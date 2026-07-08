@@ -77,6 +77,18 @@ button:disabled {
   font-weight: 800;
 }
 
+.admin-mode-badge {
+  display: inline-flex;
+  margin: 0 0 10px;
+  padding: 5px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 999px;
+  color: #ffffff;
+  background: rgba(159, 28, 28, 0.72);
+  font-size: 0.86rem;
+  font-weight: 900;
+}
+
 h1,
 h2,
 p {
@@ -394,6 +406,63 @@ textarea:focus {
   grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 10px;
   align-items: center;
+}
+
+.auto-fetch-summary,
+.auto-fetch-validation,
+.auto-fetch-log {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fbfdff;
+}
+
+.auto-fetch-summary dl {
+  display: grid;
+  grid-template-columns: minmax(110px, auto) 1fr;
+  gap: 6px 10px;
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.auto-fetch-summary dt {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.auto-fetch-summary dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.auto-fetch-validation ul,
+.auto-fetch-log ol {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 1.2em;
+}
+
+.auto-fetch-validation li,
+.auto-fetch-log li {
+  overflow-wrap: anywhere;
+}
+
+.auto-fetch-validation .is-ok {
+  color: var(--success);
+  font-weight: 800;
+}
+
+.auto-fetch-validation .is-ng {
+  color: var(--error);
+  font-weight: 800;
+}
+
+.auto-fetch-log {
+  max-height: 180px;
+  overflow: auto;
+  background: #ffffff;
 }
 
 .admin-flow-status {

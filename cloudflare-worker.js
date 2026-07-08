@@ -143,6 +143,9 @@ export default {
       return jsonResponse({
         ok: true,
         sourceUrl: validation.url,
+        fetchedAt: new Date().toISOString(),
+        method: getExtractionMethod(extraction),
+        team: "fighters",
         lineupText: extraction.lineupText
       });
     } catch (error) {
@@ -514,4 +517,17 @@ function createDebugInfo(sourceUrl, status, extraction) {
     orderExcerpt: extraction.debug?.orderExcerpt || "",
     textExcerpt: extraction.debug?.textExcerpt || ""
   };
+}
+
+function getExtractionMethod(extraction) {
+  const stage = extraction.debug?.failedAt || "";
+  const methodMap = {
+    table: "player-order-table",
+    "compact-text": "player-order-text",
+    token: "player-order-token",
+    line: "player-order-line",
+    "line-fallback": "player-order-line-fallback"
+  };
+
+  return methodMap[stage] || "unknown";
 }

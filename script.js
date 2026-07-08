@@ -143,6 +143,7 @@ const state = {
   actualPreview: null,
   adminStatus: "idle",
   adminError: "",
+  isAdminMode: false,
   autoFetch: {
     isRunning: false,
     timerId: null,
@@ -151,7 +152,12 @@ const state = {
     lastCheckedAt: "",
     lastError: "",
     sourceUrl: "",
-    gameStartAt: ""
+    gameStartAt: "",
+    nextRunAt: "",
+    status: "stopped",
+    logs: [],
+    validationChecks: [],
+    workerMeta: null
   },
   activeOrder: {
     prediction: 0,
@@ -161,10 +167,12 @@ const state = {
 };
 
 document.addEventListener("DOMContentLoaded", () => {
+  state.isAdminMode = isAdminModeEnabled();
   buildLineupPicker("prediction", "predictionLineup", "predictionPlayers");
   buildLineupPicker("actual", "actualLineup", "actualPlayers");
   loadState();
   bindEvents();
+  applyAdminMode();
   renderAll();
 });
 
@@ -183,6 +191,29 @@ function bindEvents() {
   document.getElementById("resetButton").addEventListener("click", resetAllData);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
+}
+
+function isAdminModeEnabled() {
+  return new URLSearchParams(window.location.search).get("admin") === "1";
+}
+
+function applyAdminMode() {
+  const adminDetails = document.getElementById("adminDetails");
+  const adminModeBadge = document.getElementById("adminModeBadge");
+
+  if (adminDetails) {
+    adminDetails.classList.toggle("hidden", !state.isAdminMode);
+    adminDetails.open = state.isAdminMode;
+    adminDetails.setAttribute("aria-hidden", state.isAdminMode ? "false" : "true");
+  }
+
+  if (adminModeBadge) {
+    adminModeBadge.classList.toggle("hidden", !state.isAdminMode);
+  }
+
+  if (!state.isAdminMode) {
+    stopAutoFetch("", "");
+  }
 }
 
 function buildLineupPicker(pickerName, lineupId, playersId) {
@@ -616,6 +647,9 @@ async function fetchNpbLineupCandidate(sourceUrl) {
     return {
       ok: true,
       sourceUrl: result.sourceUrl || sourceUrl,
+      fetchedAt: result.fetchedAt || "",
+      method: result.method || "",
+      team: result.team || result.targetTeam || "",
       lineupText: result.lineupText
     };
   } catch (error) {
@@ -692,12 +726,19 @@ function startAutoFetch() {
     lastCheckedAt: "",
     lastError: "",
     sourceUrl: urlValidation.url,
-    gameStartAt: gameStartAt.toISOString()
+    gameStartAt: gameStartAt.toISOString(),
+    nextRunAt: "",
+    status: "waiting",
+    logs: [],
+    validationChecks: [],
+    workerMeta: null
   };
 
+  addAutoFetchLog("自動取得を開始しました。");
   setAutoFetchStatus("自動取得を開始しました。試合開始50分前から10分ごとに取得します。", "info");
   scheduleNextAutoFetch();
   updateAutoFetchButtons();
+  renderAutoFetchPanel();
 }
 
 function stopAutoFetch(message, type) {
@@ -707,11 +748,17 @@ function stopAutoFetch(message, type) {
 
   state.autoFetch.isRunning = false;
   state.autoFetch.timerId = null;
+  state.autoFetch.nextRunAt = "";
+  if (state.autoFetch.status === "fetching" || state.autoFetch.status === "waiting") {
+    state.autoFetch.status = "stopped";
+  }
   updateAutoFetchButtons();
 
   if (message) {
+    addAutoFetchLog(message);
     setAutoFetchStatus(message, type || "info");
   }
+  renderAutoFetchPanel();
 }
 
 function scheduleNextAutoFetch() {
@@ -724,24 +771,29 @@ function scheduleNextAutoFetch() {
   const firstFetchTime = gameStartTime - AUTO_FETCH_START_BEFORE_MS;
 
   if (now >= gameStartTime) {
+    state.autoFetch.status = "stopped";
     stopAutoFetch("試合開始時刻を過ぎたため、自動取得を停止しました。", "warning");
     return;
   }
 
   if (state.autoFetch.attempts >= AUTO_FETCH_MAX_ATTEMPTS) {
+    state.autoFetch.status = "failed";
     stopAutoFetch("最大5回まで取得しました。候補を取得できなかったため停止しました。", "error");
-    state.adminStatus = "error";
+    state.adminStatus = "autoFailed";
     state.adminError = "自動取得で9人分のスタメン候補を取得できませんでした。手動取得または貼り付けを使ってください。";
     renderAdminFlow();
     return;
   }
 
   const delay = Math.max(0, now < firstFetchTime ? firstFetchTime - now : state.autoFetch.attempts === 0 ? 0 : AUTO_FETCH_INTERVAL_MS);
+  state.autoFetch.status = "waiting";
+  state.autoFetch.nextRunAt = new Date(now + delay).toISOString();
   const nextText = delay === 0 ? "まもなく取得します。" : `次回取得予定：${formatDateTime(new Date(now + delay).toISOString())}`;
   setAutoFetchStatus(`自動取得中です。${state.autoFetch.attempts} / ${AUTO_FETCH_MAX_ATTEMPTS}回実行済み。${nextText}`, "info");
 
   state.autoFetch.timerId = setTimeout(runAutoFetchAttempt, delay);
   updateAutoFetchButtons();
+  renderAutoFetchPanel();
 }
 
 async function runAutoFetchAttempt() {
@@ -753,17 +805,24 @@ async function runAutoFetchAttempt() {
   const fetchedAt = new Date();
 
   if (fetchedAt.getTime() >= gameStartAt.getTime()) {
+    state.autoFetch.status = "stopped";
     stopAutoFetch("試合開始時刻を過ぎたため、自動取得を停止しました。", "warning");
     return;
   }
 
   state.autoFetch.attempts += 1;
   state.autoFetch.lastCheckedAt = fetchedAt.toISOString();
+  state.autoFetch.status = "fetching";
+  state.autoFetch.nextRunAt = "";
+  addAutoFetchLog("取得開始");
   setAutoFetchStatus(`自動取得を実行中です。${state.autoFetch.attempts} / ${AUTO_FETCH_MAX_ATTEMPTS}回目`, "info");
+  renderAutoFetchPanel();
 
   const candidate = await fetchNpbLineupCandidate(state.autoFetch.sourceUrl);
   if (!candidate.ok) {
     state.autoFetch.lastError = candidate.message;
+    state.autoFetch.status = "failed";
+    addAutoFetchLog(`取得失敗：${candidate.message}`);
     state.adminStatus = "autoFailed";
     state.adminError = `自動取得に失敗しました：${candidate.message}`;
     renderAdminFlow();
@@ -772,8 +831,17 @@ async function runAutoFetchAttempt() {
   }
 
   const validation = validateAutoFetchedLineup(candidate.lineupText, candidate.sourceUrl, fetchedAt, gameStartAt);
+  state.autoFetch.validationChecks = validation.checks;
+  state.autoFetch.workerMeta = {
+    fetchedAt: candidate.fetchedAt || fetchedAt.toISOString(),
+    method: candidate.method || "",
+    team: candidate.team || "",
+    sourceUrl: candidate.sourceUrl
+  };
   if (!validation.ok) {
     state.autoFetch.lastError = validation.message;
+    state.autoFetch.status = "failed";
+    addAutoFetchLog(`要確認：${validation.message}`);
     state.adminStatus = "needsReview";
     state.adminError = `要確認：${validation.message}`;
     renderAdminFlow();
@@ -781,38 +849,51 @@ async function runAutoFetchAttempt() {
     return;
   }
 
-  registerProvisionalActual(validation.lineup, candidate.sourceUrl, fetchedAt);
+  addAutoFetchLog("9人取得成功");
+  registerProvisionalActual(validation.lineup, candidate.sourceUrl, fetchedAt, state.autoFetch.workerMeta, validation.checks);
+  state.autoFetch.status = "provisional";
+  addAutoFetchLog("仮承認済みにしました。");
   stopAutoFetch("9人分の候補を取得し、仮承認済みにしました。", "success");
 }
 
 function validateAutoFetchedLineup(lineupText, sourceUrl, fetchedAt, gameStartAt) {
-  if (!isNpbScoresUrl(sourceUrl)) {
-    return { ok: false, message: "取得元URLが npb.jp/scores 配下ではありません。" };
-  }
-
-  if (fetchedAt.getTime() >= gameStartAt.getTime()) {
-    return { ok: false, message: "取得時刻が試合開始後です。" };
-  }
-
   const lines = String(lineupText || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  if (lines.length !== LINEUP_SIZE) {
-    return { ok: false, message: "lineupTextが9行ではありません。" };
-  }
-
+  const parsedLines = lines.map((line) => parseActualLine(line));
   const parseResult = parseActualLineupText(lineupText);
+  const parsedItems = parsedLines.filter((result) => result.ok).map((result) => result.item);
+  const orders = parsedItems.map((item) => item.order);
+  const orderSet = new Set(orders);
+  const playerKeys = parsedItems.map((item) => normalizePlayerKey(item.player)).filter(Boolean);
+  const playerSet = new Set(playerKeys);
+  const missingPlayer = parsedItems.find((item) => !players.some((player) => normalizePlayerKey(player) === normalizePlayerKey(item.player)));
+  const checks = [
+    { label: "1〜9番が揃っている", ok: orderSet.size === LINEUP_SIZE && Array.from({ length: LINEUP_SIZE }, (_, index) => orderSet.has(index + 1)).every(Boolean) },
+    { label: "打順重複なし", ok: orders.length === orderSet.size && orders.length === LINEUP_SIZE },
+    { label: "選手重複なし", ok: playerKeys.length === playerSet.size && playerKeys.length === LINEUP_SIZE },
+    { label: "守備位置正常", ok: parsedLines.length === LINEUP_SIZE && parsedLines.every((result) => result.ok && Boolean(result.item.position)) },
+    { label: "選手名が players.js に存在する", ok: parsedItems.length === LINEUP_SIZE && !missingPlayer },
+    { label: "取得元URLが npb.jp/scores 配下", ok: isNpbScoresUrl(sourceUrl) },
+    { label: "取得時刻が試合開始前", ok: fetchedAt.getTime() < gameStartAt.getTime() },
+    { label: "lineupText が9行ある", ok: lines.length === LINEUP_SIZE }
+  ];
+  const failedCheck = checks.find((check) => !check.ok);
+
   if (!parseResult.ok) {
-    return { ok: false, message: parseResult.message };
+    return { ok: false, message: parseResult.message, checks };
   }
 
-  const missingPlayer = parseResult.lineup.find((item) => !players.some((player) => normalizePlayerKey(player) === normalizePlayerKey(item.player)));
   if (missingPlayer) {
-    return { ok: false, message: `対象選手に存在しない選手が含まれています：${missingPlayer.player}` };
+    return { ok: false, message: `対象選手に存在しない選手が含まれています：${missingPlayer.player}`, checks };
   }
 
-  return { ok: true, lineup: parseResult.lineup };
+  if (failedCheck) {
+    return { ok: false, message: failedCheck.label, checks };
+  }
+
+  return { ok: true, lineup: parseResult.lineup, checks };
 }
 
-function registerProvisionalActual(lineup, sourceUrl, fetchedAt) {
+function registerProvisionalActual(lineup, sourceUrl, fetchedAt, workerMeta, validationChecks) {
   const normalizedLineup = normalizeLineup(lineup);
   setLineupValues("actual", normalizedLineup);
   state.actual = {
@@ -821,7 +902,9 @@ function registerProvisionalActual(lineup, sourceUrl, fetchedAt) {
     approvalStatus: "provisional",
     sourceUrl,
     fetchedAt: fetchedAt.toISOString(),
-    registeredBy: "auto-fetch"
+    registeredBy: "auto-fetch",
+    workerMeta: workerMeta || null,
+    validationChecks: validationChecks || []
   };
   state.actualPreview = null;
   state.adminStatus = "provisional";
@@ -1445,6 +1528,7 @@ function renderAdminFlow() {
   renderActualPreview(state.actualPreview);
   updateAdminButtons();
   updateAutoFetchButtons();
+  renderAutoFetchPanel();
 }
 
 function renderAdminStatus() {
@@ -1608,6 +1692,105 @@ function setAutoFetchStatus(message, type) {
 
   element.textContent = message;
   element.className = `message auto-fetch-message${type ? ` is-${type}` : ""}`;
+}
+
+function addAutoFetchLog(message) {
+  const time = new Intl.DateTimeFormat("ja-JP", {
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date());
+
+  state.autoFetch.logs.push(`${time} ${message}`);
+  if (state.autoFetch.logs.length > 30) {
+    state.autoFetch.logs = state.autoFetch.logs.slice(-30);
+  }
+  renderAutoFetchPanel();
+}
+
+function renderAutoFetchPanel() {
+  renderAutoFetchSummary();
+  renderAutoFetchValidation();
+  renderAutoFetchLog();
+}
+
+function renderAutoFetchSummary() {
+  const container = document.getElementById("autoFetchSummary");
+  if (!container) {
+    return;
+  }
+
+  const meta = state.autoFetch.workerMeta || state.actual?.workerMeta || null;
+  const rows = [
+    ["自動取得状態", getAutoFetchStatusLabel()],
+    ["試行回数", `${state.autoFetch.attempts} / ${AUTO_FETCH_MAX_ATTEMPTS}`],
+    ["次回取得予定時刻", state.autoFetch.nextRunAt ? formatDateTime(state.autoFetch.nextRunAt) : "-"],
+    ["試合開始時刻", state.autoFetch.gameStartAt ? formatDateTime(state.autoFetch.gameStartAt) : "-"],
+    ["最終取得時刻", state.autoFetch.lastCheckedAt ? formatDateTime(state.autoFetch.lastCheckedAt) : "-"],
+    ["取得元URL", state.autoFetch.sourceUrl || state.actual?.sourceUrl || "-"],
+    ["Worker取得時刻", meta?.fetchedAt ? formatDateTime(meta.fetchedAt) : "-"],
+    ["抽出方式", meta?.method || "-"],
+    ["対象チーム", meta?.team || "-"]
+  ];
+
+  container.innerHTML = `<dl>${rows.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl>`;
+}
+
+function renderAutoFetchValidation() {
+  const container = document.getElementById("autoFetchValidation");
+  if (!container) {
+    return;
+  }
+
+  const checks = state.autoFetch.validationChecks.length > 0 ? state.autoFetch.validationChecks : state.actual?.validationChecks || [];
+  if (!checks.length) {
+    container.classList.add("hidden");
+    container.innerHTML = "";
+    return;
+  }
+
+  container.classList.remove("hidden");
+  container.innerHTML = `
+    <p class="preview-title">仮承認チェック結果</p>
+    <ul>
+      ${checks.map((check) => `<li><span class="${check.ok ? "is-ok" : "is-ng"}">${check.ok ? "✅" : "❌"}</span> ${escapeHtml(check.label)}</li>`).join("")}
+    </ul>
+  `;
+}
+
+function renderAutoFetchLog() {
+  const container = document.getElementById("autoFetchLog");
+  if (!container) {
+    return;
+  }
+
+  if (!state.autoFetch.logs.length) {
+    container.classList.add("hidden");
+    container.innerHTML = "";
+    return;
+  }
+
+  container.classList.remove("hidden");
+  container.innerHTML = `
+    <p class="preview-title">自動取得ログ</p>
+    <ol>
+      ${state.autoFetch.logs.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}
+    </ol>
+  `;
+}
+
+function getAutoFetchStatusLabel() {
+  if (state.actual?.approvalStatus === "provisional" || state.autoFetch.status === "provisional") {
+    return "仮承認済み";
+  }
+
+  const labels = {
+    stopped: "停止中",
+    waiting: "待機中",
+    fetching: "取得中",
+    failed: "取得失敗"
+  };
+
+  return labels[state.autoFetch.status] || "停止中";
 }
 
 function renderPicker(pickerName) {
@@ -1915,6 +2098,11 @@ function resetAllData() {
   state.autoFetch.attempts = 0;
   state.autoFetch.sourceUrl = "";
   state.autoFetch.gameStartAt = "";
+  state.autoFetch.nextRunAt = "";
+  state.autoFetch.status = "stopped";
+  state.autoFetch.logs = [];
+  state.autoFetch.validationChecks = [];
+  state.autoFetch.workerMeta = null;
   state.activeOrder.prediction = 0;
   state.activeOrder.actual = 0;
 

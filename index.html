@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ハムスタメンチャレンジ</title>
-  <link rel="stylesheet" href="style.css?v=auto-fetch-20260708">
+  <link rel="stylesheet" href="style.css?v=admin-gate-20260708">
 </head>
 <body>
   <header class="app-header">
@@ -12,6 +12,7 @@
       <p class="team-label">北海道日本ハムファイターズ専用</p>
       <h1>ハムスタメンチャレンジ</h1>
       <p class="version-label">守備位置予想対応版</p>
+      <p id="adminModeBadge" class="admin-mode-badge hidden">管理者モード</p>
       <p class="lead">試合前にスタメン9人・打順・守備位置を予想して、発表後に100点満点で採点しよう。</p>
     </div>
   </header>
@@ -67,7 +68,7 @@
       <button id="sharePredictionButton" class="secondary-button hidden" type="button">予想をXで共有</button>
     </section>
 
-    <details class="admin-details">
+    <details id="adminDetails" class="admin-details hidden">
       <summary>
         <span>管理者用・開発用エリア</span>
         <small>実スタメン登録と採点</small>
@@ -98,6 +99,9 @@
                 <button id="stopAutoFetchButton" class="secondary-button compact-button" type="button" disabled>自動取得を停止</button>
               </div>
               <p id="autoFetchStatus" class="message auto-fetch-message" role="status" aria-live="polite"></p>
+              <div id="autoFetchSummary" class="auto-fetch-summary" aria-live="polite"></div>
+              <div id="autoFetchValidation" class="auto-fetch-validation hidden" aria-live="polite"></div>
+              <div id="autoFetchLog" class="auto-fetch-log hidden" aria-live="polite"></div>
               <p id="npbFetchMessage" class="message npb-message" role="status" aria-live="polite"></p>
             </div>
             <label for="actualPasteInput">実スタメン貼り付け</label>
@@ -155,7 +159,7 @@
     </section>
   </main>
 
-  <script src="players.js?v=auto-fetch-20260708"></script>
-  <script src="script.js?v=auto-fetch-20260708"></script>
+  <script src="players.js?v=admin-gate-20260708"></script>
+  <script src="script.js?v=admin-gate-20260708"></script>
 </body>
 </html>

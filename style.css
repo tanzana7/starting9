@@ -894,8 +894,23 @@ textarea:focus {
   display: none;
 }
 
-.reset-area {
-  padding: 4px 0 0;
+.admin-reset-area {
+  display: grid;
+  gap: 12px;
+  margin: 0 16px 16px;
+  padding: 18px;
+  border: 1px solid #e3a6a6;
+  border-radius: 8px;
+  background: #fff8f8;
+}
+
+.admin-reset-area h3,
+.admin-reset-area p {
+  margin: 0;
+}
+
+.admin-reset-area > .danger-button {
+  justify-self: start;
 }
 
 @media (min-width: 760px) {
@@ -912,8 +927,7 @@ textarea:focus {
     padding: 24px;
   }
 
-  .result-card,
-  .reset-area {
+  .result-card {
     grid-column: 1 / -1;
   }
 }

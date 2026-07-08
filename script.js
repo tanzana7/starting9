@@ -2086,6 +2086,18 @@ function openXShare(text) {
 }
 
 function resetAllData() {
+  if (!state.isAdminMode) {
+    console.warn("管理者モードではないため、テストデータのリセットを中止しました。");
+    return;
+  }
+
+  const confirmed = window.confirm(
+    "Starting9の予想、実スタメン、承認状態、採点結果、自動取得ログをすべて削除します。よろしいですか？"
+  );
+  if (!confirmed) {
+    return;
+  }
+
   stopAutoFetch("", "");
   Object.values(STORAGE_KEYS).forEach(removeFromStorage);
   state.prediction = null;
@@ -2094,6 +2106,10 @@ function resetAllData() {
   state.actualPreview = null;
   state.adminStatus = "idle";
   state.adminError = "";
+  state.autoFetch.isRunning = false;
+  state.autoFetch.timerId = null;
+  state.autoFetch.startedAt = "";
+  state.autoFetch.lastCheckedAt = "";
   state.autoFetch.lastError = "";
   state.autoFetch.attempts = 0;
   state.autoFetch.sourceUrl = "";
@@ -2105,6 +2121,7 @@ function resetAllData() {
   state.autoFetch.workerMeta = null;
   state.activeOrder.prediction = 0;
   state.activeOrder.actual = 0;
+  state.flickStart.clear();
 
   document.getElementById("predictionForm").reset();
   document.getElementById("actualPasteInput").value = "";
@@ -2117,7 +2134,7 @@ function resetAllData() {
   clearMessage("parserError");
   setNpbFetchMessage("", "");
   setAutoFetchStatus("", "");
-  showMessage("resetMessage", "保存データを削除しました。");
+  showMessage("resetMessage", "テストデータをリセットしました。初期状態から再テストできます。");
   renderAll();
 }
 

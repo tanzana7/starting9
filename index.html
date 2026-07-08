@@ -132,6 +132,15 @@
           <button class="primary-button" type="submit">採点する</button>
         </form>
       </section>
+
+      <section class="admin-reset-area" aria-labelledby="admin-reset-title">
+        <div>
+          <h3 id="admin-reset-title">テスト環境の初期化</h3>
+          <p>予想、実スタメン、承認状態、採点結果、自動取得ログを削除します。</p>
+        </div>
+        <button id="resetButton" class="danger-button" type="button">テストデータをリセット</button>
+        <p id="resetMessage" class="message success-message" aria-live="polite"></p>
+      </section>
     </details>
 
     <div class="area-heading result-area-heading">
@@ -153,13 +162,9 @@
       <button id="shareResultButton" class="secondary-button hidden" type="button">結果をXで共有</button>
     </section>
 
-    <section class="reset-area" aria-label="データリセット">
-      <button id="resetButton" class="danger-button" type="button">保存データをリセット</button>
-      <p id="resetMessage" class="message success-message" aria-live="polite"></p>
-    </section>
   </main>
 
-  <script src="players.js?v=admin-gate-20260708"></script>
-  <script src="script.js?v=admin-gate-20260708"></script>
+  <script src="players.js?v=admin-reset-20260709"></script>
+  <script src="script.js?v=admin-reset-20260709"></script>
 </body>
 </html>

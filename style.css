@@ -894,7 +894,7 @@ textarea:focus {
   display: none;
 }
 
-.admin-reset-area {
+.admin-test-tools {
   display: grid;
   gap: 12px;
   margin: 0 16px 16px;
@@ -904,13 +904,15 @@ textarea:focus {
   background: #fff8f8;
 }
 
-.admin-reset-area h3,
-.admin-reset-area p {
+.admin-test-tools h3,
+.admin-test-tools p {
   margin: 0;
 }
 
-.admin-reset-area > .danger-button {
-  justify-self: start;
+.admin-test-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 @media (min-width: 760px) {

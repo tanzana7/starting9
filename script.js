@@ -31,6 +31,17 @@ const NPB_WORKER_EXTRACTION_FAILED_MESSAGE = "WorkerでNPB公式ページは取�
 const AUTO_FETCH_START_BEFORE_MS = 50 * 60 * 1000;
 const AUTO_FETCH_INTERVAL_MS = 10 * 60 * 1000;
 const AUTO_FETCH_MAX_ATTEMPTS = 5;
+const TEST_PREDICTION_LINEUP = [
+  { order: 1, player: "大塚瑠晏", position: "遊" },
+  { order: 2, player: "清宮幸太郎", position: "一" },
+  { order: 3, player: "レイエス", position: "指" },
+  { order: 4, player: "吉田賢吾", position: "中" },
+  { order: 5, player: "水谷瞬", position: "左" },
+  { order: 6, player: "野村佑希", position: "三" },
+  { order: 7, player: "宮崎一樹", position: "右" },
+  { order: 8, player: "田宮裕涼", position: "捕" },
+  { order: 9, player: "細川凌平", position: "二" }
+];
 const FIGHTERS_TEAM_KEYWORDS = [
   "北海道日本ハムファイターズ",
   "北海道日本ハム",
@@ -188,6 +199,7 @@ function bindEvents() {
   document.getElementById("approveProvisionalButton").addEventListener("click", approveProvisionalActual);
   document.getElementById("editProvisionalButton").addEventListener("click", editProvisionalActual);
   document.getElementById("cancelProvisionalButton").addEventListener("click", cancelProvisionalActual);
+  document.getElementById("generateTestPredictionButton").addEventListener("click", generateTestPrediction);
   document.getElementById("resetButton").addEventListener("click", resetAllData);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
@@ -2085,6 +2097,30 @@ function openXShare(text) {
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
+function generateTestPrediction() {
+  if (!state.isAdminMode) {
+    console.warn("管理者モードではないため、テスト用予想の生成を中止しました。");
+    return;
+  }
+
+  const currentLineup = getLineupValues("prediction");
+  const hasExistingInput = currentLineup.some((item) => item.player || item.position);
+
+  if (hasExistingInput && !window.confirm("現在の予想入力をテスト用データで上書きしますか？")) {
+    return;
+  }
+
+  const nicknameInput = document.getElementById("nickname");
+  if (!nicknameInput.value.trim()) {
+    nicknameInput.value = "テストユーザー";
+  }
+
+  setLineupValues("prediction", TEST_PREDICTION_LINEUP);
+  clearMessage("predictionError");
+  clearMessage("resetMessage");
+  showMessage("testPredictionMessage", "テスト用予想を入力しました。「予想を保存する」で保存できます。");
+}
+
 function resetAllData() {
   if (!state.isAdminMode) {
     console.warn("管理者モードではないため、テストデータのリセットを中止しました。");
@@ -2132,6 +2168,7 @@ function resetAllData() {
   clearMessage("predictionError");
   clearMessage("actualError");
   clearMessage("parserError");
+  clearMessage("testPredictionMessage");
   setNpbFetchMessage("", "");
   setAutoFetchStatus("", "");
   showMessage("resetMessage", "テストデータをリセットしました。初期状態から再テストできます。");

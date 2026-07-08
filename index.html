@@ -133,12 +133,16 @@
         </form>
       </section>
 
-      <section class="admin-reset-area" aria-labelledby="admin-reset-title">
+      <section class="admin-test-tools" aria-labelledby="admin-test-tools-title">
         <div>
-          <h3 id="admin-reset-title">テスト環境の初期化</h3>
-          <p>予想、実スタメン、承認状態、採点結果、自動取得ログを削除します。</p>
+          <h3 id="admin-test-tools-title">テスト用ツール</h3>
+          <p>動作確認用の予想生成と、テスト環境の初期化ができます。</p>
         </div>
-        <button id="resetButton" class="danger-button" type="button">テストデータをリセット</button>
+        <div class="admin-test-actions">
+          <button id="generateTestPredictionButton" class="secondary-button" type="button">テスト用予想を生成</button>
+          <button id="resetButton" class="danger-button" type="button">テストデータをリセット</button>
+        </div>
+        <p id="testPredictionMessage" class="message success-message" aria-live="polite"></p>
         <p id="resetMessage" class="message success-message" aria-live="polite"></p>
       </section>
     </details>
@@ -164,7 +168,7 @@
 
   </main>
 
-  <script src="players.js?v=admin-reset-20260709"></script>
-  <script src="script.js?v=admin-reset-20260709"></script>
+  <script src="players.js?v=admin-test-tools-20260709"></script>
+  <script src="script.js?v=admin-test-tools-20260709"></script>
 </body>
 </html>

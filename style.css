@@ -312,6 +312,7 @@ textarea:focus {
   min-height: 1.5em;
   margin: 12px 0 0;
   font-weight: 700;
+  white-space: pre-wrap;
 }
 
 .error-message {
@@ -335,6 +336,22 @@ textarea:focus {
 }
 
 .npb-message.is-error {
+  color: var(--error);
+}
+
+.auto-fetch-message.is-info {
+  color: var(--fighters-deep-blue);
+}
+
+.auto-fetch-message.is-success {
+  color: var(--success);
+}
+
+.auto-fetch-message.is-warning {
+  color: #a15c00;
+}
+
+.auto-fetch-message.is-error {
   color: var(--error);
 }
 
@@ -372,6 +389,13 @@ textarea:focus {
   align-items: center;
 }
 
+.auto-fetch-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+}
+
 .admin-flow-status {
   display: grid;
   gap: 6px;
@@ -403,6 +427,15 @@ textarea:focus {
 
 .admin-flow-status.is-approved strong {
   color: var(--success);
+}
+
+.admin-flow-status.is-provisional {
+  border-color: #e3c46d;
+  background: #fff9e8;
+}
+
+.admin-flow-status.is-provisional strong {
+  color: #8a6200;
 }
 
 .admin-flow-status.is-error {
@@ -861,6 +894,10 @@ textarea:focus {
   }
 
   .npb-url-row {
+    grid-template-columns: 1fr;
+  }
+
+  .auto-fetch-row {
     grid-template-columns: 1fr;
   }
 

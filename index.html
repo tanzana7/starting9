@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ハムスタメンチャレンジ</title>
-  <link rel="stylesheet" href="style.css?v=roster-20260708">
+  <link rel="stylesheet" href="style.css?v=auto-fetch-20260708">
 </head>
 <body>
   <header class="app-header">
@@ -91,6 +91,13 @@
                 <input id="npbUrlInput" type="url" inputmode="url" placeholder="https://npb.jp/scores/2026/0707/m-f-12/">
                 <button id="fetchNpbButton" class="secondary-button compact-button" type="button">NPB公式ページから候補取得</button>
               </div>
+              <label for="gameStartInput">試合開始日時</label>
+              <div class="auto-fetch-row">
+                <input id="gameStartInput" type="datetime-local">
+                <button id="startAutoFetchButton" class="secondary-button compact-button" type="button">自動取得を開始</button>
+                <button id="stopAutoFetchButton" class="secondary-button compact-button" type="button" disabled>自動取得を停止</button>
+              </div>
+              <p id="autoFetchStatus" class="message auto-fetch-message" role="status" aria-live="polite"></p>
               <p id="npbFetchMessage" class="message npb-message" role="status" aria-live="polite"></p>
             </div>
             <label for="actualPasteInput">実スタメン貼り付け</label>
@@ -99,6 +106,9 @@
               <button id="parseActualButton" class="secondary-button compact-button" type="button">候補を読み取る</button>
               <button id="applyParsedActualButton" class="primary-button compact-button hidden" type="button">承認して実スタメンに登録</button>
               <button id="clearActualCandidateButton" class="secondary-button compact-button hidden" type="button">候補をクリア</button>
+              <button id="approveProvisionalButton" class="primary-button compact-button hidden" type="button">本承認する</button>
+              <button id="editProvisionalButton" class="secondary-button compact-button hidden" type="button">修正する</button>
+              <button id="cancelProvisionalButton" class="danger-button compact-button hidden" type="button">仮承認を取り消す</button>
             </div>
             <p id="parserError" class="message error-message" role="alert" aria-live="polite"></p>
             <div id="actualPreview" class="parser-preview hidden" aria-live="polite"></div>
@@ -145,7 +155,7 @@
     </section>
   </main>
 
-  <script src="players.js?v=roster-20260708"></script>
-  <script src="script.js?v=roster-20260708"></script>
+  <script src="players.js?v=auto-fetch-20260708"></script>
+  <script src="script.js?v=auto-fetch-20260708"></script>
 </body>
 </html>

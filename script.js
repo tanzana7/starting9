@@ -25,7 +25,12 @@ const SCORE_RULES = {
 };
 const FLICK_DISTANCE = 42;
 const DRAG_DATA_TYPE = "application/x-ham-starting9-player";
-const NPB_DIRECT_FETCH_FALLBACK_MESSAGE = "ブラウザからNPB公式ページを直接取得できませんでした。NPB公式ページの「最新のオーダー」部分をコピーして、下の貼り付け欄に入力してください。";
+const NPB_WORKER_API_URL = "https://starting9-npb-fetch.tanzana7.workers.dev/";
+const NPB_WORKER_FALLBACK_MESSAGE = "NPB公式ページ取得APIが未設定、または取得に失敗しました。NPB公式ページの「最新のオーダー」部分をコピーして、下の貼り付け欄に入力してください。";
+const NPB_WORKER_EXTRACTION_FAILED_MESSAGE = "WorkerでNPB公式ページは取得できましたが、スタメン抽出に失敗しました。手動貼り付けを使うか、debug=1付きURLで抽出対象テキストを確認してください。";
+const AUTO_FETCH_START_BEFORE_MS = 50 * 60 * 1000;
+const AUTO_FETCH_INTERVAL_MS = 10 * 60 * 1000;
+const AUTO_FETCH_MAX_ATTEMPTS = 5;
 const FIGHTERS_TEAM_KEYWORDS = [
   "北海道日本ハムファイターズ",
   "北海道日本ハム",
@@ -138,6 +143,16 @@ const state = {
   actualPreview: null,
   adminStatus: "idle",
   adminError: "",
+  autoFetch: {
+    isRunning: false,
+    timerId: null,
+    attempts: 0,
+    startedAt: "",
+    lastCheckedAt: "",
+    lastError: "",
+    sourceUrl: "",
+    gameStartAt: ""
+  },
   activeOrder: {
     prediction: 0,
     actual: 0
@@ -157,9 +172,14 @@ function bindEvents() {
   document.getElementById("predictionForm").addEventListener("submit", handlePredictionSubmit);
   document.getElementById("actualForm").addEventListener("submit", handleActualSubmit);
   document.getElementById("fetchNpbButton").addEventListener("click", handleNpbFetchCandidate);
+  document.getElementById("startAutoFetchButton").addEventListener("click", startAutoFetch);
+  document.getElementById("stopAutoFetchButton").addEventListener("click", () => stopAutoFetch("自動取得を停止しました。", "warning"));
   document.getElementById("parseActualButton").addEventListener("click", handleActualParsePreview);
   document.getElementById("applyParsedActualButton").addEventListener("click", applyParsedActualPreview);
   document.getElementById("clearActualCandidateButton").addEventListener("click", clearActualCandidate);
+  document.getElementById("approveProvisionalButton").addEventListener("click", approveProvisionalActual);
+  document.getElementById("editProvisionalButton").addEventListener("click", editProvisionalActual);
+  document.getElementById("cancelProvisionalButton").addEventListener("click", cancelProvisionalActual);
   document.getElementById("resetButton").addEventListener("click", resetAllData);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
@@ -498,7 +518,10 @@ function applyParsedActualPreview() {
   setLineupValues("actual", state.actualPreview);
   state.actual = {
     lineup: normalizeLineup(state.actualPreview),
-    savedAt: new Date().toISOString()
+    savedAt: new Date().toISOString(),
+    approvalStatus: "approved",
+    approvedAt: new Date().toISOString(),
+    registeredBy: "manual"
   };
   state.actualPreview = null;
   state.adminStatus = "approved";
@@ -515,7 +538,7 @@ function applyParsedActualPreview() {
 function clearActualCandidate() {
   state.actualPreview = null;
   state.adminError = "";
-  state.adminStatus = state.actual ? "approved" : "idle";
+  state.adminStatus = getAdminStatusFromActual();
   clearMessage("parserError");
   clearMessage("actualError");
   setNpbFetchMessage("", "");
@@ -538,40 +561,342 @@ async function handleNpbFetchCandidate() {
   if (validation.warning) {
     setNpbFetchMessage(validation.warning, "warning");
   } else {
-    setNpbFetchMessage("NPB公式ページを取得中...", "info");
+    setNpbFetchMessage("NPB公式ページ取得APIへ問い合わせ中...", "info");
+  }
+
+  if (!NPB_WORKER_API_URL) {
+    showNpbFetchFallback("NPB公式ページ取得APIが未設定です。手動で貼り付けてください。");
+    return;
   }
 
   try {
-    const response = await fetch(validation.url, { cache: "no-store" });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+    const candidate = await fetchNpbLineupCandidate(validation.url);
+    if (!candidate.ok) {
+      if (candidate.type === "extract") {
+        showNpbExtractionFailedFallback(validation.url, candidate.message);
+      } else {
+        showNpbFetchFallback("取得できませんでした。手動で貼り付けてください。");
+      }
+      return;
     }
 
-    const html = await response.text();
-    const lineupText = extractNpbOrderText(html);
-    if (!lineupText) {
-      throw new Error("最新のオーダーを抽出できませんでした。");
-    }
-
-    const parseResult = parseActualLineupText(lineupText);
+    const parseResult = parseActualLineupText(candidate.lineupText);
     if (!parseResult.ok) {
       throw new Error(parseResult.message);
     }
 
-    document.getElementById("actualPasteInput").value = lineupText;
+    document.getElementById("actualPasteInput").value = candidate.lineupText;
     state.actualPreview = parseResult.lineup;
     state.adminStatus = "preview";
     state.adminError = "";
     renderAdminFlow();
     setNpbFetchMessage("候補スタメンを取得しました。内容を確認して承認してください。", "success");
   } catch (error) {
-    console.warn("NPB公式ページから候補を取得できませんでした。", error);
-    state.actualPreview = null;
+    console.warn("NPB公式ページ取得APIから候補を取得できませんでした。", error);
+    showNpbFetchFallback("取得できませんでした。手動で貼り付けてください。");
+  }
+}
+
+async function fetchNpbLineupCandidate(sourceUrl) {
+  if (!NPB_WORKER_API_URL) {
+    return { ok: false, type: "config", message: "NPB公式ページ取得APIが未設定です。" };
+  }
+
+  try {
+    const response = await fetch(buildNpbWorkerRequestUrl(sourceUrl), { cache: "no-store" });
+    if (!response.ok) {
+      return { ok: false, type: "network", message: `Worker APIの取得に失敗しました。HTTP ${response.status}` };
+    }
+
+    const result = await response.json();
+    if (!result.ok || !result.lineupText) {
+      return { ok: false, type: "extract", message: result.error || "最新のオーダーを抽出できませんでした。" };
+    }
+
+    return {
+      ok: true,
+      sourceUrl: result.sourceUrl || sourceUrl,
+      lineupText: result.lineupText
+    };
+  } catch (error) {
+    return { ok: false, type: "network", message: error.message };
+  }
+}
+
+function buildNpbWorkerRequestUrl(sourceUrl) {
+  const workerUrl = new URL(NPB_WORKER_API_URL);
+  workerUrl.searchParams.set("url", sourceUrl);
+  return workerUrl.href;
+}
+
+function buildNpbWorkerDebugUrl(sourceUrl) {
+  const workerUrl = new URL(NPB_WORKER_API_URL);
+  workerUrl.searchParams.set("url", sourceUrl);
+  workerUrl.searchParams.set("debug", "1");
+  return workerUrl.href;
+}
+
+function showNpbFetchFallback(message) {
+  state.actualPreview = null;
+  state.adminStatus = "error";
+  state.adminError = NPB_WORKER_FALLBACK_MESSAGE;
+  renderAdminFlow();
+  showMessage("parserError", NPB_WORKER_FALLBACK_MESSAGE);
+  setNpbFetchMessage(message, "error");
+}
+
+function showNpbExtractionFailedFallback(sourceUrl, workerError) {
+  const debugUrl = buildNpbWorkerDebugUrl(sourceUrl);
+  const message = `${NPB_WORKER_EXTRACTION_FAILED_MESSAGE}\n${debugUrl}`;
+  state.actualPreview = null;
+  state.adminStatus = "error";
+  state.adminError = workerError ? `${NPB_WORKER_EXTRACTION_FAILED_MESSAGE}\nWorkerエラー：${workerError}` : NPB_WORKER_EXTRACTION_FAILED_MESSAGE;
+  renderAdminFlow();
+  showMessage("parserError", message);
+  setNpbFetchMessage("スタメン抽出に失敗しました。手動貼り付け、またはdebug=1付きURLを確認してください。", "error");
+}
+
+function startAutoFetch() {
+  clearMessage("parserError");
+  clearMessage("actualError");
+  clearMessage("resetMessage");
+
+  const urlValidation = validateNpbUrl(document.getElementById("npbUrlInput").value);
+  if (!urlValidation.ok) {
+    setAutoFetchStatus(urlValidation.message, "error");
+    return;
+  }
+
+  if (!isNpbScoresUrl(urlValidation.url)) {
+    setAutoFetchStatus("自動取得には npb.jp/scores 配下のURLを入力してください。", "error");
+    return;
+  }
+
+  const gameStartAt = getGameStartDate();
+  if (!gameStartAt) {
+    setAutoFetchStatus("試合開始日時を入力してください。", "error");
+    return;
+  }
+
+  if (Date.now() >= gameStartAt.getTime()) {
+    setAutoFetchStatus("試合開始時刻を過ぎているため、自動取得を開始できません。", "error");
+    return;
+  }
+
+  stopAutoFetch("", "");
+  state.autoFetch = {
+    isRunning: true,
+    timerId: null,
+    attempts: 0,
+    startedAt: new Date().toISOString(),
+    lastCheckedAt: "",
+    lastError: "",
+    sourceUrl: urlValidation.url,
+    gameStartAt: gameStartAt.toISOString()
+  };
+
+  setAutoFetchStatus("自動取得を開始しました。試合開始50分前から10分ごとに取得します。", "info");
+  scheduleNextAutoFetch();
+  updateAutoFetchButtons();
+}
+
+function stopAutoFetch(message, type) {
+  if (state.autoFetch.timerId) {
+    clearTimeout(state.autoFetch.timerId);
+  }
+
+  state.autoFetch.isRunning = false;
+  state.autoFetch.timerId = null;
+  updateAutoFetchButtons();
+
+  if (message) {
+    setAutoFetchStatus(message, type || "info");
+  }
+}
+
+function scheduleNextAutoFetch() {
+  if (!state.autoFetch.isRunning) {
+    return;
+  }
+
+  const now = Date.now();
+  const gameStartTime = new Date(state.autoFetch.gameStartAt).getTime();
+  const firstFetchTime = gameStartTime - AUTO_FETCH_START_BEFORE_MS;
+
+  if (now >= gameStartTime) {
+    stopAutoFetch("試合開始時刻を過ぎたため、自動取得を停止しました。", "warning");
+    return;
+  }
+
+  if (state.autoFetch.attempts >= AUTO_FETCH_MAX_ATTEMPTS) {
+    stopAutoFetch("最大5回まで取得しました。候補を取得できなかったため停止しました。", "error");
     state.adminStatus = "error";
-    state.adminError = NPB_DIRECT_FETCH_FALLBACK_MESSAGE;
+    state.adminError = "自動取得で9人分のスタメン候補を取得できませんでした。手動取得または貼り付けを使ってください。";
     renderAdminFlow();
-    showMessage("parserError", NPB_DIRECT_FETCH_FALLBACK_MESSAGE);
-    setNpbFetchMessage("取得できませんでした。手動で貼り付けてください。", "error");
+    return;
+  }
+
+  const delay = Math.max(0, now < firstFetchTime ? firstFetchTime - now : state.autoFetch.attempts === 0 ? 0 : AUTO_FETCH_INTERVAL_MS);
+  const nextText = delay === 0 ? "まもなく取得します。" : `次回取得予定：${formatDateTime(new Date(now + delay).toISOString())}`;
+  setAutoFetchStatus(`自動取得中です。${state.autoFetch.attempts} / ${AUTO_FETCH_MAX_ATTEMPTS}回実行済み。${nextText}`, "info");
+
+  state.autoFetch.timerId = setTimeout(runAutoFetchAttempt, delay);
+  updateAutoFetchButtons();
+}
+
+async function runAutoFetchAttempt() {
+  if (!state.autoFetch.isRunning) {
+    return;
+  }
+
+  const gameStartAt = new Date(state.autoFetch.gameStartAt);
+  const fetchedAt = new Date();
+
+  if (fetchedAt.getTime() >= gameStartAt.getTime()) {
+    stopAutoFetch("試合開始時刻を過ぎたため、自動取得を停止しました。", "warning");
+    return;
+  }
+
+  state.autoFetch.attempts += 1;
+  state.autoFetch.lastCheckedAt = fetchedAt.toISOString();
+  setAutoFetchStatus(`自動取得を実行中です。${state.autoFetch.attempts} / ${AUTO_FETCH_MAX_ATTEMPTS}回目`, "info");
+
+  const candidate = await fetchNpbLineupCandidate(state.autoFetch.sourceUrl);
+  if (!candidate.ok) {
+    state.autoFetch.lastError = candidate.message;
+    state.adminStatus = "autoFailed";
+    state.adminError = `自動取得に失敗しました：${candidate.message}`;
+    renderAdminFlow();
+    scheduleNextAutoFetch();
+    return;
+  }
+
+  const validation = validateAutoFetchedLineup(candidate.lineupText, candidate.sourceUrl, fetchedAt, gameStartAt);
+  if (!validation.ok) {
+    state.autoFetch.lastError = validation.message;
+    state.adminStatus = "needsReview";
+    state.adminError = `要確認：${validation.message}`;
+    renderAdminFlow();
+    scheduleNextAutoFetch();
+    return;
+  }
+
+  registerProvisionalActual(validation.lineup, candidate.sourceUrl, fetchedAt);
+  stopAutoFetch("9人分の候補を取得し、仮承認済みにしました。", "success");
+}
+
+function validateAutoFetchedLineup(lineupText, sourceUrl, fetchedAt, gameStartAt) {
+  if (!isNpbScoresUrl(sourceUrl)) {
+    return { ok: false, message: "取得元URLが npb.jp/scores 配下ではありません。" };
+  }
+
+  if (fetchedAt.getTime() >= gameStartAt.getTime()) {
+    return { ok: false, message: "取得時刻が試合開始後です。" };
+  }
+
+  const lines = String(lineupText || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length !== LINEUP_SIZE) {
+    return { ok: false, message: "lineupTextが9行ではありません。" };
+  }
+
+  const parseResult = parseActualLineupText(lineupText);
+  if (!parseResult.ok) {
+    return { ok: false, message: parseResult.message };
+  }
+
+  const missingPlayer = parseResult.lineup.find((item) => !players.some((player) => normalizePlayerKey(player) === normalizePlayerKey(item.player)));
+  if (missingPlayer) {
+    return { ok: false, message: `対象選手に存在しない選手が含まれています：${missingPlayer.player}` };
+  }
+
+  return { ok: true, lineup: parseResult.lineup };
+}
+
+function registerProvisionalActual(lineup, sourceUrl, fetchedAt) {
+  const normalizedLineup = normalizeLineup(lineup);
+  setLineupValues("actual", normalizedLineup);
+  state.actual = {
+    lineup: normalizedLineup,
+    savedAt: fetchedAt.toISOString(),
+    approvalStatus: "provisional",
+    sourceUrl,
+    fetchedAt: fetchedAt.toISOString(),
+    registeredBy: "auto-fetch"
+  };
+  state.actualPreview = null;
+  state.adminStatus = "provisional";
+  state.adminError = "";
+  state.result = null;
+  saveToStorage(STORAGE_KEYS.actual, state.actual);
+  removeFromStorage(STORAGE_KEYS.result);
+  renderActualLineup();
+  renderAdminFlow();
+  renderScoreResult();
+}
+
+function approveProvisionalActual() {
+  if (!state.actual || state.actual.approvalStatus !== "provisional") {
+    showMessage("parserError", "仮承認済みの実スタメンがありません。");
+    return;
+  }
+
+  state.actual.approvalStatus = "approved";
+  state.actual.approvedAt = new Date().toISOString();
+  state.adminStatus = "approved";
+  saveToStorage(STORAGE_KEYS.actual, state.actual);
+  renderAdminFlow();
+  showMessage("parserError", "");
+}
+
+function editProvisionalActual() {
+  if (!state.actual || state.actual.approvalStatus !== "provisional") {
+    showMessage("parserError", "修正できる仮承認済み実スタメンがありません。");
+    return;
+  }
+
+  state.actualPreview = normalizeLineup(state.actual.lineup);
+  state.actual = null;
+  state.adminStatus = "preview";
+  state.adminError = "";
+  removeFromStorage(STORAGE_KEYS.actual);
+  renderAdminFlow();
+  showMessage("parserError", "仮承認済みの内容を候補プレビューに戻しました。必要に応じて修正して承認してください。");
+}
+
+function cancelProvisionalActual() {
+  if (!state.actual || state.actual.approvalStatus !== "provisional") {
+    showMessage("parserError", "取り消せる仮承認済み実スタメンがありません。");
+    return;
+  }
+
+  state.actual = null;
+  state.actualPreview = null;
+  state.adminStatus = "idle";
+  state.adminError = "";
+  state.result = null;
+  removeFromStorage(STORAGE_KEYS.actual);
+  removeFromStorage(STORAGE_KEYS.result);
+  setLineupValues("actual", normalizeLineup([]));
+  renderAll();
+  showMessage("parserError", "仮承認を取り消しました。");
+}
+
+function getGameStartDate() {
+  const value = document.getElementById("gameStartInput")?.value;
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function isNpbScoresUrl(value) {
+  try {
+    const url = new URL(value);
+    return (url.hostname === "npb.jp" || url.hostname.endsWith(".npb.jp")) && url.pathname.startsWith("/scores/");
+  } catch (error) {
+    return false;
   }
 }
 
@@ -1072,7 +1397,7 @@ function loadState() {
 
   if (state.actual?.lineup) {
     state.actual.lineup = normalizeLineup(state.actual.lineup);
-    state.adminStatus = "approved";
+    state.adminStatus = getAdminStatusFromActual();
   }
 
   if (state.prediction?.lineup && state.actual?.lineup && hasCompletePositions(state.prediction.lineup) && hasCompletePositions(state.actual.lineup)) {
@@ -1113,12 +1438,13 @@ function renderAll() {
 
 function renderAdminFlow() {
   if (!state.adminStatus || state.adminStatus === "idle") {
-    state.adminStatus = state.actual ? "approved" : "idle";
+    state.adminStatus = getAdminStatusFromActual();
   }
 
   renderAdminStatus();
   renderActualPreview(state.actualPreview);
   updateAdminButtons();
+  updateAutoFetchButtons();
 }
 
 function renderAdminStatus() {
@@ -1142,7 +1468,22 @@ function renderAdminStatus() {
     approved: {
       className: "is-approved",
       title: "実スタメンを承認済みです",
-      body: state.actual?.savedAt ? `承認済み：${formatDateTime(state.actual.savedAt)}` : "承認済みです。"
+      body: state.actual?.approvedAt ? `本承認済み：${formatDateTime(state.actual.approvedAt)}` : state.actual?.savedAt ? `承認済み：${formatDateTime(state.actual.savedAt)}` : "承認済みです。"
+    },
+    provisional: {
+      className: "is-provisional",
+      title: "状態：仮承認済み",
+      body: createProvisionalStatusText()
+    },
+    autoFailed: {
+      className: "is-error",
+      title: "取得失敗",
+      body: state.adminError || "自動取得で候補を取得できませんでした。手動取得または貼り付けを使ってください。"
+    },
+    needsReview: {
+      className: "is-error",
+      title: "要確認",
+      body: state.adminError || "自動取得した候補に確認が必要です。手動取得または貼り付けを使ってください。"
     },
     error: {
       className: "is-error",
@@ -1151,7 +1492,7 @@ function renderAdminStatus() {
     }
   };
   const current = statusMap[state.adminStatus] || statusMap.idle;
-  const approvedList = state.adminStatus === "approved" && state.actual ? createLineupPreviewHtml(state.actual.lineup) : "";
+  const approvedList = (state.adminStatus === "approved" || state.adminStatus === "provisional") && state.actual ? createLineupPreviewHtml(state.actual.lineup) : "";
 
   statusContainer.className = `admin-flow-status ${current.className}`;
   statusContainer.innerHTML = `
@@ -1164,16 +1505,26 @@ function renderAdminStatus() {
 function updateAdminButtons() {
   const applyButton = document.getElementById("applyParsedActualButton");
   const clearButton = document.getElementById("clearActualCandidateButton");
+  const approveProvisionalButton = document.getElementById("approveProvisionalButton");
+  const editProvisionalButton = document.getElementById("editProvisionalButton");
+  const cancelProvisionalButton = document.getElementById("cancelProvisionalButton");
 
-  if (!applyButton || !clearButton) {
+  if (!applyButton || !clearButton || !approveProvisionalButton || !editProvisionalButton || !cancelProvisionalButton) {
     return;
   }
 
   const hasPreview = state.adminStatus === "preview" && Boolean(state.actualPreview);
-  const hasCandidateState = Boolean(state.actualPreview) || state.adminStatus === "error";
+  const hasCandidateState = Boolean(state.actualPreview) || ["error", "autoFailed", "needsReview"].includes(state.adminStatus);
+  const hasProvisional = state.adminStatus === "provisional" && state.actual?.approvalStatus === "provisional";
   applyButton.classList.toggle("hidden", !hasPreview);
   applyButton.disabled = !hasPreview;
   clearButton.classList.toggle("hidden", !hasCandidateState);
+  approveProvisionalButton.classList.toggle("hidden", !hasProvisional);
+  editProvisionalButton.classList.toggle("hidden", !hasProvisional);
+  cancelProvisionalButton.classList.toggle("hidden", !hasProvisional);
+  approveProvisionalButton.disabled = !hasProvisional;
+  editProvisionalButton.disabled = !hasProvisional;
+  cancelProvisionalButton.disabled = !hasProvisional;
 }
 
 function renderActualPreview(lineup) {
@@ -1212,6 +1563,51 @@ function createLineupPreviewHtml(lineup) {
   }).join("");
 
   return `<ul class="preview-list">${items}</ul>`;
+}
+
+function getAdminStatusFromActual() {
+  if (!state.actual) {
+    return "idle";
+  }
+
+  return state.actual.approvalStatus === "provisional" ? "provisional" : "approved";
+}
+
+function createProvisionalStatusText() {
+  if (!state.actual) {
+    return "仮承認済みの実スタメンはありません。";
+  }
+
+  const lines = [
+    "自動取得で登録された実スタメンです。",
+    state.actual.sourceUrl ? `取得元URL：${state.actual.sourceUrl}` : "",
+    state.actual.fetchedAt ? `取得時刻：${formatDateTime(state.actual.fetchedAt)}` : "",
+    "採点には利用できます。本承認・修正・取り消しを選択してください。"
+  ].filter(Boolean);
+
+  return lines.join("\n");
+}
+
+function updateAutoFetchButtons() {
+  const startButton = document.getElementById("startAutoFetchButton");
+  const stopButton = document.getElementById("stopAutoFetchButton");
+
+  if (!startButton || !stopButton) {
+    return;
+  }
+
+  startButton.disabled = state.autoFetch.isRunning;
+  stopButton.disabled = !state.autoFetch.isRunning;
+}
+
+function setAutoFetchStatus(message, type) {
+  const element = document.getElementById("autoFetchStatus");
+  if (!element) {
+    return;
+  }
+
+  element.textContent = message;
+  element.className = `message auto-fetch-message${type ? ` is-${type}` : ""}`;
 }
 
 function renderPicker(pickerName) {
@@ -1507,6 +1903,7 @@ function openXShare(text) {
 }
 
 function resetAllData() {
+  stopAutoFetch("", "");
   Object.values(STORAGE_KEYS).forEach(removeFromStorage);
   state.prediction = null;
   state.actual = null;
@@ -1514,16 +1911,24 @@ function resetAllData() {
   state.actualPreview = null;
   state.adminStatus = "idle";
   state.adminError = "";
+  state.autoFetch.lastError = "";
+  state.autoFetch.attempts = 0;
+  state.autoFetch.sourceUrl = "";
+  state.autoFetch.gameStartAt = "";
   state.activeOrder.prediction = 0;
   state.activeOrder.actual = 0;
 
   document.getElementById("predictionForm").reset();
   document.getElementById("actualPasteInput").value = "";
+  document.getElementById("npbUrlInput").value = "";
+  document.getElementById("gameStartInput").value = "";
   setLineupValues("prediction", []);
   setLineupValues("actual", []);
   clearMessage("predictionError");
   clearMessage("actualError");
   clearMessage("parserError");
+  setNpbFetchMessage("", "");
+  setAutoFetchStatus("", "");
   showMessage("resetMessage", "保存データを削除しました。");
   renderAll();
 }

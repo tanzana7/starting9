@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ハムスタメンチャレンジ</title>
+  <link rel="stylesheet" href="style.css?v=position-20260707">
+</head>
+<body>
+  <header class="app-header">
+    <div class="container header-inner">
+      <p class="team-label">北海道日本ハムファイターズ専用</p>
+      <h1>ハムスタメンチャレンジ</h1>
+      <p class="version-label">守備位置予想対応版</p>
+      <p class="lead">試合前にスタメン9人・打順・守備位置を予想して、発表後に27点満点で採点しよう。</p>
+    </div>
+  </header>
+
+  <main class="container app-layout">
+    <section class="card lineup-card" aria-labelledby="prediction-title">
+      <div class="section-heading">
+        <span class="step-badge">1</span>
+        <div>
+          <h2 id="prediction-title">スタメン予想入力</h2>
+          <p>ニックネーム、1番から9番までの予想選手、守備位置を選んでください。</p>
+        </div>
+      </div>
+
+      <form id="predictionForm" novalidate>
+        <div class="field">
+          <label for="nickname">ニックネーム</label>
+          <input id="nickname" name="nickname" type="text" maxlength="24" placeholder="例：北の応援団" autocomplete="nickname">
+        </div>
+
+        <div class="lineup-builder" data-picker="prediction">
+          <div class="lineup-panel">
+            <h3>予想オーダー</h3>
+            <div id="predictionLineup" class="slot-list"></div>
+          </div>
+          <div class="player-panel">
+            <h3>選手一覧</h3>
+            <div id="predictionPlayers" class="player-list"></div>
+          </div>
+        </div>
+        <p id="predictionError" class="message error-message" role="alert" aria-live="polite"></p>
+
+        <button class="primary-button" type="submit">予想を保存する</button>
+      </form>
+    </section>
+
+    <section class="card" aria-labelledby="saved-title">
+      <div class="section-heading">
+        <span class="step-badge">2</span>
+        <div>
+          <h2 id="saved-title">あなたの予想</h2>
+          <p>保存した予想はこの端末のブラウザに残ります。</p>
+        </div>
+      </div>
+
+      <div id="savedPrediction" class="empty-state">まだ予想が保存されていません。</div>
+      <button id="sharePredictionButton" class="secondary-button hidden" type="button">予想をXで共有</button>
+    </section>
+
+    <section class="card lineup-card" aria-labelledby="actual-title">
+      <div class="section-heading">
+        <span class="step-badge">3</span>
+        <div>
+          <h2 id="actual-title">実際のスタメン入力</h2>
+          <p>発表されたスタメンを手動で入力して採点できます。</p>
+        </div>
+      </div>
+
+      <form id="actualForm" novalidate>
+        <div class="lineup-builder" data-picker="actual">
+          <div class="lineup-panel">
+            <h3>実際のオーダー</h3>
+            <div id="actualLineup" class="slot-list"></div>
+          </div>
+          <div class="player-panel">
+            <h3>選手一覧</h3>
+            <div id="actualPlayers" class="player-list"></div>
+          </div>
+        </div>
+        <p id="actualError" class="message error-message" role="alert" aria-live="polite"></p>
+        <button class="primary-button" type="submit">採点する</button>
+      </form>
+    </section>
+
+    <section class="card result-card" aria-labelledby="result-title">
+      <div class="section-heading">
+        <span class="step-badge">4</span>
+        <div>
+          <h2 id="result-title">採点結果</h2>
+          <p>◎は完全一致、◯はスタメン入り、×はスタメン外です。</p>
+        </div>
+      </div>
+
+      <div id="scoreResult" class="empty-state">採点すると結果が表示されます。</div>
+      <button id="shareResultButton" class="secondary-button hidden" type="button">結果をXで共有</button>
+    </section>
+
+    <section class="reset-area" aria-label="データリセット">
+      <button id="resetButton" class="danger-button" type="button">保存データをリセット</button>
+      <p id="resetMessage" class="message success-message" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <script src="players.js?v=position-20260707"></script>
+  <script src="script.js?v=position-20260707"></script>
+</body>
+</html>

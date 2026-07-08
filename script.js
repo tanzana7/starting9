@@ -82,6 +82,8 @@ const state = {
   actual: null,
   result: null,
   actualPreview: null,
+  adminStatus: "idle",
+  adminError: "",
   activeOrder: {
     prediction: 0,
     actual: 0
@@ -102,6 +104,7 @@ function bindEvents() {
   document.getElementById("actualForm").addEventListener("submit", handleActualSubmit);
   document.getElementById("parseActualButton").addEventListener("click", handleActualParsePreview);
   document.getElementById("applyParsedActualButton").addEventListener("click", applyParsedActualPreview);
+  document.getElementById("clearActualCandidateButton").addEventListener("click", clearActualCandidate);
   document.getElementById("resetButton").addEventListener("click", resetAllData);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
@@ -413,13 +416,17 @@ function handleActualParsePreview() {
 
   if (!parseResult.ok) {
     state.actualPreview = null;
-    renderActualPreview(null);
+    state.adminStatus = "error";
+    state.adminError = parseResult.message;
+    renderAdminFlow();
     showMessage("parserError", parseResult.message);
     return;
   }
 
   state.actualPreview = parseResult.lineup;
-  renderActualPreview(state.actualPreview);
+  state.adminStatus = "preview";
+  state.adminError = "";
+  renderAdminFlow();
 }
 
 function applyParsedActualPreview() {
@@ -436,11 +443,25 @@ function applyParsedActualPreview() {
     lineup: normalizeLineup(state.actualPreview),
     savedAt: new Date().toISOString()
   };
+  state.actualPreview = null;
+  state.adminStatus = "approved";
+  state.adminError = "";
   state.result = null;
   saveToStorage(STORAGE_KEYS.actual, state.actual);
   removeFromStorage(STORAGE_KEYS.result);
+  renderActualLineup();
+  renderAdminFlow();
   renderScoreResult();
   showMessage("parserError", "");
+}
+
+function clearActualCandidate() {
+  state.actualPreview = null;
+  state.adminError = "";
+  state.adminStatus = state.actual ? "approved" : "idle";
+  clearMessage("parserError");
+  clearMessage("actualError");
+  renderAdminFlow();
 }
 
 function parseActualLineupText(rawText) {
@@ -584,8 +605,13 @@ function handleActualSubmit(event) {
     return;
   }
 
-  const lineup = getLineupValues("actual");
-  const validationError = validateLineup(lineup, "実際のスタメン");
+  if (!state.actual) {
+    showMessage("actualError", "承認済みの実スタメンがありません。候補を読み取り、承認してから採点してください。");
+    return;
+  }
+
+  const lineup = normalizeLineup(state.actual.lineup);
+  const validationError = validateLineup(lineup, "承認済み実スタメン");
 
   if (validationError) {
     showMessage("actualError", validationError);
@@ -593,13 +619,8 @@ function handleActualSubmit(event) {
     return;
   }
 
-  state.actual = {
-    lineup,
-    savedAt: new Date().toISOString()
-  };
   state.result = scoreLineup(state.prediction.lineup, state.actual.lineup);
 
-  saveToStorage(STORAGE_KEYS.actual, state.actual);
   saveToStorage(STORAGE_KEYS.result, state.result);
   renderAll();
 }
@@ -782,6 +803,7 @@ function loadState() {
 
   if (state.actual?.lineup) {
     state.actual.lineup = normalizeLineup(state.actual.lineup);
+    state.adminStatus = "approved";
   }
 
   if (state.prediction?.lineup && state.actual?.lineup && hasCompletePositions(state.prediction.lineup) && hasCompletePositions(state.actual.lineup)) {
@@ -815,49 +837,112 @@ function renderAll() {
   renderSavedPrediction();
   renderActualLineup();
   renderScoreResult();
-  renderActualPreview(state.actualPreview);
+  renderAdminFlow();
   renderPicker("prediction");
   renderPicker("actual");
 }
 
+function renderAdminFlow() {
+  if (!state.adminStatus || state.adminStatus === "idle") {
+    state.adminStatus = state.actual ? "approved" : "idle";
+  }
+
+  renderAdminStatus();
+  renderActualPreview(state.actualPreview);
+  updateAdminButtons();
+}
+
+function renderAdminStatus() {
+  const statusContainer = document.getElementById("adminFlowStatus");
+
+  if (!statusContainer) {
+    return;
+  }
+
+  const statusMap = {
+    idle: {
+      className: "is-idle",
+      title: "未読み取り",
+      body: "実スタメンを貼り付けて、候補を読み取ってください。"
+    },
+    preview: {
+      className: "is-preview",
+      title: "候補プレビュー中",
+      body: "この候補はまだ正式な実スタメンではありません。内容を確認してから承認してください。"
+    },
+    approved: {
+      className: "is-approved",
+      title: "実スタメンを承認済みです",
+      body: state.actual?.savedAt ? `承認済み：${formatDateTime(state.actual.savedAt)}` : "承認済みです。"
+    },
+    error: {
+      className: "is-error",
+      title: "エラーあり",
+      body: state.adminError || "入力内容を修正して、もう一度候補を読み取ってください。"
+    }
+  };
+  const current = statusMap[state.adminStatus] || statusMap.idle;
+  const approvedList = state.adminStatus === "approved" && state.actual ? createLineupPreviewHtml(state.actual.lineup) : "";
+
+  statusContainer.className = `admin-flow-status ${current.className}`;
+  statusContainer.innerHTML = `
+    <strong>${current.title}</strong>
+    <span>${escapeHtml(current.body)}</span>
+    ${approvedList}
+  `;
+}
+
+function updateAdminButtons() {
+  const applyButton = document.getElementById("applyParsedActualButton");
+  const clearButton = document.getElementById("clearActualCandidateButton");
+
+  if (!applyButton || !clearButton) {
+    return;
+  }
+
+  const hasPreview = state.adminStatus === "preview" && Boolean(state.actualPreview);
+  const hasCandidateState = Boolean(state.actualPreview) || state.adminStatus === "error";
+  applyButton.classList.toggle("hidden", !hasPreview);
+  applyButton.disabled = !hasPreview;
+  clearButton.classList.toggle("hidden", !hasCandidateState);
+}
+
 function renderActualPreview(lineup) {
   const previewContainer = document.getElementById("actualPreview");
-  const applyButton = document.getElementById("applyParsedActualButton");
 
-  if (!previewContainer || !applyButton) {
+  if (!previewContainer) {
     return;
   }
 
   if (!lineup) {
     previewContainer.classList.add("hidden");
     previewContainer.innerHTML = "";
-    applyButton.classList.add("hidden");
     return;
   }
 
   const normalizedLineup = normalizeLineup(lineup);
   previewContainer.classList.remove("hidden");
-  applyButton.classList.remove("hidden");
   previewContainer.innerHTML = "";
 
   const title = document.createElement("p");
   title.className = "preview-title";
-  title.textContent = "登録前プレビュー";
+  title.textContent = "候補スタメンプレビュー";
+  previewContainer.append(title);
+  previewContainer.insertAdjacentHTML("beforeend", createLineupPreviewHtml(normalizedLineup));
+}
 
-  const list = document.createElement("ul");
-  list.className = "preview-list";
-
-  normalizedLineup.forEach((item) => {
-    const listItem = document.createElement("li");
-    listItem.innerHTML = `
-      <strong>${item.order}番</strong>
-      <span>${escapeHtml(item.position)}</span>
-      <span>${escapeHtml(item.player)}</span>
+function createLineupPreviewHtml(lineup) {
+  const items = normalizeLineup(lineup).map((item) => {
+    return `
+      <li>
+        <strong>${item.order}番</strong>
+        <span>${escapeHtml(item.position)}</span>
+        <span>${escapeHtml(item.player)}</span>
+      </li>
     `;
-    list.appendChild(listItem);
-  });
+  }).join("");
 
-  previewContainer.append(title, list);
+  return `<ul class="preview-list">${items}</ul>`;
 }
 
 function renderPicker(pickerName) {
@@ -1158,6 +1243,8 @@ function resetAllData() {
   state.actual = null;
   state.result = null;
   state.actualPreview = null;
+  state.adminStatus = "idle";
+  state.adminError = "";
   state.activeOrder.prediction = 0;
   state.activeOrder.actual = 0;
 

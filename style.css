@@ -38,6 +38,12 @@ button {
   cursor: pointer;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
+}
+
 .container {
   width: min(100% - 32px, 960px);
   margin: 0 auto;
@@ -109,6 +115,35 @@ h3 {
   padding: 22px 0 42px;
 }
 
+.area-heading {
+  grid-column: 1 / -1;
+  padding: 16px 18px;
+  border-left: 5px solid var(--fighters-blue);
+  border-radius: 8px;
+  background: #f7fbff;
+}
+
+.area-heading h2 {
+  margin-bottom: 4px;
+}
+
+.area-heading p {
+  margin-bottom: 0;
+  color: var(--muted);
+}
+
+.area-label {
+  margin-bottom: 4px;
+  color: var(--fighters-blue);
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.result-area-heading {
+  border-left-color: var(--fighters-gold);
+  background: #fff9e8;
+}
+
 .card {
   padding: 20px;
   border: 1px solid var(--border);
@@ -119,6 +154,45 @@ h3 {
 
 .lineup-card {
   grid-column: 1 / -1;
+}
+
+.admin-details {
+  grid-column: 1 / -1;
+  border: 1px solid #cfd9e5;
+  border-radius: 8px;
+  background: #f6f8fb;
+}
+
+.admin-details summary {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  color: var(--fighters-deep-blue);
+  cursor: pointer;
+  font-weight: 900;
+}
+
+.admin-details summary::marker {
+  color: var(--fighters-blue);
+}
+
+.admin-details summary small {
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.admin-card {
+  margin: 0 12px 12px;
+  border-style: dashed;
+  box-shadow: none;
+}
+
+.admin-step {
+  background: #6a7a8d;
 }
 
 .section-heading {
@@ -266,9 +340,51 @@ textarea:focus {
   background: #fbfdff;
 }
 
+.admin-flow-status {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.admin-flow-status strong {
+  color: var(--fighters-deep-blue);
+  font-size: 1rem;
+}
+
+.admin-flow-status span {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.admin-flow-status.is-preview {
+  border-color: #b9daf8;
+  background: #f3f9ff;
+}
+
+.admin-flow-status.is-approved {
+  border-color: #a8dec0;
+  background: var(--success-bg);
+}
+
+.admin-flow-status.is-approved strong {
+  color: var(--success);
+}
+
+.admin-flow-status.is-error {
+  border-color: #f2b8b5;
+  background: var(--error-bg);
+}
+
+.admin-flow-status.is-error strong {
+  color: var(--error);
+}
+
 .parser-actions {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -669,6 +785,35 @@ textarea:focus {
 }
 
 @media (max-width: 759px) {
+  body {
+    background: #f7fbff;
+  }
+
+  .container {
+    width: min(100% - 20px, 960px);
+  }
+
+  .header-inner {
+    padding: 24px 0 28px;
+  }
+
+  h1 {
+    font-size: 2.25rem;
+  }
+
+  .app-layout {
+    gap: 14px;
+    padding-top: 14px;
+  }
+
+  .area-heading {
+    padding: 14px;
+  }
+
+  .card {
+    padding: 16px;
+  }
+
   .lineup-builder {
     grid-template-columns: 1fr;
     gap: 10px;
@@ -686,6 +831,26 @@ textarea:focus {
   .hit-breakdown {
     grid-template-columns: 1fr;
   }
+
+  .player-list {
+    max-height: 260px;
+  }
+
+  .primary-button,
+  .secondary-button,
+  .danger-button {
+    min-height: 52px;
+  }
+
+  .admin-details summary {
+    align-items: flex-start;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .admin-card {
+    margin: 0 8px 8px;
+  }
 }
 
 @media (max-width: 430px) {
@@ -698,7 +863,7 @@ textarea:focus {
   }
 
   .lineup-builder {
-    grid-template-columns: minmax(128px, 0.92fr) minmax(136px, 1.08fr);
+    grid-template-columns: 1fr;
     gap: 8px;
   }
 
@@ -708,12 +873,13 @@ textarea:focus {
   }
 
   input,
-  select {
+  select,
+  textarea {
     min-height: 50px;
   }
 
   .lineup-slot {
-    grid-template-columns: 40px minmax(0, 1fr) 66px 30px;
+    grid-template-columns: 42px minmax(0, 1fr) 70px 32px;
     gap: 6px;
     padding: 6px;
   }
@@ -742,5 +908,13 @@ textarea:focus {
   .slot-clear {
     width: 28px;
     height: 28px;
+  }
+
+  .score-total {
+    flex-wrap: wrap;
+  }
+
+  .result-table {
+    min-width: 780px;
   }
 }

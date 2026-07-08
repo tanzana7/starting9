@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ハムスタメンチャレンジ</title>
-  <link rel="stylesheet" href="style.css?v=score100-20260708">
+  <link rel="stylesheet" href="style.css?v=approval-flow-20260708">
 </head>
 <body>
   <header class="app-header">
@@ -17,6 +17,12 @@
   </header>
 
   <main class="container app-layout">
+    <div class="area-heading player-area">
+      <p class="area-label">PLAYER</p>
+      <h2>プレイヤー用エリア</h2>
+      <p>ニックネームを入力して、予想オーダーを作成・保存できます。</p>
+    </div>
+
     <section class="card lineup-card" aria-labelledby="prediction-title">
       <div class="section-heading">
         <span class="step-badge">1</span>
@@ -61,41 +67,56 @@
       <button id="sharePredictionButton" class="secondary-button hidden" type="button">予想をXで共有</button>
     </section>
 
-    <section class="card lineup-card" aria-labelledby="actual-title">
-      <div class="section-heading">
-        <span class="step-badge">3</span>
-        <div>
-          <h2 id="actual-title">実際のスタメン入力</h2>
-          <p>発表されたスタメンを手動で入力して採点できます。</p>
-        </div>
-      </div>
+    <details class="admin-details">
+      <summary>
+        <span>管理者用・開発用エリア</span>
+        <small>実スタメン登録と採点</small>
+      </summary>
 
-      <form id="actualForm" novalidate>
-        <div class="parser-panel">
-          <label for="actualPasteInput">実スタメン貼り付け</label>
-          <textarea id="actualPasteInput" rows="7" placeholder="1 中 松本剛&#10;2 一 清宮幸太郎&#10;3 指 レイエス"></textarea>
-          <div class="parser-actions">
-            <button id="parseActualButton" class="secondary-button compact-button" type="button">貼り付け内容をプレビュー</button>
-            <button id="applyParsedActualButton" class="primary-button compact-button hidden" type="button">プレビューを実スタメンに反映</button>
+      <section class="card lineup-card admin-card" aria-labelledby="actual-title">
+        <div class="section-heading">
+          <span class="step-badge admin-step">3</span>
+          <div>
+            <h2 id="actual-title">実際のスタメン入力</h2>
+            <p>発表されたスタメンを貼り付け、プレビュー確認後に採点できます。</p>
           </div>
-          <p id="parserError" class="message error-message" role="alert" aria-live="polite"></p>
-          <div id="actualPreview" class="parser-preview hidden" aria-live="polite"></div>
         </div>
 
-        <div class="lineup-builder" data-picker="actual">
-          <div class="lineup-panel">
-            <h3>実際のオーダー</h3>
-            <div id="actualLineup" class="slot-list"></div>
+        <form id="actualForm" novalidate>
+          <div class="parser-panel">
+            <div id="adminFlowStatus" class="admin-flow-status" aria-live="polite"></div>
+            <label for="actualPasteInput">実スタメン貼り付け</label>
+            <textarea id="actualPasteInput" rows="7" placeholder="1 中 松本剛&#10;2 一 清宮幸太郎&#10;3 指 レイエス"></textarea>
+            <div class="parser-actions">
+              <button id="parseActualButton" class="secondary-button compact-button" type="button">候補を読み取る</button>
+              <button id="applyParsedActualButton" class="primary-button compact-button hidden" type="button">承認して実スタメンに登録</button>
+              <button id="clearActualCandidateButton" class="secondary-button compact-button hidden" type="button">候補をクリア</button>
+            </div>
+            <p id="parserError" class="message error-message" role="alert" aria-live="polite"></p>
+            <div id="actualPreview" class="parser-preview hidden" aria-live="polite"></div>
           </div>
-          <div class="player-panel">
-            <h3>選手一覧</h3>
-            <div id="actualPlayers" class="player-list"></div>
+
+          <div class="lineup-builder" data-picker="actual">
+            <div class="lineup-panel">
+              <h3>実際のオーダー</h3>
+              <div id="actualLineup" class="slot-list"></div>
+            </div>
+            <div class="player-panel">
+              <h3>選手一覧</h3>
+              <div id="actualPlayers" class="player-list"></div>
+            </div>
           </div>
-        </div>
-        <p id="actualError" class="message error-message" role="alert" aria-live="polite"></p>
-        <button class="primary-button" type="submit">採点する</button>
-      </form>
-    </section>
+          <p id="actualError" class="message error-message" role="alert" aria-live="polite"></p>
+          <button class="primary-button" type="submit">採点する</button>
+        </form>
+      </section>
+    </details>
+
+    <div class="area-heading result-area-heading">
+      <p class="area-label">RESULT</p>
+      <h2>結果表示エリア</h2>
+      <p>100点満点のスコア、的中内訳、詳細結果を確認できます。</p>
+    </div>
 
     <section class="card result-card" aria-labelledby="result-title">
       <div class="section-heading">
@@ -116,7 +137,7 @@
     </section>
   </main>
 
-  <script src="players.js?v=score100-20260708"></script>
-  <script src="script.js?v=score100-20260708"></script>
+  <script src="players.js?v=approval-flow-20260708"></script>
+  <script src="script.js?v=approval-flow-20260708"></script>
 </body>
 </html>

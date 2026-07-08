@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ハムスタメンチャレンジ</title>
-  <link rel="stylesheet" href="style.css?v=approval-flow-20260708">
+  <link rel="stylesheet" href="style.css?v=npb-fetch-20260708">
 </head>
 <body>
   <header class="app-header">
@@ -85,6 +85,14 @@
         <form id="actualForm" novalidate>
           <div class="parser-panel">
             <div id="adminFlowStatus" class="admin-flow-status" aria-live="polite"></div>
+            <div class="npb-fetch-panel">
+              <label for="npbUrlInput">NPB公式試合ページURL</label>
+              <div class="npb-url-row">
+                <input id="npbUrlInput" type="url" inputmode="url" placeholder="https://npb.jp/scores/2026/0707/m-f-12/">
+                <button id="fetchNpbButton" class="secondary-button compact-button" type="button">NPB公式ページから候補取得</button>
+              </div>
+              <p id="npbFetchMessage" class="message npb-message" role="status" aria-live="polite"></p>
+            </div>
             <label for="actualPasteInput">実スタメン貼り付け</label>
             <textarea id="actualPasteInput" rows="7" placeholder="1 中 松本剛&#10;2 一 清宮幸太郎&#10;3 指 レイエス"></textarea>
             <div class="parser-actions">
@@ -137,7 +145,7 @@
     </section>
   </main>
 
-  <script src="players.js?v=approval-flow-20260708"></script>
-  <script src="script.js?v=approval-flow-20260708"></script>
+  <script src="players.js?v=npb-fetch-20260708"></script>
+  <script src="script.js?v=npb-fetch-20260708"></script>
 </body>
 </html>

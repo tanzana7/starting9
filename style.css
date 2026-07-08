@@ -322,6 +322,22 @@ textarea:focus {
   color: var(--success);
 }
 
+.npb-message.is-info {
+  color: var(--fighters-deep-blue);
+}
+
+.npb-message.is-success {
+  color: var(--success);
+}
+
+.npb-message.is-warning {
+  color: #a15c00;
+}
+
+.npb-message.is-error {
+  color: var(--error);
+}
+
 .empty-state {
   padding: 16px;
   border: 1px dashed var(--border);
@@ -338,6 +354,22 @@ textarea:focus {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #fbfdff;
+}
+
+.npb-fetch-panel {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #cfe1f1;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.npb-url-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
 }
 
 .admin-flow-status {
@@ -825,6 +857,10 @@ textarea:focus {
   }
 
   .parser-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .npb-url-row {
     grid-template-columns: 1fr;
   }
 

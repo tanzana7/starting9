@@ -25,6 +25,13 @@ const SCORE_RULES = {
 };
 const FLICK_DISTANCE = 42;
 const DRAG_DATA_TYPE = "application/x-ham-starting9-player";
+const NPB_DIRECT_FETCH_FALLBACK_MESSAGE = "ブラウザからNPB公式ページを直接取得できませんでした。NPB公式ページの「最新のオーダー」部分をコピーして、下の貼り付け欄に入力してください。";
+const FIGHTERS_TEAM_KEYWORDS = [
+  "北海道日本ハムファイターズ",
+  "北海道日本ハム",
+  "日本ハム",
+  "ファイターズ"
+];
 const positions = [
   "捕",
   "一",
@@ -102,6 +109,7 @@ document.addEventListener("DOMContentLoaded", () => {
 function bindEvents() {
   document.getElementById("predictionForm").addEventListener("submit", handlePredictionSubmit);
   document.getElementById("actualForm").addEventListener("submit", handleActualSubmit);
+  document.getElementById("fetchNpbButton").addEventListener("click", handleNpbFetchCandidate);
   document.getElementById("parseActualButton").addEventListener("click", handleActualParsePreview);
   document.getElementById("applyParsedActualButton").addEventListener("click", applyParsedActualPreview);
   document.getElementById("clearActualCandidateButton").addEventListener("click", clearActualCandidate);
@@ -410,6 +418,7 @@ function handleActualParsePreview() {
   clearMessage("parserError");
   clearMessage("actualError");
   clearMessage("resetMessage");
+  setNpbFetchMessage("", "");
 
   const rawText = document.getElementById("actualPasteInput").value;
   const parseResult = parseActualLineupText(rawText);
@@ -432,6 +441,7 @@ function handleActualParsePreview() {
 function applyParsedActualPreview() {
   clearMessage("parserError");
   clearMessage("actualError");
+  setNpbFetchMessage("", "");
 
   if (!state.actualPreview) {
     showMessage("parserError", "先に貼り付け内容をプレビューしてください。");
@@ -461,7 +471,213 @@ function clearActualCandidate() {
   state.adminStatus = state.actual ? "approved" : "idle";
   clearMessage("parserError");
   clearMessage("actualError");
+  setNpbFetchMessage("", "");
   renderAdminFlow();
+}
+
+async function handleNpbFetchCandidate() {
+  clearMessage("parserError");
+  clearMessage("actualError");
+  clearMessage("resetMessage");
+
+  const input = document.getElementById("npbUrlInput");
+  const validation = validateNpbUrl(input.value);
+
+  if (!validation.ok) {
+    setNpbFetchMessage(validation.message, "error");
+    return;
+  }
+
+  if (validation.warning) {
+    setNpbFetchMessage(validation.warning, "warning");
+  } else {
+    setNpbFetchMessage("NPB公式ページを取得中...", "info");
+  }
+
+  try {
+    const response = await fetch(validation.url, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const html = await response.text();
+    const lineupText = extractNpbOrderText(html);
+    if (!lineupText) {
+      throw new Error("最新のオーダーを抽出できませんでした。");
+    }
+
+    const parseResult = parseActualLineupText(lineupText);
+    if (!parseResult.ok) {
+      throw new Error(parseResult.message);
+    }
+
+    document.getElementById("actualPasteInput").value = lineupText;
+    state.actualPreview = parseResult.lineup;
+    state.adminStatus = "preview";
+    state.adminError = "";
+    renderAdminFlow();
+    setNpbFetchMessage("候補スタメンを取得しました。内容を確認して承認してください。", "success");
+  } catch (error) {
+    console.warn("NPB公式ページから候補を取得できませんでした。", error);
+    state.actualPreview = null;
+    state.adminStatus = "error";
+    state.adminError = NPB_DIRECT_FETCH_FALLBACK_MESSAGE;
+    renderAdminFlow();
+    showMessage("parserError", NPB_DIRECT_FETCH_FALLBACK_MESSAGE);
+    setNpbFetchMessage("取得できませんでした。手動で貼り付けてください。", "error");
+  }
+}
+
+function validateNpbUrl(value) {
+  const trimmedUrl = String(value || "").trim();
+
+  if (!trimmedUrl) {
+    return { ok: false, message: "NPB公式ページURLを入力してください。" };
+  }
+
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(trimmedUrl);
+  } catch (error) {
+    return { ok: false, message: "URL形式が不正です。https://npb.jp/ から始まる公式ページURLを入力してください。" };
+  }
+
+  if (!/^https?:$/.test(parsedUrl.protocol)) {
+    return { ok: false, message: "httpまたはhttpsのURLを入力してください。" };
+  }
+
+  const isNpbUrl = parsedUrl.hostname.toLowerCase().includes("npb.jp");
+  return {
+    ok: true,
+    url: parsedUrl.href,
+    warning: isNpbUrl ? "" : "npb.jpを含まないURLです。公式ページURLか確認してください。"
+  };
+}
+
+function extractNpbOrderText(html) {
+  const plainText = htmlToPlainText(html);
+  return extractNpbOrderTextFromPlainText(plainText);
+}
+
+function htmlToPlainText(html) {
+  if (typeof DOMParser !== "undefined") {
+    const documentObject = new DOMParser().parseFromString(html, "text/html");
+    return documentObject.body ? documentObject.body.innerText || documentObject.body.textContent || "" : "";
+  }
+
+  return String(html || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|li|tr|th|td|h[1-6])>/gi, "\n")
+    .replace(/<[^>]+>/g, " ");
+}
+
+function extractNpbOrderTextFromPlainText(text) {
+  const lines = normalizeNpbTextLines(text);
+  const orderStartIndex = lines.findIndex((line) => line.includes("最新のオーダー"));
+  const searchStartIndex = orderStartIndex >= 0 ? orderStartIndex + 1 : 0;
+  const fightersIndex = findFightersOrderStartIndex(lines, searchStartIndex);
+  const candidateStartIndex = fightersIndex >= 0 ? fightersIndex + 1 : searchStartIndex;
+  const fightersRows = collectNpbOrderRows(lines.slice(candidateStartIndex));
+
+  if (fightersRows.length === LINEUP_SIZE) {
+    return formatNpbRowsForParser(fightersRows);
+  }
+
+  const fallbackRows = collectNpbOrderRows(lines.slice(searchStartIndex));
+  if (fallbackRows.length === LINEUP_SIZE) {
+    return formatNpbRowsForParser(fallbackRows);
+  }
+
+  return "";
+}
+
+function normalizeNpbTextLines(text) {
+  return String(text || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\u3000/g, " ")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
+function findFightersOrderStartIndex(lines, startIndex) {
+  return lines.findIndex((line, index) => {
+    return index >= startIndex && FIGHTERS_TEAM_KEYWORDS.some((keyword) => line.includes(keyword));
+  });
+}
+
+function collectNpbOrderRows(lines) {
+  const rows = [];
+  const seenOrders = new Set();
+
+  for (const line of lines) {
+    const row = parseNpbOrderRow(line);
+    if (!row) {
+      if (rows.length > 0 && rows.length < LINEUP_SIZE && isLikelyOtherTeamHeading(line)) {
+        break;
+      }
+      continue;
+    }
+
+    if (seenOrders.has(row.order)) {
+      break;
+    }
+
+    rows.push(row);
+    seenOrders.add(row.order);
+
+    if (rows.length === LINEUP_SIZE) {
+      return rows;
+    }
+  }
+
+  return rows;
+}
+
+function parseNpbOrderRow(line) {
+  const normalizedLine = line.replace(/\u3000/g, " ").replace(/\s+/g, " ").trim();
+  const match = normalizedLine.match(/^([1-9])\s+([^\s]+)\s+(.+)$/);
+
+  if (!match) {
+    return null;
+  }
+
+  const position = normalizePosition(match[2]);
+  if (!position) {
+    return null;
+  }
+
+  const player = normalizePlayerName(match[3].replace(/\s+/g, " ").trim());
+  if (!player) {
+    return null;
+  }
+
+  return {
+    order: Number(match[1]),
+    position,
+    player
+  };
+}
+
+function isLikelyOtherTeamHeading(line) {
+  return /ファイターズ|ホークス|マリーンズ|イーグルス|ライオンズ|バファローズ|ジャイアンツ|タイガース|ベイスターズ|カープ|スワローズ|ドラゴンズ/.test(line);
+}
+
+function formatNpbRowsForParser(rows) {
+  return rows
+    .sort((first, second) => first.order - second.order)
+    .map((row) => `${row.order} ${row.position} ${row.player}`)
+    .join("\n");
+}
+
+function setNpbFetchMessage(message, type) {
+  const element = document.getElementById("npbFetchMessage");
+  if (!element) {
+    return;
+  }
+
+  element.textContent = message;
+  element.className = `message npb-message${type ? ` is-${type}` : ""}`;
 }
 
 function parseActualLineupText(rawText) {

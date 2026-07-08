@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ハムスタメンチャレンジ</title>
-  <link rel="stylesheet" href="style.css?v=position-20260707">
+  <link rel="stylesheet" href="style.css?v=parser-20260708">
 </head>
 <body>
   <header class="app-header">
@@ -71,6 +71,17 @@
       </div>
 
       <form id="actualForm" novalidate>
+        <div class="parser-panel">
+          <label for="actualPasteInput">実スタメン貼り付け</label>
+          <textarea id="actualPasteInput" rows="7" placeholder="1 中 松本剛&#10;2 一 清宮幸太郎&#10;3 指 レイエス"></textarea>
+          <div class="parser-actions">
+            <button id="parseActualButton" class="secondary-button compact-button" type="button">貼り付け内容をプレビュー</button>
+            <button id="applyParsedActualButton" class="primary-button compact-button hidden" type="button">プレビューを実スタメンに反映</button>
+          </div>
+          <p id="parserError" class="message error-message" role="alert" aria-live="polite"></p>
+          <div id="actualPreview" class="parser-preview hidden" aria-live="polite"></div>
+        </div>
+
         <div class="lineup-builder" data-picker="actual">
           <div class="lineup-panel">
             <h3>実際のオーダー</h3>
@@ -105,7 +116,7 @@
     </section>
   </main>
 
-  <script src="players.js?v=position-20260707"></script>
-  <script src="script.js?v=position-20260707"></script>
+  <script src="players.js?v=parser-20260708"></script>
+  <script src="script.js?v=parser-20260708"></script>
 </body>
 </html>

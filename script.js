@@ -8,22 +8,62 @@ const LINEUP_SIZE = 9;
 const FLICK_DISTANCE = 42;
 const DRAG_DATA_TYPE = "application/x-ham-starting9-player";
 const positions = [
-  "P",
-  "C",
-  "1B",
-  "2B",
-  "3B",
-  "SS",
-  "LF",
-  "CF",
-  "RF",
-  "DH"
+  "捕",
+  "一",
+  "二",
+  "三",
+  "遊",
+  "左",
+  "中",
+  "右",
+  "指"
 ];
+
+const positionAliases = {
+  "捕": "捕",
+  "C": "捕",
+  "キャッチャー": "捕",
+  "2": "捕",
+  "一": "一",
+  "1B": "一",
+  "ファースト": "一",
+  "3": "一",
+  "二": "二",
+  "2B": "二",
+  "セカンド": "二",
+  "4": "二",
+  "三": "三",
+  "3B": "三",
+  "サード": "三",
+  "5": "三",
+  "遊": "遊",
+  "SS": "遊",
+  "ショート": "遊",
+  "6": "遊",
+  "左": "左",
+  "LF": "左",
+  "レフト": "左",
+  "7": "左",
+  "中": "中",
+  "CF": "中",
+  "センター": "中",
+  "8": "中",
+  "右": "右",
+  "RF": "右",
+  "ライト": "右",
+  "9": "右",
+  "指": "指",
+  "DH": "指",
+  "D": "指",
+  "指名打者": "指",
+  "0": "指"
+};
 
 const state = {
   prediction: null,
   actual: null,
   result: null,
+  actualPreview: null,
   activeOrder: {
     prediction: 0,
     actual: 0
@@ -42,6 +82,8 @@ document.addEventListener("DOMContentLoaded", () => {
 function bindEvents() {
   document.getElementById("predictionForm").addEventListener("submit", handlePredictionSubmit);
   document.getElementById("actualForm").addEventListener("submit", handleActualSubmit);
+  document.getElementById("parseActualButton").addEventListener("click", handleActualParsePreview);
+  document.getElementById("applyParsedActualButton").addEventListener("click", applyParsedActualPreview);
   document.getElementById("resetButton").addEventListener("click", resetAllData);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
@@ -343,6 +385,144 @@ function clearSlot(pickerName, index) {
   renderPicker(pickerName);
 }
 
+function handleActualParsePreview() {
+  clearMessage("parserError");
+  clearMessage("actualError");
+  clearMessage("resetMessage");
+
+  const rawText = document.getElementById("actualPasteInput").value;
+  const parseResult = parseActualLineupText(rawText);
+
+  if (!parseResult.ok) {
+    state.actualPreview = null;
+    renderActualPreview(null);
+    showMessage("parserError", parseResult.message);
+    return;
+  }
+
+  state.actualPreview = parseResult.lineup;
+  renderActualPreview(state.actualPreview);
+}
+
+function applyParsedActualPreview() {
+  clearMessage("parserError");
+  clearMessage("actualError");
+
+  if (!state.actualPreview) {
+    showMessage("parserError", "先に貼り付け内容をプレビューしてください。");
+    return;
+  }
+
+  setLineupValues("actual", state.actualPreview);
+  state.actual = {
+    lineup: normalizeLineup(state.actualPreview),
+    savedAt: new Date().toISOString()
+  };
+  state.result = null;
+  saveToStorage(STORAGE_KEYS.actual, state.actual);
+  removeFromStorage(STORAGE_KEYS.result);
+  renderScoreResult();
+  showMessage("parserError", "");
+}
+
+function parseActualLineupText(rawText) {
+  const lines = rawText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+
+  if (lines.length < LINEUP_SIZE) {
+    return { ok: false, message: "実スタメンは9人分入力してください。" };
+  }
+
+  const lineup = [];
+  const seenOrders = new Set();
+  const seenPlayers = new Set();
+
+  for (const line of lines) {
+    const parsedLine = parseActualLine(line);
+
+    if (!parsedLine.ok) {
+      return parsedLine;
+    }
+
+    const { order, position, player } = parsedLine.item;
+    const playerKey = normalizePlayerKey(player);
+
+    if (seenOrders.has(order)) {
+      return { ok: false, message: `打順が重複しています：${order}番` };
+    }
+
+    if (seenPlayers.has(playerKey)) {
+      return { ok: false, message: `選手が重複しています：${player}` };
+    }
+
+    seenOrders.add(order);
+    seenPlayers.add(playerKey);
+    lineup[order - 1] = createLineupItem(order - 1, player, position);
+  }
+
+  if (seenOrders.size !== LINEUP_SIZE || lineup.some((item) => !item)) {
+    return { ok: false, message: "1〜9番まですべての打順を入力してください。" };
+  }
+
+  const validationError = validateLineup(lineup, "実スタメン");
+  if (validationError) {
+    return { ok: false, message: validationError };
+  }
+
+  return { ok: true, lineup };
+}
+
+function parseActualLine(line) {
+  const normalizedLine = line.replace(/\u3000/g, " ").replace(/\s+/g, " ").trim();
+  const parts = normalizedLine.split(" ");
+
+  if (parts.length < 3) {
+    return { ok: false, message: `行の形式が不正です：${line}` };
+  }
+
+  const order = Number(parts[0]);
+  const rawPosition = parts[1];
+  const rawPlayer = parts.slice(2).join(" ");
+  const position = normalizePosition(rawPosition);
+  const player = normalizePlayerName(rawPlayer);
+
+  if (!Number.isInteger(order) || order < 1 || order > LINEUP_SIZE) {
+    return { ok: false, message: `打順が不正です：${parts[0]}` };
+  }
+
+  if (!position) {
+    return { ok: false, message: `守備位置が不正です：${rawPosition}` };
+  }
+
+  if (!player) {
+    return { ok: false, message: `選手名が不正です：${line}` };
+  }
+
+  return {
+    ok: true,
+    item: createLineupItem(order - 1, player, position)
+  };
+}
+
+function normalizePosition(value) {
+  const key = normalizePositionKey(value);
+  return positionAliases[key] || "";
+}
+
+function normalizePositionKey(value) {
+  return String(value || "").normalize("NFKC").replace(/\s+/g, "").toUpperCase();
+}
+
+function normalizePlayerName(value) {
+  const trimmedName = String(value || "").replace(/\u3000/g, " ").replace(/\s+/g, " ").trim();
+  const playerKey = normalizePlayerKey(trimmedName);
+  const rosterPlayer = players.find((player) => normalizePlayerKey(player) === playerKey);
+  return rosterPlayer || trimmedName;
+}
+
+function normalizePlayerKey(value) {
+  return String(value || "").normalize("NFKC").replace(/[\s\u3000]/g, "");
+}
+
 function handlePredictionSubmit(event) {
   event.preventDefault();
   clearMessage("predictionError");
@@ -378,6 +558,7 @@ function handlePredictionSubmit(event) {
 function handleActualSubmit(event) {
   event.preventDefault();
   clearMessage("actualError");
+  clearMessage("parserError");
   clearMessage("resetMessage");
 
   if (!state.prediction) {
@@ -426,10 +607,12 @@ function setLineupValues(pickerName, lineup) {
 }
 
 function createLineupItem(index, player, position) {
+  const normalizedPosition = position ? normalizePosition(position) : "";
+
   return {
     order: index + 1,
     player: player || "",
-    position: position || ""
+    position: normalizedPosition
   };
 }
 
@@ -485,7 +668,7 @@ function hasDuplicatePlayers(lineup) {
 }
 
 function hasDuplicatePositions(lineup) {
-  const positionNames = lineup.map((item) => item.position).filter((position) => position && position !== "DH");
+  const positionNames = lineup.map((item) => item.position).filter((position) => position && position !== "指");
   return new Set(positionNames).size !== positionNames.length;
 }
 
@@ -567,8 +750,49 @@ function renderAll() {
   renderSavedPrediction();
   renderActualLineup();
   renderScoreResult();
+  renderActualPreview(state.actualPreview);
   renderPicker("prediction");
   renderPicker("actual");
+}
+
+function renderActualPreview(lineup) {
+  const previewContainer = document.getElementById("actualPreview");
+  const applyButton = document.getElementById("applyParsedActualButton");
+
+  if (!previewContainer || !applyButton) {
+    return;
+  }
+
+  if (!lineup) {
+    previewContainer.classList.add("hidden");
+    previewContainer.innerHTML = "";
+    applyButton.classList.add("hidden");
+    return;
+  }
+
+  const normalizedLineup = normalizeLineup(lineup);
+  previewContainer.classList.remove("hidden");
+  applyButton.classList.remove("hidden");
+  previewContainer.innerHTML = "";
+
+  const title = document.createElement("p");
+  title.className = "preview-title";
+  title.textContent = "登録前プレビュー";
+
+  const list = document.createElement("ul");
+  list.className = "preview-list";
+
+  normalizedLineup.forEach((item) => {
+    const listItem = document.createElement("li");
+    listItem.innerHTML = `
+      <strong>${item.order}番</strong>
+      <span>${escapeHtml(item.position)}</span>
+      <span>${escapeHtml(item.player)}</span>
+    `;
+    list.appendChild(listItem);
+  });
+
+  previewContainer.append(title, list);
 }
 
 function renderPicker(pickerName) {
@@ -620,7 +844,7 @@ function getDuplicatedPlayers(lineup) {
 
 function getDuplicatedPositions(lineup) {
   const counts = new Map();
-  lineup.map((item) => item.position).filter((position) => position && position !== "DH").forEach((position) => {
+  lineup.map((item) => item.position).filter((position) => position && position !== "指").forEach((position) => {
     counts.set(position, (counts.get(position) || 0) + 1);
   });
 
@@ -776,14 +1000,17 @@ function resetAllData() {
   state.prediction = null;
   state.actual = null;
   state.result = null;
+  state.actualPreview = null;
   state.activeOrder.prediction = 0;
   state.activeOrder.actual = 0;
 
   document.getElementById("predictionForm").reset();
+  document.getElementById("actualPasteInput").value = "";
   setLineupValues("prediction", []);
   setLineupValues("actual", []);
   clearMessage("predictionError");
   clearMessage("actualError");
+  clearMessage("parserError");
   showMessage("resetMessage", "保存データを削除しました。");
   renderAll();
 }

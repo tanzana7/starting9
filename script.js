@@ -84,6 +84,53 @@ const positionAliases = {
   "0": "指"
 };
 
+const playerAliases = {
+  "郡司": "郡司裕也",
+  "郡司裕也": "郡司裕也",
+  "清宮": "清宮幸太郎",
+  "清宮幸": "清宮幸太郎",
+  "清宮幸太郎": "清宮幸太郎",
+  "万波": "万波中正",
+  "万波中": "万波中正",
+  "万波中正": "万波中正",
+  "田宮": "田宮裕涼",
+  "田宮裕": "田宮裕涼",
+  "田宮裕涼": "田宮裕涼",
+  "進藤": "進藤勇也",
+  "進藤勇": "進藤勇也",
+  "進藤勇也": "進藤勇也",
+  "細川": "細川凌平",
+  "細川凌": "細川凌平",
+  "細川凌平": "細川凌平",
+  "野村": "野村佑希",
+  "野村佑": "野村佑希",
+  "野村佑希": "野村佑希",
+  "水野": "水野達稀",
+  "水野達": "水野達稀",
+  "水野達稀": "水野達稀",
+  "奈良間": "奈良間大己",
+  "奈良間大": "奈良間大己",
+  "奈良間大己": "奈良間大己",
+  "五十幡": "五十幡亮汰",
+  "五十幡亮": "五十幡亮汰",
+  "五十幡亮汰": "五十幡亮汰",
+  "水谷": "水谷瞬",
+  "水谷瞬": "水谷瞬",
+  "宮崎": "宮崎一樹",
+  "宮崎一": "宮崎一樹",
+  "宮崎一樹": "宮崎一樹",
+  "大塚": "大塚瑠晏",
+  "大塚瑠": "大塚瑠晏",
+  "大塚瑠晏": "大塚瑠晏",
+  "山縣": "山縣秀",
+  "山縣秀": "山縣秀",
+  "吉田": "吉田賢吾",
+  "吉田賢": "吉田賢吾",
+  "吉田賢吾": "吉田賢吾",
+  "マルティネス": "マルティネス",
+  "レイエス": "レイエス"
+};
+
 const state = {
   prediction: null,
   actual: null,
@@ -770,6 +817,11 @@ function normalizePositionKey(value) {
 function normalizePlayerName(value) {
   const trimmedName = String(value || "").replace(/\u3000/g, " ").replace(/\s+/g, " ").trim();
   const playerKey = normalizePlayerKey(trimmedName);
+  const aliasPlayer = playerAliases[playerKey];
+  if (aliasPlayer) {
+    return aliasPlayer;
+  }
+
   const rosterPlayer = players.find((player) => normalizePlayerKey(player) === playerKey);
   return rosterPlayer || trimmedName;
 }
@@ -863,10 +915,11 @@ function setLineupValues(pickerName, lineup) {
 
 function createLineupItem(index, player, position) {
   const normalizedPosition = position ? normalizePosition(position) : "";
+  const normalizedPlayer = player ? normalizePlayerName(player) : "";
 
   return {
     order: index + 1,
-    player: player || "",
+    player: normalizedPlayer,
     position: normalizedPosition
   };
 }

@@ -5,6 +5,24 @@ const STORAGE_KEYS = {
 };
 
 const LINEUP_SIZE = 9;
+const SCORE_MAX = 100;
+const SCORE_RULES = {
+  player: {
+    perHit: 5,
+    bonus: 5,
+    max: 50
+  },
+  order: {
+    perHit: 3,
+    bonus: 3,
+    max: 30
+  },
+  position: {
+    perHit: 2,
+    bonus: 2,
+    max: 20
+  }
+};
 const FLICK_DISTANCE = 42;
 const DRAG_DATA_TYPE = "application/x-ham-starting9-player";
 const positions = [
@@ -682,27 +700,74 @@ function scoreLineup(predictionLineup, actualLineup) {
   const actualByPlayer = new Map(normalizedActual.map((item) => [item.player, item]));
   const details = normalizedPrediction.map((predictionItem, index) => {
     const actualItem = actualByPlayer.get(predictionItem.player);
+    const actualOrderItem = normalizedActual[index] || createLineupItem(index, "", "");
     const isInStartingLineup = Boolean(actualItem);
     const isExactOrder = normalizedActual[index]?.player === predictionItem.player;
     const isExactPosition = isInStartingLineup && actualItem.position === predictionItem.position;
-    const point = (isInStartingLineup ? 1 : 0) + (isExactOrder ? 1 : 0) + (isExactPosition ? 1 : 0);
+    const point = (isInStartingLineup ? SCORE_RULES.player.perHit : 0) +
+      (isExactOrder ? SCORE_RULES.order.perHit : 0) +
+      (isExactPosition ? SCORE_RULES.position.perHit : 0);
     const isPerfect = isInStartingLineup && isExactOrder && isExactPosition;
 
     return {
       order: index + 1,
       player: predictionItem.player,
       position: predictionItem.position,
+      actualPlayer: actualOrderItem.player,
+      actualPosition: actualOrderItem.position,
+      isPlayerHit: isInStartingLineup,
+      isOrderHit: isExactOrder,
+      isPositionHit: isExactPosition,
       point,
       mark: isPerfect ? "◎" : isInStartingLineup ? "◯" : "×",
       label: isPerfect ? "完全一致" : isInStartingLineup ? "スタメン入り" : "外れ"
     };
   });
+  const counts = getHitCounts(details);
+  const breakdown = createScoreBreakdown(counts);
 
   return {
-    total: details.reduce((sum, detail) => sum + detail.point, 0),
-    max: LINEUP_SIZE * 3,
+    total: Math.min(SCORE_MAX, breakdown.player.total + breakdown.order.total + breakdown.position.total),
+    max: SCORE_MAX,
+    counts,
+    breakdown,
     details,
     scoredAt: new Date().toISOString()
+  };
+}
+
+function getHitCounts(details) {
+  return {
+    player: details.filter((detail) => detail.isPlayerHit).length,
+    order: details.filter((detail) => detail.isOrderHit).length,
+    position: details.filter((detail) => detail.isPositionHit).length
+  };
+}
+
+function createScoreBreakdown(counts) {
+  const playerBase = counts.player * SCORE_RULES.player.perHit;
+  const orderBase = counts.order * SCORE_RULES.order.perHit;
+  const positionBase = counts.position * SCORE_RULES.position.perHit;
+
+  return {
+    player: {
+      base: playerBase,
+      bonus: counts.player === LINEUP_SIZE ? SCORE_RULES.player.bonus : 0,
+      total: playerBase + (counts.player === LINEUP_SIZE ? SCORE_RULES.player.bonus : 0),
+      max: SCORE_RULES.player.max
+    },
+    order: {
+      base: orderBase,
+      bonus: counts.order === LINEUP_SIZE ? SCORE_RULES.order.bonus : 0,
+      total: orderBase + (counts.order === LINEUP_SIZE ? SCORE_RULES.order.bonus : 0),
+      max: SCORE_RULES.order.max
+    },
+    position: {
+      base: positionBase,
+      bonus: counts.position === LINEUP_SIZE ? SCORE_RULES.position.bonus : 0,
+      total: positionBase + (counts.position === LINEUP_SIZE ? SCORE_RULES.position.bonus : 0),
+      max: SCORE_RULES.position.max
+    }
   };
 }
 
@@ -722,7 +787,7 @@ function loadState() {
   if (state.prediction?.lineup && state.actual?.lineup && hasCompletePositions(state.prediction.lineup) && hasCompletePositions(state.actual.lineup)) {
     state.result = scoreLineup(state.prediction.lineup, state.actual.lineup);
     saveToStorage(STORAGE_KEYS.result, state.result);
-  } else if (state.result?.max !== LINEUP_SIZE * 3) {
+  } else if (state.result?.max !== SCORE_MAX) {
     state.result = null;
     removeFromStorage(STORAGE_KEYS.result);
   }
@@ -889,27 +954,118 @@ function renderScoreResult() {
 
   container.className = "summary-box";
   container.innerHTML = "";
+  container.appendChild(createResultView(createResultViewModel(state.result)));
+  shareButton.classList.remove("hidden");
+}
 
-  const total = document.createElement("div");
-  total.className = "score-total";
-  total.innerHTML = `${state.result.total} / ${state.result.max}<span>点</span>`;
+function createResultViewModel(result) {
+  const details = result.details.map((detail) => {
+    const isPlayerHit = Boolean(detail.isPlayerHit ?? detail.mark !== "×");
+    const isOrderHit = Boolean(detail.isOrderHit ?? detail.mark === "◎");
+    const isPositionHit = Boolean(detail.isPositionHit ?? detail.mark === "◎");
 
-  const list = document.createElement("ul");
-  list.className = "lineup-list result-list";
+    return {
+      ...detail,
+      actualPlayer: detail.actualPlayer || "",
+      actualPosition: detail.actualPosition || "",
+      isPlayerHit,
+      isOrderHit,
+      isPositionHit
+    };
+  });
+  const counts = result.counts || getHitCounts(details);
+  const breakdown = result.breakdown || createScoreBreakdown(counts);
 
-  state.result.details.forEach((detail) => {
-    const item = document.createElement("li");
-    const markClass = detail.mark === "◎" ? "mark-perfect" : detail.mark === "◯" ? "mark-member" : "mark-miss";
-    item.innerHTML = `
-      <strong>${detail.order}番</strong>
-      <span>${escapeHtml(detail.position)} ${escapeHtml(detail.player)} <small>${detail.label}</small></span>
-      <span class="result-mark ${markClass}" aria-label="${detail.label}">${detail.mark}</span>
+  return {
+    total: result.total,
+    max: SCORE_MAX,
+    perfectLabel: result.total === SCORE_MAX ? "PERFECT" : "",
+    counts,
+    breakdown,
+    details
+  };
+}
+
+function createResultView(viewModel) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "result-dashboard";
+
+  const hero = document.createElement("div");
+  hero.className = "result-hero";
+  hero.innerHTML = `
+    <p class="result-label">TOTAL SCORE</p>
+    <div class="score-total"><strong>${viewModel.total}</strong><span>/ ${viewModel.max} 点</span></div>
+    ${viewModel.perfectLabel ? `<p class="score-comment">${escapeHtml(viewModel.perfectLabel)}</p>` : ""}
+  `;
+
+  const breakdown = document.createElement("div");
+  breakdown.className = "hit-breakdown";
+  breakdown.innerHTML = `
+    ${createBreakdownItem("出場得点", viewModel.breakdown.player.total, viewModel.breakdown.player.max, `出場的中：${viewModel.counts.player} / ${LINEUP_SIZE}`)}
+    ${createBreakdownItem("打順得点", viewModel.breakdown.order.total, viewModel.breakdown.order.max, `打順的中：${viewModel.counts.order} / ${LINEUP_SIZE}`)}
+    ${createBreakdownItem("守備位置得点", viewModel.breakdown.position.total, viewModel.breakdown.position.max, `守備位置的中：${viewModel.counts.position} / ${LINEUP_SIZE}`)}
+  `;
+
+  const tableWrap = document.createElement("div");
+  tableWrap.className = "result-table-wrap";
+  tableWrap.appendChild(createResultTable(viewModel.details));
+
+  wrapper.append(hero, breakdown, tableWrap);
+  return wrapper;
+}
+
+function createBreakdownItem(label, score, max, countText) {
+  return `
+    <div class="breakdown-item">
+      <span>${label}</span>
+      <strong>${score} / ${max}</strong>
+      <small>${countText}</small>
+    </div>
+  `;
+}
+
+function createResultTable(details) {
+  const table = document.createElement("table");
+  table.className = "result-table";
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>打順</th>
+        <th>予想選手</th>
+        <th>実際の選手</th>
+        <th>予想守備</th>
+        <th>実際守備</th>
+        <th>出場</th>
+        <th>打順</th>
+        <th>守備</th>
+        <th>点</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  `;
+
+  const tbody = table.querySelector("tbody");
+  details.forEach((detail) => {
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td><strong>${detail.order}番</strong></td>
+      <td>${escapeHtml(detail.player)}</td>
+      <td>${escapeHtml(detail.actualPlayer || "-")}</td>
+      <td>${escapeHtml(detail.position || "-")}</td>
+      <td>${escapeHtml(detail.actualPosition || "-")}</td>
+      <td>${createHitBadge(detail.isPlayerHit)}</td>
+      <td>${createHitBadge(detail.isOrderHit)}</td>
+      <td>${createHitBadge(detail.isPositionHit)}</td>
+      <td><strong>${detail.point}</strong></td>
     `;
-    list.appendChild(item);
+    tbody.appendChild(row);
   });
 
-  container.append(total, list);
-  shareButton.classList.remove("hidden");
+  return table;
+}
+
+function createHitBadge(isHit) {
+  return `<span class="hit-badge ${isHit ? "is-hit" : "is-miss"}">${isHit ? "○" : "×"}</span>`;
 }
 
 function createPredictionSummary(prediction) {
@@ -977,12 +1133,13 @@ function createPredictionShareText(prediction) {
 }
 
 function createResultShareText(result) {
+  const viewModel = createResultViewModel(result);
   const lines = [
-    "ハムスタメンチャレンジ結果",
-    "",
-    `${result.total} / ${result.max}点でした！`,
-    "",
-    ...result.details.map((detail) => `${detail.order}番 ${detail.position} ${detail.player} ${detail.mark}`),
+    "Starting9 結果発表！",
+    `スコア：${viewModel.total} / ${viewModel.max}点`,
+    `出場的中：${viewModel.counts.player} / ${LINEUP_SIZE}`,
+    `打順的中：${viewModel.counts.order} / ${LINEUP_SIZE}`,
+    `守備位置的中：${viewModel.counts.position} / ${LINEUP_SIZE}`,
     "",
     "#日ハム #lovefighters #スタメン予想"
   ];

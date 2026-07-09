@@ -98,6 +98,10 @@
                 <button id="startAutoFetchButton" class="secondary-button compact-button" type="button">自動取得を開始</button>
                 <button id="stopAutoFetchButton" class="secondary-button compact-button" type="button" disabled>自動取得を停止</button>
               </div>
+              <label class="auto-approve-option" for="autoApproveCheckbox">
+                <input id="autoApproveCheckbox" type="checkbox">
+                <span>チェック全OKなら自動で本承認する</span>
+              </label>
               <p id="autoFetchStatus" class="message auto-fetch-message" role="status" aria-live="polite"></p>
               <div id="autoFetchSummary" class="auto-fetch-summary" aria-live="polite"></div>
               <div id="autoFetchValidation" class="auto-fetch-validation hidden" aria-live="polite"></div>
@@ -168,7 +172,7 @@
 
   </main>
 
-  <script src="players.js?v=admin-test-tools-20260709"></script>
-  <script src="script.js?v=admin-test-tools-20260709"></script>
+  <script src="players.js?v=auto-approve-20260709"></script>
+  <script src="script.js?v=auto-approve-20260709"></script>
 </body>
 </html>

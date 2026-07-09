@@ -915,6 +915,22 @@ textarea:focus {
   gap: 10px;
 }
 
+.auto-approve-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  min-height: 44px;
+  cursor: pointer;
+}
+
+.auto-approve-option input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--fighters-blue);
+}
+
 @media (min-width: 760px) {
   .app-layout {
     grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -862,10 +862,34 @@ async function runAutoFetchAttempt() {
   }
 
   addAutoFetchLog("9人取得成功");
-  registerProvisionalActual(validation.lineup, candidate.sourceUrl, fetchedAt, state.autoFetch.workerMeta, validation.checks);
+  const autoApprove = shouldAutoApproveFetchedLineup(validation.checks);
+  registerProvisionalActual(
+    validation.lineup,
+    candidate.sourceUrl,
+    fetchedAt,
+    state.autoFetch.workerMeta,
+    validation.checks,
+    autoApprove ? "approved" : "provisional"
+  );
+
+  if (autoApprove) {
+    state.autoFetch.status = "approved";
+    addAutoFetchLog("チェック全OKのため、自動で本承認しました。");
+    stopAutoFetch("9人分の候補を取得し、自動で本承認しました。", "success");
+    return;
+  }
+
   state.autoFetch.status = "provisional";
   addAutoFetchLog("仮承認済みにしました。");
   stopAutoFetch("9人分の候補を取得し、仮承認済みにしました。", "success");
+}
+
+function shouldAutoApproveFetchedLineup(validationChecks) {
+  const checkbox = document.getElementById("autoApproveCheckbox");
+  return state.isAdminMode
+    && Boolean(checkbox?.checked)
+    && validationChecks.length === 8
+    && validationChecks.every((check) => check.ok);
 }
 
 function validateAutoFetchedLineup(lineupText, sourceUrl, fetchedAt, gameStartAt) {
@@ -905,21 +929,23 @@ function validateAutoFetchedLineup(lineupText, sourceUrl, fetchedAt, gameStartAt
   return { ok: true, lineup: parseResult.lineup, checks };
 }
 
-function registerProvisionalActual(lineup, sourceUrl, fetchedAt, workerMeta, validationChecks) {
+function registerProvisionalActual(lineup, sourceUrl, fetchedAt, workerMeta, validationChecks, approvalStatus = "provisional") {
   const normalizedLineup = normalizeLineup(lineup);
+  const isApproved = approvalStatus === "approved";
   setLineupValues("actual", normalizedLineup);
   state.actual = {
     lineup: normalizedLineup,
     savedAt: fetchedAt.toISOString(),
-    approvalStatus: "provisional",
+    approvalStatus: isApproved ? "approved" : "provisional",
     sourceUrl,
     fetchedAt: fetchedAt.toISOString(),
     registeredBy: "auto-fetch",
     workerMeta: workerMeta || null,
-    validationChecks: validationChecks || []
+    validationChecks: validationChecks || [],
+    ...(isApproved ? { approvedAt: new Date().toISOString() } : {})
   };
   state.actualPreview = null;
-  state.adminStatus = "provisional";
+  state.adminStatus = isApproved ? "approved" : "provisional";
   state.adminError = "";
   state.result = null;
   saveToStorage(STORAGE_KEYS.actual, state.actual);
@@ -1791,6 +1817,10 @@ function renderAutoFetchLog() {
 }
 
 function getAutoFetchStatusLabel() {
+  if (state.actual?.approvalStatus === "approved" && state.autoFetch.status === "approved") {
+    return "本承認済み";
+  }
+
   if (state.actual?.approvalStatus === "provisional" || state.autoFetch.status === "provisional") {
     return "仮承認済み";
   }
@@ -2163,6 +2193,7 @@ function resetAllData() {
   document.getElementById("actualPasteInput").value = "";
   document.getElementById("npbUrlInput").value = "";
   document.getElementById("gameStartInput").value = "";
+  document.getElementById("autoApproveCheckbox").checked = false;
   setLineupValues("prediction", []);
   setLineupValues("actual", []);
   clearMessage("predictionError");

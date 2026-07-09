@@ -684,6 +684,10 @@ textarea:focus {
 }
 
 .player-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   width: 100%;
   min-height: 44px;
   padding: 9px 11px;
@@ -696,6 +700,65 @@ textarea:focus {
   touch-action: pan-y;
   user-select: none;
   transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
+}
+
+.player-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.player-with-category,
+.saved-lineup-player {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.player-position-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.player-category-badge,
+.player-position-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 24px;
+  padding: 2px 6px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.player-category-badge.is-catcher,
+.player-position-badge.is-catcher {
+  color: #155f9c;
+  background: #e5f3ff;
+}
+
+.player-category-badge.is-infielder,
+.player-position-badge.is-infielder {
+  color: #775500;
+  background: #fff4c7;
+}
+
+.player-category-badge.is-outfielder,
+.player-position-badge.is-outfielder {
+  color: #27723d;
+  background: #e7f6e9;
+}
+
+.player-category-badge.is-dh,
+.player-position-badge.is-dh {
+  color: #8a295f;
+  background: #f8e8f2;
 }
 
 .player-chip:hover,

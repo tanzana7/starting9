@@ -59,6 +59,12 @@ const positions = [
   "右",
   "指"
 ];
+const playerCategoryLabels = {
+  catcher: "捕",
+  infielder: "内",
+  outfielder: "外",
+  dh: "DH"
+};
 
 const positionAliases = {
   "捕": "捕",
@@ -98,53 +104,6 @@ const positionAliases = {
   "D": "指",
   "指名打者": "指",
   "0": "指"
-};
-
-const playerAliases = {
-  "郡司": "郡司裕也",
-  "郡司裕也": "郡司裕也",
-  "清宮": "清宮幸太郎",
-  "清宮幸": "清宮幸太郎",
-  "清宮幸太郎": "清宮幸太郎",
-  "万波": "万波中正",
-  "万波中": "万波中正",
-  "万波中正": "万波中正",
-  "田宮": "田宮裕涼",
-  "田宮裕": "田宮裕涼",
-  "田宮裕涼": "田宮裕涼",
-  "進藤": "進藤勇也",
-  "進藤勇": "進藤勇也",
-  "進藤勇也": "進藤勇也",
-  "細川": "細川凌平",
-  "細川凌": "細川凌平",
-  "細川凌平": "細川凌平",
-  "野村": "野村佑希",
-  "野村佑": "野村佑希",
-  "野村佑希": "野村佑希",
-  "水野": "水野達稀",
-  "水野達": "水野達稀",
-  "水野達稀": "水野達稀",
-  "奈良間": "奈良間大己",
-  "奈良間大": "奈良間大己",
-  "奈良間大己": "奈良間大己",
-  "五十幡": "五十幡亮汰",
-  "五十幡亮": "五十幡亮汰",
-  "五十幡亮汰": "五十幡亮汰",
-  "水谷": "水谷瞬",
-  "水谷瞬": "水谷瞬",
-  "宮崎": "宮崎一樹",
-  "宮崎一": "宮崎一樹",
-  "宮崎一樹": "宮崎一樹",
-  "大塚": "大塚瑠晏",
-  "大塚瑠": "大塚瑠晏",
-  "大塚瑠晏": "大塚瑠晏",
-  "山縣": "山縣秀",
-  "山縣秀": "山縣秀",
-  "吉田": "吉田賢吾",
-  "吉田賢": "吉田賢吾",
-  "吉田賢吾": "吉田賢吾",
-  "マルティネス": "マルティネス",
-  "レイエス": "レイエス"
 };
 
 const state = {
@@ -238,7 +197,7 @@ function buildLineupPicker(pickerName, lineupId, playersId) {
     lineupFragment.appendChild(createLineupSlot(pickerName, index));
   }
 
-  players.forEach((player) => {
+  playerNames.forEach((player) => {
     playersFragment.appendChild(createPlayerChip(pickerName, player));
   });
 
@@ -320,7 +279,7 @@ function createPlayerChip(pickerName, player) {
   button.dataset.picker = pickerName;
   button.dataset.player = player;
   button.draggable = true;
-  button.textContent = player;
+  button.innerHTML = createPlayerLabelHtml(player);
 
   button.addEventListener("click", () => {
     if (button.dataset.skipClick === "true") {
@@ -901,7 +860,7 @@ function validateAutoFetchedLineup(lineupText, sourceUrl, fetchedAt, gameStartAt
   const orderSet = new Set(orders);
   const playerKeys = parsedItems.map((item) => normalizePlayerKey(item.player)).filter(Boolean);
   const playerSet = new Set(playerKeys);
-  const missingPlayer = parsedItems.find((item) => !players.some((player) => normalizePlayerKey(player) === normalizePlayerKey(item.player)));
+  const missingPlayer = parsedItems.find((item) => !playerNames.some((player) => normalizePlayerKey(player) === normalizePlayerKey(item.player)));
   const checks = [
     { label: "1〜9番が揃っている", ok: orderSet.size === LINEUP_SIZE && Array.from({ length: LINEUP_SIZE }, (_, index) => orderSet.has(index + 1)).every(Boolean) },
     { label: "打順重複なし", ok: orders.length === orderSet.size && orders.length === LINEUP_SIZE },
@@ -1268,7 +1227,7 @@ function normalizePlayerName(value) {
     return aliasPlayer;
   }
 
-  const rosterPlayer = players.find((player) => normalizePlayerKey(player) === playerKey);
+  const rosterPlayer = playerNames.find((player) => normalizePlayerKey(player) === playerKey);
   return rosterPlayer || trimmedName;
 }
 
@@ -1679,7 +1638,7 @@ function createLineupPreviewHtml(lineup) {
       <li>
         <strong>${item.order}番</strong>
         <span>${escapeHtml(item.position)}</span>
-        <span>${escapeHtml(item.player)}</span>
+        <span class="player-with-category">${createPlayerLabelHtml(item.player)}</span>
       </li>
     `;
   }).join("");
@@ -1853,7 +1812,7 @@ function renderPicker(pickerName) {
     slot.classList.toggle("is-duplicate", duplicatedPlayers.has(player) || duplicatedPositions.has(position));
     slot.draggable = Boolean(player);
     slot.setAttribute("aria-label", `${index + 1}番 ${position || "守備未選択"} ${player || "未選択"}`);
-    playerElement.textContent = player || "未選択";
+    playerElement.innerHTML = player ? createPlayerLabelHtml(player) : "未選択";
     playerElement.classList.toggle("slot-empty", !player);
     positionSelect.value = position;
     clearButton.classList.toggle("hidden", !player);
@@ -2024,8 +1983,8 @@ function createResultTable(details) {
     const row = document.createElement("tr");
     row.innerHTML = `
       <td><strong>${detail.order}番</strong></td>
-      <td>${escapeHtml(detail.player)}</td>
-      <td>${escapeHtml(detail.actualPlayer || "-")}</td>
+      <td><span class="player-with-category">${createPlayerLabelHtml(detail.player)}</span></td>
+      <td><span class="player-with-category">${detail.actualPlayer ? createPlayerLabelHtml(detail.actualPlayer) : "-"}</span></td>
       <td>${escapeHtml(detail.position || "-")}</td>
       <td>${escapeHtml(detail.actualPosition || "-")}</td>
       <td>${createHitBadge(detail.isPlayerHit)}</td>
@@ -2056,7 +2015,13 @@ function createPredictionSummary(prediction) {
   list.className = "lineup-list";
   normalizeLineup(prediction.lineup).forEach((lineupItem, index) => {
     const listItem = document.createElement("li");
-    listItem.innerHTML = `<strong>${index + 1}番</strong><span>${escapeHtml(lineupItem.position)} ${escapeHtml(lineupItem.player)}</span>`;
+    listItem.innerHTML = `
+      <strong>${index + 1}番</strong>
+      <span class="saved-lineup-player">
+        <span>${escapeHtml(lineupItem.position)} ${escapeHtml(lineupItem.player)}</span>
+        ${createPlayerPositionBadgesHtml(lineupItem.player)}
+      </span>
+    `;
     list.appendChild(listItem);
   });
 
@@ -2218,4 +2183,71 @@ function escapeHtml(value) {
   const span = document.createElement("span");
   span.textContent = value;
   return span.innerHTML;
+}
+
+function getPlayerData(playerName) {
+  const playerKey = normalizePlayerKey(playerName);
+  return players.find((player) => normalizePlayerKey(player.name) === playerKey) || null;
+}
+
+function createPlayerCategoryBadgeHtml(playerName) {
+  const player = getPlayerData(playerName);
+  const label = player ? playerCategoryLabels[player.category] : "";
+
+  if (!player || !label) {
+    return "";
+  }
+
+  return `<span class="player-category-badge is-${escapeHtml(player.category)}" aria-label="${escapeHtml(player.category)}">${escapeHtml(label)}</span>`;
+}
+
+function createPlayerPositionBadgesHtml(playerName) {
+  const player = getPlayerData(playerName);
+  const sourcePositions = Array.isArray(player?.positions) ? player.positions : [];
+  const normalizedPositions = Array.from(new Set(
+    sourcePositions.map((position) => normalizeDisplayPosition(position)).filter(Boolean)
+  ));
+
+  if (!normalizedPositions.length) {
+    return createPlayerCategoryBadgeHtml(playerName);
+  }
+
+  const badges = normalizedPositions.map((position) => {
+    return `<span class="player-position-badge is-${getPositionCategory(position)}" aria-label="守備位置 ${escapeHtml(position)}">${escapeHtml(position)}</span>`;
+  }).join("");
+
+  return `<span class="player-position-badges">${badges}</span>`;
+}
+
+function normalizeDisplayPosition(value) {
+  const key = normalizePositionKey(value);
+
+  if (["左", "中", "右", "LF", "CF", "RF", "外野", "OF"].includes(key)) {
+    return "外";
+  }
+
+  return normalizePosition(key);
+}
+
+function getPositionCategory(position) {
+  if (position === "捕") {
+    return "catcher";
+  }
+
+  if (["一", "二", "三", "遊"].includes(position)) {
+    return "infielder";
+  }
+
+  if (position === "外") {
+    return "outfielder";
+  }
+
+  return "dh";
+}
+
+function createPlayerLabelHtml(playerName) {
+  return `
+    <span class="player-name">${escapeHtml(playerName)}</span>
+    ${createPlayerPositionBadgesHtml(playerName)}
+  `;
 }

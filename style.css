@@ -590,7 +590,7 @@ textarea:focus {
 
 .lineup-slot {
   display: grid;
-  grid-template-columns: 46px minmax(0, 1fr) 42px 34px;
+  grid-template-columns: 28px 46px minmax(0, 1fr) 42px 34px;
   gap: 8px;
   align-items: center;
   min-height: 48px;
@@ -614,14 +614,6 @@ textarea:focus {
   background: #fff9e8;
   box-shadow: 0 0 0 3px rgba(213, 161, 30, 0.22);
   transform: translateY(-1px);
-}
-
-.lineup-slot[draggable="true"] {
-  cursor: grab;
-}
-
-.lineup-slot[draggable="true"]:active {
-  cursor: grabbing;
 }
 
 .lineup-slot.has-player {
@@ -681,6 +673,38 @@ textarea:focus {
   color: var(--fighters-deep-blue);
   background: var(--fighters-sky);
   font-weight: 900;
+}
+
+.slot-drag-handle {
+  display: inline-grid;
+  width: 28px;
+  height: 36px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid #b7c8d8;
+  border-radius: 6px;
+  color: #46637d;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 1.05rem;
+  line-height: 1;
+  cursor: grab;
+  touch-action: none;
+}
+
+.slot-drag-handle:active {
+  cursor: grabbing;
+}
+
+.slot-drag-handle:hover,
+.slot-drag-handle:focus-visible {
+  border-color: var(--fighters-blue);
+  color: var(--fighters-deep-blue);
+  background: #ffffff;
+}
+
+.slot-drag-handle.is-disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .slot-player {
@@ -764,12 +788,68 @@ textarea:focus {
   transform: translateY(-1px);
 }
 
+.position-button[draggable="true"] {
+  cursor: grab;
+}
+
+.position-button[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.position-button.is-dragging {
+  opacity: 0.62;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 7px 14px rgba(25, 54, 82, 0.28);
+  transform: translateY(-2px) scale(1.04);
+}
+
 .position-button:active {
   box-shadow:
     inset 0 2px 3px rgba(25, 54, 82, 0.18),
     0 1px 2px rgba(25, 54, 82, 0.16);
   filter: brightness(0.98);
   transform: translateY(1px);
+}
+
+.result-position-tile {
+  display: inline-grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1.5px solid currentColor;
+  border-radius: 6px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 2px 4px rgba(25, 54, 82, 0.18);
+  font-size: 0.9rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.result-position-tile.is-empty {
+  color: #6f7f8f;
+  background: #f5f7f9;
+}
+
+.result-position-tile.is-catcher {
+  color: #155f9c;
+  background: #dceeff;
+}
+
+.result-position-tile.is-infielder {
+  color: #775500;
+  background: #fff0b8;
+}
+
+.result-position-tile.is-outfielder {
+  color: #27723d;
+  background: #dff2e3;
+}
+
+.result-position-tile.is-dh {
+  color: #8a295f;
+  background: #f5ddec;
 }
 
 .position-menu {
@@ -1286,7 +1366,7 @@ textarea:focus {
   }
 
   .lineup-slot {
-    grid-template-columns: 42px minmax(0, 1fr) 40px 32px;
+    grid-template-columns: 26px 42px minmax(0, 1fr) 40px 32px;
     gap: 6px;
     padding: 6px;
   }
@@ -1294,6 +1374,11 @@ textarea:focus {
   .slot-order {
     min-height: 32px;
     font-size: 0.9rem;
+  }
+
+  .slot-drag-handle {
+    width: 26px;
+    height: 34px;
   }
 
   .slot-player,

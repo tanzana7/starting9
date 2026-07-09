@@ -241,8 +241,6 @@ function createLineupSlot(pickerName, index) {
       showSlotPlayerDetails(pickerName, slot);
     }
   });
-  slot.addEventListener("dragstart", (event) => handleSlotDragStart(event, slot));
-  slot.addEventListener("dragend", (event) => handleDragEnd(event, slot));
   slot.addEventListener("dragover", handleSlotDragOver);
   slot.addEventListener("dragenter", () => slot.classList.add("is-drop-target"));
   slot.addEventListener("dragleave", () => slot.classList.remove("is-drop-target"));
@@ -252,9 +250,24 @@ function createLineupSlot(pickerName, index) {
   order.className = "slot-order";
   order.textContent = `${index + 1}番`;
 
+  const dragHandle = document.createElement("button");
+  dragHandle.className = "slot-drag-handle";
+  dragHandle.type = "button";
+  dragHandle.draggable = false;
+  dragHandle.textContent = "⠿";
+  dragHandle.setAttribute("aria-label", `${index + 1}番をドラッグして並び替え`);
+  dragHandle.addEventListener("click", (event) => event.stopPropagation());
+  dragHandle.addEventListener("dragstart", (event) => handleSlotDragStart(event, slot));
+  dragHandle.addEventListener("dragend", (event) => handleDragEnd(event, slot));
+
   const player = document.createElement("span");
   player.className = "slot-player slot-empty";
   player.textContent = "未選択";
+  player.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setActiveOrder(pickerName, index);
+    showSlotPlayerDetails(pickerName, slot);
+  });
 
   const positionControl = createPositionControl(pickerName, index, slot);
 
@@ -268,7 +281,7 @@ function createLineupSlot(pickerName, index) {
     clearSlot(pickerName, index);
   });
 
-  slot.append(order, player, positionControl, clearButton);
+  slot.append(dragHandle, order, player, positionControl, clearButton);
   return slot;
 }
 
@@ -282,15 +295,21 @@ function createPositionControl(pickerName, index, slot) {
 
   button.className = "position-button is-empty";
   button.type = "button";
-  button.textContent = "－";
+  button.textContent = "?";
   button.setAttribute("aria-label", `${index + 1}番の守備位置を選択`);
   button.setAttribute("aria-haspopup", "menu");
   button.setAttribute("aria-expanded", "false");
   button.setAttribute("aria-controls", menuId);
   button.addEventListener("click", (event) => {
     event.stopPropagation();
+    if (button.dataset.skipClick === "true") {
+      button.dataset.skipClick = "false";
+      return;
+    }
     togglePositionMenu(menu, button);
   });
+  button.addEventListener("dragstart", (event) => handlePositionDragStart(event, button, slot));
+  button.addEventListener("dragend", (event) => handlePositionDragEnd(event, button));
 
   menu.id = menuId;
   menu.className = "position-menu hidden";
@@ -299,7 +318,7 @@ function createPositionControl(pickerName, index, slot) {
     const optionButton = document.createElement("button");
     optionButton.className = "position-menu-option";
     optionButton.type = "button";
-    optionButton.textContent = position || "－";
+    optionButton.textContent = position || "?";
     optionButton.setAttribute("role", "menuitem");
     optionButton.setAttribute("aria-label", position ? `${position}を選択` : "守備位置を未選択にする");
     optionButton.addEventListener("click", (event) => {
@@ -366,6 +385,7 @@ function createPlayerChip(pickerName, player) {
 
 function handlePlayerDragStart(event, button) {
   const dragData = {
+    kind: "player",
     pickerName: button.dataset.picker,
     player: button.dataset.player,
     sourceOrder: null
@@ -384,6 +404,7 @@ function handleSlotDragStart(event, slot) {
   }
 
   const dragData = {
+    kind: "lineup",
     pickerName: slot.dataset.picker,
     player,
     sourceOrder: Number(slot.dataset.order)
@@ -393,10 +414,35 @@ function handleSlotDragStart(event, slot) {
   slot.classList.add("is-dragging");
 }
 
+function handlePositionDragStart(event, button, slot) {
+  const position = slot.dataset.position;
+
+  if (!position) {
+    event.preventDefault();
+    return;
+  }
+
+  button.dataset.skipClick = "true";
+  setDragData(event, {
+    kind: "position",
+    pickerName: slot.dataset.picker,
+    position,
+    sourceOrder: Number(slot.dataset.order)
+  });
+  button.classList.add("is-dragging");
+}
+
+function handlePositionDragEnd(event, button) {
+  handleDragEnd(event, button);
+  setTimeout(() => {
+    button.dataset.skipClick = "false";
+  }, 0);
+}
+
 function setDragData(event, dragData) {
   event.dataTransfer.effectAllowed = "move";
   event.dataTransfer.setData(DRAG_DATA_TYPE, JSON.stringify(dragData));
-  event.dataTransfer.setData("text/plain", dragData.player);
+  event.dataTransfer.setData("text/plain", dragData.player || dragData.position || "");
 }
 
 function handleSlotDragOver(event) {
@@ -410,6 +456,11 @@ function handleSlotDrop(event, slot) {
 
   const dragData = getDragData(event);
   if (!dragData || dragData.pickerName !== slot.dataset.picker) {
+    return;
+  }
+
+  if (dragData.kind === "position") {
+    movePositionBetweenSlots(slot.dataset.picker, dragData.sourceOrder, Number(slot.dataset.order));
     return;
   }
 
@@ -503,22 +554,52 @@ function assignPlayerToActiveSlot(pickerName, player) {
 
 function assignPlayerToSlot(pickerName, player, targetIndex, sourceIndex) {
   const lineup = getLineupValues(pickerName);
-  const currentIndex = lineup.findIndex((item) => item.player === player);
-  const replacedItem = lineup[targetIndex];
-  const movingItem = createLineupItem(targetIndex, player, sourceIndex !== null && sourceIndex !== undefined ? lineup[sourceIndex]?.position || "" : replacedItem?.position || "");
-
-  if (sourceIndex !== null && sourceIndex !== undefined && sourceIndex !== targetIndex) {
-    lineup[sourceIndex] = createLineupItem(sourceIndex, replacedItem?.player || "", replacedItem?.position || "");
-  } else if (currentIndex !== -1 && currentIndex !== targetIndex) {
-    lineup[currentIndex] = createLineupItem(currentIndex, "", lineup[currentIndex]?.position || "");
-  }
-
-  lineup[targetIndex] = movingItem;
-  autoFillPredictionPosition(pickerName, lineup, targetIndex);
-  setLineupValues(pickerName, lineup);
+  const movedLineup = moveLineupItem(lineup, player, targetIndex, sourceIndex);
+  autoFillPredictionPosition(pickerName, movedLineup, targetIndex);
+  setLineupValues(pickerName, movedLineup);
   state.activeOrder[pickerName] = targetIndex;
   clearMessage(pickerName === "prediction" ? "predictionError" : "actualError");
   renderPicker(pickerName);
+}
+
+function moveLineupItem(lineup, player, targetIndex, sourceIndex) {
+  const movedLineup = normalizeLineup(lineup);
+  const currentIndex = movedLineup.findIndex((item) => item.player === player);
+  const replacedItem = movedLineup[targetIndex];
+  const hasSource = sourceIndex !== null && sourceIndex !== undefined;
+  const movingPosition = hasSource ? movedLineup[sourceIndex]?.position || "" : replacedItem?.position || "";
+
+  if (hasSource && sourceIndex !== targetIndex) {
+    movedLineup[sourceIndex] = createLineupItem(sourceIndex, replacedItem?.player || "", replacedItem?.position || "");
+  } else if (currentIndex !== -1 && currentIndex !== targetIndex) {
+    movedLineup[currentIndex] = createLineupItem(currentIndex, "", movedLineup[currentIndex]?.position || "");
+  }
+
+  movedLineup[targetIndex] = createLineupItem(targetIndex, player, movingPosition);
+  return movedLineup;
+}
+
+function movePositionBetweenSlots(pickerName, sourceIndex, targetIndex) {
+  const lineup = getLineupValues(pickerName);
+  const movedLineup = moveLineupPosition(lineup, sourceIndex, targetIndex);
+  setLineupValues(pickerName, movedLineup);
+  state.activeOrder[pickerName] = targetIndex;
+  clearMessage(pickerName === "prediction" ? "predictionError" : "actualError");
+  renderPicker(pickerName);
+}
+
+function moveLineupPosition(lineup, sourceIndex, targetIndex) {
+  const movedLineup = normalizeLineup(lineup);
+
+  if (sourceIndex === targetIndex) {
+    return movedLineup;
+  }
+
+  const sourcePosition = movedLineup[sourceIndex]?.position || "";
+  const targetPosition = movedLineup[targetIndex]?.position || "";
+  movedLineup[sourceIndex] = createLineupItem(sourceIndex, movedLineup[sourceIndex]?.player || "", targetPosition);
+  movedLineup[targetIndex] = createLineupItem(targetIndex, movedLineup[targetIndex]?.player || "", sourcePosition);
+  return movedLineup;
 }
 
 function autoFillPredictionPosition(pickerName, lineup, targetIndex) {
@@ -1912,17 +1993,21 @@ function renderPicker(pickerName) {
     const position = slot.dataset.position || "";
     const playerElement = slot.querySelector(".slot-player");
     const positionButton = slot.querySelector(".position-button");
+    const dragHandle = slot.querySelector(".slot-drag-handle");
     const clearButton = slot.querySelector(".slot-clear");
 
     slot.classList.toggle("is-active", state.activeOrder[pickerName] === index);
     slot.classList.toggle("has-player", Boolean(player));
     slot.classList.toggle("is-duplicate", duplicatedPlayers.has(player) || duplicatedPositions.has(position));
-    slot.draggable = Boolean(player);
+    slot.draggable = false;
     slot.setAttribute("aria-label", `${index + 1}番 ${position || "守備未選択"} ${player || "未選択"}`);
     playerElement.innerHTML = player ? createPlayerLabelHtml(player) : "未選択";
     playerElement.classList.toggle("slot-empty", !player);
     applyPlayerCategoryClass(slot, player);
     renderPositionButton(positionButton, position, index);
+    positionButton.draggable = Boolean(position);
+    dragHandle.draggable = Boolean(player);
+    dragHandle.classList.toggle("is-disabled", !player);
     clearButton.classList.toggle("hidden", !player);
   });
 
@@ -1937,7 +2022,7 @@ function renderPositionButton(button, position, index) {
     button.classList.remove(`is-${category}`);
   });
 
-  button.textContent = position || "－";
+  button.textContent = position || "?";
   button.classList.add(position ? `is-${getPositionCategory(position)}` : "is-empty");
   button.setAttribute("aria-label", `${index + 1}番の守備位置：${position || "未選択"}`);
 }
@@ -2103,8 +2188,8 @@ function createResultTable(details) {
       <td><strong>${detail.order}番</strong></td>
       <td class="${getPlayerCategoryClassNames(detail.player)}">${escapeHtml(detail.player)}</td>
       <td class="${getPlayerCategoryClassNames(detail.actualPlayer)}">${escapeHtml(detail.actualPlayer || "-")}</td>
-      <td>${escapeHtml(detail.position || "-")}</td>
-      <td>${escapeHtml(detail.actualPosition || "-")}</td>
+      <td>${createResultPositionTileHtml(detail.position)}</td>
+      <td>${createResultPositionTileHtml(detail.actualPosition)}</td>
       <td>${createHitBadge(detail.isPlayerHit)}</td>
       <td>${createHitBadge(detail.isOrderHit)}</td>
       <td>${createHitBadge(detail.isPositionHit)}</td>
@@ -2118,6 +2203,16 @@ function createResultTable(details) {
 
 function createHitBadge(isHit) {
   return `<span class="hit-badge ${isHit ? "is-hit" : "is-miss"}">${isHit ? "○" : "×"}</span>`;
+}
+
+function createResultPositionTileHtml(position) {
+  const normalizedPosition = normalizePosition(position);
+  const category = normalizedPosition ? getPositionCategory(normalizedPosition) : "empty";
+  return `
+    <span class="result-position-tile is-${category}" aria-label="守備位置 ${escapeHtml(normalizedPosition || "未選択")}">
+      ${escapeHtml(normalizedPosition || "－")}
+    </span>
+  `;
 }
 
 function createPredictionSummary(prediction) {

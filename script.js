@@ -415,6 +415,8 @@ function handleSlotDragStart(event, slot) {
 }
 
 function handlePositionDragStart(event, button, slot) {
+  closeAllPositionMenus();
+
   const position = slot.dataset.position;
 
   if (!position) {
@@ -434,6 +436,7 @@ function handlePositionDragStart(event, button, slot) {
 
 function handlePositionDragEnd(event, button) {
   handleDragEnd(event, button);
+  closeAllPositionMenus();
   setTimeout(() => {
     button.dataset.skipClick = "false";
   }, 0);
@@ -460,6 +463,7 @@ function handleSlotDrop(event, slot) {
   }
 
   if (dragData.kind === "position") {
+    closeAllPositionMenus();
     movePositionBetweenSlots(slot.dataset.picker, dragData.sourceOrder, Number(slot.dataset.order));
     return;
   }

@@ -590,7 +590,7 @@ textarea:focus {
 
 .lineup-slot {
   display: grid;
-  grid-template-columns: 46px minmax(0, 1fr) 78px 34px;
+  grid-template-columns: 46px minmax(0, 1fr) 42px 34px;
   gap: 8px;
   align-items: center;
   min-height: 48px;
@@ -628,6 +628,46 @@ textarea:focus {
   background: #ffffff;
 }
 
+.player-chip.is-category-catcher,
+.lineup-slot.is-category-catcher,
+.lineup-list li.is-category-catcher,
+.preview-list li.is-category-catcher,
+.result-table td.is-category-catcher {
+  border-color: #629fcf;
+  border-left: 4px solid #2777b5;
+  background: #dceeff;
+}
+
+.player-chip.is-category-infielder,
+.lineup-slot.is-category-infielder,
+.lineup-list li.is-category-infielder,
+.preview-list li.is-category-infielder,
+.result-table td.is-category-infielder {
+  border-color: #c7a637;
+  border-left: 4px solid #a37a00;
+  background: #fff0b8;
+}
+
+.player-chip.is-category-outfielder,
+.lineup-slot.is-category-outfielder,
+.lineup-list li.is-category-outfielder,
+.preview-list li.is-category-outfielder,
+.result-table td.is-category-outfielder {
+  border-color: #6caf7c;
+  border-left: 4px solid #38834a;
+  background: #dff2e3;
+}
+
+.player-chip.is-category-dh,
+.lineup-slot.is-category-dh,
+.lineup-list li.is-category-dh,
+.preview-list li.is-category-dh,
+.result-table td.is-category-dh {
+  border-color: #bf7da2;
+  border-left: 4px solid #9c3c72;
+  background: #f5ddec;
+}
+
 .lineup-slot.is-duplicate {
   border-color: var(--error);
   background: var(--error-bg);
@@ -644,9 +684,18 @@ textarea:focus {
 }
 
 .slot-player {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
   overflow: hidden;
   font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slot-player .player-name {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -656,12 +705,106 @@ textarea:focus {
   font-weight: 700;
 }
 
-.position-select {
-  min-height: 36px;
-  padding: 6px 8px;
+.position-control {
+  position: relative;
+  width: 40px;
+  height: 40px;
+}
+
+.position-button {
+  display: inline-grid;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  place-items: center;
+  border: 1.5px solid currentColor;
+  border-radius: 7px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 2px 4px rgba(25, 54, 82, 0.2);
+  font-size: 1rem;
+  font-weight: 900;
+  line-height: 1;
+  transform: translateY(0);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
+}
+
+.position-button.is-empty {
+  color: #6f7f8f;
+  background: #f5f7f9;
+}
+
+.position-button.is-catcher {
+  color: #155f9c;
+  background: #dceeff;
+}
+
+.position-button.is-infielder {
+  color: #775500;
+  background: #fff0b8;
+}
+
+.position-button.is-outfielder {
+  color: #27723d;
+  background: #dff2e3;
+}
+
+.position-button.is-dh {
+  color: #8a295f;
+  background: #f5ddec;
+}
+
+.position-button:hover,
+.position-button:focus-visible {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 4px 7px rgba(25, 54, 82, 0.24),
+    0 0 0 3px rgba(0, 91, 172, 0.14);
+  filter: brightness(1.025);
+  transform: translateY(-1px);
+}
+
+.position-button:active {
+  box-shadow:
+    inset 0 2px 3px rgba(25, 54, 82, 0.18),
+    0 1px 2px rgba(25, 54, 82, 0.16);
+  filter: brightness(0.98);
+  transform: translateY(1px);
+}
+
+.position-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  right: 0;
+  display: grid;
+  grid-template-columns: repeat(5, 36px);
+  gap: 5px;
+  width: max-content;
+  padding: 8px;
+  border: 1px solid #9fb8cf;
   border-radius: 8px;
-  font-size: 0.92rem;
-  font-weight: 800;
+  background: #ffffff;
+  box-shadow: 0 10px 24px rgba(20, 46, 72, 0.2);
+}
+
+.position-menu-option {
+  display: inline-grid;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  background: #f7fbff;
+  font-weight: 900;
+}
+
+.position-menu-option:hover,
+.position-menu-option:focus-visible {
+  border-color: var(--fighters-blue);
+  background: var(--fighters-sky);
 }
 
 .slot-clear {
@@ -719,6 +862,33 @@ textarea:focus {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 4px;
+}
+
+.player-detail-panel {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #b9daf8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.player-detail-panel > strong {
+  color: var(--fighters-deep-blue);
+  font-size: 1.05rem;
+}
+
+.player-detail-panel > span {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.player-detail-positions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
 }
 
 .player-category-badge,
@@ -1116,7 +1286,7 @@ textarea:focus {
   }
 
   .lineup-slot {
-    grid-template-columns: 42px minmax(0, 1fr) 70px 32px;
+    grid-template-columns: 42px minmax(0, 1fr) 40px 32px;
     gap: 6px;
     padding: 6px;
   }
@@ -1128,13 +1298,8 @@ textarea:focus {
 
   .slot-player,
   .player-chip,
-  .position-select {
+  .position-button {
     font-size: 0.9rem;
-  }
-
-  .position-select {
-    min-height: 34px;
-    padding: 5px 6px;
   }
 
   .player-chip {

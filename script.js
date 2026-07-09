@@ -31,6 +31,8 @@ const NPB_WORKER_EXTRACTION_FAILED_MESSAGE = "WorkerでNPB公式ページは取�
 const AUTO_FETCH_START_BEFORE_MS = 50 * 60 * 1000;
 const AUTO_FETCH_INTERVAL_MS = 10 * 60 * 1000;
 const AUTO_FETCH_MAX_ATTEMPTS = 5;
+const AUTO_FILL_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "指"]);
+const OUTFIELD_POSITIONS = ["左", "中", "右"];
 const TEST_PREDICTION_LINEUP = [
   { order: 1, player: "大塚瑠晏", position: "遊" },
   { order: 2, player: "清宮幸太郎", position: "一" },
@@ -64,6 +66,12 @@ const playerCategoryLabels = {
   infielder: "内",
   outfielder: "外",
   dh: "DH"
+};
+const playerCategoryNames = {
+  catcher: "捕手",
+  infielder: "内野手",
+  outfielder: "外野手",
+  dh: "DHメイン"
 };
 
 const positionAliases = {
@@ -162,6 +170,12 @@ function bindEvents() {
   document.getElementById("resetButton").addEventListener("click", resetAllData);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
+  document.addEventListener("click", () => closeAllPositionMenus());
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeAllPositionMenus();
+    }
+  });
 }
 
 function isAdminModeEnabled() {
@@ -197,7 +211,8 @@ function buildLineupPicker(pickerName, lineupId, playersId) {
     lineupFragment.appendChild(createLineupSlot(pickerName, index));
   }
 
-  playerNames.forEach((player) => {
+  const pickerPlayers = pickerName === "prediction" ? activePlayerNames : playerNames;
+  pickerPlayers.forEach((player) => {
     playersFragment.appendChild(createPlayerChip(pickerName, player));
   });
 
@@ -215,11 +230,15 @@ function createLineupSlot(pickerName, index) {
   slot.setAttribute("role", "button");
   slot.tabIndex = 0;
   slot.draggable = false;
-  slot.addEventListener("click", () => setActiveOrder(pickerName, index));
+  slot.addEventListener("click", () => {
+    setActiveOrder(pickerName, index);
+    showSlotPlayerDetails(pickerName, slot);
+  });
   slot.addEventListener("keydown", (event) => {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       setActiveOrder(pickerName, index);
+      showSlotPlayerDetails(pickerName, slot);
     }
   });
   slot.addEventListener("dragstart", (event) => handleSlotDragStart(event, slot));
@@ -237,19 +256,7 @@ function createLineupSlot(pickerName, index) {
   player.className = "slot-player slot-empty";
   player.textContent = "未選択";
 
-  const positionSelect = document.createElement("select");
-  positionSelect.className = "position-select";
-  positionSelect.setAttribute("aria-label", `${index + 1}番の守備位置`);
-  positionSelect.appendChild(createOption("", "守備"));
-  positions.forEach((position) => {
-    positionSelect.appendChild(createOption(position, position));
-  });
-  positionSelect.addEventListener("click", (event) => event.stopPropagation());
-  positionSelect.addEventListener("change", () => {
-    slot.dataset.position = positionSelect.value;
-    clearMessage(pickerName === "prediction" ? "predictionError" : "actualError");
-    renderPicker(pickerName);
-  });
+  const positionControl = createPositionControl(pickerName, index, slot);
 
   const clearButton = document.createElement("button");
   clearButton.className = "slot-clear";
@@ -261,15 +268,71 @@ function createLineupSlot(pickerName, index) {
     clearSlot(pickerName, index);
   });
 
-  slot.append(order, player, positionSelect, clearButton);
+  slot.append(order, player, positionControl, clearButton);
   return slot;
 }
 
-function createOption(value, text) {
-  const option = document.createElement("option");
-  option.value = value;
-  option.textContent = text;
-  return option;
+function createPositionControl(pickerName, index, slot) {
+  const control = document.createElement("div");
+  control.className = "position-control";
+
+  const button = document.createElement("button");
+  const menu = document.createElement("div");
+  const menuId = `${pickerName}-position-menu-${index}`;
+
+  button.className = "position-button is-empty";
+  button.type = "button";
+  button.textContent = "－";
+  button.setAttribute("aria-label", `${index + 1}番の守備位置を選択`);
+  button.setAttribute("aria-haspopup", "menu");
+  button.setAttribute("aria-expanded", "false");
+  button.setAttribute("aria-controls", menuId);
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    togglePositionMenu(menu, button);
+  });
+
+  menu.id = menuId;
+  menu.className = "position-menu hidden";
+  menu.setAttribute("role", "menu");
+  ["", ...positions].forEach((position) => {
+    const optionButton = document.createElement("button");
+    optionButton.className = "position-menu-option";
+    optionButton.type = "button";
+    optionButton.textContent = position || "－";
+    optionButton.setAttribute("role", "menuitem");
+    optionButton.setAttribute("aria-label", position ? `${position}を選択` : "守備位置を未選択にする");
+    optionButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      slot.dataset.position = position;
+      clearMessage(pickerName === "prediction" ? "predictionError" : "actualError");
+      closeAllPositionMenus();
+      renderPicker(pickerName);
+    });
+    menu.appendChild(optionButton);
+  });
+
+  control.append(button, menu);
+  return control;
+}
+
+function togglePositionMenu(menu, button) {
+  const shouldOpen = menu.classList.contains("hidden");
+  closeAllPositionMenus();
+
+  if (shouldOpen) {
+    menu.classList.remove("hidden");
+    button.setAttribute("aria-expanded", "true");
+  }
+}
+
+function closeAllPositionMenus() {
+  document.querySelectorAll(".position-menu").forEach((menu) => {
+    menu.classList.add("hidden");
+  });
+  document.querySelectorAll(".position-button").forEach((button) => {
+    button.setAttribute("aria-expanded", "false");
+  });
 }
 
 function createPlayerChip(pickerName, player) {
@@ -280,6 +343,7 @@ function createPlayerChip(pickerName, player) {
   button.dataset.player = player;
   button.draggable = true;
   button.innerHTML = createPlayerLabelHtml(player);
+  applyPlayerCategoryClass(button, player);
 
   button.addEventListener("click", () => {
     if (button.dataset.skipClick === "true") {
@@ -287,6 +351,7 @@ function createPlayerChip(pickerName, player) {
       return;
     }
 
+    showPlayerDetails(pickerName, player);
     assignPlayerToActiveSlot(pickerName, player);
   });
   button.addEventListener("pointerdown", (event) => handlePlayerPointerDown(event, button));
@@ -430,6 +495,7 @@ function assignPlayerToActiveSlot(pickerName, player) {
   }
 
   lineup[targetIndex] = createLineupItem(targetIndex, player, targetPosition);
+  autoFillPredictionPosition(pickerName, lineup, targetIndex);
   setLineupValues(pickerName, lineup);
   state.activeOrder[pickerName] = findNextEmptyIndex(lineup, targetIndex);
   renderPicker(pickerName);
@@ -448,10 +514,50 @@ function assignPlayerToSlot(pickerName, player, targetIndex, sourceIndex) {
   }
 
   lineup[targetIndex] = movingItem;
+  autoFillPredictionPosition(pickerName, lineup, targetIndex);
   setLineupValues(pickerName, lineup);
   state.activeOrder[pickerName] = targetIndex;
   clearMessage(pickerName === "prediction" ? "predictionError" : "actualError");
   renderPicker(pickerName);
+}
+
+function autoFillPredictionPosition(pickerName, lineup, targetIndex) {
+  if (pickerName !== "prediction" || lineup[targetIndex]?.position) {
+    return;
+  }
+
+  const player = getPlayerData(lineup[targetIndex]?.player);
+  if (!player || !Array.isArray(player.positions) || !player.positions.length) {
+    return;
+  }
+
+  const usedPositions = new Set(
+    lineup
+      .filter((_, index) => index !== targetIndex)
+      .map((item) => item.position)
+      .filter(Boolean)
+  );
+  let availablePosition = "";
+  for (const position of player.positions) {
+    const normalizedPosition = normalizePosition(position);
+
+    if (AUTO_FILL_POSITIONS.has(normalizedPosition) && !usedPositions.has(normalizedPosition)) {
+      availablePosition = normalizedPosition;
+      break;
+    }
+
+    if (normalizeDisplayPosition(position) === "外") {
+      const unusedOutfieldPositions = OUTFIELD_POSITIONS.filter((outfieldPosition) => !usedPositions.has(outfieldPosition));
+      if (unusedOutfieldPositions.length === 1) {
+        availablePosition = unusedOutfieldPositions[0];
+        break;
+      }
+    }
+  }
+
+  if (availablePosition) {
+    lineup[targetIndex] = createLineupItem(targetIndex, player.name, availablePosition);
+  }
 }
 
 function getTargetOrder(pickerName, lineup) {
@@ -1634,11 +1740,12 @@ function renderActualPreview(lineup) {
 
 function createLineupPreviewHtml(lineup) {
   const items = normalizeLineup(lineup).map((item) => {
+    const categoryClass = getPlayerCategoryClassNames(item.player);
     return `
-      <li>
+      <li class="${categoryClass}">
         <strong>${item.order}番</strong>
         <span>${escapeHtml(item.position)}</span>
-        <span class="player-with-category">${createPlayerLabelHtml(item.player)}</span>
+        <span>${escapeHtml(item.player)}</span>
       </li>
     `;
   }).join("");
@@ -1804,7 +1911,7 @@ function renderPicker(pickerName) {
     const player = slot.dataset.player || "";
     const position = slot.dataset.position || "";
     const playerElement = slot.querySelector(".slot-player");
-    const positionSelect = slot.querySelector(".position-select");
+    const positionButton = slot.querySelector(".position-button");
     const clearButton = slot.querySelector(".slot-clear");
 
     slot.classList.toggle("is-active", state.activeOrder[pickerName] === index);
@@ -1814,7 +1921,8 @@ function renderPicker(pickerName) {
     slot.setAttribute("aria-label", `${index + 1}番 ${position || "守備未選択"} ${player || "未選択"}`);
     playerElement.innerHTML = player ? createPlayerLabelHtml(player) : "未選択";
     playerElement.classList.toggle("slot-empty", !player);
-    positionSelect.value = position;
+    applyPlayerCategoryClass(slot, player);
+    renderPositionButton(positionButton, position, index);
     clearButton.classList.toggle("hidden", !player);
   });
 
@@ -1822,6 +1930,16 @@ function renderPicker(pickerName) {
     const isUsed = usedPlayers.has(chip.dataset.player);
     chip.classList.toggle("is-used", isUsed);
   });
+}
+
+function renderPositionButton(button, position, index) {
+  ["empty", "catcher", "infielder", "outfielder", "dh"].forEach((category) => {
+    button.classList.remove(`is-${category}`);
+  });
+
+  button.textContent = position || "－";
+  button.classList.add(position ? `is-${getPositionCategory(position)}` : "is-empty");
+  button.setAttribute("aria-label", `${index + 1}番の守備位置：${position || "未選択"}`);
 }
 
 function markDuplicateSlots(pickerName, lineup) {
@@ -1983,8 +2101,8 @@ function createResultTable(details) {
     const row = document.createElement("tr");
     row.innerHTML = `
       <td><strong>${detail.order}番</strong></td>
-      <td><span class="player-with-category">${createPlayerLabelHtml(detail.player)}</span></td>
-      <td><span class="player-with-category">${detail.actualPlayer ? createPlayerLabelHtml(detail.actualPlayer) : "-"}</span></td>
+      <td class="${getPlayerCategoryClassNames(detail.player)}">${escapeHtml(detail.player)}</td>
+      <td class="${getPlayerCategoryClassNames(detail.actualPlayer)}">${escapeHtml(detail.actualPlayer || "-")}</td>
       <td>${escapeHtml(detail.position || "-")}</td>
       <td>${escapeHtml(detail.actualPosition || "-")}</td>
       <td>${createHitBadge(detail.isPlayerHit)}</td>
@@ -2015,12 +2133,10 @@ function createPredictionSummary(prediction) {
   list.className = "lineup-list";
   normalizeLineup(prediction.lineup).forEach((lineupItem, index) => {
     const listItem = document.createElement("li");
+    applyPlayerCategoryClass(listItem, lineupItem.player);
     listItem.innerHTML = `
       <strong>${index + 1}番</strong>
-      <span class="saved-lineup-player">
-        <span>${escapeHtml(lineupItem.position)} ${escapeHtml(lineupItem.player)}</span>
-        ${createPlayerPositionBadgesHtml(lineupItem.player)}
-      </span>
+      <span>${escapeHtml(lineupItem.position)} ${escapeHtml(lineupItem.player)}</span>
     `;
     list.appendChild(listItem);
   });
@@ -2159,6 +2275,11 @@ function resetAllData() {
   document.getElementById("npbUrlInput").value = "";
   document.getElementById("gameStartInput").value = "";
   document.getElementById("autoApproveCheckbox").checked = false;
+  ["predictionPlayerDetails", "actualPlayerDetails"].forEach((elementId) => {
+    const panel = document.getElementById(elementId);
+    panel.classList.add("hidden");
+    panel.innerHTML = "";
+  });
   setLineupValues("prediction", []);
   setLineupValues("actual", []);
   clearMessage("predictionError");
@@ -2222,7 +2343,7 @@ function createPlayerPositionBadgesHtml(playerName) {
 function normalizeDisplayPosition(value) {
   const key = normalizePositionKey(value);
 
-  if (["左", "中", "右", "LF", "CF", "RF", "外野", "OF"].includes(key)) {
+  if (["左", "中", "右", "LF", "CF", "RF", "外", "外野", "OF"].includes(key)) {
     return "外";
   }
 
@@ -2238,7 +2359,7 @@ function getPositionCategory(position) {
     return "infielder";
   }
 
-  if (position === "外") {
+  if (["外", "左", "中", "右"].includes(position)) {
     return "outfielder";
   }
 
@@ -2246,8 +2367,52 @@ function getPositionCategory(position) {
 }
 
 function createPlayerLabelHtml(playerName) {
-  return `
-    <span class="player-name">${escapeHtml(playerName)}</span>
-    ${createPlayerPositionBadgesHtml(playerName)}
+  return `<span class="player-name">${escapeHtml(playerName)}</span>`;
+}
+
+function getPlayerCategoryClass(playerName) {
+  const player = getPlayerData(playerName);
+  const category = player?.mainCategory || player?.category;
+  return playerCategoryNames[category] ? `is-category-${category}` : "";
+}
+
+function getPlayerCategoryClassNames(playerName) {
+  return getPlayerCategoryClass(playerName);
+}
+
+function applyPlayerCategoryClass(element, playerName) {
+  Object.keys(playerCategoryNames).forEach((category) => {
+    element.classList.remove(`is-category-${category}`);
+    element.classList.remove(`is-subcategory-${category}`);
+  });
+
+  getPlayerCategoryClassNames(playerName).split(" ").filter(Boolean).forEach((className) => {
+    element.classList.add(className);
+  });
+}
+
+function showSlotPlayerDetails(pickerName, slot) {
+  if (slot.dataset.player) {
+    showPlayerDetails(pickerName, slot.dataset.player);
+  }
+}
+
+function showPlayerDetails(pickerName, playerName) {
+  const player = getPlayerData(playerName);
+  const panel = document.getElementById(`${pickerName}PlayerDetails`);
+
+  if (!panel || !player) {
+    return;
+  }
+
+  panel.classList.remove("hidden");
+  const mainCategory = player.mainCategory || player.category;
+  panel.innerHTML = `
+    <strong>${escapeHtml(player.name)}</strong>
+    <span>カテゴリ：${escapeHtml(playerCategoryNames[mainCategory] || "未設定")}</span>
+    <div class="player-detail-positions">
+      <span>守備候補：</span>
+      ${createPlayerPositionBadgesHtml(player.name)}
+    </div>
   `;
 }

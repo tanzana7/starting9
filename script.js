@@ -1,8 +1,14 @@
 const STORAGE_KEYS = {
   prediction: "hamStarting9Prediction",
   actual: "hamStarting9Actual",
-  result: "hamStarting9Result"
+  result: "hamStarting9Result",
+  gameInfo: "hamStarting9GameInfo"
 };
+const RESET_STORAGE_KEYS = [
+  STORAGE_KEYS.prediction,
+  STORAGE_KEYS.actual,
+  STORAGE_KEYS.result
+];
 
 const LINEUP_SIZE = 9;
 const SCORE_MAX = 100;
@@ -118,6 +124,11 @@ const state = {
   prediction: null,
   actual: null,
   result: null,
+  gameInfo: {
+    scoreUrl: "",
+    gameStartAt: "",
+    matchup: ""
+  },
   actualPreview: null,
   adminStatus: "idle",
   adminError: "",
@@ -150,6 +161,7 @@ document.addEventListener("DOMContentLoaded", () => {
   buildLineupPicker("actual", "actualLineup", "actualPlayers");
   loadState();
   bindEvents();
+  restoreAdminGameInfoInputs();
   applyAdminMode();
   renderAll();
 });
@@ -170,6 +182,7 @@ function bindEvents() {
   document.getElementById("resetButton").addEventListener("click", resetAllData);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
+  bindAdminGameInfoEvents();
   document.addEventListener("click", () => closeAllPositionMenus());
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
@@ -199,6 +212,18 @@ function applyAdminMode() {
   if (!state.isAdminMode) {
     stopAutoFetch("", "");
   }
+}
+
+function bindAdminGameInfoEvents() {
+  ["npbUrlInput", "gameStartInput", "matchupInput"].forEach((elementId) => {
+    const input = document.getElementById(elementId);
+    if (!input) {
+      return;
+    }
+
+    input.addEventListener("input", saveAdminGameInfoFromInputs);
+    input.addEventListener("change", saveAdminGameInfoFromInputs);
+  });
 }
 
 function buildLineupPicker(pickerName, lineupId, playersId) {
@@ -742,6 +767,7 @@ async function handleNpbFetchCandidate() {
   clearMessage("parserError");
   clearMessage("actualError");
   clearMessage("resetMessage");
+  saveAdminGameInfoFromInputs();
 
   const input = document.getElementById("npbUrlInput");
   const validation = validateNpbUrl(input.value);
@@ -856,6 +882,7 @@ function startAutoFetch() {
   clearMessage("parserError");
   clearMessage("actualError");
   clearMessage("resetMessage");
+  saveAdminGameInfoFromInputs();
 
   const urlValidation = validateNpbUrl(document.getElementById("npbUrlInput").value);
   if (!urlValidation.ok) {
@@ -1661,6 +1688,7 @@ function loadState() {
   state.prediction = loadFromStorage(STORAGE_KEYS.prediction);
   state.actual = loadFromStorage(STORAGE_KEYS.actual);
   state.result = loadFromStorage(STORAGE_KEYS.result);
+  state.gameInfo = normalizeGameInfo(loadFromStorage(STORAGE_KEYS.gameInfo));
 
   if (state.prediction?.lineup) {
     state.prediction.lineup = normalizeLineup(state.prediction.lineup);
@@ -1678,6 +1706,47 @@ function loadState() {
     state.result = null;
     removeFromStorage(STORAGE_KEYS.result);
   }
+}
+
+function normalizeGameInfo(gameInfo) {
+  return {
+    scoreUrl: typeof gameInfo?.scoreUrl === "string" ? gameInfo.scoreUrl : "",
+    gameStartAt: typeof gameInfo?.gameStartAt === "string" ? gameInfo.gameStartAt : "",
+    matchup: typeof gameInfo?.matchup === "string" ? gameInfo.matchup : ""
+  };
+}
+
+function restoreAdminGameInfoInputs() {
+  const inputMap = {
+    npbUrlInput: state.gameInfo.scoreUrl,
+    gameStartInput: state.gameInfo.gameStartAt,
+    matchupInput: state.gameInfo.matchup
+  };
+
+  Object.entries(inputMap).forEach(([elementId, value]) => {
+    const input = document.getElementById(elementId);
+    if (input) {
+      input.value = value || "";
+    }
+  });
+}
+
+function saveAdminGameInfoFromInputs() {
+  if (!state.isAdminMode) {
+    return;
+  }
+
+  state.gameInfo = readAdminGameInfoFromInputs();
+  saveToStorage(STORAGE_KEYS.gameInfo, state.gameInfo);
+  renderGameInfoDisplay();
+}
+
+function readAdminGameInfoFromInputs() {
+  return {
+    scoreUrl: document.getElementById("npbUrlInput")?.value.trim() || "",
+    gameStartAt: document.getElementById("gameStartInput")?.value || "",
+    matchup: document.getElementById("matchupInput")?.value.trim() || ""
+  };
 }
 
 function saveToStorage(key, value) {
@@ -1699,12 +1768,30 @@ function removeFromStorage(key) {
 }
 
 function renderAll() {
+  renderGameInfoDisplay();
   renderSavedPrediction();
   renderActualLineup();
   renderScoreResult();
   renderAdminFlow();
   renderPicker("prediction");
   renderPicker("actual");
+}
+
+function renderGameInfoDisplay() {
+  const display = document.getElementById("gameInfoDisplay");
+  if (!display) {
+    return;
+  }
+
+  const matchup = state.gameInfo?.matchup?.trim();
+  if (!matchup) {
+    display.classList.add("hidden");
+    display.textContent = "";
+    return;
+  }
+
+  display.textContent = `今日の試合：${matchup}`;
+  display.classList.remove("hidden");
 }
 
 function renderAdminFlow() {
@@ -1909,13 +1996,15 @@ function renderAutoFetchSummary() {
   }
 
   const meta = state.autoFetch.workerMeta || state.actual?.workerMeta || null;
+  const displaySourceUrl = state.autoFetch.sourceUrl || state.actual?.sourceUrl || state.gameInfo?.scoreUrl || "-";
+  const displayGameStartAt = state.autoFetch.gameStartAt || state.gameInfo?.gameStartAt || "";
   const rows = [
     ["自動取得状態", getAutoFetchStatusLabel()],
     ["試行回数", `${state.autoFetch.attempts} / ${AUTO_FETCH_MAX_ATTEMPTS}`],
     ["次回取得予定時刻", state.autoFetch.nextRunAt ? formatDateTime(state.autoFetch.nextRunAt) : "-"],
-    ["試合開始時刻", state.autoFetch.gameStartAt ? formatDateTime(state.autoFetch.gameStartAt) : "-"],
+    ["試合開始時刻", displayGameStartAt ? formatDateTime(displayGameStartAt) : "-"],
     ["最終取得時刻", state.autoFetch.lastCheckedAt ? formatDateTime(state.autoFetch.lastCheckedAt) : "-"],
-    ["取得元URL", state.autoFetch.sourceUrl || state.actual?.sourceUrl || "-"],
+    ["取得元URL", displaySourceUrl],
     ["Worker取得時刻", meta?.fetchedAt ? formatDateTime(meta.fetchedAt) : "-"],
     ["抽出方式", meta?.method || "-"],
     ["対象チーム", meta?.team || "-"]
@@ -2345,7 +2434,7 @@ function resetAllData() {
   }
 
   stopAutoFetch("", "");
-  Object.values(STORAGE_KEYS).forEach(removeFromStorage);
+  RESET_STORAGE_KEYS.forEach(removeFromStorage);
   state.prediction = null;
   state.actual = null;
   state.result = null;
@@ -2371,8 +2460,6 @@ function resetAllData() {
 
   document.getElementById("predictionForm").reset();
   document.getElementById("actualPasteInput").value = "";
-  document.getElementById("npbUrlInput").value = "";
-  document.getElementById("gameStartInput").value = "";
   document.getElementById("autoApproveCheckbox").checked = false;
   ["predictionPlayerDetails", "actualPlayerDetails"].forEach((elementId) => {
     const panel = document.getElementById(elementId);

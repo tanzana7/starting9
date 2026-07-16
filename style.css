@@ -450,6 +450,51 @@ textarea:focus {
   overflow-wrap: anywhere;
 }
 
+.roster-monitor-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  margin: 0 0 10px;
+  color: var(--fighters-deep-blue);
+  font-size: 0.98rem;
+  font-weight: 800;
+}
+
+.roster-monitor-title strong {
+  padding: 3px 8px;
+  border: 1px solid #b8c9d8;
+  border-radius: 999px;
+  background: #eef3f7;
+  color: #425466;
+  font-size: 0.82rem;
+}
+
+.roster-monitor-title strong.is-monitoring {
+  border-color: #8fc6aa;
+  background: #edf9f1;
+  color: #176b3d;
+}
+
+.roster-monitor-title strong.is-fetching {
+  border-color: #9fc4e7;
+  background: #eef7ff;
+  color: #155a91;
+}
+
+.roster-monitor-title strong.is-max-attempts,
+.roster-monitor-title strong.is-manual {
+  border-color: #d8bd82;
+  background: #fff8e8;
+  color: #805d16;
+}
+
+.roster-monitor-title strong.is-error {
+  border-color: #e3a9a9;
+  background: #fff1f1;
+  color: #a52d2d;
+}
+
 .auto-fetch-validation ul,
 .auto-fetch-log ol {
   display: grid;

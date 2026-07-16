@@ -107,6 +107,10 @@
                 <span>チェック全OKなら自動で本承認する</span>
               </label>
               <button id="checkRosterButton" class="secondary-button compact-button" type="button">1軍登録状況を確認</button>
+              <div class="auto-fetch-row">
+                <button id="startRosterMonitorButton" class="secondary-button compact-button" type="button">ロースター自動取得を開始</button>
+                <button id="stopRosterMonitorButton" class="secondary-button compact-button" type="button" disabled>ロースター自動取得を停止</button>
+              </div>
               <div id="rosterSnapshotSummary" class="auto-fetch-summary hidden" aria-live="polite"></div>
               <p id="autoFetchStatus" class="message auto-fetch-message" role="status" aria-live="polite"></p>
               <div id="autoFetchSummary" class="auto-fetch-summary" aria-live="polite"></div>

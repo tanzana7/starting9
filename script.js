@@ -38,6 +38,8 @@ const NPB_WORKER_EXTRACTION_FAILED_MESSAGE = "WorkerでNPB公式ページは取�
 const AUTO_FETCH_START_BEFORE_MS = 50 * 60 * 1000;
 const AUTO_FETCH_INTERVAL_MS = 10 * 60 * 1000;
 const AUTO_FETCH_MAX_ATTEMPTS = 5;
+const ROSTER_MONITOR_INTERVAL_MS = 10 * 60 * 1000;
+const ROSTER_MONITOR_MAX_ATTEMPTS = 6;
 const AUTO_FILL_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "指"]);
 const OUTFIELD_POSITIONS = ["左", "中", "右"];
 const TEST_PREDICTION_LINEUP = [
@@ -149,6 +151,24 @@ const state = {
     validationChecks: [],
     workerMeta: null
   },
+  rosterMonitor: {
+    isRunning: false,
+    timerId: null,
+    attempts: 0,
+    maxAttempts: ROSTER_MONITOR_MAX_ATTEMPTS,
+    startedAt: "",
+    lastCheckedAt: "",
+    lastFetchedAt: "",
+    lastError: "",
+    nextRunAt: "",
+    status: "stopped",
+    stopReason: "",
+    lastStatus: "none",
+    lastMessage: "",
+    lastAddedPlayers: [],
+    lastRemovedPlayers: [],
+    lastPlayerCount: 0
+  },
   activeOrder: {
     prediction: 0,
     actual: 0
@@ -172,6 +192,8 @@ function bindEvents() {
   document.getElementById("actualForm").addEventListener("submit", handleActualSubmit);
   document.getElementById("fetchNpbButton").addEventListener("click", handleNpbFetchCandidate);
   document.getElementById("checkRosterButton").addEventListener("click", handleRosterCheck);
+  document.getElementById("startRosterMonitorButton").addEventListener("click", startRosterMonitor);
+  document.getElementById("stopRosterMonitorButton").addEventListener("click", () => stopRosterMonitor("ロースター自動取得を停止しました。", "warning"));
   document.getElementById("startAutoFetchButton").addEventListener("click", startAutoFetch);
   document.getElementById("stopAutoFetchButton").addEventListener("click", () => stopAutoFetch("自動取得を停止しました。", "warning"));
   document.getElementById("parseActualButton").addEventListener("click", handleActualParsePreview);
@@ -213,6 +235,7 @@ function applyAdminMode() {
 
   if (!state.isAdminMode) {
     stopAutoFetch("", "");
+    stopRosterMonitor("", "", "inactive");
   }
 }
 
@@ -863,20 +886,54 @@ async function handleRosterCheck() {
   }
 
   try {
-    const rosterResult = await fetchNpbRosterSnapshot();
-    if (!rosterResult.ok) {
-      addAutoFetchLog(`1軍登録状況の取得失敗：${rosterResult.message}`);
-      setNpbFetchMessage(`1軍登録状況を取得できませんでした：${rosterResult.message}`, "error");
-      return;
-    }
-
-    applyRosterSnapshotDiff(rosterResult);
-    setNpbFetchMessage(`1軍登録状況を確認しました。登録選手数：${rosterResult.players.length}人`, "success");
+    await performRosterCheck({ setStatusMessage: true });
   } finally {
     if (button) {
       button.disabled = false;
     }
   }
+}
+
+async function performRosterCheck(options = {}) {
+  const rosterResult = await fetchNpbRosterSnapshot();
+  if (!rosterResult.ok) {
+    state.rosterMonitor.lastCheckedAt = new Date().toISOString();
+    state.rosterMonitor.lastFetchedAt = state.rosterMonitor.lastCheckedAt;
+    state.rosterMonitor.lastError = rosterResult.message;
+    state.rosterMonitor.lastStatus = "error";
+    state.rosterMonitor.lastMessage = `取得失敗：${rosterResult.message}`;
+    state.rosterMonitor.lastAddedPlayers = [];
+    state.rosterMonitor.lastRemovedPlayers = [];
+    if (options.isAuto) {
+      state.rosterMonitor.status = "errorStopped";
+      state.rosterMonitor.stopReason = "error";
+      state.rosterMonitor.isRunning = false;
+      state.rosterMonitor.nextRunAt = "";
+      addAutoFetchLog("ロースター自動取得をエラーで停止しました。");
+    }
+    addAutoFetchLog(`1軍登録状況の取得失敗：${rosterResult.message}`);
+    if (options.setStatusMessage) {
+      setNpbFetchMessage(`1軍登録状況を取得できませんでした：${rosterResult.message}`, "error");
+    }
+    updateRosterMonitorButtons();
+    renderRosterMonitorSummary();
+    return { ok: false, message: rosterResult.message };
+  }
+
+  const diff = applyRosterSnapshotDiff(rosterResult);
+  state.rosterMonitor.lastCheckedAt = new Date().toISOString();
+  state.rosterMonitor.lastFetchedAt = rosterResult.fetchedAt || state.rosterMonitor.lastCheckedAt;
+  state.rosterMonitor.lastError = "";
+  state.rosterMonitor.lastStatus = "success";
+  state.rosterMonitor.lastAddedPlayers = diff.added;
+  state.rosterMonitor.lastRemovedPlayers = diff.removed;
+  state.rosterMonitor.lastPlayerCount = rosterResult.players.length;
+  state.rosterMonitor.lastMessage = createRosterMonitorResultMessage(rosterResult, diff);
+  if (options.setStatusMessage) {
+    setNpbFetchMessage(`1軍登録状況を確認しました。登録選手数：${rosterResult.players.length}人`, "success");
+  }
+  renderRosterMonitorSummary();
+  return { ok: true, rosterResult, diff };
 }
 
 async function fetchNpbRosterSnapshot() {
@@ -916,6 +973,119 @@ function buildNpbRosterRequestUrl() {
   return workerUrl.href;
 }
 
+function startRosterMonitor() {
+  if (!state.isAdminMode) {
+    console.warn("管理者モードではないため、ロースター自動取得を開始しません。");
+    return;
+  }
+
+  if (state.rosterMonitor.isRunning) {
+    return;
+  }
+
+  clearMessage("resetMessage");
+  state.rosterMonitor = {
+    isRunning: true,
+    timerId: null,
+    attempts: 0,
+    maxAttempts: ROSTER_MONITOR_MAX_ATTEMPTS,
+    startedAt: new Date().toISOString(),
+    lastCheckedAt: "",
+    lastFetchedAt: "",
+    lastError: "",
+    nextRunAt: "",
+    status: "waiting",
+    stopReason: "",
+    lastStatus: "none",
+    lastMessage: "",
+    lastAddedPlayers: [],
+    lastRemovedPlayers: [],
+    lastPlayerCount: 0
+  };
+
+  addAutoFetchLog("ロースター自動取得を開始しました。10分ごとに1軍登録状況を確認します。");
+  setNpbFetchMessage("ロースター自動取得を開始しました。", "info");
+  scheduleNextRosterCheck(0);
+  updateRosterMonitorButtons();
+  renderRosterMonitorSummary();
+}
+
+function stopRosterMonitor(message, type, reason = "manual") {
+  if (state.rosterMonitor.timerId) {
+    clearTimeout(state.rosterMonitor.timerId);
+  }
+
+  state.rosterMonitor.isRunning = false;
+  state.rosterMonitor.timerId = null;
+  state.rosterMonitor.nextRunAt = "";
+  state.rosterMonitor.stopReason = reason;
+  if (reason === "maxAttempts") {
+    state.rosterMonitor.status = "maxAttempts";
+  } else if (reason === "error") {
+    state.rosterMonitor.status = "errorStopped";
+  } else if (reason === "inactive" || reason === "reset") {
+    state.rosterMonitor.status = "stopped";
+  } else {
+    state.rosterMonitor.status = "manualStopped";
+  }
+
+  updateRosterMonitorButtons();
+  if (message) {
+    addAutoFetchLog(message);
+    setNpbFetchMessage(message, type || "info");
+  }
+  renderRosterMonitorSummary();
+}
+
+function scheduleNextRosterCheck(delay = ROSTER_MONITOR_INTERVAL_MS) {
+  if (!state.rosterMonitor.isRunning) {
+    return;
+  }
+
+  const nextRunAt = new Date(Date.now() + delay).toISOString();
+  state.rosterMonitor.status = "waiting";
+  state.rosterMonitor.nextRunAt = nextRunAt;
+  state.rosterMonitor.timerId = setTimeout(runRosterMonitorCheck, delay);
+  updateRosterMonitorButtons();
+  renderRosterMonitorSummary();
+}
+
+async function runRosterMonitorCheck() {
+  if (!state.rosterMonitor.isRunning) {
+    return;
+  }
+
+  state.rosterMonitor.attempts += 1;
+  state.rosterMonitor.lastCheckedAt = new Date().toISOString();
+  state.rosterMonitor.nextRunAt = "";
+  state.rosterMonitor.status = "fetching";
+  addAutoFetchLog("ロースター取得開始");
+  updateRosterMonitorButtons();
+  renderRosterMonitorSummary();
+
+  const result = await performRosterCheck({ isAuto: true });
+  if (result.ok && state.rosterMonitor.isRunning) {
+    state.rosterMonitor.status = "waiting";
+    if (state.rosterMonitor.attempts >= state.rosterMonitor.maxAttempts) {
+      stopRosterMonitor("ロースター自動取得を最大試行回数到達で停止しました。", "warning", "maxAttempts");
+      return;
+    }
+    addAutoFetchLog(`次回ロースター確認予定：${formatDateTime(new Date(Date.now() + ROSTER_MONITOR_INTERVAL_MS).toISOString())}`);
+  }
+
+  if (state.rosterMonitor.isRunning) {
+    scheduleNextRosterCheck();
+  }
+}
+
+function createRosterMonitorResultMessage(rosterResult, diff) {
+  const changeMessage = diff.added.length || diff.removed.length
+    ? `追加 ${diff.added.length}人 / 削除 ${diff.removed.length}人`
+    : "変更なし";
+
+  return `登録選手数：${rosterResult.players.length}人 / ${changeMessage}`;
+}
+
 function applyRosterSnapshotDiff(rosterResult) {
   const previousSnapshot = normalizeRosterSnapshot(loadFromStorage(STORAGE_KEYS.rosterSnapshot));
   const currentSnapshot = {
@@ -934,7 +1104,7 @@ function applyRosterSnapshotDiff(rosterResult) {
       addAutoFetchLog(`警告：${currentSnapshot.warning}`);
     }
     renderRosterSnapshotSummary(currentSnapshot, { added: [], removed: [] });
-    return;
+    return { added: [], removed: [] };
   }
 
   const diff = diffRosterPlayers(previousSnapshot.players, currentSnapshot.players);
@@ -946,7 +1116,7 @@ function applyRosterSnapshotDiff(rosterResult) {
       addAutoFetchLog(`警告：${currentSnapshot.warning}`);
     }
     renderRosterSnapshotSummary(currentSnapshot, diff);
-    return;
+    return diff;
   }
 
   diff.added.forEach((player) => addAutoFetchLog(`追加：${player}`));
@@ -955,6 +1125,7 @@ function applyRosterSnapshotDiff(rosterResult) {
     addAutoFetchLog(`警告：${currentSnapshot.warning}`);
   }
   renderRosterSnapshotSummary(currentSnapshot, diff);
+  return diff;
 }
 
 function normalizeRosterSnapshot(snapshot) {
@@ -1983,8 +2154,10 @@ function renderAdminFlow() {
   renderActualPreview(state.actualPreview);
   updateAdminButtons();
   updateAutoFetchButtons();
+  updateRosterMonitorButtons();
   renderAutoFetchPanel();
   renderRosterSnapshotSummary();
+  renderRosterMonitorSummary();
 }
 
 function renderAdminStatus() {
@@ -2141,6 +2314,20 @@ function updateAutoFetchButtons() {
   stopButton.disabled = !state.autoFetch.isRunning;
 }
 
+function updateRosterMonitorButtons() {
+  const startButton = document.getElementById("startRosterMonitorButton");
+  const stopButton = document.getElementById("stopRosterMonitorButton");
+  const checkButton = document.getElementById("checkRosterButton");
+
+  if (!startButton || !stopButton || !checkButton) {
+    return;
+  }
+
+  startButton.disabled = state.rosterMonitor.isRunning;
+  stopButton.disabled = !state.rosterMonitor.isRunning;
+  checkButton.disabled = state.rosterMonitor.status === "fetching";
+}
+
 function setAutoFetchStatus(message, type) {
   const element = document.getElementById("autoFetchStatus");
   if (!element) {
@@ -2168,6 +2355,7 @@ function renderAutoFetchPanel() {
   renderAutoFetchSummary();
   renderAutoFetchValidation();
   renderAutoFetchLog();
+  renderRosterMonitorSummary();
 }
 
 function renderAutoFetchSummary() {
@@ -2244,27 +2432,72 @@ function renderRosterSnapshotSummary(snapshot = null, diff = null) {
   }
 
   const rosterSnapshot = snapshot || normalizeRosterSnapshot(loadFromStorage(STORAGE_KEYS.rosterSnapshot));
-  if (!rosterSnapshot.players.length) {
+  if (!state.isAdminMode) {
     container.classList.add("hidden");
     container.innerHTML = "";
     return;
   }
 
-  const added = diff?.added || [];
-  const removed = diff?.removed || [];
+  const added = diff ? diff.added : state.rosterMonitor.lastAddedPlayers;
+  const removed = diff ? diff.removed : state.rosterMonitor.lastRemovedPlayers;
+  const hasLastResult = state.rosterMonitor.lastStatus !== "none" || Boolean(rosterSnapshot.fetchedAt);
+  const playerCount = state.rosterMonitor.lastPlayerCount || rosterSnapshot.players.length;
+  const lastFetchedAt = state.rosterMonitor.lastFetchedAt || rosterSnapshot.fetchedAt;
+  const lastMessage = state.rosterMonitor.lastMessage || (hasLastResult ? `登録選手数：${playerCount}人` : "未取得");
+  const statusLabel = getRosterMonitorStatusLabel();
+  const statusClass = getRosterMonitorStatusClass();
   const rows = [
-    ["最終取得", rosterSnapshot.fetchedAt ? formatDateTime(rosterSnapshot.fetchedAt) : "-"],
-    ["登録選手数", `${rosterSnapshot.players.length}人`],
+    ["試行回数", `${state.rosterMonitor.attempts} / ${state.rosterMonitor.maxAttempts} 回`],
+    ["次回取得予定", state.rosterMonitor.nextRunAt ? formatDateTime(state.rosterMonitor.nextRunAt) : "-"],
+    ["最終取得", lastFetchedAt ? formatDateTime(lastFetchedAt) : "-"],
+    ["最終結果", lastMessage],
+    ["最終差分", hasLastResult ? (added.length || removed.length ? "差分あり" : "変更なし") : "未取得"],
     ["追加", added.length ? added.join("、") : "なし"],
     ["削除", removed.length ? removed.join("、") : "なし"]
   ];
+
+  if (state.rosterMonitor.lastError) {
+    rows.push(["取得エラー", state.rosterMonitor.lastError]);
+  }
 
   if (rosterSnapshot.warning) {
     rows.push(["警告", rosterSnapshot.warning]);
   }
 
   container.classList.remove("hidden");
-  container.innerHTML = `<dl>${rows.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl>`;
+  container.innerHTML = `
+    <p class="roster-monitor-title">ロースター自動取得：<strong class="is-${statusClass}">${escapeHtml(statusLabel)}</strong></p>
+    <dl>${rows.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl>
+  `;
+}
+
+function renderRosterMonitorSummary() {
+  renderRosterSnapshotSummary();
+}
+
+function getRosterMonitorStatusLabel() {
+  const labels = {
+    stopped: "停止中",
+    waiting: "監視中",
+    fetching: "取得中",
+    maxAttempts: "最大試行回数到達で停止",
+    errorStopped: "エラーで停止",
+    manualStopped: "手動停止"
+  };
+
+  return labels[state.rosterMonitor.status] || "停止中";
+}
+
+function getRosterMonitorStatusClass() {
+  const statusClasses = {
+    waiting: "monitoring",
+    fetching: "fetching",
+    maxAttempts: "max-attempts",
+    errorStopped: "error",
+    manualStopped: "manual"
+  };
+
+  return statusClasses[state.rosterMonitor.status] || "stopped";
 }
 
 function getAutoFetchStatusLabel() {
@@ -2645,6 +2878,7 @@ function resetAllData() {
   }
 
   stopAutoFetch("", "");
+  stopRosterMonitor("", "", "reset");
   RESET_STORAGE_KEYS.forEach(removeFromStorage);
   state.prediction = null;
   state.actual = null;
@@ -2665,6 +2899,24 @@ function resetAllData() {
   state.autoFetch.logs = [];
   state.autoFetch.validationChecks = [];
   state.autoFetch.workerMeta = null;
+  state.rosterMonitor = {
+    isRunning: false,
+    timerId: null,
+    attempts: 0,
+    maxAttempts: ROSTER_MONITOR_MAX_ATTEMPTS,
+    startedAt: "",
+    lastCheckedAt: "",
+    lastFetchedAt: "",
+    lastError: "",
+    nextRunAt: "",
+    status: "stopped",
+    stopReason: "",
+    lastStatus: "none",
+    lastMessage: "",
+    lastAddedPlayers: [],
+    lastRemovedPlayers: [],
+    lastPlayerCount: 0
+  };
   state.activeOrder.prediction = 0;
   state.activeOrder.actual = 0;
   state.flickStart.clear();

@@ -3,7 +3,8 @@ const STORAGE_KEYS = {
   actual: "hamStarting9Actual",
   result: "hamStarting9Result",
   gameInfo: "hamStarting9GameInfo",
-  rosterSnapshot: "hamStarting9RosterSnapshot"
+  rosterSnapshot: "hamStarting9RosterSnapshot",
+  candidateRosterFilter: "hamStarting9CandidateRosterFilter"
 };
 const RESET_STORAGE_KEYS = [
   STORAGE_KEYS.prediction,
@@ -132,6 +133,7 @@ const state = {
     gameStartAt: "",
     matchup: ""
   },
+  candidateRosterFilter: "active",
   actualPreview: null,
   adminStatus: "idle",
   adminError: "",
@@ -189,6 +191,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 function bindEvents() {
   document.getElementById("predictionForm").addEventListener("submit", handlePredictionSubmit);
+  document.getElementById("resetPredictionButton").addEventListener("click", resetPredictionInput);
   document.getElementById("actualForm").addEventListener("submit", handleActualSubmit);
   document.getElementById("fetchNpbButton").addEventListener("click", handleNpbFetchCandidate);
   document.getElementById("checkRosterButton").addEventListener("click", handleRosterCheck);
@@ -206,6 +209,9 @@ function bindEvents() {
   document.getElementById("resetButton").addEventListener("click", resetAllData);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
+  document.querySelectorAll("[data-roster-filter]").forEach((button) => {
+    button.addEventListener("click", () => setCandidateRosterFilter(button.dataset.rosterFilter));
+  });
   bindAdminGameInfoEvents();
   document.addEventListener("click", () => closeAllPositionMenus());
   document.addEventListener("keydown", (event) => {
@@ -261,13 +267,25 @@ function buildLineupPicker(pickerName, lineupId, playersId) {
     lineupFragment.appendChild(createLineupSlot(pickerName, index));
   }
 
-  const pickerPlayers = pickerName === "prediction" ? activePlayerNames : playerNames;
+  const pickerPlayers = pickerName === "prediction" ? getPredictionCandidateNames() : playerNames;
   pickerPlayers.forEach((player) => {
     playersFragment.appendChild(createPlayerChip(pickerName, player));
   });
 
   lineupContainer.appendChild(lineupFragment);
   playersContainer.appendChild(playersFragment);
+}
+
+function getPredictionCandidateNames() {
+  return players
+    .filter((player) => player.isBatterCandidate === true)
+    .map((player) => player.name);
+}
+
+function setCandidateRosterFilter(filter) {
+  state.candidateRosterFilter = filter === "inactive" ? "inactive" : "active";
+  saveToStorage(STORAGE_KEYS.candidateRosterFilter, state.candidateRosterFilter);
+  renderPicker("prediction");
 }
 
 function createLineupSlot(pickerName, index) {
@@ -411,7 +429,8 @@ function createPlayerChip(pickerName, player) {
   button.dataset.picker = pickerName;
   button.dataset.player = player;
   button.draggable = true;
-  button.innerHTML = createPlayerLabelHtml(player);
+  const isInactiveCandidate = pickerName === "prediction" && getPlayerData(player)?.isActiveRoster !== true;
+  button.innerHTML = `${createPlayerLabelHtml(player)}${isInactiveCandidate ? '<span class="roster-status-badge">出場登録外</span>' : ""}`;
   applyPlayerCategoryClass(button, player);
 
   button.addEventListener("click", () => {
@@ -1807,6 +1826,7 @@ function normalizePlayerKey(value) {
 function handlePredictionSubmit(event) {
   event.preventDefault();
   clearMessage("predictionError");
+  clearMessage("predictionResetMessage");
   clearMessage("resetMessage");
 
   const nickname = document.getElementById("nickname").value.trim();
@@ -1834,6 +1854,37 @@ function handlePredictionSubmit(event) {
   state.result = null;
   removeFromStorage(STORAGE_KEYS.result);
   renderAll();
+}
+
+function resetPredictionInput() {
+  const confirmed = window.confirm("入力中の予想をリセットします。よろしいですか？");
+  if (!confirmed) {
+    return;
+  }
+
+  state.prediction = null;
+  state.result = null;
+  state.activeOrder.prediction = 0;
+  removeFromStorage(STORAGE_KEYS.prediction);
+  removeFromStorage(STORAGE_KEYS.result);
+
+  document.getElementById("predictionForm").reset();
+  setLineupValues("prediction", []);
+  closeAllPositionMenus();
+  ["predictionPlayerDetails", "predictionResetMessage"].forEach((elementId) => {
+    const element = document.getElementById(elementId);
+    if (elementId === "predictionPlayerDetails") {
+      element.classList.add("hidden");
+      element.innerHTML = "";
+    } else {
+      element.textContent = "予想をリセットしました。";
+    }
+  });
+  clearMessage("predictionError");
+  clearMessage("testPredictionMessage");
+  renderSavedPrediction();
+  renderScoreResult();
+  renderPicker("prediction");
 }
 
 function handleActualSubmit(event) {
@@ -2040,6 +2091,7 @@ function loadState() {
   state.actual = loadFromStorage(STORAGE_KEYS.actual);
   state.result = loadFromStorage(STORAGE_KEYS.result);
   state.gameInfo = normalizeGameInfo(loadFromStorage(STORAGE_KEYS.gameInfo));
+  state.candidateRosterFilter = loadFromStorage(STORAGE_KEYS.candidateRosterFilter) === "inactive" ? "inactive" : "active";
 
   if (state.prediction?.lineup) {
     state.prediction.lineup = normalizeLineup(state.prediction.lineup);
@@ -2552,6 +2604,34 @@ function renderPicker(pickerName) {
     const isUsed = usedPlayers.has(chip.dataset.player);
     chip.classList.toggle("is-used", isUsed);
   });
+
+  if (pickerName === "prediction") {
+    renderPredictionRosterFilter();
+  }
+}
+
+function renderPredictionRosterFilter() {
+  const filter = state.candidateRosterFilter === "inactive" ? "inactive" : "active";
+  const currentLabel = document.getElementById("predictionRosterFilterCurrent");
+  const label = filter === "inactive" ? "出場登録されていない選手" : "出場登録されている選手";
+
+  if (currentLabel) {
+    currentLabel.textContent = `現在：${label}`;
+  }
+
+  document.querySelectorAll("[data-roster-filter]").forEach((button) => {
+    const isSelected = button.dataset.rosterFilter === filter;
+    button.classList.toggle("is-selected", isSelected);
+    button.setAttribute("aria-pressed", isSelected ? "true" : "false");
+  });
+
+  document.querySelectorAll('.player-chip[data-picker="prediction"]').forEach((chip) => {
+    const player = getPlayerData(chip.dataset.player);
+    const shouldShow = filter === "active"
+      ? player?.isActiveRoster === true && player?.isBatterCandidate === true
+      : player?.isActiveRoster !== true && player?.isBatterCandidate === true;
+    chip.classList.toggle("hidden", !shouldShow);
+  });
 }
 
 function renderPositionButton(button, position, index) {
@@ -3056,9 +3136,11 @@ function showPlayerDetails(pickerName, playerName) {
 
   panel.classList.remove("hidden");
   const mainCategory = player.mainCategory || player.category;
+  const rosterStatus = player.isActiveRoster === true ? "出場登録中" : "出場登録外";
   panel.innerHTML = `
     <strong>${escapeHtml(player.name)}</strong>
     <span>カテゴリ：${escapeHtml(playerCategoryNames[mainCategory] || "未設定")}</span>
+    <span>登録状態：${escapeHtml(rosterStatus)}</span>
     <div class="player-detail-positions">
       <span>守備候補：</span>
       ${createPlayerPositionBadgesHtml(player.name)}

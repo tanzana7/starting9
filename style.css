@@ -634,6 +634,61 @@ textarea:focus {
   background: #fbfdff;
 }
 
+.player-list-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 10px;
+}
+
+.player-list-heading h3 {
+  margin: 0;
+}
+
+.player-list-current {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.roster-filter {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 10px 0;
+  padding: 4px;
+  border: 1px solid #cfe1f1;
+  border-radius: 8px;
+  background: #edf4fa;
+}
+
+.roster-filter-button {
+  min-height: 38px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.roster-filter-button:hover,
+.roster-filter-button:focus-visible {
+  border-color: #a9c7df;
+  background: #ffffff;
+  color: var(--fighters-deep-blue);
+}
+
+.roster-filter-button.is-selected {
+  border-color: #6ca4d0;
+  background: #ffffff;
+  color: var(--fighters-deep-blue);
+  box-shadow: 0 1px 3px rgba(25, 54, 82, 0.12);
+}
+
 .slot-list,
 .player-list {
   display: grid;
@@ -987,6 +1042,19 @@ textarea:focus {
 .player-name {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.roster-status-badge {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border: 1px solid #c9a55c;
+  border-radius: 999px;
+  background: #fff7df;
+  color: #73520e;
+  font-size: 0.7rem;
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .player-with-category,
@@ -1367,6 +1435,10 @@ textarea:focus {
   }
 
   .npb-url-row {
+    grid-template-columns: 1fr;
+  }
+
+  .roster-filter {
     grid-template-columns: 1fr;
   }
 

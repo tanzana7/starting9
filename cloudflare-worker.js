@@ -110,8 +110,14 @@ export default {
     }
 
     const requestUrl = new URL(request.url);
-    const targetUrlValue = requestUrl.searchParams.get("url");
+    const mode = requestUrl.searchParams.get("mode") || "lineup";
     const isDebug = requestUrl.searchParams.get("debug") === "1";
+
+    if (mode === "roster") {
+      return handleRosterRequest(requestUrl, isDebug);
+    }
+
+    const targetUrlValue = requestUrl.searchParams.get("url");
     const validation = validateTargetUrl(targetUrlValue);
 
     if (!validation.ok) {
@@ -154,6 +160,51 @@ export default {
   }
 };
 
+async function handleRosterRequest(requestUrl, isDebug) {
+  const rosterUrlValue = requestUrl.searchParams.get("url") || "https://npb.jp/announcement/roster/";
+  const validation = validateRosterUrl(rosterUrlValue);
+
+  if (!validation.ok) {
+    return jsonResponse({ ok: false, error: validation.error }, 400);
+  }
+
+  try {
+    const response = await fetch(validation.url, {
+      headers: {
+        "User-Agent": "Starting9 MVP Cloudflare Worker"
+      }
+    });
+
+    if (!response.ok) {
+      return jsonResponse({ ok: false, error: `NPB公式登録ページを取得できませんでした。HTTP ${response.status}` }, 502);
+    }
+
+    const html = await response.text();
+    const extraction = extractFightersRoster(html);
+
+    if (!extraction.players.length) {
+      return jsonResponse({
+        ok: false,
+        error: "日本ハムの登録選手一覧を抽出できませんでした。",
+        ...(isDebug ? { debug: extraction.debug } : {})
+      }, 422);
+    }
+
+    return jsonResponse({
+      ok: true,
+      sourceUrl: validation.url,
+      fetchedAt: new Date().toISOString(),
+      method: extraction.method,
+      team: "fighters",
+      players: extraction.players,
+      count: extraction.players.length,
+      ...(extraction.warning ? { warning: extraction.warning } : {})
+    });
+  } catch (error) {
+    return jsonResponse({ ok: false, error: `NPB公式登録ページ取得中にエラーが発生しました：${error.message}` }, 500);
+  }
+}
+
 function validateTargetUrl(value) {
   if (!value) {
     return { ok: false, error: "urlパラメータを指定してください。" };
@@ -176,6 +227,33 @@ function validateTargetUrl(value) {
 
   if (!targetUrl.pathname.startsWith("/scores/")) {
     return { ok: false, error: "https://npb.jp/scores/ 配下の試合ページURLを指定してください。" };
+  }
+
+  return { ok: true, url: targetUrl.href };
+}
+
+function validateRosterUrl(value) {
+  if (!value) {
+    return { ok: false, error: "登録選手ページURLを指定してください。" };
+  }
+
+  let targetUrl;
+  try {
+    targetUrl = new URL(value);
+  } catch (error) {
+    return { ok: false, error: "登録選手ページURLの形式が不正です。" };
+  }
+
+  if (targetUrl.protocol !== "https:") {
+    return { ok: false, error: "httpsのNPB公式URLを指定してください。" };
+  }
+
+  if (targetUrl.hostname !== "npb.jp" && !targetUrl.hostname.endsWith(".npb.jp")) {
+    return { ok: false, error: "npb.jp以外のURLは利用できません。" };
+  }
+
+  if (!targetUrl.pathname.startsWith("/announcement/roster/")) {
+    return { ok: false, error: "https://npb.jp/announcement/roster/ 配下の登録選手ページURLを指定してください。" };
   }
 
   return { ok: true, url: targetUrl.href };
@@ -234,6 +312,118 @@ function extractNpbOrderText(html) {
     lineupText: "",
     debug: buildExtractionDebug("no-9-rows", plainText, lines, orderStartIndex, tableRows)
   };
+}
+
+function extractFightersRoster(html) {
+  const sourceHtml = String(html || "");
+  const teamTablePattern = /<h5[^>]*>\s*北海道日本ハムファイターズ\s*<\/h5>[\s\S]*?<table[^>]*>([\s\S]*?)<\/table>/i;
+  const tableMatch = sourceHtml.match(teamTablePattern);
+  const tableHtml = tableMatch ? tableMatch[1] : "";
+  const entries = tableHtml ? parseRosterTableEntries(tableHtml) : [];
+  const players = uniqueRosterEntries(entries);
+  const plainText = htmlToPlainText(sourceHtml);
+  const lines = normalizeNpbTextLines(plainText);
+  const announcedCount = extractAnnouncedRosterCount(sourceHtml, tableMatch?.index ?? -1);
+  const warning = announcedCount && announcedCount !== players.length
+    ? `登録選手数の表示（${announcedCount}人）と抽出人数（${players.length}人）が一致しません。`
+    : "";
+
+  return {
+    method: tableMatch ? "roster-page-team-block" : "roster-not-found",
+    players,
+    announcedCount,
+    warning,
+    debug: {
+      foundFightersHeading: Boolean(tableMatch),
+      foundPlayers: players.length,
+      announcedCount,
+      warning,
+      textExcerpt: lines.join(" ").slice(0, 1800),
+      fightersExcerpt: createFightersRosterExcerpt(lines)
+    }
+  };
+}
+
+function parseRosterTableEntries(tableHtml) {
+  const entries = [];
+  const rowPattern = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  let rowMatch;
+
+  while ((rowMatch = rowPattern.exec(tableHtml)) !== null) {
+    const cells = [];
+    const cellPattern = /<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi;
+    let cellMatch;
+
+    while ((cellMatch = cellPattern.exec(rowMatch[1])) !== null) {
+      cells.push(stripTags(cellMatch[1]));
+    }
+
+    if (cells.length < 3) {
+      continue;
+    }
+
+    const position = cells[0].replace(/\s+/g, "");
+    const number = cells[1].replace(/\s+/g, "");
+    const name = normalizeRosterPlayerName(cells[2]);
+
+    if (position && number && name) {
+      entries.push({ position, number, name });
+    }
+  }
+
+  return entries;
+}
+
+function uniqueRosterEntries(entries) {
+  const seen = new Set();
+  const players = [];
+
+  entries.forEach((entry) => {
+    const key = normalizeRosterPlayerKey(entry.name);
+    if (!key || seen.has(key)) {
+      return;
+    }
+
+    seen.add(key);
+    players.push(entry);
+  });
+
+  return players;
+}
+
+function normalizeRosterPlayerName(value) {
+  return String(value || "")
+    .replace(/\u3000/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[\s\u3000]/g, "");
+}
+
+function normalizeRosterPlayerKey(value) {
+  return String(value || "").normalize("NFKC").replace(/[\s\u3000]/g, "");
+}
+
+function extractAnnouncedRosterCount(html, teamHeadingIndex) {
+  if (teamHeadingIndex < 0) {
+    return 0;
+  }
+
+  const scopedHtml = String(html || "").slice(teamHeadingIndex, teamHeadingIndex + 12000);
+  const countMatch = scopedHtml.match(/以上\s*([0-9０-９]+)\s*名/);
+  if (!countMatch) {
+    return 0;
+  }
+
+  return Number(countMatch[1].normalize("NFKC"));
+}
+
+function createFightersRosterExcerpt(lines) {
+  const index = lines.findIndex((line) => line.includes("北海道日本ハムファイターズ"));
+  if (index < 0) {
+    return "";
+  }
+
+  return lines.slice(index, index + 90).join(" ").slice(0, 1800);
 }
 
 function extractRowsFromFightersTable(html) {

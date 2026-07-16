@@ -2,7 +2,8 @@ const STORAGE_KEYS = {
   prediction: "hamStarting9Prediction",
   actual: "hamStarting9Actual",
   result: "hamStarting9Result",
-  gameInfo: "hamStarting9GameInfo"
+  gameInfo: "hamStarting9GameInfo",
+  rosterSnapshot: "hamStarting9RosterSnapshot"
 };
 const RESET_STORAGE_KEYS = [
   STORAGE_KEYS.prediction,
@@ -170,6 +171,7 @@ function bindEvents() {
   document.getElementById("predictionForm").addEventListener("submit", handlePredictionSubmit);
   document.getElementById("actualForm").addEventListener("submit", handleActualSubmit);
   document.getElementById("fetchNpbButton").addEventListener("click", handleNpbFetchCandidate);
+  document.getElementById("checkRosterButton").addEventListener("click", handleRosterCheck);
   document.getElementById("startAutoFetchButton").addEventListener("click", startAutoFetch);
   document.getElementById("stopAutoFetchButton").addEventListener("click", () => stopAutoFetch("自動取得を停止しました。", "warning"));
   document.getElementById("parseActualButton").addEventListener("click", handleActualParsePreview);
@@ -843,6 +845,184 @@ async function fetchNpbLineupCandidate(sourceUrl) {
   } catch (error) {
     return { ok: false, type: "network", message: error.message };
   }
+}
+
+async function handleRosterCheck() {
+  if (!state.isAdminMode) {
+    console.warn("管理者モードではないため、1軍登録状況の確認を中止しました。");
+    return;
+  }
+
+  const button = document.getElementById("checkRosterButton");
+  clearMessage("resetMessage");
+  setNpbFetchMessage("1軍登録状況を確認中です...", "info");
+  addAutoFetchLog("1軍登録状況を確認しました。");
+
+  if (button) {
+    button.disabled = true;
+  }
+
+  try {
+    const rosterResult = await fetchNpbRosterSnapshot();
+    if (!rosterResult.ok) {
+      addAutoFetchLog(`1軍登録状況の取得失敗：${rosterResult.message}`);
+      setNpbFetchMessage(`1軍登録状況を取得できませんでした：${rosterResult.message}`, "error");
+      return;
+    }
+
+    applyRosterSnapshotDiff(rosterResult);
+    setNpbFetchMessage(`1軍登録状況を確認しました。登録選手数：${rosterResult.players.length}人`, "success");
+  } finally {
+    if (button) {
+      button.disabled = false;
+    }
+  }
+}
+
+async function fetchNpbRosterSnapshot() {
+  if (!NPB_WORKER_API_URL) {
+    return { ok: false, message: "NPB公式ページ取得APIが未設定です。" };
+  }
+
+  try {
+    const response = await fetch(buildNpbRosterRequestUrl(), { cache: "no-store" });
+    if (!response.ok) {
+      return { ok: false, message: `Worker APIの取得に失敗しました。HTTP ${response.status}` };
+    }
+
+    const result = await response.json();
+    if (!result.ok || !Array.isArray(result.players) || result.players.length === 0) {
+      return { ok: false, message: result.error || "日本ハムの登録選手一覧を抽出できませんでした。" };
+    }
+
+    return {
+      ok: true,
+      sourceUrl: result.sourceUrl || "",
+      fetchedAt: result.fetchedAt || new Date().toISOString(),
+      method: result.method || "",
+      team: result.team || "",
+      warning: result.warning || "",
+      count: Number(result.count) || result.players.length,
+      players: normalizeRosterEntries(result.players)
+    };
+  } catch (error) {
+    return { ok: false, message: error.message };
+  }
+}
+
+function buildNpbRosterRequestUrl() {
+  const workerUrl = new URL(NPB_WORKER_API_URL);
+  workerUrl.searchParams.set("mode", "roster");
+  return workerUrl.href;
+}
+
+function applyRosterSnapshotDiff(rosterResult) {
+  const previousSnapshot = normalizeRosterSnapshot(loadFromStorage(STORAGE_KEYS.rosterSnapshot));
+  const currentSnapshot = {
+    fetchedAt: rosterResult.fetchedAt,
+    sourceUrl: rosterResult.sourceUrl,
+    method: rosterResult.method,
+    warning: rosterResult.warning,
+    players: rosterResult.players
+  };
+
+  if (!previousSnapshot.players.length) {
+    saveToStorage(STORAGE_KEYS.rosterSnapshot, currentSnapshot);
+    addAutoFetchLog("1軍登録状況を初回保存しました。");
+    addAutoFetchLog(`登録選手数：${currentSnapshot.players.length}人`);
+    if (currentSnapshot.warning) {
+      addAutoFetchLog(`警告：${currentSnapshot.warning}`);
+    }
+    renderRosterSnapshotSummary(currentSnapshot, { added: [], removed: [] });
+    return;
+  }
+
+  const diff = diffRosterPlayers(previousSnapshot.players, currentSnapshot.players);
+  saveToStorage(STORAGE_KEYS.rosterSnapshot, currentSnapshot);
+
+  if (!diff.added.length && !diff.removed.length) {
+    addAutoFetchLog("1軍登録状況に変更はありません。");
+    if (currentSnapshot.warning) {
+      addAutoFetchLog(`警告：${currentSnapshot.warning}`);
+    }
+    renderRosterSnapshotSummary(currentSnapshot, diff);
+    return;
+  }
+
+  diff.added.forEach((player) => addAutoFetchLog(`追加：${player}`));
+  diff.removed.forEach((player) => addAutoFetchLog(`削除：${player}`));
+  if (currentSnapshot.warning) {
+    addAutoFetchLog(`警告：${currentSnapshot.warning}`);
+  }
+  renderRosterSnapshotSummary(currentSnapshot, diff);
+}
+
+function normalizeRosterSnapshot(snapshot) {
+  return {
+    fetchedAt: typeof snapshot?.fetchedAt === "string" ? snapshot.fetchedAt : "",
+    sourceUrl: typeof snapshot?.sourceUrl === "string" ? snapshot.sourceUrl : "",
+    method: typeof snapshot?.method === "string" ? snapshot.method : "",
+    warning: typeof snapshot?.warning === "string" ? snapshot.warning : "",
+    players: normalizeRosterEntries(snapshot?.players)
+  };
+}
+
+function normalizeRosterEntries(players) {
+  if (!Array.isArray(players)) {
+    return [];
+  }
+
+  const seen = new Set();
+  const normalizedEntries = [];
+
+  players.forEach((player) => {
+    const source = typeof player === "object" && player !== null ? player : { name: player };
+    const displayName = String(source.name || "").replace(/\u3000/g, " ").replace(/\s+/g, " ").trim().replace(/[\s\u3000]/g, "");
+    const key = normalizePlayerKey(displayName);
+    if (!displayName || !key || seen.has(key)) {
+      return;
+    }
+
+    seen.add(key);
+    normalizedEntries.push({
+      position: String(source.position || "").trim(),
+      number: String(source.number || "").trim(),
+      name: displayName
+    });
+  });
+
+  return normalizedEntries;
+}
+
+function diffRosterPlayers(previousPlayers, currentPlayers) {
+  const previousMap = createRosterPlayerMap(previousPlayers);
+  const currentMap = createRosterPlayerMap(currentPlayers);
+  const added = [];
+  const removed = [];
+
+  currentMap.forEach((player, key) => {
+    if (!previousMap.has(key)) {
+      added.push(player);
+    }
+  });
+
+  previousMap.forEach((player, key) => {
+    if (!currentMap.has(key)) {
+      removed.push(player);
+    }
+  });
+
+  return { added, removed };
+}
+
+function createRosterPlayerMap(players) {
+  const playerMap = new Map();
+
+  normalizeRosterEntries(players).forEach((player) => {
+    playerMap.set(normalizePlayerKey(player.name), player.name);
+  });
+
+  return playerMap;
 }
 
 function buildNpbWorkerRequestUrl(sourceUrl) {
@@ -1804,6 +1984,7 @@ function renderAdminFlow() {
   updateAdminButtons();
   updateAutoFetchButtons();
   renderAutoFetchPanel();
+  renderRosterSnapshotSummary();
 }
 
 function renderAdminStatus() {
@@ -2049,11 +2230,41 @@ function renderAutoFetchLog() {
 
   container.classList.remove("hidden");
   container.innerHTML = `
-    <p class="preview-title">自動取得ログ</p>
+    <p class="preview-title">管理ログ</p>
     <ol>
       ${state.autoFetch.logs.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}
     </ol>
   `;
+}
+
+function renderRosterSnapshotSummary(snapshot = null, diff = null) {
+  const container = document.getElementById("rosterSnapshotSummary");
+  if (!container) {
+    return;
+  }
+
+  const rosterSnapshot = snapshot || normalizeRosterSnapshot(loadFromStorage(STORAGE_KEYS.rosterSnapshot));
+  if (!rosterSnapshot.players.length) {
+    container.classList.add("hidden");
+    container.innerHTML = "";
+    return;
+  }
+
+  const added = diff?.added || [];
+  const removed = diff?.removed || [];
+  const rows = [
+    ["最終取得", rosterSnapshot.fetchedAt ? formatDateTime(rosterSnapshot.fetchedAt) : "-"],
+    ["登録選手数", `${rosterSnapshot.players.length}人`],
+    ["追加", added.length ? added.join("、") : "なし"],
+    ["削除", removed.length ? removed.join("、") : "なし"]
+  ];
+
+  if (rosterSnapshot.warning) {
+    rows.push(["警告", rosterSnapshot.warning]);
+  }
+
+  container.classList.remove("hidden");
+  container.innerHTML = `<dl>${rows.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl>`;
 }
 
 function getAutoFetchStatusLabel() {

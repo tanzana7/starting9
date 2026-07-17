@@ -133,6 +133,7 @@ const state = {
     gameStartAt: "",
     matchup: ""
   },
+  nextScheduleId: "",
   candidateRosterFilter: "active",
   actualPreview: null,
   adminStatus: "idle",
@@ -187,6 +188,20 @@ document.addEventListener("DOMContentLoaded", () => {
   restoreAdminGameInfoInputs();
   applyAdminMode();
   renderAll();
+
+  const scheduleReady = window.HAM_GAME_SCHEDULE_READY;
+  if (scheduleReady && typeof scheduleReady.then === "function") {
+    scheduleReady.then(() => {
+      if (window.HAM_GAME_SCHEDULE_ERROR) {
+        setScheduleLoaderMessage(window.HAM_GAME_SCHEDULE_ERROR, "error");
+      }
+      initializeGameSchedule();
+      renderAll();
+    });
+  } else {
+    initializeGameSchedule();
+    renderAll();
+  }
 });
 
 function bindEvents() {
@@ -209,6 +224,9 @@ function bindEvents() {
   document.getElementById("resetButton").addEventListener("click", resetAllData);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
+  document.getElementById("loadNextGameButton").addEventListener("click", loadNextGameSchedule);
+  document.getElementById("loadTodayGameButton").addEventListener("click", loadTodayGameSchedule);
+  document.getElementById("loadSelectedGameButton").addEventListener("click", loadSelectedGameSchedule);
   document.querySelectorAll("[data-roster-filter]").forEach((button) => {
     button.addEventListener("click", () => setCandidateRosterFilter(button.dataset.rosterFilter));
   });
@@ -2152,6 +2170,258 @@ function readAdminGameInfoFromInputs() {
   };
 }
 
+function getHamGameSchedule() {
+  return typeof window !== "undefined" && Array.isArray(window.HAM_GAME_SCHEDULE)
+    ? window.HAM_GAME_SCHEDULE
+    : [];
+}
+
+function renderGameSchedulePicker() {
+  const select = document.getElementById("gameScheduleSelect");
+  if (!select || !state.isAdminMode) {
+    return;
+  }
+
+  const currentValue = select.value;
+  select.innerHTML = "";
+  const schedules = getHamGameSchedule();
+
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "登録済み試合を選択";
+  select.appendChild(placeholder);
+
+  schedules.forEach((schedule) => {
+    const option = document.createElement("option");
+    option.value = schedule.gameId;
+    option.textContent = `${getScheduleDate(schedule)} ${getScheduleStartTime(schedule)} ${schedule.matchupLabel}`;
+    select.appendChild(option);
+  });
+
+  if (schedules.some((schedule) => schedule.gameId === currentValue)) {
+    select.value = currentValue;
+  } else if (schedules.some((schedule) => schedule.gameId === state.nextScheduleId)) {
+    select.value = state.nextScheduleId;
+  }
+
+  renderNextGameScheduleSummary(findNextGameSchedule());
+}
+
+function initializeGameSchedule() {
+  if (!state.isAdminMode) {
+    return;
+  }
+
+  const nextSchedule = findNextGameSchedule();
+  state.nextScheduleId = nextSchedule?.gameId || "";
+  renderGameSchedulePicker();
+
+  if (!nextSchedule || !areAdminGameInfoInputsEmpty()) {
+    return;
+  }
+
+  applyGameSchedule(nextSchedule);
+  setScheduleLoaderMessage("次の試合情報を自動入力しました。必要に応じて手動で変更できます。", "success");
+}
+
+function findNextGameSchedule() {
+  const today = getJapanDateString();
+  return getHamGameSchedule()
+    .filter((schedule) => getScheduleDate(schedule) >= today)
+    .sort((left, right) => getScheduleSortValue(left).localeCompare(getScheduleSortValue(right)))[0] || null;
+}
+
+function getScheduleDate(schedule) {
+  if (typeof schedule?.date === "string" && schedule.date) {
+    return schedule.date;
+  }
+
+  return String(schedule?.startDateTime || "").slice(0, 10);
+}
+
+function getScheduleStartTime(schedule) {
+  if (typeof schedule?.startTime === "string" && schedule.startTime) {
+    return schedule.startTime;
+  }
+
+  return String(schedule?.startDateTime || "").slice(11, 16);
+}
+
+function getScheduleSortValue(schedule) {
+  return `${getScheduleDate(schedule)}T${getScheduleStartTime(schedule)}`;
+}
+
+function renderNextGameScheduleSummary(schedule) {
+  const container = document.getElementById("nextGameScheduleSummary");
+  if (!container) {
+    return;
+  }
+
+  if (!state.isAdminMode || !schedule) {
+    container.classList.add("hidden");
+    container.textContent = "";
+    return;
+  }
+
+  const date = getScheduleDate(schedule);
+  const month = Number(date.slice(5, 7));
+  const day = Number(date.slice(8, 10));
+  const venue = schedule.venue ? ` ${schedule.venue}` : "";
+  container.textContent = `次の登録済み試合：${month}/${day} ${schedule.matchupLabel} ${getScheduleStartTime(schedule)}${venue}`;
+  container.classList.remove("hidden");
+}
+
+function areAdminGameInfoInputsEmpty() {
+  return ["matchupInput", "npbUrlInput", "gameStartInput"].every((elementId) => {
+    return !(document.getElementById(elementId)?.value || "").trim();
+  });
+}
+
+function loadNextGameSchedule() {
+  const schedule = findNextGameSchedule();
+  if (!schedule) {
+    setScheduleLoaderMessage("今日以降の登録済み試合はありません。", "warning");
+    return;
+  }
+
+  state.nextScheduleId = schedule.gameId;
+  renderGameSchedulePicker();
+  applyGameSchedule(schedule);
+  setScheduleLoaderMessage(`次の試合「${schedule.matchupLabel}」を読み込みました。`, "success");
+}
+
+function loadTodayGameSchedule() {
+  const today = getLocalDateString();
+  const schedule = getHamGameSchedule().find((item) => getScheduleDate(item) === today);
+
+  if (!schedule) {
+    setScheduleLoaderMessage(`本日（${today}）の登録済み試合はありません。`, "warning");
+    return;
+  }
+
+  applyGameSchedule(schedule);
+  setScheduleLoaderMessage(`今日の試合「${schedule.matchupLabel}」を読み込みました。`, "success");
+}
+
+function loadSelectedGameSchedule() {
+  const gameId = document.getElementById("gameScheduleSelect")?.value || "";
+  const schedule = getHamGameSchedule().find((item) => item.gameId === gameId);
+
+  if (!schedule) {
+    setScheduleLoaderMessage("読み込む試合を選択してください。", "warning");
+    return;
+  }
+
+  applyGameSchedule(schedule);
+  setScheduleLoaderMessage(`試合「${schedule.matchupLabel}」を読み込みました。`, "success");
+}
+
+function applyGameSchedule(schedule) {
+  const matchupInput = document.getElementById("matchupInput");
+  const scoreUrlInput = document.getElementById("npbUrlInput");
+  const gameStartInput = document.getElementById("gameStartInput");
+  const scheduleSelect = document.getElementById("gameScheduleSelect");
+
+  if (!matchupInput || !scoreUrlInput || !gameStartInput) {
+    return;
+  }
+
+  matchupInput.value = schedule.matchupLabel || "";
+  scoreUrlInput.value = schedule.npbScoreUrl || "";
+  gameStartInput.value = `${getScheduleDate(schedule)}T${getScheduleStartTime(schedule)}`;
+  if (scheduleSelect) {
+    scheduleSelect.value = schedule.gameId;
+  }
+  saveAdminGameInfoFromInputs();
+  renderLoadedScheduleInfo(schedule);
+}
+
+function renderLoadedScheduleInfo(schedule) {
+  const container = document.getElementById("loadedScheduleInfo");
+  if (!container) {
+    return;
+  }
+
+  const scheduleDate = getScheduleDate(schedule);
+  const scheduleStartTime = getScheduleStartTime(schedule);
+  const lineupStart = getScheduleLineupStart(schedule);
+  const rosterStart = schedule.rosterAutoFetchStartTime
+    ? `${scheduleDate}T${schedule.rosterAutoFetchStartTime}`
+    : "";
+  const interval = Number(schedule.lineupAutoFetchIntervalMinutes);
+  const rows = [
+    ["読み込み済み試合", `${scheduleDate} ${scheduleStartTime} ${schedule.matchupLabel}`],
+    ["会場", schedule.venue || "-"],
+    ["スタメン自動取得開始予定", lineupStart ? formatScheduleDateTime(lineupStart) : "-"],
+    ["ロースター自動取得開始予定", rosterStart ? formatScheduleDateTime(rosterStart) : "-"],
+    ["スタメン取得間隔", Number.isFinite(interval) && interval > 0 ? `${interval}分` : "-"],
+    ["NPB公式URL", schedule.npbScoreUrl || "-"]
+  ];
+
+  container.classList.remove("hidden");
+  container.innerHTML = `<dl>${rows.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl>`;
+}
+
+function getScheduleLineupStart(schedule) {
+  const date = getScheduleDate(schedule);
+  const time = getScheduleStartTime(schedule);
+  const [year, month, day] = date.split("-").map(Number);
+  const [hour, minute] = time.split(":").map(Number);
+  const offsetMinutes = Number(schedule.lineupAutoFetchStartOffsetMinutes);
+  const start = new Date(Date.UTC(year, month - 1, day, hour, minute));
+
+  if (!date || !time || Number.isNaN(start.getTime())) {
+    return "";
+  }
+
+  if (Number.isFinite(offsetMinutes)) {
+    start.setUTCMinutes(start.getUTCMinutes() + offsetMinutes);
+  }
+
+  const nextYear = start.getUTCFullYear();
+  const nextMonth = String(start.getUTCMonth() + 1).padStart(2, "0");
+  const nextDay = String(start.getUTCDate()).padStart(2, "0");
+  const nextHour = String(start.getUTCHours()).padStart(2, "0");
+  const nextMinute = String(start.getUTCMinutes()).padStart(2, "0");
+  return `${nextYear}-${nextMonth}-${nextDay}T${nextHour}:${nextMinute}`;
+}
+
+function getLocalDateString() {
+  return getJapanDateString();
+}
+
+function getJapanDateString(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function formatScheduleDateTime(value) {
+  const [date, time] = String(value || "").split("T");
+  if (!date || !time) {
+    return "-";
+  }
+
+  const month = Number(date.slice(5, 7));
+  const day = Number(date.slice(8, 10));
+  return `${month}/${day} ${time.slice(0, 5)}`;
+}
+
+function setScheduleLoaderMessage(message, type) {
+  const element = document.getElementById("scheduleLoaderMessage");
+  if (!element) {
+    return;
+  }
+
+  element.textContent = message;
+  element.className = `message schedule-loader-message${type ? ` is-${type}` : ""}`;
+}
+
 function saveToStorage(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
 }
@@ -2172,6 +2442,7 @@ function removeFromStorage(key) {
 
 function renderAll() {
   renderGameInfoDisplay();
+  renderGameSchedulePicker();
   renderSavedPrediction();
   renderActualLineup();
   renderScoreResult();

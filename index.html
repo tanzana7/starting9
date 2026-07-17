@@ -98,6 +98,20 @@
           <div class="parser-panel">
             <div id="adminFlowStatus" class="admin-flow-status" aria-live="polite"></div>
             <div class="npb-fetch-panel">
+              <div class="schedule-loader">
+                <p class="schedule-loader-title">登録済み試合スケジュール</p>
+                <div id="nextGameScheduleSummary" class="schedule-next-summary hidden" aria-live="polite"></div>
+                <div class="schedule-loader-row">
+                  <select id="gameScheduleSelect" aria-label="登録済み試合を選択">
+                    <option value="">登録済み試合を選択</option>
+                  </select>
+                  <button id="loadNextGameButton" class="secondary-button compact-button" type="button">次の試合を読み込む</button>
+                  <button id="loadTodayGameButton" class="secondary-button compact-button" type="button">今日の試合を読み込む</button>
+                  <button id="loadSelectedGameButton" class="secondary-button compact-button" type="button">選択した試合を読み込む</button>
+                </div>
+                <p id="scheduleLoaderMessage" class="message" role="status" aria-live="polite"></p>
+                <div id="loadedScheduleInfo" class="auto-fetch-summary hidden" aria-live="polite"></div>
+              </div>
               <label for="matchupInput">対戦カード名</label>
               <input id="matchupInput" type="text" maxlength="40" placeholder="例：日本ハム vs 西武">
               <label for="npbUrlInput">NPB公式試合ページURL</label>
@@ -193,6 +207,7 @@
   </main>
 
   <script src="players.js?v=split-drag-20260709"></script>
+  <script src="game-schedule.js?v=20260717-json"></script>
   <script src="script.js?v=split-drag-20260709"></script>
 </body>
 </html>

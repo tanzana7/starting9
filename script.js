@@ -185,6 +185,8 @@ document.addEventListener("DOMContentLoaded", () => {
   buildLineupPicker("actual", "actualLineup", "actualPlayers");
   loadState();
   bindEvents();
+  window.addEventListener("ham-schedule-log-updated", renderScheduleLoadLog);
+  renderScheduleLoadLog();
   restoreAdminGameInfoInputs();
   applyAdminMode();
   renderAll();
@@ -227,6 +229,9 @@ function bindEvents() {
   document.getElementById("loadNextGameButton").addEventListener("click", loadNextGameSchedule);
   document.getElementById("loadTodayGameButton").addEventListener("click", loadTodayGameSchedule);
   document.getElementById("loadSelectedGameButton").addEventListener("click", loadSelectedGameSchedule);
+  document.getElementById("gameScheduleSelect").addEventListener("change", handleScheduleSelectionChange);
+  document.getElementById("copyScheduleLogButton")?.addEventListener("click", copyScheduleLoadLog);
+  document.getElementById("clearScheduleLogButton")?.addEventListener("click", clearScheduleLoadLog);
   document.querySelectorAll("[data-roster-filter]").forEach((button) => {
     button.addEventListener("click", () => setCandidateRosterFilter(button.dataset.rosterFilter));
   });
@@ -2176,6 +2181,108 @@ function getHamGameSchedule() {
     : [];
 }
 
+function addScheduleLoadLog(message) {
+  if (typeof window !== "undefined" && typeof window.addHamScheduleLog === "function") {
+    window.addHamScheduleLog(message);
+    return;
+  }
+
+  if (typeof window !== "undefined") {
+    window.HAM_GAME_SCHEDULE_LOG = Array.isArray(window.HAM_GAME_SCHEDULE_LOG)
+      ? window.HAM_GAME_SCHEDULE_LOG
+      : [];
+    const now = new Date();
+    const time = [now.getHours(), now.getMinutes(), now.getSeconds()]
+      .map((value) => String(value).padStart(2, "0"))
+      .join(":");
+    window.HAM_GAME_SCHEDULE_LOG.push(`[${time}] ${message}`);
+  }
+  renderScheduleLoadLog();
+}
+
+function renderScheduleLoadLog() {
+  const container = document.getElementById("scheduleLoadLog");
+  if (!container) {
+    return;
+  }
+
+  const entries = typeof window !== "undefined" && Array.isArray(window.HAM_GAME_SCHEDULE_LOG)
+    ? window.HAM_GAME_SCHEDULE_LOG
+    : [];
+  container.textContent = entries.join("\n");
+  container.scrollTop = container.scrollHeight;
+}
+
+function clearScheduleLoadLog() {
+  if (typeof window !== "undefined") {
+    window.HAM_GAME_SCHEDULE_LOG = [];
+  }
+  renderScheduleLoadLog();
+}
+
+async function copyScheduleLoadLog() {
+  const text = document.getElementById("scheduleLoadLog")?.textContent || "";
+  if (!text) {
+    setScheduleLoaderMessage("コピーするログがありません。", "warning");
+    return;
+  }
+
+  try {
+    if (!navigator.clipboard?.writeText) {
+      throw new Error("Clipboard APIが利用できません");
+    }
+    await navigator.clipboard.writeText(text);
+    setScheduleLoaderMessage("試合日程読み込みログをコピーしました。", "success");
+  } catch (error) {
+    console.error("試合日程読み込みログのコピーに失敗しました", error);
+    addScheduleLoadLog(`ログのコピーに失敗：${error.message}`);
+    setScheduleLoaderMessage("ログのコピーに失敗しました。", "warning");
+  }
+}
+
+function handleScheduleSelectionChange(event) {
+  const gameId = event.target.value;
+  const schedule = getHamGameSchedule().find((item) => item.gameId === gameId);
+  if (schedule) {
+    addScheduleLoadLog(`セレクトボックスで選択：${formatScheduleForLog(schedule)}`);
+  }
+}
+
+function formatScheduleForLog(schedule) {
+  const round = Number(schedule?.round);
+  const roundLabel = Number.isInteger(round) && round > 0 ? ` ${round}回戦` : "";
+  return `${getScheduleDate(schedule)} ${schedule?.matchupLabel || "対戦カード不明"}${roundLabel}`;
+}
+
+function formatScheduleLongDate(date, time) {
+  const [year, month, day] = String(date || "").split("-").map(Number);
+  if (![year, month, day].every(Number.isInteger)) {
+    return `${date || "日付不明"} ${time || ""}`.trim();
+  }
+  return `${year}年${month}月${day}日 ${time || ""}`.trim();
+}
+
+function resolveNpbScoreUrl(schedule) {
+  const generator = typeof window !== "undefined" ? window.generateNpbScoreUrl : null;
+  if (typeof generator === "function") {
+    try {
+      const generatedUrl = generator(schedule);
+      addScheduleLoadLog(`NPB URL生成：${generatedUrl}`);
+      return generatedUrl;
+    } catch (error) {
+      const message = `URL生成に必要な情報が不足しています：${error.message}`;
+      addScheduleLoadLog(message);
+      console.error(message, schedule, error);
+    }
+  }
+
+  const fallbackUrl = typeof schedule?.npbScoreUrl === "string" ? schedule.npbScoreUrl : "";
+  if (fallbackUrl) {
+    addScheduleLoadLog(`NPB URLフォールバックを使用：${fallbackUrl}`);
+  }
+  return fallbackUrl;
+}
+
 function renderGameSchedulePicker() {
   const select = document.getElementById("gameScheduleSelect");
   if (!select || !state.isAdminMode) {
@@ -2216,11 +2323,20 @@ function initializeGameSchedule() {
   state.nextScheduleId = nextSchedule?.gameId || "";
   renderGameSchedulePicker();
 
+  if (nextSchedule) {
+    addScheduleLoadLog(`次の試合を検出：${formatScheduleForLog(nextSchedule)}`);
+  } else {
+    addScheduleLoadLog("次の試合を検出できませんでした");
+  }
+
   if (!nextSchedule || !areAdminGameInfoInputsEmpty()) {
+    if (nextSchedule && !areAdminGameInfoInputsEmpty()) {
+      addScheduleLoadLog("localStorageに既存試合情報があるため自動反映をスキップ");
+    }
     return;
   }
 
-  applyGameSchedule(nextSchedule);
+  applyGameSchedule(nextSchedule, "auto");
   setScheduleLoaderMessage("次の試合情報を自動入力しました。必要に応じて手動で変更できます。", "success");
 }
 
@@ -2278,9 +2394,11 @@ function areAdminGameInfoInputsEmpty() {
 }
 
 function loadNextGameSchedule() {
+  addScheduleLoadLog("「次の試合を読み込む」を実行");
   const schedule = findNextGameSchedule();
   if (!schedule) {
     setScheduleLoaderMessage("今日以降の登録済み試合はありません。", "warning");
+    addScheduleLoadLog("読み込む次の試合が見つかりませんでした");
     return;
   }
 
@@ -2291,11 +2409,13 @@ function loadNextGameSchedule() {
 }
 
 function loadTodayGameSchedule() {
+  addScheduleLoadLog("「今日の試合を読み込む」を実行");
   const today = getLocalDateString();
   const schedule = getHamGameSchedule().find((item) => getScheduleDate(item) === today);
 
   if (!schedule) {
     setScheduleLoaderMessage(`本日（${today}）の登録済み試合はありません。`, "warning");
+    addScheduleLoadLog(`本日（${today}）の試合が見つかりませんでした`);
     return;
   }
 
@@ -2304,11 +2424,13 @@ function loadTodayGameSchedule() {
 }
 
 function loadSelectedGameSchedule() {
+  addScheduleLoadLog("「選択した試合を読み込む」を実行");
   const gameId = document.getElementById("gameScheduleSelect")?.value || "";
   const schedule = getHamGameSchedule().find((item) => item.gameId === gameId);
 
   if (!schedule) {
     setScheduleLoaderMessage("読み込む試合を選択してください。", "warning");
+    addScheduleLoadLog("選択された試合が見つかりませんでした");
     return;
   }
 
@@ -2316,27 +2438,46 @@ function loadSelectedGameSchedule() {
   setScheduleLoaderMessage(`試合「${schedule.matchupLabel}」を読み込みました。`, "success");
 }
 
-function applyGameSchedule(schedule) {
+function applyGameSchedule(schedule, source = "button") {
   const matchupInput = document.getElementById("matchupInput");
   const scoreUrlInput = document.getElementById("npbUrlInput");
   const gameStartInput = document.getElementById("gameStartInput");
   const scheduleSelect = document.getElementById("gameScheduleSelect");
 
-  if (!matchupInput || !scoreUrlInput || !gameStartInput) {
+  if (!matchupInput && !scoreUrlInput && !gameStartInput) {
+    addScheduleLoadLog("試合入力欄が見つからないため反映できませんでした");
     return;
   }
 
-  matchupInput.value = schedule.matchupLabel || "";
-  scoreUrlInput.value = schedule.npbScoreUrl || "";
-  gameStartInput.value = `${getScheduleDate(schedule)}T${getScheduleStartTime(schedule)}`;
+  const scoreUrl = resolveNpbScoreUrl(schedule);
+  if (matchupInput) {
+    matchupInput.value = schedule.matchupLabel || "";
+  } else {
+    addScheduleLoadLog("対戦カード入力欄が見つかりませんでした");
+  }
+  if (scoreUrlInput) {
+    scoreUrlInput.value = scoreUrl;
+  } else {
+    addScheduleLoadLog("NPB URL入力欄が見つかりませんでした");
+  }
+  if (gameStartInput) {
+    gameStartInput.value = `${getScheduleDate(schedule)}T${getScheduleStartTime(schedule)}`;
+  } else {
+    addScheduleLoadLog("試合開始日時入力欄が見つかりませんでした");
+  }
   if (scheduleSelect) {
     scheduleSelect.value = schedule.gameId;
   }
   saveAdminGameInfoFromInputs();
-  renderLoadedScheduleInfo(schedule);
+  renderLoadedScheduleInfo(schedule, scoreUrl);
+  if (source === "auto") {
+    addScheduleLoadLog(`自動反映した試合：${formatScheduleForLog(schedule)}`);
+  } else {
+    addScheduleLoadLog(`読み込み完了：${formatScheduleForLog(schedule)}`);
+  }
 }
 
-function renderLoadedScheduleInfo(schedule) {
+function renderLoadedScheduleInfo(schedule, scoreUrl = resolveNpbScoreUrl(schedule)) {
   const container = document.getElementById("loadedScheduleInfo");
   if (!container) {
     return;
@@ -2349,13 +2490,18 @@ function renderLoadedScheduleInfo(schedule) {
     ? `${scheduleDate}T${schedule.rosterAutoFetchStartTime}`
     : "";
   const interval = Number(schedule.lineupAutoFetchIntervalMinutes);
+  const round = Number(schedule.round);
+  const role = schedule.homeTeam === "fighters" ? "ホーム" : schedule.awayTeam === "fighters" ? "ビジター" : "-";
   const rows = [
-    ["読み込み済み試合", `${scheduleDate} ${scheduleStartTime} ${schedule.matchupLabel}`],
+    ["現在の対象試合", formatScheduleLongDate(scheduleDate, scheduleStartTime)],
+    ["対戦", schedule.matchupLabel || "-"],
+    ["回戦", Number.isInteger(round) && round > 0 ? `${round}回戦` : "-"],
+    ["区分", role],
     ["会場", schedule.venue || "-"],
     ["スタメン自動取得開始予定", lineupStart ? formatScheduleDateTime(lineupStart) : "-"],
     ["ロースター自動取得開始予定", rosterStart ? formatScheduleDateTime(rosterStart) : "-"],
     ["スタメン取得間隔", Number.isFinite(interval) && interval > 0 ? `${interval}分` : "-"],
-    ["NPB公式URL", schedule.npbScoreUrl || "-"]
+    ["NPB URL", scoreUrl || "-"]
   ];
 
   container.classList.remove("hidden");

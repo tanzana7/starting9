@@ -452,6 +452,41 @@ textarea:focus {
   color: #a15c00;
 }
 
+.schedule-log-panel {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #dce7f1;
+}
+
+.schedule-log-panel h3 {
+  margin: 0;
+  color: var(--fighters-deep-blue);
+  font-size: 0.9rem;
+}
+
+.schedule-load-log {
+  min-height: 88px;
+  max-height: 220px;
+  margin: 0;
+  padding: 10px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid #cbd8e5;
+  border-radius: 7px;
+  background: #f7fafc;
+  color: #334155;
+  font: 0.78rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.schedule-log-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .npb-url-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

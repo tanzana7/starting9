@@ -111,6 +111,14 @@
                 </div>
                 <p id="scheduleLoaderMessage" class="message" role="status" aria-live="polite"></p>
                 <div id="loadedScheduleInfo" class="auto-fetch-summary hidden" aria-live="polite"></div>
+                <section class="schedule-log-panel" aria-labelledby="schedule-log-title">
+                  <h3 id="schedule-log-title">試合日程読み込みログ</h3>
+                  <pre id="scheduleLoadLog" class="schedule-load-log" aria-live="polite"></pre>
+                  <div class="schedule-log-actions">
+                    <button id="copyScheduleLogButton" class="secondary-button compact-button" type="button">ログをコピー</button>
+                    <button id="clearScheduleLogButton" class="secondary-button compact-button" type="button">ログを消去</button>
+                  </div>
+                </section>
               </div>
               <label for="matchupInput">対戦カード名</label>
               <input id="matchupInput" type="text" maxlength="40" placeholder="例：日本ハム vs 西武">

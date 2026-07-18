@@ -2,7 +2,7 @@
 
 Starting9 は、プロ野球のスタメンを試合前に予想し、発表後に採点して楽しむWebアプリです。
 
-現在は北海道日本ハムファイターズ専用のMVPとして開発しています。ログイン、DB、ランキング、全12球団対応はまだ入れず、静的HTML/CSS/JavaScriptとCloudflare Workerで、予想入力・管理者確認・採点までの流れを検証しています。
+現在は北海道日本ハムファイターズ専用のMVPとして開発しています。ランキングや全12球団対応はまだ入れず、静的HTML/CSS/JavaScriptとCloudflare Workerで、予想入力・管理者確認・採点までの流れを検証しています。ユーザー名＋パスワード認証は、将来のランキング機能に向けたAPI/D1基盤を準備中です。
 
 ## 概要
 
@@ -46,8 +46,13 @@ starting9/
 ├── index.html              # 画面構造
 ├── style.css               # 見た目・レスポンシブ対応
 ├── script.js               # アプリ本体の処理
+├── auth.js                 # 認証UIと認証APIクライアント
 ├── players.js              # 日本ハム野手マスタ
+├── game-schedule.js        # 手動管理する試合日程
 ├── cloudflare-worker.js    # NPB公式ページ取得用Worker
+├── auth-worker.js          # D1を使う認証Worker（準備中）
+├── migrations/0001_auth.sql # 認証用D1 migration
+├── wrangler.auth.example.jsonc # 認証Worker設定例
 └── README.md               # このファイル
 ```
 
@@ -189,6 +194,42 @@ https://<worker-url>/?url=https://npb.jp/scores/2026/0707/m-f-12/&debug=1
 - JavaScript
 - localStorage
 - Cloudflare Workers
+
+## 認証基盤（準備中）
+
+メールアドレスを使わないユーザー名＋パスワード認証の土台を、既存のNPB取得Workerとは分離した `auth-worker.js` として追加しています。認証Workerは次のAPIを提供します。
+
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `GET /api/auth/me`
+
+パスワードはWorkerのWeb Crypto APIによるPBKDF2（SHA-256、ユーザーごとのランダムソルト、反復回数210,000）でハッシュ化し、D1には平文や生のセッショントークンを保存しません。セッションは30日間の `s9_session` HttpOnly・Secure・SameSite=Lax Cookieで管理します。
+
+フロントにはログイン/新規登録UIを追加していますが、認証WorkerとD1はまだ本番デプロイしていません。認証APIが利用できない環境でも、未ログインのまま予想入力・保存・採点は利用できます。
+
+### D1とWorkerの設定
+
+`migrations/0001_auth.sql` が `users` と `sessions` テーブルを作成します。`wrangler.auth.example.jsonc` を `wrangler.auth.jsonc` にコピーし、D1の `database_id` とフロントエンドの正確なオリジンを設定してから認証Workerをデプロイしてください。
+
+認証Workerを人間がセットアップする手順:
+
+1. Cloudflare DashboardまたはWranglerで、認証用D1データベースを作成する
+2. `wrangler.auth.example.jsonc` を `wrangler.auth.jsonc` にコピーする
+3. `wrangler.auth.jsonc` の `database_id` を実際のD1 IDへ変更する
+4. `AUTH_ALLOWED_ORIGINS` にStarting9フロントエンドの完全一致オリジンを設定する
+5. ローカル確認では `npx wrangler d1 migrations apply starting9-auth --local --config wrangler.auth.jsonc` を実行する
+6. 認証Workerを `npx wrangler dev --config wrangler.auth.jsonc` で起動する
+7. 本番D1へ適用する場合だけ、内容を確認したうえで `--remote` を付けてmigrationを適用する
+8. 認証Workerをデプロイし、フロントと同一カスタムオリジンの `/api/auth/*` へルーティングする
+
+この作業ではD1作成、migrationのremote適用、Workerデプロイ、GitHub push、Secrets登録は実行していません。`wrangler.auth.jsonc`、`.dev.vars`、`.wrangler/` はGit管理対象外です。
+
+既存のNPB取得WorkerはCORS `*` の公開GET APIとして動作しているため、認証APIをそこへ混在させない構成にしています。Cookie認証を安定させる本番構成は、フロントエンドと認証Workerを同一カスタムオリジン配下（例：`https://starting9.example.com` と `https://starting9.example.com/api/auth/*`）へルーティングする方法です。別オリジンの `workers.dev` を直接呼ぶ場合は、`AUTH_ALLOWED_ORIGINS` の厳密な許可リストとCookie/CORS設定が必要で、ブラウザのサードパーティCookie制限の影響を受けます。
+
+開発時もCookieの `Secure` 属性は弱めません。HTTPSのローカルプロキシ、またはブラウザがSecure Cookieを許可するlocalhost環境で確認してください。
+
+`auth.js` の `AUTH_API_BASE_URL` は空文字なら同一オリジンの `/api/auth/*` を使います。認証Workerを別ホストで直接呼ぶ場合は、そのHTTPS URLを設定し、Worker側の `AUTH_ALLOWED_ORIGINS` にフロントのオリジンを登録してください。ただし、別サイト間のCookieはブラウザのサードパーティCookie制限を受けるため、本番は同一カスタムオリジン配下へのルーティングを推奨します。
 
 ## 開発ルール
 

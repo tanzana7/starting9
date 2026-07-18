@@ -9,19 +9,16 @@ Thumbs.db
 # Logs
 *.log
 
-# Environment variables
+# Environment variables and local Cloudflare credentials
 .env
 .env.local
+.dev.vars
+.wrangler/
+wrangler.auth.jsonc
 
-# Dependencies
+# Dependencies and build output
 node_modules/
-
-# Build output
 dist/
 build/
 .next/
 out/
-
-# Temporary files
-*.tmp
-*.temp

@@ -14,9 +14,61 @@
       <p class="version-label">守備位置予想対応版</p>
       <p id="adminModeBadge" class="admin-mode-badge hidden">管理者モード</p>
       <p id="gameInfoDisplay" class="game-info-display hidden" aria-live="polite"></p>
+      <div id="authPanel" class="auth-panel" aria-live="polite">
+        <div id="authLoggedOut" class="auth-state">
+          <span>ユーザー認証</span>
+          <div class="auth-actions">
+            <button id="openLoginButton" class="auth-button" type="button">ログイン</button>
+            <button id="openRegisterButton" class="auth-button is-primary" type="button">新規登録</button>
+          </div>
+        </div>
+        <div id="authLoggedIn" class="auth-state hidden">
+          <span><strong id="authUsername"></strong> でログイン中</span>
+          <button id="logoutButton" class="auth-button" type="button">ログアウト</button>
+        </div>
+        <p id="authStatus" class="auth-status"></p>
+      </div>
       <p class="lead">試合前にスタメン9人・打順・守備位置を予想して、発表後に100点満点で採点しよう。</p>
     </div>
   </header>
+
+  <div id="authModal" class="auth-modal hidden" aria-hidden="true">
+    <div class="auth-modal-backdrop" data-auth-close></div>
+    <section class="auth-dialog" role="dialog" aria-modal="true" aria-labelledby="authDialogTitle">
+      <div class="auth-dialog-heading">
+        <div>
+          <p class="area-label">ACCOUNT</p>
+          <h2 id="authDialogTitle">ログイン</h2>
+        </div>
+        <button id="closeAuthButton" class="auth-close-button" type="button" aria-label="認証画面を閉じる">×</button>
+      </div>
+      <div class="auth-mode-tabs" role="tablist" aria-label="認証操作の切り替え">
+        <button class="auth-mode-tab is-selected" type="button" data-auth-mode="login" role="tab" aria-selected="true">ログイン</button>
+        <button class="auth-mode-tab" type="button" data-auth-mode="register" role="tab" aria-selected="false">新規登録</button>
+      </div>
+
+      <form id="authLoginForm" class="auth-form" novalidate>
+        <label for="authLoginUsername">ユーザー名</label>
+        <input id="authLoginUsername" type="text" autocomplete="username" minlength="3" maxlength="16" required>
+        <label for="authLoginPassword">パスワード</label>
+        <input id="authLoginPassword" type="password" autocomplete="current-password" minlength="8" maxlength="72" required>
+        <p id="authLoginError" class="auth-form-error" role="alert"></p>
+        <button class="primary-button" type="submit">ログイン</button>
+      </form>
+
+      <form id="authRegisterForm" class="auth-form hidden" novalidate>
+        <label for="authRegisterUsername">ユーザー名</label>
+        <input id="authRegisterUsername" type="text" autocomplete="username" minlength="3" maxlength="16" required>
+        <label for="authRegisterPassword">パスワード</label>
+        <input id="authRegisterPassword" type="password" autocomplete="new-password" minlength="8" maxlength="72" required>
+        <label for="authRegisterConfirmation">パスワード確認</label>
+        <input id="authRegisterConfirmation" type="password" autocomplete="new-password" minlength="8" maxlength="72" required>
+        <p id="authRegisterError" class="auth-form-error" role="alert"></p>
+        <button class="primary-button" type="submit">登録してログイン</button>
+      </form>
+      <p class="auth-dialog-note">メールアドレスは使用しません。予想入力は未ログインでも利用できます。</p>
+    </section>
+  </div>
 
   <main class="container app-layout">
     <div class="area-heading player-area">
@@ -217,5 +269,6 @@
   <script src="players.js?v=split-drag-20260709"></script>
   <script src="game-schedule.js?v=20260717-json"></script>
   <script src="script.js?v=split-drag-20260709"></script>
+  <script src="auth.js?v=20260717"></script>
 </body>
 </html>

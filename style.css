@@ -103,6 +103,355 @@ button:disabled {
   line-height: 1.35;
 }
 
+.auth-panel {
+  display: grid;
+  gap: 5px;
+  width: min(100%, 520px);
+  margin: 0 0 12px;
+  padding: 9px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 8px;
+  background: rgba(0, 44, 89, 0.28);
+}
+
+.auth-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #f4fbff;
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.auth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.auth-button {
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.48);
+  border-radius: 6px;
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.auth-button:hover,
+.auth-button:focus-visible {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.auth-button.is-primary {
+  border-color: #f0d77f;
+  color: #2f3b16;
+  background: #f7df86;
+}
+
+.auth-status {
+  min-height: 1.2em;
+  margin: 0;
+  color: #d7ecff;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.auth-status.is-success {
+  color: #d7f8df;
+}
+
+.auth-status.is-warning {
+  color: #ffe3a1;
+}
+
+.auth-modal {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+
+.auth-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(7, 26, 48, 0.56);
+}
+
+.auth-dialog {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 430px);
+  max-height: calc(100vh - 36px);
+  overflow: auto;
+  padding: 20px;
+  border: 1px solid #cfe1f1;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 48px rgba(0, 35, 70, 0.28);
+}
+
+.auth-dialog-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.auth-dialog-heading h2 {
+  color: var(--fighters-deep-blue);
+}
+
+.auth-close-button {
+  display: inline-grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  background: #f7fbff;
+  font-size: 1.4rem;
+  line-height: 1;
+}
+
+.auth-mode-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  margin: 4px 0 16px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #f1f6fb;
+}
+
+.auth-mode-tab {
+  min-height: 38px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 0.84rem;
+  font-weight: 900;
+}
+
+.auth-mode-tab.is-selected {
+  border-color: #9fc4e7;
+  color: var(--fighters-deep-blue);
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(25, 54, 82, 0.12);
+}
+
+.auth-form {
+  display: grid;
+  gap: 8px;
+}
+
+.auth-form-error {
+  min-height: 1.5em;
+  margin: 4px 0 0;
+  color: var(--error);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.auth-dialog-note {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.probable-starter-card {
+  display: grid;
+  gap: 8px;
+  width: min(100%, 560px);
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  border-radius: 8px;
+  color: #f4fbff;
+  background: rgba(0, 44, 89, 0.36);
+}
+
+.probable-starter-card.is-success {
+  border-color: rgba(189, 232, 204, 0.72);
+  background: rgba(13, 76, 50, 0.38);
+}
+
+.probable-starter-card.is-pending,
+.probable-starter-card.is-loading {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.probable-starter-card.is-error {
+  border-color: rgba(255, 211, 205, 0.8);
+  background: rgba(128, 33, 33, 0.4);
+}
+
+.probable-starter-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.probable-starter-label,
+.probable-starter-message,
+.probable-starter-meta,
+.probable-starter-fetched {
+  margin: 0;
+}
+
+.probable-starter-label {
+  color: #ffffff;
+  font-size: 0.82rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
+.probable-starter-heading a {
+  color: #ffffff;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.probable-starter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.probable-starter-team {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.probable-starter-team span,
+.probable-starter-fetched {
+  color: #d7ecff;
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.probable-starter-team strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #ffffff;
+  font-size: 0.98rem;
+}
+
+.probable-starter-meta,
+.probable-starter-message {
+  color: #eef7ff;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.perfect-achievers-card {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid #cfe1f1;
+  border-left: 4px solid var(--fighters-gold);
+  border-radius: 8px;
+  background: #fffdf5;
+}
+
+.perfect-achievers-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.perfect-achievers-heading .area-label,
+.perfect-achievers-heading h3 {
+  margin-bottom: 0;
+}
+
+.perfect-achievers-heading h3 {
+  color: var(--fighters-deep-blue);
+}
+
+.perfect-achievers-count {
+  flex: 0 0 auto;
+  color: var(--fighters-deep-blue);
+  font-size: 0.86rem;
+  font-weight: 900;
+}
+
+.perfect-achievers-content {
+  display: grid;
+  gap: 10px;
+}
+
+.perfect-achievers-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.perfect-achievers-list li {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #e4d6a2;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.perfect-achievers-list li > span {
+  color: var(--fighters-gold);
+  font-weight: 950;
+}
+
+.perfect-achievers-list strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.perfect-achievers-list time {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.perfect-achievers-message,
+.perfect-achievers-total {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.perfect-achievers-message.is-success {
+  color: var(--success);
+}
+
+.perfect-achievers-message.is-error {
+  color: var(--error);
+}
+
 h1,
 h2,
 p {
@@ -408,6 +757,126 @@ textarea:focus {
   background: #ffffff;
 }
 
+.schedule-loader {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #dce7f1;
+}
+
+.schedule-loader-title {
+  margin: 0;
+  color: var(--fighters-deep-blue);
+  font-size: 0.9rem;
+  font-weight: 900;
+}
+
+.schedule-next-summary {
+  padding: 9px 10px;
+  border: 1px solid #b9daf8;
+  border-radius: 7px;
+  background: #f3f9ff;
+  color: var(--fighters-deep-blue);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.schedule-loader-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.schedule-loader-row select {
+  min-width: 0;
+}
+
+.schedule-loader-message.is-success {
+  color: var(--success);
+}
+
+.schedule-loader-message.is-warning {
+  color: #a15c00;
+}
+
+.schedule-log-panel {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #dce7f1;
+}
+
+.schedule-log-panel h3 {
+  margin: 0;
+  color: var(--fighters-deep-blue);
+  font-size: 0.9rem;
+}
+
+.schedule-load-log {
+  min-height: 88px;
+  max-height: 220px;
+  margin: 0;
+  padding: 10px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid #cbd8e5;
+  border-radius: 7px;
+  background: #f7fafc;
+  color: #334155;
+  font: 0.78rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.schedule-log-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.probable-starter-admin-panel {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px dashed #b9cbe0;
+  border-radius: 7px;
+  background: #f7fbff;
+}
+
+.probable-starter-admin-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.probable-starter-admin-heading .preview-title,
+.probable-starter-admin-heading .field-help {
+  margin-bottom: 0;
+}
+
+.probable-starter-admin-log {
+  max-height: 180px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.probable-starter-admin-log ol {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 1.2em;
+}
+
+.probable-starter-admin-log li {
+  overflow-wrap: anywhere;
+}
+
 .npb-url-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -448,6 +917,51 @@ textarea:focus {
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+.roster-monitor-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  margin: 0 0 10px;
+  color: var(--fighters-deep-blue);
+  font-size: 0.98rem;
+  font-weight: 800;
+}
+
+.roster-monitor-title strong {
+  padding: 3px 8px;
+  border: 1px solid #b8c9d8;
+  border-radius: 999px;
+  background: #eef3f7;
+  color: #425466;
+  font-size: 0.82rem;
+}
+
+.roster-monitor-title strong.is-monitoring {
+  border-color: #8fc6aa;
+  background: #edf9f1;
+  color: #176b3d;
+}
+
+.roster-monitor-title strong.is-fetching {
+  border-color: #9fc4e7;
+  background: #eef7ff;
+  color: #155a91;
+}
+
+.roster-monitor-title strong.is-max-attempts,
+.roster-monitor-title strong.is-manual {
+  border-color: #d8bd82;
+  background: #fff8e8;
+  color: #805d16;
+}
+
+.roster-monitor-title strong.is-error {
+  border-color: #e3a9a9;
+  background: #fff1f1;
+  color: #a52d2d;
 }
 
 .auto-fetch-validation ul,
@@ -587,6 +1101,61 @@ textarea:focus {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #fbfdff;
+}
+
+.player-list-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 10px;
+}
+
+.player-list-heading h3 {
+  margin: 0;
+}
+
+.player-list-current {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.roster-filter {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 10px 0;
+  padding: 4px;
+  border: 1px solid #cfe1f1;
+  border-radius: 8px;
+  background: #edf4fa;
+}
+
+.roster-filter-button {
+  min-height: 38px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.roster-filter-button:hover,
+.roster-filter-button:focus-visible {
+  border-color: #a9c7df;
+  background: #ffffff;
+  color: var(--fighters-deep-blue);
+}
+
+.roster-filter-button.is-selected {
+  border-color: #6ca4d0;
+  background: #ffffff;
+  color: var(--fighters-deep-blue);
+  box-shadow: 0 1px 3px rgba(25, 54, 82, 0.12);
 }
 
 .slot-list,
@@ -942,6 +1511,19 @@ textarea:focus {
 .player-name {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.roster-status-badge {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border: 1px solid #c9a55c;
+  border-radius: 999px;
+  background: #fff7df;
+  color: #73520e;
+  font-size: 0.7rem;
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .player-with-category,
@@ -1325,6 +1907,14 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
+  .schedule-loader-row {
+    grid-template-columns: 1fr;
+  }
+
+  .roster-filter {
+    grid-template-columns: 1fr;
+  }
+
   .auto-fetch-row {
     grid-template-columns: 1fr;
   }
@@ -1352,6 +1942,15 @@ textarea:focus {
   .admin-card {
     margin: 0 8px 8px;
   }
+
+  .probable-starter-admin-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .probable-starter-admin-heading .compact-button {
+    width: 100%;
+  }
 }
 
 @media (max-width: 430px) {
@@ -1361,6 +1960,10 @@ textarea:focus {
 
   .card {
     padding: 16px;
+  }
+
+  .probable-starter-grid {
+    grid-template-columns: 1fr;
   }
 
   .lineup-builder {
@@ -1413,6 +2016,14 @@ textarea:focus {
 
   .score-total {
     flex-wrap: wrap;
+  }
+
+  .perfect-achievers-list li {
+    grid-template-columns: 26px minmax(0, 1fr);
+  }
+
+  .perfect-achievers-list time {
+    grid-column: 2;
   }
 
   .result-table {

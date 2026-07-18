@@ -98,6 +98,21 @@ const PLAYER_ALIASES = {
   "マルティネス": "マルティネス",
   "レイエス": "レイエス"
 };
+const STARTER_SOURCE_URL = "https://npb.jp/announcement/starter/";
+const STARTER_TEAM_ALIASES = [
+  { key: "fighters", name: "北海道日本ハムファイターズ", aliases: ["北海道日本ハムファイターズ", "北海道日本ハム", "日本ハムファイターズ", "日本ハム"] },
+  { key: "buffaloes", name: "オリックス・バファローズ", aliases: ["オリックス・バファローズ", "オリックスバファローズ", "オリックス"] },
+  { key: "hawks", name: "福岡ソフトバンクホークス", aliases: ["福岡ソフトバンクホークス", "ソフトバンクホークス", "ソフトバンク"] },
+  { key: "lions", name: "埼玉西武ライオンズ", aliases: ["埼玉西武ライオンズ", "西武ライオンズ", "西武"] },
+  { key: "eagles", name: "東北楽天ゴールデンイーグルス", aliases: ["東北楽天ゴールデンイーグルス", "楽天ゴールデンイーグルス", "楽天"] },
+  { key: "marines", name: "千葉ロッテマリーンズ", aliases: ["千葉ロッテマリーンズ", "ロッテマリーンズ", "ロッテ"] },
+  { key: "giants", name: "読売ジャイアンツ", aliases: ["読売ジャイアンツ", "巨人"] },
+  { key: "tigers", name: "阪神タイガース", aliases: ["阪神タイガース", "阪神"] },
+  { key: "baystars", name: "横浜DeNAベイスターズ", aliases: ["横浜DeNAベイスターズ", "横浜DeNA", "DeNA"] },
+  { key: "carp", name: "広島東洋カープ", aliases: ["広島東洋カープ", "広島カープ", "広島"] },
+  { key: "dragons", name: "中日ドラゴンズ", aliases: ["中日ドラゴンズ", "中日"] },
+  { key: "swallows", name: "東京ヤクルトスワローズ", aliases: ["東京ヤクルトスワローズ", "ヤクルトスワローズ", "ヤクルト"] }
+];
 
 export default {
   async fetch(request) {
@@ -110,8 +125,17 @@ export default {
     }
 
     const requestUrl = new URL(request.url);
-    const targetUrlValue = requestUrl.searchParams.get("url");
+    const mode = requestUrl.searchParams.get("mode") || "lineup";
+    if (mode === "starter") {
+      return await handleStarterRequest(requestUrl.searchParams.get("debug") === "1");
+    }
     const isDebug = requestUrl.searchParams.get("debug") === "1";
+
+    if (mode === "roster") {
+      return handleRosterRequest(requestUrl, isDebug);
+    }
+
+    const targetUrlValue = requestUrl.searchParams.get("url");
     const validation = validateTargetUrl(targetUrlValue);
 
     if (!validation.ok) {
@@ -154,6 +178,220 @@ export default {
   }
 };
 
+async function handleRosterRequest(requestUrl, isDebug) {
+  const rosterUrlValue = requestUrl.searchParams.get("url") || "https://npb.jp/announcement/roster/";
+  const validation = validateRosterUrl(rosterUrlValue);
+
+  if (!validation.ok) {
+    return jsonResponse({ ok: false, error: validation.error }, 400);
+  }
+
+  try {
+    const response = await fetch(validation.url, {
+      headers: {
+        "User-Agent": "Starting9 MVP Cloudflare Worker"
+      }
+    });
+
+    if (!response.ok) {
+      return jsonResponse({ ok: false, error: `NPB公式登録ページを取得できませんでした。HTTP ${response.status}` }, 502);
+    }
+
+    const html = await response.text();
+    const extraction = extractFightersRoster(html);
+
+    if (!extraction.players.length) {
+      return jsonResponse({
+        ok: false,
+        error: "日本ハムの登録選手一覧を抽出できませんでした。",
+        ...(isDebug ? { debug: extraction.debug } : {})
+      }, 422);
+    }
+
+    return jsonResponse({
+      ok: true,
+      sourceUrl: validation.url,
+      fetchedAt: new Date().toISOString(),
+      method: extraction.method,
+      team: "fighters",
+      players: extraction.players,
+      count: extraction.players.length,
+      ...(extraction.warning ? { warning: extraction.warning } : {})
+    });
+  } catch (error) {
+    return jsonResponse({ ok: false, error: `NPB公式登録ページ取得中にエラーが発生しました：${error.message}` }, 500);
+  }
+}
+
+async function handleStarterRequest(isDebug) {
+  const fetchedAt = new Date().toISOString();
+
+  try {
+    const response = await fetch(STARTER_SOURCE_URL, {
+      cache: "no-store",
+      headers: {
+        "User-Agent": "Starting9 MVP Cloudflare Worker"
+      }
+    });
+
+    if (!response.ok) {
+      return jsonResponse({
+        ok: false,
+        sourceUrl: STARTER_SOURCE_URL,
+        fetchedAt,
+        error: `NPB公式予告先発ページを取得できませんでした。HTTP ${response.status}`
+      }, 502);
+    }
+
+    const html = await response.text();
+    const parsed = parseStarterPage(html);
+    const responseBody = {
+      ok: true,
+      sourceUrl: STARTER_SOURCE_URL,
+      fetchedAt,
+      date: parsed.date,
+      method: "starter-unit-team-pair",
+      games: parsed.games,
+      count: parsed.games.length
+    };
+
+    if (!parsed.date && parsed.games.length === 0) {
+      return jsonResponse({
+        ok: false,
+        sourceUrl: STARTER_SOURCE_URL,
+        fetchedAt,
+        error: "NPB公式予告先発ページの試合ブロックを解析できませんでした。",
+        ...(isDebug ? { debug: createStarterDebugInfo(html, parsed) } : {})
+      }, 422);
+    }
+
+    return jsonResponse({
+      ...responseBody,
+      ...(isDebug ? { debug: createStarterDebugInfo(html, parsed) } : {})
+    });
+  } catch (error) {
+    return jsonResponse({
+      ok: false,
+      sourceUrl: STARTER_SOURCE_URL,
+      fetchedAt,
+      error: "NPB公式予告先発ページの取得中に通信エラーが発生しました。"
+    }, 500);
+  }
+}
+
+function parseStarterPage(html) {
+  const sourceHtml = String(html || "");
+  const plainText = htmlToPlainText(sourceHtml);
+  const date = extractStarterDate(sourceHtml);
+  const games = [];
+  const unitPattern = /<div\s+class=["']unit\s+(?:cl|pl)_\d+["'][^>]*>([\s\S]*?)(?=<div\s+class=["']unit\s+(?:cl|pl)_\d+["']|<\/section>)/gi;
+  let unitMatch;
+
+  while ((unitMatch = unitPattern.exec(sourceHtml)) !== null) {
+    const game = parseStarterUnit(unitMatch[1]);
+    if (game) {
+      games.push({ date, ...game });
+    }
+  }
+
+  return { date, games, plainText };
+}
+
+function parseStarterUnit(unitHtml) {
+  const home = parseStarterTeamBlock(unitHtml, "team_left");
+  const away = parseStarterTeamBlock(unitHtml, "team_right");
+  const infoMatch = unitHtml.match(/<div\s+class=["']info["'][^>]*>([\s\S]*?)<\/div>/i);
+
+  if (!home || !away) {
+    return null;
+  }
+
+  const info = normalizeWhitespace(stripTags(infoMatch ? infoMatch[1] : ""));
+  const startTimeMatch = info.match(/(\d{1,2}:\d{2})/);
+  const venueMatch = info.match(/[（(]\s*([^）)]*?)\s*[）)]/);
+  const venue = venueMatch ? venueMatch[1].replace(/\s+/g, "") : "";
+
+  return {
+    homeTeam: home.key,
+    awayTeam: away.key,
+    homeTeamName: home.name,
+    awayTeamName: away.name,
+    homeStarter: { name: home.starterName },
+    awayStarter: { name: away.starterName },
+    venue,
+    startTime: startTimeMatch ? startTimeMatch[1] : ""
+  };
+}
+
+function parseStarterTeamBlock(unitHtml, className) {
+  const blockMatch = unitHtml.match(new RegExp(`<div\\s+class=["']${className}["'][^>]*>([\\s\\S]*?)<\\/div>`, "i"));
+  if (!blockMatch) {
+    return null;
+  }
+
+  const block = blockMatch[1];
+  const altMatch = block.match(/\balt=["']([^"']+)["']/i);
+  const team = normalizeStarterTeam(altMatch ? altMatch[1] : "");
+  if (!team) {
+    return null;
+  }
+
+  const playerMatch = block.match(/<span[^>]*>([\s\S]*?)<\/span>/i);
+  const starterName = normalizeStarterName(playerMatch ? stripTags(playerMatch[1]) : "");
+
+  return {
+    key: team.key,
+    name: team.name,
+    starterName
+  };
+}
+
+function extractStarterDate(html) {
+  const headingMatch = String(html || "").match(/<h4[^>]*>\s*(\d{1,2})月\s*(\d{1,2})日/iu);
+  if (!headingMatch) {
+    return "";
+  }
+
+  const yearMatch = String(html || "").match(/\b(20\d{2})\b/);
+  const year = yearMatch ? Number(yearMatch[1]) : new Date().getFullYear();
+  const month = String(Number(headingMatch[1])).padStart(2, "0");
+  const day = String(Number(headingMatch[2])).padStart(2, "0");
+  const date = `${year}-${month}-${day}`;
+  const dateValue = new Date(`${date}T00:00:00Z`);
+  return dateValue.toISOString().slice(0, 10) === date ? date : "";
+}
+
+function normalizeStarterTeam(value) {
+  const normalized = normalizeWhitespace(value).replace(/\s+/g, "").normalize("NFKC");
+  const match = STARTER_TEAM_ALIASES.find((team) => team.aliases.some((alias) => normalized === alias || normalized.includes(alias)));
+  return match || null;
+}
+
+function normalizeStarterName(value) {
+  const normalized = normalizeWhitespace(value);
+  if (!normalized || /^[\-－—–]+$/.test(normalized) || /^(未発表|未定|予告なし)$/.test(normalized)) {
+    return "";
+  }
+  return normalized;
+}
+
+function normalizeWhitespace(value) {
+  return String(value || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\u3000/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function createStarterDebugInfo(html, parsed) {
+  const text = normalizeWhitespace(parsed.plainText || htmlToPlainText(html));
+  return {
+    foundDate: Boolean(parsed.date),
+    parsedGameCount: parsed.games.length,
+    textExcerpt: text.slice(0, 2400)
+  };
+}
+
 function validateTargetUrl(value) {
   if (!value) {
     return { ok: false, error: "urlパラメータを指定してください。" };
@@ -176,6 +414,33 @@ function validateTargetUrl(value) {
 
   if (!targetUrl.pathname.startsWith("/scores/")) {
     return { ok: false, error: "https://npb.jp/scores/ 配下の試合ページURLを指定してください。" };
+  }
+
+  return { ok: true, url: targetUrl.href };
+}
+
+function validateRosterUrl(value) {
+  if (!value) {
+    return { ok: false, error: "登録選手ページURLを指定してください。" };
+  }
+
+  let targetUrl;
+  try {
+    targetUrl = new URL(value);
+  } catch (error) {
+    return { ok: false, error: "登録選手ページURLの形式が不正です。" };
+  }
+
+  if (targetUrl.protocol !== "https:") {
+    return { ok: false, error: "httpsのNPB公式URLを指定してください。" };
+  }
+
+  if (targetUrl.hostname !== "npb.jp" && !targetUrl.hostname.endsWith(".npb.jp")) {
+    return { ok: false, error: "npb.jp以外のURLは利用できません。" };
+  }
+
+  if (!targetUrl.pathname.startsWith("/announcement/roster/")) {
+    return { ok: false, error: "https://npb.jp/announcement/roster/ 配下の登録選手ページURLを指定してください。" };
   }
 
   return { ok: true, url: targetUrl.href };
@@ -234,6 +499,118 @@ function extractNpbOrderText(html) {
     lineupText: "",
     debug: buildExtractionDebug("no-9-rows", plainText, lines, orderStartIndex, tableRows)
   };
+}
+
+function extractFightersRoster(html) {
+  const sourceHtml = String(html || "");
+  const teamTablePattern = /<h5[^>]*>\s*北海道日本ハムファイターズ\s*<\/h5>[\s\S]*?<table[^>]*>([\s\S]*?)<\/table>/i;
+  const tableMatch = sourceHtml.match(teamTablePattern);
+  const tableHtml = tableMatch ? tableMatch[1] : "";
+  const entries = tableHtml ? parseRosterTableEntries(tableHtml) : [];
+  const players = uniqueRosterEntries(entries);
+  const plainText = htmlToPlainText(sourceHtml);
+  const lines = normalizeNpbTextLines(plainText);
+  const announcedCount = extractAnnouncedRosterCount(sourceHtml, tableMatch?.index ?? -1);
+  const warning = announcedCount && announcedCount !== players.length
+    ? `登録選手数の表示（${announcedCount}人）と抽出人数（${players.length}人）が一致しません。`
+    : "";
+
+  return {
+    method: tableMatch ? "roster-page-team-block" : "roster-not-found",
+    players,
+    announcedCount,
+    warning,
+    debug: {
+      foundFightersHeading: Boolean(tableMatch),
+      foundPlayers: players.length,
+      announcedCount,
+      warning,
+      textExcerpt: lines.join(" ").slice(0, 1800),
+      fightersExcerpt: createFightersRosterExcerpt(lines)
+    }
+  };
+}
+
+function parseRosterTableEntries(tableHtml) {
+  const entries = [];
+  const rowPattern = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  let rowMatch;
+
+  while ((rowMatch = rowPattern.exec(tableHtml)) !== null) {
+    const cells = [];
+    const cellPattern = /<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi;
+    let cellMatch;
+
+    while ((cellMatch = cellPattern.exec(rowMatch[1])) !== null) {
+      cells.push(stripTags(cellMatch[1]));
+    }
+
+    if (cells.length < 3) {
+      continue;
+    }
+
+    const position = cells[0].replace(/\s+/g, "");
+    const number = cells[1].replace(/\s+/g, "");
+    const name = normalizeRosterPlayerName(cells[2]);
+
+    if (position && number && name) {
+      entries.push({ position, number, name });
+    }
+  }
+
+  return entries;
+}
+
+function uniqueRosterEntries(entries) {
+  const seen = new Set();
+  const players = [];
+
+  entries.forEach((entry) => {
+    const key = normalizeRosterPlayerKey(entry.name);
+    if (!key || seen.has(key)) {
+      return;
+    }
+
+    seen.add(key);
+    players.push(entry);
+  });
+
+  return players;
+}
+
+function normalizeRosterPlayerName(value) {
+  return String(value || "")
+    .replace(/\u3000/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[\s\u3000]/g, "");
+}
+
+function normalizeRosterPlayerKey(value) {
+  return String(value || "").normalize("NFKC").replace(/[\s\u3000]/g, "");
+}
+
+function extractAnnouncedRosterCount(html, teamHeadingIndex) {
+  if (teamHeadingIndex < 0) {
+    return 0;
+  }
+
+  const scopedHtml = String(html || "").slice(teamHeadingIndex, teamHeadingIndex + 12000);
+  const countMatch = scopedHtml.match(/以上\s*([0-9０-９]+)\s*名/);
+  if (!countMatch) {
+    return 0;
+  }
+
+  return Number(countMatch[1].normalize("NFKC"));
+}
+
+function createFightersRosterExcerpt(lines) {
+  const index = lines.findIndex((line) => line.includes("北海道日本ハムファイターズ"));
+  if (index < 0) {
+    return "";
+  }
+
+  return lines.slice(index, index + 90).join(" ").slice(0, 1800);
 }
 
 function extractRowsFromFightersTable(html) {

@@ -1302,15 +1302,18 @@ function findNextScheduledGameForStarter(schedule) {
     timeZone: "Asia/Tokyo",
     year: "numeric",
     month: "2-digit",
-    day: "2-digit"
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
   }).formatToParts(new Date()).reduce((result, part) => {
     result[part.type] = part.value;
     return result;
   }, {});
-  const today = `${parts.year}-${parts.month}-${parts.day}`;
+  const currentDateTime = `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
 
   return schedule
-    .filter((game) => typeof game?.date === "string" && game.date >= today)
+    .filter((game) => typeof game?.date === "string" && `${game.date}T${game.startTime || "23:59"}` >= currentDateTime)
     .slice()
     .sort((left, right) => `${left.date}T${left.startTime || "00:00"}`.localeCompare(`${right.date}T${right.startTime || "00:00"}`))[0] || null;
 }

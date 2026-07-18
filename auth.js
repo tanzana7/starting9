@@ -181,6 +181,9 @@ function renderAuthState() {
   document.getElementById("authLoggedOut").classList.toggle("hidden", isAuthenticated);
   document.getElementById("authLoggedIn").classList.toggle("hidden", !isAuthenticated);
   document.getElementById("authUsername").textContent = isAuthenticated ? authState.user.username : "";
+  if (isAuthenticated) {
+    closeAuthModal();
+  }
 }
 
 function validateAuthCredentials(username, password) {

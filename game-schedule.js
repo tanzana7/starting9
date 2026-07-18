@@ -52,10 +52,33 @@ function getJapanDateString(date = new Date()) {
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
+function getJapanDateTimeString(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(date).reduce((result, part) => {
+    result[part.type] = part.value;
+    return result;
+  }, {});
+
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
 function findNextHamGame(schedule = [], now = new Date()) {
-  const today = getJapanDateString(now);
+  const currentDateTime = getJapanDateTimeString(now);
   return schedule
-    .filter((game) => typeof game?.date === "string" && game.date >= today)
+    .filter((game) => {
+      if (typeof game?.date !== "string") {
+        return false;
+      }
+      const scheduledDateTime = `${game.date}T${game.startTime || "23:59"}`;
+      return scheduledDateTime >= currentDateTime;
+    })
     .slice()
     .sort((left, right) => {
       const leftValue = `${left.date}T${left.startTime || "00:00"}`;
@@ -90,6 +113,7 @@ function findNextHamGame(schedule = [], now = new Date()) {
   scheduleRoot.addHamScheduleLog = addScheduleLog;
   scheduleRoot.generateNpbScoreUrl = generateNpbScoreUrl;
   scheduleRoot.getJapanDateString = getJapanDateString;
+  scheduleRoot.getJapanDateTimeString = getJapanDateTimeString;
   scheduleRoot.findNextHamGame = findNextHamGame;
   addScheduleLog("日程JSONの読み込みを開始");
 
@@ -127,14 +151,43 @@ function findNextHamGame(schedule = [], now = new Date()) {
     })
     .catch((error) => {
       const message = `試合スケジュールの読み込みに失敗しました: ${error.message}`;
-      scheduleRoot.HAM_GAME_SCHEDULE = [];
-      scheduleRoot.HAM_GAME_SCHEDULE_ERROR = message;
+      const fallbackSchedule = getLocalScheduleFallback();
+      scheduleRoot.HAM_GAME_SCHEDULE = fallbackSchedule;
+      scheduleRoot.HAM_GAME_SCHEDULE_ERROR = fallbackSchedule.length > 0
+        ? `${message} ローカル確認用の最小日程を使用します。`
+        : message;
       addScheduleLog(`日程JSON読み込み失敗：${error.message}`);
+      if (fallbackSchedule.length > 0) {
+        addScheduleLog(`ローカル確認用日程を使用しました：${fallbackSchedule.length}試合`);
+      }
       console.error(message, error);
-      return [];
+      return fallbackSchedule;
     });
 })();
 
+function getLocalScheduleFallback() {
+  if (typeof window === "undefined" || window.location?.protocol !== "file:") {
+    return [];
+  }
+
+  return [
+    {
+      gameId: "2026-07-19-b-f-17",
+      date: "2026-07-19",
+      startTime: "13:00",
+      homeTeam: "buffaloes",
+      awayTeam: "fighters",
+      matchupLabel: "オリックス vs 日本ハム",
+      venue: "京セラドーム大阪",
+      round: 17,
+      npbScoreUrl: "https://npb.jp/scores/2026/0719/b-f-17/",
+      rosterAutoFetchStartTime: "10:00",
+      lineupAutoFetchStartOffsetMinutes: -50,
+      lineupAutoFetchIntervalMinutes: 10
+    }
+  ];
+}
+
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { NPB_TEAM_CODES, generateNpbScoreUrl, getJapanDateString, findNextHamGame };
+  module.exports = { NPB_TEAM_CODES, generateNpbScoreUrl, getJapanDateString, getJapanDateTimeString, findNextHamGame };
 }

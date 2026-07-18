@@ -741,6 +741,8 @@ textarea:focus {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
 .probable-starter-admin-panel {
   display: grid;
   gap: 8px;

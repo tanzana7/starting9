@@ -34,6 +34,7 @@ const SCORE_RULES = {
 const FLICK_DISTANCE = 42;
 const DRAG_DATA_TYPE = "application/x-ham-starting9-player";
 const NPB_WORKER_API_URL = "https://starting9-npb-fetch.tanzana7.workers.dev/";
+const NPB_STARTER_SOURCE_URL = "https://npb.jp/announcement/starter/";
 const NPB_WORKER_FALLBACK_MESSAGE = "NPB公式ページ取得APIが未設定、または取得に失敗しました。NPB公式ページの「最新のオーダー」部分をコピーして、下の貼り付け欄に入力してください。";
 const NPB_WORKER_EXTRACTION_FAILED_MESSAGE = "WorkerでNPB公式ページは取得できましたが、スタメン抽出に失敗しました。手動貼り付けを使うか、debug=1付きURLで抽出対象テキストを確認してください。";
 const AUTO_FETCH_START_BEFORE_MS = 50 * 60 * 1000;
@@ -172,6 +173,19 @@ const state = {
     lastRemovedPlayers: [],
     lastPlayerCount: 0
   },
+  probableStarter: {
+    isLoading: false,
+    status: "idle",
+    message: "",
+    nextGame: null,
+    matchedGame: null,
+    games: [],
+    fetchedAt: "",
+    sourceUrl: NPB_STARTER_SOURCE_URL,
+    fetchedGameCount: 0,
+    logs: [],
+    fetchedGameId: ""
+  },
   activeOrder: {
     prediction: 0,
     actual: 0
@@ -204,6 +218,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initializeGameSchedule();
     renderAll();
   }
+  initializeProbableStarter();
 });
 
 function bindEvents() {
@@ -214,6 +229,7 @@ function bindEvents() {
   document.getElementById("checkRosterButton").addEventListener("click", handleRosterCheck);
   document.getElementById("startRosterMonitorButton").addEventListener("click", startRosterMonitor);
   document.getElementById("stopRosterMonitorButton").addEventListener("click", () => stopRosterMonitor("ロースター自動取得を停止しました。", "warning"));
+  document.getElementById("fetchProbableStarterButton").addEventListener("click", () => fetchProbableStarter({ force: true }));
   document.getElementById("startAutoFetchButton").addEventListener("click", startAutoFetch);
   document.getElementById("stopAutoFetchButton").addEventListener("click", () => stopAutoFetch("自動取得を停止しました。", "warning"));
   document.getElementById("parseActualButton").addEventListener("click", handleActualParsePreview);
@@ -1249,6 +1265,212 @@ function buildNpbWorkerDebugUrl(sourceUrl) {
   workerUrl.searchParams.set("url", sourceUrl);
   workerUrl.searchParams.set("debug", "1");
   return workerUrl.href;
+}
+
+async function initializeProbableStarter() {
+  const schedule = await getLoadedGameSchedule();
+  state.probableStarter.nextGame = findNextScheduledGameForStarter(schedule);
+  renderProbableStarter();
+
+  if (state.probableStarter.nextGame) {
+    await fetchProbableStarter();
+  } else {
+    state.probableStarter.status = "noGame";
+    state.probableStarter.message = "次の試合を検出できませんでした。";
+    renderProbableStarter();
+  }
+}
+
+async function getLoadedGameSchedule() {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  if (window.HAM_GAME_SCHEDULE_READY && typeof window.HAM_GAME_SCHEDULE_READY.then === "function") {
+    return (await window.HAM_GAME_SCHEDULE_READY) || [];
+  }
+
+  return Array.isArray(window.HAM_GAME_SCHEDULE) ? window.HAM_GAME_SCHEDULE : [];
+}
+
+function findNextScheduledGameForStarter(schedule) {
+  if (typeof window.findNextHamGame === "function") {
+    return window.findNextHamGame(schedule);
+  }
+
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date()).reduce((result, part) => {
+    result[part.type] = part.value;
+    return result;
+  }, {});
+  const today = `${parts.year}-${parts.month}-${parts.day}`;
+
+  return schedule
+    .filter((game) => typeof game?.date === "string" && game.date >= today)
+    .slice()
+    .sort((left, right) => `${left.date}T${left.startTime || "00:00"}`.localeCompare(`${right.date}T${right.startTime || "00:00"}`))[0] || null;
+}
+
+async function fetchProbableStarter({ force = false } = {}) {
+  if (state.probableStarter.isLoading) {
+    return;
+  }
+
+  if (!state.probableStarter.nextGame) {
+    state.probableStarter.status = "noGame";
+    state.probableStarter.message = "次の試合を検出できませんでした。";
+    renderProbableStarter();
+    return;
+  }
+
+  if (!force && state.probableStarter.fetchedGameId === state.probableStarter.nextGame.gameId) {
+    return;
+  }
+
+  const workerUrl = buildProbableStarterWorkerRequestUrl();
+  state.probableStarter.isLoading = true;
+  state.probableStarter.status = "loading";
+  state.probableStarter.message = "予告先発を取得中...";
+  addProbableStarterLog("予告先発の取得を開始");
+  addProbableStarterLog(`取得URL：${NPB_STARTER_SOURCE_URL}`);
+  renderProbableStarter();
+
+  try {
+    const response = await fetch(workerUrl, { cache: "no-store" });
+    addProbableStarterLog(`HTTPステータス：${response.status}`);
+
+    let result = null;
+    try {
+      result = await response.json();
+    } catch {
+      result = null;
+    }
+
+    if (!response.ok || !result?.ok) {
+      const errorMessage = result?.error || `Worker APIの取得に失敗しました。HTTP ${response.status}`;
+      state.probableStarter.status = "error";
+      state.probableStarter.message = "予告先発を取得できませんでした";
+      addProbableStarterLog(`解析失敗：${errorMessage}`);
+      return;
+    }
+
+    const games = Array.isArray(result.games) ? result.games : [];
+    state.probableStarter.games = games;
+    state.probableStarter.fetchedAt = result.fetchedAt || new Date().toISOString();
+    state.probableStarter.sourceUrl = result.sourceUrl || NPB_STARTER_SOURCE_URL;
+    state.probableStarter.fetchedGameCount = games.length;
+    state.probableStarter.fetchedGameId = state.probableStarter.nextGame.gameId || "";
+    addProbableStarterLog(`予告先発ページ取得成功：${games.length}試合`);
+
+    const matchedGame = matchProbableStarterGame(state.probableStarter.nextGame, games);
+    state.probableStarter.matchedGame = matchedGame;
+    addProbableStarterLog(`次の試合と照合：${formatScheduledGameForLog(state.probableStarter.nextGame)}`);
+
+    if (!matchedGame) {
+      state.probableStarter.status = "unannounced";
+      state.probableStarter.message = "予告先発はまだ発表されていません";
+      addProbableStarterLog("未発表：次の試合に一致するカードがありません");
+      return;
+    }
+
+    const fightersStarter = getFightersStarter(matchedGame);
+    const hasBothStarters = Boolean(fightersStarter?.fighters?.name && fightersStarter?.opponent?.name);
+    state.probableStarter.status = hasBothStarters ? "success" : "unannounced";
+    state.probableStarter.message = hasBothStarters
+      ? "予告先発を取得しました"
+      : "予告先発はまだ発表されていません";
+
+    if (hasBothStarters) {
+      addProbableStarterLog(`予告先発を検出：${fightersStarter.opponent.name} / ${fightersStarter.fighters.name}`);
+    } else {
+      addProbableStarterLog("未発表：カードは見つかりましたが両チームの先発が未発表です");
+    }
+  } catch (error) {
+    state.probableStarter.status = "error";
+    state.probableStarter.message = "予告先発を取得できませんでした";
+    addProbableStarterLog(`通信失敗：${error.message}`);
+  } finally {
+    state.probableStarter.isLoading = false;
+    renderProbableStarter();
+  }
+}
+
+function buildProbableStarterWorkerRequestUrl() {
+  const workerUrl = new URL(NPB_WORKER_API_URL);
+  workerUrl.searchParams.set("mode", "starter");
+  workerUrl.searchParams.set("cacheBust", String(Date.now()));
+  return workerUrl.href;
+}
+
+function matchProbableStarterGame(nextGame, games) {
+  const expectedDate = nextGame?.date || "";
+  const expectedHome = normalizeScheduleTeamCode(nextGame?.homeTeam);
+  const expectedAway = normalizeScheduleTeamCode(nextGame?.awayTeam);
+
+  const exactMatch = games.find((game) => {
+    return game?.date === expectedDate &&
+      normalizeScheduleTeamCode(game.homeTeam) === expectedHome &&
+      normalizeScheduleTeamCode(game.awayTeam) === expectedAway;
+  });
+  if (exactMatch) {
+    return exactMatch;
+  }
+
+  if (!expectedHome || !expectedAway) {
+    return null;
+  }
+
+  return games.find((game) => {
+    const teams = new Set([normalizeScheduleTeamCode(game.homeTeam), normalizeScheduleTeamCode(game.awayTeam)]);
+    return game?.date === expectedDate && teams.has(expectedHome) && teams.has(expectedAway);
+  }) || null;
+}
+
+function normalizeScheduleTeamCode(value) {
+  const key = String(value || "").trim().toLowerCase();
+  return ["fighters", "buffaloes", "hawks", "lions", "eagles", "marines", "giants", "tigers", "baystars", "carp", "dragons", "swallows"].includes(key)
+    ? key
+    : "";
+}
+
+function getFightersStarter(game) {
+  if (!game) {
+    return null;
+  }
+
+  if (game.homeTeam === "fighters") {
+    return { fighters: game.homeStarter, opponent: game.awayStarter, opponentName: game.awayTeamName };
+  }
+
+  if (game.awayTeam === "fighters") {
+    return { fighters: game.awayStarter, opponent: game.homeStarter, opponentName: game.homeTeamName };
+  }
+
+  return null;
+}
+
+function formatScheduledGameForLog(game) {
+  if (!game) {
+    return "対象なし";
+  }
+
+  return `${game.date || "日付不明"} ${game.matchupLabel || `${game.awayTeam || ""} vs ${game.homeTeam || ""}`}`;
+}
+
+function addProbableStarterLog(message) {
+  const now = new Date();
+  const time = [now.getHours(), now.getMinutes(), now.getSeconds()]
+    .map((value) => String(value).padStart(2, "0"))
+    .join(":");
+  state.probableStarter.logs.push(`[${time}] ${message}`);
+  if (state.probableStarter.logs.length > 30) {
+    state.probableStarter.logs = state.probableStarter.logs.slice(-30);
+  }
+  renderProbableStarterAdmin();
 }
 
 function showNpbFetchFallback(message) {
@@ -2589,12 +2811,135 @@ function removeFromStorage(key) {
 function renderAll() {
   renderGameInfoDisplay();
   renderGameSchedulePicker();
+  renderProbableStarter();
   renderSavedPrediction();
   renderActualLineup();
   renderScoreResult();
   renderAdminFlow();
   renderPicker("prediction");
   renderPicker("actual");
+}
+
+function renderProbableStarter() {
+  renderProbableStarterDisplay();
+  renderProbableStarterAdmin();
+}
+
+function renderProbableStarterDisplay() {
+  const container = document.getElementById("probableStarterDisplay");
+  if (!container) {
+    return;
+  }
+
+  const probableStarter = state.probableStarter;
+  if (!probableStarter.nextGame || probableStarter.status === "idle" || probableStarter.status === "noGame") {
+    container.classList.add("hidden");
+    container.innerHTML = "";
+    return;
+  }
+
+  container.classList.remove("hidden");
+
+  if (probableStarter.status === "loading") {
+    container.className = "probable-starter-card is-loading";
+    container.innerHTML = `
+      <p class="probable-starter-label">予告先発</p>
+      <p class="probable-starter-message">予告先発を取得中...</p>
+    `;
+    return;
+  }
+
+  if (probableStarter.status === "error") {
+    container.className = "probable-starter-card is-error";
+    container.innerHTML = `
+      <p class="probable-starter-label">予告先発</p>
+      <p class="probable-starter-message">予告先発を取得できませんでした</p>
+    `;
+    return;
+  }
+
+  const matchedGame = probableStarter.matchedGame;
+  const fightersStarter = getFightersStarter(matchedGame);
+  if (!matchedGame || !fightersStarter) {
+    container.className = "probable-starter-card is-pending";
+    container.innerHTML = `
+      <p class="probable-starter-label">予告先発</p>
+      <p class="probable-starter-message">予告先発はまだ発表されていません</p>
+      <p class="probable-starter-meta">${escapeHtml(formatScheduledGameForLog(probableStarter.nextGame))}</p>
+    `;
+    return;
+  }
+
+  const dateText = formatProbableStarterDate(matchedGame.date || probableStarter.nextGame.date);
+  const gameInfo = `${dateText} ${matchedGame.startTime || probableStarter.nextGame.startTime || ""}`.trim();
+  const sourceUrl = probableStarter.sourceUrl || NPB_STARTER_SOURCE_URL;
+  const isPending = probableStarter.status === "unannounced";
+  container.className = `probable-starter-card ${isPending ? "is-pending" : "is-success"}`;
+  container.innerHTML = `
+    <div class="probable-starter-heading">
+      <p class="probable-starter-label">予告先発</p>
+      <a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">NPB公式</a>
+    </div>
+    ${isPending ? `<p class="probable-starter-message">予告先発はまだ発表されていません</p>` : `
+      <div class="probable-starter-grid">
+        ${createProbableStarterTeamHtml("日本ハム", fightersStarter.fighters?.name)}
+        ${createProbableStarterTeamHtml(fightersStarter.opponentName || "相手チーム", fightersStarter.opponent?.name)}
+      </div>
+    `}
+    <p class="probable-starter-meta">${escapeHtml(gameInfo)}${matchedGame.venue ? ` ・ ${escapeHtml(matchedGame.venue)}` : ""}</p>
+    <p class="probable-starter-fetched">取得：${escapeHtml(formatDateTime(probableStarter.fetchedAt))}</p>
+  `;
+}
+
+function createProbableStarterTeamHtml(teamName, starterName) {
+  return `
+    <div class="probable-starter-team">
+      <span>${escapeHtml(teamName)}</span>
+      <strong>${escapeHtml(starterName || "未発表")}</strong>
+    </div>
+  `;
+}
+
+function formatProbableStarterDate(dateValue) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateValue || ""));
+  return match ? `${Number(match[2])}月${Number(match[3])}日` : "";
+}
+
+function renderProbableStarterAdmin() {
+  const statusContainer = document.getElementById("probableStarterAdminStatus");
+  const logContainer = document.getElementById("probableStarterAdminLog");
+  const button = document.getElementById("fetchProbableStarterButton");
+
+  if (button) {
+    button.disabled = state.probableStarter.isLoading;
+  }
+
+  if (statusContainer) {
+    const statusClassMap = {
+      success: "success-message",
+      unannounced: "npb-message is-warning",
+      error: "error-message",
+      loading: "npb-message is-info"
+    };
+    statusContainer.className = `message ${statusClassMap[state.probableStarter.status] || ""}`.trim();
+    statusContainer.textContent = state.probableStarter.message || "次の試合を検出して取得します。";
+  }
+
+  if (!logContainer) {
+    return;
+  }
+
+  if (!state.probableStarter.logs.length) {
+    logContainer.classList.add("hidden");
+    logContainer.innerHTML = "";
+    return;
+  }
+
+  logContainer.classList.remove("hidden");
+  logContainer.innerHTML = `
+    <p class="preview-title">予告先発取得ログ</p>
+    <ol>${state.probableStarter.logs.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ol>
+  `;
 }
 
 function renderGameInfoDisplay() {
@@ -3413,6 +3758,19 @@ function resetAllData() {
     lastAddedPlayers: [],
     lastRemovedPlayers: [],
     lastPlayerCount: 0
+  };
+  state.probableStarter = {
+    isLoading: false,
+    status: "idle",
+    message: "",
+    nextGame: state.probableStarter.nextGame,
+    matchedGame: null,
+    games: [],
+    fetchedAt: "",
+    sourceUrl: NPB_STARTER_SOURCE_URL,
+    fetchedGameCount: 0,
+    logs: [],
+    fetchedGameId: ""
   };
   state.activeOrder.prediction = 0;
   state.activeOrder.actual = 0;

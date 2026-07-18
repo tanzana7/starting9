@@ -14,6 +14,7 @@
       <p class="version-label">守備位置予想対応版</p>
       <p id="adminModeBadge" class="admin-mode-badge hidden">管理者モード</p>
       <p id="gameInfoDisplay" class="game-info-display hidden" aria-live="polite"></p>
+      <section id="probableStarterDisplay" class="probable-starter-card hidden" aria-live="polite"></section>
       <div id="authPanel" class="auth-panel" aria-live="polite">
         <div id="authLoggedOut" class="auth-state">
           <span>ユーザー認証</span>
@@ -179,6 +180,17 @@
                 <input id="npbUrlInput" type="url" inputmode="url" placeholder="https://npb.jp/scores/2026/0707/m-f-12/">
                 <button id="fetchNpbButton" class="secondary-button compact-button" type="button">NPB公式ページから候補取得</button>
               </div>
+              <div class="probable-starter-admin-panel">
+                <div class="probable-starter-admin-heading">
+                  <div>
+                    <p class="preview-title">予告先発</p>
+                    <p class="field-help">次の日ハム戦とNPB公式ページのカードを照合します。</p>
+                  </div>
+                  <button id="fetchProbableStarterButton" class="secondary-button compact-button" type="button">予告先発を再取得</button>
+                </div>
+                <p id="probableStarterAdminStatus" class="message" role="status" aria-live="polite"></p>
+                <div id="probableStarterAdminLog" class="probable-starter-admin-log hidden" aria-live="polite"></div>
+              </div>
               <label for="gameStartInput">試合開始日時</label>
               <div class="auto-fetch-row">
                 <input id="gameStartInput" type="datetime-local">
@@ -267,7 +279,7 @@
   </main>
 
   <script src="players.js?v=split-drag-20260709"></script>
-  <script src="game-schedule.js?v=20260717-json"></script>
+  <script src="game-schedule.js?v=20260718-probable-starter"></script>
   <script src="script.js?v=split-drag-20260709"></script>
   <script src="auth.js?v=20260717"></script>
 </body>

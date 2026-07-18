@@ -38,6 +38,32 @@ function generateNpbScoreUrl(game) {
   return `https://npb.jp/scores/${dateMatch[1]}/${dateMatch[2]}${dateMatch[3]}/${homeCode}-${awayCode}-${round}/`;
 }
 
+function getJapanDateString(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date).reduce((result, part) => {
+    result[part.type] = part.value;
+    return result;
+  }, {});
+
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function findNextHamGame(schedule = [], now = new Date()) {
+  const today = getJapanDateString(now);
+  return schedule
+    .filter((game) => typeof game?.date === "string" && game.date >= today)
+    .slice()
+    .sort((left, right) => {
+      const leftValue = `${left.date}T${left.startTime || "00:00"}`;
+      const rightValue = `${right.date}T${right.startTime || "00:00"}`;
+      return leftValue.localeCompare(rightValue);
+    })[0] || null;
+}
+
 (function loadHamGameSchedule() {
   if (typeof window === "undefined" || typeof fetch !== "function") {
     return;
@@ -63,6 +89,8 @@ function generateNpbScoreUrl(game) {
 
   scheduleRoot.addHamScheduleLog = addScheduleLog;
   scheduleRoot.generateNpbScoreUrl = generateNpbScoreUrl;
+  scheduleRoot.getJapanDateString = getJapanDateString;
+  scheduleRoot.findNextHamGame = findNextHamGame;
   addScheduleLog("日程JSONの読み込みを開始");
 
   scheduleRoot.HAM_GAME_SCHEDULE_READY = fetch(scheduleUrl, { cache: "no-store" })
@@ -108,5 +136,5 @@ function generateNpbScoreUrl(game) {
 })();
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { NPB_TEAM_CODES, generateNpbScoreUrl };
+  module.exports = { NPB_TEAM_CODES, generateNpbScoreUrl, getJapanDateString, findNextHamGame };
 }

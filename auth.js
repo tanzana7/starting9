@@ -16,6 +16,12 @@ const authState = {
   isLoading: false
 };
 
+window.starting9Auth = {
+  getUser: () => authState.user,
+  getApiBaseUrl: () => AUTH_API_BASE_URL,
+  openLogin: () => openAuthModal("login")
+};
+
 document.addEventListener("DOMContentLoaded", initializeAuth);
 
 function initializeAuth() {
@@ -184,6 +190,9 @@ function renderAuthState() {
   if (isAuthenticated) {
     closeAuthModal();
   }
+  window.dispatchEvent(new CustomEvent("starting9-auth-state-changed", {
+    detail: { authenticated: isAuthenticated, user: authState.user }
+  }));
 }
 
 function validateAuthCredentials(username, password) {

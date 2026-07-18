@@ -6,6 +6,8 @@ const USERNAME_MIN_LENGTH = 3;
 const USERNAME_MAX_LENGTH = 16;
 const PASSWORD_MIN_LENGTH = 8;
 const PASSWORD_MAX_LENGTH = 72;
+// 開発中は1試合につき先着3人。本番候補は30人です。
+const PERFECT_ACHIEVERS_DEFAULT_DISPLAY_LIMIT = 3;
 
 export default {
   async fetch(request, env, ctx) {
@@ -39,6 +41,12 @@ export default {
       }
       if (path === "/api/auth/me" && request.method === "GET") {
         return await handleMe(request, env, ctx, cors);
+      }
+      if (path === "/api/perfect-achievers" && request.method === "GET") {
+        return await handleGetPerfectAchievers(request, env, cors);
+      }
+      if (path === "/api/perfect-achievers" && request.method === "POST") {
+        return await handlePostPerfectAchiever(request, env, cors);
       }
 
       return jsonResponse({ ok: false, error: "認証APIのパスまたはHTTPメソッドが不正です。" }, 404, cors);
@@ -160,6 +168,118 @@ async function handleMe(request, env, ctx, cors) {
   }
 
   return jsonResponse({ ok: true, authenticated: true, user: publicUser(session) }, 200, cors);
+}
+
+async function handleGetPerfectAchievers(request, env, cors) {
+  const gameId = getValidGameId(new URL(request.url).searchParams.get("gameId"));
+  if (!gameId) {
+    return jsonResponse({ ok: false, error: "対象試合のgameIdを指定してください。" }, 400, cors);
+  }
+
+  const session = await getSessionUser(request, env);
+  const snapshot = await getPerfectAchieverSnapshot(env.AUTH_DB, gameId, session?.id || "");
+  return jsonResponse(createPerfectAchieverResponse(gameId, snapshot), 200, cors);
+}
+
+async function handlePostPerfectAchiever(request, env, cors) {
+  const session = await getSessionUser(request, env);
+  if (!session) {
+    return jsonResponse({ ok: false, error: "満点達成者として登録するにはログインしてください。" }, 401, cors);
+  }
+
+  const input = await readJson(request);
+  const gameId = getValidGameId(input?.gameId);
+  const score = input?.score;
+  const maxScore = input?.maxScore;
+
+  if (!gameId) {
+    return jsonResponse({ ok: false, error: "対象試合のgameIdを指定してください。" }, 400, cors);
+  }
+  if (!Number.isInteger(score) || !Number.isInteger(maxScore) || maxScore <= 0 || score !== maxScore) {
+    return jsonResponse({ ok: false, error: "満点を達成した場合のみ登録できます。" }, 400, cors);
+  }
+
+  const now = new Date().toISOString();
+  const id = randomToken(16);
+  let insertResult;
+  try {
+    insertResult = await env.AUTH_DB.prepare(
+    `INSERT INTO perfect_achievers
+       (id, user_id, game_id, score, max_score, achieved_at, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+      `
+    ).bind(id, session.id, gameId, score, maxScore, now).run();
+  } catch (error) {
+    if (String(error?.message || "").toLowerCase().includes("unique")) {
+      return jsonResponse({ ok: false, error: "この試合では既に満点達成者として登録されています。" }, 409, cors);
+    }
+    throw error;
+  }
+
+  if (Number(insertResult?.meta?.changes || 0) !== 1) {
+    return jsonResponse({ ok: false, error: "満点達成者の登録に失敗しました。" }, 409, cors);
+
+  }
+
+  const snapshot = await getPerfectAchieverSnapshot(env.AUTH_DB, gameId, session.id);
+  return jsonResponse({
+    ...createPerfectAchieverResponse(gameId, snapshot),
+    registered: true
+  }, 201, cors);
+}
+
+async function getPerfectAchieverSnapshot(db, gameId, currentUserId) {
+  const countRow = await db.prepare(
+    "SELECT COUNT(*) AS count FROM perfect_achievers WHERE game_id = ?1"
+  ).bind(gameId).first();
+  const rows = await db.prepare(
+    `SELECT perfect_achievers.user_id, users.username,
+            perfect_achievers.achieved_at, perfect_achievers.created_at
+       FROM perfect_achievers
+       JOIN users ON users.id = perfect_achievers.user_id
+      WHERE perfect_achievers.game_id = ?1
+      ORDER BY perfect_achievers.created_at ASC, perfect_achievers.achieved_at ASC,
+               perfect_achievers.id ASC
+      LIMIT ?2`
+  ).bind(gameId, PERFECT_ACHIEVERS_DEFAULT_DISPLAY_LIMIT).all();
+  const currentUserRow = currentUserId
+    ? await db.prepare(
+      "SELECT 1 FROM perfect_achievers WHERE user_id = ?1 AND game_id = ?2 LIMIT 1"
+    ).bind(currentUserId, gameId).first()
+    : null;
+  const totalCount = Number(countRow?.count || 0);
+
+  return {
+    totalCount,
+    currentUserRegistered: Boolean(currentUserRow),
+    achievers: (rows?.results || []).map((row, index) => ({
+      rank: index + 1,
+      username: row.username,
+      achievedAt: row.achieved_at
+    }))
+  };
+}
+
+function createPerfectAchieverResponse(gameId, snapshot) {
+  return {
+    ok: true,
+    gameId,
+    totalCount: snapshot.totalCount,
+    displayLimit: PERFECT_ACHIEVERS_DEFAULT_DISPLAY_LIMIT,
+    currentUserRegistered: snapshot.currentUserRegistered,
+    achievers: snapshot.achievers
+  };
+}
+
+function getValidGameId(value) {
+  const gameId = String(value || "").trim();
+  if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+(?:-[a-z0-9]+){1,5}$/i.test(gameId)) {
+    return "";
+  }
+
+  const date = gameId.slice(0, 10);
+  const parsedDate = new Date(`${date}T00:00:00Z`);
+  return parsedDate.toISOString().slice(0, 10) === date ? gameId : "";
 }
 
 async function getSessionUser(request, env) {

@@ -37,6 +37,8 @@ const NPB_WORKER_API_URL = "https://starting9-npb-fetch.tanzana7.workers.dev/";
 const NPB_STARTER_SOURCE_URL = "https://npb.jp/announcement/starter/";
 const NPB_WORKER_FALLBACK_MESSAGE = "NPB公式ページ取得APIが未設定、または取得に失敗しました。NPB公式ページの「最新のオーダー」部分をコピーして、下の貼り付け欄に入力してください。";
 const NPB_WORKER_EXTRACTION_FAILED_MESSAGE = "WorkerでNPB公式ページは取得できましたが、スタメン抽出に失敗しました。手動貼り付けを使うか、debug=1付きURLで抽出対象テキストを確認してください。";
+// DBには全員を保存し、通常画面では先着3人だけ表示します。
+const PERFECT_ACHIEVERS_DEFAULT_DISPLAY_LIMIT = 3;
 const AUTO_FETCH_START_BEFORE_MS = 50 * 60 * 1000;
 const AUTO_FETCH_INTERVAL_MS = 10 * 60 * 1000;
 const AUTO_FETCH_MAX_ATTEMPTS = 5;
@@ -186,6 +188,17 @@ const state = {
     logs: [],
     fetchedGameId: ""
   },
+  perfectAchievers: {
+    isLoading: false,
+    isSubmitting: false,
+    status: "idle",
+    message: "",
+    gameId: "",
+    displayLimit: PERFECT_ACHIEVERS_DEFAULT_DISPLAY_LIMIT,
+    totalCount: 0,
+    currentUserRegistered: false,
+    achievers: []
+  },
   activeOrder: {
     prediction: 0,
     actual: 0
@@ -218,7 +231,8 @@ document.addEventListener("DOMContentLoaded", () => {
     initializeGameSchedule();
     renderAll();
   }
-  initializeProbableStarter();
+  window.addEventListener("starting9-auth-state-changed", handleAuthStateChanged);
+  initializeProbableStarter().finally(() => initializePerfectAchievers());
 });
 
 function bindEvents() {
@@ -242,6 +256,7 @@ function bindEvents() {
   document.getElementById("resetButton").addEventListener("click", resetAllData);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
+  document.getElementById("registerPerfectAchieverButton")?.addEventListener("click", registerPerfectAchiever);
   document.getElementById("loadNextGameButton").addEventListener("click", loadNextGameSchedule);
   document.getElementById("loadTodayGameButton").addEventListener("click", loadTodayGameSchedule);
   document.getElementById("loadSelectedGameButton").addEventListener("click", loadSelectedGameSchedule);
@@ -1476,6 +1491,190 @@ function addProbableStarterLog(message) {
   renderProbableStarterAdmin();
 }
 
+async function initializePerfectAchievers() {
+  const schedule = await getLoadedGameSchedule();
+  if (!state.probableStarter.nextGame) {
+    state.probableStarter.nextGame = findNextScheduledGameForStarter(schedule);
+  }
+  await fetchPerfectAchievers({ force: true });
+}
+
+function handleAuthStateChanged() {
+  renderPerfectAchievers();
+  fetchPerfectAchievers({ force: true });
+}
+
+function getCurrentGameId() {
+  return state.result?.gameId || state.nextScheduleId || state.probableStarter.nextGame?.gameId || "";
+}
+
+function getPerfectAchieversApiBaseUrl() {
+  if (typeof window !== "undefined" && window.starting9Auth?.getApiBaseUrl) {
+    return window.starting9Auth.getApiBaseUrl();
+  }
+
+  if (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
+    return "http://localhost:8787";
+  }
+
+  return "";
+}
+
+function buildPerfectAchieversApiUrl(gameId) {
+  const baseUrl = getPerfectAchieversApiBaseUrl().replace(/\/+$/, "");
+  const url = new URL(`${baseUrl}/api/perfect-achievers`, window.location.href);
+  url.searchParams.set("gameId", gameId);
+  return url.href;
+}
+
+async function fetchPerfectAchievers({ force = false } = {}) {
+  const gameId = getCurrentGameId();
+  if (!gameId) {
+    state.perfectAchievers.status = "noGame";
+    state.perfectAchievers.message = "対象試合がありません。";
+    renderPerfectAchievers();
+    return;
+  }
+  if (state.perfectAchievers.isLoading || (!force && state.perfectAchievers.gameId === gameId)) {
+    return;
+  }
+
+  state.perfectAchievers.isLoading = true;
+  state.perfectAchievers.status = "loading";
+  state.perfectAchievers.message = "満点達成者を読み込み中...";
+  state.perfectAchievers.gameId = gameId;
+  renderPerfectAchievers();
+
+  try {
+    const response = await fetch(buildPerfectAchieversApiUrl(gameId), {
+      credentials: "include",
+      cache: "no-store"
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+
+    state.perfectAchievers.status = "success";
+    state.perfectAchievers.message = "";
+    state.perfectAchievers.displayLimit = Math.max(1, Number(payload.displayLimit || PERFECT_ACHIEVERS_DEFAULT_DISPLAY_LIMIT));
+    state.perfectAchievers.totalCount = Number(payload.totalCount || 0);
+    state.perfectAchievers.currentUserRegistered = Boolean(payload.currentUserRegistered);
+    state.perfectAchievers.achievers = Array.isArray(payload.achievers) ? payload.achievers : [];
+  } catch (error) {
+    console.error("満点達成者の取得に失敗しました", error.message);
+    state.perfectAchievers.status = "error";
+    state.perfectAchievers.message = "満点達成者を取得できませんでした。";
+    state.perfectAchievers.achievers = [];
+  } finally {
+    state.perfectAchievers.isLoading = false;
+    renderPerfectAchievers();
+  }
+}
+
+async function registerPerfectAchiever() {
+  if (state.perfectAchievers.isSubmitting) {
+    return;
+  }
+
+  const gameId = getCurrentGameId();
+  const result = state.result;
+  const currentUser = window.starting9Auth?.getUser?.() || null;
+  const score = Number(result?.total);
+  const maxScore = Number(result?.max);
+
+  if (!gameId || !Number.isFinite(score) || !Number.isFinite(maxScore) || score !== maxScore) {
+    state.perfectAchievers.message = "満点を達成した場合のみ登録できます。";
+    renderPerfectAchievers();
+    return;
+  }
+  if (!currentUser) {
+    state.perfectAchievers.message = "達成者として登録するにはログインしてください。";
+    renderPerfectAchievers();
+    return;
+  }
+
+  state.perfectAchievers.isSubmitting = true;
+  state.perfectAchievers.message = "満点達成者として登録中...";
+  renderPerfectAchievers();
+
+  try {
+    const baseUrl = getPerfectAchieversApiBaseUrl().replace(/\/+$/, "");
+    const response = await fetch(`${baseUrl}/api/perfect-achievers`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gameId, score, maxScore })
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+
+    state.perfectAchievers.status = "success";
+    state.perfectAchievers.message = "満点達成者として登録しました。";
+    state.perfectAchievers.gameId = payload.gameId || gameId;
+    state.perfectAchievers.displayLimit = Math.max(1, Number(payload.displayLimit || state.perfectAchievers.displayLimit));
+    state.perfectAchievers.totalCount = Number(payload.totalCount || state.perfectAchievers.totalCount);
+    state.perfectAchievers.currentUserRegistered = true;
+    state.perfectAchievers.achievers = Array.isArray(payload.achievers) ? payload.achievers : state.perfectAchievers.achievers;
+  } catch (error) {
+    console.error("満点達成者の登録に失敗しました", error.message);
+    state.perfectAchievers.message = error.message || "満点達成者の登録に失敗しました。";
+  } finally {
+    state.perfectAchievers.isSubmitting = false;
+    renderPerfectAchievers();
+  }
+}
+
+function renderPerfectAchievers() {
+  const container = document.getElementById("perfectAchieversContent");
+  const count = document.getElementById("perfectAchieversCount");
+  if (!container || !count) {
+    return;
+  }
+
+  const perfectState = state.perfectAchievers;
+  count.textContent = perfectState.totalCount > 0 ? `現在 ${perfectState.totalCount}人` : "";
+
+  if (perfectState.status === "loading") {
+    container.innerHTML = `<p class="perfect-achievers-message">満点達成者を読み込み中...</p>`;
+    return;
+  }
+  if (perfectState.status === "error") {
+    container.innerHTML = `<p class="perfect-achievers-message is-error">${escapeHtml(perfectState.message)}</p>`;
+    return;
+  }
+  if (perfectState.status === "noGame" || !perfectState.gameId) {
+    container.innerHTML = `<p class="perfect-achievers-message">対象試合を確認できません。</p>`;
+    return;
+  }
+
+  const list = perfectState.achievers.length > 0
+    ? `<ol class="perfect-achievers-list">${perfectState.achievers.slice(0, perfectState.displayLimit).map((achiever) => `
+        <li><span>${achiever.rank}.</span><strong>${escapeHtml(achiever.username)}</strong><time datetime="${escapeHtml(achiever.achievedAt || "")}">${escapeHtml(formatDateTime(achiever.achievedAt))}</time></li>
+      `).join("")}</ol>`
+    : `<p class="perfect-achievers-message">まだ満点達成者はいません。</p>`;
+
+  const result = state.result;
+  const isPerfect = Boolean(result && Number(result.total) === Number(result.max));
+  const currentUser = window.starting9Auth?.getUser?.() || null;
+  let action = "";
+  if (isPerfect && perfectState.currentUserRegistered) {
+    action = `<p class="perfect-achievers-message is-success">満点達成者として登録済みです。</p>`;
+  } else if (isPerfect && !currentUser) {
+    action = `<p class="perfect-achievers-message">満点を達成しました。達成者として登録するにはログインしてください。</p><button id="openPerfectAchieverLoginButton" class="secondary-button compact-button" type="button">ログイン</button>`;
+  } else if (isPerfect) {
+    action = `<button id="registerPerfectAchieverButton" class="primary-button compact-button" type="button" ${perfectState.isSubmitting ? "disabled" : ""}>満点達成者として登録</button>`;
+  }
+
+  container.innerHTML = `${list}
+    <p class="perfect-achievers-total">表示：先着${perfectState.displayLimit}人 / 総達成人数 ${perfectState.totalCount}人</p>
+    ${action}`;
+  container.querySelector("#registerPerfectAchieverButton")?.addEventListener("click", registerPerfectAchiever);
+  container.querySelector("#openPerfectAchieverLoginButton")?.addEventListener("click", () => window.starting9Auth?.openLogin?.());
+}
+
 function showNpbFetchFallback(message) {
   state.actualPreview = null;
   state.adminStatus = "error";
@@ -2160,7 +2359,10 @@ function handleActualSubmit(event) {
     return;
   }
 
-  state.result = scoreLineup(state.prediction.lineup, state.actual.lineup);
+  state.result = {
+    ...scoreLineup(state.prediction.lineup, state.actual.lineup),
+    gameId: getCurrentGameId()
+  };
 
   saveToStorage(STORAGE_KEYS.result, state.result);
   renderAll();
@@ -2351,7 +2553,10 @@ function loadState() {
   }
 
   if (state.prediction?.lineup && state.actual?.lineup && hasCompletePositions(state.prediction.lineup) && hasCompletePositions(state.actual.lineup)) {
-    state.result = scoreLineup(state.prediction.lineup, state.actual.lineup);
+    state.result = {
+      ...scoreLineup(state.prediction.lineup, state.actual.lineup),
+      gameId: state.result?.gameId || getCurrentGameId()
+    };
     saveToStorage(STORAGE_KEYS.result, state.result);
   } else if (state.result?.max !== SCORE_MAX) {
     state.result = null;
@@ -2674,6 +2879,7 @@ function applyGameSchedule(schedule, source = "button") {
     return;
   }
 
+  state.nextScheduleId = schedule.gameId || "";
   const scoreUrl = resolveNpbScoreUrl(schedule);
   if (matchupInput) {
     matchupInput.value = schedule.matchupLabel || "";
@@ -2818,6 +3024,7 @@ function renderAll() {
   renderSavedPrediction();
   renderActualLineup();
   renderScoreResult();
+  renderPerfectAchievers();
   renderAdminFlow();
   renderPicker("prediction");
   renderPicker("actual");

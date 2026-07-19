@@ -6,17 +6,26 @@ const AUTH_USERNAME_MAX_LENGTH = 16;
 const AUTH_PASSWORD_MIN_LENGTH = 8;
 const AUTH_PASSWORD_MAX_LENGTH = 72;
 
+let resolveAuthInitialization;
+const authInitializationPromise = new Promise((resolve) => {
+  resolveAuthInitialization = resolve;
+});
+
 const authState = {
   user: null,
   mode: "login",
-  isLoading: false
+  isLoading: false,
+  isInitialized: false
 };
 
 window.starting9Auth = {
   getUser: () => authState.user,
   getApiBaseUrl: () => AUTH_API_BASE_URL,
-  openLogin: () => openAuthModal("login")
+  openLogin: () => openAuthModal("login"),
+  isInitialized: () => authState.isInitialized,
+  whenInitialized: () => authInitializationPromise
 };
+window.starting9AuthReady = authInitializationPromise;
 
 function resolveAuthApiBaseUrl() {
   const hostname = window.location.hostname;
@@ -48,24 +57,36 @@ function initializeAuth() {
     }
   });
 
-  renderAuthState();
+  // 初期描画では未ログイン確定のイベントを出さず、/api/auth/me の完了を待ちます。
+  renderAuthState({ notify: false });
   loadCurrentUser();
 }
 
 async function loadCurrentUser() {
   if (window.location.protocol === "file:" && !AUTH_API_BASE_URL) {
     setAuthStatus("認証API未接続（予想機能は利用できます）", "info");
+    finishAuthInitialization();
     return;
   }
 
   try {
     const response = await requestAuth("/api/auth/me");
     authState.user = response.authenticated ? response.user : null;
-    renderAuthState();
   } catch (error) {
     console.error("認証状態の確認に失敗しました", error.message);
+    authState.user = null;
     setAuthStatus("認証APIに接続できません（予想機能は利用できます）", "warning");
+  } finally {
+    finishAuthInitialization();
   }
+}
+
+function finishAuthInitialization() {
+  if (!authState.isInitialized) {
+    authState.isInitialized = true;
+    resolveAuthInitialization();
+  }
+  renderAuthState();
 }
 
 async function handleLoginSubmit(event) {
@@ -187,7 +208,7 @@ function closeAuthModal() {
   modal.setAttribute("aria-hidden", "true");
 }
 
-function renderAuthState() {
+function renderAuthState({ notify = true } = {}) {
   const isAuthenticated = Boolean(authState.user?.id && authState.user?.username);
   document.getElementById("authLoggedOut").classList.toggle("hidden", isAuthenticated);
   document.getElementById("authLoggedIn").classList.toggle("hidden", !isAuthenticated);
@@ -195,9 +216,11 @@ function renderAuthState() {
   if (isAuthenticated) {
     closeAuthModal();
   }
-  window.dispatchEvent(new CustomEvent("starting9-auth-state-changed", {
-    detail: { authenticated: isAuthenticated, user: authState.user }
-  }));
+  if (notify) {
+    window.dispatchEvent(new CustomEvent("starting9-auth-state-changed", {
+      detail: { authenticated: isAuthenticated, user: authState.user }
+    }));
+  }
 }
 
 function validateAuthCredentials(username, password) {

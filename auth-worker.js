@@ -1,6 +1,7 @@
 const SESSION_COOKIE_NAME = "s9_session";
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
-const PASSWORD_ITERATIONS = 210000;
+const PBKDF2_ITERATIONS = 100_000;
+const PBKDF2_MAX_ITERATIONS = 100_000;
 const PASSWORD_HASH_BITS = 256;
 const USERNAME_MIN_LENGTH = 3;
 const USERNAME_MAX_LENGTH = 16;
@@ -106,7 +107,7 @@ async function handleRegister(request, env, cors) {
   }
 
   const salt = randomBytes(16);
-  const passwordHash = await derivePasswordHash(input.password, salt, PASSWORD_ITERATIONS);
+  const passwordHash = await derivePasswordHash(input.password, salt, PBKDF2_ITERATIONS);
   const now = new Date().toISOString();
   const userId = randomToken(16);
 
@@ -121,7 +122,7 @@ async function handleRegister(request, env, cors) {
       usernameNormalized,
       bytesToBase64Url(passwordHash),
       bytesToBase64Url(salt),
-      PASSWORD_ITERATIONS,
+      PBKDF2_ITERATIONS,
       now
     ).run();
   } catch (error) {
@@ -155,9 +156,15 @@ async function handleLogin(request, env, cors) {
     return jsonResponse({ ok: false, error: "ユーザー名またはパスワードが正しくありません。" }, 401, cors);
   }
 
+  const iterations = Number(user.password_iterations);
+  // 過去にWorker上限を超える値で作成されたレコードは書き換えず、再設定導線へ委ねます。
+  if (!Number.isInteger(iterations) || iterations < 1 || iterations > PBKDF2_MAX_ITERATIONS) {
+    return jsonResponse({ ok: false, error: "ユーザー名またはパスワードが正しくありません。" }, 401, cors);
+  }
+
   const salt = base64UrlToBytes(user.password_salt);
   const expectedHash = base64UrlToBytes(user.password_hash);
-  const actualHash = await derivePasswordHash(input.password, salt, Number(user.password_iterations));
+  const actualHash = await derivePasswordHash(input.password, salt, iterations);
   if (!constantTimeEqual(actualHash, expectedHash)) {
     return jsonResponse({ ok: false, error: "ユーザー名またはパスワードが正しくありません。" }, 401, cors);
   }

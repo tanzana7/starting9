@@ -233,6 +233,17 @@ const state = {
     locked: false,
     conflict: false
   },
+  adminScoring: {
+    isLoadingSummary: false,
+    isTesting: false,
+    isScoring: false,
+    gameId: "",
+    predictionCount: null,
+    scoredCount: null,
+    summaryMessage: "",
+    preview: null,
+    previewFingerprint: ""
+  },
   activeOrder: {
     prediction: 0,
     actual: 0
@@ -291,6 +302,8 @@ function bindEvents() {
   bindAdminEvent("approveProvisionalButton", "click", approveProvisionalActual);
   bindAdminEvent("editProvisionalButton", "click", editProvisionalActual);
   bindAdminEvent("cancelProvisionalButton", "click", cancelProvisionalActual);
+  bindAdminEvent("testServerScoringButton", "click", runServerScoringPreview);
+  bindAdminEvent("runServerScoringButton", "click", runServerScoring);
   bindAdminEvent("generateTestPredictionButton", "click", generateTestPrediction);
   bindAdminEvent("resetButton", "click", resetAllData);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
@@ -410,6 +423,7 @@ async function refreshAdminAccess() {
       applyAdminMode();
       initializeGameSchedule();
       renderAll();
+      refreshAdminScoringSummary({ force: true });
       return;
     }
 
@@ -1634,6 +1648,286 @@ function handleAuthStateChanged() {
 
 function getCurrentGameId() {
   return state.result?.gameId || state.nextScheduleId || state.probableStarter.nextGame?.gameId || "";
+}
+
+function getAdminScoringGameId() {
+  // 古いローカル採点結果ではなく、管理者が読み込んだ対象試合を優先します。
+  return state.nextScheduleId || state.probableStarter.nextGame?.gameId || "";
+}
+
+function buildAdminScoringApiUrl(gameId, action) {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  if (!baseUrl || !gameId) {
+    return "";
+  }
+
+  return `${baseUrl}/api/admin/games/${encodeURIComponent(gameId)}/predictions/${action}`;
+}
+
+function isApprovedActualLineupForServerScoring() {
+  return Boolean(state.actual?.lineup) && state.actual?.approvalStatus !== "provisional";
+}
+
+function createAdminActualLineupPayload() {
+  if (!isApprovedActualLineupForServerScoring()) {
+    return { ok: false, error: "本承認済みの実スタメンを登録してから採点してください。" };
+  }
+
+  const lineup = normalizeLineup(state.actual.lineup);
+  const validationError = validateLineup(lineup, "承認済み実スタメン");
+  if (validationError) {
+    return { ok: false, error: validationError };
+  }
+
+  const serializedLineup = [];
+  for (const item of lineup) {
+    const player = getUniquePlayerData(item.player);
+    const teamCode = player?.teamCode || DEFAULT_PLAYER_TEAM_CODE;
+    const teamId = TEAM_PLAYER_ID_PREFIXES[teamCode];
+    const uniformNumber = player?.uniformNumber;
+    const playerId = createPlayerId(teamCode, uniformNumber);
+    if (!player || !teamId || !playerId) {
+      return {
+        ok: false,
+        error: `実スタメンの「${item.player || "未選択"}」を選手マスタから識別できません。背番号を含む選手情報を確認してください。`
+      };
+    }
+
+    serializedLineup.push({
+      playerId,
+      teamId,
+      teamCode,
+      uniformNumber,
+      playerName: player.name,
+      battingOrder: item.order,
+      position: item.position
+    });
+  }
+
+  return { ok: true, lineup: serializedLineup };
+}
+
+function getAdminScoringFingerprint(actualLineup) {
+  return JSON.stringify(actualLineup.map((item) => [
+    item.playerId,
+    item.battingOrder,
+    item.position
+  ]));
+}
+
+function resetAdminScoringPreview() {
+  state.adminScoring.preview = null;
+  state.adminScoring.previewFingerprint = "";
+}
+
+async function refreshAdminScoringSummary({ force = false } = {}) {
+  if (!state.isAdminMode) {
+    return;
+  }
+
+  const gameId = getAdminScoringGameId();
+  if (!gameId) {
+    state.adminScoring.gameId = "";
+    state.adminScoring.predictionCount = null;
+    state.adminScoring.scoredCount = null;
+    state.adminScoring.summaryMessage = "対象試合を日程から読み込むと、保存済み予想の件数を確認できます。";
+    renderAdminScoringPanel();
+    return;
+  }
+  if (state.adminScoring.isLoadingSummary || (!force && state.adminScoring.gameId === gameId && state.adminScoring.predictionCount !== null)) {
+    return;
+  }
+
+  const url = buildAdminScoringApiUrl(gameId, "summary");
+  if (!url) {
+    state.adminScoring.summaryMessage = "認証APIの接続先を確認できません。";
+    renderAdminScoringPanel();
+    return;
+  }
+
+  state.adminScoring.isLoadingSummary = true;
+  state.adminScoring.gameId = gameId;
+  state.adminScoring.summaryMessage = "保存済み予想の件数を確認中...";
+  renderAdminScoringPanel();
+  try {
+    const response = await fetch(url, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+    if (state.adminScoring.gameId !== gameId) {
+      return;
+    }
+    state.adminScoring.predictionCount = Number(payload.predictionCount || 0);
+    state.adminScoring.scoredCount = Number(payload.scoredCount || 0);
+    state.adminScoring.summaryMessage = "";
+  } catch (error) {
+    console.error("保存済み予想の件数取得に失敗しました", error.message);
+    state.adminScoring.predictionCount = null;
+    state.adminScoring.scoredCount = null;
+    state.adminScoring.summaryMessage = "保存済み予想の件数を取得できませんでした。";
+  } finally {
+    state.adminScoring.isLoadingSummary = false;
+    renderAdminScoringPanel();
+  }
+}
+
+async function runServerScoringPreview() {
+  const gameId = getAdminScoringGameId();
+  const actualPayload = createAdminActualLineupPayload();
+  if (!gameId || !actualPayload.ok) {
+    state.adminScoring.summaryMessage = actualPayload.error || "対象試合を日程から読み込んでください。";
+    resetAdminScoringPreview();
+    renderAdminScoringPanel();
+    return;
+  }
+
+  const url = buildAdminScoringApiUrl(gameId, "score-predictions/preview");
+  if (!url) {
+    state.adminScoring.summaryMessage = "認証APIの接続先を確認できません。";
+    renderAdminScoringPanel();
+    return;
+  }
+
+  state.adminScoring.isTesting = true;
+  state.adminScoring.summaryMessage = "採点テストを実行中...";
+  resetAdminScoringPreview();
+  renderAdminScoringPanel();
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ actualLineup: actualPayload.lineup })
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+    state.adminScoring.preview = payload;
+    state.adminScoring.previewFingerprint = getAdminScoringFingerprint(actualPayload.lineup);
+    state.adminScoring.summaryMessage = "採点テストが完了しました。DBは変更していません。";
+    state.adminScoring.predictionCount = Number(payload.processed || 0);
+  } catch (error) {
+    console.error("採点テストに失敗しました", error.message);
+    state.adminScoring.summaryMessage = "採点テストに失敗しました。実スタメンと認証APIを確認してください。";
+  } finally {
+    state.adminScoring.isTesting = false;
+    renderAdminScoringPanel();
+  }
+}
+
+async function runServerScoring() {
+  const gameId = getAdminScoringGameId();
+  const actualPayload = createAdminActualLineupPayload();
+  const fingerprint = actualPayload.ok ? getAdminScoringFingerprint(actualPayload.lineup) : "";
+  if (!gameId || !actualPayload.ok || !state.adminScoring.preview || state.adminScoring.previewFingerprint !== fingerprint) {
+    state.adminScoring.summaryMessage = "実スタメンを変更したため、先に採点テストを実行してください。";
+    renderAdminScoringPanel();
+    return;
+  }
+
+  const processed = Number(state.adminScoring.preview.processed || 0);
+  if (!window.confirm(`この試合の保存済み予想${processed}件を採点します。よろしいですか？`)) {
+    return;
+  }
+
+  const url = buildAdminScoringApiUrl(gameId, "score-predictions");
+  if (!url) {
+    state.adminScoring.summaryMessage = "認証APIの接続先を確認できません。";
+    renderAdminScoringPanel();
+    return;
+  }
+
+  state.adminScoring.isScoring = true;
+  state.adminScoring.summaryMessage = "本番採点を実行中...";
+  renderAdminScoringPanel();
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ actualLineup: actualPayload.lineup })
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+    state.adminScoring.summaryMessage = payload.message || `本番採点が完了しました。${payload.scored}件を更新しました。`;
+    resetAdminScoringPreview();
+    await refreshAdminScoringSummary({ force: true });
+  } catch (error) {
+    console.error("本番採点に失敗しました", error.message);
+    state.adminScoring.summaryMessage = "本番採点に失敗しました。DBは更新されていない可能性があります。";
+  } finally {
+    state.adminScoring.isScoring = false;
+    renderAdminScoringPanel();
+  }
+}
+
+function renderAdminScoringPanel() {
+  const summary = document.getElementById("adminServerScoringSummary");
+  const testButton = document.getElementById("testServerScoringButton");
+  const scoreButton = document.getElementById("runServerScoringButton");
+  const message = document.getElementById("adminServerScoringMessage");
+  const previewContainer = document.getElementById("adminServerScoringPreview");
+  if (!summary || !testButton || !scoreButton || !message || !previewContainer) {
+    return;
+  }
+
+  const gameId = getAdminScoringGameId();
+  const actualPayload = createAdminActualLineupPayload();
+  const fingerprint = actualPayload.ok ? getAdminScoringFingerprint(actualPayload.lineup) : "";
+  if (state.adminScoring.preview && state.adminScoring.previewFingerprint !== fingerprint) {
+    resetAdminScoringPreview();
+    if (!state.adminScoring.isTesting && !state.adminScoring.isScoring) {
+      state.adminScoring.summaryMessage = "実スタメンが変更されました。採点テストをもう一度実行してください。";
+    }
+  }
+
+  const summaryRows = [
+    ["対象gameId", gameId || "未選択"],
+    ["実スタメン", actualPayload.ok ? "本承認済み・9人確認済み" : "未確定または選手情報を確認できません"],
+    ["保存済み予想", state.adminScoring.predictionCount === null ? "-" : `${state.adminScoring.predictionCount}件`],
+    ["採点済み", state.adminScoring.scoredCount === null ? "-" : `${state.adminScoring.scoredCount}件`]
+  ];
+  summary.innerHTML = `<dl>${summaryRows.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl>`;
+
+  const canTest = Boolean(gameId && actualPayload.ok && !state.adminScoring.isTesting && !state.adminScoring.isScoring);
+  const canScore = Boolean(
+    canTest && state.adminScoring.preview && state.adminScoring.previewFingerprint === fingerprint
+  );
+  testButton.disabled = !canTest;
+  scoreButton.disabled = !canScore;
+  message.textContent = state.adminScoring.summaryMessage || (actualPayload.ok ? "" : actualPayload.error);
+  message.className = `message${state.adminScoring.summaryMessage.includes("失敗") ? " error-message" : ""}`;
+
+  if (!state.adminScoring.preview) {
+    previewContainer.classList.add("hidden");
+    previewContainer.innerHTML = "";
+    return;
+  }
+
+  const preview = state.adminScoring.preview;
+  const distribution = Object.entries(preview.scoreDistribution || {})
+    .map(([score, count]) => `${escapeHtml(score)}点: ${escapeHtml(count)}件`)
+    .join(" / ") || "-";
+  const errors = Array.isArray(preview.validationErrors) && preview.validationErrors.length
+    ? `<p class="admin-server-scoring-errors">検証エラー：${escapeHtml(preview.validationErrors.join(" / "))}</p>`
+    : "";
+  previewContainer.classList.remove("hidden");
+  previewContainer.innerHTML = `
+    <strong>採点テスト結果（DBは変更していません）</strong>
+    <dl>
+      <dt>処理予定</dt><dd>${escapeHtml(preview.processed)}件</dd>
+      <dt>採点可能</dt><dd>${escapeHtml(preview.scored)}件</dd>
+      <dt>失敗</dt><dd>${escapeHtml(preview.failed)}件</dd>
+      <dt>平均点</dt><dd>${escapeHtml(preview.averageScore)} / ${SCORE_MAX}</dd>
+      <dt>満点件数</dt><dd>${escapeHtml(preview.perfectCount)}件</dd>
+      <dt>点数分布</dt><dd>${distribution}</dd>
+    </dl>
+    ${errors}
+  `;
 }
 
 function getPerfectAchieversApiBaseUrl() {
@@ -3249,6 +3543,7 @@ function initializeGameSchedule() {
   const nextSchedule = findNextGameSchedule();
   state.nextScheduleId = nextSchedule?.gameId || "";
   renderGameSchedulePicker();
+  refreshAdminScoringSummary({ force: true });
 
   if (nextSchedule) {
     addScheduleLoadLog(`次の試合を検出：${formatScheduleForLog(nextSchedule)}`);
@@ -3399,6 +3694,7 @@ function applyGameSchedule(schedule, source = "button") {
   saveAdminGameInfoFromInputs();
   renderLoadedScheduleInfo(schedule, scoreUrl);
   syncPredictionFromAccount({ force: true });
+  refreshAdminScoringSummary({ force: true });
   if (source === "auto") {
     addScheduleLoadLog(`自動反映した試合：${formatScheduleForLog(schedule)}`);
   } else {
@@ -3677,6 +3973,7 @@ function renderAdminFlow() {
   renderActualPreview(state.actualPreview);
   updateAdminButtons();
   updateAutoFetchButtons();
+  renderAdminScoringPanel();
   updateRosterMonitorButtons();
   renderAutoFetchPanel();
   renderRosterSnapshotSummary();
@@ -4435,6 +4732,17 @@ function resetAllData() {
   state.actual = null;
   state.result = null;
   state.predictionRemote = createEmptyPredictionRemoteState();
+  state.adminScoring = {
+    isLoadingSummary: false,
+    isTesting: false,
+    isScoring: false,
+    gameId: "",
+    predictionCount: null,
+    scoredCount: null,
+    summaryMessage: "",
+    preview: null,
+    previewFingerprint: ""
+  };
   state.actualPreview = null;
   state.adminStatus = "idle";
   state.adminError = "";

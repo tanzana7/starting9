@@ -248,6 +248,23 @@
           <p id="actualError" class="message error-message" role="alert" aria-live="polite"></p>
           <button class="primary-button" type="submit">採点する</button>
         </form>
+
+        <section id="adminServerScoringPanel" class="admin-server-scoring" aria-labelledby="admin-server-scoring-title">
+          <div class="admin-server-scoring-heading">
+            <div>
+              <p class="area-label">SERVER SCORING</p>
+              <h3 id="admin-server-scoring-title">保存済み予想の一括採点</h3>
+              <p>採点テストはDBを変更しません。本番採点はテスト成功後にだけ実行できます。</p>
+            </div>
+          </div>
+          <div id="adminServerScoringSummary" class="admin-server-scoring-summary" aria-live="polite"></div>
+          <div class="admin-server-scoring-actions">
+            <button id="testServerScoringButton" class="secondary-button compact-button" type="button">採点テスト</button>
+            <button id="runServerScoringButton" class="danger-button compact-button" type="button" disabled>本番採点</button>
+          </div>
+          <p id="adminServerScoringMessage" class="message" role="status" aria-live="polite"></p>
+          <div id="adminServerScoringPreview" class="admin-server-scoring-preview hidden" aria-live="polite"></div>
+        </section>
       </section>
 
       <section class="admin-test-tools" aria-labelledby="admin-test-tools-title">

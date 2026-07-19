@@ -358,13 +358,13 @@ function applyAdminMode() {
   }
 
   if (accessNotice) {
-    accessNotice.classList.toggle("hidden", !state.adminAccess.requested || isAuthorized);
+    accessNotice.classList.add("hidden");
   }
   if (accessMessage) {
-    accessMessage.textContent = state.adminAccess.message;
+    accessMessage.textContent = "";
   }
   if (loginButton) {
-    loginButton.classList.toggle("hidden", state.adminAccess.status !== "unauthenticated");
+    loginButton.classList.add("hidden");
   }
 
   state.isAdminMode = isAuthorized;
@@ -389,6 +389,17 @@ function buildAdminMeApiUrl() {
   return baseUrl ? `${baseUrl}/api/admin/me` : "";
 }
 
+function leaveAdminModeSilently() {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("admin");
+  window.history.replaceState(window.history.state, "", url);
+  state.adminAccess.requested = false;
+  state.adminAccess.status = "inactive";
+  state.adminAccess.message = "";
+  state.isAdminMode = false;
+  applyAdminMode();
+}
+
 async function refreshAdminAccess() {
   const requestId = state.adminAccess.requestId + 1;
   state.adminAccess.requestId = requestId;
@@ -402,19 +413,13 @@ async function refreshAdminAccess() {
   }
 
   if (!getPredictionAccountUser()) {
-    state.adminAccess.status = "unauthenticated";
-    state.adminAccess.message = getAdminAccessMessage("unauthenticated");
-    state.isAdminMode = false;
-    applyAdminMode();
+    leaveAdminModeSilently();
     return;
   }
 
   const url = buildAdminMeApiUrl();
   if (!url) {
-    state.adminAccess.status = "error";
-    state.adminAccess.message = getAdminAccessMessage("error");
-    state.isAdminMode = false;
-    applyAdminMode();
+    leaveAdminModeSilently();
     return;
   }
 
@@ -439,19 +444,16 @@ async function refreshAdminAccess() {
       return;
     }
 
-    state.adminAccess.status = response.status === 401 ? "unauthenticated" : response.status === 403 ? "forbidden" : "error";
-    state.adminAccess.message = getAdminAccessMessage(state.adminAccess.status);
+    leaveAdminModeSilently();
+    return;
   } catch (error) {
     if (requestId !== state.adminAccess.requestId) {
       return;
     }
     console.error("管理者権限の確認に失敗しました", error.message);
-    state.adminAccess.status = "error";
-    state.adminAccess.message = getAdminAccessMessage("error");
+    leaveAdminModeSilently();
+    return;
   }
-
-  state.isAdminMode = false;
-  applyAdminMode();
 }
 
 function bindAdminGameInfoEvents() {

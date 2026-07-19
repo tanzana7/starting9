@@ -8,6 +8,26 @@ const PASSWORD_MIN_LENGTH = 8;
 const PASSWORD_MAX_LENGTH = 72;
 // 開発中は1試合につき先着3人。本番候補は30人です。
 const PERFECT_ACHIEVERS_DEFAULT_DISPLAY_LIMIT = 3;
+const PREDICTION_SCHEMA_VERSION = 1;
+const PREDICTION_MAX_JSON_BYTES = 16 * 1024;
+const PREDICTION_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
+const PREDICTION_TEAM_CODES = new Set(["f", "b", "h", "l", "e", "m", "g", "t", "db", "c", "d", "s"]);
+// 既存の日程用コードとは別に、選手IDだけへ固定の球団IDを割り当てます。
+const TEAM_PLAYER_ID_PREFIXES = Object.freeze({
+  fighters: "F",
+  hawks: "H",
+  buffaloes: "Bs",
+  marines: "M",
+  eagles: "E",
+  lions: "L",
+  giants: "G",
+  tigers: "T",
+  baystars: "DB",
+  carp: "C",
+  dragons: "D",
+  swallows: "S"
+});
+const PREDICTION_TEAM_IDS = new Set(Object.values(TEAM_PLAYER_ID_PREFIXES));
 
 export default {
   async fetch(request, env, ctx) {
@@ -47,6 +67,15 @@ export default {
       }
       if (path === "/api/perfect-achievers" && request.method === "POST") {
         return await handlePostPerfectAchiever(request, env, cors);
+      }
+      if (path === "/api/predictions/current" && request.method === "GET") {
+        return await handleGetCurrentPrediction(request, env, cors);
+      }
+      if (path === "/api/predictions/current" && request.method === "PUT") {
+        return await handlePutCurrentPrediction(request, env, cors);
+      }
+      if (path === "/api/predictions/current" && request.method === "DELETE") {
+        return await handleDeleteCurrentPrediction(request, env, cors);
       }
 
       return jsonResponse({ ok: false, error: "認証APIのパスまたはHTTPメソッドが不正です。" }, 404, cors);
@@ -271,6 +300,273 @@ function createPerfectAchieverResponse(gameId, snapshot) {
   };
 }
 
+async function handleGetCurrentPrediction(request, env, cors) {
+  const session = await getSessionUser(request, env);
+  if (!session) {
+    return jsonResponse({ ok: false, error: "予想を確認するにはログインしてください。" }, 401, cors);
+  }
+
+  const metadata = parsePredictionGameId(new URL(request.url).searchParams.get("gameId"));
+  if (!metadata) {
+    return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
+  }
+
+  const row = await getPredictionRow(env.AUTH_DB, session.id, metadata.gameId);
+  if (!row) {
+    return jsonResponse({
+      ok: true,
+      gameId: metadata.gameId,
+      prediction: null,
+      status: null,
+      submittedAt: null,
+      updatedAt: null,
+      locked: false
+    }, 200, cors);
+  }
+
+  const prediction = parseStoredPrediction(row.prediction_json);
+  if (!prediction) {
+    return jsonResponse({ ok: false, error: "保存済み予想の読み込みに失敗しました。" }, 500, cors);
+  }
+
+  return jsonResponse({
+    ok: true,
+    gameId: metadata.gameId,
+    prediction,
+    status: row.status,
+    submittedAt: row.submitted_at,
+    updatedAt: row.updated_at,
+    locked: isPredictionLocked(row)
+  }, 200, cors);
+}
+
+async function handlePutCurrentPrediction(request, env, cors) {
+  const session = await getSessionUser(request, env);
+  if (!session) {
+    return jsonResponse({ ok: false, error: "予想を保存するにはログインしてください。" }, 401, cors);
+  }
+
+  const input = await readJson(request);
+  const metadata = parsePredictionGameId(input?.gameId);
+  if (!metadata) {
+    return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
+  }
+
+  const predictionResult = sanitizePredictionPayload(input?.prediction);
+  if (!predictionResult.ok) {
+    return jsonResponse({ ok: false, error: predictionResult.error }, 400, cors);
+  }
+
+  const predictionJson = JSON.stringify(predictionResult.prediction);
+  if (new TextEncoder().encode(predictionJson).byteLength > PREDICTION_MAX_JSON_BYTES) {
+    return jsonResponse({ ok: false, error: "予想データが大きすぎます。" }, 413, cors);
+  }
+
+  const existing = await getPredictionRow(env.AUTH_DB, session.id, metadata.gameId);
+  if (existing && isPredictionLocked(existing)) {
+    return jsonResponse({ ok: false, error: "この試合の予想受付は終了しています。" }, 409, cors);
+  }
+
+  const now = new Date().toISOString();
+  const id = existing?.id || randomToken(16);
+  const result = await env.AUTH_DB.prepare(
+    `INSERT INTO predictions
+       (id, user_id, game_id, prediction_json, schema_version,
+        game_date, home_team, away_team, opponent_code, is_home,
+        submitted_at, updated_at, locked_at, status,
+        score, max_score, scored_at, actual_lineup_json)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, NULL, 'submitted', NULL, NULL, NULL, NULL)
+     ON CONFLICT(user_id, game_id) DO UPDATE SET
+       prediction_json = excluded.prediction_json,
+       schema_version = excluded.schema_version,
+       game_date = excluded.game_date,
+       home_team = excluded.home_team,
+       away_team = excluded.away_team,
+       opponent_code = excluded.opponent_code,
+       is_home = excluded.is_home,
+       updated_at = excluded.updated_at,
+       status = 'submitted'
+     WHERE predictions.locked_at IS NULL
+       AND predictions.status NOT IN ('locked', 'scored')`
+  ).bind(
+    id,
+    session.id,
+    metadata.gameId,
+    predictionJson,
+    PREDICTION_SCHEMA_VERSION,
+    metadata.date,
+    metadata.homeCode,
+    metadata.awayCode,
+    metadata.opponentCode,
+    metadata.isHome ? 1 : 0,
+    now
+  ).run();
+
+  if (Number(result?.meta?.changes || 0) !== 1) {
+    const current = await getPredictionRow(env.AUTH_DB, session.id, metadata.gameId);
+    if (current && isPredictionLocked(current)) {
+      return jsonResponse({ ok: false, error: "この試合の予想受付は終了しています。" }, 409, cors);
+    }
+    return jsonResponse({ ok: false, error: "予想の保存に失敗しました。" }, 409, cors);
+  }
+
+  const created = !existing;
+  return jsonResponse({
+    ok: true,
+    gameId: metadata.gameId,
+    created,
+    updated: !created,
+    status: "submitted",
+    submittedAt: existing?.submitted_at || now,
+    updatedAt: now
+  }, 200, cors);
+}
+
+async function handleDeleteCurrentPrediction(request, env, cors) {
+  const session = await getSessionUser(request, env);
+  if (!session) {
+    return jsonResponse({ ok: false, error: "予想を削除するにはログインしてください。" }, 401, cors);
+  }
+
+  const metadata = parsePredictionGameId(new URL(request.url).searchParams.get("gameId"));
+  if (!metadata) {
+    return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
+  }
+
+  const existing = await getPredictionRow(env.AUTH_DB, session.id, metadata.gameId);
+  if (existing && isPredictionLocked(existing)) {
+    return jsonResponse({ ok: false, error: "この試合の予想受付は終了しています。" }, 409, cors);
+  }
+
+  await env.AUTH_DB.prepare(
+    "DELETE FROM predictions WHERE user_id = ?1 AND game_id = ?2"
+  ).bind(session.id, metadata.gameId).run();
+  return jsonResponse({ ok: true, gameId: metadata.gameId, deleted: Boolean(existing) }, 200, cors);
+}
+
+async function getPredictionRow(db, userId, gameId) {
+  return db.prepare(
+    `SELECT id, user_id, game_id, prediction_json, status,
+            submitted_at, updated_at, locked_at
+       FROM predictions
+      WHERE user_id = ?1 AND game_id = ?2
+      LIMIT 1`
+  ).bind(userId, gameId).first();
+}
+
+function parseStoredPrediction(value) {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && parsed.schemaVersion === PREDICTION_SCHEMA_VERSION && Array.isArray(parsed.lineup)
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function sanitizePredictionPayload(value) {
+  if (!value || typeof value !== "object" || !Array.isArray(value.lineup)) {
+    return { ok: false, error: "予想データが不正です。" };
+  }
+  if (value.lineup.length !== 9) {
+    return { ok: false, error: "予想は9人分入力してください。" };
+  }
+
+  const lineup = value.lineup.map((item) => {
+    const order = Number(item?.battingOrder ?? item?.order);
+    const playerName = String(item?.playerName ?? item?.player ?? "").trim().slice(0, 40);
+    const playerId = typeof item?.playerId === "string" ? item.playerId : "";
+    const teamId = typeof item?.teamId === "string" ? item.teamId : "";
+    const teamCode = typeof item?.teamCode === "string" ? item.teamCode : "";
+    // 数値化・trim・桁合わせをせず、先頭ゼロを含む登録背番号をそのまま検証します。
+    const uniformNumber = item?.uniformNumber;
+    const position = String(item?.position || "").normalize("NFKC").trim();
+    return { battingOrder: order, playerId, teamId, teamCode, uniformNumber, playerName, position };
+  });
+
+  if (lineup.some((item) => !Number.isInteger(item.battingOrder) || item.battingOrder < 1 || item.battingOrder > 9)) {
+    return { ok: false, error: "打順は1番から9番までで入力してください。" };
+  }
+  if (new Set(lineup.map((item) => item.battingOrder)).size !== 9) {
+    return { ok: false, error: "打順が重複しています。" };
+  }
+  if (lineup.some((item) => !item.playerName || !item.playerId)) {
+    return { ok: false, error: "選手情報が不足しています。選手を選び直してください。" };
+  }
+  for (const item of lineup) {
+    const expectedTeamId = TEAM_PLAYER_ID_PREFIXES[item.teamCode];
+    if (!expectedTeamId || !PREDICTION_TEAM_IDS.has(item.teamId) || item.teamId !== expectedTeamId) {
+      return { ok: false, error: "選手の球団情報が不正です。選手を選び直してください。" };
+    }
+    if (typeof item.uniformNumber !== "string" || !/^\d{1,3}$/.test(item.uniformNumber)) {
+      return { ok: false, error: "選手の背番号が不正です。選手を選び直してください。" };
+    }
+    if (item.playerId !== createPlayerId(item.teamCode, item.uniformNumber)) {
+      return { ok: false, error: "選手IDが不正です。選手を選び直してください。" };
+    }
+  }
+  const playerIds = lineup.map((item) => item.playerId);
+  if (new Set(playerIds).size !== 9) {
+    return { ok: false, error: "同じ選手を複数登録できません。" };
+  }
+  if (lineup.some((item) => !PREDICTION_POSITIONS.has(item.position))) {
+    return { ok: false, error: "守備位置が不正です。" };
+  }
+
+  const nickname = typeof value.nickname === "string" ? value.nickname.trim().slice(0, 24) : "";
+  return {
+    ok: true,
+    prediction: {
+      schemaVersion: PREDICTION_SCHEMA_VERSION,
+      nickname,
+      lineup: lineup.sort((left, right) => left.battingOrder - right.battingOrder)
+    }
+  };
+}
+
+function createPlayerId(teamCode, uniformNumber) {
+  const teamId = TEAM_PLAYER_ID_PREFIXES[teamCode];
+  if (!teamId || typeof uniformNumber !== "string" || !/^\d{1,3}$/.test(uniformNumber)) {
+    return "";
+  }
+
+  return `${teamId}-${uniformNumber}`;
+}
+
+function parsePredictionGameId(value) {
+  const gameId = String(value || "").trim();
+  const match = /^(\d{4}-\d{2}-\d{2})-([a-z]{1,2})-([a-z]{1,2})-(\d+)$/i.exec(gameId);
+  if (!match) {
+    return null;
+  }
+
+  const date = match[1];
+  const homeCode = match[2].toLowerCase();
+  const awayCode = match[3].toLowerCase();
+  const dateValue = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(dateValue.getTime()) || dateValue.toISOString().slice(0, 10) !== date || !PREDICTION_TEAM_CODES.has(homeCode) || !PREDICTION_TEAM_CODES.has(awayCode)) {
+    return null;
+  }
+  if (homeCode !== "f" && awayCode !== "f") {
+    return null;
+  }
+
+  const isHome = homeCode === "f";
+  return {
+    gameId,
+    date,
+    homeCode,
+    awayCode,
+    opponentCode: isHome ? awayCode : homeCode,
+    isHome
+  };
+}
+
+function isPredictionLocked(row) {
+  return Boolean(row?.locked_at) || row?.status === "locked" || row?.status === "scored";
+}
+
 function getValidGameId(value) {
   const gameId = String(value || "").trim();
   if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9]+(?:-[a-z0-9]+){1,5}$/i.test(gameId)) {
@@ -442,7 +738,7 @@ function clearSessionCookie(env) {
 function createCorsHeaders(request, env) {
   const headers = new Headers({
     "Cache-Control": "no-store",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Credentials": "true",
     Vary: "Origin"

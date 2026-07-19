@@ -1,0 +1,19 @@
+{
+  "$schema": "https://developers.cloudflare.com/wrangler/config-schema.json",
+  "name": "starting9-auth",
+  "main": "auth-worker.js",
+  "compatibility_date": "2026-07-17",
+  "workers_dev": true,
+  "vars": {
+    "AUTH_ALLOWED_ORIGINS": "https://starting9.pages.dev",
+    "SESSION_SAMESITE": "None"
+  },
+  "d1_databases": [
+    {
+      "binding": "AUTH_DB",
+      "database_name": "starting9-auth",
+      "database_id": "0ad8ada3-f50a-4e83-be8a-15a0b24324c6",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

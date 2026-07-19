@@ -1,6 +1,7 @@
 const players = [
   {
     name: "マルティネス",
+    uniformNumber: "2",
     aliases: ["マルティネス"],
     registeredPosition: "捕手",
     playerType: "batter",
@@ -14,6 +15,7 @@ const players = [
   },
   {
     name: "郡司裕也",
+    uniformNumber: "3",
     aliases: ["郡司", "郡司裕", "郡司裕也", "郡司 裕也", "郡司　裕也"],
     registeredPosition: "捕手",
     playerType: "batter",
@@ -27,6 +29,7 @@ const players = [
   },
   {
     name: "清水優心",
+    uniformNumber: "10",
     aliases: ["清水", "清水優", "清水優心", "清水 優心", "清水　優心"],
     registeredPosition: "捕手",
     playerType: "batter",
@@ -40,6 +43,7 @@ const players = [
   },
   {
     name: "進藤勇也",
+    uniformNumber: "33",
     aliases: ["進藤", "進藤勇", "進藤勇也", "進藤 勇也", "進藤　勇也"],
     registeredPosition: "捕手",
     playerType: "batter",
@@ -53,6 +57,7 @@ const players = [
   },
   {
     name: "リン",
+    uniformNumber: "38",
     aliases: ["リン"],
     registeredPosition: "捕手",
     playerType: "batter",
@@ -66,6 +71,7 @@ const players = [
   },
   {
     name: "藤森海斗",
+    uniformNumber: "57",
     aliases: ["藤森", "藤森海", "藤森海斗", "藤森 海斗", "藤森　海斗"],
     registeredPosition: "捕手",
     playerType: "batter",
@@ -79,6 +85,7 @@ const players = [
   },
   {
     name: "吉田賢吾",
+    uniformNumber: "60",
     aliases: ["吉田", "吉田賢", "吉田賢吾", "吉田 賢吾", "吉田　賢吾"],
     registeredPosition: "捕手",
     playerType: "batter",
@@ -92,6 +99,7 @@ const players = [
   },
   {
     name: "田宮裕涼",
+    uniformNumber: "64",
     aliases: ["田宮", "田宮裕", "田宮裕涼", "田宮 裕涼", "田宮　裕涼"],
     registeredPosition: "捕手",
     playerType: "batter",
@@ -105,6 +113,7 @@ const players = [
   },
   {
     name: "梅林優貴",
+    uniformNumber: "98",
     aliases: ["梅林", "梅林優", "梅林優貴", "梅林 優貴", "梅林　優貴"],
     registeredPosition: "捕手",
     playerType: "batter",
@@ -118,6 +127,7 @@ const players = [
   },
   {
     name: "上川畑大悟",
+    uniformNumber: "4",
     aliases: ["上川畑", "上川畑大", "上川畑大悟", "上川畑 大悟", "上川畑　大悟"],
     registeredPosition: "内野手",
     playerType: "batter",
@@ -131,6 +141,7 @@ const players = [
   },
   {
     name: "野村佑希",
+    uniformNumber: "5",
     aliases: ["野村", "野村佑", "野村佑希", "野村 佑希", "野村　佑希"],
     registeredPosition: "内野手",
     playerType: "batter",
@@ -144,6 +155,7 @@ const players = [
   },
   {
     name: "カストロ",
+    uniformNumber: "6",
     aliases: ["カストロ", "R.カストロ", "Ｒ．カストロ"],
     registeredPosition: "内野手",
     playerType: "batter",
@@ -157,6 +169,7 @@ const players = [
   },
   {
     name: "中島卓也",
+    uniformNumber: "9",
     aliases: ["中島", "中島卓", "中島卓也", "中島 卓也", "中島　卓也"],
     registeredPosition: "内野手",
     playerType: "batter",
@@ -170,6 +183,7 @@ const players = [
   },
   {
     name: "清宮幸太郎",
+    uniformNumber: "21",
     aliases: ["清宮", "清宮幸", "清宮幸太郎", "清宮 幸太郎", "清宮　幸太郎"],
     registeredPosition: "内野手",
     playerType: "batter",
@@ -183,6 +197,7 @@ const players = [
   },
   {
     name: "有薗直輝",
+    uniformNumber: "39",
     aliases: ["有薗", "有薗直", "有薗直輝", "有薗 直輝", "有薗　直輝"],
     registeredPosition: "内野手",
     playerType: "batter",
@@ -196,6 +211,7 @@ const players = [
   },
   {
     name: "水野達稀",
+    uniformNumber: "43",
     aliases: ["水野", "水野達", "水野達稀", "水野 達稀", "水野　達稀"],
     registeredPosition: "内野手",
     playerType: "batter",
@@ -209,6 +225,7 @@ const players = [
   },
   {
     name: "阪口樂",
+    uniformNumber: "44",
     aliases: ["阪口", "阪口樂", "阪口 樂", "阪口　樂", "阪口楽"],
     registeredPosition: "内野手",
     playerType: "batter",
@@ -222,6 +239,7 @@ const players = [
   },
   {
     name: "大塚瑠晏",
+    uniformNumber: "49",
     aliases: ["大塚", "大塚瑠", "大塚瑠晏", "大塚 瑠晏", "大塚　瑠晏"],
     registeredPosition: "内野手",
     playerType: "batter",
@@ -235,6 +253,7 @@ const players = [
   },
   {
     name: "半田南十",
+    uniformNumber: "51",
     aliases: ["半田", "半田南", "半田南十", "半田 南十", "半田　南十"],
     registeredPosition: "内野手",
     playerType: "batter",
@@ -248,6 +267,7 @@ const players = [
   },
   {
     name: "山縣秀",
+    uniformNumber: "54",
     aliases: ["山縣", "山縣秀", "山縣 秀", "山縣　秀"],
     registeredPosition: "内野手",
     playerType: "batter",
@@ -261,6 +281,7 @@ const players = [
   },
   {
     name: "細川凌平",
+    uniformNumber: "56",
     aliases: ["細川", "細川凌", "細川凌平", "細川 凌平", "細川　凌平"],
     registeredPosition: "内野手",
     playerType: "batter",
@@ -274,6 +295,7 @@ const players = [
   },
   {
     name: "奈良間大己",
+    uniformNumber: "58",
     aliases: ["奈良間", "奈良間大", "奈良間大己", "奈良間 大己", "奈良間　大己"],
     registeredPosition: "内野手",
     playerType: "batter",
@@ -287,6 +309,7 @@ const players = [
   },
   {
     name: "明瀬諒介",
+    uniformNumber: "65",
     aliases: ["明瀬", "明瀬諒", "明瀬諒介", "明瀬 諒介", "明瀬　諒介"],
     registeredPosition: "内野手",
     playerType: "batter",
@@ -300,6 +323,7 @@ const players = [
   },
   {
     name: "西川遥輝",
+    uniformNumber: "7",
     aliases: ["西川", "西川遥", "西川遥輝", "西川 遥輝", "西川　遥輝"],
     registeredPosition: "外野手",
     playerType: "batter",
@@ -313,6 +337,7 @@ const players = [
   },
   {
     name: "淺間大基",
+    uniformNumber: "8",
     aliases: ["淺間", "浅間", "淺間大", "淺間大基", "淺間 大基", "淺間　大基", "浅間大基", "浅間 大基"],
     registeredPosition: "外野手",
     playerType: "batter",
@@ -326,6 +351,7 @@ const players = [
   },
   {
     name: "宮崎一樹",
+    uniformNumber: "36",
     aliases: ["宮崎", "宮崎一", "宮崎一樹", "宮崎 一樹", "宮崎　一樹"],
     registeredPosition: "外野手",
     playerType: "batter",
@@ -339,6 +365,7 @@ const players = [
   },
   {
     name: "エドポロケイン",
+    uniformNumber: "42",
     aliases: ["エドポロ", "エドポロケイン", "エドポロ ケイン", "エドポロ　ケイン"],
     registeredPosition: "外野手",
     playerType: "batter",
@@ -352,6 +379,7 @@ const players = [
   },
   {
     name: "五十幡亮汰",
+    uniformNumber: "50",
     aliases: ["五十幡", "五十幡亮", "五十幡亮汰", "五十幡 亮汰", "五十幡　亮汰"],
     registeredPosition: "外野手",
     playerType: "batter",
@@ -365,6 +393,7 @@ const players = [
   },
   {
     name: "水谷瞬",
+    uniformNumber: "53",
     aliases: ["水谷", "水谷瞬", "水谷 瞬", "水谷　瞬"],
     registeredPosition: "外野手",
     playerType: "batter",
@@ -378,6 +407,7 @@ const players = [
   },
   {
     name: "今川優馬",
+    uniformNumber: "61",
     aliases: ["今川", "今川優", "今川優馬", "今川 優馬", "今川　優馬"],
     registeredPosition: "外野手",
     playerType: "batter",
@@ -391,6 +421,7 @@ const players = [
   },
   {
     name: "万波中正",
+    uniformNumber: "66",
     aliases: ["万波", "万波中", "万波中正", "万波 中正", "万波　中正"],
     registeredPosition: "外野手",
     playerType: "batter",
@@ -404,6 +435,7 @@ const players = [
   },
   {
     name: "レイエス",
+    uniformNumber: "99",
     aliases: ["レイエス", "F.レイエス", "Ｆ．レイエス"],
     registeredPosition: "外野手",
     playerType: "batter",
@@ -417,6 +449,7 @@ const players = [
   },
   {
     name: "矢澤宏太",
+    uniformNumber: "12",
     aliases: ["矢澤", "矢沢", "矢澤宏", "矢澤宏太", "矢澤 宏太", "矢澤　宏太", "矢沢宏太"],
     registeredPosition: "投手",
     playerType: "twoWay",

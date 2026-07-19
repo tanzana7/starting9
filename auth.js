@@ -1,10 +1,6 @@
-// 認証APIのURLです。同一オリジン配下に公開する場合は空文字のまま使います。
-// 別Workerを直接呼ぶ場合は、末尾スラッシュなしのHTTPS URLを設定してください。
-const AUTH_API_BASE_URL =
-  window.location.hostname === "localhost" ||
-  window.location.hostname === "127.0.0.1"
-    ? "http://localhost:8787"
-    : "";
+const AUTH_PRODUCTION_API_BASE_URL = "https://starting9-auth.tanzana7.workers.dev";
+// 認証APIの送信先はここだけで決めます。日程・NPB取得のWorker URLとは別です。
+const AUTH_API_BASE_URL = resolveAuthApiBaseUrl();
 const AUTH_USERNAME_MIN_LENGTH = 3;
 const AUTH_USERNAME_MAX_LENGTH = 16;
 const AUTH_PASSWORD_MIN_LENGTH = 8;
@@ -21,6 +17,15 @@ window.starting9Auth = {
   getApiBaseUrl: () => AUTH_API_BASE_URL,
   openLogin: () => openAuthModal("login")
 };
+
+function resolveAuthApiBaseUrl() {
+  const hostname = window.location.hostname;
+  if (hostname === "localhost" || hostname === "127.0.0.1") {
+    return "http://127.0.0.1:8787";
+  }
+
+  return AUTH_PRODUCTION_API_BASE_URL;
+}
 
 document.addEventListener("DOMContentLoaded", initializeAuth);
 

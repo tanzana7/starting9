@@ -116,6 +116,13 @@
         <button class="primary-button" type="submit">予想を保存する</button>
         <button id="resetPredictionButton" class="secondary-button" type="button">予想をリセット</button>
         <p id="predictionResetMessage" class="message" role="status" aria-live="polite"></p>
+        <section id="predictionAccountPanel" class="prediction-account-panel" aria-live="polite">
+          <p id="predictionAccountStatus" class="prediction-account-status"></p>
+          <div class="prediction-account-actions">
+            <button id="savePredictionToAccountButton" class="secondary-button compact-button hidden" type="button">現在の予想をアカウントに保存</button>
+            <button id="loadPredictionFromAccountButton" class="secondary-button compact-button hidden" type="button">アカウントの予想を読み込む</button>
+          </div>
+        </section>
       </form>
     </section>
 
@@ -124,7 +131,7 @@
         <span class="step-badge">2</span>
         <div>
           <h2 id="saved-title">あなたの予想</h2>
-          <p>保存した予想はこの端末のブラウザに残ります。</p>
+          <p>未ログイン時はこの端末に、ログイン時はアカウントにも保存できます。</p>
         </div>
       </div>
 
@@ -293,7 +300,7 @@
 
   <script src="players.js?v=split-drag-20260709"></script>
   <script src="game-schedule.js?v=20260718-probable-starter"></script>
-  <script src="script.js?v=probable-starter-auth-fix-20260718"></script>
-  <script src="auth.js?v=auth-modal-fix-20260718"></script>
+  <script src="auth.js?v=auth-api-local-20260719"></script>
+  <script src="script.js?v=auth-api-local-20260719"></script>
 </body>
 </html>

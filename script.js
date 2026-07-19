@@ -46,6 +46,22 @@ const ROSTER_MONITOR_INTERVAL_MS = 10 * 60 * 1000;
 const ROSTER_MONITOR_MAX_ATTEMPTS = 6;
 const AUTO_FILL_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "指"]);
 const OUTFIELD_POSITIONS = ["左", "中", "右"];
+// 日程・NPB取得の長いチームコードは維持し、選手IDだけ短い球団IDを使います。
+const TEAM_PLAYER_ID_PREFIXES = Object.freeze({
+  fighters: "F",
+  hawks: "H",
+  buffaloes: "Bs",
+  marines: "M",
+  eagles: "E",
+  lions: "L",
+  giants: "G",
+  tigers: "T",
+  baystars: "DB",
+  carp: "C",
+  dragons: "D",
+  swallows: "S"
+});
+const DEFAULT_PLAYER_TEAM_CODE = "fighters";
 const TEST_PREDICTION_LINEUP = [
   { order: 1, player: "大塚瑠晏", position: "遊" },
   { order: 2, player: "清宮幸太郎", position: "一" },
@@ -199,6 +215,19 @@ const state = {
     currentUserRegistered: false,
     achievers: []
   },
+  predictionRemote: {
+    isLoading: false,
+    isSaving: false,
+    isDeleting: false,
+    status: "idle",
+    message: "",
+    gameId: "",
+    prediction: null,
+    submittedAt: "",
+    updatedAt: "",
+    locked: false,
+    conflict: false
+  },
   activeOrder: {
     prediction: 0,
     actual: 0
@@ -232,7 +261,10 @@ document.addEventListener("DOMContentLoaded", () => {
     renderAll();
   }
   window.addEventListener("starting9-auth-state-changed", handleAuthStateChanged);
-  initializeProbableStarter().finally(() => initializePerfectAchievers());
+  initializeProbableStarter().finally(() => {
+    initializePerfectAchievers();
+    initializePredictionRemoteSync();
+  });
 });
 
 function bindEvents() {
@@ -257,6 +289,8 @@ function bindEvents() {
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
   document.getElementById("registerPerfectAchieverButton")?.addEventListener("click", registerPerfectAchiever);
+  document.getElementById("savePredictionToAccountButton")?.addEventListener("click", () => savePredictionToAccount());
+  document.getElementById("loadPredictionFromAccountButton")?.addEventListener("click", loadPredictionFromAccount);
   document.getElementById("loadNextGameButton").addEventListener("click", loadNextGameSchedule);
   document.getElementById("loadTodayGameButton").addEventListener("click", loadTodayGameSchedule);
   document.getElementById("loadSelectedGameButton").addEventListener("click", loadSelectedGameSchedule);
@@ -1502,6 +1536,7 @@ async function initializePerfectAchievers() {
 function handleAuthStateChanged() {
   renderPerfectAchievers();
   fetchPerfectAchievers({ force: true });
+  syncPredictionFromAccount({ force: true });
 }
 
 function getCurrentGameId() {
@@ -1509,14 +1544,14 @@ function getCurrentGameId() {
 }
 
 function getPerfectAchieversApiBaseUrl() {
+  return getAuthApiBaseUrl();
+}
+
+function getAuthApiBaseUrl() {
   if (typeof window !== "undefined" && window.starting9Auth?.getApiBaseUrl) {
     return window.starting9Auth.getApiBaseUrl();
   }
-
-  if (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
-    return "http://localhost:8787";
-  }
-
+  // auth.js が環境ごとのURLを一元管理します。
   return "";
 }
 
@@ -1682,6 +1717,366 @@ function showNpbFetchFallback(message) {
   renderAdminFlow();
   showMessage("parserError", NPB_WORKER_FALLBACK_MESSAGE);
   setNpbFetchMessage(message, "error");
+}
+
+async function initializePredictionRemoteSync() {
+  await syncPredictionFromAccount({ force: true });
+}
+
+function buildCurrentPredictionApiUrl(gameId) {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  if (!baseUrl || !gameId) {
+    return "";
+  }
+  const url = new URL(`${baseUrl}/api/predictions/current`, window.location.href);
+  url.searchParams.set("gameId", gameId);
+  return url.href;
+}
+
+function getPredictionAccountUser() {
+  return window.starting9Auth?.getUser?.() || null;
+}
+
+async function syncPredictionFromAccount({ force = false } = {}) {
+  const user = getPredictionAccountUser();
+  if (!user) {
+    state.predictionRemote = createEmptyPredictionRemoteState();
+    renderPredictionAccountStatus();
+    return;
+  }
+
+  const gameId = getCurrentGameId();
+  const remoteState = state.predictionRemote;
+  if (!gameId) {
+    remoteState.status = "noGame";
+    remoteState.message = "対象試合が決まるとアカウントの予想を確認できます。";
+    renderPredictionAccountStatus();
+    return;
+  }
+  if (remoteState.isLoading || (!force && remoteState.gameId === gameId)) {
+    return;
+  }
+
+  const url = buildCurrentPredictionApiUrl(gameId);
+  if (!url) {
+    remoteState.status = "unavailable";
+    remoteState.gameId = gameId;
+    remoteState.message = "認証APIが未設定のため、予想はこの端末に保存されます。";
+    renderPredictionAccountStatus();
+    return;
+  }
+
+  remoteState.isLoading = true;
+  remoteState.status = "loading";
+  if (remoteState.gameId !== gameId) {
+    remoteState.prediction = null;
+    remoteState.submittedAt = "";
+    remoteState.updatedAt = "";
+    remoteState.locked = false;
+    remoteState.conflict = false;
+  }
+  remoteState.gameId = gameId;
+  remoteState.message = "アカウントの予想を確認中...";
+  renderPredictionAccountStatus();
+
+  try {
+    const response = await fetch(url, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+
+    remoteState.status = "success";
+    remoteState.message = "";
+    remoteState.prediction = payload.prediction ? remotePredictionToLocal(payload.prediction, payload.updatedAt || payload.submittedAt, gameId) : null;
+    remoteState.submittedAt = payload.submittedAt || "";
+    remoteState.updatedAt = payload.updatedAt || "";
+    remoteState.locked = Boolean(payload.locked);
+    remoteState.conflict = Boolean(remoteState.prediction && state.prediction && !predictionsMatch(remoteState.prediction, state.prediction));
+  } catch (error) {
+    console.error("アカウント予想の取得に失敗しました", error.message);
+    remoteState.status = "error";
+    remoteState.message = "アカウントの予想を取得できませんでした。端末の予想はそのまま利用できます。";
+    remoteState.prediction = null;
+    remoteState.conflict = false;
+  } finally {
+    remoteState.isLoading = false;
+    renderPredictionAccountStatus();
+  }
+}
+
+function createEmptyPredictionRemoteState() {
+  return {
+    isLoading: false,
+    isSaving: false,
+    isDeleting: false,
+    status: "idle",
+    message: "",
+    gameId: "",
+    prediction: null,
+    submittedAt: "",
+    updatedAt: "",
+    locked: false,
+    conflict: false
+  };
+}
+
+function createPlayerId(teamCode, uniformNumber) {
+  const teamId = TEAM_PLAYER_ID_PREFIXES[teamCode];
+  if (!teamId || typeof uniformNumber !== "string" || !/^\d{1,3}$/.test(uniformNumber)) {
+    return "";
+  }
+
+  return `${teamId}-${uniformNumber}`;
+}
+
+function getUniquePlayerData(playerName) {
+  const playerKey = normalizePlayerKey(playerName);
+  const matchedPlayers = players.filter((player) => normalizePlayerKey(player.name) === playerKey);
+  return matchedPlayers.length === 1 ? matchedPlayers[0] : null;
+}
+
+function createPredictionPayload(prediction) {
+  const lineup = normalizeLineup(prediction?.lineup || []);
+  const serializedLineup = [];
+
+  for (const item of lineup) {
+    const player = getUniquePlayerData(item.player);
+    const teamCode = player?.teamCode || DEFAULT_PLAYER_TEAM_CODE;
+    const uniformNumber = player?.uniformNumber;
+    const teamId = TEAM_PLAYER_ID_PREFIXES[teamCode];
+    const playerId = createPlayerId(teamCode, uniformNumber);
+
+    // 古いlocalStorageの予想も、マスタ上で一意に一致する場合だけ補完します。
+    if (!player || !teamId || !playerId) {
+      return {
+        ok: false,
+        error: `「${item.player || "未選択"}」の選手IDを確認できません。選手を選び直してから保存してください。`
+      };
+    }
+
+    serializedLineup.push({
+      playerId,
+      teamId,
+      teamCode,
+      uniformNumber,
+      playerName: player.name,
+      battingOrder: Number(item.order),
+      position: item.position
+    });
+  }
+
+  return {
+    ok: true,
+    prediction: {
+      schemaVersion: 1,
+      nickname: String(prediction?.nickname || "").trim().slice(0, 24),
+      lineup: serializedLineup
+    }
+  };
+}
+
+function remotePredictionToLocal(prediction, savedAt = "", gameId = "") {
+  const lineup = Array.isArray(prediction?.lineup)
+    ? prediction.lineup.map((item) => ({
+      order: Number(item.battingOrder ?? item.order),
+      player: String(item.playerName ?? item.player ?? "").trim(),
+      position: normalizePosition(item.position)
+    }))
+    : [];
+  return {
+    gameId,
+    nickname: String(prediction?.nickname || "").trim(),
+    lineup: normalizeLineup(lineup),
+    savedAt: savedAt || new Date().toISOString()
+  };
+}
+
+function predictionsMatch(left, right) {
+  if (!left || !right) {
+    return false;
+  }
+  const leftLineup = normalizeLineup(left.lineup).map((item) => `${item.order}:${normalizePlayerKey(item.player)}:${item.position}`).join("|");
+  const rightLineup = normalizeLineup(right.lineup).map((item) => `${item.order}:${normalizePlayerKey(item.player)}:${item.position}`).join("|");
+  return leftLineup === rightLineup && String(left.nickname || "") === String(right.nickname || "");
+}
+
+async function savePredictionToAccount(prediction = state.prediction) {
+  const user = getPredictionAccountUser();
+  const gameId = getCurrentGameId();
+  if (!user) {
+    renderPredictionAccountStatus();
+    return false;
+  }
+  if (!prediction || !gameId) {
+    state.predictionRemote.status = "warning";
+    state.predictionRemote.message = "保存する予想と対象試合を確認してください。";
+    renderPredictionAccountStatus();
+    return false;
+  }
+  if (state.predictionRemote.gameId === gameId && state.predictionRemote.locked) {
+    state.predictionRemote.status = "warning";
+    state.predictionRemote.message = "この試合の予想受付は終了しています。";
+    renderPredictionAccountStatus();
+    return false;
+  }
+
+  const predictionPayload = createPredictionPayload(prediction);
+  if (!predictionPayload.ok) {
+    state.predictionRemote.status = "warning";
+    state.predictionRemote.message = predictionPayload.error;
+    renderPredictionAccountStatus();
+    return false;
+  }
+
+  const url = buildCurrentPredictionApiUrl(gameId);
+  if (!url) {
+    state.predictionRemote.status = "unavailable";
+    state.predictionRemote.message = "認証APIが未設定のため、端末の予想だけ保存しました。";
+    renderPredictionAccountStatus();
+    return false;
+  }
+
+  state.predictionRemote.isSaving = true;
+  state.predictionRemote.status = "saving";
+  state.predictionRemote.message = "アカウントへ予想を保存中...";
+  renderPredictionAccountStatus();
+
+  try {
+    const response = await fetch(url, {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gameId, prediction: predictionPayload.prediction })
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+
+    state.predictionRemote.status = "success";
+    state.predictionRemote.gameId = gameId;
+    state.predictionRemote.message = "アカウントにも予想を保存しました。";
+    state.predictionRemote.prediction = prediction;
+    state.predictionRemote.submittedAt = payload.submittedAt || state.predictionRemote.submittedAt;
+    state.predictionRemote.updatedAt = payload.updatedAt || new Date().toISOString();
+    state.predictionRemote.conflict = false;
+    return true;
+  } catch (error) {
+    console.error("アカウント予想の保存に失敗しました", error.message);
+    state.predictionRemote.status = "error";
+    state.predictionRemote.message = `端末には保存しましたが、アカウント保存に失敗しました。${error.message ? ` ${error.message}` : ""}`;
+    return false;
+  } finally {
+    state.predictionRemote.isSaving = false;
+    renderPredictionAccountStatus();
+  }
+}
+
+function loadPredictionFromAccount() {
+  const remotePrediction = state.predictionRemote.prediction;
+  if (!remotePrediction) {
+    return;
+  }
+  if (state.prediction && !window.confirm("アカウントに保存された予想で、現在の予想を置き換えますか？")) {
+    return;
+  }
+
+  state.prediction = { ...remotePrediction, lineup: normalizeLineup(remotePrediction.lineup) };
+  saveToStorage(STORAGE_KEYS.prediction, state.prediction);
+  state.result = null;
+  removeFromStorage(STORAGE_KEYS.result);
+  state.predictionRemote.conflict = false;
+  state.predictionRemote.message = "アカウントの予想を読み込みました。";
+  renderAll();
+}
+
+async function deletePredictionFromAccount(gameId) {
+  const user = getPredictionAccountUser();
+  const url = buildCurrentPredictionApiUrl(gameId);
+  if (!user || !url) {
+    return;
+  }
+
+  state.predictionRemote.isDeleting = true;
+  state.predictionRemote.message = "アカウントの予想を削除中...";
+  renderPredictionAccountStatus();
+  try {
+    const response = await fetch(url, { method: "DELETE", credentials: "include" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+    state.predictionRemote = createEmptyPredictionRemoteState();
+    state.predictionRemote.status = "success";
+    state.predictionRemote.gameId = gameId;
+    state.predictionRemote.message = "アカウントの予想も削除しました。";
+  } catch (error) {
+    console.error("アカウント予想の削除に失敗しました", error.message);
+    state.predictionRemote.status = "error";
+    state.predictionRemote.message = "端末の予想はリセットしましたが、アカウントの予想削除に失敗しました。";
+  } finally {
+    state.predictionRemote.isDeleting = false;
+    renderPredictionAccountStatus();
+  }
+}
+
+function renderPredictionAccountStatus() {
+  const statusElement = document.getElementById("predictionAccountStatus");
+  const saveButton = document.getElementById("savePredictionToAccountButton");
+  const loadButton = document.getElementById("loadPredictionFromAccountButton");
+  if (!statusElement || !saveButton || !loadButton) {
+    return;
+  }
+
+  const user = getPredictionAccountUser();
+  const remoteState = state.predictionRemote;
+  const currentGameId = getCurrentGameId();
+  const isCurrentGameLocked = remoteState.gameId === currentGameId && remoteState.locked;
+  statusElement.className = "prediction-account-status";
+  saveButton.classList.add("hidden");
+  loadButton.classList.add("hidden");
+  saveButton.disabled = remoteState.isSaving || remoteState.isLoading || isCurrentGameLocked;
+  loadButton.disabled = remoteState.isLoading;
+
+  if (!user) {
+    statusElement.textContent = "ログインすると、この予想をアカウントにも保存できます。未ログイン時は端末保存のみです。";
+    return;
+  }
+  if (!currentGameId) {
+    statusElement.textContent = "対象試合が決まると、予想をアカウントに保存できます。";
+    return;
+  }
+  if (remoteState.status === "loading") {
+    statusElement.textContent = remoteState.message;
+    return;
+  }
+  if (remoteState.status === "error" || remoteState.status === "warning") {
+    statusElement.classList.add(remoteState.status === "error" ? "is-error" : "is-warning");
+    statusElement.textContent = remoteState.message;
+  } else if (isCurrentGameLocked) {
+    statusElement.classList.add("is-warning");
+    statusElement.textContent = "この試合の予想受付は終了しています。";
+  } else if (remoteState.conflict && remoteState.prediction) {
+    statusElement.classList.add("is-warning");
+    statusElement.textContent = "アカウントに別の予想が保存されています。読み込むか、現在の予想で上書きしてください。";
+    loadButton.classList.remove("hidden");
+    saveButton.classList.remove("hidden");
+  } else if (remoteState.prediction) {
+    statusElement.classList.add("is-success");
+    if (state.prediction) {
+      statusElement.textContent = `アカウントにも保存済みです。最終更新：${formatDateTime(remoteState.updatedAt)}`;
+      saveButton.classList.remove("hidden");
+    } else {
+      statusElement.textContent = "アカウントに保存済みの予想があります。読み込むことができます。";
+      loadButton.classList.remove("hidden");
+    }
+  } else if (state.prediction) {
+    statusElement.textContent = "現在の予想をアカウントに保存できます。";
+    saveButton.classList.remove("hidden");
+  } else {
+    statusElement.textContent = "ログイン中です。予想を保存するとアカウントにも保存されます。";
+  }
 }
 
 function showNpbExtractionFailedFallback(sourceUrl, workerError) {
@@ -2292,6 +2687,7 @@ function handlePredictionSubmit(event) {
   }
 
   state.prediction = {
+    gameId: getCurrentGameId(),
     nickname,
     lineup,
     savedAt: new Date().toISOString()
@@ -2301,6 +2697,9 @@ function handlePredictionSubmit(event) {
   state.result = null;
   removeFromStorage(STORAGE_KEYS.result);
   renderAll();
+  if (getPredictionAccountUser()) {
+    savePredictionToAccount(state.prediction);
+  }
 }
 
 function resetPredictionInput() {
@@ -2309,6 +2708,7 @@ function resetPredictionInput() {
     return;
   }
 
+  const remoteGameId = getCurrentGameId();
   state.prediction = null;
   state.result = null;
   state.activeOrder.prediction = 0;
@@ -2331,7 +2731,11 @@ function resetPredictionInput() {
   clearMessage("testPredictionMessage");
   renderSavedPrediction();
   renderScoreResult();
+  renderPredictionAccountStatus();
   renderPicker("prediction");
+  if (remoteGameId && getPredictionAccountUser()) {
+    deletePredictionFromAccount(remoteGameId);
+  }
 }
 
 function handleActualSubmit(event) {
@@ -2901,6 +3305,7 @@ function applyGameSchedule(schedule, source = "button") {
   }
   saveAdminGameInfoFromInputs();
   renderLoadedScheduleInfo(schedule, scoreUrl);
+  syncPredictionFromAccount({ force: true });
   if (source === "auto") {
     addScheduleLoadLog(`自動反映した試合：${formatScheduleForLog(schedule)}`);
   } else {
@@ -3022,6 +3427,7 @@ function renderAll() {
   renderGameSchedulePicker();
   renderProbableStarter();
   renderSavedPrediction();
+  renderPredictionAccountStatus();
   renderActualLineup();
   renderScoreResult();
   renderPerfectAchievers();
@@ -3935,6 +4341,7 @@ function resetAllData() {
   state.prediction = null;
   state.actual = null;
   state.result = null;
+  state.predictionRemote = createEmptyPredictionRemoteState();
   state.actualPreview = null;
   state.adminStatus = "idle";
   state.adminError = "";

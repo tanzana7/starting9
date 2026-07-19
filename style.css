@@ -452,6 +452,36 @@ button:disabled {
   color: var(--error);
 }
 
+.prediction-account-panel {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid #d8e1ec;
+  border-radius: 8px;
+  background: #f7faff;
+}
+
+.prediction-account-status {
+  margin: 0;
+  color: #40546c;
+  font-size: 0.9rem;
+}
+
+.prediction-account-status.is-success {
+  color: var(--success);
+}
+
+.prediction-account-status.is-warning,
+.prediction-account-status.is-error {
+  color: #9a3f22;
+}
+
+.prediction-account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 h1,
 h2,
 p {

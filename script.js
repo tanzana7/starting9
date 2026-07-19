@@ -158,6 +158,12 @@ const state = {
   adminStatus: "idle",
   adminError: "",
   isAdminMode: false,
+  adminAccess: {
+    requested: false,
+    status: "inactive",
+    message: "",
+    requestId: 0
+  },
   autoFetch: {
     isRunning: false,
     timerId: null,
@@ -236,7 +242,8 @@ const state = {
 };
 
 document.addEventListener("DOMContentLoaded", () => {
-  state.isAdminMode = isAdminModeEnabled();
+  state.adminAccess.requested = isAdminModeRequested();
+  state.isAdminMode = false;
   buildLineupPicker("prediction", "predictionLineup", "predictionPlayers");
   buildLineupPicker("actual", "actualLineup", "actualPlayers");
   loadState();
@@ -245,6 +252,7 @@ document.addEventListener("DOMContentLoaded", () => {
   renderScheduleLoadLog();
   restoreAdminGameInfoInputs();
   applyAdminMode();
+  refreshAdminAccess();
   renderAll();
 
   const scheduleReady = window.HAM_GAME_SCHEDULE_READY;
@@ -268,35 +276,38 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 function bindEvents() {
+  document.getElementById("openAdminLoginButton")?.addEventListener("click", () => {
+    window.starting9Auth?.openLogin?.();
+  });
   document.getElementById("predictionForm").addEventListener("submit", handlePredictionSubmit);
   document.getElementById("resetPredictionButton").addEventListener("click", resetPredictionInput);
-  document.getElementById("actualForm").addEventListener("submit", handleActualSubmit);
-  document.getElementById("fetchNpbButton").addEventListener("click", handleNpbFetchCandidate);
-  document.getElementById("checkRosterButton").addEventListener("click", handleRosterCheck);
-  document.getElementById("startRosterMonitorButton").addEventListener("click", startRosterMonitor);
-  document.getElementById("stopRosterMonitorButton").addEventListener("click", () => stopRosterMonitor("ロースター自動取得を停止しました。", "warning"));
-  document.getElementById("fetchProbableStarterButton").addEventListener("click", () => fetchProbableStarter({ force: true }));
-  document.getElementById("startAutoFetchButton").addEventListener("click", startAutoFetch);
-  document.getElementById("stopAutoFetchButton").addEventListener("click", () => stopAutoFetch("自動取得を停止しました。", "warning"));
-  document.getElementById("parseActualButton").addEventListener("click", handleActualParsePreview);
-  document.getElementById("applyParsedActualButton").addEventListener("click", applyParsedActualPreview);
-  document.getElementById("clearActualCandidateButton").addEventListener("click", clearActualCandidate);
-  document.getElementById("approveProvisionalButton").addEventListener("click", approveProvisionalActual);
-  document.getElementById("editProvisionalButton").addEventListener("click", editProvisionalActual);
-  document.getElementById("cancelProvisionalButton").addEventListener("click", cancelProvisionalActual);
-  document.getElementById("generateTestPredictionButton").addEventListener("click", generateTestPrediction);
-  document.getElementById("resetButton").addEventListener("click", resetAllData);
+  bindAdminEvent("actualForm", "submit", handleActualSubmit);
+  bindAdminEvent("fetchNpbButton", "click", handleNpbFetchCandidate);
+  bindAdminEvent("checkRosterButton", "click", handleRosterCheck);
+  bindAdminEvent("startRosterMonitorButton", "click", startRosterMonitor);
+  bindAdminEvent("stopRosterMonitorButton", "click", () => stopRosterMonitor("ロースター自動取得を停止しました。", "warning"));
+  bindAdminEvent("fetchProbableStarterButton", "click", () => fetchProbableStarter({ force: true }));
+  bindAdminEvent("startAutoFetchButton", "click", startAutoFetch);
+  bindAdminEvent("stopAutoFetchButton", "click", () => stopAutoFetch("自動取得を停止しました。", "warning"));
+  bindAdminEvent("parseActualButton", "click", handleActualParsePreview);
+  bindAdminEvent("applyParsedActualButton", "click", applyParsedActualPreview);
+  bindAdminEvent("clearActualCandidateButton", "click", clearActualCandidate);
+  bindAdminEvent("approveProvisionalButton", "click", approveProvisionalActual);
+  bindAdminEvent("editProvisionalButton", "click", editProvisionalActual);
+  bindAdminEvent("cancelProvisionalButton", "click", cancelProvisionalActual);
+  bindAdminEvent("generateTestPredictionButton", "click", generateTestPrediction);
+  bindAdminEvent("resetButton", "click", resetAllData);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
   document.getElementById("registerPerfectAchieverButton")?.addEventListener("click", registerPerfectAchiever);
   document.getElementById("savePredictionToAccountButton")?.addEventListener("click", () => savePredictionToAccount());
   document.getElementById("loadPredictionFromAccountButton")?.addEventListener("click", loadPredictionFromAccount);
-  document.getElementById("loadNextGameButton").addEventListener("click", loadNextGameSchedule);
-  document.getElementById("loadTodayGameButton").addEventListener("click", loadTodayGameSchedule);
-  document.getElementById("loadSelectedGameButton").addEventListener("click", loadSelectedGameSchedule);
-  document.getElementById("gameScheduleSelect").addEventListener("change", handleScheduleSelectionChange);
-  document.getElementById("copyScheduleLogButton")?.addEventListener("click", copyScheduleLoadLog);
-  document.getElementById("clearScheduleLogButton")?.addEventListener("click", clearScheduleLoadLog);
+  bindAdminEvent("loadNextGameButton", "click", loadNextGameSchedule);
+  bindAdminEvent("loadTodayGameButton", "click", loadTodayGameSchedule);
+  bindAdminEvent("loadSelectedGameButton", "click", loadSelectedGameSchedule);
+  bindAdminEvent("gameScheduleSelect", "change", handleScheduleSelectionChange);
+  bindAdminEvent("copyScheduleLogButton", "click", copyScheduleLoadLog);
+  bindAdminEvent("clearScheduleLogButton", "click", clearScheduleLoadLog);
   document.querySelectorAll("[data-roster-filter]").forEach((button) => {
     button.addEventListener("click", () => setCandidateRosterFilter(button.dataset.rosterFilter));
   });
@@ -309,28 +320,138 @@ function bindEvents() {
   });
 }
 
-function isAdminModeEnabled() {
+function isAdminModeRequested() {
   return new URLSearchParams(window.location.search).get("admin") === "1";
+}
+
+function bindAdminEvent(elementId, eventName, handler) {
+  const element = document.getElementById(elementId);
+  if (!element) {
+    return;
+  }
+
+  element.addEventListener(eventName, (event) => {
+    if (!state.isAdminMode) {
+      event.preventDefault();
+      return;
+    }
+    handler(event);
+  });
 }
 
 function applyAdminMode() {
   const adminDetails = document.getElementById("adminDetails");
   const adminModeBadge = document.getElementById("adminModeBadge");
+  const accessNotice = document.getElementById("adminAccessNotice");
+  const accessMessage = document.getElementById("adminAccessMessage");
+  const loginButton = document.getElementById("openAdminLoginButton");
+  const isAuthorized = state.adminAccess.status === "authorized";
 
   if (adminDetails) {
-    adminDetails.classList.toggle("hidden", !state.isAdminMode);
-    adminDetails.open = state.isAdminMode;
-    adminDetails.setAttribute("aria-hidden", state.isAdminMode ? "false" : "true");
+    adminDetails.classList.toggle("hidden", !isAuthorized);
+    adminDetails.open = isAuthorized;
+    adminDetails.setAttribute("aria-hidden", isAuthorized ? "false" : "true");
   }
 
   if (adminModeBadge) {
-    adminModeBadge.classList.toggle("hidden", !state.isAdminMode);
+    adminModeBadge.classList.toggle("hidden", !isAuthorized);
   }
 
-  if (!state.isAdminMode) {
+  if (accessNotice) {
+    accessNotice.classList.toggle("hidden", !state.adminAccess.requested || isAuthorized);
+  }
+  if (accessMessage) {
+    accessMessage.textContent = state.adminAccess.message;
+  }
+  if (loginButton) {
+    loginButton.classList.toggle("hidden", state.adminAccess.status !== "unauthenticated");
+  }
+
+  state.isAdminMode = isAuthorized;
+  if (!isAuthorized) {
     stopAutoFetch("", "");
     stopRosterMonitor("", "", "inactive");
   }
+}
+
+function getAdminAccessMessage(status) {
+  const messages = {
+    checking: "管理者権限を確認しています…",
+    unauthenticated: "管理者ページを利用するにはログインしてください。",
+    forbidden: "このアカウントには管理者権限がありません。",
+    error: "管理者権限を確認できませんでした。時間を置いて再度お試しください。"
+  };
+  return messages[status] || "";
+}
+
+function buildAdminMeApiUrl() {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  return baseUrl ? `${baseUrl}/api/admin/me` : "";
+}
+
+async function refreshAdminAccess() {
+  const requestId = state.adminAccess.requestId + 1;
+  state.adminAccess.requestId = requestId;
+  state.adminAccess.requested = isAdminModeRequested();
+  if (!state.adminAccess.requested) {
+    state.adminAccess.status = "inactive";
+    state.adminAccess.message = "";
+    state.isAdminMode = false;
+    applyAdminMode();
+    return;
+  }
+
+  if (!getPredictionAccountUser()) {
+    state.adminAccess.status = "unauthenticated";
+    state.adminAccess.message = getAdminAccessMessage("unauthenticated");
+    state.isAdminMode = false;
+    applyAdminMode();
+    return;
+  }
+
+  const url = buildAdminMeApiUrl();
+  if (!url) {
+    state.adminAccess.status = "error";
+    state.adminAccess.message = getAdminAccessMessage("error");
+    state.isAdminMode = false;
+    applyAdminMode();
+    return;
+  }
+
+  state.adminAccess.status = "checking";
+  state.adminAccess.message = getAdminAccessMessage("checking");
+  state.isAdminMode = false;
+  applyAdminMode();
+
+  try {
+    const response = await fetch(url, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (requestId !== state.adminAccess.requestId) {
+      return;
+    }
+    if (response.ok && payload?.ok && payload?.admin) {
+      state.adminAccess.status = "authorized";
+      state.adminAccess.message = "";
+      state.isAdminMode = true;
+      applyAdminMode();
+      initializeGameSchedule();
+      renderAll();
+      return;
+    }
+
+    state.adminAccess.status = response.status === 401 ? "unauthenticated" : response.status === 403 ? "forbidden" : "error";
+    state.adminAccess.message = getAdminAccessMessage(state.adminAccess.status);
+  } catch (error) {
+    if (requestId !== state.adminAccess.requestId) {
+      return;
+    }
+    console.error("管理者権限の確認に失敗しました", error.message);
+    state.adminAccess.status = "error";
+    state.adminAccess.message = getAdminAccessMessage("error");
+  }
+
+  state.isAdminMode = false;
+  applyAdminMode();
 }
 
 function bindAdminGameInfoEvents() {
@@ -1537,6 +1658,7 @@ function handleAuthStateChanged() {
   renderPerfectAchievers();
   fetchPerfectAchievers({ force: true });
   syncPredictionFromAccount({ force: true });
+  refreshAdminAccess();
 }
 
 function getCurrentGameId() {

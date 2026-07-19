@@ -161,7 +161,6 @@ const state = {
   adminAccess: {
     requested: false,
     status: "inactive",
-    message: "",
     requestId: 0
   },
   autoFetch: {
@@ -276,9 +275,6 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 function bindEvents() {
-  document.getElementById("openAdminLoginButton")?.addEventListener("click", () => {
-    window.starting9Auth?.openLogin?.();
-  });
   document.getElementById("predictionForm").addEventListener("submit", handlePredictionSubmit);
   document.getElementById("resetPredictionButton").addEventListener("click", resetPredictionInput);
   bindAdminEvent("actualForm", "submit", handleActualSubmit);
@@ -342,9 +338,6 @@ function bindAdminEvent(elementId, eventName, handler) {
 function applyAdminMode() {
   const adminDetails = document.getElementById("adminDetails");
   const adminModeBadge = document.getElementById("adminModeBadge");
-  const accessNotice = document.getElementById("adminAccessNotice");
-  const accessMessage = document.getElementById("adminAccessMessage");
-  const loginButton = document.getElementById("openAdminLoginButton");
   const isAuthorized = state.adminAccess.status === "authorized";
 
   if (adminDetails) {
@@ -357,31 +350,11 @@ function applyAdminMode() {
     adminModeBadge.classList.toggle("hidden", !isAuthorized);
   }
 
-  if (accessNotice) {
-    accessNotice.classList.add("hidden");
-  }
-  if (accessMessage) {
-    accessMessage.textContent = "";
-  }
-  if (loginButton) {
-    loginButton.classList.add("hidden");
-  }
-
   state.isAdminMode = isAuthorized;
   if (!isAuthorized) {
     stopAutoFetch("", "");
     stopRosterMonitor("", "", "inactive");
   }
-}
-
-function getAdminAccessMessage(status) {
-  const messages = {
-    checking: "管理者権限を確認しています…",
-    unauthenticated: "管理者ページを利用するにはログインしてください。",
-    forbidden: "このアカウントには管理者権限がありません。",
-    error: "管理者権限を確認できませんでした。時間を置いて再度お試しください。"
-  };
-  return messages[status] || "";
 }
 
 function buildAdminMeApiUrl() {
@@ -395,7 +368,6 @@ function leaveAdminModeSilently() {
   window.history.replaceState(window.history.state, "", url);
   state.adminAccess.requested = false;
   state.adminAccess.status = "inactive";
-  state.adminAccess.message = "";
   state.isAdminMode = false;
   applyAdminMode();
 }
@@ -406,7 +378,6 @@ async function refreshAdminAccess() {
   state.adminAccess.requested = isAdminModeRequested();
   if (!state.adminAccess.requested) {
     state.adminAccess.status = "inactive";
-    state.adminAccess.message = "";
     state.isAdminMode = false;
     applyAdminMode();
     return;
@@ -424,7 +395,6 @@ async function refreshAdminAccess() {
   }
 
   state.adminAccess.status = "checking";
-  state.adminAccess.message = getAdminAccessMessage("checking");
   state.isAdminMode = false;
   applyAdminMode();
 
@@ -436,7 +406,6 @@ async function refreshAdminAccess() {
     }
     if (response.ok && payload?.ok && payload?.admin) {
       state.adminAccess.status = "authorized";
-      state.adminAccess.message = "";
       state.isAdminMode = true;
       applyAdminMode();
       initializeGameSchedule();

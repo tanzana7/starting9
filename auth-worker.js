@@ -13,6 +13,24 @@ const PREDICTION_SCHEMA_VERSION = 1;
 const PREDICTION_MAX_JSON_BYTES = 16 * 1024;
 const PREDICTION_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
 const PREDICTION_TEAM_CODES = new Set(["f", "b", "h", "l", "e", "m", "g", "t", "db", "c", "d", "s"]);
+const SCORING_LINEUP_SIZE = 9;
+const SCORING_MAX_SCORE = 100;
+const SCORING_RULES = Object.freeze({
+  player: { perHit: 5, bonus: 5 },
+  order: { perHit: 3, bonus: 3 },
+  position: { perHit: 2, bonus: 2 }
+});
+const POSITION_ALIASES = Object.freeze({
+  "捕": "捕", C: "捕", "キャッチャー": "捕", "2": "捕",
+  "一": "一", "1B": "一", "ファースト": "一", "3": "一",
+  "二": "二", "2B": "二", "セカンド": "二", "4": "二",
+  "三": "三", "3B": "三", "サード": "三", "5": "三",
+  "遊": "遊", SS: "遊", "ショート": "遊", "6": "遊",
+  "左": "左", LF: "左", "レフト": "左", "7": "左",
+  "中": "中", CF: "中", "センター": "中", "8": "中",
+  "右": "右", RF: "右", "ライト": "右", "9": "右",
+  "指": "指", DH: "指", D: "指", "指名打者": "指", "0": "指"
+});
 // 既存の日程用コードとは別に、選手IDだけへ固定の球団IDを割り当てます。
 const TEAM_PLAYER_ID_PREFIXES = Object.freeze({
   fighters: "F",
@@ -65,6 +83,10 @@ export default {
       }
       if (path === "/api/admin/me" && request.method === "GET") {
         return await handleAdminMe(request, env, cors);
+      }
+      const adminScoringRoute = parseAdminScoringRoute(path);
+      if (adminScoringRoute) {
+        return await handleAdminScoringRoute(request, env, cors, adminScoringRoute);
       }
       if (path === "/api/perfect-achievers" && request.method === "GET") {
         return await handleGetPerfectAchievers(request, env, cors);
@@ -220,6 +242,277 @@ async function handleAdminMe(request, env, cors) {
     admin: true,
     user: publicUser(access.user)
   }, 200, cors);
+}
+
+function parseAdminScoringRoute(path) {
+  const match = /^\/api\/admin\/games\/([^/]+)\/predictions\/(summary|score-predictions(?:\/preview)?)$/.exec(path);
+  if (!match) {
+    return null;
+  }
+
+  let gameId = "";
+  try {
+    gameId = decodeURIComponent(match[1]);
+  } catch {
+    return { invalid: true };
+  }
+
+  return { gameId, action: match[2] };
+}
+
+async function handleAdminScoringRoute(request, env, cors, route) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) {
+    return access.response;
+  }
+
+  const metadata = parsePredictionGameId(route.gameId);
+  if (route.invalid || !metadata) {
+    return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
+  }
+
+  if (route.action === "summary" && request.method === "GET") {
+    return await handleAdminPredictionSummary(env, cors, metadata.gameId);
+  }
+  if (route.action === "score-predictions/preview" && request.method === "POST") {
+    return await handleAdminScorePredictionsPreview(request, env, cors, metadata.gameId);
+  }
+  if (route.action === "score-predictions" && request.method === "POST") {
+    return await handleAdminScorePredictions(request, env, cors, metadata.gameId);
+  }
+
+  return jsonResponse({ ok: false, error: "管理者採点APIのHTTPメソッドが不正です。" }, 405, cors);
+}
+
+async function handleAdminPredictionSummary(env, cors, gameId) {
+  const row = await env.AUTH_DB.prepare(
+    `SELECT COUNT(*) AS prediction_count,
+            SUM(CASE WHEN status = 'scored' THEN 1 ELSE 0 END) AS scored_count
+       FROM predictions
+      WHERE game_id = ?1`
+  ).bind(gameId).first();
+
+  return jsonResponse({
+    ok: true,
+    gameId,
+    predictionCount: Number(row?.prediction_count || 0),
+    scoredCount: Number(row?.scored_count || 0)
+  }, 200, cors);
+}
+
+async function handleAdminScorePredictionsPreview(request, env, cors, gameId) {
+  const input = await readJson(request);
+  const actualResult = sanitizeActualLineupForScoring(input?.actualLineup);
+  if (!actualResult.ok) {
+    return jsonResponse({ ok: false, error: actualResult.error }, 400, cors);
+  }
+
+  const scoring = await prepareGamePredictionScoring(env.AUTH_DB, gameId, actualResult.lineup);
+  return jsonResponse({
+    ok: true,
+    gameId,
+    processed: scoring.processed,
+    scored: scoring.scored,
+    failed: scoring.failed,
+    maxScore: SCORING_MAX_SCORE,
+    averageScore: scoring.averageScore,
+    perfectCount: scoring.perfectCount,
+    scoreDistribution: scoring.scoreDistribution,
+    validationErrors: scoring.validationErrors
+  }, 200, cors);
+}
+
+async function handleAdminScorePredictions(request, env, cors, gameId) {
+  const input = await readJson(request);
+  const actualResult = sanitizeActualLineupForScoring(input?.actualLineup);
+  if (!actualResult.ok) {
+    return jsonResponse({ ok: false, error: actualResult.error }, 400, cors);
+  }
+
+  // 本番採点でもpreviewの値は使わず、DBから読み直して同じ検証・計算を行います。
+  const scoring = await prepareGamePredictionScoring(env.AUTH_DB, gameId, actualResult.lineup);
+  if (scoring.failed > 0) {
+    return jsonResponse({
+      ok: false,
+      error: "保存済み予想に検証エラーがあるため、本番採点は実行されませんでした。",
+      gameId,
+      processed: scoring.processed,
+      scored: 0,
+      failed: scoring.failed,
+      maxScore: SCORING_MAX_SCORE,
+      validationErrors: scoring.validationErrors
+    }, 409, cors);
+  }
+
+  const scoredAt = new Date().toISOString();
+  const actualLineupJson = JSON.stringify(actualResult.lineup);
+  if (scoring.outcomes.length > 0) {
+    const updates = scoring.outcomes.map((outcome) => env.AUTH_DB.prepare(
+      `UPDATE predictions
+          SET score = ?1,
+              max_score = ?2,
+              scored_at = ?3,
+              status = 'scored',
+              actual_lineup_json = ?4
+        WHERE id = ?5 AND game_id = ?6`
+    ).bind(
+      outcome.score.total,
+      SCORING_MAX_SCORE,
+      scoredAt,
+      actualLineupJson,
+      outcome.id,
+      gameId
+    ));
+
+    // D1 batchは全件のUPDATEをまとめ、途中の部分更新を避けます。
+    const results = await env.AUTH_DB.batch(updates);
+    if (results.some((result) => Number(result?.meta?.changes || 0) !== 1)) {
+      throw new Error("prediction score update count mismatch");
+    }
+  }
+
+  return jsonResponse({
+    ok: true,
+    gameId,
+    processed: scoring.processed,
+    scored: scoring.scored,
+    failed: 0,
+    maxScore: SCORING_MAX_SCORE,
+    perfectCount: scoring.perfectCount,
+    scoredAt,
+    message: scoring.processed === 0 ? "保存済み予想はありません。" : undefined
+  }, 200, cors);
+}
+
+async function prepareGamePredictionScoring(db, gameId, actualLineup) {
+  const rows = await db.prepare(
+    "SELECT id, prediction_json FROM predictions WHERE game_id = ?1 ORDER BY submitted_at ASC, id ASC"
+  ).bind(gameId).all();
+  const outcomes = [];
+  const validationErrors = [];
+  const distribution = new Map();
+
+  for (const row of rows?.results || []) {
+    const prediction = parseStoredPrediction(row.prediction_json);
+    const sanitized = prediction ? sanitizePredictionPayload(prediction) : { ok: false, error: "保存済み予想の形式が不正です。" };
+    if (!sanitized.ok) {
+      validationErrors.push(sanitized.error);
+      continue;
+    }
+
+    const score = scorePredictionLineup(sanitized.prediction.lineup, actualLineup);
+    outcomes.push({ id: row.id, score });
+    distribution.set(score.total, (distribution.get(score.total) || 0) + 1);
+  }
+
+  const scored = outcomes.length;
+  const totalScore = outcomes.reduce((total, outcome) => total + outcome.score.total, 0);
+  return {
+    processed: (rows?.results || []).length,
+    scored,
+    failed: validationErrors.length,
+    outcomes,
+    validationErrors: Array.from(new Set(validationErrors)).slice(0, 10),
+    averageScore: scored ? Number((totalScore / scored).toFixed(2)) : 0,
+    perfectCount: outcomes.filter((outcome) => outcome.score.total === SCORING_MAX_SCORE).length,
+    scoreDistribution: Object.fromEntries(
+      Array.from(distribution.entries()).sort((left, right) => left[0] - right[0]).map(([score, count]) => [String(score), count])
+    )
+  };
+}
+
+function sanitizeActualLineupForScoring(value) {
+  return sanitizeScoringLineup(value, "実スタメン");
+}
+
+function sanitizeScoringLineup(value, label) {
+  if (!Array.isArray(value) || value.length !== SCORING_LINEUP_SIZE) {
+    return { ok: false, error: `${label}は9人分入力してください。` };
+  }
+
+  const lineup = value.map((item) => {
+    const battingOrder = Number(item?.battingOrder ?? item?.order);
+    const teamCode = typeof item?.teamCode === "string" ? item.teamCode.trim().toLowerCase() : "";
+    const teamId = typeof item?.teamId === "string" ? item.teamId : "";
+    const uniformNumber = item?.uniformNumber;
+    const playerId = typeof item?.playerId === "string" ? item.playerId : "";
+    const playerName = typeof item?.playerName === "string" ? item.playerName.trim().slice(0, 40) : "";
+    const position = normalizeScoringPosition(item?.position);
+    return { battingOrder, teamCode, teamId, uniformNumber, playerId, playerName, position };
+  });
+
+  if (lineup.some((item) => !Number.isInteger(item.battingOrder) || item.battingOrder < 1 || item.battingOrder > SCORING_LINEUP_SIZE)) {
+    return { ok: false, error: `${label}の打順は1番から9番までで入力してください。` };
+  }
+  if (new Set(lineup.map((item) => item.battingOrder)).size !== SCORING_LINEUP_SIZE) {
+    return { ok: false, error: `${label}の打順が重複しています。` };
+  }
+  if (lineup.some((item) => !item.playerName || !item.playerId)) {
+    return { ok: false, error: `${label}の選手情報が不足しています。` };
+  }
+  if (lineup.some((item) => !item.position || !PREDICTION_POSITIONS.has(item.position))) {
+    return { ok: false, error: `${label}の守備位置が不正です。` };
+  }
+  if (hasDuplicateNonDhPositions(lineup)) {
+    return { ok: false, error: `${label}に同じ守備位置が複数あります。` };
+  }
+
+  for (const item of lineup) {
+    const expectedTeamId = TEAM_PLAYER_ID_PREFIXES[item.teamCode];
+    if (!expectedTeamId || !PREDICTION_TEAM_IDS.has(item.teamId) || item.teamId !== expectedTeamId) {
+      return { ok: false, error: `${label}の球団情報が不正です。` };
+    }
+    if (typeof item.uniformNumber !== "string" || !/^\d{1,3}$/.test(item.uniformNumber)) {
+      return { ok: false, error: `${label}の背番号が不正です。` };
+    }
+    if (item.playerId !== createPlayerId(item.teamCode, item.uniformNumber)) {
+      return { ok: false, error: `${label}の選手IDが不正です。` };
+    }
+  }
+  if (new Set(lineup.map((item) => item.playerId)).size !== SCORING_LINEUP_SIZE) {
+    return { ok: false, error: `${label}に同じ選手が複数います。` };
+  }
+
+  return { ok: true, lineup: lineup.sort((left, right) => left.battingOrder - right.battingOrder) };
+}
+
+function normalizeScoringPosition(value) {
+  const key = String(value || "").normalize("NFKC").replace(/\s+/g, "").toUpperCase();
+  return POSITION_ALIASES[key] || "";
+}
+
+function hasDuplicateNonDhPositions(lineup) {
+  const positions = lineup.map((item) => item.position).filter((position) => position && position !== "指");
+  return new Set(positions).size !== positions.length;
+}
+
+function scorePredictionLineup(predictionLineup, actualLineup) {
+  const actualByPlayerId = new Map(actualLineup.map((item) => [item.playerId, item]));
+  let playerHits = 0;
+  let orderHits = 0;
+  let positionHits = 0;
+
+  for (const prediction of predictionLineup) {
+    const actual = actualByPlayerId.get(prediction.playerId);
+    if (!actual) {
+      continue;
+    }
+    playerHits += 1;
+    if (actual.battingOrder === prediction.battingOrder) {
+      orderHits += 1;
+    }
+    if (actual.position === prediction.position) {
+      positionHits += 1;
+    }
+  }
+
+  const playerScore = playerHits * SCORING_RULES.player.perHit + (playerHits === SCORING_LINEUP_SIZE ? SCORING_RULES.player.bonus : 0);
+  const orderScore = orderHits * SCORING_RULES.order.perHit + (orderHits === SCORING_LINEUP_SIZE ? SCORING_RULES.order.bonus : 0);
+  const positionScore = positionHits * SCORING_RULES.position.perHit + (positionHits === SCORING_LINEUP_SIZE ? SCORING_RULES.position.bonus : 0);
+  return {
+    total: Math.min(SCORING_MAX_SCORE, playerScore + orderScore + positionScore),
+    counts: { player: playerHits, order: orderHits, position: positionHits }
+  };
 }
 
 async function handleGetPerfectAchievers(request, env, cors) {

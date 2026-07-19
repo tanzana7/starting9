@@ -254,6 +254,8 @@ const state = {
 document.addEventListener("DOMContentLoaded", () => {
   state.adminAccess.requested = isAdminModeRequested();
   state.isAdminMode = false;
+  // 後続の画面初期化とは独立して、認証復元完了後の初回管理者判定を予約します。
+  void initializeAuthDependentFeatures();
   buildLineupPicker("prediction", "predictionLineup", "predictionPlayers");
   buildLineupPicker("actual", "actualLineup", "actualPlayers");
   loadState();
@@ -262,7 +264,6 @@ document.addEventListener("DOMContentLoaded", () => {
   renderScheduleLoadLog();
   restoreAdminGameInfoInputs();
   applyAdminMode();
-  refreshAdminAccess();
   renderAll();
 
   const scheduleReady = window.HAM_GAME_SCHEDULE_READY;
@@ -278,12 +279,28 @@ document.addEventListener("DOMContentLoaded", () => {
     initializeGameSchedule();
     renderAll();
   }
-  window.addEventListener("starting9-auth-state-changed", handleAuthStateChanged);
   initializeProbableStarter().finally(() => {
     initializePerfectAchievers();
     initializePredictionRemoteSync();
   });
 });
+
+async function initializeAuthDependentFeatures() {
+  const auth = window.starting9Auth;
+  const ready = typeof auth?.whenInitialized === "function"
+    ? auth.whenInitialized()
+    : window.starting9AuthReady;
+
+  if (!ready || typeof ready.then !== "function") {
+    console.error("認証初期化Promiseを取得できませんでした。");
+    return;
+  }
+
+  await ready;
+  // 初期イベントは待機中に発火していても、解決済みPromiseから現在状態を必ず評価できます。
+  window.addEventListener("starting9-auth-state-changed", handleAuthStateChanged);
+  await refreshAdminAccess();
+}
 
 function bindEvents() {
   document.getElementById("predictionForm").addEventListener("submit", handlePredictionSubmit);
@@ -375,6 +392,11 @@ function buildAdminMeApiUrl() {
   return baseUrl ? `${baseUrl}/api/admin/me` : "";
 }
 
+function isAuthStateInitialized() {
+  const auth = window.starting9Auth;
+  return typeof auth?.isInitialized === "function" && auth.isInitialized();
+}
+
 function leaveAdminModeSilently() {
   const url = new URL(window.location.href);
   url.searchParams.delete("admin");
@@ -396,8 +418,11 @@ async function refreshAdminAccess() {
     return;
   }
 
-  if (!getPredictionAccountUser()) {
-    leaveAdminModeSilently();
+  // Cookieの復元中は、未ログインと扱わずadmin=1も変更しません。
+  if (!isAuthStateInitialized()) {
+    state.adminAccess.status = "checking";
+    state.isAdminMode = false;
+    applyAdminMode();
     return;
   }
 

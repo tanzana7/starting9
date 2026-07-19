@@ -63,6 +63,9 @@ export default {
       if (path === "/api/auth/me" && request.method === "GET") {
         return await handleMe(request, env, ctx, cors);
       }
+      if (path === "/api/admin/me" && request.method === "GET") {
+        return await handleAdminMe(request, env, cors);
+      }
       if (path === "/api/perfect-achievers" && request.method === "GET") {
         return await handleGetPerfectAchievers(request, env, cors);
       }
@@ -204,6 +207,19 @@ async function handleMe(request, env, ctx, cors) {
   }
 
   return jsonResponse({ ok: true, authenticated: true, user: publicUser(session) }, 200, cors);
+}
+
+async function handleAdminMe(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) {
+    return access.response;
+  }
+
+  return jsonResponse({
+    ok: true,
+    admin: true,
+    user: publicUser(access.user)
+  }, 200, cors);
 }
 
 async function handleGetPerfectAchievers(request, env, cors) {
@@ -594,13 +610,41 @@ async function getSessionUser(request, env) {
   const tokenHash = await sha256Base64Url(token);
   const now = new Date().toISOString();
   return env.AUTH_DB.prepare(
-    `SELECT sessions.id AS session_id, users.id, users.username, users.status
+    `SELECT sessions.id AS session_id, users.id, users.username, users.status, users.role
        FROM sessions JOIN users ON users.id = sessions.user_id
       WHERE sessions.token_hash = ?1
         AND sessions.expires_at > ?2
         AND users.status = 'active'
       LIMIT 1`
   ).bind(tokenHash, now).first().then((row) => row ? { ...row, sessionId: row.session_id } : null);
+}
+
+async function requireAuthenticatedUser(request, env, cors) {
+  const user = await getSessionUser(request, env);
+  if (!user) {
+    return {
+      ok: false,
+      response: jsonResponse({ ok: false, admin: false, error: "ログインが必要です。" }, 401, cors)
+    };
+  }
+
+  return { ok: true, user };
+}
+
+async function requireAdminUser(request, env, cors) {
+  const authenticated = await requireAuthenticatedUser(request, env, cors);
+  if (!authenticated.ok) {
+    return authenticated;
+  }
+
+  if (authenticated.user.role !== "admin") {
+    return {
+      ok: false,
+      response: jsonResponse({ ok: false, admin: false, error: "管理者権限がありません。" }, 403, cors)
+    };
+  }
+
+  return authenticated;
 }
 
 async function createSession(db, userId, env) {

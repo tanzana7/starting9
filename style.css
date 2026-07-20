@@ -1094,6 +1094,49 @@ textarea:focus {
   background: #f5f9fd;
 }
 
+.admin-auto-scoring {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 16px;
+  border: 1px solid #9db9d2;
+  border-radius: 8px;
+  background: #eff7ff;
+}
+
+.admin-auto-scoring-summary {
+  padding: 12px;
+  border: 1px solid #c8d8e6;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.admin-auto-scoring-summary dl {
+  display: grid;
+  grid-template-columns: minmax(116px, 0.8fr) minmax(0, 1.2fr);
+  gap: 6px 12px;
+  margin: 0;
+}
+
+.admin-auto-scoring-summary dt {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.admin-auto-scoring-summary dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-weight: 800;
+}
+
+.admin-auto-scoring-error {
+  margin: 10px 0 0;
+  color: var(--error);
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
 .admin-server-scoring-heading h3 {
   margin: 0;
   color: var(--fighters-deep-blue);

@@ -25,6 +25,7 @@ test("初回認証イベントを取りこぼしてもPromise完了後にadmin A
     },
     starting9AuthReady: authReady,
     starting9Auth: {
+      getUser: () => ({ id: "admin-user", username: "admin" }),
       getApiBaseUrl: () => "https://starting9-auth.tanzana7.workers.dev",
       isInitialized: () => true,
       whenInitialized: () => authReady

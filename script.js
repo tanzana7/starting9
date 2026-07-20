@@ -160,8 +160,7 @@ const state = {
   isAdminMode: false,
   adminAccess: {
     status: "inactive",
-    requestId: 0,
-    isPanelOpen: false
+    requestId: 0
   },
   autoFetch: {
     isRunning: false,
@@ -378,8 +377,9 @@ function applyAdminMode() {
   const adminDetails = document.getElementById("adminDetails");
   const adminModeBadge = document.getElementById("adminModeBadge");
   const openAdminButton = document.getElementById("openAdminButton");
-  const isAuthorized = state.adminAccess.status === "authorized";
-  const isAdminScreenOpen = isAuthorized && state.adminAccess.isPanelOpen;
+  const appLayout = document.querySelector(".app-layout");
+  const isAuthorized = ["authorized", "open"].includes(state.adminAccess.status);
+  const isAdminScreenOpen = state.adminAccess.status === "open";
 
   if (adminDetails) {
     adminDetails.classList.toggle("hidden", !isAdminScreenOpen);
@@ -392,9 +392,12 @@ function applyAdminMode() {
   }
 
   if (openAdminButton) {
-    openAdminButton.classList.toggle("hidden", !isAuthorized);
-    openAdminButton.setAttribute("aria-hidden", isAuthorized ? "false" : "true");
+    const shouldShowButton = isAuthorized && !isAdminScreenOpen;
+    openAdminButton.classList.toggle("hidden", !shouldShowButton);
+    openAdminButton.setAttribute("aria-hidden", shouldShowButton ? "false" : "true");
   }
+
+  appLayout?.classList.toggle("is-admin-screen", isAdminScreenOpen);
 
   state.isAdminMode = isAdminScreenOpen;
   if (!isAdminScreenOpen) {
@@ -415,7 +418,6 @@ function isAuthStateInitialized() {
 
 function clearAdminAccess() {
   state.adminAccess.status = "inactive";
-  state.adminAccess.isPanelOpen = false;
   state.isAdminMode = false;
   applyAdminMode();
 }
@@ -423,6 +425,7 @@ function clearAdminAccess() {
 async function refreshAdminAccess() {
   const requestId = state.adminAccess.requestId + 1;
   state.adminAccess.requestId = requestId;
+  const wasAdminScreenOpen = state.adminAccess.status === "open";
   if (!isAuthStateInitialized()) {
     state.adminAccess.status = "checking";
     state.isAdminMode = false;
@@ -452,7 +455,7 @@ async function refreshAdminAccess() {
       return;
     }
     if (response.ok && payload?.ok && payload?.admin) {
-      state.adminAccess.status = "authorized";
+      state.adminAccess.status = wasAdminScreenOpen ? "open" : "authorized";
       applyAdminMode();
       return;
     }
@@ -474,7 +477,7 @@ function openAdminPanel() {
     return;
   }
 
-  state.adminAccess.isPanelOpen = true;
+  state.adminAccess.status = "open";
   applyAdminMode();
   initializeGameSchedule();
   renderAll();
@@ -482,12 +485,16 @@ function openAdminPanel() {
 }
 
 function closeAdminPanel() {
-  state.adminAccess.isPanelOpen = false;
+  if (state.adminAccess.status !== "open") {
+    return;
+  }
+
+  state.adminAccess.status = "authorized";
   applyAdminMode();
 }
 
 function handleAdminDetailsToggle(event) {
-  if (!event.currentTarget.open && state.adminAccess.isPanelOpen) {
+  if (!event.currentTarget.open && state.adminAccess.status === "open") {
     closeAdminPanel();
   }
 }

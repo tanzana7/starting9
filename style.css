@@ -520,6 +520,10 @@ h3 {
   padding: 22px 0 42px;
 }
 
+.app-layout.is-admin-screen > :not(.admin-details) {
+  display: none;
+}
+
 .area-heading {
   grid-column: 1 / -1;
   padding: 16px 18px;

@@ -7,7 +7,8 @@
   "vars": {
     "AUTH_ALLOWED_ORIGINS": "https://REPLACE_WITH_FRONTEND_ORIGIN",
     "SESSION_SAMESITE": "Lax",
-    "AUTO_SCORING_DELAY_SECONDS": "300"
+    "AUTO_SCORING_DELAY_SECONDS": "300",
+    "ENABLE_DEVELOPMENT_MODE": "false"
   },
   "d1_databases": [
     {

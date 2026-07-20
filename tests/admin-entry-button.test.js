@@ -45,9 +45,14 @@ function createApp({ href = "https://starting9.pages.dev/", user = null, admin =
     },
     fetch: async (url) => {
       fetchUrls.push(url);
+      const isCapabilityRequest = String(url).endsWith("/api/admin/mode-capabilities");
       return {
         ok: admin,
-        json: async () => admin ? { ok: true, admin: true } : { ok: false, admin: false }
+        json: async () => admin
+          ? (isCapabilityRequest
+            ? { ok: true, adminModeAvailable: true, developmentModeAvailable: false }
+            : { ok: true, admin: true })
+          : { ok: false, admin: false }
       };
     },
     Map,
@@ -59,7 +64,7 @@ function createApp({ href = "https://starting9.pages.dev/", user = null, admin =
   });
   vm.runInContext(scriptSource, context, { filename: scriptPath });
   vm.runInContext(
-    "applyAdminMode = () => {}; initializeGameSchedule = () => {}; renderAll = () => {}; refreshAdminScoringSummary = () => {}; stopAutoFetch = () => {}; stopRosterMonitor = () => {};",
+    "applyAdminMode = () => {}; initializeGameSchedule = () => {}; renderAll = () => {}; refreshAdminScoringSummary = () => {}; refreshAutoScoringStatus = () => {}; stopAutoFetch = () => {}; stopRosterMonitor = () => {};",
     context
   );
 
@@ -77,14 +82,19 @@ test("管理者は初期Promise完了後に一度だけ確認され、ボタン�
   const app = createApp({ user: { id: "admin-user", username: "admin" }, admin: true });
 
   await vm.runInContext("initializeAuthDependentFeatures()", app.context);
-  assert.deepEqual(app.fetchUrls, ["https://starting9-auth.tanzana7.workers.dev/api/admin/me"]);
+  assert.deepEqual(app.fetchUrls, [
+    "https://starting9-auth.tanzana7.workers.dev/api/admin/me",
+    "https://starting9-auth.tanzana7.workers.dev/api/admin/mode-capabilities"
+  ]);
   assert.equal(vm.runInContext("state.adminAccess.status", app.context), "authorized");
 
   for (let index = 0; index < 3; index += 1) {
     vm.runInContext("openAdminPanel()", app.context);
-    assert.equal(vm.runInContext("state.adminAccess.status", app.context), "open");
+    assert.equal(vm.runInContext("state.adminAccess.status", app.context), "authorized");
+    assert.equal(vm.runInContext("state.appMode", app.context), "admin");
     vm.runInContext("closeAdminPanel()", app.context);
     assert.equal(vm.runInContext("state.adminAccess.status", app.context), "authorized");
+    assert.equal(vm.runInContext("state.appMode", app.context), "normal");
   }
 
   app.context.window.starting9Auth.getUser = () => null;

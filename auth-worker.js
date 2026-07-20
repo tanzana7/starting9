@@ -89,9 +89,16 @@ export default {
       if (path === "/api/admin/me" && request.method === "GET") {
         return await handleAdminMe(request, env, cors);
       }
+      if (path === "/api/admin/mode-capabilities" && request.method === "GET") {
+        return await handleAdminModeCapabilities(request, env, cors);
+      }
       const adminScoringRoute = parseAdminScoringRoute(path);
       if (adminScoringRoute) {
         return await handleAdminScoringRoute(request, env, cors, adminScoringRoute);
+      }
+      const developmentRoute = parseDevelopmentRoute(path);
+      if (developmentRoute) {
+        return await handleDevelopmentRoute(request, env, cors, developmentRoute);
       }
       if (path === "/api/perfect-achievers" && request.method === "GET") {
         return await handleGetPerfectAchievers(request, env, cors);
@@ -257,6 +264,96 @@ async function handleAdminMe(request, env, cors) {
     admin: true,
     user: publicUser(access.user)
   }, 200, cors);
+}
+
+async function handleAdminModeCapabilities(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) {
+    return access.response;
+  }
+  return jsonResponse({
+    ok: true,
+    authenticated: true,
+    role: "admin",
+    adminModeAvailable: true,
+    developmentModeAvailable: isDevelopmentModeEnabled(env)
+  }, 200, cors);
+}
+
+function parseDevelopmentRoute(path) {
+  if (path === "/api/dev/status" || path === "/api/dev/cron/run-auto-scoring") {
+    return { action: path.slice("/api/dev/".length) };
+  }
+  const match = /^\/api\/dev\/games\/([^/]+)\/create-perfect-prediction$/.exec(path);
+  if (!match) {
+    return null;
+  }
+  try {
+    return { action: "create-perfect-prediction", gameId: decodeURIComponent(match[1]) };
+  } catch {
+    return { invalid: true };
+  }
+}
+
+async function handleDevelopmentRoute(request, env, cors, route) {
+  const access = await requireDevelopmentUser(request, env, cors);
+  if (!access.ok) {
+    return access.response;
+  }
+  if (route.invalid) {
+    return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
+  }
+  if (route.action === "status" && request.method === "GET") {
+    const gameId = getValidGameId(new URL(request.url).searchParams.get("gameId"));
+    const record = gameId ? await getGameLineup(env.AUTH_DB, gameId) : null;
+    return jsonResponse({
+      ok: true,
+      developmentModeEnabled: true,
+      autoScoringDelaySeconds: getAutoScoringDelaySeconds(env),
+      user: publicUser(access.user),
+      gameId: gameId || "",
+      autoScoring: serializeGameLineup(record)
+    }, 200, cors);
+  }
+  if (route.action === "create-perfect-prediction" && request.method === "POST") {
+    const metadata = parsePredictionGameId(route.gameId);
+    if (!metadata) {
+      return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
+    }
+    return await handleCreateDevelopmentPerfectPrediction(env, cors, access.user, metadata);
+  }
+  if (route.action === "cron/run-auto-scoring" && request.method === "POST") {
+    const summary = await runDueAutoScoringJobs(env, new Date());
+    return jsonResponse({ ok: true, ...summary }, 200, cors);
+  }
+  return jsonResponse({ ok: false, error: "開発APIのHTTPメソッドが不正です。" }, 405, cors);
+}
+
+async function handleCreateDevelopmentPerfectPrediction(env, cors, user, metadata) {
+  const record = await getGameLineup(env.AUTH_DB, metadata.gameId);
+  const actualResult = sanitizeActualLineupForScoring(parseStoredActualLineup(record?.actual_lineup_json));
+  if (!actualResult.ok) {
+    return jsonResponse({ ok: false, error: "完全一致予想を作成するには、9人分の実スタメンを保存してください。" }, 409, cors);
+  }
+  const existing = await getPredictionRow(env.AUTH_DB, user.id, metadata.gameId);
+  const now = new Date().toISOString();
+  const prediction = {
+    schemaVersion: PREDICTION_SCHEMA_VERSION,
+    nickname: `[DEV] ${user.username}`,
+    lineup: actualResult.lineup
+  };
+  const predictionJson = JSON.stringify(prediction);
+  const id = existing?.id || randomToken(16);
+  await env.AUTH_DB.prepare(
+    `INSERT INTO predictions
+       (id, user_id, game_id, prediction_json, schema_version, game_date, home_team, away_team, opponent_code, is_home,
+        submitted_at, updated_at, locked_at, status, score, max_score, scored_at, actual_lineup_json)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, NULL, 'submitted', NULL, NULL, NULL, NULL)
+     ON CONFLICT(user_id, game_id) DO UPDATE SET
+       prediction_json = excluded.prediction_json, schema_version = excluded.schema_version, updated_at = excluded.updated_at,
+       locked_at = NULL, status = 'submitted', score = NULL, max_score = NULL, scored_at = NULL, actual_lineup_json = NULL`
+  ).bind(id, user.id, metadata.gameId, predictionJson, PREDICTION_SCHEMA_VERSION, metadata.date, metadata.homeCode, metadata.awayCode, metadata.opponentCode, metadata.isHome ? 1 : 0, now).run();
+  return jsonResponse({ ok: true, gameId: metadata.gameId, created: !existing, updated: Boolean(existing) }, 200, cors);
 }
 
 function parseAdminScoringRoute(path) {
@@ -613,6 +710,7 @@ function serializeGameLineup(record) {
   }
   return {
     gameId: record.game_id,
+    lineupFingerprint: record.lineup_fingerprint,
     lineupDetectedAt: record.lineup_detected_at,
     scoringDueAt: record.scoring_due_at,
     scoringStartedAt: record.scoring_started_at,
@@ -681,20 +779,25 @@ async function runDueAutoScoringJobs(env, now) {
     console.log(`auto scoring cron started: due=${due.results.length}`);
   }
 
+  const summary = { considered: (due?.results || []).length, processed: 0, succeeded: 0, failed: 0 };
   for (const row of due?.results || []) {
     const claimed = await claimGameLineupForScoring(env.AUTH_DB, row.game_id, now);
     if (!claimed) {
       continue;
     }
+    summary.processed += 1;
     try {
       console.log(`auto scoring claimed: game=${claimed.game_id} attempt=${claimed.scoring_attempts}`);
       const result = await scoreClaimedGameLineup(env.AUTH_DB, claimed, now);
+      summary.succeeded += 1;
       console.log(`auto scoring complete: game=${claimed.game_id} processed=${result.processed} perfect=${result.perfectCount}`);
     } catch (error) {
+      summary.failed += 1;
       await markGameLineupFailed(env.AUTH_DB, claimed.game_id, error, now);
       console.error(`auto scoring failed: game=${claimed.game_id} reason=${toSafeAutoScoringError(error)}`);
     }
   }
+  return summary;
 }
 
 async function scoreClaimedGameLineup(db, record, now) {
@@ -1307,6 +1410,21 @@ async function requireAdminUser(request, env, cors) {
   }
 
   return authenticated;
+}
+
+async function requireDevelopmentUser(request, env, cors) {
+  const admin = await requireAdminUser(request, env, cors);
+  if (!admin.ok) {
+    return admin;
+  }
+  if (!isDevelopmentModeEnabled(env)) {
+    return { ok: false, response: jsonResponse({ ok: false, error: "開発モードは有効ではありません。" }, 403, cors) };
+  }
+  return admin;
+}
+
+function isDevelopmentModeEnabled(env) {
+  return String(env?.ENABLE_DEVELOPMENT_MODE || "").trim().toLowerCase() === "true";
 }
 
 async function createSession(db, userId, env) {

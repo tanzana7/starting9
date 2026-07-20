@@ -79,12 +79,17 @@ test("管理者は初期Promise完了後に一度だけ確認され、ボタン�
   await vm.runInContext("initializeAuthDependentFeatures()", app.context);
   assert.deepEqual(app.fetchUrls, ["https://starting9-auth.tanzana7.workers.dev/api/admin/me"]);
   assert.equal(vm.runInContext("state.adminAccess.status", app.context), "authorized");
-  assert.equal(vm.runInContext("state.adminAccess.isPanelOpen", app.context), false);
 
-  vm.runInContext("openAdminPanel()", app.context);
-  assert.equal(vm.runInContext("state.adminAccess.isPanelOpen", app.context), true);
-  vm.runInContext("closeAdminPanel()", app.context);
-  assert.equal(vm.runInContext("state.adminAccess.isPanelOpen", app.context), false);
+  for (let index = 0; index < 3; index += 1) {
+    vm.runInContext("openAdminPanel()", app.context);
+    assert.equal(vm.runInContext("state.adminAccess.status", app.context), "open");
+    vm.runInContext("closeAdminPanel()", app.context);
+    assert.equal(vm.runInContext("state.adminAccess.status", app.context), "authorized");
+  }
+
+  app.context.window.starting9Auth.getUser = () => null;
+  await vm.runInContext("refreshAdminAccess()", app.context);
+  assert.equal(vm.runInContext("state.adminAccess.status", app.context), "inactive");
 });
 
 test("未ログインでは管理者APIを呼ばず、一般ユーザーは403後に管理状態を持たない", async () => {

@@ -62,6 +62,7 @@ const TEAM_PLAYER_ID_PREFIXES = Object.freeze({
   swallows: "S"
 });
 const DEFAULT_PLAYER_TEAM_CODE = "fighters";
+let autoScoringCountdownTimerId = null;
 const TEST_PREDICTION_LINEUP = [
   { order: 1, player: "大塚瑠晏", position: "遊" },
   { order: 2, player: "清宮幸太郎", position: "一" },
@@ -243,6 +244,15 @@ const state = {
     preview: null,
     previewFingerprint: ""
   },
+  autoScoring: {
+    isSaving: false,
+    isLoading: false,
+    isRunningNow: false,
+    isUpdating: false,
+    gameId: "",
+    record: null,
+    message: ""
+  },
   activeOrder: {
     prediction: 0,
     actual: 0
@@ -259,6 +269,7 @@ document.addEventListener("DOMContentLoaded", () => {
   buildLineupPicker("actual", "actualLineup", "actualPlayers");
   loadState();
   bindEvents();
+  startAutoScoringCountdown();
   window.addEventListener("ham-schedule-log-updated", renderScheduleLoadLog);
   renderScheduleLoadLog();
   restoreAdminGameInfoInputs();
@@ -320,6 +331,9 @@ function bindEvents() {
   bindAdminEvent("cancelProvisionalButton", "click", cancelProvisionalActual);
   bindAdminEvent("testServerScoringButton", "click", runServerScoringPreview);
   bindAdminEvent("runServerScoringButton", "click", runServerScoring);
+  bindAdminEvent("runAutoScoringNowButton", "click", runAutoScoringNow);
+  bindAdminEvent("retryAutoScoringButton", "click", retryAutoScoring);
+  bindAdminEvent("cancelAutoScoringButton", "click", cancelAutoScoring);
   bindAdminEvent("generateTestPredictionButton", "click", generateTestPrediction);
   bindAdminEvent("resetButton", "click", resetAllData);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
@@ -482,6 +496,7 @@ function openAdminPanel() {
   initializeGameSchedule();
   renderAll();
   refreshAdminScoringSummary({ force: true });
+  refreshAutoScoringStatus({ force: true });
 }
 
 function closeAdminPanel() {
@@ -1049,6 +1064,7 @@ function applyParsedActualPreview() {
   renderAdminFlow();
   renderScoreResult();
   showMessage("parserError", "");
+  void saveApprovedActualLineupForAutoScoring();
 }
 
 function clearActualCandidate() {
@@ -1724,6 +1740,19 @@ function buildAdminScoringApiUrl(gameId, action) {
   return `${baseUrl}/api/admin/games/${encodeURIComponent(gameId)}/predictions/${action}`;
 }
 
+function buildAdminGameApiUrl(gameId, action) {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  if (!baseUrl || !gameId) {
+    return "";
+  }
+
+  return `${baseUrl}/api/admin/games/${encodeURIComponent(gameId)}/${action}`;
+}
+
+function getActualLineupDetectedAt() {
+  return state.actual?.fetchedAt || state.actual?.savedAt || new Date().toISOString();
+}
+
 function isApprovedActualLineupForServerScoring() {
   return Boolean(state.actual?.lineup) && state.actual?.approvalStatus !== "provisional";
 }
@@ -1832,6 +1861,206 @@ async function refreshAdminScoringSummary({ force = false } = {}) {
   }
 }
 
+function resetAutoScoringState() {
+  state.autoScoring = {
+    isSaving: false,
+    isLoading: false,
+    isRunningNow: false,
+    isUpdating: false,
+    gameId: "",
+    record: null,
+    message: ""
+  };
+}
+
+async function saveApprovedActualLineupForAutoScoring() {
+  if (!state.isAdminMode || state.autoScoring.isSaving) {
+    return;
+  }
+
+  const gameId = getAdminScoringGameId();
+  const actualPayload = createAdminActualLineupPayload();
+  const url = buildAdminGameApiUrl(gameId, "actual-lineup");
+  if (!gameId || !actualPayload.ok || !url) {
+    return;
+  }
+
+  state.autoScoring.isSaving = true;
+  state.autoScoring.gameId = gameId;
+  state.autoScoring.message = "実スタメンをサーバーへ保存しています...";
+  renderAutoScoringPanel();
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        actualLineup: actualPayload.lineup,
+        lineupDetectedAt: getActualLineupDetectedAt()
+      })
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+    if (state.autoScoring.gameId === gameId) {
+      state.autoScoring.record = payload.autoScoring || null;
+      state.autoScoring.message = "実スタメンを保存し、自動採点を予約しました。";
+    }
+  } catch (error) {
+    console.error("自動採点用の実スタメン保存に失敗しました", error.message);
+    state.autoScoring.message = "実スタメンをサーバーへ保存できませんでした。手動採点は引き続き利用できます。";
+  } finally {
+    state.autoScoring.isSaving = false;
+    renderAutoScoringPanel();
+  }
+}
+
+async function refreshAutoScoringStatus({ force = false } = {}) {
+  if (!state.isAdminMode) {
+    return;
+  }
+  const gameId = getAdminScoringGameId();
+  if (!gameId) {
+    resetAutoScoringState();
+    renderAutoScoringPanel();
+    return;
+  }
+  if (state.autoScoring.isLoading || (!force && state.autoScoring.gameId === gameId && state.autoScoring.record)) {
+    return;
+  }
+  const url = buildAdminGameApiUrl(gameId, "auto-scoring/status");
+  if (!url) {
+    return;
+  }
+  state.autoScoring.isLoading = true;
+  state.autoScoring.gameId = gameId;
+  renderAutoScoringPanel();
+  try {
+    const response = await fetch(url, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+    if (state.autoScoring.gameId === gameId) {
+      state.autoScoring.record = payload.autoScoring || null;
+      state.autoScoring.message = "";
+    }
+  } catch (error) {
+    console.error("自動採点状態の取得に失敗しました", error.message);
+    state.autoScoring.message = "自動採点の状態を取得できませんでした。";
+  } finally {
+    state.autoScoring.isLoading = false;
+    renderAutoScoringPanel();
+  }
+}
+
+async function updateAutoScoring(action, confirmationMessage = "") {
+  const gameId = getAdminScoringGameId();
+  const url = buildAdminGameApiUrl(gameId, `auto-scoring/${action}`);
+  if (!gameId || !url || state.autoScoring.isRunningNow || state.autoScoring.isUpdating) {
+    return;
+  }
+  if (confirmationMessage && !window.confirm(confirmationMessage)) {
+    return;
+  }
+
+  const isRunNow = action === "run-now";
+  state.autoScoring[isRunNow ? "isRunningNow" : "isUpdating"] = true;
+  state.autoScoring.message = isRunNow ? "今すぐ採点を実行しています..." : "自動採点の状態を更新しています...";
+  renderAutoScoringPanel();
+  try {
+    const response = await fetch(url, { method: "POST", credentials: "include" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+    state.autoScoring.record = payload.autoScoring || state.autoScoring.record;
+    state.autoScoring.message = isRunNow
+      ? `今すぐ採点を完了しました。${Number(payload.scored || 0)}件を更新しました。`
+      : action === "cancel" ? "自動採点を取り消しました。" : "自動採点を再試行待ちに戻しました。";
+    await refreshAdminScoringSummary({ force: true });
+  } catch (error) {
+    console.error("自動採点操作に失敗しました", error.message);
+    state.autoScoring.message = "自動採点の操作に失敗しました。";
+  } finally {
+    state.autoScoring[isRunNow ? "isRunningNow" : "isUpdating"] = false;
+    renderAutoScoringPanel();
+  }
+}
+
+function runAutoScoringNow() {
+  void updateAutoScoring("run-now", "この試合の保存済み予想を今すぐサーバー側で採点します。よろしいですか？");
+}
+
+function retryAutoScoring() {
+  void updateAutoScoring("retry", "自動採点を再試行待ちに戻します。よろしいですか？");
+}
+
+function cancelAutoScoring() {
+  void updateAutoScoring("cancel", "予約済みの自動採点を取り消します。よろしいですか？");
+}
+
+function formatAutoScoringStatus(status) {
+  return ({ pending: "採点待ち", processing: "採点処理中", scored: "採点済み", failed: "採点失敗", cancelled: "取り消し済み" })[status] || "未予約";
+}
+
+function formatRemainingTime(dueAt) {
+  const due = new Date(dueAt || "");
+  if (Number.isNaN(due.getTime())) {
+    return "-";
+  }
+  const seconds = Math.max(0, Math.ceil((due.getTime() - Date.now()) / 1000));
+  const minutes = Math.floor(seconds / 60);
+  return minutes > 0 ? `${minutes}分${seconds % 60}秒` : `${seconds}秒`;
+}
+
+function startAutoScoringCountdown() {
+  if (autoScoringCountdownTimerId !== null) {
+    return;
+  }
+  autoScoringCountdownTimerId = window.setInterval(() => {
+    if (state.isAdminMode && state.autoScoring.record?.status === "pending") {
+      renderAutoScoringPanel();
+    }
+  }, 1000);
+}
+
+function renderAutoScoringPanel() {
+  const summary = document.getElementById("adminAutoScoringSummary");
+  const message = document.getElementById("adminAutoScoringMessage");
+  const runNowButton = document.getElementById("runAutoScoringNowButton");
+  const retryButton = document.getElementById("retryAutoScoringButton");
+  const cancelButton = document.getElementById("cancelAutoScoringButton");
+  if (!summary || !message || !runNowButton || !retryButton || !cancelButton) {
+    return;
+  }
+
+  const record = state.autoScoring.record;
+  const status = record?.status || "";
+  const isBusy = state.autoScoring.isSaving || state.autoScoring.isLoading || state.autoScoring.isRunningNow || state.autoScoring.isUpdating;
+  const rows = record ? [
+    ["状態", formatAutoScoringStatus(status)],
+    ["対象gameId", record.gameId || state.autoScoring.gameId || "-"],
+    ["実スタメン取得", formatDateTime(record.lineupDetectedAt)],
+    ["採点予定", formatDateTime(record.scoringDueAt)],
+    ["残り時間", status === "pending" ? formatRemainingTime(record.scoringDueAt) : "-"],
+    ["試行回数", `${record.attempts || 0} / ${record.maxAttempts || 3}`],
+    ["処理件数", record.processedPredictions === null ? "-" : `${record.processedPredictions}件`],
+    ["満点", record.perfectCount === null ? "-" : `${record.perfectCount}件`],
+    ["採点完了", record.scoredAt ? formatDateTime(record.scoredAt) : "-"]
+  ] : [["状態", state.autoScoring.isLoading ? "状態を確認中" : "実スタメン未保存"]];
+  summary.innerHTML = `<dl>${rows.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl>`;
+  if (record?.lastError) {
+    summary.insertAdjacentHTML("beforeend", `<p class="admin-auto-scoring-error">最終エラー：${escapeHtml(record.lastError)}</p>`);
+  }
+  message.textContent = state.autoScoring.message;
+  message.className = `message${state.autoScoring.message.includes("失敗") || state.autoScoring.message.includes("できません") ? " error-message" : ""}`;
+  runNowButton.disabled = !record || isBusy || status === "processing";
+  retryButton.disabled = !record || isBusy || status !== "failed";
+  cancelButton.disabled = !record || isBusy || !["pending", "failed"].includes(status);
+}
+
 async function runServerScoringPreview() {
   const gameId = getAdminScoringGameId();
   const actualPayload = createAdminActualLineupPayload();
@@ -1914,8 +2143,13 @@ async function runServerScoring() {
       throw new Error(payload?.error || `HTTP ${response.status}`);
     }
     state.adminScoring.summaryMessage = payload.message || `本番採点が完了しました。${payload.scored}件を更新しました。`;
+    if (payload.autoScoring) {
+      state.autoScoring.record = payload.autoScoring;
+      state.autoScoring.gameId = gameId;
+    }
     resetAdminScoringPreview();
     await refreshAdminScoringSummary({ force: true });
+    renderAutoScoringPanel();
   } catch (error) {
     console.error("本番採点に失敗しました", error.message);
     state.adminScoring.summaryMessage = "本番採点に失敗しました。DBは更新されていない可能性があります。";
@@ -2789,6 +3023,9 @@ function registerProvisionalActual(lineup, sourceUrl, fetchedAt, workerMeta, val
   renderActualLineup();
   renderAdminFlow();
   renderScoreResult();
+  if (isApproved) {
+    void saveApprovedActualLineupForAutoScoring();
+  }
 }
 
 function approveProvisionalActual() {
@@ -2803,6 +3040,7 @@ function approveProvisionalActual() {
   saveToStorage(STORAGE_KEYS.actual, state.actual);
   renderAdminFlow();
   showMessage("parserError", "");
+  void saveApprovedActualLineupForAutoScoring();
 }
 
 function editProvisionalActual() {
@@ -4034,6 +4272,7 @@ function renderAdminFlow() {
   updateAdminButtons();
   updateAutoFetchButtons();
   renderAdminScoringPanel();
+  renderAutoScoringPanel();
   updateRosterMonitorButtons();
   renderAutoFetchPanel();
   renderRosterSnapshotSummary();
@@ -4803,6 +5042,7 @@ function resetAllData() {
     preview: null,
     previewFingerprint: ""
   };
+  resetAutoScoringState();
   state.actualPreview = null;
   state.adminStatus = "idle";
   state.adminError = "";

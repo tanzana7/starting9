@@ -15,6 +15,11 @@ const PREDICTION_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "左", 
 const PREDICTION_TEAM_CODES = new Set(["f", "b", "h", "l", "e", "m", "g", "t", "db", "c", "d", "s"]);
 const SCORING_LINEUP_SIZE = 9;
 const SCORING_MAX_SCORE = 100;
+const AUTO_SCORING_DEFAULT_DELAY_SECONDS = 300;
+const AUTO_SCORING_MAX_DELAY_SECONDS = 24 * 60 * 60;
+const AUTO_SCORING_MAX_ATTEMPTS = 3;
+const AUTO_SCORING_CRON_BATCH_SIZE = 10;
+const AUTO_SCORING_PROCESSING_TIMEOUT_MS = 10 * 60 * 1000;
 const SCORING_RULES = Object.freeze({
   player: { perHit: 5, bonus: 5 },
   order: { perHit: 3, bonus: 3 },
@@ -109,6 +114,16 @@ export default {
       console.error("認証API処理に失敗しました", error instanceof Error ? error.message : "unknown error");
       return jsonResponse({ ok: false, error: "認証処理に失敗しました。" }, 500, cors);
     }
+  },
+
+  async scheduled(event, env, ctx) {
+    if (!env.AUTH_DB) {
+      console.error("auto scoring skipped: AUTH_DB binding is unavailable");
+      return;
+    }
+
+    const scheduledAt = new Date(Number(event?.scheduledTime) || Date.now());
+    ctx.waitUntil(runDueAutoScoringJobs(env, scheduledAt));
   }
 };
 
@@ -245,7 +260,7 @@ async function handleAdminMe(request, env, cors) {
 }
 
 function parseAdminScoringRoute(path) {
-  const match = /^\/api\/admin\/games\/([^/]+)\/predictions\/(summary|score-predictions(?:\/preview)?)$/.exec(path);
+  const match = /^\/api\/admin\/games\/([^/]+)\/(predictions\/(?:summary|score-predictions(?:\/preview)?)|actual-lineup|auto-scoring\/(?:status|run-now|retry|cancel))$/.exec(path);
   if (!match) {
     return null;
   }
@@ -279,6 +294,21 @@ async function handleAdminScoringRoute(request, env, cors, route) {
   }
   if (route.action === "score-predictions" && request.method === "POST") {
     return await handleAdminScorePredictions(request, env, cors, metadata.gameId);
+  }
+  if (route.action === "actual-lineup" && request.method === "POST") {
+    return await handleAdminActualLineupSave(request, env, cors, metadata.gameId);
+  }
+  if (route.action === "auto-scoring/status" && request.method === "GET") {
+    return await handleAdminAutoScoringStatus(env, cors, metadata.gameId);
+  }
+  if (route.action === "auto-scoring/run-now" && request.method === "POST") {
+    return await handleAdminAutoScoringRunNow(env, cors, metadata.gameId);
+  }
+  if (route.action === "auto-scoring/retry" && request.method === "POST") {
+    return await handleAdminAutoScoringRetry(env, cors, metadata.gameId);
+  }
+  if (route.action === "auto-scoring/cancel" && request.method === "POST") {
+    return await handleAdminAutoScoringCancel(env, cors, metadata.gameId);
   }
 
   return jsonResponse({ ok: false, error: "管理者採点APIのHTTPメソッドが不正です。" }, 405, cors);
@@ -329,64 +359,52 @@ async function handleAdminScorePredictions(request, env, cors, gameId) {
     return jsonResponse({ ok: false, error: actualResult.error }, 400, cors);
   }
 
-  // 本番採点でもpreviewの値は使わず、DBから読み直して同じ検証・計算を行います。
-  const scoring = await prepareGamePredictionScoring(env.AUTH_DB, gameId, actualResult.lineup);
-  if (scoring.failed > 0) {
+  // 手動採点も同じ実スタメン保存・採点コアを使い、Cronとの結果差を作りません。
+  await saveActualLineupForAutoScoring(env.AUTH_DB, gameId, actualResult.lineup, new Date(), {
+    forceReschedule: true,
+    delaySeconds: 0
+  });
+  const claimed = await claimGameLineupForScoring(env.AUTH_DB, gameId, new Date(), { force: true });
+  if (!claimed) {
+    return jsonResponse({ ok: false, error: "この試合は現在採点処理中です。" }, 409, cors);
+  }
+
+  try {
+    const result = await scoreClaimedGameLineup(env.AUTH_DB, claimed, new Date());
     return jsonResponse({
-      ok: false,
-      error: "保存済み予想に検証エラーがあるため、本番採点は実行されませんでした。",
+      ok: true,
       gameId,
-      processed: scoring.processed,
-      scored: 0,
-      failed: scoring.failed,
+      processed: result.processed,
+      scored: result.scored,
+      failed: result.failed,
       maxScore: SCORING_MAX_SCORE,
-      validationErrors: scoring.validationErrors
-    }, 409, cors);
-  }
-
-  const scoredAt = new Date().toISOString();
-  const actualLineupJson = JSON.stringify(actualResult.lineup);
-  if (scoring.outcomes.length > 0) {
-    const updates = scoring.outcomes.map((outcome) => env.AUTH_DB.prepare(
-      `UPDATE predictions
-          SET score = ?1,
-              max_score = ?2,
-              scored_at = ?3,
-              status = 'scored',
-              actual_lineup_json = ?4
-        WHERE id = ?5 AND game_id = ?6`
-    ).bind(
-      outcome.score.total,
-      SCORING_MAX_SCORE,
-      scoredAt,
-      actualLineupJson,
-      outcome.id,
-      gameId
-    ));
-
-    // D1 batchは全件のUPDATEをまとめ、途中の部分更新を避けます。
-    const results = await env.AUTH_DB.batch(updates);
-    if (results.some((result) => Number(result?.meta?.changes || 0) !== 1)) {
-      throw new Error("prediction score update count mismatch");
+      perfectCount: result.perfectCount,
+      newPerfectAchievers: result.newPerfectAchievers,
+      scoredAt: result.scoredAt,
+      message: result.processed === 0 ? "保存済み予想はありません。" : undefined,
+      autoScoring: serializeGameLineup(await getGameLineup(env.AUTH_DB, gameId))
+    }, 200, cors);
+  } catch (error) {
+    await markGameLineupFailed(env.AUTH_DB, gameId, error, new Date());
+    if (error?.code === "prediction_validation_failed") {
+      return jsonResponse({
+        ok: false,
+        error: "保存済み予想に検証エラーがあるため、本番採点は実行されませんでした。",
+        gameId,
+        processed: error.processed,
+        scored: 0,
+        failed: error.failed,
+        maxScore: SCORING_MAX_SCORE,
+        validationErrors: error.validationErrors
+      }, 409, cors);
     }
+    throw error;
   }
-
-  return jsonResponse({
-    ok: true,
-    gameId,
-    processed: scoring.processed,
-    scored: scoring.scored,
-    failed: 0,
-    maxScore: SCORING_MAX_SCORE,
-    perfectCount: scoring.perfectCount,
-    scoredAt,
-    message: scoring.processed === 0 ? "保存済み予想はありません。" : undefined
-  }, 200, cors);
 }
 
 async function prepareGamePredictionScoring(db, gameId, actualLineup) {
   const rows = await db.prepare(
-    "SELECT id, prediction_json FROM predictions WHERE game_id = ?1 ORDER BY submitted_at ASC, id ASC"
+    "SELECT id, user_id, prediction_json FROM predictions WHERE game_id = ?1 ORDER BY submitted_at ASC, id ASC"
   ).bind(gameId).all();
   const outcomes = [];
   const validationErrors = [];
@@ -401,7 +419,7 @@ async function prepareGamePredictionScoring(db, gameId, actualLineup) {
     }
 
     const score = scorePredictionLineup(sanitized.prediction.lineup, actualLineup);
-    outcomes.push({ id: row.id, score });
+    outcomes.push({ id: row.id, userId: row.user_id, score });
     distribution.set(score.total, (distribution.get(score.total) || 0) + 1);
   }
 
@@ -419,6 +437,357 @@ async function prepareGamePredictionScoring(db, gameId, actualLineup) {
       Array.from(distribution.entries()).sort((left, right) => left[0] - right[0]).map(([score, count]) => [String(score), count])
     )
   };
+}
+
+async function handleAdminActualLineupSave(request, env, cors, gameId) {
+  const input = await readJson(request);
+  const actualResult = sanitizeActualLineupForScoring(input?.actualLineup);
+  if (!actualResult.ok) {
+    return jsonResponse({ ok: false, error: actualResult.error }, 400, cors);
+  }
+
+  const detectedAt = parseLineupDetectedAt(input?.lineupDetectedAt) || new Date();
+  const record = await saveActualLineupForAutoScoring(env.AUTH_DB, gameId, actualResult.lineup, detectedAt, {
+    delaySeconds: getAutoScoringDelaySeconds(env)
+  });
+  console.log(`auto scoring scheduled: game=${gameId} due=${record.scoring_due_at}`);
+  return jsonResponse({
+    ok: true,
+    gameId,
+    autoScoring: serializeGameLineup(record)
+  }, 200, cors);
+}
+
+async function handleAdminAutoScoringStatus(env, cors, gameId) {
+  const record = await getGameLineup(env.AUTH_DB, gameId);
+  const summary = await getPredictionScoringSummary(env.AUTH_DB, gameId);
+  return jsonResponse({
+    ok: true,
+    gameId,
+    autoScoring: serializeGameLineup(record),
+    predictionCount: summary.predictionCount,
+    scoredCount: summary.scoredCount
+  }, 200, cors);
+}
+
+async function handleAdminAutoScoringRunNow(env, cors, gameId) {
+  const record = await getGameLineup(env.AUTH_DB, gameId);
+  if (!record) {
+    return jsonResponse({ ok: false, error: "先に実スタメンをサーバーへ保存してください。" }, 409, cors);
+  }
+
+  const now = new Date();
+  const claimed = await claimGameLineupForScoring(env.AUTH_DB, gameId, now, { force: true, resetAttempts: true });
+  if (!claimed) {
+    return jsonResponse({ ok: false, error: "この試合は現在採点処理中です。" }, 409, cors);
+  }
+
+  try {
+    const result = await scoreClaimedGameLineup(env.AUTH_DB, claimed, now);
+    return jsonResponse({ ok: true, gameId, ...result, autoScoring: serializeGameLineup(await getGameLineup(env.AUTH_DB, gameId)) }, 200, cors);
+  } catch (error) {
+    await markGameLineupFailed(env.AUTH_DB, gameId, error, now);
+    throw error;
+  }
+}
+
+async function handleAdminAutoScoringRetry(env, cors, gameId) {
+  const record = await getGameLineup(env.AUTH_DB, gameId);
+  if (!record) {
+    return jsonResponse({ ok: false, error: "再試行する実スタメンがありません。" }, 404, cors);
+  }
+  if (record.scoring_status === "processing") {
+    return jsonResponse({ ok: false, error: "この試合は現在採点処理中です。" }, 409, cors);
+  }
+
+  const now = new Date().toISOString();
+  await env.AUTH_DB.prepare(
+    `UPDATE game_lineups
+        SET scoring_status = 'pending', scoring_due_at = ?1, scoring_started_at = NULL,
+            scoring_attempts = 0, last_error = NULL, updated_at = ?1
+      WHERE game_id = ?2`
+  ).bind(now, gameId).run();
+  return jsonResponse({ ok: true, gameId, autoScoring: serializeGameLineup(await getGameLineup(env.AUTH_DB, gameId)) }, 200, cors);
+}
+
+async function handleAdminAutoScoringCancel(env, cors, gameId) {
+  const record = await getGameLineup(env.AUTH_DB, gameId);
+  if (!record) {
+    return jsonResponse({ ok: false, error: "取り消す自動採点はありません。" }, 404, cors);
+  }
+  if (record.scoring_status === "processing") {
+    return jsonResponse({ ok: false, error: "処理中の採点は取り消せません。完了後に再採点してください。" }, 409, cors);
+  }
+
+  const now = new Date().toISOString();
+  await env.AUTH_DB.prepare(
+    `UPDATE game_lineups
+        SET scoring_status = 'cancelled', scoring_started_at = NULL, updated_at = ?1
+      WHERE game_id = ?2`
+  ).bind(now, gameId).run();
+  return jsonResponse({ ok: true, gameId, autoScoring: serializeGameLineup(await getGameLineup(env.AUTH_DB, gameId)) }, 200, cors);
+}
+
+async function getPredictionScoringSummary(db, gameId) {
+  const row = await db.prepare(
+    `SELECT COUNT(*) AS prediction_count,
+            SUM(CASE WHEN status = 'scored' THEN 1 ELSE 0 END) AS scored_count
+       FROM predictions WHERE game_id = ?1`
+  ).bind(gameId).first();
+  return {
+    predictionCount: Number(row?.prediction_count || 0),
+    scoredCount: Number(row?.scored_count || 0)
+  };
+}
+
+function getAutoScoringDelaySeconds(env) {
+  const raw = String(env?.AUTO_SCORING_DELAY_SECONDS ?? "").trim();
+  if (!/^\d+$/.test(raw)) {
+    return AUTO_SCORING_DEFAULT_DELAY_SECONDS;
+  }
+  return Math.min(Number(raw), AUTO_SCORING_MAX_DELAY_SECONDS);
+}
+
+function parseLineupDetectedAt(value) {
+  if (typeof value !== "string" || value.length > 64) {
+    return null;
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+async function saveActualLineupForAutoScoring(db, gameId, actualLineup, detectedAt, options = {}) {
+  const actualLineupJson = JSON.stringify(actualLineup);
+  if (new TextEncoder().encode(actualLineupJson).byteLength > PREDICTION_MAX_JSON_BYTES) {
+    throw new Error("actual lineup payload exceeds the allowed size");
+  }
+  const fingerprint = await sha256Base64Url(actualLineupJson);
+  const existing = await getGameLineup(db, gameId);
+  if (existing && existing.lineup_fingerprint === fingerprint && !options.forceReschedule) {
+    return existing;
+  }
+
+  const detectedAtIso = detectedAt.toISOString();
+  const delaySeconds = Number.isInteger(options.delaySeconds) ? options.delaySeconds : AUTO_SCORING_DEFAULT_DELAY_SECONDS;
+  const scoringDueAt = new Date(detectedAt.getTime() + Math.max(0, delaySeconds) * 1000).toISOString();
+  const id = existing?.id || randomToken(16);
+  await db.prepare(
+    `INSERT INTO game_lineups
+       (id, game_id, actual_lineup_json, lineup_fingerprint, schema_version,
+        lineup_detected_at, scoring_due_at, scoring_started_at, scored_at,
+        scoring_status, scoring_attempts, last_error, processed_predictions,
+        perfect_count, new_perfect_achievers, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, 'pending', 0, NULL, NULL, NULL, NULL, ?6, ?6)
+     ON CONFLICT(game_id) DO UPDATE SET
+       actual_lineup_json = excluded.actual_lineup_json,
+       lineup_fingerprint = excluded.lineup_fingerprint,
+       schema_version = excluded.schema_version,
+       lineup_detected_at = excluded.lineup_detected_at,
+       scoring_due_at = excluded.scoring_due_at,
+       scoring_started_at = NULL,
+       scored_at = NULL,
+       scoring_status = 'pending',
+       scoring_attempts = 0,
+       last_error = NULL,
+       processed_predictions = NULL,
+       perfect_count = NULL,
+       new_perfect_achievers = NULL,
+       updated_at = excluded.updated_at`
+  ).bind(id, gameId, actualLineupJson, fingerprint, PREDICTION_SCHEMA_VERSION, detectedAtIso, scoringDueAt).run();
+  return await getGameLineup(db, gameId);
+}
+
+async function getGameLineup(db, gameId) {
+  return db.prepare(
+    `SELECT id, game_id, actual_lineup_json, lineup_fingerprint, lineup_detected_at,
+            scoring_due_at, scoring_started_at, scored_at, scoring_status,
+            scoring_attempts, last_error, processed_predictions, perfect_count,
+            new_perfect_achievers, updated_at
+       FROM game_lineups WHERE game_id = ?1 LIMIT 1`
+  ).bind(gameId).first();
+}
+
+function serializeGameLineup(record) {
+  if (!record) {
+    return null;
+  }
+  return {
+    gameId: record.game_id,
+    lineupDetectedAt: record.lineup_detected_at,
+    scoringDueAt: record.scoring_due_at,
+    scoringStartedAt: record.scoring_started_at,
+    scoredAt: record.scored_at,
+    status: record.scoring_status,
+    attempts: Number(record.scoring_attempts || 0),
+    maxAttempts: AUTO_SCORING_MAX_ATTEMPTS,
+    lastError: record.last_error || "",
+    processedPredictions: record.processed_predictions === null ? null : Number(record.processed_predictions),
+    perfectCount: record.perfect_count === null ? null : Number(record.perfect_count),
+    newPerfectAchievers: record.new_perfect_achievers === null ? null : Number(record.new_perfect_achievers)
+  };
+}
+
+async function claimGameLineupForScoring(db, gameId, now, { force = false, resetAttempts = false } = {}) {
+  const nowIso = now.toISOString();
+  if (force) {
+    const prepareResult = await db.prepare(
+      `UPDATE game_lineups
+          SET scoring_status = 'pending', scoring_due_at = ?1, scoring_started_at = NULL,
+              scoring_attempts = CASE WHEN ?2 THEN 0 ELSE scoring_attempts END,
+              last_error = NULL, updated_at = ?1
+        WHERE game_id = ?3 AND scoring_status <> 'processing'`
+    ).bind(nowIso, resetAttempts ? 1 : 0, gameId).run();
+    if (Number(prepareResult?.meta?.changes || 0) !== 1) {
+      return null;
+    }
+  }
+
+  const claimResult = await db.prepare(
+    `UPDATE game_lineups
+        SET scoring_status = 'processing', scoring_started_at = ?1,
+            scoring_attempts = scoring_attempts + 1, last_error = NULL, updated_at = ?1
+      WHERE game_id = ?2
+        AND scoring_status IN ('pending', 'failed')
+        AND scoring_due_at <= ?1
+        AND scoring_attempts < ?3`
+  ).bind(nowIso, gameId, AUTO_SCORING_MAX_ATTEMPTS).run();
+  if (Number(claimResult?.meta?.changes || 0) !== 1) {
+    return null;
+  }
+  return await getGameLineup(db, gameId);
+}
+
+async function runDueAutoScoringJobs(env, now) {
+  const nowIso = now.toISOString();
+  const staleBefore = new Date(now.getTime() - AUTO_SCORING_PROCESSING_TIMEOUT_MS).toISOString();
+  await env.AUTH_DB.prepare(
+    `UPDATE game_lineups
+        SET scoring_status = CASE WHEN scoring_attempts >= ?3 THEN 'failed' ELSE 'pending' END,
+            scoring_started_at = NULL, scoring_due_at = ?1,
+            last_error = '採点処理がタイムアウトしたため再試行します。', updated_at = ?1
+      WHERE scoring_status = 'processing' AND scoring_started_at IS NOT NULL AND scoring_started_at <= ?2`
+  ).bind(nowIso, staleBefore, AUTO_SCORING_MAX_ATTEMPTS).run();
+
+  const due = await env.AUTH_DB.prepare(
+    `SELECT game_id FROM game_lineups
+      WHERE scoring_status IN ('pending', 'failed')
+        AND scoring_due_at <= ?1
+        AND scoring_attempts < ?2
+      ORDER BY scoring_due_at ASC, game_id ASC
+      LIMIT ?3`
+  ).bind(nowIso, AUTO_SCORING_MAX_ATTEMPTS, AUTO_SCORING_CRON_BATCH_SIZE).all();
+
+  if ((due?.results || []).length > 0) {
+    console.log(`auto scoring cron started: due=${due.results.length}`);
+  }
+
+  for (const row of due?.results || []) {
+    const claimed = await claimGameLineupForScoring(env.AUTH_DB, row.game_id, now);
+    if (!claimed) {
+      continue;
+    }
+    try {
+      console.log(`auto scoring claimed: game=${claimed.game_id} attempt=${claimed.scoring_attempts}`);
+      const result = await scoreClaimedGameLineup(env.AUTH_DB, claimed, now);
+      console.log(`auto scoring complete: game=${claimed.game_id} processed=${result.processed} perfect=${result.perfectCount}`);
+    } catch (error) {
+      await markGameLineupFailed(env.AUTH_DB, claimed.game_id, error, now);
+      console.error(`auto scoring failed: game=${claimed.game_id} reason=${toSafeAutoScoringError(error)}`);
+    }
+  }
+}
+
+async function scoreClaimedGameLineup(db, record, now) {
+  const storedLineup = parseStoredActualLineup(record.actual_lineup_json);
+  const actualResult = sanitizeActualLineupForScoring(storedLineup);
+  if (!actualResult.ok) {
+    throw new Error(`stored actual lineup is invalid: ${actualResult.error}`);
+  }
+  const scoring = await prepareGamePredictionScoring(db, record.game_id, actualResult.lineup);
+  if (scoring.failed > 0) {
+    const error = new Error("stored predictions include validation errors");
+    error.code = "prediction_validation_failed";
+    error.processed = scoring.processed;
+    error.failed = scoring.failed;
+    error.validationErrors = scoring.validationErrors;
+    throw error;
+  }
+  return await persistGamePredictionScoring(db, record.game_id, actualResult.lineup, scoring, now);
+}
+
+function parseStoredActualLineup(value) {
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function persistGamePredictionScoring(db, gameId, actualLineup, scoring, now) {
+  const scoredAt = now.toISOString();
+  const actualLineupJson = JSON.stringify(actualLineup);
+  const statements = scoring.outcomes.map((outcome) => db.prepare(
+    `UPDATE predictions
+        SET score = ?1, max_score = ?2, scored_at = ?3, status = 'scored', actual_lineup_json = ?4
+      WHERE id = ?5 AND game_id = ?6`
+  ).bind(outcome.score.total, SCORING_MAX_SCORE, scoredAt, actualLineupJson, outcome.id, gameId));
+  const perfectOutcomes = scoring.outcomes.filter((outcome) => outcome.score.total === SCORING_MAX_SCORE);
+  for (const outcome of perfectOutcomes) {
+    statements.push(db.prepare(
+      `INSERT OR IGNORE INTO perfect_achievers
+         (id, user_id, game_id, score, max_score, achieved_at, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)`
+    ).bind(randomToken(16), outcome.userId, gameId, outcome.score.total, SCORING_MAX_SCORE, scoredAt));
+  }
+  statements.push(db.prepare(
+    `UPDATE game_lineups
+        SET scoring_status = 'scored', scored_at = ?1, scoring_started_at = NULL,
+            last_error = NULL, processed_predictions = ?2, perfect_count = ?3,
+            new_perfect_achievers = ?4, updated_at = ?1
+      WHERE game_id = ?5 AND scoring_status = 'processing'`
+  ).bind(scoredAt, scoring.processed, scoring.perfectCount, 0, gameId));
+
+  const results = await db.batch(statements);
+  const predictionResults = results.slice(0, scoring.outcomes.length);
+  if (predictionResults.some((result) => Number(result?.meta?.changes || 0) !== 1)) {
+    throw new Error("prediction score update count mismatch");
+  }
+  const perfectResults = results.slice(scoring.outcomes.length, scoring.outcomes.length + perfectOutcomes.length);
+  const newPerfectAchievers = perfectResults.reduce((count, result) => count + Number(result?.meta?.changes || 0), 0);
+  const gameLineupResult = results[results.length - 1];
+  if (Number(gameLineupResult?.meta?.changes || 0) !== 1) {
+    throw new Error("game lineup scoring state update mismatch");
+  }
+
+  if (newPerfectAchievers > 0) {
+    await db.prepare(
+      "UPDATE game_lineups SET new_perfect_achievers = ?1 WHERE game_id = ?2"
+    ).bind(newPerfectAchievers, gameId).run();
+  }
+  return {
+    processed: scoring.processed,
+    scored: scoring.scored,
+    failed: 0,
+    maxScore: SCORING_MAX_SCORE,
+    perfectCount: scoring.perfectCount,
+    newPerfectAchievers,
+    scoredAt
+  };
+}
+
+async function markGameLineupFailed(db, gameId, error, now) {
+  const message = toSafeAutoScoringError(error);
+  await db.prepare(
+    `UPDATE game_lineups
+        SET scoring_status = 'failed', scoring_started_at = NULL, last_error = ?1, updated_at = ?2
+      WHERE game_id = ?3 AND scoring_status = 'processing'`
+  ).bind(message, now.toISOString(), gameId).run();
+}
+
+function toSafeAutoScoringError(error) {
+  const message = error instanceof Error ? error.message : "unknown error";
+  return message.slice(0, 180);
 }
 
 function sanitizeActualLineupForScoring(value) {

@@ -4,9 +4,13 @@
   "main": "auth-worker.js",
   "compatibility_date": "2026-07-17",
   "workers_dev": true,
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
   "vars": {
     "AUTH_ALLOWED_ORIGINS": "https://starting9.pages.dev",
-    "SESSION_SAMESITE": "None"
+    "SESSION_SAMESITE": "None",
+    "AUTO_SCORING_DELAY_SECONDS": "300"
   },
   "d1_databases": [
     {

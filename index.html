@@ -270,6 +270,23 @@
           <p id="adminServerScoringMessage" class="message" role="status" aria-live="polite"></p>
           <div id="adminServerScoringPreview" class="admin-server-scoring-preview hidden" aria-live="polite"></div>
         </section>
+
+        <section id="adminAutoScoringPanel" class="admin-auto-scoring" aria-labelledby="admin-auto-scoring-title">
+          <div class="admin-server-scoring-heading">
+            <div>
+              <p class="area-label">AUTO SCORING</p>
+              <h3 id="admin-auto-scoring-title">実スタメン取得後の自動採点</h3>
+              <p>本承認済みの実スタメンをサーバーへ保存すると、設定された待機時間後にCronが採点します。</p>
+            </div>
+          </div>
+          <div id="adminAutoScoringSummary" class="admin-auto-scoring-summary" aria-live="polite"></div>
+          <div class="admin-server-scoring-actions">
+            <button id="runAutoScoringNowButton" class="secondary-button compact-button" type="button" disabled>今すぐ採点</button>
+            <button id="retryAutoScoringButton" class="secondary-button compact-button" type="button" disabled>再試行</button>
+            <button id="cancelAutoScoringButton" class="danger-button compact-button" type="button" disabled>自動採点を取り消し</button>
+          </div>
+          <p id="adminAutoScoringMessage" class="message" role="status" aria-live="polite"></p>
+        </section>
       </section>
 
       <section class="admin-test-tools" aria-labelledby="admin-test-tools-title">

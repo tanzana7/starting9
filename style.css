@@ -89,6 +89,12 @@ button:disabled {
   font-weight: 900;
 }
 
+.admin-mode-badge.is-development {
+  border-color: rgba(255, 223, 148, 0.78);
+  color: #fff5c9;
+  background: rgba(93, 52, 128, 0.84);
+}
+
 .game-info-display {
   display: inline-flex;
   max-width: 100%;
@@ -524,6 +530,10 @@ h3 {
   display: none;
 }
 
+.app-layout.is-development-screen > :not(.development-details) {
+  display: none;
+}
+
 .area-heading {
   grid-column: 1 / -1;
   padding: 16px 18px;
@@ -565,14 +575,16 @@ h3 {
   grid-column: 1 / -1;
 }
 
-.admin-details {
+.admin-details,
+.development-details {
   grid-column: 1 / -1;
   border: 1px solid #cfd9e5;
   border-radius: 8px;
   background: #f6f8fb;
 }
 
-.admin-details summary {
+.admin-details summary,
+.development-details summary {
   display: flex;
   min-height: 56px;
   align-items: center;
@@ -584,11 +596,13 @@ h3 {
   font-weight: 900;
 }
 
-.admin-details summary::marker {
+.admin-details summary::marker,
+.development-details summary::marker {
   color: var(--fighters-blue);
 }
 
-.admin-details summary small {
+.admin-details summary small,
+.development-details summary small {
   color: var(--muted);
   font-size: 0.84rem;
   font-weight: 800;
@@ -597,7 +611,86 @@ h3 {
 .admin-screen-actions {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
   padding: 14px 16px 0;
+}
+
+.development-details {
+  border-color: #7f6aa3;
+  background: #f9f6ff;
+}
+
+.development-details summary {
+  color: #513675;
+}
+
+.development-screen-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 14px 16px 0;
+}
+
+.development-warning,
+.development-panel {
+  margin: 12px 16px;
+  padding: 16px;
+  border: 1px solid #d6c6ed;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.development-warning {
+  border-color: #d8ad68;
+  color: #6c4211;
+  background: #fff8e9;
+}
+
+.development-warning p,
+.development-panel p {
+  margin: 4px 0 0;
+}
+
+.development-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.development-info dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.development-info dl > div {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #e3daf0;
+  border-radius: 6px;
+  background: #fcfbff;
+}
+
+.development-info dt {
+  color: #6a5b80;
+  font-size: 0.76rem;
+  font-weight: 900;
+}
+
+.development-info dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+  color: #302342;
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.development-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .admin-card {
@@ -1958,27 +2051,6 @@ textarea:focus {
   display: none;
 }
 
-.admin-test-tools {
-  display: grid;
-  gap: 12px;
-  margin: 0 16px 16px;
-  padding: 18px;
-  border: 1px solid #e3a6a6;
-  border-radius: 8px;
-  background: #fff8f8;
-}
-
-.admin-test-tools h3,
-.admin-test-tools p {
-  margin: 0;
-}
-
-.admin-test-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
 .auto-approve-option {
   display: flex;
   align-items: center;
@@ -2097,7 +2169,8 @@ textarea:focus {
     min-height: 52px;
   }
 
-  .admin-details summary {
+  .admin-details summary,
+  .development-details summary {
     align-items: flex-start;
     flex-direction: column;
     min-height: 0;

@@ -158,10 +158,17 @@ const state = {
   actualPreview: null,
   adminStatus: "idle",
   adminError: "",
+  appMode: "normal",
   isAdminMode: false,
   adminAccess: {
     status: "inactive",
     requestId: 0
+  },
+  developmentAccess: {
+    available: false,
+    status: "inactive",
+    info: null,
+    message: ""
   },
   autoFetch: {
     isRunning: false,
@@ -334,13 +341,20 @@ function bindEvents() {
   bindAdminEvent("runAutoScoringNowButton", "click", runAutoScoringNow);
   bindAdminEvent("retryAutoScoringButton", "click", retryAutoScoring);
   bindAdminEvent("cancelAutoScoringButton", "click", cancelAutoScoring);
-  bindAdminEvent("generateTestPredictionButton", "click", generateTestPrediction);
-  bindAdminEvent("resetButton", "click", resetAllData);
+  bindDevelopmentEvent("generateTestPredictionButton", "click", generateTestPrediction);
+  bindDevelopmentEvent("createPerfectPredictionButton", "click", createDevelopmentPerfectPrediction);
+  bindDevelopmentEvent("runDevelopmentCronButton", "click", runDevelopmentCron);
+  bindDevelopmentEvent("resetButton", "click", resetAllData);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
   document.getElementById("openAdminButton")?.addEventListener("click", openAdminPanel);
+  document.getElementById("openDevelopmentButton")?.addEventListener("click", openDevelopmentPanel);
   document.getElementById("closeAdminButton")?.addEventListener("click", closeAdminPanel);
+  document.getElementById("adminToDevelopmentButton")?.addEventListener("click", openDevelopmentPanel);
+  document.getElementById("closeDevelopmentButton")?.addEventListener("click", closeDevelopmentPanel);
+  document.getElementById("developmentToAdminButton")?.addEventListener("click", openAdminPanel);
   document.getElementById("adminDetails")?.addEventListener("toggle", handleAdminDetailsToggle);
+  document.getElementById("developmentDetails")?.addEventListener("toggle", handleDevelopmentDetailsToggle);
   document.getElementById("registerPerfectAchieverButton")?.addEventListener("click", registerPerfectAchiever);
   document.getElementById("savePredictionToAccountButton")?.addEventListener("click", () => savePredictionToAccount());
   document.getElementById("loadPredictionFromAccountButton")?.addEventListener("click", loadPredictionFromAccount);
@@ -387,13 +401,29 @@ function bindAdminEvent(elementId, eventName, handler) {
   });
 }
 
+function bindDevelopmentEvent(elementId, eventName, handler) {
+  const element = document.getElementById(elementId);
+  if (!element) return;
+  element.addEventListener(eventName, (event) => {
+    if (state.appMode !== "development" || !state.developmentAccess.available) {
+      event.preventDefault();
+      return;
+    }
+    handler(event);
+  });
+}
+
 function applyAdminMode() {
   const adminDetails = document.getElementById("adminDetails");
+  const developmentDetails = document.getElementById("developmentDetails");
   const adminModeBadge = document.getElementById("adminModeBadge");
   const openAdminButton = document.getElementById("openAdminButton");
+  const openDevelopmentButton = document.getElementById("openDevelopmentButton");
+  const adminToDevelopmentButton = document.getElementById("adminToDevelopmentButton");
   const appLayout = document.querySelector(".app-layout");
-  const isAuthorized = ["authorized", "open"].includes(state.adminAccess.status);
-  const isAdminScreenOpen = state.adminAccess.status === "open";
+  const isAuthorized = state.adminAccess.status === "authorized";
+  const isAdminScreenOpen = state.appMode === "admin";
+  const isDevelopmentScreenOpen = state.appMode === "development";
 
   if (adminDetails) {
     adminDetails.classList.toggle("hidden", !isAdminScreenOpen);
@@ -402,19 +432,38 @@ function applyAdminMode() {
   }
 
   if (adminModeBadge) {
-    adminModeBadge.classList.toggle("hidden", !isAdminScreenOpen);
+    adminModeBadge.classList.toggle("hidden", !isAdminScreenOpen && !isDevelopmentScreenOpen);
+    adminModeBadge.classList.toggle("is-development", isDevelopmentScreenOpen);
+    adminModeBadge.textContent = isDevelopmentScreenOpen ? "開発モード" : "管理者モード";
+  }
+
+  if (developmentDetails) {
+    developmentDetails.classList.toggle("hidden", !isDevelopmentScreenOpen);
+    developmentDetails.open = isDevelopmentScreenOpen;
+    developmentDetails.setAttribute("aria-hidden", isDevelopmentScreenOpen ? "false" : "true");
   }
 
   if (openAdminButton) {
-    const shouldShowButton = isAuthorized && !isAdminScreenOpen;
+    const shouldShowButton = isAuthorized && state.appMode === "normal";
     openAdminButton.classList.toggle("hidden", !shouldShowButton);
     openAdminButton.setAttribute("aria-hidden", shouldShowButton ? "false" : "true");
   }
+  if (openDevelopmentButton) {
+    const shouldShowButton = isAuthorized && state.developmentAccess.available && state.appMode === "normal";
+    openDevelopmentButton.classList.toggle("hidden", !shouldShowButton);
+    openDevelopmentButton.setAttribute("aria-hidden", shouldShowButton ? "false" : "true");
+  }
+  if (adminToDevelopmentButton) {
+    const shouldShowButton = isAuthorized && state.developmentAccess.available && isAdminScreenOpen;
+    adminToDevelopmentButton.classList.toggle("hidden", !shouldShowButton);
+    adminToDevelopmentButton.setAttribute("aria-hidden", shouldShowButton ? "false" : "true");
+  }
 
   appLayout?.classList.toggle("is-admin-screen", isAdminScreenOpen);
+  appLayout?.classList.toggle("is-development-screen", isDevelopmentScreenOpen);
 
   state.isAdminMode = isAdminScreenOpen;
-  if (!isAdminScreenOpen) {
+  if (state.appMode === "normal") {
     stopAutoFetch("", "");
     stopRosterMonitor("", "", "inactive");
   }
@@ -432,6 +481,8 @@ function isAuthStateInitialized() {
 
 function clearAdminAccess() {
   state.adminAccess.status = "inactive";
+  state.developmentAccess = { available: false, status: "inactive", info: null, message: "" };
+  state.appMode = "normal";
   state.isAdminMode = false;
   applyAdminMode();
 }
@@ -439,7 +490,6 @@ function clearAdminAccess() {
 async function refreshAdminAccess() {
   const requestId = state.adminAccess.requestId + 1;
   state.adminAccess.requestId = requestId;
-  const wasAdminScreenOpen = state.adminAccess.status === "open";
   if (!isAuthStateInitialized()) {
     state.adminAccess.status = "checking";
     state.isAdminMode = false;
@@ -469,7 +519,8 @@ async function refreshAdminAccess() {
       return;
     }
     if (response.ok && payload?.ok && payload?.admin) {
-      state.adminAccess.status = wasAdminScreenOpen ? "open" : "authorized";
+      state.adminAccess.status = "authorized";
+      await refreshDevelopmentCapabilities(requestId);
       applyAdminMode();
       return;
     }
@@ -486,12 +537,149 @@ async function refreshAdminAccess() {
   }
 }
 
+async function refreshDevelopmentCapabilities(requestId) {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  if (!baseUrl) {
+    state.developmentAccess = { available: false, status: "disabled", info: null, message: "" };
+    if (state.appMode === "development") state.appMode = "normal";
+    return;
+  }
+  try {
+    const response = await fetch(`${baseUrl}/api/admin/mode-capabilities`, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (requestId !== state.adminAccess.requestId) return;
+    if (!response.ok || !payload?.ok) {
+      state.developmentAccess = { available: false, status: "disabled", info: null, message: "" };
+      if (state.appMode === "development") state.appMode = "normal";
+      return;
+    }
+    state.developmentAccess.available = payload.developmentModeAvailable === true;
+    state.developmentAccess.status = state.developmentAccess.available ? "available" : "disabled";
+    if (!state.developmentAccess.available && state.appMode === "development") {
+      state.appMode = "normal";
+    }
+  } catch (error) {
+    console.error("開発モードの利用可否確認に失敗しました", error.message);
+    state.developmentAccess = { available: false, status: "disabled", info: null, message: "" };
+    if (state.appMode === "development") state.appMode = "normal";
+  }
+}
+
+function buildDevelopmentApiUrl(path) {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  return baseUrl ? `${baseUrl}/api/dev/${path.replace(/^\/+/, "")}` : "";
+}
+
+function formatDevelopmentValue(value, fallback = "-") {
+  return value === null || value === undefined || value === "" ? fallback : String(value);
+}
+
+function renderDevelopmentPanel() {
+  const info = document.getElementById("developmentInfo");
+  const message = document.getElementById("developmentMessage");
+  const createButton = document.getElementById("createPerfectPredictionButton");
+  const cronButton = document.getElementById("runDevelopmentCronButton");
+  if (!info || !message || !createButton || !cronButton) return;
+
+  const details = state.developmentAccess.info;
+  const autoScoring = details?.autoScoring;
+  const user = getPredictionAccountUser();
+  const gameId = getAdminScoringGameId();
+  const canOperate = state.appMode === "development" && state.developmentAccess.available;
+  createButton.disabled = !canOperate || !gameId;
+  cronButton.disabled = !canOperate;
+  message.textContent = state.developmentAccess.message || "";
+
+  const rows = [
+    ["API base URL", getAuthApiBaseUrl() || "未設定"],
+    ["開発モード", details?.developmentModeEnabled ? "有効" : "確認中"],
+    ["AUTO_SCORING_DELAY_SECONDS", formatDevelopmentValue(details?.autoScoringDelaySeconds)],
+    ["appMode", state.appMode],
+    ["ログイン中 userId", formatDevelopmentValue(user?.id)],
+    ["role", state.adminAccess.status === "authorized" ? "admin" : "-"],
+    ["選択中 gameId", gameId || "未選択"],
+    ["実スタメン保存状態", autoScoring ? "保存済み" : "未保存"],
+    ["scoring_status", formatDevelopmentValue(autoScoring?.status)],
+    ["scoring_due_at", formatDevelopmentValue(autoScoring?.scoringDueAt)],
+    ["scored_at", formatDevelopmentValue(autoScoring?.scoredAt)],
+    ["scoring_attempts", formatDevelopmentValue(autoScoring?.attempts, "0")],
+    ["last_error", formatDevelopmentValue(autoScoring?.lastError)],
+    ["lineup fingerprint", formatDevelopmentValue(autoScoring?.lineupFingerprint)]
+  ];
+  info.innerHTML = `<dl>${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>`;
+}
+
+async function refreshDevelopmentStatus() {
+  if (state.adminAccess.status !== "authorized" || !state.developmentAccess.available) return;
+  const gameId = getAdminScoringGameId();
+  const url = buildDevelopmentApiUrl(`status${gameId ? `?gameId=${encodeURIComponent(gameId)}` : ""}`);
+  if (!url) return;
+  state.developmentAccess.message = "開発情報を取得中...";
+  renderDevelopmentPanel();
+  try {
+    const response = await fetch(url, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+    state.developmentAccess.info = payload;
+    state.developmentAccess.message = "開発情報を更新しました。";
+  } catch (error) {
+    console.error("開発情報の取得に失敗しました", error.message);
+    state.developmentAccess.message = "開発情報を取得できませんでした。";
+  }
+  renderDevelopmentPanel();
+}
+
+async function createDevelopmentPerfectPrediction() {
+  const gameId = getAdminScoringGameId();
+  if (!gameId) {
+    state.developmentAccess.message = "対象試合を選択してください。";
+    renderDevelopmentPanel();
+    return;
+  }
+  if (!window.confirm(`ログイン中の管理者ユーザーの ${gameId} の予想を、保存済み実スタメンと完全一致する内容で上書きします。よろしいですか？`)) return;
+  const url = buildDevelopmentApiUrl(`games/${encodeURIComponent(gameId)}/create-perfect-prediction`);
+  if (!url) return;
+  state.developmentAccess.message = "完全一致予想を作成中...";
+  renderDevelopmentPanel();
+  try {
+    const response = await fetch(url, { method: "POST", credentials: "include" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+    state.developmentAccess.message = payload.created ? "完全一致予想を作成しました。" : "既存の予想を完全一致予想で更新しました。";
+    await syncPredictionFromAccount({ force: true });
+  } catch (error) {
+    console.error("完全一致予想の作成に失敗しました", error.message);
+    state.developmentAccess.message = "完全一致予想を作成できませんでした。";
+  }
+  await refreshDevelopmentStatus();
+}
+
+async function runDevelopmentCron() {
+  if (!window.confirm("自動採点のCron処理を手動で実行します。よろしいですか？")) return;
+  const url = buildDevelopmentApiUrl("cron/run-auto-scoring");
+  if (!url) return;
+  state.developmentAccess.message = "Cron処理を実行中...";
+  renderDevelopmentPanel();
+  try {
+    const response = await fetch(url, { method: "POST", credentials: "include" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+    state.developmentAccess.message = `Cron処理が完了しました。処理 ${payload.processed || 0}件 / 成功 ${payload.succeeded || 0}件 / 失敗 ${payload.failed || 0}件`;
+  } catch (error) {
+    console.error("開発用Cron実行に失敗しました", error.message);
+    state.developmentAccess.message = "Cron処理を実行できませんでした。";
+  }
+  await refreshDevelopmentStatus();
+}
+
 function openAdminPanel() {
   if (state.adminAccess.status !== "authorized") {
     return;
   }
 
-  state.adminAccess.status = "open";
+  state.appMode = "admin";
   applyAdminMode();
   initializeGameSchedule();
   renderAll();
@@ -500,17 +688,37 @@ function openAdminPanel() {
 }
 
 function closeAdminPanel() {
-  if (state.adminAccess.status !== "open") {
+  if (state.appMode !== "admin") {
     return;
   }
 
-  state.adminAccess.status = "authorized";
+  state.appMode = "normal";
+  applyAdminMode();
+}
+
+function openDevelopmentPanel() {
+  if (state.adminAccess.status !== "authorized" || !state.developmentAccess.available) return;
+  state.appMode = "development";
+  applyAdminMode();
+  renderDevelopmentPanel();
+  void refreshDevelopmentStatus();
+}
+
+function closeDevelopmentPanel() {
+  if (state.appMode !== "development") return;
+  state.appMode = "normal";
   applyAdminMode();
 }
 
 function handleAdminDetailsToggle(event) {
-  if (!event.currentTarget.open && state.adminAccess.status === "open") {
+  if (!event.currentTarget.open && state.appMode === "admin") {
     closeAdminPanel();
+  }
+}
+
+function handleDevelopmentDetailsToggle(event) {
+  if (!event.currentTarget.open && state.appMode === "development") {
+    closeDevelopmentPanel();
   }
 }
 
@@ -1043,6 +1251,9 @@ function applyParsedActualPreview() {
 
   if (!state.actualPreview) {
     showMessage("parserError", "先に貼り付け内容をプレビューしてください。");
+    return;
+  }
+  if (state.actual?.lineup?.length === LINEUP_SIZE && !window.confirm("登録済みの実スタメンを上書きします。自動採点の対象にも影響します。よろしいですか？")) {
     return;
   }
 
@@ -4988,8 +5199,8 @@ function openXShare(text) {
 }
 
 function generateTestPrediction() {
-  if (!state.isAdminMode) {
-    console.warn("管理者モードではないため、テスト用予想の生成を中止しました。");
+  if (state.appMode !== "development" || !state.developmentAccess.available) {
+    console.warn("開発モードではないため、テスト用予想の生成を中止しました。");
     return;
   }
 
@@ -5012,8 +5223,8 @@ function generateTestPrediction() {
 }
 
 function resetAllData() {
-  if (!state.isAdminMode) {
-    console.warn("管理者モードではないため、テストデータのリセットを中止しました。");
+  if (state.appMode !== "development" || !state.developmentAccess.available) {
+    console.warn("開発モードではないため、テストデータのリセットを中止しました。");
     return;
   }
 

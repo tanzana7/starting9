@@ -28,6 +28,7 @@
         <div id="authLoggedIn" class="auth-state hidden">
           <span><strong id="authUsername"></strong> でログイン中</span>
           <button id="openAdminButton" class="auth-button hidden" type="button">管理画面</button>
+          <button id="openDevelopmentButton" class="auth-button hidden" type="button">開発画面</button>
           <button id="logoutButton" class="auth-button" type="button">ログアウト</button>
         </div>
         <p id="authStatus" class="auth-status"></p>
@@ -144,12 +145,13 @@
 
     <details id="adminDetails" class="admin-details hidden">
       <summary>
-        <span>管理者用・開発用エリア</span>
-        <small>実スタメン登録と採点</small>
+        <span>管理画面</span>
+        <small>実スタメン登録・採点・運用確認</small>
       </summary>
 
       <div class="admin-screen-actions">
         <button id="closeAdminButton" class="secondary-button compact-button" type="button">通常画面へ戻る</button>
+        <button id="adminToDevelopmentButton" class="secondary-button compact-button hidden" type="button">開発画面へ</button>
       </div>
 
       <section class="card lineup-card admin-card" aria-labelledby="actual-title">
@@ -291,13 +293,39 @@
         </section>
       </section>
 
-      <section class="admin-test-tools" aria-labelledby="admin-test-tools-title">
+    </details>
+
+    <details id="developmentDetails" class="development-details hidden">
+      <summary>
+        <span>開発モード</span>
+        <small>検証・デバッグ専用</small>
+      </summary>
+      <div class="development-screen-actions">
+        <button id="closeDevelopmentButton" class="secondary-button compact-button" type="button">通常画面へ戻る</button>
+        <button id="developmentToAdminButton" class="secondary-button compact-button" type="button">管理画面へ戻る</button>
+      </div>
+      <section class="development-warning" aria-label="開発モードの注意">
+        <strong>開発・検証専用画面です。本番運用では使用しないでください。</strong>
+        <p>この画面の操作は、Worker側でも開発モードが有効な管理者だけに制限されます。</p>
+      </section>
+      <section class="development-panel" aria-labelledby="development-status-title">
         <div>
-          <h3 id="admin-test-tools-title">テスト用ツール</h3>
-          <p>動作確認用の予想生成と、テスト環境の初期化ができます。</p>
+          <p class="area-label">DEVELOPMENT STATUS</p>
+          <h3 id="development-status-title">現在の開発情報</h3>
         </div>
-        <div class="admin-test-actions">
-          <button id="generateTestPredictionButton" class="secondary-button" type="button">テスト用予想を生成</button>
+        <div id="developmentInfo" class="development-info" aria-live="polite"></div>
+        <p id="developmentMessage" class="message" role="status" aria-live="polite"></p>
+      </section>
+      <section class="development-panel" aria-labelledby="development-tools-title">
+        <div>
+          <p class="area-label">DEVELOPMENT TOOLS</p>
+          <h3 id="development-tools-title">検証用操作</h3>
+          <p>完全一致予想は、ログイン中の管理者自身の予想だけを対象にします。</p>
+        </div>
+        <div class="development-actions">
+          <button id="createPerfectPredictionButton" class="danger-button" type="button">完全一致予想を作成</button>
+          <button id="generateTestPredictionButton" class="secondary-button" type="button">ダミー予想を入力</button>
+          <button id="runDevelopmentCronButton" class="secondary-button" type="button">Cronを手動実行</button>
           <button id="resetButton" class="danger-button" type="button">テストデータをリセット</button>
         </div>
         <p id="testPredictionMessage" class="message success-message" aria-live="polite"></p>

@@ -54,9 +54,12 @@ test("初回認証イベントを取りこぼしてもPromise完了後にadmin A
     document,
     fetch: async (url) => {
       fetchUrls.push(url);
+      const isCapabilityRequest = String(url).endsWith("/api/admin/mode-capabilities");
       return {
         ok: true,
-        json: async () => ({ ok: true, admin: true })
+        json: async () => isCapabilityRequest
+          ? ({ ok: true, adminModeAvailable: true, developmentModeAvailable: false })
+          : ({ ok: true, admin: true })
       };
     },
     Map,
@@ -72,7 +75,7 @@ test("初回認証イベントを取りこぼしてもPromise完了後にadmin A
   const scriptPath = path.join(__dirname, "..", "script.js");
   vm.runInContext(fs.readFileSync(scriptPath, "utf8"), context, { filename: scriptPath });
   vm.runInContext(
-    "applyAdminMode = () => {}; initializeGameSchedule = () => {}; renderAll = () => {}; refreshAdminScoringSummary = () => {};",
+    "applyAdminMode = () => {}; initializeGameSchedule = () => {}; renderAll = () => {}; refreshAdminScoringSummary = () => {}; refreshAutoScoringStatus = () => {};",
     context
   );
 
@@ -83,6 +86,9 @@ test("初回認証イベントを取りこぼしてもPromise完了後にadmin A
   resolveAuthReady();
   await initialization;
 
-  assert.deepEqual(fetchUrls, ["https://starting9-auth.tanzana7.workers.dev/api/admin/me"]);
+  assert.deepEqual(fetchUrls, [
+    "https://starting9-auth.tanzana7.workers.dev/api/admin/me",
+    "https://starting9-auth.tanzana7.workers.dev/api/admin/mode-capabilities"
+  ]);
   assert.equal((listeners.get("starting9-auth-state-changed") || []).length, 1);
 });

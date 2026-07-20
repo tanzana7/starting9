@@ -159,9 +159,9 @@ const state = {
   adminError: "",
   isAdminMode: false,
   adminAccess: {
-    requested: false,
     status: "inactive",
-    requestId: 0
+    requestId: 0,
+    isPanelOpen: false
   },
   autoFetch: {
     isRunning: false,
@@ -252,7 +252,7 @@ const state = {
 };
 
 document.addEventListener("DOMContentLoaded", () => {
-  state.adminAccess.requested = isAdminModeRequested();
+  removeLegacyAdminQueryParameter();
   state.isAdminMode = false;
   // 後続の画面初期化とは独立して、認証復元完了後の初回管理者判定を予約します。
   void initializeAuthDependentFeatures();
@@ -325,6 +325,9 @@ function bindEvents() {
   bindAdminEvent("resetButton", "click", resetAllData);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
+  document.getElementById("openAdminButton")?.addEventListener("click", openAdminPanel);
+  document.getElementById("closeAdminButton")?.addEventListener("click", closeAdminPanel);
+  document.getElementById("adminDetails")?.addEventListener("toggle", handleAdminDetailsToggle);
   document.getElementById("registerPerfectAchieverButton")?.addEventListener("click", registerPerfectAchiever);
   document.getElementById("savePredictionToAccountButton")?.addEventListener("click", () => savePredictionToAccount());
   document.getElementById("loadPredictionFromAccountButton")?.addEventListener("click", loadPredictionFromAccount);
@@ -346,8 +349,14 @@ function bindEvents() {
   });
 }
 
-function isAdminModeRequested() {
-  return new URLSearchParams(window.location.search).get("admin") === "1";
+function removeLegacyAdminQueryParameter() {
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has("admin")) {
+    return;
+  }
+
+  url.searchParams.delete("admin");
+  window.history.replaceState(window.history.state, "", url);
 }
 
 function bindAdminEvent(elementId, eventName, handler) {
@@ -368,20 +377,27 @@ function bindAdminEvent(elementId, eventName, handler) {
 function applyAdminMode() {
   const adminDetails = document.getElementById("adminDetails");
   const adminModeBadge = document.getElementById("adminModeBadge");
+  const openAdminButton = document.getElementById("openAdminButton");
   const isAuthorized = state.adminAccess.status === "authorized";
+  const isAdminScreenOpen = isAuthorized && state.adminAccess.isPanelOpen;
 
   if (adminDetails) {
-    adminDetails.classList.toggle("hidden", !isAuthorized);
-    adminDetails.open = isAuthorized;
-    adminDetails.setAttribute("aria-hidden", isAuthorized ? "false" : "true");
+    adminDetails.classList.toggle("hidden", !isAdminScreenOpen);
+    adminDetails.open = isAdminScreenOpen;
+    adminDetails.setAttribute("aria-hidden", isAdminScreenOpen ? "false" : "true");
   }
 
   if (adminModeBadge) {
-    adminModeBadge.classList.toggle("hidden", !isAuthorized);
+    adminModeBadge.classList.toggle("hidden", !isAdminScreenOpen);
   }
 
-  state.isAdminMode = isAuthorized;
-  if (!isAuthorized) {
+  if (openAdminButton) {
+    openAdminButton.classList.toggle("hidden", !isAuthorized);
+    openAdminButton.setAttribute("aria-hidden", isAuthorized ? "false" : "true");
+  }
+
+  state.isAdminMode = isAdminScreenOpen;
+  if (!isAdminScreenOpen) {
     stopAutoFetch("", "");
     stopRosterMonitor("", "", "inactive");
   }
@@ -397,12 +413,9 @@ function isAuthStateInitialized() {
   return typeof auth?.isInitialized === "function" && auth.isInitialized();
 }
 
-function leaveAdminModeSilently() {
-  const url = new URL(window.location.href);
-  url.searchParams.delete("admin");
-  window.history.replaceState(window.history.state, "", url);
-  state.adminAccess.requested = false;
+function clearAdminAccess() {
   state.adminAccess.status = "inactive";
+  state.adminAccess.isPanelOpen = false;
   state.isAdminMode = false;
   applyAdminMode();
 }
@@ -410,15 +423,6 @@ function leaveAdminModeSilently() {
 async function refreshAdminAccess() {
   const requestId = state.adminAccess.requestId + 1;
   state.adminAccess.requestId = requestId;
-  state.adminAccess.requested = isAdminModeRequested();
-  if (!state.adminAccess.requested) {
-    state.adminAccess.status = "inactive";
-    state.isAdminMode = false;
-    applyAdminMode();
-    return;
-  }
-
-  // Cookieの復元中は、未ログインと扱わずadmin=1も変更しません。
   if (!isAuthStateInitialized()) {
     state.adminAccess.status = "checking";
     state.isAdminMode = false;
@@ -426,9 +430,14 @@ async function refreshAdminAccess() {
     return;
   }
 
+  if (!getPredictionAccountUser()) {
+    clearAdminAccess();
+    return;
+  }
+
   const url = buildAdminMeApiUrl();
   if (!url) {
-    leaveAdminModeSilently();
+    clearAdminAccess();
     return;
   }
 
@@ -444,23 +453,42 @@ async function refreshAdminAccess() {
     }
     if (response.ok && payload?.ok && payload?.admin) {
       state.adminAccess.status = "authorized";
-      state.isAdminMode = true;
       applyAdminMode();
-      initializeGameSchedule();
-      renderAll();
-      refreshAdminScoringSummary({ force: true });
       return;
     }
 
-    leaveAdminModeSilently();
+    clearAdminAccess();
     return;
   } catch (error) {
     if (requestId !== state.adminAccess.requestId) {
       return;
     }
     console.error("管理者権限の確認に失敗しました", error.message);
-    leaveAdminModeSilently();
+    clearAdminAccess();
     return;
+  }
+}
+
+function openAdminPanel() {
+  if (state.adminAccess.status !== "authorized") {
+    return;
+  }
+
+  state.adminAccess.isPanelOpen = true;
+  applyAdminMode();
+  initializeGameSchedule();
+  renderAll();
+  refreshAdminScoringSummary({ force: true });
+}
+
+function closeAdminPanel() {
+  state.adminAccess.isPanelOpen = false;
+  applyAdminMode();
+}
+
+function handleAdminDetailsToggle(event) {
+  if (!event.currentTarget.open && state.adminAccess.isPanelOpen) {
+    closeAdminPanel();
   }
 }
 

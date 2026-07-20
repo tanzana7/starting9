@@ -590,6 +590,12 @@ h3 {
   font-weight: 800;
 }
 
+.admin-screen-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 14px 16px 0;
+}
+
 .admin-card {
   margin: 0 12px 12px;
   border-style: dashed;

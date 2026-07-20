@@ -25,6 +25,7 @@
         </div>
         <div id="authLoggedIn" class="auth-state hidden">
           <span><strong id="authUsername"></strong> でログイン中</span>
+          <button id="openAdminButton" class="auth-button hidden" type="button">管理画面</button>
           <button id="logoutButton" class="auth-button" type="button">ログアウト</button>
         </div>
         <p id="authStatus" class="auth-status"></p>
@@ -144,6 +145,10 @@
         <span>管理者用・開発用エリア</span>
         <small>実スタメン登録と採点</small>
       </summary>
+
+      <div class="admin-screen-actions">
+        <button id="closeAdminButton" class="secondary-button compact-button" type="button">通常画面へ戻る</button>
+      </div>
 
       <section class="card lineup-card admin-card" aria-labelledby="actual-title">
         <div class="section-heading">

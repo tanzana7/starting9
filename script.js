@@ -39,8 +39,9 @@ const NPB_WORKER_FALLBACK_MESSAGE = "NPB公式ページ取得APIが未設定、�
 const NPB_WORKER_EXTRACTION_FAILED_MESSAGE = "WorkerでNPB公式ページは取得できましたが、スタメン抽出に失敗しました。手動貼り付けを使うか、debug=1付きURLで抽出対象テキストを確認してください。";
 // DBには全員を保存し、通常画面では先着3人だけ表示します。
 const PERFECT_ACHIEVERS_DEFAULT_DISPLAY_LIMIT = 3;
-const ALL_TIME_RANKING_DISPLAY_LIMIT = 50;
+const RANKING_DISPLAY_LIMIT = 50;
 const MONTHLY_RANKING_MIN_YEAR = 2020;
+const YEARLY_RANKING_MIN_YEAR = 2020;
 const AUTO_FETCH_START_BEFORE_MS = 50 * 60 * 1000;
 const AUTO_FETCH_INTERVAL_MS = 10 * 60 * 1000;
 const AUTO_FETCH_MAX_ATTEMPTS = 5;
@@ -241,7 +242,7 @@ const state = {
     currentUserRegistered: false,
     achievers: []
   },
-  allTimeRanking: {
+  yearlyRanking: {
     isLoading: false,
     isLoadingSelf: false,
     requestId: 0,
@@ -249,9 +250,10 @@ const state = {
     summary: null,
     pagination: null,
     self: null,
-    message: ""
+    message: "",
+    year: getJapanYearMonth().year
   },
-  rankingView: "allTime",
+  rankingView: "yearly",
   monthlyRanking: {
     isLoading: false,
     isLoadingSelf: false,
@@ -335,7 +337,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initializeProbableStarter().finally(() => {
     initializePerfectAchievers();
     initializePredictionRemoteSync();
-    initializeAllTimeRanking();
+    initializeYearlyRanking();
   });
 });
 
@@ -354,7 +356,7 @@ async function initializeAuthDependentFeatures() {
   // 初期イベントは待機中に発火していても、解決済みPromiseから現在状態を必ず評価できます。
   window.addEventListener("starting9-auth-state-changed", handleAuthStateChanged);
   await fetchUserAchievements({ force: true });
-  await refreshAllTimeRanking({ force: true });
+  await refreshYearlyRanking({ force: true });
   await refreshAdminAccess();
 }
 
@@ -391,9 +393,9 @@ function bindEvents() {
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
   document.getElementById("openAdminButton")?.addEventListener("click", openAdminPanel);
   document.getElementById("openDevelopmentButton")?.addEventListener("click", openDevelopmentPanel);
-  document.getElementById("showAllTimeRankingButton")?.addEventListener("click", () => selectRankingView("allTime"));
+  document.getElementById("showYearlyRankingButton")?.addEventListener("click", () => selectRankingView("yearly"));
   document.getElementById("showMonthlyRankingButton")?.addEventListener("click", () => selectRankingView("monthly"));
-  document.getElementById("allTimeRankingContent")?.addEventListener("click", handleMonthlyRankingContentClick);
+  document.getElementById("rankingContent")?.addEventListener("click", handleRankingPeriodContentClick);
   document.getElementById("closeAdminButton")?.addEventListener("click", closeAdminPanel);
   document.getElementById("adminToDevelopmentButton")?.addEventListener("click", openDevelopmentPanel);
   document.getElementById("closeDevelopmentButton")?.addEventListener("click", closeDevelopmentPanel);
@@ -2169,7 +2171,7 @@ function handleAuthStateChanged() {
   fetchPerfectAchievers({ force: true });
   syncPredictionFromAccount({ force: true });
   fetchUserAchievements({ force: true });
-  refreshAllTimeRanking({ force: true });
+  refreshYearlyRanking({ force: true });
   if (state.rankingView === "monthly") {
     refreshMonthlyRanking({ force: true });
   }
@@ -2401,7 +2403,7 @@ async function refreshAutoScoringStatus({ force = false } = {}) {
       state.autoScoring.record = payload.autoScoring || null;
       state.autoScoring.message = "";
       if (previousStatus !== "scored" && state.autoScoring.record?.status === "scored") {
-        void refreshAllTimeRanking({ force: true });
+        void refreshYearlyRanking({ force: true });
         if (state.rankingView === "monthly") {
           void refreshMonthlyRanking({ force: true });
         }
@@ -2442,7 +2444,7 @@ async function updateAutoScoring(action, confirmationMessage = "") {
       : action === "cancel" ? "自動採点を取り消しました。" : "自動採点を再試行待ちに戻しました。";
     await refreshAdminScoringSummary({ force: true });
     if (isRunNow) {
-      await refreshAllTimeRanking({ force: true });
+      await refreshYearlyRanking({ force: true });
       if (state.rankingView === "monthly") {
         await refreshMonthlyRanking({ force: true });
       }
@@ -2616,7 +2618,7 @@ async function runServerScoring() {
     }
     resetAdminScoringPreview();
     await refreshAdminScoringSummary({ force: true });
-    await refreshAllTimeRanking({ force: true });
+    await refreshYearlyRanking({ force: true });
     if (state.rankingView === "monthly") {
       await refreshMonthlyRanking({ force: true });
     }
@@ -2707,18 +2709,22 @@ function getAuthApiBaseUrl() {
   return "";
 }
 
-function buildAllTimeRankingApiUrl({ qualifiedOnly = false } = {}) {
+function buildYearlyRankingApiUrl({ year, qualifiedOnly = false } = {}) {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
   if (!baseUrl) return "";
-  const url = new URL(`${baseUrl}/api/rankings/all-time`, window.location.href);
-  url.searchParams.set("limit", String(ALL_TIME_RANKING_DISPLAY_LIMIT));
+  const url = new URL(`${baseUrl}/api/rankings/yearly`, window.location.href);
+  url.searchParams.set("year", String(year));
+  url.searchParams.set("limit", String(RANKING_DISPLAY_LIMIT));
   url.searchParams.set("qualifiedOnly", qualifiedOnly ? "true" : "false");
   return url.href;
 }
 
-function buildMyAllTimeRankingApiUrl() {
+function buildMyYearlyRankingApiUrl({ year } = {}) {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
-  return baseUrl ? `${baseUrl}/api/me/ranking/all-time` : "";
+  if (!baseUrl) return "";
+  const url = new URL(`${baseUrl}/api/me/ranking/yearly`, window.location.href);
+  url.searchParams.set("year", String(year));
+  return url.href;
 }
 
 function getJapanYearMonth(date = new Date()) {
@@ -2737,7 +2743,7 @@ function buildMonthlyRankingApiUrl({ year, month, qualifiedOnly = false } = {}) 
   const url = new URL(`${baseUrl}/api/rankings/monthly`, window.location.href);
   url.searchParams.set("year", String(year));
   url.searchParams.set("month", String(month));
-  url.searchParams.set("limit", String(ALL_TIME_RANKING_DISPLAY_LIMIT));
+  url.searchParams.set("limit", String(RANKING_DISPLAY_LIMIT));
   url.searchParams.set("qualifiedOnly", qualifiedOnly ? "true" : "false");
   return url.href;
 }
@@ -2751,17 +2757,18 @@ function buildMyMonthlyRankingApiUrl({ year, month } = {}) {
   return url.href;
 }
 
-async function initializeAllTimeRanking() {
-  await refreshAllTimeRanking({ force: true });
+async function initializeYearlyRanking() {
+  await refreshYearlyRanking({ force: true });
 }
 
-async function refreshAllTimeRanking({ force = false } = {}) {
-  const ranking = state.allTimeRanking;
+async function refreshYearlyRanking({ force = false } = {}) {
+  const ranking = state.yearlyRanking;
   if (ranking.isLoading && !force) return;
-  const publicUrl = buildAllTimeRankingApiUrl({ qualifiedOnly: false });
+  const period = { year: ranking.year };
+  const publicUrl = buildYearlyRankingApiUrl({ ...period, qualifiedOnly: false });
   if (!publicUrl) {
     ranking.message = "ランキングの接続先を確認できません。";
-    renderAllTimeRanking();
+    renderRankingPanel();
     return;
   }
 
@@ -2772,7 +2779,7 @@ async function refreshAllTimeRanking({ force = false } = {}) {
   ranking.isLoadingSelf = Boolean(user);
   ranking.message = "";
   if (!user) ranking.self = null;
-  renderAllTimeRanking();
+  renderRankingPanel();
 
   try {
     const publicRequest = fetch(publicUrl, { credentials: "include", cache: force ? "no-store" : "default" })
@@ -2783,7 +2790,7 @@ async function refreshAllTimeRanking({ force = false } = {}) {
         }
         return payload;
       });
-    const selfRequest = user ? fetch(buildMyAllTimeRankingApiUrl(), { credentials: "include", cache: "no-store" })
+    const selfRequest = user ? fetch(buildMyYearlyRankingApiUrl(period), { credentials: "include", cache: "no-store" })
       .then(async (response) => {
         const payload = await response.json().catch(() => null);
         if (!response.ok || !payload?.ok) {
@@ -2792,18 +2799,18 @@ async function refreshAllTimeRanking({ force = false } = {}) {
         return payload.rankingData || null;
       })
       .catch((error) => {
-        console.error("自分の通算成績の取得に失敗しました", error.message);
+        console.error("自分の年間成績の取得に失敗しました", error.message);
         return null;
       }) : Promise.resolve(null);
     const [publicPayload, self] = await Promise.all([publicRequest, selfRequest]);
-    if (requestId !== ranking.requestId) return;
+    if (requestId !== ranking.requestId || ranking.year !== period.year) return;
     ranking.rows = publicPayload.ranking;
     ranking.summary = publicPayload.summary || null;
     ranking.pagination = publicPayload.pagination || null;
     ranking.self = self;
   } catch (error) {
     if (requestId !== ranking.requestId) return;
-    console.error("通算ランキングの取得に失敗しました", error.message);
+    console.error("年間ランキングの取得に失敗しました", error.message);
     ranking.rows = [];
     ranking.summary = null;
     ranking.pagination = null;
@@ -2813,7 +2820,7 @@ async function refreshAllTimeRanking({ force = false } = {}) {
     if (requestId === ranking.requestId) {
       ranking.isLoading = false;
       ranking.isLoadingSelf = false;
-      renderAllTimeRanking();
+      renderRankingPanel();
     }
   }
 }
@@ -2825,7 +2832,7 @@ async function refreshMonthlyRanking({ force = false } = {}) {
   const publicUrl = buildMonthlyRankingApiUrl({ ...period, qualifiedOnly: false });
   if (!publicUrl) {
     ranking.message = "ランキングの接続先を確認できません。";
-    renderAllTimeRanking();
+    renderRankingPanel();
     return;
   }
 
@@ -2836,7 +2843,7 @@ async function refreshMonthlyRanking({ force = false } = {}) {
   ranking.isLoadingSelf = Boolean(user);
   ranking.message = "";
   if (!user) ranking.self = null;
-  renderAllTimeRanking();
+  renderRankingPanel();
 
   try {
     const publicRequest = fetch(publicUrl, { credentials: "include", cache: force ? "no-store" : "default" })
@@ -2877,21 +2884,38 @@ async function refreshMonthlyRanking({ force = false } = {}) {
     if (requestId === ranking.requestId) {
       ranking.isLoading = false;
       ranking.isLoadingSelf = false;
-      renderAllTimeRanking();
+      renderRankingPanel();
     }
   }
 }
 
 function selectRankingView(view) {
-  if (view !== "allTime" && view !== "monthly") return;
+  if (view !== "yearly" && view !== "monthly") return;
   state.rankingView = view;
-  renderAllTimeRanking();
-  if (view === "monthly") {
+  renderRankingPanel();
+  if (view === "yearly") {
+    void refreshYearlyRanking({ force: true });
+  } else {
     void refreshMonthlyRanking({ force: true });
   }
 }
 
-function handleMonthlyRankingContentClick(event) {
+function handleRankingPeriodContentClick(event) {
+  const yearlyButton = event.target.closest("[data-yearly-ranking-move]");
+  if (yearlyButton && !yearlyButton.disabled) {
+    const direction = Number(yearlyButton.dataset.yearlyRankingMove);
+    if (Number.isInteger(direction) && direction !== 0) {
+      const ranking = state.yearlyRanking;
+      const nextYear = ranking.year + direction;
+      const currentYear = getJapanYearMonth().year;
+      if (nextYear >= YEARLY_RANKING_MIN_YEAR && nextYear <= currentYear) {
+        ranking.year = nextYear;
+        ranking.self = null;
+        void refreshYearlyRanking({ force: true });
+      }
+    }
+    return;
+  }
   const button = event.target.closest("[data-monthly-ranking-move]");
   if (!button || button.disabled) return;
   const direction = Number(button.dataset.monthlyRankingMove);
@@ -2909,9 +2933,9 @@ function handleMonthlyRankingContentClick(event) {
   void refreshMonthlyRanking({ force: true });
 }
 
-function renderAllTimeRanking() {
-  const panel = document.getElementById("allTimeRankingPanel");
-  const container = document.getElementById("allTimeRankingContent");
+function renderRankingPanel() {
+  const panel = document.getElementById("rankingPanel");
+  const container = document.getElementById("rankingContent");
   if (!panel || !container) return;
 
   if (state.rankingView === "monthly") {
@@ -2919,10 +2943,18 @@ function renderAllTimeRanking() {
     return;
   }
 
-  renderRankingHeading("allTime");
-  renderRankingContent(state.allTimeRanking, {
-    selfTitle: "あなたの通算成績",
-    emptyMessage: "まだランキング対象試合がありません。"
+  renderRankingHeading("yearly");
+  const ranking = state.yearlyRanking;
+  const currentYear = getJapanYearMonth().year;
+  const periodControls = `<div class="ranking-month-controls" aria-label="年間ランキングの対象年">
+    <button class="compact-button" type="button" data-yearly-ranking-move="-1"${ranking.year <= YEARLY_RANKING_MIN_YEAR ? " disabled" : ""}>前年</button>
+    <strong>${escapeHtml(ranking.year)}年</strong>
+    <button class="compact-button" type="button" data-yearly-ranking-move="1"${ranking.year === currentYear ? " disabled" : ""}>翌年</button>
+  </div>`;
+  renderRankingContent(ranking, {
+    selfTitle: "あなたの年間成績",
+    emptyMessage: "この年のランキング対象試合はありません。",
+    prefixHtml: periodControls
   });
 }
 
@@ -2944,23 +2976,25 @@ function renderMonthlyRanking() {
 }
 
 function renderRankingHeading(view) {
-  const title = document.getElementById("allTimeRankingTitle");
+  const areaLabel = document.getElementById("rankingAreaLabel");
+  const title = document.getElementById("rankingTitle");
   const description = document.getElementById("rankingDescription");
-  const allTimeButton = document.getElementById("showAllTimeRankingButton");
+  const yearlyButton = document.getElementById("showYearlyRankingButton");
   const monthlyButton = document.getElementById("showMonthlyRankingButton");
   const isMonthly = view === "monthly";
-  if (title) title.textContent = isMonthly ? "月間ランキング" : "通算ランキング";
+  if (areaLabel) areaLabel.textContent = isMonthly ? "MONTHLY RANKING" : "YEARLY RANKING";
+  if (title) title.textContent = isMonthly ? "月間ランキング" : "年間ランキング";
   if (description) description.textContent = isMonthly
     ? "この月に正式採点された対象試合の3分の2以上に参加すると順位対象になります。"
-    : "正式に採点された対象試合の3分の2以上に参加すると順位対象になります。";
-  allTimeButton?.classList.toggle("is-active", !isMonthly);
+    : "この年に正式採点された対象試合の3分の2以上に参加すると順位対象になります。";
+  yearlyButton?.classList.toggle("is-active", !isMonthly);
   monthlyButton?.classList.toggle("is-active", isMonthly);
-  allTimeButton?.setAttribute("aria-selected", String(!isMonthly));
+  yearlyButton?.setAttribute("aria-selected", String(!isMonthly));
   monthlyButton?.setAttribute("aria-selected", String(isMonthly));
 }
 
 function renderRankingContent(ranking, { selfTitle, emptyMessage, prefixHtml = "" }) {
-  const container = document.getElementById("allTimeRankingContent");
+  const container = document.getElementById("rankingContent");
   if (!container) return;
 
   if (ranking.isLoading && !ranking.summary) {
@@ -4938,7 +4972,7 @@ function renderAll() {
   renderActualLineup();
   renderScoreResult();
   renderPerfectAchievers();
-  renderAllTimeRanking();
+  renderRankingPanel();
   renderAdminFlow();
   renderPicker("prediction");
   renderPicker("actual");

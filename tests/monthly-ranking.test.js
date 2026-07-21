@@ -45,7 +45,7 @@ function insertPrediction(db, { id, userId, gameId, score, isTest = 0, status = 
 }
 
 function getRankingCte() {
-  const match = /function createAllTimeRankingCte\(\) \{[\s\S]*?return `([\s\S]*?)`;\r?\n\}/.exec(worker);
+  const match = /function createRankingCte\(\) \{[\s\S]*?return `([\s\S]*?)`;\r?\n\}/.exec(worker);
   assert.ok(match, "Workerの共通ランキング集計CTEを取得できること");
   return match[1];
 }
@@ -99,8 +99,8 @@ test("月間ランキングは試合日で対象月のみを集計し、規定�
     { username: "charlie", games_played: 1, total_score: 100, perfect_count: 1, is_qualified: 0, games_needed: 1, ranking_rank: null }
   ]);
 
-  const allTimeGameCount = db.prepare(`${getRankingCte()} SELECT MAX(eligible_games) AS count FROM combined`).get(null, null).count;
-  assert.equal(allTimeGameCount, 4, "通算の対象試合数は月間フィルターで減らないこと");
+  const yearlyGameCount = db.prepare(`${getRankingCte()} SELECT MAX(eligible_games) AS count FROM combined`).get("2026-01-01", "2027-01-01").count;
+  assert.equal(yearlyGameCount, 4, "年間の対象試合数は月間フィルターで減らないこと");
 });
 
 test("月間APIは公開・本人取得を分け、未来月と不正値を拒否する実装を持つ", () => {
@@ -114,11 +114,11 @@ test("月間APIは公開・本人取得を分け、未来月と不正値を拒�
   assert.match(worker, /Cache-Control", "public, max-age=30/);
 });
 
-test("通常画面は通算と月間を切り替え、月移動と自動取得を持つが手動再読み込みは置かない", () => {
-  assert.match(html, /id="showAllTimeRankingButton"/);
+test("通常画面は年間と月間を切り替え、月移動と自動取得を持つが手動再読み込みは置かない", () => {
+  assert.match(html, /id="showYearlyRankingButton"/);
   assert.match(html, /id="showMonthlyRankingButton"/);
   assert.match(script, /function selectRankingView/);
-  assert.match(script, /function handleMonthlyRankingContentClick/);
+  assert.match(script, /function handleRankingPeriodContentClick/);
   assert.match(script, /function refreshMonthlyRanking/);
   assert.match(script, /前月/);
   assert.match(script, /次月/);

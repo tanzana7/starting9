@@ -56,16 +56,16 @@ test("初回認証イベントを取りこぼしてもPromise完了後にadmin A
       fetchUrls.push(url);
       const isCapabilityRequest = String(url).endsWith("/api/admin/mode-capabilities");
       const isAchievementsRequest = String(url).endsWith("/api/me/achievements");
-      const isAllTimePublicRankingRequest = String(url).includes("/api/rankings/all-time");
-      const isAllTimeMyRankingRequest = String(url).endsWith("/api/me/ranking/all-time");
+      const isYearlyPublicRankingRequest = String(url).includes("/api/rankings/yearly");
+      const isYearlyMyRankingRequest = String(url).endsWith("/api/me/ranking/yearly");
       const isMonthlyPublicRankingRequest = String(url).includes("/api/rankings/monthly");
       const isMonthlyMyRankingRequest = String(url).endsWith("/api/me/ranking/monthly");
       return {
         ok: true,
         json: async () => {
           if (isAchievementsRequest) return { ok: true, achievements: [] };
-          if (isAllTimePublicRankingRequest) return { ranking: [], summary: { eligibleGames: 0, requiredGames: 0 }, pagination: { limit: 50, offset: 0, totalUsers: 0 } };
-          if (isAllTimeMyRankingRequest) return { ok: true, rankingData: null };
+          if (isYearlyPublicRankingRequest) return { year: 2026, ranking: [], summary: { eligibleGames: 0, requiredGames: 0, qualifiedUsers: 0, totalUsers: 0 }, pagination: { limit: 50, offset: 0, totalUsers: 0 } };
+          if (isYearlyMyRankingRequest) return { ok: true, year: 2026, rankingData: null };
           if (isMonthlyPublicRankingRequest) return { year: 2026, month: 7, ranking: [], summary: { eligibleGames: 0, requiredGames: 0, qualifiedUsers: 0, totalUsers: 0 }, pagination: { limit: 50, offset: 0, totalUsers: 0 } };
           if (isMonthlyMyRankingRequest) return { ok: true, year: 2026, month: 7, rankingData: null };
           if (isCapabilityRequest) return { ok: true, adminModeAvailable: true, developmentModeAvailable: false };
@@ -99,8 +99,8 @@ test("初回認証イベントを取りこぼしてもPromise完了後にadmin A
 
   assert.deepEqual(fetchUrls, [
     "https://starting9-auth.tanzana7.workers.dev/api/me/achievements",
-    "https://starting9-auth.tanzana7.workers.dev/api/rankings/all-time?limit=50&qualifiedOnly=false",
-    "https://starting9-auth.tanzana7.workers.dev/api/me/ranking/all-time",
+    "https://starting9-auth.tanzana7.workers.dev/api/rankings/yearly?year=2026&limit=50&qualifiedOnly=false",
+    "https://starting9-auth.tanzana7.workers.dev/api/me/ranking/yearly?year=2026",
     "https://starting9-auth.tanzana7.workers.dev/api/admin/me",
     "https://starting9-auth.tanzana7.workers.dev/api/admin/mode-capabilities"
   ]);

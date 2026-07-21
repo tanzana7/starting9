@@ -30,12 +30,12 @@ function insertUser(db, id, username) {
   ).run(id, username);
 }
 
-function insertRankingGame(db, gameId, eligible = 1) {
+function insertRankingGame(db, gameId, gameDate = "2026-07-21", eligible = 1) {
   db.prepare(
     `INSERT INTO ranking_games
-       (game_id, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game, created_at, updated_at)
-     VALUES (?1, ?2, '2026-07-21T10:00:00.000Z', 'scored', 0, '2026-07-21T10:00:00.000Z', '2026-07-21T10:00:00.000Z')`
-  ).run(gameId, eligible);
+       (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game, created_at, updated_at)
+     VALUES (?1, ?2, ?3, '2026-07-21T10:00:00.000Z', 'scored', 0, '2026-07-21T10:00:00.000Z', '2026-07-21T10:00:00.000Z')`
+  ).run(gameId, gameDate, eligible);
 }
 
 function insertPrediction(db, { id, userId, gameId, score, isTest = 0, scoredAt = "2026-07-21T10:00:00.000Z" }) {
@@ -49,7 +49,7 @@ function insertPrediction(db, { id, userId, gameId, score, isTest = 0, scoredAt 
 }
 
 function getRankingCte() {
-  const match = /function createAllTimeRankingCte\(\) \{[\s\S]*?return `([\s\S]*?)`;\r?\n\}/.exec(worker);
+  const match = /function createRankingCte\(\) \{[\s\S]*?return `([\s\S]*?)`;\r?\n\}/.exec(worker);
   assert.ok(match, "Workerのランキング集計CTEを取得できること");
   return match[1];
 }
@@ -77,7 +77,7 @@ test("対象外試合・未採点・テスト予想を除き、規定と競技�
   insertUser(db, "u3", "charlie");
   insertUser(db, "u4", "dev");
   for (const gameId of ["g1", "g2", "g3"]) insertRankingGame(db, gameId);
-  insertRankingGame(db, "outside", 0);
+  insertRankingGame(db, "outside", "2026-07-21", 0);
 
   insertPrediction(db, { id: "p1", userId: "u1", gameId: "g1", score: 100, scoredAt: "2026-07-21T10:00:00.000Z" });
   insertPrediction(db, { id: "p2", userId: "u1", gameId: "g2", score: 80, scoredAt: "2026-07-21T10:01:00.000Z" });
@@ -91,7 +91,7 @@ test("対象外試合・未採点・テスト予想を除き、規定と競技�
   const rows = db.prepare(`${getRankingCte()}
     SELECT username, games_played, total_score, perfect_count, is_qualified, ranking_rank
       FROM combined
-     ORDER BY is_qualified DESC, ranking_rank ASC, username ASC`).all(null, null).map((row) => ({ ...row }));
+     ORDER BY is_qualified DESC, ranking_rank ASC, username ASC`).all("2026-01-01", "2027-01-01").map((row) => ({ ...row }));
   assert.deepEqual(rows, [
     { username: "alpha", games_played: 2, total_score: 180, perfect_count: 1, is_qualified: 1, ranking_rank: 1 },
     { username: "bravo", games_played: 2, total_score: 180, perfect_count: 0, is_qualified: 1, ranking_rank: 2 },
@@ -111,7 +111,7 @@ test("主要指標が同一の規定到達者には競技順位を付け、次�
   insertPrediction(db, { id: "u3-1", userId: "u3", gameId: "g1", score: 80, scoredAt: "2026-07-21T09:00:00.000Z" });
   insertPrediction(db, { id: "u3-2", userId: "u3", gameId: "g2", score: 80, scoredAt: "2026-07-21T10:00:00.000Z" });
   const rows = db.prepare(`${getRankingCte()}
-    SELECT username, ranking_rank FROM combined WHERE is_qualified = 1 ORDER BY ranking_rank ASC, user_id ASC`).all(null, null).map((row) => ({ ...row }));
+    SELECT username, ranking_rank FROM combined WHERE is_qualified = 1 ORDER BY ranking_rank ASC, user_id ASC`).all("2026-01-01", "2027-01-01").map((row) => ({ ...row }));
   assert.deepEqual(rows, [
     { username: "alpha", ranking_rank: 1 },
     { username: "bravo", ranking_rank: 1 },
@@ -119,24 +119,50 @@ test("主要指標が同一の規定到達者には競技順位を付け、次�
   ]);
 });
 
-test("公開ランキングは内部ID・隠し実績・metadataを返さず、本人APIは認証を要求する", () => {
-  assert.match(worker, /\/api\/rankings\/all-time/);
-  assert.match(worker, /\/api\/me\/ranking\/all-time/);
+test("年間公開ランキングは内部ID・隠し実績・metadataを返さず、本人APIは認証を要求する", () => {
+  assert.match(worker, /\/api\/rankings\/yearly/);
+  assert.match(worker, /\/api\/me\/ranking\/yearly/);
   assert.match(worker, /requireAuthenticatedUser\(request, env, cors\)/);
   assert.match(worker, /achievements\.is_hidden = 0/);
   assert.match(worker, /RANKING_ACHIEVEMENT_DISPLAY_LIMIT/);
   assert.match(worker, /Cache-Control", "public, max-age=30/);
-  assert.match(worker, /ALL_TIME_RANKING_MAX_LIMIT = 100/);
+  assert.match(worker, /RANKING_MAX_LIMIT = 100/);
   assert.match(worker, /qualifiedOnly/);
+  assert.match(worker, /未来年の年間ランキングは取得できません/);
+  assert.match(worker, /timeZone: "Asia\/Tokyo"/);
   assert.doesNotMatch(worker, /rankingData:[\s\S]{0,200}userId/);
+  assert.doesNotMatch(worker, /\/api\/rankings\/all-time/);
+  assert.doesNotMatch(worker, /\/api\/me\/ranking\/all-time/);
 });
 
-test("通常画面にはカード型の通算ランキングがあり、手動再読み込み導線を置かない", () => {
-  assert.match(html, /id="allTimeRankingPanel"/);
-  assert.match(script, /function refreshAllTimeRanking/);
-  assert.match(script, /function renderAllTimeRanking/);
+test("通常画面にはカード型の年間ランキングがあり、手動再読み込み導線を置かない", () => {
+  assert.match(html, /id="rankingPanel"/);
+  assert.match(html, /id="showYearlyRankingButton"/);
+  assert.match(script, /function refreshYearlyRanking/);
+  assert.match(script, /function renderRankingPanel/);
+  assert.match(script, /前年/);
+  assert.match(script, /翌年/);
+  assert.match(script, /data-yearly-ranking-move/);
   assert.match(script, /規定未到達者を見る/);
   assert.match(script, /規定まであと/);
-  assert.doesNotMatch(html, /reloadAllTimeRankingButton/);
-  assert.doesNotMatch(script, /reloadAllTimeRankingButton/);
+  assert.doesNotMatch(html, />通算</);
+  assert.doesNotMatch(script, /rankings\/all-time/);
+  assert.doesNotMatch(html, /reloadYearlyRankingButton/);
+  assert.doesNotMatch(script, /reloadYearlyRankingButton/);
+});
+
+test("年間ランキングはgame_dateの年範囲だけを対象とし、nullと年外試合を除外する", () => {
+  const db = createDatabase();
+  insertUser(db, "u1", "alpha");
+  insertRankingGame(db, "first", "2026-01-01");
+  insertRankingGame(db, "last", "2026-12-31");
+  insertRankingGame(db, "next", "2027-01-01");
+  insertRankingGame(db, "unknown", null);
+  for (const gameId of ["first", "last", "next", "unknown"]) {
+    insertPrediction(db, { id: `p-${gameId}`, userId: "u1", gameId, score: 90 });
+  }
+  const year2026 = db.prepare(`${getRankingCte()} SELECT MAX(eligible_games) AS count FROM combined`).get("2026-01-01", "2027-01-01").count;
+  const year2027 = db.prepare(`${getRankingCte()} SELECT MAX(eligible_games) AS count FROM combined`).get("2027-01-01", "2028-01-01").count;
+  assert.equal(year2026, 2);
+  assert.equal(year2027, 1);
 });

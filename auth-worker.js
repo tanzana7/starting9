@@ -9,10 +9,11 @@ const PASSWORD_MIN_LENGTH = 8;
 const PASSWORD_MAX_LENGTH = 72;
 // 開発中は1試合につき先着3人。本番候補は30人です。
 const PERFECT_ACHIEVERS_DEFAULT_DISPLAY_LIMIT = 3;
-const ALL_TIME_RANKING_DEFAULT_LIMIT = 50;
-const ALL_TIME_RANKING_MAX_LIMIT = 100;
-const ALL_TIME_RANKING_MAX_OFFSET = 1_000_000;
+const RANKING_DEFAULT_LIMIT = 50;
+const RANKING_MAX_LIMIT = 100;
+const RANKING_MAX_OFFSET = 1_000_000;
 const MONTHLY_RANKING_MIN_YEAR = 2020;
+const YEARLY_RANKING_MIN_YEAR = 2020;
 const RANKING_ACHIEVEMENT_DISPLAY_LIMIT = 3;
 const DEVELOPMENT_TEST_NICKNAME_PREFIX = "[DEV]";
 const PREDICTION_SCHEMA_VERSION = 1;
@@ -95,11 +96,11 @@ export default {
       if (path === "/api/me/achievements" && request.method === "GET") {
         return await handleMyAchievements(request, env, cors);
       }
-      if (path === "/api/rankings/all-time" && request.method === "GET") {
-        return await handleGetAllTimeRanking(request, env, cors);
+      if (path === "/api/rankings/yearly" && request.method === "GET") {
+        return await handleGetYearlyRanking(request, env, cors);
       }
-      if (path === "/api/me/ranking/all-time" && request.method === "GET") {
-        return await handleGetMyAllTimeRanking(request, env, cors);
+      if (path === "/api/me/ranking/yearly" && request.method === "GET") {
+        return await handleGetMyYearlyRanking(request, env, cors);
       }
       if (path === "/api/rankings/monthly" && request.method === "GET") {
         return await handleGetMonthlyRanking(request, env, cors);
@@ -375,10 +376,14 @@ async function handleMyAchievements(request, env, cors) {
   return jsonResponse({ ok: true, achievements: achievements.map(toPublicAchievement) }, 200, cors);
 }
 
-async function handleGetAllTimeRanking(request, env, cors) {
-  const options = parseAllTimeRankingQuery(new URL(request.url).searchParams);
-  const ranking = await getAllTimeRanking(env.AUTH_DB, options);
+async function handleGetYearlyRanking(request, env, cors) {
+  const options = parseYearlyRankingQuery(new URL(request.url).searchParams);
+  if (!options.ok) {
+    return jsonResponse({ ok: false, error: options.error }, 400, cors);
+  }
+  const ranking = await getRankingForPeriod(env.AUTH_DB, options);
   const response = jsonResponse({
+    year: options.year,
     ranking: ranking.rows,
     summary: ranking.summary,
     pagination: ranking.pagination,
@@ -388,12 +393,16 @@ async function handleGetAllTimeRanking(request, env, cors) {
   return response;
 }
 
-async function handleGetMyAllTimeRanking(request, env, cors) {
+async function handleGetMyYearlyRanking(request, env, cors) {
   const access = await requireAuthenticatedUser(request, env, cors);
   if (!access.ok) return access.response;
 
-  const rankingData = await getAllTimeRankingEntryForUser(env.AUTH_DB, access.user.id);
-  return jsonResponse({ ok: true, rankingData }, 200, cors);
+  const options = parseYearlyRankingQuery(new URL(request.url).searchParams);
+  if (!options.ok) {
+    return jsonResponse({ ok: false, error: options.error }, 400, cors);
+  }
+  const rankingData = await getRankingEntryForUser(env.AUTH_DB, access.user.id, options);
+  return jsonResponse({ ok: true, year: options.year, rankingData }, 200, cors);
 }
 
 async function handleGetMonthlyRanking(request, env, cors) {
@@ -433,14 +442,6 @@ async function handleGetMyMonthlyRanking(request, env, cors) {
   }, 200, cors);
 }
 
-function parseAllTimeRankingQuery(searchParams) {
-  return {
-    limit: parseBoundedInteger(searchParams.get("limit"), ALL_TIME_RANKING_DEFAULT_LIMIT, 1, ALL_TIME_RANKING_MAX_LIMIT),
-    offset: parseBoundedInteger(searchParams.get("offset"), 0, 0, ALL_TIME_RANKING_MAX_OFFSET),
-    qualifiedOnly: !["false", "0"].includes(String(searchParams.get("qualifiedOnly") || "true").trim().toLowerCase())
-  };
-}
-
 function getJapanYearMonth(now = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Tokyo",
@@ -451,13 +452,36 @@ function getJapanYearMonth(now = new Date()) {
   return { year: Number(values.year), month: Number(values.month) };
 }
 
+function parseYearlyRankingQuery(searchParams) {
+  const current = getJapanYearMonth();
+  const rawYear = searchParams.get("year");
+  const pagination = parseRankingPaginationQuery(searchParams);
+  if (!pagination.ok) return pagination;
+  if (rawYear !== null && rawYear !== "" && !/^\d{4}$/.test(rawYear)) {
+    return { ok: false, error: "yearは有効な4桁の年を指定してください。" };
+  }
+  const year = rawYear === null || rawYear === "" ? current.year : Number(rawYear);
+  if (!Number.isInteger(year) || year < YEARLY_RANKING_MIN_YEAR) {
+    return { ok: false, error: "yearは有効な4桁の年を指定してください。" };
+  }
+  if (year > current.year) {
+    return { ok: false, error: "未来年の年間ランキングは取得できません。" };
+  }
+  return {
+    ok: true,
+    year,
+    startAt: `${String(year).padStart(4, "0")}-01-01`,
+    endAt: `${String(year + 1).padStart(4, "0")}-01-01`,
+    ...pagination
+  };
+}
+
 function parseMonthlyRankingQuery(searchParams) {
   const current = getJapanYearMonth();
   const rawYear = searchParams.get("year");
   const rawMonth = searchParams.get("month");
-  const rawLimit = searchParams.get("limit");
-  const rawOffset = searchParams.get("offset");
-  const rawQualifiedOnly = searchParams.get("qualifiedOnly");
+  const pagination = parseRankingPaginationQuery(searchParams);
+  if (!pagination.ok) return pagination;
 
   if (rawYear !== null && rawYear !== "" && !/^\d{4}$/.test(rawYear)) {
     return { ok: false, error: "yearは有効な4桁の年を指定してください。" };
@@ -476,16 +500,6 @@ function parseMonthlyRankingQuery(searchParams) {
   if (year > current.year || (year === current.year && month > current.month)) {
     return { ok: false, error: "未来月の月間ランキングは取得できません。" };
   }
-  if (rawLimit !== null && (!/^\d+$/.test(rawLimit) || Number(rawLimit) < 1 || Number(rawLimit) > ALL_TIME_RANKING_MAX_LIMIT)) {
-    return { ok: false, error: `limitは1から${ALL_TIME_RANKING_MAX_LIMIT}で指定してください。` };
-  }
-  if (rawOffset !== null && (!/^\d+$/.test(rawOffset) || Number(rawOffset) > ALL_TIME_RANKING_MAX_OFFSET)) {
-    return { ok: false, error: "offsetが不正です。" };
-  }
-  if (rawQualifiedOnly !== null && !["true", "false", "1", "0"].includes(rawQualifiedOnly.trim().toLowerCase())) {
-    return { ok: false, error: "qualifiedOnlyが不正です。" };
-  }
-
   const nextMonthDate = new Date(Date.UTC(year, month, 1));
   return {
     ok: true,
@@ -493,20 +507,33 @@ function parseMonthlyRankingQuery(searchParams) {
     month,
     startAt: `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-01`,
     endAt: nextMonthDate.toISOString().slice(0, 10),
-    limit: rawLimit === null ? ALL_TIME_RANKING_DEFAULT_LIMIT : Number(rawLimit),
+    ...pagination
+  };
+}
+
+function parseRankingPaginationQuery(searchParams) {
+  const rawLimit = searchParams.get("limit");
+  const rawOffset = searchParams.get("offset");
+  const rawQualifiedOnly = searchParams.get("qualifiedOnly");
+  if (rawLimit !== null && (!/^\d+$/.test(rawLimit) || Number(rawLimit) < 1 || Number(rawLimit) > RANKING_MAX_LIMIT)) {
+    return { ok: false, error: `limitは1から${RANKING_MAX_LIMIT}で指定してください。` };
+  }
+  if (rawOffset !== null && (!/^\d+$/.test(rawOffset) || Number(rawOffset) > RANKING_MAX_OFFSET)) {
+    return { ok: false, error: "offsetが不正です。" };
+  }
+  if (rawQualifiedOnly !== null && !["true", "false", "1", "0"].includes(rawQualifiedOnly.trim().toLowerCase())) {
+    return { ok: false, error: "qualifiedOnlyが不正です。" };
+  }
+  return {
+    ok: true,
+    limit: rawLimit === null ? RANKING_DEFAULT_LIMIT : Number(rawLimit),
     offset: rawOffset === null ? 0 : Number(rawOffset),
     qualifiedOnly: rawQualifiedOnly === null ? true : ["true", "1"].includes(rawQualifiedOnly.trim().toLowerCase())
   };
 }
 
-function parseBoundedInteger(value, fallback, min, max) {
-  if (!/^\d+$/.test(String(value || ""))) return fallback;
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
-}
-
-function createAllTimeRankingCte() {
-  // ?1 / ?2 are game_date period filters. NULL means all-time aggregation.
+function createRankingCte() {
+  // ?1 / ?2 are game_date period filters for the selected year or month.
   return `WITH eligible_games AS (
     SELECT game_id
       FROM ranking_games
@@ -568,19 +595,8 @@ function createAllTimeRankingCte() {
   )`;
 }
 
-async function getAllTimeRanking(db, { limit, offset, qualifiedOnly, startAt = null, endAt = null }) {
-  const ranking = await getRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt, endAt });
-  return {
-    ...ranking,
-    summary: {
-      ...ranking.summary,
-      totalRankedUsers: ranking.summary.totalUsers
-    }
-  };
-}
-
 async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt = null, endAt = null }) {
-  const cte = createAllTimeRankingCte();
+  const cte = createRankingCte();
   const [summaryRow, countRow, rowsResult] = await Promise.all([
     db.prepare(`${cte}
       SELECT COALESCE(MAX(eligible_games), 0) AS eligible_games,
@@ -624,12 +640,8 @@ async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt =
   };
 }
 
-async function getAllTimeRankingEntryForUser(db, userId, { startAt = null, endAt = null } = {}) {
-  return getRankingEntryForUser(db, userId, { startAt, endAt });
-}
-
 async function getRankingEntryForUser(db, userId, { startAt = null, endAt = null } = {}) {
-  const cte = createAllTimeRankingCte();
+  const cte = createRankingCte();
   const row = await db.prepare(`${cte}
     SELECT user_id, username, games_played, eligible_games, required_games, is_qualified, games_needed,
            total_score, (total_score * 1.0 / games_played) AS average_score,

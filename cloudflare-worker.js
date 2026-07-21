@@ -1,4 +1,5 @@
 const LINEUP_SIZE = 9;
+const ROSTER_CACHE_TTL_SECONDS = 30 * 60;
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, OPTIONS",
@@ -187,17 +188,12 @@ async function handleRosterRequest(requestUrl, isDebug) {
   }
 
   try {
-    const response = await fetch(validation.url, {
-      headers: {
-        "User-Agent": "Starting9 MVP Cloudflare Worker"
-      }
-    });
-
-    if (!response.ok) {
-      return jsonResponse({ ok: false, error: `NPB公式登録ページを取得できませんでした。HTTP ${response.status}` }, 502);
+    const source = await fetchRosterSource(requestUrl, validation.url);
+    if (!source.ok) {
+      return jsonResponse({ ok: false, error: source.error }, 502);
     }
 
-    const html = await response.text();
+    const html = source.html;
     const extraction = extractFightersRoster(html);
 
     if (!extraction.players.length) {
@@ -211,16 +207,115 @@ async function handleRosterRequest(requestUrl, isDebug) {
     return jsonResponse({
       ok: true,
       sourceUrl: validation.url,
-      fetchedAt: new Date().toISOString(),
+      fetchedAt: source.fetchedAt,
+      servedAt: new Date().toISOString(),
+      httpStatus: source.httpStatus,
+      cacheStatus: source.cacheStatus,
+      stale: source.stale,
       method: extraction.method,
       team: "fighters",
       players: extraction.players,
       count: extraction.players.length,
+      parsedCount: extraction.players.length,
+      announcedCount: extraction.announcedCount,
       ...(extraction.warning ? { warning: extraction.warning } : {})
     });
   } catch (error) {
     return jsonResponse({ ok: false, error: `NPB公式登録ページ取得中にエラーが発生しました：${error.message}` }, 500);
   }
+}
+
+async function fetchRosterSource(requestUrl, sourceUrl) {
+  const cache = caches.default;
+  const cacheKey = new Request(`${requestUrl.origin}/__starting9/roster-cache?source=${encodeURIComponent(sourceUrl)}`);
+  let cached = null;
+  try {
+    const cachedResponse = await cache.match(cacheKey);
+    cached = cachedResponse ? await readCachedRosterSource(cachedResponse) : null;
+  } catch {
+    // Cache APIの障害時も、公式ページへの新規取得は試みる。
+  }
+
+  if (cached && !cached.isExpired) {
+    return {
+      ok: true,
+      html: cached.html,
+      httpStatus: cached.httpStatus,
+      fetchedAt: cached.fetchedAt,
+      cacheStatus: "hit",
+      stale: false
+    };
+  }
+
+  try {
+    const response = await fetch(sourceUrl, {
+      cache: "no-store",
+      headers: {
+        "User-Agent": "Starting9 MVP Cloudflare Worker"
+      }
+    });
+
+    if (!response.ok) {
+      if (cached) {
+        return {
+          ok: true,
+          html: cached.html,
+          httpStatus: cached.httpStatus,
+          fetchedAt: cached.fetchedAt,
+          cacheStatus: "stale-fallback",
+          stale: true
+        };
+      }
+      return { ok: false, error: `NPB公式登録ページを取得できませんでした。HTTP ${response.status}` };
+    }
+
+    const html = await response.text();
+    const fetchedAt = new Date().toISOString();
+    const headers = new Headers({
+      "Content-Type": "text/html; charset=UTF-8",
+      "Cache-Control": `public, max-age=${ROSTER_CACHE_TTL_SECONDS}`,
+      "X-Starting9-Roster-Fetched-At": fetchedAt,
+      "X-Starting9-Roster-Http-Status": String(response.status)
+    });
+    try {
+      await cache.put(cacheKey, new Response(html, { headers }));
+    } catch {
+      // キャッシュ不調でも、今回の公式ページ取得結果は返す。
+    }
+
+    return {
+      ok: true,
+      html,
+      httpStatus: response.status,
+      fetchedAt,
+      cacheStatus: "miss",
+      stale: false
+    };
+  } catch (error) {
+    if (cached) {
+      return {
+        ok: true,
+        html: cached.html,
+        httpStatus: cached.httpStatus,
+        fetchedAt: cached.fetchedAt,
+        cacheStatus: "stale-fallback",
+        stale: true
+      };
+    }
+    return { ok: false, error: "NPB公式登録ページの取得中に通信エラーが発生しました。" };
+  }
+}
+
+async function readCachedRosterSource(response) {
+  const fetchedAt = response.headers.get("X-Starting9-Roster-Fetched-At") || "";
+  const fetchedAtMs = Date.parse(fetchedAt);
+  const httpStatus = Number(response.headers.get("X-Starting9-Roster-Http-Status")) || 200;
+  return {
+    html: await response.text(),
+    fetchedAt,
+    httpStatus,
+    isExpired: !Number.isFinite(fetchedAtMs) || Date.now() - fetchedAtMs >= ROSTER_CACHE_TTL_SECONDS * 1000
+  };
 }
 
 async function handleStarterRequest(isDebug) {

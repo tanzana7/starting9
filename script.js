@@ -47,6 +47,7 @@ const AUTO_FETCH_INTERVAL_MS = 10 * 60 * 1000;
 const AUTO_FETCH_MAX_ATTEMPTS = 5;
 const ROSTER_MONITOR_INTERVAL_MS = 10 * 60 * 1000;
 const ROSTER_MONITOR_MAX_ATTEMPTS = 6;
+const ROSTER_SNAPSHOT_CACHE_TTL_MS = 60 * 60 * 1000;
 const AUTO_FILL_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "指"]);
 const OUTFIELD_POSITIONS = ["左", "中", "右"];
 // 日程・NPB取得の長いチームコードは維持し、選手IDだけ短い球団IDを使います。
@@ -339,6 +340,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initializePerfectAchievers();
     initializePredictionRemoteSync();
     initializeYearlyRanking();
+    void initializeRosterCandidateSync();
   });
 });
 
@@ -1204,7 +1206,7 @@ function createPlayerChip(pickerName, player) {
   button.dataset.picker = pickerName;
   button.dataset.player = player;
   button.draggable = true;
-  const isInactiveCandidate = pickerName === "prediction" && getPlayerData(player)?.isActiveRoster !== true;
+  const isInactiveCandidate = pickerName === "prediction" && !isPlayerInCurrentRoster(getPlayerData(player));
   button.innerHTML = `${createPlayerLabelHtml(player)}${isInactiveCandidate ? '<span class="roster-status-badge">出場登録外</span>' : ""}`;
   applyPlayerCategoryClass(button, player);
 
@@ -1695,8 +1697,9 @@ async function handleRosterCheck() {
 async function performRosterCheck(options = {}) {
   const rosterResult = await fetchNpbRosterSnapshot();
   if (!rosterResult.ok) {
+    const previousSnapshot = normalizeRosterSnapshot(loadFromStorage(STORAGE_KEYS.rosterSnapshot));
     state.rosterMonitor.lastCheckedAt = new Date().toISOString();
-    state.rosterMonitor.lastFetchedAt = state.rosterMonitor.lastCheckedAt;
+    state.rosterMonitor.lastFetchedAt = previousSnapshot.fetchedAt;
     state.rosterMonitor.lastError = rosterResult.message;
     state.rosterMonitor.lastStatus = "error";
     state.rosterMonitor.lastMessage = `取得失敗：${rosterResult.message}`;
@@ -1710,12 +1713,35 @@ async function performRosterCheck(options = {}) {
       addAutoFetchLog("ロースター自動取得をエラーで停止しました。");
     }
     addAutoFetchLog(`1軍登録状況の取得失敗：${rosterResult.message}`);
+    if (previousSnapshot.players.length) {
+      addAutoFetchLog(`前回成功したロースターを継続利用します：${formatDateTime(previousSnapshot.fetchedAt)}`);
+    }
     if (options.setStatusMessage) {
       setNpbFetchMessage(`1軍登録状況を取得できませんでした：${rosterResult.message}`, "error");
     }
     updateRosterMonitorButtons();
     renderRosterMonitorSummary();
     return { ok: false, message: rosterResult.message };
+  }
+
+  const previousSnapshot = normalizeRosterSnapshot(loadFromStorage(STORAGE_KEYS.rosterSnapshot));
+  if (rosterResult.warning && canUseRosterSnapshot(previousSnapshot)) {
+    state.rosterMonitor.lastCheckedAt = new Date().toISOString();
+    state.rosterMonitor.lastFetchedAt = previousSnapshot.fetchedAt;
+    state.rosterMonitor.lastError = rosterResult.warning;
+    state.rosterMonitor.lastStatus = "warning";
+    state.rosterMonitor.lastMessage = `取得警告：${rosterResult.warning}`;
+    state.rosterMonitor.lastAddedPlayers = [];
+    state.rosterMonitor.lastRemovedPlayers = [];
+    addAutoFetchLog(`1軍登録状況の解析警告：${rosterResult.warning}`);
+    addAutoFetchLog(`前回成功したロースターを継続利用します：${formatDateTime(previousSnapshot.fetchedAt)}`);
+    if (options.setStatusMessage) {
+      setNpbFetchMessage("1軍登録状況の解析に警告があるため、前回成功データを使用しています。", "warning");
+    }
+    renderPicker("prediction");
+    updateRosterMonitorButtons();
+    renderRosterMonitorSummary();
+    return { ok: false, message: rosterResult.warning };
   }
 
   const diff = applyRosterSnapshotDiff(rosterResult);
@@ -1730,6 +1756,7 @@ async function performRosterCheck(options = {}) {
   if (options.setStatusMessage) {
     setNpbFetchMessage(`1軍登録状況を確認しました。登録選手数：${rosterResult.players.length}人`, "success");
   }
+  renderPicker("prediction");
   renderRosterMonitorSummary();
   return { ok: true, rosterResult, diff };
 }
@@ -1754,10 +1781,15 @@ async function fetchNpbRosterSnapshot() {
       ok: true,
       sourceUrl: result.sourceUrl || "",
       fetchedAt: result.fetchedAt || new Date().toISOString(),
-      method: result.method || "",
-      team: result.team || "",
-      warning: result.warning || "",
-      count: Number(result.count) || result.players.length,
+    method: result.method || "",
+    team: result.team || "",
+    warning: result.warning || "",
+    httpStatus: Number(result.httpStatus) || 0,
+    cacheStatus: String(result.cacheStatus || ""),
+    stale: result.stale === true,
+    parsedCount: Number(result.parsedCount) || result.players.length,
+    announcedCount: Number(result.announcedCount) || 0,
+    count: Number(result.count) || result.players.length,
       players: normalizeRosterEntries(result.players)
     };
   } catch (error) {
@@ -1891,6 +1923,11 @@ function applyRosterSnapshotDiff(rosterResult) {
     sourceUrl: rosterResult.sourceUrl,
     method: rosterResult.method,
     warning: rosterResult.warning,
+    httpStatus: rosterResult.httpStatus,
+    cacheStatus: rosterResult.cacheStatus,
+    stale: rosterResult.stale,
+    parsedCount: rosterResult.parsedCount,
+    announcedCount: rosterResult.announcedCount,
     players: rosterResult.players
   };
 
@@ -1932,6 +1969,11 @@ function normalizeRosterSnapshot(snapshot) {
     sourceUrl: typeof snapshot?.sourceUrl === "string" ? snapshot.sourceUrl : "",
     method: typeof snapshot?.method === "string" ? snapshot.method : "",
     warning: typeof snapshot?.warning === "string" ? snapshot.warning : "",
+    httpStatus: Number(snapshot?.httpStatus) || 0,
+    cacheStatus: typeof snapshot?.cacheStatus === "string" ? snapshot.cacheStatus : "",
+    stale: snapshot?.stale === true,
+    parsedCount: Number(snapshot?.parsedCount) || 0,
+    announcedCount: Number(snapshot?.announcedCount) || 0,
     players: normalizeRosterEntries(snapshot?.players)
   };
 }
@@ -1947,7 +1989,7 @@ function normalizeRosterEntries(players) {
   players.forEach((player) => {
     const source = typeof player === "object" && player !== null ? player : { name: player };
     const displayName = String(source.name || "").replace(/\u3000/g, " ").replace(/\s+/g, " ").trim().replace(/[\s\u3000]/g, "");
-    const key = normalizePlayerKey(displayName);
+    const key = createRosterEntryKey({ number: source.number, name: displayName });
     if (!displayName || !key || seen.has(key)) {
       return;
     }
@@ -1988,10 +2030,61 @@ function createRosterPlayerMap(players) {
   const playerMap = new Map();
 
   normalizeRosterEntries(players).forEach((player) => {
-    playerMap.set(normalizePlayerKey(player.name), player.name);
+    playerMap.set(createRosterEntryKey(player), player.name);
   });
 
   return playerMap;
+}
+
+function createRosterEntryKey(player) {
+  const number = String(player?.number || "").trim();
+  return number ? `number:${number}` : `name:${normalizePlayerKey(player?.name)}`;
+}
+
+function isRosterSnapshotFresh(snapshot, now = Date.now()) {
+  const fetchedAtMs = Date.parse(snapshot?.fetchedAt || "");
+  return Number.isFinite(fetchedAtMs) && now - fetchedAtMs >= 0 && now - fetchedAtMs < ROSTER_SNAPSHOT_CACHE_TTL_MS;
+}
+
+function canUseRosterSnapshot(snapshot) {
+  return Boolean(snapshot?.players?.length) && !snapshot.warning;
+}
+
+function isPlayerInCurrentRoster(player) {
+  const snapshot = normalizeRosterSnapshot(loadFromStorage(STORAGE_KEYS.rosterSnapshot));
+  if (!canUseRosterSnapshot(snapshot)) {
+    return player?.isActiveRoster === true;
+  }
+
+  return snapshot.players.some((entry) => rosterEntryMatchesPlayer(entry, player));
+}
+
+function rosterEntryMatchesPlayer(entry, player) {
+  const rosterNumber = String(entry?.number || "").trim();
+  const masterNumber = String(player?.uniformNumber || "").trim();
+  if (rosterNumber && masterNumber) {
+    return rosterNumber === masterNumber;
+  }
+
+  const rosterNameKey = normalizePlayerKey(entry?.name);
+  if (!rosterNameKey) {
+    return false;
+  }
+  return [player?.name, ...(Array.isArray(player?.aliases) ? player.aliases : [])]
+    .some((name) => normalizePlayerKey(name) === rosterNameKey);
+}
+
+async function initializeRosterCandidateSync() {
+  const snapshot = normalizeRosterSnapshot(loadFromStorage(STORAGE_KEYS.rosterSnapshot));
+  renderPicker("prediction");
+  if (canUseRosterSnapshot(snapshot) && isRosterSnapshotFresh(snapshot)) {
+    return;
+  }
+
+  const result = await performRosterCheck();
+  if (!result.ok && snapshot.players.length) {
+    addAutoFetchLog("ロースターの更新に失敗したため、前回成功したデータを候補表示に使用しています。");
+  }
 }
 
 function buildNpbWorkerRequestUrl(sourceUrl) {
@@ -5448,6 +5541,13 @@ function renderRosterSnapshotSummary(snapshot = null, diff = null) {
   const playerCount = state.rosterMonitor.lastPlayerCount || rosterSnapshot.players.length;
   const lastFetchedAt = state.rosterMonitor.lastFetchedAt || rosterSnapshot.fetchedAt;
   const lastMessage = state.rosterMonitor.lastMessage || (hasLastResult ? `登録選手数：${playerCount}人` : "未取得");
+  const snapshotIsUsable = canUseRosterSnapshot(rosterSnapshot);
+  const snapshotIsFresh = isRosterSnapshotFresh(rosterSnapshot);
+  const dataStatus = !snapshotIsUsable
+    ? "未取得（選手マスタの初期状態を表示中）"
+    : rosterSnapshot.stale || !snapshotIsFresh
+      ? "前回成功データを継続利用中"
+      : "最新取得データを使用中";
   const statusLabel = getRosterMonitorStatusLabel();
   const statusClass = getRosterMonitorStatusClass();
   const rows = [
@@ -5455,6 +5555,11 @@ function renderRosterSnapshotSummary(snapshot = null, diff = null) {
     ["次回取得予定", state.rosterMonitor.nextRunAt ? formatDateTime(state.rosterMonitor.nextRunAt) : "-"],
     ["最終取得", lastFetchedAt ? formatDateTime(lastFetchedAt) : "-"],
     ["最終結果", lastMessage],
+    ["データ状態", dataStatus],
+    ["取得元", rosterSnapshot.sourceUrl || "-"],
+    ["HTTPステータス", rosterSnapshot.httpStatus ? String(rosterSnapshot.httpStatus) : "-"],
+    ["解析件数", rosterSnapshot.parsedCount ? `${rosterSnapshot.parsedCount}人` : "-"],
+    ["キャッシュ", rosterSnapshot.cacheStatus || "-"],
     ["最終差分", hasLastResult ? (added.length || removed.length ? "差分あり" : "変更なし") : "未取得"],
     ["追加", added.length ? added.join("、") : "なし"],
     ["削除", removed.length ? removed.join("、") : "なし"]
@@ -5580,8 +5685,8 @@ function renderPredictionRosterFilter() {
   document.querySelectorAll('.player-chip[data-picker="prediction"]').forEach((chip) => {
     const player = getPlayerData(chip.dataset.player);
     const shouldShow = filter === "active"
-      ? player?.isActiveRoster === true && player?.isBatterCandidate === true
-      : player?.isActiveRoster !== true && player?.isBatterCandidate === true;
+      ? isPlayerInCurrentRoster(player) && player?.isBatterCandidate === true
+      : !isPlayerInCurrentRoster(player) && player?.isBatterCandidate === true;
     chip.classList.toggle("hidden", !shouldShow);
   });
 }
@@ -6135,7 +6240,7 @@ function showPlayerDetails(pickerName, playerName) {
 
   panel.classList.remove("hidden");
   const mainCategory = player.mainCategory || player.category;
-  const rosterStatus = player.isActiveRoster === true ? "出場登録中" : "出場登録外";
+  const rosterStatus = isPlayerInCurrentRoster(player) ? "出場登録中" : "出場登録外";
   panel.innerHTML = `
     <strong>${escapeHtml(player.name)}</strong>
     <span>カテゴリ：${escapeHtml(playerCategoryNames[mainCategory] || "未設定")}</span>

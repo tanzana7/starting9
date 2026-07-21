@@ -96,12 +96,14 @@ test("空白表記を正規化し、前回成功スナップショットを一�
   assert.equal(isRosterSnapshotFresh({ fetchedAt: "2026-07-21T07:59:59.000Z" }, now), false);
 });
 
-test("候補表示は固定isActiveRosterではなく、最新スナップショット照合を使う", () => {
+test("通常画面は登録状態を表示せず、最新スナップショットで候補だけを絞り込む", () => {
   const filter = getFunctionSource("renderPredictionRosterFilter");
   const chip = getFunctionSource("createPlayerChip");
   assert.match(filter, /isPlayerInCurrentRoster\(player\)/);
-  assert.match(chip, /!isPlayerInCurrentRoster\(getPlayerData\(player\)\)/);
-  assert.doesNotMatch(filter, /player\?\.isActiveRoster === true/);
+  assert.match(filter, /player\?\.isBatterCandidate === true/);
+  assert.doesNotMatch(filter, /candidateRosterFilter|data-roster-filter|出場登録/);
+  assert.doesNotMatch(chip, /roster-status-badge|出場登録外/);
+  assert.doesNotMatch(script, /predictionRosterFilterCurrent|roster-status-badge|出場登録されている選手/);
 });
 
 test("Workerは現在の出場選手一覧を直接取得し、ゼロ件を成功扱いにしない", () => {

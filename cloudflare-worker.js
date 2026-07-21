@@ -1,9 +1,25 @@
 const LINEUP_SIZE = 9;
+const LINEUP_CACHE_TTL_SECONDS = 5 * 60;
 const ROSTER_CACHE_TTL_SECONDS = 30 * 60;
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
+const NPB_FETCH_TIMEOUT_MS = 12_000;
+const DEFAULT_ALLOWED_ORIGINS = [
+  "https://starting9.pages.dev",
+  "http://localhost:4173",
+  "http://127.0.0.1:4173"
+];
+const CORS_BASE_HEADERS = {
   "Access-Control-Allow-Methods": "GET, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type"
+};
+const NPB_SCORE_PATH_PATTERN = /^\/scores\/(\d{4})\/(\d{2})(\d{2})\/([a-z0-9]+-[a-z0-9]+-\d+)\/$/i;
+const LINEUP_ERROR_MESSAGES = {
+  GAME_NOT_FOUND: "対象試合を特定できませんでした。",
+  NPB_HTTP_ERROR: "NPB公式ページを取得できませんでした。",
+  WORKER_FETCH_FAILED: "NPB公式ページへの接続に失敗しました。",
+  TIMEOUT: "NPB公式ページの取得がタイムアウトしました。",
+  LINEUP_NOT_PUBLISHED: "スタメンはまだ発表されていません。",
+  PARSE_FAILED: "NPB公式ページからスタメンを解析できませんでした。",
+  INVALID_LINEUP: "取得したスタメンの内容を確認できませんでした。"
 };
 const FIGHTERS_TEAM_KEYWORDS = [
   "北海道日本ハムファイターズ",
@@ -12,6 +28,7 @@ const FIGHTERS_TEAM_KEYWORDS = [
   "ファイターズ",
   "F"
 ];
+const FIGHTERS_TEXT_KEYWORDS = FIGHTERS_TEAM_KEYWORDS.filter((keyword) => keyword !== "F");
 const POSITION_ALIASES = {
   "捕": "捕",
   "C": "捕",
@@ -116,68 +133,241 @@ const STARTER_TEAM_ALIASES = [
 ];
 
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
+    const corsHeaders = createCorsHeaders(request, env);
     if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: CORS_HEADERS });
+      return new Response(null, { status: 204, headers: corsHeaders });
     }
 
     if (request.method !== "GET") {
-      return jsonResponse({ ok: false, error: "GETリクエストのみ対応しています。" }, 405);
+      return withCors(jsonResponse({ ok: false, error: "GETリクエストのみ対応しています。" }, 405), corsHeaders);
     }
 
     const requestUrl = new URL(request.url);
     const mode = requestUrl.searchParams.get("mode") || "lineup";
     if (mode === "starter") {
-      return await handleStarterRequest(requestUrl.searchParams.get("debug") === "1");
+      return withCors(await handleStarterRequest(requestUrl.searchParams.get("debug") === "1"), corsHeaders);
     }
     const isDebug = requestUrl.searchParams.get("debug") === "1";
 
     if (mode === "roster") {
-      return handleRosterRequest(requestUrl, isDebug);
+      return withCors(await handleRosterRequest(requestUrl, isDebug), corsHeaders);
     }
 
-    const targetUrlValue = requestUrl.searchParams.get("url");
-    const validation = validateTargetUrl(targetUrlValue);
-
-    if (!validation.ok) {
-      return jsonResponse({ ok: false, error: validation.error }, 400);
+    if (mode !== "lineup") {
+      return withCors(jsonResponse({ ok: false, error: "対応していない取得モードです。" }, 400), corsHeaders);
     }
 
-    try {
-      const response = await fetch(validation.url, {
-        headers: {
-          "User-Agent": "Starting9 MVP Cloudflare Worker"
-        }
-      });
+    const source = createLineupSourceUrl(requestUrl.searchParams);
 
-      if (!response.ok) {
-        return jsonResponse({ ok: false, error: `NPB公式ページを取得できませんでした。HTTP ${response.status}` }, 502);
-      }
-
-      const html = await response.text();
-      const extraction = extractNpbOrderText(html);
-
-      if (!extraction.lineupText) {
-        return jsonResponse({
-          ok: false,
-          error: "スタメン候補を抽出できませんでした。",
-          ...(isDebug ? { debug: createDebugInfo(validation.url, response.status, extraction) } : {})
-        }, 422);
-      }
-
-      return jsonResponse({
-        ok: true,
-        sourceUrl: validation.url,
-        fetchedAt: new Date().toISOString(),
-        method: getExtractionMethod(extraction),
-        team: "fighters",
-        lineupText: extraction.lineupText
-      });
-    } catch (error) {
-      return jsonResponse({ ok: false, error: `NPB公式ページ取得中にエラーが発生しました：${error.message}` }, 500);
+    if (!source.ok) {
+      return withCors(lineupErrorResponse(source.code || "GAME_NOT_FOUND", 400), corsHeaders);
     }
+
+    const cachedLineup = await getCachedLineup(source);
+    if (cachedLineup) {
+      return withCors(jsonResponse({ ...cachedLineup, cacheStatus: "hit", stale: false }), corsHeaders);
+    }
+
+    const upstream = await fetchNpbScorePage(source.url);
+    if (!upstream.ok) {
+      return withCors(lineupErrorResponse(upstream.code, upstream.status, {
+        sourceUrl: source.url,
+        ...(upstream.httpStatus ? { httpStatus: upstream.httpStatus } : {})
+      }), corsHeaders);
+    }
+
+    const extraction = extractNpbOrderText(upstream.html);
+    if (!extraction.lineupText) {
+      const code = classifyLineupExtractionFailure(extraction);
+      return withCors(lineupErrorResponse(code, 422, {
+        sourceUrl: source.url,
+        ...(isDebug ? { debug: createDebugInfo(source.url, upstream.httpStatus, extraction) } : {})
+      }), corsHeaders);
+    }
+
+    const responseBody = {
+      ok: true,
+      sourceUrl: source.url,
+      fetchedAt: new Date().toISOString(),
+      date: source.date,
+      gameCode: source.gameCode,
+      method: getExtractionMethod(extraction),
+      team: "fighters",
+      lineup: extraction.rows.map((row) => ({
+        order: row.order,
+        position: row.position,
+        playerName: row.player
+      })),
+      lineupText: extraction.lineupText,
+      cacheStatus: "miss",
+      stale: false
+    };
+    await cacheLineupResponse(source, responseBody);
+    return withCors(jsonResponse(responseBody), corsHeaders);
   }
 };
+
+function createCorsHeaders(request, env) {
+  const configuredOrigins = String(env?.NPB_ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  const allowedOrigins = new Set(configuredOrigins.length ? configuredOrigins : DEFAULT_ALLOWED_ORIGINS);
+  const origin = request.headers.get("Origin") || "";
+  const headers = new Headers(CORS_BASE_HEADERS);
+
+  if (allowedOrigins.has(origin)) {
+    headers.set("Access-Control-Allow-Origin", origin);
+    headers.set("Vary", "Origin");
+  }
+
+  return headers;
+}
+
+function withCors(response, corsHeaders) {
+  const headers = new Headers(response.headers);
+  corsHeaders.forEach((value, name) => headers.set(name, value));
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+}
+
+function createLineupSourceUrl(searchParams) {
+  const requestedDate = String(searchParams.get("date") || searchParams.get("gameDate") || "").trim();
+  const requestedGameCode = String(searchParams.get("gameCode") || "").trim();
+
+  if (requestedDate || requestedGameCode) {
+    return createLineupSourceFromIdentity(requestedDate, requestedGameCode);
+  }
+
+  // Compatibility path for existing admin bookmarks. It still accepts only a strict NPB score URL.
+  const legacyUrl = searchParams.get("url");
+  if (!legacyUrl) {
+    return { ok: false, code: "GAME_NOT_FOUND" };
+  }
+
+  const validation = validateTargetUrl(legacyUrl);
+  if (!validation.ok) {
+    return { ok: false, code: "GAME_NOT_FOUND" };
+  }
+
+  return createLineupSourceFromIdentity(validation.date, validation.gameCode);
+}
+
+function createLineupSourceFromIdentity(date, gameCode) {
+  const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date || ""));
+  const normalizedGameCode = String(gameCode || "").trim().toLowerCase();
+
+  if (!dateMatch || !/^[a-z0-9]+-[a-z0-9]+-\d+$/.test(normalizedGameCode)) {
+    return { ok: false, code: "GAME_NOT_FOUND" };
+  }
+
+  const [, year, month, day] = dateMatch;
+  const candidateDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  if (
+    candidateDate.getUTCFullYear() !== Number(year)
+    || candidateDate.getUTCMonth() !== Number(month) - 1
+    || candidateDate.getUTCDate() !== Number(day)
+  ) {
+    return { ok: false, code: "GAME_NOT_FOUND" };
+  }
+
+  return {
+    ok: true,
+    date: `${year}-${month}-${day}`,
+    gameCode: normalizedGameCode,
+    url: `https://npb.jp/scores/${year}/${month}${day}/${normalizedGameCode}/`
+  };
+}
+
+async function fetchNpbScorePage(sourceUrl) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), NPB_FETCH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(sourceUrl, {
+      cache: "no-store",
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "Starting9 MVP Cloudflare Worker"
+      }
+    });
+
+    if (!response.ok) {
+      return { ok: false, code: "NPB_HTTP_ERROR", status: 502, httpStatus: response.status };
+    }
+
+    return { ok: true, html: await response.text(), httpStatus: response.status };
+  } catch (error) {
+    const isTimeout = error?.name === "AbortError";
+    return { ok: false, code: isTimeout ? "TIMEOUT" : "WORKER_FETCH_FAILED", status: 502 };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function lineupErrorResponse(code, status, details = {}) {
+  return jsonResponse({
+    ok: false,
+    code,
+    error: LINEUP_ERROR_MESSAGES[code] || "スタメン取得に失敗しました。",
+    ...details
+  }, status);
+}
+
+function createLineupCacheKey(source) {
+  return new Request(`https://starting9-lineup-cache.invalid/${source.date}/${source.gameCode}`);
+}
+
+async function getCachedLineup(source) {
+  if (typeof caches === "undefined" || !caches.default) {
+    return null;
+  }
+
+  try {
+    const cache = caches.default;
+    const cacheKey = createLineupCacheKey(source);
+    const cachedResponse = await cache.match(cacheKey);
+    if (!cachedResponse) {
+      return null;
+    }
+
+    const expiresAt = Number(cachedResponse.headers.get("X-Starting9-Expires-At"));
+    if (!Number.isFinite(expiresAt) || Date.now() >= expiresAt) {
+      await cache.delete(cacheKey);
+      return null;
+    }
+
+    const cachedBody = await cachedResponse.json();
+    return cachedBody?.ok && Array.isArray(cachedBody.lineup) && cachedBody.lineup.length === LINEUP_SIZE
+      ? cachedBody
+      : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+async function cacheLineupResponse(source, responseBody) {
+  if (typeof caches === "undefined" || !caches.default) {
+    return;
+  }
+
+  try {
+    const expiresAt = Date.now() + LINEUP_CACHE_TTL_SECONDS * 1000;
+    await caches.default.put(createLineupCacheKey(source), new Response(JSON.stringify(responseBody), {
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": `max-age=${LINEUP_CACHE_TTL_SECONDS}`,
+        "X-Starting9-Expires-At": String(expiresAt)
+      }
+    }));
+  } catch (error) {
+    // Cache failures must not turn a successful NPB response into a fetch failure.
+  }
+}
 
 async function handleRosterRequest(requestUrl, isDebug) {
   const rosterUrlValue = requestUrl.searchParams.get("url") || "https://npb.jp/announcement/roster/";
@@ -503,15 +693,21 @@ function validateTargetUrl(value) {
     return { ok: false, error: "httpsのNPB公式URLを指定してください。" };
   }
 
-  if (targetUrl.hostname !== "npb.jp" && !targetUrl.hostname.endsWith(".npb.jp")) {
+  if (targetUrl.hostname !== "npb.jp") {
     return { ok: false, error: "npb.jp以外のURLは利用できません。" };
   }
 
-  if (!targetUrl.pathname.startsWith("/scores/")) {
-    return { ok: false, error: "https://npb.jp/scores/ 配下の試合ページURLを指定してください。" };
+  const scoreMatch = targetUrl.pathname.match(NPB_SCORE_PATH_PATTERN);
+  if (!scoreMatch) {
+    return { ok: false, error: "NPB公式の試合ページURLを指定してください。" };
   }
 
-  return { ok: true, url: targetUrl.href };
+  return {
+    ok: true,
+    url: targetUrl.href,
+    date: `${scoreMatch[1]}-${scoreMatch[2]}-${scoreMatch[3]}`,
+    gameCode: scoreMatch[4].toLowerCase()
+  };
 }
 
 function validateRosterUrl(value) {
@@ -542,32 +738,34 @@ function validateRosterUrl(value) {
 }
 
 function extractNpbOrderText(html) {
-  const tableRows = extractRowsFromFightersTable(html);
   const plainText = htmlToPlainText(html);
   const lines = normalizeNpbTextLines(plainText);
   const orderStartIndex = lines.findIndex((line) => line.includes("最新のオーダー"));
+  const fightersTable = findFightersOrderTable(html);
 
-  if (tableRows.length === LINEUP_SIZE) {
-    return {
-      lineupText: formatRowsForParser(tableRows),
-      debug: buildExtractionDebug("table", plainText, lines, orderStartIndex, tableRows)
-    };
+  if (fightersTable) {
+    const tableRows = parseTableRows(fightersTable);
+    const validation = validateExtractedLineupRows(tableRows);
+    if (validation.ok) {
+      return createSuccessfulExtraction("table", tableRows, plainText, lines, orderStartIndex);
+    }
+
+    return createFailedExtraction("table-invalid", tableRows, plainText, lines, orderStartIndex, {
+      foundFightersTeam: true,
+      validationError: validation.reason
+    });
   }
 
   const compactRows = extractRowsFromCompactText(lines.join(" "));
-  if (compactRows.length === LINEUP_SIZE) {
-    return {
-      lineupText: formatRowsForParser(compactRows),
-      debug: buildExtractionDebug("compact-text", plainText, lines, orderStartIndex, compactRows)
-    };
+  const compactValidation = validateExtractedLineupRows(compactRows);
+  if (compactValidation.ok) {
+    return createSuccessfulExtraction("compact-text", compactRows, plainText, lines, orderStartIndex);
   }
 
   const tokenRows = extractRowsFromTokens(lines);
-  if (tokenRows.length === LINEUP_SIZE) {
-    return {
-      lineupText: formatRowsForParser(tokenRows),
-      debug: buildExtractionDebug("token", plainText, lines, orderStartIndex, tokenRows)
-    };
+  const tokenValidation = validateExtractedLineupRows(tokenRows);
+  if (tokenValidation.ok) {
+    return createSuccessfulExtraction("token", tokenRows, plainText, lines, orderStartIndex);
   }
 
   const searchStartIndex = orderStartIndex >= 0 ? orderStartIndex + 1 : 0;
@@ -575,25 +773,21 @@ function extractNpbOrderText(html) {
   const candidateStartIndex = fightersIndex >= 0 ? fightersIndex + 1 : searchStartIndex;
   const fightersRows = collectNpbOrderRows(lines.slice(candidateStartIndex));
 
-  if (fightersRows.length === LINEUP_SIZE) {
-    return {
-      lineupText: formatRowsForParser(fightersRows),
-      debug: buildExtractionDebug("line", plainText, lines, orderStartIndex, fightersRows)
-    };
+  const fightersValidation = validateExtractedLineupRows(fightersRows);
+  if (fightersValidation.ok) {
+    return createSuccessfulExtraction("line", fightersRows, plainText, lines, orderStartIndex);
   }
 
   const fallbackRows = collectNpbOrderRows(lines.slice(searchStartIndex));
-  if (fallbackRows.length === LINEUP_SIZE) {
-    return {
-      lineupText: formatRowsForParser(fallbackRows),
-      debug: buildExtractionDebug("line-fallback", plainText, lines, orderStartIndex, fallbackRows)
-    };
+  const fallbackValidation = validateExtractedLineupRows(fallbackRows);
+  if (fallbackValidation.ok) {
+    return createSuccessfulExtraction("line-fallback", fallbackRows, plainText, lines, orderStartIndex);
   }
 
-  return {
-    lineupText: "",
-    debug: buildExtractionDebug("no-9-rows", plainText, lines, orderStartIndex, tableRows)
-  };
+  return createFailedExtraction("no-valid-9-rows", fightersRows, plainText, lines, orderStartIndex, {
+    foundFightersTeam: fightersIndex >= 0,
+    validationError: fightersValidation.reason || compactValidation.reason || tokenValidation.reason || fallbackValidation.reason
+  });
 }
 
 function extractFightersRoster(html) {
@@ -708,7 +902,7 @@ function createFightersRosterExcerpt(lines) {
   return lines.slice(index, index + 90).join(" ").slice(0, 1800);
 }
 
-function extractRowsFromFightersTable(html) {
+function findFightersOrderTable(html) {
   const sourceHtml = String(html || "");
   const orderBlockMatch = sourceHtml.match(/<div[^>]+id=["']player-order["'][\s\S]*?<\/div>\s*<\/div>/i);
   const orderBlock = orderBlockMatch ? orderBlockMatch[0] : sourceHtml;
@@ -721,13 +915,15 @@ function extractRowsFromFightersTable(html) {
       continue;
     }
 
-    const rows = parseTableRows(match[2]);
-    if (rows.length >= LINEUP_SIZE) {
-      return rows.slice(0, LINEUP_SIZE);
-    }
+    return match[2];
   }
 
-  return [];
+  return "";
+}
+
+function extractRowsFromFightersTable(html) {
+  const tableHtml = findFightersOrderTable(html);
+  return tableHtml ? parseTableRows(tableHtml) : [];
 }
 
 function parseTableRows(tableHtml) {
@@ -824,6 +1020,65 @@ function parseNpbOrderParts(rawOrder, rawPosition, rawPlayer) {
   return { order, position, player };
 }
 
+function validateExtractedLineupRows(rows) {
+  if (!Array.isArray(rows) || rows.length !== LINEUP_SIZE) {
+    return { ok: false, reason: "lineup-size" };
+  }
+
+  const orders = new Set();
+  const players = new Set();
+  for (const row of rows) {
+    if (!Number.isInteger(row?.order) || row.order < 1 || row.order > LINEUP_SIZE || orders.has(row.order)) {
+      return { ok: false, reason: "batting-order" };
+    }
+    if (!normalizePosition(row.position) || row.position === "投" || !row.player) {
+      return { ok: false, reason: "position-or-player" };
+    }
+
+    const playerKey = String(row.player).normalize("NFKC").replace(/[\s\u3000]/g, "");
+    if (!playerKey || players.has(playerKey)) {
+      return { ok: false, reason: "duplicate-player" };
+    }
+    orders.add(row.order);
+    players.add(playerKey);
+  }
+
+  return { ok: true };
+}
+
+function createSuccessfulExtraction(stage, rows, plainText, lines, orderStartIndex) {
+  return {
+    lineupText: formatRowsForParser(rows),
+    rows,
+    debug: buildExtractionDebug(stage, plainText, lines, orderStartIndex, rows)
+  };
+}
+
+function createFailedExtraction(stage, rows, plainText, lines, orderStartIndex, details = {}) {
+  return {
+    lineupText: "",
+    rows: [],
+    debug: {
+      ...buildExtractionDebug(stage, plainText, lines, orderStartIndex, rows),
+      ...details
+    }
+  };
+}
+
+function classifyLineupExtractionFailure(extraction) {
+  const debug = extraction.debug || {};
+  if (!debug.foundOrderHeading) {
+    return "LINEUP_NOT_PUBLISHED";
+  }
+  if (!debug.foundFightersTeam) {
+    return "GAME_NOT_FOUND";
+  }
+  if (debug.validationError) {
+    return "INVALID_LINEUP";
+  }
+  return "PARSE_FAILED";
+}
+
 function htmlToPlainText(html) {
   return String(html || "")
     .replace(/<script[\s\S]*?<\/script>/gi, "\n")
@@ -848,7 +1103,7 @@ function normalizeNpbTextLines(text) {
 
 function findFightersOrderStartIndex(lines, startIndex) {
   return lines.findIndex((line, index) => {
-    return index >= startIndex && FIGHTERS_TEAM_KEYWORDS.some((keyword) => line.includes(keyword));
+    return index >= startIndex && FIGHTERS_TEXT_KEYWORDS.some((keyword) => line.includes(keyword));
   });
 }
 
@@ -930,7 +1185,7 @@ function findFightersTextStart(text) {
   const searchStartIndex = orderIndex >= 0 ? orderIndex : 0;
   let bestIndex = -1;
 
-  for (const keyword of FIGHTERS_TEAM_KEYWORDS) {
+  for (const keyword of FIGHTERS_TEXT_KEYWORDS) {
     const index = text.indexOf(keyword, searchStartIndex);
     if (index >= 0 && (bestIndex < 0 || index < bestIndex)) {
       bestIndex = index;
@@ -955,8 +1210,8 @@ function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body, null, 2), {
     status,
     headers: {
-      ...CORS_HEADERS,
-      "Content-Type": "application/json; charset=utf-8"
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store"
     }
   });
 }
@@ -1003,3 +1258,10 @@ function getExtractionMethod(extraction) {
 
   return methodMap[stage] || "unknown";
 }
+
+export {
+  createLineupSourceFromIdentity,
+  createLineupSourceUrl,
+  extractNpbOrderText,
+  validateTargetUrl
+};

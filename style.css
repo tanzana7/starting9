@@ -777,36 +777,6 @@ button:disabled {
   margin-bottom: 4px;
 }
 
-.prediction-account-panel {
-  margin-top: 12px;
-  padding: 12px 14px;
-  border: 1px solid #d8e1ec;
-  border-radius: 8px;
-  background: #f7faff;
-}
-
-.prediction-account-status {
-  margin: 0;
-  color: #40546c;
-  font-size: 0.9rem;
-}
-
-.prediction-account-status.is-success {
-  color: var(--success);
-}
-
-.prediction-account-status.is-warning,
-.prediction-account-status.is-error {
-  color: #9a3f22;
-}
-
-.prediction-account-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 10px;
-}
-
 h1,
 h2,
 p {
@@ -2056,6 +2026,26 @@ textarea:focus {
 .position-menu-option:focus-visible {
   border-color: var(--fighters-blue);
   background: var(--fighters-sky);
+}
+
+.position-menu-option.is-used {
+  border-color: #c3cad1;
+  color: #788592;
+  background: #edf1f4;
+}
+
+.position-menu-option.is-used:hover,
+.position-menu-option.is-used:focus-visible {
+  border-color: #8c9aa7;
+  color: #5b6874;
+  background: #e3e8ec;
+}
+
+.position-menu-option.is-current {
+  border-color: #1269b0;
+  color: #0e4f85;
+  background: #d8ecff;
+  box-shadow: inset 0 0 0 1px rgba(18, 105, 176, 0.18);
 }
 
 .slot-clear {

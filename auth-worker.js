@@ -15,7 +15,6 @@ const RANKING_MAX_OFFSET = 1_000_000;
 const MONTHLY_RANKING_MIN_YEAR = 2020;
 const YEARLY_RANKING_MIN_YEAR = 2020;
 const RANKING_ACHIEVEMENT_DISPLAY_LIMIT = 3;
-const DEVELOPMENT_TEST_NICKNAME_PREFIX = "[DEV]";
 const PREDICTION_SCHEMA_VERSION = 1;
 const PREDICTION_MAX_JSON_BYTES = 16 * 1024;
 const PREDICTION_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
@@ -808,7 +807,6 @@ async function handleCreateDevelopmentPerfectPrediction(env, cors, user, metadat
   const now = new Date().toISOString();
   const prediction = {
     schemaVersion: PREDICTION_SCHEMA_VERSION,
-    nickname: `[DEV] ${user.username}`,
     lineup: actualResult.lineup
   };
   const predictionJson = JSON.stringify(prediction);
@@ -1698,7 +1696,9 @@ async function handlePutCurrentPrediction(request, env, cors) {
 
   const now = new Date().toISOString();
   const id = existing?.id || randomToken(16);
-  const isTestPrediction = isDevelopmentTestPrediction(predictionResult.prediction) ? 1 : 0;
+  // テスト予想は開発者専用エンドポイントだけが明示的に作成します。
+  // 一般の予想保存でクライアント入力をテスト扱いにすることはありません。
+  const isTestPrediction = 0;
   const result = await env.AUTH_DB.prepare(
     `INSERT INTO predictions
        (id, user_id, game_id, prediction_json, schema_version,
@@ -1752,10 +1752,6 @@ async function handlePutCurrentPrediction(request, env, cors) {
     submittedAt: existing?.submitted_at || now,
     updatedAt: now
   }, 200, cors);
-}
-
-function isDevelopmentTestPrediction(prediction) {
-  return String(prediction?.nickname || "").trim().startsWith(DEVELOPMENT_TEST_NICKNAME_PREFIX);
 }
 
 async function handleDeleteCurrentPrediction(request, env, cors) {
@@ -1850,12 +1846,10 @@ function sanitizePredictionPayload(value) {
     return { ok: false, error: "守備位置が不正です。" };
   }
 
-  const nickname = typeof value.nickname === "string" ? value.nickname.trim().slice(0, 24) : "";
   return {
     ok: true,
     prediction: {
       schemaVersion: PREDICTION_SCHEMA_VERSION,
-      nickname,
       lineup: lineup.sort((left, right) => left.battingOrder - right.battingOrder)
     }
   };

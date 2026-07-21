@@ -3404,7 +3404,6 @@ function createPredictionPayload(prediction) {
     ok: true,
     prediction: {
       schemaVersion: 1,
-      nickname: String(prediction?.nickname || "").trim().slice(0, 24),
       lineup: serializedLineup
     }
   };
@@ -3420,7 +3419,6 @@ function remotePredictionToLocal(prediction, savedAt = "", gameId = "") {
     : [];
   return {
     gameId,
-    nickname: String(prediction?.nickname || "").trim(),
     lineup: normalizeLineup(lineup),
     savedAt: savedAt || new Date().toISOString()
   };
@@ -3432,7 +3430,7 @@ function predictionsMatch(left, right) {
   }
   const leftLineup = normalizeLineup(left.lineup).map((item) => `${item.order}:${normalizePlayerKey(item.player)}:${item.position}`).join("|");
   const rightLineup = normalizeLineup(right.lineup).map((item) => `${item.order}:${normalizePlayerKey(item.player)}:${item.position}`).join("|");
-  return leftLineup === rightLineup && String(left.nickname || "") === String(right.nickname || "");
+  return leftLineup === rightLineup;
 }
 
 async function savePredictionToAccount(prediction = state.prediction) {
@@ -4209,14 +4207,8 @@ function handlePredictionSubmit(event) {
   clearMessage("predictionResetMessage");
   clearMessage("resetMessage");
 
-  const nickname = document.getElementById("nickname").value.trim();
   const lineup = getLineupValues("prediction");
   const validationError = validateLineup(lineup, "予想");
-
-  if (!nickname) {
-    showMessage("predictionError", "ニックネームを入力してください。");
-    return;
-  }
 
   if (validationError) {
     showMessage("predictionError", validationError);
@@ -4226,7 +4218,6 @@ function handlePredictionSubmit(event) {
 
   state.prediction = {
     gameId: getCurrentGameId(),
-    nickname,
     lineup,
     savedAt: new Date().toISOString()
   };
@@ -4486,7 +4477,14 @@ function loadState() {
   state.candidateRosterFilter = loadFromStorage(STORAGE_KEYS.candidateRosterFilter) === "inactive" ? "inactive" : "active";
 
   if (state.prediction?.lineup) {
-    state.prediction.lineup = normalizeLineup(state.prediction.lineup);
+    const { nickname: legacyNickname, ...prediction } = state.prediction;
+    state.prediction = {
+      ...prediction,
+      lineup: normalizeLineup(prediction.lineup)
+    };
+    if (legacyNickname !== undefined) {
+      saveToStorage(STORAGE_KEYS.prediction, state.prediction);
+    }
   }
 
   if (state.actual?.lineup) {
@@ -5603,7 +5601,6 @@ function renderSavedPrediction() {
     return;
   }
 
-  document.getElementById("nickname").value = state.prediction.nickname;
   setLineupValues("prediction", state.prediction.lineup);
   container.className = "summary-box";
   container.innerHTML = "";
@@ -5757,7 +5754,7 @@ function createResultPositionTileHtml(position) {
 function createPredictionSummary(prediction) {
   const wrapper = document.createElement("div");
   const title = document.createElement("strong");
-  title.textContent = `${prediction.nickname}さんの予想`;
+  title.textContent = "保存済みのスタメン予想";
 
   const meta = document.createElement("div");
   meta.className = "summary-meta";
@@ -5809,17 +5806,26 @@ function shareResult() {
 
 function createPredictionShareText(prediction) {
   const lineup = normalizeLineup(prediction.lineup);
+  const gameLabel = state.gameInfo.matchup || "";
+  const serviceUrl = getPredictionShareUrl();
   const lines = [
     "ハムスタメンチャレンジ予想",
-    "",
-    `${prediction.nickname}さんのスタメン予想`,
+    ...(gameLabel ? ["", gameLabel] : []),
     "",
     ...lineup.map((item, index) => `${index + 1}番 ${item.position} ${item.player}`),
+    ...(serviceUrl ? ["", serviceUrl] : []),
     "",
     "#日ハム #lovefighters #スタメン予想"
   ];
 
   return lines.join("\n");
+}
+
+function getPredictionShareUrl() {
+  if (!window.location?.origin || window.location.origin === "null") {
+    return "";
+  }
+  return `${window.location.origin}${window.location.pathname}`;
 }
 
 function createResultShareText(result) {
@@ -5854,9 +5860,6 @@ function generateTestPrediction() {
   if (hasExistingInput && !window.confirm("現在の予想入力をテスト用データで上書きしますか？")) {
     return;
   }
-
-  const nicknameInput = document.getElementById("nickname");
-  nicknameInput.value = "[DEV] テストユーザー";
 
   setLineupValues("prediction", TEST_PREDICTION_LINEUP);
   clearMessage("predictionError");

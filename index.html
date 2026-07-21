@@ -86,7 +86,7 @@
     <div class="area-heading player-area">
       <p class="area-label">PLAYER</p>
       <h2>プレイヤー用エリア</h2>
-      <p>ニックネームを入力して、予想オーダーを作成・保存できます。</p>
+      <p>1番から9番までの予想オーダーを作成・保存できます。</p>
     </div>
 
     <section class="card lineup-card" aria-labelledby="prediction-title">
@@ -94,16 +94,11 @@
         <span class="step-badge">1</span>
         <div>
           <h2 id="prediction-title">スタメン予想入力</h2>
-          <p>ニックネーム、1番から9番までの予想選手、守備位置を選んでください。</p>
+          <p>1番から9番までの予想選手と守備位置を選んでください。</p>
         </div>
       </div>
 
       <form id="predictionForm" novalidate>
-        <div class="field">
-          <label for="nickname">ニックネーム</label>
-          <input id="nickname" name="nickname" type="text" maxlength="24" placeholder="例：北の応援団" autocomplete="nickname">
-        </div>
-
         <div class="lineup-builder" data-picker="prediction">
           <div class="lineup-panel">
             <h3>予想オーダー</h3>

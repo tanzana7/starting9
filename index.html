@@ -386,19 +386,19 @@
       </section>
     </section>
 
-    <section id="allTimeRankingPanel" class="card all-time-ranking-card" aria-labelledby="allTimeRankingTitle">
-      <div class="all-time-ranking-heading">
+    <section id="rankingPanel" class="card ranking-card" aria-labelledby="rankingTitle">
+      <div class="ranking-heading">
         <div>
-          <p class="area-label">ALL-TIME RANKING</p>
-          <h2 id="allTimeRankingTitle">通算ランキング</h2>
-          <p id="rankingDescription">正式に採点された対象試合の3分の2以上に参加すると順位対象になります。</p>
+          <p id="rankingAreaLabel" class="area-label">YEARLY RANKING</p>
+          <h2 id="rankingTitle">年間ランキング</h2>
+          <p id="rankingDescription">この年に正式採点された対象試合の3分の2以上に参加すると順位対象になります。</p>
         </div>
         <div class="ranking-tabs" role="tablist" aria-label="ランキング種別">
-          <button id="showAllTimeRankingButton" class="ranking-tab is-active" type="button" role="tab" aria-selected="true">通算</button>
+          <button id="showYearlyRankingButton" class="ranking-tab is-active" type="button" role="tab" aria-selected="true">年間</button>
           <button id="showMonthlyRankingButton" class="ranking-tab" type="button" role="tab" aria-selected="false">月間</button>
         </div>
       </div>
-      <div id="allTimeRankingContent" class="all-time-ranking-content" aria-live="polite">
+      <div id="rankingContent" class="ranking-content" aria-live="polite">
         <p class="empty-state">ランキングを読み込んでいます。</p>
       </div>
     </section>

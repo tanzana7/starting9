@@ -561,29 +561,29 @@ button:disabled {
   color: var(--error);
 }
 
-.all-time-ranking-card {
+.ranking-card {
   display: grid;
   gap: 14px;
   margin-top: 18px;
 }
 
-.all-time-ranking-heading {
+.ranking-heading {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
 }
 
-.all-time-ranking-heading h2,
-.all-time-ranking-heading p {
+.ranking-heading h2,
+.ranking-heading p {
   margin-bottom: 0;
 }
 
-.all-time-ranking-heading h2 {
+.ranking-heading h2 {
   color: var(--fighters-deep-blue);
 }
 
-.all-time-ranking-content {
+.ranking-content {
   display: grid;
   gap: 14px;
 }
@@ -2425,7 +2425,7 @@ textarea:focus {
     grid-column: 1 / -1;
   }
 
-  .all-time-ranking-card {
+  .ranking-card {
     grid-column: 1 / -1;
   }
 }
@@ -2533,7 +2533,7 @@ textarea:focus {
     width: 100%;
   }
 
-  .all-time-ranking-heading {
+  .ranking-heading {
     align-items: stretch;
     flex-direction: column;
   }

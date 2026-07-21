@@ -714,21 +714,10 @@ function renderAchievements() {
   const list = document.getElementById("achievementsList");
   if (!panel || !list) return;
   const user = getPredictionAccountUser();
-  panel.classList.toggle("hidden", !user);
-  if (!user) {
+  const hasAchievements = state.achievements.items.length > 0;
+  panel.classList.toggle("hidden", !user || !hasAchievements);
+  if (!user || !hasAchievements) {
     list.innerHTML = "";
-    return;
-  }
-  if (state.achievements.isLoading) {
-    list.innerHTML = '<p class="achievement-empty">実績を取得中...</p>';
-    return;
-  }
-  if (state.achievements.message) {
-    list.innerHTML = `<p class="achievement-empty">${escapeHtml(state.achievements.message)}</p>`;
-    return;
-  }
-  if (!state.achievements.items.length) {
-    list.innerHTML = '<p class="achievement-empty">取得済み実績はありません。</p>';
     return;
   }
   list.innerHTML = state.achievements.items.map((achievement) => createAchievementCardHtml(achievement)).join("");

@@ -60,4 +60,7 @@ test("通常画面と開発画面に実績の表示・検証導線を持つ", ()
   assert.match(script, /function refreshDevelopmentAchievements/);
   assert.match(script, /function grantDevelopmentAchievement/);
   assert.match(script, /function removeDevelopmentAchievement/);
+  assert.match(script, /const hasAchievements = state\.achievements\.items\.length > 0/);
+  assert.match(script, /panel\.classList\.toggle\("hidden", !user \|\| !hasAchievements\)/);
+  assert.doesNotMatch(script, /取得済み実績はありません/);
 });

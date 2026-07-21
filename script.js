@@ -3,7 +3,8 @@ const STORAGE_KEYS = {
   actual: "hamStarting9Actual",
   result: "hamStarting9Result",
   gameInfo: "hamStarting9GameInfo",
-  rosterSnapshot: "hamStarting9RosterSnapshot"
+  rosterSnapshot: "hamStarting9RosterSnapshot",
+  candidateRosterFilter: "hamStarting9CandidateRosterFilter"
 };
 const RESET_STORAGE_KEYS = [
   STORAGE_KEYS.prediction,
@@ -158,6 +159,7 @@ const state = {
     matchup: ""
   },
   nextScheduleId: "",
+  candidateRosterFilter: "active",
   actualPreview: null,
   adminStatus: "idle",
   adminError: "",
@@ -410,6 +412,9 @@ function bindEvents() {
   bindAdminEvent("gameScheduleSelect", "change", handleScheduleSelectionChange);
   bindAdminEvent("copyScheduleLogButton", "click", copyScheduleLoadLog);
   bindAdminEvent("clearScheduleLogButton", "click", clearScheduleLoadLog);
+  document.querySelectorAll("[data-roster-filter]").forEach((button) => {
+    button.addEventListener("click", () => setCandidateRosterFilter(button.dataset.rosterFilter));
+  });
   bindAdminGameInfoEvents();
   document.addEventListener("click", () => closeAllPositionMenus());
   document.addEventListener("keydown", (event) => {
@@ -993,6 +998,12 @@ function getPredictionCandidateNames() {
   return players
     .filter((player) => player.isBatterCandidate === true)
     .map((player) => player.name);
+}
+
+function setCandidateRosterFilter(filter) {
+  state.candidateRosterFilter = filter === "inactive" ? "inactive" : "active";
+  saveToStorage(STORAGE_KEYS.candidateRosterFilter, state.candidateRosterFilter);
+  renderPicker("prediction");
 }
 
 function createLineupSlot(pickerName, index) {
@@ -4587,6 +4598,7 @@ function loadState() {
   state.actual = loadFromStorage(STORAGE_KEYS.actual);
   state.result = loadFromStorage(STORAGE_KEYS.result);
   state.gameInfo = normalizeGameInfo(loadFromStorage(STORAGE_KEYS.gameInfo));
+  state.candidateRosterFilter = loadFromStorage(STORAGE_KEYS.candidateRosterFilter) === "inactive" ? "inactive" : "active";
   if (state.prediction?.lineup) {
     const { nickname: legacyNickname, ...prediction } = state.prediction;
     state.prediction = {
@@ -5654,9 +5666,18 @@ function renderPicker(pickerName) {
 }
 
 function renderPredictionRosterFilter() {
+  const filter = state.candidateRosterFilter === "inactive" ? "inactive" : "active";
+  document.querySelectorAll("[data-roster-filter]").forEach((button) => {
+    const isSelected = button.dataset.rosterFilter === filter;
+    button.classList.toggle("is-selected", isSelected);
+    button.setAttribute("aria-pressed", isSelected ? "true" : "false");
+  });
+
   document.querySelectorAll('.player-chip[data-picker="prediction"]').forEach((chip) => {
     const player = getPlayerData(chip.dataset.player);
-    const shouldShow = isPlayerInCurrentRoster(player) && player?.isBatterCandidate === true;
+    const shouldShow = filter === "active"
+      ? isPlayerInCurrentRoster(player) && player?.isBatterCandidate === true
+      : !isPlayerInCurrentRoster(player) && player?.isBatterCandidate === true;
     chip.classList.toggle("hidden", !shouldShow);
   });
 }

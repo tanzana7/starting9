@@ -5,6 +5,7 @@ const test = require("node:test");
 const vm = require("node:vm");
 
 const root = path.join(__dirname, "..");
+const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const worker = fs.readFileSync(path.join(root, "cloudflare-worker.js"), "utf8");
 const players = fs.readFileSync(path.join(root, "players.js"), "utf8");
@@ -96,14 +97,18 @@ test("空白表記を正規化し、前回成功スナップショットを一�
   assert.equal(isRosterSnapshotFresh({ fetchedAt: "2026-07-21T07:59:59.000Z" }, now), false);
 });
 
-test("通常画面は登録状態を表示せず、最新スナップショットで候補だけを絞り込む", () => {
+test("現在状態テキストを出さず、最新スナップショットで選手一覧タブを絞り込む", () => {
   const filter = getFunctionSource("renderPredictionRosterFilter");
   const chip = getFunctionSource("createPlayerChip");
   assert.match(filter, /isPlayerInCurrentRoster\(player\)/);
   assert.match(filter, /player\?\.isBatterCandidate === true/);
-  assert.doesNotMatch(filter, /candidateRosterFilter|data-roster-filter|出場登録/);
+  assert.match(filter, /candidateRosterFilter/);
+  assert.match(filter, /data-roster-filter/);
+  assert.match(html, /data-roster-filter="active"[^>]*>出場登録されている選手/);
+  assert.match(html, /data-roster-filter="inactive"[^>]*>出場登録されていない選手/);
+  assert.doesNotMatch(html, /predictionRosterFilterCurrent|現在：出場登録/);
   assert.doesNotMatch(chip, /roster-status-badge|出場登録外/);
-  assert.doesNotMatch(script, /predictionRosterFilterCurrent|roster-status-badge|出場登録されている選手/);
+  assert.doesNotMatch(script, /predictionRosterFilterCurrent|roster-status-badge/);
 });
 
 test("Workerは現在の出場選手一覧を直接取得し、ゼロ件を成功扱いにしない", () => {

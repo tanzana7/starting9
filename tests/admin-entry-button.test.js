@@ -46,12 +46,15 @@ function createApp({ href = "https://starting9.pages.dev/", user = null, admin =
     fetch: async (url) => {
       fetchUrls.push(url);
       const isCapabilityRequest = String(url).endsWith("/api/admin/mode-capabilities");
+      const isAchievementsRequest = String(url).endsWith("/api/me/achievements");
       return {
         ok: admin,
         json: async () => admin
-          ? (isCapabilityRequest
-            ? { ok: true, adminModeAvailable: true, developmentModeAvailable: false }
-            : { ok: true, admin: true })
+          ? (isAchievementsRequest
+            ? { ok: true, achievements: [] }
+            : (isCapabilityRequest
+              ? { ok: true, adminModeAvailable: true, developmentModeAvailable: false }
+              : { ok: true, admin: true }))
           : { ok: false, admin: false }
       };
     },
@@ -83,6 +86,7 @@ test("管理者は初期Promise完了後に一度だけ確認され、ボタン�
 
   await vm.runInContext("initializeAuthDependentFeatures()", app.context);
   assert.deepEqual(app.fetchUrls, [
+    "https://starting9-auth.tanzana7.workers.dev/api/me/achievements",
     "https://starting9-auth.tanzana7.workers.dev/api/admin/me",
     "https://starting9-auth.tanzana7.workers.dev/api/admin/mode-capabilities"
   ]);

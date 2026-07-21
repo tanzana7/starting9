@@ -170,6 +170,18 @@ const state = {
     info: null,
     message: ""
   },
+  achievements: {
+    isLoading: false,
+    requestId: 0,
+    items: [],
+    message: ""
+  },
+  developmentAchievements: {
+    isLoading: false,
+    items: [],
+    earned: [],
+    message: ""
+  },
   autoFetch: {
     isRunning: false,
     timerId: null,
@@ -316,6 +328,7 @@ async function initializeAuthDependentFeatures() {
   await ready;
   // 初期イベントは待機中に発火していても、解決済みPromiseから現在状態を必ず評価できます。
   window.addEventListener("starting9-auth-state-changed", handleAuthStateChanged);
+  await fetchUserAchievements({ force: true });
   await refreshAdminAccess();
 }
 
@@ -345,6 +358,9 @@ function bindEvents() {
   bindDevelopmentEvent("createPerfectPredictionButton", "click", createDevelopmentPerfectPrediction);
   bindDevelopmentEvent("runDevelopmentCronButton", "click", runDevelopmentCron);
   bindDevelopmentEvent("resetButton", "click", resetAllData);
+  document.getElementById("refreshAchievementsButton")?.addEventListener("click", () => fetchUserAchievements({ force: true }));
+  bindDevelopmentEvent("refreshDevelopmentAchievementsButton", "click", refreshDevelopmentAchievements);
+  document.getElementById("developmentAchievements")?.addEventListener("click", handleDevelopmentAchievementAction);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
   document.getElementById("openAdminButton")?.addEventListener("click", openAdminPanel);
@@ -482,6 +498,7 @@ function isAuthStateInitialized() {
 function clearAdminAccess() {
   state.adminAccess.status = "inactive";
   state.developmentAccess = { available: false, status: "inactive", info: null, message: "" };
+  state.developmentAchievements = { isLoading: false, items: [], earned: [], message: "" };
   state.appMode = "normal";
   state.isAdminMode = false;
   applyAdminMode();
@@ -674,6 +691,208 @@ async function runDevelopmentCron() {
   await refreshDevelopmentStatus();
 }
 
+const ACHIEVEMENT_RARITY_LABELS = Object.freeze({
+  common: "通常",
+  rare: "レア",
+  epic: "エピック",
+  limited: "限定"
+});
+
+const ACHIEVEMENT_ICONS = Object.freeze({
+  beta: "B",
+  first_prediction: "1",
+  perfect: "P"
+});
+
+function buildAchievementsApiUrl() {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  return baseUrl ? `${baseUrl}/api/me/achievements` : "";
+}
+
+function renderAchievements() {
+  const panel = document.getElementById("achievementsPanel");
+  const list = document.getElementById("achievementsList");
+  if (!panel || !list) return;
+  const user = getPredictionAccountUser();
+  panel.classList.toggle("hidden", !user);
+  if (!user) {
+    list.innerHTML = "";
+    return;
+  }
+  if (state.achievements.isLoading) {
+    list.innerHTML = '<p class="achievement-empty">実績を取得中...</p>';
+    return;
+  }
+  if (state.achievements.message) {
+    list.innerHTML = `<p class="achievement-empty">${escapeHtml(state.achievements.message)}</p>`;
+    return;
+  }
+  if (!state.achievements.items.length) {
+    list.innerHTML = '<p class="achievement-empty">取得済み実績はありません。</p>';
+    return;
+  }
+  list.innerHTML = state.achievements.items.map((achievement) => createAchievementCardHtml(achievement)).join("");
+}
+
+function createAchievementCardHtml(achievement, { includeDelete = false } = {}) {
+  const rarity = ACHIEVEMENT_RARITY_LABELS[achievement.rarity] ? achievement.rarity : "common";
+  const icon = ACHIEVEMENT_ICONS[achievement.iconKey] || "*";
+  const earned = achievement.earnedAt ? `<p class="achievement-earned">獲得：${escapeHtml(formatDateTime(achievement.earnedAt))}</p>` : "";
+  const remove = includeDelete && achievement.source === "development"
+    ? `<button class="secondary-button compact-button" type="button" data-achievement-remove="${escapeHtml(achievement.code)}">テスト付与を削除</button>`
+    : "";
+  return `<article class="achievement-card is-${escapeHtml(rarity)}">
+    <span class="achievement-icon" aria-hidden="true">${escapeHtml(icon)}</span>
+    <div class="achievement-body">
+      <p class="achievement-rarity">${escapeHtml(ACHIEVEMENT_RARITY_LABELS[rarity])}</p>
+      <h3>${escapeHtml(achievement.name)}</h3>
+      <p>${escapeHtml(achievement.description)}</p>
+      ${earned}
+      ${remove}
+    </div>
+  </article>`;
+}
+
+async function fetchUserAchievements({ force = false } = {}) {
+  const user = getPredictionAccountUser();
+  if (!user) {
+    state.achievements = { isLoading: false, requestId: state.achievements.requestId + 1, items: [], message: "" };
+    renderAchievements();
+    return;
+  }
+  if (state.achievements.isLoading && !force) return;
+  const url = buildAchievementsApiUrl();
+  if (!url) return;
+  const requestId = state.achievements.requestId + 1;
+  state.achievements.requestId = requestId;
+  state.achievements.isLoading = true;
+  state.achievements.message = "";
+  renderAchievements();
+  try {
+    const response = await fetch(url, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok || !Array.isArray(payload.achievements)) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+    if (requestId !== state.achievements.requestId || getPredictionAccountUser()?.id !== user.id) return;
+    state.achievements.items = payload.achievements;
+  } catch (error) {
+    if (requestId !== state.achievements.requestId) return;
+    console.error("実績の取得に失敗しました", error.message);
+    state.achievements.items = [];
+    state.achievements.message = "実績を取得できませんでした。";
+  } finally {
+    if (requestId === state.achievements.requestId) {
+      state.achievements.isLoading = false;
+      renderAchievements();
+    }
+  }
+}
+
+function renderDevelopmentAchievements() {
+  const container = document.getElementById("developmentAchievements");
+  if (!container) return;
+  const developer = state.developmentAchievements;
+  if (developer.isLoading) {
+    container.innerHTML = '<p class="achievement-empty">実績情報を取得中...</p>';
+    return;
+  }
+  if (developer.message) {
+    container.innerHTML = `<p class="achievement-empty">${escapeHtml(developer.message)}</p>`;
+    return;
+  }
+  const earnedByCode = new Map(developer.earned.map((achievement) => [achievement.code, achievement]));
+  if (!developer.items.length) {
+    container.innerHTML = '<p class="achievement-empty">実績マスタを取得できませんでした。</p>';
+    return;
+  }
+  container.innerHTML = developer.items.map((achievement) => {
+    const earned = earnedByCode.get(achievement.code);
+    return createAchievementCardHtml(earned || achievement, { includeDelete: Boolean(earned) });
+  }).join("");
+}
+
+async function refreshDevelopmentAchievements() {
+  if (state.appMode !== "development" || !state.developmentAccess.available) return;
+  const url = buildDevelopmentApiUrl("achievements");
+  if (!url) return;
+  state.developmentAchievements.isLoading = true;
+  state.developmentAchievements.message = "";
+  renderDevelopmentAchievements();
+  try {
+    const response = await fetch(url, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok || !Array.isArray(payload.achievements) || !Array.isArray(payload.earned)) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+    state.developmentAchievements.items = payload.achievements;
+    state.developmentAchievements.earned = payload.earned;
+  } catch (error) {
+    console.error("開発用実績情報の取得に失敗しました", error.message);
+    state.developmentAchievements.items = [];
+    state.developmentAchievements.earned = [];
+    state.developmentAchievements.message = "実績情報を取得できませんでした。";
+  } finally {
+    state.developmentAchievements.isLoading = false;
+    renderDevelopmentAchievements();
+  }
+}
+
+async function grantDevelopmentAchievement(code) {
+  if (!window.confirm("ログイン中の管理者自身へテスト実績を付与します。よろしいですか？")) return;
+  const url = buildDevelopmentApiUrl("achievements/grant-test");
+  if (!url) return;
+  state.developmentAchievements.message = "テスト実績を付与中...";
+  renderDevelopmentAchievements();
+  let resultMessage = "";
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code })
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+    resultMessage = payload.granted ? "テスト実績を付与しました。" : "この実績は既に取得済みです。";
+  } catch (error) {
+    console.error("テスト実績の付与に失敗しました", error.message);
+    resultMessage = "テスト実績を付与できませんでした。";
+  }
+  await Promise.all([fetchUserAchievements({ force: true }), refreshDevelopmentAchievements()]);
+  state.developmentAchievements.message = resultMessage;
+  renderDevelopmentAchievements();
+}
+
+async function removeDevelopmentAchievement(code) {
+  if (!window.confirm("development由来のテスト実績を削除します。よろしいですか？")) return;
+  const url = buildDevelopmentApiUrl(`achievements/${encodeURIComponent(code)}/test-grant`);
+  if (!url) return;
+  let resultMessage = "";
+  try {
+    const response = await fetch(url, { method: "DELETE", credentials: "include" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+    resultMessage = payload.removed ? "テスト実績を削除しました。" : "削除できるテスト実績はありません。";
+  } catch (error) {
+    console.error("テスト実績の削除に失敗しました", error.message);
+    resultMessage = "テスト実績を削除できませんでした。";
+  }
+  await Promise.all([fetchUserAchievements({ force: true }), refreshDevelopmentAchievements()]);
+  state.developmentAchievements.message = resultMessage;
+  renderDevelopmentAchievements();
+}
+
+function handleDevelopmentAchievementAction(event) {
+  if (state.appMode !== "development" || !state.developmentAccess.available) return;
+  const target = event.target instanceof Element ? event.target.closest("[data-achievement-grant], [data-achievement-remove]") : null;
+  if (!target) return;
+  const grantCode = target.dataset.achievementGrant;
+  const removeCode = target.dataset.achievementRemove;
+  if (grantCode) void grantDevelopmentAchievement(grantCode);
+  if (removeCode) void removeDevelopmentAchievement(removeCode);
+}
+
 function openAdminPanel() {
   if (state.adminAccess.status !== "authorized") {
     return;
@@ -702,6 +921,7 @@ function openDevelopmentPanel() {
   applyAdminMode();
   renderDevelopmentPanel();
   void refreshDevelopmentStatus();
+  void refreshDevelopmentAchievements();
 }
 
 function closeDevelopmentPanel() {
@@ -1930,6 +2150,7 @@ function handleAuthStateChanged() {
   renderPerfectAchievers();
   fetchPerfectAchievers({ force: true });
   syncPredictionFromAccount({ force: true });
+  fetchUserAchievements({ force: true });
   refreshAdminAccess();
 }
 
@@ -4326,6 +4547,7 @@ function renderAll() {
   renderProbableStarter();
   renderSavedPrediction();
   renderPredictionAccountStatus();
+  renderAchievements();
   renderActualLineup();
   renderScoreResult();
   renderPerfectAchievers();

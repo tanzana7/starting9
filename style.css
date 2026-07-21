@@ -51,11 +51,22 @@ button:disabled {
 
 .app-header {
   color: #ffffff;
-  background: var(--fighters-blue);
+  background: #061a42;
 }
 
 .header-inner {
   padding: 30px 0 34px;
+}
+
+.header-logo {
+  width: min(100%, 920px);
+  margin: 0 auto 14px;
+}
+
+.header-logo img {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 
 .team-label {
@@ -63,18 +74,6 @@ button:disabled {
   color: #d7ecff;
   font-size: 0.88rem;
   font-weight: 700;
-}
-
-.version-label {
-  display: inline-flex;
-  margin: 0 0 10px;
-  padding: 4px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.36);
-  border-radius: 999px;
-  color: #ffffff;
-  background: rgba(255, 255, 255, 0.12);
-  font-size: 0.82rem;
-  font-weight: 800;
 }
 
 .admin-mode-badge {
@@ -777,17 +776,9 @@ button:disabled {
   margin-bottom: 4px;
 }
 
-h1,
 h2,
 p {
   margin-top: 0;
-}
-
-h1 {
-  margin-bottom: 10px;
-  font-size: clamp(2rem, 7vw, 3.4rem);
-  line-height: 1.15;
-  letter-spacing: 0;
 }
 
 h2 {
@@ -2421,6 +2412,10 @@ textarea:focus {
 }
 
 @media (max-width: 759px) {
+  .app-header {
+    overflow-x: clip;
+  }
+
   body {
     background: #f7fbff;
   }
@@ -2433,8 +2428,10 @@ textarea:focus {
     padding: 24px 0 28px;
   }
 
-  h1 {
-    font-size: 2.25rem;
+  .header-logo {
+    width: calc(100vw - 20px);
+    max-width: none;
+    margin-bottom: 12px;
   }
 
   .app-layout {

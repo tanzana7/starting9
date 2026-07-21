@@ -561,6 +561,179 @@ button:disabled {
   color: var(--error);
 }
 
+.all-time-ranking-card {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.all-time-ranking-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.all-time-ranking-heading h2,
+.all-time-ranking-heading p {
+  margin-bottom: 0;
+}
+
+.all-time-ranking-heading h2 {
+  color: var(--fighters-deep-blue);
+}
+
+.all-time-ranking-content {
+  display: grid;
+  gap: 14px;
+}
+
+.ranking-summary,
+.ranking-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.ranking-qualified-section,
+.ranking-self,
+.ranking-unqualified {
+  display: grid;
+  gap: 10px;
+}
+
+.ranking-qualified-section h3,
+.ranking-self h3 {
+  margin: 0;
+  color: var(--fighters-deep-blue);
+  font-size: 1rem;
+}
+
+.ranking-self {
+  padding: 12px;
+  border: 1px solid #b9d7ef;
+  border-left: 4px solid var(--fighters-blue);
+  border-radius: 7px;
+  background: #f4faff;
+}
+
+.ranking-self p {
+  margin: 0;
+  color: #3c526c;
+  font-size: 0.88rem;
+  font-weight: 750;
+}
+
+.ranking-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ranking-entry {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid #d4e2ee;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.ranking-entry.is-reference {
+  border-style: dashed;
+  background: #fbfdff;
+}
+
+.ranking-rank {
+  margin: 0;
+  color: var(--fighters-blue);
+  font-size: 0.95rem;
+  font-weight: 950;
+  text-align: center;
+}
+
+.ranking-entry-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ranking-entry-main p {
+  margin: 0;
+  color: #4a5d74;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.ranking-user-line,
+.ranking-achievements {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.ranking-user-line strong {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.ranking-achievement-badge,
+.ranking-achievement-more {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 2px 6px;
+  border: 1px solid #b8c9dc;
+  border-radius: 999px;
+  color: #3d5270;
+  background: #f6f9fc;
+  font-size: 0.68rem;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.ranking-achievement-badge.is-rare {
+  border-color: #8aa8df;
+  color: #305caa;
+  background: #edf3ff;
+}
+
+.ranking-achievement-badge.is-epic {
+  border-color: #b89add;
+  color: #7140a1;
+  background: #f6efff;
+}
+
+.ranking-achievement-badge.is-limited {
+  border-color: #d2ae54;
+  color: #805a00;
+  background: #fff8dd;
+}
+
+.ranking-unqualified {
+  padding-top: 2px;
+}
+
+.ranking-unqualified summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--fighters-deep-blue);
+  font-size: 0.9rem;
+  font-weight: 850;
+}
+
+.ranking-unqualified[open] summary {
+  margin-bottom: 4px;
+}
+
 .prediction-account-panel {
   margin-top: 12px;
   padding: 12px 14px;
@@ -2208,6 +2381,10 @@ textarea:focus {
   .result-card {
     grid-column: 1 / -1;
   }
+
+  .all-time-ranking-card {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 759px) {
@@ -2312,6 +2489,15 @@ textarea:focus {
   .probable-starter-admin-heading .compact-button {
     width: 100%;
   }
+
+  .all-time-ranking-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .all-time-ranking-heading .compact-button {
+    width: 100%;
+  }
 }
 
 @media (max-width: 430px) {
@@ -2385,6 +2571,16 @@ textarea:focus {
 
   .perfect-achievers-list time {
     grid-column: 2;
+  }
+
+  .ranking-entry {
+    grid-template-columns: 42px minmax(0, 1fr);
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .ranking-entry-main p {
+    font-size: 0.82rem;
   }
 
   .result-table {

@@ -9,6 +9,11 @@ const PASSWORD_MIN_LENGTH = 8;
 const PASSWORD_MAX_LENGTH = 72;
 // 開発中は1試合につき先着3人。本番候補は30人です。
 const PERFECT_ACHIEVERS_DEFAULT_DISPLAY_LIMIT = 3;
+const ALL_TIME_RANKING_DEFAULT_LIMIT = 50;
+const ALL_TIME_RANKING_MAX_LIMIT = 100;
+const ALL_TIME_RANKING_MAX_OFFSET = 1_000_000;
+const RANKING_ACHIEVEMENT_DISPLAY_LIMIT = 3;
+const DEVELOPMENT_TEST_NICKNAME_PREFIX = "[DEV]";
 const PREDICTION_SCHEMA_VERSION = 1;
 const PREDICTION_MAX_JSON_BYTES = 16 * 1024;
 const PREDICTION_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
@@ -88,6 +93,12 @@ export default {
       }
       if (path === "/api/me/achievements" && request.method === "GET") {
         return await handleMyAchievements(request, env, cors);
+      }
+      if (path === "/api/rankings/all-time" && request.method === "GET") {
+        return await handleGetAllTimeRanking(request, env, cors);
+      }
+      if (path === "/api/me/ranking/all-time" && request.method === "GET") {
+        return await handleGetMyAllTimeRanking(request, env, cors);
       }
       if (path === "/api/admin/me" && request.method === "GET") {
         return await handleAdminMe(request, env, cors);
@@ -357,6 +368,211 @@ async function handleMyAchievements(request, env, cors) {
   return jsonResponse({ ok: true, achievements: achievements.map(toPublicAchievement) }, 200, cors);
 }
 
+async function handleGetAllTimeRanking(request, env, cors) {
+  const options = parseAllTimeRankingQuery(new URL(request.url).searchParams);
+  const ranking = await getAllTimeRanking(env.AUTH_DB, options);
+  const response = jsonResponse({
+    ranking: ranking.rows,
+    summary: ranking.summary,
+    pagination: ranking.pagination,
+    updatedAt: new Date().toISOString()
+  }, 200, cors);
+  response.headers.set("Cache-Control", "public, max-age=30");
+  return response;
+}
+
+async function handleGetMyAllTimeRanking(request, env, cors) {
+  const access = await requireAuthenticatedUser(request, env, cors);
+  if (!access.ok) return access.response;
+
+  const rankingData = await getAllTimeRankingEntryForUser(env.AUTH_DB, access.user.id);
+  return jsonResponse({ ok: true, rankingData }, 200, cors);
+}
+
+function parseAllTimeRankingQuery(searchParams) {
+  return {
+    limit: parseBoundedInteger(searchParams.get("limit"), ALL_TIME_RANKING_DEFAULT_LIMIT, 1, ALL_TIME_RANKING_MAX_LIMIT),
+    offset: parseBoundedInteger(searchParams.get("offset"), 0, 0, ALL_TIME_RANKING_MAX_OFFSET),
+    qualifiedOnly: !["false", "0"].includes(String(searchParams.get("qualifiedOnly") || "true").trim().toLowerCase())
+  };
+}
+
+function parseBoundedInteger(value, fallback, min, max) {
+  if (!/^\d+$/.test(String(value || ""))) return fallback;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+}
+
+function createAllTimeRankingCte() {
+  // ?1 / ?2 are reserved for future period filters (startAt / endAt).
+  return `WITH eligible_games AS (
+    SELECT game_id
+      FROM ranking_games
+     WHERE is_ranking_eligible = 1
+       AND game_status = 'scored'
+       AND is_test_game = 0
+       AND (?1 IS NULL OR ranking_eligible_at >= ?1)
+       AND (?2 IS NULL OR ranking_eligible_at < ?2)
+  ), eligibility AS (
+    SELECT COUNT(*) AS eligible_games FROM eligible_games
+  ), threshold AS (
+    SELECT eligible_games,
+           CAST((eligible_games * 2 + 2) / 3 AS INTEGER) AS required_games
+      FROM eligibility
+  ), user_totals AS (
+    SELECT predictions.user_id,
+           users.username,
+           COUNT(DISTINCT predictions.game_id) AS games_played,
+           SUM(predictions.score) AS total_score,
+           SUM(CASE WHEN predictions.score = predictions.max_score THEN 1 ELSE 0 END) AS perfect_count,
+           MAX(predictions.score) AS best_score,
+           MAX(predictions.scored_at) AS last_scored_at
+      FROM predictions
+      JOIN eligible_games ON eligible_games.game_id = predictions.game_id
+      JOIN users ON users.id = predictions.user_id
+     WHERE predictions.status = 'scored'
+       AND predictions.score IS NOT NULL
+       AND predictions.max_score IS NOT NULL
+       AND predictions.is_test_prediction = 0
+       AND users.status = 'active'
+     GROUP BY predictions.user_id, users.username
+  ), qualified_rows AS (
+    SELECT user_totals.*,
+           threshold.eligible_games,
+           threshold.required_games,
+           1 AS is_qualified,
+           0 AS games_needed,
+           RANK() OVER (
+             ORDER BY (total_score * 1.0 / games_played) DESC,
+                      perfect_count DESC,
+                      total_score DESC,
+                      games_played DESC
+           ) AS ranking_rank
+      FROM user_totals CROSS JOIN threshold
+     WHERE games_played >= required_games
+  ), unqualified_rows AS (
+    SELECT user_totals.*,
+           threshold.eligible_games,
+           threshold.required_games,
+           0 AS is_qualified,
+           MAX(threshold.required_games - user_totals.games_played, 0) AS games_needed,
+           NULL AS ranking_rank
+      FROM user_totals CROSS JOIN threshold
+     WHERE games_played < required_games
+  ), combined AS (
+    SELECT * FROM qualified_rows
+    UNION ALL
+    SELECT * FROM unqualified_rows
+  )`;
+}
+
+async function getAllTimeRanking(db, { limit, offset, qualifiedOnly, startAt = null, endAt = null }) {
+  const cte = createAllTimeRankingCte();
+  const [summaryRow, countRow, rowsResult] = await Promise.all([
+    db.prepare(`${cte}
+      SELECT COALESCE(MAX(eligible_games), 0) AS eligible_games,
+             COALESCE(MAX(required_games), 0) AS required_games,
+             COALESCE(SUM(CASE WHEN is_qualified = 1 THEN 1 ELSE 0 END), 0) AS qualified_users,
+             COUNT(*) AS total_ranked_users
+        FROM combined`).bind(startAt, endAt).first(),
+    db.prepare(`${cte}
+      SELECT COUNT(*) AS total_users
+        FROM combined
+       WHERE (?3 = 0 OR is_qualified = 1)`).bind(startAt, endAt, qualifiedOnly ? 1 : 0).first(),
+    db.prepare(`${cte}
+      SELECT user_id, username, games_played, eligible_games, required_games, is_qualified, games_needed,
+             total_score, (total_score * 1.0 / games_played) AS average_score,
+             perfect_count, best_score, last_scored_at, ranking_rank
+        FROM combined
+       WHERE (?3 = 0 OR is_qualified = 1)
+       ORDER BY is_qualified DESC,
+                ranking_rank ASC,
+                average_score DESC,
+                perfect_count DESC,
+                total_score DESC,
+                games_played DESC,
+                user_id ASC
+       LIMIT ?4 OFFSET ?5`).bind(startAt, endAt, qualifiedOnly ? 1 : 0, limit, offset).all()
+  ]);
+
+  const internalRows = rowsResult.results || [];
+  const achievementsByUser = await getRankingAchievementsByUser(db, internalRows.map((row) => row.user_id));
+  const summary = {
+    eligibleGames: Number(summaryRow?.eligible_games || 0),
+    requiredGames: Number(summaryRow?.required_games || 0),
+    qualifiedUsers: Number(summaryRow?.qualified_users || 0),
+    totalRankedUsers: Number(summaryRow?.total_ranked_users || 0)
+  };
+
+  return {
+    rows: internalRows.map((row) => toPublicRankingRow(row, achievementsByUser.get(row.user_id))),
+    summary,
+    pagination: { limit, offset, totalUsers: Number(countRow?.total_users || 0) }
+  };
+}
+
+async function getAllTimeRankingEntryForUser(db, userId, { startAt = null, endAt = null } = {}) {
+  const cte = createAllTimeRankingCte();
+  const row = await db.prepare(`${cte}
+    SELECT user_id, username, games_played, eligible_games, required_games, is_qualified, games_needed,
+           total_score, (total_score * 1.0 / games_played) AS average_score,
+           perfect_count, best_score, last_scored_at, ranking_rank
+      FROM combined
+     WHERE user_id = ?3
+     LIMIT 1`).bind(startAt, endAt, userId).first();
+  return row ? toPublicRankingRow(row) : null;
+}
+
+function toPublicRankingRow(row, achievementSummary = null) {
+  const eligibleGames = Number(row.eligible_games || 0);
+  const gamesPlayed = Number(row.games_played || 0);
+  return {
+    rank: Number(row.is_qualified) === 1 ? Number(row.ranking_rank) : null,
+    username: row.username,
+    gamesPlayed,
+    eligibleGames,
+    requiredGames: Number(row.required_games || 0),
+    participationRate: eligibleGames > 0 ? gamesPlayed / eligibleGames : 0,
+    isQualified: Number(row.is_qualified) === 1,
+    gamesNeeded: Number(row.games_needed || 0),
+    totalScore: Number(row.total_score || 0),
+    averageScore: Number(row.average_score || 0),
+    perfectCount: Number(row.perfect_count || 0),
+    bestScore: Number(row.best_score || 0),
+    lastScoredAt: row.last_scored_at || null,
+    ...(achievementSummary ? achievementSummary : {})
+  };
+}
+
+async function getRankingAchievementsByUser(db, userIds) {
+  const uniqueUserIds = Array.from(new Set(userIds.filter(Boolean)));
+  const results = new Map();
+  if (uniqueUserIds.length === 0) return results;
+
+  const placeholders = uniqueUserIds.map((_, index) => `?${index + 1}`).join(", ");
+  const rows = await db.prepare(
+    `SELECT user_achievements.user_id, achievements.code, achievements.name, achievements.icon_key, achievements.rarity
+       FROM user_achievements
+       JOIN achievements ON achievements.id = user_achievements.achievement_id
+      WHERE achievements.is_hidden = 0
+        AND user_achievements.user_id IN (${placeholders})
+      ORDER BY user_achievements.user_id ASC, user_achievements.earned_at DESC, achievements.code ASC`
+  ).bind(...uniqueUserIds).all();
+
+  for (const row of rows.results || []) {
+    const current = results.get(row.user_id) || [];
+    current.push({ code: row.code, name: row.name, iconKey: row.icon_key, rarity: row.rarity });
+    results.set(row.user_id, current);
+  }
+  for (const [userId, achievements] of results) {
+    results.set(userId, {
+      achievements: achievements.slice(0, RANKING_ACHIEVEMENT_DISPLAY_LIMIT),
+      achievementCount: achievements.length
+    });
+  }
+  return results;
+}
+
 async function handleDevelopmentAchievements(env, cors, user) {
   const [master, earned] = await Promise.all([
     getAchievementMaster(env.AUTH_DB),
@@ -471,11 +687,12 @@ async function handleCreateDevelopmentPerfectPrediction(env, cors, user, metadat
   await env.AUTH_DB.prepare(
     `INSERT INTO predictions
        (id, user_id, game_id, prediction_json, schema_version, game_date, home_team, away_team, opponent_code, is_home,
-        submitted_at, updated_at, locked_at, status, score, max_score, scored_at, actual_lineup_json)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, NULL, 'submitted', NULL, NULL, NULL, NULL)
+        submitted_at, updated_at, locked_at, status, score, max_score, scored_at, actual_lineup_json, is_test_prediction)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, NULL, 'submitted', NULL, NULL, NULL, NULL, 1)
      ON CONFLICT(user_id, game_id) DO UPDATE SET
        prediction_json = excluded.prediction_json, schema_version = excluded.schema_version, updated_at = excluded.updated_at,
-       locked_at = NULL, status = 'submitted', score = NULL, max_score = NULL, scored_at = NULL, actual_lineup_json = NULL`
+       locked_at = NULL, status = 'submitted', score = NULL, max_score = NULL, scored_at = NULL, actual_lineup_json = NULL,
+       is_test_prediction = 1`
   ).bind(id, user.id, metadata.gameId, predictionJson, PREDICTION_SCHEMA_VERSION, metadata.date, metadata.homeCode, metadata.awayCode, metadata.opponentCode, metadata.isHome ? 1 : 0, now).run();
   return jsonResponse({ ok: true, gameId: metadata.gameId, created: !existing, updated: Boolean(existing) }, 200, cors);
 }
@@ -581,17 +798,20 @@ async function handleAdminScorePredictions(request, env, cors, gameId) {
   }
 
   // 手動採点も同じ実スタメン保存・採点コアを使い、Cronとの結果差を作りません。
-  await saveActualLineupForAutoScoring(env.AUTH_DB, gameId, actualResult.lineup, new Date(), {
+  const scoringStartedAt = new Date();
+  await markGameRankingPending(env.AUTH_DB, gameId, scoringStartedAt, env);
+  await saveActualLineupForAutoScoring(env.AUTH_DB, gameId, actualResult.lineup, scoringStartedAt, {
     forceReschedule: true,
     delaySeconds: 0
   });
-  const claimed = await claimGameLineupForScoring(env.AUTH_DB, gameId, new Date(), { force: true });
+  const claimed = await claimGameLineupForScoring(env.AUTH_DB, gameId, scoringStartedAt, { force: true });
   if (!claimed) {
     return jsonResponse({ ok: false, error: "この試合は現在採点処理中です。" }, 409, cors);
   }
 
   try {
     const result = await scoreClaimedGameLineup(env.AUTH_DB, claimed, new Date());
+    await markGameRankingEligible(env.AUTH_DB, gameId, result.scoredAt, env);
     return jsonResponse({
       ok: true,
       gameId,
@@ -668,6 +888,7 @@ async function handleAdminActualLineupSave(request, env, cors, gameId) {
   }
 
   const detectedAt = parseLineupDetectedAt(input?.lineupDetectedAt) || new Date();
+  await markGameRankingPending(env.AUTH_DB, gameId, detectedAt, env);
   const record = await saveActualLineupForAutoScoring(env.AUTH_DB, gameId, actualResult.lineup, detectedAt, {
     delaySeconds: getAutoScoringDelaySeconds(env)
   });
@@ -698,6 +919,7 @@ async function handleAdminAutoScoringRunNow(env, cors, gameId) {
   }
 
   const now = new Date();
+  await markGameRankingPending(env.AUTH_DB, gameId, now, env);
   const claimed = await claimGameLineupForScoring(env.AUTH_DB, gameId, now, { force: true, resetAttempts: true });
   if (!claimed) {
     return jsonResponse({ ok: false, error: "この試合は現在採点処理中です。" }, 409, cors);
@@ -705,6 +927,7 @@ async function handleAdminAutoScoringRunNow(env, cors, gameId) {
 
   try {
     const result = await scoreClaimedGameLineup(env.AUTH_DB, claimed, now);
+    await markGameRankingEligible(env.AUTH_DB, gameId, result.scoredAt, env);
     return jsonResponse({ ok: true, gameId, ...result, autoScoring: serializeGameLineup(await getGameLineup(env.AUTH_DB, gameId)) }, 200, cors);
   } catch (error) {
     await markGameLineupFailed(env.AUTH_DB, gameId, error, now);
@@ -722,6 +945,7 @@ async function handleAdminAutoScoringRetry(env, cors, gameId) {
   }
 
   const now = new Date().toISOString();
+  await markGameRankingPending(env.AUTH_DB, gameId, now, env);
   await env.AUTH_DB.prepare(
     `UPDATE game_lineups
         SET scoring_status = 'pending', scoring_due_at = ?1, scoring_started_at = NULL,
@@ -739,6 +963,7 @@ async function handleAdminAutoScoringCancel(env, cors, gameId) {
   if (record.scoring_status === "processing") {
     return jsonResponse({ ok: false, error: "処理中の採点は取り消せません。完了後に再採点してください。" }, 409, cors);
   }
+  await markGameRankingIneligible(env.AUTH_DB, gameId, "cancelled", new Date(), env);
 
   const now = new Date().toISOString();
   await env.AUTH_DB.prepare(
@@ -913,6 +1138,7 @@ async function runDueAutoScoringJobs(env, now) {
     try {
       console.log(`auto scoring claimed: game=${claimed.game_id} attempt=${claimed.scoring_attempts}`);
       const result = await scoreClaimedGameLineup(env.AUTH_DB, claimed, now);
+      await markGameRankingEligible(env.AUTH_DB, claimed.game_id, result.scoredAt, env);
       summary.succeeded += 1;
       console.log(`auto scoring complete: game=${claimed.game_id} processed=${result.processed} perfect=${result.perfectCount}`);
     } catch (error) {
@@ -1010,6 +1236,59 @@ async function markGameLineupFailed(db, gameId, error, now) {
         SET scoring_status = 'failed', scoring_started_at = NULL, last_error = ?1, updated_at = ?2
       WHERE game_id = ?3 AND scoring_status = 'processing'`
   ).bind(message, now.toISOString(), gameId).run();
+}
+
+function toIsoString(value) {
+  if (typeof value === "string") return value;
+  return value instanceof Date ? value.toISOString() : new Date().toISOString();
+}
+
+// 開発モードで生成するダミー試合は、正式なランキング分母へ登録しません。
+async function markGameRankingPending(db, gameId, at, env) {
+  if (isDevelopmentModeEnabled(env)) return;
+  const now = toIsoString(at);
+  await db.prepare(
+    `INSERT INTO ranking_games
+       (game_id, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game, created_at, updated_at)
+     VALUES (?1, 0, NULL, 'pending', 0, ?2, ?2)
+     ON CONFLICT(game_id) DO UPDATE SET
+       is_ranking_eligible = 0,
+       ranking_eligible_at = NULL,
+       game_status = 'pending',
+       is_test_game = 0,
+       updated_at = excluded.updated_at`
+  ).bind(gameId, now).run();
+}
+
+async function markGameRankingEligible(db, gameId, scoredAt, env) {
+  if (isDevelopmentModeEnabled(env)) return;
+  const now = toIsoString(scoredAt);
+  await db.prepare(
+    `INSERT INTO ranking_games
+       (game_id, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game, created_at, updated_at)
+     VALUES (?1, 1, ?2, 'scored', 0, ?2, ?2)
+     ON CONFLICT(game_id) DO UPDATE SET
+       is_ranking_eligible = 1,
+       ranking_eligible_at = excluded.ranking_eligible_at,
+       game_status = 'scored',
+       is_test_game = 0,
+       updated_at = excluded.updated_at`
+  ).bind(gameId, now).run();
+}
+
+async function markGameRankingIneligible(db, gameId, status, at, env) {
+  if (isDevelopmentModeEnabled(env)) return;
+  const now = toIsoString(at);
+  await db.prepare(
+    `INSERT INTO ranking_games
+       (game_id, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game, created_at, updated_at)
+     VALUES (?1, 0, NULL, ?2, 0, ?3, ?3)
+     ON CONFLICT(game_id) DO UPDATE SET
+       is_ranking_eligible = 0,
+       ranking_eligible_at = NULL,
+       game_status = excluded.game_status,
+       updated_at = excluded.updated_at`
+  ).bind(gameId, status, now).run();
 }
 
 function toSafeAutoScoringError(error) {
@@ -1281,13 +1560,14 @@ async function handlePutCurrentPrediction(request, env, cors) {
 
   const now = new Date().toISOString();
   const id = existing?.id || randomToken(16);
+  const isTestPrediction = isDevelopmentTestPrediction(predictionResult.prediction) ? 1 : 0;
   const result = await env.AUTH_DB.prepare(
     `INSERT INTO predictions
        (id, user_id, game_id, prediction_json, schema_version,
         game_date, home_team, away_team, opponent_code, is_home,
         submitted_at, updated_at, locked_at, status,
-        score, max_score, scored_at, actual_lineup_json)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, NULL, 'submitted', NULL, NULL, NULL, NULL)
+        score, max_score, scored_at, actual_lineup_json, is_test_prediction)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, NULL, 'submitted', NULL, NULL, NULL, NULL, ?12)
      ON CONFLICT(user_id, game_id) DO UPDATE SET
        prediction_json = excluded.prediction_json,
        schema_version = excluded.schema_version,
@@ -1297,7 +1577,8 @@ async function handlePutCurrentPrediction(request, env, cors) {
        opponent_code = excluded.opponent_code,
        is_home = excluded.is_home,
        updated_at = excluded.updated_at,
-       status = 'submitted'
+       status = 'submitted',
+       is_test_prediction = excluded.is_test_prediction
      WHERE predictions.locked_at IS NULL
        AND predictions.status NOT IN ('locked', 'scored')`
   ).bind(
@@ -1311,7 +1592,8 @@ async function handlePutCurrentPrediction(request, env, cors) {
     metadata.awayCode,
     metadata.opponentCode,
     metadata.isHome ? 1 : 0,
-    now
+    now,
+    isTestPrediction
   ).run();
 
   if (Number(result?.meta?.changes || 0) !== 1) {
@@ -1332,6 +1614,10 @@ async function handlePutCurrentPrediction(request, env, cors) {
     submittedAt: existing?.submitted_at || now,
     updatedAt: now
   }, 200, cors);
+}
+
+function isDevelopmentTestPrediction(prediction) {
+  return String(prediction?.nickname || "").trim().startsWith(DEVELOPMENT_TEST_NICKNAME_PREFIX);
 }
 
 async function handleDeleteCurrentPrediction(request, env, cors) {

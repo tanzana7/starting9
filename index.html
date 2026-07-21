@@ -386,6 +386,20 @@
       </section>
     </section>
 
+    <section id="allTimeRankingPanel" class="card all-time-ranking-card" aria-labelledby="allTimeRankingTitle">
+      <div class="all-time-ranking-heading">
+        <div>
+          <p class="area-label">ALL-TIME RANKING</p>
+          <h2 id="allTimeRankingTitle">通算ランキング</h2>
+          <p>正式に採点された対象試合の3分の2以上に参加すると順位対象になります。</p>
+        </div>
+        <button id="reloadAllTimeRankingButton" class="secondary-button compact-button" type="button">再読み込み</button>
+      </div>
+      <div id="allTimeRankingContent" class="all-time-ranking-content" aria-live="polite">
+        <p class="empty-state">ランキングを読み込んでいます。</p>
+      </div>
+    </section>
+
   </main>
 
   <script src="players.js?v=split-drag-20260709"></script>

@@ -47,15 +47,19 @@ function createApp({ href = "https://starting9.pages.dev/", user = null, admin =
       fetchUrls.push(url);
       const isCapabilityRequest = String(url).endsWith("/api/admin/mode-capabilities");
       const isAchievementsRequest = String(url).endsWith("/api/me/achievements");
-      const isRankingRequest = String(url).includes("/api/rankings/all-time");
-      const isMyRankingRequest = String(url).endsWith("/api/me/ranking/all-time");
+      const isAllTimePublicRankingRequest = String(url).includes("/api/rankings/all-time");
+      const isAllTimeMyRankingRequest = String(url).endsWith("/api/me/ranking/all-time");
+      const isMonthlyPublicRankingRequest = String(url).includes("/api/rankings/monthly");
+      const isMonthlyMyRankingRequest = String(url).endsWith("/api/me/ranking/monthly");
       return {
         ok: admin,
         json: async () => {
           if (!admin) return { ok: false, admin: false };
           if (isAchievementsRequest) return { ok: true, achievements: [] };
-          if (isRankingRequest) return { ranking: [], summary: { eligibleGames: 0, requiredGames: 0 }, pagination: { limit: 50, offset: 0, totalUsers: 0 } };
-          if (isMyRankingRequest) return { ok: true, rankingData: null };
+          if (isAllTimePublicRankingRequest) return { ranking: [], summary: { eligibleGames: 0, requiredGames: 0 }, pagination: { limit: 50, offset: 0, totalUsers: 0 } };
+          if (isAllTimeMyRankingRequest) return { ok: true, rankingData: null };
+          if (isMonthlyPublicRankingRequest) return { year: 2026, month: 7, ranking: [], summary: { eligibleGames: 0, requiredGames: 0, qualifiedUsers: 0, totalUsers: 0 }, pagination: { limit: 50, offset: 0, totalUsers: 0 } };
+          if (isMonthlyMyRankingRequest) return { ok: true, year: 2026, month: 7, rankingData: null };
           if (isCapabilityRequest) return { ok: true, adminModeAvailable: true, developmentModeAvailable: false };
           return { ok: true, admin: true };
         }

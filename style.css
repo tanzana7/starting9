@@ -588,6 +588,49 @@ button:disabled {
   gap: 14px;
 }
 
+.ranking-tabs {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid #9db6d4;
+  border-radius: 7px;
+  background: #f7fbff;
+}
+
+.ranking-tab {
+  min-width: 58px;
+  min-height: 36px;
+  padding: 6px 12px;
+  border: 0;
+  border-right: 1px solid #9db6d4;
+  border-radius: 0;
+  color: #48627d;
+  background: transparent;
+  font-weight: 900;
+}
+
+.ranking-tab:last-child {
+  border-right: 0;
+}
+
+.ranking-tab.is-active {
+  color: #ffffff;
+  background: var(--fighters-blue);
+}
+
+.ranking-month-controls {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.ranking-month-controls strong {
+  color: var(--fighters-deep-blue);
+  text-align: center;
+  font-size: 1rem;
+}
+
 .ranking-summary,
 .ranking-empty {
   margin: 0;
@@ -2493,6 +2536,18 @@ textarea:focus {
   .all-time-ranking-heading {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .ranking-tabs {
+    width: 100%;
+  }
+
+  .ranking-tab {
+    min-height: 42px;
+  }
+
+  .ranking-month-controls {
+    grid-template-columns: minmax(0, 1fr) minmax(96px, auto) minmax(0, 1fr);
   }
 
 }

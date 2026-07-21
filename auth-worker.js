@@ -12,6 +12,7 @@ const PERFECT_ACHIEVERS_DEFAULT_DISPLAY_LIMIT = 3;
 const ALL_TIME_RANKING_DEFAULT_LIMIT = 50;
 const ALL_TIME_RANKING_MAX_LIMIT = 100;
 const ALL_TIME_RANKING_MAX_OFFSET = 1_000_000;
+const MONTHLY_RANKING_MIN_YEAR = 2020;
 const RANKING_ACHIEVEMENT_DISPLAY_LIMIT = 3;
 const DEVELOPMENT_TEST_NICKNAME_PREFIX = "[DEV]";
 const PREDICTION_SCHEMA_VERSION = 1;
@@ -99,6 +100,12 @@ export default {
       }
       if (path === "/api/me/ranking/all-time" && request.method === "GET") {
         return await handleGetMyAllTimeRanking(request, env, cors);
+      }
+      if (path === "/api/rankings/monthly" && request.method === "GET") {
+        return await handleGetMonthlyRanking(request, env, cors);
+      }
+      if (path === "/api/me/ranking/monthly" && request.method === "GET") {
+        return await handleGetMyMonthlyRanking(request, env, cors);
       }
       if (path === "/api/admin/me" && request.method === "GET") {
         return await handleAdminMe(request, env, cors);
@@ -389,11 +396,106 @@ async function handleGetMyAllTimeRanking(request, env, cors) {
   return jsonResponse({ ok: true, rankingData }, 200, cors);
 }
 
+async function handleGetMonthlyRanking(request, env, cors) {
+  const options = parseMonthlyRankingQuery(new URL(request.url).searchParams);
+  if (!options.ok) {
+    return jsonResponse({ ok: false, error: options.error }, 400, cors);
+  }
+
+  const ranking = await getRankingForPeriod(env.AUTH_DB, options);
+  const response = jsonResponse({
+    year: options.year,
+    month: options.month,
+    ranking: ranking.rows,
+    summary: ranking.summary,
+    pagination: ranking.pagination,
+    updatedAt: new Date().toISOString()
+  }, 200, cors);
+  response.headers.set("Cache-Control", "public, max-age=30");
+  return response;
+}
+
+async function handleGetMyMonthlyRanking(request, env, cors) {
+  const access = await requireAuthenticatedUser(request, env, cors);
+  if (!access.ok) return access.response;
+
+  const options = parseMonthlyRankingQuery(new URL(request.url).searchParams);
+  if (!options.ok) {
+    return jsonResponse({ ok: false, error: options.error }, 400, cors);
+  }
+
+  const rankingData = await getRankingEntryForUser(env.AUTH_DB, access.user.id, options);
+  return jsonResponse({
+    ok: true,
+    year: options.year,
+    month: options.month,
+    rankingData
+  }, 200, cors);
+}
+
 function parseAllTimeRankingQuery(searchParams) {
   return {
     limit: parseBoundedInteger(searchParams.get("limit"), ALL_TIME_RANKING_DEFAULT_LIMIT, 1, ALL_TIME_RANKING_MAX_LIMIT),
     offset: parseBoundedInteger(searchParams.get("offset"), 0, 0, ALL_TIME_RANKING_MAX_OFFSET),
     qualifiedOnly: !["false", "0"].includes(String(searchParams.get("qualifiedOnly") || "true").trim().toLowerCase())
+  };
+}
+
+function getJapanYearMonth(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit"
+  }).formatToParts(now);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return { year: Number(values.year), month: Number(values.month) };
+}
+
+function parseMonthlyRankingQuery(searchParams) {
+  const current = getJapanYearMonth();
+  const rawYear = searchParams.get("year");
+  const rawMonth = searchParams.get("month");
+  const rawLimit = searchParams.get("limit");
+  const rawOffset = searchParams.get("offset");
+  const rawQualifiedOnly = searchParams.get("qualifiedOnly");
+
+  if (rawYear !== null && rawYear !== "" && !/^\d{4}$/.test(rawYear)) {
+    return { ok: false, error: "yearは有効な4桁の年を指定してください。" };
+  }
+  if (rawMonth !== null && rawMonth !== "" && !/^\d{1,2}$/.test(rawMonth)) {
+    return { ok: false, error: "monthは1から12で指定してください。" };
+  }
+  const year = rawYear === null || rawYear === "" ? current.year : Number(rawYear);
+  const month = rawMonth === null || rawMonth === "" ? current.month : Number(rawMonth);
+  if (!Number.isInteger(year) || year < MONTHLY_RANKING_MIN_YEAR) {
+    return { ok: false, error: "yearは有効な4桁の年を指定してください。" };
+  }
+  if (!/^\d{1,2}$/.test(String(month)) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return { ok: false, error: "monthは1から12で指定してください。" };
+  }
+  if (year > current.year || (year === current.year && month > current.month)) {
+    return { ok: false, error: "未来月の月間ランキングは取得できません。" };
+  }
+  if (rawLimit !== null && (!/^\d+$/.test(rawLimit) || Number(rawLimit) < 1 || Number(rawLimit) > ALL_TIME_RANKING_MAX_LIMIT)) {
+    return { ok: false, error: `limitは1から${ALL_TIME_RANKING_MAX_LIMIT}で指定してください。` };
+  }
+  if (rawOffset !== null && (!/^\d+$/.test(rawOffset) || Number(rawOffset) > ALL_TIME_RANKING_MAX_OFFSET)) {
+    return { ok: false, error: "offsetが不正です。" };
+  }
+  if (rawQualifiedOnly !== null && !["true", "false", "1", "0"].includes(rawQualifiedOnly.trim().toLowerCase())) {
+    return { ok: false, error: "qualifiedOnlyが不正です。" };
+  }
+
+  const nextMonthDate = new Date(Date.UTC(year, month, 1));
+  return {
+    ok: true,
+    year,
+    month,
+    startAt: `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-01`,
+    endAt: nextMonthDate.toISOString().slice(0, 10),
+    limit: rawLimit === null ? ALL_TIME_RANKING_DEFAULT_LIMIT : Number(rawLimit),
+    offset: rawOffset === null ? 0 : Number(rawOffset),
+    qualifiedOnly: rawQualifiedOnly === null ? true : ["true", "1"].includes(rawQualifiedOnly.trim().toLowerCase())
   };
 }
 
@@ -404,15 +506,15 @@ function parseBoundedInteger(value, fallback, min, max) {
 }
 
 function createAllTimeRankingCte() {
-  // ?1 / ?2 are reserved for future period filters (startAt / endAt).
+  // ?1 / ?2 are game_date period filters. NULL means all-time aggregation.
   return `WITH eligible_games AS (
     SELECT game_id
       FROM ranking_games
      WHERE is_ranking_eligible = 1
        AND game_status = 'scored'
        AND is_test_game = 0
-       AND (?1 IS NULL OR ranking_eligible_at >= ?1)
-       AND (?2 IS NULL OR ranking_eligible_at < ?2)
+       AND (?1 IS NULL OR game_date >= ?1)
+       AND (?2 IS NULL OR game_date < ?2)
   ), eligibility AS (
     SELECT COUNT(*) AS eligible_games FROM eligible_games
   ), threshold AS (
@@ -467,13 +569,24 @@ function createAllTimeRankingCte() {
 }
 
 async function getAllTimeRanking(db, { limit, offset, qualifiedOnly, startAt = null, endAt = null }) {
+  const ranking = await getRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt, endAt });
+  return {
+    ...ranking,
+    summary: {
+      ...ranking.summary,
+      totalRankedUsers: ranking.summary.totalUsers
+    }
+  };
+}
+
+async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt = null, endAt = null }) {
   const cte = createAllTimeRankingCte();
   const [summaryRow, countRow, rowsResult] = await Promise.all([
     db.prepare(`${cte}
       SELECT COALESCE(MAX(eligible_games), 0) AS eligible_games,
              COALESCE(MAX(required_games), 0) AS required_games,
              COALESCE(SUM(CASE WHEN is_qualified = 1 THEN 1 ELSE 0 END), 0) AS qualified_users,
-             COUNT(*) AS total_ranked_users
+             COUNT(*) AS total_users
         FROM combined`).bind(startAt, endAt).first(),
     db.prepare(`${cte}
       SELECT COUNT(*) AS total_users
@@ -501,7 +614,7 @@ async function getAllTimeRanking(db, { limit, offset, qualifiedOnly, startAt = n
     eligibleGames: Number(summaryRow?.eligible_games || 0),
     requiredGames: Number(summaryRow?.required_games || 0),
     qualifiedUsers: Number(summaryRow?.qualified_users || 0),
-    totalRankedUsers: Number(summaryRow?.total_ranked_users || 0)
+    totalUsers: Number(summaryRow?.total_users || 0)
   };
 
   return {
@@ -512,6 +625,10 @@ async function getAllTimeRanking(db, { limit, offset, qualifiedOnly, startAt = n
 }
 
 async function getAllTimeRankingEntryForUser(db, userId, { startAt = null, endAt = null } = {}) {
+  return getRankingEntryForUser(db, userId, { startAt, endAt });
+}
+
+async function getRankingEntryForUser(db, userId, { startAt = null, endAt = null } = {}) {
   const cte = createAllTimeRankingCte();
   const row = await db.prepare(`${cte}
     SELECT user_id, username, games_played, eligible_games, required_games, is_qualified, games_needed,
@@ -1246,49 +1363,58 @@ function toIsoString(value) {
 // 開発モードで生成するダミー試合は、正式なランキング分母へ登録しません。
 async function markGameRankingPending(db, gameId, at, env) {
   if (isDevelopmentModeEnabled(env)) return;
+  const metadata = parsePredictionGameId(gameId);
+  if (!metadata) return;
   const now = toIsoString(at);
   await db.prepare(
     `INSERT INTO ranking_games
-       (game_id, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game, created_at, updated_at)
-     VALUES (?1, 0, NULL, 'pending', 0, ?2, ?2)
+       (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game, created_at, updated_at)
+     VALUES (?1, ?2, 0, NULL, 'pending', 0, ?3, ?3)
      ON CONFLICT(game_id) DO UPDATE SET
+       game_date = excluded.game_date,
        is_ranking_eligible = 0,
        ranking_eligible_at = NULL,
        game_status = 'pending',
        is_test_game = 0,
        updated_at = excluded.updated_at`
-  ).bind(gameId, now).run();
+  ).bind(gameId, metadata.date, now).run();
 }
 
 async function markGameRankingEligible(db, gameId, scoredAt, env) {
   if (isDevelopmentModeEnabled(env)) return;
+  const metadata = parsePredictionGameId(gameId);
+  if (!metadata) return;
   const now = toIsoString(scoredAt);
   await db.prepare(
     `INSERT INTO ranking_games
-       (game_id, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game, created_at, updated_at)
-     VALUES (?1, 1, ?2, 'scored', 0, ?2, ?2)
+       (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game, created_at, updated_at)
+     VALUES (?1, ?2, 1, ?3, 'scored', 0, ?3, ?3)
      ON CONFLICT(game_id) DO UPDATE SET
+       game_date = excluded.game_date,
        is_ranking_eligible = 1,
        ranking_eligible_at = excluded.ranking_eligible_at,
        game_status = 'scored',
        is_test_game = 0,
        updated_at = excluded.updated_at`
-  ).bind(gameId, now).run();
+  ).bind(gameId, metadata.date, now).run();
 }
 
 async function markGameRankingIneligible(db, gameId, status, at, env) {
   if (isDevelopmentModeEnabled(env)) return;
+  const metadata = parsePredictionGameId(gameId);
+  if (!metadata) return;
   const now = toIsoString(at);
   await db.prepare(
     `INSERT INTO ranking_games
-       (game_id, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game, created_at, updated_at)
-     VALUES (?1, 0, NULL, ?2, 0, ?3, ?3)
+       (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game, created_at, updated_at)
+     VALUES (?1, ?2, 0, NULL, ?3, 0, ?4, ?4)
      ON CONFLICT(game_id) DO UPDATE SET
+       game_date = excluded.game_date,
        is_ranking_eligible = 0,
        ranking_eligible_at = NULL,
        game_status = excluded.game_status,
        updated_at = excluded.updated_at`
-  ).bind(gameId, status, now).run();
+  ).bind(gameId, metadata.date, status, now).run();
 }
 
 function toSafeAutoScoringError(error) {

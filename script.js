@@ -39,6 +39,7 @@ const NPB_WORKER_FALLBACK_MESSAGE = "NPB公式ページ取得APIが未設定、�
 const NPB_WORKER_EXTRACTION_FAILED_MESSAGE = "WorkerでNPB公式ページは取得できましたが、スタメン抽出に失敗しました。手動貼り付けを使うか、debug=1付きURLで抽出対象テキストを確認してください。";
 // DBには全員を保存し、通常画面では先着3人だけ表示します。
 const PERFECT_ACHIEVERS_DEFAULT_DISPLAY_LIMIT = 3;
+const ALL_TIME_RANKING_DISPLAY_LIMIT = 50;
 const AUTO_FETCH_START_BEFORE_MS = 50 * 60 * 1000;
 const AUTO_FETCH_INTERVAL_MS = 10 * 60 * 1000;
 const AUTO_FETCH_MAX_ATTEMPTS = 5;
@@ -239,6 +240,16 @@ const state = {
     currentUserRegistered: false,
     achievers: []
   },
+  allTimeRanking: {
+    isLoading: false,
+    isLoadingSelf: false,
+    requestId: 0,
+    rows: [],
+    summary: null,
+    pagination: null,
+    self: null,
+    message: ""
+  },
   predictionRemote: {
     isLoading: false,
     isSaving: false,
@@ -311,6 +322,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initializeProbableStarter().finally(() => {
     initializePerfectAchievers();
     initializePredictionRemoteSync();
+    initializeAllTimeRanking();
   });
 });
 
@@ -329,6 +341,7 @@ async function initializeAuthDependentFeatures() {
   // 初期イベントは待機中に発火していても、解決済みPromiseから現在状態を必ず評価できます。
   window.addEventListener("starting9-auth-state-changed", handleAuthStateChanged);
   await fetchUserAchievements({ force: true });
+  await refreshAllTimeRanking({ force: true });
   await refreshAdminAccess();
 }
 
@@ -359,6 +372,7 @@ function bindEvents() {
   bindDevelopmentEvent("runDevelopmentCronButton", "click", runDevelopmentCron);
   bindDevelopmentEvent("resetButton", "click", resetAllData);
   document.getElementById("refreshAchievementsButton")?.addEventListener("click", () => fetchUserAchievements({ force: true }));
+  document.getElementById("reloadAllTimeRankingButton")?.addEventListener("click", () => refreshAllTimeRanking({ force: true }));
   bindDevelopmentEvent("refreshDevelopmentAchievementsButton", "click", refreshDevelopmentAchievements);
   document.getElementById("developmentAchievements")?.addEventListener("click", handleDevelopmentAchievementAction);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
@@ -2140,6 +2154,7 @@ function handleAuthStateChanged() {
   fetchPerfectAchievers({ force: true });
   syncPredictionFromAccount({ force: true });
   fetchUserAchievements({ force: true });
+  refreshAllTimeRanking({ force: true });
   refreshAdminAccess();
 }
 
@@ -2364,8 +2379,12 @@ async function refreshAutoScoringStatus({ force = false } = {}) {
       throw new Error(payload?.error || `HTTP ${response.status}`);
     }
     if (state.autoScoring.gameId === gameId) {
+      const previousStatus = state.autoScoring.record?.status || "";
       state.autoScoring.record = payload.autoScoring || null;
       state.autoScoring.message = "";
+      if (previousStatus !== "scored" && state.autoScoring.record?.status === "scored") {
+        void refreshAllTimeRanking({ force: true });
+      }
     }
   } catch (error) {
     console.error("自動採点状態の取得に失敗しました", error.message);
@@ -2401,6 +2420,9 @@ async function updateAutoScoring(action, confirmationMessage = "") {
       ? `今すぐ採点を完了しました。${Number(payload.scored || 0)}件を更新しました。`
       : action === "cancel" ? "自動採点を取り消しました。" : "自動採点を再試行待ちに戻しました。";
     await refreshAdminScoringSummary({ force: true });
+    if (isRunNow) {
+      await refreshAllTimeRanking({ force: true });
+    }
   } catch (error) {
     console.error("自動採点操作に失敗しました", error.message);
     state.autoScoring.message = "自動採点の操作に失敗しました。";
@@ -2570,6 +2592,7 @@ async function runServerScoring() {
     }
     resetAdminScoringPreview();
     await refreshAdminScoringSummary({ force: true });
+    await refreshAllTimeRanking({ force: true });
     renderAutoScoringPanel();
   } catch (error) {
     console.error("本番採点に失敗しました", error.message);
@@ -2655,6 +2678,186 @@ function getAuthApiBaseUrl() {
   }
   // auth.js が環境ごとのURLを一元管理します。
   return "";
+}
+
+function buildAllTimeRankingApiUrl({ qualifiedOnly = false } = {}) {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  if (!baseUrl) return "";
+  const url = new URL(`${baseUrl}/api/rankings/all-time`, window.location.href);
+  url.searchParams.set("limit", String(ALL_TIME_RANKING_DISPLAY_LIMIT));
+  url.searchParams.set("qualifiedOnly", qualifiedOnly ? "true" : "false");
+  return url.href;
+}
+
+function buildMyAllTimeRankingApiUrl() {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  return baseUrl ? `${baseUrl}/api/me/ranking/all-time` : "";
+}
+
+async function initializeAllTimeRanking() {
+  await refreshAllTimeRanking({ force: true });
+}
+
+async function refreshAllTimeRanking({ force = false } = {}) {
+  const ranking = state.allTimeRanking;
+  if (ranking.isLoading && !force) return;
+  const publicUrl = buildAllTimeRankingApiUrl({ qualifiedOnly: false });
+  if (!publicUrl) {
+    ranking.message = "ランキングの接続先を確認できません。";
+    renderAllTimeRanking();
+    return;
+  }
+
+  const user = getPredictionAccountUser();
+  const requestId = ranking.requestId + 1;
+  ranking.requestId = requestId;
+  ranking.isLoading = true;
+  ranking.isLoadingSelf = Boolean(user);
+  ranking.message = "";
+  if (!user) ranking.self = null;
+  renderAllTimeRanking();
+
+  try {
+    const publicRequest = fetch(publicUrl, { credentials: "include", cache: force ? "no-store" : "default" })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !Array.isArray(payload?.ranking)) {
+          throw new Error(payload?.error || `HTTP ${response.status}`);
+        }
+        return payload;
+      });
+    const selfRequest = user ? fetch(buildMyAllTimeRankingApiUrl(), { credentials: "include", cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload?.ok) {
+          throw new Error(payload?.error || `HTTP ${response.status}`);
+        }
+        return payload.rankingData || null;
+      })
+      .catch((error) => {
+        console.error("自分の通算成績の取得に失敗しました", error.message);
+        return null;
+      }) : Promise.resolve(null);
+    const [publicPayload, self] = await Promise.all([publicRequest, selfRequest]);
+    if (requestId !== ranking.requestId) return;
+    ranking.rows = publicPayload.ranking;
+    ranking.summary = publicPayload.summary || null;
+    ranking.pagination = publicPayload.pagination || null;
+    ranking.self = self;
+  } catch (error) {
+    if (requestId !== ranking.requestId) return;
+    console.error("通算ランキングの取得に失敗しました", error.message);
+    ranking.rows = [];
+    ranking.summary = null;
+    ranking.pagination = null;
+    ranking.self = null;
+    ranking.message = "ランキングの取得に失敗しました。";
+  } finally {
+    if (requestId === ranking.requestId) {
+      ranking.isLoading = false;
+      ranking.isLoadingSelf = false;
+      renderAllTimeRanking();
+    }
+  }
+}
+
+function renderAllTimeRanking() {
+  const panel = document.getElementById("allTimeRankingPanel");
+  const container = document.getElementById("allTimeRankingContent");
+  const reloadButton = document.getElementById("reloadAllTimeRankingButton");
+  if (!panel || !container || !reloadButton) return;
+
+  const ranking = state.allTimeRanking;
+  reloadButton.disabled = ranking.isLoading;
+  if (ranking.isLoading && !ranking.summary) {
+    container.innerHTML = '<p class="empty-state">ランキングを読み込んでいます。</p>';
+    return;
+  }
+  if (ranking.message) {
+    container.innerHTML = `<p class="empty-state">${escapeHtml(ranking.message)}</p>`;
+    return;
+  }
+
+  const summary = ranking.summary;
+  if (!summary || Number(summary.eligibleGames || 0) === 0) {
+    container.innerHTML = '<p class="empty-state">まだランキング対象試合がありません。</p>';
+    return;
+  }
+
+  const qualified = ranking.rows.filter((row) => row.isQualified);
+  const unqualified = ranking.rows.filter((row) => !row.isQualified);
+  const selfSection = renderMyAllTimeRanking(ranking.self);
+  const qualifiedContent = qualified.length
+    ? `<ol class="ranking-list">${qualified.map((row) => createRankingCardHtml(row)).join("")}</ol>`
+    : '<p class="ranking-empty">まだ規定到達者はいません。</p>';
+  const unqualifiedContent = unqualified.length
+    ? `<details class="ranking-unqualified"><summary>規定未到達者を見る（${unqualified.length}人）</summary><ol class="ranking-list is-reference">${unqualified.map((row) => createRankingCardHtml(row, { reference: true })).join("")}</ol></details>`
+    : "";
+  const summaryText = `対象 ${summary.eligibleGames}試合 / 規定 ${summary.requiredGames}試合以上`;
+  container.innerHTML = `
+    <p class="ranking-summary">${escapeHtml(summaryText)}</p>
+    ${selfSection}
+    <section class="ranking-qualified-section" aria-labelledby="rankingQualifiedTitle">
+      <h3 id="rankingQualifiedTitle">規定到達ランキング</h3>
+      ${qualifiedContent}
+    </section>
+    ${unqualifiedContent}
+  `;
+}
+
+function renderMyAllTimeRanking(row) {
+  const user = getPredictionAccountUser();
+  if (!user) return "";
+  if (state.allTimeRanking.isLoadingSelf) {
+    return '<section class="ranking-self"><h3>あなたの通算成績</h3><p>通算成績を読み込んでいます。</p></section>';
+  }
+  if (!row) {
+    return '<section class="ranking-self"><h3>あなたの通算成績</h3><p>まだランキング対象試合への参加記録がありません。</p></section>';
+  }
+  const qualification = row.isQualified
+    ? `規定到達・現在 ${row.rank}位`
+    : `規定まであと${row.gamesNeeded}試合（規定未到達）`;
+  return `<section class="ranking-self">
+    <h3>あなたの通算成績</h3>
+    <p><strong>平均${escapeHtml(formatRankingScore(row.averageScore))}点</strong> ${escapeHtml(qualification)}</p>
+    <p>${escapeHtml(row.gamesPlayed)} / ${escapeHtml(row.eligibleGames)}試合参加・参加率${escapeHtml(formatParticipationRate(row.participationRate))}</p>
+  </section>`;
+}
+
+function createRankingCardHtml(row, { reference = false } = {}) {
+  const rankLabel = reference ? "参考記録" : `${row.rank}位`;
+  const qualification = reference ? `規定まであと${row.gamesNeeded}試合` : "規定到達";
+  return `<li class="ranking-entry${reference ? " is-reference" : ""}">
+    <p class="ranking-rank">${escapeHtml(rankLabel)}</p>
+    <div class="ranking-entry-main">
+      <div class="ranking-user-line"><strong>${escapeHtml(row.username)}</strong>${createRankingAchievementBadgesHtml(row)}</div>
+      <p>平均 ${escapeHtml(formatRankingScore(row.averageScore))}点${reference ? "（参考）" : ""}</p>
+      <p>${escapeHtml(row.gamesPlayed)} / ${escapeHtml(row.eligibleGames)}試合・参加率 ${escapeHtml(formatParticipationRate(row.participationRate))}・${escapeHtml(qualification)}</p>
+      <p>合計 ${escapeHtml(row.totalScore)}点・満点 ${escapeHtml(row.perfectCount)}回</p>
+    </div>
+  </li>`;
+}
+
+function createRankingAchievementBadgesHtml(row) {
+  const achievements = Array.isArray(row.achievements) ? row.achievements : [];
+  if (!achievements.length) return "";
+  const badges = achievements.map((achievement) => {
+    const rarity = ACHIEVEMENT_RARITY_LABELS[achievement.rarity] || ACHIEVEMENT_RARITY_LABELS.common;
+    return `<span class="ranking-achievement-badge is-${escapeHtml(achievement.rarity || "common")}">${escapeHtml(rarity)} ${escapeHtml(achievement.name)}</span>`;
+  });
+  const hiddenCount = Math.max(0, Number(row.achievementCount || achievements.length) - achievements.length);
+  if (hiddenCount > 0) badges.push(`<span class="ranking-achievement-more">+${hiddenCount}</span>`);
+  return `<span class="ranking-achievements">${badges.join("")}</span>`;
+}
+
+function formatRankingScore(value) {
+  const numeric = Number(value || 0);
+  return Number.isFinite(numeric) ? numeric.toFixed(1) : "0.0";
+}
+
+function formatParticipationRate(value) {
+  const numeric = Number(value || 0) * 100;
+  return Number.isFinite(numeric) ? `${numeric.toFixed(1)}%` : "0.0%";
 }
 
 function buildPerfectAchieversApiUrl(gameId) {
@@ -4540,6 +4743,7 @@ function renderAll() {
   renderActualLineup();
   renderScoreResult();
   renderPerfectAchievers();
+  renderAllTimeRanking();
   renderAdminFlow();
   renderPicker("prediction");
   renderPicker("actual");
@@ -5423,9 +5627,7 @@ function generateTestPrediction() {
   }
 
   const nicknameInput = document.getElementById("nickname");
-  if (!nicknameInput.value.trim()) {
-    nicknameInput.value = "テストユーザー";
-  }
+  nicknameInput.value = "[DEV] テストユーザー";
 
   setLineupValues("prediction", TEST_PREDICTION_LINEUP);
   clearMessage("predictionError");

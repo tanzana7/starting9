@@ -3,8 +3,7 @@ const STORAGE_KEYS = {
   actual: "hamStarting9Actual",
   result: "hamStarting9Result",
   gameInfo: "hamStarting9GameInfo",
-  rosterSnapshot: "hamStarting9RosterSnapshot",
-  candidateRosterFilter: "hamStarting9CandidateRosterFilter"
+  rosterSnapshot: "hamStarting9RosterSnapshot"
 };
 const RESET_STORAGE_KEYS = [
   STORAGE_KEYS.prediction,
@@ -159,7 +158,6 @@ const state = {
     matchup: ""
   },
   nextScheduleId: "",
-  candidateRosterFilter: "active",
   actualPreview: null,
   adminStatus: "idle",
   adminError: "",
@@ -412,9 +410,6 @@ function bindEvents() {
   bindAdminEvent("gameScheduleSelect", "change", handleScheduleSelectionChange);
   bindAdminEvent("copyScheduleLogButton", "click", copyScheduleLoadLog);
   bindAdminEvent("clearScheduleLogButton", "click", clearScheduleLoadLog);
-  document.querySelectorAll("[data-roster-filter]").forEach((button) => {
-    button.addEventListener("click", () => setCandidateRosterFilter(button.dataset.rosterFilter));
-  });
   bindAdminGameInfoEvents();
   document.addEventListener("click", () => closeAllPositionMenus());
   document.addEventListener("keydown", (event) => {
@@ -1000,12 +995,6 @@ function getPredictionCandidateNames() {
     .map((player) => player.name);
 }
 
-function setCandidateRosterFilter(filter) {
-  state.candidateRosterFilter = filter === "inactive" ? "inactive" : "active";
-  saveToStorage(STORAGE_KEYS.candidateRosterFilter, state.candidateRosterFilter);
-  renderPicker("prediction");
-}
-
 function createLineupSlot(pickerName, index) {
   const slot = document.createElement("div");
   slot.className = "lineup-slot";
@@ -1206,8 +1195,7 @@ function createPlayerChip(pickerName, player) {
   button.dataset.picker = pickerName;
   button.dataset.player = player;
   button.draggable = true;
-  const isInactiveCandidate = pickerName === "prediction" && !isPlayerInCurrentRoster(getPlayerData(player));
-  button.innerHTML = `${createPlayerLabelHtml(player)}${isInactiveCandidate ? '<span class="roster-status-badge">出場登録外</span>' : ""}`;
+  button.innerHTML = createPlayerLabelHtml(player);
   applyPlayerCategoryClass(button, player);
 
   button.addEventListener("click", () => {
@@ -4599,8 +4587,6 @@ function loadState() {
   state.actual = loadFromStorage(STORAGE_KEYS.actual);
   state.result = loadFromStorage(STORAGE_KEYS.result);
   state.gameInfo = normalizeGameInfo(loadFromStorage(STORAGE_KEYS.gameInfo));
-  state.candidateRosterFilter = loadFromStorage(STORAGE_KEYS.candidateRosterFilter) === "inactive" ? "inactive" : "active";
-
   if (state.prediction?.lineup) {
     const { nickname: legacyNickname, ...prediction } = state.prediction;
     state.prediction = {
@@ -5668,25 +5654,9 @@ function renderPicker(pickerName) {
 }
 
 function renderPredictionRosterFilter() {
-  const filter = state.candidateRosterFilter === "inactive" ? "inactive" : "active";
-  const currentLabel = document.getElementById("predictionRosterFilterCurrent");
-  const label = filter === "inactive" ? "出場登録されていない選手" : "出場登録されている選手";
-
-  if (currentLabel) {
-    currentLabel.textContent = `現在：${label}`;
-  }
-
-  document.querySelectorAll("[data-roster-filter]").forEach((button) => {
-    const isSelected = button.dataset.rosterFilter === filter;
-    button.classList.toggle("is-selected", isSelected);
-    button.setAttribute("aria-pressed", isSelected ? "true" : "false");
-  });
-
   document.querySelectorAll('.player-chip[data-picker="prediction"]').forEach((chip) => {
     const player = getPlayerData(chip.dataset.player);
-    const shouldShow = filter === "active"
-      ? isPlayerInCurrentRoster(player) && player?.isBatterCandidate === true
-      : !isPlayerInCurrentRoster(player) && player?.isBatterCandidate === true;
+    const shouldShow = isPlayerInCurrentRoster(player) && player?.isBatterCandidate === true;
     chip.classList.toggle("hidden", !shouldShow);
   });
 }
@@ -6240,11 +6210,9 @@ function showPlayerDetails(pickerName, playerName) {
 
   panel.classList.remove("hidden");
   const mainCategory = player.mainCategory || player.category;
-  const rosterStatus = isPlayerInCurrentRoster(player) ? "出場登録中" : "出場登録外";
   panel.innerHTML = `
     <strong>${escapeHtml(player.name)}</strong>
     <span>カテゴリ：${escapeHtml(playerCategoryNames[mainCategory] || "未設定")}</span>
-    <span>登録状態：${escapeHtml(rosterStatus)}</span>
     <div class="player-detail-positions">
       <span>守備候補：</span>
       ${createPlayerPositionBadgesHtml(player.name)}

@@ -1664,6 +1664,43 @@ textarea:focus {
   margin: 0;
 }
 
+.roster-filter {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 10px 0;
+  padding: 4px;
+  border: 1px solid #cfe1f1;
+  border-radius: 8px;
+  background: #edf4fa;
+}
+
+.roster-filter-button {
+  min-height: 38px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.roster-filter-button:hover,
+.roster-filter-button:focus-visible {
+  border-color: #a9c7df;
+  background: #ffffff;
+  color: var(--fighters-deep-blue);
+}
+
+.roster-filter-button.is-selected {
+  border-color: #6ca4d0;
+  background: #ffffff;
+  color: var(--fighters-deep-blue);
+  box-shadow: 0 1px 3px rgba(25, 54, 82, 0.12);
+}
+
 .slot-list,
 .player-list {
   display: grid;
@@ -2419,6 +2456,10 @@ textarea:focus {
   }
 
   .schedule-loader-row {
+    grid-template-columns: 1fr;
+  }
+
+  .roster-filter {
     grid-template-columns: 1fr;
   }
 

@@ -33,10 +33,11 @@ const SCORE_RULES = {
 };
 const FLICK_DISTANCE = 42;
 const DRAG_DATA_TYPE = "application/x-ham-starting9-player";
-const NPB_WORKER_API_URL = "https://starting9-npb-fetch.tanzana7.workers.dev/";
+const NPB_WORKER_PRODUCTION_URL = "https://starting9-npb-fetch.tanzana7.workers.dev/";
+const NPB_WORKER_LOCAL_URL = "http://127.0.0.1:8788/";
+const NPB_WORKER_API_URL = getNpbWorkerApiUrl();
 const NPB_STARTER_SOURCE_URL = "https://npb.jp/announcement/starter/";
-const NPB_WORKER_FALLBACK_MESSAGE = "NPB公式ページ取得APIが未設定、または取得に失敗しました。NPB公式ページの「最新のオーダー」部分をコピーして、下の貼り付け欄に入力してください。";
-const NPB_WORKER_EXTRACTION_FAILED_MESSAGE = "WorkerでNPB公式ページは取得できましたが、スタメン抽出に失敗しました。手動貼り付けを使うか、debug=1付きURLで抽出対象テキストを確認してください。";
+const NPB_SCORE_PATH_PATTERN = /^\/scores\/(\d{4})\/(\d{2})(\d{2})\/([a-z0-9]+-[a-z0-9]+-\d+)\/$/i;
 // DBには全員を保存し、通常画面では先着3人だけ表示します。
 const PERFECT_ACHIEVERS_DEFAULT_DISPLAY_LIMIT = 3;
 const RANKING_DISPLAY_LIMIT = 50;
@@ -1608,24 +1609,21 @@ async function handleNpbFetchCandidate() {
   }
 
   if (!NPB_WORKER_API_URL) {
-    showNpbFetchFallback("NPB公式ページ取得APIが未設定です。手動で貼り付けてください。");
+    showNpbFetchFailure({ ok: false, code: "API_URL_MISSING", message: "NPB公式ページ取得APIが未設定です。" });
     return;
   }
 
   try {
     const candidate = await fetchNpbLineupCandidate(validation.url);
     if (!candidate.ok) {
-      if (candidate.type === "extract") {
-        showNpbExtractionFailedFallback(validation.url, candidate.message);
-      } else {
-        showNpbFetchFallback("取得できませんでした。手動で貼り付けてください。");
-      }
+      showNpbFetchFailure(candidate);
       return;
     }
 
     const parseResult = parseActualLineupText(candidate.lineupText);
     if (!parseResult.ok) {
-      throw new Error(parseResult.message);
+      showNpbFetchFailure({ ok: false, code: "INVALID_LINEUP", message: parseResult.message });
+      return;
     }
 
     document.getElementById("actualPasteInput").value = candidate.lineupText;
@@ -1636,7 +1634,7 @@ async function handleNpbFetchCandidate() {
     setNpbFetchMessage("候補スタメンを取得しました。内容を確認して承認してください。", "success");
   } catch (error) {
     console.warn("NPB公式ページ取得APIから候補を取得できませんでした。", error);
-    showNpbFetchFallback("取得できませんでした。手動で貼り付けてください。");
+    showNpbFetchFailure({ ok: false, code: "WORKER_FETCH_FAILED", message: "取得サービスへ接続できませんでした。" });
   }
 }
 
@@ -1647,13 +1645,22 @@ async function fetchNpbLineupCandidate(sourceUrl) {
 
   try {
     const response = await fetch(buildNpbWorkerRequestUrl(sourceUrl), { cache: "no-store" });
+    const result = await readNpbWorkerResponse(response);
     if (!response.ok) {
-      return { ok: false, type: "network", message: `Worker APIの取得に失敗しました。HTTP ${response.status}` };
+      return {
+        ok: false,
+        code: result?.code || "WORKER_FETCH_FAILED",
+        message: result?.error || `Worker APIの取得に失敗しました。HTTP ${response.status}`,
+        httpStatus: response.status
+      };
     }
 
-    const result = await response.json();
-    if (!result.ok || !result.lineupText) {
-      return { ok: false, type: "extract", message: result.error || "最新のオーダーを抽出できませんでした。" };
+    if (!result?.ok || !result.lineupText) {
+      return {
+        ok: false,
+        code: result?.code || "PARSE_FAILED",
+        message: result?.error || "最新のオーダーを抽出できませんでした。"
+      };
     }
 
     return {
@@ -1665,7 +1672,20 @@ async function fetchNpbLineupCandidate(sourceUrl) {
       lineupText: result.lineupText
     };
   } catch (error) {
-    return { ok: false, type: "network", message: error.message };
+    const errorText = String(error?.message || "");
+    return {
+      ok: false,
+      code: /cors/i.test(errorText) ? "CORS_ERROR" : "WORKER_FETCH_FAILED",
+      message: errorText || "取得サービスへ接続できませんでした。"
+    };
+  }
+}
+
+async function readNpbWorkerResponse(response) {
+  try {
+    return await response.json();
+  } catch (error) {
+    return null;
   }
 }
 
@@ -2087,16 +2107,62 @@ async function initializeRosterCandidateSync() {
 }
 
 function buildNpbWorkerRequestUrl(sourceUrl) {
+  const identity = getNpbScoreRequestIdentity(sourceUrl);
+  if (!identity) {
+    throw new Error("対象試合のNPB公式URLを特定できませんでした。");
+  }
+
   const workerUrl = new URL(NPB_WORKER_API_URL);
-  workerUrl.searchParams.set("url", sourceUrl);
+  workerUrl.searchParams.set("mode", "lineup");
+  workerUrl.searchParams.set("date", identity.date);
+  workerUrl.searchParams.set("gameCode", identity.gameCode);
   return workerUrl.href;
 }
 
 function buildNpbWorkerDebugUrl(sourceUrl) {
+  const identity = getNpbScoreRequestIdentity(sourceUrl);
+  if (!identity) {
+    return "";
+  }
+
   const workerUrl = new URL(NPB_WORKER_API_URL);
-  workerUrl.searchParams.set("url", sourceUrl);
+  workerUrl.searchParams.set("mode", "lineup");
+  workerUrl.searchParams.set("date", identity.date);
+  workerUrl.searchParams.set("gameCode", identity.gameCode);
   workerUrl.searchParams.set("debug", "1");
   return workerUrl.href;
+}
+
+function getNpbWorkerApiUrl() {
+  if (typeof window === "undefined") {
+    return NPB_WORKER_PRODUCTION_URL;
+  }
+
+  const hostname = window.location.hostname;
+  return hostname === "localhost" || hostname === "127.0.0.1"
+    ? NPB_WORKER_LOCAL_URL
+    : NPB_WORKER_PRODUCTION_URL;
+}
+
+function getNpbScoreRequestIdentity(value) {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.hostname !== "npb.jp") {
+      return null;
+    }
+
+    const match = url.pathname.match(NPB_SCORE_PATH_PATTERN);
+    if (!match) {
+      return null;
+    }
+
+    return {
+      date: `${match[1]}-${match[2]}-${match[3]}`,
+      gameCode: match[4].toLowerCase()
+    };
+  } catch (error) {
+    return null;
+  }
 }
 
 async function initializeProbableStarter() {
@@ -3394,13 +3460,34 @@ function renderPerfectAchievers() {
   container.querySelector("#openPerfectAchieverLoginButton")?.addEventListener("click", () => window.starting9Auth?.openLogin?.());
 }
 
-function showNpbFetchFallback(message) {
+function showNpbFetchFailure(candidate) {
+  const code = candidate?.code || "WORKER_FETCH_FAILED";
+  const display = getNpbFetchFailureDisplay(code, candidate?.message);
   state.actualPreview = null;
   state.adminStatus = "error";
-  state.adminError = NPB_WORKER_FALLBACK_MESSAGE;
+  state.adminError = `[${code}] ${display.message}`;
   renderAdminFlow();
-  showMessage("parserError", NPB_WORKER_FALLBACK_MESSAGE);
-  setNpbFetchMessage(message, "error");
+  showMessage("parserError", display.message);
+  setNpbFetchMessage(display.message, "error");
+  addAutoFetchLog(`スタメン取得失敗 [${code}]：${candidate?.message || display.message}`);
+  console.warn("NPBスタメン取得に失敗しました。", { code, httpStatus: candidate?.httpStatus || 0 });
+}
+
+function getNpbFetchFailureDisplay(code, workerMessage) {
+  const manualPasteHint = "必要に応じて、NPB公式ページの「最新のオーダー」を手動で貼り付けて入力できます。";
+  const messages = {
+    API_URL_MISSING: `取得サービスの設定を確認してください。${manualPasteHint}`,
+    LINEUP_NOT_PUBLISHED: "スタメンはまだ発表されていません。発表後にもう一度取得してください。",
+    GAME_NOT_FOUND: `対象試合を特定できませんでした。試合情報を確認してください。${manualPasteHint}`,
+    NPB_HTTP_ERROR: `NPB公式ページを取得できませんでした。時間をおいて再試行してください。${manualPasteHint}`,
+    WORKER_FETCH_FAILED: `取得サービスへ接続できませんでした。時間をおいて再試行してください。${manualPasteHint}`,
+    CORS_ERROR: `取得サービスへ接続できませんでした。管理者はWorkerのCORS設定を確認してください。${manualPasteHint}`,
+    TIMEOUT: `NPB公式ページの取得がタイムアウトしました。時間をおいて再試行してください。${manualPasteHint}`,
+    INVALID_LINEUP: `取得したスタメンを確認できませんでした。${manualPasteHint}`,
+    PARSE_FAILED: `NPB公式ページのスタメン解析に失敗しました。${manualPasteHint}`
+  };
+
+  return { message: messages[code] || workerMessage || `スタメン取得に失敗しました。${manualPasteHint}` };
 }
 
 async function initializePredictionRemoteSync() {
@@ -3721,17 +3808,6 @@ function updatePredictionSaveButton() {
   button.setAttribute("aria-busy", isSaving ? "true" : "false");
 }
 
-function showNpbExtractionFailedFallback(sourceUrl, workerError) {
-  const debugUrl = buildNpbWorkerDebugUrl(sourceUrl);
-  const message = `${NPB_WORKER_EXTRACTION_FAILED_MESSAGE}\n${debugUrl}`;
-  state.actualPreview = null;
-  state.adminStatus = "error";
-  state.adminError = workerError ? `${NPB_WORKER_EXTRACTION_FAILED_MESSAGE}\nWorkerエラー：${workerError}` : NPB_WORKER_EXTRACTION_FAILED_MESSAGE;
-  renderAdminFlow();
-  showMessage("parserError", message);
-  setNpbFetchMessage("スタメン抽出に失敗しました。手動貼り付け、またはdebug=1付きURLを確認してください。", "error");
-}
-
 function startAutoFetch() {
   clearMessage("parserError");
   clearMessage("actualError");
@@ -4048,12 +4124,7 @@ function getGameStartDate() {
 }
 
 function isNpbScoresUrl(value) {
-  try {
-    const url = new URL(value);
-    return (url.hostname === "npb.jp" || url.hostname.endsWith(".npb.jp")) && url.pathname.startsWith("/scores/");
-  } catch (error) {
-    return false;
-  }
+  return Boolean(getNpbScoreRequestIdentity(value));
 }
 
 function validateNpbUrl(value) {
@@ -4070,16 +4141,15 @@ function validateNpbUrl(value) {
     return { ok: false, message: "URL形式が不正です。https://npb.jp/ から始まる公式ページURLを入力してください。" };
   }
 
-  if (!/^https?:$/.test(parsedUrl.protocol)) {
-    return { ok: false, message: "httpまたはhttpsのURLを入力してください。" };
+  if (parsedUrl.protocol !== "https:" || parsedUrl.hostname !== "npb.jp") {
+    return { ok: false, message: "https://npb.jp/ の公式試合ページURLを入力してください。" };
   }
 
-  const isNpbUrl = parsedUrl.hostname.toLowerCase().includes("npb.jp");
-  return {
-    ok: true,
-    url: parsedUrl.href,
-    warning: isNpbUrl ? "" : "npb.jpを含まないURLです。公式ページURLか確認してください。"
-  };
+  if (!getNpbScoreRequestIdentity(parsedUrl.href)) {
+    return { ok: false, message: "https://npb.jp/scores/ 配下の公式試合ページURLを入力してください。" };
+  }
+
+  return { ok: true, url: parsedUrl.href, warning: "" };
 }
 
 function extractNpbOrderText(html) {

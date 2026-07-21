@@ -119,16 +119,10 @@
         </div>
         <p id="predictionError" class="message error-message" role="alert" aria-live="polite"></p>
 
-        <button class="primary-button" type="submit">予想を保存する</button>
+        <button id="savePredictionButton" class="primary-button" type="submit">予想を保存する</button>
         <button id="resetPredictionButton" class="secondary-button" type="button">予想をリセット</button>
+        <p id="predictionSaveMessage" class="message" role="status" aria-live="polite"></p>
         <p id="predictionResetMessage" class="message" role="status" aria-live="polite"></p>
-        <section id="predictionAccountPanel" class="prediction-account-panel" aria-live="polite">
-          <p id="predictionAccountStatus" class="prediction-account-status"></p>
-          <div class="prediction-account-actions">
-            <button id="savePredictionToAccountButton" class="secondary-button compact-button hidden" type="button">現在の予想をアカウントに保存</button>
-            <button id="loadPredictionFromAccountButton" class="secondary-button compact-button hidden" type="button">アカウントの予想を読み込む</button>
-          </div>
-        </section>
       </form>
     </section>
 

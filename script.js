@@ -66,6 +66,7 @@ const TEAM_PLAYER_ID_PREFIXES = Object.freeze({
 });
 const DEFAULT_PLAYER_TEAM_CODE = "fighters";
 let autoScoringCountdownTimerId = null;
+let predictionSaveMessageTimerId = null;
 const TEST_PREDICTION_LINEUP = [
   { order: 1, player: "大塚瑠晏", position: "遊" },
   { order: 2, player: "清宮幸太郎", position: "一" },
@@ -403,8 +404,6 @@ function bindEvents() {
   document.getElementById("adminDetails")?.addEventListener("toggle", handleAdminDetailsToggle);
   document.getElementById("developmentDetails")?.addEventListener("toggle", handleDevelopmentDetailsToggle);
   document.getElementById("registerPerfectAchieverButton")?.addEventListener("click", registerPerfectAchiever);
-  document.getElementById("savePredictionToAccountButton")?.addEventListener("click", () => savePredictionToAccount());
-  document.getElementById("loadPredictionFromAccountButton")?.addEventListener("click", loadPredictionFromAccount);
   bindAdminEvent("loadNextGameButton", "click", loadNextGameSchedule);
   bindAdminEvent("loadTodayGameButton", "click", loadTodayGameSchedule);
   bindAdminEvent("loadSelectedGameButton", "click", loadSelectedGameSchedule);
@@ -1091,7 +1090,7 @@ function createPositionControl(pickerName, index, slot) {
       button.dataset.skipClick = "false";
       return;
     }
-    togglePositionMenu(menu, button);
+    togglePositionMenu(menu, button, pickerName, index);
   });
   button.addEventListener("dragstart", (event) => handlePositionDragStart(event, button, slot));
   button.addEventListener("dragend", (event) => handlePositionDragEnd(event, button));
@@ -1104,14 +1103,14 @@ function createPositionControl(pickerName, index, slot) {
     optionButton.className = "position-menu-option";
     optionButton.type = "button";
     optionButton.textContent = position || "?";
+    optionButton.dataset.position = position;
     optionButton.setAttribute("role", "menuitem");
     optionButton.setAttribute("aria-label", position ? `${position}を選択` : "守備位置を未選択にする");
     optionButton.addEventListener("click", (event) => {
       event.stopPropagation();
-      slot.dataset.position = position;
+      selectPositionForSlot(pickerName, index, position);
       clearMessage(pickerName === "prediction" ? "predictionError" : "actualError");
       closeAllPositionMenus();
-      renderPicker(pickerName);
     });
     menu.appendChild(optionButton);
   });
@@ -1120,14 +1119,73 @@ function createPositionControl(pickerName, index, slot) {
   return control;
 }
 
-function togglePositionMenu(menu, button) {
+function togglePositionMenu(menu, button, pickerName, index) {
   const shouldOpen = menu.classList.contains("hidden");
   closeAllPositionMenus();
 
   if (shouldOpen) {
+    updatePositionMenuState(menu, pickerName, index);
     menu.classList.remove("hidden");
     button.setAttribute("aria-expanded", "true");
   }
+}
+
+function updatePositionMenuState(menu, pickerName, index) {
+  const lineup = getLineupValues(pickerName);
+  const currentPosition = lineup[index]?.position || "";
+  const usedByOtherSlots = new Set(
+    lineup
+      .filter((_, lineupIndex) => lineupIndex !== index)
+      .map((item) => item.position)
+      .filter(Boolean)
+  );
+
+  menu.querySelectorAll(".position-menu-option").forEach((optionButton) => {
+    const position = optionButton.dataset.position || "";
+    const isCurrent = position === currentPosition;
+    const isUsed = Boolean(position) && !isCurrent && usedByOtherSlots.has(position);
+    optionButton.classList.toggle("is-current", isCurrent);
+    optionButton.classList.toggle("is-used", isUsed);
+    optionButton.title = isUsed ? "選択するとポジションを入れ替えます" : "";
+    optionButton.setAttribute(
+      "aria-label",
+      position
+        ? `${position}を選択${isUsed ? "（他の打順で使用中。選択すると入れ替えます）" : ""}`
+        : "守備位置を未選択にする"
+    );
+  });
+}
+
+function selectPositionForSlot(pickerName, index, position) {
+  const lineup = getLineupValues(pickerName);
+  const updatedLineup = createPositionSelectionLineup(lineup, index, position);
+  setLineupValues(pickerName, updatedLineup);
+}
+
+function createPositionSelectionLineup(lineup, targetIndex, position) {
+  const updatedLineup = normalizeLineup(lineup);
+  const target = updatedLineup[targetIndex];
+  if (!target) {
+    return updatedLineup;
+  }
+
+  const nextPosition = position ? normalizePosition(position) : "";
+  const previousPosition = target.position || "";
+  if (nextPosition === previousPosition) {
+    return updatedLineup;
+  }
+
+  const occupiedIndex = nextPosition
+    ? updatedLineup.findIndex((item, lineupIndex) => lineupIndex !== targetIndex && item.position === nextPosition)
+    : -1;
+
+  updatedLineup[targetIndex] = createLineupItem(targetIndex, target.player, nextPosition);
+  if (occupiedIndex !== -1) {
+    const occupied = updatedLineup[occupiedIndex];
+    updatedLineup[occupiedIndex] = createLineupItem(occupiedIndex, occupied.player, previousPosition);
+  }
+
+  return updatedLineup;
 }
 
 function closeAllPositionMenus() {
@@ -3327,6 +3385,13 @@ async function syncPredictionFromAccount({ force = false } = {}) {
     remoteState.updatedAt = payload.updatedAt || "";
     remoteState.locked = Boolean(payload.locked);
     remoteState.conflict = Boolean(remoteState.prediction && state.prediction && !predictionsMatch(remoteState.prediction, state.prediction));
+    if (remoteState.prediction && !state.prediction) {
+      state.prediction = { ...remoteState.prediction, lineup: normalizeLineup(remoteState.prediction.lineup) };
+      state.result = null;
+      saveToStorage(STORAGE_KEYS.prediction, state.prediction);
+      removeFromStorage(STORAGE_KEYS.result);
+      renderAll();
+    }
   } catch (error) {
     console.error("アカウント予想の取得に失敗しました", error.message);
     remoteState.status = "error";
@@ -3437,19 +3502,16 @@ async function savePredictionToAccount(prediction = state.prediction) {
   const user = getPredictionAccountUser();
   const gameId = getCurrentGameId();
   if (!user) {
-    renderPredictionAccountStatus();
     return false;
   }
   if (!prediction || !gameId) {
     state.predictionRemote.status = "warning";
     state.predictionRemote.message = "保存する予想と対象試合を確認してください。";
-    renderPredictionAccountStatus();
     return false;
   }
   if (state.predictionRemote.gameId === gameId && state.predictionRemote.locked) {
     state.predictionRemote.status = "warning";
     state.predictionRemote.message = "この試合の予想受付は終了しています。";
-    renderPredictionAccountStatus();
     return false;
   }
 
@@ -3457,7 +3519,6 @@ async function savePredictionToAccount(prediction = state.prediction) {
   if (!predictionPayload.ok) {
     state.predictionRemote.status = "warning";
     state.predictionRemote.message = predictionPayload.error;
-    renderPredictionAccountStatus();
     return false;
   }
 
@@ -3465,14 +3526,13 @@ async function savePredictionToAccount(prediction = state.prediction) {
   if (!url) {
     state.predictionRemote.status = "unavailable";
     state.predictionRemote.message = "認証APIが未設定のため、端末の予想だけ保存しました。";
-    renderPredictionAccountStatus();
     return false;
   }
 
   state.predictionRemote.isSaving = true;
   state.predictionRemote.status = "saving";
   state.predictionRemote.message = "アカウントへ予想を保存中...";
-  renderPredictionAccountStatus();
+  updatePredictionSaveButton();
 
   try {
     const response = await fetch(url, {
@@ -3501,7 +3561,7 @@ async function savePredictionToAccount(prediction = state.prediction) {
     return false;
   } finally {
     state.predictionRemote.isSaving = false;
-    renderPredictionAccountStatus();
+    updatePredictionSaveButton();
   }
 }
 
@@ -3554,61 +3614,19 @@ async function deletePredictionFromAccount(gameId) {
 }
 
 function renderPredictionAccountStatus() {
-  const statusElement = document.getElementById("predictionAccountStatus");
-  const saveButton = document.getElementById("savePredictionToAccountButton");
-  const loadButton = document.getElementById("loadPredictionFromAccountButton");
-  if (!statusElement || !saveButton || !loadButton) {
+  updatePredictionSaveButton();
+}
+
+function updatePredictionSaveButton() {
+  const button = document.getElementById("savePredictionButton");
+  if (!button) {
     return;
   }
 
-  const user = getPredictionAccountUser();
-  const remoteState = state.predictionRemote;
-  const currentGameId = getCurrentGameId();
-  const isCurrentGameLocked = remoteState.gameId === currentGameId && remoteState.locked;
-  statusElement.className = "prediction-account-status";
-  saveButton.classList.add("hidden");
-  loadButton.classList.add("hidden");
-  saveButton.disabled = remoteState.isSaving || remoteState.isLoading || isCurrentGameLocked;
-  loadButton.disabled = remoteState.isLoading;
-
-  if (!user) {
-    statusElement.textContent = "ログインすると、この予想をアカウントにも保存できます。未ログイン時は端末保存のみです。";
-    return;
-  }
-  if (!currentGameId) {
-    statusElement.textContent = "対象試合が決まると、予想をアカウントに保存できます。";
-    return;
-  }
-  if (remoteState.status === "loading") {
-    statusElement.textContent = remoteState.message;
-    return;
-  }
-  if (remoteState.status === "error" || remoteState.status === "warning") {
-    statusElement.classList.add(remoteState.status === "error" ? "is-error" : "is-warning");
-    statusElement.textContent = remoteState.message;
-  } else if (isCurrentGameLocked) {
-    statusElement.classList.add("is-warning");
-    statusElement.textContent = "この試合の予想受付は終了しています。";
-  } else if (remoteState.conflict && remoteState.prediction) {
-    statusElement.classList.add("is-warning");
-    statusElement.textContent = "アカウントに別の予想が保存されています。読み込むか、現在の予想で上書きしてください。";
-    loadButton.classList.remove("hidden");
-    saveButton.classList.remove("hidden");
-  } else if (remoteState.prediction) {
-    statusElement.classList.add("is-success");
-    if (state.prediction) {
-      statusElement.textContent = `アカウントにも保存済みです。最終更新：${formatDateTime(remoteState.updatedAt)}`;
-      saveButton.classList.remove("hidden");
-    } else {
-      statusElement.textContent = "アカウントに保存済みの予想があります。読み込むことができます。";
-      loadButton.classList.remove("hidden");
-    }
-  } else if (state.prediction) {
-    statusElement.textContent = "現在の予想をアカウントに保存できます。";
-    saveButton.classList.remove("hidden");
-  } else {
-    statusElement.textContent = "ログイン中です。予想を保存するとアカウントにも保存されます。";
-  }
+  const isSaving = state.predictionRemote.isSaving;
+  button.disabled = isSaving;
+  button.textContent = isSaving ? "保存中..." : "予想を保存する";
+  button.setAttribute("aria-busy", isSaving ? "true" : "false");
 }
 
 function showNpbExtractionFailedFallback(sourceUrl, workerError) {
@@ -4201,9 +4219,14 @@ function normalizePlayerKey(value) {
   return String(value || "").normalize("NFKC").replace(/[\s\u3000]/g, "");
 }
 
-function handlePredictionSubmit(event) {
+async function handlePredictionSubmit(event) {
   event.preventDefault();
+  if (state.predictionRemote.isSaving) {
+    return;
+  }
+
   clearMessage("predictionError");
+  clearMessage("predictionSaveMessage");
   clearMessage("predictionResetMessage");
   clearMessage("resetMessage");
 
@@ -4226,9 +4249,18 @@ function handlePredictionSubmit(event) {
   state.result = null;
   removeFromStorage(STORAGE_KEYS.result);
   renderAll();
-  if (getPredictionAccountUser()) {
-    savePredictionToAccount(state.prediction);
+  if (!getPredictionAccountUser()) {
+    showPredictionSaveMessage("この端末に予想を保存しました。");
+    return;
   }
+
+  const savedToAccount = await savePredictionToAccount(state.prediction);
+  if (savedToAccount) {
+    showPredictionSaveMessage("予想を保存しました。");
+    return;
+  }
+
+  showMessage("predictionError", state.predictionRemote.message || "端末には保存しましたが、アカウントへの保存に失敗しました。");
 }
 
 function resetPredictionInput() {
@@ -5972,6 +6004,24 @@ function resetAllData() {
 
 function showMessage(elementId, message) {
   document.getElementById(elementId).textContent = message;
+}
+
+function showPredictionSaveMessage(message) {
+  const element = document.getElementById("predictionSaveMessage");
+  if (!element) {
+    return;
+  }
+
+  if (predictionSaveMessageTimerId) {
+    clearTimeout(predictionSaveMessageTimerId);
+  }
+  element.classList.add("success-message");
+  element.textContent = message;
+  predictionSaveMessageTimerId = setTimeout(() => {
+    element.textContent = "";
+    element.classList.remove("success-message");
+    predictionSaveMessageTimerId = null;
+  }, 4000);
 }
 
 function clearMessage(elementId) {

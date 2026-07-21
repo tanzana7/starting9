@@ -47,15 +47,18 @@ function createApp({ href = "https://starting9.pages.dev/", user = null, admin =
       fetchUrls.push(url);
       const isCapabilityRequest = String(url).endsWith("/api/admin/mode-capabilities");
       const isAchievementsRequest = String(url).endsWith("/api/me/achievements");
+      const isPublicRankingRequest = String(url).includes("/api/rankings/all-time");
+      const isMyRankingRequest = String(url).endsWith("/api/me/ranking/all-time");
       return {
         ok: admin,
-        json: async () => admin
-          ? (isAchievementsRequest
-            ? { ok: true, achievements: [] }
-            : (isCapabilityRequest
-              ? { ok: true, adminModeAvailable: true, developmentModeAvailable: false }
-              : { ok: true, admin: true }))
-          : { ok: false, admin: false }
+        json: async () => {
+          if (!admin) return { ok: false, admin: false };
+          if (isAchievementsRequest) return { ok: true, achievements: [] };
+          if (isPublicRankingRequest) return { ranking: [], summary: { eligibleGames: 0 }, pagination: {} };
+          if (isMyRankingRequest) return { ok: true, rankingData: null };
+          if (isCapabilityRequest) return { ok: true, adminModeAvailable: true, developmentModeAvailable: false };
+          return { ok: true, admin: true };
+        }
       };
     },
     Map,
@@ -85,8 +88,7 @@ test("管理者は初期Promise完了後に一度だけ確認され、ボタン�
   const app = createApp({ user: { id: "admin-user", username: "admin" }, admin: true });
 
   await vm.runInContext("initializeAuthDependentFeatures()", app.context);
-  assert.deepEqual(app.fetchUrls, [
-    "https://starting9-auth.tanzana7.workers.dev/api/me/achievements",
+  assert.deepEqual(app.fetchUrls.filter((url) => String(url).includes("/api/admin/")), [
     "https://starting9-auth.tanzana7.workers.dev/api/admin/me",
     "https://starting9-auth.tanzana7.workers.dev/api/admin/mode-capabilities"
   ]);

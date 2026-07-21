@@ -16,7 +16,7 @@ function requiredGames(eligibleGames) {
 
 function createDatabase() {
   const db = new DatabaseSync(":memory:");
-  for (const file of ["0001_auth.sql", "0003_predictions.sql", "0004_admin_role.sql", "0006_user_achievements.sql", "0007_all_time_ranking.sql"]) {
+  for (const file of ["0001_auth.sql", "0003_predictions.sql", "0004_admin_role.sql", "0006_user_achievements.sql", "0007_all_time_ranking.sql", "0008_monthly_ranking.sql"]) {
     db.exec(fs.readFileSync(path.join(root, "migrations", file), "utf8"));
   }
   return db;

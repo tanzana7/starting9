@@ -40,6 +40,7 @@ const NPB_WORKER_EXTRACTION_FAILED_MESSAGE = "WorkerでNPB公式ページは取�
 // DBには全員を保存し、通常画面では先着3人だけ表示します。
 const PERFECT_ACHIEVERS_DEFAULT_DISPLAY_LIMIT = 3;
 const ALL_TIME_RANKING_DISPLAY_LIMIT = 50;
+const MONTHLY_RANKING_MIN_YEAR = 2020;
 const AUTO_FETCH_START_BEFORE_MS = 50 * 60 * 1000;
 const AUTO_FETCH_INTERVAL_MS = 10 * 60 * 1000;
 const AUTO_FETCH_MAX_ATTEMPTS = 5;
@@ -250,6 +251,18 @@ const state = {
     self: null,
     message: ""
   },
+  rankingView: "allTime",
+  monthlyRanking: {
+    isLoading: false,
+    isLoadingSelf: false,
+    requestId: 0,
+    rows: [],
+    summary: null,
+    pagination: null,
+    self: null,
+    message: "",
+    ...getJapanYearMonth()
+  },
   predictionRemote: {
     isLoading: false,
     isSaving: false,
@@ -378,6 +391,9 @@ function bindEvents() {
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
   document.getElementById("openAdminButton")?.addEventListener("click", openAdminPanel);
   document.getElementById("openDevelopmentButton")?.addEventListener("click", openDevelopmentPanel);
+  document.getElementById("showAllTimeRankingButton")?.addEventListener("click", () => selectRankingView("allTime"));
+  document.getElementById("showMonthlyRankingButton")?.addEventListener("click", () => selectRankingView("monthly"));
+  document.getElementById("allTimeRankingContent")?.addEventListener("click", handleMonthlyRankingContentClick);
   document.getElementById("closeAdminButton")?.addEventListener("click", closeAdminPanel);
   document.getElementById("adminToDevelopmentButton")?.addEventListener("click", openDevelopmentPanel);
   document.getElementById("closeDevelopmentButton")?.addEventListener("click", closeDevelopmentPanel);
@@ -2154,6 +2170,9 @@ function handleAuthStateChanged() {
   syncPredictionFromAccount({ force: true });
   fetchUserAchievements({ force: true });
   refreshAllTimeRanking({ force: true });
+  if (state.rankingView === "monthly") {
+    refreshMonthlyRanking({ force: true });
+  }
   refreshAdminAccess();
 }
 
@@ -2383,6 +2402,9 @@ async function refreshAutoScoringStatus({ force = false } = {}) {
       state.autoScoring.message = "";
       if (previousStatus !== "scored" && state.autoScoring.record?.status === "scored") {
         void refreshAllTimeRanking({ force: true });
+        if (state.rankingView === "monthly") {
+          void refreshMonthlyRanking({ force: true });
+        }
       }
     }
   } catch (error) {
@@ -2421,6 +2443,9 @@ async function updateAutoScoring(action, confirmationMessage = "") {
     await refreshAdminScoringSummary({ force: true });
     if (isRunNow) {
       await refreshAllTimeRanking({ force: true });
+      if (state.rankingView === "monthly") {
+        await refreshMonthlyRanking({ force: true });
+      }
     }
   } catch (error) {
     console.error("自動採点操作に失敗しました", error.message);
@@ -2592,6 +2617,9 @@ async function runServerScoring() {
     resetAdminScoringPreview();
     await refreshAdminScoringSummary({ force: true });
     await refreshAllTimeRanking({ force: true });
+    if (state.rankingView === "monthly") {
+      await refreshMonthlyRanking({ force: true });
+    }
     renderAutoScoringPanel();
   } catch (error) {
     console.error("本番採点に失敗しました", error.message);
@@ -2693,6 +2721,36 @@ function buildMyAllTimeRankingApiUrl() {
   return baseUrl ? `${baseUrl}/api/me/ranking/all-time` : "";
 }
 
+function getJapanYearMonth(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return { year: Number(values.year), month: Number(values.month) };
+}
+
+function buildMonthlyRankingApiUrl({ year, month, qualifiedOnly = false } = {}) {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  if (!baseUrl) return "";
+  const url = new URL(`${baseUrl}/api/rankings/monthly`, window.location.href);
+  url.searchParams.set("year", String(year));
+  url.searchParams.set("month", String(month));
+  url.searchParams.set("limit", String(ALL_TIME_RANKING_DISPLAY_LIMIT));
+  url.searchParams.set("qualifiedOnly", qualifiedOnly ? "true" : "false");
+  return url.href;
+}
+
+function buildMyMonthlyRankingApiUrl({ year, month } = {}) {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  if (!baseUrl) return "";
+  const url = new URL(`${baseUrl}/api/me/ranking/monthly`, window.location.href);
+  url.searchParams.set("year", String(year));
+  url.searchParams.set("month", String(month));
+  return url.href;
+}
+
 async function initializeAllTimeRanking() {
   await refreshAllTimeRanking({ force: true });
 }
@@ -2760,30 +2818,169 @@ async function refreshAllTimeRanking({ force = false } = {}) {
   }
 }
 
+async function refreshMonthlyRanking({ force = false } = {}) {
+  const ranking = state.monthlyRanking;
+  if (ranking.isLoading && !force) return;
+  const period = { year: ranking.year, month: ranking.month };
+  const publicUrl = buildMonthlyRankingApiUrl({ ...period, qualifiedOnly: false });
+  if (!publicUrl) {
+    ranking.message = "ランキングの接続先を確認できません。";
+    renderAllTimeRanking();
+    return;
+  }
+
+  const user = getPredictionAccountUser();
+  const requestId = ranking.requestId + 1;
+  ranking.requestId = requestId;
+  ranking.isLoading = true;
+  ranking.isLoadingSelf = Boolean(user);
+  ranking.message = "";
+  if (!user) ranking.self = null;
+  renderAllTimeRanking();
+
+  try {
+    const publicRequest = fetch(publicUrl, { credentials: "include", cache: force ? "no-store" : "default" })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !Array.isArray(payload?.ranking)) {
+          throw new Error(payload?.error || `HTTP ${response.status}`);
+        }
+        return payload;
+      });
+    const selfRequest = user ? fetch(buildMyMonthlyRankingApiUrl(period), { credentials: "include", cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload?.ok) {
+          throw new Error(payload?.error || `HTTP ${response.status}`);
+        }
+        return payload.rankingData || null;
+      })
+      .catch((error) => {
+        console.error("自分の月間成績の取得に失敗しました", error.message);
+        return null;
+      }) : Promise.resolve(null);
+    const [publicPayload, self] = await Promise.all([publicRequest, selfRequest]);
+    if (requestId !== ranking.requestId || ranking.year !== period.year || ranking.month !== period.month) return;
+    ranking.rows = publicPayload.ranking;
+    ranking.summary = publicPayload.summary || null;
+    ranking.pagination = publicPayload.pagination || null;
+    ranking.self = self;
+  } catch (error) {
+    if (requestId !== ranking.requestId) return;
+    console.error("月間ランキングの取得に失敗しました", error.message);
+    ranking.rows = [];
+    ranking.summary = null;
+    ranking.pagination = null;
+    ranking.self = null;
+    ranking.message = "月間ランキングの取得に失敗しました。";
+  } finally {
+    if (requestId === ranking.requestId) {
+      ranking.isLoading = false;
+      ranking.isLoadingSelf = false;
+      renderAllTimeRanking();
+    }
+  }
+}
+
+function selectRankingView(view) {
+  if (view !== "allTime" && view !== "monthly") return;
+  state.rankingView = view;
+  renderAllTimeRanking();
+  if (view === "monthly") {
+    void refreshMonthlyRanking({ force: true });
+  }
+}
+
+function handleMonthlyRankingContentClick(event) {
+  const button = event.target.closest("[data-monthly-ranking-move]");
+  if (!button || button.disabled) return;
+  const direction = Number(button.dataset.monthlyRankingMove);
+  if (!Number.isInteger(direction) || direction === 0) return;
+  const current = state.monthlyRanking;
+  const candidate = new Date(Date.UTC(current.year, current.month - 1 + direction, 1));
+  const next = { year: candidate.getUTCFullYear(), month: candidate.getUTCMonth() + 1 };
+  const present = getJapanYearMonth();
+  if (next.year < MONTHLY_RANKING_MIN_YEAR || next.year > present.year || (next.year === present.year && next.month > present.month)) {
+    return;
+  }
+  current.year = next.year;
+  current.month = next.month;
+  current.self = null;
+  void refreshMonthlyRanking({ force: true });
+}
+
 function renderAllTimeRanking() {
   const panel = document.getElementById("allTimeRankingPanel");
   const container = document.getElementById("allTimeRankingContent");
   if (!panel || !container) return;
 
-  const ranking = state.allTimeRanking;
+  if (state.rankingView === "monthly") {
+    renderMonthlyRanking();
+    return;
+  }
+
+  renderRankingHeading("allTime");
+  renderRankingContent(state.allTimeRanking, {
+    selfTitle: "あなたの通算成績",
+    emptyMessage: "まだランキング対象試合がありません。"
+  });
+}
+
+function renderMonthlyRanking() {
+  renderRankingHeading("monthly");
+  const ranking = state.monthlyRanking;
+  const current = getJapanYearMonth();
+  const isCurrentMonth = ranking.year === current.year && ranking.month === current.month;
+  const periodControls = `<div class="ranking-month-controls" aria-label="月間ランキングの対象月">
+    <button class="compact-button" type="button" data-monthly-ranking-move="-1">前月</button>
+    <strong>${escapeHtml(ranking.year)}年${escapeHtml(ranking.month)}月</strong>
+    <button class="compact-button" type="button" data-monthly-ranking-move="1"${isCurrentMonth ? " disabled" : ""}>次月</button>
+  </div>`;
+  renderRankingContent(ranking, {
+    selfTitle: "あなたの月間成績",
+    emptyMessage: "この月のランキング対象試合はありません。",
+    prefixHtml: periodControls
+  });
+}
+
+function renderRankingHeading(view) {
+  const title = document.getElementById("allTimeRankingTitle");
+  const description = document.getElementById("rankingDescription");
+  const allTimeButton = document.getElementById("showAllTimeRankingButton");
+  const monthlyButton = document.getElementById("showMonthlyRankingButton");
+  const isMonthly = view === "monthly";
+  if (title) title.textContent = isMonthly ? "月間ランキング" : "通算ランキング";
+  if (description) description.textContent = isMonthly
+    ? "この月に正式採点された対象試合の3分の2以上に参加すると順位対象になります。"
+    : "正式に採点された対象試合の3分の2以上に参加すると順位対象になります。";
+  allTimeButton?.classList.toggle("is-active", !isMonthly);
+  monthlyButton?.classList.toggle("is-active", isMonthly);
+  allTimeButton?.setAttribute("aria-selected", String(!isMonthly));
+  monthlyButton?.setAttribute("aria-selected", String(isMonthly));
+}
+
+function renderRankingContent(ranking, { selfTitle, emptyMessage, prefixHtml = "" }) {
+  const container = document.getElementById("allTimeRankingContent");
+  if (!container) return;
+
   if (ranking.isLoading && !ranking.summary) {
-    container.innerHTML = '<p class="empty-state">ランキングを読み込んでいます。</p>';
+    container.innerHTML = `${prefixHtml}<p class="empty-state">ランキングを読み込んでいます。</p>`;
     return;
   }
   if (ranking.message) {
-    container.innerHTML = `<p class="empty-state">${escapeHtml(ranking.message)}</p>`;
+    container.innerHTML = `${prefixHtml}<p class="empty-state">${escapeHtml(ranking.message)}</p>`;
     return;
   }
 
   const summary = ranking.summary;
   if (!summary || Number(summary.eligibleGames || 0) === 0) {
-    container.innerHTML = '<p class="empty-state">まだランキング対象試合がありません。</p>';
+    container.innerHTML = `${prefixHtml}<p class="empty-state">${escapeHtml(emptyMessage)}</p>`;
     return;
   }
 
   const qualified = ranking.rows.filter((row) => row.isQualified);
   const unqualified = ranking.rows.filter((row) => !row.isQualified);
-  const selfSection = renderMyAllTimeRanking(ranking.self);
+  const selfSection = renderMyRanking(ranking, ranking.self, selfTitle);
   const qualifiedContent = qualified.length
     ? `<ol class="ranking-list">${qualified.map((row) => createRankingCardHtml(row)).join("")}</ol>`
     : '<p class="ranking-empty">まだ規定到達者はいません。</p>';
@@ -2792,6 +2989,7 @@ function renderAllTimeRanking() {
     : "";
   const summaryText = `対象 ${summary.eligibleGames}試合 / 規定 ${summary.requiredGames}試合以上`;
   container.innerHTML = `
+    ${prefixHtml}
     <p class="ranking-summary">${escapeHtml(summaryText)}</p>
     ${selfSection}
     <section class="ranking-qualified-section" aria-labelledby="rankingQualifiedTitle">
@@ -2802,20 +3000,20 @@ function renderAllTimeRanking() {
   `;
 }
 
-function renderMyAllTimeRanking(row) {
+function renderMyRanking(ranking, row, title) {
   const user = getPredictionAccountUser();
   if (!user) return "";
-  if (state.allTimeRanking.isLoadingSelf) {
-    return '<section class="ranking-self"><h3>あなたの通算成績</h3><p>通算成績を読み込んでいます。</p></section>';
+  if (ranking.isLoadingSelf) {
+    return `<section class="ranking-self"><h3>${escapeHtml(title)}</h3><p>成績を読み込んでいます。</p></section>`;
   }
   if (!row) {
-    return '<section class="ranking-self"><h3>あなたの通算成績</h3><p>まだランキング対象試合への参加記録がありません。</p></section>';
+    return `<section class="ranking-self"><h3>${escapeHtml(title)}</h3><p>まだランキング対象試合への参加記録がありません。</p></section>`;
   }
   const qualification = row.isQualified
     ? `規定到達・現在 ${row.rank}位`
     : `規定まであと${row.gamesNeeded}試合（規定未到達）`;
   return `<section class="ranking-self">
-    <h3>あなたの通算成績</h3>
+    <h3>${escapeHtml(title)}</h3>
     <p><strong>平均${escapeHtml(formatRankingScore(row.averageScore))}点</strong> ${escapeHtml(qualification)}</p>
     <p>${escapeHtml(row.gamesPlayed)} / ${escapeHtml(row.eligibleGames)}試合参加・参加率${escapeHtml(formatParticipationRate(row.participationRate))}</p>
   </section>`;

@@ -2495,9 +2495,6 @@ textarea:focus {
     flex-direction: column;
   }
 
-  .all-time-ranking-heading .compact-button {
-    width: 100%;
-  }
 }
 
 @media (max-width: 430px) {

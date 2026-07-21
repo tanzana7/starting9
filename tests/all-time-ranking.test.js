@@ -49,7 +49,7 @@ function insertPrediction(db, { id, userId, gameId, score, isTest = 0, scoredAt 
 }
 
 function getRankingCte() {
-  const match = /function createAllTimeRankingCte\(\) \{[\s\S]*?return `([\s\S]*?)`;\n\}/.exec(worker);
+  const match = /function createAllTimeRankingCte\(\) \{[\s\S]*?return `([\s\S]*?)`;\r?\n\}/.exec(worker);
   assert.ok(match, "Workerのランキング集計CTEを取得できること");
   return match[1];
 }
@@ -131,11 +131,12 @@ test("公開ランキングは内部ID・隠し実績・metadataを返さず、�
   assert.doesNotMatch(worker, /rankingData:[\s\S]{0,200}userId/);
 });
 
-test("通常画面にはカード型の通算ランキングと再読み込み導線がある", () => {
+test("通常画面にはカード型の通算ランキングがあり、手動再読み込み導線を置かない", () => {
   assert.match(html, /id="allTimeRankingPanel"/);
-  assert.match(html, /id="reloadAllTimeRankingButton"/);
   assert.match(script, /function refreshAllTimeRanking/);
   assert.match(script, /function renderAllTimeRanking/);
   assert.match(script, /規定未到達者を見る/);
   assert.match(script, /規定まであと/);
+  assert.doesNotMatch(html, /reloadAllTimeRankingButton/);
+  assert.doesNotMatch(script, /reloadAllTimeRankingButton/);
 });

@@ -372,7 +372,6 @@ function bindEvents() {
   bindDevelopmentEvent("runDevelopmentCronButton", "click", runDevelopmentCron);
   bindDevelopmentEvent("resetButton", "click", resetAllData);
   document.getElementById("refreshAchievementsButton")?.addEventListener("click", () => fetchUserAchievements({ force: true }));
-  document.getElementById("reloadAllTimeRankingButton")?.addEventListener("click", () => refreshAllTimeRanking({ force: true }));
   bindDevelopmentEvent("refreshDevelopmentAchievementsButton", "click", refreshDevelopmentAchievements);
   document.getElementById("developmentAchievements")?.addEventListener("click", handleDevelopmentAchievementAction);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
@@ -2764,11 +2763,9 @@ async function refreshAllTimeRanking({ force = false } = {}) {
 function renderAllTimeRanking() {
   const panel = document.getElementById("allTimeRankingPanel");
   const container = document.getElementById("allTimeRankingContent");
-  const reloadButton = document.getElementById("reloadAllTimeRankingButton");
-  if (!panel || !container || !reloadButton) return;
+  if (!panel || !container) return;
 
   const ranking = state.allTimeRanking;
-  reloadButton.disabled = ranking.isLoading;
   if (ranking.isLoading && !ranking.summary) {
     container.innerHTML = '<p class="empty-state">ランキングを読み込んでいます。</p>';
     return;

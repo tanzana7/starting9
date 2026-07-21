@@ -28,7 +28,8 @@ test("予想保存はニックネームなしで9人の入力検証と端末保�
   const submit = sourceForFunction(script, "handlePredictionSubmit");
   assert.match(submit, /const validationError = validateLineup\(lineup, "予想"\)/);
   assert.match(submit, /saveToStorage\(STORAGE_KEYS\.prediction, state\.prediction\)/);
-  assert.match(submit, /if \(getPredictionAccountUser\(\)\) \{\s+savePredictionToAccount/);
+  assert.match(submit, /if \(!getPredictionAccountUser\(\)\) \{/);
+  assert.match(submit, /await savePredictionToAccount\(state\.prediction\)/);
   assert.doesNotMatch(submit, /nickname/);
 });
 

@@ -86,6 +86,9 @@ export default {
       if (path === "/api/auth/me" && request.method === "GET") {
         return await handleMe(request, env, ctx, cors);
       }
+      if (path === "/api/me/achievements" && request.method === "GET") {
+        return await handleMyAchievements(request, env, cors);
+      }
       if (path === "/api/admin/me" && request.method === "GET") {
         return await handleAdminMe(request, env, cors);
       }
@@ -281,15 +284,24 @@ async function handleAdminModeCapabilities(request, env, cors) {
 }
 
 function parseDevelopmentRoute(path) {
-  if (path === "/api/dev/status" || path === "/api/dev/cron/run-auto-scoring") {
+  if (path === "/api/dev/status" || path === "/api/dev/cron/run-auto-scoring" || path === "/api/dev/achievements") {
     return { action: path.slice("/api/dev/".length) };
   }
-  const match = /^\/api\/dev\/games\/([^/]+)\/create-perfect-prediction$/.exec(path);
-  if (!match) {
-    return null;
+  if (path === "/api/dev/achievements/grant-test") {
+    return { action: "achievements/grant-test" };
   }
+  const match = /^\/api\/dev\/games\/([^/]+)\/create-perfect-prediction$/.exec(path);
+  if (match) {
+    try {
+      return { action: "create-perfect-prediction", gameId: decodeURIComponent(match[1]) };
+    } catch {
+      return { invalid: true };
+    }
+  }
+  const achievementMatch = /^\/api\/dev\/achievements\/([^/]+)\/test-grant$/.exec(path);
+  if (!achievementMatch) return null;
   try {
-    return { action: "create-perfect-prediction", gameId: decodeURIComponent(match[1]) };
+    return { action: "achievements/delete-test-grant", code: decodeURIComponent(achievementMatch[1]) };
   } catch {
     return { invalid: true };
   }
@@ -326,7 +338,119 @@ async function handleDevelopmentRoute(request, env, cors, route) {
     const summary = await runDueAutoScoringJobs(env, new Date());
     return jsonResponse({ ok: true, ...summary }, 200, cors);
   }
+  if (route.action === "achievements" && request.method === "GET") {
+    return await handleDevelopmentAchievements(env, cors, access.user);
+  }
+  if (route.action === "achievements/grant-test" && request.method === "POST") {
+    return await handleDevelopmentAchievementGrant(request, env, cors, access.user);
+  }
+  if (route.action === "achievements/delete-test-grant" && request.method === "DELETE") {
+    return await handleDevelopmentAchievementDelete(env, cors, access.user, route.code);
+  }
   return jsonResponse({ ok: false, error: "開発APIのHTTPメソッドが不正です。" }, 405, cors);
+}
+
+async function handleMyAchievements(request, env, cors) {
+  const access = await requireAuthenticatedUser(request, env, cors);
+  if (!access.ok) return access.response;
+  const achievements = await getUserAchievements(env.AUTH_DB, access.user.id);
+  return jsonResponse({ ok: true, achievements: achievements.map(toPublicAchievement) }, 200, cors);
+}
+
+async function handleDevelopmentAchievements(env, cors, user) {
+  const [master, earned] = await Promise.all([
+    getAchievementMaster(env.AUTH_DB),
+    getUserAchievements(env.AUTH_DB, user.id)
+  ]);
+  return jsonResponse({
+    ok: true,
+    achievements: master.map(toDevelopmentAchievement),
+    earned: earned.map(toDevelopmentAchievement)
+  }, 200, cors);
+}
+
+async function handleDevelopmentAchievementGrant(request, env, cors, user) {
+  const input = await readJson(request);
+  const code = normalizeAchievementCode(input?.code);
+  if (!code) return jsonResponse({ ok: false, error: "実績codeが不正です。" }, 400, cors);
+  const achievement = await getAchievementByCode(env.AUTH_DB, code);
+  if (!achievement) return jsonResponse({ ok: false, error: "指定された実績は存在しません。" }, 404, cors);
+  const now = new Date().toISOString();
+  const result = await env.AUTH_DB.prepare(
+    `INSERT OR IGNORE INTO user_achievements
+       (id, user_id, achievement_id, earned_at, source, metadata_json, created_at)
+     VALUES (?1, ?2, ?3, ?4, 'development', NULL, ?4)`
+  ).bind(randomToken(16), user.id, achievement.id, now).run();
+  return jsonResponse({
+    ok: true,
+    granted: Number(result?.meta?.changes || 0) === 1,
+    achievement: toPublicAchievement({ ...achievement, earned_at: now })
+  }, 200, cors);
+}
+
+async function handleDevelopmentAchievementDelete(env, cors, user, rawCode) {
+  const code = normalizeAchievementCode(rawCode);
+  if (!code) return jsonResponse({ ok: false, error: "実績codeが不正です。" }, 400, cors);
+  const result = await env.AUTH_DB.prepare(
+    `DELETE FROM user_achievements
+      WHERE user_id = ?1
+        AND source = 'development'
+        AND achievement_id = (SELECT id FROM achievements WHERE code = ?2 LIMIT 1)`
+  ).bind(user.id, code).run();
+  return jsonResponse({ ok: true, removed: Number(result?.meta?.changes || 0) === 1 }, 200, cors);
+}
+
+function normalizeAchievementCode(value) {
+  const code = typeof value === "string" ? value.trim() : "";
+  return /^[a-z][a-z0-9_]{2,63}$/.test(code) ? code : "";
+}
+
+async function getAchievementMaster(db) {
+  const result = await db.prepare(
+    `SELECT id, code, name, description, icon_key, rarity, is_hidden
+       FROM achievements
+      ORDER BY CASE rarity WHEN 'limited' THEN 1 WHEN 'epic' THEN 2 WHEN 'rare' THEN 3 ELSE 4 END, code ASC`
+  ).all();
+  return result.results || [];
+}
+
+async function getAchievementByCode(db, code) {
+  return db.prepare(
+    `SELECT id, code, name, description, icon_key, rarity, is_hidden
+       FROM achievements WHERE code = ?1 LIMIT 1`
+  ).bind(code).first();
+}
+
+async function getUserAchievements(db, userId) {
+  const result = await db.prepare(
+    `SELECT achievements.id, achievements.code, achievements.name, achievements.description,
+            achievements.icon_key, achievements.rarity, achievements.is_hidden,
+            user_achievements.earned_at, user_achievements.source
+       FROM user_achievements
+       JOIN achievements ON achievements.id = user_achievements.achievement_id
+      WHERE user_achievements.user_id = ?1
+      ORDER BY user_achievements.earned_at DESC, achievements.code ASC`
+  ).bind(userId).all();
+  return result.results || [];
+}
+
+function toPublicAchievement(row) {
+  return {
+    code: row.code,
+    name: row.name,
+    description: row.description,
+    iconKey: row.icon_key,
+    rarity: row.rarity,
+    earnedAt: row.earned_at
+  };
+}
+
+function toDevelopmentAchievement(row) {
+  return {
+    ...toPublicAchievement(row),
+    source: row.source || "",
+    isHidden: Number(row.is_hidden || 0) === 1
+  };
 }
 
 async function handleCreateDevelopmentPerfectPrediction(env, cors, user, metadata) {

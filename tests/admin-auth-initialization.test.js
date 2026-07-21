@@ -55,11 +55,14 @@ test("初回認証イベントを取りこぼしてもPromise完了後にadmin A
     fetch: async (url) => {
       fetchUrls.push(url);
       const isCapabilityRequest = String(url).endsWith("/api/admin/mode-capabilities");
+      const isAchievementsRequest = String(url).endsWith("/api/me/achievements");
       return {
         ok: true,
-        json: async () => isCapabilityRequest
-          ? ({ ok: true, adminModeAvailable: true, developmentModeAvailable: false })
-          : ({ ok: true, admin: true })
+        json: async () => isAchievementsRequest
+          ? ({ ok: true, achievements: [] })
+          : (isCapabilityRequest
+            ? ({ ok: true, adminModeAvailable: true, developmentModeAvailable: false })
+            : ({ ok: true, admin: true }))
       };
     },
     Map,
@@ -87,6 +90,7 @@ test("初回認証イベントを取りこぼしてもPromise完了後にadmin A
   await initialization;
 
   assert.deepEqual(fetchUrls, [
+    "https://starting9-auth.tanzana7.workers.dev/api/me/achievements",
     "https://starting9-auth.tanzana7.workers.dev/api/admin/me",
     "https://starting9-auth.tanzana7.workers.dev/api/admin/mode-capabilities"
   ]);

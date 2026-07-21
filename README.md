@@ -210,7 +210,7 @@ https://<worker-url>/?url=https://npb.jp/scores/2026/0707/m-f-12/&debug=1
 
 ### D1とWorkerの設定
 
-`migrations/0001_auth.sql` が `users` と `sessions` テーブルを作成します。`migrations/0005_game_lineups.sql` は、承認済み実スタメンと自動採点の待機・処理・失敗状態を保存します。`wrangler.auth.example.jsonc` を `wrangler.auth.jsonc` にコピーし、D1の `database_id` とフロントエンドの正確なオリジンを設定してから認証Workerをデプロイしてください。
+`migrations/0001_auth.sql` が `users` と `sessions` テーブルを作成します。`migrations/0005_game_lineups.sql` は、承認済み実スタメンと自動採点の待機・処理・失敗状態を保存します。`migrations/0006_user_achievements.sql` は実績マスタとユーザーごとの取得実績を追加します。`wrangler.auth.example.jsonc` を `wrangler.auth.jsonc` にコピーし、D1の `database_id` とフロントエンドの正確なオリジンを設定してから認証Workerをデプロイしてください。
 
 実スタメンをサーバーへ保存すると、`AUTO_SCORING_DELAY_SECONDS` 後にCronが採点対象として処理します。未設定時は300秒、0から86,400秒までを受け付けます。本番用 `wrangler.auth.production.jsonc` は5分待機と毎分Cron、ローカル専用の `wrangler.auth.jsonc` は10秒待機の例です。Worker内で待機せず、Cronが期限到達済みジョブを最大10件ずつ処理します。
 

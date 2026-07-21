@@ -175,6 +175,109 @@ button:disabled {
   color: #ffe3a1;
 }
 
+.achievements-panel {
+  display: grid;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.22);
+}
+
+.achievements-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.achievements-heading h2 {
+  margin: 0;
+  color: #ffffff;
+  font-size: 0.86rem;
+}
+
+.achievements-list,
+.development-achievements {
+  display: grid;
+  gap: 8px;
+}
+
+.achievement-empty {
+  margin: 0;
+  color: #d7ecff;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.achievement-card {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.26);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.achievement-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  color: #e3efff;
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.achievement-body {
+  min-width: 0;
+}
+
+.achievement-rarity,
+.achievement-card h3,
+.achievement-card p {
+  margin: 0;
+}
+
+.achievement-rarity {
+  font-size: 0.7rem;
+  font-weight: 900;
+}
+
+.achievement-card h3 {
+  color: #ffffff;
+  font-size: 0.84rem;
+}
+
+.achievement-card p:not(.achievement-rarity) {
+  color: #e0ecf7;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.achievement-earned {
+  margin-top: 3px !important;
+  color: #c4d8ec !important;
+  font-size: 0.7rem !important;
+}
+
+.achievement-card.is-rare .achievement-icon,
+.achievement-card.is-rare .achievement-rarity {
+  color: #9ed2ff;
+}
+
+.achievement-card.is-epic .achievement-icon,
+.achievement-card.is-epic .achievement-rarity {
+  color: #e0b5ff;
+}
+
+.achievement-card.is-limited .achievement-icon,
+.achievement-card.is-limited .achievement-rarity {
+  color: #ffe18c;
+}
+
 .auth-modal {
   position: fixed;
   z-index: 1000;
@@ -691,6 +794,27 @@ h3 {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.development-achievements .achievement-empty {
+  color: var(--muted);
+}
+
+.development-achievements .achievement-card {
+  border-color: #ddd2ec;
+  background: #fdfbff;
+}
+
+.development-achievements .achievement-card h3 {
+  color: var(--fighters-deep-blue);
+}
+
+.development-achievements .achievement-card p:not(.achievement-rarity) {
+  color: var(--muted);
+}
+
+.development-achievements .achievement-earned {
+  color: #75658b !important;
 }
 
 .admin-card {

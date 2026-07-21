@@ -31,6 +31,13 @@
           <button id="openDevelopmentButton" class="auth-button hidden" type="button">開発画面</button>
           <button id="logoutButton" class="auth-button" type="button">ログアウト</button>
         </div>
+        <section id="achievementsPanel" class="achievements-panel hidden" aria-labelledby="achievementsTitle">
+          <div class="achievements-heading">
+            <h2 id="achievementsTitle">実績</h2>
+            <button id="refreshAchievementsButton" class="auth-button" type="button">更新</button>
+          </div>
+          <div id="achievementsList" class="achievements-list" aria-live="polite"></div>
+        </section>
         <p id="authStatus" class="auth-status"></p>
       </div>
       <p class="lead">試合前にスタメン9人・打順・守備位置を予想して、発表後に100点満点で採点しよう。</p>
@@ -330,6 +337,20 @@
         </div>
         <p id="testPredictionMessage" class="message success-message" aria-live="polite"></p>
         <p id="resetMessage" class="message success-message" aria-live="polite"></p>
+      </section>
+      <section class="development-panel" aria-labelledby="development-achievements-title">
+        <div>
+          <p class="area-label">ACHIEVEMENT TEST</p>
+          <h3 id="development-achievements-title">実績テスト</h3>
+          <p>テスト付与はログイン中の管理者自身だけを対象にします。</p>
+        </div>
+        <div class="development-actions">
+          <button class="secondary-button" type="button" data-achievement-grant="beta_predictor">ベータテスターを付与</button>
+          <button class="secondary-button" type="button" data-achievement-grant="first_prediction">初予想を付与</button>
+          <button class="secondary-button" type="button" data-achievement-grant="perfect_prediction">パーフェクトを付与</button>
+          <button id="refreshDevelopmentAchievementsButton" class="secondary-button" type="button">実績一覧を再取得</button>
+        </div>
+        <div id="developmentAchievements" class="development-achievements" aria-live="polite"></div>
       </section>
     </details>
 

@@ -922,7 +922,7 @@ h3 {
 }
 
 .admin-test-info dl,
-.admin-version-info dl {
+.admin-deployment-info dl {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 8px;
@@ -930,7 +930,7 @@ h3 {
 }
 
 .admin-test-info dl > div,
-.admin-version-info dl > div {
+.admin-deployment-info dl > div {
   min-width: 0;
   padding: 9px 10px;
   border: 1px solid #e3daf0;
@@ -939,14 +939,14 @@ h3 {
 }
 
 .admin-test-info dt,
-.admin-version-info dt {
+.admin-deployment-info dt {
   color: #6a5b80;
   font-size: 0.76rem;
   font-weight: 900;
 }
 
 .admin-test-info dd,
-.admin-version-info dd {
+.admin-deployment-info dd {
   margin: 2px 0 0;
   overflow-wrap: anywhere;
   color: #302342;
@@ -1171,7 +1171,7 @@ textarea:focus {
   gap: 8px;
 }
 
-.admin-version-panel {
+.admin-deployment-info-panel {
   display: grid;
   gap: 12px;
   margin: 12px;
@@ -1181,16 +1181,10 @@ textarea:focus {
   background: #ffffff;
 }
 
-.admin-version-panel h3 {
+.admin-deployment-info-panel h3 {
   margin: 2px 0 0;
   color: var(--fighters-deep-blue);
   font-size: 1rem;
-}
-
-.admin-version-info dd small {
-  display: block;
-  color: var(--muted);
-  font-weight: 700;
 }
 
 .deadline-override-panel {

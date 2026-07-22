@@ -213,7 +213,18 @@ https://<worker-url>/?url=https://npb.jp/scores/2026/0707/m-f-12/&debug=1
 
 実スタメンをサーバーへ保存すると、`AUTO_SCORING_DELAY_SECONDS` 後にCronが採点対象として処理します。未設定時は300秒、0から86,400秒までを受け付けます。本番用 `wrangler.auth.production.jsonc` は5分待機と毎分Cron、ローカル専用の `wrangler.auth.jsonc` は10秒待機の例です。Worker内で待機せず、Cronが期限到達済みジョブを最大10件ずつ処理します。
 
-`ENABLE_DEVELOPMENT_MODE` は開発・検証専用画面とそのAPIを制御します。未設定時と本番設定では `false`、ローカル専用設定では `true` を使います。開発APIも管理者セッションを必須とし、通常の管理画面にはテスト用の操作を表示しません。
+管理者向けのテスト操作は、通常画面とは別のモードではなく、管理画面内の「開発用テスト」にまとめています。テストAPIは管理者セッションを必須とし、テスト予想は `is_test_prediction` により通常のランキング・実績集計から除外されます。
+
+### バージョン情報の更新
+
+管理画面の「バージョン情報」は、Pagesと2つのWorkerが同じ更新単位か確認するための安全な識別子だけを表示します。秘密情報やD1 IDは返しません。
+
+1. `version.js` の `APP_VERSION` を更新する
+2. `auth-worker.js` の `AUTH_WORKER_VERSION` と `AUTH_WORKER_BUILD_TIME` を更新する
+3. `cloudflare-worker.js` の `NPB_WORKER_VERSION` と `NPB_WORKER_BUILD_TIME` を更新する
+4. レビュー後、Pages、認証Worker、NPB取得Workerをそれぞれデプロイする
+
+バージョン確認APIは `Cache-Control: no-store` で返します。Auth Workerの `/api/admin/version` は管理者認証必須、NPB取得Workerの `/version` は公開GETです。
 
 認証Workerを人間がセットアップする手順:
 

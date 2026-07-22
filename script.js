@@ -174,8 +174,13 @@ const state = {
     status: "inactive",
     requestId: 0
   },
-  developmentAccess: {
-    available: false,
+  versionInfo: {
+    isLoading: false,
+    loadedAt: "",
+    auth: null,
+    npb: null
+  },
+  adminTest: {
     status: "inactive",
     info: null,
     message: ""
@@ -186,7 +191,7 @@ const state = {
     items: [],
     message: ""
   },
-  developmentAchievements: {
+  adminTestAchievements: {
     isLoading: false,
     items: [],
     earned: [],
@@ -404,28 +409,23 @@ function bindEvents() {
   bindAdminEvent("runAutoScoringNowButton", "click", runAutoScoringNow);
   bindAdminEvent("retryAutoScoringButton", "click", retryAutoScoring);
   bindAdminEvent("cancelAutoScoringButton", "click", cancelAutoScoring);
-  bindDevelopmentEvent("generateTestPredictionButton", "click", generateTestPrediction);
-  bindDevelopmentEvent("createPerfectPredictionButton", "click", createDevelopmentPerfectPrediction);
-  bindDevelopmentEvent("runDevelopmentCronButton", "click", runDevelopmentCron);
+  bindAdminTestEvent("generateTestPredictionButton", "click", generateTestPrediction);
+  bindAdminTestEvent("createPerfectPredictionButton", "click", createAdminTestPerfectPrediction);
+  bindAdminTestEvent("runAdminTestCronButton", "click", runAdminTestCron);
   document.getElementById("adminPredictionDeadlineStatus")?.addEventListener("click", handlePredictionDeadlineOverrideClick);
-  document.getElementById("developmentPredictionDeadlineStatus")?.addEventListener("click", handlePredictionDeadlineOverrideClick);
-  bindDevelopmentEvent("resetButton", "click", resetAllData);
+  document.getElementById("adminTestPredictionDeadlineStatus")?.addEventListener("click", handlePredictionDeadlineOverrideClick);
+  bindAdminTestEvent("resetButton", "click", resetAllData);
   document.getElementById("refreshAchievementsButton")?.addEventListener("click", () => fetchUserAchievements({ force: true }));
-  bindDevelopmentEvent("refreshDevelopmentAchievementsButton", "click", refreshDevelopmentAchievements);
-  document.getElementById("developmentAchievements")?.addEventListener("click", handleDevelopmentAchievementAction);
+  bindAdminTestEvent("refreshAdminTestAchievementsButton", "click", refreshAdminTestAchievements);
+  document.getElementById("adminTestAchievements")?.addEventListener("click", handleAdminTestAchievementAction);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
   document.getElementById("openAdminButton")?.addEventListener("click", openAdminPanel);
-  document.getElementById("openDevelopmentButton")?.addEventListener("click", openDevelopmentPanel);
   document.getElementById("showYearlyRankingButton")?.addEventListener("click", () => selectRankingView("yearly"));
   document.getElementById("showMonthlyRankingButton")?.addEventListener("click", () => selectRankingView("monthly"));
   document.getElementById("rankingContent")?.addEventListener("click", handleRankingPeriodContentClick);
   document.getElementById("closeAdminButton")?.addEventListener("click", closeAdminPanel);
-  document.getElementById("adminToDevelopmentButton")?.addEventListener("click", openDevelopmentPanel);
-  document.getElementById("closeDevelopmentButton")?.addEventListener("click", closeDevelopmentPanel);
-  document.getElementById("developmentToAdminButton")?.addEventListener("click", openAdminPanel);
   document.getElementById("adminDetails")?.addEventListener("toggle", handleAdminDetailsToggle);
-  document.getElementById("developmentDetails")?.addEventListener("toggle", handleDevelopmentDetailsToggle);
   document.getElementById("registerPerfectAchieverButton")?.addEventListener("click", registerPerfectAchiever);
   bindAdminEvent("loadNextGameButton", "click", loadNextGameSchedule);
   bindAdminEvent("loadTodayGameButton", "click", loadTodayGameSchedule);
@@ -470,11 +470,11 @@ function bindAdminEvent(elementId, eventName, handler) {
   });
 }
 
-function bindDevelopmentEvent(elementId, eventName, handler) {
+function bindAdminTestEvent(elementId, eventName, handler) {
   const element = document.getElementById(elementId);
   if (!element) return;
   element.addEventListener(eventName, (event) => {
-    if (state.appMode !== "development" || !state.developmentAccess.available) {
+    if (state.appMode !== "admin" || state.adminAccess.status !== "authorized") {
       event.preventDefault();
       return;
     }
@@ -484,15 +484,11 @@ function bindDevelopmentEvent(elementId, eventName, handler) {
 
 function applyAdminMode() {
   const adminDetails = document.getElementById("adminDetails");
-  const developmentDetails = document.getElementById("developmentDetails");
   const adminModeBadge = document.getElementById("adminModeBadge");
   const openAdminButton = document.getElementById("openAdminButton");
-  const openDevelopmentButton = document.getElementById("openDevelopmentButton");
-  const adminToDevelopmentButton = document.getElementById("adminToDevelopmentButton");
   const appLayout = document.querySelector(".app-layout");
   const isAuthorized = state.adminAccess.status === "authorized";
   const isAdminScreenOpen = state.appMode === "admin";
-  const isDevelopmentScreenOpen = state.appMode === "development";
 
   if (adminDetails) {
     adminDetails.classList.toggle("hidden", !isAdminScreenOpen);
@@ -501,15 +497,8 @@ function applyAdminMode() {
   }
 
   if (adminModeBadge) {
-    adminModeBadge.classList.toggle("hidden", !isAdminScreenOpen && !isDevelopmentScreenOpen);
-    adminModeBadge.classList.toggle("is-development", isDevelopmentScreenOpen);
-    adminModeBadge.textContent = isDevelopmentScreenOpen ? "開発モード" : "管理者モード";
-  }
-
-  if (developmentDetails) {
-    developmentDetails.classList.toggle("hidden", !isDevelopmentScreenOpen);
-    developmentDetails.open = isDevelopmentScreenOpen;
-    developmentDetails.setAttribute("aria-hidden", isDevelopmentScreenOpen ? "false" : "true");
+    adminModeBadge.classList.toggle("hidden", !isAdminScreenOpen);
+    adminModeBadge.textContent = "管理モード";
   }
 
   if (openAdminButton) {
@@ -517,19 +506,7 @@ function applyAdminMode() {
     openAdminButton.classList.toggle("hidden", !shouldShowButton);
     openAdminButton.setAttribute("aria-hidden", shouldShowButton ? "false" : "true");
   }
-  if (openDevelopmentButton) {
-    const shouldShowButton = isAuthorized && state.developmentAccess.available && state.appMode === "normal";
-    openDevelopmentButton.classList.toggle("hidden", !shouldShowButton);
-    openDevelopmentButton.setAttribute("aria-hidden", shouldShowButton ? "false" : "true");
-  }
-  if (adminToDevelopmentButton) {
-    const shouldShowButton = isAuthorized && state.developmentAccess.available && isAdminScreenOpen;
-    adminToDevelopmentButton.classList.toggle("hidden", !shouldShowButton);
-    adminToDevelopmentButton.setAttribute("aria-hidden", shouldShowButton ? "false" : "true");
-  }
-
   appLayout?.classList.toggle("is-admin-screen", isAdminScreenOpen);
-  appLayout?.classList.toggle("is-development-screen", isDevelopmentScreenOpen);
 
   state.isAdminMode = isAdminScreenOpen;
   if (state.appMode === "normal") {
@@ -543,6 +520,64 @@ function buildAdminMeApiUrl() {
   return baseUrl ? `${baseUrl}/api/admin/me` : "";
 }
 
+function buildAdminVersionApiUrl() {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  return baseUrl ? `${baseUrl}/api/admin/version` : "";
+}
+
+function buildNpbVersionApiUrl() {
+  if (!NPB_WORKER_API_URL) return "";
+  return new URL("version", NPB_WORKER_API_URL).href;
+}
+
+function renderAdminVersionInfo() {
+  const container = document.getElementById("adminVersionInfo");
+  if (!container) return;
+
+  const frontendVersion = window.STARTING9_APP_VERSION || "未設定";
+  const authVersion = state.versionInfo.auth?.version || (state.versionInfo.isLoading ? "取得中..." : "取得できません");
+  const npbVersion = state.versionInfo.npb?.version || (state.versionInfo.isLoading ? "取得中..." : "取得できません");
+  const authBuildTime = state.versionInfo.auth?.buildTime ? formatDateTime(state.versionInfo.auth.buildTime) : "-";
+  const npbBuildTime = state.versionInfo.npb?.buildTime ? formatDateTime(state.versionInfo.npb.buildTime) : "-";
+  const loadedAt = state.versionInfo.loadedAt ? formatDateTime(state.versionInfo.loadedAt) : formatDateTime(new Date().toISOString());
+  container.innerHTML = `<dl>
+    <div><dt>フロント</dt><dd>${escapeHtml(frontendVersion)}</dd></div>
+    <div><dt>Auth Worker</dt><dd>${escapeHtml(authVersion)} <small>${escapeHtml(authBuildTime)}</small></dd></div>
+    <div><dt>NPB Worker</dt><dd>${escapeHtml(npbVersion)} <small>${escapeHtml(npbBuildTime)}</small></dd></div>
+    <div><dt>画面読込</dt><dd>${escapeHtml(loadedAt)}</dd></div>
+  </dl>`;
+}
+
+async function refreshAdminVersionInfo() {
+  if (state.adminAccess.status !== "authorized") return;
+  const authUrl = buildAdminVersionApiUrl();
+  const npbUrl = buildNpbVersionApiUrl();
+  state.versionInfo.isLoading = true;
+  state.versionInfo.loadedAt = new Date().toISOString();
+  renderAdminVersionInfo();
+
+  const fetchVersion = async (url, options) => {
+    if (!url) throw new Error("バージョン確認URLが未設定です。");
+    const response = await fetch(url, { cache: "no-store", ...options });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok || typeof payload.version !== "string") {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+    return payload;
+  };
+
+  const [authResult, npbResult] = await Promise.allSettled([
+    fetchVersion(authUrl, { credentials: "include" }),
+    fetchVersion(npbUrl)
+  ]);
+  state.versionInfo.isLoading = false;
+  state.versionInfo.auth = authResult.status === "fulfilled" ? authResult.value : null;
+  state.versionInfo.npb = npbResult.status === "fulfilled" ? npbResult.value : null;
+  if (authResult.status === "rejected") console.error("Auth Workerのバージョン取得に失敗しました", authResult.reason?.message || "unknown error");
+  if (npbResult.status === "rejected") console.error("NPB Workerのバージョン取得に失敗しました", npbResult.reason?.message || "unknown error");
+  renderAdminVersionInfo();
+}
+
 function isAuthStateInitialized() {
   const auth = window.starting9Auth;
   return typeof auth?.isInitialized === "function" && auth.isInitialized();
@@ -550,8 +585,8 @@ function isAuthStateInitialized() {
 
 function clearAdminAccess() {
   state.adminAccess.status = "inactive";
-  state.developmentAccess = { available: false, status: "inactive", info: null, message: "" };
-  state.developmentAchievements = { isLoading: false, items: [], earned: [], message: "" };
+  state.adminTest = { status: "inactive", info: null, message: "" };
+  state.adminTestAchievements = { isLoading: false, items: [], earned: [], message: "" };
   state.appMode = "normal";
   state.isAdminMode = false;
   applyAdminMode();
@@ -590,7 +625,6 @@ async function refreshAdminAccess() {
     }
     if (response.ok && payload?.ok && payload?.admin) {
       state.adminAccess.status = "authorized";
-      await refreshDevelopmentCapabilities(requestId);
       applyAdminMode();
       return;
     }
@@ -607,141 +641,113 @@ async function refreshAdminAccess() {
   }
 }
 
-async function refreshDevelopmentCapabilities(requestId) {
-  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
-  if (!baseUrl) {
-    state.developmentAccess = { available: false, status: "disabled", info: null, message: "" };
-    if (state.appMode === "development") state.appMode = "normal";
-    return;
-  }
-  try {
-    const response = await fetch(`${baseUrl}/api/admin/mode-capabilities`, { credentials: "include", cache: "no-store" });
-    const payload = await response.json().catch(() => null);
-    if (requestId !== state.adminAccess.requestId) return;
-    if (!response.ok || !payload?.ok) {
-      state.developmentAccess = { available: false, status: "disabled", info: null, message: "" };
-      if (state.appMode === "development") state.appMode = "normal";
-      return;
-    }
-    state.developmentAccess.available = payload.developmentModeAvailable === true;
-    state.developmentAccess.status = state.developmentAccess.available ? "available" : "disabled";
-    if (!state.developmentAccess.available && state.appMode === "development") {
-      state.appMode = "normal";
-    }
-  } catch (error) {
-    console.error("開発モードの利用可否確認に失敗しました", error.message);
-    state.developmentAccess = { available: false, status: "disabled", info: null, message: "" };
-    if (state.appMode === "development") state.appMode = "normal";
-  }
-}
-
-function buildDevelopmentApiUrl(path) {
+function buildAdminTestApiUrl(path) {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
   return baseUrl ? `${baseUrl}/api/dev/${path.replace(/^\/+/, "")}` : "";
 }
 
-function formatDevelopmentValue(value, fallback = "-") {
+function formatAdminTestValue(value, fallback = "-") {
   return value === null || value === undefined || value === "" ? fallback : String(value);
 }
 
-function renderDevelopmentPanel() {
-  const info = document.getElementById("developmentInfo");
-  const message = document.getElementById("developmentMessage");
+function renderAdminTestPanel() {
+  const info = document.getElementById("adminTestInfo");
+  const message = document.getElementById("adminTestMessage");
   const createButton = document.getElementById("createPerfectPredictionButton");
-  const cronButton = document.getElementById("runDevelopmentCronButton");
+  const cronButton = document.getElementById("runAdminTestCronButton");
   if (!info || !message || !createButton || !cronButton) return;
 
-  const details = state.developmentAccess.info;
+  const details = state.adminTest.info;
   const autoScoring = details?.autoScoring;
   const user = getPredictionAccountUser();
   const gameId = getAdminScoringGameId();
-  const canOperate = state.appMode === "development" && state.developmentAccess.available;
+  const canOperate = state.appMode === "admin" && state.adminAccess.status === "authorized";
   createButton.disabled = !canOperate || !gameId;
   cronButton.disabled = !canOperate;
-  message.textContent = state.developmentAccess.message || "";
+  message.textContent = state.adminTest.message || "";
 
   const rows = [
     ["API base URL", getAuthApiBaseUrl() || "未設定"],
-    ["開発モード", details?.developmentModeEnabled ? "有効" : "確認中"],
-    ["AUTO_SCORING_DELAY_SECONDS", formatDevelopmentValue(details?.autoScoringDelaySeconds)],
+    ["管理モード", canOperate ? "有効" : "確認中"],
+    ["AUTO_SCORING_DELAY_SECONDS", formatAdminTestValue(details?.autoScoringDelaySeconds)],
     ["appMode", state.appMode],
-    ["ログイン中 userId", formatDevelopmentValue(user?.id)],
+    ["ログイン中 userId", formatAdminTestValue(user?.id)],
     ["role", state.adminAccess.status === "authorized" ? "admin" : "-"],
     ["選択中 gameId", gameId || "未選択"],
     ["実スタメン保存状態", autoScoring ? "保存済み" : "未保存"],
-    ["scoring_status", formatDevelopmentValue(autoScoring?.status)],
-    ["scoring_due_at", formatDevelopmentValue(autoScoring?.scoringDueAt)],
-    ["scored_at", formatDevelopmentValue(autoScoring?.scoredAt)],
-    ["scoring_attempts", formatDevelopmentValue(autoScoring?.attempts, "0")],
-    ["last_error", formatDevelopmentValue(autoScoring?.lastError)],
-    ["lineup fingerprint", formatDevelopmentValue(autoScoring?.lineupFingerprint)]
+    ["scoring_status", formatAdminTestValue(autoScoring?.status)],
+    ["scoring_due_at", formatAdminTestValue(autoScoring?.scoringDueAt)],
+    ["scored_at", formatAdminTestValue(autoScoring?.scoredAt)],
+    ["scoring_attempts", formatAdminTestValue(autoScoring?.attempts, "0")],
+    ["last_error", formatAdminTestValue(autoScoring?.lastError)],
+    ["lineup fingerprint", formatAdminTestValue(autoScoring?.lineupFingerprint)]
   ];
   info.innerHTML = `<dl>${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>`;
 }
 
-async function refreshDevelopmentStatus() {
-  if (state.adminAccess.status !== "authorized" || !state.developmentAccess.available) return;
+async function refreshAdminTestStatus() {
+  if (state.adminAccess.status !== "authorized") return;
   const gameId = getAdminScoringGameId();
-  const url = buildDevelopmentApiUrl(`status${gameId ? `?gameId=${encodeURIComponent(gameId)}` : ""}`);
+  const url = buildAdminTestApiUrl(`status${gameId ? `?gameId=${encodeURIComponent(gameId)}` : ""}`);
   if (!url) return;
-  state.developmentAccess.message = "開発情報を取得中...";
-  renderDevelopmentPanel();
+  state.adminTest.message = "テスト情報を取得中...";
+  renderAdminTestPanel();
   try {
     const response = await fetch(url, { credentials: "include", cache: "no-store" });
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok) {
       throw new Error(payload?.error || `HTTP ${response.status}`);
     }
-    state.developmentAccess.info = payload;
-    state.developmentAccess.message = "開発情報を更新しました。";
+    state.adminTest.info = payload;
+    state.adminTest.message = "テスト情報を更新しました。";
   } catch (error) {
-    console.error("開発情報の取得に失敗しました", error.message);
-    state.developmentAccess.message = "開発情報を取得できませんでした。";
+    console.error("管理者テスト情報の取得に失敗しました", error.message);
+    state.adminTest.message = "テスト情報を取得できませんでした。";
   }
-  renderDevelopmentPanel();
+  renderAdminTestPanel();
 }
 
-async function createDevelopmentPerfectPrediction() {
+async function createAdminTestPerfectPrediction() {
   const gameId = getAdminScoringGameId();
   if (!gameId) {
-    state.developmentAccess.message = "対象試合を選択してください。";
-    renderDevelopmentPanel();
+    state.adminTest.message = "対象試合を選択してください。";
+    renderAdminTestPanel();
     return;
   }
   if (!window.confirm(`ログイン中の管理者ユーザーの ${gameId} の予想を、保存済み実スタメンと完全一致する内容で上書きします。よろしいですか？`)) return;
-  const url = buildDevelopmentApiUrl(`games/${encodeURIComponent(gameId)}/create-perfect-prediction`);
+  const url = buildAdminTestApiUrl(`games/${encodeURIComponent(gameId)}/create-perfect-prediction`);
   if (!url) return;
-  state.developmentAccess.message = "完全一致予想を作成中...";
-  renderDevelopmentPanel();
+  state.adminTest.message = "完全一致予想を作成中...";
+  renderAdminTestPanel();
   try {
     const response = await fetch(url, { method: "POST", credentials: "include" });
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
-    state.developmentAccess.message = payload.created ? "完全一致予想を作成しました。" : "既存の予想を完全一致予想で更新しました。";
+    state.adminTest.message = payload.created ? "完全一致予想を作成しました。" : "既存の予想を完全一致予想で更新しました。";
     await syncPredictionFromAccount({ force: true });
   } catch (error) {
     console.error("完全一致予想の作成に失敗しました", error.message);
-    state.developmentAccess.message = "完全一致予想を作成できませんでした。";
+    state.adminTest.message = "完全一致予想を作成できませんでした。";
   }
-  await refreshDevelopmentStatus();
+  await refreshAdminTestStatus();
 }
 
-async function runDevelopmentCron() {
+async function runAdminTestCron() {
   if (!window.confirm("自動採点のCron処理を手動で実行します。よろしいですか？")) return;
-  const url = buildDevelopmentApiUrl("cron/run-auto-scoring");
+  const url = buildAdminTestApiUrl("cron/run-auto-scoring");
   if (!url) return;
-  state.developmentAccess.message = "Cron処理を実行中...";
-  renderDevelopmentPanel();
+  state.adminTest.message = "Cron処理を実行中...";
+  renderAdminTestPanel();
   try {
     const response = await fetch(url, { method: "POST", credentials: "include" });
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
-    state.developmentAccess.message = `Cron処理が完了しました。処理 ${payload.processed || 0}件 / 成功 ${payload.succeeded || 0}件 / 失敗 ${payload.failed || 0}件`;
+    state.adminTest.message = `Cron処理が完了しました。処理 ${payload.processed || 0}件 / 成功 ${payload.succeeded || 0}件 / 失敗 ${payload.failed || 0}件`;
   } catch (error) {
     console.error("開発用Cron実行に失敗しました", error.message);
-    state.developmentAccess.message = "Cron処理を実行できませんでした。";
+    state.adminTest.message = "Cron処理を実行できませんでした。";
   }
-  await refreshDevelopmentStatus();
+  await refreshAdminTestStatus();
 }
 
 const ACHIEVEMENT_RARITY_LABELS = Object.freeze({
@@ -831,10 +837,10 @@ async function fetchUserAchievements({ force = false } = {}) {
   }
 }
 
-function renderDevelopmentAchievements() {
-  const container = document.getElementById("developmentAchievements");
+function renderAdminTestAchievements() {
+  const container = document.getElementById("adminTestAchievements");
   if (!container) return;
-  const developer = state.developmentAchievements;
+  const developer = state.adminTestAchievements;
   if (developer.isLoading) {
     container.innerHTML = '<p class="achievement-empty">実績情報を取得中...</p>';
     return;
@@ -854,38 +860,38 @@ function renderDevelopmentAchievements() {
   }).join("");
 }
 
-async function refreshDevelopmentAchievements() {
-  if (state.appMode !== "development" || !state.developmentAccess.available) return;
-  const url = buildDevelopmentApiUrl("achievements");
+async function refreshAdminTestAchievements() {
+  if (state.appMode !== "admin" || state.adminAccess.status !== "authorized") return;
+  const url = buildAdminTestApiUrl("achievements");
   if (!url) return;
-  state.developmentAchievements.isLoading = true;
-  state.developmentAchievements.message = "";
-  renderDevelopmentAchievements();
+  state.adminTestAchievements.isLoading = true;
+  state.adminTestAchievements.message = "";
+  renderAdminTestAchievements();
   try {
     const response = await fetch(url, { credentials: "include", cache: "no-store" });
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok || !Array.isArray(payload.achievements) || !Array.isArray(payload.earned)) {
       throw new Error(payload?.error || `HTTP ${response.status}`);
     }
-    state.developmentAchievements.items = payload.achievements;
-    state.developmentAchievements.earned = payload.earned;
+    state.adminTestAchievements.items = payload.achievements;
+    state.adminTestAchievements.earned = payload.earned;
   } catch (error) {
     console.error("開発用実績情報の取得に失敗しました", error.message);
-    state.developmentAchievements.items = [];
-    state.developmentAchievements.earned = [];
-    state.developmentAchievements.message = "実績情報を取得できませんでした。";
+    state.adminTestAchievements.items = [];
+    state.adminTestAchievements.earned = [];
+    state.adminTestAchievements.message = "実績情報を取得できませんでした。";
   } finally {
-    state.developmentAchievements.isLoading = false;
-    renderDevelopmentAchievements();
+    state.adminTestAchievements.isLoading = false;
+    renderAdminTestAchievements();
   }
 }
 
-async function grantDevelopmentAchievement(code) {
+async function grantAdminTestAchievement(code) {
   if (!window.confirm("ログイン中の管理者自身へテスト実績を付与します。よろしいですか？")) return;
-  const url = buildDevelopmentApiUrl("achievements/grant-test");
+  const url = buildAdminTestApiUrl("achievements/grant-test");
   if (!url) return;
-  state.developmentAchievements.message = "テスト実績を付与中...";
-  renderDevelopmentAchievements();
+  state.adminTestAchievements.message = "テスト実績を付与中...";
+  renderAdminTestAchievements();
   let resultMessage = "";
   try {
     const response = await fetch(url, {
@@ -901,14 +907,14 @@ async function grantDevelopmentAchievement(code) {
     console.error("テスト実績の付与に失敗しました", error.message);
     resultMessage = "テスト実績を付与できませんでした。";
   }
-  await Promise.all([fetchUserAchievements({ force: true }), refreshDevelopmentAchievements()]);
-  state.developmentAchievements.message = resultMessage;
-  renderDevelopmentAchievements();
+  await Promise.all([fetchUserAchievements({ force: true }), refreshAdminTestAchievements()]);
+  state.adminTestAchievements.message = resultMessage;
+  renderAdminTestAchievements();
 }
 
-async function removeDevelopmentAchievement(code) {
-  if (!window.confirm("development由来のテスト実績を削除します。よろしいですか？")) return;
-  const url = buildDevelopmentApiUrl(`achievements/${encodeURIComponent(code)}/test-grant`);
+async function removeAdminTestAchievement(code) {
+  if (!window.confirm("テスト付与した実績を削除します。よろしいですか？")) return;
+  const url = buildAdminTestApiUrl(`achievements/${encodeURIComponent(code)}/test-grant`);
   if (!url) return;
   let resultMessage = "";
   try {
@@ -920,19 +926,19 @@ async function removeDevelopmentAchievement(code) {
     console.error("テスト実績の削除に失敗しました", error.message);
     resultMessage = "テスト実績を削除できませんでした。";
   }
-  await Promise.all([fetchUserAchievements({ force: true }), refreshDevelopmentAchievements()]);
-  state.developmentAchievements.message = resultMessage;
-  renderDevelopmentAchievements();
+  await Promise.all([fetchUserAchievements({ force: true }), refreshAdminTestAchievements()]);
+  state.adminTestAchievements.message = resultMessage;
+  renderAdminTestAchievements();
 }
 
-function handleDevelopmentAchievementAction(event) {
-  if (state.appMode !== "development" || !state.developmentAccess.available) return;
+function handleAdminTestAchievementAction(event) {
+  if (state.appMode !== "admin" || state.adminAccess.status !== "authorized") return;
   const target = event.target instanceof Element ? event.target.closest("[data-achievement-grant], [data-achievement-remove]") : null;
   if (!target) return;
   const grantCode = target.dataset.achievementGrant;
   const removeCode = target.dataset.achievementRemove;
-  if (grantCode) void grantDevelopmentAchievement(grantCode);
-  if (removeCode) void removeDevelopmentAchievement(removeCode);
+  if (grantCode) void grantAdminTestAchievement(grantCode);
+  if (removeCode) void removeAdminTestAchievement(removeCode);
 }
 
 function openAdminPanel() {
@@ -946,6 +952,10 @@ function openAdminPanel() {
   renderAll();
   refreshAdminScoringSummary({ force: true });
   refreshAutoScoringStatus({ force: true });
+  renderAdminTestPanel();
+  void refreshAdminTestStatus();
+  void refreshAdminTestAchievements();
+  void refreshAdminVersionInfo();
 }
 
 function closeAdminPanel() {
@@ -958,33 +968,9 @@ function closeAdminPanel() {
   renderPredictionDeadlineAdmin();
 }
 
-function openDevelopmentPanel() {
-  if (state.adminAccess.status !== "authorized" || !state.developmentAccess.available) return;
-  state.appMode = "development";
-  applyAdminMode();
-  renderDevelopmentPanel();
-  renderPredictionDeadlineAdmin();
-  void refreshDevelopmentStatus();
-  void refreshDevelopmentAchievements();
-}
-
-function closeDevelopmentPanel() {
-  if (state.appMode !== "development") return;
-  state.appMode = "normal";
-  clearPredictionDeadlineOverride();
-  applyAdminMode();
-  renderPredictionDeadlineAdmin();
-}
-
 function handleAdminDetailsToggle(event) {
   if (!event.currentTarget.open && state.appMode === "admin") {
     closeAdminPanel();
-  }
-}
-
-function handleDevelopmentDetailsToggle(event) {
-  if (!event.currentTarget.open && state.appMode === "development") {
-    closeDevelopmentPanel();
   }
 }
 
@@ -2525,7 +2511,7 @@ function resolvePredictionDeadline(gameId, now = new Date()) {
 }
 
 function canUsePredictionDeadlineOverride() {
-  return state.appMode === "development" && state.developmentAccess.available;
+  return state.appMode === "admin" && state.adminAccess.status === "authorized";
 }
 
 function getEffectivePredictionDeadline(deadline = state.predictionDeadline) {
@@ -2533,9 +2519,9 @@ function getEffectivePredictionDeadline(deadline = state.predictionDeadline) {
     return deadline;
   }
   if (deadline.override === "before") {
-    return { ...deadline, status: "open", isClosed: false, message: "開発モードで締切前を再現中です。" };
+    return { ...deadline, status: "open", isClosed: false, message: "管理者テストで締切前を再現中です。" };
   }
-  return { ...deadline, status: "closed", isClosed: true, message: "開発モードで締切後を再現中です。" };
+  return { ...deadline, status: "closed", isClosed: true, message: "管理者テストで締切後を再現中です。" };
 }
 
 function refreshPredictionDeadlineState() {
@@ -2546,7 +2532,7 @@ function refreshPredictionDeadlineState() {
   };
   renderPredictionDeadline();
   renderPicker("prediction");
-  renderDevelopmentPanel();
+  renderAdminTestPanel();
   renderPredictionDeadlineAdmin();
 }
 
@@ -2621,9 +2607,9 @@ function renderPredictionDeadlineAdmin() {
     state.appMode === "admin"
   );
   renderPredictionDeadlinePanel(
-    document.getElementById("developmentPredictionDeadlineStatus"),
+    document.getElementById("adminTestPredictionDeadlineStatus"),
     deadline,
-    state.appMode === "development" && state.developmentAccess.available
+    state.appMode === "admin" && state.adminAccess.status === "authorized"
   );
 }
 
@@ -6333,8 +6319,8 @@ function openXShare(text) {
 }
 
 function generateTestPrediction() {
-  if (state.appMode !== "development" || !state.developmentAccess.available) {
-    console.warn("開発モードではないため、テスト用予想の生成を中止しました。");
+  if (state.appMode !== "admin" || state.adminAccess.status !== "authorized") {
+    console.warn("管理者モードではないため、テスト用予想の生成を中止しました。");
     return;
   }
 
@@ -6352,8 +6338,8 @@ function generateTestPrediction() {
 }
 
 function resetAllData() {
-  if (state.appMode !== "development" || !state.developmentAccess.available) {
-    console.warn("開発モードではないため、テストデータのリセットを中止しました。");
+  if (state.appMode !== "admin" || state.adminAccess.status !== "authorized") {
+    console.warn("管理者モードではないため、テストデータのリセットを中止しました。");
     return;
   }
 

@@ -45,7 +45,6 @@ function createApp({ href = "https://starting9.pages.dev/", user = null, admin =
     },
     fetch: async (url) => {
       fetchUrls.push(url);
-      const isCapabilityRequest = String(url).endsWith("/api/admin/mode-capabilities");
       const isAchievementsRequest = String(url).endsWith("/api/me/achievements");
       const isYearlyPublicRankingRequest = String(url).includes("/api/rankings/yearly");
       const isYearlyMyRankingRequest = String(url).endsWith("/api/me/ranking/yearly");
@@ -60,7 +59,6 @@ function createApp({ href = "https://starting9.pages.dev/", user = null, admin =
           if (isYearlyMyRankingRequest) return { ok: true, year: 2026, rankingData: null };
           if (isMonthlyPublicRankingRequest) return { year: 2026, month: 7, ranking: [], summary: { eligibleGames: 0, requiredGames: 0, qualifiedUsers: 0, totalUsers: 0 }, pagination: { limit: 50, offset: 0, totalUsers: 0 } };
           if (isMonthlyMyRankingRequest) return { ok: true, year: 2026, month: 7, rankingData: null };
-          if (isCapabilityRequest) return { ok: true, adminModeAvailable: true, developmentModeAvailable: false };
           return { ok: true, admin: true };
         }
       };
@@ -74,7 +72,7 @@ function createApp({ href = "https://starting9.pages.dev/", user = null, admin =
   });
   vm.runInContext(scriptSource, context, { filename: scriptPath });
   vm.runInContext(
-    "applyAdminMode = () => {}; initializeGameSchedule = () => {}; renderAll = () => {}; refreshAdminScoringSummary = () => {}; refreshAutoScoringStatus = () => {}; stopAutoFetch = () => {}; stopRosterMonitor = () => {};",
+    "applyAdminMode = () => {}; initializeGameSchedule = () => {}; renderAll = () => {}; refreshAdminScoringSummary = () => {}; refreshAutoScoringStatus = () => {}; refreshAdminTestStatus = () => {}; refreshAdminTestAchievements = () => {}; refreshAdminVersionInfo = () => {}; renderAdminTestPanel = () => {}; stopAutoFetch = () => {}; stopRosterMonitor = () => {};",
     context
   );
 
@@ -96,8 +94,7 @@ test("管理者は初期Promise完了後に一度だけ確認され、ボタン�
     "https://starting9-auth.tanzana7.workers.dev/api/me/achievements",
     "https://starting9-auth.tanzana7.workers.dev/api/rankings/yearly?year=2026&limit=50&qualifiedOnly=false",
     "https://starting9-auth.tanzana7.workers.dev/api/me/ranking/yearly?year=2026",
-    "https://starting9-auth.tanzana7.workers.dev/api/admin/me",
-    "https://starting9-auth.tanzana7.workers.dev/api/admin/mode-capabilities"
+    "https://starting9-auth.tanzana7.workers.dev/api/admin/me"
   ]);
   assert.equal(vm.runInContext("state.adminAccess.status", app.context), "authorized");
 

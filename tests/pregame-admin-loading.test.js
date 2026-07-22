@@ -20,6 +20,14 @@ test("試合前自動処理の管理画面取得はタイムアウトとfinally�
   assert.match(script, /HTTP \$\{error\.status\}/);
   assert.match(script, /PREGAME_UI_WATCHDOG_TIMEOUT/);
   assert.match(script, /setTimeout\(\(\) => controller\.abort\(\), 10_000\)/);
+  assert.match(script, /PREGAME_RESPONSE_INVALID/);
+  assert.match(script, /PREGAME_RENDER_TARGET_MISSING/);
+  assert.match(script, /PREGAME_GAME_ID_MISSING/);
+  assert.match(script, /getPregameAutomationRenderTargets\(\)/);
+  assert.match(script, /isPregameLoadingVisible\(targets\)/);
+  assert.match(script, /loadingCleared/);
+  assert.match(script, /responseKeys/);
+  assert.match(script, /\[PREGAME\] rendered game=/);
   assert.equal((script.match(/試合前処理を確認中です。/g) || []).length, 1);
   assert.equal((script.match(/function renderPregameAutomationPanel\(/g) || []).length, 1);
   assert.equal((index.match(/id="adminPregameAutomationSummary"/g) || []).length, 1);
@@ -61,7 +69,42 @@ test("キャッシュされた旧script.jsを再利用しないscriptタグに�
   const scriptTags = index.match(/<script[^>]+src="[^"]+"[^>]*><\/script>/g) || [];
   const scriptJsTags = scriptTags.filter((tag) => /src="script\.js\?/.test(tag));
   assert.equal(scriptJsTags.length, 1);
-  assert.match(scriptJsTags[0], /pregame-runtime-/);
+  assert.match(scriptJsTags[0], /pregame-diagnostic-/);
+});
+
+test("PREGAME_RENDER_COMPLETEDは実DOMの成功または対象試合なしの描画後だけ設定する", () => {
+  const script = read("script.js");
+  assert.match(script, /else if \(renderResult\.completed\) \{[\s\S]*setPregameDiagnostic\("PREGAME_RENDER_COMPLETED"\)/);
+  assert.match(script, /completed: ok && \["success", "empty"\]\.includes\(stateName\)/);
+  assert.match(script, /const loadingCleared = !isPregameLoadingTextPresent\(targets\)/);
+  assert.doesNotMatch(script, /renderPregameAutomationPanelSafely\(\);\s*setPregameDiagnostic\("PREGAME_RENDER_COMPLETED"\)/);
+});
+
+test("watchdogは実DOMのloading文言を監視し、診断情報を安全に表示する", () => {
+  const script = read("script.js");
+  assert.match(script, /if \(!isPregameLoadingVisible\(targets\)\)/);
+  assert.match(script, /fetch開始：\$\{state\.pregameAutomation\.fetchStarted/);
+  assert.match(script, /response\.ok：\$\{state\.pregameAutomation\.responseOk/);
+  assert.match(script, /HTTP status：\$\{state\.pregameAutomation\.httpStatus/);
+  assert.match(script, /DOM：\$\{state\.pregameAutomation\.domPresent/);
+  assert.match(script, /response keys：\$\{responseKeys\}/);
+  assert.match(script, /stopPregameAutomationWatchdog\(watchdogToken\)/);
+  assert.match(script, /requestId !== state\.pregameAutomation\.requestId/);
+  assert.match(script, /function closeAdminPanel\(\)[\s\S]*state\.pregameAutomation\.requestId \+= 1[\s\S]*stopPregameAutomationWatchdog/);
+});
+
+test("レスポンスの必須キーとgameIdを検証し、描画対象DOMを一意に扱う", () => {
+  const script = read("script.js");
+  const index = read("index.html");
+  for (const key of ["gameId", "game", "notice", "roster", "lineup", "scoring", "publishing", "pregame"]) {
+    assert.match(script, new RegExp(`\\"${key}\\"`));
+  }
+  assert.match(script, /payload\.gameId !== requestedGameId/);
+  assert.match(script, /payload\.game === null \? null : payload\.pregame/);
+  assert.match(script, /function getPregameAutomationRenderTargets\(\)/);
+  assert.equal((index.match(/id="adminPregameAutomationSummary"/g) || []).length, 1);
+  assert.equal((index.match(/id="adminPregameAutomationMessage"/g) || []).length, 1);
+  assert.equal((index.match(/id="adminPregameAutomationDiagnostic"/g) || []).length, 1);
 });
 
 test("0010未適用時に必要なテーブルとカラムを検査できる", () => {

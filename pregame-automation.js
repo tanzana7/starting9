@@ -6,6 +6,9 @@ export const PREDICTION_DEADLINE_MINUTES_BEFORE_START = 60;
 export const LINEUP_FETCH_START_MINUTES_BEFORE_START = 60;
 export const LINEUP_FETCH_INTERVAL_MINUTES = 10;
 export const RESULT_RELEASE_MINUTES_AFTER_START = 0;
+export const NOTICE_MONITOR_START_HOUR_JST = 10;
+export const NOTICE_EARLY_INTERVAL_MINUTES = 30;
+export const NOTICE_ACTIVE_INTERVAL_MINUTES = 10;
 
 export function getScheduledGame(gameId) {
   const normalized = typeof gameId === "string" ? gameId.trim() : "";
@@ -45,6 +48,47 @@ export function getPregameTimelines() {
   return schedule.map((game) => getPregameTimeline(game?.gameId)).filter(Boolean);
 }
 
+export function getJstDateString(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+export function getNoticePollingPlan(timelines, now = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  const date = getJstDateString(current);
+  if (!date || Number.isNaN(current.getTime())) return { date: "", due: false, intervalMinutes: null, slotKey: "", activeGameIds: [] };
+  const today = (Array.isArray(timelines) ? timelines : []).filter((timeline) => {
+    return timeline?.game?.date === date && current < timeline.predictionDeadlineAt;
+  });
+  const monitorStart = new Date(`${date}T${String(NOTICE_MONITOR_START_HOUR_JST).padStart(2, "0")}:00:00+09:00`);
+  if (current < monitorStart || today.length === 0) {
+    return { date, due: false, intervalMinutes: null, slotKey: "", activeGameIds: today.map((timeline) => timeline.gameId) };
+  }
+
+  const highFrequency = today.some((timeline) => current >= new Date(timeline.startAt.getTime() - 2 * 60 * 60 * 1000));
+  const intervalMinutes = highFrequency ? NOTICE_ACTIVE_INTERVAL_MINUTES : NOTICE_EARLY_INTERVAL_MINUTES;
+  const anchor = highFrequency
+    ? new Date(Math.min(...today.map((timeline) => timeline.startAt.getTime() - 2 * 60 * 60 * 1000)))
+    : monitorStart;
+  const elapsedMinutes = Math.floor((current.getTime() - anchor.getTime()) / (60 * 1000));
+  const slot = Math.max(0, Math.floor(elapsedMinutes / intervalMinutes));
+  return {
+    date,
+    due: true,
+    intervalMinutes,
+    slotKey: `${date}:${intervalMinutes}:${slot}`,
+    activeGameIds: today.map((timeline) => timeline.gameId)
+  };
+}
+
 // Cronは毎分でなくてもよい。現在時刻が入っている10分枠を一度だけ処理する。
 export function getDueLineupAttemptAt(timeline, now = new Date()) {
   const current = now instanceof Date ? now : new Date(now);
@@ -60,6 +104,9 @@ if (typeof window !== "undefined") {
     predictionDeadlineMinutesBeforeStart: PREDICTION_DEADLINE_MINUTES_BEFORE_START,
     lineupFetchStartMinutesBeforeStart: LINEUP_FETCH_START_MINUTES_BEFORE_START,
     lineupFetchIntervalMinutes: LINEUP_FETCH_INTERVAL_MINUTES,
-    resultReleaseMinutesAfterStart: RESULT_RELEASE_MINUTES_AFTER_START
+    resultReleaseMinutesAfterStart: RESULT_RELEASE_MINUTES_AFTER_START,
+    noticeMonitorStartHourJst: NOTICE_MONITOR_START_HOUR_JST,
+    noticeEarlyIntervalMinutes: NOTICE_EARLY_INTERVAL_MINUTES,
+    noticeActiveIntervalMinutes: NOTICE_ACTIVE_INTERVAL_MINUTES
   });
 }

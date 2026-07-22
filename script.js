@@ -328,6 +328,12 @@ const state = {
     record: null,
     message: ""
   },
+  gameDayNotice: {
+    isLoading: false,
+    gameId: "",
+    record: null,
+    message: ""
+  },
   activeOrder: {
     prediction: 0,
     actual: 0
@@ -361,11 +367,13 @@ document.addEventListener("DOMContentLoaded", () => {
       initializeGameSchedule();
       refreshPredictionDeadlineState();
       renderAll();
+      void refreshGameDayNoticeStatus({ force: true });
     });
   } else {
     initializeGameSchedule();
     refreshPredictionDeadlineState();
     renderAll();
+    void refreshGameDayNoticeStatus({ force: true });
   }
   initializeProbableStarter().finally(() => {
     initializePerfectAchievers();
@@ -373,6 +381,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initializeYearlyRanking();
     refreshPredictionDeadlineState();
     void initializeRosterCandidateSync();
+    void refreshGameDayNoticeStatus({ force: true });
   });
 });
 
@@ -418,8 +427,11 @@ function bindEvents() {
   bindAdminEvent("retryAutoScoringButton", "click", retryAutoScoring);
   bindAdminEvent("cancelAutoScoringButton", "click", cancelAutoScoring);
   bindAdminTestEvent("refreshPregameAutomationButton", "click", () => refreshPregameAutomationStatus({ force: true }));
+  bindAdminTestEvent("runPregameNoticeButton", "click", () => runPregameAutomationAction("run-notice"));
   bindAdminTestEvent("runPregameRosterButton", "click", () => runPregameAutomationAction("run-roster"));
+  bindAdminTestEvent("fixPregameRosterButton", "click", () => runPregameAutomationAction("fix-roster"));
   bindAdminTestEvent("runPregameLineupButton", "click", () => runPregameAutomationAction("run-lineup"));
+  bindAdminTestEvent("publishPregameResultsButton", "click", () => runPregameAutomationAction("publish"));
   bindAdminTestEvent("generateTestPredictionButton", "click", generateTestPrediction);
   bindAdminTestEvent("createPerfectPredictionButton", "click", createAdminTestPerfectPrediction);
   bindAdminTestEvent("runAdminTestCronButton", "click", runAdminTestCron);
@@ -2156,6 +2168,23 @@ function rosterEntryMatchesPlayer(entry, player) {
 }
 
 async function initializeRosterCandidateSync() {
+  const gameSnapshot = await fetchGameDayRosterSnapshot();
+  if (gameSnapshot.ok && gameSnapshot.players.length) {
+    saveToStorage(STORAGE_KEYS.rosterSnapshot, {
+      fetchedAt: gameSnapshot.capturedAt || new Date().toISOString(),
+      sourceUrl: "auth-worker://game-day-roster",
+      method: "game-day-roster-snapshot",
+      warning: "",
+      httpStatus: 200,
+      cacheStatus: "game-snapshot",
+      stale: false,
+      parsedCount: gameSnapshot.players.length,
+      announcedCount: gameSnapshot.players.length,
+      players: gameSnapshot.players
+    });
+    renderPicker("prediction");
+    return;
+  }
   const snapshot = normalizeRosterSnapshot(loadFromStorage(STORAGE_KEYS.rosterSnapshot));
   renderPicker("prediction");
   if (canUseRosterSnapshot(snapshot) && isRosterSnapshotFresh(snapshot)) {
@@ -2559,6 +2588,7 @@ function refreshPredictionDeadlineState() {
     override: state.predictionDeadline.override
   };
   renderPredictionDeadline();
+  renderGameDayNoticeStatus();
   renderPicker("prediction");
   renderAdminTestPanel();
   renderPredictionDeadlineAdmin();
@@ -3024,7 +3054,16 @@ function renderAutoScoringPanel() {
 }
 
 function formatPregameAutomationStatus(status) {
-  return ({ pending: "待機中", captured: "保存済み", failed: "取得失敗", skipped: "停止", scored: "採点済み", blocked: "要手動対応" })[status] || "未確認";
+  return ({ pending: "待機中", captured: "保存済み", failed: "取得失敗", skipped: "停止", scored: "採点済み", scored_private: "採点済み（非公開）", published: "公開済み", blocked: "要手動対応" })[status] || "未確認";
+}
+
+function formatGameDayNoticeStatus(status) {
+  return ({
+    waiting: "本日の対象球団の公示は確認できていません",
+    detected: "本日の公示を反映済み",
+    closed_without_notice: "締切時点まで対象球団の公示は確認されませんでした",
+    error: "公示を取得できませんでした"
+  })[status] || "本日の対象球団の公示は確認できていません";
 }
 
 async function refreshPregameAutomationStatus({ force = false } = {}) {
@@ -3056,14 +3095,31 @@ async function runPregameAutomationAction(action) {
   const url = buildAdminGameApiUrl(gameId, `pregame-automation/${action}`);
   if (!gameId || !url || state.pregameAutomation.isRunning) return;
   state.pregameAutomation.isRunning = true;
-  state.pregameAutomation.message = action === "run-roster" ? "ロースターを取得中..." : "正式スタメンを取得中...";
+  const actionMessages = {
+    "run-notice": "本日の公示を取得中...",
+    "run-roster": "ロースターを取得中...",
+    "fix-roster": "締切時点のロースターを固定中...",
+    "run-lineup": "正式スタメンを取得中...",
+    publish: "結果の公開判定を確認中..."
+  };
+  state.pregameAutomation.message = actionMessages[action] || "試合前処理を実行中...";
   renderPregameAutomationPanel();
   try {
     const response = await fetch(url, { method: "POST", credentials: "include" });
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
     state.pregameAutomation.record = payload.pregame || state.pregameAutomation.record;
-    state.pregameAutomation.message = action === "run-roster" ? "ロースター取得を実行しました。" : "スタメン取得を実行しました。";
+    const completedMessages = {
+      "run-notice": "公示取得を実行しました。",
+      "run-roster": "ロースター取得を実行しました。",
+      "fix-roster": "ロースターの締切時点固定を実行しました。",
+      "run-lineup": "スタメン取得を実行しました。",
+      publish: "結果の公開判定を実行しました。"
+    };
+    state.pregameAutomation.message = completedMessages[action] || "試合前処理を実行しました。";
+    if (action === "run-notice" || action === "fix-roster") {
+      await initializeRosterCandidateSync();
+    }
     await refreshAutoScoringStatus({ force: true });
   } catch (error) {
     console.error("試合前自動処理の手動実行に失敗しました", error.message);
@@ -3086,8 +3142,15 @@ function renderPregameAutomationPanel() {
     const rows = [
       ["対象試合", record.gameId || state.pregameAutomation.gameId || "-"],
       ["試合開始", formatDateTime(schedule.startAt)],
-      ["ロースター取得予定", formatDateTime(schedule.rosterCaptureAt)],
-      ["ロースター取得状態", `${formatPregameAutomationStatus(record.roster?.status)}${record.roster?.playerCount ? `（${record.roster.playerCount}人）` : ""}`],
+      ["公示状態", formatGameDayNoticeStatus(record.notice?.status)],
+      ["公示最終確認", formatDateTime(record.notice?.lastCheckedAt)],
+      ["次回公示取得予定", formatDateTime(record.notice?.nextFetchAt)],
+      ["公示内容ハッシュ", record.notice?.contentHash ? record.notice.contentHash.slice(0, 12) : "-"],
+      ["公示差分", `登録${record.notice?.registeredCount || 0}人 / 抹消${record.notice?.removedCount || 0}人`],
+      ["公示後の通知", record.notice?.afterDeadline ? "締切後（スナップショット変更なし）" : "なし"],
+      ["ロースター固定予定", formatDateTime(schedule.predictionDeadlineAt)],
+      ["ロースター固定", formatDateTime(record.roster?.fixedAt)],
+      ["ロースター状態", `${formatPregameAutomationStatus(record.roster?.status)}${record.roster?.playerCount ? `（${record.roster.playerCount}人）` : ""}`],
       ["予想締切", formatDateTime(schedule.predictionDeadlineAt)],
       ["スタメン取得開始", formatDateTime(schedule.lineupFetchStartAt)],
       ["最終スタメン取得試行", formatDateTime(record.lineup?.lastAttemptAt || record.lineup?.detectedAt)],
@@ -3095,7 +3158,9 @@ function renderPregameAutomationPanel() {
       ["取得試行回数", `${record.lineup?.attempts || 0}回`],
       ["正式スタメン", `${formatPregameAutomationStatus(record.lineup?.status)}${record.lineup?.source ? `（${record.lineup.source === "manual" ? "手動" : "NPB自動"}）` : ""}`],
       ["採点予定", formatDateTime(record.scoring?.dueAt || schedule.resultReleaseAt)],
-      ["採点状態", formatPregameAutomationStatus(record.scoring?.status)],
+      ["採点状態", `${formatPregameAutomationStatus(record.scoring?.status)} / ${formatPregameAutomationStatus(record.scoring?.publicationStatus)}`],
+      ["公開予定", formatDateTime(schedule.startAt)],
+      ["公開日時", formatDateTime(record.scoring?.publishedAt)],
       ["最後のエラー", record.lastErrorCode || "-"]
     ];
     summary.innerHTML = `<dl>${rows.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value || "-")}</dd>`).join("")}</dl>`;
@@ -5693,6 +5758,84 @@ function renderGameInfoDisplay() {
   display.classList.remove("hidden");
 }
 
+function getGameDayNoticeTargetGameId() {
+  return state.nextScheduleId || findNextGameSchedule()?.gameId || state.probableStarter.nextGame?.gameId || "";
+}
+
+function buildGameDayNoticeApiUrl(gameId) {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  return baseUrl && gameId ? `${baseUrl}/api/game-day-status?gameId=${encodeURIComponent(gameId)}` : "";
+}
+
+function renderGameDayNoticeStatus() {
+  const container = document.getElementById("gameDayNoticeStatus");
+  if (!container) return;
+  const record = state.gameDayNotice.record;
+  if (!record && !state.gameDayNotice.isLoading && !state.gameDayNotice.message) {
+    container.classList.add("hidden");
+    container.innerHTML = "";
+    return;
+  }
+  container.classList.remove("hidden");
+  if (state.gameDayNotice.isLoading) {
+    container.innerHTML = "<span>本日の公示を確認中です。</span>";
+    return;
+  }
+  if (state.gameDayNotice.message) {
+    container.innerHTML = `<span>${escapeHtml(state.gameDayNotice.message)}</span>`;
+    return;
+  }
+  if (record.sourceStatus === "error") {
+    container.innerHTML = "<span>公示情報を確認できていません。候補選手が最新でない可能性があります。</span>";
+    return;
+  }
+  const counts = record.registeredCount || record.removedCount
+    ? `（登録${record.registeredCount || 0}人・抹消${record.removedCount || 0}人）`
+    : "";
+  const checkedAt = record.checkedAt ? ` 最終確認：${formatDateTime(record.checkedAt)}` : "";
+  container.innerHTML = `<strong>本日の公示</strong><span>${escapeHtml(record.noticeLabel || "本日の対象球団の公示は確認できていません")}${escapeHtml(counts)}${escapeHtml(checkedAt)}</span>`;
+}
+
+async function refreshGameDayNoticeStatus({ force = false } = {}) {
+  const gameId = getGameDayNoticeTargetGameId();
+  const url = buildGameDayNoticeApiUrl(gameId);
+  if (!url) return;
+  if (state.gameDayNotice.isLoading && !force) return;
+  state.gameDayNotice.isLoading = true;
+  state.gameDayNotice.gameId = gameId;
+  state.gameDayNotice.message = "";
+  renderGameDayNoticeStatus();
+  try {
+    const response = await fetch(url, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+    state.gameDayNotice.record = payload;
+  } catch (error) {
+    console.error("本日の公示状態取得に失敗しました", error.message);
+    state.gameDayNotice.record = null;
+    state.gameDayNotice.message = "公示情報を確認できていません。候補選手が最新でない可能性があります。";
+  } finally {
+    state.gameDayNotice.isLoading = false;
+    renderGameDayNoticeStatus();
+    renderScoreResult();
+  }
+}
+
+async function fetchGameDayRosterSnapshot() {
+  const gameId = getGameDayNoticeTargetGameId();
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  if (!gameId || !baseUrl) return { ok: false, players: [] };
+  try {
+    const response = await fetch(`${baseUrl}/api/game-day-roster?gameId=${encodeURIComponent(gameId)}`, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok || !Array.isArray(payload.players)) return { ok: false, players: [] };
+    return payload;
+  } catch (error) {
+    console.error("試合別ロースターの取得に失敗しました", error.message);
+    return { ok: false, players: [] };
+  }
+}
+
 function renderAdminFlow() {
   if (!state.adminStatus || state.adminStatus === "idle") {
     state.adminStatus = getAdminStatusFromActual();
@@ -6212,7 +6355,12 @@ function renderScoreResult() {
 
   if (!state.result) {
     container.className = "empty-state";
-    container.textContent = "採点すると結果が表示されます。";
+    const resultStatus = state.gameDayNotice.record?.resultStatus;
+    container.textContent = resultStatus === "prestart"
+      ? "結果は試合開始後に公開されます。"
+      : resultStatus === "preparing"
+        ? "結果を準備中です。"
+        : "採点すると結果が表示されます。";
     shareButton.classList.add("hidden");
     return;
   }

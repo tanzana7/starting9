@@ -8,6 +8,7 @@ const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 
 test("試合前自動処理の管理画面取得はタイムアウトとfinallyで固まりを防ぐ", () => {
   const script = read("script.js");
+  const index = read("index.html");
   assert.match(script, /new AbortController\(\)/);
   assert.match(script, /controller\.abort\(\)/);
   assert.match(script, /setTimeout\(\(\) => controller\.abort\(\), 10_000\)/);
@@ -17,6 +18,13 @@ test("試合前自動処理の管理画面取得はタイムアウトとfinally�
   assert.match(script, /本日の対象試合はありません/);
   assert.match(script, /PREGAME_SCHEMA_NOT_READY/);
   assert.match(script, /HTTP \$\{error\.status\}/);
+  assert.match(script, /PREGAME_UI_WATCHDOG_TIMEOUT/);
+  assert.match(script, /setTimeout\(\(\) => controller\.abort\(\), 10_000\)/);
+  assert.equal((script.match(/試合前処理を確認中です。/g) || []).length, 1);
+  assert.equal((script.match(/function renderPregameAutomationPanel\(/g) || []).length, 1);
+  assert.equal((index.match(/id="adminPregameAutomationSummary"/g) || []).length, 1);
+  assert.equal((index.match(/id="adminPregameAutomationMessage"/g) || []).length, 1);
+  assert.equal((index.match(/id="adminPregameAutomationDiagnostic"/g) || []).length, 1);
 });
 
 test("管理画面の独立した初期化は一部のAPI失敗で停止しない", () => {
@@ -25,6 +33,10 @@ test("管理画面の独立した初期化は一部のAPI失敗で停止しな�
   assert.match(script, /fetchUserAchievements\(\{ force: true \}\)/);
   assert.match(script, /refreshYearlyRanking\(\{ force: true \}\)/);
   assert.match(script, /refreshAdminAccess\(\)/);
+  assert.match(script, /beginPregameAutomationInitialization\(\);[\s\S]*refreshPregameAutomationStatus\(\{ force: true \}\)/);
+  assert.match(script, /try \{\s*initializeGameSchedule\(\);[\s\S]*catch \(error\)/);
+  assert.match(script, /try \{\s*renderAll\(\);[\s\S]*catch \(error\)/);
+  assert.match(script, /function renderPregameAutomationPanelSafely/);
 });
 
 test("試合前自動処理サマリーAPIは安全なエラーコードと構造化レスポンスを返す", () => {
@@ -39,6 +51,17 @@ test("試合前自動処理サマリーAPIは安全なエラーコードと構�
   assert.match(auth, /publishing: status\.publishing/);
   assert.match(auth, /return noStoreJsonResponse\(\{/);
   assert.match(auth, /console\.error\(`\[PREGAME\] summary failed: code=\$\{code\}`\)/);
+  assert.match(auth, /PREGAME_SUMMARY_TIMEOUT/);
+  assert.match(auth, /PREGAME_SUMMARY_TIMEOUT_MS = 10_000/);
+  assert.match(auth, /return noStoreJsonResponse\(\{ ok: false, error: code, code \}, status, cors\)/);
+});
+
+test("キャッシュされた旧script.jsを再利用しないscriptタグになっている", () => {
+  const index = read("index.html");
+  const scriptTags = index.match(/<script[^>]+src="[^"]+"[^>]*><\/script>/g) || [];
+  const scriptJsTags = scriptTags.filter((tag) => /src="script\.js\?/.test(tag));
+  assert.equal(scriptJsTags.length, 1);
+  assert.match(scriptJsTags[0], /pregame-runtime-/);
 });
 
 test("0010未適用時に必要なテーブルとカラムを検査できる", () => {

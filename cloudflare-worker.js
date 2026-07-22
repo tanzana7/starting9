@@ -3,6 +3,7 @@ const LINEUP_CACHE_TTL_SECONDS = 5 * 60;
 const ROSTER_CACHE_TTL_SECONDS = 30 * 60;
 const NPB_FETCH_TIMEOUT_MS = 12_000;
 const NPB_WORKER_UPDATED_AT = "2026-07-22T06:00:00.000Z";
+const NOTICE_SOURCE_URL = "https://npb.jp/announcement/roster/";
 const DEFAULT_ALLOWED_ORIGINS = [
   "https://starting9.pages.dev",
   "http://localhost:4173",
@@ -160,6 +161,9 @@ export default {
 
     if (mode === "roster") {
       return withCors(await handleRosterRequest(requestUrl, isDebug), corsHeaders);
+    }
+    if (mode === "notice") {
+      return withCors(await handleNoticeRequest(requestUrl, isDebug), corsHeaders);
     }
 
     if (mode !== "lineup") {
@@ -421,6 +425,136 @@ async function handleRosterRequest(requestUrl, isDebug) {
   } catch (error) {
     return jsonResponse({ ok: false, error: `NPB公式登録ページ取得中にエラーが発生しました：${error.message}` }, 500);
   }
+}
+
+async function handleNoticeRequest(requestUrl, isDebug) {
+  const requestedDate = requestUrl.searchParams.get("date") || "";
+  try {
+    // 公示監視はCronのスロットと本文ハッシュで重複を抑制するため、
+    // 通常ロースター取得の30分Cache APIを使わず、公式ページを確認する。
+    const source = await fetchNoticeSource();
+    if (!source.ok) return jsonResponse({ ok: false, sourceUrl: NOTICE_SOURCE_URL, error: source.error }, 502);
+    const parsed = parseNoticePage(source.html);
+    const contentHash = await createContentHash(source.html);
+    if (!parsed.date || (requestedDate && requestedDate !== parsed.date) || Object.keys(parsed.rosters).length === 0) {
+      return jsonResponse({
+        ok: false,
+        sourceUrl: NOTICE_SOURCE_URL,
+        fetchedAt: source.fetchedAt,
+        error: "NPB公式公示ページの日付または球団一覧を確認できませんでした。",
+        ...(isDebug ? { debug: parsed.debug } : {})
+      }, 422);
+    }
+    return jsonResponse({
+      ok: true,
+      sourceUrl: NOTICE_SOURCE_URL,
+      fetchedAt: source.fetchedAt,
+      httpStatus: source.httpStatus,
+      noticeDate: parsed.date,
+      contentHash,
+      registrations: parsed.registrations,
+      removals: parsed.removals,
+      registeredCount: parsed.registrations.length,
+      removedCount: parsed.removals.length,
+      rosters: parsed.rosters,
+      cacheStatus: source.cacheStatus,
+      stale: source.stale,
+      method: "roster-page-daily-notice-and-team-rosters",
+      ...(isDebug ? { debug: parsed.debug } : {})
+    });
+  } catch (error) {
+    return jsonResponse({ ok: false, sourceUrl: NOTICE_SOURCE_URL, error: "NPB公式公示ページを確認できませんでした。" }, 500);
+  }
+}
+
+async function fetchNoticeSource() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), NPB_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(NOTICE_SOURCE_URL, {
+      cache: "no-store",
+      signal: controller.signal,
+      headers: {
+        "Cache-Control": "no-cache",
+        "User-Agent": "Starting9 MVP Cloudflare Worker"
+      }
+    });
+    const html = await response.text();
+    if (!response.ok) {
+      return { ok: false, error: `NPB公式公示ページを取得できませんでした。HTTP ${response.status}` };
+    }
+    return {
+      ok: true,
+      html,
+      httpStatus: response.status,
+      fetchedAt: new Date().toISOString(),
+      cacheStatus: "bypass",
+      stale: false
+    };
+  } catch (error) {
+    return { ok: false, error: error?.name === "AbortError" ? "NPB公式公示ページの取得がタイムアウトしました。" : "NPB公式公示ページを取得できませんでした。" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function parseNoticePage(html) {
+  const sourceHtml = String(html || "");
+  const dateMatch = sourceHtml.match(/<h4[^>]*>\s*(20\d{2})年\s*(\d{1,2})月\s*(\d{1,2})日の出場選手登録/iu);
+  const date = dateMatch ? `${dateMatch[1]}-${String(Number(dateMatch[2])).padStart(2, "0")}-${String(Number(dateMatch[3])).padStart(2, "0")}` : "";
+  const registeredBlock = extractNoticeBlock(sourceHtml, "出場選手登録");
+  const removedBlock = extractNoticeBlock(sourceHtml, "出場選手登録抹消");
+  const registrations = parseNoticeRows(registeredBlock);
+  const removals = parseNoticeRows(removedBlock);
+  const rosters = {};
+  const rosterPattern = /<h5[^>]*>\s*([^<]+?)\s*<\/h5>[\s\S]*?<table[^>]*>([\s\S]*?)<\/table>/giu;
+  let rosterMatch;
+  while ((rosterMatch = rosterPattern.exec(sourceHtml)) !== null) {
+    const team = normalizeStarterTeam(rosterMatch[1]);
+    if (!team || rosters[team.key]) continue;
+    const entries = parseRosterTableEntries(rosterMatch[2]);
+    if (entries.length > 0) rosters[team.key] = entries;
+  }
+  return {
+    date,
+    registrations,
+    removals,
+    rosters,
+    debug: { date, registeredRows: registrations.length, removedRows: removals.length, rosterTeams: Object.keys(rosters).length }
+  };
+}
+
+function extractNoticeBlock(html, heading) {
+  const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`<h5[^>]*>\\s*${escapedHeading}\\s*<\\/h5>([\\s\\S]*?)(?=<h5[^>]*>|<h4[^>]*>|$)`, "iu");
+  return pattern.exec(html)?.[1] || "";
+}
+
+function parseNoticeRows(block) {
+  const rows = [];
+  const rowPattern = /<tr[^>]*>([\s\S]*?)<\/tr>/giu;
+  let rowMatch;
+  while ((rowMatch = rowPattern.exec(block)) !== null) {
+    const cells = [];
+    const cellPattern = /<td[^>]*>([\s\S]*?)<\/td>/giu;
+    let cellMatch;
+    while ((cellMatch = cellPattern.exec(rowMatch[1])) !== null) cells.push(stripTags(cellMatch[1]));
+    if (cells.length < 4) continue;
+    const team = normalizeStarterTeam(cells[0]);
+    const position = normalizeWhitespace(cells[1]);
+    const number = normalizeWhitespace(cells[2]).replace(/\s+/g, "");
+    const name = normalizeRosterPlayerName(cells[3]);
+    if (team && position && number && name) rows.push({ teamCode: team.key, position, number, name });
+  }
+  return rows;
+}
+
+async function createContentHash(value) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(value || "")));
+  const bytes = new Uint8Array(digest);
+  let binary = "";
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 async function fetchRosterSource(requestUrl, sourceUrl) {

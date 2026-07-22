@@ -112,6 +112,7 @@
               <button type="button" class="roster-filter-button is-selected" data-roster-filter="active" aria-pressed="true">出場登録されている選手</button>
               <button type="button" class="roster-filter-button" data-roster-filter="inactive" aria-pressed="false">出場登録されていない選手</button>
             </div>
+            <div id="gameDayNoticeStatus" class="game-day-notice-status hidden" aria-live="polite"></div>
             <div id="predictionPlayers" class="player-list"></div>
             <div id="predictionPlayerDetails" class="player-detail-panel hidden" aria-live="polite"></div>
           </div>
@@ -162,7 +163,7 @@
           <div>
             <p class="area-label">PREGAME AUTOMATION</p>
             <h3 id="admin-pregame-automation-title">試合前自動処理</h3>
-            <p>ロースターは開始2時間前、正式スタメンは開始1時間前から保存し、開始時刻に採点します。</p>
+            <p>10時から公示を監視し、締切1時間前にロースターを固定します。正式スタメンは開始1時間前から取得し、採点結果は試合開始後に公開します。</p>
           </div>
         </div>
         <div id="adminPregameAutomationSummary" class="admin-auto-scoring-summary" aria-live="polite"></div>
@@ -330,12 +331,15 @@
           <div>
             <p class="area-label">PREGAME TEST</p>
             <h3 id="admin-pregame-test-title">試合前自動処理テスト</h3>
-            <p>ロースター・スタメンの取得を1回だけ実行します。採点は既存の「今すぐ採点」を使用します。</p>
+            <p>公示・ロースター・スタメンの取得や公開判定を1回だけ実行します。</p>
           </div>
           <div class="admin-server-scoring-actions">
             <button id="refreshPregameAutomationButton" class="secondary-button compact-button" type="button">スケジュール判定を確認</button>
+            <button id="runPregameNoticeButton" class="secondary-button compact-button" type="button">公示取得を1回実行</button>
             <button id="runPregameRosterButton" class="secondary-button compact-button" type="button">ロースター取得を1回実行</button>
+            <button id="fixPregameRosterButton" class="secondary-button compact-button" type="button">ロースターを締切時点で固定</button>
             <button id="runPregameLineupButton" class="secondary-button compact-button" type="button">スタメン取得を1回実行</button>
+            <button id="publishPregameResultsButton" class="secondary-button compact-button" type="button">結果の公開判定を1回実行</button>
           </div>
         </section>
         <section id="adminTestPredictionDeadlineStatus" class="admin-prediction-deadline hidden" aria-live="polite"></section>

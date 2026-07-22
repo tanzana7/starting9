@@ -1775,6 +1775,23 @@ textarea:focus {
   box-shadow: 0 1px 3px rgba(25, 54, 82, 0.12);
 }
 
+.game-day-notice-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin: 8px 0 10px;
+  padding: 8px 10px;
+  border-left: 3px solid #8aa9c3;
+  background: #f2f7fb;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.game-day-notice-status strong {
+  color: var(--fighters-deep-blue);
+}
+
 .slot-list,
 .player-list {
   display: grid;

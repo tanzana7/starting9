@@ -4,6 +4,8 @@ const SESSION_COOKIE_NAME = "s9_session";
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const PBKDF2_ITERATIONS = 100_000;
 const PBKDF2_MAX_ITERATIONS = 100_000;
+const AUTH_WORKER_VERSION = "2026.07.22-1";
+const AUTH_WORKER_BUILD_TIME = "2026-07-22T00:00:00.000Z";
 const PASSWORD_HASH_BITS = 256;
 const USERNAME_MIN_LENGTH = 3;
 const USERNAME_MAX_LENGTH = 16;
@@ -112,6 +114,9 @@ export default {
       if (path === "/api/admin/me" && request.method === "GET") {
         return await handleAdminMe(request, env, cors);
       }
+      if (path === "/api/admin/version" && request.method === "GET") {
+        return await handleAdminVersion(request, env, cors);
+      }
       if (path === "/api/admin/mode-capabilities" && request.method === "GET") {
         return await handleAdminModeCapabilities(request, env, cors);
       }
@@ -119,9 +124,9 @@ export default {
       if (adminScoringRoute) {
         return await handleAdminScoringRoute(request, env, cors, adminScoringRoute);
       }
-      const developmentRoute = parseDevelopmentRoute(path);
-      if (developmentRoute) {
-        return await handleDevelopmentRoute(request, env, cors, developmentRoute);
+      const adminTestRoute = parseAdminTestRoute(path);
+      if (adminTestRoute) {
+        return await handleAdminTestRoute(request, env, cors, adminTestRoute);
       }
       if (path === "/api/perfect-achievers" && request.method === "GET") {
         return await handleGetPerfectAchievers(request, env, cors);
@@ -289,6 +294,19 @@ async function handleAdminMe(request, env, cors) {
   }, 200, cors);
 }
 
+async function handleAdminVersion(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) {
+    return access.response;
+  }
+  return noStoreJsonResponse({
+    ok: true,
+    service: "auth-worker",
+    version: AUTH_WORKER_VERSION,
+    buildTime: AUTH_WORKER_BUILD_TIME
+  }, 200, cors);
+}
+
 async function handleAdminModeCapabilities(request, env, cors) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) {
@@ -298,12 +316,11 @@ async function handleAdminModeCapabilities(request, env, cors) {
     ok: true,
     authenticated: true,
     role: "admin",
-    adminModeAvailable: true,
-    developmentModeAvailable: isDevelopmentModeEnabled(env)
+    adminModeAvailable: true
   }, 200, cors);
 }
 
-function parseDevelopmentRoute(path) {
+function parseAdminTestRoute(path) {
   if (path === "/api/dev/status" || path === "/api/dev/cron/run-auto-scoring" || path === "/api/dev/achievements") {
     return { action: path.slice("/api/dev/".length) };
   }
@@ -327,8 +344,8 @@ function parseDevelopmentRoute(path) {
   }
 }
 
-async function handleDevelopmentRoute(request, env, cors, route) {
-  const access = await requireDevelopmentUser(request, env, cors);
+async function handleAdminTestRoute(request, env, cors, route) {
+  const access = await requireAdminUser(request, env, cors);
   if (!access.ok) {
     return access.response;
   }
@@ -340,7 +357,6 @@ async function handleDevelopmentRoute(request, env, cors, route) {
     const record = gameId ? await getGameLineup(env.AUTH_DB, gameId) : null;
     return jsonResponse({
       ok: true,
-      developmentModeEnabled: true,
       autoScoringDelaySeconds: getAutoScoringDelaySeconds(env),
       user: publicUser(access.user),
       gameId: gameId || "",
@@ -352,7 +368,7 @@ async function handleDevelopmentRoute(request, env, cors, route) {
     if (!metadata) {
       return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
     }
-    return await handleCreateDevelopmentPerfectPrediction(env, cors, access.user, metadata);
+    return await handleCreateAdminTestPerfectPrediction(env, cors, access.user, metadata);
   }
   if (route.action === "cron/run-auto-scoring" && request.method === "POST") {
     const summary = await runDueAutoScoringJobs(env, new Date());
@@ -799,7 +815,7 @@ function toDevelopmentAchievement(row) {
   };
 }
 
-async function handleCreateDevelopmentPerfectPrediction(env, cors, user, metadata) {
+async function handleCreateAdminTestPerfectPrediction(env, cors, user, metadata) {
   const record = await getGameLineup(env.AUTH_DB, metadata.gameId);
   const actualResult = sanitizeActualLineupForScoring(parseStoredActualLineup(record?.actual_lineup_json));
   if (!actualResult.ok) {
@@ -1372,9 +1388,8 @@ function toIsoString(value) {
   return value instanceof Date ? value.toISOString() : new Date().toISOString();
 }
 
-// 開発モードで生成するダミー試合は、正式なランキング分母へ登録しません。
+// テスト用として保存した試合は、正式なランキング分母へ登録しません。
 async function markGameRankingPending(db, gameId, at, env) {
-  if (isDevelopmentModeEnabled(env)) return;
   const metadata = parsePredictionGameId(gameId);
   if (!metadata) return;
   const now = toIsoString(at);
@@ -1393,7 +1408,6 @@ async function markGameRankingPending(db, gameId, at, env) {
 }
 
 async function markGameRankingEligible(db, gameId, scoredAt, env) {
-  if (isDevelopmentModeEnabled(env)) return;
   const metadata = parsePredictionGameId(gameId);
   if (!metadata) return;
   const now = toIsoString(scoredAt);
@@ -1412,7 +1426,6 @@ async function markGameRankingEligible(db, gameId, scoredAt, env) {
 }
 
 async function markGameRankingIneligible(db, gameId, status, at, env) {
-  if (isDevelopmentModeEnabled(env)) return;
   const metadata = parsePredictionGameId(gameId);
   if (!metadata) return;
   const now = toIsoString(at);
@@ -1982,21 +1995,6 @@ async function requireAdminUser(request, env, cors) {
   return authenticated;
 }
 
-async function requireDevelopmentUser(request, env, cors) {
-  const admin = await requireAdminUser(request, env, cors);
-  if (!admin.ok) {
-    return admin;
-  }
-  if (!isDevelopmentModeEnabled(env)) {
-    return { ok: false, response: jsonResponse({ ok: false, error: "開発モードは有効ではありません。" }, 403, cors) };
-  }
-  return admin;
-}
-
-function isDevelopmentModeEnabled(env) {
-  return String(env?.ENABLE_DEVELOPMENT_MODE || "").trim().toLowerCase() === "true";
-}
-
 async function createSession(db, userId, env) {
   const token = randomToken(32);
   const tokenHash = await sha256Base64Url(token);
@@ -2169,4 +2167,10 @@ function jsonResponse(payload, status, headers) {
   const responseHeaders = new Headers(headers);
   responseHeaders.set("Content-Type", "application/json; charset=utf-8");
   return new Response(JSON.stringify(payload), { status, headers: responseHeaders });
+}
+
+function noStoreJsonResponse(payload, status, headers) {
+  const responseHeaders = new Headers(headers);
+  responseHeaders.set("Cache-Control", "no-store");
+  return jsonResponse(payload, status, responseHeaders);
 }

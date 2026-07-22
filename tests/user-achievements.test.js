@@ -42,24 +42,24 @@ test("実績migrationはメモリSQLiteで初期実績とユーザー別重複�
   assert.throws(() => statement.run("earned-2", achievement.id));
 });
 
-test("実績APIは本人の取得と開発専用の本人付与・削除を分離する", () => {
+test("実績APIは本人の取得と管理者テスト用の本人付与・削除を分離する", () => {
   assert.match(worker, /\/api\/me\/achievements/);
   assert.match(worker, /requireAuthenticatedUser\(request, env, cors\)/);
   assert.match(worker, /\/api\/dev\/achievements\/grant-test/);
-  assert.match(worker, /requireDevelopmentUser\(request, env, cors\)/);
+  assert.match(worker, /async function handleAdminTestRoute[\s\S]*?await requireAdminUser\(request, env, cors\)/);
   assert.match(worker, /INSERT OR IGNORE INTO user_achievements/);
   assert.match(worker, /source = 'development'/);
   assert.match(worker, /user_id = \?1/);
 });
 
-test("通常画面と開発画面に実績の表示・検証導線を持つ", () => {
+test("通常画面と管理画面内テストに実績の表示・検証導線を持つ", () => {
   assert.match(html, /id="achievementsPanel"/);
   assert.match(html, /id="achievementsList"/);
-  assert.match(html, /id="developmentAchievements"/);
+  assert.match(html, /id="adminTestAchievements"/);
   assert.match(script, /function fetchUserAchievements/);
-  assert.match(script, /function refreshDevelopmentAchievements/);
-  assert.match(script, /function grantDevelopmentAchievement/);
-  assert.match(script, /function removeDevelopmentAchievement/);
+  assert.match(script, /function refreshAdminTestAchievements/);
+  assert.match(script, /function grantAdminTestAchievement/);
+  assert.match(script, /function removeAdminTestAchievement/);
   assert.match(script, /const hasAchievements = state\.achievements\.items\.length > 0/);
   assert.match(script, /panel\.classList\.toggle\("hidden", !user \|\| !hasAchievements\)/);
   assert.doesNotMatch(script, /取得済み実績はありません/);

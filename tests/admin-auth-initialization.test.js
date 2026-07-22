@@ -54,7 +54,6 @@ test("初回認証イベントを取りこぼしてもPromise完了後にadmin A
     document,
     fetch: async (url) => {
       fetchUrls.push(url);
-      const isCapabilityRequest = String(url).endsWith("/api/admin/mode-capabilities");
       const isAchievementsRequest = String(url).endsWith("/api/me/achievements");
       const isYearlyPublicRankingRequest = String(url).includes("/api/rankings/yearly");
       const isYearlyMyRankingRequest = String(url).endsWith("/api/me/ranking/yearly");
@@ -68,7 +67,6 @@ test("初回認証イベントを取りこぼしてもPromise完了後にadmin A
           if (isYearlyMyRankingRequest) return { ok: true, year: 2026, rankingData: null };
           if (isMonthlyPublicRankingRequest) return { year: 2026, month: 7, ranking: [], summary: { eligibleGames: 0, requiredGames: 0, qualifiedUsers: 0, totalUsers: 0 }, pagination: { limit: 50, offset: 0, totalUsers: 0 } };
           if (isMonthlyMyRankingRequest) return { ok: true, year: 2026, month: 7, rankingData: null };
-          if (isCapabilityRequest) return { ok: true, adminModeAvailable: true, developmentModeAvailable: false };
           return { ok: true, admin: true };
         }
       };
@@ -86,7 +84,7 @@ test("初回認証イベントを取りこぼしてもPromise完了後にadmin A
   const scriptPath = path.join(__dirname, "..", "script.js");
   vm.runInContext(fs.readFileSync(scriptPath, "utf8"), context, { filename: scriptPath });
   vm.runInContext(
-    "applyAdminMode = () => {}; initializeGameSchedule = () => {}; renderAll = () => {}; refreshAdminScoringSummary = () => {}; refreshAutoScoringStatus = () => {};",
+    "applyAdminMode = () => {}; initializeGameSchedule = () => {}; renderAll = () => {}; refreshAdminScoringSummary = () => {}; refreshAutoScoringStatus = () => {}; refreshAdminTestStatus = () => {}; refreshAdminTestAchievements = () => {}; refreshAdminVersionInfo = () => {}; renderAdminTestPanel = () => {};",
     context
   );
 
@@ -101,8 +99,7 @@ test("初回認証イベントを取りこぼしてもPromise完了後にadmin A
     "https://starting9-auth.tanzana7.workers.dev/api/me/achievements",
     "https://starting9-auth.tanzana7.workers.dev/api/rankings/yearly?year=2026&limit=50&qualifiedOnly=false",
     "https://starting9-auth.tanzana7.workers.dev/api/me/ranking/yearly?year=2026",
-    "https://starting9-auth.tanzana7.workers.dev/api/admin/me",
-    "https://starting9-auth.tanzana7.workers.dev/api/admin/mode-capabilities"
+    "https://starting9-auth.tanzana7.workers.dev/api/admin/me"
   ]);
   assert.equal((listeners.get("starting9-auth-state-changed") || []).length, 1);
 });

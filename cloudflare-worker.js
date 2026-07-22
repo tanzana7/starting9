@@ -2,6 +2,8 @@ const LINEUP_SIZE = 9;
 const LINEUP_CACHE_TTL_SECONDS = 5 * 60;
 const ROSTER_CACHE_TTL_SECONDS = 30 * 60;
 const NPB_FETCH_TIMEOUT_MS = 12_000;
+const NPB_WORKER_VERSION = "2026.07.22-1";
+const NPB_WORKER_BUILD_TIME = "2026-07-22T00:00:00.000Z";
 const DEFAULT_ALLOWED_ORIGINS = [
   "https://starting9.pages.dev",
   "http://localhost:4173",
@@ -144,6 +146,14 @@ export default {
     }
 
     const requestUrl = new URL(request.url);
+    if (requestUrl.pathname === "/version") {
+      return withCors(jsonResponse({
+        ok: true,
+        service: "npb-worker",
+        version: NPB_WORKER_VERSION,
+        buildTime: NPB_WORKER_BUILD_TIME
+      }), corsHeaders);
+    }
     const mode = requestUrl.searchParams.get("mode") || "lineup";
     if (mode === "starter") {
       return withCors(await handleStarterRequest(requestUrl.searchParams.get("debug") === "1"), corsHeaders);

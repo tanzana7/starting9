@@ -29,7 +29,6 @@
         <div id="authLoggedIn" class="auth-state hidden">
           <span><strong id="authUsername"></strong> でログイン中</span>
           <button id="openAdminButton" class="auth-button hidden" type="button">管理画面</button>
-          <button id="openDevelopmentButton" class="auth-button hidden" type="button">開発画面</button>
           <button id="logoutButton" class="auth-button" type="button">ログアウト</button>
         </div>
         <section id="achievementsPanel" class="achievements-panel hidden" aria-labelledby="achievementsTitle">
@@ -148,8 +147,15 @@
 
       <div class="admin-screen-actions">
         <button id="closeAdminButton" class="secondary-button compact-button" type="button">通常画面へ戻る</button>
-        <button id="adminToDevelopmentButton" class="secondary-button compact-button hidden" type="button">開発画面へ</button>
       </div>
+
+      <section class="admin-version-panel" aria-labelledby="admin-version-title">
+        <div>
+          <p class="area-label">VERSION</p>
+          <h3 id="admin-version-title">バージョン情報</h3>
+        </div>
+        <div id="adminVersionInfo" class="admin-version-info" aria-live="polite"></div>
+      </section>
 
       <section class="card lineup-card admin-card" aria-labelledby="actual-title">
         <div class="section-heading">
@@ -291,70 +297,54 @@
         </section>
       </section>
 
-    </details>
-
-    <details id="developmentDetails" class="development-details hidden">
-      <summary>
-        <span>開発モード</span>
-        <small>検証・デバッグ専用</small>
-      </summary>
-      <div class="development-screen-actions">
-        <button id="closeDevelopmentButton" class="secondary-button compact-button" type="button">通常画面へ戻る</button>
-        <button id="developmentToAdminButton" class="secondary-button compact-button" type="button">管理画面へ戻る</button>
-      </div>
-      <section class="development-warning" aria-label="開発モードの注意">
-        <strong>開発・検証専用画面です。本番運用では使用しないでください。</strong>
-        <p>この画面の操作は、Worker側でも開発モードが有効な管理者だけに制限されます。</p>
-      </section>
-      <section class="development-panel" aria-labelledby="development-status-title">
-        <div>
-          <p class="area-label">DEVELOPMENT STATUS</p>
-          <h3 id="development-status-title">現在の開発情報</h3>
-        </div>
-        <div id="developmentInfo" class="development-info" aria-live="polite"></div>
-        <p id="developmentMessage" class="message" role="status" aria-live="polite"></p>
-      </section>
-      <section class="development-panel" aria-labelledby="development-tools-title">
-        <div>
-          <p class="area-label">DEVELOPMENT TOOLS</p>
-          <h3 id="development-tools-title">検証用操作</h3>
-          <p>完全一致予想は、ログイン中の管理者自身の予想だけを対象にします。</p>
-        </div>
-        <div class="development-actions">
-          <button id="createPerfectPredictionButton" class="danger-button" type="button">完全一致予想を作成</button>
-          <button id="generateTestPredictionButton" class="secondary-button" type="button">ダミー予想を入力</button>
-          <button id="runDevelopmentCronButton" class="secondary-button" type="button">Cronを手動実行</button>
-          <button id="resetButton" class="danger-button" type="button">テストデータをリセット</button>
-        </div>
-        <p id="testPredictionMessage" class="message success-message" aria-live="polite"></p>
-        <p id="resetMessage" class="message success-message" aria-live="polite"></p>
-      </section>
-      <section class="development-panel" aria-labelledby="development-deadline-title">
-        <div>
-          <p class="area-label">PREDICTION DEADLINE</p>
-          <h3 id="development-deadline-title">予想締切テスト</h3>
-          <p>画面上の締切前後だけを再現します。アカウント保存の最終判定はWorkerの実時刻を使用します。</p>
-        </div>
-        <div class="deadline-override-controls" role="group" aria-label="予想締切テストの時刻設定">
-          <button class="secondary-button compact-button" type="button" data-prediction-deadline-override="auto">自動</button>
-          <button class="secondary-button compact-button" type="button" data-prediction-deadline-override="before">締切前</button>
-          <button class="secondary-button compact-button" type="button" data-prediction-deadline-override="after">締切後</button>
-        </div>
-      </section>
-      <section class="development-panel" aria-labelledby="development-achievements-title">
-        <div>
-          <p class="area-label">ACHIEVEMENT TEST</p>
-          <h3 id="development-achievements-title">実績テスト</h3>
-          <p>テスト付与はログイン中の管理者自身だけを対象にします。</p>
-        </div>
-        <div class="development-actions">
-          <button class="secondary-button" type="button" data-achievement-grant="beta_predictor">ベータテスターを付与</button>
-          <button class="secondary-button" type="button" data-achievement-grant="first_prediction">初予想を付与</button>
-          <button class="secondary-button" type="button" data-achievement-grant="perfect_prediction">パーフェクトを付与</button>
-          <button id="refreshDevelopmentAchievementsButton" class="secondary-button" type="button">実績一覧を再取得</button>
-        </div>
-        <div id="developmentAchievements" class="development-achievements" aria-live="polite"></div>
-      </section>
+      <details id="adminTestDetails" class="admin-test-details">
+        <summary>
+          <span>開発用テスト</span>
+          <small>表示・動作確認用です。本番のサーバー判定は変更しません。</small>
+        </summary>
+        <section class="admin-test-warning" aria-label="開発用テストの注意">
+          <strong>管理者専用の確認操作です。</strong>
+          <p>テスト予想とテスト実績は通常のランキング・実績集計から除外されます。</p>
+        </section>
+        <section class="admin-test-panel" aria-labelledby="admin-test-status-title">
+          <div>
+            <p class="area-label">TEST STATUS</p>
+            <h3 id="admin-test-status-title">テスト情報</h3>
+          </div>
+          <div id="adminTestInfo" class="admin-test-info" aria-live="polite"></div>
+          <p id="adminTestMessage" class="message" role="status" aria-live="polite"></p>
+        </section>
+        <section id="adminTestPredictionDeadlineStatus" class="admin-prediction-deadline hidden" aria-live="polite"></section>
+        <section class="admin-test-panel" aria-labelledby="admin-test-tools-title">
+          <div>
+            <p class="area-label">TEST TOOLS</p>
+            <h3 id="admin-test-tools-title">検証用操作</h3>
+            <p>完全一致予想は、ログイン中の管理者自身の予想だけを対象にします。</p>
+          </div>
+          <div class="admin-test-actions">
+            <button id="createPerfectPredictionButton" class="danger-button" type="button">完全一致予想を作成</button>
+            <button id="generateTestPredictionButton" class="secondary-button" type="button">ダミー予想を入力</button>
+            <button id="runAdminTestCronButton" class="secondary-button" type="button">Cronを手動実行</button>
+            <button id="resetButton" class="danger-button" type="button">テストデータをリセット</button>
+          </div>
+          <p id="testPredictionMessage" class="message success-message" aria-live="polite"></p>
+          <p id="resetMessage" class="message success-message" aria-live="polite"></p>
+        </section>
+        <section class="admin-test-panel" aria-labelledby="admin-test-achievements-title">
+          <div>
+            <p class="area-label">ACHIEVEMENT TEST</p>
+            <h3 id="admin-test-achievements-title">実績テスト</h3>
+            <p>テスト付与はログイン中の管理者自身だけを対象にします。</p>
+          </div>
+          <div class="admin-test-actions">
+            <button class="secondary-button" type="button" data-achievement-grant="beta_predictor">ベータテスターを付与</button>
+            <button class="secondary-button" type="button" data-achievement-grant="first_prediction">初予想を付与</button>
+            <button class="secondary-button" type="button" data-achievement-grant="perfect_prediction">パーフェクトを付与</button>
+            <button id="refreshAdminTestAchievementsButton" class="secondary-button" type="button">実績一覧を再取得</button>
+          </div>
+          <div id="adminTestAchievements" class="admin-test-achievements" aria-live="polite"></div>
+        </section>
+      </details>
     </details>
 
     <div class="area-heading result-area-heading">
@@ -408,6 +398,7 @@
 
   </main>
 
+  <script src="version.js?v=20260722-1"></script>
   <script src="players.js?v=split-drag-20260709"></script>
   <script src="game-schedule.js?v=20260718-probable-starter"></script>
   <script src="auth.js?v=auth-api-local-20260719"></script>

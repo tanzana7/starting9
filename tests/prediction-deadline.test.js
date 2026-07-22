@@ -54,8 +54,8 @@ test("クライアントは締切後に入力・保存・リセットを止め�
   assert.match(script, /function resetPredictionInput\(\) \{\s*if \(!ensurePredictionEditingAllowed\(\)\)/);
   assert.match(script, /function canUsePredictionDeadlineOverride\(\) \{\s*return state\.appMode === "development"/);
   assert.match(html, /id="predictionDeadlineStatus"/);
-  assert.match(html, /data-prediction-deadline-override="before"/);
-  assert.match(html, /data-prediction-deadline-override="after"/);
+  assert.match(script, /function handlePredictionDeadlineOverrideClick\(event\)/);
+  assert.match(script, /data-prediction-deadline-override/);
 });
 
 test("管理画面には締切の開始・締切・状態・開発上書きを表示する", () => {
@@ -63,8 +63,16 @@ test("管理画面には締切の開始・締切・状態・開発上書きを�
   const html = read("index.html");
 
   assert.match(html, /id="adminPredictionDeadlineStatus"/);
+  assert.match(html, /id="developmentPredictionDeadlineStatus"/);
   assert.match(script, /function renderPredictionDeadlineAdmin\(\)/);
   for (const label of ["試合開始", "予想締切", "受付状態", "開発上書き"]) {
     assert.match(script, new RegExp(label));
   }
+  assert.match(script, /state\.appMode === "admin"/);
+  assert.match(script, /state\.appMode === "development" && state\.developmentAccess\.available/);
+  assert.match(script, /function renderPredictionDeadlinePanel\(container, deadline, shouldShow\)/);
+  assert.match(script, /\["auto", "自動"\]/);
+  assert.match(script, /\["before", "締切前"\]/);
+  assert.match(script, /\["after", "締切後"\]/);
+  assert.doesNotMatch(html, /development-deadline-title/);
 });

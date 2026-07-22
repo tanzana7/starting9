@@ -407,9 +407,8 @@ function bindEvents() {
   bindDevelopmentEvent("generateTestPredictionButton", "click", generateTestPrediction);
   bindDevelopmentEvent("createPerfectPredictionButton", "click", createDevelopmentPerfectPrediction);
   bindDevelopmentEvent("runDevelopmentCronButton", "click", runDevelopmentCron);
-  document.querySelectorAll("[data-prediction-deadline-override]").forEach((button) => {
-    button.addEventListener("click", () => setPredictionDeadlineOverride(button.dataset.predictionDeadlineOverride));
-  });
+  document.getElementById("adminPredictionDeadlineStatus")?.addEventListener("click", handlePredictionDeadlineOverrideClick);
+  document.getElementById("developmentPredictionDeadlineStatus")?.addEventListener("click", handlePredictionDeadlineOverrideClick);
   bindDevelopmentEvent("resetButton", "click", resetAllData);
   document.getElementById("refreshAchievementsButton")?.addEventListener("click", () => fetchUserAchievements({ force: true }));
   bindDevelopmentEvent("refreshDevelopmentAchievementsButton", "click", refreshDevelopmentAchievements);
@@ -659,12 +658,6 @@ function renderDevelopmentPanel() {
   const canOperate = state.appMode === "development" && state.developmentAccess.available;
   createButton.disabled = !canOperate || !gameId;
   cronButton.disabled = !canOperate;
-  document.querySelectorAll("[data-prediction-deadline-override]").forEach((button) => {
-    const isSelected = button.dataset.predictionDeadlineOverride === state.predictionDeadline.override;
-    button.disabled = !canOperate;
-    button.classList.toggle("is-selected", isSelected);
-    button.setAttribute("aria-pressed", isSelected ? "true" : "false");
-  });
   message.textContent = state.developmentAccess.message || "";
 
   const rows = [
@@ -962,6 +955,7 @@ function closeAdminPanel() {
 
   state.appMode = "normal";
   applyAdminMode();
+  renderPredictionDeadlineAdmin();
 }
 
 function openDevelopmentPanel() {
@@ -969,6 +963,7 @@ function openDevelopmentPanel() {
   state.appMode = "development";
   applyAdminMode();
   renderDevelopmentPanel();
+  renderPredictionDeadlineAdmin();
   void refreshDevelopmentStatus();
   void refreshDevelopmentAchievements();
 }
@@ -978,6 +973,7 @@ function closeDevelopmentPanel() {
   state.appMode = "normal";
   clearPredictionDeadlineOverride();
   applyAdminMode();
+  renderPredictionDeadlineAdmin();
 }
 
 function handleAdminDetailsToggle(event) {
@@ -2560,6 +2556,14 @@ function setPredictionDeadlineOverride(value) {
   refreshPredictionDeadlineState();
 }
 
+function handlePredictionDeadlineOverrideClick(event) {
+  const button = event.target instanceof Element
+    ? event.target.closest("[data-prediction-deadline-override]")
+    : null;
+  if (!button || !canUsePredictionDeadlineOverride()) return;
+  setPredictionDeadlineOverride(button.dataset.predictionDeadlineOverride);
+}
+
 function clearPredictionDeadlineOverride() {
   if (state.predictionDeadline.override === "auto") return;
   state.predictionDeadline.override = "auto";
@@ -2610,14 +2614,27 @@ function renderPredictionDeadline() {
 }
 
 function renderPredictionDeadlineAdmin() {
-  const container = document.getElementById("adminPredictionDeadlineStatus");
-  if (!container) return;
   const deadline = getEffectivePredictionDeadline();
-  if (!state.isAdminMode) {
+  renderPredictionDeadlinePanel(
+    document.getElementById("adminPredictionDeadlineStatus"),
+    deadline,
+    state.appMode === "admin"
+  );
+  renderPredictionDeadlinePanel(
+    document.getElementById("developmentPredictionDeadlineStatus"),
+    deadline,
+    state.appMode === "development" && state.developmentAccess.available
+  );
+}
+
+function renderPredictionDeadlinePanel(container, deadline, shouldShow) {
+  if (!container) return;
+  if (!shouldShow) {
     container.classList.add("hidden");
     container.innerHTML = "";
     return;
   }
+
   const rows = [
     ["対象試合", deadline.gameId || "未選択"],
     ["試合開始", formatPredictionDeadlineDateTime(deadline.startAt)],
@@ -2625,8 +2642,19 @@ function renderPredictionDeadlineAdmin() {
     ["受付状態", deadline.isClosed ? "締切後" : "締切前"],
     ["開発上書き", state.predictionDeadline.override === "auto" ? "自動" : state.predictionDeadline.override === "before" ? "締切前" : "締切後"]
   ];
+  const overrideControls = canUsePredictionDeadlineOverride() ? `
+    <div class="deadline-override-panel">
+      <p>開発上書き</p>
+      <div class="deadline-override-controls" role="group" aria-label="予想締切テストの時刻設定">
+        ${[
+          ["auto", "自動"],
+          ["before", "締切前"],
+          ["after", "締切後"]
+        ].map(([value, label]) => `<button class="secondary-button compact-button${state.predictionDeadline.override === value ? " is-selected" : ""}" type="button" data-prediction-deadline-override="${value}" aria-pressed="${state.predictionDeadline.override === value ? "true" : "false"}">${label}</button>`).join("")}
+      </div>
+    </div>` : "";
   container.classList.remove("hidden");
-  container.innerHTML = `<strong>予想締切</strong><dl>${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>`;
+  container.innerHTML = `<strong>予想締切</strong><dl>${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>${overrideControls}`;
 }
 
 function getCurrentGameId() {

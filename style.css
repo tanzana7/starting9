@@ -1184,6 +1184,19 @@ textarea:focus {
   gap: 8px;
 }
 
+.deadline-override-panel {
+  display: grid;
+  gap: 6px;
+  padding-top: 4px;
+}
+
+.deadline-override-panel p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 900;
+}
+
 .deadline-override-controls .is-selected {
   border-color: #513675;
   color: #ffffff;

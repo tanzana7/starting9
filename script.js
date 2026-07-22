@@ -49,6 +49,9 @@ const AUTO_FETCH_MAX_ATTEMPTS = 5;
 const ROSTER_MONITOR_INTERVAL_MS = 10 * 60 * 1000;
 const ROSTER_MONITOR_MAX_ATTEMPTS = 6;
 const ROSTER_SNAPSHOT_CACHE_TTL_MS = 60 * 60 * 1000;
+const PREDICTION_DEADLINE_MINUTES_BEFORE_START = 10;
+const PREDICTION_DEADLINE_MS = PREDICTION_DEADLINE_MINUTES_BEFORE_START * 60 * 1000;
+const PREDICTION_DEADLINE_REFRESH_MS = 30 * 1000;
 const AUTO_FILL_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "指"]);
 const OUTFIELD_POSITIONS = ["左", "中", "右"];
 // 日程・NPB取得の長いチームコードは維持し、選手IDだけ短い球団IDを使います。
@@ -69,6 +72,7 @@ const TEAM_PLAYER_ID_PREFIXES = Object.freeze({
 const DEFAULT_PLAYER_TEAM_CODE = "fighters";
 let autoScoringCountdownTimerId = null;
 let predictionSaveMessageTimerId = null;
+let predictionDeadlineTimerId = null;
 const TEST_PREDICTION_LINEUP = [
   { order: 1, player: "大塚瑠晏", position: "遊" },
   { order: 2, player: "清宮幸太郎", position: "一" },
@@ -281,6 +285,16 @@ const state = {
     locked: false,
     conflict: false
   },
+  predictionDeadline: {
+    gameId: "",
+    game: null,
+    status: "loading",
+    message: "試合情報を確認しています。",
+    startAt: "",
+    deadlineAt: "",
+    isClosed: true,
+    override: "auto"
+  },
   adminScoring: {
     isLoadingSummary: false,
     isTesting: false,
@@ -318,6 +332,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadState();
   bindEvents();
   startAutoScoringCountdown();
+  startPredictionDeadlineTicker();
   window.addEventListener("ham-schedule-log-updated", renderScheduleLoadLog);
   renderScheduleLoadLog();
   restoreAdminGameInfoInputs();
@@ -331,16 +346,19 @@ document.addEventListener("DOMContentLoaded", () => {
         setScheduleLoaderMessage(window.HAM_GAME_SCHEDULE_ERROR, "error");
       }
       initializeGameSchedule();
+      refreshPredictionDeadlineState();
       renderAll();
     });
   } else {
     initializeGameSchedule();
+    refreshPredictionDeadlineState();
     renderAll();
   }
   initializeProbableStarter().finally(() => {
     initializePerfectAchievers();
     initializePredictionRemoteSync();
     initializeYearlyRanking();
+    refreshPredictionDeadlineState();
     void initializeRosterCandidateSync();
   });
 });
@@ -389,6 +407,9 @@ function bindEvents() {
   bindDevelopmentEvent("generateTestPredictionButton", "click", generateTestPrediction);
   bindDevelopmentEvent("createPerfectPredictionButton", "click", createDevelopmentPerfectPrediction);
   bindDevelopmentEvent("runDevelopmentCronButton", "click", runDevelopmentCron);
+  document.querySelectorAll("[data-prediction-deadline-override]").forEach((button) => {
+    button.addEventListener("click", () => setPredictionDeadlineOverride(button.dataset.predictionDeadlineOverride));
+  });
   bindDevelopmentEvent("resetButton", "click", resetAllData);
   document.getElementById("refreshAchievementsButton")?.addEventListener("click", () => fetchUserAchievements({ force: true }));
   bindDevelopmentEvent("refreshDevelopmentAchievementsButton", "click", refreshDevelopmentAchievements);
@@ -638,6 +659,12 @@ function renderDevelopmentPanel() {
   const canOperate = state.appMode === "development" && state.developmentAccess.available;
   createButton.disabled = !canOperate || !gameId;
   cronButton.disabled = !canOperate;
+  document.querySelectorAll("[data-prediction-deadline-override]").forEach((button) => {
+    const isSelected = button.dataset.predictionDeadlineOverride === state.predictionDeadline.override;
+    button.disabled = !canOperate;
+    button.classList.toggle("is-selected", isSelected);
+    button.setAttribute("aria-pressed", isSelected ? "true" : "false");
+  });
   message.textContent = state.developmentAccess.message || "";
 
   const rows = [
@@ -949,6 +976,7 @@ function openDevelopmentPanel() {
 function closeDevelopmentPanel() {
   if (state.appMode !== "development") return;
   state.appMode = "normal";
+  clearPredictionDeadlineOverride();
   applyAdminMode();
 }
 
@@ -1018,17 +1046,19 @@ function createLineupSlot(pickerName, index) {
   slot.tabIndex = 0;
   slot.draggable = false;
   slot.addEventListener("click", () => {
+    if (pickerName === "prediction" && !ensurePredictionEditingAllowed()) return;
     setActiveOrder(pickerName, index);
     showSlotPlayerDetails(pickerName, slot);
   });
   slot.addEventListener("keydown", (event) => {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
+      if (pickerName === "prediction" && !ensurePredictionEditingAllowed()) return;
       setActiveOrder(pickerName, index);
       showSlotPlayerDetails(pickerName, slot);
     }
   });
-  slot.addEventListener("dragover", handleSlotDragOver);
+  slot.addEventListener("dragover", (event) => handleSlotDragOver(event, slot));
   slot.addEventListener("dragenter", () => slot.classList.add("is-drop-target"));
   slot.addEventListener("dragleave", () => slot.classList.remove("is-drop-target"));
   slot.addEventListener("drop", (event) => handleSlotDrop(event, slot));
@@ -1089,6 +1119,7 @@ function createPositionControl(pickerName, index, slot) {
   button.setAttribute("aria-controls", menuId);
   button.addEventListener("click", (event) => {
     event.stopPropagation();
+    if (pickerName === "prediction" && !ensurePredictionEditingAllowed()) return;
     if (button.dataset.skipClick === "true") {
       button.dataset.skipClick = "false";
       return;
@@ -1111,6 +1142,7 @@ function createPositionControl(pickerName, index, slot) {
     optionButton.setAttribute("aria-label", position ? `${position}を選択` : "守備位置を未選択にする");
     optionButton.addEventListener("click", (event) => {
       event.stopPropagation();
+      if (pickerName === "prediction" && !ensurePredictionEditingAllowed()) return;
       selectPositionForSlot(pickerName, index, position);
       clearMessage(pickerName === "prediction" ? "predictionError" : "actualError");
       closeAllPositionMenus();
@@ -1123,6 +1155,7 @@ function createPositionControl(pickerName, index, slot) {
 }
 
 function togglePositionMenu(menu, button, pickerName, index) {
+  if (pickerName === "prediction" && !ensurePredictionEditingAllowed()) return;
   const shouldOpen = menu.classList.contains("hidden");
   closeAllPositionMenus();
 
@@ -1160,6 +1193,7 @@ function updatePositionMenuState(menu, pickerName, index) {
 }
 
 function selectPositionForSlot(pickerName, index, position) {
+  if (pickerName === "prediction" && !ensurePredictionEditingAllowed()) return;
   const lineup = getLineupValues(pickerName);
   const updatedLineup = createPositionSelectionLineup(lineup, index, position);
   setLineupValues(pickerName, updatedLineup);
@@ -1217,6 +1251,7 @@ function createPlayerChip(pickerName, player) {
     }
 
     showPlayerDetails(pickerName, player);
+    if (pickerName === "prediction" && !ensurePredictionEditingAllowed()) return;
     assignPlayerToActiveSlot(pickerName, player);
   });
   button.addEventListener("pointerdown", (event) => handlePlayerPointerDown(event, button));
@@ -1230,6 +1265,10 @@ function createPlayerChip(pickerName, player) {
 }
 
 function handlePlayerDragStart(event, button) {
+  if (button.dataset.picker === "prediction" && !ensurePredictionEditingAllowed()) {
+    event.preventDefault();
+    return;
+  }
   const dragData = {
     kind: "player",
     pickerName: button.dataset.picker,
@@ -1242,6 +1281,10 @@ function handlePlayerDragStart(event, button) {
 }
 
 function handleSlotDragStart(event, slot) {
+  if (slot.dataset.picker === "prediction" && !ensurePredictionEditingAllowed()) {
+    event.preventDefault();
+    return;
+  }
   const player = slot.dataset.player;
 
   if (!player) {
@@ -1262,6 +1305,11 @@ function handleSlotDragStart(event, slot) {
 
 function handlePositionDragStart(event, button, slot) {
   closeAllPositionMenus();
+
+  if (slot.dataset.picker === "prediction" && !ensurePredictionEditingAllowed()) {
+    event.preventDefault();
+    return;
+  }
 
   const position = slot.dataset.position;
 
@@ -1294,7 +1342,8 @@ function setDragData(event, dragData) {
   event.dataTransfer.setData("text/plain", dragData.player || dragData.position || "");
 }
 
-function handleSlotDragOver(event) {
+function handleSlotDragOver(event, slot) {
+  if (slot?.dataset?.picker === "prediction" && isPredictionEditingLocked()) return;
   event.preventDefault();
   event.dataTransfer.dropEffect = "move";
 }
@@ -1302,6 +1351,8 @@ function handleSlotDragOver(event) {
 function handleSlotDrop(event, slot) {
   event.preventDefault();
   slot.classList.remove("is-drop-target");
+
+  if (slot.dataset.picker === "prediction" && !ensurePredictionEditingAllowed()) return;
 
   const dragData = getDragData(event);
   if (!dragData || dragData.pickerName !== slot.dataset.picker) {
@@ -1341,6 +1392,7 @@ function handleDragEnd(event, element) {
 }
 
 function handlePlayerPointerDown(event, button) {
+  if (button.dataset.picker === "prediction" && isPredictionEditingLocked()) return;
   if (event.pointerType === "mouse") {
     return;
   }
@@ -1353,6 +1405,7 @@ function handlePlayerPointerDown(event, button) {
 }
 
 function handlePlayerPointerUp(event, button) {
+  if (button.dataset.picker === "prediction" && !ensurePredictionEditingAllowed()) return;
   if (event.pointerType === "mouse") {
     return;
   }
@@ -1386,6 +1439,7 @@ function setActiveOrder(pickerName, index) {
 }
 
 function assignPlayerToActiveSlot(pickerName, player) {
+  if (pickerName === "prediction" && !ensurePredictionEditingAllowed()) return;
   const lineup = getLineupValues(pickerName);
   const currentIndex = lineup.findIndex((item) => item.player === player);
   const targetIndex = getTargetOrder(pickerName, lineup);
@@ -1403,6 +1457,7 @@ function assignPlayerToActiveSlot(pickerName, player) {
 }
 
 function assignPlayerToSlot(pickerName, player, targetIndex, sourceIndex) {
+  if (pickerName === "prediction" && !ensurePredictionEditingAllowed()) return;
   const lineup = getLineupValues(pickerName);
   const movedLineup = moveLineupItem(lineup, player, targetIndex, sourceIndex);
   autoFillPredictionPosition(pickerName, movedLineup, targetIndex);
@@ -1430,6 +1485,7 @@ function moveLineupItem(lineup, player, targetIndex, sourceIndex) {
 }
 
 function movePositionBetweenSlots(pickerName, sourceIndex, targetIndex) {
+  if (pickerName === "prediction" && !ensurePredictionEditingAllowed()) return;
   const lineup = getLineupValues(pickerName);
   const movedLineup = moveLineupPosition(lineup, sourceIndex, targetIndex);
   setLineupValues(pickerName, movedLineup);
@@ -1513,6 +1569,7 @@ function findNextEmptyIndex(lineup, startIndex) {
 }
 
 function clearSlot(pickerName, index) {
+  if (pickerName === "prediction" && !ensurePredictionEditingAllowed()) return;
   const lineup = getLineupValues(pickerName);
   lineup[index] = createLineupItem(index, "", lineup[index]?.position || "");
   setLineupValues(pickerName, lineup);
@@ -2392,6 +2449,184 @@ function handleAuthStateChanged() {
     refreshMonthlyRanking({ force: true });
   }
   refreshAdminAccess();
+}
+
+function startPredictionDeadlineTicker() {
+  if (predictionDeadlineTimerId) {
+    clearInterval(predictionDeadlineTimerId);
+  }
+  refreshPredictionDeadlineState();
+  predictionDeadlineTimerId = setInterval(refreshPredictionDeadlineState, PREDICTION_DEADLINE_REFRESH_MS);
+}
+
+function getPredictionDeadlineGameId() {
+  return state.nextScheduleId || state.probableStarter.nextGame?.gameId || state.prediction?.gameId || getCurrentGameId();
+}
+
+function parseJstScheduleDateTime(game) {
+  const date = getScheduleDate(game);
+  const time = getScheduleStartTime(game);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time)) {
+    return null;
+  }
+  const value = new Date(`${date}T${time}:00+09:00`);
+  return Number.isNaN(value.getTime()) ? null : value;
+}
+
+function isScheduleGameUnavailable(game) {
+  return ["cancelled", "canceled", "postponed"].includes(String(game?.status || "").toLowerCase());
+}
+
+function resolvePredictionDeadline(gameId, now = new Date()) {
+  const game = getHamGameSchedule().find((item) => item?.gameId === gameId) || null;
+  if (!game) {
+    return {
+      gameId: gameId || "",
+      game: null,
+      status: "unavailable",
+      message: "試合日程を確認できないため、予想は保存できません。",
+      startAt: "",
+      deadlineAt: "",
+      isClosed: true
+    };
+  }
+  if (isScheduleGameUnavailable(game)) {
+    return {
+      gameId,
+      game,
+      status: "unavailable",
+      message: "この試合は予想を受け付けていません。",
+      startAt: "",
+      deadlineAt: "",
+      isClosed: true
+    };
+  }
+
+  const startAt = parseJstScheduleDateTime(game);
+  if (!startAt) {
+    return {
+      gameId,
+      game,
+      status: "unavailable",
+      message: "試合開始時刻を確認できないため、予想は保存できません。",
+      startAt: "",
+      deadlineAt: "",
+      isClosed: true
+    };
+  }
+
+  const deadlineAt = new Date(startAt.getTime() - PREDICTION_DEADLINE_MS);
+  const isClosed = now.getTime() >= deadlineAt.getTime();
+  return {
+    gameId,
+    game,
+    status: isClosed ? "closed" : "open",
+    message: isClosed ? "この試合の予想受付は終了しました。" : "予想を受け付けています。",
+    startAt: startAt.toISOString(),
+    deadlineAt: deadlineAt.toISOString(),
+    isClosed
+  };
+}
+
+function canUsePredictionDeadlineOverride() {
+  return state.appMode === "development" && state.developmentAccess.available;
+}
+
+function getEffectivePredictionDeadline(deadline = state.predictionDeadline) {
+  if (!canUsePredictionDeadlineOverride() || deadline.override === "auto") {
+    return deadline;
+  }
+  if (deadline.override === "before") {
+    return { ...deadline, status: "open", isClosed: false, message: "開発モードで締切前を再現中です。" };
+  }
+  return { ...deadline, status: "closed", isClosed: true, message: "開発モードで締切後を再現中です。" };
+}
+
+function refreshPredictionDeadlineState() {
+  const deadline = resolvePredictionDeadline(getPredictionDeadlineGameId());
+  state.predictionDeadline = {
+    ...deadline,
+    override: state.predictionDeadline.override
+  };
+  renderPredictionDeadline();
+  renderPicker("prediction");
+  renderDevelopmentPanel();
+  renderPredictionDeadlineAdmin();
+}
+
+function setPredictionDeadlineOverride(value) {
+  if (!canUsePredictionDeadlineOverride()) return;
+  state.predictionDeadline.override = ["before", "after"].includes(value) ? value : "auto";
+  refreshPredictionDeadlineState();
+}
+
+function clearPredictionDeadlineOverride() {
+  if (state.predictionDeadline.override === "auto") return;
+  state.predictionDeadline.override = "auto";
+  refreshPredictionDeadlineState();
+}
+
+function isPredictionEditingLocked() {
+  return getEffectivePredictionDeadline().isClosed;
+}
+
+function ensurePredictionEditingAllowed() {
+  if (!isPredictionEditingLocked()) return true;
+  const deadline = getEffectivePredictionDeadline();
+  closeAllPositionMenus();
+  showMessage("predictionError", deadline.message || "この試合の予想受付は終了しました。");
+  return false;
+}
+
+function formatPredictionDeadlineDateTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).format(date);
+}
+
+function renderPredictionDeadline() {
+  const container = document.getElementById("predictionDeadlineStatus");
+  const saveButton = document.getElementById("savePredictionButton");
+  const resetButton = document.getElementById("resetPredictionButton");
+  const deadline = getEffectivePredictionDeadline();
+  const deadlineText = formatPredictionDeadlineDateTime(deadline.deadlineAt);
+
+  if (container) {
+    container.className = `prediction-deadline-status is-${deadline.status}`;
+    container.textContent = deadline.status === "open"
+      ? `予想締切：${deadlineText}（試合開始10分前）`
+      : deadline.message || "予想の受付状況を確認しています。";
+  }
+  if (saveButton) saveButton.disabled = Boolean(deadline.isClosed) || state.predictionRemote.isSaving;
+  if (resetButton) resetButton.disabled = Boolean(deadline.isClosed) || state.predictionRemote.isDeleting;
+}
+
+function renderPredictionDeadlineAdmin() {
+  const container = document.getElementById("adminPredictionDeadlineStatus");
+  if (!container) return;
+  const deadline = getEffectivePredictionDeadline();
+  if (!state.isAdminMode) {
+    container.classList.add("hidden");
+    container.innerHTML = "";
+    return;
+  }
+  const rows = [
+    ["対象試合", deadline.gameId || "未選択"],
+    ["試合開始", formatPredictionDeadlineDateTime(deadline.startAt)],
+    ["予想締切", formatPredictionDeadlineDateTime(deadline.deadlineAt)],
+    ["受付状態", deadline.isClosed ? "締切後" : "締切前"],
+    ["開発上書き", state.predictionDeadline.override === "auto" ? "自動" : state.predictionDeadline.override === "before" ? "締切前" : "締切後"]
+  ];
+  container.classList.remove("hidden");
+  container.innerHTML = `<strong>予想締切</strong><dl>${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>`;
 }
 
 function getCurrentGameId() {
@@ -3678,6 +3913,9 @@ function predictionsMatch(left, right) {
 }
 
 async function savePredictionToAccount(prediction = state.prediction) {
+  if (!ensurePredictionEditingAllowed()) {
+    return false;
+  }
   const user = getPredictionAccountUser();
   const gameId = getCurrentGameId();
   if (!user) {
@@ -3763,6 +4001,9 @@ function loadPredictionFromAccount() {
 }
 
 async function deletePredictionFromAccount(gameId) {
+  if (!ensurePredictionEditingAllowed()) {
+    return false;
+  }
   const user = getPredictionAccountUser();
   const url = buildCurrentPredictionApiUrl(gameId);
   if (!user || !url) {
@@ -3803,7 +4044,7 @@ function updatePredictionSaveButton() {
   }
 
   const isSaving = state.predictionRemote.isSaving;
-  button.disabled = isSaving;
+  button.disabled = isSaving || isPredictionEditingLocked();
   button.textContent = isSaving ? "保存中..." : "予想を保存する";
   button.setAttribute("aria-busy", isSaving ? "true" : "false");
 }
@@ -4386,6 +4627,9 @@ async function handlePredictionSubmit(event) {
   if (state.predictionRemote.isSaving) {
     return;
   }
+  if (!ensurePredictionEditingAllowed()) {
+    return;
+  }
 
   clearMessage("predictionError");
   clearMessage("predictionSaveMessage");
@@ -4426,6 +4670,9 @@ async function handlePredictionSubmit(event) {
 }
 
 function resetPredictionInput() {
+  if (!ensurePredictionEditingAllowed()) {
+    return;
+  }
   const confirmed = window.confirm("入力中の予想をリセットします。よろしいですか？");
   if (!confirmed) {
     return;
@@ -5034,6 +5281,7 @@ function applyGameSchedule(schedule, source = "button") {
     scheduleSelect.value = schedule.gameId;
   }
   saveAdminGameInfoFromInputs();
+  refreshPredictionDeadlineState();
   renderLoadedScheduleInfo(schedule, scoreUrl);
   syncPredictionFromAccount({ force: true });
   refreshAdminScoringSummary({ force: true });
@@ -5159,12 +5407,14 @@ function renderAll() {
   renderProbableStarter();
   renderSavedPrediction();
   renderPredictionAccountStatus();
+  renderPredictionDeadline();
   renderAchievements();
   renderActualLineup();
   renderScoreResult();
   renderPerfectAchievers();
   renderRankingPanel();
   renderAdminFlow();
+  renderPredictionDeadlineAdmin();
   renderPicker("prediction");
   renderPicker("actual");
 }
@@ -5701,6 +5951,7 @@ function renderPicker(pickerName) {
   const usedPlayers = new Set(lineup.map((item) => item.player).filter(Boolean));
   const duplicatedPlayers = getDuplicatedPlayers(lineup);
   const duplicatedPositions = getDuplicatedPositions(lineup);
+  const isLocked = pickerName === "prediction" && isPredictionEditingLocked();
 
   document.querySelectorAll(`.lineup-slot[data-picker="${pickerName}"]`).forEach((slot, index) => {
     const player = slot.dataset.player || "";
@@ -5713,21 +5964,28 @@ function renderPicker(pickerName) {
     slot.classList.toggle("is-active", state.activeOrder[pickerName] === index);
     slot.classList.toggle("has-player", Boolean(player));
     slot.classList.toggle("is-duplicate", duplicatedPlayers.has(player) || duplicatedPositions.has(position));
+    slot.classList.toggle("is-locked", isLocked);
     slot.draggable = false;
+    slot.setAttribute("aria-disabled", isLocked ? "true" : "false");
     slot.setAttribute("aria-label", `${index + 1}番 ${position || "守備未選択"} ${player || "未選択"}`);
     playerElement.innerHTML = player ? createPlayerLabelHtml(player) : "未選択";
     playerElement.classList.toggle("slot-empty", !player);
     applyPlayerCategoryClass(slot, player);
     renderPositionButton(positionButton, position, index);
-    positionButton.draggable = Boolean(position);
-    dragHandle.draggable = Boolean(player);
-    dragHandle.classList.toggle("is-disabled", !player);
+    positionButton.disabled = isLocked;
+    positionButton.draggable = Boolean(position) && !isLocked;
+    dragHandle.disabled = isLocked;
+    dragHandle.draggable = Boolean(player) && !isLocked;
+    dragHandle.classList.toggle("is-disabled", !player || isLocked);
+    clearButton.disabled = isLocked;
     clearButton.classList.toggle("hidden", !player);
   });
 
   document.querySelectorAll(`.player-chip[data-picker="${pickerName}"]`).forEach((chip) => {
     const isUsed = usedPlayers.has(chip.dataset.player);
     chip.classList.toggle("is-used", isUsed);
+    chip.disabled = isLocked;
+    chip.draggable = !isLocked;
   });
 
   if (pickerName === "prediction") {

@@ -118,6 +118,7 @@
           </div>
         </div>
         <p id="predictionError" class="message error-message" role="alert" aria-live="polite"></p>
+        <p id="predictionDeadlineStatus" class="prediction-deadline-status" role="status" aria-live="polite">試合情報を確認しています。</p>
 
         <button id="savePredictionButton" class="primary-button" type="submit">予想を保存する</button>
         <button id="resetPredictionButton" class="secondary-button" type="button">予想をリセット</button>
@@ -209,6 +210,7 @@
                 <button id="startAutoFetchButton" class="secondary-button compact-button" type="button">自動取得を開始</button>
                 <button id="stopAutoFetchButton" class="secondary-button compact-button" type="button" disabled>自動取得を停止</button>
               </div>
+              <section id="adminPredictionDeadlineStatus" class="admin-prediction-deadline hidden" aria-live="polite"></section>
               <label class="auto-approve-option" for="autoApproveCheckbox">
                 <input id="autoApproveCheckbox" type="checkbox">
                 <span>チェック全OKなら自動で本承認する</span>
@@ -326,6 +328,18 @@
         </div>
         <p id="testPredictionMessage" class="message success-message" aria-live="polite"></p>
         <p id="resetMessage" class="message success-message" aria-live="polite"></p>
+      </section>
+      <section class="development-panel" aria-labelledby="development-deadline-title">
+        <div>
+          <p class="area-label">PREDICTION DEADLINE</p>
+          <h3 id="development-deadline-title">予想締切テスト</h3>
+          <p>画面上の締切前後だけを再現します。アカウント保存の最終判定はWorkerの実時刻を使用します。</p>
+        </div>
+        <div class="deadline-override-controls" role="group" aria-label="予想締切テストの時刻設定">
+          <button class="secondary-button compact-button" type="button" data-prediction-deadline-override="auto">自動</button>
+          <button class="secondary-button compact-button" type="button" data-prediction-deadline-override="before">締切前</button>
+          <button class="secondary-button compact-button" type="button" data-prediction-deadline-override="after">締切後</button>
+        </div>
       </section>
       <section class="development-panel" aria-labelledby="development-achievements-title">
         <div>

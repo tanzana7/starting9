@@ -1,3 +1,5 @@
+import { getPredictionDeadlineStatus } from "./prediction-deadline.js";
+
 const SESSION_COOKIE_NAME = "s9_session";
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const PBKDF2_ITERATIONS = 100_000;
@@ -1679,6 +1681,11 @@ async function handlePutCurrentPrediction(request, env, cors) {
     return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
   }
 
+  const deadlineResponse = createPredictionDeadlineRejection(metadata.gameId, cors);
+  if (deadlineResponse) {
+    return deadlineResponse;
+  }
+
   const predictionResult = sanitizePredictionPayload(input?.prediction);
   if (!predictionResult.ok) {
     return jsonResponse({ ok: false, error: predictionResult.error }, 400, cors);
@@ -1763,6 +1770,11 @@ async function handleDeleteCurrentPrediction(request, env, cors) {
   const metadata = parsePredictionGameId(new URL(request.url).searchParams.get("gameId"));
   if (!metadata) {
     return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
+  }
+
+  const deadlineResponse = createPredictionDeadlineRejection(metadata.gameId, cors);
+  if (deadlineResponse) {
+    return deadlineResponse;
   }
 
   const existing = await getPredictionRow(env.AUTH_DB, session.id, metadata.gameId);
@@ -1891,6 +1903,22 @@ function parsePredictionGameId(value) {
     opponentCode: isHome ? awayCode : homeCode,
     isHome
   };
+}
+
+function createPredictionDeadlineRejection(gameId, cors) {
+  const deadline = getPredictionDeadlineStatus(gameId, new Date());
+  if (deadline.ok && !deadline.isClosed) {
+    return null;
+  }
+
+  const status = deadline.code === "PREDICTION_SCHEDULE_UNAVAILABLE" ? 503 : 409;
+  return jsonResponse({
+    ok: false,
+    code: deadline.code,
+    error: deadline.message,
+    startAt: deadline.startAt || null,
+    deadlineAt: deadline.deadlineAt || null
+  }, status, cors);
 }
 
 function isPredictionLocked(row) {

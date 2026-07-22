@@ -44,6 +44,7 @@ const AUTO_SCORING_CRON_BATCH_SIZE = 10;
 const AUTO_SCORING_PROCESSING_TIMEOUT_MS = 10 * 60 * 1000;
 const NPB_FETCH_WORKER_PRODUCTION_URL = "https://starting9-npb-fetch.tanzana7.workers.dev/";
 const NPB_FETCH_TIMEOUT_MS = 15_000;
+const PREGAME_SUMMARY_TIMEOUT_MS = 10_000;
 const ROSTER_MINIMUM_PLAYER_COUNT = 20;
 const GAME_DAY_NOTICE_SOURCE = "https://npb.jp/announcement/roster/";
 const GAME_DAY_NOTICE_STATUS = Object.freeze({
@@ -975,7 +976,11 @@ async function handleAdminScoringRoute(request, env, cors, route) {
 
 async function handleAdminPregameAutomationStatus(env, cors, gameId) {
   try {
-    const status = await getPregameAutomationStatus(env.AUTH_DB, gameId);
+    const status = await withPregameTimeout(
+      getPregameAutomationStatus(env.AUTH_DB, gameId),
+      PREGAME_SUMMARY_TIMEOUT_MS,
+      "PREGAME_SUMMARY_TIMEOUT"
+    );
     return noStoreJsonResponse({
       ok: true,
       gameId,
@@ -988,8 +993,12 @@ async function handleAdminPregameAutomationStatus(env, cors, gameId) {
       pregame: status
     }, 200, cors);
   } catch (error) {
-    const code = isPregameSchemaError(error) ? "PREGAME_SCHEMA_NOT_READY" : "PREGAME_SUMMARY_FAILED";
-    const status = code === "PREGAME_SCHEMA_NOT_READY" ? 503 : 500;
+    const code = isPregameSchemaError(error)
+      ? "PREGAME_SCHEMA_NOT_READY"
+      : error?.code === "PREGAME_SUMMARY_TIMEOUT"
+        ? "PREGAME_SUMMARY_TIMEOUT"
+        : "PREGAME_SUMMARY_FAILED";
+    const status = code === "PREGAME_SCHEMA_NOT_READY" ? 503 : code === "PREGAME_SUMMARY_TIMEOUT" ? 504 : 500;
     console.error(`[PREGAME] summary failed: code=${code}`);
     return noStoreJsonResponse({ ok: false, error: code, code }, status, cors);
   }
@@ -998,6 +1007,31 @@ async function handleAdminPregameAutomationStatus(env, cors, gameId) {
 function isPregameSchemaError(error) {
   const message = String(error?.message || error || "");
   return /no such (table|column)|has no column|does not exist|unknown column/i.test(message);
+}
+
+function withPregameTimeout(task, timeoutMs, code) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      const error = new Error(code);
+      error.code = code;
+      reject(error);
+    }, timeoutMs);
+
+    Promise.resolve(task).then((value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    }, (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
 }
 
 async function handleAdminPregameRosterCapture(env, cors, gameId) {

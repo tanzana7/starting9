@@ -1,23 +1,12 @@
-import schedule from "./game-schedule-2026.json" with { type: "json" };
+import {
+  PREDICTION_DEADLINE_MINUTES_BEFORE_START,
+  getScheduledGame,
+  isScheduleGameUnavailable,
+  parseJstScheduleStart
+} from "./pregame-automation.js";
 
-export const PREDICTION_DEADLINE_MINUTES_BEFORE_START = 10;
+export { PREDICTION_DEADLINE_MINUTES_BEFORE_START, getScheduledGame, parseJstScheduleStart };
 export const PREDICTION_DEADLINE_MILLISECONDS = PREDICTION_DEADLINE_MINUTES_BEFORE_START * 60 * 1000;
-
-export function getScheduledGame(gameId) {
-  const normalizedGameId = typeof gameId === "string" ? gameId.trim() : "";
-  return schedule.find((game) => game?.gameId === normalizedGameId) || null;
-}
-
-export function parseJstScheduleStart(game) {
-  const date = typeof game?.date === "string" ? game.date : "";
-  const startTime = typeof game?.startTime === "string" ? game.startTime : "";
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(startTime)) {
-    return null;
-  }
-
-  const startAt = new Date(`${date}T${startTime}:00+09:00`);
-  return Number.isNaN(startAt.getTime()) ? null : startAt;
-}
 
 export function getPredictionDeadlineStatus(gameId, now = new Date()) {
   const game = getScheduledGame(gameId);
@@ -29,7 +18,7 @@ export function getPredictionDeadlineStatus(gameId, now = new Date()) {
     };
   }
 
-  if (["cancelled", "canceled", "postponed"].includes(String(game.status || "").toLowerCase())) {
+  if (isScheduleGameUnavailable(game)) {
     return {
       ok: false,
       code: "GAME_NOT_AVAILABLE",

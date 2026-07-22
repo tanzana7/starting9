@@ -17,7 +17,6 @@ const SESSION_COOKIE_NAME = "s9_session";
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const PBKDF2_ITERATIONS = 100_000;
 const PBKDF2_MAX_ITERATIONS = 100_000;
-const AUTH_WORKER_UPDATED_AT = "2026-07-22T06:00:00.000Z";
 const PASSWORD_HASH_BITS = 256;
 const USERNAME_MIN_LENGTH = 3;
 const USERNAME_MAX_LENGTH = 16;
@@ -44,7 +43,6 @@ const AUTO_SCORING_CRON_BATCH_SIZE = 10;
 const AUTO_SCORING_PROCESSING_TIMEOUT_MS = 10 * 60 * 1000;
 const NPB_FETCH_WORKER_PRODUCTION_URL = "https://starting9-npb-fetch.tanzana7.workers.dev/";
 const NPB_FETCH_TIMEOUT_MS = 15_000;
-const PREGAME_SUMMARY_TIMEOUT_MS = 10_000;
 const ROSTER_MINIMUM_PLAYER_COUNT = 20;
 const GAME_DAY_NOTICE_SOURCE = "https://npb.jp/announcement/roster/";
 const GAME_DAY_NOTICE_STATUS = Object.freeze({
@@ -142,9 +140,6 @@ export default {
       }
       if (path === "/api/admin/me" && request.method === "GET") {
         return await handleAdminMe(request, env, cors);
-      }
-      if ((path === "/api/admin/build-info" || path === "/api/admin/version") && request.method === "GET") {
-        return await handleAdminBuildInfo(request, env, cors);
       }
       if (path === "/api/admin/mode-capabilities" && request.method === "GET") {
         return await handleAdminModeCapabilities(request, env, cors);
@@ -348,18 +343,6 @@ async function handleAdminMe(request, env, cors) {
     ok: true,
     admin: true,
     user: publicUser(access.user)
-  }, 200, cors);
-}
-
-async function handleAdminBuildInfo(request, env, cors) {
-  const access = await requireAdminUser(request, env, cors);
-  if (!access.ok) {
-    return access.response;
-  }
-  return noStoreJsonResponse({
-    ok: true,
-    service: "auth-worker",
-    updatedAt: AUTH_WORKER_UPDATED_AT
   }, 200, cors);
 }
 
@@ -899,7 +882,7 @@ async function handleCreateAdminTestPerfectPrediction(env, cors, user, metadata)
 }
 
 function parseAdminScoringRoute(path) {
-  const match = /^\/api\/admin\/games\/([^/]+)\/(predictions\/(?:summary|score-predictions(?:\/preview)?)|actual-lineup|auto-scoring\/(?:status|run-now|retry|cancel)|pregame-automation\/(?:status|run-roster|run-lineup|run-notice|fix-roster|publish))$/.exec(path);
+  const match = /^\/api\/admin\/games\/([^/]+)\/(predictions\/(?:summary|score-predictions(?:\/preview)?)|actual-lineup|auto-scoring\/(?:status|run-now|retry|cancel)|pregame-automation\/(?:run-roster|run-lineup|run-notice|distribute-notice|fix-roster|publish))$/.exec(path);
   if (!match) {
     return null;
   }
@@ -949,9 +932,6 @@ async function handleAdminScoringRoute(request, env, cors, route) {
   if (route.action === "auto-scoring/cancel" && request.method === "POST") {
     return await handleAdminAutoScoringCancel(env, cors, metadata.gameId);
   }
-  if (route.action === "pregame-automation/status" && request.method === "GET") {
-    return await handleAdminPregameAutomationStatus(env, cors, metadata.gameId);
-  }
   if (route.action === "pregame-automation/run-roster" && request.method === "POST") {
     return await handleAdminPregameRosterCapture(env, cors, metadata.gameId);
   }
@@ -960,6 +940,10 @@ async function handleAdminScoringRoute(request, env, cors, route) {
   }
   if (route.action === "pregame-automation/run-notice" && request.method === "POST") {
     const result = await runGameDayNoticeOnce(env, new Date(), metadata.gameId);
+    return jsonResponse({ ok: true, gameId: metadata.gameId, result, pregame: await getPregameAutomationStatus(env.AUTH_DB, metadata.gameId) }, 200, cors);
+  }
+  if (route.action === "pregame-automation/distribute-notice" && request.method === "POST") {
+    const result = await distributeStoredGameDayNotice(env, metadata.gameId, new Date());
     return jsonResponse({ ok: true, gameId: metadata.gameId, result, pregame: await getPregameAutomationStatus(env.AUTH_DB, metadata.gameId) }, 200, cors);
   }
   if (route.action === "pregame-automation/fix-roster" && request.method === "POST") {
@@ -972,66 +956,6 @@ async function handleAdminScoringRoute(request, env, cors, route) {
   }
 
   return jsonResponse({ ok: false, error: "管理者採点APIのHTTPメソッドが不正です。" }, 405, cors);
-}
-
-async function handleAdminPregameAutomationStatus(env, cors, gameId) {
-  try {
-    const status = await withPregameTimeout(
-      getPregameAutomationStatus(env.AUTH_DB, gameId),
-      PREGAME_SUMMARY_TIMEOUT_MS,
-      "PREGAME_SUMMARY_TIMEOUT"
-    );
-    return noStoreJsonResponse({
-      ok: true,
-      gameId,
-      game: status.game,
-      notice: status.notice,
-      roster: status.roster,
-      lineup: status.lineup,
-      scoring: status.scoring,
-      publishing: status.publishing,
-      pregame: status
-    }, 200, cors);
-  } catch (error) {
-    const code = isPregameSchemaError(error)
-      ? "PREGAME_SCHEMA_NOT_READY"
-      : error?.code === "PREGAME_SUMMARY_TIMEOUT"
-        ? "PREGAME_SUMMARY_TIMEOUT"
-        : "PREGAME_SUMMARY_FAILED";
-    const status = code === "PREGAME_SCHEMA_NOT_READY" ? 503 : code === "PREGAME_SUMMARY_TIMEOUT" ? 504 : 500;
-    console.error(`[PREGAME] summary failed: code=${code}`);
-    return noStoreJsonResponse({ ok: false, error: code, code }, status, cors);
-  }
-}
-
-function isPregameSchemaError(error) {
-  const message = String(error?.message || error || "");
-  return /no such (table|column)|has no column|does not exist|unknown column/i.test(message);
-}
-
-function withPregameTimeout(task, timeoutMs, code) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      const error = new Error(code);
-      error.code = code;
-      reject(error);
-    }, timeoutMs);
-
-    Promise.resolve(task).then((value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(value);
-    }, (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(error);
-    });
-  });
 }
 
 async function handleAdminPregameRosterCapture(env, cors, gameId) {
@@ -1152,6 +1076,40 @@ async function runGameDayNoticeOnce(env, now, requestedGameId = "") {
     removedCount: Number(payload.removedCount || 0),
     appliedGameIds: applied,
     requestedGameId: requestedGameId || null
+  };
+}
+
+async function distributeStoredGameDayNotice(env, gameId, now) {
+  const identity = getGameIdentityForPregame(gameId);
+  if (!identity?.game?.date) {
+    throw createPregameError("GAME_NOT_FOUND", "対象試合が見つかりません。");
+  }
+  const row = await env.AUTH_DB.prepare(
+    `SELECT content_hash, fetched_at, registered_json, removed_json, rosters_json,
+            registered_count, removed_count
+       FROM game_day_notices
+      WHERE notice_date = ?1
+      LIMIT 1`
+  ).bind(identity.game.date).first();
+  if (!row) {
+    throw createPregameError("NOTICE_NOT_FOUND", "保存済みの公示結果がありません。");
+  }
+  const payload = {
+    noticeDate: identity.game.date,
+    contentHash: row.content_hash || "",
+    fetchedAt: row.fetched_at || now.toISOString(),
+    registrations: parseJsonArray(row.registered_json),
+    removals: parseJsonArray(row.removed_json),
+    rosters: parseJsonObject(row.rosters_json)
+  };
+  const appliedGameIds = await applyGameDayNoticeToGames(env, identity.game.date, payload, now);
+  return {
+    status: "distributed",
+    date: identity.game.date,
+    registeredCount: Number(row.registered_count || payload.registrations.length || 0),
+    removedCount: Number(row.removed_count || payload.removals.length || 0),
+    appliedGameIds,
+    requestedGameId: gameId
   };
 }
 

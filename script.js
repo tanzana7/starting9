@@ -172,12 +172,6 @@ const state = {
     status: "inactive",
     requestId: 0
   },
-  deploymentInfo: {
-    isLoading: false,
-    loadedAt: "",
-    auth: null,
-    npb: null
-  },
   adminTest: {
     status: "inactive",
     info: null,
@@ -322,22 +316,8 @@ const state = {
     message: ""
   },
   pregameAutomation: {
-    isLoading: false,
     isRunning: false,
-    gameId: "",
-    record: null,
-    message: "",
-    detail: "",
-    diagnosticCode: "",
-    watchdogId: null,
-    watchdogGeneration: 0,
-    watchdogTimedOutGeneration: null,
-    requestId: 0,
-    fetchStarted: false,
-    responseOk: null,
-    httpStatus: null,
-    responseKeys: [],
-    domPresent: false
+    message: ""
   },
   gameDayNotice: {
     isLoading: false,
@@ -446,11 +426,12 @@ function bindEvents() {
   bindAdminEvent("runAutoScoringNowButton", "click", runAutoScoringNow);
   bindAdminEvent("retryAutoScoringButton", "click", retryAutoScoring);
   bindAdminEvent("cancelAutoScoringButton", "click", cancelAutoScoring);
-  bindAdminTestEvent("refreshPregameAutomationButton", "click", () => refreshPregameAutomationStatus({ force: true }));
   bindAdminTestEvent("runPregameNoticeButton", "click", () => runPregameAutomationAction("run-notice"));
+  bindAdminTestEvent("distributePregameNoticeButton", "click", () => runPregameAutomationAction("distribute-notice"));
   bindAdminTestEvent("runPregameRosterButton", "click", () => runPregameAutomationAction("run-roster"));
   bindAdminTestEvent("fixPregameRosterButton", "click", () => runPregameAutomationAction("fix-roster"));
   bindAdminTestEvent("runPregameLineupButton", "click", () => runPregameAutomationAction("run-lineup"));
+  bindAdminTestEvent("runPregameScoringButton", "click", runPregameScoringAction);
   bindAdminTestEvent("publishPregameResultsButton", "click", () => runPregameAutomationAction("publish"));
   bindAdminTestEvent("generateTestPredictionButton", "click", generateTestPrediction);
   bindAdminTestEvent("createPerfectPredictionButton", "click", createAdminTestPerfectPrediction);
@@ -563,75 +544,6 @@ function buildAdminMeApiUrl() {
   return baseUrl ? `${baseUrl}/api/admin/me` : "";
 }
 
-function buildAdminBuildInfoApiUrl() {
-  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
-  return baseUrl ? `${baseUrl}/api/admin/build-info` : "";
-}
-
-function buildNpbBuildInfoApiUrl() {
-  if (!NPB_WORKER_API_URL) return "";
-  return new URL("build-info", NPB_WORKER_API_URL).href;
-}
-
-function formatUpdatedAt(updatedAt) {
-  if (typeof updatedAt !== "string" || Number.isNaN(new Date(updatedAt).getTime())) {
-    return "取得できません";
-  }
-  return formatDateTime(updatedAt);
-}
-
-function renderAdminDeploymentInfo() {
-  const container = document.getElementById("adminDeploymentInfo");
-  if (!container) return;
-
-  const frontendUpdatedAt = formatUpdatedAt(window.STARTING9_BUILD_INFO?.frontendUpdatedAt);
-  const authUpdatedAt = state.deploymentInfo.auth?.updatedAt
-    ? formatUpdatedAt(state.deploymentInfo.auth.updatedAt)
-    : (state.deploymentInfo.isLoading ? "取得中..." : "取得できません");
-  const npbUpdatedAt = state.deploymentInfo.npb?.updatedAt
-    ? formatUpdatedAt(state.deploymentInfo.npb.updatedAt)
-    : (state.deploymentInfo.isLoading ? "取得中..." : "取得できません");
-  const loadedAt = state.deploymentInfo.loadedAt
-    ? formatDateTime(state.deploymentInfo.loadedAt)
-    : "取得できません";
-  container.innerHTML = `<dl>
-    <div><dt>フロント最終更新</dt><dd>${escapeHtml(frontendUpdatedAt)}</dd></div>
-    <div><dt>Auth Worker最終更新</dt><dd>${escapeHtml(authUpdatedAt)}</dd></div>
-    <div><dt>NPB Worker最終更新</dt><dd>${escapeHtml(npbUpdatedAt)}</dd></div>
-    <div><dt>画面読込</dt><dd>${escapeHtml(loadedAt)}</dd></div>
-  </dl>`;
-}
-
-async function refreshAdminDeploymentInfo() {
-  if (state.adminAccess.status !== "authorized") return;
-  const authUrl = buildAdminBuildInfoApiUrl();
-  const npbUrl = buildNpbBuildInfoApiUrl();
-  state.deploymentInfo.isLoading = true;
-  state.deploymentInfo.loadedAt = new Date().toISOString();
-  renderAdminDeploymentInfo();
-
-  const fetchBuildInfo = async (url, options) => {
-    if (!url) throw new Error("更新情報の取得URLが未設定です。");
-    const response = await fetch(url, { cache: "no-store", ...options });
-    const payload = await response.json().catch(() => null);
-    if (!response.ok || !payload?.ok || typeof payload.updatedAt !== "string" || Number.isNaN(new Date(payload.updatedAt).getTime())) {
-      throw new Error(payload?.error || `HTTP ${response.status}`);
-    }
-    return payload;
-  };
-
-  const [authResult, npbResult] = await Promise.allSettled([
-    fetchBuildInfo(authUrl, { credentials: "include" }),
-    fetchBuildInfo(npbUrl)
-  ]);
-  state.deploymentInfo.isLoading = false;
-  state.deploymentInfo.auth = authResult.status === "fulfilled" ? authResult.value : null;
-  state.deploymentInfo.npb = npbResult.status === "fulfilled" ? npbResult.value : null;
-  if (authResult.status === "rejected") console.error("Auth Workerの更新情報取得に失敗しました", authResult.reason?.message || "unknown error");
-  if (npbResult.status === "rejected") console.error("NPB Workerの更新情報取得に失敗しました", npbResult.reason?.message || "unknown error");
-  renderAdminDeploymentInfo();
-}
-
 function isAuthStateInitialized() {
   const auth = window.starting9Auth;
   return typeof auth?.isInitialized === "function" && auth.isInitialized();
@@ -643,9 +555,6 @@ function clearAdminAccess() {
   state.adminTestAchievements = { isLoading: false, items: [], earned: [], message: "" };
   state.appMode = "normal";
   state.isAdminMode = false;
-  state.pregameAutomation.isLoading = false;
-  state.pregameAutomation.requestId += 1;
-  clearPregameAutomationWatchdog();
   applyAdminMode();
 }
 
@@ -1003,7 +912,6 @@ function openAdminPanel() {
     return;
   }
 
-  beginPregameAutomationInitialization();
   state.appMode = "admin";
   try {
     applyAdminMode();
@@ -1022,11 +930,9 @@ function openAdminPanel() {
   }
   refreshAdminScoringSummary({ force: true });
   refreshAutoScoringStatus({ force: true });
-  void refreshPregameAutomationStatus({ force: true });
   renderAdminTestPanel();
   void refreshAdminTestStatus();
   void refreshAdminTestAchievements();
-  void refreshAdminDeploymentInfo();
 }
 
 function closeAdminPanel() {
@@ -1035,9 +941,6 @@ function closeAdminPanel() {
   }
 
   state.appMode = "normal";
-  state.pregameAutomation.isLoading = false;
-  state.pregameAutomation.requestId += 1;
-  clearPregameAutomationWatchdog();
   applyAdminMode();
   renderPredictionDeadlineAdmin();
 }
@@ -2749,163 +2652,6 @@ function getAdminScoringGameId() {
   return state.nextScheduleId || state.probableStarter.nextGame?.gameId || findNextGameSchedule()?.gameId || "";
 }
 
-function setPregameDiagnostic(code) {
-  state.pregameAutomation.diagnosticCode = code;
-  console.info(`[PREGAME] ${code}`);
-  const diagnostic = document.getElementById("adminPregameAutomationDiagnostic");
-  if (diagnostic) {
-    diagnostic.textContent = code;
-  }
-}
-
-function beginPregameAutomationInitialization() {
-  state.pregameAutomation.isLoading = true;
-  state.pregameAutomation.record = null;
-  state.pregameAutomation.message = "";
-  state.pregameAutomation.detail = "";
-  state.pregameAutomation.fetchStarted = false;
-  state.pregameAutomation.responseOk = null;
-  state.pregameAutomation.httpStatus = null;
-  state.pregameAutomation.responseKeys = [];
-  state.pregameAutomation.domPresent = false;
-  state.pregameAutomation.watchdogTimedOutGeneration = null;
-  state.pregameAutomation.requestId += 1;
-  setPregameDiagnostic("PREGAME_INIT_STARTED");
-  startPregameAutomationWatchdog();
-  renderPregameAutomationPanelSafely();
-}
-
-function startPregameAutomationWatchdog() {
-  clearPregameAutomationWatchdog();
-  const generation = state.pregameAutomation.watchdogGeneration + 1;
-  state.pregameAutomation.watchdogGeneration = generation;
-  state.pregameAutomation.watchdogTimedOutGeneration = null;
-  let timerId = null;
-  timerId = setTimeout(() => {
-    if (generation !== state.pregameAutomation.watchdogGeneration || timerId !== state.pregameAutomation.watchdogId || state.appMode !== "admin" || !state.pregameAutomation.isLoading) {
-      return;
-    }
-
-    const targets = getPregameAutomationRenderTargets();
-    state.pregameAutomation.domPresent = Boolean(targets.summary && targets.message);
-    if (!targets.summary || !targets.message) {
-      state.pregameAutomation.watchdogId = null;
-      state.pregameAutomation.isLoading = false;
-      setPregameDiagnostic("PREGAME_RENDER_TARGET_MISSING");
-      return;
-    }
-    if (!isPregameLoadingVisible(targets)) {
-      state.pregameAutomation.watchdogId = null;
-      state.pregameAutomation.isLoading = false;
-      return;
-    }
-
-    state.pregameAutomation.watchdogId = null;
-    state.pregameAutomation.watchdogTimedOutGeneration = generation;
-    state.pregameAutomation.isLoading = false;
-    state.pregameAutomation.record = null;
-    state.pregameAutomation.message = "試合前処理情報を取得できませんでした。";
-    state.pregameAutomation.detail = "PREGAME_UI_WATCHDOG_TIMEOUT";
-    setPregameDiagnostic("PREGAME_UI_WATCHDOG_TIMEOUT");
-    renderPregameAutomationWatchdogFallback();
-  }, 12_000);
-  state.pregameAutomation.watchdogId = timerId;
-  return generation;
-}
-
-function ensurePregameAutomationWatchdog() {
-  return state.pregameAutomation.watchdogId === null
-    ? startPregameAutomationWatchdog()
-    : state.pregameAutomation.watchdogGeneration;
-}
-
-function clearPregameAutomationWatchdog(generation = null) {
-  if (generation !== null && generation !== state.pregameAutomation.watchdogGeneration) {
-    return;
-  }
-  if (state.pregameAutomation.watchdogId !== null) {
-    clearTimeout(state.pregameAutomation.watchdogId);
-  }
-  state.pregameAutomation.watchdogId = null;
-}
-
-function renderPregameAutomationWatchdogFallback() {
-  const { summary, message, diagnostic } = getPregameAutomationRenderTargets();
-  const responseKeys = state.pregameAutomation.responseKeys.length > 0
-    ? state.pregameAutomation.responseKeys.join(", ")
-    : "なし";
-  const diagnosis = [
-    `診断：${state.pregameAutomation.diagnosticCode || "PREGAME_UI_WATCHDOG_TIMEOUT"}`,
-    `gameId：${state.pregameAutomation.gameId || "なし"}`,
-    `fetch開始：${state.pregameAutomation.fetchStarted ? "あり" : "なし"}`,
-    `response.ok：${state.pregameAutomation.responseOk === null ? "なし" : state.pregameAutomation.responseOk ? "true" : "false"}`,
-    `HTTP status：${state.pregameAutomation.httpStatus ?? "なし"}`,
-    `DOM：${state.pregameAutomation.domPresent ? "あり" : "なし"}`,
-    `response keys：${responseKeys}`
-  ].join(" / ");
-  if (summary) {
-    summary.innerHTML = `<p class="empty-state">試合前処理情報を取得できませんでした。</p>`;
-  }
-  if (message) {
-    message.textContent = diagnosis;
-    message.className = "message error-message";
-  }
-  if (diagnostic) diagnostic.textContent = "PREGAME_UI_WATCHDOG_TIMEOUT";
-}
-
-function getPregameAutomationRenderTargets() {
-  return {
-    summary: document.getElementById("adminPregameAutomationSummary"),
-    message: document.getElementById("adminPregameAutomationMessage"),
-    diagnostic: document.getElementById("adminPregameAutomationDiagnostic")
-  };
-}
-
-const PREGAME_LOADING_MESSAGE = "試合前処理を確認中です。";
-
-function isPregameElementVisible(element) {
-  if (!element || element.hidden || element.classList?.contains("hidden")) {
-    return false;
-  }
-  let parent = element.parentElement;
-  while (parent) {
-    if (parent.hidden || parent.classList?.contains("hidden")) {
-      return false;
-    }
-    parent = parent.parentElement;
-  }
-  return true;
-}
-
-function isPregameLoadingVisible(targets = getPregameAutomationRenderTargets()) {
-  if (!targets.summary || !targets.message || !isPregameElementVisible(targets.summary) || !isPregameElementVisible(targets.message)) {
-    return false;
-  }
-  return isPregameLoadingTextPresent(targets);
-}
-
-function isPregameLoadingTextPresent(targets = getPregameAutomationRenderTargets()) {
-  if (!targets.summary || !targets.message) return false;
-  return targets.summary.textContent.includes(PREGAME_LOADING_MESSAGE) || targets.message.textContent.includes(PREGAME_LOADING_MESSAGE);
-}
-
-function renderPregameAutomationPanelSafely() {
-  try {
-    return renderPregameAutomationPanel();
-  } catch (error) {
-    console.error("[PREGAME] render failed", error?.message || "unknown error");
-    const targets = getPregameAutomationRenderTargets();
-    state.pregameAutomation.domPresent = Boolean(targets.summary && targets.message);
-    return {
-      ok: false,
-      completed: false,
-      code: "PREGAME_RENDER_FAILED",
-      loadingCleared: !isPregameLoadingTextPresent(targets),
-      domPresent: Boolean(targets.summary && targets.message)
-    };
-  }
-}
-
 function buildAdminScoringApiUrl(gameId, action) {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
   if (!baseUrl || !gameId) {
@@ -3253,284 +2999,97 @@ function formatPregameAutomationStatus(status) {
   return ({ pending: "待機中", captured: "保存済み", failed: "取得失敗", skipped: "停止", scored: "採点済み", scored_private: "採点済み（非公開）", published: "公開済み", blocked: "要手動対応" })[status] || "未確認";
 }
 
-function formatGameDayNoticeStatus(status) {
-  return ({
-    waiting: "本日の対象球団の公示は確認できていません",
-    detected: "本日の公示を反映済み",
-    closed_without_notice: "締切時点まで対象球団の公示は確認されませんでした",
-    error: "公示を取得できませんでした"
-  })[status] || "本日の対象球団の公示は確認できていません";
-}
-
-const PREGAME_RESPONSE_REQUIRED_KEYS = Object.freeze([
-  "ok",
-  "gameId",
-  "game",
-  "notice",
-  "roster",
-  "lineup",
-  "scoring",
-  "publishing",
-  "pregame"
-]);
-
-function validatePregameAutomationResponse(payload, requestedGameId) {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return { ok: false, code: "PREGAME_RESPONSE_INVALID", missingKeys: PREGAME_RESPONSE_REQUIRED_KEYS };
-  }
-  const missingKeys = PREGAME_RESPONSE_REQUIRED_KEYS.filter((key) => !Object.prototype.hasOwnProperty.call(payload, key));
-  if (missingKeys.length > 0) {
-    return { ok: false, code: "PREGAME_RESPONSE_INVALID", missingKeys };
-  }
-  if (typeof payload.gameId !== "string" || !payload.gameId.trim()) {
-    return { ok: false, code: "PREGAME_GAME_ID_MISSING", missingKeys: [] };
-  }
-  if (payload.gameId !== requestedGameId || !payload.pregame || typeof payload.pregame !== "object" || Array.isArray(payload.pregame)) {
-    return { ok: false, code: "PREGAME_RESPONSE_INVALID", missingKeys: [] };
-  }
-  return { ok: true, missingKeys: [] };
-}
-
-async function refreshPregameAutomationStatus({ force = false } = {}) {
-  if (!state.isAdminMode) return;
-  const gameId = getAdminScoringGameId();
-  if (!gameId) {
-    state.pregameAutomation.isLoading = false;
-    state.pregameAutomation.gameId = "";
-    state.pregameAutomation.record = null;
-    state.pregameAutomation.message = "本日の対象試合はありません。";
-    state.pregameAutomation.detail = "";
-    setPregameDiagnostic("PREGAME_GAME_ID_MISSING");
-    clearPregameAutomationWatchdog();
-    const renderResult = renderPregameAutomationPanelSafely();
-    if (!renderResult.domPresent) setPregameDiagnostic("PREGAME_RENDER_TARGET_MISSING");
-    return;
-  }
-  if (state.pregameAutomation.isLoading && !force) return;
-  const url = buildAdminGameApiUrl(gameId, "pregame-automation/status");
-  if (!url) {
-    state.pregameAutomation.isLoading = false;
-    state.pregameAutomation.message = "試合前処理情報を取得できませんでした。";
-    state.pregameAutomation.detail = "PREGAME_API_URL_MISSING";
-    setPregameDiagnostic("PREGAME_FETCH_FAILED");
-    clearPregameAutomationWatchdog();
-    const renderResult = renderPregameAutomationPanelSafely();
-    if (!renderResult.domPresent) setPregameDiagnostic("PREGAME_RENDER_TARGET_MISSING");
-    return;
-  }
-  state.pregameAutomation.isLoading = true;
-  state.pregameAutomation.gameId = gameId;
-  state.pregameAutomation.message = "";
-  state.pregameAutomation.detail = "";
-  const watchdogGeneration = ensurePregameAutomationWatchdog();
-  const requestId = state.pregameAutomation.requestId + 1;
-  state.pregameAutomation.requestId = requestId;
-  const initialRender = renderPregameAutomationPanelSafely();
-  if (!initialRender.domPresent) {
-    state.pregameAutomation.isLoading = false;
-    setPregameDiagnostic("PREGAME_RENDER_TARGET_MISSING");
-    clearPregameAutomationWatchdog(watchdogGeneration);
-    return;
-  }
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10_000);
-  try {
-    console.info("[PREGAME] summary fetch start");
-    state.pregameAutomation.fetchStarted = true;
-    state.pregameAutomation.responseOk = null;
-    state.pregameAutomation.httpStatus = null;
-    state.pregameAutomation.responseKeys = [];
-    setPregameDiagnostic("PREGAME_FETCH_STARTED");
-    const response = await fetch(url, { credentials: "include", cache: "no-store", signal: controller.signal });
-    state.pregameAutomation.responseOk = response.ok;
-    state.pregameAutomation.httpStatus = response.status;
-    const payload = await response.json().catch(() => null);
-    state.pregameAutomation.responseKeys = payload && typeof payload === "object" && !Array.isArray(payload) ? Object.keys(payload) : [];
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-      const error = new Error("PREGAME_RESPONSE_INVALID");
-      error.status = response.status;
-      error.code = "PREGAME_RESPONSE_INVALID";
-      throw error;
-    }
-    if (!response.ok || !payload.ok) {
-      const error = new Error(payload?.error || `HTTP ${response.status}`);
-      error.status = response.status;
-      const candidateCode = String(payload?.code || payload?.error || "");
-      error.code = /^(?:PREGAME_[A-Z_]+|HTTP_\d{3})$/.test(candidateCode) ? candidateCode : "";
-      throw error;
-    }
-    const validation = validatePregameAutomationResponse(payload, gameId);
-    if (!validation.ok) {
-      const error = new Error(validation.code);
-      error.status = response.status;
-      error.code = validation.code;
-      error.missingKeys = validation.missingKeys;
-      throw error;
-    }
-    if (state.pregameAutomation.watchdogTimedOutGeneration === watchdogGeneration || requestId !== state.pregameAutomation.requestId) return;
-    state.pregameAutomation.record = payload.game === null ? null : payload.pregame;
-    state.pregameAutomation.message = payload.game === null ? "本日の対象試合はありません。" : "";
-    state.pregameAutomation.detail = "";
-    setPregameDiagnostic("PREGAME_FETCH_SUCCESS");
-  } catch (error) {
-    if (state.pregameAutomation.watchdogTimedOutGeneration === watchdogGeneration || requestId !== state.pregameAutomation.requestId) return;
-    const timedOut = error?.name === "AbortError";
-    state.pregameAutomation.record = null;
-    state.pregameAutomation.message = timedOut
-      ? "試合前処理情報の取得がタイムアウトしました。"
-      : error?.code === "PREGAME_SCHEMA_NOT_READY"
-        ? "試合前処理用データベースが準備されていません。"
-        : "試合前処理情報を取得できませんでした。";
-    state.pregameAutomation.detail = timedOut
-      ? "PREGAME_TIMEOUT"
-      : error?.status
-        ? `HTTP ${error.status}${error.code ? ` / ${error.code}` : ""}`
-        : error?.code || "PREGAME_SUMMARY_FAILED";
-    setPregameDiagnostic(error?.code === "PREGAME_RESPONSE_INVALID" || error?.code === "PREGAME_GAME_ID_MISSING"
-      ? error.code
-      : "PREGAME_FETCH_FAILED");
-    console.error("[PREGAME] summary fetch failed", state.pregameAutomation.detail);
-  } finally {
-    clearTimeout(timeoutId);
-    if (requestId !== state.pregameAutomation.requestId || state.pregameAutomation.watchdogTimedOutGeneration === watchdogGeneration) return;
-    state.pregameAutomation.isLoading = false;
-    const renderResult = renderPregameAutomationPanelSafely();
-    if (!renderResult.domPresent) {
-      setPregameDiagnostic("PREGAME_RENDER_TARGET_MISSING");
-    } else if (renderResult.completed) {
-      setPregameDiagnostic("PREGAME_RENDER_COMPLETED");
-      const record = state.pregameAutomation.record;
-      console.info(`[PREGAME] rendered game=${record?.gameId || "none"} notice=${record?.notice?.status || "none"} lineup=${record?.lineup?.status || "none"} scoring=${record?.scoring?.status || "none"}`);
-    } else if (renderResult.code === "PREGAME_RENDER_FAILED") {
-      setPregameDiagnostic("PREGAME_RENDER_FAILED");
-    }
-    if (renderResult.loadingCleared || !renderResult.domPresent) {
-      clearPregameAutomationWatchdog(watchdogGeneration);
-    }
-  }
+function getSafePregameActionError(response, payload) {
+  const candidate = String(payload?.code || payload?.error || "");
+  const code = /^[A-Z][A-Z0-9_]{1,79}$/.test(candidate) ? candidate : "";
+  return `HTTP ${response.status}${code ? ` / ${code}` : ""}`;
 }
 
 async function runPregameAutomationAction(action) {
   const gameId = getAdminScoringGameId();
   const url = buildAdminGameApiUrl(gameId, `pregame-automation/${action}`);
-  if (!gameId || !url || state.pregameAutomation.isRunning) return;
+  if (!gameId || !url || state.pregameAutomation.isRunning) {
+    state.pregameAutomation.message = "対象試合を日程から読み込んでください。";
+    renderPregameAutomationTools();
+    return;
+  }
+
   state.pregameAutomation.isRunning = true;
-  state.pregameAutomation.detail = "";
   const actionMessages = {
     "run-notice": "本日の公示を取得中...",
+    "distribute-notice": "保存済みの公示結果を当日試合へ配布中...",
     "run-roster": "ロースターを取得中...",
     "fix-roster": "締切時点のロースターを固定中...",
     "run-lineup": "正式スタメンを取得中...",
-    publish: "結果の公開判定を確認中..."
+    publish: "公開処理を実行中..."
   };
   state.pregameAutomation.message = actionMessages[action] || "試合前処理を実行中...";
-  renderPregameAutomationPanelSafely();
+  renderPregameAutomationTools();
   try {
     const response = await fetch(url, { method: "POST", credentials: "include" });
     const payload = await response.json().catch(() => null);
-    if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
-    state.pregameAutomation.record = payload.pregame || state.pregameAutomation.record;
+    if (!response.ok || !payload?.ok) {
+      throw new Error(getSafePregameActionError(response, payload));
+    }
     const completedMessages = {
-      "run-notice": "公示取得を実行しました。",
+      "run-notice": "公示取得と当日試合への配布を実行しました。",
+      "distribute-notice": "公示結果を当日試合へ配布しました。",
       "run-roster": "ロースター取得を実行しました。",
-      "fix-roster": "ロースターの締切時点固定を実行しました。",
-      "run-lineup": "スタメン取得を実行しました。",
+      "fix-roster": "ロースターの固定を実行しました。",
+      "run-lineup": "正式スタメン取得を実行しました。",
       publish: "結果の公開判定を実行しました。"
     };
     state.pregameAutomation.message = completedMessages[action] || "試合前処理を実行しました。";
-    if (action === "run-notice" || action === "fix-roster") {
+    if (action === "run-notice" || action === "distribute-notice" || action === "run-roster" || action === "fix-roster") {
       await initializeRosterCandidateSync();
     }
     await refreshAutoScoringStatus({ force: true });
   } catch (error) {
-    console.error("試合前自動処理の手動実行に失敗しました", error.message);
-    state.pregameAutomation.message = error.message || "試合前自動処理を実行できませんでした。";
+    console.error("試合前処理の手動実行に失敗しました", error.message);
+    state.pregameAutomation.message = `試合前処理を実行できませんでした。${error.message ? ` 詳細：${error.message}` : ""}`;
   } finally {
     state.pregameAutomation.isRunning = false;
-    renderPregameAutomationPanel();
+    renderPregameAutomationTools();
   }
 }
 
-function renderPregameAutomationPanel() {
-  const targets = getPregameAutomationRenderTargets();
-  const { summary, message, diagnostic } = targets;
-  const domPresent = Boolean(summary && message);
-  state.pregameAutomation.domPresent = domPresent;
-  if (!domPresent) {
-    return { ok: false, completed: false, code: "PREGAME_RENDER_TARGET_MISSING", loadingCleared: true, domPresent };
+async function runPregameScoringAction() {
+  const gameId = getAdminScoringGameId();
+  const url = buildAdminGameApiUrl(gameId, "auto-scoring/run-now");
+  if (!gameId || !url || state.pregameAutomation.isRunning) {
+    state.pregameAutomation.message = "対象試合を日程から読み込んでください。";
+    renderPregameAutomationTools();
+    return;
   }
-
+  if (!window.confirm("この試合の保存済み予想を採点します。よろしいですか？")) return;
+  state.pregameAutomation.isRunning = true;
+  state.pregameAutomation.message = "採点を実行中...";
+  renderPregameAutomationTools();
   try {
-    const record = state.pregameAutomation.record;
-    if (!record) {
-      const emptyMessage = state.pregameAutomation.isLoading
-        ? PREGAME_LOADING_MESSAGE
-        : state.pregameAutomation.message || "対象試合を日程から読み込んでください。";
-      summary.innerHTML = `<p class="empty-state">${escapeHtml(emptyMessage)}</p>`;
-    } else {
-      const schedule = record.schedule || {};
-      const rows = [
-        ["対象試合", record.gameId || state.pregameAutomation.gameId || "-"],
-        ["試合開始", formatDateTime(schedule.startAt)],
-        ["公示状態", formatGameDayNoticeStatus(record.notice?.status)],
-        ["公示最終確認", formatDateTime(record.notice?.lastCheckedAt)],
-        ["次回公示取得予定", formatDateTime(record.notice?.nextFetchAt)],
-        ["公示内容ハッシュ", record.notice?.contentHash ? record.notice.contentHash.slice(0, 12) : "-"],
-        ["公示差分", `登録${record.notice?.registeredCount || 0}人 / 抹消${record.notice?.removedCount || 0}人`],
-        ["公示後の通知", record.notice?.afterDeadline ? "締切後（スナップショット変更なし）" : "なし"],
-        ["ロースター固定予定", formatDateTime(schedule.predictionDeadlineAt)],
-        ["ロースター固定", formatDateTime(record.roster?.fixedAt)],
-        ["ロースター状態", `${formatPregameAutomationStatus(record.roster?.status)}${record.roster?.playerCount ? `（${record.roster.playerCount}人）` : ""}`],
-        ["予想締切", formatDateTime(schedule.predictionDeadlineAt)],
-        ["スタメン取得開始", formatDateTime(schedule.lineupFetchStartAt)],
-        ["最終スタメン取得試行", formatDateTime(record.lineup?.lastAttemptAt || record.lineup?.detectedAt)],
-        ["次回取得予定", formatDateTime(record.lineup?.nextAttemptAt)],
-        ["取得試行回数", `${record.lineup?.attempts || 0}回`],
-        ["正式スタメン", `${formatPregameAutomationStatus(record.lineup?.status)}${record.lineup?.source ? `（${record.lineup.source === "manual" ? "手動" : "NPB自動"}）` : ""}`],
-        ["採点予定", formatDateTime(record.scoring?.dueAt || schedule.resultReleaseAt)],
-        ["採点状態", `${formatPregameAutomationStatus(record.scoring?.status)} / ${formatPregameAutomationStatus(record.scoring?.publicationStatus)}`],
-        ["公開予定", formatDateTime(schedule.startAt)],
-        ["公開日時", formatDateTime(record.scoring?.publishedAt)],
-        ["最後のエラー", record.lastErrorCode || "-"]
-      ];
-      summary.innerHTML = `<dl>${rows.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value || "-")}</dd>`).join("")}</dl>`;
-    }
-    message.textContent = state.pregameAutomation.detail
-      ? `${state.pregameAutomation.message} 詳細：${state.pregameAutomation.detail}`
-      : state.pregameAutomation.message;
-    message.className = `message${state.pregameAutomation.message.includes("できません") || state.pregameAutomation.message.includes("失敗") || state.pregameAutomation.message.includes("タイムアウト") || state.pregameAutomation.message.includes("準備されていません") ? " error-message" : ""}`;
-    if (diagnostic) diagnostic.textContent = state.pregameAutomation.diagnosticCode || "";
+    const response = await fetch(url, { method: "POST", credentials: "include" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(getSafePregameActionError(response, payload));
+    state.pregameAutomation.message = `採点を実行しました。${Number(payload.scored || 0)}件を更新しました。`;
+    await refreshAdminScoringSummary({ force: true });
+    await refreshAutoScoringStatus({ force: true });
   } catch (error) {
-    return {
-      ok: false,
-      completed: false,
-      code: "PREGAME_RENDER_FAILED",
-      loadingCleared: !isPregameLoadingTextPresent(targets),
-      domPresent
-    };
+    console.error("試合前処理の採点に失敗しました", error.message);
+    state.pregameAutomation.message = `採点を実行できませんでした。${error.message ? ` 詳細：${error.message}` : ""}`;
+  } finally {
+    state.pregameAutomation.isRunning = false;
+    renderPregameAutomationTools();
   }
+}
 
-  const loadingCleared = !isPregameLoadingTextPresent(targets);
-  const visible = isPregameElementVisible(summary) && isPregameElementVisible(message);
-  const stateName = state.pregameAutomation.record
-    ? "success"
-    : state.pregameAutomation.message === "本日の対象試合はありません。"
-      ? "empty"
-      : state.pregameAutomation.isLoading
-        ? "loading"
-        : state.pregameAutomation.message
-          ? "error"
-          : "empty";
-  const ok = visible && loadingCleared;
-  return {
-    ok,
-    completed: ok && ["success", "empty"].includes(stateName),
-    code: ok ? "" : "PREGAME_RENDER_FAILED",
-    state: stateName,
-    loadingCleared,
-    domPresent,
-    visible
-  };
+function renderPregameAutomationTools() {
+  const container = document.getElementById("adminPregameTools");
+  const message = document.getElementById("adminPregameAutomationToolsMessage");
+  if (!container || !message) return;
+  container.querySelectorAll("button").forEach((button) => {
+    button.disabled = state.pregameAutomation.isRunning;
+  });
+  message.textContent = state.pregameAutomation.message;
+  message.className = `message${state.pregameAutomation.message.includes("できません") || state.pregameAutomation.message.includes("失敗") ? " error-message" : ""}`;
 }
 
 async function runServerScoringPreview() {
@@ -6211,7 +5770,7 @@ function renderAdminFlow() {
   updateAutoFetchButtons();
   renderAdminScoringPanel();
   renderAutoScoringPanel();
-  renderPregameAutomationPanel();
+  renderPregameAutomationTools();
   updateRosterMonitorButtons();
   renderAutoFetchPanel();
   renderRosterSnapshotSummary();

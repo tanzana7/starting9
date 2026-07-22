@@ -2,7 +2,6 @@ const LINEUP_SIZE = 9;
 const LINEUP_CACHE_TTL_SECONDS = 5 * 60;
 const ROSTER_CACHE_TTL_SECONDS = 30 * 60;
 const NPB_FETCH_TIMEOUT_MS = 12_000;
-const NPB_WORKER_UPDATED_AT = "2026-07-22T06:00:00.000Z";
 const NOTICE_SOURCE_URL = "https://npb.jp/announcement/roster/";
 const DEFAULT_ALLOWED_ORIGINS = [
   "https://starting9.pages.dev",
@@ -146,13 +145,6 @@ export default {
     }
 
     const requestUrl = new URL(request.url);
-    if (requestUrl.pathname === "/build-info" || requestUrl.pathname === "/version") {
-      return withCors(jsonResponse({
-        ok: true,
-        service: "npb-worker",
-        updatedAt: NPB_WORKER_UPDATED_AT
-      }), corsHeaders);
-    }
     const mode = requestUrl.searchParams.get("mode") || "lineup";
     if (mode === "starter") {
       return withCors(await handleStarterRequest(requestUrl.searchParams.get("debug") === "1"), corsHeaders);

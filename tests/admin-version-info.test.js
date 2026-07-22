@@ -13,7 +13,7 @@ test("管理画面だけにバージョン情報の表示領域を持つ", () =>
 
   assert.match(html, /id="adminVersionInfo"/);
   assert.match(html, /バージョン情報/);
-  assert.match(version, /const APP_VERSION = "2026\.07\.22-1"/);
+  assert.match(version, /const APP_VERSION = "2026\.07\.22-2"/);
   assert.match(script, /function refreshAdminVersionInfo\(\)/);
   assert.match(script, /cache: "no-store"/);
   assert.match(script, /buildAdminVersionApiUrl/);

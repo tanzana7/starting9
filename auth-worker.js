@@ -1,10 +1,21 @@
 import { getPredictionDeadlineStatus } from "./prediction-deadline.js";
+import {
+  getDueLineupAttemptAt,
+  getPregameTimeline,
+  getPregameTimelines
+} from "./pregame-automation.js";
+import {
+  createFightersPlayerId,
+  findFightersPlayerByName,
+  FIGHTERS_TEAM_CODE,
+  FIGHTERS_TEAM_ID
+} from "./fighters-player-master.js";
 
 const SESSION_COOKIE_NAME = "s9_session";
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const PBKDF2_ITERATIONS = 100_000;
 const PBKDF2_MAX_ITERATIONS = 100_000;
-const AUTH_WORKER_VERSION = "2026.07.22-1";
+const AUTH_WORKER_VERSION = "2026.07.22-2";
 const AUTH_WORKER_BUILD_TIME = "2026-07-22T00:00:00.000Z";
 const PASSWORD_HASH_BITS = 256;
 const USERNAME_MIN_LENGTH = 3;
@@ -30,6 +41,9 @@ const AUTO_SCORING_MAX_DELAY_SECONDS = 24 * 60 * 60;
 const AUTO_SCORING_MAX_ATTEMPTS = 3;
 const AUTO_SCORING_CRON_BATCH_SIZE = 10;
 const AUTO_SCORING_PROCESSING_TIMEOUT_MS = 10 * 60 * 1000;
+const NPB_FETCH_WORKER_PRODUCTION_URL = "https://starting9-npb-fetch.tanzana7.workers.dev/";
+const NPB_FETCH_TIMEOUT_MS = 15_000;
+const ROSTER_MINIMUM_PLAYER_COUNT = 20;
 const SCORING_RULES = Object.freeze({
   player: { perHit: 5, bonus: 5 },
   order: { perHit: 3, bonus: 3 },
@@ -158,9 +172,25 @@ export default {
     }
 
     const scheduledAt = new Date(Number(event?.scheduledTime) || Date.now());
-    ctx.waitUntil(runDueAutoScoringJobs(env, scheduledAt));
+    ctx.waitUntil(runScheduledGameAutomation(env, scheduledAt));
   }
 };
+
+async function runScheduledGameAutomation(env, now) {
+  let pregame = null;
+  let scoring = null;
+  try {
+    pregame = await runDuePregameAutomationJobs(env, now);
+  } catch (error) {
+    console.error(`pregame automation cron failed: ${error instanceof Error ? error.message : "unknown error"}`);
+  }
+  try {
+    scoring = await runDueAutoScoringJobs(env, now);
+  } catch (error) {
+    console.error(`auto scoring cron failed: ${error instanceof Error ? error.message : "unknown error"}`);
+  }
+  return { pregame, scoring };
+}
 
 async function handleRegister(request, env, cors) {
   const input = await readJson(request);
@@ -843,7 +873,7 @@ async function handleCreateAdminTestPerfectPrediction(env, cors, user, metadata)
 }
 
 function parseAdminScoringRoute(path) {
-  const match = /^\/api\/admin\/games\/([^/]+)\/(predictions\/(?:summary|score-predictions(?:\/preview)?)|actual-lineup|auto-scoring\/(?:status|run-now|retry|cancel))$/.exec(path);
+  const match = /^\/api\/admin\/games\/([^/]+)\/(predictions\/(?:summary|score-predictions(?:\/preview)?)|actual-lineup|auto-scoring\/(?:status|run-now|retry|cancel)|pregame-automation\/(?:status|run-roster|run-lineup))$/.exec(path);
   if (!match) {
     return null;
   }
@@ -893,8 +923,259 @@ async function handleAdminScoringRoute(request, env, cors, route) {
   if (route.action === "auto-scoring/cancel" && request.method === "POST") {
     return await handleAdminAutoScoringCancel(env, cors, metadata.gameId);
   }
+  if (route.action === "pregame-automation/status" && request.method === "GET") {
+    return await handleAdminPregameAutomationStatus(env, cors, metadata.gameId);
+  }
+  if (route.action === "pregame-automation/run-roster" && request.method === "POST") {
+    return await handleAdminPregameRosterCapture(env, cors, metadata.gameId);
+  }
+  if (route.action === "pregame-automation/run-lineup" && request.method === "POST") {
+    return await handleAdminPregameLineupCapture(env, cors, metadata.gameId);
+  }
 
   return jsonResponse({ ok: false, error: "管理者採点APIのHTTPメソッドが不正です。" }, 405, cors);
+}
+
+async function handleAdminPregameAutomationStatus(env, cors, gameId) {
+  const status = await getPregameAutomationStatus(env.AUTH_DB, gameId);
+  return jsonResponse({ ok: true, gameId, pregame: status }, 200, cors);
+}
+
+async function handleAdminPregameRosterCapture(env, cors, gameId) {
+  const result = await captureGameRosterSnapshot(env, gameId, new Date(), { force: true });
+  return jsonResponse({ ok: true, gameId, result, pregame: await getPregameAutomationStatus(env.AUTH_DB, gameId) }, 200, cors);
+}
+
+async function handleAdminPregameLineupCapture(env, cors, gameId) {
+  const result = await captureOfficialLineup(env, gameId, new Date(), { force: true });
+  return jsonResponse({ ok: true, gameId, result, pregame: await getPregameAutomationStatus(env.AUTH_DB, gameId) }, 200, cors);
+}
+
+function getGameIdentityForPregame(gameId) {
+  const timeline = getPregameTimeline(gameId);
+  if (!timeline) return null;
+  const gameCode = /^\d{4}-\d{2}-\d{2}-(.+)$/.exec(timeline.gameId)?.[1] || "";
+  if (!/^[a-z0-9]+-[a-z0-9]+-\d+$/i.test(gameCode)) return null;
+  return { ...timeline, gameCode: gameCode.toLowerCase() };
+}
+
+function getNpbFetchWorkerBaseUrl(env) {
+  const value = String(env?.NPB_FETCH_WORKER_URL || NPB_FETCH_WORKER_PRODUCTION_URL).trim();
+  try {
+    const url = new URL(value);
+    const isOfficialWorker = url.protocol === "https:" && url.hostname === "starting9-npb-fetch.tanzana7.workers.dev";
+    const isLocal = url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname);
+    return (isOfficialWorker || isLocal) ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchNpbWorkerJson(env, params) {
+  const url = getNpbFetchWorkerBaseUrl(env);
+  if (!url) throw createPregameError("NPB_WORKER_URL_INVALID", "NPB取得Workerの接続先が不正です。");
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), NPB_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(url.toString(), { signal: controller.signal, headers: { "Cache-Control": "no-store" } });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      throw createPregameError(payload?.code || "NPB_HTTP_ERROR", payload?.error || `NPB取得Worker HTTP ${response.status}`);
+    }
+    return payload;
+  } catch (error) {
+    if (error?.code) throw error;
+    throw createPregameError(error?.name === "AbortError" ? "TIMEOUT" : "NPB_HTTP_ERROR", "NPB公式データを取得できませんでした。");
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function createPregameError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function normalizeRosterForSnapshot(players) {
+  if (!Array.isArray(players) || players.length < ROSTER_MINIMUM_PLAYER_COUNT) return null;
+  const normalized = players.map((player) => ({
+    position: String(player?.position || "").trim(),
+    number: typeof player?.number === "string" ? player.number : String(player?.number || "").trim(),
+    name: String(player?.name || "").replace(/[\s\u3000]/g, "")
+  }));
+  if (normalized.some((player) => !player.position || !player.number || !player.name)) return null;
+  return normalized;
+}
+
+function createOfficialLineupFromNpb(lineup) {
+  if (!Array.isArray(lineup) || lineup.length !== SCORING_LINEUP_SIZE) return { ok: false, error: "NPBのスタメン人数が9人ではありません。" };
+  const result = [];
+  for (const row of lineup) {
+    const player = findFightersPlayerByName(row?.playerName);
+    const battingOrder = Number(row?.order);
+    const position = normalizePosition(row?.position);
+    if (!player || !Number.isInteger(battingOrder) || battingOrder < 1 || battingOrder > 9 || !position) {
+      return { ok: false, error: "NPBの選手名または守備位置を選手マスタへ安全に照合できません。" };
+    }
+    result.push({
+      playerId: createFightersPlayerId(player.uniformNumber),
+      teamId: FIGHTERS_TEAM_ID,
+      teamCode: FIGHTERS_TEAM_CODE,
+      uniformNumber: player.uniformNumber,
+      playerName: player.name,
+      battingOrder,
+      position
+    });
+  }
+  const sanitized = sanitizeActualLineupForScoring(result);
+  return sanitized.ok ? { ok: true, lineup: sanitized.lineup } : sanitized;
+}
+
+async function ensurePregameAutomationRow(db, identity, now) {
+  const nowIso = now.toISOString();
+  await db.prepare(
+    `INSERT INTO game_pregame_automation (game_id, game_date, start_at, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?4)
+     ON CONFLICT(game_id) DO UPDATE SET game_date = excluded.game_date, start_at = excluded.start_at, updated_at = excluded.updated_at`
+  ).bind(identity.gameId, identity.game.date, identity.startAt.toISOString(), nowIso).run();
+}
+
+async function captureGameRosterSnapshot(env, gameId, now, { force = false } = {}) {
+  const identity = getGameIdentityForPregame(gameId);
+  if (!identity) throw createPregameError("SCHEDULE_UNAVAILABLE", "試合日程を確認できません。");
+  await ensurePregameAutomationRow(env.AUTH_DB, identity, now);
+  const existing = await env.AUTH_DB.prepare("SELECT game_id FROM game_roster_snapshots WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
+  if (existing && !force) return { status: "already_captured" };
+  try {
+    const payload = await fetchNpbWorkerJson(env, { mode: "roster" });
+    const roster = normalizeRosterForSnapshot(payload.players);
+    if (!roster || payload.warning) throw createPregameError("INVALID_ROSTER", "NPBロースターの解析結果が不完全です。");
+    const capturedAt = String(payload.fetchedAt || now.toISOString());
+    const rosterJson = JSON.stringify(roster);
+    await env.AUTH_DB.batch([
+      env.AUTH_DB.prepare(
+        `INSERT INTO game_roster_snapshots (game_id, game_date, captured_at, roster_json, source, player_count, status, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, 'npb-roster', ?5, 'captured', ?3, ?3)
+         ON CONFLICT(game_id) DO UPDATE SET captured_at = excluded.captured_at, roster_json = excluded.roster_json, player_count = excluded.player_count, updated_at = excluded.updated_at`
+      ).bind(gameId, identity.game.date, capturedAt, rosterJson, roster.length),
+      env.AUTH_DB.prepare(
+        `UPDATE game_pregame_automation SET roster_status = 'captured', roster_captured_at = ?1, last_error_code = NULL, last_error_message = NULL, updated_at = ?1 WHERE game_id = ?2`
+      ).bind(capturedAt, gameId)
+    ]);
+    return { status: "captured", playerCount: roster.length, capturedAt };
+  } catch (error) {
+    await recordPregameError(env.AUTH_DB, gameId, "roster", error, now);
+    throw error;
+  }
+}
+
+async function captureOfficialLineup(env, gameId, now, { force = false } = {}) {
+  const identity = getGameIdentityForPregame(gameId);
+  if (!identity) throw createPregameError("SCHEDULE_UNAVAILABLE", "試合日程を確認できません。");
+  // 手動テストでも試合開始後のNPB内容を正式スタメンとして取り込まない。
+  if (now.getTime() > identity.startAt.getTime()) return { status: "skipped_after_start" };
+  await ensurePregameAutomationRow(env.AUTH_DB, identity, now);
+  const existing = await getGameLineup(env.AUTH_DB, gameId);
+  if (existing) return { status: existing.lineup_source === "manual" ? "manual_lineup_exists" : "already_captured" };
+  try {
+    const payload = await fetchNpbWorkerJson(env, { mode: "lineup", date: identity.game.date, gameCode: identity.gameCode });
+    const actual = createOfficialLineupFromNpb(payload.lineup);
+    if (!actual.ok) throw createPregameError("INVALID_LINEUP", actual.error);
+    const record = await saveActualLineupForAutoScoring(env.AUTH_DB, gameId, actual.lineup, new Date(payload.fetchedAt || now), {
+      source: "npb-auto",
+      scoringDueAt: identity.resultReleaseAt,
+      preventOverwrite: true
+    });
+    await env.AUTH_DB.prepare(
+      `UPDATE game_pregame_automation
+          SET lineup_status = 'captured', lineup_captured_at = ?1, last_lineup_attempt_at = ?1,
+              lineup_attempt_count = lineup_attempt_count + 1, next_lineup_attempt_at = NULL,
+              last_error_code = NULL, last_error_message = NULL, updated_at = ?1
+        WHERE game_id = ?2`
+    ).bind(now.toISOString(), gameId).run();
+    return { status: "captured", sourceUrl: payload.sourceUrl, autoScoring: serializeGameLineup(record) };
+  } catch (error) {
+    await recordPregameLineupAttempt(env.AUTH_DB, gameId, identity, now, error);
+    throw error;
+  }
+}
+
+async function recordPregameError(db, gameId, area, error, now) {
+  const code = String(error?.code || "NPB_HTTP_ERROR").slice(0, 80);
+  const message = String(error?.message || "取得に失敗しました。").slice(0, 240);
+  const column = area === "roster" ? "roster_status" : "lineup_status";
+  await db.prepare(
+    `UPDATE game_pregame_automation SET ${column} = 'failed', last_error_code = ?1, last_error_message = ?2, updated_at = ?3 WHERE game_id = ?4`
+  ).bind(code, message, now.toISOString(), gameId).run();
+}
+
+async function recordPregameLineupAttempt(db, gameId, identity, now, error) {
+  const next = new Date(now.getTime() + 10 * 60 * 1000);
+  await db.prepare(
+    `UPDATE game_pregame_automation
+        SET lineup_status = 'failed', lineup_attempt_count = lineup_attempt_count + 1, last_lineup_attempt_at = ?1,
+            next_lineup_attempt_at = ?2, last_error_code = ?3, last_error_message = ?4, updated_at = ?1
+      WHERE game_id = ?5`
+  ).bind(now.toISOString(), next <= identity.startAt ? next.toISOString() : null, String(error?.code || "NPB_HTTP_ERROR").slice(0, 80), String(error?.message || "取得に失敗しました。").slice(0, 240), gameId).run();
+}
+
+async function runDuePregameAutomationJobs(env, now) {
+  const summary = { rosterCaptured: 0, lineupCaptured: 0, lineupFailed: 0 };
+  for (const timeline of getPregameTimelines()) {
+    const gameId = timeline.gameId;
+    if (now < timeline.rosterCaptureAt || now > timeline.startAt) continue;
+    const currentLineup = await getGameLineup(env.AUTH_DB, gameId);
+    if (now >= timeline.rosterCaptureAt && now < timeline.startAt) {
+      const snapshot = await env.AUTH_DB.prepare("SELECT game_id FROM game_roster_snapshots WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
+      const rosterJob = await env.AUTH_DB.prepare("SELECT roster_status, updated_at FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
+      const lastAttemptAt = new Date(rosterJob?.updated_at || 0).getTime();
+      const retryDue = !lastAttemptAt || now.getTime() - lastAttemptAt >= 10 * 60 * 1000;
+      if (!snapshot && (rosterJob?.roster_status !== "failed" || retryDue)) {
+        try { await captureGameRosterSnapshot(env, gameId, now); summary.rosterCaptured += 1; } catch (error) { console.error(`pregame roster failed: game=${gameId} code=${error?.code || "unknown"}`); }
+      }
+    }
+    if (currentLineup || now > timeline.startAt) continue;
+    const dueAt = getDueLineupAttemptAt(timeline, now);
+    if (!dueAt) continue;
+    const job = await env.AUTH_DB.prepare("SELECT last_lineup_attempt_at FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
+    if (job?.last_lineup_attempt_at && new Date(job.last_lineup_attempt_at) >= dueAt) continue;
+    try { await captureOfficialLineup(env, gameId, now); summary.lineupCaptured += 1; }
+    catch (error) { summary.lineupFailed += 1; console.error(`pregame lineup failed: game=${gameId} code=${error?.code || "unknown"}`); }
+  }
+  return summary;
+}
+
+async function getPregameAutomationStatus(db, gameId) {
+  const identity = getGameIdentityForPregame(gameId);
+  const [job, snapshot, lineup] = await db.batch([
+    db.prepare("SELECT * FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1").bind(gameId),
+    db.prepare("SELECT captured_at, player_count FROM game_roster_snapshots WHERE game_id = ?1 LIMIT 1").bind(gameId),
+    db.prepare("SELECT lineup_source, lineup_detected_at, scoring_status, scoring_due_at, scored_at FROM game_lineups WHERE game_id = ?1 LIMIT 1").bind(gameId)
+  ]);
+  const nextAttempt = identity && !lineup?.results?.[0] ? getNextPregameLineupAttempt(identity, job?.results?.[0]?.last_lineup_attempt_at) : null;
+  return {
+    gameId,
+    schedule: identity ? {
+      startAt: identity.startAt.toISOString(), rosterCaptureAt: identity.rosterCaptureAt.toISOString(), predictionDeadlineAt: identity.predictionDeadlineAt.toISOString(),
+      lineupFetchStartAt: identity.lineupFetchStartAt.toISOString(), resultReleaseAt: identity.resultReleaseAt.toISOString()
+    } : null,
+    roster: snapshot?.results?.[0] ? { status: "captured", capturedAt: snapshot.results[0].captured_at, playerCount: Number(snapshot.results[0].player_count) } : { status: job?.results?.[0]?.roster_status || "pending" },
+    lineup: lineup?.results?.[0] ? { status: "captured", source: lineup.results[0].lineup_source, detectedAt: lineup.results[0].lineup_detected_at } : {
+      status: job?.results?.[0]?.lineup_status || "pending", attempts: Number(job?.results?.[0]?.lineup_attempt_count || 0), lastAttemptAt: job?.results?.[0]?.last_lineup_attempt_at || null, nextAttemptAt: nextAttempt
+    },
+    scoring: lineup?.results?.[0] ? { status: lineup.results[0].scoring_status, dueAt: lineup.results[0].scoring_due_at, scoredAt: lineup.results[0].scored_at } : { status: job?.results?.[0]?.scoring_status || "pending" },
+    lastErrorCode: job?.results?.[0]?.last_error_code || ""
+  };
+}
+
+function getNextPregameLineupAttempt(timeline, lastAttemptAt) {
+  const last = lastAttemptAt ? new Date(lastAttemptAt).getTime() : null;
+  for (let time = timeline.lineupFetchStartAt.getTime(); time <= timeline.startAt.getTime(); time += 10 * 60 * 1000) {
+    if (!last || time > last) return new Date(time).toISOString();
+  }
+  return null;
 }
 
 async function handleAdminPredictionSummary(env, cors, gameId) {
@@ -902,7 +1183,7 @@ async function handleAdminPredictionSummary(env, cors, gameId) {
     `SELECT COUNT(*) AS prediction_count,
             SUM(CASE WHEN status = 'scored' THEN 1 ELSE 0 END) AS scored_count
        FROM predictions
-      WHERE game_id = ?1`
+      WHERE game_id = ?1 AND is_test_prediction = 0`
   ).bind(gameId).first();
 
   return jsonResponse({
@@ -947,7 +1228,8 @@ async function handleAdminScorePredictions(request, env, cors, gameId) {
   await markGameRankingPending(env.AUTH_DB, gameId, scoringStartedAt, env);
   await saveActualLineupForAutoScoring(env.AUTH_DB, gameId, actualResult.lineup, scoringStartedAt, {
     forceReschedule: true,
-    delaySeconds: 0
+    delaySeconds: 0,
+    source: "manual"
   });
   const claimed = await claimGameLineupForScoring(env.AUTH_DB, gameId, scoringStartedAt, { force: true });
   if (!claimed) {
@@ -990,7 +1272,7 @@ async function handleAdminScorePredictions(request, env, cors, gameId) {
 
 async function prepareGamePredictionScoring(db, gameId, actualLineup) {
   const rows = await db.prepare(
-    "SELECT id, user_id, prediction_json FROM predictions WHERE game_id = ?1 ORDER BY submitted_at ASC, id ASC"
+    "SELECT id, user_id, prediction_json FROM predictions WHERE game_id = ?1 AND is_test_prediction = 0 ORDER BY submitted_at ASC, id ASC"
   ).bind(gameId).all();
   const outcomes = [];
   const validationErrors = [];
@@ -1035,7 +1317,8 @@ async function handleAdminActualLineupSave(request, env, cors, gameId) {
   const detectedAt = parseLineupDetectedAt(input?.lineupDetectedAt) || new Date();
   await markGameRankingPending(env.AUTH_DB, gameId, detectedAt, env);
   const record = await saveActualLineupForAutoScoring(env.AUTH_DB, gameId, actualResult.lineup, detectedAt, {
-    delaySeconds: getAutoScoringDelaySeconds(env)
+    scoringDueAt: getGameIdentityForPregame(gameId)?.resultReleaseAt || new Date(detectedAt.getTime() + getAutoScoringDelaySeconds(env) * 1000),
+    source: "manual"
   });
   console.log(`auto scoring scheduled: game=${gameId} due=${record.scoring_due_at}`);
   return jsonResponse({
@@ -1123,7 +1406,7 @@ async function getPredictionScoringSummary(db, gameId) {
   const row = await db.prepare(
     `SELECT COUNT(*) AS prediction_count,
             SUM(CASE WHEN status = 'scored' THEN 1 ELSE 0 END) AS scored_count
-       FROM predictions WHERE game_id = ?1`
+       FROM predictions WHERE game_id = ?1 AND is_test_prediction = 0`
   ).bind(gameId).first();
   return {
     predictionCount: Number(row?.prediction_count || 0),
@@ -1154,21 +1437,26 @@ async function saveActualLineupForAutoScoring(db, gameId, actualLineup, detected
   }
   const fingerprint = await sha256Base64Url(actualLineupJson);
   const existing = await getGameLineup(db, gameId);
+  if (existing && options.preventOverwrite) {
+    return existing;
+  }
   if (existing && existing.lineup_fingerprint === fingerprint && !options.forceReschedule) {
     return existing;
   }
 
   const detectedAtIso = detectedAt.toISOString();
   const delaySeconds = Number.isInteger(options.delaySeconds) ? options.delaySeconds : AUTO_SCORING_DEFAULT_DELAY_SECONDS;
-  const scoringDueAt = new Date(detectedAt.getTime() + Math.max(0, delaySeconds) * 1000).toISOString();
+  const requestedDueAt = options.scoringDueAt instanceof Date ? options.scoringDueAt : null;
+  const scoringDueAt = (requestedDueAt || new Date(detectedAt.getTime() + Math.max(0, delaySeconds) * 1000)).toISOString();
+  const lineupSource = options.source === "npb-auto" ? "npb-auto" : "manual";
   const id = existing?.id || randomToken(16);
   await db.prepare(
     `INSERT INTO game_lineups
        (id, game_id, actual_lineup_json, lineup_fingerprint, schema_version,
         lineup_detected_at, scoring_due_at, scoring_started_at, scored_at,
         scoring_status, scoring_attempts, last_error, processed_predictions,
-        perfect_count, new_perfect_achievers, created_at, updated_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, 'pending', 0, NULL, NULL, NULL, NULL, ?6, ?6)
+        perfect_count, new_perfect_achievers, lineup_source, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, 'pending', 0, NULL, NULL, NULL, NULL, ?8, ?6, ?6)
      ON CONFLICT(game_id) DO UPDATE SET
        actual_lineup_json = excluded.actual_lineup_json,
        lineup_fingerprint = excluded.lineup_fingerprint,
@@ -1183,8 +1471,9 @@ async function saveActualLineupForAutoScoring(db, gameId, actualLineup, detected
        processed_predictions = NULL,
        perfect_count = NULL,
        new_perfect_achievers = NULL,
+       lineup_source = excluded.lineup_source,
        updated_at = excluded.updated_at`
-  ).bind(id, gameId, actualLineupJson, fingerprint, PREDICTION_SCHEMA_VERSION, detectedAtIso, scoringDueAt).run();
+  ).bind(id, gameId, actualLineupJson, fingerprint, PREDICTION_SCHEMA_VERSION, detectedAtIso, scoringDueAt, lineupSource).run();
   return await getGameLineup(db, gameId);
 }
 
@@ -1193,7 +1482,7 @@ async function getGameLineup(db, gameId) {
     `SELECT id, game_id, actual_lineup_json, lineup_fingerprint, lineup_detected_at,
             scoring_due_at, scoring_started_at, scored_at, scoring_status,
             scoring_attempts, last_error, processed_predictions, perfect_count,
-            new_perfect_achievers, updated_at
+            new_perfect_achievers, lineup_source, updated_at
        FROM game_lineups WHERE game_id = ?1 LIMIT 1`
   ).bind(gameId).first();
 }
@@ -1206,6 +1495,7 @@ function serializeGameLineup(record) {
     gameId: record.game_id,
     lineupFingerprint: record.lineup_fingerprint,
     lineupDetectedAt: record.lineup_detected_at,
+    lineupSource: record.lineup_source || "manual",
     scoringDueAt: record.scoring_due_at,
     scoringStartedAt: record.scoring_started_at,
     scoredAt: record.scored_at,
@@ -1662,7 +1952,11 @@ async function handleGetCurrentPrediction(request, env, cors) {
       status: null,
       submittedAt: null,
       updatedAt: null,
-      locked: false
+      locked: false,
+      score: null,
+      maxScore: null,
+      scoredAt: null,
+      actualLineup: null
     }, 200, cors);
   }
 
@@ -1678,7 +1972,11 @@ async function handleGetCurrentPrediction(request, env, cors) {
     status: row.status,
     submittedAt: row.submitted_at,
     updatedAt: row.updated_at,
-    locked: isPredictionLocked(row)
+    locked: isPredictionLocked(row),
+    score: row.score === null ? null : Number(row.score),
+    maxScore: row.max_score === null ? null : Number(row.max_score),
+    scoredAt: row.scored_at || null,
+    actualLineup: row.actual_lineup_json ? parseStoredActualLineup(row.actual_lineup_json) : null
   }, 200, cors);
 }
 
@@ -1804,7 +2102,7 @@ async function handleDeleteCurrentPrediction(request, env, cors) {
 async function getPredictionRow(db, userId, gameId) {
   return db.prepare(
     `SELECT id, user_id, game_id, prediction_json, status,
-            submitted_at, updated_at, locked_at
+            submitted_at, updated_at, locked_at, score, max_score, scored_at, actual_lineup_json
        FROM predictions
       WHERE user_id = ?1 AND game_id = ?2
       LIMIT 1`

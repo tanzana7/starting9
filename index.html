@@ -157,6 +157,18 @@
         <div id="adminVersionInfo" class="admin-version-info" aria-live="polite"></div>
       </section>
 
+      <section id="adminPregameAutomationPanel" class="admin-auto-scoring" aria-labelledby="admin-pregame-automation-title">
+        <div class="admin-server-scoring-heading">
+          <div>
+            <p class="area-label">PREGAME AUTOMATION</p>
+            <h3 id="admin-pregame-automation-title">試合前自動処理</h3>
+            <p>ロースターは開始2時間前、正式スタメンは開始1時間前から保存し、開始時刻に採点します。</p>
+          </div>
+        </div>
+        <div id="adminPregameAutomationSummary" class="admin-auto-scoring-summary" aria-live="polite"></div>
+        <p id="adminPregameAutomationMessage" class="message" role="status" aria-live="polite"></p>
+      </section>
+
       <section class="card lineup-card admin-card" aria-labelledby="actual-title">
         <div class="section-heading">
           <span class="step-badge admin-step">3</span>
@@ -314,6 +326,18 @@
           <div id="adminTestInfo" class="admin-test-info" aria-live="polite"></div>
           <p id="adminTestMessage" class="message" role="status" aria-live="polite"></p>
         </section>
+        <section class="admin-test-panel" aria-labelledby="admin-pregame-test-title">
+          <div>
+            <p class="area-label">PREGAME TEST</p>
+            <h3 id="admin-pregame-test-title">試合前自動処理テスト</h3>
+            <p>ロースター・スタメンの取得を1回だけ実行します。採点は既存の「今すぐ採点」を使用します。</p>
+          </div>
+          <div class="admin-server-scoring-actions">
+            <button id="refreshPregameAutomationButton" class="secondary-button compact-button" type="button">スケジュール判定を確認</button>
+            <button id="runPregameRosterButton" class="secondary-button compact-button" type="button">ロースター取得を1回実行</button>
+            <button id="runPregameLineupButton" class="secondary-button compact-button" type="button">スタメン取得を1回実行</button>
+          </div>
+        </section>
         <section id="adminTestPredictionDeadlineStatus" class="admin-prediction-deadline hidden" aria-live="polite"></section>
         <section class="admin-test-panel" aria-labelledby="admin-test-tools-title">
           <div>
@@ -398,9 +422,10 @@
 
   </main>
 
-  <script src="version.js?v=20260722-1"></script>
+  <script src="version.js?v=20260722-2"></script>
   <script src="players.js?v=split-drag-20260709"></script>
   <script src="game-schedule.js?v=20260718-probable-starter"></script>
+  <script type="module" src="pregame-automation.js?v=20260722-2"></script>
   <script src="auth.js?v=auth-api-local-20260719"></script>
   <script src="script.js?v=auth-api-local-20260719"></script>
 </body>

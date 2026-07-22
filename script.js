@@ -49,8 +49,6 @@ const AUTO_FETCH_MAX_ATTEMPTS = 5;
 const ROSTER_MONITOR_INTERVAL_MS = 10 * 60 * 1000;
 const ROSTER_MONITOR_MAX_ATTEMPTS = 6;
 const ROSTER_SNAPSHOT_CACHE_TTL_MS = 60 * 60 * 1000;
-const PREDICTION_DEADLINE_MINUTES_BEFORE_START = 10;
-const PREDICTION_DEADLINE_MS = PREDICTION_DEADLINE_MINUTES_BEFORE_START * 60 * 1000;
 const PREDICTION_DEADLINE_REFRESH_MS = 30 * 1000;
 const AUTO_FILL_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "指"]);
 const OUTFIELD_POSITIONS = ["左", "中", "右"];
@@ -288,7 +286,10 @@ const state = {
     submittedAt: "",
     updatedAt: "",
     locked: false,
-    conflict: false
+    conflict: false,
+    score: null,
+    maxScore: null,
+    scoredAt: ""
   },
   predictionDeadline: {
     gameId: "",
@@ -316,6 +317,13 @@ const state = {
     isLoading: false,
     isRunningNow: false,
     isUpdating: false,
+    gameId: "",
+    record: null,
+    message: ""
+  },
+  pregameAutomation: {
+    isLoading: false,
+    isRunning: false,
     gameId: "",
     record: null,
     message: ""
@@ -409,6 +417,9 @@ function bindEvents() {
   bindAdminEvent("runAutoScoringNowButton", "click", runAutoScoringNow);
   bindAdminEvent("retryAutoScoringButton", "click", retryAutoScoring);
   bindAdminEvent("cancelAutoScoringButton", "click", cancelAutoScoring);
+  bindAdminTestEvent("refreshPregameAutomationButton", "click", () => refreshPregameAutomationStatus({ force: true }));
+  bindAdminTestEvent("runPregameRosterButton", "click", () => runPregameAutomationAction("run-roster"));
+  bindAdminTestEvent("runPregameLineupButton", "click", () => runPregameAutomationAction("run-lineup"));
   bindAdminTestEvent("generateTestPredictionButton", "click", generateTestPrediction);
   bindAdminTestEvent("createPerfectPredictionButton", "click", createAdminTestPerfectPrediction);
   bindAdminTestEvent("runAdminTestCronButton", "click", runAdminTestCron);
@@ -952,6 +963,7 @@ function openAdminPanel() {
   renderAll();
   refreshAdminScoringSummary({ force: true });
   refreshAutoScoringStatus({ force: true });
+  refreshPregameAutomationStatus({ force: true });
   renderAdminTestPanel();
   void refreshAdminTestStatus();
   void refreshAdminTestAchievements();
@@ -2455,6 +2467,11 @@ function parseJstScheduleDateTime(game) {
   return Number.isNaN(value.getTime()) ? null : value;
 }
 
+function getPredictionDeadlineMinutesBeforeStart() {
+  const configured = Number(window.STARTING9_PREGAME_CONFIG?.predictionDeadlineMinutesBeforeStart);
+  return Number.isFinite(configured) && configured > 0 ? configured : 60;
+}
+
 function isScheduleGameUnavailable(game) {
   return ["cancelled", "canceled", "postponed"].includes(String(game?.status || "").toLowerCase());
 }
@@ -2497,7 +2514,7 @@ function resolvePredictionDeadline(gameId, now = new Date()) {
     };
   }
 
-  const deadlineAt = new Date(startAt.getTime() - PREDICTION_DEADLINE_MS);
+  const deadlineAt = new Date(startAt.getTime() - getPredictionDeadlineMinutesBeforeStart() * 60 * 1000);
   const isClosed = now.getTime() >= deadlineAt.getTime();
   return {
     gameId,
@@ -2592,7 +2609,7 @@ function renderPredictionDeadline() {
   if (container) {
     container.className = `prediction-deadline-status is-${deadline.status}`;
     container.textContent = deadline.status === "open"
-      ? `予想締切：${deadlineText}（試合開始10分前）`
+      ? `予想締切：${deadlineText}（試合開始${getPredictionDeadlineMinutesBeforeStart()}分前）`
       : deadline.message || "予想の受付状況を確認しています。";
   }
   if (saveButton) saveButton.disabled = Boolean(deadline.isClosed) || state.predictionRemote.isSaving;
@@ -2993,6 +3010,87 @@ function renderAutoScoringPanel() {
   runNowButton.disabled = !record || isBusy || status === "processing";
   retryButton.disabled = !record || isBusy || status !== "failed";
   cancelButton.disabled = !record || isBusy || !["pending", "failed"].includes(status);
+}
+
+function formatPregameAutomationStatus(status) {
+  return ({ pending: "待機中", captured: "保存済み", failed: "取得失敗", skipped: "停止", scored: "採点済み", blocked: "要手動対応" })[status] || "未確認";
+}
+
+async function refreshPregameAutomationStatus({ force = false } = {}) {
+  if (!state.isAdminMode) return;
+  const gameId = getAdminScoringGameId();
+  if (!gameId || (state.pregameAutomation.isLoading && !force)) return;
+  const url = buildAdminGameApiUrl(gameId, "pregame-automation/status");
+  if (!url) return;
+  state.pregameAutomation.isLoading = true;
+  state.pregameAutomation.gameId = gameId;
+  renderPregameAutomationPanel();
+  try {
+    const response = await fetch(url, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+    state.pregameAutomation.record = payload.pregame || null;
+    state.pregameAutomation.message = "";
+  } catch (error) {
+    console.error("試合前自動処理の状態取得に失敗しました", error.message);
+    state.pregameAutomation.message = "試合前自動処理の状態を取得できませんでした。";
+  } finally {
+    state.pregameAutomation.isLoading = false;
+    renderPregameAutomationPanel();
+  }
+}
+
+async function runPregameAutomationAction(action) {
+  const gameId = getAdminScoringGameId();
+  const url = buildAdminGameApiUrl(gameId, `pregame-automation/${action}`);
+  if (!gameId || !url || state.pregameAutomation.isRunning) return;
+  state.pregameAutomation.isRunning = true;
+  state.pregameAutomation.message = action === "run-roster" ? "ロースターを取得中..." : "正式スタメンを取得中...";
+  renderPregameAutomationPanel();
+  try {
+    const response = await fetch(url, { method: "POST", credentials: "include" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+    state.pregameAutomation.record = payload.pregame || state.pregameAutomation.record;
+    state.pregameAutomation.message = action === "run-roster" ? "ロースター取得を実行しました。" : "スタメン取得を実行しました。";
+    await refreshAutoScoringStatus({ force: true });
+  } catch (error) {
+    console.error("試合前自動処理の手動実行に失敗しました", error.message);
+    state.pregameAutomation.message = error.message || "試合前自動処理を実行できませんでした。";
+  } finally {
+    state.pregameAutomation.isRunning = false;
+    renderPregameAutomationPanel();
+  }
+}
+
+function renderPregameAutomationPanel() {
+  const summary = document.getElementById("adminPregameAutomationSummary");
+  const message = document.getElementById("adminPregameAutomationMessage");
+  if (!summary || !message) return;
+  const record = state.pregameAutomation.record;
+  if (!record) {
+    summary.innerHTML = `<p class="empty-state">${state.pregameAutomation.isLoading ? "試合前処理を確認中です。" : "対象試合を日程から読み込んでください。"}</p>`;
+  } else {
+    const schedule = record.schedule || {};
+    const rows = [
+      ["対象試合", record.gameId || state.pregameAutomation.gameId || "-"],
+      ["試合開始", formatDateTime(schedule.startAt)],
+      ["ロースター取得予定", formatDateTime(schedule.rosterCaptureAt)],
+      ["ロースター取得状態", `${formatPregameAutomationStatus(record.roster?.status)}${record.roster?.playerCount ? `（${record.roster.playerCount}人）` : ""}`],
+      ["予想締切", formatDateTime(schedule.predictionDeadlineAt)],
+      ["スタメン取得開始", formatDateTime(schedule.lineupFetchStartAt)],
+      ["最終スタメン取得試行", formatDateTime(record.lineup?.lastAttemptAt || record.lineup?.detectedAt)],
+      ["次回取得予定", formatDateTime(record.lineup?.nextAttemptAt)],
+      ["取得試行回数", `${record.lineup?.attempts || 0}回`],
+      ["正式スタメン", `${formatPregameAutomationStatus(record.lineup?.status)}${record.lineup?.source ? `（${record.lineup.source === "manual" ? "手動" : "NPB自動"}）` : ""}`],
+      ["採点予定", formatDateTime(record.scoring?.dueAt || schedule.resultReleaseAt)],
+      ["採点状態", formatPregameAutomationStatus(record.scoring?.status)],
+      ["最後のエラー", record.lastErrorCode || "-"]
+    ];
+    summary.innerHTML = `<dl>${rows.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value || "-")}</dd>`).join("")}</dl>`;
+  }
+  message.textContent = state.pregameAutomation.message;
+  message.className = `message${state.pregameAutomation.message.includes("できません") || state.pregameAutomation.message.includes("失敗") ? " error-message" : ""}`;
 }
 
 async function runServerScoringPreview() {
@@ -3794,6 +3892,9 @@ async function syncPredictionFromAccount({ force = false } = {}) {
     remoteState.updatedAt = "";
     remoteState.locked = false;
     remoteState.conflict = false;
+    remoteState.score = null;
+    remoteState.maxScore = null;
+    remoteState.scoredAt = "";
   }
   remoteState.gameId = gameId;
   remoteState.message = "アカウントの予想を確認中...";
@@ -3812,6 +3913,9 @@ async function syncPredictionFromAccount({ force = false } = {}) {
     remoteState.submittedAt = payload.submittedAt || "";
     remoteState.updatedAt = payload.updatedAt || "";
     remoteState.locked = Boolean(payload.locked);
+    remoteState.score = Number.isFinite(payload.score) ? Number(payload.score) : null;
+    remoteState.maxScore = Number.isFinite(payload.maxScore) ? Number(payload.maxScore) : null;
+    remoteState.scoredAt = payload.scoredAt || "";
     remoteState.conflict = Boolean(remoteState.prediction && state.prediction && !predictionsMatch(remoteState.prediction, state.prediction));
     if (remoteState.prediction && !state.prediction) {
       state.prediction = { ...remoteState.prediction, lineup: normalizeLineup(remoteState.prediction.lineup) };
@@ -3819,6 +3923,12 @@ async function syncPredictionFromAccount({ force = false } = {}) {
       saveToStorage(STORAGE_KEYS.prediction, state.prediction);
       removeFromStorage(STORAGE_KEYS.result);
       renderAll();
+    }
+    if (remoteState.prediction && Array.isArray(payload.actualLineup) && payload.status === "scored") {
+      const actual = remotePredictionToLocal({ lineup: payload.actualLineup }, payload.scoredAt || "", gameId);
+      state.result = { ...scoreLineup(remoteState.prediction.lineup, actual.lineup), gameId };
+      saveToStorage(STORAGE_KEYS.result, state.result);
+      renderScoreResult();
     }
   } catch (error) {
     console.error("アカウント予想の取得に失敗しました", error.message);
@@ -5583,6 +5693,7 @@ function renderAdminFlow() {
   updateAutoFetchButtons();
   renderAdminScoringPanel();
   renderAutoScoringPanel();
+  renderPregameAutomationPanel();
   updateRosterMonitorButtons();
   renderAutoFetchPanel();
   renderRosterSnapshotSummary();

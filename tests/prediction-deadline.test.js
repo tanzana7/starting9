@@ -7,16 +7,16 @@ const { pathToFileURL } = require("node:url");
 const root = path.resolve(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 
-test("締切はJSTの試合開始10分前で判定し、境界時刻以降を締切後にする", async () => {
+test("締切はJSTの試合開始60分前で判定し、境界時刻以降を締切後にする", async () => {
   const deadline = await import(pathToFileURL(path.join(root, "prediction-deadline.js")).href);
   const gameId = "2026-07-22-l-f-16";
 
-  const before = deadline.getPredictionDeadlineStatus(gameId, new Date("2026-07-22T08:49:59.000Z"));
-  const atDeadline = deadline.getPredictionDeadlineStatus(gameId, new Date("2026-07-22T08:50:00.000Z"));
+  const before = deadline.getPredictionDeadlineStatus(gameId, new Date("2026-07-22T07:59:59.000Z"));
+  const atDeadline = deadline.getPredictionDeadlineStatus(gameId, new Date("2026-07-22T08:00:00.000Z"));
 
   assert.equal(before.ok, true);
   assert.equal(before.isClosed, false);
-  assert.equal(before.deadlineAt, "2026-07-22T08:50:00.000Z");
+  assert.equal(before.deadlineAt, "2026-07-22T08:00:00.000Z");
   assert.equal(atDeadline.ok, true);
   assert.equal(atDeadline.isClosed, true);
   assert.equal(atDeadline.code, "PREDICTION_DEADLINE_PASSED");
@@ -47,7 +47,8 @@ test("クライアントは締切後に入力・保存・リセットを止め�
   const script = read("script.js");
   const html = read("index.html");
 
-  assert.match(script, /const PREDICTION_DEADLINE_MINUTES_BEFORE_START = 10/);
+  assert.match(script, /function getPredictionDeadlineMinutesBeforeStart\(\)/);
+  assert.match(script, /predictionDeadlineMinutesBeforeStart/);
   assert.match(script, /setInterval\(refreshPredictionDeadlineState, PREDICTION_DEADLINE_REFRESH_MS\)/);
   assert.match(script, /function ensurePredictionEditingAllowed\(\)/);
   assert.match(script, /async function handlePredictionSubmit[\s\S]*?ensurePredictionEditingAllowed\(\)/);

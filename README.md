@@ -215,16 +215,16 @@ https://<worker-url>/?url=https://npb.jp/scores/2026/0707/m-f-12/&debug=1
 
 管理者向けのテスト操作は、通常画面とは別のモードではなく、管理画面内の「開発用テスト」にまとめています。テストAPIは管理者セッションを必須とし、テスト予想は `is_test_prediction` により通常のランキング・実績集計から除外されます。
 
-### バージョン情報の更新
+### 更新情報の更新
 
-管理画面の「バージョン情報」は、Pagesと2つのWorkerが同じ更新単位か確認するための安全な識別子だけを表示します。秘密情報やD1 IDは返しません。
+管理画面の「更新情報」は、Pagesと2つのWorkerが最新デプロイへ更新されているか確認するため、固定の最終更新日時だけを表示します。秘密情報やD1 IDは返しません。日時はUTCのISO 8601で保持し、画面では日本時間で表示します。
 
-1. `version.js` の `APP_VERSION` を更新する
-2. `auth-worker.js` の `AUTH_WORKER_VERSION` と `AUTH_WORKER_BUILD_TIME` を更新する
-3. `cloudflare-worker.js` の `NPB_WORKER_VERSION` と `NPB_WORKER_BUILD_TIME` を更新する
+1. `build-info.js` の `frontendUpdatedAt` を更新する
+2. `auth-worker.js` の `AUTH_WORKER_UPDATED_AT` を更新する
+3. `cloudflare-worker.js` の `NPB_WORKER_UPDATED_AT` を更新する
 4. レビュー後、Pages、認証Worker、NPB取得Workerをそれぞれデプロイする
 
-バージョン確認APIは `Cache-Control: no-store` で返します。Auth Workerの `/api/admin/version` は管理者認証必須、NPB取得Workerの `/version` は公開GETです。
+更新情報APIは `Cache-Control: no-store` で返します。Auth Workerの `/api/admin/build-info` は管理者認証必須、NPB取得Workerの `/build-info` は公開GETです。互換用の旧URLも同じ更新情報形式を返します。
 
 認証Workerを人間がセットアップする手順:
 

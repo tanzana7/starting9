@@ -172,7 +172,7 @@ const state = {
     status: "inactive",
     requestId: 0
   },
-  versionInfo: {
+  deploymentInfo: {
     isLoading: false,
     loadedAt: "",
     auth: null,
@@ -531,62 +531,73 @@ function buildAdminMeApiUrl() {
   return baseUrl ? `${baseUrl}/api/admin/me` : "";
 }
 
-function buildAdminVersionApiUrl() {
+function buildAdminBuildInfoApiUrl() {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
-  return baseUrl ? `${baseUrl}/api/admin/version` : "";
+  return baseUrl ? `${baseUrl}/api/admin/build-info` : "";
 }
 
-function buildNpbVersionApiUrl() {
+function buildNpbBuildInfoApiUrl() {
   if (!NPB_WORKER_API_URL) return "";
-  return new URL("version", NPB_WORKER_API_URL).href;
+  return new URL("build-info", NPB_WORKER_API_URL).href;
 }
 
-function renderAdminVersionInfo() {
-  const container = document.getElementById("adminVersionInfo");
+function formatUpdatedAt(updatedAt) {
+  if (typeof updatedAt !== "string" || Number.isNaN(new Date(updatedAt).getTime())) {
+    return "取得できません";
+  }
+  return formatDateTime(updatedAt);
+}
+
+function renderAdminDeploymentInfo() {
+  const container = document.getElementById("adminDeploymentInfo");
   if (!container) return;
 
-  const frontendVersion = window.STARTING9_APP_VERSION || "未設定";
-  const authVersion = state.versionInfo.auth?.version || (state.versionInfo.isLoading ? "取得中..." : "取得できません");
-  const npbVersion = state.versionInfo.npb?.version || (state.versionInfo.isLoading ? "取得中..." : "取得できません");
-  const authBuildTime = state.versionInfo.auth?.buildTime ? formatDateTime(state.versionInfo.auth.buildTime) : "-";
-  const npbBuildTime = state.versionInfo.npb?.buildTime ? formatDateTime(state.versionInfo.npb.buildTime) : "-";
-  const loadedAt = state.versionInfo.loadedAt ? formatDateTime(state.versionInfo.loadedAt) : formatDateTime(new Date().toISOString());
+  const frontendUpdatedAt = formatUpdatedAt(window.STARTING9_BUILD_INFO?.frontendUpdatedAt);
+  const authUpdatedAt = state.deploymentInfo.auth?.updatedAt
+    ? formatUpdatedAt(state.deploymentInfo.auth.updatedAt)
+    : (state.deploymentInfo.isLoading ? "取得中..." : "取得できません");
+  const npbUpdatedAt = state.deploymentInfo.npb?.updatedAt
+    ? formatUpdatedAt(state.deploymentInfo.npb.updatedAt)
+    : (state.deploymentInfo.isLoading ? "取得中..." : "取得できません");
+  const loadedAt = state.deploymentInfo.loadedAt
+    ? formatDateTime(state.deploymentInfo.loadedAt)
+    : "取得できません";
   container.innerHTML = `<dl>
-    <div><dt>フロント</dt><dd>${escapeHtml(frontendVersion)}</dd></div>
-    <div><dt>Auth Worker</dt><dd>${escapeHtml(authVersion)} <small>${escapeHtml(authBuildTime)}</small></dd></div>
-    <div><dt>NPB Worker</dt><dd>${escapeHtml(npbVersion)} <small>${escapeHtml(npbBuildTime)}</small></dd></div>
+    <div><dt>フロント最終更新</dt><dd>${escapeHtml(frontendUpdatedAt)}</dd></div>
+    <div><dt>Auth Worker最終更新</dt><dd>${escapeHtml(authUpdatedAt)}</dd></div>
+    <div><dt>NPB Worker最終更新</dt><dd>${escapeHtml(npbUpdatedAt)}</dd></div>
     <div><dt>画面読込</dt><dd>${escapeHtml(loadedAt)}</dd></div>
   </dl>`;
 }
 
-async function refreshAdminVersionInfo() {
+async function refreshAdminDeploymentInfo() {
   if (state.adminAccess.status !== "authorized") return;
-  const authUrl = buildAdminVersionApiUrl();
-  const npbUrl = buildNpbVersionApiUrl();
-  state.versionInfo.isLoading = true;
-  state.versionInfo.loadedAt = new Date().toISOString();
-  renderAdminVersionInfo();
+  const authUrl = buildAdminBuildInfoApiUrl();
+  const npbUrl = buildNpbBuildInfoApiUrl();
+  state.deploymentInfo.isLoading = true;
+  state.deploymentInfo.loadedAt = new Date().toISOString();
+  renderAdminDeploymentInfo();
 
-  const fetchVersion = async (url, options) => {
-    if (!url) throw new Error("バージョン確認URLが未設定です。");
+  const fetchBuildInfo = async (url, options) => {
+    if (!url) throw new Error("更新情報の取得URLが未設定です。");
     const response = await fetch(url, { cache: "no-store", ...options });
     const payload = await response.json().catch(() => null);
-    if (!response.ok || !payload?.ok || typeof payload.version !== "string") {
+    if (!response.ok || !payload?.ok || typeof payload.updatedAt !== "string" || Number.isNaN(new Date(payload.updatedAt).getTime())) {
       throw new Error(payload?.error || `HTTP ${response.status}`);
     }
     return payload;
   };
 
   const [authResult, npbResult] = await Promise.allSettled([
-    fetchVersion(authUrl, { credentials: "include" }),
-    fetchVersion(npbUrl)
+    fetchBuildInfo(authUrl, { credentials: "include" }),
+    fetchBuildInfo(npbUrl)
   ]);
-  state.versionInfo.isLoading = false;
-  state.versionInfo.auth = authResult.status === "fulfilled" ? authResult.value : null;
-  state.versionInfo.npb = npbResult.status === "fulfilled" ? npbResult.value : null;
-  if (authResult.status === "rejected") console.error("Auth Workerのバージョン取得に失敗しました", authResult.reason?.message || "unknown error");
-  if (npbResult.status === "rejected") console.error("NPB Workerのバージョン取得に失敗しました", npbResult.reason?.message || "unknown error");
-  renderAdminVersionInfo();
+  state.deploymentInfo.isLoading = false;
+  state.deploymentInfo.auth = authResult.status === "fulfilled" ? authResult.value : null;
+  state.deploymentInfo.npb = npbResult.status === "fulfilled" ? npbResult.value : null;
+  if (authResult.status === "rejected") console.error("Auth Workerの更新情報取得に失敗しました", authResult.reason?.message || "unknown error");
+  if (npbResult.status === "rejected") console.error("NPB Workerの更新情報取得に失敗しました", npbResult.reason?.message || "unknown error");
+  renderAdminDeploymentInfo();
 }
 
 function isAuthStateInitialized() {
@@ -967,7 +978,7 @@ function openAdminPanel() {
   renderAdminTestPanel();
   void refreshAdminTestStatus();
   void refreshAdminTestAchievements();
-  void refreshAdminVersionInfo();
+  void refreshAdminDeploymentInfo();
 }
 
 function closeAdminPanel() {
@@ -6363,7 +6374,8 @@ function formatDateTime(isoString) {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
-    minute: "2-digit"
+    minute: "2-digit",
+    timeZone: "Asia/Tokyo"
   }).format(new Date(isoString));
 }
 

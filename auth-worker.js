@@ -15,8 +15,7 @@ const SESSION_COOKIE_NAME = "s9_session";
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const PBKDF2_ITERATIONS = 100_000;
 const PBKDF2_MAX_ITERATIONS = 100_000;
-const AUTH_WORKER_VERSION = "2026.07.22-2";
-const AUTH_WORKER_BUILD_TIME = "2026-07-22T00:00:00.000Z";
+const AUTH_WORKER_UPDATED_AT = "2026-07-22T06:00:00.000Z";
 const PASSWORD_HASH_BITS = 256;
 const USERNAME_MIN_LENGTH = 3;
 const USERNAME_MAX_LENGTH = 16;
@@ -128,8 +127,8 @@ export default {
       if (path === "/api/admin/me" && request.method === "GET") {
         return await handleAdminMe(request, env, cors);
       }
-      if (path === "/api/admin/version" && request.method === "GET") {
-        return await handleAdminVersion(request, env, cors);
+      if ((path === "/api/admin/build-info" || path === "/api/admin/version") && request.method === "GET") {
+        return await handleAdminBuildInfo(request, env, cors);
       }
       if (path === "/api/admin/mode-capabilities" && request.method === "GET") {
         return await handleAdminModeCapabilities(request, env, cors);
@@ -324,7 +323,7 @@ async function handleAdminMe(request, env, cors) {
   }, 200, cors);
 }
 
-async function handleAdminVersion(request, env, cors) {
+async function handleAdminBuildInfo(request, env, cors) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) {
     return access.response;
@@ -332,8 +331,7 @@ async function handleAdminVersion(request, env, cors) {
   return noStoreJsonResponse({
     ok: true,
     service: "auth-worker",
-    version: AUTH_WORKER_VERSION,
-    buildTime: AUTH_WORKER_BUILD_TIME
+    updatedAt: AUTH_WORKER_UPDATED_AT
   }, 200, cors);
 }
 

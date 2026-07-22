@@ -974,8 +974,30 @@ async function handleAdminScoringRoute(request, env, cors, route) {
 }
 
 async function handleAdminPregameAutomationStatus(env, cors, gameId) {
-  const status = await getPregameAutomationStatus(env.AUTH_DB, gameId);
-  return jsonResponse({ ok: true, gameId, pregame: status }, 200, cors);
+  try {
+    const status = await getPregameAutomationStatus(env.AUTH_DB, gameId);
+    return noStoreJsonResponse({
+      ok: true,
+      gameId,
+      game: status.game,
+      notice: status.notice,
+      roster: status.roster,
+      lineup: status.lineup,
+      scoring: status.scoring,
+      publishing: status.publishing,
+      pregame: status
+    }, 200, cors);
+  } catch (error) {
+    const code = isPregameSchemaError(error) ? "PREGAME_SCHEMA_NOT_READY" : "PREGAME_SUMMARY_FAILED";
+    const status = code === "PREGAME_SCHEMA_NOT_READY" ? 503 : 500;
+    console.error(`[PREGAME] summary failed: code=${code}`);
+    return noStoreJsonResponse({ ok: false, error: code, code }, status, cors);
+  }
+}
+
+function isPregameSchemaError(error) {
+  const message = String(error?.message || error || "");
+  return /no such (table|column)|has no column|does not exist|unknown column/i.test(message);
 }
 
 async function handleAdminPregameRosterCapture(env, cors, gameId) {
@@ -1524,6 +1546,13 @@ async function getPregameAutomationStatus(db, gameId) {
   const nextAttempt = identity && !lineup?.results?.[0] ? getNextPregameLineupAttempt(identity, job?.results?.[0]?.last_lineup_attempt_at) : null;
   return {
     gameId,
+    game: identity?.game ? {
+      gameId: identity.game.gameId || gameId,
+      date: identity.game.date || "",
+      startTime: identity.game.startTime || "",
+      matchupLabel: identity.game.matchupLabel || "",
+      venue: identity.game.venue || ""
+    } : null,
     schedule: identity ? {
       startAt: identity.startAt.toISOString(), rosterCaptureAt: identity.rosterCaptureAt.toISOString(), predictionDeadlineAt: identity.predictionDeadlineAt.toISOString(),
       lineupFetchStartAt: identity.lineupFetchStartAt.toISOString(), resultReleaseAt: identity.resultReleaseAt.toISOString()
@@ -1533,6 +1562,7 @@ async function getPregameAutomationStatus(db, gameId) {
       status: job?.results?.[0]?.lineup_status || "pending", attempts: Number(job?.results?.[0]?.lineup_attempt_count || 0), lastAttemptAt: job?.results?.[0]?.last_lineup_attempt_at || null, nextAttemptAt: nextAttempt
     },
     scoring: lineup?.results?.[0] ? { status: lineup.results[0].scoring_status, dueAt: lineup.results[0].scoring_due_at, scoredAt: lineup.results[0].scored_at, publicationStatus: lineup.results[0].publication_status || "pending", publishedAt: lineup.results[0].published_at || null } : { status: job?.results?.[0]?.scoring_status || "pending", publicationStatus: "pending", publishedAt: null },
+    publishing: lineup?.results?.[0] ? { status: lineup.results[0].publication_status || "pending", publishedAt: lineup.results[0].published_at || null } : { status: "pending", publishedAt: null },
     notice: notice ? {
       status: notice.notice_status,
       registeredCount: Number(notice.registered_count || 0),

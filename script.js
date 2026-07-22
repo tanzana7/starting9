@@ -330,7 +330,8 @@ const state = {
     detail: "",
     diagnosticCode: "",
     watchdogId: null,
-    watchdogToken: 0
+    watchdogGeneration: 0,
+    watchdogTimedOutGeneration: null
   },
   gameDayNotice: {
     isLoading: false,
@@ -1026,7 +1027,7 @@ function closeAdminPanel() {
 
   state.appMode = "normal";
   state.pregameAutomation.isLoading = false;
-  stopPregameAutomationWatchdog(state.pregameAutomation.watchdogToken);
+  clearPregameAutomationWatchdog();
   applyAdminMode();
   renderPredictionDeadlineAdmin();
 }
@@ -2752,23 +2753,25 @@ function beginPregameAutomationInitialization() {
   state.pregameAutomation.record = null;
   state.pregameAutomation.message = "";
   state.pregameAutomation.detail = "";
+  state.pregameAutomation.watchdogTimedOutGeneration = null;
   setPregameDiagnostic("PREGAME_INIT_STARTED");
   startPregameAutomationWatchdog();
   renderPregameAutomationPanelSafely();
 }
 
 function startPregameAutomationWatchdog() {
-  if (state.pregameAutomation.watchdogId !== null) {
-    clearTimeout(state.pregameAutomation.watchdogId);
-  }
-  const token = state.pregameAutomation.watchdogToken + 1;
-  state.pregameAutomation.watchdogToken = token;
-  state.pregameAutomation.watchdogId = setTimeout(() => {
-    if (token !== state.pregameAutomation.watchdogToken || state.appMode !== "admin" || !state.pregameAutomation.isLoading) {
+  clearPregameAutomationWatchdog();
+  const generation = state.pregameAutomation.watchdogGeneration + 1;
+  state.pregameAutomation.watchdogGeneration = generation;
+  state.pregameAutomation.watchdogTimedOutGeneration = null;
+  let timerId = null;
+  timerId = setTimeout(() => {
+    if (generation !== state.pregameAutomation.watchdogGeneration || timerId !== state.pregameAutomation.watchdogId || state.appMode !== "admin" || !state.pregameAutomation.isLoading) {
       return;
     }
 
     state.pregameAutomation.watchdogId = null;
+    state.pregameAutomation.watchdogTimedOutGeneration = generation;
     state.pregameAutomation.isLoading = false;
     state.pregameAutomation.record = null;
     state.pregameAutomation.message = "試合前処理情報を取得できませんでした。";
@@ -2776,11 +2779,18 @@ function startPregameAutomationWatchdog() {
     setPregameDiagnostic("PREGAME_UI_WATCHDOG_TIMEOUT");
     renderPregameAutomationWatchdogFallback();
   }, 12_000);
-  return token;
+  state.pregameAutomation.watchdogId = timerId;
+  return generation;
 }
 
-function stopPregameAutomationWatchdog(token) {
-  if (token !== state.pregameAutomation.watchdogToken) {
+function ensurePregameAutomationWatchdog() {
+  return state.pregameAutomation.watchdogId === null
+    ? startPregameAutomationWatchdog()
+    : state.pregameAutomation.watchdogGeneration;
+}
+
+function clearPregameAutomationWatchdog(generation = null) {
+  if (generation !== null && generation !== state.pregameAutomation.watchdogGeneration) {
     return;
   }
   if (state.pregameAutomation.watchdogId !== null) {
@@ -3176,7 +3186,7 @@ async function refreshPregameAutomationStatus({ force = false } = {}) {
     state.pregameAutomation.message = "本日の対象試合はありません。";
     state.pregameAutomation.detail = "";
     setPregameDiagnostic("PREGAME_GAME_ID_MISSING");
-    stopPregameAutomationWatchdog(state.pregameAutomation.watchdogToken);
+    clearPregameAutomationWatchdog();
     renderPregameAutomationPanelSafely();
     return;
   }
@@ -3187,7 +3197,7 @@ async function refreshPregameAutomationStatus({ force = false } = {}) {
     state.pregameAutomation.message = "試合前処理情報を取得できませんでした。";
     state.pregameAutomation.detail = "PREGAME_API_URL_MISSING";
     setPregameDiagnostic("PREGAME_FETCH_FAILED");
-    stopPregameAutomationWatchdog(state.pregameAutomation.watchdogToken);
+    clearPregameAutomationWatchdog();
     renderPregameAutomationPanelSafely();
     return;
   }
@@ -3195,7 +3205,7 @@ async function refreshPregameAutomationStatus({ force = false } = {}) {
   state.pregameAutomation.gameId = gameId;
   state.pregameAutomation.message = "";
   state.pregameAutomation.detail = "";
-  const watchdogToken = startPregameAutomationWatchdog();
+  const watchdogGeneration = ensurePregameAutomationWatchdog();
   renderPregameAutomationPanelSafely();
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 10_000);
@@ -3217,11 +3227,17 @@ async function refreshPregameAutomationStatus({ force = false } = {}) {
       error.code = "PREGAME_INVALID_RESPONSE";
       throw error;
     }
+    if (state.pregameAutomation.watchdogTimedOutGeneration === watchdogGeneration) {
+      return;
+    }
     state.pregameAutomation.record = payload.pregame || null;
     state.pregameAutomation.message = "";
     state.pregameAutomation.detail = "";
     setPregameDiagnostic("PREGAME_FETCH_SUCCESS");
   } catch (error) {
+    if (state.pregameAutomation.watchdogTimedOutGeneration === watchdogGeneration) {
+      return;
+    }
     const timedOut = error?.name === "AbortError";
     state.pregameAutomation.record = null;
     state.pregameAutomation.message = timedOut
@@ -3238,10 +3254,12 @@ async function refreshPregameAutomationStatus({ force = false } = {}) {
     console.error("[PREGAME] summary fetch failed", state.pregameAutomation.detail);
   } finally {
     clearTimeout(timeoutId);
-    stopPregameAutomationWatchdog(watchdogToken);
-    state.pregameAutomation.isLoading = false;
-    renderPregameAutomationPanelSafely();
-    setPregameDiagnostic("PREGAME_RENDER_COMPLETED");
+    if (state.pregameAutomation.watchdogTimedOutGeneration !== watchdogGeneration) {
+      state.pregameAutomation.isLoading = false;
+      renderPregameAutomationPanelSafely();
+      setPregameDiagnostic("PREGAME_RENDER_COMPLETED");
+    }
+    clearPregameAutomationWatchdog(watchdogGeneration);
   }
 }
 

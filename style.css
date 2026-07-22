@@ -1132,6 +1132,64 @@ textarea:focus {
   color: var(--success);
 }
 
+.prediction-deadline-status {
+  min-height: 1.5em;
+  margin: 12px 0 0;
+  color: var(--fighters-deep-blue);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.prediction-deadline-status.is-closed,
+.prediction-deadline-status.is-unavailable {
+  color: var(--error);
+}
+
+.admin-prediction-deadline {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid #b9daf8;
+  border-radius: 8px;
+  background: #f7fbff;
+}
+
+.admin-prediction-deadline dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.admin-prediction-deadline dl > div {
+  min-width: 0;
+}
+
+.admin-prediction-deadline dt {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.admin-prediction-deadline dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+  font-weight: 900;
+}
+
+.deadline-override-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.deadline-override-controls .is-selected {
+  border-color: #513675;
+  color: #ffffff;
+  background: #6a4a91;
+}
+
 .npb-message.is-info {
   color: var(--fighters-deep-blue);
 }
@@ -1831,6 +1889,22 @@ textarea:focus {
 .slot-drag-handle.is-disabled {
   opacity: 0.35;
   cursor: default;
+}
+
+.lineup-slot.is-locked {
+  opacity: 0.72;
+}
+
+.lineup-slot.is-locked .slot-player {
+  cursor: default;
+}
+
+.player-chip:disabled,
+.position-button:disabled,
+.slot-drag-handle:disabled,
+.slot-clear:disabled {
+  cursor: default;
+  opacity: 0.58;
 }
 
 .slot-player {

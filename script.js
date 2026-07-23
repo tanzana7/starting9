@@ -3055,7 +3055,9 @@ async function runPregameAutomationAction(action) {
       "run-lineup": "正式スタメン取得を実行しました。",
       publish: "結果の公開判定を実行しました。"
     };
-    state.pregameAutomation.message = completedMessages[action] || "試合前処理を実行しました。";
+    state.pregameAutomation.message = action === "run-notice" && payload?.result?.isEmpty
+      ? "公示取得が完了しました。指定日の登録・抹消は0件です。"
+      : (completedMessages[action] || "試合前処理を実行しました。");
     if (action === "run-notice" || action === "distribute-notice" || action === "run-roster" || action === "fix-roster") {
       await initializeRosterCandidateSync();
     }

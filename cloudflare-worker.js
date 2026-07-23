@@ -457,6 +457,7 @@ async function handleNoticeRequest(requestUrl, isDebug) {
       fetchedAt: source.fetchedAt,
       httpStatus: source.httpStatus,
       noticeDate: notice.noticeDate,
+      pageDate: parsed.date,
       contentHash,
       registrations: notice.registrations,
       removals: notice.removals,

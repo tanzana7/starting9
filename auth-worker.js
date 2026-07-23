@@ -63,6 +63,7 @@ const PREGAME_TOOL_ACTIONS = Object.freeze({
 const PREGAME_TOOL_ERROR_MESSAGES = Object.freeze({
   NOTICE_FETCH_FAILED: "NPB公式の公示取得に失敗しました。",
   NOTICE_PARSE_FAILED: "NPB公式の公示を解析できませんでした。",
+  NOTICE_RESPONSE_INVALID: "NPB公式の公示レスポンス形式が不正です。",
   NOTICE_DISTRIBUTION_FAILED: "公示結果の当日試合への配布に失敗しました。",
   NOTICE_NOT_FOUND: "保存済みの公示結果がありません。",
   NOTICE_SCHEMA_NOT_READY: "公示保存用データベースが準備されていません。",
@@ -1000,7 +1001,10 @@ async function executePregameTool(env, cors, gameId, action, operation) {
     const upstreamFields = metadata.upstreamMode
       ? `transport=${metadata.transport || "-"} action=${metadata.logAction} gameId=${gameId} upstreamPath=/ mode=${metadata.upstreamMode}`
       : `action=${metadata.logAction} gameId=${gameId}`;
-    console.log(`[PREGAME_TOOL] ${upstreamFields} upstreamStatus=200 status=success`);
+    const noticeFields = action === "run-notice"
+      ? ` noticeDate=${result?.noticeDate || "-"} pageDate=${result?.pageDate || "-"} registrationCount=${Number(result?.registrationCount || 0)} removalCount=${Number(result?.removalCount || 0)} isEmpty=${result?.isEmpty === true}`
+      : "";
+    console.log(`[PREGAME_TOOL] ${upstreamFields} upstreamStatus=${Number(result?.upstreamStatus || 200)}${noticeFields} status=success`);
     return jsonResponse({ ok: true, gameId, result }, 200, cors);
   } catch (error) {
     return createPregameToolErrorResponse(cors, gameId, action, error);
@@ -1059,7 +1063,7 @@ export function normalizePregameToolError(action, error) {
   if (code === "LINEUP_NOT_PUBLISHED" || code === "SCORING_LINEUP_REQUIRED" || code === "SCORING_IN_PROGRESS" || code === "NOTICE_NOT_FOUND") status = 409;
   else if (code === "GAME_NOT_FOUND") status = 404;
   else if (code.endsWith("_SCHEMA_NOT_READY") || code === "NPB_SERVICE_BINDING_MISSING" || code === "NPB_SERVICE_BINDING_INVALID") status = 503;
-  else if (code.endsWith("_PARSE_FAILED") || code === "LINEUP_INVALID") status = 422;
+  else if (code.endsWith("_PARSE_FAILED") || code === "LINEUP_INVALID" || code === "NOTICE_RESPONSE_INVALID") status = 422;
   else if (code.endsWith("_FETCH_FAILED") || ["NPB_WORKER_HTTP_ERROR", "NPB_WORKER_ROUTE_NOT_FOUND"].includes(code)) status = 502;
   else if (status < 400 || status > 599) status = 500;
 
@@ -1165,10 +1169,8 @@ async function runDueGameDayScheduleJobs(env, now) {
 async function runGameDayNoticeOnce(env, now, requestedGameId = "") {
   const date = getJstDateString(now);
   await ensureGameDayNoticeRows(env.AUTH_DB, getPregameTimelines(), date, now);
-  const payload = await fetchNpbWorkerJson(env, { mode: "notice", date });
-  const noticeDate = String(payload.noticeDate || "");
-  if (noticeDate !== date) throw createPregameError("NOTICE_DATE_MISMATCH", "NPB公示の日付を確認できませんでした。");
-  console.log(`game-day notice fetched: date=${date} http=${payload.httpStatus || "unknown"} registered=${Number(payload.registeredCount || 0)} removed=${Number(payload.removedCount || 0)} hash=${String(payload.contentHash || "").slice(0, 12)}`);
+  const payload = normalizeGameDayNoticePayload(await fetchNpbWorkerJson(env, { mode: "notice", date }), date);
+  console.log(`game-day notice fetched: noticeDate=${payload.noticeDate} pageDate=${payload.pageDate || "-"} http=${payload.upstreamStatus} registrationCount=${payload.registrationCount} removalCount=${payload.removalCount} isEmpty=${payload.isEmpty} hash=${String(payload.contentHash || "").slice(0, 12)}`);
   let stored;
   try {
     stored = await storeGameDayNotice(env.AUTH_DB, payload, now);
@@ -1186,11 +1188,55 @@ async function runGameDayNoticeOnce(env, now, requestedGameId = "") {
   return {
     status: stored.status,
     date,
+    noticeDate: payload.noticeDate,
+    pageDate: payload.pageDate || null,
     slotKey: payload.contentHash || "",
-    registeredCount: Number(payload.registeredCount || 0),
-    removedCount: Number(payload.removedCount || 0),
+    upstreamStatus: payload.upstreamStatus,
+    registeredCount: payload.registrationCount,
+    removedCount: payload.removalCount,
+    registrationCount: payload.registrationCount,
+    removalCount: payload.removalCount,
+    isEmpty: payload.isEmpty,
+    message: payload.isEmpty ? "指定日の公示はありません。" : "公示取得が完了しました。",
     appliedGameIds: applied,
     requestedGameId: requestedGameId || null
+  };
+}
+
+function isValidPregameDate(value) {
+  const normalized = String(value || "").trim();
+  if (!/^20\d{2}-\d{2}-\d{2}$/.test(normalized)) return false;
+  const parsed = new Date(`${normalized}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().startsWith(`${normalized}T`);
+}
+
+export function normalizeGameDayNoticePayload(payload, expectedNoticeDate = "") {
+  const noticeDate = String(payload?.noticeDate || "").trim();
+  if (!isValidPregameDate(noticeDate)) {
+    throw createPregameError("NOTICE_RESPONSE_INVALID", "NPB公示レスポンスの日付が不正です。", { httpStatus: 422 });
+  }
+  if (expectedNoticeDate && noticeDate !== expectedNoticeDate) {
+    throw createPregameError("NOTICE_DATE_MISMATCH", "NPB公示の日付を確認できませんでした。", { httpStatus: 422 });
+  }
+  if (!Array.isArray(payload?.registrations) || !Array.isArray(payload?.removals)) {
+    throw createPregameError("NOTICE_RESPONSE_INVALID", "NPB公示レスポンスの登録・抹消一覧が不正です。", { httpStatus: 422 });
+  }
+
+  const registrations = payload.registrations;
+  const removals = payload.removals;
+  const pageDate = isValidPregameDate(payload?.pageDate) ? String(payload.pageDate).trim() : "";
+  return {
+    ...payload,
+    noticeDate,
+    pageDate,
+    registrations,
+    removals,
+    registrationCount: registrations.length,
+    removalCount: removals.length,
+    registeredCount: registrations.length,
+    removedCount: removals.length,
+    isEmpty: registrations.length === 0 && removals.length === 0,
+    upstreamStatus: Number(payload?.httpStatus) || 200
   };
 }
 
@@ -1237,17 +1283,26 @@ async function recordGameDayNoticeError(db, date, error, now) {
   ).bind(date, GAME_DAY_NOTICE_SOURCE, String(error?.code || "NOTICE_FETCH_FAILED").slice(0, 80), now.toISOString()).run();
 }
 
-async function storeGameDayNotice(db, payload, now) {
+export function resolveNoticeRostersForStorage(incomingRosters, existingRostersJson = "{}") {
+  const rosters = incomingRosters && typeof incomingRosters === "object" && !Array.isArray(incomingRosters)
+    ? incomingRosters
+    : {};
+  const hasPlayers = Object.values(rosters).some((players) => Array.isArray(players) && players.length > 0);
+  return hasPlayers ? rosters : parseJsonObject(existingRostersJson);
+}
+
+export async function storeGameDayNotice(db, payload, now) {
   const date = String(payload.noticeDate || "");
-  const existing = await db.prepare("SELECT content_hash FROM game_day_notices WHERE notice_date = ?1 LIMIT 1").bind(date).first();
+  const existing = await db.prepare("SELECT content_hash, rosters_json FROM game_day_notices WHERE notice_date = ?1 LIMIT 1").bind(date).first();
   if (existing?.content_hash && existing.content_hash === payload.contentHash) {
     return { status: "unchanged" };
   }
+  const rosters = resolveNoticeRostersForStorage(payload.rosters, existing?.rosters_json);
   await db.prepare(
     `INSERT INTO game_day_notices
        (notice_date, source_url, content_hash, fetched_at, registered_json, removed_json, rosters_json,
-        registered_count, removed_count, status, last_error_code, updated_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'success', NULL, ?4)
+        registered_count, removed_count, status, last_error_code, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'success', NULL, ?4, ?4)
      ON CONFLICT(notice_date) DO UPDATE SET
        source_url = excluded.source_url,
        content_hash = excluded.content_hash,
@@ -1267,9 +1322,9 @@ async function storeGameDayNotice(db, payload, now) {
     String(payload.fetchedAt || now.toISOString()),
     JSON.stringify(Array.isArray(payload.registrations) ? payload.registrations : []),
     JSON.stringify(Array.isArray(payload.removals) ? payload.removals : []),
-    JSON.stringify(payload.rosters && typeof payload.rosters === "object" ? payload.rosters : {}),
-    Number(payload.registeredCount || 0),
-    Number(payload.removedCount || 0)
+    JSON.stringify(rosters),
+    Number(payload.registrationCount ?? payload.registeredCount ?? 0),
+    Number(payload.removalCount ?? payload.removedCount ?? 0)
   ).run();
   return { status: existing ? "updated" : "captured" };
 }

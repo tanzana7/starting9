@@ -51,6 +51,38 @@ const GAME_DAY_NOTICE_STATUS = Object.freeze({
   CLOSED: "closed_without_notice",
   ERROR: "error"
 });
+const PREGAME_TOOL_ACTIONS = Object.freeze({
+  "run-notice": { logAction: "notice_fetch", fetchCode: "NOTICE_FETCH_FAILED", parseCode: "NOTICE_PARSE_FAILED", failureCode: "NOTICE_FETCH_FAILED", schemaCode: "NOTICE_SCHEMA_NOT_READY" },
+  "distribute-notice": { logAction: "notice_distribution", failureCode: "NOTICE_DISTRIBUTION_FAILED", schemaCode: "NOTICE_SCHEMA_NOT_READY" },
+  "run-roster": { logAction: "roster_fetch", fetchCode: "ROSTER_FETCH_FAILED", parseCode: "ROSTER_PARSE_FAILED", failureCode: "ROSTER_FETCH_FAILED", schemaCode: "ROSTER_SCHEMA_NOT_READY" },
+  "fix-roster": { logAction: "roster_fix", failureCode: "ROSTER_FIX_FAILED", schemaCode: "ROSTER_SCHEMA_NOT_READY" },
+  "run-lineup": { logAction: "lineup_fetch", fetchCode: "LINEUP_FETCH_FAILED", parseCode: "LINEUP_INVALID", failureCode: "LINEUP_FETCH_FAILED", schemaCode: "LINEUP_SCHEMA_NOT_READY" },
+  publish: { logAction: "publish", failureCode: "PUBLISH_FAILED", schemaCode: "PUBLISH_SCHEMA_NOT_READY" },
+  "auto-scoring/run-now": { logAction: "scoring", failureCode: "SCORING_FAILED", schemaCode: "SCORING_SCHEMA_NOT_READY" }
+});
+const PREGAME_TOOL_ERROR_MESSAGES = Object.freeze({
+  NOTICE_FETCH_FAILED: "NPB公式の公示取得に失敗しました。",
+  NOTICE_PARSE_FAILED: "NPB公式の公示を解析できませんでした。",
+  NOTICE_DISTRIBUTION_FAILED: "公示結果の当日試合への配布に失敗しました。",
+  NOTICE_NOT_FOUND: "保存済みの公示結果がありません。",
+  NOTICE_SCHEMA_NOT_READY: "公示保存用データベースが準備されていません。",
+  ROSTER_FETCH_FAILED: "NPB公式のロースター取得に失敗しました。",
+  ROSTER_PARSE_FAILED: "NPB公式のロースターを解析できませんでした。",
+  ROSTER_SCHEMA_NOT_READY: "ロースター保存用データベースが準備されていません。",
+  ROSTER_FIX_FAILED: "ロースターの固定に失敗しました。",
+  LINEUP_FETCH_FAILED: "NPB公式の正式スタメン取得に失敗しました。",
+  LINEUP_NOT_PUBLISHED: "NPB公式でスタメンがまだ発表されていません。",
+  LINEUP_INVALID: "取得した正式スタメンの内容が不正です。",
+  LINEUP_SCHEMA_NOT_READY: "正式スタメン保存用データベースが準備されていません。",
+  PUBLISH_FAILED: "公開処理に失敗しました。",
+  PUBLISH_SCHEMA_NOT_READY: "公開処理用データベースが準備されていません。",
+  SCORING_LINEUP_REQUIRED: "正式スタメンが保存されていないため採点できません。",
+  SCORING_IN_PROGRESS: "この試合は現在採点処理中です。",
+  SCORING_FAILED: "採点に失敗しました。",
+  SCORING_SCHEMA_NOT_READY: "採点用データベースが準備されていません。",
+  GAME_NOT_FOUND: "対象試合が見つかりません。",
+  NPB_WORKER_HTTP_ERROR: "NPB取得Workerへの接続に失敗しました。"
+});
 const SCORING_RULES = Object.freeze({
   player: { perHit: 5, bonus: 5 },
   order: { perHit: 3, bonus: 3 },
@@ -908,7 +940,7 @@ async function handleAdminScoringRoute(request, env, cors, route) {
     return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
   }
 
-  if (route.action === "summary" && request.method === "GET") {
+  if (route.action === "predictions/summary" && request.method === "GET") {
     return await handleAdminPredictionSummary(env, cors, metadata.gameId);
   }
   if (route.action === "score-predictions/preview" && request.method === "POST") {
@@ -924,7 +956,11 @@ async function handleAdminScoringRoute(request, env, cors, route) {
     return await handleAdminAutoScoringStatus(env, cors, metadata.gameId);
   }
   if (route.action === "auto-scoring/run-now" && request.method === "POST") {
-    return await handleAdminAutoScoringRunNow(env, cors, metadata.gameId);
+    try {
+      return await handleAdminAutoScoringRunNow(env, cors, metadata.gameId);
+    } catch (error) {
+      return createPregameToolErrorResponse(cors, metadata.gameId, "auto-scoring/run-now", error);
+    }
   }
   if (route.action === "auto-scoring/retry" && request.method === "POST") {
     return await handleAdminAutoScoringRetry(env, cors, metadata.gameId);
@@ -933,39 +969,93 @@ async function handleAdminScoringRoute(request, env, cors, route) {
     return await handleAdminAutoScoringCancel(env, cors, metadata.gameId);
   }
   if (route.action === "pregame-automation/run-roster" && request.method === "POST") {
-    return await handleAdminPregameRosterCapture(env, cors, metadata.gameId);
+    return await executePregameTool(env, cors, metadata.gameId, "run-roster", () => captureGameRosterSnapshot(env, metadata.gameId, new Date(), { force: true }));
   }
   if (route.action === "pregame-automation/run-lineup" && request.method === "POST") {
-    return await handleAdminPregameLineupCapture(env, cors, metadata.gameId);
+    return await executePregameTool(env, cors, metadata.gameId, "run-lineup", () => captureOfficialLineup(env, metadata.gameId, new Date(), { force: true }));
   }
   if (route.action === "pregame-automation/run-notice" && request.method === "POST") {
-    const result = await runGameDayNoticeOnce(env, new Date(), metadata.gameId);
-    return jsonResponse({ ok: true, gameId: metadata.gameId, result, pregame: await getPregameAutomationStatus(env.AUTH_DB, metadata.gameId) }, 200, cors);
+    return await executePregameTool(env, cors, metadata.gameId, "run-notice", () => runGameDayNoticeOnce(env, new Date(), metadata.gameId));
   }
   if (route.action === "pregame-automation/distribute-notice" && request.method === "POST") {
-    const result = await distributeStoredGameDayNotice(env, metadata.gameId, new Date());
-    return jsonResponse({ ok: true, gameId: metadata.gameId, result, pregame: await getPregameAutomationStatus(env.AUTH_DB, metadata.gameId) }, 200, cors);
+    return await executePregameTool(env, cors, metadata.gameId, "distribute-notice", () => distributeStoredGameDayNotice(env, metadata.gameId, new Date()));
   }
   if (route.action === "pregame-automation/fix-roster" && request.method === "POST") {
-    const result = await fixGameRosterAtDeadline(env, metadata.gameId, new Date());
-    return jsonResponse({ ok: true, gameId: metadata.gameId, result, pregame: await getPregameAutomationStatus(env.AUTH_DB, metadata.gameId) }, 200, cors);
+    return await executePregameTool(env, cors, metadata.gameId, "fix-roster", () => fixGameRosterAtDeadline(env, metadata.gameId, new Date()));
   }
   if (route.action === "pregame-automation/publish" && request.method === "POST") {
-    const result = await publishGameResults(env, metadata.gameId, new Date());
-    return jsonResponse({ ok: true, gameId: metadata.gameId, result, pregame: await getPregameAutomationStatus(env.AUTH_DB, metadata.gameId) }, 200, cors);
+    return await executePregameTool(env, cors, metadata.gameId, "publish", () => publishGameResults(env, metadata.gameId, new Date()));
   }
 
   return jsonResponse({ ok: false, error: "管理者採点APIのHTTPメソッドが不正です。" }, 405, cors);
 }
 
-async function handleAdminPregameRosterCapture(env, cors, gameId) {
-  const result = await captureGameRosterSnapshot(env, gameId, new Date(), { force: true });
-  return jsonResponse({ ok: true, gameId, result, pregame: await getPregameAutomationStatus(env.AUTH_DB, gameId) }, 200, cors);
+async function executePregameTool(env, cors, gameId, action, operation) {
+  try {
+    const result = await operation();
+    const metadata = PREGAME_TOOL_ACTIONS[action] || { logAction: action };
+    console.log(`[PREGAME_TOOL] action=${metadata.logAction} gameId=${gameId} status=success`);
+    return jsonResponse({ ok: true, gameId, result }, 200, cors);
+  } catch (error) {
+    return createPregameToolErrorResponse(cors, gameId, action, error);
+  }
 }
 
-async function handleAdminPregameLineupCapture(env, cors, gameId) {
-  const result = await captureOfficialLineup(env, gameId, new Date(), { force: true });
-  return jsonResponse({ ok: true, gameId, result, pregame: await getPregameAutomationStatus(env.AUTH_DB, gameId) }, 200, cors);
+function createPregameToolErrorResponse(cors, gameId, action, error) {
+  const normalized = normalizePregameToolError(action, error);
+  const metadata = PREGAME_TOOL_ACTIONS[action] || { logAction: action };
+  const upstreamStatus = Number(error?.upstreamStatus || error?.httpStatus || 0) || 0;
+  console.log(`[PREGAME_TOOL] action=${metadata.logAction} gameId=${gameId} status=failed code=${normalized.code} npbStatus=${upstreamStatus || "-"}`);
+  const body = {
+    ok: false,
+    gameId,
+    error: normalized.message,
+    code: normalized.code,
+    httpStatus: normalized.status
+  };
+  if (upstreamStatus > 0) body.upstreamStatus = upstreamStatus;
+  return jsonResponse(body, normalized.status, cors);
+}
+
+function normalizePregameToolError(action, error) {
+  const metadata = PREGAME_TOOL_ACTIONS[action] || {};
+  const rawCode = String(error?.code || "").trim();
+  let code = rawCode;
+
+  if (isPregameSchemaError(error)) {
+    code = metadata.schemaCode || "PREGAME_SCHEMA_NOT_READY";
+  } else if (rawCode === "SCHEDULE_UNAVAILABLE") {
+    code = "GAME_NOT_FOUND";
+  } else if (rawCode === "INVALID_ROSTER") {
+    code = "ROSTER_PARSE_FAILED";
+  } else if (rawCode === "INVALID_LINEUP") {
+    code = "LINEUP_INVALID";
+  } else if (rawCode === "NPB_RESPONSE_INVALID") {
+    code = Number(error?.upstreamStatus) === 422
+      ? (metadata.parseCode || metadata.fetchCode || "NPB_WORKER_HTTP_ERROR")
+      : (metadata.fetchCode || metadata.failureCode || "NPB_WORKER_HTTP_ERROR");
+  } else if (rawCode === "NOTICE_DATE_MISMATCH") {
+    code = "NOTICE_PARSE_FAILED";
+  } else if (rawCode === "NPB_HTTP_ERROR" || rawCode === "NPB_WORKER_URL_INVALID" || rawCode === "NPB_WORKER_TIMEOUT" || rawCode === "TIMEOUT") {
+    code = metadata.fetchCode || metadata.failureCode || "NPB_WORKER_HTTP_ERROR";
+  } else if (!code || !PREGAME_TOOL_ERROR_MESSAGES[code]) {
+    code = metadata.failureCode || "PREGAME_TOOL_FAILED";
+  }
+
+  let status = Number(error?.httpStatus || 0) || 500;
+  if (code === "LINEUP_NOT_PUBLISHED" || code === "SCORING_LINEUP_REQUIRED" || code === "SCORING_IN_PROGRESS" || code === "NOTICE_NOT_FOUND") status = 409;
+  else if (code === "GAME_NOT_FOUND") status = 404;
+  else if (code.endsWith("_SCHEMA_NOT_READY")) status = 503;
+  else if (code.endsWith("_PARSE_FAILED") || code === "LINEUP_INVALID") status = 422;
+  else if (code.endsWith("_FETCH_FAILED") || code === "NPB_WORKER_HTTP_ERROR") status = 502;
+  else if (status < 400 || status > 599) status = 500;
+
+  return { code, status, message: PREGAME_TOOL_ERROR_MESSAGES[code] || "試合前処理を実行できませんでした。" };
+}
+
+function isPregameSchemaError(error) {
+  const message = String(error?.message || "").toLowerCase();
+  return /no such table|no such column|has no column named|does not exist|schema.*not ready|migration/.test(message);
 }
 
 async function handleGetGameDayStatus(request, env, cors) {
@@ -1066,8 +1156,20 @@ async function runGameDayNoticeOnce(env, now, requestedGameId = "") {
   const noticeDate = String(payload.noticeDate || "");
   if (noticeDate !== date) throw createPregameError("NOTICE_DATE_MISMATCH", "NPB公示の日付を確認できませんでした。");
   console.log(`game-day notice fetched: date=${date} http=${payload.httpStatus || "unknown"} registered=${Number(payload.registeredCount || 0)} removed=${Number(payload.removedCount || 0)} hash=${String(payload.contentHash || "").slice(0, 12)}`);
-  const stored = await storeGameDayNotice(env.AUTH_DB, payload, now);
-  const applied = await applyGameDayNoticeToGames(env, date, payload, now);
+  let stored;
+  try {
+    stored = await storeGameDayNotice(env.AUTH_DB, payload, now);
+  } catch (error) {
+    if (isPregameSchemaError(error)) throw error;
+    throw createPregameError("NOTICE_FETCH_FAILED", "取得した公示結果の保存に失敗しました。");
+  }
+  let applied;
+  try {
+    applied = await applyGameDayNoticeToGames(env, date, payload, now);
+  } catch (error) {
+    if (isPregameSchemaError(error)) throw error;
+    throw createPregameError("NOTICE_DISTRIBUTION_FAILED", "取得した公示結果の配布に失敗しました。");
+  }
   return {
     status: stored.status,
     date,
@@ -1361,22 +1463,36 @@ async function fetchNpbWorkerJson(env, params) {
   const timer = setTimeout(() => controller.abort(), NPB_FETCH_TIMEOUT_MS);
   try {
     const response = await fetch(url.toString(), { signal: controller.signal, headers: { "Cache-Control": "no-store" } });
-    const payload = await response.json().catch(() => null);
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch {
+      throw createPregameError("NPB_RESPONSE_INVALID", "NPB取得Workerのレスポンス形式が不正です。", {
+        httpStatus: response.status,
+        upstreamStatus: response.status
+      });
+    }
     if (!response.ok || !payload?.ok) {
-      throw createPregameError(payload?.code || "NPB_HTTP_ERROR", payload?.error || `NPB取得Worker HTTP ${response.status}`);
+      const upstreamCode = payload?.code || (response.status === 422 ? "NPB_RESPONSE_INVALID" : "NPB_HTTP_ERROR");
+      throw createPregameError(upstreamCode, payload?.error || "NPB取得Workerがエラーを返しました。", {
+        httpStatus: response.status,
+        upstreamStatus: response.status
+      });
     }
     return payload;
   } catch (error) {
     if (error?.code) throw error;
-    throw createPregameError(error?.name === "AbortError" ? "TIMEOUT" : "NPB_HTTP_ERROR", "NPB公式データを取得できませんでした。");
+    throw createPregameError(error?.name === "AbortError" ? "NPB_WORKER_TIMEOUT" : "NPB_HTTP_ERROR", "NPB公式データを取得できませんでした。");
   } finally {
     clearTimeout(timer);
   }
 }
 
-function createPregameError(code, message) {
+function createPregameError(code, message, details = {}) {
   const error = new Error(message);
   error.code = code;
+  if (Number(details.httpStatus) > 0) error.httpStatus = Number(details.httpStatus);
+  if (Number(details.upstreamStatus) > 0) error.upstreamStatus = Number(details.upstreamStatus);
   return error;
 }
 
@@ -1450,7 +1566,11 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false } = {
     ]);
     return { status: "captured", playerCount: roster.length, capturedAt };
   } catch (error) {
-    await recordPregameError(env.AUTH_DB, gameId, "roster", error, now);
+    try {
+      await recordPregameError(env.AUTH_DB, gameId, "roster", error, now);
+    } catch (recordError) {
+      console.error(`pregame roster error record failed: game=${gameId} code=${recordError?.code || "schema"}`);
+    }
     throw error;
   }
 }
@@ -1482,7 +1602,11 @@ async function captureOfficialLineup(env, gameId, now, { force = false } = {}) {
     ).bind(now.toISOString(), gameId).run();
     return { status: "captured", sourceUrl: payload.sourceUrl, autoScoring: serializeGameLineup(record) };
   } catch (error) {
-    await recordPregameLineupAttempt(env.AUTH_DB, gameId, identity, now, error);
+    try {
+      await recordPregameLineupAttempt(env.AUTH_DB, gameId, identity, now, error);
+    } catch (recordError) {
+      console.error(`pregame lineup error record failed: game=${gameId} code=${recordError?.code || "schema"}`);
+    }
     throw error;
   }
 }
@@ -1769,14 +1893,26 @@ async function handleAdminAutoScoringStatus(env, cors, gameId) {
 async function handleAdminAutoScoringRunNow(env, cors, gameId) {
   const record = await getGameLineup(env.AUTH_DB, gameId);
   if (!record) {
-    return jsonResponse({ ok: false, error: "先に実スタメンをサーバーへ保存してください。" }, 409, cors);
+    console.log(`[PREGAME_TOOL] action=scoring gameId=${gameId} status=failed code=SCORING_LINEUP_REQUIRED npbStatus=-`);
+    return jsonResponse({
+      ok: false,
+      code: "SCORING_LINEUP_REQUIRED",
+      error: PREGAME_TOOL_ERROR_MESSAGES.SCORING_LINEUP_REQUIRED,
+      httpStatus: 409
+    }, 409, cors);
   }
 
   const now = new Date();
   await markGameRankingPending(env.AUTH_DB, gameId, now, env);
   const claimed = await claimGameLineupForScoring(env.AUTH_DB, gameId, now, { force: true, resetAttempts: true });
   if (!claimed) {
-    return jsonResponse({ ok: false, error: "この試合は現在採点処理中です。" }, 409, cors);
+    console.log(`[PREGAME_TOOL] action=scoring gameId=${gameId} status=failed code=SCORING_IN_PROGRESS npbStatus=-`);
+    return jsonResponse({
+      ok: false,
+      code: "SCORING_IN_PROGRESS",
+      error: PREGAME_TOOL_ERROR_MESSAGES.SCORING_IN_PROGRESS,
+      httpStatus: 409
+    }, 409, cors);
   }
 
   try {

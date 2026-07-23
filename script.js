@@ -2999,10 +2999,26 @@ function formatPregameAutomationStatus(status) {
   return ({ pending: "待機中", captured: "保存済み", failed: "取得失敗", skipped: "停止", scored: "採点済み", scored_private: "採点済み（非公開）", published: "公開済み", blocked: "要手動対応" })[status] || "未確認";
 }
 
-function getSafePregameActionError(response, payload) {
+function getPregameActionLabel(action) {
+  return ({
+    "run-notice": "公示取得",
+    "distribute-notice": "公示結果の当日試合への配布",
+    "run-roster": "ロースター取得",
+    "fix-roster": "ロースター固定",
+    "run-lineup": "正式スタメン取得",
+    scoring: "採点",
+    publish: "公開処理"
+  })[action] || "試合前処理";
+}
+
+function getSafePregameActionError(response, payload, action = "") {
   const candidate = String(payload?.code || payload?.error || "");
   const code = /^[A-Z][A-Z0-9_]{1,79}$/.test(candidate) ? candidate : "";
-  return `HTTP ${response.status}${code ? ` / ${code}` : ""}`;
+  const rawMessage = typeof payload?.error === "string" ? payload.error.trim() : "";
+  const message = rawMessage && rawMessage.length <= 180 ? rawMessage : "安全なエラー情報を取得できませんでした。";
+  const safeCode = code || "PREGAME_TOOL_FAILED";
+  const upstreamStatus = Number(payload?.upstreamStatus) > 0 ? ` 上流HTTP：${Number(payload.upstreamStatus)}` : "";
+  return `${getPregameActionLabel(action)}を実行できませんでした。${message} コード：${safeCode} HTTP：${response.status}${upstreamStatus}`;
 }
 
 async function runPregameAutomationAction(action) {
@@ -3029,7 +3045,7 @@ async function runPregameAutomationAction(action) {
     const response = await fetch(url, { method: "POST", credentials: "include" });
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok) {
-      throw new Error(getSafePregameActionError(response, payload));
+      throw new Error(getSafePregameActionError(response, payload, action));
     }
     const completedMessages = {
       "run-notice": "公示取得と当日試合への配布を実行しました。",
@@ -3046,7 +3062,7 @@ async function runPregameAutomationAction(action) {
     await refreshAutoScoringStatus({ force: true });
   } catch (error) {
     console.error("試合前処理の手動実行に失敗しました", error.message);
-    state.pregameAutomation.message = `試合前処理を実行できませんでした。${error.message ? ` 詳細：${error.message}` : ""}`;
+    state.pregameAutomation.message = error.message || `${getPregameActionLabel(action)}を実行できませんでした。`;
   } finally {
     state.pregameAutomation.isRunning = false;
     renderPregameAutomationTools();
@@ -3068,13 +3084,13 @@ async function runPregameScoringAction() {
   try {
     const response = await fetch(url, { method: "POST", credentials: "include" });
     const payload = await response.json().catch(() => null);
-    if (!response.ok || !payload?.ok) throw new Error(getSafePregameActionError(response, payload));
+    if (!response.ok || !payload?.ok) throw new Error(getSafePregameActionError(response, payload, "scoring"));
     state.pregameAutomation.message = `採点を実行しました。${Number(payload.scored || 0)}件を更新しました。`;
     await refreshAdminScoringSummary({ force: true });
     await refreshAutoScoringStatus({ force: true });
   } catch (error) {
     console.error("試合前処理の採点に失敗しました", error.message);
-    state.pregameAutomation.message = `採点を実行できませんでした。${error.message ? ` 詳細：${error.message}` : ""}`;
+    state.pregameAutomation.message = error.message || "採点を実行できませんでした。";
   } finally {
     state.pregameAutomation.isRunning = false;
     renderPregameAutomationTools();

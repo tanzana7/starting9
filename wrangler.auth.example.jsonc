@@ -8,9 +8,14 @@
     "AUTH_ALLOWED_ORIGINS": "https://REPLACE_WITH_FRONTEND_ORIGIN",
     "SESSION_SAMESITE": "Lax",
     "AUTO_SCORING_DELAY_SECONDS": "300",
-    "ENABLE_DEVELOPMENT_MODE": "false",
-    "NPB_FETCH_WORKER_URL": "http://127.0.0.1:8788/"
+    "ENABLE_DEVELOPMENT_MODE": "false"
   },
+  "services": [
+    {
+      "binding": "NPB_FETCH_WORKER",
+      "service": "starting9-npb-fetch"
+    }
+  ],
   "d1_databases": [
     {
       "binding": "AUTH_DB",

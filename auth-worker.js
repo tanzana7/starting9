@@ -5,6 +5,7 @@ import {
   getNoticePollingPlan,
   getPregameTimeline,
   getPregameTimelines,
+  getScheduledGames,
   isScheduleGameUnavailable,
   setDetectedScheduleGames
 } from "./pregame-automation.js";
@@ -232,27 +233,105 @@ export default {
 };
 
 async function runScheduledGameAutomation(env, now) {
+  let scheduleSync = { status: "failed", games: [] };
   try {
-    await syncTodayFightersSchedule(env, now);
+    scheduleSync = await syncTodayFightersSchedule(env, now);
   } catch (error) {
     console.error(`[GAME_DETECTION] date=${getJstDateString(now)} team=fighters status=failed code=${error?.code || "SCHEDULE_SYNC_FAILED"}`);
   }
-  return runGameWorkflows(env, now);
+  const workflowResult = await runGameWorkflows(env, now);
+  const summary = summarizeGameAutomationRun({
+    date: getJstDateString(now),
+    scheduleSync: scheduleSync.status,
+    workflows: workflowResult.workflows,
+    shared: workflowResult.shared
+  });
+  logGameAutomationSummary(summary);
+  logCancelledGameWorkflows(workflowResult.workflows, summary.scheduleSync);
+  return { ...workflowResult, summary };
 }
 
 async function runGameWorkflows(env, now) {
   const timelines = getPregameTimelines();
-  const shared = { notice: null, scoring: null, publishing: null };
+  const cancelledTimelines = getScheduledGames()
+    .filter((game) => isScheduleGameUnavailable(game))
+    .map((game) => ({ game, gameId: game.gameId, gameCode: game.gameCode || "" }));
+  const shared = { notice: null, lineup: null, scoring: null, publishing: null, errors: 0 };
   try { shared.notice = await runDueGameDayScheduleJobs(env, now); }
-  catch (error) { console.error(`game-day schedule cron failed: code=${error?.code || "unknown"}`); }
-  try { await runDuePregameAutomationJobs(env, now); }
-  catch (error) { console.error(`pregame automation cron failed: code=${error?.code || "unknown"}`); }
+  catch (error) { shared.errors += 1; console.error(`game-day schedule cron failed: code=${error?.code || "unknown"}`); }
+  try { shared.lineup = await runDuePregameAutomationJobs(env, now); }
+  catch (error) { shared.errors += 1; console.error(`pregame automation cron failed: code=${error?.code || "unknown"}`); }
   try { shared.scoring = await runDueAutoScoringJobs(env, now); }
-  catch (error) { console.error(`auto scoring cron failed: code=${error?.code || "unknown"}`); }
+  catch (error) { shared.errors += 1; console.error(`auto scoring cron failed: code=${error?.code || "unknown"}`); }
   try { shared.publishing = await runDueGameDayPublicationJobs(env, now); }
-  catch (error) { console.error(`game-day publication cron failed: code=${error?.code || "unknown"}`); }
-  const workflows = timelines.map((timeline) => runGameWorkflow(timeline, now));
+  catch (error) { shared.errors += 1; console.error(`game-day publication cron failed: code=${error?.code || "unknown"}`); }
+  const workflows = [...timelines, ...cancelledTimelines].map((timeline) => runGameWorkflow(timeline, now));
   return { shared, workflows };
+}
+
+export function summarizeGameAutomationRun({ date = "", scheduleSync = "skipped", workflows = [], shared = {} } = {}) {
+  const safeWorkflows = Array.isArray(workflows) ? workflows : [];
+  const notice = shared.notice || {};
+  const lineup = shared.lineup || {};
+  const scoring = shared.scoring || {};
+  const publishing = shared.publishing || {};
+  const noticeExecuted = notice.due && !notice.skipped ? 1 : 0;
+  const noticeFailed = notice.status === "error" ? 1 : 0;
+  const rosterFixed = Number(shared.notice?.rosterFixed || 0);
+  const lineupCaptured = Number(lineup.lineupCaptured || 0);
+  const lineupFailed = Number(lineup.lineupFailed || 0);
+  const scoringProcessed = Number(scoring.processed || 0);
+  const scoringSucceeded = Number(scoring.succeeded || 0);
+  const scoringFailed = Number(scoring.failed || 0);
+  const published = Number(publishing.published || 0);
+  const publishingFailed = Number(publishing.failed || 0);
+  const cancelled = safeWorkflows.filter((workflow) => workflow?.gameStatus === "cancelled").length;
+  const failed = noticeFailed + lineupFailed + scoringFailed + publishingFailed + Number(shared.errors || 0);
+  const executed = noticeExecuted + rosterFixed + lineupCaptured + lineupFailed + scoringProcessed + published + publishingFailed;
+  const succeeded = (noticeExecuted - noticeFailed) + rosterFixed + lineupCaptured + scoringSucceeded + published;
+  const retryWait = Number(lineup.lineupRetryWait || 0);
+  let status = "idle";
+  if (safeWorkflows.length === 0) status = "no_games";
+  else if (cancelled === safeWorkflows.length) status = "cancelled";
+  else if (failed > 0 && succeeded > 0) status = "partial_failure";
+  else if (failed > 0) status = "failed";
+  else if (executed > 0) status = "success";
+
+  return {
+    date: String(date || ""),
+    scheduleSync: ["success", "skipped", "failed"].includes(scheduleSync) ? scheduleSync : "failed",
+    games: safeWorkflows.length,
+    executed,
+    succeeded: Math.max(0, succeeded),
+    retryWait,
+    failed,
+    cancelled,
+    status
+  };
+}
+
+function shouldLogGameAutomationSummary(summary) {
+  return summary.scheduleSync !== "skipped"
+    || summary.executed > 0
+    || summary.retryWait > 0
+    || summary.failed > 0
+    || summary.cancelled > 0;
+}
+
+function logGameAutomationSummary(summary) {
+  if (!shouldLogGameAutomationSummary(summary)) return;
+  const message = `[GAME_AUTOMATION] date=${summary.date || "unknown"} scheduleSync=${summary.scheduleSync} games=${summary.games} executed=${summary.executed} succeeded=${summary.succeeded} retryWait=${summary.retryWait} failed=${summary.failed} cancelled=${summary.cancelled} status=${summary.status}`;
+  if (summary.failed > 0) console.warn(message);
+  else console.log(message);
+}
+
+function logCancelledGameWorkflows(workflows, scheduleSync) {
+  if (scheduleSync === "skipped") return;
+  for (const workflow of Array.isArray(workflows) ? workflows : []) {
+    if (workflow?.gameStatus === "cancelled") {
+      console.log(`[GAME_WORKFLOW] gameId=${workflow.gameId} step=all action=skipped status=cancelled`);
+    }
+  }
 }
 
 function runGameWorkflow(timeline, now) {
@@ -267,9 +346,10 @@ function runGameWorkflow(timeline, now) {
 
 async function syncTodayFightersSchedule(env, now) {
   const date = getJstDateString(now);
-  if (!date) return [];
+  if (!date) return { status: "skipped", games: [] };
   const state = await env.AUTH_DB.prepare("SELECT next_check_at FROM game_schedule_check_state WHERE schedule_date = ?1 LIMIT 1").bind(date).first();
   let rows = [];
+  let synced = false;
   if (!state?.next_check_at || new Date(state.next_check_at) <= now) {
     const payload = await fetchNpbWorkerJson(env, { mode: "schedule", date });
     if (!Array.isArray(payload.games)) throw createPregameError("SCHEDULE_RESPONSE_INVALID", "NPB日程レスポンスが不正です。");
@@ -292,13 +372,14 @@ async function syncTodayFightersSchedule(env, now) {
     ).bind(date, nextCheck, now.toISOString()));
     if (statements.length) await env.AUTH_DB.batch(statements);
     rows = payload.games;
+    synced = true;
     console.log(`[GAME_DETECTION] date=${date} team=fighters gamesFound=${rows.length} status=success`);
   } else {
     const stored = await env.AUTH_DB.prepare("SELECT * FROM detected_game_schedule WHERE game_date = ?1 AND game_status = 'scheduled' ORDER BY start_at").bind(date).all();
     rows = (stored.results || []).map((row) => ({ gameId: row.game_id, date: row.game_date, startTime: new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Tokyo", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(row.start_at)), homeTeam: row.home_team, awayTeam: row.away_team, venue: row.venue || "", gameCode: row.game_code || "", status: row.game_status }));
   }
   setDetectedScheduleGames(rows);
-  return rows;
+  return { status: synced ? "success" : "skipped", games: rows };
 }
 
 async function handleRegister(request, env, cors) {
@@ -1207,13 +1288,17 @@ async function runDueGameDayScheduleJobs(env, now) {
   if (plan.due && await claimGameDayNoticeSlot(env.AUTH_DB, plan.date, plan.slotKey, now)) {
     try {
       notice = await runGameDayNoticeOnce(env, now);
+      console.log(`[GAME_WORKFLOW] gameId=${notice.appliedGameIds?.join(",") || `day-${plan.date}`} step=notice action=executed status=success`);
     } catch (error) {
       await recordGameDayNoticeError(env.AUTH_DB, plan.date, error, now);
       notice = { due: true, status: "error", errorCode: String(error?.code || "NOTICE_FETCH_FAILED") };
-      console.error(`game-day notice failed: date=${plan.date} code=${error?.code || "unknown"}`);
+      console.warn(`[GAME_WORKFLOW] gameId=day-${plan.date} step=notice action=executed status=failed code=${error?.code || "unknown"}`);
     }
   }
   const rosterFixed = await fixDueGameRosters(env, timelines, now);
+  if (rosterFixed > 0) {
+    console.log(`[GAME_WORKFLOW] gameId=day-${plan.date} step=close_predictions action=executed status=success rosterFixed=${rosterFixed}`);
+  }
   return { notice, rosterFixed };
 }
 
@@ -1781,7 +1866,7 @@ async function recordPregameLineupAttempt(db, gameId, identity, now, error) {
 }
 
 async function runDuePregameAutomationJobs(env, now) {
-  const summary = { lineupCaptured: 0, lineupFailed: 0 };
+  const summary = { lineupCaptured: 0, lineupFailed: 0, lineupRetryWait: 0 };
   for (const timeline of getPregameTimelines()) {
     const gameId = timeline.gameId;
     if (now < timeline.lineupFetchStartAt || now > timeline.startAt) continue;
@@ -1790,9 +1875,22 @@ async function runDuePregameAutomationJobs(env, now) {
     const dueAt = getDueLineupAttemptAt(timeline, now);
     if (!dueAt) continue;
     const job = await env.AUTH_DB.prepare("SELECT last_lineup_attempt_at FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
-    if (job?.last_lineup_attempt_at && new Date(job.last_lineup_attempt_at) >= dueAt) continue;
-    try { await captureOfficialLineup(env, gameId, now); summary.lineupCaptured += 1; }
-    catch (error) { summary.lineupFailed += 1; console.error(`pregame lineup failed: game=${gameId} code=${error?.code || "unknown"}`); }
+    if (job?.last_lineup_attempt_at && new Date(job.last_lineup_attempt_at) >= dueAt) {
+      // 同じ10分枠での待機を毎分出力しないため、枠の開始時だけ記録します。
+      if (now.getTime() === dueAt.getTime()) {
+        summary.lineupRetryWait += 1;
+        console.log(`[GAME_WORKFLOW] gameId=${gameId} step=lineup action=skipped status=retry_wait nextRetryAt=${new Date(dueAt.getTime() + 10 * 60 * 1000).toISOString()}`);
+      }
+      continue;
+    }
+    try {
+      await captureOfficialLineup(env, gameId, now);
+      summary.lineupCaptured += 1;
+      console.log(`[GAME_WORKFLOW] gameId=${gameId} step=lineup action=executed status=success`);
+    } catch (error) {
+      summary.lineupFailed += 1;
+      console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=lineup action=executed status=failed code=${error?.code || "unknown"} retryable=true`);
+    }
   }
   return summary;
 }
@@ -2292,10 +2390,11 @@ async function runDueAutoScoringJobs(env, now) {
       await markGameRankingScoredPrivate(env.AUTH_DB, claimed.game_id, result.scoredAt, env);
       summary.succeeded += 1;
       console.log(`auto scoring complete: game=${claimed.game_id} processed=${result.processed} perfect=${result.perfectCount}`);
+      console.log(`[GAME_WORKFLOW] gameId=${claimed.game_id} step=score action=executed status=success`);
     } catch (error) {
       summary.failed += 1;
       await markGameLineupFailed(env.AUTH_DB, claimed.game_id, error, now);
-      console.error(`auto scoring failed: game=${claimed.game_id} reason=${toSafeAutoScoringError(error)}`);
+      console.warn(`[GAME_WORKFLOW] gameId=${claimed.game_id} step=score action=executed status=failed code=${error?.code || "SCORING_FAILED"}`);
     }
   }
   return summary;
@@ -2437,10 +2536,13 @@ async function runDueGameDayPublicationJobs(env, now) {
     summary.considered += 1;
     try {
       const result = await publishGameResults(env, timeline.gameId, now);
-      if (result.published) summary.published += 1;
+      if (result.published) {
+        summary.published += 1;
+        console.log(`[GAME_WORKFLOW] gameId=${timeline.gameId} step=publish action=executed status=success`);
+      }
     } catch (error) {
       summary.failed += 1;
-      console.error(`game-day publication failed: game=${timeline.gameId} code=${error?.code || "unknown"}`);
+      console.warn(`[GAME_WORKFLOW] gameId=${timeline.gameId} step=publish action=executed status=failed code=${error?.code || "unknown"}`);
     }
   }
   return summary;

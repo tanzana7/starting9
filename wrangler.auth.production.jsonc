@@ -11,9 +11,14 @@
     "AUTH_ALLOWED_ORIGINS": "https://starting9.pages.dev",
     "SESSION_SAMESITE": "None",
     "AUTO_SCORING_DELAY_SECONDS": "300",
-    "ENABLE_DEVELOPMENT_MODE": "false",
-    "NPB_FETCH_WORKER_URL": "https://starting9-npb-fetch.tanzana7.workers.dev/"
+    "ENABLE_DEVELOPMENT_MODE": "false"
   },
+  "services": [
+    {
+      "binding": "NPB_FETCH_WORKER",
+      "service": "starting9-npb-fetch"
+    }
+  ],
   "d1_databases": [
     {
       "binding": "AUTH_DB",

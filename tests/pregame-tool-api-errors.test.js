@@ -52,35 +52,33 @@ test("NPB WorkerのHTTP・JSON失敗を上流status付きで個別処理する",
   assert.match(npbWorker, /code: "ROSTER_PARSE_FAILED"/);
 });
 
-test("NPB Worker URLは環境変数の余分なpath・queryを捨て、ルート直下へ正規化する", async () => {
+test("NPB Service Binding用Requestは完全修飾URLのルート直下へmodeを保持して生成する", async () => {
   const authWorkerUrl = pathToFileURL(path.join(root, "auth-worker.js")).href;
-  const { buildNpbWorkerUrl, getNpbFetchWorkerBaseUrl } = await import(authWorkerUrl);
+  const { buildNpbServiceBindingRequest } = await import(authWorkerUrl);
 
-  for (const baseUrl of [
-    "https://starting9-npb-fetch.tanzana7.workers.dev",
-    "https://starting9-npb-fetch.tanzana7.workers.dev/",
-    "https://starting9-npb-fetch.tanzana7.workers.dev/api/legacy?old=1#stale"
-  ]) {
-    const roster = buildNpbWorkerUrl(getNpbFetchWorkerBaseUrl({ NPB_FETCH_WORKER_URL: baseUrl }), { mode: "roster" });
-    assert.equal(roster.pathname, "/");
-    assert.deepEqual([...roster.searchParams.entries()], [["mode", "roster"]]);
-    assert.equal(roster.hash, "");
-  }
+  const roster = buildNpbServiceBindingRequest({ mode: "roster" });
+  const rosterUrl = new URL(roster.url);
+  assert.equal(roster.method, "GET");
+  assert.equal(rosterUrl.protocol, "https:");
+  assert.equal(rosterUrl.hostname, "npb-fetch.internal");
+  assert.equal(rosterUrl.pathname, "/");
+  assert.deepEqual([...rosterUrl.searchParams.entries()], [["mode", "roster"]]);
+  assert.equal(roster.headers.get("Cache-Control"), "no-store");
 
-  const notice = buildNpbWorkerUrl("https://starting9-npb-fetch.tanzana7.workers.dev/api", {
+  const notice = new URL(buildNpbServiceBindingRequest({
     mode: "notice",
     date: "2026-07-23"
-  });
+  }).url);
   assert.equal(notice.pathname, "/");
   assert.equal(notice.searchParams.get("mode"), "notice");
   assert.equal(notice.searchParams.get("date"), "2026-07-23");
 
-  const lineup = buildNpbWorkerUrl("https://starting9-npb-fetch.tanzana7.workers.dev/api", {
+  const lineup = new URL(buildNpbServiceBindingRequest({
     mode: "lineup",
     date: "2026-07-23",
     gameCode: "b-f-18",
     ignored: undefined
-  });
+  }).url);
   assert.equal(lineup.pathname, "/");
   assert.equal(lineup.searchParams.get("mode"), "lineup");
   assert.equal(lineup.searchParams.get("date"), "2026-07-23");
@@ -88,18 +86,88 @@ test("NPB Worker URLは環境変数の余分なpath・queryを捨て、ルート
   assert.equal(lineup.searchParams.has("ignored"), false);
 });
 
-test("NPB Worker接続先の未設定・不正値を個別コードで拒否する", async () => {
+test("NPB Service Bindingの未設定・不正値を503の個別コードで拒否する", async () => {
   const authWorkerUrl = pathToFileURL(path.join(root, "auth-worker.js")).href;
-  const { getNpbFetchWorkerBaseUrl } = await import(authWorkerUrl);
+  const { fetchNpbWorkerJson, normalizePregameToolError } = await import(authWorkerUrl);
 
-  assert.throws(
-    () => getNpbFetchWorkerBaseUrl({}),
-    (error) => error?.code === "NPB_WORKER_URL_MISSING"
+  await assert.rejects(
+    fetchNpbWorkerJson({}, { mode: "roster" }),
+    (error) => error?.code === "NPB_SERVICE_BINDING_MISSING"
   );
-  assert.throws(
-    () => getNpbFetchWorkerBaseUrl({ NPB_FETCH_WORKER_URL: "https://example.invalid/api" }),
-    (error) => error?.code === "NPB_WORKER_URL_INVALID"
+  await assert.rejects(
+    fetchNpbWorkerJson({ NPB_FETCH_WORKER: {} }, { mode: "roster" }),
+    (error) => error?.code === "NPB_SERVICE_BINDING_INVALID"
   );
+  assert.equal(normalizePregameToolError("run-roster", { code: "NPB_SERVICE_BINDING_MISSING" }).status, 503);
+  assert.equal(normalizePregameToolError("run-roster", { code: "NPB_SERVICE_BINDING_INVALID" }).status, 503);
+});
+
+test("Auth WorkerはNPB Workerを同一アカウントのService Bindingで参照する", () => {
+  const authConfig = JSON.parse(read("wrangler.auth.production.jsonc"));
+  const npbConfig = JSON.parse(read("wrangler.npb.jsonc"));
+  const authWorker = read("auth-worker.js");
+
+  assert.deepEqual(authConfig.services, [{ binding: "NPB_FETCH_WORKER", service: npbConfig.name }]);
+  assert.equal(Object.hasOwn(authConfig.vars, "NPB_FETCH_WORKER_URL"), false);
+  assert.match(authWorker, /typeof env\.NPB_FETCH_WORKER\.fetch !== "function"/);
+  assert.match(authWorker, /binding\.fetch\(request/);
+  assert.doesNotMatch(authWorker, /NPB_FETCH_WORKER_URL/);
+  assert.match(authWorker, /transport=\$\{metadata\.transport/);
+});
+
+test("notice・roster・lineupは同じService Binding経由で取得し、上流statusを保持する", async () => {
+  const authWorkerUrl = pathToFileURL(path.join(root, "auth-worker.js")).href;
+  const { fetchNpbWorkerJson, normalizePregameToolError } = await import(authWorkerUrl);
+  const receivedRequests = [];
+  const env = {
+    NPB_FETCH_WORKER: {
+      async fetch(request) {
+        receivedRequests.push(new URL(request.url));
+        return new Response(JSON.stringify({ ok: true, source: "binding" }), { status: 200 });
+      }
+    }
+  };
+
+  await fetchNpbWorkerJson(env, { mode: "notice", date: "2026-07-23" });
+  await fetchNpbWorkerJson(env, { mode: "roster" });
+  await fetchNpbWorkerJson(env, { mode: "lineup", date: "2026-07-23", gameCode: "b-f-18" });
+
+  assert.equal(receivedRequests.length, 3);
+  assert.deepEqual(receivedRequests.map((url) => url.pathname), ["/", "/", "/"]);
+  assert.deepEqual(receivedRequests.map((url) => url.searchParams.get("mode")), ["notice", "roster", "lineup"]);
+  assert.equal(receivedRequests[0].searchParams.get("date"), "2026-07-23");
+  assert.equal(receivedRequests[2].searchParams.get("gameCode"), "b-f-18");
+
+  const errorBinding = {
+    NPB_FETCH_WORKER: {
+      async fetch() {
+        return new Response(JSON.stringify({ ok: false, code: "NPB_HTTP_ERROR" }), { status: 404 });
+      }
+    }
+  };
+  await assert.rejects(
+    fetchNpbWorkerJson(errorBinding, { mode: "notice", date: "2026-07-23" }),
+    (error) => error?.upstreamStatus === 404 && error?.upstreamTransport === "service-binding"
+  );
+  const routeError = normalizePregameToolError("run-notice", { code: "NPB_HTTP_ERROR", upstreamStatus: 404 });
+  assert.deepEqual(routeError, {
+    code: "NPB_WORKER_ROUTE_NOT_FOUND",
+    status: 502,
+    message: "NPB取得WorkerのAPIルートが見つかりません。"
+  });
+
+  const lineupBinding = {
+    NPB_FETCH_WORKER: {
+      async fetch() {
+        return new Response(JSON.stringify({ ok: false, code: "LINEUP_NOT_PUBLISHED" }), { status: 422 });
+      }
+    }
+  };
+  await assert.rejects(
+    fetchNpbWorkerJson(lineupBinding, { mode: "lineup", date: "2026-07-23", gameCode: "b-f-18" }),
+    (error) => error?.code === "LINEUP_NOT_PUBLISHED" && error?.upstreamStatus === 422
+  );
+  assert.equal(normalizePregameToolError("run-lineup", { code: "LINEUP_NOT_PUBLISHED", upstreamStatus: 422 }).status, 409);
 });
 
 test("NPB Workerはルート直下のmode指定を受け付け、404ルート誤りと混同しない", () => {
@@ -111,7 +179,7 @@ test("NPB Workerはルート直下のmode指定を受け付け、404ルート誤
   assert.match(read("auth-worker.js"), /Number\(error\?\.upstreamStatus\) === 404/);
 });
 
-test("生成したルート直下URLはNPB Workerのfetch handlerで404にならない", async () => {
+test("Service BindingのOriginなしRequestもNPB Workerのfetch handlerでCORS拒否されない", async () => {
   const workerModuleUrl = pathToFileURL(path.join(root, "cloudflare-worker.js")).href;
   const { default: worker } = await import(workerModuleUrl);
   const originalFetch = globalThis.fetch;
@@ -125,6 +193,7 @@ test("生成したルート直下URLはNPB Workerのfetch handlerで404になら
     ]) {
       const response = await worker.fetch(new Request(`https://starting9-npb-fetch.tanzana7.workers.dev/${query}`), {});
       assert.notEqual(response.status, 404, query);
+      assert.notEqual(response.status, 403, query);
     }
   } finally {
     globalThis.fetch = originalFetch;

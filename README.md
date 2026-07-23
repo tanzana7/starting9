@@ -211,7 +211,7 @@ https://<worker-url>/?url=https://npb.jp/scores/2026/0707/m-f-12/&debug=1
 
 `migrations/0001_auth.sql` が `users` と `sessions` テーブルを作成します。`migrations/0005_game_lineups.sql` は、承認済み実スタメンと自動採点の待機・処理・失敗状態を保存します。`migrations/0006_user_achievements.sql` は実績マスタとユーザーごとの取得実績を追加します。`migrations/0009_pregame_automation.sql` は試合単位のロースタースナップショット、試合前取得の進行状態、実スタメンの取得元を追加します。`migrations/0010_game_day_schedule_flow.sql` は当日公示、締切時点の固定、採点結果の非公開・公開状態を追加します。新migrationは作成後にレビューし、対象D1へ適用してからWorkerを更新してください。
 
-試合前自動処理は `pregame-automation.js` で時刻を一元管理します。日本時間10時から当日公示を1日1系統で監視し、各試合の開始2時間前までは30分間隔、それ以降は締切まで10分間隔で同じ取得結果を当日の対象試合へ配布します。対象球団の公示を検知した場合だけロースターを更新し、試合開始1時間前にスナップショットを固定します。正式スタメンは同時刻から10分ごとに取得し、正常な9人を保存した時点で採点します。採点結果は試合開始時刻まで非公開とし、開始後のCronでランキング・実績・結果を公開します。`wrangler.auth.production.jsonc` の `NPB_FETCH_WORKER_URL` は、固定のNPB取得Worker URLを設定してください。
+試合前自動処理は `pregame-automation.js` で時刻を一元管理します。日本時間10時から当日公示を1日1系統で監視し、各試合の開始2時間前までは30分間隔、それ以降は締切まで10分間隔で同じ取得結果を当日の対象試合へ配布します。対象球団の公示を検知した場合だけロースターを更新し、試合開始1時間前にスナップショットを固定します。正式スタメンは同時刻から10分ごとに取得し、正常な9人を保存した時点で採点します。採点結果は試合開始時刻まで非公開とし、開始後のCronでランキング・実績・結果を公開します。Auth Workerは `wrangler.auth.production.jsonc` の `NPB_FETCH_WORKER` Service Bindingを通じて `starting9-npb-fetch` を呼び出します。公開URLを設定する必要はありません。
 
 管理者向けのテスト操作は、通常画面とは別のモードではなく、管理画面内の「開発用テスト」にまとめています。テストAPIは管理者セッションを必須とし、テスト予想は `is_test_prediction` により通常のランキング・実績集計から除外されます。
 

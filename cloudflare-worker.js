@@ -261,7 +261,7 @@ function extractScheduleGames(html, date) {
   const targetDay = Number(dayText);
   let activeDateMatches = false;
   for (const row of rows) {
-    const text = decodeHtmlEntities(row.replace(/<[^>]+>/g, " ")).replace(/[\s\u3000]+/g, " ").trim();
+    const text = decodeHtml(row.replace(/<[^>]+>/g, " ")).replace(/[\s\u3000]+/g, " ").trim();
     const dateMatch = /(\d{1,2})\s*[/月]\s*(\d{1,2})/.exec(text);
     if (dateMatch) activeDateMatches = Number(dateMatch[1]) === targetMonth && Number(dateMatch[2]) === targetDay;
     if (!activeDateMatches) continue;
@@ -1470,8 +1470,12 @@ function decodeHtml(value) {
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, "\"")
-    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)));
+    .replace(/&(?:#(\d+)|#x([0-9a-f]+)|apos);/gi, (_, decimalCode, hexCode) => {
+      const codePoint = decimalCode ? Number(decimalCode) : hexCode ? parseInt(hexCode, 16) : 39;
+      return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
+        ? String.fromCodePoint(codePoint)
+        : _;
+    });
 }
 
 function isFightersTeamName(value) {

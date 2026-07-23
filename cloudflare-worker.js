@@ -384,7 +384,7 @@ async function handleRosterRequest(requestUrl, isDebug) {
   try {
     const source = await fetchRosterSource(requestUrl, validation.url);
     if (!source.ok) {
-      return jsonResponse({ ok: false, error: source.error }, 502);
+      return jsonResponse({ ok: false, code: "ROSTER_FETCH_FAILED", error: "NPB公式登録ページを取得できませんでした。" }, 502);
     }
 
     const html = source.html;
@@ -393,6 +393,7 @@ async function handleRosterRequest(requestUrl, isDebug) {
     if (!extraction.players.length) {
       return jsonResponse({
         ok: false,
+        code: "ROSTER_PARSE_FAILED",
         error: "日本ハムの登録選手一覧を抽出できませんでした。",
         ...(isDebug ? { debug: extraction.debug } : {})
       }, 422);
@@ -415,7 +416,7 @@ async function handleRosterRequest(requestUrl, isDebug) {
       ...(extraction.warning ? { warning: extraction.warning } : {})
     });
   } catch (error) {
-    return jsonResponse({ ok: false, error: `NPB公式登録ページ取得中にエラーが発生しました：${error.message}` }, 500);
+    return jsonResponse({ ok: false, code: "ROSTER_FETCH_FAILED", error: "NPB公式登録ページを取得できませんでした。" }, 502);
   }
 }
 
@@ -425,12 +426,13 @@ async function handleNoticeRequest(requestUrl, isDebug) {
     // 公示監視はCronのスロットと本文ハッシュで重複を抑制するため、
     // 通常ロースター取得の30分Cache APIを使わず、公式ページを確認する。
     const source = await fetchNoticeSource();
-    if (!source.ok) return jsonResponse({ ok: false, sourceUrl: NOTICE_SOURCE_URL, error: source.error }, 502);
+    if (!source.ok) return jsonResponse({ ok: false, code: "NOTICE_FETCH_FAILED", sourceUrl: NOTICE_SOURCE_URL, error: "NPB公式公示ページを取得できませんでした。" }, 502);
     const parsed = parseNoticePage(source.html);
     const contentHash = await createContentHash(source.html);
     if (!parsed.date || (requestedDate && requestedDate !== parsed.date) || Object.keys(parsed.rosters).length === 0) {
       return jsonResponse({
         ok: false,
+        code: "NOTICE_PARSE_FAILED",
         sourceUrl: NOTICE_SOURCE_URL,
         fetchedAt: source.fetchedAt,
         error: "NPB公式公示ページの日付または球団一覧を確認できませんでした。",
@@ -455,7 +457,7 @@ async function handleNoticeRequest(requestUrl, isDebug) {
       ...(isDebug ? { debug: parsed.debug } : {})
     });
   } catch (error) {
-    return jsonResponse({ ok: false, sourceUrl: NOTICE_SOURCE_URL, error: "NPB公式公示ページを確認できませんでした。" }, 500);
+    return jsonResponse({ ok: false, code: "NOTICE_FETCH_FAILED", sourceUrl: NOTICE_SOURCE_URL, error: "NPB公式公示ページを確認できませんでした。" }, 502);
   }
 }
 

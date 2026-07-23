@@ -1,5 +1,7 @@
 import schedule from "./game-schedule-2026.json" with { type: "json" };
 
+let detectedScheduleGames = [];
+
 // 試合前処理の時刻は、クライアントとAuth Workerで同じ定義を使う。
 export const ROSTER_CAPTURE_MINUTES_BEFORE_START = 120;
 export const PREDICTION_DEADLINE_MINUTES_BEFORE_START = 60;
@@ -12,7 +14,11 @@ export const NOTICE_ACTIVE_INTERVAL_MINUTES = 10;
 
 export function getScheduledGame(gameId) {
   const normalized = typeof gameId === "string" ? gameId.trim() : "";
-  return schedule.find((game) => game?.gameId === normalized) || null;
+  return [...detectedScheduleGames, ...schedule].find((game) => game?.gameId === normalized) || null;
+}
+
+export function setDetectedScheduleGames(games) {
+  detectedScheduleGames = Array.isArray(games) ? games.filter((game) => game?.gameId) : [];
 }
 
 export function parseJstScheduleStart(game) {
@@ -45,7 +51,10 @@ export function getPregameTimeline(gameId) {
 }
 
 export function getPregameTimelines() {
-  return schedule.map((game) => getPregameTimeline(game?.gameId)).filter(Boolean);
+  const ids = new Set();
+  return [...detectedScheduleGames, ...schedule]
+    .filter((game) => game?.gameId && !ids.has(game.gameId) && Boolean(ids.add(game.gameId)))
+    .map((game) => getPregameTimeline(game.gameId)).filter(Boolean);
 }
 
 export function getJstDateString(value = new Date()) {

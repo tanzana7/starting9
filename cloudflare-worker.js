@@ -426,10 +426,20 @@ async function handleNoticeRequest(requestUrl, isDebug) {
     // 公示監視はCronのスロットと本文ハッシュで重複を抑制するため、
     // 通常ロースター取得の30分Cache APIを使わず、公式ページを確認する。
     const source = await fetchNoticeSource();
-    if (!source.ok) return jsonResponse({ ok: false, code: "NOTICE_FETCH_FAILED", sourceUrl: NOTICE_SOURCE_URL, error: "NPB公式公示ページを取得できませんでした。" }, 502);
+    if (!source.ok) {
+      const isContentTypeError = source.code === "NOTICE_CONTENT_TYPE_INVALID";
+      return jsonResponse({
+        ok: false,
+        code: source.code || "NOTICE_FETCH_FAILED",
+        sourceUrl: NOTICE_SOURCE_URL,
+        ...(source.httpStatus ? { httpStatus: source.httpStatus } : {}),
+        error: isContentTypeError ? "NPB公式公示ページのContent-TypeがHTMLではありません。" : "NPB公式公示ページを取得できませんでした。",
+        ...(isDebug ? { debug: source.diagnostics } : {})
+      }, isContentTypeError ? 422 : 502);
+    }
     const parsed = parseNoticePage(source.html);
     const contentHash = await createContentHash(source.html);
-    if (!parsed.date || (requestedDate && requestedDate !== parsed.date) || Object.keys(parsed.rosters).length === 0) {
+    if (!parsed.isValid) {
       return jsonResponse({
         ok: false,
         code: "NOTICE_PARSE_FAILED",
@@ -439,24 +449,27 @@ async function handleNoticeRequest(requestUrl, isDebug) {
         ...(isDebug ? { debug: parsed.debug } : {})
       }, 422);
     }
+    const notice = selectNoticeForRequestedDate(parsed, requestedDate);
+    console.log(`[NPB_NOTICE] parse source=${NOTICE_SOURCE_URL} status=${source.httpStatus} contentType=${source.contentType || "-"} bodyLength=${source.bodyLength} title=${source.diagnostics.title || "-"} head=${source.diagnostics.headStructure || "-"} selectors=${JSON.stringify(parsed.debug.selectorCounts)} noticeDate=${notice.noticeDate} pageDate=${parsed.date} registrations=${notice.registrations.length} removals=${notice.removals.length}`);
     return jsonResponse({
       ok: true,
       sourceUrl: NOTICE_SOURCE_URL,
       fetchedAt: source.fetchedAt,
       httpStatus: source.httpStatus,
-      noticeDate: parsed.date,
+      noticeDate: notice.noticeDate,
       contentHash,
-      registrations: parsed.registrations,
-      removals: parsed.removals,
-      registeredCount: parsed.registrations.length,
-      removedCount: parsed.removals.length,
+      registrations: notice.registrations,
+      removals: notice.removals,
+      registeredCount: notice.registrations.length,
+      removedCount: notice.removals.length,
       rosters: parsed.rosters,
       cacheStatus: source.cacheStatus,
       stale: source.stale,
       method: "roster-page-daily-notice-and-team-rosters",
-      ...(isDebug ? { debug: parsed.debug } : {})
+      ...(isDebug ? { debug: { ...source.diagnostics, ...parsed.debug, ...notice.debug } } : {})
     });
   } catch (error) {
+    console.log(`[NPB_NOTICE] fetch-or-parse-failed source=${NOTICE_SOURCE_URL} code=${String(error?.code || "NOTICE_FETCH_FAILED")}`);
     return jsonResponse({ ok: false, code: "NOTICE_FETCH_FAILED", sourceUrl: NOTICE_SOURCE_URL, error: "NPB公式公示ページを確認できませんでした。" }, 502);
   }
 }
@@ -473,14 +486,30 @@ async function fetchNoticeSource() {
         "User-Agent": "Starting9 MVP Cloudflare Worker"
       }
     });
-    const html = await response.text();
+    const contentType = response.headers.get("Content-Type") || "";
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const decoded = decodeNoticeHtml(bytes, contentType);
+    const diagnostics = createNoticeSourceDiagnostics({
+      contentType,
+      httpStatus: response.status,
+      bodyLength: bytes.byteLength,
+      html: decoded.html,
+      charset: decoded.charset
+    });
     if (!response.ok) {
-      return { ok: false, error: `NPB公式公示ページを取得できませんでした。HTTP ${response.status}` };
+      return { ok: false, code: "NOTICE_FETCH_FAILED", httpStatus: response.status, diagnostics };
+    }
+    if (!isHtmlContentType(contentType)) {
+      console.log(`[NPB_NOTICE] content-type-invalid source=${NOTICE_SOURCE_URL} status=${response.status} contentType=${contentType || "-"} bodyLength=${bytes.byteLength}`);
+      return { ok: false, code: "NOTICE_CONTENT_TYPE_INVALID", httpStatus: response.status, diagnostics };
     }
     return {
       ok: true,
-      html,
+      html: decoded.html,
       httpStatus: response.status,
+      contentType,
+      bodyLength: bytes.byteLength,
+      diagnostics,
       fetchedAt: new Date().toISOString(),
       cacheStatus: "bypass",
       stale: false
@@ -494,12 +523,13 @@ async function fetchNoticeSource() {
 
 export function parseNoticePage(html) {
   const sourceHtml = String(html || "");
-  const dateMatch = sourceHtml.match(/<h4[^>]*>\s*(20\d{2})年\s*(\d{1,2})月\s*(\d{1,2})日の出場選手登録/iu);
+  const dateMatch = sourceHtml.match(/<h4[^>]*>\s*(20\d{2})年\s*(\d{1,2})月\s*(\d{1,2})日(?:の)?\s*出場選手登録(?:\s*[、・及お]\s*(?:よび)?\s*登録抹消)?/iu);
   const date = dateMatch ? `${dateMatch[1]}-${String(Number(dateMatch[2])).padStart(2, "0")}-${String(Number(dateMatch[3])).padStart(2, "0")}` : "";
-  const registeredBlock = extractNoticeBlock(sourceHtml, "出場選手登録");
-  const removedBlock = extractNoticeBlock(sourceHtml, "出場選手登録抹消");
-  const registrations = parseNoticeRows(registeredBlock);
-  const removals = parseNoticeRows(removedBlock);
+  const noticeSections = extractNoticeSections(sourceHtml);
+  const registrationSections = noticeSections.filter((section) => section.heading === "出場選手登録");
+  const removalSections = noticeSections.filter((section) => section.heading === "出場選手登録抹消");
+  const registrations = registrationSections.flatMap((section) => parseNoticeRows(section.html));
+  const removals = removalSections.flatMap((section) => parseNoticeRows(section.html));
   const rosters = {};
   const rosterPattern = /<h5[^>]*>\s*([^<]+?)\s*<\/h5>[\s\S]*?<table[^>]*>([\s\S]*?)<\/table>/giu;
   let rosterMatch;
@@ -514,14 +544,98 @@ export function parseNoticePage(html) {
     registrations,
     removals,
     rosters,
-    debug: { date, registeredRows: registrations.length, removedRows: removals.length, rosterTeams: Object.keys(rosters).length }
+    isValid: Boolean(date),
+    debug: {
+      date,
+      registeredRows: registrations.length,
+      removedRows: removals.length,
+      rosterTeams: Object.keys(rosters).length,
+      selectorCounts: {
+        dateHeading: dateMatch ? 1 : 0,
+        noticeHeadings: noticeSections.length,
+        registrationSections: registrationSections.length,
+        removalSections: removalSections.length,
+        rosterTeamSections: Object.keys(rosters).length
+      }
+    }
   };
 }
 
-function extractNoticeBlock(html, heading) {
-  const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`<h5[^>]*>\\s*${escapedHeading}\\s*<\\/h5>([\\s\\S]*?)(?=<h5[^>]*>|<h4[^>]*>|$)`, "iu");
-  return pattern.exec(html)?.[1] || "";
+function extractNoticeSections(html) {
+  const sections = [];
+  const headingPattern = /<h5[^>]*>([\s\S]*?)<\/h5>/giu;
+  const headings = [...html.matchAll(headingPattern)];
+  for (let index = 0; index < headings.length; index += 1) {
+    const heading = normalizeWhitespace(stripTags(headings[index][1]));
+    const start = (headings[index].index || 0) + headings[index][0].length;
+    const end = index + 1 < headings.length ? (headings[index + 1].index || html.length) : html.length;
+    if (heading === "出場選手登録" || heading === "出場選手登録抹消") {
+      sections.push({ heading, html: html.slice(start, end) });
+    }
+  }
+  return sections;
+}
+
+function selectNoticeForRequestedDate(parsed, requestedDate) {
+  const normalizedRequestedDate = /^20\d{2}-\d{2}-\d{2}$/.test(String(requestedDate || "")) ? requestedDate : "";
+  if (!normalizedRequestedDate || normalizedRequestedDate === parsed.date) {
+    return {
+      noticeDate: parsed.date,
+      registrations: parsed.registrations,
+      removals: parsed.removals,
+      debug: { pageDate: parsed.date, requestedDate: normalizedRequestedDate || parsed.date, noticeState: "published" }
+    };
+  }
+  // 公示がない日はルートページが直近の公示日を表示する。依頼日の差分は空公示として扱う。
+  return {
+    noticeDate: normalizedRequestedDate,
+    registrations: [],
+    removals: [],
+    debug: { pageDate: parsed.date, requestedDate: normalizedRequestedDate, noticeState: "no-notice-for-requested-date" }
+  };
+}
+
+function isHtmlContentType(contentType) {
+  return /^(text\/html|application\/xhtml\+xml)(?:\s*;|$)/iu.test(String(contentType || "").trim());
+}
+
+export function decodeNoticeHtml(bytes, contentType = "") {
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+  const asciiHead = new TextDecoder("latin1").decode(view.slice(0, 4096));
+  const charset = detectNoticeCharset(contentType, asciiHead);
+  try {
+    return { html: new TextDecoder(charset).decode(view), charset };
+  } catch {
+    return { html: new TextDecoder("utf-8").decode(view), charset: "utf-8" };
+  }
+}
+
+function detectNoticeCharset(contentType, asciiHead) {
+  const headerCharset = /charset\s*=\s*["']?([^\s;"'>]+)/iu.exec(String(contentType || ""))?.[1] || "";
+  const metaCharset = /<meta[^>]+charset\s*=\s*["']?([^\s;"'>]+)/iu.exec(asciiHead)?.[1]
+    || /<meta[^>]+content\s*=\s*["'][^"']*charset\s*=\s*([^\s;"'>]+)/iu.exec(asciiHead)?.[1]
+    || "";
+  const normalized = String(headerCharset || metaCharset || "utf-8").trim().toLowerCase().replace(/_/g, "-");
+  if (["shift-jis", "shiftjis", "sjis", "windows-31j", "ms932", "cp932"].includes(normalized)) return "windows-31j";
+  if (["euc-jp", "eucjp"].includes(normalized)) return "euc-jp";
+  return normalized || "utf-8";
+}
+
+function createNoticeSourceDiagnostics({ contentType, httpStatus, bodyLength, html, charset }) {
+  const title = normalizeWhitespace(stripTags(/<title[^>]*>([\s\S]*?)<\/title>/iu.exec(html || "")?.[1] || ""));
+  const head = String(html || "").slice(0, 1600);
+  const tags = [...head.matchAll(/<(?:!doctype\s+html|html|head|meta|title|body)\b[^>]*>/giu)]
+    .map((match) => /^<\s*([^\s>]+)/u.exec(match[0])?.[1].toLowerCase() || "")
+    .filter(Boolean);
+  return {
+    sourceUrl: NOTICE_SOURCE_URL,
+    httpStatus: Number(httpStatus || 0),
+    contentType: String(contentType || ""),
+    bodyLength: Number(bodyLength || 0),
+    charset,
+    title,
+    headStructure: [...new Set(tags)].join(",")
+  };
 }
 
 function parseNoticeRows(block) {
@@ -1005,6 +1119,7 @@ function uniqueRosterEntries(entries) {
 
 function normalizeRosterPlayerName(value) {
   return String(value || "")
+    .replace(/※[\s\S]*$/u, "")
     .replace(/\u3000/g, " ")
     .replace(/\s+/g, " ")
     .trim()

@@ -4,7 +4,8 @@ import {
   getJstDateString,
   getNoticePollingPlan,
   getPregameTimeline,
-  getPregameTimelines
+  getPregameTimelines,
+  setDetectedScheduleGames
 } from "./pregame-automation.js";
 import {
   createFightersPlayerId,
@@ -226,6 +227,11 @@ async function runScheduledGameAutomation(env, now) {
   let pregame = null;
   let scoring = null;
   try {
+    await syncTodayFightersSchedule(env, now);
+  } catch (error) {
+    console.error(`[GAME_DETECTION] date=${getJstDateString(now)} team=fighters status=failed code=${error?.code || "SCHEDULE_SYNC_FAILED"}`);
+  }
+  try {
     pregame = await runDueGameDayScheduleJobs(env, now);
   } catch (error) {
     console.error(`game-day schedule cron failed: ${error instanceof Error ? error.message : "unknown error"}`);
@@ -248,6 +254,42 @@ async function runScheduledGameAutomation(env, now) {
     console.error(`game-day publication cron failed: ${error instanceof Error ? error.message : "unknown error"}`);
   }
   return { pregame, scoring };
+}
+
+async function syncTodayFightersSchedule(env, now) {
+  const date = getJstDateString(now);
+  if (!date) return [];
+  const state = await env.AUTH_DB.prepare("SELECT next_check_at FROM game_schedule_check_state WHERE schedule_date = ?1 LIMIT 1").bind(date).first();
+  let rows = [];
+  if (!state?.next_check_at || new Date(state.next_check_at) <= now) {
+    const payload = await fetchNpbWorkerJson(env, { mode: "schedule", date });
+    if (!Array.isArray(payload.games)) throw createPregameError("SCHEDULE_RESPONSE_INVALID", "NPB日程レスポンスが不正です。");
+    const statements = [];
+    for (const game of payload.games) {
+      const startAt = new Date(`${date}T${game.startTime}:00+09:00`);
+      if (Number.isNaN(startAt.getTime())) continue;
+      const sourceGameKey = String(game.gameCode || `${date}:${game.homeTeam}:${game.awayTeam}:${game.startTime}`);
+      statements.push(env.AUTH_DB.prepare(
+        `INSERT INTO detected_game_schedule (game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, venue, game_status, detected_at, schedule_checked_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?10, ?10)
+         ON CONFLICT(source_game_key) DO UPDATE SET start_at=excluded.start_at, venue=excluded.venue, game_status=excluded.game_status, schedule_checked_at=excluded.schedule_checked_at, updated_at=excluded.updated_at`
+      ).bind(game.gameId, sourceGameKey, date, startAt.toISOString(), game.homeTeam, game.awayTeam, game.gameCode || null, game.venue || null, game.status === "cancelled" ? "cancelled" : "scheduled", now.toISOString()));
+    }
+    const nextCheck = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
+    statements.push(env.AUTH_DB.prepare(
+      `INSERT INTO game_schedule_check_state (schedule_date, next_check_at, last_checked_at, last_error_code, updated_at)
+       VALUES (?1, ?2, ?3, NULL, ?3)
+       ON CONFLICT(schedule_date) DO UPDATE SET next_check_at=excluded.next_check_at, last_checked_at=excluded.last_checked_at, last_error_code=NULL, updated_at=excluded.updated_at`
+    ).bind(date, nextCheck, now.toISOString()));
+    if (statements.length) await env.AUTH_DB.batch(statements);
+    rows = payload.games;
+    console.log(`[GAME_DETECTION] date=${date} team=fighters gamesFound=${rows.length} status=success`);
+  } else {
+    const stored = await env.AUTH_DB.prepare("SELECT * FROM detected_game_schedule WHERE game_date = ?1 AND game_status = 'scheduled' ORDER BY start_at").bind(date).all();
+    rows = (stored.results || []).map((row) => ({ gameId: row.game_id, date: row.game_date, startTime: new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Tokyo", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(row.start_at)), homeTeam: row.home_team, awayTeam: row.away_team, venue: row.venue || "", gameCode: row.game_code || "", status: row.game_status }));
+  }
+  setDetectedScheduleGames(rows);
+  return rows;
 }
 
 async function handleRegister(request, env, cors) {

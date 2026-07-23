@@ -1,3 +1,5 @@
+import { normalizeFightersScheduleGames } from "./game-schedule-detection.js";
+
 const LINEUP_SIZE = 9;
 const LINEUP_CACHE_TTL_SECONDS = 5 * 60;
 const ROSTER_CACHE_TTL_SECONDS = 30 * 60;
@@ -157,6 +159,9 @@ export default {
     if (mode === "notice") {
       return withCors(await handleNoticeRequest(requestUrl, isDebug), corsHeaders);
     }
+    if (mode === "schedule") {
+      return withCors(await handleScheduleRequest(requestUrl), corsHeaders);
+    }
 
     if (mode !== "lineup") {
       return withCors(jsonResponse({ ok: false, error: "対応していない取得モードです。" }, 400), corsHeaders);
@@ -227,6 +232,47 @@ function createCorsHeaders(request, env) {
   }
 
   return headers;
+}
+
+async function handleScheduleRequest(requestUrl) {
+  const date = String(requestUrl.searchParams.get("date") || "").trim();
+  if (!/^20\d{2}-\d{2}-\d{2}$/.test(date)) {
+    return jsonResponse({ ok: false, code: "SCHEDULE_DATE_INVALID", error: "日程の日付が不正です。" }, 400);
+  }
+  const [year, month] = date.split("-");
+  const sourceUrl = `https://npb.jp/games/${year}/schedule_${month}_detail.html`;
+  const upstream = await fetchNpbScorePage(sourceUrl);
+  if (!upstream.ok) {
+    return jsonResponse({ ok: false, code: "SCHEDULE_FETCH_FAILED", error: "NPB公式日程を取得できませんでした。" }, 502);
+  }
+  const games = extractScheduleGames(upstream.html, date);
+  if (games === null) {
+    return jsonResponse({ ok: false, code: "SCHEDULE_PARSE_FAILED", error: "NPB公式日程を解析できませんでした。" }, 422);
+  }
+  return jsonResponse({ ok: true, date, sourceUrl, fetchedAt: new Date().toISOString(), games: normalizeFightersScheduleGames(games, date) });
+}
+
+function extractScheduleGames(html, date) {
+  if (typeof html !== "string" || !html.includes("試合日程")) return null;
+  const result = [];
+  const rows = html.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/giu) || [];
+  const [, monthText, dayText] = String(date).match(/^\d{4}-(\d{2})-(\d{2})$/) || [];
+  const targetMonth = Number(monthText);
+  const targetDay = Number(dayText);
+  let activeDateMatches = false;
+  for (const row of rows) {
+    const text = decodeHtmlEntities(row.replace(/<[^>]+>/g, " ")).replace(/[\s\u3000]+/g, " ").trim();
+    const dateMatch = /(\d{1,2})\s*[/月]\s*(\d{1,2})/.exec(text);
+    if (dateMatch) activeDateMatches = Number(dateMatch[1]) === targetMonth && Number(dateMatch[2]) === targetDay;
+    if (!activeDateMatches) continue;
+    const names = STARTER_TEAM_ALIASES.filter((team) => team.aliases.some((alias) => text.includes(alias))).map((team) => team.key);
+    const unique = [...new Set(names)];
+    const time = /\b([01]\d|2[0-3]):[0-5]\d\b/.exec(text)?.[0] || "";
+    if (unique.length !== 2 || !time) continue;
+    const scoreCode = /\/scores\/\d{4}\/\d{4}\/([a-z0-9]+-[a-z0-9]+-\d+)\//i.exec(row)?.[1] || "";
+    result.push({ homeTeam: unique[0], awayTeam: unique[1], startTime: time, gameCode: scoreCode, venue: "", status: /中止|延期/.test(text) ? "cancelled" : "scheduled" });
+  }
+  return result;
 }
 
 function withCors(response, corsHeaders) {

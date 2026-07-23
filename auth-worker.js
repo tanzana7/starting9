@@ -41,7 +41,6 @@ const AUTO_SCORING_MAX_DELAY_SECONDS = 24 * 60 * 60;
 const AUTO_SCORING_MAX_ATTEMPTS = 3;
 const AUTO_SCORING_CRON_BATCH_SIZE = 10;
 const AUTO_SCORING_PROCESSING_TIMEOUT_MS = 10 * 60 * 1000;
-const NPB_FETCH_WORKER_PRODUCTION_URL = "https://starting9-npb-fetch.tanzana7.workers.dev/";
 const NPB_FETCH_TIMEOUT_MS = 15_000;
 const ROSTER_MINIMUM_PLAYER_COUNT = 20;
 const GAME_DAY_NOTICE_SOURCE = "https://npb.jp/announcement/roster/";
@@ -52,11 +51,11 @@ const GAME_DAY_NOTICE_STATUS = Object.freeze({
   ERROR: "error"
 });
 const PREGAME_TOOL_ACTIONS = Object.freeze({
-  "run-notice": { logAction: "notice_fetch", fetchCode: "NOTICE_FETCH_FAILED", parseCode: "NOTICE_PARSE_FAILED", failureCode: "NOTICE_FETCH_FAILED", schemaCode: "NOTICE_SCHEMA_NOT_READY" },
+  "run-notice": { logAction: "notice_fetch", upstreamMode: "notice", fetchCode: "NOTICE_FETCH_FAILED", parseCode: "NOTICE_PARSE_FAILED", failureCode: "NOTICE_FETCH_FAILED", schemaCode: "NOTICE_SCHEMA_NOT_READY" },
   "distribute-notice": { logAction: "notice_distribution", failureCode: "NOTICE_DISTRIBUTION_FAILED", schemaCode: "NOTICE_SCHEMA_NOT_READY" },
-  "run-roster": { logAction: "roster_fetch", fetchCode: "ROSTER_FETCH_FAILED", parseCode: "ROSTER_PARSE_FAILED", failureCode: "ROSTER_FETCH_FAILED", schemaCode: "ROSTER_SCHEMA_NOT_READY" },
+  "run-roster": { logAction: "roster_fetch", upstreamMode: "roster", fetchCode: "ROSTER_FETCH_FAILED", parseCode: "ROSTER_PARSE_FAILED", failureCode: "ROSTER_FETCH_FAILED", schemaCode: "ROSTER_SCHEMA_NOT_READY" },
   "fix-roster": { logAction: "roster_fix", failureCode: "ROSTER_FIX_FAILED", schemaCode: "ROSTER_SCHEMA_NOT_READY" },
-  "run-lineup": { logAction: "lineup_fetch", fetchCode: "LINEUP_FETCH_FAILED", parseCode: "LINEUP_INVALID", failureCode: "LINEUP_FETCH_FAILED", schemaCode: "LINEUP_SCHEMA_NOT_READY" },
+  "run-lineup": { logAction: "lineup_fetch", upstreamMode: "lineup", fetchCode: "LINEUP_FETCH_FAILED", parseCode: "LINEUP_INVALID", failureCode: "LINEUP_FETCH_FAILED", schemaCode: "LINEUP_SCHEMA_NOT_READY" },
   publish: { logAction: "publish", failureCode: "PUBLISH_FAILED", schemaCode: "PUBLISH_SCHEMA_NOT_READY" },
   "auto-scoring/run-now": { logAction: "scoring", failureCode: "SCORING_FAILED", schemaCode: "SCORING_SCHEMA_NOT_READY" }
 });
@@ -81,6 +80,9 @@ const PREGAME_TOOL_ERROR_MESSAGES = Object.freeze({
   SCORING_FAILED: "採点に失敗しました。",
   SCORING_SCHEMA_NOT_READY: "採点用データベースが準備されていません。",
   GAME_NOT_FOUND: "対象試合が見つかりません。",
+  NPB_WORKER_URL_MISSING: "NPB取得Workerの接続先が設定されていません。",
+  NPB_WORKER_URL_INVALID: "NPB取得Workerの接続先が不正です。",
+  NPB_WORKER_ROUTE_NOT_FOUND: "NPB取得WorkerのAPIルートが見つかりません。",
   NPB_WORKER_HTTP_ERROR: "NPB取得Workerへの接続に失敗しました。"
 });
 const SCORING_RULES = Object.freeze({
@@ -994,7 +996,10 @@ async function executePregameTool(env, cors, gameId, action, operation) {
   try {
     const result = await operation();
     const metadata = PREGAME_TOOL_ACTIONS[action] || { logAction: action };
-    console.log(`[PREGAME_TOOL] action=${metadata.logAction} gameId=${gameId} status=success`);
+    const upstreamFields = metadata.upstreamMode
+      ? ` upstreamPath=/ mode=${metadata.upstreamMode}`
+      : "";
+    console.log(`[PREGAME_TOOL] action=${metadata.logAction} gameId=${gameId}${upstreamFields} status=success`);
     return jsonResponse({ ok: true, gameId, result }, 200, cors);
   } catch (error) {
     return createPregameToolErrorResponse(cors, gameId, action, error);
@@ -1005,7 +1010,9 @@ function createPregameToolErrorResponse(cors, gameId, action, error) {
   const normalized = normalizePregameToolError(action, error);
   const metadata = PREGAME_TOOL_ACTIONS[action] || { logAction: action };
   const upstreamStatus = Number(error?.upstreamStatus || error?.httpStatus || 0) || 0;
-  console.log(`[PREGAME_TOOL] action=${metadata.logAction} gameId=${gameId} status=failed code=${normalized.code} npbStatus=${upstreamStatus || "-"}`);
+  const upstreamPath = error?.upstreamPath === "/" ? "/" : "-";
+  const upstreamMode = String(error?.upstreamMode || metadata.upstreamMode || "-");
+  console.log(`[PREGAME_TOOL] action=${metadata.logAction} gameId=${gameId} upstreamPath=${upstreamPath} mode=${upstreamMode} upstreamStatus=${upstreamStatus || "-"} status=failed code=${normalized.code}`);
   const body = {
     ok: false,
     gameId,
@@ -1024,6 +1031,8 @@ function normalizePregameToolError(action, error) {
 
   if (isPregameSchemaError(error)) {
     code = metadata.schemaCode || "PREGAME_SCHEMA_NOT_READY";
+  } else if (Number(error?.upstreamStatus) === 404) {
+    code = "NPB_WORKER_ROUTE_NOT_FOUND";
   } else if (rawCode === "SCHEDULE_UNAVAILABLE") {
     code = "GAME_NOT_FOUND";
   } else if (rawCode === "INVALID_ROSTER") {
@@ -1036,7 +1045,9 @@ function normalizePregameToolError(action, error) {
       : (metadata.fetchCode || metadata.failureCode || "NPB_WORKER_HTTP_ERROR");
   } else if (rawCode === "NOTICE_DATE_MISMATCH") {
     code = "NOTICE_PARSE_FAILED";
-  } else if (rawCode === "NPB_HTTP_ERROR" || rawCode === "NPB_WORKER_URL_INVALID" || rawCode === "NPB_WORKER_TIMEOUT" || rawCode === "TIMEOUT") {
+  } else if (rawCode === "NPB_WORKER_URL_MISSING" || rawCode === "NPB_WORKER_URL_INVALID" || rawCode === "NPB_WORKER_ROUTE_NOT_FOUND") {
+    code = rawCode;
+  } else if (rawCode === "NPB_HTTP_ERROR" || rawCode === "NPB_WORKER_TIMEOUT" || rawCode === "TIMEOUT") {
     code = metadata.fetchCode || metadata.failureCode || "NPB_WORKER_HTTP_ERROR";
   } else if (!code || !PREGAME_TOOL_ERROR_MESSAGES[code]) {
     code = metadata.failureCode || "PREGAME_TOOL_FAILED";
@@ -1047,7 +1058,7 @@ function normalizePregameToolError(action, error) {
   else if (code === "GAME_NOT_FOUND") status = 404;
   else if (code.endsWith("_SCHEMA_NOT_READY")) status = 503;
   else if (code.endsWith("_PARSE_FAILED") || code === "LINEUP_INVALID") status = 422;
-  else if (code.endsWith("_FETCH_FAILED") || code === "NPB_WORKER_HTTP_ERROR") status = 502;
+  else if (code.endsWith("_FETCH_FAILED") || ["NPB_WORKER_HTTP_ERROR", "NPB_WORKER_URL_MISSING", "NPB_WORKER_URL_INVALID", "NPB_WORKER_ROUTE_NOT_FOUND"].includes(code)) status = 502;
   else if (status < 400 || status > 599) status = 500;
 
   return { code, status, message: PREGAME_TOOL_ERROR_MESSAGES[code] || "試合前処理を実行できませんでした。" };
@@ -1443,22 +1454,59 @@ function getGameIdentityForPregame(gameId) {
   return { ...timeline, gameCode: gameCode.toLowerCase() };
 }
 
-function getNpbFetchWorkerBaseUrl(env) {
-  const value = String(env?.NPB_FETCH_WORKER_URL || NPB_FETCH_WORKER_PRODUCTION_URL).trim();
+export function getNpbFetchWorkerBaseUrl(env) {
+  const value = typeof env?.NPB_FETCH_WORKER_URL === "string" ? env.NPB_FETCH_WORKER_URL.trim() : "";
+  if (!value) {
+    throw createPregameError("NPB_WORKER_URL_MISSING", "NPB取得Workerの接続先が設定されていません。");
+  }
   try {
     const url = new URL(value);
     const isOfficialWorker = url.protocol === "https:" && url.hostname === "starting9-npb-fetch.tanzana7.workers.dev";
     const isLocal = url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname);
-    return (isOfficialWorker || isLocal) ? url : null;
+    if (!isOfficialWorker && !isLocal) {
+      throw createPregameError("NPB_WORKER_URL_INVALID", "NPB取得Workerの接続先が不正です。");
+    }
+    return url.toString();
   } catch {
-    return null;
+    throw createPregameError("NPB_WORKER_URL_INVALID", "NPB取得Workerの接続先が不正です。");
   }
 }
 
+export function buildNpbWorkerUrl(baseUrl, params = {}) {
+  let url;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    throw createPregameError("NPB_WORKER_URL_INVALID", "NPB取得Workerの接続先が不正です。");
+  }
+  url.pathname = "/";
+  url.search = "";
+  url.hash = "";
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && String(value) !== "") {
+      url.searchParams.set(key, String(value));
+    }
+  }
+  return url;
+}
+
 async function fetchNpbWorkerJson(env, params) {
-  const url = getNpbFetchWorkerBaseUrl(env);
-  if (!url) throw createPregameError("NPB_WORKER_URL_INVALID", "NPB取得Workerの接続先が不正です。");
-  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+  const upstreamMode = String(params?.mode || "");
+  let url;
+  try {
+    url = buildNpbWorkerUrl(getNpbFetchWorkerBaseUrl(env), params);
+  } catch (error) {
+    if (error?.code) {
+      error.upstreamPath = "/";
+      error.upstreamMode = upstreamMode;
+      throw error;
+    }
+    throw createPregameError("NPB_WORKER_URL_INVALID", "NPB取得Workerの接続先が不正です。", {
+      upstreamPath: "/",
+      upstreamMode
+    });
+  }
+  const upstreamDetails = { upstreamPath: url.pathname, upstreamMode };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), NPB_FETCH_TIMEOUT_MS);
   try {
@@ -1469,20 +1517,22 @@ async function fetchNpbWorkerJson(env, params) {
     } catch {
       throw createPregameError("NPB_RESPONSE_INVALID", "NPB取得Workerのレスポンス形式が不正です。", {
         httpStatus: response.status,
-        upstreamStatus: response.status
+        upstreamStatus: response.status,
+        ...upstreamDetails
       });
     }
     if (!response.ok || !payload?.ok) {
       const upstreamCode = payload?.code || (response.status === 422 ? "NPB_RESPONSE_INVALID" : "NPB_HTTP_ERROR");
       throw createPregameError(upstreamCode, payload?.error || "NPB取得Workerがエラーを返しました。", {
         httpStatus: response.status,
-        upstreamStatus: response.status
+        upstreamStatus: response.status,
+        ...upstreamDetails
       });
     }
     return payload;
   } catch (error) {
     if (error?.code) throw error;
-    throw createPregameError(error?.name === "AbortError" ? "NPB_WORKER_TIMEOUT" : "NPB_HTTP_ERROR", "NPB公式データを取得できませんでした。");
+    throw createPregameError(error?.name === "AbortError" ? "NPB_WORKER_TIMEOUT" : "NPB_HTTP_ERROR", "NPB公式データを取得できませんでした。", upstreamDetails);
   } finally {
     clearTimeout(timer);
   }
@@ -1493,6 +1543,8 @@ function createPregameError(code, message, details = {}) {
   error.code = code;
   if (Number(details.httpStatus) > 0) error.httpStatus = Number(details.httpStatus);
   if (Number(details.upstreamStatus) > 0) error.upstreamStatus = Number(details.upstreamStatus);
+  if (details.upstreamPath === "/") error.upstreamPath = "/";
+  if (typeof details.upstreamMode === "string" && details.upstreamMode) error.upstreamMode = details.upstreamMode;
   return error;
 }
 

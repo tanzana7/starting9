@@ -5,6 +5,7 @@ import {
   getNoticePollingPlan,
   getPregameTimeline,
   getPregameTimelines,
+  isScheduleGameUnavailable,
   setDetectedScheduleGames
 } from "./pregame-automation.js";
 import {
@@ -52,6 +53,13 @@ const GAME_DAY_NOTICE_STATUS = Object.freeze({
   CLOSED: "closed_without_notice",
   ERROR: "error"
 });
+const GAME_WORKFLOW_STEPS = Object.freeze([
+  { id: "notice", offsetMinutes: -120, retryMinutes: 10 },
+  { id: "close_predictions", offsetMinutes: -60 },
+  { id: "lineup", offsetMinutes: -60, retryMinutes: 10 },
+  { id: "score", offsetMinutes: 5 },
+  { id: "publish", offsetMinutes: 6 }
+]);
 const PREGAME_TOOL_ACTIONS = Object.freeze({
   "run-notice": { logAction: "notice_fetch", transport: "service-binding", upstreamMode: "notice", fetchCode: "NOTICE_FETCH_FAILED", parseCode: "NOTICE_PARSE_FAILED", failureCode: "NOTICE_FETCH_FAILED", schemaCode: "NOTICE_SCHEMA_NOT_READY" },
   "distribute-notice": { logAction: "notice_distribution", failureCode: "NOTICE_DISTRIBUTION_FAILED", schemaCode: "NOTICE_SCHEMA_NOT_READY" },
@@ -224,36 +232,37 @@ export default {
 };
 
 async function runScheduledGameAutomation(env, now) {
-  let pregame = null;
-  let scoring = null;
   try {
     await syncTodayFightersSchedule(env, now);
   } catch (error) {
     console.error(`[GAME_DETECTION] date=${getJstDateString(now)} team=fighters status=failed code=${error?.code || "SCHEDULE_SYNC_FAILED"}`);
   }
-  try {
-    pregame = await runDueGameDayScheduleJobs(env, now);
-  } catch (error) {
-    console.error(`game-day schedule cron failed: ${error instanceof Error ? error.message : "unknown error"}`);
-  }
-  try {
-    const lineup = await runDuePregameAutomationJobs(env, now);
-    pregame = { ...(pregame || {}), lineup };
-  } catch (error) {
-    console.error(`pregame automation cron failed: ${error instanceof Error ? error.message : "unknown error"}`);
-  }
-  try {
-    scoring = await runDueAutoScoringJobs(env, now);
-  } catch (error) {
-    console.error(`auto scoring cron failed: ${error instanceof Error ? error.message : "unknown error"}`);
-  }
-  try {
-    const published = await runDueGameDayPublicationJobs(env, now);
-    scoring = { ...(scoring || {}), published };
-  } catch (error) {
-    console.error(`game-day publication cron failed: ${error instanceof Error ? error.message : "unknown error"}`);
-  }
-  return { pregame, scoring };
+  return runGameWorkflows(env, now);
+}
+
+async function runGameWorkflows(env, now) {
+  const timelines = getPregameTimelines();
+  const shared = { notice: null, scoring: null, publishing: null };
+  try { shared.notice = await runDueGameDayScheduleJobs(env, now); }
+  catch (error) { console.error(`game-day schedule cron failed: code=${error?.code || "unknown"}`); }
+  try { await runDuePregameAutomationJobs(env, now); }
+  catch (error) { console.error(`pregame automation cron failed: code=${error?.code || "unknown"}`); }
+  try { shared.scoring = await runDueAutoScoringJobs(env, now); }
+  catch (error) { console.error(`auto scoring cron failed: code=${error?.code || "unknown"}`); }
+  try { shared.publishing = await runDueGameDayPublicationJobs(env, now); }
+  catch (error) { console.error(`game-day publication cron failed: code=${error?.code || "unknown"}`); }
+  const workflows = timelines.map((timeline) => runGameWorkflow(timeline, now));
+  return { shared, workflows };
+}
+
+function runGameWorkflow(timeline, now) {
+  const cancelled = isScheduleGameUnavailable(timeline.game);
+  const steps = GAME_WORKFLOW_STEPS.map((step) => {
+    if (cancelled) return { id: step.id, status: "cancelled", action: "skipped" };
+    const dueAt = new Date(timeline.startAt.getTime() + step.offsetMinutes * 60 * 1000);
+    return { id: step.id, status: now < dueAt ? "not_due" : "ready", action: now < dueAt ? "skipped" : "evaluated", dueAt: dueAt.toISOString() };
+  });
+  return { gameId: timeline.gameId, gameStatus: cancelled ? "cancelled" : "scheduled", source: timeline.gameCode ? "auto-detected" : "static", steps };
 }
 
 async function syncTodayFightersSchedule(env, now) {

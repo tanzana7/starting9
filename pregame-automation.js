@@ -6,6 +6,7 @@ let detectedScheduleGames = [];
 export const ROSTER_CAPTURE_MINUTES_BEFORE_START = 120;
 export const PREDICTION_DEADLINE_MINUTES_BEFORE_START = 60;
 export const LINEUP_FETCH_START_MINUTES_BEFORE_START = 60;
+export const LINEUP_AUTO_APPROVAL_MINUTES_BEFORE_START = 30;
 export const LINEUP_FETCH_INTERVAL_MINUTES = 10;
 export const RESULT_RELEASE_MINUTES_AFTER_START = 0;
 export const NOTICE_MONITOR_START_HOUR_JST = 10;
@@ -53,6 +54,7 @@ export function getPregameTimeline(gameId) {
     rosterCaptureAt: offset(ROSTER_CAPTURE_MINUTES_BEFORE_START),
     predictionDeadlineAt: offset(PREDICTION_DEADLINE_MINUTES_BEFORE_START),
     lineupFetchStartAt: offset(LINEUP_FETCH_START_MINUTES_BEFORE_START),
+    lineupAutoApprovalAt: offset(LINEUP_AUTO_APPROVAL_MINUTES_BEFORE_START),
     resultReleaseAt: new Date(startAt.getTime() + RESULT_RELEASE_MINUTES_AFTER_START * 60 * 1000)
   };
 }
@@ -106,10 +108,18 @@ export function getNoticePollingPlan(timelines, now = new Date()) {
 // Cronは毎分でなくてもよい。現在時刻が入っている10分枠を一度だけ処理する。
 export function getDueLineupAttemptAt(timeline, now = new Date()) {
   const current = now instanceof Date ? now : new Date(now);
-  if (Number.isNaN(current.getTime()) || current < timeline.lineupFetchStartAt || current > timeline.startAt) return null;
+  if (Number.isNaN(current.getTime()) || current < timeline.lineupFetchStartAt || current >= timeline.startAt) return null;
   const elapsed = current.getTime() - timeline.lineupFetchStartAt.getTime();
   const interval = LINEUP_FETCH_INTERVAL_MINUTES * 60 * 1000;
   return new Date(timeline.lineupFetchStartAt.getTime() + Math.floor(elapsed / interval) * interval);
+}
+
+export function isLineupAutoApprovalDue(timeline, now = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  return Boolean(timeline?.lineupAutoApprovalAt)
+    && !Number.isNaN(current.getTime())
+    && current >= timeline.lineupAutoApprovalAt
+    && current < timeline.startAt;
 }
 
 if (typeof window !== "undefined") {
@@ -117,6 +127,7 @@ if (typeof window !== "undefined") {
     rosterCaptureMinutesBeforeStart: ROSTER_CAPTURE_MINUTES_BEFORE_START,
     predictionDeadlineMinutesBeforeStart: PREDICTION_DEADLINE_MINUTES_BEFORE_START,
     lineupFetchStartMinutesBeforeStart: LINEUP_FETCH_START_MINUTES_BEFORE_START,
+    lineupAutoApprovalMinutesBeforeStart: LINEUP_AUTO_APPROVAL_MINUTES_BEFORE_START,
     lineupFetchIntervalMinutes: LINEUP_FETCH_INTERVAL_MINUTES,
     resultReleaseMinutesAfterStart: RESULT_RELEASE_MINUTES_AFTER_START,
     noticeMonitorStartHourJst: NOTICE_MONITOR_START_HOUR_JST,

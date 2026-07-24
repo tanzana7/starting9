@@ -3187,6 +3187,7 @@ function renderAdminGameWorkflowStatus() {
 
   const schedule = record.schedule || {};
   const workflow = record.workflow || {};
+  const lineup = record.lineup || {};
   const scoring = record.scoring || {};
   const publishing = record.publishing || {};
   const automationHealth = record.automation?.health || {};
@@ -3195,6 +3196,9 @@ function renderAdminGameWorkflowStatus() {
     ["試合開始", formatPredictionDeadlineDateTime(schedule.startAt)],
     ["予想締切", formatPredictionDeadlineDateTime(schedule.predictionDeadlineAt)],
     ["受付状態", getEffectivePredictionDeadline().isClosed ? "締切後" : "締切前"],
+    ["スタメン最終取得", lineup.latestFetchedAt ? formatDateTime(lineup.latestFetchedAt) : "未取得"],
+    ["スタメン検証", lineup.validationStatus === "valid" ? "正常" : (lineup.validationError || "未確認")],
+    ["本承認基準", formatPredictionDeadlineDateTime(schedule.lineupAutoApprovalAt)],
     ["現在のワークフロー", getGameWorkflowStepLabel(workflow.currentStep)],
     ["採点状態", formatAutoScoringStatus(scoring.status, scoring.publicationStatus)],
     ["採点時刻", scoring.scoredAt ? formatDateTime(scoring.scoredAt) : "-"],

@@ -2,6 +2,7 @@ import { getPredictionDeadlineStatus } from "./prediction-deadline.js";
 import {
   getDueLineupAttemptAt,
   getJstDateString,
+  isLineupAutoApprovalDue,
   getNoticePollingPlan,
   getPregameTimeline,
   getPregameTimelines,
@@ -2122,6 +2123,30 @@ export function shouldAutoApproveOfficialLineup(autoApproveEnabled, lineupResult
     && lineupResult.lineup.length === SCORING_LINEUP_SIZE;
 }
 
+async function storeOfficialLineupCandidate(db, gameId, lineupResult, payload, fetchedAt) {
+  const timestamp = fetchedAt.toISOString();
+  const lineupJson = lineupResult?.ok ? JSON.stringify(lineupResult.lineup) : null;
+  await db.prepare(
+    `INSERT INTO game_lineup_candidates
+       (game_id, actual_lineup_json, validation_status, validation_error, source_url, fetched_at, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?6)
+     ON CONFLICT(game_id) DO UPDATE SET
+       actual_lineup_json = excluded.actual_lineup_json,
+       validation_status = excluded.validation_status,
+       validation_error = excluded.validation_error,
+       source_url = excluded.source_url,
+       fetched_at = excluded.fetched_at,
+       updated_at = excluded.updated_at`
+  ).bind(
+    gameId,
+    lineupJson,
+    lineupResult?.ok ? "valid" : "invalid",
+    lineupResult?.ok ? null : String(lineupResult?.error || "スタメンの検証に失敗しました。").slice(0, 240),
+    String(payload?.sourceUrl || "").slice(0, 500) || null,
+    timestamp
+  ).run();
+}
+
 async function ensurePregameAutomationRow(db, identity, now) {
   const nowIso = now.toISOString();
   await db.prepare(
@@ -2170,15 +2195,21 @@ async function captureOfficialLineup(env, gameId, now, { force = false, autoAppr
   const identity = getGameIdentityForPregame(gameId);
   if (!identity) throw createPregameError("SCHEDULE_UNAVAILABLE", "試合日程を確認できません。");
   // 手動テストでも試合開始後のNPB内容を正式スタメンとして取り込まない。
-  if (now.getTime() > identity.startAt.getTime()) return { status: "skipped_after_start" };
+  if (now.getTime() >= identity.startAt.getTime()) return { status: "skipped_after_start" };
   await ensurePregameAutomationRow(env.AUTH_DB, identity, now);
   const existing = await getGameLineup(env.AUTH_DB, gameId);
   if (existing) return { status: existing.lineup_source === "manual" ? "manual_lineup_exists" : "already_captured" };
   try {
     const payload = await fetchNpbWorkerJson(env, { mode: "lineup", date: identity.game.date, gameCode: identity.gameCode });
     const actual = createOfficialLineupFromNpb(payload.lineup);
+    const fetchedAt = new Date(payload.fetchedAt || now);
+    const detectedAt = Number.isNaN(fetchedAt.getTime()) ? now : fetchedAt;
+    await storeOfficialLineupCandidate(env.AUTH_DB, gameId, actual, payload, detectedAt);
     if (!actual.ok) throw createPregameError("INVALID_LINEUP", actual.error);
-    const detectedAt = new Date(payload.fetchedAt || now);
+    if (!isLineupAutoApprovalDue(identity, now)) {
+      await recordPregameLineupDeferred(env.AUTH_DB, gameId, identity, now);
+      return { status: "provisional", sourceUrl: payload.sourceUrl, fetchedAt: detectedAt.toISOString() };
+    }
     if (!shouldAutoApproveOfficialLineup(autoApproveEnabled, actual)) {
       await recordPregameLineupDeferred(env.AUTH_DB, gameId, identity, now);
       return { status: "awaiting_manual_approval", sourceUrl: payload.sourceUrl };
@@ -2236,7 +2267,7 @@ async function recordPregameLineupDeferred(db, gameId, identity, now) {
 }
 
 async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimelines()) {
-  const summary = { lineupCaptured: 0, lineupAwaitingApproval: 0, lineupFailed: 0, lineupRetryWait: 0 };
+  const summary = { lineupCaptured: 0, lineupProvisional: 0, lineupAwaitingApproval: 0, lineupFailed: 0, lineupRetryWait: 0 };
   const settings = await getAutomationSettings(env.AUTH_DB);
   for (const timeline of timelines) {
     const gameId = timeline.gameId;
@@ -2256,7 +2287,10 @@ async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimel
         continue;
       }
       const result = await captureOfficialLineup(env, gameId, now, { autoApproveEnabled: settings.autoApproveEnabled });
-      if (result.status === "awaiting_manual_approval") {
+      if (result.status === "provisional") {
+        summary.lineupProvisional += 1;
+        console.log(`[GAME_WORKFLOW] gameId=${gameId} step=lineup action=executed status=provisional`);
+      } else if (result.status === "awaiting_manual_approval") {
         summary.lineupAwaitingApproval += 1;
         console.log(`[GAME_WORKFLOW] gameId=${gameId} step=lineup action=skipped status=auto_approval_disabled`);
       } else {
@@ -2287,6 +2321,7 @@ async function getPregameAutomationStatus(db, gameId) {
   const control = controlResult?.results?.[0] || null;
   const jobRow = job?.results?.[0] || null;
   const lineupRow = lineup?.results?.[0] || null;
+  const candidate = await getGameLineupCandidate(db, gameId);
   const nextNoticeAt = getNextGameDayNoticeAt(getPregameTimelines(), new Date());
   const nextAttempt = identity && !lineupRow ? getNextPregameLineupAttempt(identity, jobRow?.last_lineup_attempt_at) : null;
   const workflow = getGameWorkflowProgress(identity, jobRow, lineupRow, notice, dailyNotice);
@@ -2302,11 +2337,13 @@ async function getPregameAutomationStatus(db, gameId) {
     } : null,
     schedule: identity ? {
       startAt: identity.startAt.toISOString(), rosterCaptureAt: identity.rosterCaptureAt.toISOString(), predictionDeadlineAt: identity.predictionDeadlineAt.toISOString(),
-      lineupFetchStartAt: identity.lineupFetchStartAt.toISOString(), resultReleaseAt: identity.resultReleaseAt.toISOString()
+      lineupFetchStartAt: identity.lineupFetchStartAt.toISOString(), lineupAutoApprovalAt: identity.lineupAutoApprovalAt.toISOString(), resultReleaseAt: identity.resultReleaseAt.toISOString()
     } : null,
     roster: snapshot?.results?.[0] ? { status: "captured", capturedAt: snapshot.results[0].captured_at, playerCount: Number(snapshot.results[0].player_count), fixedAt: jobRow?.roster_fixed_at || notice?.roster_fixed_at || null } : { status: jobRow?.roster_status || "pending", fixedAt: jobRow?.roster_fixed_at || notice?.roster_fixed_at || null },
-    lineup: lineupRow ? { status: "captured", source: lineupRow.lineup_source, detectedAt: lineupRow.lineup_detected_at } : {
-      status: jobRow?.lineup_status || "pending", attempts: Number(jobRow?.lineup_attempt_count || 0), lastAttemptAt: jobRow?.last_lineup_attempt_at || null, nextAttemptAt: nextAttempt
+    lineup: lineupRow ? { status: "captured", source: lineupRow.lineup_source, detectedAt: lineupRow.lineup_detected_at, latestFetchedAt: candidate?.fetched_at || lineupRow.lineup_detected_at, validationStatus: candidate?.validation_status || "valid", validationError: candidate?.validation_error || "" } : {
+      status: candidate?.validation_status === "valid" ? (identity && !isLineupAutoApprovalDue(identity, new Date()) ? "provisional" : "awaiting_approval") : (jobRow?.lineup_status || "pending"),
+      attempts: Number(jobRow?.lineup_attempt_count || 0), lastAttemptAt: jobRow?.last_lineup_attempt_at || null, nextAttemptAt: nextAttempt,
+      latestFetchedAt: candidate?.fetched_at || null, validationStatus: candidate?.validation_status || "", validationError: candidate?.validation_error || ""
     },
     scoring: lineupRow ? { status: lineupRow.scoring_status, dueAt: lineupRow.scoring_due_at, scoredAt: lineupRow.scored_at, publicationStatus: lineupRow.publication_status || "pending", publishedAt: lineupRow.published_at || null, lastError: lineupRow.last_error || null } : { status: jobRow?.scoring_status || "pending", publicationStatus: "pending", publishedAt: null, lastError: null },
     publishing: lineupRow ? { status: workflow.publishingStatus, publishedAt: lineupRow.published_at || null, errorCode: workflow.errorCode || "", errorMessage: workflow.errorMessage || "" } : { status: "pending", publishedAt: null, errorCode: "", errorMessage: "" },
@@ -2340,6 +2377,18 @@ async function getPregameAutomationStatus(db, gameId) {
     lastErrorCode: workflow.errorCode || "",
     lastErrorMessage: workflow.errorMessage || ""
   };
+}
+
+async function getGameLineupCandidate(db, gameId) {
+  try {
+    return await db.prepare(
+      `SELECT validation_status, validation_error, source_url, fetched_at
+         FROM game_lineup_candidates WHERE game_id = ?1 LIMIT 1`
+    ).bind(gameId).first();
+  } catch (error) {
+    if (isPregameSchemaError(error)) return null;
+    throw error;
+  }
 }
 
 export function deriveGameWorkflowProgress({ identity = null, job = null, lineup = null, notice = null, dailyNotice = null, now = new Date() } = {}) {

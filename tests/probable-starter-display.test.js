@@ -9,6 +9,10 @@ const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
 
 test("予告先発は未発表と取得失敗を異なる案内として表示する", () => {
   assert.match(script, /status = "unannounced"/);
+  assert.match(script, /function renderProbableStarterDisplay\(\)/);
+  assert.match(script, /document\.getElementById\("probableStarterDisplay"\)/);
+  assert.match(script, /probableStarter\.status === "unannounced"/);
+  assert.match(script, /renderProbableStarterNotice\(container, "unannounced", probableStarter\.nextGame\)/);
   assert.match(script, /現在、次の試合の予告先発はまだ発表されていません。/);
   assert.match(script, /発表され次第、自動で表示されます。/);
   assert.match(script, /probableStarter\.status === "error"/);
@@ -17,7 +21,8 @@ test("予告先発は未発表と取得失敗を異なる案内として表示�
 });
 
 test("予告先発カードは発表済み・未発表・失敗で同じ表示領域を維持する", () => {
-  assert.match(script, /isPending \? "is-pending" : "is-success"/);
+  assert.match(script, /container\.className = "probable-starter-card is-success"/);
+  assert.match(script, /container\.className = `probable-starter-card \$\{isError \? "is-error" : "is-pending"\}`/);
   assert.match(css, /\.probable-starter-card[\s\S]*?min-height: 128px/);
   assert.match(css, /\.probable-starter-card\.is-error/);
 });

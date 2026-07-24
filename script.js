@@ -5754,49 +5754,48 @@ function renderProbableStarterDisplay() {
   }
 
   if (probableStarter.status === "error") {
-    container.className = "probable-starter-card is-error";
-    container.innerHTML = `
-      <p class="probable-starter-label">予告先発</p>
-      <p class="probable-starter-message">予告先発を取得できませんでした。</p>
-      <p class="probable-starter-meta">次回の自動更新で再試行します。</p>
-    `;
+    renderProbableStarterNotice(container, "error", probableStarter.nextGame);
+    return;
+  }
+
+  if (probableStarter.status === "unannounced") {
+    renderProbableStarterNotice(container, "unannounced", probableStarter.nextGame);
     return;
   }
 
   const matchedGame = probableStarter.matchedGame;
   const fightersStarter = getFightersStarter(matchedGame);
   if (!matchedGame || !fightersStarter) {
-    container.className = "probable-starter-card is-pending";
-    container.innerHTML = `
-      <p class="probable-starter-label">予告先発</p>
-      <p class="probable-starter-message">現在、次の試合の予告先発はまだ発表されていません。</p>
-      <p class="probable-starter-meta">発表され次第、自動で表示されます。</p>
-      <p class="probable-starter-meta">${escapeHtml(formatScheduledGameForLog(probableStarter.nextGame))}</p>
-    `;
+    renderProbableStarterNotice(container, "unannounced", probableStarter.nextGame);
     return;
   }
 
   const dateText = formatProbableStarterDate(matchedGame.date || probableStarter.nextGame.date);
   const gameInfo = `${dateText} ${matchedGame.startTime || probableStarter.nextGame.startTime || ""}`.trim();
   const sourceUrl = probableStarter.sourceUrl || NPB_STARTER_SOURCE_URL;
-  const isPending = probableStarter.status === "unannounced";
-  container.className = `probable-starter-card ${isPending ? "is-pending" : "is-success"}`;
+  container.className = "probable-starter-card is-success";
   container.innerHTML = `
     <div class="probable-starter-heading">
       <p class="probable-starter-label">予告先発</p>
       <a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">NPB公式</a>
     </div>
-    ${isPending ? `
-      <p class="probable-starter-message">現在、次の試合の予告先発はまだ発表されていません。</p>
-      <p class="probable-starter-meta">発表され次第、自動で表示されます。</p>
-    ` : `
-      <div class="probable-starter-grid">
-        ${createProbableStarterTeamHtml("日本ハム", fightersStarter.fighters?.name)}
-        ${createProbableStarterTeamHtml(fightersStarter.opponentName || "相手チーム", fightersStarter.opponent?.name)}
-      </div>
-    `}
+    <div class="probable-starter-grid">
+      ${createProbableStarterTeamHtml("日本ハム", fightersStarter.fighters?.name)}
+      ${createProbableStarterTeamHtml(fightersStarter.opponentName || "相手チーム", fightersStarter.opponent?.name)}
+    </div>
     <p class="probable-starter-meta">${escapeHtml(gameInfo)}${matchedGame.venue ? ` ・ ${escapeHtml(matchedGame.venue)}` : ""}</p>
     <p class="probable-starter-fetched">取得：${escapeHtml(formatDateTime(probableStarter.fetchedAt))}</p>
+  `;
+}
+
+function renderProbableStarterNotice(container, status, nextGame) {
+  const isError = status === "error";
+  container.className = `probable-starter-card ${isError ? "is-error" : "is-pending"}`;
+  container.innerHTML = `
+    <p class="probable-starter-label">予告先発</p>
+    <p class="probable-starter-message">${isError ? "予告先発を取得できませんでした。" : "現在、次の試合の予告先発はまだ発表されていません。"}</p>
+    <p class="probable-starter-meta">${isError ? "次回の自動更新で再試行します。" : "発表され次第、自動で表示されます。"}</p>
+    ${isError ? "" : `<p class="probable-starter-meta">${escapeHtml(formatScheduledGameForLog(nextGame))}</p>`}
   `;
 }
 

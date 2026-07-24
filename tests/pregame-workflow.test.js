@@ -15,7 +15,7 @@ test("Cronは日程同期後に明示的な試合workflow runnerへ委譲する"
   assert.match(worker, /\[GAME_AUTOMATION\]/);
   assert.match(worker, /getScheduledGames\(\)/);
   assert.match(worker, /async function runGameWorkflows\(env, now\)/);
-  assert.match(worker, /function runGameWorkflow\(timeline, now\)/);
+  assert.match(worker, /function runGameWorkflow\(timeline, now, paused = false\)/);
   assert.match(worker, /id: "notice", offsetMinutes: -120/);
   assert.match(worker, /id: "close_predictions", offsetMinutes: -60/);
   assert.match(worker, /id: "lineup", offsetMinutes: -60, retryMinutes: 10/);
@@ -27,10 +27,10 @@ test("workflowは中止試合を全step cancelledとして扱い、時刻未到�
   const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
   assert.match(worker, /if \(cancelled\) return \{ id: step\.id, status: "cancelled", action: "skipped" \}/);
   assert.match(worker, /status: now < dueAt \? "not_due" : "ready"/);
-  assert.match(worker, /runDueGameDayScheduleJobs\(env, now\)/);
-  assert.match(worker, /runDuePregameAutomationJobs\(env, now\)/);
-  assert.match(worker, /runDueAutoScoringJobs\(env, now\)/);
-  assert.match(worker, /runDueGameDayPublicationJobs\(env, now\)/);
+  assert.match(worker, /runDueGameDayScheduleJobs\(env, now, activeTimelines\)/);
+  assert.match(worker, /runDuePregameAutomationJobs\(env, now, activeTimelines\)/);
+  assert.match(worker, /runDueAutoScoringJobs\(env, now, pausedGameIds\)/);
+  assert.match(worker, /runDueGameDayPublicationJobs\(env, now, activeTimelines\)/);
 });
 
 test("workflow観測要約は試合・実行・失敗・中止を安全に分類する", async () => {

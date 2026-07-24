@@ -166,6 +166,9 @@ export default {
       if (path === "/api/me/achievements" && request.method === "GET") {
         return await handleMyAchievements(request, env, cors);
       }
+      if (path === "/api/rankings/perfect" && request.method === "GET") {
+        return await handleGetPerfectAchieversRanking(request, env, cors);
+      }
       if (path === "/api/rankings/yearly" && request.method === "GET") {
         return await handleGetYearlyRanking(request, env, cors);
       }
@@ -253,20 +256,35 @@ async function runScheduledGameAutomation(env, now) {
 
 async function runGameWorkflows(env, now) {
   const timelines = getPregameTimelines();
+  const pausedGameIds = await getPausedWorkflowGameIds(env.AUTH_DB);
+  const activeTimelines = timelines.filter((timeline) => !pausedGameIds.has(timeline.gameId));
   const cancelledTimelines = getScheduledGames()
     .filter((game) => isScheduleGameUnavailable(game))
     .map((game) => ({ game, gameId: game.gameId, gameCode: game.gameCode || "" }));
-  const shared = { notice: null, lineup: null, scoring: null, publishing: null, errors: 0 };
-  try { shared.notice = await runDueGameDayScheduleJobs(env, now); }
+  const shared = { notice: null, lineup: null, scoring: null, publishing: null, errors: 0, paused: pausedGameIds.size };
+  try { shared.notice = await runDueGameDayScheduleJobs(env, now, activeTimelines); }
   catch (error) { shared.errors += 1; console.error(`game-day schedule cron failed: code=${error?.code || "unknown"}`); }
-  try { shared.lineup = await runDuePregameAutomationJobs(env, now); }
+  try { shared.lineup = await runDuePregameAutomationJobs(env, now, activeTimelines); }
   catch (error) { shared.errors += 1; console.error(`pregame automation cron failed: code=${error?.code || "unknown"}`); }
-  try { shared.scoring = await runDueAutoScoringJobs(env, now); }
+  try { shared.scoring = await runDueAutoScoringJobs(env, now, pausedGameIds); }
   catch (error) { shared.errors += 1; console.error(`auto scoring cron failed: code=${error?.code || "unknown"}`); }
-  try { shared.publishing = await runDueGameDayPublicationJobs(env, now); }
+  try { shared.publishing = await runDueGameDayPublicationJobs(env, now, activeTimelines); }
   catch (error) { shared.errors += 1; console.error(`game-day publication cron failed: code=${error?.code || "unknown"}`); }
-  const workflows = [...timelines, ...cancelledTimelines].map((timeline) => runGameWorkflow(timeline, now));
+  const workflows = [...timelines, ...cancelledTimelines].map((timeline) => runGameWorkflow(timeline, now, pausedGameIds.has(timeline.gameId)));
   return { shared, workflows };
+}
+
+async function getPausedWorkflowGameIds(db) {
+  try {
+    const result = await db.prepare(
+      "SELECT game_id FROM game_workflow_controls WHERE automation_paused = 1"
+    ).all();
+    return new Set((result?.results || []).map((row) => String(row.game_id || "")).filter(Boolean));
+  } catch (error) {
+    // 新しい制御テーブルが未適用でも、既存のCron自動処理は止めません。
+    console.warn(`[GAME_WORKFLOW] step=all action=control_read status=failed code=${isPregameSchemaError(error) ? "GAME_WORKFLOW_CONTROL_SCHEMA_NOT_READY" : "GAME_WORKFLOW_CONTROL_READ_FAILED"}`);
+    return new Set();
+  }
 }
 
 export function summarizeGameAutomationRun({ date = "", scheduleSync = "skipped", workflows = [], shared = {} } = {}) {
@@ -334,14 +352,15 @@ function logCancelledGameWorkflows(workflows, scheduleSync) {
   }
 }
 
-function runGameWorkflow(timeline, now) {
+function runGameWorkflow(timeline, now, paused = false) {
   const cancelled = isScheduleGameUnavailable(timeline.game);
   const steps = GAME_WORKFLOW_STEPS.map((step) => {
     if (cancelled) return { id: step.id, status: "cancelled", action: "skipped" };
+    if (paused) return { id: step.id, status: "paused", action: "skipped" };
     const dueAt = new Date(timeline.startAt.getTime() + step.offsetMinutes * 60 * 1000);
     return { id: step.id, status: now < dueAt ? "not_due" : "ready", action: now < dueAt ? "skipped" : "evaluated", dueAt: dueAt.toISOString() };
   });
-  return { gameId: timeline.gameId, gameStatus: cancelled ? "cancelled" : "scheduled", source: timeline.gameCode ? "auto-detected" : "static", steps };
+  return { gameId: timeline.gameId, gameStatus: cancelled ? "cancelled" : paused ? "paused" : "scheduled", source: timeline.gameCode ? "auto-detected" : "static", steps };
 }
 
 async function syncTodayFightersSchedule(env, now) {
@@ -600,6 +619,24 @@ async function handleMyAchievements(request, env, cors) {
   return jsonResponse({ ok: true, achievements: achievements.map(toPublicAchievement) }, 200, cors);
 }
 
+async function handleGetPerfectAchieversRanking(request, env, cors) {
+  const options = parsePerfectAchieversQuery(new URL(request.url).searchParams);
+  if (!options.ok) {
+    return jsonResponse({ ok: false, error: options.error }, 400, cors);
+  }
+
+  const achievers = await getPerfectAchieversForDate(env.AUTH_DB, options);
+  const response = jsonResponse({
+    ok: true,
+    date: options.date,
+    achievers: achievers.rows,
+    totalCount: achievers.totalCount,
+    updatedAt: new Date().toISOString()
+  }, 200, cors);
+  response.headers.set("Cache-Control", "public, max-age=30");
+  return response;
+}
+
 async function handleGetYearlyRanking(request, env, cors) {
   const options = parseYearlyRankingQuery(new URL(request.url).searchParams);
   if (!options.ok) {
@@ -674,6 +711,19 @@ function getJapanYearMonth(now = new Date()) {
   }).formatToParts(now);
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return { year: Number(values.year), month: Number(values.month) };
+}
+
+function parsePerfectAchieversQuery(searchParams) {
+  const date = String(searchParams.get("date") || getJstDateString(new Date())).trim();
+  const pagination = parseRankingPaginationQuery(searchParams);
+  if (!pagination.ok) return pagination;
+  if (!isValidPregameDate(date)) {
+    return { ok: false, error: "dateはYYYY-MM-DD形式で指定してください。" };
+  }
+  if (date > getJstDateString(new Date())) {
+    return { ok: false, error: "未来日の満点者は取得できません。" };
+  }
+  return { ok: true, date, ...pagination };
 }
 
 function parseYearlyRankingQuery(searchParams) {
@@ -817,6 +867,60 @@ function createRankingCte() {
     UNION ALL
     SELECT * FROM unqualified_rows
   )`;
+}
+
+export async function getPerfectAchieversForDate(db, { date, limit, offset }) {
+  const latestPredictions = `WITH latest_predictions AS (
+    SELECT predictions.id, predictions.user_id, predictions.game_id, predictions.score, predictions.max_score,
+           predictions.opponent_code, predictions.submitted_at, predictions.status, predictions.is_test_prediction,
+           ROW_NUMBER() OVER (
+             PARTITION BY predictions.user_id, predictions.game_id
+             ORDER BY predictions.updated_at DESC, predictions.submitted_at DESC, predictions.id DESC
+           ) AS submission_rank
+      FROM predictions
+  )`;
+  const conditions = `latest_predictions.submission_rank = 1
+       AND latest_predictions.status = 'scored'
+       AND latest_predictions.score IS NOT NULL
+       AND latest_predictions.is_test_prediction = 0
+       AND ranking_games.game_date = ?1
+       AND ranking_games.is_ranking_eligible = 1
+       AND ranking_games.game_status = 'scored'
+       AND ranking_games.is_test_game = 0
+       AND users.status = 'active'
+       AND latest_predictions.score = latest_predictions.max_score`;
+  const [countRow, rowsResult] = await Promise.all([
+    db.prepare(`${latestPredictions}
+      SELECT COUNT(*) AS total_count
+        FROM latest_predictions
+        JOIN ranking_games ON ranking_games.game_id = latest_predictions.game_id
+        JOIN users ON users.id = latest_predictions.user_id
+       WHERE ${conditions}`).bind(date).first(),
+    db.prepare(`${latestPredictions}
+      SELECT users.username,
+             latest_predictions.score,
+             ranking_games.game_date,
+             latest_predictions.opponent_code,
+             latest_predictions.submitted_at
+        FROM latest_predictions
+        JOIN ranking_games ON ranking_games.game_id = latest_predictions.game_id
+        JOIN users ON users.id = latest_predictions.user_id
+       WHERE ${conditions}
+     ORDER BY latest_predictions.submitted_at ASC, latest_predictions.id ASC
+     LIMIT ?2 OFFSET ?3`).bind(date, limit, offset).all()
+  ]);
+
+  const totalCount = Number(countRow?.total_count || 0);
+  return {
+    rows: (rowsResult.results || []).map((row) => ({
+      username: row.username,
+      score: Number(row.score),
+      gameDate: row.game_date,
+      opponent: row.opponent_code || "",
+      submittedAt: row.submitted_at || null
+    })),
+    totalCount
+  };
 }
 
 async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt = null, endAt = null }) {
@@ -1050,7 +1154,7 @@ async function handleCreateAdminTestPerfectPrediction(env, cors, user, metadata)
 }
 
 function parseAdminScoringRoute(path) {
-  const match = /^\/api\/admin\/games\/([^/]+)\/(predictions\/(?:summary|score-predictions(?:\/preview)?)|actual-lineup|auto-scoring\/(?:status|run-now|retry|cancel)|pregame-automation\/(?:run-roster|run-lineup|run-notice|distribute-notice|fix-roster|publish))$/.exec(path);
+  const match = /^\/api\/admin\/games\/([^/]+)\/(predictions\/(?:summary|score-predictions(?:\/preview)?)|actual-lineup|auto-scoring\/(?:status|run-now|retry|cancel)|pregame-automation\/(?:run-roster|run-lineup|run-notice|distribute-notice|fix-roster|publish|workflow-status|pause-workflow|resume-workflow))$/.exec(path);
   if (!match) {
     return null;
   }
@@ -1104,6 +1208,15 @@ async function handleAdminScoringRoute(request, env, cors, route) {
   if (route.action === "auto-scoring/cancel" && request.method === "POST") {
     return await handleAdminAutoScoringCancel(env, cors, metadata.gameId);
   }
+  if (route.action === "pregame-automation/workflow-status" && request.method === "GET") {
+    return await handleAdminGameWorkflowStatus(env, cors, metadata.gameId);
+  }
+  if (route.action === "pregame-automation/pause-workflow" && request.method === "POST") {
+    return await handleAdminGameWorkflowPause(env, cors, metadata.gameId, true);
+  }
+  if (route.action === "pregame-automation/resume-workflow" && request.method === "POST") {
+    return await handleAdminGameWorkflowPause(env, cors, metadata.gameId, false);
+  }
   if (route.action === "pregame-automation/run-roster" && request.method === "POST") {
     return await executePregameTool(env, cors, metadata.gameId, "run-roster", () => captureGameRosterSnapshot(env, metadata.gameId, new Date(), { force: true }));
   }
@@ -1140,6 +1253,48 @@ async function executePregameTool(env, cors, gameId, action, operation) {
     return jsonResponse({ ok: true, gameId, result }, 200, cors);
   } catch (error) {
     return createPregameToolErrorResponse(cors, gameId, action, error);
+  }
+}
+
+async function handleAdminGameWorkflowStatus(env, cors, gameId) {
+  try {
+    const status = await getPregameAutomationStatus(env.AUTH_DB, gameId);
+    const response = jsonResponse({ ok: true, gameId, ...status }, 200, cors);
+    response.headers.set("Cache-Control", "no-store");
+    return response;
+  } catch (error) {
+    console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=status action=read status=failed code=${error?.code || "GAME_WORKFLOW_STATUS_UNAVAILABLE"}`);
+    return jsonResponse({
+      ok: false,
+      gameId,
+      code: isPregameSchemaError(error) ? "GAME_WORKFLOW_SCHEMA_NOT_READY" : "GAME_WORKFLOW_STATUS_UNAVAILABLE",
+      error: "自動運転の状態を取得できませんでした。"
+    }, isPregameSchemaError(error) ? 503 : 500, cors);
+  }
+}
+
+async function handleAdminGameWorkflowPause(env, cors, gameId, paused) {
+  const now = new Date().toISOString();
+  try {
+    await env.AUTH_DB.prepare(
+      `INSERT INTO game_workflow_controls (game_id, automation_paused, paused_at, resumed_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5)
+       ON CONFLICT(game_id) DO UPDATE SET
+         automation_paused = excluded.automation_paused,
+         paused_at = CASE WHEN excluded.automation_paused = 1 THEN excluded.paused_at ELSE game_workflow_controls.paused_at END,
+         resumed_at = CASE WHEN excluded.automation_paused = 0 THEN excluded.resumed_at ELSE game_workflow_controls.resumed_at END,
+         updated_at = excluded.updated_at`
+    ).bind(gameId, paused ? 1 : 0, paused ? now : null, paused ? null : now, now).run();
+    console.log(`[GAME_WORKFLOW] gameId=${gameId} step=all action=${paused ? "paused" : "resumed"} status=success`);
+    return await handleAdminGameWorkflowStatus(env, cors, gameId);
+  } catch (error) {
+    console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=all action=${paused ? "paused" : "resumed"} status=failed code=${error?.code || "GAME_WORKFLOW_CONTROL_FAILED"}`);
+    return jsonResponse({
+      ok: false,
+      gameId,
+      code: isPregameSchemaError(error) ? "GAME_WORKFLOW_CONTROL_SCHEMA_NOT_READY" : "GAME_WORKFLOW_CONTROL_FAILED",
+      error: "自動運転の停止状態を更新できませんでした。"
+    }, isPregameSchemaError(error) ? 503 : 500, cors);
   }
 }
 
@@ -1279,15 +1434,14 @@ async function claimGameDayNoticeSlot(db, date, slotKey, now) {
   return Number(result?.meta?.changes || 0) === 1;
 }
 
-async function runDueGameDayScheduleJobs(env, now) {
-  const timelines = getPregameTimelines();
+async function runDueGameDayScheduleJobs(env, now, timelines = getPregameTimelines()) {
   const plan = getNoticePollingPlan(timelines, now);
   if (!plan.date) return { notice: { due: false }, rosterFixed: 0 };
   await ensureGameDayNoticeRows(env.AUTH_DB, timelines, plan.date, now);
   let notice = { due: plan.due, skipped: true, slotKey: plan.slotKey };
   if (plan.due && await claimGameDayNoticeSlot(env.AUTH_DB, plan.date, plan.slotKey, now)) {
     try {
-      notice = await runGameDayNoticeOnce(env, now);
+      notice = await runGameDayNoticeOnce(env, now, "", timelines);
       console.log(`[GAME_WORKFLOW] gameId=${notice.appliedGameIds?.join(",") || `day-${plan.date}`} step=notice action=executed status=success`);
     } catch (error) {
       await recordGameDayNoticeError(env.AUTH_DB, plan.date, error, now);
@@ -1302,9 +1456,9 @@ async function runDueGameDayScheduleJobs(env, now) {
   return { notice, rosterFixed };
 }
 
-async function runGameDayNoticeOnce(env, now, requestedGameId = "") {
+async function runGameDayNoticeOnce(env, now, requestedGameId = "", timelines = getPregameTimelines()) {
   const date = getJstDateString(now);
-  await ensureGameDayNoticeRows(env.AUTH_DB, getPregameTimelines(), date, now);
+  await ensureGameDayNoticeRows(env.AUTH_DB, timelines, date, now);
   const payload = normalizeGameDayNoticePayload(await fetchNpbWorkerJson(env, { mode: "notice", date }), date);
   console.log(`game-day notice fetched: noticeDate=${payload.noticeDate} pageDate=${payload.pageDate || "-"} http=${payload.upstreamStatus} registrationCount=${payload.registrationCount} removalCount=${payload.removalCount} isEmpty=${payload.isEmpty} hash=${String(payload.contentHash || "").slice(0, 12)}`);
   let stored;
@@ -1316,7 +1470,7 @@ async function runGameDayNoticeOnce(env, now, requestedGameId = "") {
   }
   let applied;
   try {
-    applied = await applyGameDayNoticeToGames(env, date, payload, now);
+    applied = await applyGameDayNoticeToGames(env, date, payload, now, new Set(timelines.map((timeline) => timeline.gameId)));
   } catch (error) {
     if (isPregameSchemaError(error)) throw error;
     throw createPregameError("NOTICE_DISTRIBUTION_FAILED", "取得した公示結果の配布に失敗しました。");
@@ -1465,7 +1619,7 @@ export async function storeGameDayNotice(db, payload, now) {
   return { status: existing ? "updated" : "captured" };
 }
 
-async function applyGameDayNoticeToGames(env, date, payload, now) {
+async function applyGameDayNoticeToGames(env, date, payload, now, allowedGameIds = null) {
   const rows = await env.AUTH_DB.prepare(
     "SELECT * FROM game_day_notice_games WHERE notice_date = ?1"
   ).bind(date).all();
@@ -1473,6 +1627,7 @@ async function applyGameDayNoticeToGames(env, date, payload, now) {
   const removals = Array.isArray(payload.removals) ? payload.removals : [];
   const applied = [];
   for (const row of rows.results || []) {
+    if (allowedGameIds instanceof Set && !allowedGameIds.has(row.game_id)) continue;
     const teams = new Set([String(row.home_team || "").toLowerCase(), String(row.away_team || "").toLowerCase()]);
     const matchingRegistrations = registrations.filter((item) => teams.has(String(item?.teamCode || "").toLowerCase()));
     const matchingRemovals = removals.filter((item) => teams.has(String(item?.teamCode || "").toLowerCase()));
@@ -1865,9 +2020,9 @@ async function recordPregameLineupAttempt(db, gameId, identity, now, error) {
   ).bind(now.toISOString(), next <= identity.startAt ? next.toISOString() : null, String(error?.code || "NPB_HTTP_ERROR").slice(0, 80), String(error?.message || "取得に失敗しました。").slice(0, 240), gameId).run();
 }
 
-async function runDuePregameAutomationJobs(env, now) {
+async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimelines()) {
   const summary = { lineupCaptured: 0, lineupFailed: 0, lineupRetryWait: 0 };
-  for (const timeline of getPregameTimelines()) {
+  for (const timeline of timelines) {
     const gameId = timeline.gameId;
     if (now < timeline.lineupFetchStartAt || now > timeline.startAt) continue;
     const currentLineup = await getGameLineup(env.AUTH_DB, gameId);
@@ -1897,17 +2052,21 @@ async function runDuePregameAutomationJobs(env, now) {
 
 async function getPregameAutomationStatus(db, gameId) {
   const identity = getGameIdentityForPregame(gameId);
-  const [job, snapshot, lineup, noticeResult, dailyNoticeResult] = await db.batch([
+  const [job, snapshot, lineup, noticeResult, dailyNoticeResult, controlResult] = await db.batch([
     db.prepare("SELECT * FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1").bind(gameId),
     db.prepare("SELECT captured_at, player_count FROM game_roster_snapshots WHERE game_id = ?1 LIMIT 1").bind(gameId),
     db.prepare("SELECT lineup_source, lineup_detected_at, scoring_status, scoring_due_at, scored_at, publication_status, published_at FROM game_lineups WHERE game_id = ?1 LIMIT 1").bind(gameId),
     db.prepare("SELECT notice_status, registered_count, removed_count, last_checked_at, detected_at, roster_fixed_at, after_deadline_notice, last_error_code FROM game_day_notice_games WHERE game_id = ?1 LIMIT 1").bind(gameId),
-    db.prepare("SELECT content_hash, fetched_at, source_url, last_slot_key, status, last_error_code FROM game_day_notices WHERE notice_date = ?1 LIMIT 1").bind(identity?.game?.date || "")
+    db.prepare("SELECT content_hash, fetched_at, source_url, last_slot_key, status, last_error_code FROM game_day_notices WHERE notice_date = ?1 LIMIT 1").bind(identity?.game?.date || ""),
+    db.prepare("SELECT automation_paused, paused_at, resumed_at, updated_at FROM game_workflow_controls WHERE game_id = ?1 LIMIT 1").bind(gameId)
   ]);
   const notice = noticeResult?.results?.[0] || null;
   const dailyNotice = dailyNoticeResult?.results?.[0] || null;
+  const control = controlResult?.results?.[0] || null;
+  const jobRow = job?.results?.[0] || null;
+  const lineupRow = lineup?.results?.[0] || null;
   const nextNoticeAt = getNextGameDayNoticeAt(getPregameTimelines(), new Date());
-  const nextAttempt = identity && !lineup?.results?.[0] ? getNextPregameLineupAttempt(identity, job?.results?.[0]?.last_lineup_attempt_at) : null;
+  const nextAttempt = identity && !lineupRow ? getNextPregameLineupAttempt(identity, jobRow?.last_lineup_attempt_at) : null;
   return {
     gameId,
     game: identity?.game ? {
@@ -1921,12 +2080,12 @@ async function getPregameAutomationStatus(db, gameId) {
       startAt: identity.startAt.toISOString(), rosterCaptureAt: identity.rosterCaptureAt.toISOString(), predictionDeadlineAt: identity.predictionDeadlineAt.toISOString(),
       lineupFetchStartAt: identity.lineupFetchStartAt.toISOString(), resultReleaseAt: identity.resultReleaseAt.toISOString()
     } : null,
-    roster: snapshot?.results?.[0] ? { status: "captured", capturedAt: snapshot.results[0].captured_at, playerCount: Number(snapshot.results[0].player_count), fixedAt: job?.results?.[0]?.roster_fixed_at || notice?.roster_fixed_at || null } : { status: job?.results?.[0]?.roster_status || "pending", fixedAt: job?.results?.[0]?.roster_fixed_at || notice?.roster_fixed_at || null },
-    lineup: lineup?.results?.[0] ? { status: "captured", source: lineup.results[0].lineup_source, detectedAt: lineup.results[0].lineup_detected_at } : {
-      status: job?.results?.[0]?.lineup_status || "pending", attempts: Number(job?.results?.[0]?.lineup_attempt_count || 0), lastAttemptAt: job?.results?.[0]?.last_lineup_attempt_at || null, nextAttemptAt: nextAttempt
+    roster: snapshot?.results?.[0] ? { status: "captured", capturedAt: snapshot.results[0].captured_at, playerCount: Number(snapshot.results[0].player_count), fixedAt: jobRow?.roster_fixed_at || notice?.roster_fixed_at || null } : { status: jobRow?.roster_status || "pending", fixedAt: jobRow?.roster_fixed_at || notice?.roster_fixed_at || null },
+    lineup: lineupRow ? { status: "captured", source: lineupRow.lineup_source, detectedAt: lineupRow.lineup_detected_at } : {
+      status: jobRow?.lineup_status || "pending", attempts: Number(jobRow?.lineup_attempt_count || 0), lastAttemptAt: jobRow?.last_lineup_attempt_at || null, nextAttemptAt: nextAttempt
     },
-    scoring: lineup?.results?.[0] ? { status: lineup.results[0].scoring_status, dueAt: lineup.results[0].scoring_due_at, scoredAt: lineup.results[0].scored_at, publicationStatus: lineup.results[0].publication_status || "pending", publishedAt: lineup.results[0].published_at || null } : { status: job?.results?.[0]?.scoring_status || "pending", publicationStatus: "pending", publishedAt: null },
-    publishing: lineup?.results?.[0] ? { status: lineup.results[0].publication_status || "pending", publishedAt: lineup.results[0].published_at || null } : { status: "pending", publishedAt: null },
+    scoring: lineupRow ? { status: lineupRow.scoring_status, dueAt: lineupRow.scoring_due_at, scoredAt: lineupRow.scored_at, publicationStatus: lineupRow.publication_status || "pending", publishedAt: lineupRow.published_at || null } : { status: jobRow?.scoring_status || "pending", publicationStatus: "pending", publishedAt: null },
+    publishing: lineupRow ? { status: lineupRow.publication_status || "pending", publishedAt: lineupRow.published_at || null } : { status: "pending", publishedAt: null },
     notice: notice ? {
       status: notice.notice_status,
       registeredCount: Number(notice.registered_count || 0),
@@ -1947,8 +2106,37 @@ async function getPregameAutomationStatus(db, gameId) {
       fetchedAt: dailyNotice?.fetched_at || null, sourceUrl: dailyNotice?.source_url || GAME_DAY_NOTICE_SOURCE,
       nextFetchAt: nextNoticeAt
     },
-    lastErrorCode: job?.results?.[0]?.last_error_code || dailyNotice?.last_error_code || ""
+    automation: {
+      paused: Number(control?.automation_paused || 0) === 1,
+      pausedAt: control?.paused_at || null,
+      resumedAt: control?.resumed_at || null
+    },
+    workflow: getGameWorkflowProgress(identity, jobRow, lineupRow, notice, dailyNotice),
+    lastErrorCode: jobRow?.last_error_code || dailyNotice?.last_error_code || ""
   };
+}
+
+function getGameWorkflowProgress(identity, job, lineup, notice, dailyNotice) {
+  const lastErrorCode = String(job?.last_error_code || dailyNotice?.last_error_code || "");
+  const timestamps = [
+    job?.updated_at,
+    notice?.last_checked_at,
+    notice?.roster_fixed_at,
+    dailyNotice?.fetched_at,
+    lineup?.lineup_detected_at,
+    lineup?.scored_at,
+    lineup?.published_at
+  ].filter(Boolean).map((value) => new Date(value)).filter((value) => !Number.isNaN(value.getTime()));
+  const lastRunAt = timestamps.length ? new Date(Math.max(...timestamps.map((value) => value.getTime()))).toISOString() : null;
+  if (lastErrorCode) return { currentStep: "error", lastRunAt, lastResult: "failed" };
+  if (lineup?.publication_status === "published") return { currentStep: "completed", lastRunAt, lastResult: "published" };
+  if (lineup?.scoring_status === "scored") return { currentStep: "publish", lastRunAt, lastResult: "scored" };
+  if (lineup) return { currentStep: "score", lastRunAt, lastResult: "lineup_captured" };
+  const now = new Date();
+  if (identity && now >= identity.startAt) return { currentStep: "score", lastRunAt, lastResult: "waiting" };
+  if (identity && now >= identity.lineupFetchStartAt) return { currentStep: "lineup", lastRunAt, lastResult: "waiting" };
+  if (identity && now >= identity.predictionDeadlineAt) return { currentStep: "close_predictions", lastRunAt, lastResult: "waiting" };
+  return { currentStep: "notice", lastRunAt, lastResult: "waiting" };
 }
 
 function getNextGameDayNoticeAt(timelines, now) {
@@ -2353,7 +2541,7 @@ async function claimGameLineupForScoring(db, gameId, now, { force = false, reset
   return await getGameLineup(db, gameId);
 }
 
-async function runDueAutoScoringJobs(env, now) {
+async function runDueAutoScoringJobs(env, now, pausedGameIds = new Set()) {
   const nowIso = now.toISOString();
   const staleBefore = new Date(now.getTime() - AUTO_SCORING_PROCESSING_TIMEOUT_MS).toISOString();
   await env.AUTH_DB.prepare(
@@ -2364,14 +2552,18 @@ async function runDueAutoScoringJobs(env, now) {
       WHERE scoring_status = 'processing' AND scoring_started_at IS NOT NULL AND scoring_started_at <= ?2`
   ).bind(nowIso, staleBefore, AUTO_SCORING_MAX_ATTEMPTS).run();
 
+  const pausedIds = [...pausedGameIds].filter(Boolean).slice(0, 100);
+  const pausedFilter = pausedIds.length
+    ? ` AND game_id NOT IN (${pausedIds.map((_, index) => `?${index + 3}`).join(", ")})`
+    : "";
   const due = await env.AUTH_DB.prepare(
     `SELECT game_id FROM game_lineups
       WHERE scoring_status IN ('pending', 'failed')
         AND scoring_due_at <= ?1
-        AND scoring_attempts < ?2
+        AND scoring_attempts < ?2${pausedFilter}
       ORDER BY scoring_due_at ASC, game_id ASC
-      LIMIT ?3`
-  ).bind(nowIso, AUTO_SCORING_MAX_ATTEMPTS, AUTO_SCORING_CRON_BATCH_SIZE).all();
+      LIMIT ?${pausedIds.length + 3}`
+  ).bind(nowIso, AUTO_SCORING_MAX_ATTEMPTS, ...pausedIds, AUTO_SCORING_CRON_BATCH_SIZE).all();
 
   if ((due?.results || []).length > 0) {
     console.log(`auto scoring cron started: due=${due.results.length}`);
@@ -2523,9 +2715,9 @@ async function markGameRankingScoredPrivate(db, gameId, scoredAt, env) {
   ).bind(gameId, metadata.date, now).run();
 }
 
-async function runDueGameDayPublicationJobs(env, now) {
+async function runDueGameDayPublicationJobs(env, now, timelines = getPregameTimelines()) {
   const summary = { considered: 0, published: 0, skipped: 0, failed: 0 };
-  for (const timeline of getPregameTimelines()) {
+  for (const timeline of timelines) {
     if (now < timeline.startAt) continue;
     const lineup = await getGameLineup(env.AUTH_DB, timeline.gameId);
     if (!lineup || lineup.scoring_status !== "scored") {

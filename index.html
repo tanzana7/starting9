@@ -186,7 +186,15 @@
         <form id="actualForm" novalidate>
           <div class="parser-panel">
             <div id="adminFlowStatus" class="admin-flow-status" aria-live="polite"></div>
-            <div class="npb-fetch-panel">
+          <div class="npb-fetch-panel">
+              <section id="adminGameWorkflowStatus" class="admin-game-workflow-status hidden" aria-live="polite">
+                <div id="adminGameWorkflowSummary" class="admin-game-workflow-summary"></div>
+                <div class="admin-game-workflow-actions">
+                  <button id="syncGameWorkflowButton" class="secondary-button compact-button" type="button">今すぐ同期</button>
+                  <button id="toggleGameWorkflowPauseButton" class="danger-button compact-button" type="button">緊急停止</button>
+                </div>
+                <p id="adminGameWorkflowMessage" class="message" role="status"></p>
+              </section>
               <div class="schedule-loader">
                 <p class="schedule-loader-title">登録済み試合スケジュール</p>
                 <div id="nextGameScheduleSummary" class="schedule-next-summary hidden" aria-live="polite"></div>
@@ -229,9 +237,9 @@
               </div>
               <label for="gameStartInput">試合開始日時</label>
               <div class="auto-fetch-row">
-                <input id="gameStartInput" type="datetime-local">
-                <button id="startAutoFetchButton" class="secondary-button compact-button" type="button">自動取得を開始</button>
-                <button id="stopAutoFetchButton" class="secondary-button compact-button" type="button" disabled>自動取得を停止</button>
+                <input id="gameStartInput" type="datetime-local" readonly>
+                <button id="editGameStartButton" class="secondary-button compact-button" type="button">日時を手動で変更</button>
+                <button id="resetGameStartButton" class="secondary-button compact-button hidden" type="button">自動値に戻す</button>
               </div>
               <section id="adminPredictionDeadlineStatus" class="admin-prediction-deadline hidden" aria-live="polite"></section>
               <label class="auto-approve-option" for="autoApproveCheckbox">
@@ -382,16 +390,16 @@
       <div id="scoreResult" class="empty-state">採点すると結果が表示されます。</div>
       <button id="shareResultButton" class="secondary-button hidden" type="button">結果をXで共有</button>
 
-      <section id="perfectAchieversCard" class="perfect-achievers-card" aria-labelledby="perfectAchieversTitle">
+      <section id="todayPerfectAchieversCard" class="perfect-achievers-card" aria-labelledby="todayPerfectAchieversTitle">
         <div class="perfect-achievers-heading">
           <div>
             <p class="area-label">PERFECT ACHIEVERS</p>
-            <h3 id="perfectAchieversTitle">満点達成者</h3>
+            <h3 id="todayPerfectAchieversTitle">本日の満点者</h3>
           </div>
-          <span id="perfectAchieversCount" class="perfect-achievers-count"></span>
+          <span id="todayPerfectAchieversCount" class="perfect-achievers-count"></span>
         </div>
-        <div id="perfectAchieversContent" class="perfect-achievers-content" aria-live="polite">
-          <p class="empty-state">試合情報を確認中です。</p>
+        <div id="todayPerfectAchieversContent" class="perfect-achievers-content" aria-live="polite">
+          <p class="empty-state">本日の満点者を確認中です。</p>
         </div>
       </section>
     </section>

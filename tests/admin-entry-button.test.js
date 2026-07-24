@@ -72,7 +72,7 @@ function createApp({ href = "https://starting9.pages.dev/", user = null, admin =
   });
   vm.runInContext(scriptSource, context, { filename: scriptPath });
   vm.runInContext(
-    "applyAdminMode = () => {}; initializeGameSchedule = () => {}; renderAll = () => {}; refreshAdminScoringSummary = () => {}; refreshAutoScoringStatus = () => {}; refreshAdminTestStatus = () => {}; refreshAdminTestAchievements = () => {}; refreshAdminDeploymentInfo = () => {}; renderAdminTestPanel = () => {}; stopAutoFetch = () => {}; stopRosterMonitor = () => {};",
+    "applyAdminMode = () => {}; initializeGameSchedule = () => {}; renderAll = () => {}; refreshAdminScoringSummary = () => {}; refreshAutoScoringStatus = () => {}; refreshAdminGameWorkflowStatus = () => {}; refreshAdminTestStatus = () => {}; refreshAdminTestAchievements = () => {}; refreshAdminDeploymentInfo = () => {}; renderAdminTestPanel = () => {}; stopAutoFetch = () => {}; stopRosterMonitor = () => {};",
     context
   );
 

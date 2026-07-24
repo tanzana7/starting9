@@ -510,7 +510,7 @@ button:disabled {
 
 .perfect-achievers-list li {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
   min-width: 0;
@@ -538,16 +538,11 @@ button:disabled {
   white-space: nowrap;
 }
 
-.perfect-achievers-message,
-.perfect-achievers-total {
+.perfect-achievers-message {
   margin: 0;
   color: var(--muted);
   font-size: 0.84rem;
   font-weight: 800;
-}
-
-.perfect-achievers-message.is-success {
-  color: var(--success);
 }
 
 .perfect-achievers-message.is-error {
@@ -1159,6 +1154,57 @@ textarea:focus {
   margin: 2px 0 0;
   overflow-wrap: anywhere;
   font-weight: 900;
+}
+
+.admin-game-workflow-status {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid #b9daf8;
+  border-radius: 8px;
+  background: #f7fbff;
+}
+
+.admin-game-workflow-summary {
+  display: grid;
+  gap: 6px;
+}
+
+.admin-game-workflow-summary > strong {
+  color: var(--fighters-deep-blue);
+  font-size: 1rem;
+}
+
+.admin-game-workflow-summary > span {
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.admin-game-workflow-summary dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+  margin: 2px 0 0;
+}
+
+.admin-game-workflow-summary dt {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.admin-game-workflow-summary dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+  font-weight: 900;
+}
+
+.admin-game-workflow-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .deadline-override-controls {
@@ -2673,7 +2719,7 @@ textarea:focus {
   }
 
   .perfect-achievers-list li {
-    grid-template-columns: 26px minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 1fr);
   }
 
   .perfect-achievers-list time {

@@ -84,7 +84,7 @@ test("初回認証イベントを取りこぼしてもPromise完了後にadmin A
   const scriptPath = path.join(__dirname, "..", "script.js");
   vm.runInContext(fs.readFileSync(scriptPath, "utf8"), context, { filename: scriptPath });
   vm.runInContext(
-    "applyAdminMode = () => {}; initializeGameSchedule = () => {}; renderAll = () => {}; refreshAdminScoringSummary = () => {}; refreshAutoScoringStatus = () => {}; refreshAdminTestStatus = () => {}; refreshAdminTestAchievements = () => {}; refreshAdminDeploymentInfo = () => {}; renderAdminTestPanel = () => {};",
+    "applyAdminMode = () => {}; initializeGameSchedule = () => {}; renderAll = () => {}; refreshAdminScoringSummary = () => {}; refreshAutoScoringStatus = () => {}; refreshAdminGameWorkflowStatus = () => {}; refreshAdminTestStatus = () => {}; refreshAdminTestAchievements = () => {}; refreshAdminDeploymentInfo = () => {}; renderAdminTestPanel = () => {};",
     context
   );
 

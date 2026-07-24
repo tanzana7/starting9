@@ -38,8 +38,6 @@ const NPB_WORKER_LOCAL_URL = "http://127.0.0.1:8788/";
 const NPB_WORKER_API_URL = getNpbWorkerApiUrl();
 const NPB_STARTER_SOURCE_URL = "https://npb.jp/announcement/starter/";
 const NPB_SCORE_PATH_PATTERN = /^\/scores\/(\d{4})\/(\d{2})(\d{2})\/([a-z0-9]+-[a-z0-9]+-\d+)\/$/i;
-// DBには全員を保存し、通常画面では先着3人だけ表示します。
-const PERFECT_ACHIEVERS_DEFAULT_DISPLAY_LIMIT = 3;
 const RANKING_DISPLAY_LIMIT = 50;
 const MONTHLY_RANKING_MIN_YEAR = 2020;
 const YEARLY_RANKING_MIN_YEAR = 2020;
@@ -159,7 +157,10 @@ const state = {
   gameInfo: {
     scoreUrl: "",
     gameStartAt: "",
-    matchup: ""
+    matchup: "",
+    selectedGameId: "",
+    manualGameSelection: false,
+    manualStartOverride: false
   },
   nextScheduleId: "",
   candidateRosterFilter: "active",
@@ -235,17 +236,6 @@ const state = {
     logs: [],
     fetchedGameId: ""
   },
-  perfectAchievers: {
-    isLoading: false,
-    isSubmitting: false,
-    status: "idle",
-    message: "",
-    gameId: "",
-    displayLimit: PERFECT_ACHIEVERS_DEFAULT_DISPLAY_LIMIT,
-    totalCount: 0,
-    currentUserRegistered: false,
-    achievers: []
-  },
   yearlyRanking: {
     isLoading: false,
     isLoadingSelf: false,
@@ -256,6 +246,13 @@ const state = {
     self: null,
     message: "",
     year: getJapanYearMonth().year
+  },
+  todayPerfectAchievers: {
+    isLoading: false,
+    requestId: 0,
+    achievers: [],
+    totalCount: 0,
+    message: "",
   },
   rankingView: "yearly",
   monthlyRanking: {
@@ -319,6 +316,14 @@ const state = {
     isRunning: false,
     message: ""
   },
+  gameWorkflow: {
+    isLoading: false,
+    isUpdating: false,
+    requestId: 0,
+    gameId: "",
+    record: null,
+    message: ""
+  },
   gameDayNotice: {
     isLoading: false,
     gameId: "",
@@ -367,7 +372,7 @@ document.addEventListener("DOMContentLoaded", () => {
     void refreshGameDayNoticeStatus({ force: true });
   }
   initializeProbableStarter().finally(() => {
-    initializePerfectAchievers();
+    initializeTodayPerfectAchievers();
     initializePredictionRemoteSync();
     initializeYearlyRanking();
     refreshPredictionDeadlineState();
@@ -413,8 +418,10 @@ function bindEvents() {
   bindAdminEvent("startRosterMonitorButton", "click", startRosterMonitor);
   bindAdminEvent("stopRosterMonitorButton", "click", () => stopRosterMonitor("ロースター自動取得を停止しました。", "warning"));
   bindAdminEvent("fetchProbableStarterButton", "click", () => fetchProbableStarter({ force: true }));
-  bindAdminEvent("startAutoFetchButton", "click", startAutoFetch);
-  bindAdminEvent("stopAutoFetchButton", "click", () => stopAutoFetch("自動取得を停止しました。", "warning"));
+  bindAdminEvent("syncGameWorkflowButton", "click", () => refreshAdminGameWorkflowStatus({ force: true }));
+  bindAdminEvent("toggleGameWorkflowPauseButton", "click", toggleGameWorkflowPause);
+  bindAdminEvent("editGameStartButton", "click", () => setGameStartManualOverride(true));
+  bindAdminEvent("resetGameStartButton", "click", () => setGameStartManualOverride(false));
   bindAdminEvent("parseActualButton", "click", handleActualParsePreview);
   bindAdminEvent("applyParsedActualButton", "click", applyParsedActualPreview);
   bindAdminEvent("clearActualCandidateButton", "click", clearActualCandidate);
@@ -450,7 +457,6 @@ function bindEvents() {
   document.getElementById("rankingContent")?.addEventListener("click", handleRankingPeriodContentClick);
   document.getElementById("closeAdminButton")?.addEventListener("click", closeAdminPanel);
   document.getElementById("adminDetails")?.addEventListener("toggle", handleAdminDetailsToggle);
-  document.getElementById("registerPerfectAchieverButton")?.addEventListener("click", registerPerfectAchiever);
   bindAdminEvent("loadNextGameButton", "click", loadNextGameSchedule);
   bindAdminEvent("loadTodayGameButton", "click", loadTodayGameSchedule);
   bindAdminEvent("loadSelectedGameButton", "click", loadSelectedGameSchedule);
@@ -553,6 +559,7 @@ function clearAdminAccess() {
   state.adminAccess.status = "inactive";
   state.adminTest = { status: "inactive", info: null, message: "" };
   state.adminTestAchievements = { isLoading: false, items: [], earned: [], message: "" };
+  state.gameWorkflow = { isLoading: false, isUpdating: false, requestId: state.gameWorkflow.requestId + 1, gameId: "", record: null, message: "" };
   state.appMode = "normal";
   state.isAdminMode = false;
   applyAdminMode();
@@ -930,6 +937,7 @@ function openAdminPanel() {
   }
   refreshAdminScoringSummary({ force: true });
   refreshAutoScoringStatus({ force: true });
+  void refreshAdminGameWorkflowStatus({ force: true });
   renderAdminTestPanel();
   void refreshAdminTestStatus();
   void refreshAdminTestAchievements();
@@ -2407,17 +2415,9 @@ function addProbableStarterLog(message) {
   renderProbableStarterAdmin();
 }
 
-async function initializePerfectAchievers() {
-  const schedule = await getLoadedGameSchedule();
-  if (!state.probableStarter.nextGame) {
-    state.probableStarter.nextGame = findNextScheduledGameForStarter(schedule);
-  }
-  await fetchPerfectAchievers({ force: true });
-}
-
 function handleAuthStateChanged() {
-  renderPerfectAchievers();
-  fetchPerfectAchievers({ force: true });
+  renderTodayPerfectAchievers();
+  fetchTodayPerfectAchievers({ force: true });
   syncPredictionFromAccount({ force: true });
   fetchUserAchievements({ force: true });
   refreshYearlyRanking({ force: true });
@@ -2869,6 +2869,7 @@ async function refreshAutoScoringStatus({ force = false } = {}) {
       state.autoScoring.message = "";
       if (previousStatus !== "scored" && state.autoScoring.record?.status === "scored") {
         void refreshYearlyRanking({ force: true });
+        void fetchTodayPerfectAchievers({ force: true });
         if (state.rankingView === "monthly") {
           void refreshMonthlyRanking({ force: true });
         }
@@ -2910,6 +2911,7 @@ async function updateAutoScoring(action, confirmationMessage = "") {
     await refreshAdminScoringSummary({ force: true });
     if (isRunNow) {
       await refreshYearlyRanking({ force: true });
+      await fetchTodayPerfectAchievers({ force: true });
       if (state.rankingView === "monthly") {
         await refreshMonthlyRanking({ force: true });
       }
@@ -3062,6 +3064,7 @@ async function runPregameAutomationAction(action) {
       await initializeRosterCandidateSync();
     }
     await refreshAutoScoringStatus({ force: true });
+    await refreshAdminGameWorkflowStatus({ force: true });
   } catch (error) {
     console.error("試合前処理の手動実行に失敗しました", error.message);
     state.pregameAutomation.message = error.message || `${getPregameActionLabel(action)}を実行できませんでした。`;
@@ -3090,6 +3093,7 @@ async function runPregameScoringAction() {
     state.pregameAutomation.message = `採点を実行しました。${Number(payload.scored || 0)}件を更新しました。`;
     await refreshAdminScoringSummary({ force: true });
     await refreshAutoScoringStatus({ force: true });
+    await refreshAdminGameWorkflowStatus({ force: true });
   } catch (error) {
     console.error("試合前処理の採点に失敗しました", error.message);
     state.pregameAutomation.message = error.message || "採点を実行できませんでした。";
@@ -3108,6 +3112,141 @@ function renderPregameAutomationTools() {
   });
   message.textContent = state.pregameAutomation.message;
   message.className = `message${state.pregameAutomation.message.includes("できません") || state.pregameAutomation.message.includes("失敗") ? " error-message" : ""}`;
+}
+
+function getGameWorkflowStepLabel(value) {
+  return ({
+    notice: "公示確認待ち",
+    close_predictions: "予想締切",
+    lineup: "正式スタメン取得",
+    score: "採点",
+    publish: "公開処理",
+    completed: "公開済み",
+    error: "エラー確認待ち"
+  })[value] || "確認中";
+}
+
+function getGameWorkflowResultLabel(value) {
+  return ({
+    waiting: "待機中",
+    lineup_captured: "正式スタメン取得済み",
+    scored: "採点済み",
+    published: "公開済み",
+    failed: "要確認"
+  })[value] || "未実行";
+}
+
+function renderAdminGameWorkflowStatus() {
+  const panel = document.getElementById("adminGameWorkflowStatus");
+  const summary = document.getElementById("adminGameWorkflowSummary");
+  const message = document.getElementById("adminGameWorkflowMessage");
+  const syncButton = document.getElementById("syncGameWorkflowButton");
+  const pauseButton = document.getElementById("toggleGameWorkflowPauseButton");
+  if (!panel || !summary || !message || !syncButton || !pauseButton) return;
+
+  const available = state.appMode === "admin" && state.adminAccess.status === "authorized";
+  panel.classList.toggle("hidden", !available);
+  if (!available) return;
+
+  const record = state.gameWorkflow.record;
+  const paused = record?.automation?.paused === true;
+  syncButton.disabled = state.gameWorkflow.isLoading || state.gameWorkflow.isUpdating || !state.nextScheduleId;
+  pauseButton.disabled = state.gameWorkflow.isLoading || state.gameWorkflow.isUpdating || !state.nextScheduleId;
+  pauseButton.textContent = paused ? "自動運転を再開" : "緊急停止";
+  pauseButton.classList.toggle("danger-button", !paused);
+  pauseButton.classList.toggle("secondary-button", paused);
+
+  if (state.gameWorkflow.isLoading && !record) {
+    summary.textContent = "自動運転の状態を確認しています。";
+    message.textContent = "";
+    return;
+  }
+  if (!record) {
+    summary.textContent = "対象試合を取得できませんでした。";
+    message.textContent = state.gameWorkflow.message || "次回Cronで再試行します。";
+    message.className = "message error-message";
+    return;
+  }
+
+  const schedule = record.schedule || {};
+  const workflow = record.workflow || {};
+  const rows = [
+    ["対象試合", record.game?.matchupLabel || record.gameId || "-"],
+    ["試合開始", formatPredictionDeadlineDateTime(schedule.startAt)],
+    ["予想締切", formatPredictionDeadlineDateTime(schedule.predictionDeadlineAt)],
+    ["受付状態", getEffectivePredictionDeadline().isClosed ? "締切後" : "締切前"],
+    ["現在のワークフロー", getGameWorkflowStepLabel(workflow.currentStep)],
+    ["最終実行", workflow.lastRunAt ? formatDateTime(workflow.lastRunAt) : "未実行"],
+    ["最終結果", getGameWorkflowResultLabel(workflow.lastResult)]
+  ];
+  summary.innerHTML = `<strong>${paused ? "緊急停止中" : "自動運転中"}</strong><span>${paused ? "この試合のCron自動処理は停止しています。" : "毎分、試合状態を確認しています。次回確認: 1分以内"}</span><dl>${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>`;
+  message.textContent = state.gameWorkflow.message || (paused ? "再開するまで公示・締切・取得・採点・公開の自動処理は実行されません。" : "管理者操作なしでCronが処理を進めます。");
+  message.className = `message${paused || state.gameWorkflow.message ? "" : ""}`;
+}
+
+async function refreshAdminGameWorkflowStatus({ force = false } = {}) {
+  if (state.appMode !== "admin" || state.adminAccess.status !== "authorized") return;
+  const gameId = getAdminScoringGameId();
+  const url = buildAdminGameApiUrl(gameId, "pregame-automation/workflow-status");
+  if (!gameId || !url || (state.gameWorkflow.isLoading && !force)) return;
+  const requestId = ++state.gameWorkflow.requestId;
+  state.gameWorkflow.isLoading = true;
+  state.gameWorkflow.gameId = gameId;
+  state.gameWorkflow.message = "";
+  renderAdminGameWorkflowStatus();
+  try {
+    const response = await fetch(url, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || payload?.code || `HTTP ${response.status}`);
+    if (requestId !== state.gameWorkflow.requestId) return;
+    if (payload?.publishing?.status === "published" && !state.gameInfo.manualGameSelection) {
+      const nextSchedule = findAdminScheduleAfter(gameId);
+      if (nextSchedule) {
+        applyGameSchedule(nextSchedule, "auto");
+        state.gameWorkflow.record = null;
+        state.gameWorkflow.message = "公開済みの本日試合を完了として、次回試合へ切り替えました。";
+        void refreshAdminGameWorkflowStatus({ force: true });
+        return;
+      }
+    }
+    state.gameWorkflow.record = payload;
+  } catch (error) {
+    if (requestId !== state.gameWorkflow.requestId) return;
+    state.gameWorkflow.record = null;
+    state.gameWorkflow.message = `${error?.message || "状態を取得できませんでした。"} 次回Cronで再試行します。`;
+  } finally {
+    if (requestId === state.gameWorkflow.requestId) {
+      state.gameWorkflow.isLoading = false;
+      renderAdminGameWorkflowStatus();
+    }
+  }
+}
+
+async function toggleGameWorkflowPause() {
+  const gameId = getAdminScoringGameId();
+  const paused = state.gameWorkflow.record?.automation?.paused === true;
+  const action = paused ? "resume-workflow" : "pause-workflow";
+  const url = buildAdminGameApiUrl(gameId, `pregame-automation/${action}`);
+  if (!gameId || !url || state.gameWorkflow.isUpdating) return;
+  const confirmation = paused
+    ? "この試合の自動運転を再開します。よろしいですか？"
+    : "この試合のCron自動処理を緊急停止します。手動実行は引き続き利用できます。よろしいですか？";
+  if (!window.confirm(confirmation)) return;
+  state.gameWorkflow.isUpdating = true;
+  state.gameWorkflow.message = paused ? "自動運転を再開しています..." : "自動運転を緊急停止しています...";
+  renderAdminGameWorkflowStatus();
+  try {
+    const response = await fetch(url, { method: "POST", credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || payload?.code || `HTTP ${response.status}`);
+    state.gameWorkflow.record = payload;
+    state.gameWorkflow.message = paused ? "自動運転を再開しました。" : "緊急停止中です。";
+  } catch (error) {
+    state.gameWorkflow.message = error?.message || "自動運転の状態を変更できませんでした。";
+  } finally {
+    state.gameWorkflow.isUpdating = false;
+    renderAdminGameWorkflowStatus();
+  }
 }
 
 async function runServerScoringPreview() {
@@ -3199,6 +3338,7 @@ async function runServerScoring() {
     resetAdminScoringPreview();
     await refreshAdminScoringSummary({ force: true });
     await refreshYearlyRanking({ force: true });
+    await fetchTodayPerfectAchievers({ force: true });
     if (state.rankingView === "monthly") {
       await refreshMonthlyRanking({ force: true });
     }
@@ -3277,10 +3417,6 @@ function renderAdminScoringPanel() {
   `;
 }
 
-function getPerfectAchieversApiBaseUrl() {
-  return getAuthApiBaseUrl();
-}
-
 function getAuthApiBaseUrl() {
   if (typeof window !== "undefined" && window.starting9Auth?.getApiBaseUrl) {
     return window.starting9Auth.getApiBaseUrl();
@@ -3335,6 +3471,109 @@ function buildMyMonthlyRankingApiUrl({ year, month } = {}) {
   url.searchParams.set("year", String(year));
   url.searchParams.set("month", String(month));
   return url.href;
+}
+
+function buildTodayPerfectAchieversApiUrl() {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  if (!baseUrl) return "";
+  const url = new URL(`${baseUrl}/api/rankings/perfect`, window.location.href);
+  url.searchParams.set("date", getJapanDateString());
+  return url.href;
+}
+
+async function initializeTodayPerfectAchievers() {
+  await fetchTodayPerfectAchievers({ force: true });
+}
+
+async function fetchTodayPerfectAchievers({ force = false } = {}) {
+  const perfectState = state.todayPerfectAchievers;
+  if (perfectState.isLoading && !force) return;
+
+  const url = buildTodayPerfectAchieversApiUrl();
+  if (!url) {
+    perfectState.message = "本日の満点者を取得できませんでした。";
+    renderTodayPerfectAchievers();
+    return;
+  }
+
+  const requestId = perfectState.requestId + 1;
+  perfectState.requestId = requestId;
+  perfectState.isLoading = true;
+  perfectState.message = "";
+  renderTodayPerfectAchievers();
+
+  try {
+    const response = await fetch(url, {
+      credentials: "include",
+      cache: force ? "no-store" : "default"
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok || !Array.isArray(payload.achievers)) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+    if (requestId !== perfectState.requestId) return;
+    perfectState.achievers = payload.achievers;
+    perfectState.totalCount = Math.max(0, Number(payload.totalCount || payload.achievers.length));
+  } catch (error) {
+    if (requestId !== perfectState.requestId) return;
+    console.error("本日の満点者の取得に失敗しました", error.message);
+    perfectState.achievers = [];
+    perfectState.totalCount = 0;
+    perfectState.message = "本日の満点者を取得できませんでした。";
+  } finally {
+    if (requestId === perfectState.requestId) {
+      perfectState.isLoading = false;
+      renderTodayPerfectAchievers();
+    }
+  }
+}
+
+function renderTodayPerfectAchievers() {
+  const container = document.getElementById("todayPerfectAchieversContent");
+  const count = document.getElementById("todayPerfectAchieversCount");
+  if (!container || !count) return;
+
+  const perfectState = state.todayPerfectAchievers;
+  count.textContent = perfectState.totalCount > 0 ? `${perfectState.totalCount}人` : "";
+  if (perfectState.isLoading) {
+    container.innerHTML = '<p class="perfect-achievers-message">本日の満点者を確認中です。</p>';
+    return;
+  }
+  if (perfectState.message) {
+    container.innerHTML = `<p class="perfect-achievers-message is-error">${escapeHtml(perfectState.message)}</p>`;
+    return;
+  }
+  if (!perfectState.achievers.length) {
+    container.innerHTML = '<p class="perfect-achievers-message">本日の満点者はいません。</p>';
+    return;
+  }
+
+  container.innerHTML = `<ol class="perfect-achievers-list">${perfectState.achievers.map((achiever) => `
+    <li>
+      <span>${escapeHtml(achiever.score)}点</span>
+      <strong>${escapeHtml(achiever.username)}</strong>
+      <time datetime="${escapeHtml(achiever.submittedAt || "")}">${escapeHtml(achiever.gameDate)} ${escapeHtml(formatPerfectAchieverOpponent(achiever.opponent))}</time>
+    </li>
+  `).join("")}</ol>`;
+}
+
+function formatPerfectAchieverOpponent(opponent) {
+  const value = String(opponent || "").trim();
+  const labels = {
+    fighters: "日本ハム",
+    hawks: "ソフトバンク",
+    buffaloes: "オリックス",
+    marines: "ロッテ",
+    eagles: "楽天",
+    lions: "西武",
+    giants: "巨人",
+    tigers: "阪神",
+    baystars: "DeNA",
+    carp: "広島",
+    dragons: "中日",
+    swallows: "ヤクルト"
+  };
+  return labels[value] || value || "対戦相手";
 }
 
 async function initializeYearlyRanking() {
@@ -3667,161 +3906,6 @@ function formatRankingScore(value) {
 function formatParticipationRate(value) {
   const numeric = Number(value || 0) * 100;
   return Number.isFinite(numeric) ? `${numeric.toFixed(1)}%` : "0.0%";
-}
-
-function buildPerfectAchieversApiUrl(gameId) {
-  const baseUrl = getPerfectAchieversApiBaseUrl().replace(/\/+$/, "");
-  const url = new URL(`${baseUrl}/api/perfect-achievers`, window.location.href);
-  url.searchParams.set("gameId", gameId);
-  return url.href;
-}
-
-async function fetchPerfectAchievers({ force = false } = {}) {
-  const gameId = getCurrentGameId();
-  if (!gameId) {
-    state.perfectAchievers.status = "noGame";
-    state.perfectAchievers.message = "対象試合がありません。";
-    renderPerfectAchievers();
-    return;
-  }
-  if (state.perfectAchievers.isLoading || (!force && state.perfectAchievers.gameId === gameId)) {
-    return;
-  }
-
-  state.perfectAchievers.isLoading = true;
-  state.perfectAchievers.status = "loading";
-  state.perfectAchievers.message = "満点達成者を読み込み中...";
-  state.perfectAchievers.gameId = gameId;
-  renderPerfectAchievers();
-
-  try {
-    const response = await fetch(buildPerfectAchieversApiUrl(gameId), {
-      credentials: "include",
-      cache: "no-store"
-    });
-    const payload = await response.json().catch(() => null);
-    if (!response.ok || !payload?.ok) {
-      throw new Error(payload?.error || `HTTP ${response.status}`);
-    }
-
-    state.perfectAchievers.status = "success";
-    state.perfectAchievers.message = "";
-    state.perfectAchievers.displayLimit = Math.max(1, Number(payload.displayLimit || PERFECT_ACHIEVERS_DEFAULT_DISPLAY_LIMIT));
-    state.perfectAchievers.totalCount = Number(payload.totalCount || 0);
-    state.perfectAchievers.currentUserRegistered = Boolean(payload.currentUserRegistered);
-    state.perfectAchievers.achievers = Array.isArray(payload.achievers) ? payload.achievers : [];
-  } catch (error) {
-    console.error("満点達成者の取得に失敗しました", error.message);
-    state.perfectAchievers.status = "error";
-    state.perfectAchievers.message = "満点達成者を取得できませんでした。";
-    state.perfectAchievers.achievers = [];
-  } finally {
-    state.perfectAchievers.isLoading = false;
-    renderPerfectAchievers();
-  }
-}
-
-async function registerPerfectAchiever() {
-  if (state.perfectAchievers.isSubmitting) {
-    return;
-  }
-
-  const gameId = getCurrentGameId();
-  const result = state.result;
-  const currentUser = window.starting9Auth?.getUser?.() || null;
-  const score = Number(result?.total);
-  const maxScore = Number(result?.max);
-
-  if (!gameId || !Number.isFinite(score) || !Number.isFinite(maxScore) || score !== maxScore) {
-    state.perfectAchievers.message = "満点を達成した場合のみ登録できます。";
-    renderPerfectAchievers();
-    return;
-  }
-  if (!currentUser) {
-    state.perfectAchievers.message = "達成者として登録するにはログインしてください。";
-    renderPerfectAchievers();
-    return;
-  }
-
-  state.perfectAchievers.isSubmitting = true;
-  state.perfectAchievers.message = "満点達成者として登録中...";
-  renderPerfectAchievers();
-
-  try {
-    const baseUrl = getPerfectAchieversApiBaseUrl().replace(/\/+$/, "");
-    const response = await fetch(`${baseUrl}/api/perfect-achievers`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ gameId, score, maxScore })
-    });
-    const payload = await response.json().catch(() => null);
-    if (!response.ok || !payload?.ok) {
-      throw new Error(payload?.error || `HTTP ${response.status}`);
-    }
-
-    state.perfectAchievers.status = "success";
-    state.perfectAchievers.message = "満点達成者として登録しました。";
-    state.perfectAchievers.gameId = payload.gameId || gameId;
-    state.perfectAchievers.displayLimit = Math.max(1, Number(payload.displayLimit || state.perfectAchievers.displayLimit));
-    state.perfectAchievers.totalCount = Number(payload.totalCount || state.perfectAchievers.totalCount);
-    state.perfectAchievers.currentUserRegistered = true;
-    state.perfectAchievers.achievers = Array.isArray(payload.achievers) ? payload.achievers : state.perfectAchievers.achievers;
-  } catch (error) {
-    console.error("満点達成者の登録に失敗しました", error.message);
-    state.perfectAchievers.message = error.message || "満点達成者の登録に失敗しました。";
-  } finally {
-    state.perfectAchievers.isSubmitting = false;
-    renderPerfectAchievers();
-  }
-}
-
-function renderPerfectAchievers() {
-  const container = document.getElementById("perfectAchieversContent");
-  const count = document.getElementById("perfectAchieversCount");
-  if (!container || !count) {
-    return;
-  }
-
-  const perfectState = state.perfectAchievers;
-  count.textContent = perfectState.totalCount > 0 ? `現在 ${perfectState.totalCount}人` : "";
-
-  if (perfectState.status === "loading") {
-    container.innerHTML = `<p class="perfect-achievers-message">満点達成者を読み込み中...</p>`;
-    return;
-  }
-  if (perfectState.status === "error") {
-    container.innerHTML = `<p class="perfect-achievers-message is-error">${escapeHtml(perfectState.message)}</p>`;
-    return;
-  }
-  if (perfectState.status === "noGame" || !perfectState.gameId) {
-    container.innerHTML = `<p class="perfect-achievers-message">対象試合を確認できません。</p>`;
-    return;
-  }
-
-  const list = perfectState.achievers.length > 0
-    ? `<ol class="perfect-achievers-list">${perfectState.achievers.slice(0, perfectState.displayLimit).map((achiever) => `
-        <li><span>${achiever.rank}.</span><strong>${escapeHtml(achiever.username)}</strong><time datetime="${escapeHtml(achiever.achievedAt || "")}">${escapeHtml(formatDateTime(achiever.achievedAt))}</time></li>
-      `).join("")}</ol>`
-    : `<p class="perfect-achievers-message">まだ満点達成者はいません。</p>`;
-
-  const result = state.result;
-  const isPerfect = Boolean(result && Number(result.total) === Number(result.max));
-  const currentUser = window.starting9Auth?.getUser?.() || null;
-  let action = "";
-  if (isPerfect && perfectState.currentUserRegistered) {
-    action = `<p class="perfect-achievers-message is-success">満点達成者として登録済みです。</p>`;
-  } else if (isPerfect && !currentUser) {
-    action = `<p class="perfect-achievers-message">満点を達成しました。達成者として登録するにはログインしてください。</p><button id="openPerfectAchieverLoginButton" class="secondary-button compact-button" type="button">ログイン</button>`;
-  } else if (isPerfect) {
-    action = `<button id="registerPerfectAchieverButton" class="primary-button compact-button" type="button" ${perfectState.isSubmitting ? "disabled" : ""}>満点達成者として登録</button>`;
-  }
-
-  container.innerHTML = `${list}
-    <p class="perfect-achievers-total">表示：先着${perfectState.displayLimit}人 / 総達成人数 ${perfectState.totalCount}人</p>
-    ${action}`;
-  container.querySelector("#registerPerfectAchieverButton")?.addEventListener("click", registerPerfectAchiever);
-  container.querySelector("#openPerfectAchieverLoginButton")?.addEventListener("click", () => window.starting9Auth?.openLogin?.());
 }
 
 function showNpbFetchFailure(candidate) {
@@ -5089,7 +5173,10 @@ function normalizeGameInfo(gameInfo) {
   return {
     scoreUrl: typeof gameInfo?.scoreUrl === "string" ? gameInfo.scoreUrl : "",
     gameStartAt: typeof gameInfo?.gameStartAt === "string" ? gameInfo.gameStartAt : "",
-    matchup: typeof gameInfo?.matchup === "string" ? gameInfo.matchup : ""
+    matchup: typeof gameInfo?.matchup === "string" ? gameInfo.matchup : "",
+    selectedGameId: typeof gameInfo?.selectedGameId === "string" ? gameInfo.selectedGameId : "",
+    manualGameSelection: gameInfo?.manualGameSelection === true,
+    manualStartOverride: gameInfo?.manualStartOverride === true
   };
 }
 
@@ -5106,6 +5193,7 @@ function restoreAdminGameInfoInputs() {
       input.value = value || "";
     }
   });
+  updateGameStartInputMode();
 }
 
 function saveAdminGameInfoFromInputs() {
@@ -5122,7 +5210,10 @@ function readAdminGameInfoFromInputs() {
   return {
     scoreUrl: document.getElementById("npbUrlInput")?.value.trim() || "",
     gameStartAt: document.getElementById("gameStartInput")?.value || "",
-    matchup: document.getElementById("matchupInput")?.value.trim() || ""
+    matchup: document.getElementById("matchupInput")?.value.trim() || "",
+    selectedGameId: state.nextScheduleId || state.gameInfo.selectedGameId || "",
+    manualGameSelection: state.gameInfo.manualGameSelection === true,
+    manualStartOverride: state.gameInfo.manualStartOverride === true
   };
 }
 
@@ -5270,32 +5361,60 @@ function initializeGameSchedule() {
     return;
   }
 
-  const nextSchedule = findNextGameSchedule();
+  const nextSchedule = selectAdminTargetGame();
   state.nextScheduleId = nextSchedule?.gameId || "";
   renderGameSchedulePicker();
   refreshAdminScoringSummary({ force: true });
 
   if (nextSchedule) {
-    addScheduleLoadLog(`次の試合を検出：${formatScheduleForLog(nextSchedule)}`);
+    addScheduleLoadLog(`管理対象試合を自動選択：${formatScheduleForLog(nextSchedule)}`);
   } else {
-    addScheduleLoadLog("次の試合を検出できませんでした");
-  }
-
-  if (!nextSchedule || !areAdminGameInfoInputsEmpty()) {
-    if (nextSchedule && !areAdminGameInfoInputsEmpty()) {
-      addScheduleLoadLog("localStorageに既存試合情報があるため自動反映をスキップ");
-    }
+    setScheduleLoaderMessage("対象試合を取得できませんでした。次回Cronで再試行します。", "error");
+    addScheduleLoadLog("管理対象試合を検出できませんでした");
+    updateGameStartInputMode();
     return;
   }
 
   applyGameSchedule(nextSchedule, "auto");
-  setScheduleLoaderMessage("次の試合情報を自動入力しました。必要に応じて手動で変更できます。", "success");
+  setScheduleLoaderMessage("日程データから対象試合と試合開始日時を自動反映しました。", "success");
 }
 
 function findNextGameSchedule() {
   const today = getJapanDateString();
   return getHamGameSchedule()
     .filter((schedule) => getScheduleDate(schedule) >= today)
+    .sort((left, right) => getScheduleSortValue(left).localeCompare(getScheduleSortValue(right)))[0] || null;
+}
+
+function selectAdminTargetGame() {
+  const schedules = getHamGameSchedule().filter((schedule) => !isScheduleGameUnavailable(schedule) && !isAdminScheduleCompleted(schedule));
+  const manualGame = state.gameInfo.manualGameSelection
+    ? schedules.find((schedule) => schedule.gameId === state.gameInfo.selectedGameId)
+    : null;
+  if (manualGame) return manualGame;
+
+  const today = getJapanDateString();
+  const todayGame = schedules
+    .filter((schedule) => getScheduleDate(schedule) === today)
+    .sort((left, right) => getScheduleSortValue(left).localeCompare(getScheduleSortValue(right)))[0];
+  if (todayGame) return todayGame;
+
+  return schedules
+    .filter((schedule) => getScheduleDate(schedule) > today)
+    .sort((left, right) => getScheduleSortValue(left).localeCompare(getScheduleSortValue(right)))[0] || null;
+}
+
+function isAdminScheduleCompleted(schedule) {
+  return ["completed", "finished", "final"].includes(String(schedule?.status || "").toLowerCase());
+}
+
+function findAdminScheduleAfter(gameId) {
+  const current = getHamGameSchedule().find((schedule) => schedule.gameId === gameId);
+  if (!current) return null;
+  const currentValue = getScheduleSortValue(current);
+  return getHamGameSchedule()
+    .filter((schedule) => !isScheduleGameUnavailable(schedule) && !isAdminScheduleCompleted(schedule))
+    .filter((schedule) => getScheduleSortValue(schedule) > currentValue)
     .sort((left, right) => getScheduleSortValue(left).localeCompare(getScheduleSortValue(right)))[0] || null;
 }
 
@@ -5345,6 +5464,42 @@ function areAdminGameInfoInputsEmpty() {
   });
 }
 
+function updateGameStartInputMode() {
+  const input = document.getElementById("gameStartInput");
+  const editButton = document.getElementById("editGameStartButton");
+  const resetButton = document.getElementById("resetGameStartButton");
+  const manual = state.gameInfo.manualStartOverride === true;
+  if (input) input.readOnly = !manual;
+  if (editButton) {
+    editButton.disabled = manual || !state.nextScheduleId;
+    editButton.classList.toggle("hidden", manual);
+  }
+  if (resetButton) {
+    resetButton.disabled = !manual || !state.nextScheduleId;
+    resetButton.classList.toggle("hidden", !manual);
+  }
+}
+
+function setGameStartManualOverride(enabled) {
+  if (!state.isAdminMode) return;
+  const schedule = getHamGameSchedule().find((item) => item.gameId === state.nextScheduleId) || null;
+  if (enabled) {
+    state.gameInfo.manualStartOverride = true;
+    updateGameStartInputMode();
+    setScheduleLoaderMessage("試合開始日時を手動上書き中です。自動値に戻すまで日程同期では変更しません。", "warning");
+    return;
+  }
+  state.gameInfo.manualStartOverride = false;
+  if (schedule) {
+    const input = document.getElementById("gameStartInput");
+    if (input) input.value = `${getScheduleDate(schedule)}T${getScheduleStartTime(schedule)}`;
+  }
+  updateGameStartInputMode();
+  saveAdminGameInfoFromInputs();
+  refreshPredictionDeadlineState();
+  setScheduleLoaderMessage("試合開始日時を日程データの自動値へ戻しました。", "success");
+}
+
 function loadNextGameSchedule() {
   addScheduleLoadLog("「次の試合を読み込む」を実行");
   const schedule = findNextGameSchedule();
@@ -5356,7 +5511,7 @@ function loadNextGameSchedule() {
 
   state.nextScheduleId = schedule.gameId;
   renderGameSchedulePicker();
-  applyGameSchedule(schedule);
+  applyGameSchedule(schedule, "manual-selection");
   setScheduleLoaderMessage(`次の試合「${schedule.matchupLabel}」を読み込みました。`, "success");
 }
 
@@ -5371,7 +5526,7 @@ function loadTodayGameSchedule() {
     return;
   }
 
-  applyGameSchedule(schedule);
+  applyGameSchedule(schedule, "manual-selection");
   setScheduleLoaderMessage(`今日の試合「${schedule.matchupLabel}」を読み込みました。`, "success");
 }
 
@@ -5386,7 +5541,7 @@ function loadSelectedGameSchedule() {
     return;
   }
 
-  applyGameSchedule(schedule);
+  applyGameSchedule(schedule, "manual-selection");
   setScheduleLoaderMessage(`試合「${schedule.matchupLabel}」を読み込みました。`, "success");
 }
 
@@ -5402,6 +5557,12 @@ function applyGameSchedule(schedule, source = "button") {
   }
 
   state.nextScheduleId = schedule.gameId || "";
+  if (source === "manual-selection") {
+    state.gameInfo.manualGameSelection = true;
+  } else if (source === "auto") {
+    state.gameInfo.manualGameSelection = false;
+  }
+  state.gameInfo.selectedGameId = state.nextScheduleId;
   const scoreUrl = resolveNpbScoreUrl(schedule);
   if (matchupInput) {
     matchupInput.value = schedule.matchupLabel || "";
@@ -5414,13 +5575,16 @@ function applyGameSchedule(schedule, source = "button") {
     addScheduleLoadLog("NPB URL入力欄が見つかりませんでした");
   }
   if (gameStartInput) {
-    gameStartInput.value = `${getScheduleDate(schedule)}T${getScheduleStartTime(schedule)}`;
+    if (!state.gameInfo.manualStartOverride) {
+      gameStartInput.value = `${getScheduleDate(schedule)}T${getScheduleStartTime(schedule)}`;
+    }
   } else {
     addScheduleLoadLog("試合開始日時入力欄が見つかりませんでした");
   }
   if (scheduleSelect) {
     scheduleSelect.value = schedule.gameId;
   }
+  updateGameStartInputMode();
   saveAdminGameInfoFromInputs();
   refreshPredictionDeadlineState();
   renderLoadedScheduleInfo(schedule, scoreUrl);
@@ -5789,6 +5953,7 @@ function renderAdminFlow() {
   renderAdminScoringPanel();
   renderAutoScoringPanel();
   renderPregameAutomationTools();
+  renderAdminGameWorkflowStatus();
   updateRosterMonitorButtons();
   renderAutoFetchPanel();
   renderRosterSnapshotSummary();

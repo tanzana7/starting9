@@ -1,0 +1,72 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const workerPath = path.join(root, "auth-worker.js");
+const workerUrl = pathToFileURL(workerPath).href;
+const worker = fs.readFileSync(workerPath, "utf8");
+const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
+const migration = fs.readFileSync(path.join(root, "migrations", "0014_automation_settings.sql"), "utf8");
+
+test("自動承認設定は未作成時にONとして正規化される", async () => {
+  const { normalizeAutoApproveEnabled, getAutomationSettings } = await import(workerUrl);
+  assert.equal(normalizeAutoApproveEnabled(undefined), true);
+  assert.equal(normalizeAutoApproveEnabled(null), true);
+  assert.equal(normalizeAutoApproveEnabled("1"), true);
+  assert.equal(normalizeAutoApproveEnabled("0"), false);
+
+  const settings = await getAutomationSettings({
+    prepare() {
+      return { bind: () => ({ first: async () => null }) };
+    }
+  });
+  assert.deepEqual(settings, { autoApproveEnabled: true, updatedAt: null, available: true });
+});
+
+test("自動承認は検証済み9人スタメンかつ設定ONの場合だけ許可する", async () => {
+  const { shouldAutoApproveOfficialLineup } = await import(workerUrl);
+  const valid = { ok: true, lineup: Array.from({ length: 9 }, () => ({})) };
+  assert.equal(shouldAutoApproveOfficialLineup(true, valid), true);
+  assert.equal(shouldAutoApproveOfficialLineup(false, valid), false);
+  assert.equal(shouldAutoApproveOfficialLineup(true, { ok: false, lineup: valid.lineup }), false);
+  assert.equal(shouldAutoApproveOfficialLineup(true, { ok: true, lineup: valid.lineup.slice(0, 8) }), false);
+});
+
+test("設定はD1に保存され、管理者限定のGET/PUT APIでのみ更新する", () => {
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS automation_settings/);
+  assert.match(migration, /auto_approve_enabled/);
+  assert.match(worker, /\/api\/admin\/automation\/settings/);
+  assert.match(worker, /async function handleAdminAutomationSettingsGet/);
+  assert.match(worker, /async function handleAdminAutomationSettingsPut/);
+  assert.match(worker, /await requireAdminUser\(request, env, cors\)/);
+  assert.match(worker, /INSERT INTO automation_settings/);
+});
+
+test("Cronはブラウザに依存せず、設定ON時だけ同じ承認コアを通す", () => {
+  assert.match(worker, /ctx\.waitUntil\(runScheduledGameAutomation\(env, scheduledAt\)\)/);
+  assert.match(worker, /const settings = await getAutomationSettings\(env\.AUTH_DB\)/);
+  assert.match(worker, /captureOfficialLineup\(env, gameId, now, \{ autoApproveEnabled: settings\.autoApproveEnabled \}\)/);
+  assert.match(worker, /approveActualLineupForAutoScoring\(env, gameId, actual\.lineup, detectedAt/);
+  assert.match(worker, /recordPregameLineupDeferred\(env\.AUTH_DB, gameId, identity, now\)/);
+  assert.match(worker, /status=auto_approval_disabled/);
+});
+
+test("手動承認とCron自動承認は同じサーバー側の承認コアを使い、既存スタメンを再承認しない", () => {
+  assert.match(worker, /async function approveActualLineupForAutoScoring/);
+  assert.match(worker, /const record = await approveActualLineupForAutoScoring\(env, gameId, actualResult\.lineup, detectedAt/);
+  assert.match(worker, /if \(existing && options\.preventOverwrite\) \{\s+return existing;/s);
+  assert.match(worker, /if \(existing\) return \{ status: existing\.lineup_source/);
+});
+
+test("管理画面のチェックは既定ONで、サーバー設定を読んでからブラウザ側自動承認に使う", () => {
+  assert.match(html, /id="autoApproveCheckbox" type="checkbox" checked/);
+  assert.match(script, /\/api\/admin\/automation\/settings/);
+  assert.match(script, /credentials: "include", cache: "no-store"/);
+  assert.match(script, /state\.autoApproval\.loaded/);
+  assert.match(script, /state\.autoApproval\.enabled/);
+  assert.doesNotMatch(script, /localStorage\.setItem\([^\n]*autoApproveCheckbox/);
+});

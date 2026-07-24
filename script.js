@@ -174,6 +174,12 @@ const state = {
     status: "inactive",
     requestId: 0
   },
+  autoApproval: {
+    enabled: true,
+    loaded: false,
+    isLoading: false,
+    isSaving: false
+  },
   adminTest: {
     status: "inactive",
     info: null,
@@ -427,6 +433,7 @@ function bindEvents() {
   bindAdminEvent("applyParsedActualButton", "click", applyParsedActualPreview);
   bindAdminEvent("clearActualCandidateButton", "click", clearActualCandidate);
   bindAdminEvent("approveProvisionalButton", "click", approveProvisionalActual);
+  bindAdminEvent("autoApproveCheckbox", "change", handleAutoApproveSettingChange);
   bindAdminEvent("editProvisionalButton", "click", editProvisionalActual);
   bindAdminEvent("cancelProvisionalButton", "click", cancelProvisionalActual);
   bindAdminEvent("testServerScoringButton", "click", runServerScoringPreview);
@@ -938,6 +945,7 @@ function openAdminPanel() {
   }
   refreshAdminScoringSummary({ force: true });
   refreshAutoScoringStatus({ force: true });
+  void refreshAutoApprovalSettings();
   void refreshAdminGameWorkflowStatus({ force: true });
   renderAdminTestPanel();
   void refreshAdminTestStatus();
@@ -3447,6 +3455,82 @@ function getAuthApiBaseUrl() {
   return "";
 }
 
+function getAutomationSettingsApiUrl() {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  return baseUrl ? `${baseUrl}/api/admin/automation/settings` : "";
+}
+
+function renderAutoApprovalSetting() {
+  const checkbox = document.getElementById("autoApproveCheckbox");
+  if (!checkbox) return;
+  checkbox.checked = state.autoApproval.enabled;
+  checkbox.disabled = state.autoApproval.isLoading || state.autoApproval.isSaving;
+}
+
+async function refreshAutoApprovalSettings() {
+  if (state.appMode !== "admin" || state.adminAccess.status !== "authorized" || state.autoApproval.isLoading) {
+    return;
+  }
+  const url = getAutomationSettingsApiUrl();
+  if (!url) return;
+
+  state.autoApproval.isLoading = true;
+  renderAutoApprovalSetting();
+  try {
+    const response = await fetch(url, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok || typeof payload?.settings?.autoApproveEnabled !== "boolean") {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+    state.autoApproval.enabled = payload.settings.autoApproveEnabled;
+    state.autoApproval.loaded = true;
+  } catch (error) {
+    console.warn("自動承認設定を取得できませんでした", error?.message || "unknown error");
+    // 取得できない間はブラウザ側の自動本承認をしません。Cron側はD1の既定値で判断します。
+    state.autoApproval.loaded = false;
+  } finally {
+    state.autoApproval.isLoading = false;
+    renderAutoApprovalSetting();
+  }
+}
+
+async function handleAutoApproveSettingChange(event) {
+  const checkbox = event.currentTarget;
+  if (!(checkbox instanceof HTMLInputElement) || state.autoApproval.isSaving) return;
+  const nextEnabled = checkbox.checked;
+  const previousEnabled = state.autoApproval.enabled;
+  const url = getAutomationSettingsApiUrl();
+  if (!url) {
+    checkbox.checked = previousEnabled;
+    return;
+  }
+
+  state.autoApproval.enabled = nextEnabled;
+  state.autoApproval.isSaving = true;
+  renderAutoApprovalSetting();
+  try {
+    const response = await fetch(url, {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ autoApproveEnabled: nextEnabled })
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok || typeof payload?.settings?.autoApproveEnabled !== "boolean") {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+    state.autoApproval.enabled = payload.settings.autoApproveEnabled;
+    state.autoApproval.loaded = true;
+  } catch (error) {
+    console.warn("自動承認設定を保存できませんでした", error?.message || "unknown error");
+    state.autoApproval.enabled = previousEnabled;
+    state.autoApproval.loaded = false;
+  } finally {
+    state.autoApproval.isSaving = false;
+    renderAutoApprovalSetting();
+  }
+}
+
 function buildYearlyRankingApiUrl({ year, qualifiedOnly = false } = {}) {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
   if (!baseUrl) return "";
@@ -4480,9 +4564,9 @@ async function runAutoFetchAttempt() {
 }
 
 function shouldAutoApproveFetchedLineup(validationChecks) {
-  const checkbox = document.getElementById("autoApproveCheckbox");
   return state.isAdminMode
-    && Boolean(checkbox?.checked)
+    && state.autoApproval.loaded
+    && state.autoApproval.enabled
     && validationChecks.length === 8
     && validationChecks.every((check) => check.ok);
 }
@@ -5973,6 +6057,7 @@ function renderAdminFlow() {
   }
 
   renderAdminStatus();
+  renderAutoApprovalSetting();
   renderActualPreview(state.actualPreview);
   updateAdminButtons();
   updateAutoFetchButtons();
@@ -6825,7 +6910,7 @@ function resetAllData() {
 
   document.getElementById("predictionForm").reset();
   document.getElementById("actualPasteInput").value = "";
-  document.getElementById("autoApproveCheckbox").checked = false;
+  renderAutoApprovalSetting();
   ["predictionPlayerDetails", "actualPlayerDetails"].forEach((elementId) => {
     const panel = document.getElementById(elementId);
     panel.classList.add("hidden");

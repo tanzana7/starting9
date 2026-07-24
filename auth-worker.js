@@ -45,6 +45,7 @@ const AUTO_SCORING_MAX_ATTEMPTS = 3;
 const AUTO_SCORING_CRON_BATCH_SIZE = 10;
 const AUTO_SCORING_PROCESSING_TIMEOUT_MS = 10 * 60 * 1000;
 const AUTOMATION_HEALTH_STATE_KEY = "cron";
+const AUTO_APPROVE_SETTING_KEY = "auto_approve_enabled";
 const AUTOMATION_SCHEDULE_LOOKAHEAD_DAYS = 1;
 const NPB_SERVICE_BINDING_INTERNAL_ORIGIN = "https://npb-fetch.internal";
 const NPB_FETCH_TIMEOUT_MS = 15_000;
@@ -199,6 +200,12 @@ export default {
       }
       if (path === "/api/admin/automation/health" && request.method === "GET") {
         return await handleAdminAutomationHealth(request, env, cors);
+      }
+      if (path === "/api/admin/automation/settings" && request.method === "GET") {
+        return await handleAdminAutomationSettingsGet(request, env, cors);
+      }
+      if (path === "/api/admin/automation/settings" && request.method === "PUT") {
+        return await handleAdminAutomationSettingsPut(request, env, cors);
       }
       const adminScoringRoute = parseAdminScoringRoute(path);
       if (adminScoringRoute) {
@@ -1838,6 +1845,70 @@ async function handleAdminAutomationHealth(request, env, cors) {
   return response;
 }
 
+export function normalizeAutoApproveEnabled(value, fallback = true) {
+  if (value === true || value === 1 || value === "1") return true;
+  if (value === false || value === 0 || value === "0") return false;
+  return fallback;
+}
+
+export async function getAutomationSettings(db) {
+  try {
+    const row = await db.prepare(
+      "SELECT setting_value, updated_at FROM automation_settings WHERE setting_key = ?1 LIMIT 1"
+    ).bind(AUTO_APPROVE_SETTING_KEY).first();
+    return {
+      autoApproveEnabled: normalizeAutoApproveEnabled(row?.setting_value, true),
+      updatedAt: row?.updated_at || null,
+      available: true
+    };
+  } catch (error) {
+    if (isPregameSchemaError(error)) {
+      // migration未適用の既存環境でも、自動処理は従来どおり停止させません。
+      return { autoApproveEnabled: true, updatedAt: null, available: false };
+    }
+    throw error;
+  }
+}
+
+async function handleAdminAutomationSettingsGet(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  const settings = await getAutomationSettings(env.AUTH_DB);
+  const response = jsonResponse({ ok: true, settings }, 200, cors);
+  response.headers.set("Cache-Control", "no-store");
+  return response;
+}
+
+async function handleAdminAutomationSettingsPut(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  const input = await readJson(request);
+  if (typeof input?.autoApproveEnabled !== "boolean") {
+    return jsonResponse({ ok: false, error: "自動承認設定が不正です。" }, 400, cors);
+  }
+
+  const now = new Date().toISOString();
+  try {
+    await env.AUTH_DB.prepare(
+      `INSERT INTO automation_settings (setting_key, setting_value, updated_at)
+       VALUES (?1, ?2, ?3)
+       ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at`
+    ).bind(AUTO_APPROVE_SETTING_KEY, input.autoApproveEnabled ? "1" : "0", now).run();
+  } catch (error) {
+    if (isPregameSchemaError(error)) {
+      return jsonResponse({ ok: false, code: "AUTOMATION_SETTINGS_SCHEMA_NOT_READY", error: "自動承認設定用データベースが準備されていません。" }, 503, cors);
+    }
+    throw error;
+  }
+
+  const response = jsonResponse({
+    ok: true,
+    settings: { autoApproveEnabled: input.autoApproveEnabled, updatedAt: now, available: true }
+  }, 200, cors);
+  response.headers.set("Cache-Control", "no-store");
+  return response;
+}
+
 async function getAutomationHealth(db) {
   try {
     const row = await db.prepare(
@@ -2044,6 +2115,13 @@ function createOfficialLineupFromNpb(lineup) {
   return sanitized.ok ? { ok: true, lineup: sanitized.lineup } : sanitized;
 }
 
+export function shouldAutoApproveOfficialLineup(autoApproveEnabled, lineupResult) {
+  return Boolean(autoApproveEnabled)
+    && Boolean(lineupResult?.ok)
+    && Array.isArray(lineupResult.lineup)
+    && lineupResult.lineup.length === SCORING_LINEUP_SIZE;
+}
+
 async function ensurePregameAutomationRow(db, identity, now) {
   const nowIso = now.toISOString();
   await db.prepare(
@@ -2088,7 +2166,7 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false } = {
   }
 }
 
-async function captureOfficialLineup(env, gameId, now, { force = false } = {}) {
+async function captureOfficialLineup(env, gameId, now, { force = false, autoApproveEnabled = true } = {}) {
   const identity = getGameIdentityForPregame(gameId);
   if (!identity) throw createPregameError("SCHEDULE_UNAVAILABLE", "試合日程を確認できません。");
   // 手動テストでも試合開始後のNPB内容を正式スタメンとして取り込まない。
@@ -2101,7 +2179,11 @@ async function captureOfficialLineup(env, gameId, now, { force = false } = {}) {
     const actual = createOfficialLineupFromNpb(payload.lineup);
     if (!actual.ok) throw createPregameError("INVALID_LINEUP", actual.error);
     const detectedAt = new Date(payload.fetchedAt || now);
-    const record = await saveActualLineupForAutoScoring(env.AUTH_DB, gameId, actual.lineup, detectedAt, {
+    if (!shouldAutoApproveOfficialLineup(autoApproveEnabled, actual)) {
+      await recordPregameLineupDeferred(env.AUTH_DB, gameId, identity, now);
+      return { status: "awaiting_manual_approval", sourceUrl: payload.sourceUrl };
+    }
+    const record = await approveActualLineupForAutoScoring(env, gameId, actual.lineup, detectedAt, {
       source: "npb-auto",
       scoringDueAt: detectedAt,
       preventOverwrite: true
@@ -2143,8 +2225,19 @@ async function recordPregameLineupAttempt(db, gameId, identity, now, error) {
   ).bind(now.toISOString(), next <= identity.startAt ? next.toISOString() : null, String(error?.code || "NPB_HTTP_ERROR").slice(0, 80), String(error?.message || "取得に失敗しました。").slice(0, 240), gameId).run();
 }
 
+async function recordPregameLineupDeferred(db, gameId, identity, now) {
+  const next = new Date(now.getTime() + 10 * 60 * 1000);
+  await db.prepare(
+    `UPDATE game_pregame_automation
+        SET lineup_status = 'pending', lineup_attempt_count = lineup_attempt_count + 1, last_lineup_attempt_at = ?1,
+            next_lineup_attempt_at = ?2, last_error_code = NULL, last_error_message = NULL, updated_at = ?1
+      WHERE game_id = ?3`
+  ).bind(now.toISOString(), next <= identity.startAt ? next.toISOString() : null, gameId).run();
+}
+
 async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimelines()) {
-  const summary = { lineupCaptured: 0, lineupFailed: 0, lineupRetryWait: 0 };
+  const summary = { lineupCaptured: 0, lineupAwaitingApproval: 0, lineupFailed: 0, lineupRetryWait: 0 };
+  const settings = await getAutomationSettings(env.AUTH_DB);
   for (const timeline of timelines) {
     const gameId = timeline.gameId;
     try {
@@ -2162,9 +2255,14 @@ async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimel
         }
         continue;
       }
-      await captureOfficialLineup(env, gameId, now);
-      summary.lineupCaptured += 1;
-      console.log(`[GAME_WORKFLOW] gameId=${gameId} step=lineup action=executed status=success`);
+      const result = await captureOfficialLineup(env, gameId, now, { autoApproveEnabled: settings.autoApproveEnabled });
+      if (result.status === "awaiting_manual_approval") {
+        summary.lineupAwaitingApproval += 1;
+        console.log(`[GAME_WORKFLOW] gameId=${gameId} step=lineup action=skipped status=auto_approval_disabled`);
+      } else {
+        summary.lineupCaptured += 1;
+        console.log(`[GAME_WORKFLOW] gameId=${gameId} step=lineup action=executed status=success`);
+      }
     } catch (error) {
       summary.lineupFailed += 1;
       await recordGameWorkflowOutcome(env.AUTH_DB, gameId, "lineup", "failed", error, now);
@@ -2446,8 +2544,7 @@ async function handleAdminActualLineupSave(request, env, cors, gameId) {
   }
 
   const detectedAt = parseLineupDetectedAt(input?.lineupDetectedAt) || new Date();
-  await markGameRankingPending(env.AUTH_DB, gameId, detectedAt, env);
-  const record = await saveActualLineupForAutoScoring(env.AUTH_DB, gameId, actualResult.lineup, detectedAt, {
+  const record = await approveActualLineupForAutoScoring(env, gameId, actualResult.lineup, detectedAt, {
     scoringDueAt: detectedAt,
     source: "manual"
   });
@@ -2572,6 +2669,13 @@ function parseLineupDetectedAt(value) {
   }
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+// Cron自動承認と管理者の本承認は、このサーバー側の同一処理で採点待ち状態を作ります。
+async function approveActualLineupForAutoScoring(env, gameId, actualLineup, detectedAt, options = {}) {
+  const record = await saveActualLineupForAutoScoring(env.AUTH_DB, gameId, actualLineup, detectedAt, options);
+  await markGameRankingPending(env.AUTH_DB, gameId, detectedAt, env);
+  return record;
 }
 
 async function saveActualLineupForAutoScoring(db, gameId, actualLineup, detectedAt, options = {}) {

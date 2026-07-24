@@ -374,6 +374,7 @@ button:disabled {
   display: grid;
   gap: 8px;
   width: min(100%, 560px);
+  min-height: 128px;
   margin: 0 0 14px;
   padding: 12px 14px;
   border: 1px solid rgba(255, 255, 255, 0.42);

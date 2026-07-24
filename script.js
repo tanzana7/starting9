@@ -5757,7 +5757,8 @@ function renderProbableStarterDisplay() {
     container.className = "probable-starter-card is-error";
     container.innerHTML = `
       <p class="probable-starter-label">予告先発</p>
-      <p class="probable-starter-message">予告先発を取得できませんでした</p>
+      <p class="probable-starter-message">予告先発を取得できませんでした。</p>
+      <p class="probable-starter-meta">次回の自動更新で再試行します。</p>
     `;
     return;
   }
@@ -5768,7 +5769,8 @@ function renderProbableStarterDisplay() {
     container.className = "probable-starter-card is-pending";
     container.innerHTML = `
       <p class="probable-starter-label">予告先発</p>
-      <p class="probable-starter-message">予告先発はまだ発表されていません</p>
+      <p class="probable-starter-message">現在、次の試合の予告先発はまだ発表されていません。</p>
+      <p class="probable-starter-meta">発表され次第、自動で表示されます。</p>
       <p class="probable-starter-meta">${escapeHtml(formatScheduledGameForLog(probableStarter.nextGame))}</p>
     `;
     return;
@@ -5784,7 +5786,10 @@ function renderProbableStarterDisplay() {
       <p class="probable-starter-label">予告先発</p>
       <a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">NPB公式</a>
     </div>
-    ${isPending ? `<p class="probable-starter-message">予告先発はまだ発表されていません</p>` : `
+    ${isPending ? `
+      <p class="probable-starter-message">現在、次の試合の予告先発はまだ発表されていません。</p>
+      <p class="probable-starter-meta">発表され次第、自動で表示されます。</p>
+    ` : `
       <div class="probable-starter-grid">
         ${createProbableStarterTeamHtml("日本ハム", fightersStarter.fighters?.name)}
         ${createProbableStarterTeamHtml(fightersStarter.opponentName || "相手チーム", fightersStarter.opponent?.name)}

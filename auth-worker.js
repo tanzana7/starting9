@@ -44,6 +44,8 @@ const AUTO_SCORING_MAX_DELAY_SECONDS = 24 * 60 * 60;
 const AUTO_SCORING_MAX_ATTEMPTS = 3;
 const AUTO_SCORING_CRON_BATCH_SIZE = 10;
 const AUTO_SCORING_PROCESSING_TIMEOUT_MS = 10 * 60 * 1000;
+const AUTOMATION_HEALTH_STATE_KEY = "cron";
+const AUTOMATION_SCHEDULE_LOOKAHEAD_DAYS = 1;
 const NPB_SERVICE_BINDING_INTERNAL_ORIGIN = "https://npb-fetch.internal";
 const NPB_FETCH_TIMEOUT_MS = 15_000;
 const ROSTER_MINIMUM_PLAYER_COUNT = 20;
@@ -195,6 +197,9 @@ export default {
       if (path === "/api/admin/mode-capabilities" && request.method === "GET") {
         return await handleAdminModeCapabilities(request, env, cors);
       }
+      if (path === "/api/admin/automation/health" && request.method === "GET") {
+        return await handleAdminAutomationHealth(request, env, cors);
+      }
       const adminScoringRoute = parseAdminScoringRoute(path);
       if (adminScoringRoute) {
         return await handleAdminScoringRoute(request, env, cors, adminScoringRoute);
@@ -237,7 +242,7 @@ export default {
   }
 };
 
-async function runScheduledGameAutomation(env, now) {
+export async function runScheduledGameAutomation(env, now) {
   let scheduleSync = { status: "failed", games: [] };
   try {
     scheduleSync = await syncTodayFightersSchedule(env, now);
@@ -251,9 +256,39 @@ async function runScheduledGameAutomation(env, now) {
     workflows: workflowResult.workflows,
     shared: workflowResult.shared
   });
+  await recordAutomationHealth(env.AUTH_DB, { now, summary });
   logGameAutomationSummary(summary);
   logCancelledGameWorkflows(workflowResult.workflows, summary.scheduleSync);
   return { ...workflowResult, summary };
+}
+
+async function recordAutomationHealth(db, { now, summary, error = null }) {
+  const timestamp = now instanceof Date ? now.toISOString() : new Date(now).toISOString();
+  const failed = Boolean(error) || Number(summary?.failed || 0) > 0;
+  const errorCode = failed ? String(error?.code || "GAME_AUTOMATION_FAILED").slice(0, 80) : null;
+  try {
+    await db.prepare(
+      `INSERT INTO game_automation_health
+         (state_key, cron_last_run_at, cron_last_success_at, cron_last_error_at, cron_last_error_code, processed_game_count, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?2)
+       ON CONFLICT(state_key) DO UPDATE SET
+         cron_last_run_at = excluded.cron_last_run_at,
+         cron_last_success_at = CASE WHEN excluded.cron_last_success_at IS NULL THEN game_automation_health.cron_last_success_at ELSE excluded.cron_last_success_at END,
+         cron_last_error_at = CASE WHEN excluded.cron_last_error_at IS NULL THEN game_automation_health.cron_last_error_at ELSE excluded.cron_last_error_at END,
+         cron_last_error_code = CASE WHEN excluded.cron_last_error_code IS NULL THEN NULL ELSE excluded.cron_last_error_code END,
+         processed_game_count = excluded.processed_game_count,
+         updated_at = excluded.updated_at`
+    ).bind(
+      AUTOMATION_HEALTH_STATE_KEY,
+      timestamp,
+      failed ? null : timestamp,
+      failed ? timestamp : null,
+      errorCode,
+      Number(summary?.games || 0)
+    ).run();
+  } catch (healthError) {
+    console.warn(`[GAME_AUTOMATION] state=health action=record status=failed code=${healthError?.code || "AUTOMATION_HEALTH_RECORD_FAILED"}`);
+  }
 }
 
 async function runGameWorkflows(env, now) {
@@ -298,6 +333,7 @@ export function summarizeGameAutomationRun({ date = "", scheduleSync = "skipped"
   const noticeExecuted = notice.due && !notice.skipped ? 1 : 0;
   const noticeFailed = notice.status === "error" ? 1 : 0;
   const rosterFixed = Number(shared.notice?.rosterFixed || 0);
+  const rosterFailed = Number(shared.notice?.rosterFailed || 0);
   const lineupCaptured = Number(lineup.lineupCaptured || 0);
   const lineupFailed = Number(lineup.lineupFailed || 0);
   const scoringProcessed = Number(scoring.processed || 0);
@@ -306,15 +342,16 @@ export function summarizeGameAutomationRun({ date = "", scheduleSync = "skipped"
   const published = Number(publishing.published || 0);
   const publishingFailed = Number(publishing.failed || 0);
   const cancelled = safeWorkflows.filter((workflow) => workflow?.gameStatus === "cancelled").length;
-  const failed = noticeFailed + lineupFailed + scoringFailed + publishingFailed + Number(shared.errors || 0);
+  const scheduleFailed = scheduleSync === "failed" ? 1 : 0;
+  const failed = scheduleFailed + noticeFailed + rosterFailed + lineupFailed + scoringFailed + publishingFailed + Number(shared.errors || 0);
   const executed = noticeExecuted + rosterFixed + lineupCaptured + lineupFailed + scoringProcessed + published + publishingFailed;
   const succeeded = (noticeExecuted - noticeFailed) + rosterFixed + lineupCaptured + scoringSucceeded + published;
   const retryWait = Number(lineup.lineupRetryWait || 0);
   let status = "idle";
-  if (safeWorkflows.length === 0) status = "no_games";
-  else if (cancelled === safeWorkflows.length) status = "cancelled";
-  else if (failed > 0 && succeeded > 0) status = "partial_failure";
+  if (failed > 0 && succeeded > 0) status = "partial_failure";
   else if (failed > 0) status = "failed";
+  else if (safeWorkflows.length === 0) status = "no_games";
+  else if (cancelled === safeWorkflows.length) status = "cancelled";
   else if (executed > 0) status = "success";
 
   return {
@@ -368,11 +405,35 @@ function runGameWorkflow(timeline, now, paused = false) {
   return { gameId: timeline.gameId, gameStatus: cancelled ? "cancelled" : paused ? "paused" : "scheduled", source: timeline.gameCode ? "auto-detected" : "static", steps };
 }
 
-async function syncTodayFightersSchedule(env, now) {
+export function getAutomationScheduleDates(now = new Date(), lookaheadDays = AUTOMATION_SCHEDULE_LOOKAHEAD_DAYS) {
   const date = getJstDateString(now);
-  if (!date) return { status: "skipped", games: [] };
+  if (!date) return [];
+  const base = new Date(`${date}T00:00:00+09:00`);
+  const count = Math.max(0, Number.parseInt(lookaheadDays, 10) || 0);
+  return Array.from({ length: count + 1 }, (_, offset) => getJstDateString(new Date(base.getTime() + offset * 24 * 60 * 60 * 1000)));
+}
+
+async function syncTodayFightersSchedule(env, now) {
+  const dates = getAutomationScheduleDates(now);
+  if (!dates.length) return { status: "skipped", games: [] };
+  let synced = false;
+  let failed = false;
+  for (const date of dates) {
+    try {
+      const result = await syncFightersScheduleForDate(env, date, now);
+      synced ||= result.status === "success";
+    } catch (error) {
+      failed = true;
+      console.warn(`[GAME_DETECTION] date=${date} team=fighters status=failed code=${error?.code || "SCHEDULE_SYNC_FAILED"}`);
+    }
+  }
+  const rows = await loadDetectedScheduleGames(env.AUTH_DB, dates);
+  setDetectedScheduleGames(rows);
+  return { status: failed ? "failed" : synced ? "success" : "skipped", games: rows, dates };
+}
+
+async function syncFightersScheduleForDate(env, date, now) {
   const state = await env.AUTH_DB.prepare("SELECT next_check_at FROM game_schedule_check_state WHERE schedule_date = ?1 LIMIT 1").bind(date).first();
-  let rows = [];
   let synced = false;
   if (!state?.next_check_at || new Date(state.next_check_at) <= now) {
     const payload = await fetchNpbWorkerJson(env, { mode: "schedule", date });
@@ -395,15 +456,28 @@ async function syncTodayFightersSchedule(env, now) {
        ON CONFLICT(schedule_date) DO UPDATE SET next_check_at=excluded.next_check_at, last_checked_at=excluded.last_checked_at, last_error_code=NULL, updated_at=excluded.updated_at`
     ).bind(date, nextCheck, now.toISOString()));
     if (statements.length) await env.AUTH_DB.batch(statements);
-    rows = payload.games;
     synced = true;
-    console.log(`[GAME_DETECTION] date=${date} team=fighters gamesFound=${rows.length} status=success`);
-  } else {
-    const stored = await env.AUTH_DB.prepare("SELECT * FROM detected_game_schedule WHERE game_date = ?1 AND game_status = 'scheduled' ORDER BY start_at").bind(date).all();
-    rows = (stored.results || []).map((row) => ({ gameId: row.game_id, date: row.game_date, startTime: new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Tokyo", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(row.start_at)), homeTeam: row.home_team, awayTeam: row.away_team, venue: row.venue || "", gameCode: row.game_code || "", status: row.game_status }));
+    console.log(`[GAME_DETECTION] date=${date} team=fighters gamesFound=${payload.games.length} status=success`);
   }
-  setDetectedScheduleGames(rows);
-  return { status: synced ? "success" : "skipped", games: rows };
+  return { status: synced ? "success" : "skipped" };
+}
+
+async function loadDetectedScheduleGames(db, dates) {
+  const sortedDates = [...new Set((Array.isArray(dates) ? dates : []).filter(isValidPregameDate))].sort();
+  if (!sortedDates.length) return [];
+  const stored = await db.prepare(
+    "SELECT * FROM detected_game_schedule WHERE game_date >= ?1 AND game_date <= ?2 AND game_status = 'scheduled' ORDER BY start_at"
+  ).bind(sortedDates[0], sortedDates[sortedDates.length - 1]).all();
+  return (stored.results || []).map((row) => ({
+    gameId: row.game_id,
+    date: row.game_date,
+    startTime: new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Tokyo", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(row.start_at)),
+    homeTeam: row.home_team,
+    awayTeam: row.away_team,
+    venue: row.venue || "",
+    gameCode: row.game_code || "",
+    status: row.game_status
+  }));
 }
 
 async function handleRegister(request, env, cors) {
@@ -1454,11 +1528,11 @@ async function runDueGameDayScheduleJobs(env, now, timelines = getPregameTimelin
       console.warn(`[GAME_WORKFLOW] gameId=day-${plan.date} step=notice action=executed status=failed code=${error?.code || "unknown"}`);
     }
   }
-  const rosterFixed = await fixDueGameRosters(env, timelines, now);
-  if (rosterFixed > 0) {
-    console.log(`[GAME_WORKFLOW] gameId=day-${plan.date} step=close_predictions action=executed status=success rosterFixed=${rosterFixed}`);
+  const rosterResult = await fixDueGameRosters(env, timelines, now);
+  if (rosterResult.fixed > 0) {
+    console.log(`[GAME_WORKFLOW] gameId=day-${plan.date} step=close_predictions action=executed status=success rosterFixed=${rosterResult.fixed}`);
   }
-  return { notice, rosterFixed };
+  return { notice, rosterFixed: rosterResult.fixed, rosterFailed: rosterResult.failed };
 }
 
 async function runGameDayNoticeOnce(env, now, requestedGameId = "", timelines = getPregameTimelines()) {
@@ -1633,32 +1707,37 @@ async function applyGameDayNoticeToGames(env, date, payload, now, allowedGameIds
   const applied = [];
   for (const row of rows.results || []) {
     if (allowedGameIds instanceof Set && !allowedGameIds.has(row.game_id)) continue;
-    const teams = new Set([String(row.home_team || "").toLowerCase(), String(row.away_team || "").toLowerCase()]);
-    const matchingRegistrations = registrations.filter((item) => teams.has(String(item?.teamCode || "").toLowerCase()));
-    const matchingRemovals = removals.filter((item) => teams.has(String(item?.teamCode || "").toLowerCase()));
-    const detected = matchingRegistrations.length > 0 || matchingRemovals.length > 0;
-    const identity = getGameIdentityForPregame(row.game_id);
-    const nowIso = now.toISOString();
-    if (detected) {
-      const afterDeadline = identity && now >= identity.predictionDeadlineAt;
-      await env.AUTH_DB.prepare(
-        `UPDATE game_day_notice_games
-            SET notice_status = 'detected', registered_count = ?1, removed_count = ?2,
-                last_checked_at = ?3, detected_at = COALESCE(detected_at, ?3),
-                after_deadline_notice = ?4, last_error_code = ?5, updated_at = ?3
-          WHERE game_id = ?6`
-      ).bind(matchingRegistrations.length, matchingRemovals.length, nowIso, afterDeadline ? 1 : 0, afterDeadline ? "NOTICE_AFTER_DEADLINE" : null, row.game_id).run();
-      if (!afterDeadline && identity) {
-        await saveRosterSnapshotFromNotice(env.AUTH_DB, identity, payload, now);
+    try {
+      const teams = new Set([String(row.home_team || "").toLowerCase(), String(row.away_team || "").toLowerCase()]);
+      const matchingRegistrations = registrations.filter((item) => teams.has(String(item?.teamCode || "").toLowerCase()));
+      const matchingRemovals = removals.filter((item) => teams.has(String(item?.teamCode || "").toLowerCase()));
+      const detected = matchingRegistrations.length > 0 || matchingRemovals.length > 0;
+      const identity = getGameIdentityForPregame(row.game_id);
+      const nowIso = now.toISOString();
+      if (detected) {
+        const afterDeadline = identity && now >= identity.predictionDeadlineAt;
+        await env.AUTH_DB.prepare(
+          `UPDATE game_day_notice_games
+              SET notice_status = 'detected', registered_count = ?1, removed_count = ?2,
+                  last_checked_at = ?3, detected_at = COALESCE(detected_at, ?3),
+                  after_deadline_notice = ?4, last_error_code = ?5, updated_at = ?3
+            WHERE game_id = ?6`
+        ).bind(matchingRegistrations.length, matchingRemovals.length, nowIso, afterDeadline ? 1 : 0, afterDeadline ? "NOTICE_AFTER_DEADLINE" : null, row.game_id).run();
+        if (!afterDeadline && identity) {
+          await saveRosterSnapshotFromNotice(env.AUTH_DB, identity, payload, now);
+        }
+        applied.push(row.game_id);
+      } else if (identity && now >= identity.predictionDeadlineAt && now < identity.startAt && row.notice_status === GAME_DAY_NOTICE_STATUS.WAITING) {
+        await env.AUTH_DB.prepare(
+          `UPDATE game_day_notice_games
+              SET notice_status = 'closed_without_notice', last_checked_at = ?1, updated_at = ?1
+            WHERE game_id = ?2`
+        ).bind(nowIso, row.game_id).run();
+        applied.push(row.game_id);
       }
-      applied.push(row.game_id);
-    } else if (identity && now >= identity.predictionDeadlineAt && now < identity.startAt && row.notice_status === GAME_DAY_NOTICE_STATUS.WAITING) {
-      await env.AUTH_DB.prepare(
-        `UPDATE game_day_notice_games
-            SET notice_status = 'closed_without_notice', last_checked_at = ?1, updated_at = ?1
-          WHERE game_id = ?2`
-      ).bind(nowIso, row.game_id).run();
-      applied.push(row.game_id);
+    } catch (error) {
+      await recordGameWorkflowOutcome(env.AUTH_DB, row.game_id, "notice", "failed", error, now);
+      console.warn(`[GAME_WORKFLOW] gameId=${row.game_id} step=notice action=distribution status=failed code=${error?.code || "NOTICE_DISTRIBUTION_FAILED"}`);
     }
   }
   return applied;
@@ -1736,12 +1815,51 @@ async function fixGameRosterAtDeadline(env, gameId, now) {
 
 async function fixDueGameRosters(env, timelines, now) {
   let fixed = 0;
+  let failed = 0;
   for (const timeline of timelines) {
     if (now < timeline.predictionDeadlineAt || now > timeline.startAt) continue;
-    const result = await fixGameRosterAtDeadline(env, timeline.gameId, now);
-    if (result.status.startsWith("fixed")) fixed += 1;
+    try {
+      const result = await fixGameRosterAtDeadline(env, timeline.gameId, now);
+      if (result.status.startsWith("fixed")) fixed += 1;
+    } catch (error) {
+      failed += 1;
+      await recordGameWorkflowOutcome(env.AUTH_DB, timeline.gameId, "close_predictions", "failed", error, now);
+      console.warn(`[GAME_WORKFLOW] gameId=${timeline.gameId} step=close_predictions action=executed status=failed code=${error?.code || "ROSTER_FIX_FAILED"}`);
+    }
   }
-  return fixed;
+  return { fixed, failed };
+}
+
+async function handleAdminAutomationHealth(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  const response = jsonResponse({ ok: true, automation: await getAutomationHealth(env.AUTH_DB) }, 200, cors);
+  response.headers.set("Cache-Control", "no-store");
+  return response;
+}
+
+async function getAutomationHealth(db) {
+  try {
+    const row = await db.prepare(
+      `SELECT cron_last_run_at, cron_last_success_at, cron_last_error_at,
+              cron_last_error_code, processed_game_count
+         FROM game_automation_health
+        WHERE state_key = ?1 LIMIT 1`
+    ).bind(AUTOMATION_HEALTH_STATE_KEY).first();
+    return {
+      available: true,
+      cronLastRunAt: row?.cron_last_run_at || null,
+      cronLastSuccessAt: row?.cron_last_success_at || null,
+      cronLastErrorAt: row?.cron_last_error_at || null,
+      cronLastError: row?.cron_last_error_code || "",
+      processedGameCount: Number(row?.processed_game_count || 0)
+    };
+  } catch (error) {
+    if (isPregameSchemaError(error)) {
+      return { available: false, cronLastRunAt: null, cronLastSuccessAt: null, cronLastErrorAt: null, cronLastError: "", processedGameCount: 0 };
+    }
+    throw error;
+  }
 }
 
 async function getGameDayStatus(db, identity) {
@@ -2029,26 +2147,27 @@ async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimel
   const summary = { lineupCaptured: 0, lineupFailed: 0, lineupRetryWait: 0 };
   for (const timeline of timelines) {
     const gameId = timeline.gameId;
-    if (now < timeline.lineupFetchStartAt || now > timeline.startAt) continue;
-    const currentLineup = await getGameLineup(env.AUTH_DB, gameId);
-    if (currentLineup || now > timeline.startAt) continue;
-    const dueAt = getDueLineupAttemptAt(timeline, now);
-    if (!dueAt) continue;
-    const job = await env.AUTH_DB.prepare("SELECT last_lineup_attempt_at FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
-    if (job?.last_lineup_attempt_at && new Date(job.last_lineup_attempt_at) >= dueAt) {
-      // 同じ10分枠での待機を毎分出力しないため、枠の開始時だけ記録します。
-      if (now.getTime() === dueAt.getTime()) {
-        summary.lineupRetryWait += 1;
-        console.log(`[GAME_WORKFLOW] gameId=${gameId} step=lineup action=skipped status=retry_wait nextRetryAt=${new Date(dueAt.getTime() + 10 * 60 * 1000).toISOString()}`);
-      }
-      continue;
-    }
     try {
+      if (now < timeline.lineupFetchStartAt || now > timeline.startAt) continue;
+      const currentLineup = await getGameLineup(env.AUTH_DB, gameId);
+      if (currentLineup || now > timeline.startAt) continue;
+      const dueAt = getDueLineupAttemptAt(timeline, now);
+      if (!dueAt) continue;
+      const job = await env.AUTH_DB.prepare("SELECT last_lineup_attempt_at FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
+      if (job?.last_lineup_attempt_at && new Date(job.last_lineup_attempt_at) >= dueAt) {
+        // 同じ10分枠での待機を毎分出力しないため、枠の開始時だけ記録します。
+        if (now.getTime() === dueAt.getTime()) {
+          summary.lineupRetryWait += 1;
+          console.log(`[GAME_WORKFLOW] gameId=${gameId} step=lineup action=skipped status=retry_wait nextRetryAt=${new Date(dueAt.getTime() + 10 * 60 * 1000).toISOString()}`);
+        }
+        continue;
+      }
       await captureOfficialLineup(env, gameId, now);
       summary.lineupCaptured += 1;
       console.log(`[GAME_WORKFLOW] gameId=${gameId} step=lineup action=executed status=success`);
     } catch (error) {
       summary.lineupFailed += 1;
+      await recordGameWorkflowOutcome(env.AUTH_DB, gameId, "lineup", "failed", error, now);
       console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=lineup action=executed status=failed code=${error?.code || "unknown"} retryable=true`);
     }
   }
@@ -2073,6 +2192,7 @@ async function getPregameAutomationStatus(db, gameId) {
   const nextNoticeAt = getNextGameDayNoticeAt(getPregameTimelines(), new Date());
   const nextAttempt = identity && !lineupRow ? getNextPregameLineupAttempt(identity, jobRow?.last_lineup_attempt_at) : null;
   const workflow = getGameWorkflowProgress(identity, jobRow, lineupRow, notice, dailyNotice);
+  const health = await getAutomationHealth(db);
   return {
     gameId,
     game: identity?.game ? {
@@ -2115,7 +2235,8 @@ async function getPregameAutomationStatus(db, gameId) {
     automation: {
       paused: Number(control?.automation_paused || 0) === 1,
       pausedAt: control?.paused_at || null,
-      resumedAt: control?.resumed_at || null
+      resumedAt: control?.resumed_at || null,
+      health
     },
     workflow,
     lastErrorCode: workflow.errorCode || "",
@@ -2596,12 +2717,11 @@ async function runDueAutoScoringJobs(env, now, pausedGameIds = new Set()) {
 
   const summary = { considered: (due?.results || []).length, processed: 0, succeeded: 0, failed: 0 };
   for (const row of due?.results || []) {
-    const claimed = await claimGameLineupForScoring(env.AUTH_DB, row.game_id, now);
-    if (!claimed) {
-      continue;
-    }
-    summary.processed += 1;
+    let claimed = null;
     try {
+      claimed = await claimGameLineupForScoring(env.AUTH_DB, row.game_id, now);
+      if (!claimed) continue;
+      summary.processed += 1;
       console.log(`auto scoring claimed: game=${claimed.game_id} attempt=${claimed.scoring_attempts}`);
       const result = await scoreClaimedGameLineup(env.AUTH_DB, claimed, now);
       await recordGameWorkflowOutcome(env.AUTH_DB, claimed.game_id, "score", "success", null, now);
@@ -2610,9 +2730,14 @@ async function runDueAutoScoringJobs(env, now, pausedGameIds = new Set()) {
       console.log(`[GAME_WORKFLOW] gameId=${claimed.game_id} step=score action=executed status=success`);
     } catch (error) {
       summary.failed += 1;
-      await markGameLineupFailed(env.AUTH_DB, claimed.game_id, error, now);
-      await recordGameWorkflowOutcome(env.AUTH_DB, claimed.game_id, "score", "failed", error, now);
-      console.warn(`[GAME_WORKFLOW] gameId=${claimed.game_id} step=score action=executed status=failed code=${error?.code || "SCORING_FAILED"}`);
+      if (claimed) {
+        await markGameLineupFailed(env.AUTH_DB, claimed.game_id, error, now);
+        await recordGameWorkflowOutcome(env.AUTH_DB, claimed.game_id, "score", "failed", error, now);
+        console.warn(`[GAME_WORKFLOW] gameId=${claimed.game_id} step=score action=executed status=failed code=${error?.code || "SCORING_FAILED"}`);
+      } else {
+        await recordGameWorkflowOutcome(env.AUTH_DB, row.game_id, "score", "failed", error, now);
+        console.warn(`[GAME_WORKFLOW] gameId=${row.game_id} step=score action=executed status=failed code=${error?.code || "SCORING_FAILED"}`);
+      }
     }
   }
   return summary;
@@ -2780,14 +2905,14 @@ async function runDueGameDayPublicationJobs(env, now, timelines = getPregameTime
   const summary = { considered: 0, published: 0, skipped: 0, failed: 0 };
   for (const timeline of timelines) {
     if (now < timeline.startAt) continue;
-    const lineup = await getGameLineup(env.AUTH_DB, timeline.gameId);
-    if (!lineup || lineup.scoring_status !== "scored") {
-      summary.skipped += 1;
-      continue;
-    }
-    if (lineup.publication_status === "published") continue;
-    summary.considered += 1;
     try {
+      const lineup = await getGameLineup(env.AUTH_DB, timeline.gameId);
+      if (!lineup || lineup.scoring_status !== "scored") {
+        summary.skipped += 1;
+        continue;
+      }
+      if (lineup.publication_status === "published") continue;
+      summary.considered += 1;
       const result = await publishScoredGameResults(env, timeline.gameId, now);
       if (result.published) {
         summary.published += 1;

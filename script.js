@@ -3181,6 +3181,7 @@ function renderAdminGameWorkflowStatus() {
   const workflow = record.workflow || {};
   const scoring = record.scoring || {};
   const publishing = record.publishing || {};
+  const automationHealth = record.automation?.health || {};
   const rows = [
     ["対象試合", record.game?.matchupLabel || record.gameId || "-"],
     ["試合開始", formatPredictionDeadlineDateTime(schedule.startAt)],
@@ -3193,7 +3194,11 @@ function renderAdminGameWorkflowStatus() {
     ["公開状態", formatPregameAutomationStatus(publishing.status)],
     ["公開時刻", publishing.publishedAt ? formatDateTime(publishing.publishedAt) : "-"],
     ["最終実行", workflow.lastRunAt ? formatDateTime(workflow.lastRunAt) : "未実行"],
-    ["最終結果", getGameWorkflowResultLabel(workflow.lastResult)]
+    ["最終結果", getGameWorkflowResultLabel(workflow.lastResult)],
+    ["最終Cron実行", automationHealth.available ? (automationHealth.cronLastRunAt ? formatDateTime(automationHealth.cronLastRunAt) : "未実行") : "状態テーブル未適用"],
+    ["最終Cron成功", automationHealth.available ? (automationHealth.cronLastSuccessAt ? formatDateTime(automationHealth.cronLastSuccessAt) : "-" ) : "-"],
+    ["最終Cronエラー", automationHealth.available ? (automationHealth.cronLastError || "なし") : "-"],
+    ["対象試合数", automationHealth.available ? `${Number(automationHealth.processedGameCount || 0)}件` : "-"]
   ];
   summary.innerHTML = `<strong>${paused ? "緊急停止中" : "自動運転中"}</strong><span>${paused ? "この試合のCron自動処理は停止しています。" : "毎分、試合状態を確認しています。次回確認: 1分以内"}</span><dl>${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>`;
   const workflowError = workflow.errorCode ? `${workflow.errorCode}${workflow.errorMessage ? `: ${workflow.errorMessage}` : ""}` : "";

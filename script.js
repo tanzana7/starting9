@@ -41,6 +41,7 @@ const NPB_SCORE_PATH_PATTERN = /^\/scores\/(\d{4})\/(\d{2})(\d{2})\/([a-z0-9]+-[
 const RANKING_DISPLAY_LIMIT = 50;
 const MONTHLY_RANKING_MIN_YEAR = 2020;
 const YEARLY_RANKING_MIN_YEAR = 2020;
+const RANKING_SERVICE_START_YEAR = 2026;
 const AUTO_FETCH_START_BEFORE_MS = 50 * 60 * 1000;
 const AUTO_FETCH_INTERVAL_MS = 10 * 60 * 1000;
 const AUTO_FETCH_MAX_ATTEMPTS = 5;
@@ -3743,7 +3744,7 @@ function handleRankingPeriodContentClick(event) {
       const ranking = state.yearlyRanking;
       const nextYear = ranking.year + direction;
       const currentYear = getJapanYearMonth().year;
-      if (nextYear >= YEARLY_RANKING_MIN_YEAR && nextYear <= currentYear) {
+      if (nextYear >= RANKING_SERVICE_START_YEAR && nextYear <= currentYear) {
         ranking.year = nextYear;
         ranking.self = null;
         void refreshYearlyRanking({ force: true });
@@ -3781,10 +3782,12 @@ function renderRankingPanel() {
   renderRankingHeading("yearly");
   const ranking = state.yearlyRanking;
   const currentYear = getJapanYearMonth().year;
+  const canMoveToPreviousYear = ranking.year > RANKING_SERVICE_START_YEAR;
+  const canMoveToNextYear = ranking.year < currentYear;
   const periodControls = `<div class="ranking-month-controls" aria-label="年間ランキングの対象年">
-    <button class="compact-button" type="button" data-yearly-ranking-move="-1"${ranking.year <= YEARLY_RANKING_MIN_YEAR ? " disabled" : ""}>前年</button>
+    ${canMoveToPreviousYear ? '<button class="compact-button" type="button" data-yearly-ranking-move="-1">前年</button>' : '<span aria-hidden="true"></span>'}
     <strong>${escapeHtml(ranking.year)}年</strong>
-    <button class="compact-button" type="button" data-yearly-ranking-move="1"${ranking.year === currentYear ? " disabled" : ""}>翌年</button>
+    ${canMoveToNextYear ? '<button class="compact-button" type="button" data-yearly-ranking-move="1">翌年</button>' : '<span aria-hidden="true"></span>'}
   </div>`;
   renderRankingContent(ranking, {
     selfTitle: "あなたの年間成績",
@@ -3811,13 +3814,11 @@ function renderMonthlyRanking() {
 }
 
 function renderRankingHeading(view) {
-  const areaLabel = document.getElementById("rankingAreaLabel");
   const title = document.getElementById("rankingTitle");
   const description = document.getElementById("rankingDescription");
   const yearlyButton = document.getElementById("showYearlyRankingButton");
   const monthlyButton = document.getElementById("showMonthlyRankingButton");
   const isMonthly = view === "monthly";
-  if (areaLabel) areaLabel.textContent = isMonthly ? "MONTHLY RANKING" : "YEARLY RANKING";
   if (title) title.textContent = isMonthly ? "月間ランキング" : "年間ランキング";
   if (description) description.textContent = isMonthly
     ? "この月に正式採点された対象試合の3分の2以上に参加すると順位対象になります。"

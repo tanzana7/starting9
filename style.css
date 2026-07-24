@@ -609,9 +609,17 @@ button:disabled {
 
 .ranking-month-controls {
   display: grid;
-  grid-template-columns: auto minmax(120px, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, auto) minmax(0, 1fr);
   align-items: center;
   gap: 8px;
+}
+
+.ranking-month-controls > :first-child {
+  justify-self: start;
+}
+
+.ranking-month-controls > :last-child {
+  justify-self: end;
 }
 
 .ranking-month-controls strong {
@@ -800,33 +808,11 @@ h3 {
   display: none;
 }
 
-.area-heading {
-  grid-column: 1 / -1;
-  padding: 16px 18px;
-  border-left: 5px solid var(--fighters-blue);
-  border-radius: 8px;
-  background: #f7fbff;
-}
-
-.area-heading h2 {
-  margin-bottom: 4px;
-}
-
-.area-heading p {
-  margin-bottom: 0;
-  color: var(--muted);
-}
-
 .area-label {
   margin-bottom: 4px;
   color: var(--fighters-blue);
   font-size: 0.78rem;
   font-weight: 900;
-}
-
-.result-area-heading {
-  border-left-color: var(--fighters-gold);
-  background: #fff9e8;
 }
 
 .card {
@@ -979,13 +965,9 @@ h3 {
   box-shadow: none;
 }
 
-.admin-step {
-  background: #6a7a8d;
-}
-
 .section-heading {
   display: flex;
-  gap: 12px;
+  gap: 0;
   align-items: flex-start;
   margin-bottom: 18px;
 }
@@ -994,18 +976,6 @@ h3 {
   margin-bottom: 0;
   color: var(--muted);
   font-size: 0.94rem;
-}
-
-.step-badge {
-  display: inline-grid;
-  flex: 0 0 34px;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border-radius: 50%;
-  color: #ffffff;
-  background: var(--fighters-blue);
-  font-weight: 800;
 }
 
 .field {
@@ -2552,10 +2522,6 @@ textarea:focus {
   .app-layout {
     gap: 14px;
     padding-top: 14px;
-  }
-
-  .area-heading {
-    padding: 14px;
   }
 
   .card {

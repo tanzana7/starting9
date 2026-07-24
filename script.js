@@ -5716,7 +5716,7 @@ function renderAll() {
   renderAchievements();
   renderActualLineup();
   renderScoreResult();
-  renderPerfectAchievers();
+  renderTodayPerfectAchievers();
   renderRankingPanel();
   renderAdminFlow();
   renderPredictionDeadlineAdmin();

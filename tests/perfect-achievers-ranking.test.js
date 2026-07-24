@@ -125,3 +125,11 @@ test("満点者がいない日も正常な空結果を返し、月間・年間�
   assert.match(script, /本日の満点者はいません/);
   assert.doesNotMatch(script, /refreshDailyRanking|showDailyRankingButton|dailyRankingDate/);
 });
+
+test("初期描画は定義済みの本日の満点者描画関数を呼び、日程初期化を止めない", () => {
+  const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+  const renderAll = script.slice(script.indexOf("function renderAll()"), script.indexOf("function renderProbableStarter()"));
+
+  assert.match(renderAll, /renderTodayPerfectAchievers\(\)/);
+  assert.doesNotMatch(renderAll, /renderPerfectAchievers\(\)/);
+});

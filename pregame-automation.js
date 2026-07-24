@@ -21,6 +21,13 @@ export function setDetectedScheduleGames(games) {
   detectedScheduleGames = Array.isArray(games) ? games.filter((game) => game?.gameId) : [];
 }
 
+// 実行対象外の中止試合も、Cronの観測要約では状態を区別するために参照します。
+export function getScheduledGames() {
+  const ids = new Set();
+  return [...detectedScheduleGames, ...schedule]
+    .filter((game) => game?.gameId && !ids.has(game.gameId) && Boolean(ids.add(game.gameId)));
+}
+
 export function parseJstScheduleStart(game) {
   const date = typeof game?.date === "string" ? game.date : "";
   const startTime = typeof game?.startTime === "string" ? game.startTime : "";
@@ -51,9 +58,7 @@ export function getPregameTimeline(gameId) {
 }
 
 export function getPregameTimelines() {
-  const ids = new Set();
-  return [...detectedScheduleGames, ...schedule]
-    .filter((game) => game?.gameId && !ids.has(game.gameId) && Boolean(ids.add(game.gameId)))
+  return getScheduledGames()
     .map((game) => getPregameTimeline(game.gameId)).filter(Boolean);
 }
 

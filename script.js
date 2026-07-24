@@ -2937,7 +2937,9 @@ function cancelAutoScoring() {
   void updateAutoScoring("cancel", "予約済みの自動採点を取り消します。よろしいですか？");
 }
 
-function formatAutoScoringStatus(status) {
+function formatAutoScoringStatus(status, publicationStatus = "") {
+  if (status === "scored" && publicationStatus === "scored_private") return "採点済み・公開待ち";
+  if (status === "scored" && publicationStatus === "published") return "採点済み・公開済み";
   return ({ pending: "採点待ち", processing: "採点処理中", scored: "採点済み", failed: "採点失敗", cancelled: "取り消し済み" })[status] || "未予約";
 }
 
@@ -2976,7 +2978,7 @@ function renderAutoScoringPanel() {
   const status = record?.status || "";
   const isBusy = state.autoScoring.isSaving || state.autoScoring.isLoading || state.autoScoring.isRunningNow || state.autoScoring.isUpdating;
   const rows = record ? [
-    ["状態", formatAutoScoringStatus(status)],
+    ["状態", formatAutoScoringStatus(status, record.publicationStatus)],
     ["対象gameId", record.gameId || state.autoScoring.gameId || "-"],
     ["実スタメン取得", formatDateTime(record.lineupDetectedAt)],
     ["採点予定", formatDateTime(record.scoringDueAt)],
@@ -2984,7 +2986,9 @@ function renderAutoScoringPanel() {
     ["試行回数", `${record.attempts || 0} / ${record.maxAttempts || 3}`],
     ["処理件数", record.processedPredictions === null ? "-" : `${record.processedPredictions}件`],
     ["満点", record.perfectCount === null ? "-" : `${record.perfectCount}件`],
-    ["採点完了", record.scoredAt ? formatDateTime(record.scoredAt) : "-"]
+    ["採点完了", record.scoredAt ? formatDateTime(record.scoredAt) : "-"],
+    ["公開状態", formatPregameAutomationStatus(record.publicationStatus)],
+    ["公開時刻", record.publishedAt ? formatDateTime(record.publishedAt) : "-"]
   ] : [["状態", state.autoScoring.isLoading ? "状態を確認中" : "実スタメン未保存"]];
   summary.innerHTML = `<dl>${rows.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl>`;
   if (record?.lastError) {
@@ -3130,7 +3134,11 @@ function getGameWorkflowResultLabel(value) {
   return ({
     waiting: "待機中",
     lineup_captured: "正式スタメン取得済み",
-    scored: "採点済み",
+    scoring_pending: "採点待ち",
+    scoring: "採点処理中",
+    scored_private: "採点済み・公開待ち",
+    scoring_failed: "採点失敗",
+    publish_failed: "公開失敗",
     published: "公開済み",
     failed: "要確認"
   })[value] || "未実行";
@@ -3170,18 +3178,26 @@ function renderAdminGameWorkflowStatus() {
 
   const schedule = record.schedule || {};
   const workflow = record.workflow || {};
+  const scoring = record.scoring || {};
+  const publishing = record.publishing || {};
   const rows = [
     ["対象試合", record.game?.matchupLabel || record.gameId || "-"],
     ["試合開始", formatPredictionDeadlineDateTime(schedule.startAt)],
     ["予想締切", formatPredictionDeadlineDateTime(schedule.predictionDeadlineAt)],
     ["受付状態", getEffectivePredictionDeadline().isClosed ? "締切後" : "締切前"],
     ["現在のワークフロー", getGameWorkflowStepLabel(workflow.currentStep)],
+    ["採点状態", formatAutoScoringStatus(scoring.status, scoring.publicationStatus)],
+    ["採点時刻", scoring.scoredAt ? formatDateTime(scoring.scoredAt) : "-"],
+    ["公開予定", formatPredictionDeadlineDateTime(schedule.startAt)],
+    ["公開状態", formatPregameAutomationStatus(publishing.status)],
+    ["公開時刻", publishing.publishedAt ? formatDateTime(publishing.publishedAt) : "-"],
     ["最終実行", workflow.lastRunAt ? formatDateTime(workflow.lastRunAt) : "未実行"],
     ["最終結果", getGameWorkflowResultLabel(workflow.lastResult)]
   ];
   summary.innerHTML = `<strong>${paused ? "緊急停止中" : "自動運転中"}</strong><span>${paused ? "この試合のCron自動処理は停止しています。" : "毎分、試合状態を確認しています。次回確認: 1分以内"}</span><dl>${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>`;
-  message.textContent = state.gameWorkflow.message || (paused ? "再開するまで公示・締切・取得・採点・公開の自動処理は実行されません。" : "管理者操作なしでCronが処理を進めます。");
-  message.className = `message${paused || state.gameWorkflow.message ? "" : ""}`;
+  const workflowError = workflow.errorCode ? `${workflow.errorCode}${workflow.errorMessage ? `: ${workflow.errorMessage}` : ""}` : "";
+  message.textContent = state.gameWorkflow.message || workflowError || (paused ? "再開するまで公示・締切・取得・採点・公開の自動処理は実行されません。" : "管理者操作なしでCronが処理を進めます。");
+  message.className = `message${workflowError ? " error-message" : ""}`;
 }
 
 async function refreshAdminGameWorkflowStatus({ force = false } = {}) {

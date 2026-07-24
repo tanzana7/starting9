@@ -19,13 +19,14 @@ test("Cronは日程同期後に明示的な試合workflow runnerへ委譲する"
   assert.match(worker, /id: "notice", offsetMinutes: -120/);
   assert.match(worker, /id: "close_predictions", offsetMinutes: -60/);
   assert.match(worker, /id: "lineup", offsetMinutes: -60, retryMinutes: 10/);
-  assert.match(worker, /id: "score", offsetMinutes: 5/);
-  assert.match(worker, /id: "publish", offsetMinutes: 6/);
+  assert.match(worker, /id: "score", trigger: "lineup_confirmed"/);
+  assert.match(worker, /id: "publish", offsetMinutes: 0/);
 });
 
 test("workflowは中止試合を全step cancelledとして扱い、時刻未到達stepを実行しない", () => {
   const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
   assert.match(worker, /if \(cancelled\) return \{ id: step\.id, status: "cancelled", action: "skipped" \}/);
+  assert.match(worker, /step\.trigger === "lineup_confirmed"/);
   assert.match(worker, /status: now < dueAt \? "not_due" : "ready"/);
   assert.match(worker, /runDueGameDayScheduleJobs\(env, now, activeTimelines\)/);
   assert.match(worker, /runDuePregameAutomationJobs\(env, now, activeTimelines\)/);

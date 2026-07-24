@@ -58,8 +58,10 @@ const GAME_WORKFLOW_STEPS = Object.freeze([
   { id: "notice", offsetMinutes: -120, retryMinutes: 10 },
   { id: "close_predictions", offsetMinutes: -60 },
   { id: "lineup", offsetMinutes: -60, retryMinutes: 10 },
-  { id: "score", offsetMinutes: 5 },
-  { id: "publish", offsetMinutes: 6 }
+  // 採点は時刻ではなく、正式スタメン保存をトリガーにします。
+  { id: "score", trigger: "lineup_confirmed" },
+  // 公開は試合開始後、最初に実行されるCronで行います。
+  { id: "publish", offsetMinutes: 0 }
 ]);
 const PREGAME_TOOL_ACTIONS = Object.freeze({
   "run-notice": { logAction: "notice_fetch", transport: "service-binding", upstreamMode: "notice", fetchCode: "NOTICE_FETCH_FAILED", parseCode: "NOTICE_PARSE_FAILED", failureCode: "NOTICE_FETCH_FAILED", schemaCode: "NOTICE_SCHEMA_NOT_READY" },
@@ -357,6 +359,9 @@ function runGameWorkflow(timeline, now, paused = false) {
   const steps = GAME_WORKFLOW_STEPS.map((step) => {
     if (cancelled) return { id: step.id, status: "cancelled", action: "skipped" };
     if (paused) return { id: step.id, status: "paused", action: "skipped" };
+    if (step.trigger === "lineup_confirmed") {
+      return { id: step.id, status: "waiting_for_lineup", action: "evaluated" };
+    }
     const dueAt = new Date(timeline.startAt.getTime() + step.offsetMinutes * 60 * 1000);
     return { id: step.id, status: now < dueAt ? "not_due" : "ready", action: now < dueAt ? "skipped" : "evaluated", dueAt: dueAt.toISOString() };
   });
@@ -1233,7 +1238,7 @@ async function handleAdminScoringRoute(request, env, cors, route) {
     return await executePregameTool(env, cors, metadata.gameId, "fix-roster", () => fixGameRosterAtDeadline(env, metadata.gameId, new Date()));
   }
   if (route.action === "pregame-automation/publish" && request.method === "POST") {
-    return await executePregameTool(env, cors, metadata.gameId, "publish", () => publishGameResults(env, metadata.gameId, new Date()));
+    return await executePregameTool(env, cors, metadata.gameId, "publish", () => publishScoredGameResults(env, metadata.gameId, new Date()));
   }
 
   return jsonResponse({ ok: false, error: "管理者採点APIのHTTPメソッドが不正です。" }, 405, cors);
@@ -2055,7 +2060,7 @@ async function getPregameAutomationStatus(db, gameId) {
   const [job, snapshot, lineup, noticeResult, dailyNoticeResult, controlResult] = await db.batch([
     db.prepare("SELECT * FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1").bind(gameId),
     db.prepare("SELECT captured_at, player_count FROM game_roster_snapshots WHERE game_id = ?1 LIMIT 1").bind(gameId),
-    db.prepare("SELECT lineup_source, lineup_detected_at, scoring_status, scoring_due_at, scored_at, publication_status, published_at FROM game_lineups WHERE game_id = ?1 LIMIT 1").bind(gameId),
+    db.prepare("SELECT lineup_source, lineup_detected_at, scoring_status, scoring_due_at, scored_at, publication_status, published_at, last_error FROM game_lineups WHERE game_id = ?1 LIMIT 1").bind(gameId),
     db.prepare("SELECT notice_status, registered_count, removed_count, last_checked_at, detected_at, roster_fixed_at, after_deadline_notice, last_error_code FROM game_day_notice_games WHERE game_id = ?1 LIMIT 1").bind(gameId),
     db.prepare("SELECT content_hash, fetched_at, source_url, last_slot_key, status, last_error_code FROM game_day_notices WHERE notice_date = ?1 LIMIT 1").bind(identity?.game?.date || ""),
     db.prepare("SELECT automation_paused, paused_at, resumed_at, updated_at FROM game_workflow_controls WHERE game_id = ?1 LIMIT 1").bind(gameId)
@@ -2067,6 +2072,7 @@ async function getPregameAutomationStatus(db, gameId) {
   const lineupRow = lineup?.results?.[0] || null;
   const nextNoticeAt = getNextGameDayNoticeAt(getPregameTimelines(), new Date());
   const nextAttempt = identity && !lineupRow ? getNextPregameLineupAttempt(identity, jobRow?.last_lineup_attempt_at) : null;
+  const workflow = getGameWorkflowProgress(identity, jobRow, lineupRow, notice, dailyNotice);
   return {
     gameId,
     game: identity?.game ? {
@@ -2084,8 +2090,8 @@ async function getPregameAutomationStatus(db, gameId) {
     lineup: lineupRow ? { status: "captured", source: lineupRow.lineup_source, detectedAt: lineupRow.lineup_detected_at } : {
       status: jobRow?.lineup_status || "pending", attempts: Number(jobRow?.lineup_attempt_count || 0), lastAttemptAt: jobRow?.last_lineup_attempt_at || null, nextAttemptAt: nextAttempt
     },
-    scoring: lineupRow ? { status: lineupRow.scoring_status, dueAt: lineupRow.scoring_due_at, scoredAt: lineupRow.scored_at, publicationStatus: lineupRow.publication_status || "pending", publishedAt: lineupRow.published_at || null } : { status: jobRow?.scoring_status || "pending", publicationStatus: "pending", publishedAt: null },
-    publishing: lineupRow ? { status: lineupRow.publication_status || "pending", publishedAt: lineupRow.published_at || null } : { status: "pending", publishedAt: null },
+    scoring: lineupRow ? { status: lineupRow.scoring_status, dueAt: lineupRow.scoring_due_at, scoredAt: lineupRow.scored_at, publicationStatus: lineupRow.publication_status || "pending", publishedAt: lineupRow.published_at || null, lastError: lineupRow.last_error || null } : { status: jobRow?.scoring_status || "pending", publicationStatus: "pending", publishedAt: null, lastError: null },
+    publishing: lineupRow ? { status: workflow.publishingStatus, publishedAt: lineupRow.published_at || null, errorCode: workflow.errorCode || "", errorMessage: workflow.errorMessage || "" } : { status: "pending", publishedAt: null, errorCode: "", errorMessage: "" },
     notice: notice ? {
       status: notice.notice_status,
       registeredCount: Number(notice.registered_count || 0),
@@ -2111,13 +2117,16 @@ async function getPregameAutomationStatus(db, gameId) {
       pausedAt: control?.paused_at || null,
       resumedAt: control?.resumed_at || null
     },
-    workflow: getGameWorkflowProgress(identity, jobRow, lineupRow, notice, dailyNotice),
-    lastErrorCode: jobRow?.last_error_code || dailyNotice?.last_error_code || ""
+    workflow,
+    lastErrorCode: workflow.errorCode || "",
+    lastErrorMessage: workflow.errorMessage || ""
   };
 }
 
-function getGameWorkflowProgress(identity, job, lineup, notice, dailyNotice) {
-  const lastErrorCode = String(job?.last_error_code || dailyNotice?.last_error_code || "");
+export function deriveGameWorkflowProgress({ identity = null, job = null, lineup = null, notice = null, dailyNotice = null, now = new Date() } = {}) {
+  const lineupError = lineup?.scoring_status === "failed" ? "SCORING_FAILED" : "";
+  const lastErrorCode = String(job?.last_error_code || dailyNotice?.last_error_code || lineupError || "");
+  const lastErrorMessage = String(job?.last_error_message || lineup?.last_error || "");
   const timestamps = [
     job?.updated_at,
     notice?.last_checked_at,
@@ -2128,15 +2137,29 @@ function getGameWorkflowProgress(identity, job, lineup, notice, dailyNotice) {
     lineup?.published_at
   ].filter(Boolean).map((value) => new Date(value)).filter((value) => !Number.isNaN(value.getTime()));
   const lastRunAt = timestamps.length ? new Date(Math.max(...timestamps.map((value) => value.getTime()))).toISOString() : null;
-  if (lastErrorCode) return { currentStep: "error", lastRunAt, lastResult: "failed" };
-  if (lineup?.publication_status === "published") return { currentStep: "completed", lastRunAt, lastResult: "published" };
-  if (lineup?.scoring_status === "scored") return { currentStep: "publish", lastRunAt, lastResult: "scored" };
-  if (lineup) return { currentStep: "score", lastRunAt, lastResult: "lineup_captured" };
-  const now = new Date();
-  if (identity && now >= identity.startAt) return { currentStep: "score", lastRunAt, lastResult: "waiting" };
-  if (identity && now >= identity.lineupFetchStartAt) return { currentStep: "lineup", lastRunAt, lastResult: "waiting" };
-  if (identity && now >= identity.predictionDeadlineAt) return { currentStep: "close_predictions", lastRunAt, lastResult: "waiting" };
-  return { currentStep: "notice", lastRunAt, lastResult: "waiting" };
+  if (lineup?.publication_status === "published") return { currentStep: "completed", lastRunAt, lastResult: "published", publishingStatus: "published", errorCode: "", errorMessage: "" };
+  if (lastErrorCode) {
+    const publishFailure = lastErrorCode === "PUBLISH_FAILED";
+    return {
+      currentStep: publishFailure ? "publish" : "score",
+      lastRunAt,
+      lastResult: publishFailure ? "publish_failed" : "scoring_failed",
+      publishingStatus: publishFailure ? "failed" : (lineup?.publication_status || "pending"),
+      errorCode: lastErrorCode,
+      errorMessage: lastErrorMessage
+    };
+  }
+  if (lineup?.scoring_status === "scored") return { currentStep: "publish", lastRunAt, lastResult: "scored_private", publishingStatus: lineup.publication_status || "scored_private", errorCode: "", errorMessage: "" };
+  if (lineup?.scoring_status === "processing") return { currentStep: "score", lastRunAt, lastResult: "scoring", publishingStatus: "pending", errorCode: "", errorMessage: "" };
+  if (lineup) return { currentStep: "score", lastRunAt, lastResult: "scoring_pending", publishingStatus: "pending", errorCode: "", errorMessage: "" };
+  if (identity && now >= identity.startAt) return { currentStep: "score", lastRunAt, lastResult: "waiting", publishingStatus: "pending", errorCode: "", errorMessage: "" };
+  if (identity && now >= identity.lineupFetchStartAt) return { currentStep: "lineup", lastRunAt, lastResult: "waiting", publishingStatus: "pending", errorCode: "", errorMessage: "" };
+  if (identity && now >= identity.predictionDeadlineAt) return { currentStep: "close_predictions", lastRunAt, lastResult: "waiting", publishingStatus: "pending", errorCode: "", errorMessage: "" };
+  return { currentStep: "notice", lastRunAt, lastResult: "waiting", publishingStatus: "pending", errorCode: "", errorMessage: "" };
+}
+
+function getGameWorkflowProgress(identity, job, lineup, notice, dailyNotice) {
+  return deriveGameWorkflowProgress({ identity, job, lineup, notice, dailyNotice, now: new Date() });
 }
 
 function getNextGameDayNoticeAt(timelines, now) {
@@ -2224,7 +2247,7 @@ async function handleAdminScorePredictions(request, env, cors, gameId) {
 
   try {
     const result = await scoreClaimedGameLineup(env.AUTH_DB, claimed, new Date());
-    await markGameRankingScoredPrivate(env.AUTH_DB, gameId, result.scoredAt, env);
+    await recordGameWorkflowOutcome(env.AUTH_DB, gameId, "score", "success", null, new Date());
     return jsonResponse({
       ok: true,
       gameId,
@@ -2240,6 +2263,7 @@ async function handleAdminScorePredictions(request, env, cors, gameId) {
     }, 200, cors);
   } catch (error) {
     await markGameLineupFailed(env.AUTH_DB, gameId, error, new Date());
+    await recordGameWorkflowOutcome(env.AUTH_DB, gameId, "score", "failed", error, new Date());
     if (error?.code === "prediction_validation_failed") {
       return jsonResponse({
         ok: false,
@@ -2353,10 +2377,11 @@ async function handleAdminAutoScoringRunNow(env, cors, gameId) {
 
   try {
     const result = await scoreClaimedGameLineup(env.AUTH_DB, claimed, now);
-    await markGameRankingScoredPrivate(env.AUTH_DB, gameId, result.scoredAt, env);
+    await recordGameWorkflowOutcome(env.AUTH_DB, gameId, "score", "success", null, now);
     return jsonResponse({ ok: true, gameId, ...result, autoScoring: serializeGameLineup(await getGameLineup(env.AUTH_DB, gameId)) }, 200, cors);
   } catch (error) {
     await markGameLineupFailed(env.AUTH_DB, gameId, error, now);
+    await recordGameWorkflowOutcome(env.AUTH_DB, gameId, "score", "failed", error, now);
     throw error;
   }
 }
@@ -2579,13 +2604,14 @@ async function runDueAutoScoringJobs(env, now, pausedGameIds = new Set()) {
     try {
       console.log(`auto scoring claimed: game=${claimed.game_id} attempt=${claimed.scoring_attempts}`);
       const result = await scoreClaimedGameLineup(env.AUTH_DB, claimed, now);
-      await markGameRankingScoredPrivate(env.AUTH_DB, claimed.game_id, result.scoredAt, env);
+      await recordGameWorkflowOutcome(env.AUTH_DB, claimed.game_id, "score", "success", null, now);
       summary.succeeded += 1;
       console.log(`auto scoring complete: game=${claimed.game_id} processed=${result.processed} perfect=${result.perfectCount}`);
       console.log(`[GAME_WORKFLOW] gameId=${claimed.game_id} step=score action=executed status=success`);
     } catch (error) {
       summary.failed += 1;
       await markGameLineupFailed(env.AUTH_DB, claimed.game_id, error, now);
+      await recordGameWorkflowOutcome(env.AUTH_DB, claimed.game_id, "score", "failed", error, now);
       console.warn(`[GAME_WORKFLOW] gameId=${claimed.game_id} step=score action=executed status=failed code=${error?.code || "SCORING_FAILED"}`);
     }
   }
@@ -2634,15 +2660,22 @@ async function persistGamePredictionScoring(db, gameId, actualLineup, scoring, n
             new_perfect_achievers = ?4, updated_at = ?1
       WHERE game_id = ?5 AND scoring_status = 'processing'`
   ).bind(scoredAt, scoring.processed, scoring.perfectCount, 0, gameId));
+  const rankingStatement = createGameRankingScoredPrivateStatement(db, gameId, scoredAt);
+  if (rankingStatement) {
+    statements.push(rankingStatement);
+  }
 
   const results = await db.batch(statements);
   const predictionResults = results.slice(0, scoring.outcomes.length);
   if (predictionResults.some((result) => Number(result?.meta?.changes || 0) !== 1)) {
     throw new Error("prediction score update count mismatch");
   }
-  const gameLineupResult = results[results.length - 1];
+  const gameLineupResult = results[scoring.outcomes.length];
   if (Number(gameLineupResult?.meta?.changes || 0) !== 1) {
     throw new Error("game lineup scoring state update mismatch");
+  }
+  if (rankingStatement && Number(results[results.length - 1]?.meta?.changes || 0) !== 1) {
+    throw new Error("game ranking private state update mismatch");
   }
 
   return {
@@ -2663,6 +2696,29 @@ async function markGameLineupFailed(db, gameId, error, now) {
         SET scoring_status = 'failed', scoring_started_at = NULL, last_error = ?1, updated_at = ?2
       WHERE game_id = ?3 AND scoring_status = 'processing'`
   ).bind(message, now.toISOString(), gameId).run();
+}
+
+// 既存の管理用状態行へ採点・公開の成否を残します。再試行対象はgame_lineups側で管理します。
+async function recordGameWorkflowOutcome(db, gameId, step, status, error, now) {
+  const failed = status === "failed";
+  const code = failed ? String(error?.code || `${String(step || "workflow").toUpperCase()}_FAILED`).slice(0, 80) : null;
+  const message = failed ? toSafeAutoScoringError(error).slice(0, 240) : null;
+  try {
+    await db.prepare(
+      `UPDATE game_pregame_automation
+          SET scoring_status = CASE
+                WHEN ?1 = 'score' AND ?2 = 'success' THEN 'scored'
+                WHEN ?1 = 'score' AND ?2 = 'failed' THEN 'blocked'
+                ELSE scoring_status
+              END,
+              last_error_code = ?3,
+              last_error_message = ?4,
+              updated_at = ?5
+        WHERE game_id = ?6`
+    ).bind(step, status, code, message, now.toISOString(), gameId).run();
+  } catch (recordError) {
+    console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=${step} action=state_record status=failed code=${recordError?.code || "WORKFLOW_STATE_RECORD_FAILED"}`);
+  }
 }
 
 function toIsoString(value) {
@@ -2693,11 +2749,11 @@ async function markGameRankingPending(db, gameId, at, env) {
   ).bind(gameId, metadata.date, now).run();
 }
 
-async function markGameRankingScoredPrivate(db, gameId, scoredAt, env) {
+function createGameRankingScoredPrivateStatement(db, gameId, scoredAt) {
   const metadata = parsePredictionGameId(gameId);
-  if (!metadata) return;
+  if (!metadata) return null;
   const now = toIsoString(scoredAt);
-  await db.prepare(
+  return db.prepare(
     `INSERT INTO ranking_games
        (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game,
         publication_status, scored_private_at, published_at, created_at, updated_at)
@@ -2712,7 +2768,12 @@ async function markGameRankingScoredPrivate(db, gameId, scoredAt, env) {
        scored_private_at = excluded.scored_private_at,
        published_at = NULL,
        updated_at = excluded.updated_at`
-  ).bind(gameId, metadata.date, now).run();
+  ).bind(gameId, metadata.date, now);
+}
+
+async function markGameRankingScoredPrivate(db, gameId, scoredAt, env) {
+  const statement = createGameRankingScoredPrivateStatement(db, gameId, scoredAt);
+  if (statement) await statement.run();
 }
 
 async function runDueGameDayPublicationJobs(env, now, timelines = getPregameTimelines()) {
@@ -2727,7 +2788,7 @@ async function runDueGameDayPublicationJobs(env, now, timelines = getPregameTime
     if (lineup.publication_status === "published") continue;
     summary.considered += 1;
     try {
-      const result = await publishGameResults(env, timeline.gameId, now);
+      const result = await publishScoredGameResults(env, timeline.gameId, now);
       if (result.published) {
         summary.published += 1;
         console.log(`[GAME_WORKFLOW] gameId=${timeline.gameId} step=publish action=executed status=success`);
@@ -2738,6 +2799,19 @@ async function runDueGameDayPublicationJobs(env, now, timelines = getPregameTime
     }
   }
   return summary;
+}
+
+async function publishScoredGameResults(env, gameId, now) {
+  try {
+    const result = await publishGameResults(env, gameId, now);
+    if (result.published) {
+      await recordGameWorkflowOutcome(env.AUTH_DB, gameId, "publish", "success", null, now);
+    }
+    return result;
+  } catch (error) {
+    await recordGameWorkflowOutcome(env.AUTH_DB, gameId, "publish", "failed", error, now);
+    throw error;
+  }
 }
 
 async function publishGameResults(env, gameId, now) {

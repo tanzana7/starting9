@@ -429,13 +429,14 @@
 
       <div id="scoreResult" class="empty-state">採点すると結果が表示されます。</div>
       <button id="shareResultButton" class="secondary-button hidden" type="button">結果をXで共有</button>
-      <section class="score-insights" aria-labelledby="scoreInsightsTitle">
+      <section id="scoreInsights" class="score-insights" aria-labelledby="scoreInsightsTitle">
         <h3 id="scoreInsightsTitle">スコアの比較</h3>
-        <div class="score-insights-grid">
-          <div><span>全国平均</span><strong>今後表示予定</strong></div>
-          <div><span>順位</span><strong>今後表示予定</strong></div>
-          <div><span>上位</span><strong>今後表示予定</strong></div>
+        <div id="scoreInsightsGrid" class="score-insights-grid hidden">
+          <div data-score-insight="average"><span>全国平均</span><strong data-score-insight-value></strong></div>
+          <div data-score-insight="rank"><span>順位</span><strong data-score-insight-value></strong></div>
+          <div data-score-insight="top"><span>上位</span><strong data-score-insight-value></strong></div>
         </div>
+        <p id="scoreInsightsNotice" class="score-insights-notice">比較データは参加者が増え次第表示されます。</p>
       </section>
 
       <section id="todayPerfectAchieversCard" class="perfect-achievers-card" aria-labelledby="todayPerfectAchieversTitle">

@@ -6871,6 +6871,7 @@ function renderActualLineup() {
 function renderScoreResult() {
   const container = document.getElementById("scoreResult");
   const shareButton = document.getElementById("shareResultButton");
+  renderScoreInsights(state.result?.comparison || null);
 
   if (!state.result) {
     container.className = "empty-state";
@@ -6888,6 +6889,29 @@ function renderScoreResult() {
   container.innerHTML = "";
   container.appendChild(createResultView(createResultViewModel(state.result)));
   shareButton.classList.remove("hidden");
+}
+
+function renderScoreInsights(comparison) {
+  const grid = document.getElementById("scoreInsightsGrid");
+  const notice = document.getElementById("scoreInsightsNotice");
+  if (!grid || !notice) return;
+
+  const values = {
+    average: comparison?.average ?? comparison?.averageScore,
+    rank: comparison?.rank,
+    top: comparison?.top ?? comparison?.topPercent ?? comparison?.percentile
+  };
+  const hasData = Object.values(values).some((value) => value !== null && value !== undefined && String(value).trim() !== "");
+  grid.classList.toggle("hidden", !hasData);
+  notice.classList.toggle("hidden", hasData);
+
+  grid.querySelectorAll("[data-score-insight]").forEach((card) => {
+    const value = values[card.dataset.scoreInsight];
+    const valueElement = card.querySelector("[data-score-insight-value]");
+    const hasValue = value !== null && value !== undefined && String(value).trim() !== "";
+    card.classList.toggle("hidden", !hasValue);
+    if (valueElement) valueElement.textContent = hasValue ? String(value) : "";
+  });
 }
 
 function createResultViewModel(result) {

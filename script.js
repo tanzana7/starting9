@@ -310,6 +310,15 @@ const state = {
     preview: null,
     previewFingerprint: ""
   },
+  manualRescore: {
+    isLoading: false,
+    isSaving: false,
+    gameId: "",
+    history: null,
+    audits: [],
+    preview: null,
+    message: ""
+  },
   autoScoring: {
     isSaving: false,
     isLoading: false,
@@ -441,6 +450,10 @@ function bindEvents() {
   bindAdminEvent("runAutoScoringNowButton", "click", runAutoScoringNow);
   bindAdminEvent("retryAutoScoringButton", "click", retryAutoScoring);
   bindAdminEvent("cancelAutoScoringButton", "click", cancelAutoScoring);
+  bindAdminEvent("saveLineupRevisionButton", "click", saveManualLineupRevision);
+  bindAdminEvent("previewManualRescoreButton", "click", previewManualRescore);
+  bindAdminEvent("confirmManualRescoreButton", "click", confirmManualRescore);
+  bindAdminEvent("restorePreviousLineupButton", "click", restorePreviousLineupRevision);
   bindAdminTestEvent("runPregameNoticeButton", "click", () => runPregameAutomationAction("run-notice"));
   bindAdminTestEvent("distributePregameNoticeButton", "click", () => runPregameAutomationAction("distribute-notice"));
   bindAdminTestEvent("runPregameRosterButton", "click", () => runPregameAutomationAction("run-roster"));
@@ -944,6 +957,7 @@ function openAdminPanel() {
     console.error("[PREGAME] admin render failed", error?.message || "unknown error");
   }
   refreshAdminScoringSummary({ force: true });
+  void refreshManualRescorePanel({ force: true });
   refreshAutoScoringStatus({ force: true });
   void refreshAutoApprovalSettings();
   void refreshAdminGameWorkflowStatus({ force: true });
@@ -2739,6 +2753,196 @@ function resetAdminScoringPreview() {
   state.adminScoring.previewFingerprint = "";
 }
 
+function getManualRescoreMetadata() {
+  const gameId = getAdminScoringGameId();
+  const match = /^(\d{4}-\d{2}-\d{2})-([a-z]{1,2})-([a-z]{1,2})-\d+$/i.exec(gameId);
+  if (!match) return null;
+  return { gameId, gameDate: match[1], homeTeam: match[2].toLowerCase(), awayTeam: match[3].toLowerCase() };
+}
+
+function getManualRescoreReason() {
+  return String(document.getElementById("manualRescoreReason")?.value || "").trim();
+}
+
+function renderManualRescorePanel() {
+  const summary = document.getElementById("adminManualRescoreSummary");
+  const message = document.getElementById("adminManualRescoreMessage");
+  const preview = document.getElementById("adminManualRescorePreview");
+  const history = document.getElementById("adminManualRescoreHistory");
+  const saveButton = document.getElementById("saveLineupRevisionButton");
+  const previewButton = document.getElementById("previewManualRescoreButton");
+  const confirmButton = document.getElementById("confirmManualRescoreButton");
+  const restoreButton = document.getElementById("restorePreviousLineupButton");
+  if (!summary || !message || !preview || !history || !saveButton || !previewButton || !confirmButton || !restoreButton) return;
+
+  const metadata = getManualRescoreMetadata();
+  const record = state.manualRescore.history;
+  const current = record?.revisions?.find((revision) => revision.isCurrent);
+  const previous = record?.revisions?.find((revision) => !revision.isCurrent);
+  const actual = createAdminActualLineupPayload();
+  const busy = state.manualRescore.isLoading || state.manualRescore.isSaving;
+  const expiresAt = record?.rescoreExpiresAt ? formatDateTime(record.rescoreExpiresAt) : "-";
+  const rows = [
+    ["対象試合", state.gameInfo.matchup || metadata?.gameId || "未選択"],
+    ["gameId", metadata?.gameId || "未選択"],
+    ["試合日", metadata?.gameDate || "-"],
+    ["現在の正式スタメンversion", current ? `v${current.version}` : "確認中"],
+    ["再採点可能期限", expiresAt],
+    ["編集する実スタメン", actual.ok ? "9人・打順・守備位置を確認済み" : actual.error]
+  ];
+  summary.innerHTML = `<dl>${rows.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl>`;
+  saveButton.disabled = !metadata || !actual.ok || busy;
+  previewButton.disabled = !metadata || !current || busy;
+  confirmButton.disabled = !metadata || !state.manualRescore.preview || busy;
+  restoreButton.disabled = !metadata || !previous || busy;
+  message.textContent = state.manualRescore.message;
+  message.className = `message${state.manualRescore.message.includes("できません") || state.manualRescore.message.includes("失敗") || state.manualRescore.message.includes("不一致") ? " error-message" : ""}`;
+
+  if (!state.manualRescore.preview) {
+    preview.classList.add("hidden");
+    preview.innerHTML = "";
+  } else {
+    const item = state.manualRescore.preview;
+    preview.classList.remove("hidden");
+    preview.innerHTML = `<strong>再採点プレビュー（DBは変更していません）</strong><dl>
+      <dt>使用するversion</dt><dd>v${escapeHtml(item.lineupVersion)}</dd>
+      <dt>対象予想</dt><dd>${escapeHtml(item.summary.processed)}件</dd>
+      <dt>点数変更</dt><dd>${escapeHtml(item.summary.scoreChangedCount)}人</dd>
+      <dt>上昇 / 下降</dt><dd>${escapeHtml(item.summary.scoreIncreasedCount)}人 / ${escapeHtml(item.summary.scoreDecreasedCount)}人</dd>
+      <dt>満点者増減</dt><dd>${escapeHtml(item.summary.perfectCountDelta > 0 ? `+${item.summary.perfectCountDelta}` : item.summary.perfectCountDelta)}件</dd>
+      <dt>ランキング再集計対象</dt><dd>${escapeHtml(item.summary.rankingAffectedUserCount)}人</dd>
+      <dt>有効期限</dt><dd>${escapeHtml(formatDateTime(item.previewExpiresAt))}</dd>
+    </dl>`;
+  }
+  const revisions = record?.revisions || [];
+  const audits = state.manualRescore.audits || [];
+  if (!revisions.length && !audits.length) {
+    history.classList.add("hidden");
+    history.innerHTML = "";
+  } else {
+    history.classList.remove("hidden");
+    history.innerHTML = `<strong>正式スタメン修正履歴</strong><ul>${revisions.map((revision) => `<li>v${escapeHtml(revision.version)} ${revision.isCurrent ? "（現在）" : ""} - ${escapeHtml(revision.source)} - ${escapeHtml(revision.reason)}</li>`).join("")}</ul>
+      ${audits.length ? `<strong>再採点実行履歴</strong><ul>${audits.map((audit) => `<li>v${escapeHtml(audit.lineup_version)} - ${escapeHtml(audit.status)} - ${escapeHtml(audit.changed_score_count)}件変更${audit.error_code ? ` - ${escapeHtml(audit.error_code)}` : ""}</li>`).join("")}</ul>` : ""}`;
+  }
+}
+
+async function refreshManualRescorePanel({ force = false } = {}) {
+  const metadata = getManualRescoreMetadata();
+  if (!state.isAdminMode || !metadata || (state.manualRescore.isLoading && !force)) return;
+  const requestGameId = metadata.gameId;
+  state.manualRescore.isLoading = true;
+  state.manualRescore.gameId = requestGameId;
+  state.manualRescore.message = "";
+  renderManualRescorePanel();
+  try {
+    const [lineupResponse, auditResponse] = await Promise.all([
+      fetch(buildAdminGameApiUrl(requestGameId, "lineup-history"), { credentials: "include", cache: "no-store" }),
+      fetch(buildAdminGameApiUrl(requestGameId, "rescore-history"), { credentials: "include", cache: "no-store" })
+    ]);
+    const lineupPayload = await lineupResponse.json().catch(() => null);
+    const auditPayload = await auditResponse.json().catch(() => null);
+    if (!lineupResponse.ok || !lineupPayload?.ok) throw new Error(lineupPayload?.error || lineupPayload?.code || `HTTP ${lineupResponse.status}`);
+    if (!auditResponse.ok || !auditPayload?.ok) throw new Error(auditPayload?.error || auditPayload?.code || `HTTP ${auditResponse.status}`);
+    if (state.manualRescore.gameId !== requestGameId) return;
+    state.manualRescore.history = lineupPayload;
+    state.manualRescore.audits = auditPayload.history || [];
+  } catch (error) {
+    if (state.manualRescore.gameId === requestGameId) {
+      state.manualRescore.history = null;
+      state.manualRescore.audits = [];
+      state.manualRescore.message = error?.message || "再採点履歴を取得できませんでした。";
+    }
+  } finally {
+    if (state.manualRescore.gameId === requestGameId) {
+      state.manualRescore.isLoading = false;
+      renderManualRescorePanel();
+    }
+  }
+}
+
+async function runManualRescoreRequest(action, body) {
+  const metadata = getManualRescoreMetadata();
+  if (!metadata || state.manualRescore.isSaving) return null;
+  state.manualRescore.isSaving = true;
+  renderManualRescorePanel();
+  try {
+    const response = await fetch(buildAdminGameApiUrl(metadata.gameId, action), {
+      method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...metadata, ...body })
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || payload?.code || `HTTP ${response.status}`);
+    return payload;
+  } finally {
+    state.manualRescore.isSaving = false;
+  }
+}
+
+async function saveManualLineupRevision() {
+  const actual = createAdminActualLineupPayload();
+  if (!actual.ok) { state.manualRescore.message = actual.error; renderManualRescorePanel(); return; }
+  const reason = getManualRescoreReason();
+  try {
+    const payload = await runManualRescoreRequest("lineup-revisions", { actualLineup: actual.lineup, reason });
+    if (!payload) return;
+    state.manualRescore.preview = null;
+    state.manualRescore.message = `正式スタメンv${payload.revision.version}を保存しました。再採点プレビューを確認してください。`;
+    await refreshManualRescorePanel({ force: true });
+  } catch (error) {
+    state.manualRescore.message = error?.message || "修正版を保存できませんでした。";
+    renderManualRescorePanel();
+  }
+}
+
+async function previewManualRescore() {
+  const current = state.manualRescore.history?.revisions?.find((revision) => revision.isCurrent);
+  const reason = getManualRescoreReason();
+  if (!current) { state.manualRescore.message = "正式スタメンversionを取得してください。"; renderManualRescorePanel(); return; }
+  try {
+    const payload = await runManualRescoreRequest("rescore-preview", { lineupVersion: current.version, reason });
+    if (!payload) return;
+    state.manualRescore.preview = payload;
+    state.manualRescore.message = "再採点プレビューが完了しました。DBは変更していません。";
+  } catch (error) {
+    state.manualRescore.message = error?.message || "再採点プレビューを実行できませんでした。";
+  }
+  renderManualRescorePanel();
+}
+
+async function confirmManualRescore() {
+  const metadata = getManualRescoreMetadata();
+  const preview = state.manualRescore.preview;
+  const reason = getManualRescoreReason();
+  if (!metadata || !preview) return;
+  if (!window.confirm(`${metadata.gameDate} ${state.gameInfo.matchup || metadata.gameId}（${metadata.gameId}）のみを再採点します。他の日の試合は変更されません。`)) return;
+  try {
+    const payload = await runManualRescoreRequest("rescore-confirm", { lineupVersion: preview.lineupVersion, previewId: preview.previewId, reason });
+    if (!payload) return;
+    state.manualRescore.preview = null;
+    state.manualRescore.message = `${payload.changedScoreCount}件の点数を対象試合だけ再採点しました。`;
+    await Promise.all([refreshManualRescorePanel({ force: true }), refreshAdminScoringSummary({ force: true }), refreshYearlyRanking({ force: true }), fetchTodayPerfectAchievers({ force: true })]);
+  } catch (error) {
+    state.manualRescore.message = error?.message || "再採点を確定できませんでした。";
+    renderManualRescorePanel();
+  }
+}
+
+async function restorePreviousLineupRevision() {
+  const previous = state.manualRescore.history?.revisions?.find((revision) => !revision.isCurrent);
+  const reason = getManualRescoreReason();
+  if (!previous) return;
+  try {
+    const payload = await runManualRescoreRequest("restore-lineup-version", { version: previous.version, reason });
+    if (!payload) return;
+    state.manualRescore.preview = null;
+    state.manualRescore.message = `v${previous.version}を新しいv${payload.revision.version}として復元しました。再採点プレビューを確認してください。`;
+    await refreshManualRescorePanel({ force: true });
+  } catch (error) {
+    state.manualRescore.message = error?.message || "正式スタメンを復元できませんでした。";
+    renderManualRescorePanel();
+  }
+}
+
 async function refreshAdminScoringSummary({ force = false } = {}) {
   if (!state.isAdminMode) {
     return;
@@ -3305,14 +3509,14 @@ async function runServerScoringPreview() {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ actualLineup: actualPayload.lineup })
+      body: JSON.stringify({})
     });
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok) {
       throw new Error(payload?.error || `HTTP ${response.status}`);
     }
     state.adminScoring.preview = payload;
-    state.adminScoring.previewFingerprint = getAdminScoringFingerprint(actualPayload.lineup);
+    state.adminScoring.previewFingerprint = payload.lineupFingerprint || getAdminScoringFingerprint(actualPayload.lineup);
     state.adminScoring.summaryMessage = "採点テストが完了しました。DBは変更していません。";
     state.adminScoring.predictionCount = Number(payload.processed || 0);
   } catch (error) {
@@ -3354,7 +3558,7 @@ async function runServerScoring() {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ actualLineup: actualPayload.lineup })
+      body: JSON.stringify({})
     });
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok) {
@@ -5696,6 +5900,8 @@ function applyGameSchedule(schedule, source = "button") {
   renderLoadedScheduleInfo(schedule, scoreUrl);
   syncPredictionFromAccount({ force: true });
   refreshAdminScoringSummary({ force: true });
+  state.manualRescore.preview = null;
+  void refreshManualRescorePanel({ force: true });
   if (source === "auto") {
     addScheduleLoadLog(`自動反映した試合：${formatScheduleForLog(schedule)}`);
   } else {

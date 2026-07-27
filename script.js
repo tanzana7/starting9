@@ -6927,15 +6927,20 @@ function createResultTable(details) {
   table.innerHTML = `
     <thead>
       <tr>
-        <th>打順</th>
-        <th>予想選手</th>
-        <th>実際の選手</th>
-        <th>予想守備</th>
-        <th>実際守備</th>
-        <th>出場</th>
-        <th>打順</th>
-        <th>守備</th>
-        <th>点</th>
+        <th rowspan="2" class="result-order-heading">打順</th>
+        <th colspan="2" class="result-group-heading">あなたの予想</th>
+        <th colspan="2" class="result-group-heading">実際</th>
+        <th colspan="3" class="result-group-heading">判定</th>
+        <th rowspan="2" class="result-point-heading">点数</th>
+      </tr>
+      <tr>
+        <th class="result-subheading">選手</th>
+        <th class="result-subheading">守備位置</th>
+        <th class="result-subheading">選手</th>
+        <th class="result-subheading">守備位置</th>
+        <th class="result-subheading">出場</th>
+        <th class="result-subheading">打順</th>
+        <th class="result-subheading">守備</th>
       </tr>
     </thead>
     <tbody></tbody>
@@ -6946,14 +6951,14 @@ function createResultTable(details) {
     const row = document.createElement("tr");
     row.innerHTML = `
       <td><strong>${detail.order}番</strong></td>
-      <td class="${getPlayerCategoryClassNames(detail.player)}">${escapeHtml(detail.player)}</td>
-      <td class="${getPlayerCategoryClassNames(detail.actualPlayer)}">${escapeHtml(detail.actualPlayer || "-")}</td>
+      <td class="result-player-cell ${getPlayerCategoryClassNames(detail.player)}">${escapeHtml(detail.player)}</td>
       <td>${createResultPositionTileHtml(detail.position)}</td>
+      <td class="result-player-cell ${getPlayerCategoryClassNames(detail.actualPlayer)}">${escapeHtml(detail.actualPlayer || "-")}</td>
       <td>${createResultPositionTileHtml(detail.actualPosition)}</td>
-      <td>${createHitBadge(detail.isPlayerHit)}</td>
-      <td>${createHitBadge(detail.isOrderHit)}</td>
-      <td>${createHitBadge(detail.isPositionHit)}</td>
-      <td><strong>${detail.point}</strong></td>
+      <td>${createHitBadge(detail.isPlayerHit, "出場")}</td>
+      <td>${createHitBadge(detail.isOrderHit, "打順")}</td>
+      <td>${createHitBadge(detail.isPositionHit, "守備")}</td>
+      <td class="result-point-cell"><strong>${detail.point}</strong></td>
     `;
     tbody.appendChild(row);
   });
@@ -6961,8 +6966,14 @@ function createResultTable(details) {
   return table;
 }
 
-function createHitBadge(isHit) {
-  return `<span class="hit-badge ${isHit ? "is-hit" : "is-miss"}">${isHit ? "○" : "×"}</span>`;
+function createHitBadge(isHit, label) {
+  const status = isHit ? "的中" : "不一致";
+  return `
+    <span class="hit-badge ${isHit ? "is-hit" : "is-miss"}" aria-label="${escapeHtml(label)}：${status}">
+      <span class="hit-mark" aria-hidden="true">${isHit ? "○" : "×"}</span>
+      <span>${escapeHtml(label)}</span>
+    </span>
+  `;
 }
 
 function createResultPositionTileHtml(position) {

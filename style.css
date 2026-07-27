@@ -2465,8 +2465,21 @@ textarea:focus {
 
 .result-table .result-group-heading,
 .result-table .result-order-heading,
+.result-table .result-actual-order-heading,
 .result-table .result-point-heading,
 .result-table .result-subheading {
+  text-align: center;
+}
+
+.result-table .result-actual-order-heading,
+.result-table .result-actual-order-cell,
+.result-table .result-actual-group-heading {
+  border-left: 1px solid var(--border);
+}
+
+.result-table .result-actual-order-heading,
+.result-table .result-actual-order-cell {
+  min-width: 78px;
   text-align: center;
 }
 
@@ -2773,6 +2786,10 @@ textarea:focus {
 
   .result-table {
     min-width: 760px;
+  }
+
+  .result-table .result-player-cell {
+    min-width: 108px;
   }
 }
 

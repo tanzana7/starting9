@@ -5411,14 +5411,13 @@ function hasCompletePositions(lineup) {
 }
 
 function scoreLineup(predictionLineup, actualLineup) {
-  const normalizedPrediction = normalizeLineup(predictionLineup);
-  const normalizedActual = normalizeLineup(actualLineup);
-  const actualByPlayer = new Map(normalizedActual.map((item) => [item.player, item]));
+  const normalizedPrediction = normalizeScoringLineup(predictionLineup);
+  const normalizedActual = normalizeScoringLineup(actualLineup);
   const details = normalizedPrediction.map((predictionItem, index) => {
-    const actualItem = actualByPlayer.get(predictionItem.player);
+    const actualItem = findActualLineupItem(predictionItem, normalizedActual);
     const actualOrderItem = normalizedActual[index] || createLineupItem(index, "", "");
     const isInStartingLineup = Boolean(actualItem);
-    const isExactOrder = normalizedActual[index]?.player === predictionItem.player;
+    const isExactOrder = Boolean(actualItem && actualItem.order === predictionItem.order);
     const isExactPosition = isInStartingLineup && actualItem.position === predictionItem.position;
     const point = (isInStartingLineup ? SCORE_RULES.player.perHit : 0) +
       (isExactOrder ? SCORE_RULES.order.perHit : 0) +
@@ -5428,9 +5427,12 @@ function scoreLineup(predictionLineup, actualLineup) {
     return {
       order: index + 1,
       player: predictionItem.player,
+      playerId: predictionItem.playerId,
       position: predictionItem.position,
       actualPlayer: actualOrderItem.player,
+      actualPlayerId: actualOrderItem.playerId,
       actualPosition: actualOrderItem.position,
+      actualOrder: actualItem?.order || null,
       isPlayerHit: isInStartingLineup,
       isOrderHit: isExactOrder,
       isPositionHit: isExactPosition,
@@ -5450,6 +5452,39 @@ function scoreLineup(predictionLineup, actualLineup) {
     details,
     scoredAt: new Date().toISOString()
   };
+}
+
+function normalizeScoringLineup(lineup) {
+  const source = Array.isArray(lineup) ? lineup : [];
+  return normalizeLineup(source).map((item, index) => ({
+    ...item,
+    playerId: typeof source[index]?.playerId === "string" && source[index].playerId
+      ? source[index].playerId
+      : getLineupPlayerId(item)
+  }));
+}
+
+function getLineupPlayerId(item) {
+  const explicitPlayerId = typeof item?.playerId === "string" ? item.playerId.trim() : "";
+  if (explicitPlayerId) {
+    return explicitPlayerId;
+  }
+
+  const player = getUniquePlayerData(item?.player);
+  return player ? createPlayerId(player.teamCode || DEFAULT_PLAYER_TEAM_CODE, player.uniformNumber) : "";
+}
+
+function findActualLineupItem(predictionItem, actualLineup) {
+  const playerId = predictionItem?.playerId || "";
+  if (playerId) {
+    const idMatch = actualLineup.find((item) => item.playerId === playerId);
+    if (idMatch) {
+      return idMatch;
+    }
+  }
+
+  const playerKey = normalizePlayerKey(predictionItem?.player);
+  return actualLineup.find((item) => normalizePlayerKey(item.player) === playerKey) || null;
 }
 
 function getHitCounts(details) {
@@ -6856,15 +6891,39 @@ function renderScoreResult() {
 }
 
 function createResultViewModel(result) {
-  const details = result.details.map((detail) => {
+  const sourceDetails = Array.isArray(result.details) ? result.details : [];
+  const actualOrderById = new Map();
+  const actualOrderByName = new Map();
+  sourceDetails.forEach((detail) => {
+    const order = Number(detail.order);
+    if (!Number.isInteger(order) || order < 1) {
+      return;
+    }
+    const actualPlayerId = typeof detail.actualPlayerId === "string" ? detail.actualPlayerId.trim() : "";
+    const actualPlayerKey = normalizePlayerKey(detail.actualPlayer);
+    if (actualPlayerId) {
+      actualOrderById.set(actualPlayerId, order);
+    }
+    if (actualPlayerKey) {
+      actualOrderByName.set(actualPlayerKey, order);
+    }
+  });
+
+  const details = sourceDetails.map((detail) => {
     const isPlayerHit = Boolean(detail.isPlayerHit ?? detail.mark !== "×");
     const isOrderHit = Boolean(detail.isOrderHit ?? detail.mark === "◎");
     const isPositionHit = Boolean(detail.isPositionHit ?? detail.mark === "◎");
+    const playerId = typeof detail.playerId === "string" ? detail.playerId.trim() : "";
+    const existingActualOrder = Number(detail.actualOrder);
+    const actualOrder = Number.isInteger(existingActualOrder) && existingActualOrder > 0
+      ? existingActualOrder
+      : actualOrderById.get(playerId) || actualOrderByName.get(normalizePlayerKey(detail.player)) || null;
 
     return {
       ...detail,
       actualPlayer: detail.actualPlayer || "",
       actualPosition: detail.actualPosition || "",
+      actualOrder,
       isPlayerHit,
       isOrderHit,
       isPositionHit
@@ -6927,16 +6986,17 @@ function createResultTable(details) {
   table.innerHTML = `
     <thead>
       <tr>
-        <th rowspan="2" class="result-order-heading">打順</th>
+        <th rowspan="2" class="result-order-heading">予想打順</th>
         <th colspan="2" class="result-group-heading">あなたの予想</th>
-        <th colspan="2" class="result-group-heading">実際</th>
+        <th rowspan="2" class="result-actual-order-heading">実際の打順</th>
+        <th colspan="2" class="result-group-heading result-actual-group-heading">実際のスタメン</th>
         <th colspan="3" class="result-group-heading">判定</th>
         <th rowspan="2" class="result-point-heading">点数</th>
       </tr>
       <tr>
         <th class="result-subheading">選手</th>
         <th class="result-subheading">守備位置</th>
-        <th class="result-subheading">選手</th>
+        <th class="result-subheading result-actual-group-heading">選手</th>
         <th class="result-subheading">守備位置</th>
         <th class="result-subheading">出場</th>
         <th class="result-subheading">打順</th>
@@ -6953,6 +7013,7 @@ function createResultTable(details) {
       <td><strong>${detail.order}番</strong></td>
       <td class="result-player-cell ${getPlayerCategoryClassNames(detail.player)}">${escapeHtml(detail.player)}</td>
       <td>${createResultPositionTileHtml(detail.position)}</td>
+      <td class="result-actual-order-cell">${detail.actualOrder ? `${detail.actualOrder}番` : "—"}</td>
       <td class="result-player-cell ${getPlayerCategoryClassNames(detail.actualPlayer)}">${escapeHtml(detail.actualPlayer || "-")}</td>
       <td>${createResultPositionTileHtml(detail.actualPosition)}</td>
       <td>${createHitBadge(detail.isPlayerHit, "出場")}</td>

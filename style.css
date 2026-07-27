@@ -1838,7 +1838,6 @@ textarea:focus {
 .lineup-slot.is-category-catcher,
 .lineup-list li.is-category-catcher,
 .preview-list li.is-category-catcher,
-.result-table td.is-category-catcher,
 .player-category-legend-item.is-category-catcher {
   border: 1px solid #c8ddea;
   background: #f3f8fc;
@@ -1848,7 +1847,6 @@ textarea:focus {
 .lineup-slot.is-category-infielder,
 .lineup-list li.is-category-infielder,
 .preview-list li.is-category-infielder,
-.result-table td.is-category-infielder,
 .player-category-legend-item.is-category-infielder {
   border: 1px solid #e9dfae;
   background: #fdf9e9;
@@ -1858,7 +1856,6 @@ textarea:focus {
 .lineup-slot.is-category-outfielder,
 .lineup-list li.is-category-outfielder,
 .preview-list li.is-category-outfielder,
-.result-table td.is-category-outfielder,
 .player-category-legend-item.is-category-outfielder {
   border: 1px solid #c8ddcd;
   background: #f3f9f4;
@@ -1868,7 +1865,6 @@ textarea:focus {
 .lineup-slot.is-category-dh,
 .lineup-list li.is-category-dh,
 .preview-list li.is-category-dh,
-.result-table td.is-category-dh,
 .player-category-legend-item.is-category-dh {
   border: 1px solid #e3c9d9;
   background: #fcf6fa;
@@ -2495,15 +2491,6 @@ textarea:focus {
 
 .result-table .result-judgement-cell {
   min-width: 80px;
-}
-
-.result-actual-order-note {
-  display: block;
-  margin-top: 5px;
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 800;
-  white-space: nowrap;
 }
 
 .result-table tr:last-child td {

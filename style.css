@@ -2443,7 +2443,7 @@ textarea:focus {
 
 .result-table {
   width: 100%;
-  min-width: 760px;
+  min-width: 700px;
   border-collapse: collapse;
 }
 
@@ -2465,22 +2465,14 @@ textarea:focus {
 
 .result-table .result-group-heading,
 .result-table .result-order-heading,
-.result-table .result-actual-order-heading,
 .result-table .result-point-heading,
 .result-table .result-subheading {
   text-align: center;
 }
 
-.result-table .result-actual-order-heading,
-.result-table .result-actual-order-cell,
-.result-table .result-actual-group-heading {
+.result-table .result-actual-group-heading,
+.result-table .result-actual-group-cell {
   border-left: 1px solid var(--border);
-}
-
-.result-table .result-actual-order-heading,
-.result-table .result-actual-order-cell {
-  min-width: 78px;
-  text-align: center;
 }
 
 .result-table .result-subheading {
@@ -2499,6 +2491,19 @@ textarea:focus {
   min-width: 54px;
   color: var(--fighters-deep-blue);
   text-align: right;
+}
+
+.result-table .result-judgement-cell {
+  min-width: 80px;
+}
+
+.result-actual-order-note {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  white-space: nowrap;
 }
 
 .result-table tr:last-child td {
@@ -2785,7 +2790,7 @@ textarea:focus {
   }
 
   .result-table {
-    min-width: 760px;
+    min-width: 700px;
   }
 
   .result-table .result-player-cell {

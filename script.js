@@ -6988,7 +6988,6 @@ function createResultTable(details) {
       <tr>
         <th rowspan="2" class="result-order-heading">予想打順</th>
         <th colspan="2" class="result-group-heading">あなたの予想</th>
-        <th rowspan="2" class="result-actual-order-heading">実際の打順</th>
         <th colspan="2" class="result-group-heading result-actual-group-heading">実際のスタメン</th>
         <th colspan="3" class="result-group-heading">判定</th>
         <th rowspan="2" class="result-point-heading">点数</th>
@@ -7013,11 +7012,13 @@ function createResultTable(details) {
       <td><strong>${detail.order}番</strong></td>
       <td class="result-player-cell ${getPlayerCategoryClassNames(detail.player)}">${escapeHtml(detail.player)}</td>
       <td>${createResultPositionTileHtml(detail.position)}</td>
-      <td class="result-actual-order-cell">${detail.actualOrder ? `${detail.actualOrder}番` : "—"}</td>
-      <td class="result-player-cell ${getPlayerCategoryClassNames(detail.actualPlayer)}">${escapeHtml(detail.actualPlayer || "-")}</td>
+      <td class="result-player-cell result-actual-group-cell ${getPlayerCategoryClassNames(detail.actualPlayer)}">${escapeHtml(detail.actualPlayer || "-")}</td>
       <td>${createResultPositionTileHtml(detail.actualPosition)}</td>
       <td>${createHitBadge(detail.isPlayerHit, "出場")}</td>
-      <td>${createHitBadge(detail.isOrderHit, "打順")}</td>
+      <td class="result-judgement-cell">
+        ${createHitBadge(detail.isOrderHit, "打順")}
+        ${detail.isPlayerHit && !detail.isOrderHit && detail.actualOrder ? `<small class="result-actual-order-note">実際は${detail.actualOrder}番</small>` : ""}
+      </td>
       <td>${createHitBadge(detail.isPositionHit, "守備")}</td>
       <td class="result-point-cell"><strong>${detail.point}</strong></td>
     `;

@@ -7,6 +7,7 @@ const vm = require("node:vm");
 const root = path.join(__dirname, "..");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
+const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 
 function sourceForFunction(name) {
   const start = script.indexOf(`function ${name}(`);
@@ -47,6 +48,24 @@ test("判定バッジは○×だけでなく判定対象ラベルを表示する
   assert.match(source, /hit-mark/);
   assert.match(source, /escapeHtml\(label\)/);
   assert.match(css, /\.hit-badge\s*\{[\s\S]*display: inline-flex/);
+  assert.match(css, /\.hit-badge\s*\{[\s\S]*padding: 4px 6px/);
+  assert.match(css, /\.hit-badge\s*\{[\s\S]*font-size: 0\.74rem/);
+});
+
+test("比較データがない場合はプレースホルダーカードを隠して案内だけを表示する", () => {
+  const source = sourceForFunction("renderScoreInsights");
+  assert.match(html, /id="scoreInsightsGrid" class="score-insights-grid hidden"/);
+  assert.match(html, /id="scoreInsightsNotice" class="score-insights-notice">比較データは参加者が増え次第表示されます。/);
+  assert.match(source, /comparison\?\.average \?\? comparison\?\.averageScore/);
+  assert.match(source, /grid\.classList\.toggle\("hidden", !hasData\)/);
+  assert.match(source, /notice\.classList\.toggle\("hidden", hasData\)/);
+});
+
+test("比較データがある場合は値のあるカードだけを表示できる", () => {
+  const source = sourceForFunction("renderScoreInsights");
+  assert.match(source, /top: comparison\?\.top \?\? comparison\?\.topPercent \?\? comparison\?\.percentile/);
+  assert.match(source, /card\.classList\.toggle\("hidden", !hasValue\)/);
+  assert.match(source, /valueElement\.textContent = hasValue \? String\(value\) : ""/);
 });
 
 test("実際の打順照合は内部処理として維持し、結果テーブルには表示しない", () => {

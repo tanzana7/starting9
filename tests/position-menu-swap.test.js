@@ -7,6 +7,7 @@ const vm = require("node:vm");
 const root = path.join(__dirname, "..");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
+const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 
 function getFunctionSource(name) {
   const start = script.indexOf(`function ${name}(`);
@@ -34,6 +35,36 @@ function createPositionSelection(lineup, targetIndex, position) {
   vm.runInContext(`${getFunctionSource("createPositionSelectionLineup")}; this.select = createPositionSelectionLineup;`, context);
   return context.select(lineup, targetIndex, position);
 }
+
+function runLineupFunction(name, lineup, ...args) {
+  const context = vm.createContext({
+    LINEUP_SIZE: 9,
+    normalizePlayerName: (value) => String(value || "").trim(),
+    normalizePosition: (value) => String(value || "")
+  });
+  vm.runInContext(`${getFunctionSource("createLineupItem")}; ${getFunctionSource("normalizeLineup")}; ${getFunctionSource(name)}; this.run = ${name};`, context);
+  return context.run(lineup, ...args);
+}
+
+test("選手一覧に主ポジションの凡例があり、既存カテゴリ色を再利用する", () => {
+  assert.match(html, /class="player-category-legend"/);
+  assert.match(html, /色は主ポジション/);
+  assert.match(html, /player-category-legend-item is-category-catcher/);
+  assert.match(css, /\.player-category-legend-item\.is-category-catcher/);
+  assert.match(css, /\.player-category-legend-item\.is-category-infielder/);
+  assert.match(css, /\.player-category-legend-item\.is-category-outfielder/);
+  assert.match(css, /\.player-category-legend-item\.is-category-dh/);
+});
+
+test("選手を削除すると選手と守備位置を同時にクリアする", () => {
+  const result = runLineupFunction("clearLineupItem", [{ player: "田宮裕涼", position: "捕" }], 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(result[0])), { order: 1, player: "", position: "" });
+});
+
+test("別選手を設定すると前の選手の守備位置を引き継がない", () => {
+  const result = runLineupFunction("moveLineupItem", [{ player: "田宮裕涼", position: "捕" }], "清宮幸太郎", 0, null);
+  assert.deepEqual(JSON.parse(JSON.stringify(result[0])), { order: 1, player: "清宮幸太郎", position: "" });
+});
 
 test("使用済みポジションはグレー表示でもdisabledにせず、入れ替え案内を付ける", () => {
   const menuState = getFunctionSource("updatePositionMenuState");

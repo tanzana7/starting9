@@ -1435,10 +1435,11 @@ function assignPlayerToActiveSlot(pickerName, player) {
   const lineup = getLineupValues(pickerName);
   const currentIndex = lineup.findIndex((item) => item.player === player);
   const targetIndex = getTargetOrder(pickerName, lineup);
-  const targetPosition = lineup[targetIndex]?.position || "";
+  const targetPlayer = lineup[targetIndex]?.player || "";
+  const targetPosition = targetPlayer === player ? lineup[targetIndex]?.position || "" : "";
 
   if (currentIndex !== -1 && currentIndex !== targetIndex) {
-    lineup[currentIndex] = createLineupItem(currentIndex, "", lineup[currentIndex]?.position || "");
+    lineup[currentIndex] = createLineupItem(currentIndex, "", "");
   }
 
   lineup[targetIndex] = createLineupItem(targetIndex, player, targetPosition);
@@ -1464,12 +1465,14 @@ function moveLineupItem(lineup, player, targetIndex, sourceIndex) {
   const currentIndex = movedLineup.findIndex((item) => item.player === player);
   const replacedItem = movedLineup[targetIndex];
   const hasSource = sourceIndex !== null && sourceIndex !== undefined;
-  const movingPosition = hasSource ? movedLineup[sourceIndex]?.position || "" : replacedItem?.position || "";
+  const movingPosition = hasSource
+    ? movedLineup[sourceIndex]?.position || ""
+    : replacedItem?.player === player ? replacedItem.position || "" : "";
 
   if (hasSource && sourceIndex !== targetIndex) {
     movedLineup[sourceIndex] = createLineupItem(sourceIndex, replacedItem?.player || "", replacedItem?.position || "");
   } else if (currentIndex !== -1 && currentIndex !== targetIndex) {
-    movedLineup[currentIndex] = createLineupItem(currentIndex, "", movedLineup[currentIndex]?.position || "");
+    movedLineup[currentIndex] = createLineupItem(currentIndex, "", "");
   }
 
   movedLineup[targetIndex] = createLineupItem(targetIndex, player, movingPosition);
@@ -1563,10 +1566,21 @@ function findNextEmptyIndex(lineup, startIndex) {
 function clearSlot(pickerName, index) {
   if (pickerName === "prediction" && !ensurePredictionEditingAllowed()) return;
   const lineup = getLineupValues(pickerName);
-  lineup[index] = createLineupItem(index, "", lineup[index]?.position || "");
-  setLineupValues(pickerName, lineup);
+  setLineupValues(pickerName, clearLineupItem(lineup, index));
   state.activeOrder[pickerName] = index;
+  closeAllPositionMenus();
+  const detailsPanel = document.getElementById(`${normalizePickerName(pickerName)}PlayerDetails`);
+  if (detailsPanel) {
+    detailsPanel.classList.add("hidden");
+    detailsPanel.innerHTML = "";
+  }
   renderPicker(pickerName);
+}
+
+function clearLineupItem(lineup, index) {
+  const clearedLineup = normalizeLineup(lineup);
+  clearedLineup[index] = createLineupItem(index, "", "");
+  return clearedLineup;
 }
 
 function handleActualParsePreview() {
@@ -5326,8 +5340,8 @@ function setLineupValues(pickerName, lineup) {
 }
 
 function createLineupItem(index, player, position) {
-  const normalizedPosition = position ? normalizePosition(position) : "";
   const normalizedPlayer = player ? normalizePlayerName(player) : "";
+  const normalizedPosition = normalizedPlayer && position ? normalizePosition(position) : "";
 
   return {
     order: index + 1,

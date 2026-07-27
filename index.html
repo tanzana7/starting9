@@ -6,7 +6,7 @@
   <title>Starting9</title>
   <link rel="icon" type="image/png" href="./assets/icons/icon-512.png">
   <link rel="apple-touch-icon" href="./assets/icons/icon-512.png">
-  <link rel="stylesheet" href="style.css?v=probable-starter-status-20260724-1">
+  <link rel="stylesheet" href="style.css?v=ui-ux-refresh-20260727-1">
 </head>
 <body>
   <header class="app-header">
@@ -14,7 +14,10 @@
       <div class="header-logo">
         <img src="./assets/starting9-header.png" alt="Starting9 スタメン予想サービス">
       </div>
-      <p class="team-label">β版のため日本ハムのみ対応</p>
+      <section class="beta-panel" aria-label="ベータ版のお知らせ">
+        <strong>🚧 β版</strong>
+        <span>現在は北海道日本ハムファイターズのみ対応しています。今後対応球団を追加予定です。</span>
+      </section>
       <p id="adminModeBadge" class="admin-mode-badge hidden">管理者モード</p>
       <p id="gameInfoDisplay" class="game-info-display hidden" aria-live="polite"></p>
       <section id="probableStarterDisplay" class="probable-starter-card hidden" aria-live="polite"></section>
@@ -41,6 +44,14 @@
         <p id="authStatus" class="auth-status"></p>
       </div>
       <p class="lead">試合前にスタメン9人・打順・守備位置を予想して、発表後に100点満点で採点しよう。</p>
+      <section class="hero-panel" aria-labelledby="heroTitle">
+        <div class="hero-copy">
+          <p class="hero-kicker">STARTING LINEUP CHALLENGE</p>
+          <h1 id="heroTitle">スタメンを予想して100点を目指そう！</h1>
+          <p>試合開始60分前まで予想可能。試合後は自動採点され、ランキングで順位を競えます。</p>
+        </div>
+        <button id="predictionCtaButton" class="hero-cta hidden" type="button">今日のスタメンを予想する</button>
+      </section>
     </div>
   </header>
 
@@ -83,6 +94,21 @@
   </div>
 
   <main class="container app-layout">
+    <section class="how-to-panel" aria-labelledby="howToTitle">
+      <div class="how-to-heading">
+        <div>
+          <p class="area-label">HOW TO PLAY</p>
+          <h2 id="howToTitle">遊び方</h2>
+        </div>
+        <p>試合前に予想して、結果を楽しもう。</p>
+      </div>
+      <ol class="how-to-steps">
+        <li><span>1</span><strong>予想する</strong><small>9人と守備位置を選択</small></li>
+        <li><span>2</span><strong>試合開始</strong><small>締切後にスタメン確定</small></li>
+        <li><span>3</span><strong>自動採点</strong><small>100点満点でチェック</small></li>
+        <li><span>4</span><strong>ランキング</strong><small>みんなの成績と比較</small></li>
+      </ol>
+    </section>
     <section class="card lineup-card" aria-labelledby="prediction-title">
       <div class="section-heading">
         <div>
@@ -129,6 +155,7 @@
       </div>
 
       <div id="savedPrediction" class="empty-state">まだ予想が保存されていません。</div>
+      <button id="editSavedPredictionButton" class="secondary-button hidden" type="button">編集する</button>
       <button id="sharePredictionButton" class="secondary-button hidden" type="button">予想をXで共有</button>
     </section>
 
@@ -395,6 +422,14 @@
 
       <div id="scoreResult" class="empty-state">採点すると結果が表示されます。</div>
       <button id="shareResultButton" class="secondary-button hidden" type="button">結果をXで共有</button>
+      <section class="score-insights" aria-labelledby="scoreInsightsTitle">
+        <h3 id="scoreInsightsTitle">スコアの比較</h3>
+        <div class="score-insights-grid">
+          <div><span>全国平均</span><strong>今後表示予定</strong></div>
+          <div><span>順位</span><strong>今後表示予定</strong></div>
+          <div><span>上位</span><strong>今後表示予定</strong></div>
+        </div>
+      </section>
 
       <section id="todayPerfectAchieversCard" class="perfect-achievers-card" aria-labelledby="todayPerfectAchieversTitle">
         <div class="perfect-achievers-heading">
@@ -431,6 +466,6 @@
   <script src="game-schedule.js?v=20260718-probable-starter"></script>
   <script type="module" src="pregame-automation.js?v=20260722-2"></script>
   <script src="auth.js?v=auth-api-local-20260719"></script>
-  <script src="script.js?v=probable-starter-status-20260724-1"></script>
+  <script src="script.js?v=ui-ux-refresh-20260727-1"></script>
 </body>
 </html>

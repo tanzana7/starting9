@@ -472,6 +472,8 @@ function bindEvents() {
   document.getElementById("adminTestAchievements")?.addEventListener("click", handleAdminTestAchievementAction);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
+  document.getElementById("predictionCtaButton")?.addEventListener("click", scrollToPredictionForm);
+  document.getElementById("editSavedPredictionButton")?.addEventListener("click", scrollToPredictionForm);
   document.getElementById("openAdminButton")?.addEventListener("click", openAdminPanel);
   document.getElementById("showYearlyRankingButton")?.addEventListener("click", () => selectRankingView("yearly"));
   document.getElementById("showMonthlyRankingButton")?.addEventListener("click", () => selectRankingView("monthly"));
@@ -2439,6 +2441,7 @@ function addProbableStarterLog(message) {
 }
 
 function handleAuthStateChanged() {
+  renderPredictionCta();
   renderTodayPerfectAchievers();
   fetchTodayPerfectAchievers({ force: true });
   syncPredictionFromAccount({ force: true });
@@ -2613,10 +2616,20 @@ function renderPredictionDeadline() {
   const deadlineText = formatPredictionDeadlineDateTime(deadline.deadlineAt);
 
   if (container) {
-    container.className = `prediction-deadline-status is-${deadline.status}`;
-    container.textContent = deadline.status === "open"
-      ? `予想締切：${deadlineText}（試合開始${getPredictionDeadlineMinutesBeforeStart()}分前）`
-      : deadline.message || "予想の受付状況を確認しています。";
+    const isSoon = deadline.status === "open" && deadline.deadlineAt
+      && new Date(deadline.deadlineAt).getTime() - Date.now() <= 2 * 60 * 60 * 1000;
+    container.className = `prediction-deadline-status is-${deadline.status}${isSoon ? " is-soon" : ""}`;
+    if (deadline.status === "open") {
+      container.innerHTML = `
+        <div class="deadline-heading"><strong>⏰ 予想締切</strong><time>${escapeHtml(deadlineText)}</time></div>
+        <div class="deadline-countdown">
+          <span>試合開始まで <strong>${escapeHtml(formatRemainingTime(deadline.startAt))}</strong></span>
+          <span>締切まで <strong>${escapeHtml(formatRemainingTime(deadline.deadlineAt))}</strong></span>
+        </div>
+      `;
+    } else {
+      container.textContent = deadline.message || "予想の受付状況を確認しています。";
+    }
   }
   if (saveButton) saveButton.disabled = Boolean(deadline.isClosed) || state.predictionRemote.isSaving;
   if (resetButton) resetButton.disabled = Boolean(deadline.isClosed) || state.predictionRemote.isDeleting;
@@ -2751,6 +2764,18 @@ function getAdminScoringFingerprint(actualLineup) {
 function resetAdminScoringPreview() {
   state.adminScoring.preview = null;
   state.adminScoring.previewFingerprint = "";
+}
+
+function formatRemainingTime(targetIso, now = new Date()) {
+  const target = new Date(targetIso);
+  const milliseconds = target.getTime() - now.getTime();
+  if (!Number.isFinite(milliseconds)) return "-";
+  if (milliseconds <= 0) return "まもなく";
+  const totalMinutes = Math.ceil(milliseconds / 60000);
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+  return days > 0 ? `${days}日${hours}時間` : hours > 0 ? `${hours}時間${minutes}分` : `${minutes}分`;
 }
 
 function getManualRescoreMetadata() {
@@ -4183,12 +4208,15 @@ function renderMyRanking(ranking, row, title) {
 }
 
 function createRankingCardHtml(row, { reference = false } = {}) {
-  const rankLabel = reference ? "参考記録" : `${row.rank}位`;
+  const user = getPredictionAccountUser();
+  const isSelf = Boolean(user && ((row.username && row.username === user.username) || (row.userId && String(row.userId) === String(user.id))));
+  const medal = { 1: "🥇", 2: "🥈", 3: "🥉" }[Number(row.rank)] || "";
+  const rankLabel = reference ? "参考記録" : `${medal}${row.rank}位`;
   const qualification = reference ? `規定まであと${row.gamesNeeded}試合` : "規定到達";
-  return `<li class="ranking-entry${reference ? " is-reference" : ""}">
+  return `<li class="ranking-entry${reference ? " is-reference" : ""}${isSelf ? " is-self" : ""}">
     <p class="ranking-rank">${escapeHtml(rankLabel)}</p>
     <div class="ranking-entry-main">
-      <div class="ranking-user-line"><strong>${escapeHtml(row.username)}</strong>${createRankingAchievementBadgesHtml(row)}</div>
+      <div class="ranking-user-line"><strong>${escapeHtml(row.username)}${isSelf ? "（あなた）" : ""}</strong>${createRankingAchievementBadgesHtml(row)}</div>
       <p>平均 ${escapeHtml(formatRankingScore(row.averageScore))}点${reference ? "（参考）" : ""}</p>
       <p>${escapeHtml(row.gamesPlayed)} / ${escapeHtml(row.eligibleGames)}試合・参加率 ${escapeHtml(formatParticipationRate(row.participationRate))}・${escapeHtml(qualification)}</p>
       <p>合計 ${escapeHtml(row.totalScore)}点・満点 ${escapeHtml(row.perfectCount)}回</p>
@@ -6023,6 +6051,7 @@ function renderAll() {
   renderGameSchedulePicker();
   renderProbableStarter();
   renderSavedPrediction();
+  renderPredictionCta();
   renderPredictionAccountStatus();
   renderPredictionDeadline();
   renderAchievements();
@@ -6750,11 +6779,13 @@ function getDuplicatedPositions(lineup) {
 
 function renderSavedPrediction() {
   const container = document.getElementById("savedPrediction");
+  const editButton = document.getElementById("editSavedPredictionButton");
   const shareButton = document.getElementById("sharePredictionButton");
 
   if (!state.prediction) {
     container.className = "empty-state";
     container.textContent = "まだ予想が保存されていません。";
+    editButton?.classList.add("hidden");
     shareButton.classList.add("hidden");
     return;
   }
@@ -6763,7 +6794,23 @@ function renderSavedPrediction() {
   container.className = "summary-box";
   container.innerHTML = "";
   container.appendChild(createPredictionSummary(state.prediction));
+  editButton?.classList.remove("hidden");
   shareButton.classList.remove("hidden");
+}
+
+function renderPredictionCta() {
+  const button = document.getElementById("predictionCtaButton");
+  if (!button) return;
+  const isLoggedIn = Boolean(getPredictionAccountUser());
+  const hasPrediction = Boolean(state.prediction || state.predictionRemote?.prediction);
+  button.classList.toggle("hidden", !isLoggedIn);
+  button.textContent = hasPrediction ? "予想を編集する" : "今日のスタメンを予想する";
+}
+
+function scrollToPredictionForm() {
+  const form = document.getElementById("predictionForm");
+  form?.scrollIntoView({ behavior: "smooth", block: "start" });
+  form?.querySelector("button, input, select")?.focus({ preventScroll: true });
 }
 
 function renderActualLineup() {
@@ -6921,7 +6968,7 @@ function createPredictionSummary(prediction) {
 
   const meta = document.createElement("div");
   meta.className = "summary-meta";
-  meta.textContent = `保存日時：${formatDateTime(prediction.savedAt)}`;
+  meta.textContent = `最後に更新：${formatDateTime(prediction.savedAt)}`;
 
   const list = document.createElement("ul");
   list.className = "lineup-list";

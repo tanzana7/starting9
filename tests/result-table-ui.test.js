@@ -29,11 +29,12 @@ test("採点結果テーブルは同じ打順を予想と実際で比較する",
   assert.match(source, /colspan="2" class="result-group-heading result-actual-group-heading">実際のスタメン/);
   assert.match(source, /colspan="3" class="result-group-heading">判定/);
   assert.match(source, /rowspan="2" class="result-point-heading">点数/);
-  assert.match(source, /rowspan="2" class="result-order-heading">予想打順/);
+  assert.match(source, /rowspan="2" class="result-order-heading">打順/);
   assert.doesNotMatch(source, /実際の打順<\/th>/);
-  assert.match(source, /実際は\$\{detail\.actualOrder\}番/);
-  assert.match(source, /result-player-cell .*detail\.player/);
-  assert.match(source, /result-player-cell .*detail\.actualPlayer/);
+  assert.doesNotMatch(source, /実際は/);
+  assert.doesNotMatch(source, /result-actual-order-note/);
+  assert.match(source, /<td class="result-player-cell">\$\{escapeHtml\(detail\.player\)\}<\/td>/);
+  assert.match(source, /<td class="result-player-cell result-actual-group-cell">\$\{escapeHtml\(detail\.actualPlayer \|\| "-"\)\}<\/td>/);
   assert.match(source, /createHitBadge\(detail\.isPlayerHit, "出場"\)/);
   assert.match(source, /createHitBadge\(detail\.isOrderHit, "打順"\)/);
   assert.match(source, /createHitBadge\(detail\.isPositionHit, "守備"\)/);
@@ -48,15 +49,14 @@ test("判定バッジは○×だけでなく判定対象ラベルを表示する
   assert.match(css, /\.hit-badge\s*\{[\s\S]*display: inline-flex/);
 });
 
-test("別打順出場時だけ判定欄に実際の打順を補足する", () => {
+test("実際の打順照合は内部処理として維持し、結果テーブルには表示しない", () => {
   const scoring = sourceForFunction("findActualLineupItem");
   assert.match(scoring, /item\.playerId === playerId/);
   assert.match(scoring, /normalizePlayerKey\(item\.player\)/);
   assert.match(sourceForFunction("scoreLineup"), /actualOrder: actualItem\?\.order \|\| null/);
   const table = sourceForFunction("createResultTable");
-  assert.match(table, /detail\.isPlayerHit && !detail\.isOrderHit && detail\.actualOrder/);
-  assert.match(table, /result-actual-order-note/);
-  assert.doesNotMatch(table, /: "—"/);
+  assert.doesNotMatch(table, /detail\.actualOrder/);
+  assert.doesNotMatch(table, /実際は/);
 
   const idMatch = findActualLineupItem(
     { player: "同名選手", playerId: "F-9" },
@@ -66,6 +66,14 @@ test("別打順出場時だけ判定欄に実際の打順を補足する", () =>
     ]
   );
   assert.equal(idMatch.order, 2);
+});
+
+test("結果テーブルの選手セルにはカテゴリ背景クラスを付けず、守備位置表示は維持する", () => {
+  const table = sourceForFunction("createResultTable");
+  assert.doesNotMatch(table, /getPlayerCategoryClassNames\(detail\.(player|actualPlayer)\)/);
+  assert.match(table, /createResultPositionTileHtml\(detail\.position\)/);
+  assert.match(table, /createResultPositionTileHtml\(detail\.actualPosition\)/);
+  assert.doesNotMatch(css, /\.result-table td\.is-category-/);
 });
 
 test("採点結果テーブルはスマホでも内容を保持して横スクロールできる", () => {

@@ -2480,6 +2480,18 @@ textarea:focus {
 .result-table .result-player-cell {
   min-width: 118px;
   white-space: normal;
+}
+
+.result-player-name {
+  display: inline-block;
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #ffffff;
+  color: inherit;
+  line-height: 1.25;
   overflow-wrap: anywhere;
 }
 

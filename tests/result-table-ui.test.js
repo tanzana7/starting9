@@ -34,8 +34,8 @@ test("採点結果テーブルは同じ打順を予想と実際で比較する",
   assert.doesNotMatch(source, /実際の打順<\/th>/);
   assert.doesNotMatch(source, /実際は/);
   assert.doesNotMatch(source, /result-actual-order-note/);
-  assert.match(source, /<td class="result-player-cell">\$\{escapeHtml\(detail\.player\)\}<\/td>/);
-  assert.match(source, /<td class="result-player-cell result-actual-group-cell">\$\{escapeHtml\(detail\.actualPlayer \|\| "-"\)\}<\/td>/);
+  assert.match(source, /<td class="result-player-cell"><span class="result-player-name">\$\{escapeHtml\(detail\.player\)\}<\/span><\/td>/);
+  assert.match(source, /<td class="result-player-cell result-actual-group-cell"><span class="result-player-name">\$\{escapeHtml\(detail\.actualPlayer \|\| "-"\)\}<\/span><\/td>/);
   assert.match(source, /createHitBadge\(detail\.isPlayerHit, "出場"\)/);
   assert.match(source, /createHitBadge\(detail\.isOrderHit, "打順"\)/);
   assert.match(source, /createHitBadge\(detail\.isPositionHit, "守備"\)/);
@@ -90,9 +90,13 @@ test("実際の打順照合は内部処理として維持し、結果テーブ�
 test("結果テーブルの選手セルにはカテゴリ背景クラスを付けず、守備位置表示は維持する", () => {
   const table = sourceForFunction("createResultTable");
   assert.doesNotMatch(table, /getPlayerCategoryClassNames\(detail\.(player|actualPlayer)\)/);
+  assert.equal((table.match(/class="result-player-name"/g) || []).length, 2);
   assert.match(table, /createResultPositionTileHtml\(detail\.position\)/);
   assert.match(table, /createResultPositionTileHtml\(detail\.actualPosition\)/);
   assert.doesNotMatch(css, /\.result-table td\.is-category-/);
+  assert.match(css, /\.result-player-name\s*\{[\s\S]*background: #ffffff/);
+  assert.match(css, /\.result-player-name\s*\{[\s\S]*border: 1px solid var\(--border\)/);
+  assert.match(css, /\.result-player-name\s*\{[\s\S]*border-radius: 7px/);
 });
 
 test("採点結果テーブルはスマホでも内容を保持して横スクロールできる", () => {

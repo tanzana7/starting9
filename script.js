@@ -7034,9 +7034,9 @@ function createResultTable(details) {
     const row = document.createElement("tr");
     row.innerHTML = `
       <td><strong>${detail.order}番</strong></td>
-      <td class="result-player-cell">${escapeHtml(detail.player)}</td>
+      <td class="result-player-cell"><span class="result-player-name">${escapeHtml(detail.player)}</span></td>
       <td>${createResultPositionTileHtml(detail.position)}</td>
-      <td class="result-player-cell result-actual-group-cell">${escapeHtml(detail.actualPlayer || "-")}</td>
+      <td class="result-player-cell result-actual-group-cell"><span class="result-player-name">${escapeHtml(detail.actualPlayer || "-")}</span></td>
       <td>${createResultPositionTileHtml(detail.actualPosition)}</td>
       <td>${createHitBadge(detail.isPlayerHit, "出場")}</td>
       <td class="result-judgement-cell">

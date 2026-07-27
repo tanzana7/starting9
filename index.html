@@ -311,6 +311,28 @@
           </div>
           <p id="adminAutoScoringMessage" class="message" role="status" aria-live="polite"></p>
         </section>
+
+        <section id="adminManualRescorePanel" class="admin-server-scoring" aria-labelledby="admin-manual-rescore-title">
+          <div class="admin-server-scoring-heading">
+            <div>
+              <p class="area-label">MANUAL RESCORE</p>
+              <h3 id="admin-manual-rescore-title">正式スタメン修正と再採点</h3>
+              <p>この画面で選択中のgameIdだけを対象にします。修正版の保存後にプレビューを確認し、確定時だけ結果を置き換えます。</p>
+            </div>
+          </div>
+          <div id="adminManualRescoreSummary" class="admin-server-scoring-summary" aria-live="polite"></div>
+          <label for="manualRescoreReason">修正理由</label>
+          <input id="manualRescoreReason" type="text" maxlength="240" placeholder="例：公式スタメンの守備位置訂正">
+          <div class="admin-server-scoring-actions">
+            <button id="saveLineupRevisionButton" class="secondary-button compact-button" type="button">修正版を保存</button>
+            <button id="previewManualRescoreButton" class="secondary-button compact-button" type="button">再採点プレビュー</button>
+            <button id="confirmManualRescoreButton" class="danger-button compact-button" type="button" disabled>再採点を確定</button>
+            <button id="restorePreviousLineupButton" class="secondary-button compact-button" type="button">直前versionへ戻す</button>
+          </div>
+          <p id="adminManualRescoreMessage" class="message" role="status" aria-live="polite"></p>
+          <div id="adminManualRescorePreview" class="admin-server-scoring-preview hidden" aria-live="polite"></div>
+          <div id="adminManualRescoreHistory" class="admin-server-scoring-preview hidden" aria-live="polite"></div>
+        </section>
       </section>
 
       <details id="adminTestDetails" class="admin-test-details">

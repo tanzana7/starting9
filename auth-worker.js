@@ -44,6 +44,8 @@ const AUTO_SCORING_MAX_DELAY_SECONDS = 24 * 60 * 60;
 const AUTO_SCORING_MAX_ATTEMPTS = 3;
 const AUTO_SCORING_CRON_BATCH_SIZE = 10;
 const AUTO_SCORING_PROCESSING_TIMEOUT_MS = 10 * 60 * 1000;
+const MANUAL_RESCORE_RETENTION_DAYS = 7;
+const MANUAL_RESCORE_PREVIEW_TTL_MS = 15 * 60 * 1000;
 const AUTOMATION_HEALTH_STATE_KEY = "cron";
 const AUTO_APPROVE_SETTING_KEY = "auto_approve_enabled";
 const AUTOMATION_SCHEDULE_LOOKAHEAD_DAYS = 1;
@@ -250,6 +252,7 @@ export default {
 };
 
 export async function runScheduledGameAutomation(env, now) {
+  await cleanupExpiredManualRescorePreviews(env.AUTH_DB, now);
   let scheduleSync = { status: "failed", games: [] };
   try {
     scheduleSync = await syncTodayFightersSchedule(env, now);
@@ -267,6 +270,40 @@ export async function runScheduledGameAutomation(env, now) {
   logGameAutomationSummary(summary);
   logCancelledGameWorkflows(workflowResult.workflows, summary.scheduleSync);
   return { ...workflowResult, summary };
+}
+
+async function cleanupExpiredManualRescorePreviews(db, now) {
+  try {
+    await db.batch([
+      db.prepare(
+        `UPDATE game_rescore_jobs SET status = 'failed', error_code = 'RESCORE_PREVIEW_EXPIRED', updated_at = ?1
+          WHERE status = 'previewed' AND updated_at <= ?2`
+      ).bind(now.toISOString(), new Date(now.getTime() - MANUAL_RESCORE_PREVIEW_TTL_MS).toISOString()),
+      db.prepare("DELETE FROM game_rescore_previews WHERE expires_at <= ?1").bind(now.toISOString())
+    ]);
+  } catch (error) {
+    if (!isPregameSchemaError(error)) {
+      console.warn(`[GAME_AUTOMATION] step=rescore_preview_cleanup status=failed code=${error?.code || "RESCORE_PREVIEW_CLEANUP_FAILED"}`);
+    }
+  }
+}
+
+async function isManualRescoreLocked(db, gameId) {
+  try {
+    const row = await db.prepare(
+      `SELECT revisions.lineup_fingerprint AS revision_fingerprint, lineups.lineup_fingerprint AS active_fingerprint
+         FROM game_lineup_revisions AS revisions
+         JOIN game_lineups AS lineups ON lineups.game_id = revisions.game_id
+        WHERE revisions.game_id = ?1
+          AND revisions.is_current = 1
+          AND revisions.source IN ('manual-revision', 'restore')
+        LIMIT 1`
+    ).bind(gameId).first();
+    return Boolean(row?.revision_fingerprint && row.revision_fingerprint !== row.active_fingerprint);
+  } catch (error) {
+    if (isPregameSchemaError(error)) return false;
+    throw error;
+  }
 }
 
 async function recordAutomationHealth(db, { now, summary, error = null }) {
@@ -1240,7 +1277,7 @@ async function handleCreateAdminTestPerfectPrediction(env, cors, user, metadata)
 }
 
 function parseAdminScoringRoute(path) {
-  const match = /^\/api\/admin\/games\/([^/]+)\/(predictions\/(?:summary|score-predictions(?:\/preview)?)|actual-lineup|auto-scoring\/(?:status|run-now|retry|cancel)|pregame-automation\/(?:run-roster|run-lineup|run-notice|distribute-notice|fix-roster|publish|workflow-status|pause-workflow|resume-workflow))$/.exec(path);
+  const match = /^\/api\/admin\/games\/([^/]+)\/(predictions\/(?:summary|score-predictions(?:\/preview)?)|actual-lineup|lineup-history|lineup-revisions|rescore-preview|rescore-confirm|restore-lineup-version|rescore-history|auto-scoring\/(?:status|run-now|retry|cancel)|pregame-automation\/(?:run-roster|run-lineup|run-notice|distribute-notice|fix-roster|publish|workflow-status|pause-workflow|resume-workflow))$/.exec(path);
   if (!match) {
     return null;
   }
@@ -1277,6 +1314,24 @@ async function handleAdminScoringRoute(request, env, cors, route) {
   }
   if (route.action === "actual-lineup" && request.method === "POST") {
     return await handleAdminActualLineupSave(request, env, cors, metadata.gameId);
+  }
+  if (route.action === "lineup-history" && request.method === "GET") {
+    return await handleAdminLineupHistory(env, cors, metadata.gameId);
+  }
+  if (route.action === "rescore-history" && request.method === "GET") {
+    return await handleAdminRescoreHistory(env, cors, metadata.gameId);
+  }
+  if (route.action === "lineup-revisions" && request.method === "POST") {
+    return await handleAdminLineupRevision(request, env, cors, metadata, access.user);
+  }
+  if (route.action === "restore-lineup-version" && request.method === "POST") {
+    return await handleAdminLineupRestore(request, env, cors, metadata, access.user);
+  }
+  if (route.action === "rescore-preview" && request.method === "POST") {
+    return await handleAdminRescorePreview(request, env, cors, metadata, access.user);
+  }
+  if (route.action === "rescore-confirm" && request.method === "POST") {
+    return await handleAdminRescoreConfirm(request, env, cors, metadata, access.user);
   }
   if (route.action === "auto-scoring/status" && request.method === "GET") {
     return await handleAdminAutoScoringStatus(env, cors, metadata.gameId);
@@ -1996,6 +2051,29 @@ function getGameIdentityForPregame(gameId) {
   return { ...timeline, gameCode: gameCode.toLowerCase() };
 }
 
+export function isBeforeGameStart(startAt, now = new Date()) {
+  const start = startAt instanceof Date ? startAt : new Date(startAt);
+  const current = now instanceof Date ? now : new Date(now);
+  return Number.isFinite(start.getTime())
+    && Number.isFinite(current.getTime())
+    && current.getTime() < start.getTime();
+}
+
+function assertOfficialLineupSaveAllowed(gameId, now = new Date()) {
+  const identity = getGameIdentityForPregame(gameId);
+  if (!identity) {
+    throw createPregameError("SCHEDULE_UNAVAILABLE", "試合日程を確認できません。", { httpStatus: 409 });
+  }
+  if (!isBeforeGameStart(identity.startAt, now)) {
+    throw createPregameError(
+      "LINEUP_SAVE_CLOSED",
+      "試合開始後の正式スタメン修正は、正式スタメン修正・再採点機能を使用してください。",
+      { httpStatus: 409 }
+    );
+  }
+  return identity;
+}
+
 function getNpbFetchServiceBinding(env) {
   if (!env?.NPB_FETCH_WORKER) {
     throw createPregameError("NPB_SERVICE_BINDING_MISSING", "NPB取得WorkerのService Bindingが設定されていません。");
@@ -2170,7 +2248,7 @@ async function captureOfficialLineup(env, gameId, now, { force = false, autoAppr
   const identity = getGameIdentityForPregame(gameId);
   if (!identity) throw createPregameError("SCHEDULE_UNAVAILABLE", "試合日程を確認できません。");
   // 手動テストでも試合開始後のNPB内容を正式スタメンとして取り込まない。
-  if (now.getTime() > identity.startAt.getTime()) return { status: "skipped_after_start" };
+  if (!isBeforeGameStart(identity.startAt, now)) return { status: "skipped_after_start" };
   await ensurePregameAutomationRow(env.AUTH_DB, identity, now);
   const existing = await getGameLineup(env.AUTH_DB, gameId);
   if (existing) return { status: existing.lineup_source === "manual" ? "manual_lineup_exists" : "already_captured" };
@@ -2186,6 +2264,7 @@ async function captureOfficialLineup(env, gameId, now, { force = false, autoAppr
     const record = await approveActualLineupForAutoScoring(env, gameId, actual.lineup, detectedAt, {
       source: "npb-auto",
       scoringDueAt: detectedAt,
+      now,
       preventOverwrite: true
     });
     await env.AUTH_DB.prepare(
@@ -2241,7 +2320,7 @@ async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimel
   for (const timeline of timelines) {
     const gameId = timeline.gameId;
     try {
-      if (now < timeline.lineupFetchStartAt || now > timeline.startAt) continue;
+      if (now < timeline.lineupFetchStartAt || now >= timeline.startAt) continue;
       const currentLineup = await getGameLineup(env.AUTH_DB, gameId);
       if (currentLineup || now > timeline.startAt) continue;
       const dueAt = getDueLineupAttemptAt(timeline, now);
@@ -2423,8 +2502,15 @@ async function handleAdminPredictionSummary(env, cors, gameId) {
 }
 
 async function handleAdminScorePredictionsPreview(request, env, cors, gameId) {
-  const input = await readJson(request);
-  const actualResult = sanitizeActualLineupForScoring(input?.actualLineup);
+  const record = await getGameLineup(env.AUTH_DB, gameId);
+  if (!record) {
+    return jsonResponse({
+      ok: false,
+      code: "SCORING_LINEUP_REQUIRED",
+      error: "採点に使用する正式スタメンが保存されていません。"
+    }, 409, cors);
+  }
+  const actualResult = sanitizeActualLineupForScoring(parseStoredActualLineup(record.actual_lineup_json));
   if (!actualResult.ok) {
     return jsonResponse({ ok: false, error: actualResult.error }, 400, cors);
   }
@@ -2440,25 +2526,29 @@ async function handleAdminScorePredictionsPreview(request, env, cors, gameId) {
     averageScore: scoring.averageScore,
     perfectCount: scoring.perfectCount,
     scoreDistribution: scoring.scoreDistribution,
-    validationErrors: scoring.validationErrors
+    validationErrors: scoring.validationErrors,
+    lineupFingerprint: record.lineup_fingerprint,
+    lineupDetectedAt: record.lineup_detected_at
   }, 200, cors);
 }
 
 async function handleAdminScorePredictions(request, env, cors, gameId) {
-  const input = await readJson(request);
-  const actualResult = sanitizeActualLineupForScoring(input?.actualLineup);
+  const record = await getGameLineup(env.AUTH_DB, gameId);
+  if (!record) {
+    return jsonResponse({
+      ok: false,
+      code: "SCORING_LINEUP_REQUIRED",
+      error: "採点に使用する正式スタメンが保存されていません。"
+    }, 409, cors);
+  }
+  const actualResult = sanitizeActualLineupForScoring(parseStoredActualLineup(record.actual_lineup_json));
   if (!actualResult.ok) {
     return jsonResponse({ ok: false, error: actualResult.error }, 400, cors);
   }
 
-  // 手動採点も同じ実スタメン保存・採点コアを使い、Cronとの結果差を作りません。
+  // 手動採点も保存済みgame_lineupsを使い、クライアント入力で正式スタメンを差し替えません。
   const scoringStartedAt = new Date();
   await markGameRankingPending(env.AUTH_DB, gameId, scoringStartedAt, env);
-  await saveActualLineupForAutoScoring(env.AUTH_DB, gameId, actualResult.lineup, scoringStartedAt, {
-    forceReschedule: true,
-    delaySeconds: 0,
-    source: "manual"
-  });
   const claimed = await claimGameLineupForScoring(env.AUTH_DB, gameId, scoringStartedAt, { force: true });
   if (!claimed) {
     return jsonResponse({ ok: false, error: "この試合は現在採点処理中です。" }, 409, cors);
@@ -2543,17 +2633,416 @@ async function handleAdminActualLineupSave(request, env, cors, gameId) {
     return jsonResponse({ ok: false, error: actualResult.error }, 400, cors);
   }
 
-  const detectedAt = parseLineupDetectedAt(input?.lineupDetectedAt) || new Date();
-  const record = await approveActualLineupForAutoScoring(env, gameId, actualResult.lineup, detectedAt, {
-    scoringDueAt: detectedAt,
-    source: "manual"
-  });
-  console.log(`auto scoring scheduled: game=${gameId} due=${record.scoring_due_at}`);
-  return jsonResponse({
-    ok: true,
-    gameId,
-    autoScoring: serializeGameLineup(record)
-  }, 200, cors);
+  const now = new Date();
+  try {
+    assertOfficialLineupSaveAllowed(gameId, now);
+    const existing = await getGameLineup(env.AUTH_DB, gameId);
+    if (existing && (existing.scoring_status === "processing"
+      || existing.scoring_status === "scored"
+      || existing.publication_status === "published"
+      || await isManualRescoreLocked(env.AUTH_DB, gameId))) {
+      return jsonResponse({
+        ok: false,
+        code: "LINEUP_REVISION_REQUIRED",
+        error: "採点済みまたは再採点処理中の正式スタメンは、正式スタメン修正・再採点機能を使用してください。"
+      }, 409, cors);
+    }
+
+    const detectedAt = parseLineupDetectedAt(input?.lineupDetectedAt) || now;
+    const record = await approveActualLineupForAutoScoring(env, gameId, actualResult.lineup, detectedAt, {
+      scoringDueAt: detectedAt,
+      now,
+      source: "manual"
+    });
+    console.log(`auto scoring scheduled: game=${gameId} due=${record.scoring_due_at}`);
+    return jsonResponse({
+      ok: true,
+      gameId,
+      autoScoring: serializeGameLineup(record)
+    }, 200, cors);
+  } catch (error) {
+    if (error?.code === "LINEUP_SAVE_CLOSED" || error?.code === "SCHEDULE_UNAVAILABLE") {
+      return jsonResponse({ ok: false, code: error.code, error: error.message }, error.httpStatus || 409, cors);
+    }
+    throw error;
+  }
+}
+
+export function getManualRescoreExpiresAt(gameDate) {
+  const base = new Date(`${gameDate}T23:59:59.999+09:00`);
+  return new Date(base.getTime() + MANUAL_RESCORE_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+}
+
+function validateManualRescoreInput(input, metadata, { requireReason = true } = {}) {
+  if (!input || String(input.gameId || "") !== metadata.gameId) {
+    throw createPregameError("RESCORE_GAME_ID_MISMATCH", "URLとリクエスト本文の対象試合が一致しません。", { httpStatus: 409 });
+  }
+  if (String(input.gameDate || "") !== metadata.date
+    || String(input.homeTeam || "").toLowerCase() !== metadata.homeCode
+    || String(input.awayTeam || "").toLowerCase() !== metadata.awayCode) {
+    throw createPregameError("RESCORE_GAME_METADATA_MISMATCH", "対象試合の日付または対戦カードが一致しません。", { httpStatus: 409 });
+  }
+  const reason = String(input.reason || "").trim();
+  if (requireReason && (!reason || reason.length > 240)) {
+    throw createPregameError("RESCORE_REASON_REQUIRED", "修正理由を1〜240文字で入力してください。", { httpStatus: 400 });
+  }
+  return reason;
+}
+
+function assertManualRescoreWindow(metadata, now = new Date()) {
+  const expiresAt = getManualRescoreExpiresAt(metadata.date);
+  if (now > expiresAt) {
+    throw createPregameError("RESCORE_WINDOW_EXPIRED", "この試合の通常再採点可能期間は終了しています。", { httpStatus: 409 });
+  }
+  return expiresAt;
+}
+
+function serializeLineupRevision(row) {
+  return {
+    gameId: row.game_id,
+    version: Number(row.version),
+    source: row.source,
+    createdAt: row.created_at,
+    createdBy: row.created_by === null ? null : Number(row.created_by),
+    reason: row.reason,
+    isCurrent: Number(row.is_current) === 1,
+    supersededAt: row.superseded_at || null
+  };
+}
+
+async function ensureCurrentLineupRevision(db, metadata) {
+  const current = await db.prepare(
+    "SELECT * FROM game_lineup_revisions WHERE game_id = ?1 AND is_current = 1 LIMIT 1"
+  ).bind(metadata.gameId).first();
+  if (current) return current;
+
+  const lineup = await getGameLineup(db, metadata.gameId);
+  const actual = sanitizeActualLineupForScoring(parseStoredActualLineup(lineup?.actual_lineup_json));
+  if (!lineup || !actual.ok) {
+    throw createPregameError("RESCORE_LINEUP_REQUIRED", "再採点する正式スタメンが保存されていません。", { httpStatus: 409 });
+  }
+  const createdAt = lineup.lineup_detected_at || new Date().toISOString();
+  await db.prepare(
+    `INSERT INTO game_lineup_revisions
+       (game_id, version, actual_lineup_json, lineup_fingerprint, source, created_at, created_by, reason, is_current, superseded_at)
+     VALUES (?1, 1, ?2, ?3, ?4, ?5, NULL, '既存の正式スタメンを履歴化', 1, NULL)`
+  ).bind(metadata.gameId, JSON.stringify(actual.lineup), lineup.lineup_fingerprint, lineup.lineup_source === "npb-auto" ? "npb-auto" : "manual", createdAt).run();
+  return db.prepare(
+    "SELECT * FROM game_lineup_revisions WHERE game_id = ?1 AND version = 1 LIMIT 1"
+  ).bind(metadata.gameId).first();
+}
+
+async function getLineupRevision(db, gameId, version) {
+  return db.prepare(
+    "SELECT * FROM game_lineup_revisions WHERE game_id = ?1 AND version = ?2 LIMIT 1"
+  ).bind(gameId, Number(version)).first();
+}
+
+function createManualRescoreErrorResponse(cors, error) {
+  const code = String(error?.code || (isPregameSchemaError(error) ? "RESCORE_SCHEMA_NOT_READY" : "RESCORE_FAILED"));
+  const status = Number(error?.httpStatus) || (code === "RESCORE_SCHEMA_NOT_READY" ? 503 : 500);
+  const messages = {
+    RESCORE_GAME_ID_MISMATCH: "URLとリクエスト本文の対象試合が一致しません。",
+    RESCORE_GAME_METADATA_MISMATCH: "対象試合の日付または対戦カードが一致しません。",
+    RESCORE_REASON_REQUIRED: "修正理由を入力してください。",
+    RESCORE_WINDOW_EXPIRED: "この試合の通常再採点可能期間は終了しています。",
+    RESCORE_LINEUP_REQUIRED: "再採点する正式スタメンが保存されていません。",
+    RESCORE_LINEUP_UNCHANGED: "現在の正式スタメンと同じ内容です。",
+    RESCORE_RESTORE_VERSION_INVALID: "復元する正式スタメンversionが見つかりません。",
+    RESCORE_PREVIEW_INVALID: "再採点プレビューを確認してください。",
+    RESCORE_PREVIEW_EXPIRED: "再採点プレビューの有効期限が切れました。",
+    RESCORE_VERSION_CHANGED: "正式スタメンversionが変わりました。再プレビューしてください。",
+    RESCORE_SCHEMA_NOT_READY: "再採点用データベースが準備されていません。"
+  };
+  return jsonResponse({ ok: false, code, error: messages[code] || "再採点処理を実行できませんでした。" }, status, cors);
+}
+
+async function handleAdminLineupHistory(env, cors, gameId) {
+  const metadata = parsePredictionGameId(gameId);
+  try {
+    const current = await ensureCurrentLineupRevision(env.AUTH_DB, metadata);
+    const rows = await env.AUTH_DB.prepare(
+      "SELECT * FROM game_lineup_revisions WHERE game_id = ?1 ORDER BY version DESC"
+    ).bind(gameId).all();
+    return jsonResponse({
+      ok: true,
+      gameId,
+      gameDate: metadata.date,
+      rescoreExpiresAt: getManualRescoreExpiresAt(metadata.date).toISOString(),
+      currentVersion: Number(current.version),
+      revisions: (rows.results || []).map(serializeLineupRevision)
+    }, 200, cors);
+  } catch (error) {
+    return createManualRescoreErrorResponse(cors, error);
+  }
+}
+
+async function handleAdminRescoreHistory(env, cors, gameId) {
+  try {
+    const rows = await env.AUTH_DB.prepare(
+      `SELECT game_id, game_date, previous_version, lineup_version, reason, executed_at,
+              prediction_count, changed_score_count, perfect_count_delta, status, error_code
+         FROM game_rescore_audits WHERE game_id = ?1 ORDER BY executed_at DESC LIMIT 30`
+    ).bind(gameId).all();
+    return jsonResponse({ ok: true, gameId, history: rows.results || [] }, 200, cors);
+  } catch (error) {
+    return createManualRescoreErrorResponse(cors, error);
+  }
+}
+
+async function createManualLineupRevision(db, metadata, actualLineup, userId, reason, source = "manual-revision") {
+  const current = await ensureCurrentLineupRevision(db, metadata);
+  const fingerprint = await sha256Base64Url(JSON.stringify(actualLineup));
+  if (current.lineup_fingerprint === fingerprint) {
+    throw createPregameError("RESCORE_LINEUP_UNCHANGED", "現在の正式スタメンと同じ内容です。", { httpStatus: 409 });
+  }
+  const version = Number(current.version) + 1;
+  const now = new Date().toISOString();
+  await db.batch([
+    db.prepare(
+      "UPDATE game_lineup_revisions SET is_current = 0, superseded_at = ?1 WHERE game_id = ?2 AND is_current = 1"
+    ).bind(now, metadata.gameId),
+    db.prepare(
+      `INSERT INTO game_lineup_revisions
+         (game_id, version, actual_lineup_json, lineup_fingerprint, source, created_at, created_by, reason, is_current, superseded_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, NULL)`
+    ).bind(metadata.gameId, version, JSON.stringify(actualLineup), fingerprint, source, now, userId, reason)
+  ]);
+  return getLineupRevision(db, metadata.gameId, version);
+}
+
+async function handleAdminLineupRevision(request, env, cors, metadata, user) {
+  try {
+    const input = await readJson(request);
+    const reason = validateManualRescoreInput(input, metadata);
+    const expiresAt = assertManualRescoreWindow(metadata);
+    const actual = sanitizeActualLineupForScoring(input?.actualLineup);
+    if (!actual.ok) return jsonResponse({ ok: false, error: actual.error }, 400, cors);
+    const revision = await createManualLineupRevision(env.AUTH_DB, metadata, actual.lineup, user.id, reason);
+    return jsonResponse({ ok: true, gameId: metadata.gameId, rescoreExpiresAt: expiresAt.toISOString(), revision: serializeLineupRevision(revision) }, 201, cors);
+  } catch (error) {
+    return createManualRescoreErrorResponse(cors, error);
+  }
+}
+
+async function handleAdminLineupRestore(request, env, cors, metadata, user) {
+  try {
+    const input = await readJson(request);
+    const reason = validateManualRescoreInput(input, metadata);
+    const expiresAt = assertManualRescoreWindow(metadata);
+    const source = await getLineupRevision(env.AUTH_DB, metadata.gameId, input?.version);
+    const actual = sanitizeActualLineupForScoring(parseStoredActualLineup(source?.actual_lineup_json));
+    if (!source || !actual.ok) {
+      throw createPregameError("RESCORE_RESTORE_VERSION_INVALID", "復元する正式スタメンversionが見つかりません。", { httpStatus: 404 });
+    }
+    const revision = await createManualLineupRevision(env.AUTH_DB, metadata, actual.lineup, user.id, reason, "restore");
+    return jsonResponse({ ok: true, gameId: metadata.gameId, rescoreExpiresAt: expiresAt.toISOString(), revision: serializeLineupRevision(revision) }, 201, cors);
+  } catch (error) {
+    return createManualRescoreErrorResponse(cors, error);
+  }
+}
+
+async function buildManualRescorePreview(db, gameId, actualLineup) {
+  const scoring = await prepareGamePredictionScoring(db, gameId, actualLineup);
+  if (scoring.failed > 0) {
+    throw createPregameError("RESCORE_PREDICTION_INVALID", "保存済み予想に検証エラーがあるため再採点できません。", { httpStatus: 409 });
+  }
+  const previous = await db.prepare(
+    "SELECT id, score, max_score FROM predictions WHERE game_id = ?1 AND is_test_prediction = 0"
+  ).bind(gameId).all();
+  const previousById = new Map((previous.results || []).map((row) => [row.id, row]));
+  const differences = scoring.outcomes.filter((outcome) => Number(previousById.get(outcome.id)?.score) !== outcome.score.total);
+  const beforePerfectCount = (previous.results || []).filter((row) => Number(row.score) === Number(row.max_score) && Number(row.max_score) > 0).length;
+  return {
+    processed: scoring.processed,
+    scored: scoring.scored,
+    scoreChangedCount: differences.length,
+    scoreIncreasedCount: differences.filter((outcome) => outcome.score.total > Number(previousById.get(outcome.id)?.score || 0)).length,
+    scoreDecreasedCount: differences.filter((outcome) => outcome.score.total < Number(previousById.get(outcome.id)?.score || 0)).length,
+    perfectCountBefore: beforePerfectCount,
+    perfectCountAfter: scoring.perfectCount,
+    perfectCountDelta: scoring.perfectCount - beforePerfectCount,
+    rankingAffectedUserCount: differences.length,
+    scoreDistribution: scoring.scoreDistribution,
+    examples: differences.slice(0, 5).map((outcome) => ({ oldScore: Number(previousById.get(outcome.id)?.score || 0), newScore: outcome.score.total }))
+  };
+}
+
+async function handleAdminRescorePreview(request, env, cors, metadata, user) {
+  try {
+    const input = await readJson(request);
+    const reason = validateManualRescoreInput(input, metadata);
+    const expiresAt = assertManualRescoreWindow(metadata);
+    const current = await ensureCurrentLineupRevision(env.AUTH_DB, metadata);
+    const version = Number(input?.lineupVersion);
+    if (!Number.isInteger(version) || version !== Number(current.version)) {
+      throw createPregameError("RESCORE_VERSION_CHANGED", "正式スタメンversionが変わりました。再プレビューしてください。", { httpStatus: 409 });
+    }
+    const lineup = sanitizeActualLineupForScoring(parseStoredActualLineup(current.actual_lineup_json));
+    if (!lineup.ok) throw createPregameError("RESCORE_LINEUP_REQUIRED", lineup.error, { httpStatus: 409 });
+    const summary = await buildManualRescorePreview(env.AUTH_DB, metadata.gameId, lineup.lineup);
+    const now = new Date();
+    const previewId = randomToken(20);
+    const previewExpiresAt = new Date(Math.min(expiresAt.getTime(), now.getTime() + MANUAL_RESCORE_PREVIEW_TTL_MS));
+    await env.AUTH_DB.batch([
+      env.AUTH_DB.prepare(
+        `INSERT INTO game_rescore_previews
+         (id, game_id, lineup_version, created_by, reason, summary_json, expected_prediction_count, expires_at, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
+      ).bind(previewId, metadata.gameId, version, user.id, reason, JSON.stringify(summary), summary.processed, previewExpiresAt.toISOString(), now.toISOString()),
+      env.AUTH_DB.prepare(
+        `INSERT INTO game_rescore_jobs (id, game_id, lineup_version, status, error_code, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 'previewed', NULL, ?4, ?4)`
+      ).bind(previewId, metadata.gameId, version, now.toISOString())
+    ]);
+    await writeManualRescoreAudit(env.AUTH_DB, metadata, null, version, reason, user.id, now, summary, "previewed");
+    return jsonResponse({ ok: true, gameId: metadata.gameId, lineupVersion: version, previewId, previewExpiresAt: previewExpiresAt.toISOString(), rescoreExpiresAt: expiresAt.toISOString(), summary }, 200, cors);
+  } catch (error) {
+    return createManualRescoreErrorResponse(cors, error);
+  }
+}
+
+async function writeManualRescoreAudit(db, metadata, previousVersion, lineupVersion, reason, userId, now, summary, status, errorCode = null) {
+  await db.prepare(
+    `INSERT INTO game_rescore_audits
+       (id, game_id, game_date, previous_version, lineup_version, reason, executed_by, executed_at,
+        prediction_count, changed_score_count, perfect_count_delta, status, error_code, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?8, ?8)`
+  ).bind(
+    randomToken(16), metadata.gameId, metadata.date, previousVersion, lineupVersion, reason, userId, now.toISOString(),
+    Number(summary?.processed || 0), Number(summary?.scoreChangedCount || 0), Number(summary?.perfectCountDelta || 0), status, errorCode
+  ).run();
+}
+
+async function handleAdminRescoreConfirm(request, env, cors, metadata, user) {
+  let previewId = "";
+  try {
+    const input = await readJson(request);
+    const reason = validateManualRescoreInput(input, metadata);
+    assertManualRescoreWindow(metadata);
+    previewId = String(input?.previewId || "");
+    const preview = await env.AUTH_DB.prepare(
+      `SELECT * FROM game_rescore_previews WHERE id = ?1 AND game_id = ?2 AND created_by = ?3 LIMIT 1`
+    ).bind(previewId, metadata.gameId, user.id).first();
+    if (!preview || Number(preview.lineup_version) !== Number(input?.lineupVersion) || preview.reason !== reason) {
+      throw createPregameError("RESCORE_PREVIEW_INVALID", "再採点プレビューを確認してください。", { httpStatus: 409 });
+    }
+    if (new Date(preview.expires_at) < new Date()) {
+      throw createPregameError("RESCORE_PREVIEW_EXPIRED", "再採点プレビューの有効期限が切れました。", { httpStatus: 409 });
+    }
+    const current = await ensureCurrentLineupRevision(env.AUTH_DB, metadata);
+    if (Number(current.version) !== Number(preview.lineup_version)) {
+      throw createPregameError("RESCORE_VERSION_CHANGED", "正式スタメンversionが変わりました。再プレビューしてください。", { httpStatus: 409 });
+    }
+    const now = new Date();
+    const claimResult = await env.AUTH_DB.prepare(
+      `UPDATE game_rescore_jobs SET status = 'running', error_code = NULL, updated_at = ?1
+        WHERE id = ?2 AND game_id = ?3 AND status = 'previewed'`
+    ).bind(now.toISOString(), previewId, metadata.gameId).run();
+    if (Number(claimResult?.meta?.changes || 0) !== 1) {
+      throw createPregameError("RESCORE_PREVIEW_INVALID", "再採点プレビューを確認してください。", { httpStatus: 409 });
+    }
+    const result = await applyManualRescore(env.AUTH_DB, metadata, current, preview, user.id, reason, now);
+    return jsonResponse({ ok: true, gameId: metadata.gameId, lineupVersion: Number(current.version), ...result }, 200, cors);
+  } catch (error) {
+    if (previewId) {
+      try {
+        await env.AUTH_DB.prepare(
+          `UPDATE game_rescore_jobs SET status = 'failed', error_code = ?1, updated_at = ?2
+            WHERE id = ?3 AND game_id = ?4 AND status = 'running'`
+        ).bind(String(error?.code || "RESCORE_FAILED").slice(0, 80), new Date().toISOString(), previewId, metadata.gameId).run();
+      } catch {
+        // 元の再採点エラーを優先します。
+      }
+    }
+    return createManualRescoreErrorResponse(cors, error);
+  }
+}
+
+async function applyManualRescore(db, metadata, revision, preview, userId, reason, now) {
+  const lineup = sanitizeActualLineupForScoring(parseStoredActualLineup(revision.actual_lineup_json));
+  if (!lineup.ok) throw createPregameError("RESCORE_LINEUP_REQUIRED", lineup.error, { httpStatus: 409 });
+  const gameLineup = await getGameLineup(db, metadata.gameId);
+  if (!gameLineup || gameLineup.scoring_status === "processing") {
+    throw createPregameError("RESCORE_LINEUP_REQUIRED", "この試合は現在再採点できません。", { httpStatus: 409 });
+  }
+  const scoring = await prepareGamePredictionScoring(db, metadata.gameId, lineup.lineup);
+  if (scoring.failed > 0 || scoring.processed !== Number(preview.expected_prediction_count)) {
+    throw createPregameError("RESCORE_PREVIEW_INVALID", "予想データが変わりました。再プレビューしてください。", { httpStatus: 409 });
+  }
+  const previous = await db.prepare(
+    "SELECT id, score, max_score FROM predictions WHERE game_id = ?1 AND is_test_prediction = 0"
+  ).bind(metadata.gameId).all();
+  const previousById = new Map((previous.results || []).map((row) => [row.id, row]));
+  const changedScoreCount = scoring.outcomes.filter((outcome) => Number(previousById.get(outcome.id)?.score) !== outcome.score.total).length;
+  const beforePerfectCount = (previous.results || []).filter((row) => Number(row.score) === Number(row.max_score) && Number(row.max_score) > 0).length;
+  const perfectCountDelta = scoring.perfectCount - beforePerfectCount;
+  const nowIso = now.toISOString();
+  const actualLineupJson = JSON.stringify(lineup.lineup);
+  const published = gameLineup.publication_status === "published";
+  const auditId = randomToken(16);
+  const statements = scoring.outcomes.map((outcome) => db.prepare(
+    `UPDATE predictions
+        SET score = ?1, max_score = ?2, scored_at = ?3, status = 'scored', actual_lineup_json = ?4
+      WHERE id = ?5 AND game_id = ?6`
+  ).bind(outcome.score.total, SCORING_MAX_SCORE, nowIso, actualLineupJson, outcome.id, metadata.gameId));
+  statements.push(db.prepare("DELETE FROM perfect_achievers WHERE game_id = ?1").bind(metadata.gameId));
+  for (const outcome of scoring.outcomes.filter((outcome) => outcome.score.total === SCORING_MAX_SCORE)) {
+    statements.push(db.prepare(
+      `INSERT INTO perfect_achievers
+         (id, user_id, game_id, score, max_score, achieved_at, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)`
+    ).bind(randomToken(16), outcome.userId, metadata.gameId, outcome.score.total, SCORING_MAX_SCORE, nowIso));
+  }
+  statements.push(db.prepare(
+    `UPDATE game_lineups
+        SET actual_lineup_json = ?1, lineup_fingerprint = ?2, lineup_detected_at = ?3,
+            scoring_status = 'scored', scoring_started_at = NULL, scored_at = ?3,
+            last_error = NULL, processed_predictions = ?4, perfect_count = ?5,
+            new_perfect_achievers = ?5, lineup_source = 'manual-revision', updated_at = ?3
+      WHERE game_id = ?6 AND scoring_status <> 'processing'`
+  ).bind(actualLineupJson, revision.lineup_fingerprint, nowIso, scoring.processed, scoring.perfectCount, metadata.gameId));
+  statements.push(db.prepare(
+    `INSERT INTO ranking_games
+       (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game,
+        publication_status, scored_private_at, published_at, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, 'scored', 0, ?5, ?6, ?4, ?6, ?6)
+     ON CONFLICT(game_id) DO UPDATE SET
+       game_date = excluded.game_date,
+       is_ranking_eligible = excluded.is_ranking_eligible,
+       ranking_eligible_at = excluded.ranking_eligible_at,
+       game_status = 'scored',
+       is_test_game = 0,
+       publication_status = excluded.publication_status,
+       scored_private_at = excluded.scored_private_at,
+       published_at = CASE WHEN excluded.publication_status = 'published' THEN excluded.published_at ELSE ranking_games.published_at END,
+       updated_at = excluded.updated_at`
+  ).bind(metadata.gameId, metadata.date, published ? 1 : 0, published ? (gameLineup.published_at || nowIso) : null, published ? "published" : "scored_private", nowIso));
+  statements.push(db.prepare(
+    `INSERT INTO game_rescore_audits
+       (id, game_id, game_date, previous_version, lineup_version, reason, executed_by, executed_at,
+        prediction_count, changed_score_count, perfect_count_delta, status, error_code, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'completed', NULL, ?8, ?8)`
+  ).bind(auditId, metadata.gameId, metadata.date, Number(revision.version) - 1, Number(revision.version), reason, userId, nowIso, scoring.processed, changedScoreCount, perfectCountDelta));
+  statements.push(db.prepare(
+    `UPDATE game_rescore_jobs SET status = 'completed', error_code = NULL, updated_at = ?1
+      WHERE id = ?2 AND game_id = ?3 AND status = 'running'`
+  ).bind(nowIso, preview.id, metadata.gameId));
+  statements.push(db.prepare("DELETE FROM game_rescore_previews WHERE id = ?1").bind(preview.id));
+  const results = await db.batch(statements);
+  const lineupResultIndex = scoring.outcomes.length + 1 + scoring.perfectCount;
+  if (Number(results[lineupResultIndex]?.meta?.changes || 0) !== 1) {
+    throw new Error("manual rescore lineup update count mismatch");
+  }
+  return {
+    processed: scoring.processed,
+    scored: scoring.scored,
+    changedScoreCount,
+    perfectCount: scoring.perfectCount,
+    perfectCountDelta,
+    scoredAt: nowIso,
+    publicationStatus: published ? "published" : "scored_private"
+  };
 }
 
 async function handleAdminAutoScoringStatus(env, cors, gameId) {
@@ -2679,6 +3168,7 @@ async function approveActualLineupForAutoScoring(env, gameId, actualLineup, dete
 }
 
 async function saveActualLineupForAutoScoring(db, gameId, actualLineup, detectedAt, options = {}) {
+  assertOfficialLineupSaveAllowed(gameId, options.now || new Date());
   const actualLineupJson = JSON.stringify(actualLineup);
   if (new TextEncoder().encode(actualLineupJson).byteLength > PREDICTION_MAX_JSON_BYTES) {
     throw new Error("actual lineup payload exceeds the allowed size");
@@ -2823,6 +3313,9 @@ async function runDueAutoScoringJobs(env, now, pausedGameIds = new Set()) {
   for (const row of due?.results || []) {
     let claimed = null;
     try {
+      if (await isManualRescoreLocked(env.AUTH_DB, row.game_id)) {
+        continue;
+      }
       claimed = await claimGameLineupForScoring(env.AUTH_DB, row.game_id, now);
       if (!claimed) continue;
       summary.processed += 1;
@@ -3010,6 +3503,10 @@ async function runDueGameDayPublicationJobs(env, now, timelines = getPregameTime
   for (const timeline of timelines) {
     if (now < timeline.startAt) continue;
     try {
+      if (await isManualRescoreLocked(env.AUTH_DB, timeline.gameId)) {
+        summary.skipped += 1;
+        continue;
+      }
       const lineup = await getGameLineup(env.AUTH_DB, timeline.gameId);
       if (!lineup || lineup.scoring_status !== "scored") {
         summary.skipped += 1;

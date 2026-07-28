@@ -3078,6 +3078,259 @@ textarea:focus {
   box-shadow: 0 5px 14px rgba(0, 91, 172, 0.12);
 }
 
+/* 遊び方・採点ルールページ */
+.guide-page {
+  min-height: 100vh;
+  color: var(--text);
+  background: var(--page-bg);
+}
+
+.guide-header {
+  padding-bottom: 30px;
+}
+
+.guide-header-inner {
+  display: grid;
+  gap: 10px;
+}
+
+.guide-brand {
+  display: block;
+  width: min(100%, 620px);
+  margin: 0 auto 8px;
+}
+
+.guide-brand img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.guide-header h1,
+.guide-header p {
+  margin: 0;
+}
+
+.guide-header h1 {
+  color: #ffffff;
+  font-size: clamp(1.7rem, 4vw, 2.35rem);
+}
+
+.guide-header > .container > p:last-child {
+  color: #d8e9f8;
+}
+
+.guide-layout {
+  display: grid;
+  gap: 16px;
+  padding-top: 24px;
+  padding-bottom: 48px;
+}
+
+.guide-back-link,
+.guide-link {
+  color: var(--fighters-blue);
+  font-weight: 850;
+  text-decoration: none;
+}
+
+.guide-back-link {
+  justify-self: start;
+  padding: 8px 0;
+}
+
+.guide-link {
+  display: inline-block;
+  padding: 7px 11px;
+  border: 1px solid #a9c8e3;
+  border-radius: 7px;
+  background: #f7fbff;
+  font-size: 0.84rem;
+}
+
+.guide-back-link:hover,
+.guide-back-link:focus-visible,
+.guide-link:hover,
+.guide-link:focus-visible {
+  color: var(--fighters-deep-blue);
+  text-decoration: underline;
+}
+
+.guide-section {
+  display: grid;
+  gap: 10px;
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 4px 12px rgba(25, 54, 82, 0.06);
+}
+
+.guide-section h2,
+.guide-section p {
+  margin: 0;
+}
+
+.guide-section h2 {
+  color: var(--fighters-deep-blue);
+  font-size: 1.25rem;
+}
+
+.guide-section p,
+.guide-list,
+.guide-definitions {
+  line-height: 1.8;
+}
+
+.guide-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.guide-steps li {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 14px;
+  border: 1px solid #d7e5f2;
+  border-radius: 7px;
+  background: #f7fbff;
+}
+
+.guide-steps li > span {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 50%;
+  color: #ffffff;
+  background: var(--fighters-blue);
+  font-weight: 900;
+}
+
+.guide-steps strong,
+.guide-steps small {
+  display: block;
+}
+
+.guide-steps strong {
+  color: var(--fighters-deep-blue);
+}
+
+.guide-steps small {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.guide-list {
+  margin: 0;
+  padding-left: 1.3em;
+}
+
+.guide-note {
+  padding: 10px 12px;
+  border-left: 3px solid #a9c8e3;
+  color: var(--muted);
+  background: #f7fbff;
+  font-size: 0.9rem;
+}
+
+.guide-score-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.guide-score-grid > div {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  border: 1px solid #d7e5f2;
+  border-radius: 7px;
+  background: #f7fbff;
+}
+
+.guide-score-grid strong {
+  color: var(--fighters-deep-blue);
+  font-size: 1.05rem;
+}
+
+.guide-score-grid span {
+  font-weight: 850;
+}
+
+.guide-score-grid small {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.guide-score-grid b {
+  color: var(--fighters-blue);
+}
+
+.guide-total-score {
+  color: var(--fighters-deep-blue);
+}
+
+.guide-definitions {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.guide-definitions div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #e2ebf3;
+}
+
+.guide-definitions dt {
+  color: var(--fighters-deep-blue);
+  font-weight: 900;
+}
+
+.guide-definitions dd {
+  margin: 0;
+}
+
+.guide-caution {
+  background: #fbfdff;
+}
+
+.guide-back-link-bottom {
+  margin-top: 4px;
+}
+
+@media (max-width: 759px) {
+  .guide-header {
+    padding-bottom: 22px;
+  }
+
+  .guide-layout {
+    padding-top: 18px;
+  }
+
+  .guide-section {
+    padding: 18px;
+  }
+
+  .guide-steps,
+  .guide-score-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .guide-definitions div {
+    grid-template-columns: 58px minmax(0, 1fr);
+    gap: 8px;
+  }
+}
+
 @media (max-width: 759px) {
   .hero-panel,
   .how-to-heading {

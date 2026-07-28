@@ -2491,6 +2491,8 @@ textarea:focus {
   border-radius: 7px;
   background: #ffffff;
   color: inherit;
+  font-size: 1.05rem;
+  font-weight: 500;
   line-height: 1.25;
   overflow-wrap: anywhere;
 }

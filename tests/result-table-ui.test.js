@@ -97,6 +97,8 @@ test("結果テーブルの選手セルにはカテゴリ背景クラスを付�
   assert.match(css, /\.result-player-name\s*\{[\s\S]*background: #ffffff/);
   assert.match(css, /\.result-player-name\s*\{[\s\S]*border: 1px solid var\(--border\)/);
   assert.match(css, /\.result-player-name\s*\{[\s\S]*border-radius: 7px/);
+  assert.match(css, /\.result-player-name\s*\{[\s\S]*font-size: 1\.05rem/);
+  assert.match(css, /\.result-player-name\s*\{[\s\S]*font-weight: 500/);
 });
 
 test("採点結果テーブルはスマホでも内容を保持して横スクロールできる", () => {

@@ -185,6 +185,13 @@ const state = {
     info: null,
     message: ""
   },
+  adminAutoScoringTests: {
+    games: [],
+    selectedGameId: "",
+    detail: null,
+    message: "",
+    isBusy: false
+  },
   adminTestGames: {
     isLoading: false,
     isBusy: false,
@@ -473,6 +480,14 @@ function bindEvents() {
   bindAdminTestEvent("generateTestPredictionButton", "click", generateTestPrediction);
   bindAdminTestEvent("createPerfectPredictionButton", "click", createAdminTestPerfectPrediction);
   bindAdminTestEvent("runAdminTestCronButton", "click", runAdminTestCron);
+  bindAdminTestEvent("adminAutoScoringTestCreateForm", "submit", handleAutoScoringTestCreate);
+  document.getElementById("autoScoringTestAnswerLineup")?.addEventListener("input", renderAutoScoringTestAnswerPreview);
+  document.querySelectorAll("[data-auto-test-deadline-minutes]").forEach((button) => {
+    button.addEventListener("click", () => setAutoScoringTestDeadline(Number(button.dataset.autoTestDeadlineMinutes)));
+  });
+  bindAdminTestEvent("adminAutoScoringTestList", "click", handleAutoScoringTestClick);
+  bindAdminTestEvent("adminAutoScoringTestDetail", "click", handleAutoScoringTestClick);
+  bindAdminTestEvent("adminAutoScoringTestDetail", "submit", handleAutoScoringTestSubmit);
   document.getElementById("adminPredictionDeadlineStatus")?.addEventListener("click", handlePredictionDeadlineOverrideClick);
   document.getElementById("adminTestPredictionDeadlineStatus")?.addEventListener("click", handlePredictionDeadlineOverrideClick);
   bindAdminTestEvent("resetButton", "click", resetAllData);
@@ -596,6 +611,7 @@ function isAuthStateInitialized() {
 function clearAdminAccess() {
   state.adminAccess.status = "inactive";
   state.adminTest = { status: "inactive", info: null, message: "" };
+  state.adminAutoScoringTests = { games: [], selectedGameId: "", detail: null, message: "", isBusy: false };
   state.adminTestGames = { isLoading: false, isBusy: false, games: [], selectedGameId: "", detail: null, rescorePreview: null, message: "" };
   state.adminTestAchievements = { isLoading: false, items: [], earned: [], message: "" };
   state.gameWorkflow = { isLoading: false, isUpdating: false, requestId: state.gameWorkflow.requestId + 1, gameId: "", record: null, message: "" };
@@ -656,6 +672,154 @@ async function refreshAdminAccess() {
 function buildAdminTestApiUrl(path) {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
   return baseUrl ? `${baseUrl}/api/dev/${path.replace(/^\/+/, "")}` : "";
+}
+
+function buildAutoScoringTestApiUrl(path = "") {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  return baseUrl ? `${baseUrl}/api/admin/auto-scoring-tests${path ? `/${path.replace(/^\/+/, "")}` : ""}` : "";
+}
+
+function localDateTimeInputValue(date) {
+  const value = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(value.getTime())) return "";
+  const offset = value.getTimezoneOffset() * 60000;
+  return new Date(value.getTime() - offset).toISOString().slice(0, 16);
+}
+
+function setAutoScoringTestDeadline(minutes) {
+  if (!Number.isFinite(minutes) || minutes < 1) return;
+  const input = document.getElementById("autoScoringTestDeadlineAt");
+  if (input) input.value = localDateTimeInputValue(new Date(Date.now() + minutes * 60 * 1000));
+}
+
+function renderAutoScoringTestAnswerPreview() {
+  const input = document.getElementById("autoScoringTestAnswerLineup");
+  const preview = document.getElementById("autoScoringTestAnswerPreview");
+  if (!input || !preview) return;
+  const lines = input.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  preview.textContent = lines.length ? `プレビュー（${lines.length}行）\n${lines.join("\n")}` : "入力内容のプレビューがここに表示されます。";
+}
+
+function renderAutoScoringTests() {
+  const list = document.getElementById("adminAutoScoringTestList");
+  const detail = document.getElementById("adminAutoScoringTestDetail");
+  const message = document.getElementById("adminAutoScoringTestMessage");
+  if (!list || !detail || !message) return;
+  const model = state.adminAutoScoringTests;
+  message.textContent = model.message || "";
+  list.innerHTML = model.games.length
+    ? model.games.map((game) => `<button type="button" class="admin-auto-scoring-test-row${game.gameId === model.selectedGameId ? " is-selected" : ""}" data-auto-test-game-id="${escapeHtml(game.gameId)}"><span><span class="test-badge">TEST</span> ${escapeHtml(game.title)}</span><strong>${escapeHtml(game.status)}</strong><small>締切 ${escapeHtml(game.predictionDeadlineAt || "-")}</small></button>`).join("")
+    : "<p class=\"empty-state\">自動採点テストはまだありません。</p>";
+  if (!model.detail) {
+    detail.innerHTML = "<p class=\"empty-state\">テスト試合を選択すると、状態と結果を確認できます。</p>";
+    return;
+  }
+  const game = model.detail;
+  const results = Array.isArray(game.results) && game.results.length
+    ? `<ul class="admin-auto-scoring-test-results">${game.results.map((row) => `<li><strong>${escapeHtml(row.username || "管理者")}</strong><span>${escapeHtml(row.score ?? "-")} / ${escapeHtml(row.maxScore ?? "-")}</span><small>${escapeHtml(row.status || "-")} ${escapeHtml(row.scoredAt || "")}</small></li>`).join("")}</ul>`
+    : "<p>採点結果はまだありません。</p>";
+  const answerText = Array.isArray(game.answerLineup) ? game.answerLineup.map((item) => `${item.battingOrder} ${item.position} ${item.playerName}`).join("\n") : "";
+  const remainingSeconds = Number(game.deadlineRemainingSeconds || 0);
+  const remainingLabel = remainingSeconds > 0
+    ? `${Math.floor(remainingSeconds / 3600)}時間${Math.floor((remainingSeconds % 3600) / 60)}分${remainingSeconds % 60}秒`
+    : "締切済み";
+  detail.innerHTML = `<div class="admin-auto-scoring-test-detail-heading"><span class="test-badge">TEST</span><div><h4>自動採点テスト状況</h4><p>${escapeHtml(game.title)} / ${escapeHtml(game.gameId)}</p></div></div>
+    <dl class="admin-auto-scoring-test-status"><div><dt>状態</dt><dd>${escapeHtml(game.currentStatus || game.status)}</dd></div><div><dt>現在時刻</dt><dd>${escapeHtml(game.now || "-")}</dd></div><div><dt>締切</dt><dd>${escapeHtml(game.predictionDeadlineAt || "-")}</dd></div><div><dt>締切まで</dt><dd>${escapeHtml(remainingLabel)}</dd></div><div><dt>正解スタメン</dt><dd>${game.answerLineupRegistered ? "登録済み" : "未登録"}</dd></div><div><dt>保存予想数</dt><dd>${escapeHtml(game.predictionCount ?? 0)}</dd></div><div><dt>最終自動処理</dt><dd>${escapeHtml(game.lastAutoRunAt || "-")}</dd></div><div><dt>直近エラー</dt><dd>${escapeHtml(game.lastErrorCode || game.lastErrorMessage || "なし")}</dd></div></dl>
+    <div class="admin-auto-scoring-test-actions"><button type="button" class="primary-button" data-auto-test-action="run" data-auto-test-game-id="${escapeHtml(game.gameId)}">自動処理を今すぐ確認</button><button type="button" class="secondary-button" data-auto-test-action="retry" data-auto-test-game-id="${escapeHtml(game.gameId)}">自動採点を再試行</button><button type="button" class="secondary-button" data-auto-test-action="refresh" data-auto-test-game-id="${escapeHtml(game.gameId)}">状態を再取得</button></div>
+    <form class="admin-auto-scoring-test-answer-form"><label>自動採点用正解スタメン<small>1 中 水谷瞬 の形式で9行</small><textarea id="autoTestAnswerLineupInput" rows="6" required>${escapeHtml(answerText)}</textarea></label><button type="submit" class="secondary-button">正解スタメンを保存</button></form>
+    <button type="button" class="secondary-button" data-auto-test-action="save-test-prediction" data-auto-test-game-id="${escapeHtml(game.gameId)}">正解と同じテスト予想を保存</button>
+    <div class="admin-auto-scoring-test-results-wrap"><h5>採点結果・公開状態</h5>${results}</div>`;
+}
+
+async function refreshAutoScoringTests(selectGameId = "") {
+  if (state.adminAccess.status !== "authorized") return;
+  const url = buildAutoScoringTestApiUrl();
+  if (!url) return;
+  try {
+    const response = await fetch(url, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+    state.adminAutoScoringTests.games = payload.games || [];
+    const nextId = selectGameId || state.adminAutoScoringTests.selectedGameId || state.adminAutoScoringTests.games[0]?.gameId || "";
+    if (nextId) await loadAutoScoringTest(nextId);
+    state.adminAutoScoringTests.message = "";
+  } catch (error) {
+    state.adminAutoScoringTests.message = error.message || "自動採点テストを取得できませんでした。";
+  }
+  renderAutoScoringTests();
+}
+
+async function loadAutoScoringTest(gameId) {
+  const response = await fetch(buildAutoScoringTestApiUrl(encodeURIComponent(gameId)), { credentials: "include", cache: "no-store" });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+  state.adminAutoScoringTests.selectedGameId = gameId;
+  state.adminAutoScoringTests.detail = payload.game;
+}
+
+async function handleAutoScoringTestCreate(event) {
+  event.preventDefault();
+  const value = (id) => document.getElementById(id)?.value || "";
+  const startAt = new Date(value("autoScoringTestStartAt"));
+  const deadlineAt = new Date(value("autoScoringTestDeadlineAt"));
+  if (Number.isNaN(startAt.getTime()) || Number.isNaN(deadlineAt.getTime())) {
+    state.adminAutoScoringTests.message = "試合開始日時と締切日時を入力してください。";
+    renderAutoScoringTests();
+    return;
+  }
+  try {
+    const response = await fetch(buildAutoScoringTestApiUrl(), { method: "POST", credentials: "include", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: value("autoScoringTestTitle"), gameDate: value("autoScoringTestDate"), startAt: startAt.toISOString(), predictionDeadlineAt: deadlineAt.toISOString(), awayTeam: value("autoScoringTestOpponent"), venue: value("autoScoringTestVenue"), rosterText: value("autoScoringTestRoster"), answerLineupText: value("autoScoringTestAnswerLineup") }) });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+    event.currentTarget.reset();
+    state.adminAutoScoringTests.message = "自動採点テストを作成しました。";
+    await refreshAutoScoringTests(payload.game?.gameId || "");
+    state.adminAutoScoringTests.message = "自動採点テストを作成しました。";
+    renderAutoScoringTests();
+  } catch (error) {
+    state.adminAutoScoringTests.message = error.message || "自動採点テストを作成できませんでした。";
+    renderAutoScoringTests();
+  }
+}
+
+async function handleAutoScoringTestClick(event) {
+  const target = event.target instanceof Element ? event.target.closest("[data-auto-test-game-id]") : null;
+  if (!target) return;
+  const gameId = target.dataset.autoTestGameId;
+  if (target.dataset.autoTestAction === "save-test-prediction") {
+    const answerLineup = state.adminAutoScoringTests.detail?.answerLineup;
+    await autoScoringTestRequest(gameId, "prediction", { prediction: { schemaVersion: 1, lineup: answerLineup || [] } });
+    return;
+  }
+  const action = target.dataset.autoTestAction || "detail";
+  if (action === "detail") {
+    try { await loadAutoScoringTest(gameId); } catch (error) { state.adminAutoScoringTests.message = error.message; }
+    renderAutoScoringTests();
+    return;
+  }
+  await autoScoringTestRequest(gameId, action);
+}
+
+async function handleAutoScoringTestSubmit(event) {
+  if (!(event.target instanceof HTMLFormElement) || !event.target.classList.contains("admin-auto-scoring-test-answer-form")) return;
+  event.preventDefault();
+  const gameId = state.adminAutoScoringTests.selectedGameId;
+  await autoScoringTestRequest(gameId, "answer-lineup", { answerLineupText: document.getElementById("autoTestAnswerLineupInput")?.value || "" });
+}
+
+async function autoScoringTestRequest(gameId, action, body = null) {
+  if (!gameId) return;
+  try {
+    const response = await fetch(buildAutoScoringTestApiUrl(`${encodeURIComponent(gameId)}/${action}`), { method: "POST", credentials: "include", cache: "no-store", headers: body ? { "Content-Type": "application/json" } : undefined, body: body ? JSON.stringify(body) : undefined });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+    state.adminAutoScoringTests.message = action === "run" || action === "retry" ? `自動処理結果: ${payload.status || "完了"}` : "自動採点テストを更新しました。";
+    await refreshAutoScoringTests(gameId);
+    state.adminAutoScoringTests.message = action === "run" || action === "retry" ? `自動処理結果: ${payload.status || "完了"}` : "自動採点テストを更新しました。";
+  } catch (error) {
+    state.adminAutoScoringTests.message = error.message || "自動採点テストを操作できませんでした。";
+  }
+  renderAutoScoringTests();
 }
 
 function buildAdminTestGameApiUrl(gameId = "", action = "") {
@@ -1222,6 +1386,7 @@ function openAdminPanel() {
   void refreshAdminGameWorkflowStatus({ force: true });
   renderAdminTestPanel();
   void refreshAdminTestStatus();
+  void refreshAutoScoringTests();
   void refreshAdminTestGames();
   void refreshAdminTestAchievements();
 }

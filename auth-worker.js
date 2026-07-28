@@ -52,6 +52,8 @@ const AUTOMATION_SCHEDULE_LOOKAHEAD_DAYS = 1;
 const NPB_SERVICE_BINDING_INTERNAL_ORIGIN = "https://npb-fetch.internal";
 const NPB_FETCH_TIMEOUT_MS = 15_000;
 const ROSTER_MINIMUM_PLAYER_COUNT = 20;
+const TEST_GAME_DEFAULT_OPPONENT_CODE = "e";
+const TEST_GAME_DEFAULT_REOPEN_MINUTES = 60;
 const GAME_DAY_NOTICE_SOURCE = "https://npb.jp/announcement/roster/";
 const GAME_DAY_NOTICE_STATUS = Object.freeze({
   WAITING: "waiting",
@@ -220,6 +222,10 @@ export default {
       const adminTestRoute = parseAdminTestRoute(path);
       if (adminTestRoute) {
         return await handleAdminTestRoute(request, env, cors, adminTestRoute);
+      }
+      const adminTestGameRoute = parseAdminTestGameRoute(path);
+      if (adminTestGameRoute) {
+        return await handleAdminTestGameRoute(request, env, cors, adminTestGameRoute);
       }
       if (path === "/api/perfect-achievers" && request.method === "GET") {
         return await handleGetPerfectAchievers(request, env, cors);
@@ -1037,6 +1043,442 @@ async function handleAdminTestRoute(request, env, cors, route) {
     return await handleDevelopmentAchievementDelete(env, cors, access.user, route.code);
   }
   return jsonResponse({ ok: false, error: "開発APIのHTTPメソッドが不正です。" }, 405, cors);
+}
+
+function parseAdminTestGameRoute(path) {
+  if (path === "/api/admin/test-games") return { collection: true };
+  const match = /^\/api\/admin\/test-games\/([^/]+)(?:\/(roster|prediction|lineup|close|reopen|publish|score(?:\/preview)?|rescore\/(?:preview|confirm)))?$/.exec(path);
+  if (!match) return null;
+  try {
+    return { gameId: decodeURIComponent(match[1]), action: match[2] || "detail" };
+  } catch {
+    return { invalid: true };
+  }
+}
+
+async function handleAdminTestGameRoute(request, env, cors, route) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  if (route.invalid) return jsonResponse({ ok: false, code: "TEST_GAME_ID_INVALID", error: "テスト試合IDが不正です。" }, 400, cors);
+
+  try {
+    if (route.collection && request.method === "GET") return await listAdminTestGames(env.AUTH_DB, cors);
+    if (route.collection && request.method === "POST") return await createAdminTestGame(request, env, cors, access.user);
+    if (route.collection) return jsonResponse({ ok: false, error: "テスト試合APIのHTTPメソッドが不正です。" }, 405, cors);
+
+    const game = await getTestGame(env.AUTH_DB, route.gameId);
+    if (!game) return jsonResponse({ ok: false, code: "TEST_GAME_NOT_FOUND", error: "指定されたテスト試合が見つかりません。" }, 404, cors);
+    if (route.action === "detail" && request.method === "GET") return await getAdminTestGameDetail(env.AUTH_DB, cors, game);
+    if (route.action === "roster" && request.method === "POST") return await saveAdminTestGameRoster(request, env.AUTH_DB, cors, game);
+    if (route.action === "prediction" && request.method === "POST") return await saveAdminTestPrediction(request, env, cors, game, access.user);
+    if (route.action === "lineup" && request.method === "POST") return await saveAdminTestLineup(request, env, cors, game);
+    if (route.action === "close" && request.method === "POST") return await updateAdminTestGameDeadline(env.AUTH_DB, cors, game, "close");
+    if (route.action === "reopen" && request.method === "POST") return await updateAdminTestGameDeadline(env.AUTH_DB, cors, game, "reopen");
+    if (route.action === "publish" && request.method === "POST") return await publishAdminTestGame(env, cors, game);
+    if (route.action === "score/preview" && request.method === "POST") return await scoreAdminTestGamePreview(env, cors, game);
+    if (route.action === "score" && request.method === "POST") return await scoreAdminTestGame(env, cors, game);
+    if (route.action === "rescore/preview" && request.method === "POST") return await rescoreAdminTestGamePreview(request, env, cors, game, access.user);
+    if (route.action === "rescore/confirm" && request.method === "POST") return await rescoreAdminTestGameConfirm(request, env, cors, game, access.user);
+    if (route.action === "detail" && request.method === "PATCH") return await updateAdminTestGame(request, env.AUTH_DB, cors, game);
+    if (route.action === "detail" && request.method === "DELETE") return await deleteAdminTestGame(env.AUTH_DB, cors, game);
+    return jsonResponse({ ok: false, error: "テスト試合APIのHTTPメソッドが不正です。" }, 405, cors);
+  } catch (error) {
+    console.warn(`[TEST_GAME] gameId=${route.gameId || "-"} status=failed code=${error?.code || "TEST_GAME_FAILED"}`);
+    return jsonResponse({
+      ok: false,
+      code: isPregameSchemaError(error) ? "TEST_GAME_SCHEMA_NOT_READY" : String(error?.code || "TEST_GAME_FAILED"),
+      error: isPregameSchemaError(error) ? "テスト試合用データベースが準備されていません。" : "テスト試合の処理に失敗しました。"
+    }, isPregameSchemaError(error) ? 503 : (Number(error?.httpStatus) || 500), cors);
+  }
+}
+
+function parseTestGameDate(value) {
+  const date = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const parsed = new Date(`${date}T00:00:00Z`);
+  return parsed.toISOString().slice(0, 10) === date ? date : null;
+}
+
+function parseTestGameTimestamp(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw.length > 64) return null;
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function normalizeTestPlayerName(value) {
+  return String(value || "").normalize("NFKC").replace(/[\s\u3000]+/g, " ").trim();
+}
+
+export function parseTestRosterText(value) {
+  const lines = String(value || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) return { ok: false, error: "ロースターを1人以上入力してください。" };
+  const players = [];
+  const warnings = [];
+  const seen = new Set();
+  for (const line of lines) {
+    const [rawName, rawPosition = ""] = line.split(/[，,]/, 2);
+    const name = normalizeTestPlayerName(rawName);
+    if (!name) return { ok: false, error: "空の選手名は登録できません。" };
+    const key = name.replace(/\s/g, "");
+    if (seen.has(key)) return { ok: false, error: `選手が重複しています：${name}` };
+    seen.add(key);
+    const player = findFightersPlayerByName(name);
+    const rawPositionLabel = rawPosition.trim();
+    const normalizedPosition = normalizeScoringPosition(rawPositionLabel);
+    const isRosterCategory = ["捕手", "内野手", "外野手", "投手", "DH", "指名打者"].includes(rawPositionLabel);
+    const position = normalizedPosition || rawPositionLabel;
+    if (rawPositionLabel && !normalizedPosition && !isRosterCategory) warnings.push(`${name}：守備位置を確認してください。`);
+    if (!player) {
+      warnings.push(`${name}：選手マスタと照合できません。予想・スタメン登録には使用できません。`);
+      players.push({ playerId: null, teamId: "F", teamCode: "f", uniformNumber: null, playerName: name, position });
+      continue;
+    }
+    players.push({
+      playerId: createFightersPlayerId(player.uniformNumber),
+      teamId: "F",
+      teamCode: "f",
+      uniformNumber: player.uniformNumber,
+      playerName: player.name,
+      position
+    });
+  }
+  if (players.length < SCORING_LINEUP_SIZE) return { ok: false, error: "ロースターは9人以上入力してください。" };
+  return { ok: true, players, warnings };
+}
+
+export function parseTestLineupInput(input) {
+  if (Array.isArray(input)) {
+    const result = sanitizeActualLineupForScoring(input);
+    return result.ok ? result : { ok: false, error: result.error };
+  }
+  const lines = String(input || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length !== SCORING_LINEUP_SIZE) return { ok: false, error: "スタメンは1番から9番まで入力してください。" };
+  const lineup = [];
+  const orders = new Set();
+  const players = new Set();
+  for (const line of lines) {
+    const parts = line.replace(/\u3000/g, " ").replace(/\s+/g, " ").split(" ");
+    const order = Number(parts.shift());
+    const position = normalizeScoringPosition(parts.shift());
+    const name = normalizeTestPlayerName(parts.join(" "));
+    const player = findFightersPlayerByName(name);
+    if (!Number.isInteger(order) || order < 1 || order > SCORING_LINEUP_SIZE || !position || !name || !player) {
+      return { ok: false, error: `スタメンを確認できません：${line}` };
+    }
+    const playerId = createFightersPlayerId(player.uniformNumber);
+    if (orders.has(order) || players.has(playerId)) return { ok: false, error: "打順または選手が重複しています。" };
+    orders.add(order);
+    players.add(playerId);
+    lineup[order - 1] = { battingOrder: order, playerId, teamId: FIGHTERS_TEAM_ID, teamCode: FIGHTERS_TEAM_CODE, uniformNumber: player.uniformNumber, playerName: player.name, position };
+  }
+  return sanitizeActualLineupForScoring(lineup);
+}
+
+async function getTestGame(db, gameId) {
+  return db.prepare("SELECT * FROM test_games WHERE game_id = ?1 AND status <> 'deleted' LIMIT 1").bind(gameId).first();
+}
+
+function serializeTestGame(row, extra = {}) {
+  return {
+    gameId: row.game_id,
+    title: row.title,
+    gameDate: row.game_date,
+    startAt: row.start_at,
+    predictionDeadlineAt: row.prediction_deadline_at,
+    homeTeam: row.home_team,
+    awayTeam: row.away_team,
+    venue: row.venue || "",
+    status: row.status,
+    roster: parseJsonArray(row.roster_json),
+    memo: row.memo || "",
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    ...extra
+  };
+}
+
+function testGameMetadata(game) {
+  const metadata = parsePredictionGameId(game.game_id);
+  return metadata ? { ...metadata, startAt: new Date(game.start_at), predictionDeadlineAt: new Date(game.prediction_deadline_at) } : null;
+}
+
+async function listAdminTestGames(db, cors) {
+  const result = await db.prepare(
+    `SELECT test_games.*,
+            (SELECT COUNT(*) FROM predictions WHERE game_id = test_games.game_id AND is_test_prediction = 1) AS prediction_count,
+            game_lineups.scoring_status, game_lineups.publication_status, game_lineups.scored_at, game_lineups.published_at
+       FROM test_games
+      WHERE test_games.status <> 'deleted'
+      ORDER BY test_games.start_at DESC, test_games.game_id DESC`
+  ).all();
+  return jsonResponse({ ok: true, games: (result.results || []).map((row) => serializeTestGame(row, {
+    predictionCount: Number(row.prediction_count || 0),
+    lineupStatus: row.scoring_status ? "registered" : "pending",
+    scoringStatus: row.scoring_status || "pending",
+    publicationStatus: row.publication_status || "pending",
+    scoredAt: row.scored_at || null,
+    publishedAt: row.published_at || null
+  })) }, 200, cors);
+}
+
+async function createAdminTestGame(request, env, cors, user) {
+  const input = await readJson(request);
+  const title = String(input?.title || "").trim().slice(0, 120);
+  const gameDate = parseTestGameDate(input?.gameDate);
+  const startAt = parseTestGameTimestamp(input?.startAt);
+  const deadlineAt = parseTestGameTimestamp(input?.predictionDeadlineAt);
+  const awayTeam = String(input?.awayTeam || "").trim().slice(0, 80);
+  const venue = String(input?.venue || "").trim().slice(0, 120);
+  const memo = String(input?.memo || "").trim().slice(0, 2000);
+  if (!title || !gameDate || !startAt || !deadlineAt || !awayTeam) {
+    return jsonResponse({ ok: false, code: "TEST_GAME_INPUT_INVALID", error: "試合名、試合日、開始日時、締切日時、対戦相手を入力してください。" }, 400, cors);
+  }
+  const start = new Date(startAt);
+  const deadline = new Date(deadlineAt);
+  if (deadline.getTime() >= start.getTime()) {
+    return jsonResponse({ ok: false, code: "TEST_GAME_DEADLINE_INVALID", error: "予想締切は試合開始より前に設定してください。" }, 400, cors);
+  }
+  const roster = parseTestRosterText(input?.rosterText);
+  if (!roster.ok) return jsonResponse({ ok: false, code: "TEST_ROSTER_INVALID", error: roster.error }, 400, cors);
+  let gameId = "";
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const candidate = `${gameDate}-f-${TEST_GAME_DEFAULT_OPPONENT_CODE}-${90000 + Math.floor(Math.random() * 9999)}`;
+    if (!await getTestGame(env.AUTH_DB, candidate)) { gameId = candidate; break; }
+  }
+  if (!gameId) throw createPregameError("TEST_GAME_ID_CREATE_FAILED", "テスト試合IDを作成できませんでした。");
+  const now = new Date().toISOString();
+  await env.AUTH_DB.batch([
+    env.AUTH_DB.prepare(
+      `INSERT INTO test_games
+       (game_id, title, game_date, start_at, prediction_deadline_at, home_team, away_team, venue, roster_json, probable_starter_json, memo, status, created_by, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, '北海道日本ハムファイターズ', ?6, ?7, ?8, NULL, ?9, 'scheduled', ?10, ?11, ?11)`
+    ).bind(gameId, title, gameDate, startAt, deadlineAt, awayTeam, venue, JSON.stringify(roster.players), memo || null, user.id),
+    env.AUTH_DB.prepare(
+      `INSERT INTO ranking_games
+       (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game, publication_status, scored_private_at, published_at, created_at, updated_at)
+       VALUES (?1, ?2, 0, NULL, 'pending', 1, 'pending', NULL, NULL, ?3, ?3)`
+    ).bind(gameId, gameDate, now)
+  ]);
+  console.log(`[TEST_GAME] action=create gameId=${gameId} status=success`);
+  return jsonResponse({ ok: true, game: serializeTestGame({ game_id: gameId, title, game_date: gameDate, start_at: startAt, prediction_deadline_at: deadlineAt, home_team: "北海道日本ハムファイターズ", away_team: awayTeam, venue, roster_json: JSON.stringify(roster.players), memo, status: "scheduled", created_at: now, updated_at: now }), warnings: roster.warnings }, 201, cors);
+}
+
+async function getAdminTestGameDetail(db, cors, game) {
+  const [lineup, predictionSummary, revisions, results] = await Promise.all([
+    getGameLineup(db, game.game_id),
+    db.prepare("SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'scored' THEN 1 ELSE 0 END) AS scored FROM predictions WHERE game_id = ?1 AND is_test_prediction = 1").bind(game.game_id).first(),
+    db.prepare("SELECT * FROM game_lineup_revisions WHERE game_id = ?1 ORDER BY version DESC").bind(game.game_id).all(),
+    db.prepare(
+      `SELECT users.username, predictions.score, predictions.max_score, predictions.status,
+              predictions.scored_at, predictions.updated_at
+         FROM predictions JOIN users ON users.id = predictions.user_id
+        WHERE predictions.game_id = ?1 AND predictions.is_test_prediction = 1
+        ORDER BY predictions.updated_at DESC, predictions.id DESC`
+    ).bind(game.game_id).all()
+  ]);
+  return jsonResponse({
+    ok: true,
+    game: serializeTestGame(game, {
+      predictionCount: Number(predictionSummary?.total || 0),
+      scoredPredictionCount: Number(predictionSummary?.scored || 0),
+      lineup: serializeGameLineup(lineup),
+      revisions: (revisions.results || []).map(serializeLineupRevision),
+      results: (results.results || []).map((row) => ({
+        username: row.username,
+        score: row.score === null ? null : Number(row.score),
+        maxScore: row.max_score === null ? null : Number(row.max_score),
+        status: row.status,
+        scoredAt: row.scored_at || null,
+        updatedAt: row.updated_at || null
+      }))
+    })
+  }, 200, cors);
+}
+
+async function saveAdminTestGameRoster(request, db, cors, game) {
+  const input = await readJson(request);
+  const roster = parseTestRosterText(input?.rosterText);
+  if (!roster.ok) return jsonResponse({ ok: false, code: "TEST_ROSTER_INVALID", error: roster.error }, 400, cors);
+  const now = new Date().toISOString();
+  await db.prepare("UPDATE test_games SET roster_json = ?1, updated_at = ?2 WHERE game_id = ?3").bind(JSON.stringify(roster.players), now, game.game_id).run();
+  return jsonResponse({ ok: true, gameId: game.game_id, roster: roster.players, warnings: roster.warnings }, 200, cors);
+}
+
+async function updateAdminTestGame(request, db, cors, game) {
+  const input = await readJson(request);
+  const startAt = input?.startAt === undefined ? game.start_at : parseTestGameTimestamp(input.startAt);
+  const deadlineAt = input?.predictionDeadlineAt === undefined ? game.prediction_deadline_at : parseTestGameTimestamp(input.predictionDeadlineAt);
+  if (!startAt || !deadlineAt || new Date(deadlineAt) >= new Date(startAt)) return jsonResponse({ ok: false, code: "TEST_GAME_DEADLINE_INVALID", error: "締切日時を確認してください。" }, 400, cors);
+  const now = new Date().toISOString();
+  await db.prepare(
+    `UPDATE test_games SET title = ?1, start_at = ?2, prediction_deadline_at = ?3, away_team = ?4, venue = ?5, memo = ?6, updated_at = ?7 WHERE game_id = ?8`
+  ).bind(String(input?.title ?? game.title).trim().slice(0, 120), startAt, deadlineAt, String(input?.awayTeam ?? game.away_team).trim().slice(0, 80), String(input?.venue ?? game.venue ?? "").trim().slice(0, 120), String(input?.memo ?? game.memo ?? "").trim().slice(0, 2000) || null, now, game.game_id).run();
+  return getAdminTestGameDetail(db, cors, await getTestGame(db, game.game_id));
+}
+
+async function updateAdminTestGameDeadline(db, cors, game, mode) {
+  const now = new Date();
+  const deadline = mode === "close"
+    ? new Date(now.getTime() - 1000)
+    : new Date(new Date(game.start_at).getTime() - TEST_GAME_DEFAULT_REOPEN_MINUTES * 60 * 1000);
+  await db.prepare("UPDATE test_games SET prediction_deadline_at = ?1, updated_at = ?2 WHERE game_id = ?3").bind(deadline.toISOString(), now.toISOString(), game.game_id).run();
+  return jsonResponse({ ok: true, gameId: game.game_id, predictionDeadlineAt: deadline.toISOString(), status: mode === "close" ? "closed" : "open" }, 200, cors);
+}
+
+async function deleteAdminTestGame(db, cors, game) {
+  const statements = [
+    db.prepare("DELETE FROM game_rescore_audits WHERE game_id = ?1").bind(game.game_id),
+    db.prepare("DELETE FROM game_rescore_jobs WHERE game_id = ?1").bind(game.game_id),
+    db.prepare("DELETE FROM game_rescore_previews WHERE game_id = ?1").bind(game.game_id),
+    db.prepare("DELETE FROM game_lineup_revisions WHERE game_id = ?1").bind(game.game_id),
+    db.prepare("DELETE FROM perfect_achievers WHERE game_id = ?1").bind(game.game_id),
+    db.prepare("DELETE FROM predictions WHERE game_id = ?1 AND is_test_prediction = 1").bind(game.game_id),
+    db.prepare("DELETE FROM game_lineups WHERE game_id = ?1").bind(game.game_id),
+    db.prepare("DELETE FROM ranking_games WHERE game_id = ?1 AND is_test_game = 1").bind(game.game_id),
+    db.prepare("DELETE FROM test_games WHERE game_id = ?1").bind(game.game_id)
+  ];
+  await db.batch(statements);
+  return jsonResponse({ ok: true, gameId: game.game_id, deleted: true }, 200, cors);
+}
+
+async function saveAdminTestPrediction(request, env, cors, game, user) {
+  const metadata = testGameMetadata(game);
+  if (!metadata) return jsonResponse({ ok: false, code: "TEST_GAME_ID_INVALID", error: "テスト試合IDが不正です。" }, 400, cors);
+  if (new Date() >= new Date(game.prediction_deadline_at)) {
+    return jsonResponse({ ok: false, code: "TEST_GAME_CLOSED", error: "テスト試合の予想受付は終了しています。" }, 409, cors);
+  }
+  const input = await readJson(request);
+  const predictionResult = sanitizePredictionPayload(input?.prediction);
+  if (!predictionResult.ok) return jsonResponse({ ok: false, code: "TEST_PREDICTION_INVALID", error: predictionResult.error }, 400, cors);
+  const roster = parseJsonArray(game.roster_json);
+  const rosterIds = new Set(roster.map((player) => player?.playerId).filter(Boolean));
+  if (rosterIds.size && predictionResult.prediction.lineup.some((player) => !rosterIds.has(player.playerId))) {
+    return jsonResponse({ ok: false, code: "TEST_PREDICTION_OUTSIDE_ROSTER", error: "ロースターに登録された選手だけで予想してください。" }, 400, cors);
+  }
+  const now = new Date().toISOString();
+  const existing = await env.AUTH_DB.prepare("SELECT id, submitted_at FROM predictions WHERE user_id = ?1 AND game_id = ?2 AND is_test_prediction = 1 LIMIT 1").bind(user.id, game.game_id).first();
+  await env.AUTH_DB.prepare(
+    `INSERT INTO predictions
+       (id, user_id, game_id, prediction_json, schema_version, game_date, home_team, away_team, opponent_code, is_home,
+        submitted_at, updated_at, locked_at, status, score, max_score, scored_at, actual_lineup_json, is_test_prediction)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'e', 1, ?9, ?9, NULL, 'submitted', NULL, NULL, NULL, NULL, 1)
+     ON CONFLICT(user_id, game_id) DO UPDATE SET
+       prediction_json = excluded.prediction_json, schema_version = excluded.schema_version,
+       game_date = excluded.game_date, home_team = excluded.home_team, away_team = excluded.away_team,
+       updated_at = excluded.updated_at, status = 'submitted', locked_at = NULL, score = NULL,
+       max_score = NULL, scored_at = NULL, actual_lineup_json = NULL, is_test_prediction = 1
+     WHERE predictions.is_test_prediction = 1 AND predictions.locked_at IS NULL AND predictions.status NOT IN ('locked', 'scored')`
+  ).bind(existing?.id || randomToken(16), user.id, game.game_id, JSON.stringify(predictionResult.prediction), PREDICTION_SCHEMA_VERSION, game.game_date, "f", game.away_team, now).run();
+  return jsonResponse({ ok: true, gameId: game.game_id, created: !existing, updated: Boolean(existing), submittedAt: existing?.submitted_at || now }, 200, cors);
+}
+
+async function saveAdminTestLineup(request, env, cors, game) {
+  const input = await readJson(request);
+  const actual = parseTestLineupInput(input?.lineup || input?.lineupText);
+  if (!actual.ok) return jsonResponse({ ok: false, code: "TEST_LINEUP_INVALID", error: actual.error }, 400, cors);
+  const roster = parseJsonArray(game.roster_json);
+  const rosterIds = new Set(roster.map((player) => player?.playerId).filter(Boolean));
+  const outsideRoster = actual.lineup.filter((player) => rosterIds.size && !rosterIds.has(player.playerId)).map((player) => player.playerName);
+  const now = new Date();
+  const record = await approveActualLineupForAutoScoring(env, game.game_id, actual.lineup, now, {
+    allowTestGame: true,
+    isTestGame: true,
+    scoringDueAt: now,
+    now,
+    source: "manual"
+  });
+  return jsonResponse({ ok: true, gameId: game.game_id, autoScoring: serializeGameLineup(record), warnings: outsideRoster.length ? [`ロースター外の選手です：${outsideRoster.join("、")}`] : [] }, 200, cors);
+}
+
+async function scoreAdminTestGamePreview(env, cors, game) {
+  const record = await getGameLineup(env.AUTH_DB, game.game_id);
+  const actual = sanitizeActualLineupForScoring(parseStoredActualLineup(record?.actual_lineup_json));
+  if (!actual.ok) return jsonResponse({ ok: false, code: "TEST_LINEUP_REQUIRED", error: "先に9人の実スタメンを登録してください。" }, 409, cors);
+  const scoring = await prepareGamePredictionScoring(env.AUTH_DB, game.game_id, actual.lineup, 1);
+  return jsonResponse({ ok: true, gameId: game.game_id, processed: scoring.processed, scored: scoring.scored, failed: scoring.failed, maxScore: SCORING_MAX_SCORE, perfectCount: scoring.perfectCount, averageScore: scoring.averageScore, validationErrors: scoring.validationErrors, lineupFingerprint: record.lineup_fingerprint }, 200, cors);
+}
+
+async function scoreAdminTestGame(env, cors, game) {
+  const record = await getGameLineup(env.AUTH_DB, game.game_id);
+  if (!record) return jsonResponse({ ok: false, code: "TEST_LINEUP_REQUIRED", error: "先に実スタメンを登録してください。" }, 409, cors);
+  const now = new Date();
+  await markGameRankingPending(env.AUTH_DB, game.game_id, now, env, true);
+  const claimed = await claimGameLineupForScoring(env.AUTH_DB, game.game_id, now, { force: true, resetAttempts: true });
+  if (!claimed) return jsonResponse({ ok: false, code: "TEST_SCORING_IN_PROGRESS", error: "このテスト試合は現在採点処理中です。" }, 409, cors);
+  try {
+    const result = await scoreClaimedGameLineup(env.AUTH_DB, claimed, now, 1);
+    return jsonResponse({ ok: true, gameId: game.game_id, ...result, autoScoring: serializeGameLineup(await getGameLineup(env.AUTH_DB, game.game_id)) }, 200, cors);
+  } catch (error) {
+    await markGameLineupFailed(env.AUTH_DB, game.game_id, error, now);
+    throw error;
+  }
+}
+
+async function publishAdminTestGame(env, cors, game) {
+  const lineup = await getGameLineup(env.AUTH_DB, game.game_id);
+  if (!lineup || lineup.scoring_status !== "scored") return jsonResponse({ ok: false, code: "TEST_SCORING_REQUIRED", error: "先にテスト採点を完了してください。" }, 409, cors);
+  const now = new Date().toISOString();
+  const perfectRows = await env.AUTH_DB.prepare(
+    "SELECT user_id, score, max_score FROM predictions WHERE game_id = ?1 AND is_test_prediction = 1 AND status = 'scored' AND score = max_score"
+  ).bind(game.game_id).all();
+  const statements = [env.AUTH_DB.prepare(
+    `UPDATE game_lineups SET publication_status = 'published', published_at = ?1, new_perfect_achievers = ?2, updated_at = ?1 WHERE game_id = ?3 AND scoring_status = 'scored'`
+  ).bind(now, (perfectRows.results || []).length, game.game_id), env.AUTH_DB.prepare(
+    `UPDATE ranking_games SET is_ranking_eligible = 0, game_status = 'scored', is_test_game = 1, publication_status = 'published', published_at = ?1, updated_at = ?1 WHERE game_id = ?2`
+  ).bind(now, game.game_id), env.AUTH_DB.prepare("DELETE FROM perfect_achievers WHERE game_id = ?1").bind(game.game_id)];
+  for (const row of perfectRows.results || []) {
+    statements.push(env.AUTH_DB.prepare("INSERT OR IGNORE INTO perfect_achievers (id, user_id, game_id, score, max_score, achieved_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)").bind(randomToken(16), row.user_id, game.game_id, Number(row.score), Number(row.max_score), now));
+  }
+  await env.AUTH_DB.batch(statements);
+  return jsonResponse({ ok: true, gameId: game.game_id, publishedAt: now, perfectCount: (perfectRows.results || []).length }, 200, cors);
+}
+
+async function rescoreAdminTestGamePreview(request, env, cors, game, user) {
+  const input = await readJson(request);
+  const metadata = testGameMetadata(game);
+  const reason = validateManualRescoreInput({ ...input, gameId: game.game_id, gameDate: game.game_date, homeTeam: "f", awayTeam: "e" }, metadata);
+  assertManualRescoreWindow(metadata);
+  const actual = parseTestLineupInput(input?.lineup || input?.lineupText);
+  if (!actual.ok) return jsonResponse({ ok: false, code: "TEST_LINEUP_INVALID", error: actual.error }, 400, cors);
+  const current = await ensureCurrentLineupRevision(env.AUTH_DB, metadata);
+  const summary = await buildManualRescorePreview(env.AUTH_DB, game.game_id, actual.lineup, 1);
+  const version = Number(current.version) + 1;
+  const fingerprint = await sha256Base64Url(JSON.stringify(actual.lineup));
+  const now = new Date();
+  const previewId = randomToken(20);
+  await env.AUTH_DB.batch([
+    env.AUTH_DB.prepare("INSERT INTO game_lineup_revisions (game_id, version, actual_lineup_json, lineup_fingerprint, source, created_at, created_by, reason, is_current, superseded_at) VALUES (?1, ?2, ?3, ?4, 'manual-revision', ?5, ?6, ?7, 0, NULL)").bind(game.game_id, version, JSON.stringify(actual.lineup), fingerprint, now.toISOString(), user.id, reason),
+    env.AUTH_DB.prepare("INSERT INTO game_rescore_previews (id, game_id, lineup_version, created_by, reason, summary_json, expected_prediction_count, expires_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)").bind(previewId, game.game_id, version, user.id, reason, JSON.stringify({ ...summary, candidateLineup: actual.lineup }), summary.processed, new Date(now.getTime() + MANUAL_RESCORE_PREVIEW_TTL_MS).toISOString(), now.toISOString()),
+    env.AUTH_DB.prepare("INSERT INTO game_rescore_jobs (id, game_id, lineup_version, status, error_code, created_at, updated_at) VALUES (?1, ?2, ?3, 'previewed', NULL, ?4, ?4)").bind(previewId, game.game_id, version, now.toISOString())
+  ]);
+  return jsonResponse({ ok: true, gameId: game.game_id, previewId, lineupVersion: version, summary }, 200, cors);
+}
+
+async function rescoreAdminTestGameConfirm(request, env, cors, game, user) {
+  const input = await readJson(request);
+  const metadata = testGameMetadata(game);
+  const reason = validateManualRescoreInput({ ...input, gameId: game.game_id, gameDate: game.game_date, homeTeam: "f", awayTeam: "e" }, metadata);
+  assertManualRescoreWindow(metadata);
+  const preview = await env.AUTH_DB.prepare("SELECT * FROM game_rescore_previews WHERE id = ?1 AND game_id = ?2 AND created_by = ?3 LIMIT 1").bind(String(input?.previewId || ""), game.game_id, user.id).first();
+  if (!preview || preview.reason !== reason || Number(preview.lineup_version) !== Number(input?.lineupVersion)) return jsonResponse({ ok: false, code: "RESCORE_PREVIEW_INVALID", error: "再採点プレビューを確認してください。" }, 409, cors);
+  if (new Date(preview.expires_at) < new Date()) return jsonResponse({ ok: false, code: "RESCORE_PREVIEW_EXPIRED", error: "再採点プレビューの有効期限が切れました。" }, 409, cors);
+  const candidate = parseJsonArray((JSON.parse(preview.summary_json || "{}")).candidateLineup);
+  const actual = sanitizeActualLineupForScoring(candidate);
+  if (!actual.ok) return jsonResponse({ ok: false, code: "RESCORE_LINEUP_REQUIRED", error: actual.error }, 409, cors);
+  const current = await getLineupRevision(env.AUTH_DB, game.game_id, preview.lineup_version);
+  if (!current) return jsonResponse({ ok: false, code: "RESCORE_VERSION_CHANGED", error: "正式スタメンversionを確認してください。" }, 409, cors);
+  const now = new Date();
+  const claimResult = await env.AUTH_DB.prepare(
+    `UPDATE game_rescore_jobs SET status = 'running', error_code = NULL, updated_at = ?1
+      WHERE id = ?2 AND game_id = ?3 AND status = 'previewed'`
+  ).bind(now.toISOString(), preview.id, game.game_id).run();
+  if (Number(claimResult?.meta?.changes || 0) !== 1) return jsonResponse({ ok: false, code: "RESCORE_PREVIEW_INVALID", error: "再採点プレビューを確認してください。" }, 409, cors);
+  await env.AUTH_DB.prepare("UPDATE game_lineup_revisions SET is_current = 0, superseded_at = ?1 WHERE game_id = ?2 AND is_current = 1").bind(now.toISOString(), game.game_id).run();
+  await env.AUTH_DB.prepare("UPDATE game_lineup_revisions SET is_current = 1 WHERE game_id = ?1 AND version = ?2").bind(game.game_id, preview.lineup_version).run();
+  const result = await applyManualRescore(env.AUTH_DB, metadata, current, { ...preview, expected_prediction_count: Number(preview.expected_prediction_count) }, user.id, reason, now, 1);
+  await env.AUTH_DB.prepare("DELETE FROM game_rescore_previews WHERE id = ?1").bind(preview.id).run();
+  return jsonResponse({ ok: true, gameId: game.game_id, ...result }, 200, cors);
 }
 
 async function handleMyAchievements(request, env, cors) {
@@ -2897,6 +3339,7 @@ async function prepareGamePredictionScoring(db, gameId, actualLineup, isTestPred
   const productionQuery = "SELECT id, user_id, prediction_json FROM predictions WHERE game_id = ?1 AND is_test_prediction = 0 ORDER BY submitted_at ASC, id ASC";
   const testQuery = "SELECT id, user_id, prediction_json FROM predictions WHERE game_id = ?1 AND is_test_prediction = 1 ORDER BY submitted_at ASC, id ASC";
   const rows = await db.prepare(isTestPrediction ? testQuery : productionQuery).bind(gameId).all();
+
   const outcomes = [];
   const validationErrors = [];
   const distribution = new Map();
@@ -3146,14 +3589,14 @@ async function handleAdminLineupRestore(request, env, cors, metadata, user) {
   }
 }
 
-async function buildManualRescorePreview(db, gameId, actualLineup) {
-  const scoring = await prepareGamePredictionScoring(db, gameId, actualLineup);
+async function buildManualRescorePreview(db, gameId, actualLineup, isTestPrediction = 0) {
+  const scoring = await prepareGamePredictionScoring(db, gameId, actualLineup, isTestPrediction);
   if (scoring.failed > 0) {
     throw createPregameError("RESCORE_PREDICTION_INVALID", "保存済み予想に検証エラーがあるため再採点できません。", { httpStatus: 409 });
   }
   const previous = await db.prepare(
-    "SELECT id, score, max_score FROM predictions WHERE game_id = ?1 AND is_test_prediction = 0"
-  ).bind(gameId).all();
+    "SELECT id, score, max_score FROM predictions WHERE game_id = ?1 AND is_test_prediction = ?2"
+  ).bind(gameId, isTestPrediction ? 1 : 0).all();
   const previousById = new Map((previous.results || []).map((row) => [row.id, row]));
   const differences = scoring.outcomes.filter((outcome) => Number(previousById.get(outcome.id)?.score) !== outcome.score.total);
   const beforePerfectCount = (previous.results || []).filter((row) => Number(row.score) === Number(row.max_score) && Number(row.max_score) > 0).length;
@@ -3263,20 +3706,20 @@ async function handleAdminRescoreConfirm(request, env, cors, metadata, user) {
   }
 }
 
-async function applyManualRescore(db, metadata, revision, preview, userId, reason, now) {
+async function applyManualRescore(db, metadata, revision, preview, userId, reason, now, isTestPrediction = 0) {
   const lineup = sanitizeActualLineupForScoring(parseStoredActualLineup(revision.actual_lineup_json));
   if (!lineup.ok) throw createPregameError("RESCORE_LINEUP_REQUIRED", lineup.error, { httpStatus: 409 });
   const gameLineup = await getGameLineup(db, metadata.gameId);
   if (!gameLineup || gameLineup.scoring_status === "processing") {
     throw createPregameError("RESCORE_LINEUP_REQUIRED", "この試合は現在再採点できません。", { httpStatus: 409 });
   }
-  const scoring = await prepareGamePredictionScoring(db, metadata.gameId, lineup.lineup);
+  const scoring = await prepareGamePredictionScoring(db, metadata.gameId, lineup.lineup, isTestPrediction);
   if (scoring.failed > 0 || scoring.processed !== Number(preview.expected_prediction_count)) {
     throw createPregameError("RESCORE_PREVIEW_INVALID", "予想データが変わりました。再プレビューしてください。", { httpStatus: 409 });
   }
   const previous = await db.prepare(
-    "SELECT id, score, max_score FROM predictions WHERE game_id = ?1 AND is_test_prediction = 0"
-  ).bind(metadata.gameId).all();
+    "SELECT id, score, max_score FROM predictions WHERE game_id = ?1 AND is_test_prediction = ?2"
+  ).bind(metadata.gameId, isTestPrediction ? 1 : 0).all();
   const previousById = new Map((previous.results || []).map((row) => [row.id, row]));
   const changedScoreCount = scoring.outcomes.filter((outcome) => Number(previousById.get(outcome.id)?.score) !== outcome.score.total).length;
   const beforePerfectCount = (previous.results || []).filter((row) => Number(row.score) === Number(row.max_score) && Number(row.max_score) > 0).length;
@@ -3310,18 +3753,18 @@ async function applyManualRescore(db, metadata, revision, preview, userId, reaso
     `INSERT INTO ranking_games
        (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game,
         publication_status, scored_private_at, published_at, created_at, updated_at)
-     VALUES (?1, ?2, ?3, ?4, 'scored', 0, ?5, ?6, ?4, ?6, ?6)
+     VALUES (?1, ?2, ?3, ?4, 'scored', ?5, ?6, ?7, ?4, ?7, ?7)
      ON CONFLICT(game_id) DO UPDATE SET
        game_date = excluded.game_date,
        is_ranking_eligible = excluded.is_ranking_eligible,
        ranking_eligible_at = excluded.ranking_eligible_at,
        game_status = 'scored',
-       is_test_game = 0,
+       is_test_game = excluded.is_test_game,
        publication_status = excluded.publication_status,
        scored_private_at = excluded.scored_private_at,
        published_at = CASE WHEN excluded.publication_status = 'published' THEN excluded.published_at ELSE ranking_games.published_at END,
        updated_at = excluded.updated_at`
-  ).bind(metadata.gameId, metadata.date, published ? 1 : 0, published ? (gameLineup.published_at || nowIso) : null, published ? "published" : "scored_private", nowIso));
+  ).bind(metadata.gameId, metadata.date, isTestPrediction ? 0 : (published ? 1 : 0), isTestPrediction ? 1 : 0, published ? "published" : "scored_private", published ? (gameLineup.published_at || nowIso) : null, nowIso));
   statements.push(db.prepare(
     `INSERT INTO game_rescore_audits
        (id, game_id, game_date, previous_version, lineup_version, reason, executed_by, executed_at,
@@ -3607,6 +4050,7 @@ async function runDueAutoScoringJobs(env, now, pausedGameIds = new Set()) {
         AND scoring_due_at <= ?1
         AND game_id NOT IN (SELECT game_id FROM ranking_games WHERE is_test_game = 1)
         AND scoring_attempts < ?2${pausedFilter}
+
       ORDER BY scoring_due_at ASC, game_id ASC
       LIMIT ?${pausedIds.length + 3}`
   ).bind(nowIso, AUTO_SCORING_MAX_ATTEMPTS, ...pausedIds, AUTO_SCORING_CRON_BATCH_SIZE).all();
@@ -3770,7 +4214,7 @@ async function markGameRankingPending(db, gameId, at, env, isTestGame = 0) {
   const productionSql = `INSERT INTO ranking_games
        (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game,
         publication_status, scored_private_at, published_at, created_at, updated_at)
-     VALUES (?1, ?2, 0, NULL, 'pending', 0, 'pending', NULL, NULL, ?3, ?3)
+     VALUES (?1, ?2, 0, NULL, 'pending', ?3, 'pending', NULL, NULL, ?4, ?4)
      ON CONFLICT(game_id) DO UPDATE SET
        game_date = excluded.game_date, is_ranking_eligible = 0, ranking_eligible_at = NULL,
        game_status = 'pending', is_test_game = 0, publication_status = 'pending',
@@ -3794,7 +4238,7 @@ function createGameRankingScoredPrivateStatement(db, gameId, scoredAt, isTestGam
   const productionSql = `INSERT INTO ranking_games
        (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game,
         publication_status, scored_private_at, published_at, created_at, updated_at)
-     VALUES (?1, ?2, 0, NULL, 'pending', 0, 'scored_private', ?3, NULL, ?3, ?3)
+     VALUES (?1, ?2, 0, NULL, 'pending', ?3, 'scored_private', ?4, NULL, ?4, ?4)
      ON CONFLICT(game_id) DO UPDATE SET
        game_date = excluded.game_date, is_ranking_eligible = 0, ranking_eligible_at = NULL,
        game_status = 'pending', is_test_game = 0, publication_status = 'scored_private',

@@ -192,6 +192,15 @@ const state = {
     message: "",
     isBusy: false
   },
+  adminTestGames: {
+    isLoading: false,
+    isBusy: false,
+    games: [],
+    selectedGameId: "",
+    detail: null,
+    rescorePreview: null,
+    message: ""
+  },
   achievements: {
     isLoading: false,
     requestId: 0,
@@ -485,6 +494,12 @@ function bindEvents() {
   document.getElementById("refreshAchievementsButton")?.addEventListener("click", () => fetchUserAchievements({ force: true }));
   bindAdminTestEvent("refreshAdminTestAchievementsButton", "click", refreshAdminTestAchievements);
   document.getElementById("adminTestAchievements")?.addEventListener("click", handleAdminTestAchievementAction);
+  document.getElementById("adminTestGameCreateForm")?.addEventListener("submit", handleAdminTestGameCreate);
+  document.getElementById("adminTestGameRoster")?.addEventListener("input", renderAdminTestRosterPreview);
+  renderAdminTestRosterPreview();
+  document.getElementById("adminTestGamesList")?.addEventListener("click", handleAdminTestGameAction);
+  document.getElementById("adminTestGameDetail")?.addEventListener("click", handleAdminTestGameAction);
+  document.getElementById("adminTestGameDetail")?.addEventListener("input", renderAdminTestDetailPreview);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
   document.getElementById("predictionCtaButton")?.addEventListener("click", scrollToPredictionForm);
@@ -597,6 +612,7 @@ function clearAdminAccess() {
   state.adminAccess.status = "inactive";
   state.adminTest = { status: "inactive", info: null, message: "" };
   state.adminAutoScoringTests = { games: [], selectedGameId: "", detail: null, message: "", isBusy: false };
+  state.adminTestGames = { isLoading: false, isBusy: false, games: [], selectedGameId: "", detail: null, rescorePreview: null, message: "" };
   state.adminTestAchievements = { isLoading: false, items: [], earned: [], message: "" };
   state.gameWorkflow = { isLoading: false, isUpdating: false, requestId: state.gameWorkflow.requestId + 1, gameId: "", record: null, message: "" };
   state.appMode = "normal";
@@ -804,6 +820,247 @@ async function autoScoringTestRequest(gameId, action, body = null) {
     state.adminAutoScoringTests.message = error.message || "自動採点テストを操作できませんでした。";
   }
   renderAutoScoringTests();
+}
+
+function buildAdminTestGameApiUrl(gameId = "", action = "") {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  if (!baseUrl) return "";
+  const path = gameId
+    ? `/api/admin/test-games/${encodeURIComponent(gameId)}${action ? `/${action}` : ""}`
+    : "/api/admin/test-games";
+  return `${baseUrl}${path}`;
+}
+
+function testGameDateTimeInputValue(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (part) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatTestGameStatus(game) {
+  if (game.publicationStatus === "published") return "公開済み";
+  if (game.scoringStatus === "scored") return "採点済み";
+  if (game.lineupStatus === "registered") return "実スタメン登録済み";
+  return new Date() >= new Date(game.predictionDeadlineAt) ? "締切済み" : "予想受付中";
+}
+
+function renderAdminTestRosterPreview() {
+  const preview = document.getElementById("adminTestGameRosterPreview");
+  const input = document.getElementById("adminTestGameRoster");
+  if (!preview || !input) return;
+  const lines = String(input.value || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) {
+    preview.textContent = "入力すると登録内容を確認できます。";
+    return;
+  }
+  const seen = new Set();
+  let duplicateCount = 0;
+  let unknownCount = 0;
+  for (const line of lines) {
+    const name = normalizePlayerKey(line.split(/[，,]/, 1)[0]);
+    if (!name) continue;
+    if (seen.has(name)) duplicateCount += 1;
+    seen.add(name);
+    if (!playerNames.some((playerName) => normalizePlayerKey(playerName) === name)) unknownCount += 1;
+  }
+  const warnings = [duplicateCount ? `重複 ${duplicateCount}件` : "", unknownCount ? `選手マスタ未照合 ${unknownCount}件` : ""].filter(Boolean);
+  preview.textContent = `登録予定 ${lines.length}人${warnings.length ? `（${warnings.join("、")}）` : "。守備位置は登録時に検証します。"}`;
+}
+
+function renderAdminTestDetailPreview(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLTextAreaElement)) return;
+  const previewId = target.id === "adminTestDetailLineup" ? "adminTestDetailLineupPreview" : "";
+  if (!previewId) return;
+  const preview = document.getElementById(previewId);
+  if (!preview) return;
+  const lines = String(target.value || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  preview.textContent = lines.length ? `入力 ${lines.length}/9行。登録時に打順・選手・守備位置を検証します。` : "入力すると9人分の形式を確認できます。";
+}
+
+function renderAdminTestGamePanel() {
+  const list = document.getElementById("adminTestGamesList");
+  const detail = document.getElementById("adminTestGameDetail");
+  const message = document.getElementById("adminTestGameMessage");
+  if (!list || !detail || !message) return;
+  const available = state.appMode === "admin" && state.adminAccess.status === "authorized";
+  message.textContent = available ? state.adminTestGames.message || "" : "";
+  if (!available) {
+    list.innerHTML = "";
+    detail.classList.add("hidden");
+    detail.innerHTML = "";
+    return;
+  }
+  if (state.adminTestGames.isLoading) {
+    list.innerHTML = "<p class=\"admin-test-game-empty\">テスト試合を読み込み中...</p>";
+  } else if (!state.adminTestGames.games.length) {
+    list.innerHTML = "<p class=\"admin-test-game-empty\">作成済みテスト試合はありません。</p>";
+  } else {
+    list.innerHTML = `<div class="admin-test-game-list-heading"><strong>作成済みテスト試合</strong><button type="button" class="secondary-button compact-button" data-test-game-action="refresh">再取得</button></div>${state.adminTestGames.games.map((game) => `<button type="button" class="admin-test-game-row${game.gameId === state.adminTestGames.selectedGameId ? " is-selected" : ""}" data-test-game-id="${escapeHtml(game.gameId)}"><span class="test-badge">TEST</span><span class="admin-test-game-row-main"><strong>${escapeHtml(game.title)}</strong><small>${escapeHtml(game.gameDate)} / ${escapeHtml(game.awayTeam)} / ${escapeHtml(formatTestGameStatus(game))}</small></span><span class="admin-test-game-row-meta">予想 ${game.predictionCount || 0}件</span></button>`).join("")}`;
+  }
+  if (!state.adminTestGames.detail) {
+    detail.classList.add("hidden");
+    detail.innerHTML = "";
+    return;
+  }
+  const game = state.adminTestGames.detail;
+  const lineup = game.lineup;
+  const revisionPreview = state.adminTestGames.rescorePreview;
+  detail.classList.remove("hidden");
+  detail.innerHTML = `<div class="admin-test-game-detail-heading"><div><span class="test-badge">TEST MODE</span><h4>${escapeHtml(game.title)}</h4><p>${escapeHtml(game.gameId)} / ${escapeHtml(game.gameDate)} / ${escapeHtml(game.awayTeam)}</p></div><button type="button" class="secondary-button compact-button" data-test-game-action="close-detail">閉じる</button></div>
+    <dl class="admin-test-game-state"><div><dt>状態</dt><dd>${escapeHtml(formatTestGameStatus(game))}</dd></div><div><dt>開始</dt><dd>${escapeHtml(formatDateTime(game.startAt))}</dd></div><div><dt>締切</dt><dd>${escapeHtml(formatDateTime(game.predictionDeadlineAt))}</dd></div><div><dt>予想</dt><dd>${game.predictionCount || 0}件（採点済み ${game.scoredPredictionCount || 0}件）</dd></div><div><dt>実スタメン</dt><dd>${lineup ? "登録済み" : "未登録"}</dd></div><div><dt>採点</dt><dd>${escapeHtml(lineup?.status || "未実行")}</dd></div><div><dt>公開</dt><dd>${escapeHtml(lineup?.publicationStatus || "未実行")}</dd></div></dl>
+    <label for="adminTestDetailDeadline">予想締切日時を変更</label><div class="admin-test-game-inline"><input id="adminTestDetailDeadline" type="datetime-local" value="${escapeHtml(testGameDateTimeInputValue(game.predictionDeadlineAt))}"><button type="button" class="secondary-button compact-button" data-test-game-action="save-deadline">締切を保存</button></div>
+    <div class="admin-test-game-actions"><button type="button" class="secondary-button compact-button" data-test-game-action="close">今すぐ締切</button><button type="button" class="secondary-button compact-button" data-test-game-action="reopen">予想受付へ戻す</button><button type="button" class="secondary-button compact-button" data-test-game-action="score-preview">採点プレビュー</button><button type="button" class="danger-button compact-button" data-test-game-action="score">本採点</button><button type="button" class="secondary-button compact-button" data-test-game-action="publish">結果を公開</button><button type="button" class="danger-button compact-button" data-test-game-action="delete">テスト試合を削除</button></div>
+    <label for="adminTestDetailRoster">ロースター編集</label><textarea id="adminTestDetailRoster" rows="5">${escapeHtml((game.roster || []).map((player) => `${player.playerName}${player.position ? `,${player.position}` : ""}`).join("\n"))}</textarea><button type="button" class="secondary-button compact-button" data-test-game-action="save-roster">ロースターを保存</button>
+    <label for="adminTestDetailPrediction">テスト予想（1行：打順 守備 選手名）</label><textarea id="adminTestDetailPrediction" rows="5" placeholder="1 中 水谷瞬&#10;2 左 松本剛"></textarea><button type="button" class="secondary-button compact-button" data-test-game-action="save-prediction">テスト予想を保存</button>
+    <label for="adminTestDetailLineup">実スタメン（1行：打順 守備 選手名）</label><textarea id="adminTestDetailLineup" rows="5" placeholder="1 中 水谷瞬&#10;2 左 松本剛"></textarea><p id="adminTestDetailLineupPreview" class="admin-test-game-preview">入力すると9人分の形式を確認できます。</p><button type="button" class="secondary-button compact-button" data-test-game-action="save-lineup">実スタメンを登録</button>
+    <label for="adminTestDetailReason">訂正理由</label><input id="adminTestDetailReason" type="text" maxlength="240" value="テスト試合の訂正確認"><label for="adminTestDetailRevision">訂正版スタメン</label><textarea id="adminTestDetailRevision" rows="5" placeholder="訂正後の1〜9番を入力"></textarea><div class="admin-test-game-actions"><button type="button" class="secondary-button compact-button" data-test-game-action="rescore-preview">再採点プレビュー</button><button type="button" class="danger-button compact-button" data-test-game-action="rescore-confirm" ${revisionPreview ? "" : "disabled"}>再採点を確定</button></div>${revisionPreview ? `<div class="admin-test-game-preview"><strong>再採点プレビュー</strong><p>${revisionPreview.summary?.scoreChangedCount || 0}件の点数が変わる見込みです。version ${revisionPreview.lineupVersion}</p></div>` : ""}
+    <section class="admin-test-game-results" aria-live="polite"><h5>テスト採点結果</h5>${(game.results || []).length ? `<ul>${game.results.map((result) => `<li><strong>${escapeHtml(result.username)}</strong><span>${result.score === null ? "未採点" : `${result.score}点`}</span><small>${escapeHtml(formatDateTime(result.scoredAt || result.updatedAt))}</small></li>`).join("")}</ul>` : "<p>採点済み結果はまだありません。</p>"}</section>`;
+}
+
+async function refreshAdminTestGames({ selectGameId = "" } = {}) {
+  if (state.appMode !== "admin" || state.adminAccess.status !== "authorized") return;
+  const url = buildAdminTestGameApiUrl();
+  if (!url) return;
+  state.adminTestGames.isLoading = true;
+  renderAdminTestGamePanel();
+  try {
+    const response = await fetch(url, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok || !Array.isArray(payload.games)) throw new Error(payload?.error || `HTTP ${response.status}`);
+    state.adminTestGames.games = payload.games;
+    const selected = selectGameId || state.adminTestGames.selectedGameId;
+    if (selected && payload.games.some((game) => game.gameId === selected)) await loadAdminTestGame(selected);
+    else if (!selected) state.adminTestGames.detail = null;
+    state.adminTestGames.message = "";
+  } catch (error) {
+    console.error("テスト試合一覧の取得に失敗しました", error.message);
+    state.adminTestGames.message = "テスト試合一覧を取得できませんでした。";
+  } finally {
+    state.adminTestGames.isLoading = false;
+    renderAdminTestGamePanel();
+  }
+}
+
+async function loadAdminTestGame(gameId) {
+  const url = buildAdminTestGameApiUrl(gameId);
+  if (!url) return;
+  const response = await fetch(url, { credentials: "include", cache: "no-store" });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload?.ok || !payload.game) throw new Error(payload?.error || `HTTP ${response.status}`);
+  state.adminTestGames.selectedGameId = gameId;
+  state.adminTestGames.detail = payload.game;
+  renderAdminTestGamePanel();
+}
+
+async function adminTestGameRequest(action, { method = "POST", body = null, confirm = "" } = {}) {
+  const gameId = state.adminTestGames.selectedGameId;
+  if (!gameId) return;
+  if (confirm && !window.confirm(confirm)) return;
+  const url = buildAdminTestGameApiUrl(gameId, action);
+  state.adminTestGames.isBusy = true;
+  state.adminTestGames.message = "テスト試合を操作中...";
+  renderAdminTestGamePanel();
+  try {
+    const response = await fetch(url, { method, credentials: "include", cache: "no-store", headers: body ? { "Content-Type": "application/json" } : undefined, body: body ? JSON.stringify(body) : undefined });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+    if (payload.previewId) state.adminTestGames.rescorePreview = payload;
+    if (action === "rescore/confirm") state.adminTestGames.rescorePreview = null;
+    const actionMessage = payload.warnings?.length ? payload.warnings.join(" ") : "テスト試合を更新しました。";
+    state.adminTestGames.message = actionMessage;
+    if (action === "delete" || method === "DELETE") {
+      state.adminTestGames.selectedGameId = "";
+      state.adminTestGames.detail = null;
+      state.adminTestGames.rescorePreview = null;
+    } else {
+      await loadAdminTestGame(gameId);
+    }
+    await refreshAdminTestGames();
+    state.adminTestGames.message = actionMessage;
+  } catch (error) {
+    console.error("テスト試合の操作に失敗しました", error.message);
+    state.adminTestGames.message = error.message || "テスト試合の操作に失敗しました。";
+  } finally {
+    state.adminTestGames.isBusy = false;
+    renderAdminTestGamePanel();
+  }
+}
+
+async function handleAdminTestGameCreate(event) {
+  event.preventDefault();
+  if (state.adminAccess.status !== "authorized") return;
+  const value = (id) => document.getElementById(id)?.value || "";
+  const url = buildAdminTestGameApiUrl();
+  const startAt = new Date(value("adminTestGameStartAt"));
+  const predictionDeadlineAt = new Date(value("adminTestGameDeadlineAt"));
+  if (Number.isNaN(startAt.getTime()) || Number.isNaN(predictionDeadlineAt.getTime())) {
+    state.adminTestGames.message = "試合開始日時と締切日時を入力してください。";
+    renderAdminTestGamePanel();
+    return;
+  }
+  const body = { title: value("adminTestGameTitle"), gameDate: value("adminTestGameDate"), startAt: startAt.toISOString(), predictionDeadlineAt: predictionDeadlineAt.toISOString(), awayTeam: value("adminTestGameOpponent"), venue: value("adminTestGameVenue"), rosterText: value("adminTestGameRoster"), memo: value("adminTestGameMemo") };
+  try {
+    const response = await fetch(url, { method: "POST", credentials: "include", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+    event.currentTarget.reset();
+    const createMessage = payload.warnings?.length ? payload.warnings.join(" ") : "テスト試合を作成しました。";
+    state.adminTestGames.message = createMessage;
+    await refreshAdminTestGames({ selectGameId: payload.game?.gameId });
+    state.adminTestGames.message = createMessage;
+  } catch (error) {
+    state.adminTestGames.message = error.message || "テスト試合を作成できませんでした。";
+    renderAdminTestGamePanel();
+  }
+}
+
+async function handleAdminTestGameAction(event) {
+  const target = event.target instanceof Element ? event.target.closest("[data-test-game-action], [data-test-game-id]") : null;
+  if (!target) return;
+  const gameId = target.dataset.testGameId;
+  if (gameId) {
+    try { await loadAdminTestGame(gameId); } catch (error) { state.adminTestGames.message = error.message; renderAdminTestGamePanel(); }
+    return;
+  }
+  const action = target.dataset.testGameAction;
+  if (action === "refresh") return refreshAdminTestGames();
+  if (action === "close-detail") { state.adminTestGames.selectedGameId = ""; state.adminTestGames.detail = null; renderAdminTestGamePanel(); return; }
+  const value = (id) => document.getElementById(id)?.value || "";
+  if (action === "save-deadline") {
+    const deadline = new Date(value("adminTestDetailDeadline"));
+    if (Number.isNaN(deadline.getTime())) {
+      state.adminTestGames.message = "予想締切日時を入力してください。";
+      renderAdminTestGamePanel();
+      return;
+    }
+    return adminTestGameRequest("", { method: "PATCH", body: { predictionDeadlineAt: deadline.toISOString() } });
+  }
+  if (action === "save-roster") return adminTestGameRequest("roster", { body: { rosterText: value("adminTestDetailRoster") } });
+  if (action === "save-prediction") return adminTestGameRequest("prediction", { body: { prediction: { schemaVersion: 1, lineup: parseAdminTestLineupText(value("adminTestDetailPrediction")) } } });
+  if (action === "save-lineup") return adminTestGameRequest("lineup", { body: { lineupText: value("adminTestDetailLineup") } });
+  if (action === "score-preview") return adminTestGameRequest("score/preview");
+  if (action === "score") return adminTestGameRequest("score", { confirm: "テスト試合を本採点します。よろしいですか？" });
+  if (action === "publish") return adminTestGameRequest("publish", { confirm: "テスト試合の結果を公開状態にします。よろしいですか？" });
+  if (action === "close") return adminTestGameRequest("close", { confirm: "テスト試合を締切状態にします。よろしいですか？" });
+  if (action === "reopen") return adminTestGameRequest("reopen", { confirm: "テスト試合を予想受付へ戻します。よろしいですか？" });
+  if (action === "delete") return adminTestGameRequest("", { method: "DELETE", confirm: "テスト試合と関連データを削除します。よろしいですか？" });
+  if (action === "rescore-preview") return adminTestGameRequest("rescore/preview", { body: { lineupText: value("adminTestDetailRevision"), reason: value("adminTestDetailReason") } });
+  if (action === "rescore-confirm") return adminTestGameRequest("rescore/confirm", { body: { previewId: state.adminTestGames.rescorePreview?.previewId, lineupVersion: state.adminTestGames.rescorePreview?.lineupVersion, reason: value("adminTestDetailReason") }, confirm: "テスト試合だけを再採点します。よろしいですか？" });
+}
+
+function parseAdminTestLineupText(text) {
+  return String(text || "").split(/\r?\n/).map((line) => {
+    const parts = line.replace(/\u3000/g, " ").replace(/\s+/g, " ").trim().split(" ");
+    const battingOrder = Number(parts.shift());
+    const position = normalizePosition(parts.shift());
+    const playerName = normalizePlayerName(parts.join(" "));
+    const player = playerNames.find((name) => normalizePlayerKey(name) === normalizePlayerKey(playerName));
+    const uniformNumber = player ? players.find((item) => item.name === player)?.uniformNumber : "";
+    return { battingOrder, playerId: uniformNumber ? `F-${uniformNumber}` : "", teamId: "F", teamCode: "fighters", uniformNumber, playerName, position };
+  }).filter((item) => item.battingOrder && item.playerName);
 }
 
 function formatAdminTestValue(value, fallback = "-") {
@@ -1130,6 +1387,7 @@ function openAdminPanel() {
   renderAdminTestPanel();
   void refreshAdminTestStatus();
   void refreshAutoScoringTests();
+  void refreshAdminTestGames();
   void refreshAdminTestAchievements();
 }
 

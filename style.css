@@ -3480,6 +3480,221 @@ textarea:focus {
   background: #fbfdff;
 }
 
+.admin-test-game-form,
+.admin-test-game-detail {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.admin-test-game-form input,
+.admin-test-game-form textarea,
+.admin-test-game-detail input,
+.admin-test-game-detail textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #ffffff;
+  color: var(--text);
+  font: inherit;
+}
+
+.admin-test-game-form label,
+.admin-test-game-detail > label {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.admin-test-games-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 16px;
+}
+
+.admin-test-game-list-heading,
+.admin-test-game-detail-heading,
+.admin-test-game-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.admin-test-game-list-heading {
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.admin-test-game-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.admin-test-game-row:hover,
+.admin-test-game-row:focus-visible,
+.admin-test-game-row.is-selected {
+  border-color: var(--fighters-blue);
+  background: #f5faff;
+}
+
+.test-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 3px 6px;
+  border: 1px solid #d6b060;
+  border-radius: 5px;
+  background: #fff8e8;
+  color: #795715;
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+}
+
+.admin-test-game-row-main {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.admin-test-game-row-main small,
+.admin-test-game-detail-heading p {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.admin-test-game-row-meta {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+
+.admin-test-game-detail {
+  padding: 12px;
+  border: 1px solid #d8e4ef;
+  border-radius: 8px;
+  background: #f8fbff;
+}
+
+.admin-test-game-detail-heading {
+  justify-content: space-between;
+}
+
+.admin-test-game-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.admin-test-game-inline input {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.admin-test-game-detail-heading h4 {
+  margin: 6px 0 2px;
+  color: var(--fighters-deep-blue);
+}
+
+.admin-test-game-detail-heading p {
+  margin: 0;
+}
+
+.admin-test-game-state {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0 2px;
+}
+
+.admin-test-game-state div {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.admin-test-game-state dt {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.admin-test-game-state dd {
+  margin: 3px 0 0;
+  font-size: 0.8rem;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.admin-test-game-empty,
+.admin-test-game-preview {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.admin-test-game-results {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.admin-test-game-results h5 {
+  margin: 0 0 7px;
+  color: var(--fighters-deep-blue);
+}
+
+.admin-test-game-results p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.admin-test-game-results ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-test-game-results li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.admin-test-game-results li span {
+  font-weight: 800;
+}
+
+.admin-test-game-results li small {
+  margin-left: auto;
+  color: var(--muted);
+}
+
 .guide-back-link-bottom {
   margin-top: 4px;
 }
@@ -3505,6 +3720,14 @@ textarea:focus {
   .guide-definitions div {
     grid-template-columns: 58px minmax(0, 1fr);
     gap: 8px;
+  }
+
+  .admin-test-game-state {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-test-game-row {
+    align-items: flex-start;
   }
 }
 

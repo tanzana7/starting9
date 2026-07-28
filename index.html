@@ -381,6 +381,37 @@
           <strong>管理者専用の確認操作です。</strong>
           <p>テスト予想とテスト実績は通常のランキング・実績集計から除外されます。</p>
         </section>
+        <section class="admin-auto-scoring-test-panel" aria-labelledby="admin-auto-scoring-test-title">
+          <div class="admin-auto-scoring-test-heading">
+            <span class="test-badge">TEST</span>
+            <div>
+              <p class="area-label">AUTO SCORING TEST</p>
+              <h3 id="admin-auto-scoring-test-title">自動採点テスト</h3>
+              <p>締切日時と正解スタメンを設定して、締切後の自動採点・結果公開を確認できます。</p>
+            </div>
+          </div>
+          <form id="adminAutoScoringTestCreateForm" class="admin-auto-scoring-test-form">
+            <label>試合名<input id="autoScoringTestTitle" required maxlength="160" placeholder="例：自動採点確認戦"></label>
+            <label>試合日<input id="autoScoringTestDate" type="date" required></label>
+            <label>試合開始<input id="autoScoringTestStartAt" type="datetime-local" required></label>
+            <label>予想締切<input id="autoScoringTestDeadlineAt" type="datetime-local" required></label>
+            <div class="admin-test-deadline-presets" aria-label="締切日時の入力補助">
+              <span>締切補助</span>
+              <button type="button" class="secondary-button compact-button" data-auto-test-deadline-minutes="1">1分後</button>
+              <button type="button" class="secondary-button compact-button" data-auto-test-deadline-minutes="3">3分後</button>
+              <button type="button" class="secondary-button compact-button" data-auto-test-deadline-minutes="5">5分後</button>
+              <button type="button" class="secondary-button compact-button" data-auto-test-deadline-minutes="10">10分後</button>
+            </div>
+            <label>対戦相手<input id="autoScoringTestOpponent" value="e" maxlength="8" required></label>
+            <label>球場<input id="autoScoringTestVenue" maxlength="160"></label>
+            <label class="admin-auto-scoring-test-wide">ロースター<small>1行1選手、9人以上。選手名または「選手名,守備位置」</small><textarea id="autoScoringTestRoster" required rows="5" placeholder="水谷瞬\n松本剛\n郡司裕也"></textarea></label>
+            <label class="admin-auto-scoring-test-wide">自動採点用正解スタメン<small>1 中 水谷瞬 の形式で9行</small><textarea id="autoScoringTestAnswerLineup" required rows="5" placeholder="1 中 水谷瞬\n2 左 松本剛"></textarea><output id="autoScoringTestAnswerPreview" class="admin-auto-scoring-test-preview" aria-live="polite">入力内容のプレビューがここに表示されます。</output></label>
+            <button class="primary-button admin-auto-scoring-test-wide" type="submit">自動採点テストを作成</button>
+          </form>
+          <p id="adminAutoScoringTestMessage" class="message" role="status" aria-live="polite"></p>
+          <div id="adminAutoScoringTestList" class="admin-auto-scoring-test-list" aria-live="polite"></div>
+          <div id="adminAutoScoringTestDetail" class="admin-auto-scoring-test-detail" aria-live="polite"></div>
+        </section>
         <section class="admin-test-panel" aria-labelledby="admin-test-status-title">
           <div>
             <p class="area-label">TEST STATUS</p>

@@ -2497,6 +2497,37 @@ textarea:focus {
   overflow-wrap: anywhere;
 }
 
+.result-player-card {
+  display: inline-flex;
+  align-items: stretch;
+  box-sizing: border-box;
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #ffffff;
+  vertical-align: middle;
+}
+
+.result-player-card .result-position-tile {
+  flex: 0 0 34px;
+  align-self: stretch;
+  width: 34px;
+  height: auto;
+  min-height: 32px;
+  border: 0;
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.result-player-card .result-player-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+}
+
 .result-table .result-point-cell {
   min-width: 54px;
   color: var(--fighters-deep-blue);

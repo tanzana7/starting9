@@ -34,8 +34,8 @@ test("採点結果テーブルは同じ打順を予想と実際で比較する",
   assert.doesNotMatch(source, /実際の打順<\/th>/);
   assert.doesNotMatch(source, /実際は/);
   assert.doesNotMatch(source, /result-actual-order-note/);
-  assert.match(source, /<td class="result-player-cell"><span class="result-player-name">\$\{escapeHtml\(detail\.player\)\}<\/span><\/td>/);
-  assert.match(source, /<td class="result-player-cell result-actual-group-cell"><span class="result-player-name">\$\{escapeHtml\(detail\.actualPlayer \|\| "-"\)\}<\/span><\/td>/);
+  assert.match(source, /createResultPlayerCardHtml\(detail\.player, detail\.position\)/);
+  assert.match(source, /createResultPlayerCardHtml\(detail\.actualPlayer \|\| "-", detail\.actualPosition\)/);
   assert.match(source, /createHitBadge\(detail\.isPlayerHit, "出場"\)/);
   assert.match(source, /createHitBadge\(detail\.isOrderHit, "打順"\)/);
   assert.match(source, /createHitBadge\(detail\.isPositionHit, "守備"\)/);
@@ -89,10 +89,11 @@ test("実際の打順照合は内部処理として維持し、結果テーブ�
 
 test("結果テーブルの選手セルにはカテゴリ背景クラスを付けず、守備位置表示は維持する", () => {
   const table = sourceForFunction("createResultTable");
+  const card = sourceForFunction("createResultPlayerCardHtml");
   assert.doesNotMatch(table, /getPlayerCategoryClassNames\(detail\.(player|actualPlayer)\)/);
-  assert.equal((table.match(/class="result-player-name"/g) || []).length, 2);
-  assert.match(table, /createResultPositionTileHtml\(detail\.position\)/);
-  assert.match(table, /createResultPositionTileHtml\(detail\.actualPosition\)/);
+  assert.match(card, /class="result-player-card"/);
+  assert.match(card, /createResultPositionTileHtml\(position\)/);
+  assert.match(card, /class="result-player-name"/);
   assert.doesNotMatch(css, /\.result-table td\.is-category-/);
   assert.match(css, /\.result-player-name\s*\{[\s\S]*background: #ffffff/);
   assert.match(css, /\.result-player-name\s*\{[\s\S]*border: 1px solid var\(--border\)/);
@@ -101,8 +102,15 @@ test("結果テーブルの選手セルにはカテゴリ背景クラスを付�
   assert.match(css, /\.result-player-name\s*\{[\s\S]*font-weight: 500/);
 });
 
+test("結果テーブルの選手カードは守備位置と名前を薄い枠線で一体化する", () => {
+  assert.match(css, /\.result-player-card\s*\{[\s\S]*border: 1px solid var\(--border\)/);
+  assert.match(css, /\.result-player-card\s*\{[\s\S]*border-radius: 7px/);
+  assert.match(css, /\.result-player-card \.result-position-tile\s*\{[\s\S]*border-right: 1px solid var\(--border\)/);
+  assert.match(css, /\.result-player-card \.result-player-name\s*\{[\s\S]*border: 0/);
+});
+
 test("採点結果テーブルはスマホでも内容を保持して横スクロールできる", () => {
   assert.match(css, /\.result-table-wrap\s*\{[\s\S]*overflow-x: auto/);
   assert.match(css, /\.result-table\s*\{[\s\S]*min-width: 700px/);
-  assert.match(css, /\.result-table \.result-player-cell\s*\{[\s\S]*overflow-wrap: anywhere/);
+  assert.match(css, /\.result-player-name\s*\{[\s\S]*overflow-wrap: anywhere/);
 });

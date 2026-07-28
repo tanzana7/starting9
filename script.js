@@ -7034,10 +7034,8 @@ function createResultTable(details) {
     const row = document.createElement("tr");
     row.innerHTML = `
       <td><strong>${detail.order}番</strong></td>
-      <td class="result-player-cell"><span class="result-player-name">${escapeHtml(detail.player)}</span></td>
-      <td>${createResultPositionTileHtml(detail.position)}</td>
-      <td class="result-player-cell result-actual-group-cell"><span class="result-player-name">${escapeHtml(detail.actualPlayer || "-")}</span></td>
-      <td>${createResultPositionTileHtml(detail.actualPosition)}</td>
+      <td class="result-player-cell">${createResultPlayerCardHtml(detail.player, detail.position)}</td>
+      <td class="result-player-cell result-actual-group-cell">${createResultPlayerCardHtml(detail.actualPlayer || "-", detail.actualPosition)}</td>
       <td>${createHitBadge(detail.isPlayerHit, "出場")}</td>
       <td class="result-judgement-cell">
         ${createHitBadge(detail.isOrderHit, "打順")}
@@ -7049,6 +7047,15 @@ function createResultTable(details) {
   });
 
   return table;
+}
+
+function createResultPlayerCardHtml(player, position) {
+  return `
+    <span class="result-player-card">
+      ${createResultPositionTileHtml(position)}
+      <span class="result-player-name">${escapeHtml(player || "-")}</span>
+    </span>
+  `;
 }
 
 function createHitBadge(isHit, label) {

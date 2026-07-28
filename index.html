@@ -381,6 +381,36 @@
           <strong>管理者専用の確認操作です。</strong>
           <p>テスト予想とテスト実績は通常のランキング・実績集計から除外されます。</p>
         </section>
+        <section class="admin-test-panel admin-test-game-panel" aria-labelledby="admin-test-game-title">
+          <div>
+            <p class="area-label">TEST GAME DATA</p>
+            <h3 id="admin-test-game-title">テスト試合</h3>
+            <p>本番日程やCronには登録されません。作成した試合だけで受付・採点・訂正を確認できます。</p>
+          </div>
+          <form id="adminTestGameCreateForm" class="admin-test-game-form" novalidate>
+            <label for="adminTestGameTitle">試合名</label>
+            <input id="adminTestGameTitle" type="text" maxlength="120" placeholder="例：採点フロー確認テスト">
+            <label for="adminTestGameDate">試合日</label>
+            <input id="adminTestGameDate" type="date">
+            <label for="adminTestGameStartAt">試合開始日時</label>
+            <input id="adminTestGameStartAt" type="datetime-local">
+            <label for="adminTestGameDeadlineAt">予想締切日時</label>
+            <input id="adminTestGameDeadlineAt" type="datetime-local">
+            <label for="adminTestGameOpponent">対戦相手</label>
+            <input id="adminTestGameOpponent" type="text" maxlength="80" placeholder="例：楽天イーグルス">
+            <label for="adminTestGameVenue">球場</label>
+            <input id="adminTestGameVenue" type="text" maxlength="120" placeholder="例：エスコンフィールド">
+            <label for="adminTestGameRoster">ロースター（1行1人、名前 または 名前,守備位置）</label>
+            <textarea id="adminTestGameRoster" rows="7" placeholder="水谷瞬,外野手&#10;松本剛,外野手&#10;郡司裕也,捕手&#10;レイエス,DH"></textarea>
+            <p id="adminTestGameRosterPreview" class="admin-test-game-preview" aria-live="polite">入力すると登録内容を確認できます。</p>
+            <label for="adminTestGameMemo">管理者メモ（任意）</label>
+            <textarea id="adminTestGameMemo" rows="3" maxlength="2000"></textarea>
+            <button class="primary-button compact-button" type="submit">テスト試合を作成</button>
+          </form>
+          <p id="adminTestGameMessage" class="message" role="status" aria-live="polite"></p>
+          <div id="adminTestGamesList" class="admin-test-games-list" aria-live="polite"></div>
+          <div id="adminTestGameDetail" class="admin-test-game-detail hidden" aria-live="polite"></div>
+        </section>
         <section class="admin-test-panel" aria-labelledby="admin-test-status-title">
           <div>
             <p class="area-label">TEST STATUS</p>
@@ -477,6 +507,6 @@
   <script src="game-schedule.js?v=20260718-probable-starter"></script>
   <script type="module" src="pregame-automation.js?v=20260722-2"></script>
   <script src="auth.js?v=auth-api-local-20260719"></script>
-  <script src="script.js?v=ui-ux-refresh-20260727-1"></script>
+  <script src="script.js?v=admin-test-data-20260728-1"></script>
 </body>
 </html>

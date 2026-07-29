@@ -4070,16 +4070,6 @@ async function refreshAdminGameWorkflowStatus({ force = false } = {}) {
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok) throw new Error(payload?.error || payload?.code || `HTTP ${response.status}`);
     if (requestId !== state.gameWorkflow.requestId) return;
-    if (payload?.publishing?.status === "published" && !state.gameInfo.manualGameSelection) {
-      const nextSchedule = findAdminScheduleAfter(gameId);
-      if (nextSchedule) {
-        applyGameSchedule(nextSchedule, "auto");
-        state.gameWorkflow.record = null;
-        state.gameWorkflow.message = "公開済みの本日試合を完了として、次回試合へ切り替えました。";
-        void refreshAdminGameWorkflowStatus({ force: true });
-        return;
-      }
-    }
     state.gameWorkflow.record = payload;
   } catch (error) {
     if (requestId !== state.gameWorkflow.requestId) return;
@@ -6502,19 +6492,14 @@ function resolveNpbScoreUrl(schedule) {
   if (typeof generator === "function") {
     try {
       const generatedUrl = generator(schedule);
-      addScheduleLoadLog(`NPB URL生成：${generatedUrl}`);
       return generatedUrl;
     } catch (error) {
       const message = `URL生成に必要な情報が不足しています：${error.message}`;
-      addScheduleLoadLog(message);
       console.error(message, schedule, error);
     }
   }
 
   const fallbackUrl = typeof schedule?.npbScoreUrl === "string" ? schedule.npbScoreUrl : "";
-  if (fallbackUrl) {
-    addScheduleLoadLog(`NPB URLフォールバックを使用：${fallbackUrl}`);
-  }
   return fallbackUrl;
 }
 
@@ -6526,7 +6511,7 @@ function renderGameSchedulePicker() {
 
   const currentValue = select.value;
   select.innerHTML = "";
-  const schedules = getHamGameSchedule();
+  const schedules = getHamGameSchedule().filter(isNormalManagedSchedule);
 
   const placeholder = document.createElement("option");
   placeholder.value = "";
@@ -6540,10 +6525,11 @@ function renderGameSchedulePicker() {
     select.appendChild(option);
   });
 
-  if (schedules.some((schedule) => schedule.gameId === currentValue)) {
+  const preferredValue = state.nextScheduleId || currentValue;
+  if (schedules.some((schedule) => schedule.gameId === preferredValue)) {
+    select.value = preferredValue;
+  } else if (schedules.some((schedule) => schedule.gameId === currentValue)) {
     select.value = currentValue;
-  } else if (schedules.some((schedule) => schedule.gameId === state.nextScheduleId)) {
-    select.value = state.nextScheduleId;
   }
 
   renderNextGameScheduleSummary(findNextGameSchedule());
@@ -6554,8 +6540,24 @@ function initializeGameSchedule() {
     return;
   }
 
+  const savedGameId = state.gameInfo.selectedGameId || state.nextScheduleId;
+  if (savedGameId) {
+    state.nextScheduleId = savedGameId;
+    renderGameSchedulePicker();
+    const savedSchedule = getHamGameSchedule().find((schedule) => schedule.gameId === savedGameId);
+    if (savedSchedule && isNormalManagedSchedule(savedSchedule)) {
+      restoreManagedGameSchedule(savedSchedule);
+      refreshAdminScoringSummary({ force: true });
+      return;
+    }
+
+    updateGameStartInputMode();
+    renderGameInfoDisplay();
+    setScheduleLoaderMessage("保存済みの管理対象試合を表示しています。日程を再同期するまで自動変更しません。", "warning");
+    return;
+  }
+
   const nextSchedule = selectAdminTargetGame();
-  state.nextScheduleId = nextSchedule?.gameId || "";
   renderGameSchedulePicker();
   refreshAdminScoringSummary({ force: true });
 
@@ -6572,15 +6574,46 @@ function initializeGameSchedule() {
   setScheduleLoaderMessage("日程データから対象試合と試合開始日時を自動反映しました。", "success");
 }
 
+function isNormalManagedSchedule(schedule) {
+  const gameType = String(schedule?.type || schedule?.gameType || "").toLowerCase();
+  const gameId = String(schedule?.gameId || "").toLowerCase();
+  return schedule?.isTestGame !== true
+    && schedule?.isAutoScoringTest !== true
+    && schedule?.testGame !== true
+    && !["test", "auto_scoring_test", "auto-scoring-test"].includes(gameType)
+    && !gameId.includes("auto-scoring-test");
+}
+
+function restoreManagedGameSchedule(schedule) {
+  const scoreUrl = state.gameInfo.scoreUrl || schedule.npbScoreUrl || "";
+  const matchup = state.gameInfo.matchup || schedule.matchupLabel || "";
+  const gameStartAt = state.gameInfo.manualStartOverride
+    ? state.gameInfo.gameStartAt
+    : `${getScheduleDate(schedule)}T${getScheduleStartTime(schedule)}`;
+
+  const matchupInput = document.getElementById("matchupInput");
+  const scoreUrlInput = document.getElementById("npbUrlInput");
+  const gameStartInput = document.getElementById("gameStartInput");
+  if (matchupInput) matchupInput.value = matchup;
+  if (scoreUrlInput) scoreUrlInput.value = scoreUrl;
+  if (gameStartInput) gameStartInput.value = gameStartAt;
+
+  state.gameInfo.selectedGameId = schedule.gameId;
+  updateGameStartInputMode();
+  refreshPredictionDeadlineState();
+  renderLoadedScheduleInfo(schedule, scoreUrl);
+  renderGameInfoDisplay();
+}
+
 function findNextGameSchedule() {
   const today = getJapanDateString();
   return getHamGameSchedule()
-    .filter((schedule) => getScheduleDate(schedule) >= today)
+    .filter((schedule) => isNormalManagedSchedule(schedule) && getScheduleDate(schedule) >= today)
     .sort((left, right) => getScheduleSortValue(left).localeCompare(getScheduleSortValue(right)))[0] || null;
 }
 
 function selectAdminTargetGame() {
-  const schedules = getHamGameSchedule().filter((schedule) => !isScheduleGameUnavailable(schedule) && !isAdminScheduleCompleted(schedule));
+  const schedules = getHamGameSchedule().filter((schedule) => isNormalManagedSchedule(schedule) && !isScheduleGameUnavailable(schedule) && !isAdminScheduleCompleted(schedule));
   const manualGame = state.gameInfo.manualGameSelection
     ? schedules.find((schedule) => schedule.gameId === state.gameInfo.selectedGameId)
     : null;
@@ -6599,16 +6632,6 @@ function selectAdminTargetGame() {
 
 function isAdminScheduleCompleted(schedule) {
   return ["completed", "finished", "final"].includes(String(schedule?.status || "").toLowerCase());
-}
-
-function findAdminScheduleAfter(gameId) {
-  const current = getHamGameSchedule().find((schedule) => schedule.gameId === gameId);
-  if (!current) return null;
-  const currentValue = getScheduleSortValue(current);
-  return getHamGameSchedule()
-    .filter((schedule) => !isScheduleGameUnavailable(schedule) && !isAdminScheduleCompleted(schedule))
-    .filter((schedule) => getScheduleSortValue(schedule) > currentValue)
-    .sort((left, right) => getScheduleSortValue(left).localeCompare(getScheduleSortValue(right)))[0] || null;
 }
 
 function getScheduleDate(schedule) {
@@ -6694,48 +6717,41 @@ function setGameStartManualOverride(enabled) {
 }
 
 function loadNextGameSchedule() {
-  addScheduleLoadLog("「次の試合を読み込む」を実行");
   const schedule = findNextGameSchedule();
   if (!schedule) {
     setScheduleLoaderMessage("今日以降の登録済み試合はありません。", "warning");
-    addScheduleLoadLog("読み込む次の試合が見つかりませんでした");
     return;
   }
 
-  state.nextScheduleId = schedule.gameId;
   renderGameSchedulePicker();
-  applyGameSchedule(schedule, "manual-selection");
-  setScheduleLoaderMessage(`次の試合「${schedule.matchupLabel}」を読み込みました。`, "success");
+  const changed = applyGameSchedule(schedule, "manual-selection");
+  setScheduleLoaderMessage(changed ? `次の試合「${schedule.matchupLabel}」を読み込みました。` : "この試合は既に管理対象として選択されています。", changed ? "success" : "info");
 }
 
 function loadTodayGameSchedule() {
-  addScheduleLoadLog("「今日の試合を読み込む」を実行");
   const today = getLocalDateString();
-  const schedule = getHamGameSchedule().find((item) => getScheduleDate(item) === today);
+  const schedule = getHamGameSchedule().find((item) => isNormalManagedSchedule(item) && getScheduleDate(item) === today);
 
   if (!schedule) {
     setScheduleLoaderMessage(`本日（${today}）の登録済み試合はありません。`, "warning");
-    addScheduleLoadLog(`本日（${today}）の試合が見つかりませんでした`);
     return;
   }
 
-  applyGameSchedule(schedule, "manual-selection");
-  setScheduleLoaderMessage(`今日の試合「${schedule.matchupLabel}」を読み込みました。`, "success");
+  const changed = applyGameSchedule(schedule, "manual-selection");
+  setScheduleLoaderMessage(changed ? `今日の試合「${schedule.matchupLabel}」を読み込みました。` : "この試合は既に管理対象として選択されています。", changed ? "success" : "info");
 }
 
 function loadSelectedGameSchedule() {
-  addScheduleLoadLog("「選択した試合を読み込む」を実行");
   const gameId = document.getElementById("gameScheduleSelect")?.value || "";
-  const schedule = getHamGameSchedule().find((item) => item.gameId === gameId);
+  const schedule = getHamGameSchedule().find((item) => isNormalManagedSchedule(item) && item.gameId === gameId);
 
   if (!schedule) {
     setScheduleLoaderMessage("読み込む試合を選択してください。", "warning");
-    addScheduleLoadLog("選択された試合が見つかりませんでした");
     return;
   }
 
-  applyGameSchedule(schedule, "manual-selection");
-  setScheduleLoaderMessage(`試合「${schedule.matchupLabel}」を読み込みました。`, "success");
+  const changed = applyGameSchedule(schedule, "manual-selection");
+  setScheduleLoaderMessage(changed ? `試合「${schedule.matchupLabel}」を読み込みました。` : "この試合は既に管理対象として選択されています。", changed ? "success" : "info");
 }
 
 function applyGameSchedule(schedule, source = "button") {
@@ -6746,7 +6762,21 @@ function applyGameSchedule(schedule, source = "button") {
 
   if (!matchupInput && !scoreUrlInput && !gameStartInput) {
     addScheduleLoadLog("試合入力欄が見つからないため反映できませんでした");
-    return;
+    return false;
+  }
+
+  if (!isNormalManagedSchedule(schedule)) {
+    setScheduleLoaderMessage("テスト試合は通常の管理対象試合へ設定できません。", "warning");
+    return false;
+  }
+
+  const previousGameId = state.gameInfo.selectedGameId || state.nextScheduleId || "";
+  const targetChanged = previousGameId !== (schedule.gameId || "");
+  if (!targetChanged) {
+    state.nextScheduleId = schedule.gameId || previousGameId;
+    renderGameSchedulePicker();
+    restoreManagedGameSchedule(schedule);
+    return false;
   }
 
   state.nextScheduleId = schedule.gameId || "";
@@ -6790,9 +6820,10 @@ function applyGameSchedule(schedule, source = "button") {
   } else {
     addScheduleLoadLog(`読み込み完了：${formatScheduleForLog(schedule)}`);
   }
+  return true;
 }
 
-function renderLoadedScheduleInfo(schedule, scoreUrl = resolveNpbScoreUrl(schedule)) {
+function renderLoadedScheduleInfo(schedule, scoreUrl = "") {
   const container = document.getElementById("loadedScheduleInfo");
   if (!container) {
     return;

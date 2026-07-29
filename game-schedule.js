@@ -115,8 +115,6 @@ function findNextHamGame(schedule = [], now = new Date()) {
   scheduleRoot.getJapanDateString = getJapanDateString;
   scheduleRoot.getJapanDateTimeString = getJapanDateTimeString;
   scheduleRoot.findNextHamGame = findNextHamGame;
-  addScheduleLog("日程JSONの読み込みを開始");
-
   scheduleRoot.HAM_GAME_SCHEDULE_READY = fetch(scheduleUrl, { cache: "no-store" })
     .then((response) => {
       if (!response.ok) {
@@ -146,7 +144,6 @@ function findNextHamGame(schedule = [], now = new Date()) {
       });
 
       scheduleRoot.HAM_GAME_SCHEDULE = schedule;
-      addScheduleLog(`日程JSONを読み込みました：${schedule.length}試合`);
       return schedule;
     })
     .catch((error) => {

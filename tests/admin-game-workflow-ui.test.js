@@ -11,7 +11,9 @@ test("管理画面は日程から対象試合と開始日時を自動反映し�
   assert.match(script, /function selectAdminTargetGame\(\)/);
   assert.match(script, /getScheduleDate\(schedule\) === today/);
   assert.match(script, /function isAdminScheduleCompleted\(schedule\)/);
-  assert.match(script, /payload\?\.publishing\?\.status === "published"/);
+  assert.match(script, /state\.gameWorkflow\.record = payload/);
+  const workflowRefresh = script.slice(script.indexOf("async function refreshAdminGameWorkflowStatus"), script.indexOf("function getWorkflowLogStatusLabel"));
+  assert.doesNotMatch(workflowRefresh, /applyGameSchedule\(nextSchedule, "auto"\)/);
   assert.match(script, /manualGameSelection/);
   assert.match(script, /manualStartOverride/);
   assert.match(script, /function setGameStartManualOverride\(enabled\)/);

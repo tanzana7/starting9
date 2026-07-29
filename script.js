@@ -797,6 +797,16 @@ async function handleAutoScoringTestClick(event) {
     renderAutoScoringTests();
     return;
   }
+  if (action === "refresh") {
+    try {
+      await loadAutoScoringTest(gameId);
+      state.adminAutoScoringTests.message = "自動採点テストの状態を再取得しました。";
+    } catch (error) {
+      state.adminAutoScoringTests.message = error.message || "自動採点テストを取得できませんでした。";
+    }
+    renderAutoScoringTests();
+    return;
+  }
   await autoScoringTestRequest(gameId, action);
 }
 

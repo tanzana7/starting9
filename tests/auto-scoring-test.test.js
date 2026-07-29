@@ -34,7 +34,7 @@ test("不完全または重複した正解スタメンを拒否する", () => {
 });
 
 test("自動採点テストのDB・API・Cron・管理UIが本番から分離される", () => {
-  const migration = read("migrations/0016_auto_scoring_tests.sql");
+  const migration = read("migrations/0017_auto_scoring_tests.sql");
   const worker = read("auth-worker.js");
   const html = read("index.html");
   const script = read("script.js");

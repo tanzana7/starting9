@@ -18,15 +18,16 @@ test("Cronは日程同期後に明示的な試合workflow runnerへ委譲する"
   assert.match(worker, /function runGameWorkflow\(timeline, now, paused = false\)/);
   assert.match(worker, /id: "notice", offsetMinutes: -120/);
   assert.match(worker, /id: "close_predictions", offsetMinutes: -60/);
-  assert.match(worker, /id: "lineup", offsetMinutes: -60, retryMinutes: 10/);
-  assert.match(worker, /id: "score", trigger: "lineup_confirmed"/);
-  assert.match(worker, /id: "publish", offsetMinutes: 0/);
+  assert.match(worker, /id: "lineup", offsetMinutes: -50, retryMinutes: 10/);
+  assert.match(worker, /id: "final_lineup", offsetMinutes: 1, retryMinutes: 10/);
+  assert.match(worker, /id: "score", offsetMinutes: 2/);
+  assert.match(worker, /id: "publish", offsetMinutes: 5/);
 });
 
 test("workflowは中止試合を全step cancelledとして扱い、時刻未到達stepを実行しない", () => {
   const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
   assert.match(worker, /if \(cancelled\) return \{ id: step\.id, status: "cancelled", action: "skipped" \}/);
-  assert.match(worker, /step\.trigger === "lineup_confirmed"/);
+  assert.match(worker, /step\.offsetMinutes/);
   assert.match(worker, /status: now < dueAt \? "not_due" : "ready"/);
   assert.match(worker, /runDueGameDayScheduleJobs\(env, now, activeTimelines\)/);
   assert.match(worker, /runDuePregameAutomationJobs\(env, now, activeTimelines\)/);
@@ -72,7 +73,8 @@ test("観測ログは実行ステップだけを対象にし、時刻前・処�
   const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
   assert.match(worker, /if \(!shouldLogGameAutomationSummary\(summary\)\) return/);
   assert.match(worker, /now\.getTime\(\) === dueAt\.getTime\(\)/);
-  assert.match(worker, /step=lineup action=executed status=success/);
+  assert.match(worker, /step=lineup action=executed status=provisional/);
+  assert.match(worker, /step=\$\{isFinalPhase \? "final_lineup" : "lineup"\} action=executed status=success/);
   assert.match(worker, /step=score action=executed status=success/);
   assert.match(worker, /step=publish action=executed status=success/);
   assert.doesNotMatch(worker, /status=not_due/);

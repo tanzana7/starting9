@@ -26,3 +26,17 @@ test("予告先発カードは発表済み・未発表・失敗で同じ表示�
   assert.match(css, /\.probable-starter-card[\s\S]*?min-height: 128px/);
   assert.match(css, /\.probable-starter-card\.is-error/);
 });
+
+test("ブラウザは保存済みAPIだけを読み、NPB Workerのstarter取得を起動しない", () => {
+  assert.match(script, /function buildProbableStarterApiUrl\(gameId\)/);
+  assert.match(script, /\/api\/probable-starter\?gameId=/);
+  assert.match(script, /fetchStoredProbableStarter\(\)/);
+  assert.doesNotMatch(script, /function buildProbableStarterWorkerRequestUrl\(/);
+  assert.doesNotMatch(script, /searchParams\.set\("mode", "starter"\)/);
+});
+
+test("管理者の再取得だけがAuth Workerの管理APIへPOSTする", () => {
+  assert.match(script, /buildAdminGameApiUrl\(gameId, "probable-starter\/refresh"\)/);
+  assert.match(script, /method: "POST"/);
+  assert.match(script, /credentials: "include"/);
+});

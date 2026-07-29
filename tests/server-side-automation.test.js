@@ -32,13 +32,15 @@ test("server-side schedule synchronization covers today and the next JST day", a
   );
   assert.match(worker, /loadDetectedScheduleGames\(env\.AUTH_DB, dates\)/);
   assert.match(worker, /setDetectedScheduleGames\(rows\)/);
+  assert.match(worker, /const AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS = 24 \* 60 \* 60 \* 1000/);
+  assert.match(worker, /now\.getTime\(\) \+ AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS/);
 });
 
 test("workflow isolates roster, lineup, scoring, and publication failures by game", () => {
   assert.match(worker, /for \(const timeline of timelines\) \{\s+if \(now < timeline\.predictionDeadlineAt/s);
   assert.match(worker, /step=close_predictions action=executed status=failed/);
   assert.match(worker, /step=notice action=distribution status=failed/);
-  assert.match(worker, /step=lineup action=executed status=failed/);
+  assert.match(worker, /step=\$\{isFinalPhase \? "final_lineup" : "lineup"\} action=executed status=failed/);
   assert.match(worker, /let claimed = null/);
   assert.match(worker, /if \(claimed\) \{/);
   assert.match(worker, /recordGameWorkflowOutcome\(env\.AUTH_DB, row\.game_id, "score", "failed"/);

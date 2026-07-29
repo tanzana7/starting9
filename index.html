@@ -148,6 +148,7 @@
         </div>
         <p id="predictionError" class="message error-message" role="alert" aria-live="polite"></p>
         <p id="predictionDeadlineStatus" class="prediction-deadline-status" role="status" aria-live="polite">試合情報を確認しています。</p>
+        <p id="predictionTargetNotice" class="message prediction-target-notice hidden" role="status" aria-live="polite"></p>
 
         <button id="savePredictionButton" class="primary-button" type="submit">予想を保存する</button>
         <button id="resetPredictionButton" class="secondary-button" type="button">予想をリセット</button>
@@ -222,6 +223,50 @@
                   <button id="toggleGameWorkflowPauseButton" class="danger-button compact-button" type="button">緊急停止</button>
                 </div>
                 <p id="adminGameWorkflowMessage" class="message" role="status"></p>
+              </section>
+              <section id="adminWorkflowLogsPanel" class="admin-workflow-logs hidden" aria-labelledby="adminWorkflowLogsTitle">
+                <div class="admin-workflow-logs-heading">
+                  <div>
+                    <h3 id="adminWorkflowLogsTitle">試合進行ログ</h3>
+                    <p>通常試合の自動処理と管理者操作の履歴です。</p>
+                  </div>
+                  <button id="refreshAdminWorkflowLogsButton" class="secondary-button compact-button" type="button">再読み込み</button>
+                </div>
+                <div class="admin-workflow-log-filters" aria-label="試合進行ログの絞り込み">
+                  <input id="adminWorkflowLogGameId" type="text" placeholder="gameId（任意）" aria-label="gameIdで絞り込み">
+                  <select id="adminWorkflowLogEventType" aria-label="種別で絞り込み">
+                    <option value="">すべての種別</option>
+                    <option value="schedule_sync">試合予定取得</option>
+                    <option value="notice_fetch">公示取得</option>
+                    <option value="roster_fixed">ロースター固定</option>
+                    <option value="prediction_target_switched">対象試合切り替え</option>
+                    <option value="probable_starter_fetch">予告先発取得</option>
+                    <option value="lineup_fetch">実スタメン取得</option>
+                    <option value="final_lineup_fetch">最終スタメン取得</option>
+                    <option value="lineup_fallback">仮スタメンへフォールバック</option>
+                    <option value="scoring_started">採点開始</option>
+                    <option value="scoring_succeeded">採点成功</option>
+                    <option value="scoring_failed">採点失敗</option>
+                    <option value="result_published">結果正式公開</option>
+                    <option value="ranking_reflected">ランキング反映</option>
+                    <option value="admin_manual_operation">管理者手動操作</option>
+                    <option value="admin_lineup_approved">管理者スタメン登録</option>
+                    <option value="admin_lineup_revision">管理者スタメン修正</option>
+                    <option value="admin_rescore_confirmed">管理者再採点</option>
+                    <option value="prediction_target_switch_skipped">次戦なし</option>
+                    <option value="scoring_skipped">採点見送り</option>
+                    <option value="result_publish_failed">結果公開失敗</option>
+                  </select>
+                  <select id="adminWorkflowLogStatus" aria-label="状態で絞り込み">
+                    <option value="">すべての状態</option>
+                    <option value="success">成功</option>
+                    <option value="warning">注意</option>
+                    <option value="error">エラー</option>
+                    <option value="info">情報</option>
+                  </select>
+                </div>
+                <p id="adminWorkflowLogsMessage" class="message" role="status" aria-live="polite"></p>
+                <div id="adminWorkflowLogsList" class="admin-workflow-logs-list" aria-live="polite"></div>
               </section>
               <div class="schedule-loader">
                 <p class="schedule-loader-title">登録済み試合スケジュール</p>
@@ -493,6 +538,15 @@
 
       <div id="scoreResult" class="empty-state">採点すると結果が表示されます。</div>
       <button id="shareResultButton" class="secondary-button hidden" type="button">結果をXで共有</button>
+      <section id="resultHistory" class="result-history" aria-labelledby="resultHistoryTitle">
+        <div class="result-history-heading">
+          <div>
+            <h3 id="resultHistoryTitle">過去の試合結果</h3>
+            <p>採点済みの試合を選択して確認できます。</p>
+          </div>
+        </div>
+        <div id="resultHistoryList" class="result-history-list" aria-live="polite"></div>
+      </section>
       <section id="scoreInsights" class="score-insights" aria-labelledby="scoreInsightsTitle">
         <h3 id="scoreInsightsTitle">スコアの比較</h3>
         <div id="scoreInsightsGrid" class="score-insights-grid hidden">

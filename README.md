@@ -209,11 +209,13 @@ https://<worker-url>/?url=https://npb.jp/scores/2026/0707/m-f-12/&debug=1
 
 ### D1とWorkerの設定
 
-`migrations/0001_auth.sql` が `users` と `sessions` テーブルを作成します。`migrations/0005_game_lineups.sql` は、承認済み実スタメンと自動採点の待機・処理・失敗状態を保存します。`migrations/0006_user_achievements.sql` は実績マスタとユーザーごとの取得実績を追加します。`migrations/0009_pregame_automation.sql` は試合単位のロースタースナップショット、試合前取得の進行状態、実スタメンの取得元を追加します。`migrations/0010_game_day_schedule_flow.sql` は当日公示、締切時点の固定、採点結果の非公開・公開状態を追加します。新migrationは作成後にレビューし、対象D1へ適用してからWorkerを更新してください。
+`migrations/0001_auth.sql` が `users` と `sessions` テーブルを作成します。`migrations/0005_game_lineups.sql` は、承認済み実スタメンと自動採点の待機・処理・失敗状態を保存します。`migrations/0006_user_achievements.sql` は実績マスタとユーザーごとの取得実績を追加します。`migrations/0009_pregame_automation.sql` は試合単位のロースタースナップショット、試合前取得の進行状態、実スタメンの取得元を追加します。`migrations/0010_game_day_schedule_flow.sql` は当日公示、締切時点の固定、採点結果の非公開・公開状態を追加します。`migrations/0019_game_workflow_logs.sql` は通常試合の自動処理・管理操作ログと90日保持のcleanup状態を追加します。`migrations/0020_probable_starters.sql` は試合ごとの予告先発状態と次回確認時刻を追加します。新migrationは作成後にレビューし、対象D1へ適用してからWorkerを更新してください。
 
-試合前自動処理は `pregame-automation.js` で時刻を一元管理します。日本時間10時から当日公示を1日1系統で監視し、各試合の開始2時間前までは30分間隔、それ以降は締切まで10分間隔で同じ取得結果を当日の対象試合へ配布します。対象球団の公示を検知した場合だけロースターを更新し、試合開始1時間前にスナップショットを固定します。正式スタメンは同時刻から10分ごとに取得し、正常な9人を保存した時点で採点します。採点結果は試合開始時刻まで非公開とし、開始後のCronでランキング・実績・結果を公開します。Auth Workerは `wrangler.auth.production.jsonc` の `NPB_FETCH_WORKER` Service Bindingを通じて `starting9-npb-fetch` を呼び出します。公開URLを設定する必要はありません。
+試合前自動処理は `pregame-automation.js` で時刻を一元管理します。日本時間10時から当日公示を1日1系統で監視し、各試合の開始2時間前までは30分間隔、それ以降は締切まで10分間隔で同じ取得結果を当日の対象試合へ配布します。対象球団の公示を検知した場合だけロースターを更新し、試合開始1時間前にスナップショットを固定します。予告先発はAuth Worker Cronが対象試合の開始前だけ取得し、未発表時はD1の`next_check_at`から60分後以降に再確認します。発表済みデータは開始まで固定されます。ブラウザは `/api/probable-starter` の保存済みデータを表示し、管理者の再取得だけが `/api/admin/games/:gameId/probable-starter/refresh` を呼び出します。正式スタメンは同時刻から10分ごとに取得し、正常な9人を保存した時点で採点します。採点結果は試合開始時刻まで非公開とし、開始後のCronでランキング・実績・結果を公開します。Auth Workerは `wrangler.auth.production.jsonc` の `NPB_FETCH_WORKER` Service Bindingを通じて `starting9-npb-fetch` を呼び出します。公開URLを設定する必要はありません。
 
 管理者向けのテスト操作は、通常画面とは別のモードではなく、管理画面内の「開発用テスト」にまとめています。テストAPIは管理者セッションを必須とし、テスト予想は `is_test_prediction` により通常のランキング・実績集計から除外されます。
+
+管理画面の「試合進行ログ」では、通常試合のCron処理と管理者操作を新しい順に確認できます。ログAPIは管理者セッションを必須とし、gameId・種別・状態で絞り込めます。認証情報や予想内容などの秘密情報は保存せず、90日を超えたログはCronのcleanupで削除します。
 
 認証Workerを人間がセットアップする手順:
 

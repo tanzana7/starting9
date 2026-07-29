@@ -16,7 +16,7 @@ function requiredGames(eligibleGames) {
 
 function createDatabase() {
   const db = new DatabaseSync(":memory:");
-  for (const file of ["0001_auth.sql", "0003_predictions.sql", "0004_admin_role.sql", "0006_user_achievements.sql", "0007_all_time_ranking.sql", "0008_monthly_ranking.sql"]) {
+  for (const file of ["0001_auth.sql", "0003_predictions.sql", "0004_admin_role.sql", "0005_game_lineups.sql", "0006_user_achievements.sql", "0007_all_time_ranking.sql", "0008_monthly_ranking.sql", "0009_pregame_automation.sql", "0010_game_day_schedule_flow.sql"]) {
     db.exec(fs.readFileSync(path.join(root, "migrations", file), "utf8"));
   }
   return db;
@@ -30,12 +30,12 @@ function insertUser(db, id, username) {
   ).run(id, username);
 }
 
-function insertRankingGame(db, gameId, gameDate = "2026-07-21", eligible = 1) {
+function insertRankingGame(db, gameId, gameDate = "2026-07-21", eligible = 1, publicationStatus = eligible ? "published" : "pending") {
   db.prepare(
     `INSERT INTO ranking_games
-       (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game, created_at, updated_at)
-     VALUES (?1, ?2, ?3, '2026-07-21T10:00:00.000Z', 'scored', 0, '2026-07-21T10:00:00.000Z', '2026-07-21T10:00:00.000Z')`
-  ).run(gameId, gameDate, eligible);
+       (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game, publication_status, created_at, updated_at)
+     VALUES (?1, ?2, ?3, '2026-07-21T10:00:00.000Z', 'scored', 0, ?4, '2026-07-21T10:00:00.000Z', '2026-07-21T10:00:00.000Z')`
+  ).run(gameId, gameDate, eligible, publicationStatus);
 }
 
 function insertPrediction(db, { id, userId, gameId, score, isTest = 0, scoredAt = "2026-07-21T10:00:00.000Z" }) {
@@ -133,6 +133,15 @@ test("年間公開ランキングは内部ID・隠し実績・metadataを返さ�
   assert.doesNotMatch(worker, /rankingData:[\s\S]{0,200}userId/);
   assert.doesNotMatch(worker, /\/api\/rankings\/all-time/);
   assert.doesNotMatch(worker, /\/api\/me\/ranking\/all-time/);
+});
+
+test("採点済み・正式結果公開前の試合もランキング集計へ反映する", () => {
+  const db = createDatabase();
+  insertUser(db, "u1", "alpha");
+  insertRankingGame(db, "private", "2026-07-21", 1, "scored_private");
+  insertPrediction(db, { id: "private-prediction", userId: "u1", gameId: "private", score: 90 });
+  const row = db.prepare(`${getRankingCte()} SELECT games_played, total_score FROM combined WHERE username = 'alpha'`).get("2026-01-01", "2027-01-01");
+  assert.deepEqual({ gamesPlayed: row.games_played, totalScore: row.total_score }, { gamesPlayed: 1, totalScore: 90 });
 });
 
 test("通常画面にはカード型の年間ランキングがあり、手動再読み込み導線を置かない", () => {

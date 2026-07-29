@@ -99,7 +99,8 @@ test("初回認証イベントを取りこぼしてもPromise完了後にadmin A
     "https://starting9-auth.tanzana7.workers.dev/api/me/achievements",
     "https://starting9-auth.tanzana7.workers.dev/api/rankings/yearly?year=2026&limit=50&qualifiedOnly=false",
     "https://starting9-auth.tanzana7.workers.dev/api/me/ranking/yearly?year=2026",
-    "https://starting9-auth.tanzana7.workers.dev/api/admin/me"
+    "https://starting9-auth.tanzana7.workers.dev/api/admin/me",
+    "https://starting9-auth.tanzana7.workers.dev/api/results/games"
   ]);
   assert.equal((listeners.get("starting9-auth-state-changed") || []).length, 1);
 });

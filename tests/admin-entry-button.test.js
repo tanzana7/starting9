@@ -94,7 +94,8 @@ test("管理者は初期Promise完了後に一度だけ確認され、ボタン�
     "https://starting9-auth.tanzana7.workers.dev/api/me/achievements",
     "https://starting9-auth.tanzana7.workers.dev/api/rankings/yearly?year=2026&limit=50&qualifiedOnly=false",
     "https://starting9-auth.tanzana7.workers.dev/api/me/ranking/yearly?year=2026",
-    "https://starting9-auth.tanzana7.workers.dev/api/admin/me"
+    "https://starting9-auth.tanzana7.workers.dev/api/admin/me",
+    "https://starting9-auth.tanzana7.workers.dev/api/results/games"
   ]);
   assert.equal(vm.runInContext("state.adminAccess.status", app.context), "authorized");
 

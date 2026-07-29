@@ -256,8 +256,18 @@ const state = {
     fetchedAt: "",
     sourceUrl: NPB_STARTER_SOURCE_URL,
     fetchedGameCount: 0,
+    nextCheckAt: "",
+    errorCode: "",
     logs: [],
     fetchedGameId: ""
+  },
+  predictionTargetGameId: "",
+  predictionTargetNotice: "",
+  resultHistory: {
+    isLoading: false,
+    games: [],
+    selectedGameId: "",
+    message: ""
   },
   yearlyRanking: {
     isLoading: false,
@@ -356,6 +366,12 @@ const state = {
     record: null,
     message: ""
   },
+  workflowLogs: {
+    isLoading: false,
+    requestId: 0,
+    logs: [],
+    message: ""
+  },
   gameDayNotice: {
     isLoading: false,
     gameId: "",
@@ -431,11 +447,12 @@ async function initializeAuthDependentFeatures() {
   const results = await Promise.allSettled([
     fetchUserAchievements({ force: true }),
     refreshYearlyRanking({ force: true }),
-    refreshAdminAccess()
+    refreshAdminAccess(),
+    refreshResultHistory({ force: true })
   ]);
   results.forEach((result, index) => {
     if (result.status === "rejected") {
-      const labels = ["実績", "ランキング", "管理者権限"];
+      const labels = ["実績", "ランキング", "管理者権限", "過去結果"];
       console.error(`${labels[index]}の初期化に失敗しました`, result.reason?.message || "unknown error");
     }
   });
@@ -451,6 +468,10 @@ function bindEvents() {
   bindAdminEvent("stopRosterMonitorButton", "click", () => stopRosterMonitor("ロースター自動取得を停止しました。", "warning"));
   bindAdminEvent("fetchProbableStarterButton", "click", () => fetchProbableStarter({ force: true }));
   bindAdminEvent("syncGameWorkflowButton", "click", () => refreshAdminGameWorkflowStatus({ force: true }));
+  bindAdminEvent("refreshAdminWorkflowLogsButton", "click", () => refreshAdminWorkflowLogs({ force: true }));
+  bindAdminEvent("adminWorkflowLogGameId", "change", () => refreshAdminWorkflowLogs({ force: true }));
+  bindAdminEvent("adminWorkflowLogEventType", "change", () => refreshAdminWorkflowLogs({ force: true }));
+  bindAdminEvent("adminWorkflowLogStatus", "change", () => refreshAdminWorkflowLogs({ force: true }));
   bindAdminEvent("toggleGameWorkflowPauseButton", "click", toggleGameWorkflowPause);
   bindAdminEvent("editGameStartButton", "click", () => setGameStartManualOverride(true));
   bindAdminEvent("resetGameStartButton", "click", () => setGameStartManualOverride(false));
@@ -508,6 +529,7 @@ function bindEvents() {
   document.getElementById("showYearlyRankingButton")?.addEventListener("click", () => selectRankingView("yearly"));
   document.getElementById("showMonthlyRankingButton")?.addEventListener("click", () => selectRankingView("monthly"));
   document.getElementById("rankingContent")?.addEventListener("click", handleRankingPeriodContentClick);
+  document.getElementById("resultHistoryList")?.addEventListener("click", handleResultHistoryClick);
   document.getElementById("closeAdminButton")?.addEventListener("click", closeAdminPanel);
   document.getElementById("adminDetails")?.addEventListener("toggle", handleAdminDetailsToggle);
   bindAdminEvent("loadNextGameButton", "click", loadNextGameSchedule);
@@ -615,6 +637,7 @@ function clearAdminAccess() {
   state.adminTestGames = { isLoading: false, isBusy: false, games: [], selectedGameId: "", detail: null, rescorePreview: null, message: "" };
   state.adminTestAchievements = { isLoading: false, items: [], earned: [], message: "" };
   state.gameWorkflow = { isLoading: false, isUpdating: false, requestId: state.gameWorkflow.requestId + 1, gameId: "", record: null, message: "" };
+  state.workflowLogs = { isLoading: false, requestId: state.workflowLogs.requestId + 1, logs: [], message: "" };
   state.appMode = "normal";
   state.isAdminMode = false;
   applyAdminMode();
@@ -794,6 +817,16 @@ async function handleAutoScoringTestClick(event) {
   const action = target.dataset.autoTestAction || "detail";
   if (action === "detail") {
     try { await loadAutoScoringTest(gameId); } catch (error) { state.adminAutoScoringTests.message = error.message; }
+    renderAutoScoringTests();
+    return;
+  }
+  if (action === "refresh") {
+    try {
+      await loadAutoScoringTest(gameId);
+      state.adminAutoScoringTests.message = "自動採点テストの状態を再取得しました。";
+    } catch (error) {
+      state.adminAutoScoringTests.message = error.message || "自動採点テストを取得できませんでした。";
+    }
     renderAutoScoringTests();
     return;
   }
@@ -1384,6 +1417,7 @@ function openAdminPanel() {
   refreshAutoScoringStatus({ force: true });
   void refreshAutoApprovalSettings();
   void refreshAdminGameWorkflowStatus({ force: true });
+  void refreshAdminWorkflowLogs({ force: true });
   renderAdminTestPanel();
   void refreshAdminTestStatus();
   void refreshAutoScoringTests();
@@ -1397,7 +1431,12 @@ function closeAdminPanel() {
   }
 
   state.appMode = "normal";
+  state.workflowLogs.requestId += 1;
+  state.workflowLogs.isLoading = false;
+  state.workflowLogs.logs = [];
+  state.workflowLogs.message = "";
   applyAdminMode();
+  renderAdminWorkflowLogs();
   renderPredictionDeadlineAdmin();
 }
 
@@ -2670,16 +2709,85 @@ function getNpbScoreRequestIdentity(value) {
 
 async function initializeProbableStarter() {
   const schedule = await getLoadedGameSchedule();
-  state.probableStarter.nextGame = findNextScheduledGameForStarter(schedule);
+  const previousGameId = state.probableStarter.nextGame?.gameId || state.predictionTargetGameId || state.prediction?.gameId || "";
+  const nextGame = await resolvePredictionTargetGame(schedule, true);
+  const preservedGame = nextGame || schedule.find((game) => game?.gameId === previousGameId) || state.probableStarter.nextGame || null;
+  state.probableStarter.nextGame = preservedGame;
+  state.predictionTargetGameId = state.probableStarter.nextGame?.gameId || "";
+  if (nextGame && previousGameId && previousGameId !== state.predictionTargetGameId) {
+    state.predictionTargetNotice = "予想対象試合が次の試合へ切り替わりました。";
+    state.prediction = null;
+    state.actual = null;
+    removeFromStorage(STORAGE_KEYS.prediction);
+    removeFromStorage(STORAGE_KEYS.actual);
+  }
   renderProbableStarter();
+  renderPredictionTargetNotice();
 
   if (state.probableStarter.nextGame) {
-    await fetchProbableStarter();
+    await fetchStoredProbableStarter();
   } else {
     state.probableStarter.status = "noGame";
     state.probableStarter.message = "次の試合を検出できませんでした。";
     renderProbableStarter();
   }
+}
+
+async function refreshPredictionTarget({ retryUnannounced = true, useServer = false } = {}) {
+  const schedule = await getLoadedGameSchedule();
+  const nextGame = await resolvePredictionTargetGame(schedule, useServer);
+  const previousGameId = state.predictionTargetGameId || state.probableStarter.nextGame?.gameId || "";
+  if (!nextGame) {
+    return;
+  }
+  if ((nextGame?.gameId || "") !== previousGameId) {
+    state.predictionTargetGameId = nextGame?.gameId || "";
+    state.probableStarter.nextGame = nextGame;
+    state.probableStarter.matchedGame = null;
+    state.probableStarter.games = [];
+    state.probableStarter.fetchedGameId = "";
+    state.probableStarter.status = nextGame ? "idle" : "noGame";
+    state.probableStarter.message = nextGame ? "次の試合を確認しています。" : "次の試合を検出できませんでした。";
+    state.probableStarter.nextCheckAt = "";
+    state.probableStarter.errorCode = "";
+    state.predictionTargetNotice = nextGame ? "予想対象試合が次の試合へ切り替わりました。" : "";
+    renderAll();
+    void syncPredictionFromAccount({ force: true });
+    void refreshGameDayNoticeStatus({ force: true });
+    if (nextGame) await fetchStoredProbableStarter();
+    return;
+  }
+  // 未発表の再取得はAuth Worker Cronがnext_check_atを基準に行います。
+  // ブラウザ側は試合進行を起動せず、保存済み状態の表示だけを担当します。
+}
+
+async function resolvePredictionTargetGame(schedule, useServer) {
+  const fallback = findNextScheduledGameForStarter(schedule);
+  if (!useServer) return fallback;
+  const url = buildPredictionTargetApiUrl();
+  if (!url) return fallback;
+  try {
+    const response = await fetch(url, { cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) return fallback;
+    return payload.target ? normalizeServerPredictionTarget(payload.target) : null;
+  } catch (error) {
+    console.warn("サーバー側の予想対象取得に失敗しました", error.message);
+    return fallback;
+  }
+}
+
+function buildPredictionTargetApiUrl() {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  return baseUrl ? `${baseUrl}/api/prediction-target` : "";
+}
+
+function normalizeServerPredictionTarget(target) {
+  return {
+    ...target,
+    startDateTime: target.startAt || `${target.date || ""}T${target.startTime || "00:00"}:00+09:00`,
+    matchupLabel: `${target.awayTeam || ""} vs ${target.homeTeam || ""}`
+  };
 }
 
 async function getLoadedGameSchedule() {
@@ -2695,31 +2803,52 @@ async function getLoadedGameSchedule() {
 }
 
 function findNextScheduledGameForStarter(schedule) {
-  if (typeof window.findNextHamGame === "function") {
-    return window.findNextHamGame(schedule);
-  }
-
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "Asia/Tokyo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23"
-  }).formatToParts(new Date()).reduce((result, part) => {
-    result[part.type] = part.value;
-    return result;
-  }, {});
-  const currentDateTime = `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
-
+  const now = new Date();
   return schedule
-    .filter((game) => typeof game?.date === "string" && `${game.date}T${game.startTime || "23:59"}` >= currentDateTime)
+    .filter((game) => !isScheduleGameUnavailable(game) && parseJstScheduleDateTime(game) > now)
     .slice()
-    .sort((left, right) => `${left.date}T${left.startTime || "00:00"}`.localeCompare(`${right.date}T${right.startTime || "00:00"}`))[0] || null;
+    .sort((left, right) => parseJstScheduleDateTime(left) - parseJstScheduleDateTime(right))[0] || null;
 }
 
-async function fetchProbableStarter({ force = false } = {}) {
+function buildProbableStarterApiUrl(gameId) {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  return baseUrl && gameId ? `${baseUrl}/api/probable-starter?gameId=${encodeURIComponent(gameId)}` : "";
+}
+
+function applyStoredProbableStarter(probableStarter) {
+  const nextGame = state.probableStarter.nextGame;
+  const status = String(probableStarter?.status || "unannounced");
+  state.probableStarter.fetchedGameId = nextGame?.gameId || "";
+  state.probableStarter.fetchedAt = probableStarter?.fetchedAt || "";
+  state.probableStarter.sourceUrl = probableStarter?.sourceUrl || NPB_STARTER_SOURCE_URL;
+  state.probableStarter.fetchedGameCount = probableStarter ? 1 : 0;
+  state.probableStarter.nextCheckAt = probableStarter?.nextCheckAt || "";
+  state.probableStarter.errorCode = probableStarter?.errorCode || "";
+  if (!probableStarter || status === "unannounced") {
+    state.probableStarter.status = "unannounced";
+    state.probableStarter.message = "予告先発はまだ発表されていません";
+    state.probableStarter.matchedGame = null;
+    state.probableStarter.games = [];
+    return;
+  }
+  if (status === "error") {
+    state.probableStarter.status = "error";
+    state.probableStarter.message = "予告先発を取得できませんでした";
+    state.probableStarter.matchedGame = null;
+    state.probableStarter.games = [];
+    return;
+  }
+  state.probableStarter.status = "success";
+  state.probableStarter.message = "予告先発を取得しました";
+  state.probableStarter.matchedGame = {
+    ...nextGame,
+    homeStarter: { name: probableStarter.homePitcherName || "" },
+    awayStarter: { name: probableStarter.awayPitcherName || "" }
+  };
+  state.probableStarter.games = [state.probableStarter.matchedGame];
+}
+
+async function fetchStoredProbableStarter() {
   if (state.probableStarter.isLoading) {
     return;
   }
@@ -2731,83 +2860,69 @@ async function fetchProbableStarter({ force = false } = {}) {
     return;
   }
 
-  if (!force && state.probableStarter.fetchedGameId === state.probableStarter.nextGame.gameId) {
+  const gameId = state.probableStarter.nextGame.gameId;
+  const url = buildProbableStarterApiUrl(gameId);
+  if (!url) {
+    state.probableStarter.status = "error";
+    state.probableStarter.message = "予告先発を取得できませんでした";
+    renderProbableStarter();
     return;
   }
-
-  const workerUrl = buildProbableStarterWorkerRequestUrl();
   state.probableStarter.isLoading = true;
   state.probableStarter.status = "loading";
-  state.probableStarter.message = "予告先発を取得中...";
-  addProbableStarterLog("予告先発の取得を開始");
-  addProbableStarterLog(`取得URL：${NPB_STARTER_SOURCE_URL}`);
+  state.probableStarter.message = "保存済みの予告先発を確認中...";
   renderProbableStarter();
 
   try {
-    const response = await fetch(workerUrl, { cache: "no-store" });
-    addProbableStarterLog(`HTTPステータス：${response.status}`);
-
-    let result = null;
-    try {
-      result = await response.json();
-    } catch {
-      result = null;
-    }
-
+    const response = await fetch(url, { credentials: "include", cache: "no-store" });
+    const result = await response.json().catch(() => null);
     if (!response.ok || !result?.ok) {
-      const errorMessage = result?.error || `Worker APIの取得に失敗しました。HTTP ${response.status}`;
       state.probableStarter.status = "error";
       state.probableStarter.message = "予告先発を取得できませんでした";
-      addProbableStarterLog(`解析失敗：${errorMessage}`);
       return;
     }
-
-    const games = Array.isArray(result.games) ? result.games : [];
-    state.probableStarter.games = games;
-    state.probableStarter.fetchedAt = result.fetchedAt || new Date().toISOString();
-    state.probableStarter.sourceUrl = result.sourceUrl || NPB_STARTER_SOURCE_URL;
-    state.probableStarter.fetchedGameCount = games.length;
-    state.probableStarter.fetchedGameId = state.probableStarter.nextGame.gameId || "";
-    addProbableStarterLog(`予告先発ページ取得成功：${games.length}試合`);
-
-    const matchedGame = matchProbableStarterGame(state.probableStarter.nextGame, games);
-    state.probableStarter.matchedGame = matchedGame;
-    addProbableStarterLog(`次の試合と照合：${formatScheduledGameForLog(state.probableStarter.nextGame)}`);
-
-    if (!matchedGame) {
-      state.probableStarter.status = "unannounced";
-      state.probableStarter.message = "予告先発はまだ発表されていません";
-      addProbableStarterLog("未発表：次の試合に一致するカードがありません");
-      return;
-    }
-
-    const fightersStarter = getFightersStarter(matchedGame);
-    const hasBothStarters = Boolean(fightersStarter?.fighters?.name && fightersStarter?.opponent?.name);
-    state.probableStarter.status = hasBothStarters ? "success" : "unannounced";
-    state.probableStarter.message = hasBothStarters
-      ? "予告先発を取得しました"
-      : "予告先発はまだ発表されていません";
-
-    if (hasBothStarters) {
-      addProbableStarterLog(`予告先発を検出：${fightersStarter.opponent.name} / ${fightersStarter.fighters.name}`);
-    } else {
-      addProbableStarterLog("未発表：カードは見つかりましたが両チームの先発が未発表です");
-    }
+    applyStoredProbableStarter(result.probableStarter);
   } catch (error) {
     state.probableStarter.status = "error";
     state.probableStarter.message = "予告先発を取得できませんでした";
-    addProbableStarterLog(`通信失敗：${error.message}`);
   } finally {
     state.probableStarter.isLoading = false;
     renderProbableStarter();
   }
 }
 
-function buildProbableStarterWorkerRequestUrl() {
-  const workerUrl = new URL(NPB_WORKER_API_URL);
-  workerUrl.searchParams.set("mode", "starter");
-  workerUrl.searchParams.set("cacheBust", String(Date.now()));
-  return workerUrl.href;
+async function fetchProbableStarter({ force = false } = {}) {
+  if (!force || !state.isAdminMode || state.adminAccess.status !== "authorized") {
+    return fetchStoredProbableStarter();
+  }
+  const gameId = state.probableStarter.nextGame?.gameId || "";
+  const url = buildAdminGameApiUrl(gameId, "probable-starter/refresh");
+  if (!url) return fetchStoredProbableStarter();
+  state.probableStarter.isLoading = true;
+  state.probableStarter.status = "loading";
+  state.probableStarter.message = "予告先発を再取得中...";
+  addProbableStarterLog("保存済みデータをサーバーで再取得");
+  renderProbableStarter();
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store"
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok || !result?.ok) {
+      throw new Error(result?.error || "予告先発を再取得できませんでした。");
+    }
+    applyStoredProbableStarter(result.probableStarter);
+    addProbableStarterLog("サーバー再取得が完了");
+  } catch (error) {
+    state.probableStarter.status = "error";
+    state.probableStarter.message = "予告先発を取得できませんでした";
+    addProbableStarterLog(`再取得失敗：${error.message}`);
+  } finally {
+    state.probableStarter.isLoading = false;
+    renderProbableStarter();
+  }
 }
 
 function matchProbableStarterGame(nextGame, games) {
@@ -2888,6 +3003,7 @@ function handleAuthStateChanged() {
     refreshMonthlyRanking({ force: true });
   }
   refreshAdminAccess();
+  refreshResultHistory({ force: true });
 }
 
 function startPredictionDeadlineTicker() {
@@ -2895,11 +3011,16 @@ function startPredictionDeadlineTicker() {
     clearInterval(predictionDeadlineTimerId);
   }
   refreshPredictionDeadlineState();
-  predictionDeadlineTimerId = setInterval(refreshPredictionDeadlineState, PREDICTION_DEADLINE_REFRESH_MS);
+  predictionDeadlineTimerId = setInterval(() => {
+    refreshPredictionDeadlineState();
+    void refreshPredictionTarget({ retryUnannounced: false });
+  }, PREDICTION_DEADLINE_REFRESH_MS);
 }
 
 function getPredictionDeadlineGameId() {
-  return state.nextScheduleId || state.probableStarter.nextGame?.gameId || state.prediction?.gameId || getCurrentGameId();
+  return state.isAdminMode
+    ? state.nextScheduleId || state.probableStarter.nextGame?.gameId || state.prediction?.gameId || getCurrentGameId()
+    : state.predictionTargetGameId || state.probableStarter.nextGame?.gameId || state.prediction?.gameId || getCurrentGameId();
 }
 
 function parseJstScheduleDateTime(game) {
@@ -3117,7 +3238,9 @@ function renderPredictionDeadlinePanel(container, deadline, shouldShow) {
 }
 
 function getCurrentGameId() {
-  return state.result?.gameId || state.nextScheduleId || state.probableStarter.nextGame?.gameId || "";
+  return state.isAdminMode
+    ? state.result?.gameId || state.nextScheduleId || state.probableStarter.nextGame?.gameId || ""
+    : state.predictionTargetGameId || state.probableStarter.nextGame?.gameId || state.prediction?.gameId || "";
 }
 
 function getAdminScoringGameId() {
@@ -3141,6 +3264,11 @@ function buildAdminGameApiUrl(gameId, action) {
   }
 
   return `${baseUrl}/api/admin/games/${encodeURIComponent(gameId)}/${action}`;
+}
+
+function buildAdminWorkflowLogsApiUrl() {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  return baseUrl ? `${baseUrl}/api/admin/workflow-logs` : "";
 }
 
 function getActualLineupDetectedAt() {
@@ -3677,7 +3805,7 @@ function renderAutoScoringPanel() {
 }
 
 function formatPregameAutomationStatus(status) {
-  return ({ pending: "待機中", captured: "保存済み", failed: "取得失敗", skipped: "停止", scored: "採点済み", scored_private: "採点済み（非公開）", published: "公開済み", blocked: "要手動対応" })[status] || "未確認";
+  return ({ pending: "待機中", provisional: "仮保存（採点前）", captured: "保存済み", failed: "取得失敗", skipped: "停止", scored: "採点済み", scored_private: "採点済み（非公開）", published: "公開済み", blocked: "要手動対応" })[status] || "未確認";
 }
 
 function getPregameActionLabel(action) {
@@ -3798,6 +3926,7 @@ function getGameWorkflowStepLabel(value) {
     notice: "公示確認待ち",
     close_predictions: "予想締切",
     lineup: "正式スタメン取得",
+    final_lineup: "最終スタメン再取得",
     score: "採点",
     publish: "公開処理",
     completed: "公開済み",
@@ -3855,16 +3984,25 @@ function renderAdminGameWorkflowStatus() {
   const workflow = record.workflow || {};
   const scoring = record.scoring || {};
   const publishing = record.publishing || {};
+  const lineup = record.lineup || {};
   const automationHealth = record.automation?.health || {};
+  const provisionalLineup = Array.isArray(lineup.provisionalLineup)
+    ? lineup.provisionalLineup.map((item) => `${item.battingOrder}番 ${item.position || ""} ${item.playerName || ""}`.trim()).join(" / ")
+    : "";
   const rows = [
     ["対象試合", record.game?.matchupLabel || record.gameId || "-"],
     ["試合開始", formatPredictionDeadlineDateTime(schedule.startAt)],
     ["予想締切", formatPredictionDeadlineDateTime(schedule.predictionDeadlineAt)],
     ["受付状態", getEffectivePredictionDeadline().isClosed ? "締切後" : "締切前"],
     ["現在のワークフロー", getGameWorkflowStepLabel(workflow.currentStep)],
+    ["正式スタメン", formatPregameAutomationStatus(lineup.status)],
+    ["最終スタメン取得", lineup.finalLineupFallbackUsed
+      ? "最終取得失敗・直前取得データを使用"
+      : (lineup.finalLineupErrorCode ? `取得失敗（${lineup.finalLineupErrorCode}）` : "未実行")],
+    ["仮スタメン", provisionalLineup || "未取得"],
     ["採点状態", formatAutoScoringStatus(scoring.status, scoring.publicationStatus)],
     ["採点時刻", scoring.scoredAt ? formatDateTime(scoring.scoredAt) : "-"],
-    ["公開予定", formatPredictionDeadlineDateTime(schedule.startAt)],
+    ["公開予定", formatPredictionDeadlineDateTime(schedule.resultReleaseAt)],
     ["公開状態", formatPregameAutomationStatus(publishing.status)],
     ["公開時刻", publishing.publishedAt ? formatDateTime(publishing.publishedAt) : "-"],
     ["最終実行", workflow.lastRunAt ? formatDateTime(workflow.lastRunAt) : "未実行"],
@@ -3890,6 +4028,7 @@ async function refreshAdminGameWorkflowStatus({ force = false } = {}) {
   state.gameWorkflow.gameId = gameId;
   state.gameWorkflow.message = "";
   renderAdminGameWorkflowStatus();
+  renderAdminWorkflowLogs();
   try {
     const response = await fetch(url, { credentials: "include", cache: "no-store" });
     const payload = await response.json().catch(() => null);
@@ -3914,6 +4053,113 @@ async function refreshAdminGameWorkflowStatus({ force = false } = {}) {
     if (requestId === state.gameWorkflow.requestId) {
       state.gameWorkflow.isLoading = false;
       renderAdminGameWorkflowStatus();
+    }
+  }
+}
+
+function getWorkflowLogStatusLabel(status) {
+  return ({ success: "成功", warning: "注意", error: "エラー", info: "情報" })[status] || "情報";
+}
+
+function getWorkflowLogEventLabel(eventType) {
+  return ({
+    schedule_sync: "試合予定取得",
+    notice_fetch: "公示取得",
+    roster_fixed: "ロースター固定",
+    prediction_target_switched: "対象試合切り替え",
+    prediction_target_switch_skipped: "次戦なし",
+    probable_starter_fetch_started: "予告先発取得開始",
+    probable_starter_unannounced: "予告先発未発表",
+    probable_starter_announced: "予告先発取得",
+    probable_starter_fetch_failed: "予告先発取得失敗",
+    probable_starter_manual_refresh: "予告先発手動再取得",
+    lineup_fetch: "実スタメン取得",
+    final_lineup_fetch: "最終スタメン取得",
+    lineup_fallback: "仮スタメンへフォールバック",
+    lineup_retry_wait: "取得再試行待ち",
+    scoring_started: "採点開始",
+    scoring_succeeded: "採点成功",
+    scoring_failed: "採点失敗",
+    scoring_skipped: "採点見送り",
+    result_published: "結果正式公開",
+    result_publish_failed: "結果公開失敗",
+    ranking_reflected: "ランキング反映",
+    admin_manual_operation: "管理者手動操作",
+    admin_lineup_approved: "管理者スタメン登録",
+    admin_lineup_revision: "管理者スタメン修正",
+    admin_lineup_restore: "管理者スタメン復元",
+    admin_rescore_preview: "再採点プレビュー",
+    admin_rescore_confirmed: "管理者再採点"
+  })[eventType] || eventType || "ワークフロー";
+}
+
+function renderAdminWorkflowLogs() {
+  const panel = document.getElementById("adminWorkflowLogsPanel");
+  const list = document.getElementById("adminWorkflowLogsList");
+  const message = document.getElementById("adminWorkflowLogsMessage");
+  if (!panel || !list || !message) return;
+
+  const available = state.appMode === "admin" && state.adminAccess.status === "authorized";
+  panel.classList.toggle("hidden", !available);
+  if (!available) return;
+
+  if (state.workflowLogs.isLoading && !state.workflowLogs.logs.length) {
+    message.className = "message";
+    message.textContent = "試合進行ログを読み込み中です。";
+  } else {
+    message.className = `message${state.workflowLogs.message ? " error-message" : ""}`;
+    message.textContent = state.workflowLogs.message || (state.workflowLogs.logs.length ? `${state.workflowLogs.logs.length}件` : "該当するログはありません。");
+  }
+
+  list.innerHTML = state.workflowLogs.logs.map((log) => {
+    const metadata = log.metadata && typeof log.metadata === "object"
+      ? JSON.stringify(log.metadata, null, 2)
+      : "{}";
+    const status = String(log.status || "info");
+    return `<article class="workflow-log-entry workflow-log-status-${escapeHtml(status)}">
+      <div class="workflow-log-entry-main">
+        <time datetime="${escapeHtml(log.occurredAt || "")}">${escapeHtml(formatDateTime(log.occurredAt))}</time>
+        <span class="workflow-log-event">${escapeHtml(getWorkflowLogEventLabel(log.eventType))}</span>
+        <span class="workflow-log-status">${escapeHtml(getWorkflowLogStatusLabel(status))}</span>
+        <span class="workflow-log-game">${escapeHtml(log.gameId || "全体")}</span>
+      </div>
+      <p class="workflow-log-message">${escapeHtml(log.message || "")}${log.errorCode ? ` <code>${escapeHtml(log.errorCode)}</code>` : ""}</p>
+      <details><summary>詳細</summary><pre>${escapeHtml(metadata)}</pre></details>
+    </article>`;
+  }).join("");
+}
+
+async function refreshAdminWorkflowLogs({ force = false } = {}) {
+  if (state.appMode !== "admin" || state.adminAccess.status !== "authorized") return;
+  if (state.workflowLogs.isLoading && !force) return;
+  const url = buildAdminWorkflowLogsApiUrl();
+  if (!url) return;
+  const requestId = ++state.workflowLogs.requestId;
+  const query = new URLSearchParams({ limit: "50" });
+  const gameId = document.getElementById("adminWorkflowLogGameId")?.value.trim();
+  const eventType = document.getElementById("adminWorkflowLogEventType")?.value || "";
+  const status = document.getElementById("adminWorkflowLogStatus")?.value || "";
+  if (gameId) query.set("gameId", gameId);
+  if (eventType) query.set("eventType", eventType);
+  if (status) query.set("status", status);
+  state.workflowLogs.isLoading = true;
+  state.workflowLogs.message = "";
+  renderAdminWorkflowLogs();
+  try {
+    const response = await fetch(`${url}?${query.toString()}`, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || payload?.code || `HTTP ${response.status}`);
+    if (requestId !== state.workflowLogs.requestId) return;
+    state.workflowLogs.logs = Array.isArray(payload.logs) ? payload.logs : [];
+  } catch (error) {
+    if (requestId !== state.workflowLogs.requestId) return;
+    state.workflowLogs.logs = [];
+    state.workflowLogs.message = "試合進行ログを取得できませんでした。";
+    console.error("試合進行ログの取得に失敗しました", error?.message || "unknown error");
+  } finally {
+    if (requestId === state.workflowLogs.requestId) {
+      state.workflowLogs.isLoading = false;
+      renderAdminWorkflowLogs();
     }
   }
 }
@@ -4715,6 +4961,96 @@ function getNpbFetchFailureDisplay(code, workerMessage) {
 
 async function initializePredictionRemoteSync() {
   await syncPredictionFromAccount({ force: true });
+}
+
+function buildResultGamesApiUrl(gameId = "") {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  if (!baseUrl) return "";
+  return gameId
+    ? `${baseUrl}/api/results/games/${encodeURIComponent(gameId)}`
+    : `${baseUrl}/api/results/games`;
+}
+
+async function refreshResultHistory({ force = false } = {}) {
+  const user = getPredictionAccountUser();
+  if (!user) {
+    state.resultHistory = { isLoading: false, games: [], selectedGameId: "", message: "ログインすると過去の試合結果を確認できます。" };
+    renderResultHistory();
+    return;
+  }
+  if (state.resultHistory.isLoading || (!force && state.resultHistory.games.length > 0)) return;
+  const url = buildResultGamesApiUrl();
+  if (!url) return;
+  state.resultHistory.isLoading = true;
+  state.resultHistory.message = "過去の試合結果を確認中...";
+  renderResultHistory();
+  try {
+    const response = await fetch(url, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok || !Array.isArray(payload.games)) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+    state.resultHistory.games = payload.games;
+    state.resultHistory.message = payload.games.length ? "" : "採点済みの過去試合はありません。";
+  } catch (error) {
+    state.resultHistory.games = [];
+    state.resultHistory.message = "過去の試合結果を取得できませんでした。";
+    console.error("過去の試合結果の取得に失敗しました", error.message);
+  } finally {
+    state.resultHistory.isLoading = false;
+    renderResultHistory();
+  }
+}
+
+async function handleResultHistoryClick(event) {
+  const target = event.target instanceof Element ? event.target.closest("[data-result-game-id]") : null;
+  if (!target) return;
+  const gameId = target.dataset.resultGameId;
+  if (!gameId) return;
+  state.resultHistory.selectedGameId = gameId;
+  state.resultHistory.message = "試合結果を読み込み中...";
+  renderResultHistory();
+  try {
+    const response = await fetch(buildResultGamesApiUrl(gameId), { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+    if (!payload.resultsPublished) {
+      state.resultHistory.message = "この試合の結果はまだ公開されていません。";
+      renderResultHistory();
+      return;
+    }
+    if (!payload.prediction || !Array.isArray(payload.actualLineup)) {
+      throw new Error("結果データが不足しています。");
+    }
+    const prediction = remotePredictionToLocal({ lineup: payload.prediction.lineup }, payload.updatedAt || payload.submittedAt, gameId);
+    const actual = remotePredictionToLocal({ lineup: payload.actualLineup }, payload.scoredAt || "", gameId);
+    state.result = { ...scoreLineup(prediction.lineup, actual.lineup), gameId };
+    state.resultHistory.message = "";
+    renderScoreResult();
+  } catch (error) {
+    state.resultHistory.message = "この試合の結果を取得できませんでした。";
+    console.error("過去の試合結果の読み込みに失敗しました", error.message);
+  }
+  renderResultHistory();
+}
+
+function renderResultHistory() {
+  const container = document.getElementById("resultHistoryList");
+  if (!container) return;
+  const history = state.resultHistory;
+  if (history.isLoading) {
+    container.innerHTML = `<p class="result-history-message">${escapeHtml(history.message || "読み込み中...")}</p>`;
+    return;
+  }
+  if (!history.games.length) {
+    container.innerHTML = `<p class="result-history-message">${escapeHtml(history.message || "採点済みの過去試合はありません。")}</p>`;
+    return;
+  }
+  container.innerHTML = history.games.map((game) => {
+    const matchup = game.awayTeam && game.homeTeam ? `${game.awayTeam} vs ${game.homeTeam}` : game.gameId;
+    const score = game.resultsPublished && game.score !== null ? `${game.score}点` : "結果公開前";
+    return `<button type="button" class="result-history-item${game.gameId === history.selectedGameId ? " is-selected" : ""}" data-result-game-id="${escapeHtml(game.gameId)}"><span><strong>${escapeHtml(game.gameDate || game.date || "日付不明")}</strong><span>${escapeHtml(matchup)}</span><small>${escapeHtml(game.startTime || "")}</small></span><b>${escapeHtml(score)}</b></button>`;
+  }).join("") + (history.message ? `<p class="result-history-message" role="status">${escapeHtml(history.message)}</p>` : "");
 }
 
 function buildCurrentPredictionApiUrl(gameId) {
@@ -6526,8 +6862,10 @@ function renderAll() {
   renderPredictionCta();
   renderPredictionAccountStatus();
   renderPredictionDeadline();
+  renderPredictionTargetNotice();
   renderAchievements();
   renderActualLineup();
+  renderResultHistory();
   renderScoreResult();
   renderTodayPerfectAchievers();
   renderRankingPanel();
@@ -6535,6 +6873,14 @@ function renderAll() {
   renderPredictionDeadlineAdmin();
   renderPicker("prediction");
   renderPicker("actual");
+}
+
+function renderPredictionTargetNotice() {
+  const container = document.getElementById("predictionTargetNotice");
+  if (!container) return;
+  const message = String(state.predictionTargetNotice || "").trim();
+  container.textContent = message;
+  container.classList.toggle("hidden", !message);
 }
 
 function renderProbableStarter() {
@@ -6772,6 +7118,7 @@ function renderAdminFlow() {
   renderAutoScoringPanel();
   renderPregameAutomationTools();
   renderAdminGameWorkflowStatus();
+  renderAdminWorkflowLogs();
   updateRosterMonitorButtons();
   renderAutoFetchPanel();
   renderRosterSnapshotSummary();
@@ -7310,6 +7657,13 @@ function renderScoreResult() {
 
   container.className = "summary-box";
   container.innerHTML = "";
+  const selectedGame = state.resultHistory.games.find((game) => game.gameId === state.result.gameId);
+  const resultHeading = document.createElement("p");
+  resultHeading.className = "result-selected-game";
+  resultHeading.textContent = selectedGame
+    ? `表示中：${selectedGame.gameDate || selectedGame.date || ""} ${selectedGame.awayTeam || ""} vs ${selectedGame.homeTeam || ""}`
+    : `表示中の試合：${state.result.gameId || "対象試合"}`;
+  container.appendChild(resultHeading);
   container.appendChild(createResultView(createResultViewModel(state.result)));
   shareButton.classList.remove("hidden");
 }
@@ -7694,6 +8048,8 @@ function resetAllData() {
     fetchedAt: "",
     sourceUrl: NPB_STARTER_SOURCE_URL,
     fetchedGameCount: 0,
+    nextCheckAt: "",
+    errorCode: "",
     logs: [],
     fetchedGameId: ""
   };

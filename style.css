@@ -1388,6 +1388,13 @@ textarea:focus {
   font-size: 1rem;
 }
 
+.admin-workflow-logs-heading-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .admin-workflow-logs-heading p {
   margin-top: 3px;
   color: var(--muted);

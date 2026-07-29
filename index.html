@@ -230,9 +230,13 @@
                     <h3 id="adminWorkflowLogsTitle">試合進行ログ</h3>
                     <p>通常試合の自動処理と管理者操作の履歴です。</p>
                   </div>
-                  <button id="refreshAdminWorkflowLogsButton" class="secondary-button compact-button" type="button">再読み込み</button>
+                  <div class="admin-workflow-logs-heading-actions">
+                    <button id="toggleAdminWorkflowLogsButton" class="secondary-button compact-button" type="button" aria-expanded="false" aria-controls="adminWorkflowLogsContent">ログを表示</button>
+                    <button id="refreshAdminWorkflowLogsButton" class="secondary-button compact-button" type="button">再読み込み</button>
+                  </div>
                 </div>
-                <div class="admin-workflow-log-filters" aria-label="試合進行ログの絞り込み">
+                <div id="adminWorkflowLogsContent" class="admin-workflow-logs-content hidden">
+                  <div class="admin-workflow-log-filters" aria-label="試合進行ログの絞り込み">
                   <input id="adminWorkflowLogGameId" type="text" placeholder="gameId（任意）" aria-label="gameIdで絞り込み">
                   <select id="adminWorkflowLogEventType" aria-label="種別で絞り込み">
                     <option value="">すべての種別</option>
@@ -240,7 +244,11 @@
                     <option value="notice_fetch">公示取得</option>
                     <option value="roster_fixed">ロースター固定</option>
                     <option value="prediction_target_switched">対象試合切り替え</option>
-                    <option value="probable_starter_fetch">予告先発取得</option>
+                    <option value="probable_starter_fetch_started">予告先発取得開始</option>
+                    <option value="probable_starter_unannounced">予告先発未発表</option>
+                    <option value="probable_starter_announced">予告先発取得</option>
+                    <option value="probable_starter_fetch_failed">予告先発取得失敗</option>
+                    <option value="probable_starter_manual_refresh">予告先発手動再取得</option>
                     <option value="lineup_fetch">実スタメン取得</option>
                     <option value="final_lineup_fetch">最終スタメン取得</option>
                     <option value="lineup_fallback">仮スタメンへフォールバック</option>
@@ -264,9 +272,10 @@
                     <option value="error">エラー</option>
                     <option value="info">情報</option>
                   </select>
+                  </div>
+                  <p id="adminWorkflowLogsMessage" class="message" role="status" aria-live="polite"></p>
+                  <div id="adminWorkflowLogsList" class="admin-workflow-logs-list" aria-live="polite"></div>
                 </div>
-                <p id="adminWorkflowLogsMessage" class="message" role="status" aria-live="polite"></p>
-                <div id="adminWorkflowLogsList" class="admin-workflow-logs-list" aria-live="polite"></div>
               </section>
               <div class="schedule-loader">
                 <p class="schedule-loader-title">登録済み試合スケジュール</p>

@@ -366,6 +366,12 @@ const state = {
     record: null,
     message: ""
   },
+  workflowLogs: {
+    isLoading: false,
+    requestId: 0,
+    logs: [],
+    message: ""
+  },
   gameDayNotice: {
     isLoading: false,
     gameId: "",
@@ -462,6 +468,10 @@ function bindEvents() {
   bindAdminEvent("stopRosterMonitorButton", "click", () => stopRosterMonitor("ロースター自動取得を停止しました。", "warning"));
   bindAdminEvent("fetchProbableStarterButton", "click", () => fetchProbableStarter({ force: true }));
   bindAdminEvent("syncGameWorkflowButton", "click", () => refreshAdminGameWorkflowStatus({ force: true }));
+  bindAdminEvent("refreshAdminWorkflowLogsButton", "click", () => refreshAdminWorkflowLogs({ force: true }));
+  bindAdminEvent("adminWorkflowLogGameId", "change", () => refreshAdminWorkflowLogs({ force: true }));
+  bindAdminEvent("adminWorkflowLogEventType", "change", () => refreshAdminWorkflowLogs({ force: true }));
+  bindAdminEvent("adminWorkflowLogStatus", "change", () => refreshAdminWorkflowLogs({ force: true }));
   bindAdminEvent("toggleGameWorkflowPauseButton", "click", toggleGameWorkflowPause);
   bindAdminEvent("editGameStartButton", "click", () => setGameStartManualOverride(true));
   bindAdminEvent("resetGameStartButton", "click", () => setGameStartManualOverride(false));
@@ -627,6 +637,7 @@ function clearAdminAccess() {
   state.adminTestGames = { isLoading: false, isBusy: false, games: [], selectedGameId: "", detail: null, rescorePreview: null, message: "" };
   state.adminTestAchievements = { isLoading: false, items: [], earned: [], message: "" };
   state.gameWorkflow = { isLoading: false, isUpdating: false, requestId: state.gameWorkflow.requestId + 1, gameId: "", record: null, message: "" };
+  state.workflowLogs = { isLoading: false, requestId: state.workflowLogs.requestId + 1, logs: [], message: "" };
   state.appMode = "normal";
   state.isAdminMode = false;
   applyAdminMode();
@@ -1406,6 +1417,7 @@ function openAdminPanel() {
   refreshAutoScoringStatus({ force: true });
   void refreshAutoApprovalSettings();
   void refreshAdminGameWorkflowStatus({ force: true });
+  void refreshAdminWorkflowLogs({ force: true });
   renderAdminTestPanel();
   void refreshAdminTestStatus();
   void refreshAutoScoringTests();
@@ -1419,7 +1431,12 @@ function closeAdminPanel() {
   }
 
   state.appMode = "normal";
+  state.workflowLogs.requestId += 1;
+  state.workflowLogs.isLoading = false;
+  state.workflowLogs.logs = [];
+  state.workflowLogs.message = "";
   applyAdminMode();
+  renderAdminWorkflowLogs();
   renderPredictionDeadlineAdmin();
 }
 
@@ -2837,6 +2854,14 @@ async function fetchProbableStarter({ force = false } = {}) {
       state.probableStarter.status = "error";
       state.probableStarter.message = "予告先発を取得できませんでした";
       addProbableStarterLog(`解析失敗：${errorMessage}`);
+      void recordAdminWorkflowEvent({
+        eventType: "probable_starter_fetch",
+        status: "error",
+        gameId: state.probableStarter.nextGame.gameId,
+        message: "予告先発を取得できませんでした。",
+        errorCode: "PROBABLE_STARTER_FETCH_FAILED",
+        metadata: { httpStatus: response.status }
+      });
       return;
     }
 
@@ -2856,6 +2881,14 @@ async function fetchProbableStarter({ force = false } = {}) {
       state.probableStarter.status = "unannounced";
       state.probableStarter.message = "予告先発はまだ発表されていません";
       addProbableStarterLog("未発表：次の試合に一致するカードがありません");
+      void recordAdminWorkflowEvent({
+        eventType: "probable_starter_fetch",
+        status: "warning",
+        gameId: state.probableStarter.nextGame.gameId,
+        message: "予告先発はまだ発表されていません。",
+        errorCode: "PROBABLE_STARTER_UNANNOUNCED",
+        metadata: { fetchedGameCount: games.length }
+      });
       return;
     }
 
@@ -2868,13 +2901,35 @@ async function fetchProbableStarter({ force = false } = {}) {
 
     if (hasBothStarters) {
       addProbableStarterLog(`予告先発を検出：${fightersStarter.opponent.name} / ${fightersStarter.fighters.name}`);
+      void recordAdminWorkflowEvent({
+        eventType: "probable_starter_fetch",
+        status: "success",
+        gameId: state.probableStarter.nextGame.gameId,
+        message: "予告先発を取得しました。",
+        metadata: { fetchedGameCount: games.length, matched: true }
+      });
     } else {
       addProbableStarterLog("未発表：カードは見つかりましたが両チームの先発が未発表です");
+      void recordAdminWorkflowEvent({
+        eventType: "probable_starter_fetch",
+        status: "warning",
+        gameId: state.probableStarter.nextGame.gameId,
+        message: "予告先発はまだ発表されていません。",
+        errorCode: "PROBABLE_STARTER_UNANNOUNCED",
+        metadata: { fetchedGameCount: games.length, matched: true }
+      });
     }
   } catch (error) {
     state.probableStarter.status = "error";
     state.probableStarter.message = "予告先発を取得できませんでした";
     addProbableStarterLog(`通信失敗：${error.message}`);
+    void recordAdminWorkflowEvent({
+      eventType: "probable_starter_fetch",
+      status: "error",
+      gameId: state.probableStarter.nextGame.gameId,
+      message: "予告先発を取得できませんでした。",
+      errorCode: "PROBABLE_STARTER_FETCH_FAILED"
+    });
   } finally {
     state.probableStarter.isLoading = false;
     renderProbableStarter();
@@ -2967,6 +3022,23 @@ function handleAuthStateChanged() {
   }
   refreshAdminAccess();
   refreshResultHistory({ force: true });
+}
+
+async function recordAdminWorkflowEvent(event) {
+  if (!state.isAdminMode || state.adminAccess.status !== "authorized") return;
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  if (!baseUrl || !event?.gameId) return;
+  try {
+    await fetch(`${baseUrl}/api/admin/workflow-logs/events`, {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(event)
+    });
+  } catch (error) {
+    console.warn("[GAME_WORKFLOW_LOG] probable starter log failed", error?.message || "unknown error");
+  }
 }
 
 function startPredictionDeadlineTicker() {
@@ -3227,6 +3299,11 @@ function buildAdminGameApiUrl(gameId, action) {
   }
 
   return `${baseUrl}/api/admin/games/${encodeURIComponent(gameId)}/${action}`;
+}
+
+function buildAdminWorkflowLogsApiUrl() {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  return baseUrl ? `${baseUrl}/api/admin/workflow-logs` : "";
 }
 
 function getActualLineupDetectedAt() {
@@ -3986,6 +4063,7 @@ async function refreshAdminGameWorkflowStatus({ force = false } = {}) {
   state.gameWorkflow.gameId = gameId;
   state.gameWorkflow.message = "";
   renderAdminGameWorkflowStatus();
+  renderAdminWorkflowLogs();
   try {
     const response = await fetch(url, { credentials: "include", cache: "no-store" });
     const payload = await response.json().catch(() => null);
@@ -4010,6 +4088,109 @@ async function refreshAdminGameWorkflowStatus({ force = false } = {}) {
     if (requestId === state.gameWorkflow.requestId) {
       state.gameWorkflow.isLoading = false;
       renderAdminGameWorkflowStatus();
+    }
+  }
+}
+
+function getWorkflowLogStatusLabel(status) {
+  return ({ success: "成功", warning: "注意", error: "エラー", info: "情報" })[status] || "情報";
+}
+
+function getWorkflowLogEventLabel(eventType) {
+  return ({
+    schedule_sync: "試合予定取得",
+    notice_fetch: "公示取得",
+    roster_fixed: "ロースター固定",
+    prediction_target_switched: "対象試合切り替え",
+    prediction_target_switch_skipped: "次戦なし",
+    probable_starter_fetch: "予告先発取得",
+    lineup_fetch: "実スタメン取得",
+    final_lineup_fetch: "最終スタメン取得",
+    lineup_fallback: "仮スタメンへフォールバック",
+    lineup_retry_wait: "取得再試行待ち",
+    scoring_started: "採点開始",
+    scoring_succeeded: "採点成功",
+    scoring_failed: "採点失敗",
+    scoring_skipped: "採点見送り",
+    result_published: "結果正式公開",
+    result_publish_failed: "結果公開失敗",
+    ranking_reflected: "ランキング反映",
+    admin_manual_operation: "管理者手動操作",
+    admin_lineup_approved: "管理者スタメン登録",
+    admin_lineup_revision: "管理者スタメン修正",
+    admin_lineup_restore: "管理者スタメン復元",
+    admin_rescore_preview: "再採点プレビュー",
+    admin_rescore_confirmed: "管理者再採点"
+  })[eventType] || eventType || "ワークフロー";
+}
+
+function renderAdminWorkflowLogs() {
+  const panel = document.getElementById("adminWorkflowLogsPanel");
+  const list = document.getElementById("adminWorkflowLogsList");
+  const message = document.getElementById("adminWorkflowLogsMessage");
+  if (!panel || !list || !message) return;
+
+  const available = state.appMode === "admin" && state.adminAccess.status === "authorized";
+  panel.classList.toggle("hidden", !available);
+  if (!available) return;
+
+  if (state.workflowLogs.isLoading && !state.workflowLogs.logs.length) {
+    message.className = "message";
+    message.textContent = "試合進行ログを読み込み中です。";
+  } else {
+    message.className = `message${state.workflowLogs.message ? " error-message" : ""}`;
+    message.textContent = state.workflowLogs.message || (state.workflowLogs.logs.length ? `${state.workflowLogs.logs.length}件` : "該当するログはありません。");
+  }
+
+  list.innerHTML = state.workflowLogs.logs.map((log) => {
+    const metadata = log.metadata && typeof log.metadata === "object"
+      ? JSON.stringify(log.metadata, null, 2)
+      : "{}";
+    const status = String(log.status || "info");
+    return `<article class="workflow-log-entry workflow-log-status-${escapeHtml(status)}">
+      <div class="workflow-log-entry-main">
+        <time datetime="${escapeHtml(log.occurredAt || "")}">${escapeHtml(formatDateTime(log.occurredAt))}</time>
+        <span class="workflow-log-event">${escapeHtml(getWorkflowLogEventLabel(log.eventType))}</span>
+        <span class="workflow-log-status">${escapeHtml(getWorkflowLogStatusLabel(status))}</span>
+        <span class="workflow-log-game">${escapeHtml(log.gameId || "全体")}</span>
+      </div>
+      <p class="workflow-log-message">${escapeHtml(log.message || "")}${log.errorCode ? ` <code>${escapeHtml(log.errorCode)}</code>` : ""}</p>
+      <details><summary>詳細</summary><pre>${escapeHtml(metadata)}</pre></details>
+    </article>`;
+  }).join("");
+}
+
+async function refreshAdminWorkflowLogs({ force = false } = {}) {
+  if (state.appMode !== "admin" || state.adminAccess.status !== "authorized") return;
+  if (state.workflowLogs.isLoading && !force) return;
+  const url = buildAdminWorkflowLogsApiUrl();
+  if (!url) return;
+  const requestId = ++state.workflowLogs.requestId;
+  const query = new URLSearchParams({ limit: "50" });
+  const gameId = document.getElementById("adminWorkflowLogGameId")?.value.trim();
+  const eventType = document.getElementById("adminWorkflowLogEventType")?.value || "";
+  const status = document.getElementById("adminWorkflowLogStatus")?.value || "";
+  if (gameId) query.set("gameId", gameId);
+  if (eventType) query.set("eventType", eventType);
+  if (status) query.set("status", status);
+  state.workflowLogs.isLoading = true;
+  state.workflowLogs.message = "";
+  renderAdminWorkflowLogs();
+  try {
+    const response = await fetch(`${url}?${query.toString()}`, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || payload?.code || `HTTP ${response.status}`);
+    if (requestId !== state.workflowLogs.requestId) return;
+    state.workflowLogs.logs = Array.isArray(payload.logs) ? payload.logs : [];
+  } catch (error) {
+    if (requestId !== state.workflowLogs.requestId) return;
+    state.workflowLogs.logs = [];
+    state.workflowLogs.message = "試合進行ログを取得できませんでした。";
+    console.error("試合進行ログの取得に失敗しました", error?.message || "unknown error");
+  } finally {
+    if (requestId === state.workflowLogs.requestId) {
+      state.workflowLogs.isLoading = false;
+      renderAdminWorkflowLogs();
     }
   }
 }
@@ -6968,6 +7149,7 @@ function renderAdminFlow() {
   renderAutoScoringPanel();
   renderPregameAutomationTools();
   renderAdminGameWorkflowStatus();
+  renderAdminWorkflowLogs();
   updateRosterMonitorButtons();
   renderAutoFetchPanel();
   renderRosterSnapshotSummary();

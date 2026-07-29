@@ -52,6 +52,10 @@ const AUTOMATION_HEALTH_STATE_KEY = "cron";
 const AUTO_APPROVE_SETTING_KEY = "auto_approve_enabled";
 const AUTOMATION_SCHEDULE_LOOKAHEAD_DAYS = 1;
 const AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const WORKFLOW_LOG_RETENTION_DAYS = 90;
+const WORKFLOW_LOG_DEFAULT_LIMIT = 50;
+const WORKFLOW_LOG_MAX_LIMIT = 200;
+const WORKFLOW_LOG_CLEANUP_KEY = "workflow_logs_90d";
 const NPB_SERVICE_BINDING_INTERNAL_ORIGIN = "https://npb-fetch.internal";
 const NPB_FETCH_TIMEOUT_MS = 15_000;
 const ROSTER_MINIMUM_PLAYER_COUNT = 20;
@@ -217,6 +221,12 @@ export default {
       if (path === "/api/admin/automation/health" && request.method === "GET") {
         return await handleAdminAutomationHealth(request, env, cors);
       }
+      if (path === "/api/admin/workflow-logs" && request.method === "GET") {
+        return await handleAdminWorkflowLogs(request, env, cors);
+      }
+      if (path === "/api/admin/workflow-logs/events" && request.method === "POST") {
+        return await handleAdminWorkflowLogEvent(request, env, cors);
+      }
       if (path === "/api/admin/automation/settings" && request.method === "GET") {
         return await handleAdminAutomationSettingsGet(request, env, cors);
       }
@@ -281,10 +291,20 @@ export async function runScheduledGameAutomation(env, now) {
   } catch (error) {
     console.error(`[GAME_DETECTION] date=${getJstDateString(now)} team=fighters status=failed code=${error?.code || "SCHEDULE_SYNC_FAILED"}`);
   }
+  await recordWorkflowLog(env.AUTH_DB, {
+    eventType: "schedule_sync",
+    status: scheduleSync.status === "success" ? "success" : scheduleSync.status === "skipped" ? "info" : "error",
+    occurredAt: now,
+    message: scheduleSync.status === "success" ? "試合予定を同期しました。" : "試合予定の同期に失敗または未実行でした。",
+    errorCode: scheduleSync.status === "success" ? "" : "SCHEDULE_SYNC_FAILED",
+    metadata: { date: getJstDateString(now), gameCount: Array.isArray(scheduleSync.games) ? scheduleSync.games.length : 0 },
+    source: "cron"
+  });
   try {
     // 対象試合は保存値ではなく、最新日程と開始時刻から導出します。
     // そのため、Cronが再実行されても同じ試合を再切替する副作用はありません。
     scheduleSync.predictionTarget = await getServerPredictionTarget(env.AUTH_DB, now);
+    await updatePredictionTargetState(env.AUTH_DB, scheduleSync.predictionTarget, now);
   } catch (error) {
     console.warn(`[GAME_WORKFLOW] step=target action=evaluated status=failed code=${error?.code || "PREDICTION_TARGET_FAILED"}`);
   }
@@ -296,6 +316,7 @@ export async function runScheduledGameAutomation(env, now) {
     shared: workflowResult.shared
   });
   await recordAutomationHealth(env.AUTH_DB, { now, summary });
+  await cleanupWorkflowLogs(env.AUTH_DB, now);
   logGameAutomationSummary(summary);
   logCancelledGameWorkflows(workflowResult.workflows, summary.scheduleSync);
   return { ...workflowResult, summary };
@@ -2156,8 +2177,27 @@ async function executePregameTool(env, cors, gameId, action, operation) {
       ? ` noticeDate=${result?.noticeDate || "-"} pageDate=${result?.pageDate || "-"} registrationCount=${Number(result?.registrationCount || 0)} removalCount=${Number(result?.removalCount || 0)} isEmpty=${result?.isEmpty === true}`
       : "";
     console.log(`[PREGAME_TOOL] ${upstreamFields} upstreamStatus=${Number(result?.upstreamStatus || 200)}${noticeFields} status=success`);
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "admin_manual_operation",
+      status: "success",
+      gameId,
+      occurredAt: new Date(),
+      message: `${metadata.label || action}を実行しました。`,
+      metadata: { action, upstreamStatus: Number(result?.upstreamStatus || 200) },
+      source: "admin"
+    });
     return jsonResponse({ ok: true, gameId, result }, 200, cors);
   } catch (error) {
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "admin_manual_operation",
+      status: "error",
+      gameId,
+      occurredAt: new Date(),
+      message: `${PREGAME_TOOL_ACTIONS[action]?.label || action}に失敗しました。`,
+      errorCode: String(error?.code || "PREGAME_TOOL_FAILED"),
+      metadata: { action },
+      source: "admin"
+    });
     return createPregameToolErrorResponse(cors, gameId, action, error);
   }
 }
@@ -2349,14 +2389,51 @@ async function runDueGameDayScheduleJobs(env, now, timelines = getPregameTimelin
     try {
       notice = await runGameDayNoticeOnce(env, now, "", timelines);
       console.log(`[GAME_WORKFLOW] gameId=${notice.appliedGameIds?.join(",") || `day-${plan.date}`} step=notice action=executed status=success`);
+      await recordWorkflowLog(env.AUTH_DB, {
+        eventType: "notice_fetch",
+        status: "success",
+        gameId: notice.appliedGameIds?.[0] || `day-${plan.date}`,
+        occurredAt: now,
+        message: notice.isEmpty ? "指定日の公示はありません。" : "公示取得が完了しました。",
+        errorCode: "",
+        metadata: {
+          date: plan.date,
+          noticeDate: notice.noticeDate,
+          pageDate: notice.pageDate,
+          registrationCount: notice.registrationCount,
+          removalCount: notice.removalCount,
+          isEmpty: notice.isEmpty,
+          appliedGameCount: Array.isArray(notice.appliedGameIds) ? notice.appliedGameIds.length : 0
+        },
+        source: "cron"
+      });
     } catch (error) {
       await recordGameDayNoticeError(env.AUTH_DB, plan.date, error, now);
       notice = { due: true, status: "error", errorCode: String(error?.code || "NOTICE_FETCH_FAILED") };
+      await recordWorkflowLog(env.AUTH_DB, {
+        eventType: "notice_fetch",
+        status: "error",
+        gameId: `day-${plan.date}`,
+        occurredAt: now,
+        message: "公示取得に失敗しました。",
+        errorCode: String(error?.code || "NOTICE_FETCH_FAILED"),
+        metadata: { date: plan.date },
+        source: "cron"
+      });
       console.warn(`[GAME_WORKFLOW] gameId=day-${plan.date} step=notice action=executed status=failed code=${error?.code || "unknown"}`);
     }
   }
   const rosterResult = await fixDueGameRosters(env, timelines, now);
   if (rosterResult.fixed > 0) {
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "roster_fixed",
+      status: "success",
+      gameId: `day-${plan.date}`,
+      occurredAt: now,
+      message: "ロースターを固定しました。",
+      metadata: { date: plan.date, fixedCount: rosterResult.fixed },
+      source: "cron"
+    });
     console.log(`[GAME_WORKFLOW] gameId=day-${plan.date} step=close_predictions action=executed status=success rosterFixed=${rosterResult.fixed}`);
   }
   return { notice, rosterFixed: rosterResult.fixed, rosterFailed: rosterResult.failed };
@@ -3054,6 +3131,232 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
   }
 }
 
+const WORKFLOW_LOG_STATUSES = new Set(["success", "warning", "error", "info"]);
+const WORKFLOW_LOG_SOURCES = new Set(["cron", "admin", "system"]);
+
+function serializeWorkflowLogMetadata(metadata) {
+  const source = metadata && typeof metadata === "object" ? metadata : {};
+  try {
+    const serialized = JSON.stringify(source, (key, value) => {
+      if (/(cookie|authorization|token|secret|password|webhook|email|nickname|prediction)/i.test(key)) {
+        return "[redacted]";
+      }
+      return value;
+    });
+    return serialized && serialized.length <= 2000 ? serialized : JSON.stringify({ truncated: true });
+  } catch {
+    return JSON.stringify({ unavailable: true });
+  }
+}
+
+async function recordWorkflowLog(db, {
+  eventType,
+  status = "info",
+  gameId = "",
+  occurredAt = new Date(),
+  message = "",
+  errorCode = "",
+  metadata = {},
+  source = "system"
+} = {}) {
+  try {
+    const normalizedGameId = String(gameId || "").slice(0, 120);
+    if (normalizedGameId && await isTestRankingGame(db, normalizedGameId)) return null;
+    const occurred = occurredAt instanceof Date ? occurredAt : new Date(occurredAt);
+    if (Number.isNaN(occurred.getTime())) return null;
+    const normalizedStatus = WORKFLOW_LOG_STATUSES.has(status) ? status : "info";
+    const normalizedSource = WORKFLOW_LOG_SOURCES.has(source) ? source : "system";
+    await db.prepare(
+      `INSERT INTO game_workflow_logs
+         (id, event_type, status, game_id, occurred_at, message, error_code, metadata, source)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
+    ).bind(
+      randomToken(24),
+      String(eventType || "workflow").slice(0, 80),
+      normalizedStatus,
+      normalizedGameId || null,
+      occurred.toISOString(),
+      String(message || "").slice(0, 300),
+      String(errorCode || "").slice(0, 80) || null,
+      serializeWorkflowLogMetadata(metadata),
+      normalizedSource
+    ).run();
+    return true;
+  } catch (error) {
+    console.warn(`[GAME_WORKFLOW_LOG] action=write status=failed code=${error?.code || "WORKFLOW_LOG_WRITE_FAILED"}`);
+    return false;
+  }
+}
+
+async function cleanupWorkflowLogs(db, now) {
+  try {
+    const current = now instanceof Date ? now : new Date(now);
+    const today = getJstDateString(current);
+    const maintenance = await db.prepare(
+      "SELECT last_cleanup_at FROM game_workflow_log_maintenance WHERE maintenance_key = ?1 LIMIT 1"
+    ).bind(WORKFLOW_LOG_CLEANUP_KEY).first();
+    if (maintenance?.last_cleanup_at && getJstDateString(new Date(maintenance.last_cleanup_at)) === today) return;
+    const cutoff = new Date(current.getTime() - WORKFLOW_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    await db.batch([
+      db.prepare("DELETE FROM game_workflow_logs WHERE occurred_at < ?1").bind(cutoff),
+      db.prepare(
+        `INSERT INTO game_workflow_log_maintenance (maintenance_key, last_cleanup_at, updated_at)
+         VALUES (?1, ?2, ?2)
+         ON CONFLICT(maintenance_key) DO UPDATE SET last_cleanup_at = excluded.last_cleanup_at, updated_at = excluded.updated_at`
+      ).bind(WORKFLOW_LOG_CLEANUP_KEY, current.toISOString())
+    ]);
+  } catch (error) {
+    console.warn(`[GAME_WORKFLOW_LOG] action=cleanup status=failed code=${error?.code || "WORKFLOW_LOG_CLEANUP_FAILED"}`);
+  }
+}
+
+async function updatePredictionTargetState(db, target, now) {
+  try {
+    const current = await db.prepare(
+      "SELECT prediction_target_game_id, prediction_target_no_next_logged_at FROM game_automation_health WHERE state_key = ?1 LIMIT 1"
+    ).bind(AUTOMATION_HEALTH_STATE_KEY).first();
+    const previousGameId = String(current?.prediction_target_game_id || "");
+    const nextGameId = String(target?.gameId || "");
+    if (!nextGameId) {
+      const noNextLoggedAt = current?.prediction_target_no_next_logged_at ? new Date(current.prediction_target_no_next_logged_at) : null;
+      const noNextLoggedToday = noNextLoggedAt && !Number.isNaN(noNextLoggedAt.getTime())
+        ? getJstDateString(noNextLoggedAt) === getJstDateString(now)
+        : false;
+      if (previousGameId && !noNextLoggedToday) {
+        await db.prepare(
+          "UPDATE game_automation_health SET prediction_target_no_next_logged_at = ?1 WHERE state_key = ?2"
+        ).bind(now.toISOString(), AUTOMATION_HEALTH_STATE_KEY).run();
+        await recordWorkflowLog(db, {
+          eventType: "prediction_target_switch_skipped",
+          status: "warning",
+          gameId: previousGameId,
+          occurredAt: now,
+          message: "次の対象試合がないため、現在の予想対象を維持しました。",
+          metadata: { previousGameId, reason: "no_next_game" },
+          source: "cron"
+        });
+      }
+      return { changed: false, previousGameId, nextGameId: previousGameId, skipped: Boolean(previousGameId) };
+    }
+    if (previousGameId === nextGameId) return { changed: false, previousGameId, nextGameId };
+    await db.prepare(
+      `INSERT INTO game_automation_health
+         (state_key, prediction_target_game_id, prediction_target_no_next_logged_at, updated_at)
+       VALUES (?1, ?2, NULL, ?3)
+       ON CONFLICT(state_key) DO UPDATE SET
+         prediction_target_game_id = excluded.prediction_target_game_id,
+         prediction_target_no_next_logged_at = NULL,
+         updated_at = excluded.updated_at`
+    ).bind(AUTOMATION_HEALTH_STATE_KEY, nextGameId, now.toISOString()).run();
+    await recordWorkflowLog(db, {
+      eventType: "prediction_target_switched",
+      status: "success",
+      gameId: nextGameId,
+      occurredAt: now,
+      message: "予想対象試合を次の試合へ切り替えました。",
+      metadata: { previousGameId: previousGameId || null, nextGameId },
+      source: "cron"
+    });
+    return { changed: true, previousGameId, nextGameId };
+  } catch (error) {
+    console.warn(`[GAME_WORKFLOW_LOG] action=target_state status=failed code=${error?.code || "PREDICTION_TARGET_STATE_FAILED"}`);
+    return { changed: false, previousGameId: "", nextGameId: String(target?.gameId || ""), error };
+  }
+}
+
+function parseWorkflowLogLimit(value) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return WORKFLOW_LOG_DEFAULT_LIMIT;
+  return Math.min(WORKFLOW_LOG_MAX_LIMIT, Math.max(1, parsed));
+}
+
+function getWorkflowLogDateBoundary(value, endOfDay = false) {
+  const date = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const boundary = new Date(`${date}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}+09:00`);
+  return Number.isNaN(boundary.getTime()) ? null : boundary.toISOString();
+}
+
+async function handleAdminWorkflowLogs(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  const url = new URL(request.url);
+  const limit = parseWorkflowLogLimit(url.searchParams.get("limit"));
+  const clauses = [];
+  const bindings = [];
+  const gameId = String(url.searchParams.get("gameId") || "").trim().slice(0, 120);
+  const eventType = String(url.searchParams.get("eventType") || "").trim().slice(0, 80);
+  const status = String(url.searchParams.get("status") || "").trim();
+  const dateFrom = getWorkflowLogDateBoundary(url.searchParams.get("dateFrom"));
+  const dateTo = getWorkflowLogDateBoundary(url.searchParams.get("dateTo"), true);
+  if (gameId) { bindings.push(gameId); clauses.push(`game_id = ?${bindings.length}`); }
+  if (eventType) { bindings.push(eventType); clauses.push(`event_type = ?${bindings.length}`); }
+  if (WORKFLOW_LOG_STATUSES.has(status)) { bindings.push(status); clauses.push(`status = ?${bindings.length}`); }
+  if (dateFrom) { bindings.push(dateFrom); clauses.push(`occurred_at >= ?${bindings.length}`); }
+  if (dateTo) { bindings.push(dateTo); clauses.push(`occurred_at <= ?${bindings.length}`); }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  try {
+    const result = await env.AUTH_DB.prepare(
+      `SELECT id, event_type, status, game_id, occurred_at, message, error_code, metadata, source
+         FROM game_workflow_logs ${where}
+        ORDER BY occurred_at DESC, id DESC LIMIT ${limit}`
+    ).bind(...bindings).all();
+    const logs = (result.results || []).map((row) => ({
+      id: row.id,
+      eventType: row.event_type,
+      status: row.status,
+      gameId: row.game_id || "",
+      occurredAt: row.occurred_at,
+      message: row.message,
+      errorCode: row.error_code || "",
+      metadata: parseJsonObject(row.metadata),
+      source: row.source
+    }));
+    const response = jsonResponse({ ok: true, logs, limit }, 200, cors);
+    response.headers.set("Cache-Control", "no-store");
+    return response;
+  } catch (error) {
+    return jsonResponse({
+      ok: false,
+      code: isPregameSchemaError(error) ? "WORKFLOW_LOG_SCHEMA_NOT_READY" : "WORKFLOW_LOG_READ_FAILED",
+      error: "試合進行ログを取得できませんでした。"
+    }, isPregameSchemaError(error) ? 503 : 500, cors);
+  }
+}
+
+async function handleAdminWorkflowLogEvent(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  try {
+    const input = await readJson(request);
+    const allowedEvents = new Set(["probable_starter_fetch"]);
+    const eventType = String(input?.eventType || "").trim();
+    const status = String(input?.status || "info").trim();
+    if (!allowedEvents.has(eventType) || !WORKFLOW_LOG_STATUSES.has(status)) {
+      return jsonResponse({ ok: false, code: "WORKFLOW_LOG_EVENT_INVALID", error: "試合進行ログの形式が不正です。" }, 400, cors);
+    }
+    const gameId = String(input?.gameId || "").trim().slice(0, 120);
+    const safeMessage = status === "success"
+      ? "予告先発を取得しました。"
+      : status === "warning"
+        ? "予告先発はまだ発表されていません。"
+        : "予告先発を取得できませんでした。";
+    const result = await recordWorkflowLog(env.AUTH_DB, {
+      eventType,
+      status,
+      gameId,
+      occurredAt: new Date(),
+      message: safeMessage,
+      errorCode: String(input?.errorCode || "").slice(0, 80),
+      metadata: input?.metadata,
+      source: "admin"
+    });
+    return jsonResponse({ ok: result !== false }, result === false ? 500 : 200, cors);
+  } catch (error) {
+    return jsonResponse({ ok: false, code: "WORKFLOW_LOG_EVENT_FAILED", error: "試合進行ログを保存できませんでした。" }, 500, cors);
+  }
+}
+
 export function selectNextPredictionTarget(games, now = new Date()) {
   const current = now instanceof Date ? now : new Date(now);
   if (Number.isNaN(current.getTime())) return null;
@@ -3316,6 +3619,15 @@ async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimel
         // 同じ10分枠での待機を毎分出力しないため、枠の開始時だけ記録します。
         if (now.getTime() === dueAt.getTime()) {
           summary.lineupRetryWait += 1;
+          await recordWorkflowLog(env.AUTH_DB, {
+            eventType: "lineup_retry_wait",
+            status: "info",
+            gameId,
+            occurredAt: now,
+            message: "次回の実スタメン取得を待っています。",
+            metadata: { phase: isFinalPhase ? "final" : "provisional", nextRetryAt: new Date(dueAt.getTime() + 10 * 60 * 1000).toISOString() },
+            source: "cron"
+          });
           console.log(`[GAME_WORKFLOW] gameId=${gameId} step=lineup action=skipped status=retry_wait nextRetryAt=${new Date(dueAt.getTime() + 10 * 60 * 1000).toISOString()}`);
         }
         continue;
@@ -3323,10 +3635,28 @@ async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimel
       const result = await captureOfficialLineup(env, gameId, now, { phase: isFinalPhase ? "final" : "provisional" });
       if (result.status === "provisional") {
         summary.provisionalCaptured += 1;
+        await recordWorkflowLog(env.AUTH_DB, {
+          eventType: "lineup_fetch",
+          status: "success",
+          gameId,
+          occurredAt: now,
+          message: "仮スタメンを取得しました。",
+          metadata: { phase: "provisional", playerCount: Array.isArray(result.lineup) ? result.lineup.length : null },
+          source: "cron"
+        });
         console.log(`[GAME_WORKFLOW] gameId=${gameId} step=lineup action=executed status=provisional`);
       } else {
         summary.lineupCaptured += 1;
         if (isFinalPhase) summary.finalLineupCaptured += 1;
+        await recordWorkflowLog(env.AUTH_DB, {
+          eventType: isFinalPhase ? "final_lineup_fetch" : "lineup_fetch",
+          status: "success",
+          gameId,
+          occurredAt: now,
+          message: isFinalPhase ? "最終スタメンを取得しました。" : "実スタメンを取得しました。",
+          metadata: { phase: isFinalPhase ? "final" : "provisional", playerCount: Array.isArray(result.lineup) ? result.lineup.length : null },
+          source: "cron"
+        });
         console.log(`[GAME_WORKFLOW] gameId=${gameId} step=${isFinalPhase ? "final_lineup" : "lineup"} action=executed status=success`);
       }
     } catch (error) {
@@ -3338,6 +3668,16 @@ async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimel
             summary.lineupCaptured += 1;
             summary.finalLineupFallbackUsed += 1;
             await recordGameWorkflowOutcome(env.AUTH_DB, gameId, "final_lineup", "fallback", error, now);
+            await recordWorkflowLog(env.AUTH_DB, {
+              eventType: "lineup_fallback",
+              status: "warning",
+              gameId,
+              occurredAt: now,
+              message: "最終取得失敗・直前取得データを使用しました。",
+              errorCode: fallback.errorCode,
+              metadata: { phase: "final", fallbackUsed: true, playerCount: parseStoredActualLineup(fallback.record?.actual_lineup_json)?.length || null },
+              source: "cron"
+            });
             console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=final_lineup action=fallback status=success code=${fallback.errorCode}`);
             continue;
           }
@@ -3347,6 +3687,28 @@ async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimel
       }
       summary.lineupFailed += 1;
       await recordGameWorkflowOutcome(env.AUTH_DB, gameId, "lineup", "failed", error, now);
+      await recordWorkflowLog(env.AUTH_DB, {
+        eventType: isFinalPhase ? "final_lineup_fetch" : "lineup_fetch",
+        status: "error",
+        gameId,
+        occurredAt: now,
+        message: isFinalPhase ? "最終スタメンを取得できず、採点を見送りました。" : "実スタメンを取得できませんでした。",
+        errorCode: String(error?.code || "LINEUP_FETCH_FAILED"),
+        metadata: { phase: isFinalPhase ? "final" : "provisional", fallbackUsed: false },
+        source: "cron"
+      });
+      if (isFinalPhase) {
+        await recordWorkflowLog(env.AUTH_DB, {
+          eventType: "scoring_skipped",
+          status: "warning",
+          gameId,
+          occurredAt: now,
+          message: "有効なスタメンがないため採点を見送りました。",
+          errorCode: "LINEUP_REQUIRED",
+          metadata: { reason: "no_valid_lineup" },
+          source: "cron"
+        });
+      }
       console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=${isFinalPhase ? "final_lineup" : "lineup"} action=executed status=failed code=${error?.code || "unknown"} retryable=true`);
     }
   }
@@ -3584,8 +3946,26 @@ async function handleAdminScorePredictions(request, env, cors, gameId) {
   }
 
   try {
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "scoring_started",
+      status: "info",
+      gameId,
+      occurredAt: scoringStartedAt,
+      message: "採点を開始しました。",
+      metadata: { source: "admin" },
+      source: "admin"
+    });
     const result = await scoreClaimedGameLineup(env.AUTH_DB, claimed, new Date());
     await recordGameWorkflowOutcome(env.AUTH_DB, gameId, "score", "success", null, new Date());
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "scoring_succeeded",
+      status: "success",
+      gameId,
+      occurredAt: new Date(),
+      message: "採点が完了しました。",
+      metadata: { processed: result.processed, perfectCount: result.perfectCount, source: "admin" },
+      source: "admin"
+    });
     return jsonResponse({
       ok: true,
       gameId,
@@ -3602,6 +3982,16 @@ async function handleAdminScorePredictions(request, env, cors, gameId) {
   } catch (error) {
     await markGameLineupFailed(env.AUTH_DB, gameId, error, new Date());
     await recordGameWorkflowOutcome(env.AUTH_DB, gameId, "score", "failed", error, new Date());
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "scoring_failed",
+      status: "error",
+      gameId,
+      occurredAt: new Date(),
+      message: "採点に失敗しました。",
+      errorCode: String(error?.code || "SCORING_FAILED"),
+      metadata: { source: "admin" },
+      source: "admin"
+    });
     if (error?.code === "prediction_validation_failed") {
       return jsonResponse({
         ok: false,
@@ -3684,6 +4074,15 @@ async function handleAdminActualLineupSave(request, env, cors, gameId) {
       now,
       source: "manual"
     });
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "admin_lineup_approved",
+      status: "success",
+      gameId,
+      occurredAt: now,
+      message: "管理者が正式スタメンを登録しました。",
+      metadata: { source: "manual", playerCount: actualResult.lineup.length },
+      source: "admin"
+    });
     console.log(`auto scoring scheduled: game=${gameId} due=${record.scoring_due_at}`);
     return jsonResponse({
       ok: true,
@@ -3691,6 +4090,15 @@ async function handleAdminActualLineupSave(request, env, cors, gameId) {
       autoScoring: serializeGameLineup(record)
     }, 200, cors);
   } catch (error) {
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "admin_lineup_approved",
+      status: "error",
+      gameId,
+      occurredAt: now,
+      message: "管理者による正式スタメン登録に失敗しました。",
+      errorCode: String(error?.code || "LINEUP_SAVE_FAILED"),
+      source: "admin"
+    });
     if (error?.code === "LINEUP_SAVE_CLOSED" || error?.code === "SCHEDULE_UNAVAILABLE") {
       return jsonResponse({ ok: false, code: error.code, error: error.message }, error.httpStatus || 409, cors);
     }
@@ -3849,8 +4257,26 @@ async function handleAdminLineupRevision(request, env, cors, metadata, user) {
     const actual = sanitizeActualLineupForScoring(input?.actualLineup);
     if (!actual.ok) return jsonResponse({ ok: false, error: actual.error }, 400, cors);
     const revision = await createManualLineupRevision(env.AUTH_DB, metadata, actual.lineup, user.id, reason);
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "admin_lineup_revision",
+      status: "success",
+      gameId: metadata.gameId,
+      occurredAt: new Date(),
+      message: "管理者が正式スタメンを修正しました。",
+      metadata: { version: revision.version, source: revision.source },
+      source: "admin"
+    });
     return jsonResponse({ ok: true, gameId: metadata.gameId, rescoreExpiresAt: expiresAt.toISOString(), revision: serializeLineupRevision(revision) }, 201, cors);
   } catch (error) {
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "admin_lineup_revision",
+      status: "error",
+      gameId: metadata.gameId,
+      occurredAt: new Date(),
+      message: "管理者による正式スタメン修正に失敗しました。",
+      errorCode: String(error?.code || "RESCORE_LINEUP_REVISION_FAILED"),
+      source: "admin"
+    });
     return createManualRescoreErrorResponse(cors, error);
   }
 }
@@ -3866,8 +4292,26 @@ async function handleAdminLineupRestore(request, env, cors, metadata, user) {
       throw createPregameError("RESCORE_RESTORE_VERSION_INVALID", "復元する正式スタメンversionが見つかりません。", { httpStatus: 404 });
     }
     const revision = await createManualLineupRevision(env.AUTH_DB, metadata, actual.lineup, user.id, reason, "restore");
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "admin_lineup_restore",
+      status: "success",
+      gameId: metadata.gameId,
+      occurredAt: new Date(),
+      message: "管理者が正式スタメンを復元しました。",
+      metadata: { version: revision.version, restoredVersion: Number(input?.version) },
+      source: "admin"
+    });
     return jsonResponse({ ok: true, gameId: metadata.gameId, rescoreExpiresAt: expiresAt.toISOString(), revision: serializeLineupRevision(revision) }, 201, cors);
   } catch (error) {
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "admin_lineup_restore",
+      status: "error",
+      gameId: metadata.gameId,
+      occurredAt: new Date(),
+      message: "管理者による正式スタメン復元に失敗しました。",
+      errorCode: String(error?.code || "RESCORE_LINEUP_RESTORE_FAILED"),
+      source: "admin"
+    });
     return createManualRescoreErrorResponse(cors, error);
   }
 }
@@ -3926,8 +4370,26 @@ async function handleAdminRescorePreview(request, env, cors, metadata, user) {
       ).bind(previewId, metadata.gameId, version, now.toISOString())
     ]);
     await writeManualRescoreAudit(env.AUTH_DB, metadata, null, version, reason, user.id, now, summary, "previewed");
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "admin_rescore_preview",
+      status: "info",
+      gameId: metadata.gameId,
+      occurredAt: now,
+      message: "管理者が再採点プレビューを作成しました。",
+      metadata: { lineupVersion: version, processed: summary.processed, scoreChangedCount: summary.scoreChangedCount },
+      source: "admin"
+    });
     return jsonResponse({ ok: true, gameId: metadata.gameId, lineupVersion: version, previewId, previewExpiresAt: previewExpiresAt.toISOString(), rescoreExpiresAt: expiresAt.toISOString(), summary }, 200, cors);
   } catch (error) {
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "admin_rescore_preview",
+      status: "error",
+      gameId: metadata.gameId,
+      occurredAt: new Date(),
+      message: "管理者による再採点プレビューに失敗しました。",
+      errorCode: String(error?.code || "RESCORE_PREVIEW_FAILED"),
+      source: "admin"
+    });
     return createManualRescoreErrorResponse(cors, error);
   }
 }
@@ -3973,6 +4435,15 @@ async function handleAdminRescoreConfirm(request, env, cors, metadata, user) {
       throw createPregameError("RESCORE_PREVIEW_INVALID", "再採点プレビューを確認してください。", { httpStatus: 409 });
     }
     const result = await applyManualRescore(env.AUTH_DB, metadata, current, preview, user.id, reason, now);
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "admin_rescore_confirmed",
+      status: "success",
+      gameId: metadata.gameId,
+      occurredAt: now,
+      message: "管理者が再採点を確定しました。",
+      metadata: { lineupVersion: Number(current.version), processed: result.processed, perfectCount: result.perfectCount },
+      source: "admin"
+    });
     return jsonResponse({ ok: true, gameId: metadata.gameId, lineupVersion: Number(current.version), ...result }, 200, cors);
   } catch (error) {
     if (previewId) {
@@ -3985,6 +4456,15 @@ async function handleAdminRescoreConfirm(request, env, cors, metadata, user) {
         // 元の再採点エラーを優先します。
       }
     }
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "admin_rescore_confirmed",
+      status: "error",
+      gameId: metadata.gameId,
+      occurredAt: new Date(),
+      message: "管理者による再採点確定に失敗しました。",
+      errorCode: String(error?.code || "RESCORE_FAILED"),
+      source: "admin"
+    });
     return createManualRescoreErrorResponse(cors, error);
   }
 }
@@ -4353,8 +4833,35 @@ async function runDueAutoScoringJobs(env, now, pausedGameIds = new Set()) {
       if (!claimed) continue;
       summary.processed += 1;
       console.log(`auto scoring claimed: game=${claimed.game_id} attempt=${claimed.scoring_attempts}`);
+      await recordWorkflowLog(env.AUTH_DB, {
+        eventType: "scoring_started",
+        status: "info",
+        gameId: claimed.game_id,
+        occurredAt: now,
+        message: "採点を開始しました。",
+        metadata: { attempt: claimed.scoring_attempts },
+        source: "cron"
+      });
       const result = await scoreClaimedGameLineup(env.AUTH_DB, claimed, now);
       await recordGameWorkflowOutcome(env.AUTH_DB, claimed.game_id, "score", "success", null, now);
+      await recordWorkflowLog(env.AUTH_DB, {
+        eventType: "scoring_succeeded",
+        status: "success",
+        gameId: claimed.game_id,
+        occurredAt: now,
+        message: "採点が完了しました。",
+        metadata: { processed: result.processed, perfectCount: result.perfectCount },
+        source: "cron"
+      });
+      await recordWorkflowLog(env.AUTH_DB, {
+        eventType: "ranking_reflected",
+        status: "success",
+        gameId: claimed.game_id,
+        occurredAt: now,
+        message: "採点結果をランキング集計対象へ反映しました。",
+        metadata: { processed: result.processed, perfectCount: result.perfectCount, publicationStatus: "scored_private" },
+        source: "cron"
+      });
       summary.succeeded += 1;
       console.log(`auto scoring complete: game=${claimed.game_id} processed=${result.processed} perfect=${result.perfectCount}`);
       console.log(`[GAME_WORKFLOW] gameId=${claimed.game_id} step=score action=executed status=success`);
@@ -4363,9 +4870,28 @@ async function runDueAutoScoringJobs(env, now, pausedGameIds = new Set()) {
       if (claimed) {
         await markGameLineupFailed(env.AUTH_DB, claimed.game_id, error, now);
         await recordGameWorkflowOutcome(env.AUTH_DB, claimed.game_id, "score", "failed", error, now);
+        await recordWorkflowLog(env.AUTH_DB, {
+          eventType: "scoring_failed",
+          status: "error",
+          gameId: claimed.game_id,
+          occurredAt: now,
+          message: "採点に失敗しました。",
+          errorCode: String(error?.code || "SCORING_FAILED"),
+          metadata: { attempt: claimed.scoring_attempts },
+          source: "cron"
+        });
         console.warn(`[GAME_WORKFLOW] gameId=${claimed.game_id} step=score action=executed status=failed code=${error?.code || "SCORING_FAILED"}`);
       } else {
         await recordGameWorkflowOutcome(env.AUTH_DB, row.game_id, "score", "failed", error, now);
+        await recordWorkflowLog(env.AUTH_DB, {
+          eventType: "scoring_failed",
+          status: "error",
+          gameId: row.game_id,
+          occurredAt: now,
+          message: "採点の開始に失敗しました。",
+          errorCode: String(error?.code || "SCORING_FAILED"),
+          source: "cron"
+        });
         console.warn(`[GAME_WORKFLOW] gameId=${row.game_id} step=score action=executed status=failed code=${error?.code || "SCORING_FAILED"}`);
       }
     }
@@ -4562,10 +5088,37 @@ async function runDueGameDayPublicationJobs(env, now, timelines = getPregameTime
       const result = await publishScoredGameResults(env, timeline.gameId, now);
       if (result.published) {
         summary.published += 1;
+        await recordWorkflowLog(env.AUTH_DB, {
+          eventType: "result_published",
+          status: "success",
+          gameId: timeline.gameId,
+          occurredAt: now,
+          message: "正式結果を公開しました。",
+          metadata: { publishedAt: result.publishedAt || now.toISOString() },
+          source: "cron"
+        });
+        await recordWorkflowLog(env.AUTH_DB, {
+          eventType: "ranking_reflected",
+          status: "success",
+          gameId: timeline.gameId,
+          occurredAt: now,
+          message: "公開結果をランキングへ反映しました。",
+          metadata: { publicationStatus: "published" },
+          source: "cron"
+        });
         console.log(`[GAME_WORKFLOW] gameId=${timeline.gameId} step=publish action=executed status=success`);
       }
     } catch (error) {
       summary.failed += 1;
+      await recordWorkflowLog(env.AUTH_DB, {
+        eventType: "result_publish_failed",
+        status: "error",
+        gameId: timeline.gameId,
+        occurredAt: now,
+        message: "正式結果の公開に失敗しました。",
+        errorCode: String(error?.code || "RESULT_PUBLISH_FAILED"),
+        source: "cron"
+      });
       console.warn(`[GAME_WORKFLOW] gameId=${timeline.gameId} step=publish action=executed status=failed code=${error?.code || "unknown"}`);
     }
   }

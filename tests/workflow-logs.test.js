@@ -73,6 +73,9 @@ test("管理画面は試合進行ログを管理者だけに表示し、フィ�
   assert.match(html, /id="adminWorkflowLogStatus"/);
   assert.match(html, /id="refreshAdminWorkflowLogsButton"/);
   assert.match(html, /id="adminWorkflowLogsList"/);
+  assert.match(html, /id="toggleAdminWorkflowLogsButton"/);
+  assert.match(html, /aria-expanded="false"/);
+  assert.match(html, /aria-controls="adminWorkflowLogsContent"/);
   assert.match(script, /state\.appMode === "admin" && state\.adminAccess\.status === "authorized"/);
   assert.match(script, /\/api\/admin\/workflow-logs/);
   assert.match(script, /function renderAdminWorkflowLogs\(\)/);

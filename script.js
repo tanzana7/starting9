@@ -6,6 +6,7 @@ const STORAGE_KEYS = {
   rosterSnapshot: "hamStarting9RosterSnapshot",
   candidateRosterFilter: "hamStarting9CandidateRosterFilter"
 };
+const ADMIN_WORKFLOW_LOGS_EXPANDED_STORAGE_KEY = "starting9AdminWorkflowLogsExpanded";
 const RESET_STORAGE_KEYS = [
   STORAGE_KEYS.prediction,
   STORAGE_KEYS.actual,
@@ -370,7 +371,8 @@ const state = {
     isLoading: false,
     requestId: 0,
     logs: [],
-    message: ""
+    message: "",
+    expanded: false
   },
   gameDayNotice: {
     isLoading: false,
@@ -386,6 +388,7 @@ const state = {
 };
 
 document.addEventListener("DOMContentLoaded", () => {
+  restoreAdminWorkflowLogsExpanded();
   removeLegacyAdminQueryParameter();
   state.isAdminMode = false;
   // 後続の画面初期化とは独立して、認証復元完了後の初回管理者判定を予約します。
@@ -468,6 +471,7 @@ function bindEvents() {
   bindAdminEvent("stopRosterMonitorButton", "click", () => stopRosterMonitor("ロースター自動取得を停止しました。", "warning"));
   bindAdminEvent("fetchProbableStarterButton", "click", () => fetchProbableStarter({ force: true }));
   bindAdminEvent("syncGameWorkflowButton", "click", () => refreshAdminGameWorkflowStatus({ force: true }));
+  bindAdminEvent("toggleAdminWorkflowLogsButton", "click", toggleAdminWorkflowLogs);
   bindAdminEvent("refreshAdminWorkflowLogsButton", "click", () => refreshAdminWorkflowLogs({ force: true }));
   bindAdminEvent("adminWorkflowLogGameId", "change", () => refreshAdminWorkflowLogs({ force: true }));
   bindAdminEvent("adminWorkflowLogEventType", "change", () => refreshAdminWorkflowLogs({ force: true }));
@@ -1417,7 +1421,9 @@ function openAdminPanel() {
   refreshAutoScoringStatus({ force: true });
   void refreshAutoApprovalSettings();
   void refreshAdminGameWorkflowStatus({ force: true });
-  void refreshAdminWorkflowLogs({ force: true });
+  if (state.workflowLogs.expanded) {
+    void refreshAdminWorkflowLogs({ force: true });
+  }
   renderAdminTestPanel();
   void refreshAdminTestStatus();
   void refreshAutoScoringTests();
@@ -1438,6 +1444,36 @@ function closeAdminPanel() {
   applyAdminMode();
   renderAdminWorkflowLogs();
   renderPredictionDeadlineAdmin();
+}
+
+function restoreAdminWorkflowLogsExpanded() {
+  try {
+    state.workflowLogs.expanded = window.localStorage.getItem(ADMIN_WORKFLOW_LOGS_EXPANDED_STORAGE_KEY) === "true";
+  } catch {
+    state.workflowLogs.expanded = false;
+  }
+}
+
+function persistAdminWorkflowLogsExpanded() {
+  try {
+    window.localStorage.setItem(ADMIN_WORKFLOW_LOGS_EXPANDED_STORAGE_KEY, String(state.workflowLogs.expanded));
+  } catch {
+    // localStorageが使えない環境でもログ表示自体は継続します。
+  }
+}
+
+function toggleAdminWorkflowLogs() {
+  if (state.appMode !== "admin" || state.adminAccess.status !== "authorized") return;
+  state.workflowLogs.expanded = !state.workflowLogs.expanded;
+  persistAdminWorkflowLogsExpanded();
+  if (!state.workflowLogs.expanded) {
+    state.workflowLogs.requestId += 1;
+    state.workflowLogs.isLoading = false;
+  }
+  renderAdminWorkflowLogs();
+  if (state.workflowLogs.expanded) {
+    void refreshAdminWorkflowLogs({ force: true });
+  }
 }
 
 function handleAdminDetailsToggle(event) {
@@ -4095,13 +4131,23 @@ function getWorkflowLogEventLabel(eventType) {
 
 function renderAdminWorkflowLogs() {
   const panel = document.getElementById("adminWorkflowLogsPanel");
+  const content = document.getElementById("adminWorkflowLogsContent");
+  const toggle = document.getElementById("toggleAdminWorkflowLogsButton");
+  const refresh = document.getElementById("refreshAdminWorkflowLogsButton");
   const list = document.getElementById("adminWorkflowLogsList");
   const message = document.getElementById("adminWorkflowLogsMessage");
-  if (!panel || !list || !message) return;
+  if (!panel || !content || !toggle || !refresh || !list || !message) return;
 
   const available = state.appMode === "admin" && state.adminAccess.status === "authorized";
   panel.classList.toggle("hidden", !available);
   if (!available) return;
+
+  const expanded = state.workflowLogs.expanded === true;
+  content.classList.toggle("hidden", !expanded);
+  refresh.classList.toggle("hidden", !expanded);
+  toggle.setAttribute("aria-expanded", String(expanded));
+  toggle.textContent = expanded ? "ログを閉じる" : "ログを表示";
+  if (!expanded) return;
 
   if (state.workflowLogs.isLoading && !state.workflowLogs.logs.length) {
     message.className = "message";
@@ -4131,6 +4177,7 @@ function renderAdminWorkflowLogs() {
 
 async function refreshAdminWorkflowLogs({ force = false } = {}) {
   if (state.appMode !== "admin" || state.adminAccess.status !== "authorized") return;
+  if (!state.workflowLogs.expanded) return;
   if (state.workflowLogs.isLoading && !force) return;
   const url = buildAdminWorkflowLogsApiUrl();
   if (!url) return;

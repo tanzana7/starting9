@@ -56,7 +56,7 @@ test("要求された通常試合イベントをCron・管理操作から記録�
     "scoring_succeeded", "scoring_failed", "scoring_skipped", "result_published",
     "ranking_reflected", "admin_manual_operation", "admin_lineup_revision", "admin_rescore_confirmed"
   ]) {
-    assert.match(worker, new RegExp(`eventType: "${eventType}"`), `${eventType}の記録がない`);
+    assert.match(worker, new RegExp(eventType), `${eventType}の記録がない`);
   }
   assert.match(worker, /eventType: isFinalPhase \? "final_lineup_fetch" : "lineup_fetch"/);
   assert.match(worker, /source: "cron"/);
@@ -82,14 +82,24 @@ test("管理画面は試合進行ログを管理者だけに表示し、フィ�
   assert.match(style, /@media \(max-width: 759px\)/);
 });
 
-test("予告先発の管理者イベントは専用POSTで、管理画面のログ取得はGETで行う", () => {
+test("予告先発の取得イベントはサーバー側のCron・管理者経路で記録する", () => {
   const worker = read("auth-worker.js");
   const script = read("script.js");
-  assert.match(worker, /path === "\/api\/admin\/workflow-logs\/events" && request\.method === "POST"/);
-  assert.match(worker, /allowedEvents = new Set\(\["probable_starter_fetch"\]\)/);
-  assert.match(worker, /async function handleAdminWorkflowLogEvent/);
-  assert.match(script, /eventType: "probable_starter_fetch"/);
-  assert.match(script, /method: "POST"/);
+  for (const eventType of [
+    "probable_starter_fetch_started",
+    "probable_starter_unannounced",
+    "probable_starter_announced",
+    "probable_starter_fetch_failed",
+    "probable_starter_manual_refresh"
+  ]) {
+    assert.match(worker, new RegExp(eventType), `${eventType}の記録がない`);
+  }
+  assert.match(worker, /async function runDueProbableStarterJob\(env, now\)/);
+  assert.match(worker, /fetchNpbWorkerJson\(env, \{ mode: "starter" \}\)/);
+  assert.match(worker, /path === "\/api\/probable-starter" && request\.method === "GET"/);
+  assert.match(worker, /probable-starter/);
+  assert.match(worker, /refresh\$\/\);/);
+  assert.doesNotMatch(script, /workflow-logs\/events/);
 });
 
 test("cleanupは同じJST日付に1回だけ実行する", async () => {

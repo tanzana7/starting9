@@ -58,6 +58,7 @@ const WORKFLOW_LOG_MAX_LIMIT = 200;
 const WORKFLOW_LOG_CLEANUP_KEY = "workflow_logs_90d";
 const NPB_SERVICE_BINDING_INTERNAL_ORIGIN = "https://npb-fetch.internal";
 const NPB_FETCH_TIMEOUT_MS = 15_000;
+const PROBABLE_STARTER_RETRY_INTERVAL_MS = 60 * 60 * 1000;
 const ROSTER_MINIMUM_PLAYER_COUNT = 20;
 const TEST_GAME_DEFAULT_OPPONENT_CODE = "e";
 const TEST_GAME_DEFAULT_REOPEN_MINUTES = 60;
@@ -205,6 +206,9 @@ export default {
       if (path === "/api/prediction-target" && request.method === "GET") {
         return await handleGetPredictionTarget(request, env, cors);
       }
+      if (path === "/api/probable-starter" && request.method === "GET") {
+        return await handleGetProbableStarter(request, env, cors);
+      }
       const resultGameRoute = parseResultGameRoute(path);
       if (resultGameRoute && request.method === "GET") {
         return await handleGetResultGame(request, env, cors, resultGameRoute.gameId);
@@ -224,8 +228,9 @@ export default {
       if (path === "/api/admin/workflow-logs" && request.method === "GET") {
         return await handleAdminWorkflowLogs(request, env, cors);
       }
-      if (path === "/api/admin/workflow-logs/events" && request.method === "POST") {
-        return await handleAdminWorkflowLogEvent(request, env, cors);
+      const probableStarterRefreshRoute = parseProbableStarterRefreshRoute(path);
+      if (probableStarterRefreshRoute && request.method === "POST") {
+        return await handleAdminProbableStarterRefresh(request, env, cors, probableStarterRefreshRoute.gameId);
       }
       if (path === "/api/admin/automation/settings" && request.method === "GET") {
         return await handleAdminAutomationSettingsGet(request, env, cors);
@@ -392,9 +397,11 @@ async function runGameWorkflows(env, now) {
   const cancelledTimelines = getScheduledGames()
     .filter((game) => isScheduleGameUnavailable(game))
     .map((game) => ({ game, gameId: game.gameId, gameCode: game.gameCode || "" }));
-  const shared = { notice: null, lineup: null, scoring: null, publishing: null, errors: 0, paused: pausedGameIds.size };
+  const shared = { notice: null, lineup: null, probableStarter: null, scoring: null, publishing: null, errors: 0, paused: pausedGameIds.size };
   try { shared.notice = await runDueGameDayScheduleJobs(env, now, activeTimelines); }
   catch (error) { shared.errors += 1; console.error(`game-day schedule cron failed: code=${error?.code || "unknown"}`); }
+  try { shared.probableStarter = await runDueProbableStarterJob(env, now); }
+  catch (error) { shared.errors += 1; console.error(`probable starter cron failed: code=${error?.code || "unknown"}`); }
   try { shared.lineup = await runDuePregameAutomationJobs(env, now, activeTimelines); }
   catch (error) { shared.errors += 1; console.error(`pregame automation cron failed: code=${error?.code || "unknown"}`); }
   try { shared.scoring = await runDueAutoScoringJobs(env, now, pausedGameIds); }
@@ -405,6 +412,229 @@ async function runGameWorkflows(env, now) {
   catch (error) { shared.errors += 1; console.error(`game-day publication cron failed: code=${error?.code || "unknown"}`); }
   const workflows = [...timelines, ...cancelledTimelines].map((timeline) => runGameWorkflow(timeline, now, pausedGameIds.has(timeline.gameId)));
   return { shared, workflows };
+}
+
+function normalizeProbableStarterTeam(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return ["fighters", "buffaloes", "hawks", "lions", "eagles", "marines", "giants", "tigers", "baystars", "carp", "dragons", "swallows"].includes(normalized)
+    ? normalized
+    : "";
+}
+
+function findProbableStarterGame(target, games) {
+  const expectedDate = String(target?.date || "");
+  const expectedHome = normalizeProbableStarterTeam(target?.homeTeam);
+  const expectedAway = normalizeProbableStarterTeam(target?.awayTeam);
+  if (!expectedHome || !expectedAway) return null;
+  const exact = (Array.isArray(games) ? games : []).find((game) => {
+    return (!expectedDate || String(game?.date || "") === expectedDate)
+      && normalizeProbableStarterTeam(game?.homeTeam) === expectedHome
+      && normalizeProbableStarterTeam(game?.awayTeam) === expectedAway;
+  });
+  if (exact) return exact;
+  return (Array.isArray(games) ? games : []).find((game) => {
+    const teams = new Set([normalizeProbableStarterTeam(game?.homeTeam), normalizeProbableStarterTeam(game?.awayTeam)]);
+    return (!expectedDate || String(game?.date || "") === expectedDate)
+      && teams.has(expectedHome)
+      && teams.has(expectedAway);
+  }) || null;
+}
+
+function serializeProbableStarterRow(row) {
+  if (!row) return null;
+  return {
+    gameId: String(row.game_id || ""),
+    status: String(row.status || "error"),
+    homePitcherName: row.home_pitcher_name || "",
+    awayPitcherName: row.away_pitcher_name || "",
+    fetchedAt: row.fetched_at || null,
+    announcedAt: row.announced_at || null,
+    nextCheckAt: row.next_check_at || null,
+    sourceUrl: row.source_url || "",
+    errorCode: row.error_code || "",
+    updatedAt: row.updated_at || null
+  };
+}
+
+async function isProbableStarterTestGame(db, gameId) {
+  try {
+    const testGame = await db.prepare(
+      "SELECT game_id FROM test_games WHERE game_id = ?1 AND status <> 'deleted' LIMIT 1"
+    ).bind(gameId).first();
+    if (testGame) return true;
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+  }
+  try {
+    return await isTestRankingGame(db, gameId);
+  } catch (error) {
+    if (isPregameSchemaError(error)) return false;
+    throw error;
+  }
+}
+
+async function saveProbableStarterRow(db, {
+  gameId,
+  status,
+  homePitcherName = "",
+  awayPitcherName = "",
+  fetchedAt = null,
+  announcedAt = null,
+  nextCheckAt = null,
+  sourceUrl = "",
+  errorCode = "",
+  updatedAt
+}) {
+  await db.prepare(
+    `INSERT INTO probable_starters
+       (game_id, status, home_pitcher_name, away_pitcher_name, fetched_at, announced_at, next_check_at, source_url, error_code, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+     ON CONFLICT(game_id) DO UPDATE SET
+       status = excluded.status,
+       home_pitcher_name = excluded.home_pitcher_name,
+       away_pitcher_name = excluded.away_pitcher_name,
+       fetched_at = excluded.fetched_at,
+       announced_at = excluded.announced_at,
+       next_check_at = excluded.next_check_at,
+       source_url = excluded.source_url,
+       error_code = excluded.error_code,
+       updated_at = excluded.updated_at`
+  ).bind(
+    gameId,
+    status,
+    homePitcherName || null,
+    awayPitcherName || null,
+    fetchedAt,
+    announcedAt,
+    nextCheckAt,
+    sourceUrl || null,
+    errorCode || null,
+    updatedAt
+  ).run();
+}
+
+async function runProbableStarterFetch(env, target, now, { source = "cron" } = {}) {
+  const current = now instanceof Date ? now : new Date(now);
+  const gameId = String(target?.gameId || "");
+  if (!gameId || !target?.startAt || !Number.isFinite(new Date(target.startAt).getTime())) {
+    throw createPregameError("SCHEDULE_UNAVAILABLE", "予告先発の対象試合を確認できません。", { httpStatus: 409 });
+  }
+  if (await isProbableStarterTestGame(env.AUTH_DB, gameId)) {
+    return { status: "skipped", reason: "test_game", gameId };
+  }
+
+  const fetchedAt = current.toISOString();
+  await recordWorkflowLog(env.AUTH_DB, {
+    eventType: "probable_starter_fetch_started",
+    status: "info",
+    gameId,
+    occurredAt: current,
+    message: "予告先発の取得を開始しました。",
+    metadata: { source },
+    source
+  });
+
+  let previous = null;
+  try {
+    previous = await env.AUTH_DB.prepare("SELECT * FROM probable_starters WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
+    const payload = await fetchNpbWorkerJson(env, { mode: "starter" });
+    const matched = findProbableStarterGame(target, payload.games);
+    const homePitcherName = String(matched?.homeStarter?.name || "").trim();
+    const awayPitcherName = String(matched?.awayStarter?.name || "").trim();
+    const announced = Boolean(homePitcherName && awayPitcherName);
+    const normalizedFetchedAt = String(payload.fetchedAt || fetchedAt);
+    const announcedAt = announced ? (previous?.announced_at || normalizedFetchedAt) : null;
+    const nextCheckAt = announced ? null : new Date(current.getTime() + PROBABLE_STARTER_RETRY_INTERVAL_MS).toISOString();
+    const status = announced ? "announced" : "unannounced";
+    await saveProbableStarterRow(env.AUTH_DB, {
+      gameId,
+      status,
+      homePitcherName,
+      awayPitcherName,
+      fetchedAt: normalizedFetchedAt,
+      announcedAt,
+      nextCheckAt,
+      sourceUrl: payload.sourceUrl || "https://npb.jp/announcement/starter/",
+      errorCode: "",
+      updatedAt: fetchedAt
+    });
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: announced ? "probable_starter_announced" : "probable_starter_unannounced",
+      status: announced ? "success" : "warning",
+      gameId,
+      occurredAt: current,
+      message: announced ? "予告先発を保存しました。" : "予告先発はまだ発表されていません。",
+      errorCode: announced ? "" : "PROBABLE_STARTER_UNANNOUNCED",
+      metadata: { source, matched: Boolean(matched), nextCheckAt },
+      source
+    });
+    return {
+      ok: true,
+      gameId,
+      probableStarter: serializeProbableStarterRow({
+        game_id: gameId,
+        status,
+        home_pitcher_name: homePitcherName,
+        away_pitcher_name: awayPitcherName,
+        fetched_at: normalizedFetchedAt,
+        announced_at: announcedAt,
+        next_check_at: nextCheckAt,
+        source_url: payload.sourceUrl || "https://npb.jp/announcement/starter/",
+        error_code: "",
+        updated_at: fetchedAt
+      })
+    };
+  } catch (error) {
+    const errorCode = String(error?.code || "PROBABLE_STARTER_FETCH_FAILED").slice(0, 80);
+    const nextCheckAt = new Date(current.getTime() + PROBABLE_STARTER_RETRY_INTERVAL_MS).toISOString();
+    try {
+      await saveProbableStarterRow(env.AUTH_DB, {
+        gameId,
+        status: "error",
+        homePitcherName: previous?.home_pitcher_name || "",
+        awayPitcherName: previous?.away_pitcher_name || "",
+        fetchedAt,
+        announcedAt: previous?.announced_at || null,
+        nextCheckAt,
+        sourceUrl: previous?.source_url || "https://npb.jp/announcement/starter/",
+        errorCode,
+        updatedAt: fetchedAt
+      });
+    } catch (saveError) {
+      console.warn(`[PROBABLE_STARTER] action=save status=failed code=${saveError?.code || "PROBABLE_STARTER_SAVE_FAILED"}`);
+    }
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "probable_starter_fetch_failed",
+      status: "error",
+      gameId,
+      occurredAt: current,
+      message: "予告先発を取得できませんでした。",
+      errorCode,
+      metadata: { source, nextCheckAt },
+      source
+    });
+    throw error;
+  }
+}
+
+async function runDueProbableStarterJob(env, now) {
+  const target = await getServerPredictionTarget(env.AUTH_DB, now);
+  if (!target?.gameId || !target.startAt || new Date(now).getTime() >= new Date(target.startAt).getTime()) {
+    return { status: "not_due", gameId: target?.gameId || "" };
+  }
+  if (await isProbableStarterTestGame(env.AUTH_DB, target.gameId)) {
+    return { status: "skipped", gameId: target.gameId, reason: "test_game" };
+  }
+  const row = await env.AUTH_DB.prepare("SELECT status, next_check_at FROM probable_starters WHERE game_id = ?1 LIMIT 1").bind(target.gameId).first();
+  if (row?.status === "announced") return { status: "already_announced", gameId: target.gameId };
+  if (row?.next_check_at && new Date(row.next_check_at).getTime() > new Date(now).getTime()) {
+    return { status: "retry_wait", gameId: target.gameId, nextCheckAt: row.next_check_at };
+  }
+  try {
+    return await runProbableStarterFetch(env, target, now, { source: "cron" });
+  } catch (error) {
+    return { status: "error", gameId: target.gameId, errorCode: error?.code || "PROBABLE_STARTER_FETCH_FAILED" };
+  }
 }
 
 async function getPausedWorkflowGameIds(db) {
@@ -3324,39 +3554,6 @@ async function handleAdminWorkflowLogs(request, env, cors) {
   }
 }
 
-async function handleAdminWorkflowLogEvent(request, env, cors) {
-  const access = await requireAdminUser(request, env, cors);
-  if (!access.ok) return access.response;
-  try {
-    const input = await readJson(request);
-    const allowedEvents = new Set(["probable_starter_fetch"]);
-    const eventType = String(input?.eventType || "").trim();
-    const status = String(input?.status || "info").trim();
-    if (!allowedEvents.has(eventType) || !WORKFLOW_LOG_STATUSES.has(status)) {
-      return jsonResponse({ ok: false, code: "WORKFLOW_LOG_EVENT_INVALID", error: "試合進行ログの形式が不正です。" }, 400, cors);
-    }
-    const gameId = String(input?.gameId || "").trim().slice(0, 120);
-    const safeMessage = status === "success"
-      ? "予告先発を取得しました。"
-      : status === "warning"
-        ? "予告先発はまだ発表されていません。"
-        : "予告先発を取得できませんでした。";
-    const result = await recordWorkflowLog(env.AUTH_DB, {
-      eventType,
-      status,
-      gameId,
-      occurredAt: new Date(),
-      message: safeMessage,
-      errorCode: String(input?.errorCode || "").slice(0, 80),
-      metadata: input?.metadata,
-      source: "admin"
-    });
-    return jsonResponse({ ok: result !== false }, result === false ? 500 : 200, cors);
-  } catch (error) {
-    return jsonResponse({ ok: false, code: "WORKFLOW_LOG_EVENT_FAILED", error: "試合進行ログを保存できませんでした。" }, 500, cors);
-  }
-}
-
 export function selectNextPredictionTarget(games, now = new Date()) {
   const current = now instanceof Date ? now : new Date(now);
   if (Number.isNaN(current.getTime())) return null;
@@ -3412,6 +3609,73 @@ async function handleGetPredictionTarget(request, env, cors) {
   const response = jsonResponse({ ok: true, target, generatedAt: new Date().toISOString() }, 200, cors);
   response.headers.set("Cache-Control", "no-store");
   return response;
+}
+
+async function handleGetProbableStarter(request, env, cors) {
+  const gameId = getValidGameId(new URL(request.url).searchParams.get("gameId"));
+  if (!gameId) return jsonResponse({ ok: false, code: "GAME_ID_INVALID", error: "対象試合を指定してください。" }, 400, cors);
+  try {
+    const row = await env.AUTH_DB.prepare("SELECT * FROM probable_starters WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
+    const response = jsonResponse({ ok: true, gameId, probableStarter: serializeProbableStarterRow(row) }, 200, cors);
+    response.headers.set("Cache-Control", "no-store");
+    return response;
+  } catch (error) {
+    return jsonResponse({
+      ok: false,
+      code: isPregameSchemaError(error) ? "PROBABLE_STARTER_SCHEMA_NOT_READY" : "PROBABLE_STARTER_READ_FAILED",
+      error: "予告先発情報を取得できませんでした。"
+    }, isPregameSchemaError(error) ? 503 : 500, cors);
+  }
+}
+
+function parseProbableStarterRefreshRoute(path) {
+  const match = String(path || "").match(/^\/api\/admin\/games\/([^/]+)\/probable-starter\/refresh$/);
+  if (!match) return null;
+  try {
+    return { gameId: decodeURIComponent(match[1]) };
+  } catch {
+    return { gameId: "" };
+  }
+}
+
+async function handleAdminProbableStarterRefresh(request, env, cors, gameId) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  const validGameId = getValidGameId(gameId);
+  const metadata = validGameId ? await getResultGameMetadata(env.AUTH_DB, validGameId) : null;
+  const startAt = metadata?.startAt ? new Date(metadata.startAt) : null;
+  if (!metadata || !startAt || Number.isNaN(startAt.getTime()) || !metadata.homeTeam || !metadata.awayTeam) {
+    return jsonResponse({ ok: false, code: "GAME_NOT_FOUND", error: "対象試合が見つかりません。" }, 404, cors);
+  }
+  const target = { ...metadata, gameId: validGameId, startAt };
+  try {
+    const result = await runProbableStarterFetch(env, target, new Date(), { source: "admin" });
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "probable_starter_manual_refresh",
+      status: "success",
+      gameId: validGameId,
+      message: "予告先発を手動で再取得しました。",
+      metadata: { status: result?.probableStarter?.status || "unknown" },
+      source: "admin"
+    });
+    const response = jsonResponse(result, 200, cors);
+    response.headers.set("Cache-Control", "no-store");
+    return response;
+  } catch (error) {
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "probable_starter_manual_refresh",
+      status: "error",
+      gameId: validGameId,
+      message: "予告先発の手動再取得に失敗しました。",
+      errorCode: String(error?.code || "PROBABLE_STARTER_FETCH_FAILED"),
+      source: "admin"
+    });
+    return jsonResponse({
+      ok: false,
+      code: String(error?.code || "PROBABLE_STARTER_FETCH_FAILED"),
+      error: "予告先発を取得できませんでした。"
+    }, Number(error?.httpStatus) >= 400 ? Number(error.httpStatus) : 502, cors);
+  }
 }
 
 function parseResultGameRoute(path) {

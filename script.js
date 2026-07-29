@@ -49,7 +49,6 @@ const ROSTER_MONITOR_INTERVAL_MS = 10 * 60 * 1000;
 const ROSTER_MONITOR_MAX_ATTEMPTS = 6;
 const ROSTER_SNAPSHOT_CACHE_TTL_MS = 60 * 60 * 1000;
 const PREDICTION_DEADLINE_REFRESH_MS = 30 * 1000;
-const PROBABLE_STARTER_RETRY_INTERVAL_MS = 60 * 60 * 1000;
 const AUTO_FILL_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "指"]);
 const OUTFIELD_POSITIONS = ["左", "中", "右"];
 // 日程・NPB取得の長いチームコードは維持し、選手IDだけ短い球団IDを使います。
@@ -71,7 +70,6 @@ const DEFAULT_PLAYER_TEAM_CODE = "fighters";
 let autoScoringCountdownTimerId = null;
 let predictionSaveMessageTimerId = null;
 let predictionDeadlineTimerId = null;
-let probableStarterRefreshTimerId = null;
 const TEST_PREDICTION_LINEUP = [
   { order: 1, player: "大塚瑠晏", position: "遊" },
   { order: 2, player: "清宮幸太郎", position: "一" },
@@ -258,6 +256,8 @@ const state = {
     fetchedAt: "",
     sourceUrl: NPB_STARTER_SOURCE_URL,
     fetchedGameCount: 0,
+    nextCheckAt: "",
+    errorCode: "",
     logs: [],
     fetchedGameId: ""
   },
@@ -2725,16 +2725,11 @@ async function initializeProbableStarter() {
   renderPredictionTargetNotice();
 
   if (state.probableStarter.nextGame) {
-    await fetchProbableStarter();
+    await fetchStoredProbableStarter();
   } else {
     state.probableStarter.status = "noGame";
     state.probableStarter.message = "次の試合を検出できませんでした。";
     renderProbableStarter();
-  }
-  if (probableStarterRefreshTimerId === null) {
-    probableStarterRefreshTimerId = window.setInterval(() => {
-      void refreshPredictionTarget({ useServer: true });
-    }, PROBABLE_STARTER_RETRY_INTERVAL_MS);
   }
 }
 
@@ -2753,16 +2748,17 @@ async function refreshPredictionTarget({ retryUnannounced = true, useServer = fa
     state.probableStarter.fetchedGameId = "";
     state.probableStarter.status = nextGame ? "idle" : "noGame";
     state.probableStarter.message = nextGame ? "次の試合を確認しています。" : "次の試合を検出できませんでした。";
+    state.probableStarter.nextCheckAt = "";
+    state.probableStarter.errorCode = "";
     state.predictionTargetNotice = nextGame ? "予想対象試合が次の試合へ切り替わりました。" : "";
     renderAll();
     void syncPredictionFromAccount({ force: true });
     void refreshGameDayNoticeStatus({ force: true });
-    if (nextGame) await fetchProbableStarter();
+    if (nextGame) await fetchStoredProbableStarter();
     return;
   }
-  if (retryUnannounced && nextGame && state.probableStarter.status === "unannounced") {
-    await fetchProbableStarter({ force: true });
-  }
+  // 未発表の再取得はAuth Worker Cronがnext_check_atを基準に行います。
+  // ブラウザ側は試合進行を起動せず、保存済み状態の表示だけを担当します。
 }
 
 async function resolvePredictionTargetGame(schedule, useServer) {
@@ -2814,7 +2810,45 @@ function findNextScheduledGameForStarter(schedule) {
     .sort((left, right) => parseJstScheduleDateTime(left) - parseJstScheduleDateTime(right))[0] || null;
 }
 
-async function fetchProbableStarter({ force = false } = {}) {
+function buildProbableStarterApiUrl(gameId) {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  return baseUrl && gameId ? `${baseUrl}/api/probable-starter?gameId=${encodeURIComponent(gameId)}` : "";
+}
+
+function applyStoredProbableStarter(probableStarter) {
+  const nextGame = state.probableStarter.nextGame;
+  const status = String(probableStarter?.status || "unannounced");
+  state.probableStarter.fetchedGameId = nextGame?.gameId || "";
+  state.probableStarter.fetchedAt = probableStarter?.fetchedAt || "";
+  state.probableStarter.sourceUrl = probableStarter?.sourceUrl || NPB_STARTER_SOURCE_URL;
+  state.probableStarter.fetchedGameCount = probableStarter ? 1 : 0;
+  state.probableStarter.nextCheckAt = probableStarter?.nextCheckAt || "";
+  state.probableStarter.errorCode = probableStarter?.errorCode || "";
+  if (!probableStarter || status === "unannounced") {
+    state.probableStarter.status = "unannounced";
+    state.probableStarter.message = "予告先発はまだ発表されていません";
+    state.probableStarter.matchedGame = null;
+    state.probableStarter.games = [];
+    return;
+  }
+  if (status === "error") {
+    state.probableStarter.status = "error";
+    state.probableStarter.message = "予告先発を取得できませんでした";
+    state.probableStarter.matchedGame = null;
+    state.probableStarter.games = [];
+    return;
+  }
+  state.probableStarter.status = "success";
+  state.probableStarter.message = "予告先発を取得しました";
+  state.probableStarter.matchedGame = {
+    ...nextGame,
+    homeStarter: { name: probableStarter.homePitcherName || "" },
+    awayStarter: { name: probableStarter.awayPitcherName || "" }
+  };
+  state.probableStarter.games = [state.probableStarter.matchedGame];
+}
+
+async function fetchStoredProbableStarter() {
   if (state.probableStarter.isLoading) {
     return;
   }
@@ -2826,121 +2860,69 @@ async function fetchProbableStarter({ force = false } = {}) {
     return;
   }
 
-  if (!force && state.probableStarter.fetchedGameId === state.probableStarter.nextGame.gameId) {
+  const gameId = state.probableStarter.nextGame.gameId;
+  const url = buildProbableStarterApiUrl(gameId);
+  if (!url) {
+    state.probableStarter.status = "error";
+    state.probableStarter.message = "予告先発を取得できませんでした";
+    renderProbableStarter();
     return;
   }
-
-  const workerUrl = buildProbableStarterWorkerRequestUrl();
   state.probableStarter.isLoading = true;
   state.probableStarter.status = "loading";
-  state.probableStarter.message = "予告先発を取得中...";
-  addProbableStarterLog("予告先発の取得を開始");
-  addProbableStarterLog(`取得URL：${NPB_STARTER_SOURCE_URL}`);
+  state.probableStarter.message = "保存済みの予告先発を確認中...";
   renderProbableStarter();
 
   try {
-    const response = await fetch(workerUrl, { cache: "no-store" });
-    addProbableStarterLog(`HTTPステータス：${response.status}`);
-
-    let result = null;
-    try {
-      result = await response.json();
-    } catch {
-      result = null;
-    }
-
+    const response = await fetch(url, { credentials: "include", cache: "no-store" });
+    const result = await response.json().catch(() => null);
     if (!response.ok || !result?.ok) {
-      const errorMessage = result?.error || `Worker APIの取得に失敗しました。HTTP ${response.status}`;
       state.probableStarter.status = "error";
       state.probableStarter.message = "予告先発を取得できませんでした";
-      addProbableStarterLog(`解析失敗：${errorMessage}`);
-      void recordAdminWorkflowEvent({
-        eventType: "probable_starter_fetch",
-        status: "error",
-        gameId: state.probableStarter.nextGame.gameId,
-        message: "予告先発を取得できませんでした。",
-        errorCode: "PROBABLE_STARTER_FETCH_FAILED",
-        metadata: { httpStatus: response.status }
-      });
       return;
     }
-
-    const games = Array.isArray(result.games) ? result.games : [];
-    state.probableStarter.games = games;
-    state.probableStarter.fetchedAt = result.fetchedAt || new Date().toISOString();
-    state.probableStarter.sourceUrl = result.sourceUrl || NPB_STARTER_SOURCE_URL;
-    state.probableStarter.fetchedGameCount = games.length;
-    state.probableStarter.fetchedGameId = state.probableStarter.nextGame.gameId || "";
-    addProbableStarterLog(`予告先発ページ取得成功：${games.length}試合`);
-
-    const matchedGame = matchProbableStarterGame(state.probableStarter.nextGame, games);
-    state.probableStarter.matchedGame = matchedGame;
-    addProbableStarterLog(`次の試合と照合：${formatScheduledGameForLog(state.probableStarter.nextGame)}`);
-
-    if (!matchedGame) {
-      state.probableStarter.status = "unannounced";
-      state.probableStarter.message = "予告先発はまだ発表されていません";
-      addProbableStarterLog("未発表：次の試合に一致するカードがありません");
-      void recordAdminWorkflowEvent({
-        eventType: "probable_starter_fetch",
-        status: "warning",
-        gameId: state.probableStarter.nextGame.gameId,
-        message: "予告先発はまだ発表されていません。",
-        errorCode: "PROBABLE_STARTER_UNANNOUNCED",
-        metadata: { fetchedGameCount: games.length }
-      });
-      return;
-    }
-
-    const fightersStarter = getFightersStarter(matchedGame);
-    const hasBothStarters = Boolean(fightersStarter?.fighters?.name && fightersStarter?.opponent?.name);
-    state.probableStarter.status = hasBothStarters ? "success" : "unannounced";
-    state.probableStarter.message = hasBothStarters
-      ? "予告先発を取得しました"
-      : "予告先発はまだ発表されていません";
-
-    if (hasBothStarters) {
-      addProbableStarterLog(`予告先発を検出：${fightersStarter.opponent.name} / ${fightersStarter.fighters.name}`);
-      void recordAdminWorkflowEvent({
-        eventType: "probable_starter_fetch",
-        status: "success",
-        gameId: state.probableStarter.nextGame.gameId,
-        message: "予告先発を取得しました。",
-        metadata: { fetchedGameCount: games.length, matched: true }
-      });
-    } else {
-      addProbableStarterLog("未発表：カードは見つかりましたが両チームの先発が未発表です");
-      void recordAdminWorkflowEvent({
-        eventType: "probable_starter_fetch",
-        status: "warning",
-        gameId: state.probableStarter.nextGame.gameId,
-        message: "予告先発はまだ発表されていません。",
-        errorCode: "PROBABLE_STARTER_UNANNOUNCED",
-        metadata: { fetchedGameCount: games.length, matched: true }
-      });
-    }
+    applyStoredProbableStarter(result.probableStarter);
   } catch (error) {
     state.probableStarter.status = "error";
     state.probableStarter.message = "予告先発を取得できませんでした";
-    addProbableStarterLog(`通信失敗：${error.message}`);
-    void recordAdminWorkflowEvent({
-      eventType: "probable_starter_fetch",
-      status: "error",
-      gameId: state.probableStarter.nextGame.gameId,
-      message: "予告先発を取得できませんでした。",
-      errorCode: "PROBABLE_STARTER_FETCH_FAILED"
-    });
   } finally {
     state.probableStarter.isLoading = false;
     renderProbableStarter();
   }
 }
 
-function buildProbableStarterWorkerRequestUrl() {
-  const workerUrl = new URL(NPB_WORKER_API_URL);
-  workerUrl.searchParams.set("mode", "starter");
-  workerUrl.searchParams.set("cacheBust", String(Date.now()));
-  return workerUrl.href;
+async function fetchProbableStarter({ force = false } = {}) {
+  if (!force || !state.isAdminMode || state.adminAccess.status !== "authorized") {
+    return fetchStoredProbableStarter();
+  }
+  const gameId = state.probableStarter.nextGame?.gameId || "";
+  const url = buildAdminGameApiUrl(gameId, "probable-starter/refresh");
+  if (!url) return fetchStoredProbableStarter();
+  state.probableStarter.isLoading = true;
+  state.probableStarter.status = "loading";
+  state.probableStarter.message = "予告先発を再取得中...";
+  addProbableStarterLog("保存済みデータをサーバーで再取得");
+  renderProbableStarter();
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store"
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok || !result?.ok) {
+      throw new Error(result?.error || "予告先発を再取得できませんでした。");
+    }
+    applyStoredProbableStarter(result.probableStarter);
+    addProbableStarterLog("サーバー再取得が完了");
+  } catch (error) {
+    state.probableStarter.status = "error";
+    state.probableStarter.message = "予告先発を取得できませんでした";
+    addProbableStarterLog(`再取得失敗：${error.message}`);
+  } finally {
+    state.probableStarter.isLoading = false;
+    renderProbableStarter();
+  }
 }
 
 function matchProbableStarterGame(nextGame, games) {
@@ -3022,23 +3004,6 @@ function handleAuthStateChanged() {
   }
   refreshAdminAccess();
   refreshResultHistory({ force: true });
-}
-
-async function recordAdminWorkflowEvent(event) {
-  if (!state.isAdminMode || state.adminAccess.status !== "authorized") return;
-  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
-  if (!baseUrl || !event?.gameId) return;
-  try {
-    await fetch(`${baseUrl}/api/admin/workflow-logs/events`, {
-      method: "POST",
-      credentials: "include",
-      cache: "no-store",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(event)
-    });
-  } catch (error) {
-    console.warn("[GAME_WORKFLOW_LOG] probable starter log failed", error?.message || "unknown error");
-  }
 }
 
 function startPredictionDeadlineTicker() {
@@ -4103,7 +4068,11 @@ function getWorkflowLogEventLabel(eventType) {
     roster_fixed: "ロースター固定",
     prediction_target_switched: "対象試合切り替え",
     prediction_target_switch_skipped: "次戦なし",
-    probable_starter_fetch: "予告先発取得",
+    probable_starter_fetch_started: "予告先発取得開始",
+    probable_starter_unannounced: "予告先発未発表",
+    probable_starter_announced: "予告先発取得",
+    probable_starter_fetch_failed: "予告先発取得失敗",
+    probable_starter_manual_refresh: "予告先発手動再取得",
     lineup_fetch: "実スタメン取得",
     final_lineup_fetch: "最終スタメン取得",
     lineup_fallback: "仮スタメンへフォールバック",
@@ -8079,6 +8048,8 @@ function resetAllData() {
     fetchedAt: "",
     sourceUrl: NPB_STARTER_SOURCE_URL,
     fetchedGameCount: 0,
+    nextCheckAt: "",
+    errorCode: "",
     logs: [],
     fetchedGameId: ""
   };

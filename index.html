@@ -148,6 +148,7 @@
         </div>
         <p id="predictionError" class="message error-message" role="alert" aria-live="polite"></p>
         <p id="predictionDeadlineStatus" class="prediction-deadline-status" role="status" aria-live="polite">試合情報を確認しています。</p>
+        <p id="predictionTargetNotice" class="message prediction-target-notice hidden" role="status" aria-live="polite"></p>
 
         <button id="savePredictionButton" class="primary-button" type="submit">予想を保存する</button>
         <button id="resetPredictionButton" class="secondary-button" type="button">予想をリセット</button>
@@ -493,6 +494,15 @@
 
       <div id="scoreResult" class="empty-state">採点すると結果が表示されます。</div>
       <button id="shareResultButton" class="secondary-button hidden" type="button">結果をXで共有</button>
+      <section id="resultHistory" class="result-history" aria-labelledby="resultHistoryTitle">
+        <div class="result-history-heading">
+          <div>
+            <h3 id="resultHistoryTitle">過去の試合結果</h3>
+            <p>採点済みの試合を選択して確認できます。</p>
+          </div>
+        </div>
+        <div id="resultHistoryList" class="result-history-list" aria-live="polite"></div>
+      </section>
       <section id="scoreInsights" class="score-insights" aria-labelledby="scoreInsightsTitle">
         <h3 id="scoreInsightsTitle">スコアの比較</h3>
         <div id="scoreInsightsGrid" class="score-insights-grid hidden">

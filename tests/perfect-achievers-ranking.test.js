@@ -10,7 +10,7 @@ const authWorkerUrl = pathToFileURL(path.join(root, "auth-worker.js")).href;
 
 function createDatabase() {
   const database = new DatabaseSync(":memory:");
-  for (const file of ["0001_auth.sql", "0003_predictions.sql", "0004_admin_role.sql", "0007_all_time_ranking.sql", "0008_monthly_ranking.sql"]) {
+  for (const file of ["0001_auth.sql", "0003_predictions.sql", "0004_admin_role.sql", "0005_game_lineups.sql", "0007_all_time_ranking.sql", "0008_monthly_ranking.sql", "0009_pregame_automation.sql", "0010_game_day_schedule_flow.sql"]) {
     database.exec(fs.readFileSync(path.join(root, "migrations", file), "utf8"));
   }
   return createD1Adapter(database);
@@ -44,8 +44,8 @@ function insertUser(db, id, username) {
 function insertRankingGame(db, gameId, gameDate, { eligible = 1, status = "scored" } = {}) {
   db.raw.prepare(
     `INSERT INTO ranking_games
-       (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game, created_at, updated_at)
-     VALUES (?1, ?2, ?3, '2026-07-23T00:00:00.000Z', ?4, 0, '2026-07-23T00:00:00.000Z', '2026-07-23T00:00:00.000Z')`
+       (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game, publication_status, created_at, updated_at)
+     VALUES (?1, ?2, ?3, '2026-07-23T00:00:00.000Z', ?4, 0, CASE WHEN ?3 = 1 THEN 'published' ELSE 'pending' END, '2026-07-23T00:00:00.000Z', '2026-07-23T00:00:00.000Z')`
   ).run(gameId, gameDate, eligible, status);
 }
 
@@ -88,14 +88,14 @@ test("同一ユーザー・同一試合は最新提出だけを満点者判定�
   const database = new DatabaseSync(":memory:");
   database.exec(`
     CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT NOT NULL, status TEXT NOT NULL);
-    CREATE TABLE ranking_games (game_id TEXT PRIMARY KEY, game_date TEXT NOT NULL, is_ranking_eligible INTEGER NOT NULL, game_status TEXT NOT NULL, is_test_game INTEGER NOT NULL);
+    CREATE TABLE ranking_games (game_id TEXT PRIMARY KEY, game_date TEXT NOT NULL, is_ranking_eligible INTEGER NOT NULL, game_status TEXT NOT NULL, is_test_game INTEGER NOT NULL, publication_status TEXT NOT NULL);
     CREATE TABLE predictions (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL, game_id TEXT NOT NULL, score INTEGER, max_score INTEGER,
       opponent_code TEXT, submitted_at TEXT NOT NULL, updated_at TEXT NOT NULL, status TEXT NOT NULL, is_test_prediction INTEGER NOT NULL
     );
   `);
   database.prepare("INSERT INTO users VALUES ('u1', 'latest', 'active')").run();
-  database.prepare("INSERT INTO ranking_games VALUES ('g1', '2026-07-23', 1, 'scored', 0)").run();
+  database.prepare("INSERT INTO ranking_games VALUES ('g1', '2026-07-23', 1, 'scored', 0, 'published')").run();
   database.prepare("INSERT INTO predictions VALUES ('old', 'u1', 'g1', 100, 100, 'hawks', '2026-07-23T09:00:00.000Z', '2026-07-23T09:00:00.000Z', 'scored', 0)").run();
   database.prepare("INSERT INTO predictions VALUES ('new', 'u1', 'g1', NULL, NULL, 'hawks', '2026-07-23T10:00:00.000Z', '2026-07-23T10:00:00.000Z', 'submitted', 0)").run();
 

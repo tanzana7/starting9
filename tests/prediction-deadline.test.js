@@ -49,7 +49,7 @@ test("クライアントは締切後に入力・保存・リセットを止め�
 
   assert.match(script, /function getPredictionDeadlineMinutesBeforeStart\(\)/);
   assert.match(script, /predictionDeadlineMinutesBeforeStart/);
-  assert.match(script, /setInterval\(refreshPredictionDeadlineState, PREDICTION_DEADLINE_REFRESH_MS\)/);
+  assert.match(script, /setInterval\(\(\) => \{[\s\S]*?refreshPredictionDeadlineState\(\);[\s\S]*?refreshPredictionTarget\(\{ retryUnannounced: false \}\)/);
   assert.match(script, /function ensurePredictionEditingAllowed\(\)/);
   assert.match(script, /async function handlePredictionSubmit[\s\S]*?ensurePredictionEditingAllowed\(\)/);
   assert.match(script, /function resetPredictionInput\(\) \{\s*if \(!ensurePredictionEditingAllowed\(\)\)/);

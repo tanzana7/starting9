@@ -12,7 +12,7 @@ const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 
 function createDatabase() {
   const db = new DatabaseSync(":memory:");
-  for (const file of ["0001_auth.sql", "0003_predictions.sql", "0004_admin_role.sql", "0006_user_achievements.sql", "0007_all_time_ranking.sql", "0008_monthly_ranking.sql"]) {
+  for (const file of ["0001_auth.sql", "0003_predictions.sql", "0004_admin_role.sql", "0005_game_lineups.sql", "0006_user_achievements.sql", "0007_all_time_ranking.sql", "0008_monthly_ranking.sql", "0009_pregame_automation.sql", "0010_game_day_schedule_flow.sql"]) {
     db.exec(fs.readFileSync(path.join(root, "migrations", file), "utf8"));
   }
   return db;
@@ -29,8 +29,8 @@ function insertUser(db, id, username) {
 function insertRankingGame(db, gameId, gameDate, { eligible = 1, testGame = 0 } = {}) {
   db.prepare(
     `INSERT INTO ranking_games
-       (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game, created_at, updated_at)
-     VALUES (?1, ?2, ?3, '2026-07-21T10:00:00.000Z', 'scored', ?4, '2026-07-21T10:00:00.000Z', '2026-07-21T10:00:00.000Z')`
+       (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game, publication_status, created_at, updated_at)
+     VALUES (?1, ?2, ?3, '2026-07-21T10:00:00.000Z', 'scored', ?4, CASE WHEN ?3 = 1 AND ?4 = 0 THEN 'published' ELSE 'pending' END, '2026-07-21T10:00:00.000Z', '2026-07-21T10:00:00.000Z')`
   ).run(gameId, gameDate, eligible, testGame);
 }
 

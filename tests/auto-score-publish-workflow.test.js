@@ -16,11 +16,13 @@ function createIdentity() {
   };
 }
 
-test("正式スタメン保存を採点トリガーにし、公開は試合開始後に限定する", () => {
-  assert.match(worker, /scoringDueAt: detectedAt/);
-  assert.match(worker, /id: "score", trigger: "lineup_confirmed"/);
-  assert.match(worker, /if \(now < timeline\.startAt\) continue/);
-  assert.match(worker, /if \(now < identity\.startAt\) return \{ published: false, status: "not_due"/);
+test("開始+1分の最終スタメンを開始+2分に採点し、開始+5分に公開する", () => {
+  assert.match(worker, /scoringDueAt: new Date\(identity\.startAt\.getTime\(\) \+ 2 \* 60 \* 1000\)/);
+  assert.match(worker, /id: "final_lineup", offsetMinutes: 1/);
+  assert.match(worker, /id: "score", offsetMinutes: 2/);
+  assert.match(worker, /id: "publish", offsetMinutes: 5/);
+  assert.match(worker, /if \(now < timeline\.resultReleaseAt\) continue/);
+  assert.match(worker, /if \(now < identity\.resultReleaseAt\) return \{ published: false, status: "not_due"/);
 });
 
 test("採点更新と非公開ランキング化を同じD1 batchへ含める", () => {
@@ -28,6 +30,16 @@ test("採点更新と非公開ランキング化を同じD1 batchへ含める", 
   assert.match(worker, /statements\.push\(rankingStatement\)/);
   assert.match(worker, /const results = await db\.batch\(statements\)/);
   assert.match(worker, /publication_status = 'scored_private'/);
+  assert.match(worker, /VALUES \(\?1, \?2, 1, \?4, 'scored'/);
+});
+
+test("最終スタメン取得失敗時は有効な仮スタメンへフォールバックし、管理状態へ記録する", () => {
+  assert.match(worker, /async function useProvisionalLineupFallback/);
+  assert.match(worker, /sanitizeActualLineupForScoring\(provisional\)/);
+  assert.match(worker, /final_lineup_fallback_used = 1/);
+  assert.match(worker, /最終取得失敗・直前取得データを使用/);
+  assert.match(worker, /if \(isFinalPhase\) \{[\s\S]*?useProvisionalLineupFallback/);
+  assert.match(worker, /if \(!actualResult\.ok\) return \{ used: false \}/);
 });
 
 test("公開前のユーザーAPIは得点、実スタメン、満点者、ランキングを返さない", () => {
@@ -35,7 +47,13 @@ test("公開前のユーザーAPIは得点、実スタメン、満点者、ラ�
   assert.match(worker, /score: published && row\.score !== null \? Number\(row\.score\) : null/);
   assert.match(worker, /actualLineup: published && row\.actual_lineup_json/);
   assert.match(worker, /if \(!await isGameResultsPublished\(env\.AUTH_DB, gameId, new Date\(\)\)\)/);
-  assert.match(worker, /is_ranking_eligible = 0/);
+  assert.match(worker, /publication_status = 'published'/);
+});
+
+test("採点済みなら正式結果公開前でもランキング集計対象にする", () => {
+  const match = /function createRankingCte\(\) \{[\s\S]*?return `([\s\S]*?)`;/m.exec(worker);
+  assert.ok(match);
+  assert.doesNotMatch(match[1], /publication_status = 'published'/);
 });
 
 test("管理状態は採点待ち、採点中、非公開採点済み、公開済み、失敗を区別する", async () => {

@@ -26,3 +26,9 @@ test("予告先発カードは発表済み・未発表・失敗で同じ表示�
   assert.match(css, /\.probable-starter-card[\s\S]*?min-height: 128px/);
   assert.match(css, /\.probable-starter-card\.is-error/);
 });
+
+test("未発表の予告先発は1時間間隔でのみ自動再確認し、成功後は自動更新しない", () => {
+  assert.match(script, /const PROBABLE_STARTER_RETRY_INTERVAL_MS = 60 \* 60 \* 1000/);
+  assert.match(script, /retryUnannounced && nextGame && state\.probableStarter\.status === "unannounced"/);
+  assert.doesNotMatch(script, /const PROBABLE_STARTER_RETRY_INTERVAL_MS = 10 \* 60 \* 1000/);
+});

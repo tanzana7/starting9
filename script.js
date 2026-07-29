@@ -49,6 +49,7 @@ const ROSTER_MONITOR_INTERVAL_MS = 10 * 60 * 1000;
 const ROSTER_MONITOR_MAX_ATTEMPTS = 6;
 const ROSTER_SNAPSHOT_CACHE_TTL_MS = 60 * 60 * 1000;
 const PREDICTION_DEADLINE_REFRESH_MS = 30 * 1000;
+const PROBABLE_STARTER_RETRY_INTERVAL_MS = 60 * 60 * 1000;
 const AUTO_FILL_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "指"]);
 const OUTFIELD_POSITIONS = ["左", "中", "右"];
 // 日程・NPB取得の長いチームコードは維持し、選手IDだけ短い球団IDを使います。
@@ -70,6 +71,7 @@ const DEFAULT_PLAYER_TEAM_CODE = "fighters";
 let autoScoringCountdownTimerId = null;
 let predictionSaveMessageTimerId = null;
 let predictionDeadlineTimerId = null;
+let probableStarterRefreshTimerId = null;
 const TEST_PREDICTION_LINEUP = [
   { order: 1, player: "大塚瑠晏", position: "遊" },
   { order: 2, player: "清宮幸太郎", position: "一" },
@@ -259,6 +261,14 @@ const state = {
     logs: [],
     fetchedGameId: ""
   },
+  predictionTargetGameId: "",
+  predictionTargetNotice: "",
+  resultHistory: {
+    isLoading: false,
+    games: [],
+    selectedGameId: "",
+    message: ""
+  },
   yearlyRanking: {
     isLoading: false,
     isLoadingSelf: false,
@@ -431,11 +441,12 @@ async function initializeAuthDependentFeatures() {
   const results = await Promise.allSettled([
     fetchUserAchievements({ force: true }),
     refreshYearlyRanking({ force: true }),
-    refreshAdminAccess()
+    refreshAdminAccess(),
+    refreshResultHistory({ force: true })
   ]);
   results.forEach((result, index) => {
     if (result.status === "rejected") {
-      const labels = ["実績", "ランキング", "管理者権限"];
+      const labels = ["実績", "ランキング", "管理者権限", "過去結果"];
       console.error(`${labels[index]}の初期化に失敗しました`, result.reason?.message || "unknown error");
     }
   });
@@ -508,6 +519,7 @@ function bindEvents() {
   document.getElementById("showYearlyRankingButton")?.addEventListener("click", () => selectRankingView("yearly"));
   document.getElementById("showMonthlyRankingButton")?.addEventListener("click", () => selectRankingView("monthly"));
   document.getElementById("rankingContent")?.addEventListener("click", handleRankingPeriodContentClick);
+  document.getElementById("resultHistoryList")?.addEventListener("click", handleResultHistoryClick);
   document.getElementById("closeAdminButton")?.addEventListener("click", closeAdminPanel);
   document.getElementById("adminDetails")?.addEventListener("toggle", handleAdminDetailsToggle);
   bindAdminEvent("loadNextGameButton", "click", loadNextGameSchedule);
@@ -2680,8 +2692,20 @@ function getNpbScoreRequestIdentity(value) {
 
 async function initializeProbableStarter() {
   const schedule = await getLoadedGameSchedule();
-  state.probableStarter.nextGame = findNextScheduledGameForStarter(schedule);
+  const previousGameId = state.probableStarter.nextGame?.gameId || state.predictionTargetGameId || state.prediction?.gameId || "";
+  const nextGame = await resolvePredictionTargetGame(schedule, true);
+  const preservedGame = nextGame || schedule.find((game) => game?.gameId === previousGameId) || state.probableStarter.nextGame || null;
+  state.probableStarter.nextGame = preservedGame;
+  state.predictionTargetGameId = state.probableStarter.nextGame?.gameId || "";
+  if (nextGame && previousGameId && previousGameId !== state.predictionTargetGameId) {
+    state.predictionTargetNotice = "予想対象試合が次の試合へ切り替わりました。";
+    state.prediction = null;
+    state.actual = null;
+    removeFromStorage(STORAGE_KEYS.prediction);
+    removeFromStorage(STORAGE_KEYS.actual);
+  }
   renderProbableStarter();
+  renderPredictionTargetNotice();
 
   if (state.probableStarter.nextGame) {
     await fetchProbableStarter();
@@ -2690,6 +2714,67 @@ async function initializeProbableStarter() {
     state.probableStarter.message = "次の試合を検出できませんでした。";
     renderProbableStarter();
   }
+  if (probableStarterRefreshTimerId === null) {
+    probableStarterRefreshTimerId = window.setInterval(() => {
+      void refreshPredictionTarget({ useServer: true });
+    }, PROBABLE_STARTER_RETRY_INTERVAL_MS);
+  }
+}
+
+async function refreshPredictionTarget({ retryUnannounced = true, useServer = false } = {}) {
+  const schedule = await getLoadedGameSchedule();
+  const nextGame = await resolvePredictionTargetGame(schedule, useServer);
+  const previousGameId = state.predictionTargetGameId || state.probableStarter.nextGame?.gameId || "";
+  if (!nextGame) {
+    return;
+  }
+  if ((nextGame?.gameId || "") !== previousGameId) {
+    state.predictionTargetGameId = nextGame?.gameId || "";
+    state.probableStarter.nextGame = nextGame;
+    state.probableStarter.matchedGame = null;
+    state.probableStarter.games = [];
+    state.probableStarter.fetchedGameId = "";
+    state.probableStarter.status = nextGame ? "idle" : "noGame";
+    state.probableStarter.message = nextGame ? "次の試合を確認しています。" : "次の試合を検出できませんでした。";
+    state.predictionTargetNotice = nextGame ? "予想対象試合が次の試合へ切り替わりました。" : "";
+    renderAll();
+    void syncPredictionFromAccount({ force: true });
+    void refreshGameDayNoticeStatus({ force: true });
+    if (nextGame) await fetchProbableStarter();
+    return;
+  }
+  if (retryUnannounced && nextGame && state.probableStarter.status === "unannounced") {
+    await fetchProbableStarter({ force: true });
+  }
+}
+
+async function resolvePredictionTargetGame(schedule, useServer) {
+  const fallback = findNextScheduledGameForStarter(schedule);
+  if (!useServer) return fallback;
+  const url = buildPredictionTargetApiUrl();
+  if (!url) return fallback;
+  try {
+    const response = await fetch(url, { cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) return fallback;
+    return payload.target ? normalizeServerPredictionTarget(payload.target) : null;
+  } catch (error) {
+    console.warn("サーバー側の予想対象取得に失敗しました", error.message);
+    return fallback;
+  }
+}
+
+function buildPredictionTargetApiUrl() {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  return baseUrl ? `${baseUrl}/api/prediction-target` : "";
+}
+
+function normalizeServerPredictionTarget(target) {
+  return {
+    ...target,
+    startDateTime: target.startAt || `${target.date || ""}T${target.startTime || "00:00"}:00+09:00`,
+    matchupLabel: `${target.awayTeam || ""} vs ${target.homeTeam || ""}`
+  };
 }
 
 async function getLoadedGameSchedule() {
@@ -2705,28 +2790,11 @@ async function getLoadedGameSchedule() {
 }
 
 function findNextScheduledGameForStarter(schedule) {
-  if (typeof window.findNextHamGame === "function") {
-    return window.findNextHamGame(schedule);
-  }
-
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "Asia/Tokyo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23"
-  }).formatToParts(new Date()).reduce((result, part) => {
-    result[part.type] = part.value;
-    return result;
-  }, {});
-  const currentDateTime = `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
-
+  const now = new Date();
   return schedule
-    .filter((game) => typeof game?.date === "string" && `${game.date}T${game.startTime || "23:59"}` >= currentDateTime)
+    .filter((game) => !isScheduleGameUnavailable(game) && parseJstScheduleDateTime(game) > now)
     .slice()
-    .sort((left, right) => `${left.date}T${left.startTime || "00:00"}`.localeCompare(`${right.date}T${right.startTime || "00:00"}`))[0] || null;
+    .sort((left, right) => parseJstScheduleDateTime(left) - parseJstScheduleDateTime(right))[0] || null;
 }
 
 async function fetchProbableStarter({ force = false } = {}) {
@@ -2898,6 +2966,7 @@ function handleAuthStateChanged() {
     refreshMonthlyRanking({ force: true });
   }
   refreshAdminAccess();
+  refreshResultHistory({ force: true });
 }
 
 function startPredictionDeadlineTicker() {
@@ -2905,11 +2974,16 @@ function startPredictionDeadlineTicker() {
     clearInterval(predictionDeadlineTimerId);
   }
   refreshPredictionDeadlineState();
-  predictionDeadlineTimerId = setInterval(refreshPredictionDeadlineState, PREDICTION_DEADLINE_REFRESH_MS);
+  predictionDeadlineTimerId = setInterval(() => {
+    refreshPredictionDeadlineState();
+    void refreshPredictionTarget({ retryUnannounced: false });
+  }, PREDICTION_DEADLINE_REFRESH_MS);
 }
 
 function getPredictionDeadlineGameId() {
-  return state.nextScheduleId || state.probableStarter.nextGame?.gameId || state.prediction?.gameId || getCurrentGameId();
+  return state.isAdminMode
+    ? state.nextScheduleId || state.probableStarter.nextGame?.gameId || state.prediction?.gameId || getCurrentGameId()
+    : state.predictionTargetGameId || state.probableStarter.nextGame?.gameId || state.prediction?.gameId || getCurrentGameId();
 }
 
 function parseJstScheduleDateTime(game) {
@@ -3127,7 +3201,9 @@ function renderPredictionDeadlinePanel(container, deadline, shouldShow) {
 }
 
 function getCurrentGameId() {
-  return state.result?.gameId || state.nextScheduleId || state.probableStarter.nextGame?.gameId || "";
+  return state.isAdminMode
+    ? state.result?.gameId || state.nextScheduleId || state.probableStarter.nextGame?.gameId || ""
+    : state.predictionTargetGameId || state.probableStarter.nextGame?.gameId || state.prediction?.gameId || "";
 }
 
 function getAdminScoringGameId() {
@@ -3687,7 +3763,7 @@ function renderAutoScoringPanel() {
 }
 
 function formatPregameAutomationStatus(status) {
-  return ({ pending: "待機中", captured: "保存済み", failed: "取得失敗", skipped: "停止", scored: "採点済み", scored_private: "採点済み（非公開）", published: "公開済み", blocked: "要手動対応" })[status] || "未確認";
+  return ({ pending: "待機中", provisional: "仮保存（採点前）", captured: "保存済み", failed: "取得失敗", skipped: "停止", scored: "採点済み", scored_private: "採点済み（非公開）", published: "公開済み", blocked: "要手動対応" })[status] || "未確認";
 }
 
 function getPregameActionLabel(action) {
@@ -3808,6 +3884,7 @@ function getGameWorkflowStepLabel(value) {
     notice: "公示確認待ち",
     close_predictions: "予想締切",
     lineup: "正式スタメン取得",
+    final_lineup: "最終スタメン再取得",
     score: "採点",
     publish: "公開処理",
     completed: "公開済み",
@@ -3865,16 +3942,25 @@ function renderAdminGameWorkflowStatus() {
   const workflow = record.workflow || {};
   const scoring = record.scoring || {};
   const publishing = record.publishing || {};
+  const lineup = record.lineup || {};
   const automationHealth = record.automation?.health || {};
+  const provisionalLineup = Array.isArray(lineup.provisionalLineup)
+    ? lineup.provisionalLineup.map((item) => `${item.battingOrder}番 ${item.position || ""} ${item.playerName || ""}`.trim()).join(" / ")
+    : "";
   const rows = [
     ["対象試合", record.game?.matchupLabel || record.gameId || "-"],
     ["試合開始", formatPredictionDeadlineDateTime(schedule.startAt)],
     ["予想締切", formatPredictionDeadlineDateTime(schedule.predictionDeadlineAt)],
     ["受付状態", getEffectivePredictionDeadline().isClosed ? "締切後" : "締切前"],
     ["現在のワークフロー", getGameWorkflowStepLabel(workflow.currentStep)],
+    ["正式スタメン", formatPregameAutomationStatus(lineup.status)],
+    ["最終スタメン取得", lineup.finalLineupFallbackUsed
+      ? "最終取得失敗・直前取得データを使用"
+      : (lineup.finalLineupErrorCode ? `取得失敗（${lineup.finalLineupErrorCode}）` : "未実行")],
+    ["仮スタメン", provisionalLineup || "未取得"],
     ["採点状態", formatAutoScoringStatus(scoring.status, scoring.publicationStatus)],
     ["採点時刻", scoring.scoredAt ? formatDateTime(scoring.scoredAt) : "-"],
-    ["公開予定", formatPredictionDeadlineDateTime(schedule.startAt)],
+    ["公開予定", formatPredictionDeadlineDateTime(schedule.resultReleaseAt)],
     ["公開状態", formatPregameAutomationStatus(publishing.status)],
     ["公開時刻", publishing.publishedAt ? formatDateTime(publishing.publishedAt) : "-"],
     ["最終実行", workflow.lastRunAt ? formatDateTime(workflow.lastRunAt) : "未実行"],
@@ -4725,6 +4811,96 @@ function getNpbFetchFailureDisplay(code, workerMessage) {
 
 async function initializePredictionRemoteSync() {
   await syncPredictionFromAccount({ force: true });
+}
+
+function buildResultGamesApiUrl(gameId = "") {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  if (!baseUrl) return "";
+  return gameId
+    ? `${baseUrl}/api/results/games/${encodeURIComponent(gameId)}`
+    : `${baseUrl}/api/results/games`;
+}
+
+async function refreshResultHistory({ force = false } = {}) {
+  const user = getPredictionAccountUser();
+  if (!user) {
+    state.resultHistory = { isLoading: false, games: [], selectedGameId: "", message: "ログインすると過去の試合結果を確認できます。" };
+    renderResultHistory();
+    return;
+  }
+  if (state.resultHistory.isLoading || (!force && state.resultHistory.games.length > 0)) return;
+  const url = buildResultGamesApiUrl();
+  if (!url) return;
+  state.resultHistory.isLoading = true;
+  state.resultHistory.message = "過去の試合結果を確認中...";
+  renderResultHistory();
+  try {
+    const response = await fetch(url, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok || !Array.isArray(payload.games)) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+    state.resultHistory.games = payload.games;
+    state.resultHistory.message = payload.games.length ? "" : "採点済みの過去試合はありません。";
+  } catch (error) {
+    state.resultHistory.games = [];
+    state.resultHistory.message = "過去の試合結果を取得できませんでした。";
+    console.error("過去の試合結果の取得に失敗しました", error.message);
+  } finally {
+    state.resultHistory.isLoading = false;
+    renderResultHistory();
+  }
+}
+
+async function handleResultHistoryClick(event) {
+  const target = event.target instanceof Element ? event.target.closest("[data-result-game-id]") : null;
+  if (!target) return;
+  const gameId = target.dataset.resultGameId;
+  if (!gameId) return;
+  state.resultHistory.selectedGameId = gameId;
+  state.resultHistory.message = "試合結果を読み込み中...";
+  renderResultHistory();
+  try {
+    const response = await fetch(buildResultGamesApiUrl(gameId), { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+    if (!payload.resultsPublished) {
+      state.resultHistory.message = "この試合の結果はまだ公開されていません。";
+      renderResultHistory();
+      return;
+    }
+    if (!payload.prediction || !Array.isArray(payload.actualLineup)) {
+      throw new Error("結果データが不足しています。");
+    }
+    const prediction = remotePredictionToLocal({ lineup: payload.prediction.lineup }, payload.updatedAt || payload.submittedAt, gameId);
+    const actual = remotePredictionToLocal({ lineup: payload.actualLineup }, payload.scoredAt || "", gameId);
+    state.result = { ...scoreLineup(prediction.lineup, actual.lineup), gameId };
+    state.resultHistory.message = "";
+    renderScoreResult();
+  } catch (error) {
+    state.resultHistory.message = "この試合の結果を取得できませんでした。";
+    console.error("過去の試合結果の読み込みに失敗しました", error.message);
+  }
+  renderResultHistory();
+}
+
+function renderResultHistory() {
+  const container = document.getElementById("resultHistoryList");
+  if (!container) return;
+  const history = state.resultHistory;
+  if (history.isLoading) {
+    container.innerHTML = `<p class="result-history-message">${escapeHtml(history.message || "読み込み中...")}</p>`;
+    return;
+  }
+  if (!history.games.length) {
+    container.innerHTML = `<p class="result-history-message">${escapeHtml(history.message || "採点済みの過去試合はありません。")}</p>`;
+    return;
+  }
+  container.innerHTML = history.games.map((game) => {
+    const matchup = game.awayTeam && game.homeTeam ? `${game.awayTeam} vs ${game.homeTeam}` : game.gameId;
+    const score = game.resultsPublished && game.score !== null ? `${game.score}点` : "結果公開前";
+    return `<button type="button" class="result-history-item${game.gameId === history.selectedGameId ? " is-selected" : ""}" data-result-game-id="${escapeHtml(game.gameId)}"><span><strong>${escapeHtml(game.gameDate || game.date || "日付不明")}</strong><span>${escapeHtml(matchup)}</span><small>${escapeHtml(game.startTime || "")}</small></span><b>${escapeHtml(score)}</b></button>`;
+  }).join("") + (history.message ? `<p class="result-history-message" role="status">${escapeHtml(history.message)}</p>` : "");
 }
 
 function buildCurrentPredictionApiUrl(gameId) {
@@ -6536,8 +6712,10 @@ function renderAll() {
   renderPredictionCta();
   renderPredictionAccountStatus();
   renderPredictionDeadline();
+  renderPredictionTargetNotice();
   renderAchievements();
   renderActualLineup();
+  renderResultHistory();
   renderScoreResult();
   renderTodayPerfectAchievers();
   renderRankingPanel();
@@ -6545,6 +6723,14 @@ function renderAll() {
   renderPredictionDeadlineAdmin();
   renderPicker("prediction");
   renderPicker("actual");
+}
+
+function renderPredictionTargetNotice() {
+  const container = document.getElementById("predictionTargetNotice");
+  if (!container) return;
+  const message = String(state.predictionTargetNotice || "").trim();
+  container.textContent = message;
+  container.classList.toggle("hidden", !message);
 }
 
 function renderProbableStarter() {
@@ -7320,6 +7506,13 @@ function renderScoreResult() {
 
   container.className = "summary-box";
   container.innerHTML = "";
+  const selectedGame = state.resultHistory.games.find((game) => game.gameId === state.result.gameId);
+  const resultHeading = document.createElement("p");
+  resultHeading.className = "result-selected-game";
+  resultHeading.textContent = selectedGame
+    ? `表示中：${selectedGame.gameDate || selectedGame.date || ""} ${selectedGame.awayTeam || ""} vs ${selectedGame.homeTeam || ""}`
+    : `表示中の試合：${state.result.gameId || "対象試合"}`;
+  container.appendChild(resultHeading);
   container.appendChild(createResultView(createResultViewModel(state.result)));
   shareButton.classList.remove("hidden");
 }

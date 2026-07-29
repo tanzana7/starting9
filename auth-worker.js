@@ -1,5 +1,6 @@
 import { getPredictionDeadlineStatus } from "./prediction-deadline.js";
 import {
+  getDueFinalLineupAttemptAt,
   getDueLineupAttemptAt,
   getJstDateString,
   getNoticePollingPlan,
@@ -7,6 +8,7 @@ import {
   getPregameTimelines,
   getScheduledGames,
   isScheduleGameUnavailable,
+  parseJstScheduleStart,
   setDetectedScheduleGames
 } from "./pregame-automation.js";
 import {
@@ -49,6 +51,7 @@ const MANUAL_RESCORE_PREVIEW_TTL_MS = 15 * 60 * 1000;
 const AUTOMATION_HEALTH_STATE_KEY = "cron";
 const AUTO_APPROVE_SETTING_KEY = "auto_approve_enabled";
 const AUTOMATION_SCHEDULE_LOOKAHEAD_DAYS = 1;
+const AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const NPB_SERVICE_BINDING_INTERNAL_ORIGIN = "https://npb-fetch.internal";
 const NPB_FETCH_TIMEOUT_MS = 15_000;
 const ROSTER_MINIMUM_PLAYER_COUNT = 20;
@@ -64,11 +67,10 @@ const GAME_DAY_NOTICE_STATUS = Object.freeze({
 const GAME_WORKFLOW_STEPS = Object.freeze([
   { id: "notice", offsetMinutes: -120, retryMinutes: 10 },
   { id: "close_predictions", offsetMinutes: -60 },
-  { id: "lineup", offsetMinutes: -60, retryMinutes: 10 },
-  // 採点は時刻ではなく、正式スタメン保存をトリガーにします。
-  { id: "score", trigger: "lineup_confirmed" },
-  // 公開は試合開始後、最初に実行されるCronで行います。
-  { id: "publish", offsetMinutes: 0 }
+  { id: "lineup", offsetMinutes: -50, retryMinutes: 10 },
+  { id: "final_lineup", offsetMinutes: 1, retryMinutes: 10 },
+  { id: "score", offsetMinutes: 2 },
+  { id: "publish", offsetMinutes: 5 }
 ]);
 const PREGAME_TOOL_ACTIONS = Object.freeze({
   "run-notice": { logAction: "notice_fetch", transport: "service-binding", upstreamMode: "notice", fetchCode: "NOTICE_FETCH_FAILED", parseCode: "NOTICE_PARSE_FAILED", failureCode: "NOTICE_FETCH_FAILED", schemaCode: "NOTICE_SCHEMA_NOT_READY" },
@@ -196,6 +198,16 @@ export default {
       if (path === "/api/game-day-roster" && request.method === "GET") {
         return await handleGetGameDayRoster(request, env, cors);
       }
+      if (path === "/api/prediction-target" && request.method === "GET") {
+        return await handleGetPredictionTarget(request, env, cors);
+      }
+      const resultGameRoute = parseResultGameRoute(path);
+      if (resultGameRoute && request.method === "GET") {
+        return await handleGetResultGame(request, env, cors, resultGameRoute.gameId);
+      }
+      if (path === "/api/results/games" && request.method === "GET") {
+        return await handleGetResultGames(request, env, cors);
+      }
       if (path === "/api/admin/me" && request.method === "GET") {
         return await handleAdminMe(request, env, cors);
       }
@@ -268,6 +280,13 @@ export async function runScheduledGameAutomation(env, now) {
     scheduleSync = await syncTodayFightersSchedule(env, now);
   } catch (error) {
     console.error(`[GAME_DETECTION] date=${getJstDateString(now)} team=fighters status=failed code=${error?.code || "SCHEDULE_SYNC_FAILED"}`);
+  }
+  try {
+    // 対象試合は保存値ではなく、最新日程と開始時刻から導出します。
+    // そのため、Cronが再実行されても同じ試合を再切替する副作用はありません。
+    scheduleSync.predictionTarget = await getServerPredictionTarget(env.AUTH_DB, now);
+  } catch (error) {
+    console.warn(`[GAME_WORKFLOW] step=target action=evaluated status=failed code=${error?.code || "PREDICTION_TARGET_FAILED"}`);
   }
   const workflowResult = await runGameWorkflows(env, now);
   const summary = summarizeGameAutomationRun({
@@ -505,7 +524,7 @@ async function syncFightersScheduleForDate(env, date, now) {
          ON CONFLICT(source_game_key) DO UPDATE SET start_at=excluded.start_at, venue=excluded.venue, game_status=excluded.game_status, schedule_checked_at=excluded.schedule_checked_at, updated_at=excluded.updated_at`
       ).bind(game.gameId, sourceGameKey, date, startAt.toISOString(), game.homeTeam, game.awayTeam, game.gameCode || null, game.venue || null, game.status === "cancelled" ? "cancelled" : "scheduled", now.toISOString()));
     }
-    const nextCheck = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
+    const nextCheck = new Date(now.getTime() + AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS).toISOString();
     statements.push(env.AUTH_DB.prepare(
       `INSERT INTO game_schedule_check_state (schedule_date, next_check_at, last_checked_at, last_error_code, updated_at)
        VALUES (?1, ?2, ?3, NULL, ?3)
@@ -1679,7 +1698,7 @@ function createRankingCte() {
   // ?1 / ?2 are game_date period filters for the selected year or month.
   return `WITH eligible_games AS (
     SELECT game_id
-      FROM ranking_games
+     FROM ranking_games
      WHERE is_ranking_eligible = 1
        AND game_status = 'scored'
        AND is_test_game = 0
@@ -2990,11 +3009,13 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false } = {
   }
 }
 
-async function captureOfficialLineup(env, gameId, now, { force = false, autoApproveEnabled = true } = {}) {
+async function captureOfficialLineup(env, gameId, now, { force = false, phase = "provisional", autoApproveEnabled = true } = {}) {
   const identity = getGameIdentityForPregame(gameId);
   if (!identity) throw createPregameError("SCHEDULE_UNAVAILABLE", "試合日程を確認できません。");
-  // 手動テストでも試合開始後のNPB内容を正式スタメンとして取り込まない。
-  if (!isBeforeGameStart(identity.startAt, now)) return { status: "skipped_after_start" };
+  const isFinalCapture = phase === "final";
+  if (isFinalCapture ? now < identity.finalLineupFetchAt : !isBeforeGameStart(identity.startAt, now)) {
+    return { status: isFinalCapture ? "not_due" : "skipped_after_start" };
+  }
   await ensurePregameAutomationRow(env.AUTH_DB, identity, now);
   const existing = await getGameLineup(env.AUTH_DB, gameId);
   if (existing) return { status: existing.lineup_source === "manual" ? "manual_lineup_exists" : "already_captured" };
@@ -3003,32 +3024,248 @@ async function captureOfficialLineup(env, gameId, now, { force = false, autoAppr
     const actual = createOfficialLineupFromNpb(payload.lineup);
     if (!actual.ok) throw createPregameError("INVALID_LINEUP", actual.error);
     const detectedAt = new Date(payload.fetchedAt || now);
-    if (!shouldAutoApproveOfficialLineup(autoApproveEnabled, actual)) {
-      await recordPregameLineupDeferred(env.AUTH_DB, gameId, identity, now);
-      return { status: "awaiting_manual_approval", sourceUrl: payload.sourceUrl };
+    if (!isFinalCapture) {
+      await saveProvisionalOfficialLineup(env.AUTH_DB, gameId, actual.lineup, detectedAt, now);
+      return { status: "provisional", sourceUrl: payload.sourceUrl, lineup: actual.lineup, detectedAt: detectedAt.toISOString() };
     }
     const record = await approveActualLineupForAutoScoring(env, gameId, actual.lineup, detectedAt, {
       source: "npb-auto",
-      scoringDueAt: detectedAt,
+      scoringDueAt: new Date(identity.startAt.getTime() + 2 * 60 * 1000),
       now,
+      allowAfterStart: true,
       preventOverwrite: true
     });
     await env.AUTH_DB.prepare(
       `UPDATE game_pregame_automation
-          SET lineup_status = 'captured', lineup_captured_at = ?1, last_lineup_attempt_at = ?1,
-              lineup_attempt_count = lineup_attempt_count + 1, next_lineup_attempt_at = NULL,
+          SET lineup_status = 'captured', lineup_captured_at = ?1, final_lineup_attempt_at = ?1,
+              last_lineup_attempt_at = ?1, lineup_attempt_count = lineup_attempt_count + 1,
+              next_lineup_attempt_at = NULL,
               last_error_code = NULL, last_error_message = NULL, updated_at = ?1
         WHERE game_id = ?2`
     ).bind(now.toISOString(), gameId).run();
     return { status: "captured", sourceUrl: payload.sourceUrl, autoScoring: serializeGameLineup(record) };
   } catch (error) {
     try {
-      await recordPregameLineupAttempt(env.AUTH_DB, gameId, identity, now, error);
+      await recordPregameLineupAttempt(env.AUTH_DB, gameId, identity, now, error, phase);
     } catch (recordError) {
       console.error(`pregame lineup error record failed: game=${gameId} code=${recordError?.code || "schema"}`);
     }
     throw error;
   }
+}
+
+export function selectNextPredictionTarget(games, now = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(current.getTime())) return null;
+  return (Array.isArray(games) ? games : [])
+    .filter((game) => game?.gameId && !isScheduleGameUnavailable(game))
+    .map((game) => ({ game, startAt: game.startAt instanceof Date ? game.startAt : parseJstScheduleStart(game) }))
+    .filter(({ startAt }) => startAt && startAt.getTime() > current.getTime())
+    .sort((left, right) => left.startAt.getTime() - right.startAt.getTime())[0]?.game || null;
+}
+
+async function getServerPredictionTarget(db, now = new Date()) {
+  let detectedGames = [];
+  try {
+    const rows = await db.prepare(
+      `SELECT game_id, game_date, start_at, home_team, away_team, game_code, venue, game_status
+         FROM detected_game_schedule
+        WHERE game_status = 'scheduled' AND start_at > ?1
+        ORDER BY start_at ASC LIMIT 50`
+    ).bind(now.toISOString()).all();
+    detectedGames = (rows.results || []).map((row) => ({
+      gameId: row.game_id,
+      date: row.game_date,
+      startAt: new Date(row.start_at),
+      homeTeam: row.home_team,
+      awayTeam: row.away_team,
+      gameCode: row.game_code || "",
+      venue: row.venue || "",
+      status: row.game_status
+    }));
+  } catch {
+    // 既存D1に検出日程テーブルがない環境では、静的日程へ安全にフォールバックします。
+  }
+  const target = selectNextPredictionTarget([...detectedGames, ...getScheduledGames()], now);
+  return target ? serializePredictionTarget(target) : null;
+}
+
+function serializePredictionTarget(game) {
+  const startAt = game?.startAt instanceof Date ? game.startAt : parseJstScheduleStart(game);
+  return {
+    gameId: game.gameId,
+    date: game.date || "",
+    startTime: game.startTime || (startAt ? new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Tokyo", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(startAt) : ""),
+    startAt: startAt?.toISOString() || "",
+    homeTeam: game.homeTeam || "",
+    awayTeam: game.awayTeam || "",
+    gameCode: game.gameCode || "",
+    venue: game.venue || ""
+  };
+}
+
+async function handleGetPredictionTarget(request, env, cors) {
+  const target = await getServerPredictionTarget(env.AUTH_DB, new Date());
+  const response = jsonResponse({ ok: true, target, generatedAt: new Date().toISOString() }, 200, cors);
+  response.headers.set("Cache-Control", "no-store");
+  return response;
+}
+
+function parseResultGameRoute(path) {
+  const match = String(path || "").match(/^\/api\/results\/games\/([^/]+)$/);
+  if (!match) return null;
+  try {
+    return { gameId: decodeURIComponent(match[1]) };
+  } catch {
+    return { gameId: "" };
+  }
+}
+
+async function getResultGameMetadata(db, gameId) {
+  try {
+    const row = await db.prepare(
+      `SELECT game_id, game_date, start_at, home_team, away_team, game_code, venue
+         FROM detected_game_schedule WHERE game_id = ?1 LIMIT 1`
+    ).bind(gameId).first();
+    if (row) {
+      return serializePredictionTarget({
+        gameId: row.game_id,
+        date: row.game_date,
+        startAt: new Date(row.start_at),
+        homeTeam: row.home_team,
+        awayTeam: row.away_team,
+        gameCode: row.game_code || "",
+        venue: row.venue || ""
+      });
+    }
+  } catch {
+    // 既存日程だけで解決できる場合は下の静的日程へ進みます。
+  }
+  const identity = getGameIdentityForPregame(gameId);
+  return identity?.game ? serializePredictionTarget({
+    ...identity.game,
+    gameId,
+    startAt: identity.startAt,
+    gameCode: identity.gameCode
+  }) : { gameId, date: "", startAt: "", startTime: "", homeTeam: "", awayTeam: "", gameCode: "", venue: "" };
+}
+
+async function handleGetResultGames(request, env, cors) {
+  const access = await requireAuthenticatedUser(request, env, cors);
+  if (!access.ok) return access.response;
+
+  const rows = await env.AUTH_DB.prepare(
+    `WITH latest_predictions AS (
+       SELECT predictions.game_id, predictions.score, predictions.max_score, predictions.scored_at,
+              predictions.updated_at, predictions.status,
+              ROW_NUMBER() OVER (
+                PARTITION BY predictions.user_id, predictions.game_id
+                ORDER BY predictions.updated_at DESC, predictions.submitted_at DESC, predictions.id DESC
+              ) AS submission_rank
+          FROM predictions
+         WHERE predictions.user_id = ?1 AND predictions.is_test_prediction = 0
+     )
+     SELECT latest_predictions.game_id, latest_predictions.score, latest_predictions.max_score,
+            latest_predictions.scored_at, latest_predictions.updated_at,
+            ranking_games.game_date, ranking_games.publication_status
+       FROM latest_predictions
+       JOIN ranking_games ON ranking_games.game_id = latest_predictions.game_id
+      WHERE latest_predictions.submission_rank = 1
+        AND latest_predictions.status = 'scored'
+        AND ranking_games.game_status = 'scored'
+        AND ranking_games.is_ranking_eligible = 1
+        AND ranking_games.is_test_game = 0
+      ORDER BY ranking_games.game_date DESC, latest_predictions.scored_at DESC, latest_predictions.game_id DESC
+      LIMIT 50`
+  ).bind(access.user.id).all();
+
+  const now = new Date();
+  const games = [];
+  for (const row of rows.results || []) {
+    const metadata = await getResultGameMetadata(env.AUTH_DB, row.game_id);
+    const resultsPublished = await isGameResultsPublished(env.AUTH_DB, row.game_id, now);
+    games.push({
+      ...metadata,
+      gameDate: row.game_date || metadata.date,
+      resultsPublished,
+      score: resultsPublished && row.score !== null ? Number(row.score) : null,
+      maxScore: resultsPublished && row.max_score !== null ? Number(row.max_score) : null,
+      scoredAt: row.scored_at || null,
+      publicationStatus: row.publication_status || "scored_private"
+    });
+  }
+  return jsonResponse({ ok: true, games }, 200, cors);
+}
+
+async function handleGetResultGame(request, env, cors, gameId) {
+  const access = await requireAuthenticatedUser(request, env, cors);
+  if (!access.ok) return access.response;
+  const metadata = parsePredictionGameId(gameId);
+  if (!metadata) return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
+  if (await isTestRankingGame(env.AUTH_DB, metadata.gameId)) {
+    return jsonResponse({ ok: false, error: "テスト試合の結果は通常画面で表示できません。" }, 404, cors);
+  }
+
+  const row = await getPredictionRow(env.AUTH_DB, access.user.id, metadata.gameId);
+  if (!row || row.status !== "scored") {
+    return jsonResponse({ ok: false, error: "採点済みの結果が見つかりません。" }, 404, cors);
+  }
+  const resultsPublished = await isGameResultsPublished(env.AUTH_DB, metadata.gameId, new Date());
+  const prediction = parseStoredPrediction(row.prediction_json);
+  if (!prediction) return jsonResponse({ ok: false, error: "保存済み予想の読み込みに失敗しました。" }, 500, cors);
+  return jsonResponse({
+    ok: true,
+    game: await getResultGameMetadata(env.AUTH_DB, metadata.gameId),
+    gameId: metadata.gameId,
+    prediction,
+    status: resultsPublished ? row.status : "submitted",
+    submittedAt: row.submitted_at,
+    updatedAt: row.updated_at,
+    score: resultsPublished && row.score !== null ? Number(row.score) : null,
+    maxScore: resultsPublished && row.max_score !== null ? Number(row.max_score) : null,
+    scoredAt: resultsPublished ? row.scored_at : null,
+    actualLineup: resultsPublished && row.actual_lineup_json ? parseStoredActualLineup(row.actual_lineup_json) : null,
+    resultsPublished
+  }, 200, cors);
+}
+
+async function saveProvisionalOfficialLineup(db, gameId, lineup, detectedAt, now) {
+  await db.prepare(
+    `UPDATE game_pregame_automation
+        SET lineup_status = 'captured', provisional_lineup_json = ?1,
+            provisional_lineup_detected_at = ?2, lineup_attempt_count = lineup_attempt_count + 1,
+            last_lineup_attempt_at = ?3, next_lineup_attempt_at = NULL,
+            last_error_code = NULL, last_error_message = NULL, updated_at = ?3
+      WHERE game_id = ?4`
+  ).bind(JSON.stringify(lineup), detectedAt.toISOString(), now.toISOString(), gameId).run();
+}
+
+async function useProvisionalLineupFallback(env, gameId, identity, now, finalError) {
+  const job = await env.AUTH_DB.prepare(
+    "SELECT provisional_lineup_json, provisional_lineup_detected_at FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1"
+  ).bind(gameId).first();
+  const provisional = parseStoredActualLineup(job?.provisional_lineup_json);
+  const actualResult = sanitizeActualLineupForScoring(provisional);
+  if (!actualResult.ok) return { used: false };
+
+  const detectedAt = parseLineupDetectedAt(job?.provisional_lineup_detected_at) || now;
+  const record = await approveActualLineupForAutoScoring(env, gameId, actualResult.lineup, detectedAt, {
+    source: "npb-auto",
+    scoringDueAt: new Date(identity.startAt.getTime() + 2 * 60 * 1000),
+    now,
+    allowAfterStart: true,
+    preventOverwrite: true
+  });
+  const errorCode = String(finalError?.code || "LINEUP_FETCH_FAILED").slice(0, 80);
+  await env.AUTH_DB.prepare(
+    `UPDATE game_pregame_automation
+        SET lineup_status = 'captured', lineup_captured_at = ?1,
+            final_lineup_attempt_at = ?1, next_lineup_attempt_at = NULL,
+            final_lineup_fallback_used = 1, final_lineup_error_code = ?2,
+            last_error_code = NULL, last_error_message = NULL, updated_at = ?1
+      WHERE game_id = ?3`
+  ).bind(now.toISOString(), errorCode, gameId).run();
+  return { used: true, record, errorCode };
 }
 
 async function recordPregameError(db, gameId, area, error, now) {
@@ -3040,14 +3277,16 @@ async function recordPregameError(db, gameId, area, error, now) {
   ).bind(code, message, now.toISOString(), gameId).run();
 }
 
-async function recordPregameLineupAttempt(db, gameId, identity, now, error) {
+async function recordPregameLineupAttempt(db, gameId, identity, now, error, phase = "provisional") {
   const next = new Date(now.getTime() + 10 * 60 * 1000);
   await db.prepare(
     `UPDATE game_pregame_automation
         SET lineup_status = 'failed', lineup_attempt_count = lineup_attempt_count + 1, last_lineup_attempt_at = ?1,
-            next_lineup_attempt_at = ?2, last_error_code = ?3, last_error_message = ?4, updated_at = ?1
-      WHERE game_id = ?5`
-  ).bind(now.toISOString(), next <= identity.startAt ? next.toISOString() : null, String(error?.code || "NPB_HTTP_ERROR").slice(0, 80), String(error?.message || "取得に失敗しました。").slice(0, 240), gameId).run();
+            final_lineup_attempt_at = CASE WHEN ?5 = 'final' THEN ?1 ELSE final_lineup_attempt_at END,
+            next_lineup_attempt_at = CASE WHEN ?5 = 'final' OR ?2 <= ?6 THEN ?2 ELSE NULL END,
+            last_error_code = ?3, last_error_message = ?4, updated_at = ?1
+      WHERE game_id = ?7`
+  ).bind(now.toISOString(), next.toISOString(), String(error?.code || "NPB_HTTP_ERROR").slice(0, 80), String(error?.message || "取得に失敗しました。").slice(0, 240), phase, identity.startAt.toISOString(), gameId).run();
 }
 
 async function recordPregameLineupDeferred(db, gameId, identity, now) {
@@ -3061,18 +3300,19 @@ async function recordPregameLineupDeferred(db, gameId, identity, now) {
 }
 
 async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimelines()) {
-  const summary = { lineupCaptured: 0, lineupAwaitingApproval: 0, lineupFailed: 0, lineupRetryWait: 0 };
-  const settings = await getAutomationSettings(env.AUTH_DB);
+  const summary = { lineupCaptured: 0, provisionalCaptured: 0, finalLineupCaptured: 0, finalLineupFallbackUsed: 0, lineupAwaitingApproval: 0, lineupFailed: 0, lineupRetryWait: 0 };
   for (const timeline of timelines) {
     const gameId = timeline.gameId;
     try {
-      if (now < timeline.lineupFetchStartAt || now >= timeline.startAt) continue;
       const currentLineup = await getGameLineup(env.AUTH_DB, gameId);
-      if (currentLineup || now > timeline.startAt) continue;
-      const dueAt = getDueLineupAttemptAt(timeline, now);
+      if (currentLineup) continue;
+      const finalLineupFetchAt = timeline.finalLineupFetchAt || new Date(timeline.startAt.getTime() + 60 * 1000);
+      const isFinalPhase = now >= finalLineupFetchAt;
+      const dueAt = isFinalPhase ? getDueFinalLineupAttemptAt(timeline, now) : getDueLineupAttemptAt(timeline, now);
       if (!dueAt) continue;
-      const job = await env.AUTH_DB.prepare("SELECT last_lineup_attempt_at FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
-      if (job?.last_lineup_attempt_at && new Date(job.last_lineup_attempt_at) >= dueAt) {
+      const job = await env.AUTH_DB.prepare("SELECT last_lineup_attempt_at, final_lineup_attempt_at FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
+      const lastAttemptAt = isFinalPhase ? job?.final_lineup_attempt_at : job?.last_lineup_attempt_at;
+      if (lastAttemptAt && new Date(lastAttemptAt) >= dueAt) {
         // 同じ10分枠での待機を毎分出力しないため、枠の開始時だけ記録します。
         if (now.getTime() === dueAt.getTime()) {
           summary.lineupRetryWait += 1;
@@ -3080,18 +3320,34 @@ async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimel
         }
         continue;
       }
-      const result = await captureOfficialLineup(env, gameId, now, { autoApproveEnabled: settings.autoApproveEnabled });
-      if (result.status === "awaiting_manual_approval") {
-        summary.lineupAwaitingApproval += 1;
-        console.log(`[GAME_WORKFLOW] gameId=${gameId} step=lineup action=skipped status=auto_approval_disabled`);
+      const result = await captureOfficialLineup(env, gameId, now, { phase: isFinalPhase ? "final" : "provisional" });
+      if (result.status === "provisional") {
+        summary.provisionalCaptured += 1;
+        console.log(`[GAME_WORKFLOW] gameId=${gameId} step=lineup action=executed status=provisional`);
       } else {
         summary.lineupCaptured += 1;
-        console.log(`[GAME_WORKFLOW] gameId=${gameId} step=lineup action=executed status=success`);
+        if (isFinalPhase) summary.finalLineupCaptured += 1;
+        console.log(`[GAME_WORKFLOW] gameId=${gameId} step=${isFinalPhase ? "final_lineup" : "lineup"} action=executed status=success`);
       }
     } catch (error) {
+      const isFinalPhase = now >= (timeline.finalLineupFetchAt || new Date(timeline.startAt.getTime() + 60 * 1000));
+      if (isFinalPhase) {
+        try {
+          const fallback = await useProvisionalLineupFallback(env, gameId, timeline, now, error);
+          if (fallback.used) {
+            summary.lineupCaptured += 1;
+            summary.finalLineupFallbackUsed += 1;
+            await recordGameWorkflowOutcome(env.AUTH_DB, gameId, "final_lineup", "fallback", error, now);
+            console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=final_lineup action=fallback status=success code=${fallback.errorCode}`);
+            continue;
+          }
+        } catch (fallbackError) {
+          console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=final_lineup action=fallback status=failed code=${fallbackError?.code || "LINEUP_FALLBACK_FAILED"}`);
+        }
+      }
       summary.lineupFailed += 1;
       await recordGameWorkflowOutcome(env.AUTH_DB, gameId, "lineup", "failed", error, now);
-      console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=lineup action=executed status=failed code=${error?.code || "unknown"} retryable=true`);
+      console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=${isFinalPhase ? "final_lineup" : "lineup"} action=executed status=failed code=${error?.code || "unknown"} retryable=true`);
     }
   }
   return summary;
@@ -3112,8 +3368,16 @@ async function getPregameAutomationStatus(db, gameId) {
   const control = controlResult?.results?.[0] || null;
   const jobRow = job?.results?.[0] || null;
   const lineupRow = lineup?.results?.[0] || null;
+  const provisionalLineup = jobRow?.provisional_lineup_json
+    ? parseStoredActualLineup(jobRow.provisional_lineup_json)
+    : null;
   const nextNoticeAt = getNextGameDayNoticeAt(getPregameTimelines(), new Date());
-  const nextAttempt = identity && !lineupRow ? getNextPregameLineupAttempt(identity, jobRow?.last_lineup_attempt_at) : null;
+  const statusNow = new Date();
+  const nextAttempt = identity && !lineupRow
+    ? statusNow < identity.startAt
+      ? getNextPregameLineupAttempt(identity, jobRow?.last_lineup_attempt_at)
+      : getNextFinalLineupAttempt(identity, jobRow?.final_lineup_attempt_at)
+    : null;
   const workflow = getGameWorkflowProgress(identity, jobRow, lineupRow, notice, dailyNotice);
   const health = await getAutomationHealth(db);
   return {
@@ -3127,11 +3391,20 @@ async function getPregameAutomationStatus(db, gameId) {
     } : null,
     schedule: identity ? {
       startAt: identity.startAt.toISOString(), rosterCaptureAt: identity.rosterCaptureAt.toISOString(), predictionDeadlineAt: identity.predictionDeadlineAt.toISOString(),
-      lineupFetchStartAt: identity.lineupFetchStartAt.toISOString(), resultReleaseAt: identity.resultReleaseAt.toISOString()
+      lineupFetchStartAt: identity.lineupFetchStartAt.toISOString(), finalLineupFetchAt: identity.finalLineupFetchAt.toISOString(), resultReleaseAt: identity.resultReleaseAt.toISOString()
     } : null,
     roster: snapshot?.results?.[0] ? { status: "captured", capturedAt: snapshot.results[0].captured_at, playerCount: Number(snapshot.results[0].player_count), fixedAt: jobRow?.roster_fixed_at || notice?.roster_fixed_at || null } : { status: jobRow?.roster_status || "pending", fixedAt: jobRow?.roster_fixed_at || notice?.roster_fixed_at || null },
-    lineup: lineupRow ? { status: "captured", source: lineupRow.lineup_source, detectedAt: lineupRow.lineup_detected_at } : {
-      status: jobRow?.lineup_status || "pending", attempts: Number(jobRow?.lineup_attempt_count || 0), lastAttemptAt: jobRow?.last_lineup_attempt_at || null, nextAttemptAt: nextAttempt
+    lineup: lineupRow ? {
+      status: "captured", source: lineupRow.lineup_source, detectedAt: lineupRow.lineup_detected_at,
+      finalLineupFallbackUsed: Number(jobRow?.final_lineup_fallback_used || 0) === 1,
+      finalLineupErrorCode: jobRow?.final_lineup_error_code || "",
+      finalLineupMessage: Number(jobRow?.final_lineup_fallback_used || 0) === 1 ? "最終取得失敗・直前取得データを使用" : ""
+    } : {
+      status: jobRow?.lineup_status === "failed" ? "failed" : jobRow?.provisional_lineup_json ? "provisional" : (jobRow?.lineup_status || "pending"),
+      provisional: Boolean(jobRow?.provisional_lineup_json), provisionalDetectedAt: jobRow?.provisional_lineup_detected_at || null,
+      provisionalLineup: Array.isArray(provisionalLineup) ? provisionalLineup.map((item) => ({ battingOrder: item.battingOrder, position: item.position, playerName: item.playerName })) : [],
+      attempts: Number(jobRow?.lineup_attempt_count || 0), lastAttemptAt: jobRow?.last_lineup_attempt_at || null,
+      finalAttemptAt: jobRow?.final_lineup_attempt_at || null, nextAttemptAt: nextAttempt
     },
     scoring: lineupRow ? { status: lineupRow.scoring_status, dueAt: lineupRow.scoring_due_at, scoredAt: lineupRow.scored_at, publicationStatus: lineupRow.publication_status || "pending", publishedAt: lineupRow.published_at || null, lastError: lineupRow.last_error || null } : { status: jobRow?.scoring_status || "pending", publicationStatus: "pending", publishedAt: null, lastError: null },
     publishing: lineupRow ? { status: workflow.publishingStatus, publishedAt: lineupRow.published_at || null, errorCode: workflow.errorCode || "", errorMessage: workflow.errorMessage || "" } : { status: "pending", publishedAt: null, errorCode: "", errorMessage: "" },
@@ -3196,6 +3469,9 @@ export function deriveGameWorkflowProgress({ identity = null, job = null, lineup
   if (lineup?.scoring_status === "scored") return { currentStep: "publish", lastRunAt, lastResult: "scored_private", publishingStatus: lineup.publication_status || "scored_private", errorCode: "", errorMessage: "" };
   if (lineup?.scoring_status === "processing") return { currentStep: "score", lastRunAt, lastResult: "scoring", publishingStatus: "pending", errorCode: "", errorMessage: "" };
   if (lineup) return { currentStep: "score", lastRunAt, lastResult: "scoring_pending", publishingStatus: "pending", errorCode: "", errorMessage: "" };
+  if (job?.provisional_lineup_json) {
+    return { currentStep: now >= identity?.finalLineupFetchAt ? "final_lineup" : "lineup", lastRunAt, lastResult: "provisional", publishingStatus: "pending", errorCode: "", errorMessage: "" };
+  }
   if (identity && now >= identity.startAt) return { currentStep: "score", lastRunAt, lastResult: "waiting", publishingStatus: "pending", errorCode: "", errorMessage: "" };
   if (identity && now >= identity.lineupFetchStartAt) return { currentStep: "lineup", lastRunAt, lastResult: "waiting", publishingStatus: "pending", errorCode: "", errorMessage: "" };
   if (identity && now >= identity.predictionDeadlineAt) return { currentStep: "close_predictions", lastRunAt, lastResult: "waiting", publishingStatus: "pending", errorCode: "", errorMessage: "" };
@@ -3229,6 +3505,13 @@ function getNextPregameLineupAttempt(timeline, lastAttemptAt) {
     if (!last || time > last) return new Date(time).toISOString();
   }
   return null;
+}
+
+function getNextFinalLineupAttempt(timeline, lastAttemptAt) {
+  const first = timeline.finalLineupFetchAt.getTime();
+  const last = lastAttemptAt ? new Date(lastAttemptAt).getTime() : null;
+  if (!last || Number.isNaN(last)) return new Date(first).toISOString();
+  return new Date(last + 10 * 60 * 1000).toISOString();
 }
 
 async function handleAdminPredictionSummary(env, cors, gameId) {
@@ -3915,7 +4198,7 @@ async function approveActualLineupForAutoScoring(env, gameId, actualLineup, dete
 }
 
 async function saveActualLineupForAutoScoring(db, gameId, actualLineup, detectedAt, options = {}) {
-  if (!options.allowTestGame) assertOfficialLineupSaveAllowed(gameId, options.now || new Date());
+  if (!options.allowTestGame && !options.allowAfterStart) assertOfficialLineupSaveAllowed(gameId, options.now || new Date());
   const actualLineupJson = JSON.stringify(actualLineup);
   if (new TextEncoder().encode(actualLineupJson).byteLength > PREDICTION_MAX_JSON_BYTES) {
     throw new Error("actual lineup payload exceeds the allowed size");
@@ -4238,10 +4521,10 @@ function createGameRankingScoredPrivateStatement(db, gameId, scoredAt, isTestGam
   const productionSql = `INSERT INTO ranking_games
        (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game,
         publication_status, scored_private_at, published_at, created_at, updated_at)
-     VALUES (?1, ?2, 0, NULL, 'pending', ?3, 'scored_private', ?4, NULL, ?4, ?4)
+     VALUES (?1, ?2, 1, ?4, 'scored', ?3, 'scored_private', ?4, NULL, ?4, ?4)
      ON CONFLICT(game_id) DO UPDATE SET
-       game_date = excluded.game_date, is_ranking_eligible = 0, ranking_eligible_at = NULL,
-       game_status = 'pending', is_test_game = 0, publication_status = 'scored_private',
+       game_date = excluded.game_date, is_ranking_eligible = 1, ranking_eligible_at = excluded.ranking_eligible_at,
+       game_status = 'scored', is_test_game = 0, publication_status = 'scored_private',
        scored_private_at = excluded.scored_private_at, published_at = NULL, updated_at = excluded.updated_at`;
   const testSql = `INSERT INTO ranking_games
        (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game,
@@ -4263,7 +4546,7 @@ async function markGameRankingScoredPrivate(db, gameId, scoredAt, env, isTestGam
 async function runDueGameDayPublicationJobs(env, now, timelines = getPregameTimelines()) {
   const summary = { considered: 0, published: 0, skipped: 0, failed: 0 };
   for (const timeline of timelines) {
-    if (now < timeline.startAt) continue;
+    if (now < timeline.resultReleaseAt) continue;
     try {
       if (await isManualRescoreLocked(env.AUTH_DB, timeline.gameId)) {
         summary.skipped += 1;
@@ -4307,7 +4590,7 @@ async function publishGameResults(env, gameId, now, { isTestGame = false } = {})
   const identity = getGameIdentityForPregame(gameId);
   if (!isTestGame) {
     if (!identity) throw createPregameError("SCHEDULE_UNAVAILABLE", "試合日程を確認できません。");
-    if (now < identity.startAt) return { published: false, status: "not_due", publishedAt: null };
+    if (now < identity.resultReleaseAt) return { published: false, status: "not_due", publishedAt: null };
   } else if (!testGame) {
     throw createPregameError("TEST_GAME_NOT_FOUND", "自動採点テストが見つかりません。");
   }
@@ -4653,14 +4936,15 @@ async function handleGetCurrentPrediction(request, env, cors) {
 
 async function isGameResultsPublished(db, gameId, now) {
   const identity = getGameIdentityForPregame(gameId);
-  if (!identity || now < identity.startAt) return false;
+  if (!identity || now < identity.resultReleaseAt) return false;
   const row = await db.prepare(
     `SELECT is_ranking_eligible, publication_status, is_test_game
        FROM ranking_games WHERE game_id = ?1 LIMIT 1`
   ).bind(gameId).first();
   if (Number(row?.is_test_game || 0) === 1) return false;
-  // 0010適用前の正式採点済み試合は、過去データとして引き続き表示します。
-  return row?.publication_status === "published" || Number(row?.is_ranking_eligible || 0) === 1;
+  // 0010適用前の正式採点済み試合だけは、publication_statusが存在しない場合に限り過去データとして表示します。
+  return row?.publication_status === "published"
+    || (row?.publication_status === undefined && Number(row?.is_ranking_eligible || 0) === 1);
 }
 
 async function isTestRankingGame(db, gameId) {

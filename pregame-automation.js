@@ -5,9 +5,12 @@ let detectedScheduleGames = [];
 // 試合前処理の時刻は、クライアントとAuth Workerで同じ定義を使う。
 export const ROSTER_CAPTURE_MINUTES_BEFORE_START = 120;
 export const PREDICTION_DEADLINE_MINUTES_BEFORE_START = 60;
-export const LINEUP_FETCH_START_MINUTES_BEFORE_START = 60;
+export const LINEUP_FETCH_START_MINUTES_BEFORE_START = 50;
 export const LINEUP_FETCH_INTERVAL_MINUTES = 10;
-export const RESULT_RELEASE_MINUTES_AFTER_START = 0;
+export const FINAL_LINEUP_FETCH_MINUTES_AFTER_START = 1;
+export const FINAL_LINEUP_FETCH_INTERVAL_MINUTES = 10;
+export const RESULT_RELEASE_MINUTES_AFTER_START = 5;
+export const PROBABLE_STARTER_RETRY_INTERVAL_MINUTES = 60;
 export const NOTICE_MONITOR_START_HOUR_JST = 10;
 export const NOTICE_EARLY_INTERVAL_MINUTES = 30;
 export const NOTICE_ACTIVE_INTERVAL_MINUTES = 10;
@@ -53,6 +56,7 @@ export function getPregameTimeline(gameId) {
     rosterCaptureAt: offset(ROSTER_CAPTURE_MINUTES_BEFORE_START),
     predictionDeadlineAt: offset(PREDICTION_DEADLINE_MINUTES_BEFORE_START),
     lineupFetchStartAt: offset(LINEUP_FETCH_START_MINUTES_BEFORE_START),
+    finalLineupFetchAt: new Date(startAt.getTime() + FINAL_LINEUP_FETCH_MINUTES_AFTER_START * 60 * 1000),
     resultReleaseAt: new Date(startAt.getTime() + RESULT_RELEASE_MINUTES_AFTER_START * 60 * 1000)
   };
 }
@@ -112,13 +116,25 @@ export function getDueLineupAttemptAt(timeline, now = new Date()) {
   return new Date(timeline.lineupFetchStartAt.getTime() + Math.floor(elapsed / interval) * interval);
 }
 
+export function getDueFinalLineupAttemptAt(timeline, now = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  const first = timeline?.finalLineupFetchAt || (timeline?.startAt ? new Date(timeline.startAt.getTime() + FINAL_LINEUP_FETCH_MINUTES_AFTER_START * 60 * 1000) : null);
+  if (!first || Number.isNaN(current.getTime()) || current < first) return null;
+  const elapsed = current.getTime() - first.getTime();
+  const interval = FINAL_LINEUP_FETCH_INTERVAL_MINUTES * 60 * 1000;
+  return new Date(first.getTime() + Math.floor(elapsed / interval) * interval);
+}
+
 if (typeof window !== "undefined") {
   window.STARTING9_PREGAME_CONFIG = Object.freeze({
     rosterCaptureMinutesBeforeStart: ROSTER_CAPTURE_MINUTES_BEFORE_START,
     predictionDeadlineMinutesBeforeStart: PREDICTION_DEADLINE_MINUTES_BEFORE_START,
     lineupFetchStartMinutesBeforeStart: LINEUP_FETCH_START_MINUTES_BEFORE_START,
     lineupFetchIntervalMinutes: LINEUP_FETCH_INTERVAL_MINUTES,
+    finalLineupFetchMinutesAfterStart: FINAL_LINEUP_FETCH_MINUTES_AFTER_START,
+    finalLineupFetchIntervalMinutes: FINAL_LINEUP_FETCH_INTERVAL_MINUTES,
     resultReleaseMinutesAfterStart: RESULT_RELEASE_MINUTES_AFTER_START,
+    probableStarterRetryIntervalMinutes: PROBABLE_STARTER_RETRY_INTERVAL_MINUTES,
     noticeMonitorStartHourJst: NOTICE_MONITOR_START_HOUR_JST,
     noticeEarlyIntervalMinutes: NOTICE_EARLY_INTERVAL_MINUTES,
     noticeActiveIntervalMinutes: NOTICE_ACTIVE_INTERVAL_MINUTES

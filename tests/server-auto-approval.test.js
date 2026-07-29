@@ -46,13 +46,12 @@ test("設定はD1に保存され、管理者限定のGET/PUT APIでのみ更新�
   assert.match(worker, /INSERT INTO automation_settings/);
 });
 
-test("Cronはブラウザに依存せず、設定ON時だけ同じ承認コアを通す", () => {
+test("Cronはブラウザに依存せず、最終スタメンだけ同じ承認コアを通す", () => {
   assert.match(worker, /ctx\.waitUntil\(runScheduledGameAutomation\(env, scheduledAt\)\)/);
-  assert.match(worker, /const settings = await getAutomationSettings\(env\.AUTH_DB\)/);
-  assert.match(worker, /captureOfficialLineup\(env, gameId, now, \{ autoApproveEnabled: settings\.autoApproveEnabled \}\)/);
+  assert.match(worker, /captureOfficialLineup\(env, gameId, now, \{ phase: isFinalPhase \? "final" : "provisional" \}\)/);
+  assert.match(worker, /scoringDueAt: new Date\(identity\.startAt\.getTime\(\) \+ 2 \* 60 \* 1000\)/);
   assert.match(worker, /approveActualLineupForAutoScoring\(env, gameId, actual\.lineup, detectedAt/);
-  assert.match(worker, /recordPregameLineupDeferred\(env\.AUTH_DB, gameId, identity, now\)/);
-  assert.match(worker, /status=auto_approval_disabled/);
+  assert.match(worker, /provisional_lineup_json/);
 });
 
 test("手動承認とCron自動承認は同じサーバー側の承認コアを使い、既存スタメンを再承認しない", () => {

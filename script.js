@@ -2526,10 +2526,6 @@ function applyRosterSnapshotDiff(rosterResult) {
   saveToStorage(STORAGE_KEYS.rosterSnapshot, currentSnapshot);
 
   if (!diff.added.length && !diff.removed.length) {
-    addAutoFetchLog("1軍登録状況に変更はありません。");
-    if (currentSnapshot.warning) {
-      addAutoFetchLog(`警告：${currentSnapshot.warning}`);
-    }
     renderRosterSnapshotSummary(currentSnapshot, diff);
     return diff;
   }
@@ -2674,14 +2670,8 @@ async function initializeRosterCandidateSync() {
   }
   const snapshot = normalizeRosterSnapshot(loadFromStorage(STORAGE_KEYS.rosterSnapshot));
   renderPicker("prediction");
-  if (canUseRosterSnapshot(snapshot) && isRosterSnapshotFresh(snapshot)) {
-    return;
-  }
-
-  const result = await performRosterCheck();
-  if (!result.ok && snapshot.players.length) {
-    addAutoFetchLog("ロースターの更新に失敗したため、前回成功したデータを候補表示に使用しています。");
-  }
+  // ページ表示は保存済みスナップショットだけを使い、NPB取得は管理者操作またはAuth Cronに委ねる。
+  if (snapshot.players.length) return;
 }
 
 function buildNpbWorkerRequestUrl(sourceUrl) {
@@ -4144,7 +4134,7 @@ function renderAdminWorkflowLogs() {
     message.textContent = "試合進行ログを読み込み中です。";
   } else {
     message.className = `message${state.workflowLogs.message ? " error-message" : ""}`;
-    message.textContent = state.workflowLogs.message || (state.workflowLogs.logs.length ? `${state.workflowLogs.logs.length}件` : "該当するログはありません。");
+    message.textContent = state.workflowLogs.message || (state.workflowLogs.logs.length ? `${state.workflowLogs.logs.length}件` : "管理ログは特にありません。");
   }
 
   list.innerHTML = state.workflowLogs.logs.map((log) => {

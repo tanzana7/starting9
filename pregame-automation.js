@@ -11,6 +11,9 @@ export const FINAL_LINEUP_FETCH_MINUTES_AFTER_START = 1;
 export const FINAL_LINEUP_FETCH_INTERVAL_MINUTES = 10;
 export const RESULT_RELEASE_MINUTES_AFTER_START = 5;
 export const PROBABLE_STARTER_RETRY_INTERVAL_MINUTES = 60;
+export const ROSTER_AUTO_FETCH_INTERVAL_MINUTES = 360;
+export const ROSTER_FETCH_RETRY_INTERVAL_MINUTES = 30;
+export const ROSTER_PREGAME_CHECK_MINUTES = 180;
 export const NOTICE_MONITOR_START_HOUR_JST = 10;
 export const NOTICE_EARLY_INTERVAL_MINUTES = 30;
 export const NOTICE_ACTIVE_INTERVAL_MINUTES = 10;
@@ -125,6 +128,35 @@ export function getDueFinalLineupAttemptAt(timeline, now = new Date()) {
   return new Date(first.getTime() + Math.floor(elapsed / interval) * interval);
 }
 
+export function getRosterFetchDecision(timeline, state = {}, now = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  const startAt = timeline?.startAt instanceof Date ? timeline.startAt : new Date(timeline?.startAt || "");
+  const gameId = String(timeline?.gameId || "");
+  if (!gameId || Number.isNaN(current.getTime()) || Number.isNaN(startAt.getTime())) {
+    return { due: false, reason: "invalid" };
+  }
+  if (current >= startAt) {
+    return { due: false, reason: "after_start" };
+  }
+
+  const nextCheckAt = state?.nextCheckAt ? new Date(state.nextCheckAt) : null;
+  if (nextCheckAt && !Number.isNaN(nextCheckAt.getTime()) && current < nextCheckAt) {
+    return { due: false, reason: "retry_wait" };
+  }
+
+  const pregameAt = new Date(startAt.getTime() - ROSTER_PREGAME_CHECK_MINUTES * 60 * 1000);
+  if (current >= pregameAt && state?.lastPregameCheckGameId !== gameId) {
+    return { due: true, kind: "pregame" };
+  }
+
+  const successfulAt = state?.lastSuccessfulFetchAt ? new Date(state.lastSuccessfulFetchAt) : null;
+  if (!successfulAt || Number.isNaN(successfulAt.getTime())
+    || current.getTime() - successfulAt.getTime() >= ROSTER_AUTO_FETCH_INTERVAL_MINUTES * 60 * 1000) {
+    return { due: true, kind: "regular" };
+  }
+  return { due: false, reason: "interval" };
+}
+
 if (typeof window !== "undefined") {
   window.STARTING9_PREGAME_CONFIG = Object.freeze({
     rosterCaptureMinutesBeforeStart: ROSTER_CAPTURE_MINUTES_BEFORE_START,
@@ -135,6 +167,9 @@ if (typeof window !== "undefined") {
     finalLineupFetchIntervalMinutes: FINAL_LINEUP_FETCH_INTERVAL_MINUTES,
     resultReleaseMinutesAfterStart: RESULT_RELEASE_MINUTES_AFTER_START,
     probableStarterRetryIntervalMinutes: PROBABLE_STARTER_RETRY_INTERVAL_MINUTES,
+    rosterAutoFetchIntervalMinutes: ROSTER_AUTO_FETCH_INTERVAL_MINUTES,
+    rosterFetchRetryIntervalMinutes: ROSTER_FETCH_RETRY_INTERVAL_MINUTES,
+    rosterPregameCheckMinutes: ROSTER_PREGAME_CHECK_MINUTES,
     noticeMonitorStartHourJst: NOTICE_MONITOR_START_HOUR_JST,
     noticeEarlyIntervalMinutes: NOTICE_EARLY_INTERVAL_MINUTES,
     noticeActiveIntervalMinutes: NOTICE_ACTIVE_INTERVAL_MINUTES

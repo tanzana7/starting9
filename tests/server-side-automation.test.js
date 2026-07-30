@@ -36,6 +36,18 @@ test("server-side schedule synchronization covers today and the next JST day", a
   assert.match(worker, /now\.getTime\(\) \+ AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS/);
 });
 
+test("schedule sync distinguishes changed, unchanged, skipped, and failed outcomes", async () => {
+  const { classifyScheduleSyncResults, summarizeGameAutomationRun } = await import(workerUrl);
+  assert.equal(classifyScheduleSyncResults([{ status: "success_changed" }, { status: "skipped" }]), "success_changed");
+  assert.equal(classifyScheduleSyncResults([{ status: "success_no_change" }, { status: "skipped" }]), "success_no_change");
+  assert.equal(classifyScheduleSyncResults([{ status: "skipped" }]), "skipped");
+  assert.equal(classifyScheduleSyncResults([{ status: "success_no_change" }, { status: "failed" }]), "failed");
+  assert.equal(summarizeGameAutomationRun({ date: "2026-07-30", scheduleSync: "success_no_change" }).failed, 0);
+  assert.match(worker, /if \(status === "success_no_change" \|\| status === "skipped"\) return;/);
+  assert.match(worker, /error_code = \?1 AND occurred_at >= \?2/);
+  assert.match(worker, /new Date\(now\)\.getTime\(\) - 30 \* 60 \* 1000/);
+});
+
 test("workflow isolates roster, lineup, scoring, and publication failures by game", () => {
   assert.match(worker, /for \(const timeline of timelines\) \{\s+if \(now < timeline\.predictionDeadlineAt/s);
   assert.match(worker, /step=close_predictions action=executed status=failed/);

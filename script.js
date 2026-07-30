@@ -263,6 +263,7 @@ const state = {
     fetchedGameId: ""
   },
   predictionTargetGameId: "",
+  predictionTargetGame: null,
   predictionTargetNotice: "",
   resultHistory: {
     isLoading: false,
@@ -2739,6 +2740,7 @@ async function initializeProbableStarter() {
   const nextGame = await resolvePredictionTargetGame(schedule, true);
   const preservedGame = nextGame || schedule.find((game) => game?.gameId === previousGameId) || state.probableStarter.nextGame || null;
   state.probableStarter.nextGame = preservedGame;
+  state.predictionTargetGame = preservedGame;
   state.predictionTargetGameId = state.probableStarter.nextGame?.gameId || "";
   if (nextGame && previousGameId && previousGameId !== state.predictionTargetGameId) {
     state.predictionTargetNotice = "予想対象試合が次の試合へ切り替わりました。";
@@ -2759,7 +2761,7 @@ async function initializeProbableStarter() {
   }
 }
 
-async function refreshPredictionTarget({ retryUnannounced = true, useServer = false } = {}) {
+async function refreshPredictionTarget({ retryUnannounced = true, useServer = true } = {}) {
   const schedule = await getLoadedGameSchedule();
   const nextGame = await resolvePredictionTargetGame(schedule, useServer);
   const previousGameId = state.predictionTargetGameId || state.probableStarter.nextGame?.gameId || "";
@@ -2768,6 +2770,7 @@ async function refreshPredictionTarget({ retryUnannounced = true, useServer = fa
   }
   if ((nextGame?.gameId || "") !== previousGameId) {
     state.predictionTargetGameId = nextGame?.gameId || "";
+    state.predictionTargetGame = nextGame;
     state.probableStarter.nextGame = nextGame;
     state.probableStarter.matchedGame = null;
     state.probableStarter.games = [];
@@ -2791,15 +2794,15 @@ async function resolvePredictionTargetGame(schedule, useServer) {
   const fallback = findNextScheduledGameForStarter(schedule);
   if (!useServer) return fallback;
   const url = buildPredictionTargetApiUrl();
-  if (!url) return fallback;
+  if (!url) return null;
   try {
     const response = await fetch(url, { cache: "no-store" });
     const payload = await response.json().catch(() => null);
-    if (!response.ok || !payload?.ok) return fallback;
+    if (!response.ok || !payload?.ok) return null;
     return payload.target ? normalizeServerPredictionTarget(payload.target) : null;
   } catch (error) {
     console.warn("サーバー側の予想対象取得に失敗しました", error.message);
-    return fallback;
+    return null;
   }
 }
 
@@ -3069,7 +3072,8 @@ function isScheduleGameUnavailable(game) {
 }
 
 function resolvePredictionDeadline(gameId, now = new Date()) {
-  const game = getHamGameSchedule().find((item) => item?.gameId === gameId) || null;
+  const game = getHamGameSchedule().find((item) => item?.gameId === gameId)
+    || (state.predictionTargetGame?.gameId === gameId ? state.predictionTargetGame : null);
   if (!game) {
     return {
       gameId: gameId || "",

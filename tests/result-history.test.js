@@ -75,3 +75,12 @@ test("ページを開かなくてもCronがサーバー側の対象試合評価�
   assert.match(worker, /scheduleSync\.predictionTarget = await getServerPredictionTarget\(env\.AUTH_DB, now\)/);
   assert.doesNotMatch(script, /runScheduledGameAutomation\(/);
 });
+
+test("通常画面はprediction-targetの保存済みgameIdを予想保存と締切判定へ引き継ぐ", () => {
+  assert.match(script, /const nextGame = await resolvePredictionTargetGame\(schedule, true\)/);
+  assert.match(script, /state\.predictionTargetGame = preservedGame/);
+  assert.match(script, /async function refreshPredictionTarget\(\{ retryUnannounced = true, useServer = true \} = \{\}\)/);
+  assert.match(script, /if \(!response\.ok \|\| !payload\?\.ok\) return null/);
+  assert.match(script, /state\.predictionTargetGame\?\.gameId === gameId \? state\.predictionTargetGame : null/);
+  assert.match(script, /state\.prediction = \{\s*gameId: getCurrentGameId\(\)/);
+});

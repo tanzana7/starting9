@@ -224,6 +224,16 @@
                 </div>
                 <p id="adminGameWorkflowMessage" class="message" role="status"></p>
               </section>
+              <section id="adminGameProgressBoard" class="admin-game-progress-board hidden" aria-labelledby="adminGameProgressTitle">
+                <div class="admin-game-progress-heading">
+                  <div>
+                    <h3 id="adminGameProgressTitle">試合進行ステータス</h3>
+                    <p>現在の管理対象試合を、保存済みデータと進行ログから表示します。</p>
+                  </div>
+                  <button id="refreshAdminGameProgressButton" class="secondary-button compact-button" type="button">手動更新</button>
+                </div>
+                <div id="adminGameProgressContent" aria-live="polite"></div>
+              </section>
               <section id="adminWorkflowLogsPanel" class="admin-workflow-logs hidden" aria-labelledby="adminWorkflowLogsTitle">
                 <div class="admin-workflow-logs-heading">
                   <div>

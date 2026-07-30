@@ -4131,31 +4131,117 @@ body:not(:has(.app-layout.is-admin-screen)) {
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .header-inner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "logo auth"
+    "game game"
+    "starter starter"
+    "hero hero"
+    "lead lead"
+    "beta beta";
+  gap: 10px 24px;
   padding-top: 22px;
   padding-bottom: 26px;
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .header-logo {
-  margin-bottom: 12px;
+  grid-area: logo;
+  width: min(100%, 300px);
+  margin: 0;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) #authPanel {
+  grid-area: auth;
+  align-self: start;
+  justify-self: end;
+  width: auto;
+  max-width: 360px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) #authPanel .auth-state {
+  justify-content: flex-end;
+  color: #d9e5f2;
+  font-size: 0.76rem;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) #authPanel .auth-button {
+  min-height: 30px;
+  padding: 4px 9px;
+  border-radius: 3px;
+  font-size: 0.74rem;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) #authPanel .achievements-panel {
+  margin-top: 6px;
+  padding-top: 6px;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .game-info-display {
+  grid-area: game;
+  justify-content: center;
+  text-align: center;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .probable-starter-card {
+  grid-area: starter;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .hero-panel {
+  grid-area: hero;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .lead {
+  grid-area: lead;
+  max-width: 760px;
+  margin: 0;
+  padding-left: 10px;
+  border-left: 2px solid rgba(168, 216, 255, 0.5);
+  color: #c5d6e8;
+  font-size: 0.84rem;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .beta-panel {
+  grid-area: beta;
+  width: 100%;
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .beta-panel {
   margin-bottom: 12px;
-  border-radius: 3px;
+  margin-top: 2px;
+  border-color: rgba(195, 211, 228, 0.3);
+  border-width: 1px 0 0;
+  border-radius: 0;
+  color: #aebed0;
+  background: transparent;
   box-shadow: none;
+  font-size: 0.76rem;
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .game-info-display {
   width: 100%;
-  margin: 0 0 10px;
-  padding: 12px 16px;
+  min-height: 70px;
+  margin: 0;
+  padding: 14px 18px;
   border: 1px solid rgba(255, 255, 255, 0.28);
-  border-radius: 3px;
+  border-radius: 4px;
   color: #ffffff;
   background: #0b2c5c;
-  font-size: 1.04rem;
+  font-size: clamp(1.35rem, 3.3vw, 2.15rem);
   font-weight: 900;
+  line-height: 1.25;
   letter-spacing: 0.01em;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .game-info-display.hidden,
+body:not(:has(.app-layout.is-admin-screen)) .probable-starter-card.hidden {
+  display: none;
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .probable-starter-card {
@@ -4173,9 +4259,30 @@ body:not(:has(.app-layout.is-admin-screen)) .probable-starter-team {
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .hero-panel {
-  margin-top: 12px;
-  border-radius: 3px;
+  width: 100%;
+  margin-top: 0;
+  padding: 20px 22px;
+  border-color: rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  background: #102f5c;
   box-shadow: none;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .hero-panel h1 {
+  font-size: clamp(1.4rem, 3vw, 2rem);
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .hero-cta {
+  min-width: 250px;
+  border-color: #8fc7ff;
+  border-radius: 4px;
+  background: var(--fighters-blue);
+  box-shadow: none;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .hero-cta:hover,
+body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
+  background: #1476c7;
 }
 
 .app-layout:not(.is-admin-screen) {
@@ -4470,5 +4577,71 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-panel {
   .app-layout:not(.is-admin-screen) .slot-player,
   .app-layout:not(.is-admin-screen) .player-chip {
     font-size: 0.92rem;
+  }
+}
+
+@media (max-width: 759px) {
+  body:not(:has(.app-layout.is-admin-screen)) .header-inner {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "logo"
+      "game"
+      "starter"
+      "hero"
+      "lead"
+      "beta"
+      "auth";
+    gap: 8px;
+    padding-top: 16px;
+    padding-bottom: 20px;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .header-logo {
+    width: min(100%, 250px);
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) #authPanel {
+    justify-self: stretch;
+    max-width: none;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) #authPanel .auth-state {
+    justify-content: space-between;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .game-info-display {
+    min-height: 62px;
+    padding: 12px 14px;
+    font-size: clamp(1.25rem, 6vw, 1.7rem);
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .hero-panel {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 14px;
+    padding: 16px;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .hero-cta {
+    width: 100%;
+    min-width: 0;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .probable-starter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 430px) {
+  body:not(:has(.app-layout.is-admin-screen)) .header-logo {
+    width: min(100%, 220px);
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .probable-starter-grid {
+    grid-template-columns: 1fr;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .game-info-display {
+    font-size: 1.18rem;
   }
 }

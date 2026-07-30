@@ -1361,6 +1361,121 @@ textarea:focus {
   gap: 8px;
 }
 
+.admin-game-progress-board {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid #cbd8e5;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.admin-game-progress-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.admin-game-progress-heading h3,
+.admin-game-progress-heading p {
+  margin: 0;
+}
+
+.admin-game-progress-heading h3 {
+  color: var(--fighters-deep-blue);
+  font-size: 1rem;
+}
+
+.admin-game-progress-heading p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.admin-game-progress-game {
+  margin: 0;
+  color: var(--fighters-deep-blue);
+  font-weight: 900;
+}
+
+.admin-game-progress-updated {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.admin-game-progress-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin: 0;
+}
+
+.admin-game-progress-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #d7e2ed;
+  border-radius: 6px;
+  background: #fbfcfe;
+}
+
+.admin-game-progress-item dt,
+.admin-game-progress-item dd {
+  margin: 0;
+}
+
+.admin-game-progress-item dt {
+  color: var(--text);
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+
+.admin-game-progress-item dd {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  text-align: right;
+}
+
+.admin-game-progress-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.admin-game-progress-status.is-completed { color: #27643c; background: #e4f3e9; }
+.admin-game-progress-status.is-waiting { color: #805817; background: #fff0c9; }
+.admin-game-progress-status.is-not_started { color: #5f6d7b; background: #eef1f4; }
+.admin-game-progress-status.is-error { color: #9c2f2f; background: #fce5e5; }
+.admin-game-progress-status.is-out_of_scope { color: #7c8792; background: #f3f5f7; }
+
+.admin-game-progress-detail {
+  max-width: 240px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.admin-game-progress-errors {
+  margin: 0;
+  color: var(--error);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
 .admin-workflow-logs {
   display: grid;
   gap: 10px;
@@ -3024,6 +3139,15 @@ textarea:focus {
 }
 
 @media (max-width: 759px) {
+  .admin-game-progress-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .admin-game-progress-list {
+    grid-template-columns: 1fr;
+  }
+
   .admin-workflow-logs-heading {
     align-items: stretch;
     flex-direction: column;

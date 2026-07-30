@@ -228,6 +228,9 @@ export default {
       if (path === "/api/admin/automation/health" && request.method === "GET") {
         return await handleAdminAutomationHealth(request, env, cors);
       }
+      if (path === "/api/admin/game-progress-status" && request.method === "GET") {
+        return await handleAdminGameProgressStatus(request, env, cors);
+      }
       if (path === "/api/admin/workflow-logs" && request.method === "GET") {
         return await handleAdminWorkflowLogs(request, env, cors);
       }
@@ -4111,6 +4114,166 @@ async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimel
     }
   }
   return summary;
+}
+
+function makeGameProgressStatus(status, { completedAt = null, scheduledAt = null, detail = "", errorCode = "" } = {}) {
+  return { status, completedAt, scheduledAt, detail, errorCode };
+}
+
+function latestProgressLog(logs, eventTypes, status = "") {
+  const types = new Set(Array.isArray(eventTypes) ? eventTypes : [eventTypes]);
+  return (Array.isArray(logs) ? logs : []).find((log) => types.has(log.eventType) && (!status || log.status === status)) || null;
+}
+
+function progressLogHasCurrentError(logs, failureTypes, successTypes = []) {
+  const failure = latestProgressLog(logs, failureTypes, "error");
+  if (!failure) return false;
+  const success = latestProgressLog(logs, successTypes, "success");
+  if (!success) return true;
+  return new Date(failure.occurredAt).getTime() > new Date(success.occurredAt).getTime();
+}
+
+export function deriveGameProgressStatuses({
+  gameId = "",
+  game = null,
+  schedule = null,
+  probableStarter = null,
+  lineup = null,
+  scoring = null,
+  ranking = null,
+  logs = [],
+  now = new Date()
+} = {}) {
+  const current = now instanceof Date ? now : new Date(now);
+  const startAt = schedule?.startAt ? new Date(schedule.startAt) : null;
+  const deadlineAt = schedule?.predictionDeadlineAt ? new Date(schedule.predictionDeadlineAt) : null;
+  const lineupAt = schedule?.lineupFetchStartAt ? new Date(schedule.lineupFetchStartAt) : null;
+  const releaseAt = schedule?.resultReleaseAt ? new Date(schedule.resultReleaseAt) : null;
+  const validDate = (value) => value && !Number.isNaN(value.getTime());
+  const probableError = probableStarter?.status === "error"
+    || progressLogHasCurrentError(logs, ["probable_starter_fetch_failed"], ["probable_starter_announced"]);
+  const lineupError = lineup?.status === "failed"
+    || progressLogHasCurrentError(logs, ["lineup_fetch", "final_lineup_fetch"], ["lineup_fetch", "final_lineup_fetch"]);
+  const scoringError = scoring?.status === "failed"
+    || progressLogHasCurrentError(logs, ["scoring_failed"], ["scoring_succeeded"]);
+  const rankingError = progressLogHasCurrentError(logs, ["ranking_reflected"], ["ranking_reflected"]);
+  const publishError = scoring?.publicationStatus === "failed"
+    || progressLogHasCurrentError(logs, ["result_publish_failed"], ["result_published"]);
+  const probableSuccess = probableStarter?.status === "announced";
+  const lineupSuccess = Boolean(lineup?.detectedAt) || lineup?.status === "captured";
+  const scoringSuccess = scoring?.status === "scored";
+  const rankingSuccess = ranking?.isRankingEligible === true || latestProgressLog(logs, ["ranking_reflected"], "success") !== null;
+  const publicationSuccess = scoring?.publicationStatus === "published" || ranking?.publicationStatus === "published";
+  const progressErrorResolved = (log) => {
+    const successTypes = {
+      probable_starter_fetch_failed: ["probable_starter_announced"],
+      lineup_fetch: ["lineup_fetch", "final_lineup_fetch"],
+      final_lineup_fetch: ["lineup_fetch", "final_lineup_fetch"],
+      scoring_failed: ["scoring_succeeded"],
+      result_publish_failed: ["result_published"],
+      ranking_reflected: ["ranking_reflected"]
+    }[log.eventType] || [];
+    return successTypes.some((eventType) => (Array.isArray(logs) ? logs : []).some((candidate) => candidate.status === "success"
+      && candidate.eventType === eventType
+      && new Date(candidate.occurredAt).getTime() > new Date(log.occurredAt).getTime()));
+  };
+  const errors = (Array.isArray(logs) ? logs : [])
+    .filter((log) => log.status === "error" && !progressErrorResolved(log))
+    .slice(0, 5)
+    .map((log) => ({ eventType: log.eventType, occurredAt: log.occurredAt, message: log.message, errorCode: log.errorCode || "" }));
+
+  const statuses = {
+    targetSelected: makeGameProgressStatus(gameId ? "completed" : "error", { detail: gameId ? "管理対象gameIdを取得済み" : "対象試合なし" }),
+    probableStarter: makeGameProgressStatus(probableError ? "error" : probableSuccess ? "completed" : "waiting", {
+      completedAt: probableSuccess ? (probableStarter.announcedAt || probableStarter.fetchedAt) : null,
+      scheduledAt: startAt?.toISOString() || null,
+      detail: probableSuccess ? `${probableStarter.home_pitcher_name || probableStarter.homePitcherName || ""} / ${probableStarter.away_pitcher_name || probableStarter.awayPitcherName || ""}`.replace(/^\s*\/\s*|\s*\/\s*$/g, "") : "発表待ち",
+      errorCode: probableStarter?.error_code || probableStarter?.errorCode || (probableError ? "PROBABLE_STARTER_FETCH_FAILED" : "")
+    }),
+    predictionOpen: !validDate(deadlineAt) ? makeGameProgressStatus("error", { detail: "締切時刻を取得できません", errorCode: "PREDICTION_DEADLINE_UNAVAILABLE" }) : current < deadlineAt
+      ? makeGameProgressStatus("completed", { detail: "受付中" })
+      : makeGameProgressStatus("out_of_scope", { completedAt: deadlineAt.toISOString(), detail: "締切済み" }),
+    predictionClosed: !validDate(deadlineAt) ? makeGameProgressStatus("error", { detail: "締切時刻を取得できません", errorCode: "PREDICTION_DEADLINE_UNAVAILABLE" }) : current >= deadlineAt
+      ? makeGameProgressStatus("completed", { completedAt: deadlineAt.toISOString(), detail: "受付終了" })
+      : makeGameProgressStatus("waiting", { scheduledAt: deadlineAt.toISOString(), detail: "締切前" }),
+    lineupFetched: makeGameProgressStatus(lineupError ? "error" : lineupSuccess ? "completed" : validDate(lineupAt) && current < lineupAt ? "waiting" : "not_started", {
+      completedAt: lineup?.detectedAt || null,
+      scheduledAt: lineupAt?.toISOString() || null,
+      detail: lineupSuccess ? "正式スタメン保存済み" : "取得待ち",
+      errorCode: lineup?.finalLineupErrorCode || (lineupError ? "LINEUP_FETCH_FAILED" : "")
+    }),
+    scoringCompleted: makeGameProgressStatus(scoringError ? "error" : scoringSuccess ? "completed" : "waiting", {
+      completedAt: scoring?.scoredAt || null,
+      scheduledAt: scoring?.dueAt || (validDate(startAt) ? new Date(startAt.getTime() + 2 * 60 * 1000).toISOString() : null),
+      detail: scoringSuccess ? "採点完了" : "採点待ち",
+      errorCode: scoring?.lastError || (scoringError ? "SCORING_FAILED" : "")
+    }),
+    rankingUpdated: makeGameProgressStatus(rankingError ? "error" : rankingSuccess ? "completed" : scoringSuccess ? "waiting" : "not_started", {
+      completedAt: ranking?.rankingEligibleAt || latestProgressLog(logs, ["ranking_reflected"], "success")?.occurredAt || null,
+      detail: rankingSuccess ? "ランキング反映済み" : "採点後に反映"
+    }),
+    resultPublished: makeGameProgressStatus(publishError ? "error" : publicationSuccess ? "completed" : validDate(releaseAt) && current < releaseAt ? "waiting" : "not_started", {
+      completedAt: scoring?.publishedAt || ranking?.publishedAt || null,
+      scheduledAt: releaseAt?.toISOString() || null,
+      detail: publicationSuccess ? "正式結果公開済み" : "公開待ち",
+      errorCode: publishError ? "RESULT_PUBLISH_FAILED" : ""
+    })
+  };
+
+  const timestamps = [
+    ...Object.values(statuses).map((item) => item.completedAt),
+    ...(Array.isArray(logs) ? logs.map((log) => log.occurredAt) : [])
+  ].filter(Boolean).map((value) => new Date(value)).filter(validDate);
+  const lastUpdatedAt = timestamps.length ? new Date(Math.max(...timestamps.map((value) => value.getTime()))).toISOString() : null;
+  const latestError = errors[0] || null;
+  statuses.errorState = makeGameProgressStatus(latestError ? "error" : "completed", {
+    completedAt: latestError?.occurredAt || null,
+    detail: latestError ? latestError.message : "エラーはありません",
+    errorCode: latestError?.errorCode || ""
+  });
+  return { statuses, errors, lastUpdatedAt, game: game || null };
+}
+
+async function handleAdminGameProgressStatus(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  const url = new URL(request.url);
+  let gameId = getValidGameId(url.searchParams.get("gameId"));
+  let target = null;
+  if (!gameId) {
+    target = await getServerPredictionTarget(env.AUTH_DB, new Date());
+    gameId = getValidGameId(target?.gameId);
+  }
+  if (!gameId) return jsonResponse({ ok: true, game: null, gameId: "", statuses: null, errors: [], updatedAt: null }, 200, cors);
+  if (await isTestRankingGame(env.AUTH_DB, gameId)) {
+    return jsonResponse({ ok: true, game: null, gameId: "", statuses: null, errors: [], updatedAt: null, excluded: "test_game" }, 200, cors);
+  }
+  try {
+    const record = await getPregameAutomationStatus(env.AUTH_DB, gameId);
+    const [probableResult, rankingResult, logResult] = await env.AUTH_DB.batch([
+      env.AUTH_DB.prepare("SELECT status, home_pitcher_name, away_pitcher_name, fetched_at, announced_at, error_code FROM probable_starters WHERE game_id = ?1 LIMIT 1").bind(gameId),
+      env.AUTH_DB.prepare("SELECT is_ranking_eligible, ranking_eligible_at, publication_status, published_at FROM ranking_games WHERE game_id = ?1 LIMIT 1").bind(gameId),
+      env.AUTH_DB.prepare("SELECT event_type, status, occurred_at, message, error_code FROM game_workflow_logs WHERE game_id = ?1 ORDER BY occurred_at DESC LIMIT 100").bind(gameId)
+    ]);
+    const probableStarter = probableResult?.results?.[0] || null;
+    const rankingRow = rankingResult?.results?.[0] || null;
+    const logs = (logResult?.results || []).map((log) => ({ eventType: log.event_type, status: log.status, occurredAt: log.occurred_at, message: log.message, errorCode: log.error_code || "" }));
+    const derived = deriveGameProgressStatuses({
+      gameId,
+      game: record.game || target,
+      schedule: record.schedule,
+      probableStarter,
+      lineup: record.lineup,
+      scoring: record.scoring,
+      ranking: rankingRow ? { isRankingEligible: Number(rankingRow.is_ranking_eligible || 0) === 1, rankingEligibleAt: rankingRow.ranking_eligible_at || null, publicationStatus: rankingRow.publication_status || "pending", publishedAt: rankingRow.published_at || null } : null,
+      logs
+    });
+    const game = record.game || target || { gameId };
+    const gameLabel = game.matchupLabel || `${game.date || ""} ${game.awayTeam || ""} vs ${game.homeTeam || ""}`.trim();
+    return jsonResponse({ ok: true, gameId, game, gameLabel, updatedAt: derived.lastUpdatedAt, statuses: derived.statuses, errors: derived.errors }, 200, cors);
+  } catch (error) {
+    return jsonResponse({ ok: false, code: isPregameSchemaError(error) ? "GAME_PROGRESS_SCHEMA_NOT_READY" : "GAME_PROGRESS_STATUS_FAILED", error: "試合進行ステータスを取得できませんでした。" }, isPregameSchemaError(error) ? 503 : 500, cors);
+  }
 }
 
 async function getPregameAutomationStatus(db, gameId) {

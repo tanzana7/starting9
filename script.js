@@ -50,6 +50,7 @@ const ROSTER_MONITOR_INTERVAL_MS = 10 * 60 * 1000;
 const ROSTER_MONITOR_MAX_ATTEMPTS = 6;
 const ROSTER_SNAPSHOT_CACHE_TTL_MS = 60 * 60 * 1000;
 const PREDICTION_DEADLINE_REFRESH_MS = 30 * 1000;
+const GAME_PROGRESS_STATUS_REFRESH_MS = 60 * 1000;
 const AUTO_FILL_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "指"]);
 const OUTFIELD_POSITIONS = ["左", "中", "右"];
 // 日程・NPB取得の長いチームコードは維持し、選手IDだけ短い球団IDを使います。
@@ -71,6 +72,7 @@ const DEFAULT_PLAYER_TEAM_CODE = "fighters";
 let autoScoringCountdownTimerId = null;
 let predictionSaveMessageTimerId = null;
 let predictionDeadlineTimerId = null;
+let gameProgressStatusTimerId = null;
 const TEST_PREDICTION_LINEUP = [
   { order: 1, player: "大塚瑠晏", position: "遊" },
   { order: 2, player: "清宮幸太郎", position: "一" },
@@ -368,6 +370,12 @@ const state = {
     record: null,
     message: ""
   },
+  gameProgressStatus: {
+    isLoading: false,
+    requestId: 0,
+    record: null,
+    message: ""
+  },
   workflowLogs: {
     isLoading: false,
     requestId: 0,
@@ -472,6 +480,7 @@ function bindEvents() {
   bindAdminEvent("stopRosterMonitorButton", "click", () => stopRosterMonitor("ロースター自動取得を停止しました。", "warning"));
   bindAdminEvent("fetchProbableStarterButton", "click", () => fetchProbableStarter({ force: true }));
   bindAdminEvent("syncGameWorkflowButton", "click", () => refreshAdminGameWorkflowStatus({ force: true }));
+  bindAdminEvent("refreshAdminGameProgressButton", "click", () => refreshAdminGameProgressStatus({ force: true }));
   bindAdminEvent("toggleAdminWorkflowLogsButton", "click", toggleAdminWorkflowLogs);
   bindAdminEvent("refreshAdminWorkflowLogsButton", "click", () => refreshAdminWorkflowLogs({ force: true }));
   bindAdminEvent("adminWorkflowLogGameId", "change", () => refreshAdminWorkflowLogs({ force: true }));
@@ -642,6 +651,8 @@ function clearAdminAccess() {
   state.adminTestGames = { isLoading: false, isBusy: false, games: [], selectedGameId: "", detail: null, rescorePreview: null, message: "" };
   state.adminTestAchievements = { isLoading: false, items: [], earned: [], message: "" };
   state.gameWorkflow = { isLoading: false, isUpdating: false, requestId: state.gameWorkflow.requestId + 1, gameId: "", record: null, message: "" };
+  stopGameProgressStatusRefresh();
+  state.gameProgressStatus = { isLoading: false, requestId: state.gameProgressStatus.requestId + 1, record: null, message: "" };
   state.workflowLogs = { isLoading: false, requestId: state.workflowLogs.requestId + 1, logs: [], message: "" };
   state.appMode = "normal";
   state.isAdminMode = false;
@@ -1422,6 +1433,8 @@ function openAdminPanel() {
   refreshAutoScoringStatus({ force: true });
   void refreshAutoApprovalSettings();
   void refreshAdminGameWorkflowStatus({ force: true });
+  void refreshAdminGameProgressStatus({ force: true });
+  startGameProgressStatusRefresh();
   if (state.workflowLogs.expanded) {
     void refreshAdminWorkflowLogs({ force: true });
   }
@@ -1442,8 +1455,14 @@ function closeAdminPanel() {
   state.workflowLogs.isLoading = false;
   state.workflowLogs.logs = [];
   state.workflowLogs.message = "";
+  stopGameProgressStatusRefresh();
+  state.gameProgressStatus.requestId += 1;
+  state.gameProgressStatus.isLoading = false;
+  state.gameProgressStatus.record = null;
+  state.gameProgressStatus.message = "";
   applyAdminMode();
   renderAdminWorkflowLogs();
+  renderAdminGameProgressStatus();
   renderPredictionDeadlineAdmin();
 }
 
@@ -4074,6 +4093,111 @@ async function refreshAdminGameWorkflowStatus({ force = false } = {}) {
       state.gameWorkflow.isLoading = false;
       renderAdminGameWorkflowStatus();
     }
+  }
+}
+
+function buildAdminGameProgressStatusApiUrl() {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  return baseUrl ? `${baseUrl}/api/admin/game-progress-status` : "";
+}
+
+function getGameProgressStatusLabel(status) {
+  return ({
+    completed: "✅ 完了",
+    waiting: "🟡 待機中",
+    not_started: "⚪ 未実行",
+    error: "🔴 エラー",
+    out_of_scope: "◻ 対象外"
+  })[status] || "⚪ 未実行";
+}
+
+function renderAdminGameProgressStatus() {
+  const panel = document.getElementById("adminGameProgressBoard");
+  const content = document.getElementById("adminGameProgressContent");
+  const refresh = document.getElementById("refreshAdminGameProgressButton");
+  if (!panel || !content || !refresh) return;
+
+  const available = state.appMode === "admin" && state.adminAccess.status === "authorized";
+  panel.classList.toggle("hidden", !available);
+  if (!available) return;
+
+  const progress = state.gameProgressStatus;
+  refresh.disabled = progress.isLoading;
+  if (progress.isLoading && !progress.record) {
+    content.innerHTML = '<p class="message">試合進行ステータスを読み込み中です。</p>';
+    return;
+  }
+  if (progress.message) {
+    content.innerHTML = `<p class="message error-message">${escapeHtml(progress.message)}</p>`;
+    return;
+  }
+  if (!progress.record?.gameId || !progress.record.statuses) {
+    content.innerHTML = '<p class="empty-state">現在の管理対象試合はありません</p>';
+    return;
+  }
+
+  const record = progress.record;
+  const game = record.game || {};
+  const rows = [
+    ["targetSelected", "管理対象試合決定"],
+    ["probableStarter", "予告先発取得"],
+    ["predictionOpen", "予想受付中"],
+    ["predictionClosed", "予想受付終了"],
+    ["lineupFetched", "スタメン取得"],
+    ["scoringCompleted", "採点完了"],
+    ["rankingUpdated", "ランキング更新"],
+    ["resultPublished", "結果公開"],
+    ["errorState", "エラー状態"]
+  ];
+  const formatStatusTime = (value, prefix) => value ? `${prefix} ${formatDateTime(value)}` : "";
+  content.innerHTML = `
+    <p class="admin-game-progress-game">${escapeHtml(record.gameLabel || game.matchupLabel || record.gameId)}</p>
+    <p class="admin-game-progress-updated">最終更新: ${escapeHtml(record.updatedAt ? formatDateTime(record.updatedAt) : "未更新")}</p>
+    <dl class="admin-game-progress-list">${rows.map(([key, label]) => {
+      const item = record.statuses[key] || { status: "not_started", detail: "" };
+      const time = item.completedAt ? formatStatusTime(item.completedAt, "完了") : item.scheduledAt ? formatStatusTime(item.scheduledAt, "予定") : "";
+      return `<div class="admin-game-progress-item"><dt>${escapeHtml(label)}</dt><dd><span class="admin-game-progress-status is-${escapeHtml(item.status)}">${escapeHtml(getGameProgressStatusLabel(item.status))}</span><small class="admin-game-progress-detail">${escapeHtml([item.detail, item.errorCode, time].filter(Boolean).join(" / "))}</small></dd></div>`;
+    }).join("")}</dl>
+    ${record.errors?.length ? `<p class="admin-game-progress-errors">直近エラー: ${escapeHtml(record.errors[0].errorCode || record.errors[0].message || "確認が必要です")}</p>` : ""}`;
+}
+
+async function refreshAdminGameProgressStatus({ force = false } = {}) {
+  if (state.appMode !== "admin" || state.adminAccess.status !== "authorized") return;
+  const url = buildAdminGameProgressStatusApiUrl();
+  if (!url || (state.gameProgressStatus.isLoading && !force)) return;
+  const requestId = ++state.gameProgressStatus.requestId;
+  state.gameProgressStatus.isLoading = true;
+  state.gameProgressStatus.message = "";
+  renderAdminGameProgressStatus();
+  try {
+    const response = await fetch(url, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || payload?.code || `HTTP ${response.status}`);
+    if (requestId !== state.gameProgressStatus.requestId) return;
+    state.gameProgressStatus.record = payload;
+  } catch (error) {
+    if (requestId !== state.gameProgressStatus.requestId) return;
+    state.gameProgressStatus.record = null;
+    state.gameProgressStatus.message = error?.message || "試合進行ステータスを取得できませんでした。";
+  } finally {
+    if (requestId === state.gameProgressStatus.requestId) {
+      state.gameProgressStatus.isLoading = false;
+      renderAdminGameProgressStatus();
+    }
+  }
+}
+
+function startGameProgressStatusRefresh() {
+  stopGameProgressStatusRefresh();
+  gameProgressStatusTimerId = setInterval(() => {
+    void refreshAdminGameProgressStatus();
+  }, GAME_PROGRESS_STATUS_REFRESH_MS);
+}
+
+function stopGameProgressStatusRefresh() {
+  if (gameProgressStatusTimerId) {
+    clearInterval(gameProgressStatusTimerId);
+    gameProgressStatusTimerId = null;
   }
 }
 
@@ -6942,6 +7066,7 @@ function renderAll() {
   renderTodayPerfectAchievers();
   renderRankingPanel();
   renderAdminFlow();
+  renderAdminGameProgressStatus();
   renderPredictionDeadlineAdmin();
   renderPicker("prediction");
   renderPicker("actual");

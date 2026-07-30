@@ -48,8 +48,16 @@ export function isScheduleGameUnavailable(game) {
 
 export function getPregameTimeline(gameId) {
   const game = getScheduledGame(gameId);
+  return buildPregameTimeline(game);
+}
+
+// D1で検出した日程も、静的日程と同じ基準時刻から処理できるようにします。
+export function buildPregameTimeline(game) {
   if (!game || isScheduleGameUnavailable(game)) return null;
-  const startAt = parseJstScheduleStart(game);
+  const storedStartAt = game.startAt instanceof Date ? game.startAt : new Date(game.startAt || "");
+  const startAt = !Number.isNaN(storedStartAt.getTime())
+    ? storedStartAt
+    : parseJstScheduleStart(game);
   if (!startAt) return null;
   const offset = (minutes) => new Date(startAt.getTime() - minutes * 60 * 1000);
   return {

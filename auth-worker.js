@@ -4,6 +4,7 @@ import {
   getDueLineupAttemptAt,
   getJstDateString,
   getNoticePollingPlan,
+  buildPregameTimeline,
   getPregameTimeline,
   getPregameTimelines,
   getRosterFetchDecision,
@@ -4142,7 +4143,9 @@ export function deriveGameProgressStatuses({
   scoring = null,
   ranking = null,
   logs = [],
-  now = new Date()
+  now = new Date(),
+  scheduleSource = "",
+  checkedScheduleSources = []
 } = {}) {
   const current = now instanceof Date ? now : new Date(now);
   const startAt = schedule?.startAt ? new Date(schedule.startAt) : null;
@@ -4150,6 +4153,9 @@ export function deriveGameProgressStatuses({
   const lineupAt = schedule?.lineupFetchStartAt ? new Date(schedule.lineupFetchStartAt) : null;
   const releaseAt = schedule?.resultReleaseAt ? new Date(schedule.resultReleaseAt) : null;
   const validDate = (value) => value && !Number.isNaN(value.getTime());
+  const deadlineUnavailableDetail = scheduleSource
+    ? `締切時刻を取得できません（確認済み: ${[...new Set([scheduleSource, ...checkedScheduleSources])].join(", ")}）`
+    : "締切時刻を取得できません";
   const probableError = probableStarter?.status === "error"
     || progressLogHasCurrentError(logs, ["probable_starter_fetch_failed"], ["probable_starter_announced"]);
   const lineupError = lineup?.status === "failed"
@@ -4190,10 +4196,10 @@ export function deriveGameProgressStatuses({
       detail: probableSuccess ? `${probableStarter.home_pitcher_name || probableStarter.homePitcherName || ""} / ${probableStarter.away_pitcher_name || probableStarter.awayPitcherName || ""}`.replace(/^\s*\/\s*|\s*\/\s*$/g, "") : "発表待ち",
       errorCode: probableStarter?.error_code || probableStarter?.errorCode || (probableError ? "PROBABLE_STARTER_FETCH_FAILED" : "")
     }),
-    predictionOpen: !validDate(deadlineAt) ? makeGameProgressStatus("error", { detail: "締切時刻を取得できません", errorCode: "PREDICTION_DEADLINE_UNAVAILABLE" }) : current < deadlineAt
+    predictionOpen: !validDate(deadlineAt) ? makeGameProgressStatus("error", { detail: deadlineUnavailableDetail, errorCode: "PREDICTION_DEADLINE_UNAVAILABLE" }) : current < deadlineAt
       ? makeGameProgressStatus("completed", { detail: "受付中" })
       : makeGameProgressStatus("out_of_scope", { completedAt: deadlineAt.toISOString(), detail: "締切済み" }),
-    predictionClosed: !validDate(deadlineAt) ? makeGameProgressStatus("error", { detail: "締切時刻を取得できません", errorCode: "PREDICTION_DEADLINE_UNAVAILABLE" }) : current >= deadlineAt
+    predictionClosed: !validDate(deadlineAt) ? makeGameProgressStatus("error", { detail: deadlineUnavailableDetail, errorCode: "PREDICTION_DEADLINE_UNAVAILABLE" }) : current >= deadlineAt
       ? makeGameProgressStatus("completed", { completedAt: deadlineAt.toISOString(), detail: "受付終了" })
       : makeGameProgressStatus("waiting", { scheduledAt: deadlineAt.toISOString(), detail: "締切前" }),
     lineupFetched: makeGameProgressStatus(lineupError ? "error" : lineupSuccess ? "completed" : validDate(lineupAt) && current < lineupAt ? "waiting" : "not_started", {
@@ -4231,7 +4237,89 @@ export function deriveGameProgressStatuses({
     detail: latestError ? latestError.message : "エラーはありません",
     errorCode: latestError?.errorCode || ""
   });
-  return { statuses, errors, lastUpdatedAt, game: game || null };
+  return { statuses, errors, lastUpdatedAt, game: game || null, scheduleSource, checkedScheduleSources };
+}
+
+const GAME_PROGRESS_TEAM_LABELS = Object.freeze({
+  fighters: "日本ハム",
+  marines: "ロッテ",
+  buffaloes: "オリックス",
+  hawks: "ソフトバンク",
+  lions: "西武",
+  eagles: "楽天",
+  giants: "巨人",
+  tigers: "阪神",
+  baystars: "DeNA",
+  carp: "広島",
+  dragons: "中日",
+  swallows: "ヤクルト"
+});
+
+function formatGameProgressTeam(value) {
+  const text = String(value || "").trim();
+  return GAME_PROGRESS_TEAM_LABELS[text.toLowerCase()] || text;
+}
+
+export function formatGameProgressLabel(game = {}) {
+  if (String(game.matchupLabel || "").trim()) return String(game.matchupLabel).trim();
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(game.date || ""))
+    ? String(game.date).replace(/-/g, "/")
+    : String(game.date || "");
+  const away = formatGameProgressTeam(game.awayTeam);
+  const home = formatGameProgressTeam(game.homeTeam);
+  return `${date} ${away}${away && home ? " vs " : ""}${home}`.trim();
+}
+
+function scheduleGameFromDetectedRow(row) {
+  if (!row) return null;
+  return {
+    gameId: row.game_id,
+    date: row.game_date,
+    startAt: row.start_at,
+    homeTeam: row.home_team,
+    awayTeam: row.away_team,
+    gameCode: row.game_code || "",
+    venue: row.venue || "",
+    status: row.game_status || "scheduled"
+  };
+}
+
+async function getDetectedScheduleGame(db, gameId) {
+  try {
+    const row = await db.prepare(
+      `SELECT game_id, game_date, start_at, home_team, away_team, game_code, venue, game_status
+         FROM detected_game_schedule WHERE game_id = ?1 LIMIT 1`
+    ).bind(gameId).first();
+    return scheduleGameFromDetectedRow(row);
+  } catch {
+    return null;
+  }
+}
+
+function resolveGameProgressContext({ gameId, target, detectedGame, identity, workflow }) {
+  const candidates = [
+    { source: "prediction_target", game: target, schedule: null },
+    { source: "detected_game_schedule", game: detectedGame, schedule: null },
+    { source: "existing_schedule", game: identity?.game, schedule: identity },
+    { source: "workflow_state", game: workflow?.game, schedule: workflow?.schedule }
+  ];
+  const checkedScheduleSources = candidates.map((candidate) => candidate.source);
+  const resolved = candidates.find((candidate) => {
+    const schedule = candidate.schedule || buildPregameTimeline(candidate.game);
+    return schedule?.startAt instanceof Date && !Number.isNaN(schedule.startAt.getTime())
+      && schedule?.predictionDeadlineAt instanceof Date
+      && !Number.isNaN(schedule.predictionDeadlineAt.getTime());
+  });
+  const sourceGame = resolved?.game || detectedGame || target || identity?.game || workflow?.game || { gameId };
+  const schedule = resolved ? (resolved.schedule || buildPregameTimeline(resolved.game)) : null;
+  const displayGame = {
+    ...sourceGame,
+    gameId,
+    matchupLabel: [workflow?.game, identity?.game, target, detectedGame]
+      .map((game) => String(game?.matchupLabel || "").trim())
+      .find(Boolean) || formatGameProgressLabel(sourceGame)
+  };
+  return { game: displayGame, schedule, scheduleSource: resolved?.source || "none", checkedScheduleSources };
 }
 
 async function handleAdminGameProgressStatus(request, env, cors) {
@@ -4250,6 +4338,15 @@ async function handleAdminGameProgressStatus(request, env, cors) {
   }
   try {
     const record = await getPregameAutomationStatus(env.AUTH_DB, gameId);
+    const detectedGame = await getDetectedScheduleGame(env.AUTH_DB, gameId);
+    const identity = getGameIdentityForPregame(gameId);
+    const context = resolveGameProgressContext({
+      gameId,
+      target: target?.gameId === gameId ? target : null,
+      detectedGame,
+      identity,
+      workflow: record
+    });
     const [probableResult, rankingResult, logResult] = await env.AUTH_DB.batch([
       env.AUTH_DB.prepare("SELECT status, home_pitcher_name, away_pitcher_name, fetched_at, announced_at, error_code FROM probable_starters WHERE game_id = ?1 LIMIT 1").bind(gameId),
       env.AUTH_DB.prepare("SELECT is_ranking_eligible, ranking_eligible_at, publication_status, published_at FROM ranking_games WHERE game_id = ?1 LIMIT 1").bind(gameId),
@@ -4260,17 +4357,28 @@ async function handleAdminGameProgressStatus(request, env, cors) {
     const logs = (logResult?.results || []).map((log) => ({ eventType: log.event_type, status: log.status, occurredAt: log.occurred_at, message: log.message, errorCode: log.error_code || "" }));
     const derived = deriveGameProgressStatuses({
       gameId,
-      game: record.game || target,
-      schedule: record.schedule,
+      game: context.game,
+      schedule: context.schedule,
       probableStarter,
       lineup: record.lineup,
       scoring: record.scoring,
       ranking: rankingRow ? { isRankingEligible: Number(rankingRow.is_ranking_eligible || 0) === 1, rankingEligibleAt: rankingRow.ranking_eligible_at || null, publicationStatus: rankingRow.publication_status || "pending", publishedAt: rankingRow.published_at || null } : null,
-      logs
+      logs,
+      scheduleSource: context.scheduleSource,
+      checkedScheduleSources: context.checkedScheduleSources
     });
-    const game = record.game || target || { gameId };
-    const gameLabel = game.matchupLabel || `${game.date || ""} ${game.awayTeam || ""} vs ${game.homeTeam || ""}`.trim();
-    return jsonResponse({ ok: true, gameId, game, gameLabel, updatedAt: derived.lastUpdatedAt, statuses: derived.statuses, errors: derived.errors }, 200, cors);
+    const game = context.game || { gameId };
+    const gameLabel = formatGameProgressLabel(game);
+    return jsonResponse({
+      ok: true,
+      gameId,
+      game,
+      gameLabel,
+      updatedAt: derived.lastUpdatedAt,
+      statuses: derived.statuses,
+      errors: derived.errors,
+      metadata: { scheduleSource: context.scheduleSource, checkedScheduleSources: context.checkedScheduleSources }
+    }, 200, cors);
   } catch (error) {
     return jsonResponse({ ok: false, code: isPregameSchemaError(error) ? "GAME_PROGRESS_SCHEMA_NOT_READY" : "GAME_PROGRESS_STATUS_FAILED", error: "試合進行ステータスを取得できませんでした。" }, isPregameSchemaError(error) ? 503 : 500, cors);
   }

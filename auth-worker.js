@@ -6,6 +6,7 @@ import {
   getNoticePollingPlan,
   getPregameTimeline,
   getPregameTimelines,
+  getRosterFetchDecision,
   getScheduledGames,
   isScheduleGameUnavailable,
   parseJstScheduleStart,
@@ -60,6 +61,8 @@ const NPB_SERVICE_BINDING_INTERNAL_ORIGIN = "https://npb-fetch.internal";
 const NPB_FETCH_TIMEOUT_MS = 15_000;
 const PROBABLE_STARTER_RETRY_INTERVAL_MS = 60 * 60 * 1000;
 const ROSTER_MINIMUM_PLAYER_COUNT = 20;
+const ROSTER_AUTO_FETCH_RETRY_INTERVAL_MS = 30 * 60 * 1000;
+const ROSTER_AUTO_FETCH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const TEST_GAME_DEFAULT_OPPONENT_CODE = "e";
 const TEST_GAME_DEFAULT_REOPEN_MINUTES = 60;
 const GAME_DAY_NOTICE_SOURCE = "https://npb.jp/announcement/roster/";
@@ -397,9 +400,11 @@ async function runGameWorkflows(env, now) {
   const cancelledTimelines = getScheduledGames()
     .filter((game) => isScheduleGameUnavailable(game))
     .map((game) => ({ game, gameId: game.gameId, gameCode: game.gameCode || "" }));
-  const shared = { notice: null, lineup: null, probableStarter: null, scoring: null, publishing: null, errors: 0, paused: pausedGameIds.size };
+  const shared = { notice: null, roster: null, lineup: null, probableStarter: null, scoring: null, publishing: null, errors: 0, paused: pausedGameIds.size };
   try { shared.notice = await runDueGameDayScheduleJobs(env, now, activeTimelines); }
   catch (error) { shared.errors += 1; console.error(`game-day schedule cron failed: code=${error?.code || "unknown"}`); }
+  try { shared.roster = await runDueRosterCaptureJobs(env, now, activeTimelines); }
+  catch (error) { shared.errors += 1; console.error(`roster cron failed: code=${error?.code || "unknown"}`); }
   try { shared.probableStarter = await runDueProbableStarterJob(env, now); }
   catch (error) { shared.errors += 1; console.error(`probable starter cron failed: code=${error?.code || "unknown"}`); }
   try { shared.lineup = await runDuePregameAutomationJobs(env, now, activeTimelines); }
@@ -2375,7 +2380,7 @@ async function handleAdminScoringRoute(request, env, cors, route) {
     return await handleAdminGameWorkflowPause(env, cors, metadata.gameId, false);
   }
   if (route.action === "pregame-automation/run-roster" && request.method === "POST") {
-    return await executePregameTool(env, cors, metadata.gameId, "run-roster", () => captureGameRosterSnapshot(env, metadata.gameId, new Date(), { force: true }));
+    return await executePregameTool(env, cors, metadata.gameId, "run-roster", () => captureGameRosterSnapshot(env, metadata.gameId, new Date(), { force: true, source: "admin" }));
   }
   if (route.action === "pregame-automation/run-lineup" && request.method === "POST") {
     return await executePregameTool(env, cors, metadata.gameId, "run-lineup", () => captureOfficialLineup(env, metadata.gameId, new Date(), { force: true }));
@@ -2964,6 +2969,73 @@ async function fixDueGameRosters(env, timelines, now) {
   return { fixed, failed };
 }
 
+function isNormalRosterTimeline(timeline) {
+  const game = timeline?.game || {};
+  const gameType = String(game.type || game.gameType || "").toLowerCase();
+  const gameId = String(timeline?.gameId || game.gameId || "").toLowerCase();
+  return game.isTestGame !== true
+    && game.isAutoScoringTest !== true
+    && game.testGame !== true
+    && !["test", "auto_scoring_test", "auto-scoring-test"].includes(gameType)
+    && !gameId.includes("auto-scoring-test");
+}
+
+async function runDueRosterCaptureJobs(env, now, timelines = getPregameTimelines()) {
+  const target = await getServerPredictionTarget(env.AUTH_DB, now);
+  const timeline = (Array.isArray(timelines) ? timelines : [])
+    .find((item) => isNormalRosterTimeline(item) && item.gameId === target?.gameId);
+  if (!timeline || now >= timeline.startAt) return { due: false, status: "idle", gameId: timeline?.gameId || "" };
+
+  await ensurePregameAutomationRow(env.AUTH_DB, timeline, now);
+  const storedState = await readRosterFetchState(env.AUTH_DB, timeline.gameId) || {};
+  const previousSnapshot = await readRosterSnapshot(env.AUTH_DB, timeline.gameId);
+  const decisionState = {
+    lastSuccessfulFetchAt: storedState.last_successful_roster_fetch_at || previousSnapshot.capturedAt,
+    nextCheckAt: storedState.roster_next_check_at,
+    lastPregameCheckGameId: storedState.last_pregame_check_game_id
+  };
+  const decision = getRosterFetchDecision(timeline, decisionState, now);
+  if (!decision.due) return { due: false, status: decision.reason, gameId: timeline.gameId };
+
+  try {
+    const result = await captureGameRosterSnapshot(env, timeline.gameId, now, {
+      force: true,
+      source: "cron",
+      pregame: decision.kind === "pregame"
+    });
+    if (result.status !== "captured") return { due: true, status: result.status, gameId: timeline.gameId };
+
+    const changed = rosterFingerprint(previousSnapshot.players) !== rosterFingerprint(result.roster);
+    if (changed || !previousSnapshot.players.length) {
+      const message = previousSnapshot.players.length ? "ロースターに変更がありました。" : "ロースターを初回取得しました。";
+      await recordWorkflowLog(env.AUTH_DB, {
+        eventType: "roster_fetch",
+        status: "success",
+        gameId: timeline.gameId,
+        occurredAt: now,
+        message,
+        metadata: { source: "cron", kind: decision.kind, playerCount: result.playerCount, changed },
+        source: "cron"
+      });
+      console.log(`[GAME_WORKFLOW] gameId=${timeline.gameId} step=roster action=executed status=success source=cron changed=${changed}`);
+    }
+    return { due: true, status: "success", gameId: timeline.gameId, changed };
+  } catch (error) {
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "roster_fetch",
+      status: "error",
+      gameId: timeline.gameId,
+      occurredAt: now,
+      message: "ロースター取得に失敗しました。",
+      errorCode: String(error?.code || "ROSTER_FETCH_FAILED"),
+      metadata: { source: "cron", kind: decision.kind, retryAfterMinutes: 30 },
+      source: "cron"
+    });
+    console.warn(`[GAME_WORKFLOW] gameId=${timeline.gameId} step=roster action=executed status=failed source=cron code=${error?.code || "ROSTER_FETCH_FAILED"}`);
+    return { due: true, status: "error", gameId: timeline.gameId, errorCode: String(error?.code || "ROSTER_FETCH_FAILED") };
+  }
+}
+
 async function handleAdminAutomationHealth(request, env, cors) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) return access.response;
@@ -3281,7 +3353,67 @@ async function ensurePregameAutomationRow(db, identity, now) {
   ).bind(identity.gameId, identity.game.date, identity.startAt.toISOString(), nowIso).run();
 }
 
-async function captureGameRosterSnapshot(env, gameId, now, { force = false } = {}) {
+async function readRosterFetchState(db, gameId) {
+  try {
+    return await db.prepare(
+      `SELECT last_successful_roster_fetch_at, roster_next_check_at, last_pregame_check_game_id,
+              last_roster_attempt_at, last_roster_error_code, last_roster_fetch_source
+         FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1`
+    ).bind(gameId).first();
+  } catch (error) {
+    if (isPregameSchemaError(error)) return null;
+    throw error;
+  }
+}
+
+async function updateRosterFetchState(db, gameId, now, { source = "cron", success = false, pregame = false, errorCode = "" } = {}) {
+  const nowIso = now.toISOString();
+  const nextCheckAt = success && !pregame
+    ? new Date(now.getTime() + ROSTER_AUTO_FETCH_INTERVAL_MS).toISOString()
+    : success
+      ? null
+      : new Date(now.getTime() + ROSTER_AUTO_FETCH_RETRY_INTERVAL_MS).toISOString();
+  try {
+    await db.prepare(
+      `UPDATE game_pregame_automation
+          SET last_roster_attempt_at = ?1,
+              last_successful_roster_fetch_at = CASE WHEN ?2 THEN ?1 ELSE last_successful_roster_fetch_at END,
+              roster_next_check_at = ?3,
+              last_pregame_check_game_id = CASE WHEN ?4 THEN game_id ELSE last_pregame_check_game_id END,
+              last_roster_error_code = ?5,
+              last_roster_fetch_source = ?6,
+              updated_at = ?1
+        WHERE game_id = ?7`
+    ).bind(nowIso, success ? 1 : 0, nextCheckAt, pregame ? 1 : 0, errorCode || null, source === "admin" ? "admin" : "cron", gameId).run();
+  } catch (error) {
+    if (isPregameSchemaError(error)) {
+      console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=roster state=record status=failed code=ROSTER_STATE_SCHEMA_NOT_READY`);
+      return false;
+    }
+    throw error;
+  }
+  return true;
+}
+
+async function readRosterSnapshot(db, gameId) {
+  const row = await db.prepare(
+    "SELECT roster_json, captured_at FROM game_roster_snapshots WHERE game_id = ?1 LIMIT 1"
+  ).bind(gameId).first();
+  return {
+    capturedAt: row?.captured_at || "",
+    players: parseJsonArray(row?.roster_json)
+  };
+}
+
+function rosterFingerprint(players) {
+  return JSON.stringify((Array.isArray(players) ? players : []).map((player) => ({
+    position: String(player?.position || ""),
+    number: String(player?.number || ""),
+    name: String(player?.name || "")
+  })).sort((left, right) => `${left.number}:${left.name}:${left.position}`.localeCompare(`${right.number}:${right.name}:${right.position}`)));
+}
+
+async function captureGameRosterSnapshot(env, gameId, now, { force = false, source = "admin", pregame = false } = {}) {
   const identity = getGameIdentityForPregame(gameId);
   if (!identity) throw createPregameError("SCHEDULE_UNAVAILABLE", "試合日程を確認できません。");
   await ensurePregameAutomationRow(env.AUTH_DB, identity, now);
@@ -3305,8 +3437,10 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false } = {
         `UPDATE game_pregame_automation SET roster_status = 'captured', roster_captured_at = ?1, last_error_code = NULL, last_error_message = NULL, updated_at = ?1 WHERE game_id = ?2`
       ).bind(capturedAt, gameId)
     ]);
-    return { status: "captured", playerCount: roster.length, capturedAt };
+    await updateRosterFetchState(env.AUTH_DB, gameId, now, { source, success: true, pregame });
+    return { status: "captured", playerCount: roster.length, capturedAt, roster };
   } catch (error) {
+    await updateRosterFetchState(env.AUTH_DB, gameId, now, { source, errorCode: String(error?.code || "ROSTER_FETCH_FAILED") });
     try {
       await recordPregameError(env.AUTH_DB, gameId, "roster", error, now);
     } catch (recordError) {
@@ -4019,7 +4153,18 @@ async function getPregameAutomationStatus(db, gameId) {
       startAt: identity.startAt.toISOString(), rosterCaptureAt: identity.rosterCaptureAt.toISOString(), predictionDeadlineAt: identity.predictionDeadlineAt.toISOString(),
       lineupFetchStartAt: identity.lineupFetchStartAt.toISOString(), finalLineupFetchAt: identity.finalLineupFetchAt.toISOString(), resultReleaseAt: identity.resultReleaseAt.toISOString()
     } : null,
-    roster: snapshot?.results?.[0] ? { status: "captured", capturedAt: snapshot.results[0].captured_at, playerCount: Number(snapshot.results[0].player_count), fixedAt: jobRow?.roster_fixed_at || notice?.roster_fixed_at || null } : { status: jobRow?.roster_status || "pending", fixedAt: jobRow?.roster_fixed_at || notice?.roster_fixed_at || null },
+    roster: {
+      status: snapshot?.results?.[0] ? "captured" : (jobRow?.roster_status || "pending"),
+      capturedAt: snapshot?.results?.[0]?.captured_at || null,
+      playerCount: snapshot?.results?.[0] ? Number(snapshot.results[0].player_count) : 0,
+      fixedAt: jobRow?.roster_fixed_at || notice?.roster_fixed_at || null,
+      lastSuccessfulFetchAt: jobRow?.last_successful_roster_fetch_at || null,
+      nextCheckAt: jobRow?.roster_next_check_at || null,
+      lastPregameCheckGameId: jobRow?.last_pregame_check_game_id || null,
+      lastAttemptAt: jobRow?.last_roster_attempt_at || null,
+      lastErrorCode: jobRow?.last_roster_error_code || null,
+      fetchSource: jobRow?.last_roster_fetch_source || null
+    },
     lineup: lineupRow ? {
       status: "captured", source: lineupRow.lineup_source, detectedAt: lineupRow.lineup_detected_at,
       finalLineupFallbackUsed: Number(jobRow?.final_lineup_fallback_used || 0) === 1,

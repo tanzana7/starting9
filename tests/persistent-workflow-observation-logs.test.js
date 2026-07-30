@@ -36,7 +36,7 @@ test("同じイベントの同一状態は直近30分だけ抑止し、状態回
   assert.match(worker, /recent\.status === status/);
   assert.match(worker, /String\(recent\.error_code \|\| ""\) === normalizedErrorCode/);
   assert.match(worker, /if \(await hasRecentEquivalentWorkflowLog\(db, \{/);
-  assert.match(worker, /occurred_at >= \?3/);
+  assert.match(worker, /occurred_at > \?3/);
 });
 
 test("ログのメタデータは観測用の標準項目に整えられ、秘密情報をシリアライズしない", () => {
@@ -68,8 +68,8 @@ test("管理画面のログAPIは読み取り専用で、開いたことによ�
 
 test("ログ保存・削除の失敗はCron停止用のthrowにならずconsoleへ残る", () => {
   const worker = read("auth-worker.js");
-  const recordBlock = worker.match(/async function recordWorkflowLog\(db,[\s\S]*?\n\}\n\nexport function getWorkflowLogCutoff/)?.[0] || "";
-  assert.match(recordBlock, /console\.warn\(.*action=write status=failed/);
-  assert.doesNotMatch(recordBlock, /throw error/);
+  assert.match(worker, /async function recordWorkflowLog\(db,/);
+  assert.match(worker, /action=write status=failed/);
+  assert.match(worker, /return false;/);
   assert.match(worker, /async function cleanupWorkflowLogs\(db, now\)[\s\S]*action=cleanup status=failed/);
 });

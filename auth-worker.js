@@ -1,6 +1,7 @@
 import { getPredictionDeadlineStatus } from "./prediction-deadline.js";
 import {
   getDueFinalLineupAttemptAt,
+  getFinalLineupRetryDeadline,
   getDueLineupAttemptAt,
   getJstDateString,
   getNoticePollingPlan,
@@ -9,6 +10,7 @@ import {
   getPregameTimelines,
   getRosterFetchDecision,
   getScheduledGames,
+  isFinalLineupRetryExpired,
   isScheduleGameUnavailable,
   parseJstScheduleStart,
   setDetectedScheduleGames
@@ -3638,15 +3640,16 @@ async function hasRecentEquivalentWorkflowLog(db, { eventType, status, gameId, e
     const normalizedEventType = String(eventType || "workflow").slice(0, 80);
     const normalizedErrorCode = String(errorCode || "").slice(0, 80);
     const expectedDate = String(metadata?.gameDate || metadata?.date || "");
+    // 期限ちょうどは「30分以上経過」として再通知を許可するため、比較は厳密な > にします。
     const rows = gameId
       ? await db.prepare(
         `SELECT status, error_code, metadata FROM game_workflow_logs
-           WHERE event_type = ?1 AND game_id = ?2 AND occurred_at >= ?3
+           WHERE event_type = ?1 AND game_id = ?2 AND occurred_at > ?3
            ORDER BY occurred_at DESC LIMIT 50`
       ).bind(normalizedEventType, gameId, since).all()
       : await db.prepare(
         `SELECT status, error_code, metadata FROM game_workflow_logs
-           WHERE event_type = ?1 AND game_id IS NULL AND occurred_at >= ?2
+           WHERE event_type = ?1 AND game_id IS NULL AND occurred_at > ?2
            ORDER BY occurred_at DESC LIMIT 50`
       ).bind(normalizedEventType, since).all();
     const recent = (rows.results || []).find((row) => {
@@ -4204,6 +4207,74 @@ async function recordPregameLineupDeferred(db, gameId, identity, now) {
   ).bind(now.toISOString(), next <= identity.startAt ? next.toISOString() : null, gameId).run();
 }
 
+const SCORING_RETRY_EXPIRED_CODE = "SCORING_RETRY_EXPIRED";
+
+async function recordScoringRetryExpiredOnce(db, timeline, now, previousErrorCode = "") {
+  const gameId = String(timeline?.gameId || "");
+  const retryDeadlineAt = getFinalLineupRetryDeadline(timeline);
+  if (!gameId || !retryDeadlineAt) return false;
+  try {
+    const state = await db.prepare(
+      "SELECT last_error_code FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1"
+    ).bind(gameId).first();
+    if (state?.last_error_code === SCORING_RETRY_EXPIRED_CODE) return false;
+    const existingLog = await db.prepare(
+      `SELECT id FROM game_workflow_logs
+         WHERE event_type = 'scoring_retry_expired'
+           AND game_id = ?1
+           AND status = 'warning'
+           AND error_code = ?2
+         LIMIT 1`
+    ).bind(gameId, SCORING_RETRY_EXPIRED_CODE).first();
+    if (existingLog) {
+      await db.prepare(
+        `UPDATE game_pregame_automation
+            SET last_error_code = ?1, next_lineup_attempt_at = NULL, updated_at = ?2
+          WHERE game_id = ?3`
+      ).bind(SCORING_RETRY_EXPIRED_CODE, now.toISOString(), gameId).run();
+      return false;
+    }
+    const claim = await db.prepare(
+      `UPDATE game_pregame_automation
+          SET last_error_code = ?1,
+              last_error_message = ?2,
+              next_lineup_attempt_at = NULL,
+              updated_at = ?3
+        WHERE game_id = ?4
+          AND (last_error_code IS NULL OR last_error_code <> ?1)`
+    ).bind(
+      SCORING_RETRY_EXPIRED_CODE,
+      "最終スタメンを取得できないまま再試行期限を迎えました。",
+      now.toISOString(),
+      gameId
+    ).run();
+    if (Number(claim?.meta?.changes || 0) !== 1) return false;
+    await recordWorkflowLog(db, {
+      eventType: "scoring_retry_expired",
+      status: "warning",
+      gameId,
+      occurredAt: now,
+      message: "最終スタメンを取得できないまま再試行期限を迎えたため、自動採点を終了しました。",
+      errorCode: SCORING_RETRY_EXPIRED_CODE,
+      metadata: {
+        processName: "scoring_retry",
+        gameId,
+        gameDate: timeline?.game?.date || timeline?.date || null,
+        scheduledStartAt: timeline.startAt?.toISOString?.() || null,
+        retryDeadlineAt: retryDeadlineAt.toISOString(),
+        attemptedAt: now.toISOString(),
+        previousErrorCode: String(previousErrorCode || ""),
+        reason: "final_lineup_retry_window_expired"
+      },
+      source: "cron"
+    });
+    return true;
+  } catch (error) {
+    console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=scoring_retry action=expire status=failed code=${error?.code || "SCORING_RETRY_EXPIRY_FAILED"}`);
+    return false;
+  }
+}
+
 async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimelines()) {
   const summary = { lineupCaptured: 0, provisionalCaptured: 0, finalLineupCaptured: 0, finalLineupFallbackUsed: 0, lineupAwaitingApproval: 0, lineupFailed: 0, lineupRetryWait: 0 };
   for (const timeline of timelines) {
@@ -4215,8 +4286,13 @@ async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimel
       const isFinalPhase = now >= finalLineupFetchAt;
       const dueAt = isFinalPhase ? getDueFinalLineupAttemptAt(timeline, now) : getDueLineupAttemptAt(timeline, now);
       if (!dueAt) continue;
-      const job = await env.AUTH_DB.prepare("SELECT last_lineup_attempt_at, final_lineup_attempt_at FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
+      const job = await env.AUTH_DB.prepare("SELECT last_lineup_attempt_at, final_lineup_attempt_at, last_error_code FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
       const lastAttemptAt = isFinalPhase ? job?.final_lineup_attempt_at : job?.last_lineup_attempt_at;
+      if (isFinalPhase && isFinalLineupRetryExpired(timeline, now)) {
+        if (!job) await ensurePregameAutomationRow(env.AUTH_DB, timeline, now);
+        await recordScoringRetryExpiredOnce(env.AUTH_DB, timeline, now, job?.last_error_code || "LINEUP_FETCH_FAILED");
+        continue;
+      }
       if (lastAttemptAt && new Date(lastAttemptAt) >= dueAt) {
         // 同じ10分枠での待機を毎分出力しないため、枠の開始時だけ記録します。
         if (now.getTime() === dueAt.getTime()) {
@@ -4299,18 +4375,6 @@ async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimel
         metadata: { phase: isFinalPhase ? "final" : "provisional", fallbackUsed: false },
         source: "cron"
       });
-      if (isFinalPhase) {
-        await recordWorkflowLog(env.AUTH_DB, {
-          eventType: "scoring_skipped",
-          status: "warning",
-          gameId,
-          occurredAt: now,
-          message: "有効なスタメンがないため採点を見送りました。",
-          errorCode: "LINEUP_REQUIRED",
-          metadata: { reason: "no_valid_lineup" },
-          source: "cron"
-        });
-      }
       console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=${isFinalPhase ? "final_lineup" : "lineup"} action=executed status=failed code=${error?.code || "unknown"} retryable=true`);
     }
   }

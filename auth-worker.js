@@ -54,10 +54,11 @@ const AUTOMATION_HEALTH_STATE_KEY = "cron";
 const AUTO_APPROVE_SETTING_KEY = "auto_approve_enabled";
 const AUTOMATION_SCHEDULE_LOOKAHEAD_DAYS = 1;
 const AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const WORKFLOW_LOG_RETENTION_DAYS = 90;
+const WORKFLOW_LOG_RETENTION_HOURS = 48;
 const WORKFLOW_LOG_DEFAULT_LIMIT = 50;
 const WORKFLOW_LOG_MAX_LIMIT = 200;
-const WORKFLOW_LOG_CLEANUP_KEY = "workflow_logs_90d";
+const WORKFLOW_LOG_DEDUPE_WINDOW_MS = 30 * 60 * 1000;
+const WORKFLOW_LOG_CLEANUP_KEY = "workflow_logs_48h";
 const NPB_SERVICE_BINDING_INTERNAL_ORIGIN = "https://npb-fetch.internal";
 const NPB_FETCH_TIMEOUT_MS = 15_000;
 const PROBABLE_STARTER_RETRY_INTERVAL_MS = 60 * 60 * 1000;
@@ -311,6 +312,7 @@ export async function runScheduledGameAutomation(env, now) {
     await updatePredictionTargetState(env.AUTH_DB, scheduleSync.predictionTarget, now);
   } catch (error) {
     console.warn(`[GAME_WORKFLOW] step=target action=evaluated status=failed code=${error?.code || "PREDICTION_TARGET_FAILED"}`);
+    await recordCronStepFailure(env.AUTH_DB, "prediction_target", now, error);
   }
   const workflowResult = await runGameWorkflows(env, now);
   const summary = summarizeGameAutomationRun({
@@ -389,6 +391,27 @@ async function recordAutomationHealth(db, { now, summary, error = null }) {
   }
 }
 
+async function recordCronStepFailure(db, processName, now, error) {
+  const occurredAt = now instanceof Date ? now : new Date(now);
+  try {
+    await recordWorkflowLog(db, {
+      eventType: "cron_step_failed",
+      status: "error",
+      occurredAt,
+      message: `${String(processName || "workflow")}の自動処理に失敗しました。`,
+      errorCode: String(error?.code || "CRON_STEP_FAILED"),
+      metadata: {
+        processName: String(processName || "workflow"),
+        attemptedAt: Number.isNaN(occurredAt.getTime()) ? null : occurredAt.toISOString(),
+        source: "cron"
+      },
+      source: "cron"
+    });
+  } catch (logError) {
+    console.error(`[GAME_WORKFLOW_LOG] action=cron_step_failure status=failed code=${logError?.code || "WORKFLOW_LOG_WRITE_FAILED"}`);
+  }
+}
+
 async function runGameWorkflows(env, now) {
   const timelines = getPregameTimelines();
   const pausedGameIds = await getPausedWorkflowGameIds(env.AUTH_DB);
@@ -398,19 +421,19 @@ async function runGameWorkflows(env, now) {
     .map((game) => ({ game, gameId: game.gameId, gameCode: game.gameCode || "" }));
   const shared = { notice: null, roster: null, lineup: null, probableStarter: null, scoring: null, publishing: null, errors: 0, paused: pausedGameIds.size };
   try { shared.notice = await runDueGameDayScheduleJobs(env, now, activeTimelines); }
-  catch (error) { shared.errors += 1; console.error(`game-day schedule cron failed: code=${error?.code || "unknown"}`); }
+  catch (error) { shared.errors += 1; await recordCronStepFailure(env.AUTH_DB, "game_day_schedule", now, error); console.error(`game-day schedule cron failed: code=${error?.code || "unknown"}`); }
   try { shared.roster = await runDueRosterCaptureJobs(env, now, activeTimelines); }
-  catch (error) { shared.errors += 1; console.error(`roster cron failed: code=${error?.code || "unknown"}`); }
+  catch (error) { shared.errors += 1; await recordCronStepFailure(env.AUTH_DB, "roster", now, error); console.error(`roster cron failed: code=${error?.code || "unknown"}`); }
   try { shared.probableStarter = await runDueProbableStarterJob(env, now); }
-  catch (error) { shared.errors += 1; console.error(`probable starter cron failed: code=${error?.code || "unknown"}`); }
+  catch (error) { shared.errors += 1; await recordCronStepFailure(env.AUTH_DB, "probable_starter", now, error); console.error(`probable starter cron failed: code=${error?.code || "unknown"}`); }
   try { shared.lineup = await runDuePregameAutomationJobs(env, now, activeTimelines); }
-  catch (error) { shared.errors += 1; console.error(`pregame automation cron failed: code=${error?.code || "unknown"}`); }
+  catch (error) { shared.errors += 1; await recordCronStepFailure(env.AUTH_DB, "lineup", now, error); console.error(`pregame automation cron failed: code=${error?.code || "unknown"}`); }
   try { shared.scoring = await runDueAutoScoringJobs(env, now, pausedGameIds); }
-  catch (error) { shared.errors += 1; console.error(`auto scoring cron failed: code=${error?.code || "unknown"}`); }
+  catch (error) { shared.errors += 1; await recordCronStepFailure(env.AUTH_DB, "scoring", now, error); console.error(`auto scoring cron failed: code=${error?.code || "unknown"}`); }
   try { shared.autoScoringTests = await runDueAutoScoringTestJobs(env, now); }
   catch (error) { shared.errors += 1; console.error(`auto scoring test cron failed: code=${error?.code || "unknown"}`); }
   try { shared.publishing = await runDueGameDayPublicationJobs(env, now, activeTimelines); }
-  catch (error) { shared.errors += 1; console.error(`game-day publication cron failed: code=${error?.code || "unknown"}`); }
+  catch (error) { shared.errors += 1; await recordCronStepFailure(env.AUTH_DB, "publication", now, error); console.error(`game-day publication cron failed: code=${error?.code || "unknown"}`); }
   const workflows = [...timelines, ...cancelledTimelines].map((timeline) => runGameWorkflow(timeline, now, pausedGameIds.has(timeline.gameId)));
   return { shared, workflows };
 }
@@ -3054,6 +3077,16 @@ async function fixDueGameRosters(env, timelines, now) {
     } catch (error) {
       failed += 1;
       await recordGameWorkflowOutcome(env.AUTH_DB, timeline.gameId, "close_predictions", "failed", error, now);
+      await recordWorkflowLog(env.AUTH_DB, {
+        eventType: "prediction_close_failed",
+        status: "error",
+        gameId: timeline.gameId,
+        occurredAt: now,
+        message: "予想受付終了処理に失敗しました。",
+        errorCode: String(error?.code || "PREDICTION_CLOSE_FAILED"),
+        metadata: { processName: "close_predictions", scheduledAt: timeline.predictionDeadlineAt.toISOString() },
+        source: "cron"
+      });
       console.warn(`[GAME_WORKFLOW] gameId=${timeline.gameId} step=close_predictions action=executed status=failed code=${error?.code || "ROSTER_FIX_FAILED"}`);
     }
   }
@@ -3589,6 +3622,49 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
 const WORKFLOW_LOG_STATUSES = new Set(["success", "warning", "error", "info"]);
 const WORKFLOW_LOG_SOURCES = new Set(["cron", "admin", "system"]);
 
+function parseWorkflowLogMetadata(value) {
+  if (!value || typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+async function hasRecentEquivalentWorkflowLog(db, { eventType, status, gameId, errorCode, metadata, occurred }) {
+  try {
+    const since = new Date(occurred.getTime() - WORKFLOW_LOG_DEDUPE_WINDOW_MS).toISOString();
+    const normalizedEventType = String(eventType || "workflow").slice(0, 80);
+    const normalizedErrorCode = String(errorCode || "").slice(0, 80);
+    const expectedDate = String(metadata?.gameDate || metadata?.date || "");
+    const rows = gameId
+      ? await db.prepare(
+        `SELECT status, error_code, metadata FROM game_workflow_logs
+           WHERE event_type = ?1 AND game_id = ?2 AND occurred_at >= ?3
+           ORDER BY occurred_at DESC LIMIT 50`
+      ).bind(normalizedEventType, gameId, since).all()
+      : await db.prepare(
+        `SELECT status, error_code, metadata FROM game_workflow_logs
+           WHERE event_type = ?1 AND game_id IS NULL AND occurred_at >= ?2
+           ORDER BY occurred_at DESC LIMIT 50`
+      ).bind(normalizedEventType, since).all();
+    const recent = (rows.results || []).find((row) => {
+      if (!gameId && expectedDate) {
+        const rowMetadata = parseWorkflowLogMetadata(row.metadata);
+        return String(rowMetadata.gameDate || rowMetadata.date || "") === expectedDate;
+      }
+      return true;
+    });
+    return Boolean(recent)
+      && recent.status === status
+      && String(recent.error_code || "") === normalizedErrorCode;
+  } catch (error) {
+    console.warn(`[GAME_WORKFLOW_LOG] action=dedupe status=failed code=${error?.code || "WORKFLOW_LOG_DEDUPE_READ_FAILED"}`);
+    return false;
+  }
+}
+
 function serializeWorkflowLogMetadata(metadata) {
   const source = metadata && typeof metadata === "object" ? metadata : {};
   try {
@@ -3621,19 +3697,40 @@ async function recordWorkflowLog(db, {
     if (Number.isNaN(occurred.getTime())) return null;
     const normalizedStatus = WORKFLOW_LOG_STATUSES.has(status) ? status : "info";
     const normalizedSource = WORKFLOW_LOG_SOURCES.has(source) ? source : "system";
+    const inputMetadata = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : {};
+    const safeMetadata = {
+      ...inputMetadata,
+      processName: inputMetadata.processName || String(eventType || "workflow").slice(0, 80),
+      gameId: inputMetadata.gameId || normalizedGameId || null,
+      gameDate: inputMetadata.gameDate || inputMetadata.date || null,
+      attemptedAt: inputMetadata.attemptedAt || occurred.toISOString(),
+      completedAt: inputMetadata.completedAt || null,
+      durationMs: inputMetadata.durationMs ?? null,
+      source: inputMetadata.source || normalizedSource
+    };
+    const normalizedEventType = String(eventType || "workflow").slice(0, 80);
+    const normalizedErrorCode = String(errorCode || "").slice(0, 80);
+    if (await hasRecentEquivalentWorkflowLog(db, {
+      eventType: normalizedEventType,
+      status: normalizedStatus,
+      gameId: normalizedGameId,
+      errorCode: normalizedErrorCode,
+      metadata: safeMetadata,
+      occurred
+    })) return null;
     await db.prepare(
       `INSERT INTO game_workflow_logs
          (id, event_type, status, game_id, occurred_at, message, error_code, metadata, source)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
     ).bind(
       randomToken(24),
-      String(eventType || "workflow").slice(0, 80),
+      normalizedEventType,
       normalizedStatus,
       normalizedGameId || null,
       occurred.toISOString(),
       String(message || "").slice(0, 300),
-      String(errorCode || "").slice(0, 80) || null,
-      serializeWorkflowLogMetadata(metadata),
+      normalizedErrorCode || null,
+      serializeWorkflowLogMetadata(safeMetadata),
       normalizedSource
     ).run();
     return true;
@@ -3641,6 +3738,12 @@ async function recordWorkflowLog(db, {
     console.warn(`[GAME_WORKFLOW_LOG] action=write status=failed code=${error?.code || "WORKFLOW_LOG_WRITE_FAILED"}`);
     return false;
   }
+}
+
+export function getWorkflowLogCutoff(now) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(current.getTime())) return null;
+  return new Date(current.getTime() - WORKFLOW_LOG_RETENTION_HOURS * 60 * 60 * 1000).toISOString();
 }
 
 async function cleanupWorkflowLogs(db, now) {
@@ -3651,7 +3754,8 @@ async function cleanupWorkflowLogs(db, now) {
       "SELECT last_cleanup_at FROM game_workflow_log_maintenance WHERE maintenance_key = ?1 LIMIT 1"
     ).bind(WORKFLOW_LOG_CLEANUP_KEY).first();
     if (maintenance?.last_cleanup_at && getJstDateString(new Date(maintenance.last_cleanup_at)) === today) return;
-    const cutoff = new Date(current.getTime() - WORKFLOW_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    const cutoff = getWorkflowLogCutoff(current);
+    if (!cutoff) return;
     await db.batch([
       db.prepare("DELETE FROM game_workflow_logs WHERE occurred_at < ?1").bind(cutoff),
       db.prepare(
@@ -3662,6 +3766,15 @@ async function cleanupWorkflowLogs(db, now) {
     ]);
   } catch (error) {
     console.warn(`[GAME_WORKFLOW_LOG] action=cleanup status=failed code=${error?.code || "WORKFLOW_LOG_CLEANUP_FAILED"}`);
+    await recordWorkflowLog(db, {
+      eventType: "workflow_log_cleanup_failed",
+      status: "warning",
+      occurredAt: now,
+      message: "試合進行ログの削除に失敗しました。",
+      errorCode: String(error?.code || "WORKFLOW_LOG_CLEANUP_FAILED"),
+      metadata: { processName: "workflow_log_cleanup" },
+      source: "system"
+    });
   }
 }
 

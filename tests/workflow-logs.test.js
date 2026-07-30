@@ -8,7 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 const authWorkerUrl = pathToFileURL(path.join(root, "auth-worker.js")).href;
 
-test("通常試合の進行ログmigrationは必要な項目・索引・90日cleanup状態を持つ", () => {
+test("通常試合の進行ログmigrationは必要な項目・索引・48時間cleanup状態を持つ", () => {
   const migration = read("migrations/0019_game_workflow_logs.sql");
   assert.match(migration, /CREATE TABLE IF NOT EXISTS game_workflow_logs/);
   for (const column of ["id", "event_type", "status", "game_id", "occurred_at", "message", "error_code", "metadata", "source"]) {
@@ -18,7 +18,7 @@ test("通常試合の進行ログmigrationは必要な項目・索引・90日cle
   assert.match(migration, /source IN \('cron', 'admin', 'system'\)/);
   assert.match(migration, /idx_game_workflow_logs_occurred_at/);
   assert.match(migration, /game_workflow_log_maintenance/);
-  assert.match(read("auth-worker.js"), /WORKFLOW_LOG_RETENTION_DAYS = 90/);
+  assert.match(read("auth-worker.js"), /WORKFLOW_LOG_RETENTION_HOURS = 48/);
 });
 
 test("ログAPIは管理者限定で、絞り込み・新しい順・最大200件を適用する", () => {

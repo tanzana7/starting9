@@ -4124,3 +4124,351 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 }
+
+/* 通常画面: 野球のオーダー表として読める、情報優先のレイアウト */
+body:not(:has(.app-layout.is-admin-screen)) {
+  background: #f3f5f7;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .header-inner {
+  padding-top: 22px;
+  padding-bottom: 26px;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .header-logo {
+  margin-bottom: 12px;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .beta-panel {
+  margin-bottom: 12px;
+  border-radius: 3px;
+  box-shadow: none;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .game-info-display {
+  width: 100%;
+  margin: 0 0 10px;
+  padding: 12px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 3px;
+  color: #ffffff;
+  background: #0b2c5c;
+  font-size: 1.04rem;
+  font-weight: 900;
+  letter-spacing: 0.01em;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .probable-starter-card {
+  width: 100%;
+  min-height: 0;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 3px;
+  box-shadow: none;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .probable-starter-team {
+  padding: 7px 9px;
+  border-radius: 2px;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .hero-panel {
+  margin-top: 12px;
+  border-radius: 3px;
+  box-shadow: none;
+}
+
+.app-layout:not(.is-admin-screen) {
+  gap: 22px;
+  padding-top: 20px;
+}
+
+.app-layout:not(.is-admin-screen) > .card {
+  border-color: #d6dde5;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(21, 32, 51, 0.045);
+}
+
+.app-layout:not(.is-admin-screen) > .how-to-panel {
+  border-color: #d6dde5;
+  border-left: 3px solid var(--fighters-blue);
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.app-layout:not(.is-admin-screen) .how-to-steps {
+  gap: 0;
+  border-top: 1px solid #e1e6eb;
+}
+
+.app-layout:not(.is-admin-screen) .how-to-steps li {
+  border: 0;
+  border-bottom: 1px solid #e1e6eb;
+  border-radius: 0;
+  background: transparent;
+}
+
+.app-layout:not(.is-admin-screen) .how-to-steps li + li {
+  border-left: 1px solid #e1e6eb;
+}
+
+.app-layout:not(.is-admin-screen) .lineup-card {
+  border-top: 3px solid var(--fighters-deep-blue);
+}
+
+.app-layout:not(.is-admin-screen) .lineup-builder {
+  grid-template-columns: minmax(280px, 0.9fr) minmax(360px, 1.1fr);
+  gap: 24px;
+}
+
+.app-layout:not(.is-admin-screen) .lineup-panel,
+.app-layout:not(.is-admin-screen) .player-panel {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #ffffff;
+}
+
+.app-layout:not(.is-admin-screen) .player-panel {
+  padding-left: 20px;
+  border-left: 1px solid #dfe5eb;
+}
+
+.app-layout:not(.is-admin-screen) .lineup-panel h3,
+.app-layout:not(.is-admin-screen) .player-list-heading {
+  margin-bottom: 10px;
+}
+
+.app-layout:not(.is-admin-screen) .slot-list {
+  gap: 0;
+  border-top: 1px solid #dfe5eb;
+}
+
+.app-layout:not(.is-admin-screen) .lineup-slot {
+  grid-template-columns: 34px 46px minmax(0, 1fr) 42px 34px;
+  min-height: 52px;
+  padding: 7px 4px;
+  border: 0;
+  border-bottom: 1px solid #dfe5eb;
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+  transform: none;
+  transition: background-color 0.15s ease, outline-color 0.15s ease;
+}
+
+.app-layout:not(.is-admin-screen) .lineup-slot:nth-child(even) {
+  background: #fbfcfd;
+}
+
+.app-layout:not(.is-admin-screen) .lineup-slot.is-category-catcher,
+.app-layout:not(.is-admin-screen) .lineup-slot.is-category-infielder,
+.app-layout:not(.is-admin-screen) .lineup-slot.is-category-outfielder,
+.app-layout:not(.is-admin-screen) .lineup-slot.is-category-dh {
+  border: 0;
+  border-bottom: 1px solid #dfe5eb;
+  background: inherit;
+}
+
+.app-layout:not(.is-admin-screen) .lineup-slot.is-active {
+  border-color: #dfe5eb;
+  background: #eef6fc;
+  box-shadow: inset 3px 0 0 var(--fighters-blue);
+  outline: 1px solid #c3dced;
+  outline-offset: -1px;
+}
+
+.app-layout:not(.is-admin-screen) .lineup-slot.is-drop-target {
+  border-color: #d9c177;
+  background: #fffaf0;
+  box-shadow: none;
+  transform: none;
+}
+
+.app-layout:not(.is-admin-screen) .slot-order {
+  min-height: 38px;
+  border-radius: 2px;
+  color: var(--fighters-deep-blue);
+  background: #eef2f5;
+  font-size: 1.04rem;
+}
+
+.app-layout:not(.is-admin-screen) .slot-player {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  line-height: 1.35;
+}
+
+.app-layout:not(.is-admin-screen) .slot-player .player-name {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.app-layout:not(.is-admin-screen) .slot-drag-handle {
+  border-color: #c4cdd6;
+  border-radius: 2px;
+  background: #ffffff;
+}
+
+.app-layout:not(.is-admin-screen) .position-button {
+  border-width: 1px;
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.app-layout:not(.is-admin-screen) .position-button:hover,
+.app-layout:not(.is-admin-screen) .position-button:focus-visible {
+  box-shadow: 0 0 0 3px rgba(0, 91, 172, 0.12);
+  transform: none;
+}
+
+.app-layout:not(.is-admin-screen) .slot-clear {
+  border-radius: 3px;
+}
+
+.app-layout:not(.is-admin-screen) .roster-filter {
+  margin: 8px 0;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid #dfe5eb;
+  border-radius: 0;
+  background: transparent;
+}
+
+.app-layout:not(.is-admin-screen) .roster-filter-button {
+  border-radius: 2px;
+}
+
+.app-layout:not(.is-admin-screen) .player-category-legend {
+  margin-top: 8px;
+}
+
+.app-layout:not(.is-admin-screen) .player-list {
+  gap: 0;
+  border-top: 1px solid #dfe5eb;
+}
+
+.app-layout:not(.is-admin-screen) .player-chip {
+  min-height: 48px;
+  padding: 8px 10px;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+  transform: none;
+}
+
+.app-layout:not(.is-admin-screen) .player-chip.is-category-catcher,
+.app-layout:not(.is-admin-screen) .player-chip.is-category-infielder,
+.app-layout:not(.is-admin-screen) .player-chip.is-category-outfielder,
+.app-layout:not(.is-admin-screen) .player-chip.is-category-dh {
+  border-width: 0 0 1px;
+  border-color: #dfe5eb;
+  background: #ffffff;
+}
+
+.app-layout:not(.is-admin-screen) .player-chip:hover,
+.app-layout:not(.is-admin-screen) .player-chip:focus-visible {
+  border-color: #a8c8e1;
+  background: #f5f9fc;
+  box-shadow: none;
+  transform: none;
+}
+
+.app-layout:not(.is-admin-screen) .primary-button {
+  width: min(100%, 300px);
+  margin-top: 18px;
+}
+
+.app-layout:not(.is-admin-screen) #resetPredictionButton,
+.app-layout:not(.is-admin-screen) #editSavedPredictionButton,
+.app-layout:not(.is-admin-screen) #sharePredictionButton {
+  width: auto;
+  min-width: 150px;
+}
+
+.app-layout:not(.is-admin-screen) .prediction-deadline-status {
+  border-radius: 3px;
+}
+
+.app-layout:not(.is-admin-screen) .result-card {
+  border-top: 3px solid var(--fighters-blue);
+}
+
+.app-layout:not(.is-admin-screen) .result-hero {
+  padding: 18px 20px;
+  border-radius: 3px;
+  background: #0b2c5c;
+}
+
+.app-layout:not(.is-admin-screen) .hit-breakdown {
+  gap: 0;
+  border-top: 1px solid #dfe5eb;
+}
+
+.app-layout:not(.is-admin-screen) .breakdown-item {
+  padding: 12px 14px;
+  border-width: 0 1px 1px 0;
+  border-radius: 0;
+  background: #ffffff;
+}
+
+.app-layout:not(.is-admin-screen) .breakdown-item:last-child {
+  border-right: 0;
+}
+
+@media (max-width: 759px) {
+  .app-layout:not(.is-admin-screen) {
+    gap: 16px;
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-builder {
+    gap: 18px;
+  }
+
+  .app-layout:not(.is-admin-screen) .player-panel {
+    padding: 18px 0 0;
+    border-top: 1px solid #dfe5eb;
+    border-left: 0;
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-slot {
+    grid-template-columns: 32px 44px minmax(0, 1fr) 42px 34px;
+  }
+
+  .app-layout:not(.is-admin-screen) .primary-button,
+  .app-layout:not(.is-admin-screen) #resetPredictionButton,
+  .app-layout:not(.is-admin-screen) #editSavedPredictionButton,
+  .app-layout:not(.is-admin-screen) #sharePredictionButton {
+    width: 100%;
+  }
+
+  .app-layout:not(.is-admin-screen) .breakdown-item {
+    border-right: 0;
+  }
+}
+
+@media (max-width: 430px) {
+  .app-layout:not(.is-admin-screen) .lineup-slot {
+    grid-template-columns: 28px 40px minmax(0, 1fr) 40px 32px;
+    gap: 6px;
+    padding: 6px 2px;
+  }
+
+  .app-layout:not(.is-admin-screen) .slot-order {
+    min-height: 34px;
+    font-size: 0.96rem;
+  }
+
+  .app-layout:not(.is-admin-screen) .slot-drag-handle {
+    width: 26px;
+    height: 34px;
+  }
+
+  .app-layout:not(.is-admin-screen) .slot-player,
+  .app-layout:not(.is-admin-screen) .player-chip {
+    font-size: 0.92rem;
+  }
+}

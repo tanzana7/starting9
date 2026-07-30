@@ -297,21 +297,13 @@ export default {
 
 export async function runScheduledGameAutomation(env, now) {
   await cleanupExpiredManualRescorePreviews(env.AUTH_DB, now);
-  let scheduleSync = { status: "failed", games: [] };
+  let scheduleSync = { status: "failed", games: [], failedDates: [getJstDateString(now)] };
   try {
     scheduleSync = await syncTodayFightersSchedule(env, now);
   } catch (error) {
     console.error(`[GAME_DETECTION] date=${getJstDateString(now)} team=fighters status=failed code=${error?.code || "SCHEDULE_SYNC_FAILED"}`);
   }
-  await recordWorkflowLog(env.AUTH_DB, {
-    eventType: "schedule_sync",
-    status: scheduleSync.status === "success" ? "success" : scheduleSync.status === "skipped" ? "info" : "error",
-    occurredAt: now,
-    message: scheduleSync.status === "success" ? "試合予定を同期しました。" : "試合予定の同期に失敗または未実行でした。",
-    errorCode: scheduleSync.status === "success" ? "" : "SCHEDULE_SYNC_FAILED",
-    metadata: { date: getJstDateString(now), gameCount: Array.isArray(scheduleSync.games) ? scheduleSync.games.length : 0 },
-    source: "cron"
-  });
+  await recordScheduleSyncOutcome(env.AUTH_DB, scheduleSync, now);
   try {
     // 対象試合は保存値ではなく、最新日程と開始時刻から導出します。
     // そのため、Cronが再実行されても同じ試合を再切替する副作用はありません。
@@ -691,7 +683,7 @@ export function summarizeGameAutomationRun({ date = "", scheduleSync = "skipped"
 
   return {
     date: String(date || ""),
-    scheduleSync: ["success", "skipped", "failed"].includes(scheduleSync) ? scheduleSync : "failed",
+    scheduleSync: ["success_changed", "success_no_change", "skipped", "failed"].includes(scheduleSync) ? scheduleSync : "failed",
     games: safeWorkflows.length,
     executed,
     succeeded: Math.max(0, succeeded),
@@ -703,7 +695,7 @@ export function summarizeGameAutomationRun({ date = "", scheduleSync = "skipped"
 }
 
 function shouldLogGameAutomationSummary(summary) {
-  return summary.scheduleSync !== "skipped"
+  return !["skipped", "success_no_change"].includes(summary.scheduleSync)
     || summary.executed > 0
     || summary.retryWait > 0
     || summary.failed > 0
@@ -718,7 +710,7 @@ function logGameAutomationSummary(summary) {
 }
 
 function logCancelledGameWorkflows(workflows, scheduleSync) {
-  if (scheduleSync === "skipped") return;
+  if (["skipped", "success_no_change"].includes(scheduleSync)) return;
   for (const workflow of Array.isArray(workflows) ? workflows : []) {
     if (workflow?.gameStatus === "cancelled") {
       console.log(`[GAME_WORKFLOW] gameId=${workflow.gameId} step=all action=skipped status=cancelled`);
@@ -748,41 +740,70 @@ export function getAutomationScheduleDates(now = new Date(), lookaheadDays = AUT
   return Array.from({ length: count + 1 }, (_, offset) => getJstDateString(new Date(base.getTime() + offset * 24 * 60 * 60 * 1000)));
 }
 
+export function classifyScheduleSyncResults(results = []) {
+  const statuses = (Array.isArray(results) ? results : []).map((result) => result?.status);
+  if (statuses.includes("failed")) return "failed";
+  if (statuses.includes("success_changed")) return "success_changed";
+  if (statuses.includes("success_no_change")) return "success_no_change";
+  return "skipped";
+}
+
 async function syncTodayFightersSchedule(env, now) {
   const dates = getAutomationScheduleDates(now);
   if (!dates.length) return { status: "skipped", games: [] };
-  let synced = false;
-  let failed = false;
+  const results = [];
   for (const date of dates) {
     try {
-      const result = await syncFightersScheduleForDate(env, date, now);
-      synced ||= result.status === "success";
+      results.push(await syncFightersScheduleForDate(env, date, now));
     } catch (error) {
-      failed = true;
+      results.push({ status: "failed", date, errorCode: error?.code || "SCHEDULE_SYNC_FAILED" });
+      try {
+        await env.AUTH_DB.prepare(
+          "UPDATE game_schedule_check_state SET last_error_code = ?1, updated_at = ?2 WHERE schedule_date = ?3"
+        ).bind(error?.code || "SCHEDULE_SYNC_FAILED", now.toISOString(), date).run();
+      } catch (stateError) {
+        console.warn(`[GAME_DETECTION] date=${date} state=failed code=${stateError?.code || "SCHEDULE_SYNC_STATE_WRITE_FAILED"}`);
+      }
       console.warn(`[GAME_DETECTION] date=${date} team=fighters status=failed code=${error?.code || "SCHEDULE_SYNC_FAILED"}`);
     }
   }
   const rows = await loadDetectedScheduleGames(env.AUTH_DB, dates);
   setDetectedScheduleGames(rows);
-  return { status: failed ? "failed" : synced ? "success" : "skipped", games: rows, dates };
+  return {
+    status: classifyScheduleSyncResults(results),
+    games: rows,
+    dates,
+    results,
+    failedDates: results.filter((result) => result?.status === "failed").map((result) => result.date).filter(Boolean)
+  };
 }
 
 async function syncFightersScheduleForDate(env, date, now) {
   const state = await env.AUTH_DB.prepare("SELECT next_check_at FROM game_schedule_check_state WHERE schedule_date = ?1 LIMIT 1").bind(date).first();
-  let synced = false;
   if (!state?.next_check_at || new Date(state.next_check_at) <= now) {
     const payload = await fetchNpbWorkerJson(env, { mode: "schedule", date });
     if (!Array.isArray(payload.games)) throw createPregameError("SCHEDULE_RESPONSE_INVALID", "NPB日程レスポンスが不正です。");
+    const normalizedGames = payload.games.map((game) => {
+      const startAt = new Date(`${date}T${game?.startTime}:00+09:00`);
+      if (!game?.gameId || !game?.homeTeam || !game?.awayTeam || Number.isNaN(startAt.getTime())) {
+        throw createPregameError("SCHEDULE_RESPONSE_INVALID", "NPB日程レスポンスに必須項目がありません。");
+      }
+      return {
+        game,
+        startAt,
+        sourceGameKey: String(game.gameCode || `${date}:${game.homeTeam}:${game.awayTeam}:${game.startTime}`),
+        gameStatus: game.status === "cancelled" ? "cancelled" : "scheduled"
+      };
+    });
+    const changed = await hasScheduleDataChanged(env.AUTH_DB, date, normalizedGames);
     const statements = [];
-    for (const game of payload.games) {
-      const startAt = new Date(`${date}T${game.startTime}:00+09:00`);
-      if (Number.isNaN(startAt.getTime())) continue;
-      const sourceGameKey = String(game.gameCode || `${date}:${game.homeTeam}:${game.awayTeam}:${game.startTime}`);
+    for (const item of normalizedGames) {
+      const { game, startAt, sourceGameKey, gameStatus } = item;
       statements.push(env.AUTH_DB.prepare(
         `INSERT INTO detected_game_schedule (game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, venue, game_status, detected_at, schedule_checked_at, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?10, ?10)
          ON CONFLICT(source_game_key) DO UPDATE SET start_at=excluded.start_at, venue=excluded.venue, game_status=excluded.game_status, schedule_checked_at=excluded.schedule_checked_at, updated_at=excluded.updated_at`
-      ).bind(game.gameId, sourceGameKey, date, startAt.toISOString(), game.homeTeam, game.awayTeam, game.gameCode || null, game.venue || null, game.status === "cancelled" ? "cancelled" : "scheduled", now.toISOString()));
+      ).bind(game.gameId, sourceGameKey, date, startAt.toISOString(), game.homeTeam, game.awayTeam, game.gameCode || null, game.venue || null, gameStatus, now.toISOString()));
     }
     const nextCheck = new Date(now.getTime() + AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS).toISOString();
     statements.push(env.AUTH_DB.prepare(
@@ -791,10 +812,76 @@ async function syncFightersScheduleForDate(env, date, now) {
        ON CONFLICT(schedule_date) DO UPDATE SET next_check_at=excluded.next_check_at, last_checked_at=excluded.last_checked_at, last_error_code=NULL, updated_at=excluded.updated_at`
     ).bind(date, nextCheck, now.toISOString()));
     if (statements.length) await env.AUTH_DB.batch(statements);
-    synced = true;
     console.log(`[GAME_DETECTION] date=${date} team=fighters gamesFound=${payload.games.length} status=success`);
+    return { status: changed ? "success_changed" : "success_no_change", date, gameCount: payload.games.length };
   }
-  return { status: synced ? "success" : "skipped" };
+  return { status: "skipped", date };
+}
+
+async function hasScheduleDataChanged(db, date, games) {
+  const result = await db.prepare(
+    `SELECT source_game_key, game_id, start_at, home_team, away_team, game_code, venue, game_status
+       FROM detected_game_schedule WHERE game_date = ?1`
+  ).bind(date).all();
+  const existing = new Map((result.results || []).map((row) => [String(row.source_game_key), row]));
+  return (Array.isArray(games) ? games : []).some(({ game, startAt, sourceGameKey, gameStatus }) => {
+    const row = existing.get(sourceGameKey);
+    return !row
+      || String(row.game_id || "") !== String(game.gameId || "")
+      || String(row.start_at || "") !== startAt.toISOString()
+      || String(row.home_team || "") !== String(game.homeTeam || "")
+      || String(row.away_team || "") !== String(game.awayTeam || "")
+      || String(row.game_code || "") !== String(game.gameCode || "")
+      || String(row.venue || "") !== String(game.venue || "")
+      || String(row.game_status || "") !== gameStatus;
+  });
+}
+
+async function recordScheduleSyncOutcome(db, result, now) {
+  try {
+    const status = String(result?.status || "failed");
+    if (status === "success_no_change" || status === "skipped") return;
+    const date = getJstDateString(now);
+    const gameCount = Array.isArray(result?.games) ? result.games.length : Number(result?.gameCount || 0);
+    const metadata = { date, gameCount };
+    if (status === "success_changed") {
+      await recordWorkflowLog(db, {
+        eventType: "schedule_sync",
+        status: "success",
+        occurredAt: now,
+        message: "試合予定を同期しました。",
+        metadata,
+        source: "cron"
+      });
+      return;
+    }
+    const since = new Date(new Date(now).getTime() - 30 * 60 * 1000).toISOString();
+    const recent = await db.prepare(
+      `SELECT metadata FROM game_workflow_logs
+         WHERE event_type = 'schedule_sync' AND status IN ('warning', 'error')
+           AND error_code = ?1 AND occurred_at >= ?2
+         ORDER BY occurred_at DESC LIMIT 50`
+    ).bind("SCHEDULE_SYNC_FAILED", since).all();
+    const failedDates = [...new Set((Array.isArray(result?.failedDates) ? result.failedDates : []).filter(Boolean))];
+    const states = await Promise.all(failedDates.map((failedDate) => db.prepare(
+      "SELECT last_error_code FROM game_schedule_check_state WHERE schedule_date = ?1 LIMIT 1"
+    ).bind(failedDate).first()));
+    const recovered = failedDates.length > 0 && states.length === failedDates.length
+      && states.every((state) => state && !state.last_error_code);
+    const duplicate = !recovered && (recent.results || []).some((row) => parseJsonObject(row.metadata).date === date);
+    if (duplicate) return;
+    await recordWorkflowLog(db, {
+      eventType: "schedule_sync",
+      status: "error",
+      occurredAt: now,
+      message: "試合予定の同期に失敗しました。",
+      errorCode: "SCHEDULE_SYNC_FAILED",
+      metadata,
+      source: "cron"
+    });
+  } catch (error) {
+    console.warn(`[GAME_WORKFLOW_LOG] action=schedule_sync status=failed code=${error?.code || "SCHEDULE_SYNC_LOG_READ_FAILED"}`);
+  }
 }
 
 async function loadDetectedScheduleGames(db, dates) {

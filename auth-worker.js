@@ -539,10 +539,41 @@ async function saveProbableStarterRow(db, {
   ).run();
 }
 
+async function recordProbableStarterDecision(db, {
+  eventType = "probable_starter_fetch_skipped",
+  status = "info",
+  gameId = "",
+  occurredAt,
+  message,
+  errorCode = "",
+  metadata = {},
+  source = "cron"
+} = {}) {
+  return recordWorkflowLog(db, {
+    eventType,
+    status,
+    gameId,
+    occurredAt,
+    message,
+    errorCode,
+    metadata: { ...metadata, source },
+    source
+  });
+}
+
 async function runProbableStarterFetch(env, target, now, { source = "cron" } = {}) {
   const current = now instanceof Date ? now : new Date(now);
   const gameId = String(target?.gameId || "");
   if (!gameId || !target?.startAt || !Number.isFinite(new Date(target.startAt).getTime())) {
+    await recordProbableStarterDecision(env.AUTH_DB, {
+      eventType: "probable_starter_no_target",
+      status: "warning",
+      occurredAt: current,
+      message: "予告先発の取得対象試合がありません。",
+      errorCode: "PROBABLE_STARTER_NO_TARGET",
+      metadata: { source },
+      source
+    });
     throw createPregameError("SCHEDULE_UNAVAILABLE", "予告先発の対象試合を確認できません。", { httpStatus: 409 });
   }
   if (await isProbableStarterTestGame(env.AUTH_DB, gameId)) {
@@ -561,6 +592,13 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
   });
 
   let previous = null;
+  let terminalLogged = false;
+  const recordTerminal = async (details) => {
+    const result = await recordProbableStarterDecision(env.AUTH_DB, details);
+    // null means the equivalent terminal log was deduplicated; it is still a recorded outcome.
+    terminalLogged = result !== false;
+    return result;
+  };
   try {
     previous = await env.AUTH_DB.prepare("SELECT * FROM probable_starters WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
     const payload = await fetchNpbWorkerJson(env, { mode: "starter" });
@@ -584,7 +622,7 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
       errorCode: "",
       updatedAt: fetchedAt
     });
-    await recordWorkflowLog(env.AUTH_DB, {
+    await recordTerminal({
       eventType: announced ? "probable_starter_announced" : "probable_starter_unannounced",
       status: announced ? "success" : "warning",
       gameId,
@@ -596,6 +634,7 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
     });
     return {
       ok: true,
+      status: announced ? "success" : "notPublished",
       gameId,
       probableStarter: serializeProbableStarterRow({
         game_id: gameId,
@@ -629,7 +668,7 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
     } catch (saveError) {
       console.warn(`[PROBABLE_STARTER] action=save status=failed code=${saveError?.code || "PROBABLE_STARTER_SAVE_FAILED"}`);
     }
-    await recordWorkflowLog(env.AUTH_DB, {
+    await recordTerminal({
       eventType: "probable_starter_fetch_failed",
       status: "error",
       gameId,
@@ -640,20 +679,77 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
       source
     });
     throw error;
+  } finally {
+    if (!terminalLogged) {
+      await recordProbableStarterDecision(env.AUTH_DB, {
+        eventType: "probable_starter_fetch_failed",
+        status: "error",
+        gameId,
+        occurredAt: current,
+        message: "予告先発の取得処理が完了状態を記録できませんでした。",
+        errorCode: "PROBABLE_STARTER_TERMINAL_STATE_MISSING",
+        metadata: { source },
+        source
+      });
+    }
   }
 }
 
 async function runDueProbableStarterJob(env, now) {
   const target = await getServerPredictionTarget(env.AUTH_DB, now);
   if (!target?.gameId || !target.startAt || new Date(now).getTime() >= new Date(target.startAt).getTime()) {
-    return { status: "not_due", gameId: target?.gameId || "" };
+    const gameId = target?.gameId || "";
+    const started = Boolean(gameId && target?.startAt && new Date(now).getTime() >= new Date(target.startAt).getTime());
+    await recordProbableStarterDecision(env.AUTH_DB, {
+      eventType: started ? "probable_starter_fetch_skipped" : "probable_starter_no_target",
+      status: "info",
+      gameId,
+      occurredAt: now,
+      message: started ? "試合開始後のため予告先発取得をスキップしました。" : "予告先発の取得対象試合がありません。",
+      errorCode: started ? "PROBABLE_STARTER_AFTER_START" : "PROBABLE_STARTER_NO_TARGET",
+      metadata: { source: "cron", gameDate: target?.date || getJstDateString(now) },
+      source: "cron"
+    });
+    return { status: started ? "not_due" : "noTarget", gameId };
   }
   if (await isProbableStarterTestGame(env.AUTH_DB, target.gameId)) {
+    await recordProbableStarterDecision(env.AUTH_DB, {
+      eventType: "probable_starter_fetch_skipped",
+      status: "info",
+      gameId: target.gameId,
+      occurredAt: now,
+      message: "テスト試合のため予告先発取得をスキップしました。",
+      errorCode: "PROBABLE_STARTER_TEST_GAME",
+      metadata: { source: "cron", gameDate: target.date || getJstDateString(now) },
+      source: "cron"
+    });
     return { status: "skipped", gameId: target.gameId, reason: "test_game" };
   }
   const row = await env.AUTH_DB.prepare("SELECT status, next_check_at FROM probable_starters WHERE game_id = ?1 LIMIT 1").bind(target.gameId).first();
-  if (row?.status === "announced") return { status: "already_announced", gameId: target.gameId };
+  if (row?.status === "announced") {
+    await recordProbableStarterDecision(env.AUTH_DB, {
+      eventType: "probable_starter_fetch_skipped",
+      status: "info",
+      gameId: target.gameId,
+      occurredAt: now,
+      message: "予告先発取得済みのためスキップしました。",
+      errorCode: "PROBABLE_STARTER_ALREADY_ANNOUNCED",
+      metadata: { source: "cron", gameDate: target.date || getJstDateString(now) },
+      source: "cron"
+    });
+    return { status: "already_announced", gameId: target.gameId };
+  }
   if (row?.next_check_at && new Date(row.next_check_at).getTime() > new Date(now).getTime()) {
+    await recordProbableStarterDecision(env.AUTH_DB, {
+      eventType: "probable_starter_fetch_skipped",
+      status: "info",
+      gameId: target.gameId,
+      occurredAt: now,
+      message: "予告先発の再取得待機中のためスキップしました。",
+      errorCode: "PROBABLE_STARTER_RETRY_WAIT",
+      metadata: { source: "cron", gameDate: target.date || getJstDateString(now), nextCheckAt: row.next_check_at },
+      source: "cron"
+    });
     return { status: "retry_wait", gameId: target.gameId, nextCheckAt: row.next_check_at };
   }
   try {

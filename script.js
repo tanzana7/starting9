@@ -1965,6 +1965,8 @@ function beginPointerInteraction(event, element, kind) {
     targetIndex: null,
     active: false,
     inputSource: event.inputSource || "pointer",
+    pointerType: event.pointerType || "",
+    activeTouchIdentifier: event.inputSource === "touch" ? event.pointerId : null,
     timerId: setTimeout(() => activatePointerInteraction(interaction), POINTER_LONG_PRESS_MS)
   };
 
@@ -2086,16 +2088,26 @@ function getTouchInteractionTarget(event) {
 }
 
 function handleTouchInteractionStart(event) {
-  if (state.pointerInteraction) return;
   const target = getTouchInteractionTarget(event);
   const touch = event.changedTouches[0];
   if (!target || !touch) return;
+
+  const existingInteraction = state.pointerInteraction;
+  if (existingInteraction) {
+    if (existingInteraction.pointerType !== "touch" || existingInteraction.element !== target) return;
+    existingInteraction.inputSource = "touch";
+    existingInteraction.activeTouchIdentifier = touch.identifier;
+    existingInteraction.pointerId = touch.identifier;
+    return;
+  }
+
   const kind = target.classList.contains("player-chip") ? "player" : "lineup";
   beginPointerInteraction(createTouchPointerEvent(touch, event), target, kind);
 }
 
 function getChangedTouch(event, interaction) {
-  return Array.from(event.changedTouches).find((touch) => touch.identifier === interaction.pointerId);
+  const touchIdentifier = interaction.activeTouchIdentifier ?? interaction.pointerId;
+  return Array.from(event.changedTouches).find((touch) => touch.identifier === touchIdentifier);
 }
 
 function handleTouchInteractionMove(event) {

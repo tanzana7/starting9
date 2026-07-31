@@ -185,3 +185,28 @@ test("Touch Eventsフォールバックでも選手一覧から打順へ配置�
   harness.context.api.handleTouchInteractionEnd(touchEvent({ identifier: 3, clientX: 10, clientY: 20 }));
   assert.deepEqual(harness.getAssigned(), ["prediction", "選手A", 2, null]);
 });
+
+test("Pointer開始後にTouchへハンドオフし、Pointer cancelで状態を失わない", () => {
+  const harness = createPointerHarness();
+  const player = new FakeElement({ picker: "prediction", player: "選手A" });
+  player.classList.add("player-chip");
+  player.closestResult = player;
+  const touch = { identifier: 11, clientX: 10, clientY: 10 };
+  const touchEvent = (currentTouch) => ({
+    touches: [currentTouch],
+    changedTouches: [currentTouch],
+    target: player,
+    preventDefault() {}
+  });
+
+  harness.context.api.beginPointerInteraction(pointerEvent(4, 10, 10, player), player, "player");
+  harness.context.api.handleTouchInteractionStart(touchEvent(touch));
+  assert.equal(harness.context.state.pointerInteraction.inputSource, "touch");
+  assert.equal(harness.context.state.pointerInteraction.activeTouchIdentifier, 11);
+  harness.context.api.handlePointerInteractionCancel(pointerEvent(4, 10, 10, player));
+  assert.ok(harness.context.state.pointerInteraction);
+  harness.timers[0]();
+  harness.context.api.handleTouchInteractionMove(touchEvent({ identifier: 11, clientX: 10, clientY: 20 }));
+  harness.context.api.handleTouchInteractionEnd(touchEvent({ identifier: 11, clientX: 10, clientY: 20 }));
+  assert.deepEqual(harness.getAssigned(), ["prediction", "選手A", 2, null]);
+});

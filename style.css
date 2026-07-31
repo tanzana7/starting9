@@ -2756,12 +2756,6 @@ textarea:focus {
   opacity: 0.48;
 }
 
-.player-chip.is-flicking {
-  border-color: var(--fighters-gold);
-  background: #fff8df;
-  transform: translateX(-6px);
-}
-
 .summary-box {
   display: grid;
   gap: 12px;
@@ -3329,11 +3323,6 @@ textarea:focus {
     font-size: 0.9rem;
   }
 
-  .slot-drag-handle {
-    width: 26px;
-    height: 34px;
-  }
-
   .slot-player,
   .player-chip,
   .position-button {
@@ -3348,6 +3337,11 @@ textarea:focus {
   .slot-clear {
     width: 28px;
     height: 28px;
+  }
+
+  .slot-drag-handle {
+    width: 26px;
+    height: 34px;
   }
 
   .score-total {
@@ -4413,12 +4407,6 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
   white-space: normal;
 }
 
-.app-layout:not(.is-admin-screen) .slot-drag-handle {
-  border-color: #c4cdd6;
-  border-radius: 2px;
-  background: #ffffff;
-}
-
 .app-layout:not(.is-admin-screen) .position-button {
   border-width: 1px;
   border-radius: 4px;
@@ -4569,11 +4557,6 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
     font-size: 0.96rem;
   }
 
-  .app-layout:not(.is-admin-screen) .slot-drag-handle {
-    width: 26px;
-    height: 34px;
-  }
-
   .app-layout:not(.is-admin-screen) .slot-player,
   .app-layout:not(.is-admin-screen) .player-chip {
     font-size: 0.92rem;
@@ -4657,42 +4640,6 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
   max-width: 100%;
 }
 
-.app-layout:not(.is-admin-screen) .slot-actions {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 2px;
-}
-
-.app-layout:not(.is-admin-screen) .slot-reorder-controls {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.app-layout:not(.is-admin-screen) .slot-reorder-button {
-  display: inline-grid;
-  width: 34px;
-  min-width: 34px;
-  min-height: 44px;
-  padding: 0;
-  place-items: center;
-  border: 1px solid #b7c8d8;
-  border-radius: 4px;
-  color: var(--fighters-deep-blue);
-  background: #ffffff;
-  font-weight: 900;
-  line-height: 1;
-  touch-action: manipulation;
-}
-
-.app-layout:not(.is-admin-screen) .slot-reorder-button:hover,
-.app-layout:not(.is-admin-screen) .slot-reorder-button:focus-visible {
-  border-color: var(--fighters-blue);
-  background: #f5f9fc;
-}
-
 .app-layout:not(.is-admin-screen) .roster-filter-button {
   min-height: 44px;
   font-weight: 800;
@@ -4735,7 +4682,6 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
   }
 
   .app-layout:not(.is-admin-screen) .player-chip,
-  .app-layout:not(.is-admin-screen) .slot-reorder-button,
   .app-layout:not(.is-admin-screen) .position-button {
     touch-action: manipulation;
   }
@@ -4748,8 +4694,169 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
     padding: 6px 2px;
   }
 
-  .app-layout:not(.is-admin-screen) .slot-reorder-button {
-    width: 32px;
-    min-width: 32px;
+}
+
+/* スマホの通常画面は、縦長フォームではなくゲームのオーダー編集画面として扱う。 */
+.app-layout:not(.is-admin-screen) .lineup-slot,
+.app-layout:not(.is-admin-screen) .player-chip {
+  touch-action: pan-y;
+  user-select: none;
+}
+
+.app-layout:not(.is-admin-screen) .lineup-slot {
+  cursor: grab;
+}
+
+.app-layout:not(.is-admin-screen) .lineup-slot:active {
+  cursor: grabbing;
+}
+
+.app-layout:not(.is-admin-screen) .lineup-slot.is-pressing,
+.app-layout:not(.is-admin-screen) .player-chip.is-pressing {
+  border-color: var(--fighters-gold);
+  background: #fffaf0;
+  box-shadow: 0 0 0 2px rgba(213, 161, 30, 0.18);
+}
+
+.app-layout:not(.is-admin-screen) .lineup-slot.is-dragging,
+.app-layout:not(.is-admin-screen) .player-chip.is-dragging {
+  opacity: 0.52;
+  box-shadow: 0 8px 18px rgba(25, 54, 82, 0.22);
+  transform: translateY(-2px) scale(1.01);
+}
+
+@media (max-width: 768px) {
+  .app-layout:not(.is-admin-screen) .lineup-builder {
+    grid-template-columns: minmax(0, 0.4fr) minmax(0, 0.6fr);
+    gap: 8px;
+    align-items: start;
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-panel,
+  .app-layout:not(.is-admin-screen) .player-panel {
+    padding: 8px;
+    border-radius: 6px;
+  }
+
+  .app-layout:not(.is-admin-screen) .player-panel {
+    border-top: 1px solid var(--border);
+    border-left: 1px solid var(--border);
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-panel h3,
+  .app-layout:not(.is-admin-screen) .player-panel h3 {
+    font-size: 0.82rem;
+  }
+
+  .app-layout:not(.is-admin-screen) .slot-list,
+  .app-layout:not(.is-admin-screen) .player-list {
+    gap: 3px;
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-slot {
+    grid-template-columns: 25px minmax(0, 1fr) 28px 18px;
+    min-height: 40px;
+    gap: 3px;
+    padding: 4px 3px;
+    border-radius: 5px;
+  }
+
+  .app-layout:not(.is-admin-screen) .slot-order {
+    min-height: 30px;
+    border-radius: 4px;
+    font-size: 0.76rem;
+  }
+
+  .app-layout:not(.is-admin-screen) .slot-player {
+    font-size: 0.74rem;
+    line-height: 1.2;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .app-layout:not(.is-admin-screen) .position-control,
+  .app-layout:not(.is-admin-screen) .position-button {
+    width: 28px;
+    height: 30px;
+  }
+
+  .app-layout:not(.is-admin-screen) .position-button {
+    border-radius: 4px;
+    font-size: 0.78rem;
+  }
+
+  .app-layout:not(.is-admin-screen) .slot-clear {
+    width: 18px;
+    min-width: 18px;
+    height: 28px;
+    padding: 0;
+    font-size: 0.9rem;
+  }
+
+  .app-layout:not(.is-admin-screen) .roster-filter {
+    gap: 2px;
+    margin: 6px 0;
+  }
+
+  .app-layout:not(.is-admin-screen) .roster-filter-button {
+    min-height: 34px;
+    padding: 4px 2px;
+    font-size: 0.68rem;
+    line-height: 1.1;
+  }
+
+  .app-layout:not(.is-admin-screen) .player-category-legend {
+    display: none;
+  }
+
+  .app-layout:not(.is-admin-screen) .player-list {
+    max-height: 560px;
+    padding-right: 0;
+  }
+
+  .app-layout:not(.is-admin-screen) .player-chip {
+    min-height: 38px;
+    padding: 6px 7px;
+    font-size: 0.78rem;
+    line-height: 1.15;
+    text-align: left;
+  }
+}
+
+@media (max-width: 430px) {
+  .app-layout:not(.is-admin-screen) .lineup-builder {
+    gap: 5px;
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-panel,
+  .app-layout:not(.is-admin-screen) .player-panel {
+    padding: 6px;
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-slot {
+    grid-template-columns: 22px minmax(0, 1fr) 26px 16px;
+    gap: 2px;
+    padding: 3px 2px;
+  }
+
+  .app-layout:not(.is-admin-screen) .slot-order {
+    min-height: 28px;
+    font-size: 0.7rem;
+  }
+
+  .app-layout:not(.is-admin-screen) .slot-player,
+  .app-layout:not(.is-admin-screen) .player-chip {
+    font-size: 0.7rem;
+  }
+
+  .app-layout:not(.is-admin-screen) .position-control,
+  .app-layout:not(.is-admin-screen) .position-button {
+    width: 26px;
+    height: 28px;
+  }
+
+  .app-layout:not(.is-admin-screen) .slot-clear {
+    width: 16px;
+    min-width: 16px;
   }
 }

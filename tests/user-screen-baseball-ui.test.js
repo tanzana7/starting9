@@ -73,3 +73,17 @@ test("タッチ端末向けに長押しドラッグで選手と守備位置を�
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.lineup-slot,\n\.app-layout:not\(\.is-admin-screen\) \.player-chip[\s\S]*touch-action: pan-y/);
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.lineup-slot\.is-dragging[\s\S]*box-shadow/);
 });
+
+test("iPhone向けの選択抑止と公示ブロックの位置を通常画面だけに適用する", () => {
+  assert.match(css, /-webkit-user-select:\s*none/);
+  assert.match(css, /-webkit-touch-callout:\s*none/);
+  assert.match(css, /-webkit-tap-highlight-color:\s*transparent/);
+  assert.match(script, /event\.target\.closest\("button, \.position-menu"\)/);
+  assert.match(script, /element\.setPointerCapture\(interaction\.pointerId\)/);
+  assert.match(script, /interaction\.pointerId !== event\.pointerId/);
+  assert.match(script, /function shouldUseNativeDrag\(pickerName\)/);
+  assert.doesNotMatch(script, /data-lineup-move/);
+  const noticeIndex = html.indexOf('id="gameDayNoticeStatus"');
+  const lineupIndex = html.indexOf('<div class="lineup-builder" data-picker="prediction">');
+  assert.ok(noticeIndex >= 0 && noticeIndex < lineupIndex, "公示ブロックが左右カラムの外にありません");
+});

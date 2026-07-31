@@ -1584,6 +1584,11 @@ function createLineupSlot(pickerName, index) {
   slot.addEventListener("dragstart", (event) => handleSlotDragStart(event, slot));
   slot.addEventListener("dragend", (event) => handleDragEnd(event, slot));
   slot.addEventListener("pointerdown", (event) => handleLineupPointerDown(event, slot));
+  if (pickerName === "prediction") {
+    slot.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+    });
+  }
 
   const order = document.createElement("span");
   order.className = "slot-order";
@@ -1771,7 +1776,7 @@ function createPlayerChip(pickerName, player) {
   button.type = "button";
   button.dataset.picker = pickerName;
   button.dataset.player = player;
-  button.draggable = true;
+  button.draggable = shouldUseNativeDrag(pickerName);
   button.innerHTML = createPlayerLabelHtml(player);
   applyPlayerCategoryClass(button, player);
 
@@ -1787,6 +1792,11 @@ function createPlayerChip(pickerName, player) {
     assignPlayerToActiveSlot(pickerName, player);
   });
   button.addEventListener("pointerdown", (event) => handlePlayerPointerDown(event, button));
+  if (pickerName === "prediction") {
+    button.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+    });
+  }
   button.addEventListener("dragstart", (event) => handlePlayerDragStart(event, button));
   button.addEventListener("dragend", (event) => handleDragEnd(event, button));
 
@@ -1935,7 +1945,7 @@ function handleLineupPointerDown(event, slot) {
 
 function beginPointerInteraction(event, element, kind) {
   if (element.dataset.picker !== "prediction" || event.pointerType === "mouse" || isPredictionEditingLocked()) return;
-  if (event.target instanceof Element && event.target.closest("button, .position-menu")) return;
+  if (kind === "lineup" && event.target instanceof Element && event.target.closest("button, .position-menu")) return;
 
   clearPointerInteraction();
   const interaction = {
@@ -1944,7 +1954,7 @@ function beginPointerInteraction(event, element, kind) {
     kind,
     pickerName: element.dataset.picker,
     sourceIndex: kind === "lineup" ? Number(element.dataset.order) : null,
-    player: kind === "player" ? element.dataset.player : element.dataset.player,
+    player: element.dataset.player,
     startX: event.clientX,
     startY: event.clientY,
     targetIndex: null,
@@ -1954,6 +1964,11 @@ function beginPointerInteraction(event, element, kind) {
 
   state.pointerInteraction = interaction;
   element.classList.add("is-pressing");
+  try {
+    element.setPointerCapture(interaction.pointerId);
+  } catch {
+    // Pointer capture is unavailable in some Safari versions; document listeners remain the fallback.
+  }
 }
 
 function activatePointerInteraction(interaction) {
@@ -2041,6 +2056,12 @@ function clearPointerInteraction() {
     // Pointer capture cleanup is best effort.
   }
   state.pointerInteraction = null;
+}
+
+function shouldUseNativeDrag(pickerName) {
+  if (pickerName === "actual") return true;
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return true;
+  return window.matchMedia("(pointer: fine)").matches;
 }
 
 function setActiveOrder(pickerName, index) {
@@ -7828,7 +7849,7 @@ function renderPicker(pickerName) {
     slot.classList.toggle("has-player", Boolean(player));
     slot.classList.toggle("is-duplicate", duplicatedPlayers.has(player) || duplicatedPositions.has(position));
     slot.classList.toggle("is-locked", isLocked);
-    slot.draggable = pickerName === "prediction" && Boolean(player) && !isLocked;
+    slot.draggable = shouldUseNativeDrag(pickerName) && Boolean(player) && !isLocked;
     slot.setAttribute("aria-disabled", isLocked ? "true" : "false");
     slot.setAttribute("aria-label", `${index + 1}番 ${position || "守備未選択"} ${player || "未選択"}`);
     playerElement.innerHTML = player ? createPlayerLabelHtml(player) : "未選択";
@@ -7836,7 +7857,7 @@ function renderPicker(pickerName) {
     applyPlayerCategoryClass(slot, player);
     renderPositionButton(positionButton, position, index);
     positionButton.disabled = isLocked;
-    positionButton.draggable = Boolean(position) && !isLocked;
+    positionButton.draggable = shouldUseNativeDrag(pickerName) && Boolean(position) && !isLocked;
     clearButton.disabled = isLocked;
     clearButton.classList.toggle("hidden", !player);
     const dragHandle = slot.querySelector(".slot-drag-handle");
@@ -7851,7 +7872,7 @@ function renderPicker(pickerName) {
     const isUsed = usedPlayers.has(chip.dataset.player);
     chip.classList.toggle("is-used", isUsed);
     chip.disabled = isLocked;
-    chip.draggable = !isLocked;
+    chip.draggable = shouldUseNativeDrag(pickerName) && !isLocked;
   });
 
   if (pickerName === "prediction") {

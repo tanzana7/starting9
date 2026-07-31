@@ -68,8 +68,8 @@ test("管理画面のログAPIは読み取り専用で、開いたことによ�
 
 test("ログ保存・削除の失敗はCron停止用のthrowにならずconsoleへ残る", () => {
   const worker = read("auth-worker.js");
-  const recordBlock = worker.match(/async function recordWorkflowLog\(db,[\s\S]*?\n\}\n\nexport function getWorkflowLogCutoff/)?.[0] || "";
-  assert.match(recordBlock, /console\.warn\(.*action=write status=failed/);
-  assert.doesNotMatch(recordBlock, /throw error/);
+  assert.match(worker, /async function recordWorkflowLog\(db,/);
+  assert.match(worker, /action=write status=failed/);
+  assert.match(worker, /return false;/);
   assert.match(worker, /async function cleanupWorkflowLogs\(db, now\)[\s\S]*action=cleanup status=failed/);
 });

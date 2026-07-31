@@ -46,3 +46,24 @@ test("通常画面の固定幅を避け、保存操作の既存IDを維持する
   assert.doesNotMatch(css, /\.app-layout:not\(\.is-admin-screen\)[^{]*min-width:\s*\d{4}px/);
   assert.match(html, /id="savePredictionButton"/);
 });
+
+test("スマホの通常画面はオーダー表と選手一覧を1列に積む", () => {
+  assert.match(css, /@media \(max-width: 768px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.lineup-slot[\s\S]*min-width: 0/);
+  assert.doesNotMatch(css, /body\s*\{[\s\S]*overflow-x:\s*hidden/);
+});
+
+test("選手フィルターは初期状態をactiveとして保持し、選択状態を読み上げられる", () => {
+  assert.match(script, /candidateRosterFilter: "active"/);
+  assert.match(script, /button\.setAttribute\("aria-pressed", isSelected \? "true" : "false"\)/);
+  assert.match(script, /button\.setAttribute\("aria-selected", isSelected \? "true" : "false"\)/);
+  assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.roster-filter-button\.is-selected[\s\S]*font-weight: 950/);
+});
+
+test("タッチ端末向けに上下移動ボタンで選手と守備位置を同時に入れ替えられる", () => {
+  assert.match(script, /function moveLineupSlot\(pickerName, sourceIndex, targetIndex\)/);
+  assert.match(script, /reorderButton\.dataset\.lineupMove = direction/);
+  assert.match(script, /slotActions\.append\(reorderControls, clearButton\)/);
+  assert.match(script, /button\.disabled = isLocked \|\| targetIndex < 0 \|\| targetIndex >= LINEUP_SIZE/);
+  assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.slot-reorder-button[\s\S]*min-height: 44px/);
+});

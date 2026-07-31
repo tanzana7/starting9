@@ -39,6 +39,15 @@ test("自動取得は試合開始時刻以降にNPBを取得せず、保存済�
   assert.match(worker, /assertOfficialLineupSaveAllowed\(gameId, options\.now \|\| new Date\(\)\)/);
 });
 
+test("NPBスタメンの守備位置正規化は採点用の既存関数を使い、未定義参照を残さない", () => {
+  assert.match(worker, /const position = normalizeScoringPosition\(row\?\.position\);/);
+  assert.doesNotMatch(worker, /const position = normalizePosition\(row\?\.position\);/);
+  assert.match(worker, /function normalizeScoringPosition\(value\)/);
+  for (const alias of ["捕", "一", "二", "三", "遊", "左", "中", "右", "指", "DH", "1B", "2B", "3B", "SS", "LF", "CF", "RF"]) {
+    assert.match(worker, new RegExp(`(?:[\"']${alias}[\"']|\\b${alias}\\b)`), `${alias} の正規化定義がありません`);
+  }
+});
+
 test("Cron採点と手動採点は保存済みgame_lineupsを採点元にする", () => {
   assert.match(worker, /const storedLineup = parseStoredActualLineup\(record\.actual_lineup_json\);/);
   assert.match(worker, /SELECT id, user_id, prediction_json FROM predictions WHERE game_id = \?1 AND is_test_prediction = 0/);

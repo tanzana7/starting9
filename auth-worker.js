@@ -3541,7 +3541,7 @@ function createOfficialLineupFromNpb(lineup) {
   for (const row of lineup) {
     const player = findFightersPlayerByName(row?.playerName);
     const battingOrder = Number(row?.order);
-    const position = normalizePosition(row?.position);
+    const position = normalizeScoringPosition(row?.position);
     if (!player || !Number.isInteger(battingOrder) || battingOrder < 1 || battingOrder > 9 || !position) {
       return { ok: false, error: "NPBの選手名または守備位置を選手マスタへ安全に照合できません。" };
     }

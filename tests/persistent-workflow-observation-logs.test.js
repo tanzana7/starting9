@@ -36,7 +36,7 @@ test("同じイベントの同一状態は直近30分だけ抑止し、状態回
   assert.match(worker, /recent\.status === status/);
   assert.match(worker, /String\(recent\.error_code \|\| ""\) === normalizedErrorCode/);
   assert.match(worker, /if \(await hasRecentEquivalentWorkflowLog\(db, \{/);
-  assert.match(worker, /occurred_at >= \?3/);
+  assert.match(worker, /occurred_at > \?3/);
 });
 
 test("ログのメタデータは観測用の標準項目に整えられ、秘密情報をシリアライズしない", () => {

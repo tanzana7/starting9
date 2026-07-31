@@ -9,6 +9,7 @@ export const LINEUP_FETCH_START_MINUTES_BEFORE_START = 50;
 export const LINEUP_FETCH_INTERVAL_MINUTES = 10;
 export const FINAL_LINEUP_FETCH_MINUTES_AFTER_START = 1;
 export const FINAL_LINEUP_FETCH_INTERVAL_MINUTES = 10;
+export const FINAL_LINEUP_RETRY_WINDOW_HOURS = 12;
 export const RESULT_RELEASE_MINUTES_AFTER_START = 5;
 export const PROBABLE_STARTER_RETRY_INTERVAL_MINUTES = 60;
 export const ROSTER_AUTO_FETCH_INTERVAL_MINUTES = 360;
@@ -136,6 +137,24 @@ export function getDueFinalLineupAttemptAt(timeline, now = new Date()) {
   return new Date(first.getTime() + Math.floor(elapsed / interval) * interval);
 }
 
+export function getFinalLineupRetryDeadline(timeline) {
+  const startAt = timeline?.startAt instanceof Date ? timeline.startAt : new Date(timeline?.startAt || "");
+  if (!Number.isNaN(startAt.getTime())) {
+    return new Date(startAt.getTime() + FINAL_LINEUP_RETRY_WINDOW_HOURS * 60 * 60 * 1000);
+  }
+  const gameDate = String(timeline?.game?.date || timeline?.date || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(gameDate)) return null;
+  const nextMorning = new Date(`${gameDate}T06:00:00+09:00`);
+  nextMorning.setUTCDate(nextMorning.getUTCDate() + 1);
+  return Number.isNaN(nextMorning.getTime()) ? null : nextMorning;
+}
+
+export function isFinalLineupRetryExpired(timeline, now = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  const deadline = getFinalLineupRetryDeadline(timeline);
+  return Boolean(deadline && !Number.isNaN(current.getTime()) && current >= deadline);
+}
+
 export function getRosterFetchDecision(timeline, state = {}, now = new Date()) {
   const current = now instanceof Date ? now : new Date(now);
   const startAt = timeline?.startAt instanceof Date ? timeline.startAt : new Date(timeline?.startAt || "");
@@ -173,6 +192,7 @@ if (typeof window !== "undefined") {
     lineupFetchIntervalMinutes: LINEUP_FETCH_INTERVAL_MINUTES,
     finalLineupFetchMinutesAfterStart: FINAL_LINEUP_FETCH_MINUTES_AFTER_START,
     finalLineupFetchIntervalMinutes: FINAL_LINEUP_FETCH_INTERVAL_MINUTES,
+    finalLineupRetryWindowHours: FINAL_LINEUP_RETRY_WINDOW_HOURS,
     resultReleaseMinutesAfterStart: RESULT_RELEASE_MINUTES_AFTER_START,
     probableStarterRetryIntervalMinutes: PROBABLE_STARTER_RETRY_INTERVAL_MINUTES,
     rosterAutoFetchIntervalMinutes: ROSTER_AUTO_FETCH_INTERVAL_MINUTES,

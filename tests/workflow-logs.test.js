@@ -53,7 +53,7 @@ test("要求された通常試合イベントをCron・管理操作から記録�
   for (const eventType of [
     "schedule_sync", "prediction_target_switched", "prediction_target_switch_skipped",
     "lineup_fetch", "lineup_fallback", "scoring_started",
-    "scoring_succeeded", "scoring_failed", "scoring_skipped", "result_published",
+    "scoring_succeeded", "scoring_failed", "scoring_retry_expired", "result_published",
     "ranking_reflected", "admin_manual_operation", "admin_lineup_revision", "admin_rescore_confirmed"
   ]) {
     assert.match(worker, new RegExp(eventType), `${eventType}の記録がない`);

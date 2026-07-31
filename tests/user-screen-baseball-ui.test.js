@@ -70,8 +70,25 @@ test("タッチ端末向けに長押しドラッグで選手と守備位置を�
   assert.doesNotMatch(script, /slot-reorder-button|reorderButton/);
   assert.match(script, /const dragHandle = pickerName === "actual"/);
   assert.match(css, /\.slot-drag-handle/);
-  assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.lineup-slot,\n\.app-layout:not\(\.is-admin-screen\) \.player-chip[\s\S]*touch-action: pan-y/);
+  assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.lineup-slot,\r?\n\.app-layout:not\(\.is-admin-screen\) \.player-chip[\s\S]*touch-action: pan-y/);
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.lineup-slot\.is-dragging[\s\S]*box-shadow/);
+});
+
+test("スマホの選手一覧はページ全体でスクロールし、2列のコンパクト表示になる", () => {
+  assert.match(css, /@media \(max-width: 768px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-list[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.player-list[\s\S]*max-height: none/);
+  assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.player-list[\s\S]*overflow: visible/);
+  assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.player-chip \.player-name[\s\S]*text-overflow: ellipsis/);
+});
+
+test("iPhone向けTouch Eventsフォールバックも既存のPointer状態更新を利用する", () => {
+  assert.match(script, /touchstart.*handleTouchInteractionStart/);
+  assert.match(script, /touchmove.*handleTouchInteractionMove/);
+  assert.match(script, /touchend.*handleTouchInteractionEnd/);
+  assert.match(script, /touchcancel.*handleTouchInteractionCancel/);
+  assert.match(script, /function createTouchPointerEvent\(touch, sourceEvent\)/);
+  assert.match(script, /beginPointerInteraction\(createTouchPointerEvent\(touch, event\), target, kind\)/);
+  assert.match(script, /handlePointerInteractionMove\(createTouchPointerEvent\(touch, event\)\)/);
 });
 
 test("iPhone向けの選択抑止と公示ブロックの位置を通常画面だけに適用する", () => {

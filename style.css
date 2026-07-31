@@ -4836,16 +4836,28 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
   }
 
   .app-layout:not(.is-admin-screen) .player-list {
-    max-height: 560px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-height: none;
+    overflow: visible;
     padding-right: 0;
+    scrollbar-width: auto;
   }
 
   .app-layout:not(.is-admin-screen) .player-chip {
-    min-height: 38px;
-    padding: 6px 7px;
+    min-height: 34px;
+    padding: 5px 6px;
+    gap: 4px;
     font-size: 0.78rem;
     line-height: 1.15;
     text-align: left;
+  }
+
+  .app-layout:not(.is-admin-screen) .player-chip .player-name {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 
@@ -4878,6 +4890,11 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
   .app-layout:not(.is-admin-screen) .slot-player,
   .app-layout:not(.is-admin-screen) .player-chip {
     font-size: 0.7rem;
+  }
+
+  .app-layout:not(.is-admin-screen) .player-chip {
+    min-height: 32px;
+    padding: 4px 5px;
   }
 
   .app-layout:not(.is-admin-screen) .position-control,

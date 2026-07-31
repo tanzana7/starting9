@@ -553,6 +553,10 @@ function bindEvents() {
   document.addEventListener("pointermove", handlePointerInteractionMove, { passive: false });
   document.addEventListener("pointerup", handlePointerInteractionEnd);
   document.addEventListener("pointercancel", handlePointerInteractionCancel);
+  document.addEventListener("touchstart", handleTouchInteractionStart, { passive: true });
+  document.addEventListener("touchmove", handleTouchInteractionMove, { passive: false });
+  document.addEventListener("touchend", handleTouchInteractionEnd, { passive: false });
+  document.addEventListener("touchcancel", handleTouchInteractionCancel, { passive: false });
   bindAdminEvent("loadSelectedGameButton", "click", loadSelectedGameSchedule);
   bindAdminEvent("gameScheduleSelect", "change", handleScheduleSelectionChange);
   bindAdminEvent("copyScheduleLogButton", "click", copyScheduleLoadLog);
@@ -1776,6 +1780,7 @@ function createPlayerChip(pickerName, player) {
   button.type = "button";
   button.dataset.picker = pickerName;
   button.dataset.player = player;
+  button.title = player;
   button.draggable = shouldUseNativeDrag(pickerName);
   button.innerHTML = createPlayerLabelHtml(player);
   applyPlayerCategoryClass(button, player);
@@ -1959,6 +1964,7 @@ function beginPointerInteraction(event, element, kind) {
     startY: event.clientY,
     targetIndex: null,
     active: false,
+    inputSource: event.inputSource || "pointer",
     timerId: setTimeout(() => activatePointerInteraction(interaction), POINTER_LONG_PRESS_MS)
   };
 
@@ -1985,7 +1991,7 @@ function activatePointerInteraction(interaction) {
 
 function handlePointerInteractionMove(event) {
   const interaction = state.pointerInteraction;
-  if (!interaction || interaction.pointerId !== event.pointerId) return;
+  if (!interaction || interaction.inputSource !== (event.inputSource || "pointer") || interaction.pointerId !== event.pointerId) return;
 
   const distance = Math.hypot(event.clientX - interaction.startX, event.clientY - interaction.startY);
   if (!interaction.active) {
@@ -2014,7 +2020,7 @@ function handlePointerInteractionMove(event) {
 
 function handlePointerInteractionEnd(event) {
   const interaction = state.pointerInteraction;
-  if (!interaction || interaction.pointerId !== event.pointerId) return;
+  if (!interaction || interaction.inputSource !== (event.inputSource || "pointer") || interaction.pointerId !== event.pointerId) return;
 
   if (interaction.active) {
     event.preventDefault();
@@ -2034,7 +2040,7 @@ function handlePointerInteractionEnd(event) {
 
 function handlePointerInteractionCancel(event) {
   const interaction = state.pointerInteraction;
-  if (!interaction || interaction.pointerId !== event.pointerId) return;
+  if (!interaction || interaction.inputSource !== (event.inputSource || "pointer") || interaction.pointerId !== event.pointerId) return;
   if (interaction.active) state.pointerSuppressClickUntil = Date.now() + 400;
   clearPointerInteraction();
 }
@@ -2056,6 +2062,61 @@ function clearPointerInteraction() {
     // Pointer capture cleanup is best effort.
   }
   state.pointerInteraction = null;
+}
+
+function createTouchPointerEvent(touch, sourceEvent) {
+  return {
+    pointerId: touch.identifier,
+    pointerType: "touch",
+    clientX: touch.clientX,
+    clientY: touch.clientY,
+    target: sourceEvent.target,
+    inputSource: "touch",
+    preventDefault: () => sourceEvent.preventDefault()
+  };
+}
+
+function getTouchInteractionTarget(event) {
+  if (event.touches.length !== 1 || !(event.target instanceof Element)) return null;
+  const target = event.target.closest(
+    '.player-chip[data-picker="prediction"], .lineup-slot[data-picker="prediction"]'
+  );
+  if (!target || (target.classList.contains("lineup-slot") && !target.dataset.player)) return null;
+  return target;
+}
+
+function handleTouchInteractionStart(event) {
+  if (state.pointerInteraction) return;
+  const target = getTouchInteractionTarget(event);
+  const touch = event.changedTouches[0];
+  if (!target || !touch) return;
+  const kind = target.classList.contains("player-chip") ? "player" : "lineup";
+  beginPointerInteraction(createTouchPointerEvent(touch, event), target, kind);
+}
+
+function getChangedTouch(event, interaction) {
+  return Array.from(event.changedTouches).find((touch) => touch.identifier === interaction.pointerId);
+}
+
+function handleTouchInteractionMove(event) {
+  const interaction = state.pointerInteraction;
+  if (!interaction || interaction.inputSource !== "touch") return;
+  const touch = getChangedTouch(event, interaction);
+  if (touch) handlePointerInteractionMove(createTouchPointerEvent(touch, event));
+}
+
+function handleTouchInteractionEnd(event) {
+  const interaction = state.pointerInteraction;
+  if (!interaction || interaction.inputSource !== "touch") return;
+  const touch = getChangedTouch(event, interaction);
+  if (touch) handlePointerInteractionEnd(createTouchPointerEvent(touch, event));
+}
+
+function handleTouchInteractionCancel(event) {
+  const interaction = state.pointerInteraction;
+  if (!interaction || interaction.inputSource !== "touch") return;
+  const touch = getChangedTouch(event, interaction);
+  if (touch) handlePointerInteractionCancel(createTouchPointerEvent(touch, event));
 }
 
 function shouldUseNativeDrag(pickerName) {

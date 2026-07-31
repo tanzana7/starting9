@@ -31,7 +31,8 @@ class FakeElement {
     this.closestResult = null;
     this.classList = {
       add: (...names) => names.forEach((name) => this.classNames.add(name)),
-      remove: (...names) => names.forEach((name) => this.classNames.delete(name))
+      remove: (...names) => names.forEach((name) => this.classNames.delete(name)),
+      contains: (name) => this.classNames.has(name)
     };
   }
 
@@ -91,9 +92,16 @@ function createPointerHarness() {
     "handlePointerInteractionMove",
     "handlePointerInteractionEnd",
     "handlePointerInteractionCancel",
-    "clearPointerInteraction"
+    "clearPointerInteraction",
+    "createTouchPointerEvent",
+    "getTouchInteractionTarget",
+    "getChangedTouch",
+    "handleTouchInteractionStart",
+    "handleTouchInteractionMove",
+    "handleTouchInteractionEnd",
+    "handleTouchInteractionCancel"
   ].map(getFunctionSource).join("\n");
-  vm.runInContext(`${functions}; this.api = { beginPointerInteraction, handlePointerInteractionMove, handlePointerInteractionEnd, handlePointerInteractionCancel };`, context);
+  vm.runInContext(`${functions}; this.api = { beginPointerInteraction, handlePointerInteractionMove, handlePointerInteractionEnd, handlePointerInteractionCancel, handleTouchInteractionStart, handleTouchInteractionMove, handleTouchInteractionEnd, handleTouchInteractionCancel };`, context);
   return { context, timers, target, getMoved: () => moved, getAssigned: () => assigned };
 }
 
@@ -155,4 +163,25 @@ test("打順ドラッグでは既存の共通移動関数へ渡す", () => {
   harness.context.api.handlePointerInteractionMove(pointerEvent(1, 10, 20, slot));
   harness.context.api.handlePointerInteractionEnd(pointerEvent(1, 10, 10, slot));
   assert.deepEqual(harness.getMoved(), ["prediction", 1, 2]);
+});
+
+test("Touch Eventsフォールバックでも選手一覧から打順へ配置できる", () => {
+  const harness = createPointerHarness();
+  const player = new FakeElement({ picker: "prediction", player: "選手A" });
+  player.classList.add("player-chip");
+  player.closestResult = player;
+  const touch = { identifier: 3, clientX: 10, clientY: 10 };
+  const touchEvent = (currentTouch, target = player) => ({
+    touches: [currentTouch],
+    changedTouches: [currentTouch],
+    target,
+    preventDefault() {}
+  });
+
+  harness.context.api.handleTouchInteractionStart(touchEvent(touch));
+  assert.equal(harness.context.state.pointerInteraction.inputSource, "touch");
+  harness.timers[0]();
+  harness.context.api.handleTouchInteractionMove(touchEvent({ identifier: 3, clientX: 10, clientY: 20 }));
+  harness.context.api.handleTouchInteractionEnd(touchEvent({ identifier: 3, clientX: 10, clientY: 20 }));
+  assert.deepEqual(harness.getAssigned(), ["prediction", "選手A", 2, null]);
 });

@@ -4645,3 +4645,111 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
     font-size: 1.18rem;
   }
 }
+
+/* 通常画面のスマホ操作: 管理画面のオーダー表には適用しない */
+.app-layout:not(.is-admin-screen),
+.app-layout:not(.is-admin-screen) > .card,
+.app-layout:not(.is-admin-screen) .lineup-card,
+.app-layout:not(.is-admin-screen) .lineup-builder,
+.app-layout:not(.is-admin-screen) .lineup-panel,
+.app-layout:not(.is-admin-screen) .player-panel {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.app-layout:not(.is-admin-screen) .slot-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
+.app-layout:not(.is-admin-screen) .slot-reorder-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.app-layout:not(.is-admin-screen) .slot-reorder-button {
+  display: inline-grid;
+  width: 34px;
+  min-width: 34px;
+  min-height: 44px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid #b7c8d8;
+  border-radius: 4px;
+  color: var(--fighters-deep-blue);
+  background: #ffffff;
+  font-weight: 900;
+  line-height: 1;
+  touch-action: manipulation;
+}
+
+.app-layout:not(.is-admin-screen) .slot-reorder-button:hover,
+.app-layout:not(.is-admin-screen) .slot-reorder-button:focus-visible {
+  border-color: var(--fighters-blue);
+  background: #f5f9fc;
+}
+
+.app-layout:not(.is-admin-screen) .roster-filter-button {
+  min-height: 44px;
+  font-weight: 800;
+  touch-action: manipulation;
+}
+
+.app-layout:not(.is-admin-screen) .roster-filter-button.is-selected {
+  border-color: var(--fighters-blue);
+  color: var(--fighters-deep-blue);
+  font-weight: 950;
+  box-shadow: inset 0 -2px 0 var(--fighters-blue), 0 1px 3px rgba(25, 54, 82, 0.12);
+}
+
+@media (max-width: 768px) {
+  .app-layout:not(.is-admin-screen) .lineup-builder {
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+    gap: 18px;
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-panel,
+  .app-layout:not(.is-admin-screen) .player-panel,
+  .app-layout:not(.is-admin-screen) .slot-list,
+  .app-layout:not(.is-admin-screen) .player-list {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-slot {
+    grid-template-columns: 32px 44px minmax(0, 1fr) 42px minmax(88px, auto);
+    width: 100%;
+    min-width: 0;
+  }
+
+  .app-layout:not(.is-admin-screen) .slot-player,
+  .app-layout:not(.is-admin-screen) .player-chip,
+  .app-layout:not(.is-admin-screen) .roster-filter-button {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .app-layout:not(.is-admin-screen) .player-chip,
+  .app-layout:not(.is-admin-screen) .slot-reorder-button,
+  .app-layout:not(.is-admin-screen) .position-button {
+    touch-action: manipulation;
+  }
+}
+
+@media (max-width: 430px) {
+  .app-layout:not(.is-admin-screen) .lineup-slot {
+    grid-template-columns: 28px 40px minmax(0, 1fr) 40px minmax(88px, auto);
+    gap: 6px;
+    padding: 6px 2px;
+  }
+
+  .app-layout:not(.is-admin-screen) .slot-reorder-button {
+    width: 32px;
+    min-width: 32px;
+  }
+}

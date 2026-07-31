@@ -1608,7 +1608,36 @@ function createLineupSlot(pickerName, index) {
     clearSlot(pickerName, index);
   });
 
-  slot.append(dragHandle, order, player, positionControl, clearButton);
+  const reorderControls = document.createElement("span");
+  reorderControls.className = "slot-reorder-controls";
+  [
+    ["up", "上へ", index - 1],
+    ["down", "下へ", index + 1]
+  ].forEach(([direction, label, targetIndex]) => {
+    const reorderButton = document.createElement("button");
+    reorderButton.className = "slot-reorder-button";
+    reorderButton.type = "button";
+    reorderButton.dataset.lineupMove = direction;
+    reorderButton.textContent = direction === "up" ? "↑" : "↓";
+    reorderButton.setAttribute("aria-label", `${index + 1}番を${label}`);
+    reorderButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      moveLineupSlot(pickerName, index, targetIndex);
+    });
+    reorderControls.appendChild(reorderButton);
+  });
+
+  const slotActions = document.createElement("span");
+  slotActions.className = "slot-actions";
+  slotActions.append(reorderControls, clearButton);
+
+  slot.append(
+    dragHandle,
+    order,
+    player,
+    positionControl,
+    pickerName === "prediction" ? slotActions : clearButton
+  );
   return slot;
 }
 
@@ -2005,6 +2034,22 @@ function movePositionBetweenSlots(pickerName, sourceIndex, targetIndex) {
   state.activeOrder[pickerName] = targetIndex;
   clearMessage(pickerName === "prediction" ? "predictionError" : "actualError");
   renderPicker(pickerName);
+}
+
+function moveLineupSlot(pickerName, sourceIndex, targetIndex) {
+  if (pickerName === "prediction" && !ensurePredictionEditingAllowed()) return;
+  if (targetIndex < 0 || targetIndex >= LINEUP_SIZE || sourceIndex === targetIndex) return;
+
+  const lineup = normalizeLineup(getLineupValues(pickerName));
+  const sourceItem = lineup[sourceIndex];
+  const targetItem = lineup[targetIndex];
+  if (!sourceItem || !targetItem) return;
+
+  lineup[sourceIndex] = createLineupItem(sourceIndex, targetItem.player, targetItem.position);
+  lineup[targetIndex] = createLineupItem(targetIndex, sourceItem.player, sourceItem.position);
+  state.activeOrder[pickerName] = targetIndex;
+  setLineupValues(pickerName, lineup);
+  clearMessage(pickerName === "prediction" ? "predictionError" : "actualError");
 }
 
 function moveLineupPosition(lineup, sourceIndex, targetIndex) {
@@ -7726,6 +7771,10 @@ function renderPicker(pickerName) {
     dragHandle.classList.toggle("is-disabled", !player || isLocked);
     clearButton.disabled = isLocked;
     clearButton.classList.toggle("hidden", !player);
+    slot.querySelectorAll("[data-lineup-move]").forEach((button) => {
+      const targetIndex = button.dataset.lineupMove === "up" ? index - 1 : index + 1;
+      button.disabled = isLocked || targetIndex < 0 || targetIndex >= LINEUP_SIZE;
+    });
   });
 
   document.querySelectorAll(`.player-chip[data-picker="${pickerName}"]`).forEach((chip) => {
@@ -7746,6 +7795,7 @@ function renderPredictionRosterFilter() {
     const isSelected = button.dataset.rosterFilter === filter;
     button.classList.toggle("is-selected", isSelected);
     button.setAttribute("aria-pressed", isSelected ? "true" : "false");
+    button.setAttribute("aria-selected", isSelected ? "true" : "false");
   });
 
   document.querySelectorAll('.player-chip[data-picker="prediction"]').forEach((chip) => {

@@ -32,7 +32,8 @@ const SCORE_RULES = {
     max: 20
   }
 };
-const FLICK_DISTANCE = 42;
+const POINTER_LONG_PRESS_MS = 250;
+const POINTER_DRAG_DISTANCE = 8;
 const DRAG_DATA_TYPE = "application/x-ham-starting9-player";
 const NPB_WORKER_PRODUCTION_URL = "https://starting9-npb-fetch.tanzana7.workers.dev/";
 const NPB_WORKER_LOCAL_URL = "http://127.0.0.1:8788/";
@@ -393,7 +394,8 @@ const state = {
     prediction: 0,
     actual: 0
   },
-  flickStart: new Map()
+  pointerInteraction: null,
+  pointerSuppressClickUntil: 0
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -548,6 +550,9 @@ function bindEvents() {
   document.getElementById("adminDetails")?.addEventListener("toggle", handleAdminDetailsToggle);
   bindAdminEvent("loadNextGameButton", "click", loadNextGameSchedule);
   bindAdminEvent("loadTodayGameButton", "click", loadTodayGameSchedule);
+  document.addEventListener("pointermove", handlePointerInteractionMove, { passive: false });
+  document.addEventListener("pointerup", handlePointerInteractionEnd);
+  document.addEventListener("pointercancel", handlePointerInteractionCancel);
   bindAdminEvent("loadSelectedGameButton", "click", loadSelectedGameSchedule);
   bindAdminEvent("gameScheduleSelect", "change", handleScheduleSelectionChange);
   bindAdminEvent("copyScheduleLogButton", "click", copyScheduleLoadLog);
@@ -1556,6 +1561,10 @@ function createLineupSlot(pickerName, index) {
   slot.tabIndex = 0;
   slot.draggable = false;
   slot.addEventListener("click", () => {
+    if (Date.now() < state.pointerSuppressClickUntil || slot.dataset.skipClick === "true") {
+      slot.dataset.skipClick = "false";
+      return;
+    }
     if (pickerName === "prediction" && !ensurePredictionEditingAllowed()) return;
     setActiveOrder(pickerName, index);
     showSlotPlayerDetails(pickerName, slot);
@@ -1572,26 +1581,32 @@ function createLineupSlot(pickerName, index) {
   slot.addEventListener("dragenter", () => slot.classList.add("is-drop-target"));
   slot.addEventListener("dragleave", () => slot.classList.remove("is-drop-target"));
   slot.addEventListener("drop", (event) => handleSlotDrop(event, slot));
+  slot.addEventListener("dragstart", (event) => handleSlotDragStart(event, slot));
+  slot.addEventListener("dragend", (event) => handleDragEnd(event, slot));
+  slot.addEventListener("pointerdown", (event) => handleLineupPointerDown(event, slot));
 
   const order = document.createElement("span");
   order.className = "slot-order";
   order.textContent = `${index + 1}番`;
 
-  const dragHandle = document.createElement("button");
-  dragHandle.className = "slot-drag-handle";
-  dragHandle.type = "button";
-  dragHandle.draggable = false;
-  dragHandle.textContent = "⠿";
-  dragHandle.setAttribute("aria-label", `${index + 1}番をドラッグして並び替え`);
-  dragHandle.addEventListener("click", (event) => event.stopPropagation());
-  dragHandle.addEventListener("dragstart", (event) => handleSlotDragStart(event, slot));
-  dragHandle.addEventListener("dragend", (event) => handleDragEnd(event, slot));
+  const dragHandle = pickerName === "actual" ? document.createElement("button") : null;
+  if (dragHandle) {
+    dragHandle.className = "slot-drag-handle";
+    dragHandle.type = "button";
+    dragHandle.draggable = false;
+    dragHandle.textContent = "⠿";
+    dragHandle.setAttribute("aria-label", `${index + 1}番をドラッグして並び替え`);
+    dragHandle.addEventListener("click", (event) => event.stopPropagation());
+    dragHandle.addEventListener("dragstart", (event) => handleSlotDragStart(event, slot));
+    dragHandle.addEventListener("dragend", (event) => handleDragEnd(event, slot));
+  }
 
   const player = document.createElement("span");
   player.className = "slot-player slot-empty";
   player.textContent = "未選択";
   player.addEventListener("click", (event) => {
     event.stopPropagation();
+    if (Date.now() < state.pointerSuppressClickUntil) return;
     setActiveOrder(pickerName, index);
     showSlotPlayerDetails(pickerName, slot);
   });
@@ -1608,35 +1623,12 @@ function createLineupSlot(pickerName, index) {
     clearSlot(pickerName, index);
   });
 
-  const reorderControls = document.createElement("span");
-  reorderControls.className = "slot-reorder-controls";
-  [
-    ["up", "上へ", index - 1],
-    ["down", "下へ", index + 1]
-  ].forEach(([direction, label, targetIndex]) => {
-    const reorderButton = document.createElement("button");
-    reorderButton.className = "slot-reorder-button";
-    reorderButton.type = "button";
-    reorderButton.dataset.lineupMove = direction;
-    reorderButton.textContent = direction === "up" ? "↑" : "↓";
-    reorderButton.setAttribute("aria-label", `${index + 1}番を${label}`);
-    reorderButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      moveLineupSlot(pickerName, index, targetIndex);
-    });
-    reorderControls.appendChild(reorderButton);
-  });
-
-  const slotActions = document.createElement("span");
-  slotActions.className = "slot-actions";
-  slotActions.append(reorderControls, clearButton);
-
   slot.append(
-    dragHandle,
+    ...(dragHandle ? [dragHandle] : []),
     order,
     player,
     positionControl,
-    pickerName === "prediction" ? slotActions : clearButton
+    clearButton
   );
   return slot;
 }
@@ -1784,6 +1776,7 @@ function createPlayerChip(pickerName, player) {
   applyPlayerCategoryClass(button, player);
 
   button.addEventListener("click", () => {
+    if (Date.now() < state.pointerSuppressClickUntil) return;
     if (button.dataset.skipClick === "true") {
       button.dataset.skipClick = "false";
       return;
@@ -1794,9 +1787,6 @@ function createPlayerChip(pickerName, player) {
     assignPlayerToActiveSlot(pickerName, player);
   });
   button.addEventListener("pointerdown", (event) => handlePlayerPointerDown(event, button));
-  button.addEventListener("pointerup", (event) => handlePlayerPointerUp(event, button));
-  button.addEventListener("pointercancel", () => clearFlickState(button));
-  button.addEventListener("lostpointercapture", () => clearFlickState(button));
   button.addEventListener("dragstart", (event) => handlePlayerDragStart(event, button));
   button.addEventListener("dragend", (event) => handleDragEnd(event, button));
 
@@ -1925,50 +1915,132 @@ function getDragData(event) {
 function handleDragEnd(event, element) {
   event.preventDefault();
   element.classList.remove("is-dragging");
+  element.dataset.skipClick = "true";
+  setTimeout(() => {
+    element.dataset.skipClick = "false";
+  }, 0);
   document.querySelectorAll(".lineup-slot.is-drop-target").forEach((slot) => {
     slot.classList.remove("is-drop-target");
   });
 }
 
 function handlePlayerPointerDown(event, button) {
-  if (button.dataset.picker === "prediction" && isPredictionEditingLocked()) return;
-  if (event.pointerType === "mouse") {
+  beginPointerInteraction(event, button, "player");
+}
+
+function handleLineupPointerDown(event, slot) {
+  if (slot.dataset.picker !== "prediction" || !slot.dataset.player) return;
+  beginPointerInteraction(event, slot, "lineup");
+}
+
+function beginPointerInteraction(event, element, kind) {
+  if (element.dataset.picker !== "prediction" || event.pointerType === "mouse" || isPredictionEditingLocked()) return;
+  if (event.target instanceof Element && event.target.closest("button, .position-menu")) return;
+
+  clearPointerInteraction();
+  const interaction = {
+    pointerId: event.pointerId,
+    element,
+    kind,
+    pickerName: element.dataset.picker,
+    sourceIndex: kind === "lineup" ? Number(element.dataset.order) : null,
+    player: kind === "player" ? element.dataset.player : element.dataset.player,
+    startX: event.clientX,
+    startY: event.clientY,
+    targetIndex: null,
+    active: false,
+    timerId: setTimeout(() => activatePointerInteraction(interaction), POINTER_LONG_PRESS_MS)
+  };
+
+  state.pointerInteraction = interaction;
+  element.classList.add("is-pressing");
+}
+
+function activatePointerInteraction(interaction) {
+  if (state.pointerInteraction !== interaction || isPredictionEditingLocked()) return;
+  interaction.active = true;
+  interaction.element.classList.remove("is-pressing");
+  interaction.element.classList.add("is-dragging");
+  try {
+    interaction.element.setPointerCapture(interaction.pointerId);
+  } catch {
+    // Pointer capture is unavailable in some embedded browsers; document listeners still handle cleanup.
+  }
+}
+
+function handlePointerInteractionMove(event) {
+  const interaction = state.pointerInteraction;
+  if (!interaction || interaction.pointerId !== event.pointerId) return;
+
+  const distance = Math.hypot(event.clientX - interaction.startX, event.clientY - interaction.startY);
+  if (!interaction.active) {
+    if (distance > POINTER_DRAG_DISTANCE) {
+      clearPointerInteraction();
+    }
     return;
   }
 
-  state.flickStart.set(button, {
-    x: event.clientX,
-    y: event.clientY
+  event.preventDefault();
+  const target = document.elementFromPoint(event.clientX, event.clientY)?.closest(
+    `.lineup-slot[data-picker="${interaction.pickerName}"]`
+  );
+  document.querySelectorAll(`.lineup-slot[data-picker="${interaction.pickerName}"].is-drop-target`).forEach((slot) => {
+    slot.classList.remove("is-drop-target");
   });
-  button.classList.add("is-flicking");
-}
 
-function handlePlayerPointerUp(event, button) {
-  if (button.dataset.picker === "prediction" && !ensurePredictionEditingAllowed()) return;
-  if (event.pointerType === "mouse") {
+  if (!target) {
+    interaction.targetIndex = null;
     return;
   }
 
-  const start = state.flickStart.get(button);
-  clearFlickState(button);
-
-  if (!start) {
-    return;
-  }
-
-  const diffX = event.clientX - start.x;
-  const diffY = event.clientY - start.y;
-  const isLeftFlick = diffX <= -FLICK_DISTANCE && Math.abs(diffX) > Math.abs(diffY);
-
-  if (isLeftFlick) {
-    button.dataset.skipClick = "true";
-    assignPlayerToActiveSlot(button.dataset.picker, button.dataset.player);
-  }
+  interaction.targetIndex = Number(target.dataset.order);
+  target.classList.add("is-drop-target");
 }
 
-function clearFlickState(button) {
-  state.flickStart.delete(button);
-  button.classList.remove("is-flicking");
+function handlePointerInteractionEnd(event) {
+  const interaction = state.pointerInteraction;
+  if (!interaction || interaction.pointerId !== event.pointerId) return;
+
+  if (interaction.active) {
+    event.preventDefault();
+    const targetIndex = interaction.targetIndex;
+    if (Number.isInteger(targetIndex)) {
+      if (interaction.kind === "lineup") {
+        moveLineupSlot(interaction.pickerName, interaction.sourceIndex, targetIndex);
+      } else {
+        assignPlayerToSlot(interaction.pickerName, interaction.player, targetIndex, null);
+      }
+    }
+    state.pointerSuppressClickUntil = Date.now() + 400;
+  }
+
+  clearPointerInteraction();
+}
+
+function handlePointerInteractionCancel(event) {
+  const interaction = state.pointerInteraction;
+  if (!interaction || interaction.pointerId !== event.pointerId) return;
+  if (interaction.active) state.pointerSuppressClickUntil = Date.now() + 400;
+  clearPointerInteraction();
+}
+
+function clearPointerInteraction() {
+  const interaction = state.pointerInteraction;
+  if (!interaction) return;
+
+  clearTimeout(interaction.timerId);
+  interaction.element.classList.remove("is-pressing", "is-dragging");
+  document.querySelectorAll(".lineup-slot.is-drop-target").forEach((slot) => {
+    slot.classList.remove("is-drop-target");
+  });
+  try {
+    if (interaction.element.hasPointerCapture?.(interaction.pointerId)) {
+      interaction.element.releasePointerCapture(interaction.pointerId);
+    }
+  } catch {
+    // Pointer capture cleanup is best effort.
+  }
+  state.pointerInteraction = null;
 }
 
 function setActiveOrder(pickerName, index) {
@@ -7750,14 +7822,13 @@ function renderPicker(pickerName) {
     const position = slot.dataset.position || "";
     const playerElement = slot.querySelector(".slot-player");
     const positionButton = slot.querySelector(".position-button");
-    const dragHandle = slot.querySelector(".slot-drag-handle");
     const clearButton = slot.querySelector(".slot-clear");
 
     slot.classList.toggle("is-active", state.activeOrder[pickerName] === index);
     slot.classList.toggle("has-player", Boolean(player));
     slot.classList.toggle("is-duplicate", duplicatedPlayers.has(player) || duplicatedPositions.has(position));
     slot.classList.toggle("is-locked", isLocked);
-    slot.draggable = false;
+    slot.draggable = pickerName === "prediction" && Boolean(player) && !isLocked;
     slot.setAttribute("aria-disabled", isLocked ? "true" : "false");
     slot.setAttribute("aria-label", `${index + 1}番 ${position || "守備未選択"} ${player || "未選択"}`);
     playerElement.innerHTML = player ? createPlayerLabelHtml(player) : "未選択";
@@ -7766,15 +7837,14 @@ function renderPicker(pickerName) {
     renderPositionButton(positionButton, position, index);
     positionButton.disabled = isLocked;
     positionButton.draggable = Boolean(position) && !isLocked;
-    dragHandle.disabled = isLocked;
-    dragHandle.draggable = Boolean(player) && !isLocked;
-    dragHandle.classList.toggle("is-disabled", !player || isLocked);
     clearButton.disabled = isLocked;
     clearButton.classList.toggle("hidden", !player);
-    slot.querySelectorAll("[data-lineup-move]").forEach((button) => {
-      const targetIndex = button.dataset.lineupMove === "up" ? index - 1 : index + 1;
-      button.disabled = isLocked || targetIndex < 0 || targetIndex >= LINEUP_SIZE;
-    });
+    const dragHandle = slot.querySelector(".slot-drag-handle");
+    if (dragHandle) {
+      dragHandle.disabled = isLocked;
+      dragHandle.draggable = Boolean(player) && !isLocked;
+      dragHandle.classList.toggle("is-disabled", !player || isLocked);
+    }
   });
 
   document.querySelectorAll(`.player-chip[data-picker="${pickerName}"]`).forEach((chip) => {
@@ -8302,7 +8372,7 @@ function resetAllData() {
   };
   state.activeOrder.prediction = 0;
   state.activeOrder.actual = 0;
-  state.flickStart.clear();
+  clearPointerInteraction();
 
   document.getElementById("predictionForm").reset();
   document.getElementById("actualPasteInput").value = "";

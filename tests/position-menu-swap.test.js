@@ -85,7 +85,7 @@ test("別選手を設定すると前の選手の守備位置を引き継がな�
   assert.deepEqual(JSON.parse(JSON.stringify(result[0])), { order: 1, player: "清宮幸太郎", position: "" });
 });
 
-test("上下移動は選手と守備位置をセットで入れ替え、重複を作らない", () => {
+test("ドラッグ移動は選手と守備位置をセットで入れ替え、重複を作らない", () => {
   const result = runLineupSlotMove([
     { player: "田宮裕涼", position: "捕" },
     { player: "清宮幸太郎", position: "一" }

@@ -104,8 +104,8 @@ test("現在状態テキストを出さず、最新スナップショットで�
   assert.match(filter, /player\?\.isBatterCandidate === true/);
   assert.match(filter, /candidateRosterFilter/);
   assert.match(filter, /data-roster-filter/);
-  assert.match(html, /data-roster-filter="active"[^>]*>出場登録されている選手/);
-  assert.match(html, /data-roster-filter="inactive"[^>]*>出場登録されていない選手/);
+  assert.match(html, /data-roster-filter="active"[^>]*>登録済み/);
+  assert.match(html, /data-roster-filter="inactive"[^>]*>未登録/);
   assert.doesNotMatch(html, /predictionRosterFilterCurrent|現在：出場登録/);
   assert.doesNotMatch(chip, /roster-status-badge|出場登録外/);
   assert.doesNotMatch(script, /predictionRosterFilterCurrent|roster-status-badge/);

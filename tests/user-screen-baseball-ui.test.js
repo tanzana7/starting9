@@ -47,8 +47,8 @@ test("通常画面の固定幅を避け、保存操作の既存IDを維持する
   assert.match(html, /id="savePredictionButton"/);
 });
 
-test("スマホの通常画面はオーダー表と選手一覧を1列に積む", () => {
-  assert.match(css, /@media \(max-width: 768px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+test("スマホの通常画面はオーダー表40%と選手一覧60%の2列にする", () => {
+  assert.match(css, /@media \(max-width: 768px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 0\.4fr\) minmax\(0, 0\.6fr\)/);
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.lineup-slot[\s\S]*min-width: 0/);
   assert.doesNotMatch(css, /body\s*\{[\s\S]*overflow-x:\s*hidden/);
 });
@@ -60,10 +60,16 @@ test("選手フィルターは初期状態をactiveとして保持し、選択�
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.roster-filter-button\.is-selected[\s\S]*font-weight: 950/);
 });
 
-test("タッチ端末向けに上下移動ボタンで選手と守備位置を同時に入れ替えられる", () => {
+test("タッチ端末向けに長押しドラッグで選手と守備位置を同時に入れ替えられる", () => {
   assert.match(script, /function moveLineupSlot\(pickerName, sourceIndex, targetIndex\)/);
-  assert.match(script, /reorderButton\.dataset\.lineupMove = direction/);
-  assert.match(script, /slotActions\.append\(reorderControls, clearButton\)/);
-  assert.match(script, /button\.disabled = isLocked \|\| targetIndex < 0 \|\| targetIndex >= LINEUP_SIZE/);
-  assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.slot-reorder-button[\s\S]*min-height: 44px/);
+  assert.match(script, /const POINTER_LONG_PRESS_MS = 250/);
+  assert.match(script, /const POINTER_DRAG_DISTANCE = 8/);
+  assert.match(script, /function handleLineupPointerDown\(event, slot\)/);
+  assert.match(script, /function handlePointerInteractionMove\(event\)/);
+  assert.match(script, /moveLineupSlot\(interaction\.pickerName, interaction\.sourceIndex, targetIndex\)/);
+  assert.doesNotMatch(script, /slot-reorder-button|reorderButton/);
+  assert.match(script, /const dragHandle = pickerName === "actual"/);
+  assert.match(css, /\.slot-drag-handle/);
+  assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.lineup-slot,\n\.app-layout:not\(\.is-admin-screen\) \.player-chip[\s\S]*touch-action: pan-y/);
+  assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.lineup-slot\.is-dragging[\s\S]*box-shadow/);
 });

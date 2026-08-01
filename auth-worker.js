@@ -494,14 +494,26 @@ async function runGameWorkflows(env, now, syncedGames = []) {
   catch (error) { shared.errors += 1; await recordCronStepFailure(env.AUTH_DB, "roster", now, error); console.error(`roster cron failed: code=${error?.code || "unknown"}`); }
   try { shared.probableStarter = await runDueProbableStarterWorkflowJobs(env, now); }
   catch (error) { shared.errors += 1; await recordCronStepFailure(env.AUTH_DB, "probable_starter", now, error); console.error(`probable starter cron failed: code=${error?.code || "unknown"}`); }
-  try { shared.lineup = await runDuePregameAutomationJobs(env, now, activeTimelines); }
-  catch (error) { shared.errors += 1; await recordCronStepFailure(env.AUTH_DB, "lineup", now, error); console.error(`pregame automation cron failed: code=${error?.code || "unknown"}`); }
-  try { shared.scoring = await runDueAutoScoringJobs(env, now, pausedGameIds); }
-  catch (error) { shared.errors += 1; await recordCronStepFailure(env.AUTH_DB, "scoring", now, error); console.error(`auto scoring cron failed: code=${error?.code || "unknown"}`); }
+  const completionJobsEnabled = await shouldUseCompletionWorkflowJobs(env);
+  if (completionJobsEnabled) {
+    try {
+      const completion = await runDueCompletionWorkflowJobs(env, now, activeTimelines);
+      shared.lineup = completion;
+      shared.scoring = completion;
+      shared.publishing = completion;
+    } catch (error) { shared.errors += 1; await recordCronStepFailure(env.AUTH_DB, "completion_workflow_jobs", now, error); console.error(`completion workflow job cron failed: code=${error?.code || "unknown"}`); }
+  } else {
+    try { shared.lineup = await runDuePregameAutomationJobs(env, now, activeTimelines); }
+    catch (error) { shared.errors += 1; await recordCronStepFailure(env.AUTH_DB, "lineup", now, error); console.error(`pregame automation cron failed: code=${error?.code || "unknown"}`); }
+    try { shared.scoring = await runDueAutoScoringJobs(env, now, pausedGameIds); }
+    catch (error) { shared.errors += 1; await recordCronStepFailure(env.AUTH_DB, "scoring", now, error); console.error(`auto scoring cron failed: code=${error?.code || "unknown"}`); }
+  }
   try { shared.autoScoringTests = await runDueAutoScoringTestJobs(env, now); }
   catch (error) { shared.errors += 1; console.error(`auto scoring test cron failed: code=${error?.code || "unknown"}`); }
-  try { shared.publishing = await runDueGameDayPublicationJobs(env, now, activeTimelines); }
-  catch (error) { shared.errors += 1; await recordCronStepFailure(env.AUTH_DB, "publication", now, error); console.error(`game-day publication cron failed: code=${error?.code || "unknown"}`); }
+  if (!completionJobsEnabled) {
+    try { shared.publishing = await runDueGameDayPublicationJobs(env, now, activeTimelines); }
+    catch (error) { shared.errors += 1; await recordCronStepFailure(env.AUTH_DB, "publication", now, error); console.error(`game-day publication cron failed: code=${error?.code || "unknown"}`); }
+  }
   const workflows = [...timelines, ...cancelledTimelines].map((timeline) => runGameWorkflow(timeline, now, pausedGameIds.has(timeline.gameId)));
   return { shared, workflows };
 }
@@ -1532,6 +1544,7 @@ async function loadDetectedScheduleGames(db, dates) {
     awayTeam: row.away_team,
     venue: row.venue || "",
     gameCode: row.game_code || "",
+    internalGameId: row.internal_game_id || "",
     status: row.game_status
   }));
 }
@@ -5081,9 +5094,10 @@ async function handleAdminGameWorkflowAudit(request, env, cors) {
     }
     const filter = options.internalGameId ? "WHERE internal_game_id = ?1" : "";
     const bindings = options.internalGameId ? [options.internalGameId] : [];
-    const [workflowStates, jobStates, staleLeases, permanentFailures, orphanedStates, duplicateSlots, jobs] = await Promise.all([
+    const [workflowStates, jobStates, jobTypeStates, staleLeases, permanentFailures, orphanedStates, duplicateSlots, jobs] = await Promise.all([
       env.AUTH_DB.prepare(`SELECT workflow_status, COUNT(*) AS count FROM game_workflow_state ${filter} GROUP BY workflow_status`).bind(...bindings).all(),
       env.AUTH_DB.prepare(`SELECT status, COUNT(*) AS count FROM game_job_runs ${filter} GROUP BY status`).bind(...bindings).all(),
+      env.AUTH_DB.prepare(`SELECT job_type, status, COUNT(*) AS count FROM game_job_runs ${filter} GROUP BY job_type, status`).bind(...bindings).all(),
       env.AUTH_DB.prepare(`SELECT COUNT(*) AS count FROM game_job_runs ${filter}${filter ? " AND" : " WHERE"} status IN ('claimed', 'running') AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?${bindings.length + 1}`).bind(...bindings, new Date().toISOString()).first(),
       env.AUTH_DB.prepare(`SELECT id, internal_game_id, job_type, scheduled_slot_at, attempt_count, max_attempts, error_code, updated_at FROM game_job_runs ${filter}${filter ? " AND" : " WHERE"} status = 'permanently_failed' ORDER BY updated_at DESC LIMIT ?${bindings.length + 1}`).bind(...bindings, options.limit).all(),
       env.AUTH_DB.prepare(`SELECT COUNT(*) AS count FROM game_workflow_state state LEFT JOIN games ON games.internal_game_id = state.internal_game_id ${options.internalGameId ? "WHERE state.internal_game_id = ?1 AND" : "WHERE"} games.internal_game_id IS NULL`).bind(...bindings).first(),
@@ -5095,6 +5109,7 @@ async function handleAdminGameWorkflowAudit(request, env, cors) {
       summary: {
         workflowStates: workflowStates.results || [],
         jobStates: jobStates.results || [],
+        jobTypeStates: jobTypeStates.results || [],
         staleLeaseCount: Number(staleLeases?.count || 0),
         permanentlyFailedCount: (permanentFailures.results || []).length,
         orphanedStateCount: Number(orphanedStates?.count || 0),
@@ -5604,6 +5619,155 @@ async function recordScoringRetryExpiredOnce(db, timeline, now, previousErrorCod
     console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=scoring_retry action=expire status=failed code=${error?.code || "SCORING_RETRY_EXPIRY_FAILED"}`);
     return false;
   }
+}
+
+const COMPLETION_WORKFLOW_JOB_TYPES = Object.freeze([
+  "provisional_lineup_fetch", "final_lineup_fetch", "scoring", "ranking_update", "publication", "rescore"
+]);
+
+async function shouldUseCompletionWorkflowJobs(env) {
+  if (String(env.ENABLE_WORKFLOW_COMPLETION_JOBS || "").toLowerCase() !== "true") return false;
+  try {
+    return await isGameWorkflowJobSchemaReady(env.AUTH_DB);
+  } catch (error) {
+    if (!isPregameSchemaError(error)) console.warn(`completion workflow schema check failed: ${error?.code || "unknown"}`);
+    return false;
+  }
+}
+
+async function createCompletionWorkflowJob(db, timeline, jobType, now, source = "cron") {
+  const internalGameId = String(timeline?.game?.internalGameId || timeline?.internalGameId || "");
+  if (!internalGameId) return false;
+  await ensureGameWorkflowState(db, {
+    internalGameId,
+    legacyGameId: timeline.gameId,
+    gameStatus: timeline.game?.status === "cancelled" ? "cancelled" : "scheduled",
+    workflowStatus: "prediction_open",
+    now
+  });
+  const created = await createWorkflowJob(db, {
+    internalGameId,
+    jobType,
+    scheduledSlotAt: timeline.startAt,
+    source,
+    maxAttempts: jobType.includes("lineup") ? 72 : 5,
+    now
+  });
+  return created.created;
+}
+
+async function alignWorkflowStateWithStoredLineup(db, internalGameId, legacyGameId, now) {
+  await ensureGameWorkflowState(db, { internalGameId, legacyGameId, workflowStatus: "prediction_open", now });
+  const state = await db.prepare("SELECT workflow_status FROM game_workflow_state WHERE internal_game_id = ?1 LIMIT 1").bind(internalGameId).first();
+  if (state?.workflow_status === "prediction_open") {
+    await transitionWorkflowState(db, { internalGameId, to: "lineup_pending", now });
+    await transitionWorkflowState(db, { internalGameId, to: "final_lineup_captured", now });
+  } else if (["lineup_pending", "provisional_lineup_captured", "retrying"].includes(state?.workflow_status)) {
+    await transitionWorkflowState(db, { internalGameId, to: "final_lineup_captured", now });
+  }
+}
+
+async function executeCompletionWorkflowJob(env, job, now) {
+  const target = await resolveWorkflowJobGame(env.AUTH_DB, job.internal_game_id);
+  const timeline = getPregameTimeline({
+    gameId: target.gameId,
+    date: target.date,
+    startAt: target.startAt,
+    homeTeam: target.homeTeam,
+    awayTeam: target.awayTeam,
+    gameCode: target.gameCode,
+    status: target.status
+  });
+  if (!timeline || target.status === "cancelled") throw createPregameError("JOB_INPUT_INVALID", "試合進行ジョブの対象試合が無効です。");
+  let result;
+  if (job.job_type === "provisional_lineup_fetch") {
+    result = await captureOfficialLineup(env, target.gameId, now, { phase: "provisional" });
+    if (result.status !== "provisional") throw createPregameError("LINEUP_NOT_ANNOUNCED", "仮スタメンをまだ取得できません。");
+    await transitionWorkflowState(env.AUTH_DB, { internalGameId: job.internal_game_id, to: "provisional_lineup_captured", completedJobType: job.job_type, now });
+  } else if (job.job_type === "final_lineup_fetch") {
+    result = await captureOfficialLineup(env, target.gameId, now, { phase: "final" });
+    if (result.status !== "captured" && result.status !== "already_captured") throw createPregameError("LINEUP_NOT_ANNOUNCED", "最終スタメンをまだ取得できません。");
+    await transitionWorkflowState(env.AUTH_DB, { internalGameId: job.internal_game_id, to: "final_lineup_captured", completedJobType: job.job_type, now });
+  } else if (job.job_type === "scoring") {
+    const claimed = await claimGameLineupForScoring(env.AUTH_DB, target.gameId, now);
+    if (!claimed) {
+      const existing = await getGameLineup(env.AUTH_DB, target.gameId);
+      if (existing?.scoring_status !== "scored") throw createPregameError("SCORING_IN_PROGRESS", "採点処理を開始できません。");
+      result = { status: "already_scored" };
+    } else {
+      result = await scoreClaimedGameLineup(env.AUTH_DB, claimed, now);
+    }
+    await transitionWorkflowState(env.AUTH_DB, { internalGameId: job.internal_game_id, to: "scored_private", completedJobType: job.job_type, now });
+  } else if (job.job_type === "ranking_update") {
+    const lineup = await getGameLineup(env.AUTH_DB, target.gameId);
+    if (!lineup || lineup.scoring_status !== "scored") throw createPregameError("SCORING_LINEUP_REQUIRED", "採点結果がありません。");
+    await markGameRankingScoredPrivate(env.AUTH_DB, target.gameId, lineup.scored_at || now.toISOString(), env);
+    result = { status: "ranking_updated" };
+    await transitionWorkflowState(env.AUTH_DB, { internalGameId: job.internal_game_id, to: "scored_private", completedJobType: job.job_type, now });
+  } else if (job.job_type === "publication") {
+    result = await publishScoredGameResults(env, target.gameId, now);
+    if (!result.published && result.status !== "already_published") throw createPregameError("PUBLICATION_NOT_READY", "公開条件を満たしていません。");
+    await transitionWorkflowState(env.AUTH_DB, { internalGameId: job.internal_game_id, to: "published", completedJobType: job.job_type, now });
+  } else {
+    throw createPregameError("JOB_INPUT_INVALID", "未対応の試合進行ジョブです。");
+  }
+  const completed = await completeWorkflowJob(env.AUTH_DB, { jobId: job.id, claimToken: job.claim_token, resultMetadata: { status: result?.status || "success" }, now });
+  if (!completed) throw createPregameError("JOB_CLAIM_CONFLICT", "試合進行ジョブの完了権限を確認できません。");
+  return result;
+}
+
+async function runDueCompletionWorkflowJobs(env, now, timelines) {
+  const summary = { mode: "workflow_jobs", created: 0, processed: 0, succeeded: 0, retried: 0, serviceUnavailable: 0 };
+  for (const timeline of timelines) {
+    const internalGameId = String(timeline?.game?.internalGameId || timeline?.internalGameId || "");
+    if (!internalGameId) continue;
+    const lineup = await getGameLineup(env.AUTH_DB, timeline.gameId);
+    if (!lineup) {
+      const finalDue = now >= timeline.finalLineupFetchAt;
+      if (finalDue && isFinalLineupRetryExpired(timeline, now)) {
+        await recordScoringRetryExpiredOnce(env.AUTH_DB, timeline, now, "LINEUP_FETCH_FAILED");
+        await ensureGameWorkflowState(env.AUTH_DB, { internalGameId, legacyGameId: timeline.gameId, workflowStatus: "lineup_pending", now });
+        await transitionWorkflowState(env.AUTH_DB, { internalGameId, to: "service_unavailable", errorCode: SCORING_RETRY_EXPIRED_CODE, now });
+        summary.serviceUnavailable += 1;
+        continue;
+      }
+      const dueAt = finalDue ? getDueFinalLineupAttemptAt(timeline, now) : getDueLineupAttemptAt(timeline, now);
+      if (dueAt) {
+        await ensureGameWorkflowState(env.AUTH_DB, { internalGameId, legacyGameId: timeline.gameId, workflowStatus: "prediction_open", now });
+        await transitionWorkflowState(env.AUTH_DB, { internalGameId, to: "lineup_pending", now });
+        if (await createCompletionWorkflowJob(env.AUTH_DB, timeline, finalDue ? "final_lineup_fetch" : "provisional_lineup_fetch", now)) summary.created += 1;
+      }
+      continue;
+    }
+    if (lineup.scoring_status !== "scored" && lineup.scoring_due_at && new Date(lineup.scoring_due_at) <= now) {
+      await alignWorkflowStateWithStoredLineup(env.AUTH_DB, internalGameId, timeline.gameId, now);
+      await transitionWorkflowState(env.AUTH_DB, { internalGameId, to: "scoring_pending", now });
+      if (await createCompletionWorkflowJob(env.AUTH_DB, timeline, "scoring", now)) summary.created += 1;
+    }
+    if (lineup.scoring_status === "scored") {
+      if (await createCompletionWorkflowJob(env.AUTH_DB, timeline, "ranking_update", now)) summary.created += 1;
+      if (now >= timeline.resultReleaseAt && lineup.publication_status !== "published" && await createCompletionWorkflowJob(env.AUTH_DB, timeline, "publication", now)) summary.created += 1;
+    }
+  }
+  const dueJobs = await listDueWorkflowJobs(env.AUTH_DB, { jobTypes: COMPLETION_WORKFLOW_JOB_TYPES.filter((type) => type !== "rescore"), now, limit: 20 });
+  for (const due of dueJobs) {
+    const claimed = await claimWorkflowJob(env.AUTH_DB, { jobId: due.id, now, leaseMilliseconds: WORKFLOW_JOB_LEASE_MS });
+    if (!claimed) continue;
+    summary.processed += 1;
+    try {
+      await executeCompletionWorkflowJob(env, claimed, now);
+      summary.succeeded += 1;
+    } catch (error) {
+      const target = await resolveWorkflowJobGame(env.AUTH_DB, claimed.internal_game_id);
+      const retryDeadline = getFinalLineupRetryDeadline(getPregameTimeline({ gameId: target.gameId, date: target.date, startAt: target.startAt, homeTeam: target.homeTeam, awayTeam: target.awayTeam, gameCode: target.gameCode }), now);
+      const expired = claimed.job_type === "final_lineup_fetch" && retryDeadline && now >= retryDeadline;
+      const retry = await retryWorkflowJob(env.AUTH_DB, { job: claimed, claimToken: claimed.claim_token, errorCode: expired ? SCORING_RETRY_EXPIRED_CODE : getWorkflowJobErrorCode(error), errorDetail: String(error?.message || ""), nextAttemptAt: new Date(now.getTime() + (claimed.job_type.includes("lineup") ? 10 : 1) * 60 * 1000), now });
+      await transitionWorkflowState(env.AUTH_DB, { internalGameId: claimed.internal_game_id, to: expired ? "service_unavailable" : "retrying", errorCode: expired ? SCORING_RETRY_EXPIRED_CODE : getWorkflowJobErrorCode(error), now });
+      if (expired) summary.serviceUnavailable += 1;
+      else summary.retried += 1;
+    }
+  }
+  return summary;
 }
 
 async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimelines()) {

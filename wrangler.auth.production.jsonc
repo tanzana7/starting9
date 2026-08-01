@@ -11,7 +11,8 @@
     "AUTH_ALLOWED_ORIGINS": "https://starting9.pages.dev",
     "SESSION_SAMESITE": "None",
     "AUTO_SCORING_DELAY_SECONDS": "300",
-    "ENABLE_DEVELOPMENT_MODE": "false"
+    "ENABLE_DEVELOPMENT_MODE": "false",
+    "ENABLE_WORKFLOW_COMPLETION_JOBS": "true"
   },
   "services": [
     {

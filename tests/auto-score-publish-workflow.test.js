@@ -26,7 +26,7 @@ test("開始+1分の最終スタメンを開始+2分に採点し、開始+5分�
 });
 
 test("採点更新と非公開ランキング化を同じD1 batchへ含める", () => {
-  assert.match(worker, /const rankingStatement = createGameRankingScoredPrivateStatement\(db, gameId, scoredAt\)/);
+  assert.match(worker, /const rankingStatement = await createGameRankingScoredPrivateStatement\(db, gameId, scoredAt, 0, internalGameId\)/);
   assert.match(worker, /statements\.push\(rankingStatement\)/);
   assert.match(worker, /const results = await db\.batch\(statements\)/);
   assert.match(worker, /publication_status = 'scored_private'/);

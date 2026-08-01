@@ -74,6 +74,7 @@ const PREDICTION_TEAM_SLUG_CODES = Object.freeze({
   dragons: "d",
   swallows: "s"
 });
+const INTERNAL_GAME_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SCORING_LINEUP_SIZE = 9;
 const SCORING_MAX_SCORE = 100;
 const AUTO_SCORING_DEFAULT_DELAY_SECONDS = 300;
@@ -720,6 +721,7 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
       errorCode: "",
       updatedAt: fetchedAt
     });
+    await linkLegacyGameRowsToInternalGameId(env.AUTH_DB, target?.internalGameId, gameId);
     await recordTerminal({
       eventType: announced ? "probable_starter_announced" : "probable_starter_unannounced",
       status: announced ? "success" : "warning",
@@ -763,6 +765,7 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
         errorCode,
         updatedAt: fetchedAt
       });
+      await linkLegacyGameRowsToInternalGameId(env.AUTH_DB, target?.internalGameId, gameId);
     } catch (saveError) {
       console.warn(`[PROBABLE_STARTER] action=save status=failed code=${saveError?.code || "PROBABLE_STARTER_SAVE_FAILED"}`);
     }
@@ -1372,6 +1375,32 @@ async function getGameIdentityRegistryAvailability(db) {
     console.warn(`[GAME_IDENTITY_REGISTRY] status=unavailable code=${error?.code || "GAME_IDENTITY_REGISTRY_SCHEMA_NOT_READY"}`);
     return { available: false, scheduleColumnAvailable: false };
   }
+}
+
+async function getInternalGameIdStorageAvailability(db, tables) {
+  try {
+    const availability = {};
+    for (const table of tables) {
+      const columns = await db.prepare(`PRAGMA table_info(${table})`).bind().all();
+      availability[table] = (columns.results || []).some((column) => String(column.name || "") === "internal_game_id");
+    }
+    return availability;
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+    return Object.fromEntries(tables.map((table) => [table, false]));
+  }
+}
+
+async function linkLegacyGameRowsToInternalGameId(db, internalGameId, legacyGameId) {
+  const internal = String(internalGameId || "");
+  const legacy = String(legacyGameId || "");
+  if (!INTERNAL_GAME_ID_PATTERN.test(internal) || !legacy || legacy.startsWith("day-")) return;
+  const tables = ["predictions", "probable_starters", "game_roster_snapshots", "game_pregame_automation", "game_lineups", "ranking_games", "game_rescore_jobs"];
+  const availability = await getInternalGameIdStorageAvailability(db, tables);
+  const statements = tables
+    .filter((table) => availability[table])
+    .map((table) => db.prepare(`UPDATE ${table} SET internal_game_id = ?1 WHERE game_id = ?2 AND (internal_game_id IS NULL OR internal_game_id = '')`).bind(internal, legacy));
+  if (statements.length) await db.batch(statements);
 }
 
 async function resolveScheduleInternalGameId(db, registry, { date, startAt, game, sourceGameKey, gameStatus, existingRow, existingCandidates, now }) {
@@ -3057,9 +3086,12 @@ async function handleAdminScoringRoute(request, env, cors, route) {
     return access.response;
   }
 
-  const metadata = parsePredictionGameId(route.gameId);
-  if (route.invalid || !metadata) {
-    return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
+  if (route.invalid) return jsonResponse({ ok: false, code: "INVALID_GAME_IDENTIFIER_FORMAT", error: "対象試合のgameIdが不正です。" }, 400, cors);
+  const reference = await resolveApiGameReference(env.AUTH_DB, route.gameId);
+  if (!reference.ok) return jsonResponse({ ok: false, code: reference.code, error: "対象試合のgameIdが不正です。" }, 400, cors);
+  const metadata = reference.metadata;
+  if (metadata.internalGameId) {
+    await linkLegacyGameRowsToInternalGameId(env.AUTH_DB, metadata.internalGameId, metadata.gameId);
   }
 
   if (route.action === "predictions/summary" && request.method === "GET") {
@@ -3725,6 +3757,7 @@ async function saveRosterSnapshotFromNotice(db, identity, payload, capturedAt) {
         WHERE game_id = ?2`
     ).bind(capturedAtIso, identity.gameId)
   ]);
+  await linkLegacyGameRowsToInternalGameId(db, identity.game?.internalGameId || identity.internalGameId, identity.gameId);
   return true;
 }
 
@@ -4281,6 +4314,7 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
         `UPDATE game_pregame_automation SET roster_status = 'captured', roster_captured_at = ?1, last_error_code = NULL, last_error_message = NULL, updated_at = ?1 WHERE game_id = ?2`
       ).bind(capturedAt, gameId)
     ]);
+    await linkLegacyGameRowsToInternalGameId(env.AUTH_DB, identity.game?.internalGameId || identity.internalGameId, gameId);
     await updateRosterFetchState(env.AUTH_DB, gameId, now, { source, success: true, pregame });
     return { status: "captured", playerCount: roster.length, capturedAt, roster };
   } catch (error) {
@@ -4294,7 +4328,7 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
   }
 }
 
-async function captureOfficialLineup(env, gameId, now, { force = false, phase = "provisional", autoApproveEnabled = true } = {}) {
+async function captureOfficialLineup(env, gameId, now, { force = false, phase = "provisional", autoApproveEnabled = true, internalGameId = "" } = {}) {
   const identity = getGameIdentityForPregame(gameId);
   if (!identity) throw createPregameError("LINEUP_URL_BUILD_FAILED", "NPB公式スタメンURLを生成できません。試合の日程コードを確認してください。");
   const isFinalCapture = phase === "final";
@@ -4302,7 +4336,7 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
     return { status: isFinalCapture ? "not_due" : "skipped_after_start" };
   }
   await ensurePregameAutomationRow(env.AUTH_DB, identity, now);
-  const existing = await getGameLineup(env.AUTH_DB, gameId);
+  const existing = await getGameLineup(env.AUTH_DB, { gameId, internalGameId });
   if (existing) return { status: existing.lineup_source === "manual" ? "manual_lineup_exists" : "already_captured" };
   try {
     const payload = await fetchNpbWorkerJson(env, { mode: "lineup", date: identity.game.date, gameCode: identity.gameCode });
@@ -4318,7 +4352,8 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
       scoringDueAt: new Date(identity.startAt.getTime() + 2 * 60 * 1000),
       now,
       allowAfterStart: true,
-      preventOverwrite: true
+      preventOverwrite: true,
+      internalGameId
     });
     await env.AUTH_DB.prepare(
       `UPDATE game_pregame_automation
@@ -5187,11 +5222,16 @@ async function handleGetPredictionTarget(request, env, cors) {
 }
 
 async function handleGetProbableStarter(request, env, cors) {
-  const gameId = getValidGameId(new URL(request.url).searchParams.get("gameId"));
-  if (!gameId) return jsonResponse({ ok: false, code: "GAME_ID_INVALID", error: "対象試合を指定してください。" }, 400, cors);
+  const reference = await resolveApiGameReference(env.AUTH_DB, new URL(request.url).searchParams.get("gameId"));
+  if (!reference.ok) return jsonResponse({ ok: false, code: reference.code, error: "対象試合を指定してください。" }, 400, cors);
+  const metadata = reference.metadata;
+  const gameId = metadata.gameId;
   try {
-    const row = await env.AUTH_DB.prepare("SELECT * FROM probable_starters WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
-    const response = jsonResponse({ ok: true, gameId, probableStarter: serializeProbableStarterRow(row) }, 200, cors);
+    const storage = await getInternalGameIdStorageAvailability(env.AUTH_DB, ["probable_starters"]);
+    const row = storage.probable_starters && metadata.internalGameId
+      ? await env.AUTH_DB.prepare("SELECT * FROM probable_starters WHERE internal_game_id = ?1 OR (internal_game_id IS NULL AND game_id = ?2) ORDER BY CASE WHEN internal_game_id = ?1 THEN 0 ELSE 1 END LIMIT 1").bind(metadata.internalGameId, gameId).first()
+      : await env.AUTH_DB.prepare("SELECT * FROM probable_starters WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
+    const response = jsonResponse({ ok: true, gameId, internalGameId: metadata.internalGameId || "", legacyGameId: metadata.legacyGameId || gameId, probableStarter: serializeProbableStarterRow(row) }, 200, cors);
     response.headers.set("Cache-Control", "no-store");
     return response;
   } catch (error) {
@@ -5669,6 +5709,7 @@ async function alignWorkflowStateWithStoredLineup(db, internalGameId, legacyGame
 
 async function executeCompletionWorkflowJob(env, job, now) {
   const target = await resolveWorkflowJobGame(env.AUTH_DB, job.internal_game_id);
+  await linkLegacyGameRowsToInternalGameId(env.AUTH_DB, job.internal_game_id, target.gameId);
   const timeline = getPregameTimeline({
     gameId: target.gameId,
     date: target.date,
@@ -5681,11 +5722,11 @@ async function executeCompletionWorkflowJob(env, job, now) {
   if (!timeline || target.status === "cancelled") throw createPregameError("JOB_INPUT_INVALID", "試合進行ジョブの対象試合が無効です。");
   let result;
   if (job.job_type === "provisional_lineup_fetch") {
-    result = await captureOfficialLineup(env, target.gameId, now, { phase: "provisional" });
+    result = await captureOfficialLineup(env, target.gameId, now, { phase: "provisional", internalGameId: job.internal_game_id });
     if (result.status !== "provisional") throw createPregameError("LINEUP_NOT_ANNOUNCED", "仮スタメンをまだ取得できません。");
     await transitionWorkflowState(env.AUTH_DB, { internalGameId: job.internal_game_id, to: "provisional_lineup_captured", completedJobType: job.job_type, now });
   } else if (job.job_type === "final_lineup_fetch") {
-    result = await captureOfficialLineup(env, target.gameId, now, { phase: "final" });
+    result = await captureOfficialLineup(env, target.gameId, now, { phase: "final", internalGameId: job.internal_game_id });
     if (result.status !== "captured" && result.status !== "already_captured") throw createPregameError("LINEUP_NOT_ANNOUNCED", "最終スタメンをまだ取得できません。");
     await transitionWorkflowState(env.AUTH_DB, { internalGameId: job.internal_game_id, to: "final_lineup_captured", completedJobType: job.job_type, now });
   } else if (job.job_type === "scoring") {
@@ -5711,6 +5752,7 @@ async function executeCompletionWorkflowJob(env, job, now) {
   } else {
     throw createPregameError("JOB_INPUT_INVALID", "未対応の試合進行ジョブです。");
   }
+  await linkLegacyGameRowsToInternalGameId(env.AUTH_DB, job.internal_game_id, target.gameId);
   const completed = await completeWorkflowJob(env.AUTH_DB, { jobId: job.id, claimToken: job.claim_token, resultMetadata: { status: result?.status || "success" }, now });
   if (!completed) throw createPregameError("JOB_CLAIM_CONFLICT", "試合進行ジョブの完了権限を確認できません。");
   return result;
@@ -6468,10 +6510,18 @@ async function handleAdminScorePredictions(request, env, cors, gameId) {
   }
 }
 
-async function prepareGamePredictionScoring(db, gameId, actualLineup, isTestPrediction = 0) {
-  const productionQuery = "SELECT id, user_id, prediction_json FROM predictions WHERE game_id = ?1 AND is_test_prediction = 0 ORDER BY submitted_at ASC, id ASC";
-  const testQuery = "SELECT id, user_id, prediction_json FROM predictions WHERE game_id = ?1 AND is_test_prediction = 1 ORDER BY submitted_at ASC, id ASC";
-  const rows = await db.prepare(isTestPrediction ? testQuery : productionQuery).bind(gameId).all();
+async function prepareGamePredictionScoring(db, gameReference, actualLineup, isTestPrediction = 0) {
+  const metadata = typeof gameReference === "object" && gameReference ? gameReference : null;
+  const gameId = String(metadata?.gameId || gameReference || "");
+  const internalGameId = String(metadata?.internalGameId || "");
+  const storage = await getInternalGameIdStorageAvailability(db, ["predictions"]);
+  const scope = storage.predictions && internalGameId
+    ? "(internal_game_id = ?1 OR (internal_game_id IS NULL AND game_id = ?2))"
+    : "game_id = ?1";
+  const bindings = storage.predictions && internalGameId ? [internalGameId, gameId] : [gameId];
+  const productionQuery = `SELECT id, user_id, prediction_json FROM predictions WHERE ${scope} AND is_test_prediction = 0 ORDER BY submitted_at ASC, id ASC`;
+  const testQuery = `SELECT id, user_id, prediction_json FROM predictions WHERE ${scope} AND is_test_prediction = 1 ORDER BY submitted_at ASC, id ASC`;
+  const rows = await db.prepare(isTestPrediction ? testQuery : productionQuery).bind(...bindings).all();
 
   const outcomes = [];
   const validationErrors = [];
@@ -7139,7 +7189,7 @@ function parseLineupDetectedAt(value) {
 // Cron自動承認と管理者の本承認は、このサーバー側の同一処理で採点待ち状態を作ります。
 async function approveActualLineupForAutoScoring(env, gameId, actualLineup, detectedAt, options = {}) {
   const record = await saveActualLineupForAutoScoring(env.AUTH_DB, gameId, actualLineup, detectedAt, options);
-  await markGameRankingPending(env.AUTH_DB, gameId, detectedAt, env, options.isTestGame ? 1 : 0);
+  await markGameRankingPending(env.AUTH_DB, gameId, detectedAt, env, options.isTestGame ? 1 : 0, options.internalGameId || "");
   return record;
 }
 
@@ -7150,7 +7200,8 @@ async function saveActualLineupForAutoScoring(db, gameId, actualLineup, detected
     throw new Error("actual lineup payload exceeds the allowed size");
   }
   const fingerprint = await sha256Base64Url(actualLineupJson);
-  const existing = await getGameLineup(db, gameId);
+  const internalGameId = String(options.internalGameId || "");
+  const existing = await getGameLineup(db, { gameId, internalGameId });
   if (existing && options.preventOverwrite) {
     return existing;
   }
@@ -7164,14 +7215,16 @@ async function saveActualLineupForAutoScoring(db, gameId, actualLineup, detected
   const scoringDueAt = (requestedDueAt || new Date(detectedAt.getTime() + Math.max(0, delaySeconds) * 1000)).toISOString();
   const lineupSource = options.source === "npb-auto" ? "npb-auto" : "manual";
   const id = existing?.id || randomToken(16);
+  const storage = await getInternalGameIdStorageAvailability(db, ["game_lineups"]);
   await db.prepare(
     `INSERT INTO game_lineups
-       (id, game_id, actual_lineup_json, lineup_fingerprint, schema_version,
+       (id, game_id${storage.game_lineups ? ", internal_game_id" : ""}, actual_lineup_json, lineup_fingerprint, schema_version,
         lineup_detected_at, scoring_due_at, scoring_started_at, scored_at,
         scoring_status, scoring_attempts, last_error, processed_predictions,
         perfect_count, new_perfect_achievers, lineup_source, publication_status, published_at, created_at, updated_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, 'pending', 0, NULL, NULL, NULL, NULL, ?8, 'pending', NULL, ?6, ?6)
+     VALUES (?1, ?2${storage.game_lineups ? ", ?3" : ""}, ?${storage.game_lineups ? 4 : 3}, ?${storage.game_lineups ? 5 : 4}, ?${storage.game_lineups ? 6 : 5}, ?${storage.game_lineups ? 7 : 6}, ?${storage.game_lineups ? 8 : 7}, NULL, NULL, 'pending', 0, NULL, NULL, NULL, NULL, ?${storage.game_lineups ? 9 : 8}, 'pending', NULL, ?${storage.game_lineups ? 7 : 6}, ?${storage.game_lineups ? 7 : 6})
      ON CONFLICT(game_id) DO UPDATE SET
+       ${storage.game_lineups ? "internal_game_id = CASE WHEN excluded.internal_game_id IS NULL OR excluded.internal_game_id = '' THEN game_lineups.internal_game_id ELSE excluded.internal_game_id END," : ""}
        actual_lineup_json = excluded.actual_lineup_json,
        lineup_fingerprint = excluded.lineup_fingerprint,
        schema_version = excluded.schema_version,
@@ -7189,11 +7242,26 @@ async function saveActualLineupForAutoScoring(db, gameId, actualLineup, detected
        publication_status = 'pending',
        published_at = NULL,
        updated_at = excluded.updated_at`
-  ).bind(id, gameId, actualLineupJson, fingerprint, PREDICTION_SCHEMA_VERSION, detectedAtIso, scoringDueAt, lineupSource).run();
-  return await getGameLineup(db, gameId);
+  ).bind(id, gameId, ...(storage.game_lineups ? [internalGameId || null] : []), actualLineupJson, fingerprint, PREDICTION_SCHEMA_VERSION, detectedAtIso, scoringDueAt, lineupSource).run();
+  return await getGameLineup(db, { gameId, internalGameId });
 }
 
-async function getGameLineup(db, gameId) {
+async function getGameLineup(db, gameReference) {
+  const metadata = typeof gameReference === "object" && gameReference ? gameReference : null;
+  const gameId = String(metadata?.gameId || gameReference || "");
+  const internalGameId = String(metadata?.internalGameId || "");
+  const storage = await getInternalGameIdStorageAvailability(db, ["game_lineups"]);
+  if (storage.game_lineups && internalGameId) {
+    return db.prepare(
+      `SELECT id, game_id, internal_game_id, actual_lineup_json, lineup_fingerprint, lineup_detected_at,
+              scoring_due_at, scoring_started_at, scored_at, scoring_status,
+              scoring_attempts, last_error, processed_predictions, perfect_count,
+              new_perfect_achievers, lineup_source, publication_status, published_at, updated_at
+         FROM game_lineups
+        WHERE internal_game_id = ?1 OR (internal_game_id IS NULL AND game_id = ?2)
+        ORDER BY CASE WHEN internal_game_id = ?1 THEN 0 ELSE 1 END LIMIT 1`
+    ).bind(internalGameId, gameId).first();
+  }
   return db.prepare(
     `SELECT id, game_id, actual_lineup_json, lineup_fingerprint, lineup_detected_at,
             scoring_due_at, scoring_started_at, scored_at, scoring_status,
@@ -7373,7 +7441,7 @@ async function scoreClaimedGameLineup(db, record, now, isTestPrediction = 0) {
   if (!actualResult.ok) {
     throw new Error(`stored actual lineup is invalid: ${actualResult.error}`);
   }
-  const scoring = await prepareGamePredictionScoring(db, record.game_id, actualResult.lineup, isTestPrediction);
+  const scoring = await prepareGamePredictionScoring(db, { gameId: record.game_id, internalGameId: record.internal_game_id || "" }, actualResult.lineup, isTestPrediction);
   if (scoring.failed > 0) {
     const error = new Error("stored predictions include validation errors");
     error.code = "prediction_validation_failed";
@@ -7382,7 +7450,7 @@ async function scoreClaimedGameLineup(db, record, now, isTestPrediction = 0) {
     error.validationErrors = scoring.validationErrors;
     throw error;
   }
-  return await persistGamePredictionScoring(db, record.game_id, actualResult.lineup, scoring, now, isTestPrediction);
+  return await persistGamePredictionScoring(db, record.game_id, actualResult.lineup, scoring, now, isTestPrediction, record.internal_game_id || "");
 }
 
 function parseStoredActualLineup(value) {
@@ -7394,7 +7462,7 @@ function parseStoredActualLineup(value) {
   }
 }
 
-async function persistGamePredictionScoring(db, gameId, actualLineup, scoring, now, isTestPrediction = 0) {
+async function persistGamePredictionScoring(db, gameId, actualLineup, scoring, now, isTestPrediction = 0, internalGameId = "") {
   const scoredAt = now.toISOString();
   const actualLineupJson = JSON.stringify(actualLineup);
   const scoreSql = isTestPrediction
@@ -7412,9 +7480,9 @@ async function persistGamePredictionScoring(db, gameId, actualLineup, scoring, n
             new_perfect_achievers = ?4, updated_at = ?1
       WHERE game_id = ?5 AND scoring_status = 'processing'`
   ).bind(scoredAt, scoring.processed, scoring.perfectCount, 0, gameId));
-  const rankingStatement = createGameRankingScoredPrivateStatement(db, gameId, scoredAt);
+  const rankingStatement = await createGameRankingScoredPrivateStatement(db, gameId, scoredAt, 0, internalGameId);
   const effectiveRankingStatement = isTestPrediction
-    ? createGameRankingScoredPrivateStatement(db, gameId, scoredAt, 1)
+    ? await createGameRankingScoredPrivateStatement(db, gameId, scoredAt, 1, internalGameId)
     : rankingStatement;
   if (isTestPrediction && effectiveRankingStatement) {
     statements.push(effectiveRankingStatement);
@@ -7487,10 +7555,33 @@ function toIsoString(value) {
 }
 
 // テスト用として保存した試合は、正式なランキング分母へ登録しません。
-async function markGameRankingPending(db, gameId, at, env, isTestGame = 0) {
+async function markGameRankingPending(db, gameId, at, env, isTestGame = 0, internalGameId = "") {
   const metadata = parsePredictionGameId(gameId);
   if (!metadata) return;
   const now = toIsoString(at);
+  const storage = await getInternalGameIdStorageAvailability(db, ["ranking_games"]);
+  const hasInternalGameId = storage.ranking_games && INTERNAL_GAME_ID_PATTERN.test(String(internalGameId || ""));
+  if (hasInternalGameId) {
+    const sql = isTestGame
+      ? `INSERT INTO ranking_games
+           (game_id, internal_game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game,
+            publication_status, scored_private_at, published_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 0, NULL, 'pending', 1, 'pending', NULL, NULL, ?4, ?4)
+         ON CONFLICT(game_id) DO UPDATE SET
+           internal_game_id = excluded.internal_game_id, game_date = excluded.game_date,
+           is_ranking_eligible = 0, ranking_eligible_at = NULL, game_status = 'pending', is_test_game = 1,
+           publication_status = 'pending', scored_private_at = NULL, published_at = NULL, updated_at = excluded.updated_at`
+      : `INSERT INTO ranking_games
+           (game_id, internal_game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game,
+            publication_status, scored_private_at, published_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 0, NULL, 'pending', 0, 'pending', NULL, NULL, ?4, ?4)
+         ON CONFLICT(game_id) DO UPDATE SET
+           internal_game_id = excluded.internal_game_id, game_date = excluded.game_date,
+           is_ranking_eligible = 0, ranking_eligible_at = NULL, game_status = 'pending', is_test_game = 0,
+           publication_status = 'pending', scored_private_at = NULL, published_at = NULL, updated_at = excluded.updated_at`;
+    await db.prepare(sql).bind(gameId, internalGameId, metadata.date, now).run();
+    return;
+  }
   const productionSql = `INSERT INTO ranking_games
        (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game,
         publication_status, scored_private_at, published_at, created_at, updated_at)
@@ -7511,10 +7602,34 @@ async function markGameRankingPending(db, gameId, at, env, isTestGame = 0) {
     .bind(gameId, metadata.date, now).run();
 }
 
-function createGameRankingScoredPrivateStatement(db, gameId, scoredAt, isTestGame = 0) {
+async function createGameRankingScoredPrivateStatement(db, gameId, scoredAt, isTestGame = 0, internalGameId = "") {
   const metadata = parsePredictionGameId(gameId);
   if (!metadata) return null;
   const now = toIsoString(scoredAt);
+  const storage = await getInternalGameIdStorageAvailability(db, ["ranking_games"]);
+  const hasInternalGameId = storage.ranking_games && INTERNAL_GAME_ID_PATTERN.test(String(internalGameId || ""));
+  if (hasInternalGameId) {
+    const sql = isTestGame
+      ? `INSERT INTO ranking_games
+           (game_id, internal_game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game,
+            publication_status, scored_private_at, published_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 0, NULL, 'pending', 1, 'scored_private', ?4, NULL, ?4, ?4)
+         ON CONFLICT(game_id) DO UPDATE SET
+           internal_game_id = excluded.internal_game_id, game_date = excluded.game_date,
+           is_ranking_eligible = 0, ranking_eligible_at = NULL, game_status = 'pending', is_test_game = 1,
+           publication_status = 'scored_private', scored_private_at = excluded.scored_private_at,
+           published_at = NULL, updated_at = excluded.updated_at`
+      : `INSERT INTO ranking_games
+           (game_id, internal_game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game,
+            publication_status, scored_private_at, published_at, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 1, ?4, 'scored', 0, 'scored_private', ?4, NULL, ?4, ?4)
+         ON CONFLICT(game_id) DO UPDATE SET
+           internal_game_id = excluded.internal_game_id, game_date = excluded.game_date,
+           is_ranking_eligible = 1, ranking_eligible_at = excluded.ranking_eligible_at, game_status = 'scored',
+           is_test_game = 0, publication_status = 'scored_private', scored_private_at = excluded.scored_private_at,
+           published_at = NULL, updated_at = excluded.updated_at`;
+    return db.prepare(sql).bind(gameId, internalGameId, metadata.date, now);
+  }
   const productionSql = `INSERT INTO ranking_games
        (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game,
         publication_status, scored_private_at, published_at, created_at, updated_at)
@@ -7536,7 +7651,7 @@ function createGameRankingScoredPrivateStatement(db, gameId, scoredAt, isTestGam
 }
 
 async function markGameRankingScoredPrivate(db, gameId, scoredAt, env, isTestGame = 0) {
-  const statement = createGameRankingScoredPrivateStatement(db, gameId, scoredAt, isTestGame);
+  const statement = await createGameRankingScoredPrivateStatement(db, gameId, scoredAt, isTestGame);
   if (statement) await statement.run();
 }
 
@@ -7919,21 +8034,19 @@ async function handleGetCurrentPrediction(request, env, cors) {
     return jsonResponse({ ok: false, error: "予想を確認するにはログインしてください。" }, 401, cors);
   }
 
-  const metadata = await resolvePredictionGameMetadata(
-    env.AUTH_DB,
-    new URL(request.url).searchParams.get("gameId")
-  );
-  if (!metadata) {
-    return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
-  }
+  const reference = await resolveApiGameReference(env.AUTH_DB, new URL(request.url).searchParams.get("gameId"));
+  if (!reference.ok) return jsonResponse({ ok: false, code: reference.code, error: "対象試合のgameIdが不正です。" }, 400, cors);
+  const metadata = reference.metadata;
 
   const testGame = await isTestRankingGame(env.AUTH_DB, metadata.gameId);
   const published = testGame ? false : await isGameResultsPublished(env.AUTH_DB, metadata.gameId, new Date());
-  const row = testGame ? null : await getPredictionRow(env.AUTH_DB, session.id, metadata.gameId);
+  const row = testGame ? null : await getPredictionRow(env.AUTH_DB, session.id, metadata);
   if (!row) {
     return jsonResponse({
       ok: true,
       gameId: metadata.gameId,
+      internalGameId: metadata.internalGameId || "",
+      legacyGameId: metadata.legacyGameId || metadata.gameId,
       prediction: null,
       status: null,
       submittedAt: null,
@@ -7955,6 +8068,8 @@ async function handleGetCurrentPrediction(request, env, cors) {
   return jsonResponse({
     ok: true,
     gameId: metadata.gameId,
+    internalGameId: metadata.internalGameId || "",
+    legacyGameId: metadata.legacyGameId || metadata.gameId,
     prediction,
     status: published ? row.status : row.status === "scored" ? "submitted" : row.status,
     submittedAt: row.submitted_at,
@@ -7993,10 +8108,9 @@ async function handlePutCurrentPrediction(request, env, cors) {
   }
 
   const input = await readJson(request);
-  const metadata = await resolvePredictionGameMetadata(env.AUTH_DB, input?.gameId);
-  if (!metadata) {
-    return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
-  }
+  const reference = await resolveApiGameReference(env.AUTH_DB, input?.gameId);
+  if (!reference.ok) return jsonResponse({ ok: false, code: reference.code, error: "対象試合のgameIdが不正です。" }, 400, cors);
+  const metadata = reference.metadata;
 
   const deadlineResponse = createPredictionDeadlineRejection(metadata, cors);
   if (deadlineResponse) {
@@ -8013,24 +8127,32 @@ async function handlePutCurrentPrediction(request, env, cors) {
     return jsonResponse({ ok: false, error: "予想データが大きすぎます。" }, 413, cors);
   }
 
-  const existing = await getPredictionRow(env.AUTH_DB, session.id, metadata.gameId);
+  const existing = await getPredictionRow(env.AUTH_DB, session.id, metadata);
   if (existing && isPredictionLocked(existing)) {
     return jsonResponse({ ok: false, error: "この試合の予想受付は終了しています。" }, 409, cors);
   }
 
   const now = new Date().toISOString();
   const id = existing?.id || randomToken(16);
+  // An older prediction can already be linked to the same canonical game via
+  // a legacy game_id. Keep that compatibility key instead of inserting a
+  // second row for the same user and internal game.
+  const storageGameId = metadata.internalGameId && existing?.game_id
+    ? existing.game_id
+    : metadata.gameId;
   // テスト予想は開発者専用エンドポイントだけが明示的に作成します。
   // 一般の予想保存でクライアント入力をテスト扱いにすることはありません。
   const isTestPrediction = 0;
+  const predictionStorage = await getInternalGameIdStorageAvailability(env.AUTH_DB, ["predictions"]);
   const result = await env.AUTH_DB.prepare(
     `INSERT INTO predictions
-       (id, user_id, game_id, prediction_json, schema_version,
+       (id, user_id, game_id${predictionStorage.predictions ? ", internal_game_id" : ""}, prediction_json, schema_version,
         game_date, home_team, away_team, opponent_code, is_home,
         submitted_at, updated_at, locked_at, status,
         score, max_score, scored_at, actual_lineup_json, is_test_prediction)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, NULL, 'submitted', NULL, NULL, NULL, NULL, ?12)
+     VALUES (?1, ?2, ?3${predictionStorage.predictions ? ", ?4" : ""}, ?${predictionStorage.predictions ? 5 : 4}, ?${predictionStorage.predictions ? 6 : 5}, ?${predictionStorage.predictions ? 7 : 6}, ?${predictionStorage.predictions ? 8 : 7}, ?${predictionStorage.predictions ? 9 : 8}, ?${predictionStorage.predictions ? 10 : 9}, ?${predictionStorage.predictions ? 11 : 10}, ?${predictionStorage.predictions ? 12 : 11}, ?${predictionStorage.predictions ? 12 : 11}, NULL, 'submitted', NULL, NULL, NULL, NULL, ?${predictionStorage.predictions ? 13 : 12})
      ON CONFLICT(user_id, game_id) DO UPDATE SET
+       ${predictionStorage.predictions ? "internal_game_id = CASE WHEN excluded.internal_game_id IS NULL OR excluded.internal_game_id = '' THEN predictions.internal_game_id ELSE excluded.internal_game_id END," : ""}
        prediction_json = excluded.prediction_json,
        schema_version = excluded.schema_version,
        game_date = excluded.game_date,
@@ -8046,7 +8168,8 @@ async function handlePutCurrentPrediction(request, env, cors) {
   ).bind(
     id,
     session.id,
-    metadata.gameId,
+    storageGameId,
+    ...(predictionStorage.predictions ? [metadata.internalGameId || null] : []),
     predictionJson,
     PREDICTION_SCHEMA_VERSION,
     metadata.date,
@@ -8059,7 +8182,7 @@ async function handlePutCurrentPrediction(request, env, cors) {
   ).run();
 
   if (Number(result?.meta?.changes || 0) !== 1) {
-    const current = await getPredictionRow(env.AUTH_DB, session.id, metadata.gameId);
+    const current = await getPredictionRow(env.AUTH_DB, session.id, metadata);
     if (current && isPredictionLocked(current)) {
       return jsonResponse({ ok: false, error: "この試合の予想受付は終了しています。" }, 409, cors);
     }
@@ -8070,6 +8193,8 @@ async function handlePutCurrentPrediction(request, env, cors) {
   return jsonResponse({
     ok: true,
     gameId: metadata.gameId,
+    internalGameId: metadata.internalGameId || "",
+    legacyGameId: metadata.legacyGameId || metadata.gameId,
     created,
     updated: !created,
     status: "submitted",
@@ -8084,37 +8209,46 @@ async function handleDeleteCurrentPrediction(request, env, cors) {
     return jsonResponse({ ok: false, error: "予想を削除するにはログインしてください。" }, 401, cors);
   }
 
-  const metadata = await resolvePredictionGameMetadata(
-    env.AUTH_DB,
-    new URL(request.url).searchParams.get("gameId")
-  );
-  if (!metadata) {
-    return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
-  }
+  const reference = await resolveApiGameReference(env.AUTH_DB, new URL(request.url).searchParams.get("gameId"));
+  if (!reference.ok) return jsonResponse({ ok: false, code: reference.code, error: "対象試合のgameIdが不正です。" }, 400, cors);
+  const metadata = reference.metadata;
 
   const deadlineResponse = createPredictionDeadlineRejection(metadata, cors);
   if (deadlineResponse) {
     return deadlineResponse;
   }
 
-  const existing = await getPredictionRow(env.AUTH_DB, session.id, metadata.gameId);
+  const existing = await getPredictionRow(env.AUTH_DB, session.id, metadata);
   if (existing && isPredictionLocked(existing)) {
     return jsonResponse({ ok: false, error: "この試合の予想受付は終了しています。" }, 409, cors);
   }
 
-  await env.AUTH_DB.prepare(
-    "DELETE FROM predictions WHERE user_id = ?1 AND game_id = ?2"
-  ).bind(session.id, metadata.gameId).run();
-  return jsonResponse({ ok: true, gameId: metadata.gameId, deleted: Boolean(existing) }, 200, cors);
+  const predictionStorage = await getInternalGameIdStorageAvailability(env.AUTH_DB, ["predictions"]);
+  const deleted = predictionStorage.predictions && metadata.internalGameId
+    ? await env.AUTH_DB.prepare("DELETE FROM predictions WHERE user_id = ?1 AND (internal_game_id = ?2 OR (internal_game_id IS NULL AND game_id = ?3))").bind(session.id, metadata.internalGameId, metadata.gameId).run()
+    : await env.AUTH_DB.prepare("DELETE FROM predictions WHERE user_id = ?1 AND game_id = ?2").bind(session.id, metadata.gameId).run();
+  return jsonResponse({ ok: true, gameId: metadata.gameId, internalGameId: metadata.internalGameId || "", deleted: Number(deleted?.meta?.changes || 0) > 0 }, 200, cors);
 }
 
-async function getPredictionRow(db, userId, gameId) {
+async function getPredictionRow(db, userId, gameReference) {
+  const metadata = typeof gameReference === "object" && gameReference ? gameReference : null;
+  const gameId = String(metadata?.gameId || gameReference || "");
+  const internalGameId = String(metadata?.internalGameId || "");
+  const storage = await getInternalGameIdStorageAvailability(db, ["predictions"]);
+  if (storage.predictions && internalGameId) {
+    return db.prepare(
+      `SELECT id, user_id, game_id, internal_game_id, prediction_json, status,
+            submitted_at, updated_at, locked_at, score, max_score, scored_at, actual_lineup_json
+       FROM predictions
+      WHERE user_id = ?1 AND (internal_game_id = ?2 OR (internal_game_id IS NULL AND game_id = ?3))
+      ORDER BY CASE WHEN internal_game_id = ?2 THEN 0 ELSE 1 END
+       LIMIT 1`
+    ).bind(userId, internalGameId, gameId).first();
+  }
   return db.prepare(
     `SELECT id, user_id, game_id, prediction_json, status,
             submitted_at, updated_at, locked_at, score, max_score, scored_at, actual_lineup_json
-       FROM predictions
-      WHERE user_id = ?1 AND game_id = ?2
-      LIMIT 1`
+       FROM predictions WHERE user_id = ?1 AND game_id = ?2 LIMIT 1`
   ).bind(userId, gameId).first();
 }
 
@@ -8236,12 +8370,39 @@ function predictionTeamCodeFromStoredName(value) {
 }
 
 export async function resolvePredictionGameMetadata(db, value) {
-  const parsed = parsePredictionGameId(value);
+  const requestedGameReference = String(value || "").trim();
+  const registry = await getGameIdentityRegistryAvailability(db);
+  if (INTERNAL_GAME_ID_PATTERN.test(requestedGameReference)) {
+    if (!registry.available) return null;
+    let internalRow = null;
+    try {
+      internalRow = await db.prepare(
+        `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, game_status, internal_game_id
+           FROM detected_game_schedule
+          WHERE internal_game_id = ?1
+          ORDER BY updated_at DESC LIMIT 2`
+      ).bind(requestedGameReference).all();
+    } catch (error) {
+      if (!isPregameSchemaError(error)) throw error;
+      return null;
+    }
+    const rows = internalRow?.results || [];
+    if (rows.length !== 1) return null;
+    const row = rows[0];
+    const parsedRow = parsePredictionGameId(row.game_id);
+    if (!parsedRow) return null;
+    return createResolvedPredictionGameMetadata({
+      parsed: parsedRow,
+      row,
+      internalGameId: requestedGameReference
+    });
+  }
+
+  const parsed = parsePredictionGameId(requestedGameReference);
   if (!parsed) return null;
 
   let row = null;
   let scheduleTableAvailable = true;
-  const registry = await getGameIdentityRegistryAvailability(db);
   const internalGameIdColumn = registry.scheduleColumnAvailable ? ", internal_game_id" : "";
   try {
     row = await db.prepare(
@@ -8276,19 +8437,7 @@ export async function resolvePredictionGameMetadata(db, value) {
       return null;
     }
     const internalGameId = await resolveExistingInternalGameId(db, registry, row, parsed.gameId);
-    return {
-      ...parsed,
-      gameId: String(row.game_id),
-      date: row.game_date || parsed.date,
-      homeCode,
-      awayCode,
-      opponentCode: homeCode === "f" ? awayCode : homeCode,
-      isHome: homeCode === "f",
-      startAt: row.start_at || "",
-      gameCode: normalizeNpbGameCode(row.game_code) || parsePredictionGameId(row.game_id)?.gameCode || parsed.gameCode,
-      internalGameId,
-      game: { ...row, status: row.game_status }
-    };
+    return createResolvedPredictionGameMetadata({ parsed, row, internalGameId, homeCode, awayCode });
   }
 
   // 日程同期前にprediction-targetが静的日程を返しても、既知の試合だけは保存対象として解決します。
@@ -8302,6 +8451,54 @@ export async function resolvePredictionGameMetadata(db, value) {
     startAt: startAt.toISOString(),
     gameCode: parsePredictionGameId(scheduled.gameId)?.gameCode || parsed.gameCode,
     game: scheduled
+  };
+}
+
+function createResolvedPredictionGameMetadata({ parsed, row, internalGameId = "", homeCode = "", awayCode = "" }) {
+  const resolvedHomeCode = homeCode || predictionTeamCodeFromStoredName(row?.home_team) || parsed.homeCode;
+  const resolvedAwayCode = awayCode || predictionTeamCodeFromStoredName(row?.away_team) || parsed.awayCode;
+  if (!PREDICTION_TEAM_CODES.has(resolvedHomeCode) || !PREDICTION_TEAM_CODES.has(resolvedAwayCode) || (resolvedHomeCode !== "f" && resolvedAwayCode !== "f")) {
+    return null;
+  }
+  return {
+    ...parsed,
+    gameId: String(row.game_id),
+    legacyGameId: String(row.game_id),
+    date: row.game_date || parsed.date,
+    homeCode: resolvedHomeCode,
+    awayCode: resolvedAwayCode,
+    opponentCode: resolvedHomeCode === "f" ? resolvedAwayCode : resolvedHomeCode,
+    isHome: resolvedHomeCode === "f",
+    startAt: row.start_at || "",
+    gameCode: normalizeNpbGameCode(row.game_code) || parsePredictionGameId(row.game_id)?.gameCode || parsed.gameCode,
+    internalGameId: String(internalGameId || row.internal_game_id || ""),
+    game: { ...row, status: row.game_status }
+  };
+}
+
+export async function resolveApiGameReference(db, value) {
+  const raw = String(value || "").trim();
+  if (!raw) return { ok: false, code: "INVALID_GAME_IDENTIFIER_FORMAT", metadata: null };
+  const metadata = await resolvePredictionGameMetadata(db, raw);
+  if (!metadata) {
+    return {
+      ok: false,
+      code: INTERNAL_GAME_ID_PATTERN.test(raw) ? "INTERNAL_GAME_ID_NOT_FOUND" : "GAME_IDENTIFIER_NOT_FOUND",
+      metadata: null
+    };
+  }
+  if (!metadata.internalGameId && INTERNAL_GAME_ID_PATTERN.test(raw)) {
+    return { ok: false, code: "INTERNAL_GAME_ID_NOT_FOUND", metadata: null };
+  }
+  return {
+    ok: true,
+    code: "",
+    metadata: {
+      ...metadata,
+      legacyGameId: metadata.legacyGameId || metadata.gameId,
+      descriptiveGameId: metadata.format === "descriptive" ? metadata.gameId : "",
+      npbGameCode: metadata.gameCode || ""
+    }
   };
 }
 

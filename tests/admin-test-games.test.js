@@ -75,7 +75,7 @@ test("テスト採点は既存の採点準備・保存関数へis_testフラグ�
   assert.match(worker, /prepareGamePredictionScoring\(env\.AUTH_DB, game\.game_id, actual\.lineup, 1\)/);
   assert.match(worker, /scoreClaimedGameLineup\(env\.AUTH_DB, claimed, now, 1\)/);
   assert.match(worker, /scorePredictionLineup\(sanitized\.prediction\.lineup, actualLineup\)/);
-  assert.match(worker, /persistGamePredictionScoring\(db, record\.game_id, actualResult\.lineup, scoring, now, isTestPrediction\)/);
+  assert.match(worker, /persistGamePredictionScoring\(db, record\.game_id, actualResult\.lineup, scoring, now, isTestPrediction, record\.internal_game_id \|\| ""\)/);
 });
 
 test("Cronの日程集合へtest_gamesを混ぜる処理を追加していない", () => {

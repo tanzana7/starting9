@@ -50,7 +50,7 @@ test("フォールバックIDと静的日程の同一試合は一つに統合し
 
 test("正常な発表済みスキップは開始・終了ログの連打対象にならない", () => {
   const worker = read("auth-worker.js");
-  const block = worker.match(/if \(row\?\.status === "announced"\) \{([\s\S]*?)\n  \}/)?.[1] || "";
+  const block = worker.match(/if \(selection\.reason === "already_announced"\) \{([\s\S]*?)\n  \}/)?.[1] || "";
   assert.match(block, /return \{ status: "already_announced"/);
   assert.doesNotMatch(block, /recordProbableStarterDecision/);
 });

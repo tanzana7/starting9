@@ -571,6 +571,12 @@ async function recordProbableStarterDecision(db, {
   });
 }
 
+export function isProbableStarterComplete(row) {
+  return row?.status === "announced"
+    && Boolean(String(row?.home_pitcher_name || "").trim())
+    && Boolean(String(row?.away_pitcher_name || "").trim());
+}
+
 async function runProbableStarterFetch(env, target, now, { source = "cron" } = {}) {
   const current = now instanceof Date ? now : new Date(now);
   const gameId = String(target?.gameId || "");
@@ -705,8 +711,25 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
   }
 }
 
+export async function selectProbableStarterCronTarget(db, now = new Date()) {
+  const target = await getServerPredictionTarget(db, now);
+  if (!target?.gameId) return { target: null, row: null, reason: "no_target", gameId: "" };
+  const row = await db.prepare(
+    "SELECT status, home_pitcher_name, away_pitcher_name, next_check_at FROM probable_starters WHERE game_id = ?1 LIMIT 1"
+  ).bind(target.gameId).first();
+  if (isProbableStarterComplete(row)) {
+    return { target: null, row, reason: "already_announced", gameId: target.gameId };
+  }
+  return { target, row, reason: "candidate", gameId: target.gameId };
+}
+
 async function runDueProbableStarterJob(env, now) {
-  const target = await getServerPredictionTarget(env.AUTH_DB, now);
+  const selection = await selectProbableStarterCronTarget(env.AUTH_DB, now);
+  const target = selection.target;
+  if (selection.reason === "already_announced") {
+    // 完了済み試合はCron対象から除外し、取得関数・スキップログへ進めません。
+    return { status: "already_announced", gameId: selection.gameId, reason: "already_announced" };
+  }
   if (!target?.gameId || !target.startAt || new Date(now).getTime() >= new Date(target.startAt).getTime()) {
     const gameId = target?.gameId || "";
     const started = Boolean(gameId && target?.startAt && new Date(now).getTime() >= new Date(target.startAt).getTime());
@@ -735,11 +758,7 @@ async function runDueProbableStarterJob(env, now) {
     });
     return { status: "skipped", gameId: target.gameId, reason: "test_game" };
   }
-  const row = await env.AUTH_DB.prepare("SELECT status, next_check_at FROM probable_starters WHERE game_id = ?1 LIMIT 1").bind(target.gameId).first();
-  if (row?.status === "announced") {
-    // 発表済みは正常な終端状態のため、毎回のCronスキップを進行ログへ残しません。
-    return { status: "already_announced", gameId: target.gameId, reason: "already_announced" };
-  }
+  const row = selection.row;
   if (row?.next_check_at && new Date(row.next_check_at).getTime() > new Date(now).getTime()) {
     await recordProbableStarterDecision(env.AUTH_DB, {
       eventType: "probable_starter_fetch_skipped",

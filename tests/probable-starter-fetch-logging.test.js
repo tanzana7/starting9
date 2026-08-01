@@ -21,8 +21,9 @@ test("対象なし・再試行待ちは取得せず終端状態を記録し、�
   assert.match(worker, /async function recordProbableStarterDecision\(/);
   assert.match(worker, /eventType: started \? "probable_starter_fetch_skipped" : "probable_starter_no_target"/);
   assert.match(worker, /PROBABLE_STARTER_RETRY_WAIT/);
-  assert.match(worker, /if \(row\?\.status === "announced"\) \{[\s\S]*?return \{ status: "already_announced", gameId: target\.gameId, reason: "already_announced" \};/);
-  const announcedBlock = worker.match(/if \(row\?\.status === "announced"\) \{([\s\S]*?)\n  \}/)?.[1] || "";
+  assert.match(worker, /const selection = await selectProbableStarterCronTarget\(env\.AUTH_DB, now\)/);
+  assert.match(worker, /if \(selection\.reason === "already_announced"\) \{[\s\S]*?return \{ status: "already_announced", gameId: selection\.gameId, reason: "already_announced" \};/);
+  const announcedBlock = worker.match(/if \(selection\.reason === "already_announced"\) \{([\s\S]*?)\n  \}/)?.[1] || "";
   assert.doesNotMatch(announcedBlock, /recordProbableStarterDecision/);
   assert.match(worker, /return \{ status: started \? "not_due" : "noTarget", gameId \};/);
   assert.match(worker, /WORKFLOW_LOG_DEDUPE_WINDOW_MS = 30 \* 60 \* 1000/);

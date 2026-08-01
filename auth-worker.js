@@ -28,6 +28,16 @@ import {
   getOrCreateInternalGame,
   resolveInternalGameId
 } from "./game-identity-registry.js";
+import {
+  claimWorkflowJob,
+  completeWorkflowJob,
+  createWorkflowJob,
+  ensureGameWorkflowState,
+  isGameWorkflowJobSchemaReady,
+  listDueWorkflowJobs,
+  retryWorkflowJob,
+  transitionWorkflowState
+} from "./game-workflow-jobs.js";
 
 const SESSION_COOKIE_NAME = "s9_session";
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
@@ -291,6 +301,9 @@ export default {
       if (path === "/api/admin/audit/game-identities" && request.method === "GET") {
         return await handleAdminGameIdentityAudit(request, env, cors);
       }
+      if (path === "/api/admin/audit/game-workflows" && request.method === "GET") {
+        return await handleAdminGameWorkflowAudit(request, env, cors);
+      }
       const probableStarterRefreshRoute = parseProbableStarterRefreshRoute(path);
       if (probableStarterRefreshRoute && request.method === "POST") {
         return await handleAdminProbableStarterRefresh(request, env, cors, probableStarterRefreshRoute.gameId);
@@ -479,7 +492,7 @@ async function runGameWorkflows(env, now, syncedGames = []) {
   catch (error) { shared.errors += 1; await recordCronStepFailure(env.AUTH_DB, "game_day_schedule", now, error); console.error(`game-day schedule cron failed: code=${error?.code || "unknown"}`); }
   try { shared.roster = await runDueRosterCaptureJobs(env, now, activeTimelines); }
   catch (error) { shared.errors += 1; await recordCronStepFailure(env.AUTH_DB, "roster", now, error); console.error(`roster cron failed: code=${error?.code || "unknown"}`); }
-  try { shared.probableStarter = await runDueProbableStarterJob(env, now); }
+  try { shared.probableStarter = await runDueProbableStarterWorkflowJobs(env, now); }
   catch (error) { shared.errors += 1; await recordCronStepFailure(env.AUTH_DB, "probable_starter", now, error); console.error(`probable starter cron failed: code=${error?.code || "unknown"}`); }
   try { shared.lineup = await runDuePregameAutomationJobs(env, now, activeTimelines); }
   catch (error) { shared.errors += 1; await recordCronStepFailure(env.AUTH_DB, "lineup", now, error); console.error(`pregame automation cron failed: code=${error?.code || "unknown"}`); }
@@ -834,6 +847,272 @@ async function runDueProbableStarterJob(env, now) {
   } catch (error) {
     return { status: "error", gameId: target.gameId, errorCode: error?.code || "PROBABLE_STARTER_FETCH_FAILED" };
   }
+}
+
+const WORKFLOW_PROBABLE_STARTER_JOB_TYPE = "probable_starter_fetch";
+const WORKFLOW_JOB_LEASE_MS = 5 * 60 * 1000;
+
+function getProbableStarterJobMaxAttempts(startAt, now) {
+  const remainingMilliseconds = Math.max(0, new Date(startAt).getTime() - new Date(now).getTime());
+  return Math.max(1, Math.ceil(remainingMilliseconds / PROBABLE_STARTER_RETRY_INTERVAL_MS) + 1);
+}
+
+function getWorkflowJobErrorCode(error) {
+  const code = String(error?.code || "").toUpperCase();
+  if (code.includes("NOT_ANNOUNCED") || code.includes("UNANNOUNCED")) return "DATA_NOT_ANNOUNCED";
+  if (code.includes("RATE") || code.includes("429")) return "EXTERNAL_RATE_LIMITED";
+  if (code.includes("HTTP") || code.includes("FETCH") || code.includes("TIMEOUT")) return "EXTERNAL_HTTP_ERROR";
+  if (code.includes("PARSE")) return "DATA_PARSE_FAILED";
+  if (code.includes("INVALID") || code.includes("VALIDATION")) return "DATA_VALIDATION_FAILED";
+  if (code.includes("DATABASE") || code.includes("SAVE")) return "DATABASE_WRITE_FAILED";
+  return code || "JOB_FAILED";
+}
+
+async function resolveWorkflowJobGame(db, internalGameId) {
+  const state = await db.prepare(
+    `SELECT state.legacy_game_id, games.game_date, games.start_time, games.home_team, games.away_team, games.game_status
+       FROM game_workflow_state AS state
+       JOIN games ON games.internal_game_id = state.internal_game_id
+      WHERE state.internal_game_id = ?1 LIMIT 1`
+  ).bind(internalGameId).first();
+  if (!state) throw createPregameError("INTERNAL_GAME_ID_MISSING", "内部試合IDの状態を確認できません。");
+  let legacyGameId = String(state.legacy_game_id || "");
+  if (!legacyGameId) {
+    const identifiers = await db.prepare(
+      `SELECT identifier_value FROM game_identifiers
+        WHERE internal_game_id = ?1 AND identifier_type IN ('descriptive_game_id', 'legacy_compact_game_id')
+        ORDER BY CASE identifier_type WHEN 'descriptive_game_id' THEN 0 ELSE 1 END, id ASC LIMIT 2`
+    ).bind(internalGameId).all();
+    const candidates = [...new Set((identifiers.results || []).map((row) => String(row.identifier_value || "").trim()).filter(Boolean))];
+    if (candidates.length > 1) throw createPregameError("GAME_IDENTIFIER_AMBIGUOUS", "複数の旧試合IDが内部試合IDに紐付いています。");
+    legacyGameId = candidates[0] || "";
+  }
+  if (!legacyGameId) throw createPregameError("GAME_IDENTIFIER_NOT_FOUND", "既存処理に渡す試合IDが見つかりません。");
+  const gameCode = await db.prepare(
+    `SELECT identifier_value FROM game_identifiers
+      WHERE internal_game_id = ?1 AND identifier_type = 'npb_game_code'
+      ORDER BY id ASC LIMIT 1`
+  ).bind(internalGameId).first();
+  return {
+    gameId: legacyGameId,
+    internalGameId,
+    date: state.game_date,
+    startAt: state.start_time,
+    homeTeam: state.home_team,
+    awayTeam: state.away_team,
+    gameCode: String(gameCode?.identifier_value || ""),
+    status: state.game_status || "scheduled"
+  };
+}
+
+async function recordWorkflowJobEvent(db, { eventType, status, internalGameId, job, now, errorCode = "", metadata = {}, source = "cron" }) {
+  await recordWorkflowLog(db, {
+    eventType,
+    status,
+    gameId: String(job?.legacyGameId || ""),
+    occurredAt: now,
+    message: {
+      workflow_job_created: "試合進行ジョブを作成しました。",
+      workflow_job_claimed: "試合進行ジョブを実行開始しました。",
+      workflow_job_succeeded: "試合進行ジョブが完了しました。",
+      workflow_job_retry: "試合進行ジョブを再試行待ちにしました。",
+      workflow_job_permanently_failed: "試合進行ジョブが恒久失敗になりました。",
+      workflow_internal_id_unresolved: "内部試合IDを解決できないためジョブを作成しませんでした。"
+    }[eventType] || "試合進行ジョブの状態が更新されました。",
+    errorCode,
+    metadata: { internalGameId, jobType: job?.job_type || WORKFLOW_PROBABLE_STARTER_JOB_TYPE, jobId: job?.id || null, ...metadata },
+    source
+  });
+}
+
+async function executeProbableStarterWorkflowJob(env, claimedJob, now, source = "cron") {
+  const target = await resolveWorkflowJobGame(env.AUTH_DB, claimedJob.internal_game_id);
+  const result = await runProbableStarterFetch(env, target, now, { source });
+  if (result?.status === "success") {
+    const completed = await completeWorkflowJob(env.AUTH_DB, {
+      jobId: claimedJob.id,
+      claimToken: claimedJob.claim_token,
+      resultMetadata: { probableStarterStatus: "announced" },
+      now
+    });
+    if (!completed) throw createPregameError("JOB_CLAIM_CONFLICT", "ジョブの完了権限を確認できません。");
+    await transitionWorkflowState(env.AUTH_DB, {
+      internalGameId: claimedJob.internal_game_id,
+      to: "prediction_open",
+      completedJobType: claimedJob.job_type,
+      now
+    });
+    await recordWorkflowJobEvent(env.AUTH_DB, { eventType: "workflow_job_succeeded", status: "success", internalGameId: claimedJob.internal_game_id, job: { ...claimedJob, legacyGameId: target.gameId }, now, source });
+    return { status: "succeeded", gameId: target.gameId, result };
+  }
+
+  const nextAttemptAt = result?.probableStarter?.nextCheckAt || new Date(now.getTime() + PROBABLE_STARTER_RETRY_INTERVAL_MS).toISOString();
+  const retried = await retryWorkflowJob(env.AUTH_DB, {
+    job: claimedJob,
+    claimToken: claimedJob.claim_token,
+    errorCode: "DATA_NOT_ANNOUNCED",
+    errorDetail: "予告先発が未発表です。",
+    nextAttemptAt,
+    now
+  });
+  await transitionWorkflowState(env.AUTH_DB, {
+    internalGameId: claimedJob.internal_game_id,
+    to: retried.status === "permanently_failed" ? "manual_intervention_required" : "retrying",
+    errorCode: "DATA_NOT_ANNOUNCED",
+    nextDueAt: retried.status === "permanently_failed" ? null : nextAttemptAt,
+    now
+  });
+  await recordWorkflowJobEvent(env.AUTH_DB, {
+    eventType: retried.status === "permanently_failed" ? "workflow_job_permanently_failed" : "workflow_job_retry",
+    status: retried.status === "permanently_failed" ? "error" : "warning",
+    internalGameId: claimedJob.internal_game_id,
+    job: { ...claimedJob, legacyGameId: target.gameId },
+    now,
+    errorCode: "DATA_NOT_ANNOUNCED",
+    metadata: { nextAttemptAt },
+    source
+  });
+  return { status: retried.status, gameId: target.gameId, result };
+}
+
+async function runDueProbableStarterWorkflowJobs(env, now) {
+  let schemaReady = false;
+  try {
+    schemaReady = await isGameWorkflowJobSchemaReady(env.AUTH_DB);
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+  }
+  if (!schemaReady) {
+    return { mode: "legacy", ...(await runDueProbableStarterJob(env, now)) };
+  }
+
+  const selection = await selectProbableStarterCronTarget(env.AUTH_DB, now);
+  const target = selection.target;
+  if (!target?.gameId || selection.reason !== "candidate" || !target.startAt || new Date(now).getTime() >= new Date(target.startAt).getTime()) {
+    return { mode: "workflow_jobs", status: selection.reason || "not_due", created: 0, processed: 0 };
+  }
+  if (await isProbableStarterTestGame(env.AUTH_DB, target.gameId)) {
+    return { mode: "workflow_jobs", status: "test_game", created: 0, processed: 0 };
+  }
+  if (selection.row?.next_check_at && new Date(selection.row.next_check_at).getTime() > new Date(now).getTime()) {
+    return { mode: "workflow_jobs", status: "retry_wait", created: 0, processed: 0 };
+  }
+  if (!target.internalGameId) {
+    await recordWorkflowJobEvent(env.AUTH_DB, {
+      eventType: "workflow_internal_id_unresolved",
+      status: "warning",
+      internalGameId: "",
+      job: { legacyGameId: target.gameId },
+      now,
+      errorCode: "INTERNAL_GAME_ID_MISSING",
+      metadata: { gameDate: target.date || "" }
+    });
+    return { mode: "workflow_jobs", status: "internal_id_missing", created: 0, processed: 0 };
+  }
+
+  await ensureGameWorkflowState(env.AUTH_DB, {
+    internalGameId: target.internalGameId,
+    legacyGameId: target.gameId,
+    gameStatus: target.status === "cancelled" ? "cancelled" : "scheduled",
+    workflowStatus: "prediction_open",
+    now
+  });
+  const created = await createWorkflowJob(env.AUTH_DB, {
+    internalGameId: target.internalGameId,
+    jobType: WORKFLOW_PROBABLE_STARTER_JOB_TYPE,
+    scheduledSlotAt: target.startAt,
+    source: "cron",
+    maxAttempts: getProbableStarterJobMaxAttempts(target.startAt, now),
+    now
+  });
+  if (created.created) {
+    await recordWorkflowJobEvent(env.AUTH_DB, { eventType: "workflow_job_created", status: "info", internalGameId: target.internalGameId, job: { legacyGameId: target.gameId, job_type: WORKFLOW_PROBABLE_STARTER_JOB_TYPE }, now });
+  }
+  const dueJobs = await listDueWorkflowJobs(env.AUTH_DB, { jobTypes: [WORKFLOW_PROBABLE_STARTER_JOB_TYPE], now, limit: 5 });
+  let processed = 0;
+  for (const dueJob of dueJobs) {
+    const claimed = await claimWorkflowJob(env.AUTH_DB, { jobId: dueJob.id, now, leaseMilliseconds: WORKFLOW_JOB_LEASE_MS });
+    if (!claimed) continue;
+    processed += 1;
+    try {
+      const resolved = await resolveWorkflowJobGame(env.AUTH_DB, claimed.internal_game_id);
+      await recordWorkflowJobEvent(env.AUTH_DB, { eventType: "workflow_job_claimed", status: "info", internalGameId: claimed.internal_game_id, job: { ...claimed, legacyGameId: resolved.gameId }, now });
+      await executeProbableStarterWorkflowJob(env, claimed, now, "cron");
+    } catch (error) {
+      const errorCode = getWorkflowJobErrorCode(error);
+      const retry = await retryWorkflowJob(env.AUTH_DB, {
+        job: claimed,
+        claimToken: claimed.claim_token,
+        errorCode,
+        errorDetail: String(error?.message || ""),
+        nextAttemptAt: new Date(now.getTime() + PROBABLE_STARTER_RETRY_INTERVAL_MS),
+        now
+      });
+      await transitionWorkflowState(env.AUTH_DB, {
+        internalGameId: claimed.internal_game_id,
+        to: retry.status === "permanently_failed" ? "manual_intervention_required" : "retrying",
+        errorCode,
+        nextDueAt: retry.status === "permanently_failed" ? null : new Date(now.getTime() + PROBABLE_STARTER_RETRY_INTERVAL_MS),
+        now
+      });
+      await recordWorkflowJobEvent(env.AUTH_DB, {
+        eventType: retry.status === "permanently_failed" ? "workflow_job_permanently_failed" : "workflow_job_retry",
+        status: retry.status === "permanently_failed" ? "error" : "warning",
+        internalGameId: claimed.internal_game_id,
+        job: claimed,
+        now,
+        errorCode,
+        metadata: { nextAttemptAt: retry.status === "retry_wait" ? new Date(now.getTime() + PROBABLE_STARTER_RETRY_INTERVAL_MS).toISOString() : null }
+      });
+    }
+  }
+  return { mode: "workflow_jobs", status: "ok", created: created.created ? 1 : 0, processed };
+}
+
+async function runAdminProbableStarterWorkflowJob(env, target, now) {
+  let schemaReady = false;
+  try {
+    schemaReady = await isGameWorkflowJobSchemaReady(env.AUTH_DB);
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+  }
+  if (!schemaReady || !target.internalGameId) {
+    return { mode: "legacy", result: await runProbableStarterFetch(env, target, now, { source: "admin" }) };
+  }
+
+  await ensureGameWorkflowState(env.AUTH_DB, {
+    internalGameId: target.internalGameId,
+    legacyGameId: target.gameId,
+    gameStatus: target.status === "cancelled" ? "cancelled" : "scheduled",
+    workflowStatus: "prediction_open",
+    now
+  });
+  const scheduledSlotAt = now.toISOString();
+  await createWorkflowJob(env.AUTH_DB, {
+    internalGameId: target.internalGameId,
+    jobType: "probable_starter_fetch_manual",
+    scheduledSlotAt,
+    source: "admin",
+    maxAttempts: 1,
+    now
+  });
+  const job = (await listDueWorkflowJobs(env.AUTH_DB, {
+    jobTypes: ["probable_starter_fetch_manual"],
+    now,
+    limit: 10
+  })).find((candidate) => candidate.internal_game_id === target.internalGameId && candidate.scheduled_slot_at === scheduledSlotAt);
+  const claimed = job ? await claimWorkflowJob(env.AUTH_DB, { jobId: job.id, now, leaseMilliseconds: WORKFLOW_JOB_LEASE_MS }) : null;
+  if (!claimed) throw createPregameError("JOB_CLAIM_CONFLICT", "手動再取得ジョブを開始できません。");
+  await recordWorkflowJobEvent(env.AUTH_DB, {
+    eventType: "workflow_job_claimed",
+    status: "info",
+    internalGameId: target.internalGameId,
+    job: { ...claimed, legacyGameId: target.gameId },
+    now,
+    source: "admin"
+  });
+  const execution = await executeProbableStarterWorkflowJob(env, claimed, now, "admin");
+  return { mode: "workflow_jobs", result: execution.result || { ok: execution.status === "succeeded", status: execution.status } };
 }
 
 async function getPausedWorkflowGameIds(db) {
@@ -4782,6 +5061,56 @@ async function handleAdminGameIdentityAudit(request, env, cors) {
   }
 }
 
+function parseGameWorkflowAuditOptions(request) {
+  const url = new URL(request.url);
+  const internalGameId = String(url.searchParams.get("internalGameId") || "").trim().slice(0, 80);
+  const parsedLimit = Number.parseInt(url.searchParams.get("limit"), 10);
+  return {
+    internalGameId,
+    limit: Number.isFinite(parsedLimit) ? Math.min(200, Math.max(1, parsedLimit)) : 50
+  };
+}
+
+async function handleAdminGameWorkflowAudit(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  const options = parseGameWorkflowAuditOptions(request);
+  try {
+    if (!await isGameWorkflowJobSchemaReady(env.AUTH_DB)) {
+      return jsonResponse({ ok: false, code: "GAME_WORKFLOW_JOB_SCHEMA_NOT_READY", error: "試合進行ジョブのmigrationが未適用です。" }, 503, cors);
+    }
+    const filter = options.internalGameId ? "WHERE internal_game_id = ?1" : "";
+    const bindings = options.internalGameId ? [options.internalGameId] : [];
+    const [workflowStates, jobStates, staleLeases, permanentFailures, orphanedStates, duplicateSlots, jobs] = await Promise.all([
+      env.AUTH_DB.prepare(`SELECT workflow_status, COUNT(*) AS count FROM game_workflow_state ${filter} GROUP BY workflow_status`).bind(...bindings).all(),
+      env.AUTH_DB.prepare(`SELECT status, COUNT(*) AS count FROM game_job_runs ${filter} GROUP BY status`).bind(...bindings).all(),
+      env.AUTH_DB.prepare(`SELECT COUNT(*) AS count FROM game_job_runs ${filter}${filter ? " AND" : " WHERE"} status IN ('claimed', 'running') AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?${bindings.length + 1}`).bind(...bindings, new Date().toISOString()).first(),
+      env.AUTH_DB.prepare(`SELECT id, internal_game_id, job_type, scheduled_slot_at, attempt_count, max_attempts, error_code, updated_at FROM game_job_runs ${filter}${filter ? " AND" : " WHERE"} status = 'permanently_failed' ORDER BY updated_at DESC LIMIT ?${bindings.length + 1}`).bind(...bindings, options.limit).all(),
+      env.AUTH_DB.prepare(`SELECT COUNT(*) AS count FROM game_workflow_state state LEFT JOIN games ON games.internal_game_id = state.internal_game_id ${options.internalGameId ? "WHERE state.internal_game_id = ?1 AND" : "WHERE"} games.internal_game_id IS NULL`).bind(...bindings).first(),
+      env.AUTH_DB.prepare(`SELECT COUNT(*) AS count FROM (SELECT internal_game_id, job_type, scheduled_slot_at FROM game_job_runs ${filter} GROUP BY internal_game_id, job_type, scheduled_slot_at HAVING COUNT(*) > 1)`).bind(...bindings).first(),
+      env.AUTH_DB.prepare(`SELECT jobs.id, jobs.internal_game_id, state.legacy_game_id, jobs.job_type, jobs.status, jobs.source, jobs.attempt_count, jobs.max_attempts, jobs.scheduled_slot_at, jobs.next_attempt_at, jobs.lease_expires_at, jobs.error_code, jobs.updated_at FROM game_job_runs jobs LEFT JOIN game_workflow_state state ON state.internal_game_id = jobs.internal_game_id ${options.internalGameId ? "WHERE jobs.internal_game_id = ?1" : ""} ORDER BY jobs.updated_at DESC LIMIT ?${bindings.length + 1}`).bind(...bindings, options.limit).all()
+    ]);
+    const response = jsonResponse({
+      ok: true,
+      summary: {
+        workflowStates: workflowStates.results || [],
+        jobStates: jobStates.results || [],
+        staleLeaseCount: Number(staleLeases?.count || 0),
+        permanentlyFailedCount: (permanentFailures.results || []).length,
+        orphanedStateCount: Number(orphanedStates?.count || 0),
+        duplicateJobSlotCount: Number(duplicateSlots?.count || 0)
+      },
+      permanentlyFailedJobs: permanentFailures.results || [],
+      recentJobs: jobs.results || []
+    }, 200, cors);
+    response.headers.set("Cache-Control", "no-store");
+    return response;
+  } catch (error) {
+    console.error("試合進行ジョブ監査の読み取りに失敗しました", error instanceof Error ? error.message : "unknown error");
+    return jsonResponse({ ok: false, code: "GAME_WORKFLOW_JOB_AUDIT_READ_FAILED", error: "試合進行ジョブ監査を取得できませんでした。" }, 500, cors);
+  }
+}
+
 export function selectNextPredictionTarget(games, now = new Date()) {
   const current = now instanceof Date ? now : new Date(now);
   if (Number.isNaN(current.getTime())) return null;
@@ -4880,7 +5209,8 @@ async function handleAdminProbableStarterRefresh(request, env, cors, gameId) {
   }
   const target = { ...metadata, gameId: validGameId, startAt };
   try {
-    const result = await runProbableStarterFetch(env, target, new Date(), { source: "admin" });
+    const workflow = await runAdminProbableStarterWorkflowJob(env, target, new Date());
+    const result = workflow.result;
     await recordWorkflowLog(env.AUTH_DB, {
       eventType: "probable_starter_manual_refresh",
       status: "success",
@@ -4922,7 +5252,7 @@ function parseResultGameRoute(path) {
 async function getResultGameMetadata(db, gameId) {
   try {
     const row = await db.prepare(
-      `SELECT game_id, game_date, start_at, home_team, away_team, game_code, venue
+      `SELECT game_id, game_date, start_at, home_team, away_team, game_code, venue, internal_game_id
          FROM detected_game_schedule WHERE game_id = ?1 LIMIT 1`
     ).bind(gameId).first();
     if (row) {
@@ -4933,6 +5263,7 @@ async function getResultGameMetadata(db, gameId) {
         homeTeam: row.home_team,
         awayTeam: row.away_team,
         gameCode: row.game_code || "",
+        internalGameId: row.internal_game_id || "",
         venue: row.venue || ""
       });
     }

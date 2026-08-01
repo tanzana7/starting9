@@ -84,8 +84,9 @@ test("Cron候補抽出後にのみ取得関数を呼び、正常な取得済み�
   assert.doesNotMatch(announcedBlock, /recordProbableStarterDecision/);
 });
 
-test("手動再取得はCron用候補抽出を経由せず既存の共通取得関数を使う", () => {
+test("手動再取得はCron用候補抽出を経由せず同じジョブ実行器を使う", () => {
   const worker = fs.readFileSync(workerPath, "utf8");
-  assert.match(worker, /const result = await runProbableStarterFetch\(env, target, new Date\(\), \{ source: "admin" \}\)/);
-  assert.match(worker, /source: "admin"/);
+  assert.match(worker, /const workflow = await runAdminProbableStarterWorkflowJob\(env, target, new Date\(\)\)/);
+  assert.match(worker, /executeProbableStarterWorkflowJob\(env, claimed, now, "admin"\)/);
+  assert.match(worker, /runProbableStarterFetch\(env, target, now, \{ source: "admin" \}\)/);
 });

@@ -76,6 +76,25 @@ const WORKFLOW_LOG_DEFAULT_LIMIT = 50;
 const WORKFLOW_LOG_MAX_LIMIT = 200;
 const WORKFLOW_LOG_DEDUPE_WINDOW_MS = 30 * 60 * 1000;
 const WORKFLOW_LOG_CLEANUP_KEY = "workflow_logs_48h";
+const GAME_IDENTITY_AUDIT_DEFAULT_RANGE_DAYS = 30;
+const GAME_IDENTITY_AUDIT_DEFAULT_LIMIT = 50;
+const GAME_IDENTITY_AUDIT_MAX_LIMIT = 100;
+const GAME_IDENTITY_AUDIT_MAX_SCHEDULE_ROWS = 1_000;
+const GAME_IDENTITY_AUDIT_TABLES = Object.freeze([
+  "detected_game_schedule",
+  "probable_starters",
+  "game_day_notice_games",
+  "game_roster_snapshots",
+  "game_pregame_automation",
+  "game_lineups",
+  "game_lineup_revisions",
+  "predictions",
+  "ranking_games",
+  "perfect_achievers",
+  "game_rescore_jobs",
+  "game_workflow_logs",
+  "game_workflow_controls"
+]);
 const NPB_SERVICE_BINDING_INTERNAL_ORIGIN = "https://npb-fetch.internal";
 const NPB_FETCH_TIMEOUT_MS = 15_000;
 const PROBABLE_STARTER_RETRY_INTERVAL_MS = 60 * 60 * 1000;
@@ -262,6 +281,9 @@ export default {
       }
       if (path === "/api/admin/workflow-logs" && request.method === "GET") {
         return await handleAdminWorkflowLogs(request, env, cors);
+      }
+      if (path === "/api/admin/audit/game-identities" && request.method === "GET") {
+        return await handleAdminGameIdentityAudit(request, env, cors);
       }
       const probableStarterRefreshRoute = parseProbableStarterRefreshRoute(path);
       if (probableStarterRefreshRoute && request.method === "POST") {
@@ -4180,6 +4202,402 @@ async function handleAdminWorkflowLogs(request, env, cors) {
       code: isPregameSchemaError(error) ? "WORKFLOW_LOG_SCHEMA_NOT_READY" : "WORKFLOW_LOG_READ_FAILED",
       error: "試合進行ログを取得できませんでした。"
     }, isPregameSchemaError(error) ? 503 : 500, cors);
+  }
+}
+
+export function parseGameIdentityAuditOptions(request, now = new Date()) {
+  const url = new URL(request.url);
+  const suppliedGameDate = String(url.searchParams.get("gameDate") || "").trim();
+  if (suppliedGameDate && !/^\d{4}-\d{2}-\d{2}$/.test(suppliedGameDate)) {
+    return { ok: false, code: "GAME_IDENTITY_AUDIT_DATE_INVALID" };
+  }
+  const scope = String(url.searchParams.get("scope") || "").trim().toLowerCase();
+  const allPeriod = scope === "all";
+  const parsedLimit = Number.parseInt(url.searchParams.get("limit"), 10);
+  const limit = Number.isFinite(parsedLimit)
+    ? Math.min(GAME_IDENTITY_AUDIT_MAX_LIMIT, Math.max(1, parsedLimit))
+    : GAME_IDENTITY_AUDIT_DEFAULT_LIMIT;
+  const gameId = String(url.searchParams.get("gameId") || "").trim().slice(0, 160);
+  const includeDetails = ["1", "true"].includes(String(url.searchParams.get("includeDetails") || "").trim().toLowerCase());
+  const today = getJstDateString(now);
+  const rangeStart = new Date(now.getTime() - ((GAME_IDENTITY_AUDIT_DEFAULT_RANGE_DAYS - 1) * 24 * 60 * 60 * 1000));
+  return {
+    ok: true,
+    gameId,
+    includeDetails,
+    limit,
+    allPeriod,
+    gameDate: suppliedGameDate || "",
+    dateFrom: suppliedGameDate || (allPeriod ? "" : getJstDateString(rangeStart)),
+    dateTo: suppliedGameDate || (allPeriod ? "" : today),
+    timestampFrom: allPeriod ? "" : rangeStart.toISOString(),
+    timestampTo: allPeriod ? "" : now.toISOString()
+  };
+}
+
+function getGameIdentityAuditFilter(options, field, isGameDate = false) {
+  if (options.gameId) return { where: "WHERE game_id = ?", bindings: [options.gameId] };
+  if (options.allPeriod || !field) return { where: "", bindings: [] };
+  if (isGameDate) return { where: `WHERE ${field} >= ? AND ${field} <= ?`, bindings: [options.dateFrom, options.dateTo] };
+  return { where: `WHERE ${field} >= ? AND ${field} <= ?`, bindings: [options.timestampFrom, options.timestampTo] };
+}
+
+async function getAvailableGameIdentityAuditTables(db) {
+  const placeholders = GAME_IDENTITY_AUDIT_TABLES.map(() => "?").join(", ");
+  const result = await db.prepare(
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${placeholders})`
+  ).bind(...GAME_IDENTITY_AUDIT_TABLES).all();
+  return new Set((result.results || []).map((row) => String(row.name || "")));
+}
+
+async function readGameIdentityAuditRows(db, table, selectColumns, options, dateField, isGameDate = false) {
+  const filter = getGameIdentityAuditFilter(options, dateField, isGameDate);
+  const query = `${selectColumns} FROM ${table} ${filter.where} GROUP BY game_id ORDER BY last_seen_at DESC LIMIT ${GAME_IDENTITY_AUDIT_MAX_SCHEDULE_ROWS}`;
+  const result = await db.prepare(query).bind(...filter.bindings).all();
+  return result.results || [];
+}
+
+const GAME_IDENTITY_AUDIT_TABLE_QUERIES = Object.freeze({
+  probable_starters: {
+    dateField: "updated_at",
+    select: `SELECT game_id, COUNT(*) AS row_count, MIN(updated_at) AS first_seen_at, MAX(updated_at) AS last_seen_at,
+      MAX(status) AS probable_starter_status, MAX(next_check_at) AS next_check_at, MAX(error_code) AS error_code`
+  },
+  game_day_notice_games: {
+    dateField: "notice_date",
+    isGameDate: true,
+    select: `SELECT game_id, COUNT(*) AS row_count, MIN(created_at) AS first_seen_at, MAX(updated_at) AS last_seen_at,
+      MAX(notice_date) AS game_date, MAX(notice_status) AS notice_status, MAX(last_error_code) AS error_code`
+  },
+  game_roster_snapshots: {
+    dateField: "game_date",
+    isGameDate: true,
+    select: `SELECT game_id, COUNT(*) AS row_count, MIN(created_at) AS first_seen_at, MAX(updated_at) AS last_seen_at,
+      MAX(game_date) AS game_date, MAX(status) AS roster_status`
+  },
+  game_pregame_automation: {
+    dateField: "game_date",
+    isGameDate: true,
+    select: `SELECT game_id, COUNT(*) AS row_count, MIN(created_at) AS first_seen_at, MAX(updated_at) AS last_seen_at,
+      MAX(game_date) AS game_date, MAX(start_at) AS start_at, MAX(roster_status) AS roster_status,
+      MAX(lineup_status) AS lineup_status, MAX(scoring_status) AS scoring_status,
+      MAX(last_error_code) AS error_code, MAX(next_lineup_attempt_at) AS next_lineup_attempt_at`
+  },
+  game_lineups: {
+    dateField: "updated_at",
+    select: `SELECT game_id, COUNT(*) AS row_count, MIN(created_at) AS first_seen_at, MAX(updated_at) AS last_seen_at,
+      MAX(scoring_status) AS lineup_scoring_status, MAX(publication_status) AS publication_status,
+      MAX(scored_at) AS scored_at, MAX(published_at) AS published_at`
+  },
+  game_lineup_revisions: {
+    dateField: "created_at",
+    select: `SELECT game_id, COUNT(*) AS row_count, MIN(created_at) AS first_seen_at, MAX(created_at) AS last_seen_at,
+      MAX(version) AS latest_revision_version, MAX(is_current) AS has_current_revision`
+  },
+  predictions: {
+    dateField: "game_date",
+    isGameDate: true,
+    select: `SELECT game_id, COUNT(*) AS row_count, MIN(submitted_at) AS first_seen_at, MAX(updated_at) AS last_seen_at,
+      MAX(game_date) AS game_date, SUM(CASE WHEN status = 'scored' THEN 1 ELSE 0 END) AS scored_prediction_count,
+      SUM(CASE WHEN status <> 'scored' THEN 1 ELSE 0 END) AS unscored_prediction_count`
+  },
+  ranking_games: {
+    dateField: "game_date",
+    isGameDate: true,
+    select: `SELECT game_id, COUNT(*) AS row_count, MIN(created_at) AS first_seen_at, MAX(updated_at) AS last_seen_at,
+      MAX(game_date) AS game_date, MAX(is_ranking_eligible) AS is_ranking_eligible,
+      MAX(game_status) AS ranking_game_status, MAX(publication_status) AS publication_status,
+      MAX(published_at) AS published_at`
+  },
+  perfect_achievers: {
+    dateField: "achieved_at",
+    select: `SELECT game_id, COUNT(*) AS row_count, MIN(achieved_at) AS first_seen_at, MAX(achieved_at) AS last_seen_at`
+  },
+  game_rescore_jobs: {
+    dateField: "updated_at",
+    select: `SELECT game_id, COUNT(*) AS row_count, MIN(created_at) AS first_seen_at, MAX(updated_at) AS last_seen_at,
+      MAX(status) AS rescore_status, MAX(error_code) AS error_code`
+  },
+  game_workflow_logs: {
+    dateField: "occurred_at",
+    select: `SELECT game_id, COUNT(*) AS row_count, MIN(occurred_at) AS first_seen_at, MAX(occurred_at) AS last_seen_at,
+      SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_log_count, MAX(error_code) AS error_code`
+  },
+  game_workflow_controls: {
+    dateField: "updated_at",
+    select: `SELECT game_id, COUNT(*) AS row_count, MIN(updated_at) AS first_seen_at, MAX(updated_at) AS last_seen_at,
+      MAX(automation_paused) AS automation_paused`
+  }
+});
+
+async function collectGameIdentityAuditData(db, options) {
+  const availableTables = await getAvailableGameIdentityAuditTables(db);
+  const unavailableTables = GAME_IDENTITY_AUDIT_TABLES.filter((table) => !availableTables.has(table));
+  const scheduleRows = [];
+  if (availableTables.has("detected_game_schedule")) {
+    const filter = getGameIdentityAuditFilter(options, "game_date", true);
+    const result = await db.prepare(
+      `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, game_status,
+              detected_at, schedule_checked_at, created_at, updated_at
+         FROM detected_game_schedule ${filter.where}
+        ORDER BY game_date DESC, start_at DESC LIMIT ${GAME_IDENTITY_AUDIT_MAX_SCHEDULE_ROWS}`
+    ).bind(...filter.bindings).all();
+    scheduleRows.push(...(result.results || []));
+  }
+
+  const tableRows = {};
+  await Promise.all(Object.entries(GAME_IDENTITY_AUDIT_TABLE_QUERIES).map(async ([table, config]) => {
+    if (!availableTables.has(table)) return;
+    try {
+      tableRows[table] = await readGameIdentityAuditRows(db, table, config.select, options, config.dateField, config.isGameDate);
+    } catch (error) {
+      if (!isPregameSchemaError(error)) throw error;
+      unavailableTables.push(table);
+    }
+  }));
+  return { availableTables, unavailableTables: [...new Set(unavailableTables)].sort(), scheduleRows, tableRows };
+}
+
+export function classifyGameIdentityFormat(value) {
+  const gameId = String(value || "").trim();
+  if (!gameId) return "empty";
+  if (/^\d{4}-\d{2}-\d{2}-[a-z]{1,2}-[a-z]{1,2}-\d+$/i.test(gameId)) return "compact";
+  if (parsePredictionGameId(gameId)?.format === "descriptive") return "descriptive";
+  return "other";
+}
+
+function normalizeAuditIdentityValue(value) {
+  return String(value || "").normalize("NFKC").trim().toLocaleLowerCase("en-US");
+}
+
+function normalizeAuditStartAt(value) {
+  const source = String(value || "").trim();
+  if (!source) return "";
+  const parsed = new Date(source);
+  return Number.isNaN(parsed.getTime()) ? source : parsed.toISOString();
+}
+
+function createAuditIdentifierCounts() {
+  return { compact: 0, descriptive: 0, other: 0, empty: 0 };
+}
+
+function addAuditReference(references, table, row) {
+  const gameId = String(row?.game_id || "").trim();
+  if (!gameId) return;
+  const reference = references.get(gameId) || { gameId, tables: {} };
+  reference.tables[table] = row;
+  references.set(gameId, reference);
+}
+
+function getAuditReferenceSummary(reference) {
+  return Object.entries(reference?.tables || {}).map(([table, row]) => ({
+    table,
+    rowCount: Number(row?.row_count || 1),
+    firstSeenAt: row?.first_seen_at || row?.created_at || "",
+    lastSeenAt: row?.last_seen_at || row?.updated_at || ""
+  })).sort((left, right) => left.table.localeCompare(right.table));
+}
+
+function isAuditPublished(reference) {
+  const lineup = reference?.tables?.game_lineups;
+  const ranking = reference?.tables?.ranking_games;
+  return lineup?.publication_status === "published" || ranking?.publication_status === "published";
+}
+
+function buildAuditGameState(reference) {
+  const lineup = reference?.tables?.game_lineups || {};
+  const ranking = reference?.tables?.ranking_games || {};
+  const pregame = reference?.tables?.game_pregame_automation || {};
+  return {
+    scored: lineup.lineup_scoring_status === "scored" || ranking.ranking_game_status === "scored",
+    published: isAuditPublished(reference),
+    serviceUnavailable: ranking.ranking_game_status === "service_unavailable",
+    workflowStatus: pregame.scoring_status || "",
+    lineupStatus: pregame.lineup_status || ""
+  };
+}
+
+function buildAuditGameDetail(gameId, scheduleRow, reference) {
+  const prediction = reference?.tables?.predictions || {};
+  return {
+    gameId,
+    gameCode: scheduleRow?.game_code || "",
+    sourceGameKey: scheduleRow?.source_game_key || "",
+    gameDate: scheduleRow?.game_date || prediction.game_date || reference?.tables?.game_pregame_automation?.game_date || "",
+    references: getAuditReferenceSummary(reference),
+    predictionCount: Number(prediction.row_count || 0),
+    hasLineup: Boolean(reference?.tables?.game_lineups),
+    hasRankingGame: Boolean(reference?.tables?.ranking_games),
+    workflow: buildAuditGameState(reference)
+  };
+}
+
+function pushAuditConflict(conflicts, conflict) {
+  conflicts.push({
+    gameId: conflict.gameId || "",
+    code: conflict.code,
+    detail: conflict.detail || ""
+  });
+}
+
+function buildGameIdentityAuditStateConflicts(references, duplicateGroups) {
+  const conflicts = [];
+  for (const reference of references.values()) {
+    const lineup = reference.tables.game_lineups;
+    const pregame = reference.tables.game_pregame_automation;
+    const ranking = reference.tables.ranking_games;
+    const predictions = reference.tables.predictions;
+    if (lineup && !pregame) pushAuditConflict(conflicts, { gameId: reference.gameId, code: "LINEUP_WITHOUT_PREGAME_STATE", detail: "正式スタメンはありますが試合前自動処理状態がありません。" });
+    if (lineup && pregame && pregame.lineup_status && pregame.lineup_status !== "captured") pushAuditConflict(conflicts, { gameId: reference.gameId, code: "LINEUP_WORKFLOW_STATE_MISMATCH", detail: "正式スタメンの保存状態と自動処理の取得状態が一致しません。" });
+    if (Number(predictions?.scored_prediction_count || 0) > 0 && !lineup) pushAuditConflict(conflicts, { gameId: reference.gameId, code: "SCORED_PREDICTIONS_WITHOUT_LINEUP", detail: "採点済み予想がありますが正式スタメンがありません。" });
+    if (ranking?.ranking_game_status === "scored" && !lineup) pushAuditConflict(conflicts, { gameId: reference.gameId, code: "SCORED_RANKING_GAME_WITHOUT_LINEUP", detail: "採点済み試合として記録されていますが正式スタメンがありません。" });
+    if (lineup?.publication_status === "published" && lineup.lineup_scoring_status !== "scored") pushAuditConflict(conflicts, { gameId: reference.gameId, code: "LINEUP_PUBLISHED_NOT_SCORED", detail: "正式結果として公開されていますがスタメン採点状態が scored ではありません。" });
+    if (ranking?.publication_status === "published" && ranking.ranking_game_status !== "scored") pushAuditConflict(conflicts, { gameId: reference.gameId, code: "RANKING_PUBLISHED_NOT_SCORED", detail: "ランキング側で公開されていますが試合状態が scored ではありません。" });
+    if (ranking?.ranking_game_status === "service_unavailable" && Number(ranking.is_ranking_eligible) === 1) pushAuditConflict(conflicts, { gameId: reference.gameId, code: "SERVICE_UNAVAILABLE_RANKING_ELIGIBLE", detail: "サービス未稼働の試合がランキング対象です。" });
+    if (Number(ranking?.is_ranking_eligible) === 1 && ranking.ranking_game_status !== "scored") pushAuditConflict(conflicts, { gameId: reference.gameId, code: "RANKING_ELIGIBLE_NOT_SCORED", detail: "ランキング対象ですが試合状態が scored ではありません。" });
+    if (pregame?.error_code === "SCORING_RETRY_EXPIRED" && pregame.next_lineup_attempt_at) pushAuditConflict(conflicts, { gameId: reference.gameId, code: "RETRY_EXPIRED_WITH_NEXT_ATTEMPT", detail: "再試行期限切れ後にも次回スタメン取得時刻が残っています。" });
+    if (Number(predictions?.scored_prediction_count || 0) > 0 && Number(predictions?.unscored_prediction_count || 0) > 0) pushAuditConflict(conflicts, { gameId: reference.gameId, code: "MIXED_PREDICTION_SCORING_STATE", detail: "同じ試合に採点済みと未採点の予想が混在しています。" });
+  }
+  for (const group of duplicateGroups) {
+    const publishedIds = group.gameIds.filter((gameId) => isAuditPublished(references.get(gameId)));
+    if (publishedIds.length > 0 && publishedIds.length < group.gameIds.length) {
+      pushAuditConflict(conflicts, { gameId: group.gameIds.join(","), code: "DUPLICATE_ALIAS_PUBLICATION_SPLIT", detail: "同一試合候補の一部 ID だけが公開済みです。" });
+    }
+    const tableGameIds = {};
+    for (const gameId of group.gameIds) {
+      for (const table of Object.keys(references.get(gameId)?.tables || {})) {
+        if (table === "detected_game_schedule") continue;
+        tableGameIds[table] = [...new Set([...(tableGameIds[table] || []), gameId])];
+      }
+    }
+    if (new Set(Object.values(tableGameIds).flat()).size > 1) {
+      pushAuditConflict(conflicts, { gameId: group.gameIds.join(","), code: "TABLE_ID_PARTITIONED", detail: "同一試合候補の関連データが複数の game_id に分断されています。", tableGameIds });
+    }
+  }
+  return conflicts;
+}
+
+function buildGameIdentityAuditDuplicates(scheduleRows, references) {
+  const groups = new Map();
+  for (const row of scheduleRows) {
+    const identityParts = [row.game_date, normalizeAuditStartAt(row.start_at), normalizeAuditIdentityValue(row.home_team), normalizeAuditIdentityValue(row.away_team)];
+    if (identityParts.some((value) => !value)) continue;
+    const identity = identityParts.join("|");
+    const group = groups.get(identity) || [];
+    group.push(row);
+    groups.set(identity, group);
+  }
+  return [...groups.values()]
+    .filter((rows) => new Set(rows.map((row) => String(row.game_id || "").trim())).size > 1)
+    .map((rows) => {
+      const gameIds = [...new Set(rows.map((row) => String(row.game_id || "").trim()).filter(Boolean))].sort();
+      return {
+        gameDate: rows[0].game_date,
+        startAt: normalizeAuditStartAt(rows[0].start_at),
+        homeTeam: rows[0].home_team,
+        awayTeam: rows[0].away_team,
+        gameIds,
+        gameCodes: [...new Set(rows.map((row) => String(row.game_code || "").trim()).filter(Boolean))].sort(),
+        sourceGameKeys: [...new Set(rows.map((row) => String(row.source_game_key || "").trim()).filter(Boolean))].sort(),
+        games: gameIds.map((gameId) => buildAuditGameDetail(gameId, rows.find((row) => row.game_id === gameId), references))
+      };
+    });
+}
+
+export function buildGameIdentityAuditReport({ scheduleRows = [], tableRows = {}, unavailableTables = [], options = {} } = {}) {
+  const rowsByTable = { detected_game_schedule: scheduleRows, ...tableRows };
+  const identifierFormats = { all: createAuditIdentifierCounts(), tables: {} };
+  const references = new Map();
+  for (const [table, rows] of Object.entries(rowsByTable)) {
+    const counts = createAuditIdentifierCounts();
+    for (const row of rows || []) {
+      const count = Number(row?.row_count || 1);
+      const format = classifyGameIdentityFormat(row?.game_id);
+      counts[format] += count;
+      identifierFormats.all[format] += count;
+      addAuditReference(references, table, row);
+    }
+    identifierFormats.tables[table] = counts;
+  }
+
+  const scheduleById = new Map(scheduleRows.map((row) => [String(row.game_id || "").trim(), row]));
+  const duplicateCandidates = buildGameIdentityAuditDuplicates(scheduleRows, references);
+  const identifierIssues = [];
+  const gameCodeToIds = new Map();
+  const sourceKeyToIds = new Map();
+  for (const row of scheduleRows) {
+    const gameId = String(row.game_id || "").trim();
+    const gameCode = String(row.game_code || "").trim();
+    const sourceKey = String(row.source_game_key || "").trim();
+    if (!gameCode) pushAuditConflict(identifierIssues, { gameId, code: "GAME_CODE_EMPTY", detail: "日程レコードに game_code がありません。" });
+    else if (!normalizeNpbGameCode(gameCode)) pushAuditConflict(identifierIssues, { gameId, code: "GAME_CODE_INVALID", detail: "game_code が既存のNPBコード形式として利用できません。" });
+    const parsed = parsePredictionGameId(gameId);
+    if (parsed?.format === "compact" && gameCode && normalizeNpbGameCode(gameCode) !== parsed.gameCode) pushAuditConflict(identifierIssues, { gameId, code: "COMPACT_ID_GAME_CODE_MISMATCH", detail: "compact game_id と game_code が一致しません。" });
+    if (gameCode) gameCodeToIds.set(gameCode, [...new Set([...(gameCodeToIds.get(gameCode) || []), gameId])]);
+    if (sourceKey) sourceKeyToIds.set(sourceKey, [...new Set([...(sourceKeyToIds.get(sourceKey) || []), gameId])]);
+  }
+  for (const [gameCode, gameIds] of gameCodeToIds) if (gameIds.length > 1) pushAuditConflict(identifierIssues, { gameId: gameIds.join(","), code: "GAME_CODE_LINKED_TO_MULTIPLE_IDS", detail: `同じ game_code (${gameCode}) が複数の game_id に紐付いています。` });
+  for (const [sourceKey, gameIds] of sourceKeyToIds) if (gameIds.length > 1) pushAuditConflict(identifierIssues, { gameId: gameIds.join(","), code: "SOURCE_GAME_KEY_LINKED_TO_MULTIPLE_IDS", detail: `同じ source_game_key (${sourceKey}) が複数の game_id に紐付いています。` });
+
+  const scheduleAvailable = !unavailableTables.includes("detected_game_schedule");
+  const orphanIds = scheduleAvailable
+    ? [...references.values()].filter((reference) => !scheduleById.has(reference.gameId)).map((reference) => buildAuditGameDetail(reference.gameId, null, reference))
+    : [];
+  const stateConflicts = buildGameIdentityAuditStateConflicts(references, duplicateCandidates);
+  const reasonCodes = new Set();
+  if (identifierFormats.all.compact > 0 && identifierFormats.all.descriptive > 0) reasonCodes.add("ID_FORMAT_MIXED");
+  if (duplicateCandidates.length) reasonCodes.add("DUPLICATE_SCHEDULE_IDENTITY");
+  if (orphanIds.length) reasonCodes.add("ORPHAN_GAME_ID");
+  if (identifierIssues.length) reasonCodes.add("IDENTIFIER_MISMATCH");
+  if (stateConflicts.some((conflict) => conflict.code === "TABLE_ID_PARTITIONED")) reasonCodes.add("TABLE_ID_PARTITIONED");
+  if (unavailableTables.length) reasonCodes.add("AUDIT_TABLE_UNAVAILABLE");
+  const identityRisk = ["DUPLICATE_SCHEDULE_IDENTITY", "ORPHAN_GAME_ID", "IDENTIFIER_MISMATCH", "TABLE_ID_PARTITIONED"].some((code) => reasonCodes.has(code));
+  const limit = Number(options.limit || GAME_IDENTITY_AUDIT_DEFAULT_LIMIT);
+  const details = options.includeDetails ? {
+    duplicateCandidates: duplicateCandidates.slice(0, limit),
+    orphanIds: orphanIds.slice(0, limit),
+    identifierIssues: identifierIssues.slice(0, limit),
+    stateConflicts: stateConflicts.slice(0, limit)
+  } : undefined;
+  return {
+    summary: {
+      scheduleGames: scheduleRows.length,
+      identifierFormats,
+      duplicateCandidateGroups: duplicateCandidates.length,
+      orphanGameIds: orphanIds.length,
+      identifierIssues: identifierIssues.length,
+      stateConflicts: stateConflicts.length,
+      scannedTables: Object.keys(rowsByTable).sort(),
+      unavailableTables: [...new Set(unavailableTables)].sort(),
+      readQueryCount: 1 + (unavailableTables.includes("detected_game_schedule") ? 0 : 1) + Object.keys(tableRows).length,
+      queryScope: options.allPeriod ? "all" : "last_30_days",
+      dateFrom: options.dateFrom || "",
+      dateTo: options.dateTo || "",
+      limit
+    },
+    ...(details || {}),
+    recommendation: {
+      canFreezeCurrentGameId: !identityRisk,
+      requiresNewInternalId: identityRisk,
+      assessment: identityRisk ? "manual_review_required" : "no_identity_blocker_observed",
+      reasonCodes: [...reasonCodes].sort()
+    }
+  };
+}
+
+async function handleAdminGameIdentityAudit(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  const options = parseGameIdentityAuditOptions(request);
+  if (!options.ok) return jsonResponse({ ok: false, code: options.code, error: "監査対象日が不正です。" }, 400, cors);
+  try {
+    const auditData = await collectGameIdentityAuditData(env.AUTH_DB, options);
+    const response = jsonResponse({ ok: true, ...buildGameIdentityAuditReport({ ...auditData, options }) }, 200, cors);
+    response.headers.set("Cache-Control", "no-store");
+    return response;
+  } catch (error) {
+    console.error("試合識別子監査の読み取りに失敗しました", error instanceof Error ? error.message : "unknown error");
+    return jsonResponse({ ok: false, code: "GAME_IDENTITY_AUDIT_READ_FAILED", error: "試合識別子監査を取得できませんでした。" }, 500, cors);
   }
 }
 

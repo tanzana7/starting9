@@ -130,7 +130,7 @@ test("workflow transition table accepts recovery and rejects invalid jumps", () 
   assert.throws(() => assertAllowedWorkflowTransition("waiting", "published"), { code: "WORKFLOW_TRANSITION_INVALID" });
 });
 
-test("Phase 2 migration and Worker use internal IDs without changing scoring or publication runners", async () => {
+test("workflow job runner uses internal IDs and keeps legacy completion runners behind a feature fallback", async () => {
   const [migration, worker] = await Promise.all([
     readFile(new URL("../migrations/0024_game_workflow_jobs.sql", import.meta.url), "utf8"),
     readFile(new URL("../auth-worker.js", import.meta.url), "utf8")
@@ -144,6 +144,20 @@ test("Phase 2 migration and Worker use internal IDs without changing scoring or 
   assert.match(worker, /runAdminProbableStarterWorkflowJob/);
   assert.match(worker, /handleAdminGameWorkflowAudit/);
   assert.match(worker, /path === "\/api\/admin\/audit\/game-workflows"/);
+  assert.match(worker, /ENABLE_WORKFLOW_COMPLETION_JOBS/);
+  assert.match(worker, /COMPLETION_WORKFLOW_JOB_TYPES/);
+  assert.match(worker, /"provisional_lineup_fetch", "final_lineup_fetch", "scoring", "ranking_update", "publication", "rescore"/);
+  assert.match(worker, /runDueCompletionWorkflowJobs\(env, now, activeTimelines\)/);
+  assert.match(worker, /if \(completionJobsEnabled\)/);
+  assert.match(worker, /if \(!completionJobsEnabled\)/);
   assert.match(worker, /runDueAutoScoringJobs\(env, now, pausedGameIds\)/);
   assert.match(worker, /runDueGameDayPublicationJobs\(env, now, activeTimelines\)/);
+});
+
+test("production alone enables completion workflow jobs", async () => {
+  const config = JSON.parse(await readFile(new URL("../wrangler.auth.production.jsonc", import.meta.url), "utf8"));
+  assert.equal(config.vars.ENABLE_WORKFLOW_COMPLETION_JOBS, "true");
+  assert.deepEqual(config.triggers.crons, ["* * * * *"]);
+  assert.equal(config.services[0].binding, "NPB_FETCH_WORKER");
+  assert.equal(config.d1_databases[0].binding, "AUTH_DB");
 });

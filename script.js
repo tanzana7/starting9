@@ -5380,6 +5380,19 @@ async function handleResultHistoryClick(event) {
     const response = await fetch(buildResultGamesApiUrl(gameId), { credentials: "include", cache: "no-store" });
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+    if (payload.serviceUnavailable) {
+      state.result = {
+        gameId,
+        serviceUnavailable: true,
+        serviceUnavailableMessage: payload.serviceUnavailableMessage || "この試合はサービス未稼働のため集計対象外です。",
+        prediction: payload.prediction || null,
+        savedAt: payload.updatedAt || payload.submittedAt || ""
+      };
+      state.resultHistory.message = "";
+      renderScoreResult();
+      renderResultHistory();
+      return;
+    }
     if (!payload.resultsPublished) {
       state.resultHistory.message = "この試合の結果はまだ公開されていません。";
       renderResultHistory();
@@ -5414,7 +5427,9 @@ function renderResultHistory() {
   }
   container.innerHTML = history.games.map((game) => {
     const matchup = game.awayTeam && game.homeTeam ? `${game.awayTeam} vs ${game.homeTeam}` : game.gameId;
-    const score = game.resultsPublished && game.score !== null ? `${game.score}点` : "結果公開前";
+    const score = game.serviceUnavailable
+      ? "集計対象外"
+      : game.resultsPublished && game.score !== null ? `${game.score}点` : "結果公開前";
     return `<button type="button" class="result-history-item${game.gameId === history.selectedGameId ? " is-selected" : ""}" data-result-game-id="${escapeHtml(game.gameId)}"><span><strong>${escapeHtml(game.gameDate || game.date || "日付不明")}</strong><span>${escapeHtml(matchup)}</span><small>${escapeHtml(game.startTime || "")}</small></span><b>${escapeHtml(score)}</b></button>`;
   }).join("") + (history.message ? `<p class="result-history-message" role="status">${escapeHtml(history.message)}</p>` : "");
 }
@@ -8062,6 +8077,19 @@ function renderScoreResult() {
       : resultStatus === "preparing"
         ? "結果を準備中です。"
         : "採点すると結果が表示されます。";
+    shareButton.classList.add("hidden");
+    return;
+  }
+
+  if (state.result.serviceUnavailable) {
+    container.className = "empty-state service-unavailable-result";
+    container.innerHTML = `<p>${escapeHtml(state.result.serviceUnavailableMessage || "この試合はサービス未稼働のため集計対象外です。")}</p>`;
+    if (state.result.prediction?.lineup) {
+      container.appendChild(createPredictionSummary({
+        lineup: state.result.prediction.lineup,
+        savedAt: state.result.savedAt || ""
+      }));
+    }
     shareButton.classList.add("hidden");
     return;
   }

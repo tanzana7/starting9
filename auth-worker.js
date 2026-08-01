@@ -2591,7 +2591,7 @@ async function handleCreateAdminTestPerfectPrediction(env, cors, user, metadata)
 }
 
 function parseAdminScoringRoute(path) {
-  const match = /^\/api\/admin\/games\/([^/]+)\/(predictions\/(?:summary|score-predictions(?:\/preview)?)|actual-lineup|lineup-history|lineup-revisions|rescore-preview|rescore-confirm|restore-lineup-version|rescore-history|auto-scoring\/(?:status|run-now|retry|cancel)|pregame-automation\/(?:run-roster|run-lineup|run-notice|distribute-notice|fix-roster|publish|workflow-status|pause-workflow|resume-workflow))$/.exec(path);
+  const match = /^\/api\/admin\/games\/([^/]+)\/(predictions\/(?:summary|score-predictions(?:\/preview)?)|actual-lineup|lineup-history|lineup-revisions|rescore-preview|rescore-confirm|restore-lineup-version|rescore-history|service-unavailable|restore-service-unavailable|auto-scoring\/(?:status|run-now|retry|cancel)|pregame-automation\/(?:run-roster|run-lineup|run-notice|distribute-notice|fix-roster|publish|workflow-status|pause-workflow|resume-workflow))$/.exec(path);
   if (!match) {
     return null;
   }
@@ -2628,6 +2628,12 @@ async function handleAdminScoringRoute(request, env, cors, route) {
   }
   if (route.action === "actual-lineup" && request.method === "POST") {
     return await handleAdminActualLineupSave(request, env, cors, metadata.gameId);
+  }
+  if (route.action === "service-unavailable" && request.method === "POST") {
+    return await handleAdminServiceUnavailable(env, cors, metadata.gameId, true);
+  }
+  if (route.action === "restore-service-unavailable" && request.method === "POST") {
+    return await handleAdminServiceUnavailable(env, cors, metadata.gameId, false);
   }
   if (route.action === "lineup-history" && request.method === "GET") {
     return await handleAdminLineupHistory(env, cors, metadata.gameId);
@@ -2769,6 +2775,70 @@ async function handleAdminGameWorkflowPause(env, cors, gameId, paused) {
       code: isPregameSchemaError(error) ? "GAME_WORKFLOW_CONTROL_SCHEMA_NOT_READY" : "GAME_WORKFLOW_CONTROL_FAILED",
       error: "自動運転の停止状態を更新できませんでした。"
     }, isPregameSchemaError(error) ? 503 : 500, cors);
+  }
+}
+
+async function handleAdminServiceUnavailable(env, cors, gameId, unavailable) {
+  const now = new Date();
+  try {
+    const current = await getRankingGameState(env.AUTH_DB, gameId);
+    if (Number(current?.is_test_game || 0) === 1) {
+      return jsonResponse({ ok: false, code: "TEST_GAME_NOT_ALLOWED", error: "テスト試合は通常試合の集計対象外状態に変更できません。" }, 409, cors);
+    }
+    if (unavailable) {
+      if (current?.game_status === "scored") {
+        return jsonResponse({ ok: false, code: "SCORED_GAME_NOT_ALLOWED", error: "採点済み試合は先に既存の再採点手順を確認してください。" }, 409, cors);
+      }
+      const changed = await markGameServiceUnavailable(env.AUTH_DB, gameId, now, "ADMIN_SERVICE_UNAVAILABLE");
+      await recordWorkflowLog(env.AUTH_DB, {
+        eventType: "service_unavailable_marked",
+        status: "warning",
+        gameId,
+        occurredAt: now,
+        message: SERVICE_UNAVAILABLE_MESSAGE,
+        errorCode: "ADMIN_SERVICE_UNAVAILABLE",
+        metadata: { source: "admin", changed },
+        source: "admin"
+      });
+      return jsonResponse({ ok: true, gameId, status: SERVICE_UNAVAILABLE_GAME_STATUS, changed }, 200, cors);
+    }
+
+    const result = await env.AUTH_DB.prepare(
+      `UPDATE ranking_games
+          SET is_ranking_eligible = 0, ranking_eligible_at = NULL,
+              game_status = 'pending', publication_status = 'pending',
+              scored_private_at = NULL, published_at = NULL, updated_at = ?1
+        WHERE game_id = ?2 AND game_status = ?3 AND is_test_game = 0`
+    ).bind(now.toISOString(), gameId, SERVICE_UNAVAILABLE_GAME_STATUS).run();
+    await env.AUTH_DB.prepare(
+      `UPDATE game_pregame_automation
+          SET last_error_code = CASE WHEN last_error_code = ?1 THEN NULL ELSE last_error_code END,
+              last_error_message = CASE WHEN last_error_code = ?1 THEN NULL ELSE last_error_message END,
+              next_lineup_attempt_at = ?2, updated_at = ?2
+        WHERE game_id = ?3`
+    ).bind(SCORING_RETRY_EXPIRED_CODE, now.toISOString(), gameId).run();
+    const changed = Number(result?.meta?.changes || 0) === 1;
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "service_unavailable_restored",
+      status: "info",
+      gameId,
+      occurredAt: now,
+      message: "集計対象外状態を解除しました。再取得・再採点を実行できます。",
+      metadata: { source: "admin", changed },
+      source: "admin"
+    });
+    return jsonResponse({ ok: true, gameId, status: "pending", changed }, 200, cors);
+  } catch (error) {
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: unavailable ? "service_unavailable_marked" : "service_unavailable_restored",
+      status: "error",
+      gameId,
+      occurredAt: now,
+      message: unavailable ? "集計対象外状態への変更に失敗しました。" : "集計対象外状態の解除に失敗しました。",
+      errorCode: String(error?.code || "SERVICE_UNAVAILABLE_STATE_FAILED"),
+      source: "admin"
+    });
+    return jsonResponse({ ok: false, code: "SERVICE_UNAVAILABLE_STATE_FAILED", error: "試合状態を更新できませんでした。" }, 500, cors);
   }
 }
 
@@ -4277,16 +4347,19 @@ async function handleGetResultGames(request, env, cors) {
          WHERE predictions.user_id = ?1 AND predictions.is_test_prediction = 0
      )
      SELECT latest_predictions.game_id, latest_predictions.score, latest_predictions.max_score,
-            latest_predictions.scored_at, latest_predictions.updated_at,
-            ranking_games.game_date, ranking_games.publication_status
+            latest_predictions.scored_at, latest_predictions.updated_at, latest_predictions.status,
+            ranking_games.game_date, ranking_games.game_status, ranking_games.publication_status
        FROM latest_predictions
        JOIN ranking_games ON ranking_games.game_id = latest_predictions.game_id
       WHERE latest_predictions.submission_rank = 1
-        AND latest_predictions.status = 'scored'
-        AND ranking_games.game_status = 'scored'
-        AND ranking_games.is_ranking_eligible = 1
+        AND (
+          (latest_predictions.status = 'scored'
+           AND ranking_games.game_status = 'scored'
+           AND ranking_games.is_ranking_eligible = 1)
+          OR ranking_games.game_status = 'service_unavailable'
+        )
         AND ranking_games.is_test_game = 0
-      ORDER BY ranking_games.game_date DESC, latest_predictions.scored_at DESC, latest_predictions.game_id DESC
+      ORDER BY ranking_games.game_date DESC, latest_predictions.updated_at DESC, latest_predictions.game_id DESC
       LIMIT 50`
   ).bind(access.user.id).all();
 
@@ -4295,14 +4368,18 @@ async function handleGetResultGames(request, env, cors) {
   for (const row of rows.results || []) {
     const metadata = await getResultGameMetadata(env.AUTH_DB, row.game_id);
     const resultsPublished = await isGameResultsPublished(env.AUTH_DB, row.game_id, now);
+    const serviceUnavailable = isServiceUnavailableGameStatus(row.game_status);
     games.push({
       ...metadata,
       gameDate: row.game_date || metadata.date,
       resultsPublished,
-      score: resultsPublished && row.score !== null ? Number(row.score) : null,
-      maxScore: resultsPublished && row.max_score !== null ? Number(row.max_score) : null,
-      scoredAt: row.scored_at || null,
-      publicationStatus: row.publication_status || "scored_private"
+      score: !serviceUnavailable && resultsPublished && row.score !== null ? Number(row.score) : null,
+      maxScore: !serviceUnavailable && resultsPublished && row.max_score !== null ? Number(row.max_score) : null,
+      scoredAt: !serviceUnavailable ? (row.scored_at || null) : null,
+      publicationStatus: row.publication_status || "scored_private",
+      serviceUnavailable,
+      serviceUnavailableReason: serviceUnavailable ? SCORING_RETRY_EXPIRED_CODE : null,
+      serviceUnavailableMessage: serviceUnavailable ? SERVICE_UNAVAILABLE_MESSAGE : null
     });
   }
   return jsonResponse({ ok: true, games }, 200, cors);
@@ -4317,13 +4394,37 @@ async function handleGetResultGame(request, env, cors, gameId) {
     return jsonResponse({ ok: false, error: "テスト試合の結果は通常画面で表示できません。" }, 404, cors);
   }
 
+  const rankingState = await getRankingGameState(env.AUTH_DB, metadata.gameId);
+  const serviceUnavailable = isServiceUnavailableGameStatus(rankingState?.game_status);
   const row = await getPredictionRow(env.AUTH_DB, access.user.id, metadata.gameId);
-  if (!row || row.status !== "scored") {
+  if (!row) {
+    return jsonResponse({ ok: false, error: "採点済みの結果が見つかりません。" }, 404, cors);
+  }
+  const prediction = parseStoredPrediction(row.prediction_json);
+  if (!prediction) return jsonResponse({ ok: false, error: "保存済み予想の読み込みに失敗しました。" }, 500, cors);
+  if (serviceUnavailable) {
+    return jsonResponse({
+      ok: true,
+      game: await getResultGameMetadata(env.AUTH_DB, metadata.gameId),
+      gameId: metadata.gameId,
+      prediction,
+      status: SERVICE_UNAVAILABLE_GAME_STATUS,
+      submittedAt: row.submitted_at,
+      updatedAt: row.updated_at,
+      score: null,
+      maxScore: null,
+      scoredAt: null,
+      actualLineup: null,
+      resultsPublished: false,
+      serviceUnavailable: true,
+      serviceUnavailableReason: SCORING_RETRY_EXPIRED_CODE,
+      serviceUnavailableMessage: SERVICE_UNAVAILABLE_MESSAGE
+    }, 200, cors);
+  }
+  if (row.status !== "scored") {
     return jsonResponse({ ok: false, error: "採点済みの結果が見つかりません。" }, 404, cors);
   }
   const resultsPublished = await isGameResultsPublished(env.AUTH_DB, metadata.gameId, new Date());
-  const prediction = parseStoredPrediction(row.prediction_json);
-  if (!prediction) return jsonResponse({ ok: false, error: "保存済み予想の読み込みに失敗しました。" }, 500, cors);
   return jsonResponse({
     ok: true,
     game: await getResultGameMetadata(env.AUTH_DB, metadata.gameId),
@@ -4336,7 +4437,10 @@ async function handleGetResultGame(request, env, cors, gameId) {
     maxScore: resultsPublished && row.max_score !== null ? Number(row.max_score) : null,
     scoredAt: resultsPublished ? row.scored_at : null,
     actualLineup: resultsPublished && row.actual_lineup_json ? parseStoredActualLineup(row.actual_lineup_json) : null,
-    resultsPublished
+    resultsPublished,
+    serviceUnavailable: false,
+    serviceUnavailableReason: null,
+    serviceUnavailableMessage: null
   }, 200, cors);
 }
 
@@ -4426,6 +4530,50 @@ async function recordPregameLineupDeferred(db, gameId, identity, now) {
 }
 
 const SCORING_RETRY_EXPIRED_CODE = "SCORING_RETRY_EXPIRED";
+const SERVICE_UNAVAILABLE_GAME_STATUS = "service_unavailable";
+const SERVICE_UNAVAILABLE_MESSAGE = "この試合はサービス未稼働のため集計対象外です。";
+
+function isServiceUnavailableGameStatus(status) {
+  return String(status || "") === SERVICE_UNAVAILABLE_GAME_STATUS;
+}
+
+async function getRankingGameState(db, gameId) {
+  return db.prepare(
+    `SELECT game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status,
+            is_test_game, publication_status, scored_private_at, published_at
+       FROM ranking_games WHERE game_id = ?1 LIMIT 1`
+  ).bind(gameId).first();
+}
+
+async function isServiceUnavailableGame(db, gameId) {
+  const row = await getRankingGameState(db, gameId);
+  return isServiceUnavailableGameStatus(row?.game_status);
+}
+
+async function markGameServiceUnavailable(db, gameId, at, reasonCode = SCORING_RETRY_EXPIRED_CODE) {
+  const metadata = parsePredictionGameId(gameId);
+  if (!metadata) return false;
+  const now = toIsoString(at);
+  const existing = await getRankingGameState(db, gameId);
+  if (Number(existing?.is_test_game || 0) === 1 || ["scored", "cancelled"].includes(existing?.game_status)) return false;
+  await db.prepare(
+    `INSERT INTO ranking_games
+       (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game,
+        publication_status, scored_private_at, published_at, created_at, updated_at)
+     VALUES (?1, ?2, 0, NULL, ?3, 0, 'pending', NULL, NULL, ?4, ?4)
+     ON CONFLICT(game_id) DO UPDATE SET
+       game_date = excluded.game_date,
+       is_ranking_eligible = 0,
+       ranking_eligible_at = NULL,
+       game_status = excluded.game_status,
+       is_test_game = 0,
+       publication_status = 'pending',
+       scored_private_at = NULL,
+       published_at = NULL,
+       updated_at = excluded.updated_at`
+  ).bind(gameId, metadata.date, SERVICE_UNAVAILABLE_GAME_STATUS, now).run();
+  return true;
+}
 
 async function recordScoringRetryExpiredOnce(db, timeline, now, previousErrorCode = "") {
   const gameId = String(timeline?.gameId || "");
@@ -4435,7 +4583,14 @@ async function recordScoringRetryExpiredOnce(db, timeline, now, previousErrorCod
     const state = await db.prepare(
       "SELECT last_error_code FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1"
     ).bind(gameId).first();
-    if (state?.last_error_code === SCORING_RETRY_EXPIRED_CODE) return false;
+    if (state?.last_error_code === SCORING_RETRY_EXPIRED_CODE) {
+      try {
+        await markGameServiceUnavailable(db, gameId, now, SCORING_RETRY_EXPIRED_CODE);
+      } catch (error) {
+        console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=service_unavailable action=state_record status=failed code=${error?.code || "SERVICE_UNAVAILABLE_STATE_FAILED"}`);
+      }
+      return false;
+    }
     const existingLog = await db.prepare(
       `SELECT id FROM game_workflow_logs
          WHERE event_type = 'scoring_retry_expired'
@@ -4445,6 +4600,11 @@ async function recordScoringRetryExpiredOnce(db, timeline, now, previousErrorCod
          LIMIT 1`
     ).bind(gameId, SCORING_RETRY_EXPIRED_CODE).first();
     if (existingLog) {
+      try {
+        await markGameServiceUnavailable(db, gameId, now, SCORING_RETRY_EXPIRED_CODE);
+      } catch (error) {
+        console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=service_unavailable action=state_record status=failed code=${error?.code || "SERVICE_UNAVAILABLE_STATE_FAILED"}`);
+      }
       await db.prepare(
         `UPDATE game_pregame_automation
             SET last_error_code = ?1, next_lineup_attempt_at = NULL, updated_at = ?2
@@ -4467,6 +4627,11 @@ async function recordScoringRetryExpiredOnce(db, timeline, now, previousErrorCod
       gameId
     ).run();
     if (Number(claim?.meta?.changes || 0) !== 1) return false;
+    try {
+      await markGameServiceUnavailable(db, gameId, now, SCORING_RETRY_EXPIRED_CODE);
+    } catch (error) {
+      console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=service_unavailable action=state_record status=failed code=${error?.code || "SERVICE_UNAVAILABLE_STATE_FAILED"}`);
+    }
     await recordWorkflowLog(db, {
       eventType: "scoring_retry_expired",
       status: "warning",
@@ -5070,6 +5235,9 @@ async function handleAdminPredictionSummary(env, cors, gameId) {
 }
 
 async function handleAdminScorePredictionsPreview(request, env, cors, gameId) {
+  if (await isServiceUnavailableGame(env.AUTH_DB, gameId)) {
+    return jsonResponse({ ok: false, code: "SERVICE_UNAVAILABLE_GAME", error: SERVICE_UNAVAILABLE_MESSAGE }, 409, cors);
+  }
   const record = await getGameLineup(env.AUTH_DB, gameId);
   if (!record) {
     return jsonResponse({
@@ -5101,6 +5269,9 @@ async function handleAdminScorePredictionsPreview(request, env, cors, gameId) {
 }
 
 async function handleAdminScorePredictions(request, env, cors, gameId) {
+  if (await isServiceUnavailableGame(env.AUTH_DB, gameId)) {
+    return jsonResponse({ ok: false, code: "SERVICE_UNAVAILABLE_GAME", error: SERVICE_UNAVAILABLE_MESSAGE }, 409, cors);
+  }
   const record = await getGameLineup(env.AUTH_DB, gameId);
   if (!record) {
     return jsonResponse({
@@ -5745,6 +5916,9 @@ async function handleAdminAutoScoringStatus(env, cors, gameId) {
 }
 
 async function handleAdminAutoScoringRunNow(env, cors, gameId) {
+  if (await isServiceUnavailableGame(env.AUTH_DB, gameId)) {
+    return jsonResponse({ ok: false, code: "SERVICE_UNAVAILABLE_GAME", error: SERVICE_UNAVAILABLE_MESSAGE }, 409, cors);
+  }
   const record = await getGameLineup(env.AUTH_DB, gameId);
   if (!record) {
     console.log(`[PREGAME_TOOL] action=scoring gameId=${gameId} status=failed code=SCORING_LINEUP_REQUIRED npbStatus=-`);
@@ -5781,6 +5955,9 @@ async function handleAdminAutoScoringRunNow(env, cors, gameId) {
 }
 
 async function handleAdminAutoScoringRetry(env, cors, gameId) {
+  if (await isServiceUnavailableGame(env.AUTH_DB, gameId)) {
+    return jsonResponse({ ok: false, code: "SERVICE_UNAVAILABLE_GAME", error: SERVICE_UNAVAILABLE_MESSAGE }, 409, cors);
+  }
   const record = await getGameLineup(env.AUTH_DB, gameId);
   if (!record) {
     return jsonResponse({ ok: false, error: "再試行する実スタメンがありません。" }, 404, cors);
@@ -5977,7 +6154,8 @@ async function runDueAutoScoringJobs(env, now, pausedGameIds = new Set()) {
             scoring_started_at = NULL, scoring_due_at = ?1,
             last_error = '採点処理がタイムアウトしたため再試行します。', updated_at = ?1
       WHERE scoring_status = 'processing' AND scoring_started_at IS NOT NULL AND scoring_started_at <= ?2
-        AND game_id NOT IN (SELECT game_id FROM ranking_games WHERE is_test_game = 1)`
+        AND game_id NOT IN (SELECT game_id FROM ranking_games WHERE is_test_game = 1)
+        AND game_id NOT IN (SELECT game_id FROM ranking_games WHERE game_status = 'service_unavailable')`
   ).bind(nowIso, staleBefore, AUTO_SCORING_MAX_ATTEMPTS).run();
 
   const pausedIds = [...pausedGameIds].filter(Boolean).slice(0, 100);
@@ -5989,6 +6167,7 @@ async function runDueAutoScoringJobs(env, now, pausedGameIds = new Set()) {
       WHERE scoring_status IN ('pending', 'failed')
         AND scoring_due_at <= ?1
         AND game_id NOT IN (SELECT game_id FROM ranking_games WHERE is_test_game = 1)
+        AND game_id NOT IN (SELECT game_id FROM ranking_games WHERE game_status = 'service_unavailable')
         AND scoring_attempts < ?2${pausedFilter}
 
       ORDER BY scoring_due_at ASC, game_id ASC
@@ -6254,6 +6433,10 @@ async function runDueGameDayPublicationJobs(env, now, timelines = getPregameTime
   for (const timeline of timelines) {
     if (now < timeline.resultReleaseAt) continue;
     try {
+      if (await isServiceUnavailableGame(env.AUTH_DB, timeline.gameId)) {
+        summary.skipped += 1;
+        continue;
+      }
       if (await isManualRescoreLocked(env.AUTH_DB, timeline.gameId)) {
         summary.skipped += 1;
         continue;
@@ -6320,6 +6503,9 @@ async function publishScoredGameResults(env, gameId, now) {
 
 async function publishGameResults(env, gameId, now, { isTestGame = false } = {}) {
   const testGame = isTestGame ? await getAutoScoringTest(env.AUTH_DB, gameId) : null;
+  if (!isTestGame && await isServiceUnavailableGame(env.AUTH_DB, gameId)) {
+    return { published: false, status: SERVICE_UNAVAILABLE_GAME_STATUS, publishedAt: null };
+  }
   const identity = getGameIdentityForPregame(gameId);
   if (!isTestGame) {
     if (!identity) throw createPregameError("SCHEDULE_UNAVAILABLE", "試合日程を確認できません。");

@@ -50,7 +50,8 @@ test("NPBスタメンの守備位置正規化は採点用の既存関数を使�
 
 test("Cron採点と手動採点は保存済みgame_lineupsを採点元にする", () => {
   assert.match(worker, /const storedLineup = parseStoredActualLineup\(record\.actual_lineup_json\);/);
-  assert.match(worker, /SELECT id, user_id, prediction_json FROM predictions WHERE game_id = \?1 AND is_test_prediction = 0/);
+  assert.match(worker, /const scope = storage\.predictions && internalGameId/);
+  assert.match(worker, /internal_game_id = \?1 OR \(internal_game_id IS NULL AND game_id = \?2\)/);
 
   const previewBody = functionBody(worker, "handleAdminScorePredictionsPreview", "handleAdminScorePredictions");
   const scoreBody = functionBody(worker, "handleAdminScorePredictions", "prepareGamePredictionScoring");

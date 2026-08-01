@@ -8,7 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const workerPath = path.join(root, "auth-worker.js");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const worker = fs.readFileSync(workerPath, "utf8");
-const { getResolvedPredictionDeadlineStatus, parsePredictionGameId, resolvePredictionGameMetadata } = await import(pathToFileURL(workerPath).href);
+const { getResolvedPredictionDeadlineStatus, parsePredictionGameId, resolveApiGameReference, resolvePredictionGameMetadata } = await import(pathToFileURL(workerPath).href);
 
 function createScheduleDb({ directRow = null, candidateRows = [] } = {}) {
   return {
@@ -105,11 +105,13 @@ test("D1同期前に静的日程から返した既知gameIdは開始時刻付き
   }
 });
 
-test("対象試合APIのcanonical gameIdを画面の保存処理がそのまま送信する", () => {
-  assert.match(script, /state\.predictionTargetGame\?\.gameId \|\| state\.predictionTargetGameId/);
+test("対象試合APIのinternalGameIdを画面の保存処理が優先して送信する", () => {
+  assert.match(script, /state\.predictionTargetGame\?\.internalGameId \|\| state\.probableStarter\.nextGame\?\.internalGameId \|\| getCurrentLegacyGameId\(\)/);
   assert.match(script, /body: JSON\.stringify\(\{ gameId, prediction: predictionPayload\.prediction \}\)/);
-  assert.match(worker, /const metadata = await resolvePredictionGameMetadata\(env\.AUTH_DB, input\?\.gameId\)/);
-  assert.match(worker, /metadata\.gameId,\s*predictionJson/);
+  assert.match(worker, /const reference = await resolveApiGameReference\(env\.AUTH_DB, input\?\.gameId\)/);
+  assert.match(worker, /internalGameId: metadata\.internalGameId \|\| ""/);
+  assert.match(worker, /const storageGameId = metadata\.internalGameId && existing\?\.game_id/);
+  assert.match(worker, /storageGameId,\s*\.\.\.\(predictionStorage\.predictions/);
 });
 
 test("compact game_code照合は同じ試合日の行だけを候補にする", () => {
@@ -117,22 +119,43 @@ test("compact game_code照合は同じ試合日の行だけを候補にする", 
   assert.match(worker, /\.bind\(parsed\.gameId, parsed\.gameCode \|\| "", parsed\.date\)\.first\(\)/);
 });
 
-test("通常画面の保存と締切判定は対象試合を優先し、古いlocalStorage gameIdを送らない", () => {
+test("通常画面の保存はUUIDを優先し、締切判定は旧gameIdを利用する", () => {
   const currentGameId = script.slice(script.indexOf("function getCurrentGameId"), script.indexOf("\nfunction getAdminScoringGameId"));
   const deadlineGameId = script.slice(script.indexOf("function getPredictionDeadlineGameId"), script.indexOf("\nfunction parseJstScheduleDateTime"));
 
-  assert.match(currentGameId, /state\.predictionTargetGame\?\.gameId \|\| state\.predictionTargetGameId/);
+  assert.match(currentGameId, /state\.predictionTargetGame\?\.internalGameId/);
+  assert.match(currentGameId, /getCurrentLegacyGameId\(\)/);
   assert.doesNotMatch(currentGameId, /state\.prediction\?\.gameId/);
-  assert.match(deadlineGameId, /: state\.predictionTargetGame\?\.gameId \|\| state\.predictionTargetGameId \|\| state\.probableStarter\.nextGame\?\.gameId \|\| ""/);
+  assert.match(deadlineGameId, /: getCurrentLegacyGameId\(\)/);
 });
 
-test("アカウント保存・復元・削除は同じgameId解決経路を使う", () => {
+test("アカウント保存・復元・削除は共通API resolverを使う", () => {
   const put = worker.slice(worker.indexOf("async function handlePutCurrentPrediction"), worker.indexOf("async function handleDeleteCurrentPrediction"));
   const remove = worker.slice(worker.indexOf("async function handleDeleteCurrentPrediction"), worker.indexOf("async function getPredictionRow"));
   const get = worker.slice(worker.indexOf("async function handleGetCurrentPrediction"), worker.indexOf("async function isGameResultsPublished"));
-  assert.match(put, /resolvePredictionGameMetadata\(env\.AUTH_DB, input\?\.gameId\)/);
-  assert.match(get, /resolvePredictionGameMetadata\(/);
-  assert.match(remove, /resolvePredictionGameMetadata\(/);
+  assert.match(put, /resolveApiGameReference\(env\.AUTH_DB, input\?\.gameId\)/);
+  assert.match(get, /resolveApiGameReference\(/);
+  assert.match(remove, /resolveApiGameReference\(/);
   assert.match(put, /createPredictionDeadlineRejection\(metadata, cors\)/);
   assert.match(remove, /createPredictionDeadlineRejection\(metadata, cors\)/);
+});
+
+test("API共通resolverは空の識別子を形式不正として拒否する", async () => {
+  const resolved = await resolveApiGameReference(createScheduleDb(), "");
+  assert.equal(resolved.ok, false);
+  assert.equal(resolved.code, "INVALID_GAME_IDENTIFIER_FORMAT");
+});
+
+test("Phase 4はmigration未適用時の旧game_id fallbackとdual-writeを明示する", () => {
+  assert.match(worker, /getInternalGameIdStorageAvailability/);
+  assert.match(worker, /internal_game_id = \?1 WHERE game_id = \?2/);
+  assert.match(worker, /ON CONFLICT\(user_id, game_id\) DO UPDATE SET/);
+  assert.match(worker, /internal_game_id IS NULL AND game_id = \?3/);
+});
+
+test("予告先発とロースターの保存後もcanonical IDへ関連行をリンクする", () => {
+  const probable = worker.slice(worker.indexOf("async function runProbableStarterFetch"), worker.indexOf("function parseJsonArray"));
+  const roster = worker.slice(worker.indexOf("async function saveRosterSnapshotFromNotice"), worker.indexOf("async function fixGameRosterAtDeadline"));
+  assert.match(probable, /linkLegacyGameRowsToInternalGameId\(env\.AUTH_DB, target\?\.internalGameId, gameId\)/);
+  assert.match(roster, /linkLegacyGameRowsToInternalGameId\(db, identity\.game\?\.internalGameId \|\| identity\.internalGameId, identity\.gameId\)/);
 });

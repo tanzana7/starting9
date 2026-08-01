@@ -3280,7 +3280,7 @@ function startPredictionDeadlineTicker() {
 function getPredictionDeadlineGameId() {
   return state.isAdminMode
     ? state.nextScheduleId || state.probableStarter.nextGame?.gameId || state.prediction?.gameId || getCurrentGameId()
-    : state.predictionTargetGame?.gameId || state.predictionTargetGameId || state.probableStarter.nextGame?.gameId || "";
+    : getCurrentLegacyGameId();
 }
 
 function parseJstScheduleDateTime(game) {
@@ -3501,7 +3501,11 @@ function renderPredictionDeadlinePanel(container, deadline, shouldShow) {
 function getCurrentGameId() {
   return state.isAdminMode
     ? state.result?.gameId || state.nextScheduleId || state.probableStarter.nextGame?.gameId || ""
-    : state.predictionTargetGame?.gameId || state.predictionTargetGameId || state.probableStarter.nextGame?.gameId || "";
+    : state.predictionTargetGame?.internalGameId || state.probableStarter.nextGame?.internalGameId || getCurrentLegacyGameId();
+}
+
+function getCurrentLegacyGameId() {
+  return state.predictionTargetGame?.gameId || state.predictionTargetGameId || state.probableStarter.nextGame?.gameId || "";
 }
 
 function getAdminScoringGameId() {

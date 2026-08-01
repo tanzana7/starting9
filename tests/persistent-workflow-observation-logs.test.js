@@ -12,7 +12,7 @@ test("ページを開かなくてもscheduledから通常Cronワークフロー�
   const worker = read("auth-worker.js");
   assert.match(worker, /async scheduled\(event, env, ctx\)/);
   assert.match(worker, /ctx\.waitUntil\(runScheduledGameAutomation\(env, scheduledAt\)\)/);
-  assert.match(worker, /const workflowResult = await runGameWorkflows\(env, now\)/);
+  assert.match(worker, /const workflowResult = await runGameWorkflows\(env, now, scheduleSync\.games\)/);
   assert.match(worker, /await cleanupWorkflowLogs\(env\.AUTH_DB, now\)/);
 });
 

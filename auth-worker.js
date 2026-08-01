@@ -105,6 +105,16 @@ const PREGAME_TOOL_ERROR_MESSAGES = Object.freeze({
   ROSTER_SCHEMA_NOT_READY: "ロースター保存用データベースが準備されていません。",
   ROSTER_FIX_FAILED: "ロースターの固定に失敗しました。",
   LINEUP_FETCH_FAILED: "NPB公式の正式スタメン取得に失敗しました。",
+  LINEUP_GAME_NOT_FOUND: "対象試合のNPB公式スタメンページが見つかりません。",
+  LINEUP_URL_BUILD_FAILED: "対象試合のNPB公式スタメンURLを生成できません。",
+  LINEUP_HTTP_ERROR: "NPB公式スタメンページの取得に失敗しました。",
+  LINEUP_NOT_ANNOUNCED: "NPB公式でスタメンがまだ発表されていません。",
+  LINEUP_PARSE_FAILED: "NPB公式スタメンを解析できませんでした。",
+  LINEUP_INVALID_PLAYER_COUNT: "NPB公式スタメンの選手人数が不正です。",
+  LINEUP_INVALID_POSITION: "NPB公式スタメンの守備位置が不正です。",
+  LINEUP_PLAYER_RESOLUTION_FAILED: "NPB公式スタメンの選手を選手マスタへ照合できません。",
+  LINEUP_DUPLICATE_PLAYER: "NPB公式スタメンに同一選手が重複しています。",
+  LINEUP_SAVE_FAILED: "正式スタメンの保存に失敗しました。",
   LINEUP_NOT_PUBLISHED: "NPB公式でスタメンがまだ発表されていません。",
   LINEUP_INVALID: "取得した正式スタメンの内容が不正です。",
   LINEUP_SCHEMA_NOT_READY: "正式スタメン保存用データベースが準備されていません。",
@@ -727,17 +737,8 @@ async function runDueProbableStarterJob(env, now) {
   }
   const row = await env.AUTH_DB.prepare("SELECT status, next_check_at FROM probable_starters WHERE game_id = ?1 LIMIT 1").bind(target.gameId).first();
   if (row?.status === "announced") {
-    await recordProbableStarterDecision(env.AUTH_DB, {
-      eventType: "probable_starter_fetch_skipped",
-      status: "info",
-      gameId: target.gameId,
-      occurredAt: now,
-      message: "予告先発取得済みのためスキップしました。",
-      errorCode: "PROBABLE_STARTER_ALREADY_ANNOUNCED",
-      metadata: { source: "cron", gameDate: target.date || getJstDateString(now) },
-      source: "cron"
-    });
-    return { status: "already_announced", gameId: target.gameId };
+    // 発表済みは正常な終端状態のため、毎回のCronスキップを進行ログへ残しません。
+    return { status: "already_announced", gameId: target.gameId, reason: "already_announced" };
   }
   if (row?.next_check_at && new Date(row.next_check_at).getTime() > new Date(now).getTime()) {
     await recordProbableStarterDecision(env.AUTH_DB, {
@@ -904,14 +905,33 @@ async function syncFightersScheduleForDate(env, date, now) {
   if (!state?.next_check_at || new Date(state.next_check_at) <= now) {
     const payload = await fetchNpbWorkerJson(env, { mode: "schedule", date });
     if (!Array.isArray(payload.games)) throw createPregameError("SCHEDULE_RESPONSE_INVALID", "NPB日程レスポンスが不正です。");
+    const existingResult = await env.AUTH_DB.prepare(
+      `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, venue, game_status
+         FROM detected_game_schedule WHERE game_date = ?1 ORDER BY updated_at DESC`
+    ).bind(date).all();
+    const existingByIdentity = new Map();
+    for (const row of existingResult.results || []) {
+      const key = createScheduleIdentityKey({
+        date: row.game_date,
+        startAt: row.start_at,
+        homeTeam: row.home_team,
+        awayTeam: row.away_team
+      });
+      if (!key || !existingByIdentity.has(key) || shouldPreferDetectedScheduleRow(row, existingByIdentity.get(key))) {
+        existingByIdentity.set(key, row);
+      }
+    }
     const normalizedGames = payload.games.map((game) => {
       const startAt = new Date(`${date}T${game?.startTime}:00+09:00`);
       if (!game?.gameId || !game?.homeTeam || !game?.awayTeam || Number.isNaN(startAt.getTime())) {
         throw createPregameError("SCHEDULE_RESPONSE_INVALID", "NPB日程レスポンスに必須項目がありません。");
       }
+      const identityKey = createScheduleIdentityKey({ date, startAt, homeTeam: game.homeTeam, awayTeam: game.awayTeam });
       return {
         game,
         startAt,
+        identityKey,
+        existingRow: existingByIdentity.get(identityKey) || null,
         sourceGameKey: String(game.gameCode || `${date}:${game.homeTeam}:${game.awayTeam}:${game.startTime}`),
         gameStatus: game.status === "cancelled" ? "cancelled" : "scheduled"
       };
@@ -919,12 +939,22 @@ async function syncFightersScheduleForDate(env, date, now) {
     const changed = await hasScheduleDataChanged(env.AUTH_DB, date, normalizedGames);
     const statements = [];
     for (const item of normalizedGames) {
-      const { game, startAt, sourceGameKey, gameStatus } = item;
-      statements.push(env.AUTH_DB.prepare(
-        `INSERT INTO detected_game_schedule (game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, venue, game_status, detected_at, schedule_checked_at, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?10, ?10)
-         ON CONFLICT(source_game_key) DO UPDATE SET start_at=excluded.start_at, venue=excluded.venue, game_status=excluded.game_status, schedule_checked_at=excluded.schedule_checked_at, updated_at=excluded.updated_at`
-      ).bind(game.gameId, sourceGameKey, date, startAt.toISOString(), game.homeTeam, game.awayTeam, game.gameCode || null, game.venue || null, gameStatus, now.toISOString()));
+      const { game, startAt, sourceGameKey, gameStatus, existingRow } = item;
+      if (existingRow) {
+        // 公式gameCodeが後から得られても、予想・採点に紐づく既存game_idは維持します。
+        statements.push(env.AUTH_DB.prepare(
+          `UPDATE detected_game_schedule
+              SET start_at = ?1, home_team = ?2, away_team = ?3, game_code = ?4,
+                  venue = ?5, game_status = ?6, schedule_checked_at = ?7, updated_at = ?7
+            WHERE game_id = ?8`
+        ).bind(startAt.toISOString(), game.homeTeam, game.awayTeam, game.gameCode || null, game.venue || null, gameStatus, now.toISOString(), existingRow.game_id));
+      } else {
+        statements.push(env.AUTH_DB.prepare(
+          `INSERT INTO detected_game_schedule (game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, venue, game_status, detected_at, schedule_checked_at, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?10, ?10)
+           ON CONFLICT(source_game_key) DO UPDATE SET start_at=excluded.start_at, venue=excluded.venue, game_status=excluded.game_status, schedule_checked_at=excluded.schedule_checked_at, updated_at=excluded.updated_at`
+        ).bind(game.gameId, sourceGameKey, date, startAt.toISOString(), game.homeTeam, game.awayTeam, game.gameCode || null, game.venue || null, gameStatus, now.toISOString()));
+      }
     }
     const nextCheck = new Date(now.getTime() + AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS).toISOString();
     statements.push(env.AUTH_DB.prepare(
@@ -939,16 +969,34 @@ async function syncFightersScheduleForDate(env, date, now) {
   return { status: "skipped", date };
 }
 
+function normalizeNpbGameCode(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return /^[a-z0-9]{1,2}-[a-z0-9]{1,2}-\d+$/.test(normalized) ? normalized : "";
+}
+
+function createScheduleIdentityKey({ date = "", startAt = "", homeTeam = "", awayTeam = "" } = {}) {
+  const start = startAt instanceof Date ? startAt : new Date(startAt);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date)) || Number.isNaN(start.getTime())) return "";
+  return `${date}|${start.toISOString()}|${String(homeTeam).trim().toLowerCase()}|${String(awayTeam).trim().toLowerCase()}`;
+}
+
+function shouldPreferDetectedScheduleRow(candidate, current) {
+  return Boolean(normalizeNpbGameCode(candidate?.game_code) && !normalizeNpbGameCode(current?.game_code));
+}
+
 async function hasScheduleDataChanged(db, date, games) {
   const result = await db.prepare(
     `SELECT source_game_key, game_id, start_at, home_team, away_team, game_code, venue, game_status
        FROM detected_game_schedule WHERE game_date = ?1`
   ).bind(date).all();
-  const existing = new Map((result.results || []).map((row) => [String(row.source_game_key), row]));
-  return (Array.isArray(games) ? games : []).some(({ game, startAt, sourceGameKey, gameStatus }) => {
-    const row = existing.get(sourceGameKey);
+  const existing = new Map();
+  for (const row of result.results || []) {
+    const key = createScheduleIdentityKey({ date: row.game_date || date, startAt: row.start_at, homeTeam: row.home_team, awayTeam: row.away_team });
+    if (key && (!existing.has(key) || shouldPreferDetectedScheduleRow(row, existing.get(key)))) existing.set(key, row);
+  }
+  return (Array.isArray(games) ? games : []).some(({ game, startAt, identityKey, gameStatus }) => {
+    const row = existing.get(identityKey);
     return !row
-      || String(row.game_id || "") !== String(game.gameId || "")
       || String(row.start_at || "") !== startAt.toISOString()
       || String(row.home_team || "") !== String(game.homeTeam || "")
       || String(row.away_team || "") !== String(game.awayTeam || "")
@@ -3412,9 +3460,11 @@ function parseJsonArray(value) {
 function getGameIdentityForPregame(gameId) {
   const timeline = getPregameTimeline(gameId);
   if (!timeline) return null;
-  const gameCode = /^\d{4}-\d{2}-\d{2}-(.+)$/.exec(timeline.gameId)?.[1] || "";
-  if (!/^[a-z0-9]+-[a-z0-9]+-\d+$/i.test(gameCode)) return null;
-  return { ...timeline, gameCode: gameCode.toLowerCase() };
+  const storedGameCode = normalizeNpbGameCode(timeline.game?.gameCode);
+  const idGameCode = /^\d{4}-\d{2}-\d{2}-(.+)$/.exec(timeline.gameId)?.[1] || "";
+  const gameCode = storedGameCode || normalizeNpbGameCode(idGameCode);
+  if (!gameCode) return null;
+  return { ...timeline, gameCode };
 }
 
 export function isBeforeGameStart(startAt, now = new Date()) {
@@ -3501,6 +3551,8 @@ export async function fetchNpbWorkerJson(env, params) {
       throw createPregameError(upstreamCode, payload?.error || "NPB取得Workerがエラーを返しました。", {
         httpStatus: response.status,
         upstreamStatus: response.status,
+        externalStatus: payload?.httpStatus,
+        upstreamUrl: payload?.sourceUrl,
         ...upstreamDetails
       });
     }
@@ -3518,6 +3570,8 @@ function createPregameError(code, message, details = {}) {
   error.code = code;
   if (Number(details.httpStatus) > 0) error.httpStatus = Number(details.httpStatus);
   if (Number(details.upstreamStatus) > 0) error.upstreamStatus = Number(details.upstreamStatus);
+  if (Number(details.externalStatus) > 0) error.externalStatus = Number(details.externalStatus);
+  if (typeof details.upstreamUrl === "string" && /^https:\/\/npb\.jp\//i.test(details.upstreamUrl)) error.upstreamUrl = details.upstreamUrl;
   if (details.upstreamPath === "/") error.upstreamPath = "/";
   if (typeof details.upstreamMode === "string" && details.upstreamMode) error.upstreamMode = details.upstreamMode;
   if (typeof details.upstreamTransport === "string" && details.upstreamTransport) error.upstreamTransport = details.upstreamTransport;
@@ -3536,17 +3590,33 @@ function normalizeRosterForSnapshot(players) {
 }
 
 function createOfficialLineupFromNpb(lineup) {
-  if (!Array.isArray(lineup) || lineup.length !== SCORING_LINEUP_SIZE) return { ok: false, error: "NPBのスタメン人数が9人ではありません。" };
+  if (!Array.isArray(lineup) || lineup.length !== SCORING_LINEUP_SIZE) {
+    return { ok: false, code: "LINEUP_INVALID_PLAYER_COUNT", error: "NPBのスタメン人数が9人ではありません。" };
+  }
   const result = [];
+  const orders = new Set();
+  const players = new Set();
   for (const row of lineup) {
     const player = findFightersPlayerByName(row?.playerName);
     const battingOrder = Number(row?.order);
     const position = normalizeScoringPosition(row?.position);
-    if (!player || !Number.isInteger(battingOrder) || battingOrder < 1 || battingOrder > 9 || !position) {
-      return { ok: false, error: "NPBの選手名または守備位置を選手マスタへ安全に照合できません。" };
+    if (!player) {
+      return { ok: false, code: "LINEUP_PLAYER_RESOLUTION_FAILED", error: "NPBの選手名を選手マスタへ安全に照合できません。" };
     }
+    if (!Number.isInteger(battingOrder) || battingOrder < 1 || battingOrder > 9 || orders.has(battingOrder)) {
+      return { ok: false, code: "LINEUP_PARSE_FAILED", error: "NPBの打順を安全に解析できません。" };
+    }
+    if (!position) {
+      return { ok: false, code: "LINEUP_INVALID_POSITION", error: "NPBの守備位置を正規化できません。" };
+    }
+    const playerId = createFightersPlayerId(player.uniformNumber);
+    if (players.has(playerId)) {
+      return { ok: false, code: "LINEUP_DUPLICATE_PLAYER", error: "NPBのスタメンに同一選手が重複しています。" };
+    }
+    orders.add(battingOrder);
+    players.add(playerId);
     result.push({
-      playerId: createFightersPlayerId(player.uniformNumber),
+      playerId,
       teamId: FIGHTERS_TEAM_ID,
       teamCode: FIGHTERS_TEAM_CODE,
       uniformNumber: player.uniformNumber,
@@ -3556,7 +3626,11 @@ function createOfficialLineupFromNpb(lineup) {
     });
   }
   const sanitized = sanitizeActualLineupForScoring(result);
-  return sanitized.ok ? { ok: true, lineup: sanitized.lineup } : sanitized;
+  return sanitized.ok ? { ok: true, lineup: sanitized.lineup } : {
+    ok: false,
+    code: "LINEUP_INVALID_POSITION",
+    error: sanitized.error || "NPBの守備位置を検証できません。"
+  };
 }
 
 export function shouldAutoApproveOfficialLineup(autoApproveEnabled, lineupResult) {
@@ -3674,7 +3748,7 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
 
 async function captureOfficialLineup(env, gameId, now, { force = false, phase = "provisional", autoApproveEnabled = true } = {}) {
   const identity = getGameIdentityForPregame(gameId);
-  if (!identity) throw createPregameError("SCHEDULE_UNAVAILABLE", "試合日程を確認できません。");
+  if (!identity) throw createPregameError("LINEUP_URL_BUILD_FAILED", "NPB公式スタメンURLを生成できません。試合の日程コードを確認してください。");
   const isFinalCapture = phase === "final";
   if (isFinalCapture ? now < identity.finalLineupFetchAt : !isBeforeGameStart(identity.startAt, now)) {
     return { status: isFinalCapture ? "not_due" : "skipped_after_start" };
@@ -3685,7 +3759,7 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
   try {
     const payload = await fetchNpbWorkerJson(env, { mode: "lineup", date: identity.game.date, gameCode: identity.gameCode });
     const actual = createOfficialLineupFromNpb(payload.lineup);
-    if (!actual.ok) throw createPregameError("INVALID_LINEUP", actual.error);
+    if (!actual.ok) throw createPregameError(actual.code || "LINEUP_PARSE_FAILED", actual.error);
     const detectedAt = new Date(payload.fetchedAt || now);
     if (!isFinalCapture) {
       await saveProvisionalOfficialLineup(env.AUTH_DB, gameId, actual.lineup, detectedAt, now);
@@ -4260,7 +4334,7 @@ async function useProvisionalLineupFallback(env, gameId, identity, now, finalErr
     allowAfterStart: true,
     preventOverwrite: true
   });
-  const errorCode = String(finalError?.code || "LINEUP_FETCH_FAILED").slice(0, 80);
+  const errorCode = classifyLineupErrorCode(finalError);
   await env.AUTH_DB.prepare(
     `UPDATE game_pregame_automation
         SET lineup_status = 'captured', lineup_captured_at = ?1,
@@ -4283,6 +4357,7 @@ async function recordPregameError(db, gameId, area, error, now) {
 
 async function recordPregameLineupAttempt(db, gameId, identity, now, error, phase = "provisional") {
   const next = new Date(now.getTime() + 10 * 60 * 1000);
+  const errorCode = classifyLineupErrorCode(error);
   await db.prepare(
     `UPDATE game_pregame_automation
         SET lineup_status = 'failed', lineup_attempt_count = lineup_attempt_count + 1, last_lineup_attempt_at = ?1,
@@ -4290,7 +4365,21 @@ async function recordPregameLineupAttempt(db, gameId, identity, now, error, phas
             next_lineup_attempt_at = CASE WHEN ?5 = 'final' OR ?2 <= ?6 THEN ?2 ELSE NULL END,
             last_error_code = ?3, last_error_message = ?4, updated_at = ?1
       WHERE game_id = ?7`
-  ).bind(now.toISOString(), next.toISOString(), String(error?.code || "NPB_HTTP_ERROR").slice(0, 80), String(error?.message || "取得に失敗しました。").slice(0, 240), phase, identity.startAt.toISOString(), gameId).run();
+  ).bind(now.toISOString(), next.toISOString(), errorCode, String(error?.message || "取得に失敗しました。").slice(0, 240), phase, identity.startAt.toISOString(), gameId).run();
+}
+
+function classifyLineupErrorCode(error) {
+  const raw = String(error?.code || "LINEUP_FETCH_FAILED").slice(0, 80);
+  if (["GAME_NOT_FOUND", "SCHEDULE_UNAVAILABLE"].includes(raw)) return "LINEUP_GAME_NOT_FOUND";
+  if (raw === "LINEUP_URL_BUILD_FAILED") return raw;
+  if (["NPB_HTTP_ERROR", "NPB_WORKER_HTTP_ERROR", "NPB_WORKER_TIMEOUT", "NPB_SERVICE_BINDING_MISSING", "NPB_SERVICE_BINDING_INVALID"].includes(raw)) {
+    return "LINEUP_HTTP_ERROR";
+  }
+  if (["LINEUP_NOT_PUBLISHED", "LINEUP_NOT_ANNOUNCED"].includes(raw)) return "LINEUP_NOT_ANNOUNCED";
+  if (["PARSE_FAILED", "NPB_RESPONSE_INVALID", "INVALID_LINEUP", "LINEUP_PARSE_FAILED"].includes(raw)) return "LINEUP_PARSE_FAILED";
+  if (["LINEUP_INVALID_PLAYER_COUNT", "LINEUP_INVALID_POSITION", "LINEUP_PLAYER_RESOLUTION_FAILED", "LINEUP_DUPLICATE_PLAYER", "LINEUP_SAVE_FAILED"].includes(raw)) return raw;
+  if (/^(D1|SQLITE|SQLITE_CONSTRAINT|DATABASE)_/i.test(raw)) return "LINEUP_SAVE_FAILED";
+  return raw.startsWith("LINEUP_") ? raw : "LINEUP_FETCH_FAILED";
 }
 
 async function recordPregameLineupDeferred(db, gameId, identity, now) {
@@ -4449,7 +4538,15 @@ async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimel
               occurredAt: now,
               message: "最終取得失敗・直前取得データを使用しました。",
               errorCode: fallback.errorCode,
-              metadata: { phase: "final", fallbackUsed: true, playerCount: parseStoredActualLineup(fallback.record?.actual_lineup_json)?.length || null },
+              metadata: {
+                phase: "final",
+                fallbackUsed: true,
+                playerCount: parseStoredActualLineup(fallback.record?.actual_lineup_json)?.length || null,
+                rawErrorCode: String(error?.code || "LINEUP_FETCH_FAILED"),
+                upstreamStatus: Number(error?.upstreamStatus || 0) || null,
+                externalStatus: Number(error?.externalStatus || 0) || null,
+                upstreamUrl: error?.upstreamUrl || null
+              },
               source: "cron"
             });
             console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=final_lineup action=fallback status=success code=${fallback.errorCode}`);
@@ -4467,8 +4564,15 @@ async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimel
         gameId,
         occurredAt: now,
         message: isFinalPhase ? "最終スタメンを取得できず、採点を見送りました。" : "実スタメンを取得できませんでした。",
-        errorCode: String(error?.code || "LINEUP_FETCH_FAILED"),
-        metadata: { phase: isFinalPhase ? "final" : "provisional", fallbackUsed: false },
+        errorCode: classifyLineupErrorCode(error),
+        metadata: {
+          phase: isFinalPhase ? "final" : "provisional",
+          fallbackUsed: false,
+          rawErrorCode: String(error?.code || "LINEUP_FETCH_FAILED"),
+          upstreamStatus: Number(error?.upstreamStatus || 0) || null,
+          externalStatus: Number(error?.externalStatus || 0) || null,
+          upstreamUrl: error?.upstreamUrl || null
+        },
         source: "cron"
       });
       console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=${isFinalPhase ? "final_lineup" : "lineup"} action=executed status=failed code=${error?.code || "unknown"} retryable=true`);
@@ -6030,7 +6134,10 @@ async function markGameLineupFailed(db, gameId, error, now) {
 // 既存の管理用状態行へ採点・公開の成否を残します。再試行対象はgame_lineups側で管理します。
 async function recordGameWorkflowOutcome(db, gameId, step, status, error, now) {
   const failed = status === "failed";
-  const code = failed ? String(error?.code || `${String(step || "workflow").toUpperCase()}_FAILED`).slice(0, 80) : null;
+  const isLineupStep = step === "lineup" || step === "final_lineup";
+  const code = failed
+    ? (isLineupStep ? classifyLineupErrorCode(error) : String(error?.code || `${String(step || "workflow").toUpperCase()}_FAILED`).slice(0, 80))
+    : null;
   const message = failed ? toSafeAutoScoringError(error).slice(0, 240) : null;
   try {
     await db.prepare(

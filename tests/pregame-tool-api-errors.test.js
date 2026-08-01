@@ -149,6 +149,24 @@ test("notice・roster・lineupは同じService Binding経由で取得し、上�
     fetchNpbWorkerJson(errorBinding, { mode: "notice", date: "2026-07-23" }),
     (error) => error?.upstreamStatus === 404 && error?.upstreamTransport === "service-binding"
   );
+
+  const externalErrorBinding = {
+    NPB_FETCH_WORKER: {
+      async fetch() {
+        return new Response(JSON.stringify({
+          ok: false,
+          code: "NPB_HTTP_ERROR",
+          httpStatus: 404,
+          sourceUrl: "https://npb.jp/scores/2026/0731/fighters-marines-1800/"
+        }), { status: 502 });
+      }
+    }
+  };
+  await assert.rejects(
+    fetchNpbWorkerJson(externalErrorBinding, { mode: "lineup", date: "2026-07-31", gameCode: "fighters-marines-1800" }),
+    (error) => error?.externalStatus === 404
+      && error?.upstreamUrl === "https://npb.jp/scores/2026/0731/fighters-marines-1800/"
+  );
   const routeError = normalizePregameToolError("run-notice", { code: "NPB_HTTP_ERROR", upstreamStatus: 404 });
   assert.deepEqual(routeError, {
     code: "NPB_WORKER_ROUTE_NOT_FOUND",

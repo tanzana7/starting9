@@ -34,8 +34,22 @@ test("開始時刻がない場合は試合翌日06:00 JSTを再試行期限に�
 test("取得失敗由来のLINEUP_REQUIREDは永続ログへ二重保存せず、根本原因ログを残す", () => {
   const worker = read("auth-worker.js");
   assert.match(worker, /eventType: isFinalPhase \? "final_lineup_fetch" : "lineup_fetch"/);
-  assert.match(worker, /errorCode: String\(error\?\.code \|\| "LINEUP_FETCH_FAILED"\)/);
+  assert.match(worker, /errorCode: classifyLineupErrorCode\(error\)/);
   assert.doesNotMatch(worker, /eventType: "scoring_skipped"/);
+});
+
+test("ラインナップ失敗は上流エラーを運用向け分類へ変換する", () => {
+  const worker = read("auth-worker.js");
+  assert.match(worker, /function classifyLineupErrorCode\(error\)/);
+  assert.match(worker, /return "LINEUP_GAME_NOT_FOUND"/);
+  assert.match(worker, /return "LINEUP_HTTP_ERROR"/);
+  assert.match(worker, /return "LINEUP_NOT_ANNOUNCED"/);
+  assert.match(worker, /return "LINEUP_PARSE_FAILED"/);
+  assert.match(worker, /LINEUP_INVALID_PLAYER_COUNT/);
+  assert.match(worker, /LINEUP_INVALID_POSITION/);
+  assert.match(worker, /LINEUP_PLAYER_RESOLUTION_FAILED/);
+  assert.match(worker, /LINEUP_DUPLICATE_PLAYER/);
+  assert.match(worker, /LINEUP_SAVE_FAILED/);
 });
 
 test("期限超過試合はSCORING_RETRY_EXPIREDを一度だけ記録し、取得・採点処理を行わない", () => {

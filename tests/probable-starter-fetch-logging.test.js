@@ -16,12 +16,14 @@ test("予告先発取得は成功・未発表・失敗の終端ログを持つ",
   assert.match(worker, /status: announced \? "success" : "notPublished"/);
 });
 
-test("対象なし・既取得・再試行待ちは取得せず終端状態を記録する", () => {
+test("対象なし・再試行待ちは取得せず終端状態を記録し、発表済みはログを増やさない", () => {
   const worker = readWorker();
   assert.match(worker, /async function recordProbableStarterDecision\(/);
   assert.match(worker, /eventType: started \? "probable_starter_fetch_skipped" : "probable_starter_no_target"/);
-  assert.match(worker, /PROBABLE_STARTER_ALREADY_ANNOUNCED/);
   assert.match(worker, /PROBABLE_STARTER_RETRY_WAIT/);
+  assert.match(worker, /if \(row\?\.status === "announced"\) \{[\s\S]*?return \{ status: "already_announced", gameId: target\.gameId, reason: "already_announced" \};/);
+  const announcedBlock = worker.match(/if \(row\?\.status === "announced"\) \{([\s\S]*?)\n  \}/)?.[1] || "";
+  assert.doesNotMatch(announcedBlock, /recordProbableStarterDecision/);
   assert.match(worker, /return \{ status: started \? "not_due" : "noTarget", gameId \};/);
   assert.match(worker, /WORKFLOW_LOG_DEDUPE_WINDOW_MS = 30 \* 60 \* 1000/);
 });

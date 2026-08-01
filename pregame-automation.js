@@ -21,7 +21,14 @@ export const NOTICE_ACTIVE_INTERVAL_MINUTES = 10;
 
 export function getScheduledGame(gameId) {
   const normalized = typeof gameId === "string" ? gameId.trim() : "";
-  return [...detectedScheduleGames, ...schedule].find((game) => game?.gameId === normalized) || null;
+  const merged = getScheduledGames();
+  const exact = merged.find((game) => game?.gameId === normalized);
+  if (exact) return exact;
+  const raw = [...detectedScheduleGames, ...schedule].find((game) => game?.gameId === normalized);
+  if (!raw) return null;
+  const identity = getScheduleIdentity(raw);
+  const enriched = identity ? merged.find((game) => getScheduleIdentity(game) === identity) : null;
+  return enriched ? { ...enriched, gameId: normalized } : raw;
 }
 
 export function setDetectedScheduleGames(games) {
@@ -30,9 +37,41 @@ export function setDetectedScheduleGames(games) {
 
 // 実行対象外の中止試合も、Cronの観測要約では状態を区別するために参照します。
 export function getScheduledGames() {
-  const ids = new Set();
-  return [...detectedScheduleGames, ...schedule]
-    .filter((game) => game?.gameId && !ids.has(game.gameId) && Boolean(ids.add(game.gameId)));
+  const identities = new Map();
+  for (const game of [...detectedScheduleGames, ...schedule]) {
+    if (!game?.gameId) continue;
+    const key = getScheduleIdentity(game);
+    if (!key || !identities.has(key)) {
+      identities.set(key || `id:${game.gameId}`, game);
+      continue;
+    }
+    const current = identities.get(key);
+    // D1で保持したフォールバックIDを維持しつつ、静的日程の公式gameCodeを補完します。
+    const currentGameCode = getScheduleGameCode(current);
+    const candidateGameCode = getScheduleGameCode(game);
+    if (!currentGameCode && candidateGameCode) {
+      identities.set(key, { ...current, gameCode: candidateGameCode });
+    }
+  }
+  return [...identities.values()];
+}
+
+function getScheduleGameCode(game) {
+  const explicit = String(game?.gameCode || "").trim().toLowerCase();
+  if (/^[a-z0-9]{1,2}-[a-z0-9]{1,2}-\d+$/.test(explicit)) return explicit;
+  const fromId = /^\d{4}-\d{2}-\d{2}-(.+)$/.exec(String(game?.gameId || ""))?.[1] || "";
+  if (/^[a-z0-9]{1,2}-[a-z0-9]{1,2}-\d+$/i.test(fromId)) return fromId.toLowerCase();
+  const fromUrl = /\/scores\/\d{4}\/\d{4}\/([a-z0-9]{1,2}-[a-z0-9]{1,2}-\d+)\//i.exec(String(game?.npbScoreUrl || ""))?.[1] || "";
+  return fromUrl.toLowerCase();
+}
+
+function getScheduleIdentity(game) {
+  const date = String(game?.date || "");
+  const homeTeam = String(game?.homeTeam || "").trim().toLowerCase();
+  const awayTeam = String(game?.awayTeam || "").trim().toLowerCase();
+  const startAt = game?.startAt instanceof Date ? game.startAt : parseJstScheduleStart(game);
+  if (!date || !homeTeam || !awayTeam || !startAt || Number.isNaN(startAt.getTime())) return "";
+  return `${date}|${startAt.toISOString()}|${homeTeam}|${awayTeam}`;
 }
 
 export function parseJstScheduleStart(game) {

@@ -1,4 +1,5 @@
-import { getPredictionDeadlineStatus, PREDICTION_DEADLINE_MILLISECONDS } from "./prediction-deadline.js";
+import { getPredictionDeadlineStatus } from "./prediction-deadline.js";
+import { PREDICTION_DEADLINE_MILLISECONDS } from "./prediction-deadline.js";
 import {
   getDueFinalLineupAttemptAt,
   getFinalLineupRetryDeadline,
@@ -22,6 +23,11 @@ import {
   FIGHTERS_TEAM_CODE,
   FIGHTERS_TEAM_ID
 } from "./fighters-player-master.js";
+import {
+  createScheduleGameIdentifiers,
+  getOrCreateInternalGame,
+  resolveInternalGameId
+} from "./game-identity-registry.js";
 
 const SESSION_COOKIE_NAME = "s9_session";
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
@@ -975,11 +981,13 @@ async function syncFightersScheduleForDate(env, date, now) {
   if (!state?.next_check_at || new Date(state.next_check_at) <= now) {
     const payload = await fetchNpbWorkerJson(env, { mode: "schedule", date });
     if (!Array.isArray(payload.games)) throw createPregameError("SCHEDULE_RESPONSE_INVALID", "NPB日程レスポンスが不正です。");
+    const registry = await getGameIdentityRegistryAvailability(env.AUTH_DB);
     const existingResult = await env.AUTH_DB.prepare(
-      `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, venue, game_status
+      `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, venue, game_status${registry.scheduleColumnAvailable ? ", internal_game_id" : ""}
          FROM detected_game_schedule WHERE game_date = ?1 ORDER BY updated_at DESC`
     ).bind(date).all();
     const existingByIdentity = new Map();
+    const existingRowsByIdentity = new Map();
     for (const row of existingResult.results || []) {
       const key = createScheduleIdentityKey({
         date: row.game_date,
@@ -987,6 +995,7 @@ async function syncFightersScheduleForDate(env, date, now) {
         homeTeam: row.home_team,
         awayTeam: row.away_team
       });
+      if (key) existingRowsByIdentity.set(key, [...(existingRowsByIdentity.get(key) || []), row]);
       if (!key || !existingByIdentity.has(key) || shouldPreferDetectedScheduleRow(row, existingByIdentity.get(key))) {
         existingByIdentity.set(key, row);
       }
@@ -1002,6 +1011,7 @@ async function syncFightersScheduleForDate(env, date, now) {
         startAt,
         identityKey,
         existingRow: existingByIdentity.get(identityKey) || null,
+        existingCandidates: existingRowsByIdentity.get(identityKey) || [],
         sourceGameKey: String(game.gameCode || `${date}:${game.homeTeam}:${game.awayTeam}:${game.startTime}`),
         gameStatus: game.status === "cancelled" ? "cancelled" : "scheduled"
       };
@@ -1009,21 +1019,35 @@ async function syncFightersScheduleForDate(env, date, now) {
     const changed = await hasScheduleDataChanged(env.AUTH_DB, date, normalizedGames);
     const statements = [];
     for (const item of normalizedGames) {
-      const { game, startAt, sourceGameKey, gameStatus, existingRow } = item;
+      const { game, startAt, sourceGameKey, gameStatus, existingRow, existingCandidates } = item;
+      const internalGameId = await resolveScheduleInternalGameId(env.AUTH_DB, registry, {
+        date,
+        startAt,
+        game,
+        sourceGameKey,
+        gameStatus,
+        existingRow,
+        existingCandidates,
+        now
+      });
       if (existingRow) {
         // 公式gameCodeが後から得られても、予想・採点に紐づく既存game_idは維持します。
         statements.push(env.AUTH_DB.prepare(
           `UPDATE detected_game_schedule
               SET start_at = ?1, home_team = ?2, away_team = ?3, game_code = ?4,
-                  venue = ?5, game_status = ?6, schedule_checked_at = ?7, updated_at = ?7
-            WHERE game_id = ?8`
-        ).bind(startAt.toISOString(), game.homeTeam, game.awayTeam, game.gameCode || null, game.venue || null, gameStatus, now.toISOString(), existingRow.game_id));
+                  venue = ?5, game_status = ?6, schedule_checked_at = ?7, updated_at = ?7${registry.scheduleColumnAvailable ? ", internal_game_id = COALESCE(?8, internal_game_id)" : ""}
+            WHERE game_id = ?${registry.scheduleColumnAvailable ? 9 : 8}`
+        ).bind(...(registry.scheduleColumnAvailable
+          ? [startAt.toISOString(), game.homeTeam, game.awayTeam, game.gameCode || null, game.venue || null, gameStatus, now.toISOString(), internalGameId, existingRow.game_id]
+          : [startAt.toISOString(), game.homeTeam, game.awayTeam, game.gameCode || null, game.venue || null, gameStatus, now.toISOString(), existingRow.game_id])));
       } else {
         statements.push(env.AUTH_DB.prepare(
-          `INSERT INTO detected_game_schedule (game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, venue, game_status, detected_at, schedule_checked_at, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?10, ?10)
-           ON CONFLICT(source_game_key) DO UPDATE SET start_at=excluded.start_at, venue=excluded.venue, game_status=excluded.game_status, schedule_checked_at=excluded.schedule_checked_at, updated_at=excluded.updated_at`
-        ).bind(game.gameId, sourceGameKey, date, startAt.toISOString(), game.homeTeam, game.awayTeam, game.gameCode || null, game.venue || null, gameStatus, now.toISOString()));
+          `INSERT INTO detected_game_schedule (game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, venue, game_status, detected_at, schedule_checked_at, created_at, updated_at${registry.scheduleColumnAvailable ? ", internal_game_id" : ""})
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?10, ?10${registry.scheduleColumnAvailable ? ", ?11" : ""})
+           ON CONFLICT(source_game_key) DO UPDATE SET start_at=excluded.start_at, venue=excluded.venue, game_status=excluded.game_status, schedule_checked_at=excluded.schedule_checked_at, updated_at=excluded.updated_at${registry.scheduleColumnAvailable ? ", internal_game_id=COALESCE(excluded.internal_game_id, detected_game_schedule.internal_game_id)" : ""}`
+        ).bind(...(registry.scheduleColumnAvailable
+          ? [game.gameId, sourceGameKey, date, startAt.toISOString(), game.homeTeam, game.awayTeam, game.gameCode || null, game.venue || null, gameStatus, now.toISOString(), internalGameId]
+          : [game.gameId, sourceGameKey, date, startAt.toISOString(), game.homeTeam, game.awayTeam, game.gameCode || null, game.venue || null, gameStatus, now.toISOString()])));
       }
     }
     const nextCheck = new Date(now.getTime() + AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS).toISOString();
@@ -1033,10 +1057,102 @@ async function syncFightersScheduleForDate(env, date, now) {
        ON CONFLICT(schedule_date) DO UPDATE SET next_check_at=excluded.next_check_at, last_checked_at=excluded.last_checked_at, last_error_code=NULL, updated_at=excluded.updated_at`
     ).bind(date, nextCheck, now.toISOString()));
     if (statements.length) await env.AUTH_DB.batch(statements);
+    await backfillUniqueDetectedScheduleInternalGames(env.AUTH_DB, date, registry, now);
     console.log(`[GAME_DETECTION] date=${date} team=fighters gamesFound=${payload.games.length} status=success`);
     return { status: changed ? "success_changed" : "success_no_change", date, gameCount: payload.games.length };
   }
   return { status: "skipped", date };
+}
+
+async function getGameIdentityRegistryAvailability(db) {
+  try {
+    const tables = await db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('games', 'game_identifiers', 'detected_game_schedule')"
+    ).bind().all();
+    const names = new Set((tables.results || []).map((row) => String(row.name || "")));
+    if (!names.has("games") || !names.has("game_identifiers") || !names.has("detected_game_schedule")) {
+      return { available: false, scheduleColumnAvailable: false };
+    }
+    const columns = await db.prepare("PRAGMA table_info(detected_game_schedule)").bind().all();
+    const scheduleColumnAvailable = (columns.results || []).some((column) => String(column.name || "") === "internal_game_id");
+    return { available: scheduleColumnAvailable, scheduleColumnAvailable };
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+    console.warn(`[GAME_IDENTITY_REGISTRY] status=unavailable code=${error?.code || "GAME_IDENTITY_REGISTRY_SCHEMA_NOT_READY"}`);
+    return { available: false, scheduleColumnAvailable: false };
+  }
+}
+
+async function resolveScheduleInternalGameId(db, registry, { date, startAt, game, sourceGameKey, gameStatus, existingRow, existingCandidates, now }) {
+  if (!registry.available || existingCandidates.length > 1) return null;
+  const gameIds = [existingRow?.game_id, game?.gameId].filter(Boolean);
+  const identifiers = gameIds.flatMap((gameId) => createScheduleGameIdentifiers({
+    gameId,
+    gameCode: game?.gameCode || "",
+    sourceGameKey
+  }));
+  try {
+    const result = await getOrCreateInternalGame(db, {
+      game: {
+        gameDate: date,
+        startTime: startAt.toISOString(),
+        homeTeam: game?.homeTeam,
+        awayTeam: game?.awayTeam,
+        gameStatus
+      },
+      identifiers,
+      allowCreate: true,
+      now
+    });
+    return result.status === "resolved" ? result.internalGameId : null;
+  } catch (error) {
+    console.warn(`[GAME_IDENTITY_REGISTRY] status=unresolved gameId=${String(existingRow?.game_id || game?.gameId || "")} code=${error?.code || "GAME_IDENTITY_REGISTRY_WRITE_FAILED"}`);
+    return null;
+  }
+}
+
+async function backfillUniqueDetectedScheduleInternalGames(db, date, registry, now) {
+  if (!registry.available || !registry.scheduleColumnAvailable) return;
+  const result = await db.prepare(
+    `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, game_status, internal_game_id
+       FROM detected_game_schedule
+      WHERE game_date = ?1 AND (internal_game_id IS NULL OR internal_game_id = '')`
+  ).bind(date).all();
+  const rowsByIdentity = new Map();
+  for (const row of result.results || []) {
+    const identityKey = createScheduleIdentityKey({ date: row.game_date, startAt: row.start_at, homeTeam: row.home_team, awayTeam: row.away_team });
+    if (!identityKey) continue;
+    rowsByIdentity.set(identityKey, [...(rowsByIdentity.get(identityKey) || []), row]);
+  }
+  for (const rows of rowsByIdentity.values()) {
+    if (rows.length !== 1) continue;
+    const row = rows[0];
+    try {
+      const registration = await getOrCreateInternalGame(db, {
+        game: {
+          gameDate: row.game_date,
+          startTime: row.start_at,
+          homeTeam: row.home_team,
+          awayTeam: row.away_team,
+          gameStatus: row.game_status
+        },
+        identifiers: createScheduleGameIdentifiers({
+          gameId: row.game_id,
+          gameCode: row.game_code,
+          sourceGameKey: row.source_game_key
+        }),
+        allowCreate: true,
+        now
+      });
+      if (registration.status === "resolved") {
+        await db.prepare(
+          "UPDATE detected_game_schedule SET internal_game_id = ?1, updated_at = ?2 WHERE game_id = ?3 AND (internal_game_id IS NULL OR internal_game_id = '')"
+        ).bind(registration.internalGameId, now.toISOString(), row.game_id).run();
+      }
+    } catch (error) {
+      console.warn(`[GAME_IDENTITY_REGISTRY] status=backfill_skipped gameId=${String(row.game_id || "")} code=${error?.code || "GAME_IDENTITY_REGISTRY_BACKFILL_FAILED"}`);
+    }
+  }
 }
 
 function normalizeNpbGameCode(value) {
@@ -4333,6 +4449,7 @@ const GAME_IDENTITY_AUDIT_TABLE_QUERIES = Object.freeze({
 async function collectGameIdentityAuditData(db, options) {
   const availableTables = await getAvailableGameIdentityAuditTables(db);
   const unavailableTables = GAME_IDENTITY_AUDIT_TABLES.filter((table) => !availableTables.has(table));
+  const internalRegistry = await collectInternalGameRegistryAuditData(db, options);
   const scheduleRows = [];
   if (availableTables.has("detected_game_schedule")) {
     const filter = getGameIdentityAuditFilter(options, "game_date", true);
@@ -4355,7 +4472,70 @@ async function collectGameIdentityAuditData(db, options) {
       unavailableTables.push(table);
     }
   }));
-  return { availableTables, unavailableTables: [...new Set(unavailableTables)].sort(), scheduleRows, tableRows };
+  return { availableTables, unavailableTables: [...new Set(unavailableTables)].sort(), scheduleRows, tableRows, internalRegistry };
+}
+
+async function collectInternalGameRegistryAuditData(db, options) {
+  const registry = await getGameIdentityRegistryAvailability(db);
+  if (!registry.available) {
+    return { available: false, reasonCode: "INTERNAL_GAME_REGISTRY_SCHEMA_NOT_READY" };
+  }
+  const gameFilter = getGameIdentityAuditFilter(options, "game_date", true);
+  const scheduleFilter = getGameIdentityAuditFilter(options, "game_date", true);
+  const gamesResult = await db.prepare(
+    `SELECT COUNT(*) AS games_count
+       FROM games ${gameFilter.where}`
+  ).bind(...gameFilter.bindings).first();
+  const identifiersResult = await db.prepare(
+    `SELECT COUNT(*) AS identifiers_count
+       FROM game_identifiers identifiers
+       JOIN games ON games.internal_game_id = identifiers.internal_game_id
+       ${gameFilter.where.replace(/game_date/g, "games.game_date")}`
+  ).bind(...gameFilter.bindings).first();
+  const withoutIdentifiersResult = await db.prepare(
+    `SELECT COUNT(*) AS games_without_identifiers
+       FROM games
+       LEFT JOIN game_identifiers identifiers ON identifiers.internal_game_id = games.internal_game_id
+       ${gameFilter.where.replace(/game_date/g, "games.game_date")}
+       ${gameFilter.where ? "AND" : "WHERE"} identifiers.id IS NULL`
+  ).bind(...gameFilter.bindings).first();
+  const identifiersWithoutGamesResult = await db.prepare(
+    `SELECT COUNT(*) AS identifiers_without_games
+       FROM game_identifiers identifiers
+       LEFT JOIN games ON games.internal_game_id = identifiers.internal_game_id
+      WHERE games.internal_game_id IS NULL`
+  ).bind().first();
+  const multipleCandidatesResult = await db.prepare(
+    `SELECT COUNT(*) AS multiple_internal_game_candidates
+       FROM (
+         SELECT game_date, start_time, home_team, away_team
+           FROM games ${gameFilter.where}
+          GROUP BY game_date, start_time, home_team, away_team
+         HAVING COUNT(*) > 1
+       )`
+  ).bind(...gameFilter.bindings).first();
+  const coverageResult = await db.prepare(
+    `SELECT COUNT(*) AS schedule_games,
+            SUM(CASE WHEN internal_game_id IS NOT NULL AND internal_game_id <> '' THEN 1 ELSE 0 END) AS linked_schedule_games,
+            SUM(CASE WHEN internal_game_id IS NULL OR internal_game_id = '' THEN 1 ELSE 0 END) AS legacy_ids_without_internal_game_id
+       FROM detected_game_schedule ${scheduleFilter.where}`
+  ).bind(...scheduleFilter.bindings).first();
+  const scheduleGames = Number(coverageResult?.schedule_games || 0);
+  const linkedScheduleGames = Number(coverageResult?.linked_schedule_games || 0);
+  return {
+    available: true,
+    gamesCount: Number(gamesResult?.games_count || 0),
+    identifiersCount: Number(identifiersResult?.identifiers_count || 0),
+    gamesWithoutIdentifiers: Number(withoutIdentifiersResult?.games_without_identifiers || 0),
+    identifiersWithoutGames: Number(identifiersWithoutGamesResult?.identifiers_without_games || 0),
+    multipleInternalGameCandidates: Number(multipleCandidatesResult?.multiple_internal_game_candidates || 0),
+    legacyIdsWithoutInternalGameId: Number(coverageResult?.legacy_ids_without_internal_game_id || 0),
+    internalGameIdCoverage: {
+      scheduleGames,
+      linkedScheduleGames,
+      ratio: scheduleGames ? linkedScheduleGames / scheduleGames : 0
+    }
+  };
 }
 
 export function classifyGameIdentityFormat(value) {
@@ -4504,7 +4684,7 @@ function buildGameIdentityAuditDuplicates(scheduleRows, references) {
     });
 }
 
-export function buildGameIdentityAuditReport({ scheduleRows = [], tableRows = {}, unavailableTables = [], options = {} } = {}) {
+export function buildGameIdentityAuditReport({ scheduleRows = [], tableRows = {}, unavailableTables = [], internalRegistry = { available: false, reasonCode: "INTERNAL_GAME_REGISTRY_SCHEMA_NOT_READY" }, options = {} } = {}) {
   const rowsByTable = { detected_game_schedule: scheduleRows, ...tableRows };
   const identifierFormats = { all: createAuditIdentifierCounts(), tables: {} };
   const references = new Map();
@@ -4573,7 +4753,8 @@ export function buildGameIdentityAuditReport({ scheduleRows = [], tableRows = {}
       queryScope: options.allPeriod ? "all" : "last_30_days",
       dateFrom: options.dateFrom || "",
       dateTo: options.dateTo || "",
-      limit
+      limit,
+      internalRegistry
     },
     ...(details || {}),
     recommendation: {
@@ -4614,8 +4795,9 @@ export function selectNextPredictionTarget(games, now = new Date()) {
 async function getServerPredictionTarget(db, now = new Date()) {
   let detectedGames = [];
   try {
+    const registry = await getGameIdentityRegistryAvailability(db);
     const rows = await db.prepare(
-      `SELECT game_id, game_date, start_at, home_team, away_team, game_code, venue, game_status
+      `SELECT game_id, game_date, start_at, home_team, away_team, game_code, venue, game_status${registry.scheduleColumnAvailable ? ", internal_game_id" : ""}
          FROM detected_game_schedule
         WHERE game_status = 'scheduled' AND start_at > ?1
         ORDER BY start_at ASC LIMIT 50`
@@ -4627,6 +4809,7 @@ async function getServerPredictionTarget(db, now = new Date()) {
       homeTeam: row.home_team,
       awayTeam: row.away_team,
       gameCode: row.game_code || "",
+      internalGameId: row.internal_game_id || "",
       venue: row.venue || "",
       status: row.game_status
     }));
@@ -4647,6 +4830,7 @@ function serializePredictionTarget(game) {
     homeTeam: game.homeTeam || "",
     awayTeam: game.awayTeam || "",
     gameCode: game.gameCode || "",
+    internalGameId: game.internalGameId || "",
     venue: game.venue || ""
   };
 }
@@ -7562,9 +7746,11 @@ export async function resolvePredictionGameMetadata(db, value) {
 
   let row = null;
   let scheduleTableAvailable = true;
+  const registry = await getGameIdentityRegistryAvailability(db);
+  const internalGameIdColumn = registry.scheduleColumnAvailable ? ", internal_game_id" : "";
   try {
     row = await db.prepare(
-      `SELECT game_id, game_date, start_at, home_team, away_team, game_code, game_status
+      `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, game_status${internalGameIdColumn}
          FROM detected_game_schedule
         WHERE game_id = ?1 OR (?2 <> '' AND game_code = ?2 AND game_date = ?3)
         ORDER BY CASE WHEN game_id = ?1 THEN 0 ELSE 1 END, updated_at DESC
@@ -7579,7 +7765,7 @@ export async function resolvePredictionGameMetadata(db, value) {
     const expectedStartAt = getPredictionGameExpectedStartAt(parsed);
     if (expectedStartAt) {
       const candidates = await db.prepare(
-        `SELECT game_id, game_date, start_at, home_team, away_team, game_code, game_status
+        `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, game_status${internalGameIdColumn}
            FROM detected_game_schedule
           WHERE game_date = ?1
           ORDER BY updated_at DESC`
@@ -7594,6 +7780,7 @@ export async function resolvePredictionGameMetadata(db, value) {
     if (!PREDICTION_TEAM_CODES.has(homeCode) || !PREDICTION_TEAM_CODES.has(awayCode) || (homeCode !== "f" && awayCode !== "f")) {
       return null;
     }
+    const internalGameId = await resolveExistingInternalGameId(db, registry, row, parsed.gameId);
     return {
       ...parsed,
       gameId: String(row.game_id),
@@ -7604,6 +7791,7 @@ export async function resolvePredictionGameMetadata(db, value) {
       isHome: homeCode === "f",
       startAt: row.start_at || "",
       gameCode: normalizeNpbGameCode(row.game_code) || parsePredictionGameId(row.game_id)?.gameCode || parsed.gameCode,
+      internalGameId,
       game: { ...row, status: row.game_status }
     };
   }
@@ -7620,6 +7808,24 @@ export async function resolvePredictionGameMetadata(db, value) {
     gameCode: parsePredictionGameId(scheduled.gameId)?.gameCode || parsed.gameCode,
     game: scheduled
   };
+}
+
+async function resolveExistingInternalGameId(db, registry, row, requestedGameId) {
+  if (row?.internal_game_id) return String(row.internal_game_id);
+  if (!registry.available) return "";
+  try {
+    return await resolveInternalGameId(db, [
+      ...createScheduleGameIdentifiers({
+        gameId: row?.game_id,
+        gameCode: row?.game_code,
+        sourceGameKey: row?.source_game_key
+      }),
+      ...createScheduleGameIdentifiers({ gameId: requestedGameId })
+    ]) || "";
+  } catch (error) {
+    console.warn(`[GAME_IDENTITY_REGISTRY] status=api_resolution_unavailable gameId=${String(row?.game_id || requestedGameId || "")} code=${error?.code || "INTERNAL_GAME_ID_RESOLUTION_FAILED"}`);
+    return "";
+  }
 }
 
 function getPredictionGameExpectedStartAt(parsed) {

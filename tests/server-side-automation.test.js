@@ -16,7 +16,10 @@ test("scheduled entry point is the server-side automation trigger", () => {
   assert.match(worker, /async scheduled\(event, env, ctx\)/);
   assert.match(worker, /ctx\.waitUntil\(runScheduledGameAutomation\(env, scheduledAt\)\)/);
   assert.match(worker, /await syncTodayFightersSchedule\(env, now\)/);
-  assert.match(worker, /await runGameWorkflows\(env, now\)/);
+  assert.match(worker, /const timelines = await getCronPregameTimelines\(env\.AUTH_DB, now, syncedGames\)/);
+  assert.match(worker, /const detected = await loadDetectedScheduleGames\(db, dates\)/);
+  assert.match(worker, /setDetectedScheduleGames\(detected\)/);
+  assert.match(worker, /await runGameWorkflows\(env, now, scheduleSync\.games\)/);
   assert.match(config, /"crons": \["\* \* \* \* \*"\]/);
 });
 
@@ -84,4 +87,12 @@ test("manual admin endpoints remain fallbacks while scoring and publication reus
   assert.match(worker, /publishScoredGameResults\(env, metadata\.gameId, new Date\(\)\)/);
   assert.match(worker, /scoreClaimedGameLineup\(env\.AUTH_DB, claimed, now\)/);
   assert.doesNotMatch(script, /runScheduledGameAutomation\(/);
+});
+
+test("Cronのタイムライン復元はページアクセスを必要とせず、最終取得・採点・公開へ接続する", () => {
+  const workflowBlock = worker.slice(worker.indexOf("async function runGameWorkflows"), worker.indexOf("function normalizeProbableStarterTeam"));
+  assert.match(workflowBlock, /await runDuePregameAutomationJobs\(env, now, activeTimelines\)/);
+  assert.match(workflowBlock, /await runDueAutoScoringJobs\(env, now, pausedGameIds\)/);
+  assert.match(workflowBlock, /await runDueGameDayPublicationJobs\(env, now, activeTimelines\)/);
+  assert.doesNotMatch(script, /runDuePregameAutomationJobs|runDueAutoScoringJobs|runDueGameDayPublicationJobs/);
 });

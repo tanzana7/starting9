@@ -10,11 +10,11 @@ const authWorkerUrl = pathToFileURL(path.join(root, "auth-worker.js")).href;
 test("Cronは日程同期後に明示的な試合workflow runnerへ委譲する", () => {
   const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
   assert.match(worker, /const GAME_WORKFLOW_STEPS = Object\.freeze/);
-  assert.match(worker, /const workflowResult = await runGameWorkflows\(env, now\)/);
+  assert.match(worker, /const workflowResult = await runGameWorkflows\(env, now, scheduleSync\.games\)/);
   assert.match(worker, /summarizeGameAutomationRun/);
   assert.match(worker, /\[GAME_AUTOMATION\]/);
   assert.match(worker, /getScheduledGames\(\)/);
-  assert.match(worker, /async function runGameWorkflows\(env, now\)/);
+  assert.match(worker, /async function runGameWorkflows\(env, now, syncedGames = \[\]\)/);
   assert.match(worker, /function runGameWorkflow\(timeline, now, paused = false\)/);
   assert.match(worker, /id: "notice", offsetMinutes: -120/);
   assert.match(worker, /id: "close_predictions", offsetMinutes: -60/);

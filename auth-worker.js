@@ -326,7 +326,7 @@ export async function runScheduledGameAutomation(env, now) {
     console.warn(`[GAME_WORKFLOW] step=target action=evaluated status=failed code=${error?.code || "PREDICTION_TARGET_FAILED"}`);
     await recordCronStepFailure(env.AUTH_DB, "prediction_target", now, error);
   }
-  const workflowResult = await runGameWorkflows(env, now);
+  const workflowResult = await runGameWorkflows(env, now, scheduleSync.games);
   const summary = summarizeGameAutomationRun({
     date: getJstDateString(now),
     scheduleSync: scheduleSync.status,
@@ -424,8 +424,8 @@ async function recordCronStepFailure(db, processName, now, error) {
   }
 }
 
-async function runGameWorkflows(env, now) {
-  const timelines = getPregameTimelines();
+async function runGameWorkflows(env, now, syncedGames = []) {
+  const timelines = await getCronPregameTimelines(env.AUTH_DB, now, syncedGames);
   const pausedGameIds = await getPausedWorkflowGameIds(env.AUTH_DB);
   const activeTimelines = timelines.filter((timeline) => !pausedGameIds.has(timeline.gameId));
   const cancelledTimelines = getScheduledGames()
@@ -448,6 +448,20 @@ async function runGameWorkflows(env, now) {
   catch (error) { shared.errors += 1; await recordCronStepFailure(env.AUTH_DB, "publication", now, error); console.error(`game-day publication cron failed: code=${error?.code || "unknown"}`); }
   const workflows = [...timelines, ...cancelledTimelines].map((timeline) => runGameWorkflow(timeline, now, pausedGameIds.has(timeline.gameId)));
   return { shared, workflows };
+}
+
+// Cron実行はブラウザの状態に依存せず、毎回D1の日程をタイムラインへ復元します。
+// 同一Workerインスタンスが再利用されても、前回の検出日程を誤って引き継ぎません。
+async function getCronPregameTimelines(db, now, fallbackGames = []) {
+  try {
+    const dates = getAutomationScheduleDates(now);
+    const detected = await loadDetectedScheduleGames(db, dates);
+    setDetectedScheduleGames(detected);
+  } catch (error) {
+    setDetectedScheduleGames(Array.isArray(fallbackGames) ? fallbackGames : []);
+    console.warn(`[GAME_WORKFLOW] action=load_schedule status=failed code=${error?.code || "SCHEDULE_STATE_READ_FAILED"}`);
+  }
+  return getPregameTimelines();
 }
 
 function normalizeProbableStarterTeam(value) {

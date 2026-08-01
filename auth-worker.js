@@ -1,4 +1,4 @@
-import { getPredictionDeadlineStatus } from "./prediction-deadline.js";
+import { getPredictionDeadlineStatus, PREDICTION_DEADLINE_MILLISECONDS } from "./prediction-deadline.js";
 import {
   getDueFinalLineupAttemptAt,
   getFinalLineupRetryDeadline,
@@ -9,6 +9,7 @@ import {
   getPregameTimeline,
   getPregameTimelines,
   getRosterFetchDecision,
+  getScheduledGame,
   getScheduledGames,
   isFinalLineupRetryExpired,
   isScheduleGameUnavailable,
@@ -43,6 +44,20 @@ const PREDICTION_SCHEMA_VERSION = 1;
 const PREDICTION_MAX_JSON_BYTES = 16 * 1024;
 const PREDICTION_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
 const PREDICTION_TEAM_CODES = new Set(["f", "b", "h", "l", "e", "m", "g", "t", "db", "c", "d", "s"]);
+const PREDICTION_TEAM_SLUG_CODES = Object.freeze({
+  fighters: "f",
+  buffaloes: "b",
+  hawks: "h",
+  lions: "l",
+  eagles: "e",
+  marines: "m",
+  giants: "g",
+  tigers: "t",
+  baystars: "db",
+  carp: "c",
+  dragons: "d",
+  swallows: "s"
+});
 const SCORING_LINEUP_SIZE = 9;
 const SCORING_MAX_SCORE = 100;
 const AUTO_SCORING_DEFAULT_DELAY_SECONDS = 300;
@@ -4388,7 +4403,7 @@ async function handleGetResultGames(request, env, cors) {
 async function handleGetResultGame(request, env, cors, gameId) {
   const access = await requireAuthenticatedUser(request, env, cors);
   if (!access.ok) return access.response;
-  const metadata = parsePredictionGameId(gameId);
+  const metadata = await resolvePredictionGameMetadata(env.AUTH_DB, gameId);
   if (!metadata) return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
   if (await isTestRankingGame(env.AUTH_DB, metadata.gameId)) {
     return jsonResponse({ ok: false, error: "テスト試合の結果は通常画面で表示できません。" }, 404, cors);
@@ -6807,7 +6822,10 @@ async function handleGetCurrentPrediction(request, env, cors) {
     return jsonResponse({ ok: false, error: "予想を確認するにはログインしてください。" }, 401, cors);
   }
 
-  const metadata = parsePredictionGameId(new URL(request.url).searchParams.get("gameId"));
+  const metadata = await resolvePredictionGameMetadata(
+    env.AUTH_DB,
+    new URL(request.url).searchParams.get("gameId")
+  );
   if (!metadata) {
     return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
   }
@@ -6878,12 +6896,12 @@ async function handlePutCurrentPrediction(request, env, cors) {
   }
 
   const input = await readJson(request);
-  const metadata = parsePredictionGameId(input?.gameId);
+  const metadata = await resolvePredictionGameMetadata(env.AUTH_DB, input?.gameId);
   if (!metadata) {
     return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
   }
 
-  const deadlineResponse = createPredictionDeadlineRejection(metadata.gameId, cors);
+  const deadlineResponse = createPredictionDeadlineRejection(metadata, cors);
   if (deadlineResponse) {
     return deadlineResponse;
   }
@@ -6969,12 +6987,15 @@ async function handleDeleteCurrentPrediction(request, env, cors) {
     return jsonResponse({ ok: false, error: "予想を削除するにはログインしてください。" }, 401, cors);
   }
 
-  const metadata = parsePredictionGameId(new URL(request.url).searchParams.get("gameId"));
+  const metadata = await resolvePredictionGameMetadata(
+    env.AUTH_DB,
+    new URL(request.url).searchParams.get("gameId")
+  );
   if (!metadata) {
     return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
   }
 
-  const deadlineResponse = createPredictionDeadlineRejection(metadata.gameId, cors);
+  const deadlineResponse = createPredictionDeadlineRejection(metadata, cors);
   if (deadlineResponse) {
     return deadlineResponse;
   }
@@ -7078,16 +7099,19 @@ function createPlayerId(teamCode, uniformNumber) {
   return `${teamId}-${uniformNumber}`;
 }
 
-function parsePredictionGameId(value) {
+export function parsePredictionGameId(value) {
   const gameId = String(value || "").trim();
-  const match = /^(\d{4}-\d{2}-\d{2})-([a-z]{1,2})-([a-z]{1,2})-(\d+)$/i.exec(gameId);
+  const compactMatch = /^(\d{4}-\d{2}-\d{2})-([a-z]{1,2})-([a-z]{1,2})-(\d+)$/i.exec(gameId);
+  const teamSlugs = Object.keys(PREDICTION_TEAM_SLUG_CODES).join("|");
+  const descriptiveMatch = new RegExp(`^(\\d{4}-\\d{2}-\\d{2})-(${teamSlugs})-(${teamSlugs})-(\\d{3,4})$`, "i").exec(gameId);
+  const match = compactMatch || descriptiveMatch;
   if (!match) {
     return null;
   }
 
   const date = match[1];
-  const homeCode = match[2].toLowerCase();
-  const awayCode = match[3].toLowerCase();
+  const homeCode = (PREDICTION_TEAM_SLUG_CODES[match[2].toLowerCase()] || match[2]).toLowerCase();
+  const awayCode = (PREDICTION_TEAM_SLUG_CODES[match[3].toLowerCase()] || match[3]).toLowerCase();
   const dateValue = new Date(`${date}T00:00:00Z`);
   if (Number.isNaN(dateValue.getTime()) || dateValue.toISOString().slice(0, 10) !== date || !PREDICTION_TEAM_CODES.has(homeCode) || !PREDICTION_TEAM_CODES.has(awayCode)) {
     return null;
@@ -7103,12 +7127,168 @@ function parsePredictionGameId(value) {
     homeCode,
     awayCode,
     opponentCode: isHome ? awayCode : homeCode,
-    isHome
+    isHome,
+    gameCode: compactMatch ? `${homeCode}-${awayCode}-${match[4]}` : "",
+    format: descriptiveMatch ? "descriptive" : "compact"
   };
 }
 
-function createPredictionDeadlineRejection(gameId, cors) {
-  const deadline = getPredictionDeadlineStatus(gameId, new Date());
+function predictionTeamCodeFromStoredName(value) {
+  const name = String(value || "").trim().toLowerCase();
+  return PREDICTION_TEAM_SLUG_CODES[name] || "";
+}
+
+export async function resolvePredictionGameMetadata(db, value) {
+  const parsed = parsePredictionGameId(value);
+  if (!parsed) return null;
+
+  let row = null;
+  let scheduleTableAvailable = true;
+  try {
+    row = await db.prepare(
+      `SELECT game_id, game_date, start_at, home_team, away_team, game_code, game_status
+         FROM detected_game_schedule
+        WHERE game_id = ?1 OR (?2 <> '' AND game_code = ?2 AND game_date = ?3)
+        ORDER BY CASE WHEN game_id = ?1 THEN 0 ELSE 1 END, updated_at DESC
+        LIMIT 1`
+    ).bind(parsed.gameId, parsed.gameCode || "", parsed.date).first();
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+    scheduleTableAvailable = false;
+  }
+
+  if (!row && scheduleTableAvailable) {
+    const expectedStartAt = getPredictionGameExpectedStartAt(parsed);
+    if (expectedStartAt) {
+      const candidates = await db.prepare(
+        `SELECT game_id, game_date, start_at, home_team, away_team, game_code, game_status
+           FROM detected_game_schedule
+          WHERE game_date = ?1
+          ORDER BY updated_at DESC`
+      ).bind(parsed.date).all();
+      row = selectPredictionGameIdentityRow(candidates.results || [], parsed, expectedStartAt);
+    }
+  }
+
+  if (row) {
+    const homeCode = predictionTeamCodeFromStoredName(row.home_team) || parsed.homeCode;
+    const awayCode = predictionTeamCodeFromStoredName(row.away_team) || parsed.awayCode;
+    if (!PREDICTION_TEAM_CODES.has(homeCode) || !PREDICTION_TEAM_CODES.has(awayCode) || (homeCode !== "f" && awayCode !== "f")) {
+      return null;
+    }
+    return {
+      ...parsed,
+      gameId: String(row.game_id),
+      date: row.game_date || parsed.date,
+      homeCode,
+      awayCode,
+      opponentCode: homeCode === "f" ? awayCode : homeCode,
+      isHome: homeCode === "f",
+      startAt: row.start_at || "",
+      gameCode: normalizeNpbGameCode(row.game_code) || parsePredictionGameId(row.game_id)?.gameCode || parsed.gameCode,
+      game: { ...row, status: row.game_status }
+    };
+  }
+
+  // 日程同期前にprediction-targetが静的日程を返しても、既知の試合だけは保存対象として解決します。
+  const scheduled = findKnownPredictionSchedule(parsed);
+  if (!scheduled) return null;
+  const startAt = parseJstScheduleStart(scheduled);
+  if (!startAt || Number.isNaN(startAt.getTime())) return null;
+  return {
+    ...parsed,
+    gameId: scheduled.gameId,
+    startAt: startAt.toISOString(),
+    gameCode: parsePredictionGameId(scheduled.gameId)?.gameCode || parsed.gameCode,
+    game: scheduled
+  };
+}
+
+function getPredictionGameExpectedStartAt(parsed) {
+  const scheduled = getScheduledGame(parsed.gameId);
+  const scheduledStartAt = scheduled ? parseJstScheduleStart(scheduled) : null;
+  if (scheduledStartAt && !Number.isNaN(scheduledStartAt.getTime())) {
+    return scheduledStartAt;
+  }
+  if (parsed.format !== "descriptive") return null;
+
+  const timeValue = /-(\d{3,4})$/.exec(parsed.gameId)?.[1] || "";
+  const paddedTime = timeValue.padStart(4, "0");
+  const hours = Number(paddedTime.slice(0, 2));
+  const minutes = Number(paddedTime.slice(2));
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes) || hours > 23 || minutes > 59) {
+    return null;
+  }
+  const startAt = new Date(`${parsed.date}T${paddedTime.slice(0, 2)}:${paddedTime.slice(2)}:00+09:00`);
+  return Number.isNaN(startAt.getTime()) ? null : startAt;
+}
+
+function selectPredictionGameIdentityRow(rows, parsed, expectedStartAt) {
+  const expectedTime = expectedStartAt.getTime();
+  const matches = (Array.isArray(rows) ? rows : []).filter((candidate) => {
+    const homeCode = predictionTeamCodeFromStoredName(candidate?.home_team);
+    const awayCode = predictionTeamCodeFromStoredName(candidate?.away_team);
+    const startAt = new Date(candidate?.start_at || "");
+    return homeCode === parsed.homeCode
+      && awayCode === parsed.awayCode
+      && !Number.isNaN(startAt.getTime())
+      && startAt.getTime() === expectedTime;
+  });
+  return matches.reduce((selected, candidate) => (
+    !selected || shouldPreferDetectedScheduleRow(candidate, selected) ? candidate : selected
+  ), null);
+}
+
+function findKnownPredictionSchedule(parsed) {
+  const direct = getScheduledGame(parsed.gameId);
+  if (direct) return direct;
+
+  const expectedStartAt = getPredictionGameExpectedStartAt(parsed);
+  if (!expectedStartAt) return null;
+  const expectedTime = expectedStartAt.getTime();
+  return getScheduledGames().find((candidate) => {
+    const homeCode = predictionTeamCodeFromStoredName(candidate?.homeTeam);
+    const awayCode = predictionTeamCodeFromStoredName(candidate?.awayTeam);
+    const startAt = parseJstScheduleStart(candidate);
+    return String(candidate?.date || "") === parsed.date
+      && homeCode === parsed.homeCode
+      && awayCode === parsed.awayCode
+      && startAt
+      && !Number.isNaN(startAt.getTime())
+      && startAt.getTime() === expectedTime;
+  }) || null;
+}
+
+export function getResolvedPredictionDeadlineStatus(resolved, now = new Date()) {
+  const gameId = resolved?.gameId || "";
+  const game = resolved?.game;
+  if (isScheduleGameUnavailable(game)) {
+    return { ok: false, code: "GAME_NOT_AVAILABLE", message: "この試合は予想を受け付けていません。" };
+  }
+  const startAt = resolved?.startAt ? new Date(resolved.startAt) : null;
+  if (startAt && !Number.isNaN(startAt.getTime())) {
+    const currentTime = now instanceof Date ? now : new Date(now);
+    if (Number.isNaN(currentTime.getTime())) {
+      return { ok: false, code: "PREDICTION_SCHEDULE_UNAVAILABLE", message: "現在時刻を確認できないため、予想は保存できません。" };
+    }
+    const deadlineAt = new Date(startAt.getTime() - PREDICTION_DEADLINE_MILLISECONDS);
+    const isClosed = currentTime.getTime() >= deadlineAt.getTime();
+    return {
+      ok: true,
+      game,
+      gameId,
+      startAt: startAt.toISOString(),
+      deadlineAt: deadlineAt.toISOString(),
+      isClosed,
+      code: isClosed ? "PREDICTION_DEADLINE_PASSED" : "PREDICTION_DEADLINE_OPEN",
+      message: isClosed ? "この試合の予想受付は終了しました。" : "予想を受け付けています。"
+    };
+  }
+  return getPredictionDeadlineStatus(gameId, now);
+}
+
+function createPredictionDeadlineRejection(resolved, cors) {
+  const deadline = getResolvedPredictionDeadlineStatus(resolved, new Date());
   if (deadline.ok && !deadline.isClosed) {
     return null;
   }

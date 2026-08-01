@@ -307,6 +307,7 @@ const state = {
   predictionRemote: {
     isLoading: false,
     isSaving: false,
+    isSubmitting: false,
     isDeleting: false,
     status: "idle",
     message: "",
@@ -2966,7 +2967,7 @@ function getNpbScoreRequestIdentity(value) {
 
 async function initializeProbableStarter() {
   const schedule = await getLoadedGameSchedule();
-  const previousGameId = state.probableStarter.nextGame?.gameId || state.predictionTargetGameId || state.prediction?.gameId || "";
+  const previousGameId = state.probableStarter.nextGame?.gameId || state.predictionTargetGameId || "";
   const nextGame = await resolvePredictionTargetGame(schedule, true);
   const preservedGame = nextGame || schedule.find((game) => game?.gameId === previousGameId) || state.probableStarter.nextGame || null;
   state.probableStarter.nextGame = preservedGame;
@@ -3279,7 +3280,7 @@ function startPredictionDeadlineTicker() {
 function getPredictionDeadlineGameId() {
   return state.isAdminMode
     ? state.nextScheduleId || state.probableStarter.nextGame?.gameId || state.prediction?.gameId || getCurrentGameId()
-    : state.predictionTargetGameId || state.probableStarter.nextGame?.gameId || state.prediction?.gameId || getCurrentGameId();
+    : state.predictionTargetGame?.gameId || state.predictionTargetGameId || state.probableStarter.nextGame?.gameId || "";
 }
 
 function parseJstScheduleDateTime(game) {
@@ -3449,7 +3450,7 @@ function renderPredictionDeadline() {
       container.textContent = deadline.message || "予想の受付状況を確認しています。";
     }
   }
-  if (saveButton) saveButton.disabled = Boolean(deadline.isClosed) || state.predictionRemote.isSaving;
+  if (saveButton) saveButton.disabled = Boolean(deadline.isClosed) || state.predictionRemote.isSaving || state.predictionRemote.isSubmitting;
   if (resetButton) resetButton.disabled = Boolean(deadline.isClosed) || state.predictionRemote.isDeleting;
 }
 
@@ -3500,7 +3501,7 @@ function renderPredictionDeadlinePanel(container, deadline, shouldShow) {
 function getCurrentGameId() {
   return state.isAdminMode
     ? state.result?.gameId || state.nextScheduleId || state.probableStarter.nextGame?.gameId || ""
-    : state.predictionTargetGameId || state.probableStarter.nextGame?.gameId || state.prediction?.gameId || "";
+    : state.predictionTargetGame?.gameId || state.predictionTargetGameId || state.probableStarter.nextGame?.gameId || "";
 }
 
 function getAdminScoringGameId() {
@@ -5464,7 +5465,7 @@ async function syncPredictionFromAccount({ force = false } = {}) {
     renderPredictionAccountStatus();
     return;
   }
-  if (remoteState.isLoading || (!force && remoteState.gameId === gameId)) {
+  if (remoteState.isLoading || remoteState.isSaving || remoteState.isSubmitting || (!force && remoteState.gameId === gameId)) {
     return;
   }
 
@@ -5539,6 +5540,7 @@ function createEmptyPredictionRemoteState() {
   return {
     isLoading: false,
     isSaving: false,
+    isSubmitting: false,
     isDeleting: false,
     status: "idle",
     message: "",
@@ -5761,9 +5763,10 @@ function updatePredictionSaveButton() {
   }
 
   const isSaving = state.predictionRemote.isSaving;
-  button.disabled = isSaving || isPredictionEditingLocked();
-  button.textContent = isSaving ? "保存中..." : "予想を保存する";
-  button.setAttribute("aria-busy", isSaving ? "true" : "false");
+  const isSubmitting = state.predictionRemote.isSubmitting;
+  button.disabled = isSaving || isSubmitting || isPredictionEditingLocked();
+  button.textContent = isSaving || isSubmitting ? "保存中..." : "予想を保存する";
+  button.setAttribute("aria-busy", isSaving || isSubmitting ? "true" : "false");
 }
 
 function startAutoFetch() {
@@ -6341,49 +6344,56 @@ function normalizePlayerKey(value) {
 
 async function handlePredictionSubmit(event) {
   event.preventDefault();
-  if (state.predictionRemote.isSaving) {
+  if (state.predictionRemote.isSaving || state.predictionRemote.isSubmitting) {
     return;
   }
   if (!ensurePredictionEditingAllowed()) {
     return;
   }
 
-  clearMessage("predictionError");
-  clearMessage("predictionSaveMessage");
-  clearMessage("predictionResetMessage");
-  clearMessage("resetMessage");
+  state.predictionRemote.isSubmitting = true;
+  updatePredictionSaveButton();
+  try {
+    clearMessage("predictionError");
+    clearMessage("predictionSaveMessage");
+    clearMessage("predictionResetMessage");
+    clearMessage("resetMessage");
 
-  const lineup = getLineupValues("prediction");
-  const validationError = validateLineup(lineup, "予想");
+    const lineup = getLineupValues("prediction");
+    const validationError = validateLineup(lineup, "予想");
 
-  if (validationError) {
-    showMessage("predictionError", validationError);
-    markDuplicateSlots("prediction", lineup);
-    return;
+    if (validationError) {
+      showMessage("predictionError", validationError);
+      markDuplicateSlots("prediction", lineup);
+      return;
+    }
+
+    state.prediction = {
+      gameId: getCurrentGameId(),
+      lineup,
+      savedAt: new Date().toISOString()
+    };
+
+    saveToStorage(STORAGE_KEYS.prediction, state.prediction);
+    state.result = null;
+    removeFromStorage(STORAGE_KEYS.result);
+    renderAll();
+    if (!getPredictionAccountUser()) {
+      showPredictionSaveMessage("この端末に予想を保存しました。");
+      return;
+    }
+
+    const savedToAccount = await savePredictionToAccount(state.prediction);
+    if (savedToAccount) {
+      showPredictionSaveMessage("予想を保存しました。");
+      return;
+    }
+
+    showMessage("predictionError", state.predictionRemote.message || "端末には保存しましたが、アカウントへの保存に失敗しました。");
+  } finally {
+    state.predictionRemote.isSubmitting = false;
+    updatePredictionSaveButton();
   }
-
-  state.prediction = {
-    gameId: getCurrentGameId(),
-    lineup,
-    savedAt: new Date().toISOString()
-  };
-
-  saveToStorage(STORAGE_KEYS.prediction, state.prediction);
-  state.result = null;
-  removeFromStorage(STORAGE_KEYS.result);
-  renderAll();
-  if (!getPredictionAccountUser()) {
-    showPredictionSaveMessage("この端末に予想を保存しました。");
-    return;
-  }
-
-  const savedToAccount = await savePredictionToAccount(state.prediction);
-  if (savedToAccount) {
-    showPredictionSaveMessage("予想を保存しました。");
-    return;
-  }
-
-  showMessage("predictionError", state.predictionRemote.message || "端末には保存しましたが、アカウントへの保存に失敗しました。");
 }
 
 function resetPredictionInput() {

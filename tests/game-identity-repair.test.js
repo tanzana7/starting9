@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { buildGameIdentityRepairPreview, isNonGameScope } from "../game-identity-repair.js";
+import { buildGameIdentityRepairPreview, hashGameIdentityRepairPlan, isNonGameScope } from "../game-identity-repair.js";
 
 const schedule = {
   game_id: "2026-08-01-fighters-marines-1400",
@@ -39,6 +39,44 @@ test("一意な日程と既存gamesの一致はSAFE_AUTO_LINKとして安定し�
     games: [game("11111111-1111-4111-8111-111111111111", { game_status: "cancelled" })]
   });
   assert.notEqual(first.safeAutoLinks[0].planHash, changed.safeAutoLinks[0].planHash);
+});
+
+test("修復plan hashはgeneratedAt、履歴フィールド、配列取得順に依存しない", async () => {
+  const material = {
+    classification: "SAFE_CREATE_INTERNAL_GAME",
+    scheduleGameId: schedule.game_id,
+    scheduleIdentity: { gameDate: schedule.game_date, startTime: schedule.start_at, homeTeam: schedule.home_team, awayTeam: schedule.away_team },
+    targetInternalGameId: "",
+    targetGameStatus: "scheduled",
+    createInternalGame: true,
+    legacyGameIds: ["2026-08-01-f-m-15", schedule.game_id],
+    identifiersToInsert: [
+      { provider: "npb", identifierType: "npb_game_code", identifierValue: "f-m-15" },
+      { provider: "starting9", identifierType: "legacy_descriptive_game_id", identifierValue: schedule.game_id }
+    ],
+    tableRowsToUpdate: [
+      { table: "ranking_games", legacyGameId: "2026-08-01-f-m-15", expectedCount: 1 },
+      { table: "predictions", legacyGameId: "2026-08-01-f-m-15", expectedCount: 2 }
+    ],
+    reasonCodes: ["UNIQUE_SCHEDULE_MATCH", "INTERNAL_GAME_CREATION_REQUIRED"],
+    stateConflict: false
+  };
+  const reordered = {
+    ...material,
+    generatedAt: "2026-08-02T01:00:00.000Z",
+    rollbackData: { failure: { stage: "history_complete", errorCode: "IGNORED" } },
+    legacyGameIds: [...material.legacyGameIds].reverse(),
+    identifiersToInsert: [...material.identifiersToInsert].reverse(),
+    tableRowsToUpdate: [...material.tableRowsToUpdate].reverse()
+  };
+  assert.equal(await hashGameIdentityRepairPlan(material), await hashGameIdentityRepairPlan(reordered));
+});
+
+test("dry-runのplan hashは生成日時が変わっても同じDB状態なら一致する", async () => {
+  const input = { scheduleRows: [schedule], games: [], tableRows: { predictions: [{ game_id: "2026-08-01-f-m-15", row_count: 1, unlinked_row_count: 1 }] } };
+  const first = await buildGameIdentityRepairPreview({ ...input, now: new Date("2026-08-02T00:00:00.000Z") });
+  const second = await buildGameIdentityRepairPreview({ ...input, now: new Date("2026-08-02T06:00:00.000Z") });
+  assert.equal(first.safeInternalGameCreations[0].planHash, second.safeInternalGameCreations[0].planHash);
 });
 
 test("一意な未登録日程だけをSAFE_CREATE_INTERNAL_GAMEに分類し、dry-runではUUIDを作らない", async () => {

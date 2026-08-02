@@ -54,7 +54,7 @@ function stableRepairToken(value) {
 }
 
 export async function hashGameIdentityRepairPlan(material) {
-  const bytes = new TextEncoder().encode(stableJson(material));
+  const bytes = new TextEncoder().encode(stableJson(normalizeGameIdentityRepairPlanMaterial(material)));
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
@@ -145,13 +145,18 @@ function collectReferenceRows(tableRows, gameId) {
   return updates;
 }
 
+function comparePlanTableRows(left, right) {
+  return text(left?.table).localeCompare(text(right?.table))
+    || text(left?.legacyGameId).localeCompare(text(right?.legacyGameId));
+}
+
 function uniqueTableUpdates(...groups) {
   const updates = new Map();
   for (const row of groups.flat()) {
     const key = `${row.table}\u0000${row.legacyGameId}`;
     if (!updates.has(key)) updates.set(key, row);
   }
-  return [...updates.values()];
+  return [...updates.values()].sort(comparePlanTableRows);
 }
 
 function identifierInternalGameIds(identifiers, identifierType, identifierValue) {
@@ -253,21 +258,63 @@ function classifyOrphan(reference) {
   return { classification: "OBSOLETE_ORPHAN", reasonCodes: ["INSUFFICIENT_METADATA"], riskLevel: "high", requiresConfirmation: true };
 }
 
+export function normalizeGameIdentityRepairPlanMaterial(material = {}) {
+  const identifiers = new Map();
+  for (const identifier of material.identifiersToInsert || []) {
+    const normalized = {
+      provider: text(identifier?.provider),
+      identifierType: text(identifier?.identifierType),
+      identifierValue: text(identifier?.identifierValue)
+    };
+    if (!normalized.provider || !normalized.identifierType || !normalized.identifierValue) continue;
+    identifiers.set(`${normalized.provider}\u0000${normalized.identifierType}\u0000${normalized.identifierValue}`, normalized);
+  }
+  const tableRows = new Map();
+  for (const row of material.tableRowsToUpdate || []) {
+    const normalized = {
+      table: text(row?.table),
+      legacyGameId: text(row?.legacyGameId),
+      expectedCount: Number(row?.expectedCount || 0)
+    };
+    if (!normalized.table || !normalized.legacyGameId) continue;
+    tableRows.set(`${normalized.table}\u0000${normalized.legacyGameId}`, normalized);
+  }
+  const identity = material.scheduleIdentity || {};
+  return {
+    classification: text(material.classification),
+    scheduleGameId: text(material.scheduleGameId),
+    scheduleIdentity: {
+      gameDate: text(identity.gameDate),
+      startTime: normalizedStart(identity.startTime),
+      homeTeam: normalizedTeam(identity.homeTeam),
+      awayTeam: normalizedTeam(identity.awayTeam)
+    },
+    targetInternalGameId: text(material.targetInternalGameId),
+    targetGameStatus: text(material.targetGameStatus),
+    createInternalGame: Boolean(material.createInternalGame),
+    legacyGameIds: [...new Set((material.legacyGameIds || []).map(text).filter(Boolean))].sort(),
+    identifiersToInsert: [...identifiers.values()].sort((left, right) => stableJson(left).localeCompare(stableJson(right))),
+    tableRowsToUpdate: [...tableRows.values()].sort(comparePlanTableRows),
+    reasonCodes: [...new Set((material.reasonCodes || []).map(text).filter(Boolean))].sort(),
+    stateConflict: Boolean(material.stateConflict)
+  };
+}
+
 function createPlanMaterial({ classification, scheduleRow, targetInternalGameId, targetGameStatus = "", createInternalGame, identifiersToInsert, tableRowsToUpdate, legacyGameIds = [], reasonCodes, stateConflict }) {
   const identity = getScheduleIdentity(scheduleRow || {});
-  return {
+  return normalizeGameIdentityRepairPlanMaterial({
     classification,
     scheduleGameId: text(scheduleRow?.game_id),
     scheduleIdentity: identity,
     targetInternalGameId: text(targetInternalGameId),
     targetGameStatus: text(targetGameStatus),
     createInternalGame: Boolean(createInternalGame),
-    legacyGameIds: [...new Set(legacyGameIds.map(text).filter(Boolean))].sort(),
-    identifiersToInsert: [...identifiersToInsert].sort((left, right) => stableJson(left).localeCompare(stableJson(right))),
-    tableRowsToUpdate: [...tableRowsToUpdate].sort((left, right) => left.table.localeCompare(right.table)),
-    reasonCodes: [...new Set(reasonCodes)].sort(),
+    legacyGameIds,
+    identifiersToInsert,
+    tableRowsToUpdate,
+    reasonCodes,
     stateConflict: Boolean(stateConflict)
-  };
+  });
 }
 
 export async function buildGameIdentityRepairPreview({ scheduleRows = [], games = [], identifiers = [], tableRows = {}, stateConflicts = [], now = new Date() } = {}) {

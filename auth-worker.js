@@ -31,6 +31,7 @@ import {
 } from "./game-identity-registry.js";
 import {
   buildGameIdentityRepairPreview,
+  hashGameIdentityRepairPlan,
   REPAIRABLE_TABLES
 } from "./game-identity-repair.js";
 import {
@@ -5254,6 +5255,22 @@ async function buildCurrentGameIdentityRepairPreview(db, options) {
   return { data, auditReport, preview };
 }
 
+function createDefaultGameIdentityRepairPreviewOptions(now = new Date()) {
+  const rangeStart = new Date(now.getTime() - ((GAME_IDENTITY_AUDIT_DEFAULT_RANGE_DAYS - 1) * 24 * 60 * 60 * 1000));
+  return {
+    ok: true,
+    gameId: "",
+    includeDetails: true,
+    limit: GAME_IDENTITY_AUDIT_MAX_LIMIT,
+    allPeriod: false,
+    gameDate: "",
+    dateFrom: getJstDateString(rangeStart),
+    dateTo: getJstDateString(now),
+    timestampFrom: rangeStart.toISOString(),
+    timestampTo: now.toISOString()
+  };
+}
+
 async function handleAdminGameIdentityRepairPreview(request, env, cors) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) return access.response;
@@ -5280,18 +5297,7 @@ function normalizeRepairRequest(input) {
 }
 
 async function loadSingleRepairPlan(db, repairId) {
-  const options = {
-    ok: true,
-    gameId: "",
-    includeDetails: true,
-    limit: GAME_IDENTITY_AUDIT_MAX_LIMIT,
-    allPeriod: true,
-    gameDate: "",
-    dateFrom: "",
-    dateTo: "",
-    timestampFrom: "",
-    timestampTo: ""
-  };
+  const options = createDefaultGameIdentityRepairPreviewOptions();
   const { preview } = await buildCurrentGameIdentityRepairPreview(db, options);
   return preview.repairPlans.find((plan) => plan.repairId === repairId) || null;
 }
@@ -5304,10 +5310,11 @@ async function getExistingRepairRecord(db, repairId) {
   ).bind(repairId).first();
 }
 
-function createGameIdentityRepairError(code, message, stage) {
+function createGameIdentityRepairError(code, message, stage, details = null) {
   const error = new Error(message);
   error.code = code;
   error.repairStage = stage;
+  if (details && typeof details === "object") Object.assign(error, details);
   return error;
 }
 
@@ -5357,6 +5364,33 @@ function createRepairFailureMetadata({ repairId, stage, errorCode, targetInterna
       occurredAt: now.toISOString()
     }
   };
+}
+
+function normalizePlanHash(value) {
+  const hash = String(value || "").trim();
+  return hash || null;
+}
+
+function createPlanHashMismatchError({ expectedPlanHash, currentPlanHash, storedPlanHash, mismatchReason, stage = "plan_read" }) {
+  return createGameIdentityRepairError(
+    "GAME_IDENTITY_REPAIR_PLAN_HASH_MISMATCH",
+    "修復計画が更新されています。再度dry-runを確認してください。",
+    stage,
+    {
+      repairHashComparison: {
+        expectedPlanHash: normalizePlanHash(expectedPlanHash),
+        currentPlanHash: normalizePlanHash(currentPlanHash),
+        storedPlanHash: normalizePlanHash(storedPlanHash),
+        mismatchReason
+      }
+    }
+  );
+}
+
+function repairHashComparisonResponse(error) {
+  return error?.repairHashComparison && typeof error.repairHashComparison === "object"
+    ? error.repairHashComparison
+    : {};
 }
 
 async function saveRepairPlanRecord(db, { plan, status, adminId, targetInternalGameId = null, rollbackData = null, errorCode = null, errorMessage = null, now = new Date() }) {
@@ -5477,7 +5511,7 @@ export async function applyGameIdentityRepairPlan(db, plan, adminId, { targetInt
   return { repairId: plan.repairId, status: "completed", targetInternalGameId, rollbackData };
 }
 
-async function collectGameIdentityRepairExecutionState(db, record) {
+export async function collectGameIdentityRepairExecutionState(db, record) {
   const plan = parseStoredRepairPlan(record);
   if (!plan) throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_RECORD_INVALID", "保存済みの修復計画を読み取れません。", "history_read");
   const targetInternalGameId = String(record?.target_internal_game_id || plan.targetInternalGameId || "");
@@ -5517,10 +5551,18 @@ async function collectGameIdentityRepairExecutionState(db, record) {
       unlinkedCount: Number(result?.unlinked_count || 0)
     });
   }
+  const rollbackData = parseRepairRollbackData(record);
+  const rollbackRecordedChanges = Boolean(
+    rollbackData.createdInternalGame === true || rollbackData.scheduleLinked === true
+    || (Array.isArray(rollbackData.addedIdentifiers) && rollbackData.addedIdentifiers.length)
+    || (Array.isArray(rollbackData.linkedRows) && rollbackData.linkedRows.some((row) => Number(row?.count || 0) > 0))
+  );
+  const hasTargetInternalGameId = Boolean(targetInternalGameId);
   const partialWriteDetected = Boolean(
-    targetGame || (schedule && String(schedule.internal_game_id || "") === targetInternalGameId)
+    targetGame || (hasTargetInternalGameId && schedule && String(schedule.internal_game_id || "") === targetInternalGameId)
     || identifiers.some((item) => item.state === "linked_to_target")
     || tableRows.some((item) => item.linkedToTargetCount > 0)
+    || rollbackRecordedChanges
   );
   return {
     repairId: record.repair_id,
@@ -5541,6 +5583,7 @@ async function collectGameIdentityRepairExecutionState(db, record) {
       scheduleInternalGameId: schedule?.internal_game_id || null,
       identifiers,
       tableRows,
+      rollbackRecordedChanges,
       partialWriteDetected
     }
   };
@@ -5586,11 +5629,37 @@ async function handleAdminGameIdentityRepairs(request, env, cors) {
         if (existing) {
           plan = parseStoredRepairPlan(existing);
           if (!plan) throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_RECORD_INVALID", "保存済みの修復計画を読み取れません。", "history_read");
-          if (String(input.expectedPlanHashes[repairId] || "") !== String(existing.plan_hash || "")) {
-            throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_PLAN_HASH_MISMATCH", "修復計画が更新されています。再度dry-runを確認してください。", "plan_read");
+          const expectedPlanHash = normalizePlanHash(input.expectedPlanHashes[repairId]);
+          const storedPlanHash = normalizePlanHash(existing.plan_hash);
+          if (expectedPlanHash !== storedPlanHash) {
+            throw createPlanHashMismatchError({
+              expectedPlanHash,
+              currentPlanHash: null,
+              storedPlanHash,
+              mismatchReason: "EXPECTED_HASH_DIFFERS_FROM_STORED_PLAN"
+            });
+          }
+          const state = await collectGameIdentityRepairExecutionState(env.AUTH_DB, existing);
+          const currentPlan = await loadSingleRepairPlan(env.AUTH_DB, repairId);
+          const currentPlanHash = normalizePlanHash(currentPlan?.planHash);
+          const canonicalStoredPlanHash = normalizePlanHash(await hashGameIdentityRepairPlan(plan));
+          if (!state.observed.partialWriteDetected && !currentPlanHash) {
+            throw createPlanHashMismatchError({
+              expectedPlanHash,
+              currentPlanHash,
+              storedPlanHash,
+              mismatchReason: "CURRENT_PLAN_NOT_FOUND"
+            });
+          }
+          if (!state.observed.partialWriteDetected && currentPlanHash !== canonicalStoredPlanHash) {
+            throw createPlanHashMismatchError({
+              expectedPlanHash,
+              currentPlanHash,
+              storedPlanHash,
+              mismatchReason: "STORED_PLAN_DIFFERS_FROM_CURRENT_PLAN"
+            });
           }
           if (existing.status === "executing") {
-            const state = await collectGameIdentityRepairExecutionState(env.AUTH_DB, existing);
             stage = "interrupted_execution";
             targetInternalGameId = String(existing.target_internal_game_id || "");
             await saveRepairPlanRecord(env.AUTH_DB, {
@@ -5605,7 +5674,11 @@ async function handleAdminGameIdentityRepairs(request, env, cors) {
             throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_INTERRUPTED", "前回の修復実行が中断されています。状態監査を確認してください。", stage);
           }
           if (existing.status === "failed") {
+            if (!state.observed.partialWriteDetected && currentPlan) plan = currentPlan;
             targetInternalGameId = String(existing.target_internal_game_id || plan.targetInternalGameId || "");
+            if (!targetInternalGameId && plan.createInternalGame && !state.observed.partialWriteDetected) {
+              targetInternalGameId = crypto.randomUUID();
+            }
             if (!targetInternalGameId) {
               throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_TARGET_MISSING", "再実行する内部試合IDを確認できません。状態監査を確認してください。", "history_read");
             }
@@ -5625,8 +5698,16 @@ async function handleAdminGameIdentityRepairs(request, env, cors) {
         }
         plan = await loadSingleRepairPlan(env.AUTH_DB, repairId);
         if (!plan) throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_PLAN_NOT_FOUND", "修復計画が見つかりません。", stage);
-        if (String(input.expectedPlanHashes[repairId] || "") !== plan.planHash) {
-          throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_PLAN_HASH_MISMATCH", "修復計画が更新されています。再度dry-runを確認してください。", stage);
+        const expectedPlanHash = normalizePlanHash(input.expectedPlanHashes[repairId]);
+        const currentPlanHash = normalizePlanHash(plan.planHash);
+        if (expectedPlanHash !== currentPlanHash) {
+          throw createPlanHashMismatchError({
+            expectedPlanHash,
+            currentPlanHash,
+            storedPlanHash: null,
+            mismatchReason: "EXPECTED_HASH_DIFFERS_FROM_CURRENT_PLAN",
+            stage
+          });
         }
         targetInternalGameId = plan.createInternalGame ? crypto.randomUUID() : plan.targetInternalGameId;
         if (!targetInternalGameId) throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_TARGET_MISSING", "修復先の内部試合IDを決定できません。", stage);
@@ -5638,6 +5719,7 @@ async function handleAdminGameIdentityRepairs(request, env, cors) {
       } catch (error) {
         const errorCode = error?.code || "GAME_IDENTITY_REPAIR_FAILED";
         const errorStage = error?.repairStage || stage;
+        const hashComparison = repairHashComparisonResponse(error);
         if (plan && errorCode !== "GAME_IDENTITY_REPAIR_ALREADY_EXECUTED" && errorCode !== "GAME_IDENTITY_REPAIR_INTERRUPTED") {
           try {
             await saveRepairPlanRecord(env.AUTH_DB, {
@@ -5654,7 +5736,7 @@ async function handleAdminGameIdentityRepairs(request, env, cors) {
           }
         }
         console.error("試合ID修復に失敗しました", { repairId, stage: errorStage, errorCode });
-        return jsonResponse({ ok: false, repairId, stage: errorStage, code: errorCode, error: "試合ID修復に失敗しました。状態監査を確認してください。" }, isGameIdentityRepairConflict(error) ? 409 : 500, cors);
+        return jsonResponse({ ok: false, repairId, stage: errorStage, code: errorCode, error: "試合ID修復に失敗しました。状態監査を確認してください。", ...hashComparison }, isGameIdentityRepairConflict(error) ? 409 : 500, cors);
       }
     }
     return jsonResponse({ ok: true, results }, 200, cors);

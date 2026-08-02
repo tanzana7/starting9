@@ -1486,6 +1486,112 @@ textarea:focus {
   background: #ffffff;
 }
 
+.admin-game-identity-repairs {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid #d7e2ed;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.admin-game-identity-repairs-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.admin-game-identity-repairs-heading h3,
+.admin-game-identity-repairs-heading p {
+  margin: 0;
+}
+
+.admin-game-identity-repairs-heading h3 {
+  color: var(--fighters-deep-blue);
+  font-size: 1rem;
+}
+
+.admin-game-identity-repairs-heading p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.admin-game-identity-repairs-list {
+  display: grid;
+  gap: 8px;
+}
+
+.game-identity-repair-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #d8e1ea;
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: #fbfdff;
+}
+
+.game-identity-repair-card.is-SAFE_CREATE_INTERNAL_GAME,
+.game-identity-repair-card.is-SAFE_AUTO_LINK { border-left-color: #4b9a68; }
+.game-identity-repair-card.is-MANUAL_REVIEW { border-left-color: #c48828; background: #fffdf7; }
+.game-identity-repair-card.is-OBSOLETE_ORPHAN { border-left-color: #7b9fbd; }
+
+.game-identity-repair-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  color: var(--fighters-deep-blue);
+}
+
+.game-identity-repair-card-heading code,
+.game-identity-repair-details dd,
+.game-identity-repair-result {
+  overflow-wrap: anywhere;
+}
+
+.game-identity-repair-details {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.game-identity-repair-details > div {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.game-identity-repair-details dt,
+.game-identity-repair-details dd {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.game-identity-repair-details dt {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.game-identity-repair-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.game-identity-repair-notice,
+.game-identity-repair-result {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
 .admin-workflow-logs-heading {
   display: flex;
   align-items: flex-start;
@@ -3145,6 +3251,20 @@ textarea:focus {
   .admin-workflow-logs-heading {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .admin-game-identity-repairs-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .game-identity-repair-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .game-identity-repair-actions button {
+    width: 100%;
   }
 
   .admin-workflow-log-filters {

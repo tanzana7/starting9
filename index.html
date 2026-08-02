@@ -287,6 +287,17 @@
                   <div id="adminWorkflowLogsList" class="admin-workflow-logs-list" aria-live="polite"></div>
                 </div>
               </section>
+              <section id="adminGameIdentityRepairsPanel" class="admin-game-identity-repairs hidden" aria-labelledby="adminGameIdentityRepairsTitle">
+                <div class="admin-game-identity-repairs-heading">
+                  <div>
+                    <h3 id="adminGameIdentityRepairsTitle">試合ID修復</h3>
+                    <p>dry-runで確認した安全な計画だけを、1件ずつ実行できます。</p>
+                  </div>
+                  <button id="refreshAdminGameIdentityRepairsButton" class="secondary-button compact-button" type="button">dry-runを更新</button>
+                </div>
+                <p id="adminGameIdentityRepairsMessage" class="message" role="status" aria-live="polite"></p>
+                <div id="adminGameIdentityRepairsList" class="admin-game-identity-repairs-list" aria-live="polite"></div>
+              </section>
               <div class="schedule-loader">
                 <p class="schedule-loader-title">登録済み試合スケジュール</p>
                 <div id="nextGameScheduleSummary" class="schedule-next-summary hidden" aria-live="polite"></div>

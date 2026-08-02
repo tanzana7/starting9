@@ -14,6 +14,18 @@ test("新規日程はinternal ID登録とidentifier登録を同じ同期経路�
   assert.match(worker, /UPDATE detected_game_schedule SET internal_game_id/);
 });
 
+test("スケジュール同期完了後にだけ試合前処理が始まる", () => {
+  const worker = read("auth-worker.js");
+  const scheduledStart = worker.indexOf("export async function runScheduledGameAutomation");
+  const workflowStart = worker.indexOf("async function runGameWorkflows", scheduledStart);
+  const syncCall = worker.indexOf("scheduleSync = await syncTodayFightersSchedule(env, now)", scheduledStart);
+  const workflowCall = worker.indexOf("await runGameWorkflows(env, now, scheduleSync.games)", scheduledStart);
+  assert.ok(scheduledStart >= 0);
+  assert.ok(workflowStart > syncCall);
+  assert.ok(workflowCall > syncCall);
+  assert.doesNotMatch(worker.slice(workflowStart, worker.indexOf("// Cron実行はブラウザ", workflowStart)), /Promise\.all/);
+});
+
 test("workflow job chainは各成功後に後続jobを生成し、reconciliationで欠落を補完する", () => {
   const worker = read("auth-worker.js");
   assert.match(worker, /provisional_lineup_fetch: "final_lineup_fetch"/);

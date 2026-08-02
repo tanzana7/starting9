@@ -31,6 +31,34 @@ test("stale lease、ID未割当、欠落job、legacy-only writeはblockerにな�
   ]);
 });
 
+test("legacy-only writeは新規INSERTだけをblockerにし、既存行のUPDATEはwarningへ分離する", async () => {
+  const { classifyLegacyOnlyWrite, deriveReleaseReadiness } = await import("../auth-worker.js");
+  const since = "2026-08-01T00:00:00.000Z";
+  assert.equal(classifyLegacyOnlyWrite({ createdAt: "2026-08-01T01:00:00.000Z", updatedAt: "2026-08-01T01:00:00.000Z", since }), "insert");
+  assert.equal(classifyLegacyOnlyWrite({ createdAt: "2026-07-20T01:00:00.000Z", updatedAt: "2026-08-01T01:00:00.000Z", since }), "update");
+  const result = deriveReleaseReadiness({ counts: { legacyOnlyUpdateCount: 7 } });
+  assert.equal(result.ready, true);
+  assert.deepEqual(result.blockers, []);
+  assert.deepEqual(result.warnings, ["HISTORICAL_LEGACY_ONLY_UPDATE"]);
+  const blocker = deriveReleaseReadiness({ counts: { newLegacyOnlyInsertCount: 1, legacyOnlyUpdateCount: 7 } });
+  assert.equal(blocker.ready, false);
+  assert.deepEqual(blocker.blockers, ["RECENT_LEGACY_ONLY_WRITE"]);
+  assert.deepEqual(blocker.warnings, ["HISTORICAL_LEGACY_ONLY_UPDATE"]);
+});
+
+test("日程の未接続は現在・未来だけがblockerで、過去分はwarningへ分離する", async () => {
+  const { classifyScheduleInternalGameScope, deriveReleaseReadiness } = await import("../auth-worker.js");
+  assert.equal(classifyScheduleInternalGameScope("2026-07-31", "2026-08-01"), "historical");
+  assert.equal(classifyScheduleInternalGameScope("2026-08-01", "2026-08-01"), "current_or_future");
+  const result = deriveReleaseReadiness({ counts: { historicalGamesWithoutInternalGameId: 1 } });
+  assert.equal(result.ready, true);
+  assert.deepEqual(result.warnings, ["HISTORICAL_GAME_WITHOUT_INTERNAL_ID"]);
+  const blocker = deriveReleaseReadiness({ counts: { gamesWithoutInternalGameId: 1, historicalGamesWithoutInternalGameId: 2 } });
+  assert.equal(blocker.ready, false);
+  assert.deepEqual(blocker.blockers, ["NEW_GAME_WITHOUT_INTERNAL_ID"]);
+  assert.deepEqual(blocker.warnings, ["HISTORICAL_GAME_WITHOUT_INTERNAL_ID"]);
+});
+
 test("readiness APIは管理者専用の読み取りAPIで、個人情報を返さない", () => {
   const worker = read("auth-worker.js");
   const html = read("index.html");

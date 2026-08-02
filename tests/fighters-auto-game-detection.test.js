@@ -42,3 +42,31 @@ test("Cronは公式日程をService Bindingで同期してから既存の試合�
   assert.match(npbWorker, /handleScheduleRequest/);
   assert.match(migration, /CREATE TABLE IF NOT EXISTS detected_game_schedule/);
 });
+
+test("日程同期はsource keyを試合日・対戦カード・開始時刻から生成する", () => {
+  const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+  assert.match(worker, /sourceGameKey: `\$\{date\}:\$\{game\.homeTeam\}:\$\{game\.awayTeam\}:\$\{game\.startTime\}`/);
+  assert.match(worker, /SET source_game_key = \?1/);
+});
+
+test("レジストリ解決に失敗した日程は後段のlegacy-only保存へ進めない", () => {
+  const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+  const resolverStart = worker.indexOf("async function resolveScheduleInternalGameId");
+  const resolverEnd = worker.indexOf("async function backfillUniqueDetectedScheduleInternalGames", resolverStart);
+  const resolver = worker.slice(resolverStart, resolverEnd);
+  assert.match(resolver, /INTERNAL_GAME_REGISTRY_NOT_READY/);
+  assert.match(resolver, /throw error;/);
+  assert.match(worker, /\["game_roster_snapshots", "game_pregame_automation"\]\.includes\(table\)/);
+  assert.match(worker, /INTERNAL_GAME_REGISTRY_NOT_READY/);
+});
+
+test("h-fのcompact日程はホークス対ファイターズのschedule identityへ解決できる", async () => {
+  const { normalizeFightersScheduleGames } = await import(moduleUrl);
+  const [game] = normalizeFightersScheduleGames([
+    { homeTeam: "福岡ソフトバンクホークス", awayTeam: "北海道日本ハムファイターズ", startTime: "18:00", gameCode: "h-f-15" }
+  ], "2026-08-04");
+  assert.deepEqual(
+    { gameId: game.gameId, homeTeam: game.homeTeam, awayTeam: game.awayTeam, startTime: game.startTime },
+    { gameId: "2026-08-04-h-f-15", homeTeam: "hawks", awayTeam: "fighters", startTime: "18:00" }
+  );
+});

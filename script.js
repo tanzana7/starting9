@@ -4727,7 +4727,7 @@ function renderGameIdentityRepairCard(plan) {
   const resultMessage = action.message || "";
   const target = plan.createInternalGame
     ? "新しい内部試合IDを作成"
-    : (plan.targetInternalGameId || "修復先IDなし");
+    : (plan.targetInternalGameId ? `既存の内部試合IDへ紐づけ: ${plan.targetInternalGameId}` : "修復先IDなし");
   const rollbackAllowed = action.auditStatus === "completed" && action.rollbackAvailable === true;
   const executionBlock = getGameIdentityRepairExecutionBlock(plan, action);
   const actionDisabled = isBusy || Boolean(executionBlock);

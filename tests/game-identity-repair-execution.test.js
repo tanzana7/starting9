@@ -32,6 +32,10 @@ function createDb({ failAt = "", predictionCount = 1 } = {}) {
     games: new Map(),
     identifiers: new Map(),
     predictionInternalGameId: "",
+    legacyRows: {
+      game_pregame_automation: null,
+      game_roster_snapshots: null
+    },
     history: []
   };
   const keyForIdentifier = (provider, type, value) => `${provider}|${type}|${value}`;
@@ -86,6 +90,16 @@ function createDb({ failAt = "", predictionCount = 1 } = {}) {
             if (!state.predictionInternalGameId && predictionCount > 0) state.predictionInternalGameId = bindings[0];
             return { meta: { changes: predictionCount } };
           }
+          for (const table of ["game_pregame_automation", "game_roster_snapshots"]) {
+            if (sql.includes(`UPDATE ${table}`)) {
+              const row = state.legacyRows[table];
+              if (row && row.game_id === bindings[1] && !row.internal_game_id) {
+                row.internal_game_id = bindings[0];
+                return { meta: { changes: 1 } };
+              }
+              return { meta: { changes: 0 } };
+            }
+          }
           if (sql.includes("INSERT INTO game_identity_repair_plans")) {
             if (control.failAt === "history_complete") throw new Error("history write failed");
             state.history.push({ status: bindings[1], targetInternalGameId: bindings[3] });
@@ -133,6 +147,53 @@ test("expectedCountが0の関連テーブル更新は正常完了する", async 
   const result = await apply(db, { tableRowsToUpdate: [{ table: "predictions", legacyGameId: "2026-08-01-f-m-15", expectedCount: 0 }] });
   assert.equal(result.status, "completed");
   assert.equal(state.history.at(-1).status, "completed");
+});
+
+test("既存UUIDへの8月4日row-only修復はpregameとrosterのinternal_game_idだけを更新する", async () => {
+  const { db, state } = createDb();
+  const compactGameId = "2026-08-04-h-f-15";
+  const scheduleGameId = "2026-08-04-hawks-fighters-1500";
+  state.schedule = {
+    game_id: scheduleGameId,
+    internal_game_id: targetInternalGameId,
+    game_date: "2026-08-04",
+    start_at: "2026-08-04T06:00:00.000Z",
+    home_team: "hawks",
+    away_team: "fighters",
+    game_code: "h-f-15",
+    game_status: "scheduled"
+  };
+  state.games.set(targetInternalGameId, {
+    internal_game_id: targetInternalGameId,
+    game_date: "2026-08-04",
+    start_time: "2026-08-04T06:00:00.000Z",
+    home_team: "hawks",
+    away_team: "fighters"
+  });
+  state.legacyRows.game_pregame_automation = { game_id: compactGameId, internal_game_id: "", status: "pending" };
+  state.legacyRows.game_roster_snapshots = { game_id: compactGameId, internal_game_id: "", roster_json: "preserved" };
+  const rowOnlyPlan = {
+    ...plan,
+    classification: "SAFE_AUTO_LINK",
+    scheduleGameId,
+    targetInternalGameId,
+    createInternalGame: false,
+    identifiersToInsert: [],
+    tableRowsToUpdate: [
+      { table: "game_pregame_automation", legacyGameId: compactGameId, expectedCount: 1 },
+      { table: "game_roster_snapshots", legacyGameId: compactGameId, expectedCount: 1 }
+    ]
+  };
+  const result = await applyGameIdentityRepairPlan(db, rowOnlyPlan, "admin-1", { targetInternalGameId, now });
+  assert.equal(result.status, "completed");
+  assert.equal(state.legacyRows.game_pregame_automation.internal_game_id, targetInternalGameId);
+  assert.equal(state.legacyRows.game_roster_snapshots.internal_game_id, targetInternalGameId);
+  assert.equal(state.legacyRows.game_pregame_automation.game_id, compactGameId);
+  assert.equal(state.legacyRows.game_pregame_automation.status, "pending");
+  assert.equal(state.legacyRows.game_roster_snapshots.game_id, compactGameId);
+  assert.equal(state.legacyRows.game_roster_snapshots.roster_json, "preserved");
+  assert.equal(state.games.size, 1);
+  assert.equal(state.identifiers.size, 0);
 });
 
 async function audit(db, overrides = {}) {

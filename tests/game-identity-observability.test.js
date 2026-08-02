@@ -127,7 +127,7 @@ test("game identity audit route is admin-only and contains no mutation SQL", asy
   const source = await readFile(new URL("../auth-worker.js", import.meta.url), "utf8");
   assert.match(source, /path === "\/api\/admin\/audit\/game-identities" && request\.method === "GET"/);
   const start = source.indexOf("async function handleAdminGameIdentityAudit");
-  const end = source.indexOf("export function selectNextPredictionTarget", start);
+  const end = source.indexOf("function parseGameIdentityRepairRollbackRoute", start);
   const auditSource = source.slice(start, end);
   assert.match(auditSource, /requireAdminUser\(request, env, cors\)/);
   assert.doesNotMatch(auditSource, /\b(?:INSERT|UPDATE|DELETE|ALTER|CREATE|DROP)\b/i);

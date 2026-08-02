@@ -390,7 +390,10 @@ const state = {
     requestId: 0,
     preview: null,
     message: "",
-    actions: {}
+    actions: {},
+    activeRepairId: "",
+    blockedRepairId: "",
+    lastExecution: null
   },
   gameDayNotice: {
     isLoading: false,
@@ -673,7 +676,7 @@ function clearAdminAccess() {
   stopGameProgressStatusRefresh();
   state.gameProgressStatus = { isLoading: false, requestId: state.gameProgressStatus.requestId + 1, record: null, message: "" };
   state.workflowLogs = { isLoading: false, requestId: state.workflowLogs.requestId + 1, logs: [], message: "" };
-  state.gameIdentityRepairs = { isLoading: false, requestId: state.gameIdentityRepairs.requestId + 1, preview: null, message: "", actions: {} };
+  state.gameIdentityRepairs = { isLoading: false, requestId: state.gameIdentityRepairs.requestId + 1, preview: null, message: "", actions: {}, activeRepairId: "", blockedRepairId: "", lastExecution: null };
   state.appMode = "normal";
   state.isAdminMode = false;
   applyAdminMode();
@@ -4567,7 +4570,18 @@ async function refreshAdminWorkflowLogs({ force = false } = {}) {
 }
 
 function getGameIdentityRepairPlans(preview = state.gameIdentityRepairs.preview) {
-  return Array.isArray(preview?.repairPlans) ? preview.repairPlans : [];
+  const plans = Array.isArray(preview?.repairPlans) ? preview.repairPlans.slice() : [];
+  return plans.sort((left, right) => {
+    const leftSafety = isSafeGameIdentityRepairPlan(left) ? 0 : 1;
+    const rightSafety = isSafeGameIdentityRepairPlan(right) ? 0 : 1;
+    if (leftSafety !== rightSafety) return leftSafety - rightSafety;
+    const rowCount = (plan) => (plan.tableRowsToUpdate || []).reduce((total, row) => total + Number(row.expectedCount || 0), 0);
+    const rowDifference = rowCount(left) - rowCount(right);
+    if (rowDifference) return rowDifference;
+    const leftDate = String(left.scheduleIdentity?.gameDate || left.scheduleGameId || "");
+    const rightDate = String(right.scheduleIdentity?.gameDate || right.scheduleGameId || "");
+    return leftDate.localeCompare(rightDate) || String(left.repairId || "").localeCompare(String(right.repairId || ""));
+  });
 }
 
 function isSafeGameIdentityRepairPlan(plan) {
@@ -4580,6 +4594,39 @@ function getGameIdentityRepairAction(repairId) {
 
 function setGameIdentityRepairAction(repairId, update) {
   state.gameIdentityRepairs.actions[repairId] = { ...getGameIdentityRepairAction(repairId), ...update };
+}
+
+function getGameIdentityRepairExecutionBlock(plan, action = getGameIdentityRepairAction(plan?.repairId)) {
+  const repairs = state.gameIdentityRepairs;
+  if (repairs.preview?.classificationIntegrity?.valid === false) return "修復候補の分類整合性に問題があるため、自動実行できません。";
+  if (repairs.activeRepairId && repairs.activeRepairId !== plan.repairId) return "別の修復を実行中です。";
+  if (repairs.blockedRepairId && repairs.blockedRepairId !== plan.repairId) return "前の修復を確認または再実行するまで、次の修復は実行できません。";
+  if (action.requiresManualReview) return "部分書き込みを検出したため、自動再実行できません。";
+  return "";
+}
+
+function createGameIdentityRepairRequestError(response, payload) {
+  const error = new Error(payload?.error || payload?.code || `HTTP ${response.status}`);
+  error.code = payload?.code || "GAME_IDENTITY_REPAIR_REQUEST_FAILED";
+  error.httpStatus = response.status;
+  error.processingStage = payload?.stage || "";
+  error.expectedPlanHash = payload?.expectedPlanHash || "";
+  error.currentPlanHash = payload?.currentPlanHash || "";
+  error.storedPlanHash = payload?.storedPlanHash || "";
+  error.mismatchReason = payload?.mismatchReason || "";
+  return error;
+}
+
+function getGameIdentityRepairActionErrorDetails(action) {
+  return [
+    action.httpStatus ? `HTTP ${action.httpStatus}` : "",
+    action.errorCode || "",
+    action.processingStage ? `stage: ${action.processingStage}` : "",
+    action.mismatchReason ? `reason: ${action.mismatchReason}` : "",
+    action.expectedPlanHash ? `expected: ${action.expectedPlanHash}` : "",
+    action.currentPlanHash ? `current: ${action.currentPlanHash}` : "",
+    action.storedPlanHash ? `stored: ${action.storedPlanHash}` : ""
+  ].filter(Boolean);
 }
 
 function formatGameIdentityRepairTableRows(rows) {
@@ -4599,6 +4646,10 @@ function renderGameIdentityRepairCard(plan) {
     ? "新しい内部試合IDを作成"
     : (plan.targetInternalGameId || "修復先IDなし");
   const rollbackAllowed = action.auditStatus === "completed" && action.rollbackAvailable === true;
+  const executionBlock = getGameIdentityRepairExecutionBlock(plan, action);
+  const actionDisabled = isBusy || Boolean(executionBlock);
+  const actionLabel = isBusy ? "処理中..." : action.auditStatus === "failed" ? "この1件を再実行" : "この1件を修復";
+  const errorDetails = getGameIdentityRepairActionErrorDetails(action);
   return `<article class="game-identity-repair-card is-${escapeHtml(plan.classification || "unknown")}">
     <div class="game-identity-repair-card-heading">
       <strong>${escapeHtml(plan.classification || "未分類")}</strong>
@@ -4613,24 +4664,61 @@ function renderGameIdentityRepairCard(plan) {
       <div><dt>理由</dt><dd>${escapeHtml((plan.reasonCodes || []).join(" / ") || "-")}</dd></div>
     </dl>
     ${safe ? `<div class="game-identity-repair-actions">
-      <button class="primary-button compact-button" type="button" data-game-identity-repair-action="execute" data-repair-id="${escapeHtml(plan.repairId)}" ${isBusy ? "disabled" : ""}>${isBusy ? "処理中..." : "この計画を実行"}</button>
-      ${rollbackAllowed ? `<button class="secondary-button compact-button" type="button" data-game-identity-repair-action="rollback" data-repair-id="${escapeHtml(plan.repairId)}" ${isBusy ? "disabled" : ""}>ロールバック</button>` : ""}
-    </div>` : `<p class="game-identity-repair-notice">この分類は自動実行できません。理由を確認して手動で対応してください。</p>`}
-    ${status || resultMessage || errorCode || partial !== undefined ? `<p class="game-identity-repair-result${errorCode ? " error-message" : ""}">状態: ${escapeHtml(status || "未実行")}${resultMessage ? ` / ${escapeHtml(resultMessage)}` : ""}${errorCode ? ` / ${escapeHtml(errorCode)}` : ""}${partial !== undefined ? ` / 部分書き込み: ${partial ? "あり" : "なし"}` : ""}</p>` : ""}
+      <button class="primary-button compact-button" type="button" data-game-identity-repair-action="execute" data-repair-id="${escapeHtml(plan.repairId)}" ${actionDisabled ? "disabled" : ""}>${escapeHtml(actionLabel)}</button>
+      ${rollbackAllowed ? `<button class="secondary-button compact-button" type="button" data-game-identity-repair-action="rollback" data-repair-id="${escapeHtml(plan.repairId)}" ${isBusy || Boolean(state.gameIdentityRepairs.activeRepairId) ? "disabled" : ""}>ロールバック</button>` : ""}
+    </div>${executionBlock ? `<p class="game-identity-repair-notice">${escapeHtml(executionBlock)}</p>` : ""}` : `<p class="game-identity-repair-notice">この分類は自動実行できません。理由を確認して手動で対応してください。</p>`}
+    ${status || resultMessage || errorCode || partial !== undefined ? `<p class="game-identity-repair-result${errorCode ? " error-message" : ""}">状態: ${escapeHtml(status || "未実行")}${resultMessage ? ` / ${escapeHtml(resultMessage)}` : ""}${partial !== undefined ? ` / 部分書き込み: ${partial ? "あり" : "なし"}` : ""}</p>` : ""}
+    ${errorDetails.length ? `<p class="game-identity-repair-error-details">${escapeHtml(errorDetails.join(" / "))}</p>` : ""}
   </article>`;
+}
+
+function renderGameIdentityRepairCoverage(preview) {
+  const summary = preview?.summary;
+  if (!summary) return "";
+  const integrity = preview?.classificationIntegrity?.valid === true ? "分類整合性: 正常" : "分類整合性: 要確認";
+  return `<dl class="game-identity-repair-coverage-list">
+    <div><dt>日程連携</dt><dd>${Number(summary.linkedScheduleGames || 0)} / ${Number(summary.scheduleGames || 0)}</dd></div>
+    <div><dt>未連携</dt><dd>${Number(summary.unlinkedScheduleGames || 0)}件</dd></div>
+    <div><dt>SAFE作成</dt><dd>${Number(summary.safeCreateCount || 0)}件</dd></div>
+    <div><dt>SAFE連携</dt><dd>${Number(summary.safeAutoLinkCount || 0)}件</dd></div>
+    <div><dt>手動確認</dt><dd>${Number(summary.manualReviewCount || 0)}件</dd></div>
+    <div><dt>予測coverage</dt><dd>${Math.round(Number(summary.projectedCoverage || 0) * 100)}%</dd></div>
+    <div><dt>分類</dt><dd>${escapeHtml(integrity)}</dd></div>
+  </dl>`;
+}
+
+function renderGameIdentityRepairLastExecution(lastExecution) {
+  if (!lastExecution) return "";
+  const audit = lastExecution.audit || {};
+  const observed = audit.observed || {};
+  const details = [
+    `repairId: ${lastExecution.repairId}`,
+    `状態: ${lastExecution.status || "unknown"}`,
+    audit.targetInternalGameId ? `target: ${audit.targetInternalGameId}` : "",
+    observed.targetGameExists !== undefined ? `games: ${observed.targetGameExists ? "あり" : "なし"}` : "",
+    observed.scheduleInternalGameId ? `schedule: ${observed.scheduleInternalGameId}` : "",
+    observed.partialWriteDetected !== undefined ? `部分書き込み: ${observed.partialWriteDetected ? "あり" : "なし"}` : "",
+    lastExecution.errorCode ? `errorCode: ${lastExecution.errorCode}` : ""
+  ].filter(Boolean);
+  return `<p class="game-identity-repair-last-result${lastExecution.errorCode ? " error-message" : ""}">${escapeHtml(details.join(" / "))}</p>`;
 }
 
 function renderAdminGameIdentityRepairs() {
   const panel = document.getElementById("adminGameIdentityRepairsPanel");
   const message = document.getElementById("adminGameIdentityRepairsMessage");
+  const coverage = document.getElementById("adminGameIdentityRepairCoverage");
+  const lastResult = document.getElementById("adminGameIdentityRepairLastResult");
   const list = document.getElementById("adminGameIdentityRepairsList");
   const refresh = document.getElementById("refreshAdminGameIdentityRepairsButton");
-  if (!panel || !message || !list || !refresh) return;
+  if (!panel || !message || !coverage || !lastResult || !list || !refresh) return;
   const available = state.appMode === "admin" && state.adminAccess.status === "authorized";
   panel.classList.toggle("hidden", !available);
   if (!available) return;
   const repairs = state.gameIdentityRepairs;
-  refresh.disabled = repairs.isLoading;
+  refresh.disabled = repairs.isLoading || Boolean(repairs.activeRepairId);
+  refresh.textContent = repairs.message ? "再読み込み" : "修復候補を確認";
+  coverage.innerHTML = renderGameIdentityRepairCoverage(repairs.preview);
+  lastResult.innerHTML = renderGameIdentityRepairLastExecution(repairs.lastExecution);
   if (repairs.isLoading && !repairs.preview) {
     message.className = "message";
     message.textContent = "試合ID修復のdry-runを読み込み中です。";
@@ -4643,7 +4731,7 @@ function renderAdminGameIdentityRepairs() {
   } else {
     const plans = getGameIdentityRepairPlans();
     message.className = "message";
-    message.textContent = repairs.preview ? `dry-run: ${plans.length}件の修復計画` : "";
+    message.textContent = repairs.preview ? `dry-run: ${plans.length}件の修復計画。SAFE計画は更新件数が少ない順に表示しています。` : "";
   }
   const plans = getGameIdentityRepairPlans();
   const otherItems = [
@@ -4675,14 +4763,18 @@ async function refreshAdminGameIdentityRepairs({ force = false } = {}) {
   try {
     const response = await fetch(url, { credentials: "include", cache: "no-store" });
     const payload = await response.json().catch(() => null);
-    if (!response.ok || !payload?.ok || payload?.dryRun !== true) throw new Error(payload?.error || payload?.code || `HTTP ${response.status}`);
+    if (!response.ok || !payload?.ok || payload?.dryRun !== true) throw createGameIdentityRepairRequestError(response, payload);
     if (requestId !== repairs.requestId) return;
     repairs.preview = payload;
     await refreshAdminGameIdentityRepairAudits(payload.repairPlans, requestId);
   } catch (error) {
     if (requestId !== repairs.requestId) return;
     repairs.preview = null;
-    repairs.message = error?.message || "試合ID修復のdry-runを取得できませんでした。";
+    repairs.message = [
+      error?.httpStatus ? `HTTP ${error.httpStatus}` : "",
+      error?.code || "",
+      error?.message || "試合ID修復のdry-runを取得できませんでした。"
+    ].filter(Boolean).join(" / ");
   } finally {
     if (requestId === repairs.requestId) {
       repairs.isLoading = false;
@@ -4696,7 +4788,7 @@ async function loadAdminGameIdentityRepairAudit(repairId) {
   if (!url) return null;
   const response = await fetch(url, { credentials: "include", cache: "no-store" });
   const payload = await response.json().catch(() => null);
-  if (!response.ok || !payload?.ok || !payload?.repair) throw new Error(payload?.error || payload?.code || `HTTP ${response.status}`);
+  if (!response.ok || !payload?.ok || !payload?.repair) throw createGameIdentityRepairRequestError(response, payload);
   return payload.repair;
 }
 
@@ -4716,16 +4808,23 @@ async function refreshAdminGameIdentityRepairAudits(plans, requestId) {
       auditStatus: audit.status,
       rollbackAvailable: audit.status === "completed",
       partialWriteDetected: Boolean(audit.observed?.partialWriteDetected),
-      errorCode: audit.errorCode || ""
+      errorCode: audit.errorCode || "",
+      status: audit.status === "failed" ? "失敗（再実行可否を確認）" : (audit.status || ""),
+      requiresManualReview: audit.status !== "completed" && Boolean(audit.observed?.partialWriteDetected)
     });
+    if (audit.status === "failed" && !state.gameIdentityRepairs.blockedRepairId) {
+      state.gameIdentityRepairs.blockedRepairId = repairId;
+    }
   });
 }
 
 async function executeAdminGameIdentityRepair(plan) {
   const repairId = plan.repairId;
-  if (!repairId || !plan.planHash || getGameIdentityRepairAction(repairId).isBusy) return;
+  const existingAction = getGameIdentityRepairAction(repairId);
+  if (!repairId || !plan.planHash || existingAction.isBusy || getGameIdentityRepairExecutionBlock(plan, existingAction)) return;
   if (!window.confirm(`${plan.scheduleGameId} の修復を実行します。更新対象を確認しましたか？`)) return;
-  setGameIdentityRepairAction(repairId, { isBusy: true, status: "実行中", message: "", errorCode: "" });
+  state.gameIdentityRepairs.activeRepairId = repairId;
+  setGameIdentityRepairAction(repairId, { isBusy: true, status: "実行中", message: "", errorCode: "", httpStatus: 0, processingStage: "", mismatchReason: "", expectedPlanHash: "", currentPlanHash: "", storedPlanHash: "" });
   renderAdminGameIdentityRepairs();
   try {
     const response = await fetch(buildAdminGameIdentityRepairsApiUrl(), {
@@ -4736,36 +4835,60 @@ async function executeAdminGameIdentityRepair(plan) {
       body: JSON.stringify({ repairIds: [repairId], expectedPlanHashes: { [repairId]: plan.planHash } })
     });
     const payload = await response.json().catch(() => null);
-    if (!response.ok || !payload?.ok) {
-      const error = new Error(payload?.error || payload?.code || `HTTP ${response.status}`);
-      error.code = payload?.code || "GAME_IDENTITY_REPAIR_FAILED";
+    if (!response.ok || !payload?.ok) throw createGameIdentityRepairRequestError(response, payload);
+    const result = Array.isArray(payload.results) ? payload.results.find((item) => item.repairId === repairId) : null;
+    if (!result || result.status !== "completed") {
+      const error = new Error("修復APIが完了結果を返しませんでした。");
+      error.code = "GAME_IDENTITY_REPAIR_RESULT_INVALID";
+      error.httpStatus = response.status;
       throw error;
     }
-    const result = Array.isArray(payload.results) ? payload.results.find((item) => item.repairId === repairId) : null;
     setGameIdentityRepairAction(repairId, { status: result?.status || "completed", message: "修復が完了しました。", errorCode: "" });
   } catch (error) {
-    setGameIdentityRepairAction(repairId, { status: "失敗", message: "修復を完了できませんでした。", errorCode: error?.code || error?.message || "GAME_IDENTITY_REPAIR_FAILED" });
+    state.gameIdentityRepairs.blockedRepairId = repairId;
+    setGameIdentityRepairAction(repairId, {
+      status: "失敗",
+      message: error?.message || "修復を完了できませんでした。",
+      errorCode: error?.code || "GAME_IDENTITY_REPAIR_FAILED",
+      httpStatus: error?.httpStatus || 0,
+      processingStage: error?.processingStage || "",
+      mismatchReason: error?.mismatchReason || "",
+      expectedPlanHash: error?.expectedPlanHash || "",
+      currentPlanHash: error?.currentPlanHash || "",
+      storedPlanHash: error?.storedPlanHash || ""
+    });
   } finally {
+    let audit = null;
     try {
-      const audit = await loadAdminGameIdentityRepairAudit(repairId);
+      audit = await loadAdminGameIdentityRepairAudit(repairId);
       setGameIdentityRepairAction(repairId, {
         auditStatus: audit.status,
         rollbackAvailable: audit.status === "completed",
         partialWriteDetected: Boolean(audit.observed?.partialWriteDetected),
-        errorCode: audit.errorCode || getGameIdentityRepairAction(repairId).errorCode
+        errorCode: audit.errorCode || getGameIdentityRepairAction(repairId).errorCode,
+        requiresManualReview: audit.status !== "completed" && Boolean(audit.observed?.partialWriteDetected)
       });
+      if (audit.status === "completed") state.gameIdentityRepairs.blockedRepairId = "";
     } catch (error) {
       setGameIdentityRepairAction(repairId, { message: `${getGameIdentityRepairAction(repairId).message || ""} 状態監査を取得できませんでした。`.trim() });
     }
+    const action = getGameIdentityRepairAction(repairId);
+    state.gameIdentityRepairs.lastExecution = {
+      repairId,
+      status: action.auditStatus || action.status,
+      errorCode: action.errorCode || "",
+      audit
+    };
     setGameIdentityRepairAction(repairId, { isBusy: false });
-    renderAdminGameIdentityRepairs();
+    state.gameIdentityRepairs.activeRepairId = "";
+    await refreshAdminGameIdentityRepairs({ force: true });
   }
 }
 
 async function rollbackAdminGameIdentityRepair(plan) {
   const repairId = plan.repairId;
   const action = getGameIdentityRepairAction(repairId);
-  if (!repairId || !plan.planHash || action.isBusy || action.auditStatus !== "completed" || action.rollbackAvailable !== true) return;
+  if (!repairId || !plan.planHash || action.isBusy || state.gameIdentityRepairs.activeRepairId || action.auditStatus !== "completed" || action.rollbackAvailable !== true) return;
   if (!window.confirm(`${plan.scheduleGameId} の修復をロールバックします。`)) return;
   setGameIdentityRepairAction(repairId, { isBusy: true, status: "ロールバック中", message: "", errorCode: "" });
   renderAdminGameIdentityRepairs();

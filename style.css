@@ -1525,6 +1525,56 @@ textarea:focus {
   gap: 8px;
 }
 
+.game-identity-repair-coverage {
+  min-width: 0;
+}
+
+.game-identity-repair-coverage-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+}
+
+.game-identity-repair-coverage-list > div {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid #d8e1ea;
+  border-radius: 6px;
+  background: #fbfdff;
+}
+
+.game-identity-repair-coverage-list dt,
+.game-identity-repair-coverage-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.game-identity-repair-coverage-list dt {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.game-identity-repair-coverage-list dd {
+  margin-top: 2px;
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.game-identity-repair-last-result {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid #d8e1ea;
+  border-radius: 6px;
+  background: #fbfdff;
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
 .game-identity-repair-card {
   display: grid;
   gap: 8px;
@@ -1590,6 +1640,14 @@ textarea:focus {
   color: var(--muted);
   font-size: 0.8rem;
   font-weight: 700;
+}
+
+.game-identity-repair-error-details {
+  margin: 0;
+  color: #7f3030;
+  font-size: 0.75rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .admin-workflow-logs-heading {
@@ -3265,6 +3323,10 @@ textarea:focus {
 
   .game-identity-repair-actions button {
     width: 100%;
+  }
+
+  .game-identity-repair-coverage-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .admin-workflow-log-filters {

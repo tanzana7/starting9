@@ -20,6 +20,15 @@ test("Auth Worker owns the audit route and keeps the existing admin authenticati
   assert.match(worker.slice(start, end), /requireAdminUser\(request, env, cors\)/);
 });
 
+test("修復実行は管理者POSTだけで、Cronや通常ユーザーAPIからは起動しない", async () => {
+  const worker = await readFile(new URL("../auth-worker.js", import.meta.url), "utf8");
+  const scheduledStart = worker.indexOf("async scheduled(event, env, ctx)");
+  const scheduledEnd = worker.indexOf("async function runScheduledGameAutomation", scheduledStart);
+  const scheduled = worker.slice(scheduledStart, scheduledEnd);
+  assert.match(worker, /path === "\/api\/admin\/game-identities\/repairs" && request\.method === "POST"/);
+  assert.doesNotMatch(scheduled, /handleAdminGameIdentityRepairs|applyGameIdentityRepairPlan/);
+});
+
 test("the browser's existing API base remains the Auth Worker rather than the Pages origin", async () => {
   const auth = await readFile(new URL("../auth.js", import.meta.url), "utf8");
   assert.match(auth, /const AUTH_PRODUCTION_API_BASE_URL = "https:\/\/starting9-auth\.tanzana7\.workers\.dev"/);

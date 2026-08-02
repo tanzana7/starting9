@@ -5371,6 +5371,13 @@ function normalizePlanHash(value) {
   return hash || null;
 }
 
+export function canResumeFailedGameIdentityRepair({ status, partialWriteDetected, expectedPlanHash, currentPlanHash, canonicalStoredPlanHash }) {
+  return status === "failed" && partialWriteDetected !== true
+    && Boolean(expectedPlanHash)
+    && expectedPlanHash === currentPlanHash
+    && currentPlanHash === canonicalStoredPlanHash;
+}
+
 function createPlanHashMismatchError({ expectedPlanHash, currentPlanHash, storedPlanHash, mismatchReason, stage = "plan_read" }) {
   return createGameIdentityRepairError(
     "GAME_IDENTITY_REPAIR_PLAN_HASH_MISMATCH",
@@ -5631,19 +5638,18 @@ async function handleAdminGameIdentityRepairs(request, env, cors) {
           if (!plan) throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_RECORD_INVALID", "保存済みの修復計画を読み取れません。", "history_read");
           const expectedPlanHash = normalizePlanHash(input.expectedPlanHashes[repairId]);
           const storedPlanHash = normalizePlanHash(existing.plan_hash);
-          if (expectedPlanHash !== storedPlanHash) {
-            throw createPlanHashMismatchError({
-              expectedPlanHash,
-              currentPlanHash: null,
-              storedPlanHash,
-              mismatchReason: "EXPECTED_HASH_DIFFERS_FROM_STORED_PLAN"
-            });
-          }
           const state = await collectGameIdentityRepairExecutionState(env.AUTH_DB, existing);
           const currentPlan = await loadSingleRepairPlan(env.AUTH_DB, repairId);
           const currentPlanHash = normalizePlanHash(currentPlan?.planHash);
           const canonicalStoredPlanHash = normalizePlanHash(await hashGameIdentityRepairPlan(plan));
-          if (!state.observed.partialWriteDetected && !currentPlanHash) {
+          const canResumeFailedWithoutPartialWrite = canResumeFailedGameIdentityRepair({
+            status: existing.status,
+            partialWriteDetected: state.observed.partialWriteDetected,
+            expectedPlanHash,
+            currentPlanHash,
+            canonicalStoredPlanHash
+          });
+          if (existing.status === "failed" && !state.observed.partialWriteDetected && !currentPlanHash) {
             throw createPlanHashMismatchError({
               expectedPlanHash,
               currentPlanHash,
@@ -5651,12 +5657,20 @@ async function handleAdminGameIdentityRepairs(request, env, cors) {
               mismatchReason: "CURRENT_PLAN_NOT_FOUND"
             });
           }
-          if (!state.observed.partialWriteDetected && currentPlanHash !== canonicalStoredPlanHash) {
+          if (existing.status === "failed" && !state.observed.partialWriteDetected && currentPlanHash !== canonicalStoredPlanHash) {
             throw createPlanHashMismatchError({
               expectedPlanHash,
               currentPlanHash,
               storedPlanHash,
               mismatchReason: "STORED_PLAN_DIFFERS_FROM_CURRENT_PLAN"
+            });
+          }
+          if (!canResumeFailedWithoutPartialWrite && expectedPlanHash !== storedPlanHash) {
+            throw createPlanHashMismatchError({
+              expectedPlanHash,
+              currentPlanHash,
+              storedPlanHash,
+              mismatchReason: "EXPECTED_HASH_DIFFERS_FROM_STORED_PLAN"
             });
           }
           if (existing.status === "executing") {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { applyGameIdentityRepairPlan, collectGameIdentityRepairExecutionState } from "../auth-worker.js";
+import { applyGameIdentityRepairPlan, canResumeFailedGameIdentityRepair, collectGameIdentityRepairExecutionState } from "../auth-worker.js";
 
 const targetInternalGameId = "11111111-1111-4111-8111-111111111111";
 const now = new Date("2026-08-02T00:00:00.000Z");
@@ -169,6 +169,21 @@ test("games、identifier、scheduleのいずれかが書き込まれた場合だ
   assert.equal((await audit(linkedSchedule.db)).observed.partialWriteDetected, true);
 });
 
+test("部分書き込みのないfailed履歴は、最新dry-runのcanonical hashが一致する場合だけ再実行できる", () => {
+  const base = {
+    status: "failed",
+    partialWriteDetected: false,
+    expectedPlanHash: "current-canonical-hash",
+    currentPlanHash: "current-canonical-hash",
+    canonicalStoredPlanHash: "current-canonical-hash"
+  };
+  assert.equal(canResumeFailedGameIdentityRepair(base), true);
+  assert.equal(canResumeFailedGameIdentityRepair({ ...base, partialWriteDetected: true }), false);
+  assert.equal(canResumeFailedGameIdentityRepair({ ...base, expectedPlanHash: "stale-hash" }), false);
+  assert.equal(canResumeFailedGameIdentityRepair({ ...base, canonicalStoredPlanHash: "changed-plan" }), false);
+  assert.equal(canResumeFailedGameIdentityRepair({ ...base, status: "completed" }), false);
+});
+
 test("修復POSTは最上位catch、段階別記録、読み取り専用の実行監査ルートを持つ", async () => {
   const source = await readFile(new URL("../auth-worker.js", import.meta.url), "utf8");
   assert.match(source, /parseGameIdentityRepairAuditRoute/);
@@ -182,6 +197,8 @@ test("修復POSTは最上位catch、段階別記録、読み取り専用の実�
   assert.match(source, /storedPlanHash/);
   assert.match(source, /mismatchReason/);
   assert.match(source, /existing\.status === "failed"/);
+  assert.match(source, /canResumeFailedGameIdentityRepair/);
+  assert.match(source, /!canResumeFailedWithoutPartialWrite && expectedPlanHash !== storedPlanHash/);
   assert.match(source, /plan\.createInternalGame && !state\.observed\.partialWriteDetected/);
   assert.match(source, /status: "executing"/);
   assert.match(source, /const errorStage = error\?\.repairStage \|\| stage/);

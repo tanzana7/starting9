@@ -49,6 +49,119 @@ test("一意な未登録日程だけをSAFE_CREATE_INTERNAL_GAMEに分類し、d
   assert.equal(preview.summary.projectedCoverage, 1);
 });
 
+test("一意に一致するcompact IDの関連行を同じSAFE_CREATE計画へ収束させる", async () => {
+  const compactGameId = "2026-08-01-f-m-15";
+  const input = {
+    scheduleRows: [schedule],
+    tableRows: {
+      predictions: [{ game_id: compactGameId, row_count: 2, unlinked_row_count: 2 }],
+      game_lineups: [{ game_id: compactGameId, row_count: 1, unlinked_row_count: 1 }],
+      ranking_games: [{ game_id: compactGameId, row_count: 1, unlinked_row_count: 1 }],
+      game_pregame_automation: [{ game_id: compactGameId, row_count: 1, unlinked_row_count: 1, start_at: schedule.start_at }]
+    }
+  };
+  const preview = await buildGameIdentityRepairPreview(input);
+  const repeatedPreview = await buildGameIdentityRepairPreview(input);
+  const plan = preview.safeInternalGameCreations[0];
+  assert.ok(plan.legacyGameIds.includes(schedule.game_id));
+  assert.ok(plan.legacyGameIds.includes(compactGameId));
+  assert.deepEqual(plan.identifiersToInsert.find((identifier) => identifier.identifierValue === compactGameId), {
+    provider: "starting9", identifierType: "legacy_compact_game_id", identifierValue: compactGameId
+  });
+  assert.deepEqual(plan.tableRowsToUpdate.map((row) => `${row.table}:${row.legacyGameId}`).sort(), [
+    `game_lineups:${compactGameId}`,
+    `game_pregame_automation:${compactGameId}`,
+    `predictions:${compactGameId}`,
+    `ranking_games:${compactGameId}`
+  ]);
+  assert.equal(preview.summary.projectedScheduleLegacyIdsWithoutInternalGameId, 0);
+  assert.equal(preview.summary.projectedAllTableLegacyIdsWithoutInternalGameId, 0);
+  assert.equal(preview.summary.projectedCompactIdsWithoutInternalGameId, 0);
+  assert.equal(preview.obsoleteOrphans.some((item) => item.gameId === compactGameId), false);
+  assert.equal(preview.classificationIntegrity.valid, true);
+  assert.deepEqual(preview.classificationIntegrity.repairPlanAndObsolete, []);
+  assert.equal(plan.repairId, repeatedPreview.safeInternalGameCreations[0].repairId);
+  assert.equal(plan.planHash, repeatedPreview.safeInternalGameCreations[0].planHash);
+});
+
+test("reverse home/awayのcompact IDはSAFE計画へ入れずMANUAL_REVIEWに残す", async () => {
+  const compactGameId = "2026-07-23-l-f-17";
+  const reverseSchedule = {
+    ...schedule,
+    game_id: "2026-07-23-fighters-lions-1800",
+    game_date: "2026-07-23",
+    start_at: "2026-07-23T09:00:00.000Z",
+    home_team: "fighters",
+    away_team: "lions",
+    game_code: "f-l-17"
+  };
+  const preview = await buildGameIdentityRepairPreview({
+    scheduleRows: [reverseSchedule],
+    tableRows: { predictions: [{ game_id: compactGameId, row_count: 1, unlinked_row_count: 1 }] }
+  });
+  assert.equal(preview.safeInternalGameCreations[0].legacyGameIds.includes(compactGameId), false);
+  assert.ok(preview.manualReviewItems.some((item) => item.compactGameId === compactGameId
+    && item.reasonCodes.includes("REVERSE_HOME_AWAY_RISK")));
+  assert.equal(preview.obsoleteOrphans.some((item) => item.gameId === compactGameId), false);
+  assert.equal(preview.classificationIntegrity.valid, true);
+  assert.equal(preview.summary.projectedCompactIdsWithoutInternalGameId, 1);
+});
+
+test("指定されたcompact IDは一意の同日同一カードだけに安全に関連付ける", async () => {
+  const cases = [
+    ["2026-07-31-f-m-14", "2026-07-31-fighters-marines-1800", "2026-07-31", "fighters", "marines", "f-m-14", "2026-07-31T09:00:00.000Z"],
+    ["2026-08-01-f-m-15", "2026-08-01-fighters-marines-1400", "2026-08-01", "fighters", "marines", "f-m-15", "2026-08-01T05:00:00.000Z"],
+    ["2026-07-25-f-e-15", "2026-07-25-fighters-eagles-1400", "2026-07-25", "fighters", "eagles", "f-e-15", "2026-07-25T05:00:00.000Z"],
+    ["2026-07-26-f-e-16", "2026-07-26-fighters-eagles-1300", "2026-07-26", "fighters", "eagles", "f-e-16", "2026-07-26T04:00:00.000Z"]
+  ];
+  for (const [compactGameId, descriptiveGameId, gameDate, homeTeam, awayTeam, gameCode, startAt] of cases) {
+    const scheduleRow = { ...schedule, game_id: descriptiveGameId, game_date: gameDate, home_team: homeTeam, away_team: awayTeam, game_code: gameCode, start_at: startAt };
+    const preview = await buildGameIdentityRepairPreview({
+      scheduleRows: [scheduleRow],
+      tableRows: { predictions: [{ game_id: compactGameId, row_count: 1, unlinked_row_count: 1 }] }
+    });
+    assert.ok(preview.safeInternalGameCreations[0].legacyGameIds.includes(compactGameId), compactGameId);
+    assert.equal(preview.obsoleteOrphans.some((item) => item.gameId === compactGameId), false, compactGameId);
+    assert.equal(preview.manualReviewItems.some((item) => item.compactGameId === compactGameId), false, compactGameId);
+  }
+});
+
+test("scheduleだけの旧指標と全関連テーブルを含む新指標を分けて返す", async () => {
+  const compactGameId = "2026-08-01-f-m-15";
+  const preview = await buildGameIdentityRepairPreview({
+    scheduleRows: [{ ...schedule, game_code: "f-m-99", internal_game_id: "11111111-1111-4111-8111-111111111111" }],
+    tableRows: { predictions: [{ game_id: compactGameId, row_count: 1, unlinked_row_count: 1 }] }
+  });
+  assert.equal(preview.summary.projectedLegacyIdsWithoutInternalGameId, 0);
+  assert.equal(preview.summary.projectedScheduleLegacyIdsWithoutInternalGameId, 0);
+  assert.equal(preview.summary.projectedAllTableLegacyIdsWithoutInternalGameId, 1);
+  assert.equal(preview.summary.projectedCompactIdsWithoutInternalGameId, 1);
+  assert.equal(preview.summary.projectedDescriptiveIdsWithoutInternalGameId, 0);
+  assert.deepEqual(preview.summary.projectedAllTableLegacyIdBreakdown, [{
+    gameId: compactGameId,
+    classification: "MANUAL_REVIEW",
+    tableCount: 1,
+    tableRows: [{ table: "predictions", count: 1 }],
+    reasonCodes: ["GAME_CODE_CONFLICT"]
+  }]);
+});
+
+test("既に日程へ設定済みのUUIDにも安全なcompact IDをSAFE_AUTO_LINKで収束できる", async () => {
+  const internalGameId = "11111111-1111-4111-8111-111111111111";
+  const compactGameId = "2026-08-01-f-m-15";
+  const preview = await buildGameIdentityRepairPreview({
+    scheduleRows: [{ ...schedule, internal_game_id: internalGameId }],
+    tableRows: {
+      predictions: [{ game_id: compactGameId, row_count: 1, unlinked_row_count: 1 }],
+      ranking_games: [{ game_id: compactGameId, row_count: 1, unlinked_row_count: 1 }]
+    }
+  });
+  assert.equal(preview.safeAutoLinks.length, 1);
+  assert.equal(preview.safeAutoLinks[0].targetInternalGameId, internalGameId);
+  assert.ok(preview.safeAutoLinks[0].legacyGameIds.includes(compactGameId));
+  assert.equal(preview.summary.projectedAllTableLegacyIdsWithoutInternalGameId, 0);
+});
+
 test("doubleheader、開始時刻またはNPBコードの矛盾はMANUAL_REVIEWに残す", async () => {
   const doubleheader = await buildGameIdentityRepairPreview({
     scheduleRows: [schedule],

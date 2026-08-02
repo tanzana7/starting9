@@ -4719,7 +4719,9 @@ const GAME_IDENTITY_AUDIT_TABLE_QUERIES = Object.freeze({
   probable_starters: {
     dateField: "updated_at",
     select: `SELECT game_id, COUNT(*) AS row_count, MIN(updated_at) AS first_seen_at, MAX(updated_at) AS last_seen_at,
-      MAX(status) AS probable_starter_status, MAX(next_check_at) AS next_check_at, MAX(error_code) AS error_code`
+      MAX(status) AS probable_starter_status, MAX(next_check_at) AS next_check_at, MAX(error_code) AS error_code,
+      SUM(CASE WHEN internal_game_id IS NULL OR internal_game_id = '' THEN 1 ELSE 0 END) AS unlinked_row_count,
+      GROUP_CONCAT(DISTINCT NULLIF(internal_game_id, '')) AS internal_game_ids`
   },
   game_day_notice_games: {
     dateField: "notice_date",
@@ -4731,7 +4733,9 @@ const GAME_IDENTITY_AUDIT_TABLE_QUERIES = Object.freeze({
     dateField: "game_date",
     isGameDate: true,
     select: `SELECT game_id, COUNT(*) AS row_count, MIN(created_at) AS first_seen_at, MAX(updated_at) AS last_seen_at,
-      MAX(game_date) AS game_date, MAX(status) AS roster_status`
+      MAX(game_date) AS game_date, MAX(status) AS roster_status,
+      SUM(CASE WHEN internal_game_id IS NULL OR internal_game_id = '' THEN 1 ELSE 0 END) AS unlinked_row_count,
+      GROUP_CONCAT(DISTINCT NULLIF(internal_game_id, '')) AS internal_game_ids`
   },
   game_pregame_automation: {
     dateField: "game_date",
@@ -4739,13 +4743,17 @@ const GAME_IDENTITY_AUDIT_TABLE_QUERIES = Object.freeze({
     select: `SELECT game_id, COUNT(*) AS row_count, MIN(created_at) AS first_seen_at, MAX(updated_at) AS last_seen_at,
       MAX(game_date) AS game_date, MAX(start_at) AS start_at, MAX(roster_status) AS roster_status,
       MAX(lineup_status) AS lineup_status, MAX(scoring_status) AS scoring_status,
-      MAX(last_error_code) AS error_code, MAX(next_lineup_attempt_at) AS next_lineup_attempt_at`
+      MAX(last_error_code) AS error_code, MAX(next_lineup_attempt_at) AS next_lineup_attempt_at,
+      SUM(CASE WHEN internal_game_id IS NULL OR internal_game_id = '' THEN 1 ELSE 0 END) AS unlinked_row_count,
+      GROUP_CONCAT(DISTINCT NULLIF(internal_game_id, '')) AS internal_game_ids`
   },
   game_lineups: {
     dateField: "updated_at",
     select: `SELECT game_id, COUNT(*) AS row_count, MIN(created_at) AS first_seen_at, MAX(updated_at) AS last_seen_at,
       MAX(scoring_status) AS lineup_scoring_status, MAX(publication_status) AS publication_status,
-      MAX(scored_at) AS scored_at, MAX(published_at) AS published_at`
+      MAX(scored_at) AS scored_at, MAX(published_at) AS published_at,
+      SUM(CASE WHEN internal_game_id IS NULL OR internal_game_id = '' THEN 1 ELSE 0 END) AS unlinked_row_count,
+      GROUP_CONCAT(DISTINCT NULLIF(internal_game_id, '')) AS internal_game_ids`
   },
   game_lineup_revisions: {
     dateField: "created_at",
@@ -4757,7 +4765,9 @@ const GAME_IDENTITY_AUDIT_TABLE_QUERIES = Object.freeze({
     isGameDate: true,
     select: `SELECT game_id, COUNT(*) AS row_count, MIN(submitted_at) AS first_seen_at, MAX(updated_at) AS last_seen_at,
       MAX(game_date) AS game_date, SUM(CASE WHEN status = 'scored' THEN 1 ELSE 0 END) AS scored_prediction_count,
-      SUM(CASE WHEN status <> 'scored' THEN 1 ELSE 0 END) AS unscored_prediction_count`
+      SUM(CASE WHEN status <> 'scored' THEN 1 ELSE 0 END) AS unscored_prediction_count,
+      SUM(CASE WHEN internal_game_id IS NULL OR internal_game_id = '' THEN 1 ELSE 0 END) AS unlinked_row_count,
+      GROUP_CONCAT(DISTINCT NULLIF(internal_game_id, '')) AS internal_game_ids`
   },
   ranking_games: {
     dateField: "game_date",
@@ -4765,7 +4775,9 @@ const GAME_IDENTITY_AUDIT_TABLE_QUERIES = Object.freeze({
     select: `SELECT game_id, COUNT(*) AS row_count, MIN(created_at) AS first_seen_at, MAX(updated_at) AS last_seen_at,
       MAX(game_date) AS game_date, MAX(is_ranking_eligible) AS is_ranking_eligible,
       MAX(game_status) AS ranking_game_status, MAX(publication_status) AS publication_status,
-      MAX(published_at) AS published_at`
+      MAX(published_at) AS published_at,
+      SUM(CASE WHEN internal_game_id IS NULL OR internal_game_id = '' THEN 1 ELSE 0 END) AS unlinked_row_count,
+      GROUP_CONCAT(DISTINCT NULLIF(internal_game_id, '')) AS internal_game_ids`
   },
   perfect_achievers: {
     dateField: "achieved_at",
@@ -4774,7 +4786,9 @@ const GAME_IDENTITY_AUDIT_TABLE_QUERIES = Object.freeze({
   game_rescore_jobs: {
     dateField: "updated_at",
     select: `SELECT game_id, COUNT(*) AS row_count, MIN(created_at) AS first_seen_at, MAX(updated_at) AS last_seen_at,
-      MAX(status) AS rescore_status, MAX(error_code) AS error_code`
+      MAX(status) AS rescore_status, MAX(error_code) AS error_code,
+      SUM(CASE WHEN internal_game_id IS NULL OR internal_game_id = '' THEN 1 ELSE 0 END) AS unlinked_row_count,
+      GROUP_CONCAT(DISTINCT NULLIF(internal_game_id, '')) AS internal_game_ids`
   },
   game_workflow_logs: {
     dateField: "occurred_at",
@@ -5322,8 +5336,8 @@ async function applyGameIdentityRepairPlan(db, plan, adminId, now = new Date()) 
     `SELECT game_id, internal_game_id, game_date, start_at, home_team, away_team, game_code, source_game_key, game_status
        FROM detected_game_schedule WHERE game_id = ?1 LIMIT 2`
   ).bind(plan.scheduleGameId).all();
-  if ((schedule.results || []).length !== 1 || String(schedule.results[0].internal_game_id || "")) {
-    const error = new Error("対象日程が存在しないか、すでに内部試合IDが設定されています。");
+  if ((schedule.results || []).length !== 1) {
+    const error = new Error("対象日程が存在しません。");
     error.code = "GAME_IDENTITY_REPAIR_SCHEDULE_CHANGED";
     throw error;
   }
@@ -5345,14 +5359,24 @@ async function applyGameIdentityRepairPlan(db, plan, adminId, now = new Date()) 
       throw error;
     }
   }
-  await assertRepairPlanIdentifiersAvailable(db, plan, targetInternalGameId);
-  const scheduleUpdate = await db.prepare(
-    "UPDATE detected_game_schedule SET internal_game_id = ?1, updated_at = ?2 WHERE game_id = ?3 AND (internal_game_id IS NULL OR internal_game_id = '')"
-  ).bind(targetInternalGameId, now.toISOString(), plan.scheduleGameId).run();
-  if (Number(scheduleUpdate?.meta?.changes || 0) !== 1) {
-    const error = new Error("日程の更新件数が修復計画と一致しません。");
-    error.code = "GAME_IDENTITY_REPAIR_UPDATE_COUNT_MISMATCH";
+  const currentScheduleInternalGameId = String(scheduleRow.internal_game_id || "");
+  if (currentScheduleInternalGameId && currentScheduleInternalGameId !== targetInternalGameId) {
+    const error = new Error("対象日程が別の内部試合IDに変更されています。");
+    error.code = "GAME_IDENTITY_REPAIR_SCHEDULE_CHANGED";
     throw error;
+  }
+  await assertRepairPlanIdentifiersAvailable(db, plan, targetInternalGameId);
+  let scheduleLinked = false;
+  if (!currentScheduleInternalGameId) {
+    const scheduleUpdate = await db.prepare(
+      "UPDATE detected_game_schedule SET internal_game_id = ?1, updated_at = ?2 WHERE game_id = ?3 AND (internal_game_id IS NULL OR internal_game_id = '')"
+    ).bind(targetInternalGameId, now.toISOString(), plan.scheduleGameId).run();
+    if (Number(scheduleUpdate?.meta?.changes || 0) !== 1) {
+      const error = new Error("日程の更新件数が修復計画と一致しません。");
+      error.code = "GAME_IDENTITY_REPAIR_UPDATE_COUNT_MISMATCH";
+      throw error;
+    }
+    scheduleLinked = true;
   }
   const addedIdentifiers = [];
   for (const identifier of plan.identifiersToInsert || []) {
@@ -5376,7 +5400,7 @@ async function applyGameIdentityRepairPlan(db, plan, adminId, now = new Date()) 
   const rollbackData = {
     targetInternalGameId,
     scheduleGameId: plan.scheduleGameId,
-    scheduleLinked: true,
+    scheduleLinked,
     createdInternalGame,
     addedIdentifiers,
     linkedRows,

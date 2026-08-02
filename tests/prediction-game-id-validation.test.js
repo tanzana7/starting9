@@ -157,5 +157,5 @@ test("予告先発とロースターの保存後もcanonical IDへ関連行を�
   const probable = worker.slice(worker.indexOf("async function runProbableStarterFetch"), worker.indexOf("function parseJsonArray"));
   const roster = worker.slice(worker.indexOf("async function saveRosterSnapshotFromNotice"), worker.indexOf("async function fixGameRosterAtDeadline"));
   assert.match(probable, /linkLegacyGameRowsToInternalGameId\(env\.AUTH_DB, target\?\.internalGameId, gameId\)/);
-  assert.match(roster, /linkLegacyGameRowsToInternalGameId\(db, identity\.game\?\.internalGameId \|\| identity\.internalGameId, identity\.gameId\)/);
+  assert.match(roster, /linkLegacyGameRowsToInternalGameId\(db, storage\.internalGameId, identity\.gameId\)/);
 });

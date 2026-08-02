@@ -617,6 +617,7 @@ async function isProbableStarterTestGame(db, gameId) {
 
 async function saveProbableStarterRow(db, {
   gameId,
+  internalGameId = "",
   status,
   homePitcherName = "",
   awayPitcherName = "",
@@ -627,11 +628,18 @@ async function saveProbableStarterRow(db, {
   errorCode = "",
   updatedAt
 }) {
+  const storage = await requireInternalGameIdForWrite(db, { table: "probable_starters", gameId, internalGameId });
+  const internalColumn = storage.schemaReady ? ", internal_game_id" : "";
+  const internalValue = storage.schemaReady ? ", ?2" : "";
+  const bindValues = storage.schemaReady
+    ? [gameId, storage.internalGameId || null, status, homePitcherName || null, awayPitcherName || null, fetchedAt, announcedAt, nextCheckAt, sourceUrl || null, errorCode || null, updatedAt]
+    : [gameId, status, homePitcherName || null, awayPitcherName || null, fetchedAt, announcedAt, nextCheckAt, sourceUrl || null, errorCode || null, updatedAt];
   await db.prepare(
     `INSERT INTO probable_starters
-       (game_id, status, home_pitcher_name, away_pitcher_name, fetched_at, announced_at, next_check_at, source_url, error_code, updated_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+       (game_id${internalColumn}, status, home_pitcher_name, away_pitcher_name, fetched_at, announced_at, next_check_at, source_url, error_code, updated_at)
+     VALUES (?1${internalValue}, ?${storage.schemaReady ? 3 : 2}, ?${storage.schemaReady ? 4 : 3}, ?${storage.schemaReady ? 5 : 4}, ?${storage.schemaReady ? 6 : 5}, ?${storage.schemaReady ? 7 : 6}, ?${storage.schemaReady ? 8 : 7}, ?${storage.schemaReady ? 9 : 8}, ?${storage.schemaReady ? 10 : 9}, ?${storage.schemaReady ? 11 : 10})
      ON CONFLICT(game_id) DO UPDATE SET
+       ${storage.schemaReady ? "internal_game_id = CASE WHEN excluded.internal_game_id IS NULL OR excluded.internal_game_id = '' THEN probable_starters.internal_game_id ELSE excluded.internal_game_id END," : ""}
        status = excluded.status,
        home_pitcher_name = excluded.home_pitcher_name,
        away_pitcher_name = excluded.away_pitcher_name,
@@ -641,18 +649,7 @@ async function saveProbableStarterRow(db, {
        source_url = excluded.source_url,
        error_code = excluded.error_code,
        updated_at = excluded.updated_at`
-  ).bind(
-    gameId,
-    status,
-    homePitcherName || null,
-    awayPitcherName || null,
-    fetchedAt,
-    announcedAt,
-    nextCheckAt,
-    sourceUrl || null,
-    errorCode || null,
-    updatedAt
-  ).run();
+  ).bind(...bindValues).run();
 }
 
 async function recordProbableStarterDecision(db, {
@@ -732,9 +729,10 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
     const announcedAt = announced ? (previous?.announced_at || normalizedFetchedAt) : null;
     const nextCheckAt = announced ? null : new Date(current.getTime() + PROBABLE_STARTER_RETRY_INTERVAL_MS).toISOString();
     const status = announced ? "announced" : "unannounced";
-    await saveProbableStarterRow(env.AUTH_DB, {
-      gameId,
-      status,
+      await saveProbableStarterRow(env.AUTH_DB, {
+        gameId,
+        internalGameId: target?.internalGameId || "",
+        status,
       homePitcherName,
       awayPitcherName,
       fetchedAt: normalizedFetchedAt,
@@ -778,6 +776,7 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
     try {
       await saveProbableStarterRow(env.AUTH_DB, {
         gameId,
+        internalGameId: target?.internalGameId || "",
         status: "error",
         homePitcherName: previous?.home_pitcher_name || "",
         awayPitcherName: previous?.away_pitcher_name || "",
@@ -1421,6 +1420,20 @@ async function getInternalGameIdStorageAvailability(db, tables) {
   }
 }
 
+async function requireInternalGameIdForWrite(db, { table, gameId, internalGameId = "" } = {}) {
+  const storage = await getInternalGameIdStorageAvailability(db, [table]);
+  if (!storage[table]) return { internalGameId: "", schemaReady: false };
+  const supplied = String(internalGameId || "").trim();
+  if (INTERNAL_GAME_ID_PATTERN.test(supplied)) return { internalGameId: supplied, schemaReady: true };
+  const reference = await resolveApiGameReference(db, gameId);
+  const resolved = String(reference?.metadata?.internalGameId || "").trim();
+  if (reference?.ok && INTERNAL_GAME_ID_PATTERN.test(resolved)) return { internalGameId: resolved, schemaReady: true };
+  const error = createPregameError("INTERNAL_GAME_ID_REQUIRED", "内部試合IDを解決できないため保存を停止しました。", { httpStatus: 409 });
+  error.gameId = String(gameId || "");
+  error.table = table;
+  throw error;
+}
+
 async function linkLegacyGameRowsToInternalGameId(db, internalGameId, legacyGameId) {
   const internal = String(internalGameId || "");
   const legacy = String(legacyGameId || "");
@@ -1592,8 +1605,10 @@ async function recordScheduleSyncOutcome(db, result, now) {
 async function loadDetectedScheduleGames(db, dates) {
   const sortedDates = [...new Set((Array.isArray(dates) ? dates : []).filter(isValidPregameDate))].sort();
   if (!sortedDates.length) return [];
+  const registry = await getGameIdentityRegistryAvailability(db);
+  const internalFilter = registry.scheduleColumnAvailable ? " AND internal_game_id IS NOT NULL AND internal_game_id <> ''" : "";
   const stored = await db.prepare(
-    "SELECT * FROM detected_game_schedule WHERE game_date >= ?1 AND game_date <= ?2 AND game_status = 'scheduled' ORDER BY start_at"
+    `SELECT * FROM detected_game_schedule WHERE game_date >= ?1 AND game_date <= ?2 AND game_status = 'scheduled'${internalFilter} ORDER BY start_at`
   ).bind(sortedDates[0], sortedDates[sortedDates.length - 1]).all();
   return (stored.results || []).map((row) => ({
     gameId: row.game_id,
@@ -3771,15 +3786,25 @@ async function saveRosterSnapshotFromNotice(db, identity, payload, capturedAt) {
   if (!players.length || players.length > 100) return false;
   const rosterJson = JSON.stringify(players);
   const capturedAtIso = capturedAt instanceof Date ? capturedAt.toISOString() : String(capturedAt || new Date().toISOString());
+  const storage = await requireInternalGameIdForWrite(db, {
+    table: "game_roster_snapshots",
+    gameId: identity.gameId,
+    internalGameId: identity.internalGameId || identity.game?.internalGameId || ""
+  });
+  const internalColumn = storage.schemaReady ? ", internal_game_id" : "";
+  const internalValue = storage.schemaReady ? ", ?6" : "";
   await db.batch([
     db.prepare(
       `INSERT INTO game_roster_snapshots
-         (game_id, game_date, captured_at, roster_json, source, player_count, status, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, 'npb-roster', ?5, 'captured', ?3, ?3)
+         (game_id, game_date, captured_at, roster_json, source, player_count, status, created_at, updated_at${internalColumn})
+       VALUES (?1, ?2, ?3, ?4, 'npb-roster', ?5, 'captured', ?3, ?3${internalValue})
        ON CONFLICT(game_id) DO UPDATE SET
+         ${storage.schemaReady ? "internal_game_id = CASE WHEN excluded.internal_game_id IS NULL OR excluded.internal_game_id = '' THEN game_roster_snapshots.internal_game_id ELSE excluded.internal_game_id END," : ""}
          captured_at = excluded.captured_at, roster_json = excluded.roster_json,
          player_count = excluded.player_count, updated_at = excluded.updated_at`
-    ).bind(identity.gameId, identity.game.date, capturedAtIso, rosterJson, players.length),
+    ).bind(...(storage.schemaReady
+      ? [identity.gameId, identity.game.date, capturedAtIso, rosterJson, players.length, storage.internalGameId]
+      : [identity.gameId, identity.game.date, capturedAtIso, rosterJson, players.length])),
     db.prepare(
       `UPDATE game_pregame_automation
           SET roster_status = 'captured', roster_captured_at = ?1,
@@ -3787,7 +3812,7 @@ async function saveRosterSnapshotFromNotice(db, identity, payload, capturedAt) {
         WHERE game_id = ?2`
     ).bind(capturedAtIso, identity.gameId)
   ]);
-  await linkLegacyGameRowsToInternalGameId(db, identity.game?.internalGameId || identity.internalGameId, identity.gameId);
+  await linkLegacyGameRowsToInternalGameId(db, storage.internalGameId, identity.gameId);
   return true;
 }
 
@@ -4253,11 +4278,20 @@ export function shouldAutoApproveOfficialLineup(autoApproveEnabled, lineupResult
 
 async function ensurePregameAutomationRow(db, identity, now) {
   const nowIso = now.toISOString();
+  const storage = await requireInternalGameIdForWrite(db, {
+    table: "game_pregame_automation",
+    gameId: identity.gameId,
+    internalGameId: identity.internalGameId || identity.game?.internalGameId || ""
+  });
+  const internalColumn = storage.schemaReady ? ", internal_game_id" : "";
+  const internalValue = storage.schemaReady ? ", ?5" : "";
   await db.prepare(
-    `INSERT INTO game_pregame_automation (game_id, game_date, start_at, created_at, updated_at)
-     VALUES (?1, ?2, ?3, ?4, ?4)
+    `INSERT INTO game_pregame_automation (game_id, game_date, start_at, created_at, updated_at${internalColumn})
+     VALUES (?1, ?2, ?3, ?4, ?4${internalValue})
      ON CONFLICT(game_id) DO UPDATE SET game_date = excluded.game_date, start_at = excluded.start_at, updated_at = excluded.updated_at`
-  ).bind(identity.gameId, identity.game.date, identity.startAt.toISOString(), nowIso).run();
+  ).bind(...(storage.schemaReady
+    ? [identity.gameId, identity.game.date, identity.startAt.toISOString(), nowIso, storage.internalGameId]
+    : [identity.gameId, identity.game.date, identity.startAt.toISOString(), nowIso])).run();
 }
 
 async function readRosterFetchState(db, gameId) {
@@ -4323,6 +4357,11 @@ function rosterFingerprint(players) {
 async function captureGameRosterSnapshot(env, gameId, now, { force = false, source = "admin", pregame = false } = {}) {
   const identity = getGameIdentityForPregame(gameId);
   if (!identity) throw createPregameError("SCHEDULE_UNAVAILABLE", "試合日程を確認できません。");
+  const storage = await requireInternalGameIdForWrite(env.AUTH_DB, {
+    table: "game_roster_snapshots",
+    gameId,
+    internalGameId: identity.internalGameId || identity.game?.internalGameId || ""
+  });
   await ensurePregameAutomationRow(env.AUTH_DB, identity, now);
   const frozen = await env.AUTH_DB.prepare("SELECT roster_fixed_at FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
   if (frozen?.roster_fixed_at) return { status: "frozen", fixedAt: frozen.roster_fixed_at };
@@ -4334,17 +4373,21 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
     if (!roster || payload.warning) throw createPregameError("INVALID_ROSTER", "NPBロースターの解析結果が不完全です。");
     const capturedAt = String(payload.fetchedAt || now.toISOString());
     const rosterJson = JSON.stringify(roster);
+    const internalColumn = storage.schemaReady ? ", internal_game_id" : "";
+    const internalValue = storage.schemaReady ? ", ?6" : "";
     await env.AUTH_DB.batch([
       env.AUTH_DB.prepare(
-        `INSERT INTO game_roster_snapshots (game_id, game_date, captured_at, roster_json, source, player_count, status, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, 'npb-roster', ?5, 'captured', ?3, ?3)
-         ON CONFLICT(game_id) DO UPDATE SET captured_at = excluded.captured_at, roster_json = excluded.roster_json, player_count = excluded.player_count, updated_at = excluded.updated_at`
-      ).bind(gameId, identity.game.date, capturedAt, rosterJson, roster.length),
+        `INSERT INTO game_roster_snapshots (game_id, game_date, captured_at, roster_json, source, player_count, status, created_at, updated_at${internalColumn})
+         VALUES (?1, ?2, ?3, ?4, 'npb-roster', ?5, 'captured', ?3, ?3${internalValue})
+         ON CONFLICT(game_id) DO UPDATE SET${storage.schemaReady ? " internal_game_id = CASE WHEN excluded.internal_game_id IS NULL OR excluded.internal_game_id = '' THEN game_roster_snapshots.internal_game_id ELSE excluded.internal_game_id END," : ""} captured_at = excluded.captured_at, roster_json = excluded.roster_json, player_count = excluded.player_count, updated_at = excluded.updated_at`
+      ).bind(...(storage.schemaReady
+        ? [gameId, identity.game.date, capturedAt, rosterJson, roster.length, storage.internalGameId]
+        : [gameId, identity.game.date, capturedAt, rosterJson, roster.length])),
       env.AUTH_DB.prepare(
         `UPDATE game_pregame_automation SET roster_status = 'captured', roster_captured_at = ?1, last_error_code = NULL, last_error_message = NULL, updated_at = ?1 WHERE game_id = ?2`
       ).bind(capturedAt, gameId)
     ]);
-    await linkLegacyGameRowsToInternalGameId(env.AUTH_DB, identity.game?.internalGameId || identity.internalGameId, gameId);
+    await linkLegacyGameRowsToInternalGameId(env.AUTH_DB, storage.internalGameId, gameId);
     await updateRosterFetchState(env.AUTH_DB, gameId, now, { source, success: true, pregame });
     return { status: "captured", playerCount: roster.length, capturedAt, roster };
   } catch (error) {
@@ -5879,6 +5922,7 @@ export function deriveReleaseReadiness({ schemaReady = true, counts = {} } = {})
     gamesWithoutInternalGameId: numeric("gamesWithoutInternalGameId"),
     identifiersWithoutGames: numeric("identifiersWithoutGames"),
     newLegacyOnlyWritesLast24h: numeric("newLegacyOnlyWritesLast24h"),
+    retryWaitBlockerCount: numeric("retryWaitBlockerCount"),
     publishedWorkflowMismatchCount: numeric("publishedWorkflowMismatchCount")
   };
   if (!schemaReady) blockers.push("WORKFLOW_SCHEMA_NOT_READY");
@@ -5888,11 +5932,183 @@ export function deriveReleaseReadiness({ schemaReady = true, counts = {} } = {})
   if (checks.missingDownstreamJobCount > 0) blockers.push("MISSING_DOWNSTREAM_JOB");
   if (checks.staleLeaseCount > 0) blockers.push("STALE_LEASE");
   if (checks.newLegacyOnlyWritesLast24h > 0) blockers.push("RECENT_LEGACY_ONLY_WRITE");
+  if (checks.retryWaitBlockerCount > 0) blockers.push("RETRY_WAIT_EXPIRED");
   if (checks.publishedWorkflowMismatchCount > 0) blockers.push("WORKFLOW_STATE_CONFLICT");
   if (checks.permanentlyFailedCount > 0) warnings.push("PERMANENTLY_FAILED_JOBS");
   if (checks.serviceUnavailableCount > 0) warnings.push("SERVICE_UNAVAILABLE_GAMES");
   if (checks.retryWaitCount > 0) warnings.push("RETRY_WAIT_JOBS");
   return { ready: blockers.length === 0, blockers, warnings, checks };
+}
+
+const RELEASE_READINESS_LEGACY_AUDIT_LIMIT = 200;
+const RETRY_WAIT_STALE_GRACE_MS = 60 * 60 * 1000;
+
+function isAuditableGameId(value) {
+  const gameId = String(value || "").trim();
+  if (!gameId || /^day-\d{4}-\d{2}-\d{2}$/i.test(gameId)) return false;
+  return !["global", "batch", "system"].includes(gameId.toLowerCase());
+}
+
+async function collectGamesWithoutInternalGameIdDetails(db, dateFrom, dateTo) {
+  const result = await db.prepare(
+    `SELECT schedule.game_id, schedule.game_date, schedule.start_at, schedule.home_team, schedule.away_team,
+            schedule.game_code, schedule.source_game_key, schedule.internal_game_id,
+            schedule.created_at, schedule.updated_at,
+            (SELECT COUNT(*) FROM games
+              WHERE games.game_date = schedule.game_date
+                AND games.start_time = schedule.start_at
+                AND games.home_team = schedule.home_team
+                AND games.away_team = schedule.away_team) AS games_candidate_count,
+            (SELECT COUNT(*) FROM game_identifiers identifiers
+              WHERE identifiers.identifier_value IN (schedule.game_id, schedule.game_code, schedule.source_game_key)) AS identifier_candidate_count
+       FROM detected_game_schedule schedule
+      WHERE schedule.game_date >= ?1 AND schedule.game_date <= ?2
+        AND (schedule.internal_game_id IS NULL OR schedule.internal_game_id = '')
+      ORDER BY schedule.game_date DESC, schedule.start_at DESC, schedule.game_id ASC
+      LIMIT ?3`
+  ).bind(dateFrom, dateTo, RELEASE_READINESS_LEGACY_AUDIT_LIMIT).all();
+  return (result.results || []).map((row) => {
+    const gamesCandidateCount = Number(row.games_candidate_count || 0);
+    const identifierCandidateCount = Number(row.identifier_candidate_count || 0);
+    return {
+      scheduleGameId: String(row.game_id || ""),
+      gameDate: row.game_date || null,
+      startTime: row.start_at || null,
+      homeTeam: row.home_team || "",
+      awayTeam: row.away_team || "",
+      npbGameCode: row.game_code || null,
+      sourceGameKey: row.source_game_key || null,
+      detectedScheduleInternalGameId: row.internal_game_id || null,
+      gamesCandidateCount,
+      identifierCandidateCount,
+      createdBy: "schedule_sync",
+      createdAt: row.created_at || null,
+      updatedAt: row.updated_at || null,
+      reasonCode: gamesCandidateCount > 1
+        ? "INTERNAL_GAME_IDENTITY_AMBIGUOUS"
+        : gamesCandidateCount === 1
+          ? "SCHEDULE_INTERNAL_GAME_ID_LINK_MISSING"
+          : identifierCandidateCount > 1
+            ? "INTERNAL_GAME_IDENTIFIER_AMBIGUOUS"
+            : "INTERNAL_GAME_REGISTRY_MISSING"
+    };
+  });
+}
+
+async function collectRecentLegacyOnlyWrites(db, since) {
+  const definitions = [
+    { table: "detected_game_schedule", timestampColumn: "updated_at", source: "schedule_sync" },
+    { table: "predictions", timestampColumn: "updated_at", source: "prediction_save", exclusion: " AND is_test_prediction = 0" },
+    { table: "probable_starters", timestampColumn: "updated_at", source: "probable_starter_fetch" },
+    { table: "game_roster_snapshots", timestampColumn: "created_at", sourceColumn: "source", source: "roster_fetch" },
+    { table: "game_pregame_automation", timestampColumn: "created_at", source: "pregame_automation" },
+    { table: "game_lineups", timestampColumn: "created_at", sourceColumn: "lineup_source", source: "lineup_save" },
+    { table: "ranking_games", timestampColumn: "created_at", source: "ranking_state", exclusion: " AND (is_test_game = 0 OR is_test_game IS NULL)" },
+    { table: "game_rescore_jobs", timestampColumn: "created_at", source: "rescore" }
+  ];
+  const rows = [];
+  for (const definition of definitions) {
+    const sourceExpression = definition.sourceColumn ? `COALESCE(${definition.sourceColumn}, '${definition.source}')` : `'${definition.source}'`;
+    try {
+      const result = await db.prepare(
+        `SELECT game_id, ${definition.timestampColumn} AS occurred_at, ${sourceExpression} AS write_source
+           FROM ${definition.table}
+          WHERE (internal_game_id IS NULL OR internal_game_id = '')
+            AND ${definition.timestampColumn} >= ?1
+            AND game_id IS NOT NULL AND game_id <> ''
+            AND game_id NOT LIKE 'day-%'${definition.exclusion || ""}
+          ORDER BY ${definition.timestampColumn} DESC
+          LIMIT ?2`
+      ).bind(since, RELEASE_READINESS_LEGACY_AUDIT_LIMIT).all();
+      for (const row of result.results || []) {
+        if (!isAuditableGameId(row.game_id)) continue;
+        rows.push({
+          table: definition.table,
+          gameId: String(row.game_id),
+          createdAt: row.occurred_at || null,
+          writeSource: String(row.write_source || definition.source),
+          expectedInternalGameId: "",
+          reasonCode: "INTERNAL_GAME_ID_NOT_PERSISTED"
+        });
+      }
+    } catch (error) {
+      if (!isPregameSchemaError(error)) throw error;
+    }
+  }
+  const uniqueGameIds = [...new Set(rows.map((row) => row.gameId))];
+  if (uniqueGameIds.length) {
+    const placeholders = uniqueGameIds.map((_, index) => `?${index + 1}`).join(", ");
+    const [schedule, identifiers] = await Promise.all([
+      db.prepare(`SELECT game_id, internal_game_id FROM detected_game_schedule WHERE game_id IN (${placeholders})`).bind(...uniqueGameIds).all(),
+      db.prepare(`SELECT identifier_value, internal_game_id FROM game_identifiers WHERE identifier_value IN (${placeholders})`).bind(...uniqueGameIds).all()
+    ]);
+    const resolved = new Map();
+    for (const row of [...(schedule.results || []), ...(identifiers.results || []).map((item) => ({ game_id: item.identifier_value, internal_game_id: item.internal_game_id }))]) {
+      const id = String(row.internal_game_id || "").trim();
+      if (!id) continue;
+      const values = resolved.get(String(row.game_id)) || new Set();
+      values.add(id);
+      resolved.set(String(row.game_id), values);
+    }
+    for (const row of rows) {
+      const candidates = [...(resolved.get(row.gameId) || [])];
+      if (candidates.length === 1 && INTERNAL_GAME_ID_PATTERN.test(candidates[0])) {
+        row.expectedInternalGameId = candidates[0];
+        row.reasonCode = "INTERNAL_GAME_ID_NOT_PERSISTED";
+      } else if (candidates.length > 1) {
+        row.reasonCode = "INTERNAL_GAME_ID_AMBIGUOUS";
+      } else {
+        row.reasonCode = "INTERNAL_GAME_ID_UNRESOLVED";
+      }
+    }
+  }
+  return rows
+    .sort((left, right) => String(right.createdAt || "").localeCompare(String(left.createdAt || "")) || left.table.localeCompare(right.table) || left.gameId.localeCompare(right.gameId))
+    .slice(0, RELEASE_READINESS_LEGACY_AUDIT_LIMIT);
+}
+
+function summarizeLegacyOnlyWrites(rows) {
+  const byTable = {};
+  const bySource = {};
+  for (const row of rows) {
+    byTable[row.table] = (byTable[row.table] || 0) + 1;
+    bySource[row.writeSource] = (bySource[row.writeSource] || 0) + 1;
+  }
+  return { byTable, bySource };
+}
+
+export function classifyRetryWaitJobs(rows, now) {
+  const current = now instanceof Date ? now : new Date(now);
+  const retryWaitJobs = (rows || []).filter((row) => row.status === "retry_wait").map((row) => {
+    const nextAttemptAt = row.next_attempt_at ? new Date(row.next_attempt_at) : null;
+    const overdue = Boolean(nextAttemptAt && current.getTime() - nextAttemptAt.getTime() > RETRY_WAIT_STALE_GRACE_MS);
+    const attemptsExceeded = Number(row.attempt_count || 0) >= Number(row.max_attempts || 1);
+    const internalMissing = !INTERNAL_GAME_ID_PATTERN.test(String(row.internal_game_id || ""));
+    const expired = attemptsExceeded || String(row.error_code || "") === SCORING_RETRY_EXPIRED_CODE || !nextAttemptAt;
+    const blockerReasonCode = internalMissing
+      ? "INTERNAL_GAME_ID_UNRESOLVED"
+      : expired
+        ? "RETRY_WINDOW_EXPIRED"
+        : overdue
+          ? "RETRY_WAIT_OVERDUE"
+          : "";
+    return {
+      internalGameId: row.internal_game_id || null,
+      jobType: row.job_type,
+      status: row.status,
+      scheduledSlotAt: row.scheduled_slot_at || null,
+      nextAttemptAt: row.next_attempt_at || null,
+      attemptCount: Number(row.attempt_count || 0),
+      maxAttempts: Number(row.max_attempts || 0),
+      errorCode: row.error_code || null,
+      updatedAt: row.updated_at || null,
+      overdue,
+      blockerReasonCode: blockerReasonCode || null
+    };
+  });
+  const blockers = retryWaitJobs.filter((job) => job.blockerReasonCode);
+  const oldestRetryWaitAt = retryWaitJobs.map((job) => job.updatedAt).filter(Boolean).sort()[0] || null;
+  return { retryWaitJobs, retryWaitBlockerCount: blockers.length, oldestRetryWaitAt };
 }
 
 async function collectReleaseReadiness(env, now = new Date()) {
@@ -5904,7 +6120,7 @@ async function collectReleaseReadiness(env, now = new Date()) {
   const dateFrom = getJstDateString(yesterday);
   const dateTo = getJstDateString(tomorrow);
   const timestamp24h = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
-  const [workflowRows, jobRows, staleLease, duplicateSlots, scheduleMissing, identifiersMissing, currentLineups, health] = await Promise.all([
+  const [workflowRows, jobRows, staleLease, duplicateSlots, scheduleMissing, scheduleMissingDetails, identifiersMissing, currentLineups, health] = await Promise.all([
     db.prepare(
       `SELECT state.internal_game_id, state.game_status, state.workflow_status, games.game_date
          FROM game_workflow_state state
@@ -5912,7 +6128,8 @@ async function collectReleaseReadiness(env, now = new Date()) {
         WHERE games.game_date >= ?1 AND games.game_date <= ?2`
     ).bind(dateFrom, dateTo).all(),
     db.prepare(
-      `SELECT internal_game_id, job_type, status, scheduled_slot_at, next_attempt_at
+      `SELECT internal_game_id, job_type, status, scheduled_slot_at, next_attempt_at,
+              attempt_count, max_attempts, error_code, updated_at
          FROM game_job_runs
         WHERE scheduled_slot_at <= ?1 OR status IN ('retry_wait', 'claimed', 'running')`
     ).bind(tomorrow.toISOString()).all(),
@@ -5932,6 +6149,7 @@ async function collectReleaseReadiness(env, now = new Date()) {
       `SELECT COUNT(*) AS count FROM detected_game_schedule
         WHERE game_date >= ?1 AND game_date <= ?2 AND (internal_game_id IS NULL OR internal_game_id = '')`
     ).bind(dateFrom, dateTo).first(),
+    collectGamesWithoutInternalGameIdDetails(db, dateFrom, dateTo),
     db.prepare(
       `SELECT COUNT(*) AS count FROM game_identifiers identifiers
          LEFT JOIN games ON games.internal_game_id = identifiers.internal_game_id
@@ -5947,6 +6165,7 @@ async function collectReleaseReadiness(env, now = new Date()) {
     ).bind().first()
   ]);
   const jobs = jobRows.results || [];
+  const retryState = classifyRetryWaitJobs(jobs, now);
   const jobsByGame = new Map();
   for (const job of jobs) {
     const list = jobsByGame.get(job.internal_game_id) || [];
@@ -5978,18 +6197,21 @@ async function collectReleaseReadiness(env, now = new Date()) {
     gamesWithoutInternalGameId: Number(scheduleMissing?.count || 0),
     identifiersWithoutGames: Number(identifiersMissing?.count || 0),
     newLegacyOnlyWritesLast24h: 0,
+    retryWaitBlockerCount: retryState.retryWaitBlockerCount,
     publishedWorkflowMismatchCount: currentWorkflows.filter((row) => row.workflow_status === "published"
       && lineupsByGame.get(row.internal_game_id)?.publication_status !== "published").length
   };
-  const storage = await getInternalGameIdStorageAvailability(db, ["predictions", "game_lineups", "ranking_games"]);
-  const legacyWriteChecks = [];
-  if (storage.predictions) legacyWriteChecks.push(db.prepare("SELECT COUNT(*) AS count FROM predictions WHERE (internal_game_id IS NULL OR internal_game_id = '') AND submitted_at >= ?1").bind(timestamp24h).first());
-  if (storage.game_lineups) legacyWriteChecks.push(db.prepare("SELECT COUNT(*) AS count FROM game_lineups WHERE (internal_game_id IS NULL OR internal_game_id = '') AND created_at >= ?1").bind(timestamp24h).first());
-  if (storage.ranking_games) legacyWriteChecks.push(db.prepare("SELECT COUNT(*) AS count FROM ranking_games WHERE (internal_game_id IS NULL OR internal_game_id = '') AND created_at >= ?1").bind(timestamp24h).first());
-  const legacyWrites = await Promise.all(legacyWriteChecks);
-  counts.newLegacyOnlyWritesLast24h = legacyWrites.reduce((total, row) => total + Number(row?.count || 0), 0);
+  const recentLegacyOnlyWrites = await collectRecentLegacyOnlyWrites(db, timestamp24h);
+  counts.newLegacyOnlyWritesLast24h = recentLegacyOnlyWrites.length;
+  const legacyWriteSummary = summarizeLegacyOnlyWrites(recentLegacyOnlyWrites);
   return {
     ...deriveReleaseReadiness({ schemaReady, counts }),
+    gamesWithoutInternalGameIdDetails: scheduleMissingDetails,
+    recentLegacyOnlyWrites,
+    legacyOnlyWritesByTable: legacyWriteSummary.byTable,
+    legacyOnlyWritesBySource: legacyWriteSummary.bySource,
+    oldestRetryWaitAt: retryState.oldestRetryWaitAt,
+    retryWaitJobs: retryState.retryWaitJobs,
     dateFrom,
     dateTo,
     cronLastRunAt: health?.cron_last_run_at || null,
@@ -6024,12 +6246,15 @@ export function selectNextPredictionTarget(games, now = new Date()) {
 
 async function getServerPredictionTarget(db, now = new Date()) {
   let detectedGames = [];
+  let registryAvailable = false;
   try {
     const registry = await getGameIdentityRegistryAvailability(db);
+    registryAvailable = registry.available;
+    const internalFilter = registry.scheduleColumnAvailable ? " AND internal_game_id IS NOT NULL AND internal_game_id <> ''" : "";
     const rows = await db.prepare(
       `SELECT game_id, game_date, start_at, home_team, away_team, game_code, venue, game_status${registry.scheduleColumnAvailable ? ", internal_game_id" : ""}
          FROM detected_game_schedule
-        WHERE game_status = 'scheduled' AND start_at > ?1
+        WHERE game_status = 'scheduled' AND start_at > ?1${internalFilter}
         ORDER BY start_at ASC LIMIT 50`
     ).bind(now.toISOString()).all();
     detectedGames = (rows.results || []).map((row) => ({
@@ -6047,6 +6272,7 @@ async function getServerPredictionTarget(db, now = new Date()) {
     // 既存D1に検出日程テーブルがない環境では、静的日程へ安全にフォールバックします。
   }
   const target = selectNextPredictionTarget([...detectedGames, ...getScheduledGames()], now);
+  if (registryAvailable && target && !INTERNAL_GAME_ID_PATTERN.test(String(target.internalGameId || ""))) return null;
   return target ? serializePredictionTarget(target) : null;
 }
 
@@ -6404,18 +6630,25 @@ async function isServiceUnavailableGame(db, gameId) {
   return isServiceUnavailableGameStatus(row?.game_status);
 }
 
-async function markGameServiceUnavailable(db, gameId, at, reasonCode = SCORING_RETRY_EXPIRED_CODE) {
+async function markGameServiceUnavailable(db, gameId, at, reasonCode = SCORING_RETRY_EXPIRED_CODE, internalGameId = "") {
   const metadata = parsePredictionGameId(gameId);
   if (!metadata) return false;
   const now = toIsoString(at);
   const existing = await getRankingGameState(db, gameId);
   if (Number(existing?.is_test_game || 0) === 1 || ["scored", "cancelled"].includes(existing?.game_status)) return false;
+  const storage = await getInternalGameIdStorageAvailability(db, ["ranking_games"]);
+  if (storage.ranking_games) {
+    internalGameId = (await requireInternalGameIdForWrite(db, { table: "ranking_games", gameId, internalGameId })).internalGameId;
+  }
+  const internalColumn = storage.ranking_games ? ", internal_game_id" : "";
+  const internalValue = storage.ranking_games ? ", ?2" : "";
   await db.prepare(
     `INSERT INTO ranking_games
-       (game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game,
+       (game_id${internalColumn}, game_date, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game,
         publication_status, scored_private_at, published_at, created_at, updated_at)
-     VALUES (?1, ?2, 0, NULL, ?3, 0, 'pending', NULL, NULL, ?4, ?4)
+     VALUES (?1${internalValue}, ?${storage.ranking_games ? 4 : 2}, 0, NULL, ?${storage.ranking_games ? 5 : 3}, 0, 'pending', NULL, NULL, ?${storage.ranking_games ? 6 : 4}, ?${storage.ranking_games ? 6 : 4})
      ON CONFLICT(game_id) DO UPDATE SET
+       ${storage.ranking_games ? "internal_game_id = excluded.internal_game_id," : ""}
        game_date = excluded.game_date,
        is_ranking_eligible = 0,
        ranking_eligible_at = NULL,
@@ -6425,7 +6658,9 @@ async function markGameServiceUnavailable(db, gameId, at, reasonCode = SCORING_R
        scored_private_at = NULL,
        published_at = NULL,
        updated_at = excluded.updated_at`
-  ).bind(gameId, metadata.date, SERVICE_UNAVAILABLE_GAME_STATUS, now).run();
+  ).bind(...(storage.ranking_games
+    ? [gameId, internalGameId, metadata.date, SERVICE_UNAVAILABLE_GAME_STATUS, now]
+    : [gameId, metadata.date, SERVICE_UNAVAILABLE_GAME_STATUS, now])).run();
   return true;
 }
 
@@ -6686,7 +6921,7 @@ async function executeCompletionWorkflowJob(env, job, now) {
   } else if (job.job_type === "ranking_update") {
     const lineup = await getGameLineup(env.AUTH_DB, target.gameId);
     if (!lineup || lineup.scoring_status !== "scored") throw createPregameError("SCORING_LINEUP_REQUIRED", "採点結果がありません。");
-    await markGameRankingScoredPrivate(env.AUTH_DB, target.gameId, lineup.scored_at || now.toISOString(), env);
+    await markGameRankingScoredPrivate(env.AUTH_DB, target.gameId, lineup.scored_at || now.toISOString(), env, 0, job.internal_game_id);
     result = { status: "ranking_updated" };
     await transitionWorkflowState(env.AUTH_DB, { internalGameId: job.internal_game_id, to: "scored_private", completedJobType: job.job_type, now });
   } else if (job.job_type === "publication") {
@@ -7838,6 +8073,11 @@ async function handleAdminRescorePreview(request, env, cors, metadata, user) {
     const now = new Date();
     const previewId = randomToken(20);
     const previewExpiresAt = new Date(Math.min(expiresAt.getTime(), now.getTime() + MANUAL_RESCORE_PREVIEW_TTL_MS));
+    const writeIdentity = await requireInternalGameIdForWrite(env.AUTH_DB, {
+      table: "game_rescore_jobs",
+      gameId: metadata.gameId,
+      internalGameId: metadata.internalGameId
+    });
     await env.AUTH_DB.batch([
       env.AUTH_DB.prepare(
         `INSERT INTO game_rescore_previews
@@ -7845,9 +8085,11 @@ async function handleAdminRescorePreview(request, env, cors, metadata, user) {
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
       ).bind(previewId, metadata.gameId, version, user.id, reason, JSON.stringify(summary), summary.processed, previewExpiresAt.toISOString(), now.toISOString()),
       env.AUTH_DB.prepare(
-        `INSERT INTO game_rescore_jobs (id, game_id, lineup_version, status, error_code, created_at, updated_at)
-         VALUES (?1, ?2, ?3, 'previewed', NULL, ?4, ?4)`
-      ).bind(previewId, metadata.gameId, version, now.toISOString())
+        `INSERT INTO game_rescore_jobs (id, game_id${writeIdentity.schemaReady ? ", internal_game_id" : ""}, lineup_version, status, error_code, created_at, updated_at)
+         VALUES (?1, ?2${writeIdentity.schemaReady ? ", ?3" : ""}, ?${writeIdentity.schemaReady ? 4 : 3}, 'previewed', NULL, ?${writeIdentity.schemaReady ? 5 : 4}, ?${writeIdentity.schemaReady ? 5 : 4})`
+      ).bind(...(writeIdentity.schemaReady
+        ? [previewId, metadata.gameId, writeIdentity.internalGameId, version, now.toISOString()]
+        : [previewId, metadata.gameId, version, now.toISOString()]))
     ]);
     await writeManualRescoreAudit(env.AUTH_DB, metadata, null, version, reason, user.id, now, summary, "previewed");
     await recordWorkflowLog(env.AUTH_DB, {
@@ -8158,8 +8400,12 @@ function parseLineupDetectedAt(value) {
 
 // Cron自動承認と管理者の本承認は、このサーバー側の同一処理で採点待ち状態を作ります。
 async function approveActualLineupForAutoScoring(env, gameId, actualLineup, detectedAt, options = {}) {
-  const record = await saveActualLineupForAutoScoring(env.AUTH_DB, gameId, actualLineup, detectedAt, options);
-  await markGameRankingPending(env.AUTH_DB, gameId, detectedAt, env, options.isTestGame ? 1 : 0, options.internalGameId || "");
+  const writeIdentity = options.isTestGame
+    ? { internalGameId: String(options.internalGameId || ""), schemaReady: false }
+    : await requireInternalGameIdForWrite(env.AUTH_DB, { table: "game_lineups", gameId, internalGameId: options.internalGameId || "" });
+  const effectiveOptions = { ...options, internalGameId: writeIdentity.internalGameId };
+  const record = await saveActualLineupForAutoScoring(env.AUTH_DB, gameId, actualLineup, detectedAt, effectiveOptions);
+  await markGameRankingPending(env.AUTH_DB, gameId, detectedAt, env, options.isTestGame ? 1 : 0, writeIdentity.internalGameId);
   return record;
 }
 
@@ -8170,7 +8416,11 @@ async function saveActualLineupForAutoScoring(db, gameId, actualLineup, detected
     throw new Error("actual lineup payload exceeds the allowed size");
   }
   const fingerprint = await sha256Base64Url(actualLineupJson);
-  const internalGameId = String(options.internalGameId || "");
+  const storage = await getInternalGameIdStorageAvailability(db, ["game_lineups"]);
+  const writeIdentity = options.isTestGame
+    ? { internalGameId: String(options.internalGameId || ""), schemaReady: storage.game_lineups }
+    : await requireInternalGameIdForWrite(db, { table: "game_lineups", gameId, internalGameId: options.internalGameId || "" });
+  const internalGameId = writeIdentity.internalGameId;
   const existing = await getGameLineup(db, { gameId, internalGameId });
   if (existing && options.preventOverwrite) {
     return existing;
@@ -8185,7 +8435,6 @@ async function saveActualLineupForAutoScoring(db, gameId, actualLineup, detected
   const scoringDueAt = (requestedDueAt || new Date(detectedAt.getTime() + Math.max(0, delaySeconds) * 1000)).toISOString();
   const lineupSource = options.source === "npb-auto" ? "npb-auto" : "manual";
   const id = existing?.id || randomToken(16);
-  const storage = await getInternalGameIdStorageAvailability(db, ["game_lineups"]);
   await db.prepare(
     `INSERT INTO game_lineups
        (id, game_id${storage.game_lineups ? ", internal_game_id" : ""}, actual_lineup_json, lineup_fingerprint, schema_version,
@@ -8530,6 +8779,9 @@ async function markGameRankingPending(db, gameId, at, env, isTestGame = 0, inter
   if (!metadata) return;
   const now = toIsoString(at);
   const storage = await getInternalGameIdStorageAvailability(db, ["ranking_games"]);
+  if (storage.ranking_games && !isTestGame) {
+    internalGameId = (await requireInternalGameIdForWrite(db, { table: "ranking_games", gameId, internalGameId })).internalGameId;
+  }
   const hasInternalGameId = storage.ranking_games && INTERNAL_GAME_ID_PATTERN.test(String(internalGameId || ""));
   if (hasInternalGameId) {
     const sql = isTestGame
@@ -8577,6 +8829,9 @@ async function createGameRankingScoredPrivateStatement(db, gameId, scoredAt, isT
   if (!metadata) return null;
   const now = toIsoString(scoredAt);
   const storage = await getInternalGameIdStorageAvailability(db, ["ranking_games"]);
+  if (storage.ranking_games && !isTestGame) {
+    internalGameId = (await requireInternalGameIdForWrite(db, { table: "ranking_games", gameId, internalGameId })).internalGameId;
+  }
   const hasInternalGameId = storage.ranking_games && INTERNAL_GAME_ID_PATTERN.test(String(internalGameId || ""));
   if (hasInternalGameId) {
     const sql = isTestGame
@@ -8620,8 +8875,8 @@ async function createGameRankingScoredPrivateStatement(db, gameId, scoredAt, isT
     .bind(gameId, metadata.date, now);
 }
 
-async function markGameRankingScoredPrivate(db, gameId, scoredAt, env, isTestGame = 0) {
-  const statement = await createGameRankingScoredPrivateStatement(db, gameId, scoredAt, isTestGame);
+async function markGameRankingScoredPrivate(db, gameId, scoredAt, env, isTestGame = 0, internalGameId = "") {
+  const statement = await createGameRankingScoredPrivateStatement(db, gameId, scoredAt, isTestGame, internalGameId);
   if (statement) await statement.run();
 }
 
@@ -9038,7 +9293,7 @@ async function handleGetCurrentPrediction(request, env, cors) {
   return jsonResponse({
     ok: true,
     gameId: metadata.gameId,
-    internalGameId: metadata.internalGameId || "",
+    internalGameId,
     legacyGameId: metadata.legacyGameId || metadata.gameId,
     prediction,
     status: published ? row.status : row.status === "scored" ? "submitted" : row.status,
@@ -9114,6 +9369,15 @@ async function handlePutCurrentPrediction(request, env, cors) {
   // 一般の予想保存でクライアント入力をテスト扱いにすることはありません。
   const isTestPrediction = 0;
   const predictionStorage = await getInternalGameIdStorageAvailability(env.AUTH_DB, ["predictions"]);
+  let internalGameId = metadata.internalGameId || "";
+  if (predictionStorage.predictions) {
+    try {
+      internalGameId = (await requireInternalGameIdForWrite(env.AUTH_DB, { table: "predictions", gameId: metadata.gameId, internalGameId })).internalGameId;
+    } catch (error) {
+      return jsonResponse({ ok: false, code: error?.code || "INTERNAL_GAME_ID_REQUIRED", error: "内部試合IDを解決できないため、予想を保存できません。" }, 409, cors);
+    }
+  }
+  const resolvedMetadata = { ...metadata, internalGameId };
   const result = await env.AUTH_DB.prepare(
     `INSERT INTO predictions
        (id, user_id, game_id${predictionStorage.predictions ? ", internal_game_id" : ""}, prediction_json, schema_version,
@@ -9139,7 +9403,7 @@ async function handlePutCurrentPrediction(request, env, cors) {
     id,
     session.id,
     storageGameId,
-    ...(predictionStorage.predictions ? [metadata.internalGameId || null] : []),
+    ...(predictionStorage.predictions ? [internalGameId || null] : []),
     predictionJson,
     PREDICTION_SCHEMA_VERSION,
     metadata.date,
@@ -9152,7 +9416,7 @@ async function handlePutCurrentPrediction(request, env, cors) {
   ).run();
 
   if (Number(result?.meta?.changes || 0) !== 1) {
-    const current = await getPredictionRow(env.AUTH_DB, session.id, metadata);
+    const current = await getPredictionRow(env.AUTH_DB, session.id, resolvedMetadata);
     if (current && isPredictionLocked(current)) {
       return jsonResponse({ ok: false, error: "この試合の予想受付は終了しています。" }, 409, cors);
     }
@@ -9163,7 +9427,7 @@ async function handlePutCurrentPrediction(request, env, cors) {
   return jsonResponse({
     ok: true,
     gameId: metadata.gameId,
-    internalGameId: metadata.internalGameId || "",
+    internalGameId,
     legacyGameId: metadata.legacyGameId || metadata.gameId,
     created,
     updated: !created,

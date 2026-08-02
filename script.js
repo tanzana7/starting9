@@ -4317,6 +4317,38 @@ function renderAdminGameWorkflowStatus() {
   const automationHealth = record.automation?.health || {};
   const currentGame = record.currentGame || {};
   const jobSummary = record.jobSummary || {};
+  const lineupJobStatus = record.lineupFetchState || jobSummary.lineupFetchState || "not_started";
+  const finalLineupJob = record.lineupFetchStatus?.final || jobSummary.lineupFetchStatus?.final || null;
+  const lastFetchAttempt = record.lastFetchAttempt || jobSummary.lastFetchAttempt || null;
+  const jobWarnings = Array.isArray(record.warnings) ? record.warnings : [];
+  const jobErrors = Array.isArray(record.errors) ? record.errors : [];
+  const lineupJobReason = lastFetchAttempt
+    ? `${lastFetchAttempt.errorCode || lastFetchAttempt.health?.reasonCode || lineupJobStatus}${lastFetchAttempt.errorDetail ? `: ${lastFetchAttempt.errorDetail}` : ""}`
+    : lineupJobStatus === "not_started" ? "未作成" : lineupJobStatus;
+  const lineupAttemptCount = lastFetchAttempt
+    ? `${Number(lastFetchAttempt.attemptCount || 0)} / ${Number(lastFetchAttempt.maxAttempts || 0) || "-"}`
+    : "-";
+  const finalLineupDisplay = lineup.finalLineupFallbackUsed
+    ? "最終取得失敗・直前取得データを使用"
+    : finalLineupJob?.status === "retry_wait"
+      ? `${finalLineupJob.health?.level === "error" ? "エラー" : "再試行待ち"}（${finalLineupJob.errorCode || "理由未記録"}）`
+      : finalLineupJob?.status === "permanently_failed"
+        ? `恒久失敗（${finalLineupJob.errorCode || "理由未記録"}）`
+        : finalLineupJob?.status === "pending" || finalLineupJob?.status === "claimed" || finalLineupJob?.status === "running"
+          ? "実行待ち"
+          : (lineup.finalLineupErrorCode ? `取得失敗（${lineup.finalLineupErrorCode}）` : lineup.status === "captured" ? "取得済み" : "未実行");
+  const validation = record.validation || lastFetchAttempt?.validation || null;
+  const validationDetail = validation
+    ? [
+      validation.validationReason,
+      validation.parseStage,
+      validation.parsedCount !== null && validation.expectedCount !== null ? `行数 ${validation.parsedCount}/${validation.expectedCount}` : "",
+      validation.duplicatePlayerCount ? `重複 ${validation.duplicatePlayerCount}` : "",
+      validation.missingPositionCount ? `守備位置欠損 ${validation.missingPositionCount}` : "",
+      validation.sourceUrlHost ? `取得元 ${validation.sourceUrlHost}` : "",
+      validation.httpStatus ? `HTTP ${validation.httpStatus}` : ""
+    ].filter(Boolean).join(" / ")
+    : "なし";
   const historicalFailures = Array.isArray(record.historicalFailures) ? record.historicalFailures : [];
   const provisionalLineup = Array.isArray(lineup.provisionalLineup)
     ? lineup.provisionalLineup.map((item) => `${item.battingOrder}番 ${item.position || ""} ${item.playerName || ""}`.trim()).join(" / ")
@@ -4328,9 +4360,12 @@ function renderAdminGameWorkflowStatus() {
     ["受付状態", getEffectivePredictionDeadline().isClosed ? "締切後" : "締切前"],
     ["現在のワークフロー", getGameWorkflowStepLabel(workflow.currentStep)],
     ["正式スタメン", formatPregameAutomationStatus(lineup.status)],
-    ["最終スタメン取得", lineup.finalLineupFallbackUsed
-      ? "最終取得失敗・直前取得データを使用"
-      : (lineup.finalLineupErrorCode ? `取得失敗（${lineup.finalLineupErrorCode}）` : "未実行")],
+    ["最終スタメン取得", finalLineupDisplay],
+    ["スタメンjob状態", lineupJobStatus],
+    ["スタメン取得理由", lineupJobReason],
+    ["スタメン試行回数", lineupAttemptCount],
+    ["スタメン次回試行", lastFetchAttempt?.nextAttemptAt ? formatDateTime(lastFetchAttempt.nextAttemptAt) : "-"],
+    ["スタメン検証詳細", validationDetail],
     ["仮スタメン", provisionalLineup || "未取得"],
     ["採点状態", formatAutoScoringStatus(scoring.status, scoring.publicationStatus)],
     ["採点時刻", scoring.scoredAt ? formatDateTime(scoring.scoredAt) : "-"],
@@ -4358,8 +4393,9 @@ function renderAdminGameWorkflowStatus() {
     : "";
   summary.innerHTML = `<strong>${paused ? "緊急停止中" : "自動運転中"}</strong><span>${paused ? "この試合のCron自動処理は停止しています。" : "毎分、試合状態を確認しています。次回確認: 1分以内"}</span><dl>${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>${historicalMarkup}`;
   const workflowError = workflow.errorCode ? `${workflow.errorCode}${workflow.errorMessage ? `: ${workflow.errorMessage}` : ""}` : "";
-  message.textContent = state.gameWorkflow.message || workflowError || (paused ? "再開するまで公示・締切・取得・採点・公開の自動処理は実行されません。" : "管理者操作なしでCronが処理を進めます。");
-  message.className = `message${workflowError ? " error-message" : ""}`;
+  const jobIssue = jobErrors[0] || jobWarnings[0] || "";
+  message.textContent = state.gameWorkflow.message || workflowError || jobIssue || (paused ? "再開するまで公示・締切・取得・採点・公開の自動処理は実行されません。" : "管理者操作なしでCronが処理を進めます。");
+  message.className = `message${workflowError || jobErrors.length ? " error-message" : jobWarnings.length ? " warning-message" : ""}`;
 }
 
 async function refreshAdminGameWorkflowStatus({ force = false } = {}) {

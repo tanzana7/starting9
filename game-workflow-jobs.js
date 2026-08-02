@@ -172,6 +172,7 @@ export async function retryWorkflowJob(db, {
   claimToken,
   errorCode,
   errorDetail = "",
+  errorMetadata = null,
   nextAttemptAt,
   now = new Date()
 } = {}) {
@@ -180,13 +181,26 @@ export async function retryWorkflowJob(db, {
   const maxAttempts = Math.max(1, Number(job?.max_attempts || 1));
   const permanentlyFailed = attemptCount >= maxAttempts;
   const status = permanentlyFailed ? "permanently_failed" : "retry_wait";
+  const serializedMetadata = errorMetadata && typeof errorMetadata === "object"
+    ? JSON.stringify(errorMetadata).slice(0, 1200)
+    : null;
   const result = await db.prepare(
     `UPDATE game_job_runs
         SET status = ?1, completed_at = CASE WHEN ?1 = 'permanently_failed' THEN ?2 ELSE NULL END,
             next_attempt_at = CASE WHEN ?1 = 'retry_wait' THEN ?3 ELSE NULL END,
-            lease_expires_at = NULL, error_code = ?4, error_detail = ?5, updated_at = ?2
+            lease_expires_at = NULL, error_code = ?4, error_detail = ?5,
+            result_metadata = ?8, updated_at = ?2
       WHERE id = ?6 AND claim_token = ?7 AND status IN ('claimed', 'running')`
-  ).bind(status, timestamp, permanentlyFailed ? null : asIso(nextAttemptAt), String(errorCode || "JOB_FAILED"), String(errorDetail || "").slice(0, 500), Number(job?.id), String(claimToken || "")).run();
+  ).bind(
+    status,
+    timestamp,
+    permanentlyFailed ? null : asIso(nextAttemptAt),
+    String(errorCode || "JOB_FAILED"),
+    String(errorDetail || "").slice(0, 500),
+    Number(job?.id),
+    String(claimToken || ""),
+    serializedMetadata
+  ).run();
   return { updated: Number(result?.meta?.changes || 0) === 1, status };
 }
 

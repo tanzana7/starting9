@@ -307,6 +307,10 @@ export default {
       if (path === "/api/admin/audit/game-identities" && request.method === "GET") {
         return await handleAdminGameIdentityAudit(request, env, cors);
       }
+      const gameIdentityRepairAuditRoute = parseGameIdentityRepairAuditRoute(path);
+      if (gameIdentityRepairAuditRoute && request.method === "GET") {
+        return await handleAdminGameIdentityRepairExecutionAudit(request, env, cors, gameIdentityRepairAuditRoute.repairId);
+      }
       if (path === "/api/admin/audit/game-identity-repairs" && request.method === "GET") {
         return await handleAdminGameIdentityRepairPreview(request, env, cors);
       }
@@ -5192,6 +5196,11 @@ function parseGameIdentityRepairRollbackRoute(path) {
   return match ? { repairId: decodeURIComponent(match[1]) } : null;
 }
 
+function parseGameIdentityRepairAuditRoute(path) {
+  const match = /^\/api\/admin\/audit\/game-identity-repairs\/([^/]+)$/.exec(path);
+  return match ? { repairId: decodeURIComponent(match[1]) } : null;
+}
+
 function isSafeGameIdentityRepairClassification(value) {
   return value === "SAFE_AUTO_LINK" || value === "SAFE_CREATE_INTERNAL_GAME";
 }
@@ -5289,8 +5298,65 @@ async function loadSingleRepairPlan(db, repairId) {
 
 async function getExistingRepairRecord(db, repairId) {
   return await db.prepare(
-    "SELECT repair_id, status, plan_hash, rollback_json, target_internal_game_id, create_internal_game FROM game_identity_repair_plans WHERE repair_id = ?1 LIMIT 1"
+    `SELECT repair_id, status, classification, plan_json, plan_hash, rollback_json, target_internal_game_id, create_internal_game,
+            generated_at, executed_at, completed_at, error_code, error_message
+       FROM game_identity_repair_plans WHERE repair_id = ?1 LIMIT 1`
   ).bind(repairId).first();
+}
+
+function createGameIdentityRepairError(code, message, stage) {
+  const error = new Error(message);
+  error.code = code;
+  error.repairStage = stage;
+  return error;
+}
+
+async function runGameIdentityRepairStage(stage, operation) {
+  try {
+    return await operation();
+  } catch (error) {
+    if (!error?.repairStage) error.repairStage = stage;
+    throw error;
+  }
+}
+
+function parseStoredRepairPlan(record) {
+  try {
+    const plan = JSON.parse(String(record?.plan_json || ""));
+    return plan && typeof plan === "object" ? plan : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseRepairRollbackData(record) {
+  try {
+    const data = JSON.parse(String(record?.rollback_json || ""));
+    return data && typeof data === "object" ? data : {};
+  } catch {
+    return {};
+  }
+}
+
+function isGameIdentityRepairConflict(error) {
+  const code = String(error?.code || "");
+  return code === "GAME_IDENTITY_REPAIR_ALREADY_EXECUTED" || code === "GAME_IDENTITY_REPAIR_INTERRUPTED"
+    || code === "GAME_IDENTITY_REPAIR_PLAN_NOT_FOUND" || code === "GAME_IDENTITY_REPAIR_PLAN_HASH_MISMATCH"
+    || code === "GAME_IDENTITY_REPAIR_SCHEDULE_CHANGED" || code === "GAME_IDENTITY_REPAIR_TARGET_NOT_FOUND"
+    || code === "GAME_IDENTITY_REPAIR_UPDATE_COUNT_MISMATCH" || code === "GAME_IDENTIFIER_CONFLICT"
+    || code === "GAME_IDENTITY_REPAIR_MANUAL_REVIEW_REQUIRED";
+}
+
+function createRepairFailureMetadata({ repairId, stage, errorCode, targetInternalGameId = "", now = new Date() }) {
+  return {
+    repairId,
+    targetInternalGameId: targetInternalGameId || null,
+    failure: {
+      stage,
+      errorCode,
+      occurredAt: now.toISOString()
+    }
+  };
 }
 
 async function saveRepairPlanRecord(db, { plan, status, adminId, targetInternalGameId = null, rollbackData = null, errorCode = null, errorMessage = null, now = new Date() }) {
@@ -5326,74 +5392,75 @@ async function assertRepairPlanIdentifiersAvailable(db, plan, targetInternalGame
   }
 }
 
-async function applyGameIdentityRepairPlan(db, plan, adminId, now = new Date()) {
+export async function applyGameIdentityRepairPlan(db, plan, adminId, { targetInternalGameId: requestedTargetInternalGameId = "", now = new Date() } = {}) {
   if (!isSafeGameIdentityRepairClassification(plan.classification)) {
     const error = new Error("手動確認が必要な修復計画は自動実行できません。");
     error.code = "GAME_IDENTITY_REPAIR_MANUAL_REVIEW_REQUIRED";
     throw error;
   }
-  const schedule = await db.prepare(
+  const schedule = await runGameIdentityRepairStage("schedule_read", () => db.prepare(
     `SELECT game_id, internal_game_id, game_date, start_at, home_team, away_team, game_code, source_game_key, game_status
        FROM detected_game_schedule WHERE game_id = ?1 LIMIT 2`
-  ).bind(plan.scheduleGameId).all();
+  ).bind(plan.scheduleGameId).all());
   if ((schedule.results || []).length !== 1) {
-    const error = new Error("対象日程が存在しません。");
-    error.code = "GAME_IDENTITY_REPAIR_SCHEDULE_CHANGED";
-    throw error;
+    throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_SCHEDULE_CHANGED", "対象日程が存在しません。", "schedule_read");
   }
   const scheduleRow = schedule.results[0];
-  let targetInternalGameId = plan.targetInternalGameId;
+  let targetInternalGameId = requestedTargetInternalGameId || plan.targetInternalGameId;
   let createdInternalGame = false;
   if (plan.createInternalGame) {
-    targetInternalGameId = crypto.randomUUID();
-    await db.prepare(
-      `INSERT INTO games (internal_game_id, game_date, start_time, home_team, away_team, game_status, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)`
-    ).bind(targetInternalGameId, scheduleRow.game_date, new Date(scheduleRow.start_at).toISOString(), String(scheduleRow.home_team).toLowerCase(), String(scheduleRow.away_team).toLowerCase(), scheduleRow.game_status || "scheduled", now.toISOString()).run();
-    createdInternalGame = true;
+    if (!targetInternalGameId) throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_TARGET_MISSING", "作成する内部試合IDがありません。", "game_create");
+    const existingGame = await runGameIdentityRepairStage("game_create", () => db.prepare(
+      "SELECT internal_game_id, game_date, start_time, home_team, away_team FROM games WHERE internal_game_id = ?1 LIMIT 1"
+    ).bind(targetInternalGameId).first());
+    if (existingGame) {
+      const sameIdentity = String(existingGame.game_date) === String(scheduleRow.game_date)
+        && String(existingGame.start_time) === new Date(scheduleRow.start_at).toISOString()
+        && String(existingGame.home_team).toLowerCase() === String(scheduleRow.home_team).toLowerCase()
+        && String(existingGame.away_team).toLowerCase() === String(scheduleRow.away_team).toLowerCase();
+      if (!sameIdentity) throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_TARGET_CONFLICT", "内部試合IDが別試合に使用されています。", "game_create");
+    } else {
+      await runGameIdentityRepairStage("game_create", () => db.prepare(
+        `INSERT INTO games (internal_game_id, game_date, start_time, home_team, away_team, game_status, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)`
+      ).bind(targetInternalGameId, scheduleRow.game_date, new Date(scheduleRow.start_at).toISOString(), String(scheduleRow.home_team).toLowerCase(), String(scheduleRow.away_team).toLowerCase(), scheduleRow.game_status || "scheduled", now.toISOString()).run());
+      createdInternalGame = true;
+    }
   } else {
-    const game = await db.prepare("SELECT internal_game_id FROM games WHERE internal_game_id = ?1 LIMIT 1").bind(targetInternalGameId).first();
+    const game = await runGameIdentityRepairStage("game_read", () => db.prepare("SELECT internal_game_id FROM games WHERE internal_game_id = ?1 LIMIT 1").bind(targetInternalGameId).first());
     if (!game) {
-      const error = new Error("修復先の内部試合IDが存在しません。");
-      error.code = "GAME_IDENTITY_REPAIR_TARGET_NOT_FOUND";
-      throw error;
+      throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_TARGET_NOT_FOUND", "修復先の内部試合IDが存在しません。", "game_read");
     }
   }
   const currentScheduleInternalGameId = String(scheduleRow.internal_game_id || "");
   if (currentScheduleInternalGameId && currentScheduleInternalGameId !== targetInternalGameId) {
-    const error = new Error("対象日程が別の内部試合IDに変更されています。");
-    error.code = "GAME_IDENTITY_REPAIR_SCHEDULE_CHANGED";
-    throw error;
+    throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_SCHEDULE_CHANGED", "対象日程が別の内部試合IDに変更されています。", "schedule_read");
   }
-  await assertRepairPlanIdentifiersAvailable(db, plan, targetInternalGameId);
-  let scheduleLinked = false;
-  if (!currentScheduleInternalGameId) {
-    const scheduleUpdate = await db.prepare(
-      "UPDATE detected_game_schedule SET internal_game_id = ?1, updated_at = ?2 WHERE game_id = ?3 AND (internal_game_id IS NULL OR internal_game_id = '')"
-    ).bind(targetInternalGameId, now.toISOString(), plan.scheduleGameId).run();
-    if (Number(scheduleUpdate?.meta?.changes || 0) !== 1) {
-      const error = new Error("日程の更新件数が修復計画と一致しません。");
-      error.code = "GAME_IDENTITY_REPAIR_UPDATE_COUNT_MISMATCH";
-      throw error;
-    }
-    scheduleLinked = true;
-  }
+  await runGameIdentityRepairStage("identifier_validate", () => assertRepairPlanIdentifiersAvailable(db, plan, targetInternalGameId));
   const addedIdentifiers = [];
   for (const identifier of plan.identifiersToInsert || []) {
-    const outcome = await registerGameIdentifier(db, targetInternalGameId, identifier, now);
+    const outcome = await runGameIdentityRepairStage("identifier_register", () => registerGameIdentifier(db, targetInternalGameId, identifier, now));
     if (outcome.registered) addedIdentifiers.push(identifier);
+  }
+  let scheduleLinked = false;
+  if (!currentScheduleInternalGameId) {
+    const scheduleUpdate = await runGameIdentityRepairStage("schedule_link", () => db.prepare(
+      "UPDATE detected_game_schedule SET internal_game_id = ?1, updated_at = ?2 WHERE game_id = ?3 AND (internal_game_id IS NULL OR internal_game_id = '')"
+    ).bind(targetInternalGameId, now.toISOString(), plan.scheduleGameId).run());
+    if (Number(scheduleUpdate?.meta?.changes || 0) !== 1) {
+      throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_UPDATE_COUNT_MISMATCH", "日程の更新件数が修復計画と一致しません。", "schedule_link");
+    }
+    scheduleLinked = true;
   }
   const linkedRows = [];
   for (const row of plan.tableRowsToUpdate || []) {
     if (!REPAIRABLE_TABLES.includes(row.table)) continue;
-    const result = await db.prepare(
+    const result = await runGameIdentityRepairStage("legacy_row_link", () => db.prepare(
       `UPDATE ${row.table} SET internal_game_id = ?1 WHERE game_id = ?2 AND (internal_game_id IS NULL OR internal_game_id = '')`
-    ).bind(targetInternalGameId, row.legacyGameId).run();
+    ).bind(targetInternalGameId, row.legacyGameId).run());
     const changes = Number(result?.meta?.changes || 0);
     if (changes !== Number(row.expectedCount || 0)) {
-      const error = new Error(`${row.table} の更新件数が修復計画と一致しません。`);
-      error.code = "GAME_IDENTITY_REPAIR_UPDATE_COUNT_MISMATCH";
-      throw error;
+      throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_UPDATE_COUNT_MISMATCH", `${row.table} の更新件数が修復計画と一致しません。`, "legacy_row_link");
     }
     linkedRows.push({ table: row.table, legacyGameId: row.legacyGameId, count: changes });
   }
@@ -5406,49 +5473,196 @@ async function applyGameIdentityRepairPlan(db, plan, adminId, now = new Date()) 
     linkedRows,
     workflowStateCorrection: null
   };
-  await saveRepairPlanRecord(db, { plan, status: "completed", adminId, targetInternalGameId, rollbackData, now });
+  await runGameIdentityRepairStage("history_complete", () => saveRepairPlanRecord(db, { plan, status: "completed", adminId, targetInternalGameId, rollbackData, now }));
   return { repairId: plan.repairId, status: "completed", targetInternalGameId, rollbackData };
 }
 
-async function handleAdminGameIdentityRepairs(request, env, cors) {
+async function collectGameIdentityRepairExecutionState(db, record) {
+  const plan = parseStoredRepairPlan(record);
+  if (!plan) throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_RECORD_INVALID", "保存済みの修復計画を読み取れません。", "history_read");
+  const targetInternalGameId = String(record?.target_internal_game_id || plan.targetInternalGameId || "");
+  const [schedule, targetGame] = await Promise.all([
+    db.prepare("SELECT game_id, internal_game_id FROM detected_game_schedule WHERE game_id = ?1 LIMIT 1").bind(plan.scheduleGameId).first(),
+    targetInternalGameId
+      ? db.prepare("SELECT internal_game_id FROM games WHERE internal_game_id = ?1 LIMIT 1").bind(targetInternalGameId).first()
+      : Promise.resolve(null)
+  ]);
+  const identifiers = [];
+  for (const identifier of plan.identifiersToInsert || []) {
+    const row = await db.prepare(
+      "SELECT internal_game_id FROM game_identifiers WHERE provider = ?1 AND identifier_type = ?2 AND identifier_value = ?3 LIMIT 1"
+    ).bind(identifier.provider, identifier.identifierType, identifier.identifierValue).first();
+    identifiers.push({
+      provider: identifier.provider,
+      identifierType: identifier.identifierType,
+      identifierValue: identifier.identifierValue,
+      state: !row ? "missing" : String(row.internal_game_id) === targetInternalGameId ? "linked_to_target" : "linked_to_other"
+    });
+  }
+  const tableRows = [];
+  for (const row of plan.tableRowsToUpdate || []) {
+    if (!REPAIRABLE_TABLES.includes(row.table)) continue;
+    const result = await db.prepare(
+      `SELECT COUNT(*) AS row_count,
+              SUM(CASE WHEN internal_game_id = ?1 THEN 1 ELSE 0 END) AS linked_to_target_count,
+              SUM(CASE WHEN internal_game_id IS NULL OR internal_game_id = '' THEN 1 ELSE 0 END) AS unlinked_count
+         FROM ${row.table} WHERE game_id = ?2`
+    ).bind(targetInternalGameId, row.legacyGameId).first();
+    tableRows.push({
+      table: row.table,
+      legacyGameId: row.legacyGameId,
+      expectedCount: Number(row.expectedCount || 0),
+      rowCount: Number(result?.row_count || 0),
+      linkedToTargetCount: Number(result?.linked_to_target_count || 0),
+      unlinkedCount: Number(result?.unlinked_count || 0)
+    });
+  }
+  const partialWriteDetected = Boolean(
+    targetGame || (schedule && String(schedule.internal_game_id || "") === targetInternalGameId)
+    || identifiers.some((item) => item.state === "linked_to_target")
+    || tableRows.some((item) => item.linkedToTargetCount > 0)
+  );
+  return {
+    repairId: record.repair_id,
+    status: record.status,
+    classification: record.classification,
+    planHash: record.plan_hash,
+    targetInternalGameId: targetInternalGameId || null,
+    errorCode: record.error_code || null,
+    failure: parseRepairRollbackData(record).failure || null,
+    plan: {
+      scheduleGameId: plan.scheduleGameId,
+      createInternalGame: Boolean(plan.createInternalGame),
+      legacyGameIds: plan.legacyGameIds || [],
+      tableRowsToUpdate: (plan.tableRowsToUpdate || []).map((item) => ({ table: item.table, legacyGameId: item.legacyGameId, expectedCount: Number(item.expectedCount || 0) }))
+    },
+    observed: {
+      targetGameExists: Boolean(targetGame),
+      scheduleInternalGameId: schedule?.internal_game_id || null,
+      identifiers,
+      tableRows,
+      partialWriteDetected
+    }
+  };
+}
+
+async function handleAdminGameIdentityRepairExecutionAudit(request, env, cors, repairId) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) return access.response;
-  const input = normalizeRepairRequest(await readJson(request));
-  if (input.dryRun || !input.repairIds.length || input.repairIds.length > 20) {
-    return jsonResponse({ ok: false, code: "GAME_IDENTITY_REPAIR_REQUEST_INVALID", error: "修復IDを1件以上20件以下で指定してください。" }, 400, cors);
-  }
-  if (!await isGameIdentityRepairSchemaReady(env.AUTH_DB)) {
-    return jsonResponse({ ok: false, code: "GAME_IDENTITY_REPAIR_SCHEMA_NOT_READY", error: "修復履歴のmigrationが未適用です。" }, 503, cors);
-  }
-  const results = [];
-  for (const repairId of input.repairIds) {
-    let plan = null;
-    try {
-      plan = await loadSingleRepairPlan(env.AUTH_DB, repairId);
-      if (!plan) throw Object.assign(new Error("修復計画が見つかりません。"), { code: "GAME_IDENTITY_REPAIR_PLAN_NOT_FOUND" });
-      if (String(input.expectedPlanHashes[repairId] || "") !== plan.planHash) throw Object.assign(new Error("修復計画が更新されています。再度dry-runを確認してください。"), { code: "GAME_IDENTITY_REPAIR_PLAN_HASH_MISMATCH" });
-      const existing = await getExistingRepairRecord(env.AUTH_DB, repairId);
-      if (existing) throw Object.assign(new Error("この修復計画はすでに実行済み、または手動確認が必要な失敗状態です。"), { code: "GAME_IDENTITY_REPAIR_ALREADY_EXECUTED" });
-      await saveRepairPlanRecord(env.AUTH_DB, { plan, status: "executing", adminId: access.user.id });
-      results.push(await applyGameIdentityRepairPlan(env.AUTH_DB, plan, access.user.id));
-    } catch (error) {
-      if (plan) {
-        try {
-          await saveRepairPlanRecord(env.AUTH_DB, {
-            plan,
-            status: "failed",
-            adminId: access.user.id,
-            errorCode: error?.code || "GAME_IDENTITY_REPAIR_FAILED",
-            errorMessage: String(error?.message || "修復に失敗しました。")
-          });
-        } catch (recordError) {
-          console.error("試合ID修復の失敗履歴を保存できませんでした", recordError instanceof Error ? recordError.message : "unknown error");
-        }
-      }
-      results.push({ repairId, status: "failed", code: error?.code || "GAME_IDENTITY_REPAIR_FAILED", error: String(error?.message || "修復に失敗しました。") });
+  try {
+    if (!await isGameIdentityRepairSchemaReady(env.AUTH_DB)) {
+      return jsonResponse({ ok: false, code: "GAME_IDENTITY_REPAIR_SCHEMA_NOT_READY", error: "修復履歴のmigrationが未適用です。" }, 503, cors);
     }
+    const record = await getExistingRepairRecord(env.AUTH_DB, repairId);
+    if (!record) return jsonResponse({ ok: false, code: "GAME_IDENTITY_REPAIR_RECORD_NOT_FOUND", error: "修復履歴が見つかりません。" }, 404, cors);
+    return jsonResponse({ ok: true, readOnly: true, repair: await collectGameIdentityRepairExecutionState(env.AUTH_DB, record) }, 200, cors);
+  } catch (error) {
+    console.error("試合ID修復監査に失敗しました", { repairId, stage: error?.repairStage || "audit", errorCode: error?.code || "GAME_IDENTITY_REPAIR_AUDIT_FAILED" });
+    return jsonResponse({ ok: false, repairId, stage: error?.repairStage || "audit", code: error?.code || "GAME_IDENTITY_REPAIR_AUDIT_FAILED", error: "修復状態を確認できませんでした。" }, 500, cors);
   }
-  return jsonResponse({ ok: true, results }, 200, cors);
+}
+
+async function handleAdminGameIdentityRepairs(request, env, cors) {
+  let repairId = "";
+  let stage = "request";
+  try {
+    const access = await requireAdminUser(request, env, cors);
+    if (!access.ok) return access.response;
+    const input = normalizeRepairRequest(await readJson(request));
+    if (input.dryRun || !input.repairIds.length || input.repairIds.length > 20) {
+      return jsonResponse({ ok: false, code: "GAME_IDENTITY_REPAIR_REQUEST_INVALID", error: "修復IDを1件以上20件以下で指定してください。" }, 400, cors);
+    }
+    if (!await isGameIdentityRepairSchemaReady(env.AUTH_DB)) {
+      return jsonResponse({ ok: false, code: "GAME_IDENTITY_REPAIR_SCHEMA_NOT_READY", error: "修復履歴のmigrationが未適用です。" }, 503, cors);
+    }
+    const results = [];
+    for (const requestedRepairId of input.repairIds) {
+      repairId = requestedRepairId;
+      stage = "plan_read";
+      let plan = null;
+      let targetInternalGameId = "";
+      try {
+        const existing = await getExistingRepairRecord(env.AUTH_DB, repairId);
+        if (existing) {
+          plan = parseStoredRepairPlan(existing);
+          if (!plan) throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_RECORD_INVALID", "保存済みの修復計画を読み取れません。", "history_read");
+          if (String(input.expectedPlanHashes[repairId] || "") !== String(existing.plan_hash || "")) {
+            throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_PLAN_HASH_MISMATCH", "修復計画が更新されています。再度dry-runを確認してください。", "plan_read");
+          }
+          if (existing.status === "executing") {
+            const state = await collectGameIdentityRepairExecutionState(env.AUTH_DB, existing);
+            stage = "interrupted_execution";
+            targetInternalGameId = String(existing.target_internal_game_id || "");
+            await saveRepairPlanRecord(env.AUTH_DB, {
+              plan,
+              status: "failed",
+              adminId: access.user.id,
+              targetInternalGameId,
+              errorCode: "GAME_IDENTITY_REPAIR_INTERRUPTED",
+              errorMessage: "前回の修復実行が完了応答なしで終了しました。状態監査を確認してください。",
+              rollbackData: { ...parseRepairRollbackData(existing), ...createRepairFailureMetadata({ repairId, stage, errorCode: "GAME_IDENTITY_REPAIR_INTERRUPTED", targetInternalGameId }), observed: state.observed }
+            });
+            throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_INTERRUPTED", "前回の修復実行が中断されています。状態監査を確認してください。", stage);
+          }
+          if (existing.status === "failed") {
+            targetInternalGameId = String(existing.target_internal_game_id || plan.targetInternalGameId || "");
+            if (!targetInternalGameId) {
+              throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_TARGET_MISSING", "再実行する内部試合IDを確認できません。状態監査を確認してください。", "history_read");
+            }
+            stage = "history_resume";
+            await saveRepairPlanRecord(env.AUTH_DB, {
+              plan,
+              status: "executing",
+              adminId: access.user.id,
+              targetInternalGameId,
+              rollbackData: { ...parseRepairRollbackData(existing), resumedAt: new Date().toISOString() }
+            });
+            stage = "apply";
+            results.push(await applyGameIdentityRepairPlan(env.AUTH_DB, plan, access.user.id, { targetInternalGameId }));
+            continue;
+          }
+          throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_ALREADY_EXECUTED", "この修復計画はすでに実行済みまたは失敗状態です。状態監査を確認してください。", "history_read");
+        }
+        plan = await loadSingleRepairPlan(env.AUTH_DB, repairId);
+        if (!plan) throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_PLAN_NOT_FOUND", "修復計画が見つかりません。", stage);
+        if (String(input.expectedPlanHashes[repairId] || "") !== plan.planHash) {
+          throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_PLAN_HASH_MISMATCH", "修復計画が更新されています。再度dry-runを確認してください。", stage);
+        }
+        targetInternalGameId = plan.createInternalGame ? crypto.randomUUID() : plan.targetInternalGameId;
+        if (!targetInternalGameId) throw createGameIdentityRepairError("GAME_IDENTITY_REPAIR_TARGET_MISSING", "修復先の内部試合IDを決定できません。", stage);
+        stage = "history_executing";
+        await saveRepairPlanRecord(env.AUTH_DB, { plan, status: "executing", adminId: access.user.id, targetInternalGameId });
+        stage = "apply";
+        const result = await applyGameIdentityRepairPlan(env.AUTH_DB, plan, access.user.id, { targetInternalGameId });
+        results.push(result);
+      } catch (error) {
+        const errorCode = error?.code || "GAME_IDENTITY_REPAIR_FAILED";
+        const errorStage = error?.repairStage || stage;
+        if (plan && errorCode !== "GAME_IDENTITY_REPAIR_ALREADY_EXECUTED" && errorCode !== "GAME_IDENTITY_REPAIR_INTERRUPTED") {
+          try {
+            await saveRepairPlanRecord(env.AUTH_DB, {
+              plan,
+              status: "failed",
+              adminId: access.user.id,
+              targetInternalGameId,
+              errorCode,
+              errorMessage: "試合ID修復処理が失敗しました。",
+              rollbackData: createRepairFailureMetadata({ repairId, stage: errorStage, errorCode, targetInternalGameId })
+            });
+          } catch (recordError) {
+            console.error("試合ID修復の失敗履歴を保存できませんでした", { repairId, stage: "history_failed", errorCode: recordError?.code || "GAME_IDENTITY_REPAIR_HISTORY_WRITE_FAILED" });
+          }
+        }
+        console.error("試合ID修復に失敗しました", { repairId, stage: errorStage, errorCode });
+        return jsonResponse({ ok: false, repairId, stage: errorStage, code: errorCode, error: "試合ID修復に失敗しました。状態監査を確認してください。" }, isGameIdentityRepairConflict(error) ? 409 : 500, cors);
+      }
+    }
+    return jsonResponse({ ok: true, results }, 200, cors);
+  } catch (error) {
+    const errorCode = error?.code || "GAME_IDENTITY_REPAIR_UNEXPECTED_ERROR";
+    console.error("試合ID修復APIの予期しない失敗", { repairId: repairId || null, stage, errorCode });
+    return jsonResponse({ ok: false, repairId: repairId || null, stage, code: errorCode, error: "試合ID修復APIの処理に失敗しました。" }, 500, cors);
+  }
 }
 
 async function handleAdminGameIdentityRepairRollback(request, env, cors, repairId) {

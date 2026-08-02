@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { applyGameIdentityRepairPlan } from "../auth-worker.js";
+import { applyGameIdentityRepairPlan, collectGameIdentityRepairExecutionState } from "../auth-worker.js";
 
 const targetInternalGameId = "11111111-1111-4111-8111-111111111111";
 const now = new Date("2026-08-02T00:00:00.000Z");
@@ -44,9 +44,14 @@ function createDb({ failAt = "", predictionCount = 1 } = {}) {
           return statement;
         },
         async first() {
+          if (sql.includes("FROM detected_game_schedule")) return state.schedule;
           if (sql.includes("FROM games WHERE internal_game_id")) return state.games.get(bindings[0]) || null;
           if (sql.includes("FROM game_identifiers")) {
             return state.identifiers.get(keyForIdentifier(bindings[0], bindings[1], bindings[2])) || null;
+          }
+          if (sql.includes("FROM predictions")) {
+            const linkedToTarget = state.predictionInternalGameId === bindings[0] ? predictionCount : 0;
+            return { row_count: predictionCount, linked_to_target_count: linkedToTarget, unlinked_count: linkedToTarget ? 0 : predictionCount };
           }
           return null;
         },
@@ -130,13 +135,54 @@ test("expectedCountが0の関連テーブル更新は正常完了する", async 
   assert.equal(state.history.at(-1).status, "completed");
 });
 
+async function audit(db, overrides = {}) {
+  return await collectGameIdentityRepairExecutionState(db, {
+    repair_id: plan.repairId,
+    status: "failed",
+    plan_json: JSON.stringify(plan),
+    plan_hash: plan.planHash,
+    rollback_json: JSON.stringify({ failure: { stage: "plan_read", errorCode: "GAME_IDENTITY_REPAIR_PLAN_HASH_MISMATCH" } }),
+    target_internal_game_id: targetInternalGameId,
+    ...overrides
+  });
+}
+
+test("書き込みゼロのfailed履歴はpartial writeとして扱わない", async () => {
+  const { db } = createDb();
+  const result = await audit(db);
+  assert.equal(result.observed.targetGameExists, false);
+  assert.equal(result.observed.partialWriteDetected, false);
+  assert.equal(result.observed.rollbackRecordedChanges, false);
+});
+
+test("games、identifier、scheduleのいずれかが書き込まれた場合だけpartial writeとして扱う", async () => {
+  const createdGame = createDb();
+  createdGame.state.games.set(targetInternalGameId, { internal_game_id: targetInternalGameId });
+  assert.equal((await audit(createdGame.db)).observed.partialWriteDetected, true);
+
+  const registeredIdentifier = createDb();
+  registeredIdentifier.state.identifiers.set("starting9|legacy_compact_game_id|2026-08-01-f-m-15", { internal_game_id: targetInternalGameId });
+  assert.equal((await audit(registeredIdentifier.db)).observed.partialWriteDetected, true);
+
+  const linkedSchedule = createDb();
+  linkedSchedule.state.schedule.internal_game_id = targetInternalGameId;
+  assert.equal((await audit(linkedSchedule.db)).observed.partialWriteDetected, true);
+});
+
 test("修復POSTは最上位catch、段階別記録、読み取り専用の実行監査ルートを持つ", async () => {
   const source = await readFile(new URL("../auth-worker.js", import.meta.url), "utf8");
   assert.match(source, /parseGameIdentityRepairAuditRoute/);
   assert.match(source, /handleAdminGameIdentityRepairExecutionAudit/);
   assert.match(source, /GAME_IDENTITY_REPAIR_UNEXPECTED_ERROR/);
   assert.match(source, /GAME_IDENTITY_REPAIR_INTERRUPTED/);
+  assert.match(source, /EXPECTED_HASH_DIFFERS_FROM_CURRENT_PLAN/);
+  assert.match(source, /STORED_PLAN_DIFFERS_FROM_CURRENT_PLAN/);
+  assert.match(source, /expectedPlanHash/);
+  assert.match(source, /currentPlanHash/);
+  assert.match(source, /storedPlanHash/);
+  assert.match(source, /mismatchReason/);
   assert.match(source, /existing\.status === "failed"/);
+  assert.match(source, /plan\.createInternalGame && !state\.observed\.partialWriteDetected/);
   assert.match(source, /status: "executing"/);
   assert.match(source, /const errorStage = error\?\.repairStage \|\| stage/);
   assert.match(source, /isGameIdentityRepairConflict\(error\) \? 409 : 500/);

@@ -291,11 +291,13 @@
                 <div class="admin-game-identity-repairs-heading">
                   <div>
                     <h3 id="adminGameIdentityRepairsTitle">試合ID修復</h3>
-                    <p>dry-runで確認した安全な計画だけを、1件ずつ実行できます。</p>
+                    <p>dry-runで確認した安全な計画だけを、監査を確認しながら1件ずつ実行できます。</p>
                   </div>
-                  <button id="refreshAdminGameIdentityRepairsButton" class="secondary-button compact-button" type="button">dry-runを更新</button>
+                  <button id="refreshAdminGameIdentityRepairsButton" class="secondary-button compact-button" type="button">修復候補を確認</button>
                 </div>
                 <p id="adminGameIdentityRepairsMessage" class="message" role="status" aria-live="polite"></p>
+                <div id="adminGameIdentityRepairCoverage" class="game-identity-repair-coverage" aria-live="polite"></div>
+                <div id="adminGameIdentityRepairLastResult" class="game-identity-repair-last-result" aria-live="polite"></div>
                 <div id="adminGameIdentityRepairsList" class="admin-game-identity-repairs-list" aria-live="polite"></div>
               </section>
               <div class="schedule-loader">

@@ -378,6 +378,12 @@ const state = {
     record: null,
     message: ""
   },
+  releaseReadiness: {
+    isLoading: false,
+    requestId: 0,
+    record: null,
+    message: ""
+  },
   workflowLogs: {
     isLoading: false,
     requestId: 0,
@@ -494,6 +500,7 @@ function bindEvents() {
   bindAdminEvent("fetchProbableStarterButton", "click", () => fetchProbableStarter({ force: true }));
   bindAdminEvent("syncGameWorkflowButton", "click", () => refreshAdminGameWorkflowStatus({ force: true }));
   bindAdminEvent("refreshAdminGameProgressButton", "click", () => refreshAdminGameProgressStatus({ force: true }));
+  bindAdminEvent("refreshAdminReleaseReadinessButton", "click", () => refreshAdminReleaseReadiness({ force: true }));
   bindAdminEvent("toggleAdminWorkflowLogsButton", "click", toggleAdminWorkflowLogs);
   bindAdminEvent("refreshAdminWorkflowLogsButton", "click", () => refreshAdminWorkflowLogs({ force: true }));
   bindAdminEvent("adminWorkflowLogGameId", "change", () => refreshAdminWorkflowLogs({ force: true }));
@@ -1457,6 +1464,7 @@ function openAdminPanel() {
   void refreshAutoApprovalSettings();
   void refreshAdminGameWorkflowStatus({ force: true });
   void refreshAdminGameProgressStatus({ force: true });
+  void refreshAdminReleaseReadiness({ force: true });
   void refreshAdminGameIdentityRepairs({ force: true });
   startGameProgressStatusRefresh();
   if (state.workflowLogs.expanded) {
@@ -1481,6 +1489,8 @@ function closeAdminPanel() {
   state.workflowLogs.message = "";
   state.gameIdentityRepairs.requestId += 1;
   state.gameIdentityRepairs.isLoading = false;
+  state.releaseReadiness.requestId += 1;
+  state.releaseReadiness.isLoading = false;
   stopGameProgressStatusRefresh();
   state.gameProgressStatus.requestId += 1;
   state.gameProgressStatus.isLoading = false;
@@ -4411,6 +4421,78 @@ function renderAdminGameProgressStatus() {
     ${record.errors?.length ? `<p class="admin-game-progress-errors">直近エラー: ${escapeHtml(record.errors[0].errorCode || record.errors[0].message || "確認が必要です")}</p>` : ""}`;
 }
 
+function getReleaseReadinessStatusLabel(record) {
+  if (!record) return "確認中";
+  if (record.ready === true) return "正常";
+  if (Array.isArray(record.blockers) && record.blockers.length) return "異常";
+  return "警告";
+}
+
+function renderAdminReleaseReadiness() {
+  const panel = document.getElementById("adminReleaseReadiness");
+  const content = document.getElementById("adminReleaseReadinessContent");
+  const refresh = document.getElementById("refreshAdminReleaseReadinessButton");
+  if (!panel || !content || !refresh) return;
+  const available = state.appMode === "admin" && state.adminAccess.status === "authorized";
+  panel.classList.toggle("hidden", !available);
+  if (!available) return;
+  const readiness = state.releaseReadiness;
+  refresh.disabled = readiness.isLoading;
+  if (readiness.isLoading && !readiness.record) {
+    content.innerHTML = '<p class="message">リリース準備状況を確認しています。</p>';
+    return;
+  }
+  if (readiness.message) {
+    content.innerHTML = `<p class="message error-message">${escapeHtml(readiness.message)}</p>`;
+    return;
+  }
+  if (!readiness.record) {
+    content.innerHTML = '<p class="empty-state">リリース準備状況は未確認です。</p>';
+    return;
+  }
+  const checks = readiness.record.checks || {};
+  const blockers = Array.isArray(readiness.record.blockers) ? readiness.record.blockers : [];
+  const warnings = Array.isArray(readiness.record.warnings) ? readiness.record.warnings : [];
+  const status = getReleaseReadinessStatusLabel(readiness.record);
+  const rows = [
+    ["自動処理", status],
+    ["pending jobs", checks.pendingJobCount],
+    ["retry jobs", checks.retryWaitCount],
+    ["stale leases", checks.staleLeaseCount],
+    ["permanently failed", checks.permanentlyFailedCount],
+    ["internal ID未割当の新規試合", checks.gamesWithoutInternalGameId],
+    ["後続job欠落", checks.missingDownstreamJobCount],
+    ["最終Cron実行", readiness.cronLastRunAt ? formatDateTime(readiness.cronLastRunAt) : "確認済み"]
+  ];
+  content.innerHTML = `<dl class="admin-release-readiness-list">${rows.map(([label, value]) => `<div><dt>${escapeHtml(String(label))}</dt><dd>${escapeHtml(String(value))}</dd></div>`).join("")}</dl>${blockers.length ? `<p class="admin-release-readiness-errors">blocker: ${escapeHtml(blockers.join(", "))}</p>` : ""}${warnings.length ? `<p class="admin-release-readiness-warnings">warning: ${escapeHtml(warnings.join(", "))}</p>` : ""}`;
+}
+
+async function refreshAdminReleaseReadiness({ force = false } = {}) {
+  if (state.appMode !== "admin" || state.adminAccess.status !== "authorized") return;
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  if (!baseUrl || (state.releaseReadiness.isLoading && !force)) return;
+  const requestId = ++state.releaseReadiness.requestId;
+  state.releaseReadiness.isLoading = true;
+  state.releaseReadiness.message = "";
+  renderAdminReleaseReadiness();
+  try {
+    const response = await fetch(`${baseUrl}/api/admin/audit/release-readiness`, { credentials: "include", cache: "no-store" });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || payload?.code || `HTTP ${response.status}`);
+    if (requestId !== state.releaseReadiness.requestId) return;
+    state.releaseReadiness.record = payload;
+  } catch (error) {
+    if (requestId !== state.releaseReadiness.requestId) return;
+    state.releaseReadiness.record = null;
+    state.releaseReadiness.message = error?.message || "リリース準備状況を取得できませんでした。";
+  } finally {
+    if (requestId === state.releaseReadiness.requestId) {
+      state.releaseReadiness.isLoading = false;
+      renderAdminReleaseReadiness();
+    }
+  }
+}
+
 async function refreshAdminGameProgressStatus({ force = false } = {}) {
   if (state.appMode !== "admin" || state.adminAccess.status !== "authorized") return;
   const url = buildAdminGameProgressStatusApiUrl();
@@ -4441,6 +4523,7 @@ function startGameProgressStatusRefresh() {
   stopGameProgressStatusRefresh();
   gameProgressStatusTimerId = setInterval(() => {
     void refreshAdminGameProgressStatus();
+    void refreshAdminReleaseReadiness();
   }, GAME_PROGRESS_STATUS_REFRESH_MS);
 }
 
@@ -7700,6 +7783,7 @@ function renderAll() {
   renderRankingPanel();
   renderAdminFlow();
   renderAdminGameProgressStatus();
+  renderAdminReleaseReadiness();
   renderAdminGameIdentityRepairs();
   renderPredictionDeadlineAdmin();
   renderPicker("prediction");

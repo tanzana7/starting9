@@ -224,6 +224,16 @@
                 </div>
                 <p id="adminGameWorkflowMessage" class="message" role="status"></p>
               </section>
+              <section id="adminReleaseReadiness" class="admin-release-readiness hidden" aria-labelledby="adminReleaseReadinessTitle">
+                <div class="admin-release-readiness-heading">
+                  <div>
+                    <h3 id="adminReleaseReadinessTitle">リリース準備状況</h3>
+                    <p>新規試合のCron自動処理と後続ジョブの状態を確認します。</p>
+                  </div>
+                  <button id="refreshAdminReleaseReadinessButton" class="secondary-button compact-button" type="button">再読み込み</button>
+                </div>
+                <div id="adminReleaseReadinessContent" aria-live="polite"></div>
+              </section>
               <section id="adminGameProgressBoard" class="admin-game-progress-board hidden" aria-labelledby="adminGameProgressTitle">
                 <div class="admin-game-progress-heading">
                   <div>

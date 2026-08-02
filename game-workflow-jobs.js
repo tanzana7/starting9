@@ -198,6 +198,7 @@ export async function listDueWorkflowJobs(db, { jobTypes = [], now = new Date(),
   const result = await db.prepare(
     `SELECT * FROM game_job_runs
       WHERE job_type IN (${placeholders})
+        AND scheduled_slot_at <= ?${types.length + 1}
         AND (
           status = 'pending'
           OR (status = 'retry_wait' AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?${types.length + 1})

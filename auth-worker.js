@@ -325,6 +325,9 @@ export default {
       if (path === "/api/admin/audit/game-workflows" && request.method === "GET") {
         return await handleAdminGameWorkflowAudit(request, env, cors);
       }
+      if (path === "/api/admin/audit/release-readiness" && request.method === "GET") {
+        return await handleAdminReleaseReadiness(request, env, cors);
+      }
       const probableStarterRefreshRoute = parseProbableStarterRefreshRoute(path);
       if (probableStarterRefreshRoute && request.method === "POST") {
         return await handleAdminProbableStarterRefresh(request, env, cors, probableStarterRefreshRoute.gameId);
@@ -1072,7 +1075,14 @@ async function runDueProbableStarterWorkflowJobs(env, now) {
     try {
       const resolved = await resolveWorkflowJobGame(env.AUTH_DB, claimed.internal_game_id);
       await recordWorkflowJobEvent(env.AUTH_DB, { eventType: "workflow_job_claimed", status: "info", internalGameId: claimed.internal_game_id, job: { ...claimed, legacyGameId: resolved.gameId }, now });
-      await executeProbableStarterWorkflowJob(env, claimed, now, "cron");
+      const result = await executeProbableStarterWorkflowJob(env, claimed, now, "cron");
+      if (result?.status === "succeeded") {
+        try {
+          await ensureCompletionDownstreamJobs(env, claimed, now);
+        } catch (downstreamError) {
+          await recordCronStepFailure(env.AUTH_DB, "probable_starter_downstream", now, downstreamError);
+        }
+      }
     } catch (error) {
       const errorCode = getWorkflowJobErrorCode(error);
       const retry = await retryWorkflowJob(env.AUTH_DB, {
@@ -5853,6 +5863,155 @@ async function handleAdminGameWorkflowAudit(request, env, cors) {
   }
 }
 
+export function deriveReleaseReadiness({ schemaReady = true, counts = {} } = {}) {
+  const blockers = [];
+  const warnings = [];
+  const numeric = (key) => Math.max(0, Number(counts?.[key] || 0));
+  const checks = {
+    activeWorkflowCount: numeric("activeWorkflowCount"),
+    pendingJobCount: numeric("pendingJobCount"),
+    retryWaitCount: numeric("retryWaitCount"),
+    staleLeaseCount: numeric("staleLeaseCount"),
+    permanentlyFailedCount: numeric("permanentlyFailedCount"),
+    missingDownstreamJobCount: numeric("missingDownstreamJobCount"),
+    duplicateJobSlotCount: numeric("duplicateJobSlotCount"),
+    serviceUnavailableCount: numeric("serviceUnavailableCount"),
+    gamesWithoutInternalGameId: numeric("gamesWithoutInternalGameId"),
+    identifiersWithoutGames: numeric("identifiersWithoutGames"),
+    newLegacyOnlyWritesLast24h: numeric("newLegacyOnlyWritesLast24h"),
+    publishedWorkflowMismatchCount: numeric("publishedWorkflowMismatchCount")
+  };
+  if (!schemaReady) blockers.push("WORKFLOW_SCHEMA_NOT_READY");
+  if (checks.duplicateJobSlotCount > 0) blockers.push("ACTIVE_DUPLICATE_JOBS");
+  if (checks.gamesWithoutInternalGameId > 0) blockers.push("NEW_GAME_WITHOUT_INTERNAL_ID");
+  if (checks.identifiersWithoutGames > 0) blockers.push("IDENTIFIER_WITHOUT_GAME");
+  if (checks.missingDownstreamJobCount > 0) blockers.push("MISSING_DOWNSTREAM_JOB");
+  if (checks.staleLeaseCount > 0) blockers.push("STALE_LEASE");
+  if (checks.newLegacyOnlyWritesLast24h > 0) blockers.push("RECENT_LEGACY_ONLY_WRITE");
+  if (checks.publishedWorkflowMismatchCount > 0) blockers.push("WORKFLOW_STATE_CONFLICT");
+  if (checks.permanentlyFailedCount > 0) warnings.push("PERMANENTLY_FAILED_JOBS");
+  if (checks.serviceUnavailableCount > 0) warnings.push("SERVICE_UNAVAILABLE_GAMES");
+  if (checks.retryWaitCount > 0) warnings.push("RETRY_WAIT_JOBS");
+  return { ready: blockers.length === 0, blockers, warnings, checks };
+}
+
+async function collectReleaseReadiness(env, now = new Date()) {
+  const db = env.AUTH_DB;
+  const schemaReady = await isGameWorkflowJobSchemaReady(db);
+  if (!schemaReady) return deriveReleaseReadiness({ schemaReady: false });
+  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const tomorrow = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+  const dateFrom = getJstDateString(yesterday);
+  const dateTo = getJstDateString(tomorrow);
+  const timestamp24h = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const [workflowRows, jobRows, staleLease, duplicateSlots, scheduleMissing, identifiersMissing, currentLineups, health] = await Promise.all([
+    db.prepare(
+      `SELECT state.internal_game_id, state.game_status, state.workflow_status, games.game_date
+         FROM game_workflow_state state
+         JOIN games ON games.internal_game_id = state.internal_game_id
+        WHERE games.game_date >= ?1 AND games.game_date <= ?2`
+    ).bind(dateFrom, dateTo).all(),
+    db.prepare(
+      `SELECT internal_game_id, job_type, status, scheduled_slot_at, next_attempt_at
+         FROM game_job_runs
+        WHERE scheduled_slot_at <= ?1 OR status IN ('retry_wait', 'claimed', 'running')`
+    ).bind(tomorrow.toISOString()).all(),
+    db.prepare(
+      `SELECT COUNT(*) AS count FROM game_job_runs
+        WHERE status IN ('claimed', 'running') AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?1`
+    ).bind(now.toISOString()).first(),
+    db.prepare(
+      `SELECT COUNT(*) AS count FROM (
+        SELECT internal_game_id, job_type, scheduled_slot_at
+          FROM game_job_runs
+         GROUP BY internal_game_id, job_type, scheduled_slot_at
+        HAVING COUNT(*) > 1
+      )`
+    ).bind().first(),
+    db.prepare(
+      `SELECT COUNT(*) AS count FROM detected_game_schedule
+        WHERE game_date >= ?1 AND game_date <= ?2 AND (internal_game_id IS NULL OR internal_game_id = '')`
+    ).bind(dateFrom, dateTo).first(),
+    db.prepare(
+      `SELECT COUNT(*) AS count FROM game_identifiers identifiers
+         LEFT JOIN games ON games.internal_game_id = identifiers.internal_game_id
+        WHERE games.internal_game_id IS NULL`
+    ).bind().first(),
+    db.prepare(
+      `SELECT internal_game_id, scoring_status, publication_status
+         FROM game_lineups
+        WHERE internal_game_id IS NOT NULL AND internal_game_id <> ''`
+    ).bind().all(),
+    db.prepare(
+      "SELECT cron_last_run_at, cron_last_success_at, cron_last_error_code FROM game_automation_health WHERE state_key = 'cron' LIMIT 1"
+    ).bind().first()
+  ]);
+  const jobs = jobRows.results || [];
+  const jobsByGame = new Map();
+  for (const job of jobs) {
+    const list = jobsByGame.get(job.internal_game_id) || [];
+    list.push(job);
+    jobsByGame.set(job.internal_game_id, list);
+  }
+  const lineupsByGame = new Map((currentLineups.results || []).map((row) => [row.internal_game_id, row]));
+  let missingDownstreamJobCount = 0;
+  for (const workflow of workflowRows.results || []) {
+    if (["cancelled", "service_unavailable", "published"].includes(workflow.workflow_status)) continue;
+    const gameJobs = jobsByGame.get(workflow.internal_game_id) || [];
+    const lineup = lineupsByGame.get(workflow.internal_game_id);
+    const hasJob = (type) => gameJobs.some((job) => job.job_type === type && job.status !== "cancelled");
+    if (workflow.workflow_status === "final_lineup_captured" && !hasJob("scoring")) missingDownstreamJobCount += 1;
+    if (lineup?.scoring_status === "scored" && !hasJob("ranking_update")) missingDownstreamJobCount += 1;
+    if (gameJobs.some((job) => job.job_type === "ranking_update" && job.status === "succeeded")
+      && lineup?.publication_status !== "published" && !hasJob("publication")) missingDownstreamJobCount += 1;
+  }
+  const currentWorkflows = workflowRows.results || [];
+  const counts = {
+    activeWorkflowCount: currentWorkflows.filter((row) => !["published", "service_unavailable", "cancelled"].includes(row.workflow_status)).length,
+    pendingJobCount: jobs.filter((job) => job.status === "pending").length,
+    retryWaitCount: jobs.filter((job) => job.status === "retry_wait").length,
+    staleLeaseCount: Number(staleLease?.count || 0),
+    permanentlyFailedCount: jobs.filter((job) => job.status === "permanently_failed").length,
+    missingDownstreamJobCount,
+    duplicateJobSlotCount: Number(duplicateSlots?.count || 0),
+    serviceUnavailableCount: currentWorkflows.filter((row) => row.workflow_status === "service_unavailable").length,
+    gamesWithoutInternalGameId: Number(scheduleMissing?.count || 0),
+    identifiersWithoutGames: Number(identifiersMissing?.count || 0),
+    newLegacyOnlyWritesLast24h: 0,
+    publishedWorkflowMismatchCount: currentWorkflows.filter((row) => row.workflow_status === "published"
+      && lineupsByGame.get(row.internal_game_id)?.publication_status !== "published").length
+  };
+  const storage = await getInternalGameIdStorageAvailability(db, ["predictions", "game_lineups", "ranking_games"]);
+  const legacyWriteChecks = [];
+  if (storage.predictions) legacyWriteChecks.push(db.prepare("SELECT COUNT(*) AS count FROM predictions WHERE (internal_game_id IS NULL OR internal_game_id = '') AND submitted_at >= ?1").bind(timestamp24h).first());
+  if (storage.game_lineups) legacyWriteChecks.push(db.prepare("SELECT COUNT(*) AS count FROM game_lineups WHERE (internal_game_id IS NULL OR internal_game_id = '') AND created_at >= ?1").bind(timestamp24h).first());
+  if (storage.ranking_games) legacyWriteChecks.push(db.prepare("SELECT COUNT(*) AS count FROM ranking_games WHERE (internal_game_id IS NULL OR internal_game_id = '') AND created_at >= ?1").bind(timestamp24h).first());
+  const legacyWrites = await Promise.all(legacyWriteChecks);
+  counts.newLegacyOnlyWritesLast24h = legacyWrites.reduce((total, row) => total + Number(row?.count || 0), 0);
+  return {
+    ...deriveReleaseReadiness({ schemaReady, counts }),
+    dateFrom,
+    dateTo,
+    cronLastRunAt: health?.cron_last_run_at || null,
+    cronLastSuccessAt: health?.cron_last_success_at || null,
+    cronLastErrorCode: health?.cron_last_error_code || null
+  };
+}
+
+async function handleAdminReleaseReadiness(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  try {
+    const report = await collectReleaseReadiness(env, new Date());
+    const response = jsonResponse({ ok: true, ...report }, 200, cors);
+    response.headers.set("Cache-Control", "no-store");
+    return response;
+  } catch (error) {
+    console.error("リリース準備状況の読み取りに失敗しました", error instanceof Error ? error.message : "unknown error");
+    return jsonResponse({ ok: false, code: "RELEASE_READINESS_READ_FAILED", error: "リリース準備状況を取得できませんでした。" }, 500, cors);
+  }
+}
+
 export function selectNextPredictionTarget(games, now = new Date()) {
   const current = now instanceof Date ? now : new Date(now);
   if (Number.isNaN(current.getTime())) return null;
@@ -6357,6 +6516,15 @@ const COMPLETION_WORKFLOW_JOB_TYPES = Object.freeze([
   "provisional_lineup_fetch", "final_lineup_fetch", "scoring", "ranking_update", "publication", "rescore"
 ]);
 
+function getCompletionJobScheduledSlot(timeline, jobType, now = new Date()) {
+  const startAt = timeline?.startAt instanceof Date ? timeline.startAt : new Date(timeline?.startAt);
+  if (jobType === "provisional_lineup_fetch") return timeline?.lineupFetchStartAt || startAt;
+  if (jobType === "final_lineup_fetch") return timeline?.finalLineupFetchAt || new Date(startAt.getTime() + 60 * 1000);
+  if (jobType === "scoring" || jobType === "ranking_update") return new Date(startAt.getTime() + 2 * 60 * 1000);
+  if (jobType === "publication") return timeline?.resultReleaseAt || new Date(startAt.getTime() + 5 * 60 * 1000);
+  return now;
+}
+
 async function shouldUseCompletionWorkflowJobs(env) {
   if (String(env.ENABLE_WORKFLOW_COMPLETION_JOBS || "").toLowerCase() !== "true") return false;
   try {
@@ -6367,7 +6535,7 @@ async function shouldUseCompletionWorkflowJobs(env) {
   }
 }
 
-async function createCompletionWorkflowJob(db, timeline, jobType, now, source = "cron") {
+async function createCompletionWorkflowJob(db, timeline, jobType, now, source = "cron", scheduledSlotAt = null) {
   const internalGameId = String(timeline?.game?.internalGameId || timeline?.internalGameId || "");
   if (!internalGameId) return false;
   await ensureGameWorkflowState(db, {
@@ -6380,12 +6548,96 @@ async function createCompletionWorkflowJob(db, timeline, jobType, now, source = 
   const created = await createWorkflowJob(db, {
     internalGameId,
     jobType,
-    scheduledSlotAt: timeline.startAt,
+    scheduledSlotAt: scheduledSlotAt || getCompletionJobScheduledSlot(timeline, jobType, now),
     source,
     maxAttempts: jobType.includes("lineup") ? 72 : 5,
     now
   });
   return created.created;
+}
+
+async function ensureCompletionWorkflowJob(db, timeline, jobType, now, source = "cron") {
+  const internalGameId = String(timeline?.game?.internalGameId || timeline?.internalGameId || "");
+  if (!internalGameId) return { created: false, reason: "internal_id_missing" };
+  const existing = await db.prepare(
+    `SELECT id, status FROM game_job_runs
+      WHERE internal_game_id = ?1 AND job_type = ?2 AND status <> 'cancelled'
+      ORDER BY id DESC LIMIT 1`
+  ).bind(internalGameId, jobType).first();
+  if (existing) return { created: false, reason: "already_exists", job: existing };
+  const created = await createCompletionWorkflowJob(db, timeline, jobType, now, source);
+  return { created, reason: created ? "created" : "already_exists" };
+}
+
+async function recordCreatedCompletionJob(db, timeline, jobType, now, source = "cron") {
+  const result = await ensureCompletionWorkflowJob(db, timeline, jobType, now, source);
+  if (result.created) {
+    await recordWorkflowJobEvent(db, {
+      eventType: "workflow_job_created",
+      status: "info",
+      internalGameId: timeline.game.internalGameId || timeline.internalGameId,
+      job: { legacyGameId: timeline.gameId, job_type: jobType },
+      now,
+      source
+    });
+  }
+  return result;
+}
+
+async function ensureCompletionDownstreamJobs(env, job, now) {
+  const nextJobType = ({
+    probable_starter_fetch: "provisional_lineup_fetch",
+    provisional_lineup_fetch: "final_lineup_fetch",
+    final_lineup_fetch: "scoring",
+    scoring: "ranking_update",
+    ranking_update: "publication"
+  })[job?.job_type];
+  if (!nextJobType) return { created: false, reason: "no_downstream" };
+  const target = await resolveWorkflowJobGame(env.AUTH_DB, job.internal_game_id);
+  const timeline = getPregameTimeline({
+    gameId: target.gameId,
+    date: target.date,
+    startAt: target.startAt,
+    homeTeam: target.homeTeam,
+    awayTeam: target.awayTeam,
+    gameCode: target.gameCode,
+    status: target.status
+  });
+  if (!timeline || target.status === "cancelled") return { created: false, reason: "out_of_scope" };
+  const result = await recordCreatedCompletionJob(env.AUTH_DB, { ...timeline, internalGameId: job.internal_game_id }, nextJobType, now);
+  return { ...result, jobType: nextJobType };
+}
+
+async function reconcileCompletionWorkflowJobs(env, now, timelines) {
+  const summary = { checked: 0, created: 0, skipped: 0 };
+  for (const timeline of Array.isArray(timelines) ? timelines : []) {
+    const internalGameId = String(timeline?.game?.internalGameId || timeline?.internalGameId || "");
+    if (!internalGameId || timeline?.game?.status === "cancelled" || isScheduleGameUnavailable(timeline?.game)) {
+      summary.skipped += 1;
+      continue;
+    }
+    summary.checked += 1;
+    const canonicalTimeline = { ...timeline, internalGameId };
+    const lineup = await getGameLineup(env.AUTH_DB, { gameId: timeline.gameId, internalGameId });
+    let requiredJobType = "";
+    if (!lineup) {
+      requiredJobType = now >= timeline.finalLineupFetchAt ? "final_lineup_fetch" : "provisional_lineup_fetch";
+    } else if (lineup.scoring_status !== "scored" && lineup.scoring_due_at) {
+      requiredJobType = "scoring";
+    } else if (lineup.scoring_status === "scored") {
+      const rankingJob = await env.AUTH_DB.prepare(
+        `SELECT status FROM game_job_runs
+          WHERE internal_game_id = ?1 AND job_type = 'ranking_update' AND status <> 'cancelled'
+          ORDER BY id DESC LIMIT 1`
+      ).bind(internalGameId).first();
+      if (!rankingJob) requiredJobType = "ranking_update";
+      else if (rankingJob.status === "succeeded" && lineup.publication_status !== "published") requiredJobType = "publication";
+    }
+    if (!requiredJobType) continue;
+    const result = await recordCreatedCompletionJob(env.AUTH_DB, canonicalTimeline, requiredJobType, now, "system");
+    if (result.created) summary.created += 1;
+  }
+  return summary;
 }
 
 async function alignWorkflowStateWithStoredLineup(db, internalGameId, legacyGameId, now) {
@@ -6455,13 +6707,20 @@ async function runDueCompletionWorkflowJobs(env, now, timelines) {
   for (const timeline of timelines) {
     const internalGameId = String(timeline?.game?.internalGameId || timeline?.internalGameId || "");
     if (!internalGameId) continue;
-    const lineup = await getGameLineup(env.AUTH_DB, timeline.gameId);
+    if (timeline?.game?.status === "cancelled" || isScheduleGameUnavailable(timeline?.game)) continue;
+    const canonicalTimeline = { ...timeline, internalGameId };
+    const lineup = await getGameLineup(env.AUTH_DB, { gameId: timeline.gameId, internalGameId });
     if (!lineup) {
       const finalDue = now >= timeline.finalLineupFetchAt;
       if (finalDue && isFinalLineupRetryExpired(timeline, now)) {
         await recordScoringRetryExpiredOnce(env.AUTH_DB, timeline, now, "LINEUP_FETCH_FAILED");
         await ensureGameWorkflowState(env.AUTH_DB, { internalGameId, legacyGameId: timeline.gameId, workflowStatus: "lineup_pending", now });
         await transitionWorkflowState(env.AUTH_DB, { internalGameId, to: "service_unavailable", errorCode: SCORING_RETRY_EXPIRED_CODE, now });
+        await env.AUTH_DB.prepare(
+          `UPDATE game_job_runs SET status = 'cancelled', lease_expires_at = NULL, next_attempt_at = NULL, updated_at = ?1
+            WHERE internal_game_id = ?2 AND job_type IN ('scoring', 'ranking_update', 'publication')
+              AND status IN ('pending', 'retry_wait')`
+        ).bind(now.toISOString(), internalGameId).run();
         summary.serviceUnavailable += 1;
         continue;
       }
@@ -6469,20 +6728,24 @@ async function runDueCompletionWorkflowJobs(env, now, timelines) {
       if (dueAt) {
         await ensureGameWorkflowState(env.AUTH_DB, { internalGameId, legacyGameId: timeline.gameId, workflowStatus: "prediction_open", now });
         await transitionWorkflowState(env.AUTH_DB, { internalGameId, to: "lineup_pending", now });
-        if (await createCompletionWorkflowJob(env.AUTH_DB, timeline, finalDue ? "final_lineup_fetch" : "provisional_lineup_fetch", now)) summary.created += 1;
+        const result = await recordCreatedCompletionJob(env.AUTH_DB, canonicalTimeline, finalDue ? "final_lineup_fetch" : "provisional_lineup_fetch", now);
+        if (result.created) summary.created += 1;
       }
       continue;
     }
     if (lineup.scoring_status !== "scored" && lineup.scoring_due_at && new Date(lineup.scoring_due_at) <= now) {
       await alignWorkflowStateWithStoredLineup(env.AUTH_DB, internalGameId, timeline.gameId, now);
       await transitionWorkflowState(env.AUTH_DB, { internalGameId, to: "scoring_pending", now });
-      if (await createCompletionWorkflowJob(env.AUTH_DB, timeline, "scoring", now)) summary.created += 1;
+      const result = await recordCreatedCompletionJob(env.AUTH_DB, canonicalTimeline, "scoring", now);
+      if (result.created) summary.created += 1;
     }
     if (lineup.scoring_status === "scored") {
-      if (await createCompletionWorkflowJob(env.AUTH_DB, timeline, "ranking_update", now)) summary.created += 1;
-      if (now >= timeline.resultReleaseAt && lineup.publication_status !== "published" && await createCompletionWorkflowJob(env.AUTH_DB, timeline, "publication", now)) summary.created += 1;
+      const ranking = await recordCreatedCompletionJob(env.AUTH_DB, canonicalTimeline, "ranking_update", now);
+      if (ranking.created) summary.created += 1;
     }
   }
+  const reconciled = await reconcileCompletionWorkflowJobs(env, now, timelines);
+  summary.created += reconciled.created;
   const dueJobs = await listDueWorkflowJobs(env.AUTH_DB, { jobTypes: COMPLETION_WORKFLOW_JOB_TYPES.filter((type) => type !== "rescore"), now, limit: 20 });
   for (const due of dueJobs) {
     const claimed = await claimWorkflowJob(env.AUTH_DB, { jobId: due.id, now, leaseMilliseconds: WORKFLOW_JOB_LEASE_MS });
@@ -6491,9 +6754,22 @@ async function runDueCompletionWorkflowJobs(env, now, timelines) {
     try {
       await executeCompletionWorkflowJob(env, claimed, now);
       summary.succeeded += 1;
+      try {
+        const downstream = await ensureCompletionDownstreamJobs(env, claimed, now);
+        if (downstream.created) summary.created += 1;
+      } catch (downstreamError) {
+        await recordCronStepFailure(env.AUTH_DB, `completion_${claimed.job_type}_downstream`, now, downstreamError);
+      }
     } catch (error) {
-      const target = await resolveWorkflowJobGame(env.AUTH_DB, claimed.internal_game_id);
-      const retryDeadline = getFinalLineupRetryDeadline(getPregameTimeline({ gameId: target.gameId, date: target.date, startAt: target.startAt, homeTeam: target.homeTeam, awayTeam: target.awayTeam, gameCode: target.gameCode }), now);
+      let retryDeadline = null;
+      try {
+        const target = await resolveWorkflowJobGame(env.AUTH_DB, claimed.internal_game_id);
+        retryDeadline = getFinalLineupRetryDeadline(getPregameTimeline({ gameId: target.gameId, date: target.date, startAt: target.startAt, homeTeam: target.homeTeam, awayTeam: target.awayTeam, gameCode: target.gameCode }), now);
+      } catch (resolveError) {
+        const fallbackTimeline = (Array.isArray(timelines) ? timelines : []).find((timeline) => String(timeline?.game?.internalGameId || timeline?.internalGameId || "") === String(claimed.internal_game_id || ""));
+        if (fallbackTimeline) retryDeadline = getFinalLineupRetryDeadline(fallbackTimeline, now);
+        console.error(`completion workflow target resolve failed: code=${getWorkflowJobErrorCode(resolveError)}`);
+      }
       const expired = claimed.job_type === "final_lineup_fetch" && retryDeadline && now >= retryDeadline;
       const retry = await retryWorkflowJob(env.AUTH_DB, { job: claimed, claimToken: claimed.claim_token, errorCode: expired ? SCORING_RETRY_EXPIRED_CODE : getWorkflowJobErrorCode(error), errorDetail: String(error?.message || ""), nextAttemptAt: new Date(now.getTime() + (claimed.job_type.includes("lineup") ? 10 : 1) * 60 * 1000), now });
       await transitionWorkflowState(env.AUTH_DB, { internalGameId: claimed.internal_game_id, to: expired ? "service_unavailable" : "retrying", errorCode: expired ? SCORING_RETRY_EXPIRED_CODE : getWorkflowJobErrorCode(error), now });
@@ -6501,6 +6777,8 @@ async function runDueCompletionWorkflowJobs(env, now, timelines) {
       else summary.retried += 1;
     }
   }
+  const afterRunReconciliation = await reconcileCompletionWorkflowJobs(env, now, timelines);
+  summary.created += afterRunReconciliation.created;
   return summary;
 }
 

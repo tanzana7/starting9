@@ -1361,6 +1361,70 @@ textarea:focus {
   gap: 8px;
 }
 
+.admin-release-readiness {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid #cbd8e5;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.admin-release-readiness-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.admin-release-readiness-heading h3,
+.admin-release-readiness-heading p {
+  margin: 0;
+}
+
+.admin-release-readiness-heading h3 {
+  color: var(--fighters-deep-blue);
+  font-size: 1rem;
+}
+
+.admin-release-readiness-heading p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.admin-release-readiness-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.admin-release-readiness-list dt {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.admin-release-readiness-list dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+  font-weight: 900;
+}
+
+.admin-release-readiness-errors,
+.admin-release-readiness-warnings {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.admin-release-readiness-errors { color: #9c2f2f; }
+.admin-release-readiness-warnings { color: #805817; }
+
 .admin-game-progress-board {
   display: grid;
   gap: 12px;
@@ -3297,6 +3361,11 @@ textarea:focus {
 }
 
 @media (max-width: 759px) {
+  .admin-release-readiness-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .admin-game-progress-heading {
     align-items: stretch;
     flex-direction: column;

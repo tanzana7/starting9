@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { getGameIdentityRepairPreviewDateTo } from "../auth-worker.js";
 import { buildGameIdentityRepairPreview, hashGameIdentityRepairPlan, isNonGameScope } from "../game-identity-repair.js";
 
 const schedule = {
@@ -24,6 +25,10 @@ function game(internal_game_id, overrides = {}) {
     ...overrides
   };
 }
+
+test("修復dry-runの既定範囲は日程registryと同じ近未来を含む", () => {
+  assert.equal(getGameIdentityRepairPreviewDateTo(new Date("2026-08-02T00:00:00.000Z")), "2026-08-05");
+});
 
 test("一意な日程と既存gamesの一致はSAFE_AUTO_LINKとして安定した計画になる", async () => {
   const input = { scheduleRows: [schedule], games: [game("11111111-1111-4111-8111-111111111111")], now: new Date("2026-08-01T00:00:00.000Z") };
@@ -198,6 +203,60 @@ test("既に日程へ設定済みのUUIDにも安全なcompact IDをSAFE_AUTO_LI
   assert.equal(preview.safeAutoLinks[0].targetInternalGameId, internalGameId);
   assert.ok(preview.safeAutoLinks[0].legacyGameIds.includes(compactGameId));
   assert.equal(preview.summary.projectedAllTableLegacyIdsWithoutInternalGameId, 0);
+});
+
+test("8月4日のpregameとrosterのlegacy-only行を既存UUIDへSAFE_AUTO_LINKする", async () => {
+  const internalGameId = "33333333-3333-4333-8333-333333333333";
+  const compactGameId = "2026-08-04-h-f-15";
+  const descriptiveGameId = "2026-08-04-hawks-fighters-1500";
+  const sourceGameKey = "2026-08-04:hawks:fighters:15:00";
+  const augustFourSchedule = {
+    game_id: descriptiveGameId,
+    source_game_key: sourceGameKey,
+    game_date: "2026-08-04",
+    start_at: "2026-08-04T06:00:00.000Z",
+    home_team: "hawks",
+    away_team: "fighters",
+    game_code: "h-f-15",
+    game_status: "scheduled",
+    internal_game_id: internalGameId
+  };
+  const previewInput = {
+    scheduleRows: [augustFourSchedule],
+    games: [game(internalGameId, {
+      game_date: "2026-08-04",
+      start_time: "2026-08-04T06:00:00.000Z",
+      home_team: "hawks",
+      away_team: "fighters",
+      game_status: "scheduled"
+    })],
+    identifiers: [
+      { internal_game_id: internalGameId, provider: "starting9", identifier_type: "descriptive_game_id", identifier_value: descriptiveGameId },
+      { internal_game_id: internalGameId, provider: "npb", identifier_type: "npb_game_code", identifier_value: "h-f-15" },
+      { internal_game_id: internalGameId, provider: "schedule_worker", identifier_type: "source_game_key", identifier_value: sourceGameKey }
+    ],
+    tableRows: {
+      game_pregame_automation: [{ game_id: compactGameId, row_count: 1, unlinked_row_count: 1, start_at: augustFourSchedule.start_at }],
+      game_roster_snapshots: [{ game_id: compactGameId, row_count: 1, unlinked_row_count: 1, game_date: augustFourSchedule.game_date }]
+    },
+    now: new Date("2026-08-02T00:00:00.000Z")
+  };
+  const preview = await buildGameIdentityRepairPreview(previewInput);
+  const repeated = await buildGameIdentityRepairPreview(previewInput);
+  assert.equal(preview.safeAutoLinks.length, 1);
+  const plan = preview.safeAutoLinks[0];
+  assert.equal(plan.targetInternalGameId, internalGameId);
+  assert.equal(plan.createInternalGame, false);
+  assert.deepEqual(plan.identifiersToInsert, []);
+  assert.deepEqual(plan.tableRowsToUpdate, [
+    { table: "game_pregame_automation", legacyGameId: compactGameId, expectedCount: 1 },
+    { table: "game_roster_snapshots", legacyGameId: compactGameId, expectedCount: 1 }
+  ]);
+  assert.equal(plan.legacyGameIds.includes(compactGameId), true);
+  assert.equal(preview.obsoleteOrphans.some((item) => item.gameId === compactGameId), false);
+  assert.equal(preview.classificationIntegrity.valid, true);
+  assert.equal(plan.repairId, repeated.safeAutoLinks[0].repairId);
+  assert.equal(plan.planHash, repeated.safeAutoLinks[0].planHash);
 });
 
 test("doubleheader、開始時刻またはNPBコードの矛盾はMANUAL_REVIEWに残す", async () => {

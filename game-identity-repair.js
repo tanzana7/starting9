@@ -470,7 +470,11 @@ export async function buildGameIdentityRepairPreview({ scheduleRows = [], games 
       targetInternalGameId,
       targetGameStatus: exactGames.find((game) => text(game.internal_game_id) === targetInternalGameId)?.game_status || scheduleRow.game_status || "",
       createInternalGame,
-      identifiersToInsert: [...planIdentifiers, ...compactIdentifiers],
+      // An already-linked schedule is a row-only backfill. Do not add new
+      // registry aliases as a side effect of the targeted legacy-row repair.
+      identifiersToInsert: classification === "SAFE_AUTO_LINK" && existingScheduleInternalGameId
+        ? []
+        : [...planIdentifiers, ...compactIdentifiers],
       tableRowsToUpdate: uniqueTableUpdates(collectReferenceRows(tableRows, gameId), ...compactTableUpdates),
       legacyGameIds: [gameId, ...compactIdsForPlan],
       reasonCodes: [...reasonCodes, ...(compactIdsForPlan.length ? ["UNIQUE_COMPACT_LEGACY_MATCH"] : [])],

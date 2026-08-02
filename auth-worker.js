@@ -5344,10 +5344,24 @@ function createDefaultGameIdentityRepairPreviewOptions(now = new Date()) {
     allPeriod: false,
     gameDate: "",
     dateFrom: getJstDateString(rangeStart),
-    dateTo: getJstDateString(now),
+    dateTo: getGameIdentityRepairPreviewDateTo(now),
     timestampFrom: rangeStart.toISOString(),
     timestampTo: now.toISOString()
   };
+}
+
+// Repair previews must include the same near-term window that registers
+// upcoming schedules. This lets the default admin dry-run find legacy rows
+// created before the registry link was available, without widening the audit
+// to an unbounded period.
+export function getGameIdentityRepairPreviewDateTo(now = new Date()) {
+  const date = new Date(now.getTime() + (AUTOMATION_SCHEDULE_LOOKAHEAD_DAYS * 24 * 60 * 60 * 1000));
+  return getJstDateString(date);
+}
+
+function getGameIdentityRepairPreviewOptions(options, now = new Date()) {
+  if (options.gameDate || options.allPeriod) return options;
+  return { ...options, dateTo: getGameIdentityRepairPreviewDateTo(now) };
 }
 
 async function handleAdminGameIdentityRepairPreview(request, env, cors) {
@@ -5356,7 +5370,8 @@ async function handleAdminGameIdentityRepairPreview(request, env, cors) {
   const options = parseGameIdentityAuditOptions(request);
   if (!options.ok) return jsonResponse({ ok: false, code: options.code, error: "監査対象日が不正です。" }, 400, cors);
   try {
-    const { preview } = await buildCurrentGameIdentityRepairPreview(env.AUTH_DB, options);
+    const previewOptions = getGameIdentityRepairPreviewOptions(options);
+    const { preview } = await buildCurrentGameIdentityRepairPreview(env.AUTH_DB, previewOptions);
     const response = jsonResponse({ ok: true, dryRun: true, ...preview }, 200, cors);
     response.headers.set("Cache-Control", "no-store");
     return response;

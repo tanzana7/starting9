@@ -41,6 +41,13 @@ test("SAFE計画だけを1件ずつ最新planHashで実行する", () => {
   assert.match(script, /repairs\.preview\?\.obsoleteOrphans/);
 });
 
+test("既存UUIDへ紐づけるSAFE計画を新規UUID作成と誤表示しない", () => {
+  const script = read("script.js");
+
+  assert.match(script, /既存の内部試合IDへ紐づけ/);
+  assert.match(script, /新しい内部試合IDを作成/);
+});
+
 test("修復結果はエラーコードと部分書き込み状態を表示し、完了済みだけロールバック可能にする", () => {
   const script = read("script.js");
 

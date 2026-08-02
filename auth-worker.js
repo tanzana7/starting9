@@ -328,6 +328,9 @@ export default {
       if (path === "/api/admin/audit/game-workflows" && request.method === "GET") {
         return await handleAdminGameWorkflowAudit(request, env, cors);
       }
+      if (path === "/api/admin/audit/current-game-workflow" && request.method === "GET") {
+        return await handleAdminCurrentGameWorkflow(request, env, cors);
+      }
       if (path === "/api/admin/audit/release-readiness" && request.method === "GET") {
         return await handleAdminReleaseReadiness(request, env, cors);
       }
@@ -3301,6 +3304,84 @@ async function handleAdminGameWorkflowStatus(env, cors, gameId) {
   }
 }
 
+async function getManagedGameJobSummary(db, internalGameId) {
+  if (!internalGameId) return { pendingCount: 0, retryCount: 0, nextExecutionAt: null, jobs: [] };
+  const result = await db.prepare(
+    `SELECT job_type, status, scheduled_slot_at, next_attempt_at, error_code
+       FROM game_job_runs
+      WHERE internal_game_id = ?1
+      ORDER BY COALESCE(next_attempt_at, scheduled_slot_at) ASC, job_type ASC`
+  ).bind(internalGameId).all();
+  const jobs = (result?.results || []).map((row) => ({
+    jobType: row.job_type,
+    status: row.status,
+    scheduledAt: row.scheduled_slot_at || null,
+    nextAttemptAt: row.next_attempt_at || null,
+    errorCode: row.error_code || null
+  }));
+  const pending = jobs.filter((job) => ["pending", "claimed", "running"].includes(job.status));
+  const retry = jobs.filter((job) => job.status === "retry_wait");
+  const nextExecutionAt = jobs
+    .map((job) => job.nextAttemptAt || job.scheduledAt)
+    .filter(Boolean)
+    .sort()[0] || null;
+  return { pendingCount: pending.length, retryCount: retry.length, nextExecutionAt, jobs };
+}
+
+async function handleAdminCurrentGameWorkflow(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  try {
+    const now = new Date();
+    const { selection, candidates } = await getCurrentManagedGame(env.AUTH_DB, now);
+    const historicalFailures = candidates
+      .map((candidate) => normalizeManagedGameCandidate(candidate, now))
+      .filter((candidate) => candidate.isHistorical && candidate.isFailed)
+      .sort((left, right) => String(right.startAt || "").localeCompare(String(left.startAt || "")))
+      .slice(0, 10)
+      .map((candidate) => ({
+        internalGameId: candidate.internalGameId,
+        gameId: candidate.legacyGameId,
+        gameDate: candidate.gameDate,
+        startAt: candidate.startAt || null,
+        homeTeam: candidate.homeTeam,
+        awayTeam: candidate.awayTeam,
+        workflowStatus: candidate.workflowStatus,
+        gameStatus: candidate.gameStatus,
+        classification: classifyManagedGame(candidate),
+        lastErrorCode: candidate.lastErrorCode || null,
+        lastErrorAt: candidate.lastErrorAt || null
+      }));
+    if (!selection || !selection.legacyGameId) {
+      return jsonResponse({ ok: true, currentGame: null, selectionReason: "NO_MANAGED_GAME", historicalFailures, pendingJobs: [], retryJobs: [], warnings: [], errors: [] }, 200, cors);
+    }
+    const status = await getPregameAutomationStatus(env.AUTH_DB, selection.legacyGameId);
+    let jobSummary = { pendingCount: 0, retryCount: 0, nextExecutionAt: null, jobs: [] };
+    try {
+      jobSummary = await getManagedGameJobSummary(env.AUTH_DB, selection.internalGameId);
+    } catch (error) {
+      if (!isPregameSchemaError(error)) throw error;
+    }
+    const response = jsonResponse({
+      ok: true,
+      ...status,
+      currentGame: selection,
+      selectionReason: selection.selectionReason,
+      historicalFailures,
+      pendingJobs: jobSummary.jobs.filter((job) => ["pending", "claimed", "running"].includes(job.status)),
+      retryJobs: jobSummary.jobs.filter((job) => job.status === "retry_wait"),
+      jobSummary,
+      warnings: selection.isFuture && selection.workflowStatus === "retrying" ? ["future_workflow_retry_wait"] : [],
+      errors: []
+    }, 200, cors);
+    response.headers.set("Cache-Control", "no-store");
+    return response;
+  } catch (error) {
+    console.error("現在の試合進行状態の読み取りに失敗しました", error instanceof Error ? error.message : "unknown error");
+    return jsonResponse({ ok: false, code: isPregameSchemaError(error) ? "CURRENT_GAME_WORKFLOW_SCHEMA_NOT_READY" : "CURRENT_GAME_WORKFLOW_READ_FAILED", error: "現在の試合進行状態を取得できませんでした。" }, isPregameSchemaError(error) ? 503 : 500, cors);
+  }
+}
+
 async function handleAdminGameWorkflowPause(env, cors, gameId, paused) {
   const now = new Date().toISOString();
   try {
@@ -6237,16 +6318,34 @@ async function collectReleaseReadiness(env, now = new Date()) {
     ).bind().first()
   ]);
   const jobs = jobRows.results || [];
-  const retryState = classifyRetryWaitJobs(jobs, now);
+  let managed = { selection: null, candidates: [] };
+  try {
+    managed = await getCurrentManagedGame(db, now);
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+  }
+  const managedCandidates = managed.candidates || [];
+  const currentAndFutureIds = new Set(managedCandidates
+    .map((candidate) => normalizeManagedGameCandidate(candidate, now))
+    .filter((candidate) => !candidate.isHistorical && !candidate.isTestGame)
+    .map((candidate) => candidate.internalGameId)
+    .filter(Boolean));
+  const currentWorkflows = currentAndFutureIds.size
+    ? (workflowRows.results || []).filter((row) => currentAndFutureIds.has(row.internal_game_id))
+    : (workflowRows.results || []).filter((row) => row.game_date >= currentDate);
+  const scopedJobs = currentAndFutureIds.size
+    ? jobs.filter((job) => currentAndFutureIds.has(job.internal_game_id))
+    : jobs.filter((job) => !job.internal_game_id);
+  const retryState = classifyRetryWaitJobs(scopedJobs, now);
   const jobsByGame = new Map();
-  for (const job of jobs) {
+  for (const job of scopedJobs) {
     const list = jobsByGame.get(job.internal_game_id) || [];
     list.push(job);
     jobsByGame.set(job.internal_game_id, list);
   }
   const lineupsByGame = new Map((currentLineups.results || []).map((row) => [row.internal_game_id, row]));
   let missingDownstreamJobCount = 0;
-  for (const workflow of workflowRows.results || []) {
+  for (const workflow of currentWorkflows) {
     if (["cancelled", "service_unavailable", "published"].includes(workflow.workflow_status)) continue;
     const gameJobs = jobsByGame.get(workflow.internal_game_id) || [];
     const lineup = lineupsByGame.get(workflow.internal_game_id);
@@ -6256,13 +6355,12 @@ async function collectReleaseReadiness(env, now = new Date()) {
     if (gameJobs.some((job) => job.job_type === "ranking_update" && job.status === "succeeded")
       && lineup?.publication_status !== "published" && !hasJob("publication")) missingDownstreamJobCount += 1;
   }
-  const currentWorkflows = workflowRows.results || [];
   const counts = {
     activeWorkflowCount: currentWorkflows.filter((row) => !["published", "service_unavailable", "cancelled"].includes(row.workflow_status)).length,
-    pendingJobCount: jobs.filter((job) => job.status === "pending").length,
-    retryWaitCount: jobs.filter((job) => job.status === "retry_wait").length,
+    pendingJobCount: scopedJobs.filter((job) => job.status === "pending").length,
+    retryWaitCount: scopedJobs.filter((job) => job.status === "retry_wait").length,
     staleLeaseCount: Number(staleLease?.count || 0),
-    permanentlyFailedCount: jobs.filter((job) => job.status === "permanently_failed").length,
+    permanentlyFailedCount: scopedJobs.filter((job) => job.status === "permanently_failed").length,
     missingDownstreamJobCount,
     duplicateJobSlotCount: Number(duplicateSlots?.count || 0),
     serviceUnavailableCount: currentWorkflows.filter((row) => row.workflow_status === "service_unavailable").length,
@@ -6281,8 +6379,34 @@ async function collectReleaseReadiness(env, now = new Date()) {
   counts.newLegacyOnlyWritesLast24h = legacyWriteSummary.insertCount;
   counts.newLegacyOnlyInsertCount = legacyWriteSummary.insertCount;
   counts.legacyOnlyUpdateCount = legacyWriteSummary.updateCount;
+  const historicalFailures = managedCandidates
+    .map((candidate) => normalizeManagedGameCandidate(candidate, now))
+    .filter((candidate) => candidate.isHistorical && candidate.isFailed)
+    .sort((left, right) => String(right.startAt || "").localeCompare(String(left.startAt || "")))
+    .slice(0, 10)
+    .map((candidate) => ({
+      internalGameId: candidate.internalGameId,
+      gameId: candidate.legacyGameId,
+      gameDate: candidate.gameDate,
+      workflowStatus: candidate.workflowStatus,
+      gameStatus: candidate.gameStatus,
+      classification: classifyManagedGame(candidate),
+      lastErrorCode: candidate.lastErrorCode || null,
+      lastErrorAt: candidate.lastErrorAt || null
+    }));
   return {
     ...deriveReleaseReadiness({ schemaReady, counts }),
+    currentGame: managed.selection,
+    currentGameSelection: managed.selection ? {
+      selectionReason: managed.selection.selectionReason,
+      gameId: managed.selection.legacyGameId,
+      internalGameId: managed.selection.internalGameId,
+      classification: managed.selection.classification
+    } : null,
+    historicalFailures,
+    activeWorkflowGameIds: currentWorkflows.filter((row) => !["published", "service_unavailable", "cancelled"].includes(row.workflow_status)).map((row) => row.internal_game_id),
+    pendingJobGameIds: [...new Set(scopedJobs.filter((job) => job.status === "pending").map((job) => job.internal_game_id))],
+    retryJobGameIds: [...new Set(scopedJobs.filter((job) => job.status === "retry_wait").map((job) => job.internal_game_id))],
     gamesWithoutInternalGameIdDetails: scheduleMissingDetails,
     recentLegacyOnlyWrites,
     legacyOnlyWritesByTable: legacyWriteSummary.byTable,
@@ -7254,11 +7378,17 @@ export function deriveGameProgressStatuses({
   const lineupAt = schedule?.lineupFetchStartAt ? new Date(schedule.lineupFetchStartAt) : null;
   const releaseAt = schedule?.resultReleaseAt ? new Date(schedule.resultReleaseAt) : null;
   const validDate = (value) => value && !Number.isNaN(value.getTime());
+  const scheduleErrorCodes = [
+    probableStarter?.status === "error" ? probableStarter?.error_code || probableStarter?.errorCode : "",
+    lineup?.finalLineupErrorCode || "",
+    ...(Array.isArray(logs) ? logs.map((log) => log.errorCode) : [])
+  ];
+  const scheduleWaiting = scheduleErrorCodes.some((code) => classifyScheduleUnavailable({ startAt, now: current, code }).status === "waiting");
   const deadlineUnavailableDetail = scheduleSource
     ? `締切時刻を取得できません（確認済み: ${[...new Set([scheduleSource, ...checkedScheduleSources])].join(", ")}）`
     : "締切時刻を取得できません";
-  const probableError = probableStarter?.status === "error"
-    || progressLogHasCurrentError(logs, ["probable_starter_fetch_failed"], ["probable_starter_announced"]);
+  const probableError = !scheduleWaiting && (probableStarter?.status === "error"
+    || progressLogHasCurrentError(logs, ["probable_starter_fetch_failed"], ["probable_starter_announced"]));
   const lineupError = lineup?.status === "failed"
     || progressLogHasCurrentError(logs, ["lineup_fetch", "final_lineup_fetch"], ["lineup_fetch", "final_lineup_fetch"]);
   const scoringError = scoring?.status === "failed"
@@ -7285,7 +7415,9 @@ export function deriveGameProgressStatuses({
       && new Date(candidate.occurredAt).getTime() > new Date(log.occurredAt).getTime()));
   };
   const errors = (Array.isArray(logs) ? logs : [])
-    .filter((log) => log.status === "error" && !progressErrorResolved(log))
+    .filter((log) => log.status === "error"
+      && !progressErrorResolved(log)
+      && !(scheduleWaiting && ["SCHEDULE_UNAVAILABLE", "GAME_NOT_FOUND", "SCHEDULE_NOT_PUBLISHED"].includes(String(log.errorCode || ""))))
     .slice(0, 5)
     .map((log) => ({ eventType: log.eventType, occurredAt: log.occurredAt, message: log.message, errorCode: log.errorCode || "" }));
 
@@ -7333,9 +7465,9 @@ export function deriveGameProgressStatuses({
   ].filter(Boolean).map((value) => new Date(value)).filter(validDate);
   const lastUpdatedAt = timestamps.length ? new Date(Math.max(...timestamps.map((value) => value.getTime()))).toISOString() : null;
   const latestError = errors[0] || null;
-  statuses.errorState = makeGameProgressStatus(latestError ? "error" : "completed", {
+  statuses.errorState = makeGameProgressStatus(latestError ? "error" : scheduleWaiting ? "waiting" : "completed", {
     completedAt: latestError?.occurredAt || null,
-    detail: latestError ? latestError.message : "エラーはありません",
+    detail: latestError ? latestError.message : scheduleWaiting ? "試合情報公開待ち" : "エラーはありません",
     errorCode: latestError?.errorCode || ""
   });
   return { statuses, errors, lastUpdatedAt, game: game || null, scheduleSource, checkedScheduleSources };
@@ -7369,6 +7501,168 @@ export function formatGameProgressLabel(game = {}) {
   const away = formatGameProgressTeam(game.awayTeam);
   const home = formatGameProgressTeam(game.homeTeam);
   return `${date} ${away}${away && home ? " vs " : ""}${home}`.trim();
+}
+
+const CURRENT_MANAGED_TERMINAL_WORKFLOWS = new Set(["published", "service_unavailable", "cancelled"]);
+const CURRENT_MANAGED_FAILED_WORKFLOWS = new Set(["retrying", "manual_intervention_required"]);
+
+function parseManagedGameStart(value, date = "") {
+  const raw = String(value || "").trim();
+  if (raw) {
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+    if (/^\d{1,2}:\d{2}/.test(raw) && /^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
+      const local = new Date(`${date}T${raw.slice(0, 5)}:00+09:00`);
+      if (!Number.isNaN(local.getTime())) return local;
+    }
+  }
+  return null;
+}
+
+function normalizeManagedGameCandidate(candidate, now = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  const startAt = parseManagedGameStart(candidate?.startAt || candidate?.start_time, candidate?.gameDate || candidate?.date);
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(candidate?.gameDate || candidate?.date || ""))
+    ? String(candidate.gameDate || candidate.date)
+    : (startAt ? getJstDateString(startAt) : "");
+  const today = getJstDateString(current);
+  const workflowStatus = String(candidate?.workflowStatus || candidate?.workflow_status || "waiting");
+  const gameStatus = String(candidate?.gameStatus || candidate?.game_status || "scheduled");
+  const terminal = gameStatus === "cancelled" || CURRENT_MANAGED_TERMINAL_WORKFLOWS.has(workflowStatus);
+  const failed = Boolean(String(candidate?.lastErrorCode || candidate?.last_error_code || "").trim())
+    || CURRENT_MANAGED_FAILED_WORKFLOWS.has(workflowStatus)
+    || workflowStatus.endsWith("_failed");
+  const legacyGameId = String(candidate?.legacyGameId || candidate?.gameId || "").trim();
+  return {
+    internalGameId: String(candidate?.internalGameId || candidate?.internal_game_id || "").trim(),
+    legacyGameId,
+    gameId: legacyGameId,
+    gameDate: date,
+    date,
+    startAt: startAt?.toISOString() || "",
+    startTime: candidate?.startTime || candidate?.start_time || startAt?.toISOString() || "",
+    homeTeam: String(candidate?.homeTeam || candidate?.home_team || ""),
+    awayTeam: String(candidate?.awayTeam || candidate?.away_team || ""),
+    gameCode: String(candidate?.gameCode || candidate?.game_code || ""),
+    venue: String(candidate?.venue || ""),
+    gameStatus,
+    workflowStatus,
+    lastErrorCode: String(candidate?.lastErrorCode || candidate?.last_error_code || ""),
+    lastErrorAt: candidate?.lastErrorAt || candidate?.last_error_at || null,
+    nextDueAt: candidate?.nextDueAt || candidate?.next_due_at || null,
+    isTestGame: candidate?.isTestGame === true || Number(candidate?.is_test_game || 0) === 1,
+    isTerminal: terminal,
+    isFailed: failed,
+    isFuture: Boolean(startAt && startAt.getTime() > current.getTime()),
+    isHistorical: Boolean(date && date < today)
+  };
+}
+
+function managedGameSelectionReason(candidate, currentDate) {
+  if (!candidate) return "NO_MANAGED_GAME";
+  if (candidate.gameDate === currentDate && candidate.gameStatus !== "completed" && !candidate.isTerminal) return "TODAY_UNCOMPLETED_GAME";
+  if (candidate.isFuture && !candidate.isTerminal) return "NEXT_UPCOMING_GAME";
+  if (candidate.gameDate === currentDate && candidate.gameStatus === "completed" && !candidate.isTerminal) return "TODAY_INCOMPLETE_GAME";
+  if (candidate.isHistorical && candidate.isFailed) return "RECENT_HISTORICAL_FAILURE";
+  return "LATEST_HISTORICAL_FALLBACK";
+}
+
+function classifyManagedGame(candidate) {
+  if (!candidate?.isHistorical) return candidate?.isFuture ? "future" : "current";
+  if (candidate.workflowStatus === "service_unavailable" || candidate.gameStatus === "service_unavailable") return "historical_service_unavailable";
+  if (candidate.workflowStatus === "manual_intervention_required") return "manual_review_required";
+  if (candidate.isFailed) return "historical_failed";
+  if (candidate.gameStatus === "completed" && candidate.lastErrorCode) return "completed_with_error";
+  return "historical";
+}
+
+export function selectCurrentManagedGame(candidates, now = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(current.getTime())) return null;
+  const currentDate = getJstDateString(current);
+  const normalized = (Array.isArray(candidates) ? candidates : [])
+    .map((candidate) => normalizeManagedGameCandidate(candidate, current))
+    .filter((candidate) => (candidate.internalGameId || candidate.legacyGameId) && !candidate.isTestGame);
+  const byStartAscending = (left, right) => String(left.startAt || "").localeCompare(String(right.startAt || "")) || left.legacyGameId.localeCompare(right.legacyGameId);
+  const byStartDescending = (left, right) => byStartAscending(right, left);
+  const todayUncompleted = normalized.filter((candidate) => candidate.gameDate === currentDate && candidate.gameStatus !== "completed" && !candidate.isTerminal).sort(byStartAscending);
+  const nextUpcoming = normalized.filter((candidate) => candidate.isFuture && !candidate.isTerminal).sort(byStartAscending);
+  const todayIncomplete = normalized.filter((candidate) => candidate.gameDate === currentDate && candidate.gameStatus === "completed" && !candidate.isTerminal).sort(byStartAscending);
+  const recentFailures = normalized.filter((candidate) => candidate.isHistorical && candidate.isFailed).sort(byStartDescending);
+  const historical = normalized.filter((candidate) => candidate.isHistorical).sort(byStartDescending);
+  const selected = todayUncompleted[0] || nextUpcoming[0] || todayIncomplete[0] || recentFailures[0] || historical[0] || null;
+  if (!selected) return null;
+  return {
+    ...selected,
+    classification: classifyManagedGame(selected),
+    selectionReason: managedGameSelectionReason(selected, currentDate),
+    isCurrent: !selected.isHistorical,
+    isHistorical: selected.isHistorical,
+    isFuture: selected.isFuture
+  };
+}
+
+async function getCurrentManagedGameCandidates(db, now = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  const historyFrom = new Date(current.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const dateFrom = getJstDateString(historyFrom);
+  const dateTo = getJstDateString(new Date(current.getTime() + AUTOMATION_SCHEDULE_LOOKAHEAD_DAYS * 24 * 60 * 60 * 1000));
+  const [gamesResult, scheduleResult, testResult] = await db.batch([
+    db.prepare(
+      `SELECT games.internal_game_id, games.game_date, games.start_time, games.home_team, games.away_team, games.game_status,
+              state.legacy_game_id, state.game_status AS workflow_game_status, state.workflow_status, state.last_error_code, state.last_error_at, state.next_due_at
+         FROM games
+         LEFT JOIN game_workflow_state state ON state.internal_game_id = games.internal_game_id
+        WHERE games.game_date >= ?1 AND games.game_date <= ?2
+        ORDER BY games.game_date ASC, games.start_time ASC, games.internal_game_id ASC`
+    ).bind(dateFrom, dateTo),
+    db.prepare(
+      `SELECT internal_game_id, game_id, game_date, start_at, home_team, away_team, game_code, venue, game_status
+         FROM detected_game_schedule
+        WHERE game_date >= ?1 AND game_date <= ?2
+        ORDER BY game_date ASC, start_at ASC, game_id ASC`
+    ).bind(dateFrom, dateTo),
+    db.prepare(
+      `SELECT internal_game_id, game_id
+         FROM ranking_games
+        WHERE is_test_game = 1 AND game_date >= ?1 AND game_date <= ?2`
+    ).bind(dateFrom, dateTo)
+  ]);
+  const schedules = new Map();
+  for (const row of scheduleResult?.results || []) {
+    const key = String(row.internal_game_id || "");
+    if (key && !schedules.has(key)) schedules.set(key, row);
+  }
+  const testIds = new Set();
+  for (const row of testResult?.results || []) {
+    if (row.internal_game_id) testIds.add(String(row.internal_game_id));
+    if (row.game_id) testIds.add(String(row.game_id));
+  }
+  return (gamesResult?.results || []).map((row) => {
+    const schedule = schedules.get(String(row.internal_game_id || "")) || {};
+    const legacyGameId = String(row.legacy_game_id || schedule.game_id || "");
+    return {
+      internalGameId: row.internal_game_id,
+      legacyGameId,
+      gameDate: row.game_date || schedule.game_date,
+      startAt: row.start_time || schedule.start_at,
+      homeTeam: row.home_team || schedule.home_team,
+      awayTeam: row.away_team || schedule.away_team,
+      gameCode: schedule.game_code || "",
+      venue: schedule.venue || "",
+      gameStatus: row.workflow_game_status || row.game_status || schedule.game_status || "scheduled",
+      workflowStatus: row.workflow_status || "waiting",
+      lastErrorCode: row.last_error_code || "",
+      lastErrorAt: row.last_error_at || null,
+      nextDueAt: row.next_due_at || null,
+      isTestGame: testIds.has(String(row.internal_game_id || "")) || testIds.has(legacyGameId)
+    };
+  });
+}
+
+async function getCurrentManagedGame(db, now = new Date()) {
+  const candidates = await getCurrentManagedGameCandidates(db, now);
+  return { selection: selectCurrentManagedGame(candidates, now), candidates };
 }
 
 function scheduleGameFromDetectedRow(row) {
@@ -7429,11 +7723,33 @@ async function handleAdminGameProgressStatus(request, env, cors) {
   const url = new URL(request.url);
   let gameId = getValidGameId(url.searchParams.get("gameId"));
   let target = null;
+  let currentSelection = null;
   if (!gameId) {
-    target = await getServerPredictionTarget(env.AUTH_DB, new Date());
-    gameId = getValidGameId(target?.gameId);
+    let managed = null;
+    try {
+      managed = await getCurrentManagedGame(env.AUTH_DB, new Date());
+    } catch (error) {
+      if (!isPregameSchemaError(error)) throw error;
+      target = await getServerPredictionTarget(env.AUTH_DB, new Date());
+    }
+    currentSelection = managed?.selection || null;
+    gameId = getValidGameId(currentSelection?.legacyGameId || currentSelection?.gameId);
+    if (!gameId) gameId = getValidGameId(target?.gameId);
+    if (currentSelection) {
+      target = {
+        gameId: currentSelection.legacyGameId || currentSelection.gameId,
+        date: currentSelection.gameDate,
+        startAt: currentSelection.startAt ? new Date(currentSelection.startAt) : null,
+        homeTeam: currentSelection.homeTeam,
+        awayTeam: currentSelection.awayTeam,
+        gameCode: currentSelection.gameCode,
+        venue: currentSelection.venue,
+        internalGameId: currentSelection.internalGameId,
+        status: currentSelection.gameStatus
+      };
+    }
   }
-  if (!gameId) return jsonResponse({ ok: true, game: null, gameId: "", statuses: null, errors: [], updatedAt: null }, 200, cors);
+  if (!gameId) return jsonResponse({ ok: true, game: null, gameId: "", currentGame: null, selectionReason: "NO_MANAGED_GAME", statuses: null, errors: [], updatedAt: null }, 200, cors);
   if (await isTestRankingGame(env.AUTH_DB, gameId)) {
     return jsonResponse({ ok: true, game: null, gameId: "", statuses: null, errors: [], updatedAt: null, excluded: "test_game" }, 200, cors);
   }
@@ -7478,7 +7794,9 @@ async function handleAdminGameProgressStatus(request, env, cors) {
       updatedAt: derived.lastUpdatedAt,
       statuses: derived.statuses,
       errors: derived.errors,
-      metadata: { scheduleSource: context.scheduleSource, checkedScheduleSources: context.checkedScheduleSources }
+      metadata: { scheduleSource: context.scheduleSource, checkedScheduleSources: context.checkedScheduleSources },
+      currentGame: currentSelection,
+      selectionReason: currentSelection?.selectionReason || "EXPLICIT_GAME_ID"
     }, 200, cors);
   } catch (error) {
     return jsonResponse({ ok: false, code: isPregameSchemaError(error) ? "GAME_PROGRESS_SCHEMA_NOT_READY" : "GAME_PROGRESS_STATUS_FAILED", error: "試合進行ステータスを取得できませんでした。" }, isPregameSchemaError(error) ? 503 : 500, cors);
@@ -7583,9 +7901,25 @@ async function getPregameAutomationStatus(db, gameId) {
   };
 }
 
+export function classifyScheduleUnavailable({ startAt = null, now = new Date(), code = "SCHEDULE_UNAVAILABLE" } = {}) {
+  const rawCode = String(code || "").trim();
+  if (!["SCHEDULE_UNAVAILABLE", "GAME_NOT_FOUND", "SCHEDULE_NOT_PUBLISHED"].includes(rawCode)) {
+    return { status: "error", code: rawCode || "SCHEDULE_FETCH_FAILED", retryable: false, detail: "試合情報を取得できませんでした。" };
+  }
+  const start = startAt instanceof Date ? startAt : new Date(startAt || "");
+  const current = now instanceof Date ? now : new Date(now);
+  if (!Number.isNaN(start.getTime()) && !Number.isNaN(current.getTime()) && start.getTime() > current.getTime()) {
+    return { status: "waiting", code: "SCHEDULE_NOT_PUBLISHED", retryable: true, detail: "試合情報公開待ち" };
+  }
+  return { status: "error", code: "SCHEDULE_FETCH_FAILED", retryable: true, detail: "試合情報の取得に失敗しました。" };
+}
+
 export function deriveGameWorkflowProgress({ identity = null, job = null, lineup = null, notice = null, dailyNotice = null, now = new Date() } = {}) {
   const lineupError = lineup?.scoring_status === "failed" ? "SCORING_FAILED" : "";
-  const lastErrorCode = String(job?.last_error_code || dailyNotice?.last_error_code || lineupError || "");
+  const rawLastErrorCode = String(job?.last_error_code || dailyNotice?.last_error_code || lineupError || "");
+  const scheduleAvailability = classifyScheduleUnavailable({ startAt: identity?.startAt, now, code: rawLastErrorCode });
+  const scheduleWaiting = scheduleAvailability.status === "waiting";
+  const lastErrorCode = scheduleWaiting ? "" : rawLastErrorCode;
   const lastErrorMessage = String(job?.last_error_message || lineup?.last_error || "");
   const timestamps = [
     job?.updated_at,
@@ -7597,6 +7931,17 @@ export function deriveGameWorkflowProgress({ identity = null, job = null, lineup
     lineup?.published_at
   ].filter(Boolean).map((value) => new Date(value)).filter((value) => !Number.isNaN(value.getTime()));
   const lastRunAt = timestamps.length ? new Date(Math.max(...timestamps.map((value) => value.getTime()))).toISOString() : null;
+  if (scheduleWaiting) {
+    return {
+      currentStep: identity && now >= identity.predictionDeadlineAt ? "close_predictions" : "notice",
+      lastRunAt,
+      lastResult: "retry_wait",
+      publishingStatus: lineup?.publication_status || "pending",
+      errorCode: "",
+      errorMessage: scheduleAvailability.detail,
+      waitingReasonCode: scheduleAvailability.code
+    };
+  }
   if (lineup?.publication_status === "published") return { currentStep: "completed", lastRunAt, lastResult: "published", publishingStatus: "published", errorCode: "", errorMessage: "" };
   if (lastErrorCode) {
     const publishFailure = lastErrorCode === "PUBLISH_FAILED";

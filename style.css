@@ -1355,6 +1355,39 @@ textarea:focus {
   font-weight: 900;
 }
 
+.admin-workflow-history {
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+  padding-top: 8px;
+}
+
+.admin-workflow-history > strong {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.admin-workflow-history ul {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+.admin-workflow-history li {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  justify-content: space-between;
+}
+
+.admin-workflow-history li b {
+  color: var(--danger, #9f1239);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
 .admin-game-workflow-actions {
   display: flex;
   flex-wrap: wrap;

@@ -3535,8 +3535,14 @@ function getCurrentLegacyGameId() {
 }
 
 function getAdminScoringGameId() {
-  // 古いローカル採点結果ではなく、管理者が読み込んだ対象試合を優先します。
-  return state.nextScheduleId || state.probableStarter.nextGame?.gameId || findNextGameSchedule()?.gameId || "";
+  // サーバーselectorが返した現在対象を最優先し、古い画面状態へ戻らないようにします。
+  return state.gameWorkflow.record?.currentGame?.legacyGameId
+    || state.gameWorkflow.record?.currentGame?.gameId
+    || state.gameWorkflow.record?.gameId
+    || state.nextScheduleId
+    || state.probableStarter.nextGame?.gameId
+    || findNextGameSchedule()?.gameId
+    || "";
 }
 
 function buildAdminScoringApiUrl(gameId, action) {
@@ -3556,6 +3562,8 @@ function buildAdminGameApiUrl(gameId, action) {
 
   return `${baseUrl}/api/admin/games/${encodeURIComponent(gameId)}/${action}`;
 }
+
+const ADMIN_WORKFLOW_STATUS_ACTION = "pregame-automation/workflow-status";
 
 function buildAdminWorkflowLogsApiUrl() {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
@@ -4246,6 +4254,7 @@ function getGameWorkflowStepLabel(value) {
 function getGameWorkflowResultLabel(value) {
   return ({
     waiting: "待機中",
+    retry_wait: "再試行待ち",
     lineup_captured: "正式スタメン取得済み",
     scoring_pending: "採点待ち",
     scoring: "採点処理中",
@@ -4255,6 +4264,17 @@ function getGameWorkflowResultLabel(value) {
     published: "公開済み",
     failed: "要確認"
   })[value] || "未実行";
+}
+
+function getManagedGameSelectionLabel(value) {
+  return ({
+    TODAY_UNCOMPLETED_GAME: "本日の未完了試合",
+    NEXT_UPCOMING_GAME: "次回開催試合",
+    TODAY_INCOMPLETE_GAME: "本日の採点・公開未完了試合",
+    RECENT_HISTORICAL_FAILURE: "直近の過去失敗試合",
+    LATEST_HISTORICAL_FALLBACK: "最新の過去試合",
+    NO_MANAGED_GAME: "対象試合なし"
+  })[value] || value || "-";
 }
 
 function renderAdminGameWorkflowStatus() {
@@ -4271,8 +4291,8 @@ function renderAdminGameWorkflowStatus() {
 
   const record = state.gameWorkflow.record;
   const paused = record?.automation?.paused === true;
-  syncButton.disabled = state.gameWorkflow.isLoading || state.gameWorkflow.isUpdating || !state.nextScheduleId;
-  pauseButton.disabled = state.gameWorkflow.isLoading || state.gameWorkflow.isUpdating || !state.nextScheduleId;
+  syncButton.disabled = state.gameWorkflow.isLoading || state.gameWorkflow.isUpdating || !getAdminScoringGameId();
+  pauseButton.disabled = state.gameWorkflow.isLoading || state.gameWorkflow.isUpdating || !getAdminScoringGameId();
   pauseButton.textContent = paused ? "自動運転を再開" : "緊急停止";
   pauseButton.classList.toggle("danger-button", !paused);
   pauseButton.classList.toggle("secondary-button", paused);
@@ -4295,6 +4315,9 @@ function renderAdminGameWorkflowStatus() {
   const publishing = record.publishing || {};
   const lineup = record.lineup || {};
   const automationHealth = record.automation?.health || {};
+  const currentGame = record.currentGame || {};
+  const jobSummary = record.jobSummary || {};
+  const historicalFailures = Array.isArray(record.historicalFailures) ? record.historicalFailures : [];
   const provisionalLineup = Array.isArray(lineup.provisionalLineup)
     ? lineup.provisionalLineup.map((item) => `${item.battingOrder}番 ${item.position || ""} ${item.playerName || ""}`.trim()).join(" / ")
     : "";
@@ -4319,9 +4342,21 @@ function renderAdminGameWorkflowStatus() {
     ["最終Cron実行", automationHealth.available ? (automationHealth.cronLastRunAt ? formatDateTime(automationHealth.cronLastRunAt) : "未実行") : "状態テーブル未適用"],
     ["最終Cron成功", automationHealth.available ? (automationHealth.cronLastSuccessAt ? formatDateTime(automationHealth.cronLastSuccessAt) : "-" ) : "-"],
     ["最終Cronエラー", automationHealth.available ? (automationHealth.cronLastError || "なし") : "-"],
-    ["対象試合数", automationHealth.available ? `${Number(automationHealth.processedGameCount || 0)}件` : "-"]
+    ["現在の対象区分", getManagedGameSelectionLabel(currentGame.selectionReason)],
+    ["保留job", `${Number(jobSummary.pendingCount || 0)}件`],
+    ["再試行待ちjob", `${Number(jobSummary.retryCount || 0)}件`],
+    ["次回実行", jobSummary.nextExecutionAt ? formatDateTime(jobSummary.nextExecutionAt) : "-"],
+    ["Cron処理確認件数", automationHealth.available ? `${Number(automationHealth.processedGameCount || 0)}件` : "-"]
   ];
-  summary.innerHTML = `<strong>${paused ? "緊急停止中" : "自動運転中"}</strong><span>${paused ? "この試合のCron自動処理は停止しています。" : "毎分、試合状態を確認しています。次回確認: 1分以内"}</span><dl>${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>`;
+  const historicalMarkup = historicalFailures.length
+    ? `<section class="admin-workflow-history" aria-label="直近の要確認"><strong>直近の要確認</strong><ul>${historicalFailures.map((failure) => {
+      const label = formatGameProgressLabel({ date: failure.gameDate, awayTeam: failure.awayTeam, homeTeam: failure.homeTeam }) || failure.gameId || "過去試合";
+      const status = failure.classification || failure.workflowStatus || "historical";
+      const detail = failure.lastErrorCode ? `: ${failure.lastErrorCode}` : "";
+      return `<li><span>${escapeHtml(label)}</span><b>${escapeHtml(`${status}${detail}`)}</b></li>`;
+    }).join("")}</ul></section>`
+    : "";
+  summary.innerHTML = `<strong>${paused ? "緊急停止中" : "自動運転中"}</strong><span>${paused ? "この試合のCron自動処理は停止しています。" : "毎分、試合状態を確認しています。次回確認: 1分以内"}</span><dl>${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>${historicalMarkup}`;
   const workflowError = workflow.errorCode ? `${workflow.errorCode}${workflow.errorMessage ? `: ${workflow.errorMessage}` : ""}` : "";
   message.textContent = state.gameWorkflow.message || workflowError || (paused ? "再開するまで公示・締切・取得・採点・公開の自動処理は実行されません。" : "管理者操作なしでCronが処理を進めます。");
   message.className = `message${workflowError ? " error-message" : ""}`;
@@ -4329,12 +4364,11 @@ function renderAdminGameWorkflowStatus() {
 
 async function refreshAdminGameWorkflowStatus({ force = false } = {}) {
   if (state.appMode !== "admin" || state.adminAccess.status !== "authorized") return;
-  const gameId = getAdminScoringGameId();
-  const url = buildAdminGameApiUrl(gameId, "pregame-automation/workflow-status");
-  if (!gameId || !url || (state.gameWorkflow.isLoading && !force)) return;
+  const url = buildAdminCurrentGameWorkflowApiUrl();
+  if (!url || (state.gameWorkflow.isLoading && !force)) return;
   const requestId = ++state.gameWorkflow.requestId;
   state.gameWorkflow.isLoading = true;
-  state.gameWorkflow.gameId = gameId;
+  state.gameWorkflow.gameId = "";
   state.gameWorkflow.message = "";
   renderAdminGameWorkflowStatus();
   renderAdminWorkflowLogs();
@@ -4344,6 +4378,7 @@ async function refreshAdminGameWorkflowStatus({ force = false } = {}) {
     if (!response.ok || !payload?.ok) throw new Error(payload?.error || payload?.code || `HTTP ${response.status}`);
     if (requestId !== state.gameWorkflow.requestId) return;
     state.gameWorkflow.record = payload;
+    state.gameWorkflow.gameId = payload.currentGame?.legacyGameId || payload.currentGame?.gameId || payload.gameId || "";
   } catch (error) {
     if (requestId !== state.gameWorkflow.requestId) return;
     state.gameWorkflow.record = null;
@@ -4359,6 +4394,11 @@ async function refreshAdminGameWorkflowStatus({ force = false } = {}) {
 function buildAdminGameProgressStatusApiUrl() {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
   return baseUrl ? `${baseUrl}/api/admin/game-progress-status` : "";
+}
+
+function buildAdminCurrentGameWorkflowApiUrl() {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  return baseUrl ? `${baseUrl}/api/admin/audit/current-game-workflow` : "";
 }
 
 function getGameProgressStatusLabel(status) {

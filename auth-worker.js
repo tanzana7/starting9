@@ -92,7 +92,10 @@ const MANUAL_RESCORE_RETENTION_DAYS = 7;
 const MANUAL_RESCORE_PREVIEW_TTL_MS = 15 * 60 * 1000;
 const AUTOMATION_HEALTH_STATE_KEY = "cron";
 const AUTO_APPROVE_SETTING_KEY = "auto_approve_enabled";
-const AUTOMATION_SCHEDULE_LOOKAHEAD_DAYS = 1;
+// The pregame runner must register the near-term schedule before it can create
+// any downstream rows. Keep a small forward window so games such as the next
+// three calendar days are registered before their pregame jobs become due.
+const AUTOMATION_SCHEDULE_LOOKAHEAD_DAYS = 3;
 const AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const WORKFLOW_LOG_RETENTION_HOURS = 48;
 const WORKFLOW_LOG_DEFAULT_LIMIT = 50;
@@ -1335,7 +1338,7 @@ async function syncFightersScheduleForDate(env, date, now) {
         identityKey,
         existingRow: existingByIdentity.get(identityKey) || null,
         existingCandidates: existingRowsByIdentity.get(identityKey) || [],
-        sourceGameKey: String(game.gameCode || `${date}:${game.homeTeam}:${game.awayTeam}:${game.startTime}`),
+        sourceGameKey: `${date}:${game.homeTeam}:${game.awayTeam}:${game.startTime}`,
         gameStatus: game.status === "cancelled" ? "cancelled" : "scheduled"
       };
     });
@@ -1357,12 +1360,12 @@ async function syncFightersScheduleForDate(env, date, now) {
         // 公式gameCodeが後から得られても、予想・採点に紐づく既存game_idは維持します。
         statements.push(env.AUTH_DB.prepare(
           `UPDATE detected_game_schedule
-              SET start_at = ?1, home_team = ?2, away_team = ?3, game_code = ?4,
-                  venue = ?5, game_status = ?6, schedule_checked_at = ?7, updated_at = ?7${registry.scheduleColumnAvailable ? ", internal_game_id = COALESCE(?8, internal_game_id)" : ""}
-            WHERE game_id = ?${registry.scheduleColumnAvailable ? 9 : 8}`
+              SET source_game_key = ?1, start_at = ?2, home_team = ?3, away_team = ?4, game_code = ?5,
+                  venue = ?6, game_status = ?7, schedule_checked_at = ?8, updated_at = ?8${registry.scheduleColumnAvailable ? ", internal_game_id = COALESCE(?9, internal_game_id)" : ""}
+            WHERE game_id = ?${registry.scheduleColumnAvailable ? 10 : 9}`
         ).bind(...(registry.scheduleColumnAvailable
-          ? [startAt.toISOString(), game.homeTeam, game.awayTeam, game.gameCode || null, game.venue || null, gameStatus, now.toISOString(), internalGameId, existingRow.game_id]
-          : [startAt.toISOString(), game.homeTeam, game.awayTeam, game.gameCode || null, game.venue || null, gameStatus, now.toISOString(), existingRow.game_id])));
+          ? [sourceGameKey, startAt.toISOString(), game.homeTeam, game.awayTeam, game.gameCode || null, game.venue || null, gameStatus, now.toISOString(), internalGameId, existingRow.game_id]
+          : [sourceGameKey, startAt.toISOString(), game.homeTeam, game.awayTeam, game.gameCode || null, game.venue || null, gameStatus, now.toISOString(), existingRow.game_id])));
       } else {
         statements.push(env.AUTH_DB.prepare(
           `INSERT INTO detected_game_schedule (game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, venue, game_status, detected_at, schedule_checked_at, created_at, updated_at${registry.scheduleColumnAvailable ? ", internal_game_id" : ""})
@@ -1422,7 +1425,15 @@ async function getInternalGameIdStorageAvailability(db, tables) {
 
 async function requireInternalGameIdForWrite(db, { table, gameId, internalGameId = "" } = {}) {
   const storage = await getInternalGameIdStorageAvailability(db, [table]);
-  if (!storage[table]) return { internalGameId: "", schemaReady: false };
+  if (!storage[table]) {
+    if (["game_roster_snapshots", "game_pregame_automation"].includes(table)) {
+      const error = createPregameError("INTERNAL_GAME_REGISTRY_NOT_READY", "内部試合IDを保存できるスキーマが利用できないため、自動処理を停止しました。", { httpStatus: 503 });
+      error.gameId = String(gameId || "");
+      error.table = table;
+      throw error;
+    }
+    return { internalGameId: "", schemaReady: false };
+  }
   const supplied = String(internalGameId || "").trim();
   if (INTERNAL_GAME_ID_PATTERN.test(supplied)) return { internalGameId: supplied, schemaReady: true };
   const reference = await resolveApiGameReference(db, gameId);
@@ -1447,7 +1458,12 @@ async function linkLegacyGameRowsToInternalGameId(db, internalGameId, legacyGame
 }
 
 async function resolveScheduleInternalGameId(db, registry, { date, startAt, game, sourceGameKey, gameStatus, existingRow, existingCandidates, now }) {
-  if (!registry.available || existingCandidates.length > 1) return null;
+  if (!registry.available) {
+    throw createPregameError("INTERNAL_GAME_REGISTRY_NOT_READY", "内部試合IDレジストリが利用できないため、日程を登録できません。", { httpStatus: 503 });
+  }
+  if (existingCandidates.length > 1) {
+    throw createPregameError("INTERNAL_GAME_IDENTITY_AMBIGUOUS", "同一日程に複数の試合候補があるため、内部試合IDを決定できません。", { httpStatus: 409 });
+  }
   const gameIds = [existingRow?.game_id, game?.gameId].filter(Boolean);
   const identifiers = gameIds.flatMap((gameId) => createScheduleGameIdentifiers({
     gameId,
@@ -1467,10 +1483,20 @@ async function resolveScheduleInternalGameId(db, registry, { date, startAt, game
       allowCreate: true,
       now
     });
-    return result.status === "resolved" ? result.internalGameId : null;
+    if (result.status !== "resolved" || !INTERNAL_GAME_ID_PATTERN.test(String(result.internalGameId || ""))) {
+      const error = createPregameError(
+        result.code || "INTERNAL_GAME_REGISTRY_UNRESOLVED",
+        "日程を内部試合IDへ解決できないため、自動処理対象へ登録できません。",
+        { httpStatus: 409 }
+      );
+      error.gameId = String(existingRow?.game_id || game?.gameId || "");
+      error.sourceGameKey = sourceGameKey;
+      throw error;
+    }
+    return result.internalGameId;
   } catch (error) {
     console.warn(`[GAME_IDENTITY_REGISTRY] status=unresolved gameId=${String(existingRow?.game_id || game?.gameId || "")} code=${error?.code || "GAME_IDENTITY_REGISTRY_WRITE_FAILED"}`);
-    return null;
+    throw error;
   }
 }
 
@@ -5920,8 +5946,10 @@ export function deriveReleaseReadiness({ schemaReady = true, counts = {} } = {})
     duplicateJobSlotCount: numeric("duplicateJobSlotCount"),
     serviceUnavailableCount: numeric("serviceUnavailableCount"),
     gamesWithoutInternalGameId: numeric("gamesWithoutInternalGameId"),
+    historicalGamesWithoutInternalGameId: numeric("historicalGamesWithoutInternalGameId"),
     identifiersWithoutGames: numeric("identifiersWithoutGames"),
-    newLegacyOnlyWritesLast24h: numeric("newLegacyOnlyWritesLast24h"),
+    newLegacyOnlyInsertCount: numeric("newLegacyOnlyInsertCount") || numeric("newLegacyOnlyWritesLast24h"),
+    legacyOnlyUpdateCount: numeric("legacyOnlyUpdateCount"),
     retryWaitBlockerCount: numeric("retryWaitBlockerCount"),
     publishedWorkflowMismatchCount: numeric("publishedWorkflowMismatchCount")
   };
@@ -5931,12 +5959,14 @@ export function deriveReleaseReadiness({ schemaReady = true, counts = {} } = {})
   if (checks.identifiersWithoutGames > 0) blockers.push("IDENTIFIER_WITHOUT_GAME");
   if (checks.missingDownstreamJobCount > 0) blockers.push("MISSING_DOWNSTREAM_JOB");
   if (checks.staleLeaseCount > 0) blockers.push("STALE_LEASE");
-  if (checks.newLegacyOnlyWritesLast24h > 0) blockers.push("RECENT_LEGACY_ONLY_WRITE");
+  if (checks.newLegacyOnlyInsertCount > 0) blockers.push("RECENT_LEGACY_ONLY_WRITE");
   if (checks.retryWaitBlockerCount > 0) blockers.push("RETRY_WAIT_EXPIRED");
   if (checks.publishedWorkflowMismatchCount > 0) blockers.push("WORKFLOW_STATE_CONFLICT");
   if (checks.permanentlyFailedCount > 0) warnings.push("PERMANENTLY_FAILED_JOBS");
   if (checks.serviceUnavailableCount > 0) warnings.push("SERVICE_UNAVAILABLE_GAMES");
   if (checks.retryWaitCount > 0) warnings.push("RETRY_WAIT_JOBS");
+  if (checks.historicalGamesWithoutInternalGameId > 0) warnings.push("HISTORICAL_GAME_WITHOUT_INTERNAL_ID");
+  if (checks.legacyOnlyUpdateCount > 0) warnings.push("HISTORICAL_LEGACY_ONLY_UPDATE");
   return { ready: blockers.length === 0, blockers, warnings, checks };
 }
 
@@ -5949,7 +5979,24 @@ function isAuditableGameId(value) {
   return !["global", "batch", "system"].includes(gameId.toLowerCase());
 }
 
-async function collectGamesWithoutInternalGameIdDetails(db, dateFrom, dateTo) {
+export function classifyLegacyOnlyWrite({ createdAt = "", updatedAt = "", since = "" } = {}) {
+  const threshold = new Date(since).getTime();
+  if (!Number.isFinite(threshold)) return "unknown";
+  const created = new Date(createdAt).getTime();
+  const updated = new Date(updatedAt).getTime();
+  if (Number.isFinite(created) && created >= threshold) return "insert";
+  if (Number.isFinite(updated) && updated >= threshold) return "update";
+  return "unknown";
+}
+
+export function classifyScheduleInternalGameScope(gameDate, currentDate) {
+  const date = String(gameDate || "");
+  const current = String(currentDate || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{4}-\d{2}-\d{2}$/.test(current)) return "unknown";
+  return date >= current ? "current_or_future" : "historical";
+}
+
+async function collectGamesWithoutInternalGameIdDetails(db, dateFrom, dateTo, currentDate = dateFrom) {
   const result = await db.prepare(
     `SELECT schedule.game_id, schedule.game_date, schedule.start_at, schedule.home_team, schedule.away_team,
             schedule.game_code, schedule.source_game_key, schedule.internal_game_id,
@@ -5981,6 +6028,7 @@ async function collectGamesWithoutInternalGameIdDetails(db, dateFrom, dateTo) {
       detectedScheduleInternalGameId: row.internal_game_id || null,
       gamesCandidateCount,
       identifierCandidateCount,
+      scope: classifyScheduleInternalGameScope(row.game_date, currentDate),
       createdBy: "schedule_sync",
       createdAt: row.created_at || null,
       updatedAt: row.updated_at || null,
@@ -5997,35 +6045,41 @@ async function collectGamesWithoutInternalGameIdDetails(db, dateFrom, dateTo) {
 
 async function collectRecentLegacyOnlyWrites(db, since) {
   const definitions = [
-    { table: "detected_game_schedule", timestampColumn: "updated_at", source: "schedule_sync" },
-    { table: "predictions", timestampColumn: "updated_at", source: "prediction_save", exclusion: " AND is_test_prediction = 0" },
-    { table: "probable_starters", timestampColumn: "updated_at", source: "probable_starter_fetch" },
-    { table: "game_roster_snapshots", timestampColumn: "created_at", sourceColumn: "source", source: "roster_fetch" },
-    { table: "game_pregame_automation", timestampColumn: "created_at", source: "pregame_automation" },
-    { table: "game_lineups", timestampColumn: "created_at", sourceColumn: "lineup_source", source: "lineup_save" },
-    { table: "ranking_games", timestampColumn: "created_at", source: "ranking_state", exclusion: " AND (is_test_game = 0 OR is_test_game IS NULL)" },
-    { table: "game_rescore_jobs", timestampColumn: "created_at", source: "rescore" }
+    { table: "detected_game_schedule", creationColumn: "created_at", source: "schedule_sync" },
+    { table: "predictions", creationColumn: "submitted_at", source: "prediction_save", exclusion: " AND is_test_prediction = 0" },
+    { table: "probable_starters", creationColumn: "", source: "probable_starter_fetch" },
+    { table: "game_roster_snapshots", creationColumn: "created_at", sourceColumn: "source", source: "roster_fetch" },
+    { table: "game_pregame_automation", creationColumn: "created_at", source: "pregame_automation" },
+    { table: "game_lineups", creationColumn: "created_at", sourceColumn: "lineup_source", source: "lineup_save" },
+    { table: "ranking_games", creationColumn: "created_at", source: "ranking_state", exclusion: " AND (is_test_game = 0 OR is_test_game IS NULL)" },
+    { table: "game_rescore_jobs", creationColumn: "created_at", source: "rescore" }
   ];
   const rows = [];
   for (const definition of definitions) {
     const sourceExpression = definition.sourceColumn ? `COALESCE(${definition.sourceColumn}, '${definition.source}')` : `'${definition.source}'`;
     try {
       const result = await db.prepare(
-        `SELECT game_id, ${definition.timestampColumn} AS occurred_at, ${sourceExpression} AS write_source
+        `SELECT game_id, ${definition.creationColumn ? definition.creationColumn : "NULL"} AS created_at,
+                updated_at, ${sourceExpression} AS write_source
            FROM ${definition.table}
           WHERE (internal_game_id IS NULL OR internal_game_id = '')
-            AND ${definition.timestampColumn} >= ?1
+            AND (updated_at >= ?1 OR ${definition.creationColumn ? `${definition.creationColumn} >= ?1` : "0"})
             AND game_id IS NOT NULL AND game_id <> ''
             AND game_id NOT LIKE 'day-%'${definition.exclusion || ""}
-          ORDER BY ${definition.timestampColumn} DESC
+          ORDER BY COALESCE(updated_at, created_at) DESC
           LIMIT ?2`
       ).bind(since, RELEASE_READINESS_LEGACY_AUDIT_LIMIT).all();
       for (const row of result.results || []) {
         if (!isAuditableGameId(row.game_id)) continue;
+        const writeType = classifyLegacyOnlyWrite({ createdAt: row.created_at, updatedAt: row.updated_at, since });
+        if (writeType === "unknown") continue;
         rows.push({
           table: definition.table,
           gameId: String(row.game_id),
-          createdAt: row.occurred_at || null,
+          writeType,
+          createdAt: row.created_at || null,
+          updatedAt: row.updated_at || null,
+          occurredAt: row.updated_at || row.created_at || null,
           writeSource: String(row.write_source || definition.source),
           expectedInternalGameId: "",
           reasonCode: "INTERNAL_GAME_ID_NOT_PERSISTED"
@@ -6063,18 +6117,20 @@ async function collectRecentLegacyOnlyWrites(db, since) {
     }
   }
   return rows
-    .sort((left, right) => String(right.createdAt || "").localeCompare(String(left.createdAt || "")) || left.table.localeCompare(right.table) || left.gameId.localeCompare(right.gameId))
+    .sort((left, right) => String(right.occurredAt || "").localeCompare(String(left.occurredAt || "")) || left.table.localeCompare(right.table) || left.gameId.localeCompare(right.gameId))
     .slice(0, RELEASE_READINESS_LEGACY_AUDIT_LIMIT);
 }
 
 function summarizeLegacyOnlyWrites(rows) {
   const byTable = {};
   const bySource = {};
+  const byType = { insert: 0, update: 0 };
   for (const row of rows) {
     byTable[row.table] = (byTable[row.table] || 0) + 1;
     bySource[row.writeSource] = (bySource[row.writeSource] || 0) + 1;
+    if (Object.hasOwn(byType, row.writeType)) byType[row.writeType] += 1;
   }
-  return { byTable, bySource };
+  return { byTable, bySource, byType, insertCount: byType.insert, updateCount: byType.update };
 }
 
 export function classifyRetryWaitJobs(rows, now) {
@@ -6119,6 +6175,7 @@ async function collectReleaseReadiness(env, now = new Date()) {
   const tomorrow = new Date(now.getTime() + 48 * 60 * 60 * 1000);
   const dateFrom = getJstDateString(yesterday);
   const dateTo = getJstDateString(tomorrow);
+  const currentDate = getJstDateString(now);
   const timestamp24h = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
   const [workflowRows, jobRows, staleLease, duplicateSlots, scheduleMissing, scheduleMissingDetails, identifiersMissing, currentLineups, health] = await Promise.all([
     db.prepare(
@@ -6148,8 +6205,8 @@ async function collectReleaseReadiness(env, now = new Date()) {
     db.prepare(
       `SELECT COUNT(*) AS count FROM detected_game_schedule
         WHERE game_date >= ?1 AND game_date <= ?2 AND (internal_game_id IS NULL OR internal_game_id = '')`
-    ).bind(dateFrom, dateTo).first(),
-    collectGamesWithoutInternalGameIdDetails(db, dateFrom, dateTo),
+    ).bind(currentDate, dateTo).first(),
+    collectGamesWithoutInternalGameIdDetails(db, dateFrom, dateTo, currentDate),
     db.prepare(
       `SELECT COUNT(*) AS count FROM game_identifiers identifiers
          LEFT JOIN games ON games.internal_game_id = identifiers.internal_game_id
@@ -6197,19 +6254,27 @@ async function collectReleaseReadiness(env, now = new Date()) {
     gamesWithoutInternalGameId: Number(scheduleMissing?.count || 0),
     identifiersWithoutGames: Number(identifiersMissing?.count || 0),
     newLegacyOnlyWritesLast24h: 0,
+    newLegacyOnlyInsertCount: 0,
+    legacyOnlyUpdateCount: 0,
+    historicalGamesWithoutInternalGameId: scheduleMissingDetails.filter((detail) => detail.scope === "historical").length,
     retryWaitBlockerCount: retryState.retryWaitBlockerCount,
     publishedWorkflowMismatchCount: currentWorkflows.filter((row) => row.workflow_status === "published"
       && lineupsByGame.get(row.internal_game_id)?.publication_status !== "published").length
   };
   const recentLegacyOnlyWrites = await collectRecentLegacyOnlyWrites(db, timestamp24h);
-  counts.newLegacyOnlyWritesLast24h = recentLegacyOnlyWrites.length;
   const legacyWriteSummary = summarizeLegacyOnlyWrites(recentLegacyOnlyWrites);
+  counts.newLegacyOnlyWritesLast24h = legacyWriteSummary.insertCount;
+  counts.newLegacyOnlyInsertCount = legacyWriteSummary.insertCount;
+  counts.legacyOnlyUpdateCount = legacyWriteSummary.updateCount;
   return {
     ...deriveReleaseReadiness({ schemaReady, counts }),
     gamesWithoutInternalGameIdDetails: scheduleMissingDetails,
     recentLegacyOnlyWrites,
     legacyOnlyWritesByTable: legacyWriteSummary.byTable,
     legacyOnlyWritesBySource: legacyWriteSummary.bySource,
+    legacyOnlyWritesByType: legacyWriteSummary.byType,
+    recentLegacyOnlyInsertCount: legacyWriteSummary.insertCount,
+    recentLegacyOnlyUpdateCount: legacyWriteSummary.updateCount,
     oldestRetryWaitAt: retryState.oldestRetryWaitAt,
     retryWaitJobs: retryState.retryWaitJobs,
     dateFrom,

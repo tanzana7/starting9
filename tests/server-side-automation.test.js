@@ -23,15 +23,19 @@ test("scheduled entry point is the server-side automation trigger", () => {
   assert.match(config, /"crons": \["\* \* \* \* \*"\]/);
 });
 
-test("server-side schedule synchronization covers today and the next JST day", async () => {
+test("server-side schedule synchronization covers the near-term JST window", async () => {
   const { getAutomationScheduleDates } = await import(workerUrl);
   assert.deepEqual(
     getAutomationScheduleDates(new Date("2026-07-24T14:59:00.000Z")),
-    ["2026-07-24", "2026-07-25"]
+    ["2026-07-24", "2026-07-25", "2026-07-26", "2026-07-27"]
   );
   assert.deepEqual(
     getAutomationScheduleDates(new Date("2026-07-24T15:00:00.000Z")),
-    ["2026-07-25", "2026-07-26"]
+    ["2026-07-25", "2026-07-26", "2026-07-27", "2026-07-28"]
+  );
+  assert.deepEqual(
+    getAutomationScheduleDates(new Date("2026-08-01T00:00:00.000Z")),
+    ["2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04"]
   );
   assert.match(worker, /loadDetectedScheduleGames\(env\.AUTH_DB, dates\)/);
   assert.match(worker, /setDetectedScheduleGames\(rows\)/);

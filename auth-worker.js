@@ -911,6 +911,170 @@ function getWorkflowJobErrorCode(error) {
   return code || "JOB_FAILED";
 }
 
+function sanitizeLineupValidationDetails(details = {}) {
+  if (!details || typeof details !== "object" || Array.isArray(details)) return null;
+  const numericKeys = [
+    "expectedCount", "parsedCount", "resolvedPlayerCount", "validPositionCount",
+    "missingPositionCount", "duplicateBattingOrderCount", "duplicatePlayerCount",
+    "battingOrderMin", "battingOrderMax", "parsedHomeCount", "parsedAwayCount",
+    "expectedHomeCount", "expectedAwayCount", "httpStatus"
+  ];
+  const stringKeys = ["parseStage", "reason", "validationReason", "sourceUrlHost"];
+  const result = {};
+  for (const key of numericKeys) {
+    result[key] = Number.isFinite(Number(details[key])) ? Number(details[key]) : null;
+  }
+  for (const key of stringKeys) {
+    if (typeof details[key] === "string" && details[key]) result[key] = details[key].slice(0, 80);
+  }
+  if (Array.isArray(details.detectedTeams)) result.detectedTeams = details.detectedTeams.filter((team) => typeof team === "string").map((team) => team.slice(0, 40)).slice(0, 4);
+  if (Array.isArray(details.expectedTeams)) result.expectedTeams = details.expectedTeams.filter((team) => typeof team === "string").map((team) => team.slice(0, 40)).slice(0, 4);
+  if (details.battingOrderRange && typeof details.battingOrderRange === "object") {
+    result.battingOrderRange = {
+      min: Number.isFinite(Number(details.battingOrderRange.min)) ? Number(details.battingOrderRange.min) : null,
+      max: Number.isFinite(Number(details.battingOrderRange.max)) ? Number(details.battingOrderRange.max) : null
+    };
+  } else if ("battingOrderMin" in result || "battingOrderMax" in result) {
+    result.battingOrderRange = { min: result.battingOrderMin ?? null, max: result.battingOrderMax ?? null };
+  }
+  if (typeof details.retryable === "boolean") result.retryable = details.retryable;
+  if (typeof details.nextAttemptAt === "string" && details.nextAttemptAt) result.nextAttemptAt = details.nextAttemptAt.slice(0, 40);
+  return Object.keys(result).length ? result : null;
+}
+
+function parseSafeWorkflowJobMetadata(value) {
+  if (!value) return {};
+  let parsed = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return {};
+    }
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const result = {};
+  const validation = sanitizeLineupValidationDetails(parsed.validation);
+  if (validation) result.validation = validation;
+  if (typeof parsed.parseStage === "string" && parsed.parseStage) result.parseStage = parsed.parseStage.slice(0, 80);
+  if (typeof parsed.sourceUrlHost === "string" && parsed.sourceUrlHost) result.sourceUrlHost = parsed.sourceUrlHost.slice(0, 120);
+  if (Number.isFinite(Number(parsed.httpStatus)) && Number(parsed.httpStatus) > 0) result.httpStatus = Number(parsed.httpStatus);
+  if (typeof parsed.retryable === "boolean") result.retryable = parsed.retryable;
+  if (typeof parsed.status === "string" && parsed.status) result.status = parsed.status.slice(0, 40);
+  return result;
+}
+
+function getSafeWorkflowErrorMetadata(error) {
+  const metadata = {};
+  const validation = sanitizeLineupValidationDetails(error?.validation);
+  if (validation) metadata.validation = validation;
+  if (typeof error?.parseStage === "string" && error.parseStage) metadata.parseStage = error.parseStage.slice(0, 80);
+  metadata.retryable = !String(error?.code || "").toUpperCase().includes("INVALID")
+    && !String(error?.code || "").toUpperCase().includes("VALIDATION");
+  if (Number(error?.httpStatus || error?.upstreamStatus || error?.externalStatus) > 0) {
+    metadata.httpStatus = Number(error.httpStatus || error.upstreamStatus || error.externalStatus);
+  }
+  if (typeof error?.upstreamUrl === "string") {
+    try {
+      const host = new URL(error.upstreamUrl).hostname;
+      if (host === "npb.jp" || host.endsWith(".npb.jp")) metadata.sourceUrlHost = host;
+    } catch {
+      // URLの不正値は診断情報へ含めません。
+    }
+  }
+  return metadata;
+}
+
+export function getWorkflowJobHealth(job, now = new Date()) {
+  if (!job) return { status: "not_started", level: "info", reasonCode: "JOB_NOT_CREATED", message: "ジョブ未作成" };
+  const status = String(job.status || "");
+  if (status === "retry_wait") {
+    const next = job.nextAttemptAt ? new Date(job.nextAttemptAt) : null;
+    const overdue = !next || Number.isNaN(next.getTime()) || next <= now;
+    return {
+      status,
+      level: overdue ? "error" : "warning",
+      reasonCode: job.errorCode || "WORKFLOW_JOB_RETRY_WAIT",
+      message: job.errorDetail || "再試行待ちです。",
+      nextAttemptAt: job.nextAttemptAt || null,
+      overdue
+    };
+  }
+  if (status === "permanently_failed") {
+    return { status, level: "error", reasonCode: job.errorCode || "WORKFLOW_JOB_FAILED", message: job.errorDetail || "ジョブが恒久失敗しました。" };
+  }
+  if (status === "succeeded") return { status, level: "success", reasonCode: "", message: "完了" };
+  if (status === "cancelled") return { status, level: "info", reasonCode: "JOB_CANCELLED", message: "キャンセル済み" };
+  return { status: status || "unknown", level: "waiting", reasonCode: "WORKFLOW_JOB_PENDING", message: "実行待ちです。" };
+}
+
+export function summarizeLineupWorkflowJobs(jobs = [], now = new Date()) {
+  const lineupJobs = (Array.isArray(jobs) ? jobs : [])
+    .filter((job) => ["provisional_lineup_fetch", "final_lineup_fetch"].includes(job?.jobType))
+    .sort((left, right) => String(right.updatedAt || right.startedAt || right.scheduledAt || "").localeCompare(String(left.updatedAt || left.startedAt || left.scheduledAt || "")));
+  const finalJob = lineupJobs.find((job) => job.jobType === "final_lineup_fetch") || null;
+  const relevantJobs = finalJob?.status === "succeeded"
+    ? lineupJobs.filter((job) => job.jobType === "final_lineup_fetch")
+    : lineupJobs.filter((job) => job.status !== "cancelled");
+  const latest = relevantJobs[0] || null;
+  const latestValidation = sanitizeLineupValidationDetails(latest?.validation);
+  const health = getWorkflowJobHealth(latest, now);
+  const byType = (jobType) => {
+    const job = lineupJobs.find((candidate) => candidate.jobType === jobType && candidate.status !== "cancelled")
+      || lineupJobs.find((candidate) => candidate.jobType === jobType)
+      || null;
+    if (!job) return null;
+    const jobHealth = getWorkflowJobHealth(job, now);
+    return {
+      status: job.status,
+      attemptCount: job.attemptCount,
+      maxAttempts: job.maxAttempts,
+      scheduledAt: job.scheduledAt || null,
+      nextAttemptAt: job.nextAttemptAt || null,
+      errorCode: job.errorCode || null,
+      errorDetail: job.errorDetail || null,
+      updatedAt: job.updatedAt || null,
+      health: jobHealth,
+      validation: sanitizeLineupValidationDetails(job.validation)
+    };
+  };
+  const warnings = relevantJobs
+    .map((job) => ({ job, health: getWorkflowJobHealth(job, now) }))
+    .filter(({ health: item }) => item.level === "warning")
+    .map(({ job, health: item }) => `${job.jobType}:${item.reasonCode}`);
+  const errors = relevantJobs
+    .map((job) => ({ job, health: getWorkflowJobHealth(job, now) }))
+    .filter(({ health: item }) => item.level === "error")
+    .map(({ job, health: item }) => `${job.jobType}:${item.reasonCode}`);
+  return {
+    status: finalJob?.status === "succeeded" ? "completed" : (latest ? health.status : "not_started"),
+    lineupFetchStatus: {
+      provisional: byType("provisional_lineup_fetch"),
+      final: byType("final_lineup_fetch")
+    },
+    lineupJobs,
+    lastFetchAttempt: latest ? {
+      jobType: latest.jobType,
+      status: latest.status,
+      attemptCount: latest.attemptCount,
+      maxAttempts: latest.maxAttempts,
+      startedAt: latest.startedAt || null,
+      updatedAt: latest.updatedAt || null,
+      nextAttemptAt: latest.nextAttemptAt || null,
+      errorCode: latest.errorCode || null,
+      errorDetail: latest.errorDetail || null,
+      health,
+      validation: latestValidation
+    } : null,
+    validation: latestValidation,
+    warnings: [...new Set(warnings)],
+    errors: [...new Set(errors)],
+    scoringEligibility: finalJob?.status === "succeeded"
+      ? { eligible: true, status: "ready", reasonCode: "FINAL_LINEUP_JOB_SUCCEEDED" }
+      : { eligible: false, status: health.level === "error" ? "blocked" : "waiting", reasonCode: finalJob?.errorCode || "FINAL_LINEUP_REQUIRED" }
+  };
+}
+
 async function resolveWorkflowJobGame(db, internalGameId) {
   const state = await db.prepare(
     `SELECT state.legacy_game_id, games.game_date, games.start_time, games.home_team, games.away_team, games.game_status
@@ -3305,9 +3469,11 @@ async function handleAdminGameWorkflowStatus(env, cors, gameId) {
 }
 
 async function getManagedGameJobSummary(db, internalGameId) {
-  if (!internalGameId) return { pendingCount: 0, retryCount: 0, nextExecutionAt: null, jobs: [] };
+  if (!internalGameId) return { pendingCount: 0, retryCount: 0, nextExecutionAt: null, jobs: [], lineupJobs: [], lineupFetchStatus: { provisional: null, final: null }, lineupFetchState: "not_started", lastFetchAttempt: null, validation: null, scoringEligibility: { eligible: false, status: "waiting", reasonCode: "FINAL_LINEUP_REQUIRED" }, warnings: [], errors: [] };
   const result = await db.prepare(
-    `SELECT job_type, status, scheduled_slot_at, next_attempt_at, error_code
+    `SELECT job_type, status, scheduled_slot_at, next_attempt_at, error_code, error_detail,
+            source, attempt_count, max_attempts, claimed_at, lease_expires_at,
+            started_at, completed_at, result_metadata, updated_at
        FROM game_job_runs
       WHERE internal_game_id = ?1
       ORDER BY COALESCE(next_attempt_at, scheduled_slot_at) ASC, job_type ASC`
@@ -3317,7 +3483,26 @@ async function getManagedGameJobSummary(db, internalGameId) {
     status: row.status,
     scheduledAt: row.scheduled_slot_at || null,
     nextAttemptAt: row.next_attempt_at || null,
-    errorCode: row.error_code || null
+    errorCode: row.error_code || null,
+    errorDetail: row.error_detail || null,
+    source: row.source || null,
+    attemptCount: Number(row.attempt_count || 0),
+    maxAttempts: Number(row.max_attempts || 0),
+    claimedAt: row.claimed_at || null,
+    leaseExpiresAt: row.lease_expires_at || null,
+    startedAt: row.started_at || null,
+    completedAt: row.completed_at || null,
+    updatedAt: row.updated_at || null,
+    validation: (() => {
+      const metadata = parseSafeWorkflowJobMetadata(row.result_metadata);
+      return sanitizeLineupValidationDetails({
+        ...metadata.validation,
+        parseStage: metadata.parseStage,
+        sourceUrlHost: metadata.sourceUrlHost,
+        httpStatus: metadata.httpStatus,
+        retryable: metadata.retryable
+      });
+    })()
   }));
   const pending = jobs.filter((job) => ["pending", "claimed", "running"].includes(job.status));
   const retry = jobs.filter((job) => job.status === "retry_wait");
@@ -3325,7 +3510,8 @@ async function getManagedGameJobSummary(db, internalGameId) {
     .map((job) => job.nextAttemptAt || job.scheduledAt)
     .filter(Boolean)
     .sort()[0] || null;
-  return { pendingCount: pending.length, retryCount: retry.length, nextExecutionAt, jobs };
+  const lineupDiagnostics = summarizeLineupWorkflowJobs(jobs);
+  return { pendingCount: pending.length, retryCount: retry.length, nextExecutionAt, jobs, lineupJobs: lineupDiagnostics.lineupJobs, lineupFetchStatus: lineupDiagnostics.lineupFetchStatus, lineupFetchState: lineupDiagnostics.status, lastFetchAttempt: lineupDiagnostics.lastFetchAttempt, validation: lineupDiagnostics.validation, scoringEligibility: lineupDiagnostics.scoringEligibility, warnings: lineupDiagnostics.warnings, errors: lineupDiagnostics.errors };
 }
 
 async function handleAdminCurrentGameWorkflow(request, env, cors) {
@@ -3356,12 +3542,17 @@ async function handleAdminCurrentGameWorkflow(request, env, cors) {
       return jsonResponse({ ok: true, currentGame: null, selectionReason: "NO_MANAGED_GAME", historicalFailures, pendingJobs: [], retryJobs: [], warnings: [], errors: [] }, 200, cors);
     }
     const status = await getPregameAutomationStatus(env.AUTH_DB, selection.legacyGameId);
-    let jobSummary = { pendingCount: 0, retryCount: 0, nextExecutionAt: null, jobs: [] };
+    let jobSummary = { pendingCount: 0, retryCount: 0, nextExecutionAt: null, jobs: [], lineupJobs: [], lineupFetchStatus: { provisional: null, final: null }, lineupFetchState: "not_started", lastFetchAttempt: null, validation: null, scoringEligibility: { eligible: false, status: "waiting", reasonCode: "FINAL_LINEUP_REQUIRED" }, warnings: [], errors: [] };
     try {
       jobSummary = await getManagedGameJobSummary(env.AUTH_DB, selection.internalGameId);
     } catch (error) {
       if (!isPregameSchemaError(error)) throw error;
     }
+    const warnings = [...new Set([
+      ...(selection.isFuture && selection.workflowStatus === "retrying" ? ["future_workflow_retry_wait"] : []),
+      ...(jobSummary.warnings || [])
+    ])];
+    const errors = [...new Set(jobSummary.errors || [])];
     const response = jsonResponse({
       ok: true,
       ...status,
@@ -3371,8 +3562,14 @@ async function handleAdminCurrentGameWorkflow(request, env, cors) {
       pendingJobs: jobSummary.jobs.filter((job) => ["pending", "claimed", "running"].includes(job.status)),
       retryJobs: jobSummary.jobs.filter((job) => job.status === "retry_wait"),
       jobSummary,
-      warnings: selection.isFuture && selection.workflowStatus === "retrying" ? ["future_workflow_retry_wait"] : [],
-      errors: []
+      lineupJobs: jobSummary.lineupJobs,
+      lineupFetchStatus: jobSummary.lineupFetchStatus,
+      lineupFetchState: jobSummary.lineupFetchState,
+      lastFetchAttempt: jobSummary.lastFetchAttempt,
+      validation: jobSummary.validation,
+      scoringEligibility: jobSummary.scoringEligibility,
+      warnings,
+      errors
     }, 200, cors);
     response.headers.set("Cache-Control", "no-store");
     return response;
@@ -4318,6 +4515,9 @@ function createPregameError(code, message, details = {}) {
   if (details.upstreamPath === "/") error.upstreamPath = "/";
   if (typeof details.upstreamMode === "string" && details.upstreamMode) error.upstreamMode = details.upstreamMode;
   if (typeof details.upstreamTransport === "string" && details.upstreamTransport) error.upstreamTransport = details.upstreamTransport;
+  if (typeof details.parseStage === "string" && details.parseStage) error.parseStage = details.parseStage.slice(0, 80);
+  const validation = sanitizeLineupValidationDetails(details.validation);
+  if (validation) error.validation = validation;
   return error;
 }
 
@@ -4333,8 +4533,29 @@ function normalizeRosterForSnapshot(players) {
 }
 
 function createOfficialLineupFromNpb(lineup) {
+  const parsedCount = Array.isArray(lineup) ? lineup.length : 0;
+  const validation = {
+    parseStage: "official_lineup",
+    expectedTeams: [FIGHTERS_TEAM_CODE],
+    detectedTeams: [],
+    expectedCount: SCORING_LINEUP_SIZE,
+    parsedCount,
+    resolvedPlayerCount: 0,
+    validPositionCount: 0,
+    missingPositionCount: 0,
+    duplicateBattingOrderCount: 0,
+    duplicatePlayerCount: 0,
+    battingOrderMin: null,
+    battingOrderMax: null
+  };
+  const invalid = (code, error, extra = {}) => ({
+    ok: false,
+    code,
+    error,
+    validation: sanitizeLineupValidationDetails({ ...validation, ...extra, validationReason: code })
+  });
   if (!Array.isArray(lineup) || lineup.length !== SCORING_LINEUP_SIZE) {
-    return { ok: false, code: "LINEUP_INVALID_PLAYER_COUNT", error: "NPBのスタメン人数が9人ではありません。" };
+    return invalid("LINEUP_INVALID_PLAYER_COUNT", "NPBのスタメン人数が9人ではありません。");
   }
   const result = [];
   const orders = new Set();
@@ -4344,20 +4565,35 @@ function createOfficialLineupFromNpb(lineup) {
     const battingOrder = Number(row?.order);
     const position = normalizeScoringPosition(row?.position);
     if (!player) {
-      return { ok: false, code: "LINEUP_PLAYER_RESOLUTION_FAILED", error: "NPBの選手名を選手マスタへ安全に照合できません。" };
+      return invalid("LINEUP_PLAYER_RESOLUTION_FAILED", "NPBの選手名を選手マスタへ安全に照合できません。", { resolvedPlayerCount: result.length });
     }
     if (!Number.isInteger(battingOrder) || battingOrder < 1 || battingOrder > 9 || orders.has(battingOrder)) {
-      return { ok: false, code: "LINEUP_PARSE_FAILED", error: "NPBの打順を安全に解析できません。" };
+      return invalid("LINEUP_PARSE_FAILED", "NPBの打順を安全に解析できません。", {
+        resolvedPlayerCount: result.length,
+        duplicateBattingOrderCount: orders.has(battingOrder) ? 1 : 0,
+        battingOrderMin: Number.isInteger(battingOrder) ? battingOrder : null,
+        battingOrderMax: Number.isInteger(battingOrder) ? battingOrder : null
+      });
     }
     if (!position) {
-      return { ok: false, code: "LINEUP_INVALID_POSITION", error: "NPBの守備位置を正規化できません。" };
+      return invalid("LINEUP_INVALID_POSITION", "NPBの守備位置を正規化できません。", {
+        resolvedPlayerCount: result.length,
+        missingPositionCount: 1
+      });
     }
     const playerId = createFightersPlayerId(player.uniformNumber);
     if (players.has(playerId)) {
-      return { ok: false, code: "LINEUP_DUPLICATE_PLAYER", error: "NPBのスタメンに同一選手が重複しています。" };
+      return invalid("LINEUP_DUPLICATE_PLAYER", "NPBのスタメンに同一選手が重複しています。", {
+        resolvedPlayerCount: result.length,
+        duplicatePlayerCount: 1
+      });
     }
     orders.add(battingOrder);
     players.add(playerId);
+    validation.resolvedPlayerCount = result.length + 1;
+    validation.validPositionCount = result.length + 1;
+    validation.battingOrderMin = validation.battingOrderMin === null ? battingOrder : Math.min(validation.battingOrderMin, battingOrder);
+    validation.battingOrderMax = validation.battingOrderMax === null ? battingOrder : Math.max(validation.battingOrderMax, battingOrder);
     result.push({
       playerId,
       teamId: FIGHTERS_TEAM_ID,
@@ -4370,9 +4606,11 @@ function createOfficialLineupFromNpb(lineup) {
   }
   const sanitized = sanitizeActualLineupForScoring(result);
   return sanitized.ok ? { ok: true, lineup: sanitized.lineup } : {
-    ok: false,
-    code: "LINEUP_INVALID_POSITION",
-    error: sanitized.error || "NPBの守備位置を検証できません。"
+    ...invalid("LINEUP_INVALID_POSITION", sanitized.error || "NPBの守備位置を検証できません。", {
+      resolvedPlayerCount: result.length,
+      validPositionCount: result.length,
+      missingPositionCount: 1
+    })
   };
 }
 
@@ -4521,7 +4759,14 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
   try {
     const payload = await fetchNpbWorkerJson(env, { mode: "lineup", date: identity.game.date, gameCode: identity.gameCode });
     const actual = createOfficialLineupFromNpb(payload.lineup);
-    if (!actual.ok) throw createPregameError(actual.code || "LINEUP_PARSE_FAILED", actual.error);
+    if (!actual.ok) {
+      throw createPregameError(actual.code || "LINEUP_PARSE_FAILED", actual.error, {
+        parseStage: "official_lineup",
+        validation: { ...actual.validation, detectedTeams: payload.team ? [String(payload.team)] : [] },
+        upstreamUrl: payload.sourceUrl,
+        upstreamMode: "lineup"
+      });
+    }
     const detectedAt = new Date(payload.fetchedAt || now);
     if (!isFinalCapture) {
       await saveProvisionalOfficialLineup(env.AUTH_DB, gameId, actual.lineup, detectedAt, now);
@@ -7058,6 +7303,7 @@ async function reconcileCompletionWorkflowJobs(env, now, timelines) {
     summary.checked += 1;
     const canonicalTimeline = { ...timeline, internalGameId };
     const lineup = await getGameLineup(env.AUTH_DB, { gameId: timeline.gameId, internalGameId });
+    if (lineup) await cancelSupersededLineupJobs(env.AUTH_DB, internalGameId, now);
     let requiredJobType = "";
     if (!lineup) {
       requiredJobType = now >= timeline.finalLineupFetchAt ? "final_lineup_fetch" : "provisional_lineup_fetch";
@@ -7077,6 +7323,18 @@ async function reconcileCompletionWorkflowJobs(env, now, timelines) {
     if (result.created) summary.created += 1;
   }
   return summary;
+}
+
+async function cancelSupersededLineupJobs(db, internalGameId, now) {
+  if (!internalGameId) return 0;
+  const result = await db.prepare(
+    `UPDATE game_job_runs
+        SET status = 'cancelled', lease_expires_at = NULL, next_attempt_at = NULL, updated_at = ?1
+      WHERE internal_game_id = ?2
+        AND job_type = 'provisional_lineup_fetch'
+        AND status IN ('pending', 'retry_wait', 'claimed', 'running')`
+  ).bind(now.toISOString(), internalGameId).run();
+  return Number(result?.meta?.changes || 0);
 }
 
 async function alignWorkflowStateWithStoredLineup(db, internalGameId, legacyGameId, now) {
@@ -7138,6 +7396,7 @@ async function executeCompletionWorkflowJob(env, job, now) {
   await linkLegacyGameRowsToInternalGameId(env.AUTH_DB, job.internal_game_id, target.gameId);
   const completed = await completeWorkflowJob(env.AUTH_DB, { jobId: job.id, claimToken: job.claim_token, resultMetadata: { status: result?.status || "success" }, now });
   if (!completed) throw createPregameError("JOB_CLAIM_CONFLICT", "試合進行ジョブの完了権限を確認できません。");
+  if (job.job_type === "final_lineup_fetch") await cancelSupersededLineupJobs(env.AUTH_DB, job.internal_game_id, now);
   return result;
 }
 
@@ -7210,8 +7469,40 @@ async function runDueCompletionWorkflowJobs(env, now, timelines) {
         console.error(`completion workflow target resolve failed: code=${getWorkflowJobErrorCode(resolveError)}`);
       }
       const expired = claimed.job_type === "final_lineup_fetch" && retryDeadline && now >= retryDeadline;
-      const retry = await retryWorkflowJob(env.AUTH_DB, { job: claimed, claimToken: claimed.claim_token, errorCode: expired ? SCORING_RETRY_EXPIRED_CODE : getWorkflowJobErrorCode(error), errorDetail: String(error?.message || ""), nextAttemptAt: new Date(now.getTime() + (claimed.job_type.includes("lineup") ? 10 : 1) * 60 * 1000), now });
-      await transitionWorkflowState(env.AUTH_DB, { internalGameId: claimed.internal_game_id, to: expired ? "service_unavailable" : "retrying", errorCode: expired ? SCORING_RETRY_EXPIRED_CODE : getWorkflowJobErrorCode(error), now });
+      const errorCode = expired ? SCORING_RETRY_EXPIRED_CODE : getWorkflowJobErrorCode(error);
+      const errorDetail = String(error?.message || "").slice(0, 500);
+      const nextAttemptAt = new Date(now.getTime() + (claimed.job_type.includes("lineup") ? 10 : 1) * 60 * 1000);
+      const errorMetadata = getSafeWorkflowErrorMetadata(error);
+      const retry = await retryWorkflowJob(env.AUTH_DB, {
+        job: claimed,
+        claimToken: claimed.claim_token,
+        errorCode,
+        errorDetail,
+        errorMetadata,
+        nextAttemptAt,
+        now
+      });
+      await transitionWorkflowState(env.AUTH_DB, { internalGameId: claimed.internal_game_id, to: expired ? "service_unavailable" : "retrying", errorCode, now });
+      try {
+        await recordWorkflowJobEvent(env.AUTH_DB, {
+          eventType: retry.status === "permanently_failed" ? "workflow_job_permanently_failed" : "workflow_job_retry",
+          status: retry.status === "permanently_failed" ? "error" : "warning",
+          internalGameId: claimed.internal_game_id,
+          job: { ...claimed, legacyGameId: "" },
+          now,
+          errorCode,
+          metadata: {
+            ...errorMetadata,
+            attemptCount: Number(claimed.attempt_count || 0),
+            maxAttempts: Number(claimed.max_attempts || 0),
+            nextAttemptAt: retry.status === "retry_wait" ? nextAttemptAt.toISOString() : null,
+            errorDetail
+          },
+          source: claimed.source || "cron"
+        });
+      } catch (logError) {
+        console.error(`[GAME_WORKFLOW] job retry event record failed: job=${claimed.id} code=${logError?.code || "WORKFLOW_LOG_WRITE_FAILED"}`);
+      }
       if (expired) summary.serviceUnavailable += 1;
       else summary.retried += 1;
     }

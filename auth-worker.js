@@ -328,6 +328,10 @@ export default {
       if (path === "/api/admin/audit/game-workflows" && request.method === "GET") {
         return await handleAdminGameWorkflowAudit(request, env, cors);
       }
+      const historicalGameWorkflowAuditRoute = parseHistoricalGameWorkflowAuditRoute(path);
+      if (historicalGameWorkflowAuditRoute && request.method === "GET") {
+        return await handleAdminHistoricalGameWorkflow(request, env, cors, historicalGameWorkflowAuditRoute.internalGameId);
+      }
       if (path === "/api/admin/audit/current-game-workflow" && request.method === "GET") {
         return await handleAdminCurrentGameWorkflow(request, env, cors);
       }
@@ -3732,6 +3736,16 @@ function isPregameSchemaError(error) {
   return /no such table|no such column|has no column named|does not exist|schema.*not ready|migration/.test(message);
 }
 
+async function isWorkflowJobSchemaReady(db) {
+  try {
+    await db.prepare("SELECT 1 FROM game_job_runs LIMIT 1").first();
+    return true;
+  } catch (error) {
+    if (isPregameSchemaError(error)) return false;
+    throw error;
+  }
+}
+
 async function handleGetGameDayStatus(request, env, cors) {
   const gameId = getValidGameId(new URL(request.url).searchParams.get("gameId"));
   const identity = gameId ? getGameIdentityForPregame(gameId) : null;
@@ -6218,6 +6232,313 @@ async function handleAdminGameIdentityRepairRollback(request, env, cors, repairI
     return jsonResponse({ ok: true, repairId, status: "rolled_back" }, 200, cors);
   } catch (error) {
     return jsonResponse({ ok: false, code: error?.code || "GAME_IDENTITY_REPAIR_ROLLBACK_FAILED", error: "修復のロールバックに失敗しました。" }, 500, cors);
+  }
+}
+
+function parseHistoricalGameWorkflowAuditRoute(path) {
+  const prefix = "/api/admin/audit/game-workflows/";
+  if (!String(path || "").startsWith(prefix)) return null;
+  const rawInternalGameId = String(path).slice(prefix.length);
+  try {
+    return { internalGameId: decodeURIComponent(rawInternalGameId) };
+  } catch {
+    return { internalGameId: rawInternalGameId };
+  }
+}
+
+function sanitizeHistoricalWorkflowErrorDetail(value) {
+  const detail = String(value || "").trim();
+  if (!detail) return null;
+  if (/[\"'](?:token|cookie|authorization|password|secret)[\"']?\s*:/i.test(detail)) return "機密情報を含む可能性があるため詳細を省略しました。";
+  return detail.slice(0, 500);
+}
+
+function mapHistoricalWorkflowJobRow(row, now = new Date()) {
+  const metadata = parseSafeWorkflowJobMetadata(row?.result_metadata);
+  const validation = sanitizeLineupValidationDetails({
+    ...metadata.validation,
+    parseStage: metadata.parseStage || metadata.validation?.parseStage,
+    sourceUrlHost: metadata.sourceUrlHost || metadata.validation?.sourceUrlHost,
+    httpStatus: metadata.httpStatus || metadata.validation?.httpStatus,
+    retryable: typeof metadata.retryable === "boolean" ? metadata.retryable : metadata.validation?.retryable
+  });
+  const job = {
+    id: Number.isFinite(Number(row?.id)) ? Number(row.id) : null,
+    jobType: String(row?.job_type || ""),
+    status: String(row?.status || "unknown"),
+    source: String(row?.source || "system"),
+    scheduledAt: row?.scheduled_slot_at || null,
+    nextAttemptAt: row?.next_attempt_at || null,
+    attemptCount: Number(row?.attempt_count || 0),
+    maxAttempts: Number(row?.max_attempts || 0),
+    errorCode: row?.error_code || null,
+    errorDetail: sanitizeHistoricalWorkflowErrorDetail(row?.error_detail),
+    claimedAt: row?.claimed_at || null,
+    leaseExpiresAt: row?.lease_expires_at || null,
+    startedAt: row?.started_at || null,
+    completedAt: row?.completed_at || null,
+    updatedAt: row?.updated_at || null,
+    validation,
+    parseStage: metadata.parseStage || null,
+    httpStatus: metadata.httpStatus || null,
+    sourceUrlHost: metadata.sourceUrlHost || null,
+    retryable: typeof metadata.retryable === "boolean" ? metadata.retryable : String(row?.status || "") === "retry_wait"
+  };
+  const health = getWorkflowJobHealth(job, now);
+  const nextAt = job.nextAttemptAt || job.scheduledAt;
+  const nextDate = nextAt ? new Date(nextAt) : null;
+  return {
+    ...job,
+    overdue: ["pending", "retry_wait"].includes(job.status)
+      && (!nextDate || Number.isNaN(nextDate.getTime()) || nextDate.getTime() <= now.getTime()),
+    health
+  };
+}
+
+export function summarizeHistoricalWorkflowJobs(jobs = [], workflowStatus = "", now = new Date(), lineupRows = []) {
+  const current = now instanceof Date ? now : new Date(now);
+  const normalizedJobs = (Array.isArray(jobs) ? jobs : [])
+    .map((job) => job?.jobType ? job : mapHistoricalWorkflowJobRow(job, current))
+    .sort((left, right) => String(right.updatedAt || right.startedAt || right.scheduledAt || "").localeCompare(String(left.updatedAt || left.startedAt || left.scheduledAt || "")));
+  const activeRetryJobs = normalizedJobs.filter((job) => job.status === "retry_wait");
+  const warnings = [];
+  if (workflowStatus === "retrying" && activeRetryJobs.length === 0) {
+    warnings.push("WORKFLOW_RETRYING_WITHOUT_ACTIVE_RETRY_JOB");
+    if (normalizedJobs.some((job) => ["cancelled", "permanently_failed", "succeeded"].includes(job.status))) {
+      warnings.push("HISTORICAL_JOB_STATE_MISMATCH");
+    }
+  }
+  const errors = normalizedJobs
+    .filter((job) => job.health?.level === "error")
+    .map((job) => `${job.jobType}:${job.health.reasonCode}`);
+  const byType = (jobType) => normalizedJobs.find((job) => job.jobType === jobType && job.status !== "cancelled")
+    || normalizedJobs.find((job) => job.jobType === jobType)
+    || null;
+  const provisional = byType("provisional_lineup_fetch");
+  const final = byType("final_lineup_fetch");
+  const latest = normalizedJobs.find((job) => ["provisional_lineup_fetch", "final_lineup_fetch"].includes(job.jobType)) || null;
+  const latestValidation = latest?.validation || null;
+  const lineupCaptured = Array.isArray(lineupRows) && lineupRows.length > 0;
+  const finalSucceeded = final?.status === "succeeded";
+  const scoringRow = (Array.isArray(lineupRows) ? lineupRows : []).find((row) => row?.scoring_status === "scored") || null;
+  let scoringEligibility;
+  if (workflowStatus === "service_unavailable") {
+    scoringEligibility = { eligible: false, status: "service_unavailable", reasonCode: "SERVICE_UNAVAILABLE" };
+  } else if (scoringRow || finalSucceeded) {
+    scoringEligibility = { eligible: true, status: scoringRow ? "scored" : "ready", reasonCode: scoringRow ? "LINEUP_SCORED" : "FINAL_LINEUP_JOB_SUCCEEDED" };
+  } else {
+    scoringEligibility = { eligible: false, status: errors.length ? "blocked" : "waiting", reasonCode: final?.errorCode || "FINAL_LINEUP_REQUIRED" };
+  }
+  const latestHealth = latest ? getWorkflowJobHealth(latest, current) : null;
+  return {
+    jobs: normalizedJobs,
+    lineupJobs: normalizedJobs.filter((job) => ["provisional_lineup_fetch", "final_lineup_fetch"].includes(job.jobType)),
+    lineupFetchStatus: { provisional, final },
+    lineupFetchState: finalSucceeded ? "completed" : (latestHealth?.status || "not_started"),
+    lastFetchAttempt: latest ? {
+      jobType: latest.jobType,
+      status: latest.status,
+      attemptCount: latest.attemptCount,
+      maxAttempts: latest.maxAttempts,
+      startedAt: latest.startedAt || null,
+      updatedAt: latest.updatedAt || null,
+      nextAttemptAt: latest.nextAttemptAt || null,
+      errorCode: latest.errorCode || null,
+      errorDetail: latest.errorDetail || null,
+      validation: latestValidation,
+      health: latestHealth
+    } : null,
+    validation: latestValidation,
+    scoringEligibility,
+    activeRetryJobs,
+    warnings: [...new Set(warnings)],
+    errors: [...new Set(errors)],
+    lineupCaptured
+  };
+}
+
+function normalizeAuditTeam(value) {
+  return String(value || "").trim().toLowerCase().replace(/[\s　]+/g, " ");
+}
+
+export function auditGameHomeAwayConsistency({ game = null, scheduleRows = [] } = {}) {
+  const observations = [];
+  if (game?.homeTeam && game?.awayTeam) {
+    observations.push({ source: "games", homeTeam: String(game.homeTeam), awayTeam: String(game.awayTeam), startAt: game.startAt || null });
+  }
+  for (const row of Array.isArray(scheduleRows) ? scheduleRows : []) {
+    if (!row?.home_team || !row?.away_team) continue;
+    observations.push({ source: "detected_game_schedule", gameId: row.game_id || null, sourceGameKey: row.source_game_key || null, homeTeam: String(row.home_team), awayTeam: String(row.away_team), startAt: row.start_at || null });
+  }
+  const reference = observations[0];
+  const mismatches = reference ? observations.slice(1).filter((item) => normalizeAuditTeam(item.homeTeam) !== normalizeAuditTeam(reference.homeTeam) || normalizeAuditTeam(item.awayTeam) !== normalizeAuditTeam(reference.awayTeam)) : [];
+  return {
+    consistent: Boolean(reference) && mismatches.length === 0,
+    warningCode: mismatches.length ? "GAME_HOME_AWAY_INCONSISTENCY" : null,
+    observations,
+    mismatches
+  };
+}
+
+async function handleAdminHistoricalGameWorkflow(request, env, cors, requestedInternalGameId) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  const internalGameId = String(requestedInternalGameId || "").trim();
+  if (!INTERNAL_GAME_ID_PATTERN.test(internalGameId)) {
+    return jsonResponse({ ok: false, code: "INVALID_INTERNAL_GAME_ID", error: "内部試合IDの形式が不正です。" }, 400, cors);
+  }
+  try {
+    if (!await isWorkflowJobSchemaReady(env.AUTH_DB)) {
+      return jsonResponse({ ok: false, code: "GAME_WORKFLOW_JOB_SCHEMA_NOT_READY", error: "試合進行ジョブのmigrationが未適用です。" }, 503, cors);
+    }
+    const identity = await env.AUTH_DB.prepare(
+      `SELECT games.internal_game_id, games.game_date, games.start_time, games.home_team, games.away_team,
+              games.game_status, games.created_at, games.updated_at,
+              state.legacy_game_id, state.workflow_status, state.workflow_version,
+              state.last_completed_job_type, state.last_error_code, state.last_error_at,
+              state.next_due_at, state.updated_at AS workflow_updated_at
+         FROM games
+         LEFT JOIN game_workflow_state AS state ON state.internal_game_id = games.internal_game_id
+        WHERE games.internal_game_id = ?1 LIMIT 1`
+    ).bind(internalGameId).first();
+    if (!identity) {
+      return jsonResponse({ ok: false, code: "GAME_WORKFLOW_NOT_FOUND", error: "指定された試合の進行状態が見つかりません。" }, 404, cors);
+    }
+    const identifierResult = await env.AUTH_DB.prepare(
+      `SELECT provider, identifier_type, identifier_value
+         FROM game_identifiers
+        WHERE internal_game_id = ?1
+          AND identifier_type IN ('descriptive_game_id', 'legacy_compact_game_id', 'npb_game_code', 'source_game_key', 'game_code')
+        ORDER BY identifier_type ASC, identifier_value ASC`
+    ).bind(internalGameId).all();
+    const identifiers = (identifierResult?.results || []).map((row) => ({
+      provider: String(row.provider || ""),
+      type: String(row.identifier_type || ""),
+      value: String(row.identifier_value || "")
+    }));
+    const legacyGameId = String(identity.legacy_game_id || identifiers.find((row) => ["descriptive_game_id", "legacy_compact_game_id"].includes(row.type))?.value || "");
+    const sourceGameKey = identifiers.find((row) => row.type === "source_game_key")?.value || "";
+    const npbGameCode = identifiers.find((row) => ["npb_game_code", "game_code"].includes(row.type))?.value || "";
+    const [scheduleResult, jobResult, lineupResult, pregameResult, rosterResult] = await Promise.all([
+      env.AUTH_DB.prepare(
+        `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, venue, game_status, internal_game_id
+           FROM detected_game_schedule
+          WHERE internal_game_id = ?1 OR game_id = ?2 OR (?3 <> '' AND source_game_key = ?3)
+          ORDER BY updated_at DESC`
+      ).bind(internalGameId, legacyGameId, sourceGameKey).all(),
+      env.AUTH_DB.prepare(
+        `SELECT id, job_type, status, source, attempt_count, max_attempts, scheduled_slot_at,
+                next_attempt_at, error_code, error_detail, claimed_at, lease_expires_at,
+                started_at, completed_at, result_metadata, updated_at
+           FROM game_job_runs
+          WHERE internal_game_id = ?1
+          ORDER BY COALESCE(updated_at, scheduled_slot_at) DESC, id DESC`
+      ).bind(internalGameId).all(),
+      env.AUTH_DB.prepare(
+        `SELECT game_id, lineup_source, lineup_detected_at, scoring_status, scoring_due_at,
+                scored_at, publication_status, published_at, last_error, updated_at
+           FROM game_lineups
+          WHERE internal_game_id = ?1 OR (internal_game_id IS NULL AND game_id = ?2)
+          ORDER BY updated_at DESC LIMIT 10`
+      ).bind(internalGameId, legacyGameId).all(),
+      env.AUTH_DB.prepare(
+        `SELECT game_id, roster_status, lineup_status, lineup_attempt_count, last_lineup_attempt_at,
+                next_lineup_attempt_at, scoring_status, last_error_code, last_error_message, updated_at
+           FROM game_pregame_automation
+          WHERE internal_game_id = ?1 OR (internal_game_id IS NULL AND game_id = ?2)
+          ORDER BY updated_at DESC LIMIT 10`
+      ).bind(internalGameId, legacyGameId).all(),
+      env.AUTH_DB.prepare(
+        `SELECT game_id, captured_at, player_count, status, source, updated_at
+           FROM game_roster_snapshots
+          WHERE internal_game_id = ?1 OR (internal_game_id IS NULL AND game_id = ?2)
+          ORDER BY updated_at DESC LIMIT 10`
+      ).bind(internalGameId, legacyGameId).all()
+    ]);
+    const now = new Date();
+    const jobs = (jobResult?.results || []).map((row) => mapHistoricalWorkflowJobRow(row, now));
+    const lineupRows = lineupResult?.results || [];
+    const diagnostics = summarizeHistoricalWorkflowJobs(jobs, identity.workflow_status || "unknown", now, lineupRows);
+    const homeAwayAudit = auditGameHomeAwayConsistency({
+      game: { homeTeam: identity.home_team, awayTeam: identity.away_team, startAt: identity.start_time },
+      scheduleRows: scheduleResult?.results || []
+    });
+    const warnings = [...new Set([...(diagnostics.warnings || []), ...(homeAwayAudit.warningCode ? [homeAwayAudit.warningCode] : [])])];
+    const lineupData = lineupRows.map((row) => ({
+      gameId: row.game_id || null,
+      source: row.lineup_source || null,
+      detectedAt: row.lineup_detected_at || null,
+      scoringStatus: row.scoring_status || null,
+      scoringDueAt: row.scoring_due_at || null,
+      scoredAt: row.scored_at || null,
+      publicationStatus: row.publication_status || null,
+      publishedAt: row.published_at || null,
+      lastError: sanitizeHistoricalWorkflowErrorDetail(row.last_error),
+      updatedAt: row.updated_at || null
+    }));
+    const pregameData = (pregameResult?.results || []).map((row) => ({
+      gameId: row.game_id || null,
+      rosterStatus: row.roster_status || null,
+      lineupStatus: row.lineup_status || null,
+      lineupAttemptCount: Number(row.lineup_attempt_count || 0),
+      lastLineupAttemptAt: row.last_lineup_attempt_at || null,
+      nextLineupAttemptAt: row.next_lineup_attempt_at || null,
+      scoringStatus: row.scoring_status || null,
+      lastErrorCode: row.last_error_code || null,
+      lastErrorMessage: sanitizeHistoricalWorkflowErrorDetail(row.last_error_message),
+      updatedAt: row.updated_at || null
+    }));
+    const rosterData = (rosterResult?.results || []).map((row) => ({
+      gameId: row.game_id || null,
+      capturedAt: row.captured_at || null,
+      playerCount: Number(row.player_count || 0),
+      status: row.status || null,
+      source: row.source || null,
+      updatedAt: row.updated_at || null
+    }));
+    const response = jsonResponse({
+      ok: true,
+      internalGameId,
+      observedAt: now.toISOString(),
+      game: {
+        internalGameId,
+        legacyGameId,
+        gameDate: identity.game_date || null,
+        startAt: identity.start_time || null,
+        homeTeam: identity.home_team || null,
+        awayTeam: identity.away_team || null,
+        gameStatus: identity.game_status || null,
+        sourceGameKey,
+        npbGameCode,
+        identifiers
+      },
+      workflow: {
+        status: identity.workflow_status || "unknown",
+        gameStatus: identity.game_status || null,
+        version: Number(identity.workflow_version || 0),
+        lastCompletedJobType: identity.last_completed_job_type || null,
+        lastErrorCode: identity.last_error_code || null,
+        lastErrorAt: identity.last_error_at || null,
+        nextDueAt: identity.next_due_at || null,
+        updatedAt: identity.workflow_updated_at || identity.updated_at || null
+      },
+      jobs: diagnostics.jobs,
+      lineupJobs: diagnostics.lineupJobs,
+      lineupFetchStatus: diagnostics.lineupFetchStatus,
+      lineupFetchState: diagnostics.lineupFetchState,
+      lastFetchAttempt: diagnostics.lastFetchAttempt,
+      validation: diagnostics.validation,
+      scoringEligibility: diagnostics.scoringEligibility,
+      dataState: { lineups: lineupData, pregameAutomation: pregameData, rosterSnapshots: rosterData },
+      homeAwayAudit,
+      warnings,
+      errors: diagnostics.errors
+    }, 200, cors);
+    response.headers.set("Cache-Control", "no-store");
+    return response;
+  } catch (error) {
+    console.error("過去試合の進行詳細監査に失敗しました", error instanceof Error ? error.message : "unknown error");
+    return jsonResponse({ ok: false, code: isPregameSchemaError(error) ? "HISTORICAL_GAME_WORKFLOW_SCHEMA_NOT_READY" : "HISTORICAL_GAME_WORKFLOW_READ_FAILED", error: "過去試合の進行詳細を取得できませんでした。" }, isPregameSchemaError(error) ? 503 : 500, cors);
   }
 }
 

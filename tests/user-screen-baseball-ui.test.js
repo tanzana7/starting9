@@ -118,6 +118,9 @@ test("PCのオーダー行は固定列と省略表示を使い、通知・操作
   assert.match(css, /\.lineup-slot\[data-picker="prediction"\][\s\S]*\.position-button[\s\S]*justify-self: end/);
   assert.match(css, /\.lineup-slot\[data-picker="prediction"\][\s\S]*\.slot-clear[\s\S]*width: 44px/);
   assert.match(css, /\.lineup-slot\[data-picker="prediction"\][\s\S]*\.slot-clear[\s\S]*justify-self: end/);
+  assert.match(css, /#predictionLineup[\s\S]*gap: 6px[\s\S]*border-top: 0/);
+  assert.match(css, /#predictionLineup \.lineup-slot\[data-picker="prediction"\][\s\S]*border: 1px solid #d7e1eb[\s\S]*border-radius: 7px[\s\S]*box-shadow: 0 1px 3px/);
+  assert.match(css, /#predictionLineup \.lineup-slot\[data-picker="prediction"\]\.is-active[\s\S]*background: #eef6fc[\s\S]*box-shadow: inset 3px 0 0 var\(--fighters-blue\)/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.slot-player,[\s\S]*white-space: nowrap/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.slot-player,[\s\S]*padding-inline-start: 10px/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-category-legend[\s\S]*display: none/);

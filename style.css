@@ -5290,6 +5290,24 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
     justify-self: end;
   }
 
+  .app-layout:not(.is-admin-screen) #predictionLineup {
+    gap: 6px;
+    border-top: 0;
+  }
+
+  .app-layout:not(.is-admin-screen) #predictionLineup .lineup-slot[data-picker="prediction"] {
+    border: 1px solid #d7e1eb;
+    border-radius: 7px;
+    background: #fbfdff;
+    box-shadow: 0 1px 3px rgba(25, 54, 82, 0.08);
+  }
+
+  .app-layout:not(.is-admin-screen) #predictionLineup .lineup-slot[data-picker="prediction"].is-active {
+    border-color: #c3dced;
+    background: #eef6fc;
+    box-shadow: inset 3px 0 0 var(--fighters-blue), 0 1px 4px rgba(25, 54, 82, 0.1);
+  }
+
   .app-layout:not(.is-admin-screen) .slot-order {
     width: 44px;
     min-height: 38px;

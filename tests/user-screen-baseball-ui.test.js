@@ -87,6 +87,26 @@ test("PCの予想入力は900px以上で左420px以上のオーダー表と広�
   assert.match(css, /@media \(min-width: 78\.125rem\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-list[\s\S]*grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/);
 });
 
+test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=desktop-lineup-20260803-1">/);
+  for (const [className, label, source] of [
+    ["lineup-builder", "左右カラム", html],
+    ["lineup-panel", "予想オーダー", html],
+    ["player-panel", "選手一覧パネル", html],
+    ["lineup-slot", "オーダー行", script],
+    ["slot-player", "選手名", script],
+    ["roster-filter", "登録状態タブ", html],
+    ["player-list", "選手一覧", html]
+  ]) {
+    assert.match(source, source === script ? new RegExp(`className = "${className}`) : new RegExp(`class="[^"]*\\b${className}\\b`), `${label}のDOM生成元がありません`);
+    assert.match(css, new RegExp(`\\.app-layout:not\\(\\.is-admin-screen\\) \\.${className}`), `${label}へ適用する通常画面セレクタがありません`);
+  }
+  for (const id of ["predictionForm", "predictionError", "savePredictionButton", "resetPredictionButton"]) {
+    assert.match(html, new RegExp(`id="${id}"`), `${id}の実DOMがありません`);
+  }
+  assert.match(css, /#predictionForm > \.message,[\s\S]*grid-column: 1 \/ -1/);
+});
+
 test("PCのオーダー行は固定列と省略表示を使い、通知・操作領域はフォーム幅に揃える", () => {
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-slot[\s\S]*grid-template-columns: 30px 44px minmax\(180px, 1fr\) 44px 38px/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.slot-player,[\s\S]*white-space: nowrap/);

@@ -205,6 +205,48 @@ export async function retryWorkflowJob(db, {
   return { updated: Number(result?.meta?.changes || 0) === 1, status };
 }
 
+// A stale claim is put back into the queue without consuming another attempt.
+// The normal claim path increments attempt_count only when the executor starts.
+export async function recoverWorkflowJobForReevaluation(db, {
+  jobId,
+  expectedStatus,
+  expectedErrorCode = "",
+  expectedErrorDetail = "",
+  recoveryMetadata = null,
+  now = new Date()
+} = {}) {
+  const numericJobId = Number(jobId);
+  const status = String(expectedStatus || "");
+  if (!Number.isInteger(numericJobId) || numericJobId < 1) {
+    throw createWorkflowError("JOB_INPUT_INVALID", "ジョブIDが不正です。");
+  }
+  if (!['claimed', 'retry_wait'].includes(status)) {
+    throw createWorkflowError("JOB_INPUT_INVALID", "回収対象のジョブ状態が不正です。");
+  }
+  const timestamp = asIso(now);
+  const serializedMetadata = recoveryMetadata && typeof recoveryMetadata === "object"
+    ? JSON.stringify(recoveryMetadata).slice(0, 1200)
+    : null;
+  const staleClaimCondition = status === "claimed"
+    ? "lease_expires_at IS NOT NULL AND lease_expires_at <= ?2"
+    : "error_code = ?6 AND error_detail = ?7";
+  const bindings = status === "claimed"
+    ? [timestamp, timestamp, serializedMetadata, numericJobId, status]
+    : [timestamp, timestamp, serializedMetadata, numericJobId, status, String(expectedErrorCode), String(expectedErrorDetail)];
+  const result = await db.prepare(
+    `UPDATE game_job_runs
+        SET status = 'pending', claim_token = NULL, claimed_at = NULL, started_at = NULL,
+            lease_expires_at = NULL, next_attempt_at = NULL, completed_at = NULL,
+            error_code = NULL, error_detail = NULL, result_metadata = ?3, updated_at = ?1
+      WHERE id = ?4
+        AND status = ?5
+        AND completed_at IS NULL
+        AND attempt_count < max_attempts
+        AND ${staleClaimCondition}`
+  ).bind(...bindings).run();
+  return { recovered: Number(result?.meta?.changes || 0) === 1, jobId: numericJobId };
+}
+
 export async function listDueWorkflowJobs(db, { jobTypes = [], now = new Date(), limit = 20 } = {}) {
   const types = [...new Set((jobTypes || []).map((value) => String(value || "").trim()).filter(Boolean))];
   if (!types.length) return [];

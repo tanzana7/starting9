@@ -311,16 +311,18 @@ export async function recoverWorkflowJobForReevaluation(db, {
   if (!Number.isInteger(numericJobId) || numericJobId < 1) {
     throw createWorkflowError("JOB_INPUT_INVALID", "ジョブIDが不正です。");
   }
-  if (!['claimed', 'retry_wait'].includes(status)) {
+  if (!['claimed', 'retry_wait', 'permanently_failed'].includes(status)) {
     throw createWorkflowError("JOB_INPUT_INVALID", "回収対象のジョブ状態が不正です。");
   }
   const timestamp = asIso(now);
   const serializedMetadata = recoveryMetadata && typeof recoveryMetadata === "object"
     ? JSON.stringify(recoveryMetadata).slice(0, 1200)
     : null;
-  const staleClaimCondition = status === "claimed"
-    ? "lease_expires_at IS NOT NULL AND lease_expires_at <= ?2"
-    : "error_code = ?6 AND error_detail = ?7";
+  const recoveryCondition = status === "claimed"
+    ? "completed_at IS NULL AND attempt_count < max_attempts AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?2"
+    : status === "retry_wait"
+      ? "completed_at IS NULL AND attempt_count < max_attempts AND error_code = ?6 AND error_detail = ?7"
+      : "completed_at IS NOT NULL AND attempt_count = max_attempts AND error_code = ?6 AND error_detail = ?7";
   const bindings = status === "claimed"
     ? [timestamp, timestamp, serializedMetadata, numericJobId, status, "", "", String(expectedJobType || "")]
     : [timestamp, timestamp, serializedMetadata, numericJobId, status, String(expectedErrorCode), String(expectedErrorDetail), String(expectedJobType || "")];
@@ -332,9 +334,7 @@ export async function recoverWorkflowJobForReevaluation(db, {
       WHERE id = ?4
         AND status = ?5
         AND (?8 = '' OR job_type = ?8)
-        AND completed_at IS NULL
-        AND attempt_count < max_attempts
-        AND ${staleClaimCondition}`
+        AND ${recoveryCondition}`
   ).bind(...bindings).run();
   return { recovered: Number(result?.meta?.changes || 0) === 1, jobId: numericJobId };
 }

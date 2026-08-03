@@ -167,6 +167,51 @@ export async function completeWorkflowJob(db, { jobId, claimToken, resultMetadat
   return Number(result?.meta?.changes || 0) === 1;
 }
 
+// Adopt an already-persisted scoring result without executing the scorer again.
+// The old error fields are matched atomically so unrelated permanent failures
+// cannot be converted into successful jobs.
+export async function reconcilePersistedScoringJob(db, {
+  jobId,
+  expectedStatus = "permanently_failed",
+  expectedErrorCode,
+  expectedErrorDetail,
+  resultMetadata = null,
+  now = new Date()
+} = {}) {
+  const numericJobId = Number(jobId);
+  if (!Number.isInteger(numericJobId) || numericJobId < 1) {
+    throw createWorkflowError("JOB_INPUT_INVALID", "ジョブIDが不正です。");
+  }
+  const status = String(expectedStatus || "");
+  if (status !== "permanently_failed") {
+    throw createWorkflowError("JOB_INPUT_INVALID", "採点ジョブの整合対象状態が不正です。");
+  }
+  const timestamp = asIso(now);
+  const serializedMetadata = resultMetadata && typeof resultMetadata === "object"
+    ? JSON.stringify(resultMetadata).slice(0, 1200)
+    : null;
+  const result = await db.prepare(
+    `UPDATE game_job_runs
+        SET status = 'succeeded', completed_at = ?1, next_attempt_at = NULL,
+            lease_expires_at = NULL, claim_token = NULL, error_code = NULL,
+            error_detail = NULL, result_metadata = ?2, updated_at = ?1
+      WHERE id = ?3
+        AND job_type = 'scoring'
+        AND status = ?4
+        AND error_code = ?5
+        AND error_detail = ?6
+        AND completed_at IS NOT NULL`
+  ).bind(
+    timestamp,
+    serializedMetadata,
+    numericJobId,
+    status,
+    String(expectedErrorCode || ""),
+    String(expectedErrorDetail || "").slice(0, 500)
+  ).run();
+  return { reconciled: Number(result?.meta?.changes || 0) === 1, jobId: numericJobId };
+}
+
 export async function retryWorkflowJob(db, {
   job,
   claimToken,

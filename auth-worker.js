@@ -41,6 +41,7 @@ import {
   ensureGameWorkflowState,
   isGameWorkflowJobSchemaReady,
   listDueWorkflowJobs,
+  reconcilePersistedScoringJob,
   recoverWorkflowJobForReevaluation,
   retryWorkflowJob,
   transitionWorkflowState
@@ -907,6 +908,10 @@ function getProbableStarterJobMaxAttempts(startAt, now) {
 
 export function getWorkflowJobErrorCode(error) {
   const code = String(error?.code || "").toUpperCase();
+  if (["WORKFLOW_TRANSITION_INVALID", "WORKFLOW_STATE_CONFLICT"].includes(code)
+    || String(error?.message || "") === "試合進行状態を final_lineup_captured から scored_private へ変更できません。") {
+    return "WORKFLOW_STATE_TRANSITION_FAILED";
+  }
   if ([
     "GAME_TARGET_INVALID",
     "GAME_TARGET_IDENTIFIER_CONFLICT",
@@ -933,6 +938,7 @@ export function isCompletionWorkflowErrorRetryable(error, errorCode, { expired =
     "GAME_IDENTIFIER_NOT_FOUND",
     "GAME_IDENTIFIER_AMBIGUOUS",
     "LINEUP_SOURCE_UNRESOLVED",
+    "WORKFLOW_STATE_TRANSITION_FAILED",
     "SCORING_RETRY_EXPIRED",
     "DATA_VALIDATION_FAILED"
   ].includes(code)) return false;
@@ -1386,6 +1392,7 @@ async function recordWorkflowJobEvent(db, { eventType, status, internalGameId, j
       workflow_job_retry: "試合進行ジョブを再試行待ちにしました。",
       workflow_job_permanently_failed: "試合進行ジョブが恒久失敗になりました。",
       workflow_job_recovered: "停止していた試合進行ジョブを再評価待ちに戻しました。",
+      scoring_workflow_reconciled: "保存済みの採点結果に試合進行状態を整合しました。",
       workflow_internal_id_unresolved: "内部試合IDを解決できないためジョブを作成しませんでした。"
     }[eventType] || "試合進行ジョブの状態が更新されました。",
     errorCode,
@@ -6701,7 +6708,7 @@ async function handleAdminHistoricalGameWorkflow(request, env, cors, requestedIn
     const legacyGameId = String(identity.legacy_game_id || identifiers.find((row) => ["descriptive_game_id", "legacy_compact_game_id"].includes(row.type))?.value || "");
     const sourceGameKey = identifiers.find((row) => row.type === "source_game_key")?.value || "";
     const npbGameCode = identifiers.find((row) => ["npb_game_code", "game_code"].includes(row.type))?.value || "";
-    const [scheduleResult, jobResult, lineupResult, pregameResult, rosterResult, recoveryLog] = await Promise.all([
+    const [scheduleResult, jobResult, lineupResult, pregameResult, rosterResult, recoveryLog, rankingResult, scoringRecoveryLog] = await Promise.all([
       env.AUTH_DB.prepare(
         `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, venue, game_status, internal_game_id
            FROM detected_game_schedule
@@ -6717,7 +6724,7 @@ async function handleAdminHistoricalGameWorkflow(request, env, cors, requestedIn
           ORDER BY COALESCE(updated_at, scheduled_slot_at) DESC, id DESC`
       ).bind(internalGameId).all(),
       env.AUTH_DB.prepare(
-        `SELECT game_id, lineup_source, lineup_detected_at, scoring_status, scoring_due_at,
+        `SELECT game_id, internal_game_id, lineup_source, lineup_detected_at, scoring_status, scoring_due_at,
                 scored_at, publication_status, published_at, last_error, updated_at
            FROM game_lineups
           WHERE internal_game_id = ?1 OR (internal_game_id IS NULL AND game_id = ?2)
@@ -6741,11 +6748,33 @@ async function handleAdminHistoricalGameWorkflow(request, env, cors, requestedIn
            FROM game_workflow_logs
           WHERE game_id = ?1 AND event_type = 'workflow_job_recovered'
           ORDER BY occurred_at DESC LIMIT 1`
+      ).bind(legacyGameId).first(),
+      env.AUTH_DB.prepare(
+        `SELECT game_id, internal_game_id, is_ranking_eligible, game_status,
+                publication_status, scored_private_at, published_at, updated_at
+           FROM ranking_games
+          WHERE internal_game_id = ?1 OR (internal_game_id IS NULL AND game_id = ?2)
+           ORDER BY updated_at DESC LIMIT 1`
+      ).bind(internalGameId, legacyGameId).first(),
+      env.AUTH_DB.prepare(
+        `SELECT occurred_at, error_code, metadata
+           FROM game_workflow_logs
+          WHERE game_id = ?1 AND event_type = 'scoring_workflow_reconciled'
+          ORDER BY occurred_at DESC LIMIT 1`
       ).bind(legacyGameId).first()
     ]);
     const now = new Date();
     const jobs = (jobResult?.results || []).map((row) => mapHistoricalWorkflowJobRow(row, now));
     const lineupRows = lineupResult?.results || [];
+    const scoredLineup = lineupRows.find((row) => row.scoring_status === "scored") || null;
+    const scoringJob = jobs.find((job) => job.jobType === "scoring") || null;
+    const rankingJob = jobs.find((job) => job.jobType === "ranking_update" && job.status !== "cancelled") || null;
+    const publicationJob = jobs.find((job) => job.jobType === "publication" && job.status !== "cancelled") || null;
+    const rankingRow = rankingResult || null;
+    const rankingReflected = Boolean(rankingRow
+      && Number(rankingRow.is_ranking_eligible || 0) === 1
+      && String(rankingRow.game_status || "") === "scored"
+      && String(rankingRow.publication_status || "") !== "pending");
     const diagnostics = summarizeHistoricalWorkflowJobs(jobs, identity.workflow_status || "unknown", now, lineupRows);
     const finalJob = diagnostics.lineupFetchStatus.final;
     const recoveryEligibility = getHistoricalWorkflowRecoveryEligibility({
@@ -6763,6 +6792,23 @@ async function handleAdminHistoricalGameWorkflow(request, env, cors, requestedIn
     } catch (error) {
       targetResolution = getSafeWorkflowErrorMetadata(error).targetResolution || targetResolution;
     }
+    const scoringPersistence = getScoringPersistenceReconciliationEligibility({
+      workflowStatus: identity.workflow_status,
+      workflowErrorCode: scoringJob?.errorCode || identity.last_error_code,
+      workflowErrorDetail: scoringJob?.errorDetail || "",
+      scoringStatus: scoredLineup?.scoring_status || "",
+      scoredAt: scoredLineup?.scored_at || "",
+      lastError: scoredLineup?.last_error || "",
+      finalLineupExists: Boolean(scoredLineup),
+      scoreResultExists: Boolean(scoredLineup),
+      scoreResultCount: lineupRows.filter((row) => row.scoring_status === "scored").length,
+      publicationStatus: scoredLineup?.publication_status || "pending",
+      rankingCheckAvailable: true,
+      identifierConflict: Array.isArray(targetResolution?.identifierConflicts) && targetResolution.identifierConflicts.length > 0,
+      internalGameIdMatches: Boolean(scoredLineup && String(scoredLineup.internal_game_id || "") === internalGameId)
+    });
+    const scoringRecoveryMetadata = parseJsonObject(scoringRecoveryLog?.metadata);
+    const scoringJobRecoveryMode = String(scoringRecoveryMetadata?.recoveryMode || scoringPersistence.scoringJobRecoveryMode || "none");
     const rawRecoveryMetadata = parseJsonObject(recoveryLog?.metadata);
     const recoveredJobId = Number(rawRecoveryMetadata?.recoveredJobId);
     const supersededJobIds = Array.isArray(rawRecoveryMetadata?.supersededJobIds)
@@ -6845,6 +6891,19 @@ async function handleAdminHistoricalGameWorkflow(request, env, cors, requestedIn
       lastFetchAttempt: diagnostics.lastFetchAttempt,
       validation: diagnostics.validation,
       scoringEligibility: diagnostics.scoringEligibility,
+      scoringPersistenceState: scoringPersistence.scoringPersistenceState,
+      workflowStateConsistency: scoringPersistence.workflowStateConsistency,
+      scoringPersisted: scoringPersistence.scoringPersisted,
+      scoredAt: scoredLineup?.scored_at || null,
+      workflowBehindScoring: scoringPersistence.workflowBehindScoring,
+      reconciliationEligible: scoringPersistence.reconciliationEligible,
+      reconciliationBlockedReason: scoringPersistence.reconciliationBlockedReason,
+      rankingJobExists: Boolean(rankingJob),
+      rankingStatus: rankingReflected ? "reflected" : (rankingJob?.status || "not_started"),
+      publicationJobExists: Boolean(publicationJob),
+      publicationStatus: scoredLineup?.publication_status || rankingRow?.publication_status || "pending",
+      scoreResultCount: scoringPersistence.scoreResultCount,
+      scoringJobRecoveryMode,
       staleLeaseDetected: recoveryAudit.staleLeaseDetected,
       eligibleForRecovery: recoveryAudit.eligibleForRecovery,
       recoveryBlockedReason: recoveryAudit.recoveryBlockedReason,
@@ -7914,8 +7973,34 @@ async function recordCreatedCompletionJob(db, timeline, jobType, now, source = "
   return result;
 }
 
+async function getRankingReflectionState(db, gameId) {
+  const row = await db.prepare(
+    `SELECT is_ranking_eligible, game_status, publication_status, published_at
+       FROM ranking_games
+      WHERE game_id = ?1
+      ORDER BY updated_at DESC LIMIT 1`
+  ).bind(String(gameId || "")).first();
+  return {
+    row,
+    reflected: Boolean(row
+      && Number(row.is_ranking_eligible || 0) === 1
+      && String(row.game_status || "") === "scored"
+      && String(row.publication_status || "") !== "pending")
+  };
+}
+
+async function ensureWorkflowScoringPending(db, internalGameId, now) {
+  const state = await db.prepare(
+    "SELECT workflow_status FROM game_workflow_state WHERE internal_game_id = ?1 LIMIT 1"
+  ).bind(String(internalGameId || "")).first();
+  if (!state) throw createPregameError("WORKFLOW_STATE_NOT_FOUND", "試合進行状態がありません。");
+  if (["scoring_pending", "scored_private", "published"].includes(String(state.workflow_status || ""))) return state.workflow_status;
+  await transitionWorkflowState(db, { internalGameId, to: "scoring_pending", now });
+  return "scoring_pending";
+}
+
 async function ensureCompletionDownstreamJobs(env, job, now) {
-  const nextJobType = ({
+  let nextJobType = ({
     probable_starter_fetch: "provisional_lineup_fetch",
     provisional_lineup_fetch: "final_lineup_fetch",
     final_lineup_fetch: "scoring",
@@ -7926,6 +8011,12 @@ async function ensureCompletionDownstreamJobs(env, job, now) {
   const target = await resolveWorkflowJobGame(env.AUTH_DB, job.internal_game_id);
   const timeline = buildWorkflowJobTimeline(target);
   if (!timeline || target.status === "cancelled") return { created: false, reason: "out_of_scope" };
+  if (nextJobType === "scoring") {
+    await ensureWorkflowScoringPending(env.AUTH_DB, job.internal_game_id, now);
+  } else if (job?.job_type === "scoring") {
+    const ranking = await getRankingReflectionState(env.AUTH_DB, target.gameId);
+    if (ranking.reflected) nextJobType = "publication";
+  }
   const result = await recordCreatedCompletionJob(env.AUTH_DB, { ...timeline, internalGameId: job.internal_game_id }, nextJobType, now);
   return { ...result, jobType: nextJobType };
 }
@@ -7938,6 +8029,7 @@ const HISTORICAL_WORKFLOW_TERMINAL_STATUSES = new Set([
   "service_unavailable", "manual_intervention_required", "scored_private", "published"
 ]);
 const LEGACY_TARGET_VALIDATION_ERROR_DETAIL = "試合進行ジョブの対象試合が無効です。";
+const SCORING_WORKFLOW_STATE_TRANSITION_ERROR_DETAIL = "試合進行状態を final_lineup_captured から scored_private へ変更できません。";
 
 function getWorkflowRecoveryDateScope(now = new Date()) {
   const current = now instanceof Date ? now : new Date(now);
@@ -8137,8 +8229,189 @@ async function reconcileHistoricalCompletionWorkflowJobs(env, now) {
   return summary;
 }
 
+export function getScoringPersistenceReconciliationEligibility({
+  workflowStatus = "",
+  workflowErrorCode = "",
+  workflowErrorDetail = "",
+  scoringStatus = "",
+  scoredAt = "",
+  lastError = "",
+  finalLineupExists = false,
+  scoreResultExists = false,
+  scoreResultCount = 0,
+  publicationStatus = "pending",
+  rankingCheckAvailable = true,
+  identifierConflict = false,
+  internalGameIdMatches = true
+} = {}) {
+  const workflow = String(workflowStatus || "");
+  const scoringPersisted = String(scoringStatus || "") === "scored"
+    && Boolean(scoredAt)
+    && !String(lastError || "")
+    && Boolean(scoreResultExists);
+  const workflowBehindScoring = scoringPersisted && !["scored_private", "published"].includes(workflow);
+  const transitionFailure = String(workflowErrorCode || "") === "WORKFLOW_STATE_TRANSITION_FAILED"
+    || (String(workflowErrorCode || "") === "DATA_VALIDATION_FAILED"
+      && String(workflowErrorDetail || "") === SCORING_WORKFLOW_STATE_TRANSITION_ERROR_DETAIL);
+  let reconciliationBlockedReason = "";
+  if (!workflowBehindScoring) reconciliationBlockedReason = "SCORING_WORKFLOW_NOT_BEHIND";
+  else if (!["manual_intervention_required", "final_lineup_captured", "scoring_pending", "retrying"].includes(workflow)) reconciliationBlockedReason = "WORKFLOW_STATUS_NOT_RECONCILABLE";
+  else if (workflow === "manual_intervention_required" && !transitionFailure) reconciliationBlockedReason = "MANUAL_INTERVENTION_NOT_STATE_TRANSITION";
+  else if (!finalLineupExists) reconciliationBlockedReason = "FINAL_LINEUP_REQUIRED";
+  else if (!scoringPersisted) reconciliationBlockedReason = "SCORING_RESULT_NOT_PERSISTED";
+  else if (Number(scoreResultCount) !== 1) reconciliationBlockedReason = "SCORING_RESULT_COUNT_INVALID";
+  else if (String(publicationStatus || "") === "published") reconciliationBlockedReason = "PUBLICATION_ALREADY_COMPLETED";
+  else if (!rankingCheckAvailable) reconciliationBlockedReason = "RANKING_STATE_UNAVAILABLE";
+  else if (identifierConflict) reconciliationBlockedReason = "GAME_IDENTIFIER_CONFLICT";
+  else if (!internalGameIdMatches) reconciliationBlockedReason = "INTERNAL_GAME_ID_MISMATCH";
+  return {
+    scoringPersistenceState: scoringPersisted ? "scored" : "not_scored",
+    workflowStateConsistency: workflowBehindScoring ? "behind" : "consistent",
+    scoringPersisted,
+    workflowBehindScoring,
+    reconciliationEligible: !reconciliationBlockedReason,
+    reconciliationBlockedReason: reconciliationBlockedReason || null,
+    reasonCode: reconciliationBlockedReason ? null : "SCORING_PERSISTED_WORKFLOW_BEHIND",
+    scoreResultCount: Number(scoreResultCount || 0),
+    scoringJobRecoveryMode: reconciliationBlockedReason ? "none" : "persisted_result_adoption"
+  };
+}
+
+async function listPersistedScoringWorkflowCandidates(db, now) {
+  const from = new Date(now.getTime() - 48 * 60 * 60 * 1000).toISOString();
+  const result = await db.prepare(
+    `SELECT state.internal_game_id, state.legacy_game_id, state.workflow_status,
+            state.last_error_code AS workflow_error_code, games.game_date, games.start_time,
+            games.game_status, lineups.game_id, lineups.internal_game_id AS lineup_internal_game_id,
+            lineups.scoring_status, lineups.scored_at, lineups.last_error,
+            lineups.publication_status, lineups.processed_predictions,
+            (SELECT COUNT(*) FROM game_lineups AS scored_rows
+              WHERE scored_rows.internal_game_id = state.internal_game_id
+                AND scored_rows.scoring_status = 'scored') AS score_result_count
+       FROM game_workflow_state AS state
+       JOIN games ON games.internal_game_id = state.internal_game_id
+       JOIN game_lineups AS lineups ON lineups.internal_game_id = state.internal_game_id
+      WHERE state.workflow_status IN ('manual_intervention_required', 'final_lineup_captured', 'scoring_pending', 'retrying')
+        AND lineups.scoring_status = 'scored'
+        AND lineups.scored_at IS NOT NULL
+        AND COALESCE(lineups.publication_status, 'pending') <> 'published'
+        AND games.start_time >= ?1
+        AND games.start_time <= ?2
+      ORDER BY games.start_time ASC, state.internal_game_id ASC
+      LIMIT 20`
+  ).bind(from, now.toISOString()).all();
+  return result.results || [];
+}
+
+async function reconcilePersistedScoringWorkflows(env, now) {
+  const summary = { checked: 0, reconciled: 0, created: 0, blocked: 0, recoveredJobIds: [] };
+  const candidates = await listPersistedScoringWorkflowCandidates(env.AUTH_DB, now);
+  for (const row of candidates) {
+    summary.checked += 1;
+    const jobResult = await env.AUTH_DB.prepare(
+      `SELECT id, job_type, status, error_code, error_detail
+         FROM game_job_runs
+        WHERE internal_game_id = ?1 AND job_type IN ('scoring', 'ranking_update', 'publication')
+        ORDER BY id DESC`
+    ).bind(row.internal_game_id).all();
+    const jobs = jobResult.results || [];
+    const scoringJob = jobs.find((job) => job.job_type === "scoring") || null;
+    const rankingJob = jobs.find((job) => job.job_type === "ranking_update" && job.status !== "cancelled") || null;
+    const publicationJob = jobs.find((job) => job.job_type === "publication" && job.status !== "cancelled") || null;
+    let target;
+    try {
+      target = await resolveWorkflowJobGame(env.AUTH_DB, row.internal_game_id);
+    } catch (error) {
+      summary.blocked += 1;
+      continue;
+    }
+    const ranking = await getRankingReflectionState(env.AUTH_DB, row.game_id);
+    const eligibility = getScoringPersistenceReconciliationEligibility({
+      workflowStatus: row.workflow_status,
+      workflowErrorCode: scoringJob?.error_code || row.workflow_error_code,
+      workflowErrorDetail: scoringJob?.error_detail || "",
+      scoringStatus: row.scoring_status,
+      scoredAt: row.scored_at,
+      lastError: row.last_error,
+      finalLineupExists: true,
+      scoreResultExists: Number(row.score_result_count || 0) === 1,
+      scoreResultCount: Number(row.score_result_count || 0),
+      publicationStatus: row.publication_status || "pending",
+      rankingCheckAvailable: true,
+      identifierConflict: (target.targetResolution?.identifierConflicts || []).length > 0,
+      internalGameIdMatches: String(row.lineup_internal_game_id || "") === String(row.internal_game_id || "")
+    });
+    if (!eligibility.reconciliationEligible) {
+      summary.blocked += 1;
+      continue;
+    }
+    if (scoringJob?.status === "permanently_failed") {
+      const adopted = await reconcilePersistedScoringJob(env.AUTH_DB, {
+        jobId: scoringJob.id,
+        expectedStatus: "permanently_failed",
+        expectedErrorCode: scoringJob.error_code,
+        expectedErrorDetail: scoringJob.error_detail,
+        resultMetadata: {
+          recoveryMode: eligibility.scoringJobRecoveryMode,
+          reasonCode: eligibility.reasonCode,
+          originalErrorCode: scoringJob.error_code
+        },
+        now
+      });
+      if (!adopted.reconciled) continue;
+      summary.recoveredJobIds.push(Number(scoringJob.id));
+    }
+    try {
+      await ensureWorkflowScoringPending(env.AUTH_DB, row.internal_game_id, now);
+      await transitionWorkflowState(env.AUTH_DB, {
+        internalGameId: row.internal_game_id,
+        to: "scored_private",
+        completedJobType: "scoring",
+        now
+      });
+    } catch (error) {
+      summary.blocked += 1;
+      continue;
+    }
+    let downstream = { created: false, jobType: "" };
+    if (ranking.reflected) {
+      if (!publicationJob && row.publication_status !== "published") {
+        downstream = await recordCreatedCompletionJob(env.AUTH_DB, { ...buildWorkflowJobTimeline(target), internalGameId: row.internal_game_id }, "publication", now, "system");
+        downstream.jobType = "publication";
+      }
+    } else if (!rankingJob) {
+      downstream = await recordCreatedCompletionJob(env.AUTH_DB, { ...buildWorkflowJobTimeline(target), internalGameId: row.internal_game_id }, "ranking_update", now, "system");
+      downstream.jobType = "ranking_update";
+    }
+    if (downstream.created) summary.created += 1;
+    try {
+      await recordWorkflowJobEvent(env.AUTH_DB, {
+        eventType: "scoring_workflow_reconciled",
+        status: "success",
+        internalGameId: row.internal_game_id,
+        job: { id: scoringJob?.id || null, job_type: "scoring", legacyGameId: row.game_id },
+        now,
+        errorCode: eligibility.reasonCode,
+        metadata: {
+          recoveryMode: eligibility.scoringJobRecoveryMode,
+          scoreResultCount: eligibility.scoreResultCount,
+          rankingReflected: ranking.reflected,
+          downstreamJobType: downstream.jobType || null,
+          rankingJobExists: Boolean(rankingJob),
+          publicationJobExists: Boolean(publicationJob)
+        },
+        source: "system"
+      });
+    } catch (error) {
+      console.error(`scoring workflow reconciliation event record failed: game=${row.internal_game_id} code=${error?.code || "WORKFLOW_LOG_WRITE_FAILED"}`);
+    }
+    summary.reconciled += 1;
+  }
+  return summary;
+}
+
 async function reconcileCompletionWorkflowJobs(env, now, timelines) {
-  const summary = { checked: 0, created: 0, skipped: 0, recovered: 0, recoveredJobIds: [], supersededJobIds: [] };
+  const summary = { checked: 0, created: 0, skipped: 0, recovered: 0, recoveredJobIds: [], supersededJobIds: [], scoringReconciled: 0, scoringRecoveredJobIds: [] };
   for (const timeline of Array.isArray(timelines) ? timelines : []) {
     const internalGameId = String(timeline?.game?.internalGameId || timeline?.internalGameId || "");
     if (!internalGameId || timeline?.game?.status === "cancelled" || isScheduleGameUnavailable(timeline?.game)) {
@@ -8160,8 +8433,10 @@ async function reconcileCompletionWorkflowJobs(env, now, timelines) {
           WHERE internal_game_id = ?1 AND job_type = 'ranking_update' AND status <> 'cancelled'
           ORDER BY id DESC LIMIT 1`
       ).bind(internalGameId).first();
-      if (!rankingJob) requiredJobType = "ranking_update";
-      else if (rankingJob.status === "succeeded" && lineup.publication_status !== "published") requiredJobType = "publication";
+      const ranking = await getRankingReflectionState(env.AUTH_DB, timeline.gameId);
+      if (!ranking.reflected && !rankingJob) requiredJobType = "ranking_update";
+      else if (rankingJob?.status === "succeeded" && lineup.publication_status !== "published") requiredJobType = "publication";
+      else if (ranking.reflected && lineup.publication_status !== "published") requiredJobType = "publication";
     }
     if (!requiredJobType) continue;
     if (requiredJobType === "final_lineup_fetch") await cancelSupersededLineupJobs(env.AUTH_DB, internalGameId, now);
@@ -8172,6 +8447,10 @@ async function reconcileCompletionWorkflowJobs(env, now, timelines) {
   summary.recovered += historical.recovered;
   summary.recoveredJobIds = historical.recoveredJobIds;
   summary.supersededJobIds = historical.supersededJobIds;
+  const scoring = await reconcilePersistedScoringWorkflows(env, now);
+  summary.scoringReconciled = scoring.reconciled;
+  summary.scoringRecoveredJobIds = scoring.recoveredJobIds;
+  summary.created += scoring.created;
   return summary;
 }
 
@@ -8218,6 +8497,7 @@ async function executeCompletionWorkflowJob(env, job, now) {
     if (result.status !== "captured" && result.status !== "already_captured") throw createPregameError("LINEUP_NOT_ANNOUNCED", "最終スタメンをまだ取得できません。");
     await transitionWorkflowState(env.AUTH_DB, { internalGameId: job.internal_game_id, to: "final_lineup_captured", completedJobType: job.job_type, now });
   } else if (job.job_type === "scoring") {
+    await ensureWorkflowScoringPending(env.AUTH_DB, job.internal_game_id, now);
     const claimed = await claimGameLineupForScoring(env.AUTH_DB, target.gameId, now);
     if (!claimed) {
       const existing = await getGameLineup(env.AUTH_DB, target.gameId);

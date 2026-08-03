@@ -212,6 +212,51 @@ export async function reconcilePersistedScoringJob(db, {
   return { reconciled: Number(result?.meta?.changes || 0) === 1, jobId: numericJobId };
 }
 
+// Adopt publication data that is already persisted without running publication again.
+// This is intentionally guarded by the caller's published_at/publication_status check.
+export async function reconcilePersistedPublicationJob(db, {
+  jobId,
+  expectedStatus,
+  expectedErrorCode = "",
+  expectedErrorDetail = "",
+  resultMetadata = null,
+  now = new Date()
+} = {}) {
+  const numericJobId = Number(jobId);
+  const status = String(expectedStatus || "");
+  if (!Number.isInteger(numericJobId) || numericJobId < 1) {
+    throw createWorkflowError("JOB_INPUT_INVALID", "ジョブIDが不正です。");
+  }
+  if (!["pending", "claimed", "running", "retry_wait", "permanently_failed"].includes(status)) {
+    throw createWorkflowError("JOB_INPUT_INVALID", "公開ジョブの整合対象状態が不正です。");
+  }
+  const timestamp = asIso(now);
+  const serializedMetadata = resultMetadata && typeof resultMetadata === "object"
+    ? JSON.stringify(resultMetadata).slice(0, 1200)
+    : null;
+  const completedCondition = status === "permanently_failed" ? "completed_at IS NOT NULL" : "completed_at IS NULL";
+  const result = await db.prepare(
+    `UPDATE game_job_runs
+        SET status = 'succeeded', completed_at = ?1, next_attempt_at = NULL,
+            lease_expires_at = NULL, claim_token = NULL, error_code = NULL,
+            error_detail = NULL, result_metadata = ?2, updated_at = ?1
+      WHERE id = ?3
+        AND job_type = 'publication'
+        AND status = ?4
+        AND ${completedCondition}
+        AND (?5 = '' OR error_code = ?5)
+        AND (?6 = '' OR error_detail = ?6)`
+  ).bind(
+    timestamp,
+    serializedMetadata,
+    numericJobId,
+    status,
+    String(expectedErrorCode || ""),
+    String(expectedErrorDetail || "").slice(0, 500)
+  ).run();
+  return { reconciled: Number(result?.meta?.changes || 0) === 1, jobId: numericJobId };
+}
+
 export async function retryWorkflowJob(db, {
   job,
   claimToken,
@@ -255,6 +300,7 @@ export async function retryWorkflowJob(db, {
 export async function recoverWorkflowJobForReevaluation(db, {
   jobId,
   expectedStatus,
+  expectedJobType = "",
   expectedErrorCode = "",
   expectedErrorDetail = "",
   recoveryMetadata = null,
@@ -276,8 +322,8 @@ export async function recoverWorkflowJobForReevaluation(db, {
     ? "lease_expires_at IS NOT NULL AND lease_expires_at <= ?2"
     : "error_code = ?6 AND error_detail = ?7";
   const bindings = status === "claimed"
-    ? [timestamp, timestamp, serializedMetadata, numericJobId, status]
-    : [timestamp, timestamp, serializedMetadata, numericJobId, status, String(expectedErrorCode), String(expectedErrorDetail)];
+    ? [timestamp, timestamp, serializedMetadata, numericJobId, status, "", "", String(expectedJobType || "")]
+    : [timestamp, timestamp, serializedMetadata, numericJobId, status, String(expectedErrorCode), String(expectedErrorDetail), String(expectedJobType || "")];
   const result = await db.prepare(
     `UPDATE game_job_runs
         SET status = 'pending', claim_token = NULL, claimed_at = NULL, started_at = NULL,
@@ -285,6 +331,7 @@ export async function recoverWorkflowJobForReevaluation(db, {
             error_code = NULL, error_detail = NULL, result_metadata = ?3, updated_at = ?1
       WHERE id = ?4
         AND status = ?5
+        AND (?8 = '' OR job_type = ?8)
         AND completed_at IS NULL
         AND attempt_count < max_attempts
         AND ${staleClaimCondition}`

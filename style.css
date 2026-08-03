@@ -5427,3 +5427,37 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
     grid-template-columns: minmax(480px, 0.95fr) minmax(0, 1.3fr);
   }
 }
+
+@media (min-width: 900px) {
+  .app-layout:not(.is-admin-screen) #predictionForm #predictionLineup > .lineup-slot[data-picker="prediction"] {
+    display: grid;
+    grid-template-columns: 56px 56px minmax(0, 1fr) 44px;
+    grid-template-areas: "order position player clear";
+    column-gap: 12px;
+  }
+
+  .app-layout:not(.is-admin-screen) #predictionForm #predictionLineup > .lineup-slot[data-picker="prediction"] > .slot-order {
+    grid-column: 1;
+    grid-area: order;
+  }
+
+  .app-layout:not(.is-admin-screen) #predictionForm #predictionLineup > .lineup-slot[data-picker="prediction"] > .position-control {
+    grid-column: 2;
+    grid-area: position;
+    justify-self: center;
+  }
+
+  .app-layout:not(.is-admin-screen) #predictionForm #predictionLineup > .lineup-slot[data-picker="prediction"] > .slot-player {
+    grid-column: 3;
+    grid-area: player;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+  }
+
+  .app-layout:not(.is-admin-screen) #predictionForm #predictionLineup > .lineup-slot[data-picker="prediction"] > .slot-clear {
+    grid-column: 4;
+    grid-area: clear;
+    justify-self: end;
+  }
+}

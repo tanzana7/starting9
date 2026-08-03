@@ -89,7 +89,7 @@ test("PCの予想入力は900px以上で左420px以上のオーダー表と広�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=desktop-lineup-20260804-2">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=desktop-lineup-20260804-3">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],
@@ -122,6 +122,11 @@ test("PCのオーダー行は固定列と省略表示を使い、通知・操作
   assert.match(css, /\.lineup-slot\[data-picker="prediction"\][\s\S]*\.position-control[\s\S]*grid-column: 2[\s\S]*justify-self: center/);
   assert.match(css, /\.lineup-slot\[data-picker="prediction"\][\s\S]*\.slot-player[\s\S]*grid-column: 3/);
   assert.match(css, /\.lineup-slot\[data-picker="prediction"\][\s\S]*\.slot-clear[\s\S]*grid-column: 4/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*#predictionForm #predictionLineup > \.lineup-slot\[data-picker="prediction"\][\s\S]*display: grid[\s\S]*grid-template-columns: 56px 56px minmax\(0, 1fr\) 44px[\s\S]*grid-template-areas: "order position player clear"/);
+  assert.match(css, /#predictionForm #predictionLineup > \.lineup-slot\[data-picker="prediction"\] > \.slot-order[\s\S]*grid-area: order/);
+  assert.match(css, /#predictionForm #predictionLineup > \.lineup-slot\[data-picker="prediction"\] > \.position-control[\s\S]*grid-area: position/);
+  assert.match(css, /#predictionForm #predictionLineup > \.lineup-slot\[data-picker="prediction"\] > \.slot-player[\s\S]*grid-area: player/);
+  assert.match(css, /#predictionForm #predictionLineup > \.lineup-slot\[data-picker="prediction"\] > \.slot-clear[\s\S]*grid-area: clear/);
   assert.match(css, /#predictionLineup[\s\S]*gap: 6px[\s\S]*border-top: 0/);
   assert.match(css, /#predictionLineup \.lineup-slot\[data-picker="prediction"\][\s\S]*border: 1px solid #d7e1eb[\s\S]*border-radius: 7px[\s\S]*box-shadow: 0 1px 3px/);
   assert.match(css, /#predictionLineup \.lineup-slot\[data-picker="prediction"\]\.is-active[\s\S]*background: #eef6fc[\s\S]*box-shadow: inset 3px 0 0 var\(--fighters-blue\)/);

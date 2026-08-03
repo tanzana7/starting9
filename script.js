@@ -4313,6 +4313,7 @@ function renderAdminGameWorkflowStatus() {
   const workflow = record.workflow || {};
   const scoring = record.scoring || {};
   const publishing = record.publishing || {};
+  const publicationWorkflow = record.publicationWorkflow || {};
   const lineup = record.lineup || {};
   const automationHealth = record.automation?.health || {};
   const currentGame = record.currentGame || {};
@@ -4372,6 +4373,10 @@ function renderAdminGameWorkflowStatus() {
     ["公開予定", formatPredictionDeadlineDateTime(schedule.resultReleaseAt)],
     ["公開状態", formatPregameAutomationStatus(publishing.status)],
     ["公開時刻", publishing.publishedAt ? formatDateTime(publishing.publishedAt) : "-"],
+    ["公開job", publicationWorkflow.jobStatus || "未作成"],
+    ["公開job次回実行", publicationWorkflow.nextAttemptAt ? formatDateTime(publicationWorkflow.nextAttemptAt) : (publicationWorkflow.scheduledAt ? formatDateTime(publicationWorkflow.scheduledAt) : "-")],
+    ["最後に成功した遷移", publicationWorkflow.lastSuccessfulTransition?.completedAt ? `${publicationWorkflow.lastSuccessfulTransition.jobType} / ${formatDateTime(publicationWorkflow.lastSuccessfulTransition.completedAt)}` : "-"],
+    ["現在のblocker", record.currentBlocker || "なし"],
     ["最終実行", workflow.lastRunAt ? formatDateTime(workflow.lastRunAt) : "未実行"],
     ["最終結果", getGameWorkflowResultLabel(workflow.lastResult)],
     ["最終Cron実行", automationHealth.available ? (automationHealth.cronLastRunAt ? formatDateTime(automationHealth.cronLastRunAt) : "未実行") : "状態テーブル未適用"],

@@ -108,8 +108,10 @@ test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、
 });
 
 test("PCのオーダー行は固定列と省略表示を使い、通知・操作領域はフォーム幅に揃える", () => {
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-slot[\s\S]*grid-template-columns: 30px 44px minmax\(180px, 1fr\) 44px 38px/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-slot[\s\S]*grid-template-columns: 30px 54px minmax\(180px, 1fr\) 44px 38px/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.slot-player,[\s\S]*white-space: nowrap/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.slot-player,[\s\S]*padding-inline-start: 10px/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-category-legend[\s\S]*display: none/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*#predictionForm > \.message,[\s\S]*grid-column: 1 \/ -1/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*#savePredictionButton[\s\S]*min-width: 220px/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*#resetPredictionButton[\s\S]*min-width: 180px/);

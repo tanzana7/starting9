@@ -904,8 +904,14 @@ function getProbableStarterJobMaxAttempts(startAt, now) {
   return Math.max(1, Math.ceil(remainingMilliseconds / PROBABLE_STARTER_RETRY_INTERVAL_MS) + 1);
 }
 
-function getWorkflowJobErrorCode(error) {
+export function getWorkflowJobErrorCode(error) {
   const code = String(error?.code || "").toUpperCase();
+  if ([
+    "GAME_TARGET_INVALID",
+    "GAME_TARGET_IDENTIFIER_CONFLICT",
+    "NPB_GAME_CODE_UNAVAILABLE",
+    "LINEUP_SOURCE_UNRESOLVED"
+  ].includes(code)) return code;
   if (code.includes("NOT_ANNOUNCED") || code.includes("UNANNOUNCED")) return "DATA_NOT_ANNOUNCED";
   if (code.includes("RATE") || code.includes("429")) return "EXTERNAL_RATE_LIMITED";
   if (code.includes("HTTP") || code.includes("FETCH") || code.includes("TIMEOUT")) return "EXTERNAL_HTTP_ERROR";
@@ -913,6 +919,23 @@ function getWorkflowJobErrorCode(error) {
   if (code.includes("INVALID") || code.includes("VALIDATION")) return "DATA_VALIDATION_FAILED";
   if (code.includes("DATABASE") || code.includes("SAVE")) return "DATABASE_WRITE_FAILED";
   return code || "JOB_FAILED";
+}
+
+export function isCompletionWorkflowErrorRetryable(error, errorCode, { expired = false } = {}) {
+  if (expired || typeof error?.retryable === "boolean" && error.retryable === false) return false;
+  const code = String(errorCode || error?.code || "").toUpperCase();
+  if ([
+    "GAME_TARGET_INVALID",
+    "GAME_TARGET_IDENTIFIER_CONFLICT",
+    "JOB_INPUT_INVALID",
+    "INTERNAL_GAME_ID_MISSING",
+    "GAME_IDENTIFIER_NOT_FOUND",
+    "GAME_IDENTIFIER_AMBIGUOUS",
+    "LINEUP_SOURCE_UNRESOLVED",
+    "SCORING_RETRY_EXPIRED",
+    "DATA_VALIDATION_FAILED"
+  ].includes(code)) return false;
+  return true;
 }
 
 function sanitizeLineupValidationDetails(details = {}) {
@@ -965,7 +988,48 @@ function parseSafeWorkflowJobMetadata(value) {
   if (Number.isFinite(Number(parsed.httpStatus)) && Number(parsed.httpStatus) > 0) result.httpStatus = Number(parsed.httpStatus);
   if (typeof parsed.retryable === "boolean") result.retryable = parsed.retryable;
   if (typeof parsed.status === "string" && parsed.status) result.status = parsed.status.slice(0, 40);
+  const targetResolution = sanitizeWorkflowTargetDiagnostics(parsed.targetResolution);
+  if (targetResolution) result.targetResolution = targetResolution;
   return result;
+}
+
+function sanitizeWorkflowTargetDiagnostics(details) {
+  if (!details || typeof details !== "object" || Array.isArray(details)) return null;
+  const result = {};
+  const booleanKeys = [
+    "internalGameIdFound", "gameRowFound", "scheduleRowFound", "npbGameCodePresent", "retryable"
+  ];
+  const numberKeys = ["identifierCount"];
+  const stringKeys = [
+    "validationStage", "resolvedBy", "sourceGameKey", "targetValidityReason", "gameDate", "startAt", "homeTeam", "awayTeam"
+  ];
+  for (const key of booleanKeys) {
+    if (typeof details[key] === "boolean") result[key] = details[key];
+  }
+  for (const key of numberKeys) {
+    if (Number.isFinite(Number(details[key]))) result[key] = Number(details[key]);
+  }
+  for (const key of stringKeys) {
+    if (typeof details[key] === "string" && details[key]) result[key] = details[key].slice(0, 120);
+  }
+  if (Array.isArray(details.missingFields)) {
+    result.missingFields = details.missingFields
+      .filter((field) => typeof field === "string")
+      .map((field) => field.slice(0, 60))
+      .slice(0, 12);
+  }
+  if (Array.isArray(details.identifierConflicts)) {
+    result.identifierConflicts = details.identifierConflicts
+      .filter((item) => item && typeof item === "object")
+      .map((item) => ({
+        provider: typeof item.provider === "string" ? item.provider.slice(0, 40) : "",
+        identifierType: typeof item.identifierType === "string" ? item.identifierType.slice(0, 60) : "",
+        identifierValue: typeof item.identifierValue === "string" ? item.identifierValue.slice(0, 120) : "",
+        internalGameId: typeof item.internalGameId === "string" ? item.internalGameId.slice(0, 80) : ""
+      }))
+      .slice(0, 8);
+  }
+  return Object.keys(result).length ? result : null;
 }
 
 function getSafeWorkflowErrorMetadata(error) {
@@ -973,8 +1037,12 @@ function getSafeWorkflowErrorMetadata(error) {
   const validation = sanitizeLineupValidationDetails(error?.validation);
   if (validation) metadata.validation = validation;
   if (typeof error?.parseStage === "string" && error.parseStage) metadata.parseStage = error.parseStage.slice(0, 80);
-  metadata.retryable = !String(error?.code || "").toUpperCase().includes("INVALID")
-    && !String(error?.code || "").toUpperCase().includes("VALIDATION");
+  metadata.retryable = typeof error?.retryable === "boolean"
+    ? error.retryable
+    : !String(error?.code || "").toUpperCase().includes("INVALID")
+      && !String(error?.code || "").toUpperCase().includes("VALIDATION");
+  const targetResolution = sanitizeWorkflowTargetDiagnostics(error?.targetResolution);
+  if (targetResolution) metadata.targetResolution = targetResolution;
   if (Number(error?.httpStatus || error?.upstreamStatus || error?.externalStatus) > 0) {
     metadata.httpStatus = Number(error.httpStatus || error.upstreamStatus || error.externalStatus);
   }
@@ -1079,41 +1147,229 @@ export function summarizeLineupWorkflowJobs(jobs = [], now = new Date()) {
   };
 }
 
-async function resolveWorkflowJobGame(db, internalGameId) {
-  const state = await db.prepare(
-    `SELECT state.legacy_game_id, games.game_date, games.start_time, games.home_team, games.away_team, games.game_status
-       FROM game_workflow_state AS state
-       JOIN games ON games.internal_game_id = state.internal_game_id
-      WHERE state.internal_game_id = ?1 LIMIT 1`
-  ).bind(internalGameId).first();
-  if (!state) throw createPregameError("INTERNAL_GAME_ID_MISSING", "内部試合IDの状態を確認できません。");
-  let legacyGameId = String(state.legacy_game_id || "");
-  if (!legacyGameId) {
-    const identifiers = await db.prepare(
-      `SELECT identifier_value FROM game_identifiers
-        WHERE internal_game_id = ?1 AND identifier_type IN ('descriptive_game_id', 'legacy_compact_game_id')
-        ORDER BY CASE identifier_type WHEN 'descriptive_game_id' THEN 0 ELSE 1 END, id ASC LIMIT 2`
-    ).bind(internalGameId).all();
-    const candidates = [...new Set((identifiers.results || []).map((row) => String(row.identifier_value || "").trim()).filter(Boolean))];
-    if (candidates.length > 1) throw createPregameError("GAME_IDENTIFIER_AMBIGUOUS", "複数の旧試合IDが内部試合IDに紐付いています。");
-    legacyGameId = candidates[0] || "";
+export function validateWorkflowJobTarget({
+  internalGameId = "",
+  gameRow = null,
+  scheduleRows = [],
+  identifiers = [],
+  identifierConflicts = [],
+  isTestGame = false,
+  staticGameCode = "",
+  internalGameIdFound = Boolean(gameRow)
+} = {}) {
+  const normalizedInternalGameId = String(internalGameId || "").trim();
+  const rows = Array.isArray(scheduleRows) ? scheduleRows.filter(Boolean) : [];
+  const schedule = rows[0] || null;
+  const getIdentifier = (type) => identifiers.find((row) => String(row?.identifier_type || row?.identifierType || "") === type);
+  const descriptive = String(getIdentifier("descriptive_game_id")?.identifier_value || getIdentifier("descriptive_game_id")?.identifierValue || "").trim();
+  const compact = String(getIdentifier("legacy_compact_game_id")?.identifier_value || getIdentifier("legacy_compact_game_id")?.identifierValue || "").trim();
+  const legacyGameId = String(gameRow?.legacy_game_id || schedule?.game_id || descriptive || compact || "").trim();
+  const sourceGameKey = String(schedule?.source_game_key || getIdentifier("source_game_key")?.identifier_value || getIdentifier("source_game_key")?.identifierValue || "").trim();
+  const storedGameCode = [
+    schedule?.game_code,
+    getIdentifier("npb_game_code")?.identifier_value,
+    getIdentifier("npb_game_code")?.identifierValue
+  ].map(normalizeNpbGameCode).find(Boolean) || "";
+  const gameCode = storedGameCode || normalizeNpbGameCode(staticGameCode);
+  const gameDate = String(schedule?.game_date || gameRow?.game_date || "").trim();
+  const startValue = String(schedule?.start_at || gameRow?.start_time || "").trim();
+  const parsedStart = new Date(startValue);
+  const startAt = Number.isNaN(parsedStart.getTime()) ? "" : parsedStart.toISOString();
+  const homeTeam = String(schedule?.home_team || gameRow?.home_team || "").trim().toLowerCase();
+  const awayTeam = String(schedule?.away_team || gameRow?.away_team || "").trim().toLowerCase();
+  const missingFields = [];
+  if (!INTERNAL_GAME_ID_PATTERN.test(normalizedInternalGameId)) missingFields.push("internalGameId");
+  if (!gameRow) missingFields.push("gamesRow");
+  if (!rows.length) missingFields.push("scheduleRow");
+  if (!gameDate) missingFields.push("gameDate");
+  if (!startAt) missingFields.push("startAt");
+  if (!homeTeam) missingFields.push("homeTeam");
+  if (!awayTeam) missingFields.push("awayTeam");
+  const scheduleMismatch = Boolean(gameRow && schedule && (
+    String(gameRow.game_date || "") !== String(schedule.game_date || "")
+    || String(gameRow.home_team || "").trim().toLowerCase() !== homeTeam
+    || String(gameRow.away_team || "").trim().toLowerCase() !== awayTeam
+    || (gameRow.start_time && schedule.start_at && new Date(gameRow.start_time).getTime() !== new Date(schedule.start_at).getTime())
+  ));
+  const cancelled = [gameRow?.game_status, schedule?.game_status, schedule?.status]
+    .some((value) => ["cancelled", "canceled", "postponed"].includes(String(value || "").toLowerCase()));
+  const sameTeams = Boolean(homeTeam && awayTeam && homeTeam !== awayTeam);
+  const conflicts = Array.isArray(identifierConflicts) ? identifierConflicts.filter((row) => String(row?.internal_game_id || "") !== normalizedInternalGameId) : [];
+  let code = "";
+  let targetValidityReason = "valid";
+  if (conflicts.length) {
+    code = "GAME_TARGET_IDENTIFIER_CONFLICT";
+    targetValidityReason = "identifier_conflict";
+  } else if (!sameTeams) {
+    code = "GAME_TARGET_INVALID";
+    targetValidityReason = "home_away_invalid";
+  } else if (scheduleMismatch) {
+    code = "GAME_TARGET_INVALID";
+    targetValidityReason = "schedule_game_mismatch";
+  } else if (cancelled) {
+    code = "GAME_TARGET_INVALID";
+    targetValidityReason = "cancelled_game";
+  } else if (missingFields.length) {
+    code = "GAME_TARGET_INVALID";
+    targetValidityReason = "required_target_field_missing";
+  } else if (isTestGame) {
+    code = "GAME_TARGET_INVALID";
+    targetValidityReason = "test_game";
   }
-  if (!legacyGameId) throw createPregameError("GAME_IDENTIFIER_NOT_FOUND", "既存処理に渡す試合IDが見つかりません。");
-  const gameCode = await db.prepare(
-    `SELECT identifier_value FROM game_identifiers
-      WHERE internal_game_id = ?1 AND identifier_type = 'npb_game_code'
-      ORDER BY id ASC LIMIT 1`
-  ).bind(internalGameId).first();
-  return {
-    gameId: legacyGameId,
-    internalGameId,
-    date: state.game_date,
-    startAt: state.start_time,
-    homeTeam: state.home_team,
-    awayTeam: state.away_team,
-    gameCode: String(gameCode?.identifier_value || ""),
-    status: state.game_status || "scheduled"
+  const resolvedBy = storedGameCode
+    ? "npbGameCode"
+    : sourceGameKey
+      ? "sourceGameKey"
+      : descriptive
+        ? "descriptiveGameId"
+        : "scheduleIdentity";
+  const targetResolution = {
+    validationStage: "job_target_resolution",
+    missingFields,
+    resolvedBy,
+    internalGameIdFound: Boolean(internalGameIdFound),
+    gameRowFound: Boolean(gameRow),
+    scheduleRowFound: rows.length > 0,
+    identifierCount: Array.isArray(identifiers) ? identifiers.length : 0,
+    sourceGameKey,
+    npbGameCodePresent: Boolean(storedGameCode),
+    targetValidityReason,
+    gameDate,
+    startAt,
+    homeTeam,
+    awayTeam,
+    retryable: false,
+    identifierConflicts: conflicts.map((row) => ({
+      provider: String(row.provider || ""),
+      identifierType: String(row.identifier_type || ""),
+      identifierValue: String(row.identifier_value || ""),
+      internalGameId: String(row.internal_game_id || "")
+    }))
   };
+  return {
+    valid: !code,
+    code,
+    message: code === "GAME_TARGET_IDENTIFIER_CONFLICT"
+      ? "試合識別子が別の内部試合IDにも紐付いています。"
+      : "試合進行ジョブの対象試合が無効です。",
+    targetResolution,
+    target: {
+      gameId: legacyGameId,
+      internalGameId: normalizedInternalGameId,
+      date: gameDate,
+      startAt,
+      homeTeam,
+      awayTeam,
+      gameCode,
+      status: gameRow?.game_status || schedule?.game_status || "scheduled",
+      sourceGameKey,
+      targetResolution
+    }
+  };
+}
+
+export async function resolveWorkflowJobTarget(db, internalGameId) {
+  const normalizedInternalGameId = String(internalGameId || "").trim();
+  if (!INTERNAL_GAME_ID_PATTERN.test(normalizedInternalGameId)) {
+    throw createPregameError("GAME_TARGET_INVALID", "試合進行ジョブの対象試合が無効です。", {
+      retryable: false,
+      targetResolution: {
+        validationStage: "job_target_resolution",
+        missingFields: ["internalGameId"],
+        internalGameIdFound: false,
+        gameRowFound: false,
+        scheduleRowFound: false,
+        identifierCount: 0,
+        npbGameCodePresent: false,
+        targetValidityReason: "invalid_internal_game_id",
+        retryable: false
+      }
+    });
+  }
+  const state = await db.prepare(
+    "SELECT legacy_game_id, game_status, workflow_status FROM game_workflow_state WHERE internal_game_id = ?1 LIMIT 1"
+  ).bind(normalizedInternalGameId).first();
+  const gameRow = await db.prepare(
+    "SELECT game_date, start_time, home_team, away_team, game_status FROM games WHERE internal_game_id = ?1 LIMIT 1"
+  ).bind(normalizedInternalGameId).first();
+  const scheduleResult = await db.prepare(
+    `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, game_status, internal_game_id
+       FROM detected_game_schedule
+      WHERE internal_game_id = ?1
+      ORDER BY game_date ASC, start_at ASC, game_id ASC`
+  ).bind(normalizedInternalGameId).all();
+  const identifierResult = await db.prepare(
+    `SELECT internal_game_id, provider, identifier_type, identifier_value
+       FROM game_identifiers
+      WHERE internal_game_id = ?1
+      ORDER BY id ASC`
+  ).bind(normalizedInternalGameId).all();
+  const identifiers = identifierResult.results || [];
+  const identityValues = [...new Set(identifiers.map((row) => String(row.identifier_value || "").trim()).filter(Boolean))];
+  let identifierConflicts = [];
+  if (identityValues.length) {
+    const placeholders = identityValues.map((_, index) => `?${index + 2}`).join(", ");
+    const conflictResult = await db.prepare(
+      `SELECT internal_game_id, provider, identifier_type, identifier_value
+         FROM game_identifiers
+        WHERE internal_game_id <> ?1 AND identifier_value IN (${placeholders})
+        ORDER BY identifier_value ASC, internal_game_id ASC`
+    ).bind(normalizedInternalGameId, ...identityValues).all();
+    identifierConflicts = conflictResult.results || [];
+  }
+  const legacyGameId = String(state?.legacy_game_id || scheduleResult.results?.[0]?.game_id || "").trim();
+  const scheduleIdentity = scheduleResult.results?.[0] || null;
+  const staticGame = legacyGameId ? getScheduledGame(legacyGameId) : null;
+  const staticIdentityGame = getScheduledGames().find((candidate) => {
+    const candidateStart = candidate?.startAt instanceof Date ? candidate.startAt : parseJstScheduleStart(candidate);
+    const targetStart = new Date(scheduleIdentity?.start_at || gameRow?.start_time || "");
+    return String(candidate?.date || "") === String(scheduleIdentity?.game_date || gameRow?.game_date || "")
+      && String(candidate?.homeTeam || "").trim().toLowerCase() === String(scheduleIdentity?.home_team || gameRow?.home_team || "").trim().toLowerCase()
+      && String(candidate?.awayTeam || "").trim().toLowerCase() === String(scheduleIdentity?.away_team || gameRow?.away_team || "").trim().toLowerCase()
+      && candidateStart && !Number.isNaN(targetStart.getTime())
+      && candidateStart.getTime() === targetStart.getTime();
+  });
+  const sourceGame = staticGame || staticIdentityGame;
+  const staticGameCode = normalizeNpbGameCode(sourceGame?.gameCode)
+    || /\/scores\/\d{4}\/\d{4}\/([a-z0-9]{1,2}-[a-z0-9]{1,2}-\d+)\//i.exec(String(sourceGame?.npbScoreUrl || ""))?.[1]?.toLowerCase()
+    || "";
+  const isTestGame = legacyGameId ? await isProbableStarterTestGame(db, legacyGameId) : false;
+  const validation = validateWorkflowJobTarget({
+    internalGameId: normalizedInternalGameId,
+    gameRow,
+    scheduleRows: scheduleResult.results || [],
+    identifiers,
+    identifierConflicts,
+    isTestGame,
+    staticGameCode,
+    internalGameIdFound: Boolean(state || gameRow)
+  });
+  if (!validation.valid) {
+    throw createPregameError(validation.code, validation.message, {
+      retryable: false,
+      targetResolution: validation.targetResolution
+    });
+  }
+  return {
+    ...validation.target,
+    gameId: String(state?.legacy_game_id || validation.target.gameId || "").trim(),
+    internalGameId: normalizedInternalGameId,
+    workflowStatus: state?.workflow_status || "waiting"
+  };
+}
+
+export const resolveWorkflowJobGame = resolveWorkflowJobTarget;
+
+function buildWorkflowJobTimeline(target) {
+  return buildPregameTimeline({
+    gameId: target.gameId,
+    date: target.date,
+    startAt: new Date(target.startAt),
+    homeTeam: target.homeTeam,
+    awayTeam: target.awayTeam,
+    gameCode: target.gameCode,
+    status: target.status
+  });
 }
 
 async function recordWorkflowJobEvent(db, { eventType, status, internalGameId, job, now, errorCode = "", metadata = {}, source = "cron" }) {
@@ -1258,19 +1514,25 @@ async function runDueProbableStarterWorkflowJobs(env, now) {
       }
     } catch (error) {
       const errorCode = getWorkflowJobErrorCode(error);
+      const retryable = isCompletionWorkflowErrorRetryable(error, errorCode);
+      const nextAttemptAt = new Date(now.getTime() + PROBABLE_STARTER_RETRY_INTERVAL_MS);
+      const errorMetadata = getSafeWorkflowErrorMetadata(error);
+      errorMetadata.retryable = retryable;
       const retry = await retryWorkflowJob(env.AUTH_DB, {
         job: claimed,
         claimToken: claimed.claim_token,
         errorCode,
         errorDetail: String(error?.message || ""),
-        nextAttemptAt: new Date(now.getTime() + PROBABLE_STARTER_RETRY_INTERVAL_MS),
+        errorMetadata,
+        retryable,
+        nextAttemptAt,
         now
       });
       await transitionWorkflowState(env.AUTH_DB, {
         internalGameId: claimed.internal_game_id,
         to: retry.status === "permanently_failed" ? "manual_intervention_required" : "retrying",
         errorCode,
-        nextDueAt: retry.status === "permanently_failed" ? null : new Date(now.getTime() + PROBABLE_STARTER_RETRY_INTERVAL_MS),
+        nextDueAt: retry.status === "permanently_failed" ? null : nextAttemptAt,
         now
       });
       await recordWorkflowJobEvent(env.AUTH_DB, {
@@ -3506,7 +3768,8 @@ async function getManagedGameJobSummary(db, internalGameId) {
         httpStatus: metadata.httpStatus,
         retryable: metadata.retryable
       });
-    })()
+    })(),
+    targetResolution: parseSafeWorkflowJobMetadata(row.result_metadata).targetResolution || null
   }));
   const pending = jobs.filter((job) => ["pending", "claimed", "running"].includes(job.status));
   const retry = jobs.filter((job) => job.status === "retry_wait");
@@ -4411,12 +4674,20 @@ function parseJsonArray(value) {
   }
 }
 
-function getGameIdentityForPregame(gameId) {
-  const timeline = getPregameTimeline(gameId);
+function getGameIdentityForPregame(gameId, fallback = {}) {
+  const timeline = getPregameTimeline(gameId) || buildPregameTimeline({
+    gameId,
+    date: fallback.date,
+    startAt: fallback.startAt ? new Date(fallback.startAt) : null,
+    homeTeam: fallback.homeTeam,
+    awayTeam: fallback.awayTeam,
+    gameCode: fallback.gameCode,
+    status: fallback.status
+  });
   if (!timeline) return null;
   const storedGameCode = normalizeNpbGameCode(timeline.game?.gameCode);
   const idGameCode = /^\d{4}-\d{2}-\d{2}-(.+)$/.exec(timeline.gameId)?.[1] || "";
-  const gameCode = storedGameCode || normalizeNpbGameCode(idGameCode);
+  const gameCode = storedGameCode || normalizeNpbGameCode(fallback.gameCode) || normalizeNpbGameCode(idGameCode);
   if (!gameCode) return null;
   return { ...timeline, gameCode };
 }
@@ -4522,6 +4793,9 @@ export async function fetchNpbWorkerJson(env, params) {
 function createPregameError(code, message, details = {}) {
   const error = new Error(message);
   error.code = code;
+  if (typeof details.retryable === "boolean") error.retryable = details.retryable;
+  const targetResolution = sanitizeWorkflowTargetDiagnostics(details.targetResolution);
+  if (targetResolution) error.targetResolution = targetResolution;
   if (Number(details.httpStatus) > 0) error.httpStatus = Number(details.httpStatus);
   if (Number(details.upstreamStatus) > 0) error.upstreamStatus = Number(details.upstreamStatus);
   if (Number(details.externalStatus) > 0) error.externalStatus = Number(details.externalStatus);
@@ -4760,9 +5034,14 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
   }
 }
 
-async function captureOfficialLineup(env, gameId, now, { force = false, phase = "provisional", autoApproveEnabled = true, internalGameId = "" } = {}) {
-  const identity = getGameIdentityForPregame(gameId);
-  if (!identity) throw createPregameError("LINEUP_URL_BUILD_FAILED", "NPB公式スタメンURLを生成できません。試合の日程コードを確認してください。");
+async function captureOfficialLineup(env, gameId, now, { force = false, phase = "provisional", autoApproveEnabled = true, internalGameId = "", target = null } = {}) {
+  const identity = getGameIdentityForPregame(gameId, target || {});
+  if (!identity) {
+    if (!target) throw createPregameError("LINEUP_URL_BUILD_FAILED", "NPB公式スタメンを取得する対象試合コードを解決できません。");
+    const deadline = target ? getFinalLineupRetryDeadline({ startAt: new Date(target.startAt) }) : null;
+    const retryable = Boolean(deadline && now < deadline);
+    throw createPregameError("NPB_GAME_CODE_UNAVAILABLE", "NPB公式スタメンの取得先コードを解決できません。", { retryable });
+  }
   const isFinalCapture = phase === "final";
   if (isFinalCapture ? now < identity.finalLineupFetchAt : !isBeforeGameStart(identity.startAt, now)) {
     return { status: isFinalCapture ? "not_due" : "skipped_after_start" };
@@ -6279,6 +6558,7 @@ function mapHistoricalWorkflowJobRow(row, now = new Date()) {
     completedAt: row?.completed_at || null,
     updatedAt: row?.updated_at || null,
     validation,
+    targetResolution: metadata.targetResolution || null,
     parseStage: metadata.parseStage || null,
     httpStatus: metadata.httpStatus || null,
     sourceUrlHost: metadata.sourceUrlHost || null,
@@ -7599,15 +7879,7 @@ async function ensureCompletionDownstreamJobs(env, job, now) {
   })[job?.job_type];
   if (!nextJobType) return { created: false, reason: "no_downstream" };
   const target = await resolveWorkflowJobGame(env.AUTH_DB, job.internal_game_id);
-  const timeline = getPregameTimeline({
-    gameId: target.gameId,
-    date: target.date,
-    startAt: target.startAt,
-    homeTeam: target.homeTeam,
-    awayTeam: target.awayTeam,
-    gameCode: target.gameCode,
-    status: target.status
-  });
+  const timeline = buildWorkflowJobTimeline(target);
   if (!timeline || target.status === "cancelled") return { created: false, reason: "out_of_scope" };
   const result = await recordCreatedCompletionJob(env.AUTH_DB, { ...timeline, internalGameId: job.internal_game_id }, nextJobType, now);
   return { ...result, jobType: nextJobType };
@@ -7640,6 +7912,7 @@ async function reconcileCompletionWorkflowJobs(env, now, timelines) {
       else if (rankingJob.status === "succeeded" && lineup.publication_status !== "published") requiredJobType = "publication";
     }
     if (!requiredJobType) continue;
+    if (requiredJobType === "final_lineup_fetch") await cancelSupersededLineupJobs(env.AUTH_DB, internalGameId, now);
     const result = await recordCreatedCompletionJob(env.AUTH_DB, canonicalTimeline, requiredJobType, now, "system");
     if (result.created) summary.created += 1;
   }
@@ -7672,23 +7945,20 @@ async function alignWorkflowStateWithStoredLineup(db, internalGameId, legacyGame
 async function executeCompletionWorkflowJob(env, job, now) {
   const target = await resolveWorkflowJobGame(env.AUTH_DB, job.internal_game_id);
   await linkLegacyGameRowsToInternalGameId(env.AUTH_DB, job.internal_game_id, target.gameId);
-  const timeline = getPregameTimeline({
-    gameId: target.gameId,
-    date: target.date,
-    startAt: target.startAt,
-    homeTeam: target.homeTeam,
-    awayTeam: target.awayTeam,
-    gameCode: target.gameCode,
-    status: target.status
-  });
-  if (!timeline || target.status === "cancelled") throw createPregameError("JOB_INPUT_INVALID", "試合進行ジョブの対象試合が無効です。");
+  const timeline = buildWorkflowJobTimeline(target);
+  if (!timeline || target.status === "cancelled") {
+    throw createPregameError("GAME_TARGET_INVALID", "試合進行ジョブの対象試合が無効です。", {
+      retryable: false,
+      targetResolution: target.targetResolution
+    });
+  }
   let result;
   if (job.job_type === "provisional_lineup_fetch") {
-    result = await captureOfficialLineup(env, target.gameId, now, { phase: "provisional", internalGameId: job.internal_game_id });
+    result = await captureOfficialLineup(env, target.gameId, now, { phase: "provisional", internalGameId: job.internal_game_id, target });
     if (result.status !== "provisional") throw createPregameError("LINEUP_NOT_ANNOUNCED", "仮スタメンをまだ取得できません。");
     await transitionWorkflowState(env.AUTH_DB, { internalGameId: job.internal_game_id, to: "provisional_lineup_captured", completedJobType: job.job_type, now });
   } else if (job.job_type === "final_lineup_fetch") {
-    result = await captureOfficialLineup(env, target.gameId, now, { phase: "final", internalGameId: job.internal_game_id });
+    result = await captureOfficialLineup(env, target.gameId, now, { phase: "final", internalGameId: job.internal_game_id, target });
     if (result.status !== "captured" && result.status !== "already_captured") throw createPregameError("LINEUP_NOT_ANNOUNCED", "最終スタメンをまだ取得できません。");
     await transitionWorkflowState(env.AUTH_DB, { internalGameId: job.internal_game_id, to: "final_lineup_captured", completedJobType: job.job_type, now });
   } else if (job.job_type === "scoring") {
@@ -7722,7 +7992,7 @@ async function executeCompletionWorkflowJob(env, job, now) {
 }
 
 async function runDueCompletionWorkflowJobs(env, now, timelines) {
-  const summary = { mode: "workflow_jobs", created: 0, processed: 0, succeeded: 0, retried: 0, serviceUnavailable: 0 };
+  const summary = { mode: "workflow_jobs", created: 0, processed: 0, succeeded: 0, retried: 0, permanentlyFailed: 0, serviceUnavailable: 0 };
   for (const timeline of timelines) {
     const internalGameId = String(timeline?.game?.internalGameId || timeline?.internalGameId || "");
     if (!internalGameId) continue;
@@ -7745,6 +8015,7 @@ async function runDueCompletionWorkflowJobs(env, now, timelines) {
       }
       const dueAt = finalDue ? getDueFinalLineupAttemptAt(timeline, now) : getDueLineupAttemptAt(timeline, now);
       if (dueAt) {
+        if (finalDue) await cancelSupersededLineupJobs(env.AUTH_DB, internalGameId, now);
         await ensureGameWorkflowState(env.AUTH_DB, { internalGameId, legacyGameId: timeline.gameId, workflowStatus: "prediction_open", now });
         await transitionWorkflowState(env.AUTH_DB, { internalGameId, to: "lineup_pending", now });
         const result = await recordCreatedCompletionJob(env.AUTH_DB, canonicalTimeline, finalDue ? "final_lineup_fetch" : "provisional_lineup_fetch", now);
@@ -7783,7 +8054,7 @@ async function runDueCompletionWorkflowJobs(env, now, timelines) {
       let retryDeadline = null;
       try {
         const target = await resolveWorkflowJobGame(env.AUTH_DB, claimed.internal_game_id);
-        retryDeadline = getFinalLineupRetryDeadline(getPregameTimeline({ gameId: target.gameId, date: target.date, startAt: target.startAt, homeTeam: target.homeTeam, awayTeam: target.awayTeam, gameCode: target.gameCode }), now);
+        retryDeadline = getFinalLineupRetryDeadline(buildWorkflowJobTimeline(target), now);
       } catch (resolveError) {
         const fallbackTimeline = (Array.isArray(timelines) ? timelines : []).find((timeline) => String(timeline?.game?.internalGameId || timeline?.internalGameId || "") === String(claimed.internal_game_id || ""));
         if (fallbackTimeline) retryDeadline = getFinalLineupRetryDeadline(fallbackTimeline, now);
@@ -7794,16 +8065,30 @@ async function runDueCompletionWorkflowJobs(env, now, timelines) {
       const errorDetail = String(error?.message || "").slice(0, 500);
       const nextAttemptAt = new Date(now.getTime() + (claimed.job_type.includes("lineup") ? 10 : 1) * 60 * 1000);
       const errorMetadata = getSafeWorkflowErrorMetadata(error);
+      const retryable = isCompletionWorkflowErrorRetryable(error, errorCode, { expired });
+      errorMetadata.retryable = retryable;
       const retry = await retryWorkflowJob(env.AUTH_DB, {
         job: claimed,
         claimToken: claimed.claim_token,
         errorCode,
         errorDetail,
         errorMetadata,
+        retryable,
         nextAttemptAt,
         now
       });
-      await transitionWorkflowState(env.AUTH_DB, { internalGameId: claimed.internal_game_id, to: expired ? "service_unavailable" : "retrying", errorCode, now });
+      const nextWorkflowStatus = expired
+        ? "service_unavailable"
+        : retry.status === "permanently_failed"
+          ? "manual_intervention_required"
+          : "retrying";
+      await transitionWorkflowState(env.AUTH_DB, {
+        internalGameId: claimed.internal_game_id,
+        to: nextWorkflowStatus,
+        errorCode,
+        nextDueAt: retry.status === "retry_wait" ? nextAttemptAt : null,
+        now
+      });
       try {
         await recordWorkflowJobEvent(env.AUTH_DB, {
           eventType: retry.status === "permanently_failed" ? "workflow_job_permanently_failed" : "workflow_job_retry",
@@ -7825,7 +8110,8 @@ async function runDueCompletionWorkflowJobs(env, now, timelines) {
         console.error(`[GAME_WORKFLOW] job retry event record failed: job=${claimed.id} code=${logError?.code || "WORKFLOW_LOG_WRITE_FAILED"}`);
       }
       if (expired) summary.serviceUnavailable += 1;
-      else summary.retried += 1;
+      else if (retry.status === "retry_wait") summary.retried += 1;
+      else summary.permanentlyFailed += 1;
     }
   }
   const afterRunReconciliation = await reconcileCompletionWorkflowJobs(env, now, timelines);

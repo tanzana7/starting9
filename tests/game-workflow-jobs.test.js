@@ -123,6 +123,23 @@ test("expired lease is reclaimed and retry_wait is not due before next_attempt_a
   assert.equal((await listDueWorkflowJobs(db, { jobTypes: ["probable_starter_fetch"], now: new Date("2026-08-01T01:00:00.000Z") })).length, 1);
 });
 
+test("non-retryable job failure becomes permanently_failed and is not scheduled again", async () => {
+  const db = createJobDb();
+  await createWorkflowJob(db, { internalGameId, jobType: "final_lineup_fetch", scheduledSlotAt: "2026-08-01T05:00:00.000Z" });
+  const claimed = await claimWorkflowJob(db, { jobId: 1, claimToken: "target-invalid" });
+  const outcome = await retryWorkflowJob(db, {
+    job: claimed,
+    claimToken: "target-invalid",
+    errorCode: "GAME_TARGET_INVALID",
+    errorDetail: "試合進行ジョブの対象試合が無効です。",
+    retryable: false,
+    nextAttemptAt: "2026-08-01T05:10:00.000Z"
+  });
+  assert.equal(outcome.status, "permanently_failed");
+  assert.equal(db.state.jobs[0].next_attempt_at, null);
+  assert.equal((await listDueWorkflowJobs(db, { jobTypes: ["final_lineup_fetch"], now: new Date("2026-08-02T00:00:00.000Z") })).length, 0);
+});
+
 test("workflow transition table accepts recovery and rejects invalid jumps", () => {
   assert.equal(isWorkflowTransitionAllowed("lineup_pending", "retrying"), true);
   assert.equal(isWorkflowTransitionAllowed("service_unavailable", "lineup_pending"), true);

@@ -18,7 +18,7 @@ test("公式gameCode取得後も試合日・開始時刻・対戦カードで既
 test("NPB URLは保存済みgame_codeをID由来のフォールバックより優先する", () => {
   const worker = read("auth-worker.js");
   assert.match(worker, /const storedGameCode = normalizeNpbGameCode\(timeline\.game\?\.gameCode\)/);
-  assert.match(worker, /const gameCode = storedGameCode \|\| normalizeNpbGameCode\(idGameCode\)/);
+  assert.match(worker, /const gameCode = storedGameCode \|\| normalizeNpbGameCode\(fallback\.gameCode\) \|\| normalizeNpbGameCode\(idGameCode\)/);
   assert.match(worker, /LINEUP_URL_BUILD_FAILED/);
   assert.match(worker, /const isLineupStep = step === "lineup" \|\| step === "final_lineup"/);
 });

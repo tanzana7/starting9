@@ -5290,6 +5290,24 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
     justify-self: end;
   }
 
+  .app-layout:not(.is-admin-screen) .lineup-slot[data-picker="prediction"] .slot-order {
+    grid-column: 1;
+    justify-self: start;
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-slot[data-picker="prediction"] .position-control {
+    grid-column: 2;
+    justify-self: center;
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-slot[data-picker="prediction"] .slot-player {
+    grid-column: 3;
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-slot[data-picker="prediction"] .slot-clear {
+    grid-column: 4;
+  }
+
   .app-layout:not(.is-admin-screen) #predictionLineup {
     gap: 6px;
     border-top: 0;

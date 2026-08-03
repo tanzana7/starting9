@@ -89,7 +89,7 @@ test("PCの予想入力は900px以上で左420px以上のオーダー表と広�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=desktop-lineup-20260803-2">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=desktop-lineup-20260804-2">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],
@@ -118,6 +118,10 @@ test("PCのオーダー行は固定列と省略表示を使い、通知・操作
   assert.match(css, /\.lineup-slot\[data-picker="prediction"\][\s\S]*\.position-button[\s\S]*justify-self: end/);
   assert.match(css, /\.lineup-slot\[data-picker="prediction"\][\s\S]*\.slot-clear[\s\S]*width: 44px/);
   assert.match(css, /\.lineup-slot\[data-picker="prediction"\][\s\S]*\.slot-clear[\s\S]*justify-self: end/);
+  assert.match(css, /\.lineup-slot\[data-picker="prediction"\][\s\S]*\.slot-order[\s\S]*grid-column: 1[\s\S]*justify-self: start/);
+  assert.match(css, /\.lineup-slot\[data-picker="prediction"\][\s\S]*\.position-control[\s\S]*grid-column: 2[\s\S]*justify-self: center/);
+  assert.match(css, /\.lineup-slot\[data-picker="prediction"\][\s\S]*\.slot-player[\s\S]*grid-column: 3/);
+  assert.match(css, /\.lineup-slot\[data-picker="prediction"\][\s\S]*\.slot-clear[\s\S]*grid-column: 4/);
   assert.match(css, /#predictionLineup[\s\S]*gap: 6px[\s\S]*border-top: 0/);
   assert.match(css, /#predictionLineup \.lineup-slot\[data-picker="prediction"\][\s\S]*border: 1px solid #d7e1eb[\s\S]*border-radius: 7px[\s\S]*box-shadow: 0 1px 3px/);
   assert.match(css, /#predictionLineup \.lineup-slot\[data-picker="prediction"\]\.is-active[\s\S]*background: #eef6fc[\s\S]*box-shadow: inset 3px 0 0 var\(--fighters-blue\)/);

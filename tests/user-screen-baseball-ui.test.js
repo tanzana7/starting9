@@ -81,6 +81,20 @@ test("スマホの選手一覧はページ全体でスクロールし、2列の�
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.player-chip \.player-name[\s\S]*text-overflow: ellipsis/);
 });
 
+test("PCの予想入力は900px以上で左420px以上のオーダー表と広い選手一覧を使う", () => {
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(420px, 0\.9fr\) minmax\(0, 1\.3fr\)/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.container[\s\S]*width: calc\(100% - 48px\)[\s\S]*max-width: 75rem/);
+  assert.match(css, /@media \(min-width: 78\.125rem\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-list[\s\S]*grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/);
+});
+
+test("PCのオーダー行は固定列と省略表示を使い、通知・操作領域はフォーム幅に揃える", () => {
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-slot[\s\S]*grid-template-columns: 30px 44px minmax\(180px, 1fr\) 44px 38px/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.slot-player,[\s\S]*white-space: nowrap/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*#predictionForm > \.message,[\s\S]*grid-column: 1 \/ -1/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*#savePredictionButton[\s\S]*min-width: 220px/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*#resetPredictionButton[\s\S]*min-width: 180px/);
+});
+
 test("iPhone向けTouch Eventsフォールバックも既存のPointer状態更新を利用する", () => {
   assert.match(script, /touchstart.*handleTouchInteractionStart/);
   assert.match(script, /touchmove.*handleTouchInteractionMove/);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getPublicationJobRecoveryEligibility, resolvePublicationTarget } from "../auth-worker.js";
+import { getPublicationJobRecoveryEligibility, getPublicationTerminalRecoveryEligibility, resolvePublicationTarget } from "../auth-worker.js";
 import { recoverWorkflowJobForReevaluation } from "../game-workflow-jobs.js";
 import { readFile } from "node:fs/promises";
 
@@ -81,6 +81,31 @@ test("only the known permanently failed legacy publication error is eligible onc
   assert.equal(getPublicationJobRecoveryEligibility({ ...base, attemptCount: 4 }).eligible, false);
 });
 
+test("manual intervention is overridden only for an eligible legacy publication recovery", () => {
+  const base = {
+    workflowStatus: "manual_intervention_required",
+    jobType: "publication",
+    status: "permanently_failed",
+    errorCode: "SCHEDULE_UNAVAILABLE",
+    errorDetail: "試合日程を確認できません。",
+    publishedAt: null,
+    publicationStatus: "pending",
+    scoringPersisted: true,
+    scoreResultCount: 1,
+    rankingReflected: true,
+    internalGameIdMatches: true,
+    identifierConflict: false,
+    attemptCount: 5,
+    maxAttempts: 5
+  };
+  assert.equal(getPublicationTerminalRecoveryEligibility(base).eligible, true);
+  assert.equal(getPublicationTerminalRecoveryEligibility({ ...base, errorCode: "SCORING_FAILED" }).eligible, false);
+  assert.equal(getPublicationTerminalRecoveryEligibility({ ...base, identifierConflict: true }).eligible, false);
+  assert.equal(getPublicationTerminalRecoveryEligibility({ ...base, publishedAt: "2026-08-02T00:00:00.000Z" }).eligible, false);
+  assert.equal(getPublicationTerminalRecoveryEligibility({ ...base, scoreResultCount: 2 }).eligible, false);
+  assert.equal(getPublicationTerminalRecoveryEligibility({ ...base, workflowStatus: "scored_private" }).eligible, false);
+});
+
 test("permanently failed recovery keeps the attempt count and requires exact job type/error", async () => {
   const calls = [];
   const db = {
@@ -114,6 +139,9 @@ test("publication executor no longer treats static schedule as its target resolv
   assert.match(publication, /PUBLICATION_PREREQUISITE_MISSING/);
   assert.doesNotMatch(publication, /throw createPregameError\("SCHEDULE_UNAVAILABLE"/);
   assert.match(worker, /PUBLICATION_LEGACY_SCHEDULE_ERROR_REEVALUATION/);
+  assert.match(worker, /getPublicationTerminalRecoveryEligibility/);
+  assert.match(worker, /workflowTerminalOverrideApplied/);
+  assert.match(worker, /publicationRecoveryApplied/);
   assert.match(worker, /publicationTargetResolution/);
   assert.match(worker, /stalePregameErrorIgnored/);
 });

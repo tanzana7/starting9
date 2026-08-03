@@ -1003,6 +1003,13 @@ function parseSafeWorkflowJobMetadata(value) {
   if (typeof parsed.retryable === "boolean") result.retryable = parsed.retryable;
   if (typeof parsed.status === "string" && parsed.status) result.status = parsed.status.slice(0, 40);
   if (typeof parsed.recoveryMode === "string" && parsed.recoveryMode) result.recoveryMode = parsed.recoveryMode.slice(0, 80);
+  if (typeof parsed.recoveryReasonCode === "string" && parsed.recoveryReasonCode) result.recoveryReasonCode = parsed.recoveryReasonCode.slice(0, 100);
+  if (typeof parsed.recoveredAt === "string" && parsed.recoveredAt) result.recoveredAt = parsed.recoveredAt.slice(0, 40);
+  if (typeof parsed.previousErrorCode === "string" && parsed.previousErrorCode) result.previousErrorCode = parsed.previousErrorCode.slice(0, 100);
+  if (typeof parsed.previousErrorDetail === "string" && parsed.previousErrorDetail) result.previousErrorDetail = parsed.previousErrorDetail.slice(0, 500);
+  if (Number.isFinite(Number(parsed.attemptCountBeforeRecovery))) result.attemptCountBeforeRecovery = Number(parsed.attemptCountBeforeRecovery);
+  if (typeof parsed.attemptCountChanged === "boolean") result.attemptCountChanged = parsed.attemptCountChanged;
+  if (typeof parsed.workflowTerminalOverrideApplied === "boolean") result.workflowTerminalOverrideApplied = parsed.workflowTerminalOverrideApplied;
   const targetResolution = sanitizeWorkflowTargetDiagnostics(parsed.targetResolution);
   if (targetResolution) result.targetResolution = targetResolution;
   return result;
@@ -1568,6 +1575,21 @@ export function getPublicationJobRecoveryEligibility({
     return { eligible: false, reasonCode: "PUBLICATION_ATTEMPT_STATE_INVALID" };
   }
   return { eligible: true, reasonCode: "PUBLICATION_LEGACY_SCHEDULE_ERROR_REEVALUATION" };
+}
+
+export function getPublicationTerminalRecoveryEligibility({
+  workflowStatus = "",
+  ...publicationRecovery
+} = {}) {
+  if (String(workflowStatus || "") !== "manual_intervention_required") {
+    return { eligible: false, reasonCode: "PUBLICATION_TERMINAL_OVERRIDE_NOT_REQUIRED" };
+  }
+  const recovery = getPublicationJobRecoveryEligibility(publicationRecovery);
+  if (!recovery.eligible) return recovery;
+  return {
+    eligible: true,
+    reasonCode: "PUBLICATION_MANUAL_INTERVENTION_TERMINAL_OVERRIDE"
+  };
 }
 
 function buildWorkflowJobTimeline(target) {
@@ -3950,7 +3972,7 @@ async function handleAdminGameWorkflowStatus(env, cors, gameId) {
 async function getManagedGameJobSummary(db, internalGameId) {
   if (!internalGameId) return { pendingCount: 0, retryCount: 0, nextExecutionAt: null, jobs: [], lineupJobs: [], lineupFetchStatus: { provisional: null, final: null }, lineupFetchState: "not_started", lastFetchAttempt: null, validation: null, scoringEligibility: { eligible: false, status: "waiting", reasonCode: "FINAL_LINEUP_REQUIRED" }, warnings: [], errors: [] };
   const result = await db.prepare(
-    `SELECT job_type, status, scheduled_slot_at, next_attempt_at, error_code, error_detail,
+    `SELECT id, job_type, status, scheduled_slot_at, next_attempt_at, error_code, error_detail,
             source, attempt_count, max_attempts, claimed_at, lease_expires_at,
             started_at, completed_at, result_metadata, updated_at
        FROM game_job_runs
@@ -3958,6 +3980,7 @@ async function getManagedGameJobSummary(db, internalGameId) {
       ORDER BY COALESCE(next_attempt_at, scheduled_slot_at) ASC, job_type ASC`
   ).bind(internalGameId).all();
   const jobs = (result?.results || []).map((row) => ({
+    id: Number(row.id),
     jobType: row.job_type,
     status: row.status,
     scheduledAt: row.scheduled_slot_at || null,
@@ -3976,6 +3999,18 @@ async function getManagedGameJobSummary(db, internalGameId) {
       const metadata = parseSafeWorkflowJobMetadata(row.result_metadata);
       return metadata.recoveryMode || null;
     })(),
+    recoveryReasonCode: (() => parseSafeWorkflowJobMetadata(row.result_metadata).recoveryReasonCode || null)(),
+    recoveredAt: (() => parseSafeWorkflowJobMetadata(row.result_metadata).recoveredAt || null)(),
+    previousErrorCode: (() => parseSafeWorkflowJobMetadata(row.result_metadata).previousErrorCode || null)(),
+    attemptCountBeforeRecovery: (() => {
+      const value = parseSafeWorkflowJobMetadata(row.result_metadata).attemptCountBeforeRecovery;
+      return Number.isFinite(value) ? value : null;
+    })(),
+    attemptCountChanged: (() => {
+      const value = parseSafeWorkflowJobMetadata(row.result_metadata).attemptCountChanged;
+      return typeof value === "boolean" ? value : null;
+    })(),
+    workflowTerminalOverrideApplied: (() => parseSafeWorkflowJobMetadata(row.result_metadata).workflowTerminalOverrideApplied === true)(),
     validation: (() => {
       const metadata = parseSafeWorkflowJobMetadata(row.result_metadata);
       return sanitizeLineupValidationDetails({
@@ -4003,6 +4038,8 @@ async function getAdminPublicationWorkflowAudit(db, {
   legacyGameId,
   workflowStatus = "",
   jobSummary = {},
+  recoveryLog = null,
+  scoreResultCount = null,
   now = new Date()
 } = {}) {
   const lineup = await getGameLineup(db, { gameId: legacyGameId, internalGameId });
@@ -4027,12 +4064,20 @@ async function getAdminPublicationWorkflowAudit(db, {
     publishedAt,
     publicationStatus,
     scoringPersisted: lineup?.scoring_status === "scored",
+    scoreResultCount,
     rankingReflected: ranking.reflected,
     internalGameIdMatches: Boolean(lineup && String(lineup.internal_game_id || "") === String(internalGameId || "")),
     identifierConflict,
     attemptCount: publicationJob?.attemptCount,
     maxAttempts: publicationJob?.maxAttempts
   });
+  const recoveryLogMetadata = parseJsonObject(recoveryLog?.metadata);
+  const publicationRecoveryApplied = publicationJob?.recoveryMode === "publication_legacy_schedule_error"
+    || recoveryLogMetadata?.recoveryMode === "publication_legacy_schedule_error";
+  const publicationRecoveryDetected = publicationRecovery.eligible || publicationRecoveryApplied
+    || recoveryLogMetadata?.originalErrorCode === PUBLICATION_LEGACY_ERROR_CODE;
+  const workflowTerminalOverrideApplied = publicationJob?.workflowTerminalOverrideApplied === true
+    || recoveryLogMetadata?.workflowTerminalOverrideApplied === true;
   const staleLeaseDetected = Boolean(publicationJob
     && ["claimed", "running"].includes(publicationJob.status)
     && publicationJob.leaseExpiresAt
@@ -4062,9 +4107,27 @@ async function getAdminPublicationWorkflowAudit(db, {
   } catch (error) {
     if (!isPregameSchemaError(error)) throw error;
   }
-  const currentPublicationError = publicationRecovery.eligible
+  const currentPublicationError = publicationRecoveryApplied
+    ? null
+    : publicationRecovery.eligible
     ? { code: "PUBLICATION_RECOVERY_ELIGIBLE", previousCode: publicationJob?.errorCode || null }
     : (currentErrors[0] ? { code: currentErrors[0], detail: publicationJob?.errorDetail || null } : null);
+  const previousPublicationError = publicationRecoveryDetected
+    ? {
+        code: publicationJob?.previousErrorCode || recoveryLogMetadata?.previousErrorCode || recoveryLogMetadata?.originalErrorCode || PUBLICATION_LEGACY_ERROR_CODE,
+        detail: recoveryLogMetadata?.previousErrorDetail || PUBLICATION_LEGACY_ERROR_DETAIL
+      }
+    : null;
+  const publicationRecoveredJobId = publicationRecoveryApplied
+    ? (Number.isInteger(Number(publicationJob?.id)) ? Number(publicationJob.id) : Number(recoveryLogMetadata?.recoveredJobId) || null)
+    : (Number(recoveryLogMetadata?.recoveredJobId) || null);
+  const publicationRecoveredAt = publicationRecoveryApplied
+    ? (publicationJob?.recoveredAt || recoveryLogMetadata?.recoveredAt || recoveryLog?.occurred_at || null)
+    : (recoveryLogMetadata?.recoveredAt || recoveryLog?.occurred_at || null);
+  const recoveryAttemptCountPreserved = publicationRecoveryDetected
+    ? (publicationJob?.attemptCountChanged === false
+      || (Number.isFinite(publicationJob?.attemptCountBeforeRecovery) && Number(publicationJob.attemptCountBeforeRecovery) === Number(publicationJob.attemptCount)))
+    : false;
   return {
     status: publicationStatus,
     workflowStatus: workflowStatus || "unknown",
@@ -4078,6 +4141,7 @@ async function getAdminPublicationWorkflowAudit(db, {
     publicationPrerequisites: {
       targetResolved: Boolean(publicationTarget),
       scoringPersisted: lineup?.scoring_status === "scored",
+      scoreResultCount,
       rankingReflected: ranking.reflected,
       publicationStatus,
       publishedAtPresent: Boolean(publishedAt),
@@ -4085,8 +4149,19 @@ async function getAdminPublicationWorkflowAudit(db, {
       identifierConflict
     },
     publicationRecoveryEligible: publicationRecovery.eligible,
-    publicationRecoveryBlockedReason: publicationRecovery.eligible ? null : publicationRecovery.reasonCode,
+    publicationRecoveryBlockedReason: publicationRecoveryApplied || publicationRecovery.eligible ? null : publicationRecovery.reasonCode,
     publicationJobRecoveryMode: publicationJob?.recoveryMode || null,
+    publicationRecoveryDetected,
+    publicationRecoveryApplied,
+    publicationRecoveredJobId,
+    publicationRecoveredAt,
+    publicationRecoveryMode: publicationJob?.recoveryMode || recoveryLogMetadata?.recoveryMode || null,
+    workflowTerminalOverrideApplied,
+    previousPublicationError,
+    recoveryAttemptCountPreserved,
+    recoveryExecutionBlockedReason: publicationRecoveryDetected && !publicationRecoveryApplied
+      ? (workflowStatus === "manual_intervention_required" ? "WORKFLOW_TERMINAL" : publicationRecovery.reasonCode)
+      : null,
     publicationErrorStage: publicationTargetError ? "publication_target_resolution" : (currentPublicationError ? "publication_executor" : null),
     publicationPersisted: Boolean(publishedAt || publicationStatus === "published"),
     publicationJobStatus: publicationJob?.status || "not_started",
@@ -4143,6 +4218,7 @@ async function handleAdminCurrentGameWorkflow(request, env, cors) {
       legacyGameId: selection.legacyGameId,
       workflowStatus: selection.workflowStatus,
       jobSummary,
+      scoreResultCount: status?.scoreResultCount ?? null,
       now
     });
     const warnings = [...new Set([
@@ -6892,6 +6968,13 @@ function mapHistoricalWorkflowJobRow(row, now = new Date()) {
     updatedAt: row?.updated_at || null,
     validation,
     targetResolution: metadata.targetResolution || null,
+    recoveryMode: metadata.recoveryMode || null,
+    recoveryReasonCode: metadata.recoveryReasonCode || null,
+    recoveredAt: metadata.recoveredAt || null,
+    previousErrorCode: metadata.previousErrorCode || null,
+    attemptCountBeforeRecovery: Number.isFinite(metadata.attemptCountBeforeRecovery) ? metadata.attemptCountBeforeRecovery : null,
+    attemptCountChanged: typeof metadata.attemptCountChanged === "boolean" ? metadata.attemptCountChanged : null,
+    workflowTerminalOverrideApplied: metadata.workflowTerminalOverrideApplied === true,
     parseStage: metadata.parseStage || null,
     httpStatus: metadata.httpStatus || null,
     sourceUrlHost: metadata.sourceUrlHost || null,
@@ -7150,6 +7233,8 @@ async function handleAdminHistoricalGameWorkflow(request, env, cors, requestedIn
       legacyGameId,
       workflowStatus: identity.workflow_status,
       jobSummary: { jobs },
+      recoveryLog,
+      scoreResultCount: scoringPersistence.scoreResultCount,
       now
     });
     const homeAwayAudit = auditGameHomeAwayConsistency({
@@ -8910,7 +8995,7 @@ async function reconcileStalePublicationJobs(env, now) {
 }
 
 async function reconcileLegacyPublicationJobs(env, now) {
-  const summary = { checked: 0, recovered: 0, recoveredJobIds: [], blocked: 0 };
+  const summary = { checked: 0, recovered: 0, recoveredJobIds: [], blocked: 0, terminalOverrides: 0 };
   let rows;
   try {
     rows = await env.AUTH_DB.prepare(
@@ -8977,19 +9062,46 @@ async function reconcileLegacyPublicationJobs(env, now) {
       summary.blocked += 1;
       continue;
     }
-    if (row.workflow_status === "manual_intervention_required") {
-      await transitionWorkflowState(env.AUTH_DB, {
-        internalGameId: row.internal_game_id,
-        to: "scoring_pending",
-        completedJobType: "scoring",
-        now
+    const workflowTerminalOverrideApplied = row.workflow_status === "manual_intervention_required";
+    if (workflowTerminalOverrideApplied) {
+      const terminalOverride = getPublicationTerminalRecoveryEligibility({
+        workflowStatus: row.workflow_status,
+        jobType: row.job_type,
+        status: row.status,
+        errorCode: row.error_code,
+        errorDetail: row.error_detail,
+        publishedAt: row.published_at,
+        publicationStatus: row.publication_status,
+        scoringPersisted: row.scoring_status === "scored" && Number(row.score_result_count || 0) > 0,
+        scoreResultCount: Number(row.score_result_count || 0),
+        rankingReflected,
+        internalGameIdMatches: String(row.lineup_internal_game_id || "") === String(row.internal_game_id || ""),
+        identifierConflict: (target.targetResolution?.identifierConflicts || []).length > 0,
+        attemptCount: row.attempt_count,
+        maxAttempts: row.max_attempts
       });
-      await transitionWorkflowState(env.AUTH_DB, {
-        internalGameId: row.internal_game_id,
-        to: "scored_private",
-        completedJobType: "scoring",
-        now
-      });
+      if (!terminalOverride.eligible) {
+        summary.blocked += 1;
+        continue;
+      }
+      try {
+        await transitionWorkflowState(env.AUTH_DB, {
+          internalGameId: row.internal_game_id,
+          to: "scoring_pending",
+          completedJobType: "scoring",
+          now
+        });
+        await transitionWorkflowState(env.AUTH_DB, {
+          internalGameId: row.internal_game_id,
+          to: "scored_private",
+          completedJobType: "scoring",
+          now
+        });
+      } catch (error) {
+        summary.blocked += 1;
+        console.warn(`publication terminal recovery state transition skipped: job=${row.id} code=${error?.code || "WORKFLOW_STATE_CONFLICT"}`);
+        continue;
+      }
     }
     const recovered = await recoverWorkflowJobForReevaluation(env.AUTH_DB, {
       jobId: row.id,
@@ -9001,8 +9113,11 @@ async function reconcileLegacyPublicationJobs(env, now) {
         recoveryMode: "publication_legacy_schedule_error",
         recoveryReasonCode: eligibility.reasonCode,
         recoveredAt: now.toISOString(),
+        previousErrorCode: PUBLICATION_LEGACY_ERROR_CODE,
+        previousErrorDetail: PUBLICATION_LEGACY_ERROR_DETAIL,
         attemptCountBeforeRecovery: Number(row.attempt_count || 0),
         attemptCountChanged: false,
+        workflowTerminalOverrideApplied,
         targetResolution: target.targetResolution
       },
       now
@@ -9010,6 +9125,7 @@ async function reconcileLegacyPublicationJobs(env, now) {
     if (!recovered.recovered) continue;
     summary.recovered += 1;
     summary.recoveredJobIds.push(Number(row.id));
+    if (workflowTerminalOverrideApplied) summary.terminalOverrides += 1;
     await recordWorkflowJobEvent(env.AUTH_DB, {
       eventType: "workflow_job_recovered",
       status: "warning",
@@ -9018,11 +9134,15 @@ async function reconcileLegacyPublicationJobs(env, now) {
       now,
       errorCode: eligibility.reasonCode,
       metadata: {
+        recoveredJobId: Number(row.id),
         recoveryMode: "publication_legacy_schedule_error",
         originalErrorCode: PUBLICATION_LEGACY_ERROR_CODE,
         originalErrorDetail: PUBLICATION_LEGACY_ERROR_DETAIL,
+        previousErrorCode: PUBLICATION_LEGACY_ERROR_CODE,
+        previousErrorDetail: PUBLICATION_LEGACY_ERROR_DETAIL,
         attemptCountBeforeRecovery: Number(row.attempt_count || 0),
         attemptCountChanged: false,
+        workflowTerminalOverrideApplied,
         targetResolution: target.targetResolution
       },
       source: "system"
@@ -9217,7 +9337,7 @@ async function reconcilePregameAutomationState(env, now) {
 }
 
 async function reconcileCompletionWorkflowJobs(env, now, timelines) {
-  const summary = { checked: 0, created: 0, skipped: 0, recovered: 0, recoveredJobIds: [], supersededJobIds: [], scoringReconciled: 0, scoringRecoveredJobIds: [], publicationReconciled: 0, publicationRecoveredJobIds: [], publicationRecoveryReconciled: 0, publicationRecoveryJobIds: [], auxiliaryReconciled: 0 };
+  const summary = { checked: 0, created: 0, skipped: 0, recovered: 0, recoveredJobIds: [], supersededJobIds: [], scoringReconciled: 0, scoringRecoveredJobIds: [], publicationReconciled: 0, publicationRecoveredJobIds: [], publicationRecoveryReconciled: 0, publicationRecoveryJobIds: [], publicationRecoveryTerminalOverrides: 0, auxiliaryReconciled: 0 };
   for (const timeline of Array.isArray(timelines) ? timelines : []) {
     const internalGameId = String(timeline?.game?.internalGameId || timeline?.internalGameId || "");
     if (!internalGameId || timeline?.game?.status === "cancelled" || isScheduleGameUnavailable(timeline?.game)) {
@@ -9265,6 +9385,7 @@ async function reconcileCompletionWorkflowJobs(env, now, timelines) {
   summary.recoveredJobIds.push(...legacyPublication.recoveredJobIds);
   summary.publicationRecoveryReconciled = legacyPublication.recovered;
   summary.publicationRecoveryJobIds = legacyPublication.recoveredJobIds;
+  summary.publicationRecoveryTerminalOverrides = legacyPublication.terminalOverrides;
   const publication = await reconcilePersistedPublicationWorkflows(env, now);
   summary.publicationReconciled = publication.reconciled;
   summary.publicationRecoveredJobIds = publication.recoveredJobIds;

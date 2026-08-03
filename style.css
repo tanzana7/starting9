@@ -5261,6 +5261,35 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
     padding-inline-start: 10px;
   }
 
+  .app-layout:not(.is-admin-screen) .lineup-slot[data-picker="prediction"] {
+    grid-template-columns: 56px minmax(0, 1fr) 56px 44px;
+    column-gap: 12px;
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-slot[data-picker="prediction"] .slot-player {
+    width: auto;
+    max-width: none;
+    min-width: 0;
+    padding-inline-start: 12px;
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-slot[data-picker="prediction"] .slot-order,
+  .app-layout:not(.is-admin-screen) .lineup-slot[data-picker="prediction"] .position-control,
+  .app-layout:not(.is-admin-screen) .lineup-slot[data-picker="prediction"] .position-button {
+    width: 56px;
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-slot[data-picker="prediction"] .position-control,
+  .app-layout:not(.is-admin-screen) .lineup-slot[data-picker="prediction"] .position-button {
+    justify-self: end;
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-slot[data-picker="prediction"] .slot-clear {
+    width: 44px;
+    min-width: 44px;
+    justify-self: end;
+  }
+
   .app-layout:not(.is-admin-screen) .slot-order {
     width: 44px;
     min-height: 38px;
@@ -5354,5 +5383,11 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
 @media (min-width: 78.125rem) {
   .app-layout:not(.is-admin-screen) .player-list {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 64rem) {
+  .app-layout:not(.is-admin-screen) .lineup-builder {
+    grid-template-columns: minmax(480px, 0.95fr) minmax(0, 1.3fr);
   }
 }

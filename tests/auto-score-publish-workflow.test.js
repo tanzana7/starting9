@@ -22,7 +22,8 @@ test("開始+1分の最終スタメンを開始+2分に採点し、開始+5分�
   assert.match(worker, /id: "score", offsetMinutes: 2/);
   assert.match(worker, /id: "publish", offsetMinutes: 5/);
   assert.match(worker, /if \(now < timeline\.resultReleaseAt\) continue/);
-  assert.match(worker, /if \(now < identity\.resultReleaseAt\) return \{ published: false, status: "not_due"/);
+  assert.match(worker, /const resultReleaseAt = new Date\(startAt\.getTime\(\) \+ RESULT_RELEASE_MINUTES_AFTER_START \* 60 \* 1000\)/);
+  assert.match(worker, /if \(now < resultReleaseAt\) return \{ published: false, status: "not_due"/);
 });
 
 test("採点更新と非公開ランキング化を同じD1 batchへ含める", () => {

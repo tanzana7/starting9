@@ -173,13 +173,14 @@ export async function retryWorkflowJob(db, {
   errorCode,
   errorDetail = "",
   errorMetadata = null,
+  retryable = true,
   nextAttemptAt,
   now = new Date()
 } = {}) {
   const timestamp = asIso(now);
   const attemptCount = Number(job?.attempt_count || 0);
   const maxAttempts = Math.max(1, Number(job?.max_attempts || 1));
-  const permanentlyFailed = attemptCount >= maxAttempts;
+  const permanentlyFailed = retryable !== true || attemptCount >= maxAttempts;
   const status = permanentlyFailed ? "permanently_failed" : "retry_wait";
   const serializedMetadata = errorMetadata && typeof errorMetadata === "object"
     ? JSON.stringify(errorMetadata).slice(0, 1200)

@@ -125,9 +125,30 @@ test("permanently failed recovery keeps the attempt count and requires exact job
     expectedErrorDetail: "試合日程を確認できません。"
   });
   assert.equal(result.recovered, true);
+  assert.equal(result.updateRowCount, 1);
   assert.match(calls[0], /job_type = \?8/);
   assert.match(calls[0], /attempt_count = max_attempts/);
   assert.doesNotMatch(calls[0], /attempt_count\s*=\s*0/);
+});
+
+test("a second Cron recovery observes zero changed rows and does not create another job", async () => {
+  const db = {
+    prepare() {
+      return {
+        bind() { return this; },
+        async run() { return { meta: { changes: 0 } }; }
+      };
+    }
+  };
+  const result = await recoverWorkflowJobForReevaluation(db, {
+    jobId: 539,
+    expectedStatus: "permanently_failed",
+    expectedJobType: "publication",
+    expectedErrorCode: "SCHEDULE_UNAVAILABLE",
+    expectedErrorDetail: "試合日程を確認できません。"
+  });
+  assert.equal(result.recovered, false);
+  assert.equal(result.updateRowCount, 0);
 });
 
 test("publication executor no longer treats static schedule as its target resolver", async () => {
@@ -140,6 +161,18 @@ test("publication executor no longer treats static schedule as its target resolv
   assert.doesNotMatch(publication, /throw createPregameError\("SCHEDULE_UNAVAILABLE"/);
   assert.match(worker, /PUBLICATION_LEGACY_SCHEDULE_ERROR_REEVALUATION/);
   assert.match(worker, /getPublicationTerminalRecoveryEligibility/);
+  assert.match(worker, /CASE WHEN lineups\.scoring_status = 'scored' AND lineups\.scored_at IS NOT NULL THEN 1 ELSE 0 END AS score_result_count/);
+  assert.doesNotMatch(worker.slice(worker.indexOf("async function reconcileLegacyPublicationJobs"), worker.indexOf("async function reconcilePersistedPublicationWorkflows")), /predictions\.status = 'scored'/);
+  assert.match(worker, /publication_recovery_cron_visit/);
+  assert.match(worker, /publicationRecoveryCronVisited/);
+  const reconciliationStart = worker.indexOf("async function reconcileCompletionWorkflowJobs");
+  const recoveryCall = worker.indexOf("legacyPublication = await reconcileLegacyPublicationJobs", reconciliationStart);
+  const historicalCall = worker.indexOf("const historical = await reconcileHistoricalCompletionWorkflowJobs", reconciliationStart);
+  assert.ok(recoveryCall > reconciliationStart && recoveryCall < historicalCall);
+  const runnerStart = worker.indexOf("async function runDueCompletionWorkflowJobs");
+  const dueJobList = worker.indexOf("const dueJobs = await listDueWorkflowJobs", runnerStart);
+  assert.ok(dueJobList > runnerStart);
+  assert.match(worker, /recoveryMode: "publication_legacy_schedule_error"/);
   assert.match(worker, /workflowTerminalOverrideApplied/);
   assert.match(worker, /publicationRecoveryApplied/);
   assert.match(worker, /publicationTargetResolution/);

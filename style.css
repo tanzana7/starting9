@@ -5192,3 +5192,170 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
     min-width: 16px;
   }
 }
+
+/* Desktop lineup editor: use the available width without changing mobile behavior. */
+@media (min-width: 900px) {
+  body:not(:has(.app-layout.is-admin-screen)) .container {
+    width: calc(100% - 48px);
+    max-width: 75rem;
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-card {
+    width: 100%;
+    justify-self: stretch;
+  }
+
+  .app-layout:not(.is-admin-screen) #predictionForm {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 22px;
+  }
+
+  .app-layout:not(.is-admin-screen) #predictionForm > #gameDayNoticeStatus,
+  .app-layout:not(.is-admin-screen) #predictionForm > .lineup-builder,
+  .app-layout:not(.is-admin-screen) #predictionForm > .message,
+  .app-layout:not(.is-admin-screen) #predictionForm > .prediction-deadline-status {
+    grid-column: 1 / -1;
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-builder {
+    grid-template-columns: minmax(420px, 0.9fr) minmax(0, 1.3fr);
+    gap: 28px;
+    width: 100%;
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-panel,
+  .app-layout:not(.is-admin-screen) .player-panel {
+    min-width: 0;
+    padding: 16px;
+    border: 1px solid #d7e1eb;
+    border-radius: 8px;
+    background: #ffffff;
+  }
+
+  .app-layout:not(.is-admin-screen) .player-panel {
+    background: #f8fbfe;
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-panel h3,
+  .app-layout:not(.is-admin-screen) .player-list-heading {
+    margin-bottom: 12px;
+  }
+
+  .app-layout:not(.is-admin-screen) .lineup-slot {
+    grid-template-columns: 30px 44px minmax(180px, 1fr) 44px 38px;
+    min-height: 56px;
+    gap: 8px;
+    padding: 8px 10px;
+  }
+
+  .app-layout:not(.is-admin-screen) .slot-player,
+  .app-layout:not(.is-admin-screen) .slot-player .player-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app-layout:not(.is-admin-screen) .slot-order {
+    width: 44px;
+    min-height: 38px;
+  }
+
+  .app-layout:not(.is-admin-screen) .position-control,
+  .app-layout:not(.is-admin-screen) .position-button {
+    width: 44px;
+    height: 42px;
+  }
+
+  .app-layout:not(.is-admin-screen) .slot-clear {
+    width: 36px;
+    height: 36px;
+    border: 1px solid #c8d4df;
+    border-radius: 5px;
+    color: #52697f;
+    background: #f7fafc;
+    font-size: 1.05rem;
+  }
+
+  .app-layout:not(.is-admin-screen) .slot-clear:hover,
+  .app-layout:not(.is-admin-screen) .slot-clear:focus-visible {
+    border-color: #d28a8a;
+    color: #8b2a2a;
+    background: #fff5f5;
+  }
+
+  .app-layout:not(.is-admin-screen) .roster-filter {
+    display: flex;
+    width: max-content;
+    max-width: 100%;
+    margin: 0 0 10px;
+    padding: 3px;
+    border-radius: 6px;
+  }
+
+  .app-layout:not(.is-admin-screen) .roster-filter-button {
+    min-width: 104px;
+    min-height: 34px;
+    padding: 6px 12px;
+  }
+
+  .app-layout:not(.is-admin-screen) .player-category-legend {
+    margin: 0 0 12px;
+    gap: 5px;
+    font-size: 0.72rem;
+  }
+
+  .app-layout:not(.is-admin-screen) .player-category-legend-item {
+    min-height: 24px;
+    padding: 3px 7px;
+  }
+
+  .app-layout:not(.is-admin-screen) .player-list {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+    border-top: 0;
+  }
+
+  .app-layout:not(.is-admin-screen) .player-chip {
+    min-height: 56px;
+    padding: 10px 12px;
+    border: 1px solid #c7d7e8;
+    border-radius: 7px;
+    background: #ffffff;
+  }
+
+  .app-layout:not(.is-admin-screen) .player-chip .player-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app-layout:not(.is-admin-screen) .player-chip.is-used {
+    color: #586b7e;
+    border-color: #d2dce6;
+    background: #eef2f6;
+  }
+
+  .app-layout:not(.is-admin-screen) #savePredictionButton,
+  .app-layout:not(.is-admin-screen) #resetPredictionButton {
+    width: auto;
+    min-width: 180px;
+    justify-self: start;
+    margin-top: 2px;
+  }
+
+  .app-layout:not(.is-admin-screen) #savePredictionButton {
+    min-width: 220px;
+  }
+}
+
+@media (min-width: 78.125rem) {
+  .app-layout:not(.is-admin-screen) .player-list {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}

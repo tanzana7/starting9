@@ -336,7 +336,8 @@ export async function recoverWorkflowJobForReevaluation(db, {
         AND (?8 = '' OR job_type = ?8)
         AND ${recoveryCondition}`
   ).bind(...bindings).run();
-  return { recovered: Number(result?.meta?.changes || 0) === 1, jobId: numericJobId };
+  const updateRowCount = Number(result?.meta?.changes || 0);
+  return { recovered: updateRowCount === 1, jobId: numericJobId, updateRowCount };
 }
 
 export async function listDueWorkflowJobs(db, { jobTypes = [], now = new Date(), limit = 20 } = {}) {

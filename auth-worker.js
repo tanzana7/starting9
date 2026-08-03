@@ -4039,6 +4039,7 @@ async function getAdminPublicationWorkflowAudit(db, {
   workflowStatus = "",
   jobSummary = {},
   recoveryLog = null,
+  recoveryVisitLog = null,
   scoreResultCount = null,
   now = new Date()
 } = {}) {
@@ -4072,6 +4073,8 @@ async function getAdminPublicationWorkflowAudit(db, {
     maxAttempts: publicationJob?.maxAttempts
   });
   const recoveryLogMetadata = parseJsonObject(recoveryLog?.metadata);
+  const recoveryVisitMetadata = parseJsonObject(recoveryVisitLog?.metadata);
+  const publicationRecoveryCronVisited = Boolean(recoveryVisitLog);
   const publicationRecoveryApplied = publicationJob?.recoveryMode === "publication_legacy_schedule_error"
     || recoveryLogMetadata?.recoveryMode === "publication_legacy_schedule_error";
   const publicationRecoveryDetected = publicationRecovery.eligible || publicationRecoveryApplied
@@ -4162,6 +4165,17 @@ async function getAdminPublicationWorkflowAudit(db, {
     recoveryExecutionBlockedReason: publicationRecoveryDetected && !publicationRecoveryApplied
       ? (workflowStatus === "manual_intervention_required" ? "WORKFLOW_TERMINAL" : publicationRecovery.reasonCode)
       : null,
+    publicationRecoveryCronVisited,
+    publicationRecoveryCronVisitedAt: recoveryVisitMetadata.publicationRecoveryCronVisitedAt || recoveryVisitLog?.occurred_at || null,
+    publicationRecoveryCandidateSelected: recoveryVisitMetadata.publicationRecoveryCandidateSelected === true,
+    publicationRecoveryCandidateJobId: Number.isInteger(Number(recoveryVisitMetadata.publicationRecoveryCandidateJobId))
+      ? Number(recoveryVisitMetadata.publicationRecoveryCandidateJobId)
+      : null,
+    publicationRecoveryStage: recoveryVisitMetadata.publicationRecoveryStage
+      || (publicationRecoveryDetected && !publicationRecoveryCronVisited ? "not_visited" : null),
+    publicationRecoverySkippedReason: recoveryVisitMetadata.publicationRecoverySkippedReason
+      || (publicationRecoveryDetected && !publicationRecoveryCronVisited ? "CRON_RECOVERY_FUNCTION_NOT_CALLED" : null),
+    publicationRecoveryUpdateRowCount: Number(recoveryVisitMetadata.publicationRecoveryUpdateRowCount || 0),
     publicationErrorStage: publicationTargetError ? "publication_target_resolution" : (currentPublicationError ? "publication_executor" : null),
     publicationPersisted: Boolean(publishedAt || publicationStatus === "published"),
     publicationJobStatus: publicationJob?.status || "not_started",
@@ -7115,7 +7129,7 @@ async function handleAdminHistoricalGameWorkflow(request, env, cors, requestedIn
     const legacyGameId = String(identity.legacy_game_id || identifiers.find((row) => ["descriptive_game_id", "legacy_compact_game_id"].includes(row.type))?.value || "");
     const sourceGameKey = identifiers.find((row) => row.type === "source_game_key")?.value || "";
     const npbGameCode = identifiers.find((row) => ["npb_game_code", "game_code"].includes(row.type))?.value || "";
-    const [scheduleResult, jobResult, lineupResult, pregameResult, rosterResult, recoveryLog, rankingResult, scoringRecoveryLog] = await Promise.all([
+    const [scheduleResult, jobResult, lineupResult, pregameResult, rosterResult, recoveryLog, recoveryVisitLog, rankingResult, scoringRecoveryLog] = await Promise.all([
       env.AUTH_DB.prepare(
         `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, venue, game_status, internal_game_id
            FROM detected_game_schedule
@@ -7154,6 +7168,12 @@ async function handleAdminHistoricalGameWorkflow(request, env, cors, requestedIn
         `SELECT occurred_at, error_code, metadata
            FROM game_workflow_logs
           WHERE game_id = ?1 AND event_type = 'workflow_job_recovered'
+          ORDER BY occurred_at DESC LIMIT 1`
+      ).bind(legacyGameId).first(),
+      env.AUTH_DB.prepare(
+        `SELECT occurred_at, error_code, metadata
+           FROM game_workflow_logs
+          WHERE game_id = ?1 AND event_type = 'publication_recovery_cron_visit'
           ORDER BY occurred_at DESC LIMIT 1`
       ).bind(legacyGameId).first(),
       env.AUTH_DB.prepare(
@@ -7234,6 +7254,7 @@ async function handleAdminHistoricalGameWorkflow(request, env, cors, requestedIn
       workflowStatus: identity.workflow_status,
       jobSummary: { jobs },
       recoveryLog,
+      recoveryVisitLog,
       scoreResultCount: scoringPersistence.scoreResultCount,
       now
     });
@@ -8995,7 +9016,21 @@ async function reconcileStalePublicationJobs(env, now) {
 }
 
 async function reconcileLegacyPublicationJobs(env, now) {
-  const summary = { checked: 0, recovered: 0, recoveredJobIds: [], blocked: 0, terminalOverrides: 0 };
+  const summary = {
+    checked: 0,
+    recovered: 0,
+    recoveredJobIds: [],
+    blocked: 0,
+    terminalOverrides: 0,
+    publicationRecoveryCronVisited: true,
+    publicationRecoveryCronVisitedAt: now.toISOString(),
+    publicationRecoveryCandidateSelected: false,
+    publicationRecoveryCandidateJobId: null,
+    publicationRecoveryStage: "candidate_query",
+    publicationRecoverySkippedReason: null,
+    publicationRecoveryUpdateRowCount: 0,
+    publicationRecoveryApplied: false
+  };
   let rows;
   try {
     rows = await env.AUTH_DB.prepare(
@@ -9004,10 +9039,7 @@ async function reconcileLegacyPublicationJobs(env, now) {
               state.workflow_status, state.game_status,
               lineups.game_id, lineups.internal_game_id AS lineup_internal_game_id,
               lineups.scoring_status, lineups.publication_status, lineups.published_at,
-              (SELECT COUNT(*) FROM predictions
-                WHERE predictions.game_id = lineups.game_id
-                  AND predictions.is_test_prediction = 0
-                  AND predictions.status = 'scored') AS score_result_count,
+              CASE WHEN lineups.scoring_status = 'scored' AND lineups.scored_at IS NOT NULL THEN 1 ELSE 0 END AS score_result_count,
               ranking.is_ranking_eligible, ranking.game_status AS ranking_game_status,
               ranking.publication_status AS ranking_publication_status
          FROM game_job_runs jobs
@@ -9020,24 +9052,60 @@ async function reconcileLegacyPublicationJobs(env, now) {
           AND jobs.error_detail = ?2
           AND jobs.completed_at IS NOT NULL
           AND jobs.attempt_count = jobs.max_attempts
-          AND lineups.scoring_status = 'scored'
-          AND COALESCE(lineups.publication_status, 'pending') <> 'published'
-          AND lineups.published_at IS NULL
           AND state.workflow_status NOT IN ('published', 'service_unavailable')
           AND state.game_status NOT IN ('cancelled', 'canceled', 'postponed', 'service_unavailable')
         ORDER BY jobs.id ASC LIMIT 20`
     ).bind(PUBLICATION_LEGACY_ERROR_CODE, PUBLICATION_LEGACY_ERROR_DETAIL).all();
   } catch (error) {
-    if (isPregameSchemaError(error)) return summary;
+    if (isPregameSchemaError(error)) {
+      summary.publicationRecoveryStage = "candidate_query_failed";
+      summary.publicationRecoverySkippedReason = "SCHEMA_NOT_READY";
+      return summary;
+    }
     throw error;
   }
   for (const row of rows.results || []) {
     summary.checked += 1;
+    summary.publicationRecoveryCandidateSelected = true;
+    summary.publicationRecoveryCandidateJobId = Number(row.id);
+    summary.publicationRecoveryStage = "candidate_selected";
+    const recordVisit = async (stage, skippedReason = null, updateRowCount = 0, applied = false) => {
+      summary.publicationRecoveryStage = stage;
+      summary.publicationRecoverySkippedReason = skippedReason;
+      summary.publicationRecoveryUpdateRowCount = updateRowCount;
+      summary.publicationRecoveryApplied = applied;
+      try {
+        await recordWorkflowLog(env.AUTH_DB, {
+          eventType: "publication_recovery_cron_visit",
+          status: skippedReason ? "warning" : applied ? "success" : "info",
+          gameId: row.game_id,
+          occurredAt: now,
+          message: applied ? "publication旧エラー復旧をCronから適用しました。" : "publication旧エラー復旧候補をCronで確認しました。",
+          errorCode: skippedReason || "",
+          metadata: {
+            processName: "publication_recovery_cron",
+            internalGameId: row.internal_game_id,
+            publicationRecoveryCronVisited: true,
+            publicationRecoveryCronVisitedAt: now.toISOString(),
+            publicationRecoveryCandidateSelected: true,
+            publicationRecoveryCandidateJobId: Number(row.id),
+            publicationRecoveryStage: stage,
+            publicationRecoverySkippedReason: skippedReason,
+            publicationRecoveryUpdateRowCount: updateRowCount,
+            publicationRecoveryApplied: applied
+          },
+          source: "cron"
+        });
+      } catch (error) {
+        console.error(`publication recovery visit log failed: job=${row.id} code=${error?.code || "WORKFLOW_LOG_WRITE_FAILED"}`);
+      }
+    };
     let target;
     try {
       target = await resolvePublicationTarget(env.AUTH_DB, row.internal_game_id, row.game_id);
     } catch {
       summary.blocked += 1;
+      await recordVisit("target_resolution", "TARGET_RESOLUTION_FAILED");
       continue;
     }
     const rankingReflected = Number(row.is_ranking_eligible || 0) === 1
@@ -9060,6 +9128,7 @@ async function reconcileLegacyPublicationJobs(env, now) {
     });
     if (!eligibility.eligible) {
       summary.blocked += 1;
+      await recordVisit("eligibility", eligibility.reasonCode || "CANDIDATE_NOT_ELIGIBLE");
       continue;
     }
     const workflowTerminalOverrideApplied = row.workflow_status === "manual_intervention_required";
@@ -9082,6 +9151,7 @@ async function reconcileLegacyPublicationJobs(env, now) {
       });
       if (!terminalOverride.eligible) {
         summary.blocked += 1;
+        await recordVisit("terminal_override", terminalOverride.reasonCode || "TERMINAL_OVERRIDE_REJECTED");
         continue;
       }
       try {
@@ -9099,6 +9169,7 @@ async function reconcileLegacyPublicationJobs(env, now) {
         });
       } catch (error) {
         summary.blocked += 1;
+        await recordVisit("workflow_transition", "WORKFLOW_TRANSITION_FAILED");
         console.warn(`publication terminal recovery state transition skipped: job=${row.id} code=${error?.code || "WORKFLOW_STATE_CONFLICT"}`);
         continue;
       }
@@ -9122,10 +9193,14 @@ async function reconcileLegacyPublicationJobs(env, now) {
       },
       now
     });
-    if (!recovered.recovered) continue;
+    if (!recovered.recovered) {
+      await recordVisit("atomic_update", "ATOMIC_UPDATE_NO_MATCH", recovered.updateRowCount || 0);
+      continue;
+    }
     summary.recovered += 1;
     summary.recoveredJobIds.push(Number(row.id));
     if (workflowTerminalOverrideApplied) summary.terminalOverrides += 1;
+    await recordVisit("applied", null, recovered.updateRowCount || 0, true);
     await recordWorkflowJobEvent(env.AUTH_DB, {
       eventType: "workflow_job_recovered",
       status: "warning",
@@ -9369,9 +9444,39 @@ async function reconcileCompletionWorkflowJobs(env, now, timelines) {
     const result = await recordCreatedCompletionJob(env.AUTH_DB, canonicalTimeline, requiredJobType, now, "system");
     if (result.created) summary.created += 1;
   }
+  // Run the narrowly scoped legacy publication recovery before other historical
+  // reconciliation can abort the completion pass. The normal timeline work above
+  // has already created any missing current jobs, and the recovered job is handed
+  // to the due-job executor below in this same Cron invocation.
+  let legacyPublication;
+  try {
+    legacyPublication = await reconcileLegacyPublicationJobs(env, now);
+  } catch (error) {
+    legacyPublication = {
+      checked: 0,
+      recovered: 0,
+      recoveredJobIds: [],
+      blocked: 1,
+      terminalOverrides: 0,
+      publicationRecoveryCronVisited: true,
+      publicationRecoveryCronVisitedAt: now.toISOString(),
+      publicationRecoveryCandidateSelected: false,
+      publicationRecoveryCandidateJobId: null,
+      publicationRecoveryStage: "reconcile_exception",
+      publicationRecoverySkippedReason: "CRON_RECOVERY_EXCEPTION",
+      publicationRecoveryUpdateRowCount: 0,
+      publicationRecoveryApplied: false
+    };
+    await recordCronStepFailure(env.AUTH_DB, "publication_recovery", now, error);
+  }
+  summary.recovered += legacyPublication.recovered;
+  summary.recoveredJobIds.push(...legacyPublication.recoveredJobIds);
+  summary.publicationRecoveryReconciled = legacyPublication.recovered;
+  summary.publicationRecoveryJobIds = legacyPublication.recoveredJobIds;
+  summary.publicationRecoveryTerminalOverrides = legacyPublication.terminalOverrides;
   const historical = await reconcileHistoricalCompletionWorkflowJobs(env, now);
   summary.recovered += historical.recovered;
-  summary.recoveredJobIds = historical.recoveredJobIds;
+  summary.recoveredJobIds.push(...historical.recoveredJobIds);
   summary.supersededJobIds = historical.supersededJobIds;
   const scoring = await reconcilePersistedScoringWorkflows(env, now);
   summary.scoringReconciled = scoring.reconciled;
@@ -9380,12 +9485,6 @@ async function reconcileCompletionWorkflowJobs(env, now, timelines) {
   const stalePublication = await reconcileStalePublicationJobs(env, now);
   summary.recovered += stalePublication.recovered;
   summary.recoveredJobIds.push(...stalePublication.recoveredJobIds);
-  const legacyPublication = await reconcileLegacyPublicationJobs(env, now);
-  summary.recovered += legacyPublication.recovered;
-  summary.recoveredJobIds.push(...legacyPublication.recoveredJobIds);
-  summary.publicationRecoveryReconciled = legacyPublication.recovered;
-  summary.publicationRecoveryJobIds = legacyPublication.recoveredJobIds;
-  summary.publicationRecoveryTerminalOverrides = legacyPublication.terminalOverrides;
   const publication = await reconcilePersistedPublicationWorkflows(env, now);
   summary.publicationReconciled = publication.reconciled;
   summary.publicationRecoveredJobIds = publication.recoveredJobIds;

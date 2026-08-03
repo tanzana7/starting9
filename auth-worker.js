@@ -10,6 +10,7 @@ import {
   getPregameTimeline,
   getPregameTimelines,
   getRosterFetchDecision,
+  RESULT_RELEASE_MINUTES_AFTER_START,
   getScheduledGame,
   getScheduledGames,
   isFinalLineupRetryExpired,
@@ -934,6 +935,15 @@ export function getWorkflowJobErrorCode(error) {
   return code || "JOB_FAILED";
 }
 
+export function getCompletionWorkflowErrorCode(error, jobType = "") {
+  if (String(jobType || "") === "publication"
+    && String(error?.name || "") === "ReferenceError"
+    && String(error?.message || "") === PUBLICATION_REFERENCE_ERROR_DETAIL) {
+    return PUBLICATION_REFERENCE_ERROR_REASON;
+  }
+  return getWorkflowJobErrorCode(error);
+}
+
 export function isCompletionWorkflowErrorRetryable(error, errorCode, { expired = false } = {}) {
   if (expired || typeof error?.retryable === "boolean" && error.retryable === false) return false;
   const code = String(errorCode || error?.code || "").toUpperCase();
@@ -947,7 +957,8 @@ export function isCompletionWorkflowErrorRetryable(error, errorCode, { expired =
     "LINEUP_SOURCE_UNRESOLVED",
     "WORKFLOW_STATE_TRANSITION_FAILED",
     "SCORING_RETRY_EXPIRED",
-    "DATA_VALIDATION_FAILED"
+    "DATA_VALIDATION_FAILED",
+    PUBLICATION_REFERENCE_ERROR_REASON
   ].includes(code)) return false;
   return true;
 }
@@ -1384,6 +1395,33 @@ export const resolveWorkflowJobGame = resolveWorkflowJobTarget;
 
 const PUBLICATION_LEGACY_ERROR_CODE = "SCHEDULE_UNAVAILABLE";
 const PUBLICATION_LEGACY_ERROR_DETAIL = "試合日程を確認できません。";
+const PUBLICATION_REFERENCE_ERROR_CODE = "JOB_FAILED";
+const PUBLICATION_REFERENCE_ERROR_DETAIL = "RESULT_RELEASE_MINUTES_AFTER_START is not defined";
+const PUBLICATION_REFERENCE_ERROR_REASON = "PUBLICATION_EXECUTOR_REFERENCE_ERROR";
+
+function getPublicationRecoveryProfile(errorCode, errorDetail) {
+  const code = String(errorCode || "");
+  const detail = String(errorDetail || "");
+  if (code === PUBLICATION_LEGACY_ERROR_CODE && detail === PUBLICATION_LEGACY_ERROR_DETAIL) {
+    return {
+      recoveryMode: "publication_legacy_schedule_error",
+      reasonCode: "PUBLICATION_LEGACY_SCHEDULE_ERROR_REEVALUATION",
+      allowOneOverMaxAttempt: false,
+      errorCode: PUBLICATION_LEGACY_ERROR_CODE,
+      errorDetail: PUBLICATION_LEGACY_ERROR_DETAIL
+    };
+  }
+  if (code === PUBLICATION_REFERENCE_ERROR_CODE && detail === PUBLICATION_REFERENCE_ERROR_DETAIL) {
+    return {
+      recoveryMode: "publication_executor_reference_error",
+      reasonCode: `${PUBLICATION_REFERENCE_ERROR_REASON}_REEVALUATION`,
+      allowOneOverMaxAttempt: true,
+      errorCode: PUBLICATION_REFERENCE_ERROR_CODE,
+      errorDetail: PUBLICATION_REFERENCE_ERROR_DETAIL
+    };
+  }
+  return null;
+}
 
 function getPublicationIdentifierValue(identifiers, types) {
   const allowed = new Set(types);
@@ -1558,11 +1596,13 @@ export function getPublicationJobRecoveryEligibility({
   internalGameIdMatches = false,
   identifierConflict = false,
   attemptCount = 0,
-  maxAttempts = 0
+  maxAttempts = 0,
+  recoveryProfile = null
 } = {}) {
   if (String(jobType) !== "publication") return { eligible: false, reasonCode: "PUBLICATION_JOB_REQUIRED" };
   if (String(status) !== "permanently_failed") return { eligible: false, reasonCode: "PUBLICATION_JOB_NOT_PERMANENTLY_FAILED" };
-  if (String(errorCode) !== PUBLICATION_LEGACY_ERROR_CODE || String(errorDetail) !== PUBLICATION_LEGACY_ERROR_DETAIL) {
+  const profile = recoveryProfile || getPublicationRecoveryProfile(errorCode, errorDetail);
+  if (!profile) {
     return { eligible: false, reasonCode: "PUBLICATION_LEGACY_ERROR_NOT_MATCHED" };
   }
   if (publishedAt || String(publicationStatus) === "published") return { eligible: false, reasonCode: "PUBLICATION_ALREADY_COMPLETED" };
@@ -1571,10 +1611,12 @@ export function getPublicationJobRecoveryEligibility({
   if (!rankingReflected) return { eligible: false, reasonCode: "PUBLICATION_RANKING_REQUIRED" };
   if (!internalGameIdMatches) return { eligible: false, reasonCode: "PUBLICATION_INTERNAL_ID_MISMATCH" };
   if (identifierConflict) return { eligible: false, reasonCode: "PUBLICATION_TARGET_IDENTIFIER_CONFLICT" };
-  if (Number(attemptCount) !== Number(maxAttempts) || Number(maxAttempts) < 1) {
+  const attemptsMatch = Number(attemptCount) === Number(maxAttempts)
+    || (profile.allowOneOverMaxAttempt && Number(attemptCount) === Number(maxAttempts) + 1);
+  if (!attemptsMatch || Number(maxAttempts) < 1) {
     return { eligible: false, reasonCode: "PUBLICATION_ATTEMPT_STATE_INVALID" };
   }
-  return { eligible: true, reasonCode: "PUBLICATION_LEGACY_SCHEDULE_ERROR_REEVALUATION" };
+  return { eligible: true, reasonCode: profile.reasonCode, recoveryMode: profile.recoveryMode };
 }
 
 export function getPublicationTerminalRecoveryEligibility({
@@ -4002,6 +4044,7 @@ async function getManagedGameJobSummary(db, internalGameId) {
     recoveryReasonCode: (() => parseSafeWorkflowJobMetadata(row.result_metadata).recoveryReasonCode || null)(),
     recoveredAt: (() => parseSafeWorkflowJobMetadata(row.result_metadata).recoveredAt || null)(),
     previousErrorCode: (() => parseSafeWorkflowJobMetadata(row.result_metadata).previousErrorCode || null)(),
+    previousErrorDetail: (() => parseSafeWorkflowJobMetadata(row.result_metadata).previousErrorDetail || null)(),
     attemptCountBeforeRecovery: (() => {
       const value = parseSafeWorkflowJobMetadata(row.result_metadata).attemptCountBeforeRecovery;
       return Number.isFinite(value) ? value : null;
@@ -4075,10 +4118,18 @@ async function getAdminPublicationWorkflowAudit(db, {
   const recoveryLogMetadata = parseJsonObject(recoveryLog?.metadata);
   const recoveryVisitMetadata = parseJsonObject(recoveryVisitLog?.metadata);
   const publicationRecoveryCronVisited = Boolean(recoveryVisitLog);
-  const publicationRecoveryApplied = publicationJob?.recoveryMode === "publication_legacy_schedule_error"
-    || recoveryLogMetadata?.recoveryMode === "publication_legacy_schedule_error";
+  const publicationRecoveryApplied = [
+    "publication_legacy_schedule_error",
+    "publication_executor_reference_error"
+  ].includes(publicationJob?.recoveryMode)
+    || [
+      "publication_legacy_schedule_error",
+      "publication_executor_reference_error"
+    ].includes(recoveryLogMetadata?.recoveryMode);
   const publicationRecoveryDetected = publicationRecovery.eligible || publicationRecoveryApplied
-    || recoveryLogMetadata?.originalErrorCode === PUBLICATION_LEGACY_ERROR_CODE;
+    || recoveryLogMetadata?.originalErrorCode === PUBLICATION_LEGACY_ERROR_CODE
+    || recoveryLogMetadata?.originalErrorCode === PUBLICATION_REFERENCE_ERROR_CODE
+      && recoveryLogMetadata?.originalErrorDetail === PUBLICATION_REFERENCE_ERROR_DETAIL;
   const workflowTerminalOverrideApplied = publicationJob?.workflowTerminalOverrideApplied === true
     || recoveryLogMetadata?.workflowTerminalOverrideApplied === true;
   const staleLeaseDetected = Boolean(publicationJob
@@ -4118,7 +4169,11 @@ async function getAdminPublicationWorkflowAudit(db, {
   const previousPublicationError = publicationRecoveryDetected
     ? {
         code: publicationJob?.previousErrorCode || recoveryLogMetadata?.previousErrorCode || recoveryLogMetadata?.originalErrorCode || PUBLICATION_LEGACY_ERROR_CODE,
-        detail: recoveryLogMetadata?.previousErrorDetail || PUBLICATION_LEGACY_ERROR_DETAIL
+        detail: publicationJob?.previousErrorDetail
+          || recoveryLogMetadata?.previousErrorDetail
+          || (publicationJob?.previousErrorCode === PUBLICATION_REFERENCE_ERROR_CODE
+            ? PUBLICATION_REFERENCE_ERROR_DETAIL
+            : PUBLICATION_LEGACY_ERROR_DETAIL)
       }
     : null;
   const publicationRecoveredJobId = publicationRecoveryApplied
@@ -9048,14 +9103,21 @@ async function reconcileLegacyPublicationJobs(env, now) {
          LEFT JOIN ranking_games ranking ON ranking.game_id = lineups.game_id
         WHERE jobs.job_type = 'publication'
           AND jobs.status = 'permanently_failed'
-          AND jobs.error_code = ?1
-          AND jobs.error_detail = ?2
           AND jobs.completed_at IS NOT NULL
-          AND jobs.attempt_count = jobs.max_attempts
+          AND (
+            (jobs.error_code = ?1 AND jobs.error_detail = ?2 AND jobs.attempt_count = jobs.max_attempts)
+            OR (jobs.error_code = ?3 AND jobs.error_detail = ?4
+                AND jobs.attempt_count IN (jobs.max_attempts, jobs.max_attempts + 1))
+          )
           AND state.workflow_status NOT IN ('published', 'service_unavailable')
           AND state.game_status NOT IN ('cancelled', 'canceled', 'postponed', 'service_unavailable')
         ORDER BY jobs.id ASC LIMIT 20`
-    ).bind(PUBLICATION_LEGACY_ERROR_CODE, PUBLICATION_LEGACY_ERROR_DETAIL).all();
+    ).bind(
+      PUBLICATION_LEGACY_ERROR_CODE,
+      PUBLICATION_LEGACY_ERROR_DETAIL,
+      PUBLICATION_REFERENCE_ERROR_CODE,
+      PUBLICATION_REFERENCE_ERROR_DETAIL
+    ).all();
   } catch (error) {
     if (isPregameSchemaError(error)) {
       summary.publicationRecoveryStage = "candidate_query_failed";
@@ -9111,6 +9173,7 @@ async function reconcileLegacyPublicationJobs(env, now) {
     const rankingReflected = Number(row.is_ranking_eligible || 0) === 1
       && String(row.ranking_game_status || "") === "scored"
       && String(row.ranking_publication_status || "") !== "pending";
+    const recoveryProfile = getPublicationRecoveryProfile(row.error_code, row.error_detail);
     const eligibility = getPublicationJobRecoveryEligibility({
       jobType: row.job_type,
       status: row.status,
@@ -9124,7 +9187,8 @@ async function reconcileLegacyPublicationJobs(env, now) {
       internalGameIdMatches: String(row.lineup_internal_game_id || "") === String(row.internal_game_id || ""),
       identifierConflict: (target.targetResolution?.identifierConflicts || []).length > 0,
       attemptCount: row.attempt_count,
-      maxAttempts: row.max_attempts
+      maxAttempts: row.max_attempts,
+      recoveryProfile
     });
     if (!eligibility.eligible) {
       summary.blocked += 1;
@@ -9147,7 +9211,8 @@ async function reconcileLegacyPublicationJobs(env, now) {
         internalGameIdMatches: String(row.lineup_internal_game_id || "") === String(row.internal_game_id || ""),
         identifierConflict: (target.targetResolution?.identifierConflicts || []).length > 0,
         attemptCount: row.attempt_count,
-        maxAttempts: row.max_attempts
+        maxAttempts: row.max_attempts,
+        recoveryProfile
       });
       if (!terminalOverride.eligible) {
         summary.blocked += 1;
@@ -9178,14 +9243,15 @@ async function reconcileLegacyPublicationJobs(env, now) {
       jobId: row.id,
       expectedStatus: "permanently_failed",
       expectedJobType: "publication",
-      expectedErrorCode: PUBLICATION_LEGACY_ERROR_CODE,
-      expectedErrorDetail: PUBLICATION_LEGACY_ERROR_DETAIL,
+      expectedErrorCode: row.error_code,
+      expectedErrorDetail: row.error_detail,
+      allowOneOverMaxAttempt: recoveryProfile?.allowOneOverMaxAttempt === true,
       recoveryMetadata: {
-        recoveryMode: "publication_legacy_schedule_error",
+        recoveryMode: recoveryProfile?.recoveryMode || "publication_legacy_schedule_error",
         recoveryReasonCode: eligibility.reasonCode,
         recoveredAt: now.toISOString(),
-        previousErrorCode: PUBLICATION_LEGACY_ERROR_CODE,
-        previousErrorDetail: PUBLICATION_LEGACY_ERROR_DETAIL,
+        previousErrorCode: row.error_code,
+        previousErrorDetail: row.error_detail,
         attemptCountBeforeRecovery: Number(row.attempt_count || 0),
         attemptCountChanged: false,
         workflowTerminalOverrideApplied,
@@ -9210,11 +9276,11 @@ async function reconcileLegacyPublicationJobs(env, now) {
       errorCode: eligibility.reasonCode,
       metadata: {
         recoveredJobId: Number(row.id),
-        recoveryMode: "publication_legacy_schedule_error",
-        originalErrorCode: PUBLICATION_LEGACY_ERROR_CODE,
-        originalErrorDetail: PUBLICATION_LEGACY_ERROR_DETAIL,
-        previousErrorCode: PUBLICATION_LEGACY_ERROR_CODE,
-        previousErrorDetail: PUBLICATION_LEGACY_ERROR_DETAIL,
+        recoveryMode: recoveryProfile?.recoveryMode || "publication_legacy_schedule_error",
+        originalErrorCode: row.error_code,
+        originalErrorDetail: row.error_detail,
+        previousErrorCode: row.error_code,
+        previousErrorDetail: row.error_detail,
         attemptCountBeforeRecovery: Number(row.attempt_count || 0),
         attemptCountChanged: false,
         workflowTerminalOverrideApplied,
@@ -9663,7 +9729,7 @@ async function runDueCompletionWorkflowJobs(env, now, timelines) {
         console.error(`completion workflow target resolve failed: code=${getWorkflowJobErrorCode(resolveError)}`);
       }
       const expired = claimed.job_type === "final_lineup_fetch" && retryDeadline && now >= retryDeadline;
-      const errorCode = expired ? SCORING_RETRY_EXPIRED_CODE : getWorkflowJobErrorCode(error);
+      const errorCode = expired ? SCORING_RETRY_EXPIRED_CODE : getCompletionWorkflowErrorCode(error, claimed.job_type);
       const errorDetail = String(error?.message || "").slice(0, 500);
       const nextAttemptAt = new Date(now.getTime() + (claimed.job_type.includes("lineup") ? 10 : 1) * 60 * 1000);
       const errorMetadata = getSafeWorkflowErrorMetadata(error);

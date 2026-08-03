@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { RESULT_RELEASE_MINUTES_AFTER_START } from "../pregame-automation.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const authWorkerUrl = pathToFileURL(path.join(root, "auth-worker.js")).href;
@@ -17,6 +18,8 @@ function createIdentity() {
 }
 
 test("開始+1分の最終スタメンを開始+2分に採点し、開始+5分に公開する", () => {
+  assert.equal(RESULT_RELEASE_MINUTES_AFTER_START, 5);
+  assert.match(worker, /RESULT_RELEASE_MINUTES_AFTER_START,\s*getScheduledGame/);
   assert.match(worker, /scoringDueAt: new Date\(identity\.startAt\.getTime\(\) \+ 2 \* 60 \* 1000\)/);
   assert.match(worker, /id: "final_lineup", offsetMinutes: 1/);
   assert.match(worker, /id: "score", offsetMinutes: 2/);
@@ -77,4 +80,19 @@ test("Cronと手動フォールバックは共通の採点・公開関数を使�
   assert.match(worker, /publishScoredGameResults\(env, metadata\.gameId, new Date\(\)\)/);
   assert.match(worker, /recordGameWorkflowOutcome\(env\.AUTH_DB, claimed\.game_id, "score", "failed"/);
   assert.match(worker, /recordGameWorkflowOutcome\(env\.AUTH_DB, gameId, "publish", "failed"/);
+});
+
+test("復旧したpublication jobは既存executorから公開済み状態とsucceededへ進む", () => {
+  const executorStart = worker.indexOf("async function executeCompletionWorkflowJob");
+  const executorEnd = worker.indexOf("async function runDueCompletionWorkflowJobs", executorStart);
+  const executor = worker.slice(executorStart, executorEnd);
+  const publicationStart = worker.indexOf("async function publishGameResults");
+  const publicationEnd = worker.indexOf("async function publishScoredGameResults", publicationStart);
+  const publication = worker.slice(publicationStart, publicationEnd);
+  assert.match(executor, /job\.job_type === "publication"/);
+  assert.match(executor, /publishScoredGameResults\(env, target\.gameId, now/);
+  assert.match(executor, /to: "published", completedJobType: job\.job_type/);
+  assert.match(executor, /completeWorkflowJob\(env\.AUTH_DB/);
+  assert.match(publication, /publication_status = 'published'/);
+  assert.match(publication, /published_at = \?1/);
 });

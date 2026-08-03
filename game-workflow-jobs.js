@@ -303,6 +303,7 @@ export async function recoverWorkflowJobForReevaluation(db, {
   expectedJobType = "",
   expectedErrorCode = "",
   expectedErrorDetail = "",
+  allowOneOverMaxAttempt = false,
   recoveryMetadata = null,
   now = new Date()
 } = {}) {
@@ -322,10 +323,14 @@ export async function recoverWorkflowJobForReevaluation(db, {
     ? "completed_at IS NULL AND attempt_count < max_attempts AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?2"
     : status === "retry_wait"
       ? "completed_at IS NULL AND attempt_count < max_attempts AND error_code = ?6 AND error_detail = ?7"
-      : "completed_at IS NOT NULL AND attempt_count = max_attempts AND error_code = ?6 AND error_detail = ?7";
+      : `completed_at IS NOT NULL
+         AND (attempt_count = max_attempts
+           OR (?9 = 1 AND attempt_count = max_attempts + 1))
+         AND error_code = ?6 AND error_detail = ?7`;
   const bindings = status === "claimed"
     ? [timestamp, timestamp, serializedMetadata, numericJobId, status, "", "", String(expectedJobType || "")]
     : [timestamp, timestamp, serializedMetadata, numericJobId, status, String(expectedErrorCode), String(expectedErrorDetail), String(expectedJobType || "")];
+  if (status === "permanently_failed") bindings.push(allowOneOverMaxAttempt ? 1 : 0);
   const result = await db.prepare(
     `UPDATE game_job_runs
         SET status = 'pending', claim_token = NULL, claimed_at = NULL, started_at = NULL,

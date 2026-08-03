@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getPublicationJobRecoveryEligibility, getPublicationTerminalRecoveryEligibility, resolvePublicationTarget } from "../auth-worker.js";
+import { getCompletionWorkflowErrorCode, getPublicationJobRecoveryEligibility, getPublicationTerminalRecoveryEligibility, resolvePublicationTarget } from "../auth-worker.js";
 import { recoverWorkflowJobForReevaluation } from "../game-workflow-jobs.js";
 import { readFile } from "node:fs/promises";
 
@@ -81,6 +81,47 @@ test("only the known permanently failed legacy publication error is eligible onc
   assert.equal(getPublicationJobRecoveryEligibility({ ...base, attemptCount: 4 }).eligible, false);
 });
 
+test("the known publication ReferenceError is eligible only for the exact legacy failure", () => {
+  const base = {
+    jobType: "publication",
+    status: "permanently_failed",
+    errorCode: "JOB_FAILED",
+    errorDetail: "RESULT_RELEASE_MINUTES_AFTER_START is not defined",
+    scoringPersisted: true,
+    scoreResultCount: 1,
+    rankingReflected: true,
+    internalGameIdMatches: true,
+    identifierConflict: false,
+    attemptCount: 6,
+    maxAttempts: 5,
+    publicationStatus: "pending",
+    publishedAt: null
+  };
+  assert.deepEqual(getPublicationJobRecoveryEligibility(base), {
+    eligible: true,
+    reasonCode: "PUBLICATION_EXECUTOR_REFERENCE_ERROR_REEVALUATION",
+    recoveryMode: "publication_executor_reference_error"
+  });
+  assert.equal(getPublicationJobRecoveryEligibility({ ...base, errorDetail: "other runtime failure" }).eligible, false);
+  assert.equal(getPublicationJobRecoveryEligibility({ ...base, errorCode: "OTHER_JOB_FAILED" }).eligible, false);
+  assert.equal(getPublicationJobRecoveryEligibility({ ...base, attemptCount: 7 }).eligible, false);
+  assert.equal(getPublicationJobRecoveryEligibility({ ...base, publishedAt: "2026-08-03T01:00:00.000Z" }).eligible, false);
+});
+
+test("publication ReferenceError is classified separately from generic job failure", () => {
+  assert.equal(
+    getCompletionWorkflowErrorCode(
+      new ReferenceError("RESULT_RELEASE_MINUTES_AFTER_START is not defined"),
+      "publication"
+    ),
+    "PUBLICATION_EXECUTOR_REFERENCE_ERROR"
+  );
+  assert.equal(
+    getCompletionWorkflowErrorCode(new Error("RESULT_RELEASE_MINUTES_AFTER_START is not defined"), "publication"),
+    "JOB_FAILED"
+  );
+});
+
 test("manual intervention is overridden only for an eligible legacy publication recovery", () => {
   const base = {
     workflowStatus: "manual_intervention_required",
@@ -128,6 +169,7 @@ test("permanently failed recovery keeps the attempt count and requires exact job
   assert.equal(result.updateRowCount, 1);
   assert.match(calls[0], /job_type = \?8/);
   assert.match(calls[0], /attempt_count = max_attempts/);
+  assert.match(calls[0], /\?9 = 1/);
   assert.doesNotMatch(calls[0], /attempt_count\s*=\s*0/);
 });
 

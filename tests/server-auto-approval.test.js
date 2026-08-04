@@ -58,7 +58,7 @@ test("手動承認とCron自動承認は同じサーバー側の承認コアを�
   assert.match(worker, /async function approveActualLineupForAutoScoring/);
   assert.match(worker, /const record = await approveActualLineupForAutoScoring\(env, gameId, actualResult\.lineup, detectedAt/);
   assert.match(worker, /if \(existing && options\.preventOverwrite\) \{\s+return existing;/s);
-  assert.match(worker, /if \(existing\) return \{ status: existing\.lineup_source/);
+  assert.match(worker, /const existing = await getGameLineup\(env\.AUTH_DB, \{ gameId, internalGameId \}\);\s+if \(existing\) \{\s+return \{\s+status: isFinalCapture \? "already_captured" : "provisional"/s);
 });
 
 test("管理画面のチェックは既定ONで、サーバー設定を読んでからブラウザ側自動承認に使う", () => {

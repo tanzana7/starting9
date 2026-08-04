@@ -6,15 +6,16 @@ const test = require("node:test");
 const root = path.resolve(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 
-test("共通selectorは当日未完了、次回、当日未処理、過去失敗、過去試合の順で候補を選ぶ", () => {
+test("共通selectorは当日未完了、当日採点公開未完了、直近48時間、次回、過去失敗の順で候補を選ぶ", () => {
   const worker = read("auth-worker.js");
   const start = worker.indexOf("export function selectCurrentManagedGame");
   const block = worker.slice(start, worker.indexOf("async function getCurrentManagedGameCandidates", start));
   assert.ok(start >= 0);
-  assert.match(block, /todayUncompleted\[0\] \|\| nextUpcoming\[0\] \|\| todayIncomplete\[0\] \|\| recentFailures\[0\] \|\| historical\[0\]/);
+  assert.match(block, /todayUncompleted\[0\] \|\| todayIncomplete\[0\] \|\| recentUncompleted\[0\] \|\| nextUpcoming\[0\] \|\| recentFailures\[0\] \|\| historical\[0\]/);
   assert.match(block, /!candidate\.isTestGame/);
   assert.match(block, /selectionReason/);
   assert.match(block, /isCurrent: !selected\.isHistorical/);
+  assert.match(block, /candidate\.gameDate === currentDate && candidate\.gameStatus === "completed" && !candidate\.isTerminal/);
 });
 
 test("selector候補はinternal ID単位で状態・schedule・テスト試合を読み取る", () => {

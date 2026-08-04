@@ -18,6 +18,7 @@ import {
   parseJstScheduleStart,
   setDetectedScheduleGames
 } from "./pregame-automation.js";
+import { normalizeScheduleTeamCode } from "./game-schedule-detection.js";
 import {
   createFightersPlayerId,
   findFightersPlayerByName,
@@ -1088,7 +1089,8 @@ function sanitizeWorkflowTargetDiagnostics(details) {
   ];
   const numberKeys = ["identifierCount"];
   const stringKeys = [
-    "validationStage", "resolvedBy", "npbGameCodeResolvedBy", "sourceGameKey", "targetValidityReason", "gameDate", "startAt", "homeTeam", "awayTeam"
+    "validationStage", "resolvedBy", "npbGameCodeResolvedBy", "sourceGameKey", "targetValidityReason", "gameDate", "startAt", "homeTeam", "awayTeam",
+    "detectedScheduleGameCode", "scheduleMetadataGameCode", "npbGameCodeConflictReason"
   ];
   for (const key of booleanKeys) {
     if (typeof details[key] === "boolean") result[key] = details[key];
@@ -1107,9 +1109,35 @@ function sanitizeWorkflowTargetDiagnostics(details) {
   }
   if (Array.isArray(details.npbGameCodeCandidates)) {
     result.npbGameCodeCandidates = details.npbGameCodeCandidates
-      .filter((value) => typeof value === "string")
-      .map((value) => value.slice(0, 40))
-      .slice(0, 4);
+      .map((candidate) => typeof candidate === "string"
+        ? { gameCode: candidate.slice(0, 40), resolvedBy: "" }
+        : {
+          gameCode: typeof candidate?.gameCode === "string" ? candidate.gameCode.slice(0, 40) : "",
+          resolvedBy: typeof candidate?.resolvedBy === "string" ? candidate.resolvedBy.slice(0, 80) : "",
+          persisted: candidate?.persisted === true
+        })
+      .filter((candidate) => candidate.gameCode)
+      .slice(0, 8);
+  }
+  if (Array.isArray(details.npbIdentifierRows)) {
+    result.npbIdentifierRows = details.npbIdentifierRows
+      .filter((row) => row && typeof row === "object")
+      .map((row) => ({
+        provider: typeof row.provider === "string" ? row.provider.slice(0, 40) : "",
+        identifierType: typeof row.identifierType === "string" ? row.identifierType.slice(0, 60) : "",
+        identifierValue: typeof row.identifierValue === "string" ? row.identifierValue.slice(0, 80) : "",
+        internalGameId: typeof row.internalGameId === "string" ? row.internalGameId.slice(0, 80) : ""
+      }))
+      .filter((row) => row.identifierValue)
+      .slice(0, 8);
+  }
+  for (const key of ["teamNormalizationInput", "teamNormalizationOutput"]) {
+    if (details[key] && typeof details[key] === "object" && !Array.isArray(details[key])) {
+      result[key] = {
+        home: typeof details[key].home === "string" ? details[key].home.slice(0, 80) : "",
+        away: typeof details[key].away === "string" ? details[key].away.slice(0, 80) : ""
+      };
+    }
   }
   if (Array.isArray(details.identifierConflicts)) {
     result.identifierConflicts = details.identifierConflicts
@@ -1250,33 +1278,55 @@ export function summarizeLineupWorkflowJobs(jobs = [], now = new Date()) {
   };
 }
 
-function getNpbGameCodeCandidate({ gameRow = null, identifiers = [], schedule = null, sourceMetadata = null, staticGameCode = "" } = {}) {
+export function getNpbGameCodeCandidate({ gameRow = null, identifiers = [], schedule = null, scheduleRows = [], sourceMetadata = null, staticGameCode = "" } = {}) {
   const candidates = [];
   const add = (value, resolvedBy, persisted = true) => {
     const gameCode = normalizeNpbGameCode(value);
     if (gameCode) candidates.push({ gameCode, resolvedBy, persisted });
   };
   add(gameRow?.npb_game_code, "games.npb_game_code");
-  for (const row of Array.isArray(identifiers) ? identifiers : []) {
+  const npbIdentifierRows = (Array.isArray(identifiers) ? identifiers : [])
+    .filter((row) => {
+      const provider = String(row?.provider || "").trim().toLowerCase();
+      const type = String(row?.identifier_type || row?.identifierType || "").trim().toLowerCase();
+      return (provider === "npb" || !provider) && ["npb_game_code", "game_code"].includes(type);
+    })
+    .map((row) => ({
+      provider: String(row?.provider || ""),
+      identifierType: String(row?.identifier_type || row?.identifierType || ""),
+      identifierValue: String(row?.identifier_value || row?.identifierValue || ""),
+      internalGameId: String(row?.internal_game_id || row?.internalGameId || "")
+    }));
+  for (const row of npbIdentifierRows) {
     const provider = String(row?.provider || "").trim().toLowerCase();
-    const type = String(row?.identifier_type || row?.identifierType || "").trim().toLowerCase();
+    const type = String(row?.identifierType || "").trim().toLowerCase();
     if ((provider === "npb" || !provider) && ["npb_game_code", "game_code"].includes(type)) {
-      add(row?.identifier_value || row?.identifierValue, "game_identifiers");
+      add(row?.identifierValue, "game_identifiers");
     }
   }
-  add(schedule?.game_code, "detected_game_schedule");
-  add(sourceMetadata?.npbGameCode || sourceMetadata?.gameCode || sourceMetadata?.npb_game_code, "schedule_metadata", false);
+  const scheduleCandidates = [schedule, ...(Array.isArray(scheduleRows) ? scheduleRows : [])]
+    .filter(Boolean)
+    .filter((row, index, rows) => rows.findIndex((candidate) => String(candidate?.game_id || "") === String(row?.game_id || "")
+      && String(candidate?.source_game_key || "") === String(row?.source_game_key || "")) === index);
+  for (const row of scheduleCandidates) add(row?.game_code, "detected_game_schedule");
+  const scheduleMetadataGameCode = normalizeNpbGameCode(sourceMetadata?.npbGameCode || sourceMetadata?.gameCode || sourceMetadata?.npb_game_code);
+  add(scheduleMetadataGameCode, "schedule_metadata", false);
   add(staticGameCode, "safe_schedule_resolver", false);
   const persisted = candidates.filter((candidate) => candidate.persisted);
   const persistedValues = [...new Set(persisted.map((candidate) => candidate.gameCode))];
-  if (persistedValues.length > 1) {
+  const candidateValues = [...new Set(candidates.map((candidate) => candidate.gameCode))];
+  if (candidateValues.length > 1) {
     return {
       gameCode: "",
       storedGameCode: "",
       resolvedBy: "conflict",
       storedResolvedBy: "conflict",
       conflict: true,
-      candidates: persistedValues
+      conflictReason: "multiple_npb_game_code_candidates",
+      candidates,
+      npbIdentifierRows,
+      detectedScheduleGameCode: normalizeNpbGameCode(scheduleCandidates.find((row) => row?.game_code)?.game_code),
+      scheduleMetadataGameCode
     };
   }
   const selected = candidates.find((candidate) => !candidate.persisted && persistedValues.length === 0)
@@ -1289,7 +1339,11 @@ function getNpbGameCodeCandidate({ gameRow = null, identifiers = [], schedule = 
     resolvedBy: selected?.resolvedBy || "",
     storedResolvedBy: persisted[0]?.resolvedBy || "",
     conflict: false,
-    candidates: [...new Set(candidates.map((candidate) => candidate.gameCode))]
+    conflictReason: "",
+    candidates: candidates.filter((candidate, index, rows) => rows.findIndex((item) => item.gameCode === candidate.gameCode && item.resolvedBy === candidate.resolvedBy) === index),
+    npbIdentifierRows,
+    detectedScheduleGameCode: normalizeNpbGameCode(scheduleCandidates.find((row) => normalizeNpbGameCode(row?.game_code))?.game_code),
+    scheduleMetadataGameCode
   };
 }
 
@@ -1318,6 +1372,7 @@ export function validateWorkflowJobTarget({
   identifierConflicts = [],
   npbGameCodeConflict = false,
   npbGameCodeResolvedBy = "",
+  scheduleMetadataGameCode = "",
   isTestGame = false,
   staticGameCode = "",
   internalGameIdFound = Boolean(gameRow)
@@ -1334,6 +1389,8 @@ export function validateWorkflowJobTarget({
     gameRow,
     identifiers,
     schedule,
+    scheduleRows: rows,
+    sourceMetadata: { gameCode: scheduleMetadataGameCode },
     staticGameCode
   });
   const storedGameCode = storedNpbGame.storedGameCode;
@@ -1343,8 +1400,12 @@ export function validateWorkflowJobTarget({
   const startValue = String(schedule?.start_at || gameRow?.start_time || "").trim();
   const parsedStart = new Date(startValue);
   const startAt = Number.isNaN(parsedStart.getTime()) ? "" : parsedStart.toISOString();
-  const homeTeam = String(schedule?.home_team || gameRow?.home_team || "").trim().toLowerCase();
-  const awayTeam = String(schedule?.away_team || gameRow?.away_team || "").trim().toLowerCase();
+  const rawGameHomeTeam = String(gameRow?.home_team || "");
+  const rawGameAwayTeam = String(gameRow?.away_team || "");
+  const rawHomeTeam = String(schedule?.home_team || gameRow?.home_team || "");
+  const rawAwayTeam = String(schedule?.away_team || gameRow?.away_team || "");
+  const homeTeam = normalizeWorkflowTeam(rawHomeTeam);
+  const awayTeam = normalizeWorkflowTeam(rawAwayTeam);
   const missingFields = [];
   if (!INTERNAL_GAME_ID_PATTERN.test(normalizedInternalGameId)) missingFields.push("internalGameId");
   if (!gameRow) missingFields.push("gamesRow");
@@ -1355,8 +1416,8 @@ export function validateWorkflowJobTarget({
   if (!awayTeam) missingFields.push("awayTeam");
   const scheduleMismatch = Boolean(gameRow && schedule && (
     String(gameRow.game_date || "") !== String(schedule.game_date || "")
-    || String(gameRow.home_team || "").trim().toLowerCase() !== homeTeam
-    || String(gameRow.away_team || "").trim().toLowerCase() !== awayTeam
+    || normalizeWorkflowTeam(gameRow.home_team) !== homeTeam
+    || normalizeWorkflowTeam(gameRow.away_team) !== awayTeam
     || (gameRow.start_time && schedule.start_at && new Date(gameRow.start_time).getTime() !== new Date(schedule.start_at).getTime())
   ));
   const cancelled = [gameRow?.game_status, schedule?.game_status, schedule?.status]
@@ -1406,6 +1467,15 @@ export function validateWorkflowJobTarget({
     npbGameCodePresent: Boolean(storedGameCode),
     npbGameCodeResolvedBy: storedNpbGame.resolvedBy || null,
     npbGameCodeCandidates: storedNpbGame.candidates,
+    npbIdentifierRows: storedNpbGame.npbIdentifierRows,
+    detectedScheduleGameCode: storedNpbGame.detectedScheduleGameCode || "",
+    scheduleMetadataGameCode: storedNpbGame.scheduleMetadataGameCode || "",
+    npbGameCodeConflictReason: storedNpbGame.conflictReason || "",
+    teamNormalizationInput: {
+      home: rawGameHomeTeam || rawHomeTeam,
+      away: rawGameAwayTeam || rawAwayTeam
+    },
+    teamNormalizationOutput: { home: homeTeam, away: awayTeam },
     targetValidityReason,
     gameDate,
     startAt,
@@ -1465,12 +1535,6 @@ export async function resolveWorkflowJobTarget(db, internalGameId) {
     "SELECT legacy_game_id, game_status, workflow_status FROM game_workflow_state WHERE internal_game_id = ?1 LIMIT 1"
   ).bind(normalizedInternalGameId).first();
   const gameRow = await getWorkflowGameRow(db, normalizedInternalGameId);
-  const scheduleResult = await db.prepare(
-    `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, game_status, internal_game_id
-       FROM detected_game_schedule
-      WHERE internal_game_id = ?1
-      ORDER BY game_date ASC, start_at ASC, game_id ASC`
-  ).bind(normalizedInternalGameId).all();
   const identifierResult = await db.prepare(
     `SELECT internal_game_id, provider, identifier_type, identifier_value
        FROM game_identifiers
@@ -1478,6 +1542,43 @@ export async function resolveWorkflowJobTarget(db, internalGameId) {
       ORDER BY id ASC`
   ).bind(normalizedInternalGameId).all();
   const identifiers = identifierResult.results || [];
+  const legacyGameId = String(state?.legacy_game_id || "").trim();
+  let scheduleResult = await db.prepare(
+    `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, game_status, internal_game_id
+       FROM detected_game_schedule
+      WHERE internal_game_id = ?1
+      ORDER BY game_date ASC, start_at ASC, game_id ASC`
+  ).bind(normalizedInternalGameId).all();
+  let scheduleRows = scheduleResult.results || [];
+  if (!scheduleRows.some((row) => normalizeNpbGameCode(row?.game_code))) {
+    // 古いregistry行はinternal_game_id未設定のまま残ることがあるため、
+    // 既存のlegacy ID/source keyだけで安全に同じ日程行を再取得する。
+    const scheduleLookupValues = [...new Set([
+      legacyGameId,
+      ...identifiers
+        .filter((row) => String(row?.identifier_type || "") !== "npb_game_code" && String(row?.identifier_type || "") !== "game_code")
+        .map((row) => String(row?.identifier_value || "").trim())
+    ].filter(Boolean))].slice(0, 12);
+    if (scheduleLookupValues.length) {
+      const gamePlaceholders = scheduleLookupValues.map((_, index) => `?${index + 1}`).join(", ");
+      const sourceOffset = scheduleLookupValues.length + 1;
+      const sourcePlaceholders = scheduleLookupValues.map((_, index) => `?${sourceOffset + index}`).join(", ");
+      scheduleResult = await db.prepare(
+        `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, game_status, internal_game_id
+           FROM detected_game_schedule
+          WHERE game_id IN (${gamePlaceholders}) OR source_game_key IN (${sourcePlaceholders})
+          ORDER BY game_date ASC, start_at ASC, game_id ASC`
+      ).bind(...scheduleLookupValues, ...scheduleLookupValues).all();
+      const fallbackRows = scheduleResult.results || [];
+      const existingScheduleKeys = new Set(scheduleRows.map((row) => `${row?.game_id || ""}|${row?.source_game_key || ""}`));
+      scheduleRows = [...scheduleRows, ...fallbackRows.filter((row) => {
+        const key = `${row?.game_id || ""}|${row?.source_game_key || ""}`;
+        if (existingScheduleKeys.has(key)) return false;
+        existingScheduleKeys.add(key);
+        return true;
+      })];
+    }
+  }
   const identityValues = [...new Set(identifiers.map((row) => String(row.identifier_value || "").trim()).filter(Boolean))];
   let identifierConflicts = [];
   if (identityValues.length) {
@@ -1490,15 +1591,15 @@ export async function resolveWorkflowJobTarget(db, internalGameId) {
     ).bind(normalizedInternalGameId, ...identityValues).all();
     identifierConflicts = conflictResult.results || [];
   }
-  const legacyGameId = String(state?.legacy_game_id || scheduleResult.results?.[0]?.game_id || "").trim();
-  const scheduleIdentity = scheduleResult.results?.[0] || null;
-  const staticGame = legacyGameId ? getScheduledGame(legacyGameId) : null;
+  const resolvedLegacyGameId = String(legacyGameId || scheduleRows[0]?.game_id || "").trim();
+  const scheduleIdentity = scheduleRows[0] || null;
+  const staticGame = resolvedLegacyGameId ? getScheduledGame(resolvedLegacyGameId) : null;
   const staticIdentityGame = getScheduledGames().find((candidate) => {
     const candidateStart = candidate?.startAt instanceof Date ? candidate.startAt : parseJstScheduleStart(candidate);
     const targetStart = new Date(scheduleIdentity?.start_at || gameRow?.start_time || "");
     return String(candidate?.date || "") === String(scheduleIdentity?.game_date || gameRow?.game_date || "")
-      && String(candidate?.homeTeam || "").trim().toLowerCase() === String(scheduleIdentity?.home_team || gameRow?.home_team || "").trim().toLowerCase()
-      && String(candidate?.awayTeam || "").trim().toLowerCase() === String(scheduleIdentity?.away_team || gameRow?.away_team || "").trim().toLowerCase()
+      && normalizeWorkflowTeam(candidate?.homeTeam) === normalizeWorkflowTeam(scheduleIdentity?.home_team || gameRow?.home_team)
+      && normalizeWorkflowTeam(candidate?.awayTeam) === normalizeWorkflowTeam(scheduleIdentity?.away_team || gameRow?.away_team)
       && candidateStart && !Number.isNaN(targetStart.getTime())
       && candidateStart.getTime() === targetStart.getTime();
   });
@@ -1510,17 +1611,20 @@ export async function resolveWorkflowJobTarget(db, internalGameId) {
     gameRow,
     identifiers,
     schedule: scheduleIdentity,
+    scheduleRows,
+    sourceMetadata: { gameCode: sourceGame?.gameCode || sourceGame?.npbGameCode || "" },
     staticGameCode
   });
   const isTestGame = legacyGameId ? await isProbableStarterTestGame(db, legacyGameId) : false;
   const validation = validateWorkflowJobTarget({
     internalGameId: normalizedInternalGameId,
     gameRow,
-    scheduleRows: scheduleResult.results || [],
+    scheduleRows,
     identifiers,
     identifierConflicts,
     npbGameCodeConflict: npbGameCodeCandidate.conflict,
     npbGameCodeResolvedBy: npbGameCodeCandidate.resolvedBy,
+    scheduleMetadataGameCode: sourceGame?.gameCode || sourceGame?.npbGameCode || "",
     isTestGame,
     staticGameCode,
     internalGameIdFound: Boolean(state || gameRow)
@@ -1533,7 +1637,7 @@ export async function resolveWorkflowJobTarget(db, internalGameId) {
   }
   return {
     ...validation.target,
-    gameId: String(state?.legacy_game_id || validation.target.gameId || "").trim(),
+    gameId: String(resolvedLegacyGameId || validation.target.gameId || "").trim(),
     internalGameId: normalizedInternalGameId,
     workflowStatus: state?.workflow_status || "waiting"
   };
@@ -2405,6 +2509,11 @@ async function backfillUniqueDetectedScheduleInternalGames(db, date, registry, n
 function normalizeNpbGameCode(value) {
   const normalized = String(value || "").trim().toLowerCase();
   return /^[a-z0-9]{1,2}-[a-z0-9]{1,2}-\d+$/.test(normalized) ? normalized : "";
+}
+
+function normalizeWorkflowTeam(value) {
+  const raw = String(value || "").trim();
+  return normalizeScheduleTeamCode(raw) || raw.toLowerCase();
 }
 
 function createScheduleIdentityKey({ date = "", startAt = "", homeTeam = "", awayTeam = "" } = {}) {
@@ -8310,7 +8419,27 @@ async function getServerPredictionTarget(db, now = new Date()) {
   } catch {
     // 既存D1に検出日程テーブルがない環境では、静的日程へ安全にフォールバックします。
   }
-  const target = selectNextPredictionTarget([...detectedGames, ...getScheduledGames()], now);
+  let target = selectNextPredictionTarget([...detectedGames, ...getScheduledGames()], now);
+  if (registryAvailable && target?.internalGameId && INTERNAL_GAME_ID_PATTERN.test(String(target.internalGameId))) {
+    try {
+      // Cronとroster_fetchが使う永続registry resolverで、選択済みtargetの
+      // gameCodeとlegacy/source identityを再補完する。選択順自体は変更しない。
+      const resolved = await resolveWorkflowJobTarget(db, target.internalGameId);
+      const resolvedStartAt = resolved.startAt ? new Date(resolved.startAt) : null;
+      target = {
+        ...target,
+        gameId: resolved.gameId || target.gameId,
+        date: resolved.date || target.date,
+        startAt: resolvedStartAt && !Number.isNaN(resolvedStartAt.getTime()) ? resolvedStartAt : target.startAt,
+        homeTeam: resolved.homeTeam || target.homeTeam,
+        awayTeam: resolved.awayTeam || target.awayTeam,
+        gameCode: resolved.gameCode || target.gameCode,
+        internalGameId: resolved.internalGameId || target.internalGameId
+      };
+    } catch (error) {
+      console.warn(`[GAME_WORKFLOW] action=prediction_target_enrichment status=failed code=${error?.code || "GAME_TARGET_RESOLUTION_FAILED"}`);
+    }
+  }
   if (registryAvailable && target && !INTERNAL_GAME_ID_PATTERN.test(String(target.internalGameId || ""))) return null;
   return target ? serializePredictionTarget(target) : null;
 }
@@ -10006,6 +10135,9 @@ async function executeCompletionWorkflowJob(env, job, now) {
     claimToken: job.claim_token,
     resultMetadata: {
       status: result?.status || "success",
+      ...(sanitizeWorkflowTargetDiagnostics(target?.targetResolution)
+        ? { targetResolution: sanitizeWorkflowTargetDiagnostics(target.targetResolution) }
+        : {}),
       ...getWorkflowExecutionDiagnostics({ job, target, result })
     },
     now
@@ -10100,6 +10232,9 @@ async function runDueCompletionWorkflowJobs(env, now, timelines) {
       const nextAttemptAt = new Date(now.getTime() + (claimed.job_type.includes("lineup") ? 10 : 1) * 60 * 1000);
       const errorMetadata = {
         ...getSafeWorkflowErrorMetadata(error),
+        ...(sanitizeWorkflowTargetDiagnostics(resolvedTarget?.targetResolution)
+          ? { targetResolution: sanitizeWorkflowTargetDiagnostics(resolvedTarget.targetResolution) }
+          : {}),
         ...getWorkflowExecutionDiagnostics({ job: claimed, target: resolvedTarget, error })
       };
       const retryable = isCompletionWorkflowErrorRetryable(error, errorCode, { expired });

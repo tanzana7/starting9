@@ -43,7 +43,7 @@ test("同じ試合を重複切り替えせず、次戦がない場合も現在�
   assert.equal(selectNextPredictionTarget(games, now).gameId, "2026-07-25-f-e-14");
   assert.match(script, /if \(!nextGame\) \{\s+return;\s+\}/);
   assert.match(script, /const preservedGame = nextGame \|\| schedule\.find/);
-  assert.match(worker, /const target = selectNextPredictionTarget\(\[\.\.\.detectedGames, \.\.\.getScheduledGames\(\)\], now\)/);
+  assert.match(worker, /let target = selectNextPredictionTarget\(\[\.\.\.detectedGames, \.\.\.getScheduledGames\(\)\], now\)/);
   assert.match(worker, /if \(path === "\/api\/prediction-target" && request\.method === "GET"\)/);
   assert.match(worker, /export async function runScheduledGameAutomation\(env, now\)/);
 });

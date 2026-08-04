@@ -4270,6 +4270,7 @@ function getManagedGameSelectionLabel(value) {
     TODAY_UNCOMPLETED_GAME: "本日の未完了試合",
     NEXT_UPCOMING_GAME: "次回開催試合",
     TODAY_INCOMPLETE_GAME: "本日の採点・公開未完了試合",
+    RECENT_UNCOMPLETED_GAME: "直近48時間の未完了試合",
     RECENT_HISTORICAL_FAILURE: "直近の過去失敗試合",
     LATEST_HISTORICAL_FALLBACK: "最新の過去試合",
     NO_MANAGED_GAME: "対象試合なし"

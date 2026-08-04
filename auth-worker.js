@@ -917,6 +917,7 @@ export function getWorkflowJobErrorCode(error) {
   if ([
     "GAME_TARGET_INVALID",
     "GAME_TARGET_IDENTIFIER_CONFLICT",
+    "NPB_GAME_CODE_CONFLICT",
     "NPB_GAME_CODE_UNAVAILABLE",
     "LINEUP_SOURCE_UNRESOLVED",
     "PUBLICATION_TARGET_INVALID",
@@ -950,6 +951,7 @@ export function isCompletionWorkflowErrorRetryable(error, errorCode, { expired =
   if ([
     "GAME_TARGET_INVALID",
     "GAME_TARGET_IDENTIFIER_CONFLICT",
+    "NPB_GAME_CODE_CONFLICT",
     "JOB_INPUT_INVALID",
     "INTERNAL_GAME_ID_MISSING",
     "GAME_IDENTIFIER_NOT_FOUND",
@@ -1034,7 +1036,7 @@ function sanitizeWorkflowTargetDiagnostics(details) {
   ];
   const numberKeys = ["identifierCount"];
   const stringKeys = [
-    "validationStage", "resolvedBy", "sourceGameKey", "targetValidityReason", "gameDate", "startAt", "homeTeam", "awayTeam"
+    "validationStage", "resolvedBy", "npbGameCodeResolvedBy", "sourceGameKey", "targetValidityReason", "gameDate", "startAt", "homeTeam", "awayTeam"
   ];
   for (const key of booleanKeys) {
     if (typeof details[key] === "boolean") result[key] = details[key];
@@ -1050,6 +1052,12 @@ function sanitizeWorkflowTargetDiagnostics(details) {
       .filter((field) => typeof field === "string")
       .map((field) => field.slice(0, 60))
       .slice(0, 12);
+  }
+  if (Array.isArray(details.npbGameCodeCandidates)) {
+    result.npbGameCodeCandidates = details.npbGameCodeCandidates
+      .filter((value) => typeof value === "string")
+      .map((value) => value.slice(0, 40))
+      .slice(0, 4);
   }
   if (Array.isArray(details.identifierConflicts)) {
     result.identifierConflicts = details.identifierConflicts
@@ -1180,12 +1188,74 @@ export function summarizeLineupWorkflowJobs(jobs = [], now = new Date()) {
   };
 }
 
+function getNpbGameCodeCandidate({ gameRow = null, identifiers = [], schedule = null, sourceMetadata = null, staticGameCode = "" } = {}) {
+  const candidates = [];
+  const add = (value, resolvedBy, persisted = true) => {
+    const gameCode = normalizeNpbGameCode(value);
+    if (gameCode) candidates.push({ gameCode, resolvedBy, persisted });
+  };
+  add(gameRow?.npb_game_code, "games.npb_game_code");
+  for (const row of Array.isArray(identifiers) ? identifiers : []) {
+    const provider = String(row?.provider || "").trim().toLowerCase();
+    const type = String(row?.identifier_type || row?.identifierType || "").trim().toLowerCase();
+    if ((provider === "npb" || !provider) && ["npb_game_code", "game_code"].includes(type)) {
+      add(row?.identifier_value || row?.identifierValue, "game_identifiers");
+    }
+  }
+  add(schedule?.game_code, "detected_game_schedule");
+  add(sourceMetadata?.npbGameCode || sourceMetadata?.gameCode || sourceMetadata?.npb_game_code, "schedule_metadata", false);
+  add(staticGameCode, "safe_schedule_resolver", false);
+  const persisted = candidates.filter((candidate) => candidate.persisted);
+  const persistedValues = [...new Set(persisted.map((candidate) => candidate.gameCode))];
+  if (persistedValues.length > 1) {
+    return {
+      gameCode: "",
+      storedGameCode: "",
+      resolvedBy: "conflict",
+      storedResolvedBy: "conflict",
+      conflict: true,
+      candidates: persistedValues
+    };
+  }
+  const selected = candidates.find((candidate) => !candidate.persisted && persistedValues.length === 0)
+    || persisted[0]
+    || candidates[0]
+    || null;
+  return {
+    gameCode: selected?.gameCode || "",
+    storedGameCode: persisted[0]?.gameCode || "",
+    resolvedBy: selected?.resolvedBy || "",
+    storedResolvedBy: persisted[0]?.resolvedBy || "",
+    conflict: false,
+    candidates: [...new Set(candidates.map((candidate) => candidate.gameCode))]
+  };
+}
+
+async function getWorkflowGameRow(db, internalGameId) {
+  const baseQuery = `SELECT game_date, start_time, home_team, away_team, game_status
+                       FROM games WHERE internal_game_id = ?1 LIMIT 1`;
+  const base = await db.prepare(baseQuery).bind(internalGameId).first();
+  try {
+    const columns = await db.prepare("PRAGMA table_info(games)").bind().all();
+    if (!(columns.results || []).some((column) => String(column.name || "") === "npb_game_code")) return base;
+    return await db.prepare(
+      `SELECT game_date, start_time, home_team, away_team, game_status, npb_game_code
+         FROM games WHERE internal_game_id = ?1 LIMIT 1`
+    ).bind(internalGameId).first() || base;
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+    return base;
+  }
+}
+
 export function validateWorkflowJobTarget({
   internalGameId = "",
   gameRow = null,
   scheduleRows = [],
   identifiers = [],
   identifierConflicts = [],
+  npbGameCodeConflict = false,
+  npbGameCodeResolvedBy = "",
   isTestGame = false,
   staticGameCode = "",
   internalGameIdFound = Boolean(gameRow)
@@ -1198,12 +1268,15 @@ export function validateWorkflowJobTarget({
   const compact = String(getIdentifier("legacy_compact_game_id")?.identifier_value || getIdentifier("legacy_compact_game_id")?.identifierValue || "").trim();
   const legacyGameId = String(gameRow?.legacy_game_id || schedule?.game_id || descriptive || compact || "").trim();
   const sourceGameKey = String(schedule?.source_game_key || getIdentifier("source_game_key")?.identifier_value || getIdentifier("source_game_key")?.identifierValue || "").trim();
-  const storedGameCode = [
-    schedule?.game_code,
-    getIdentifier("npb_game_code")?.identifier_value,
-    getIdentifier("npb_game_code")?.identifierValue
-  ].map(normalizeNpbGameCode).find(Boolean) || "";
-  const gameCode = storedGameCode || normalizeNpbGameCode(staticGameCode);
+  const storedNpbGame = getNpbGameCodeCandidate({
+    gameRow,
+    identifiers,
+    schedule,
+    staticGameCode
+  });
+  const storedGameCode = storedNpbGame.storedGameCode;
+  const gameCode = storedNpbGame.gameCode;
+  const hasNpbGameCodeConflict = npbGameCodeConflict || storedNpbGame.conflict;
   const gameDate = String(schedule?.game_date || gameRow?.game_date || "").trim();
   const startValue = String(schedule?.start_at || gameRow?.start_time || "").trim();
   const parsedStart = new Date(startValue);
@@ -1233,6 +1306,9 @@ export function validateWorkflowJobTarget({
   if (conflicts.length) {
     code = "GAME_TARGET_IDENTIFIER_CONFLICT";
     targetValidityReason = "identifier_conflict";
+  } else if (hasNpbGameCodeConflict) {
+    code = "NPB_GAME_CODE_CONFLICT";
+    targetValidityReason = "npb_game_code_conflict";
   } else if (!sameTeams) {
     code = "GAME_TARGET_INVALID";
     targetValidityReason = "home_away_invalid";
@@ -1250,7 +1326,7 @@ export function validateWorkflowJobTarget({
     targetValidityReason = "test_game";
   }
   const resolvedBy = storedGameCode
-    ? "npbGameCode"
+    ? (npbGameCodeResolvedBy || storedNpbGame.storedResolvedBy || "npbGameCode")
     : sourceGameKey
       ? "sourceGameKey"
       : descriptive
@@ -1266,6 +1342,8 @@ export function validateWorkflowJobTarget({
     identifierCount: Array.isArray(identifiers) ? identifiers.length : 0,
     sourceGameKey,
     npbGameCodePresent: Boolean(storedGameCode),
+    npbGameCodeResolvedBy: storedNpbGame.resolvedBy || null,
+    npbGameCodeCandidates: storedNpbGame.candidates,
     targetValidityReason,
     gameDate,
     startAt,
@@ -1284,6 +1362,8 @@ export function validateWorkflowJobTarget({
     code,
     message: code === "GAME_TARGET_IDENTIFIER_CONFLICT"
       ? "試合識別子が別の内部試合IDにも紐付いています。"
+      : code === "NPB_GAME_CODE_CONFLICT"
+        ? "NPB公式試合コードが複数存在するため、安全に取得先を決定できません。"
       : "試合進行ジョブの対象試合が無効です。",
     targetResolution,
     target: {
@@ -1322,9 +1402,7 @@ export async function resolveWorkflowJobTarget(db, internalGameId) {
   const state = await db.prepare(
     "SELECT legacy_game_id, game_status, workflow_status FROM game_workflow_state WHERE internal_game_id = ?1 LIMIT 1"
   ).bind(normalizedInternalGameId).first();
-  const gameRow = await db.prepare(
-    "SELECT game_date, start_time, home_team, away_team, game_status FROM games WHERE internal_game_id = ?1 LIMIT 1"
-  ).bind(normalizedInternalGameId).first();
+  const gameRow = await getWorkflowGameRow(db, normalizedInternalGameId);
   const scheduleResult = await db.prepare(
     `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, game_status, internal_game_id
        FROM detected_game_schedule
@@ -1366,6 +1444,12 @@ export async function resolveWorkflowJobTarget(db, internalGameId) {
   const staticGameCode = normalizeNpbGameCode(sourceGame?.gameCode)
     || /\/scores\/\d{4}\/\d{4}\/([a-z0-9]{1,2}-[a-z0-9]{1,2}-\d+)\//i.exec(String(sourceGame?.npbScoreUrl || ""))?.[1]?.toLowerCase()
     || "";
+  const npbGameCodeCandidate = getNpbGameCodeCandidate({
+    gameRow,
+    identifiers,
+    schedule: scheduleIdentity,
+    staticGameCode
+  });
   const isTestGame = legacyGameId ? await isProbableStarterTestGame(db, legacyGameId) : false;
   const validation = validateWorkflowJobTarget({
     internalGameId: normalizedInternalGameId,
@@ -1373,6 +1457,8 @@ export async function resolveWorkflowJobTarget(db, internalGameId) {
     scheduleRows: scheduleResult.results || [],
     identifiers,
     identifierConflicts,
+    npbGameCodeConflict: npbGameCodeCandidate.conflict,
+    npbGameCodeResolvedBy: npbGameCodeCandidate.resolvedBy,
     isTestGame,
     staticGameCode,
     internalGameIdFound: Boolean(state || gameRow)
@@ -4284,8 +4370,17 @@ function buildCurrentWorkflowObservation(selection, legacyStatus, jobSummary, pu
     awayTeam: selection.awayTeam,
     matchupLabel: formatGameProgressLabel({ date: selection.gameDate, homeTeam: selection.homeTeam, awayTeam: selection.awayTeam })
   };
-  const activeJob = (jobSummary?.jobs || [])
+  const latestJobsByType = new Map();
+  for (const job of [...(jobSummary?.jobs || [])]
+    .filter((item) => item && item.status !== "cancelled")
+    .sort((left, right) => String(right.updatedAt || right.completedAt || right.scheduledAt || "").localeCompare(String(left.updatedAt || left.completedAt || left.scheduledAt || "")))) {
+    if (job.jobType && !latestJobsByType.has(job.jobType)) latestJobsByType.set(job.jobType, job);
+  }
+  const activeJob = [...latestJobsByType.values()]
     .filter((job) => ["pending", "claimed", "running", "retry_wait", "permanently_failed"].includes(job.status))
+    .sort((left, right) => String(right.updatedAt || right.scheduledAt || "").localeCompare(String(left.updatedAt || left.scheduledAt || "")))[0];
+  const currentErrorJob = [...latestJobsByType.values()]
+    .filter((job) => ["claimed", "running", "retry_wait", "permanently_failed"].includes(job.status) && job.errorCode)
     .sort((left, right) => String(right.updatedAt || right.scheduledAt || "").localeCompare(String(left.updatedAt || left.scheduledAt || "")))[0];
   const finalLineupJob = (jobSummary?.jobs || []).find((job) => job.jobType === "final_lineup_fetch" && job.status !== "cancelled") || null;
   const provisionalLineupJob = (jobSummary?.jobs || []).find((job) => job.jobType === "provisional_lineup_fetch" && job.status !== "cancelled") || null;
@@ -4299,8 +4394,8 @@ function buildCurrentWorkflowObservation(selection, legacyStatus, jobSummary, pu
       currentStep: getManagedWorkflowStep(workflow, selection.lastCompletedJobType),
       lastRunAt: selection.updatedAt || legacyStatus?.workflow?.lastRunAt || null,
       lastResult: activeJob?.status || legacyStatus?.workflow?.lastResult || workflow,
-      errorCode: selection.lastErrorCode || activeJob?.errorCode || legacyStatus?.workflow?.errorCode || "",
-      errorMessage: activeJob?.errorDetail || legacyStatus?.workflow?.errorMessage || ""
+      errorCode: currentErrorJob?.errorCode || selection.lastErrorCode || "",
+      errorMessage: currentErrorJob?.errorDetail || ""
     },
     lineup: {
       ...(legacyStatus?.lineup || {}),
@@ -5263,12 +5358,12 @@ async function resolvePregameIdentity(db, gameId, fallback = {}) {
       const metadata = reference.metadata;
       const resolvedGameId = metadata.legacyGameId || metadata.gameId || gameId;
       const identity = getGameIdentityForPregame(resolvedGameId, {
-        date: metadata.date,
-        startAt: metadata.startAt,
-        homeTeam: metadata.game?.home_team || metadata.game?.homeTeam,
-        awayTeam: metadata.game?.away_team || metadata.game?.awayTeam,
-        gameCode: metadata.gameCode,
-        status: metadata.game?.game_status || metadata.game?.status
+        date: metadata.date || fallback.date,
+        startAt: metadata.startAt || fallback.startAt,
+        homeTeam: metadata.game?.home_team || metadata.game?.homeTeam || fallback.homeTeam,
+        awayTeam: metadata.game?.away_team || metadata.game?.awayTeam || fallback.awayTeam,
+        gameCode: metadata.gameCode || fallback.gameCode,
+        status: metadata.game?.game_status || metadata.game?.status || fallback.status
       });
       if (identity) {
         return {
@@ -10246,9 +10341,10 @@ function normalizeManagedGameCandidate(candidate, now = new Date()) {
 
 function managedGameSelectionReason(candidate, currentDate) {
   if (!candidate) return "NO_MANAGED_GAME";
-  if (candidate.gameDate === currentDate && candidate.gameStatus !== "completed" && !candidate.isTerminal) return "TODAY_UNCOMPLETED_GAME";
+  if (candidate.gameDate === currentDate && !candidate.isTerminal && candidate.gameStatus !== "completed") return "TODAY_UNCOMPLETED_GAME";
+  if (candidate.gameDate === currentDate && !candidate.isTerminal && candidate.gameStatus === "completed") return "TODAY_INCOMPLETE_GAME";
+  if (!candidate.isFuture && !candidate.isTerminal && candidate.startAt) return "RECENT_UNCOMPLETED_GAME";
   if (candidate.isFuture && !candidate.isTerminal) return "NEXT_UPCOMING_GAME";
-  if (candidate.gameDate === currentDate && candidate.gameStatus === "completed" && !candidate.isTerminal) return "TODAY_INCOMPLETE_GAME";
   if (candidate.isHistorical && candidate.isFailed) return "RECENT_HISTORICAL_FAILURE";
   return "LATEST_HISTORICAL_FALLBACK";
 }
@@ -10272,11 +10368,16 @@ export function selectCurrentManagedGame(candidates, now = new Date()) {
   const byStartAscending = (left, right) => String(left.startAt || "").localeCompare(String(right.startAt || "")) || left.legacyGameId.localeCompare(right.legacyGameId);
   const byStartDescending = (left, right) => byStartAscending(right, left);
   const todayUncompleted = normalized.filter((candidate) => candidate.gameDate === currentDate && candidate.gameStatus !== "completed" && !candidate.isTerminal).sort(byStartAscending);
-  const nextUpcoming = normalized.filter((candidate) => candidate.isFuture && !candidate.isTerminal).sort(byStartAscending);
   const todayIncomplete = normalized.filter((candidate) => candidate.gameDate === currentDate && candidate.gameStatus === "completed" && !candidate.isTerminal).sort(byStartAscending);
+  const recentUncompleted = normalized.filter((candidate) => {
+    if (candidate.isFuture || candidate.isTerminal || !candidate.startAt) return false;
+    const start = new Date(candidate.startAt);
+    return !Number.isNaN(start.getTime()) && start.getTime() >= current.getTime() - 48 * 60 * 60 * 1000;
+  }).sort(byStartDescending);
+  const nextUpcoming = normalized.filter((candidate) => candidate.isFuture && !candidate.isTerminal).sort(byStartAscending);
   const recentFailures = normalized.filter((candidate) => candidate.isHistorical && candidate.isFailed).sort(byStartDescending);
   const historical = normalized.filter((candidate) => candidate.isHistorical).sort(byStartDescending);
-  const selected = todayUncompleted[0] || nextUpcoming[0] || todayIncomplete[0] || recentFailures[0] || historical[0] || null;
+  const selected = todayUncompleted[0] || todayIncomplete[0] || recentUncompleted[0] || nextUpcoming[0] || recentFailures[0] || historical[0] || null;
   if (!selected) return null;
   return {
     ...selected,

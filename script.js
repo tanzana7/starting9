@@ -498,7 +498,6 @@ function bindEvents() {
   bindAdminEvent("startRosterMonitorButton", "click", startRosterMonitor);
   bindAdminEvent("stopRosterMonitorButton", "click", () => stopRosterMonitor("ロースター自動取得を停止しました。", "warning"));
   bindAdminEvent("fetchProbableStarterButton", "click", () => fetchProbableStarter({ force: true }));
-  bindAdminEvent("syncGameWorkflowButton", "click", () => refreshAdminGameWorkflowStatus({ force: true }));
   bindAdminEvent("refreshAdminGameProgressButton", "click", () => refreshAdminGameProgressStatus({ force: true }));
   bindAdminEvent("refreshAdminReleaseReadinessButton", "click", () => refreshAdminReleaseReadiness({ force: true }));
   bindAdminEvent("toggleAdminWorkflowLogsButton", "click", toggleAdminWorkflowLogs);
@@ -3565,8 +3564,6 @@ function buildAdminGameApiUrl(gameId, action) {
   return `${baseUrl}/api/admin/games/${encodeURIComponent(gameId)}/${action}`;
 }
 
-const ADMIN_WORKFLOW_STATUS_ACTION = "pregame-automation/workflow-status";
-
 function buildAdminWorkflowLogsApiUrl() {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
   return baseUrl ? `${baseUrl}/api/admin/workflow-logs` : "";
@@ -4283,9 +4280,8 @@ function renderAdminGameWorkflowStatus() {
   const panel = document.getElementById("adminGameWorkflowStatus");
   const summary = document.getElementById("adminGameWorkflowSummary");
   const message = document.getElementById("adminGameWorkflowMessage");
-  const syncButton = document.getElementById("syncGameWorkflowButton");
   const pauseButton = document.getElementById("toggleGameWorkflowPauseButton");
-  if (!panel || !summary || !message || !syncButton || !pauseButton) return;
+  if (!panel || !summary || !message || !pauseButton) return;
 
   const available = state.appMode === "admin" && state.adminAccess.status === "authorized";
   panel.classList.toggle("hidden", !available);
@@ -4293,7 +4289,6 @@ function renderAdminGameWorkflowStatus() {
 
   const record = state.gameWorkflow.record;
   const paused = record?.automation?.paused === true;
-  syncButton.disabled = state.gameWorkflow.isLoading || state.gameWorkflow.isUpdating || !getAdminScoringGameId();
   pauseButton.disabled = state.gameWorkflow.isLoading || state.gameWorkflow.isUpdating || !getAdminScoringGameId();
   pauseButton.textContent = paused ? "自動運転を再開" : "緊急停止";
   pauseButton.classList.toggle("danger-button", !paused);
@@ -5111,8 +5106,8 @@ async function toggleGameWorkflowPause() {
     const response = await fetch(url, { method: "POST", credentials: "include", cache: "no-store" });
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok) throw new Error(payload?.error || payload?.code || `HTTP ${response.status}`);
-    state.gameWorkflow.record = payload;
     state.gameWorkflow.message = paused ? "自動運転を再開しました。" : "緊急停止中です。";
+    await refreshAdminGameWorkflowStatus({ force: true });
   } catch (error) {
     state.gameWorkflow.message = error?.message || "自動運転の状態を変更できませんでした。";
   } finally {

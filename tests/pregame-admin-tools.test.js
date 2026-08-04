@@ -6,7 +6,7 @@ const test = require("node:test");
 const root = path.resolve(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 
-test("管理画面は試合前処理サマリーを自動取得せず手動ツールだけを持つ", () => {
+test("管理画面は試合前処理サマリーを自動取得せず緊急復旧ツールだけを持つ", () => {
   const html = read("index.html");
   const script = read("script.js");
   const authWorker = read("auth-worker.js");
@@ -30,6 +30,8 @@ test("管理画面は試合前処理サマリーを自動取得せず手動ツ�
   }
   assert.match(script, /function renderPregameAutomationTools\(\)/);
   assert.match(script, /distribute-notice/);
+  assert.match(html, /id="adminPregameTools" class="admin-test-details"/);
+  assert.match(html, /通常は使用しない手動復旧/);
 });
 
 test("更新情報機能の残骸を持たない", () => {

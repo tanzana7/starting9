@@ -1023,9 +1023,61 @@ function parseSafeWorkflowJobMetadata(value) {
   if (Number.isFinite(Number(parsed.attemptCountBeforeRecovery))) result.attemptCountBeforeRecovery = Number(parsed.attemptCountBeforeRecovery);
   if (typeof parsed.attemptCountChanged === "boolean") result.attemptCountChanged = parsed.attemptCountChanged;
   if (typeof parsed.workflowTerminalOverrideApplied === "boolean") result.workflowTerminalOverrideApplied = parsed.workflowTerminalOverrideApplied;
+  const executionDiagnostics = sanitizeWorkflowExecutionDiagnostics(parsed);
+  if (executionDiagnostics) Object.assign(result, executionDiagnostics);
   const targetResolution = sanitizeWorkflowTargetDiagnostics(parsed.targetResolution);
   if (targetResolution) result.targetResolution = targetResolution;
   return result;
+}
+
+function sanitizeWorkflowExecutionDiagnostics(details = {}) {
+  if (!details || typeof details !== "object" || Array.isArray(details)) return null;
+  const result = {};
+  const numericKeys = ["claimedJobId", "lineupHttpStatus"];
+  const stringKeys = [
+    "claimedJobType", "resolvedNpbGameCode", "lineupSourceUrl", "lineupParseStage",
+    "lineupDataClassification", "dataNotAnnouncedReason", "rosterResolutionStage", "rosterResolvedBy"
+  ];
+  for (const key of numericKeys) {
+    if (Number.isInteger(Number(details[key])) && Number(details[key]) > 0) result[key] = Number(details[key]);
+  }
+  for (const key of stringKeys) {
+    if (typeof details[key] === "string" && details[key]) result[key] = details[key].slice(0, key === "lineupSourceUrl" ? 240 : 120);
+  }
+  if (typeof details.rosterStartAtFound === "boolean") result.rosterStartAtFound = details.rosterStartAtFound;
+  return Object.keys(result).length ? result : null;
+}
+
+function getWorkflowExecutionDiagnostics({ job = null, target = null, result = null, error = null } = {}) {
+  const jobType = String(job?.job_type || job?.jobType || "");
+  const diagnostics = {
+    claimedJobId: Number(job?.id || 0),
+    claimedJobType: jobType
+  };
+  if (jobType.includes("lineup")) {
+    const rawCode = String(error?.code || "").toUpperCase();
+    const sourceUrl = String(error?.upstreamUrl || result?.sourceUrl || "");
+    if (target?.gameCode) diagnostics.resolvedNpbGameCode = String(target.gameCode);
+    if (/^https:\/\/npb\.jp\//i.test(sourceUrl)) diagnostics.lineupSourceUrl = sourceUrl;
+    diagnostics.lineupHttpStatus = Number(error?.upstreamStatus || error?.httpStatus || error?.externalStatus || 0);
+    diagnostics.lineupParseStage = String(error?.parseStage || (result ? "official_lineup" : ""));
+    diagnostics.lineupDataClassification = result?.reused
+      ? "stored"
+      : result
+        ? "announced"
+        : /NOT_ANNOUNCED|NOT_PUBLISHED|UNANNOUNCED/.test(rawCode)
+          ? "not_announced"
+          : "fetch_failed";
+    if (diagnostics.lineupDataClassification === "not_announced") {
+      diagnostics.dataNotAnnouncedReason = rawCode || "LINEUP_NOT_ANNOUNCED";
+    }
+  }
+  if (jobType === "roster_fetch" || jobType === "run-roster") {
+    diagnostics.rosterResolutionStage = String(error?.rosterResolution?.resolutionStage || result?.rosterResolution?.resolutionStage || "resolvePregameIdentity");
+    diagnostics.rosterResolvedBy = String(error?.rosterResolution?.resolvedBy || result?.rosterResolution?.resolvedBy || "");
+    diagnostics.rosterStartAtFound = Boolean(error?.rosterResolution?.startAtFound ?? result?.rosterResolution?.startAtFound);
+  }
+  return sanitizeWorkflowExecutionDiagnostics(diagnostics) || {};
 }
 
 function sanitizeWorkflowTargetDiagnostics(details) {
@@ -1094,6 +1146,16 @@ function getSafeWorkflowErrorMetadata(error) {
     } catch {
       // URLの不正値は診断情報へ含めません。
     }
+  }
+  const executionDiagnostics = sanitizeWorkflowExecutionDiagnostics(error?.workflowDiagnostics || error);
+  if (executionDiagnostics) Object.assign(metadata, executionDiagnostics);
+  if (error?.rosterResolution && typeof error.rosterResolution === "object") {
+    const rosterDiagnostics = sanitizeWorkflowExecutionDiagnostics({
+      rosterResolutionStage: error.rosterResolution.resolutionStage,
+      rosterResolvedBy: error.rosterResolution.resolvedBy,
+      rosterStartAtFound: error.rosterResolution.startAtFound
+    });
+    if (rosterDiagnostics) Object.assign(metadata, rosterDiagnostics);
   }
   return metadata;
 }
@@ -5160,7 +5222,15 @@ async function runDueRosterCaptureJobs(env, now, timelines = getPregameTimelines
         gameId: timeline.gameId,
         occurredAt: now,
         message,
-        metadata: { source: "cron", kind: decision.kind, playerCount: result.playerCount, changed },
+        metadata: {
+          source: "cron",
+          kind: decision.kind,
+          playerCount: result.playerCount,
+          changed,
+          rosterResolutionStage: result.rosterResolution?.resolutionStage || "resolvePregameIdentity",
+          rosterResolvedBy: result.rosterResolution?.resolvedBy || null,
+          rosterStartAtFound: result.rosterResolution?.startAtFound === true
+        },
         source: "cron"
       });
       console.log(`[GAME_WORKFLOW] gameId=${timeline.gameId} step=roster action=executed status=success source=cron changed=${changed}`);
@@ -5174,7 +5244,19 @@ async function runDueRosterCaptureJobs(env, now, timelines = getPregameTimelines
       occurredAt: now,
       message: "ロースター取得に失敗しました。",
       errorCode: String(error?.code || "ROSTER_FETCH_FAILED"),
-      metadata: { source: "cron", kind: decision.kind, retryAfterMinutes: 30 },
+      metadata: {
+        source: "cron",
+        kind: decision.kind,
+        retryAfterMinutes: 30,
+        ...getWorkflowExecutionDiagnostics({
+          job: { job_type: "roster_fetch", id: null },
+          result: null,
+          error
+        }),
+        rosterResolutionStage: error?.rosterResolution?.resolutionStage || "resolvePregameIdentity",
+        rosterResolvedBy: error?.rosterResolution?.resolvedBy || null,
+        rosterStartAtFound: error?.rosterResolution?.startAtFound === true
+      },
       source: "cron"
     });
     console.warn(`[GAME_WORKFLOW] gameId=${timeline.gameId} step=roster action=executed status=failed source=cron code=${error?.code || "ROSTER_FETCH_FAILED"}`);
@@ -5373,6 +5455,22 @@ async function resolvePregameIdentity(db, gameId, fallback = {}) {
           resolvedBy: metadata.resolvedBy || "game_identity_registry"
         };
       }
+    }
+    // 呼び出し元が既にworkflow targetとして検証した内部IDと日程を持つ場合は、
+    // registryの別名検索に失敗しても、そのtargetを共通resolverの補助入力として使う。
+    // 任意のlegacy IDを許可するのではなく、内部ID・開始時刻・対戦カードが揃う場合だけに限定する。
+    const fallbackInternalGameId = String(fallback?.internalGameId || "").trim();
+    const fallbackStartAt = fallback?.startAt ? new Date(fallback.startAt) : null;
+    const fallbackIdentity = fallbackInternalGameId && fallbackStartAt && !Number.isNaN(fallbackStartAt.getTime())
+      ? getGameIdentityForPregame(gameId, fallback)
+      : null;
+    if (fallbackIdentity) {
+      return {
+        ...fallbackIdentity,
+        internalGameId: fallbackInternalGameId,
+        game: { ...fallbackIdentity.game, internalGameId: fallbackInternalGameId },
+        resolvedBy: "workflow_target_fallback"
+      };
     }
     const registry = await getGameIdentityRegistryAvailability(db);
     if (registry.available) return null;
@@ -5679,7 +5777,15 @@ function rosterFingerprint(players) {
 
 async function captureGameRosterSnapshot(env, gameId, now, { force = false, source = "admin", pregame = false, target = null } = {}) {
   const identity = await resolvePregameIdentity(env.AUTH_DB, gameId, target || {});
-  if (!identity) throw createPregameError("SCHEDULE_UNAVAILABLE", "試合日程を確認できません。");
+  if (!identity) {
+    const error = createPregameError("SCHEDULE_UNAVAILABLE", "試合日程を確認できません。");
+    error.rosterResolution = {
+      resolutionStage: "resolvePregameIdentity",
+      resolvedBy: "unresolved",
+      startAtFound: false
+    };
+    throw error;
+  }
   const storage = await requireInternalGameIdForWrite(env.AUTH_DB, {
     table: "game_roster_snapshots",
     gameId,
@@ -5712,8 +5818,24 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
     ]);
     await linkLegacyGameRowsToInternalGameId(env.AUTH_DB, storage.internalGameId, gameId);
     await updateRosterFetchState(env.AUTH_DB, gameId, now, { source, success: true, pregame });
-    return { status: "captured", playerCount: roster.length, capturedAt, roster };
+    return {
+      status: "captured",
+      playerCount: roster.length,
+      capturedAt,
+      roster,
+      rosterResolution: {
+        resolutionStage: "resolvePregameIdentity",
+        resolvedBy: identity.resolvedBy || "game_identity_registry",
+        startAtFound: Boolean(identity.startAt && !Number.isNaN(new Date(identity.startAt).getTime())
+        )
+      }
+    };
   } catch (error) {
+    error.rosterResolution = {
+      resolutionStage: "resolvePregameIdentity",
+      resolvedBy: identity.resolvedBy || "game_identity_registry",
+      startAtFound: Boolean(identity.startAt && !Number.isNaN(new Date(identity.startAt).getTime()))
+    };
     await updateRosterFetchState(env.AUTH_DB, gameId, now, { source, errorCode: String(error?.code || "ROSTER_FETCH_FAILED") });
     try {
       await recordPregameError(env.AUTH_DB, gameId, "roster", error, now);
@@ -5733,12 +5855,20 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
     throw createPregameError("NPB_GAME_CODE_UNAVAILABLE", "NPB公式スタメンの取得先コードを解決できません。", { retryable });
   }
   const isFinalCapture = phase === "final";
-  if (isFinalCapture ? now < identity.finalLineupFetchAt : !isBeforeGameStart(identity.startAt, now)) {
-    return { status: isFinalCapture ? "not_due" : "skipped_after_start" };
-  }
   await ensurePregameAutomationRow(env.AUTH_DB, identity, now);
   const existing = await getGameLineup(env.AUTH_DB, { gameId, internalGameId });
-  if (existing) return { status: existing.lineup_source === "manual" ? "manual_lineup_exists" : "already_captured" };
+  if (existing) {
+    return {
+      status: isFinalCapture ? "already_captured" : "provisional",
+      reused: true,
+      lineupSource: existing.lineup_source || "manual"
+    };
+  }
+  if (isFinalCapture ? now < identity.finalLineupFetchAt : !isBeforeGameStart(identity.startAt, now)) {
+    // 試合開始後に残った仮スタメンjobは「未発表」ではない。
+    // executorがfinal_lineup_fetchを後続作成できるよう、正常な引き継ぎ結果にする。
+    return { status: isFinalCapture ? "not_due" : "superseded_after_start", superseded: !isFinalCapture };
+  }
   try {
     const payload = await fetchNpbWorkerJson(env, { mode: "lineup", date: identity.game.date, gameCode: identity.gameCode });
     const actual = createOfficialLineupFromNpb(payload.lineup);
@@ -7259,6 +7389,17 @@ function mapHistoricalWorkflowJobRow(row, now = new Date()) {
     parseStage: metadata.parseStage || null,
     httpStatus: metadata.httpStatus || null,
     sourceUrlHost: metadata.sourceUrlHost || null,
+    claimedJobId: metadata.claimedJobId || null,
+    claimedJobType: metadata.claimedJobType || null,
+    resolvedNpbGameCode: metadata.resolvedNpbGameCode || null,
+    lineupSourceUrl: metadata.lineupSourceUrl || null,
+    lineupHttpStatus: metadata.lineupHttpStatus || null,
+    lineupParseStage: metadata.lineupParseStage || null,
+    lineupDataClassification: metadata.lineupDataClassification || null,
+    dataNotAnnouncedReason: metadata.dataNotAnnouncedReason || null,
+    rosterResolutionStage: metadata.rosterResolutionStage || null,
+    rosterResolvedBy: metadata.rosterResolvedBy || null,
+    rosterStartAtFound: typeof metadata.rosterStartAtFound === "boolean" ? metadata.rosterStartAtFound : null,
     retryable: typeof metadata.retryable === "boolean" ? metadata.retryable : String(row?.status || "") === "retry_wait"
   };
   const health = getWorkflowJobHealth(job, now);
@@ -9825,8 +9966,12 @@ async function executeCompletionWorkflowJob(env, job, now) {
   let result;
   if (job.job_type === "provisional_lineup_fetch") {
     result = await captureOfficialLineup(env, target.gameId, now, { phase: "provisional", internalGameId: job.internal_game_id, target });
-    if (result.status !== "provisional") throw createPregameError("LINEUP_NOT_ANNOUNCED", "仮スタメンをまだ取得できません。");
-    await transitionWorkflowState(env.AUTH_DB, { internalGameId: job.internal_game_id, to: "provisional_lineup_captured", completedJobType: job.job_type, now });
+    if (!["provisional", "superseded_after_start"].includes(result.status)) {
+      throw createPregameError("LINEUP_NOT_ANNOUNCED", "仮スタメンをまだ取得できません。");
+    }
+    if (result.status === "provisional") {
+      await transitionWorkflowState(env.AUTH_DB, { internalGameId: job.internal_game_id, to: "provisional_lineup_captured", completedJobType: job.job_type, now });
+    }
   } else if (job.job_type === "final_lineup_fetch") {
     result = await captureOfficialLineup(env, target.gameId, now, { phase: "final", internalGameId: job.internal_game_id, target });
     if (result.status !== "captured" && result.status !== "already_captured") throw createPregameError("LINEUP_NOT_ANNOUNCED", "最終スタメンをまだ取得できません。");
@@ -9856,7 +10001,15 @@ async function executeCompletionWorkflowJob(env, job, now) {
     throw createPregameError("JOB_INPUT_INVALID", "未対応の試合進行ジョブです。");
   }
   await linkLegacyGameRowsToInternalGameId(env.AUTH_DB, job.internal_game_id, target.gameId);
-  const completed = await completeWorkflowJob(env.AUTH_DB, { jobId: job.id, claimToken: job.claim_token, resultMetadata: { status: result?.status || "success" }, now });
+  const completed = await completeWorkflowJob(env.AUTH_DB, {
+    jobId: job.id,
+    claimToken: job.claim_token,
+    resultMetadata: {
+      status: result?.status || "success",
+      ...getWorkflowExecutionDiagnostics({ job, target, result })
+    },
+    now
+  });
   if (!completed) throw createPregameError("JOB_CLAIM_CONFLICT", "試合進行ジョブの完了権限を確認できません。");
   if (job.job_type === "publication") await reconcilePregameAutomationState(env, now);
   if (job.job_type === "final_lineup_fetch") await cancelSupersededLineupJobs(env.AUTH_DB, job.internal_game_id, now);
@@ -9932,9 +10085,10 @@ async function runDueCompletionWorkflowJobs(env, now, timelines) {
       }
     } catch (error) {
       let retryDeadline = null;
+      let resolvedTarget = null;
       try {
-        const target = await resolveWorkflowJobGame(env.AUTH_DB, claimed.internal_game_id);
-        retryDeadline = getFinalLineupRetryDeadline(buildWorkflowJobTimeline(target), now);
+        resolvedTarget = await resolveWorkflowJobGame(env.AUTH_DB, claimed.internal_game_id);
+        retryDeadline = getFinalLineupRetryDeadline(buildWorkflowJobTimeline(resolvedTarget), now);
       } catch (resolveError) {
         const fallbackTimeline = (Array.isArray(timelines) ? timelines : []).find((timeline) => String(timeline?.game?.internalGameId || timeline?.internalGameId || "") === String(claimed.internal_game_id || ""));
         if (fallbackTimeline) retryDeadline = getFinalLineupRetryDeadline(fallbackTimeline, now);
@@ -9944,7 +10098,10 @@ async function runDueCompletionWorkflowJobs(env, now, timelines) {
       const errorCode = expired ? SCORING_RETRY_EXPIRED_CODE : getCompletionWorkflowErrorCode(error, claimed.job_type);
       const errorDetail = String(error?.message || "").slice(0, 500);
       const nextAttemptAt = new Date(now.getTime() + (claimed.job_type.includes("lineup") ? 10 : 1) * 60 * 1000);
-      const errorMetadata = getSafeWorkflowErrorMetadata(error);
+      const errorMetadata = {
+        ...getSafeWorkflowErrorMetadata(error),
+        ...getWorkflowExecutionDiagnostics({ job: claimed, target: resolvedTarget, error })
+      };
       const retryable = isCompletionWorkflowErrorRetryable(error, errorCode, { expired });
       errorMetadata.retryable = retryable;
       const retry = await retryWorkflowJob(env.AUTH_DB, {

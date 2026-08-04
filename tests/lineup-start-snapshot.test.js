@@ -27,13 +27,14 @@ test("試合開始前だけ正式スタメン保存を許可し、開始時刻�
   assert.equal(isBeforeGameStart(startAt, new Date("invalid")), false);
 });
 
-test("自動取得は試合開始時刻以降にNPBを取得せず、保存済み行を自動上書きしない", () => {
+test("provisionalは開始後に再取得せず、finalは保存済み行を優先して上書きしない", () => {
   assert.match(worker, /phase = "provisional"/);
   assert.match(worker, /phase === "final"/);
   assert.match(worker, /now < identity\.finalLineupFetchAt/);
   assert.match(worker, /const isFinalPhase = now >= finalLineupFetchAt/);
   assert.match(worker, /getDueFinalLineupAttemptAt\(timeline, now\)/);
-  assert.match(worker, /if \(existing\) return \{ status: existing\.lineup_source === "manual" \? "manual_lineup_exists" : "already_captured" \};/);
+  assert.match(worker, /status: isFinalCapture \? "already_captured" : "provisional"/);
+  assert.match(worker, /status: isFinalCapture \? "not_due" : "superseded_after_start"/);
   assert.match(worker, /provisional_lineup_json/);
   assert.match(worker, /preventOverwrite: true/);
   assert.match(worker, /assertOfficialLineupSaveAllowed\(gameId, options\.now \|\| new Date\(\)\)/);

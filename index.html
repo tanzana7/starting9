@@ -182,14 +182,14 @@
 
       <details id="adminPregameTools" class="admin-test-details">
         <summary>
-          <span>試合前処理ツール</span>
-          <small>必要な処理を押下時に1回だけ実行します。</small>
+          <span>緊急復旧</span>
+          <small>通常は使用せず、Cronで解決できない場合だけ限定的に実行します。</small>
         </summary>
         <section class="admin-test-panel" aria-labelledby="admin-pregame-tools-title">
           <div>
-            <p class="area-label">PREGAME TOOLS</p>
-            <h3 id="admin-pregame-tools-title">手動実行</h3>
-            <p>公示監視や試合前自動処理の本体はCronで継続します。ここでは管理者が必要な処理だけを手動実行できます。</p>
+            <p class="area-label">EMERGENCY RECOVERY</p>
+            <h3 id="admin-pregame-tools-title">通常は使用しない手動復旧</h3>
+            <p>自動処理の本体はCloudflare Cronと永続workflowです。ここでは障害調査・復旧時だけ、対象試合を確認して限定操作します。</p>
           </div>
           <div class="admin-server-scoring-actions">
             <button id="runPregameNoticeButton" class="secondary-button compact-button" type="button">公示取得を1回実行</button>
@@ -219,7 +219,6 @@
               <section id="adminGameWorkflowStatus" class="admin-game-workflow-status hidden" aria-live="polite">
                 <div id="adminGameWorkflowSummary" class="admin-game-workflow-summary"></div>
                 <div class="admin-game-workflow-actions">
-                  <button id="syncGameWorkflowButton" class="secondary-button compact-button" type="button">今すぐ同期</button>
                   <button id="toggleGameWorkflowPauseButton" class="danger-button compact-button" type="button">緊急停止</button>
                 </div>
                 <p id="adminGameWorkflowMessage" class="message" role="status"></p>
@@ -634,6 +633,6 @@
   <script src="game-schedule.js?v=20260718-probable-starter"></script>
   <script type="module" src="pregame-automation.js?v=20260722-2"></script>
   <script src="auth.js?v=auth-api-local-20260719"></script>
-  <script src="script.js?v=admin-test-data-20260728-2"></script>
+  <script src="script.js?v=admin-test-data-20260728-3"></script>
 </body>
 </html>

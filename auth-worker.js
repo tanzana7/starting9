@@ -3846,7 +3846,7 @@ async function handleCreateAdminTestPerfectPrediction(env, cors, user, metadata)
 }
 
 function parseAdminScoringRoute(path) {
-  const match = /^\/api\/admin\/games\/([^/]+)\/(predictions\/(?:summary|score-predictions(?:\/preview)?)|actual-lineup|lineup-history|lineup-revisions|rescore-preview|rescore-confirm|restore-lineup-version|rescore-history|service-unavailable|restore-service-unavailable|auto-scoring\/(?:status|run-now|retry|cancel)|pregame-automation\/(?:run-roster|run-lineup|run-notice|distribute-notice|fix-roster|publish|workflow-status|pause-workflow|resume-workflow))$/.exec(path);
+  const match = /^\/api\/admin\/games\/([^/]+)\/(predictions\/(?:summary|score-predictions(?:\/preview)?)|actual-lineup|lineup-history|lineup-revisions|rescore-preview|rescore-confirm|restore-lineup-version|rescore-history|service-unavailable|restore-service-unavailable|auto-scoring\/(?:status|run-now|retry|cancel)|pregame-automation\/(?:run-roster|run-lineup|run-notice|distribute-notice|fix-roster|publish|pause-workflow|resume-workflow))$/.exec(path);
   if (!match) {
     return null;
   }
@@ -3927,9 +3927,6 @@ async function handleAdminScoringRoute(request, env, cors, route) {
   if (route.action === "auto-scoring/cancel" && request.method === "POST") {
     return await handleAdminAutoScoringCancel(env, cors, metadata.gameId);
   }
-  if (route.action === "pregame-automation/workflow-status" && request.method === "GET") {
-    return await handleAdminGameWorkflowStatus(env, cors, metadata.gameId);
-  }
   if (route.action === "pregame-automation/pause-workflow" && request.method === "POST") {
     return await handleAdminGameWorkflowPause(env, cors, metadata.gameId, true);
   }
@@ -3991,23 +3988,6 @@ async function executePregameTool(env, cors, gameId, action, operation) {
       source: "admin"
     });
     return createPregameToolErrorResponse(cors, gameId, action, error);
-  }
-}
-
-async function handleAdminGameWorkflowStatus(env, cors, gameId) {
-  try {
-    const status = await getPregameAutomationStatus(env.AUTH_DB, gameId);
-    const response = jsonResponse({ ok: true, gameId, ...status }, 200, cors);
-    response.headers.set("Cache-Control", "no-store");
-    return response;
-  } catch (error) {
-    console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=status action=read status=failed code=${error?.code || "GAME_WORKFLOW_STATUS_UNAVAILABLE"}`);
-    return jsonResponse({
-      ok: false,
-      gameId,
-      code: isPregameSchemaError(error) ? "GAME_WORKFLOW_SCHEMA_NOT_READY" : "GAME_WORKFLOW_STATUS_UNAVAILABLE",
-      error: "自動運転の状態を取得できませんでした。"
-    }, isPregameSchemaError(error) ? 503 : 500, cors);
   }
 }
 
@@ -4248,6 +4228,109 @@ async function getAdminPublicationWorkflowAudit(db, {
   };
 }
 
+function getManagedWorkflowStep(workflowStatus, lastCompletedJobType = "") {
+  const byStatus = {
+    waiting: "notice",
+    prediction_open: "close_predictions",
+    prediction_closed: "close_predictions",
+    lineup_pending: "lineup",
+    provisional_lineup_captured: "final_lineup",
+    final_lineup_captured: "score",
+    scoring_pending: "score",
+    scored_private: "publish",
+    published: "completed",
+    retrying: lastCompletedJobType === "scoring" ? "score" : lastCompletedJobType === "publication" ? "publish" : "lineup",
+    service_unavailable: "lineup",
+    manual_intervention_required: "lineup"
+  };
+  return byStatus[String(workflowStatus || "")] || (lastCompletedJobType === "publication" ? "publish" : "notice");
+}
+
+function buildManagedWorkflowSchedule(selection, fallback = null) {
+  const startAt = parseManagedGameStart(selection?.startAt, selection?.gameDate);
+  if (!startAt) return fallback;
+  try {
+    const timeline = buildPregameTimeline({
+      gameId: selection.legacyGameId,
+      date: selection.gameDate,
+      startAt,
+      homeTeam: selection.homeTeam,
+      awayTeam: selection.awayTeam,
+      gameCode: selection.gameCode,
+      status: selection.gameStatus
+    });
+    return timeline ? {
+      startAt: timeline.startAt.toISOString(),
+      rosterCaptureAt: timeline.rosterCaptureAt.toISOString(),
+      predictionDeadlineAt: timeline.predictionDeadlineAt.toISOString(),
+      lineupFetchStartAt: timeline.lineupFetchStartAt.toISOString(),
+      finalLineupFetchAt: timeline.finalLineupFetchAt.toISOString(),
+      resultReleaseAt: timeline.resultReleaseAt.toISOString()
+    } : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function buildCurrentWorkflowObservation(selection, legacyStatus, jobSummary, publicationWorkflow, now = new Date()) {
+  const workflow = selection?.workflowStatus || legacyStatus?.workflow?.workflowStatus || "waiting";
+  const currentGame = {
+    ...(legacyStatus?.game || {}),
+    gameId: selection.legacyGameId,
+    internalGameId: selection.internalGameId,
+    date: selection.gameDate,
+    startTime: selection.startAt,
+    homeTeam: selection.homeTeam,
+    awayTeam: selection.awayTeam,
+    matchupLabel: formatGameProgressLabel({ date: selection.gameDate, homeTeam: selection.homeTeam, awayTeam: selection.awayTeam })
+  };
+  const activeJob = (jobSummary?.jobs || [])
+    .filter((job) => ["pending", "claimed", "running", "retry_wait", "permanently_failed"].includes(job.status))
+    .sort((left, right) => String(right.updatedAt || right.scheduledAt || "").localeCompare(String(left.updatedAt || left.scheduledAt || "")))[0];
+  const finalLineupJob = (jobSummary?.jobs || []).find((job) => job.jobType === "final_lineup_fetch" && job.status !== "cancelled") || null;
+  const provisionalLineupJob = (jobSummary?.jobs || []).find((job) => job.jobType === "provisional_lineup_fetch" && job.status !== "cancelled") || null;
+  const scoringJob = (jobSummary?.jobs || []).find((job) => job.jobType === "scoring" && job.status !== "cancelled") || null;
+  return {
+    game: currentGame,
+    schedule: buildManagedWorkflowSchedule(selection, legacyStatus?.schedule || null),
+    workflow: {
+      ...(legacyStatus?.workflow || {}),
+      status: workflow,
+      currentStep: getManagedWorkflowStep(workflow, selection.lastCompletedJobType),
+      lastRunAt: selection.updatedAt || legacyStatus?.workflow?.lastRunAt || null,
+      lastResult: activeJob?.status || legacyStatus?.workflow?.lastResult || workflow,
+      errorCode: selection.lastErrorCode || activeJob?.errorCode || legacyStatus?.workflow?.errorCode || "",
+      errorMessage: activeJob?.errorDetail || legacyStatus?.workflow?.errorMessage || ""
+    },
+    lineup: {
+      ...(legacyStatus?.lineup || {}),
+      status: finalLineupJob?.status === "succeeded" ? "captured" : (finalLineupJob?.status || legacyStatus?.lineup?.status || "pending"),
+      attempts: finalLineupJob?.attemptCount ?? legacyStatus?.lineup?.attempts ?? 0,
+      lastAttemptAt: finalLineupJob?.updatedAt || legacyStatus?.lineup?.lastAttemptAt || null,
+      finalAttemptAt: finalLineupJob?.completedAt || legacyStatus?.lineup?.finalAttemptAt || null,
+      nextAttemptAt: finalLineupJob?.nextAttemptAt || legacyStatus?.lineup?.nextAttemptAt || null,
+      provisional: Boolean(provisionalLineupJob && provisionalLineupJob.status === "succeeded") || legacyStatus?.lineup?.provisional === true
+    },
+    scoring: {
+      ...(legacyStatus?.scoring || {}),
+      status: scoringJob?.status === "succeeded" ? "scored" : (scoringJob?.status || legacyStatus?.scoring?.status || "pending"),
+      scoredAt: scoringJob?.completedAt || legacyStatus?.scoring?.scoredAt || null,
+      publicationStatus: publicationWorkflow?.status || legacyStatus?.scoring?.publicationStatus || "pending",
+      publishedAt: publicationWorkflow?.publishedAt || legacyStatus?.scoring?.publishedAt || null
+    },
+    publishing: {
+      ...(legacyStatus?.publishing || {}),
+      status: publicationWorkflow?.status || legacyStatus?.publishing?.status || "pending",
+      publishedAt: publicationWorkflow?.publishedAt || legacyStatus?.publishing?.publishedAt || null,
+      errorCode: publicationWorkflow?.errorCode || legacyStatus?.publishing?.errorCode || "",
+      errorMessage: publicationWorkflow?.currentPublicationError?.detail || legacyStatus?.publishing?.errorMessage || ""
+    },
+    workflowAuditSource: "game_workflow_state+game_job_runs",
+    workflowAuditInternalGameId: selection.internalGameId,
+    workflowAuditObservedAt: now.toISOString()
+  };
+}
+
 async function handleAdminCurrentGameWorkflow(request, env, cors) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) return access.response;
@@ -4295,9 +4378,11 @@ async function handleAdminCurrentGameWorkflow(request, env, cors) {
       ...(jobSummary.warnings || [])
     ])];
     const errors = [...new Set(jobSummary.errors || [])];
+    const workflowObservation = buildCurrentWorkflowObservation(selection, status, jobSummary, publicationWorkflow, now);
     const response = jsonResponse({
       ok: true,
       ...status,
+      ...workflowObservation,
       currentGame: selection,
       selectionReason: selection.selectionReason,
       historicalFailures,
@@ -4337,7 +4422,7 @@ async function handleAdminGameWorkflowPause(env, cors, gameId, paused) {
          updated_at = excluded.updated_at`
     ).bind(gameId, paused ? 1 : 0, paused ? now : null, paused ? null : now, now).run();
     console.log(`[GAME_WORKFLOW] gameId=${gameId} step=all action=${paused ? "paused" : "resumed"} status=success`);
-    return await handleAdminGameWorkflowStatus(env, cors, gameId);
+    return jsonResponse({ ok: true, gameId, paused, observedAt: now }, 200, cors);
   } catch (error) {
     console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=all action=${paused ? "paused" : "resumed"} status=failed code=${error?.code || "GAME_WORKFLOW_CONTROL_FAILED"}`);
     return jsonResponse({
@@ -4966,7 +5051,8 @@ async function runDueRosterCaptureJobs(env, now, timelines = getPregameTimelines
     const result = await captureGameRosterSnapshot(env, timeline.gameId, now, {
       force: true,
       source: "cron",
-      pregame: decision.kind === "pregame"
+      pregame: decision.kind === "pregame",
+      target
     });
     if (result.status !== "captured") return { due: true, status: result.status, gameId: timeline.gameId };
 
@@ -5168,6 +5254,37 @@ function getGameIdentityForPregame(gameId, fallback = {}) {
   const gameCode = storedGameCode || normalizeNpbGameCode(fallback.gameCode) || normalizeNpbGameCode(idGameCode);
   if (!gameCode) return null;
   return { ...timeline, gameCode };
+}
+
+async function resolvePregameIdentity(db, gameId, fallback = {}) {
+  try {
+    const reference = await resolveApiGameReference(db, gameId);
+    if (reference.ok && reference.metadata?.startAt) {
+      const metadata = reference.metadata;
+      const resolvedGameId = metadata.legacyGameId || metadata.gameId || gameId;
+      const identity = getGameIdentityForPregame(resolvedGameId, {
+        date: metadata.date,
+        startAt: metadata.startAt,
+        homeTeam: metadata.game?.home_team || metadata.game?.homeTeam,
+        awayTeam: metadata.game?.away_team || metadata.game?.awayTeam,
+        gameCode: metadata.gameCode,
+        status: metadata.game?.game_status || metadata.game?.status
+      });
+      if (identity) {
+        return {
+          ...identity,
+          internalGameId: metadata.internalGameId || "",
+          game: { ...identity.game, internalGameId: metadata.internalGameId || "" },
+          resolvedBy: metadata.resolvedBy || "game_identity_registry"
+        };
+      }
+    }
+    const registry = await getGameIdentityRegistryAvailability(db);
+    if (registry.available) return null;
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+  }
+  return getGameIdentityForPregame(gameId, fallback);
 }
 
 export function isBeforeGameStart(startAt, now = new Date()) {
@@ -5465,8 +5582,8 @@ function rosterFingerprint(players) {
   })).sort((left, right) => `${left.number}:${left.name}:${left.position}`.localeCompare(`${right.number}:${right.name}:${right.position}`)));
 }
 
-async function captureGameRosterSnapshot(env, gameId, now, { force = false, source = "admin", pregame = false } = {}) {
-  const identity = getGameIdentityForPregame(gameId);
+async function captureGameRosterSnapshot(env, gameId, now, { force = false, source = "admin", pregame = false, target = null } = {}) {
+  const identity = await resolvePregameIdentity(env.AUTH_DB, gameId, target || {});
   if (!identity) throw createPregameError("SCHEDULE_UNAVAILABLE", "試合日程を確認できません。");
   const storage = await requireInternalGameIdForWrite(env.AUTH_DB, {
     table: "game_roster_snapshots",
@@ -5513,7 +5630,7 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
 }
 
 async function captureOfficialLineup(env, gameId, now, { force = false, phase = "provisional", autoApproveEnabled = true, internalGameId = "", target = null } = {}) {
-  const identity = getGameIdentityForPregame(gameId, target || {});
+  const identity = await resolvePregameIdentity(env.AUTH_DB, gameId, target || {});
   if (!identity) {
     if (!target) throw createPregameError("LINEUP_URL_BUILD_FAILED", "NPB公式スタメンを取得する対象試合コードを解決できません。");
     const deadline = target ? getFinalLineupRetryDeadline({ startAt: new Date(target.startAt) }) : null;
@@ -10114,9 +10231,11 @@ function normalizeManagedGameCandidate(candidate, now = new Date()) {
     venue: String(candidate?.venue || ""),
     gameStatus,
     workflowStatus,
+    lastCompletedJobType: String(candidate?.lastCompletedJobType || candidate?.last_completed_job_type || ""),
     lastErrorCode: String(candidate?.lastErrorCode || candidate?.last_error_code || ""),
     lastErrorAt: candidate?.lastErrorAt || candidate?.last_error_at || null,
     nextDueAt: candidate?.nextDueAt || candidate?.next_due_at || null,
+    updatedAt: candidate?.updatedAt || candidate?.updated_at || null,
     isTestGame: candidate?.isTestGame === true || Number(candidate?.is_test_game || 0) === 1,
     isTerminal: terminal,
     isFailed: failed,
@@ -10177,7 +10296,7 @@ async function getCurrentManagedGameCandidates(db, now = new Date()) {
   const [gamesResult, scheduleResult, testResult] = await db.batch([
     db.prepare(
       `SELECT games.internal_game_id, games.game_date, games.start_time, games.home_team, games.away_team, games.game_status,
-              state.legacy_game_id, state.game_status AS workflow_game_status, state.workflow_status, state.last_error_code, state.last_error_at, state.next_due_at
+              state.legacy_game_id, state.game_status AS workflow_game_status, state.workflow_status, state.last_completed_job_type, state.last_error_code, state.last_error_at, state.next_due_at, state.updated_at
          FROM games
          LEFT JOIN game_workflow_state state ON state.internal_game_id = games.internal_game_id
         WHERE games.game_date >= ?1 AND games.game_date <= ?2
@@ -10219,9 +10338,11 @@ async function getCurrentManagedGameCandidates(db, now = new Date()) {
       venue: schedule.venue || "",
       gameStatus: row.workflow_game_status || row.game_status || schedule.game_status || "scheduled",
       workflowStatus: row.workflow_status || "waiting",
+      lastCompletedJobType: row.last_completed_job_type || "",
       lastErrorCode: row.last_error_code || "",
       lastErrorAt: row.last_error_at || null,
       nextDueAt: row.next_due_at || null,
+      updatedAt: row.updated_at || null,
       isTestGame: testIds.has(String(row.internal_game_id || "")) || testIds.has(legacyGameId)
     };
   });

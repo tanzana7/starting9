@@ -81,6 +81,6 @@ test("通常画面はprediction-targetの保存済みgameIdを予想保存と締
   assert.match(script, /state\.predictionTargetGame = preservedGame/);
   assert.match(script, /async function refreshPredictionTarget\(\{ retryUnannounced = true, useServer = true \} = \{\}\)/);
   assert.match(script, /if \(!response\.ok \|\| !payload\?\.ok\) return null/);
-  assert.match(script, /state\.predictionTargetGame\?\.gameId === gameId \? state\.predictionTargetGame : null/);
+  assert.match(script, /state\.predictionTargetGame\?\.gameId === gameId \|\| state\.predictionTargetGame\?\.internalGameId === gameId \? state\.predictionTargetGame : null/);
   assert.match(script, /state\.prediction = \{\s*gameId: getCurrentGameId\(\)/);
 });

@@ -3329,8 +3329,8 @@ function isScheduleGameUnavailable(game) {
 }
 
 function resolvePredictionDeadline(gameId, now = new Date()) {
-  const game = getHamGameSchedule().find((item) => item?.gameId === gameId)
-    || (state.predictionTargetGame?.gameId === gameId ? state.predictionTargetGame : null);
+  const game = getHamGameSchedule().find((item) => item?.gameId === gameId || item?.internalGameId === gameId)
+    || (state.predictionTargetGame?.gameId === gameId || state.predictionTargetGame?.internalGameId === gameId ? state.predictionTargetGame : null);
   if (!game) {
     return {
       gameId: gameId || "",
@@ -3354,8 +3354,10 @@ function resolvePredictionDeadline(gameId, now = new Date()) {
     };
   }
 
-  const startAt = parseJstScheduleDateTime(game);
-  if (!startAt) {
+  const startAt = game.startAt
+    ? new Date(game.startAt)
+    : parseJstScheduleDateTime(game);
+  if (!startAt || Number.isNaN(startAt.getTime())) {
     return {
       gameId,
       game,

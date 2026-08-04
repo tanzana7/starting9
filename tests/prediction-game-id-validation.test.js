@@ -25,6 +25,33 @@ function createScheduleDb({ directRow = null, candidateRows = [] } = {}) {
   };
 }
 
+function createRegistryDb({ identifierRows = [], gameRow = null, scheduleRow = null } = {}) {
+  return {
+    prepare(sql) {
+      return {
+        bind(...values) {
+          return {
+            first: async () => {
+              if (sql.includes("FROM games WHERE internal_game_id")) return gameRow;
+              if (sql.includes("FROM detected_game_schedule") && sql.includes("internal_game_id = ?1")) return scheduleRow;
+              return null;
+            },
+            all: async () => {
+              if (sql.includes("sqlite_master")) {
+                return { results: [{ name: "games" }, { name: "game_identifiers" }, { name: "detected_game_schedule" }] };
+              }
+              if (sql.includes("PRAGMA table_info")) return { results: [{ name: "internal_game_id" }] };
+              if (sql.includes("FROM game_identifiers")) return { results: identifierRows };
+              if (sql.includes("FROM games WHERE game_date")) return { results: gameRow ? [gameRow] : [] };
+              return { results: [] };
+            }
+          };
+        }
+      };
+    }
+  };
+}
+
 test("長形式のcanonical game_idを既知の球団slugとして正規化できる", () => {
   assert.deepEqual(parsePredictionGameId("2026-08-01-fighters-marines-1400"), {
     gameId: "2026-08-01-fighters-marines-1400",
@@ -103,6 +130,59 @@ test("D1同期前に静的日程から返した既知gameIdは開始時刻付き
     assert.equal(resolved.gameCode, "f-m-15");
     assert.equal(resolved.startAt, "2026-08-01T05:00:00.000Z");
   }
+});
+
+test("2026-08-04の説明形式IDをregistry経由で解決し、games.start_timeを締切計算へ使う", async () => {
+  const internalGameId = "12d554bb-ad25-44be-8159-0134c046dcee";
+  const resolved = await resolvePredictionGameMetadata(createRegistryDb({
+    identifierRows: [{ internal_game_id: internalGameId, identifier_type: "descriptive_game_id", identifier_value: "2026-08-04-fighters-hawks-1800" }],
+    gameRow: {
+      internal_game_id: internalGameId,
+      game_date: "2026-08-04",
+      start_time: "2026-08-04T09:00:00.000Z",
+      home_team: "fighters",
+      away_team: "hawks",
+      game_status: "scheduled"
+    },
+    scheduleRow: {
+      game_id: "2026-08-04-f-h-15",
+      source_game_key: "2026-08-04:fighters:hawks:18:00",
+      game_date: "2026-08-04",
+      start_at: "2026-08-04T10:00:00.000Z",
+      home_team: "fighters",
+      away_team: "hawks",
+      game_code: "f-h-15",
+      game_status: "scheduled",
+      internal_game_id: internalGameId
+    }
+  }), "2026-08-04-fighters-hawks-1800");
+
+  assert.equal(resolved.internalGameId, internalGameId);
+  assert.equal(resolved.gameId, "2026-08-04-f-h-15");
+  assert.equal(resolved.startAt, "2026-08-04T09:00:00.000Z");
+  const before = getResolvedPredictionDeadlineStatus(resolved, new Date("2026-08-04T07:59:59.000Z"));
+  const atDeadline = getResolvedPredictionDeadlineStatus(resolved, new Date("2026-08-04T08:00:00.000Z"));
+  assert.equal(before.isClosed, false);
+  assert.equal(atDeadline.isClosed, true);
+  assert.equal(atDeadline.deadlineAt, "2026-08-04T08:00:00.000Z");
+});
+
+test("source_game_keyから対象UUIDへ安全に解決し、外部日程取得を必要としない", async () => {
+  const internalGameId = "12d554bb-ad25-44be-8159-0134c046dcee";
+  const db = createRegistryDb({
+    identifierRows: [{ internal_game_id: internalGameId, identifier_type: "source_game_key", identifier_value: "2026-08-04:fighters:hawks:18:00" }],
+    gameRow: {
+      internal_game_id: internalGameId,
+      game_date: "2026-08-04",
+      start_time: "2026-08-04T09:00:00.000Z",
+      home_team: "fighters",
+      away_team: "hawks",
+      game_status: "scheduled"
+    }
+  });
+  const resolved = await resolvePredictionGameMetadata(db, "2026-08-04-fighters-hawks-1800");
+  assert.equal(resolved.internalGameId, internalGameId);
+  assert.equal(resolved.startAt, "2026-08-04T09:00:00.000Z");
 });
 
 test("対象試合APIのinternalGameIdを画面の保存処理が優先して送信する", () => {

@@ -10323,10 +10323,22 @@ async function handleAdminGameProgressStatus(request, env, cors) {
   try {
     const record = await getPregameAutomationStatus(env.AUTH_DB, gameId);
     const detectedGame = await getDetectedScheduleGame(env.AUTH_DB, gameId);
+    const predictionMetadata = await resolvePredictionGameMetadata(env.AUTH_DB, gameId);
+    const resolvedTarget = predictionMetadata?.startAt ? {
+      ...(predictionMetadata.game || {}),
+      gameId: predictionMetadata.gameId || gameId,
+      date: predictionMetadata.date,
+      startAt: new Date(predictionMetadata.startAt),
+      startTime: predictionMetadata.startAt,
+      homeTeam: predictionMetadata.game?.home_team || predictionMetadata.game?.homeTeam || "",
+      awayTeam: predictionMetadata.game?.away_team || predictionMetadata.game?.awayTeam || "",
+      gameCode: predictionMetadata.gameCode || "",
+      internalGameId: predictionMetadata.internalGameId || ""
+    } : null;
     const identity = getGameIdentityForPregame(gameId);
     const context = resolveGameProgressContext({
       gameId,
-      target: target?.gameId === gameId ? target : null,
+      target: resolvedTarget || (target?.gameId === gameId ? target : null),
       detectedGame,
       identity,
       workflow: record
@@ -12347,7 +12359,7 @@ async function handlePutCurrentPrediction(request, env, cors) {
 
   const input = await readJson(request);
   const reference = await resolveApiGameReference(env.AUTH_DB, input?.gameId);
-  if (!reference.ok) return jsonResponse({ ok: false, code: reference.code, error: "対象試合のgameIdが不正です。" }, 400, cors);
+  if (!reference.ok) return jsonResponse({ ok: false, code: reference.code, error: "対象試合のgameIdが不正です。", resolution: reference.diagnostics || null }, 400, cors);
   const metadata = reference.metadata;
 
   const deadlineResponse = createPredictionDeadlineRejection(metadata, cors);
@@ -12613,40 +12625,204 @@ export function parsePredictionGameId(value) {
 
 function predictionTeamCodeFromStoredName(value) {
   const name = String(value || "").trim().toLowerCase();
-  return PREDICTION_TEAM_SLUG_CODES[name] || "";
+  return PREDICTION_TEAM_SLUG_CODES[name] || (PREDICTION_TEAM_CODES.has(name) ? name : "");
 }
 
-export async function resolvePredictionGameMetadata(db, value) {
+function createPredictionResolutionDiagnostics({
+  requestedGameId = "",
+  sourceGameKey = "",
+  internalGameIdFound = false,
+  gameRowFound = false,
+  scheduleRowFound = false,
+  startAtFound = false,
+  resolvedBy = "",
+  missingFields = [],
+  identifierConflicts = []
+} = {}) {
+  return {
+    validationStage: "prediction_schedule_resolution",
+    internalGameIdFound: Boolean(internalGameIdFound),
+    gameRowFound: Boolean(gameRowFound),
+    scheduleRowFound: Boolean(scheduleRowFound),
+    legacyGameId: String(requestedGameId || ""),
+    sourceGameKey: String(sourceGameKey || ""),
+    startAtFound: Boolean(startAtFound),
+    resolvedBy: String(resolvedBy || ""),
+    missingFields: [...new Set((Array.isArray(missingFields) ? missingFields : []).filter(Boolean))],
+    identifierConflicts: (Array.isArray(identifierConflicts) ? identifierConflicts : []).map((row) => ({
+      identifierType: String(row?.identifier_type || ""),
+      identifierValue: String(row?.identifier_value || ""),
+      internalGameId: String(row?.internal_game_id || "")
+    }))
+  };
+}
+
+function getPredictionSourceGameKey(parsed) {
+  if (!parsed?.date || !parsed.homeCode || !parsed.awayCode) return "";
+  const reverseSlugs = Object.entries(PREDICTION_TEAM_SLUG_CODES)
+    .reduce((map, [slug, code]) => {
+      if (!map.has(code)) map.set(code, slug);
+      return map;
+    }, new Map());
+  const timeValue = /-(\d{3,4})$/.exec(String(parsed.gameId || ""))?.[1] || "";
+  if (!timeValue) return "";
+  const paddedTime = timeValue.padStart(4, "0");
+  return `${parsed.date}:${reverseSlugs.get(parsed.homeCode) || parsed.homeCode}:${reverseSlugs.get(parsed.awayCode) || parsed.awayCode}:${paddedTime.slice(0, 2)}:${paddedTime.slice(2)}`;
+}
+
+function getPredictionResolutionMissingFields(row, parsed) {
+  return [
+    ["gameDate", row?.game_date || parsed?.date],
+    ["startAt", row?.start_at || row?.start_time],
+    ["homeTeam", row?.home_team || parsed?.homeCode],
+    ["awayTeam", row?.away_team || parsed?.awayCode]
+  ].filter(([, value]) => !String(value || "").trim()).map(([name]) => name);
+}
+
+async function resolvePredictionGameMetadataDetailed(db, value) {
   const requestedGameReference = String(value || "").trim();
   const registry = await getGameIdentityRegistryAvailability(db);
-  if (INTERNAL_GAME_ID_PATTERN.test(requestedGameReference)) {
-    if (!registry.available) return null;
-    let internalRow = null;
-    try {
-      internalRow = await db.prepare(
-        `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, game_status, internal_game_id
-           FROM detected_game_schedule
-          WHERE internal_game_id = ?1
-          ORDER BY updated_at DESC LIMIT 2`
-      ).bind(requestedGameReference).all();
-    } catch (error) {
-      if (!isPregameSchemaError(error)) throw error;
-      return null;
-    }
-    const rows = internalRow?.results || [];
-    if (rows.length !== 1) return null;
-    const row = rows[0];
-    const parsedRow = parsePredictionGameId(row.game_id);
-    if (!parsedRow) return null;
-    return createResolvedPredictionGameMetadata({
-      parsed: parsedRow,
-      row,
-      internalGameId: requestedGameReference
-    });
+  const parsed = parsePredictionGameId(requestedGameReference);
+  const diagnostics = createPredictionResolutionDiagnostics({
+    requestedGameId: requestedGameReference,
+    sourceGameKey: parsed ? getPredictionSourceGameKey(parsed) : ""
+  });
+  if (!registry.available && !parsed && !INTERNAL_GAME_ID_PATTERN.test(requestedGameReference)) {
+    return { metadata: null, diagnostics };
   }
 
-  const parsed = parsePredictionGameId(requestedGameReference);
-  if (!parsed) return null;
+  // Registryが利用できる環境では、保存処理もCronと同じ永続日程を優先します。
+  // games.start_timeを正とし、detected_game_scheduleは不足項目の補完に使います。
+  if (registry.available) {
+    let internalGameId = INTERNAL_GAME_ID_PATTERN.test(requestedGameReference) ? requestedGameReference : "";
+    let identifierRows = [];
+    if (!internalGameId) {
+      const identifierValues = [...new Set([
+        requestedGameReference,
+        diagnostics.sourceGameKey,
+        parsed?.gameCode || ""
+      ].filter(Boolean))];
+      if (identifierValues.length) {
+        const placeholders = identifierValues.map((_, index) => `?${index + 1}`).join(", ");
+        const result = await db.prepare(
+          `SELECT internal_game_id, identifier_type, identifier_value
+             FROM game_identifiers
+            WHERE identifier_value IN (${placeholders})
+            ORDER BY identifier_value ASC, internal_game_id ASC`
+        ).bind(...identifierValues).all();
+        identifierRows = result.results || [];
+        const ids = [...new Set(identifierRows.map((row) => String(row.internal_game_id || "").trim()).filter(Boolean))];
+        if (ids.length > 1) {
+          return {
+            metadata: null,
+            diagnostics: createPredictionResolutionDiagnostics({
+              ...diagnostics,
+              identifierConflicts: identifierRows,
+              missingFields: ["internalGameId"]
+            })
+          };
+        }
+        internalGameId = ids[0] || "";
+      }
+    }
+
+    if (internalGameId) {
+      diagnostics.internalGameIdFound = true;
+      const gameRow = await db.prepare(
+        `SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status
+           FROM games WHERE internal_game_id = ?1 LIMIT 1`
+      ).bind(internalGameId).first();
+      let scheduleRow = null;
+      try {
+        scheduleRow = await db.prepare(
+          `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, game_status, internal_game_id
+             FROM detected_game_schedule
+            WHERE internal_game_id = ?1
+            ORDER BY updated_at DESC, game_id ASC LIMIT 1`
+        ).bind(internalGameId).first();
+      } catch (error) {
+        if (!isPregameSchemaError(error)) throw error;
+      }
+      const row = {
+        ...(scheduleRow || {}),
+        ...(gameRow ? {
+          game_date: gameRow.game_date || scheduleRow?.game_date,
+          start_at: gameRow.start_time || scheduleRow?.start_at,
+          home_team: gameRow.home_team || scheduleRow?.home_team,
+          away_team: gameRow.away_team || scheduleRow?.away_team,
+          game_status: gameRow.game_status || scheduleRow?.game_status
+        } : {})
+      };
+      const resolvedParsed = parsePredictionGameId(scheduleRow?.game_id || requestedGameReference) || parsed;
+      const homeCode = predictionTeamCodeFromStoredName(row.home_team) || resolvedParsed?.homeCode || "";
+      const awayCode = predictionTeamCodeFromStoredName(row.away_team) || resolvedParsed?.awayCode || "";
+      const directionMatches = !parsed || (homeCode === parsed.homeCode && awayCode === parsed.awayCode);
+      if (gameRow && directionMatches && homeCode && awayCode) {
+        const sourceGameKey = row.source_game_key || diagnostics.sourceGameKey;
+        const resolved = createResolvedPredictionGameMetadata({
+          parsed: resolvedParsed,
+          row: { ...row, game_id: row.game_id || requestedGameReference },
+          internalGameId,
+          homeCode,
+          awayCode,
+          resolvedBy: gameRow.start_time ? "games.start_time" : "detected_game_schedule.start_at"
+        });
+        if (resolved) {
+          return {
+            metadata: resolved,
+            diagnostics: createPredictionResolutionDiagnostics({
+              ...diagnostics,
+              sourceGameKey,
+              gameRowFound: true,
+              scheduleRowFound: Boolean(scheduleRow),
+              startAtFound: Boolean(row.start_at),
+              resolvedBy: gameRow.start_time ? "games.start_time" : "detected_game_schedule.start_at",
+              missingFields: getPredictionResolutionMissingFields(row, resolvedParsed)
+            })
+          };
+        }
+      }
+    }
+
+    if (parsed) {
+      const expectedStartAt = getPredictionGameExpectedStartAt(parsed);
+      const games = await db.prepare(
+        `SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status
+           FROM games WHERE game_date = ?1 ORDER BY start_time ASC, internal_game_id ASC LIMIT 50`
+      ).bind(parsed.date).all();
+      const matches = (games.results || []).filter((row) => {
+        const homeCode = predictionTeamCodeFromStoredName(row.home_team);
+        const awayCode = predictionTeamCodeFromStoredName(row.away_team);
+        const startAt = new Date(row.start_time || "");
+        return homeCode === parsed.homeCode && awayCode === parsed.awayCode
+          && (!expectedStartAt || startAt.getTime() === expectedStartAt.getTime());
+      });
+      if (matches.length === 1) {
+        const gameRow = matches[0];
+        const resolved = createResolvedPredictionGameMetadata({
+          parsed,
+          row: { ...gameRow, game_id: requestedGameReference, start_at: gameRow.start_time },
+          internalGameId: gameRow.internal_game_id,
+          resolvedBy: "games.identity"
+        });
+        if (resolved) {
+          return {
+            metadata: resolved,
+            diagnostics: createPredictionResolutionDiagnostics({
+              ...diagnostics,
+              internalGameIdFound: true,
+              gameRowFound: true,
+              startAtFound: Boolean(gameRow.start_time),
+              resolvedBy: "games.identity",
+              missingFields: getPredictionResolutionMissingFields(gameRow, parsed)
+            })
+          };
+        }
+      }
+    }
+  }
+
+  if (!parsed) return { metadata: null, diagnostics };
 
   let row = null;
   let scheduleTableAvailable = true;
@@ -12684,24 +12860,44 @@ export async function resolvePredictionGameMetadata(db, value) {
       return null;
     }
     const internalGameId = await resolveExistingInternalGameId(db, registry, row, parsed.gameId);
-    return createResolvedPredictionGameMetadata({ parsed, row, internalGameId, homeCode, awayCode });
+    const metadata = createResolvedPredictionGameMetadata({ parsed, row, internalGameId, homeCode, awayCode, resolvedBy: "detected_game_schedule" });
+    return {
+      metadata,
+      diagnostics: createPredictionResolutionDiagnostics({
+        ...diagnostics,
+        internalGameIdFound: Boolean(internalGameId),
+        scheduleRowFound: true,
+        startAtFound: Boolean(row.start_at),
+        resolvedBy: "detected_game_schedule",
+        sourceGameKey: row.source_game_key || diagnostics.sourceGameKey,
+        missingFields: getPredictionResolutionMissingFields(row, parsed)
+      })
+    };
   }
 
   // 日程同期前にprediction-targetが静的日程を返しても、既知の試合だけは保存対象として解決します。
   const scheduled = findKnownPredictionSchedule(parsed);
-  if (!scheduled) return null;
+  if (!scheduled) return { metadata: null, diagnostics: createPredictionResolutionDiagnostics({ ...diagnostics, missingFields: ["internalGameId", "gameRow", "scheduleRow", "startAt"] }) };
   const startAt = parseJstScheduleStart(scheduled);
-  if (!startAt || Number.isNaN(startAt.getTime())) return null;
+  if (!startAt || Number.isNaN(startAt.getTime())) return { metadata: null, diagnostics: createPredictionResolutionDiagnostics({ ...diagnostics, missingFields: ["startAt"] }) };
   return {
-    ...parsed,
-    gameId: scheduled.gameId,
-    startAt: startAt.toISOString(),
-    gameCode: parsePredictionGameId(scheduled.gameId)?.gameCode || parsed.gameCode,
-    game: scheduled
+    metadata: {
+      ...parsed,
+      gameId: scheduled.gameId,
+      startAt: startAt.toISOString(),
+      gameCode: parsePredictionGameId(scheduled.gameId)?.gameCode || parsed.gameCode,
+      game: scheduled
+    },
+    diagnostics: createPredictionResolutionDiagnostics({ ...diagnostics, startAtFound: true, resolvedBy: "static_schedule" })
   };
 }
 
-function createResolvedPredictionGameMetadata({ parsed, row, internalGameId = "", homeCode = "", awayCode = "" }) {
+export async function resolvePredictionGameMetadata(db, value) {
+  const result = await resolvePredictionGameMetadataDetailed(db, value);
+  return result.metadata;
+}
+
+function createResolvedPredictionGameMetadata({ parsed, row, internalGameId = "", homeCode = "", awayCode = "", resolvedBy = "" }) {
   const resolvedHomeCode = homeCode || predictionTeamCodeFromStoredName(row?.home_team) || parsed.homeCode;
   const resolvedAwayCode = awayCode || predictionTeamCodeFromStoredName(row?.away_team) || parsed.awayCode;
   if (!PREDICTION_TEAM_CODES.has(resolvedHomeCode) || !PREDICTION_TEAM_CODES.has(resolvedAwayCode) || (resolvedHomeCode !== "f" && resolvedAwayCode !== "f")) {
@@ -12719,6 +12915,7 @@ function createResolvedPredictionGameMetadata({ parsed, row, internalGameId = ""
     startAt: row.start_at || "",
     gameCode: normalizeNpbGameCode(row.game_code) || parsePredictionGameId(row.game_id)?.gameCode || parsed.gameCode,
     internalGameId: String(internalGameId || row.internal_game_id || ""),
+    resolvedBy,
     game: { ...row, status: row.game_status }
   };
 }
@@ -12726,16 +12923,20 @@ function createResolvedPredictionGameMetadata({ parsed, row, internalGameId = ""
 export async function resolveApiGameReference(db, value) {
   const raw = String(value || "").trim();
   if (!raw) return { ok: false, code: "INVALID_GAME_IDENTIFIER_FORMAT", metadata: null };
-  const metadata = await resolvePredictionGameMetadata(db, raw);
+  const resolution = await resolvePredictionGameMetadataDetailed(db, raw);
+  const metadata = resolution.metadata
+    ? { ...resolution.metadata, resolution: resolution.diagnostics }
+    : null;
   if (!metadata) {
     return {
       ok: false,
       code: INTERNAL_GAME_ID_PATTERN.test(raw) ? "INTERNAL_GAME_ID_NOT_FOUND" : "GAME_IDENTIFIER_NOT_FOUND",
-      metadata: null
+      metadata: null,
+      diagnostics: resolution.diagnostics
     };
   }
   if (!metadata.internalGameId && INTERNAL_GAME_ID_PATTERN.test(raw)) {
-    return { ok: false, code: "INTERNAL_GAME_ID_NOT_FOUND", metadata: null };
+    return { ok: false, code: "INTERNAL_GAME_ID_NOT_FOUND", metadata: null, diagnostics: resolution.diagnostics };
   }
   return {
     ok: true,
@@ -12745,7 +12946,8 @@ export async function resolveApiGameReference(db, value) {
       legacyGameId: metadata.legacyGameId || metadata.gameId,
       descriptiveGameId: metadata.format === "descriptive" ? metadata.gameId : "",
       npbGameCode: metadata.gameCode || ""
-    }
+    },
+    diagnostics: resolution.diagnostics
   };
 }
 
@@ -12862,7 +13064,8 @@ function createPredictionDeadlineRejection(resolved, cors) {
     code: deadline.code,
     error: deadline.message,
     startAt: deadline.startAt || null,
-    deadlineAt: deadline.deadlineAt || null
+    deadlineAt: deadline.deadlineAt || null,
+    resolution: resolved?.resolution || null
   }, status, cors);
 }
 

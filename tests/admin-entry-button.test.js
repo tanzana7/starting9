@@ -7,7 +7,7 @@ const vm = require("node:vm");
 const scriptPath = path.join(__dirname, "..", "script.js");
 const scriptSource = fs.readFileSync(scriptPath, "utf8");
 
-function createApp({ href = "https://starting9.pages.dev/", user = null, admin = false } = {}) {
+function createApp({ href = "https://starting9.pages.dev/", user = null, admin = false, responseStatus = admin ? 200 : 403, fetchError = false } = {}) {
   const fetchUrls = [];
   const historyUrls = [];
   const listeners = new Map();
@@ -45,6 +45,7 @@ function createApp({ href = "https://starting9.pages.dev/", user = null, admin =
     },
     fetch: async (url) => {
       fetchUrls.push(url);
+      if (fetchError) throw new Error("network unavailable");
       const isAchievementsRequest = String(url).endsWith("/api/me/achievements");
       const isYearlyPublicRankingRequest = String(url).includes("/api/rankings/yearly");
       const isYearlyMyRankingRequest = String(url).endsWith("/api/me/ranking/yearly");
@@ -52,6 +53,7 @@ function createApp({ href = "https://starting9.pages.dev/", user = null, admin =
       const isMonthlyMyRankingRequest = String(url).endsWith("/api/me/ranking/monthly");
       return {
         ok: admin,
+        status: responseStatus,
         json: async () => {
           if (!admin) return { ok: false, admin: false };
           if (isAchievementsRequest) return { ok: true, achievements: [] };
@@ -123,4 +125,16 @@ test("未ログインでは管理者APIを呼ばず、一般ユーザーは403�
   await vm.runInContext("refreshAdminAccess()", regularUser.context);
   assert.deepEqual(regularUser.fetchUrls, ["https://starting9-auth.tanzana7.workers.dev/api/admin/me"]);
   assert.equal(vm.runInContext("state.adminAccess.status", regularUser.context), "inactive");
+});
+
+test("管理者APIの503や通信失敗をログアウト扱いにせず、認証状態を保持する", async () => {
+  const serverUnavailable = createApp({ user: { id: "admin-user", username: "admin" }, admin: false, responseStatus: 503 });
+  await vm.runInContext("refreshAdminAccess()", serverUnavailable.context);
+  assert.equal(vm.runInContext("state.adminAccess.status", serverUnavailable.context), "unavailable");
+  assert.equal(vm.runInContext("getPredictionAccountUser().id", serverUnavailable.context), "admin-user");
+
+  const networkUnavailable = createApp({ user: { id: "admin-user", username: "admin" }, admin: false, fetchError: true });
+  await vm.runInContext("refreshAdminAccess()", networkUnavailable.context);
+  assert.equal(vm.runInContext("state.adminAccess.status", networkUnavailable.context), "unavailable");
+  assert.equal(vm.runInContext("getPredictionAccountUser().id", networkUnavailable.context), "admin-user");
 });

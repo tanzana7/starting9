@@ -24,6 +24,7 @@ import {
   FIGHTERS_TEAM_CODE,
   FIGHTERS_TEAM_ID
 } from "./fighters-player-master.js";
+import { normalizeScheduleTeamCode } from "./game-schedule-detection.js";
 import {
   createScheduleGameIdentifiers,
   getOrCreateInternalGame,
@@ -401,8 +402,10 @@ export default {
 
       return jsonResponse({ ok: false, error: "認証APIのパスまたはHTTPメソッドが不正です。" }, 404, cors);
     } catch (error) {
-      console.error("認証API処理に失敗しました", error instanceof Error ? error.message : "unknown error");
-      return jsonResponse({ ok: false, error: "認証処理に失敗しました。" }, 500, cors);
+      const endpoint = url.pathname;
+      const failureCode = String(error?.code || "AUTH_API_INTERNAL_ERROR");
+      console.error(`[AUTH_API] endpoint=${endpoint} authenticated=unknown userId= resolvedRole= failureCode=${failureCode}`);
+      return jsonResponse({ ok: false, code: failureCode, error: "認証処理に失敗しました。" }, 500, cors);
     }
   },
 
@@ -13773,7 +13776,7 @@ async function handleGetCurrentPrediction(request, env, cors) {
   return jsonResponse({
     ok: true,
     gameId: metadata.gameId,
-    internalGameId,
+    internalGameId: metadata.internalGameId || "",
     legacyGameId: metadata.legacyGameId || metadata.gameId,
     prediction,
     status: published ? row.status : row.status === "scored" ? "submitted" : row.status,
@@ -13824,12 +13827,41 @@ async function handlePutCurrentPrediction(request, env, cors) {
   }
 
   const input = await readJson(request);
-  const reference = await resolveApiGameReference(env.AUTH_DB, input?.gameId);
-  if (!reference.ok) return jsonResponse({ ok: false, code: reference.code, error: "対象試合のgameIdが不正です。", resolution: reference.diagnostics || null }, 400, cors);
+  let reference;
+  try {
+    reference = await resolveApiGameReference(env.AUTH_DB, input?.gameId);
+  } catch (error) {
+    const diagnostics = createPredictionResolutionDiagnostics({ requestedGameId: input?.gameId });
+    await recordPredictionResolutionFailure(env.AUTH_DB, {
+      code: isPregameSchemaError(error) ? "GAME_SCHEDULE_SCHEMA_UNAVAILABLE" : "GAME_SCHEDULE_READ_FAILED",
+      diagnostics
+    });
+    return jsonResponse({
+      ok: false,
+      code: isPregameSchemaError(error) ? "GAME_SCHEDULE_SCHEMA_UNAVAILABLE" : "GAME_SCHEDULE_READ_FAILED",
+      error: "試合日程を確認できないため、予想は保存できません。",
+      resolution: diagnostics
+    }, isPregameSchemaError(error) ? 503 : 500, cors);
+  }
+  if (!reference.ok) {
+    await recordPredictionResolutionFailure(env.AUTH_DB, { code: reference.code, diagnostics: reference.diagnostics });
+    const status = reference.code === "GAME_SCHEDULE_NOT_FOUND" ? 503 : 400;
+    return jsonResponse({ ok: false, code: reference.code, error: "対象試合の日程を確認できないため、予想は保存できません。", resolution: reference.diagnostics || null }, status, cors);
+  }
   const metadata = reference.metadata;
 
   const deadlineResponse = createPredictionDeadlineRejection(metadata, cors);
   if (deadlineResponse) {
+    const deadline = getResolvedPredictionDeadlineStatus(metadata, new Date());
+    const deadlineCode = deadline.code === "PREDICTION_SCHEDULE_UNAVAILABLE"
+      ? (metadata.resolution?.gameRowFound || metadata.resolution?.scheduleRowFound ? "GAME_ID_RESOLUTION_FAILED" : "GAME_SCHEDULE_NOT_FOUND")
+      : deadline.code;
+    await recordPredictionResolutionFailure(env.AUTH_DB, {
+      code: deadlineCode,
+      diagnostics: metadata.resolution,
+      eventType: "prediction_save_validation",
+      message: "予想保存前の検証に失敗しました。"
+    });
     return deadlineResponse;
   }
 
@@ -14091,7 +14123,10 @@ export function parsePredictionGameId(value) {
 
 function predictionTeamCodeFromStoredName(value) {
   const name = String(value || "").trim().toLowerCase();
-  return PREDICTION_TEAM_SLUG_CODES[name] || (PREDICTION_TEAM_CODES.has(name) ? name : "");
+  if (PREDICTION_TEAM_SLUG_CODES[name]) return PREDICTION_TEAM_SLUG_CODES[name];
+  if (PREDICTION_TEAM_CODES.has(name)) return name;
+  const normalizedScheduleCode = normalizeScheduleTeamCode(value);
+  return PREDICTION_TEAM_SLUG_CODES[normalizedScheduleCode] || "";
 }
 
 function createPredictionResolutionDiagnostics({
@@ -14123,6 +14158,39 @@ function createPredictionResolutionDiagnostics({
   };
 }
 
+async function recordPredictionResolutionFailure(db, {
+  code = "GAME_SCHEDULE_NOT_FOUND",
+  diagnostics = null,
+  eventType = "prediction_schedule_resolution",
+  message = "予想保存時の日程解決に失敗しました。"
+} = {}) {
+  const safeDiagnostics = diagnostics && typeof diagnostics === "object" ? diagnostics : {};
+  try {
+    await recordWorkflowLog(db, {
+      eventType,
+      status: "error",
+      gameId: safeDiagnostics.legacyGameId || "",
+      message,
+      errorCode: String(code || "GAME_SCHEDULE_NOT_FOUND"),
+      metadata: {
+        validationStage: safeDiagnostics.validationStage || "prediction_schedule_resolution",
+        internalGameIdFound: Boolean(safeDiagnostics.internalGameIdFound),
+        gameRowFound: Boolean(safeDiagnostics.gameRowFound),
+        scheduleRowFound: Boolean(safeDiagnostics.scheduleRowFound),
+        legacyGameId: safeDiagnostics.legacyGameId || "",
+        sourceGameKey: safeDiagnostics.sourceGameKey || "",
+        startAtFound: Boolean(safeDiagnostics.startAtFound),
+        resolvedBy: safeDiagnostics.resolvedBy || "",
+        missingFields: Array.isArray(safeDiagnostics.missingFields) ? safeDiagnostics.missingFields : [],
+        identifierConflicts: Array.isArray(safeDiagnostics.identifierConflicts) ? safeDiagnostics.identifierConflicts : []
+      },
+      source: "api"
+    });
+  } catch (error) {
+    console.warn(`[PREDICTION_RESOLUTION] status=log_failed code=${error?.code || "PREDICTION_RESOLUTION_LOG_FAILED"}`);
+  }
+}
+
 function getPredictionSourceGameKey(parsed) {
   if (!parsed?.date || !parsed.homeCode || !parsed.awayCode) return "";
   const reverseSlugs = Object.entries(PREDICTION_TEAM_SLUG_CODES)
@@ -14145,9 +14213,24 @@ function getPredictionResolutionMissingFields(row, parsed) {
   ].filter(([, value]) => !String(value || "").trim()).map(([name]) => name);
 }
 
+async function getPredictionGameStartColumn(db) {
+  try {
+    const columns = await getTableColumnSet(db, "games");
+    if (columns.has("start_at")) return "start_at";
+    if (columns.has("start_time")) return "start_time";
+  } catch (error) {
+    console.warn(`[PREDICTION_RESOLUTION] stage=games_schema_read status=failed code=${error?.code || "GAME_SCHEDULE_SCHEMA_READ_FAILED"}`);
+  }
+  // The registry migration uses start_time. Keep that as the compatibility
+  // default for older adapters that do not expose PRAGMA metadata.
+  return "start_time";
+}
+
 async function resolvePredictionGameMetadataDetailed(db, value) {
   const requestedGameReference = String(value || "").trim();
   const registry = await getGameIdentityRegistryAvailability(db);
+  const gamesStartColumn = await getPredictionGameStartColumn(db);
+  const gamesStartSelect = `${gamesStartColumn} AS start_time`;
   const parsed = parsePredictionGameId(requestedGameReference);
   const diagnostics = createPredictionResolutionDiagnostics({
     requestedGameId: requestedGameReference,
@@ -14195,7 +14278,7 @@ async function resolvePredictionGameMetadataDetailed(db, value) {
     if (internalGameId) {
       diagnostics.internalGameIdFound = true;
       const gameRow = await db.prepare(
-        `SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status
+        `SELECT internal_game_id, game_date, ${gamesStartSelect}, home_team, away_team, game_status
            FROM games WHERE internal_game_id = ?1 LIMIT 1`
       ).bind(internalGameId).first();
       let scheduleRow = null;
@@ -14253,8 +14336,8 @@ async function resolvePredictionGameMetadataDetailed(db, value) {
     if (parsed) {
       const expectedStartAt = getPredictionGameExpectedStartAt(parsed);
       const games = await db.prepare(
-        `SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status
-           FROM games WHERE game_date = ?1 ORDER BY start_time ASC, internal_game_id ASC LIMIT 50`
+        `SELECT internal_game_id, game_date, ${gamesStartSelect}, home_team, away_team, game_status
+           FROM games WHERE game_date = ?1 ORDER BY ${gamesStartColumn} ASC, internal_game_id ASC LIMIT 50`
       ).bind(parsed.date).all();
       const matches = (games.results || []).filter((row) => {
         const homeCode = predictionTeamCodeFromStoredName(row.home_team);
@@ -14394,11 +14477,18 @@ export async function resolveApiGameReference(db, value) {
     ? { ...resolution.metadata, resolution: resolution.diagnostics }
     : null;
   if (!metadata) {
+    const diagnostics = resolution.diagnostics || {};
+    const resolutionFailed = diagnostics.identifierConflicts?.length > 0
+      || diagnostics.internalGameIdFound
+      || diagnostics.gameRowFound
+      || diagnostics.scheduleRowFound;
     return {
       ok: false,
-      code: INTERNAL_GAME_ID_PATTERN.test(raw) ? "INTERNAL_GAME_ID_NOT_FOUND" : "GAME_IDENTIFIER_NOT_FOUND",
+      code: INTERNAL_GAME_ID_PATTERN.test(raw)
+        ? "INTERNAL_GAME_ID_NOT_FOUND"
+        : (resolutionFailed ? "GAME_ID_RESOLUTION_FAILED" : "GAME_SCHEDULE_NOT_FOUND"),
       metadata: null,
-      diagnostics: resolution.diagnostics
+      diagnostics
     };
   }
   if (!metadata.internalGameId && INTERNAL_GAME_ID_PATTERN.test(raw)) {
@@ -14524,10 +14614,14 @@ function createPredictionDeadlineRejection(resolved, cors) {
     return null;
   }
 
-  const status = deadline.code === "PREDICTION_SCHEDULE_UNAVAILABLE" ? 503 : 409;
+  const resolution = resolved?.resolution || {};
+  const code = deadline.code === "PREDICTION_SCHEDULE_UNAVAILABLE"
+    ? (resolution.gameRowFound || resolution.scheduleRowFound ? "GAME_ID_RESOLUTION_FAILED" : "GAME_SCHEDULE_NOT_FOUND")
+    : deadline.code;
+  const status = code === "GAME_SCHEDULE_NOT_FOUND" ? 503 : 409;
   return jsonResponse({
     ok: false,
-    code: deadline.code,
+    code,
     error: deadline.message,
     startAt: deadline.startAt || null,
     deadlineAt: deadline.deadlineAt || null,
@@ -14581,18 +14675,23 @@ async function requireAuthenticatedUser(request, env, cors) {
 }
 
 async function requireAdminUser(request, env, cors) {
+  const endpoint = new URL(request.url).pathname;
   const authenticated = await requireAuthenticatedUser(request, env, cors);
   if (!authenticated.ok) {
+    console.warn(`[ADMIN_AUTH] endpoint=${endpoint} authenticated=false userId= resolvedRole= failureCode=AUTH_REQUIRED`);
     return authenticated;
   }
 
-  if (authenticated.user.role !== "admin") {
+  const resolvedRole = String(authenticated.user.role || "").trim().toLowerCase();
+  if (resolvedRole !== "admin") {
+    console.warn(`[ADMIN_AUTH] endpoint=${endpoint} authenticated=true userId=${String(authenticated.user.id || "")} resolvedRole=${resolvedRole || "unknown"} failureCode=ADMIN_ROLE_REQUIRED`);
     return {
       ok: false,
       response: jsonResponse({ ok: false, admin: false, error: "管理者権限がありません。" }, 403, cors)
     };
   }
 
+  console.info(`[ADMIN_AUTH] endpoint=${endpoint} authenticated=true userId=${String(authenticated.user.id || "")} resolvedRole=admin failureCode=`);
   return authenticated;
 }
 

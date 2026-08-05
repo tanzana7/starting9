@@ -499,6 +499,7 @@ function bindEvents() {
   bindAdminEvent("stopRosterMonitorButton", "click", () => stopRosterMonitor("ロースター自動取得を停止しました。", "warning"));
   bindAdminEvent("fetchProbableStarterButton", "click", () => fetchProbableStarter({ force: true }));
   bindAdminEvent("refreshAdminGameProgressButton", "click", () => refreshAdminGameProgressStatus({ force: true }));
+  bindAdminEvent("adminGameProgressContent", "click", handleAdminRankingEligibilityAction);
   bindAdminEvent("refreshAdminReleaseReadinessButton", "click", () => refreshAdminReleaseReadiness({ force: true }));
   bindAdminEvent("toggleAdminWorkflowLogsButton", "click", toggleAdminWorkflowLogs);
   bindAdminEvent("refreshAdminWorkflowLogsButton", "click", () => refreshAdminWorkflowLogs({ force: true }));
@@ -705,7 +706,8 @@ async function refreshAdminAccess() {
 
   const url = buildAdminMeApiUrl();
   if (!url) {
-    clearAdminAccess();
+    state.adminAccess.status = "unavailable";
+    applyAdminMode();
     return;
   }
 
@@ -725,6 +727,12 @@ async function refreshAdminAccess() {
       return;
     }
 
+    if (response.status >= 500 || response.status === 0) {
+      state.adminAccess.status = "unavailable";
+      applyAdminMode();
+      return;
+    }
+
     clearAdminAccess();
     return;
   } catch (error) {
@@ -732,7 +740,8 @@ async function refreshAdminAccess() {
       return;
     }
     console.error("管理者権限の確認に失敗しました", error.message);
-    clearAdminAccess();
+    state.adminAccess.status = "unavailable";
+    applyAdminMode();
     return;
   }
 }
@@ -3050,15 +3059,15 @@ async function resolvePredictionTargetGame(schedule, useServer) {
   const fallback = findNextScheduledGameForStarter(schedule);
   if (!useServer) return fallback;
   const url = buildPredictionTargetApiUrl();
-  if (!url) return null;
+  if (!url) return fallback;
   try {
     const response = await fetch(url, { cache: "no-store" });
     const payload = await response.json().catch(() => null);
-    if (!response.ok || !payload?.ok) return null;
-    return payload.target ? normalizeServerPredictionTarget(payload.target) : null;
+    if (!response.ok || !payload?.ok) return fallback;
+    return payload.target ? normalizeServerPredictionTarget(payload.target) : fallback;
   } catch (error) {
     console.warn("サーバー側の予想対象取得に失敗しました", error.message);
-    return null;
+    return fallback;
   }
 }
 
@@ -4477,6 +4486,7 @@ function renderAdminGameProgressStatus() {
 
   const record = progress.record;
   const game = record.game || {};
+  const eligibility = record.rankingEligibility || {};
   const rows = [
     ["targetSelected", "管理対象試合決定"],
     ["probableStarter", "予告先発取得"],
@@ -4497,7 +4507,51 @@ function renderAdminGameProgressStatus() {
       const time = item.completedAt ? formatStatusTime(item.completedAt, "完了") : item.scheduledAt ? formatStatusTime(item.scheduledAt, "予定") : "";
       return `<div class="admin-game-progress-item"><dt>${escapeHtml(label)}</dt><dd><span class="admin-game-progress-status is-${escapeHtml(item.status)}">${escapeHtml(getGameProgressStatusLabel(item.status))}</span><small class="admin-game-progress-detail">${escapeHtml([item.detail, item.errorCode, time].filter(Boolean).join(" / "))}</small></dd></div>`;
     }).join("")}</dl>
+    <section class="admin-ranking-eligibility" aria-labelledby="admin-ranking-eligibility-title">
+      <div class="admin-ranking-eligibility-heading"><strong id="admin-ranking-eligibility-title">ランキング対象設定</strong><span>${escapeHtml(eligibility.rankingEligibilityStatus || "未確認")}</span></div>
+      <p>${escapeHtml(eligibility.rankingEligibilityReason || eligibility.rankingEligibilityNote || "通常試合として集計")}</p>
+      <div class="admin-ranking-eligibility-actions">
+        <button type="button" class="secondary-button compact-button" data-ranking-eligibility-action="eligible">対象にする</button>
+        <button type="button" class="danger-button compact-button" data-ranking-eligibility-action="excluded">対象外にする</button>
+        <button type="button" class="secondary-button compact-button" data-ranking-eligibility-action="pending_admin_decision">判断待ちに戻す</button>
+      </div>
+    </section>
     ${record.errors?.length ? `<p class="admin-game-progress-errors">直近エラー: ${escapeHtml(record.errors[0].errorCode || record.errors[0].message || "確認が必要です")}</p>` : ""}`;
+}
+
+async function handleAdminRankingEligibilityAction(event) {
+  const button = event.target instanceof Element ? event.target.closest("[data-ranking-eligibility-action]") : null;
+  if (!button) return;
+  const record = state.gameProgressStatus.record;
+  const gameId = record?.gameId;
+  const action = button.dataset.rankingEligibilityAction;
+  if (!gameId || !action || button.disabled) return;
+  let reason = "";
+  if (action === "excluded") {
+    reason = window.prompt("対象外理由コードを入力してください（例: no_game, postponed, admin_decision）", "admin_decision") || "";
+    if (!reason.trim()) return;
+  }
+  const note = action === "excluded" ? (window.prompt("対象外メモ（任意）", "") || "") : "";
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  if (!baseUrl) return;
+  button.disabled = true;
+  try {
+    const response = await fetch(`${baseUrl}/api/admin/games/${encodeURIComponent(gameId)}/ranking-eligibility`, {
+      method: "PUT",
+      credentials: "include",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: action, reason, note })
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) throw new Error(payload?.error || payload?.code || `HTTP ${response.status}`);
+    await refreshAdminGameProgressStatus({ force: true });
+  } catch (error) {
+    state.gameProgressStatus.message = error?.message || "ランキング対象状態を更新できませんでした。";
+    renderAdminGameProgressStatus();
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function getReleaseReadinessStatusLabel(record) {

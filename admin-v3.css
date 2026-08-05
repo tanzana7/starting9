@@ -26,6 +26,11 @@ button:hover { background: #edf4fa; }
 .game-heading code { color: #60758c; font-size: 12px; }
 .game-meta { display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 0; color: #526477; font-size: 13px; }
 .state { font-weight: 700; color: #1b5c8b; }
+.npb-code-editor { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 10px 0 2px; border-top: 1px solid #edf1f5; }
+.npb-code-editor label { display: flex; align-items: center; gap: 8px; color: #526477; font-size: 13px; }
+.npb-code-editor input { width: 150px; border: 1px solid #b9c8d8; border-radius: 5px; padding: 7px 8px; font: inherit; color: #172033; }
+.npb-code-editor button { padding: 6px 12px; }
+.npb-code-status { min-height: 1.2em; color: #1b5c8b; font-size: 12px; }
 .job-list { display: grid; gap: 7px; margin-top: 12px; }
 .job { display: grid; grid-template-columns: 150px 110px 1fr auto; align-items: center; gap: 10px; padding: 8px 10px; background: #f8fafc; border: 1px solid #e5ebf1; border-radius: 5px; font-size: 13px; }
 .job code { color: #536d86; }

@@ -5,10 +5,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { classifyNpbScheduleFetchError, fetchNpbWorkerJson, mergeNpbScheduleCandidates, resolveNpbScheduleIdentity } from "../auth-worker.js";
 import { normalizeScheduleTeamCode } from "../game-schedule-detection.js";
+import { getV3NpbIdentityState } from "../game-automation-v3.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const npbWorker = fs.readFileSync(path.join(root, "cloudflare-worker.js"), "utf8");
+const staticSchedule = JSON.parse(fs.readFileSync(path.join(root, "game-schedule-2026.json"), "utf8"));
 
 test("NPB日程照合は既存の球団正規化と日付・開始時刻・home/awayを使う", () => {
   const result = resolveNpbScheduleIdentity({
@@ -47,7 +49,7 @@ test("NPB日程にコードがない場合だけ未解決になる", () => {
     games: [{ homeTeam: "hawks", awayTeam: "fighters", startTime: "18:00" }]
   });
   assert.equal(result.status, "unresolved");
-  assert.equal(result.code, "NPB_IDENTITY_UNRESOLVED");
+  assert.equal(result.code, "NPB_STATIC_SCHEDULE_NO_IDENTITY");
 });
 
 test("NPB候補の実レスポンス形を複数日・JST基準で解決する", () => {
@@ -83,7 +85,7 @@ test("既存の球団正規化はH/Eを含むNPB略号とhome/away順を維持�
     awayTeam: "fighters",
     games: [{ homeTeam: "F", awayTeam: "H", startTime: "18:00", gameCode: "f-h-16" }]
   });
-  assert.equal(reversed.code, "NPB_IDENTITY_UNRESOLVED");
+  assert.equal(reversed.code, "NPB_IDENTITY_NO_MATCH");
   assert.equal(reversed.diagnostics.rejectionReasonCounts.reverse_home_away, 1);
 });
 
@@ -122,11 +124,30 @@ test("NPB Service Bindingはscheduleモードの日付をGETで渡し、レス�
   assert.deepEqual(result.games, payload.games);
 });
 
+test("NPB候補取得エラーはHTTP状態と安全なendpoint診断を保持する", async () => {
+  await assert.rejects(
+    fetchNpbWorkerJson({
+      NPB_FETCH_WORKER: {
+        fetch: async () => new Response(JSON.stringify({ ok: false, code: "SCHEDULE_FETCH_FAILED" }), { status: 502, headers: { "Content-Type": "application/json" } })
+      }
+    }, { mode: "schedule", date: "2026-08-05" }),
+    (error) => {
+      assert.equal(error.code, "SCHEDULE_FETCH_FAILED");
+      assert.equal(error.httpStatus, 502);
+      assert.match(error.fetchEndpoint, /mode=schedule/);
+      assert.doesNotMatch(error.fetchEndpoint, /token|cookie|secret/i);
+      return true;
+    }
+  );
+});
+
 test("候補取得失敗とレスポンス不正・空候補を別コードへ分類する", () => {
   assert.equal(classifyNpbScheduleFetchError({ code: "NPB_HTTP_ERROR" }), "NPB_SCHEDULE_FETCH_FAILED");
+  assert.equal(classifyNpbScheduleFetchError({ code: "NPB_HTTP_ERROR", httpStatus: 502 }), "NPB_SCHEDULE_HTTP_ERROR");
+  assert.equal(classifyNpbScheduleFetchError({ code: "NPB_WORKER_TIMEOUT" }), "NPB_SCHEDULE_FETCH_FAILED");
   assert.equal(classifyNpbScheduleFetchError({ code: "SCHEDULE_PARSE_FAILED" }), "NPB_SCHEDULE_RESPONSE_INVALID");
   assert.equal(classifyNpbScheduleFetchError({ code: "NPB_RESPONSE_INVALID" }), "NPB_SCHEDULE_RESPONSE_INVALID");
-  assert.equal(classifyNpbScheduleFetchError({ code: "SCHEDULE_EMPTY" }), "NPB_SCHEDULE_EMPTY");
+  assert.equal(classifyNpbScheduleFetchError({ code: "SCHEDULE_EMPTY" }), "NPB_SCHEDULE_FETCH_FAILED");
   const noMatch = resolveNpbScheduleIdentity({
     date: "2026-08-05",
     startAt: "2026-08-05T09:00:00.000Z",
@@ -134,7 +155,7 @@ test("候補取得失敗とレスポンス不正・空候補を別コードへ�
     awayTeam: "fighters",
     games: [{ homeTeam: "eagles", awayTeam: "fighters", startTime: "18:00", gameCode: "e-f-18" }]
   });
-  assert.equal(noMatch.code, "NPB_IDENTITY_UNRESOLVED");
+  assert.equal(noMatch.code, "NPB_IDENTITY_NO_MATCH");
   assert.equal(noMatch.diagnostics.rejectionReasonCounts.team_mismatch, 1);
 });
 
@@ -157,11 +178,63 @@ test("日別ページにコードがない未来試合は既存静的日程の�
   assert.equal(result.gameUrl, "https://npb.jp/scores/2026/0805/h-f-16/");
 });
 
+test("8月5日から8月8日の静的日程は既存公式URLからだけコードを補完する", () => {
+  const expected = [
+    ["2026-08-05", "hawks", "fighters", "h-f-16", "09:00"],
+    ["2026-08-06", "hawks", "fighters", "h-f-17", "09:00"],
+    ["2026-08-07", "fighters", "eagles", "f-e-17", "09:00"],
+    ["2026-08-08", "fighters", "eagles", "f-e-18", "06:00"]
+  ];
+  for (const [date, homeTeam, awayTeam, code, utcTime] of expected) {
+    const row = staticSchedule.find((game) => game.date === date && game.homeTeam === homeTeam && game.awayTeam === awayTeam);
+    assert.ok(row, date);
+    const merged = mergeNpbScheduleCandidates([], [row], date);
+    const result = resolveNpbScheduleIdentity({ date, startAt: `${date}T${utcTime}:00.000Z`, homeTeam, awayTeam, games: merged });
+    assert.equal(result.status, "resolved", date);
+    assert.equal(result.gameCode, code, date);
+    assert.match(result.gameUrl, new RegExp(`/${code}/$`), date);
+  }
+});
+
+test("診断候補は最大10件で、取得形状と拒否理由を安全に表現する", () => {
+  const result = resolveNpbScheduleIdentity({
+    date: "2026-08-05",
+    startAt: "2026-08-05T09:00:00.000Z",
+    homeTeam: "hawks",
+    awayTeam: "fighters",
+    games: Array.from({ length: 12 }, (_, index) => ({
+      date: "2026-08-05",
+      homeTeam: index === 0 ? "hawks" : "eagles",
+      awayTeam: "fighters",
+      startTime: "18:00",
+      gameCode: `h-f-${index + 1}`
+    }))
+  });
+  assert.equal(result.status, "resolved");
+  assert.equal(result.diagnostics.rawCandidateCount, 12);
+  assert.equal(result.diagnostics.candidates.length, 10);
+  assert.equal(result.diagnostics.candidates[1].rejectionReasons.includes("HOME_TEAM_MISMATCH"), true);
+  assert.equal(result.diagnostics.candidates[0].gameCodePresent, true);
+});
+
+test("NPB識別情報はDB状態を変えずに未来・取得待ち・確認必要を実行時分類する", () => {
+  const start = new Date("2026-08-05T09:00:00.000Z");
+  assert.equal(getV3NpbIdentityState({ npbIdentityStatus: "unresolved", startAt: start }, new Date("2026-08-05T07:00:00.000Z")), "pending");
+  assert.equal(getV3NpbIdentityState({ npbIdentityStatus: "unresolved", startAt: start }, new Date("2026-08-05T08:20:00.000Z")), "retry_wait");
+  assert.equal(getV3NpbIdentityState({ npbIdentityStatus: "unresolved", startAt: start }, new Date("2026-08-05T09:03:00.000Z")), "manual_action_required");
+  assert.equal(getV3NpbIdentityState({ npbIdentityStatus: "resolved", startAt: start }, new Date("2026-08-05T09:03:00.000Z")), "resolved");
+});
+
 test("日程同期はgamesへNPB識別情報を渡し、公式WorkerはURLを返す", () => {
   assert.match(worker, /npbGameUrl: String\(game\.npbGameUrl/);
   assert.match(worker, /sourceScheduleKey: sourceGameKey/);
   assert.match(worker, /npbIdentityStatus: npbGameCode \? "resolved" : "unresolved"/);
   assert.match(npbWorker, /npbGameUrl: buildNpbGameUrl\(date, game\.gameCode\)/);
+  assert.match(npbWorker, /return jsonResponse\(\{ ok: true, date, sourceUrl, fetchedAt: new Date\(\)\.toISOString\(\), games: normalizedGames \}\)/);
+  assert.match(worker, /NPB_SCHEDULE_CANDIDATES_EMPTY/);
+  assert.match(worker, /NPB_STATIC_SCHEDULE_EMPTY/);
+  assert.match(worker, /NPB_SCHEDULE_RESPONSE_INVALID/);
+  assert.match(worker, /NPB_IDENTITY_NO_MATCH/);
 });
 
 test("V3 lineup fetchは保存URLを優先し、未解決時はlegacy fallbackを使わない", () => {
@@ -170,4 +243,16 @@ test("V3 lineup fetchは保存URLを優先し、未解決時はlegacy fallback�
   assert.match(worker, /NPB_IDENTITY_UNRESOLVED/);
   const v3Section = worker.slice(worker.indexOf("function createV3LineupIdentity"), worker.indexOf("async function executeGameAutomationV3Job"));
   assert.doesNotMatch(v3Section, /resolvePregameIdentity/);
+});
+
+test("V3管理画面は取得形状・候補・照合結果の診断を最大10件表示する", () => {
+  const client = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
+  const page = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
+  assert.match(client, /resolutionDiagnostics/);
+  assert.match(client, /fetchEndpoint/);
+  assert.match(client, /rawCandidateCount/);
+  assert.match(client, /slice\(0, 10\)/);
+  assert.match(client, /data-v3-identity-diagnostics/);
+  assert.match(page, /admin-v3\.css\?v=automation-v3-4/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-4/);
 });

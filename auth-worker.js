@@ -2731,6 +2731,7 @@ export function mergeNpbScheduleCandidates(scheduleGames, fallbackGames, date) {
       npbGameUrl: fallback.npbGameUrl || fallback.npbScoreUrl,
       resolutionSource: "static_schedule"
     }, date);
+    if (fallbackCandidate.candidateDateJst !== String(date || "")) continue;
     const matchingIndex = normalizedPrimary.findIndex((candidate) => candidate.normalizedHomeTeam === fallbackCandidate.normalizedHomeTeam
       && candidate.normalizedAwayTeam === fallbackCandidate.normalizedAwayTeam
       && candidate.candidateStart.getTime() === fallbackCandidate.candidateStart.getTime());
@@ -2754,6 +2755,27 @@ export function mergeNpbScheduleCandidates(scheduleGames, fallbackGames, date) {
     }
   }
   return merged;
+}
+
+function getStaticNpbTargetCandidates(fallbackGames, current) {
+  const targetDate = String(current?.game_date || "");
+  const targetStart = new Date(current?.start_time || "");
+  const targetHome = normalizeScheduleTeamCode(current?.home_team);
+  const targetAway = normalizeScheduleTeamCode(current?.away_team);
+  if (!targetDate || Number.isNaN(targetStart.getTime()) || !targetHome || !targetAway) return [];
+  return (Array.isArray(fallbackGames) ? fallbackGames : []).filter((game) => {
+    const candidate = normalizeNpbScheduleCandidate(game, targetDate);
+    return candidate.candidateDateJst === targetDate
+      && candidate.normalizedHomeTeam === targetHome
+      && candidate.normalizedAwayTeam === targetAway
+      && !Number.isNaN(candidate.candidateStart.getTime())
+      && candidate.candidateStart.getTime() === targetStart.getTime();
+  }).map((game) => ({
+    ...game,
+    gameCode: getScheduleGameCode(game),
+    npbGameUrl: game.npbGameUrl || game.npbScoreUrl || "",
+    resolutionSource: "static_schedule"
+  }));
 }
 
 const NPB_SCHEDULE_TIME_TOLERANCE_MS = 30 * 60 * 1000;
@@ -2805,13 +2827,16 @@ function normalizeNpbScheduleCandidate(game, fallbackDate) {
     normalizedHomeTeam,
     rawAwayTeam,
     normalizedAwayTeam,
+    rawDate: explicitDate,
     rawStartTime: String(rawStartTime || "").trim(),
+    normalizedStartTime: formatJstTime(candidateStart),
     candidateStart,
     candidateDateJst,
     candidateStadium,
     gameCode,
     gameUrl: String(firstNpbValue(game, ["npbGameUrl", "gameUrl", "game_url"]) || "").trim(),
     resolutionSource: String(game?.resolutionSource || "npb_schedule"),
+    rejectionReasons: [],
     game
   };
 }
@@ -2822,30 +2847,74 @@ function addRejectionReason(counts, reason) {
 
 function serializeNpbCandidate(candidate) {
   return {
+    source: candidate.resolutionSource,
+    rawDate: candidate.rawDate,
+    normalizedDate: candidate.candidateDateJst,
+    rawHome: candidate.rawHomeTeam,
     rawHomeTeam: candidate.rawHomeTeam,
+    normalizedHome: candidate.normalizedHomeTeam,
     normalizedHomeTeam: candidate.normalizedHomeTeam,
+    rawAway: candidate.rawAwayTeam,
     rawAwayTeam: candidate.rawAwayTeam,
+    normalizedAway: candidate.normalizedAwayTeam,
     normalizedAwayTeam: candidate.normalizedAwayTeam,
+    rawStartTime: candidate.rawStartTime,
     startTime: candidate.rawStartTime,
-    startTimeJst: formatJstTime(candidate.candidateStart),
-    gameDateJst: candidate.candidateDateJst,
-    gameCode: candidate.gameCode || null
+    normalizedStartTime: candidate.normalizedStartTime,
+    gameCodePresent: Boolean(candidate.gameCode),
+    urlPresent: Boolean(candidate.gameUrl),
+    rejectionReasons: candidate.rejectionReasons || []
   };
 }
 
-function buildNpbIdentityDiagnostics({ targetDate, expectedStart, expectedHome, expectedAway, candidates, normalizedCandidateCount, rejectionReasonCounts, finalFailureCode = "", resolvedBy = "" }) {
+function buildNpbIdentityDiagnostics({ targetDate, expectedStart, expectedHome, expectedAway, candidates, normalizedCandidateCount, rejectionReasonCounts, finalFailureCode = "", resolvedBy = "", matchCount = 0, rawCandidateCount = null, staticCandidateCount = 0 }) {
   return {
     targetGameDateJst: targetDate,
     targetHomeTeam: expectedHome,
     targetAwayTeam: expectedAway,
     targetStartTimeJst: formatJstTime(expectedStart),
-    candidateCount: candidates.length,
-    normalizedCandidateCount,
+    rawCandidateCount: rawCandidateCount === null ? candidates.length : rawCandidateCount,
+    parsedCandidateCount: normalizedCandidateCount,
+    staticCandidateCount,
+    mergedCandidateCount: candidates.length,
+    matchCount,
     rejectionReasonCounts,
     finalFailureCode,
     resolvedBy,
-    candidates: candidates.slice(0, 20).map(serializeNpbCandidate)
+    candidates: candidates.slice(0, 10).map(serializeNpbCandidate)
   };
+}
+
+function createNpbResolutionDiagnostics(current, overrides = {}) {
+  return {
+    internalGameId: String(current?.internal_game_id || ""),
+    fetchEndpoint: null,
+    fetchHttpStatus: null,
+    responseContentType: null,
+    rawCandidateCount: 0,
+    parsedCandidateCount: 0,
+    staticCandidateCount: 0,
+    mergedCandidateCount: 0,
+    targetGameDateJst: String(current?.game_date || "") || null,
+    targetHomeTeam: normalizeScheduleTeamCode(current?.home_team) || String(current?.home_team || ""),
+    targetAwayTeam: normalizeScheduleTeamCode(current?.away_team) || String(current?.away_team || ""),
+    targetStartTimeJst: formatJstTime(current?.start_time),
+    matchCount: 0,
+    rejectionReasonCounts: {},
+    finalFailureCode: "",
+    resolvedBy: "",
+    candidates: [],
+    ...overrides
+  };
+}
+
+function getNpbIdentityRuntimeState(startAt, now = new Date()) {
+  const start = new Date(startAt || "");
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(current.getTime())) return "manual_action_required";
+  if (current < new Date(start.getTime() - 50 * 60 * 1000)) return "pending";
+  if (current <= new Date(start.getTime() + 2 * 60 * 1000)) return "retry_wait";
+  return "manual_action_required";
 }
 
 export function resolveNpbScheduleIdentity({ date, startAt, homeTeam, awayTeam, stadium = "", games = [] } = {}) {
@@ -2866,7 +2935,7 @@ export function resolveNpbScheduleIdentity({ date, startAt, homeTeam, awayTeam, 
     candidates: normalized,
     normalizedCandidateCount: normalized.filter((candidate) => candidate.normalizedHomeTeam && candidate.normalizedAwayTeam && !Number.isNaN(candidate.candidateStart.getTime())).length,
     rejectionReasonCounts,
-    finalFailureCode: "NPB_IDENTITY_UNRESOLVED"
+    finalFailureCode: "NPB_IDENTITY_NO_MATCH"
   });
   if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate) || Number.isNaN(expectedStart.getTime()) || !expectedHome || !expectedAway) {
     addRejectionReason(rejectionReasonCounts, "target_metadata_invalid");
@@ -2881,16 +2950,24 @@ export function resolveNpbScheduleIdentity({ date, startAt, homeTeam, awayTeam, 
   const sameDateAndTeams = [];
   for (const candidate of normalized) {
     if (!candidate.normalizedHomeTeam || !candidate.normalizedAwayTeam || Number.isNaN(candidate.candidateStart.getTime())) {
+      candidate.rejectionReasons.push("CANDIDATE_METADATA_INVALID");
       addRejectionReason(rejectionReasonCounts, "candidate_metadata_invalid");
       continue;
     }
     if (candidate.candidateDateJst !== targetDate) {
+      candidate.rejectionReasons.push("DATE_MISMATCH");
       addRejectionReason(rejectionReasonCounts, "date_mismatch");
       continue;
     }
     if (candidate.normalizedHomeTeam !== expectedHome || candidate.normalizedAwayTeam !== expectedAway) {
-      if (candidate.normalizedHomeTeam === expectedAway && candidate.normalizedAwayTeam === expectedHome) addRejectionReason(rejectionReasonCounts, "reverse_home_away");
-      else addRejectionReason(rejectionReasonCounts, "team_mismatch");
+      if (candidate.normalizedHomeTeam === expectedAway && candidate.normalizedAwayTeam === expectedHome) {
+        candidate.rejectionReasons.push("HOME_AWAY_REVERSED");
+        addRejectionReason(rejectionReasonCounts, "reverse_home_away");
+      } else {
+        if (candidate.normalizedHomeTeam !== expectedHome) candidate.rejectionReasons.push("HOME_TEAM_MISMATCH");
+        if (candidate.normalizedAwayTeam !== expectedAway) candidate.rejectionReasons.push("AWAY_TEAM_MISMATCH");
+        addRejectionReason(rejectionReasonCounts, "team_mismatch");
+      }
       continue;
     }
     sameDateAndTeams.push(candidate);
@@ -2899,8 +2976,14 @@ export function resolveNpbScheduleIdentity({ date, startAt, homeTeam, awayTeam, 
   const exactMatches = sameDateAndTeams.filter((candidate) => {
     const sameStart = candidate.candidateStart.getTime() === expectedStart.getTime();
     const sameStadium = !expectedStadium || !candidate.candidateStadium || expectedStadium === candidate.candidateStadium;
-    if (!sameStart) addRejectionReason(rejectionReasonCounts, "start_time_mismatch");
-    if (!sameStadium) addRejectionReason(rejectionReasonCounts, "stadium_mismatch");
+    if (!sameStart) {
+      candidate.rejectionReasons.push("START_TIME_MISMATCH");
+      addRejectionReason(rejectionReasonCounts, "start_time_mismatch");
+    }
+    if (!sameStadium) {
+      candidate.rejectionReasons.push("STADIUM_MISMATCH");
+      addRejectionReason(rejectionReasonCounts, "stadium_mismatch");
+    }
     return sameStart && sameStadium;
   });
   let matches = exactMatches;
@@ -2918,15 +3001,16 @@ export function resolveNpbScheduleIdentity({ date, startAt, homeTeam, awayTeam, 
     }
   }
   if (matches.length > 1) {
-    return { status: "conflict", code: "NPB_IDENTITY_CONFLICT", candidates: matches.map((candidate) => candidate.game), diagnostics: buildNpbIdentityDiagnostics({ targetDate, expectedStart, expectedHome, expectedAway, candidates: normalized, normalizedCandidateCount: normalized.length, rejectionReasonCounts, finalFailureCode: "NPB_IDENTITY_CONFLICT" }) };
+    return { status: "conflict", code: "NPB_IDENTITY_CONFLICT", candidates: matches.map((candidate) => candidate.game), diagnostics: buildNpbIdentityDiagnostics({ targetDate, expectedStart, expectedHome, expectedAway, candidates: normalized, normalizedCandidateCount: normalized.length, rejectionReasonCounts, finalFailureCode: "NPB_IDENTITY_CONFLICT", matchCount: matches.length }) };
   }
   const match = matches[0];
   if (!match) {
-    return { status: "unresolved", code: "NPB_IDENTITY_UNRESOLVED", candidates: [], diagnostics: diagnostics() };
+    return { status: "unresolved", code: "NPB_IDENTITY_NO_MATCH", candidates: [], diagnostics: diagnostics() };
   }
   if (!match.gameCode) {
+    match.rejectionReasons.push("GAME_CODE_MISSING");
     addRejectionReason(rejectionReasonCounts, "game_code_missing");
-    return { status: "unresolved", code: "NPB_IDENTITY_UNRESOLVED", candidates: [match.game], diagnostics: diagnostics() };
+    return { status: "unresolved", code: "NPB_STATIC_SCHEDULE_NO_IDENTITY", candidates: [match.game], diagnostics: buildNpbIdentityDiagnostics({ targetDate, expectedStart, expectedHome, expectedAway, candidates: normalized, normalizedCandidateCount: normalized.length, rejectionReasonCounts, finalFailureCode: "NPB_STATIC_SCHEDULE_NO_IDENTITY", matchCount: 1 }) };
   }
   return {
     status: "resolved",
@@ -2936,14 +3020,15 @@ export function resolveNpbScheduleIdentity({ date, startAt, homeTeam, awayTeam, 
     sourceScheduleKey: `${targetDate}:${expectedHome}:${expectedAway}:${formatJstTime(match.candidateStart)}`,
     source: "npb_schedule_resolve",
     candidates: [match.game],
-    diagnostics: buildNpbIdentityDiagnostics({ targetDate, expectedStart, expectedHome, expectedAway, candidates: normalized, normalizedCandidateCount: normalized.length, rejectionReasonCounts, finalFailureCode: "", resolvedBy: match.resolutionSource })
+    diagnostics: buildNpbIdentityDiagnostics({ targetDate, expectedStart, expectedHome, expectedAway, candidates: normalized, normalizedCandidateCount: normalized.length, rejectionReasonCounts, finalFailureCode: "", resolvedBy: match.resolutionSource, matchCount: 1 })
   };
 }
 
 export function classifyNpbScheduleFetchError(error) {
   const code = String(error?.code || "");
+  const status = Number(error?.httpStatus || error?.upstreamStatus || 0);
   if (["NPB_RESPONSE_INVALID", "SCHEDULE_PARSE_FAILED"].includes(code)) return "NPB_SCHEDULE_RESPONSE_INVALID";
-  if (code === "SCHEDULE_EMPTY") return "NPB_SCHEDULE_EMPTY";
+  if (status >= 400) return "NPB_SCHEDULE_HTTP_ERROR";
   return "NPB_SCHEDULE_FETCH_FAILED";
 }
 
@@ -3202,8 +3287,11 @@ async function handleAdminV3Overview(request, env, cors) {
 async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) return access.response;
+  let diagnosticId = "";
+  let diagnosticGame = null;
   try {
     const id = normalizeV3InternalGameId(internalGameId);
+    diagnosticId = id;
     const columns = await getTableColumnSet(env.AUTH_DB, "games");
     const requiredColumns = ["npb_game_code", "npb_game_url", "source_schedule_key", "npb_identity_status", "npb_identity_resolved_at", "npb_identity_source"];
     if (!requiredColumns.every((column) => columns.has(column))) {
@@ -3216,6 +3304,7 @@ async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) 
          FROM games WHERE internal_game_id = ?1 LIMIT 1`
     ).bind(id).first();
     if (!current) return jsonResponse({ ok: false, code: "V3_GAME_NOT_REGISTERED", error: "対象試合が日程DBに登録されていません。" }, 404, cors);
+    diagnosticGame = current;
     if (current.npb_identity_status === "manually_overridden") {
       return jsonResponse({ ok: false, code: "NPB_IDENTITY_MANUAL_OVERRIDE", error: "管理者上書き値は自動再解決で変更できません。" }, 409, cors);
     }
@@ -3224,19 +3313,13 @@ async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) 
       payload = await fetchNpbWorkerJson(env, { mode: "schedule", date: current.game_date });
     } catch (error) {
       const failureCode = classifyNpbScheduleFetchError(error);
-      const diagnostics = {
-        internalGameId: id,
-        targetGameDateJst: current.game_date || null,
-        targetHomeTeam: normalizeScheduleTeamCode(current.home_team) || String(current.home_team || ""),
-        targetAwayTeam: normalizeScheduleTeamCode(current.away_team) || String(current.away_team || ""),
-        targetStartTimeJst: formatJstTime(current.start_time),
-        fetchStatus: Number(error?.httpStatus || error?.upstreamStatus) || null,
-        fetchContentType: error?.contentType || null,
-        candidateCount: 0,
-        normalizedCandidateCount: 0,
-        rejectionReasonCounts: { fetch_failed: 1 },
+      const diagnostics = createNpbResolutionDiagnostics(current, {
+        fetchEndpoint: error?.fetchEndpoint || null,
+        fetchHttpStatus: Number(error?.httpStatus || error?.upstreamStatus) || null,
+        responseContentType: error?.contentType || null,
+        rejectionReasonCounts: { FETCH_FAILED: 1 },
         finalFailureCode: failureCode
-      };
+      });
       await recordWorkflowLog(env.AUTH_DB, {
         eventType: "v3_npb_identity_resolution",
         status: "error",
@@ -3246,22 +3329,17 @@ async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) 
         metadata: diagnostics,
         source: "admin"
       });
-      console.warn(`[GAME_AUTOMATION_V3] stage=npb_identity_resolve_fetch code=${failureCode} status=${diagnostics.fetchStatus || "unknown"}`);
-      return jsonResponse({ ok: false, code: failureCode, error: "NPB日程候補を取得できませんでした。", resolutionDiagnostics: diagnostics }, 502, cors);
+      console.warn(`[GAME_AUTOMATION_V3] stage=npb_identity_resolve_fetch code=${failureCode} status=${diagnostics.fetchHttpStatus || "unknown"}`);
+      return jsonResponse({ ok: false, code: failureCode, error: "NPB日程候補を取得できませんでした。", identityState: getNpbIdentityRuntimeState(current.start_time), resolutionDiagnostics: diagnostics }, 502, cors);
     }
     if (!Array.isArray(payload?.games)) {
-      const diagnostics = {
-        internalGameId: id,
-        targetGameDateJst: current.game_date || null,
-        targetHomeTeam: normalizeScheduleTeamCode(current.home_team) || String(current.home_team || ""),
-        targetAwayTeam: normalizeScheduleTeamCode(current.away_team) || String(current.away_team || ""),
-        targetStartTimeJst: formatJstTime(current.start_time),
-        fetchStatus: 200,
-        candidateCount: 0,
-        normalizedCandidateCount: 0,
-        rejectionReasonCounts: { response_games_not_array: 1 },
+      const diagnostics = createNpbResolutionDiagnostics(current, {
+        fetchEndpoint: payload?.__fetchMeta?.endpoint || null,
+        fetchHttpStatus: Number(payload?.__fetchMeta?.httpStatus) || 200,
+        responseContentType: payload?.__fetchMeta?.contentType || "application/json",
+        rejectionReasonCounts: { RESPONSE_GAMES_NOT_ARRAY: 1 },
         finalFailureCode: "NPB_SCHEDULE_RESPONSE_INVALID"
-      };
+      });
       await recordWorkflowLog(env.AUTH_DB, {
         eventType: "v3_npb_identity_resolution",
         status: "error",
@@ -3271,60 +3349,71 @@ async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) 
         metadata: diagnostics,
         source: "admin"
       });
-      return jsonResponse({ ok: false, code: "NPB_SCHEDULE_RESPONSE_INVALID", error: "NPB日程レスポンスが不正です。", resolutionDiagnostics: diagnostics }, 502, cors);
+      return jsonResponse({ ok: false, code: "NPB_SCHEDULE_RESPONSE_INVALID", error: "NPB日程レスポンスが不正です。", identityState: getNpbIdentityRuntimeState(current.start_time), resolutionDiagnostics: diagnostics }, 502, cors);
     }
-    if (!payload.games.length) {
-      const diagnostics = {
-        internalGameId: id,
-        targetGameDateJst: current.game_date || null,
-        targetHomeTeam: normalizeScheduleTeamCode(current.home_team) || String(current.home_team || ""),
-        targetAwayTeam: normalizeScheduleTeamCode(current.away_team) || String(current.away_team || ""),
-        targetStartTimeJst: formatJstTime(current.start_time),
-        fetchStatus: 200,
-        candidateCount: 0,
-        normalizedCandidateCount: 0,
-        rejectionReasonCounts: { schedule_empty: 1 },
-        finalFailureCode: "NPB_SCHEDULE_EMPTY"
-      };
-      await recordWorkflowLog(env.AUTH_DB, {
-        eventType: "v3_npb_identity_resolution",
-        status: "warning",
-        gameId: id,
-        message: "NPB日程候補がありません。",
-        errorCode: "NPB_SCHEDULE_EMPTY",
-        metadata: diagnostics,
-        source: "admin"
-      });
-      return jsonResponse({ ok: false, code: "NPB_SCHEDULE_EMPTY", error: "対象日のNPB日程候補がありません。", resolutionDiagnostics: diagnostics }, 422, cors);
-    }
-    const scheduleCandidates = mergeNpbScheduleCandidates(payload.games, getScheduledGames(), current.game_date);
+    const staticGames = getScheduledGames();
+    const staticDateCount = staticGames.filter((game) => String(game?.date || game?.game_date || "") === String(current.game_date || "")).length;
+    const staticTargetCandidates = getStaticNpbTargetCandidates(staticGames, current);
+    const scheduleCandidates = mergeNpbScheduleCandidates(payload.games, staticGames, current.game_date);
+    const targetHome = normalizeScheduleTeamCode(current.home_team);
+    const targetAway = normalizeScheduleTeamCode(current.away_team);
+    const targetStart = new Date(current.start_time || "");
+    const hasLiveOrMergedTarget = scheduleCandidates.some((game) => {
+      const candidate = normalizeNpbScheduleCandidate(game, current.game_date);
+      return candidate.candidateDateJst === current.game_date
+        && candidate.normalizedHomeTeam === targetHome
+        && candidate.normalizedAwayTeam === targetAway
+        && !Number.isNaN(candidate.candidateStart.getTime())
+        && candidate.candidateStart.getTime() === targetStart.getTime();
+    });
+    const identityCandidates = hasLiveOrMergedTarget
+      ? scheduleCandidates
+      : [...scheduleCandidates, ...staticTargetCandidates];
     const resolved = resolveNpbScheduleIdentity({
       date: current.game_date,
       startAt: current.start_time,
       homeTeam: current.home_team,
       awayTeam: current.away_team,
       stadium: current.stadium,
-      games: scheduleCandidates
+      games: identityCandidates
     });
     if (resolved.status !== "resolved") {
       const status = resolved.status === "conflict" ? 409 : 422;
-    const diagnostics = {
-      ...(resolved.diagnostics || {}),
-      internalGameId: id,
-      fetchedCandidateCount: payload.games.length,
-      fallbackCandidateCount: Math.max(0, scheduleCandidates.length - payload.games.length),
-      finalFailureCode: resolved.code
-    };
+      const noCandidates = payload.games.length === 0 && identityCandidates.length === 0;
+      const staticHasNoIdentity = staticTargetCandidates.length > 0
+        && staticTargetCandidates.every((game) => !getScheduleGameCode(game));
+      const finalFailureCode = noCandidates
+        ? (staticDateCount === 0 ? "NPB_STATIC_SCHEDULE_EMPTY" : "NPB_SCHEDULE_CANDIDATES_EMPTY")
+        : (staticHasNoIdentity && resolved.code === "NPB_IDENTITY_NO_MATCH"
+          ? "NPB_STATIC_SCHEDULE_NO_IDENTITY"
+          : resolved.code);
+      const diagnostics = createNpbResolutionDiagnostics(current, {
+        ...(resolved.diagnostics || {}),
+        fetchEndpoint: payload?.__fetchMeta?.endpoint || null,
+        fetchHttpStatus: Number(payload?.__fetchMeta?.httpStatus) || 200,
+        responseContentType: payload?.__fetchMeta?.contentType || "application/json",
+        rawCandidateCount: payload.games.length,
+        parsedCandidateCount: resolved.diagnostics?.parsedCandidateCount || 0,
+        staticCandidateCount: staticTargetCandidates.length,
+        mergedCandidateCount: identityCandidates.length,
+        finalFailureCode,
+        rejectionReasonCounts: {
+          ...(resolved.diagnostics?.rejectionReasonCounts || {}),
+          ...(noCandidates ? { CANDIDATES_EMPTY: 1 } : {}),
+          ...(noCandidates && staticDateCount === 0 ? { STATIC_SCHEDULE_EMPTY: 1 } : {}),
+          ...(staticHasNoIdentity ? { STATIC_SCHEDULE_NO_IDENTITY: 1 } : {})
+        }
+      });
       await recordWorkflowLog(env.AUTH_DB, {
         eventType: "v3_npb_identity_resolution",
         status: resolved.status === "conflict" ? "error" : "warning",
         gameId: id,
         message: resolved.status === "conflict" ? "NPB日程の候補が複数あります。" : "NPB日程から対象試合を解決できませんでした。",
-        errorCode: resolved.code,
+        errorCode: finalFailureCode,
         metadata: diagnostics,
         source: "admin"
       });
-      return jsonResponse({ ok: false, code: resolved.code, error: resolved.status === "conflict" ? "NPB日程の候補が複数あります。" : "NPB日程から対象試合を解決できませんでした。", resolutionDiagnostics: diagnostics }, status, cors);
+      return jsonResponse({ ok: false, code: finalFailureCode, error: ["NPB_SCHEDULE_CANDIDATES_EMPTY", "NPB_STATIC_SCHEDULE_EMPTY"].includes(finalFailureCode) ? "NPB日程候補が空です。" : (resolved.status === "conflict" ? "NPB日程の候補が複数あります。" : "NPB日程から対象試合を解決できませんでした。"), identityState: getNpbIdentityRuntimeState(current.start_time), resolutionDiagnostics: diagnostics }, status, cors);
     }
     const identifiers = [
       { provider: "npb", identifierType: "npb_game_code", identifierValue: resolved.gameCode },
@@ -3337,7 +3426,29 @@ async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) 
           LIMIT 2`
       ).bind(identifier.provider, identifier.identifierType, identifier.identifierValue).all();
       const otherIds = [...new Set((conflict.results || []).map((row) => String(row.internal_game_id || "")).filter((value) => value && value !== id))];
-      if (otherIds.length) return jsonResponse({ ok: false, code: "NPB_IDENTITY_CONFLICT", error: "NPB識別子が別の試合へ登録されています。" }, 409, cors);
+      if (otherIds.length) {
+        const diagnostics = createNpbResolutionDiagnostics(current, {
+          ...(resolved.diagnostics || {}),
+          fetchEndpoint: payload?.__fetchMeta?.endpoint || null,
+          fetchHttpStatus: Number(payload?.__fetchMeta?.httpStatus) || 200,
+          responseContentType: payload?.__fetchMeta?.contentType || "application/json",
+          rawCandidateCount: payload.games.length,
+          staticCandidateCount: staticTargetCandidates.length,
+          mergedCandidateCount: identityCandidates.length,
+          finalFailureCode: "NPB_IDENTITY_CONFLICT",
+          rejectionReasonCounts: { ...(resolved.diagnostics?.rejectionReasonCounts || {}), IDENTIFIER_CONFLICT: 1 }
+        });
+        await recordWorkflowLog(env.AUTH_DB, {
+          eventType: "v3_npb_identity_resolution",
+          status: "error",
+          gameId: id,
+          message: "NPB識別子が別の試合へ登録されています。",
+          errorCode: "NPB_IDENTITY_CONFLICT",
+          metadata: diagnostics,
+          source: "admin"
+        });
+        return jsonResponse({ ok: false, code: "NPB_IDENTITY_CONFLICT", error: "NPB識別子が別の試合へ登録されています。", identityState: getNpbIdentityRuntimeState(current.start_time), resolutionDiagnostics: diagnostics }, 409, cors);
+      }
     }
     const now = new Date();
     await updateGameScheduleMetadata(env.AUTH_DB, id, {
@@ -3362,13 +3473,17 @@ async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) 
               npb_identity_resolved_at, npb_identity_source, game_status
          FROM games WHERE internal_game_id = ?1 LIMIT 1`
     ).bind(id).first();
-    const diagnostics = {
+    const diagnostics = createNpbResolutionDiagnostics(current, {
       ...(resolved.diagnostics || {}),
-      internalGameId: id,
-      fetchedCandidateCount: payload.games.length,
-      fallbackCandidateCount: Math.max(0, scheduleCandidates.length - payload.games.length),
+      fetchEndpoint: payload?.__fetchMeta?.endpoint || null,
+      fetchHttpStatus: Number(payload?.__fetchMeta?.httpStatus) || 200,
+      responseContentType: payload?.__fetchMeta?.contentType || "application/json",
+      rawCandidateCount: payload.games.length,
+      parsedCandidateCount: resolved.diagnostics?.parsedCandidateCount || 0,
+      staticCandidateCount: staticTargetCandidates.length,
+      mergedCandidateCount: identityCandidates.length,
       finalFailureCode: ""
-    };
+    });
     await recordWorkflowLog(env.AUTH_DB, {
       eventType: "v3_npb_identity_resolution",
       status: "success",
@@ -3377,11 +3492,16 @@ async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) 
       metadata: diagnostics,
       source: "admin"
     });
-    return jsonResponse({ ok: true, resolvedBy: resolved.diagnostics?.resolvedBy || resolved.source || "npb_schedule_resolve", resolutionDiagnostics: diagnostics, game: serializeV3GameIdentity(updated) }, 200, cors);
+    return jsonResponse({ ok: true, resolvedBy: resolved.diagnostics?.resolvedBy || resolved.source || "npb_schedule_resolve", identityState: "resolved", resolutionDiagnostics: diagnostics, game: serializeV3GameIdentity(updated) }, 200, cors);
   } catch (error) {
     const code = String(error?.code || "NPB_IDENTITY_RESOLUTION_FAILED");
     console.error(`[GAME_AUTOMATION_V3] stage=npb_identity_resolve code=${code}`);
-    return jsonResponse({ ok: false, code, error: "NPB試合識別情報を再解決できませんでした。" }, 500, cors);
+    const diagnostics = createNpbResolutionDiagnostics(diagnosticGame, {
+      internalGameId: diagnosticId,
+      finalFailureCode: code,
+      rejectionReasonCounts: { RESOLUTION_EXCEPTION: 1 }
+    });
+    return jsonResponse({ ok: false, code, error: "NPB試合識別情報を再解決できませんでした。", identityState: getNpbIdentityRuntimeState(diagnosticGame?.start_time), resolutionDiagnostics: diagnostics }, 500, cors);
   }
 }
 
@@ -6615,6 +6735,7 @@ export async function fetchNpbWorkerJson(env, params) {
   try {
     binding = getNpbFetchServiceBinding(env);
     request = buildNpbServiceBindingRequest(params);
+    upstreamDetails.fetchEndpoint = `${new URL(request.url).pathname}${new URL(request.url).search}`;
   } catch (error) {
     if (error?.code) {
       Object.assign(error, upstreamDetails);
@@ -6648,6 +6769,14 @@ export async function fetchNpbWorkerJson(env, params) {
         ...upstreamDetails
       });
     }
+    Object.defineProperty(payload, "__fetchMeta", {
+      value: {
+        httpStatus: response.status,
+        contentType: response.headers.get("content-type") || "",
+        endpoint: request.url
+      },
+      enumerable: false
+    });
     return payload;
   } catch (error) {
     if (error?.code) throw error;
@@ -6671,6 +6800,7 @@ function createPregameError(code, message, details = {}) {
   if (typeof details.upstreamMode === "string" && details.upstreamMode) error.upstreamMode = details.upstreamMode;
   if (typeof details.upstreamTransport === "string" && details.upstreamTransport) error.upstreamTransport = details.upstreamTransport;
   if (typeof details.contentType === "string" && details.contentType) error.contentType = details.contentType.slice(0, 120);
+  if (typeof details.fetchEndpoint === "string" && details.fetchEndpoint) error.fetchEndpoint = details.fetchEndpoint.slice(0, 240);
   if (typeof details.parseStage === "string" && details.parseStage) error.parseStage = details.parseStage.slice(0, 80);
   const validation = sanitizeLineupValidationDetails(details.validation);
   if (validation) error.validation = validation;

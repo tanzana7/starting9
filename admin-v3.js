@@ -12,6 +12,8 @@ async function v3Fetch(path, options = {}) {
     const error = new Error(body.error || `HTTP ${response.status}`);
     error.code = body.code || "V3_ADMIN_REQUEST_FAILED";
     error.status = response.status;
+    error.details = body.resolutionDiagnostics || body.diagnostics || null;
+    error.identityState = body.identityState || null;
     throw error;
   }
   return body;
@@ -27,12 +29,45 @@ function escapeV3(value) {
   return String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]));
 }
 
-function identityStatusLabel(status) {
+function identityStatusLabel(status, state) {
+  if (state === "pending") return "掲載待ち";
+  if (state === "retry_wait") return "取得待ち";
+  if (state === "manual_action_required") return "確認が必要";
   return {
     resolved: "自動解決済み",
-    unresolved: "未解決",
+    unresolved: "確認が必要",
     manually_overridden: "管理者上書き"
   }[String(status || "unresolved")] || "未解決";
+}
+
+function renderV3IdentityDiagnostics(card, diagnostics, failureCode = "", identityState = "") {
+  const panel = card?.querySelector("[data-v3-identity-diagnostics]");
+  if (!panel) return;
+  if (!diagnostics) {
+    panel.textContent = "";
+    return;
+  }
+  const fields = [
+    ["internalGameId", diagnostics.internalGameId],
+    ["fetchEndpoint", diagnostics.fetchEndpoint],
+    ["fetchHttpStatus", diagnostics.fetchHttpStatus],
+    ["responseContentType", diagnostics.responseContentType],
+    ["rawCandidateCount", diagnostics.rawCandidateCount],
+    ["parsedCandidateCount", diagnostics.parsedCandidateCount],
+    ["staticCandidateCount", diagnostics.staticCandidateCount],
+    ["mergedCandidateCount", diagnostics.mergedCandidateCount],
+    ["targetGameDateJst", diagnostics.targetGameDateJst],
+    ["targetHomeTeam", diagnostics.targetHomeTeam],
+    ["targetAwayTeam", diagnostics.targetAwayTeam],
+    ["targetStartTimeJst", diagnostics.targetStartTimeJst],
+    ["matchCount", diagnostics.matchCount],
+    ["finalFailureCode", diagnostics.finalFailureCode || failureCode],
+    ["identityState", identityState]
+  ];
+  const fieldMarkup = fields.map(([name, value]) => `<div><dt>${escapeV3(name)}</dt><dd>${escapeV3(value ?? "-")}</dd></div>`).join("");
+  const candidates = Array.isArray(diagnostics.candidates) ? diagnostics.candidates.slice(0, 10) : [];
+  const candidateMarkup = candidates.map((candidate, index) => `<article><strong>#${index + 1} ${escapeV3(candidate.source || "-")}</strong><dl><div><dt>date</dt><dd>${escapeV3(candidate.rawDate || "-")} → ${escapeV3(candidate.normalizedDate || "-")}</dd></div><div><dt>home</dt><dd>${escapeV3(candidate.rawHome || candidate.rawHomeTeam || "-")} → ${escapeV3(candidate.normalizedHome || candidate.normalizedHomeTeam || "-")}</dd></div><div><dt>away</dt><dd>${escapeV3(candidate.rawAway || candidate.rawAwayTeam || "-")} → ${escapeV3(candidate.normalizedAway || candidate.normalizedAwayTeam || "-")}</dd></div><div><dt>start</dt><dd>${escapeV3(candidate.rawStartTime || candidate.startTime || "-")} → ${escapeV3(candidate.normalizedStartTime || "-")}</dd></div><div><dt>identity</dt><dd>code:${candidate.gameCodePresent ? "あり" : "なし"} / URL:${candidate.urlPresent ? "あり" : "なし"}</dd></div><div><dt>rejection</dt><dd>${escapeV3((candidate.rejectionReasons || []).join(", ") || "-")}</dd></div></dl></article>`).join("");
+  panel.innerHTML = `<details open><summary>NPB解決診断</summary><dl class="npb-diagnostic-grid">${fieldMarkup}</dl><div class="npb-diagnostic-candidates"><strong>候補（最大10件）</strong>${candidateMarkup || "<span class=muted>候補なし</span>"}</div></details>`;
 }
 
 function renderV3(payload) {
@@ -44,12 +79,12 @@ function renderV3(payload) {
     const card = document.createElement("article");
     card.className = "game-card";
     const npbGameCode = String(game.npbGameCode || "");
-    const identityStatus = identityStatusLabel(game.npbIdentityStatus);
+    const identityStatus = identityStatusLabel(game.npbIdentityStatus, game.npbIdentityState);
     const jobs = (game.jobs || []).map((job) => {
       const select = V3_JOB_TYPES.map((type) => `<option value="${type}">${type}</option>`).join("");
       return `<div class="job"><code>${escapeV3(job.job_type)}</code><span class="job-status">${escapeV3(job.status)}</span><span>${escapeV3(job.failure_code || `attempt ${job.attempt_count}/${job.max_attempts}`)}</span><button type="button" data-v3-job="${escapeV3(game.internalGameId)}" data-v3-type="${escapeV3(job.job_type)}">再投入</button></div>`;
     }).join("");
-    card.innerHTML = `<div class="game-heading"><h2>${escapeV3(game.gameDate)} ${escapeV3(game.awayTeam)} vs ${escapeV3(game.homeTeam)}</h2><code>${escapeV3(game.internalGameId)}</code></div><div class="game-meta"><span>開始 ${escapeV3(game.startAt)}</span><span class="npb-identity-status">NPB識別情報: ${escapeV3(identityStatus)}</span><span>コード ${escapeV3(npbGameCode || "未登録")}</span><span class="state">state: ${escapeV3(game.state.state)}</span></div><div class="npb-identity-details"><span>解決元: ${escapeV3(game.npbIdentitySource || "-")}</span><span>解決時刻: ${escapeV3(game.npbIdentityResolvedAt || "-")}</span><span>URL: ${game.npbGameUrl ? `<a href="${escapeV3(game.npbGameUrl)}" target="_blank" rel="noreferrer">${escapeV3(game.npbGameUrl)}</a>` : "-"}</span><button type="button" data-v3-identity-resolve="${escapeV3(game.internalGameId)}">自動再解決</button></div><div class="npb-code-editor"><strong>非常用手動上書き</strong><label>NPBゲームコード <input type="text" maxlength="32" value="${escapeV3(npbGameCode)}" data-v3-npb-code><button type="button" data-v3-code-save="${escapeV3(game.internalGameId)}">保存</button></label><span class="npb-code-status" data-v3-code-status></span></div><div class="job-list">${jobs || "<span class=muted>ジョブなし</span>"}</div>`;
+    card.innerHTML = `<div class="game-heading"><h2>${escapeV3(game.gameDate)} ${escapeV3(game.awayTeam)} vs ${escapeV3(game.homeTeam)}</h2><code>${escapeV3(game.internalGameId)}</code></div><div class="game-meta"><span>開始 ${escapeV3(game.startAt)}</span><span class="npb-identity-status">NPB識別情報: ${escapeV3(identityStatus)}</span><span>コード ${escapeV3(npbGameCode || "未登録")}</span><span class="state">state: ${escapeV3(game.state.state)}</span></div><div class="npb-identity-details"><span>解決元: ${escapeV3(game.npbIdentitySource || "-")}</span><span>解決時刻: ${escapeV3(game.npbIdentityResolvedAt || "-")}</span><span>URL: ${game.npbGameUrl ? `<a href="${escapeV3(game.npbGameUrl)}" target="_blank" rel="noreferrer">${escapeV3(game.npbGameUrl)}</a>` : "-"}</span><button type="button" data-v3-identity-resolve="${escapeV3(game.internalGameId)}">自動再解決</button></div><div class="npb-identity-diagnostics" data-v3-identity-diagnostics></div><div class="npb-code-editor"><strong>非常用手動上書き</strong><label>NPBゲームコード <input type="text" maxlength="32" value="${escapeV3(npbGameCode)}" data-v3-npb-code><button type="button" data-v3-code-save="${escapeV3(game.internalGameId)}">保存</button></label><span class="npb-code-status" data-v3-code-status></span></div><div class="job-list">${jobs || "<span class=muted>ジョブなし</span>"}</div>`;
     container.append(card);
   }
 }
@@ -77,7 +112,8 @@ document.addEventListener("click", async (event) => {
       setV3Status("NPB識別情報を更新しました。");
       await loadV3();
     } catch (error) {
-      setV3Status(`${error.code || "NPB_IDENTITY_RESOLUTION_FAILED"}: ${error.message}`, true);
+      renderV3IdentityDiagnostics(resolveButton.closest(".game-card"), error.details, error.code, error.identityState);
+      setV3Status(`${error.code || "NPB_IDENTITY_RESOLUTION_FAILED"}: ${error.message}`, !["pending", "retry_wait"].includes(error.identityState));
       resolveButton.disabled = false;
     }
     return;

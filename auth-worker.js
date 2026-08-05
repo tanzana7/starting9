@@ -2713,47 +2713,238 @@ function buildNpbGameUrl(date, gameCode) {
   return `https://npb.jp/scores/${match[1]}/${match[2]}${match[3]}/${normalizedCode}/`;
 }
 
-function parseNpbScheduleStartAt(date, value) {
-  if (/^\d{2}:\d{2}$/.test(String(value || ""))) {
-    return new Date(`${date}T${value}:00+09:00`);
+function getScheduleGameCode(game) {
+  return normalizeNpbGameCode(game?.gameCode || game?.game_code || game?.npbGameCode || game?.npb_game_code)
+    || /\/scores\/\d{4}\/\d{4}\/([a-z0-9]{1,2}-[a-z0-9]{1,2}-\d+)\//i.exec(String(game?.npbGameUrl || game?.npbScoreUrl || game?.gameUrl || ""))?.[1]?.toLowerCase()
+    || "";
+}
+
+export function mergeNpbScheduleCandidates(scheduleGames, fallbackGames, date) {
+  const merged = Array.isArray(scheduleGames) ? scheduleGames.map((game) => ({ ...game, resolutionSource: "npb_schedule" })) : [];
+  const normalizedPrimary = merged.map((game) => normalizeNpbScheduleCandidate(game, date));
+  for (const fallback of Array.isArray(fallbackGames) ? fallbackGames : []) {
+    const gameCode = getScheduleGameCode(fallback);
+    if (!gameCode) continue;
+    const fallbackCandidate = normalizeNpbScheduleCandidate({
+      ...fallback,
+      gameCode,
+      npbGameUrl: fallback.npbGameUrl || fallback.npbScoreUrl,
+      resolutionSource: "static_schedule"
+    }, date);
+    const matchingIndex = normalizedPrimary.findIndex((candidate) => candidate.normalizedHomeTeam === fallbackCandidate.normalizedHomeTeam
+      && candidate.normalizedAwayTeam === fallbackCandidate.normalizedAwayTeam
+      && candidate.candidateStart.getTime() === fallbackCandidate.candidateStart.getTime());
+    if (matchingIndex < 0) {
+      merged.push({ ...fallback, gameCode, npbGameUrl: fallback.npbGameUrl || fallback.npbScoreUrl, resolutionSource: "static_schedule" });
+      normalizedPrimary.push(fallbackCandidate);
+      continue;
+    }
+    const existingCode = getScheduleGameCode(merged[matchingIndex]);
+    if (!existingCode) {
+      merged[matchingIndex] = {
+        ...merged[matchingIndex],
+        gameCode,
+        npbGameUrl: fallback.npbGameUrl || fallback.npbScoreUrl || "",
+        resolutionSource: "npb_schedule+static_schedule"
+      };
+      normalizedPrimary[matchingIndex] = normalizeNpbScheduleCandidate(merged[matchingIndex], date);
+    } else if (existingCode !== gameCode) {
+      merged.push({ ...fallback, gameCode, npbGameUrl: fallback.npbGameUrl || fallback.npbScoreUrl, resolutionSource: "static_schedule" });
+      normalizedPrimary.push(fallbackCandidate);
+    }
   }
-  return new Date(value || "");
+  return merged;
+}
+
+const NPB_SCHEDULE_TIME_TOLERANCE_MS = 30 * 60 * 1000;
+
+function parseNpbScheduleStartAt(date, value) {
+  const raw = String(value || "").trim();
+  if (/^\d{2}:\d{2}(?::\d{2})?$/.test(raw)) {
+    return new Date(`${date}T${raw.length === 5 ? `${raw}:00` : raw}+09:00`);
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?$/.test(raw)) {
+    return new Date(`${raw}+09:00`);
+  }
+  return new Date(raw);
+}
+
+function formatJstTime(value) {
+  const date = value instanceof Date ? value : new Date(value || "");
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Tokyo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).format(date);
+}
+
+function firstNpbValue(game, keys) {
+  for (const key of keys) {
+    const value = game?.[key];
+    if (value !== undefined && value !== null && String(value).trim()) return value;
+  }
+  return "";
+}
+
+function normalizeNpbScheduleCandidate(game, fallbackDate) {
+  const rawHomeTeam = String(firstNpbValue(game, ["homeTeam", "home_team", "home", "homeTeamId"]) || "").trim();
+  const rawAwayTeam = String(firstNpbValue(game, ["awayTeam", "away_team", "away", "awayTeamId"]) || "").trim();
+  const normalizedHomeTeam = normalizeScheduleTeamCode(rawHomeTeam);
+  const normalizedAwayTeam = normalizeScheduleTeamCode(rawAwayTeam);
+  const rawStartTime = firstNpbValue(game, ["startTime", "start_time", "startAt", "start_at", "time"]);
+  const explicitDate = String(firstNpbValue(game, ["gameDate", "game_date", "date"]) || "").trim();
+  const candidateDate = /^\d{4}-\d{2}-\d{2}$/.test(explicitDate) ? explicitDate : fallbackDate;
+  const candidateStart = parseNpbScheduleStartAt(candidateDate, rawStartTime);
+  const candidateDateJst = getJstDateString(candidateStart) || explicitDate;
+  const gameCode = normalizeNpbGameCode(firstNpbValue(game, ["gameCode", "game_code", "npbGameCode", "npb_game_code"]));
+  const candidateStadium = String(firstNpbValue(game, ["stadium", "venue"]) || "").trim();
+  return {
+    rawHomeTeam,
+    normalizedHomeTeam,
+    rawAwayTeam,
+    normalizedAwayTeam,
+    rawStartTime: String(rawStartTime || "").trim(),
+    candidateStart,
+    candidateDateJst,
+    candidateStadium,
+    gameCode,
+    gameUrl: String(firstNpbValue(game, ["npbGameUrl", "gameUrl", "game_url"]) || "").trim(),
+    resolutionSource: String(game?.resolutionSource || "npb_schedule"),
+    game
+  };
+}
+
+function addRejectionReason(counts, reason) {
+  counts[reason] = (counts[reason] || 0) + 1;
+}
+
+function serializeNpbCandidate(candidate) {
+  return {
+    rawHomeTeam: candidate.rawHomeTeam,
+    normalizedHomeTeam: candidate.normalizedHomeTeam,
+    rawAwayTeam: candidate.rawAwayTeam,
+    normalizedAwayTeam: candidate.normalizedAwayTeam,
+    startTime: candidate.rawStartTime,
+    startTimeJst: formatJstTime(candidate.candidateStart),
+    gameDateJst: candidate.candidateDateJst,
+    gameCode: candidate.gameCode || null
+  };
+}
+
+function buildNpbIdentityDiagnostics({ targetDate, expectedStart, expectedHome, expectedAway, candidates, normalizedCandidateCount, rejectionReasonCounts, finalFailureCode = "", resolvedBy = "" }) {
+  return {
+    targetGameDateJst: targetDate,
+    targetHomeTeam: expectedHome,
+    targetAwayTeam: expectedAway,
+    targetStartTimeJst: formatJstTime(expectedStart),
+    candidateCount: candidates.length,
+    normalizedCandidateCount,
+    rejectionReasonCounts,
+    finalFailureCode,
+    resolvedBy,
+    candidates: candidates.slice(0, 20).map(serializeNpbCandidate)
+  };
 }
 
 export function resolveNpbScheduleIdentity({ date, startAt, homeTeam, awayTeam, stadium = "", games = [] } = {}) {
   const expectedStart = startAt instanceof Date ? startAt : new Date(startAt || "");
   const expectedHome = normalizeScheduleTeamCode(homeTeam);
   const expectedAway = normalizeScheduleTeamCode(awayTeam);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || "")) || Number.isNaN(expectedStart.getTime()) || !expectedHome || !expectedAway) {
-    return { status: "unresolved", code: "NPB_IDENTITY_UNRESOLVED", candidates: [] };
-  }
-  const candidates = (Array.isArray(games) ? games : []).filter((game) => {
-    const gameHome = normalizeScheduleTeamCode(game?.homeTeam || game?.homeTeamId);
-    const gameAway = normalizeScheduleTeamCode(game?.awayTeam || game?.awayTeamId);
-    const candidateStart = parseNpbScheduleStartAt(date, game?.startTime || game?.start_at || game?.startAt);
-    const sameTeams = gameHome === expectedHome && gameAway === expectedAway;
-    const sameStart = !Number.isNaN(candidateStart.getTime()) && candidateStart.getTime() === expectedStart.getTime();
-    const expectedStadium = String(stadium || "").trim();
-    const candidateStadium = String(game?.stadium || game?.venue || "").trim();
-    return sameTeams && sameStart && (!expectedStadium || !candidateStadium || expectedStadium === candidateStadium);
+  const suppliedDate = String(date || "").trim();
+  const derivedDate = getJstDateString(expectedStart);
+  const targetDate = derivedDate || suppliedDate;
+  const sourceGames = Array.isArray(games) ? games : [];
+  const normalized = sourceGames.map((game) => normalizeNpbScheduleCandidate(game, targetDate));
+  const rejectionReasonCounts = {};
+  const diagnostics = () => buildNpbIdentityDiagnostics({
+    targetDate,
+    expectedStart,
+    expectedHome,
+    expectedAway,
+    candidates: normalized,
+    normalizedCandidateCount: normalized.filter((candidate) => candidate.normalizedHomeTeam && candidate.normalizedAwayTeam && !Number.isNaN(candidate.candidateStart.getTime())).length,
+    rejectionReasonCounts,
+    finalFailureCode: "NPB_IDENTITY_UNRESOLVED"
   });
-  if (candidates.length > 1) {
-    return { status: "conflict", code: "NPB_IDENTITY_CONFLICT", candidates };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate) || Number.isNaN(expectedStart.getTime()) || !expectedHome || !expectedAway) {
+    addRejectionReason(rejectionReasonCounts, "target_metadata_invalid");
+    return { status: "unresolved", code: "NPB_IDENTITY_UNRESOLVED", candidates: [], diagnostics: diagnostics() };
   }
-  const match = candidates[0];
-  const gameCode = normalizeNpbGameCode(match?.gameCode || match?.npbGameCode);
-  if (!match || !gameCode) {
-    return { status: "unresolved", code: "NPB_IDENTITY_UNRESOLVED", candidates };
+  if (suppliedDate && suppliedDate !== targetDate) {
+    addRejectionReason(rejectionReasonCounts, "target_date_mismatch");
+    return { status: "unresolved", code: "NPB_IDENTITY_UNRESOLVED", candidates: [], diagnostics: diagnostics() };
+  }
+
+  const expectedStadium = String(stadium || "").trim();
+  const sameDateAndTeams = [];
+  for (const candidate of normalized) {
+    if (!candidate.normalizedHomeTeam || !candidate.normalizedAwayTeam || Number.isNaN(candidate.candidateStart.getTime())) {
+      addRejectionReason(rejectionReasonCounts, "candidate_metadata_invalid");
+      continue;
+    }
+    if (candidate.candidateDateJst !== targetDate) {
+      addRejectionReason(rejectionReasonCounts, "date_mismatch");
+      continue;
+    }
+    if (candidate.normalizedHomeTeam !== expectedHome || candidate.normalizedAwayTeam !== expectedAway) {
+      if (candidate.normalizedHomeTeam === expectedAway && candidate.normalizedAwayTeam === expectedHome) addRejectionReason(rejectionReasonCounts, "reverse_home_away");
+      else addRejectionReason(rejectionReasonCounts, "team_mismatch");
+      continue;
+    }
+    sameDateAndTeams.push(candidate);
+  }
+
+  const exactMatches = sameDateAndTeams.filter((candidate) => {
+    const sameStart = candidate.candidateStart.getTime() === expectedStart.getTime();
+    const sameStadium = !expectedStadium || !candidate.candidateStadium || expectedStadium === candidate.candidateStadium;
+    if (!sameStart) addRejectionReason(rejectionReasonCounts, "start_time_mismatch");
+    if (!sameStadium) addRejectionReason(rejectionReasonCounts, "stadium_mismatch");
+    return sameStart && sameStadium;
+  });
+  let matches = exactMatches;
+  if (!matches.length && sameDateAndTeams.length) {
+    const closeMatches = sameDateAndTeams.filter((candidate) => {
+      const difference = Math.abs(candidate.candidateStart.getTime() - expectedStart.getTime());
+      const sameStadium = !expectedStadium || !candidate.candidateStadium || expectedStadium === candidate.candidateStadium;
+      return difference <= NPB_SCHEDULE_TIME_TOLERANCE_MS && sameStadium;
+    });
+    if (closeMatches.length === 1) {
+      matches = closeMatches;
+      addRejectionReason(rejectionReasonCounts, "start_time_tolerance_used");
+    } else if (closeMatches.length > 1) {
+      matches = closeMatches;
+    }
+  }
+  if (matches.length > 1) {
+    return { status: "conflict", code: "NPB_IDENTITY_CONFLICT", candidates: matches.map((candidate) => candidate.game), diagnostics: buildNpbIdentityDiagnostics({ targetDate, expectedStart, expectedHome, expectedAway, candidates: normalized, normalizedCandidateCount: normalized.length, rejectionReasonCounts, finalFailureCode: "NPB_IDENTITY_CONFLICT" }) };
+  }
+  const match = matches[0];
+  if (!match) {
+    return { status: "unresolved", code: "NPB_IDENTITY_UNRESOLVED", candidates: [], diagnostics: diagnostics() };
+  }
+  if (!match.gameCode) {
+    addRejectionReason(rejectionReasonCounts, "game_code_missing");
+    return { status: "unresolved", code: "NPB_IDENTITY_UNRESOLVED", candidates: [match.game], diagnostics: diagnostics() };
   }
   return {
     status: "resolved",
     code: "",
-    gameCode,
-    gameUrl: String(match.npbGameUrl || "").trim() || buildNpbGameUrl(date, gameCode),
-    sourceScheduleKey: `${date}:${expectedHome}:${expectedAway}:${String(match.startTime || "")}`,
+    gameCode: match.gameCode,
+    gameUrl: match.gameUrl || buildNpbGameUrl(targetDate, match.gameCode),
+    sourceScheduleKey: `${targetDate}:${expectedHome}:${expectedAway}:${formatJstTime(match.candidateStart)}`,
     source: "npb_schedule_resolve",
-    candidates
+    candidates: [match.game],
+    diagnostics: buildNpbIdentityDiagnostics({ targetDate, expectedStart, expectedHome, expectedAway, candidates: normalized, normalizedCandidateCount: normalized.length, rejectionReasonCounts, finalFailureCode: "", resolvedBy: match.resolutionSource })
   };
+}
+
+export function classifyNpbScheduleFetchError(error) {
+  const code = String(error?.code || "");
+  if (["NPB_RESPONSE_INVALID", "SCHEDULE_PARSE_FAILED"].includes(code)) return "NPB_SCHEDULE_RESPONSE_INVALID";
+  if (code === "SCHEDULE_EMPTY") return "NPB_SCHEDULE_EMPTY";
+  return "NPB_SCHEDULE_FETCH_FAILED";
 }
 
 function createScheduleIdentityKey({ date = "", startAt = "", homeTeam = "", awayTeam = "" } = {}) {
@@ -3032,20 +3223,108 @@ async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) 
     try {
       payload = await fetchNpbWorkerJson(env, { mode: "schedule", date: current.game_date });
     } catch (error) {
-      console.warn(`[GAME_AUTOMATION_V3] stage=npb_identity_resolve_fetch code=${error?.code || "NPB_IDENTITY_RESOLUTION_FAILED"}`);
-      return jsonResponse({ ok: false, code: "NPB_IDENTITY_RESOLUTION_FAILED", error: "NPB日程を取得できませんでした。" }, 502, cors);
+      const failureCode = classifyNpbScheduleFetchError(error);
+      const diagnostics = {
+        internalGameId: id,
+        targetGameDateJst: current.game_date || null,
+        targetHomeTeam: normalizeScheduleTeamCode(current.home_team) || String(current.home_team || ""),
+        targetAwayTeam: normalizeScheduleTeamCode(current.away_team) || String(current.away_team || ""),
+        targetStartTimeJst: formatJstTime(current.start_time),
+        fetchStatus: Number(error?.httpStatus || error?.upstreamStatus) || null,
+        fetchContentType: error?.contentType || null,
+        candidateCount: 0,
+        normalizedCandidateCount: 0,
+        rejectionReasonCounts: { fetch_failed: 1 },
+        finalFailureCode: failureCode
+      };
+      await recordWorkflowLog(env.AUTH_DB, {
+        eventType: "v3_npb_identity_resolution",
+        status: "error",
+        gameId: id,
+        message: "NPB試合識別情報の候補取得に失敗しました。",
+        errorCode: failureCode,
+        metadata: diagnostics,
+        source: "admin"
+      });
+      console.warn(`[GAME_AUTOMATION_V3] stage=npb_identity_resolve_fetch code=${failureCode} status=${diagnostics.fetchStatus || "unknown"}`);
+      return jsonResponse({ ok: false, code: failureCode, error: "NPB日程候補を取得できませんでした。", resolutionDiagnostics: diagnostics }, 502, cors);
     }
+    if (!Array.isArray(payload?.games)) {
+      const diagnostics = {
+        internalGameId: id,
+        targetGameDateJst: current.game_date || null,
+        targetHomeTeam: normalizeScheduleTeamCode(current.home_team) || String(current.home_team || ""),
+        targetAwayTeam: normalizeScheduleTeamCode(current.away_team) || String(current.away_team || ""),
+        targetStartTimeJst: formatJstTime(current.start_time),
+        fetchStatus: 200,
+        candidateCount: 0,
+        normalizedCandidateCount: 0,
+        rejectionReasonCounts: { response_games_not_array: 1 },
+        finalFailureCode: "NPB_SCHEDULE_RESPONSE_INVALID"
+      };
+      await recordWorkflowLog(env.AUTH_DB, {
+        eventType: "v3_npb_identity_resolution",
+        status: "error",
+        gameId: id,
+        message: "NPB日程レスポンスのgamesが不正です。",
+        errorCode: "NPB_SCHEDULE_RESPONSE_INVALID",
+        metadata: diagnostics,
+        source: "admin"
+      });
+      return jsonResponse({ ok: false, code: "NPB_SCHEDULE_RESPONSE_INVALID", error: "NPB日程レスポンスが不正です。", resolutionDiagnostics: diagnostics }, 502, cors);
+    }
+    if (!payload.games.length) {
+      const diagnostics = {
+        internalGameId: id,
+        targetGameDateJst: current.game_date || null,
+        targetHomeTeam: normalizeScheduleTeamCode(current.home_team) || String(current.home_team || ""),
+        targetAwayTeam: normalizeScheduleTeamCode(current.away_team) || String(current.away_team || ""),
+        targetStartTimeJst: formatJstTime(current.start_time),
+        fetchStatus: 200,
+        candidateCount: 0,
+        normalizedCandidateCount: 0,
+        rejectionReasonCounts: { schedule_empty: 1 },
+        finalFailureCode: "NPB_SCHEDULE_EMPTY"
+      };
+      await recordWorkflowLog(env.AUTH_DB, {
+        eventType: "v3_npb_identity_resolution",
+        status: "warning",
+        gameId: id,
+        message: "NPB日程候補がありません。",
+        errorCode: "NPB_SCHEDULE_EMPTY",
+        metadata: diagnostics,
+        source: "admin"
+      });
+      return jsonResponse({ ok: false, code: "NPB_SCHEDULE_EMPTY", error: "対象日のNPB日程候補がありません。", resolutionDiagnostics: diagnostics }, 422, cors);
+    }
+    const scheduleCandidates = mergeNpbScheduleCandidates(payload.games, getScheduledGames(), current.game_date);
     const resolved = resolveNpbScheduleIdentity({
       date: current.game_date,
       startAt: current.start_time,
       homeTeam: current.home_team,
       awayTeam: current.away_team,
       stadium: current.stadium,
-      games: payload.games
+      games: scheduleCandidates
     });
     if (resolved.status !== "resolved") {
       const status = resolved.status === "conflict" ? 409 : 422;
-      return jsonResponse({ ok: false, code: resolved.code, error: resolved.status === "conflict" ? "NPB日程の候補が複数あります。" : "NPB日程から対象試合を解決できませんでした。" }, status, cors);
+    const diagnostics = {
+      ...(resolved.diagnostics || {}),
+      internalGameId: id,
+      fetchedCandidateCount: payload.games.length,
+      fallbackCandidateCount: Math.max(0, scheduleCandidates.length - payload.games.length),
+      finalFailureCode: resolved.code
+    };
+      await recordWorkflowLog(env.AUTH_DB, {
+        eventType: "v3_npb_identity_resolution",
+        status: resolved.status === "conflict" ? "error" : "warning",
+        gameId: id,
+        message: resolved.status === "conflict" ? "NPB日程の候補が複数あります。" : "NPB日程から対象試合を解決できませんでした。",
+        errorCode: resolved.code,
+        metadata: diagnostics,
+        source: "admin"
+      });
+      return jsonResponse({ ok: false, code: resolved.code, error: resolved.status === "conflict" ? "NPB日程の候補が複数あります。" : "NPB日程から対象試合を解決できませんでした。", resolutionDiagnostics: diagnostics }, status, cors);
     }
     const identifiers = [
       { provider: "npb", identifierType: "npb_game_code", identifierValue: resolved.gameCode },
@@ -3073,7 +3352,7 @@ async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) 
       sourceScheduleKey: resolved.sourceScheduleKey,
       npbIdentityStatus: "resolved",
       npbIdentityResolvedAt: now.toISOString(),
-      npbIdentitySource: "npb_schedule_resolve",
+      npbIdentitySource: resolved.diagnostics?.resolvedBy || resolved.source || "npb_schedule_resolve",
       updatedBy: access.user?.id ? `admin:${String(access.user.id)}` : "admin"
     }, now);
     for (const identifier of identifiers) await registerGameIdentifier(env.AUTH_DB, id, identifier, now);
@@ -3083,7 +3362,22 @@ async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) 
               npb_identity_resolved_at, npb_identity_source, game_status
          FROM games WHERE internal_game_id = ?1 LIMIT 1`
     ).bind(id).first();
-    return jsonResponse({ ok: true, resolvedBy: "npb_schedule_resolve", game: serializeV3GameIdentity(updated) }, 200, cors);
+    const diagnostics = {
+      ...(resolved.diagnostics || {}),
+      internalGameId: id,
+      fetchedCandidateCount: payload.games.length,
+      fallbackCandidateCount: Math.max(0, scheduleCandidates.length - payload.games.length),
+      finalFailureCode: ""
+    };
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "v3_npb_identity_resolution",
+      status: "success",
+      gameId: id,
+      message: "NPB試合識別情報を解決しました。",
+      metadata: diagnostics,
+      source: "admin"
+    });
+    return jsonResponse({ ok: true, resolvedBy: resolved.diagnostics?.resolvedBy || resolved.source || "npb_schedule_resolve", resolutionDiagnostics: diagnostics, game: serializeV3GameIdentity(updated) }, 200, cors);
   } catch (error) {
     const code = String(error?.code || "NPB_IDENTITY_RESOLUTION_FAILED");
     console.error(`[GAME_AUTOMATION_V3] stage=npb_identity_resolve code=${code}`);
@@ -6339,6 +6633,7 @@ export async function fetchNpbWorkerJson(env, params) {
       throw createPregameError("NPB_RESPONSE_INVALID", "NPB取得Workerのレスポンス形式が不正です。", {
         httpStatus: response.status,
         upstreamStatus: response.status,
+        contentType: response.headers.get("content-type") || "",
         ...upstreamDetails
       });
     }
@@ -6348,6 +6643,7 @@ export async function fetchNpbWorkerJson(env, params) {
         httpStatus: response.status,
         upstreamStatus: response.status,
         externalStatus: payload?.httpStatus,
+        contentType: response.headers.get("content-type") || "",
         upstreamUrl: payload?.sourceUrl,
         ...upstreamDetails
       });
@@ -6374,6 +6670,7 @@ function createPregameError(code, message, details = {}) {
   if (details.upstreamPath === "/") error.upstreamPath = "/";
   if (typeof details.upstreamMode === "string" && details.upstreamMode) error.upstreamMode = details.upstreamMode;
   if (typeof details.upstreamTransport === "string" && details.upstreamTransport) error.upstreamTransport = details.upstreamTransport;
+  if (typeof details.contentType === "string" && details.contentType) error.contentType = details.contentType.slice(0, 120);
   if (typeof details.parseStage === "string" && details.parseStage) error.parseStage = details.parseStage.slice(0, 80);
   const validation = sanitizeLineupValidationDetails(details.validation);
   if (validation) error.validation = validation;

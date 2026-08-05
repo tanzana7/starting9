@@ -185,13 +185,41 @@ test("source_game_keyから対象UUIDへ安全に解決し、外部日程取得�
   assert.equal(resolved.startAt, "2026-08-04T09:00:00.000Z");
 });
 
+test("V2の日本語チーム名を含むgames行から8月4日の内部試合IDと開始時刻を解決する", async () => {
+  const internalGameId = "12d554bb-ad25-44be-8159-0134c046dcee";
+  const resolved = await resolvePredictionGameMetadata(createRegistryDb({
+    identifierRows: [{ internal_game_id: internalGameId, identifier_type: "descriptive_game_id", identifier_value: "2026-08-04-fighters-hawks-1800" }],
+    gameRow: {
+      internal_game_id: internalGameId,
+      game_date: "2026-08-04",
+      start_time: "2026-08-04T09:00:00.000Z",
+      home_team: "日本ハム",
+      away_team: "ソフトバンク",
+      game_status: "scheduled"
+    }
+  }), "2026-08-04-fighters-hawks-1800");
+
+  assert.equal(resolved.internalGameId, internalGameId);
+  assert.equal(resolved.homeCode, "f");
+  assert.equal(resolved.awayCode, "h");
+  assert.equal(resolved.startAt, "2026-08-04T09:00:00.000Z");
+});
+
 test("対象試合APIのinternalGameIdを画面の保存処理が優先して送信する", () => {
   assert.match(script, /state\.predictionTargetGame\?\.internalGameId \|\| state\.probableStarter\.nextGame\?\.internalGameId \|\| getCurrentLegacyGameId\(\)/);
   assert.match(script, /body: JSON\.stringify\(\{ gameId, prediction: predictionPayload\.prediction \}\)/);
-  assert.match(worker, /const reference = await resolveApiGameReference\(env\.AUTH_DB, input\?\.gameId\)/);
+  assert.match(worker, /reference = await resolveApiGameReference\(env\.AUTH_DB, input\?\.gameId\)/);
   assert.match(worker, /internalGameId: metadata\.internalGameId \|\| ""/);
   assert.match(worker, /const storageGameId = metadata\.internalGameId && existing\?\.game_id/);
   assert.match(worker, /storageGameId,\s*\.\.\.\(predictionStorage\.predictions/);
+});
+
+test("対象試合APIの一時障害時は、既存静的日程へ戻って保存対象を失わない", () => {
+  const resolver = script.slice(script.indexOf("async function resolvePredictionTargetGame"), script.indexOf("function buildPredictionTargetApiUrl"));
+  assert.match(resolver, /if \(!url\) return fallback;/);
+  assert.match(resolver, /if \(!response\.ok \|\| !payload\?\.ok\) return fallback;/);
+  assert.match(resolver, /return payload\.target \? normalizeServerPredictionTarget\(payload\.target\) : fallback;/);
+  assert.match(resolver, /console\.warn[\s\S]*return fallback;/);
 });
 
 test("compact game_code照合は同じ試合日の行だけを候補にする", () => {

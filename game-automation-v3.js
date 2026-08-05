@@ -69,6 +69,17 @@ export function deriveV3Schedule(game) {
   };
 }
 
+export function getV3NpbIdentityState(game, now = new Date()) {
+  const persisted = String(game?.npbIdentityStatus || game?.npb_identity_status || "").trim();
+  if (persisted === "resolved" || persisted === "manually_overridden") return persisted;
+  const startAt = new Date(game?.startAt || game?.start_at || game?.startTime || game?.start_time || "");
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(startAt.getTime()) || Number.isNaN(current.getTime())) return "manual_action_required";
+  if (current < new Date(startAt.getTime() - 50 * 60 * 1000)) return "pending";
+  if (current <= new Date(startAt.getTime() + 2 * 60 * 1000)) return "retry_wait";
+  return "manual_action_required";
+}
+
 export function isV3GameEligible(game) {
   if (!game?.internalGameId) return false;
   if (Number(game.isActive) === 0 || game.deletedAt) return false;
@@ -181,6 +192,10 @@ export async function listV3Games(db, now = new Date()) {
     npbIdentityStatus: row.npb_identity_status || (row.npb_game_code ? "resolved" : "unresolved"),
     npbIdentityResolvedAt: row.npb_identity_resolved_at || null,
     npbIdentitySource: row.npb_identity_source || null,
+    npbIdentityState: getV3NpbIdentityState({
+      npbIdentityStatus: row.npb_identity_status || (row.npb_game_code ? "resolved" : "unresolved"),
+      startAt: row.start_time
+    }, current),
     gameStatus: row.game_status,
     isActive: row.is_active,
     deletedAt: row.deleted_at

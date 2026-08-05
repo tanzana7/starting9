@@ -29,6 +29,15 @@ button:hover { background: #edf4fa; }
 .npb-identity-status { font-weight: 700; color: #1b5c8b; }
 .npb-identity-details { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 8px 0; color: #526477; font-size: 12px; }
 .npb-identity-details button { padding: 5px 10px; }
+.npb-identity-diagnostics { margin: 8px 0; color: #526477; font-size: 12px; }
+.npb-identity-diagnostics summary { cursor: pointer; color: #1b5c8b; font-weight: 700; }
+.npb-diagnostic-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 6px 12px; margin: 10px 0; }
+.npb-diagnostic-grid div, .npb-diagnostic-candidates article { min-width: 0; padding: 6px 8px; background: #f8fafc; border: 1px solid #e5ebf1; border-radius: 5px; }
+.npb-diagnostic-grid dt, .npb-diagnostic-candidates dt { color: #718197; font-size: 11px; }
+.npb-diagnostic-grid dd, .npb-diagnostic-candidates dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+.npb-diagnostic-candidates { display: grid; gap: 7px; }
+.npb-diagnostic-candidates > strong { margin-top: 4px; }
+.npb-diagnostic-candidates article dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 5px 10px; margin: 6px 0 0; }
 .npb-code-editor { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 10px 0 2px; border-top: 1px solid #edf1f5; }
 .npb-code-editor label { display: flex; align-items: center; gap: 8px; color: #526477; font-size: 13px; }
 .npb-code-editor input { width: 150px; border: 1px solid #b9c8d8; border-radius: 5px; padding: 7px 8px; font: inherit; color: #172033; }

@@ -65,8 +65,8 @@ test("V3管理画面は現在値・入力欄・保存操作を持ち、更新後
   assert.match(client, /data-v3-identity-resolve/);
   assert.match(client, /npb-identity\/resolve/);
   assert.match(client, /await loadV3\(\)/);
-  assert.match(page, /admin-v3\.css\?v=automation-v3-3/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-3/);
+  assert.match(page, /admin-v3\.css\?v=automation-v3-4/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-4/);
 });
 
 test("V3監査のNPBコード変更列は追加migrationで定義される", () => {

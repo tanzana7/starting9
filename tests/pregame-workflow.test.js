@@ -19,7 +19,7 @@ test("Cronは日程同期後に明示的な試合workflow runnerへ委譲する"
   assert.match(worker, /id: "notice", offsetMinutes: -120/);
   assert.match(worker, /id: "close_predictions", offsetMinutes: -60/);
   assert.match(worker, /id: "lineup", offsetMinutes: -50, retryMinutes: 10/);
-  assert.match(worker, /id: "final_lineup", offsetMinutes: 1, retryMinutes: 10/);
+  assert.match(worker, /id: "final_lineup", offsetMinutes: AUTOMATION_V2_TIMING\.finalLineupMinutesAfterStart, retryMinutes: 10/);
   assert.match(worker, /id: "score", offsetMinutes: 2/);
   assert.match(worker, /id: "publish", offsetMinutes: 5/);
 });
@@ -31,7 +31,7 @@ test("workflowは中止試合を全step cancelledとして扱い、時刻未到�
   assert.match(worker, /status: now < dueAt \? "not_due" : "ready"/);
   assert.match(worker, /runDueGameDayScheduleJobs\(env, now, activeTimelines\)/);
   assert.match(worker, /runDuePregameAutomationJobs\(env, now, activeTimelines\)/);
-  assert.match(worker, /runDueAutoScoringJobs\(env, now, pausedGameIds\)/);
+  assert.match(worker, /runDueAutoScoringJobs\(executorEnv, executorNow, pausedGameIds\)/);
   assert.match(worker, /runDueGameDayPublicationJobs\(env, now, activeTimelines\)/);
 });
 

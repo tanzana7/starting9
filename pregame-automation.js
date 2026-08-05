@@ -1,20 +1,25 @@
 import schedule from "./game-schedule-2026.json" with { type: "json" };
+import {
+  AUTOMATION_V2_TIMING,
+  deriveAutomationSchedule,
+  getRosterExecutorDecision as getRosterExecutorDecisionV2
+} from "./game-automation-v2.js";
 
 let detectedScheduleGames = [];
 
 // 試合前処理の時刻は、クライアントとAuth Workerで同じ定義を使う。
-export const ROSTER_CAPTURE_MINUTES_BEFORE_START = 120;
-export const PREDICTION_DEADLINE_MINUTES_BEFORE_START = 60;
-export const LINEUP_FETCH_START_MINUTES_BEFORE_START = 50;
-export const LINEUP_FETCH_INTERVAL_MINUTES = 10;
-export const FINAL_LINEUP_FETCH_MINUTES_AFTER_START = 1;
-export const FINAL_LINEUP_FETCH_INTERVAL_MINUTES = 10;
+export const ROSTER_CAPTURE_MINUTES_BEFORE_START = AUTOMATION_V2_TIMING.rosterPregameMinutes;
+export const PREDICTION_DEADLINE_MINUTES_BEFORE_START = AUTOMATION_V2_TIMING.predictionDeadlineMinutes;
+export const LINEUP_FETCH_START_MINUTES_BEFORE_START = AUTOMATION_V2_TIMING.lineupPollingStartMinutes;
+export const LINEUP_FETCH_INTERVAL_MINUTES = AUTOMATION_V2_TIMING.lineupPollingIntervalMinutes;
+export const FINAL_LINEUP_FETCH_MINUTES_AFTER_START = AUTOMATION_V2_TIMING.finalLineupMinutesAfterStart;
+export const FINAL_LINEUP_FETCH_INTERVAL_MINUTES = AUTOMATION_V2_TIMING.lineupPollingIntervalMinutes;
 export const FINAL_LINEUP_RETRY_WINDOW_HOURS = 12;
 export const RESULT_RELEASE_MINUTES_AFTER_START = 5;
 export const PROBABLE_STARTER_RETRY_INTERVAL_MINUTES = 60;
-export const ROSTER_AUTO_FETCH_INTERVAL_MINUTES = 360;
+export const ROSTER_AUTO_FETCH_INTERVAL_MINUTES = AUTOMATION_V2_TIMING.rosterRegularIntervalMinutes;
 export const ROSTER_FETCH_RETRY_INTERVAL_MINUTES = 30;
-export const ROSTER_PREGAME_CHECK_MINUTES = 180;
+export const ROSTER_PREGAME_CHECK_MINUTES = AUTOMATION_V2_TIMING.rosterPregameMinutes;
 export const NOTICE_MONITOR_START_HOUR_JST = 10;
 export const NOTICE_EARLY_INTERVAL_MINUTES = 30;
 export const NOTICE_ACTIVE_INTERVAL_MINUTES = 10;
@@ -99,15 +104,28 @@ export function buildPregameTimeline(game) {
     ? storedStartAt
     : parseJstScheduleStart(game);
   if (!startAt) return null;
+  const canonical = deriveAutomationSchedule({
+    internalGameId: game.internalGameId || game.internal_game_id || game.gameId,
+    gameDate: game.date || game.game_date,
+    startAt,
+    homeTeam: game.homeTeam || game.home_team,
+    awayTeam: game.awayTeam || game.away_team,
+    npbGameCode: game.gameCode || game.game_code,
+    status: game.status || game.game_status || "scheduled",
+    updatedBy: game.updatedBy || game.updated_by || "system",
+    updatedAt: game.updatedAt || game.updated_at || ""
+  });
+  if (!canonical) return null;
   const offset = (minutes) => new Date(startAt.getTime() - minutes * 60 * 1000);
   return {
     game,
     gameId: game.gameId,
     startAt,
-    rosterCaptureAt: offset(ROSTER_CAPTURE_MINUTES_BEFORE_START),
-    predictionDeadlineAt: offset(PREDICTION_DEADLINE_MINUTES_BEFORE_START),
-    lineupFetchStartAt: offset(LINEUP_FETCH_START_MINUTES_BEFORE_START),
-    finalLineupFetchAt: new Date(startAt.getTime() + FINAL_LINEUP_FETCH_MINUTES_AFTER_START * 60 * 1000),
+    canonical,
+    rosterCaptureAt: new Date(new Date(canonical.startAt).getTime() - ROSTER_CAPTURE_MINUTES_BEFORE_START * 60 * 1000),
+    predictionDeadlineAt: new Date(canonical.predictionDeadline),
+    lineupFetchStartAt: new Date(canonical.lineupPollingStart),
+    finalLineupFetchAt: new Date(canonical.finalLineupAt),
     resultReleaseAt: new Date(startAt.getTime() + RESULT_RELEASE_MINUTES_AFTER_START * 60 * 1000)
   };
 }
@@ -195,6 +213,18 @@ export function isFinalLineupRetryExpired(timeline, now = new Date()) {
 }
 
 export function getRosterFetchDecision(timeline, state = {}, now = new Date()) {
+  const v2Decision = getRosterExecutorDecisionV2({
+    gameDate: timeline?.game?.date || timeline?.date,
+    startAt: timeline?.startAt,
+    predictionDeadline: timeline?.predictionDeadlineAt,
+    lineupPollingStart: timeline?.lineupFetchStartAt,
+    finalLineupAt: timeline?.finalLineupFetchAt
+  }, { ...state, gameId: timeline?.gameId }, now);
+  if (v2Decision.reason === "SCHEDULE_START_AT_UNAVAILABLE") return { due: false, reason: "invalid" };
+  if (v2Decision.reason === "AFTER_START") return { due: false, reason: "after_start" };
+  if (v2Decision.reason === "RETRY_WAIT") return { due: false, reason: "retry_wait" };
+  if (v2Decision.reason === "DAILY_INTERVAL") return { due: false, reason: "interval" };
+  if (v2Decision.due) return { due: true, kind: v2Decision.kind === "daily" ? "regular" : v2Decision.kind };
   const current = now instanceof Date ? now : new Date(now);
   const startAt = timeline?.startAt instanceof Date ? timeline.startAt : new Date(timeline?.startAt || "");
   const gameId = String(timeline?.gameId || "");

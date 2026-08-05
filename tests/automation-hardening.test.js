@@ -60,7 +60,7 @@ test("新runnerの処理失敗で同じCron内にlegacy runnerを二重実行し
   const end = worker.indexOf("// Cron実行はブラウザ", start);
   const block = worker.slice(start, end);
   assert.match(block, /if \(completionJobsEnabled\)/);
-  assert.match(block, /runDueCompletionWorkflowJobs\(env, now, activeTimelines\)/);
+  assert.match(block, /runDueCompletionWorkflowJobs\(executorEnv, executorNow, executorTimelines\)/);
   const enabledBranch = /if \(completionJobsEnabled\) \{([\s\S]*?)\} else/.exec(block)?.[1] || "";
   assert.doesNotMatch(enabledBranch, /runDuePregameAutomationJobs\(env, now, activeTimelines\)/);
 });

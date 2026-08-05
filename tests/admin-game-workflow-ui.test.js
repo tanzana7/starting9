@@ -40,7 +40,7 @@ test("管理画面は現行workflow監査を表示し、緊急停止だけを管
   assert.match(worker, /workflowAuditSource: "game_workflow_state\+game_job_runs"/);
   assert.match(worker, /requireAdminUser\(request, env, cors\)/);
   assert.match(worker, /async function getPausedWorkflowGameIds/);
-  assert.match(worker, /runDueAutoScoringJobs\(env, now, pausedGameIds\)/);
+  assert.match(worker, /runDueAutoScoringJobs\(executorEnv, executorNow, pausedGameIds\)/);
   assert.match(migration, /CREATE TABLE IF NOT EXISTS game_workflow_controls/);
   assert.match(migration, /automation_paused INTEGER NOT NULL DEFAULT 0/);
 });

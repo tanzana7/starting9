@@ -1,3 +1,5 @@
+import { canonicalAutomationStateFromLegacy } from "./game-automation-v2.js";
+
 export const WORKFLOW_JOB_STATUSES = Object.freeze(new Set([
   "pending", "claimed", "running", "retry_wait", "succeeded", "permanently_failed", "cancelled"
 ]));
@@ -36,6 +38,16 @@ function asInternalGameId(value) {
   return internalGameId;
 }
 
+async function hasCanonicalWorkflowStateColumns(db) {
+  try {
+    const result = await db.prepare("PRAGMA table_info(game_workflow_state)").bind().all();
+    const columns = new Set((result.results || []).map((row) => String(row.name || "")));
+    return columns.has("canonical_status") && columns.has("state_updated_by") && columns.has("state_updated_at");
+  } catch {
+    return false;
+  }
+}
+
 export function isWorkflowTransitionAllowed(from, to) {
   const current = String(from || "waiting");
   const next = String(to || "");
@@ -65,21 +77,37 @@ export async function ensureGameWorkflowState(db, {
 } = {}) {
   const id = asInternalGameId(internalGameId);
   const timestamp = asIso(now);
-  await db.prepare(
-    `INSERT INTO game_workflow_state
-      (internal_game_id, legacy_game_id, game_status, workflow_status, workflow_version, created_at, updated_at)
-     VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5)
-     ON CONFLICT(internal_game_id) DO UPDATE SET
-       legacy_game_id = CASE WHEN excluded.legacy_game_id = '' THEN game_workflow_state.legacy_game_id ELSE excluded.legacy_game_id END,
-       game_status = excluded.game_status,
-       updated_at = excluded.updated_at`
-  ).bind(id, String(legacyGameId || ""), String(gameStatus || "scheduled"), String(workflowStatus || "prediction_open"), timestamp).run();
+  const canonicalColumns = await hasCanonicalWorkflowStateColumns(db);
+  if (canonicalColumns) {
+    await db.prepare(
+      `INSERT INTO game_workflow_state
+        (internal_game_id, legacy_game_id, game_status, workflow_status, canonical_status, state_updated_by, state_updated_at, workflow_version, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, 'system', ?6, 0, ?6, ?6)
+       ON CONFLICT(internal_game_id) DO UPDATE SET
+         legacy_game_id = CASE WHEN excluded.legacy_game_id = '' THEN game_workflow_state.legacy_game_id ELSE excluded.legacy_game_id END,
+         game_status = excluded.game_status,
+         canonical_status = CASE WHEN game_workflow_state.canonical_status = 'published' THEN game_workflow_state.canonical_status ELSE excluded.canonical_status END,
+         state_updated_at = excluded.state_updated_at,
+         updated_at = excluded.updated_at`
+    ).bind(id, String(legacyGameId || ""), String(gameStatus || "scheduled"), String(workflowStatus || "prediction_open"), canonicalAutomationStateFromLegacy(workflowStatus), timestamp).run();
+  } else {
+    await db.prepare(
+      `INSERT INTO game_workflow_state
+        (internal_game_id, legacy_game_id, game_status, workflow_status, workflow_version, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5)
+       ON CONFLICT(internal_game_id) DO UPDATE SET
+         legacy_game_id = CASE WHEN excluded.legacy_game_id = '' THEN game_workflow_state.legacy_game_id ELSE excluded.legacy_game_id END,
+         game_status = excluded.game_status,
+         updated_at = excluded.updated_at`
+    ).bind(id, String(legacyGameId || ""), String(gameStatus || "scheduled"), String(workflowStatus || "prediction_open"), timestamp).run();
+  }
   return id;
 }
 
 export async function transitionWorkflowState(db, {
   internalGameId,
   to,
+  canonicalStatus = "",
   completedJobType = "",
   errorCode = "",
   nextDueAt = null,
@@ -87,20 +115,33 @@ export async function transitionWorkflowState(db, {
 } = {}) {
   const id = asInternalGameId(internalGameId);
   const current = await db.prepare(
-    "SELECT workflow_status, workflow_version FROM game_workflow_state WHERE internal_game_id = ?1 LIMIT 1"
+    "SELECT workflow_status, workflow_version, canonical_status FROM game_workflow_state WHERE internal_game_id = ?1 LIMIT 1"
   ).bind(id).first();
   if (!current) throw createWorkflowError("WORKFLOW_STATE_NOT_FOUND", "試合進行状態がありません。");
   assertAllowedWorkflowTransition(current.workflow_status, to);
   const timestamp = asIso(now);
-  const result = await db.prepare(
-    `UPDATE game_workflow_state
-        SET workflow_status = ?1, workflow_version = workflow_version + 1,
-            last_completed_job_type = CASE WHEN ?2 = '' THEN last_completed_job_type ELSE ?2 END,
-            last_error_code = CASE WHEN ?3 = '' THEN NULL ELSE ?3 END,
-            last_error_at = CASE WHEN ?3 = '' THEN NULL ELSE ?4 END,
-            next_due_at = ?5, updated_at = ?4
-      WHERE internal_game_id = ?6 AND workflow_version = ?7`
-  ).bind(String(to), String(completedJobType || ""), String(errorCode || ""), timestamp, nextDueAt ? asIso(nextDueAt) : null, id, Number(current.workflow_version || 0)).run();
+  const canonicalColumns = await hasCanonicalWorkflowStateColumns(db);
+  const canonicalNext = String(canonicalStatus || canonicalAutomationStateFromLegacy(to));
+  const result = canonicalColumns
+    ? await db.prepare(
+      `UPDATE game_workflow_state
+          SET workflow_status = ?1, canonical_status = ?8, state_updated_by = 'system', state_updated_at = ?4,
+              workflow_version = workflow_version + 1,
+              last_completed_job_type = CASE WHEN ?2 = '' THEN last_completed_job_type ELSE ?2 END,
+              last_error_code = CASE WHEN ?3 = '' THEN NULL ELSE ?3 END,
+              last_error_at = CASE WHEN ?3 = '' THEN NULL ELSE ?4 END,
+              next_due_at = ?5, updated_at = ?4
+        WHERE internal_game_id = ?6 AND workflow_version = ?7`
+    ).bind(String(to), String(completedJobType || ""), String(errorCode || ""), timestamp, nextDueAt ? asIso(nextDueAt) : null, id, Number(current.workflow_version || 0), canonicalNext).run()
+    : await db.prepare(
+      `UPDATE game_workflow_state
+          SET workflow_status = ?1, workflow_version = workflow_version + 1,
+              last_completed_job_type = CASE WHEN ?2 = '' THEN last_completed_job_type ELSE ?2 END,
+              last_error_code = CASE WHEN ?3 = '' THEN NULL ELSE ?3 END,
+              last_error_at = CASE WHEN ?3 = '' THEN NULL ELSE ?4 END,
+              next_due_at = ?5, updated_at = ?4
+        WHERE internal_game_id = ?6 AND workflow_version = ?7`
+    ).bind(String(to), String(completedJobType || ""), String(errorCode || ""), timestamp, nextDueAt ? asIso(nextDueAt) : null, id, Number(current.workflow_version || 0)).run();
   if (Number(result?.meta?.changes || 0) !== 1) {
     throw createWorkflowError("WORKFLOW_STATE_CONFLICT", "試合進行状態が別の実行者に更新されました。");
   }

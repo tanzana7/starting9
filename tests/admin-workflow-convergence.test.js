@@ -27,7 +27,7 @@ test("Cronはschedule登録後に同じrunGameWorkflows経路へ進む", () => {
   const scheduled = worker.slice(worker.indexOf("export async function runScheduledGameAutomation"), worker.indexOf("async function cleanupExpiredManualRescorePreviews"));
   assert.match(scheduled, /syncTodayFightersSchedule\(env, now\)/);
   assert.match(scheduled, /runGameWorkflows\(env, now, scheduleSync\.games\)/);
-  assert.match(worker, /runDueCompletionWorkflowJobs\(env, now, activeTimelines\)/);
+  assert.match(worker, /runDueCompletionWorkflowJobs\(executorEnv, executorNow, executorTimelines\)/);
   assert.match(worker, /runDuePregameAutomationJobs\(env, now, activeTimelines\)/);
 });
 
@@ -39,6 +39,6 @@ test("ロースターと正式スタメンの取得は共通game identity resolv
 
   assert.match(resolver, /resolveApiGameReference\(db, gameId\)/);
   assert.match(resolver, /getGameIdentityRegistryAvailability\(db\)/);
-  assert.match(roster, /await resolvePregameIdentity\(env\.AUTH_DB, gameId, target \|\| \{\}\)/);
+  assert.match(roster, /await resolveRosterScheduleTarget\(env\.AUTH_DB, gameId, target \|\| \{\}\)/);
   assert.match(lineup, /await resolvePregameIdentity\(env\.AUTH_DB, gameId, target \|\| \{\}\)/);
 });

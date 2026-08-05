@@ -96,7 +96,7 @@ test("manual admin endpoints remain fallbacks while scoring and publication reus
 test("Cronのタイムライン復元はページアクセスを必要とせず、最終取得・採点・公開へ接続する", () => {
   const workflowBlock = worker.slice(worker.indexOf("async function runGameWorkflows"), worker.indexOf("function normalizeProbableStarterTeam"));
   assert.match(workflowBlock, /await runDuePregameAutomationJobs\(env, now, activeTimelines\)/);
-  assert.match(workflowBlock, /await runDueAutoScoringJobs\(env, now, pausedGameIds\)/);
+  assert.match(workflowBlock, /runDueAutoScoringJobs\(executorEnv, executorNow, pausedGameIds\)/);
   assert.match(workflowBlock, /await runDueGameDayPublicationJobs\(env, now, activeTimelines\)/);
   assert.doesNotMatch(script, /runDuePregameAutomationJobs|runDueAutoScoringJobs|runDueGameDayPublicationJobs/);
 });

@@ -7,17 +7,17 @@ const { pathToFileURL } = require("node:url");
 const root = path.resolve(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 
-test("ロースター自動取得は6時間間隔、試合3時間前の直前確認、失敗後30分待機を適用する", async () => {
+test("ロースター自動取得は1日間隔、試合2時間前の直前確認、失敗後30分待機を適用する", async () => {
   const automation = await import(pathToFileURL(path.join(root, "pregame-automation.js")).href);
   const timeline = automation.getPregameTimeline("2026-07-22-l-f-16");
   const successAt = "2026-07-22T00:00:00.000Z";
 
   assert.deepEqual(automation.getRosterFetchDecision(timeline, {}, new Date("2026-07-22T00:00:00.000Z")), { due: true, kind: "regular" });
   assert.equal(automation.getRosterFetchDecision(timeline, { lastSuccessfulFetchAt: successAt }, new Date("2026-07-22T04:00:00.000Z")).due, false);
-  assert.deepEqual(automation.getRosterFetchDecision(timeline, { lastSuccessfulFetchAt: successAt }, new Date("2026-07-22T06:00:00.000Z")), { due: true, kind: "pregame" });
-  assert.equal(automation.getRosterFetchDecision(timeline, { lastSuccessfulFetchAt: "2026-07-22T06:00:00.000Z", lastPregameCheckGameId: timeline.gameId }, new Date("2026-07-22T06:30:00.000Z")).due, false);
-  assert.equal(automation.getRosterFetchDecision(timeline, { nextCheckAt: "2026-07-22T06:30:00.000Z" }, new Date("2026-07-22T06:29:59.000Z")).reason, "retry_wait");
-  assert.deepEqual(automation.getRosterFetchDecision(timeline, { nextCheckAt: "2026-07-22T06:30:00.000Z" }, new Date("2026-07-22T06:30:00.000Z")), { due: true, kind: "pregame" });
+  assert.deepEqual(automation.getRosterFetchDecision(timeline, { lastSuccessfulFetchAt: successAt }, new Date("2026-07-22T07:00:00.000Z")), { due: true, kind: "pregame" });
+  assert.equal(automation.getRosterFetchDecision(timeline, { lastSuccessfulFetchAt: "2026-07-22T07:00:00.000Z", lastPregameCheckGameId: timeline.gameId }, new Date("2026-07-22T07:30:00.000Z")).due, false);
+  assert.equal(automation.getRosterFetchDecision(timeline, { nextCheckAt: "2026-07-22T07:30:00.000Z" }, new Date("2026-07-22T07:29:59.000Z")).reason, "retry_wait");
+  assert.deepEqual(automation.getRosterFetchDecision(timeline, { nextCheckAt: "2026-07-22T07:30:00.000Z" }, new Date("2026-07-22T07:30:00.000Z")), { due: true, kind: "pregame" });
   assert.equal(automation.getRosterFetchDecision(timeline, {}, new Date("2026-07-22T09:00:00.000Z")).reason, "after_start");
 });
 

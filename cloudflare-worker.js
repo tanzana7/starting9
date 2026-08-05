@@ -249,7 +249,18 @@ async function handleScheduleRequest(requestUrl) {
   if (games === null) {
     return jsonResponse({ ok: false, code: "SCHEDULE_PARSE_FAILED", error: "NPB公式日程を解析できませんでした。" }, 422);
   }
-  return jsonResponse({ ok: true, date, sourceUrl, fetchedAt: new Date().toISOString(), games: normalizeFightersScheduleGames(games, date) });
+  const normalizedGames = normalizeFightersScheduleGames(games, date).map((game) => ({
+    ...game,
+    npbGameUrl: buildNpbGameUrl(date, game.gameCode)
+  }));
+  return jsonResponse({ ok: true, date, sourceUrl, fetchedAt: new Date().toISOString(), games: normalizedGames });
+}
+
+function buildNpbGameUrl(date, gameCode) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date || ""));
+  const normalizedCode = String(gameCode || "").trim().toLowerCase();
+  if (!match || !/^[a-z0-9]+-[a-z0-9]+-\d+$/.test(normalizedCode)) return "";
+  return `https://npb.jp/scores/${match[1]}/${match[2]}${match[3]}/${normalizedCode}/`;
 }
 
 function extractScheduleGames(html, date) {

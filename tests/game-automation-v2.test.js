@@ -18,8 +18,11 @@ test("v2 schedule derives deadline, lineup polling, and finalization from the D1
     npbGameCode: "h-f-15"
   });
   assert.equal(schedule.predictionDeadline, "2026-08-04T08:00:00.000Z");
+  assert.equal(schedule.rosterFetchAt1, "2026-08-04T07:00:00.000Z");
+  assert.equal(schedule.rosterFetchAt2, "2026-08-04T07:10:00.000Z");
   assert.equal(schedule.lineupPollingStart, "2026-08-04T08:10:00.000Z");
   assert.equal(schedule.finalLineupAt, "2026-08-04T09:02:00.000Z");
+  assert.equal(schedule.publicationAt, "2026-08-04T09:10:00.000Z");
   assert.equal(automation.getLineupPollingSlot(schedule, "2026-08-04T08:27:30.000Z"), "2026-08-04T08:20:00.000Z");
 });
 
@@ -44,6 +47,9 @@ test("roster decisions are daily or two-hours-before-start and isolate after-sta
     awayTeam: "fighters"
   });
   assert.equal(automation.getRosterExecutorDecision(schedule, { gameId: "game-1" }, "2026-08-04T07:00:00.000Z").kind, "pregame");
+  assert.equal(automation.getRosterExecutorDecision(schedule, { gameId: "game-1", lastPregameCheckGameId: "game-1" }, "2026-08-04T07:10:00.000Z").kind, "daily_slot");
+  const laterSchedule = automation.deriveAutomationSchedule({ ...schedule, startAt: "2026-08-04T10:00:00.000Z" });
+  assert.equal(automation.getRosterExecutorDecision(laterSchedule, { gameId: "game-1", lastPregameCheckGameId: "game-1", lastSuccessfulFetchSlot: "2026-08-04:16:10" }, "2026-08-04T08:10:00.000Z").kind, "pregame");
   assert.equal(automation.getRosterExecutorDecision(schedule, { gameId: "game-1", lastPregameCheckGameId: "game-1", lastSuccessfulFetchAt: "2026-08-04T07:00:00.000Z" }, "2026-08-04T07:01:00.000Z").due, false);
   assert.equal(automation.getRosterExecutorDecision(schedule, {}, "2026-08-04T09:01:00.000Z").reason, "AFTER_START");
 });
@@ -57,6 +63,9 @@ test("lineup revision validation and scoring no-op protect identity and duplicat
     internalGameId: "game-1"
   }));
   assert.equal(automation.validateLineupRevision(lineup, { internalGameId: "game-1" }).valid, true);
+  const unresolved = lineup.map((row, index) => index === 5 ? { ...row, playerId: null, playerName: "不明", rawPlayerName: "未登録選手" } : row);
+  assert.equal(automation.validateLineupRevision(unresolved, { internalGameId: "game-1", allowUnresolvedPlayer: true }).valid, true);
+  assert.equal(automation.validateLineupRevision(unresolved, { internalGameId: "game-1" }).reason, "PLAYER_INVALID");
   assert.equal(automation.validateLineupRevision([...lineup, { ...lineup[0], order: 10, playerId: "player-10" }]).reason, "ORDER_INVALID");
   assert.deepEqual(automation.shouldCreateScoringRevision({
     lineupRevisionId: "game-1:2",

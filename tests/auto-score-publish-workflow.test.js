@@ -17,13 +17,13 @@ function createIdentity() {
   };
 }
 
-test("開始+1分の最終スタメンを開始+2分に採点し、開始+5分に公開する", () => {
-  assert.equal(RESULT_RELEASE_MINUTES_AFTER_START, 5);
+test("開始+1分の最終スタメンを開始+2分に採点し、開始+10分に公開する", () => {
+  assert.equal(RESULT_RELEASE_MINUTES_AFTER_START, 10);
   assert.match(worker, /RESULT_RELEASE_MINUTES_AFTER_START,\s*getScheduledGame/);
   assert.match(worker, /scoringDueAt: new Date\(identity\.startAt\.getTime\(\) \+ 2 \* 60 \* 1000\)/);
   assert.match(worker, /id: "final_lineup", offsetMinutes: AUTOMATION_V2_TIMING\.finalLineupMinutesAfterStart/);
   assert.match(worker, /id: "score", offsetMinutes: 2/);
-  assert.match(worker, /id: "publish", offsetMinutes: 5/);
+  assert.match(worker, /id: "publish", offsetMinutes: AUTOMATION_V2_TIMING\.publicationMinutesAfterStart/);
   assert.match(worker, /if \(now < timeline\.resultReleaseAt\) continue/);
   assert.match(worker, /const resultReleaseAt = new Date\(startAt\.getTime\(\) \+ RESULT_RELEASE_MINUTES_AFTER_START \* 60 \* 1000\)/);
   assert.match(worker, /if \(now < resultReleaseAt\) return \{ published: false, status: "not_due"/);

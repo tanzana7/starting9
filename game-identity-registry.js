@@ -155,10 +155,51 @@ export async function getOrCreateInternalGame(db, {
     if (!allowCreate) return { status: "not_found", code: "INTERNAL_GAME_NOT_FOUND", internalGameId: null };
     internalGameId = await createInternalGame(db, identity, createId, now);
   }
+  await updateGameScheduleMetadata(db, internalGameId, identity, game, now);
   for (const identifier of normalizedIdentifiers) {
     await registerGameIdentifier(db, internalGameId, identifier, now);
   }
   return { status: "resolved", code: "", internalGameId };
+}
+
+// Keep the schedule row's derived timestamps beside the canonical start time.
+// Older environments simply skip columns introduced after the registry.
+export async function updateGameScheduleMetadata(db, internalGameId, identity, source = {}, now = new Date()) {
+  let columnsResult;
+  try {
+    columnsResult = await db.prepare("PRAGMA table_info(games)").bind().all();
+  } catch {
+    // Older adapters may not expose schema metadata; registry resolution still works.
+    return false;
+  }
+  const columns = new Set((columnsResult.results || []).map((row) => String(row.name || "")));
+  const startAt = new Date(identity?.startTime || "");
+  if (!internalGameId || Number.isNaN(startAt.getTime())) return false;
+  const fields = [];
+  const values = [];
+  const add = (column, value) => {
+    if (!columns.has(column)) return;
+    fields.push(`${column} = ?${values.length + 1}`);
+    values.push(value);
+  };
+  add("game_date", identity.gameDate);
+  add("start_time", identity.startTime);
+  add("home_team", identity.homeTeam);
+  add("away_team", identity.awayTeam);
+  add("game_status", identity.gameStatus || "scheduled");
+  add("npb_game_code", String(source?.npbGameCode || source?.gameCode || "").trim().toLowerCase() || null);
+  add("season", /^\d{4}$/.test(String(source?.season || "")) ? Number(source.season) : Number(identity.gameDate.slice(0, 4)));
+  add("stadium", String(source?.stadium || source?.venue || "").trim() || null);
+  const iso = (offset) => new Date(startAt.getTime() + offset * 60000).toISOString();
+  add("roster_fetch_at1", iso(-120));
+  add("roster_fetch_at2", iso(-110));
+  add("publication_at", iso(10));
+  add("updated_by", String(source?.updatedBy || "system").slice(0, 120));
+  add("updated_at", (now instanceof Date ? now : new Date(now)).toISOString());
+  if (!fields.length) return false;
+  values.push(internalGameId);
+  await db.prepare(`UPDATE games SET ${fields.join(", ")} WHERE internal_game_id = ?${values.length}`).bind(...values).run();
+  return true;
 }
 
 export function createScheduleGameIdentifiers({ gameId = "", gameCode = "", sourceGameKey = "", staticScheduleGameId = "" } = {}) {

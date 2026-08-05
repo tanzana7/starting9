@@ -1,4 +1,4 @@
-import { canonicalAutomationStateFromLegacy } from "./game-automation-v2.js";
+import { canonicalAutomationStateFromLegacy, isAutomationV2StateTransitionAllowed } from "./game-automation-v2.js";
 
 export const WORKFLOW_JOB_STATUSES = Object.freeze(new Set([
   "pending", "claimed", "running", "retry_wait", "succeeded", "permanently_failed", "cancelled"
@@ -122,6 +122,10 @@ export async function transitionWorkflowState(db, {
   const timestamp = asIso(now);
   const canonicalColumns = await hasCanonicalWorkflowStateColumns(db);
   const canonicalNext = String(canonicalStatus || canonicalAutomationStateFromLegacy(to));
+  if (canonicalColumns && current.canonical_status
+    && !isAutomationV2StateTransitionAllowed(current.canonical_status, canonicalNext)) {
+    throw createWorkflowError("AUTOMATION_V2_STATE_TRANSITION_INVALID", `自動運転状態を ${current.canonical_status} から ${canonicalNext} へ変更できません。`);
+  }
   const result = canonicalColumns
     ? await db.prepare(
       `UPDATE game_workflow_state

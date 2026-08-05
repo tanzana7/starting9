@@ -28,7 +28,8 @@ import {
   createScheduleGameIdentifiers,
   getOrCreateInternalGame,
   registerGameIdentifier,
-  resolveInternalGameId
+  resolveInternalGameId,
+  updateGameScheduleMetadata
 } from "./game-identity-registry.js";
 import {
   buildGameIdentityRepairPreview,
@@ -55,6 +56,13 @@ import {
   deriveAutomationSchedule,
   getProbableStarterSourceDate
 } from "./game-automation-v2.js";
+import {
+  RANKING_ELIGIBILITY_STATUS,
+  normalizeRankingEligibilityReason,
+  normalizeRankingEligibilityStatus,
+  isRankingAggregationEligible,
+  isScoringComplete
+} from "./game-scoring-ranking-v2.js";
 
 const SESSION_COOKIE_NAME = "s9_session";
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
@@ -153,7 +161,7 @@ const GAME_WORKFLOW_STEPS = Object.freeze([
   { id: "lineup", offsetMinutes: -50, retryMinutes: 10 },
   { id: "final_lineup", offsetMinutes: AUTOMATION_V2_TIMING.finalLineupMinutesAfterStart, retryMinutes: 10 },
   { id: "score", offsetMinutes: 2 },
-  { id: "publish", offsetMinutes: 5 }
+  { id: "publish", offsetMinutes: AUTOMATION_V2_TIMING.publicationMinutesAfterStart }
 ]);
 const PREGAME_TOOL_ACTIONS = Object.freeze({
   "run-notice": { logAction: "notice_fetch", transport: "service-binding", upstreamMode: "notice", fetchCode: "NOTICE_FETCH_FAILED", parseCode: "NOTICE_PARSE_FAILED", failureCode: "NOTICE_FETCH_FAILED", schemaCode: "NOTICE_SCHEMA_NOT_READY" },
@@ -4021,7 +4029,7 @@ async function handleAdminGameScheduleUpdate(request, env, cors, metadata, user)
     const input = await readJson(request);
     const currentColumns = await getTableColumnSet(env.AUTH_DB, "games");
     const current = await env.AUTH_DB.prepare(
-      `SELECT game_date, start_time, home_team, away_team, game_status${currentColumns.has("npb_game_code") ? ", npb_game_code" : ""}
+      `SELECT game_date, start_time, home_team, away_team, game_status${currentColumns.has("npb_game_code") ? ", npb_game_code" : ""}${currentColumns.has("season") ? ", season" : ""}${currentColumns.has("stadium") ? ", stadium" : ""}${currentColumns.has("is_active") ? ", is_active" : ""}
          FROM games WHERE internal_game_id = ?1 LIMIT 1`
     ).bind(metadata.internalGameId).first();
     if (!current) return jsonResponse({ ok: false, code: "GAME_NOT_FOUND", error: "対象試合が見つかりません。" }, 404, cors);
@@ -4034,6 +4042,9 @@ async function handleAdminGameScheduleUpdate(request, env, cors, metadata, user)
     const awayTeam = String(input?.awayTeam || current.away_team || "").trim();
     const status = String(input?.status || current.game_status || "scheduled").trim().toLowerCase();
     const npbGameCode = String(input?.npbGameCode || current.npb_game_code || "").trim();
+    const season = input?.season === undefined ? current.season : Number(input.season);
+    const stadium = String(input?.stadium === undefined ? (current.stadium || "") : input.stadium).trim().slice(0, 160);
+    const isActive = input?.isActive === undefined ? Number(current.is_active ?? 1) : (input.isActive ? 1 : 0);
     const canonical = deriveAutomationSchedule({
       internalGameId: metadata.internalGameId,
       gameDate,
@@ -4055,9 +4066,16 @@ async function handleAdminGameScheduleUpdate(request, env, cors, metadata, user)
     const fields = ["game_date = ?1", "start_time = ?2", "home_team = ?3", "away_team = ?4", "game_status = ?5", "updated_at = ?6"];
     const values = [gameDate, canonical.startAt, homeTeam, awayTeam, status, now.toISOString()];
     if (currentColumns.has("npb_game_code")) { fields.push(`npb_game_code = ?${values.length + 1}`); values.push(npbGameCode || null); }
+    if (currentColumns.has("season")) { fields.push(`season = ?${values.length + 1}`); values.push(Number.isInteger(season) ? season : null); }
+    if (currentColumns.has("stadium")) { fields.push(`stadium = ?${values.length + 1}`); values.push(stadium || null); }
+    if (currentColumns.has("is_active")) { fields.push(`is_active = ?${values.length + 1}`); values.push(isActive); }
+    if (currentColumns.has("deleted_at")) { fields.push(`deleted_at = ?${values.length + 1}`); values.push(isActive ? null : now.toISOString()); }
     if (currentColumns.has("prediction_deadline_at")) { fields.push(`prediction_deadline_at = ?${values.length + 1}`); values.push(canonical.predictionDeadline); }
+    if (currentColumns.has("roster_fetch_at1")) { fields.push(`roster_fetch_at1 = ?${values.length + 1}`); values.push(canonical.rosterFetchAt1); }
+    if (currentColumns.has("roster_fetch_at2")) { fields.push(`roster_fetch_at2 = ?${values.length + 1}`); values.push(canonical.rosterFetchAt2); }
     if (currentColumns.has("lineup_polling_start_at")) { fields.push(`lineup_polling_start_at = ?${values.length + 1}`); values.push(canonical.lineupPollingStart); }
     if (currentColumns.has("final_lineup_at")) { fields.push(`final_lineup_at = ?${values.length + 1}`); values.push(canonical.finalLineupAt); }
+    if (currentColumns.has("publication_at")) { fields.push(`publication_at = ?${values.length + 1}`); values.push(canonical.publicationAt); }
     if (currentColumns.has("updated_by")) { fields.push(`updated_by = ?${values.length + 1}`); values.push(user?.id ? `admin:${user.id}` : "admin"); }
     const gameIdPlaceholder = `?${values.length + 1}`;
     values.push(metadata.internalGameId);
@@ -4067,6 +4085,24 @@ async function handleAdminGameScheduleUpdate(request, env, cors, metadata, user)
          (internal_game_id, previous_start_at, next_start_at, previous_status, next_status, reason, changed_by, changed_at)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`
     ).bind(metadata.internalGameId, current.start_time || null, canonical.startAt, current.game_status || null, status, reason, user?.id ? String(user.id) : "admin", now.toISOString()).run();
+
+    if (status === "cancelled" || status === "postponed") {
+      const cancellationReason = status === "postponed"
+        ? "postponed"
+        : (now < startAt ? "cancelled_before_start" : "cancelled_after_start");
+      const rankingState = await getRankingGameState(env.AUTH_DB, metadata.gameId);
+      if (rankingState) {
+        await setRankingEligibility(env.AUTH_DB, {
+          gameId: metadata.gameId,
+          internalGameId: metadata.internalGameId,
+          status: RANKING_ELIGIBILITY_STATUS.EXCLUDED,
+          reason: cancellationReason,
+          note: reason,
+          updatedBy: user?.id ? `admin:${user.id}` : "admin",
+          now
+        });
+      }
+    }
 
     if (wasClosed) {
       const workflow = await env.AUTH_DB.prepare("SELECT workflow_status FROM game_workflow_state WHERE internal_game_id = ?1 LIMIT 1").bind(metadata.internalGameId).first();
@@ -4099,7 +4135,7 @@ async function handleAdminGameScheduleUpdate(request, env, cors, metadata, user)
 }
 
 function parseAdminScoringRoute(path) {
-  const match = /^\/api\/admin\/games\/([^/]+)\/(schedule|predictions\/(?:summary|score-predictions(?:\/preview)?)|actual-lineup|lineup-history|lineup-revisions|rescore-preview|rescore-confirm|restore-lineup-version|rescore-history|service-unavailable|restore-service-unavailable|auto-scoring\/(?:status|run-now|retry|cancel)|pregame-automation\/(?:run-roster|run-lineup|run-notice|distribute-notice|fix-roster|publish|pause-workflow|resume-workflow))$/.exec(path);
+  const match = /^\/api\/admin\/games\/([^/]+)\/(schedule|predictions\/(?:summary|score-predictions(?:\/preview)?)|actual-lineup|lineup-history|lineup-revisions|rescore-preview|rescore-confirm|restore-lineup-version|rescore-history|service-unavailable|restore-service-unavailable|ranking-eligibility|auto-scoring\/(?:status|run-now|retry|cancel)|pregame-automation\/(?:run-roster|run-lineup|run-notice|distribute-notice|fix-roster|publish|pause-workflow|resume-workflow))$/.exec(path);
   if (!match) {
     return null;
   }
@@ -4149,6 +4185,12 @@ async function handleAdminScoringRoute(request, env, cors, route) {
   }
   if (route.action === "restore-service-unavailable" && request.method === "POST") {
     return await handleAdminServiceUnavailable(env, cors, metadata.gameId, false);
+  }
+  if (route.action === "ranking-eligibility" && request.method === "GET") {
+    return jsonResponse({ ok: true, gameId: metadata.gameId, rankingEligibility: await getRankingEligibilityState(env.AUTH_DB, metadata.gameId) }, 200, cors);
+  }
+  if (route.action === "ranking-eligibility" && request.method === "PUT") {
+    return await handleAdminRankingEligibilityUpdate(request, env, cors, metadata, access.user);
   }
   if (route.action === "lineup-history" && request.method === "GET") {
     return await handleAdminLineupHistory(env, cors, metadata.gameId);
@@ -4748,6 +4790,16 @@ async function handleAdminServiceUnavailable(env, cors, gameId, unavailable) {
         WHERE game_id = ?3`
     ).bind(SCORING_RETRY_EXPIRED_CODE, now.toISOString(), gameId).run();
     const changed = Number(result?.meta?.changes || 0) === 1;
+    if (changed) {
+      await setRankingEligibility(env.AUTH_DB, {
+        gameId,
+        internalGameId: current?.internal_game_id || "",
+        status: RANKING_ELIGIBILITY_STATUS.ELIGIBLE,
+        reason: null,
+        updatedBy: "admin",
+        now
+      });
+    }
     await recordWorkflowLog(env.AUTH_DB, {
       eventType: "service_unavailable_restored",
       status: "info",
@@ -5305,33 +5357,43 @@ function isNormalRosterTimeline(timeline) {
 }
 
 async function runDueRosterCaptureJobs(env, now, timelines = getPregameTimelines()) {
-  const target = await getServerPredictionTarget(env.AUTH_DB, now);
-  const timeline = (Array.isArray(timelines) ? timelines : [])
-    .find((item) => isNormalRosterTimeline(item) && item.gameId === target?.gameId);
-  if (!timeline || now >= timeline.startAt) return { due: false, status: "idle", gameId: timeline?.gameId || "" };
+  const summary = { due: false, status: "idle", processed: 0, captured: 0, failed: 0, games: [] };
+  const rosterTimelines = (Array.isArray(timelines) ? timelines : [])
+    .filter((timeline) => isNormalRosterTimeline(timeline) && now < timeline.startAt);
+  for (const timeline of rosterTimelines) {
+    await ensurePregameAutomationRow(env.AUTH_DB, timeline, now);
+    const storedState = await readRosterFetchState(env.AUTH_DB, timeline.gameId) || {};
+    const previousSnapshot = await readRosterSnapshot(env.AUTH_DB, timeline.gameId);
+    const decisionState = {
+      lastSuccessfulFetchAt: storedState.last_successful_roster_fetch_at || previousSnapshot.capturedAt,
+      lastSuccessfulFetchSlot: storedState.last_roster_fetch_slot,
+      nextCheckAt: storedState.roster_next_check_at,
+      lastPregameCheckGameId: storedState.last_pregame_check_game_id
+    };
+    const decision = getRosterFetchDecision(timeline, decisionState, now);
+    if (!decision.due) continue;
+    summary.due = true;
+    summary.processed += 1;
+    try {
+      const result = await captureGameRosterSnapshot(env, timeline.gameId, now, {
+        force: true,
+        source: "cron",
+        pregame: decision.kind === "pregame",
+        pregameMarker: decision.kind === "pregame"
+          ? `${timeline.gameId}:${now < new Date(timeline.startAt.getTime() - AUTOMATION_V2_TIMING.rosterSecondPregameMinutes * 60 * 1000) ? "120" : "110"}`
+          : "",
+        fetchSlot: decision.slot || "",
+        target: timeline
+      });
+      if (result.status !== "captured") {
+        summary.games.push({ gameId: timeline.gameId, status: result.status });
+        continue;
+      }
+      summary.captured += 1;
 
-  await ensurePregameAutomationRow(env.AUTH_DB, timeline, now);
-  const storedState = await readRosterFetchState(env.AUTH_DB, timeline.gameId) || {};
-  const previousSnapshot = await readRosterSnapshot(env.AUTH_DB, timeline.gameId);
-  const decisionState = {
-    lastSuccessfulFetchAt: storedState.last_successful_roster_fetch_at || previousSnapshot.capturedAt,
-    nextCheckAt: storedState.roster_next_check_at,
-    lastPregameCheckGameId: storedState.last_pregame_check_game_id
-  };
-  const decision = getRosterFetchDecision(timeline, decisionState, now);
-  if (!decision.due) return { due: false, status: decision.reason, gameId: timeline.gameId };
-
-  try {
-    const result = await captureGameRosterSnapshot(env, timeline.gameId, now, {
-      force: true,
-      source: "cron",
-      pregame: decision.kind === "pregame",
-      target
-    });
-    if (result.status !== "captured") return { due: true, status: result.status, gameId: timeline.gameId };
-
-    const changed = rosterFingerprint(previousSnapshot.players) !== rosterFingerprint(result.roster);
-    if (changed || !previousSnapshot.players.length) {
+      const changed = rosterFingerprint(previousSnapshot.players) !== rosterFingerprint(result.roster);
+      summary.games.push({ gameId: timeline.gameId, status: "success", changed });
+      if (changed || !previousSnapshot.players.length) {
       const message = previousSnapshot.players.length ? "ロースターに変更がありました。" : "ロースターを初回取得しました。";
       await recordWorkflowLog(env.AUTH_DB, {
         eventType: "roster_fetch",
@@ -5342,6 +5404,7 @@ async function runDueRosterCaptureJobs(env, now, timelines = getPregameTimelines
         metadata: {
           source: "cron",
           kind: decision.kind,
+          slot: decision.slot || "",
           playerCount: result.playerCount,
           changed,
           rosterResolutionStage: result.rosterResolution?.resolutionStage || "resolvePregameIdentity",
@@ -5351,9 +5414,10 @@ async function runDueRosterCaptureJobs(env, now, timelines = getPregameTimelines
         source: "cron"
       });
       console.log(`[GAME_WORKFLOW] gameId=${timeline.gameId} step=roster action=executed status=success source=cron changed=${changed}`);
-    }
-    return { due: true, status: "success", gameId: timeline.gameId, changed };
-  } catch (error) {
+      }
+    } catch (error) {
+      summary.failed += 1;
+      summary.games.push({ gameId: timeline.gameId, status: "error", errorCode: String(error?.code || "ROSTER_FETCH_FAILED") });
     await recordWorkflowLog(env.AUTH_DB, {
       eventType: "roster_fetch",
       status: "error",
@@ -5364,6 +5428,7 @@ async function runDueRosterCaptureJobs(env, now, timelines = getPregameTimelines
       metadata: {
         source: "cron",
         kind: decision.kind,
+        slot: decision.slot || "",
         retryAfterMinutes: 30,
         ...getWorkflowExecutionDiagnostics({
           job: { job_type: "roster_fetch", id: null },
@@ -5377,8 +5442,11 @@ async function runDueRosterCaptureJobs(env, now, timelines = getPregameTimelines
       source: "cron"
     });
     console.warn(`[GAME_WORKFLOW] gameId=${timeline.gameId} step=roster action=executed status=failed source=cron code=${error?.code || "ROSTER_FETCH_FAILED"}`);
-    return { due: true, status: "error", gameId: timeline.gameId, errorCode: String(error?.code || "ROSTER_FETCH_FAILED") };
+    }
   }
+  if (!summary.processed) return summary;
+  summary.status = summary.failed ? "partial_failure" : "success";
+  return summary;
 }
 
 async function handleAdminAutomationHealth(request, env, cors) {
@@ -5754,12 +5822,10 @@ function createOfficialLineupFromNpb(lineup) {
   const orders = new Set();
   const players = new Set();
   for (const row of lineup) {
-    const player = findFightersPlayerByName(row?.playerName);
+    const rawPlayerName = String(row?.playerName || "").trim();
+    const player = findFightersPlayerByName(rawPlayerName);
     const battingOrder = Number(row?.order);
     const position = normalizeScoringPosition(row?.position);
-    if (!player) {
-      return invalid("LINEUP_PLAYER_RESOLUTION_FAILED", "NPBの選手名を選手マスタへ安全に照合できません。", { resolvedPlayerCount: result.length });
-    }
     if (!Number.isInteger(battingOrder) || battingOrder < 1 || battingOrder > 9 || orders.has(battingOrder)) {
       return invalid("LINEUP_PARSE_FAILED", "NPBの打順を安全に解析できません。", {
         resolvedPlayerCount: result.length,
@@ -5774,16 +5840,16 @@ function createOfficialLineupFromNpb(lineup) {
         missingPositionCount: 1
       });
     }
-    const playerId = createFightersPlayerId(player.uniformNumber);
-    if (players.has(playerId)) {
+    const playerId = player ? createFightersPlayerId(player.uniformNumber) : null;
+    if (playerId && players.has(playerId)) {
       return invalid("LINEUP_DUPLICATE_PLAYER", "NPBのスタメンに同一選手が重複しています。", {
         resolvedPlayerCount: result.length,
         duplicatePlayerCount: 1
       });
     }
     orders.add(battingOrder);
-    players.add(playerId);
-    validation.resolvedPlayerCount = result.length + 1;
+    if (playerId) players.add(playerId);
+    validation.resolvedPlayerCount += playerId ? 1 : 0;
     validation.validPositionCount = result.length + 1;
     validation.battingOrderMin = validation.battingOrderMin === null ? battingOrder : Math.min(validation.battingOrderMin, battingOrder);
     validation.battingOrderMax = validation.battingOrderMax === null ? battingOrder : Math.max(validation.battingOrderMax, battingOrder);
@@ -5791,14 +5857,15 @@ function createOfficialLineupFromNpb(lineup) {
       playerId,
       teamId: FIGHTERS_TEAM_ID,
       teamCode: FIGHTERS_TEAM_CODE,
-      uniformNumber: player.uniformNumber,
-      playerName: player.name,
+      uniformNumber: player?.uniformNumber || String(row?.uniformNumber || "").trim(),
+      playerName: player?.name || rawPlayerName || "不明",
       battingOrder,
-      position
+      position,
+      ...(playerId ? {} : { resolutionStatus: "unresolved", rawPlayerName: rawPlayerName || "不明" })
     });
   }
-  const sanitized = sanitizeActualLineupForScoring(result);
-  return sanitized.ok ? { ok: true, lineup: sanitized.lineup } : {
+  const sanitized = sanitizeActualLineupForScoring(result, { allowUnresolvedPlayer: true });
+  return sanitized.ok ? { ok: true, lineup: sanitized.lineup, validation: { ...validation, valid: true, unresolvedPlayerCount: sanitized.lineup.filter((row) => !row.playerId).length } } : {
     ...invalid("LINEUP_INVALID_POSITION", sanitized.error || "NPBの守備位置を検証できません。", {
       resolvedPlayerCount: result.length,
       validPositionCount: result.length,
@@ -5836,7 +5903,7 @@ async function readRosterFetchState(db, gameId) {
   try {
     return await db.prepare(
       `SELECT last_successful_roster_fetch_at, roster_next_check_at, last_pregame_check_game_id,
-              last_roster_attempt_at, last_roster_error_code, last_roster_fetch_source
+              last_roster_fetch_slot, last_roster_attempt_at, last_roster_error_code, last_roster_fetch_source
          FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1`
     ).bind(gameId).first();
   } catch (error) {
@@ -5845,7 +5912,7 @@ async function readRosterFetchState(db, gameId) {
   }
 }
 
-async function updateRosterFetchState(db, gameId, now, { source = "cron", success = false, pregame = false, errorCode = "" } = {}) {
+async function updateRosterFetchState(db, gameId, now, { source = "cron", success = false, pregame = false, pregameMarker = "", fetchSlot = "", errorCode = "" } = {}) {
   const nowIso = now.toISOString();
   const nextCheckAt = success && !pregame
     ? new Date(now.getTime() + ROSTER_AUTO_FETCH_INTERVAL_MS).toISOString()
@@ -5858,12 +5925,13 @@ async function updateRosterFetchState(db, gameId, now, { source = "cron", succes
           SET last_roster_attempt_at = ?1,
               last_successful_roster_fetch_at = CASE WHEN ?2 THEN ?1 ELSE last_successful_roster_fetch_at END,
               roster_next_check_at = ?3,
-              last_pregame_check_game_id = CASE WHEN ?4 THEN game_id ELSE last_pregame_check_game_id END,
-              last_roster_error_code = ?5,
-              last_roster_fetch_source = ?6,
+              last_pregame_check_game_id = CASE WHEN ?4 THEN COALESCE(?5, game_id) ELSE last_pregame_check_game_id END,
+              last_roster_fetch_slot = CASE WHEN ?6 <> '' THEN ?6 ELSE last_roster_fetch_slot END,
+              last_roster_error_code = ?7,
+              last_roster_fetch_source = ?8,
               updated_at = ?1
-        WHERE game_id = ?7`
-    ).bind(nowIso, success ? 1 : 0, nextCheckAt, pregame ? 1 : 0, errorCode || null, source === "admin" ? "admin" : "cron", gameId).run();
+        WHERE game_id = ?9`
+    ).bind(nowIso, success ? 1 : 0, nextCheckAt, pregame ? 1 : 0, pregameMarker || null, fetchSlot || "", errorCode || null, source === "admin" ? "admin" : "cron", gameId).run();
   } catch (error) {
     if (isPregameSchemaError(error)) {
       console.warn(`[GAME_WORKFLOW] gameId=${gameId} step=roster state=record status=failed code=ROSTER_STATE_SCHEMA_NOT_READY`);
@@ -5956,7 +6024,7 @@ async function resolveRosterScheduleTarget(db, gameId, target = {}) {
   };
 }
 
-async function captureGameRosterSnapshot(env, gameId, now, { force = false, source = "admin", pregame = false, target = null } = {}) {
+async function captureGameRosterSnapshot(env, gameId, now, { force = false, source = "admin", pregame = false, pregameMarker = "", fetchSlot = "", target = null } = {}) {
   const identity = await resolveRosterScheduleTarget(env.AUTH_DB, gameId, target || {});
   const storage = await requireInternalGameIdForWrite(env.AUTH_DB, {
     table: "game_roster_snapshots",
@@ -5974,6 +6042,13 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
     if (!roster || payload.warning) throw createPregameError("INVALID_ROSTER", "NPBロースターの解析結果が不完全です。");
     const capturedAt = String(payload.fetchedAt || now.toISOString());
     const rosterJson = JSON.stringify(roster);
+    const previousRosterJson = existing
+      ? await env.AUTH_DB.prepare("SELECT roster_json FROM game_roster_snapshots WHERE game_id = ?1 LIMIT 1").bind(gameId).first()
+      : null;
+    if (previousRosterJson?.roster_json && rosterFingerprint(parseJsonArray(previousRosterJson.roster_json)) === rosterFingerprint(roster)) {
+      await updateRosterFetchState(env.AUTH_DB, gameId, now, { source, success: true, pregame, pregameMarker, fetchSlot });
+      return { status: "unchanged", playerCount: roster.length, capturedAt, roster, unchanged: true };
+    }
     const internalColumn = storage.schemaReady ? ", internal_game_id" : "";
     const internalValue = storage.schemaReady ? ", ?6" : "";
     await env.AUTH_DB.batch([
@@ -5989,7 +6064,7 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
       ).bind(capturedAt, gameId)
     ]);
     await linkLegacyGameRowsToInternalGameId(env.AUTH_DB, storage.internalGameId, gameId);
-    await updateRosterFetchState(env.AUTH_DB, gameId, now, { source, success: true, pregame });
+    await updateRosterFetchState(env.AUTH_DB, gameId, now, { source, success: true, pregame, pregameMarker, fetchSlot });
     return {
       status: "captured",
       playerCount: roster.length,
@@ -6027,7 +6102,7 @@ async function adoptPersistedLineupCandidate(env, gameId, now, { internalGameId 
     "SELECT * FROM game_lineup_revisions WHERE game_id = ?1 ORDER BY version DESC LIMIT 20"
   ).bind(gameId).all();
   for (const row of rows.results || []) {
-    const actual = sanitizeActualLineupForScoring(parseStoredActualLineup(row.actual_lineup_json));
+    const actual = sanitizeActualLineupForScoring(parseStoredActualLineup(row.actual_lineup_json), { allowUnresolvedPlayer: true });
     if (!actual.ok) continue;
     const detectedAt = parseLineupDetectedAt(row.captured_at || row.created_at) || now;
     const record = await approveActualLineupForAutoScoring(env, gameId, actual.lineup, detectedAt, {
@@ -6104,7 +6179,8 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
       source: "npb",
       capturedAt: detectedAt,
       validation: actual.validation || null,
-      reason: "NPB公式スタメン最終候補"
+      reason: "NPB公式スタメン最終候補",
+      allowUnresolvedPlayer: true
     });
     const record = await approveActualLineupForAutoScoring(env, gameId, actual.lineup, detectedAt, {
       source: "npb-auto",
@@ -8675,6 +8751,13 @@ async function getResultGameMetadata(db, gameId) {
 
 async function handleGetResultGames(request, env, cors) {
   const access = await requireAuthenticatedUser(request, env, cors);
+  const rankingColumns = await getTableColumnSet(env.AUTH_DB, "ranking_games");
+  const eligibilitySelect = rankingColumns.has("ranking_eligibility_status")
+    ? "ranking_games.ranking_eligibility_status, ranking_games.ranking_eligibility_reason, ranking_games.ranking_eligibility_note"
+    : "NULL AS ranking_eligibility_status, NULL AS ranking_eligibility_reason, NULL AS ranking_eligibility_note";
+  const eligibilityCondition = rankingColumns.has("ranking_eligibility_status")
+    ? "OR ranking_games.ranking_eligibility_status <> 'eligible'"
+    : "";
   if (!access.ok) return access.response;
 
   const rows = await env.AUTH_DB.prepare(
@@ -8690,7 +8773,8 @@ async function handleGetResultGames(request, env, cors) {
      )
      SELECT latest_predictions.game_id, latest_predictions.score, latest_predictions.max_score,
             latest_predictions.scored_at, latest_predictions.updated_at, latest_predictions.status,
-            ranking_games.game_date, ranking_games.game_status, ranking_games.publication_status
+            ranking_games.game_date, ranking_games.game_status, ranking_games.publication_status,
+            ${eligibilitySelect}
        FROM latest_predictions
        JOIN ranking_games ON ranking_games.game_id = latest_predictions.game_id
       WHERE latest_predictions.submission_rank = 1
@@ -8699,6 +8783,7 @@ async function handleGetResultGames(request, env, cors) {
            AND ranking_games.game_status = 'scored'
            AND ranking_games.is_ranking_eligible = 1)
           OR ranking_games.game_status = 'service_unavailable'
+          ${eligibilityCondition}
         )
         AND ranking_games.is_test_game = 0
       ORDER BY ranking_games.game_date DESC, latest_predictions.updated_at DESC, latest_predictions.game_id DESC
@@ -8711,17 +8796,23 @@ async function handleGetResultGames(request, env, cors) {
     const metadata = await getResultGameMetadata(env.AUTH_DB, row.game_id);
     const resultsPublished = await isGameResultsPublished(env.AUTH_DB, row.game_id, now);
     const serviceUnavailable = isServiceUnavailableGameStatus(row.game_status);
+    const excluded = String(row.ranking_eligibility_status || "") === "excluded" || serviceUnavailable;
     games.push({
       ...metadata,
       gameDate: row.game_date || metadata.date,
       resultsPublished,
-      score: !serviceUnavailable && resultsPublished && row.score !== null ? Number(row.score) : null,
-      maxScore: !serviceUnavailable && resultsPublished && row.max_score !== null ? Number(row.max_score) : null,
-      scoredAt: !serviceUnavailable ? (row.scored_at || null) : null,
+      score: !excluded && resultsPublished && row.score !== null ? Number(row.score) : null,
+      maxScore: !excluded && resultsPublished && row.max_score !== null ? Number(row.max_score) : null,
+      scoredAt: !excluded ? (row.scored_at || null) : null,
       publicationStatus: row.publication_status || "scored_private",
       serviceUnavailable,
       serviceUnavailableReason: serviceUnavailable ? SCORING_RETRY_EXPIRED_CODE : null,
-      serviceUnavailableMessage: serviceUnavailable ? SERVICE_UNAVAILABLE_MESSAGE : null
+      serviceUnavailableMessage: serviceUnavailable ? SERVICE_UNAVAILABLE_MESSAGE : null,
+      rankingEligibilityStatus: row.ranking_eligibility_status || (serviceUnavailable ? "excluded" : "eligible"),
+      rankingEligibilityReason: row.ranking_eligibility_reason || (serviceUnavailable ? "data_invalid" : null),
+      rankingEligibilityNote: row.ranking_eligibility_note || null,
+      rankingExcluded: excluded,
+      rankingExcludedMessage: excluded ? "この試合はランキング対象外です。" : null
     });
   }
   return jsonResponse({ ok: true, games }, 200, cors);
@@ -8738,6 +8829,7 @@ async function handleGetResultGame(request, env, cors, gameId) {
 
   const rankingState = await getRankingGameState(env.AUTH_DB, metadata.gameId);
   const serviceUnavailable = isServiceUnavailableGameStatus(rankingState?.game_status);
+  const rankingEligibility = await getRankingEligibilityState(env.AUTH_DB, metadata.gameId);
   const row = await getPredictionRow(env.AUTH_DB, access.user.id, metadata.gameId);
   if (!row) {
     return jsonResponse({ ok: false, error: "採点済みの結果が見つかりません。" }, 404, cors);
@@ -8758,9 +8850,42 @@ async function handleGetResultGame(request, env, cors, gameId) {
       scoredAt: null,
       actualLineup: null,
       resultsPublished: false,
-      serviceUnavailable: true,
-      serviceUnavailableReason: SCORING_RETRY_EXPIRED_CODE,
-      serviceUnavailableMessage: SERVICE_UNAVAILABLE_MESSAGE
+      serviceUnavailable,
+      serviceUnavailableReason: serviceUnavailable ? SCORING_RETRY_EXPIRED_CODE : null,
+      serviceUnavailableMessage: serviceUnavailable ? SERVICE_UNAVAILABLE_MESSAGE : null,
+      rankingExcluded: true,
+      rankingEligibilityStatus: rankingEligibility?.rankingEligibilityStatus || "excluded",
+      rankingEligibilityReason: rankingEligibility?.rankingEligibilityReason || null,
+      rankingEligibilityNote: rankingEligibility?.rankingEligibilityNote || null,
+      rankingEligibilityMessage: rankingEligibility?.rankingEligibilityStatus === "pending_admin_decision"
+        ? "公式記録の確認中のため、ランキング対象を管理者が判断しています。"
+        : "この試合はランキング対象外です。"
+    }, 200, cors);
+  }
+  if (rankingEligibility?.rankingEligibilityStatus !== "eligible") {
+    return jsonResponse({
+      ok: true,
+      game: await getResultGameMetadata(env.AUTH_DB, metadata.gameId),
+      gameId: metadata.gameId,
+      prediction,
+      status: "excluded",
+      submittedAt: row.submitted_at,
+      updatedAt: row.updated_at,
+      score: null,
+      maxScore: null,
+      scoredAt: null,
+      actualLineup: null,
+      resultsPublished: false,
+      serviceUnavailable: false,
+      serviceUnavailableReason: null,
+      serviceUnavailableMessage: null,
+      rankingExcluded: true,
+      rankingEligibilityStatus: rankingEligibility?.rankingEligibilityStatus || "excluded",
+      rankingEligibilityReason: rankingEligibility?.rankingEligibilityReason || null,
+      rankingEligibilityNote: rankingEligibility?.rankingEligibilityNote || null,
+      rankingEligibilityMessage: rankingEligibility?.rankingEligibilityStatus === "pending_admin_decision"
+        ? "公式記録の確認中のため、ランキング対象を管理者が判断しています。"
+        : "この試合はランキング対象外です。"
     }, 200, cors);
   }
   if (row.status !== "scored") {
@@ -8799,9 +8924,10 @@ async function saveLineupCandidateRevision(db, {
   capturedAt = new Date(),
   validation = null,
   reason = "NPB公式スタメン候補",
-  createdBy = null
+  createdBy = null,
+  allowUnresolvedPlayer = false
 } = {}) {
-  const actual = sanitizeActualLineupForScoring(lineup);
+  const actual = sanitizeActualLineupForScoring(lineup, { allowUnresolvedPlayer });
   if (!actual.ok) {
     const error = createPregameError("LINEUP_REVISION_INVALID", actual.error, { httpStatus: 409 });
     error.validation = validation || null;
@@ -8835,6 +8961,10 @@ async function saveLineupCandidateRevision(db, {
     fields.push("validation_json");
     values.push(validation ? JSON.stringify(validation) : null);
   }
+  if (columns.has("unresolved_player_count")) {
+    fields.push("unresolved_player_count");
+    values.push(actual.lineup.filter((row) => !row.playerId).length);
+  }
   const placeholders = fields.map((_, index) => `?${index + 1}`).join(", ");
   await db.prepare(
     `INSERT INTO game_lineup_revisions (${fields.join(", ")}) VALUES (${placeholders})`
@@ -8856,6 +8986,7 @@ async function activateLineupRevision(db, { gameId, version, internalGameId = ""
   if (columns.has("finalized_at")) addBinding("finalized_at", finalizedAtIso);
   if (columns.has("finalized_by")) addBinding("finalized_by", finalizedBy);
   if (columns.has("internal_game_id")) addBinding("internal_game_id", internalGameId || null);
+  if (columns.has("is_final")) addBinding("is_final", 1);
   const gameIdPlaceholder = `?${bindings.length + 1}`;
   bindings.push(gameId);
   const versionPlaceholder = `?${bindings.length + 1}`;
@@ -8895,7 +9026,8 @@ async function saveProvisionalOfficialLineup(db, gameId, lineup, detectedAt, now
     lineup,
     source: "npb",
     capturedAt: detectedAt,
-    validation: options.validation || null
+    validation: options.validation || null,
+    allowUnresolvedPlayer: true
   });
   await db.prepare(
     `UPDATE game_pregame_automation
@@ -8913,7 +9045,10 @@ async function useProvisionalLineupFallback(env, gameId, identity, now, finalErr
     "SELECT provisional_lineup_json, provisional_lineup_detected_at FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1"
   ).bind(gameId).first();
   const provisional = parseStoredActualLineup(job?.provisional_lineup_json);
-  const actualResult = sanitizeActualLineupForScoring(provisional);
+  const strictResult = sanitizeActualLineupForScoring(provisional);
+  const actualResult = strictResult.ok
+    ? strictResult
+    : sanitizeActualLineupForScoring(provisional, { allowUnresolvedPlayer: true });
   if (!actualResult.ok) return { used: false };
 
   const detectedAt = parseLineupDetectedAt(job?.provisional_lineup_detected_at) || now;
@@ -8923,7 +9058,8 @@ async function useProvisionalLineupFallback(env, gameId, identity, now, finalErr
     lineup: actualResult.lineup,
     source: "npb",
     capturedAt: detectedAt,
-    reason: "保存済み候補の最終確定"
+    reason: "保存済み候補の最終確定",
+    allowUnresolvedPlayer: true
   });
   const record = await approveActualLineupForAutoScoring(env, gameId, actualResult.lineup, detectedAt, {
     source: "npb-auto",
@@ -9002,11 +9138,179 @@ function isServiceUnavailableGameStatus(status) {
 }
 
 async function getRankingGameState(db, gameId) {
+  const columns = await getTableColumnSet(db, "ranking_games");
+  const optional = [
+    "ranking_eligibility_status", "ranking_eligibility_reason", "ranking_eligibility_note",
+    "ranking_eligibility_version", "ranking_eligibility_updated_by", "ranking_eligibility_updated_at"
+  ].filter((column) => columns.has(column));
   return db.prepare(
-    `SELECT game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status,
-            is_test_game, publication_status, scored_private_at, published_at
+    `SELECT game_id, internal_game_id, game_date, is_ranking_eligible, ranking_eligible_at, game_status,
+            is_test_game, publication_status, scored_private_at, published_at${optional.length ? `, ${optional.join(", ")}` : ""}
        FROM ranking_games WHERE game_id = ?1 LIMIT 1`
   ).bind(gameId).first();
+}
+
+async function getRankingEligibilityState(db, gameId) {
+  const row = await getRankingGameState(db, gameId);
+  if (!row) return null;
+  const status = normalizeRankingEligibilityStatus(row.ranking_eligibility_status
+    || (Number(row.is_ranking_eligible || 0) === 1 ? RANKING_ELIGIBILITY_STATUS.ELIGIBLE : RANKING_ELIGIBILITY_STATUS.EXCLUDED));
+  return {
+    gameId: row.game_id,
+    internalGameId: row.internal_game_id || null,
+    rankingEligible: status === RANKING_ELIGIBILITY_STATUS.ELIGIBLE && Number(row.is_ranking_eligible || 0) === 1,
+    rankingEligibilityStatus: status,
+    rankingEligibilityReason: row.ranking_eligibility_reason || null,
+    rankingEligibilityNote: row.ranking_eligibility_note || null,
+    rankingEligibilityVersion: Math.max(1, Number(row.ranking_eligibility_version || 1)),
+    rankingEligibilityUpdatedBy: row.ranking_eligibility_updated_by || "system",
+    rankingEligibilityUpdatedAt: row.ranking_eligibility_updated_at || row.updated_at || null,
+    gameStatus: row.game_status || "pending",
+    publicationStatus: row.publication_status || "pending"
+  };
+}
+
+async function isGameEligibleForScoring(db, gameId) {
+  const eligibility = await getRankingEligibilityState(db, gameId);
+  return !eligibility || eligibility.rankingEligibilityStatus === RANKING_ELIGIBILITY_STATUS.ELIGIBLE;
+}
+
+async function setCanonicalEligibilityWorkflowStatus(db, internalGameId, canonicalStatus, now) {
+  if (!internalGameId) return false;
+  const columns = await getTableColumnSet(db, "game_workflow_state");
+  if (!columns.has("canonical_status")) return false;
+  const result = await db.prepare(
+    `UPDATE game_workflow_state
+        SET canonical_status = ?1, state_updated_by = 'admin', state_updated_at = ?2, updated_at = ?2
+      WHERE internal_game_id = ?3`
+  ).bind(canonicalStatus, now.toISOString(), internalGameId).run();
+  return Number(result?.meta?.changes || 0) === 1;
+}
+
+async function cancelUnstartedRankingJobs(db, internalGameId, now) {
+  if (!internalGameId) return 0;
+  const result = await db.prepare(
+    `UPDATE game_job_runs
+        SET status = 'cancelled', lease_expires_at = NULL, next_attempt_at = NULL, updated_at = ?1
+      WHERE internal_game_id = ?2
+        AND job_type IN ('provisional_lineup_fetch', 'final_lineup_fetch', 'scoring', 'ranking_update', 'publication')
+        AND status IN ('pending', 'retry_wait')`
+  ).bind(now.toISOString(), internalGameId).run();
+  return Number(result?.meta?.changes || 0);
+}
+
+async function recordRankingReflectionRevision(db, {
+  internalGameId = "", scoringRevisionId = "none", eligibilityVersion = 1,
+  status = "reflected", now = new Date()
+} = {}) {
+  if (!internalGameId) return null;
+  try {
+    const latest = await db.prepare(
+      "SELECT COALESCE(MAX(ranking_update_revision), 0) AS revision FROM ranking_reflection_revisions WHERE internal_game_id = ?1"
+    ).bind(internalGameId).first();
+    const updateRevision = Number(latest?.revision || 0) + 1;
+    const id = `${internalGameId}:${scoringRevisionId}:${Number(eligibilityVersion || 1)}`;
+    await db.prepare(
+      `INSERT INTO ranking_reflection_revisions
+         (id, internal_game_id, scoring_revision_id, ranking_eligibility_version,
+          ranking_update_revision, status, reflected_at, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+       ON CONFLICT(internal_game_id, scoring_revision_id, ranking_eligibility_version) DO UPDATE SET
+         status = excluded.status, reflected_at = excluded.reflected_at,
+         ranking_update_revision = excluded.ranking_update_revision`
+    ).bind(id, internalGameId, scoringRevisionId, Math.max(1, Number(eligibilityVersion || 1)), updateRevision, status, status === "pending" ? null : now.toISOString()).run();
+    return { id, rankingUpdateRevision: updateRevision, status };
+  } catch (error) {
+    if (isPregameSchemaError(error)) return null;
+    throw error;
+  }
+}
+
+async function setRankingEligibility(db, {
+  gameId, internalGameId = "", status, reason = null, note = null,
+  updatedBy = "admin", now = new Date()
+} = {}) {
+  const nextStatus = normalizeRankingEligibilityStatus(status);
+  if (!gameId) throw createPregameError("RANKING_GAME_REQUIRED", "対象試合がありません。", { httpStatus: 400 });
+  if (nextStatus === RANKING_ELIGIBILITY_STATUS.EXCLUDED && !String(reason || "").trim()) {
+    throw createPregameError("RANKING_ELIGIBILITY_REASON_REQUIRED", "対象外理由を入力してください。", { httpStatus: 400 });
+  }
+  const current = await getRankingGameState(db, gameId);
+  if (!current) throw createPregameError("RANKING_GAME_NOT_FOUND", "対象試合が見つかりません。", { httpStatus: 404 });
+  const columns = await getTableColumnSet(db, "ranking_games");
+  const previous = await getRankingEligibilityState(db, gameId);
+  const version = Math.max(1, Number(previous?.rankingEligibilityVersion || 1) + (previous?.rankingEligibilityStatus === nextStatus && String(previous?.rankingEligibilityReason || "") === String(reason || "") && String(previous?.rankingEligibilityNote || "") === String(note || "") ? 0 : 1));
+  const fields = ["is_ranking_eligible = ?1", "ranking_eligible_at = CASE WHEN ?1 = 1 THEN ?2 ELSE NULL END"];
+  const values = [nextStatus === RANKING_ELIGIBILITY_STATUS.ELIGIBLE ? 1 : 0, now.toISOString()];
+  const add = (column, value) => { if (columns.has(column)) { fields.push(`${column} = ?${values.length + 1}`); values.push(value); } };
+  add("ranking_eligibility_status", nextStatus);
+  add("ranking_eligibility_reason", nextStatus === RANKING_ELIGIBILITY_STATUS.ELIGIBLE ? null : normalizeRankingEligibilityReason(reason));
+  add("ranking_eligibility_note", String(note || "").trim().slice(0, 500) || null);
+  add("ranking_eligibility_version", version);
+  add("ranking_eligibility_updated_by", String(updatedBy || "admin").slice(0, 120));
+  add("ranking_eligibility_updated_at", now.toISOString());
+  if (nextStatus !== RANKING_ELIGIBILITY_STATUS.ELIGIBLE) {
+    add("publication_status", "pending");
+    add("published_at", null);
+  }
+  fields.push(`updated_at = ?${values.length + 1}`);
+  values.push(now.toISOString());
+  values.push(gameId);
+  const changed = await db.prepare(`UPDATE ranking_games SET ${fields.join(", ")} WHERE game_id = ?${values.length}`).bind(...values).run();
+  if (Number(changed?.meta?.changes || 0) !== 1) throw createPregameError("RANKING_ELIGIBILITY_UPDATE_FAILED", "ランキング対象状態を更新できませんでした。");
+  try {
+    await db.prepare(
+      `INSERT INTO ranking_eligibility_history
+         (internal_game_id, game_id, previous_status, next_status, reason, note, version, updated_by, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
+    ).bind(internalGameId || current.internal_game_id || null, gameId, previous?.rankingEligibilityStatus || null, nextStatus, nextStatus === "eligible" ? null : normalizeRankingEligibilityReason(reason), String(note || "").trim().slice(0, 500) || null, version, String(updatedBy || "admin").slice(0, 120), now.toISOString()).run();
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+  }
+  if (nextStatus === RANKING_ELIGIBILITY_STATUS.EXCLUDED) {
+    await cancelUnstartedRankingJobs(db, internalGameId || current.internal_game_id || "", now);
+    await setCanonicalEligibilityWorkflowStatus(db, internalGameId || current.internal_game_id || "", "ranking_excluded", now);
+    await recordRankingReflectionRevision(db, { internalGameId: internalGameId || current.internal_game_id || "", eligibilityVersion: version, status: "excluded", now });
+  } else if (nextStatus === RANKING_ELIGIBILITY_STATUS.PENDING_ADMIN_DECISION) {
+    await cancelUnstartedRankingJobs(db, internalGameId || current.internal_game_id || "", now);
+    await setCanonicalEligibilityWorkflowStatus(db, internalGameId || current.internal_game_id || "", "ranking_exclusion_pending", now);
+  } else {
+    await setCanonicalEligibilityWorkflowStatus(db, internalGameId || current.internal_game_id || "", "ranking_reflected", now);
+    await recordRankingReflectionRevision(db, { internalGameId: internalGameId || current.internal_game_id || "", eligibilityVersion: version, status: "reflected", now });
+  }
+  return await getRankingEligibilityState(db, gameId);
+}
+
+async function handleAdminRankingEligibilityUpdate(request, env, cors, metadata, user) {
+  try {
+    const input = await readJson(request);
+    const requestedStatus = String(input?.status || "").trim().toLowerCase();
+    const status = normalizeRankingEligibilityStatus(requestedStatus);
+    if (!Object.values(RANKING_ELIGIBILITY_STATUS).includes(requestedStatus)) {
+      return jsonResponse({ ok: false, code: "RANKING_ELIGIBILITY_STATUS_INVALID", error: "ランキング対象状態が不正です。" }, 400, cors);
+    }
+    const rankingEligibility = await setRankingEligibility(env.AUTH_DB, {
+      gameId: metadata.gameId,
+      internalGameId: metadata.internalGameId,
+      status,
+      reason: input?.reason,
+      note: input?.note,
+      updatedBy: user?.id ? `admin:${user.id}` : "admin",
+      now: new Date()
+    });
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "ranking_eligibility_changed",
+      status: "success",
+      gameId: metadata.gameId,
+      occurredAt: new Date(),
+      message: "ランキング対象状態を更新しました。",
+      metadata: { internalGameId: metadata.internalGameId, status, reason: input?.reason || null },
+      source: "admin"
+    });
+    return jsonResponse({ ok: true, gameId: metadata.gameId, rankingEligibility }, 200, cors);
+  } catch (error) {
+    return jsonResponse({ ok: false, code: String(error?.code || "RANKING_ELIGIBILITY_UPDATE_FAILED"), error: error?.message || "ランキング対象状態を更新できませんでした。" }, Number(error?.httpStatus) || 500, cors);
+  }
 }
 
 async function isServiceUnavailableGame(db, gameId) {
@@ -9045,6 +9349,17 @@ async function markGameServiceUnavailable(db, gameId, at, reasonCode = SCORING_R
   ).bind(...(storage.ranking_games
     ? [gameId, internalGameId, metadata.date, SERVICE_UNAVAILABLE_GAME_STATUS, now]
     : [gameId, metadata.date, SERVICE_UNAVAILABLE_GAME_STATUS, now])).run();
+  const current = await getRankingGameState(db, gameId);
+  if (current) {
+    await setRankingEligibility(db, {
+      gameId,
+      internalGameId: current.internal_game_id || internalGameId || "",
+      status: RANKING_ELIGIBILITY_STATUS.EXCLUDED,
+      reason: "data_invalid",
+      updatedBy: "system",
+      now: at instanceof Date ? at : new Date(at)
+    });
+  }
   return true;
 }
 
@@ -9213,18 +9528,66 @@ async function recordCreatedCompletionJob(db, timeline, jobType, now, source = "
 }
 
 async function getRankingReflectionState(db, gameId) {
-  const row = await db.prepare(
-    `SELECT is_ranking_eligible, game_status, publication_status, published_at
-       FROM ranking_games
-      WHERE game_id = ?1
-      ORDER BY updated_at DESC LIMIT 1`
-  ).bind(String(gameId || "")).first();
+  const row = await getRankingGameState(db, gameId);
+  const eligibilityStatus = normalizeRankingEligibilityStatus(row?.ranking_eligibility_status
+    || (Number(row?.is_ranking_eligible || 0) === 1 ? "eligible" : "excluded"));
   return {
     row,
     reflected: Boolean(row
       && Number(row.is_ranking_eligible || 0) === 1
+      && eligibilityStatus === "eligible"
       && String(row.game_status || "") === "scored"
       && String(row.publication_status || "") !== "pending")
+  };
+}
+
+async function getActiveScoringRevision(db, internalGameId) {
+  if (!internalGameId) return null;
+  try {
+    const columns = await getTableColumnSet(db, "game_scoring_revisions");
+    if (!columns.size) return null;
+    return await db.prepare(
+      `SELECT id, revision_number, lineup_revision_id, status
+         FROM game_scoring_revisions
+        WHERE internal_game_id = ?1 AND is_active = 1 AND status = 'completed'
+        ORDER BY revision_number DESC LIMIT 1`
+    ).bind(internalGameId).first();
+  } catch (error) {
+    if (isPregameSchemaError(error)) return null;
+    throw error;
+  }
+}
+
+async function getScoringCompletionState(db, { gameId = "", internalGameId = "" } = {}) {
+  const columns = await getTableColumnSet(db, "predictions");
+  const hasInternalId = columns.has("internal_game_id") && internalGameId;
+  const scope = hasInternalId
+    ? "(internal_game_id = ?1 OR (internal_game_id IS NULL AND game_id = ?2))"
+    : "game_id = ?1";
+  const bindings = hasInternalId ? [internalGameId, gameId] : [gameId];
+  const rows = await db.prepare(
+    `SELECT
+       COUNT(*) AS total_count,
+       SUM(CASE WHEN ${columns.has("scoring_status") ? "scoring_status = 'scored'" : "status = 'scored'"} THEN 1 ELSE 0 END) AS scored_count,
+       SUM(CASE WHEN ${columns.has("scoring_status") ? "scoring_status = 'excluded'" : "0"} THEN 1 ELSE 0 END) AS excluded_count,
+       SUM(CASE WHEN ${columns.has("scoring_status") ? "scoring_status = 'failed'" : "0"} THEN 1 ELSE 0 END) AS failed_count
+       FROM predictions WHERE ${scope} AND is_test_prediction = 0`
+  ).bind(...bindings).first();
+  const total = Number(rows?.total_count || 0);
+  const excluded = Number(rows?.excluded_count || 0);
+  const state = {
+    eligiblePredictionCount: Math.max(0, total - excluded),
+    scoredPredictionCount: Number(rows?.scored_count || 0),
+    excludedPredictionCount: excluded,
+    failedPredictionCount: Number(rows?.failed_count || 0)
+  };
+  const revision = await getActiveScoringRevision(db, internalGameId);
+  return {
+    ...state,
+    scoringRevisionId: revision?.id || "legacy",
+    scoringRevisionNumber: Number(revision?.revision_number || 1),
+    activeRevision: revision,
+    complete: isScoringComplete(state) && (!internalGameId || !revision || revision.status === "completed")
   };
 }
 
@@ -10194,6 +10557,7 @@ async function reconcileCompletionWorkflowJobs(env, now, timelines) {
     }
     summary.checked += 1;
     const canonicalTimeline = { ...timeline, internalGameId };
+    if (!(await isGameEligibleForScoring(env.AUTH_DB, timeline.gameId))) continue;
     const lineup = await getGameLineup(env.AUTH_DB, { gameId: timeline.gameId, internalGameId });
     if (lineup) await cancelSupersededLineupJobs(env.AUTH_DB, internalGameId, now);
     let requiredJobType = "";
@@ -10331,6 +10695,9 @@ async function executeCompletionWorkflowJob(env, job, now) {
     if (result.status !== "captured" && result.status !== "already_captured") throw createPregameError("LINEUP_NOT_ANNOUNCED", "最終スタメンをまだ取得できません。");
     await transitionWorkflowState(env.AUTH_DB, { internalGameId: job.internal_game_id, to: "final_lineup_captured", completedJobType: job.job_type, now });
   } else if (job.job_type === "scoring") {
+    if (!(await isGameEligibleForScoring(env.AUTH_DB, target.gameId))) {
+      throw createPregameError("RANKING_GAME_EXCLUDED", "ランキング対象外の試合は採点しません。", { retryable: false });
+    }
     await ensureWorkflowScoringPending(env.AUTH_DB, job.internal_game_id, now);
     const claimed = await claimGameLineupForScoring(env.AUTH_DB, target.gameId, now);
     if (!claimed) {
@@ -10342,9 +10709,24 @@ async function executeCompletionWorkflowJob(env, job, now) {
     }
     await transitionWorkflowState(env.AUTH_DB, { internalGameId: job.internal_game_id, to: "scored_private", canonicalStatus: "scored", completedJobType: job.job_type, now });
   } else if (job.job_type === "ranking_update") {
+    if (!(await isGameEligibleForScoring(env.AUTH_DB, target.gameId))) {
+      throw createPregameError("RANKING_GAME_EXCLUDED", "ランキング対象外の試合は集計しません。", { retryable: false });
+    }
     const lineup = await getGameLineup(env.AUTH_DB, target.gameId);
     if (!lineup || lineup.scoring_status !== "scored") throw createPregameError("SCORING_LINEUP_REQUIRED", "採点結果がありません。");
+    const scoringCompletion = await getScoringCompletionState(env.AUTH_DB, { gameId: target.gameId, internalGameId: job.internal_game_id });
+    if (!scoringCompletion.complete) {
+      throw createPregameError("SCORING_INCOMPLETE", "全予想の採点が完了していません。", { retryable: true });
+    }
     await markGameRankingScoredPrivate(env.AUTH_DB, target.gameId, lineup.scored_at || now.toISOString(), env, 0, job.internal_game_id);
+    const eligibility = await getRankingEligibilityState(env.AUTH_DB, target.gameId);
+    await recordRankingReflectionRevision(env.AUTH_DB, {
+      internalGameId: job.internal_game_id,
+      scoringRevisionId: scoringCompletion.scoringRevisionId,
+      eligibilityVersion: eligibility?.rankingEligibilityVersion || 1,
+      status: "reflected",
+      now
+    });
     result = { status: "ranking_updated" };
     await transitionWorkflowState(env.AUTH_DB, { internalGameId: job.internal_game_id, to: "scored_private", canonicalStatus: "ranking_reflected", completedJobType: job.job_type, now });
   } else if (job.job_type === "publication") {
@@ -10384,6 +10766,7 @@ async function runDueCompletionWorkflowJobs(env, now, timelines) {
       || ["cancelled", "postponed", "service_unavailable"].includes(String(currentState.game_status || ""))
     )) continue;
     const canonicalTimeline = { ...timeline, internalGameId };
+    if (!(await isGameEligibleForScoring(env.AUTH_DB, timeline.gameId))) continue;
     const lineup = await getGameLineup(env.AUTH_DB, { gameId: timeline.gameId, internalGameId });
     if (!lineup) {
       const finalDue = now >= timeline.finalLineupFetchAt;
@@ -11095,6 +11478,7 @@ async function handleAdminGameProgressStatus(request, env, cors) {
     ]);
     const probableStarter = probableResult?.results?.[0] || null;
     const rankingRow = rankingResult?.results?.[0] || null;
+    const rankingEligibility = await getRankingEligibilityState(env.AUTH_DB, gameId);
     const logs = (logResult?.results || []).map((log) => ({ eventType: log.event_type, status: log.status, occurredAt: log.occurred_at, message: log.message, errorCode: log.error_code || "" }));
     const derived = deriveGameProgressStatuses({
       gameId,
@@ -11119,6 +11503,7 @@ async function handleAdminGameProgressStatus(request, env, cors) {
       statuses: derived.statuses,
       errors: derived.errors,
       metadata: { scheduleSource: context.scheduleSource, checkedScheduleSources: context.checkedScheduleSources },
+      rankingEligibility,
       currentGame: currentSelection,
       selectionReason: currentSelection?.selectionReason || "EXPLICIT_GAME_ID"
     }, 200, cors);
@@ -11478,6 +11863,7 @@ async function prepareGamePredictionScoring(db, gameReference, actualLineup, isT
   const rows = await db.prepare(isTestPrediction ? testQuery : productionQuery).bind(...bindings).all();
 
   const outcomes = [];
+  const exclusions = [];
   const validationErrors = [];
   const distribution = new Map();
 
@@ -11485,7 +11871,12 @@ async function prepareGamePredictionScoring(db, gameReference, actualLineup, isT
     const prediction = parseStoredPrediction(row.prediction_json);
     const sanitized = prediction ? sanitizePredictionPayload(prediction) : { ok: false, error: "保存済み予想の形式が不正です。" };
     if (!sanitized.ok) {
-      validationErrors.push(sanitized.error);
+      const message = String(sanitized.error || "");
+      const reason = message.includes("9人") ? "INCOMPLETE_LINEUP"
+        : message.includes("同じ選手") ? "DUPLICATE_PLAYER"
+          : message.includes("打順が重複") ? "DUPLICATE_ORDER"
+            : "INVALID_PREDICTION";
+      exclusions.push({ id: row.id, reason });
       continue;
     }
 
@@ -11499,7 +11890,9 @@ async function prepareGamePredictionScoring(db, gameReference, actualLineup, isT
   return {
     processed: (rows?.results || []).length,
     scored,
-    failed: validationErrors.length,
+    failed: 0,
+    excluded: exclusions.length,
+    exclusions,
     outcomes,
     validationErrors: Array.from(new Set(validationErrors)).slice(0, 10),
     averageScore: scored ? Number((totalScore / scored).toFixed(2)) : 0,
@@ -11627,6 +12020,8 @@ function serializeLineupRevision(row) {
     supersededAt: row.superseded_at || null,
     finalizedAt: row.finalized_at || null,
     finalizedBy: row.finalized_by || null,
+    unresolvedPlayerCount: Number(row.unresolved_player_count || 0),
+    isFinal: Number(row.is_final || 0) === 1,
     validation: row.validation_json ? parseJsonObject(row.validation_json) : null
   };
 }
@@ -12504,20 +12899,42 @@ async function runDueAutoScoringJobs(env, now, pausedGameIds = new Set()) {
 
 async function scoreClaimedGameLineup(db, record, now, isTestPrediction = 0) {
   const storedLineup = parseStoredActualLineup(record.actual_lineup_json);
-  const actualResult = sanitizeActualLineupForScoring(storedLineup);
+  const actualResult = sanitizeActualLineupForScoring(storedLineup, { allowUnresolvedPlayer: true });
   if (!actualResult.ok) {
     throw new Error(`stored actual lineup is invalid: ${actualResult.error}`);
   }
-  const scoring = await prepareGamePredictionScoring(db, { gameId: record.game_id, internalGameId: record.internal_game_id || "" }, actualResult.lineup, isTestPrediction);
-  if (scoring.failed > 0) {
-    const error = new Error("stored predictions include validation errors");
-    error.code = "prediction_validation_failed";
-    error.processed = scoring.processed;
-    error.failed = scoring.failed;
-    error.validationErrors = scoring.validationErrors;
+  const currentLineupRevision = await getCurrentLineupRevisionForScoring(db, record.game_id);
+  const revisionId = record.scoring_lineup_revision_id || currentLineupRevision?.revisionId || `${record.game_id}:1`;
+  const revision = await beginGameScoringRevision(db, {
+    gameId: record.game_id,
+    internalGameId: record.internal_game_id || "",
+    lineupRevisionId: revisionId,
+    reason: Number(record.scoring_revision || 0) > 0 ? "lineup_correction" : "initial_scoring",
+    now
+  });
+  if (revision.existingCompleted) {
+    await db.prepare(
+      "UPDATE game_lineups SET scoring_status = 'scored', scoring_started_at = NULL, last_error = NULL, updated_at = ?1 WHERE game_id = ?2 AND scoring_status = 'processing'"
+    ).bind(now.toISOString(), record.game_id).run();
+    return { processed: 0, scored: 0, failed: 0, maxScore: SCORING_MAX_SCORE, perfectCount: 0, newPerfectAchievers: 0, scoredAt: now.toISOString(), lineupRevisionId: revisionId, scoringRevision: revision.number, status: "already_scored" };
+  }
+  try {
+    const scoring = await prepareGamePredictionScoring(db, { gameId: record.game_id, internalGameId: record.internal_game_id || "" }, actualResult.lineup, isTestPrediction);
+    if (scoring.failed > 0) {
+      const error = new Error("stored predictions include validation errors");
+      error.code = "prediction_validation_failed";
+      error.processed = scoring.processed;
+      error.failed = scoring.failed;
+      error.validationErrors = scoring.validationErrors;
+      throw error;
+    }
+    const result = await persistGamePredictionScoring(db, record.game_id, actualResult.lineup, scoring, now, isTestPrediction, record.internal_game_id || "", revision.number);
+    await completeGameScoringRevision(db, { internalGameId: record.internal_game_id || "", scoringRevisionId: revision.id, now });
+    return { ...result, scoringRevisionId: revision.id };
+  } catch (error) {
+    await failGameScoringRevision(db, { scoringRevisionId: revision.id, error, now });
     throw error;
   }
-  return await persistGamePredictionScoring(db, record.game_id, actualResult.lineup, scoring, now, isTestPrediction, record.internal_game_id || "");
 }
 
 function parseStoredActualLineup(value) {
@@ -12529,7 +12946,7 @@ function parseStoredActualLineup(value) {
   }
 }
 
-async function persistGamePredictionScoring(db, gameId, actualLineup, scoring, now, isTestPrediction = 0, internalGameId = "") {
+async function persistGamePredictionScoring(db, gameId, actualLineup, scoring, now, isTestPrediction = 0, internalGameId = "", scoringRevisionNumber = null) {
   const scoredAt = now.toISOString();
   const actualLineupJson = JSON.stringify(actualLineup);
   const scoreSql = isTestPrediction
@@ -12540,6 +12957,21 @@ async function persistGamePredictionScoring(db, gameId, actualLineup, scoring, n
         SET score = ?1, max_score = ?2, scored_at = ?3, status = 'scored', actual_lineup_json = ?4
       WHERE id = ?5 AND game_id = ?6`;
   const statements = scoring.outcomes.map((outcome) => db.prepare(scoreSql).bind(outcome.score.total, SCORING_MAX_SCORE, scoredAt, actualLineupJson, outcome.id, gameId));
+  try {
+    const predictionColumns = await getTableColumnSet(db, "predictions");
+    if (predictionColumns.has("scoring_status") && predictionColumns.has("scoring_exclusion_reason")) {
+      for (const exclusion of scoring.exclusions || []) {
+        statements.push(db.prepare(
+          `UPDATE predictions
+              SET scoring_status = 'excluded', scoring_exclusion_reason = ?, updated_at = ?
+            WHERE id = ? AND game_id = ? AND is_test_prediction = ?`
+        ).bind(exclusion.reason, scoredAt, exclusion.id, gameId, isTestPrediction ? 1 : 0));
+      }
+    }
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+  }
+  const predictionStatementCount = statements.length;
   statements.push(db.prepare(
     `UPDATE game_lineups
         SET scoring_status = 'scored', scored_at = ?1, scoring_started_at = NULL,
@@ -12562,7 +12994,7 @@ async function persistGamePredictionScoring(db, gameId, actualLineup, scoring, n
   if (predictionResults.some((result) => Number(result?.meta?.changes || 0) !== 1)) {
     throw new Error("prediction score update count mismatch");
   }
-  const gameLineupResult = results[scoring.outcomes.length];
+  const gameLineupResult = results[predictionStatementCount];
   if (Number(gameLineupResult?.meta?.changes || 0) !== 1) {
     throw new Error("game lineup scoring state update mismatch");
   }
@@ -12571,7 +13003,7 @@ async function persistGamePredictionScoring(db, gameId, actualLineup, scoring, n
   }
 
   const revision = await getCurrentLineupRevisionForScoring(db, gameId);
-  const scoringRevision = await getNextScoringRevision(db, gameId);
+  const scoringRevision = Number(scoringRevisionNumber || await getNextScoringRevision(db, gameId));
   await recordScoringRevisionMetadata(db, {
     gameId,
     internalGameId,
@@ -12585,7 +13017,8 @@ async function persistGamePredictionScoring(db, gameId, actualLineup, scoring, n
   return {
     processed: scoring.processed,
     scored: scoring.scored,
-    failed: 0,
+    excluded: scoring.excluded || 0,
+    failed: scoring.failed || 0,
     maxScore: SCORING_MAX_SCORE,
     perfectCount: scoring.perfectCount,
     newPerfectAchievers: 0,
@@ -12769,6 +13202,10 @@ async function markGameRankingPending(db, gameId, at, env, isTestGame = 0, inter
 async function createGameRankingScoredPrivateStatement(db, gameId, scoredAt, isTestGame = 0, internalGameId = "") {
   const metadata = parsePredictionGameId(gameId);
   if (!metadata) return null;
+  if (!isTestGame) {
+    const eligibility = await getRankingEligibilityState(db, gameId);
+    if (eligibility && eligibility.rankingEligibilityStatus !== RANKING_ELIGIBILITY_STATUS.ELIGIBLE) return null;
+  }
   const now = toIsoString(scoredAt);
   const storage = await getInternalGameIdStorageAvailability(db, ["ranking_games"]);
   if (storage.ranking_games && !isTestGame) {
@@ -12921,6 +13358,11 @@ async function publishGameResults(env, gameId, now, { isTestGame = false, intern
     return { published: false, status: "already_published", publishedAt: lineup.published_at || null };
   }
 
+  const scoringCompletion = await getScoringCompletionState(env.AUTH_DB, { gameId, internalGameId });
+  if (!scoringCompletion.complete) {
+    throw createPregameError("SCORING_INCOMPLETE", "全予想の採点が完了していません。", { retryable: true });
+  }
+
   const ranking = isTestGame ? null : await getRankingReflectionState(env.AUTH_DB, gameId);
   if (!isTestGame && !ranking.reflected) {
     throw createPregameError("PUBLICATION_PREREQUISITE_MISSING", "ランキング反映済みの公開対象がありません。", { retryable: false, targetResolution: publicationTarget.targetResolution });
@@ -13001,6 +13443,77 @@ async function markGameRankingIneligible(db, gameId, status, at, env) {
        published_at = NULL,
        updated_at = excluded.updated_at`
   ).bind(gameId, metadata.date, status, now).run();
+  const reason = status === "postponed"
+    ? "postponed"
+    : status === "cancelled"
+      ? "cancelled_before_start"
+      : "data_invalid";
+  const current = await getRankingGameState(db, gameId);
+  if (current) {
+    await setRankingEligibility(db, {
+      gameId,
+      internalGameId: current.internal_game_id || "",
+      status: RANKING_ELIGIBILITY_STATUS.EXCLUDED,
+      reason,
+      updatedBy: "system",
+      now: at instanceof Date ? at : new Date(at)
+    });
+  }
+}
+
+async function beginGameScoringRevision(db, {
+  gameId, internalGameId = "", lineupRevisionId = "", reason = "initial_scoring", now = new Date()
+} = {}) {
+  const fallback = { id: `${gameId}:scoring:${await getNextScoringRevision(db, gameId)}`, number: await getNextScoringRevision(db, gameId), existingCompleted: false };
+  if (!internalGameId || !lineupRevisionId) return fallback;
+  try {
+    const columns = await getTableColumnSet(db, "game_scoring_revisions");
+    if (!columns.size) return fallback;
+    const existing = await db.prepare(
+      "SELECT id, revision_number, status FROM game_scoring_revisions WHERE internal_game_id = ?1 AND lineup_revision_id = ?2 LIMIT 1"
+    ).bind(internalGameId, lineupRevisionId).first();
+    if (existing) return { id: existing.id, number: Number(existing.revision_number), existingCompleted: existing.status === "completed" };
+    const latest = await db.prepare(
+      "SELECT COALESCE(MAX(revision_number), 0) AS revision FROM game_scoring_revisions WHERE internal_game_id = ?1"
+    ).bind(internalGameId).first();
+    const number = Number(latest?.revision || 0) + 1;
+    const id = `${internalGameId}:scoring:${number}`;
+    await db.prepare(
+      `INSERT INTO game_scoring_revisions
+         (id, internal_game_id, game_id, revision_number, lineup_revision_id, status,
+          reason, created_by, created_at, is_active)
+       VALUES (?1, ?2, ?3, ?4, ?5, 'in_progress', ?6, 'system', ?7, 0)`
+    ).bind(id, internalGameId, gameId, number, lineupRevisionId, reason, now.toISOString()).run();
+    return { id, number, existingCompleted: false };
+  } catch (error) {
+    if (isPregameSchemaError(error)) return fallback;
+    throw error;
+  }
+}
+
+async function completeGameScoringRevision(db, { internalGameId = "", scoringRevisionId = "", now = new Date() } = {}) {
+  if (!internalGameId || !scoringRevisionId) return;
+  try {
+    await db.batch([
+      db.prepare("UPDATE game_scoring_revisions SET is_active = 0 WHERE internal_game_id = ?1").bind(internalGameId),
+      db.prepare("UPDATE game_scoring_revisions SET status = 'completed', is_active = 1, completed_at = ?1 WHERE id = ?2 AND internal_game_id = ?3").bind(now.toISOString(), scoringRevisionId, internalGameId)
+    ]);
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+  }
+}
+
+async function failGameScoringRevision(db, { scoringRevisionId = "", error, now = new Date() } = {}) {
+  if (!scoringRevisionId) return;
+  try {
+    await db.prepare(
+      "UPDATE game_scoring_revisions SET status = 'failed', is_active = 0, completed_at = NULL WHERE id = ?1"
+    ).bind(scoringRevisionId).run();
+  } catch (recordError) {
+    if (!isPregameSchemaError(recordError)) throw recordError;
+  }
+  void error;
+  void now;
 }
 
 function toSafeAutoScoringError(error) {
@@ -13008,11 +13521,11 @@ function toSafeAutoScoringError(error) {
   return message.slice(0, 180);
 }
 
-function sanitizeActualLineupForScoring(value) {
-  return sanitizeScoringLineup(value, "実スタメン");
+function sanitizeActualLineupForScoring(value, options = {}) {
+  return sanitizeScoringLineup(value, "実スタメン", options);
 }
 
-function sanitizeScoringLineup(value, label) {
+function sanitizeScoringLineup(value, label, { allowUnresolvedPlayer = false } = {}) {
   if (!Array.isArray(value) || value.length !== SCORING_LINEUP_SIZE) {
     return { ok: false, error: `${label}は9人分入力してください。` };
   }
@@ -13022,10 +13535,12 @@ function sanitizeScoringLineup(value, label) {
     const teamCode = typeof item?.teamCode === "string" ? item.teamCode.trim().toLowerCase() : "";
     const teamId = typeof item?.teamId === "string" ? item.teamId : "";
     const uniformNumber = item?.uniformNumber;
-    const playerId = typeof item?.playerId === "string" ? item.playerId : "";
+    const playerId = typeof item?.playerId === "string" && item.playerId.trim() ? item.playerId : null;
     const playerName = typeof item?.playerName === "string" ? item.playerName.trim().slice(0, 40) : "";
+    const displayName = typeof item?.displayName === "string" ? item.displayName.trim().slice(0, 40) : "";
     const position = normalizeScoringPosition(item?.position);
-    return { battingOrder, teamCode, teamId, uniformNumber, playerId, playerName, position };
+    const resolvedDisplayName = displayName || playerName || (allowUnresolvedPlayer ? "不明" : "");
+    return { battingOrder, teamCode, teamId, uniformNumber, playerId, playerName: playerName || resolvedDisplayName, displayName: resolvedDisplayName, position, resolutionStatus: item?.resolutionStatus || (playerId ? "resolved" : "unresolved"), rawPlayerName: item?.rawPlayerName || playerName || displayName || "不明" };
   });
 
   if (lineup.some((item) => !Number.isInteger(item.battingOrder) || item.battingOrder < 1 || item.battingOrder > SCORING_LINEUP_SIZE)) {
@@ -13034,7 +13549,7 @@ function sanitizeScoringLineup(value, label) {
   if (new Set(lineup.map((item) => item.battingOrder)).size !== SCORING_LINEUP_SIZE) {
     return { ok: false, error: `${label}の打順が重複しています。` };
   }
-  if (lineup.some((item) => !item.playerName || !item.playerId)) {
+  if (lineup.some((item) => !item.playerName || (!allowUnresolvedPlayer && !item.playerId))) {
     return { ok: false, error: `${label}の選手情報が不足しています。` };
   }
   if (lineup.some((item) => !item.position || !PREDICTION_POSITIONS.has(item.position))) {
@@ -13045,6 +13560,7 @@ function sanitizeScoringLineup(value, label) {
   }
 
   for (const item of lineup) {
+    if (allowUnresolvedPlayer && !item.playerId) continue;
     const expectedTeamId = TEAM_PLAYER_ID_PREFIXES[item.teamCode];
     if (!expectedTeamId || !PREDICTION_TEAM_IDS.has(item.teamId) || item.teamId !== expectedTeamId) {
       return { ok: false, error: `${label}の球団情報が不正です。` };
@@ -13056,7 +13572,8 @@ function sanitizeScoringLineup(value, label) {
       return { ok: false, error: `${label}の選手IDが不正です。` };
     }
   }
-  if (new Set(lineup.map((item) => item.playerId)).size !== SCORING_LINEUP_SIZE) {
+  const resolvedPlayerIds = lineup.map((item) => item.playerId).filter(Boolean);
+  if (new Set(resolvedPlayerIds).size !== resolvedPlayerIds.length) {
     return { ok: false, error: `${label}に同じ選手が複数います。` };
   }
 
@@ -13273,7 +13790,18 @@ async function handleGetCurrentPrediction(request, env, cors) {
 
 async function isGameResultsPublished(db, gameId, now) {
   const identity = getGameIdentityForPregame(gameId);
-  if (!identity || now < identity.resultReleaseAt) return false;
+  let releaseAt = identity?.resultReleaseAt || null;
+  try {
+    const resolved = await resolvePredictionGameMetadataDetailed(db, gameId);
+    const schedule = resolved?.metadata?.internalGameId
+      ? await db.prepare("SELECT start_time FROM games WHERE internal_game_id = ?1 LIMIT 1").bind(resolved.metadata.internalGameId).first()
+      : null;
+    const startAt = new Date(schedule?.start_time || "");
+    if (!Number.isNaN(startAt.getTime())) releaseAt = new Date(startAt.getTime() + RESULT_RELEASE_MINUTES_AFTER_START * 60 * 1000);
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+  }
+  if (!releaseAt || now < releaseAt) return false;
   const row = await db.prepare(
     `SELECT is_ranking_eligible, publication_status, is_test_game
        FROM ranking_games WHERE game_id = ?1 LIMIT 1`

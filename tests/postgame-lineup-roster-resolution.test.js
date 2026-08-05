@@ -42,7 +42,7 @@ test("8/5のrosterは解決済みtargetのinternalGameIdとstartAtを共通resol
   assert.match(resolver, /fallbackInternalGameId/);
   assert.match(resolver, /workflow_target_fallback/);
   assert.match(roster, /resolveRosterScheduleTarget\(env\.AUTH_DB, gameId, target \|\| \{\}\)/);
-  assert.match(cron, /target\s*\}\)/);
+  assert.match(cron, /target:\s*timeline/);
   assert.match(worker, /SCHEDULE_UNAVAILABLE/);
   assert.match(cron, /rosterResolutionStage/);
   assert.match(cron, /rosterResolvedBy/);

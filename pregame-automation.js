@@ -15,7 +15,7 @@ export const LINEUP_FETCH_INTERVAL_MINUTES = AUTOMATION_V2_TIMING.lineupPollingI
 export const FINAL_LINEUP_FETCH_MINUTES_AFTER_START = AUTOMATION_V2_TIMING.finalLineupMinutesAfterStart;
 export const FINAL_LINEUP_FETCH_INTERVAL_MINUTES = AUTOMATION_V2_TIMING.lineupPollingIntervalMinutes;
 export const FINAL_LINEUP_RETRY_WINDOW_HOURS = 12;
-export const RESULT_RELEASE_MINUTES_AFTER_START = 5;
+export const RESULT_RELEASE_MINUTES_AFTER_START = AUTOMATION_V2_TIMING.publicationMinutesAfterStart;
 export const PROBABLE_STARTER_RETRY_INTERVAL_MINUTES = 60;
 export const ROSTER_AUTO_FETCH_INTERVAL_MINUTES = AUTOMATION_V2_TIMING.rosterRegularIntervalMinutes;
 export const ROSTER_FETCH_RETRY_INTERVAL_MINUTES = 30;
@@ -122,11 +122,13 @@ export function buildPregameTimeline(game) {
     gameId: game.gameId,
     startAt,
     canonical,
-    rosterCaptureAt: new Date(new Date(canonical.startAt).getTime() - ROSTER_CAPTURE_MINUTES_BEFORE_START * 60 * 1000),
+    rosterCaptureAt: new Date(canonical.rosterFetchAt1),
+    rosterFetchAt1: new Date(canonical.rosterFetchAt1),
+    rosterFetchAt2: new Date(canonical.rosterFetchAt2),
     predictionDeadlineAt: new Date(canonical.predictionDeadline),
     lineupFetchStartAt: new Date(canonical.lineupPollingStart),
     finalLineupFetchAt: new Date(canonical.finalLineupAt),
-    resultReleaseAt: new Date(startAt.getTime() + RESULT_RELEASE_MINUTES_AFTER_START * 60 * 1000)
+    resultReleaseAt: new Date(canonical.publicationAt)
   };
 }
 
@@ -224,7 +226,11 @@ export function getRosterFetchDecision(timeline, state = {}, now = new Date()) {
   if (v2Decision.reason === "AFTER_START") return { due: false, reason: "after_start" };
   if (v2Decision.reason === "RETRY_WAIT") return { due: false, reason: "retry_wait" };
   if (v2Decision.reason === "DAILY_INTERVAL") return { due: false, reason: "interval" };
-  if (v2Decision.due) return { due: true, kind: v2Decision.kind === "daily" ? "regular" : v2Decision.kind };
+  if (v2Decision.due) {
+    const decision = { due: true, kind: v2Decision.kind === "daily" ? "regular" : v2Decision.kind };
+    if (v2Decision.slot) decision.slot = v2Decision.slot;
+    return decision;
+  }
   const current = now instanceof Date ? now : new Date(now);
   const startAt = timeline?.startAt instanceof Date ? timeline.startAt : new Date(timeline?.startAt || "");
   const gameId = String(timeline?.gameId || "");

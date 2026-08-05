@@ -21,7 +21,7 @@ test("Cronは日程同期後に明示的な試合workflow runnerへ委譲する"
   assert.match(worker, /id: "lineup", offsetMinutes: -50, retryMinutes: 10/);
   assert.match(worker, /id: "final_lineup", offsetMinutes: AUTOMATION_V2_TIMING\.finalLineupMinutesAfterStart, retryMinutes: 10/);
   assert.match(worker, /id: "score", offsetMinutes: 2/);
-  assert.match(worker, /id: "publish", offsetMinutes: 5/);
+  assert.match(worker, /id: "publish", offsetMinutes: AUTOMATION_V2_TIMING\.publicationMinutesAfterStart/);
 });
 
 test("workflowは中止試合を全step cancelledとして扱い、時刻未到達stepを実行しない", () => {

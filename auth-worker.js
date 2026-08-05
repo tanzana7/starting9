@@ -331,6 +331,10 @@ export default {
       if (path === "/api/admin/v3/overview" && request.method === "GET") {
         return await handleAdminV3Overview(request, env, cors);
       }
+      const adminV3NpbGameCodeRoute = parseAdminV3NpbGameCodeRoute(path);
+      if (adminV3NpbGameCodeRoute && request.method === "PATCH") {
+        return await handleAdminV3NpbGameCodeUpdate(request, env, cors, adminV3NpbGameCodeRoute.internalGameId);
+      }
       const adminV3JobRoute = parseAdminV3JobRoute(path);
       if (adminV3JobRoute && request.method === "POST") {
         return await handleAdminV3JobCreate(request, env, cors, adminV3JobRoute.internalGameId);
@@ -522,7 +526,7 @@ async function loadV3GameTarget(db, internalGameId) {
     isActive: row.is_active,
     deletedAt: row.deleted_at,
     gameId: legacyGameId,
-    gameCode: row.npb_game_code || identifiers.find((item) => item.provider === "npb")?.identifier_value || "",
+    gameCode: row.npb_game_code || "",
     targetResolution: "v3_games_internal_game_id"
   };
 }
@@ -2893,6 +2897,83 @@ async function handleAdminV3Overview(request, env, cors) {
   return jsonResponse({ ok: true, featureFlag: V3_FEATURE_FLAG, enabled: isGameAutomationV3Enabled(env), schema, games: rows }, 200, cors);
 }
 
+async function handleAdminV3NpbGameCodeUpdate(request, env, cors, internalGameId) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+
+  try {
+    const id = normalizeV3InternalGameId(internalGameId);
+    const gameColumns = await getTableColumnSet(env.AUTH_DB, "games");
+    if (!gameColumns.has("npb_game_code")) {
+      return jsonResponse({ ok: false, code: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", error: "games.npb_game_code が利用できません。" }, 503, cors);
+    }
+    const auditColumns = await getTableColumnSet(env.AUTH_DB, "game_automation_v3_audit");
+    const requiredAuditColumns = ["event_type", "previous_npb_game_code", "next_npb_game_code", "updated_by"];
+    if (!requiredAuditColumns.every((column) => auditColumns.has(column))) {
+      return jsonResponse({ ok: false, code: "GAME_AUTOMATION_V3_AUDIT_SCHEMA_UNAVAILABLE", error: "V3監査スキーマが準備されていません。" }, 503, cors);
+    }
+
+    const current = await env.AUTH_DB.prepare(
+      `SELECT internal_game_id, game_date, start_time, home_team, away_team,
+              npb_game_code, game_status, is_active, deleted_at
+         FROM games WHERE internal_game_id = ?1 LIMIT 1`
+    ).bind(id).first();
+    if (!current) return jsonResponse({ ok: false, code: "V3_GAME_NOT_REGISTERED", error: "対象試合が日程DBに登録されていません。" }, 404, cors);
+
+    const input = await readJson(request);
+    if (!input || !Object.prototype.hasOwnProperty.call(input, "npbGameCode") || typeof input.npbGameCode !== "string") {
+      return jsonResponse({ ok: false, code: "NPB_GAME_CODE_INVALID", error: "npbGameCodeは文字列で指定してください。" }, 400, cors);
+    }
+    const rawCode = input.npbGameCode.trim();
+    const nextCode = rawCode ? normalizeNpbGameCode(rawCode) : "";
+    if (rawCode && !nextCode) {
+      return jsonResponse({ ok: false, code: "NPB_GAME_CODE_INVALID", error: "NPBゲームコードの形式が不正です。" }, 400, cors);
+    }
+
+    const previousCode = String(current.npb_game_code || "").trim().toLowerCase() || null;
+    const updatedAt = new Date().toISOString();
+    const updatedBy = access.user?.id ? `admin:${String(access.user.id)}` : "admin";
+    const updateFields = ["npb_game_code = ?1", "updated_at = ?2"];
+    const updateValues = [nextCode || null, updatedAt];
+    if (gameColumns.has("updated_by")) {
+      updateFields.push(`updated_by = ?${updateValues.length + 1}`);
+      updateValues.push(updatedBy);
+    }
+    updateValues.push(id);
+
+    await env.AUTH_DB.batch([
+      env.AUTH_DB.prepare(`UPDATE games SET ${updateFields.join(", ")} WHERE internal_game_id = ?${updateValues.length}`).bind(...updateValues),
+      env.AUTH_DB.prepare(
+        `INSERT INTO game_automation_v3_audit
+           (internal_game_id, job_type, event_type, previous_npb_game_code,
+            next_npb_game_code, updated_by, occurred_at, source)
+         VALUES (?1, 'npb_game_code_update', 'admin_npb_game_code_update', ?2, ?3, ?4, ?5, 'admin')`
+      ).bind(id, previousCode, nextCode || null, updatedBy, updatedAt)
+    ]);
+
+    const updated = await env.AUTH_DB.prepare(
+      `SELECT internal_game_id, game_date, start_time, home_team, away_team,
+              npb_game_code, game_status, is_active, deleted_at
+         FROM games WHERE internal_game_id = ?1 LIMIT 1`
+    ).bind(id).first();
+    return jsonResponse({ ok: true, updated: previousCode !== (nextCode || null), game: {
+      internalGameId: updated.internal_game_id,
+      gameDate: updated.game_date,
+      startAt: updated.start_time,
+      homeTeam: updated.home_team,
+      awayTeam: updated.away_team,
+      npbGameCode: updated.npb_game_code || null,
+      gameStatus: updated.game_status,
+      isActive: updated.is_active,
+      deletedAt: updated.deleted_at
+    } }, 200, cors);
+  } catch (error) {
+    const code = String(error?.code || "V3_NPB_GAME_CODE_UPDATE_FAILED");
+    console.error(`[GAME_AUTOMATION_V3] stage=npb_game_code_update code=${code}`);
+    return jsonResponse({ ok: false, code, error: "NPBゲームコードを更新できませんでした。" }, 500, cors);
+  }
+}
+
 async function handleAdminV3JobCreate(request, env, cors, internalGameId) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) return access.response;
@@ -2940,6 +3021,16 @@ async function handleAdminModeCapabilities(request, env, cors) {
 
 function parseAdminV3JobRoute(path) {
   const match = /^\/api\/admin\/v3\/games\/([^/]+)\/jobs$/.exec(path);
+  if (!match) return null;
+  try {
+    return { internalGameId: decodeURIComponent(match[1]) };
+  } catch {
+    return { internalGameId: "" };
+  }
+}
+
+function parseAdminV3NpbGameCodeRoute(path) {
+  const match = /^\/api\/admin\/v3\/games\/([^/]+)\/npb-game-code$/.exec(path);
   if (!match) return null;
   try {
     return { internalGameId: decodeURIComponent(match[1]) };

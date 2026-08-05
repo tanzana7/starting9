@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Starting9 自動運転V3</title>
+  <link rel="stylesheet" href="admin-v3.css?v=automation-v3-1">
+</head>
+<body>
+  <main class="admin-v3-shell">
+    <header class="admin-v3-header">
+      <div>
+        <p class="eyebrow">GAME AUTOMATION V3</p>
+        <h1>自動運転V3</h1>
+        <p class="muted">DB日程とinternal_game_idを正として、V3ジョブの状態だけを確認します。</p>
+      </div>
+      <div class="header-actions">
+        <a href="index.html">通常画面</a>
+        <button id="refreshV3" type="button">更新</button>
+      </div>
+    </header>
+    <p id="v3Status" class="status" role="status"></p>
+    <section id="v3Schema" class="schema-panel"></section>
+    <section id="v3Games" class="games" aria-live="polite"></section>
+  </main>
+  <script src="admin-v3.js?v=automation-v3-1"></script>
+</body>
+</html>

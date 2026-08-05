@@ -40,7 +40,8 @@ test("workflow job chainは各成功後に後続jobを生成し、reconciliation
 test("future slotのjobはdue runnerで実行せず、Cronだけが起動する", () => {
   const worker = read("auth-worker.js");
   const jobs = read("game-workflow-jobs.js");
-  assert.match(worker, /ctx\.waitUntil\(runScheduledGameAutomation\(env, scheduledAt\)\)/);
+  assert.match(worker, /ctx\.waitUntil\(runScheduledGameAutomationV3\(env, scheduledAt\)\)/);
+  assert.match(worker, /isGameAutomationV3Enabled\(env\)/);
   assert.match(jobs, /scheduled_slot_at <= \?\$\{types\.length \+ 1\}/);
   assert.match(jobs, /status = 'retry_wait'/);
   assert.doesNotMatch(read("script.js"), /runScheduledGameAutomation\(/);

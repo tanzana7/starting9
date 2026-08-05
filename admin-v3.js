@@ -27,6 +27,14 @@ function escapeV3(value) {
   return String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]));
 }
 
+function identityStatusLabel(status) {
+  return {
+    resolved: "自動解決済み",
+    unresolved: "未解決",
+    manually_overridden: "管理者上書き"
+  }[String(status || "unresolved")] || "未解決";
+}
+
 function renderV3(payload) {
   const schema = document.getElementById("v3Schema");
   schema.textContent = `schema: ${payload.schema.ready ? "ready" : "unavailable"} / feature flag: ${payload.enabled ? "enabled" : "disabled"}`;
@@ -36,11 +44,12 @@ function renderV3(payload) {
     const card = document.createElement("article");
     card.className = "game-card";
     const npbGameCode = String(game.npbGameCode || "");
+    const identityStatus = identityStatusLabel(game.npbIdentityStatus);
     const jobs = (game.jobs || []).map((job) => {
       const select = V3_JOB_TYPES.map((type) => `<option value="${type}">${type}</option>`).join("");
       return `<div class="job"><code>${escapeV3(job.job_type)}</code><span class="job-status">${escapeV3(job.status)}</span><span>${escapeV3(job.failure_code || `attempt ${job.attempt_count}/${job.max_attempts}`)}</span><button type="button" data-v3-job="${escapeV3(game.internalGameId)}" data-v3-type="${escapeV3(job.job_type)}">再投入</button></div>`;
     }).join("");
-    card.innerHTML = `<div class="game-heading"><h2>${escapeV3(game.gameDate)} ${escapeV3(game.awayTeam)} vs ${escapeV3(game.homeTeam)}</h2><code>${escapeV3(game.internalGameId)}</code></div><div class="game-meta"><span>開始 ${escapeV3(game.startAt)}</span><span>NPB ${escapeV3(npbGameCode || "未登録")}</span><span class="state">state: ${escapeV3(game.state.state)}</span></div><div class="npb-code-editor"><label>NPBゲームコード <input type="text" maxlength="32" value="${escapeV3(npbGameCode)}" data-v3-npb-code><button type="button" data-v3-code-save="${escapeV3(game.internalGameId)}">保存</button></label><span class="npb-code-status" data-v3-code-status></span></div><div class="job-list">${jobs || "<span class=muted>ジョブなし</span>"}</div>`;
+    card.innerHTML = `<div class="game-heading"><h2>${escapeV3(game.gameDate)} ${escapeV3(game.awayTeam)} vs ${escapeV3(game.homeTeam)}</h2><code>${escapeV3(game.internalGameId)}</code></div><div class="game-meta"><span>開始 ${escapeV3(game.startAt)}</span><span class="npb-identity-status">NPB識別情報: ${escapeV3(identityStatus)}</span><span>コード ${escapeV3(npbGameCode || "未登録")}</span><span class="state">state: ${escapeV3(game.state.state)}</span></div><div class="npb-identity-details"><span>解決元: ${escapeV3(game.npbIdentitySource || "-")}</span><span>解決時刻: ${escapeV3(game.npbIdentityResolvedAt || "-")}</span><span>URL: ${game.npbGameUrl ? `<a href="${escapeV3(game.npbGameUrl)}" target="_blank" rel="noreferrer">${escapeV3(game.npbGameUrl)}</a>` : "-"}</span><button type="button" data-v3-identity-resolve="${escapeV3(game.internalGameId)}">自動再解決</button></div><div class="npb-code-editor"><strong>非常用手動上書き</strong><label>NPBゲームコード <input type="text" maxlength="32" value="${escapeV3(npbGameCode)}" data-v3-npb-code><button type="button" data-v3-code-save="${escapeV3(game.internalGameId)}">保存</button></label><span class="npb-code-status" data-v3-code-status></span></div><div class="job-list">${jobs || "<span class=muted>ジョブなし</span>"}</div>`;
     container.append(card);
   }
 }
@@ -59,6 +68,20 @@ async function loadV3() {
 }
 
 document.addEventListener("click", async (event) => {
+  const resolveButton = event.target.closest("[data-v3-identity-resolve]");
+  if (resolveButton) {
+    resolveButton.disabled = true;
+    setV3Status("NPB識別情報を自動解決中…");
+    try {
+      await v3Fetch(`/api/admin/v3/games/${encodeURIComponent(resolveButton.dataset.v3IdentityResolve)}/npb-identity/resolve`, { method: "POST" });
+      setV3Status("NPB識別情報を更新しました。");
+      await loadV3();
+    } catch (error) {
+      setV3Status(`${error.code || "NPB_IDENTITY_RESOLUTION_FAILED"}: ${error.message}`, true);
+      resolveButton.disabled = false;
+    }
+    return;
+  }
   const codeButton = event.target.closest("[data-v3-code-save]");
   if (codeButton) {
     const card = codeButton.closest(".game-card");

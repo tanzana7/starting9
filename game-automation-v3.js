@@ -151,9 +151,19 @@ export async function getV3SchemaState(db) {
 export async function listV3Games(db, now = new Date()) {
   const current = now instanceof Date ? now : new Date(now);
   const date = new Date(current.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  let columns = new Set();
+  try {
+    const schema = await db.prepare("PRAGMA table_info(games)").all();
+    columns = new Set((schema.results || []).map((row) => String(row.name || "")));
+  } catch {
+    // Older adapters do not expose PRAGMA; the base V3 projection remains valid.
+  }
+  const optionalColumns = ["npb_game_url", "source_schedule_key", "npb_identity_status", "npb_identity_resolved_at", "npb_identity_source"]
+    .filter((column) => columns.has(column));
   const result = await db.prepare(
     `SELECT internal_game_id, game_date, start_time, home_team, away_team,
-            npb_game_code, game_status, is_active, deleted_at
+            npb_game_code${optionalColumns.length ? `, ${optionalColumns.join(", ")}` : ""},
+            game_status, is_active, deleted_at
        FROM games
       WHERE internal_game_id IS NOT NULL AND internal_game_id <> ''
         AND game_date >= date(?1)
@@ -166,6 +176,11 @@ export async function listV3Games(db, now = new Date()) {
     homeTeam: row.home_team,
     awayTeam: row.away_team,
     npbGameCode: row.npb_game_code || null,
+    npbGameUrl: row.npb_game_url || null,
+    sourceScheduleKey: row.source_schedule_key || null,
+    npbIdentityStatus: row.npb_identity_status || (row.npb_game_code ? "resolved" : "unresolved"),
+    npbIdentityResolvedAt: row.npb_identity_resolved_at || null,
+    npbIdentitySource: row.npb_identity_source || null,
     gameStatus: row.game_status,
     isActive: row.is_active,
     deletedAt: row.deleted_at

@@ -175,6 +175,32 @@ export async function updateGameScheduleMetadata(db, internalGameId, identity, s
   const columns = new Set((columnsResult.results || []).map((row) => String(row.name || "")));
   const startAt = new Date(identity?.startTime || "");
   if (!internalGameId || Number.isNaN(startAt.getTime())) return false;
+  const identityColumns = [
+    "npb_game_url",
+    "source_schedule_key",
+    "npb_identity_status",
+    "npb_identity_resolved_at",
+    "npb_identity_source"
+  ].filter((column) => columns.has(column));
+  let currentGame = null;
+  if (identityColumns.length || columns.has("npb_game_code")) {
+    try {
+      const selectColumns = ["npb_game_code", ...identityColumns].filter((column, index, list) => list.indexOf(column) === index);
+      currentGame = await db.prepare(
+        `SELECT ${selectColumns.join(", ")} FROM games WHERE internal_game_id = ?1 LIMIT 1`
+      ).bind(internalGameId).first();
+    } catch {
+      currentGame = null;
+    }
+  }
+  const isManualOverride = String(currentGame?.npb_identity_status || "") === "manually_overridden";
+  const hasSourceGameCode = Object.prototype.hasOwnProperty.call(source || {}, "npbGameCode")
+    || Object.prototype.hasOwnProperty.call(source || {}, "gameCode");
+  const sourceGameCode = String(source?.npbGameCode ?? source?.gameCode ?? "").trim().toLowerCase();
+  const nextGameCode = isManualOverride
+    ? (String(currentGame?.npb_game_code || "").trim().toLowerCase() || null)
+    : (hasSourceGameCode ? (sourceGameCode || null) : (String(currentGame?.npb_game_code || "").trim().toLowerCase() || null));
+  const timestamp = (now instanceof Date ? now : new Date(now)).toISOString();
   const fields = [];
   const values = [];
   const add = (column, value) => {
@@ -187,7 +213,7 @@ export async function updateGameScheduleMetadata(db, internalGameId, identity, s
   add("home_team", identity.homeTeam);
   add("away_team", identity.awayTeam);
   add("game_status", identity.gameStatus || "scheduled");
-  add("npb_game_code", String(source?.npbGameCode || source?.gameCode || "").trim().toLowerCase() || null);
+  add("npb_game_code", nextGameCode);
   add("season", /^\d{4}$/.test(String(source?.season || "")) ? Number(source.season) : Number(identity.gameDate.slice(0, 4)));
   add("stadium", String(source?.stadium || source?.venue || "").trim() || null);
   const iso = (offset) => new Date(startAt.getTime() + offset * 60000).toISOString();
@@ -195,10 +221,64 @@ export async function updateGameScheduleMetadata(db, internalGameId, identity, s
   add("roster_fetch_at2", iso(-110));
   add("publication_at", iso(10));
   add("updated_by", String(source?.updatedBy || "system").slice(0, 120));
-  add("updated_at", (now instanceof Date ? now : new Date(now)).toISOString());
+  if (!isManualOverride) {
+    add("npb_game_url", String(source?.npbGameUrl || source?.npb_game_url || "").trim() || null);
+    add("source_schedule_key", String(source?.sourceScheduleKey || source?.sourceGameKey || "").trim() || null);
+    add("npb_identity_status", String(source?.npbIdentityStatus || (nextGameCode ? "resolved" : "unresolved")));
+    add("npb_identity_resolved_at", nextGameCode ? String(source?.npbIdentityResolvedAt || timestamp) : null);
+    add("npb_identity_source", String(source?.npbIdentitySource || (nextGameCode ? "npb_schedule_sync" : "npb_schedule_unresolved")));
+  }
+  add("updated_at", timestamp);
   if (!fields.length) return false;
   values.push(internalGameId);
-  await db.prepare(`UPDATE games SET ${fields.join(", ")} WHERE internal_game_id = ?${values.length}`).bind(...values).run();
+  const updateStatement = db.prepare(`UPDATE games SET ${fields.join(", ")} WHERE internal_game_id = ?${values.length}`).bind(...values);
+  const auditColumnsResult = identityColumns.length
+    ? await db.prepare("PRAGMA table_info(game_automation_v3_audit)").bind().all().catch(() => ({ results: [] }))
+    : { results: [] };
+  const auditColumns = new Set((auditColumnsResult.results || []).map((row) => String(row.name || "")));
+  const canAuditIdentityChange = !isManualOverride
+    && auditColumns.has("event_type")
+    && auditColumns.has("previous_npb_game_code")
+    && auditColumns.has("next_npb_game_code")
+    && auditColumns.has("previous_npb_game_url")
+    && auditColumns.has("next_npb_game_url")
+    && auditColumns.has("previous_npb_identity_status")
+    && auditColumns.has("next_npb_identity_status")
+    && auditColumns.has("previous_npb_identity_source")
+    && auditColumns.has("next_npb_identity_source");
+  if (canAuditIdentityChange) {
+    const nextUrl = String(source?.npbGameUrl || source?.npb_game_url || "").trim() || null;
+    const nextStatus = String(source?.npbIdentityStatus || (nextGameCode ? "resolved" : "unresolved"));
+    const nextSource = String(source?.npbIdentitySource || (nextGameCode ? "npb_schedule_sync" : "npb_schedule_unresolved"));
+    const changed = String(currentGame?.npb_game_code || "") !== String(nextGameCode || "")
+      || String(currentGame?.npb_game_url || "") !== String(nextUrl || "")
+      || String(currentGame?.npb_identity_status || "unresolved") !== nextStatus
+      || String(currentGame?.npb_identity_source || "") !== nextSource;
+    if (changed) {
+      const auditStatement = db.prepare(
+        `INSERT INTO game_automation_v3_audit
+           (internal_game_id, job_type, event_type, previous_npb_game_code, next_npb_game_code,
+            previous_npb_game_url, next_npb_game_url, previous_npb_identity_status,
+            next_npb_identity_status, previous_npb_identity_source, next_npb_identity_source,
+            occurred_at, source)
+         VALUES (?1, 'schedule_identity', 'npb_identity_resolved', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'schedule_sync')`
+      ).bind(
+        internalGameId,
+        currentGame?.npb_game_code || null,
+        nextGameCode,
+        currentGame?.npb_game_url || null,
+        nextUrl,
+        currentGame?.npb_identity_status || "unresolved",
+        nextStatus,
+        currentGame?.npb_identity_source || null,
+        nextSource,
+        timestamp
+      );
+      await db.batch([updateStatement, auditStatement]);
+      return true;
+    }
+  }
+  await updateStatement.run();
   return true;
 }
 

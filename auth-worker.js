@@ -331,6 +331,10 @@ export default {
       if (path === "/api/admin/v3/overview" && request.method === "GET") {
         return await handleAdminV3Overview(request, env, cors);
       }
+      const adminV3IdentityResolveRoute = parseAdminV3IdentityResolveRoute(path);
+      if (adminV3IdentityResolveRoute && request.method === "POST") {
+        return await handleAdminV3IdentityResolve(request, env, cors, adminV3IdentityResolveRoute.internalGameId);
+      }
       const adminV3NpbGameCodeRoute = parseAdminV3NpbGameCodeRoute(path);
       if (adminV3NpbGameCodeRoute && request.method === "PATCH") {
         return await handleAdminV3NpbGameCodeUpdate(request, env, cors, adminV3NpbGameCodeRoute.internalGameId);
@@ -505,9 +509,18 @@ async function runScheduledGameAutomationV3(env, now) {
 
 async function loadV3GameTarget(db, internalGameId) {
   const id = normalizeV3InternalGameId(internalGameId);
+  let gameColumns = new Set();
+  try {
+    gameColumns = await getTableColumnSet(db, "games");
+  } catch {
+    gameColumns = new Set();
+  }
+  const identityColumns = ["npb_game_url", "source_schedule_key", "npb_identity_status", "npb_identity_resolved_at", "npb_identity_source"]
+    .filter((column) => gameColumns.has(column));
   const row = await db.prepare(
     `SELECT internal_game_id, game_date, start_time, home_team, away_team,
-            npb_game_code, game_status, is_active, deleted_at
+            npb_game_code${identityColumns.length ? `, ${identityColumns.join(", ")}` : ""},
+            game_status, is_active, deleted_at
        FROM games WHERE internal_game_id = ?1 LIMIT 1`
   ).bind(id).first();
   if (!row) throw createV3Error("V3_GAME_NOT_REGISTERED", "V3対象試合が日程DBに登録されていません。");
@@ -527,7 +540,39 @@ async function loadV3GameTarget(db, internalGameId) {
     deletedAt: row.deleted_at,
     gameId: legacyGameId,
     gameCode: row.npb_game_code || "",
+    npbGameUrl: row.npb_game_url || "",
+    sourceScheduleKey: row.source_schedule_key || "",
+    npbIdentityStatus: row.npb_identity_status || (row.npb_game_code ? "resolved" : "unresolved"),
+    npbIdentityResolvedAt: row.npb_identity_resolved_at || null,
+    npbIdentitySource: row.npb_identity_source || "",
     targetResolution: "v3_games_internal_game_id"
+  };
+}
+
+function createV3LineupIdentity(target) {
+  const startAt = new Date(target?.startAt || target?.start_time || "");
+  const gameCode = normalizeNpbGameCode(target?.gameCode || target?.npb_game_code);
+  const sourceUrl = String(target?.npbGameUrl || "").trim() || buildNpbGameUrl(target?.game_date, gameCode);
+  if (!INTERNAL_GAME_ID_PATTERN.test(String(target?.internalGameId || "")) || Number.isNaN(startAt.getTime()) || !gameCode || !sourceUrl) return null;
+  return {
+    internalGameId: target.internalGameId,
+    gameId: target.gameId,
+    gameCode,
+    sourceUrl,
+    startAt,
+    finalLineupFetchAt: new Date(startAt.getTime() + 2 * 60 * 1000),
+    game: {
+      gameId: target.gameId,
+      internalGameId: target.internalGameId,
+      gameCode,
+      npbScoreUrl: sourceUrl,
+      date: target.game_date,
+      startAt,
+      homeTeam: target.home_team,
+      awayTeam: target.away_team,
+      status: target.game_status
+    },
+    resolvedBy: "v3_games_npb_identity"
   };
 }
 
@@ -573,7 +618,8 @@ async function executeGameAutomationV3Job({ env, job, internalGameId, now }) {
   }
   if (jobType === "lineup_fetch" || jobType === "lineup_finalize") {
     if (!target.gameId) throw createV3Error("V3_LEGACY_REFERENCE_MISSING", "既存スタメン互換参照が見つかりません。");
-    if (!target.gameCode) throw createV3Error("NPB_GAME_CODE_UNAVAILABLE", "NPB公式試合コードが日程DBにありません。");
+    const lineupIdentity = createV3LineupIdentity(target);
+    if (!lineupIdentity) throw createV3Error("NPB_IDENTITY_UNRESOLVED", "NPB試合識別情報が日程DBにありません。");
     const result = await captureOfficialLineup(env, target.gameId, now, {
       phase: jobType === "lineup_finalize" ? "final" : "provisional",
       internalGameId,
@@ -588,7 +634,8 @@ async function executeGameAutomationV3Job({ env, job, internalGameId, now }) {
           awayTeam: target.away_team,
           status: target.game_status
         }
-      }
+      },
+      identityOverride: lineupIdentity
     });
     if (jobType === "lineup_fetch") return { status: result.status, stateBefore, stateAfter: stateBefore };
     return { status: result.status, stateBefore, stateAfter: "lineup_ready" };
@@ -2435,18 +2482,22 @@ async function syncFightersScheduleForDate(env, date, now) {
         existingRow: existingByIdentity.get(identityKey) || null,
         existingCandidates: existingRowsByIdentity.get(identityKey) || [],
         sourceGameKey: `${date}:${game.homeTeam}:${game.awayTeam}:${game.startTime}`,
+        npbGameCode: normalizeNpbGameCode(game.gameCode),
+        npbGameUrl: String(game.npbGameUrl || "").trim() || buildNpbGameUrl(date, game.gameCode),
         gameStatus: game.status === "cancelled" ? "cancelled" : "scheduled"
       };
     });
     const changed = await hasScheduleDataChanged(env.AUTH_DB, date, normalizedGames);
     const statements = [];
     for (const item of normalizedGames) {
-      const { game, startAt, sourceGameKey, gameStatus, existingRow, existingCandidates } = item;
+      const { game, startAt, sourceGameKey, npbGameCode, npbGameUrl, gameStatus, existingRow, existingCandidates } = item;
       const internalGameId = await resolveScheduleInternalGameId(env.AUTH_DB, registry, {
         date,
         startAt,
         game,
         sourceGameKey,
+        npbGameCode,
+        npbGameUrl,
         gameStatus,
         existingRow,
         existingCandidates,
@@ -2553,7 +2604,7 @@ async function linkLegacyGameRowsToInternalGameId(db, internalGameId, legacyGame
   if (statements.length) await db.batch(statements);
 }
 
-async function resolveScheduleInternalGameId(db, registry, { date, startAt, game, sourceGameKey, gameStatus, existingRow, existingCandidates, now }) {
+async function resolveScheduleInternalGameId(db, registry, { date, startAt, game, sourceGameKey, npbGameCode = "", npbGameUrl = "", gameStatus, existingRow, existingCandidates, now }) {
   if (!registry.available) {
     throw createPregameError("INTERNAL_GAME_REGISTRY_NOT_READY", "内部試合IDレジストリが利用できないため、日程を登録できません。", { httpStatus: 503 });
   }
@@ -2573,7 +2624,12 @@ async function resolveScheduleInternalGameId(db, registry, { date, startAt, game
         startTime: startAt.toISOString(),
         homeTeam: game?.homeTeam,
         awayTeam: game?.awayTeam,
-        gameStatus
+        gameStatus,
+        npbGameCode,
+        npbGameUrl,
+        sourceScheduleKey: sourceGameKey,
+        npbIdentityStatus: npbGameCode ? "resolved" : "unresolved",
+        npbIdentitySource: "npb_schedule_sync"
       },
       identifiers,
       allowCreate: true,
@@ -2619,7 +2675,12 @@ async function backfillUniqueDetectedScheduleInternalGames(db, date, registry, n
           startTime: row.start_at,
           homeTeam: row.home_team,
           awayTeam: row.away_team,
-          gameStatus: row.game_status
+          gameStatus: row.game_status,
+          npbGameCode: normalizeNpbGameCode(row.game_code),
+          npbGameUrl: buildNpbGameUrl(row.game_date, row.game_code),
+          sourceScheduleKey: row.source_game_key,
+          npbIdentityStatus: normalizeNpbGameCode(row.game_code) ? "resolved" : "unresolved",
+          npbIdentitySource: "npb_schedule_backfill"
         },
         identifiers: createScheduleGameIdentifiers({
           gameId: row.game_id,
@@ -2643,6 +2704,56 @@ async function backfillUniqueDetectedScheduleInternalGames(db, date, registry, n
 function normalizeNpbGameCode(value) {
   const normalized = String(value || "").trim().toLowerCase();
   return /^[a-z0-9]{1,2}-[a-z0-9]{1,2}-\d+$/.test(normalized) ? normalized : "";
+}
+
+function buildNpbGameUrl(date, gameCode) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date || ""));
+  const normalizedCode = normalizeNpbGameCode(gameCode);
+  if (!match || !normalizedCode) return "";
+  return `https://npb.jp/scores/${match[1]}/${match[2]}${match[3]}/${normalizedCode}/`;
+}
+
+function parseNpbScheduleStartAt(date, value) {
+  if (/^\d{2}:\d{2}$/.test(String(value || ""))) {
+    return new Date(`${date}T${value}:00+09:00`);
+  }
+  return new Date(value || "");
+}
+
+export function resolveNpbScheduleIdentity({ date, startAt, homeTeam, awayTeam, stadium = "", games = [] } = {}) {
+  const expectedStart = startAt instanceof Date ? startAt : new Date(startAt || "");
+  const expectedHome = normalizeScheduleTeamCode(homeTeam);
+  const expectedAway = normalizeScheduleTeamCode(awayTeam);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || "")) || Number.isNaN(expectedStart.getTime()) || !expectedHome || !expectedAway) {
+    return { status: "unresolved", code: "NPB_IDENTITY_UNRESOLVED", candidates: [] };
+  }
+  const candidates = (Array.isArray(games) ? games : []).filter((game) => {
+    const gameHome = normalizeScheduleTeamCode(game?.homeTeam || game?.homeTeamId);
+    const gameAway = normalizeScheduleTeamCode(game?.awayTeam || game?.awayTeamId);
+    const candidateStart = parseNpbScheduleStartAt(date, game?.startTime || game?.start_at || game?.startAt);
+    const sameTeams = gameHome === expectedHome && gameAway === expectedAway;
+    const sameStart = !Number.isNaN(candidateStart.getTime()) && candidateStart.getTime() === expectedStart.getTime();
+    const expectedStadium = String(stadium || "").trim();
+    const candidateStadium = String(game?.stadium || game?.venue || "").trim();
+    return sameTeams && sameStart && (!expectedStadium || !candidateStadium || expectedStadium === candidateStadium);
+  });
+  if (candidates.length > 1) {
+    return { status: "conflict", code: "NPB_IDENTITY_CONFLICT", candidates };
+  }
+  const match = candidates[0];
+  const gameCode = normalizeNpbGameCode(match?.gameCode || match?.npbGameCode);
+  if (!match || !gameCode) {
+    return { status: "unresolved", code: "NPB_IDENTITY_UNRESOLVED", candidates };
+  }
+  return {
+    status: "resolved",
+    code: "",
+    gameCode,
+    gameUrl: String(match.npbGameUrl || "").trim() || buildNpbGameUrl(date, gameCode),
+    sourceScheduleKey: `${date}:${expectedHome}:${expectedAway}:${String(match.startTime || "")}`,
+    source: "npb_schedule_resolve",
+    candidates
+  };
 }
 
 function createScheduleIdentityKey({ date = "", startAt = "", homeTeam = "", awayTeam = "" } = {}) {
@@ -2897,6 +3008,106 @@ async function handleAdminV3Overview(request, env, cors) {
   return jsonResponse({ ok: true, featureFlag: V3_FEATURE_FLAG, enabled: isGameAutomationV3Enabled(env), schema, games: rows }, 200, cors);
 }
 
+async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  try {
+    const id = normalizeV3InternalGameId(internalGameId);
+    const columns = await getTableColumnSet(env.AUTH_DB, "games");
+    const requiredColumns = ["npb_game_code", "npb_game_url", "source_schedule_key", "npb_identity_status", "npb_identity_resolved_at", "npb_identity_source"];
+    if (!requiredColumns.every((column) => columns.has(column))) {
+      return jsonResponse({ ok: false, code: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", error: "NPB識別情報スキーマが準備されていません。" }, 503, cors);
+    }
+    const current = await env.AUTH_DB.prepare(
+      `SELECT internal_game_id, game_date, start_time, home_team, away_team, stadium,
+              npb_game_code, npb_game_url, source_schedule_key, npb_identity_status,
+              npb_identity_resolved_at, npb_identity_source, game_status
+         FROM games WHERE internal_game_id = ?1 LIMIT 1`
+    ).bind(id).first();
+    if (!current) return jsonResponse({ ok: false, code: "V3_GAME_NOT_REGISTERED", error: "対象試合が日程DBに登録されていません。" }, 404, cors);
+    if (current.npb_identity_status === "manually_overridden") {
+      return jsonResponse({ ok: false, code: "NPB_IDENTITY_MANUAL_OVERRIDE", error: "管理者上書き値は自動再解決で変更できません。" }, 409, cors);
+    }
+    let payload;
+    try {
+      payload = await fetchNpbWorkerJson(env, { mode: "schedule", date: current.game_date });
+    } catch (error) {
+      console.warn(`[GAME_AUTOMATION_V3] stage=npb_identity_resolve_fetch code=${error?.code || "NPB_IDENTITY_RESOLUTION_FAILED"}`);
+      return jsonResponse({ ok: false, code: "NPB_IDENTITY_RESOLUTION_FAILED", error: "NPB日程を取得できませんでした。" }, 502, cors);
+    }
+    const resolved = resolveNpbScheduleIdentity({
+      date: current.game_date,
+      startAt: current.start_time,
+      homeTeam: current.home_team,
+      awayTeam: current.away_team,
+      stadium: current.stadium,
+      games: payload.games
+    });
+    if (resolved.status !== "resolved") {
+      const status = resolved.status === "conflict" ? 409 : 422;
+      return jsonResponse({ ok: false, code: resolved.code, error: resolved.status === "conflict" ? "NPB日程の候補が複数あります。" : "NPB日程から対象試合を解決できませんでした。" }, status, cors);
+    }
+    const identifiers = [
+      { provider: "npb", identifierType: "npb_game_code", identifierValue: resolved.gameCode },
+      { provider: "schedule_worker", identifierType: "source_game_key", identifierValue: resolved.sourceScheduleKey }
+    ];
+    for (const identifier of identifiers) {
+      const conflict = await env.AUTH_DB.prepare(
+        `SELECT internal_game_id FROM game_identifiers
+          WHERE provider = ?1 AND identifier_type = ?2 AND identifier_value = ?3
+          LIMIT 2`
+      ).bind(identifier.provider, identifier.identifierType, identifier.identifierValue).all();
+      const otherIds = [...new Set((conflict.results || []).map((row) => String(row.internal_game_id || "")).filter((value) => value && value !== id))];
+      if (otherIds.length) return jsonResponse({ ok: false, code: "NPB_IDENTITY_CONFLICT", error: "NPB識別子が別の試合へ登録されています。" }, 409, cors);
+    }
+    const now = new Date();
+    await updateGameScheduleMetadata(env.AUTH_DB, id, {
+      gameDate: current.game_date,
+      startTime: current.start_time,
+      homeTeam: current.home_team,
+      awayTeam: current.away_team,
+      gameStatus: current.game_status
+    }, {
+      npbGameCode: resolved.gameCode,
+      npbGameUrl: resolved.gameUrl,
+      sourceScheduleKey: resolved.sourceScheduleKey,
+      npbIdentityStatus: "resolved",
+      npbIdentityResolvedAt: now.toISOString(),
+      npbIdentitySource: "npb_schedule_resolve",
+      updatedBy: access.user?.id ? `admin:${String(access.user.id)}` : "admin"
+    }, now);
+    for (const identifier of identifiers) await registerGameIdentifier(env.AUTH_DB, id, identifier, now);
+    const updated = await env.AUTH_DB.prepare(
+      `SELECT internal_game_id, game_date, start_time, home_team, away_team,
+              npb_game_code, npb_game_url, source_schedule_key, npb_identity_status,
+              npb_identity_resolved_at, npb_identity_source, game_status
+         FROM games WHERE internal_game_id = ?1 LIMIT 1`
+    ).bind(id).first();
+    return jsonResponse({ ok: true, resolvedBy: "npb_schedule_resolve", game: serializeV3GameIdentity(updated) }, 200, cors);
+  } catch (error) {
+    const code = String(error?.code || "NPB_IDENTITY_RESOLUTION_FAILED");
+    console.error(`[GAME_AUTOMATION_V3] stage=npb_identity_resolve code=${code}`);
+    return jsonResponse({ ok: false, code, error: "NPB試合識別情報を再解決できませんでした。" }, 500, cors);
+  }
+}
+
+function serializeV3GameIdentity(row) {
+  return {
+    internalGameId: row?.internal_game_id || "",
+    gameDate: row?.game_date || "",
+    startAt: row?.start_time || null,
+    homeTeam: row?.home_team || "",
+    awayTeam: row?.away_team || "",
+    npbGameCode: row?.npb_game_code || null,
+    npbGameUrl: row?.npb_game_url || null,
+    sourceScheduleKey: row?.source_schedule_key || null,
+    npbIdentityStatus: row?.npb_identity_status || "unresolved",
+    npbIdentityResolvedAt: row?.npb_identity_resolved_at || null,
+    npbIdentitySource: row?.npb_identity_source || null,
+    gameStatus: row?.game_status || null
+  };
+}
+
 async function handleAdminV3NpbGameCodeUpdate(request, env, cors, internalGameId) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) return access.response;
@@ -2907,15 +3118,20 @@ async function handleAdminV3NpbGameCodeUpdate(request, env, cors, internalGameId
     if (!gameColumns.has("npb_game_code")) {
       return jsonResponse({ ok: false, code: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", error: "games.npb_game_code が利用できません。" }, 503, cors);
     }
+    const identityColumns = ["npb_game_url", "source_schedule_key", "npb_identity_status", "npb_identity_resolved_at", "npb_identity_source"];
+    if (!identityColumns.every((column) => gameColumns.has(column))) {
+      return jsonResponse({ ok: false, code: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", error: "NPB識別情報スキーマが準備されていません。" }, 503, cors);
+    }
     const auditColumns = await getTableColumnSet(env.AUTH_DB, "game_automation_v3_audit");
-    const requiredAuditColumns = ["event_type", "previous_npb_game_code", "next_npb_game_code", "updated_by"];
+    const requiredAuditColumns = ["event_type", "previous_npb_game_code", "next_npb_game_code", "updated_by", "previous_npb_game_url", "next_npb_game_url", "previous_npb_identity_status", "next_npb_identity_status", "previous_npb_identity_source", "next_npb_identity_source"];
     if (!requiredAuditColumns.every((column) => auditColumns.has(column))) {
       return jsonResponse({ ok: false, code: "GAME_AUTOMATION_V3_AUDIT_SCHEMA_UNAVAILABLE", error: "V3監査スキーマが準備されていません。" }, 503, cors);
     }
 
     const current = await env.AUTH_DB.prepare(
       `SELECT internal_game_id, game_date, start_time, home_team, away_team,
-              npb_game_code, game_status, is_active, deleted_at
+              npb_game_code, npb_game_url, source_schedule_key, npb_identity_status,
+              npb_identity_resolved_at, npb_identity_source, game_status, is_active, deleted_at
          FROM games WHERE internal_game_id = ?1 LIMIT 1`
     ).bind(id).first();
     if (!current) return jsonResponse({ ok: false, code: "V3_GAME_NOT_REGISTERED", error: "対象試合が日程DBに登録されていません。" }, 404, cors);
@@ -2931,10 +3147,16 @@ async function handleAdminV3NpbGameCodeUpdate(request, env, cors, internalGameId
     }
 
     const previousCode = String(current.npb_game_code || "").trim().toLowerCase() || null;
+    const previousUrl = String(current.npb_game_url || "").trim() || null;
+    const previousStatus = String(current.npb_identity_status || "unresolved");
+    const previousSource = String(current.npb_identity_source || "").trim() || null;
     const updatedAt = new Date().toISOString();
     const updatedBy = access.user?.id ? `admin:${String(access.user.id)}` : "admin";
-    const updateFields = ["npb_game_code = ?1", "updated_at = ?2"];
-    const updateValues = [nextCode || null, updatedAt];
+    const nextUrl = nextCode ? buildNpbGameUrl(current.game_date, nextCode) : null;
+    const nextStatus = nextCode ? "manually_overridden" : "unresolved";
+    const nextSource = nextCode ? "admin_manual_override" : "admin_manual_clear";
+    const updateFields = ["npb_game_code = ?1", "npb_game_url = ?2", "npb_identity_status = ?3", "npb_identity_resolved_at = ?4", "npb_identity_source = ?5", "updated_at = ?6"];
+    const updateValues = [nextCode || null, nextUrl, nextStatus, nextCode ? updatedAt : null, nextSource, updatedAt];
     if (gameColumns.has("updated_by")) {
       updateFields.push(`updated_by = ?${updateValues.length + 1}`);
       updateValues.push(updatedBy);
@@ -2946,14 +3168,18 @@ async function handleAdminV3NpbGameCodeUpdate(request, env, cors, internalGameId
       env.AUTH_DB.prepare(
         `INSERT INTO game_automation_v3_audit
            (internal_game_id, job_type, event_type, previous_npb_game_code,
-            next_npb_game_code, updated_by, occurred_at, source)
-         VALUES (?1, 'npb_game_code_update', 'admin_npb_game_code_update', ?2, ?3, ?4, ?5, 'admin')`
-      ).bind(id, previousCode, nextCode || null, updatedBy, updatedAt)
+            next_npb_game_code, previous_npb_game_url, next_npb_game_url,
+            previous_npb_identity_status, next_npb_identity_status,
+            previous_npb_identity_source, next_npb_identity_source,
+            updated_by, occurred_at, source)
+         VALUES (?1, 'npb_game_code_update', 'admin_npb_game_code_update', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'admin')`
+      ).bind(id, previousCode, nextCode || null, previousUrl, nextUrl, previousStatus, nextStatus, previousSource, nextSource, updatedBy, updatedAt)
     ]);
 
     const updated = await env.AUTH_DB.prepare(
       `SELECT internal_game_id, game_date, start_time, home_team, away_team,
-              npb_game_code, game_status, is_active, deleted_at
+              npb_game_code, npb_game_url, source_schedule_key, npb_identity_status,
+              npb_identity_resolved_at, npb_identity_source, game_status, is_active, deleted_at
          FROM games WHERE internal_game_id = ?1 LIMIT 1`
     ).bind(id).first();
     return jsonResponse({ ok: true, updated: previousCode !== (nextCode || null), game: {
@@ -2963,6 +3189,11 @@ async function handleAdminV3NpbGameCodeUpdate(request, env, cors, internalGameId
       homeTeam: updated.home_team,
       awayTeam: updated.away_team,
       npbGameCode: updated.npb_game_code || null,
+      npbGameUrl: updated.npb_game_url || null,
+      sourceScheduleKey: updated.source_schedule_key || null,
+      npbIdentityStatus: updated.npb_identity_status || "unresolved",
+      npbIdentityResolvedAt: updated.npb_identity_resolved_at || null,
+      npbIdentitySource: updated.npb_identity_source || null,
       gameStatus: updated.game_status,
       isActive: updated.is_active,
       deletedAt: updated.deleted_at
@@ -3031,6 +3262,16 @@ function parseAdminV3JobRoute(path) {
 
 function parseAdminV3NpbGameCodeRoute(path) {
   const match = /^\/api\/admin\/v3\/games\/([^/]+)\/npb-game-code$/.exec(path);
+  if (!match) return null;
+  try {
+    return { internalGameId: decodeURIComponent(match[1]) };
+  } catch {
+    return { internalGameId: "" };
+  }
+}
+
+function parseAdminV3IdentityResolveRoute(path) {
+  const match = /^\/api\/admin\/v3\/games\/([^/]+)\/npb-identity\/resolve$/.exec(path);
   if (!match) return null;
   try {
     return { internalGameId: decodeURIComponent(match[1]) };
@@ -6483,7 +6724,7 @@ async function adoptPersistedLineupCandidate(env, gameId, now, { internalGameId 
   return null;
 }
 
-async function captureOfficialLineup(env, gameId, now, { force = false, phase = "provisional", autoApproveEnabled = true, internalGameId = "", target = null } = {}) {
+async function captureOfficialLineup(env, gameId, now, { force = false, phase = "provisional", autoApproveEnabled = true, internalGameId = "", target = null, identityOverride = null } = {}) {
   const isFinalCapture = phase === "final";
   const existing = await getGameLineup(env.AUTH_DB, { gameId, internalGameId });
   if (existing) {
@@ -6497,7 +6738,7 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
     const adopted = await adoptPersistedLineupCandidate(env, gameId, now, { internalGameId, target });
     if (adopted) return adopted;
   }
-  const identity = await resolvePregameIdentity(env.AUTH_DB, gameId, target || {});
+  const identity = identityOverride || await resolvePregameIdentity(env.AUTH_DB, gameId, target || {});
   if (!identity) {
     if (!target) throw createPregameError("LINEUP_URL_BUILD_FAILED", "NPB公式スタメンを取得する対象試合コードを解決できません。");
     const deadline = target ? getFinalLineupRetryDeadline({ startAt: new Date(target.startAt) }) : null;
@@ -6511,7 +6752,9 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
     return { status: isFinalCapture ? "not_due" : "superseded_after_start", superseded: !isFinalCapture };
   }
   try {
-    const payload = await fetchNpbWorkerJson(env, { mode: "lineup", date: identity.game.date, gameCode: identity.gameCode });
+    const payload = identityOverride?.sourceUrl
+      ? await fetchNpbWorkerJson(env, { mode: "lineup", url: identityOverride.sourceUrl })
+      : await fetchNpbWorkerJson(env, { mode: "lineup", date: identity.game.date, gameCode: identity.gameCode });
     const actual = createOfficialLineupFromNpb(payload.lineup);
     if (!actual.ok) {
       throw createPregameError(actual.code || "LINEUP_PARSE_FAILED", actual.error, {

@@ -22,7 +22,7 @@ test("予告先発はgameId単位のD1保存と60分再確認時刻を持つ", (
 
 test("Cronはtarget・開始前・next_check_at・announcedを条件に予告先発を取得する", () => {
   const worker = read("auth-worker.js");
-  assert.match(worker, /shared\.probableStarter = await runDueProbableStarterWorkflowJobs\(env, now\)/);
+  assert.match(worker, /probableStarter: \(\{ env: executorEnv, now: executorNow \}\) => runDueProbableStarterWorkflowJobs\(executorEnv, executorNow\)/);
   assert.match(worker, /mode: "legacy", \.\.\.\(await runDueProbableStarterJob\(env, now\)\)/);
   assert.match(worker, /selectProbableStarterCronTarget\(env\.AUTH_DB, now\)/);
   assert.match(worker, /new Date\(now\)\.getTime\(\) >= new Date\(target\.startAt\)\.getTime\(\)/);

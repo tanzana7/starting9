@@ -41,9 +41,9 @@ test("8/5のrosterは解決済みtargetのinternalGameIdとstartAtを共通resol
 
   assert.match(resolver, /fallbackInternalGameId/);
   assert.match(resolver, /workflow_target_fallback/);
-  assert.match(roster, /resolvePregameIdentity\(env\.AUTH_DB, gameId, target \|\| \{\}\)/);
+  assert.match(roster, /resolveRosterScheduleTarget\(env\.AUTH_DB, gameId, target \|\| \{\}\)/);
   assert.match(cron, /target\s*\}\)/);
-  assert.match(roster, /SCHEDULE_UNAVAILABLE/);
+  assert.match(worker, /SCHEDULE_UNAVAILABLE/);
   assert.match(cron, /rosterResolutionStage/);
   assert.match(cron, /rosterResolvedBy/);
   assert.match(cron, /rosterStartAtFound/);
@@ -69,7 +69,7 @@ test("scheduleが本当に解決できない場合だけroster SCHEDULE_UNAVAILA
   const rosterEnd = worker.indexOf("async function captureOfficialLineup", rosterStart);
   const roster = worker.slice(rosterStart, rosterEnd);
 
-  assert.match(roster, /if \(!identity\)/);
-  assert.match(roster, /error\.rosterResolution = \{[\s\S]*startAtFound: false/);
-  assert.match(roster, /const identity = await resolvePregameIdentity/);
+  assert.match(roster, /resolveRosterScheduleTarget/);
+  assert.match(worker, /error\.rosterResolution = \{[\s\S]*startAtFound: false/);
+  assert.match(worker, /if \(!schedule\)/);
 });

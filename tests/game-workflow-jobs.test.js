@@ -155,7 +155,7 @@ test("workflow job runner uses internal IDs and keeps legacy completion runners 
   assert.match(migration, /CREATE TABLE IF NOT EXISTS game_workflow_state/);
   assert.match(migration, /CREATE TABLE IF NOT EXISTS game_job_runs/);
   assert.match(migration, /UNIQUE\(internal_game_id, job_type, scheduled_slot_at\)/);
-  assert.match(worker, /shared\.probableStarter = await runDueProbableStarterWorkflowJobs\(env, now\)/);
+  assert.match(worker, /probableStarter: \(\{ env: executorEnv, now: executorNow \}\) => runDueProbableStarterWorkflowJobs\(executorEnv, executorNow\)/);
   assert.match(worker, /maxAttempts: getProbableStarterJobMaxAttempts\(target\.startAt, now\)/);
   assert.match(worker, /mode: "legacy", \.\.\.\(await runDueProbableStarterJob\(env, now\)\)/);
   assert.match(worker, /runAdminProbableStarterWorkflowJob/);
@@ -164,10 +164,10 @@ test("workflow job runner uses internal IDs and keeps legacy completion runners 
   assert.match(worker, /ENABLE_WORKFLOW_COMPLETION_JOBS/);
   assert.match(worker, /COMPLETION_WORKFLOW_JOB_TYPES/);
   assert.match(worker, /"provisional_lineup_fetch", "final_lineup_fetch", "scoring", "ranking_update", "publication", "rescore"/);
-  assert.match(worker, /runDueCompletionWorkflowJobs\(env, now, activeTimelines\)/);
+  assert.match(worker, /runDueCompletionWorkflowJobs\(executorEnv, executorNow, executorTimelines\)/);
   assert.match(worker, /if \(completionJobsEnabled\)/);
   assert.match(worker, /if \(!completionJobsEnabled\)/);
-  assert.match(worker, /runDueAutoScoringJobs\(env, now, pausedGameIds\)/);
+  assert.match(worker, /runDueAutoScoringJobs\(executorEnv, executorNow, pausedGameIds\)/);
   assert.match(worker, /runDueGameDayPublicationJobs\(env, now, activeTimelines\)/);
 });
 

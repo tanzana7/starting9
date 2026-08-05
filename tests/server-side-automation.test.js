@@ -14,12 +14,9 @@ const migration = fs.readFileSync(path.join(root, "migrations", "0013_game_autom
 
 test("scheduled entry point is the server-side automation trigger", () => {
   assert.match(worker, /async scheduled\(event, env, ctx\)/);
-  assert.match(worker, /ctx\.waitUntil\(runScheduledGameAutomation\(env, scheduledAt\)\)/);
-  assert.match(worker, /await syncTodayFightersSchedule\(env, now\)/);
-  assert.match(worker, /const timelines = await getCronPregameTimelines\(env\.AUTH_DB, now, syncedGames\)/);
-  assert.match(worker, /const detected = await loadDetectedScheduleGames\(db, dates\)/);
-  assert.match(worker, /setDetectedScheduleGames\(detected\)/);
-  assert.match(worker, /await runGameWorkflows\(env, now, scheduleSync\.games\)/);
+  assert.match(worker, /isGameAutomationV3Enabled\(env\)/);
+  assert.match(worker, /ctx\.waitUntil\(runScheduledGameAutomationV3\(env, scheduledAt\)\)/);
+  assert.match(worker, /runGameAutomationV3\(env, now/);
   assert.match(config, /"crons": \["\* \* \* \* \*"\]/);
 });
 

@@ -634,6 +634,7 @@ function applyAdminMode() {
   const adminDetails = document.getElementById("adminDetails");
   const adminModeBadge = document.getElementById("adminModeBadge");
   const openAdminButton = document.getElementById("openAdminButton");
+  const openAdminV3Button = document.getElementById("openAdminV3Button");
   const appLayout = document.querySelector(".app-layout");
   const isAuthorized = state.adminAccess.status === "authorized";
   const isAdminScreenOpen = state.appMode === "admin";
@@ -653,6 +654,11 @@ function applyAdminMode() {
     const shouldShowButton = isAuthorized && state.appMode === "normal";
     openAdminButton.classList.toggle("hidden", !shouldShowButton);
     openAdminButton.setAttribute("aria-hidden", shouldShowButton ? "false" : "true");
+  }
+  if (openAdminV3Button) {
+    const shouldShowButton = isAuthorized && state.appMode === "normal";
+    openAdminV3Button.classList.toggle("hidden", !shouldShowButton);
+    openAdminV3Button.setAttribute("aria-hidden", shouldShowButton ? "false" : "true");
   }
   appLayout?.classList.toggle("is-admin-screen", isAdminScreenOpen);
 

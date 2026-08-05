@@ -11,9 +11,9 @@ const authWorkerUrl = pathToFileURL(path.join(root, "auth-worker.js")).href;
 test("ページを開かなくてもscheduledから通常Cronワークフローとログ保持処理が始まる", () => {
   const worker = read("auth-worker.js");
   assert.match(worker, /async scheduled\(event, env, ctx\)/);
-  assert.match(worker, /ctx\.waitUntil\(runScheduledGameAutomation\(env, scheduledAt\)\)/);
-  assert.match(worker, /const workflowResult = await runGameWorkflows\(env, now, scheduleSync\.games\)/);
-  assert.match(worker, /await cleanupWorkflowLogs\(env\.AUTH_DB, now\)/);
+  assert.match(worker, /ctx\.waitUntil\(runScheduledGameAutomationV3\(env, scheduledAt\)\)/);
+  assert.match(worker, /runGameAutomationV3\(env, now/);
+  assert.match(worker, /game_automation_v3_audit/);
 });
 
 test("通常Cronの各段階の予期しない失敗は共通の観測ログへ記録し、テストCronとは分離される", () => {

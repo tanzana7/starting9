@@ -29,6 +29,7 @@ button:hover { background: #edf4fa; }
 .npb-identity-status { font-weight: 700; color: #1b5c8b; }
 .npb-identity-details { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 8px 0; color: #526477; font-size: 12px; }
 .npb-identity-details button { padding: 5px 10px; }
+.npb-identity-auto-job { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 6px 0; padding: 8px 10px; background: #f4f8fc; border: 1px solid #dce8f2; border-radius: 5px; color: #526477; font-size: 12px; }
 .v3-orientation-editor { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 10px 0 2px; border-top: 1px solid #edf1f5; color: #526477; font-size: 12px; }
 .v3-orientation-editor label { display: flex; align-items: center; gap: 6px; }
 .v3-orientation-editor input { width: 120px; border: 1px solid #b9c8d8; border-radius: 5px; padding: 6px 8px; font: inherit; color: #172033; }

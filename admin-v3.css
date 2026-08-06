@@ -106,6 +106,13 @@ button:disabled { cursor: wait; opacity: .65; }
 .job { display: grid; grid-template-columns: 150px 110px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 8px 10px; background: #f8fafc; border: 1px solid #e5ebf1; border-radius: 5px; font-size: 13px; }
 .job code { color: #536d86; overflow-wrap: anywhere; }
 .job-status { font-weight: 650; }
+.v3-lineup-editor { display: grid; gap: 7px; margin: 10px 0; }
+.v3-lineup-row { display: grid; grid-template-columns: 44px repeat(4, minmax(0, 1fr)); gap: 7px; align-items: center; }
+.v3-lineup-row input, .v3-panel input, .v3-panel select { min-width: 0; border: 1px solid #b9c8d8; border-radius: 5px; padding: 7px 8px; color: #172033; background: #fff; }
+.v3-operation-reason { display: inline-flex; align-items: center; gap: 7px; margin: 8px 0; }
+.v3-operation-reason input { width: min(420px, 100%); }
+.v3-operation-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 9px 0; }
+.v3-operation-result { min-height: 1.3em; color: #1b5c8b; overflow-wrap: anywhere; }
 .npb-identity-diagnostics { margin: 8px 0; color: #526477; font-size: 12px; }
 .npb-identity-diagnostics summary, .v3-panel summary { cursor: pointer; color: #1b5c8b; font-weight: 700; }
 .npb-diagnostic-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 6px 12px; margin: 10px 0; }
@@ -142,6 +149,8 @@ button:disabled { cursor: wait; opacity: .65; }
   .roster-summary, .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .job { grid-template-columns: 1fr 1fr; }
   .job button { grid-column: 1 / -1; }
+  .v3-lineup-row { grid-template-columns: 36px repeat(2, minmax(0, 1fr)); }
+  .v3-lineup-row input:nth-of-type(n + 3) { grid-column: span 1; }
   .game-heading { align-items: flex-start; }
   .game-heading code { display: none; }
 }

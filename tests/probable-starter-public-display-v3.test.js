@@ -52,5 +52,5 @@ test("通常画面はhome/awayをDB順で表示し、反転候補を一致扱い
 });
 
 test("script.jsの表示接続変更に対応するキャッシュバスターが更新されている", () => {
-  assert.match(html, /script\.js\?v=admin-test-data-20260728-9/);
+  assert.match(html, /script\.js\?v=admin-test-data-20260728-10/);
 });

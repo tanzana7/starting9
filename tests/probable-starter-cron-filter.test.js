@@ -48,7 +48,7 @@ test("両チームの予告先発が揃った試合はCron対象から除外す�
   assert.equal(selection.target, null);
 });
 
-test("片方だけ、未取得、再試行待ちの行はCron候補として残る", async () => {
+test("片側取得はpartial完了として保持し、未取得・再試行待ちだけをCron候補に残す", async () => {
   const { isProbableStarterComplete, selectProbableStarterCronTarget } = await import(pathToFileURL(workerPath));
   assert.equal(isProbableStarterComplete({ status: "announced", home_pitcher_name: "A", away_pitcher_name: "B" }), true);
   assert.equal(isProbableStarterComplete({ status: "announced", home_pitcher_name: "A", away_pitcher_name: "" }), false);
@@ -70,8 +70,8 @@ test("片方だけ、未取得、再試行待ちの行はCron候補として残�
     away_pitcher_name: "",
     next_check_at: null
   }), new Date("2026-08-20T00:00:00.000Z"));
-  assert.equal(selection.reason, "candidate");
-  assert.equal(selection.target.gameId, "2026-08-20-f-m-20");
+  assert.equal(selection.reason, "already_announced");
+  assert.equal(selection.target, null);
 });
 
 test("Cron候補抽出後にのみ取得関数を呼び、正常な取得済み除外はログを作らない", () => {

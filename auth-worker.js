@@ -937,24 +937,28 @@ function findProbableStarterGame(target, games) {
       && normalizeProbableStarterTeam(game?.homeTeam) === expectedHome
       && normalizeProbableStarterTeam(game?.awayTeam) === expectedAway;
   });
-  if (exact) return exact;
-  return (Array.isArray(games) ? games : []).find((game) => {
-    const teams = new Set([normalizeProbableStarterTeam(game?.homeTeam), normalizeProbableStarterTeam(game?.awayTeam)]);
-    return (!expectedDate || String(game?.date || "") === expectedDate)
-      && teams.has(expectedHome)
-      && teams.has(expectedAway);
-  }) || null;
+  return exact || null;
 }
 
-function serializeProbableStarterRow(row) {
+export function serializeProbableStarterRow(row) {
   if (!row) return null;
   const status = String(row.status || "error");
   const errorCode = row.error_code || "";
+  const homePitcherName = row.home_pitcher_name || "";
+  const awayPitcherName = row.away_pitcher_name || "";
+  const homePitcherId = row.home_pitcher_id || null;
+  const awayPitcherId = row.away_pitcher_id || null;
+  const partial = Boolean(homePitcherName) !== Boolean(awayPitcherName);
   return {
     gameId: String(row.game_id || ""),
+    internalGameId: String(row.internal_game_id || ""),
     status,
-    homePitcherName: row.home_pitcher_name || "",
-    awayPitcherName: row.away_pitcher_name || "",
+    homePitcherName,
+    awayPitcherName,
+    homeProbableStarter: { name: homePitcherName, playerId: homePitcherId },
+    awayProbableStarter: { name: awayPitcherName, playerId: awayPitcherId },
+    partial,
+    dataStatus: partial ? "partial" : (homePitcherName && awayPitcherName ? "complete" : "unannounced"),
     fetchedAt: row.fetched_at || null,
     announcedAt: row.announced_at || null,
     nextCheckAt: row.next_check_at || null,
@@ -1000,9 +1004,11 @@ async function saveProbableStarterRow(db, {
   const storage = await requireInternalGameIdForWrite(db, { table: "probable_starters", gameId, internalGameId });
   const internalColumn = storage.schemaReady ? ", internal_game_id" : "";
   const internalValue = storage.schemaReady ? ", ?2" : "";
+  const normalizedHomePitcherName = homePitcherName == null ? null : String(homePitcherName).trim() || null;
+  const normalizedAwayPitcherName = awayPitcherName == null ? null : String(awayPitcherName).trim() || null;
   const bindValues = storage.schemaReady
-    ? [gameId, storage.internalGameId || null, status, homePitcherName || null, awayPitcherName || null, fetchedAt, announcedAt, nextCheckAt, sourceUrl || null, errorCode || null, updatedAt]
-    : [gameId, status, homePitcherName || null, awayPitcherName || null, fetchedAt, announcedAt, nextCheckAt, sourceUrl || null, errorCode || null, updatedAt];
+    ? [gameId, storage.internalGameId || null, status, normalizedHomePitcherName, normalizedAwayPitcherName, fetchedAt, announcedAt, nextCheckAt, sourceUrl || null, errorCode || null, updatedAt]
+    : [gameId, status, normalizedHomePitcherName, normalizedAwayPitcherName, fetchedAt, announcedAt, nextCheckAt, sourceUrl || null, errorCode || null, updatedAt];
   await db.prepare(
     `INSERT INTO probable_starters
        (game_id${internalColumn}, status, home_pitcher_name, away_pitcher_name, fetched_at, announced_at, next_check_at, source_url, error_code, updated_at)
@@ -1010,15 +1016,32 @@ async function saveProbableStarterRow(db, {
      ON CONFLICT(game_id) DO UPDATE SET
        ${storage.schemaReady ? "internal_game_id = CASE WHEN excluded.internal_game_id IS NULL OR excluded.internal_game_id = '' THEN probable_starters.internal_game_id ELSE excluded.internal_game_id END," : ""}
        status = excluded.status,
-       home_pitcher_name = excluded.home_pitcher_name,
-       away_pitcher_name = excluded.away_pitcher_name,
-       fetched_at = excluded.fetched_at,
-       announced_at = excluded.announced_at,
+       home_pitcher_name = COALESCE(excluded.home_pitcher_name, probable_starters.home_pitcher_name),
+       away_pitcher_name = COALESCE(excluded.away_pitcher_name, probable_starters.away_pitcher_name),
+       fetched_at = CASE WHEN probable_starters.fetched_at IS NULL OR excluded.fetched_at IS NULL OR excluded.fetched_at >= probable_starters.fetched_at THEN excluded.fetched_at ELSE probable_starters.fetched_at END,
+       announced_at = COALESCE(excluded.announced_at, probable_starters.announced_at),
        next_check_at = excluded.next_check_at,
        source_url = excluded.source_url,
        error_code = excluded.error_code,
        updated_at = excluded.updated_at`
   ).bind(...bindValues).run();
+}
+
+async function readProbableStarterRow(db, { gameId = "", internalGameId = "" } = {}) {
+  const storage = await getInternalGameIdStorageAvailability(db, ["probable_starters"]);
+  if (storage.probable_starters && internalGameId) {
+    return await db.prepare(
+      `SELECT * FROM probable_starters
+        WHERE internal_game_id = ?1
+           OR (internal_game_id IS NULL AND game_id = ?2)
+        ORDER BY CASE WHEN internal_game_id = ?1 THEN 0 ELSE 1 END,
+                 COALESCE(fetched_at, updated_at) DESC
+        LIMIT 1`
+    ).bind(internalGameId, gameId).first();
+  }
+  return await db.prepare(
+    "SELECT * FROM probable_starters WHERE game_id = ?1 ORDER BY COALESCE(fetched_at, updated_at) DESC LIMIT 1"
+  ).bind(gameId).first();
 }
 
 async function recordProbableStarterDecision(db, {
@@ -1047,6 +1070,11 @@ export function isProbableStarterComplete(row) {
   return row?.status === "announced"
     && Boolean(String(row?.home_pitcher_name || "").trim())
     && Boolean(String(row?.away_pitcher_name || "").trim());
+}
+
+export function isProbableStarterTerminal(row) {
+  return row?.status === "announced"
+    && Boolean(String(row?.home_pitcher_name || "").trim() || String(row?.away_pitcher_name || "").trim());
 }
 
 async function runProbableStarterFetch(env, target, now, { source = "cron" } = {}) {
@@ -1093,12 +1121,17 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
     return result;
   };
   try {
-    previous = await env.AUTH_DB.prepare("SELECT * FROM probable_starters WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
+    previous = await readProbableStarterRow(env.AUTH_DB, {
+      gameId,
+      internalGameId: target?.internalGameId || ""
+    });
     const payload = await fetchNpbWorkerJson(env, { mode: "starter" });
     const matched = findProbableStarterGame(target, payload.games);
-    const homePitcherName = String(matched?.homeStarter?.name || "").trim();
-    const awayPitcherName = String(matched?.awayStarter?.name || "").trim();
-    const announced = Boolean(homePitcherName && awayPitcherName);
+    const homePitcherName = String(matched?.homeStarter?.name || previous?.home_pitcher_name || "").trim();
+    const awayPitcherName = String(matched?.awayStarter?.name || previous?.away_pitcher_name || "").trim();
+    const hasAnyPitcher = Boolean(homePitcherName || awayPitcherName);
+    const fullyAnnounced = Boolean(homePitcherName && awayPitcherName);
+    const announced = hasAnyPitcher;
     const normalizedFetchedAt = String(payload.fetchedAt || fetchedAt);
     const announcedAt = announced ? (previous?.announced_at || normalizedFetchedAt) : null;
     const nextCheckAt = announced ? null : new Date(current.getTime() + PROBABLE_STARTER_RETRY_INTERVAL_MS).toISOString();
@@ -1122,9 +1155,9 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
       status: announced ? "success" : "warning",
       gameId,
       occurredAt: current,
-      message: announced ? "予告先発を保存しました。" : "予告先発はまだ発表されていません。",
+      message: announced ? (fullyAnnounced ? "予告先発を保存しました。" : "予告先発を一部保存しました。") : "予告先発はまだ発表されていません。",
       errorCode: announced ? "" : "PROBABLE_STARTER_UNANNOUNCED",
-      metadata: { source, sourceDate, matched: Boolean(matched), nextCheckAt },
+      metadata: { source, sourceDate, matched: Boolean(matched), nextCheckAt, partial: announced && !fullyAnnounced },
       source
     });
     return {
@@ -1141,6 +1174,7 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
         next_check_at: nextCheckAt,
         source_url: payload.sourceUrl || "https://npb.jp/announcement/starter/",
         error_code: "",
+        internal_game_id: target?.internalGameId || "",
         updated_at: fetchedAt
       })
     };
@@ -1195,10 +1229,11 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
 export async function selectProbableStarterCronTarget(db, now = new Date()) {
   const target = await getServerPredictionTarget(db, now);
   if (!target?.gameId) return { target: null, row: null, reason: "no_target", gameId: "" };
-  const row = await db.prepare(
-    "SELECT status, home_pitcher_name, away_pitcher_name, next_check_at FROM probable_starters WHERE game_id = ?1 LIMIT 1"
-  ).bind(target.gameId).first();
-  if (isProbableStarterComplete(row)) {
+  const row = await readProbableStarterRow(db, {
+    gameId: target.gameId,
+    internalGameId: target.internalGameId || ""
+  });
+  if (isProbableStarterTerminal(row)) {
     return { target: null, row, reason: "already_announced", gameId: target.gameId };
   }
   return { target, row, reason: "candidate", gameId: target.gameId };
@@ -3380,13 +3415,25 @@ async function handleAdminV3Overview(request, env, cors) {
     if (probableStarterColumns.has("internal_game_id")) {
       probableStarter = await env.AUTH_DB.prepare(
         `SELECT status, home_pitcher_name, away_pitcher_name, fetched_at, announced_at,
-                next_check_at, source_url, error_code, updated_at
+                next_check_at, source_url, error_code, updated_at, game_id, internal_game_id
            FROM probable_starters
           WHERE internal_game_id = ?1
+             OR (internal_game_id IS NULL AND game_id = ?2)
+          ORDER BY CASE WHEN internal_game_id = ?1 THEN 0 ELSE 1 END,
+                   COALESCE(fetched_at, updated_at) DESC
+          LIMIT 1`
+      ).bind(game.internalGameId, game.gameId).first();
+    } else {
+      probableStarter = await env.AUTH_DB.prepare(
+        `SELECT status, home_pitcher_name, away_pitcher_name, fetched_at, announced_at,
+                next_check_at, source_url, error_code, updated_at, game_id
+           FROM probable_starters
+          WHERE game_id = ?1
           ORDER BY COALESCE(fetched_at, updated_at) DESC
           LIMIT 1`
-      ).bind(game.internalGameId).first();
+      ).bind(game.gameId).first();
     }
+    const serializedProbableStarter = serializeProbableStarterRow(probableStarter);
     const resolvedState = state || { state: "scheduled", version: 0 };
     const jobRows = jobs.results || [];
     const schedule = deriveV3DisplaySchedule(game);
@@ -3395,17 +3442,7 @@ async function handleAdminV3Overview(request, env, cors) {
       ...game,
       state: resolvedState,
       jobs: jobRows,
-      probableStarter: probableStarter ? {
-        status: probableStarter.status || null,
-        homePitcherName: probableStarter.home_pitcher_name || "",
-        awayPitcherName: probableStarter.away_pitcher_name || "",
-        fetchedAt: probableStarter.fetched_at || null,
-        announcedAt: probableStarter.announced_at || null,
-        nextCheckAt: probableStarter.next_check_at || null,
-        sourceUrl: probableStarter.source_url || "",
-        errorCode: probableStarter.error_code || "",
-        updatedAt: probableStarter.updated_at || null
-      } : null,
+      probableStarter: serializedProbableStarter,
       schedule: { ...schedule, ...nextAction }
     });
   }
@@ -10534,10 +10571,10 @@ async function handleGetProbableStarter(request, env, cors) {
   const metadata = reference.metadata;
   const gameId = metadata.gameId || metadata.legacyGameId || suppliedGameId;
   try {
-    const storage = await getInternalGameIdStorageAvailability(env.AUTH_DB, ["probable_starters"]);
-    const row = storage.probable_starters && metadata.internalGameId
-      ? await env.AUTH_DB.prepare("SELECT * FROM probable_starters WHERE internal_game_id = ?1 OR (internal_game_id IS NULL AND game_id = ?2) ORDER BY CASE WHEN internal_game_id = ?1 THEN 0 ELSE 1 END LIMIT 1").bind(metadata.internalGameId, gameId).first()
-      : await env.AUTH_DB.prepare("SELECT * FROM probable_starters WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
+    const row = await readProbableStarterRow(env.AUTH_DB, {
+      gameId,
+      internalGameId: metadata.internalGameId || ""
+    });
     const probableStarter = serializeProbableStarterRow(row);
     const game = metadata.game || {};
     const response = jsonResponse({
@@ -10556,8 +10593,8 @@ async function handleGetProbableStarter(request, env, cors) {
       lastFailureCode: probableStarter?.lastFailureCode || "",
       isConfirmed: Boolean(probableStarter?.isConfirmed),
       confirmed: Boolean(probableStarter?.isConfirmed),
-      homeProbableStarter: probableStarter ? { name: probableStarter.homePitcherName, status: probableStarter.status } : null,
-      awayProbableStarter: probableStarter ? { name: probableStarter.awayPitcherName, status: probableStarter.status } : null,
+      homeProbableStarter: probableStarter?.homeProbableStarter || null,
+      awayProbableStarter: probableStarter?.awayProbableStarter || null,
       probableStarter
     }, 200, cors);
     response.headers.set("Cache-Control", "no-store");

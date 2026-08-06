@@ -3146,7 +3146,8 @@ function applyStoredProbableStarter(probableStarter, gameMetadata = {}) {
   state.probableStarter.nextCheckAt = probableStarter?.nextCheckAt || "";
   state.probableStarter.errorCode = probableStarter?.errorCode || "";
   state.probableStarter.referenceDiagnostics = null;
-  if (!probableStarter || status === "empty" || status === "unannounced") {
+  const hasAnyPitcher = Boolean(String(probableStarter?.homePitcherName || "").trim() || String(probableStarter?.awayPitcherName || "").trim());
+  if (!probableStarter || status === "empty" || status === "unannounced" || (status === "announced" && !hasAnyPitcher)) {
     state.probableStarter.status = "unannounced";
     state.probableStarter.message = "予告先発はまだ発表されていません";
     state.probableStarter.matchedGame = null;
@@ -3161,7 +3162,7 @@ function applyStoredProbableStarter(probableStarter, gameMetadata = {}) {
     return;
   }
   state.probableStarter.status = "success";
-  state.probableStarter.message = "予告先発を取得しました";
+  state.probableStarter.message = probableStarter.partial ? "予告先発を一部取得しました" : "予告先発を取得しました";
   state.probableStarter.matchedGame = {
     ...canonicalGame,
     homeStarter: { name: probableStarter.homePitcherName || "" },

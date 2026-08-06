@@ -1,3 +1,5 @@
+import { AUTOMATION_V2_TIMING } from "./game-automation-v2.js";
+
 const INTERNAL_GAME_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export const V3_FEATURE_FLAG = "ENABLE_GAME_AUTOMATION_V3";
@@ -62,13 +64,98 @@ export function deriveV3Schedule(game) {
     error.code = "V3_GAME_SCHEDULE_INVALID";
     throw error;
   }
+  const minutes = (offset) => new Date(startAt.getTime() + offset * 60 * 1000);
   return {
     startAt,
-    predictionDeadline: new Date(startAt.getTime() - 60 * 60 * 1000),
-    lineupPollingStart: new Date(startAt.getTime() - 50 * 60 * 1000),
-    finalLineupAt: new Date(startAt.getTime() + 2 * 60 * 1000),
-    publicationAt: new Date(startAt.getTime() + 10 * 60 * 1000)
+    predictionDeadline: minutes(-AUTOMATION_V2_TIMING.predictionDeadlineMinutes),
+    lineupPollingStart: minutes(-AUTOMATION_V2_TIMING.lineupPollingStartMinutes),
+    finalLineupAt: minutes(AUTOMATION_V2_TIMING.finalLineupMinutesAfterStart),
+    publicationAt: minutes(AUTOMATION_V2_TIMING.publicationMinutesAfterStart)
   };
+}
+
+function uniqueSortedV3Dates(values) {
+  return [...new Map(values.filter((value) => value instanceof Date && !Number.isNaN(value.getTime()))
+    .map((value) => [value.toISOString(), value])).values()]
+    .sort((left, right) => left.getTime() - right.getTime())
+    .map((value) => value.toISOString());
+}
+
+export function deriveV3DisplaySchedule(game) {
+  const schedule = deriveV3Schedule(game);
+  const gameDate = String(game?.gameDate || game?.game_date || "").slice(0, 10);
+  const rosterFetchSlots = [
+    new Date(schedule.startAt.getTime() - AUTOMATION_V2_TIMING.rosterPregameMinutes * 60 * 1000),
+    new Date(schedule.startAt.getTime() - AUTOMATION_V2_TIMING.rosterSecondPregameMinutes * 60 * 1000),
+    ...AUTOMATION_V2_TIMING.rosterDailySlotsJst.map((slot) => {
+      const [hour, minute] = String(slot).split(":").map(Number);
+      return jstV3Slot(gameDate, hour, minute);
+    })
+  ];
+  const lineupPollingSlots = [];
+  for (let slot = schedule.lineupPollingStart; slot < schedule.finalLineupAt; slot = new Date(slot.getTime() + AUTOMATION_V2_TIMING.lineupPollingIntervalMinutes * 60 * 1000)) {
+    lineupPollingSlots.push(slot);
+  }
+  const previousDayProbableStarterAt = jstV3Slot(shiftV3IsoDate(gameDate, -1), 18, 0);
+  return {
+    startAt: schedule.startAt.toISOString(),
+    predictionDeadline: schedule.predictionDeadline.toISOString(),
+    rosterFetchSlots: uniqueSortedV3Dates(rosterFetchSlots),
+    lineupPollingStart: schedule.lineupPollingStart.toISOString(),
+    lineupPollingSlots: uniqueSortedV3Dates(lineupPollingSlots),
+    finalLineupAt: schedule.finalLineupAt.toISOString(),
+    scoringEarliestAt: schedule.finalLineupAt.toISOString(),
+    publicationAt: schedule.publicationAt.toISOString(),
+    probableStarterNextAt: previousDayProbableStarterAt?.toISOString() || null
+  };
+}
+
+const NEXT_ACTION_LABELS = Object.freeze({
+  prediction_close: "予想締切",
+  roster_fetch: "ロースター取得",
+  lineup_fetch: "スタメン取得",
+  lineup_finalize: "正式スタメン確定",
+  score: "採点",
+  ranking_rebuild: "ランキング反映",
+  publish: "結果公開"
+});
+
+function hasFinishedV3Job(jobs, jobType) {
+  return jobs.some((job) => job.job_type === jobType && ["completed", "cancelled"].includes(job.status));
+}
+
+export function getV3NextAction({ schedule, state = "scheduled", jobs = [], now = new Date() } = {}) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (!schedule || Number.isNaN(current.getTime()) || ["excluded", "published"].includes(String(state))) {
+    return { nextAction: null, nextActionAt: null, nextActionLabel: null };
+  }
+  const completed = (jobType) => hasFinishedV3Job(jobs, jobType);
+  const candidates = [];
+  const add = (action, values, jobType, enabled = true) => {
+    if (!enabled || completed(jobType)) return;
+    for (const value of Array.isArray(values) ? values : [values]) {
+      const at = new Date(value || "");
+      if (!Number.isNaN(at.getTime()) && at.getTime() > current.getTime()) candidates.push({ action, at });
+    }
+  };
+  add("prediction_close", schedule.predictionDeadline, "prediction_close", state === "scheduled");
+  add("roster_fetch", schedule.rosterFetchSlots, "roster_fetch", !["lineup_ready", "scored", "ranked", "published"].includes(String(state)));
+  add("lineup_fetch", schedule.lineupPollingSlots, "lineup_fetch", ["scheduled", "prediction_closed", "manual_action_required"].includes(String(state)));
+  add("lineup_finalize", schedule.finalLineupAt, "lineup_finalize", ["scheduled", "prediction_closed", "manual_action_required"].includes(String(state)));
+  add("score", schedule.scoringEarliestAt, "score", ["scheduled", "prediction_closed", "lineup_ready", "manual_action_required"].includes(String(state)));
+  add("publish", schedule.publicationAt, "publish", String(state) === "ranked");
+  const next = candidates.sort((left, right) => left.at.getTime() - right.at.getTime())[0];
+  if (next) return { nextAction: next.action, nextActionAt: next.at.toISOString(), nextActionLabel: NEXT_ACTION_LABELS[next.action] };
+  if (["lineup_ready", "manual_action_required"].includes(String(state)) && !completed("score")) {
+    return { nextAction: "score_after_final_lineup", nextActionAt: null, nextActionLabel: "採点（正式スタメン確定後）" };
+  }
+  if (String(state) === "scored" && !completed("ranking_rebuild")) {
+    return { nextAction: "ranking_after_scoring", nextActionAt: null, nextActionLabel: "ランキング反映（採点完了後）" };
+  }
+  if (String(state) === "ranked" && !completed("publish")) {
+    return { nextAction: "publish", nextActionAt: schedule.publicationAt, nextActionLabel: NEXT_ACTION_LABELS.publish };
+  }
+  return { nextAction: null, nextActionAt: null, nextActionLabel: null };
 }
 
 export function getV3NpbIdentityState(game, now = new Date()) {

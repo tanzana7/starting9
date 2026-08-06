@@ -259,6 +259,24 @@ function timelineStep(name, job, fallbackStatus, detail = "", scheduledAt = "") 
   return `<article class="timeline-step ${klass}"><span class="status-badge ${klass === "complete" ? "ok" : klass === "retry" ? "retry" : klass === "failed" || klass === "action" ? "action" : klass === "excluded" ? "excluded" : "wait"}">${escapeV3(label)}</span><h4>${escapeV3(name)}</h4><p class="step-time">${escapeV3(formatTimelineTime(time) || (detail && !failure ? detail : "予定未定"))}</p><p>${escapeV3(detail || failure || (job ? `試行 ${job.attempt_count || 0}/${job.max_attempts || 0}` : ""))}</p></article>`;
 }
 
+function probableStarterTimelineDetails(game, job, now = new Date()) {
+  const starter = game?.probableStarter;
+  const details = [];
+  if (starter?.status === "announced") {
+    const pitchers = [starter.homePitcherName, starter.awayPitcherName].filter(Boolean).join(" / ");
+    if (pitchers) details.push(pitchers);
+  } else if (starter?.status) {
+    details.push(starter.status === "unannounced" ? "未発表" : starter.status);
+  }
+  if (starter?.sourceUrl) details.push(`取得元: ${starter.sourceUrl}`);
+  if (starter?.fetchedAt) details.push(`最終取得: ${formatV3Jst(starter.fetchedAt)}`);
+  if (job?.failure_code) details.push(job.failure_code);
+  if (job && Number.isFinite(Number(job.attempt_count))) details.push(`試行 ${job.attempt_count || 0}/${job.max_attempts || 0}`);
+  const scheduledAt = game?.schedule?.probableStarterNextAt ? new Date(game.schedule.probableStarterNextAt) : null;
+  if (!job && scheduledAt && scheduledAt.getTime() <= now.getTime()) details.push("実行待ち / job未生成 / 要確認");
+  return details.join(" / ") || (job ? "" : "前日18:00予定");
+}
+
 function renderTimeline(game) {
   const schedule = game.schedule || {};
   const state = String(game.state?.state || "scheduled");
@@ -273,9 +291,14 @@ function renderTimeline(game) {
   const scoreJob = latestV3Job(game, "score");
   const rankingJob = latestV3Job(game, "ranking_rebuild");
   const publishJob = latestV3Job(game, "publish");
+  const probableJob = latestV3Job(game, "probable_starter_fetch");
+  const probableSlot = schedule.probableStarterNextAt ? new Date(schedule.probableStarterNextAt) : null;
+  const probableMissingPastSlot = !probableJob && probableSlot && probableSlot.getTime() <= Date.now();
+  const probableFallback = probableMissingPastSlot ? "action" : game?.probableStarter?.status === "announced" ? "complete" : "wait";
+  const probableTime = probableMissingPastSlot ? "" : schedule.probableStarterNextAt;
   const steps = [
     timelineStep("日程登録", null, "complete", "games登録済み", schedule.startAt),
-    timelineStep("予告先発取得", latestV3Job(game, "probable_starter_fetch"), "wait", schedule.probableStarterNextAt ? "前日18:00予定" : "試合開始後に次試合確認", schedule.probableStarterNextAt),
+    timelineStep("予告先発取得", probableJob, probableFallback, probableStarterTimelineDetails(game, probableJob), probableTime),
     timelineStep("ロースター取得", rosterJob, "wait", rosterJob?.failure_code || "本日の予定slot", schedule.rosterFetchSlots),
     timelineStep("予想締切", predictionJob, state === "scheduled" ? "scheduled" : "complete", "締切は開始時刻から60分前", schedule.predictionDeadline),
     timelineStep("NPB識別情報解決", identityJob, identityFallback, identityStatusLabel(game.npbIdentityStatus, identityState)),

@@ -3355,20 +3355,54 @@ async function handleAdminV3Overview(request, env, cors) {
   if (!schema.ready) return jsonResponse({ ok: false, code: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", schema }, 503, cors);
   const rows = [];
   const overviewNow = new Date();
+  let probableStarterColumns = new Set();
+  try {
+    probableStarterColumns = await getTableColumnSet(env.AUTH_DB, "probable_starters");
+  } catch {
+    // 予告先発の旧スキーマでは、V3概要の付加情報だけを省略します。
+  }
   for (const game of await listV3Games(env.AUTH_DB, overviewNow)) {
     const state = await env.AUTH_DB.prepare(
       "SELECT state, version, failure_code, updated_at FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
     ).bind(game.internalGameId).first();
     const jobs = await env.AUTH_DB.prepare(
       `SELECT id, job_type, status, scheduled_at, scheduled_slot_at, attempt_count,
-              max_attempts, next_retry_at, claimed_at, completed_at, failure_code, updated_at
+              max_attempts, next_retry_at, claimed_at, lease_expires_at, completed_at,
+              failure_code, failure_message, updated_at
          FROM game_jobs_v3 WHERE internal_game_id = ?1 ORDER BY scheduled_at, id`
     ).bind(game.internalGameId).all();
+    let probableStarter = null;
+    if (probableStarterColumns.has("internal_game_id")) {
+      probableStarter = await env.AUTH_DB.prepare(
+        `SELECT status, home_pitcher_name, away_pitcher_name, fetched_at, announced_at,
+                next_check_at, source_url, error_code, updated_at
+           FROM probable_starters
+          WHERE internal_game_id = ?1
+          ORDER BY COALESCE(fetched_at, updated_at) DESC
+          LIMIT 1`
+      ).bind(game.internalGameId).first();
+    }
     const resolvedState = state || { state: "scheduled", version: 0 };
     const jobRows = jobs.results || [];
     const schedule = deriveV3DisplaySchedule(game);
     const nextAction = getV3NextAction({ schedule, state: resolvedState.state, jobs: jobRows, now: overviewNow });
-    rows.push({ ...game, state: resolvedState, jobs: jobRows, schedule: { ...schedule, ...nextAction } });
+    rows.push({
+      ...game,
+      state: resolvedState,
+      jobs: jobRows,
+      probableStarter: probableStarter ? {
+        status: probableStarter.status || null,
+        homePitcherName: probableStarter.home_pitcher_name || "",
+        awayPitcherName: probableStarter.away_pitcher_name || "",
+        fetchedAt: probableStarter.fetched_at || null,
+        announcedAt: probableStarter.announced_at || null,
+        nextCheckAt: probableStarter.next_check_at || null,
+        sourceUrl: probableStarter.source_url || "",
+        errorCode: probableStarter.error_code || "",
+        updatedAt: probableStarter.updated_at || null
+      } : null,
+      schedule: { ...schedule, ...nextAction }
+    });
   }
   return jsonResponse({ ok: true, featureFlag: V3_FEATURE_FLAG, enabled: isGameAutomationV3Enabled(env), schema, games: rows }, 200, cors);
 }

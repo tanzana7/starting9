@@ -84,7 +84,7 @@ function renderV3(payload) {
       const select = V3_JOB_TYPES.map((type) => `<option value="${type}">${type}</option>`).join("");
       return `<div class="job"><code>${escapeV3(job.job_type)}</code><span class="job-status">${escapeV3(job.status)}</span><span>${escapeV3(job.failure_code || `attempt ${job.attempt_count}/${job.max_attempts}`)}</span><button type="button" data-v3-job="${escapeV3(game.internalGameId)}" data-v3-type="${escapeV3(job.job_type)}">再投入</button></div>`;
     }).join("");
-    card.innerHTML = `<div class="game-heading"><h2>${escapeV3(game.gameDate)} ${escapeV3(game.awayTeam)} vs ${escapeV3(game.homeTeam)}</h2><code>${escapeV3(game.internalGameId)}</code></div><div class="game-meta"><span>開始 ${escapeV3(game.startAt)}</span><span class="npb-identity-status">NPB識別情報: ${escapeV3(identityStatus)}</span><span>コード ${escapeV3(npbGameCode || "未登録")}</span><span class="state">state: ${escapeV3(game.state.state)}</span></div><div class="npb-identity-details"><span>解決元: ${escapeV3(game.npbIdentitySource || "-")}</span><span>解決時刻: ${escapeV3(game.npbIdentityResolvedAt || "-")}</span><span>URL: ${game.npbGameUrl ? `<a href="${escapeV3(game.npbGameUrl)}" target="_blank" rel="noreferrer">${escapeV3(game.npbGameUrl)}</a>` : "-"}</span><button type="button" data-v3-identity-resolve="${escapeV3(game.internalGameId)}">自動再解決</button></div><div class="npb-identity-diagnostics" data-v3-identity-diagnostics></div><div class="npb-code-editor"><strong>非常用手動上書き</strong><label>NPBゲームコード <input type="text" maxlength="32" value="${escapeV3(npbGameCode)}" data-v3-npb-code><button type="button" data-v3-code-save="${escapeV3(game.internalGameId)}">保存</button></label><span class="npb-code-status" data-v3-code-status></span></div><div class="job-list">${jobs || "<span class=muted>ジョブなし</span>"}</div>`;
+    card.innerHTML = `<div class="game-heading"><h2>${escapeV3(game.gameDate)} ${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}</h2><code>${escapeV3(game.internalGameId)}</code></div><div class="game-meta"><span>開始 ${escapeV3(game.startAt)}</span><span>DB home: ${escapeV3(game.homeTeam)}</span><span>DB away: ${escapeV3(game.awayTeam)}</span><span class="npb-identity-status">NPB識別情報: ${escapeV3(identityStatus)}</span><span>コード ${escapeV3(npbGameCode || "未登録")}</span><span class="state">state: ${escapeV3(game.state.state)}</span></div><div class="npb-identity-details"><span>解決元: ${escapeV3(game.npbIdentitySource || "-")}</span><span>解決時刻: ${escapeV3(game.npbIdentityResolvedAt || "-")}</span><span>URL: ${game.npbGameUrl ? `<a href="${escapeV3(game.npbGameUrl)}" target="_blank" rel="noreferrer">${escapeV3(game.npbGameUrl)}</a>` : "-"}</span><button type="button" data-v3-identity-resolve="${escapeV3(game.internalGameId)}">自動再解決</button></div><div class="v3-orientation-editor"><strong>home / away修正（DB値確認後のみ）</strong><label>home <input type="text" value="${escapeV3(game.homeTeam)}" data-v3-home-team></label><label>away <input type="text" value="${escapeV3(game.awayTeam)}" data-v3-away-team></label><input type="text" maxlength="240" placeholder="修正理由（必須）" data-v3-orientation-reason><button type="button" data-v3-orientation-save="${escapeV3(game.internalGameId)}">向きを保存</button><span class="v3-orientation-status" data-v3-orientation-status></span></div><div class="npb-identity-diagnostics" data-v3-identity-diagnostics></div><div class="npb-code-editor"><strong>非常用手動上書き</strong><label>NPBゲームコード <input type="text" maxlength="32" value="${escapeV3(npbGameCode)}" data-v3-npb-code><button type="button" data-v3-code-save="${escapeV3(game.internalGameId)}">保存</button></label><span class="npb-code-status" data-v3-code-status></span></div><div class="job-list">${jobs || "<span class=muted>ジョブなし</span>"}</div>`;
     container.append(card);
   }
 }
@@ -115,6 +115,27 @@ document.addEventListener("click", async (event) => {
       renderV3IdentityDiagnostics(resolveButton.closest(".game-card"), error.details, error.code, error.identityState);
       setV3Status(`${error.code || "NPB_IDENTITY_RESOLUTION_FAILED"}: ${error.message}`, !["pending", "retry_wait"].includes(error.identityState));
       resolveButton.disabled = false;
+    }
+    return;
+  }
+  const orientationButton = event.target.closest("[data-v3-orientation-save]");
+  if (orientationButton) {
+    const card = orientationButton.closest(".game-card");
+    const homeInput = card?.querySelector("[data-v3-home-team]");
+    const awayInput = card?.querySelector("[data-v3-away-team]");
+    const reasonInput = card?.querySelector("[data-v3-orientation-reason]");
+    const status = card?.querySelector("[data-v3-orientation-status]");
+    if (!homeInput || !awayInput || !reasonInput || !status) return;
+    orientationButton.disabled = true;
+    status.textContent = "確認・保存中…";
+    try {
+      const payload = await v3Fetch(`/api/admin/v3/games/${encodeURIComponent(orientationButton.dataset.v3OrientationSave)}/orientation`, { method: "PATCH", body: JSON.stringify({ homeTeam: homeInput.value, awayTeam: awayInput.value, reason: reasonInput.value }) });
+      const impact = Object.entries(payload.impact || {}).filter(([, count]) => Number(count) > 0).map(([table, count]) => `${table}:${count}`).join(", ");
+      status.textContent = payload.warning ? `更新しました。関連データあり${impact ? `（${impact}）` : ""}` : "更新しました。";
+      await loadV3();
+    } catch (error) {
+      status.textContent = `${error.code || "V3_ORIENTATION_UPDATE_FAILED"}: ${error.message}`;
+      orientationButton.disabled = false;
     }
     return;
   }

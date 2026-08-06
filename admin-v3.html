@@ -4,25 +4,55 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Starting9 自動運転V3</title>
-  <link rel="stylesheet" href="admin-v3.css?v=automation-v3-6">
+  <link rel="stylesheet" href="admin-v3.css?v=automation-v3-7">
 </head>
 <body>
   <main class="admin-v3-shell">
     <header class="admin-v3-header">
-      <div>
+      <div class="admin-v3-brand">
         <p class="eyebrow">GAME AUTOMATION V3</p>
         <h1>自動運転V3</h1>
-        <p class="muted">DB日程とinternal_game_idを正として、V3ジョブの状態だけを確認します。</p>
+        <p class="muted">今日の試合を起点に、V3の運用状態を確認します。</p>
       </div>
       <div class="header-actions">
         <a href="index.html">通常画面</a>
-        <button id="refreshV3" type="button">更新</button>
+        <button id="refreshV3" type="button">全体を更新</button>
+        <button id="mobileNavToggle" class="mobile-nav-toggle" type="button" aria-controls="v3Navigation" aria-expanded="false">メニュー</button>
       </div>
     </header>
-    <p id="v3Status" class="status" role="status"></p>
-    <section id="v3Schema" class="schema-panel"></section>
-    <section id="v3Games" class="games" aria-live="polite"></section>
+    <div class="admin-v3-layout">
+      <aside id="v3Navigation" class="v3-sidebar" aria-label="V3管理メニュー">
+        <nav class="v3-nav">
+          <button type="button" data-v3-view="dashboard">ダッシュボード</button>
+          <button type="button" data-v3-view="games">試合一覧</button>
+          <button type="button" data-v3-view="workflow">試合進行</button>
+          <button type="button" data-v3-view="lineup">スタメン</button>
+          <button type="button" data-v3-view="scoring">採点・ランキング</button>
+          <button type="button" data-v3-view="schedule">日程管理</button>
+          <button type="button" data-v3-view="emergency">緊急操作</button>
+          <button type="button" data-v3-view="diagnostics">診断・監査</button>
+        </nav>
+      </aside>
+      <section class="admin-v3-main" aria-live="polite">
+        <div class="v3-toolbar">
+          <label for="v3GameFilter">試合</label>
+          <select id="v3GameFilter">
+            <option value="all">すべて</option>
+            <option value="today">今日</option>
+            <option value="tomorrow">明日</option>
+            <option value="future">今後</option>
+            <option value="past">過去</option>
+          </select>
+          <label for="v3GameSelect">対象試合</label>
+          <select id="v3GameSelect" aria-label="対象試合"></select>
+          <button id="refreshV3View" type="button">この画面を更新</button>
+        </div>
+        <div id="v3Status" class="status" role="status" aria-live="polite"></div>
+        <section id="v3Schema" class="schema-panel"></section>
+        <section id="v3View" class="v3-view" aria-live="polite"></section>
+      </section>
+    </div>
   </main>
-  <script src="admin-v3.js?v=automation-v3-6"></script>
+  <script src="admin-v3.js?v=automation-v3-7"></script>
 </body>
 </html>

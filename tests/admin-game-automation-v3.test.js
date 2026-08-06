@@ -23,6 +23,15 @@ test("V3管理操作は巨大処理を直接実行せず、V3 jobを投入する
   assert.doesNotMatch(worker, /handleAdminV3JobCreate[\s\S]{0,500}runScheduledGameAutomation\(/);
 });
 
+test("V3管理画面はNPB自動解決jobの予定・結果・retryを表示する", () => {
+  assert.match(client, /npb_identity_resolve/);
+  assert.match(client, /次回予定/);
+  assert.match(client, /最終実行/);
+  assert.match(client, /次回retry/);
+  assert.match(worker, /completed_at/);
+  assert.match(worker, /claimed_at/);
+});
+
 test("V3の通常Cronはfeature flag有効時だけ実行し、旧Cronを自動起動しない", () => {
   const scheduled = worker.slice(worker.indexOf("async scheduled(event, env, ctx)"), worker.indexOf("export async function runScheduledGameAutomation"));
   assert.match(scheduled, /isGameAutomationV3Enabled\(env\)/);

@@ -57,6 +57,26 @@ test("V3の派生時刻はDB startAtから固定され、外部IDを要求しな
   assert.equal(v3.getV3DuePlan(game(), "scheduled", "2026-08-04T08:00:00.000Z").jobType, "prediction_close");
 });
 
+test("NPB識別解決は前日18時・当日16時・10分スロットをJSTで計画する", () => {
+  const target = { ...game(), gameDate: "2026-08-05", startAt: "2026-08-05T09:00:00.000Z", npbIdentityStatus: "unresolved" };
+  const previousDay = v3.getV3IdentityResolvePlans(target, "2026-08-04T09:00:00.000Z");
+  assert.deepEqual(previousDay.map((plan) => plan.scheduledSlotAt.toISOString()), ["2026-08-04T09:00:00.000Z"]);
+  const polling = v3.getV3IdentityResolvePlans(target, "2026-08-05T08:20:00.000Z");
+  assert.deepEqual(polling.map((plan) => plan.scheduledSlotAt.toISOString()), [
+    "2026-08-04T09:00:00.000Z",
+    "2026-08-05T07:00:00.000Z",
+    "2026-08-05T08:10:00.000Z",
+    "2026-08-05T08:20:00.000Z"
+  ]);
+  assert.equal(v3.getV3IdentityResolvePlans({ ...target, npbIdentityStatus: "resolved" }, "2026-08-05T08:20:00.000Z").length, 0);
+});
+
+test("NPB識別情報が未解決の間はlineup jobを計画しない", () => {
+  const target = { ...game(), npbIdentityStatus: "unresolved" };
+  assert.equal(v3.getV3DuePlan(target, "prediction_closed", "2026-08-04T08:20:00.000Z"), null);
+  assert.equal(v3.getV3DuePlan({ ...target, npbIdentityStatus: "resolved" }, "prediction_closed", "2026-08-04T08:20:00.000Z").jobType, "lineup_fetch");
+});
+
 test("V3の状態機械は正常遷移だけを受け入れ、旧状態名を含めない", () => {
   assert.equal(v3.getV3AllowedTransitions("scheduled", "prediction_closed"), true);
   assert.equal(v3.getV3AllowedTransitions("prediction_closed", "lineup_ready"), true);
@@ -116,6 +136,45 @@ test("V3 runnerは同じDB行をprediction closeからpublishまで一度ずつ�
   }
 });
 
+test("V3 Cronは未解決試合のNPB識別jobを固定slotで一度だけ投入する", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE games (internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+        home_team TEXT, away_team TEXT, npb_game_code TEXT, npb_identity_status TEXT,
+        game_status TEXT, is_active INTEGER, deleted_at TEXT);
+      CREATE TABLE game_automation_v3_state (internal_game_id TEXT PRIMARY KEY, state TEXT,
+        prediction_closed_at TEXT, lineup_finalized_at TEXT, scoring_revision_id TEXT,
+        ranked_at TEXT, published_at TEXT, excluded_at TEXT, failure_code TEXT,
+        failure_message TEXT, version INTEGER, created_at TEXT, updated_at TEXT);
+      CREATE TABLE game_jobs_v3 (id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT,
+        job_type TEXT, scheduled_at TEXT, scheduled_slot_at TEXT, status TEXT, attempt_count INTEGER,
+        max_attempts INTEGER, next_retry_at TEXT, claimed_at TEXT, claim_token TEXT,
+        lease_expires_at TEXT, completed_at TEXT, failure_code TEXT, failure_message TEXT,
+        created_at TEXT, updated_at TEXT, UNIQUE(internal_game_id, job_type, scheduled_slot_at));
+      INSERT INTO games VALUES ('${GAME_ID}', '2026-08-05', '2026-08-05T09:00:00.000Z', 'hawks', 'fighters', NULL, 'unresolved', 'scheduled', 1, NULL);
+    `);
+    const env = { AUTH_DB: d1(database), ENABLE_GAME_AUTOMATION_V3: "true" };
+    const executed = [];
+    const executeJob = async ({ job }) => {
+      executed.push(job.job_type);
+      return { status: "pending", stateBefore: "scheduled", stateAfter: "scheduled" };
+    };
+    const at = new Date("2026-08-04T09:00:00.000Z");
+    await v3.runGameAutomationV3(env, at, { executeJob });
+    await v3.runGameAutomationV3(env, at, { executeJob });
+    const row = database.prepare("SELECT job_type, scheduled_slot_at, status, attempt_count FROM game_jobs_v3 WHERE internal_game_id = ?1").get(GAME_ID);
+    assert.equal(row.job_type, "npb_identity_resolve");
+    assert.equal(row.scheduled_slot_at, "2026-08-04T09:00:00.000Z");
+    assert.equal(row.status, "completed");
+    assert.equal(row.attempt_count, 1);
+    assert.deepEqual(executed, ["npb_identity_resolve"]);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id = ?1").get(GAME_ID).count, 1);
+  } finally {
+    database.close();
+  }
+});
+
 test("0029 is additive, has no backfill, and applies to an existing migration chain", () => {
   const database = new DatabaseSync(":memory:");
   try {
@@ -130,6 +189,20 @@ test("0029 is additive, has no backfill, and applies to an existing migration ch
     assert.deepEqual(table.map((row) => row.name), ["game_automation_v3_state", "game_jobs_v3"]);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3").get().count, 0);
     assert.equal(database.prepare("SELECT start_time FROM games WHERE internal_game_id = ?1").get(GAME_ID).start_time, START);
+    database.exec(fs.readFileSync(path.join(root, "migrations", "0030_game_automation_v3_npb_code_audit.sql"), "utf8"));
+    database.exec(fs.readFileSync(path.join(root, "migrations", "0031_game_npb_identity_registry.sql"), "utf8"));
+    database.exec(`INSERT INTO game_jobs_v3 (internal_game_id, job_type, scheduled_at, scheduled_slot_at, created_at, updated_at)
+      VALUES ('${GAME_ID}', 'prediction_close', '${START}', '${START}', '${START}', '${START}')`);
+    database.exec(`INSERT INTO game_automation_v3_audit (internal_game_id, job_id, job_type, occurred_at)
+      VALUES ('${GAME_ID}', 1, 'prediction_close', '${START}')`);
+    database.exec(fs.readFileSync(path.join(root, "migrations", "0032_game_automation_v3_npb_identity_job.sql"), "utf8"));
+    const jobSchema = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'game_jobs_v3'").get().sql;
+    assert.match(jobSchema, /npb_identity_resolve/);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE job_type = 'prediction_close'").get().count, 1);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_automation_v3_audit").get().count, 1);
+    assert.deepEqual(database.prepare("PRAGMA foreign_key_check").all(), []);
+    database.prepare("INSERT INTO game_jobs_v3 (internal_game_id, job_type, scheduled_at, scheduled_slot_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(GAME_ID, "npb_identity_resolve", START, "2026-08-04T09:00:00.000Z", START, START);
   } finally {
     database.close();
   }

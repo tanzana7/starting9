@@ -13,6 +13,7 @@ export const V3_STATES = Object.freeze([
   "manual_action_required"
 ]);
 export const V3_JOB_TYPES = Object.freeze([
+  "npb_identity_resolve",
   "prediction_close",
   "lineup_fetch",
   "lineup_finalize",
@@ -23,6 +24,7 @@ export const V3_JOB_TYPES = Object.freeze([
   "roster_fetch"
 ]);
 export const V3_MAIN_JOB_TYPES = Object.freeze([
+  "npb_identity_resolve",
   "prediction_close",
   "lineup_fetch",
   "lineup_finalize",
@@ -119,6 +121,48 @@ export function getV3LineupSlot(startAt, now = new Date()) {
   return new Date(pollingStart.getTime() + Math.floor(elapsed / (10 * 60 * 1000)) * 10 * 60 * 1000);
 }
 
+function shiftV3IsoDate(dateValue, days) {
+  const date = new Date(`${String(dateValue || "").slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return "";
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function jstV3Slot(dateValue, hour, minute) {
+  const date = String(dateValue || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  return new Date(`${date}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00+09:00`);
+}
+
+export function getV3IdentityResolvePlans(game, now = new Date(), workflowState = "") {
+  if (!isV3GameEligible(game) || String(workflowState || "") === "published") return [];
+  const identityStatus = String(game?.npbIdentityStatus || game?.npb_identity_status || "").trim();
+  if (["resolved", "manually_overridden"].includes(identityStatus)) return [];
+  const current = now instanceof Date ? now : new Date(now);
+  const schedule = deriveV3Schedule(game);
+  if (Number.isNaN(current.getTime())) return [];
+  const gameDate = String(game?.gameDate || game?.game_date || "").slice(0, 10);
+  const slots = [
+    jstV3Slot(shiftV3IsoDate(gameDate, -1), 18, 0),
+    jstV3Slot(gameDate, 16, 0),
+    schedule.lineupPollingStart
+  ];
+  for (let slot = schedule.lineupPollingStart; slot <= schedule.finalLineupAt; slot = new Date(slot.getTime() + 10 * 60 * 1000)) {
+    slots.push(slot);
+  }
+  const uniqueSlots = [...new Map(slots.filter((slot) => slot && !Number.isNaN(slot.getTime()))
+    .map((slot) => [slot.toISOString(), slot])).values()]
+    .sort((left, right) => left.getTime() - right.getTime());
+  return uniqueSlots
+    .filter((slot) => slot.getTime() <= current.getTime())
+    .filter((slot) => slot.getTime() <= schedule.finalLineupAt.getTime())
+    .map((slot) => ({ jobType: "npb_identity_resolve", scheduledSlotAt: slot, scheduledAt: slot }));
+}
+
+function isV3NpbIdentityResolved(game) {
+  return ["resolved", "manually_overridden"].includes(String(game?.npbIdentityStatus || game?.npb_identity_status || "").trim());
+}
+
 export function getV3DuePlan(game, state, now = new Date()) {
   if (!isV3GameEligible(game)) return null;
   const schedule = deriveV3Schedule(game);
@@ -126,10 +170,10 @@ export function getV3DuePlan(game, state, now = new Date()) {
   if (state === "scheduled" && current >= schedule.predictionDeadline) {
     return { jobType: "prediction_close", scheduledSlotAt: schedule.predictionDeadline, scheduledAt: schedule.predictionDeadline };
   }
-  if (state === "prediction_closed" && current >= schedule.finalLineupAt) {
+  if (state === "prediction_closed" && current >= schedule.finalLineupAt && isV3NpbIdentityResolved(game)) {
     return { jobType: "lineup_finalize", scheduledSlotAt: schedule.finalLineupAt, scheduledAt: schedule.finalLineupAt };
   }
-  if (state === "prediction_closed" && current >= schedule.lineupPollingStart) {
+  if (state === "prediction_closed" && current >= schedule.lineupPollingStart && isV3NpbIdentityResolved(game)) {
     const slot = getV3LineupSlot(schedule.startAt, current);
     return slot ? { jobType: "lineup_fetch", scheduledSlotAt: slot, scheduledAt: slot } : null;
   }
@@ -314,6 +358,16 @@ export async function listDueV3Jobs(db, now = new Date(), limit = 50) {
   return result.results || [];
 }
 
+async function hasOpenV3Job(db, internalGameId, jobType) {
+  const row = await db.prepare(
+    `SELECT id FROM game_jobs_v3
+      WHERE internal_game_id = ?1 AND job_type = ?2
+        AND status IN ('pending', 'claimed', 'retry_wait')
+      LIMIT 1`
+  ).bind(internalGameId, jobType).first();
+  return Boolean(row?.id);
+}
+
 export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null } = {}) {
   if (!isGameAutomationV3Enabled(env)) return { enabled: false, processed: 0, created: 0 };
   const schema = await getV3SchemaState(env.AUTH_DB);
@@ -330,6 +384,12 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
           await transitionV3State(env.AUTH_DB, { internalGameId: game.internalGameId, from: stateRow.state, to: "excluded", now });
         }
         continue;
+      }
+      const identityPlans = getV3IdentityResolvePlans(game, now, stateRow.state);
+      const identityPlan = identityPlans[identityPlans.length - 1] || null;
+      if (identityPlan && !(await hasOpenV3Job(env.AUTH_DB, game.internalGameId, "npb_identity_resolve"))) {
+        const result = await createV3Job(env.AUTH_DB, { internalGameId: game.internalGameId, ...identityPlan });
+        if (result.created) created += 1;
       }
       const plan = getV3DuePlan(game, stateRow.state, now);
       if (plan) {
@@ -348,7 +408,13 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     processed += 1;
     try {
       const result = await executeJob({ env, job: claimed, internalGameId: claimed.internal_game_id, now });
-      await completeV3Job(env.AUTH_DB, { jobId: claimed.id, claimToken: claimed.claim_token, now });
+      await completeV3Job(env.AUTH_DB, {
+        jobId: claimed.id,
+        claimToken: claimed.claim_token,
+        now,
+        failureCode: result?.failureCode || null,
+        failureMessage: result?.failureMessage || null
+      });
       if (result?.stateAfter && result.stateBefore && result.stateAfter !== result.stateBefore) {
         await transitionV3State(env.AUTH_DB, {
           internalGameId: claimed.internal_game_id,
@@ -360,6 +426,19 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
         });
       }
       if (onSuccess) await onSuccess({ job: claimed, result, now });
+      if (claimed.job_type === "npb_identity_resolve" && result?.identityResolved) {
+        const followupGame = games.find((game) => game.internalGameId === claimed.internal_game_id);
+        if (followupGame) {
+          followupGame.npbIdentityStatus = "resolved";
+          const followupState = await env.AUTH_DB.prepare(
+            "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
+          ).bind(claimed.internal_game_id).first();
+          const followupPlan = getV3DuePlan(followupGame, followupState?.state || "scheduled", now);
+          if (followupPlan && ["lineup_fetch", "lineup_finalize"].includes(followupPlan.jobType)) {
+            await createV3Job(env.AUTH_DB, { internalGameId: claimed.internal_game_id, ...followupPlan });
+          }
+        }
+      }
     } catch (error) {
       failed += 1;
       await retryV3Job(env.AUTH_DB, {
@@ -370,7 +449,7 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
         now,
         errorCode: error?.code || "V3_JOB_FAILED",
         errorMessage: String(error?.message || "V3ジョブに失敗しました。").slice(0, 240),
-        retryAt: new Date(new Date(now).getTime() + 10 * 60 * 1000)
+        retryAt: error?.retryAt || new Date(new Date(now).getTime() + 10 * 60 * 1000)
       });
       if (onError) await onError(error, { job: claimed, stage: "execute" });
     }

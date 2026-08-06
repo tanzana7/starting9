@@ -580,6 +580,42 @@ function createV3LineupIdentity(target) {
   };
 }
 
+function getNextV3IdentityRetryAt(now) {
+  const timestamp = new Date(now).getTime();
+  if (Number.isNaN(timestamp)) return new Date(Date.now() + 10 * 60 * 1000);
+  return new Date(Math.floor(timestamp / (10 * 60 * 1000)) * (10 * 60 * 1000) + 10 * 60 * 1000);
+}
+
+async function executeV3IdentityResolutionJob(env, internalGameId, now) {
+  const response = await handleAdminV3IdentityResolve(null, env, {}, internalGameId, { skipAuth: true, source: "cron" });
+  const payload = await response.json().catch(() => ({}));
+  if (payload?.ok) {
+    return {
+      status: payload.noOp ? "already_resolved" : "resolved",
+      identityResolved: true,
+      failureCode: null,
+      failureMessage: null
+    };
+  }
+  const identityState = String(payload?.identityState || "");
+  if (identityState === "pending" || identityState === "manual_action_required") {
+    const requiresManualAction = identityState === "manual_action_required";
+    return {
+      status: identityState,
+      identityResolved: false,
+      failureCode: requiresManualAction ? payload?.code || null : null,
+      failureMessage: requiresManualAction ? payload?.error || null : null
+    };
+  }
+  if (identityState === "retry_wait") {
+    const error = createV3Error(payload?.code || "NPB_IDENTITY_RETRY_WAIT", payload?.error || "NPB識別情報の掲載を待っています。", {
+      retryAt: getNextV3IdentityRetryAt(now)
+    });
+    throw error;
+  }
+  throw createV3Error(payload?.code || "NPB_IDENTITY_RESOLUTION_FAILED", payload?.error || "NPB試合識別情報を解決できませんでした。");
+}
+
 async function executeGameAutomationV3Job({ env, job, internalGameId, now }) {
   const target = await loadV3GameTarget(env.AUTH_DB, internalGameId);
   const state = await env.AUTH_DB.prepare(
@@ -587,6 +623,10 @@ async function executeGameAutomationV3Job({ env, job, internalGameId, now }) {
   ).bind(internalGameId).first();
   const stateBefore = String(state?.state || "scheduled");
   const jobType = String(job.job_type || "");
+  if (jobType === "npb_identity_resolve") {
+    const result = await executeV3IdentityResolutionJob(env, internalGameId, now);
+    return { ...result, stateBefore, stateAfter: stateBefore };
+  }
   if (jobType === "probable_starter_fetch") {
     if (!target.gameId) throw createV3Error("V3_LEGACY_REFERENCE_MISSING", "予告先発対象の互換参照が見つかりません。");
     const result = await runProbableStarterFetch(env, {
@@ -3293,7 +3333,7 @@ async function handleAdminV3Overview(request, env, cors) {
     ).bind(game.internalGameId).first();
     const jobs = await env.AUTH_DB.prepare(
       `SELECT id, job_type, status, scheduled_at, scheduled_slot_at, attempt_count,
-              max_attempts, next_retry_at, failure_code, updated_at
+              max_attempts, next_retry_at, claimed_at, completed_at, failure_code, updated_at
          FROM game_jobs_v3 WHERE internal_game_id = ?1 ORDER BY scheduled_at, id`
     ).bind(game.internalGameId).all();
     rows.push({ ...game, state: state || { state: "scheduled", version: 0 }, jobs: jobs.results || [] });
@@ -3301,8 +3341,9 @@ async function handleAdminV3Overview(request, env, cors) {
   return jsonResponse({ ok: true, featureFlag: V3_FEATURE_FLAG, enabled: isGameAutomationV3Enabled(env), schema, games: rows }, 200, cors);
 }
 
-async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) {
-  const access = await requireAdminUser(request, env, cors);
+async function handleAdminV3IdentityResolve(request, env, cors, internalGameId, options = {}) {
+  const operationSource = options.source || "admin";
+  const access = options.skipAuth ? { ok: true, user: null } : await requireAdminUser(request, env, cors);
   if (!access.ok) return access.response;
   let diagnosticId = "";
   let diagnosticGame = null;
@@ -3322,6 +3363,12 @@ async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) 
     ).bind(id).first();
     if (!current) return jsonResponse({ ok: false, code: "V3_GAME_NOT_REGISTERED", error: "対象試合が日程DBに登録されていません。" }, 404, cors);
     diagnosticGame = current;
+    if (current.npb_identity_status === "manually_overridden" && options.skipAuth) {
+      return jsonResponse({ ok: true, noOp: true, resolvedBy: "manually_overridden", identityState: "manually_overridden", game: serializeV3GameIdentity(current) }, 200, cors);
+    }
+    if (current.npb_identity_status === "resolved" && options.skipAuth) {
+      return jsonResponse({ ok: true, noOp: true, resolvedBy: current.npb_identity_source || "persisted", identityState: "resolved", game: serializeV3GameIdentity(current) }, 200, cors);
+    }
     if (current.npb_identity_status === "manually_overridden") {
       return jsonResponse({ ok: false, code: "NPB_IDENTITY_MANUAL_OVERRIDE", error: "管理者上書き値は自動再解決で変更できません。" }, 409, cors);
     }
@@ -3344,7 +3391,7 @@ async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) 
         message: "NPB試合識別情報の候補取得に失敗しました。",
         errorCode: failureCode,
         metadata: diagnostics,
-        source: "admin"
+        source: operationSource
       });
       console.warn(`[GAME_AUTOMATION_V3] stage=npb_identity_resolve_fetch code=${failureCode} status=${diagnostics.fetchHttpStatus || "unknown"}`);
       return jsonResponse({ ok: false, code: failureCode, error: "NPB日程候補を取得できませんでした。", identityState: getNpbIdentityRuntimeState(current.start_time), resolutionDiagnostics: diagnostics }, 502, cors);
@@ -3364,7 +3411,7 @@ async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) 
         message: "NPB日程レスポンスのgamesが不正です。",
         errorCode: "NPB_SCHEDULE_RESPONSE_INVALID",
         metadata: diagnostics,
-        source: "admin"
+        source: operationSource
       });
       return jsonResponse({ ok: false, code: "NPB_SCHEDULE_RESPONSE_INVALID", error: "NPB日程レスポンスが不正です。", identityState: getNpbIdentityRuntimeState(current.start_time), resolutionDiagnostics: diagnostics }, 502, cors);
     }
@@ -3428,7 +3475,7 @@ async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) 
         message: resolved.status === "conflict" ? "NPB日程の候補が複数あります。" : "NPB日程から対象試合を解決できませんでした。",
         errorCode: finalFailureCode,
         metadata: diagnostics,
-        source: "admin"
+        source: operationSource
       });
       return jsonResponse({ ok: false, code: finalFailureCode, error: ["NPB_SCHEDULE_CANDIDATES_EMPTY", "NPB_STATIC_SCHEDULE_EMPTY"].includes(finalFailureCode) ? "NPB日程候補が空です。" : (resolved.status === "conflict" ? "NPB日程の候補が複数あります。" : "NPB日程から対象試合を解決できませんでした。"), identityState: getNpbIdentityRuntimeState(current.start_time), resolutionDiagnostics: diagnostics }, status, cors);
     }
@@ -3462,7 +3509,7 @@ async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) 
           message: "NPB識別子が別の試合へ登録されています。",
           errorCode: "NPB_IDENTITY_CONFLICT",
           metadata: diagnostics,
-          source: "admin"
+          source: operationSource
         });
         return jsonResponse({ ok: false, code: "NPB_IDENTITY_CONFLICT", error: "NPB識別子が別の試合へ登録されています。", identityState: getNpbIdentityRuntimeState(current.start_time), resolutionDiagnostics: diagnostics }, 409, cors);
       }
@@ -3481,7 +3528,7 @@ async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) 
       npbIdentityStatus: "resolved",
       npbIdentityResolvedAt: now.toISOString(),
       npbIdentitySource: resolved.diagnostics?.resolvedBy || resolved.source || "npb_schedule_resolve",
-      updatedBy: access.user?.id ? `admin:${String(access.user.id)}` : "admin"
+      updatedBy: access.user?.id ? `admin:${String(access.user.id)}` : operationSource === "cron" ? "system" : "admin"
     }, now);
     for (const identifier of identifiers) await registerGameIdentifier(env.AUTH_DB, id, identifier, now);
     const updated = await env.AUTH_DB.prepare(
@@ -3507,7 +3554,7 @@ async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) 
       gameId: id,
       message: "NPB試合識別情報を解決しました。",
       metadata: diagnostics,
-      source: "admin"
+      source: operationSource
     });
     return jsonResponse({ ok: true, resolvedBy: resolved.diagnostics?.resolvedBy || resolved.source || "npb_schedule_resolve", identityState: "resolved", resolutionDiagnostics: diagnostics, game: serializeV3GameIdentity(updated) }, 200, cors);
   } catch (error) {
@@ -3737,7 +3784,7 @@ async function handleAdminV3OrientationUpdate(request, env, cors, internalGameId
         updatedBy,
         updatedAt: now
       },
-      source: "admin"
+      source: operationSource
     });
     const updated = await env.AUTH_DB.prepare(
       "SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status FROM games WHERE internal_game_id = ?1 LIMIT 1"
@@ -3760,6 +3807,10 @@ async function handleAdminV3JobCreate(request, env, cors, internalGameId) {
     if (!V3_JOB_TYPES.includes(jobType)) throw createV3Error("V3_JOB_TYPE_INVALID", "V3ジョブ種別が不正です。");
     const game = (await listV3Games(env.AUTH_DB, new Date())).find((row) => row.internalGameId === id);
     if (!game) throw createV3Error("V3_GAME_NOT_REGISTERED", "V3対象試合が日程DBに登録されていません。");
+    if (["lineup_fetch", "lineup_finalize"].includes(jobType)
+      && !["resolved", "manually_overridden"].includes(String(game.npbIdentityStatus || ""))) {
+      throw createV3Error("NPB_IDENTITY_PENDING", "NPB識別情報が解決するまでスタメン取得ジョブを投入できません。");
+    }
     const now = new Date();
     const schedule = deriveV3Schedule(game);
     const created = await createV3Job(env.AUTH_DB, {

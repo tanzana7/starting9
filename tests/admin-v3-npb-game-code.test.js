@@ -19,10 +19,12 @@ test("V3のNPBコード更新APIはinternalGameIdのPATCHへ登録される", ()
   assert.match(worker, /handleAdminV3NpbGameCodeUpdate\(request, env, cors/);
   assert.match(worker, /parseAdminV3IdentityResolveRoute/);
   assert.match(worker, /handleAdminV3IdentityResolve\(request, env, cors/);
+  assert.match(worker, /parseAdminV3OrientationRoute/);
+  assert.match(worker, /handleAdminV3OrientationUpdate\(request, env, cors/);
 });
 
 test("NPBコード更新は既存管理者認証とgames.npb_game_codeを使用する", () => {
-  const handler = worker.slice(worker.indexOf("async function handleAdminV3NpbGameCodeUpdate"), worker.indexOf("async function handleAdminV3JobCreate"));
+  const handler = worker.slice(worker.indexOf("async function handleAdminV3NpbGameCodeUpdate"), worker.indexOf("async function getV3OrientationImpact"));
   assert.match(handler, /requireAdminUser\(request, env, cors\)/);
   assert.match(handler, /normalizeV3InternalGameId\(internalGameId\)/);
   assert.match(handler, /UPDATE games SET/);
@@ -37,7 +39,7 @@ test("NPBコード更新は既存管理者認証とgames.npb_game_codeを使用�
 });
 
 test("NPBコード入力はtrim・解除・形式検証を行う", () => {
-  const handler = worker.slice(worker.indexOf("async function handleAdminV3NpbGameCodeUpdate"), worker.indexOf("async function handleAdminV3JobCreate"));
+  const handler = worker.slice(worker.indexOf("async function handleAdminV3NpbGameCodeUpdate"), worker.indexOf("async function getV3OrientationImpact"));
   assert.match(handler, /input\.npbGameCode\.trim\(\)/);
   assert.match(handler, /rawCode && !nextCode/);
   assert.match(handler, /nextCode \|\| null/);
@@ -45,7 +47,7 @@ test("NPBコード入力はtrim・解除・形式検証を行う", () => {
 });
 
 test("更新は旧値・新値・管理者・時刻を既存V3監査へ記録する", () => {
-  const handler = worker.slice(worker.indexOf("async function handleAdminV3NpbGameCodeUpdate"), worker.indexOf("async function handleAdminV3JobCreate"));
+  const handler = worker.slice(worker.indexOf("async function handleAdminV3NpbGameCodeUpdate"), worker.indexOf("async function getV3OrientationImpact"));
   assert.match(handler, /previous_npb_game_code/);
   assert.match(handler, /next_npb_game_code/);
   assert.match(handler, /updated_by/);
@@ -64,9 +66,36 @@ test("V3管理画面は現在値・入力欄・保存操作を持ち、更新後
   assert.match(client, /非常用手動上書き/);
   assert.match(client, /data-v3-identity-resolve/);
   assert.match(client, /npb-identity\/resolve/);
+  assert.match(client, /data-v3-orientation-save/);
+  assert.match(client, /\/orientation/);
+  assert.match(client, /DB home/);
+  assert.match(client, /DB away/);
+  assert.ok(client.includes("${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}"));
   assert.match(client, /await loadV3\(\)/);
-  assert.match(page, /admin-v3\.css\?v=automation-v3-4/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-4/);
+  assert.match(page, /admin-v3\.css\?v=automation-v3-5/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-5/);
+});
+
+test("home/away修正APIはinternalGameId単位で関連データの影響を警告する", () => {
+  const handler = worker.slice(worker.indexOf("async function handleAdminV3OrientationUpdate"), worker.indexOf("async function handleAdminV3JobCreate"));
+  assert.match(handler, /requireAdminUser\(request, env, cors\)/);
+  assert.match(handler, /normalizeV3InternalGameId\(internalGameId\)/);
+  assert.match(handler, /UPDATE games SET/);
+  assert.match(handler, /home_team = \?1/);
+  assert.match(handler, /away_team = \?2/);
+  assert.match(handler, /internal_game_id = \?1/);
+  assert.match(handler, /getV3OrientationImpact/);
+  assert.match(handler, /admin_game_orientation_changed/);
+  assert.match(handler, /previousHomeTeam/);
+  assert.match(handler, /nextAwayTeam/);
+  assert.match(handler, /V3_ORIENTATION_REASON_REQUIRED/);
+});
+
+test("identity resolverはgamesのhome/awayを正とし、自動反転しない", () => {
+  const handler = worker.slice(worker.indexOf("async function handleAdminV3IdentityResolve"), worker.indexOf("async function handleAdminV3NpbGameCodeUpdate"));
+  assert.match(handler, /normalizeScheduleTeamCode\(current\.home_team\)/);
+  assert.match(handler, /normalizeScheduleTeamCode\(current\.away_team\)/);
+  assert.doesNotMatch(handler, /UPDATE games SET[\s\S]*home_team/);
 });
 
 test("V3監査のNPBコード変更列は追加migrationで定義される", () => {

@@ -339,6 +339,10 @@ export default {
       if (adminV3NpbGameCodeRoute && request.method === "PATCH") {
         return await handleAdminV3NpbGameCodeUpdate(request, env, cors, adminV3NpbGameCodeRoute.internalGameId);
       }
+      const adminV3OrientationRoute = parseAdminV3OrientationRoute(path);
+      if (adminV3OrientationRoute && request.method === "PATCH") {
+        return await handleAdminV3OrientationUpdate(request, env, cors, adminV3OrientationRoute.internalGameId);
+      }
       const adminV3JobRoute = parseAdminV3JobRoute(path);
       if (adminV3JobRoute && request.method === "POST") {
         return await handleAdminV3JobCreate(request, env, cors, adminV3JobRoute.internalGameId);
@@ -3619,6 +3623,120 @@ async function handleAdminV3NpbGameCodeUpdate(request, env, cors, internalGameId
   }
 }
 
+async function getV3OrientationImpact(db, internalGameId, legacyGameId = "") {
+  const tables = ["predictions", "game_jobs_v3", "game_lineups", "ranking_games", "game_workflow_state"];
+  const impact = {};
+  for (const table of tables) {
+    const columns = await getTableColumnSet(db, table);
+    if (columns.has("internal_game_id")) {
+      const row = await db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE internal_game_id = ?1`).bind(internalGameId).first();
+      impact[table] = Number(row?.count || 0);
+      continue;
+    }
+    if (!columns.has("game_id") || !legacyGameId) {
+      impact[table] = 0;
+      continue;
+    }
+    const row = await db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE game_id = ?1`).bind(legacyGameId).first();
+    impact[table] = Number(row?.count || 0);
+  }
+  return impact;
+}
+
+async function handleAdminV3OrientationUpdate(request, env, cors, internalGameId) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  try {
+    const id = normalizeV3InternalGameId(internalGameId);
+    const columns = await getTableColumnSet(env.AUTH_DB, "games");
+    if (!columns.has("home_team") || !columns.has("away_team")) {
+      return jsonResponse({ ok: false, code: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", error: "gamesのhome/away列が利用できません。" }, 503, cors);
+    }
+    const current = await env.AUTH_DB.prepare(
+      `SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status,
+              ${columns.has("updated_at") ? "updated_at," : ""}
+              ${columns.has("updated_by") ? "updated_by" : "internal_game_id"}
+         FROM games WHERE internal_game_id = ?1 LIMIT 1`
+    ).bind(id).first();
+    if (!current) return jsonResponse({ ok: false, code: "V3_GAME_NOT_REGISTERED", error: "対象試合が日程DBに登録されていません。" }, 404, cors);
+
+    const legacyGameId = columns.has("game_id")
+      ? String((await env.AUTH_DB.prepare("SELECT game_id FROM games WHERE internal_game_id = ?1 LIMIT 1").bind(id).first())?.game_id || "")
+      : "";
+
+    const input = await readJson(request);
+    const homeTeam = normalizeScheduleTeamCode(input?.homeTeam);
+    const awayTeam = normalizeScheduleTeamCode(input?.awayTeam);
+    const reason = String(input?.reason || "").trim();
+    if (!homeTeam || !awayTeam || homeTeam === awayTeam) {
+      return jsonResponse({ ok: false, code: "V3_ORIENTATION_INVALID", error: "homeTeamとawayTeamの組み合わせが不正です。" }, 400, cors);
+    }
+    if (!reason || reason.length > 240) {
+      return jsonResponse({ ok: false, code: "V3_ORIENTATION_REASON_REQUIRED", error: "向きの修正理由を入力してください。" }, 400, cors);
+    }
+
+    const impact = await getV3OrientationImpact(env.AUTH_DB, id, legacyGameId);
+    const warning = Object.values(impact).some((count) => count > 0);
+    const now = new Date().toISOString();
+    const updatedBy = access.user?.id ? `admin:${String(access.user.id)}` : "admin";
+    const fields = ["home_team = ?1", "away_team = ?2"];
+    const values = [homeTeam, awayTeam];
+    if (columns.has("updated_at")) {
+      fields.push(`updated_at = ?${values.length + 1}`);
+      values.push(now);
+    }
+    if (columns.has("updated_by")) {
+      fields.push(`updated_by = ?${values.length + 1}`);
+      values.push(updatedBy);
+    }
+    values.push(id);
+    await env.AUTH_DB.prepare(`UPDATE games SET ${fields.join(", ")} WHERE internal_game_id = ?${values.length}`).bind(...values).run();
+
+    const scheduleColumns = await getTableColumnSet(env.AUTH_DB, "detected_game_schedule");
+    let scheduleRowsUpdated = 0;
+    if (scheduleColumns.has("internal_game_id") && scheduleColumns.has("home_team") && scheduleColumns.has("away_team")) {
+      const scheduleFields = ["home_team = ?1", "away_team = ?2"];
+      const scheduleValues = [homeTeam, awayTeam];
+      if (scheduleColumns.has("updated_at")) {
+        scheduleFields.push(`updated_at = ?${scheduleValues.length + 1}`);
+        scheduleValues.push(now);
+      }
+      scheduleValues.push(id);
+      const result = await env.AUTH_DB.prepare(`UPDATE detected_game_schedule SET ${scheduleFields.join(", ")} WHERE internal_game_id = ?${scheduleValues.length}`).bind(...scheduleValues).run();
+      scheduleRowsUpdated = Number(result?.meta?.changes || 0);
+    }
+
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "admin_game_orientation_changed",
+      status: "success",
+      gameId: id,
+      message: "管理者が試合のhome/away向きを修正しました。",
+      metadata: {
+        internalGameId: id,
+        previousHomeTeam: String(current.home_team || ""),
+        previousAwayTeam: String(current.away_team || ""),
+        nextHomeTeam: homeTeam,
+        nextAwayTeam: awayTeam,
+        reason,
+        impact,
+        warning,
+        scheduleRowsUpdated,
+        updatedBy,
+        updatedAt: now
+      },
+      source: "admin"
+    });
+    const updated = await env.AUTH_DB.prepare(
+      "SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status FROM games WHERE internal_game_id = ?1 LIMIT 1"
+    ).bind(id).first();
+    return jsonResponse({ ok: true, warning, impact, scheduleRowsUpdated, game: serializeV3GameIdentity(updated) }, 200, cors);
+  } catch (error) {
+    const code = String(error?.code || "V3_ORIENTATION_UPDATE_FAILED");
+    console.error(`[GAME_AUTOMATION_V3] stage=orientation_update code=${code}`);
+    return jsonResponse({ ok: false, code, error: "試合のhome/away向きを更新できませんでした。" }, 500, cors);
+  }
+}
+
 async function handleAdminV3JobCreate(request, env, cors, internalGameId) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) return access.response;
@@ -3676,6 +3794,16 @@ function parseAdminV3JobRoute(path) {
 
 function parseAdminV3NpbGameCodeRoute(path) {
   const match = /^\/api\/admin\/v3\/games\/([^/]+)\/npb-game-code$/.exec(path);
+  if (!match) return null;
+  try {
+    return { internalGameId: decodeURIComponent(match[1]) };
+  } catch {
+    return { internalGameId: "" };
+  }
+}
+
+function parseAdminV3OrientationRoute(path) {
+  const match = /^\/api\/admin\/v3\/games\/([^/]+)\/orientation$/.exec(path);
   if (!match) return null;
   try {
     return { internalGameId: decodeURIComponent(match[1]) };

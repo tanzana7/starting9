@@ -178,6 +178,55 @@ test("日別ページにコードがない未来試合は既存静的日程の�
   assert.equal(result.gameUrl, "https://npb.jp/scores/2026/0805/h-f-16/");
 });
 
+test("静的候補が逆向きでもDB向きを保持してidentityだけ安全に補完する", () => {
+  const staticRow = staticSchedule.find((game) => game.date === "2026-08-06");
+  assert.deepEqual({ homeTeam: staticRow.homeTeam, awayTeam: staticRow.awayTeam }, { homeTeam: "hawks", awayTeam: "fighters" });
+  const target = { game_date: "2026-08-06", start_time: "2026-08-06T09:00:00.000Z", home_team: "fighters", away_team: "hawks" };
+  const merged = mergeNpbScheduleCandidates(
+    [{ homeTeam: "fighters", awayTeam: "hawks", startTime: "18:00" }],
+    [staticRow],
+    target.game_date,
+    target
+  );
+  assert.equal(merged.length, 1);
+  assert.deepEqual({ homeTeam: merged[0].homeTeam, awayTeam: merged[0].awayTeam }, { homeTeam: "fighters", awayTeam: "hawks" });
+  assert.equal(merged[0].gameCode, "h-f-17");
+  assert.equal(merged[0].resolutionSource, "static_schedule_enrichment");
+  const result = resolveNpbScheduleIdentity({ date: target.game_date, startAt: target.start_time, homeTeam: target.home_team, awayTeam: target.away_team, games: merged });
+  assert.equal(result.status, "resolved");
+  assert.equal(result.diagnostics.resolvedBy, "static_schedule_enrichment");
+  assert.equal(result.gameCode, "h-f-17");
+});
+
+test("静的候補は同一日・時刻・チーム集合でないidentityを補完しない", () => {
+  const target = { game_date: "2026-08-06", start_time: "2026-08-06T09:00:00.000Z", home_team: "fighters", away_team: "hawks" };
+  const other = { date: "2026-08-06", startTime: "18:00", homeTeam: "eagles", awayTeam: "fighters", npbScoreUrl: "https://npb.jp/scores/2026/0806/e-f-17/" };
+  const merged = mergeNpbScheduleCandidates([], [other], target.game_date, target);
+  assert.equal(merged.length, 0);
+});
+
+test("静的identity補完は4方向のhome/awayでもDB向きを維持する", () => {
+  const cases = [
+    ["fighters", "hawks", "hawks", "fighters", "f-h-1"],
+    ["hawks", "fighters", "fighters", "hawks", "h-f-2"],
+    ["fighters", "eagles", "eagles", "fighters", "f-e-3"],
+    ["eagles", "fighters", "fighters", "eagles", "e-f-4"]
+  ];
+  for (const [targetHome, targetAway, staticHome, staticAway, gameCode] of cases) {
+    const target = { game_date: "2026-08-06", start_time: "2026-08-06T09:00:00.000Z", home_team: targetHome, away_team: targetAway };
+    const merged = mergeNpbScheduleCandidates(
+      [{ homeTeam: targetHome, awayTeam: targetAway, startTime: "18:00" }],
+      [{ date: target.game_date, startTime: "18:00", homeTeam: staticHome, awayTeam: staticAway, gameCode }],
+      target.game_date,
+      target
+    );
+    assert.equal(merged.length, 1, `${targetHome}/${targetAway}`);
+    assert.deepEqual({ homeTeam: merged[0].homeTeam, awayTeam: merged[0].awayTeam }, { homeTeam: targetHome, awayTeam: targetAway });
+    assert.equal(merged[0].gameCode, gameCode);
+    assert.equal(resolveNpbScheduleIdentity({ date: target.game_date, startAt: target.start_time, homeTeam: targetHome, awayTeam: targetAway, games: merged }).status, "resolved");
+  }
+});
+
 test("8月5日から8月8日の静的日程は既存公式URLからだけコードを補完する", () => {
   const expected = [
     ["2026-08-05", "hawks", "fighters", "h-f-16", "09:00"],

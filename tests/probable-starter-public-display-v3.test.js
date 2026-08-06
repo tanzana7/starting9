@@ -37,8 +37,20 @@ test("APIの取得状態とV3保存元を通常画面へ返し、キャッシュ
   assert.match(script, /state\.predictionTargetGame = canonicalGame/);
   assert.match(script, /applyStoredProbableStarter\(result\.probableStarter, result\)/);
   assert.match(script, /status === "empty" \|\| status === "unannounced"/);
+  assert.match(script, /function getProbableStarterReferenceDiagnostics\(selectedGame, response, httpStatus = 200\)/);
+  assert.match(script, /GAME_REFERENCE_MISMATCH/);
+  assert.match(script, /mismatches\.push\("HOME_TEAM_MISMATCH"\)/);
+  assert.match(script, /getProbableStarterReferenceDiagnostics\(game, result, response\.status\)/);
+});
+
+test("通常画面はhome/awayをDB順で表示し、反転候補を一致扱いしない", () => {
+  assert.match(script, /matchupLabel: `\$\{target\.homeTeam \|\| ""\} vs \$\{target\.awayTeam \|\| ""\}`/);
+  assert.match(script, /function matchProbableStarterGame\(nextGame, games\)/);
+  assert.match(script, /return null;\r?\n}\r?\n\r?\nfunction normalizeScheduleTeamCode/);
+  assert.doesNotMatch(script, /const teams = new Set\(\[normalizeScheduleTeamCode\(game\.homeTeam\)/);
+  assert.match(script, /game_reference_mismatch: "error-message"/);
 });
 
 test("script.jsの表示接続変更に対応するキャッシュバスターが更新されている", () => {
-  assert.match(html, /script\.js\?v=admin-test-data-20260728-8/);
+  assert.match(html, /script\.js\?v=admin-test-data-20260728-9/);
 });

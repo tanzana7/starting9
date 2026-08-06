@@ -12,7 +12,8 @@
     "SESSION_SAMESITE": "None",
     "AUTO_SCORING_DELAY_SECONDS": "300",
     "ENABLE_DEVELOPMENT_MODE": "false",
-    "ENABLE_WORKFLOW_COMPLETION_JOBS": "true"
+    "ENABLE_WORKFLOW_COMPLETION_JOBS": "true",
+    "ENABLE_GAME_AUTOMATION_V3": "true"
   },
   "services": [
     {

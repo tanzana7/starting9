@@ -31,6 +31,10 @@ const v3State = {
   lastUpdatedAt: null,
   identityDiagnostics: new Map(),
   operationDetails: new Map(),
+  jobDetails: new Map(),
+  jobDetailsOpen: new Set(),
+  jobDetailsLoading: new Set(),
+  jobDetailsCopyStatus: new Map(),
   rescorePreview: null,
   busy: new Set()
 };
@@ -255,6 +259,24 @@ function timelineStep(name, job, fallbackStatus, detail = "", scheduledAt = "") 
   return `<article class="timeline-step ${klass}"><span class="status-badge ${klass === "complete" ? "ok" : klass === "retry" ? "retry" : klass === "failed" || klass === "action" ? "action" : klass === "excluded" ? "excluded" : "wait"}">${escapeV3(label)}</span><h4>${escapeV3(name)}</h4><p class="step-time">${escapeV3(formatTimelineTime(time) || (detail && !failure ? detail : "予定未定"))}</p><p>${escapeV3(detail || failure || (job ? `試行 ${job.attempt_count || 0}/${job.max_attempts || 0}` : ""))}</p></article>`;
 }
 
+function probableStarterTimelineDetails(game, job, now = new Date()) {
+  const starter = game?.probableStarter;
+  const details = [];
+  if (starter?.status === "announced") {
+    const pitchers = [starter.homePitcherName, starter.awayPitcherName].filter(Boolean).join(" / ");
+    if (pitchers) details.push(pitchers);
+  } else if (starter?.status) {
+    details.push(starter.status === "unannounced" ? "未発表" : starter.status);
+  }
+  if (starter?.sourceUrl) details.push(`取得元: ${starter.sourceUrl}`);
+  if (starter?.fetchedAt) details.push(`最終取得: ${formatV3Jst(starter.fetchedAt)}`);
+  if (job?.failure_code) details.push(job.failure_code);
+  if (job && Number.isFinite(Number(job.attempt_count))) details.push(`試行 ${job.attempt_count || 0}/${job.max_attempts || 0}`);
+  const scheduledAt = game?.schedule?.probableStarterNextAt ? new Date(game.schedule.probableStarterNextAt) : null;
+  if (!job && scheduledAt && scheduledAt.getTime() <= now.getTime()) details.push("実行待ち / job未生成 / 要確認");
+  return details.join(" / ") || (job ? "" : "前日18:00予定");
+}
+
 function renderTimeline(game) {
   const schedule = game.schedule || {};
   const state = String(game.state?.state || "scheduled");
@@ -269,9 +291,14 @@ function renderTimeline(game) {
   const scoreJob = latestV3Job(game, "score");
   const rankingJob = latestV3Job(game, "ranking_rebuild");
   const publishJob = latestV3Job(game, "publish");
+  const probableJob = latestV3Job(game, "probable_starter_fetch");
+  const probableSlot = schedule.probableStarterNextAt ? new Date(schedule.probableStarterNextAt) : null;
+  const probableMissingPastSlot = !probableJob && probableSlot && probableSlot.getTime() <= Date.now();
+  const probableFallback = probableMissingPastSlot ? "action" : game?.probableStarter?.status === "announced" ? "complete" : "wait";
+  const probableTime = probableMissingPastSlot ? "" : schedule.probableStarterNextAt;
   const steps = [
     timelineStep("日程登録", null, "complete", "games登録済み", schedule.startAt),
-    timelineStep("予告先発取得", latestV3Job(game, "probable_starter_fetch"), "wait", schedule.probableStarterNextAt ? "前日18:00予定" : "試合開始後に次試合確認", schedule.probableStarterNextAt),
+    timelineStep("予告先発取得", probableJob, probableFallback, probableStarterTimelineDetails(game, probableJob), probableTime),
     timelineStep("ロースター取得", rosterJob, "wait", rosterJob?.failure_code || "本日の予定slot", schedule.rosterFetchSlots),
     timelineStep("予想締切", predictionJob, state === "scheduled" ? "scheduled" : "complete", "締切は開始時刻から60分前", schedule.predictionDeadline),
     timelineStep("NPB識別情報解決", identityJob, identityFallback, identityStatusLabel(game.npbIdentityStatus, identityState)),
@@ -317,9 +344,145 @@ function renderWorkflowView(game) {
   return `${renderSelectedGameHeader(game, "試合進行", "V3 jobの状態、失敗、再試行・取消を試合単位で確認します。")}<section class="v3-panel"><div class="compact-meta"><span>現在: <strong>${escapeV3(game.state?.state || "scheduled")}</strong></span><span>次の処理: <strong>${escapeV3(nextV3ActionText(game))}</strong></span><span>NPB識別: <strong>${escapeV3(identityStatusLabel(game.npbIdentityStatus, game.npbIdentityState))}</strong></span></div>${renderTimeline(game)}<details class="roster-details"><summary>ロースター取得の詳細</summary>${renderRosterSummary(game)}</details><h3>job操作</h3>${renderJobRows(game, V3_JOB_TYPES)}</section>`;
 }
 
+function jobDetailKey(internalGameId, jobId) {
+  return `${String(internalGameId || "").trim()}:${String(jobId || "").trim()}`;
+}
+
+function jobDetailDomId(key) {
+  return `v3-job-detail-${String(key || "").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
+function jobField(job, snakeName, camelName, fallback = "") {
+  const value = job?.[snakeName] ?? job?.[camelName];
+  return value === null || value === undefined ? fallback : value;
+}
+
+const JOB_DETAIL_FIELDS = Object.freeze([
+  ["job_type", "jobType"],
+  ["status", "status"],
+  ["scheduled_at", "scheduledAt"],
+  ["scheduled_slot_at", "scheduledSlotAt"],
+  ["attempt_count", "attemptCount"],
+  ["max_attempts", "maxAttempts"],
+  ["next_retry_at", "nextRetryAt"],
+  ["claimed_at", "claimedAt"],
+  ["lease_expires_at", "leaseExpiresAt"],
+  ["completed_at", "completedAt"],
+  ["failure_code", "failureCode"],
+  ["job_id", "jobId"],
+  ["internal_game_id", "internalGameId"],
+  ["lineup_revision_id", "lineupRevisionId"],
+  ["scoring_revision_id", "scoringRevisionId"],
+  ["ranking_revision_id", "rankingRevisionId"],
+  ["created_at", "createdAt"],
+  ["updated_at", "updatedAt"]
+]);
+
+function jobDetailRawFields(internalGameId, detail) {
+  const job = detail?.job || detail || {};
+  return JOB_DETAIL_FIELDS.map(([snakeName, camelName]) => {
+    const raw = snakeName === "job_id" ? jobField(job, snakeName, camelName, job.id) : snakeName === "internal_game_id" ? jobField(job, snakeName, camelName, internalGameId) : jobField(job, snakeName, camelName, "");
+    return { snakeName, camelName, raw: raw === null || raw === undefined ? "" : String(raw) };
+  }).filter((field) => field.raw !== "");
+}
+
+function jobDetailDisplayValue(field) {
+  if (field.snakeName.endsWith("_at") || field.snakeName === "claimed_at" || field.snakeName === "completed_at") {
+    const formatted = formatV3Jst(field.raw);
+    return formatted === "-" ? field.raw : `${formatted} JST (${field.raw})`;
+  }
+  return field.raw;
+}
+
+function jobDetailCopyText(internalGameId, detail) {
+  const job = detail?.job || detail || {};
+  const fields = jobDetailRawFields(internalGameId, detail);
+  const lines = fields.map((field) => `${field.camelName}: ${field.raw}`);
+  if (job.failure_message || job.failureMessage) lines.push(`failureMessage:\n${job.failure_message || job.failureMessage}`);
+  if (Array.isArray(detail?.audits) && detail.audits.length) lines.push(`audits:\n${JSON.stringify(detail.audits, null, 2)}`);
+  return lines.join("\n");
+}
+
+function renderJobCopyButton(copyType, label, value, internalGameId, jobId) {
+  if (!value) return "";
+  return `<button type="button" class="job-detail-copy" data-v3-job-copy="${escapeV3(copyType)}" data-v3-job-copy-game="${escapeV3(internalGameId)}" data-v3-job-copy-id="${escapeV3(jobId)}">${escapeV3(label)}</button>`;
+}
+
+function renderInlineJobDetail(game, job) {
+  const key = jobDetailKey(game.internalGameId, job.id);
+  if (!v3State.jobDetailsOpen.has(key)) return "";
+  const domId = jobDetailDomId(key);
+  const detail = v3State.jobDetails.get(key);
+  if (v3State.jobDetailsLoading.has(key)) return `<div id="${escapeV3(domId)}" class="job-detail-inline" aria-busy="true"><p>job詳細を読み込んでいます。</p></div>`;
+  if (detail?.error) return `<div id="${escapeV3(domId)}" class="job-detail-inline job-detail-error"><p>${escapeV3(detail.error)}</p><button type="button" data-v3-job-detail-refresh="${escapeV3(game.internalGameId)}" data-v3-job-detail-refresh-id="${escapeV3(job.id)}">再取得</button></div>`;
+  if (!detail) return `<div id="${escapeV3(domId)}" class="job-detail-inline"><p>job詳細を取得できませんでした。</p></div>`;
+  const detailedJob = detail.job || detail;
+  const fields = jobDetailRawFields(game.internalGameId, detail);
+  const failureMessage = jobField(detailedJob, "failure_message", "failureMessage", "");
+  const fullText = jobDetailCopyText(game.internalGameId, detail);
+  const copyStatus = v3State.jobDetailsCopyStatus?.get(key) || "";
+  const fieldMarkup = fields.map((field) => `<div class="job-detail-field"><dt>${escapeV3(field.camelName)}</dt><dd class="job-detail-value">${escapeV3(jobDetailDisplayValue(field))}${renderJobCopyButton(field.camelName, "コピー", field.raw, game.internalGameId, job.id)}</dd></div>`).join("");
+  const failureMarkup = failureMessage ? `<div class="job-detail-field job-detail-field-full"><dt>failureMessage ${renderJobCopyButton("failureMessage", "エラーをコピー", String(failureMessage), game.internalGameId, job.id)}</dt><dd><pre class="job-detail-pre">${escapeV3(String(failureMessage))}</pre></dd></div>` : "";
+  const auditMarkup = Array.isArray(detail.audits) && detail.audits.length ? `<div class="job-detail-field job-detail-field-full"><dt>audits</dt><dd><pre class="job-detail-pre">${escapeV3(JSON.stringify(detail.audits, null, 2))}</pre></dd></div>` : "";
+  return `<section id="${escapeV3(domId)}" class="job-detail-inline" aria-label="job詳細"><div class="job-detail-toolbar"><strong>job詳細</strong>${renderJobCopyButton("all", "詳細をすべてコピー", fullText, game.internalGameId, job.id)}<span class="job-copy-status" aria-live="polite">${escapeV3(copyStatus)}</span></div><dl class="job-detail-grid">${fieldMarkup}${failureMarkup}${auditMarkup}</dl><button type="button" class="job-detail-refresh" data-v3-job-detail-refresh="${escapeV3(game.internalGameId)}" data-v3-job-detail-refresh-id="${escapeV3(job.id)}">再取得</button></section>`;
+}
+
 function renderJobRows(game, types) {
   const jobs = latestV3Jobs(game, types);
-  return jobs.length ? `<div class="job-list">${jobs.map((job) => `<div class="job"><code>${escapeV3(V3_JOB_LABELS[job.job_type] || job.job_type)}</code><span class="job-status">${escapeV3(statusLabel(job.status))}</span><span>${escapeV3(job.failure_code || `試行 ${job.attempt_count || 0}/${job.max_attempts || 0}`)}<br><small>予定 ${escapeV3(formatV3Jst(job.scheduled_at))}</small></span><button type="button" data-v3-job-detail="${escapeV3(game.internalGameId)}" data-v3-job-id="${escapeV3(job.id)}">詳細</button>${["failed", "retry_wait"].includes(job.status) ? `<button type="button" data-v3-job-retry="${escapeV3(job.id)}">再試行</button>` : ""}${["pending", "retry_wait"].includes(job.status) ? `<button type="button" data-v3-job-cancel="${escapeV3(job.id)}">取消</button>` : ""}</div>`).join("")}</div>` : "<span class=muted>該当jobの履歴はありません。</span>";
+  return jobs.length ? `<div class="job-list">${jobs.map((job) => {
+    const key = jobDetailKey(game.internalGameId, job.id);
+    const open = v3State.jobDetailsOpen.has(key);
+    return `<div class="job-entry"><div class="job"><code>${escapeV3(V3_JOB_LABELS[job.job_type] || job.job_type)}</code><span class="job-status">${escapeV3(statusLabel(job.status))}</span><span>${escapeV3(job.failure_code || `試行 ${job.attempt_count || 0}/${job.max_attempts || 0}`)}<br><small>予定 ${escapeV3(formatV3Jst(job.scheduled_at))}</small></span><button type="button" aria-expanded="${open ? "true" : "false"}" aria-controls="${escapeV3(jobDetailDomId(key))}" data-v3-job-detail="${escapeV3(game.internalGameId)}" data-v3-job-id="${escapeV3(job.id)}">詳細</button>${["failed", "retry_wait"].includes(job.status) ? `<button type="button" data-v3-job-retry="${escapeV3(job.id)}">再試行</button>` : ""}${["pending", "retry_wait"].includes(job.status) ? `<button type="button" data-v3-job-cancel="${escapeV3(job.id)}">取消</button>` : ""}</div>${renderInlineJobDetail(game, job)}</div>`;
+  }).join("")}</div>` : "<span class=muted>該当jobの履歴はありません。</span>";
+}
+
+async function copyTextSafely(value) {
+  const text = String(value ?? "");
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Clipboard permissions may be unavailable in an embedded admin page.
+    }
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = typeof document.execCommand === "function" && document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("CLIPBOARD_UNAVAILABLE");
+}
+
+async function loadV3JobDetail(internalGameId, jobId, force = false) {
+  const key = jobDetailKey(internalGameId, jobId);
+  if (v3State.jobDetailsLoading.has(key)) return;
+  if (!force && v3State.jobDetails.has(key)) return;
+  const numericJobId = Number(jobId);
+  const selected = (v3State.payload?.games || []).find((game) => game.internalGameId === internalGameId);
+  const listedJob = selected?.jobs?.find((job) => Number(job.id) === numericJobId);
+  if (!selected || !Number.isInteger(numericJobId) || numericJobId <= 0 || !listedJob) {
+    v3State.jobDetails.set(key, { error: "V3_JOB_DETAIL_INVALID_TARGET" });
+    renderCurrentV3View();
+    return;
+  }
+  v3State.jobDetailsLoading.add(key);
+  v3State.jobDetails.delete(key);
+  renderCurrentV3View();
+  try {
+    const detail = await v3Fetch(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/jobs/${encodeURIComponent(numericJobId)}`);
+    if (detail.internalGameId !== internalGameId || Number(detail.job?.id) !== numericJobId) throw new Error("V3_JOB_DETAIL_ID_MISMATCH");
+    v3State.jobDetails.set(key, detail);
+  } catch (error) {
+    v3State.jobDetails.set(key, { error: `${error.code || "V3_JOB_DETAIL_FAILED"}: ${error.message}` });
+  } finally {
+    v3State.jobDetailsLoading.delete(key);
+    renderCurrentV3View();
+  }
 }
 
 function renderLineupView(game) {
@@ -627,12 +790,50 @@ document.addEventListener("click", async (event) => {
     }, "ランキング対象状態を保存しました。");
     return;
   }
+  const jobCopyButton = event.target.closest("[data-v3-job-copy]");
+  if (jobCopyButton) {
+    const internalGameId = jobCopyButton.dataset.v3JobCopyGame || "";
+    const jobId = jobCopyButton.dataset.v3JobCopyId || "";
+    const key = jobDetailKey(internalGameId, jobId);
+    const detail = v3State.jobDetails.get(key);
+    const job = detail?.job || detail;
+    let value = "";
+    if (jobCopyButton.dataset.v3JobCopy === "all") value = jobDetailCopyText(internalGameId, detail);
+    else if (jobCopyButton.dataset.v3JobCopy === "failureMessage") value = String(jobField(job, "failure_message", "failureMessage", ""));
+    else {
+      const field = JOB_DETAIL_FIELDS.find((item) => item[1] === jobCopyButton.dataset.v3JobCopy);
+      value = field ? jobField(job, field[0], field[1], field[0] === "job_id" ? job?.id : field[0] === "internal_game_id" ? internalGameId : "") : "";
+    }
+    try {
+      await copyTextSafely(value);
+      v3State.jobDetailsCopyStatus.set(key, "コピーしました");
+      const status = jobCopyButton.closest(".job-detail-inline")?.querySelector(".job-copy-status");
+      if (status) status.textContent = "コピーしました";
+    } catch (error) {
+      v3State.jobDetailsCopyStatus.set(key, "コピーできませんでした");
+      const status = jobCopyButton.closest(".job-detail-inline")?.querySelector(".job-copy-status");
+      if (status) status.textContent = "コピーできませんでした";
+    }
+    return;
+  }
+  const jobDetailRefreshButton = event.target.closest("[data-v3-job-detail-refresh]");
+  if (jobDetailRefreshButton) {
+    await loadV3JobDetail(jobDetailRefreshButton.dataset.v3JobDetailRefresh, jobDetailRefreshButton.dataset.v3JobDetailRefreshId, true);
+    return;
+  }
   const jobDetailButton = event.target.closest("[data-v3-job-detail]");
   if (jobDetailButton) {
-    try {
-      const detail = await v3Fetch(`/api/admin/v3/games/${encodeURIComponent(jobDetailButton.dataset.v3JobDetail)}/jobs/${encodeURIComponent(jobDetailButton.dataset.v3JobId)}`);
-      window.alert(JSON.stringify(detail.job, null, 2));
-    } catch (error) { setV3Status(`${error.code || "V3_JOB_DETAIL_FAILED"}: ${error.message}`, true); }
+    const internalGameId = jobDetailButton.dataset.v3JobDetail;
+    const jobId = jobDetailButton.dataset.v3JobId;
+    const key = jobDetailKey(internalGameId, jobId);
+    if (v3State.jobDetailsOpen.has(key)) {
+      v3State.jobDetailsOpen.delete(key);
+      renderCurrentV3View();
+      return;
+    }
+    v3State.jobDetailsOpen.add(key);
+    renderCurrentV3View();
+    await loadV3JobDetail(internalGameId, jobId);
     return;
   }
   const jobOperationButton = event.target.closest("[data-v3-job-retry], [data-v3-job-cancel]");

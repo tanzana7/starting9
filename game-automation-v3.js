@@ -221,6 +221,51 @@ function jstV3Slot(dateValue, hour, minute) {
   return new Date(`${date}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00+09:00`);
 }
 
+export function getV3ProbableStarterSlot(game) {
+  const gameDate = String(game?.gameDate || game?.game_date || "").slice(0, 10);
+  const previousGameDate = shiftV3IsoDate(gameDate, -1);
+  return jstV3Slot(previousGameDate, 18, 0);
+}
+
+export function getV3ProbableStarterPlan(game, now = new Date()) {
+  if (!isV3GameEligible(game)) return null;
+  const current = now instanceof Date ? now : new Date(now);
+  const startAt = new Date(game?.startAt || game?.start_at || game?.startTime || game?.start_time || "");
+  const slot = getV3ProbableStarterSlot(game);
+  if (Number.isNaN(current.getTime()) || Number.isNaN(startAt.getTime()) || !slot) return null;
+  if (startAt.getTime() <= current.getTime() || slot.getTime() > current.getTime()) return null;
+  return { jobType: "probable_starter_fetch", scheduledSlotAt: slot, scheduledAt: slot };
+}
+
+export async function planV3ProbableStarterJobs(db, games = [], now = new Date()) {
+  const planned = [];
+  const errors = [];
+  for (const game of Array.isArray(games) ? games : []) {
+    const plan = getV3ProbableStarterPlan(game, now);
+    if (!plan) continue;
+    try {
+      let stateRow = null;
+      try {
+        stateRow = await db.prepare(
+          "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
+        ).bind(game.internalGameId).first();
+      } catch {
+        // V3 state行が未作成、または旧テストadapterの場合も対象抽出は継続します。
+      }
+      if (["excluded", "published"].includes(String(stateRow?.state || game?.workflowState || ""))) continue;
+      const result = await createV3Job(db, { internalGameId: game.internalGameId, ...plan });
+      planned.push({ game, plan, ...result });
+    } catch (error) {
+      errors.push({ game, plan, error });
+    }
+  }
+  return {
+    created: planned.filter((entry) => entry.created).length,
+    planned,
+    errors
+  };
+}
+
 export function getV3IdentityResolvePlans(game, now = new Date(), workflowState = "") {
   if (!isV3GameEligible(game) || String(workflowState || "") === "published") return [];
   const identityStatus = String(game?.npbIdentityStatus || game?.npb_identity_status || "").trim();
@@ -463,6 +508,12 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
   let created = 0;
   let processed = 0;
   let failed = 0;
+  const probablePlan = await planV3ProbableStarterJobs(env.AUTH_DB, games, now);
+  created += probablePlan.created;
+  for (const entry of probablePlan.errors) {
+    failed += 1;
+    if (onError) await onError(entry.error, { game: entry.game, stage: "probable_plan" });
+  }
   for (const game of games) {
     try {
       const stateRow = await ensureV3State(env.AUTH_DB, game.internalGameId, now);

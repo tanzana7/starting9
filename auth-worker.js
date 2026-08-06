@@ -948,16 +948,21 @@ function findProbableStarterGame(target, games) {
 
 function serializeProbableStarterRow(row) {
   if (!row) return null;
+  const status = String(row.status || "error");
+  const errorCode = row.error_code || "";
   return {
     gameId: String(row.game_id || ""),
-    status: String(row.status || "error"),
+    status,
     homePitcherName: row.home_pitcher_name || "",
     awayPitcherName: row.away_pitcher_name || "",
     fetchedAt: row.fetched_at || null,
     announcedAt: row.announced_at || null,
     nextCheckAt: row.next_check_at || null,
     sourceUrl: row.source_url || "",
-    errorCode: row.error_code || "",
+    source: row.source || (row.source_url ? "npb" : ""),
+    errorCode,
+    lastFailureCode: errorCode,
+    isConfirmed: status === "announced",
     updatedAt: row.updated_at || null
   };
 }
@@ -3355,20 +3360,54 @@ async function handleAdminV3Overview(request, env, cors) {
   if (!schema.ready) return jsonResponse({ ok: false, code: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", schema }, 503, cors);
   const rows = [];
   const overviewNow = new Date();
+  let probableStarterColumns = new Set();
+  try {
+    probableStarterColumns = await getTableColumnSet(env.AUTH_DB, "probable_starters");
+  } catch {
+    // 予告先発の旧スキーマでは、V3概要の付加情報だけを省略します。
+  }
   for (const game of await listV3Games(env.AUTH_DB, overviewNow)) {
     const state = await env.AUTH_DB.prepare(
       "SELECT state, version, failure_code, updated_at FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
     ).bind(game.internalGameId).first();
     const jobs = await env.AUTH_DB.prepare(
       `SELECT id, job_type, status, scheduled_at, scheduled_slot_at, attempt_count,
-              max_attempts, next_retry_at, claimed_at, completed_at, failure_code, updated_at
+              max_attempts, next_retry_at, claimed_at, lease_expires_at, completed_at,
+              failure_code, failure_message, updated_at
          FROM game_jobs_v3 WHERE internal_game_id = ?1 ORDER BY scheduled_at, id`
     ).bind(game.internalGameId).all();
+    let probableStarter = null;
+    if (probableStarterColumns.has("internal_game_id")) {
+      probableStarter = await env.AUTH_DB.prepare(
+        `SELECT status, home_pitcher_name, away_pitcher_name, fetched_at, announced_at,
+                next_check_at, source_url, error_code, updated_at
+           FROM probable_starters
+          WHERE internal_game_id = ?1
+          ORDER BY COALESCE(fetched_at, updated_at) DESC
+          LIMIT 1`
+      ).bind(game.internalGameId).first();
+    }
     const resolvedState = state || { state: "scheduled", version: 0 };
     const jobRows = jobs.results || [];
     const schedule = deriveV3DisplaySchedule(game);
     const nextAction = getV3NextAction({ schedule, state: resolvedState.state, jobs: jobRows, now: overviewNow });
-    rows.push({ ...game, state: resolvedState, jobs: jobRows, schedule: { ...schedule, ...nextAction } });
+    rows.push({
+      ...game,
+      state: resolvedState,
+      jobs: jobRows,
+      probableStarter: probableStarter ? {
+        status: probableStarter.status || null,
+        homePitcherName: probableStarter.home_pitcher_name || "",
+        awayPitcherName: probableStarter.away_pitcher_name || "",
+        fetchedAt: probableStarter.fetched_at || null,
+        announcedAt: probableStarter.announced_at || null,
+        nextCheckAt: probableStarter.next_check_at || null,
+        sourceUrl: probableStarter.source_url || "",
+        errorCode: probableStarter.error_code || "",
+        updatedAt: probableStarter.updated_at || null
+      } : null,
+      schedule: { ...schedule, ...nextAction }
+    });
   }
   return jsonResponse({ ok: true, featureFlag: V3_FEATURE_FLAG, enabled: isGameAutomationV3Enabled(env), schema, games: rows }, 200, cors);
 }
@@ -10487,16 +10526,40 @@ async function handleGetPredictionTarget(request, env, cors) {
 }
 
 async function handleGetProbableStarter(request, env, cors) {
-  const reference = await resolveApiGameReference(env.AUTH_DB, new URL(request.url).searchParams.get("gameId"));
+  const params = new URL(request.url).searchParams;
+  const suppliedInternalGameId = String(params.get("internalGameId") || "").trim();
+  const suppliedGameId = String(params.get("gameId") || "").trim();
+  const reference = await resolveApiGameReference(env.AUTH_DB, suppliedInternalGameId || suppliedGameId);
   if (!reference.ok) return jsonResponse({ ok: false, code: reference.code, error: "対象試合を指定してください。" }, 400, cors);
   const metadata = reference.metadata;
-  const gameId = metadata.gameId;
+  const gameId = metadata.gameId || metadata.legacyGameId || suppliedGameId;
   try {
     const storage = await getInternalGameIdStorageAvailability(env.AUTH_DB, ["probable_starters"]);
     const row = storage.probable_starters && metadata.internalGameId
       ? await env.AUTH_DB.prepare("SELECT * FROM probable_starters WHERE internal_game_id = ?1 OR (internal_game_id IS NULL AND game_id = ?2) ORDER BY CASE WHEN internal_game_id = ?1 THEN 0 ELSE 1 END LIMIT 1").bind(metadata.internalGameId, gameId).first()
       : await env.AUTH_DB.prepare("SELECT * FROM probable_starters WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
-    const response = jsonResponse({ ok: true, gameId, internalGameId: metadata.internalGameId || "", legacyGameId: metadata.legacyGameId || gameId, probableStarter: serializeProbableStarterRow(row) }, 200, cors);
+    const probableStarter = serializeProbableStarterRow(row);
+    const game = metadata.game || {};
+    const response = jsonResponse({
+      ok: true,
+      gameId,
+      internalGameId: metadata.internalGameId || "",
+      legacyGameId: metadata.legacyGameId || gameId,
+      gameDate: metadata.date || game.game_date || "",
+      startAt: metadata.startAt || game.start_at || "",
+      homeTeam: game.home_team || metadata.homeCode || "",
+      awayTeam: game.away_team || metadata.awayCode || "",
+      source: probableStarter?.source || "",
+      fetchedAt: probableStarter?.fetchedAt || null,
+      status: probableStarter?.status || "empty",
+      state: probableStarter?.status || "empty",
+      lastFailureCode: probableStarter?.lastFailureCode || "",
+      isConfirmed: Boolean(probableStarter?.isConfirmed),
+      confirmed: Boolean(probableStarter?.isConfirmed),
+      homeProbableStarter: probableStarter ? { name: probableStarter.homePitcherName, status: probableStarter.status } : null,
+      awayProbableStarter: probableStarter ? { name: probableStarter.awayPitcherName, status: probableStarter.status } : null,
+      probableStarter
+    }, 200, cors);
     response.headers.set("Cache-Control", "no-store");
     return response;
   } catch (error) {

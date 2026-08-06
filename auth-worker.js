@@ -2723,10 +2723,11 @@ function getScheduleGameCode(game) {
     || "";
 }
 
-export function mergeNpbScheduleCandidates(scheduleGames, fallbackGames, date) {
+export function mergeNpbScheduleCandidates(scheduleGames, fallbackGames, date, target = null) {
   const merged = Array.isArray(scheduleGames) ? scheduleGames.map((game) => ({ ...game, resolutionSource: "npb_schedule" })) : [];
   const normalizedPrimary = merged.map((game) => normalizeNpbScheduleCandidate(game, date));
-  for (const fallback of Array.isArray(fallbackGames) ? fallbackGames : []) {
+  const staticCandidates = target ? getStaticNpbTargetCandidates(fallbackGames, target) : (Array.isArray(fallbackGames) ? fallbackGames : []);
+  for (const fallback of staticCandidates) {
     const gameCode = getScheduleGameCode(fallback);
     if (!gameCode) continue;
     const fallbackCandidate = normalizeNpbScheduleCandidate({
@@ -2750,7 +2751,9 @@ export function mergeNpbScheduleCandidates(scheduleGames, fallbackGames, date) {
         ...merged[matchingIndex],
         gameCode,
         npbGameUrl: fallback.npbGameUrl || fallback.npbScoreUrl || "",
-        resolutionSource: "npb_schedule+static_schedule"
+        resolutionSource: fallback.resolutionSource === "static_schedule_enrichment"
+          ? "static_schedule_enrichment"
+          : "npb_schedule+static_schedule"
       };
       normalizedPrimary[matchingIndex] = normalizeNpbScheduleCandidate(merged[matchingIndex], date);
     } else if (existingCode !== gameCode) {
@@ -2770,15 +2773,25 @@ function getStaticNpbTargetCandidates(fallbackGames, current) {
   return (Array.isArray(fallbackGames) ? fallbackGames : []).filter((game) => {
     const candidate = normalizeNpbScheduleCandidate(game, targetDate);
     return candidate.candidateDateJst === targetDate
-      && candidate.normalizedHomeTeam === targetHome
-      && candidate.normalizedAwayTeam === targetAway
+      && ((candidate.normalizedHomeTeam === targetHome && candidate.normalizedAwayTeam === targetAway)
+        || (candidate.normalizedHomeTeam === targetAway && candidate.normalizedAwayTeam === targetHome))
       && !Number.isNaN(candidate.candidateStart.getTime())
       && candidate.candidateStart.getTime() === targetStart.getTime();
   }).map((game) => ({
     ...game,
+    // Static records expose explicit homeTeam/awayTeam fields. Preserve the DB target orientation when
+    // a same-time candidate has the same teams in reverse order, and use the static row only for identity enrichment.
+    homeTeam: normalizeScheduleTeamCode(game?.homeTeam) === targetAway && normalizeScheduleTeamCode(game?.awayTeam) === targetHome
+      ? current.home_team
+      : game.homeTeam,
+    awayTeam: normalizeScheduleTeamCode(game?.homeTeam) === targetAway && normalizeScheduleTeamCode(game?.awayTeam) === targetHome
+      ? current.away_team
+      : game.awayTeam,
     gameCode: getScheduleGameCode(game),
     npbGameUrl: game.npbGameUrl || game.npbScoreUrl || "",
-    resolutionSource: "static_schedule"
+    resolutionSource: normalizeScheduleTeamCode(game?.homeTeam) === targetAway && normalizeScheduleTeamCode(game?.awayTeam) === targetHome
+      ? "static_schedule_enrichment"
+      : "static_schedule"
   }));
 }
 
@@ -3358,7 +3371,7 @@ async function handleAdminV3IdentityResolve(request, env, cors, internalGameId) 
     const staticGames = getScheduledGames();
     const staticDateCount = staticGames.filter((game) => String(game?.date || game?.game_date || "") === String(current.game_date || "")).length;
     const staticTargetCandidates = getStaticNpbTargetCandidates(staticGames, current);
-    const scheduleCandidates = mergeNpbScheduleCandidates(payload.games, staticGames, current.game_date);
+    const scheduleCandidates = mergeNpbScheduleCandidates(payload.games, staticGames, current.game_date, current);
     const targetHome = normalizeScheduleTeamCode(current.home_team);
     const targetAway = normalizeScheduleTeamCode(current.away_team);
     const targetStart = new Date(current.start_time || "");

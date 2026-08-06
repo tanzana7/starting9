@@ -948,16 +948,21 @@ function findProbableStarterGame(target, games) {
 
 function serializeProbableStarterRow(row) {
   if (!row) return null;
+  const status = String(row.status || "error");
+  const errorCode = row.error_code || "";
   return {
     gameId: String(row.game_id || ""),
-    status: String(row.status || "error"),
+    status,
     homePitcherName: row.home_pitcher_name || "",
     awayPitcherName: row.away_pitcher_name || "",
     fetchedAt: row.fetched_at || null,
     announcedAt: row.announced_at || null,
     nextCheckAt: row.next_check_at || null,
     sourceUrl: row.source_url || "",
-    errorCode: row.error_code || "",
+    source: row.source || (row.source_url ? "npb" : ""),
+    errorCode,
+    lastFailureCode: errorCode,
+    isConfirmed: status === "announced",
     updatedAt: row.updated_at || null
   };
 }
@@ -10521,16 +10526,40 @@ async function handleGetPredictionTarget(request, env, cors) {
 }
 
 async function handleGetProbableStarter(request, env, cors) {
-  const reference = await resolveApiGameReference(env.AUTH_DB, new URL(request.url).searchParams.get("gameId"));
+  const params = new URL(request.url).searchParams;
+  const suppliedInternalGameId = String(params.get("internalGameId") || "").trim();
+  const suppliedGameId = String(params.get("gameId") || "").trim();
+  const reference = await resolveApiGameReference(env.AUTH_DB, suppliedInternalGameId || suppliedGameId);
   if (!reference.ok) return jsonResponse({ ok: false, code: reference.code, error: "対象試合を指定してください。" }, 400, cors);
   const metadata = reference.metadata;
-  const gameId = metadata.gameId;
+  const gameId = metadata.gameId || metadata.legacyGameId || suppliedGameId;
   try {
     const storage = await getInternalGameIdStorageAvailability(env.AUTH_DB, ["probable_starters"]);
     const row = storage.probable_starters && metadata.internalGameId
       ? await env.AUTH_DB.prepare("SELECT * FROM probable_starters WHERE internal_game_id = ?1 OR (internal_game_id IS NULL AND game_id = ?2) ORDER BY CASE WHEN internal_game_id = ?1 THEN 0 ELSE 1 END LIMIT 1").bind(metadata.internalGameId, gameId).first()
       : await env.AUTH_DB.prepare("SELECT * FROM probable_starters WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
-    const response = jsonResponse({ ok: true, gameId, internalGameId: metadata.internalGameId || "", legacyGameId: metadata.legacyGameId || gameId, probableStarter: serializeProbableStarterRow(row) }, 200, cors);
+    const probableStarter = serializeProbableStarterRow(row);
+    const game = metadata.game || {};
+    const response = jsonResponse({
+      ok: true,
+      gameId,
+      internalGameId: metadata.internalGameId || "",
+      legacyGameId: metadata.legacyGameId || gameId,
+      gameDate: metadata.date || game.game_date || "",
+      startAt: metadata.startAt || game.start_at || "",
+      homeTeam: game.home_team || metadata.homeCode || "",
+      awayTeam: game.away_team || metadata.awayCode || "",
+      source: probableStarter?.source || "",
+      fetchedAt: probableStarter?.fetchedAt || null,
+      status: probableStarter?.status || "empty",
+      state: probableStarter?.status || "empty",
+      lastFailureCode: probableStarter?.lastFailureCode || "",
+      isConfirmed: Boolean(probableStarter?.isConfirmed),
+      confirmed: Boolean(probableStarter?.isConfirmed),
+      homeProbableStarter: probableStarter ? { name: probableStarter.homePitcherName, status: probableStarter.status } : null,
+      awayProbableStarter: probableStarter ? { name: probableStarter.awayPitcherName, status: probableStarter.status } : null,
+      probableStarter
+    }, 200, cors);
     response.headers.set("Cache-Control", "no-store");
     return response;
   } catch (error) {

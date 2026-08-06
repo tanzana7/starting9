@@ -3112,19 +3112,36 @@ function findNextScheduledGameForStarter(schedule) {
 
 function buildProbableStarterApiUrl(gameId) {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
-  return baseUrl && gameId ? `${baseUrl}/api/probable-starter?gameId=${encodeURIComponent(gameId)}` : "";
+  const game = gameId && typeof gameId === "object" ? gameId : { gameId };
+  const internalGameId = String(game?.internalGameId || "").trim();
+  const legacyGameId = String(game?.gameId || "").trim();
+  if (!baseUrl || (!internalGameId && !legacyGameId)) return "";
+  return internalGameId
+    ? `${baseUrl}/api/probable-starter?internalGameId=${encodeURIComponent(internalGameId)}`
+    : `${baseUrl}/api/probable-starter?gameId=${encodeURIComponent(legacyGameId)}`;
 }
 
-function applyStoredProbableStarter(probableStarter) {
+function applyStoredProbableStarter(probableStarter, gameMetadata = {}) {
   const nextGame = state.probableStarter.nextGame;
-  const status = String(probableStarter?.status || "unannounced");
-  state.probableStarter.fetchedGameId = nextGame?.gameId || "";
+  const canonicalGame = {
+    ...nextGame,
+    internalGameId: gameMetadata.internalGameId || probableStarter?.internalGameId || nextGame?.internalGameId || "",
+    gameId: gameMetadata.legacyGameId || gameMetadata.gameId || nextGame?.gameId || "",
+    date: gameMetadata.gameDate || nextGame?.date || "",
+    startAt: gameMetadata.startAt || nextGame?.startAt || "",
+    homeTeam: gameMetadata.homeTeam || nextGame?.homeTeam || "",
+    awayTeam: gameMetadata.awayTeam || nextGame?.awayTeam || ""
+  };
+  state.probableStarter.nextGame = canonicalGame;
+  state.predictionTargetGame = canonicalGame;
+  const status = String(probableStarter?.status || "empty");
+  state.probableStarter.fetchedGameId = canonicalGame.gameId || "";
   state.probableStarter.fetchedAt = probableStarter?.fetchedAt || "";
   state.probableStarter.sourceUrl = probableStarter?.sourceUrl || NPB_STARTER_SOURCE_URL;
   state.probableStarter.fetchedGameCount = probableStarter ? 1 : 0;
   state.probableStarter.nextCheckAt = probableStarter?.nextCheckAt || "";
   state.probableStarter.errorCode = probableStarter?.errorCode || "";
-  if (!probableStarter || status === "unannounced") {
+  if (!probableStarter || status === "empty" || status === "unannounced") {
     state.probableStarter.status = "unannounced";
     state.probableStarter.message = "予告先発はまだ発表されていません";
     state.probableStarter.matchedGame = null;
@@ -3141,7 +3158,7 @@ function applyStoredProbableStarter(probableStarter) {
   state.probableStarter.status = "success";
   state.probableStarter.message = "予告先発を取得しました";
   state.probableStarter.matchedGame = {
-    ...nextGame,
+    ...canonicalGame,
     homeStarter: { name: probableStarter.homePitcherName || "" },
     awayStarter: { name: probableStarter.awayPitcherName || "" }
   };
@@ -3160,8 +3177,8 @@ async function fetchStoredProbableStarter() {
     return;
   }
 
-  const gameId = state.probableStarter.nextGame.gameId;
-  const url = buildProbableStarterApiUrl(gameId);
+  const game = state.probableStarter.nextGame;
+  const url = buildProbableStarterApiUrl(game);
   if (!url) {
     state.probableStarter.status = "error";
     state.probableStarter.message = "予告先発を取得できませんでした";
@@ -3181,7 +3198,7 @@ async function fetchStoredProbableStarter() {
       state.probableStarter.message = "予告先発を取得できませんでした";
       return;
     }
-    applyStoredProbableStarter(result.probableStarter);
+    applyStoredProbableStarter(result.probableStarter, result);
   } catch (error) {
     state.probableStarter.status = "error";
     state.probableStarter.message = "予告先発を取得できませんでした";
@@ -3213,7 +3230,7 @@ async function fetchProbableStarter({ force = false } = {}) {
     if (!response.ok || !result?.ok) {
       throw new Error(result?.error || "予告先発を再取得できませんでした。");
     }
-    applyStoredProbableStarter(result.probableStarter);
+    applyStoredProbableStarter(result.probableStarter, result);
     addProbableStarterLog("サーバー再取得が完了");
   } catch (error) {
     state.probableStarter.status = "error";

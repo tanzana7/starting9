@@ -14,45 +14,141 @@ export const V3_TIMING = Object.freeze({
 });
 
 export const V3_FEATURE_FLAG = "ENABLE_GAME_AUTOMATION_V3";
-export const V3_STATES = Object.freeze([
-  "scheduled",
-  "prediction_closed",
-  "lineup_ready",
-  "scored",
-  "ranked",
-  "published",
-  "excluded",
-  "failed",
-  "manual_action_required"
-]);
-export const V3_JOB_TYPES = Object.freeze([
-  "npb_identity_resolve",
-  "prediction_close",
-  "lineup_fetch",
-  "lineup_finalize",
-  "score",
-  "ranking_rebuild",
-  "publish",
-  "probable_starter_fetch",
-  "roster_fetch"
+export const V3_STATE = Object.freeze({
+  SCHEDULED: "scheduled",
+  PREDICTION_CLOSED: "prediction_closed",
+  LINEUP_READY: "lineup_ready",
+  SCORED: "scored",
+  RANKED: "ranked",
+  PUBLISHED: "published",
+  EXCLUDED: "excluded",
+  FAILED: "failed",
+  MANUAL_ACTION_REQUIRED: "manual_action_required"
+});
+export const V3_STATES = Object.freeze(Object.values(V3_STATE));
+export const V3_JOB_TYPE = Object.freeze({
+  NPB_IDENTITY_RESOLVE: "npb_identity_resolve",
+  PREDICTION_CLOSE: "prediction_close",
+  PROBABLE_STARTER_FETCH: "probable_starter_fetch",
+  ROSTER_FETCH: "roster_fetch",
+  LINEUP_FETCH: "lineup_fetch",
+  LINEUP_FINALIZE: "lineup_finalize",
+  SCORE: "score",
+  RANKING_REBUILD: "ranking_rebuild",
+  PUBLISH: "publish"
+});
+export const V3_AUXILIARY_JOB_TYPES = Object.freeze([
+  V3_JOB_TYPE.PROBABLE_STARTER_FETCH,
+  V3_JOB_TYPE.ROSTER_FETCH,
+  V3_JOB_TYPE.NPB_IDENTITY_RESOLVE
 ]);
 export const V3_MAIN_JOB_TYPES = Object.freeze([
-  "npb_identity_resolve",
-  "prediction_close",
-  "lineup_fetch",
-  "lineup_finalize",
-  "score",
-  "ranking_rebuild",
-  "publish"
+  V3_JOB_TYPE.PREDICTION_CLOSE,
+  V3_JOB_TYPE.LINEUP_FETCH,
+  V3_JOB_TYPE.LINEUP_FINALIZE,
+  V3_JOB_TYPE.SCORE,
+  V3_JOB_TYPE.RANKING_REBUILD,
+  V3_JOB_TYPE.PUBLISH
 ]);
-export const V3_JOB_STATUSES = Object.freeze([
-  "pending",
-  "claimed",
-  "completed",
-  "retry_wait",
-  "failed",
-  "cancelled"
+export const V3_JOB_TYPES = Object.freeze([
+  V3_JOB_TYPE.NPB_IDENTITY_RESOLVE,
+  ...V3_MAIN_JOB_TYPES,
+  V3_JOB_TYPE.PROBABLE_STARTER_FETCH,
+  V3_JOB_TYPE.ROSTER_FETCH
 ]);
+export const V3_JOB_STATUS = Object.freeze({
+  PENDING: "pending",
+  CLAIMED: "claimed",
+  RETRY_WAIT: "retry_wait",
+  COMPLETED: "completed",
+  FAILED: "failed",
+  CANCELLED: "cancelled"
+});
+export const V3_JOB_STATUSES = Object.freeze(Object.values(V3_JOB_STATUS));
+export const V3_OPEN_JOB_STATUSES = Object.freeze([
+  V3_JOB_STATUS.PENDING,
+  V3_JOB_STATUS.CLAIMED,
+  V3_JOB_STATUS.RETRY_WAIT
+]);
+export const V3_TERMINAL_JOB_STATUSES = Object.freeze([
+  V3_JOB_STATUS.COMPLETED,
+  V3_JOB_STATUS.FAILED,
+  V3_JOB_STATUS.CANCELLED
+]);
+const V3_OPEN_JOB_STATUS_SQL = V3_OPEN_JOB_STATUSES.map((status) => `'${status}'`).join(", ");
+export const V3_POLLING_RESULTS = Object.freeze({
+  LINEUP_ANNOUNCED: "LINEUP_ANNOUNCED",
+  LINEUP_NOT_ANNOUNCED: "LINEUP_NOT_ANNOUNCED",
+  LINEUP_TRANSIENT_ERROR: "LINEUP_TRANSIENT_ERROR",
+  LINEUP_INTEGRITY_ERROR: "LINEUP_INTEGRITY_ERROR"
+});
+export const V3_ERROR_CLASSES = Object.freeze({
+  RETRYABLE: "RETRYABLE",
+  DATA_INTEGRITY: "DATA_INTEGRITY",
+  WORKFLOW: "WORKFLOW",
+  SYSTEM: "SYSTEM"
+});
+
+const V3_TRANSITION_LIST = Object.freeze([
+  { from: V3_STATE.SCHEDULED, to: V3_STATE.PREDICTION_CLOSED, triggeringJob: V3_JOB_TYPE.PREDICTION_CLOSE, prerequisite: "prediction deadline reached" },
+  { from: V3_STATE.PREDICTION_CLOSED, to: V3_STATE.LINEUP_READY, triggeringJob: V3_JOB_TYPE.LINEUP_FINALIZE, prerequisite: "canonical finalized lineup" },
+  { from: V3_STATE.LINEUP_READY, to: V3_STATE.SCORED, triggeringJob: V3_JOB_TYPE.SCORE, prerequisite: "finalized lineup and predictions" },
+  { from: V3_STATE.SCORED, to: V3_STATE.RANKED, triggeringJob: V3_JOB_TYPE.RANKING_REBUILD, prerequisite: "completed scoring revision" },
+  { from: V3_STATE.RANKED, to: V3_STATE.PUBLISHED, triggeringJob: V3_JOB_TYPE.PUBLISH, prerequisite: "reflected ranking and publication time" },
+  { from: V3_STATE.SCHEDULED, to: V3_STATE.EXCLUDED, triggeringJob: "admin", prerequisite: "game is excluded" },
+  { from: V3_STATE.PREDICTION_CLOSED, to: V3_STATE.EXCLUDED, triggeringJob: "admin", prerequisite: "game is excluded" },
+  { from: V3_STATE.LINEUP_READY, to: V3_STATE.EXCLUDED, triggeringJob: "admin", prerequisite: "game is excluded" },
+  { from: V3_STATE.SCORED, to: V3_STATE.EXCLUDED, triggeringJob: "admin", prerequisite: "game is excluded" },
+  { from: V3_STATE.RANKED, to: V3_STATE.EXCLUDED, triggeringJob: "admin", prerequisite: "game is excluded" },
+  { from: V3_STATE.PUBLISHED, to: V3_STATE.MANUAL_ACTION_REQUIRED, triggeringJob: "admin", prerequisite: "manual intervention" },
+  { from: V3_STATE.EXCLUDED, to: V3_STATE.RANKED, triggeringJob: V3_JOB_TYPE.RANKING_REBUILD, prerequisite: "eligibility restored" },
+  { from: V3_STATE.EXCLUDED, to: V3_STATE.MANUAL_ACTION_REQUIRED, triggeringJob: "admin", prerequisite: "manual intervention" },
+  { from: V3_STATE.FAILED, to: V3_STATE.MANUAL_ACTION_REQUIRED, triggeringJob: "admin", prerequisite: "manual intervention" },
+  ...[V3_STATE.SCHEDULED, V3_STATE.PREDICTION_CLOSED, V3_STATE.LINEUP_READY, V3_STATE.SCORED, V3_STATE.RANKED]
+    .map((from) => ({ from, to: V3_STATE.FAILED, triggeringJob: "system", prerequisite: "non-retryable failure" })),
+  ...[V3_STATE.SCHEDULED, V3_STATE.PREDICTION_CLOSED, V3_STATE.LINEUP_READY, V3_STATE.SCORED, V3_STATE.RANKED]
+    .map((from) => ({ from, to: V3_STATE.MANUAL_ACTION_REQUIRED, triggeringJob: "admin", prerequisite: "manual intervention" }))
+  ,...[V3_STATE.PREDICTION_CLOSED, V3_STATE.LINEUP_READY, V3_STATE.SCORED, V3_STATE.RANKED, V3_STATE.PUBLISHED]
+    .map((to) => ({ from: V3_STATE.MANUAL_ACTION_REQUIRED, to, triggeringJob: "admin", prerequisite: "manual intervention resolved" }))
+]);
+export const V3_TRANSITIONS = Object.freeze(Object.fromEntries(
+  V3_TRANSITION_LIST.map((transition) => [`${transition.from}->${transition.to}`, Object.freeze(transition)])
+));
+export const V3_JOB_REGISTRY = Object.freeze({
+  [V3_JOB_TYPE.NPB_IDENTITY_RESOLVE]: Object.freeze({ kind: "auxiliary", label: "NPB識別情報解決", transitionTo: null }),
+  [V3_JOB_TYPE.PROBABLE_STARTER_FETCH]: Object.freeze({ kind: "auxiliary", label: "予告先発取得", transitionTo: null }),
+  [V3_JOB_TYPE.ROSTER_FETCH]: Object.freeze({ kind: "auxiliary", label: "ロースター取得", transitionTo: null }),
+  [V3_JOB_TYPE.PREDICTION_CLOSE]: Object.freeze({ kind: "main", label: "予想締切", transitionTo: V3_STATE.PREDICTION_CLOSED }),
+  [V3_JOB_TYPE.LINEUP_FETCH]: Object.freeze({ kind: "main_polling", label: "スタメン取得", transitionTo: null }),
+  [V3_JOB_TYPE.LINEUP_FINALIZE]: Object.freeze({ kind: "main", label: "正式スタメン確定", transitionTo: V3_STATE.LINEUP_READY }),
+  [V3_JOB_TYPE.SCORE]: Object.freeze({ kind: "main", label: "採点", transitionTo: V3_STATE.SCORED }),
+  [V3_JOB_TYPE.RANKING_REBUILD]: Object.freeze({ kind: "main", label: "ランキング反映", transitionTo: V3_STATE.RANKED }),
+  [V3_JOB_TYPE.PUBLISH]: Object.freeze({ kind: "main", label: "結果公開", transitionTo: V3_STATE.PUBLISHED })
+});
+
+export function getV3JobDefinition(jobType) {
+  return V3_JOB_REGISTRY[String(jobType || "")] || null;
+}
+
+export function isV3OpenJobStatus(status) {
+  return V3_OPEN_JOB_STATUSES.includes(String(status || ""));
+}
+
+export function isV3TerminalJobStatus(status) {
+  return V3_TERMINAL_JOB_STATUSES.includes(String(status || ""));
+}
+
+export function getV3TransitionDefinition(from, to) {
+  return V3_TRANSITIONS[`${String(from || "")}->${String(to || "")}`] || null;
+}
+
+export function classifyV3ErrorCode(code) {
+  const normalized = String(code || "").trim().toUpperCase();
+  if (["MISSING_EXECUTOR", "MISSING_HELPER", "UNEXPECTED_EXCEPTION", "V3_JOB_TYPE_UNSUPPORTED"].includes(normalized)) return V3_ERROR_CLASSES.SYSTEM;
+  if (["V3_STATE_TRANSITION_INVALID", "V3_STATE_VERSION_CONFLICT", "PREREQUISITE_NOT_MET", "V3_SCORING_INCOMPLETE", "V3_PUBLICATION_NOT_READY"].includes(normalized)) return V3_ERROR_CLASSES.WORKFLOW;
+  if (["LINEUP_INCOMPLETE", "PLAYER_ID_UNRESOLVED", "INTERNAL_GAME_ID_MISMATCH", "DATA_INTEGRITY_ERROR", "NPB_IDENTITY_CONFLICT"].includes(normalized)) return V3_ERROR_CLASSES.DATA_INTEGRITY;
+  return V3_ERROR_CLASSES.RETRYABLE;
+}
 
 export function isGameAutomationV3Enabled(env = {}) {
   return ["true", "1", "on", "enabled"].includes(String(env?.[V3_FEATURE_FLAG] || "").trim().toLowerCase());
@@ -288,18 +384,7 @@ export function shouldStopProbableStarterScheduling({
 }
 
 export function getV3AllowedTransitions(from, to) {
-  const allowed = {
-    scheduled: ["prediction_closed", "excluded", "failed", "manual_action_required"],
-    prediction_closed: ["lineup_ready", "failed", "manual_action_required", "excluded"],
-    lineup_ready: ["scored", "failed", "manual_action_required", "excluded"],
-    scored: ["ranked", "failed", "manual_action_required", "excluded"],
-    ranked: ["published", "failed", "manual_action_required", "excluded"],
-    published: ["manual_action_required"],
-    excluded: ["ranked", "manual_action_required"],
-    failed: ["manual_action_required"],
-    manual_action_required: ["prediction_closed", "lineup_ready", "scored", "ranked", "published", "excluded"]
-  };
-  return Boolean(allowed[String(from || "")]?.includes(String(to || "")));
+  return Boolean(getV3TransitionDefinition(from, to));
 }
 
 export function assertV3Transition(from, to) {
@@ -546,7 +631,7 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
            FROM game_jobs_v3
           WHERE internal_game_id = ?1
             AND job_type = ?2
-            AND status IN ('pending', 'claimed', 'retry_wait')
+            AND status IN (${V3_OPEN_JOB_STATUS_SQL})
           LIMIT 1`
       ).bind(game.internalGameId, plan.jobType).first();
       if (openJob) {
@@ -894,8 +979,22 @@ export function getV3DuePlan(game, state, now = new Date()) {
 export function createV3Error(code, message, details = {}) {
   const error = new Error(message);
   error.code = code;
+  error.errorClass = details.errorClass || classifyV3ErrorCode(code);
   Object.assign(error, details);
   return error;
+}
+
+function normalizeV3ExecutionError(error) {
+  if (error?.code && error.code !== "V3_JOB_FAILED") return error;
+  return createV3Error("UNEXPECTED_EXCEPTION", String(error?.message || "V3ジョブの予期しない例外です。"), {
+    errorClass: V3_ERROR_CLASSES.SYSTEM,
+    exceptionName: String(error?.name || "Error"),
+    exceptionMessage: String(error?.message || ""),
+    diagnostics: {
+      exceptionName: String(error?.name || "Error"),
+      exceptionMessage: String(error?.message || "")
+    }
+  });
 }
 
 function formatV3JobFailureMessage(error) {
@@ -1106,7 +1205,7 @@ async function hasOpenV3Job(db, internalGameId, jobType) {
   const row = await db.prepare(
     `SELECT id FROM game_jobs_v3
       WHERE internal_game_id = ?1 AND job_type = ?2
-        AND status IN ('pending', 'claimed', 'retry_wait')
+        AND status IN (${V3_OPEN_JOB_STATUS_SQL})
       LIMIT 1`
   ).bind(internalGameId, jobType).first();
   return Boolean(row?.id);
@@ -1139,6 +1238,132 @@ function createV3PlanningDiagnostic(game, plan, state) {
     existingJobId: null,
     existingStatus: null
   };
+}
+
+export function normalizeV3PlannerDecision(entry, now = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  const plan = entry?.plan || null;
+  const diagnostic = entry?.diagnostic || {};
+  const job = entry?.job || null;
+  const status = String(entry?.existingStatus || job?.status || diagnostic.existingStatus || "");
+  const scheduledSlotAt = plan?.scheduledSlotAt instanceof Date
+    ? plan.scheduledSlotAt.toISOString()
+    : plan?.scheduledSlotAt || entry?.existingScheduledSlotAt || null;
+  const dueAt = new Date(plan?.scheduledAt || scheduledSlotAt || "");
+  const due = !Number.isNaN(current.getTime()) && !Number.isNaN(dueAt.getTime()) && dueAt.getTime() <= current.getTime();
+  const existing = job?.id ? { id: job.id, status: job.status || null, scheduledSlotAt: job.scheduled_slot_at || null } : null;
+  const existingOpenJob = existing && isV3OpenJobStatus(existing.status) ? existing : null;
+  const existingTerminalJob = existing && isV3TerminalJobStatus(existing.status) ? existing : null;
+  const reasonCode = entry?.reasonCode || diagnostic.reasonCode || null;
+  const shouldRun = Boolean(plan && ![
+    "PROBABLE_STARTER_GAME_NOT_ELIGIBLE",
+    "PROBABLE_STARTER_NOT_DUE",
+    "V3_GAME_NOT_ELIGIBLE",
+    "V3_STATE_NOT_ELIGIBLE"
+  ].includes(String(reasonCode || "")));
+  const canonicalDataReady = typeof diagnostic.canonicalDataReady === "boolean"
+    ? diagnostic.canonicalDataReady
+    : typeof diagnostic.rosterSnapshotExists === "boolean"
+      ? diagnostic.rosterSnapshotExists
+      : null;
+  return {
+    jobType: plan?.jobType || job?.job_type || null,
+    shouldRun,
+    reasonCode,
+    scheduledSlotAt,
+    due,
+    existingOpenJob,
+    existingTerminalJob,
+    canonicalDataReady,
+    insertAttempted: Boolean(entry?.insertAttempted ?? diagnostic.insertAttempted),
+    insertedJobId: entry?.created ? entry?.job?.id || null : null
+  };
+}
+
+function normalizeV3PlanEntries(result, now) {
+  const planned = (result?.planned || []).map((entry) => ({
+    ...entry,
+    plannerDecision: normalizeV3PlannerDecision(entry, now),
+    diagnostic: {
+      ...(entry.diagnostic || {}),
+      plannerDecision: normalizeV3PlannerDecision(entry, now)
+    }
+  }));
+  return { ...(result || {}), planned, diagnostics: planned.map((entry) => ({ ...(entry.diagnostic || {}) })) };
+}
+
+function emptyV3PlanResult(error = null) {
+  return { created: 0, planned: [], diagnostics: [], errors: error ? [{ game: null, plan: null, error }] : [] };
+}
+
+export const V3_JOB_PLANNERS = Object.freeze({
+  [V3_JOB_TYPE.PROBABLE_STARTER_FETCH]: planV3ProbableStarterJobs,
+  [V3_JOB_TYPE.ROSTER_FETCH]: planV3RosterJobs,
+  [V3_JOB_TYPE.NPB_IDENTITY_RESOLVE]: planV3IdentityJobs,
+  [V3_JOB_TYPE.PREDICTION_CLOSE]: planV3MainJobs,
+  [V3_JOB_TYPE.LINEUP_FETCH]: planV3MainJobs,
+  [V3_JOB_TYPE.LINEUP_FINALIZE]: planV3MainJobs,
+  [V3_JOB_TYPE.SCORE]: planV3MainJobs,
+  [V3_JOB_TYPE.RANKING_REBUILD]: planV3MainJobs,
+  [V3_JOB_TYPE.PUBLISH]: planV3MainJobs
+});
+
+export async function planAuxiliaryJobs(db, games = [], now = new Date()) {
+  const run = async (name, planner) => {
+    try {
+      return normalizeV3PlanEntries(await planner(db, games, now), now);
+    } catch (error) {
+      // Auxiliary failures are isolated. The other auxiliary and main planners
+      // still run in the same Cron invocation.
+      return emptyV3PlanResult(error);
+    }
+  };
+  const probablePlan = await run(V3_JOB_TYPE.PROBABLE_STARTER_FETCH, V3_JOB_PLANNERS[V3_JOB_TYPE.PROBABLE_STARTER_FETCH]);
+  const rosterPlan = await run(V3_JOB_TYPE.ROSTER_FETCH, V3_JOB_PLANNERS[V3_JOB_TYPE.ROSTER_FETCH]);
+  const identityPlan = await run(V3_JOB_TYPE.NPB_IDENTITY_RESOLVE, V3_JOB_PLANNERS[V3_JOB_TYPE.NPB_IDENTITY_RESOLVE]);
+  return {
+    probablePlan,
+    rosterPlan,
+    identityPlan,
+    planned: [...probablePlan.planned, ...rosterPlan.planned, ...identityPlan.planned],
+    errors: [...probablePlan.errors, ...rosterPlan.errors, ...identityPlan.errors],
+    created: probablePlan.created + rosterPlan.created + identityPlan.created
+  };
+}
+
+export async function planMainWorkflowJobs(db, games = [], now = new Date()) {
+  try {
+    return normalizeV3PlanEntries(await planV3MainJobs(db, games, now), now);
+  } catch (error) {
+    return emptyV3PlanResult(error);
+  }
+}
+
+export async function claimDueJobs(db, now = new Date(), plannedEntries = []) {
+  const due = await listDueV3Jobs(db, now);
+  const plannedById = new Map(plannedEntries.map((entry) => [String(entry?.job?.id || ""), entry]));
+  const claimed = [];
+  for (const job of due) {
+    const claimedJob = await claimV3Job(db, { jobId: job.id, now });
+    const entry = plannedById.get(String(job.id));
+    const claimResult = claimedJob ? "claimed" : "claim_conflict";
+    if (entry) {
+      entry.plannerDecision = {
+        ...(entry.plannerDecision || normalizeV3PlannerDecision(entry, now)),
+        existingOpenJob: { id: job.id, status: job.status, scheduledSlotAt: job.scheduled_slot_at },
+        insertAttempted: entry.plannerDecision?.insertAttempted ?? false
+      };
+      entry.diagnostic = {
+        ...(entry.diagnostic || {}),
+        actualJobExists: true,
+        jobStatus: claimedJob?.status || job.status || null,
+        claimEligible: isV3OpenJobStatus(job.status),
+        claimResult
+      };
+    }
+    claimed.push({ job, claimed: claimedJob, entry, claimResult });
+  }
+  return { due, claimed };
 }
 
 export async function planV3MainJobs(db, games = [], now = new Date()) {
@@ -1215,125 +1440,31 @@ export async function planV3IdentityJobs(db, games = [], now = new Date()) {
   return { created: planned.filter((entry) => entry.created).length, planned, errors, diagnostics };
 }
 
-export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null } = {}) {
-  if (!isGameAutomationV3Enabled(env)) return { enabled: false, processed: 0, created: 0 };
-  const schema = await getV3SchemaState(env.AUTH_DB);
-  if (!schema.ready) return { enabled: true, schemaReady: false, errorCode: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", processed: 0, created: 0 };
-  const games = await listV3Games(env.AUTH_DB, now);
-  let created = 0;
+export async function executeClaimedJobs(env, claims = [], games = [], now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null } = {}) {
   let processed = 0;
   let failed = 0;
-  for (const game of games) {
-    try {
-      const stateRow = await ensureV3State(env.AUTH_DB, game.internalGameId, now);
-      if (!isV3GameEligible(game) && stateRow.state !== "excluded") {
-        await transitionV3State(env.AUTH_DB, { internalGameId: game.internalGameId, from: stateRow.state, to: "excluded", now });
-      }
-    } catch (error) {
-      failed += 1;
-      if (onError) await onError(error, { game, stage: "state_prepare" });
-    }
-  }
-  const probablePlan = await planV3ProbableStarterJobs(env.AUTH_DB, games, now);
-  created += probablePlan.created;
-  if (onPlan) {
-    for (const entry of probablePlan.planned) {
+  for (const claim of claims) {
+    const { job, claimed, entry, claimResult } = claim;
+    if (entry && onPlan) {
       try {
-        await onPlan({ ...entry, stage: "probable_plan", now });
+        await onPlan({
+          ...entry,
+          stage: entry.plan?.jobType === "probable_starter_fetch"
+            ? "probable_claim"
+            : `${entry.plan?.jobType || job.job_type}_claim`,
+          claimResult,
+          now
+        });
       } catch (error) {
         failed += 1;
-        if (onError) await onError(error, { game: entry.game, plan: entry.plan, stage: "probable_plan_audit" });
-      }
-    }
-  }
-  for (const entry of probablePlan.errors) {
-    failed += 1;
-    if (onError) await onError(entry.error, { game: entry.game, stage: "probable_plan" });
-  }
-  // Probable-starter completion is auxiliary to roster planning. A confirmed
-  // probable starter must never prevent an overdue roster slot from running.
-  const rosterPlan = await planV3RosterJobs(env.AUTH_DB, games, now);
-  created += rosterPlan.created;
-  if (onPlan) {
-    for (const entry of rosterPlan.planned) {
-      try {
-        await onPlan({ ...entry, stage: "roster_plan", now });
-      } catch (error) {
-        failed += 1;
-        if (onError) await onError(error, { game: entry.game, plan: entry.plan, stage: "roster_plan_audit" });
-      }
-    }
-  }
-  for (const entry of rosterPlan.errors) {
-    failed += 1;
-    if (onError) await onError(entry.error, { game: entry.game, stage: "roster_plan" });
-  }
-  const identityPlan = await planV3IdentityJobs(env.AUTH_DB, games, now);
-  created += identityPlan.created;
-  if (onPlan) {
-    for (const entry of identityPlan.planned) {
-      try {
-        await onPlan({ ...entry, stage: "identity_plan", now });
-      } catch (error) {
-        failed += 1;
-        if (onError) await onError(error, { game: entry.game, plan: entry.plan, stage: "identity_plan_audit" });
-      }
-    }
-  }
-  for (const entry of identityPlan.errors) {
-    failed += 1;
-    if (onError) await onError(entry.error, { game: entry.game, stage: "identity_plan" });
-  }
-  const mainPlan = await planV3MainJobs(env.AUTH_DB, games, now);
-  created += mainPlan.created;
-  if (onPlan) {
-    for (const entry of mainPlan.planned) {
-      try {
-        await onPlan({ ...entry, stage: "main_plan", now });
-      } catch (error) {
-        failed += 1;
-        if (onError) await onError(error, { game: entry.game, plan: entry.plan, stage: "main_plan_audit" });
-      }
-    }
-  }
-  for (const entry of mainPlan.errors) {
-    failed += 1;
-    if (onError) await onError(entry.error, { game: entry.game, stage: "main_plan" });
-  }
-  const due = await listDueV3Jobs(env.AUTH_DB, now);
-  for (const job of due) {
-    const claimed = await claimV3Job(env.AUTH_DB, { jobId: job.id, now });
-    const planEntry = [...probablePlan.planned, ...rosterPlan.planned]
-      .find((entry) => String(entry?.job?.id || "") === String(job.id));
-    if (planEntry) {
-      const claimAuditResult = claimed ? "claimed" : "claim_conflict";
-      planEntry.diagnostic = {
-        ...(planEntry.diagnostic || {}),
-        actualJobExists: true,
-        jobStatus: claimed?.status || job.status || null,
-        claimEligible: ["pending", "retry_wait", "claimed"].includes(String(job.status || "")),
-        claimResult: claimAuditResult
-      };
-      if (onPlan) {
-        try {
-          await onPlan({
-            ...planEntry,
-            stage: planEntry.plan?.jobType === "probable_starter_fetch"
-              ? "probable_claim"
-              : `${planEntry.plan?.jobType || job.job_type}_claim`,
-            claimResult: claimAuditResult,
-            now
-          });
-        } catch (error) {
-          failed += 1;
-          if (onError) await onError(error, { game: planEntry.game, plan: planEntry.plan, stage: "v3_job_claim_audit" });
-        }
+        if (onError) await onError(error, { game: entry.game, plan: entry.plan, stage: "v3_job_claim_audit" });
       }
     }
     if (!claimed) continue;
     processed += 1;
     const executionNow = new Date(monotonicV3JobTimestamp(now, claimed.created_at, claimed.claimed_at));
     try {
+      if (typeof executeJob !== "function") throw createV3Error("MISSING_EXECUTOR", "V3ジョブexecutorが注入されていません。");
       const result = await executeJob({ env, job: claimed, internalGameId: claimed.internal_game_id, now: executionNow });
       assertV3AuxiliaryJobResult(claimed, result, executionNow);
       await completeV3Job(env.AUTH_DB, {
@@ -1354,29 +1485,30 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
         });
       }
       const completedJob = await env.AUTH_DB.prepare("SELECT * FROM game_jobs_v3 WHERE id = ?1 LIMIT 1").bind(Number(claimed.id)).first();
-      if (onSuccess) await onSuccess({ job: completedJob || { ...claimed, status: "completed", completed_at: executionNow.toISOString(), updated_at: executionNow.toISOString() }, claimToken: claimed.claim_token, result, now: executionNow });
-      if (claimed.job_type === "npb_identity_resolve" && result?.identityResolved) {
+      if (onSuccess) await onSuccess({ job: completedJob || { ...claimed, status: V3_JOB_STATUS.COMPLETED, completed_at: executionNow.toISOString(), updated_at: executionNow.toISOString() }, claimToken: claimed.claim_token, result, now: executionNow });
+      if (claimed.job_type === V3_JOB_TYPE.NPB_IDENTITY_RESOLVE && result?.identityResolved) {
         const followupGame = games.find((game) => game.internalGameId === claimed.internal_game_id);
         if (followupGame) {
           followupGame.npbIdentityStatus = "resolved";
           const followupState = await env.AUTH_DB.prepare(
             "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
           ).bind(claimed.internal_game_id).first();
-          const followupPlan = getV3DuePlan(followupGame, followupState?.state || "scheduled", now);
-          if (followupPlan && ["lineup_fetch", "lineup_finalize"].includes(followupPlan.jobType)) {
+          const followupPlan = getV3DuePlan(followupGame, followupState?.state || V3_STATE.SCHEDULED, now);
+          if (followupPlan && [V3_JOB_TYPE.LINEUP_FETCH, V3_JOB_TYPE.LINEUP_FINALIZE].includes(followupPlan.jobType)) {
             await createV3Job(env.AUTH_DB, { internalGameId: claimed.internal_game_id, ...followupPlan });
           }
         }
       }
-    } catch (error) {
+    } catch (rawError) {
       failed += 1;
+      const error = normalizeV3ExecutionError(rawError);
       await retryV3Job(env.AUTH_DB, {
         jobId: claimed.id,
         claimToken: claimed.claim_token,
         attemptCount: claimed.attempt_count,
         maxAttempts: claimed.max_attempts,
         now: executionNow,
-        errorCode: error?.code || "V3_JOB_FAILED",
+        errorCode: error.code,
         errorMessage: formatV3JobFailureMessage(error),
         retryAt: error?.retryAt || new Date(executionNow.getTime() + 10 * 60 * 1000)
       });
@@ -1384,16 +1516,66 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
       if (onError) await onError(error, { job: retryJob || claimed, claimToken: claimed.claim_token, stage: "execute", stateBefore: claimed.status });
     }
   }
+  return { processed, failed };
+}
+
+export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null } = {}) {
+  if (!isGameAutomationV3Enabled(env)) return { enabled: false, processed: 0, created: 0 };
+  const schema = await getV3SchemaState(env.AUTH_DB);
+  if (!schema.ready) return { enabled: true, schemaReady: false, errorCode: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", processed: 0, created: 0 };
+  const games = await listV3Games(env.AUTH_DB, now);
+  let failed = 0;
+  for (const game of games) {
+    try {
+      const stateRow = await ensureV3State(env.AUTH_DB, game.internalGameId, now);
+      if (!isV3GameEligible(game) && stateRow.state !== V3_STATE.EXCLUDED) {
+        await transitionV3State(env.AUTH_DB, { internalGameId: game.internalGameId, from: stateRow.state, to: V3_STATE.EXCLUDED, now });
+      }
+    } catch (error) {
+      failed += 1;
+      if (onError) await onError(error, { game, stage: "state_prepare" });
+    }
+  }
+
+  // Phase boundaries are explicit: an auxiliary decision never short-circuits
+  // the main workflow planner for the same or another game.
+  const auxiliary = await planAuxiliaryJobs(env.AUTH_DB, games, now);
+  const mainPlan = await planMainWorkflowJobs(env.AUTH_DB, games, now);
+  const allPlanned = [...auxiliary.planned, ...mainPlan.planned];
+  const reportPlan = async (entries, stage) => {
+    for (const entry of entries) {
+      if (!onPlan) continue;
+      try {
+        await onPlan({ ...entry, stage, now, plannerDecision: entry.plannerDecision });
+      } catch (error) {
+        failed += 1;
+        if (onError) await onError(error, { game: entry.game, plan: entry.plan, stage: `${stage}_audit` });
+      }
+    }
+  };
+  await reportPlan(auxiliary.probablePlan.planned, "probable_plan");
+  await reportPlan(auxiliary.rosterPlan.planned, "roster_plan");
+  await reportPlan(auxiliary.identityPlan.planned, "identity_plan");
+  await reportPlan(mainPlan.planned, "main_plan");
+  for (const entry of [...auxiliary.errors, ...mainPlan.errors]) {
+    failed += 1;
+    if (onError) await onError(entry.error, { game: entry.game, plan: entry.plan, stage: "planner" });
+  }
+
+  const claimReport = await claimDueJobs(env.AUTH_DB, now, allPlanned);
+  const execution = await executeClaimedJobs(env, claimReport.claimed, games, now, { executeJob, onError, onSuccess, onPlan });
   return {
     enabled: true,
     schemaReady: true,
     gameCount: games.length,
-    created,
-    processed,
-    failed,
-    probablePlan,
-    rosterPlan,
-    identityPlan,
-    mainPlan
+    created: auxiliary.created + mainPlan.created,
+    processed: execution.processed,
+    failed: failed + execution.failed,
+    probablePlan: auxiliary.probablePlan,
+    rosterPlan: auxiliary.rosterPlan,
+    identityPlan: auxiliary.identityPlan,
+    mainPlan,
+    auxiliaryPlan: auxiliary,
+    claimReport
   };
 }

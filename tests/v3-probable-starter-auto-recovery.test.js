@@ -149,7 +149,7 @@ test("片側取得・UUID rowなしでもV3は次slotを計画し、legacy row�
   assert.match(worker, /source !== "v3"\) await linkLegacyGameRowsToInternalGameId/);
 });
 
-test("serializerはunannounced・partial・announced・errorをデータ状態として区別する", async () => {
+test("serializerはunannounced・partial・announced・transient_errorをデータ状態として区別する", async () => {
   const { serializeProbableStarterRow } = await import(pathToFileURL(path.join(root, "auth-worker.js")));
   const base = { game_id: GAME_ID, internal_game_id: GAME_ID, fetched_at: "2026-08-07T00:00:00.000Z" };
   assert.equal(serializeProbableStarterRow({ ...base, status: "unannounced" }).dataStatus, "unannounced");
@@ -159,7 +159,7 @@ test("serializerはunannounced・partial・announced・errorをデータ状態�
   const announced = serializeProbableStarterRow({ ...base, status: "announced", home_pitcher_name: "投手A", away_pitcher_name: "投手B" });
   assert.equal(announced.dataStatus, "announced");
   assert.equal(announced.isConfirmed, true);
-  assert.equal(serializeProbableStarterRow({ ...base, status: "error", error_code: "NPB_FETCH_FAILED" }).dataStatus, "error");
+  assert.equal(serializeProbableStarterRow({ ...base, status: "error", error_code: "NPB_FETCH_FAILED" }).dataStatus, "transient_error");
 });
 
 test("V3 runnerはprobable starterをUUID対象として実行し、完了したslotを次のslotと混同しない", () => {

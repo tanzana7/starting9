@@ -205,10 +205,10 @@ test("V2の日本語チーム名を含むgames行から8月4日の内部試合ID
   assert.equal(resolved.startAt, "2026-08-04T09:00:00.000Z");
 });
 
-test("対象試合APIのinternalGameIdを画面の保存処理が優先して送信する", () => {
+test("対象試合APIはV3のinternalGameIdを保存処理へ送信する", () => {
   assert.match(script, /state\.predictionTargetGame\?\.internalGameId \|\| state\.probableStarter\.nextGame\?\.internalGameId \|\| getCurrentLegacyGameId\(\)/);
   assert.match(script, /body: JSON\.stringify\(\{ gameId, prediction: predictionPayload\.prediction \}\)/);
-  assert.match(worker, /reference = await resolveApiGameReference\(env\.AUTH_DB, input\?\.gameId\)/);
+  assert.match(worker, /reference = await resolveV3PredictionReference\(env\.AUTH_DB, input\?\.internalGameId\)/);
   assert.match(worker, /internalGameId: metadata\.internalGameId \|\| ""/);
   assert.match(worker, /const storageGameId = metadata\.internalGameId && existing\?\.game_id/);
   assert.match(worker, /storageGameId,\s*\.\.\.\(predictionStorage\.predictions/);
@@ -254,11 +254,9 @@ test("API共通resolverは空の識別子を形式不正として拒否する", 
   assert.equal(resolved.code, "INVALID_GAME_IDENTIFIER_FORMAT");
 });
 
-test("Phase 4はmigration未適用時の旧game_id fallbackとdual-writeを明示する", () => {
-  assert.match(worker, /getInternalGameIdStorageAvailability/);
-  assert.match(worker, /internal_game_id = \?1 WHERE game_id = \?2/);
-  assert.match(worker, /ON CONFLICT\(user_id, game_id\) DO UPDATE SET/);
-  assert.match(worker, /internal_game_id IS NULL AND game_id = \?3/);
+test("V3はmigration未適用時に安全停止し、旧game_idへfallbackしない", () => {
+  assert.match(worker, /V3_PREDICTIONS_SCHEMA_UNAVAILABLE/);
+  assert.match(worker, /resolveV3PredictionReference\(env\.AUTH_DB, input\?\.internalGameId\)/);
 });
 
 test("予告先発とロースターの保存後もcanonical IDへ関連行をリンクする", () => {

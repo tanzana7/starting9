@@ -78,7 +78,9 @@ import {
   deriveV3Schedule,
   deriveV3DisplaySchedule,
   getV3NextAction,
-  getV3ProbableStarterSlots
+  getV3ProbableStarterSlots,
+  normalizeProbableStarterDataStatus,
+  shouldStopProbableStarterScheduling
 } from "./game-automation-v3.js";
 
 const SESSION_COOKIE_NAME = "s9_session";
@@ -522,15 +524,16 @@ async function runScheduledGameAutomationV3(env, now) {
 
   const result = await runGameAutomationV3(env, now, {
     executeJob: (context) => executeGameAutomationV3Job(context),
-    onPlan: async ({ game, plan, job, created, reasonCode, insertedRowCount, existingJobId, existingScheduledSlotAt, existingStatus }) => {
+    onPlan: async ({ game, plan, job, created, reasonCode, insertedRowCount, existingJobId, existingScheduledSlotAt, existingStatus, diagnostic, stage = "probable_plan", claimResult = null }) => {
       if (String(plan?.jobType || "") !== "probable_starter_fetch") return;
-      if (!created && reasonCode !== "PROBABLE_STARTER_SLOT_CONFLICT") return;
+      const isClaimAudit = stage === "probable_claim";
       await recordWorkflowJobEvent(env.AUTH_DB, {
-        eventType: created ? "workflow_job_created" : "probable_starter_job_plan_observed",
-        status: created ? "info" : "warning",
+        eventType: isClaimAudit ? "probable_starter_job_claimed" : (created ? "workflow_job_created" : "probable_starter_job_plan_observed"),
+        status: isClaimAudit ? "info" : (created ? "info" : "warning"),
         internalGameId: game?.internalGameId || job?.internal_game_id || "",
         job: {
           ...(job || {}),
+          legacyGameId: job?.legacyGameId || game?.legacyGameId || game?.gameId || game?.internalGameId || "",
           job_type: plan?.jobType || "probable_starter_fetch",
           scheduled_slot_at: plan?.scheduledSlotAt?.toISOString?.() || job?.scheduled_slot_at || null
         },
@@ -543,6 +546,8 @@ async function runScheduledGameAutomationV3(env, now) {
           existingJobId: existingJobId || null,
           existingScheduledSlotAt: existingScheduledSlotAt || null,
           existingStatus: existingStatus || null,
+          planningDiagnostics: diagnostic || null,
+          claimResult: claimResult || diagnostic?.claimResult || "not_attempted",
           uniqueKey: "internal_game_id|job_type|scheduled_slot_at"
         }
       });
@@ -1013,14 +1018,9 @@ export function serializeProbableStarterRow(row) {
   const homePitcherId = row.home_pitcher_id || null;
   const awayPitcherId = row.away_pitcher_id || null;
   const partial = Boolean(homePitcherName) !== Boolean(awayPitcherName);
-  const integrityError = ["DATA_INTEGRITY_ERROR", "PROBABLE_STARTER_GAME_MISMATCH"].includes(String(errorCode || ""));
   const dataStatus = status === "error"
-    ? (integrityError ? "integrity_error" : "transient_error")
-    : partial
-      ? "partial"
-      : homePitcherName && awayPitcherName
-        ? "announced"
-        : "unannounced";
+    ? normalizeProbableStarterDataStatus({ status: "error", errorCode, homePitcherName, awayPitcherName })
+    : normalizeProbableStarterDataStatus({ status, errorCode, homePitcherName, awayPitcherName });
   return {
     gameId: String(row.game_id || ""),
     internalGameId: String(row.internal_game_id || ""),
@@ -1148,14 +1148,19 @@ async function recordProbableStarterDecision(db, {
 }
 
 export function isProbableStarterComplete(row) {
-  return row?.status === "announced"
-    && Boolean(String(row?.home_pitcher_name || "").trim())
-    && Boolean(String(row?.away_pitcher_name || "").trim());
+  return normalizeProbableStarterDataStatus(row) === "announced";
 }
 
 export function isProbableStarterTerminal(row) {
-  return row?.status === "announced"
-    && Boolean(String(row?.home_pitcher_name || "").trim() || String(row?.away_pitcher_name || "").trim());
+  const normalized = normalizeProbableStarterDataStatus(row);
+  if (normalized === "announced") return true;
+  // The retired V1/V2 selector historically treated a partial announced row
+  // as terminal. V3 scheduling uses shouldStopProbableStarterScheduling, so
+  // partial data remains eligible for the next V3 slot.
+  const homePitcherName = String(row?.home_pitcher_name || row?.homePitcherName || "").trim();
+  const awayPitcherName = String(row?.away_pitcher_name || row?.awayPitcherName || "").trim();
+  const hasAnyPitcher = Boolean(homePitcherName || awayPitcherName);
+  return String(row?.status || "").toLowerCase() === "announced" && hasAnyPitcher;
 }
 
 async function runProbableStarterFetch(env, target, now, { source = "cron" } = {}) {
@@ -1233,9 +1238,15 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
     const awayPitcherName = String(matched?.awayStarter?.name || previous?.away_pitcher_name || "").trim();
     diagnostics.homePitcherName = homePitcherName || null;
     diagnostics.awayPitcherName = awayPitcherName || null;
-    const hasAnyPitcher = Boolean(homePitcherName || awayPitcherName);
+    const dataStatus = normalizeProbableStarterDataStatus({
+      status: "announced",
+      homePitcherName,
+      awayPitcherName
+    });
     const fullyAnnounced = Boolean(homePitcherName && awayPitcherName);
-    const announced = hasAnyPitcher;
+    const hasAnyPitcher = Boolean(homePitcherName || awayPitcherName);
+    const partial = hasAnyPitcher && !fullyAnnounced;
+    const announced = dataStatus === "announced" || dataStatus === "partial";
     const normalizedFetchedAt = String(payload.fetchedAt || fetchedAt);
     const announcedAt = fullyAnnounced ? (previous?.announced_at || normalizedFetchedAt) : (previous?.announced_at || null);
     const nextFixedSlot = source === "v3"
@@ -1246,7 +1257,6 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
       ? null
       : nextFixedSlot?.toISOString() || new Date(current.getTime() + PROBABLE_STARTER_RETRY_INTERVAL_MS).toISOString();
     const status = announced ? "announced" : "unannounced";
-    const dataStatus = fullyAnnounced ? "announced" : announced ? "partial" : "unannounced";
     diagnostics.dataStatus = dataStatus;
     diagnostics.nextCheckAt = nextCheckAt;
     await saveProbableStarterRow(env.AUTH_DB, {
@@ -1272,7 +1282,7 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
       occurredAt: current,
       message: announced ? (fullyAnnounced ? "予告先発を保存しました。" : "予告先発を一部保存しました。") : "予告先発はまだ発表されていません。",
       errorCode: "",
-      metadata: { source, sourceDate, matched: Boolean(matched), nextCheckAt, partial: announced && !fullyAnnounced, decisionCode: announced ? null : "PROBABLE_STARTER_UNANNOUNCED", ...diagnostics },
+      metadata: { source, sourceDate, matched: Boolean(matched), nextCheckAt, partial, decisionCode: announced ? null : "PROBABLE_STARTER_UNANNOUNCED", ...diagnostics },
       source
     });
     return {
@@ -1302,8 +1312,7 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
     let nextCheckAt = new Date(current.getTime() + PROBABLE_STARTER_RETRY_INTERVAL_MS);
     if (nextFixedSlot) nextCheckAt = nextFixedSlot;
     const nextCheckAtIso = nextCheckAt.toISOString();
-    const integrityError = ["DATA_INTEGRITY_ERROR", "PROBABLE_STARTER_GAME_MISMATCH"].includes(errorCode);
-    diagnostics.dataStatus = integrityError ? "integrity_error" : "transient_error";
+    diagnostics.dataStatus = normalizeProbableStarterDataStatus({ status: "error", errorCode });
     diagnostics.errorCode = errorCode;
     diagnostics.nextCheckAt = nextCheckAtIso;
     diagnostics.httpStatus = diagnostics.httpStatus ?? error?.httpStatus ?? error?.upstreamStatus ?? null;
@@ -2326,7 +2335,7 @@ async function recordWorkflowJobEvent(db, { eventType, status, internalGameId, j
   await recordWorkflowLog(db, {
     eventType,
     status,
-    gameId: String(job?.legacyGameId || ""),
+    gameId: String(job?.legacyGameId || internalGameId || ""),
     occurredAt: now,
     message: {
       workflow_job_created: "試合進行ジョブを作成しました。",
@@ -2336,6 +2345,7 @@ async function recordWorkflowJobEvent(db, { eventType, status, internalGameId, j
       workflow_job_permanently_failed: "試合進行ジョブが恒久失敗になりました。",
       workflow_job_recovered: "停止していた試合進行ジョブを再評価待ちに戻しました。",
       probable_starter_job_plan_observed: "予告先発jobのslot競合を検出しました。",
+      probable_starter_job_claimed: "予告先発jobを実行開始しました。",
       scoring_workflow_reconciled: "保存済みの採点結果に試合進行状態を整合しました。",
       publication_workflow_reconciled: "保存済みの公開結果へ試合進行状態を整合しました。",
       workflow_internal_id_unresolved: "内部試合IDを解決できないためジョブを作成しませんでした。"
@@ -3602,11 +3612,12 @@ async function handleAdminV3Overview(request, env, cors) {
         `SELECT occurred_at, error_code, metadata
            FROM game_workflow_logs
           WHERE game_id = ?1
-            AND event_type IN ('probable_starter_announced', 'probable_starter_unannounced', 'probable_starter_fetch_failed')
+            AND event_type IN ('probable_starter_announced', 'probable_starter_unannounced', 'probable_starter_fetch_failed', 'probable_starter_job_plan_observed', 'probable_starter_job_claimed')
           ORDER BY occurred_at DESC LIMIT 1`
       ).bind(game.internalGameId).first();
       if (diagnosticLog) {
         const metadata = parseWorkflowLogMetadata(diagnosticLog.metadata);
+        const planning = metadata.planningDiagnostics || {};
         probableStarterDiagnostics = {
           httpStatus: metadata.httpStatus ?? null,
           responseType: metadata.responseType || null,
@@ -3617,7 +3628,27 @@ async function handleAdminV3Overview(request, env, cors) {
           dataStatus: metadata.dataStatus || serializedProbableStarter?.dataStatus || null,
           errorCode: metadata.errorCode || diagnosticLog.error_code || null,
           nextCheckAt: metadata.nextCheckAt || serializedProbableStarter?.nextCheckAt || null,
-          occurredAt: diagnosticLog.occurred_at || null
+          occurredAt: diagnosticLog.occurred_at || null,
+          reasonCode: planning.reasonCode || metadata.errorCode || diagnosticLog.error_code || null,
+          generatedSlots: Array.isArray(planning.generatedSlots) ? planning.generatedSlots : [],
+          dueSlots: Array.isArray(planning.dueSlots) ? planning.dueSlots : [],
+          selectedDueSlot: planning.selectedDueSlot || null,
+          currentDataStatus: planning.currentDataStatus || metadata.dataStatus || serializedProbableStarter?.dataStatus || null,
+          homePitcherPresent: planning.homePitcherPresent === true,
+          awayPitcherPresent: planning.awayPitcherPresent === true,
+          shouldStopScheduling: planning.shouldStopScheduling === true,
+          openJobExists: planning.openJobExists === true,
+          openJobId: planning.openJobId || null,
+          sameSlotJobExists: planning.sameSlotJobExists === true,
+          sameSlotJobId: planning.sameSlotJobId || null,
+          insertAttempted: planning.insertAttempted === true,
+          insertedRowCount: Number.isFinite(Number(planning.insertedRowCount)) ? Number(planning.insertedRowCount) : null,
+          insertReasonCode: planning.insertReasonCode || null,
+          claimEligible: planning.claimEligible === true,
+          claimResult: planning.claimResult || "not_attempted",
+          conflictingJobId: metadata.existingJobId || null,
+          conflictingScheduledSlotAt: metadata.existingScheduledSlotAt || null,
+          conflictingStatus: metadata.existingStatus || null
         };
       }
     } catch (error) {
@@ -13352,7 +13383,7 @@ export function deriveGameProgressStatuses({
   const rankingError = progressLogHasCurrentError(logs, ["ranking_reflected"], ["ranking_reflected"]);
   const publishError = scoring?.publicationStatus === "failed"
     || progressLogHasCurrentError(logs, ["result_publish_failed"], ["result_published"]);
-  const probableSuccess = probableStarter?.status === "announced";
+  const probableSuccess = normalizeProbableStarterDataStatus(probableStarter) === "announced";
   const lineupSuccess = Boolean(lineup?.detectedAt) || lineup?.status === "captured";
   const scoringSuccess = scoring?.status === "scored";
   const rankingSuccess = ranking?.isRankingEligible === true || latestProgressLog(logs, ["ranking_reflected"], "success") !== null;

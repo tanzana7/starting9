@@ -41,6 +41,17 @@ test("予告先発のjob statusとdataStatusを分離し、失敗コードを保
   assert.equal(serializeProbableStarterRow({ ...base, status: "error", error_code: "NPB_HTTP_ERROR" }).errorCode, "NPB_HTTP_ERROR");
 });
 
+test("dataStatus正規化と後続slot停止判定を共有する", () => {
+  assert.equal(v3.normalizeProbableStarterDataStatus({ status: "error", errorCode: "NPB_HTTP_ERROR", homePitcherName: "残存A", awayPitcherName: "残存B" }), "transient_error");
+  assert.equal(v3.normalizeProbableStarterDataStatus({ status: "completed", dataStatus: "error", homePitcherName: "残存A", awayPitcherName: "残存B" }), "transient_error");
+  assert.equal(v3.normalizeProbableStarterDataStatus({ status: "failed" }), "transient_error");
+  assert.equal(v3.normalizeProbableStarterDataStatus({ status: "unannounced" }), "unannounced");
+  assert.equal(v3.normalizeProbableStarterDataStatus({ status: "announced", homePitcherName: "A" }), "partial");
+  assert.equal(v3.normalizeProbableStarterDataStatus({ status: "announced", homePitcherName: "A", awayPitcherName: "B" }), "announced");
+  assert.equal(v3.shouldStopProbableStarterScheduling({ status: "error", errorCode: "NPB_HTTP_ERROR", homePitcherName: "A", awayPitcherName: "B", startAt: "2026-08-07T09:00:00.000Z", now: "2026-08-07T03:00:00.000Z" }).shouldStopScheduling, false);
+  assert.equal(v3.shouldStopProbableStarterScheduling({ status: "announced", homePitcherName: "A", awayPitcherName: "B", startAt: "2026-08-07T09:00:00.000Z", now: "2026-08-07T03:00:00.000Z" }).shouldStopScheduling, true);
+});
+
 test("救済jobの対象slot、実行時刻、監査状態、診断情報を別々に扱う", () => {
   assert.match(worker, /stateAfter\s*[,=].*statusAfter|statusAfter\s*=\s*String\(job\?\.status/);
   assert.match(worker, /scheduled_slot_at/);
@@ -48,14 +59,20 @@ test("救済jobの対象slot、実行時刻、監査状態、診断情報を別�
   assert.match(worker, /httpStatus/);
   assert.match(worker, /parserResult/);
   assert.match(worker, /candidateCount/);
+  assert.match(worker, /normalizeProbableStarterDataStatus/);
+  assert.match(worker, /probable_starter_job_plan_observed/);
+  assert.match(worker, /probable_starter_job_claimed/);
+  assert.match(worker, /claimResult/);
   assert.match(worker, /insertedRowCount/);
   assert.match(worker, /actualJobExists/);
+  assert.match(worker, /gameId: String\(job\?\.legacyGameId \|\| internalGameId \|\| ""\)/);
   assert.match(worker, /probableStarterNextCheckAt/);
   assert.match(worker, /probableStarterJob/);
   assert.match(admin, /対象slot:/);
   assert.match(admin, /実行:/);
   assert.match(admin, /次回自動確認:/);
   assert.match(admin, /job: 未生成/);
+  assert.match(admin, /未生成理由:/);
   assert.match(admin, /probableJob \|\| probableMissingPastSlot/);
   assert.match(migration, /ADD COLUMN data_status TEXT NULL/);
 });
@@ -146,7 +163,7 @@ test("09:00救済完了後は12:00到達後に次slotを1件だけ生成する",
   }
 });
 
-test("09:00のtransient_errorは12:00 slotを抑止せず、12:35時点で1件だけclaim・実行する", async () => {
+test("09:00のtransient_errorは12:00 slotを抑止せず、12:58時点で1件だけclaim・実行する", async () => {
   const database = new DatabaseSync(":memory:");
   database.exec(`
     CREATE TABLE games (
@@ -222,10 +239,14 @@ test("09:00のtransient_errorは12:00 slotを抑止せず、12:35時点で1件�
       .run(GAME_ID, "probable_starter_fetch", "2026-08-07T00:00:00.000Z", "2026-08-07T00:00:00.000Z", "2026-08-07T00:01:00.000Z", "2026-08-07T00:01:00.000Z");
     const env = { ENABLE_GAME_AUTOMATION_V3: "true", AUTH_DB: db };
     const executed = [];
-    const result = await v3.runGameAutomationV3(env, new Date("2026-08-07T03:35:00.000Z"), {
+    const planEvents = [];
+    const result = await v3.runGameAutomationV3(env, new Date("2026-08-07T03:58:00.000Z"), {
       executeJob: async ({ job, now }) => {
         executed.push({ job, now });
         return { stateBefore: "scheduled", stateAfter: "scheduled" };
+      },
+      onPlan: (entry) => {
+        if (entry.plan?.jobType === "probable_starter_fetch") planEvents.push(entry);
       }
     });
     assert.equal(result.created, 1);
@@ -234,13 +255,15 @@ test("09:00のtransient_errorは12:00 slotを抑止せず、12:35時点で1件�
     assert.equal(executed[0].job.scheduled_slot_at, "2026-08-07T03:00:00.000Z");
     assert.equal(executed[0].job.status, "claimed");
     assert.equal(executed[0].job.attempt_count, 1);
-    assert.ok(Date.parse(executed[0].now.toISOString()) >= Date.parse("2026-08-07T03:35:00.000Z"));
+    assert.deepEqual(planEvents.map((entry) => entry.stage), ["probable_plan", "probable_claim"]);
+    assert.equal(planEvents.at(-1).diagnostic.claimResult, "claimed");
+    assert.ok(Date.parse(executed[0].now.toISOString()) >= Date.parse("2026-08-07T03:58:00.000Z"));
     const rows = database.prepare("SELECT status, scheduled_slot_at, attempt_count, claimed_at, completed_at FROM game_jobs_v3 WHERE internal_game_id = ? ORDER BY scheduled_slot_at").all(GAME_ID);
     assert.deepEqual(rows.map((row) => [row.status, row.scheduled_slot_at, row.attempt_count, row.claimed_at, row.completed_at]), [
       ["completed", "2026-08-07T00:00:00.000Z", 1, null, null],
       ["completed", "2026-08-07T03:00:00.000Z", 1, executed[0].now.toISOString(), executed[0].now.toISOString()]
     ]);
-    const secondRun = await v3.runGameAutomationV3(env, new Date("2026-08-07T03:35:00.000Z"), {
+    const secondRun = await v3.runGameAutomationV3(env, new Date("2026-08-07T03:58:00.000Z"), {
       executeJob: async ({ job }) => {
         executed.push({ job });
         return { stateBefore: "scheduled", stateAfter: "scheduled" };

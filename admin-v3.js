@@ -292,6 +292,12 @@ function probableStarterTimelineDetails(game, job, now = new Date()) {
       details.push(`${formatV3Jst(nextCheckAt)} job: 未生成`);
     }
   }
+  if (diagnostics?.reasonCode && (!nextJob?.actualJobExists || diagnostics.reasonCode !== "PROBABLE_STARTER_JOB_CREATED")) {
+    details.push(`未生成理由: ${diagnostics.reasonCode}`);
+  }
+  if (diagnostics?.conflictingJobId) details.push(`競合job: ${diagnostics.conflictingJobId}`);
+  if (diagnostics?.conflictingScheduledSlotAt) details.push(`競合slot: ${formatV3Jst(diagnostics.conflictingScheduledSlotAt)}`);
+  if (diagnostics?.conflictingStatus) details.push(`競合status: ${diagnostics.conflictingStatus}`);
   if (job?.failure_code || diagnostics?.errorCode) details.push(`errorCode: ${job?.failure_code || diagnostics?.errorCode}`);
   if (diagnostics?.httpStatus || diagnostics?.parserResult || diagnostics?.candidateCount !== null) {
     details.push(`診断: HTTP ${diagnostics.httpStatus ?? "-"} / ${diagnostics.parserResult || "-"} / 候補 ${diagnostics.candidateCount ?? "-"}`);

@@ -175,6 +175,61 @@ export function isV3GameEligible(game) {
   return !["cancelled", "postponed", "no_game", "service_unavailable"].includes(String(game.gameStatus || "").toLowerCase());
 }
 
+export function normalizeProbableStarterDataStatus(input = {}) {
+  const value = typeof input === "string" ? { dataStatus: input } : (input || {});
+  const rawStatus = String(value.dataStatus || value.data_status || "").trim().toLowerCase();
+  const jobStatus = String(value.status || "").trim().toLowerCase();
+  const errorCode = String(value.errorCode || value.error_code || "").trim().toUpperCase();
+  const homePitcherName = String(value.homePitcherName || value.home_pitcher_name || "").trim();
+  const awayPitcherName = String(value.awayPitcherName || value.away_pitcher_name || "").trim();
+  const hasHomePitcher = Boolean(homePitcherName);
+  const hasAwayPitcher = Boolean(awayPitcherName);
+  const integrityError = ["DATA_INTEGRITY_ERROR", "PROBABLE_STARTER_GAME_MISMATCH"].includes(errorCode);
+  if (integrityError) return "integrity_error";
+  if (jobStatus === "error" || jobStatus === "failed" || ["error", "failed", "transient_error"].includes(rawStatus)) {
+    return "transient_error";
+  }
+  if (rawStatus === "partial" || (hasHomePitcher !== hasAwayPitcher)) return "partial";
+  if ((rawStatus === "announced" || jobStatus === "announced") && hasHomePitcher && hasAwayPitcher) return "announced";
+  if (["unannounced", "empty", "pending"].includes(rawStatus) || jobStatus === "unannounced" || !hasHomePitcher && !hasAwayPitcher) return "unannounced";
+  return rawStatus || "unannounced";
+}
+
+export function shouldStopProbableStarterScheduling({
+  dataStatus,
+  status,
+  errorCode,
+  homePitcherName,
+  awayPitcherName,
+  startAt,
+  gameStatus,
+  now = new Date()
+} = {}) {
+  const normalizedDataStatus = normalizeProbableStarterDataStatus({
+    dataStatus,
+    status,
+    errorCode,
+    homePitcherName,
+    awayPitcherName
+  });
+  const normalizedGameStatus = String(gameStatus || "").trim().toLowerCase();
+  if (["cancelled", "postponed", "no_game", "service_unavailable", "excluded", "invalid"].includes(normalizedGameStatus)) {
+    return { shouldStopScheduling: true, normalizedDataStatus, reasonCode: "PROBABLE_STARTER_GAME_NOT_ELIGIBLE" };
+  }
+  if (normalizedDataStatus === "integrity_error") {
+    return { shouldStopScheduling: true, normalizedDataStatus, reasonCode: "DATA_INTEGRITY_ERROR" };
+  }
+  const current = now instanceof Date ? now : new Date(now);
+  const start = new Date(startAt || "");
+  if (!Number.isNaN(current.getTime()) && !Number.isNaN(start.getTime()) && start.getTime() <= current.getTime()) {
+    return { shouldStopScheduling: true, normalizedDataStatus, reasonCode: "PROBABLE_STARTER_GAME_STARTED" };
+  }
+  if (normalizedDataStatus === "announced") {
+    return { shouldStopScheduling: true, normalizedDataStatus, reasonCode: "PROBABLE_STARTER_ALREADY_ANNOUNCED" };
+  }
+  return { shouldStopScheduling: false, normalizedDataStatus, reasonCode: null };
+}
+
 export function getV3AllowedTransitions(from, to) {
   const allowed = {
     scheduled: ["prediction_closed", "excluded", "failed", "manual_action_required"],
@@ -260,14 +315,57 @@ export function getV3ProbableStarterPlan(game, now = new Date()) {
 export async function planV3ProbableStarterJobs(db, games = [], now = new Date()) {
   const planned = [];
   const errors = [];
+  const diagnostics = [];
   const current = now instanceof Date ? now : new Date(now);
   for (const game of Array.isArray(games) ? games : []) {
-    if (!isV3GameEligible(game) || Number.isNaN(current.getTime())) continue;
     const startAt = new Date(game?.startAt || game?.start_at || game?.startTime || game?.start_time || "");
-    if (Number.isNaN(startAt.getTime()) || startAt.getTime() <= current.getTime()) continue;
-    const slots = getV3ProbableStarterSlots(game).filter((slot) => slot.getTime() <= current.getTime());
+    const diagnostic = {
+      internalGameId: game?.internalGameId || null,
+      now: Number.isNaN(current.getTime()) ? null : current.toISOString(),
+      startAt: Number.isNaN(startAt.getTime()) ? null : startAt.toISOString(),
+      generatedSlots: [],
+      dueSlots: [],
+      selectedDueSlot: null,
+      currentDataStatus: "unannounced",
+      homePitcherPresent: false,
+      awayPitcherPresent: false,
+      shouldStopScheduling: false,
+      openJobExists: false,
+      openJobId: null,
+      sameSlotJobExists: false,
+      sameSlotJobId: null,
+      actualJobExists: false,
+      jobStatus: null,
+      insertAttempted: false,
+      insertedRowCount: 0,
+      insertReasonCode: null,
+      claimEligible: false,
+      claimResult: "not_attempted",
+      reasonCode: null
+    };
+    const recordDiagnostic = () => diagnostics.push({ ...diagnostic });
+    if (Number.isNaN(current.getTime()) || !isV3GameEligible(game)) {
+      diagnostic.reasonCode = "PROBABLE_STARTER_GAME_NOT_ELIGIBLE";
+      recordDiagnostic();
+      continue;
+    }
+    if (Number.isNaN(startAt.getTime()) || startAt.getTime() <= current.getTime()) {
+      diagnostic.reasonCode = "PROBABLE_STARTER_NOT_DUE";
+      recordDiagnostic();
+      continue;
+    }
+    const generatedSlots = getV3ProbableStarterSlots(game);
+    diagnostic.generatedSlots = generatedSlots.map((slot) => slot.toISOString());
+    const slots = generatedSlots.filter((slot) => slot.getTime() <= current.getTime());
+    diagnostic.dueSlots = slots.map((slot) => slot.toISOString());
     const latestDueSlot = slots[slots.length - 1] || null;
-    if (!latestDueSlot) continue;
+    if (!latestDueSlot) {
+      diagnostic.reasonCode = "PROBABLE_STARTER_NOT_DUE";
+      recordDiagnostic();
+      continue;
+    }
+    diagnostic.selectedDueSlot = latestDueSlot.toISOString();
+    diagnostic.scheduledSlotAt = latestDueSlot.toISOString();
     const plan = { jobType: "probable_starter_fetch", scheduledSlotAt: latestDueSlot, scheduledAt: latestDueSlot };
     try {
       let stateRow = null;
@@ -278,12 +376,16 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
       } catch {
         // V3 state行が未作成、または旧テストadapterの場合も対象抽出は継続します。
       }
-      if (["excluded", "published"].includes(String(stateRow?.state || game?.workflowState || ""))) continue;
+      if (["excluded", "published"].includes(String(stateRow?.state || game?.workflowState || ""))) {
+        diagnostic.reasonCode = "PROBABLE_STARTER_GAME_NOT_ELIGIBLE";
+        recordDiagnostic();
+        continue;
+      }
       let probableRow = null;
       try {
         try {
           probableRow = await db.prepare(
-            `SELECT status, error_code, home_pitcher_name, away_pitcher_name
+            `SELECT status, data_status, error_code, home_pitcher_name, away_pitcher_name
                FROM probable_starters
               WHERE internal_game_id = ?1
               ORDER BY COALESCE(fetched_at, updated_at) DESC
@@ -303,12 +405,24 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
       }
       const hasHomePitcher = Boolean(String(probableRow?.home_pitcher_name || "").trim());
       const hasAwayPitcher = Boolean(String(probableRow?.away_pitcher_name || "").trim());
-      const dataStatusAnnounced = String(probableRow?.status || "") === "announced"
-        && !String(probableRow?.error_code || "").trim()
-        && hasHomePitcher
-        && hasAwayPitcher;
-      if (dataStatusAnnounced) {
-        planned.push({ game, plan, created: false, job: null, reasonCode: "PROBABLE_STARTER_DATA_ANNOUNCED", insertedRowCount: 0 });
+      const stopDecision = shouldStopProbableStarterScheduling({
+        dataStatus: probableRow?.data_status,
+        status: probableRow?.status,
+        errorCode: probableRow?.error_code,
+        homePitcherName: probableRow?.home_pitcher_name,
+        awayPitcherName: probableRow?.away_pitcher_name,
+        startAt,
+        gameStatus: stateRow?.state === "excluded" ? "excluded" : game?.gameStatus,
+        now: current
+      });
+      diagnostic.currentDataStatus = stopDecision.normalizedDataStatus;
+      diagnostic.homePitcherPresent = hasHomePitcher;
+      diagnostic.awayPitcherPresent = hasAwayPitcher;
+      diagnostic.shouldStopScheduling = stopDecision.shouldStopScheduling;
+      if (stopDecision.shouldStopScheduling) {
+        diagnostic.reasonCode = stopDecision.reasonCode;
+        planned.push({ game, plan, created: false, job: null, reasonCode: stopDecision.reasonCode, insertedRowCount: 0, diagnostic: { ...diagnostic } });
+        recordDiagnostic();
         continue;
       }
       const openJob = await db.prepare(
@@ -320,6 +434,13 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
           LIMIT 1`
       ).bind(game.internalGameId, plan.jobType).first();
       if (openJob) {
+        diagnostic.openJobExists = true;
+        diagnostic.openJobId = openJob.id;
+        diagnostic.actualJobExists = true;
+        diagnostic.jobStatus = openJob.status;
+        diagnostic.insertReasonCode = "PROBABLE_STARTER_OPEN_JOB_EXISTS";
+        diagnostic.reasonCode = "PROBABLE_STARTER_OPEN_JOB_EXISTS";
+        diagnostic.claimEligible = openJob.status === "pending" && new Date(plan.scheduledAt).getTime() <= current.getTime();
         planned.push({
           game,
           plan,
@@ -329,8 +450,10 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
           insertedRowCount: 0,
           existingJobId: openJob.id,
           existingScheduledSlotAt: openJob.scheduled_slot_at,
-          existingStatus: openJob.status
+          existingStatus: openJob.status,
+          diagnostic: { ...diagnostic }
         });
+        recordDiagnostic();
         continue;
       }
       const existingJob = await db.prepare(
@@ -342,6 +465,14 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
           LIMIT 1`
       ).bind(game.internalGameId, plan.jobType, latestDueSlot.toISOString()).first();
       if (existingJob) {
+        diagnostic.sameSlotJobExists = true;
+        diagnostic.sameSlotJobId = existingJob.id;
+        diagnostic.actualJobExists = true;
+        diagnostic.jobStatus = existingJob.status;
+        diagnostic.insertReasonCode = "PROBABLE_STARTER_SLOT_ALREADY_EXISTS";
+        diagnostic.reasonCode = "PROBABLE_STARTER_SLOT_ALREADY_EXISTS";
+        diagnostic.claimEligible = ["pending", "retry_wait"].includes(String(existingJob.status || ""))
+          && new Date(plan.scheduledAt).getTime() <= current.getTime();
         planned.push({
           game,
           plan,
@@ -351,22 +482,38 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
           insertedRowCount: 0,
           existingJobId: existingJob.id,
           existingScheduledSlotAt: existingJob.scheduled_slot_at,
-          existingStatus: existingJob.status
+          existingStatus: existingJob.status,
+          diagnostic: { ...diagnostic }
         });
+        recordDiagnostic();
         continue;
       }
+      diagnostic.insertAttempted = true;
       const result = await createV3Job(db, { internalGameId: game.internalGameId, ...plan });
+      diagnostic.insertedRowCount = result.created ? 1 : 0;
+      diagnostic.insertReasonCode = result.created ? "PROBABLE_STARTER_JOB_CREATED" : "PROBABLE_STARTER_INSERT_IGNORED";
+      diagnostic.reasonCode = result.created ? "PROBABLE_STARTER_JOB_CREATED" : "PROBABLE_STARTER_INSERT_IGNORED";
+      diagnostic.sameSlotJobExists = !result.created && Boolean(result.job?.id);
+      diagnostic.sameSlotJobId = result.created ? null : result.job?.id || null;
+      diagnostic.actualJobExists = Boolean(result.job?.id);
+      diagnostic.jobStatus = result.job?.status || (result.created ? "pending" : null);
+      diagnostic.claimEligible = Boolean(result.job?.status === "pending"
+        && new Date(result.job?.scheduled_at || plan.scheduledAt).getTime() <= current.getTime());
       planned.push({
         game,
         plan,
         ...result,
-        reasonCode: result.created ? "PROBABLE_STARTER_JOB_CREATED" : "PROBABLE_STARTER_SLOT_CONFLICT",
+        reasonCode: result.created ? "PROBABLE_STARTER_JOB_CREATED" : "PROBABLE_STARTER_INSERT_IGNORED",
         insertedRowCount: result.created ? 1 : 0,
         existingJobId: result.created ? null : result.job?.id || null,
         existingScheduledSlotAt: result.created ? null : result.job?.scheduled_slot_at || null,
-        existingStatus: result.created ? null : result.job?.status || null
+        existingStatus: result.created ? null : result.job?.status || null,
+        diagnostic: { ...diagnostic }
       });
+      recordDiagnostic();
     } catch (error) {
+      diagnostic.reasonCode = "PROBABLE_STARTER_SLOT_SELECTION_FAILED";
+      recordDiagnostic();
       errors.push({ game, plan, error });
     }
   }
@@ -374,17 +521,7 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
     created: planned.filter((entry) => entry.created).length,
     planned,
     errors,
-    diagnostics: planned.map(({ game, plan, job, created, reasonCode, insertedRowCount, existingJobId, existingScheduledSlotAt, existingStatus }) => ({
-      internalGameId: game?.internalGameId || null,
-      jobType: plan?.jobType || null,
-      scheduledSlotAt: plan?.scheduledSlotAt?.toISOString?.() || null,
-      insertedRowCount,
-      actualJobExists: Boolean(job?.id),
-      existingJobId: existingJobId || null,
-      existingScheduledSlotAt: existingScheduledSlotAt || null,
-      status: existingStatus || job?.status || (created ? "pending" : null),
-      reasonCode
-    }))
+    diagnostics
   };
 }
 
@@ -684,6 +821,30 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
   const due = await listDueV3Jobs(env.AUTH_DB, now);
   for (const job of due) {
     const claimed = await claimV3Job(env.AUTH_DB, { jobId: job.id, now });
+    const probablePlanEntry = probablePlan.planned.find((entry) => String(entry?.job?.id || "") === String(job.id));
+    if (probablePlanEntry) {
+      const claimAuditResult = claimed ? "claimed" : "claim_conflict";
+      probablePlanEntry.diagnostic = {
+        ...(probablePlanEntry.diagnostic || {}),
+        actualJobExists: true,
+        jobStatus: claimed?.status || job.status || null,
+        claimEligible: ["pending", "retry_wait", "claimed"].includes(String(job.status || "")),
+        claimResult: claimAuditResult
+      };
+      if (onPlan) {
+        try {
+          await onPlan({
+            ...probablePlanEntry,
+            stage: "probable_claim",
+            claimResult: claimAuditResult,
+            now
+          });
+        } catch (error) {
+          failed += 1;
+          if (onError) await onError(error, { game: probablePlanEntry.game, plan: probablePlanEntry.plan, stage: "probable_claim_audit" });
+        }
+      }
+    }
     if (!claimed) continue;
     processed += 1;
     const executionNow = new Date(monotonicV3JobTimestamp(now, claimed.created_at, claimed.claimed_at));

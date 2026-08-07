@@ -42,6 +42,8 @@ test("予告先発のjob statusとdataStatusを分離し、失敗コードを保
 });
 
 test("dataStatus正規化と後続slot停止判定を共有する", () => {
+  assert.equal(v3.normalizeProbableStarterDataStatus({ status: "error", errorCode: "DATA_INTEGRITY_ERROR", homePitcherName: "残存A", awayPitcherName: "残存B" }), "integrity_error");
+  assert.equal(v3.normalizeProbableStarterDataStatus({ status: "announced", integrityErrorReason: "PROBABLE_STARTER_INTERNAL_GAME_ID_MISMATCH", homePitcherName: "残存A", awayPitcherName: "残存B" }), "integrity_error");
   assert.equal(v3.normalizeProbableStarterDataStatus({ status: "error", errorCode: "NPB_HTTP_ERROR", homePitcherName: "残存A", awayPitcherName: "残存B" }), "transient_error");
   assert.equal(v3.normalizeProbableStarterDataStatus({ status: "completed", dataStatus: "error", homePitcherName: "残存A", awayPitcherName: "残存B" }), "transient_error");
   assert.equal(v3.normalizeProbableStarterDataStatus({ status: "announced", errorCode: "PROBABLE_STARTER_FETCH_FAILED", homePitcherName: "残存A", awayPitcherName: "残存B" }), "transient_error");
@@ -50,7 +52,102 @@ test("dataStatus正規化と後続slot停止判定を共有する", () => {
   assert.equal(v3.normalizeProbableStarterDataStatus({ status: "announced", homePitcherName: "A" }), "partial");
   assert.equal(v3.normalizeProbableStarterDataStatus({ status: "announced", homePitcherName: "A", awayPitcherName: "B" }), "announced");
   assert.equal(v3.shouldStopProbableStarterScheduling({ status: "error", errorCode: "NPB_HTTP_ERROR", homePitcherName: "A", awayPitcherName: "B", startAt: "2026-08-07T09:00:00.000Z", now: "2026-08-07T03:00:00.000Z" }).shouldStopScheduling, false);
-  assert.equal(v3.shouldStopProbableStarterScheduling({ status: "announced", homePitcherName: "A", awayPitcherName: "B", startAt: "2026-08-07T09:00:00.000Z", now: "2026-08-07T03:00:00.000Z" }).shouldStopScheduling, true);
+  assert.deepEqual(
+    v3.shouldStopProbableStarterScheduling({ status: "error", errorCode: "DATA_INTEGRITY_ERROR", homePitcherName: "残存A", awayPitcherName: "残存B", startAt: "2026-08-07T09:00:00.000Z", now: "2026-08-07T03:00:00.000Z" }),
+    { shouldStopScheduling: true, normalizedDataStatus: "integrity_error", reasonCode: "DATA_INTEGRITY_ERROR" }
+  );
+  assert.deepEqual(
+    v3.shouldStopProbableStarterScheduling({ status: "announced", homePitcherName: "A", awayPitcherName: "B", startAt: "2026-08-07T09:00:00.000Z", now: "2026-08-07T03:00:00.000Z" }),
+    { shouldStopScheduling: true, normalizedDataStatus: "announced", reasonCode: "PROBABLE_STARTER_ALREADY_ANNOUNCED" }
+  );
+});
+
+test("UUID正規rowを唯一の予告先発データとして選び、legacy rowを採用しない", () => {
+  const canonical = { game_id: GAME_ID, internal_game_id: GAME_ID, status: "error", error_code: "DATA_INTEGRITY_ERROR" };
+  const legacy = { game_id: "2026-08-07-fighters-eagles-1800", internal_game_id: GAME_ID, status: "announced", home_pitcher_name: "旧投手A", away_pitcher_name: "旧投手B" };
+  const resolved = v3.resolveCanonicalProbableStarterRow([legacy, canonical], GAME_ID);
+  assert.equal(resolved.canonicalRow, canonical);
+  assert.equal(resolved.legacyRowDetected, true);
+  assert.equal(resolved.conflictingRowId, legacy.game_id);
+  assert.equal(resolved.integrityErrorReason, null);
+});
+
+test("予告先発rowのinternal_game_id不一致を整合性エラーとして診断する", () => {
+  const mismatched = {
+    game_id: GAME_ID,
+    internal_game_id: "a7debb1c-87e5-4d38-8073-7c7a1cd2c502",
+    status: "announced",
+    home_pitcher_name: "残存A",
+    away_pitcher_name: "残存B"
+  };
+  const resolved = v3.resolveCanonicalProbableStarterRow([mismatched], GAME_ID);
+  assert.equal(resolved.canonicalRow, null);
+  assert.equal(resolved.integrityErrorReason, "PROBABLE_STARTER_INTERNAL_GAME_ID_MISMATCH");
+  assert.equal(resolved.mismatchedRowId, GAME_ID);
+  assert.equal(resolved.mismatchedInternalGameId, mismatched.internal_game_id);
+  assert.deepEqual(
+    v3.shouldStopProbableStarterScheduling({
+      normalizedDataStatus: "announced",
+      integrityErrorReason: resolved.integrityErrorReason,
+      homePitcherName: "残存A",
+      awayPitcherName: "残存B",
+      startAt: "2026-08-07T09:00:00.000Z",
+      now: "2026-08-07T03:00:00.000Z"
+    }),
+    { shouldStopScheduling: true, normalizedDataStatus: "integrity_error", reasonCode: "DATA_INTEGRITY_ERROR" }
+  );
+});
+
+test("legacyの発表済みrowが残っていても、UUID正規rowの一時失敗を後続slot停止に使わない", async () => {
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE game_jobs_v3 (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      internal_game_id TEXT NOT NULL,
+      job_type TEXT NOT NULL,
+      scheduled_at TEXT NOT NULL,
+      scheduled_slot_at TEXT NOT NULL,
+      status TEXT NOT NULL,
+      attempt_count INTEGER DEFAULT 0,
+      max_attempts INTEGER DEFAULT 12,
+      created_at TEXT,
+      updated_at TEXT,
+      UNIQUE(internal_game_id, job_type, scheduled_slot_at)
+    );
+    CREATE TABLE game_automation_v3_state (internal_game_id TEXT PRIMARY KEY, state TEXT);
+    CREATE TABLE probable_starters (
+      game_id TEXT PRIMARY KEY,
+      internal_game_id TEXT,
+      status TEXT,
+      error_code TEXT,
+      home_pitcher_name TEXT,
+      away_pitcher_name TEXT,
+      fetched_at TEXT,
+      updated_at TEXT
+    );
+  `);
+  try {
+    database.prepare("INSERT INTO probable_starters (game_id, internal_game_id, status, home_pitcher_name, away_pitcher_name, updated_at) VALUES (?, ?, 'announced', ?, ?, ?)")
+      .run("2026-08-07-fighters-eagles-1800", GAME_ID, "旧投手A", "旧投手B", "2026-08-07T01:00:00.000Z");
+    database.prepare("INSERT INTO probable_starters (game_id, internal_game_id, status, error_code, updated_at) VALUES (?, ?, 'error', ?, ?)")
+      .run(GAME_ID, GAME_ID, "NPB_HTTP_ERROR", "2026-08-07T02:00:00.000Z");
+    const result = await v3.planV3ProbableStarterJobs(d1(database), [{
+      internalGameId: GAME_ID,
+      gameDate: "2026-08-07",
+      startAt: "2026-08-07T09:00:00.000Z",
+      homeTeam: "fighters",
+      awayTeam: "eagles",
+      gameStatus: "scheduled",
+      isActive: 1
+    }], new Date("2026-08-07T03:01:00.000Z"));
+    assert.equal(result.created, 1);
+    assert.equal(result.diagnostics[0].currentDataStatus, "transient_error");
+    assert.equal(result.diagnostics[0].reasonCode, "PROBABLE_STARTER_JOB_CREATED");
+    assert.equal(result.diagnostics[0].legacyRowDetected, true);
+    assert.equal(result.diagnostics[0].canonicalRowId, GAME_ID);
+  } finally {
+    database.close();
+  }
 });
 
 test("救済jobの対象slot、実行時刻、監査状態、診断情報を別々に扱う", () => {
@@ -77,6 +174,11 @@ test("救済jobの対象slot、実行時刻、監査状態、診断情報を別�
   assert.match(admin, /normalizedDataStatus/);
   assert.match(admin, /後続取得:/);
   assert.match(admin, /停止理由:/);
+  assert.match(admin, /integrityErrorReason/);
+  assert.match(admin, /raw dataStatus/);
+  assert.match(admin, /stopReason/);
+  assert.match(admin, /canonical row id/);
+  assert.match(admin, /legacy row detected/);
   assert.match(admin, /probableJob \|\| probableMissingPastSlot/);
   assert.match(migration, /ADD COLUMN data_status TEXT NULL/);
 });
@@ -144,14 +246,14 @@ test("09:00救済完了後は12:00到達後に次slotを1件だけ生成する",
       UNIQUE(internal_game_id, job_type, scheduled_slot_at)
     );
     CREATE TABLE game_automation_v3_state (internal_game_id TEXT PRIMARY KEY, state TEXT);
-    CREATE TABLE probable_starters (internal_game_id TEXT, status TEXT, error_code TEXT, home_pitcher_name TEXT, away_pitcher_name TEXT, fetched_at TEXT, updated_at TEXT);
+    CREATE TABLE probable_starters (game_id TEXT PRIMARY KEY, internal_game_id TEXT, status TEXT, error_code TEXT, home_pitcher_name TEXT, away_pitcher_name TEXT, fetched_at TEXT, updated_at TEXT);
   `);
   try {
     const db = d1(database);
     database.prepare(`INSERT INTO game_jobs_v3 (internal_game_id, job_type, scheduled_at, scheduled_slot_at, status, attempt_count, created_at, updated_at) VALUES (?, ?, ?, ?, 'completed', 1, ?, ?)`)
       .run(GAME_ID, "probable_starter_fetch", "2026-08-07T00:00:00.000Z", "2026-08-07T00:00:00.000Z", "2026-08-07T00:01:00.000Z", "2026-08-07T00:01:00.000Z");
-    database.prepare(`INSERT INTO probable_starters (internal_game_id, status, error_code, home_pitcher_name, away_pitcher_name, fetched_at, updated_at) VALUES (?, 'error', ?, ?, ?, ?, ?)`)
-      .run(GAME_ID, "NPB_HTTP_ERROR", "前回の投手", "前回の投手", "2026-08-07T02:00:00.000Z", "2026-08-07T02:00:00.000Z");
+    database.prepare(`INSERT INTO probable_starters (game_id, internal_game_id, status, error_code, home_pitcher_name, away_pitcher_name, fetched_at, updated_at) VALUES (?, ?, 'error', ?, ?, ?, ?, ?)`)
+      .run(GAME_ID, GAME_ID, "NPB_HTTP_ERROR", "前回の投手", "前回の投手", "2026-08-07T02:00:00.000Z", "2026-08-07T02:00:00.000Z");
     const game = { internalGameId: GAME_ID, gameDate: "2026-08-07", startAt: "2026-08-07T09:00:00.000Z", gameStatus: "scheduled", isActive: 1 };
     const before = await v3.planV3ProbableStarterJobs(db, [game], new Date("2026-08-07T02:59:00.000Z"));
     assert.equal(before.created, 0);
@@ -217,6 +319,7 @@ test("09:00のtransient_errorは12:00 slotを抑止せず、12:58時点で1件�
       excluded_at TEXT
     );
     CREATE TABLE probable_starters (
+      game_id TEXT PRIMARY KEY,
       internal_game_id TEXT,
       status TEXT,
       error_code TEXT,
@@ -237,8 +340,8 @@ test("09:00のtransient_errorは12:00 slotを抑止せず、12:58時点で1件�
     };
     database.prepare("INSERT INTO games (internal_game_id, game_date, start_time, npb_identity_status, game_status, is_active) VALUES (?, ?, ?, 'resolved', ?, ?)")
       .run(GAME_ID, game.gameDate, game.startAt, game.gameStatus, 1);
-    database.prepare("INSERT INTO probable_starters (internal_game_id, status, error_code, home_pitcher_name, away_pitcher_name, fetched_at, updated_at) VALUES (?, 'error', ?, ?, ?, ?, ?)")
-      .run(GAME_ID, "NPB_HTTP_ERROR", "前回の投手", "前回の投手", "2026-08-07T02:00:00.000Z", "2026-08-07T02:00:00.000Z");
+    database.prepare("INSERT INTO probable_starters (game_id, internal_game_id, status, error_code, home_pitcher_name, away_pitcher_name, fetched_at, updated_at) VALUES (?, ?, 'error', ?, ?, ?, ?, ?)")
+      .run(GAME_ID, GAME_ID, "NPB_HTTP_ERROR", "前回の投手", "前回の投手", "2026-08-07T02:00:00.000Z", "2026-08-07T02:00:00.000Z");
     database.prepare("INSERT INTO game_jobs_v3 (internal_game_id, job_type, scheduled_at, scheduled_slot_at, status, attempt_count, created_at, updated_at) VALUES (?, ?, ?, ?, 'completed', 1, ?, ?)")
       .run(GAME_ID, "probable_starter_fetch", "2026-08-07T00:00:00.000Z", "2026-08-07T00:00:00.000Z", "2026-08-07T00:01:00.000Z", "2026-08-07T00:01:00.000Z");
     const env = { ENABLE_GAME_AUTOMATION_V3: "true", AUTH_DB: db };
@@ -307,6 +410,7 @@ for (const scenario of [
       );
       CREATE TABLE game_automation_v3_state (internal_game_id TEXT PRIMARY KEY, state TEXT);
       CREATE TABLE probable_starters (
+        game_id TEXT PRIMARY KEY,
         internal_game_id TEXT,
         status TEXT,
         home_pitcher_name TEXT,
@@ -320,8 +424,8 @@ for (const scenario of [
       database.prepare("INSERT INTO game_jobs_v3 (internal_game_id, job_type, scheduled_at, scheduled_slot_at, status, attempt_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)")
         .run(GAME_ID, "probable_starter_fetch", "2026-08-07T00:00:00.000Z", "2026-08-07T00:00:00.000Z", scenario.jobStatus || "completed", "2026-08-07T00:01:00.000Z", "2026-08-07T00:01:00.000Z");
       if (scenario.status) {
-        database.prepare("INSERT INTO probable_starters (internal_game_id, status, home_pitcher_name, away_pitcher_name, fetched_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
-          .run(GAME_ID, scenario.status, scenario.home || "", scenario.away || "", "2026-08-07T02:00:00.000Z", "2026-08-07T02:00:00.000Z");
+        database.prepare("INSERT INTO probable_starters (game_id, internal_game_id, status, home_pitcher_name, away_pitcher_name, fetched_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .run(GAME_ID, GAME_ID, scenario.status, scenario.home || "", scenario.away || "", "2026-08-07T02:00:00.000Z", "2026-08-07T02:00:00.000Z");
       }
       const result = await v3.planV3ProbableStarterJobs(db, [{
         internalGameId: GAME_ID,

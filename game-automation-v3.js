@@ -175,17 +175,50 @@ export function isV3GameEligible(game) {
   return !["cancelled", "postponed", "no_game", "service_unavailable"].includes(String(game.gameStatus || "").toLowerCase());
 }
 
+export function resolveCanonicalProbableStarterRow(rows, internalGameId) {
+  const expectedInternalGameId = String(internalGameId || "").trim();
+  const allRows = Array.isArray(rows) ? rows : [];
+  const mismatchedRows = allRows.filter((row) => {
+    const rowInternalGameId = String(row?.internal_game_id || row?.internalGameId || "").trim();
+    return rowInternalGameId && rowInternalGameId !== expectedInternalGameId;
+  });
+  const scopedRows = allRows.filter((row) =>
+    String(row?.internal_game_id || row?.internalGameId || "").trim() === expectedInternalGameId
+  );
+  const canonicalRows = scopedRows.filter((row) =>
+    String(row?.game_id || row?.gameId || "").trim() === expectedInternalGameId
+  );
+  const legacyRows = scopedRows.filter((row) =>
+    String(row?.game_id || row?.gameId || "").trim() !== expectedInternalGameId
+  );
+  const canonicalRow = canonicalRows.length === 1 ? canonicalRows[0] : null;
+  return {
+    canonicalRow,
+    canonicalRowId: canonicalRow?.game_id || canonicalRow?.gameId || null,
+    probableStarterRowInternalGameId: canonicalRow?.internal_game_id || canonicalRow?.internalGameId || null,
+    conflictingRowId: legacyRows[0]?.game_id || legacyRows[0]?.gameId || null,
+    legacyRowDetected: legacyRows.length > 0,
+    rowCount: scopedRows.length,
+    mismatchedRowId: mismatchedRows[0]?.game_id || mismatchedRows[0]?.gameId || null,
+    mismatchedInternalGameId: mismatchedRows[0]?.internal_game_id || mismatchedRows[0]?.internalGameId || null,
+    integrityErrorReason: mismatchedRows.length > 0
+      ? "PROBABLE_STARTER_INTERNAL_GAME_ID_MISMATCH"
+      : canonicalRows.length > 1 ? "MULTIPLE_CANONICAL_PROBABLE_STARTER_ROWS" : null
+  };
+}
+
 export function normalizeProbableStarterDataStatus(input = {}) {
   const value = typeof input === "string" ? { dataStatus: input } : (input || {});
   const rawStatus = String(value.dataStatus || value.data_status || "").trim().toLowerCase();
   const jobStatus = String(value.status || "").trim().toLowerCase();
   const errorCode = String(value.errorCode || value.error_code || "").trim().toUpperCase();
+  const integrityErrorReason = String(value.integrityErrorReason || value.integrity_error_reason || "").trim();
   const homePitcherName = String(value.homePitcherName || value.home_pitcher_name || "").trim();
   const awayPitcherName = String(value.awayPitcherName || value.away_pitcher_name || "").trim();
   const hasHomePitcher = Boolean(homePitcherName);
   const hasAwayPitcher = Boolean(awayPitcherName);
   const integrityError = ["DATA_INTEGRITY_ERROR", "PROBABLE_STARTER_GAME_MISMATCH"].includes(errorCode);
-  if (integrityError) return "integrity_error";
+  if (integrityError || integrityErrorReason) return "integrity_error";
   if (errorCode) return "transient_error";
   if (jobStatus === "error" || jobStatus === "failed" || ["error", "failed", "transient_error"].includes(rawStatus)) {
     return "transient_error";
@@ -200,6 +233,8 @@ export function shouldStopProbableStarterScheduling({
   dataStatus,
   status,
   errorCode,
+  normalizedDataStatus: suppliedNormalizedDataStatus,
+  integrityErrorReason,
   homePitcherName,
   awayPitcherName,
   startAt,
@@ -207,9 +242,10 @@ export function shouldStopProbableStarterScheduling({
   now = new Date()
 } = {}) {
   const normalizedDataStatus = normalizeProbableStarterDataStatus({
-    dataStatus,
+    dataStatus: suppliedNormalizedDataStatus || dataStatus,
     status,
     errorCode,
+    integrityErrorReason,
     homePitcherName,
     awayPitcherName
   });
@@ -342,6 +378,13 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
       insertReasonCode: null,
       claimEligible: false,
       claimResult: "not_attempted",
+      integrityErrorReason: null,
+      canonicalRowId: null,
+      probableStarterRowInternalGameId: null,
+      conflictingRowId: null,
+      legacyRowDetected: false,
+      mismatchedRowId: null,
+      mismatchedInternalGameId: null,
       reasonCode: null
     };
     const recordDiagnostic = () => diagnostics.push({ ...diagnostic });
@@ -384,22 +427,50 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
       }
       let probableRow = null;
       try {
+        let probableRows = [];
         try {
-          probableRow = await db.prepare(
-            `SELECT status, data_status, error_code, home_pitcher_name, away_pitcher_name
+          probableRows = (await db.prepare(
+            `SELECT game_id, internal_game_id, status, data_status, error_code, home_pitcher_name, away_pitcher_name
                FROM probable_starters
-              WHERE internal_game_id = ?1
+              WHERE internal_game_id = ?1 OR game_id = ?1
               ORDER BY COALESCE(fetched_at, updated_at) DESC
-              LIMIT 1`
-          ).bind(game.internalGameId).first();
+               LIMIT 3`
+          ).bind(game.internalGameId).all()).results || [];
         } catch {
-          probableRow = await db.prepare(
-            `SELECT status, home_pitcher_name, away_pitcher_name
-               FROM probable_starters
-              WHERE internal_game_id = ?1
-              ORDER BY COALESCE(fetched_at, updated_at) DESC
-              LIMIT 1`
-          ).bind(game.internalGameId).first();
+          try {
+            probableRows = (await db.prepare(
+              `SELECT game_id, internal_game_id, status, error_code, home_pitcher_name, away_pitcher_name
+                 FROM probable_starters
+                WHERE internal_game_id = ?1 OR game_id = ?1
+                ORDER BY COALESCE(fetched_at, updated_at) DESC
+                 LIMIT 3`
+            ).bind(game.internalGameId).all()).results || [];
+          } catch {
+            probableRows = (await db.prepare(
+              `SELECT game_id, internal_game_id, status, home_pitcher_name, away_pitcher_name
+                 FROM probable_starters
+                WHERE internal_game_id = ?1 OR game_id = ?1
+                ORDER BY COALESCE(fetched_at, updated_at) DESC
+                 LIMIT 3`
+            ).bind(game.internalGameId).all()).results || [];
+          }
+        }
+        const canonical = resolveCanonicalProbableStarterRow(probableRows, game.internalGameId);
+        probableRow = canonical.canonicalRow;
+        diagnostic.integrityErrorReason = canonical.integrityErrorReason;
+        diagnostic.canonicalRowId = canonical.canonicalRowId;
+        diagnostic.probableStarterRowInternalGameId = canonical.probableStarterRowInternalGameId;
+        diagnostic.conflictingRowId = canonical.conflictingRowId;
+        diagnostic.legacyRowDetected = canonical.legacyRowDetected;
+        diagnostic.mismatchedRowId = canonical.mismatchedRowId;
+        diagnostic.mismatchedInternalGameId = canonical.mismatchedInternalGameId;
+        if (canonical.integrityErrorReason) {
+          diagnostic.currentDataStatus = "integrity_error";
+          diagnostic.shouldStopScheduling = true;
+          diagnostic.reasonCode = "DATA_INTEGRITY_ERROR";
+          planned.push({ game, plan, created: false, job: null, reasonCode: diagnostic.reasonCode, insertedRowCount: 0, diagnostic: { ...diagnostic } });
+          recordDiagnostic();
+          continue;
         }
       } catch {
         // 旧adapterまたは未適用の補助スキーマでも、V3 job計画自体は継続します。
@@ -410,6 +481,7 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
         dataStatus: probableRow?.data_status,
         status: probableRow?.status,
         errorCode: probableRow?.error_code,
+        integrityErrorReason: diagnostic.integrityErrorReason,
         homePitcherName: probableRow?.home_pitcher_name,
         awayPitcherName: probableRow?.away_pitcher_name,
         startAt,

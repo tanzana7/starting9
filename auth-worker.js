@@ -80,6 +80,7 @@ import {
   getV3NextAction,
   getV3ProbableStarterSlots,
   normalizeProbableStarterDataStatus,
+  resolveCanonicalProbableStarterRow,
   shouldStopProbableStarterScheduling
 } from "./game-automation-v3.js";
 
@@ -1115,14 +1116,23 @@ async function readProbableStarterRow(db, { internalGameId = "" } = {}) {
   }
   const rows = await db.prepare(
     `SELECT * FROM probable_starters
-      WHERE internal_game_id = ?1
+      WHERE internal_game_id = ?1 OR game_id = ?1
       ORDER BY COALESCE(fetched_at, updated_at) DESC
-      LIMIT 2`
+      LIMIT 3`
   ).bind(internalGameId).all();
-  if ((rows.results || []).length > 1) {
-    throw createV3Error("DATA_INTEGRITY_ERROR", "同一internal_game_idの予告先発データが複数存在します。", { httpStatus: 409 });
+  const canonical = resolveCanonicalProbableStarterRow(rows.results, internalGameId);
+  if (canonical.integrityErrorReason) {
+    throw createV3Error("DATA_INTEGRITY_ERROR", "UUID正規の予告先発データが複数存在します。", {
+      httpStatus: 409,
+      integrityErrorReason: canonical.integrityErrorReason,
+      canonicalRowId: canonical.canonicalRowId,
+      conflictingRowId: canonical.conflictingRowId,
+      legacyRowDetected: canonical.legacyRowDetected,
+      mismatchedRowId: canonical.mismatchedRowId,
+      mismatchedInternalGameId: canonical.mismatchedInternalGameId
+    });
   }
-  return rows.results?.[0] || null;
+  return canonical.canonicalRow;
 }
 
 async function recordProbableStarterDecision(db, {
@@ -1207,8 +1217,15 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
     candidateCount: 0,
     homePitcherName: null,
     awayPitcherName: null,
+    rawStatus: null,
+    rawDataStatus: null,
+    fetchedNpbGameCode: null,
     dataStatus: null,
     errorCode: null,
+    integrityErrorReason: null,
+    canonicalRowId: null,
+    conflictingRowId: null,
+    legacyRowDetected: false,
     nextCheckAt: null
   };
   const recordTerminal = async (details) => {
@@ -1234,6 +1251,12 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
     diagnostics.candidateCount = payload.games.length;
     const matched = findProbableStarterGame(target, payload.games);
     diagnostics.parserResult = matched ? "matched" : "unannounced";
+    diagnostics.fetchedGameDate = matched?.date || null;
+    diagnostics.fetchedHomeTeam = matched?.homeTeam || null;
+    diagnostics.fetchedAwayTeam = matched?.awayTeam || null;
+    diagnostics.fetchedNpbGameCode = matched?.npbGameCode || matched?.gameCode || matched?.npb_game_code || null;
+    diagnostics.rawStatus = matched ? "announced" : "unannounced";
+    diagnostics.rawDataStatus = diagnostics.rawStatus;
     const freshHomePitcherName = String(matched?.homeStarter?.name || "").trim();
     const freshAwayPitcherName = String(matched?.awayStarter?.name || "").trim();
     const homePitcherName = freshHomePitcherName || String(previous?.home_pitcher_name || "").trim();
@@ -1319,6 +1342,12 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
     const nextCheckAtIso = nextCheckAt.toISOString();
     diagnostics.dataStatus = normalizeProbableStarterDataStatus({ status: "error", errorCode });
     diagnostics.errorCode = errorCode;
+    diagnostics.integrityErrorReason = error?.integrityErrorReason || null;
+    diagnostics.canonicalRowId = error?.canonicalRowId || null;
+    diagnostics.conflictingRowId = error?.conflictingRowId || null;
+    diagnostics.legacyRowDetected = error?.legacyRowDetected === true;
+    diagnostics.rawStatus = "error";
+    diagnostics.rawDataStatus = "error";
     diagnostics.nextCheckAt = nextCheckAtIso;
     diagnostics.httpStatus = diagnostics.httpStatus ?? error?.httpStatus ?? error?.upstreamStatus ?? null;
     diagnostics.responseType = diagnostics.responseType || error?.contentType || null;
@@ -3585,6 +3614,15 @@ async function handleAdminV3Overview(request, env, cors) {
     }
     let probableStarter = null;
     let probableStarterError = null;
+    let probableStarterRowAudit = {
+      integrityErrorReason: null,
+      canonicalRowId: null,
+      probableStarterRowInternalGameId: null,
+      conflictingRowId: null,
+      legacyRowDetected: false,
+      mismatchedRowId: null,
+      mismatchedInternalGameId: null
+    };
     try {
       if (!probableStarterColumns.has("internal_game_id")) {
         probableStarterError = "V3_PROBABLE_STARTER_SCHEMA_UNAVAILABLE";
@@ -3593,14 +3631,24 @@ async function handleAdminV3Overview(request, env, cors) {
           `SELECT status, home_pitcher_name, away_pitcher_name, fetched_at, announced_at,
                   next_check_at, source_url, error_code, updated_at, game_id, internal_game_id
              FROM probable_starters
-            WHERE internal_game_id = ?1
+            WHERE internal_game_id = ?1 OR game_id = ?1
             ORDER BY COALESCE(fetched_at, updated_at) DESC
-            LIMIT 2`
+            LIMIT 3`
         ).bind(game.internalGameId).all();
-        if ((probableRows.results || []).length > 1) {
+        const canonical = resolveCanonicalProbableStarterRow(probableRows.results, game.internalGameId);
+        probableStarterRowAudit = {
+          integrityErrorReason: canonical.integrityErrorReason,
+          canonicalRowId: canonical.canonicalRowId,
+          probableStarterRowInternalGameId: canonical.probableStarterRowInternalGameId,
+          conflictingRowId: canonical.conflictingRowId,
+          legacyRowDetected: canonical.legacyRowDetected,
+          mismatchedRowId: canonical.mismatchedRowId,
+          mismatchedInternalGameId: canonical.mismatchedInternalGameId
+        };
+        if (canonical.integrityErrorReason) {
           probableStarterError = "DATA_INTEGRITY_ERROR";
         } else {
-          probableStarter = probableRows.results?.[0] || null;
+          probableStarter = canonical.canonicalRow;
         }
       }
     } catch (error) {
@@ -3611,7 +3659,47 @@ async function handleAdminV3Overview(request, env, cors) {
     const probableStarterPayload = probableStarterError
       ? { status: "error", errorCode: probableStarterError }
       : serializedProbableStarter;
-    let probableStarterDiagnostics = null;
+    const currentProbableStarterDataStatus = serializedProbableStarter?.dataStatus
+      || normalizeProbableStarterDataStatus(probableStarterPayload || {});
+    const currentProbableStarterErrorCode = serializedProbableStarter?.errorCode || probableStarterError || null;
+    const currentProbableStarterDecision = shouldStopProbableStarterScheduling({
+      dataStatus: currentProbableStarterDataStatus,
+      integrityErrorReason: probableStarterRowAudit.integrityErrorReason,
+      status: probableStarterPayload?.status,
+      errorCode: currentProbableStarterErrorCode,
+      homePitcherName: serializedProbableStarter?.homePitcherName,
+      awayPitcherName: serializedProbableStarter?.awayPitcherName,
+      startAt: game.startAt,
+      gameStatus: game.gameStatus,
+      now: overviewNow
+    });
+    let probableStarterDiagnostics = {
+      internalGameId: game.internalGameId,
+      probableStarterRowInternalGameId: probableStarterRowAudit.probableStarterRowInternalGameId,
+      canonicalRowId: probableStarterRowAudit.canonicalRowId,
+      conflictingRowId: probableStarterRowAudit.conflictingRowId,
+      legacyRowDetected: probableStarterRowAudit.legacyRowDetected,
+      mismatchedRowId: probableStarterRowAudit.mismatchedRowId,
+      mismatchedInternalGameId: probableStarterRowAudit.mismatchedInternalGameId,
+      integrityErrorReason: probableStarterRowAudit.integrityErrorReason,
+      homeTeam: game.homeTeam || null,
+      awayTeam: game.awayTeam || null,
+      gameDate: game.gameDate || null,
+      npbGameCode: game.npbGameCode || null,
+      dataStatus: currentProbableStarterDataStatus,
+      currentDataStatus: currentProbableStarterDecision.normalizedDataStatus,
+      rawStatus: probableStarterPayload?.status || null,
+      rawDataStatus: probableStarterPayload?.dataStatus || null,
+      rawErrorCode: currentProbableStarterErrorCode,
+      errorCode: currentProbableStarterErrorCode,
+      shouldStopScheduling: currentProbableStarterDecision.shouldStopScheduling,
+      reasonCode: currentProbableStarterDecision.reasonCode,
+      nextCheckAt: serializedProbableStarter?.nextCheckAt || null,
+      homePitcherPresent: Boolean(serializedProbableStarter?.homePitcherName),
+      awayPitcherPresent: Boolean(serializedProbableStarter?.awayPitcherName),
+      generatedSlots: [],
+      dueSlots: []
+    };
     try {
       const diagnosticLog = await env.AUTH_DB.prepare(
         `SELECT occurred_at, error_code, metadata
@@ -3624,24 +3712,25 @@ async function handleAdminV3Overview(request, env, cors) {
         const metadata = parseWorkflowLogMetadata(diagnosticLog.metadata);
         const planning = metadata.planningDiagnostics || {};
         probableStarterDiagnostics = {
+          ...probableStarterDiagnostics,
           httpStatus: metadata.httpStatus ?? null,
           responseType: metadata.responseType || null,
           parserResult: metadata.parserResult || null,
           candidateCount: Number.isFinite(Number(metadata.candidateCount)) ? Number(metadata.candidateCount) : null,
           homePitcherName: metadata.homePitcherName || null,
           awayPitcherName: metadata.awayPitcherName || null,
-          dataStatus: metadata.dataStatus || serializedProbableStarter?.dataStatus || null,
-          errorCode: metadata.errorCode || diagnosticLog.error_code || null,
-          nextCheckAt: metadata.nextCheckAt || serializedProbableStarter?.nextCheckAt || null,
+          fetchedHomeTeam: metadata.fetchedHomeTeam || null,
+          fetchedAwayTeam: metadata.fetchedAwayTeam || null,
+          fetchedGameDate: metadata.fetchedGameDate || null,
+          fetchedNpbGameCode: metadata.fetchedNpbGameCode || null,
+          rawDataStatus: metadata.rawDataStatus || probableStarterDiagnostics.rawDataStatus || null,
+          nextCheckAt: serializedProbableStarter?.nextCheckAt || metadata.nextCheckAt || null,
           occurredAt: diagnosticLog.occurred_at || null,
-          reasonCode: planning.reasonCode || metadata.errorCode || diagnosticLog.error_code || null,
           generatedSlots: Array.isArray(planning.generatedSlots) ? planning.generatedSlots : [],
           dueSlots: Array.isArray(planning.dueSlots) ? planning.dueSlots : [],
           selectedDueSlot: planning.selectedDueSlot || null,
-          currentDataStatus: planning.currentDataStatus || metadata.dataStatus || serializedProbableStarter?.dataStatus || null,
           homePitcherPresent: planning.homePitcherPresent === true,
           awayPitcherPresent: planning.awayPitcherPresent === true,
-          shouldStopScheduling: planning.shouldStopScheduling === true,
           openJobExists: planning.openJobExists === true,
           openJobId: planning.openJobId || null,
           sameSlotJobExists: planning.sameSlotJobExists === true,

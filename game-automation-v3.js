@@ -1,6 +1,17 @@
-import { AUTOMATION_V2_TIMING } from "./game-automation-v2.js";
-
 const INTERNAL_GAME_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+// V3 owns its timing contract. Keeping these values here prevents the
+// production scheduler from depending on the retired V1/V2 module.
+export const V3_TIMING = Object.freeze({
+  predictionDeadlineMinutes: 60,
+  lineupPollingStartMinutes: 50,
+  finalLineupMinutesAfterStart: 2,
+  publicationMinutesAfterStart: 10,
+  lineupPollingIntervalMinutes: 10,
+  rosterPregameMinutes: 120,
+  rosterSecondPregameMinutes: 110,
+  rosterDailySlotsJst: Object.freeze(["16:02", "16:10"])
+});
 
 export const V3_FEATURE_FLAG = "ENABLE_GAME_AUTOMATION_V3";
 export const V3_STATES = Object.freeze([
@@ -67,10 +78,12 @@ export function deriveV3Schedule(game) {
   const minutes = (offset) => new Date(startAt.getTime() + offset * 60 * 1000);
   return {
     startAt,
-    predictionDeadline: minutes(-AUTOMATION_V2_TIMING.predictionDeadlineMinutes),
-    lineupPollingStart: minutes(-AUTOMATION_V2_TIMING.lineupPollingStartMinutes),
-    finalLineupAt: minutes(AUTOMATION_V2_TIMING.finalLineupMinutesAfterStart),
-    publicationAt: minutes(AUTOMATION_V2_TIMING.publicationMinutesAfterStart)
+    predictionDeadline: minutes(-V3_TIMING.predictionDeadlineMinutes),
+    rosterFetchAt1: minutes(-V3_TIMING.rosterPregameMinutes),
+    rosterFetchAt2: minutes(-V3_TIMING.rosterSecondPregameMinutes),
+    lineupPollingStart: minutes(-V3_TIMING.lineupPollingStartMinutes),
+    finalLineupAt: minutes(V3_TIMING.finalLineupMinutesAfterStart),
+    publicationAt: minutes(V3_TIMING.publicationMinutesAfterStart)
   };
 }
 
@@ -85,15 +98,15 @@ export function deriveV3DisplaySchedule(game) {
   const schedule = deriveV3Schedule(game);
   const gameDate = String(game?.gameDate || game?.game_date || "").slice(0, 10);
   const rosterFetchSlots = [
-    new Date(schedule.startAt.getTime() - AUTOMATION_V2_TIMING.rosterPregameMinutes * 60 * 1000),
-    new Date(schedule.startAt.getTime() - AUTOMATION_V2_TIMING.rosterSecondPregameMinutes * 60 * 1000),
-    ...AUTOMATION_V2_TIMING.rosterDailySlotsJst.map((slot) => {
+    new Date(schedule.startAt.getTime() - V3_TIMING.rosterPregameMinutes * 60 * 1000),
+    new Date(schedule.startAt.getTime() - V3_TIMING.rosterSecondPregameMinutes * 60 * 1000),
+    ...V3_TIMING.rosterDailySlotsJst.map((slot) => {
       const [hour, minute] = String(slot).split(":").map(Number);
       return jstV3Slot(gameDate, hour, minute);
     })
   ];
   const lineupPollingSlots = [];
-  for (let slot = schedule.lineupPollingStart; slot < schedule.finalLineupAt; slot = new Date(slot.getTime() + AUTOMATION_V2_TIMING.lineupPollingIntervalMinutes * 60 * 1000)) {
+  for (let slot = schedule.lineupPollingStart; slot < schedule.finalLineupAt; slot = new Date(slot.getTime() + V3_TIMING.lineupPollingIntervalMinutes * 60 * 1000)) {
     lineupPollingSlots.push(slot);
   }
   const previousDayProbableStarterAt = jstV3Slot(shiftV3IsoDate(gameDate, -1), 18, 0);
@@ -312,6 +325,25 @@ function shiftV3IsoDate(dateValue, days) {
   if (Number.isNaN(date.getTime())) return "";
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
+}
+
+export function getV3ProbableStarterSourceDate({ now = new Date(), currentGameStartAt = "", nextGameDate = "" } = {}) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(current.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", hourCycle: "h23"
+  }).formatToParts(current);
+  const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  const today = `${values.year}-${values.month}-${values.day}`;
+  const currentHour = Number(values.hour || 0);
+  const start = new Date(currentGameStartAt || "");
+  if (!Number.isNaN(start.getTime()) && current >= start && nextGameDate) return String(nextGameDate);
+  if (currentHour >= 18) {
+    const tomorrow = new Date(Date.UTC(Number(values.year), Number(values.month) - 1, Number(values.day) + 1));
+    return tomorrow.toISOString().slice(0, 10);
+  }
+  return today;
 }
 
 function jstV3Slot(dateValue, hour, minute) {

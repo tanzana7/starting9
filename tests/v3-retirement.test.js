@@ -9,6 +9,16 @@ const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const client = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const index = fs.readFileSync(path.join(root, "index.html"), "utf8");
 
+test("V1/V2 runtime modules are physically absent and V3 has no legacy dependency", () => {
+  assert.equal(fs.existsSync(path.join(root, "game-automation-v2.js")), false);
+  assert.equal(fs.existsSync(path.join(root, "game-workflow-jobs.js")), false);
+  for (const file of ["auth-worker.js", "game-automation-v3.js", "pregame-automation.js"]) {
+    const source = fs.readFileSync(path.join(root, file), "utf8");
+    assert.doesNotMatch(source, /game-automation-v2|AUTOMATION_V2_TIMING|game-workflow-jobs/);
+  }
+  assert.doesNotMatch(worker, /runScheduledGameAutomation\(|runGameWorkflows\(|runDueCompletionWorkflowJobs\(|runDuePregameAutomationJobs\(/);
+});
+
 function section(source, start, end) {
   const from = source.indexOf(start);
   assert.notEqual(from, -1, `missing ${start}`);
@@ -24,23 +34,10 @@ test("production scheduled entrypoint runs V3 only and disabled V3 does not fall
   assert.doesNotMatch(scheduled, /runGameWorkflows\(/);
 });
 
-test("retired V1/V2 runners reject direct execution", () => {
-  for (const name of [
-    "runScheduledGameAutomation",
-    "runGameWorkflows",
-    "runDueProbableStarterJob",
-    "runDueProbableStarterWorkflowJobs",
-    "runDueRosterCaptureJobs",
-    "runDueCompletionWorkflowJobs",
-    "runDuePregameAutomationJobs",
-    "runDueAutoScoringJobs",
-    "runDueAutoScoringTestJobs",
-    "runDueGameDayScheduleJobs",
-    "runDueGameDayPublicationJobs"
-  ]) {
-    const body = section(worker, `async function ${name}(`, "\nasync function");
-    assert.match(body, /LEGACY_AUTOMATION_RETIRED/);
-  }
+test("legacy mutation URLs remain an explicit 410 contract", () => {
+  assert.match(worker, /LEGACY_AUTOMATION_RETIRED_CODE/);
+  assert.match(worker, /LEGACY_ADMIN_OPERATION_RETIRED_CODE/);
+  assert.match(worker, /return legacyAdminOperationRetiredResponse\(cors\);/);
 });
 
 test("legacy admin mutation paths return the explicit retirement contract", () => {

@@ -9,8 +9,9 @@ const migration = fs.readFileSync(path.join(root, "migrations", "0005_game_lineu
 
 test("自動採点はCron、原子的なclaim、共通採点コアを持つ", () => {
   assert.match(worker, /async scheduled\(event, env, ctx\)/);
-  assert.match(worker, /ctx\.waitUntil\(runScheduledGameAutomation/);
-  assert.match(worker, /runDuePregameAutomationJobs/);
+  assert.match(worker, /ctx\.waitUntil\(runScheduledGameAutomationV3/);
+  assert.match(worker, /V3_JOB_TYPE\.SCORE/);
+  assert.doesNotMatch(worker, /runDuePregameAutomationJobs|runDueAutoScoringJobs/);
   assert.match(worker, /AUTO_SCORING_DEFAULT_DELAY_SECONDS = 300/);
   assert.match(worker, /AUTO_SCORING_MAX_ATTEMPTS = 3/);
   assert.match(worker, /scoring_status = 'processing'/);

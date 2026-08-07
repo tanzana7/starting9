@@ -51,7 +51,9 @@ test("試合前自動処理は公示・非公開採点・開始後公開の責�
   assert.match(auth, /\/api\/game-day-roster/);
   assert.match(auth, /snapshotTeams = Array\.isArray\(rosters\.fighters\)/);
   assert.match(auth, /resultStatus = now < identity\.startAt/);
-  assert.match(auth, /runDueGameDayScheduleJobs/);
+  assert.match(auth, /runScheduledGameAutomationV3/);
+  assert.match(auth, /V3_JOB_TYPE\.ROSTER_FETCH/);
+  assert.doesNotMatch(auth, /runDueGameDayScheduleJobs/);
   assert.match(auth, /publication_status = 'scored_private'/);
   assert.match(auth, /async function publishGameResults/);
   assert.match(auth, /isGameResultsPublished/);

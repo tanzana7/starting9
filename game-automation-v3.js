@@ -10,6 +10,7 @@ export const V3_TIMING = Object.freeze({
   lineupPollingIntervalMinutes: 10,
   rosterPregameMinutes: 120,
   rosterSecondPregameMinutes: 110,
+  rosterRegularIntervalMinutes: 24 * 60,
   rosterDailySlotsJst: Object.freeze(["16:02", "16:10"])
 });
 

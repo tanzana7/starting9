@@ -149,7 +149,7 @@ test("再採点previewは試合・lineup・scoring revisionを固定し、confir
 test("再採点成功時はscoring revisionを完了させ、V3ではranking/publicationを後続へ分離する", () => {
   assert.match(worker, /beginGameScoringRevision\(db, \{[\s\S]*lineupRevisionId/);
   assert.match(worker, /completeGameScoringRevision\(db, \{[\s\S]*scoringRevisionId: scoringRevisionState\.id/);
-  assert.match(worker, /if \(!deferPublication\) \{[\s\S]*canonicalStatus: "ranking_reflected"/);
+  assert.match(worker, /if \(!deferPublication\) \{[\s\S]*to: "ranked"/);
   assert.match(worker, /publication_status = CASE WHEN \?7 = 1 THEN 'published' ELSE 'pending' END/);
 });
 

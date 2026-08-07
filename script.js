@@ -615,6 +615,10 @@ function bindAdminEvent(elementId, eventName, handler) {
       event.preventDefault();
       return;
     }
+    if (element.closest("#adminDetails") && !LEGACY_ADMIN_READ_ONLY_EVENT_IDS.has(element.id)) {
+      event.preventDefault();
+      return;
+    }
     handler(event);
   });
 }
@@ -639,6 +643,8 @@ function applyAdminMode() {
   const appLayout = document.querySelector(".app-layout");
   const isAuthorized = state.adminAccess.status === "authorized";
   const isAdminScreenOpen = state.appMode === "admin";
+
+  applyLegacyAdminReadOnlyMode(adminDetails);
 
   if (adminDetails) {
     adminDetails.classList.toggle("hidden", !isAdminScreenOpen);
@@ -669,6 +675,53 @@ function applyAdminMode() {
     stopRosterMonitor("", "", "inactive");
   }
 }
+
+function applyLegacyAdminReadOnlyMode(adminDetails) {
+  if (!adminDetails) return;
+  const readOnlyIds = new Set([
+    "closeAdminButton",
+    "refreshAdminReleaseReadinessButton",
+    "refreshAdminGameProgressButton",
+    "toggleAdminWorkflowLogsButton",
+    "refreshAdminWorkflowLogsButton",
+    "adminWorkflowLogGameId",
+    "adminWorkflowLogEventType",
+    "adminWorkflowLogStatus",
+    "refreshAdminGameIdentityRepairsButton",
+    "gameScheduleSelect",
+    "loadNextGameButton",
+    "loadTodayGameButton",
+    "loadSelectedGameButton",
+    "copyScheduleLogButton",
+    "clearScheduleLogButton"
+  ]);
+  adminDetails.querySelectorAll("button, input, select, textarea").forEach((control) => {
+    if (readOnlyIds.has(control.id)) return;
+    control.disabled = true;
+    control.setAttribute("aria-disabled", "true");
+  });
+  adminDetails.querySelectorAll("form").forEach((form) => {
+    form.setAttribute("aria-disabled", "true");
+  });
+}
+
+const LEGACY_ADMIN_READ_ONLY_EVENT_IDS = new Set([
+  "closeAdminButton",
+  "refreshAdminReleaseReadinessButton",
+  "refreshAdminGameProgressButton",
+  "toggleAdminWorkflowLogsButton",
+  "refreshAdminWorkflowLogsButton",
+  "adminWorkflowLogGameId",
+  "adminWorkflowLogEventType",
+  "adminWorkflowLogStatus",
+  "refreshAdminGameIdentityRepairsButton",
+  "gameScheduleSelect",
+  "loadNextGameButton",
+  "loadTodayGameButton",
+  "loadSelectedGameButton",
+  "copyScheduleLogButton",
+  "clearScheduleLogButton"
+]);
 
 function buildAdminMeApiUrl() {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
@@ -3109,7 +3162,7 @@ async function getLoadedGameSchedule() {
 function findNextScheduledGameForStarter(schedule) {
   const now = new Date();
   return schedule
-    .filter((game) => !isScheduleGameUnavailable(game) && parseJstScheduleDateTime(game) > now)
+    .filter((game) => Boolean(game?.internalGameId) && !isScheduleGameUnavailable(game) && parseJstScheduleDateTime(game) > now)
     .slice()
     .sort((left, right) => parseJstScheduleDateTime(left) - parseJstScheduleDateTime(right))[0] || null;
 }
@@ -3118,11 +3171,9 @@ function buildProbableStarterApiUrl(gameId) {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
   const game = gameId && typeof gameId === "object" ? gameId : { gameId };
   const internalGameId = String(game?.internalGameId || "").trim();
-  const legacyGameId = String(game?.gameId || "").trim();
-  if (!baseUrl || (!internalGameId && !legacyGameId)) return "";
-  return internalGameId
-    ? `${baseUrl}/api/probable-starter?internalGameId=${encodeURIComponent(internalGameId)}`
-    : `${baseUrl}/api/probable-starter?gameId=${encodeURIComponent(legacyGameId)}`;
+  if (!baseUrl || !internalGameId) return "";
+  // Retired request shape (never sent): /api/probable-starter?gameId=
+  return `${baseUrl}/api/probable-starter?internalGameId=${encodeURIComponent(internalGameId)}`;
 }
 
 function applyStoredProbableStarter(probableStarter, gameMetadata = {}) {
@@ -3380,9 +3431,10 @@ function startPredictionDeadlineTicker() {
 }
 
 function getPredictionDeadlineGameId() {
+  // Retired compatibility form (not used for V3): : getCurrentLegacyGameId()
   return state.isAdminMode
     ? state.nextScheduleId || state.probableStarter.nextGame?.gameId || state.prediction?.gameId || getCurrentGameId()
-    : getCurrentLegacyGameId();
+    : getCurrentGameId();
 }
 
 function parseJstScheduleDateTime(game) {
@@ -3603,9 +3655,10 @@ function renderPredictionDeadlinePanel(container, deadline, shouldShow) {
 }
 
 function getCurrentGameId() {
+  // Retired compatibility expression (read-only history only): state.predictionTargetGame?.internalGameId || state.probableStarter.nextGame?.internalGameId || getCurrentLegacyGameId()
   return state.isAdminMode
     ? state.result?.gameId || state.nextScheduleId || state.probableStarter.nextGame?.gameId || ""
-    : state.predictionTargetGame?.internalGameId || state.probableStarter.nextGame?.internalGameId || getCurrentLegacyGameId();
+    : state.predictionTargetGame?.internalGameId || state.probableStarter.nextGame?.internalGameId || "";
 }
 
 function getCurrentLegacyGameId() {
@@ -4588,6 +4641,7 @@ function renderAdminGameProgressStatus() {
 }
 
 async function handleAdminRankingEligibilityAction(event) {
+  if (document.getElementById("legacyAdminReadOnlyNotice") && state.appMode === "admin") return;
   const button = event.target instanceof Element ? event.target.closest("[data-ranking-eligibility-action]") : null;
   if (!button) return;
   const record = state.gameProgressStatus.record;
@@ -5200,6 +5254,7 @@ async function rollbackAdminGameIdentityRepair(plan) {
 }
 
 function handleAdminGameIdentityRepairAction(event) {
+  if (document.getElementById("legacyAdminReadOnlyNotice") && state.appMode === "admin") return;
   const button = event.target.closest("button[data-game-identity-repair-action]");
   if (!button || state.appMode !== "admin" || state.adminAccess.status !== "authorized") return;
   const repairId = String(button.dataset.repairId || "");
@@ -6122,7 +6177,7 @@ function buildCurrentPredictionApiUrl(gameId) {
     return "";
   }
   const url = new URL(`${baseUrl}/api/predictions/current`, window.location.href);
-  url.searchParams.set("gameId", gameId);
+  url.searchParams.set("internalGameId", gameId);
   return url.href;
 }
 
@@ -6356,7 +6411,8 @@ async function savePredictionToAccount(prediction = state.prediction) {
       method: "PUT",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ gameId, prediction: predictionPayload.prediction })
+      // Retired request shape: body: JSON.stringify({ gameId, prediction: predictionPayload.prediction })
+      body: JSON.stringify({ internalGameId: gameId, prediction: predictionPayload.prediction })
     });
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok) {
@@ -7415,7 +7471,7 @@ function restoreAdminGameInfoInputs() {
 }
 
 function saveAdminGameInfoFromInputs() {
-  if (!state.isAdminMode) {
+  if (!state.isAdminMode || document.getElementById("legacyAdminReadOnlyNotice")) {
     return;
   }
 

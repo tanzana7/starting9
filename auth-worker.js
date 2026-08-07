@@ -487,7 +487,15 @@ async function runScheduledGameAutomationV3(env, now) {
     const probableStarter = execution?.probableStarter || null;
     const dataStatus = execution?.dataStatus || probableStarter?.dataStatus || null;
     const failureCode = failure?.code || execution?.failureCode || job?.failure_code || probableStarter?.errorCode || null;
-    const failureMessage = failure?.message || execution?.failureMessage || job?.failure_message || null;
+    const failureBaseMessage = failure?.message || execution?.failureMessage || job?.failure_message || null;
+    let failureMessage = failureBaseMessage;
+    if (failure?.diagnostics && typeof failure.diagnostics === "object") {
+      try {
+        failureMessage = `${failureBaseMessage || ""} [diagnostics=${JSON.stringify(failure.diagnostics)}]`.slice(0, 240);
+      } catch {
+        failureMessage = failureBaseMessage;
+      }
+    }
     const values = [
       ...(auditColumns.has("event_type") ? [eventType] : []),
       job?.internal_game_id || null,
@@ -755,7 +763,13 @@ async function executeGameAutomationV3Job({ env, job, internalGameId, now }) {
       });
     } catch (error) {
       if (jobType === "lineup_fetch") throw normalizeV3LineupFetchError(error, now);
-      throw error;
+      throw normalizeV3LineupFinalizeError(error, {
+        internalGameId,
+        jobType,
+        executorReached: true,
+        stateBefore,
+        provisionalLookup: "game_lineup_revisions.internal_game_id"
+      });
     }
     if (jobType === "lineup_fetch") return { status: result.status, stateBefore, stateAfter: stateBefore };
     return { status: result.status, stateBefore, stateAfter: "lineup_ready" };
@@ -7900,11 +7914,110 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
   }
 }
 
+export async function selectV3LineupFinalizeCandidate(db, { internalGameId = "" } = {}) {
+  const id = String(internalGameId || "");
+  const diagnostics = {
+    internalGameId: id,
+    lookup: "game_lineup_revisions.internal_game_id",
+    executorReached: true,
+    provisionalLineupFound: false,
+    candidateCount: 0,
+    selectedRevisionId: null,
+    playerCount: 0,
+    validation: null,
+    rejectionReasons: []
+  };
+  if (!INTERNAL_GAME_ID_PATTERN.test(id)) {
+    return { ok: false, code: "V3_LINEUP_INTERNAL_ID_INVALID", diagnostics };
+  }
+  const columns = await getTableColumnSet(db, "game_lineup_revisions");
+  if (!columns.has("internal_game_id")) {
+    return {
+      ok: false,
+      code: "V3_LINEUP_SCHEMA_UNAVAILABLE",
+      diagnostics: { ...diagnostics, lookup: "internal_game_id_column_missing" }
+    };
+  }
+  const rows = await db.prepare(
+    "SELECT * FROM game_lineup_revisions WHERE internal_game_id = ?1 ORDER BY version DESC, id DESC LIMIT 20"
+  ).bind(id).all();
+  const candidates = (rows.results || []).filter((row) => Number(row.is_final || 0) !== 1);
+  diagnostics.candidateCount = candidates.length;
+  for (const row of candidates) {
+    const permissive = sanitizeActualLineupForScoring(parseStoredActualLineup(row.actual_lineup_json), { allowUnresolvedPlayer: true });
+    if (!permissive.ok) {
+      diagnostics.rejectionReasons.push({ revisionId: row.revision_id || `${row.game_id}:${row.version}`, code: "V3_LINEUP_INCOMPLETE", message: permissive.error });
+      continue;
+    }
+    const strict = sanitizeActualLineupForScoring(permissive.lineup);
+    if (!strict.ok) {
+      diagnostics.rejectionReasons.push({ revisionId: row.revision_id || `${row.game_id}:${row.version}`, code: "V3_LINEUP_PLAYER_RESOLUTION_FAILED", message: strict.error });
+      continue;
+    }
+    diagnostics.provisionalLineupFound = true;
+    diagnostics.selectedRevisionId = row.revision_id || `${row.game_id}:${row.version}`;
+    diagnostics.playerCount = strict.lineup.length;
+    diagnostics.validation = row.validation_json || null;
+    return { ok: true, row, lineup: strict.lineup, diagnostics };
+  }
+  const firstRejection = diagnostics.rejectionReasons[0];
+  return {
+    ok: false,
+    code: firstRejection?.code || "V3_LINEUP_CANDIDATE_NOT_FOUND",
+    diagnostics
+  };
+}
+
+function normalizeV3LineupFinalizeError(error, diagnostics = {}) {
+  if (error?.code) {
+    if (!error.diagnostics) error.diagnostics = diagnostics;
+    return error;
+  }
+  return createV3Error("V3_LINEUP_FINALIZE_FAILED", "正式スタメン確定処理に失敗しました。", {
+    retryable: true,
+    diagnostics: {
+      ...diagnostics,
+      executorError: String(error?.message || "unknown").slice(0, 120)
+    }
+  });
+}
+
 async function adoptPersistedLineupCandidate(env, gameId, now, { internalGameId = "", target = null, source = "legacy" } = {}) {
   const startAt = new Date(target?.startAt || "");
   if (!INTERNAL_GAME_ID_PATTERN.test(String(internalGameId || "")) || Number.isNaN(startAt.getTime())) return null;
   const finalAt = new Date(startAt.getTime() + V3_TIMING.finalLineupMinutesAfterStart * 60000);
   if (now < finalAt) return null;
+  if (source === "v3") {
+    const candidate = await selectV3LineupFinalizeCandidate(env.AUTH_DB, { internalGameId });
+    if (!candidate.ok) {
+      if (candidate.code !== "V3_LINEUP_CANDIDATE_NOT_FOUND") {
+        throw createV3Error(candidate.code, "V3の正式スタメン候補を確定できません。", {
+          retryable: candidate.code === "V3_LINEUP_INCOMPLETE" || candidate.code === "V3_LINEUP_PLAYER_RESOLUTION_FAILED",
+          diagnostics: candidate.diagnostics
+        });
+      }
+      return null;
+    }
+    const row = candidate.row;
+    const detectedAt = parseLineupDetectedAt(row.captured_at || row.created_at) || now;
+    const record = await approveActualLineupForAutoScoring(env, gameId, candidate.lineup, detectedAt, {
+      source: "npb-auto",
+      scoringDueAt: finalAt,
+      now,
+      allowAfterStart: true,
+      preventOverwrite: true,
+      internalGameId
+    });
+    await activateLineupRevision(env.AUTH_DB, { gameId, version: row.version, internalGameId, finalizedAt: now, finalizedBy: "system" });
+    await linkFinalLineupRevision(env.AUTH_DB, { gameId, internalGameId, version: row.version, finalizedAt: now, finalizedBy: "system" });
+    return {
+      status: "captured",
+      recoveryMode: "persisted_lineup_revision_adoption",
+      autoScoring: serializeGameLineup(record),
+      lineupRevision: row,
+      finalizationDiagnostics: candidate.diagnostics
+    };
+  }
   const rows = await env.AUTH_DB.prepare(
     "SELECT * FROM game_lineup_revisions WHERE game_id = ?1 ORDER BY version DESC LIMIT 20"
   ).bind(gameId).all();
@@ -15235,6 +15348,16 @@ function parseStoredPrediction(value) {
     return parsed && parsed.schemaVersion === PREDICTION_SCHEMA_VERSION && Array.isArray(parsed.lineup)
       ? parsed
       : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseStoredActualLineup(value) {
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    if (Array.isArray(parsed)) return parsed;
+    return parsed && Array.isArray(parsed.lineup) ? parsed.lineup : null;
   } catch {
     return null;
   }

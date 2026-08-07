@@ -526,16 +526,16 @@ async function runScheduledGameAutomationV3(env, now) {
 
   const result = await runGameAutomationV3(env, now, {
     executeJob: (context) => executeGameAutomationV3Job(context),
-    onPlan: async ({ game, plan, job, created, reasonCode, insertedRowCount, existingJobId, existingScheduledSlotAt, existingStatus, diagnostic, stage = "probable_plan", claimResult = null }) => {
+    onPlan: async ({ game, plan, job, created, reasonCode, insertedRowCount, existingJobId, existingScheduledSlotAt, existingStatus, diagnostic, stage = "v3_plan", claimResult = null }) => {
       const jobType = String(plan?.jobType || job?.job_type || "");
-      if (!["probable_starter_fetch", "roster_fetch"].includes(jobType)) return;
       const isClaimAudit = stage.endsWith("_claim");
       const isRoster = jobType === "roster_fetch";
+      const isProbable = jobType === "probable_starter_fetch";
       const eventType = isClaimAudit
-        ? (isRoster ? "roster_job_claimed" : "probable_starter_job_claimed")
+        ? (isRoster ? "roster_job_claimed" : isProbable ? "probable_starter_job_claimed" : "v3_job_claimed")
         : created
-          ? (isRoster ? "roster_job_created" : "workflow_job_created")
-          : (isRoster ? "roster_job_plan_observed" : "probable_starter_job_plan_observed");
+          ? (isRoster ? "roster_job_created" : isProbable ? "workflow_job_created" : "v3_job_created")
+          : (isRoster ? "roster_job_plan_observed" : isProbable ? "probable_starter_job_plan_observed" : "v3_job_plan_observed");
       await recordWorkflowJobEvent(env.AUTH_DB, {
         eventType,
         status: isClaimAudit ? "info" : (created ? "info" : "warning"),
@@ -748,23 +748,29 @@ async function executeGameAutomationV3Job({ env, job, internalGameId, now }) {
   if (jobType === "lineup_fetch" || jobType === "lineup_finalize") {
     const lineupIdentity = createV3LineupIdentity(target);
     if (!lineupIdentity) throw createV3Error("NPB_IDENTITY_UNRESOLVED", "NPB試合識別情報が日程DBにありません。");
-    const result = await captureOfficialLineup(env, internalGameId, now, {
-      phase: jobType === "lineup_finalize" ? "final" : "provisional",
-      internalGameId,
-      target: {
-        ...target,
-        game: {
-          gameId: internalGameId,
-          internalGameId,
-          gameCode: target.gameCode,
-          date: target.game_date,
-          homeTeam: target.home_team,
-          awayTeam: target.away_team,
-          status: target.game_status
-        }
-      },
-      identityOverride: lineupIdentity
-    });
+    let result;
+    try {
+      result = await captureOfficialLineup(env, internalGameId, now, {
+        phase: jobType === "lineup_finalize" ? "final" : "provisional",
+        internalGameId,
+        target: {
+          ...target,
+          game: {
+            gameId: internalGameId,
+            internalGameId,
+            gameCode: target.gameCode,
+            date: target.game_date,
+            homeTeam: target.home_team,
+            awayTeam: target.away_team,
+            status: target.game_status
+          }
+        },
+        identityOverride: lineupIdentity
+      });
+    } catch (error) {
+      if (jobType === "lineup_fetch") throw normalizeV3LineupFetchError(error, now);
+      throw error;
+    }
     if (jobType === "lineup_fetch") return { status: result.status, stateBefore, stateAfter: stateBefore };
     return { status: result.status, stateBefore, stateAfter: "lineup_ready" };
   }
@@ -815,6 +821,24 @@ async function executeGameAutomationV3Job({ env, job, internalGameId, now }) {
     return { status: result.status, stateBefore, stateAfter: "published" };
   }
   throw createV3Error("V3_JOB_TYPE_UNSUPPORTED", "V3自動処理で未対応のジョブです。");
+}
+
+function normalizeV3LineupFetchError(error, now = new Date()) {
+  const rawCode = String(error?.code || "LINEUP_FETCH_FAILED").trim().toUpperCase();
+  const validation = error?.validation || {};
+  const unannounced = ["LINEUP_NOT_ANNOUNCED", "LINEUP_NOT_PUBLISHED"].includes(rawCode)
+    || (rawCode === "LINEUP_INVALID_PLAYER_COUNT" && Number(validation.parsedCount || 0) === 0);
+  if (!unannounced) return error;
+  const normalized = createV3Error("LINEUP_NOT_ANNOUNCED", "NPB公式でスタメンがまだ発表されていません。", {
+    retryable: true,
+    retryAt: new Date(new Date(now).getTime() + 10 * 60 * 1000),
+    reasonCode: "LINEUP_DATA_NOT_ANNOUNCED",
+    originalErrorCode: rawCode,
+    parseStage: error?.parseStage || validation.parseStage || "official_lineup"
+  });
+  normalized.validation = validation;
+  normalized.upstreamUrl = error?.upstreamUrl || null;
+  return normalized;
 }
 
 export async function runScheduledGameAutomation(env, now) {
@@ -2250,9 +2274,12 @@ async function recordWorkflowJobEvent(db, { eventType, status, internalGameId, j
       workflow_job_recovered: "停止していた試合進行ジョブを再評価待ちに戻しました。",
       probable_starter_job_plan_observed: "予告先発jobのslot競合を検出しました。",
       probable_starter_job_claimed: "予告先発jobを実行開始しました。",
-      roster_job_created: "ロースターjobを作成しました。",
-      roster_job_plan_observed: "ロースターjobのslot状態を確認しました。",
-      roster_job_claimed: "ロースターjobを実行開始しました。",
+       roster_job_created: "ロースターjobを作成しました。",
+       roster_job_plan_observed: "ロースターjobのslot状態を確認しました。",
+       roster_job_claimed: "ロースターjobを実行開始しました。",
+       v3_job_created: "V3自動処理jobを作成しました。",
+       v3_job_plan_observed: "V3自動処理jobのslot状態を確認しました。",
+       v3_job_claimed: "V3自動処理jobを実行開始しました。",
       scoring_workflow_reconciled: "保存済みの採点結果に試合進行状態を整合しました。",
       publication_workflow_reconciled: "保存済みの公開結果へ試合進行状態を整合しました。",
       workflow_internal_id_unresolved: "内部試合IDを解決できないためジョブを作成しませんでした。"
@@ -4659,7 +4686,27 @@ async function handleAdminV3JobDetail(env, cors, context, jobId) {
     `SELECT job_id, job_type, state_before, state_after, attempt_count, failure_code, occurred_at, source
        FROM game_automation_v3_audit WHERE internal_game_id = ?1 AND job_id = ?2 ORDER BY occurred_at DESC LIMIT 20`
   ).bind(context.id, Number(jobId)).all();
-  return jsonResponse({ ok: true, internalGameId: context.id, job, audits: audits.results || [] }, 200, cors);
+  let pipelineEvents = [];
+  try {
+    const events = await env.AUTH_DB.prepare(
+      `SELECT event_type, status, error_code, metadata, occurred_at
+         FROM game_workflow_logs
+        WHERE game_id = ?1
+        ORDER BY occurred_at DESC LIMIT 50`
+    ).bind(context.id).all();
+    pipelineEvents = (events.results || []).map((event) => ({
+      eventType: event.event_type,
+      status: event.status,
+      errorCode: event.error_code || null,
+      occurredAt: event.occurred_at || null,
+      metadata: parseWorkflowLogMetadata(event.metadata)
+    })).filter((event) => String(event.metadata?.jobId || "") === String(jobId));
+  } catch (error) {
+    console.error(`[ADMIN_V3_JOB_DETAIL] internalGameId=${context.id} jobId=${jobId} stage=pipeline_event_read failureCode=${error?.code || "V3_PIPELINE_EVENT_READ_FAILED"}`);
+  }
+  const latestPipelineEvent = pipelineEvents[0] || null;
+  const pipelineDiagnostics = latestPipelineEvent?.metadata?.planningDiagnostics || null;
+  return jsonResponse({ ok: true, internalGameId: context.id, job, audits: audits.results || [], pipelineEvents, pipelineDiagnostics }, 200, cors);
 }
 
 async function requireV3JobReason(request) {

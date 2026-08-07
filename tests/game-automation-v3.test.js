@@ -87,6 +87,20 @@ test("V3の状態機械は正常遷移だけを受け入れ、旧状態名を含
   assert.equal(v3.getV3AllowedTransitions("scheduled", "retrying"), false);
 });
 
+test("V3全job typeはstate gateから各plannerへ到達できる", () => {
+  const target = { ...game(), npbIdentityStatus: "resolved" };
+  assert.deepEqual(v3.V3_JOB_TYPES, [
+    "npb_identity_resolve", "prediction_close", "lineup_fetch", "lineup_finalize",
+    "score", "ranking_rebuild", "publish", "probable_starter_fetch", "roster_fetch"
+  ]);
+  assert.deepEqual(v3.getV3DuePlans(target, "scheduled", "2026-08-04T08:00:00.000Z").map((plan) => plan.jobType), ["prediction_close"]);
+  assert.deepEqual(v3.getV3DuePlans(target, "prediction_closed", "2026-08-04T08:20:00.000Z").map((plan) => plan.jobType), ["lineup_fetch"]);
+  assert.deepEqual(v3.getV3DuePlans(target, "prediction_closed", "2026-08-04T09:03:00.000Z").map((plan) => plan.jobType), ["lineup_finalize"]);
+  assert.deepEqual(v3.getV3DuePlans(target, "lineup_ready", "2026-08-04T09:03:00.000Z").map((plan) => plan.jobType), ["score"]);
+  assert.deepEqual(v3.getV3DuePlans(target, "scored", "2026-08-04T09:03:00.000Z").map((plan) => plan.jobType), ["ranking_rebuild"]);
+  assert.deepEqual(v3.getV3DuePlans(target, "ranked", "2026-08-04T09:11:00.000Z").map((plan) => plan.jobType), ["publish"]);
+});
+
 test("V3 job slot is unique and claim is atomic", async () => {
   const statements = [];
   const db = {
@@ -131,6 +145,42 @@ test("V3 runnerは同じDB行をprediction closeからpublishまで一度ずつ�
     assert.deepEqual(executed, ["roster_fetch", "probable_starter_fetch", "prediction_close", "lineup_fetch", "lineup_finalize", "score", "ranking_rebuild", "publish"]);
     assert.equal(database.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1").get(GAME_ID).state, "published");
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id = ?1").get(GAME_ID).count, 8);
+  } finally {
+    database.close();
+  }
+});
+
+test("lineup未発表の戻り値は成功完了にせず次slotのretry_waitへ戻す", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE games (internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+        home_team TEXT, away_team TEXT, npb_game_code TEXT, npb_identity_status TEXT,
+        game_status TEXT, is_active INTEGER, deleted_at TEXT);
+      CREATE TABLE game_automation_v3_state (internal_game_id TEXT PRIMARY KEY, state TEXT,
+        prediction_closed_at TEXT, lineup_finalized_at TEXT, scoring_revision_id TEXT,
+        ranked_at TEXT, published_at TEXT, excluded_at TEXT, failure_code TEXT,
+        failure_message TEXT, version INTEGER, created_at TEXT, updated_at TEXT);
+      CREATE TABLE game_jobs_v3 (id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT,
+        job_type TEXT, scheduled_at TEXT, scheduled_slot_at TEXT, status TEXT, attempt_count INTEGER,
+        max_attempts INTEGER, next_retry_at TEXT, claimed_at TEXT, claim_token TEXT,
+        lease_expires_at TEXT, completed_at TEXT, failure_code TEXT, failure_message TEXT,
+        created_at TEXT, updated_at TEXT, UNIQUE(internal_game_id, job_type, scheduled_slot_at));
+      INSERT INTO games VALUES ('${GAME_ID}', '2026-08-04', '${START}', 'hawks', 'fighters', 'h-f-15', 'resolved', 'scheduled', 1, NULL);
+      INSERT INTO game_automation_v3_state VALUES ('${GAME_ID}', 'prediction_closed', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, '${START}', '${START}');
+    `);
+    const env = { AUTH_DB: d1(database), ENABLE_GAME_AUTOMATION_V3: "true" };
+    const at = new Date("2026-08-04T08:20:00.000Z");
+    await v3.runGameAutomationV3(env, at, {
+      executeJob: async () => ({ status: "retry_wait", failureCode: "LINEUP_NOT_ANNOUNCED", failureMessage: "未発表" })
+    });
+    const row = database.prepare(
+      "SELECT job_type, status, failure_code, attempt_count FROM game_jobs_v3 WHERE job_type = 'lineup_fetch'"
+    ).get();
+    assert.equal(row.job_type, "lineup_fetch");
+    assert.equal(row.status, "retry_wait");
+    assert.equal(row.failure_code, "LINEUP_NOT_ANNOUNCED");
+    assert.equal(row.attempt_count, 1);
   } finally {
     database.close();
   }

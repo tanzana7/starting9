@@ -816,26 +816,47 @@ function isV3NpbIdentityResolved(game) {
   return ["resolved", "manually_overridden"].includes(String(game?.npbIdentityStatus || game?.npb_identity_status || "").trim());
 }
 
-export function getV3DuePlan(game, state, now = new Date()) {
-  if (!isV3GameEligible(game)) return null;
+export const V3_JOB_STATE_GATES = Object.freeze({
+  prediction_close: ["scheduled"],
+  lineup_fetch: ["prediction_closed", "manual_action_required"],
+  lineup_finalize: ["prediction_closed", "manual_action_required"],
+  score: ["lineup_ready", "manual_action_required"],
+  ranking_rebuild: ["scored"],
+  publish: ["ranked"]
+});
+
+export function getV3DuePlans(game, state, now = new Date()) {
+  if (!isV3GameEligible(game)) return [];
   const schedule = deriveV3Schedule(game);
   const current = now instanceof Date ? now : new Date(now);
-  if (state === "scheduled" && current >= schedule.predictionDeadline) {
-    return { jobType: "prediction_close", scheduledSlotAt: schedule.predictionDeadline, scheduledAt: schedule.predictionDeadline };
+  if (Number.isNaN(current.getTime())) return [];
+  const plans = [];
+  if (V3_JOB_STATE_GATES.prediction_close.includes(String(state)) && current >= schedule.predictionDeadline) {
+    plans.push({ jobType: "prediction_close", scheduledSlotAt: schedule.predictionDeadline, scheduledAt: schedule.predictionDeadline });
   }
-  if (state === "prediction_closed" && current >= schedule.finalLineupAt && isV3NpbIdentityResolved(game)) {
-    return { jobType: "lineup_finalize", scheduledSlotAt: schedule.finalLineupAt, scheduledAt: schedule.finalLineupAt };
-  }
-  if (state === "prediction_closed" && current >= schedule.lineupPollingStart && isV3NpbIdentityResolved(game)) {
+  const lineupState = V3_JOB_STATE_GATES.lineup_fetch.includes(String(state));
+  if (lineupState && current >= schedule.lineupPollingStart && current < schedule.finalLineupAt && isV3NpbIdentityResolved(game)) {
     const slot = getV3LineupSlot(schedule.startAt, current);
-    return slot ? { jobType: "lineup_fetch", scheduledSlotAt: slot, scheduledAt: slot } : null;
+    if (slot) plans.push({ jobType: "lineup_fetch", scheduledSlotAt: slot, scheduledAt: slot });
   }
-  if (state === "lineup_ready") return { jobType: "score", scheduledSlotAt: schedule.finalLineupAt, scheduledAt: schedule.finalLineupAt };
-  if (state === "scored") return { jobType: "ranking_rebuild", scheduledSlotAt: schedule.publicationAt, scheduledAt: schedule.publicationAt };
-  if (state === "ranked" && current >= schedule.publicationAt) {
-    return { jobType: "publish", scheduledSlotAt: schedule.publicationAt, scheduledAt: schedule.publicationAt };
+  if (V3_JOB_STATE_GATES.lineup_finalize.includes(String(state)) && current >= schedule.finalLineupAt && isV3NpbIdentityResolved(game)) {
+    plans.push({ jobType: "lineup_finalize", scheduledSlotAt: schedule.finalLineupAt, scheduledAt: schedule.finalLineupAt });
   }
-  return null;
+  if (V3_JOB_STATE_GATES.score.includes(String(state)) && current >= schedule.finalLineupAt) {
+    plans.push({ jobType: "score", scheduledSlotAt: schedule.finalLineupAt, scheduledAt: schedule.finalLineupAt });
+  }
+  if (V3_JOB_STATE_GATES.ranking_rebuild.includes(String(state))) {
+    plans.push({ jobType: "ranking_rebuild", scheduledSlotAt: schedule.publicationAt, scheduledAt: schedule.publicationAt });
+  }
+  if (V3_JOB_STATE_GATES.publish.includes(String(state)) && current >= schedule.publicationAt) {
+    plans.push({ jobType: "publish", scheduledSlotAt: schedule.publicationAt, scheduledAt: schedule.publicationAt });
+  }
+  return plans;
+}
+
+export function getV3DuePlan(game, state, now = new Date()) {
+  const plans = getV3DuePlans(game, state, now);
+  return Array.isArray(plans) ? plans[0] || null : null;
 }
 
 export function createV3Error(code, message, details = {}) {
@@ -1021,6 +1042,21 @@ export async function listDueV3Jobs(db, now = new Date(), limit = 50) {
   return result.results || [];
 }
 
+function assertV3AuxiliaryJobResult(job, result, now) {
+  const jobType = String(job?.job_type || "");
+  if (!["roster_fetch", "lineup_fetch"].includes(jobType)) return;
+  const status = String(result?.status || "").trim().toLowerCase();
+  const retryableStatuses = new Set(["pending", "retry_wait", "unannounced", "not_announced", "error", "failed"]);
+  if (!retryableStatuses.has(status)) return;
+  const error = createV3Error(
+    String(result?.failureCode || result?.reasonCode || `${jobType.toUpperCase()}_RETRYABLE`),
+    String(result?.failureMessage || result?.message || `${jobType}の次回slotで再試行します。`),
+    { retryable: true }
+  );
+  error.retryAt = result?.nextRetryAt || new Date(new Date(now).getTime() + 10 * 60 * 1000);
+  throw error;
+}
+
 async function hasOpenV3Job(db, internalGameId, jobType) {
   const row = await db.prepare(
     `SELECT id FROM game_jobs_v3
@@ -1031,6 +1067,109 @@ async function hasOpenV3Job(db, internalGameId, jobType) {
   return Boolean(row?.id);
 }
 
+async function readV3StateForPlanning(db, internalGameId) {
+  try {
+    return await db.prepare(
+      "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
+    ).bind(internalGameId).first();
+  } catch {
+    return null;
+  }
+}
+
+function createV3PlanningDiagnostic(game, plan, state) {
+  return {
+    internalGameId: game?.internalGameId || null,
+    jobType: plan?.jobType || null,
+    state: state || "scheduled",
+    scheduledSlotAt: plan?.scheduledSlotAt?.toISOString?.() || null,
+    plannerReached: true,
+    insertAttempted: false,
+    insertedRowCount: 0,
+    claimResult: "not_attempted",
+    executorReached: false,
+    persistenceResult: "not_attempted",
+    reasonCode: null,
+    actualJobExists: false,
+    existingJobId: null,
+    existingStatus: null
+  };
+}
+
+export async function planV3MainJobs(db, games = [], now = new Date()) {
+  const planned = [];
+  const errors = [];
+  const diagnostics = [];
+  for (const game of Array.isArray(games) ? games : []) {
+    if (!isV3GameEligible(game)) continue;
+    try {
+      const stateRow = await readV3StateForPlanning(db, game.internalGameId);
+      const state = String(stateRow?.state || game.workflowState || "scheduled");
+      const plans = getV3DuePlans(game, state, now);
+      for (const plan of plans) {
+        const diagnostic = createV3PlanningDiagnostic(game, plan, state);
+        const result = await createV3Job(db, { internalGameId: game.internalGameId, ...plan });
+        diagnostic.insertAttempted = true;
+        diagnostic.insertedRowCount = result.created ? 1 : 0;
+        diagnostic.actualJobExists = Boolean(result.job?.id);
+        diagnostic.existingJobId = result.created ? null : result.job?.id || null;
+        diagnostic.existingStatus = result.created ? "pending" : result.job?.status || null;
+        diagnostic.reasonCode = result.created ? "V3_JOB_CREATED" : "V3_JOB_ALREADY_EXISTS";
+        const entry = {
+          game,
+          plan,
+          ...result,
+          reasonCode: diagnostic.reasonCode,
+          insertedRowCount: diagnostic.insertedRowCount,
+          existingJobId: diagnostic.existingJobId,
+          existingScheduledSlotAt: result.created ? null : result.job?.scheduled_slot_at || null,
+          existingStatus: diagnostic.existingStatus,
+          diagnostic
+        };
+        planned.push(entry);
+        diagnostics.push({ ...diagnostic });
+      }
+    } catch (error) {
+      errors.push({ game, plan: null, error });
+    }
+  }
+  return {
+    created: planned.filter((entry) => entry.created).length,
+    planned,
+    errors,
+    diagnostics
+  };
+}
+
+export async function planV3IdentityJobs(db, games = [], now = new Date()) {
+  const planned = [];
+  const errors = [];
+  const diagnostics = [];
+  for (const game of Array.isArray(games) ? games : []) {
+    try {
+      const stateRow = await readV3StateForPlanning(db, game.internalGameId);
+      const state = String(stateRow?.state || game.workflowState || "scheduled");
+      const plans = getV3IdentityResolvePlans(game, now, state);
+      const plan = plans[plans.length - 1] || null;
+      if (!plan) continue;
+      const diagnostic = createV3PlanningDiagnostic(game, plan, state);
+      const result = await createV3Job(db, { internalGameId: game.internalGameId, ...plan });
+      diagnostic.insertAttempted = true;
+      diagnostic.insertedRowCount = result.created ? 1 : 0;
+      diagnostic.actualJobExists = Boolean(result.job?.id);
+      diagnostic.existingJobId = result.created ? null : result.job?.id || null;
+      diagnostic.existingStatus = result.created ? "pending" : result.job?.status || null;
+      diagnostic.reasonCode = result.created ? "V3_JOB_CREATED" : "V3_JOB_ALREADY_EXISTS";
+      const entry = { game, plan, ...result, reasonCode: diagnostic.reasonCode, insertedRowCount: diagnostic.insertedRowCount, existingJobId: diagnostic.existingJobId, existingStatus: diagnostic.existingStatus, diagnostic };
+      planned.push(entry);
+      diagnostics.push({ ...diagnostic });
+    } catch (error) {
+      errors.push({ game, plan: null, error });
+    }
+  }
+  return { created: planned.filter((entry) => entry.created).length, planned, errors, diagnostics };
+}
+
 export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null } = {}) {
   if (!isGameAutomationV3Enabled(env)) return { enabled: false, processed: 0, created: 0 };
   const schema = await getV3SchemaState(env.AUTH_DB);
@@ -1039,6 +1178,17 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
   let created = 0;
   let processed = 0;
   let failed = 0;
+  for (const game of games) {
+    try {
+      const stateRow = await ensureV3State(env.AUTH_DB, game.internalGameId, now);
+      if (!isV3GameEligible(game) && stateRow.state !== "excluded") {
+        await transitionV3State(env.AUTH_DB, { internalGameId: game.internalGameId, from: stateRow.state, to: "excluded", now });
+      }
+    } catch (error) {
+      failed += 1;
+      if (onError) await onError(error, { game, stage: "state_prepare" });
+    }
+  }
   const probablePlan = await planV3ProbableStarterJobs(env.AUTH_DB, games, now);
   created += probablePlan.created;
   if (onPlan) {
@@ -1073,30 +1223,37 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     failed += 1;
     if (onError) await onError(entry.error, { game: entry.game, stage: "roster_plan" });
   }
-  for (const game of games) {
-    try {
-      const stateRow = await ensureV3State(env.AUTH_DB, game.internalGameId, now);
-      if (!isV3GameEligible(game)) {
-        if (stateRow.state !== "excluded") {
-          await transitionV3State(env.AUTH_DB, { internalGameId: game.internalGameId, from: stateRow.state, to: "excluded", now });
-        }
-        continue;
+  const identityPlan = await planV3IdentityJobs(env.AUTH_DB, games, now);
+  created += identityPlan.created;
+  if (onPlan) {
+    for (const entry of identityPlan.planned) {
+      try {
+        await onPlan({ ...entry, stage: "identity_plan", now });
+      } catch (error) {
+        failed += 1;
+        if (onError) await onError(error, { game: entry.game, plan: entry.plan, stage: "identity_plan_audit" });
       }
-      const identityPlans = getV3IdentityResolvePlans(game, now, stateRow.state);
-      const identityPlan = identityPlans[identityPlans.length - 1] || null;
-      if (identityPlan && !(await hasOpenV3Job(env.AUTH_DB, game.internalGameId, "npb_identity_resolve"))) {
-        const result = await createV3Job(env.AUTH_DB, { internalGameId: game.internalGameId, ...identityPlan });
-        if (result.created) created += 1;
-      }
-      const plan = getV3DuePlan(game, stateRow.state, now);
-      if (plan) {
-        const result = await createV3Job(env.AUTH_DB, { internalGameId: game.internalGameId, ...plan });
-        if (result.created) created += 1;
-      }
-    } catch (error) {
-      failed += 1;
-      if (onError) await onError(error, { game, stage: "plan" });
     }
+  }
+  for (const entry of identityPlan.errors) {
+    failed += 1;
+    if (onError) await onError(entry.error, { game: entry.game, stage: "identity_plan" });
+  }
+  const mainPlan = await planV3MainJobs(env.AUTH_DB, games, now);
+  created += mainPlan.created;
+  if (onPlan) {
+    for (const entry of mainPlan.planned) {
+      try {
+        await onPlan({ ...entry, stage: "main_plan", now });
+      } catch (error) {
+        failed += 1;
+        if (onError) await onError(error, { game: entry.game, plan: entry.plan, stage: "main_plan_audit" });
+      }
+    }
+  }
+  for (const entry of mainPlan.errors) {
+    failed += 1;
+    if (onError) await onError(entry.error, { game: entry.game, stage: "main_plan" });
   }
   const due = await listDueV3Jobs(env.AUTH_DB, now);
   for (const job of due) {
@@ -1133,6 +1290,7 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     const executionNow = new Date(monotonicV3JobTimestamp(now, claimed.created_at, claimed.claimed_at));
     try {
       const result = await executeJob({ env, job: claimed, internalGameId: claimed.internal_game_id, now: executionNow });
+      assertV3AuxiliaryJobResult(claimed, result, executionNow);
       await completeV3Job(env.AUTH_DB, {
         jobId: claimed.id,
         claimToken: claimed.claim_token,
@@ -1189,6 +1347,8 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     processed,
     failed,
     probablePlan,
-    rosterPlan
+    rosterPlan,
+    identityPlan,
+    mainPlan
   };
 }

@@ -293,7 +293,10 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
       }
       const hasHomePitcher = Boolean(String(probableRow?.home_pitcher_name || "").trim());
       const hasAwayPitcher = Boolean(String(probableRow?.away_pitcher_name || "").trim());
-      if (hasHomePitcher && hasAwayPitcher) continue;
+      const dataStatusAnnounced = String(probableRow?.status || "") === "announced"
+        && hasHomePitcher
+        && hasAwayPitcher;
+      if (dataStatusAnnounced) continue;
       const openJob = await db.prepare(
         `SELECT id, status, scheduled_slot_at
            FROM game_jobs_v3
@@ -493,8 +496,16 @@ export async function createV3Job(db, { internalGameId, jobType, scheduledSlotAt
   return { created: Number(result?.meta?.changes || 0) === 1, job: row, source };
 }
 
+function monotonicV3JobTimestamp(requestedAt, ...minimumValues) {
+  const requested = requestedAt instanceof Date ? requestedAt : new Date(requestedAt);
+  const values = [requested.getTime(), ...minimumValues.map((value) => new Date(value || "").getTime())]
+    .filter((value) => Number.isFinite(value));
+  return new Date(Math.max(...values)).toISOString();
+}
+
 export async function claimV3Job(db, { jobId, now = new Date(), leaseMilliseconds = 5 * 60 * 1000 } = {}) {
-  const timestamp = (now instanceof Date ? now : new Date(now)).toISOString();
+  const current = await db.prepare("SELECT created_at FROM game_jobs_v3 WHERE id = ?1 LIMIT 1").bind(Number(jobId)).first();
+  const timestamp = monotonicV3JobTimestamp(now, current?.created_at);
   const leaseExpiresAt = new Date(new Date(timestamp).getTime() + leaseMilliseconds).toISOString();
   const claimToken = `${timestamp}:${Math.random().toString(36).slice(2)}`;
   const result = await db.prepare(
@@ -513,7 +524,8 @@ export async function claimV3Job(db, { jobId, now = new Date(), leaseMillisecond
 }
 
 export async function completeV3Job(db, { jobId, claimToken, now = new Date(), failureCode = null, failureMessage = null } = {}) {
-  const timestamp = (now instanceof Date ? now : new Date(now)).toISOString();
+  const current = await db.prepare("SELECT created_at, claimed_at FROM game_jobs_v3 WHERE id = ?1 LIMIT 1").bind(Number(jobId)).first();
+  const timestamp = monotonicV3JobTimestamp(now, current?.created_at, current?.claimed_at);
   const result = await db.prepare(
     `UPDATE game_jobs_v3
         SET status = 'completed', completed_at = ?1, lease_expires_at = NULL,
@@ -524,7 +536,8 @@ export async function completeV3Job(db, { jobId, claimToken, now = new Date(), f
 }
 
 export async function retryV3Job(db, { jobId, claimToken, attemptCount, maxAttempts, now = new Date(), errorCode, errorMessage, retryAt } = {}) {
-  const timestamp = (now instanceof Date ? now : new Date(now)).toISOString();
+  const current = await db.prepare("SELECT created_at, claimed_at FROM game_jobs_v3 WHERE id = ?1 LIMIT 1").bind(Number(jobId)).first();
+  const timestamp = monotonicV3JobTimestamp(now, current?.created_at, current?.claimed_at);
   const terminal = Number(attemptCount) >= Number(maxAttempts);
   const retry = retryAt ? new Date(retryAt).toISOString() : null;
   const result = await db.prepare(
@@ -603,12 +616,13 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     const claimed = await claimV3Job(env.AUTH_DB, { jobId: job.id, now });
     if (!claimed) continue;
     processed += 1;
+    const executionNow = new Date(monotonicV3JobTimestamp(now, claimed.created_at, claimed.claimed_at));
     try {
-      const result = await executeJob({ env, job: claimed, internalGameId: claimed.internal_game_id, now });
+      const result = await executeJob({ env, job: claimed, internalGameId: claimed.internal_game_id, now: executionNow });
       await completeV3Job(env.AUTH_DB, {
         jobId: claimed.id,
         claimToken: claimed.claim_token,
-        now,
+        now: executionNow,
         failureCode: result?.failureCode || null,
         failureMessage: result?.failureMessage || null
       });
@@ -617,12 +631,13 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
           internalGameId: claimed.internal_game_id,
           from: result.stateBefore,
           to: result.stateAfter,
-          now,
+          now: executionNow,
           failureCode: null,
           failureMessage: null
         });
       }
-      if (onSuccess) await onSuccess({ job: claimed, result, now });
+      const completedJob = await env.AUTH_DB.prepare("SELECT * FROM game_jobs_v3 WHERE id = ?1 LIMIT 1").bind(Number(claimed.id)).first();
+      if (onSuccess) await onSuccess({ job: completedJob || { ...claimed, status: "completed", completed_at: executionNow.toISOString(), updated_at: executionNow.toISOString() }, claimToken: claimed.claim_token, result, now: executionNow });
       if (claimed.job_type === "npb_identity_resolve" && result?.identityResolved) {
         const followupGame = games.find((game) => game.internalGameId === claimed.internal_game_id);
         if (followupGame) {
@@ -643,12 +658,13 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
         claimToken: claimed.claim_token,
         attemptCount: claimed.attempt_count,
         maxAttempts: claimed.max_attempts,
-        now,
+        now: executionNow,
         errorCode: error?.code || "V3_JOB_FAILED",
         errorMessage: String(error?.message || "V3ジョブに失敗しました。").slice(0, 240),
-        retryAt: error?.retryAt || new Date(new Date(now).getTime() + 10 * 60 * 1000)
+        retryAt: error?.retryAt || new Date(executionNow.getTime() + 10 * 60 * 1000)
       });
-      if (onError) await onError(error, { job: claimed, stage: "execute" });
+      const retryJob = await env.AUTH_DB.prepare("SELECT * FROM game_jobs_v3 WHERE id = ?1 LIMIT 1").bind(Number(claimed.id)).first();
+      if (onError) await onError(error, { job: retryJob || claimed, claimToken: claimed.claim_token, stage: "execute", stateBefore: claimed.status });
     }
   }
   return { enabled: true, schemaReady: true, gameCount: games.length, created, processed, failed };

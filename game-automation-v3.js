@@ -227,6 +227,26 @@ export function getV3ProbableStarterSlot(game) {
   return jstV3Slot(previousGameDate, 18, 0);
 }
 
+export function getV3ProbableStarterSlots(game) {
+  const gameDate = String(game?.gameDate || game?.game_date || "").slice(0, 10);
+  const startAt = new Date(game?.startAt || game?.start_at || game?.startTime || game?.start_time || "");
+  if (!gameDate || Number.isNaN(startAt.getTime())) return [];
+  const slots = [
+    getV3ProbableStarterSlot(game),
+    jstV3Slot(gameDate, 9, 0),
+    jstV3Slot(gameDate, 12, 0),
+    jstV3Slot(gameDate, 15, 0),
+    new Date(startAt.getTime() - 120 * 60 * 1000),
+    new Date(startAt.getTime() - 60 * 60 * 1000),
+    new Date(startAt.getTime() - 30 * 60 * 1000)
+  ];
+  return [...new Map(slots
+    .filter((slot) => slot && !Number.isNaN(slot.getTime()) && slot.getTime() <= startAt.getTime())
+    .map((slot) => [slot.toISOString(), slot]))
+    .values()]
+    .sort((left, right) => left.getTime() - right.getTime());
+}
+
 export function getV3ProbableStarterPlan(game, now = new Date()) {
   if (!isV3GameEligible(game)) return null;
   const current = now instanceof Date ? now : new Date(now);
@@ -240,9 +260,15 @@ export function getV3ProbableStarterPlan(game, now = new Date()) {
 export async function planV3ProbableStarterJobs(db, games = [], now = new Date()) {
   const planned = [];
   const errors = [];
+  const current = now instanceof Date ? now : new Date(now);
   for (const game of Array.isArray(games) ? games : []) {
-    const plan = getV3ProbableStarterPlan(game, now);
-    if (!plan) continue;
+    if (!isV3GameEligible(game) || Number.isNaN(current.getTime())) continue;
+    const startAt = new Date(game?.startAt || game?.start_at || game?.startTime || game?.start_time || "");
+    if (Number.isNaN(startAt.getTime()) || startAt.getTime() <= current.getTime()) continue;
+    const slots = getV3ProbableStarterSlots(game).filter((slot) => slot.getTime() <= current.getTime());
+    const latestDueSlot = slots[slots.length - 1] || null;
+    if (!latestDueSlot) continue;
+    const plan = { jobType: "probable_starter_fetch", scheduledSlotAt: latestDueSlot, scheduledAt: latestDueSlot };
     try {
       let stateRow = null;
       try {
@@ -253,6 +279,39 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
         // V3 state行が未作成、または旧テストadapterの場合も対象抽出は継続します。
       }
       if (["excluded", "published"].includes(String(stateRow?.state || game?.workflowState || ""))) continue;
+      let probableRow = null;
+      try {
+        probableRow = await db.prepare(
+          `SELECT status, home_pitcher_name, away_pitcher_name
+             FROM probable_starters
+            WHERE internal_game_id = ?1
+            ORDER BY COALESCE(fetched_at, updated_at) DESC
+            LIMIT 1`
+        ).bind(game.internalGameId).first();
+      } catch {
+        // 旧adapterまたは未適用の補助スキーマでも、V3 job計画自体は継続します。
+      }
+      const hasHomePitcher = Boolean(String(probableRow?.home_pitcher_name || "").trim());
+      const hasAwayPitcher = Boolean(String(probableRow?.away_pitcher_name || "").trim());
+      if (hasHomePitcher && hasAwayPitcher) continue;
+      const openJob = await db.prepare(
+        `SELECT id, status, scheduled_slot_at
+           FROM game_jobs_v3
+          WHERE internal_game_id = ?1
+            AND job_type = ?2
+            AND status IN ('pending', 'claimed', 'retry_wait')
+          LIMIT 1`
+      ).bind(game.internalGameId, plan.jobType).first();
+      if (openJob) continue;
+      const existingJob = await db.prepare(
+        `SELECT id, status, scheduled_slot_at
+           FROM game_jobs_v3
+          WHERE internal_game_id = ?1
+            AND job_type = ?2
+            AND scheduled_slot_at = ?3
+          LIMIT 1`
+      ).bind(game.internalGameId, plan.jobType, latestDueSlot.toISOString()).first();
+      if (existingJob) continue;
       const result = await createV3Job(db, { internalGameId: game.internalGameId, ...plan });
       planned.push({ game, plan, ...result });
     } catch (error) {

@@ -77,7 +77,8 @@ import {
   createV3Job,
   deriveV3Schedule,
   deriveV3DisplaySchedule,
-  getV3NextAction
+  getV3NextAction,
+  getV3ProbableStarterSlots
 } from "./game-automation-v3.js";
 
 const SESSION_COOKIE_NAME = "s9_session";
@@ -659,7 +660,9 @@ async function executeGameAutomationV3Job({ env, job, internalGameId, now }) {
       gameId: internalGameId,
       internalGameId,
       startAt: new Date(target.startAt),
-      game: { homeTeam: target.home_team, awayTeam: target.away_team },
+      date: target.game_date,
+      homeTeam: target.home_team,
+      awayTeam: target.away_team,
       nextGameDate: target.game_date
     }, now, { source: "v3" });
     return { status: result.status, stateBefore, stateAfter: stateBefore };
@@ -967,6 +970,13 @@ export function serializeProbableStarterRow(row) {
   const homePitcherId = row.home_pitcher_id || null;
   const awayPitcherId = row.away_pitcher_id || null;
   const partial = Boolean(homePitcherName) !== Boolean(awayPitcherName);
+  const dataStatus = status === "error"
+    ? "error"
+    : partial
+      ? "partial"
+      : homePitcherName && awayPitcherName
+        ? "announced"
+        : "unannounced";
   return {
     gameId: String(row.game_id || ""),
     internalGameId: String(row.internal_game_id || ""),
@@ -976,7 +986,8 @@ export function serializeProbableStarterRow(row) {
     homeProbableStarter: { name: homePitcherName, playerId: homePitcherId },
     awayProbableStarter: { name: awayPitcherName, playerId: awayPitcherId },
     partial,
-    dataStatus: partial ? "partial" : (homePitcherName && awayPitcherName ? "complete" : "unannounced"),
+    dataStatus,
+    fullyAnnounced: dataStatus === "announced",
     fetchedAt: row.fetched_at || null,
     announcedAt: row.announced_at || null,
     nextCheckAt: row.next_check_at || null,
@@ -984,7 +995,7 @@ export function serializeProbableStarterRow(row) {
     source: row.source || (row.source_url ? "npb" : ""),
     errorCode,
     lastFailureCode: errorCode,
-    isConfirmed: status === "announced",
+    isConfirmed: dataStatus === "announced",
     updatedAt: row.updated_at || null
   };
 }
@@ -1158,8 +1169,14 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
     const fullyAnnounced = Boolean(homePitcherName && awayPitcherName);
     const announced = hasAnyPitcher;
     const normalizedFetchedAt = String(payload.fetchedAt || fetchedAt);
-    const announcedAt = announced ? (previous?.announced_at || normalizedFetchedAt) : null;
-    const nextCheckAt = announced ? null : new Date(current.getTime() + PROBABLE_STARTER_RETRY_INTERVAL_MS).toISOString();
+    const announcedAt = fullyAnnounced ? (previous?.announced_at || normalizedFetchedAt) : (previous?.announced_at || null);
+    const nextFixedSlot = source === "v3"
+      ? getV3ProbableStarterSlots({ gameDate: target?.nextGameDate, startAt: target?.startAt })
+        .find((slot) => slot.getTime() > current.getTime())
+      : null;
+    const nextCheckAt = announced
+      ? null
+      : nextFixedSlot?.toISOString() || new Date(current.getTime() + PROBABLE_STARTER_RETRY_INTERVAL_MS).toISOString();
     const status = announced ? "announced" : "unannounced";
       await saveProbableStarterRow(env.AUTH_DB, {
         gameId,
@@ -3510,7 +3527,22 @@ async function handleAdminV3Overview(request, env, cors) {
       : { fetch: summarizeJob(["lineup_fetch", "final_lineup_fetch"]), finalize: summarizeJob(["lineup_finalize"]), status: summarizeJob(["lineup_fetch", "final_lineup_fetch", "lineup_finalize"]).status };
     const scoringSummary = jobs.errorCode ? { status: "error", errorCode: jobs.errorCode } : summarizeJob(["score", "scoring"]);
     const publicationSummary = jobs.errorCode ? { status: "error", errorCode: jobs.errorCode } : summarizeJob(["publish", "publication"]);
-    const schedule = deriveV3DisplaySchedule(game);
+    const scheduleBase = deriveV3DisplaySchedule(game);
+    const probableSlots = getV3ProbableStarterSlots(game).map((slot) => slot.toISOString());
+    const probableJobSlots = new Set(jobRows
+      .filter((job) => String(job.job_type || "") === "probable_starter_fetch")
+      .map((job) => String(job.scheduled_slot_at || "")));
+    const missingDueProbableSlot = probableSlots
+      .filter((slot) => new Date(slot).getTime() <= overviewNow.getTime() && !probableJobSlots.has(slot))
+      .pop() || "";
+    const nextProbableSlot = missingDueProbableSlot
+      || probableSlots.find((slot) => new Date(slot).getTime() > overviewNow.getTime() && !probableJobSlots.has(slot))
+      || "";
+    const schedule = {
+      ...scheduleBase,
+      probableStarterSlots: probableSlots,
+      probableStarterNextAt: serializedProbableStarter?.dataStatus === "announced" ? null : nextProbableSlot || null
+    };
     const nextAction = getV3NextAction({ schedule, state: resolvedState.state, jobs: jobRows, now: overviewNow });
     rows.push({
       ...game,

@@ -128,9 +128,66 @@ test("V3 runnerは同じDB行をprediction closeからpublishまで一度ずつ�
     for (const at of ["2026-08-04T08:00:00.000Z", "2026-08-04T08:10:00.000Z", "2026-08-04T09:02:00.000Z", "2026-08-04T09:03:00.000Z", "2026-08-04T09:10:00.000Z", "2026-08-04T09:11:00.000Z"]) {
       await v3.runGameAutomationV3(env, new Date(at), { executeJob });
     }
-    assert.deepEqual(executed, ["prediction_close", "lineup_fetch", "lineup_finalize", "score", "ranking_rebuild", "publish"]);
+    assert.deepEqual(executed, ["roster_fetch", "probable_starter_fetch", "prediction_close", "lineup_fetch", "lineup_finalize", "score", "ranking_rebuild", "publish"]);
     assert.equal(database.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1").get(GAME_ID).state, "published");
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id = ?1").get(GAME_ID).count, 6);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id = ?1").get(GAME_ID).count, 8);
+  } finally {
+    database.close();
+  }
+});
+
+test("予告先発announcedでもロースターの期限到達slotは独立して1件だけ救済される", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE games (internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+        home_team TEXT, away_team TEXT, npb_game_code TEXT, npb_identity_status TEXT,
+        game_status TEXT, is_active INTEGER, deleted_at TEXT);
+      CREATE TABLE probable_starters (game_id TEXT PRIMARY KEY, internal_game_id TEXT,
+        status TEXT, data_status TEXT, error_code TEXT, home_pitcher_name TEXT,
+        away_pitcher_name TEXT, fetched_at TEXT, updated_at TEXT);
+      CREATE TABLE game_roster_snapshots (game_id TEXT PRIMARY KEY, internal_game_id TEXT,
+        status TEXT, player_count INTEGER, captured_at TEXT, updated_at TEXT);
+      CREATE TABLE game_automation_v3_state (internal_game_id TEXT PRIMARY KEY, state TEXT,
+        prediction_closed_at TEXT, lineup_finalized_at TEXT, scoring_revision_id TEXT,
+        ranked_at TEXT, published_at TEXT, excluded_at TEXT, failure_code TEXT,
+        failure_message TEXT, version INTEGER, created_at TEXT, updated_at TEXT);
+      CREATE TABLE game_jobs_v3 (id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT,
+        job_type TEXT, scheduled_at TEXT, scheduled_slot_at TEXT, status TEXT, attempt_count INTEGER,
+        max_attempts INTEGER, next_retry_at TEXT, claimed_at TEXT, claim_token TEXT,
+        lease_expires_at TEXT, completed_at TEXT, failure_code TEXT, failure_message TEXT,
+        created_at TEXT, updated_at TEXT, UNIQUE(internal_game_id, job_type, scheduled_slot_at));
+      INSERT INTO games VALUES ('${GAME_ID}', '2026-08-07', '2026-08-07T09:00:00.000Z',
+        'fighters', 'eagles', 'f-e-17', 'resolved', 'scheduled', 1, NULL);
+      INSERT INTO probable_starters VALUES ('${GAME_ID}', '${GAME_ID}', 'announced', 'announced', NULL,
+        '投手A', '投手B', '2026-08-07T03:00:00.000Z', '2026-08-07T03:00:00.000Z');
+    `);
+    const env = { AUTH_DB: d1(database), ENABLE_GAME_AUTOMATION_V3: "true" };
+    const executed = [];
+    const executeJob = async ({ job }) => {
+      executed.push(job.job_type);
+      return { status: "captured", stateBefore: "scheduled", stateAfter: "scheduled" };
+    };
+    const now = new Date("2026-08-07T07:50:00.000Z");
+    const first = await v3.runGameAutomationV3(env, now, { executeJob });
+    const second = await v3.runGameAutomationV3(env, now, { executeJob });
+    const rosterJobs = database.prepare(
+      "SELECT job_type, scheduled_slot_at, status, attempt_count FROM game_jobs_v3 WHERE internal_game_id = ?1 AND job_type = 'roster_fetch'"
+    ).all(GAME_ID);
+    assert.equal(first.rosterPlan.created, 1);
+    assert.equal(second.rosterPlan.created, 0);
+    assert.equal(rosterJobs.length, 1);
+    assert.equal(rosterJobs[0].job_type, "roster_fetch");
+    assert.equal(rosterJobs[0].scheduled_slot_at, "2026-08-07T07:10:00.000Z");
+    assert.equal(rosterJobs[0].status, "completed");
+    assert.equal(rosterJobs[0].attempt_count, 1);
+    assert.deepEqual(executed, ["roster_fetch"]);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE job_type = 'probable_starter_fetch'").get().count, 0);
+    assert.deepEqual(v3.getV3RosterSlots({ ...game(), gameDate: "2026-08-07", startAt: "2026-08-07T09:00:00.000Z" }).map((slot) => slot.toISOString()), [
+      "2026-08-07T07:00:00.000Z",
+      "2026-08-07T07:02:00.000Z",
+      "2026-08-07T07:10:00.000Z"
+    ]);
   } finally {
     database.close();
   }
@@ -168,8 +225,8 @@ test("V3 Cronは未解決試合のNPB識別jobを固定slotで一度だけ投入
     assert.equal(row.scheduled_slot_at, "2026-08-04T09:00:00.000Z");
     assert.equal(row.status, "completed");
     assert.equal(row.attempt_count, 1);
-    assert.deepEqual(executed, ["npb_identity_resolve"]);
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id = ?1").get(GAME_ID).count, 1);
+    assert.deepEqual(executed, ["probable_starter_fetch", "npb_identity_resolve"]);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id = ?1").get(GAME_ID).count, 2);
   } finally {
     database.close();
   }

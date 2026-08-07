@@ -487,26 +487,69 @@ export default {
 };
 
 async function runScheduledGameAutomationV3(env, now) {
+  const writeAudit = async ({ job, claimToken = null, stateBefore = null, execution = null, failure = null, occurredAt = now } = {}) => {
+    const auditColumns = await getTableColumnSet(env.AUTH_DB, "game_automation_v3_audit");
+    const columns = [
+      "internal_game_id", "job_id", "job_type", "scheduled_slot_at", "claim_id",
+      "state_before", "state_after", "attempt_count", "failure_code", "failure_message",
+      ...(auditColumns.has("data_status") ? ["data_status"] : []), "occurred_at", "source"
+    ];
+    const statusAfter = String(job?.status || (failure ? "retry_wait" : "completed"));
+    const probableStarter = execution?.probableStarter || null;
+    const dataStatus = execution?.dataStatus || probableStarter?.dataStatus || null;
+    const failureCode = failure?.code || execution?.failureCode || job?.failure_code || probableStarter?.errorCode || null;
+    const failureMessage = failure?.message || execution?.failureMessage || job?.failure_message || null;
+    const values = [
+      job?.internal_game_id || null,
+      job?.id || null,
+      job?.job_type || "plan",
+      job?.scheduled_slot_at || null,
+      job?.claim_token || claimToken || null,
+      stateBefore || (failure ? "claimed" : "claimed"),
+      statusAfter,
+      Number(job?.attempt_count || 0),
+      failureCode,
+      failureMessage ? String(failureMessage).slice(0, 240) : null,
+      ...(auditColumns.has("data_status") ? [dataStatus] : []),
+      new Date(occurredAt || job?.completed_at || job?.updated_at || now).toISOString(),
+      "cron"
+    ];
+    await env.AUTH_DB.prepare(
+      `INSERT INTO game_automation_v3_audit (${columns.join(", ")})
+       VALUES (${columns.map((_, index) => `?${index + 1}`).join(", ")})`
+    ).bind(...values).run();
+  };
+
   const result = await runGameAutomationV3(env, now, {
     executeJob: (context) => executeGameAutomationV3Job(context),
-    onSuccess: async ({ job, result: execution }) => {
+    onPlan: async ({ game, plan, job, created, reasonCode, insertedRowCount, existingJobId, existingScheduledSlotAt, existingStatus }) => {
+      if (String(plan?.jobType || "") !== "probable_starter_fetch") return;
+      if (!created && reasonCode !== "PROBABLE_STARTER_SLOT_CONFLICT") return;
+      await recordWorkflowJobEvent(env.AUTH_DB, {
+        eventType: created ? "workflow_job_created" : "probable_starter_job_plan_observed",
+        status: created ? "info" : "warning",
+        internalGameId: game?.internalGameId || job?.internal_game_id || "",
+        job: {
+          ...(job || {}),
+          job_type: plan?.jobType || "probable_starter_fetch",
+          scheduled_slot_at: plan?.scheduledSlotAt?.toISOString?.() || job?.scheduled_slot_at || null
+        },
+        now,
+        errorCode: created ? "" : reasonCode,
+        metadata: {
+          scheduledSlotAt: plan?.scheduledSlotAt?.toISOString?.() || null,
+          insertedRowCount: Number(insertedRowCount || 0),
+          actualJobExists: Boolean(job?.id),
+          existingJobId: existingJobId || null,
+          existingScheduledSlotAt: existingScheduledSlotAt || null,
+          existingStatus: existingStatus || null,
+          uniqueKey: "internal_game_id|job_type|scheduled_slot_at"
+        }
+      });
+    },
+    onSuccess: async ({ job, claimToken, result: execution, now: completedAt }) => {
       try {
-        await env.AUTH_DB.prepare(
-          `INSERT INTO game_automation_v3_audit
-             (internal_game_id, job_id, job_type, scheduled_slot_at, claim_id,
-              state_before, state_after, attempt_count, occurred_at, source)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'cron')`
-        ).bind(
-          job.internal_game_id,
-          job.id,
-          job.job_type,
-          job.scheduled_slot_at,
-          job.claim_token,
-          execution?.stateBefore || null,
-          execution?.stateAfter || null,
-          Number(job.attempt_count || 0),
-          new Date(now).toISOString()
-        ).run();
+        await writeAudit({ job, claimToken, execution, occurredAt: job?.completed_at || job?.updated_at || completedAt });
       } catch (error) {
         console.error(`[GAME_AUTOMATION_V3] audit_write_failed code=${error?.code || "V3_AUDIT_WRITE_FAILED"}`);
       }
@@ -516,20 +559,12 @@ async function runScheduledGameAutomationV3(env, now) {
       console.error(`[GAME_AUTOMATION_V3] internalGameId=${id} stage=${context?.stage || "unknown"} code=${error?.code || "V3_JOB_FAILED"}`);
       if (env.AUTH_DB && id) {
         try {
-          await env.AUTH_DB.prepare(
-            `INSERT INTO game_automation_v3_audit
-               (internal_game_id, job_id, job_type, scheduled_slot_at, claim_id, failure_code, failure_message, occurred_at, source)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'cron')`
-          ).bind(
-            id,
-            context?.job?.id || null,
-            context?.job?.job_type || "plan",
-            context?.job?.scheduled_slot_at || null,
-            context?.job?.claim_token || null,
-            String(error?.code || "V3_JOB_FAILED"),
-            String(error?.message || "V3自動処理に失敗しました。").slice(0, 240),
-            new Date(now).toISOString()
-          ).run();
+          let execution = null;
+          if (String(context?.job?.job_type || "") === "probable_starter_fetch") {
+            const row = await readProbableStarterRow(env.AUTH_DB, { internalGameId: id }).catch(() => null);
+            execution = { probableStarter: serializeProbableStarterRow(row) };
+          }
+          await writeAudit({ job: context?.job, claimToken: context?.claimToken, stateBefore: context?.stateBefore || "claimed", execution, failure: error, occurredAt: context?.job?.updated_at || now });
         } catch (auditError) {
           console.error(`[GAME_AUTOMATION_V3] audit_write_failed code=${auditError?.code || "V3_AUDIT_WRITE_FAILED"}`);
         }
@@ -665,7 +700,15 @@ async function executeGameAutomationV3Job({ env, job, internalGameId, now }) {
       awayTeam: target.away_team,
       nextGameDate: target.game_date
     }, now, { source: "v3" });
-    return { status: result.status, stateBefore, stateAfter: stateBefore };
+    return {
+      status: result.status,
+      stateBefore,
+      stateAfter: stateBefore,
+      dataStatus: result.probableStarter?.dataStatus || null,
+      probableStarter: result.probableStarter || null,
+      failureCode: result.probableStarter?.errorCode || null,
+      nextCheckAt: result.probableStarter?.nextCheckAt || null
+    };
   }
   if (jobType === "roster_fetch") {
     const result = await captureGameRosterSnapshot(env, internalGameId, now, {
@@ -964,14 +1007,15 @@ function findProbableStarterGame(target, games) {
 export function serializeProbableStarterRow(row) {
   if (!row) return null;
   const status = String(row.status || "error");
-  const errorCode = row.error_code || "";
+  const errorCode = row.error_code || (status === "error" ? "PROBABLE_STARTER_FETCH_FAILED" : null);
   const homePitcherName = row.home_pitcher_name || "";
   const awayPitcherName = row.away_pitcher_name || "";
   const homePitcherId = row.home_pitcher_id || null;
   const awayPitcherId = row.away_pitcher_id || null;
   const partial = Boolean(homePitcherName) !== Boolean(awayPitcherName);
+  const integrityError = ["DATA_INTEGRITY_ERROR", "PROBABLE_STARTER_GAME_MISMATCH"].includes(String(errorCode || ""));
   const dataStatus = status === "error"
-    ? "error"
+    ? (integrityError ? "integrity_error" : "transient_error")
     : partial
       ? "partial"
       : homePitcherName && awayPitcherName
@@ -1151,6 +1195,17 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
 
   let previous = null;
   let terminalLogged = false;
+  const diagnostics = {
+    httpStatus: null,
+    responseType: null,
+    parserResult: "not_started",
+    candidateCount: 0,
+    homePitcherName: null,
+    awayPitcherName: null,
+    dataStatus: null,
+    errorCode: null,
+    nextCheckAt: null
+  };
   const recordTerminal = async (details) => {
     const result = await recordProbableStarterDecision(env.AUTH_DB, details);
     // null means the equivalent terminal log was deduplicated; it is still a recorded outcome.
@@ -1162,9 +1217,22 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
       internalGameId: target?.internalGameId || ""
     });
     const payload = await fetchNpbWorkerJson(env, { mode: "starter" });
+    diagnostics.httpStatus = payload?.__fetchMeta?.httpStatus ?? null;
+    diagnostics.responseType = payload?.__fetchMeta?.contentType || "application/json";
+    if (!Array.isArray(payload?.games)) {
+      diagnostics.parserResult = "invalid_games_shape";
+      throw createPregameError("PROBABLE_STARTER_RESPONSE_INVALID", "予告先発レスポンスの試合一覧が不正です。", {
+        httpStatus: diagnostics.httpStatus,
+        responseType: diagnostics.responseType
+      });
+    }
+    diagnostics.candidateCount = payload.games.length;
     const matched = findProbableStarterGame(target, payload.games);
+    diagnostics.parserResult = matched ? "matched" : "unannounced";
     const homePitcherName = String(matched?.homeStarter?.name || previous?.home_pitcher_name || "").trim();
     const awayPitcherName = String(matched?.awayStarter?.name || previous?.away_pitcher_name || "").trim();
+    diagnostics.homePitcherName = homePitcherName || null;
+    diagnostics.awayPitcherName = awayPitcherName || null;
     const hasAnyPitcher = Boolean(homePitcherName || awayPitcherName);
     const fullyAnnounced = Boolean(homePitcherName && awayPitcherName);
     const announced = hasAnyPitcher;
@@ -1178,7 +1246,10 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
       ? null
       : nextFixedSlot?.toISOString() || new Date(current.getTime() + PROBABLE_STARTER_RETRY_INTERVAL_MS).toISOString();
     const status = announced ? "announced" : "unannounced";
-      await saveProbableStarterRow(env.AUTH_DB, {
+    const dataStatus = fullyAnnounced ? "announced" : announced ? "partial" : "unannounced";
+    diagnostics.dataStatus = dataStatus;
+    diagnostics.nextCheckAt = nextCheckAt;
+    await saveProbableStarterRow(env.AUTH_DB, {
         gameId,
         internalGameId: target?.internalGameId || "",
         source,
@@ -1200,8 +1271,8 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
       gameId,
       occurredAt: current,
       message: announced ? (fullyAnnounced ? "予告先発を保存しました。" : "予告先発を一部保存しました。") : "予告先発はまだ発表されていません。",
-      errorCode: announced ? "" : "PROBABLE_STARTER_UNANNOUNCED",
-      metadata: { source, sourceDate, matched: Boolean(matched), nextCheckAt, partial: announced && !fullyAnnounced },
+      errorCode: "",
+      metadata: { source, sourceDate, matched: Boolean(matched), nextCheckAt, partial: announced && !fullyAnnounced, decisionCode: announced ? null : "PROBABLE_STARTER_UNANNOUNCED", ...diagnostics },
       source
     });
     return {
@@ -1224,7 +1295,20 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
     };
   } catch (error) {
     const errorCode = String(error?.code || "PROBABLE_STARTER_FETCH_FAILED").slice(0, 80);
-    const nextCheckAt = new Date(current.getTime() + PROBABLE_STARTER_RETRY_INTERVAL_MS).toISOString();
+    const nextFixedSlot = source === "v3"
+      ? getV3ProbableStarterSlots({ gameDate: target?.nextGameDate, startAt: target?.startAt })
+        .find((slot) => slot.getTime() > current.getTime())
+      : null;
+    let nextCheckAt = new Date(current.getTime() + PROBABLE_STARTER_RETRY_INTERVAL_MS);
+    if (nextFixedSlot) nextCheckAt = nextFixedSlot;
+    const nextCheckAtIso = nextCheckAt.toISOString();
+    const integrityError = ["DATA_INTEGRITY_ERROR", "PROBABLE_STARTER_GAME_MISMATCH"].includes(errorCode);
+    diagnostics.dataStatus = integrityError ? "integrity_error" : "transient_error";
+    diagnostics.errorCode = errorCode;
+    diagnostics.nextCheckAt = nextCheckAtIso;
+    diagnostics.httpStatus = diagnostics.httpStatus ?? error?.httpStatus ?? error?.upstreamStatus ?? null;
+    diagnostics.responseType = diagnostics.responseType || error?.contentType || null;
+    diagnostics.parserResult = diagnostics.parserResult === "not_started" ? "fetch_failed" : diagnostics.parserResult;
     try {
       await saveProbableStarterRow(env.AUTH_DB, {
         gameId,
@@ -1235,7 +1319,7 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
         awayPitcherName: previous?.away_pitcher_name || "",
         fetchedAt,
         announcedAt: previous?.announced_at || null,
-        nextCheckAt,
+        nextCheckAt: nextCheckAtIso,
         sourceUrl: previous?.source_url || "https://npb.jp/announcement/starter/",
         errorCode,
         updatedAt: fetchedAt
@@ -1252,7 +1336,7 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
       occurredAt: current,
       message: "予告先発を取得できませんでした。",
       errorCode,
-      metadata: { source, sourceDate, nextCheckAt },
+      metadata: { source, sourceDate, nextCheckAt: nextCheckAtIso, ...diagnostics },
       source
     });
     throw error;
@@ -1265,7 +1349,7 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
         occurredAt: current,
         message: "予告先発の取得処理が完了状態を記録できませんでした。",
         errorCode: "PROBABLE_STARTER_TERMINAL_STATE_MISSING",
-        metadata: { source, sourceDate },
+        metadata: { source, sourceDate, ...diagnostics },
         source
       });
     }
@@ -2251,6 +2335,7 @@ async function recordWorkflowJobEvent(db, { eventType, status, internalGameId, j
       workflow_job_retry: "試合進行ジョブを再試行待ちにしました。",
       workflow_job_permanently_failed: "試合進行ジョブが恒久失敗になりました。",
       workflow_job_recovered: "停止していた試合進行ジョブを再評価待ちに戻しました。",
+      probable_starter_job_plan_observed: "予告先発jobのslot競合を検出しました。",
       scoring_workflow_reconciled: "保存済みの採点結果に試合進行状態を整合しました。",
       publication_workflow_reconciled: "保存済みの公開結果へ試合進行状態を整合しました。",
       workflow_internal_id_unresolved: "内部試合IDを解決できないためジョブを作成しませんでした。"
@@ -3511,6 +3596,33 @@ async function handleAdminV3Overview(request, env, cors) {
     const probableStarterPayload = probableStarterError
       ? { status: "error", errorCode: probableStarterError }
       : serializedProbableStarter;
+    let probableStarterDiagnostics = null;
+    try {
+      const diagnosticLog = await env.AUTH_DB.prepare(
+        `SELECT occurred_at, error_code, metadata
+           FROM game_workflow_logs
+          WHERE game_id = ?1
+            AND event_type IN ('probable_starter_announced', 'probable_starter_unannounced', 'probable_starter_fetch_failed')
+          ORDER BY occurred_at DESC LIMIT 1`
+      ).bind(game.internalGameId).first();
+      if (diagnosticLog) {
+        const metadata = parseWorkflowLogMetadata(diagnosticLog.metadata);
+        probableStarterDiagnostics = {
+          httpStatus: metadata.httpStatus ?? null,
+          responseType: metadata.responseType || null,
+          parserResult: metadata.parserResult || null,
+          candidateCount: Number.isFinite(Number(metadata.candidateCount)) ? Number(metadata.candidateCount) : null,
+          homePitcherName: metadata.homePitcherName || null,
+          awayPitcherName: metadata.awayPitcherName || null,
+          dataStatus: metadata.dataStatus || serializedProbableStarter?.dataStatus || null,
+          errorCode: metadata.errorCode || diagnosticLog.error_code || null,
+          nextCheckAt: metadata.nextCheckAt || serializedProbableStarter?.nextCheckAt || null,
+          occurredAt: diagnosticLog.occurred_at || null
+        };
+      }
+    } catch (error) {
+      console.error(`[ADMIN_V3_OVERVIEW] internalGameId=${game.internalGameId} stage=probable_starter_diagnostics_read failureCode=${error?.code || "V3_PROBABLE_STARTER_DIAGNOSTICS_READ_FAILED"}`);
+    }
     const resolvedState = state || { state: "scheduled", version: 0 };
     const jobRows = jobs.results || [];
     const latestJob = (types) => jobRows
@@ -3538,10 +3650,41 @@ async function handleAdminV3Overview(request, env, cors) {
     const nextProbableSlot = missingDueProbableSlot
       || probableSlots.find((slot) => new Date(slot).getTime() > overviewNow.getTime() && !probableJobSlots.has(slot))
       || "";
+    const probableStarterNextCheckAt = serializedProbableStarter?.nextCheckAt
+      || probableStarterDiagnostics?.nextCheckAt
+      || nextProbableSlot
+      || null;
+    const probableStarterActualJob = jobRows
+      .filter((job) => String(job.job_type || "") === "probable_starter_fetch"
+        && probableStarterNextCheckAt
+        && String(job.scheduled_slot_at || "") === String(probableStarterNextCheckAt))
+      .sort((left, right) => Number(right.id || 0) - Number(left.id || 0))[0] || null;
     const schedule = {
       ...scheduleBase,
       probableStarterSlots: probableSlots,
-      probableStarterNextAt: serializedProbableStarter?.dataStatus === "announced" ? null : nextProbableSlot || null
+      probableStarterNextAt: serializedProbableStarter?.dataStatus === "announced" ? null : probableStarterNextCheckAt,
+      probableStarterNextCheckAt,
+      probableStarterJob: probableStarterActualJob ? {
+        actualJobExists: true,
+        jobId: Number(probableStarterActualJob.id || 0) || null,
+        scheduledSlotAt: probableStarterActualJob.scheduled_slot_at || null,
+        jobStatus: probableStarterActualJob.status || null,
+        attemptCount: Number(probableStarterActualJob.attempt_count || 0),
+        maxAttempts: Number(probableStarterActualJob.max_attempts || 0),
+        nextRetryAt: probableStarterActualJob.next_retry_at || null,
+        claimedAt: probableStarterActualJob.claimed_at || null,
+        completedAt: probableStarterActualJob.completed_at || null
+      } : {
+        actualJobExists: false,
+        jobId: null,
+        scheduledSlotAt: null,
+        jobStatus: "not_created",
+        attemptCount: 0,
+        maxAttempts: 0,
+        nextRetryAt: null,
+        claimedAt: null,
+        completedAt: null
+      }
     };
     const nextAction = getV3NextAction({ schedule, state: resolvedState.state, jobs: jobRows, now: overviewNow });
     rows.push({
@@ -3552,6 +3695,9 @@ async function handleAdminV3Overview(request, env, cors) {
       scoringSummary,
       publicationSummary,
       probableStarter: probableStarterPayload,
+      probableStarterDiagnostics,
+      probableStarterNextCheckAt,
+      probableStarterJob: schedule.probableStarterJob,
       auxiliaryErrors: [
         ...(state?.errorCode ? [{ field: "state", errorCode: state.errorCode }] : []),
         ...(jobs.errorCode ? [{ field: "jobs", errorCode: jobs.errorCode }] : []),
@@ -10716,8 +10862,10 @@ async function handleGetProbableStarter(request, env, cors) {
       source: probableStarter?.source || "",
       fetchedAt: probableStarter?.fetchedAt || null,
       status: probableStarter?.status || "empty",
+      dataStatus: probableStarter?.dataStatus || "unannounced",
       state: probableStarter?.status || "empty",
-      lastFailureCode: probableStarter?.lastFailureCode || "",
+      errorCode: probableStarter?.errorCode || null,
+      lastFailureCode: probableStarter?.lastFailureCode || null,
       isConfirmed: Boolean(probableStarter?.isConfirmed),
       confirmed: Boolean(probableStarter?.isConfirmed),
       homeProbableStarter: probableStarter?.homeProbableStarter || null,

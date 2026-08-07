@@ -281,22 +281,36 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
       if (["excluded", "published"].includes(String(stateRow?.state || game?.workflowState || ""))) continue;
       let probableRow = null;
       try {
-        probableRow = await db.prepare(
-          `SELECT status, home_pitcher_name, away_pitcher_name
-             FROM probable_starters
-            WHERE internal_game_id = ?1
-            ORDER BY COALESCE(fetched_at, updated_at) DESC
-            LIMIT 1`
-        ).bind(game.internalGameId).first();
+        try {
+          probableRow = await db.prepare(
+            `SELECT status, error_code, home_pitcher_name, away_pitcher_name
+               FROM probable_starters
+              WHERE internal_game_id = ?1
+              ORDER BY COALESCE(fetched_at, updated_at) DESC
+              LIMIT 1`
+          ).bind(game.internalGameId).first();
+        } catch {
+          probableRow = await db.prepare(
+            `SELECT status, home_pitcher_name, away_pitcher_name
+               FROM probable_starters
+              WHERE internal_game_id = ?1
+              ORDER BY COALESCE(fetched_at, updated_at) DESC
+              LIMIT 1`
+          ).bind(game.internalGameId).first();
+        }
       } catch {
         // 旧adapterまたは未適用の補助スキーマでも、V3 job計画自体は継続します。
       }
       const hasHomePitcher = Boolean(String(probableRow?.home_pitcher_name || "").trim());
       const hasAwayPitcher = Boolean(String(probableRow?.away_pitcher_name || "").trim());
       const dataStatusAnnounced = String(probableRow?.status || "") === "announced"
+        && !String(probableRow?.error_code || "").trim()
         && hasHomePitcher
         && hasAwayPitcher;
-      if (dataStatusAnnounced) continue;
+      if (dataStatusAnnounced) {
+        planned.push({ game, plan, created: false, job: null, reasonCode: "PROBABLE_STARTER_DATA_ANNOUNCED", insertedRowCount: 0 });
+        continue;
+      }
       const openJob = await db.prepare(
         `SELECT id, status, scheduled_slot_at
            FROM game_jobs_v3
@@ -305,7 +319,20 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
             AND status IN ('pending', 'claimed', 'retry_wait')
           LIMIT 1`
       ).bind(game.internalGameId, plan.jobType).first();
-      if (openJob) continue;
+      if (openJob) {
+        planned.push({
+          game,
+          plan,
+          created: false,
+          job: openJob,
+          reasonCode: "PROBABLE_STARTER_OPEN_JOB_EXISTS",
+          insertedRowCount: 0,
+          existingJobId: openJob.id,
+          existingScheduledSlotAt: openJob.scheduled_slot_at,
+          existingStatus: openJob.status
+        });
+        continue;
+      }
       const existingJob = await db.prepare(
         `SELECT id, status, scheduled_slot_at
            FROM game_jobs_v3
@@ -314,9 +341,31 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
             AND scheduled_slot_at = ?3
           LIMIT 1`
       ).bind(game.internalGameId, plan.jobType, latestDueSlot.toISOString()).first();
-      if (existingJob) continue;
+      if (existingJob) {
+        planned.push({
+          game,
+          plan,
+          created: false,
+          job: existingJob,
+          reasonCode: "PROBABLE_STARTER_JOB_ALREADY_EXISTS",
+          insertedRowCount: 0,
+          existingJobId: existingJob.id,
+          existingScheduledSlotAt: existingJob.scheduled_slot_at,
+          existingStatus: existingJob.status
+        });
+        continue;
+      }
       const result = await createV3Job(db, { internalGameId: game.internalGameId, ...plan });
-      planned.push({ game, plan, ...result });
+      planned.push({
+        game,
+        plan,
+        ...result,
+        reasonCode: result.created ? "PROBABLE_STARTER_JOB_CREATED" : "PROBABLE_STARTER_SLOT_CONFLICT",
+        insertedRowCount: result.created ? 1 : 0,
+        existingJobId: result.created ? null : result.job?.id || null,
+        existingScheduledSlotAt: result.created ? null : result.job?.scheduled_slot_at || null,
+        existingStatus: result.created ? null : result.job?.status || null
+      });
     } catch (error) {
       errors.push({ game, plan, error });
     }
@@ -324,7 +373,18 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
   return {
     created: planned.filter((entry) => entry.created).length,
     planned,
-    errors
+    errors,
+    diagnostics: planned.map(({ game, plan, job, created, reasonCode, insertedRowCount, existingJobId, existingScheduledSlotAt, existingStatus }) => ({
+      internalGameId: game?.internalGameId || null,
+      jobType: plan?.jobType || null,
+      scheduledSlotAt: plan?.scheduledSlotAt?.toISOString?.() || null,
+      insertedRowCount,
+      actualJobExists: Boolean(job?.id),
+      existingJobId: existingJobId || null,
+      existingScheduledSlotAt: existingScheduledSlotAt || null,
+      status: existingStatus || job?.status || (created ? "pending" : null),
+      reasonCode
+    }))
   };
 }
 
@@ -572,7 +632,7 @@ async function hasOpenV3Job(db, internalGameId, jobType) {
   return Boolean(row?.id);
 }
 
-export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null } = {}) {
+export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null } = {}) {
   if (!isGameAutomationV3Enabled(env)) return { enabled: false, processed: 0, created: 0 };
   const schema = await getV3SchemaState(env.AUTH_DB);
   if (!schema.ready) return { enabled: true, schemaReady: false, errorCode: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", processed: 0, created: 0 };
@@ -582,6 +642,16 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
   let failed = 0;
   const probablePlan = await planV3ProbableStarterJobs(env.AUTH_DB, games, now);
   created += probablePlan.created;
+  if (onPlan) {
+    for (const entry of probablePlan.planned) {
+      try {
+        await onPlan({ ...entry, stage: "probable_plan", now });
+      } catch (error) {
+        failed += 1;
+        if (onError) await onError(error, { game: entry.game, plan: entry.plan, stage: "probable_plan_audit" });
+      }
+    }
+  }
   for (const entry of probablePlan.errors) {
     failed += 1;
     if (onError) await onError(entry.error, { game: entry.game, stage: "probable_plan" });

@@ -48,9 +48,14 @@ test("救済jobの対象slot、実行時刻、監査状態、診断情報を別�
   assert.match(worker, /httpStatus/);
   assert.match(worker, /parserResult/);
   assert.match(worker, /candidateCount/);
+  assert.match(worker, /insertedRowCount/);
+  assert.match(worker, /actualJobExists/);
+  assert.match(worker, /probableStarterNextCheckAt/);
+  assert.match(worker, /probableStarterJob/);
   assert.match(admin, /対象slot:/);
   assert.match(admin, /実行:/);
   assert.match(admin, /次回自動確認:/);
+  assert.match(admin, /job: 未生成/);
   assert.match(admin, /probableJob \|\| probableMissingPastSlot/);
   assert.match(migration, /ADD COLUMN data_status TEXT NULL/);
 });
@@ -132,6 +137,9 @@ test("09:00救済完了後は12:00到達後に次slotを1件だけ生成する",
     const after = await v3.planV3ProbableStarterJobs(db, [game], new Date("2026-08-07T03:01:00.000Z"));
     assert.equal(after.created, 1);
     assert.equal(after.planned[0].job.scheduled_slot_at, "2026-08-07T03:00:00.000Z");
+    assert.equal(after.diagnostics[0].insertedRowCount, 1);
+    assert.equal(after.diagnostics[0].actualJobExists, true);
+    assert.equal(after.diagnostics[0].scheduledSlotAt, "2026-08-07T03:00:00.000Z");
     assert.equal((await v3.planV3ProbableStarterJobs(db, [game], new Date("2026-08-07T03:01:00.000Z"))).created, 0);
   } finally {
     database.close();

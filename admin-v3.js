@@ -263,18 +263,39 @@ function timelineStep(name, job, fallbackStatus, detail = "", scheduledAt = "") 
 
 function probableStarterTimelineDetails(game, job, now = new Date()) {
   const starter = game?.probableStarter;
+  const diagnostics = game?.probableStarterDiagnostics;
   const details = [];
   const dataStatus = starter?.dataStatus || (starter?.status === "announced" ? "announced" : starter?.status);
   if (dataStatus === "announced" || dataStatus === "partial") {
     details.push(`home: ${starter?.homePitcherName || "未発表"} / away: ${starter?.awayPitcherName || "未発表"}`);
     if (dataStatus === "partial") details.push("一部発表・自動確認継続中");
   } else if (starter?.status) {
-    details.push(dataStatus === "unannounced" ? "未発表" : dataStatus);
+    details.push({
+      unannounced: "未発表",
+      transient_error: "一時的に取得失敗",
+      integrity_error: "データ整合性エラー"
+    }[dataStatus] || dataStatus);
   }
+  if (job?.scheduled_slot_at) details.push(`対象slot: ${formatV3Jst(job.scheduled_slot_at)}`);
+  if (job?.claimed_at || job?.completed_at) details.push(`実行: ${formatV3Jst(job.completed_at || job.claimed_at)}`);
+  if (dataStatus) details.push(`取得結果: ${dataStatus}`);
   if (starter?.sourceUrl) details.push(`取得元: ${starter.sourceUrl}`);
   if (starter?.fetchedAt) details.push(`最終取得: ${formatV3Jst(starter.fetchedAt)}`);
-  if (starter?.nextCheckAt) details.push(`次回自動確認: ${formatV3Jst(starter.nextCheckAt)}`);
-  if (job?.failure_code) details.push(job.failure_code);
+  const nextCheckAt = game?.probableStarterNextCheckAt || starter?.nextCheckAt || diagnostics?.nextCheckAt;
+  if (nextCheckAt) details.push(`次回自動確認: ${formatV3Jst(nextCheckAt)}`);
+  const nextJob = game?.probableStarterJob;
+  if (nextCheckAt) {
+    if (nextJob?.actualJobExists) {
+      details.push(`${formatV3Jst(nextCheckAt)} job: ${statusLabel(nextJob.jobStatus)} / 試行 ${nextJob.attemptCount || 0}/${nextJob.maxAttempts || 0}`);
+      if (nextJob.scheduledSlotAt) details.push(`実在scheduledSlotAt: ${formatV3Jst(nextJob.scheduledSlotAt)}`);
+    } else {
+      details.push(`${formatV3Jst(nextCheckAt)} job: 未生成`);
+    }
+  }
+  if (job?.failure_code || diagnostics?.errorCode) details.push(`errorCode: ${job?.failure_code || diagnostics?.errorCode}`);
+  if (diagnostics?.httpStatus || diagnostics?.parserResult || diagnostics?.candidateCount !== null) {
+    details.push(`診断: HTTP ${diagnostics.httpStatus ?? "-"} / ${diagnostics.parserResult || "-"} / 候補 ${diagnostics.candidateCount ?? "-"}`);
+  }
   if (job && Number.isFinite(Number(job.attempt_count))) details.push(`試行 ${job.attempt_count || 0}/${job.max_attempts || 0}`);
   const scheduledAt = game?.schedule?.probableStarterNextAt ? new Date(game.schedule.probableStarterNextAt) : null;
   if (!job && scheduledAt && scheduledAt.getTime() <= now.getTime()) details.push("実行待ち / job未生成 / 要確認");
@@ -300,7 +321,7 @@ function renderTimeline(game) {
   const probableMissingPastSlot = !probableJob && probableSlot && probableSlot.getTime() <= Date.now();
   const probableDataStatus = game?.probableStarter?.dataStatus || game?.probableStarter?.status;
   const probableFallback = probableMissingPastSlot ? "action" : probableDataStatus === "announced" ? "complete" : "wait";
-  const probableTime = probableMissingPastSlot ? "" : schedule.probableStarterNextAt;
+  const probableTime = probableJob || probableMissingPastSlot ? "" : schedule.probableStarterNextAt;
   const steps = [
     timelineStep("日程登録", null, "complete", "games登録済み", schedule.startAt),
     timelineStep("予告先発取得", probableJob, probableFallback, probableStarterTimelineDetails(game, probableJob), probableTime),

@@ -1234,21 +1234,26 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
     diagnostics.candidateCount = payload.games.length;
     const matched = findProbableStarterGame(target, payload.games);
     diagnostics.parserResult = matched ? "matched" : "unannounced";
-    const homePitcherName = String(matched?.homeStarter?.name || previous?.home_pitcher_name || "").trim();
-    const awayPitcherName = String(matched?.awayStarter?.name || previous?.away_pitcher_name || "").trim();
+    const freshHomePitcherName = String(matched?.homeStarter?.name || "").trim();
+    const freshAwayPitcherName = String(matched?.awayStarter?.name || "").trim();
+    const homePitcherName = freshHomePitcherName || String(previous?.home_pitcher_name || "").trim();
+    const awayPitcherName = freshAwayPitcherName || String(previous?.away_pitcher_name || "").trim();
     diagnostics.homePitcherName = homePitcherName || null;
     diagnostics.awayPitcherName = awayPitcherName || null;
     const dataStatus = normalizeProbableStarterDataStatus({
-      status: "announced",
-      homePitcherName,
-      awayPitcherName
+      dataStatus: matched ? "announced" : "unannounced",
+      status: matched ? "announced" : "unannounced",
+      errorCode: matched ? null : previous?.error_code,
+      homePitcherName: freshHomePitcherName,
+      awayPitcherName: freshAwayPitcherName
     });
     const fullyAnnounced = Boolean(homePitcherName && awayPitcherName);
-    const hasAnyPitcher = Boolean(homePitcherName || awayPitcherName);
-    const partial = hasAnyPitcher && !fullyAnnounced;
+    const freshFullyAnnounced = Boolean(freshHomePitcherName && freshAwayPitcherName);
+    const hasAnyPitcher = Boolean(freshHomePitcherName || freshAwayPitcherName);
+    const partial = hasAnyPitcher && !freshFullyAnnounced;
     const announced = dataStatus === "announced" || dataStatus === "partial";
     const normalizedFetchedAt = String(payload.fetchedAt || fetchedAt);
-    const announcedAt = fullyAnnounced ? (previous?.announced_at || normalizedFetchedAt) : (previous?.announced_at || null);
+    const announcedAt = freshFullyAnnounced ? (previous?.announced_at || normalizedFetchedAt) : (previous?.announced_at || null);
     const nextFixedSlot = source === "v3"
       ? getV3ProbableStarterSlots({ gameDate: target?.nextGameDate, startAt: target?.startAt })
         .find((slot) => slot.getTime() > current.getTime())
@@ -1280,7 +1285,7 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
       status: announced ? "success" : "warning",
       gameId,
       occurredAt: current,
-      message: announced ? (fullyAnnounced ? "予告先発を保存しました。" : "予告先発を一部保存しました。") : "予告先発はまだ発表されていません。",
+      message: announced ? (freshFullyAnnounced ? "予告先発を保存しました。" : "予告先発を一部保存しました。") : "予告先発はまだ発表されていません。",
       errorCode: "",
       metadata: { source, sourceDate, matched: Boolean(matched), nextCheckAt, partial, decisionCode: announced ? null : "PROBABLE_STARTER_UNANNOUNCED", ...diagnostics },
       source

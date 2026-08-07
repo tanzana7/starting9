@@ -186,6 +186,7 @@ export function normalizeProbableStarterDataStatus(input = {}) {
   const hasAwayPitcher = Boolean(awayPitcherName);
   const integrityError = ["DATA_INTEGRITY_ERROR", "PROBABLE_STARTER_GAME_MISMATCH"].includes(errorCode);
   if (integrityError) return "integrity_error";
+  if (errorCode) return "transient_error";
   if (jobStatus === "error" || jobStatus === "failed" || ["error", "failed", "transient_error"].includes(rawStatus)) {
     return "transient_error";
   }

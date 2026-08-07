@@ -153,7 +153,12 @@ async function requireAndRetireLegacyAdminMutation(request, env, cors) {
 // The pregame runner must register the near-term schedule before it can create
 // any downstream rows. Keep a small forward window so games such as the next
 // three calendar days are registered before their pregame jobs become due.
+// Keep the existing short window for legacy callers. The V3 future-game buffer
+// uses its own range so repair and other historical readers keep their contract.
 const AUTOMATION_SCHEDULE_LOOKAHEAD_DAYS = 3;
+const AUTOMATION_FUTURE_SCHEDULE_LOOKAHEAD_DAYS = 14;
+const AUTOMATION_SCHEDULE_MAX_LOOKAHEAD_DAYS = 30;
+const AUTOMATION_MIN_FUTURE_GAMES = 3;
 const AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const WORKFLOW_LOG_RETENTION_HOURS = 48;
 const WORKFLOW_LOG_DEFAULT_LIMIT = 50;
@@ -520,6 +525,25 @@ async function runScheduledGameAutomationV3(env, now) {
     ).bind(...values).run();
   };
 
+  let scheduleSync = null;
+  try {
+    scheduleSync = await ensureFutureFightersSchedule(env, now);
+    console.log(`[GAME_SCHEDULE_BUFFER] before=${scheduleSync.futureGamesBefore} after=${scheduleSync.futureGamesAfter} fetched=${scheduleSync.gamesFetched} inserted=${scheduleSync.gamesInserted} updated=${scheduleSync.gamesUpdated} range=${scheduleSync.fetchRangeStart || ""}..${scheduleSync.fetchRangeEnd || ""} skip=${scheduleSync.skipReason || ""}`);
+  } catch (error) {
+    scheduleSync = {
+      status: "failed",
+      futureGamesBefore: null,
+      futureGamesAfter: null,
+      gamesFetched: 0,
+      gamesInserted: 0,
+      gamesUpdated: 0,
+      fetchRangeStart: "",
+      fetchRangeEnd: "",
+      skipReason: error?.code || "SCHEDULE_SYNC_FAILED"
+    };
+    console.warn(`[GAME_SCHEDULE_BUFFER] status=failed code=${scheduleSync.skipReason}`);
+  }
+
   const result = await runGameAutomationV3(env, now, {
     executeJob: (context) => executeGameAutomationV3Job(context),
     onPlan: async ({ game, plan, job, created, reasonCode, insertedRowCount, existingJobId, existingScheduledSlotAt, existingStatus, diagnostic, stage = "v3_plan", claimResult = null }) => {
@@ -583,7 +607,7 @@ async function runScheduledGameAutomationV3(env, now) {
   if (result?.schemaReady === false) {
     console.error(`[GAME_AUTOMATION_V3] enabled=true code=${result.errorCode}`);
   }
-  return result;
+  return { ...result, scheduleSync };
 }
 
 async function loadV3GameTarget(db, internalGameId) {
@@ -2469,6 +2493,30 @@ export function getAutomationScheduleDates(now = new Date(), lookaheadDays = AUT
   return Array.from({ length: count + 1 }, (_, offset) => getJstDateString(new Date(base.getTime() + offset * 24 * 60 * 60 * 1000)));
 }
 
+export function getFutureScheduleSyncPlan(now = new Date(), futureGames = 0) {
+  const current = now instanceof Date ? now : new Date(now);
+  const start = getJstDateString(current);
+  const count = Math.max(0, Number(futureGames) || 0);
+  if (!start) return { shouldFetch: false, dates: [], fetchRangeStart: "", fetchRangeEnd: "", skipReason: "INVALID_NOW" };
+  if (count >= AUTOMATION_MIN_FUTURE_GAMES) {
+    return {
+      shouldFetch: false,
+      dates: [],
+      fetchRangeStart: start,
+      fetchRangeEnd: start,
+      skipReason: "FUTURE_GAMES_SUFFICIENT"
+    };
+  }
+  const dates = getAutomationScheduleDates(current, AUTOMATION_FUTURE_SCHEDULE_LOOKAHEAD_DAYS);
+  return {
+    shouldFetch: true,
+    dates,
+    fetchRangeStart: dates[0] || start,
+    fetchRangeEnd: dates[dates.length - 1] || start,
+    skipReason: "FUTURE_GAMES_BELOW_MINIMUM"
+  };
+}
+
 export function classifyScheduleSyncResults(results = []) {
   const statuses = (Array.isArray(results) ? results : []).map((result) => result?.status);
   if (statuses.includes("failed")) return "failed";
@@ -2550,6 +2598,16 @@ async function syncFightersScheduleForDate(env, date, now) {
       };
     });
     const changed = await hasScheduleDataChanged(env.AUTH_DB, date, normalizedGames);
+    const changedItems = normalizedGames.filter(({ game, startAt, identityKey, gameStatus, existingRow }) => {
+      const current = existingByIdentity.get(identityKey);
+      return !current
+        || String(current.start_at || "") !== startAt.toISOString()
+        || String(current.home_team || "") !== String(game.homeTeam || "")
+        || String(current.away_team || "") !== String(game.awayTeam || "")
+        || String(current.game_code || "") !== String(game.gameCode || "")
+        || String(current.venue || "") !== String(game.venue || "")
+        || String(current.game_status || "") !== gameStatus;
+    });
     const statements = [];
     for (const item of normalizedGames) {
       const { game, startAt, sourceGameKey, npbGameCode, npbGameUrl, gameStatus, existingRow, existingCandidates } = item;
@@ -2594,9 +2652,82 @@ async function syncFightersScheduleForDate(env, date, now) {
     if (statements.length) await env.AUTH_DB.batch(statements);
     await backfillUniqueDetectedScheduleInternalGames(env.AUTH_DB, date, registry, now);
     console.log(`[GAME_DETECTION] date=${date} team=fighters gamesFound=${payload.games.length} status=success`);
-    return { status: changed ? "success_changed" : "success_no_change", date, gameCount: payload.games.length };
+    return {
+      status: changed ? "success_changed" : "success_no_change",
+      date,
+      gameCount: payload.games.length,
+      gamesInserted: normalizedGames.filter(({ existingRow }) => !existingRow).length,
+      gamesUpdated: changedItems.filter(({ existingRow }) => Boolean(existingRow)).length
+    };
   }
   return { status: "skipped", date };
+}
+
+async function countFutureFightersGames(db, now) {
+  const result = await db.prepare(
+    `SELECT COUNT(*) AS count
+       FROM games
+      WHERE internal_game_id IS NOT NULL AND internal_game_id <> ''
+        AND start_time > ?1
+        AND (is_active IS NULL OR is_active = 1)
+        AND (deleted_at IS NULL OR deleted_at = '')
+        AND (game_status IS NULL OR game_status NOT IN ('cancelled', 'canceled', 'postponed', 'service_unavailable'))
+        AND (LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')`
+  ).bind((now instanceof Date ? now : new Date(now)).toISOString()).first();
+  return Number(result?.count || 0);
+}
+
+async function ensureFutureFightersSchedule(env, now) {
+  const futureGamesBefore = await countFutureFightersGames(env.AUTH_DB, now);
+  const initialPlan = getFutureScheduleSyncPlan(now, futureGamesBefore);
+  if (!initialPlan.shouldFetch) {
+    return {
+      status: "skipped",
+      futureGamesBefore,
+      futureGamesAfter: futureGamesBefore,
+      gamesFetched: 0,
+      gamesInserted: 0,
+      gamesUpdated: 0,
+      fetchRangeStart: initialPlan.fetchRangeStart,
+      fetchRangeEnd: initialPlan.fetchRangeEnd,
+      skipReason: initialPlan.skipReason,
+      results: []
+    };
+  }
+
+  const dates = getAutomationScheduleDates(now, AUTOMATION_SCHEDULE_MAX_LOOKAHEAD_DAYS);
+  const results = [];
+  let futureGamesAfter = futureGamesBefore;
+  let lastDate = "";
+  for (const date of dates) {
+    lastDate = date;
+    try {
+      const result = await syncFightersScheduleForDate(env, date, now);
+      results.push(result);
+      futureGamesAfter = await countFutureFightersGames(env.AUTH_DB, now);
+      if (futureGamesAfter >= AUTOMATION_MIN_FUTURE_GAMES) break;
+    } catch (error) {
+      results.push({ status: "failed", date, errorCode: error?.code || "SCHEDULE_SYNC_FAILED" });
+      console.warn(`[GAME_DETECTION] date=${date} team=fighters status=failed code=${error?.code || "SCHEDULE_SYNC_FAILED"}`);
+    }
+  }
+
+  const gamesFetched = results.reduce((total, result) => total + Number(result?.gameCount || 0), 0);
+  const gamesInserted = results.reduce((total, result) => total + Number(result?.gamesInserted || 0), 0);
+  const gamesUpdated = results.reduce((total, result) => total + Number(result?.gamesUpdated || 0), 0);
+  const failed = results.some((result) => result?.status === "failed");
+  return {
+    status: failed ? "partial_failure" : futureGamesAfter >= AUTOMATION_MIN_FUTURE_GAMES ? "success" : "insufficient_future_games",
+    futureGamesBefore,
+    futureGamesAfter,
+    gamesFetched,
+    gamesInserted,
+    gamesUpdated,
+    fetchRangeStart: dates[0] || "",
+    fetchRangeEnd: lastDate || dates[dates.length - 1] || "",
+    skipReason: futureGamesAfter >= AUTOMATION_MIN_FUTURE_GAMES ? "FUTURE_GAMES_BUFFER_FILLED" : "FUTURE_GAMES_BUFFER_NOT_REACHED",
+    results
+  };
 }
 
 async function getGameIdentityRegistryAvailability(db) {

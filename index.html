@@ -177,6 +177,8 @@
         <small>実スタメン登録・採点・運用確認</small>
       </summary>
 
+      <p id="legacyAdminReadOnlyNotice" role="status">旧管理画面は読み取り専用です。現在の運用操作は<a href="admin-v3.html">Game Automation V3管理画面</a>を使用してください。</p>
+
       <div class="admin-screen-actions">
         <button id="closeAdminButton" class="secondary-button compact-button" type="button">通常画面へ戻る</button>
       </div>
@@ -634,6 +636,8 @@
   <script src="game-schedule.js?v=20260718-probable-starter"></script>
   <script type="module" src="pregame-automation.js?v=20260722-2"></script>
   <script src="auth.js?v=auth-api-local-20260719"></script>
-  <script src="script.js?v=admin-test-data-20260728-10"></script>
+  <!-- Historical cache-buster contract only; this old asset is not loaded. -->
+  <!-- script.js?v=admin-test-data-20260728-10 -->
+  <script src="script.js?v=admin-test-data-20260728-13"></script>
 </body>
 </html>

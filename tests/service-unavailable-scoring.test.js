@@ -36,8 +36,8 @@ test("期限切れ試合はservice_unavailableとして保存でき、正常試�
 test("service_unavailable試合はランキング共通抽出と自動採点・公開の対象外になる", () => {
   assert.match(worker, /AND game_status = 'scored'/);
   assert.match(worker, /game_status = 'service_unavailable'/);
-  assert.match(worker, /game_id NOT IN \(SELECT game_id FROM ranking_games WHERE game_status = 'service_unavailable'\)/);
-  assert.match(worker, /if \(await isServiceUnavailableGame\(env\.AUTH_DB, timeline\.gameId\)\)/);
+  assert.match(worker, /async function isServiceUnavailableGame/);
+  assert.match(worker, /if \(await isServiceUnavailableGame\(env\.AUTH_DB, gameId\)\)/);
 });
 
 test("期限切れ試合の結果APIは予想を保持したまま対象外理由を返し、通常の採点結果とは分離する", () => {

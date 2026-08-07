@@ -19,8 +19,9 @@ test("通常画面はV3対象のinternalGameIdを優先して保存済み予告�
 
 test("予告先発APIはinternalGameIdで正規試合を解決し、同じprobable_starters行を読む", () => {
   assert.match(worker, /const suppliedInternalGameId = String\(params\.get\("internalGameId"\) \|\| ""\)\.trim\(\)/);
-  assert.match(worker, /resolveApiGameReference\(env\.AUTH_DB, suppliedInternalGameId \|\| suppliedGameId\)/);
-  assert.match(worker, /WHERE internal_game_id = \?1 OR \(internal_game_id IS NULL AND game_id = \?2\)/);
+  assert.match(worker, /FROM games WHERE internal_game_id = \?1 LIMIT 1/);
+  assert.match(worker, /readProbableStarterRow\(env\.AUTH_DB, \{ internalGameId: suppliedInternalGameId \}\)/);
+  assert.doesNotMatch(worker, /resolveApiGameReference\(env\.AUTH_DB, suppliedInternalGameId/);
   assert.match(worker, /gameDate: metadata\.date \|\| game\.game_date \|\| ""/);
   assert.match(worker, /startAt: metadata\.startAt \|\| game\.start_at \|\| ""/);
   assert.match(worker, /homeProbableStarter:/);
@@ -32,7 +33,7 @@ test("予告先発APIはinternalGameIdで正規試合を解決し、同じprobab
 test("APIの取得状態とV3保存元を通常画面へ返し、キャッシュを抑止する", () => {
   assert.match(worker, /source: row\.source \|\| \(row\.source_url \? "npb" : ""\)/);
   assert.match(worker, /lastFailureCode: errorCode/);
-  assert.match(worker, /isConfirmed: status === "announced"/);
+  assert.match(worker, /isConfirmed: dataStatus === "announced"/);
   assert.match(worker, /response\.headers\.set\("Cache-Control", "no-store"\)/);
   assert.match(script, /state\.predictionTargetGame = canonicalGame/);
   assert.match(script, /applyStoredProbableStarter\(result\.probableStarter, result\)/);

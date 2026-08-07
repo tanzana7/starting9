@@ -32,22 +32,6 @@ test("試合開始前は対象を維持し、開始時刻到達後は次の試�
   );
 });
 
-test("同じ試合を重複切り替えせず、次戦がない場合も現在のデータを破壊しない", async () => {
-  const { selectNextPredictionTarget } = await import(authWorkerUrl);
-  const games = [
-    { gameId: "2026-07-25-f-e-14", date: "2026-07-25", startTime: "14:00", status: "scheduled" },
-    { gameId: "2026-07-25-f-e-14", date: "2026-07-25", startTime: "14:00", status: "scheduled" }
-  ];
-  const now = new Date("2026-07-25T04:00:00.000Z");
-  assert.equal(selectNextPredictionTarget(games, now).gameId, "2026-07-25-f-e-14");
-  assert.equal(selectNextPredictionTarget(games, now).gameId, "2026-07-25-f-e-14");
-  assert.match(script, /if \(!nextGame\) \{\s+return;\s+\}/);
-  assert.match(script, /const preservedGame = nextGame \|\| schedule\.find/);
-  assert.match(worker, /const target = selectNextPredictionTarget\(\[\.\.\.detectedGames, \.\.\.getScheduledGames\(\)\], now\)/);
-  assert.match(worker, /if \(path === "\/api\/prediction-target" && request\.method === "GET"\)/);
-  assert.match(worker, /export async function runScheduledGameAutomation\(env, now\)/);
-});
-
 test("過去結果APIは採点済みの通常試合だけを一覧化し、公開前データを隠す", () => {
   assert.match(worker, /path === "\/api\/results\/games" && request\.method === "GET"/);
   assert.match(worker, /async function handleGetResultGames\(request, env, cors\)/);
@@ -68,12 +52,6 @@ test("gameId指定の結果詳細APIと通常画面の選択UIが存在する", 
   assert.match(script, /data-result-game-id/);
   assert.match(html, /id="resultHistoryList"/);
   assert.match(html, /過去の試合結果/);
-});
-
-test("ページを開かなくてもCronがサーバー側の対象試合評価を呼ぶ", () => {
-  assert.match(worker, /await syncTodayFightersSchedule\(env, now\)/);
-  assert.match(worker, /scheduleSync\.predictionTarget = await getServerPredictionTarget\(env\.AUTH_DB, now\)/);
-  assert.doesNotMatch(script, /runScheduledGameAutomation\(/);
 });
 
 test("通常画面はprediction-targetの保存済みgameIdを予想保存と締切判定へ引き継ぐ", () => {

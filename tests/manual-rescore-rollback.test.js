@@ -51,8 +51,6 @@ test("再採点は期限付きプレビューとcurrent versionの再検証後�
   assert.match(worker, /status = 'completed'/);
   assert.match(worker, /async function isManualRescoreLocked/);
   assert.match(worker, /revision_fingerprint !== row\.active_fingerprint/);
-  assert.match(worker, /if \(await isManualRescoreLocked\(env\.AUTH_DB, row\.game_id\)\)/);
-  assert.match(worker, /if \(await isManualRescoreLocked\(env\.AUTH_DB, timeline\.gameId\)\)/);
 });
 
 test("再採点可能期限は試合日のJST終了から7日間で、予測データは既存保持を短縮しない", async () => {

@@ -1,5 +1,26 @@
 const V3_AUTH_PRODUCTION_BASE = "https://starting9-auth.tanzana7.workers.dev";
-const V3_JOB_TYPES = ["npb_identity_resolve", "prediction_close", "lineup_fetch", "lineup_finalize", "score", "ranking_rebuild", "publish", "probable_starter_fetch", "roster_fetch"];
+const V3_JOB_TYPE = Object.freeze({
+  NPB_IDENTITY_RESOLVE: "npb_identity_resolve",
+  PREDICTION_CLOSE: "prediction_close",
+  PROBABLE_STARTER_FETCH: "probable_starter_fetch",
+  ROSTER_FETCH: "roster_fetch",
+  LINEUP_FETCH: "lineup_fetch",
+  LINEUP_FINALIZE: "lineup_finalize",
+  SCORE: "score",
+  RANKING_REBUILD: "ranking_rebuild",
+  PUBLISH: "publish"
+});
+const V3_JOB_TYPES = Object.freeze([
+  V3_JOB_TYPE.NPB_IDENTITY_RESOLVE,
+  V3_JOB_TYPE.PREDICTION_CLOSE,
+  V3_JOB_TYPE.LINEUP_FETCH,
+  V3_JOB_TYPE.LINEUP_FINALIZE,
+  V3_JOB_TYPE.SCORE,
+  V3_JOB_TYPE.RANKING_REBUILD,
+  V3_JOB_TYPE.PUBLISH,
+  V3_JOB_TYPE.PROBABLE_STARTER_FETCH,
+  V3_JOB_TYPE.ROSTER_FETCH
+]);
 const V3_VIEWS = ["dashboard", "games", "workflow", "lineup", "scoring", "schedule", "emergency", "diagnostics"];
 const V3_VIEW_LABELS = {
   dashboard: "ダッシュボード",
@@ -494,6 +515,7 @@ function jobDetailCopyText(internalGameId, detail) {
   const fields = jobDetailRawFields(internalGameId, detail);
   const lines = fields.map((field) => `${field.camelName}: ${field.raw}`);
   if (job.failure_message || job.failureMessage) lines.push(`failureMessage:\n${job.failure_message || job.failureMessage}`);
+  if (detail?.plannerDecision) lines.push(`plannerDecision:\n${JSON.stringify(detail.plannerDecision, null, 2)}`);
   if (detail?.pipelineDiagnostics) lines.push(`pipelineDiagnostics:\n${JSON.stringify(detail.pipelineDiagnostics, null, 2)}`);
   if (Array.isArray(detail?.pipelineEvents) && detail.pipelineEvents.length) lines.push(`pipelineEvents:\n${JSON.stringify(detail.pipelineEvents, null, 2)}`);
   if (Array.isArray(detail?.audits) && detail.audits.length) lines.push(`audits:\n${JSON.stringify(detail.audits, null, 2)}`);
@@ -516,14 +538,16 @@ function renderInlineJobDetail(game, job) {
   const detailedJob = detail.job || detail;
   const fields = jobDetailRawFields(game.internalGameId, detail);
   const failureMessage = jobField(detailedJob, "failure_message", "failureMessage", "");
+  const plannerDecision = detail.plannerDecision || detail.pipelineDiagnostics?.plannerDecision || null;
   const fullText = jobDetailCopyText(game.internalGameId, detail);
   const copyStatus = v3State.jobDetailsCopyStatus?.get(key) || "";
   const fieldMarkup = fields.map((field) => `<div class="job-detail-field"><dt>${escapeV3(field.camelName)}</dt><dd class="job-detail-value">${escapeV3(jobDetailDisplayValue(field))}${renderJobCopyButton(field.camelName, "コピー", field.raw, game.internalGameId, job.id)}</dd></div>`).join("");
   const failureMarkup = failureMessage ? `<div class="job-detail-field job-detail-field-full"><dt>failureMessage ${renderJobCopyButton("failureMessage", "エラーをコピー", String(failureMessage), game.internalGameId, job.id)}</dt><dd><pre class="job-detail-pre">${escapeV3(String(failureMessage))}</pre></dd></div>` : "";
+  const plannerMarkup = plannerDecision ? `<div class="job-detail-field job-detail-field-full"><dt>planner decision</dt><dd><pre class="job-detail-pre">${escapeV3(JSON.stringify(plannerDecision, null, 2))}</pre></dd></div>` : "";
   const pipelineMarkup = detail.pipelineDiagnostics ? `<div class="job-detail-field job-detail-field-full"><dt>pipeline diagnostics</dt><dd><pre class="job-detail-pre">${escapeV3(JSON.stringify(detail.pipelineDiagnostics, null, 2))}</pre></dd></div>` : "";
   const eventMarkup = Array.isArray(detail.pipelineEvents) && detail.pipelineEvents.length ? `<div class="job-detail-field job-detail-field-full"><dt>pipeline events</dt><dd><pre class="job-detail-pre">${escapeV3(JSON.stringify(detail.pipelineEvents, null, 2))}</pre></dd></div>` : "";
   const auditMarkup = Array.isArray(detail.audits) && detail.audits.length ? `<div class="job-detail-field job-detail-field-full"><dt>audits</dt><dd><pre class="job-detail-pre">${escapeV3(JSON.stringify(detail.audits, null, 2))}</pre></dd></div>` : "";
-  return `<section id="${escapeV3(domId)}" class="job-detail-inline" aria-label="job詳細"><div class="job-detail-toolbar"><strong>job詳細</strong>${renderJobCopyButton("all", "詳細をすべてコピー", fullText, game.internalGameId, job.id)}<span class="job-copy-status" aria-live="polite">${escapeV3(copyStatus)}</span></div><dl class="job-detail-grid">${fieldMarkup}${failureMarkup}${pipelineMarkup}${eventMarkup}${auditMarkup}</dl><button type="button" class="job-detail-refresh" data-v3-job-detail-refresh="${escapeV3(game.internalGameId)}" data-v3-job-detail-refresh-id="${escapeV3(job.id)}">再取得</button></section>`;
+  return `<section id="${escapeV3(domId)}" class="job-detail-inline" aria-label="job詳細"><div class="job-detail-toolbar"><strong>job詳細</strong>${renderJobCopyButton("all", "詳細をすべてコピー", fullText, game.internalGameId, job.id)}<span class="job-copy-status" aria-live="polite">${escapeV3(copyStatus)}</span></div><dl class="job-detail-grid">${fieldMarkup}${failureMarkup}${plannerMarkup}${pipelineMarkup}${eventMarkup}${auditMarkup}</dl><button type="button" class="job-detail-refresh" data-v3-job-detail-refresh="${escapeV3(game.internalGameId)}" data-v3-job-detail-refresh-id="${escapeV3(job.id)}">再取得</button></section>`;
 }
 
 function renderJobRows(game, types) {

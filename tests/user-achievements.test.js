@@ -45,7 +45,7 @@ test("実績migrationはメモリSQLiteで初期実績とユーザー別重複�
 test("実績APIは本人の取得と管理者テスト用の本人付与・削除を分離する", () => {
   assert.match(worker, /\/api\/me\/achievements/);
   assert.match(worker, /requireAuthenticatedUser\(request, env, cors\)/);
-  assert.match(worker, /\/api\/dev\/achievements\/grant-test/);
+  assert.match(worker, /if \(request\.method !== "GET"\) return legacyAdminOperationRetiredResponse\(cors\)/);
   assert.match(worker, /async function handleAdminTestRoute[\s\S]*?await requireAdminUser\(request, env, cors\)/);
   assert.match(worker, /INSERT OR IGNORE INTO user_achievements/);
   assert.match(worker, /source = 'development'/);

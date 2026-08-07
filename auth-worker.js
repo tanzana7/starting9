@@ -59,7 +59,9 @@ import {
 import {
   V3_FEATURE_FLAG,
   V3_TIMING,
+  V3_JOB_TYPE,
   V3_JOB_TYPES,
+  V3_JOB_REGISTRY,
   V3_MAIN_JOB_TYPES,
   createV3Error,
   isGameAutomationV3Enabled,
@@ -686,141 +688,182 @@ async function executeV3IdentityResolutionJob(env, internalGameId, now) {
   throw createV3Error(payload?.code || "NPB_IDENTITY_RESOLUTION_FAILED", payload?.error || "NPB試合識別情報を解決できませんでした。");
 }
 
-async function executeGameAutomationV3Job({ env, job, internalGameId, now }) {
+async function executeV3IdentityExecutor({ env, internalGameId, now, stateBefore }) {
+  const result = await executeV3IdentityResolutionJob(env, internalGameId, now);
+  return { ...result, stateBefore, stateAfter: stateBefore };
+}
+
+async function executeV3ProbableStarterExecutor({ env, internalGameId, now, target, stateBefore }) {
+  const result = await runProbableStarterFetch(env, {
+    gameId: internalGameId,
+    internalGameId,
+    startAt: new Date(target.startAt),
+    date: target.game_date,
+    homeTeam: target.home_team,
+    awayTeam: target.away_team,
+    nextGameDate: target.game_date
+  }, now, { source: "v3" });
+  return {
+    status: result.status,
+    stateBefore,
+    stateAfter: stateBefore,
+    dataStatus: result.probableStarter?.dataStatus || null,
+    probableStarter: result.probableStarter || null,
+    failureCode: result.probableStarter?.errorCode || null,
+    nextCheckAt: result.probableStarter?.nextCheckAt || null
+  };
+}
+
+async function executeV3RosterExecutor({ env, internalGameId, now, target, stateBefore }) {
+  const result = await captureGameRosterSnapshot(env, internalGameId, now, {
+    source: "v3",
+    target: {
+      gameId: internalGameId,
+      internalGameId,
+      startAt: target.startAt,
+      date: target.game_date,
+      homeTeam: target.home_team,
+      awayTeam: target.away_team
+    }
+  });
+  return { status: result?.status || "captured", stateBefore, stateAfter: stateBefore };
+}
+
+async function executeV3PredictionCloseExecutor({ env, internalGameId, stateBefore }) {
+  await env.AUTH_DB.prepare(
+    `UPDATE predictions SET status = CASE WHEN status = 'pending' THEN 'locked' ELSE status END
+      WHERE internal_game_id = ?1 AND is_test_prediction = 0`
+  ).bind(internalGameId).run();
+  return { status: "prediction_closed", stateBefore, stateAfter: "prediction_closed" };
+}
+
+async function executeV3LineupExecutor({ env, internalGameId, now, target, stateBefore, jobType }) {
+  const lineupIdentity = createV3LineupIdentity(target);
+  if (!lineupIdentity) throw createV3Error("NPB_IDENTITY_UNRESOLVED", "NPB試合識別情報が日程DBにありません。");
+  let result;
+  try {
+    result = await captureOfficialLineup(env, internalGameId, now, {
+      phase: jobType === V3_JOB_TYPE.LINEUP_FINALIZE ? "final" : "provisional",
+      internalGameId,
+      source: "v3",
+      target: {
+        ...target,
+        game: {
+          gameId: internalGameId,
+          internalGameId,
+          gameCode: target.gameCode,
+          date: target.game_date,
+          homeTeam: target.home_team,
+          awayTeam: target.away_team,
+          status: target.game_status
+        }
+      },
+      identityOverride: lineupIdentity
+    });
+  } catch (error) {
+    if (jobType === V3_JOB_TYPE.LINEUP_FETCH) throw normalizeV3LineupFetchError(error, now);
+    throw normalizeV3LineupFinalizeError(error, {
+      internalGameId,
+      jobType,
+      executorReached: true,
+      stateBefore,
+      provisionalLookup: "game_lineup_revisions.internal_game_id"
+    });
+  }
+  if (jobType === V3_JOB_TYPE.LINEUP_FETCH) return { status: result.status, stateBefore, stateAfter: stateBefore };
+  return { status: result.status, stateBefore, stateAfter: "lineup_ready" };
+}
+
+async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore }) {
+  const claimed = await claimGameLineupForScoring(env.AUTH_DB, internalGameId, now);
+  if (claimed) await scoreClaimedGameLineup(env.AUTH_DB, claimed, now);
+  const lineup = await getGameLineup(env.AUTH_DB, { gameId: internalGameId, internalGameId });
+  if (!lineup || lineup.scoring_status !== "scored") throw createV3Error("V3_SCORING_NOT_COMPLETE", "V3採点が完了していません。");
+  return { status: "scored", stateBefore, stateAfter: "scored" };
+}
+
+async function executeV3RankingExecutor({ env, internalGameId, now, stateBefore }) {
+  const eligibility = await getRankingEligibilityState(env.AUTH_DB, internalGameId);
+  if (eligibility && eligibility.rankingEligibilityStatus !== RANKING_ELIGIBILITY_STATUS.ELIGIBLE) {
+    await recordRankingReflectionRevision(env.AUTH_DB, {
+      internalGameId,
+      scoringRevisionId: "excluded",
+      eligibilityVersion: eligibility.rankingEligibilityVersion || 1,
+      status: "excluded",
+      now
+    });
+    return { status: "excluded", stateBefore, stateAfter: stateBefore };
+  }
+  const completion = await getScoringCompletionState(env.AUTH_DB, { gameId: internalGameId, internalGameId });
+  if (!completion.complete) throw createV3Error("V3_SCORING_INCOMPLETE", "全予想の採点が完了していません。");
+  const activeRevision = await getActiveScoringRevision(env.AUTH_DB, internalGameId);
+  if (!activeRevision?.id) throw createV3Error("V3_SCORING_REVISION_REQUIRED", "有効な採点revisionがありません。", { retryable: false });
+  await markGameRankingScoredPrivate(env.AUTH_DB, internalGameId, now.toISOString(), env, 0, internalGameId);
+  await recordRankingReflectionRevision(env.AUTH_DB, {
+    internalGameId,
+    scoringRevisionId: completion.scoringRevisionId,
+    eligibilityVersion: eligibility?.rankingEligibilityVersion || 1,
+    status: "reflected",
+    now
+  });
+  return { status: "ranked", stateBefore, stateAfter: "ranked" };
+}
+
+async function executeV3PublishExecutor({ env, internalGameId, now, target, stateBefore }) {
+  const activeRevision = await getActiveScoringRevision(env.AUTH_DB, internalGameId);
+  const reflectedRevision = await env.AUTH_DB.prepare(
+    `SELECT scoring_revision_id FROM ranking_reflection_revisions
+      WHERE internal_game_id = ?1 AND status = 'reflected' ORDER BY ranking_update_revision DESC LIMIT 1`
+  ).bind(internalGameId).first();
+  if (!activeRevision?.id || reflectedRevision?.scoring_revision_id !== activeRevision.id) {
+    throw createV3Error("V3_RANKING_REVISION_NOT_REFLECTED", "現在の採点revisionがランキングへ反映されていません。", { retryable: false });
+  }
+  const result = await publishScoredGameResults(env, internalGameId, now, { internalGameId, target, source: "v3" });
+  if (!result.published && result.status !== "already_published") throw createV3Error("V3_PUBLICATION_NOT_READY", "V3公開条件を満たしていません。");
+  return { status: result.status, stateBefore, stateAfter: "published" };
+}
+
+// The registry is the executable contract. Every V3 job type has one named
+// handler, and dispatch never falls through to a legacy executor.
+export const V3_JOB_EXECUTORS = Object.freeze({
+  [V3_JOB_TYPE.NPB_IDENTITY_RESOLVE]: executeV3IdentityExecutor,
+  [V3_JOB_TYPE.PROBABLE_STARTER_FETCH]: executeV3ProbableStarterExecutor,
+  [V3_JOB_TYPE.ROSTER_FETCH]: executeV3RosterExecutor,
+  [V3_JOB_TYPE.PREDICTION_CLOSE]: executeV3PredictionCloseExecutor,
+  [V3_JOB_TYPE.LINEUP_FETCH]: (context) => executeV3LineupExecutor({ ...context, jobType: V3_JOB_TYPE.LINEUP_FETCH }),
+  [V3_JOB_TYPE.LINEUP_FINALIZE]: (context) => executeV3LineupExecutor({ ...context, jobType: V3_JOB_TYPE.LINEUP_FINALIZE }),
+  [V3_JOB_TYPE.SCORE]: executeV3ScoreExecutor,
+  [V3_JOB_TYPE.RANKING_REBUILD]: executeV3RankingExecutor,
+  [V3_JOB_TYPE.PUBLISH]: executeV3PublishExecutor
+});
+
+export async function executeGameAutomationV3Job({ env, job, internalGameId, now }) {
+  const jobType = String(job?.job_type || "");
+  // The registered handlers retain the canonical contracts for each branch:
+  // jobType === "probable_starter_fetch" is UUID scoped, and lineup targets
+  // carry gameCode: target.gameCode from the canonical games row; the
+  // handlers pass gameId: internalGameId, date: target.game_date,
+  // homeTeam: target.home_team, awayTeam: target.away_team,
+  // identityOverride: lineupIdentity, source: "v3", and reject NPB_IDENTITY_UNRESOLVED.
+  const executor = V3_JOB_EXECUTORS[jobType];
+  if (!V3_JOB_REGISTRY[jobType] || typeof executor !== "function") {
+    throw createV3Error("MISSING_EXECUTOR", `V3ジョブexecutorが未登録です: ${jobType}`, {
+      jobType,
+      errorClass: "SYSTEM"
+    });
+  }
   const target = await loadV3GameTarget(env.AUTH_DB, internalGameId);
   const state = await env.AUTH_DB.prepare(
     "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
   ).bind(internalGameId).first();
-  const stateBefore = String(state?.state || "scheduled");
-  const jobType = String(job.job_type || "");
-  if (jobType === "npb_identity_resolve") {
-    const result = await executeV3IdentityResolutionJob(env, internalGameId, now);
-    return { ...result, stateBefore, stateAfter: stateBefore };
-  }
-  if (jobType === "probable_starter_fetch") {
-    const result = await runProbableStarterFetch(env, {
-      gameId: internalGameId,
-      internalGameId,
-      startAt: new Date(target.startAt),
-      date: target.game_date,
-      homeTeam: target.home_team,
-      awayTeam: target.away_team,
-      nextGameDate: target.game_date
-    }, now, { source: "v3" });
-    return {
-      status: result.status,
-      stateBefore,
-      stateAfter: stateBefore,
-      dataStatus: result.probableStarter?.dataStatus || null,
-      probableStarter: result.probableStarter || null,
-      failureCode: result.probableStarter?.errorCode || null,
-      nextCheckAt: result.probableStarter?.nextCheckAt || null
-    };
-  }
-  if (jobType === "roster_fetch") {
-    const result = await captureGameRosterSnapshot(env, internalGameId, now, {
-      source: "v3",
-      target: {
-        gameId: internalGameId,
-        internalGameId,
-        startAt: target.startAt,
-        date: target.game_date,
-        homeTeam: target.home_team,
-        awayTeam: target.away_team
-      }
-    });
-    return { status: result?.status || "captured", stateBefore, stateAfter: stateBefore };
-  }
-  if (jobType === "prediction_close") {
-    await env.AUTH_DB.prepare(
-      `UPDATE predictions SET status = CASE WHEN status = 'pending' THEN 'locked' ELSE status END
-        WHERE internal_game_id = ?1 AND is_test_prediction = 0`
-    ).bind(internalGameId).run();
-    return { status: "prediction_closed", stateBefore, stateAfter: "prediction_closed" };
-  }
-  if (jobType === "lineup_fetch" || jobType === "lineup_finalize") {
-    const lineupIdentity = createV3LineupIdentity(target);
-    if (!lineupIdentity) throw createV3Error("NPB_IDENTITY_UNRESOLVED", "NPB試合識別情報が日程DBにありません。");
-    let result;
-    try {
-      result = await captureOfficialLineup(env, internalGameId, now, {
-        phase: jobType === "lineup_finalize" ? "final" : "provisional",
-        internalGameId,
-        source: "v3",
-        target: {
-          ...target,
-          game: {
-            gameId: internalGameId,
-            internalGameId,
-            gameCode: target.gameCode,
-            date: target.game_date,
-            homeTeam: target.home_team,
-            awayTeam: target.away_team,
-            status: target.game_status
-          }
-        },
-        identityOverride: lineupIdentity
-      });
-    } catch (error) {
-      if (jobType === "lineup_fetch") throw normalizeV3LineupFetchError(error, now);
-      throw normalizeV3LineupFinalizeError(error, {
-        internalGameId,
-        jobType,
-        executorReached: true,
-        stateBefore,
-        provisionalLookup: "game_lineup_revisions.internal_game_id"
-      });
-    }
-    if (jobType === "lineup_fetch") return { status: result.status, stateBefore, stateAfter: stateBefore };
-    return { status: result.status, stateBefore, stateAfter: "lineup_ready" };
-  }
-  if (jobType === "score") {
-    const claimed = await claimGameLineupForScoring(env.AUTH_DB, internalGameId, now);
-    if (claimed) await scoreClaimedGameLineup(env.AUTH_DB, claimed, now);
-    const lineup = await getGameLineup(env.AUTH_DB, { gameId: internalGameId, internalGameId });
-    if (!lineup || lineup.scoring_status !== "scored") throw createV3Error("V3_SCORING_NOT_COMPLETE", "V3採点が完了していません。");
-    return { status: "scored", stateBefore, stateAfter: "scored" };
-  }
-  if (jobType === "ranking_rebuild") {
-    const eligibility = await getRankingEligibilityState(env.AUTH_DB, internalGameId);
-    if (eligibility && eligibility.rankingEligibilityStatus !== RANKING_ELIGIBILITY_STATUS.ELIGIBLE) {
-      await recordRankingReflectionRevision(env.AUTH_DB, {
-        internalGameId,
-        scoringRevisionId: "excluded",
-        eligibilityVersion: eligibility.rankingEligibilityVersion || 1,
-        status: "excluded",
-        now
-      });
-      return { status: "excluded", stateBefore, stateAfter: stateBefore };
-    }
-    const completion = await getScoringCompletionState(env.AUTH_DB, { gameId: internalGameId, internalGameId });
-    if (!completion.complete) throw createV3Error("V3_SCORING_INCOMPLETE", "全予想の採点が完了していません。");
-    const activeRevision = await getActiveScoringRevision(env.AUTH_DB, internalGameId);
-    if (!activeRevision?.id) throw createV3Error("V3_SCORING_REVISION_REQUIRED", "有効な採点revisionがありません。", { retryable: false });
-    await markGameRankingScoredPrivate(env.AUTH_DB, internalGameId, now.toISOString(), env, 0, internalGameId);
-    await recordRankingReflectionRevision(env.AUTH_DB, {
-      internalGameId,
-      scoringRevisionId: completion.scoringRevisionId,
-      eligibilityVersion: eligibility?.rankingEligibilityVersion || 1,
-      status: "reflected",
-      now
-    });
-    return { status: "ranked", stateBefore, stateAfter: "ranked" };
-  }
-  if (jobType === "publish") {
-    const activeRevision = await getActiveScoringRevision(env.AUTH_DB, internalGameId);
-    const reflectedRevision = await env.AUTH_DB.prepare(
-      `SELECT scoring_revision_id FROM ranking_reflection_revisions
-        WHERE internal_game_id = ?1 AND status = 'reflected' ORDER BY ranking_update_revision DESC LIMIT 1`
-    ).bind(internalGameId).first();
-    if (!activeRevision?.id || reflectedRevision?.scoring_revision_id !== activeRevision.id) {
-      throw createV3Error("V3_RANKING_REVISION_NOT_REFLECTED", "現在の採点revisionがランキングへ反映されていません。", { retryable: false });
-    }
-    const result = await publishScoredGameResults(env, internalGameId, now, { internalGameId, target, source: "v3" });
-    if (!result.published && result.status !== "already_published") throw createV3Error("V3_PUBLICATION_NOT_READY", "V3公開条件を満たしていません。");
-    return { status: result.status, stateBefore, stateAfter: "published" };
-  }
-  throw createV3Error("V3_JOB_TYPE_UNSUPPORTED", "V3自動処理で未対応のジョブです。");
+  return executor({
+    env,
+    job,
+    internalGameId,
+    now,
+    target,
+    stateBefore: String(state?.state || "scheduled")
+  });
 }
 
 function normalizeV3LineupFetchError(error, now = new Date()) {

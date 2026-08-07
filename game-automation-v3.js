@@ -898,6 +898,19 @@ export function createV3Error(code, message, details = {}) {
   return error;
 }
 
+function formatV3JobFailureMessage(error) {
+  const message = String(error?.message || "V3ジョブに失敗しました。");
+  let diagnostics = "";
+  if (error?.diagnostics && typeof error.diagnostics === "object") {
+    try {
+      diagnostics = JSON.stringify(error.diagnostics);
+    } catch {
+      diagnostics = "";
+    }
+  }
+  return (diagnostics ? `${message} [diagnostics=${diagnostics}]` : message).slice(0, 240);
+}
+
 export async function getV3SchemaState(db) {
   const rows = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('games', 'game_jobs_v3', 'game_automation_v3_state')").all();
   const names = new Set((rows.results || []).map((row) => row.name));
@@ -1364,7 +1377,7 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
         maxAttempts: claimed.max_attempts,
         now: executionNow,
         errorCode: error?.code || "V3_JOB_FAILED",
-        errorMessage: String(error?.message || "V3ジョブに失敗しました。").slice(0, 240),
+        errorMessage: formatV3JobFailureMessage(error),
         retryAt: error?.retryAt || new Date(executionNow.getTime() + 10 * 60 * 1000)
       });
       const retryJob = await env.AUTH_DB.prepare("SELECT * FROM game_jobs_v3 WHERE id = ?1 LIMIT 1").bind(Number(claimed.id)).first();

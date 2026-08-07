@@ -9,7 +9,6 @@ import {
   buildPregameTimeline,
   getPregameTimeline,
   getPregameTimelines,
-  getRosterFetchDecision,
   RESULT_RELEASE_MINUTES_AFTER_START,
   getScheduledGame,
   getScheduledGames,
@@ -51,13 +50,6 @@ import {
   transitionWorkflowState
 } from "./game-workflow-jobs.js";
 import {
-  AUTOMATION_V2_STATES,
-  AUTOMATION_V2_TIMING,
-  createAutomationExecutors,
-  deriveAutomationSchedule,
-  getProbableStarterSourceDate
-} from "./game-automation-v2.js";
-import {
   RANKING_ELIGIBILITY_STATUS,
   normalizeRankingEligibilityReason,
   normalizeRankingEligibilityStatus,
@@ -66,6 +58,7 @@ import {
 } from "./game-scoring-ranking-v2.js";
 import {
   V3_FEATURE_FLAG,
+  V3_TIMING,
   V3_JOB_TYPES,
   V3_MAIN_JOB_TYPES,
   createV3Error,
@@ -79,6 +72,7 @@ import {
   deriveV3DisplaySchedule,
   getV3NextAction,
   getV3ProbableStarterSlots,
+  getV3ProbableStarterSourceDate,
   getV3CanonicalRosterSnapshot,
   normalizeProbableStarterDataStatus,
   resolveCanonicalProbableStarterRow,
@@ -130,7 +124,6 @@ const AUTO_SCORING_CRON_BATCH_SIZE = 10;
 const AUTO_SCORING_PROCESSING_TIMEOUT_MS = 10 * 60 * 1000;
 const MANUAL_RESCORE_RETENTION_DAYS = 7;
 const MANUAL_RESCORE_PREVIEW_TTL_MS = 15 * 60 * 1000;
-const AUTOMATION_HEALTH_STATE_KEY = "cron";
 const AUTO_APPROVE_SETTING_KEY = "auto_approve_enabled";
 const LEGACY_ADMIN_OPERATION_RETIRED_CODE = "LEGACY_ADMIN_OPERATION_RETIRED";
 const LEGACY_ADMIN_OPERATION_RETIRED_MESSAGE = "この操作はGame Automation V3へ移行されました。";
@@ -189,7 +182,7 @@ const NPB_FETCH_TIMEOUT_MS = 15_000;
 const PROBABLE_STARTER_RETRY_INTERVAL_MS = 60 * 60 * 1000;
 const ROSTER_MINIMUM_PLAYER_COUNT = 20;
 const ROSTER_AUTO_FETCH_RETRY_INTERVAL_MS = 30 * 60 * 1000;
-const ROSTER_AUTO_FETCH_INTERVAL_MS = AUTOMATION_V2_TIMING.rosterRegularIntervalMinutes * 60 * 1000;
+const ROSTER_AUTO_FETCH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const TEST_GAME_DEFAULT_OPPONENT_CODE = "e";
 const TEST_GAME_DEFAULT_REOPEN_MINUTES = 60;
 const GAME_DAY_NOTICE_SOURCE = "https://npb.jp/announcement/roster/";
@@ -203,9 +196,9 @@ const GAME_WORKFLOW_STEPS = Object.freeze([
   { id: "notice", offsetMinutes: -120, retryMinutes: 10 },
   { id: "close_predictions", offsetMinutes: -60 },
   { id: "lineup", offsetMinutes: -50, retryMinutes: 10 },
-  { id: "final_lineup", offsetMinutes: AUTOMATION_V2_TIMING.finalLineupMinutesAfterStart, retryMinutes: 10 },
+  { id: "final_lineup", offsetMinutes: V3_TIMING.finalLineupMinutesAfterStart, retryMinutes: 10 },
   { id: "score", offsetMinutes: 2 },
-  { id: "publish", offsetMinutes: AUTOMATION_V2_TIMING.publicationMinutesAfterStart }
+  { id: "publish", offsetMinutes: V3_TIMING.publicationMinutesAfterStart }
 ]);
 const PREGAME_TOOL_ACTIONS = Object.freeze({
   "run-notice": { logAction: "notice_fetch", transport: "service-binding", upstreamMode: "notice", fetchCode: "NOTICE_FETCH_FAILED", parseCode: "NOTICE_PARSE_FAILED", failureCode: "NOTICE_FETCH_FAILED", schemaCode: "NOTICE_SCHEMA_NOT_READY" },
@@ -382,73 +375,64 @@ export default {
       if (adminV3JobRoute && request.method === "POST") {
         return await handleAdminV3JobCreate(request, env, cors, adminV3JobRoute.internalGameId);
       }
-      if (path === "/api/admin/mode-capabilities" && request.method === "GET") {
-        return await handleAdminModeCapabilities(request, env, cors);
-      }
-      if (path === "/api/admin/automation/health" && request.method === "GET") {
-        return await handleAdminAutomationHealth(request, env, cors);
-      }
-      if (path === "/api/admin/game-progress-status" && request.method === "GET") {
-        return await handleAdminGameProgressStatus(request, env, cors);
-      }
-      if (path === "/api/admin/workflow-logs" && request.method === "GET") {
-        return await handleAdminWorkflowLogs(request, env, cors);
-      }
-      if (path === "/api/admin/audit/game-identities" && request.method === "GET") {
-        return await handleAdminGameIdentityAudit(request, env, cors);
+      if ([
+        "/api/admin/mode-capabilities",
+        "/api/admin/automation/health",
+        "/api/admin/game-progress-status",
+        "/api/admin/workflow-logs",
+        "/api/admin/audit/game-identities"
+      ].includes(path)) {
+        return await requireAndRetireLegacyAdminMutation(request, env, cors);
       }
       const gameIdentityRepairAuditRoute = parseGameIdentityRepairAuditRoute(path);
-      if (gameIdentityRepairAuditRoute && request.method === "GET") {
-        return await handleAdminGameIdentityRepairExecutionAudit(request, env, cors, gameIdentityRepairAuditRoute.repairId);
+      if (gameIdentityRepairAuditRoute) {
+        return await requireAndRetireLegacyAdminMutation(request, env, cors);
       }
-      if (path === "/api/admin/audit/game-identity-repairs" && request.method === "GET") {
-        return await handleAdminGameIdentityRepairPreview(request, env, cors);
+      if (path === "/api/admin/audit/game-identity-repairs") {
+        return await requireAndRetireLegacyAdminMutation(request, env, cors);
       }
-      if (path === "/api/admin/game-identities/repairs" && request.method === "POST") {
+      if (path === "/api/admin/game-identities/repairs") {
         return await requireAndRetireLegacyAdminMutation(request, env, cors);
       }
       const gameIdentityRepairRollbackRoute = parseGameIdentityRepairRollbackRoute(path);
-      if (gameIdentityRepairRollbackRoute && request.method === "POST") {
+      if (gameIdentityRepairRollbackRoute) {
         return await requireAndRetireLegacyAdminMutation(request, env, cors);
       }
-      if (path === "/api/admin/audit/game-workflows" && request.method === "GET") {
-        return await handleAdminGameWorkflowAudit(request, env, cors);
+      if (path === "/api/admin/audit/game-workflows") {
+        return await requireAndRetireLegacyAdminMutation(request, env, cors);
       }
       const historicalGameWorkflowAuditRoute = parseHistoricalGameWorkflowAuditRoute(path);
-      if (historicalGameWorkflowAuditRoute && request.method === "GET") {
-        return await handleAdminHistoricalGameWorkflow(request, env, cors, historicalGameWorkflowAuditRoute.internalGameId);
+      if (historicalGameWorkflowAuditRoute) {
+        return await requireAndRetireLegacyAdminMutation(request, env, cors);
       }
-      if (path === "/api/admin/audit/current-game-workflow" && request.method === "GET") {
-        return await handleAdminCurrentGameWorkflow(request, env, cors);
+      if (path === "/api/admin/audit/current-game-workflow") {
+        return await requireAndRetireLegacyAdminMutation(request, env, cors);
       }
-      if (path === "/api/admin/audit/release-readiness" && request.method === "GET") {
-        return await handleAdminReleaseReadiness(request, env, cors);
+      if (path === "/api/admin/audit/release-readiness") {
+        return await requireAndRetireLegacyAdminMutation(request, env, cors);
       }
       const probableStarterRefreshRoute = parseProbableStarterRefreshRoute(path);
       if (probableStarterRefreshRoute && request.method === "POST") {
         return await requireAndRetireLegacyAdminMutation(request, env, cors);
       }
-      if (path === "/api/admin/automation/settings" && request.method === "GET") {
-        return await handleAdminAutomationSettingsGet(request, env, cors);
-      }
-      if (path === "/api/admin/automation/settings" && request.method === "PUT") {
+      if (path === "/api/admin/automation/settings") {
         return await requireAndRetireLegacyAdminMutation(request, env, cors);
       }
       const adminScoringRoute = parseAdminScoringRoute(path);
       if (adminScoringRoute) {
-        return await handleAdminScoringRoute(request, env, cors, adminScoringRoute);
+        return await requireAndRetireLegacyAdminMutation(request, env, cors);
       }
       const autoScoringTestRoute = parseAutoScoringTestRoute(path);
       if (autoScoringTestRoute) {
-        return await handleAutoScoringTestRoute(request, env, cors, autoScoringTestRoute);
+        return await requireAndRetireLegacyAdminMutation(request, env, cors);
       }
       const adminTestRoute = parseAdminTestRoute(path);
       if (adminTestRoute) {
-        return await handleAdminTestRoute(request, env, cors, adminTestRoute);
+        return await requireAndRetireLegacyAdminMutation(request, env, cors);
       }
       const adminTestGameRoute = parseAdminTestGameRoute(path);
       if (adminTestGameRoute) {
-        return await handleAdminTestGameRoute(request, env, cors, adminTestGameRoute);
+        return await requireAndRetireLegacyAdminMutation(request, env, cors);
       }
       if (path === "/api/perfect-achievers" && request.method === "GET") {
         return await handleGetPerfectAchievers(request, env, cors);
@@ -491,9 +475,10 @@ export default {
 };
 
 async function runScheduledGameAutomationV3(env, now) {
-  const writeAudit = async ({ job, claimToken = null, stateBefore = null, execution = null, failure = null, occurredAt = now } = {}) => {
+  const writeAudit = async ({ eventType = "job", job, claimToken = null, stateBefore = null, execution = null, failure = null, occurredAt = now } = {}) => {
     const auditColumns = await getTableColumnSet(env.AUTH_DB, "game_automation_v3_audit");
     const columns = [
+      ...(auditColumns.has("event_type") ? ["event_type"] : []),
       "internal_game_id", "job_id", "job_type", "scheduled_slot_at", "claim_id",
       "state_before", "state_after", "attempt_count", "failure_code", "failure_message",
       ...(auditColumns.has("data_status") ? ["data_status"] : []), "occurred_at", "source"
@@ -504,6 +489,7 @@ async function runScheduledGameAutomationV3(env, now) {
     const failureCode = failure?.code || execution?.failureCode || job?.failure_code || probableStarter?.errorCode || null;
     const failureMessage = failure?.message || execution?.failureMessage || job?.failure_message || null;
     const values = [
+      ...(auditColumns.has("event_type") ? [eventType] : []),
       job?.internal_game_id || null,
       job?.id || null,
       job?.job_type || "plan",
@@ -536,29 +522,28 @@ async function runScheduledGameAutomationV3(env, now) {
         : created
           ? (isRoster ? "roster_job_created" : isProbable ? "workflow_job_created" : "v3_job_created")
           : (isRoster ? "roster_job_plan_observed" : isProbable ? "probable_starter_job_plan_observed" : "v3_job_plan_observed");
-      await recordWorkflowJobEvent(env.AUTH_DB, {
+      await writeAudit({
         eventType,
-        status: isClaimAudit ? "info" : (created ? "info" : "warning"),
-        internalGameId: game?.internalGameId || job?.internal_game_id || "",
         job: {
           ...(job || {}),
-          legacyGameId: job?.legacyGameId || game?.legacyGameId || game?.gameId || game?.internalGameId || "",
+          internal_game_id: job?.internal_game_id || game?.internalGameId || null,
           job_type: jobType,
-          scheduled_slot_at: plan?.scheduledSlotAt?.toISOString?.() || job?.scheduled_slot_at || null
+          scheduled_slot_at: plan?.scheduledSlotAt?.toISOString?.() || job?.scheduled_slot_at || null,
+          status: claimResult === "claimed" ? "claimed" : (created ? "pending" : existingStatus || job?.status || "observed")
         },
-        now,
-        errorCode: created ? "" : reasonCode,
-        metadata: {
-          scheduledSlotAt: plan?.scheduledSlotAt?.toISOString?.() || null,
+        execution: {
+          status: isClaimAudit ? "claimed" : (created ? "created" : "observed"),
+          reasonCode: created ? null : reasonCode,
+          planningDiagnostics: diagnostic || null,
           insertedRowCount: Number(insertedRowCount || 0),
           actualJobExists: Boolean(job?.id),
           existingJobId: existingJobId || null,
           existingScheduledSlotAt: existingScheduledSlotAt || null,
           existingStatus: existingStatus || null,
-          planningDiagnostics: diagnostic || null,
           claimResult: claimResult || diagnostic?.claimResult || "not_attempted",
           uniqueKey: "internal_game_id|job_type|scheduled_slot_at"
-        }
+        },
+        occurredAt: now
       });
     },
     onSuccess: async ({ job, claimToken, result: execution, now: completedAt }) => {
@@ -753,6 +738,7 @@ async function executeGameAutomationV3Job({ env, job, internalGameId, now }) {
       result = await captureOfficialLineup(env, internalGameId, now, {
         phase: jobType === "lineup_finalize" ? "final" : "provisional",
         internalGameId,
+        source: "v3",
         target: {
           ...target,
           game: {
@@ -816,7 +802,7 @@ async function executeGameAutomationV3Job({ env, job, internalGameId, now }) {
     if (!activeRevision?.id || reflectedRevision?.scoring_revision_id !== activeRevision.id) {
       throw createV3Error("V3_RANKING_REVISION_NOT_REFLECTED", "現在の採点revisionがランキングへ反映されていません。", { retryable: false });
     }
-    const result = await publishScoredGameResults(env, internalGameId, now, { internalGameId, target });
+    const result = await publishScoredGameResults(env, internalGameId, now, { internalGameId, target, source: "v3" });
     if (!result.published && result.status !== "already_published") throw createV3Error("V3_PUBLICATION_NOT_READY", "V3公開条件を満たしていません。");
     return { status: result.status, stateBefore, stateAfter: "published" };
   }
@@ -875,35 +861,6 @@ async function isManualRescoreLocked(db, gameId) {
   } catch (error) {
     if (isPregameSchemaError(error)) return false;
     throw error;
-  }
-}
-
-async function recordAutomationHealth(db, { now, summary, error = null }) {
-  const timestamp = now instanceof Date ? now.toISOString() : new Date(now).toISOString();
-  const failed = Boolean(error) || Number(summary?.failed || 0) > 0;
-  const errorCode = failed ? String(error?.code || "GAME_AUTOMATION_FAILED").slice(0, 80) : null;
-  try {
-    await db.prepare(
-      `INSERT INTO game_automation_health
-         (state_key, cron_last_run_at, cron_last_success_at, cron_last_error_at, cron_last_error_code, processed_game_count, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?2)
-       ON CONFLICT(state_key) DO UPDATE SET
-         cron_last_run_at = excluded.cron_last_run_at,
-         cron_last_success_at = CASE WHEN excluded.cron_last_success_at IS NULL THEN game_automation_health.cron_last_success_at ELSE excluded.cron_last_success_at END,
-         cron_last_error_at = CASE WHEN excluded.cron_last_error_at IS NULL THEN game_automation_health.cron_last_error_at ELSE excluded.cron_last_error_at END,
-         cron_last_error_code = CASE WHEN excluded.cron_last_error_code IS NULL THEN NULL ELSE excluded.cron_last_error_code END,
-         processed_game_count = excluded.processed_game_count,
-         updated_at = excluded.updated_at`
-    ).bind(
-      AUTOMATION_HEALTH_STATE_KEY,
-      timestamp,
-      failed ? null : timestamp,
-      failed ? timestamp : null,
-      errorCode,
-      Number(summary?.games || 0)
-    ).run();
-  } catch (healthError) {
-    console.warn(`[GAME_AUTOMATION] state=health action=record status=failed code=${healthError?.code || "AUTOMATION_HEALTH_RECORD_FAILED"}`);
   }
 }
 
@@ -1098,6 +1055,7 @@ async function recordProbableStarterDecision(db, {
   metadata = {},
   source = "cron"
 } = {}) {
+  if (source === "v3") return false;
   return recordWorkflowLog(db, {
     eventType,
     status,
@@ -1129,7 +1087,7 @@ export function isProbableStarterTerminal(row) {
 async function runProbableStarterFetch(env, target, now, { source = "cron" } = {}) {
   const current = now instanceof Date ? now : new Date(now);
   const gameId = String(target?.gameId || "");
-  const sourceDate = getProbableStarterSourceDate({
+  const sourceDate = getV3ProbableStarterSourceDate({
     now: current,
     currentGameStartAt: target?.startAt,
     nextGameDate: target?.nextGameDate || ""
@@ -1146,20 +1104,22 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
     });
     throw createPregameError("SCHEDULE_UNAVAILABLE", "予告先発の対象試合を確認できません。", { httpStatus: 409 });
   }
-  if (await isProbableStarterTestGame(env.AUTH_DB, gameId)) {
+  if (source !== "v3" && await isProbableStarterTestGame(env.AUTH_DB, gameId)) {
     return { status: "skipped", reason: "test_game", gameId };
   }
 
   const fetchedAt = current.toISOString();
-  await recordWorkflowLog(env.AUTH_DB, {
-    eventType: "probable_starter_fetch_started",
-    status: "info",
-    gameId,
-    occurredAt: current,
-    message: "予告先発の取得を開始しました。",
-    metadata: { source, sourceDate },
-    source
-  });
+  if (source !== "v3") {
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "probable_starter_fetch_started",
+      status: "info",
+      gameId,
+      occurredAt: current,
+      message: "予告先発の取得を開始しました。",
+      metadata: { source, sourceDate },
+      source
+    });
+  }
 
   let previous = null;
   let terminalLogged = false;
@@ -3456,54 +3416,6 @@ async function handleAdminV3Overview(request, env, cors) {
       generatedSlots: [],
       dueSlots: []
     };
-    try {
-      const diagnosticLog = await env.AUTH_DB.prepare(
-        `SELECT occurred_at, error_code, metadata
-           FROM game_workflow_logs
-          WHERE game_id = ?1
-            AND event_type IN ('probable_starter_announced', 'probable_starter_unannounced', 'probable_starter_fetch_failed', 'probable_starter_job_plan_observed', 'probable_starter_job_claimed')
-          ORDER BY occurred_at DESC LIMIT 1`
-      ).bind(game.internalGameId).first();
-      if (diagnosticLog) {
-        const metadata = parseWorkflowLogMetadata(diagnosticLog.metadata);
-        const planning = metadata.planningDiagnostics || {};
-        probableStarterDiagnostics = {
-          ...probableStarterDiagnostics,
-          httpStatus: metadata.httpStatus ?? null,
-          responseType: metadata.responseType || null,
-          parserResult: metadata.parserResult || null,
-          candidateCount: Number.isFinite(Number(metadata.candidateCount)) ? Number(metadata.candidateCount) : null,
-          homePitcherName: metadata.homePitcherName || null,
-          awayPitcherName: metadata.awayPitcherName || null,
-          fetchedHomeTeam: metadata.fetchedHomeTeam || null,
-          fetchedAwayTeam: metadata.fetchedAwayTeam || null,
-          fetchedGameDate: metadata.fetchedGameDate || null,
-          fetchedNpbGameCode: metadata.fetchedNpbGameCode || null,
-          rawDataStatus: metadata.rawDataStatus || probableStarterDiagnostics.rawDataStatus || null,
-          nextCheckAt: serializedProbableStarter?.nextCheckAt || metadata.nextCheckAt || null,
-          occurredAt: diagnosticLog.occurred_at || null,
-          generatedSlots: Array.isArray(planning.generatedSlots) ? planning.generatedSlots : [],
-          dueSlots: Array.isArray(planning.dueSlots) ? planning.dueSlots : [],
-          selectedDueSlot: planning.selectedDueSlot || null,
-          homePitcherPresent: planning.homePitcherPresent === true,
-          awayPitcherPresent: planning.awayPitcherPresent === true,
-          openJobExists: planning.openJobExists === true,
-          openJobId: planning.openJobId || null,
-          sameSlotJobExists: planning.sameSlotJobExists === true,
-          sameSlotJobId: planning.sameSlotJobId || null,
-          insertAttempted: planning.insertAttempted === true,
-          insertedRowCount: Number.isFinite(Number(planning.insertedRowCount)) ? Number(planning.insertedRowCount) : null,
-          insertReasonCode: planning.insertReasonCode || null,
-          claimEligible: planning.claimEligible === true,
-          claimResult: planning.claimResult || "not_attempted",
-          conflictingJobId: metadata.existingJobId || null,
-          conflictingScheduledSlotAt: metadata.existingScheduledSlotAt || null,
-          conflictingStatus: metadata.existingStatus || null
-        };
-      }
-    } catch (error) {
-      console.error(`[ADMIN_V3_OVERVIEW] internalGameId=${game.internalGameId} stage=probable_starter_diagnostics_read failureCode=${error?.code || "V3_PROBABLE_STARTER_DIAGNOSTICS_READ_FAILED"}`);
-    }
     let rosterDiagnostics = {
       internalGameId: game.internalGameId,
       generatedSlots: [],
@@ -3522,29 +3434,6 @@ async function handleAdminV3Overview(request, env, cors) {
       rosterSnapshotInternalGameId: null,
       rosterSnapshotStatus: null
     };
-    try {
-      const rosterLog = await env.AUTH_DB.prepare(
-        `SELECT occurred_at, error_code, metadata
-           FROM game_workflow_logs
-          WHERE game_id = ?1
-            AND event_type IN ('roster_job_created', 'roster_job_plan_observed', 'roster_job_claimed')
-          ORDER BY occurred_at DESC LIMIT 1`
-      ).bind(game.internalGameId).first();
-      if (rosterLog) {
-        const metadata = parseWorkflowLogMetadata(rosterLog.metadata);
-        rosterDiagnostics = {
-          ...rosterDiagnostics,
-          ...(metadata.planningDiagnostics && typeof metadata.planningDiagnostics === "object" ? metadata.planningDiagnostics : {}),
-          occurredAt: rosterLog.occurred_at || null,
-          errorCode: rosterLog.error_code || null,
-          claimResult: metadata.claimResult || "not_attempted",
-          actualJobExists: metadata.actualJobExists === true || Boolean(metadata.existingJobId),
-          existingJobId: metadata.existingJobId || null
-        };
-      }
-    } catch (error) {
-      console.error(`[ADMIN_V3_OVERVIEW] internalGameId=${game.internalGameId} stage=roster_diagnostics_read failureCode=${error?.code || "V3_ROSTER_DIAGNOSTICS_READ_FAILED"}`);
-    }
     const resolvedState = state || { state: "scheduled", version: 0 };
     const jobRows = jobs.results || [];
     const latestJob = (types) => jobRows
@@ -4148,19 +4037,6 @@ async function handleAdminV3JobCreate(request, env, cors, internalGameId) {
     const status = code === "V3_GAME_NOT_REGISTERED" ? 404 : 400;
     return jsonResponse({ ok: false, code, error: String(error?.message || "V3ジョブを作成できませんでした。") }, status, cors);
   }
-}
-
-async function handleAdminModeCapabilities(request, env, cors) {
-  const access = await requireAdminUser(request, env, cors);
-  if (!access.ok) {
-    return access.response;
-  }
-  return jsonResponse({
-    ok: true,
-    authenticated: true,
-    role: "admin",
-    adminModeAvailable: true
-  }, 200, cors);
 }
 
 function parseAdminV3JobRoute(path) {
@@ -6113,23 +5989,22 @@ async function handleAdminGameScheduleUpdate(request, env, cors, metadata, user)
     const season = input?.season === undefined ? current.season : Number(input.season);
     const stadium = String(input?.stadium === undefined ? (current.stadium || "") : input.stadium).trim().slice(0, 160);
     const isActive = input?.isActive === undefined ? Number(current.is_active ?? 1) : (input.isActive ? 1 : 0);
-    const canonical = deriveAutomationSchedule({
-      internalGameId: metadata.internalGameId,
-      gameDate,
-      startAt,
-      homeTeam,
-      awayTeam,
-      npbGameCode,
-      status,
-      updatedBy: user?.id ? `admin:${user.id}` : "admin",
-      updatedAt: now.toISOString()
-    });
+    const v3Schedule = deriveV3Schedule({ startAt });
+    const canonical = v3Schedule ? {
+      startAt: v3Schedule.startAt.toISOString(),
+      predictionDeadline: v3Schedule.predictionDeadline.toISOString(),
+      rosterFetchAt1: v3Schedule.rosterFetchAt1.toISOString(),
+      rosterFetchAt2: v3Schedule.rosterFetchAt2.toISOString(),
+      lineupPollingStart: v3Schedule.lineupPollingStart.toISOString(),
+      finalLineupAt: v3Schedule.finalLineupAt.toISOString(),
+      publicationAt: v3Schedule.publicationAt.toISOString()
+    } : null;
     if (!canonical) return jsonResponse({ ok: false, code: "SCHEDULE_INPUT_INVALID", error: "日程情報が不正です。" }, 400, cors);
     const previousStartAt = new Date(current.start_time || "");
-    const previousDeadline = Number.isNaN(previousStartAt.getTime()) ? null : new Date(previousStartAt.getTime() - AUTOMATION_V2_TIMING.predictionDeadlineMinutes * 60000);
+    const previousDeadline = Number.isNaN(previousStartAt.getTime()) ? null : new Date(previousStartAt.getTime() - V3_TIMING.predictionDeadlineMinutes * 60000);
     const wasClosed = previousDeadline && now >= previousDeadline;
     const scheduleColumns = await getTableColumnSet(env.AUTH_DB, "game_schedule_change_history");
-    if (!scheduleColumns.size) return jsonResponse({ ok: false, code: "AUTOMATION_V2_SCHEMA_NOT_READY", error: "日程変更履歴のスキーマが準備されていません。" }, 503, cors);
+    if (!scheduleColumns.size) return jsonResponse({ ok: false, code: "V3_SCHEDULE_SCHEMA_NOT_READY", error: "日程変更履歴のスキーマが準備されていません。" }, 503, cors);
 
     const fields = ["game_date = ?1", "start_time = ?2", "home_team = ?3", "away_team = ?4", "game_status = ?5", "updated_at = ?6"];
     const values = [gameDate, canonical.startAt, homeTeam, awayTeam, status, now.toISOString()];
@@ -7399,14 +7274,6 @@ function isNormalRosterTimeline(timeline) {
 async function runDueRosterCaptureJobs(env, now, timelines = getPregameTimelines()) {
   throw createV3Error(LEGACY_AUTOMATION_RETIRED_CODE, "V1/V2 roster runner is retired.", { httpStatus: 410, retryable: false });
 }
-async function handleAdminAutomationHealth(request, env, cors) {
-  const access = await requireAdminUser(request, env, cors);
-  if (!access.ok) return access.response;
-  const response = jsonResponse({ ok: true, automation: await getAutomationHealth(env.AUTH_DB) }, 200, cors);
-  response.headers.set("Cache-Control", "no-store");
-  return response;
-}
-
 export function normalizeAutoApproveEnabled(value, fallback = true) {
   if (value === true || value === 1 || value === "1") return true;
   if (value === false || value === 0 || value === "0") return false;
@@ -7471,28 +7338,8 @@ async function handleAdminAutomationSettingsPut(request, env, cors) {
   return response;
 }
 
-async function getAutomationHealth(db) {
-  try {
-    const row = await db.prepare(
-      `SELECT cron_last_run_at, cron_last_success_at, cron_last_error_at,
-              cron_last_error_code, processed_game_count
-         FROM game_automation_health
-        WHERE state_key = ?1 LIMIT 1`
-    ).bind(AUTOMATION_HEALTH_STATE_KEY).first();
-    return {
-      available: true,
-      cronLastRunAt: row?.cron_last_run_at || null,
-      cronLastSuccessAt: row?.cron_last_success_at || null,
-      cronLastErrorAt: row?.cron_last_error_at || null,
-      cronLastError: row?.cron_last_error_code || "",
-      processedGameCount: Number(row?.processed_game_count || 0)
-    };
-  } catch (error) {
-    if (isPregameSchemaError(error)) {
-      return { available: false, cronLastRunAt: null, cronLastSuccessAt: null, cronLastErrorAt: null, cronLastError: "", processedGameCount: 0 };
-    }
-    throw error;
-  }
+function getAutomationHealth() {
+  return { available: false, cronLastRunAt: null, cronLastSuccessAt: null, cronLastErrorAt: null, cronLastError: "", processedGameCount: 0 };
 }
 
 async function getGameDayStatus(db, identity) {
@@ -7977,16 +7824,21 @@ async function resolveRosterScheduleTarget(db, gameId, target = {}) {
 }
 
 async function captureGameRosterSnapshot(env, gameId, now, { force = false, source = "admin", pregame = false, pregameMarker = "", fetchSlot = "", target = null } = {}) {
+  const isV3 = source === "v3";
   const identity = await resolveRosterScheduleTarget(env.AUTH_DB, gameId, target || {});
   const storage = await requireInternalGameIdForWrite(env.AUTH_DB, {
     table: "game_roster_snapshots",
     gameId,
     internalGameId: identity.internalGameId || identity.game?.internalGameId || ""
   });
-  await ensurePregameAutomationRow(env.AUTH_DB, identity, now);
-  const frozen = await env.AUTH_DB.prepare("SELECT roster_fixed_at FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
+  if (!isV3) await ensurePregameAutomationRow(env.AUTH_DB, identity, now);
+  const frozen = isV3
+    ? null
+    : await env.AUTH_DB.prepare("SELECT roster_fixed_at FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
   if (frozen?.roster_fixed_at) return { status: "frozen", fixedAt: frozen.roster_fixed_at };
-  const existing = await env.AUTH_DB.prepare("SELECT game_id FROM game_roster_snapshots WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
+  const existing = isV3 && storage.schemaReady
+    ? await env.AUTH_DB.prepare("SELECT game_id, roster_json FROM game_roster_snapshots WHERE internal_game_id = ?1 LIMIT 1").bind(storage.internalGameId).first()
+    : await env.AUTH_DB.prepare("SELECT game_id, roster_json FROM game_roster_snapshots WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
   if (existing && !force) return { status: "already_captured" };
   try {
     const payload = await fetchNpbWorkerJson(env, { mode: "roster" });
@@ -7994,29 +7846,30 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
     if (!roster || payload.warning) throw createPregameError("INVALID_ROSTER", "NPBロースターの解析結果が不完全です。");
     const capturedAt = String(payload.fetchedAt || now.toISOString());
     const rosterJson = JSON.stringify(roster);
-    const previousRosterJson = existing
-      ? await env.AUTH_DB.prepare("SELECT roster_json FROM game_roster_snapshots WHERE game_id = ?1 LIMIT 1").bind(gameId).first()
-      : null;
+    const previousRosterJson = existing;
     if (previousRosterJson?.roster_json && rosterFingerprint(parseJsonArray(previousRosterJson.roster_json)) === rosterFingerprint(roster)) {
-      await updateRosterFetchState(env.AUTH_DB, gameId, now, { source, success: true, pregame, pregameMarker, fetchSlot });
+      if (!isV3) await updateRosterFetchState(env.AUTH_DB, gameId, now, { source, success: true, pregame, pregameMarker, fetchSlot });
       return { status: "unchanged", playerCount: roster.length, capturedAt, roster, unchanged: true };
     }
     const internalColumn = storage.schemaReady ? ", internal_game_id" : "";
     const internalValue = storage.schemaReady ? ", ?6" : "";
-    await env.AUTH_DB.batch([
+    const statements = [
       env.AUTH_DB.prepare(
         `INSERT INTO game_roster_snapshots (game_id, game_date, captured_at, roster_json, source, player_count, status, created_at, updated_at${internalColumn})
          VALUES (?1, ?2, ?3, ?4, 'npb-roster', ?5, 'captured', ?3, ?3${internalValue})
          ON CONFLICT(game_id) DO UPDATE SET${storage.schemaReady ? " internal_game_id = CASE WHEN excluded.internal_game_id IS NULL OR excluded.internal_game_id = '' THEN game_roster_snapshots.internal_game_id ELSE excluded.internal_game_id END," : ""} captured_at = excluded.captured_at, roster_json = excluded.roster_json, player_count = excluded.player_count, updated_at = excluded.updated_at`
       ).bind(...(storage.schemaReady
         ? [gameId, identity.game.date, capturedAt, rosterJson, roster.length, storage.internalGameId]
-        : [gameId, identity.game.date, capturedAt, rosterJson, roster.length])),
-      env.AUTH_DB.prepare(
+        : [gameId, identity.game.date, capturedAt, rosterJson, roster.length]))
+    ];
+    if (!isV3) {
+      statements.push(env.AUTH_DB.prepare(
         `UPDATE game_pregame_automation SET roster_status = 'captured', roster_captured_at = ?1, last_error_code = NULL, last_error_message = NULL, updated_at = ?1 WHERE game_id = ?2`
-      ).bind(capturedAt, gameId)
-    ]);
+      ).bind(capturedAt, gameId));
+    }
+    await env.AUTH_DB.batch(statements);
     // V3 writes stay on the canonical UUID row; historical legacy rows are read-only.
-    await updateRosterFetchState(env.AUTH_DB, gameId, now, { source, success: true, pregame, pregameMarker, fetchSlot });
+    if (!isV3) await updateRosterFetchState(env.AUTH_DB, gameId, now, { source, success: true, pregame, pregameMarker, fetchSlot });
     return {
       status: "captured",
       playerCount: roster.length,
@@ -8035,20 +7888,22 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
       resolvedBy: identity.resolvedBy || "canonical_schedule_db",
       startAtFound: Boolean(identity.startAt && !Number.isNaN(new Date(identity.startAt).getTime()))
     };
-    await updateRosterFetchState(env.AUTH_DB, gameId, now, { source, errorCode: String(error?.code || "ROSTER_FETCH_FAILED") });
-    try {
-      await recordPregameError(env.AUTH_DB, gameId, "roster", error, now);
-    } catch (recordError) {
-      console.error(`pregame roster error record failed: game=${gameId} code=${recordError?.code || "schema"}`);
+    if (!isV3) {
+      await updateRosterFetchState(env.AUTH_DB, gameId, now, { source, errorCode: String(error?.code || "ROSTER_FETCH_FAILED") });
+      try {
+        await recordPregameError(env.AUTH_DB, gameId, "roster", error, now);
+      } catch (recordError) {
+        console.error(`pregame roster error record failed: game=${gameId} code=${recordError?.code || "schema"}`);
+      }
     }
     throw error;
   }
 }
 
-async function adoptPersistedLineupCandidate(env, gameId, now, { internalGameId = "", target = null } = {}) {
+async function adoptPersistedLineupCandidate(env, gameId, now, { internalGameId = "", target = null, source = "legacy" } = {}) {
   const startAt = new Date(target?.startAt || "");
   if (!INTERNAL_GAME_ID_PATTERN.test(String(internalGameId || "")) || Number.isNaN(startAt.getTime())) return null;
-  const finalAt = new Date(startAt.getTime() + AUTOMATION_V2_TIMING.finalLineupMinutesAfterStart * 60000);
+  const finalAt = new Date(startAt.getTime() + V3_TIMING.finalLineupMinutesAfterStart * 60000);
   if (now < finalAt) return null;
   const rows = await env.AUTH_DB.prepare(
     "SELECT * FROM game_lineup_revisions WHERE game_id = ?1 ORDER BY version DESC LIMIT 20"
@@ -8067,19 +7922,22 @@ async function adoptPersistedLineupCandidate(env, gameId, now, { internalGameId 
     });
     await activateLineupRevision(env.AUTH_DB, { gameId, version: row.version, internalGameId, finalizedAt: now, finalizedBy: "system" });
     await linkFinalLineupRevision(env.AUTH_DB, { gameId, internalGameId, version: row.version, finalizedAt: now, finalizedBy: "system" });
-    await env.AUTH_DB.prepare(
-      `UPDATE game_pregame_automation
-          SET lineup_status = 'captured', lineup_captured_at = ?1, final_lineup_attempt_at = ?1,
-              next_lineup_attempt_at = NULL, last_error_code = NULL, last_error_message = NULL, updated_at = ?1
-        WHERE game_id = ?2`
-    ).bind(now.toISOString(), gameId).run();
+    if (source !== "v3") {
+      await env.AUTH_DB.prepare(
+        `UPDATE game_pregame_automation
+            SET lineup_status = 'captured', lineup_captured_at = ?1, final_lineup_attempt_at = ?1,
+                next_lineup_attempt_at = NULL, last_error_code = NULL, last_error_message = NULL, updated_at = ?1
+          WHERE game_id = ?2`
+      ).bind(now.toISOString(), gameId).run();
+    }
     return { status: "captured", recoveryMode: "persisted_lineup_revision_adoption", autoScoring: serializeGameLineup(record), lineupRevision: row };
   }
   return null;
 }
 
-async function captureOfficialLineup(env, gameId, now, { force = false, phase = "provisional", autoApproveEnabled = true, internalGameId = "", target = null, identityOverride = null } = {}) {
+async function captureOfficialLineup(env, gameId, now, { force = false, phase = "provisional", autoApproveEnabled = true, internalGameId = "", target = null, identityOverride = null, source = "legacy" } = {}) {
   const isFinalCapture = phase === "final";
+  const isV3 = source === "v3";
   const existing = await getGameLineup(env.AUTH_DB, { gameId, internalGameId });
   if (existing) {
     return {
@@ -8089,14 +7947,14 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
     };
   }
   if (isFinalCapture) {
-    const adopted = await adoptPersistedLineupCandidate(env, gameId, now, { internalGameId, target });
+    const adopted = await adoptPersistedLineupCandidate(env, gameId, now, { internalGameId, target, source });
     if (adopted) return adopted;
   }
   if (!identityOverride) {
     throw createV3Error(LEGACY_AUTOMATION_RETIRED_CODE, "旧スタメン取得経路は停止されています。V3のinternal_game_id経路を使用してください。", { httpStatus: 410, retryable: false });
   }
   const identity = identityOverride;
-  await ensurePregameAutomationRow(env.AUTH_DB, identity, now);
+  if (!isV3) await ensurePregameAutomationRow(env.AUTH_DB, identity, now);
   if (isFinalCapture ? now < identity.finalLineupFetchAt : !isBeforeGameStart(identity.startAt, now)) {
     // 試合開始後に残った仮スタメンjobは「未発表」ではない。
     // executorがfinal_lineup_fetchを後続作成できるよう、正常な引き継ぎ結果にする。
@@ -8119,7 +7977,8 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
     if (!isFinalCapture) {
       const revision = await saveProvisionalOfficialLineup(env.AUTH_DB, gameId, actual.lineup, detectedAt, now, {
         internalGameId,
-        validation: actual.validation || null
+        validation: actual.validation || null,
+        source
       });
       return { status: "provisional", sourceUrl: payload.sourceUrl, lineup: actual.lineup, detectedAt: detectedAt.toISOString(), lineupRevision: revision };
     }
@@ -8143,20 +8002,24 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
     });
     await activateLineupRevision(env.AUTH_DB, { gameId, version: revision.version, internalGameId, finalizedAt: now, finalizedBy: "system" });
     await linkFinalLineupRevision(env.AUTH_DB, { gameId, internalGameId, version: revision.version, finalizedAt: now, finalizedBy: "system" });
-    await env.AUTH_DB.prepare(
-      `UPDATE game_pregame_automation
-          SET lineup_status = 'captured', lineup_captured_at = ?1, final_lineup_attempt_at = ?1,
-              last_lineup_attempt_at = ?1, lineup_attempt_count = lineup_attempt_count + 1,
-              next_lineup_attempt_at = NULL,
-              last_error_code = NULL, last_error_message = NULL, updated_at = ?1
-        WHERE game_id = ?2`
-    ).bind(now.toISOString(), gameId).run();
+    if (!isV3) {
+      await env.AUTH_DB.prepare(
+        `UPDATE game_pregame_automation
+            SET lineup_status = 'captured', lineup_captured_at = ?1, final_lineup_attempt_at = ?1,
+                last_lineup_attempt_at = ?1, lineup_attempt_count = lineup_attempt_count + 1,
+                next_lineup_attempt_at = NULL,
+                last_error_code = NULL, last_error_message = NULL, updated_at = ?1
+          WHERE game_id = ?2`
+      ).bind(now.toISOString(), gameId).run();
+    }
     return { status: "captured", sourceUrl: payload.sourceUrl, autoScoring: serializeGameLineup(record), lineupRevision: revision };
   } catch (error) {
-    try {
-      await recordPregameLineupAttempt(env.AUTH_DB, gameId, identity, now, error, phase);
-    } catch (recordError) {
-      console.error(`pregame lineup error record failed: game=${gameId} code=${recordError?.code || "schema"}`);
+    if (!isV3) {
+      try {
+        await recordPregameLineupAttempt(env.AUTH_DB, gameId, identity, now, error, phase);
+      } catch (recordError) {
+        console.error(`pregame lineup error record failed: game=${gameId} code=${recordError?.code || "schema"}`);
+      }
     }
     throw error;
   }
@@ -8322,58 +8185,8 @@ async function cleanupWorkflowLogs(db, now) {
   }
 }
 
-async function updatePredictionTargetState(db, target, now) {
-  try {
-    const current = await db.prepare(
-      "SELECT prediction_target_game_id, prediction_target_no_next_logged_at FROM game_automation_health WHERE state_key = ?1 LIMIT 1"
-    ).bind(AUTOMATION_HEALTH_STATE_KEY).first();
-    const previousGameId = String(current?.prediction_target_game_id || "");
-    const nextGameId = String(target?.gameId || "");
-    if (!nextGameId) {
-      const noNextLoggedAt = current?.prediction_target_no_next_logged_at ? new Date(current.prediction_target_no_next_logged_at) : null;
-      const noNextLoggedToday = noNextLoggedAt && !Number.isNaN(noNextLoggedAt.getTime())
-        ? getJstDateString(noNextLoggedAt) === getJstDateString(now)
-        : false;
-      if (previousGameId && !noNextLoggedToday) {
-        await db.prepare(
-          "UPDATE game_automation_health SET prediction_target_no_next_logged_at = ?1 WHERE state_key = ?2"
-        ).bind(now.toISOString(), AUTOMATION_HEALTH_STATE_KEY).run();
-        await recordWorkflowLog(db, {
-          eventType: "prediction_target_switch_skipped",
-          status: "warning",
-          gameId: previousGameId,
-          occurredAt: now,
-          message: "次の対象試合がないため、現在の予想対象を維持しました。",
-          metadata: { previousGameId, reason: "no_next_game" },
-          source: "cron"
-        });
-      }
-      return { changed: false, previousGameId, nextGameId: previousGameId, skipped: Boolean(previousGameId) };
-    }
-    if (previousGameId === nextGameId) return { changed: false, previousGameId, nextGameId };
-    await db.prepare(
-      `INSERT INTO game_automation_health
-         (state_key, prediction_target_game_id, prediction_target_no_next_logged_at, updated_at)
-       VALUES (?1, ?2, NULL, ?3)
-       ON CONFLICT(state_key) DO UPDATE SET
-         prediction_target_game_id = excluded.prediction_target_game_id,
-         prediction_target_no_next_logged_at = NULL,
-         updated_at = excluded.updated_at`
-    ).bind(AUTOMATION_HEALTH_STATE_KEY, nextGameId, now.toISOString()).run();
-    await recordWorkflowLog(db, {
-      eventType: "prediction_target_switched",
-      status: "success",
-      gameId: nextGameId,
-      occurredAt: now,
-      message: "予想対象試合を次の試合へ切り替えました。",
-      metadata: { previousGameId: previousGameId || null, nextGameId },
-      source: "cron"
-    });
-    return { changed: true, previousGameId, nextGameId };
-  } catch (error) {
-    console.warn(`[GAME_WORKFLOW_LOG] action=target_state status=failed code=${error?.code || "PREDICTION_TARGET_STATE_FAILED"}`);
-    return { changed: false, previousGameId: "", nextGameId: String(target?.gameId || ""), error };
-  }
+function updatePredictionTargetState(_db, target) {
+  return { changed: false, previousGameId: "", nextGameId: String(target?.gameId || ""), skipped: true };
 }
 
 function parseWorkflowLogLimit(value) {
@@ -10321,7 +10134,7 @@ async function collectReleaseReadiness(env, now = new Date()) {
   const dateTo = getJstDateString(tomorrow);
   const currentDate = getJstDateString(now);
   const timestamp24h = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
-  const [workflowRows, jobRows, staleLease, duplicateSlots, scheduleMissing, scheduleMissingDetails, identifiersMissing, currentLineups, health] = await Promise.all([
+  const [workflowRows, jobRows, staleLease, duplicateSlots, scheduleMissing, scheduleMissingDetails, identifiersMissing, currentLineups] = await Promise.all([
     db.prepare(
       `SELECT state.internal_game_id, state.game_status, state.workflow_status, games.game_date
          FROM game_workflow_state state
@@ -10361,9 +10174,6 @@ async function collectReleaseReadiness(env, now = new Date()) {
          FROM game_lineups
         WHERE internal_game_id IS NOT NULL AND internal_game_id <> ''`
     ).bind().all(),
-    db.prepare(
-      "SELECT cron_last_run_at, cron_last_success_at, cron_last_error_code FROM game_automation_health WHERE state_key = 'cron' LIMIT 1"
-    ).bind().first()
   ]);
   const jobs = jobRows.results || [];
   let managed = { selection: null, candidates: [] };
@@ -10503,9 +10313,9 @@ async function collectReleaseReadiness(env, now = new Date()) {
     retryWaitJobs: retryState.retryWaitJobs,
     dateFrom,
     dateTo,
-    cronLastRunAt: health?.cron_last_run_at || null,
-    cronLastSuccessAt: health?.cron_last_success_at || null,
-    cronLastErrorCode: health?.cron_last_error_code || null
+    cronLastRunAt: null,
+    cronLastSuccessAt: null,
+    cronLastErrorCode: null
   };
 }
 
@@ -10646,10 +10456,6 @@ function parseProbableStarterRefreshRoute(path) {
   } catch {
     return { gameId: "" };
   }
-}
-
-async function handleAdminProbableStarterRefresh(request, env, cors, gameId) {
-  return requireAndRetireLegacyAdminMutation(request, env, cors);
 }
 
 function parseResultGameRoute(path) {
@@ -11019,14 +10825,16 @@ async function saveProvisionalOfficialLineup(db, gameId, lineup, detectedAt, now
     validation: options.validation || null,
     allowUnresolvedPlayer: true
   });
-  await db.prepare(
-    `UPDATE game_pregame_automation
-        SET lineup_status = 'captured', provisional_lineup_json = ?1,
-            provisional_lineup_detected_at = ?2, lineup_attempt_count = lineup_attempt_count + 1,
-            last_lineup_attempt_at = ?3, next_lineup_attempt_at = NULL,
-            last_error_code = NULL, last_error_message = NULL, updated_at = ?3
-      WHERE game_id = ?4`
-  ).bind(JSON.stringify(lineup), detectedAt.toISOString(), now.toISOString(), gameId).run();
+  if (options.source !== "v3") {
+    await db.prepare(
+      `UPDATE game_pregame_automation
+          SET lineup_status = 'captured', provisional_lineup_json = ?1,
+              provisional_lineup_detected_at = ?2, lineup_attempt_count = lineup_attempt_count + 1,
+              last_lineup_attempt_at = ?3, next_lineup_attempt_at = NULL,
+              last_error_code = NULL, last_error_message = NULL, updated_at = ?3
+        WHERE game_id = ?4`
+    ).bind(JSON.stringify(lineup), detectedAt.toISOString(), now.toISOString(), gameId).run();
+  }
   return revision;
 }
 
@@ -14654,12 +14462,12 @@ async function runDueGameDayPublicationJobs(env, now, timelines = getPregameTime
 async function publishScoredGameResults(env, gameId, now, options = {}) {
   try {
     const result = await publishGameResults(env, gameId, now, options);
-    if (result.published) {
+    if (result.published && options.source !== "v3") {
       await recordGameWorkflowOutcome(env.AUTH_DB, gameId, "publish", "success", null, now);
     }
     return result;
   } catch (error) {
-    await recordGameWorkflowOutcome(env.AUTH_DB, gameId, "publish", "failed", error, now);
+    if (options.source !== "v3") await recordGameWorkflowOutcome(env.AUTH_DB, gameId, "publish", "failed", error, now);
     throw error;
   }
 }
@@ -15072,16 +14880,72 @@ function createPerfectAchieverResponse(gameId, snapshot) {
 }
 
 async function resolveV3PredictionReference(db, internalGameId) {
-  // Retired legacy path: reference = await resolveApiGameReference(env.AUTH_DB, input?.gameId)
   const id = String(internalGameId || "").trim();
   if (!INTERNAL_GAME_ID_PATTERN.test(id)) {
     return { ok: false, code: "INTERNAL_GAME_ID_REQUIRED", diagnostics: createPredictionResolutionDiagnostics({ requestedGameId: id }) };
   }
-  const result = await resolvePredictionGameMetadataDetailed(db, id);
-  if (!result.metadata?.internalGameId) {
-    return { ok: false, code: "GAME_SCHEDULE_NOT_FOUND", diagnostics: result.diagnostics };
+  const diagnostics = createPredictionResolutionDiagnostics({ requestedGameId: id });
+  const row = await db.prepare(
+    `SELECT internal_game_id, game_date, start_time, home_team, away_team,
+            npb_game_code, game_status
+       FROM games
+      WHERE internal_game_id = ?1
+      LIMIT 1`
+  ).bind(id).first();
+  if (!row) {
+    return {
+      ok: false,
+      code: "GAME_SCHEDULE_NOT_FOUND",
+      diagnostics: { ...diagnostics, internalGameIdFound: true }
+    };
   }
-  return { ok: true, metadata: result.metadata, diagnostics: result.diagnostics };
+  const parsed = {
+    gameId: id,
+    date: String(row.game_date || ""),
+    homeCode: predictionTeamCodeFromStoredName(row.home_team),
+    awayCode: predictionTeamCodeFromStoredName(row.away_team),
+    gameCode: normalizeNpbGameCode(row.npb_game_code)
+  };
+  const metadata = createResolvedPredictionGameMetadata({
+    parsed,
+    row: { ...row, game_id: id, start_at: row.start_time, game_code: row.npb_game_code },
+    internalGameId: id,
+    homeCode: parsed.homeCode,
+    awayCode: parsed.awayCode,
+    resolvedBy: "games.internal_game_id"
+  });
+  if (!metadata) {
+    const missingFields = [
+      ["gameDate", row.game_date],
+      ["startAt", row.start_time],
+      ["homeTeam", parsed.homeCode],
+      ["awayTeam", parsed.awayCode]
+    ].filter(([, value]) => !String(value || "").trim()).map(([name]) => name);
+    return {
+      ok: false,
+      code: "GAME_ID_RESOLUTION_FAILED",
+      diagnostics: {
+        ...diagnostics,
+        internalGameIdFound: true,
+        gameRowFound: true,
+        startAtFound: Boolean(row.start_time),
+        resolvedBy: "games.internal_game_id",
+        missingFields
+      }
+    };
+  }
+  return {
+    ok: true,
+    metadata,
+    diagnostics: {
+      ...diagnostics,
+      internalGameIdFound: true,
+      gameRowFound: true,
+      startAtFound: Boolean(row.start_time),
+      resolvedBy: "games.internal_game_id",
+      sourceGameKey: ""
+    }
+  };
 }
 
 async function handleGetCurrentPrediction(request, env, cors) {

@@ -261,6 +261,133 @@ function nextV3ActionText(game) {
   return next ? `${V3_JOB_LABELS[next.job_type] || next.job_type} ${formatV3Jst(next.scheduled_at)}` : "なし";
 }
 
+const TODAY_OPS_STATUS_LABELS = Object.freeze({ ok: "OK", waiting: "WAITING", attention: "ATTENTION" });
+
+function todayOpsStatusClass(status) {
+  return status === "attention" ? "attention" : status === "ok" ? "ok" : "waiting";
+}
+
+function todayOpsStatusBadge(status) {
+  const normalized = todayOpsStatusClass(status);
+  return `<span class="today-ops-status ${normalized}">${TODAY_OPS_STATUS_LABELS[normalized]}</span>`;
+}
+
+function todayOpsLatestJob(game, statuses = []) {
+  const jobs = (game?.jobs || []).filter((job) => !statuses.length || statuses.includes(String(job.status || "")));
+  return [...jobs].sort((left, right) => String(right.completed_at || right.updated_at || right.scheduled_at || "").localeCompare(String(left.completed_at || left.updated_at || left.scheduled_at || "")))[0] || null;
+}
+
+function todayOpsStep(game, step, now = new Date()) {
+  const state = String(game?.state?.state || "scheduled");
+  const schedule = game?.schedule || {};
+  const jobs = game?.jobs || [];
+  const stepJobTypes = {
+    probable: ["probable_starter_fetch"],
+    roster: ["roster_fetch"],
+    lineup: ["lineup_fetch", "lineup_finalize"],
+    scoring: ["score", "scoring"],
+    ranking: ["ranking_rebuild"],
+    publication: ["publish", "publication"]
+  };
+  const hasFailed = jobs.some((job) => ["failed", "manual_action_required"].includes(String(job.status || ""))
+    && (step === "all" || (stepJobTypes[step] || []).includes(String(job.job_type || ""))));
+  if (hasFailed) return "attention";
+  if (step === "probable") {
+    const status = String(game?.probableStarter?.dataStatus || game?.probableStarter?.status || "unannounced");
+    return status === "announced" ? "ok" : "waiting";
+  }
+  if (step === "roster") {
+    if (game?.rosterDiagnostics?.rosterSnapshotExists) return "ok";
+    if (jobs.some((job) => job.job_type === "roster_fetch" && job.status === "completed")) return "ok";
+    return "waiting";
+  }
+  if (step === "lineup") {
+    if (["lineup_ready", "scored", "ranked", "published"].includes(state)) return "ok";
+    const pollingStart = new Date(schedule.lineupPollingStart || "").getTime();
+    return Number.isFinite(pollingStart) && pollingStart <= now.getTime() ? "attention" : "waiting";
+  }
+  if (step === "scoring") return ["scored", "ranked", "published"].includes(state) ? "ok" : "waiting";
+  if (step === "ranking") return ["ranked", "published"].includes(state) ? "ok" : "waiting";
+  if (step === "publication") {
+    if (state === "published" || game?.publicationStatus === "published") return "ok";
+    const publicationAt = new Date(schedule.publicationAt || "").getTime();
+    return Number.isFinite(publicationAt) && publicationAt <= now.getTime() ? "attention" : "waiting";
+  }
+  return "waiting";
+}
+
+function buildTodayOpsModel(payload, games, now = new Date()) {
+  const todayGames = filteredV3Games(games || [], "today");
+  const activeFutureGames = (games || []).filter((game) => gameDateForFilter(game) > v3JstDate(now) && Number(game.isActive ?? 1) !== 0 && !game.deletedAt);
+  const allJobs = todayGames.flatMap((game) => game.jobs || []);
+  const latestCompleted = todayOpsLatestJob({ jobs: allJobs }, ["completed"]);
+  const latestFailed = todayOpsLatestJob({ jobs: allJobs }, ["failed"]);
+  const cronLastRunAt = payload?.todayOps?.cronLastRunAt || null;
+  const cronAge = cronLastRunAt ? now.getTime() - new Date(cronLastRunAt).getTime() : Number.POSITIVE_INFINITY;
+  const cronStale = !cronLastRunAt || !Number.isFinite(cronAge) || cronAge > 15 * 60 * 1000;
+  const futureShortage = activeFutureGames.length < 3;
+  const gameModels = todayGames.map((game) => {
+    const state = String(game?.state?.state || "scheduled");
+    const publicationAt = new Date(game?.schedule?.publicationAt || "").getTime();
+    const published = state === "published" || game?.publicationStatus === "published";
+    const failedJob = (game.jobs || []).find((job) => job.status === "failed");
+    const manualAction = state === "manual_action_required";
+    const lineupOverdue = !["lineup_ready", "scored", "ranked", "published"].includes(state)
+      && Number.isFinite(new Date(game?.startAt || "").getTime())
+      && new Date(game.startAt).getTime() <= now.getTime();
+    const publicationOverdue = !published && Number.isFinite(publicationAt) && publicationAt <= now.getTime();
+    const attention = Boolean(failedJob || manualAction || lineupOverdue || publicationOverdue);
+    return {
+      game,
+      state,
+      attention,
+      status: attention ? "attention" : game?.jobs?.some((job) => ["pending", "claimed", "retry_wait"].includes(job.status)) ? "waiting" : "ok",
+      nextAction: nextV3ActionText(game),
+      steps: {
+        probable: todayOpsStep(game, "probable", now),
+        roster: todayOpsStep(game, "roster", now),
+        lineup: todayOpsStep(game, "lineup", now),
+        scoring: todayOpsStep(game, "scoring", now),
+        ranking: todayOpsStep(game, "ranking", now),
+        publication: todayOpsStep(game, "publication", now)
+      }
+    };
+  });
+  const attention = gameModels.some((model) => model.attention) || futureShortage || cronStale;
+  return {
+    todayGames,
+    gameModels,
+    futureGames: activeFutureGames.length,
+    futureShortage,
+    cronLastRunAt,
+    cronStale,
+    overallStatus: attention ? "attention" : gameModels.some((model) => model.status === "waiting") ? "waiting" : "ok",
+    openJobs: allJobs.filter((job) => ["pending", "claimed", "retry_wait"].includes(job.status)).length,
+    retryWaitJobs: allJobs.filter((job) => job.status === "retry_wait").length,
+    failedJobs: allJobs.filter((job) => job.status === "failed").length,
+    latestCompleted,
+    latestFailed
+  };
+}
+
+function renderTodayOpsJob(job) {
+  if (!job) return "未実行";
+  return `${escapeV3(V3_JOB_LABELS[job.job_type] || job.job_type)} / ${escapeV3(formatV3Jst(job.completed_at || job.updated_at || job.scheduled_at))}`;
+}
+
+function renderTodayOpsStep(label, status) {
+  return `<div class="today-ops-step"><span>${escapeV3(label)}</span>${todayOpsStatusBadge(status)}</div>`;
+}
+
+function renderTodayOps(payload, games) {
+  const model = buildTodayOpsModel(payload, games);
+  const cronDetail = model.cronLastRunAt ? formatV3Jst(model.cronLastRunAt) : "記録なし";
+  const gameCards = model.gameModels.length
+    ? model.gameModels.map(({ game, state, status, nextAction, steps }) => `<article class="today-ops-game"><div class="today-ops-game-heading"><strong>${escapeV3(gameDateForFilter(game))} ${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}</strong>${todayOpsStatusBadge(status)}</div><div class="today-ops-game-meta"><span>state: ${escapeV3(state)}</span><span>次: ${escapeV3(nextAction)}</span></div><div class="today-ops-steps">${renderTodayOpsStep("予告先発", steps.probable)}${renderTodayOpsStep("ロースター", steps.roster)}${renderTodayOpsStep("スタメン", steps.lineup)}${renderTodayOpsStep("採点", steps.scoring)}${renderTodayOpsStep("ランキング", steps.ranking)}${renderTodayOpsStep("公開", steps.publication)}</div></article>`).join("")
+    : "<p class=muted>本日の対象試合はありません。</p>";
+  return `<section class="today-ops-panel" aria-labelledby="todayOpsHeading"><div class="today-ops-heading"><div><h3 id="todayOpsHeading">Today Ops / Automation Health</h3><p>本日のV3自動処理を試合単位で確認します。</p></div>${todayOpsStatusBadge(model.overallStatus)}</div><div class="today-ops-metrics"><div><strong>${model.todayGames.length}</strong><span>今日の試合</span></div><div><strong>${escapeV3(model.openJobs)}</strong><span>open job</span></div><div><strong>${escapeV3(model.retryWaitJobs)}</strong><span>retry_wait</span></div><div><strong>${escapeV3(model.failedJobs)}</strong><span>failed</span></div><div><strong>${escapeV3(model.futureGames)}</strong><span>未来試合登録数</span></div><div><strong>${escapeV3(cronDetail)}</strong><span>Cron最終監査</span></div></div><div class="today-ops-notices"><span>最後に完了: ${renderTodayOpsJob(model.latestCompleted)}</span><span>最後に失敗: ${renderTodayOpsJob(model.latestFailed)}</span><span>${model.futureShortage ? "未来試合が3試合未満" : "未来試合数は充足"}</span><span>${model.cronStale ? "Cron監査が古い、または未記録" : "Cron監査は直近"}</span></div><div class="today-ops-games">${gameCards}</div></section>`;
+}
+
 function renderGameSummary(game, buttonLabel = "試合進行を見る") {
   const identity = identityStatusLabel(game.npbIdentityStatus, game.npbIdentityState);
   const probable = game.probableStarter;
@@ -442,7 +569,7 @@ function renderDashboard(payload, games) {
   const completedToday = todayGames.reduce((count, game) => count + (game.jobs || []).filter((job) => job.status === "completed" && String(job.completed_at || "").slice(0, 10) === v3JstDate()).length, 0);
   const publicationWait = (payload.games || []).filter((game) => game.state?.state === "ranked").length;
   const cards = todayGames.length ? todayGames.map((game) => renderGameSummary(game)).join("") : `<div class="today-empty">本日の試合はありません</div>`;
-  return `<div class="view-heading"><div><h2>ダッシュボード</h2><p>本日の試合と要対応項目を最初に確認できます。</p></div></div><section class="today-card"><h3>本日の試合</h3>${cards}</section><section class="summary-grid">${renderSummaryCard("要対応", attention, attention ? "attention" : "ok")}${renderSummaryCard("失敗job", failed, failed ? "error" : "ok")}${renderSummaryCard("retry_wait", retry, retry ? "attention" : "ok")}${renderSummaryCard("掲載待ち", pendingIdentity, pendingIdentity ? "attention" : "ok")}${renderSummaryCard("本日の完了job", completedToday)}${renderSummaryCard("公開待ち", publicationWait, publicationWait ? "attention" : "ok")}</section><section class="v3-panel"><div class="view-heading"><div><h3>今日の自動処理</h3><p>詳細は試合進行メニューから確認できます。</p></div></div>${todayGames.length ? todayGames.map((game) => `<div class="compact-meta"><strong>${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}</strong><span>次: ${escapeV3(nextV3ActionText(game))}</span><span>${escapeV3(gameHasAttention(game) ? "要対応" : "正常")}</span></div>`).join("") : "<span class=muted>今日の処理履歴はありません。</span>"}</section>`;
+  return `<div class="view-heading"><div><h2>ダッシュボード</h2><p>本日の試合と要対応項目を最初に確認できます。</p></div></div>${renderTodayOps(payload, games)}<section class="today-card"><h3>本日の試合</h3>${cards}</section><section class="summary-grid">${renderSummaryCard("要対応", attention, attention ? "attention" : "ok")}${renderSummaryCard("失敗job", failed, failed ? "error" : "ok")}${renderSummaryCard("retry_wait", retry, retry ? "attention" : "ok")}${renderSummaryCard("掲載待ち", pendingIdentity, pendingIdentity ? "attention" : "ok")}${renderSummaryCard("本日の完了job", completedToday)}${renderSummaryCard("公開待ち", publicationWait, publicationWait ? "attention" : "ok")}</section><section class="v3-panel"><div class="view-heading"><div><h3>今日の自動処理</h3><p>詳細は試合進行メニューから確認できます。</p></div></div>${todayGames.length ? todayGames.map((game) => `<div class="compact-meta"><strong>${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}</strong><span>次: ${escapeV3(nextV3ActionText(game))}</span><span>${escapeV3(gameHasAttention(game) ? "要対応" : "正常")}</span></div>`).join("") : "<span class=muted>今日の処理履歴はありません。</span>"}</section>`;
 }
 
 function renderGamesView(games) {

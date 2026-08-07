@@ -3403,6 +3403,15 @@ async function handleAdminV3Overview(request, env, cors) {
     return jsonResponse({ ok: false, code: "V3_OVERVIEW_INTERNAL_ERROR", error: "V3管理画面の概要を取得できませんでした。" }, 500, cors);
   }
   if (!schema.ready) return jsonResponse({ ok: false, code: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", schema }, 503, cors);
+  let cronLastRunAt = null;
+  try {
+    const cronAudit = await env.AUTH_DB.prepare(
+      "SELECT occurred_at FROM game_automation_v3_audit WHERE source = 'cron' ORDER BY occurred_at DESC LIMIT 1"
+    ).first();
+    cronLastRunAt = cronAudit?.occurred_at || null;
+  } catch (error) {
+    console.warn(`[ADMIN_V3_OVERVIEW] stage=cron_audit_read failureCode=${error?.code || "V3_CRON_AUDIT_READ_FAILED"}`);
+  }
   const rows = [];
   const overviewNow = new Date();
   let probableStarterColumns = new Set();
@@ -3651,7 +3660,14 @@ async function handleAdminV3Overview(request, env, cors) {
       schedule: { ...schedule, ...nextAction }
     });
   }
-  return jsonResponse({ ok: true, featureFlag: V3_FEATURE_FLAG, enabled: isGameAutomationV3Enabled(env), schema, games: rows }, 200, cors);
+  return jsonResponse({
+    ok: true,
+    featureFlag: V3_FEATURE_FLAG,
+    enabled: isGameAutomationV3Enabled(env),
+    schema,
+    todayOps: { cronLastRunAt, cronLastRunSource: "game_automation_v3_audit" },
+    games: rows
+  }, 200, cors);
 }
 
 async function handleAdminV3IdentityResolve(request, env, cors, internalGameId, options = {}) {

@@ -266,6 +266,11 @@ function probableStarterTimelineDetails(game, job, now = new Date()) {
   const diagnostics = game?.probableStarterDiagnostics;
   const details = [];
   const dataStatus = starter?.dataStatus || (starter?.status === "announced" ? "announced" : starter?.status);
+  if (diagnostics?.currentDataStatus || dataStatus) details.push(`normalizedDataStatus: ${diagnostics?.currentDataStatus || dataStatus}`);
+  if (starter?.status) details.push(`raw status: ${starter.status}`);
+  if (starter?.errorCode) details.push(`raw errorCode: ${starter.errorCode}`);
+  if (typeof diagnostics?.shouldStopScheduling === "boolean") details.push(`後続取得: ${diagnostics.shouldStopScheduling ? "停止" : "継続"}`);
+  if (diagnostics?.shouldStopScheduling && diagnostics?.reasonCode) details.push(`停止理由: ${diagnostics.reasonCode}`);
   if (dataStatus === "announced" || dataStatus === "partial") {
     details.push(`home: ${starter?.homePitcherName || "未発表"} / away: ${starter?.awayPitcherName || "未発表"}`);
     if (dataStatus === "partial") details.push("一部発表・自動確認継続中");

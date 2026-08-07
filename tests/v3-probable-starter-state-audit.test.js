@@ -44,6 +44,7 @@ test("予告先発のjob statusとdataStatusを分離し、失敗コードを保
 test("dataStatus正規化と後続slot停止判定を共有する", () => {
   assert.equal(v3.normalizeProbableStarterDataStatus({ status: "error", errorCode: "NPB_HTTP_ERROR", homePitcherName: "残存A", awayPitcherName: "残存B" }), "transient_error");
   assert.equal(v3.normalizeProbableStarterDataStatus({ status: "completed", dataStatus: "error", homePitcherName: "残存A", awayPitcherName: "残存B" }), "transient_error");
+  assert.equal(v3.normalizeProbableStarterDataStatus({ status: "announced", errorCode: "PROBABLE_STARTER_FETCH_FAILED", homePitcherName: "残存A", awayPitcherName: "残存B" }), "transient_error");
   assert.equal(v3.normalizeProbableStarterDataStatus({ status: "failed" }), "transient_error");
   assert.equal(v3.normalizeProbableStarterDataStatus({ status: "unannounced" }), "unannounced");
   assert.equal(v3.normalizeProbableStarterDataStatus({ status: "announced", homePitcherName: "A" }), "partial");
@@ -73,6 +74,9 @@ test("救済jobの対象slot、実行時刻、監査状態、診断情報を別�
   assert.match(admin, /次回自動確認:/);
   assert.match(admin, /job: 未生成/);
   assert.match(admin, /未生成理由:/);
+  assert.match(admin, /normalizedDataStatus/);
+  assert.match(admin, /後続取得:/);
+  assert.match(admin, /停止理由:/);
   assert.match(admin, /probableJob \|\| probableMissingPastSlot/);
   assert.match(migration, /ADD COLUMN data_status TEXT NULL/);
 });

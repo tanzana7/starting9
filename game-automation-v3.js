@@ -110,6 +110,13 @@ export function deriveV3DisplaySchedule(game) {
   };
 }
 
+export function getV3RosterSlots(game) {
+  return deriveV3DisplaySchedule(game).rosterFetchSlots
+    .map((slot) => new Date(slot))
+    .filter((slot) => !Number.isNaN(slot.getTime()))
+    .sort((left, right) => left.getTime() - right.getTime());
+}
+
 const NEXT_ACTION_LABELS = Object.freeze({
   prediction_close: "予想締切",
   roster_fetch: "ロースター取得",
@@ -432,25 +439,29 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
           probableRows = (await db.prepare(
             `SELECT game_id, internal_game_id, status, data_status, error_code, home_pitcher_name, away_pitcher_name
                FROM probable_starters
-              WHERE internal_game_id = ?1 OR game_id = ?1
+              WHERE internal_game_id = ?1
               ORDER BY COALESCE(fetched_at, updated_at) DESC
                LIMIT 3`
           ).bind(game.internalGameId).all()).results || [];
         } catch {
+          // Older fixtures may lack the optional data_status column. The
+          // canonical UUID scope remains unchanged; only the projection narrows.
           try {
             probableRows = (await db.prepare(
               `SELECT game_id, internal_game_id, status, error_code, home_pitcher_name, away_pitcher_name
                  FROM probable_starters
-                WHERE internal_game_id = ?1 OR game_id = ?1
+                WHERE internal_game_id = ?1
                 ORDER BY COALESCE(fetched_at, updated_at) DESC
                  LIMIT 3`
             ).bind(game.internalGameId).all()).results || [];
           } catch {
+            // Pre-audit schemas may also lack error_code. Keep the canonical
+            // UUID lookup and retain the status/pitcher fields needed by V3.
             probableRows = (await db.prepare(
               `SELECT game_id, internal_game_id, status, home_pitcher_name, away_pitcher_name
                  FROM probable_starters
-                WHERE internal_game_id = ?1 OR game_id = ?1
-                ORDER BY COALESCE(fetched_at, updated_at) DESC
+                WHERE internal_game_id = ?1
+                ORDER BY updated_at DESC
                  LIMIT 3`
             ).bind(game.internalGameId).all()).results || [];
           }
@@ -588,6 +599,184 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
       diagnostic.reasonCode = "PROBABLE_STARTER_SLOT_SELECTION_FAILED";
       recordDiagnostic();
       errors.push({ game, plan, error });
+    }
+  }
+  return {
+    created: planned.filter((entry) => entry.created).length,
+    planned,
+    errors,
+    diagnostics
+  };
+}
+
+export async function getV3CanonicalRosterSnapshot(db, internalGameId) {
+  const id = normalizeV3InternalGameId(internalGameId);
+  try {
+    const row = await db.prepare(
+      `SELECT internal_game_id, status, player_count, captured_at, updated_at
+         FROM game_roster_snapshots
+        WHERE internal_game_id = ?1
+        ORDER BY updated_at DESC, captured_at DESC
+        LIMIT 1`
+    ).bind(id).first();
+    const exists = Boolean(row
+      && String(row.internal_game_id || "") === id
+      && String(row.status || "") === "captured"
+      && Number(row.player_count || 0) > 0);
+    return {
+      schemaAvailable: true,
+      exists,
+      internalGameId: row?.internal_game_id || null,
+      status: row?.status || null,
+      playerCount: Number(row?.player_count || 0),
+      capturedAt: row?.captured_at || null,
+      updatedAt: row?.updated_at || null
+    };
+  } catch {
+    return {
+      schemaAvailable: false,
+      exists: false,
+      internalGameId: null,
+      status: null,
+      playerCount: 0,
+      capturedAt: null,
+      updatedAt: null
+    };
+  }
+}
+
+export async function planV3RosterJobs(db, games = [], now = new Date()) {
+  const planned = [];
+  const errors = [];
+  const diagnostics = [];
+  const current = now instanceof Date ? now : new Date(now);
+  for (const game of Array.isArray(games) ? games : []) {
+    const diagnostic = {
+      internalGameId: game?.internalGameId || null,
+      now: Number.isNaN(current.getTime()) ? null : current.toISOString(),
+      generatedSlots: [],
+      dueSlots: [],
+      selectedDueSlot: null,
+      actualJobExists: false,
+      jobStatus: null,
+      planningSkipped: false,
+      skipReason: null,
+      openJobExists: false,
+      existingJobId: null,
+      insertAttempted: false,
+      insertedRowCount: 0,
+      claimResult: "not_attempted",
+      rosterSnapshotExists: false,
+      rosterSnapshotInternalGameId: null,
+      rosterSnapshotStatus: null,
+      rosterSnapshotPlayerCount: 0,
+      insertReasonCode: null
+    };
+    diagnostics.push(diagnostic);
+    try {
+      if (!isV3GameEligible(game)) {
+        diagnostic.planningSkipped = true;
+        diagnostic.skipReason = "ROSTER_GAME_NOT_ELIGIBLE";
+        planned.push({ game, plan: null, created: false, reasonCode: diagnostic.skipReason, diagnostic: { ...diagnostic } });
+        continue;
+      }
+      const generatedSlots = getV3RosterSlots(game);
+      diagnostic.generatedSlots = generatedSlots.map((slot) => slot.toISOString());
+      const dueSlots = generatedSlots.filter((slot) => slot.getTime() <= current.getTime());
+      diagnostic.dueSlots = dueSlots.map((slot) => slot.toISOString());
+      if (!dueSlots.length) {
+        diagnostic.planningSkipped = true;
+        diagnostic.skipReason = "ROSTER_NOT_DUE";
+        planned.push({ game, plan: null, created: false, reasonCode: diagnostic.skipReason, diagnostic: { ...diagnostic } });
+        continue;
+      }
+      const snapshot = await getV3CanonicalRosterSnapshot(db, game.internalGameId);
+      diagnostic.rosterSnapshotExists = snapshot.exists;
+      diagnostic.rosterSnapshotInternalGameId = snapshot.internalGameId;
+      diagnostic.rosterSnapshotStatus = snapshot.status;
+      diagnostic.rosterSnapshotPlayerCount = snapshot.playerCount;
+      if (snapshot.exists) {
+        diagnostic.planningSkipped = true;
+        diagnostic.skipReason = "ROSTER_SNAPSHOT_ALREADY_EXISTS";
+        planned.push({ game, plan: null, created: false, reasonCode: diagnostic.skipReason, diagnostic: { ...diagnostic } });
+        continue;
+      }
+
+      const rosterJobs = (await db.prepare(
+        `SELECT id, status, scheduled_slot_at, scheduled_at, attempt_count, max_attempts,
+                next_retry_at, claimed_at, completed_at
+           FROM game_jobs_v3
+          WHERE internal_game_id = ?1 AND job_type = ?2
+          ORDER BY scheduled_slot_at DESC, id DESC`
+      ).bind(game.internalGameId, "roster_fetch").all()).results || [];
+      const openJob = rosterJobs.find((job) => ["pending", "claimed", "retry_wait"].includes(String(job.status || "")));
+      const latestDueSlot = dueSlots[dueSlots.length - 1];
+      // Rescue only the latest due slot. Older due slots must not be backfilled
+      // one by one after a newer slot has already been processed.
+      const selectedDueSlot = latestDueSlot;
+      diagnostic.selectedDueSlot = selectedDueSlot.toISOString();
+      const selectedExistingJob = rosterJobs.find((job) => String(job.scheduled_slot_at || "") === selectedDueSlot.toISOString()) || null;
+      diagnostic.actualJobExists = Boolean(selectedExistingJob || openJob);
+      diagnostic.jobStatus = selectedExistingJob?.status || openJob?.status || null;
+      diagnostic.existingJobId = selectedExistingJob?.id || openJob?.id || null;
+      if (openJob) {
+        diagnostic.openJobExists = true;
+        diagnostic.insertReasonCode = "ROSTER_OPEN_JOB_EXISTS";
+        diagnostic.skipReason = "ROSTER_OPEN_JOB_EXISTS";
+        planned.push({
+          game,
+          plan: { jobType: "roster_fetch", scheduledSlotAt: selectedDueSlot, scheduledAt: selectedDueSlot },
+          created: false,
+          job: openJob,
+          reasonCode: diagnostic.skipReason,
+          insertedRowCount: 0,
+          existingJobId: openJob.id,
+          existingScheduledSlotAt: openJob.scheduled_slot_at,
+          existingStatus: openJob.status,
+          diagnostic: { ...diagnostic }
+        });
+        continue;
+      }
+      if (selectedExistingJob) {
+        diagnostic.insertReasonCode = "ROSTER_SLOT_ALREADY_PROCESSED";
+        diagnostic.skipReason = diagnostic.insertReasonCode;
+        planned.push({
+          game,
+          plan: { jobType: "roster_fetch", scheduledSlotAt: selectedDueSlot, scheduledAt: selectedDueSlot },
+          created: false,
+          job: selectedExistingJob,
+          reasonCode: diagnostic.skipReason,
+          insertedRowCount: 0,
+          existingJobId: selectedExistingJob.id,
+          existingScheduledSlotAt: selectedExistingJob.scheduled_slot_at,
+          existingStatus: selectedExistingJob.status,
+          diagnostic: { ...diagnostic }
+        });
+        continue;
+      }
+      const plan = { jobType: "roster_fetch", scheduledSlotAt: selectedDueSlot, scheduledAt: selectedDueSlot };
+      diagnostic.insertAttempted = true;
+      const result = await createV3Job(db, { internalGameId: game.internalGameId, ...plan });
+      diagnostic.insertedRowCount = result.created ? 1 : 0;
+      diagnostic.insertReasonCode = result.created ? "ROSTER_JOB_CREATED" : "ROSTER_INSERT_IGNORED";
+      diagnostic.actualJobExists = Boolean(result.job?.id);
+      diagnostic.jobStatus = result.job?.status || (result.created ? "pending" : null);
+      diagnostic.existingJobId = result.created ? null : result.job?.id || null;
+      planned.push({
+        game,
+        plan,
+        ...result,
+        reasonCode: diagnostic.insertReasonCode,
+        insertedRowCount: diagnostic.insertedRowCount,
+        existingJobId: diagnostic.existingJobId,
+        existingScheduledSlotAt: result.created ? null : result.job?.scheduled_slot_at || null,
+        existingStatus: result.created ? null : result.job?.status || null,
+        diagnostic: { ...diagnostic }
+      });
+    } catch (error) {
+      diagnostic.planningSkipped = true;
+      diagnostic.skipReason = "ROSTER_SLOT_PLANNING_FAILED";
+      errors.push({ game, plan: null, error });
     }
   }
   return {
@@ -866,6 +1055,24 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     failed += 1;
     if (onError) await onError(entry.error, { game: entry.game, stage: "probable_plan" });
   }
+  // Probable-starter completion is auxiliary to roster planning. A confirmed
+  // probable starter must never prevent an overdue roster slot from running.
+  const rosterPlan = await planV3RosterJobs(env.AUTH_DB, games, now);
+  created += rosterPlan.created;
+  if (onPlan) {
+    for (const entry of rosterPlan.planned) {
+      try {
+        await onPlan({ ...entry, stage: "roster_plan", now });
+      } catch (error) {
+        failed += 1;
+        if (onError) await onError(error, { game: entry.game, plan: entry.plan, stage: "roster_plan_audit" });
+      }
+    }
+  }
+  for (const entry of rosterPlan.errors) {
+    failed += 1;
+    if (onError) await onError(entry.error, { game: entry.game, stage: "roster_plan" });
+  }
   for (const game of games) {
     try {
       const stateRow = await ensureV3State(env.AUTH_DB, game.internalGameId, now);
@@ -894,11 +1101,12 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
   const due = await listDueV3Jobs(env.AUTH_DB, now);
   for (const job of due) {
     const claimed = await claimV3Job(env.AUTH_DB, { jobId: job.id, now });
-    const probablePlanEntry = probablePlan.planned.find((entry) => String(entry?.job?.id || "") === String(job.id));
-    if (probablePlanEntry) {
+    const planEntry = [...probablePlan.planned, ...rosterPlan.planned]
+      .find((entry) => String(entry?.job?.id || "") === String(job.id));
+    if (planEntry) {
       const claimAuditResult = claimed ? "claimed" : "claim_conflict";
-      probablePlanEntry.diagnostic = {
-        ...(probablePlanEntry.diagnostic || {}),
+      planEntry.diagnostic = {
+        ...(planEntry.diagnostic || {}),
         actualJobExists: true,
         jobStatus: claimed?.status || job.status || null,
         claimEligible: ["pending", "retry_wait", "claimed"].includes(String(job.status || "")),
@@ -907,14 +1115,16 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
       if (onPlan) {
         try {
           await onPlan({
-            ...probablePlanEntry,
-            stage: "probable_claim",
+            ...planEntry,
+            stage: planEntry.plan?.jobType === "probable_starter_fetch"
+              ? "probable_claim"
+              : `${planEntry.plan?.jobType || job.job_type}_claim`,
             claimResult: claimAuditResult,
             now
           });
         } catch (error) {
           failed += 1;
-          if (onError) await onError(error, { game: probablePlanEntry.game, plan: probablePlanEntry.plan, stage: "probable_claim_audit" });
+          if (onError) await onError(error, { game: planEntry.game, plan: planEntry.plan, stage: "v3_job_claim_audit" });
         }
       }
     }
@@ -971,5 +1181,14 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
       if (onError) await onError(error, { job: retryJob || claimed, claimToken: claimed.claim_token, stage: "execute", stateBefore: claimed.status });
     }
   }
-  return { enabled: true, schemaReady: true, gameCount: games.length, created, processed, failed };
+  return {
+    enabled: true,
+    schemaReady: true,
+    gameCount: games.length,
+    created,
+    processed,
+    failed,
+    probablePlan,
+    rosterPlan
+  };
 }

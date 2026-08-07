@@ -3196,6 +3196,7 @@ function applyStoredProbableStarter(probableStarter, gameMetadata = {}) {
   state.probableStarter.fetchedGameCount = probableStarter ? 1 : 0;
   state.probableStarter.nextCheckAt = probableStarter?.nextCheckAt || "";
   state.probableStarter.errorCode = probableStarter?.errorCode || "";
+  state.probableStarter.dataStatus = probableStarter?.dataStatus || (probableStarter?.partial ? "partial" : status);
   state.probableStarter.referenceDiagnostics = null;
   const hasAnyPitcher = Boolean(String(probableStarter?.homePitcherName || "").trim() || String(probableStarter?.awayPitcherName || "").trim());
   if (!probableStarter || status === "empty" || status === "unannounced" || (status === "announced" && !hasAnyPitcher)) {
@@ -8134,6 +8135,7 @@ function renderProbableStarterNotice(container, status, nextGame) {
     <p class="probable-starter-message">${isReferenceMismatch ? "予告先発の試合参照を確認できませんでした。" : isError ? "予告先発を取得できませんでした。" : "現在、次の試合の予告先発はまだ発表されていません。"}</p>
     <p class="probable-starter-meta">${isReferenceMismatch ? "試合情報を更新して再確認します。" : isError ? "次回の自動更新で再試行します。" : "発表され次第、自動で表示されます。"}</p>
     ${isError || isReferenceMismatch ? "" : `<p class="probable-starter-meta">${escapeHtml(formatScheduledGameForLog(nextGame))}</p>`}
+    ${!isError && !isReferenceMismatch && state.probableStarter.nextCheckAt ? `<p class="probable-starter-meta">次回自動確認：${escapeHtml(formatDateTime(state.probableStarter.nextCheckAt))}</p>` : ""}
   `;
 }
 

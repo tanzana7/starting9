@@ -242,7 +242,9 @@ function nextV3ActionText(game) {
 
 function renderGameSummary(game, buttonLabel = "試合進行を見る") {
   const identity = identityStatusLabel(game.npbIdentityStatus, game.npbIdentityState);
-  return `<article class="game-card"><div class="game-heading"><h3>${escapeV3(gameDateForFilter(game))} ${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}</h3>${gameHasAttention(game) ? "<span class=attention-badge>要対応</span>" : ""}</div><div class="game-meta"><span>開始 ${escapeV3(formatV3Jst(game.startAt, false))} JST</span><span>state: ${escapeV3(game.state?.state || "scheduled")}</span><span>NPB: ${escapeV3(identity)}</span><span>次: ${escapeV3(nextV3ActionText(game))}</span></div><div class="game-card-actions"><button type="button" data-v3-select-game="${escapeV3(game.internalGameId)}">${escapeV3(buttonLabel)}</button></div></article>`;
+  const probable = game.probableStarter;
+  const probableStatus = probable?.dataStatus || probable?.status || "unannounced";
+  return `<article class="game-card"><div class="game-heading"><h3>${escapeV3(gameDateForFilter(game))} ${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}</h3>${gameHasAttention(game) ? "<span class=attention-badge>要対応</span>" : ""}</div><div class="game-meta"><span>開始 ${escapeV3(formatV3Jst(game.startAt, false))} JST</span><span>state: ${escapeV3(game.state?.state || "scheduled")}</span><span>NPB: ${escapeV3(identity)}</span><span>予告先発: ${escapeV3(probableStatus)}</span><span>次: ${escapeV3(nextV3ActionText(game))}</span></div><div class="game-card-actions"><button type="button" data-v3-select-game="${escapeV3(game.internalGameId)}">${escapeV3(buttonLabel)}</button></div></article>`;
 }
 
 function formatTimelineTime(value) {
@@ -262,14 +264,16 @@ function timelineStep(name, job, fallbackStatus, detail = "", scheduledAt = "") 
 function probableStarterTimelineDetails(game, job, now = new Date()) {
   const starter = game?.probableStarter;
   const details = [];
-  if (starter?.status === "announced") {
-    const pitchers = [starter.homePitcherName, starter.awayPitcherName].filter(Boolean).join(" / ");
-    if (pitchers) details.push(pitchers);
+  const dataStatus = starter?.dataStatus || (starter?.status === "announced" ? "announced" : starter?.status);
+  if (dataStatus === "announced" || dataStatus === "partial") {
+    details.push(`home: ${starter?.homePitcherName || "未発表"} / away: ${starter?.awayPitcherName || "未発表"}`);
+    if (dataStatus === "partial") details.push("一部発表・自動確認継続中");
   } else if (starter?.status) {
-    details.push(starter.status === "unannounced" ? "未発表" : starter.status);
+    details.push(dataStatus === "unannounced" ? "未発表" : dataStatus);
   }
   if (starter?.sourceUrl) details.push(`取得元: ${starter.sourceUrl}`);
   if (starter?.fetchedAt) details.push(`最終取得: ${formatV3Jst(starter.fetchedAt)}`);
+  if (starter?.nextCheckAt) details.push(`次回自動確認: ${formatV3Jst(starter.nextCheckAt)}`);
   if (job?.failure_code) details.push(job.failure_code);
   if (job && Number.isFinite(Number(job.attempt_count))) details.push(`試行 ${job.attempt_count || 0}/${job.max_attempts || 0}`);
   const scheduledAt = game?.schedule?.probableStarterNextAt ? new Date(game.schedule.probableStarterNextAt) : null;
@@ -294,7 +298,8 @@ function renderTimeline(game) {
   const probableJob = latestV3Job(game, "probable_starter_fetch");
   const probableSlot = schedule.probableStarterNextAt ? new Date(schedule.probableStarterNextAt) : null;
   const probableMissingPastSlot = !probableJob && probableSlot && probableSlot.getTime() <= Date.now();
-  const probableFallback = probableMissingPastSlot ? "action" : game?.probableStarter?.status === "announced" ? "complete" : "wait";
+  const probableDataStatus = game?.probableStarter?.dataStatus || game?.probableStarter?.status;
+  const probableFallback = probableMissingPastSlot ? "action" : probableDataStatus === "announced" ? "complete" : "wait";
   const probableTime = probableMissingPastSlot ? "" : schedule.probableStarterNextAt;
   const steps = [
     timelineStep("日程登録", null, "complete", "games登録済み", schedule.startAt),

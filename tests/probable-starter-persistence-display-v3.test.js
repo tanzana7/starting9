@@ -44,7 +44,7 @@ test("公開APIはadmin-v3と同じinternalGameId優先rowを返し、HTTP 200�
   assert.match(worker, /WHERE internal_game_id = \?1\s+OR \(internal_game_id IS NULL AND game_id = \?2\)/);
   assert.match(worker, /homeProbableStarter: probableStarter\?\.homeProbableStarter \|\| null/);
   assert.match(worker, /awayProbableStarter: probableStarter\?\.awayProbableStarter \|\| null/);
-  assert.match(worker, /if \(result\?\.status === "success"\)/);
+  assert.match(worker, /status: announced \? "success" : "notPublished"/);
   assert.match(worker, /PROBABLE_STARTER_UNANNOUNCED/);
   assert.match(script, /status === "announced" && !hasAnyPitcher/);
 });

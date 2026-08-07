@@ -37,19 +37,6 @@ import {
   REPAIRABLE_TABLES
 } from "./game-identity-repair.js";
 import {
-  claimWorkflowJob,
-  completeWorkflowJob,
-  createWorkflowJob,
-  ensureGameWorkflowState,
-  isGameWorkflowJobSchemaReady,
-  listDueWorkflowJobs,
-  reconcilePersistedPublicationJob,
-  reconcilePersistedScoringJob,
-  recoverWorkflowJobForReevaluation,
-  retryWorkflowJob,
-  transitionWorkflowState
-} from "./game-workflow-jobs.js";
-import {
   RANKING_ELIGIBILITY_STATUS,
   normalizeRankingEligibilityReason,
   normalizeRankingEligibilityStatus,
@@ -66,6 +53,7 @@ import {
   createV3Error,
   isGameAutomationV3Enabled,
   normalizeV3InternalGameId,
+  transitionV3State,
   listV3Games,
   getV3SchemaState,
   runGameAutomationV3,
@@ -908,9 +896,6 @@ function normalizeV3LineupFetchError(error, now = new Date()) {
   return normalized;
 }
 
-export async function runScheduledGameAutomation(env, now) {
-  throw createV3Error(LEGACY_AUTOMATION_RETIRED_CODE, "V1/V2 automation is retired.", { httpStatus: 410, retryable: false });
-}
 async function cleanupExpiredManualRescorePreviews(db, now) {
   try {
     await db.batch([
@@ -966,9 +951,6 @@ async function recordCronStepFailure(db, processName, now, error) {
   }
 }
 
-async function runGameWorkflows(env, now, syncedGames = []) {
-  throw createV3Error(LEGACY_AUTOMATION_RETIRED_CODE, "V1/V2 workflow is retired.", { httpStatus: 410, retryable: false });
-}
 async function getCronPregameTimelines(db, now, fallbackGames = []) {
   try {
     const dates = getAutomationScheduleDates(now);
@@ -1405,9 +1387,6 @@ export async function selectProbableStarterCronTarget(db, now = new Date()) {
   return { target, row, reason: "candidate", gameId: target.gameId };
 }
 
-async function runDueProbableStarterJob(env, now) {
-  throw createV3Error(LEGACY_AUTOMATION_RETIRED_CODE, "V1/V2 probable starter runner is retired.", { httpStatus: 410, retryable: false });
-}
 function getProbableStarterJobMaxAttempts(startAt, now) {
   const remainingMilliseconds = Math.max(0, new Date(startAt).getTime() - new Date(now).getTime());
   return Math.max(1, Math.ceil(remainingMilliseconds / PROBABLE_STARTER_RETRY_INTERVAL_MS) + 1);
@@ -2328,66 +2307,6 @@ async function recordWorkflowJobEvent(db, { eventType, status, internalGameId, j
     errorCode,
     metadata: { internalGameId, jobType: job?.job_type || WORKFLOW_PROBABLE_STARTER_JOB_TYPE, jobId: job?.id || null, ...metadata },
     source
-  });
-}
-
-async function executeProbableStarterWorkflowJob(env, claimedJob, now, source = "cron") {
-  const target = await resolveWorkflowJobGame(env.AUTH_DB, claimedJob.internal_game_id);
-  const result = await runProbableStarterFetch(env, target, now, { source });
-  if (result?.status === "success") {
-    const completed = await completeWorkflowJob(env.AUTH_DB, {
-      jobId: claimedJob.id,
-      claimToken: claimedJob.claim_token,
-      resultMetadata: { probableStarterStatus: "announced" },
-      now
-    });
-    if (!completed) throw createPregameError("JOB_CLAIM_CONFLICT", "ジョブの完了権限を確認できません。");
-    await transitionWorkflowState(env.AUTH_DB, {
-      internalGameId: claimedJob.internal_game_id,
-      to: "prediction_open",
-      completedJobType: claimedJob.job_type,
-      now
-    });
-    await recordWorkflowJobEvent(env.AUTH_DB, { eventType: "workflow_job_succeeded", status: "success", internalGameId: claimedJob.internal_game_id, job: { ...claimedJob, legacyGameId: target.gameId }, now, source });
-    return { status: "succeeded", gameId: target.gameId, result };
-  }
-
-  const nextAttemptAt = result?.probableStarter?.nextCheckAt || new Date(now.getTime() + PROBABLE_STARTER_RETRY_INTERVAL_MS).toISOString();
-  const retried = await retryWorkflowJob(env.AUTH_DB, {
-    job: claimedJob,
-    claimToken: claimedJob.claim_token,
-    errorCode: "DATA_NOT_ANNOUNCED",
-    errorDetail: "予告先発が未発表です。",
-    nextAttemptAt,
-    now
-  });
-  await transitionWorkflowState(env.AUTH_DB, {
-    internalGameId: claimedJob.internal_game_id,
-    to: retried.status === "permanently_failed" ? "manual_intervention_required" : "retrying",
-    errorCode: "DATA_NOT_ANNOUNCED",
-    nextDueAt: retried.status === "permanently_failed" ? null : nextAttemptAt,
-    now
-  });
-  await recordWorkflowJobEvent(env.AUTH_DB, {
-    eventType: retried.status === "permanently_failed" ? "workflow_job_permanently_failed" : "workflow_job_retry",
-    status: retried.status === "permanently_failed" ? "error" : "warning",
-    internalGameId: claimedJob.internal_game_id,
-    job: { ...claimedJob, legacyGameId: target.gameId },
-    now,
-    errorCode: "DATA_NOT_ANNOUNCED",
-    metadata: { nextAttemptAt },
-    source
-  });
-  return { status: retried.status, gameId: target.gameId, result };
-}
-
-async function runDueProbableStarterWorkflowJobs(env, now) {
-  throw createV3Error(LEGACY_AUTOMATION_RETIRED_CODE, "V1/V2 probable starter workflow is retired.", { httpStatus: 410, retryable: false });
-}
-async function runAdminProbableStarterWorkflowJob(env, target, now) {
-  throw createV3Error(LEGACY_ADMIN_OPERATION_RETIRED_CODE, LEGACY_ADMIN_OPERATION_RETIRED_MESSAGE, {
-    httpStatus: 410,
-    retryable: false
   });
 }
 
@@ -5131,9 +5050,6 @@ async function runSingleAutoScoringTest(env, gameId, now, { manual = false } = {
   }
 }
 
-async function runDueAutoScoringTestJobs(env, now) {
-  throw createV3Error(LEGACY_AUTOMATION_RETIRED_CODE, "V1/V2 development scoring runner is retired.", { httpStatus: 410, retryable: false });
-}
 async function handleAdminTestRoute(request, env, cors, route) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) {
@@ -5160,10 +5076,6 @@ async function handleAdminTestRoute(request, env, cors, route) {
       return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
     }
     return await handleCreateAdminTestPerfectPrediction(env, cors, access.user, metadata);
-  }
-  if (route.action === "cron/run-auto-scoring" && request.method === "POST") {
-    const summary = await runDueAutoScoringJobs(env, new Date());
-    return jsonResponse({ ok: true, ...summary }, 200, cors);
   }
   if (route.action === "achievements" && request.method === "GET") {
     return await handleDevelopmentAchievements(env, cors, access.user);
@@ -6236,9 +6148,9 @@ async function handleAdminGameScheduleUpdate(request, env, cors, metadata, user)
     }
 
     if (wasClosed) {
-      const workflow = await env.AUTH_DB.prepare("SELECT workflow_status FROM game_workflow_state WHERE internal_game_id = ?1 LIMIT 1").bind(metadata.internalGameId).first();
-      if (workflow?.workflow_status === "prediction_open") {
-        await transitionWorkflowState(env.AUTH_DB, { internalGameId: metadata.internalGameId, to: "prediction_closed", now });
+      const v3State = await env.AUTH_DB.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(metadata.internalGameId).first();
+      if (v3State?.state === "scheduled") {
+        await transitionV3State(env.AUTH_DB, { internalGameId: metadata.internalGameId, from: "scheduled", to: "prediction_closed", now });
       }
     }
     await recordWorkflowLog(env.AUTH_DB, {
@@ -7129,9 +7041,6 @@ async function claimGameDayNoticeSlot(db, date, slotKey, now) {
   return Number(result?.meta?.changes || 0) === 1;
 }
 
-async function runDueGameDayScheduleJobs(env, now, timelines = getPregameTimelines()) {
-  throw createV3Error(LEGACY_AUTOMATION_RETIRED_CODE, "V1/V2 notice runner is retired.", { httpStatus: 410, retryable: false });
-}
 async function runGameDayNoticeOnce(env, now, requestedGameId = "", timelines = getPregameTimelines()) {
   const date = getJstDateString(now);
   await ensureGameDayNoticeRows(env.AUTH_DB, timelines, date, now);
@@ -7459,9 +7368,6 @@ function isNormalRosterTimeline(timeline) {
     && !gameId.includes("auto-scoring-test");
 }
 
-async function runDueRosterCaptureJobs(env, now, timelines = getPregameTimelines()) {
-  throw createV3Error(LEGACY_AUTOMATION_RETIRED_CODE, "V1/V2 roster runner is retired.", { httpStatus: 410, retryable: false });
-}
 export function normalizeAutoApproveEnabled(value, fallback = true) {
   if (value === true || value === 1 || value === "1") return true;
   if (value === false || value === 0 || value === "0") return false;
@@ -12848,12 +12754,6 @@ async function executeCompletionWorkflowJob(env, job, now) {
   return result;
 }
 
-async function runDueCompletionWorkflowJobs(env, now, timelines) {
-  throw createV3Error(LEGACY_AUTOMATION_RETIRED_CODE, "V1/V2 completion workflow is retired.", { httpStatus: 410, retryable: false });
-}
-async function runDuePregameAutomationJobs(env, now, timelines = getPregameTimelines()) {
-  throw createV3Error(LEGACY_AUTOMATION_RETIRED_CODE, "V1/V2 pregame automation is retired.", { httpStatus: 410, retryable: false });
-}
 const CURRENT_MANAGED_TERMINAL_WORKFLOWS = new Set(["published", "service_unavailable", "cancelled"]);
 const CURRENT_MANAGED_FAILED_WORKFLOWS = new Set(["retrying", "manual_intervention_required"]);
 
@@ -13805,17 +13705,19 @@ async function createManualLineupRevision(db, metadata, actualLineup, userId, re
 async function markManualLineupCorrectionPending(db, internalGameId, now) {
   if (!internalGameId) return false;
   const current = await db.prepare(
-    "SELECT workflow_status FROM game_workflow_state WHERE internal_game_id = ?1 LIMIT 1"
+    "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
   ).bind(internalGameId).first();
   if (!current) return false;
-  const currentStatus = String(current.workflow_status || "");
-  const legacyStatus = currentStatus === "published" ? "rescore_pending" : currentStatus;
-  await transitionWorkflowState(db, {
+  const currentState = String(current.state || "");
+  if (currentState === "manual_action_required") return true;
+  if (currentState !== "published") return false;
+  await transitionV3State(db, {
     internalGameId,
-    to: legacyStatus || "rescore_pending",
-    canonicalStatus: "lineup_correction_pending",
-    completedJobType: "rescore",
-    now
+    from: currentState,
+    to: "manual_action_required",
+    now,
+    failureCode: "LINEUP_CORRECTION_PENDING",
+    failureMessage: "管理者による正式スタメン修正を待っています。"
   });
   return true;
 }
@@ -13823,42 +13725,43 @@ async function markManualLineupCorrectionPending(db, internalGameId, now) {
 async function markManualRescoreCompleted(db, internalGameId, publicationStatus, now, { deferPublication = false } = {}) {
   if (!internalGameId) return false;
   const current = await db.prepare(
-    "SELECT workflow_status FROM game_workflow_state WHERE internal_game_id = ?1 LIMIT 1"
+    "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
   ).bind(internalGameId).first();
   if (!current) return false;
-  const currentStatus = String(current.workflow_status || "");
-  if (!["rescore_pending", "scored_private", "published"].includes(currentStatus)) return false;
-  if (currentStatus === "published") {
-    await transitionWorkflowState(db, {
+  let currentState = String(current.state || "");
+  if (currentState === "published") {
+    await transitionV3State(db, {
       internalGameId,
-      to: "rescore_pending",
-      canonicalStatus: "lineup_correction_pending",
-      completedJobType: "rescore",
-      now
+      from: currentState,
+      to: "manual_action_required",
+      now,
+      failureCode: "RESCORE_PENDING",
+      failureMessage: "修正版の再採点結果を反映しています。"
     });
+    currentState = "manual_action_required";
   }
-  await transitionWorkflowState(db, {
+  if (currentState !== "manual_action_required") return false;
+  await transitionV3State(db, {
     internalGameId,
-    to: "scored_private",
-    canonicalStatus: "rescored",
-    completedJobType: "rescore",
+    from: currentState,
+    to: "scored",
     now
   });
+  currentState = "scored";
   if (!deferPublication) {
-    await transitionWorkflowState(db, {
+    await transitionV3State(db, {
       internalGameId,
-      to: "scored_private",
-      canonicalStatus: "ranking_reflected",
-      completedJobType: "ranking_update",
+      from: currentState,
+      to: "ranked",
       now
     });
+    currentState = "ranked";
   }
   if (!deferPublication && publicationStatus === "published") {
-    await transitionWorkflowState(db, {
+    await transitionV3State(db, {
       internalGameId,
+      from: currentState,
       to: "published",
-      canonicalStatus: "published",
-      completedJobType: "publication",
       now
     });
   }
@@ -14485,9 +14388,6 @@ async function claimGameLineupForScoring(db, gameId, now, { force = false, reset
   return await getGameLineup(db, gameId);
 }
 
-async function runDueAutoScoringJobs(env, now, pausedGameIds = new Set()) {
-  throw createV3Error(LEGACY_AUTOMATION_RETIRED_CODE, "V1/V2 scoring runner is retired.", { httpStatus: 410, retryable: false });
-}
 async function getCurrentLineupRevisionForScoring(db, gameId) {
   try {
     const row = await db.prepare(
@@ -14743,9 +14643,6 @@ async function markGameRankingScoredPrivate(db, gameId, scoredAt, env, isTestGam
   if (statement) await statement.run();
 }
 
-async function runDueGameDayPublicationJobs(env, now, timelines = getPregameTimelines()) {
-  throw createV3Error(LEGACY_AUTOMATION_RETIRED_CODE, "V1/V2 publication runner is retired.", { httpStatus: 410, retryable: false });
-}
 async function publishScoredGameResults(env, gameId, now, options = {}) {
   try {
     const result = await publishGameResults(env, gameId, now, options);

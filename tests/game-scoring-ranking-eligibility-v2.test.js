@@ -63,11 +63,9 @@ test("admin eligibility API and user result expose the explicit exclusion state"
   assert.match(script, /data-ranking-eligibility-action/);
 });
 
-test("canonical state rules include exclusion and rescoring paths while rejecting a direct publish-to-score jump", async () => {
-  const automation = await import(pathToFileURL(path.join(root, "game-automation-v2.js")).href);
-  assert.equal(automation.isAutomationV2StateTransitionAllowed("published", "ranking_exclusion_pending"), true);
-  assert.equal(automation.isAutomationV2StateTransitionAllowed("ranking_exclusion_pending", "ranking_excluded"), true);
-  assert.equal(automation.isAutomationV2StateTransitionAllowed("ranking_excluded", "ranking_reinclusion_pending"), true);
-  assert.equal(automation.isAutomationV2StateTransitionAllowed("rescoring_pending", "rescoring_in_progress"), true);
-  assert.equal(automation.isAutomationV2StateTransitionAllowed("published", "scored"), false);
+test("V3 state rules remain the only workflow transition contract", async () => {
+  const automation = await import(pathToFileURL(path.join(root, "game-automation-v3.js")).href);
+  assert.equal(automation.getV3TransitionDefinition("published", "scored"), null);
+  assert.equal(automation.getV3TransitionDefinition("scored", "ranked").triggeringJob, "ranking_rebuild");
+  assert.equal(automation.getV3TransitionDefinition("ranked", "published").triggeringJob, "publish");
 });

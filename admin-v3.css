@@ -49,6 +49,25 @@ button:disabled { cursor: wait; opacity: .65; }
 .today-card .today-note { color: #526477; font-size: 13px; }
 .today-card .today-meta, .compact-meta { display: flex; flex-wrap: wrap; gap: 7px 14px; color: #526477; font-size: 13px; }
 .today-empty { padding: 18px; color: #5f6e80; background: #fff; border: 1px dashed #cbd7e2; border-radius: 8px; margin-bottom: 14px; }
+.today-ops-panel { margin-bottom: 14px; padding: 15px; background: #fff; border: 1px solid #dce3eb; border-radius: 8px; box-shadow: 0 2px 8px rgba(31, 54, 77, .06); }
+.today-ops-heading, .today-ops-game-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.today-ops-heading h3 { margin: 0; font-size: 19px; }
+.today-ops-heading p { margin: 3px 0 0; color: #5f6e80; font-size: 13px; }
+.today-ops-status { display: inline-flex; align-items: center; min-width: 70px; justify-content: center; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 800; letter-spacing: .03em; }
+.today-ops-status.ok { background: #e5f5ea; color: #21683d; }
+.today-ops-status.waiting { background: #edf3f8; color: #526477; }
+.today-ops-status.attention { background: #fde9e9; color: #9d3636; }
+.today-ops-metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-top: 13px; }
+.today-ops-metrics > div { min-width: 0; padding: 9px; background: #f8fafc; border: 1px solid #e5ebf1; border-radius: 6px; }
+.today-ops-metrics strong, .today-ops-metrics span { display: block; overflow-wrap: anywhere; }
+.today-ops-metrics strong { color: #1b5c8b; font-size: 17px; }
+.today-ops-metrics span, .today-ops-notices, .today-ops-game-meta { color: #526477; font-size: 12px; }
+.today-ops-notices { display: flex; flex-wrap: wrap; gap: 6px 15px; margin: 11px 0; }
+.today-ops-games { display: grid; gap: 8px; }
+.today-ops-game { padding: 11px; border: 1px solid #e0e8ef; border-radius: 6px; background: #fbfcfd; }
+.today-ops-steps { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; margin-top: 9px; }
+.today-ops-step { min-width: 0; padding: 7px; background: #fff; border: 1px solid #e5ebf1; border-radius: 5px; }
+.today-ops-step > span { display: block; margin-bottom: 5px; color: #526477; font-size: 11px; }
 .games { display: grid; gap: 10px; }
 .game-card { padding: 14px; }
 .game-heading { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
@@ -144,6 +163,8 @@ button:disabled { cursor: wait; opacity: .65; }
 @media (max-width: 1040px) {
   .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .timeline { grid-template-columns: repeat(3, minmax(145px, 1fr)); }
+  .today-ops-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .today-ops-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (max-width: 720px) {
   .admin-v3-shell { padding: 16px 10px 32px; }
@@ -160,6 +181,7 @@ button:disabled { cursor: wait; opacity: .65; }
   .v3-toolbar select + label { margin-left: 0; }
   .v3-toolbar button { width: 100%; }
   .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .today-ops-metrics, .today-ops-steps { grid-template-columns: 1fr; }
   .timeline { display: flex; overflow-x: auto; padding-bottom: 4px; }
   .timeline-step { flex: 0 0 165px; }
   .roster-summary, .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

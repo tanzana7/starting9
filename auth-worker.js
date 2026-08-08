@@ -10720,29 +10720,43 @@ async function handleGetPredictionTarget(request, env, cors) {
 async function handleGetPublicGames(request, env, cors) {
   const now = new Date();
   const today = getJstDateString(now);
-  const result = await env.AUTH_DB.prepare(
-    `SELECT games.internal_game_id, games.game_date, games.start_time,
-            games.home_team, games.away_team, games.game_status,
-            COALESCE(workflow.legacy_game_id, schedule.game_id, '') AS legacy_game_id,
-            COALESCE(workflow.workflow_status, '') AS workflow_status,
-            COALESCE(lineup.publication_status, ranking.publication_status, '') AS publication_status,
-            COALESCE(lineup.published_at, ranking.published_at, '') AS published_at
-       FROM games
-       LEFT JOIN game_workflow_state AS workflow
-         ON workflow.internal_game_id = games.internal_game_id
-       LEFT JOIN detected_game_schedule AS schedule
-         ON schedule.internal_game_id = games.internal_game_id
-       LEFT JOIN game_lineups AS lineup
-         ON lineup.internal_game_id = games.internal_game_id
-       LEFT JOIN ranking_games AS ranking
-         ON ranking.internal_game_id = games.internal_game_id
-      WHERE games.game_date >= ?1
-        AND games.game_status NOT IN ('cancelled', 'canceled', 'postponed')
-        AND games.is_active = 1
-        AND games.deleted_at IS NULL
-      ORDER BY games.start_time ASC
-      LIMIT 50`
-  ).bind(today).all();
+  let result;
+  try {
+    result = await env.AUTH_DB.prepare(
+      `SELECT games.internal_game_id, games.game_date, games.start_time,
+              games.home_team, games.away_team, games.game_status,
+              COALESCE(workflow.legacy_game_id, schedule.game_id, '') AS legacy_game_id,
+              COALESCE(workflow.workflow_status, '') AS workflow_status,
+              COALESCE(lineup.publication_status, ranking.publication_status, '') AS publication_status,
+              COALESCE(lineup.published_at, ranking.published_at, '') AS published_at
+         FROM games
+         LEFT JOIN game_workflow_state AS workflow
+           ON workflow.internal_game_id = games.internal_game_id
+         LEFT JOIN detected_game_schedule AS schedule
+           ON schedule.internal_game_id = games.internal_game_id
+         LEFT JOIN game_lineups AS lineup
+           ON lineup.internal_game_id = games.internal_game_id
+         LEFT JOIN ranking_games AS ranking
+           ON ranking.internal_game_id = games.internal_game_id
+        WHERE games.game_date >= ?1
+          AND games.game_status NOT IN ('cancelled', 'canceled', 'postponed')
+          AND games.is_active = 1
+          AND games.deleted_at IS NULL
+        ORDER BY games.start_time ASC
+        LIMIT 50`
+    ).bind(today).all();
+  } catch (error) {
+    // Public selection must remain available when an older optional status column is absent.
+    console.warn("public game status joins unavailable; using canonical games fallback", error instanceof Error ? error.message : "unknown error");
+    result = await env.AUTH_DB.prepare(
+      `SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status
+         FROM games
+        WHERE game_date >= ?1
+          AND game_status NOT IN ('cancelled', 'canceled', 'postponed')
+        ORDER BY start_time ASC
+        LIMIT 50`
+    ).bind(today).all();
+  }
 
   const games = (result.results || []).map((row) => {
     const startAt = new Date(row.start_time);

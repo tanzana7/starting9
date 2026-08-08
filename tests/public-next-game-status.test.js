@@ -40,6 +40,8 @@ test("公開用ゲーム一覧はcanonical internalGameIdとworkflow/publication
   assert.match(worker, /workflow\.workflow_status/);
   assert.match(worker, /lineup\.publication_status/);
   assert.match(worker, /isPublished: publicationStatus === "published"/);
+  assert.match(worker, /public game status joins unavailable; using canonical games fallback/);
+  assert.match(worker, /SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status/);
 });
 
 test("受付中・締切間近・締切済み・公開済みをユーザー向けに区別する", () => {

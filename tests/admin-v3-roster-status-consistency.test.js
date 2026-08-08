@@ -10,7 +10,7 @@ const client = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
 const page = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 const helperStart = client.indexOf("function rosterDisplaySlots");
 const helperEnd = client.indexOf("function buildTodayOpsModel", helperStart);
-const context = {};
+const context = { formatV3Jst: (value) => String(value || "") };
 vm.runInNewContext(`${client.slice(helperStart, helperEnd)}; globalThis.rosterDisplaySlots = rosterDisplaySlots; globalThis.rosterDisplayState = rosterDisplayState; globalThis.todayOpsStep = todayOpsStep;`, context);
 
 function game(overrides = {}) {
@@ -39,6 +39,23 @@ test("stale snapshotは取得済みと表示せず、未実行jobがあれば待
   assert.equal(context.rosterDisplayState(pending).status, "waiting");
 });
 
+test("slot前のmissing snapshotはToday Opsと個別詳細で取得予定として待機する", () => {
+  const target = game({ rosterDiagnostics: {
+    rosterSnapshotExists: false,
+    isSnapshotStale: true,
+    staleReason: "ROSTER_SNAPSHOT_MISSING",
+    severity: "WAITING",
+    reasonCode: "ROSTER_SNAPSHOT_MISSING_BEFORE_DUE",
+    label: "取得予定",
+    nextCheckAt: "2026-08-09T04:00:00.000Z"
+  } });
+  const state = context.rosterDisplayState(target);
+  assert.equal(state.status, "waiting");
+  assert.equal(context.todayOpsStep(target, "roster"), "waiting");
+  assert.match(state.detail, /ROSTER_SNAPSHOT_MISSING_BEFORE_DUE/);
+  assert.match(state.detail, /現時点では当日公示未確認/);
+});
+
 test("failedとretry_waitはsnapshotより優先して注意・待機表示にする", () => {
   const snapshot = { rosterSnapshotExists: true };
   assert.equal(context.rosterDisplayState(game({ rosterDiagnostics: snapshot, jobs: [{ job_type: "roster_fetch", status: "failed", failure_code: "ROSTER_FETCH_FAILED" }] })).status, "attention");
@@ -58,5 +75,5 @@ test("15時開始試合の表示slotから開始後の固定slotを除外し、1
 
 test("admin-v3のcache busterはロースター状態表示版へ更新される", () => {
   assert.match(page, /admin-v3\.css\?v=automation-v3-13-structured-logs/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-15-roster-announcements-cleanup/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-15-roster-before-due-status/);
 });

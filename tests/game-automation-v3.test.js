@@ -284,6 +284,52 @@ test("V3ロースターsnapshotは対象試合日とJST取得日が一致する�
   }
 });
 
+test("V3ロースターplannerはslot前missingを待機監査し、slot後だけjobを計画する", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE game_roster_snapshots (game_id TEXT PRIMARY KEY, internal_game_id TEXT,
+        game_date TEXT, source TEXT, status TEXT, player_count INTEGER, captured_at TEXT, updated_at TEXT);
+      CREATE TABLE game_jobs_v3 (id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT,
+        job_type TEXT, scheduled_at TEXT, scheduled_slot_at TEXT, status TEXT, attempt_count INTEGER,
+        max_attempts INTEGER, next_retry_at TEXT, claimed_at TEXT, claim_token TEXT,
+        lease_expires_at TEXT, completed_at TEXT, failure_code TEXT, failure_message TEXT,
+        created_at TEXT, updated_at TEXT, UNIQUE(internal_game_id, job_type, scheduled_slot_at));
+    `);
+    const target = { ...game(), gameDate: "2026-08-09", startAt: "2026-08-09T06:00:00.000Z" };
+    const beforeDue = await v3.planV3RosterJobs(d1(database), [target], new Date("2026-08-08T23:32:00.000Z"));
+    assert.equal(beforeDue.created, 0);
+    assert.equal(beforeDue.planned[0].reasonCode, "ROSTER_SNAPSHOT_MISSING_BEFORE_DUE");
+    assert.deepEqual(Object.fromEntries([
+      ["currentJstTime", beforeDue.diagnostics[0].currentJstTime],
+      ["nextCheckAt", beforeDue.diagnostics[0].nextCheckAt],
+      ["isBeforeFirstRosterSlot", beforeDue.diagnostics[0].isBeforeFirstRosterSlot],
+      ["freshSnapshotExists", beforeDue.diagnostics[0].freshSnapshotExists],
+      ["staleSnapshotExists", beforeDue.diagnostics[0].staleSnapshotExists],
+      ["openRosterJobExists", beforeDue.diagnostics[0].openJobExists],
+      ["terminalRosterJobExists", beforeDue.diagnostics[0].terminalRosterJobExists],
+      ["reasonCode", beforeDue.diagnostics[0].reasonCode],
+      ["severity", beforeDue.diagnostics[0].severity]
+    ]), {
+      currentJstTime: "2026-08-09T08:32:00+09:00",
+      nextCheckAt: "2026-08-09T04:00:00.000Z",
+      isBeforeFirstRosterSlot: true,
+      freshSnapshotExists: false,
+      staleSnapshotExists: false,
+      openRosterJobExists: false,
+      terminalRosterJobExists: false,
+      reasonCode: "ROSTER_SNAPSHOT_MISSING_BEFORE_DUE",
+      severity: "WAITING"
+    });
+    const afterDue = await v3.planV3RosterJobs(d1(database), [target], new Date("2026-08-09T04:20:00.000Z"));
+    assert.equal(afterDue.created, 1);
+    assert.equal(afterDue.diagnostics[0].reasonCode, "ROSTER_SNAPSHOT_MISSING_AFTER_DUE");
+    assert.equal(afterDue.diagnostics[0].severity, "ATTENTION");
+  } finally {
+    database.close();
+  }
+});
+
 test("V3 Cronは未解決試合のNPB識別jobを固定slotで一度だけ投入する", async () => {
   const database = new DatabaseSync(":memory:");
   try {

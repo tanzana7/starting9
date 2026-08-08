@@ -286,6 +286,20 @@ function currentRetryWaitV3Jobs(game, types = []) {
     && !hasNewerV3Job(game, job));
 }
 
+function rosterDecisionDetail(diagnostics, nextSlot) {
+  const reasonCode = String(diagnostics?.reasonCode || "");
+  const next = diagnostics?.nextCheckAt || nextSlot;
+  const nextText = next ? `次回確認: ${formatV3Jst(next)}` : "";
+  if (reasonCode === "ROSTER_SNAPSHOT_MISSING_BEFORE_DUE") return ["取得予定", reasonCode, nextText, "現時点では当日公示未確認"].filter(Boolean).join(" / ");
+  if (reasonCode === "ROSTER_SNAPSHOT_STALE_REFETCH_SCHEDULED") return ["再取得予定", reasonCode, nextText].filter(Boolean).join(" / ");
+  if (reasonCode === "ROSTER_FETCH_PENDING") return ["取得中", reasonCode, nextText].filter(Boolean).join(" / ");
+  if (reasonCode === "ROSTER_FETCH_RETRY_WAIT") return ["再試行待ち", reasonCode, nextText].filter(Boolean).join(" / ");
+  if (reasonCode === "ROSTER_SNAPSHOT_MISSING_AFTER_DUE") return ["要確認", reasonCode, "期限到達後に取得jobとsnapshotがありません"].join(" / ");
+  if (reasonCode === "ROSTER_SNAPSHOT_STALE_AFTER_DUE") return ["要確認", reasonCode, "期限到達後も当日snapshotがありません"].join(" / ");
+  if (["ROSTER_NO_CHANGES", "ROSTER_CHANGES_CAPTURED"].includes(reasonCode)) return diagnostics?.label || (reasonCode === "ROSTER_CHANGES_CAPTURED" ? "公示確認済み（変更あり）" : "公示確認済み");
+  return [diagnostics?.label, reasonCode, nextText].filter(Boolean).join(" / ");
+}
+
 function rosterDisplayState(game) {
   const diagnostics = game?.rosterDiagnostics || {};
   const now = new Date();
@@ -296,6 +310,18 @@ function rosterDisplayState(game) {
   const jobs = (game?.jobs || []).filter((job) => String(job.job_type || "") === "roster_fetch");
   const byRecent = (left, right) => String(right.updated_at || right.completed_at || right.scheduled_at || "")
     .localeCompare(String(left.updated_at || left.completed_at || left.scheduled_at || ""));
+  const decisionSeverity = String(diagnostics.severity || "").toUpperCase();
+  if (["OK", "WAITING", "ATTENTION"].includes(decisionSeverity)) {
+    const status = decisionSeverity === "OK" ? "ok" : decisionSeverity === "ATTENTION" ? "attention" : "waiting";
+    const currentJob = [...jobs].filter((job) => ["pending", "claimed", "retry_wait", "failed"].includes(String(job.status || ""))).sort(byRecent)[0] || null;
+    return {
+      status,
+      fallbackStatus: status === "ok" ? "complete" : status === "attention" ? "action" : "wait",
+      job: currentJob,
+      nextSlot: diagnostics.nextCheckAt || nextSlot,
+      detail: rosterDecisionDetail(diagnostics, nextSlot)
+    };
+  }
   const failedJob = [...jobs].filter((job) => String(job.status || "") === "failed").sort(byRecent)[0] || null;
   if (failedJob) return { status: "attention", fallbackStatus: "action", job: failedJob, nextSlot, detail: failedJob.failure_code || "ロースター取得に失敗しました。" };
   const retryJob = [...jobs].filter((job) => String(job.status || "") === "retry_wait").sort(byRecent)[0] || null;
@@ -748,6 +774,10 @@ function renderRosterSummary(game) {
   const generatedSlots = rosterDisplaySlots(game, diagnostics.generatedSlots);
   const dueSlots = rosterDisplaySlots(game, diagnostics.dueSlots);
   const diagnosticRows = [
+    ["判定", diagnostics.severity ? `${diagnostics.severity}${diagnostics.label ? ` / ${diagnostics.label}` : ""}` : ""],
+    ["reason", diagnostics.reasonCode || ""],
+    ["現在時刻（JST）", diagnostics.currentJstTime || ""],
+    ["次回確認", formatV3Jst(diagnostics.nextCheckAt)],
     ["生成slot", formatTimelineTime(generatedSlots)],
     ["期限到達slot", formatTimelineTime(dueSlots)],
     ["選択slot", formatV3Jst(diagnostics.selectedDueSlot)],
@@ -755,6 +785,8 @@ function renderRosterSummary(game) {
     ["planning", diagnostics.planningSkipped ? `skip: ${diagnostics.skipReason || "-"}` : "継続"],
     ["INSERT", diagnostics.insertAttempted ? `${diagnostics.insertedRowCount || 0}件` : "未実行"],
     ["claim", diagnostics.claimResult || "未実行"],
+    ["open roster job", diagnostics.openJobExists ? "あり" : "なし"],
+    ["terminal roster job", diagnostics.terminalRosterJobExists ? "あり" : "なし"],
     ["snapshot", diagnostics.rosterSnapshotExists ? `${diagnostics.rosterSnapshotStatus || "captured"} / ${diagnostics.rosterSnapshotPlayerCount || 0}人` : "未取得"],
     ["snapshot取得時刻", formatV3Jst(diagnostics.rosterSnapshotCapturedAt)],
     ["snapshot対象日", diagnostics.rosterSnapshotGameDate || ""],

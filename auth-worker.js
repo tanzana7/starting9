@@ -61,6 +61,7 @@ import {
   deriveV3Schedule,
   deriveV3DisplaySchedule,
   getV3RosterPlanningDiagnostics,
+  getV3RosterStatusDecision,
   getV3NextAction,
   getV3ProbableStarterSlots,
   getV3ProbableStarterSourceDate,
@@ -3928,7 +3929,18 @@ async function handleAdminV3Overview(request, env, cors) {
       deregisteredPlayersHome: [],
       registeredPlayersAway: [],
       deregisteredPlayersAway: [],
-      selectedSlotReason: null
+      selectedSlotReason: null,
+      currentJstTime: null,
+      plannedSlots: [],
+      nextCheckAt: null,
+      isBeforeFirstRosterSlot: false,
+      isAfterDueSlot: false,
+      freshSnapshotExists: false,
+      staleSnapshotExists: false,
+      terminalRosterJobExists: false,
+      reasonCode: null,
+      severity: null,
+      label: null
     };
     const resolvedState = state || { state: "scheduled", version: 0 };
     const jobRows = jobs.results || [];
@@ -3978,7 +3990,6 @@ async function handleAdminV3Overview(request, env, cors) {
     const selectedRosterJob = selectedRosterSlot
       ? rosterJobRows.find((job) => String(job.scheduled_slot_at || "") === String(selectedRosterSlot)) || null
       : null;
-    const latestRosterJob = rosterJobRows[rosterJobRows.length - 1] || null;
     const canonicalRosterSnapshot = await getV3CanonicalRosterSnapshot(env.AUTH_DB, game.internalGameId, { gameDate: game.gameDate });
     let latestRosterAuditDetails = {};
     try {
@@ -3992,14 +4003,22 @@ async function handleAdminV3Overview(request, env, cors) {
     } catch (error) {
       console.warn(`[ADMIN_V3_OVERVIEW] internalGameId=${game.internalGameId} stage=roster_audit_read failureCode=${error?.code || "V3_ROSTER_AUDIT_READ_FAILED"}`);
     }
+    const rosterStatusDecision = getV3RosterStatusDecision({
+      game,
+      now: overviewNow,
+      snapshot: canonicalRosterSnapshot,
+      jobs: rosterJobRows,
+      noticeState: latestRosterAuditDetails.noticeState || latestRosterAuditDetails.reasonCode || null
+    });
+    const currentRosterJob = selectedRosterJob || rosterStatusDecision.openRosterJob || null;
     rosterDiagnostics = {
       ...rosterDiagnostics,
       generatedSlots: rosterDiagnostics.generatedSlots?.length ? rosterDiagnostics.generatedSlots : rosterSlots,
       dueSlots: rosterDiagnostics.dueSlots?.length ? rosterDiagnostics.dueSlots : dueRosterSlots,
-      selectedDueSlot: selectedRosterSlot,
-      actualJobExists: Boolean(selectedRosterJob || latestRosterJob || rosterDiagnostics.actualJobExists),
-      jobStatus: selectedRosterJob?.status || latestRosterJob?.status || rosterDiagnostics.jobStatus || null,
-      existingJobId: selectedRosterJob?.id || latestRosterJob?.id || rosterDiagnostics.existingJobId || null,
+      selectedDueSlot: rosterStatusDecision.selectedDueSlot || selectedRosterSlot,
+      actualJobExists: Boolean(currentRosterJob || rosterDiagnostics.actualJobExists),
+      jobStatus: currentRosterJob?.status || rosterDiagnostics.jobStatus || null,
+      existingJobId: currentRosterJob?.id || rosterDiagnostics.existingJobId || null,
       rosterSnapshotExists: canonicalRosterSnapshot.exists,
       rosterSnapshotInternalGameId: canonicalRosterSnapshot.internalGameId,
       rosterSnapshotStatus: canonicalRosterSnapshot.status,
@@ -4026,7 +4045,19 @@ async function handleAdminV3Overview(request, env, cors) {
       deregisteredPlayersHome: latestRosterAuditDetails.deregisteredPlayersHome || [],
       registeredPlayersAway: latestRosterAuditDetails.registeredPlayersAway || [],
       deregisteredPlayersAway: latestRosterAuditDetails.deregisteredPlayersAway || [],
-      selectedSlotReason: latestRosterAuditDetails.plannerDecision?.selectedSlotReason || null
+      selectedSlotReason: latestRosterAuditDetails.plannerDecision?.selectedSlotReason || (rosterStatusDecision.selectedDueSlot ? "latest_due_roster_slot" : "roster_not_due"),
+      currentJstTime: rosterStatusDecision.currentJstTime,
+      plannedSlots: rosterStatusDecision.plannedSlots,
+      nextCheckAt: rosterStatusDecision.nextCheckAt,
+      isBeforeFirstRosterSlot: rosterStatusDecision.isBeforeFirstRosterSlot,
+      isAfterDueSlot: rosterStatusDecision.isAfterDueSlot,
+      freshSnapshotExists: rosterStatusDecision.freshSnapshotExists,
+      staleSnapshotExists: rosterStatusDecision.staleSnapshotExists,
+      openJobExists: rosterStatusDecision.openRosterJobExists,
+      terminalRosterJobExists: rosterStatusDecision.terminalRosterJobExists,
+      reasonCode: rosterStatusDecision.reasonCode,
+      severity: rosterStatusDecision.severity,
+      label: rosterStatusDecision.label
     };
     const probableSlots = getV3ProbableStarterSlots(game).map((slot) => slot.toISOString());
     const probableJobSlots = new Set(jobRows

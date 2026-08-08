@@ -302,7 +302,7 @@ test("V3管理画面はNPB識別情報とjob監査を読み取り表示する", 
   assert.match(client, /planner decision/);
   assert.ok(client.includes("${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}"));
   assert.match(page, /admin-v3\.css\?v=automation-v3-13-structured-logs/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-15-roster-announcements-cleanup/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-15-roster-before-due-status/);
   assert.match(client, /NPB自動解決job/);
   assert.match(client, /解決元/);
 });

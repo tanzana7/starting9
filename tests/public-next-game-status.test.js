@@ -14,7 +14,8 @@ test("通常画面に試合ステータスカードと未来試合セレクタ�
   for (const id of ["publicGameStatusCard", "publicGameStatusBadge", "publicGameStatusGrid", "publicGameSelect"]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
-  assert.match(html, /GAME STATUS/);
+  assert.match(html, /NEXT GAME/);
+  assert.match(html, /予想する試合/);
   assert.match(html, /for="publicGameSelect"/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*#predictionForm > \.public-game-status-card[\s\S]*grid-column: 1 \/ -1/);
 });
@@ -67,6 +68,15 @@ test("スマホではカードを2列、試合選択を1列にして横溢れを
 });
 
 test("公開画面のJS/CSS cache busterを更新する", () => {
-  assert.match(html, /style\.css\?v=public-next-game-status-1/);
-  assert.match(html, /script\.js\?v=account-prediction-save-auth-1/);
+  assert.match(html, /style\.css\?v=public-hide-system-status-1/);
+  assert.match(html, /script\.js\?v=public-hide-system-status-1/);
+});
+
+test("通常画面は管理用システム表示を初期HTMLから非表示にする", () => {
+  const publicMarkup = html.slice(0, html.indexOf('<details id="adminDetails"'));
+  for (const internalLabel of ["schema ready", "feature flag", "Cron最終監査", "V3 job", "diagnostics", "internal state"]) {
+    assert.doesNotMatch(publicMarkup, new RegExp(internalLabel, "i"));
+  }
+  assert.match(html, /id="adminDetails"[^>]*hidden[^>]*aria-hidden="true"/);
+  assert.match(script, /adminDetails\.hidden = !isAdminScreenOpen/);
 });

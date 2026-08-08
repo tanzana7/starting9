@@ -490,9 +490,10 @@ async function runScheduledGameAutomationV3(env, now) {
     const dataStatus = execution?.dataStatus || probableStarter?.dataStatus || null;
     const noOpReason = execution?.noOpReason || null;
     const failureCode = failure?.code || execution?.failureCode || job?.failure_code || probableStarter?.errorCode || null;
+    if (eventType === "job" && noOpReason) eventType = execution?.noOpEventType || "scoring_no_op";
+    const noOpMessage = eventType === "ranking_no_op" ? "ランキング対象なし" : "採点対象なし";
     const failureBaseMessage = failure?.message || execution?.failureMessage || job?.failure_message
-      || (noOpReason ? `採点対象なし: ${noOpReason}` : null);
-    if (eventType === "job" && noOpReason) eventType = "scoring_no_op";
+      || (noOpReason ? `${noOpMessage}: ${noOpReason}` : null);
     let failureMessage = failureBaseMessage;
     if (failure?.diagnostics && typeof failure.diagnostics === "object") {
       try {
@@ -919,6 +920,15 @@ async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore })
   const result = claimed ? await scoreClaimedGameLineup(env.AUTH_DB, claimed, now) : null;
   const lineup = await getGameLineup(env.AUTH_DB, { gameId: internalGameId, internalGameId });
   if (!lineup || lineup.scoring_status !== "scored") throw createV3Error("V3_SCORING_NOT_COMPLETE", "V3採点が完了していません。");
+  if (result?.scoringRevisionId) {
+    try {
+      await env.AUTH_DB.prepare(
+        "UPDATE game_automation_v3_state SET scoring_revision_id = ?1, updated_at = ?2 WHERE internal_game_id = ?3"
+      ).bind(result.scoringRevisionId, now.toISOString(), internalGameId).run();
+    } catch (error) {
+      if (!isPregameSchemaError(error)) throw error;
+    }
+  }
   return {
     status: result?.status || "scored",
     stateBefore,
@@ -947,17 +957,48 @@ async function executeV3RankingExecutor({ env, internalGameId, now, stateBefore 
   }
   const completion = await getScoringCompletionState(env.AUTH_DB, { gameId: internalGameId, internalGameId });
   if (!completion.complete) throw createV3Error("V3_SCORING_INCOMPLETE", "全予想の採点が完了していません。");
-  const activeRevision = await getActiveScoringRevision(env.AUTH_DB, internalGameId);
+  let activeRevision = await getActiveScoringRevision(env.AUTH_DB, internalGameId);
+  const isNoOpScoring = completion.eligiblePredictionCount === 0 && completion.failedPredictionCount === 0;
+  let noOpReason = isNoOpScoring ? "V3_RANKING_NO_ENTRIES" : null;
+  if (!activeRevision?.id && isNoOpScoring) {
+    const lineup = await getGameLineup(env.AUTH_DB, { gameId: internalGameId, internalGameId });
+    if (lineup?.scoring_status === "scored") {
+      const scoringNoOpReason = completion.excludedPredictionCount > 0
+        ? "V3_SCORING_NO_ELIGIBLE_PREDICTIONS"
+        : "V3_SCORING_NO_PREDICTIONS";
+      noOpReason = "V3_RANKING_NO_ENTRIES";
+      activeRevision = await ensurePersistedScoringRevision(env.AUTH_DB, {
+        gameId: internalGameId,
+        internalGameId,
+        lineupRevisionId: lineup.scoring_lineup_revision_id || "",
+        reason: scoringNoOpReason,
+        now
+      });
+      try {
+        await env.AUTH_DB.prepare(
+          "UPDATE game_automation_v3_state SET scoring_revision_id = ?1, updated_at = ?2 WHERE internal_game_id = ?3"
+        ).bind(activeRevision.id, now.toISOString(), internalGameId).run();
+      } catch (error) {
+        if (!isPregameSchemaError(error)) throw error;
+      }
+    }
+  }
   if (!activeRevision?.id) throw createV3Error("V3_SCORING_REVISION_REQUIRED", "有効な採点revisionがありません。", { retryable: false });
   await markGameRankingScoredPrivate(env.AUTH_DB, internalGameId, now.toISOString(), env, 0, internalGameId);
   await recordRankingReflectionRevision(env.AUTH_DB, {
     internalGameId,
-    scoringRevisionId: completion.scoringRevisionId,
+    scoringRevisionId: activeRevision.id,
     eligibilityVersion: eligibility?.rankingEligibilityVersion || 1,
     status: "reflected",
     now
   });
-  return { status: "ranked", stateBefore, stateAfter: "ranked" };
+  return {
+    status: "ranked",
+    stateBefore,
+    stateAfter: "ranked",
+    noOpReason,
+    noOpEventType: noOpReason ? "ranking_no_op" : null
+  };
 }
 
 async function executeV3PublishExecutor({ env, internalGameId, now, target, stateBefore }) {
@@ -3748,7 +3789,27 @@ async function handleAdminV3Overview(request, env, cors) {
     const lineupSummary = jobs.errorCode
       ? { status: "error", errorCode: jobs.errorCode }
       : { fetch: summarizeJob(["lineup_fetch", "final_lineup_fetch"]), finalize: summarizeJob(["lineup_finalize"]), status: summarizeJob(["lineup_fetch", "final_lineup_fetch", "lineup_finalize"]).status };
-    const scoringSummary = jobs.errorCode ? { status: "error", errorCode: jobs.errorCode } : summarizeJob(["score", "scoring"]);
+    let scoringNoOpAudit = null;
+    let rankingNoOpAudit = null;
+    try {
+      const noOpAudits = await env.AUTH_DB.prepare(
+        `SELECT event_type, failure_message, occurred_at
+           FROM game_automation_v3_audit
+          WHERE internal_game_id = ?1 AND (event_type = 'scoring_no_op' OR event_type = 'ranking_no_op')
+          ORDER BY occurred_at DESC, id DESC LIMIT 10`
+      ).bind(game.internalGameId).all();
+      scoringNoOpAudit = (noOpAudits.results || []).find((row) => row.event_type === "scoring_no_op") || null;
+      rankingNoOpAudit = (noOpAudits.results || []).find((row) => row.event_type === "ranking_no_op") || null;
+    } catch (error) {
+      if (!isPregameSchemaError(error)) throw error;
+    }
+    const extractNoOpReason = (audit) => String(audit?.failure_message || "").match(/V3_[A-Z0-9_]+/)?.[0] || null;
+    const scoringSummary = jobs.errorCode
+      ? { status: "error", errorCode: jobs.errorCode }
+      : { ...summarizeJob(["score", "scoring"]), noOpReason: extractNoOpReason(scoringNoOpAudit), noOpAt: scoringNoOpAudit?.occurred_at || null };
+    const rankingSummary = jobs.errorCode
+      ? { status: "error", errorCode: jobs.errorCode }
+      : { ...summarizeJob(["ranking_rebuild"]), noOpReason: extractNoOpReason(rankingNoOpAudit), noOpAt: rankingNoOpAudit?.occurred_at || null };
     const publicationSummary = jobs.errorCode ? { status: "error", errorCode: jobs.errorCode } : summarizeJob(["publish", "publication"]);
     const scheduleBase = deriveV3DisplaySchedule(game);
     const rosterSlots = scheduleBase.rosterFetchSlots || [];
@@ -3830,6 +3891,7 @@ async function handleAdminV3Overview(request, env, cors) {
       jobs: jobRows,
       lineupSummary,
       scoringSummary,
+      rankingSummary,
       publicationSummary,
       probableStarter: probableStarterPayload,
       probableStarterDiagnostics,
@@ -4677,13 +4739,15 @@ async function handleAdminV3RankingGet(env, cors, context) {
   const completion = await getScoringCompletionState(env.AUTH_DB, context.metadata);
   const activeRevision = await getActiveScoringRevision(env.AUTH_DB, context.id);
   let noOpReason = null;
+  let rankingNoOpReason = null;
   try {
     const noOpAudit = await env.AUTH_DB.prepare(
-      `SELECT failure_message FROM game_automation_v3_audit
-         WHERE internal_game_id = ?1 AND job_type = 'score' AND event_type = 'scoring_no_op'
+      `SELECT event_type, failure_message FROM game_automation_v3_audit
+         WHERE internal_game_id = ?1 AND (event_type = 'scoring_no_op' OR event_type = 'ranking_no_op')
          ORDER BY occurred_at DESC LIMIT 1`
     ).bind(context.id).first();
-    noOpReason = noOpAudit?.failure_message || null;
+    if (noOpAudit?.event_type === "ranking_no_op") rankingNoOpReason = noOpAudit.failure_message || null;
+    else noOpReason = noOpAudit?.failure_message || null;
   } catch (error) {
     if (!isPregameSchemaError(error)) throw error;
   }
@@ -4698,7 +4762,7 @@ async function handleAdminV3RankingGet(env, cors, context) {
     gameStatus: ranking.game_status, publicationStatus: ranking.publication_status,
     rankingEligible: Number(ranking.is_ranking_eligible || 0) === 1,
     scoredPrivateAt: ranking.scored_private_at, publishedAt: ranking.published_at
-  } : null, scoring: { ...completion, noOpReason }, activeScoringRevision: activeRevision, reflection }, 200, cors);
+  } : null, scoring: { ...completion, noOpReason }, rankingNoOpReason, activeScoringRevision: activeRevision, reflection }, 200, cors);
 }
 
 async function handleAdminV3RankingRebuild(request, env, cors, context, user) {
@@ -13781,6 +13845,16 @@ async function scoreClaimedGameLineup(db, record, now, isTestPrediction = 0) {
     now
   });
   if (revision.existingCompleted) {
+    const completedRevision = record.internal_game_id
+      ? await ensurePersistedScoringRevision(db, {
+        gameId: record.game_id,
+        internalGameId: record.internal_game_id,
+        lineupRevisionId: revisionId,
+        revisionNumber: revision.number,
+        reason: "existing_completed_scoring",
+        now
+      })
+      : revision;
     await db.prepare(
       "UPDATE game_lineups SET scoring_status = 'scored', scoring_started_at = NULL, last_error = NULL, updated_at = ?1 WHERE game_id = ?2 AND scoring_status = 'processing'"
     ).bind(now.toISOString(), record.game_id).run();
@@ -13795,7 +13869,7 @@ async function scoreClaimedGameLineup(db, record, now, isTestPrediction = 0) {
       scoredAt: now.toISOString(),
       lineupRevisionId: revisionId,
       scoringRevision: revision.number,
-      scoringRevisionId: revision.id,
+      scoringRevisionId: completedRevision?.id || revision.id,
       status: "already_scored"
     };
   }
@@ -13825,17 +13899,27 @@ async function scoreClaimedGameLineup(db, record, now, isTestPrediction = 0) {
       record.internal_game_id || "",
       revision.number
     );
-    await completeGameScoringRevision(db, {
-      internalGameId: record.internal_game_id || "",
-      scoringRevisionId: revision.id,
-      now
-    });
     const noOpReason = scoring.processed === 0
       ? "V3_SCORING_NO_PREDICTIONS"
       : scoring.scored === 0 && scoring.excluded === scoring.processed
         ? "V3_SCORING_NO_ELIGIBLE_PREDICTIONS"
         : null;
-    return { ...result, scoringRevisionId: revision.id, status: noOpReason ? "no_op_success" : "scored", noOpReason };
+    const persistedRevision = record.internal_game_id
+      ? await ensurePersistedScoringRevision(db, {
+        gameId: record.game_id,
+        internalGameId: record.internal_game_id,
+        lineupRevisionId: revisionId,
+        revisionNumber: revision.number,
+        reason: noOpReason || "initial_scoring",
+        now
+      })
+      : revision;
+    await completeGameScoringRevision(db, {
+      internalGameId: record.internal_game_id || "",
+      scoringRevisionId: persistedRevision?.id || revision.id,
+      now
+    });
+    return { ...result, scoringRevisionId: persistedRevision?.id || revision.id, status: noOpReason ? "no_op_success" : "scored", noOpReason };
   } catch (error) {
     await failGameScoringRevision(db, { scoringRevisionId: revision.id, error, now });
     throw error;
@@ -15270,6 +15354,58 @@ async function beginGameScoringRevision(db, {
     if (isPregameSchemaError(error)) return fallback;
     throw error;
   }
+}
+
+export async function ensurePersistedScoringRevision(db, {
+  gameId = "", internalGameId = "", lineupRevisionId = "", revisionNumber = null,
+  reason = "initial_scoring", now = new Date()
+} = {}) {
+  if (!internalGameId) return null;
+  const columns = await getTableColumnSet(db, "game_scoring_revisions");
+  const requiredColumns = [
+    "id", "internal_game_id", "game_id", "revision_number", "lineup_revision_id",
+    "status", "reason", "created_by", "created_at", "completed_at", "is_active"
+  ];
+  if (!requiredColumns.every((column) => columns.has(column))) {
+    throw createV3Error("V3_SCORING_SCHEMA_UNAVAILABLE", "V3採点revisionの保存先が準備されていません。", { httpStatus: 503, retryable: false });
+  }
+  const resolvedLineupRevisionId = String(lineupRevisionId || `${internalGameId}:1`);
+  let existing = await db.prepare(
+    "SELECT id, revision_number, status, lineup_revision_id FROM game_scoring_revisions WHERE internal_game_id = ?1 AND lineup_revision_id = ?2 LIMIT 1"
+  ).bind(internalGameId, resolvedLineupRevisionId).first();
+  if (!existing) {
+    const latest = await db.prepare(
+      "SELECT COALESCE(MAX(revision_number), 0) AS revision FROM game_scoring_revisions WHERE internal_game_id = ?1"
+    ).bind(internalGameId).first();
+    const number = Number.isInteger(Number(revisionNumber)) && Number(revisionNumber) > 0
+      ? Number(revisionNumber)
+      : Number(latest?.revision || 0) + 1;
+    const id = `${internalGameId}:scoring:${number}`;
+    await db.prepare(
+      `INSERT OR IGNORE INTO game_scoring_revisions
+         (id, internal_game_id, game_id, revision_number, lineup_revision_id, status,
+          reason, created_by, created_at, completed_at, is_active)
+       VALUES (?1, ?2, ?3, ?4, ?5, 'completed', ?6, 'system', ?7, ?7, 1)`
+    ).bind(id, internalGameId, gameId || internalGameId, number, resolvedLineupRevisionId, reason, now.toISOString()).run();
+    existing = await db.prepare(
+      "SELECT id, revision_number, status, lineup_revision_id FROM game_scoring_revisions WHERE internal_game_id = ?1 AND lineup_revision_id = ?2 LIMIT 1"
+    ).bind(internalGameId, resolvedLineupRevisionId).first();
+  }
+  if (!existing?.id) {
+    throw createV3Error("V3_SCORING_REVISION_PERSIST_FAILED", "採点revisionを保存できませんでした。", { retryable: true });
+  }
+  await db.batch([
+    db.prepare("UPDATE game_scoring_revisions SET is_active = 0 WHERE internal_game_id = ?1").bind(internalGameId),
+    db.prepare(
+      "UPDATE game_scoring_revisions SET status = 'completed', is_active = 1, completed_at = COALESCE(completed_at, ?1) WHERE id = ?2 AND internal_game_id = ?3"
+    ).bind(now.toISOString(), existing.id, internalGameId)
+  ]);
+  return {
+    id: existing.id,
+    number: Number(existing.revision_number || revisionNumber || 1),
+    lineupRevisionId: existing.lineup_revision_id || resolvedLineupRevisionId,
+    existingCompleted: existing.status === "completed"
+  };
 }
 
 async function completeGameScoringRevision(db, { internalGameId = "", scoringRevisionId = "", now = new Date() } = {}) {

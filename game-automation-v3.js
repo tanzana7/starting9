@@ -146,6 +146,10 @@ export function isV3ScoreRecoveryTerminalJob(job) {
     && Number(job?.attempt_count ?? job?.attemptCount ?? 0) >= Number(job?.max_attempts ?? job?.maxAttempts ?? 0);
 }
 
+export function isV3RankingRecoveryTerminalJob(job) {
+  return isV3ScoreRecoveryTerminalJob(job);
+}
+
 export function getV3TransitionDefinition(from, to) {
   return V3_TRANSITIONS[`${String(from || "")}->${String(to || "")}`] || null;
 }
@@ -1389,9 +1393,17 @@ export async function planV3MainJobs(db, games = [], now = new Date()) {
         let recoveryOfJobId = null;
         let diagnostic = createV3PlanningDiagnostic(game, effectivePlan, state);
         let result = await createV3Job(db, { internalGameId: game.internalGameId, ...effectivePlan });
-        if (plan.jobType === V3_JOB_TYPE.SCORE
+        const recoveryJobType = plan.jobType === V3_JOB_TYPE.SCORE
+          ? "score"
+          : plan.jobType === V3_JOB_TYPE.RANKING_REBUILD
+            ? "ranking"
+            : null;
+        const isTerminalRecovery = recoveryJobType
           && !result.created
-          && isV3ScoreRecoveryTerminalJob(result.job)) {
+          && (recoveryJobType === "score"
+            ? isV3ScoreRecoveryTerminalJob(result.job)
+            : isV3RankingRecoveryTerminalJob(result.job));
+        if (isTerminalRecovery) {
           const originalSlot = new Date(plan.scheduledSlotAt);
           const recoverySlot = new Date(originalSlot.getTime() + 1000);
           effectivePlan = { ...plan, scheduledSlotAt: recoverySlot, scheduledAt: recoverySlot };
@@ -1407,7 +1419,9 @@ export async function planV3MainJobs(db, games = [], now = new Date()) {
         diagnostic.existingJobId = result.created ? null : result.job?.id || null;
         diagnostic.existingStatus = result.created ? "pending" : result.job?.status || null;
         diagnostic.reasonCode = recoveryOfJobId
-          ? (result.created ? "V3_SCORE_RECOVERY_JOB_CREATED" : "V3_SCORE_RECOVERY_JOB_ALREADY_EXISTS")
+          ? recoveryJobType === "score"
+            ? (result.created ? "V3_SCORE_RECOVERY_JOB_CREATED" : "V3_SCORE_RECOVERY_JOB_ALREADY_EXISTS")
+            : (result.created ? "V3_RANKING_RECOVERY_JOB_CREATED" : "V3_RANKING_RECOVERY_JOB_ALREADY_EXISTS")
           : (result.created ? "V3_JOB_CREATED" : "V3_JOB_ALREADY_EXISTS");
         const entry = {
           game,

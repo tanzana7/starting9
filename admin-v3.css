@@ -68,6 +68,7 @@ button:disabled { cursor: wait; opacity: .65; }
 .today-ops-steps { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; margin-top: 9px; }
 .today-ops-step { min-width: 0; padding: 7px; background: #fff; border: 1px solid #e5ebf1; border-radius: 5px; }
 .today-ops-step > span { display: block; margin-bottom: 5px; color: #526477; font-size: 11px; }
+.today-ops-step > small { display: block; color: #526477; font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
 .today-ops-diagnostics { margin-top: 12px; padding: 11px; background: #f8fafc; border: 1px solid #e0e8ef; border-radius: 6px; }
 .today-ops-diagnostics-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .today-ops-diagnostic-grid { display: grid; grid-template-columns: minmax(150px, .5fr) minmax(0, 1.5fr); gap: 5px 12px; margin-top: 8px; font-size: 12px; }

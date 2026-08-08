@@ -6369,11 +6369,11 @@ function getPredictionAccountUser() {
 function getPredictionAccountSaveErrorMessage(error) {
   const code = String(error?.code || "");
   const status = Number(error?.status || 0);
-  if (code === "AUTH_REQUIRED" || status === 401) {
-    return "端末には保存しました。ログインするとアカウントにも保存できます。";
-  }
   if (code === "SESSION_EXPIRED" || code === "AUTH_SESSION_EXPIRED") {
     return "端末には保存しました。ログイン状態が切れているため、再ログインしてください。";
+  }
+  if (code === "AUTH_REQUIRED" || status === 401) {
+    return "端末には保存しました。ログインするとアカウントにも保存できます。";
   }
   if (code === "PREDICTION_DEADLINE_PASSED" || code === "PREDICTION_CLOSED" || status === 409 && /受付|締切/.test(String(error?.message || ""))) {
     return "予想受付は終了しました。";

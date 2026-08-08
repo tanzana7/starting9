@@ -103,7 +103,8 @@ test("予想保存はcookie credentialsとcanonical internalGameIdを使う", ()
 
 test("認証・締切・対象試合エラーを画面側で分離し、local保存を保持する", () => {
   assert.match(clientSource, /AUTH_REQUIRED/);
-  assert.match(clientSource, /再ログインしてください/);
+  assert.match(clientSource, /SESSION_EXPIRED[\s\S]*再ログインしてください/);
+  assert.ok(clientSource.indexOf("SESSION_EXPIRED") < clientSource.indexOf("AUTH_REQUIRED"));
   assert.match(clientSource, /PREDICTION_DEADLINE_PASSED/);
   assert.match(clientSource, /INVALID_GAME_ID/);
   assert.match(clientSource, /saveToStorage\(STORAGE_KEYS\.prediction, state\.prediction\)/);

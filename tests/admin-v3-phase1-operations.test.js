@@ -51,13 +51,13 @@ test("管理画面はPhase 1操作を実際のV3 APIへ送信し、理由とキ�
     assert.match(client, new RegExp(suffix.replaceAll("/", "\\/")));
   }
   assert.match(client, /data-v3-operation-reason/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-12-ranking-noop-scoring-revision/);
-  assert.match(page, /admin-v3\.css\?v=automation-v3-12-ranking-noop-scoring-revision/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-13-structured-logs/);
+  assert.match(page, /admin-v3\.css\?v=automation-v3-13-structured-logs/);
 });
 
 test("管理画面のjob詳細は失敗内容を確認でき、ユーザー情報を描画しない", () => {
   assert.match(client, /data-v3-job-detail/);
-  assert.match(worker, /SELECT job_id, job_type, state_before, state_after/);
+  assert.match(worker, /SELECT id, job_id, job_type, state_before, state_after/);
   assert.doesNotMatch(worker, /SELECT .*email.*FROM game_jobs_v3/);
 });
 

@@ -318,14 +318,19 @@ function todayOpsStep(game, step, now = new Date()) {
 
 function buildTodayOpsModel(payload, games, now = new Date()) {
   const todayGames = filteredV3Games(games || [], "today");
-  const activeFutureGames = (games || []).filter((game) => gameDateForFilter(game) > v3JstDate(now) && Number(game.isActive ?? 1) !== 0 && !game.deletedAt);
+  const todayJst = v3JstDate(now);
+  const activeFutureGames = (games || []).filter((game) => gameDateForFilter(game) > todayJst && Number(game.isActive ?? 1) !== 0 && !game.deletedAt && (String(game.homeTeam || game.home_team || "").toLowerCase() === "fighters" || String(game.awayTeam || game.away_team || "").toLowerCase() === "fighters"));
+  const reportedFutureGames = payload?.todayOps?.futureGamesCount;
+  const hasReportedFutureGames = typeof reportedFutureGames === "number" && Number.isFinite(reportedFutureGames);
+  const futureGames = hasReportedFutureGames ? reportedFutureGames : activeFutureGames.length;
+  const futureGamesMinimum = Number(payload?.todayOps?.futureGamesMinimum) || 3;
   const allJobs = todayGames.flatMap((game) => game.jobs || []);
   const latestCompleted = todayOpsLatestJob({ jobs: allJobs }, ["completed"]);
   const latestFailed = todayOpsLatestJob({ jobs: allJobs }, ["failed"]);
   const cronLastRunAt = payload?.todayOps?.cronLastRunAt || null;
   const cronAge = cronLastRunAt ? now.getTime() - new Date(cronLastRunAt).getTime() : Number.POSITIVE_INFINITY;
   const cronStale = !cronLastRunAt || !Number.isFinite(cronAge) || cronAge > 15 * 60 * 1000;
-  const futureShortage = activeFutureGames.length < 3;
+  const futureShortage = futureGames < futureGamesMinimum;
   const gameModels = todayGames.map((game) => {
     const state = String(game?.state?.state || "scheduled");
     const publicationAt = new Date(game?.schedule?.publicationAt || "").getTime();
@@ -357,7 +362,8 @@ function buildTodayOpsModel(payload, games, now = new Date()) {
   return {
     todayGames,
     gameModels,
-    futureGames: activeFutureGames.length,
+    futureGames,
+    futureGamesMinimum,
     futureShortage,
     cronLastRunAt,
     cronStale,

@@ -256,6 +256,87 @@ export function getV3RosterPlanningDiagnostics(game, now = new Date(), selectedS
   };
 }
 
+function formatV3JstTimestamp(value) {
+  const date = value instanceof Date ? value : new Date(value || "");
+  if (Number.isNaN(date.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(date).reduce((result, part) => {
+    if (part.type !== "literal") result[part.type] = part.value;
+    return result;
+  }, {});
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}+09:00`;
+}
+
+function latestV3RosterJob(jobs, statuses) {
+  return (Array.isArray(jobs) ? jobs : [])
+    .filter((job) => String(job?.job_type || job?.jobType || "") === V3_JOB_TYPE.ROSTER_FETCH)
+    .filter((job) => statuses.includes(String(job?.status || "")))
+    .sort((left, right) => String(right?.updated_at || right?.completed_at || right?.scheduled_at || "")
+      .localeCompare(String(left?.updated_at || left?.completed_at || left?.scheduled_at || "")))[0] || null;
+}
+
+// This decision is shared by planning/audit and the admin overview. A missing
+// snapshot is expected until the first roster slot is due; it is not stale data.
+export function getV3RosterStatusDecision({ game, now = new Date(), snapshot = null, jobs = [], noticeState = null } = {}) {
+  const current = now instanceof Date ? now : new Date(now);
+  const slotDiagnostics = getV3RosterPlanningDiagnostics(game, current);
+  const plannedSlots = slotDiagnostics.generatedSlots;
+  const dueSlots = slotDiagnostics.dueSlots;
+  const firstSlot = plannedSlots[0] || null;
+  const nextSlot = plannedSlots.find((slot) => new Date(slot).getTime() > current.getTime()) || null;
+  const freshSnapshotExists = Boolean(snapshot?.isFresh || snapshot?.exists);
+  const missingSnapshot = !freshSnapshotExists && String(snapshot?.staleReason || "") === "ROSTER_SNAPSHOT_MISSING";
+  const staleSnapshotExists = !freshSnapshotExists && !missingSnapshot && Boolean(snapshot?.isStale);
+  const openRosterJob = latestV3RosterJob(jobs, ["pending", "claimed", "retry_wait"]);
+  const failedRosterJob = latestV3RosterJob(jobs, ["failed"]);
+  const terminalRosterJobExists = Boolean(latestV3RosterJob(jobs, ["completed", "failed", "cancelled"]));
+  const retryWait = String(openRosterJob?.status || "") === "retry_wait";
+  const pending = ["pending", "claimed"].includes(String(openRosterJob?.status || ""));
+  const isBeforeFirstRosterSlot = Boolean(firstSlot && current.getTime() < new Date(firstSlot).getTime());
+  const isAfterDueSlot = dueSlots.length > 0;
+  const nextCheckAt = openRosterJob?.next_retry_at || nextSlot || null;
+  const base = {
+    currentJstTime: formatV3JstTimestamp(current),
+    plannedSlots,
+    dueSlots,
+    selectedDueSlot: slotDiagnostics.selectedDueSlot,
+    nextCheckAt,
+    isBeforeFirstRosterSlot,
+    isAfterDueSlot,
+    freshSnapshotExists,
+    staleSnapshotExists,
+    openRosterJobExists: Boolean(openRosterJob),
+    terminalRosterJobExists,
+    openRosterJob,
+    failedRosterJob
+  };
+  if (freshSnapshotExists) {
+    const changesCaptured = String(noticeState || "") === "ROSTER_CHANGES_CAPTURED";
+    return { ...base, severity: "OK", reasonCode: changesCaptured ? "ROSTER_CHANGES_CAPTURED" : "ROSTER_NO_CHANGES", label: changesCaptured ? "公示確認済み（変更あり）" : "公示確認済み" };
+  }
+  if (isBeforeFirstRosterSlot) {
+    return {
+      ...base,
+      severity: "WAITING",
+      reasonCode: staleSnapshotExists ? "ROSTER_SNAPSHOT_STALE_REFETCH_SCHEDULED" : "ROSTER_SNAPSHOT_MISSING_BEFORE_DUE",
+      label: staleSnapshotExists ? "再取得予定" : "取得予定"
+    };
+  }
+  if (retryWait) return { ...base, severity: "WAITING", reasonCode: "ROSTER_FETCH_RETRY_WAIT", label: "再試行待ち" };
+  if (pending) return { ...base, severity: "WAITING", reasonCode: "ROSTER_FETCH_PENDING", label: "取得中" };
+  if (failedRosterJob) return { ...base, severity: "ATTENTION", reasonCode: String(failedRosterJob.failure_code || "ROSTER_FETCH_FAILED"), label: "取得失敗" };
+  if (staleSnapshotExists) return { ...base, severity: "ATTENTION", reasonCode: "ROSTER_SNAPSHOT_STALE_AFTER_DUE", label: "再取得が必要" };
+  return { ...base, severity: "ATTENTION", reasonCode: "ROSTER_SNAPSHOT_MISSING_AFTER_DUE", label: "取得漏れの可能性" };
+}
+
 const NEXT_ACTION_LABELS = Object.freeze({
   prediction_close: "予想締切",
   roster_fetch: "ロースター取得",
@@ -870,7 +951,17 @@ export async function planV3RosterJobs(db, games = [], now = new Date()) {
       rosterSnapshotFresh: false,
       rosterSnapshotStale: false,
       staleReason: null,
-      insertReasonCode: null
+      insertReasonCode: null,
+      currentJstTime: null,
+      plannedSlots: [],
+      nextCheckAt: null,
+      isBeforeFirstRosterSlot: false,
+      isAfterDueSlot: false,
+      freshSnapshotExists: false,
+      staleSnapshotExists: false,
+      terminalRosterJobExists: false,
+      reasonCode: null,
+      severity: null
     };
     diagnostics.push(diagnostic);
     try {
@@ -884,43 +975,56 @@ export async function planV3RosterJobs(db, games = [], now = new Date()) {
       diagnostic.generatedSlots = slotDiagnostics.generatedSlots;
       diagnostic.dueSlots = slotDiagnostics.dueSlots;
       const dueSlots = slotDiagnostics.dueSlots.map((slot) => new Date(slot));
+      const snapshot = await getV3CanonicalRosterSnapshot(db, game.internalGameId, { gameDate: game.gameDate || game.game_date });
+      const rosterJobs = (await db.prepare(
+        `SELECT id, status, scheduled_slot_at, scheduled_at, attempt_count, max_attempts,
+                next_retry_at, claimed_at, completed_at, failure_code, updated_at
+           FROM game_jobs_v3
+          WHERE internal_game_id = ?1 AND job_type = ?2
+          ORDER BY scheduled_slot_at DESC, id DESC`
+      ).bind(game.internalGameId, "roster_fetch").all()).results || [];
+      const rosterStatus = getV3RosterStatusDecision({ game, now: current, snapshot, jobs: rosterJobs });
+      Object.assign(diagnostic, {
+        selectedDueSlot: rosterStatus.selectedDueSlot,
+        rosterSnapshotExists: snapshot.exists,
+        rosterSnapshotInternalGameId: snapshot.internalGameId,
+        rosterSnapshotStatus: snapshot.status,
+        rosterSnapshotPlayerCount: snapshot.playerCount,
+        rosterSnapshotCapturedAt: snapshot.capturedAt,
+        rosterSnapshotGameDate: snapshot.gameDate,
+        rosterSnapshotSource: snapshot.source,
+        rosterSnapshotFresh: snapshot.isFresh,
+        rosterSnapshotStale: snapshot.isStale,
+        staleReason: snapshot.staleReason,
+        currentJstTime: rosterStatus.currentJstTime,
+        plannedSlots: rosterStatus.plannedSlots,
+        nextCheckAt: rosterStatus.nextCheckAt,
+        isBeforeFirstRosterSlot: rosterStatus.isBeforeFirstRosterSlot,
+        isAfterDueSlot: rosterStatus.isAfterDueSlot,
+        freshSnapshotExists: rosterStatus.freshSnapshotExists,
+        staleSnapshotExists: rosterStatus.staleSnapshotExists,
+        openJobExists: rosterStatus.openRosterJobExists,
+        terminalRosterJobExists: rosterStatus.terminalRosterJobExists,
+        reasonCode: rosterStatus.reasonCode,
+        severity: rosterStatus.severity
+      });
       if (!dueSlots.length) {
         diagnostic.planningSkipped = true;
         diagnostic.skipReason = "ROSTER_NOT_DUE";
-        planned.push({ game, plan: null, created: false, reasonCode: diagnostic.skipReason, diagnostic: { ...diagnostic } });
+        planned.push({ game, plan: null, created: false, reasonCode: diagnostic.reasonCode, diagnostic: { ...diagnostic } });
         continue;
       }
-      const snapshot = await getV3CanonicalRosterSnapshot(db, game.internalGameId, { gameDate: game.gameDate || game.game_date });
-      diagnostic.rosterSnapshotExists = snapshot.exists;
-      diagnostic.rosterSnapshotInternalGameId = snapshot.internalGameId;
-      diagnostic.rosterSnapshotStatus = snapshot.status;
-      diagnostic.rosterSnapshotPlayerCount = snapshot.playerCount;
-      diagnostic.rosterSnapshotCapturedAt = snapshot.capturedAt;
-      diagnostic.rosterSnapshotGameDate = snapshot.gameDate;
-      diagnostic.rosterSnapshotSource = snapshot.source;
-      diagnostic.rosterSnapshotFresh = snapshot.isFresh;
-      diagnostic.rosterSnapshotStale = snapshot.isStale;
-      diagnostic.staleReason = snapshot.staleReason;
       if (snapshot.exists) {
         diagnostic.planningSkipped = true;
         diagnostic.skipReason = "ROSTER_SNAPSHOT_ALREADY_EXISTS";
         planned.push({ game, plan: null, created: false, reasonCode: diagnostic.skipReason, diagnostic: { ...diagnostic } });
         continue;
       }
-
-      const rosterJobs = (await db.prepare(
-        `SELECT id, status, scheduled_slot_at, scheduled_at, attempt_count, max_attempts,
-                next_retry_at, claimed_at, completed_at
-           FROM game_jobs_v3
-          WHERE internal_game_id = ?1 AND job_type = ?2
-          ORDER BY scheduled_slot_at DESC, id DESC`
-      ).bind(game.internalGameId, "roster_fetch").all()).results || [];
       const openJob = rosterJobs.find((job) => ["pending", "claimed", "retry_wait"].includes(String(job.status || "")));
       const latestDueSlot = dueSlots[dueSlots.length - 1];
       // Rescue only the latest due slot. Older due slots must not be backfilled
       // one by one after a newer slot has already been processed.
       const selectedDueSlot = latestDueSlot;
-      diagnostic.selectedDueSlot = slotDiagnostics.selectedDueSlot;
       const selectedExistingJob = rosterJobs.find((job) => String(job.scheduled_slot_at || "") === selectedDueSlot.toISOString()) || null;
       diagnostic.actualJobExists = Boolean(selectedExistingJob || openJob);
       diagnostic.jobStatus = selectedExistingJob?.status || openJob?.status || null;

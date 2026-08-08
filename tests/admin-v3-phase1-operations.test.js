@@ -52,7 +52,7 @@ test("管理画面は自動進行の確認に限定し、手動Phase 1操作を�
   }
   assert.match(client, /V3が取得・確定したスタメンrevisionを確認します/);
   assert.match(client, /V3が進めた採点・ランキング・公開の状態を確認します/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-15-roster-announcements-cleanup/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-15-roster-before-due-status/);
   assert.match(page, /admin-v3\.css\?v=automation-v3-13-structured-logs/);
 });
 

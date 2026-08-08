@@ -137,7 +137,7 @@ test("overviewはCron監査時刻をToday Opsへ返し、管理画面は専用�
   assert.match(client, /Today Ops \/ Automation Health/);
   assert.match(client, /futureShortage/);
   assert.match(client, /todayOpsStep/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-15-roster-announcements-cleanup/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-15-roster-before-due-status/);
   assert.match(page, /admin-v3\.css\?v=automation-v3-13-structured-logs/);
   assert.match(css, /today-ops-panel/);
   assert.match(css, /@media \(max-width: 720px\)[\s\S]*today-ops-metrics, \.today-ops-steps \{ grid-template-columns: 1fr; \}/);

@@ -800,9 +800,60 @@ async function executeV3PredictionCloseExecutor({ env, internalGameId, stateBefo
   return { status: "prediction_closed", stateBefore, stateAfter: "prediction_closed" };
 }
 
-async function executeV3LineupExecutor({ env, internalGameId, now, target, stateBefore, jobType }) {
+function enrichV3LineupExecutorError(error, { internalGameId, now, target, job, lineupIdentity, stage = "capture_official_lineup" } = {}) {
+  const diagnostics = {
+    ...(error?.diagnostics && typeof error.diagnostics === "object" ? error.diagnostics : {}),
+    executorStage: stage,
+    sourceUrl: lineupIdentity?.sourceUrl || target?.npbGameUrl || null,
+    httpStatus: Number(error?.httpStatus || error?.upstreamStatus || 0) || null,
+    selectedSlot: job?.scheduled_slot_at || null,
+    internalGameId,
+    npbGameCode: lineupIdentity?.gameCode || target?.gameCode || target?.npb_game_code || null,
+    homeTeam: target?.home_team || target?.homeTeam || null,
+    awayTeam: target?.away_team || target?.awayTeam || null
+  };
+  const code = String(error?.code || "").trim().toUpperCase();
+  if (code && code !== "V3_JOB_FAILED") {
+    error.diagnostics = diagnostics;
+    return error;
+  }
+  return createV3Error("UNEXPECTED_EXCEPTION", String(error?.message || "V3スタメン取得で予期しない例外が発生しました。"), {
+    errorClass: "SYSTEM",
+    exceptionName: String(error?.name || "Error"),
+    exceptionMessage: String(error?.message || ""),
+    diagnostics: {
+      ...diagnostics,
+      exceptionName: String(error?.name || "Error"),
+      exceptionMessage: String(error?.message || "")
+    }
+  });
+}
+
+async function executeV3LineupExecutor({ env, internalGameId, now, target, stateBefore, jobType, job }) {
   const lineupIdentity = createV3LineupIdentity(target);
-  if (!lineupIdentity) throw createV3Error("NPB_IDENTITY_UNRESOLVED", "NPB試合識別情報が日程DBにありません。");
+  if (!lineupIdentity) {
+    const startAt = new Date(target?.startAt || target?.start_time || "");
+    const hasCanonicalSchedule = INTERNAL_GAME_ID_PATTERN.test(String(internalGameId || ""))
+      && !Number.isNaN(startAt.getTime());
+    const missingCode = !normalizeNpbGameCode(target?.gameCode || target?.npb_game_code);
+    throw createV3Error(
+      hasCanonicalSchedule && missingCode ? "NPB_GAME_CODE_NOT_AVAILABLE" : "NPB_IDENTITY_UNRESOLVED",
+      hasCanonicalSchedule && missingCode ? "NPB試合コードが未掲載のため、次回slotで再確認します。" : "NPB試合識別情報が日程DBにありません。",
+      {
+        retryable: true,
+        retryAt: new Date(new Date(now).getTime() + 10 * 60 * 1000),
+        diagnostics: {
+          executorStage: "resolve_lineup_identity",
+          selectedSlot: job?.scheduled_slot_at || null,
+          internalGameId,
+          npbGameCode: target?.gameCode || target?.npb_game_code || null,
+          homeTeam: target?.home_team || null,
+          awayTeam: target?.away_team || null,
+          reasonCode: hasCanonicalSchedule && missingCode ? "NPB_GAME_CODE_NOT_AVAILABLE" : "NPB_IDENTITY_UNRESOLVED"
+        }
+      }
+    );
+  }
   let result;
   try {
     result = await captureOfficialLineup(env, internalGameId, now, {
@@ -824,14 +875,18 @@ async function executeV3LineupExecutor({ env, internalGameId, now, target, state
       identityOverride: lineupIdentity
     });
   } catch (error) {
-    if (jobType === V3_JOB_TYPE.LINEUP_FETCH) throw normalizeV3LineupFetchError(error, now);
-    throw normalizeV3LineupFinalizeError(error, {
+    if (jobType === V3_JOB_TYPE.LINEUP_FETCH) {
+      throw enrichV3LineupExecutorError(normalizeV3LineupFetchError(error, now), {
+        internalGameId, now, target, job, lineupIdentity
+      });
+    }
+    throw enrichV3LineupExecutorError(normalizeV3LineupFinalizeError(error, {
       internalGameId,
       jobType,
       executorReached: true,
       stateBefore,
       provisionalLookup: "game_lineup_revisions.internal_game_id"
-    });
+    }), { internalGameId, now, target, job, lineupIdentity, stage: "finalize_official_lineup" });
   }
   if (jobType === V3_JOB_TYPE.LINEUP_FETCH) return { status: result.status, stateBefore, stateAfter: stateBefore };
   return { status: result.status, stateBefore, stateAfter: "lineup_ready" };
@@ -929,7 +984,7 @@ export async function executeGameAutomationV3Job({ env, job, internalGameId, now
   });
 }
 
-function normalizeV3LineupFetchError(error, now = new Date()) {
+export function normalizeV3LineupFetchError(error, now = new Date()) {
   const rawCode = String(error?.code || "LINEUP_FETCH_FAILED").trim().toUpperCase();
   const validation = error?.validation || {};
   const unannounced = ["LINEUP_NOT_ANNOUNCED", "LINEUP_NOT_PUBLISHED"].includes(rawCode)
@@ -4635,10 +4690,10 @@ async function handleAdminV3PublicationGet(env, cors, context) {
   let publishedScoringRevision = null;
   try {
     const finalRevision = await env.AUTH_DB.prepare(
-      `SELECT id, version, revision_id, source, finalized_at
+      `SELECT version, revision_id, source, finalized_at
          FROM game_lineup_revisions
-        WHERE internal_game_id = ?1 AND is_final = 1
-        ORDER BY version DESC, id DESC LIMIT 1`
+         WHERE internal_game_id = ?1 AND is_final = 1
+         ORDER BY version DESC LIMIT 1`
     ).bind(context.id).first();
     publishedLineupRevision = finalRevision || null;
   } catch (error) {
@@ -8142,7 +8197,7 @@ export async function selectV3LineupFinalizeCandidate(db, { internalGameId = "" 
     };
   }
   const rows = await db.prepare(
-    "SELECT * FROM game_lineup_revisions WHERE internal_game_id = ?1 ORDER BY version DESC, id DESC LIMIT 20"
+    "SELECT * FROM game_lineup_revisions WHERE internal_game_id = ?1 ORDER BY version DESC LIMIT 20"
   ).bind(id).all();
   const candidates = (rows.results || []).filter((row) => Number(row.is_final || 0) !== 1);
   diagnostics.candidateCount = candidates.length;
@@ -11073,10 +11128,10 @@ async function saveLineupCandidateRevision(db, {
   }
   const latest = hasCanonicalIdentity
     ? await db.prepare(
-      "SELECT * FROM game_lineup_revisions WHERE internal_game_id = ?1 ORDER BY version DESC, id DESC LIMIT 1"
+      "SELECT * FROM game_lineup_revisions WHERE internal_game_id = ?1 ORDER BY version DESC LIMIT 1"
     ).bind(internalGameId).first()
     : await db.prepare(
-      "SELECT * FROM game_lineup_revisions WHERE game_id = ?1 ORDER BY version DESC, id DESC LIMIT 1"
+      "SELECT * FROM game_lineup_revisions WHERE game_id = ?1 ORDER BY version DESC LIMIT 1"
     ).bind(gameId).first();
   if (latest && String(latest.lineup_fingerprint || "") === fingerprint) return latest;
 
@@ -11122,10 +11177,10 @@ async function saveLineupCandidateRevision(db, {
       if (!/constraint|unique|primary key/i.test(String(error?.message || "")) || attempt === 1) throw error;
       const concurrent = hasCanonicalIdentity
         ? await db.prepare(
-          "SELECT * FROM game_lineup_revisions WHERE internal_game_id = ?1 ORDER BY version DESC, id DESC LIMIT 1"
+          "SELECT * FROM game_lineup_revisions WHERE internal_game_id = ?1 ORDER BY version DESC LIMIT 1"
         ).bind(internalGameId).first()
         : await db.prepare(
-          "SELECT * FROM game_lineup_revisions WHERE game_id = ?1 ORDER BY version DESC, id DESC LIMIT 1"
+          "SELECT * FROM game_lineup_revisions WHERE game_id = ?1 ORDER BY version DESC LIMIT 1"
         ).bind(gameId).first();
       if (concurrent && String(concurrent.lineup_fingerprint || "") === fingerprint) return concurrent;
       version = Number(concurrent?.version || version) + 1;

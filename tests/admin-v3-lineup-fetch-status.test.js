@@ -58,6 +58,21 @@ test("HTTP失敗retry_waitは一時取得失敗、parser失敗とV3_JOB_FAILED�
   assert.equal(system.label, "システム異常");
 });
 
+test("UNEXPECTED_EXCEPTIONは例外診断と次回確認slotを表示する", () => {
+  const result = context.lineupDisplayState(game([{
+    job_type: "lineup_fetch",
+    status: "retry_wait",
+    failure_code: "UNEXPECTED_EXCEPTION",
+    failure_message: 'D1_ERROR [diagnostics={"exceptionName":"Error","exceptionMessage":"no such column: id","executorStage":"capture_official_lineup","selectedSlot":"2026-08-08T05:40:00.000Z"}]'
+  }]), now);
+  assert.equal(result.status, "attention");
+  assert.equal(result.label, "システム異常");
+  assert.match(result.detail, /exceptionName: Error/);
+  assert.match(result.detail, /no such column: id/);
+  assert.match(result.detail, /capture_official_lineup/);
+  assert.equal(result.nextCheckAt, "2026-08-08T05:30:00.000Z");
+});
+
 test("全polling slot経過後にlineupがなければATTENTION", () => {
   const result = context.lineupDisplayState(game(), new Date("2026-08-08T06:01:00.000Z"));
   assert.equal(result.status, "attention");
@@ -68,6 +83,6 @@ test("Today Opsはlineup reasonと次回確認を同じ表示契約へ渡す", (
   assert.match(client, /lineupDetail/);
   assert.match(client, /renderTodayOpsStep\("スタメン", steps\.lineup, steps\.lineupDetail\)/);
   assert.match(client, /次回確認待ち/);
-  assert.match(page, /admin-v3\.css\?v=automation-v3-8-lineup-status/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-8-lineup-status/);
+  assert.match(page, /admin-v3\.css\?v=automation-v3-9-lineup-unexpected/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-9-lineup-unexpected/);
 });

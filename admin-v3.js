@@ -321,9 +321,39 @@ function lineupReasonCode(job, game) {
   return raw;
 }
 
+function lineupFailureDiagnostics(job) {
+  if (job?.diagnostics && typeof job.diagnostics === "object") return job.diagnostics;
+  const message = String(job?.failure_message || job?.failureMessage || "");
+  const marker = message.indexOf("[diagnostics=");
+  if (marker < 0) return {};
+  const json = message.slice(marker + "[diagnostics=".length).replace(/\]\s*$/, "");
+  try {
+    const parsed = JSON.parse(json);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function lineupDiagnosticText(diagnostics) {
+  const fields = [
+    ["exceptionName", diagnostics?.exceptionName],
+    ["exceptionMessage", diagnostics?.exceptionMessage],
+    ["stage", diagnostics?.executorStage],
+    ["sourceUrl", diagnostics?.sourceUrl],
+    ["HTTP", diagnostics?.httpStatus],
+    ["slot", diagnostics?.selectedSlot]
+  ];
+  return fields
+    .filter(([, value]) => value !== undefined && value !== null && String(value) !== "")
+    .map(([label, value]) => `${label}: ${value}`)
+    .join(" / ");
+}
+
 function classifyLineupReason(reasonCode) {
   const code = String(reasonCode || "").toUpperCase();
   if (code === "LINEUP_NOT_ANNOUNCED") return "unannounced";
+  if (["NPB_GAME_CODE_NOT_AVAILABLE", "NPB_IDENTITY_UNRESOLVED"].includes(code)) return "identity_pending";
   if (/HTTP|NETWORK|TEMPORARY|TIMEOUT|FETCH_FAILED/.test(code)) return "temporary_error";
   if (/PARSE|INVALID|INCOMPLETE|TEAM_MISMATCH|PLAYER_ID|INTEGRITY|CONFLICT/.test(code)) return "data_error";
   if (/MISSING_EXECUTOR|MISSING_HELPER|UNEXPECTED|V3_JOB_FAILED/.test(code)) return "system_error";
@@ -342,6 +372,8 @@ function lineupDisplayState(game, now = new Date()) {
   const job = jobs[0] || null;
   const reasonCode = lineupReasonCode(job, game);
   const classification = classifyLineupReason(reasonCode);
+  const diagnostics = lineupFailureDiagnostics(job);
+  const diagnosticText = lineupDiagnosticText(diagnostics);
   const jobStatusLabel = ({ pending: "予定", claimed: "実行中", retry_wait: "retry_wait", completed: "完了", failed: "失敗" })[String(job?.status || "")] || "待機中";
   const slots = Array.isArray(game?.schedule?.lineupPollingSlots) ? game.schedule.lineupPollingSlots : [];
   const nextCheckAt = slots.map((slot) => new Date(slot || ""))
@@ -359,10 +391,13 @@ function lineupDisplayState(game, now = new Date()) {
     if (classification === "temporary_error") {
       return { status: "waiting", fallbackStatus: "wait", label: "一時取得失敗", job, reasonCode, nextCheckAt, detail: `状態: 次回再試行 / 次回確認: ${nextText} / reason: ${reasonCode}` };
     }
-    return { status: "attention", fallbackStatus: "action", label: classification === "data_error" ? "スタメン取得異常" : "システム異常", job, reasonCode: reasonCode || "V3_JOB_FAILED", nextCheckAt, detail: `状態: 要確認 / reason: ${reasonCode || "V3_JOB_FAILED"}` };
+    if (classification === "identity_pending") {
+      return { status: "waiting", fallbackStatus: "wait", label: "NPB識別情報待ち", job, reasonCode, nextCheckAt, diagnostics, detail: `状態: 次回確認待ち / 次回確認: ${nextText} / reason: ${reasonCode}` };
+    }
+    return { status: "attention", fallbackStatus: "action", label: classification === "data_error" ? "スタメン取得異常" : "システム異常", job, reasonCode: reasonCode || "V3_JOB_FAILED", nextCheckAt, diagnostics, detail: `状態: 要確認 / reason: ${reasonCode || "V3_JOB_FAILED"}${diagnosticText ? ` / ${diagnosticText}` : ""}` };
   }
   if (["failed", "permanently_failed"].includes(String(job?.status || ""))) {
-    return { status: "attention", fallbackStatus: "action", label: classification === "data_error" ? "スタメン取得異常" : "システム異常", job, reasonCode: reasonCode || "V3_JOB_FAILED", nextCheckAt: null, detail: `状態: 要確認 / reason: ${reasonCode || "V3_JOB_FAILED"}` };
+    return { status: "attention", fallbackStatus: "action", label: classification === "data_error" ? "スタメン取得異常" : "システム異常", job, reasonCode: reasonCode || "V3_JOB_FAILED", nextCheckAt: null, diagnostics, detail: `状態: 要確認 / reason: ${reasonCode || "V3_JOB_FAILED"}${diagnosticText ? ` / ${diagnosticText}` : ""}` };
   }
   if (job) {
     return { status: "waiting", fallbackStatus: "wait", label: "取得待ち", job, reasonCode, nextCheckAt, detail: `状態: ${jobStatusLabel}${nextCheckAt ? ` / 次回確認: ${nextText}` : ""}${reasonCode ? ` / reason: ${reasonCode}` : ""}` };

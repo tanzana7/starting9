@@ -1008,7 +1008,7 @@ function formatV3JobFailureMessage(error) {
       diagnostics = "";
     }
   }
-  return (diagnostics ? `${message} [diagnostics=${diagnostics}]` : message).slice(0, 240);
+  return (diagnostics ? `${message} [diagnostics=${diagnostics}]` : message).slice(0, 1200);
 }
 
 export async function getV3SchemaState(db) {

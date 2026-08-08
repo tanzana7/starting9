@@ -21,7 +21,7 @@ const V3_JOB_TYPES = Object.freeze([
   V3_JOB_TYPE.PROBABLE_STARTER_FETCH,
   V3_JOB_TYPE.ROSTER_FETCH
 ]);
-const V3_VIEWS = ["dashboard", "games", "workflow", "lineup", "scoring", "schedule", "emergency", "diagnostics"];
+const V3_VIEWS = ["dashboard", "games", "workflow", "lineup", "scoring", "schedule", "diagnostics"];
 const V3_VIEW_LABELS = {
   dashboard: "ダッシュボード",
   games: "試合一覧",
@@ -29,7 +29,6 @@ const V3_VIEW_LABELS = {
   lineup: "スタメン",
   scoring: "採点・ランキング",
   schedule: "日程管理",
-  emergency: "緊急操作",
   diagnostics: "診断・監査"
 };
 const V3_JOB_LABELS = {
@@ -50,16 +49,13 @@ const v3State = {
   filter: "all",
   selectedGameId: "",
   lastUpdatedAt: null,
-  identityDiagnostics: new Map(),
   operationDetails: new Map(),
   jobDetails: new Map(),
   jobDetailsOpen: new Set(),
   jobDetailsLoading: new Set(),
   jobDetailsCopyStatus: new Map(),
   automationLogs: null,
-  automationLogFilters: { runId: "", internalGameId: "", jobType: "", status: "", reasonCode: "", failureCode: "" },
-  rescorePreview: null,
-  busy: new Set()
+  automationLogFilters: { runId: "", internalGameId: "", jobType: "", status: "", reasonCode: "", failureCode: "" }
 };
 
 function v3ApiBase() {
@@ -203,28 +199,6 @@ function v3DetailPath(suffix) {
   return `/api/admin/v3/games/${encodeURIComponent(v3State.selectedGameId)}${suffix}`;
 }
 
-function v3ActionBusy(key) {
-  return v3State.busy.has(key);
-}
-
-function v3ReasonInputMarkup(label = "理由") {
-  return `<label class="v3-operation-reason">${escapeV3(label)} <input type="text" maxlength="240" data-v3-operation-reason placeholder="必須"></label>`;
-}
-
-function v3LineupEditorMarkup(lineup = []) {
-  const rows = Array.from({ length: 9 }, (_, index) => lineup.find((row) => Number(row?.battingOrder || row?.order) === index + 1) || { battingOrder: index + 1 });
-  return `<div class="v3-lineup-editor">${rows.map((row, index) => `<div class="v3-lineup-row"><strong>${index + 1}番</strong><input value="${escapeV3(row.playerId || "")}" placeholder="playerId" data-v3-player-id><input value="${escapeV3(row.playerName || row.name || "")}" placeholder="選手名" data-v3-player-name><input value="${escapeV3(row.position || "")}" placeholder="守備" data-v3-position><input value="${escapeV3(row.teamCode || "")}" placeholder="team" data-v3-team-code></div>`).join("")}</div>`;
-}
-
-function readV3LineupEditor(card) {
-  return [...(card?.querySelectorAll(".v3-lineup-row") || [])].map((row, index) => ({
-    battingOrder: index + 1,
-    playerId: row.querySelector("[data-v3-player-id]")?.value.trim() || null,
-    playerName: row.querySelector("[data-v3-player-name]")?.value.trim() || "",
-    position: row.querySelector("[data-v3-position]")?.value.trim() || "",
-    teamCode: row.querySelector("[data-v3-team-code]")?.value.trim() || ""
-  }));
-}
 
 function updateV3Hash(view = v3State.view, gameId = v3State.selectedGameId) {
   const query = gameId ? `?game=${encodeURIComponent(gameId)}` : "";
@@ -241,24 +215,6 @@ function readV3Hash() {
   return { view, gameId };
 }
 
-function renderV3IdentityDiagnostics(card, diagnostics, failureCode = "", identityState = "") {
-  const panel = card?.querySelector("[data-v3-identity-diagnostics]");
-  if (!panel) return;
-  if (!diagnostics) { panel.textContent = ""; return; }
-  const fields = [
-    ["internalGameId", diagnostics.internalGameId], ["fetchEndpoint", diagnostics.fetchEndpoint],
-    ["fetchHttpStatus", diagnostics.fetchHttpStatus], ["responseContentType", diagnostics.responseContentType],
-    ["rawCandidateCount", diagnostics.rawCandidateCount], ["parsedCandidateCount", diagnostics.parsedCandidateCount],
-    ["staticCandidateCount", diagnostics.staticCandidateCount], ["mergedCandidateCount", diagnostics.mergedCandidateCount],
-    ["targetGameDateJst", diagnostics.targetGameDateJst], ["targetHomeTeam", diagnostics.targetHomeTeam],
-    ["targetAwayTeam", diagnostics.targetAwayTeam], ["targetStartTimeJst", diagnostics.targetStartTimeJst],
-    ["matchCount", diagnostics.matchCount], ["finalFailureCode", diagnostics.finalFailureCode || failureCode], ["identityState", identityState]
-  ];
-  const fieldMarkup = fields.map(([name, value]) => `<div><dt>${escapeV3(name)}</dt><dd>${escapeV3(value ?? "-")}</dd></div>`).join("");
-  const candidates = Array.isArray(diagnostics.candidates) ? diagnostics.candidates.slice(0, 10) : [];
-  const candidateMarkup = candidates.map((candidate, index) => `<article><strong>#${index + 1} ${escapeV3(candidate.source || "-")}</strong><dl><div><dt>date</dt><dd>${escapeV3(candidate.rawDate || "-")} → ${escapeV3(candidate.normalizedDate || "-")}</dd></div><div><dt>home</dt><dd>${escapeV3(candidate.rawHome || candidate.rawHomeTeam || "-")} → ${escapeV3(candidate.normalizedHome || candidate.normalizedHomeTeam || "-")}</dd></div><div><dt>away</dt><dd>${escapeV3(candidate.rawAway || candidate.rawAwayTeam || "-")} → ${escapeV3(candidate.normalizedAway || candidate.normalizedAwayTeam || "-")}</dd></div><div><dt>start</dt><dd>${escapeV3(candidate.rawStartTime || candidate.startTime || "-")} → ${escapeV3(candidate.normalizedStartTime || "-")}</dd></div><div><dt>identity</dt><dd>code:${candidate.gameCodePresent ? "あり" : "なし"} / URL:${candidate.urlPresent ? "あり" : "なし"}</dd></div><div><dt>rejection</dt><dd>${escapeV3((candidate.rejectionReasons || []).join(", ") || "-")}</dd></div></dl></article>`).join("");
-  panel.innerHTML = `<details open><summary>NPB解決診断</summary><dl class="npb-diagnostic-grid">${fieldMarkup}</dl><div class="npb-diagnostic-candidates"><strong>候補（最大10件）</strong>${candidateMarkup || "<span class=muted>候補なし</span>"}</div></details>`;
-}
 
 function renderSummaryCard(label, count, tone = "ok") {
   return `<div class="summary-card ${tone}"><strong>${escapeV3(count)}</strong><span>${escapeV3(label)}</span></div>`;
@@ -332,17 +288,22 @@ function currentRetryWaitV3Jobs(game, types = []) {
 
 function rosterDisplayState(game) {
   const diagnostics = game?.rosterDiagnostics || {};
+  const now = new Date();
+  const nextSlot = rosterDisplaySlots(game, game?.schedule?.rosterFetchSlots)
+    .map((slot) => new Date(slot || ""))
+    .filter((slot) => !Number.isNaN(slot.getTime()) && slot.getTime() > now.getTime())
+    .sort((left, right) => left.getTime() - right.getTime())[0]?.toISOString() || null;
   const jobs = (game?.jobs || []).filter((job) => String(job.job_type || "") === "roster_fetch");
   const byRecent = (left, right) => String(right.updated_at || right.completed_at || right.scheduled_at || "")
     .localeCompare(String(left.updated_at || left.completed_at || left.scheduled_at || ""));
   const failedJob = [...jobs].filter((job) => String(job.status || "") === "failed").sort(byRecent)[0] || null;
-  if (failedJob) return { status: "attention", fallbackStatus: "action", job: failedJob, detail: failedJob.failure_code || "ロースター取得に失敗しました。" };
+  if (failedJob) return { status: "attention", fallbackStatus: "action", job: failedJob, nextSlot, detail: failedJob.failure_code || "ロースター取得に失敗しました。" };
   const retryJob = [...jobs].filter((job) => String(job.status || "") === "retry_wait").sort(byRecent)[0] || null;
-  if (retryJob) return { status: "waiting", fallbackStatus: "wait", job: retryJob, detail: retryJob.failure_code || "次回取得を待っています。" };
+  if (retryJob) return { status: "waiting", fallbackStatus: "wait", job: retryJob, nextSlot, detail: retryJob.failure_code || "次回の公式公示確認を待っています。" };
   const openJob = [...jobs].filter((job) => ["pending", "claimed"].includes(String(job.status || ""))).sort(byRecent)[0] || null;
-  if (openJob) return { status: "waiting", fallbackStatus: "wait", job: openJob, detail: "取得処理を待っています。" };
+  if (openJob) return { status: "waiting", fallbackStatus: "wait", job: openJob, nextSlot, detail: "公式公示の取得処理を待っています。" };
   if (diagnostics.isSnapshotStale === true) {
-    return { status: "attention", fallbackStatus: "action", job: null, detail: diagnostics.staleReason || "ROSTER_SNAPSHOT_STALE" };
+    return { status: "attention", fallbackStatus: "action", job: null, nextSlot, detail: diagnostics.staleReason || "ROSTER_SNAPSHOT_STALE" };
   }
   if (diagnostics.rosterSnapshotExists === true && diagnostics.isSnapshotFresh !== false) {
     const completedJob = [...jobs].filter((job) => String(job.status || "") === "completed").sort(byRecent)[0] || null;
@@ -350,12 +311,19 @@ function rosterDisplayState(game) {
       status: "ok",
       fallbackStatus: "complete",
       job: completedJob,
+      nextSlot: null,
       detail: diagnostics.noticeState === "ROSTER_CHANGES_CAPTURED"
         ? "公式公示の変更を記録しました。"
         : "公式公示を確認しました。変更はありません。"
     };
   }
-  return { status: "waiting", fallbackStatus: "wait", job: null, detail: "取得予定を待っています。" };
+  return {
+    status: "waiting",
+    fallbackStatus: "wait",
+    job: null,
+    nextSlot,
+    detail: nextSlot ? `公式公示の取得予定: ${formatV3Jst(nextSlot)}` : "公式公示の取得予定を確認しています。"
+  };
 }
 
 function lineupReasonCode(job, game) {
@@ -545,6 +513,7 @@ function buildTodayOpsModel(payload, games, now = new Date()) {
       steps: {
         probable: todayOpsStep(game, "probable", now),
         roster: todayOpsStep(game, "roster", now),
+        rosterDetail: rosterDisplayState(game).detail,
         lineup: lineupStatus.status,
         lineupDetail: lineupStatus.detail,
         scoring: todayOpsStep(game, "scoring", now),
@@ -603,7 +572,7 @@ function renderTodayOps(payload, games) {
   const cronLastDetail = model.cronLastRunAt ? formatV3Jst(model.cronLastRunAt) : "記録なし";
   const nextCronDetail = model.nextCronEstimate ? formatV3Jst(model.nextCronEstimate) : "不明";
   const gameCards = model.gameModels.length
-    ? model.gameModels.map(({ game, state, status, nextAction, steps }) => `<article class="today-ops-game"><div class="today-ops-game-heading"><strong>${escapeV3(gameDateForFilter(game))} ${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}</strong>${todayOpsStatusBadge(status)}</div><div class="today-ops-game-meta"><span>state: ${escapeV3(state)}</span><span>次: ${escapeV3(nextAction)}</span></div><div class="today-ops-steps">${renderTodayOpsStep("予告先発", steps.probable)}${renderTodayOpsStep("ロースター", steps.roster)}${renderTodayOpsStep("スタメン", steps.lineup, steps.lineupDetail)}${renderTodayOpsStep("採点", steps.scoring)}${renderTodayOpsStep("ランキング", steps.ranking)}${renderTodayOpsStep("公開", steps.publication)}</div></article>`).join("")
+    ? model.gameModels.map(({ game, state, status, nextAction, steps }) => `<article class="today-ops-game"><div class="today-ops-game-heading"><strong>${escapeV3(gameDateForFilter(game))} ${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}</strong>${todayOpsStatusBadge(status)}</div><div class="today-ops-game-meta"><span>state: ${escapeV3(state)}</span><span>次: ${escapeV3(nextAction)}</span></div><div class="today-ops-steps">${renderTodayOpsStep("予告先発", steps.probable)}${renderTodayOpsStep("ロースター", steps.roster, steps.rosterDetail)}${renderTodayOpsStep("スタメン", steps.lineup, steps.lineupDetail)}${renderTodayOpsStep("採点", steps.scoring)}${renderTodayOpsStep("ランキング", steps.ranking)}${renderTodayOpsStep("公開", steps.publication)}</div></article>`).join("")
     : "<p class=muted>本日の対象試合はありません。</p>";
   return `<section class="today-ops-panel" aria-labelledby="todayOpsHeading"><div class="today-ops-heading"><div><h3 id="todayOpsHeading">Today Ops / Automation Health</h3><p>本日のV3自動処理を試合単位で確認します。</p></div>${todayOpsStatusBadge(model.overallStatus)}</div><div class="today-ops-metrics"><div><strong>${escapeV3(model.todayGames.length)}</strong><span>今日の試合</span></div><div><strong>${escapeV3(model.openJobs)}</strong><span>open job</span></div><div><strong>${escapeV3(model.retryWaitJobs)}</strong><span>retry_wait</span></div><div><strong>${escapeV3(model.failedJobs)}</strong><span>failed</span></div><div><strong>${escapeV3(model.futureGames)}</strong><span>未来試合登録数</span></div><div><strong>${escapeV3(model.cronSchedule)}</strong><span>Cron設定${model.cronDescription ? `（${escapeV3(model.cronDescription)}）` : ""}</span></div><div><strong>${escapeV3(cronLastDetail)}</strong><span>Cron最終監査</span></div><div><strong>${escapeV3(nextCronDetail)}</strong><span>次Cron目安</span></div><div><strong>${escapeV3(model.cronStatus === "attention" ? "ATTENTION" : "直近")}</strong><span>Cron状態</span></div></div><div class="today-ops-notices"><span>最後に完了: ${renderTodayOpsJob(model.latestCompleted)}</span><span>最後に失敗: ${renderTodayOpsJob(model.latestFailed)}</span><span>${model.futureShortage ? "未来試合が3試合未満" : "未来試合数は充足"}</span><span>${model.cronStale ? "Cron監査が古い、または未記録" : "Cron監査は直近"}</span></div>${renderTodayOpsScheduleSync(model)}<div class="today-ops-games">${gameCards}</div></section>`;
 }
@@ -789,14 +758,19 @@ function renderRosterSummary(game) {
     ["snapshot", diagnostics.rosterSnapshotExists ? `${diagnostics.rosterSnapshotStatus || "captured"} / ${diagnostics.rosterSnapshotPlayerCount || 0}人` : "未取得"],
     ["snapshot取得時刻", formatV3Jst(diagnostics.rosterSnapshotCapturedAt)],
     ["snapshot対象日", diagnostics.rosterSnapshotGameDate || ""],
+    ["公示対象日", diagnostics.sourceDate || ""],
     ["freshness", diagnostics.isSnapshotStale ? `stale: ${diagnostics.staleReason || "ROSTER_SNAPSHOT_STALE"}` : diagnostics.isSnapshotFresh ? "fresh" : "未確認"],
     ["公式確認", diagnostics.noticeState || ""],
     ["登録/抹消", Number.isFinite(Number(diagnostics.totalRosterChanges)) ? `home +${diagnostics.registeredCountHome || 0}/-${diagnostics.deregisteredCountHome || 0}, away +${diagnostics.registeredCountAway || 0}/-${diagnostics.deregisteredCountAway || 0}` : ""],
+    ["home 登録選手", (diagnostics.registeredPlayersHome || []).join(" / ")],
+    ["home 抹消選手", (diagnostics.deregisteredPlayersHome || []).join(" / ")],
+    ["away 登録選手", (diagnostics.registeredPlayersAway || []).join(" / ")],
+    ["away 抹消選手", (diagnostics.deregisteredPlayersAway || []).join(" / ")],
     ["取得元", diagnostics.sourceUrl || ""],
     ["解析", diagnostics.parserResult || ""]
   ].filter(([, value]) => value && value !== "-");
   const successAt = job?.status === "completed" ? formatV3Jst(job.completed_at || job.updated_at) : diagnostics.isSnapshotFresh ? formatV3Jst(diagnostics.rosterSnapshotCapturedAt) : "-";
-  const nextAt = job ? formatV3Jst(job.next_retry_at || job.scheduled_at) : rosterState.status === "ok" ? "追加取得不要" : "予定未定";
+  const nextAt = job ? formatV3Jst(job.next_retry_at || job.scheduled_at) : rosterState.status === "ok" ? "追加取得不要" : formatV3Jst(rosterState.nextSlot) || "予定未定";
   const result = job ? `${job.failure_code || "V3 job"} / ${statusLabel(job.status)}` : rosterState.detail || "履歴なし";
   const attempts = job ? `${job.attempt_count || 0}/${job.max_attempts || 0}` : rosterState.status === "ok" ? "不要" : "-";
   return `<div class="roster-summary"><div><strong>最終成功</strong><span>${escapeV3(successAt)}</span></div><div><strong>次回取得予定</strong><span>${escapeV3(nextAt)}</span></div><div><strong>取得元・結果</strong><span>${escapeV3(result)}</span></div><div><strong>試行</strong><span>${escapeV3(attempts)}</span></div>${diagnosticRows.map(([label, value]) => `<div><strong>${escapeV3(label)}</strong><span>${escapeV3(value)}</span></div>`).join("")}</div>`;
@@ -828,7 +802,7 @@ function renderSelectedGameHeader(game, title, description = "") {
 function renderWorkflowView(game) {
   if (!game) return renderSelectedGameHeader(null, "試合進行");
   const identity = npbIdentityDisplay(game);
-  return `${renderSelectedGameHeader(game, "試合進行", "V3 jobの状態、失敗、再試行・取消を試合単位で確認します。")}<section class="v3-panel"><div class="compact-meta"><span>現在: <strong>${escapeV3(game.state?.state || "scheduled")}</strong></span><span>次の処理: <strong>${escapeV3(nextV3ActionText(game))}</strong></span><span>NPB識別job: <strong>${escapeV3(identity.jobStatus)}</strong></span><span>NPB game code: <strong>${escapeV3(identity.code)}</strong></span></div>${renderTimeline(game)}<details class="roster-details"><summary>ロースター取得の詳細</summary>${renderRosterSummary(game)}</details><h3>job操作</h3>${renderJobRows(game, V3_JOB_TYPES)}</section>`;
+  return `${renderSelectedGameHeader(game, "試合進行", "V3 jobの状態と監査結果を試合単位で確認します。自動処理はCronが実行します。")}<section class="v3-panel"><div class="compact-meta"><span>現在: <strong>${escapeV3(game.state?.state || "scheduled")}</strong></span><span>次の処理: <strong>${escapeV3(nextV3ActionText(game))}</strong></span><span>NPB識別job: <strong>${escapeV3(identity.jobStatus)}</strong></span><span>NPB game code: <strong>${escapeV3(identity.code)}</strong></span></div>${renderTimeline(game)}<details class="roster-details"><summary>ロースター取得の詳細</summary>${renderRosterSummary(game)}</details><h3>job履歴</h3>${renderJobRows(game, V3_JOB_TYPES)}</section>`;
 }
 
 function jobDetailKey(internalGameId, jobId) {
@@ -926,7 +900,7 @@ function renderJobRows(game, types) {
   return jobs.length ? `<div class="job-list">${jobs.map((job) => {
     const key = jobDetailKey(game.internalGameId, job.id);
     const open = v3State.jobDetailsOpen.has(key);
-    return `<div class="job-entry"><div class="job"><code>${escapeV3(V3_JOB_LABELS[job.job_type] || job.job_type)}</code><span class="job-status">${escapeV3(statusLabel(job.status))}</span><span>${escapeV3(job.failure_code || `試行 ${job.attempt_count || 0}/${job.max_attempts || 0}`)}<br><small>予定 ${escapeV3(formatV3Jst(job.scheduled_at))}</small></span><button type="button" aria-expanded="${open ? "true" : "false"}" aria-controls="${escapeV3(jobDetailDomId(key))}" data-v3-job-detail="${escapeV3(game.internalGameId)}" data-v3-job-id="${escapeV3(job.id)}">詳細</button>${["failed", "retry_wait"].includes(job.status) ? `<button type="button" data-v3-job-retry="${escapeV3(job.id)}">再試行</button>` : ""}${["pending", "retry_wait"].includes(job.status) ? `<button type="button" data-v3-job-cancel="${escapeV3(job.id)}">取消</button>` : ""}</div>${renderInlineJobDetail(game, job)}</div>`;
+    return `<div class="job-entry"><div class="job"><code>${escapeV3(V3_JOB_LABELS[job.job_type] || job.job_type)}</code><span class="job-status">${escapeV3(statusLabel(job.status))}</span><span>${escapeV3(job.failure_code || `試行 ${job.attempt_count || 0}/${job.max_attempts || 0}`)}<br><small>予定 ${escapeV3(formatV3Jst(job.scheduled_at))}</small></span><button type="button" aria-expanded="${open ? "true" : "false"}" aria-controls="${escapeV3(jobDetailDomId(key))}" data-v3-job-detail="${escapeV3(game.internalGameId)}" data-v3-job-id="${escapeV3(job.id)}">詳細</button></div>${renderInlineJobDetail(game, job)}</div>`;
   }).join("")}</div>` : "<span class=muted>該当jobの履歴はありません。</span>";
 }
 
@@ -983,7 +957,7 @@ function renderLineupView(game) {
   if (!game) return renderSelectedGameHeader(null, "スタメン");
   const details = selectedV3Details();
   const current = details.lineup?.currentRevision;
-  return `${renderSelectedGameHeader(game, "スタメン", "revisionを作成してから正式確定します。既存revisionは保持されます。")}<section class="v3-panel"><div class="detail-grid"><div><dt>最新revision</dt><dd>${escapeV3(current?.revisionId || "未作成")}</dd></div><div><dt>正式確定</dt><dd>${escapeV3(details.lineup?.lineupStatus || "待機")}</dd></div><div><dt>source / finalizedAt</dt><dd>${escapeV3(`${current?.source || "-"} / ${formatV3Jst(details.lineup?.finalizedAt)}`)}</dd></div></div><h3>スタメン編集</h3>${v3LineupEditorMarkup(current?.lineup || [])}${v3ReasonInputMarkup("修正理由")}<div class="v3-operation-actions"><button type="button" data-v3-save-lineup>revisionを保存</button><button type="button" data-v3-finalize-lineup>正式確定</button></div><h3>revision履歴</h3><div class="revision-list">${(details.revisions || []).map((revision) => `<div class="revision-row"><span><strong>${escapeV3(revision.revisionId)}</strong> / ${escapeV3(revision.source)} / ${escapeV3(revision.reason || "-")}</span><span>${revision.isFinal ? "final" : "candidate"} ${escapeV3(formatV3Jst(revision.createdAt))}</span></div>`).join("") || "<span class=muted>revision履歴はありません。</span>"}</div><h3>取得・確定job</h3>${renderJobRows(game, ["lineup_fetch", "lineup_finalize"])}</section>`;
+  return `${renderSelectedGameHeader(game, "スタメン", "V3が取得・確定したスタメンrevisionを確認します。")}<section class="v3-panel"><div class="detail-grid"><div><dt>最新revision</dt><dd>${escapeV3(current?.revisionId || "未作成")}</dd></div><div><dt>正式確定</dt><dd>${escapeV3(details.lineup?.lineupStatus || "待機")}</dd></div><div><dt>source / finalizedAt</dt><dd>${escapeV3(`${current?.source || "-"} / ${formatV3Jst(details.lineup?.finalizedAt)}`)}</dd></div></div><h3>revision履歴</h3><div class="revision-list">${(details.revisions || []).map((revision) => `<div class="revision-row"><span><strong>${escapeV3(revision.revisionId)}</strong> / ${escapeV3(revision.source)} / ${escapeV3(revision.reason || "-")}</span><span>${revision.isFinal ? "final" : "candidate"} ${escapeV3(formatV3Jst(revision.createdAt))}</span></div>`).join("") || "<span class=muted>revision履歴はありません。</span>"}</div><h3>取得・確定job</h3>${renderJobRows(game, ["lineup_fetch", "lineup_finalize"])}</section>`;
 }
 
 function renderScoringView(game) {
@@ -997,7 +971,7 @@ function renderScoringView(game) {
   const rankingNoOpNotice = details.ranking?.rankingNoOpReason
     ? `<div class="v3-operation-result" data-v3-ranking-no-op>ランキング対象なしのため、ランキング反映はno-opで完了します。<code>${escapeV3(details.ranking.rankingNoOpReason)}</code></div>`
     : "";
-  return `${renderSelectedGameHeader(game, "採点・ランキング", "採点プレビュー、ランキング再構築、結果公開を段階的に実行します。")}<section class="v3-panel"><div class="detail-grid"><div><dt>対象予想数</dt><dd>${escapeV3(scoring.eligiblePredictionCount ?? "-")}</dd></div><div><dt>採点済み / 失敗</dt><dd>${escapeV3(`${scoring.scoredPredictionCount ?? "-"} / ${scoring.failedPredictionCount ?? "-"}`)}</dd></div><div><dt>active scoring revision</dt><dd>${escapeV3(details.ranking?.activeScoringRevision?.id || "-")}</dd></div><div><dt>ranking</dt><dd>${escapeV3(details.ranking?.ranking?.gameStatus || "-")}</dd></div><div><dt>publication</dt><dd>${escapeV3(publication.status || "pending")}</dd></div><div><dt>publishedAt</dt><dd>${escapeV3(formatV3Jst(publication.publishedAt))}</dd></div><div><dt>公開lineup revision</dt><dd>${escapeV3(publication.publishedLineupRevision?.revision_id || publication.publishedLineupRevision?.id || "-")}</dd></div><div><dt>公開scoring revision</dt><dd>${escapeV3(publication.publishedScoringRevision?.id || "-")}</dd></div></div>${noOpNotice}${rankingNoOpNotice}${v3ReasonInputMarkup("操作理由")}<div class="v3-operation-actions"><button type="button" data-v3-scoring-preview>再採点プレビュー</button><button type="button" data-v3-scoring-confirm>再採点実行</button><button type="button" data-v3-ranking-rebuild>ランキング再構築</button><button type="button" data-v3-publish>公開</button><button type="button" data-v3-republish>再公開</button></div><div class="v3-operation-result" data-v3-operation-result>${v3State.rescorePreview?.internalGameId === game.internalGameId ? `previewId: ${escapeV3(v3State.rescorePreview.previewId || "-")}` : ""}</div><h3>処理job</h3>${renderJobRows(game, ["score", "ranking_rebuild", "publish"])}</section>`;
+  return `${renderSelectedGameHeader(game, "採点・ランキング", "V3が進めた採点・ランキング・公開の状態を確認します。")}<section class="v3-panel"><div class="detail-grid"><div><dt>対象予想数</dt><dd>${escapeV3(scoring.eligiblePredictionCount ?? "-")}</dd></div><div><dt>採点済み / 失敗</dt><dd>${escapeV3(`${scoring.scoredPredictionCount ?? "-"} / ${scoring.failedPredictionCount ?? "-"}`)}</dd></div><div><dt>active scoring revision</dt><dd>${escapeV3(details.ranking?.activeScoringRevision?.id || "-")}</dd></div><div><dt>ranking</dt><dd>${escapeV3(details.ranking?.ranking?.gameStatus || "-")}</dd></div><div><dt>publication</dt><dd>${escapeV3(publication.status || "pending")}</dd></div><div><dt>publishedAt</dt><dd>${escapeV3(formatV3Jst(publication.publishedAt))}</dd></div><div><dt>公開lineup revision</dt><dd>${escapeV3(publication.publishedLineupRevision?.revision_id || publication.publishedLineupRevision?.id || "-")}</dd></div><div><dt>公開scoring revision</dt><dd>${escapeV3(publication.publishedScoringRevision?.id || "-")}</dd></div></div>${noOpNotice}${rankingNoOpNotice}<h3>処理job</h3>${renderJobRows(game, ["score", "ranking_rebuild", "publish"])}</section>`;
 }
 
 function renderScheduleView(games) {
@@ -1005,25 +979,19 @@ function renderScheduleView(games) {
   const details = selectedV3Details();
   const schedule = details.schedule?.schedule;
   if (!game) return `<div class="view-heading"><div><h2>日程管理</h2><p>対象試合を選択してください。</p></div></div>`;
-  const localStart = schedule?.startAt ? new Date(schedule.startAt).toISOString().slice(0, 16) : "";
-  return `${renderSelectedGameHeader(game, "日程管理", "開始時刻変更は締切を再計算します。締切後の受付は自動再開しません。")}<section class="v3-panel"><div class="detail-grid"><div><dt>試合開始</dt><dd>${escapeV3(formatV3Jst(schedule?.startAt || game.startAt))}</dd></div><div><dt>予想締切</dt><dd>${escapeV3(formatV3Jst(schedule?.predictionDeadline))}</dd></div><div><dt>lineupPollingStart</dt><dd>${escapeV3(formatV3Jst(schedule?.lineupPollingStart))}</dd></div></div><label>開始時刻 <input type="datetime-local" value="${escapeV3(localStart)}" data-v3-schedule-start></label>${v3ReasonInputMarkup("変更理由")}<div class="v3-operation-actions"><button type="button" data-v3-schedule-save>日程を保存</button></div><h3>ランキング対象状態</h3><p>${escapeV3(details.eligibility?.rankingEligibility?.rankingEligibilityStatus || "未取得")}</p><select data-v3-eligibility-status><option value="eligible">対象</option><option value="excluded">対象外</option><option value="pending_admin_decision">確認待ち</option></select><button type="button" data-v3-eligibility-save>状態を保存</button></section>`;
+  return `${renderSelectedGameHeader(game, "日程管理", "日程とV3が算出した処理時刻を確認します。")}<section class="v3-panel"><div class="detail-grid"><div><dt>試合開始</dt><dd>${escapeV3(formatV3Jst(schedule?.startAt || game.startAt))}</dd></div><div><dt>予想締切</dt><dd>${escapeV3(formatV3Jst(schedule?.predictionDeadline))}</dd></div><div><dt>lineupPollingStart</dt><dd>${escapeV3(formatV3Jst(schedule?.lineupPollingStart))}</dd></div><div><dt>ランキング対象状態</dt><dd>${escapeV3(details.eligibility?.rankingEligibility?.rankingEligibilityStatus || "未取得")}</dd></div></div><p class="muted">日程とランキング対象状態は自動処理の監査情報として表示しています。</p></section>`;
 }
 
-function renderGameControls(game, includeDiagnostics = false) {
+function renderGameDiagnostics(game) {
   if (!game) return "<div class=today-empty>対象試合を選択してください。</div>";
   const npbGameCode = String(game.npbGameCode || "");
   const identityJob = latestV3Job(game, "npb_identity_resolve");
   const jobs = renderJobRows(game, V3_JOB_TYPES);
-  const identityDiagnostics = v3State.identityDiagnostics.get(game.internalGameId);
-  return `<article class="game-card"><div class="game-heading"><h3>${escapeV3(gameDateForFilter(game))} ${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}</h3><code>${escapeV3(game.internalGameId)}</code></div><div class="game-meta"><span>開始 ${escapeV3(formatV3Jst(game.startAt))} JST</span><span>DB home: ${escapeV3(game.homeTeam)}</span><span>DB away: ${escapeV3(game.awayTeam)}</span><span class="npb-identity-status">NPB識別情報: ${escapeV3(identityStatusLabel(game.npbIdentityStatus, game.npbIdentityState))}</span><span>コード ${escapeV3(npbGameCode || "未登録")}</span><span class="state">state: ${escapeV3(game.state?.state || "scheduled")}</span></div><div class="npb-identity-details"><span>解決元: ${escapeV3(game.npbIdentitySource || "-")}</span><span>解決時刻: ${escapeV3(formatV3Jst(game.npbIdentityResolvedAt))}</span><span>URL: ${game.npbGameUrl ? `<a href="${escapeV3(game.npbGameUrl)}" target="_blank" rel="noreferrer">${escapeV3(game.npbGameUrl)}</a>` : "-"}</span><button type="button" data-v3-identity-resolve="${escapeV3(game.internalGameId)}">手動再解決</button></div><div class="npb-identity-auto-job"><strong>NPB自動解決job</strong><span>次回予定: ${escapeV3(identityJob ? formatV3Jst(identityJob.status === "retry_wait" ? identityJob.next_retry_at : identityJob.scheduled_at) : "未作成")}</span><span>最終実行: ${escapeV3(formatV3Jst(identityJob?.completed_at || identityJob?.updated_at))}</span><span>次回retry: ${escapeV3(formatV3Jst(identityJob?.next_retry_at))}</span><span>結果: ${escapeV3(identityJob?.failure_code || identityJob?.status || "-")}</span><span>試行: ${escapeV3(identityJob ? `${identityJob.attempt_count || 0}/${identityJob.max_attempts || 0}` : "-")}</span></div><div class="v3-orientation-editor"><strong>home / away修正（DB値確認後のみ）</strong><label>home <input type="text" value="${escapeV3(game.homeTeam)}" data-v3-home-team></label><label>away <input type="text" value="${escapeV3(game.awayTeam)}" data-v3-away-team></label><input type="text" maxlength="240" placeholder="修正理由（必須）" data-v3-orientation-reason><button type="button" data-v3-orientation-save="${escapeV3(game.internalGameId)}">向きを保存</button><span class="v3-orientation-status" data-v3-orientation-status></span></div><div class="npb-code-editor"><strong>非常用手動上書き</strong><label>NPBゲームコード <input type="text" maxlength="32" value="${escapeV3(npbGameCode)}" data-v3-npb-code><button type="button" data-v3-code-save="${escapeV3(game.internalGameId)}">保存</button></label><span class="npb-code-status" data-v3-code-status></span></div>${includeDiagnostics ? `<div class="npb-identity-diagnostics" data-v3-identity-diagnostics></div>` : ""}<div class="job-list">${jobs}</div></article>`;
-}
-
-function renderEmergencyView(game) {
-  return `${renderSelectedGameHeader(game, "緊急操作", "通常運用から分離した管理者向け操作です。実行前に影響を確認してください。")}<section class="v3-panel"><p class="muted">この操作はjobの再投入、NPB識別情報の再解決、日程の向きや非常用コードを変更します。採点・ランキング・公開に影響する場合があります。</p>${renderGameControls(game, false)}</section>`;
+  return `<article class="game-card"><div class="game-heading"><h3>${escapeV3(gameDateForFilter(game))} ${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}</h3><code>${escapeV3(game.internalGameId)}</code></div><div class="game-meta"><span>開始 ${escapeV3(formatV3Jst(game.startAt))} JST</span><span>DB home: ${escapeV3(game.homeTeam)}</span><span>DB away: ${escapeV3(game.awayTeam)}</span><span class="npb-identity-status">NPB識別情報: ${escapeV3(identityStatusLabel(game.npbIdentityStatus, game.npbIdentityState))}</span><span>コード ${escapeV3(npbGameCode || "未登録")}</span><span class="state">state: ${escapeV3(game.state?.state || "scheduled")}</span></div><div class="npb-identity-details"><span>解決元: ${escapeV3(game.npbIdentitySource || "-")}</span><span>解決時刻: ${escapeV3(formatV3Jst(game.npbIdentityResolvedAt))}</span><span>URL: ${game.npbGameUrl ? `<a href="${escapeV3(game.npbGameUrl)}" target="_blank" rel="noreferrer">${escapeV3(game.npbGameUrl)}</a>` : "-"}</span></div><div class="npb-identity-auto-job"><strong>NPB自動解決job</strong><span>次回予定: ${escapeV3(identityJob ? formatV3Jst(identityJob.status === "retry_wait" ? identityJob.next_retry_at : identityJob.scheduled_at) : "未作成")}</span><span>最終実行: ${escapeV3(formatV3Jst(identityJob?.completed_at || identityJob?.updated_at))}</span><span>次回retry: ${escapeV3(formatV3Jst(identityJob?.next_retry_at))}</span><span>結果: ${escapeV3(identityJob?.failure_code || identityJob?.status || "-")}</span><span>試行: ${escapeV3(identityJob ? `${identityJob.attempt_count || 0}/${identityJob.max_attempts || 0}` : "-")}</span></div><div class="job-list">${jobs}</div></article>`;
 }
 
 function renderDiagnosticsView(game) {
-  return `${renderSelectedGameHeader(game, "診断・監査", "UUID、job、lease、failure codeなどの技術情報をこの画面へ集約しています。")}${renderAutomationLogs()}<section class="diagnostics-list">${renderGameControls(game, true)}</section>`;
+  return `${renderSelectedGameHeader(game, "診断・監査", "UUID、job、lease、failure codeなどの技術情報をこの画面へ集約しています。")}${renderAutomationLogs()}<section class="diagnostics-list">${renderGameDiagnostics(game)}</section>`;
 }
 
 function renderAutomationLogs() {
@@ -1067,7 +1035,6 @@ function renderCurrentV3View() {
     lineup: () => renderLineupView(filteredGame || game),
     scoring: () => renderScoringView(filteredGame || game),
     schedule: () => renderScheduleView(games),
-    emergency: () => renderEmergencyView(filteredGame || game),
     diagnostics: () => renderDiagnosticsView(filteredGame || game)
   }[v3State.view]();
   document.querySelectorAll("[data-v3-view]").forEach((button) => {
@@ -1126,22 +1093,6 @@ async function loadV3() {
   }
 }
 
-async function executeV3UiAction(button, key, operation, successMessage = "操作を完了しました。") {
-  if (v3ActionBusy(key)) return;
-  v3State.busy.add(key);
-  button.disabled = true;
-  try {
-    await operation();
-    setV3Status(successMessage);
-    await loadV3();
-  } catch (error) {
-    setV3Status(`${error.code || "V3_ADMIN_OPERATION_FAILED"}: ${error.message}`, true);
-    button.disabled = false;
-  } finally {
-    v3State.busy.delete(key);
-  }
-}
-
 function chooseV3View(view) {
   if (!V3_VIEWS.includes(view)) return;
   v3State.view = view;
@@ -1176,150 +1127,6 @@ document.addEventListener("click", async (event) => {
     const navigation = document.getElementById("v3Navigation");
     const open = navigation?.classList.toggle("open");
     event.target.closest("#mobileNavToggle")?.setAttribute("aria-expanded", String(Boolean(open)));
-    return;
-  }
-  const resolveButton = event.target.closest("[data-v3-identity-resolve]");
-  if (resolveButton) {
-    resolveButton.disabled = true;
-    setV3Status("NPB識別情報を自動解決中…");
-    try {
-      await v3Fetch(`/api/admin/v3/games/${encodeURIComponent(resolveButton.dataset.v3IdentityResolve)}/npb-identity/resolve`, { method: "POST" });
-      setV3Status("NPB識別情報を更新しました。");
-      await loadV3();
-    } catch (error) {
-      v3State.identityDiagnostics.set(resolveButton.dataset.v3IdentityResolve, error.details);
-      renderV3IdentityDiagnostics(resolveButton.closest(".game-card"), error.details, error.code, error.identityState);
-      setV3Status(`${error.code || "NPB_IDENTITY_RESOLUTION_FAILED"}: ${error.message}`, !["pending", "retry_wait"].includes(error.identityState));
-      resolveButton.disabled = false;
-    }
-    return;
-  }
-  const orientationButton = event.target.closest("[data-v3-orientation-save]");
-  if (orientationButton) {
-    if (!window.confirm("この操作は試合のhome / away保存値を変更します。続行しますか？")) return;
-    const card = orientationButton.closest(".game-card");
-    const homeInput = card?.querySelector("[data-v3-home-team]");
-    const awayInput = card?.querySelector("[data-v3-away-team]");
-    const reasonInput = card?.querySelector("[data-v3-orientation-reason]");
-    const status = card?.querySelector("[data-v3-orientation-status]");
-    if (!homeInput || !awayInput || !reasonInput || !status) return;
-    orientationButton.disabled = true;
-    status.textContent = "確認・保存中…";
-    try {
-      const payload = await v3Fetch(`/api/admin/v3/games/${encodeURIComponent(orientationButton.dataset.v3OrientationSave)}/orientation`, { method: "PATCH", body: JSON.stringify({ homeTeam: homeInput.value, awayTeam: awayInput.value, reason: reasonInput.value }) });
-      const impact = Object.entries(payload.impact || {}).filter(([, count]) => Number(count) > 0).map(([table, count]) => `${table}:${count}`).join(", ");
-      status.textContent = payload.warning ? `更新しました。関連データあり${impact ? `（${impact}）` : ""}` : "更新しました。";
-      await loadV3();
-    } catch (error) {
-      status.textContent = `${error.code || "V3_ORIENTATION_UPDATE_FAILED"}: ${error.message}`;
-      orientationButton.disabled = false;
-    }
-    return;
-  }
-  const codeButton = event.target.closest("[data-v3-code-save]");
-  if (codeButton) {
-    if (!window.confirm("非常用NPBゲームコードを保存します。通常の自動解決値を上書きする可能性があります。続行しますか？")) return;
-    const card = codeButton.closest(".game-card");
-    const input = card?.querySelector("[data-v3-npb-code]");
-    const status = card?.querySelector("[data-v3-code-status]");
-    if (!input || !status) return;
-    codeButton.disabled = true;
-    status.textContent = "保存中…";
-    try {
-      const payload = await v3Fetch(`/api/admin/v3/games/${encodeURIComponent(codeButton.dataset.v3CodeSave)}/npb-game-code`, { method: "PATCH", body: JSON.stringify({ npbGameCode: input.value }) });
-      input.value = payload.game?.npbGameCode || "";
-      status.textContent = `更新しました: ${payload.game?.npbGameCode ? `NPB ${payload.game.npbGameCode}` : "未登録"}`;
-      await loadV3();
-    } catch (error) {
-      status.textContent = `${error.code || "V3_NPB_GAME_CODE_UPDATE_FAILED"}: ${error.message}`;
-      codeButton.disabled = false;
-    }
-    return;
-  }
-  const saveLineupButton = event.target.closest("[data-v3-save-lineup]");
-  if (saveLineupButton) {
-    const card = saveLineupButton.closest(".v3-panel");
-    const reason = card?.querySelector("[data-v3-operation-reason]")?.value || "";
-    await executeV3UiAction(saveLineupButton, "lineup-save", async () => {
-      await v3Fetch(v3DetailPath("/lineup-revisions"), { method: "POST", body: JSON.stringify({ reason, lineup: readV3LineupEditor(card) }) });
-    }, "スタメンrevisionを保存しました。");
-    return;
-  }
-  const finalizeLineupButton = event.target.closest("[data-v3-finalize-lineup]");
-  if (finalizeLineupButton) {
-    const card = finalizeLineupButton.closest(".v3-panel");
-    const reason = card?.querySelector("[data-v3-operation-reason]")?.value || "";
-    const revisionId = selectedV3Details().lineup?.currentRevision?.revisionId || "";
-    if (!revisionId || !window.confirm("このrevisionを正式スタメンとして確定しますか？")) return;
-    await executeV3UiAction(finalizeLineupButton, "lineup-finalize", async () => {
-      await v3Fetch(v3DetailPath("/lineup-finalize"), { method: "POST", body: JSON.stringify({ lineupRevisionId: revisionId, reason }) });
-    }, "正式スタメンを確定しました。");
-    return;
-  }
-  const scoringPreviewButton = event.target.closest("[data-v3-scoring-preview]");
-  if (scoringPreviewButton) {
-    const card = scoringPreviewButton.closest(".v3-panel");
-    const reason = card?.querySelector("[data-v3-operation-reason]")?.value || "";
-    const lineupVersion = selectedV3Details().lineup?.currentRevision?.version;
-    await executeV3UiAction(scoringPreviewButton, "scoring-preview", async () => {
-      const preview = await v3Fetch(v3DetailPath("/scoring/preview"), { method: "POST", body: JSON.stringify({ reason, lineupVersion }) });
-      v3State.rescorePreview = { ...preview, internalGameId: v3State.selectedGameId };
-    }, "再採点プレビューを作成しました。");
-    return;
-  }
-  const scoringConfirmButton = event.target.closest("[data-v3-scoring-confirm]");
-  if (scoringConfirmButton) {
-    const card = scoringConfirmButton.closest(".v3-panel");
-    const reason = card?.querySelector("[data-v3-operation-reason]")?.value || "";
-    const preview = v3State.rescorePreview?.internalGameId === v3State.selectedGameId ? v3State.rescorePreview : null;
-    if (!preview?.previewId || !window.confirm("プレビュー済みの再採点を実行しますか？")) return;
-    await executeV3UiAction(scoringConfirmButton, "scoring-confirm", async () => {
-      await v3Fetch(v3DetailPath("/scoring/confirm"), { method: "POST", body: JSON.stringify({ reason, lineupVersion: preview.lineupVersion, previewId: preview.previewId }) });
-      v3State.rescorePreview = null;
-    }, "再採点を実行しました。");
-    return;
-  }
-  const rankingButton = event.target.closest("[data-v3-ranking-rebuild]");
-  if (rankingButton) {
-    const card = rankingButton.closest(".v3-panel");
-    const reason = card?.querySelector("[data-v3-operation-reason]")?.value || "";
-    if (!window.confirm("現在の採点revisionをランキングへ反映します。続行しますか？")) return;
-    await executeV3UiAction(rankingButton, "ranking-rebuild", async () => {
-      await v3Fetch(v3DetailPath("/ranking/rebuild"), { method: "POST", body: JSON.stringify({ reason }) });
-    }, "ランキング再構築jobを投入しました。");
-    return;
-  }
-  const publishButton = event.target.closest("[data-v3-publish], [data-v3-republish]");
-  if (publishButton) {
-    const card = publishButton.closest(".v3-panel");
-    const reason = card?.querySelector("[data-v3-operation-reason]")?.value || "";
-    const republish = Boolean(publishButton.matches("[data-v3-republish]"));
-    if (!window.confirm(republish ? "結果を再公開しますか？" : "結果を公開しますか？")) return;
-    await executeV3UiAction(publishButton, republish ? "republish" : "publish", async () => {
-      await v3Fetch(v3DetailPath(republish ? "/publication/republish" : "/publication/publish"), { method: "POST", body: JSON.stringify({ reason }) });
-    }, republish ? "再公開jobを投入しました。" : "公開jobを投入しました。");
-    return;
-  }
-  const scheduleButton = event.target.closest("[data-v3-schedule-save]");
-  if (scheduleButton) {
-    const panel = scheduleButton.closest(".v3-panel");
-    const startAt = panel?.querySelector("[data-v3-schedule-start]")?.value || "";
-    const reason = panel?.querySelector("[data-v3-operation-reason]")?.value || "";
-    if (!window.confirm("開始時刻と後続jobの予定を変更します。続行しますか？")) return;
-    await executeV3UiAction(scheduleButton, "schedule-save", async () => {
-      await v3Fetch(v3DetailPath("/schedule"), { method: "PUT", body: JSON.stringify({ startAt: startAt ? new Date(startAt).toISOString() : "", reason }) });
-    }, "日程を保存しました。");
-    return;
-  }
-  const eligibilityButton = event.target.closest("[data-v3-eligibility-save]");
-  if (eligibilityButton) {
-    const panel = eligibilityButton.closest(".v3-panel");
-    const status = panel?.querySelector("[data-v3-eligibility-status]")?.value || "";
-    const reason = panel?.querySelector("[data-v3-operation-reason]")?.value || "";
-    if (!window.confirm("ランキング対象状態を変更します。続行しますか？")) return;
-    await executeV3UiAction(eligibilityButton, "eligibility-save", async () => {
-      await v3Fetch(v3DetailPath("/ranking-eligibility"), { method: "PUT", body: JSON.stringify({ status, reason }) });
-    }, "ランキング対象状態を保存しました。");
     return;
   }
   const jobCopyButton = event.target.closest("[data-v3-job-copy]");
@@ -1367,28 +1174,6 @@ document.addEventListener("click", async (event) => {
     renderCurrentV3View();
     await loadV3JobDetail(internalGameId, jobId);
     return;
-  }
-  const jobOperationButton = event.target.closest("[data-v3-job-retry], [data-v3-job-cancel]");
-  if (jobOperationButton) {
-    const reason = window.prompt("job操作理由を入力してください。", "管理者確認後の操作") || "";
-    if (!reason) return;
-    const action = jobOperationButton.matches("[data-v3-job-retry]") ? "retry" : "cancel";
-    await executeV3UiAction(jobOperationButton, `job-${action}-${jobOperationButton.dataset.v3JobRetry || jobOperationButton.dataset.v3JobCancel}`, async () => {
-      await v3Fetch(v3DetailPath(`/jobs/${encodeURIComponent(jobOperationButton.dataset.v3JobRetry || jobOperationButton.dataset.v3JobCancel)}/${action}`), { method: "POST", body: JSON.stringify({ reason }) });
-    }, action === "retry" ? "jobを再試行可能状態へ戻しました。" : "jobを取消しました。");
-    return;
-  }
-  const jobButton = event.target.closest("[data-v3-job]");
-  if (!jobButton) return;
-  if (!window.confirm("このjobを再投入します。実行状態を確認してから続行しますか？")) return;
-  jobButton.disabled = true;
-  try {
-    await v3Fetch(`/api/admin/v3/games/${encodeURIComponent(jobButton.dataset.v3Job)}/jobs`, { method: "POST", body: JSON.stringify({ jobType: jobButton.dataset.v3Type, scheduledSlotAt: new Date().toISOString() }) });
-    setV3Status("V3ジョブを投入しました。");
-    await loadV3();
-  } catch (error) {
-    setV3Status(`${error.code || "V3_ADMIN_REQUEST_FAILED"}: ${error.message}`, true);
-    jobButton.disabled = false;
   }
 });
 

@@ -58,22 +58,20 @@ test("更新は旧値・新値・管理者・時刻を既存V3監査へ記録す
   assert.match(handler, /env\.AUTH_DB\.batch\(\[/);
 });
 
-test("V3管理画面は現在値・入力欄・保存操作を持ち、更新後に再取得する", () => {
-  assert.match(client, /data-v3-npb-code/);
-  assert.match(client, /data-v3-code-save/);
-  assert.match(client, /method: "PATCH"/);
-  assert.match(client, /npb-game-code/);
-  assert.match(client, /非常用手動上書き/);
-  assert.match(client, /data-v3-identity-resolve/);
-  assert.match(client, /npb-identity\/resolve/);
-  assert.match(client, /data-v3-orientation-save/);
-  assert.match(client, /\/orientation/);
+test("V3管理画面はNPB識別情報を読み取り表示し、手動上書き導線を置かない", () => {
+  assert.doesNotMatch(client, /data-v3-npb-code/);
+  assert.doesNotMatch(client, /data-v3-code-save/);
+  assert.doesNotMatch(client, /非常用手動上書き/);
+  assert.doesNotMatch(client, /data-v3-identity-resolve/);
+  assert.doesNotMatch(client, /data-v3-orientation-save/);
+  assert.match(client, /NPB自動解決job/);
+  assert.match(client, /解決元/);
   assert.match(client, /DB home/);
   assert.match(client, /DB away/);
   assert.ok(client.includes("${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}"));
-  assert.match(client, /await loadV3\(\)/);
+  assert.match(client, /loadV3OperationDetails/);
   assert.match(page, /admin-v3\.css\?v=automation-v3-13-structured-logs/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-14-roster-freshness/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-15-roster-announcements-cleanup/);
 });
 
 test("home/away修正APIはinternalGameId単位で関連データの影響を警告する", () => {

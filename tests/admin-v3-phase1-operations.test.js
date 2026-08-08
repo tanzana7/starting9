@@ -39,19 +39,20 @@ test("再採点は既存preview/confirmコアへ委譲し、ランキング・�
   assert.match(worker, /status IN \('pending', 'claimed', 'retry_wait'\)/);
 });
 
-test("job再試行・取消は対象UUIDと状態を条件に原子的に更新する", () => {
+test("旧job操作APIは安全条件を維持し、admin-v3の通常画面は読み取り専用にする", () => {
   assert.match(worker, /status IN \('failed', 'retry_wait'\) AND attempt_count < max_attempts/);
   assert.match(worker, /status IN \('pending', 'retry_wait'\)/);
-  assert.match(client, /data-v3-job-retry/);
-  assert.match(client, /data-v3-job-cancel/);
+  assert.doesNotMatch(client, /data-v3-job-retry/);
+  assert.doesNotMatch(client, /data-v3-job-cancel/);
 });
 
-test("管理画面はPhase 1操作を実際のV3 APIへ送信し、理由とキャッシュバスターを持つ", () => {
-  for (const suffix of ["/lineup-revisions", "/lineup-finalize", "/scoring/preview", "/scoring/confirm", "/ranking/rebuild", "/publication/publish", "/publication/republish", "/ranking-eligibility", "/schedule"]) {
-    assert.match(client, new RegExp(suffix.replaceAll("/", "\\/")));
+test("管理画面は自動進行の確認に限定し、手動Phase 1操作を表示しない", () => {
+  for (const selector of ["data-v3-save-lineup", "data-v3-finalize-lineup", "data-v3-scoring-preview", "data-v3-scoring-confirm", "data-v3-ranking-rebuild", "data-v3-publish", "data-v3-republish", "data-v3-schedule-save", "data-v3-eligibility-save"]) {
+    assert.doesNotMatch(client, new RegExp(selector));
   }
-  assert.match(client, /data-v3-operation-reason/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-14-roster-freshness/);
+  assert.match(client, /V3が取得・確定したスタメンrevisionを確認します/);
+  assert.match(client, /V3が進めた採点・ランキング・公開の状態を確認します/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-15-roster-announcements-cleanup/);
   assert.match(page, /admin-v3\.css\?v=automation-v3-13-structured-logs/);
 });
 
@@ -177,11 +178,9 @@ test("job retry/cancelと日程変更は原子的条件・理由・pending限定
   assert.match(worker, /predictionReopened: false/);
 });
 
-test("危険なV3操作はUI確認後にだけAPIを呼び出す", () => {
-  assert.match(client, /現在の採点revisionをランキングへ反映します/);
-  assert.match(client, /開始時刻と後続jobの予定を変更します/);
-  assert.match(client, /ランキング対象状態を変更します/);
-  assert.match(client, /data-v3-scoring-confirm/);
+test("V3の通常管理画面には緊急操作メニューを置かない", () => {
+  assert.doesNotMatch(page, /data-v3-view="emergency"/);
+  assert.doesNotMatch(client, /renderEmergencyView/);
 });
 
 test("再採点途中の失敗は新revisionをfailed・非activeに閉じ、旧公開結果を保護する", () => {

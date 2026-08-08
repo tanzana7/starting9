@@ -153,6 +153,17 @@ function latestV3Jobs(game, types) {
   return types.map((type) => latestV3Job(game, type)).filter(Boolean);
 }
 
+function npbIdentityDisplay(game) {
+  const job = latestV3Job(game, "npb_identity_resolve");
+  const code = String(game?.npbGameCode || game?.npb_game_code || "").trim();
+  const identityState = String(game?.npbIdentityState || "");
+  return {
+    job,
+    jobStatus: job ? statusLabel(job.status) : identityState === "pending" ? "待機中" : "未作成",
+    code: code || "掲載待ち"
+  };
+}
+
 function gameHasAttention(game) {
   if (String(game?.state?.state || "") === "manual_action_required") return true;
   if (["unresolved", "manual_action_required"].includes(String(game?.npbIdentityState || ""))) return true;
@@ -272,6 +283,38 @@ function todayOpsStatusBadge(status) {
   return `<span class="today-ops-status ${normalized}">${TODAY_OPS_STATUS_LABELS[normalized]}</span>`;
 }
 
+function rosterDisplaySlots(game, slots) {
+  const values = Array.isArray(slots) ? slots : [];
+  const startAt = new Date(game?.startAt || game?.start_at || game?.startTime || game?.start_time || "");
+  if (Number.isNaN(startAt.getTime())) return values;
+  return values.filter((slot) => {
+    const slotAt = new Date(slot || "");
+    return Number.isNaN(slotAt.getTime()) || slotAt.getTime() < startAt.getTime();
+  });
+}
+
+function rosterDisplayState(game) {
+  const jobs = (game?.jobs || []).filter((job) => String(job.job_type || "") === "roster_fetch");
+  const byRecent = (left, right) => String(right.updated_at || right.completed_at || right.scheduled_at || "")
+    .localeCompare(String(left.updated_at || left.completed_at || left.scheduled_at || ""));
+  const failedJob = [...jobs].filter((job) => String(job.status || "") === "failed").sort(byRecent)[0] || null;
+  if (failedJob) return { status: "attention", fallbackStatus: "action", job: failedJob, detail: failedJob.failure_code || "ロースター取得に失敗しました。" };
+  const retryJob = [...jobs].filter((job) => String(job.status || "") === "retry_wait").sort(byRecent)[0] || null;
+  if (retryJob) return { status: "waiting", fallbackStatus: "wait", job: retryJob, detail: retryJob.failure_code || "次回取得を待っています。" };
+  if (game?.rosterDiagnostics?.rosterSnapshotExists === true) {
+    const completedJob = [...jobs].filter((job) => String(job.status || "") === "completed").sort(byRecent)[0] || null;
+    return {
+      status: "ok",
+      fallbackStatus: "complete",
+      job: completedJob,
+      detail: completedJob ? "ロースターsnapshot取得済み" : "snapshot取得済みのため追加job不要"
+    };
+  }
+  const openJob = [...jobs].filter((job) => ["pending", "claimed"].includes(String(job.status || ""))).sort(byRecent)[0] || null;
+  if (openJob) return { status: "waiting", fallbackStatus: "wait", job: openJob, detail: "取得処理を待っています。" };
+  return { status: "waiting", fallbackStatus: "wait", job: null, detail: "取得予定を待っています。" };
+}
+
 function todayOpsLatestJob(game, statuses = []) {
   const jobs = (game?.jobs || []).filter((job) => !statuses.length || statuses.includes(String(job.status || "")));
   return [...jobs].sort((left, right) => String(right.completed_at || right.updated_at || right.scheduled_at || "").localeCompare(String(left.completed_at || left.updated_at || left.scheduled_at || "")))[0] || null;
@@ -297,9 +340,7 @@ function todayOpsStep(game, step, now = new Date()) {
     return status === "announced" ? "ok" : "waiting";
   }
   if (step === "roster") {
-    if (game?.rosterDiagnostics?.rosterSnapshotExists) return "ok";
-    if (jobs.some((job) => job.job_type === "roster_fetch" && job.status === "completed")) return "ok";
-    return "waiting";
+    return rosterDisplayState(game).status;
   }
   if (step === "lineup") {
     if (["lineup_ready", "scored", "ranked", "published"].includes(state)) return "ok";
@@ -530,17 +571,20 @@ function probableStarterTimelineDetails(game, job, now = new Date()) {
 function rosterTimelineDetails(game) {
   const diagnostics = game?.rosterDiagnostics || {};
   const details = [];
-  if (Array.isArray(diagnostics.generatedSlots) && diagnostics.generatedSlots.length) {
-    details.push(`生成slot: ${formatTimelineTime(diagnostics.generatedSlots)}`);
+  const generatedSlots = rosterDisplaySlots(game, diagnostics.generatedSlots);
+  const dueSlots = rosterDisplaySlots(game, diagnostics.dueSlots);
+  if (generatedSlots.length) {
+    details.push(`生成slot: ${formatTimelineTime(generatedSlots)}`);
   }
-  if (Array.isArray(diagnostics.dueSlots) && diagnostics.dueSlots.length) {
-    details.push(`期限到達: ${formatTimelineTime(diagnostics.dueSlots)}`);
+  if (dueSlots.length) {
+    details.push(`期限到達: ${formatTimelineTime(dueSlots)}`);
   }
   if (diagnostics.selectedDueSlot) details.push(`選択slot: ${formatV3Jst(diagnostics.selectedDueSlot)}`);
+  const rosterState = rosterDisplayState(game);
   if (diagnostics.actualJobExists) {
     details.push(`job: ${statusLabel(diagnostics.jobStatus)}${diagnostics.existingJobId ? ` #${diagnostics.existingJobId}` : ""}`);
   } else {
-    details.push("job未生成");
+    details.push(rosterState.status === "ok" ? "job未生成理由: snapshot取得済みのため追加job不要" : "job未生成");
   }
   if (diagnostics.planningSkipped) details.push(`planning: skip (${diagnostics.skipReason || "理由不明"})`);
   if (diagnostics.insertAttempted) details.push(`INSERT: ${diagnostics.insertedRowCount || 0}件`);
@@ -555,14 +599,16 @@ function renderTimeline(game) {
   const identityStatus = String(game.npbIdentityStatus || "");
   const identityState = String(game.npbIdentityState || "");
   const identityJob = latestV3Job(game, "npb_identity_resolve");
+  const identityDisplay = npbIdentityDisplay(game);
   const identityFallback = identityStatus === "resolved" || identityStatus === "manually_overridden" ? "complete" : identityState === "manual_action_required" ? "action" : identityState === "retry_wait" ? "retry" : "scheduled";
   const predictionJob = latestV3Job(game, "prediction_close");
   const lineupJob = latestV3Job(game, "lineup_fetch");
   const finalizeJob = latestV3Job(game, "lineup_finalize");
-  const rosterJob = latestV3Job(game, "roster_fetch");
   const scoreJob = latestV3Job(game, "score");
   const rankingJob = latestV3Job(game, "ranking_rebuild");
   const publishJob = latestV3Job(game, "publish");
+  const rosterState = rosterDisplayState(game);
+  const displayRosterSlots = rosterDisplaySlots(game, schedule.rosterFetchSlots);
   const probableJob = latestV3Job(game, "probable_starter_fetch");
   const probableSlot = schedule.probableStarterNextAt ? new Date(schedule.probableStarterNextAt) : null;
   const probableMissingPastSlot = !probableJob && probableSlot && probableSlot.getTime() <= Date.now();
@@ -572,9 +618,9 @@ function renderTimeline(game) {
   const steps = [
     timelineStep("日程登録", null, "complete", "games登録済み", schedule.startAt),
     timelineStep("予告先発取得", probableJob, probableFallback, probableStarterTimelineDetails(game, probableJob), probableTime),
-    timelineStep("ロースター取得", rosterJob, "wait", rosterJob?.failure_code || rosterTimelineDetails(game), schedule.rosterFetchSlots),
+    timelineStep("ロースター取得", rosterState.job, rosterState.fallbackStatus, rosterState.job?.failure_code || rosterTimelineDetails(game), displayRosterSlots),
     timelineStep("予想締切", predictionJob, state === "scheduled" ? "scheduled" : "complete", "締切は開始時刻から60分前", schedule.predictionDeadline),
-    timelineStep("NPB識別情報解決", identityJob, identityFallback, identityStatusLabel(game.npbIdentityStatus, identityState)),
+    timelineStep("NPB識別情報解決", identityJob, identityFallback, `job: ${identityDisplay.jobStatus} / game code: ${identityDisplay.code}`),
     timelineStep("スタメン取得", lineupJob, identityStatus ? "scheduled" : "wait", `${formatTimelineTime(schedule.lineupPollingSlots)}（10分間隔）`, schedule.lineupPollingStart),
     timelineStep("正式スタメン確定", finalizeJob, state === "lineup_ready" || state === "scored" || state === "ranked" || state === "published" ? "complete" : "scheduled", "最新候補を開始2分後に確定", schedule.finalLineupAt),
     timelineStep("採点", scoreJob, ["scored", "ranked", "published"].includes(state) ? "complete" : "scheduled", scoreJob ? "" : "正式スタメン確定後", schedule.scoringEarliestAt),
@@ -585,19 +631,26 @@ function renderTimeline(game) {
 }
 
 function renderRosterSummary(game) {
-  const job = latestV3Job(game, "roster_fetch");
+  const rosterState = rosterDisplayState(game);
+  const job = rosterState.job;
   const diagnostics = game?.rosterDiagnostics || {};
+  const generatedSlots = rosterDisplaySlots(game, diagnostics.generatedSlots);
+  const dueSlots = rosterDisplaySlots(game, diagnostics.dueSlots);
   const diagnosticRows = [
-    ["生成slot", formatTimelineTime(diagnostics.generatedSlots)],
-    ["期限到達slot", formatTimelineTime(diagnostics.dueSlots)],
+    ["生成slot", formatTimelineTime(generatedSlots)],
+    ["期限到達slot", formatTimelineTime(dueSlots)],
     ["選択slot", formatV3Jst(diagnostics.selectedDueSlot)],
-    ["job実在", diagnostics.actualJobExists ? `${statusLabel(diagnostics.jobStatus)}${diagnostics.existingJobId ? ` (#${diagnostics.existingJobId})` : ""}` : "未生成"],
+    ["job実在", diagnostics.actualJobExists ? `${statusLabel(diagnostics.jobStatus)}${diagnostics.existingJobId ? ` (#${diagnostics.existingJobId})` : ""}` : rosterState.status === "ok" ? "未生成（snapshot取得済み）" : "未生成"],
     ["planning", diagnostics.planningSkipped ? `skip: ${diagnostics.skipReason || "-"}` : "継続"],
     ["INSERT", diagnostics.insertAttempted ? `${diagnostics.insertedRowCount || 0}件` : "未実行"],
     ["claim", diagnostics.claimResult || "未実行"],
     ["snapshot", diagnostics.rosterSnapshotExists ? `${diagnostics.rosterSnapshotStatus || "captured"} / ${diagnostics.rosterSnapshotPlayerCount || 0}人` : "未取得"]
   ].filter(([, value]) => value && value !== "-");
-  return `<div class="roster-summary"><div><strong>最終成功</strong><span>${escapeV3(job?.status === "completed" ? formatV3Jst(job.completed_at || job.updated_at) : "-")}</span></div><div><strong>次回取得予定</strong><span>${escapeV3(job ? formatV3Jst(job.next_retry_at || job.scheduled_at) : "予定未定")}</span></div><div><strong>取得元・結果</strong><span>${escapeV3(job ? `${job.failure_code || "V3 job"} / ${statusLabel(job.status)}` : "履歴なし")}</span></div><div><strong>試行</strong><span>${escapeV3(job ? `${job.attempt_count || 0}/${job.max_attempts || 0}` : "-")}</span></div>${diagnosticRows.map(([label, value]) => `<div><strong>${escapeV3(label)}</strong><span>${escapeV3(value)}</span></div>`).join("")}</div>`;
+  const successAt = job?.status === "completed" ? formatV3Jst(job.completed_at || job.updated_at) : diagnostics.rosterSnapshotExists ? "snapshot captured" : "-";
+  const nextAt = job ? formatV3Jst(job.next_retry_at || job.scheduled_at) : rosterState.status === "ok" ? "追加取得不要" : "予定未定";
+  const result = job ? `${job.failure_code || "V3 job"} / ${statusLabel(job.status)}` : rosterState.status === "ok" ? "snapshot captured / job未生成" : "履歴なし";
+  const attempts = job ? `${job.attempt_count || 0}/${job.max_attempts || 0}` : rosterState.status === "ok" ? "不要" : "-";
+  return `<div class="roster-summary"><div><strong>最終成功</strong><span>${escapeV3(successAt)}</span></div><div><strong>次回取得予定</strong><span>${escapeV3(nextAt)}</span></div><div><strong>取得元・結果</strong><span>${escapeV3(result)}</span></div><div><strong>試行</strong><span>${escapeV3(attempts)}</span></div>${diagnosticRows.map(([label, value]) => `<div><strong>${escapeV3(label)}</strong><span>${escapeV3(value)}</span></div>`).join("")}</div>`;
 }
 
 function renderDashboard(payload, games) {
@@ -625,7 +678,8 @@ function renderSelectedGameHeader(game, title, description = "") {
 
 function renderWorkflowView(game) {
   if (!game) return renderSelectedGameHeader(null, "試合進行");
-  return `${renderSelectedGameHeader(game, "試合進行", "V3 jobの状態、失敗、再試行・取消を試合単位で確認します。")}<section class="v3-panel"><div class="compact-meta"><span>現在: <strong>${escapeV3(game.state?.state || "scheduled")}</strong></span><span>次の処理: <strong>${escapeV3(nextV3ActionText(game))}</strong></span><span>NPB識別: <strong>${escapeV3(identityStatusLabel(game.npbIdentityStatus, game.npbIdentityState))}</strong></span></div>${renderTimeline(game)}<details class="roster-details"><summary>ロースター取得の詳細</summary>${renderRosterSummary(game)}</details><h3>job操作</h3>${renderJobRows(game, V3_JOB_TYPES)}</section>`;
+  const identity = npbIdentityDisplay(game);
+  return `${renderSelectedGameHeader(game, "試合進行", "V3 jobの状態、失敗、再試行・取消を試合単位で確認します。")}<section class="v3-panel"><div class="compact-meta"><span>現在: <strong>${escapeV3(game.state?.state || "scheduled")}</strong></span><span>次の処理: <strong>${escapeV3(nextV3ActionText(game))}</strong></span><span>NPB識別job: <strong>${escapeV3(identity.jobStatus)}</strong></span><span>NPB game code: <strong>${escapeV3(identity.code)}</strong></span></div>${renderTimeline(game)}<details class="roster-details"><summary>ロースター取得の詳細</summary>${renderRosterSummary(game)}</details><h3>job操作</h3>${renderJobRows(game, V3_JOB_TYPES)}</section>`;
 }
 
 function jobDetailKey(internalGameId, jobId) {

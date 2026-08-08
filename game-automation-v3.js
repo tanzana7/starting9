@@ -238,6 +238,24 @@ export function getV3RosterSlots(game) {
     .sort((left, right) => left.getTime() - right.getTime());
 }
 
+// Keep planner and executor audit data on the same V3 timing contract.
+export function getV3RosterPlanningDiagnostics(game, now = new Date(), selectedSlotAt = "") {
+  const current = now instanceof Date ? now : new Date(now);
+  const slots = getV3RosterSlots(game);
+  const dueSlots = Number.isNaN(current.getTime())
+    ? []
+    : slots.filter((slot) => slot.getTime() <= current.getTime());
+  const selectedDueSlot = selectedSlotAt
+    ? new Date(selectedSlotAt)
+    : dueSlots[dueSlots.length - 1] || null;
+  return {
+    generatedSlots: slots.map((slot) => slot.toISOString()),
+    dueSlots: dueSlots.map((slot) => slot.toISOString()),
+    selectedDueSlot: selectedDueSlot && !Number.isNaN(selectedDueSlot.getTime()) ? selectedDueSlot.toISOString() : null,
+    selectedSlotReason: selectedDueSlot ? "latest_due_roster_slot" : "roster_not_due"
+  };
+}
+
 const NEXT_ACTION_LABELS = Object.freeze({
   prediction_close: "予想締切",
   roster_fetch: "ロースター取得",
@@ -862,10 +880,10 @@ export async function planV3RosterJobs(db, games = [], now = new Date()) {
         planned.push({ game, plan: null, created: false, reasonCode: diagnostic.skipReason, diagnostic: { ...diagnostic } });
         continue;
       }
-      const generatedSlots = getV3RosterSlots(game);
-      diagnostic.generatedSlots = generatedSlots.map((slot) => slot.toISOString());
-      const dueSlots = generatedSlots.filter((slot) => slot.getTime() <= current.getTime());
-      diagnostic.dueSlots = dueSlots.map((slot) => slot.toISOString());
+      const slotDiagnostics = getV3RosterPlanningDiagnostics(game, current);
+      diagnostic.generatedSlots = slotDiagnostics.generatedSlots;
+      diagnostic.dueSlots = slotDiagnostics.dueSlots;
+      const dueSlots = slotDiagnostics.dueSlots.map((slot) => new Date(slot));
       if (!dueSlots.length) {
         diagnostic.planningSkipped = true;
         diagnostic.skipReason = "ROSTER_NOT_DUE";
@@ -902,7 +920,7 @@ export async function planV3RosterJobs(db, games = [], now = new Date()) {
       // Rescue only the latest due slot. Older due slots must not be backfilled
       // one by one after a newer slot has already been processed.
       const selectedDueSlot = latestDueSlot;
-      diagnostic.selectedDueSlot = selectedDueSlot.toISOString();
+      diagnostic.selectedDueSlot = slotDiagnostics.selectedDueSlot;
       const selectedExistingJob = rosterJobs.find((job) => String(job.scheduled_slot_at || "") === selectedDueSlot.toISOString()) || null;
       diagnostic.actualJobExists = Boolean(selectedExistingJob || openJob);
       diagnostic.jobStatus = selectedExistingJob?.status || openJob?.status || null;

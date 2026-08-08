@@ -60,6 +60,7 @@ import {
   createV3Job,
   deriveV3Schedule,
   deriveV3DisplaySchedule,
+  getV3RosterPlanningDiagnostics,
   getV3NextAction,
   getV3ProbableStarterSlots,
   getV3ProbableStarterSourceDate,
@@ -900,7 +901,7 @@ async function executeV3ProbableStarterExecutor({ env, internalGameId, now, targ
   };
 }
 
-async function executeV3RosterExecutor({ env, internalGameId, now, target, stateBefore }) {
+async function executeV3RosterExecutor({ env, internalGameId, now, target, stateBefore, job }) {
   const result = await captureGameRosterSnapshot(env, internalGameId, now, {
     source: "v3",
     target: {
@@ -917,7 +918,13 @@ async function executeV3RosterExecutor({ env, internalGameId, now, target, state
     status: result?.status || "captured",
     stateBefore,
     stateAfter: stateBefore,
-    executorStage: "capture_roster_snapshot"
+    executorStage: "capture_roster_snapshot",
+    plannerDecision: getV3RosterPlanningDiagnostics({
+      gameDate: target.game_date,
+      startAt: target.startAt,
+      homeTeam: target.home_team,
+      awayTeam: target.away_team
+    }, now, job?.scheduled_slot_at || "")
   };
 }
 
@@ -3914,7 +3921,14 @@ async function handleAdminV3Overview(request, env, cors) {
       deregisteredCountAway: null,
       totalRosterChanges: null,
       noticeState: null,
-      executorStage: null
+      executorStage: null,
+      sourceDate: null,
+      fetchedAt: null,
+      registeredPlayersHome: [],
+      deregisteredPlayersHome: [],
+      registeredPlayersAway: [],
+      deregisteredPlayersAway: [],
+      selectedSlotReason: null
     };
     const resolvedState = state || { state: "scheduled", version: 0 };
     const jobRows = jobs.results || [];
@@ -4005,7 +4019,14 @@ async function handleAdminV3Overview(request, env, cors) {
       deregisteredCountAway: latestRosterAuditDetails.deregisteredCountAway ?? null,
       totalRosterChanges: latestRosterAuditDetails.totalRosterChanges ?? null,
       noticeState: latestRosterAuditDetails.noticeState || latestRosterAuditDetails.reasonCode || null,
-      executorStage: latestRosterAuditDetails.executorStage || null
+      executorStage: latestRosterAuditDetails.executorStage || null,
+      sourceDate: latestRosterAuditDetails.sourceDate || latestRosterAuditDetails.diagnostics?.sourceDate || null,
+      fetchedAt: latestRosterAuditDetails.fetchedAt || null,
+      registeredPlayersHome: latestRosterAuditDetails.registeredPlayersHome || [],
+      deregisteredPlayersHome: latestRosterAuditDetails.deregisteredPlayersHome || [],
+      registeredPlayersAway: latestRosterAuditDetails.registeredPlayersAway || [],
+      deregisteredPlayersAway: latestRosterAuditDetails.deregisteredPlayersAway || [],
+      selectedSlotReason: latestRosterAuditDetails.plannerDecision?.selectedSlotReason || null
     };
     const probableSlots = getV3ProbableStarterSlots(game).map((slot) => slot.toISOString());
     const probableJobSlots = new Set(jobRows
@@ -8471,11 +8492,18 @@ export function summarizeV3RosterNotice(payload, { gameDate = "", homeTeam = "",
     .filter(([team]) => Boolean(team));
   const rosterByTeam = new Map(teams);
   const changesFor = (field, team) => (Array.isArray(payload?.[field]) ? payload[field] : [])
-    .filter((entry) => normalizeScheduleTeamCode(entry?.team || entry?.teamName || entry?.club || "") === team).length;
-  const registeredCountHome = changesFor("registrations", targetHomeTeam);
-  const deregisteredCountHome = changesFor("removals", targetHomeTeam);
-  const registeredCountAway = changesFor("registrations", targetAwayTeam);
-  const deregisteredCountAway = changesFor("removals", targetAwayTeam);
+    .filter((entry) => normalizeScheduleTeamCode(entry?.team || entry?.teamName || entry?.club || "") === team);
+  const namesFor = (field, team) => changesFor(field, team)
+    .map((entry) => String(entry?.name || entry?.playerName || entry?.player_name || "").trim())
+    .filter(Boolean);
+  const registeredHome = changesFor("registrations", targetHomeTeam);
+  const deregisteredHome = changesFor("removals", targetHomeTeam);
+  const registeredAway = changesFor("registrations", targetAwayTeam);
+  const deregisteredAway = changesFor("removals", targetAwayTeam);
+  const registeredCountHome = registeredHome.length;
+  const deregisteredCountHome = deregisteredHome.length;
+  const registeredCountAway = registeredAway.length;
+  const deregisteredCountAway = deregisteredAway.length;
   const homeRosterConfirmed = rosterByTeam.has(targetHomeTeam) && rosterByTeam.get(targetHomeTeam).length > 0;
   const awayRosterConfirmed = rosterByTeam.has(targetAwayTeam) && rosterByTeam.get(targetAwayTeam).length > 0;
   const totalRosterChanges = registeredCountHome + deregisteredCountHome + registeredCountAway + deregisteredCountAway;
@@ -8488,11 +8516,26 @@ export function summarizeV3RosterNotice(payload, { gameDate = "", homeTeam = "",
     deregisteredCountHome,
     registeredCountAway,
     deregisteredCountAway,
+    registeredPlayersHome: namesFor("registrations", targetHomeTeam),
+    deregisteredPlayersHome: namesFor("removals", targetHomeTeam),
+    registeredPlayersAway: namesFor("registrations", targetAwayTeam),
+    deregisteredPlayersAway: namesFor("removals", targetAwayTeam),
     totalRosterChanges,
+    sourceDate: String(payload?.pageDate || "") || null,
     noticeState: String(payload?.pageDate || "") === String(gameDate || "")
       ? (totalRosterChanges > 0 ? "ROSTER_CHANGES_CAPTURED" : "ROSTER_NO_CHANGES")
       : "ROSTER_NOTICE_DATE_UNAVAILABLE"
   };
+}
+
+export function validateV3RosterAnnouncement(notice, { gameDate = "" } = {}) {
+  if (!notice?.sourceDate || notice.sourceDate !== String(gameDate || "")) {
+    return { ok: false, code: "ROSTER_SOURCE_DATE_MISMATCH", parserResult: "notice_date_mismatch" };
+  }
+  if (!notice.homeRosterConfirmed || !notice.awayRosterConfirmed) {
+    return { ok: false, code: "ROSTER_TEAM_MISMATCH", parserResult: "team_confirmation_failed" };
+  }
+  return { ok: true, code: notice.noticeState, parserResult: "valid" };
 }
 
 async function captureGameRosterSnapshot(env, gameId, now, { force = false, source = "admin", pregame = false, pregameMarker = "", fetchSlot = "", target = null } = {}) {
@@ -8515,7 +8558,9 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
   try {
     const payload = await fetchNpbWorkerJson(env, { mode: "roster" });
     const roster = normalizeRosterForSnapshot(payload.players);
-    if (!roster || payload.warning) throw createPregameError("INVALID_ROSTER", "NPBロースターの解析結果が不完全です。");
+    if (!roster || payload.warning) {
+      throw createPregameError(isV3 ? "ROSTER_PARSE_FAILED" : "INVALID_ROSTER", "NPBロースターの解析結果が不完全です。", { retryable: isV3 });
+    }
     const noticePayload = isV3
       ? await fetchNpbWorkerJson(env, { mode: "notice", date: identity.game.date })
       : null;
@@ -8538,15 +8583,18 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
       };
       throw error;
     }
-    if (isV3 && (!notice.homeRosterConfirmed || !notice.awayRosterConfirmed)) {
-      const error = createPregameError("ROSTER_TEAM_CONFIRMATION_FAILED", "対象試合の両球団ロースターを公式公示で確認できません。", { retryable: true });
+    const announcementValidation = isV3 ? validateV3RosterAnnouncement(notice, { gameDate: identity.game.date }) : null;
+    if (isV3 && !announcementValidation.ok) {
+      const error = createPregameError(announcementValidation.code, announcementValidation.code === "ROSTER_SOURCE_DATE_MISMATCH"
+        ? "対象日のNPB公示を確認できません。"
+        : "対象試合の両球団ロースターを公式公示で確認できません。", { retryable: true });
       error.diagnostics = {
-        executorStage: "validate_notice_teams",
+        executorStage: announcementValidation.code === "ROSTER_SOURCE_DATE_MISMATCH" ? "validate_notice_date" : "validate_notice_teams",
         internalGameId: storage.internalGameId,
         gameDate: identity.game.date,
         sourceUrl: noticePayload?.sourceUrl || null,
         httpStatus: Number(noticePayload?.httpStatus || noticePayload?.__fetchMeta?.httpStatus || 0) || null,
-        parserResult: "team_confirmation_failed",
+        parserResult: announcementValidation.parserResult,
         ...notice
       };
       throw error;
@@ -8595,6 +8643,8 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
       sourceUrl: isV3 ? (noticePayload?.sourceUrl || payload?.sourceUrl || null) : (payload?.sourceUrl || null),
       httpStatus: isV3 ? Number(noticePayload?.httpStatus || noticePayload?.__fetchMeta?.httpStatus || 0) || null : Number(payload?.httpStatus || payload?.__fetchMeta?.httpStatus || 0) || null,
       parserResult: "valid",
+      sourceDate: noticePayload?.pageDate || null,
+      fetchedAt: capturedAt,
       ...(isV3 ? notice : {}),
       rosterResolution: {
         resolutionStage: "canonical_schedule_db",
@@ -8604,6 +8654,9 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
       }
     };
   } catch (error) {
+    if (isV3 && ["NPB_HTTP_ERROR", "NPB_WORKER_TIMEOUT", "NPB_FETCH_FAILED"].includes(String(error?.code || ""))) {
+      error.code = "HTTP_FETCH_FAILED";
+    }
     error.rosterResolution = {
       resolutionStage: "canonical_schedule_db",
       resolvedBy: identity.resolvedBy || "canonical_schedule_db",

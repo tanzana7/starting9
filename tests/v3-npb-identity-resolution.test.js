@@ -294,17 +294,15 @@ test("V3 lineup fetchは保存URLを優先し、未解決時はlegacy fallback�
   assert.doesNotMatch(v3Section, /resolvePregameIdentity/);
 });
 
-test("V3管理画面は取得形状・候補・照合結果の診断を最大10件表示する", () => {
+test("V3管理画面はNPB識別情報とjob監査を読み取り表示する", () => {
   const client = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
   const page = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
-  assert.match(client, /resolutionDiagnostics/);
-  assert.match(client, /fetchEndpoint/);
-  assert.match(client, /rawCandidateCount/);
-  assert.match(client, /slice\(0, 10\)/);
-  assert.match(client, /data-v3-identity-diagnostics/);
+  assert.match(client, /renderAutomationLogs/);
+  assert.match(client, /renderInlineJobDetail/);
+  assert.match(client, /planner decision/);
   assert.ok(client.includes("${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}"));
   assert.match(page, /admin-v3\.css\?v=automation-v3-13-structured-logs/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-14-roster-freshness/);
-  assert.match(client, /DB home/);
-  assert.match(client, /DB away/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-15-roster-announcements-cleanup/);
+  assert.match(client, /NPB自動解決job/);
+  assert.match(client, /解決元/);
 });

@@ -657,6 +657,7 @@ function applyAdminMode() {
 
   if (adminDetails) {
     adminDetails.classList.toggle("hidden", !isAdminScreenOpen);
+    adminDetails.hidden = !isAdminScreenOpen;
     adminDetails.open = isAdminScreenOpen;
     adminDetails.setAttribute("aria-hidden", isAdminScreenOpen ? "false" : "true");
   }

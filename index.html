@@ -6,7 +6,7 @@
   <title>Starting9</title>
   <link rel="icon" type="image/png" href="./assets/icons/icon-512.png">
   <link rel="apple-touch-icon" href="./assets/icons/icon-512.png">
-  <link rel="stylesheet" href="style.css?v=public-next-game-status-1">
+  <link rel="stylesheet" href="style.css?v=public-hide-system-status-1">
 </head>
 <body>
   <header class="app-header">
@@ -126,8 +126,8 @@
         <section id="publicGameStatusCard" class="public-game-status-card" aria-labelledby="publicGameStatusTitle">
           <div class="public-game-status-heading">
             <div>
-              <p class="area-label">GAME STATUS</p>
-              <h3 id="publicGameStatusTitle">試合ステータス</h3>
+              <p class="area-label">NEXT GAME</p>
+              <h3 id="publicGameStatusTitle">予想する試合</h3>
             </div>
             <span id="publicGameStatusBadge" class="public-game-status-badge is-waiting">確認中</span>
           </div>
@@ -187,7 +187,7 @@
       <button id="sharePredictionButton" class="secondary-button hidden" type="button">予想をXで共有</button>
     </section>
 
-    <details id="adminDetails" class="admin-details hidden">
+    <details id="adminDetails" class="admin-details hidden" hidden aria-hidden="true">
       <summary>
         <span>管理画面</span>
         <small>実スタメン登録・採点・運用確認</small>
@@ -654,6 +654,6 @@
   <script src="auth.js?v=auth-api-local-20260719"></script>
   <!-- Historical cache-buster contract only; this old asset is not loaded. -->
   <!-- script.js?v=admin-test-data-20260728-10 -->
-  <script src="script.js?v=account-prediction-save-auth-1"></script>
+  <script src="script.js?v=public-hide-system-status-1"></script>
 </body>
 </html>

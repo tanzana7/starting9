@@ -900,6 +900,21 @@ async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore })
   if (!revisions.some((row) => Number(row.is_final) === 1)) {
     throw createV3Error("V3_FINAL_LINEUP_REQUIRED", "正式スタメン確定済みの採点対象がありません。", { retryable: false });
   }
+  // A terminal score job can leave the canonical lineup in processing. The
+  // recovery job owns the next attempt, so release that stale marker before
+  // claiming the lineup again; no prediction or revision history is changed.
+  try {
+    const columns = await getTableColumnSet(env.AUTH_DB, "game_lineups");
+    const scopeColumn = columns.has("internal_game_id") ? "internal_game_id" : "game_id";
+    await env.AUTH_DB.prepare(
+      `UPDATE game_lineups
+          SET scoring_status = 'pending', scoring_started_at = NULL,
+              last_error = NULL, updated_at = ?1
+        WHERE ${scopeColumn} = ?2 AND scoring_status = 'processing'`
+    ).bind(now.toISOString(), internalGameId).run();
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+  }
   const claimed = await claimGameLineupForScoring(env.AUTH_DB, internalGameId, now);
   const result = claimed ? await scoreClaimedGameLineup(env.AUTH_DB, claimed, now) : null;
   const lineup = await getGameLineup(env.AUTH_DB, { gameId: internalGameId, internalGameId });

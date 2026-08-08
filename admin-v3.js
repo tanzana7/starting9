@@ -167,7 +167,8 @@ function npbIdentityDisplay(game) {
 function gameHasAttention(game) {
   if (String(game?.state?.state || "") === "manual_action_required") return true;
   if (["unresolved", "manual_action_required"].includes(String(game?.npbIdentityState || ""))) return true;
-  return (game?.jobs || []).some((job) => ["failed", "retry_wait"].includes(String(job.status)));
+  return currentFailedV3Jobs(game).length > 0
+    || currentRetryWaitV3Jobs(game).length > 0;
 }
 
 function gameDateForFilter(game) {
@@ -291,6 +292,32 @@ function rosterDisplaySlots(game, slots) {
     const slotAt = new Date(slot || "");
     return Number.isNaN(slotAt.getTime()) || slotAt.getTime() < startAt.getTime();
   });
+}
+
+function v3JobTimestamp(job) {
+  const value = job?.updated_at || job?.completed_at || job?.scheduled_at || "";
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function hasNewerV3Job(game, candidateJob, statuses = null) {
+  const candidateTimestamp = v3JobTimestamp(candidateJob);
+  return (game?.jobs || []).some((job) => job !== candidateJob
+    && job.job_type === candidateJob?.job_type
+    && (!statuses || statuses.includes(String(job.status || "")))
+    && v3JobTimestamp(job) >= candidateTimestamp);
+}
+
+function currentFailedV3Jobs(game, types = []) {
+  return (game?.jobs || []).filter((job) => String(job.status || "") === "failed"
+    && (!types.length || types.includes(String(job.job_type || "")))
+    && !hasNewerV3Job(game, job));
+}
+
+function currentRetryWaitV3Jobs(game, types = []) {
+  return (game?.jobs || []).filter((job) => String(job.status || "") === "retry_wait"
+    && (!types.length || types.includes(String(job.job_type || "")))
+    && !hasNewerV3Job(game, job));
 }
 
 function rosterDisplayState(game) {
@@ -425,8 +452,10 @@ function todayOpsStep(game, step, now = new Date()) {
     ranking: ["ranking_rebuild"],
     publication: ["publish", "publication"]
   };
-  const hasFailed = jobs.some((job) => ["failed", "manual_action_required"].includes(String(job.status || ""))
-    && (step === "all" || (stepJobTypes[step] || []).includes(String(job.job_type || ""))));
+  const hasFailed = currentFailedV3Jobs(game, step === "all" ? [] : (stepJobTypes[step] || [])).length > 0
+    || (step === "all" || (stepJobTypes[step] || []).length > 0)
+      && jobs.some((job) => String(job.status || "") === "manual_action_required"
+        && (step === "all" || (stepJobTypes[step] || []).includes(String(job.job_type || ""))));
   if (hasFailed) return "attention";
   if (step === "probable") {
     const status = String(game?.probableStarter?.dataStatus || game?.probableStarter?.status || "unannounced");
@@ -468,7 +497,7 @@ function buildTodayOpsModel(payload, games, now = new Date()) {
   );
   const allJobs = todayGames.flatMap((game) => game.jobs || []);
   const latestCompleted = todayOpsLatestJob({ jobs: allJobs }, ["completed"]);
-  const latestFailed = todayOpsLatestJob({ jobs: allJobs }, ["failed"]);
+  const latestFailed = todayOpsLatestJob({ jobs: currentFailedV3Jobs({ jobs: allJobs }) }, ["failed"]);
   const cronLastRunAt = payload?.todayOps?.cronLastRunAt || null;
   const cronIntervalMinutes = Number(payload?.todayOps?.cronIntervalMinutes) || 1;
   const cronGraceMinutes = Number.isFinite(Number(payload?.todayOps?.cronGraceMinutes)) ? Number(payload.todayOps.cronGraceMinutes) : 2;
@@ -483,7 +512,7 @@ function buildTodayOpsModel(payload, games, now = new Date()) {
     const state = String(game?.state?.state || "scheduled");
     const publicationAt = new Date(game?.schedule?.publicationAt || "").getTime();
     const published = state === "published" || game?.publicationStatus === "published";
-    const failedJob = (game.jobs || []).find((job) => job.status === "failed");
+    const failedJob = currentFailedV3Jobs(game)[0] || null;
     const manualAction = state === "manual_action_required";
     const lineupOverdue = !["lineup_ready", "scored", "ranked", "published"].includes(state)
       && Number.isFinite(new Date(game?.startAt || "").getTime())
@@ -527,7 +556,7 @@ function buildTodayOpsModel(payload, games, now = new Date()) {
     overallStatus: attention ? "attention" : gameModels.some((model) => model.status === "waiting") ? "waiting" : "ok",
     openJobs: allJobs.filter((job) => ["pending", "claimed", "retry_wait"].includes(job.status)).length,
     retryWaitJobs: allJobs.filter((job) => job.status === "retry_wait").length,
-    failedJobs: allJobs.filter((job) => job.status === "failed").length,
+    failedJobs: currentFailedV3Jobs({ jobs: allJobs }).length,
     latestCompleted,
     latestFailed
   };

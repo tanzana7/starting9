@@ -304,7 +304,7 @@ test("V3管理画面は取得形状・候補・照合結果の診断を最大10�
   assert.match(client, /data-v3-identity-diagnostics/);
   assert.ok(client.includes("${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}"));
   assert.match(page, /admin-v3\.css\?v=automation-v3-13-structured-logs/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-13-structured-logs/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-14-roster-freshness/);
   assert.match(client, /DB home/);
   assert.match(client, /DB away/);
 });

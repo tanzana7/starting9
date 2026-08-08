@@ -912,7 +912,13 @@ async function executeV3RosterExecutor({ env, internalGameId, now, target, state
       awayTeam: target.away_team
     }
   });
-  return { status: result?.status || "captured", stateBefore, stateAfter: stateBefore };
+  return {
+    ...result,
+    status: result?.status || "captured",
+    stateBefore,
+    stateAfter: stateBefore,
+    executorStage: "capture_roster_snapshot"
+  };
 }
 
 async function executeV3PredictionCloseExecutor({ env, internalGameId, stateBefore }) {
@@ -3892,7 +3898,23 @@ async function handleAdminV3Overview(request, env, cors) {
       claimResult: "not_attempted",
       rosterSnapshotExists: false,
       rosterSnapshotInternalGameId: null,
-      rosterSnapshotStatus: null
+      rosterSnapshotStatus: null,
+      rosterSnapshotCapturedAt: null,
+      rosterSnapshotGameDate: null,
+      rosterSnapshotSource: null,
+      isSnapshotFresh: false,
+      isSnapshotStale: false,
+      staleReason: null,
+      sourceUrl: null,
+      httpStatus: null,
+      parserResult: null,
+      registeredCountHome: null,
+      deregisteredCountHome: null,
+      registeredCountAway: null,
+      deregisteredCountAway: null,
+      totalRosterChanges: null,
+      noticeState: null,
+      executorStage: null
     };
     const resolvedState = state || { state: "scheduled", version: 0 };
     const jobRows = jobs.results || [];
@@ -3943,7 +3965,19 @@ async function handleAdminV3Overview(request, env, cors) {
       ? rosterJobRows.find((job) => String(job.scheduled_slot_at || "") === String(selectedRosterSlot)) || null
       : null;
     const latestRosterJob = rosterJobRows[rosterJobRows.length - 1] || null;
-    const canonicalRosterSnapshot = await getV3CanonicalRosterSnapshot(env.AUTH_DB, game.internalGameId);
+    const canonicalRosterSnapshot = await getV3CanonicalRosterSnapshot(env.AUTH_DB, game.internalGameId, { gameDate: game.gameDate });
+    let latestRosterAuditDetails = {};
+    try {
+      const rosterAudit = await env.AUTH_DB.prepare(
+        `SELECT failure_message
+           FROM game_automation_v3_audit
+          WHERE internal_game_id = ?1 AND job_type = 'roster_fetch' AND event_type = 'job'
+          ORDER BY occurred_at DESC, id DESC LIMIT 1`
+      ).bind(game.internalGameId).first();
+      latestRosterAuditDetails = parseV3AuditDetails(rosterAudit?.failure_message);
+    } catch (error) {
+      console.warn(`[ADMIN_V3_OVERVIEW] internalGameId=${game.internalGameId} stage=roster_audit_read failureCode=${error?.code || "V3_ROSTER_AUDIT_READ_FAILED"}`);
+    }
     rosterDiagnostics = {
       ...rosterDiagnostics,
       generatedSlots: rosterDiagnostics.generatedSlots?.length ? rosterDiagnostics.generatedSlots : rosterSlots,
@@ -3955,7 +3989,23 @@ async function handleAdminV3Overview(request, env, cors) {
       rosterSnapshotExists: canonicalRosterSnapshot.exists,
       rosterSnapshotInternalGameId: canonicalRosterSnapshot.internalGameId,
       rosterSnapshotStatus: canonicalRosterSnapshot.status,
-      rosterSnapshotPlayerCount: canonicalRosterSnapshot.playerCount
+      rosterSnapshotPlayerCount: canonicalRosterSnapshot.playerCount,
+      rosterSnapshotCapturedAt: canonicalRosterSnapshot.capturedAt,
+      rosterSnapshotGameDate: canonicalRosterSnapshot.gameDate,
+      rosterSnapshotSource: canonicalRosterSnapshot.source,
+      isSnapshotFresh: canonicalRosterSnapshot.isFresh,
+      isSnapshotStale: canonicalRosterSnapshot.isStale,
+      staleReason: canonicalRosterSnapshot.staleReason,
+      sourceUrl: latestRosterAuditDetails.sourceUrl || null,
+      httpStatus: latestRosterAuditDetails.httpStatus || null,
+      parserResult: latestRosterAuditDetails.parserResult || null,
+      registeredCountHome: latestRosterAuditDetails.registeredCountHome ?? null,
+      deregisteredCountHome: latestRosterAuditDetails.deregisteredCountHome ?? null,
+      registeredCountAway: latestRosterAuditDetails.registeredCountAway ?? null,
+      deregisteredCountAway: latestRosterAuditDetails.deregisteredCountAway ?? null,
+      totalRosterChanges: latestRosterAuditDetails.totalRosterChanges ?? null,
+      noticeState: latestRosterAuditDetails.noticeState || latestRosterAuditDetails.reasonCode || null,
+      executorStage: latestRosterAuditDetails.executorStage || null
     };
     const probableSlots = getV3ProbableStarterSlots(game).map((slot) => slot.toISOString());
     const probableJobSlots = new Set(jobRows
@@ -8413,6 +8463,38 @@ async function resolveRosterScheduleTarget(db, gameId, target = {}) {
   };
 }
 
+export function summarizeV3RosterNotice(payload, { gameDate = "", homeTeam = "", awayTeam = "" } = {}) {
+  const targetHomeTeam = normalizeScheduleTeamCode(homeTeam);
+  const targetAwayTeam = normalizeScheduleTeamCode(awayTeam);
+  const teams = Object.entries(payload?.rosters && typeof payload.rosters === "object" ? payload.rosters : {})
+    .map(([team, roster]) => [normalizeScheduleTeamCode(team), Array.isArray(roster) ? roster : []])
+    .filter(([team]) => Boolean(team));
+  const rosterByTeam = new Map(teams);
+  const changesFor = (field, team) => (Array.isArray(payload?.[field]) ? payload[field] : [])
+    .filter((entry) => normalizeScheduleTeamCode(entry?.team || entry?.teamName || entry?.club || "") === team).length;
+  const registeredCountHome = changesFor("registrations", targetHomeTeam);
+  const deregisteredCountHome = changesFor("removals", targetHomeTeam);
+  const registeredCountAway = changesFor("registrations", targetAwayTeam);
+  const deregisteredCountAway = changesFor("removals", targetAwayTeam);
+  const homeRosterConfirmed = rosterByTeam.has(targetHomeTeam) && rosterByTeam.get(targetHomeTeam).length > 0;
+  const awayRosterConfirmed = rosterByTeam.has(targetAwayTeam) && rosterByTeam.get(targetAwayTeam).length > 0;
+  const totalRosterChanges = registeredCountHome + deregisteredCountHome + registeredCountAway + deregisteredCountAway;
+  return {
+    targetHomeTeam,
+    targetAwayTeam,
+    homeRosterConfirmed,
+    awayRosterConfirmed,
+    registeredCountHome,
+    deregisteredCountHome,
+    registeredCountAway,
+    deregisteredCountAway,
+    totalRosterChanges,
+    noticeState: String(payload?.pageDate || "") === String(gameDate || "")
+      ? (totalRosterChanges > 0 ? "ROSTER_CHANGES_CAPTURED" : "ROSTER_NO_CHANGES")
+      : "ROSTER_NOTICE_DATE_UNAVAILABLE"
+  };
+}
+
 async function captureGameRosterSnapshot(env, gameId, now, { force = false, source = "admin", pregame = false, pregameMarker = "", fetchSlot = "", target = null } = {}) {
   const isV3 = source === "v3";
   const identity = await resolveRosterScheduleTarget(env.AUTH_DB, gameId, target || {});
@@ -8427,20 +8509,58 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
     : await env.AUTH_DB.prepare("SELECT roster_fixed_at FROM game_pregame_automation WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
   if (frozen?.roster_fixed_at) return { status: "frozen", fixedAt: frozen.roster_fixed_at };
   const existing = isV3 && storage.schemaReady
-    ? await env.AUTH_DB.prepare("SELECT game_id, roster_json FROM game_roster_snapshots WHERE internal_game_id = ?1 LIMIT 1").bind(storage.internalGameId).first()
+    ? await env.AUTH_DB.prepare("SELECT game_id, game_date, captured_at, source, status, player_count, roster_json FROM game_roster_snapshots WHERE internal_game_id = ?1 ORDER BY updated_at DESC, captured_at DESC LIMIT 1").bind(storage.internalGameId).first()
     : await env.AUTH_DB.prepare("SELECT game_id, roster_json FROM game_roster_snapshots WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
-  if (existing && !force) return { status: "already_captured" };
+  if (existing && !force && !isV3) return { status: "already_captured" };
   try {
     const payload = await fetchNpbWorkerJson(env, { mode: "roster" });
     const roster = normalizeRosterForSnapshot(payload.players);
     if (!roster || payload.warning) throw createPregameError("INVALID_ROSTER", "NPBロースターの解析結果が不完全です。");
-    const capturedAt = String(payload.fetchedAt || now.toISOString());
+    const noticePayload = isV3
+      ? await fetchNpbWorkerJson(env, { mode: "notice", date: identity.game.date })
+      : null;
+    const notice = isV3
+      ? summarizeV3RosterNotice(noticePayload, {
+        gameDate: identity.game.date,
+        homeTeam: identity.game.homeTeam,
+        awayTeam: identity.game.awayTeam
+      })
+      : null;
+    if (isV3 && (payload?.stale || noticePayload?.stale)) {
+      const error = createPregameError("ROSTER_SOURCE_STALE", "最新のNPBロースター情報を確認できません。", { retryable: true });
+      error.diagnostics = {
+        executorStage: "validate_roster_source",
+        internalGameId: storage.internalGameId,
+        gameDate: identity.game.date,
+        sourceUrl: noticePayload?.sourceUrl || payload?.sourceUrl || null,
+        httpStatus: Number(noticePayload?.httpStatus || payload?.httpStatus || 0) || null,
+        parserResult: "source_stale"
+      };
+      throw error;
+    }
+    if (isV3 && (!notice.homeRosterConfirmed || !notice.awayRosterConfirmed)) {
+      const error = createPregameError("ROSTER_TEAM_CONFIRMATION_FAILED", "対象試合の両球団ロースターを公式公示で確認できません。", { retryable: true });
+      error.diagnostics = {
+        executorStage: "validate_notice_teams",
+        internalGameId: storage.internalGameId,
+        gameDate: identity.game.date,
+        sourceUrl: noticePayload?.sourceUrl || null,
+        httpStatus: Number(noticePayload?.httpStatus || noticePayload?.__fetchMeta?.httpStatus || 0) || null,
+        parserResult: "team_confirmation_failed",
+        ...notice
+      };
+      throw error;
+    }
+    const capturedAt = String((isV3 ? noticePayload?.fetchedAt : payload.fetchedAt) || payload.fetchedAt || now.toISOString());
     const rosterJson = JSON.stringify(roster);
     const previousRosterJson = existing;
-    if (previousRosterJson?.roster_json && rosterFingerprint(parseJsonArray(previousRosterJson.roster_json)) === rosterFingerprint(roster)) {
+    const unchanged = Boolean(previousRosterJson?.roster_json && rosterFingerprint(parseJsonArray(previousRosterJson.roster_json)) === rosterFingerprint(roster));
+    if (unchanged && !isV3) {
       if (!isV3) await updateRosterFetchState(env.AUTH_DB, gameId, now, { source, success: true, pregame, pregameMarker, fetchSlot });
       return { status: "unchanged", playerCount: roster.length, capturedAt, roster, unchanged: true };
     }
+    // V3 owns a UUID-keyed snapshot row. Older legacy-keyed rows are historical only.
+    const snapshotGameId = isV3 ? storage.internalGameId : gameId;
     const internalColumn = storage.schemaReady ? ", internal_game_id" : "";
     const internalValue = storage.schemaReady ? ", ?6" : "";
     const statements = [
@@ -8449,8 +8569,8 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
          VALUES (?1, ?2, ?3, ?4, 'npb-roster', ?5, 'captured', ?3, ?3${internalValue})
          ON CONFLICT(game_id) DO UPDATE SET${storage.schemaReady ? " internal_game_id = CASE WHEN excluded.internal_game_id IS NULL OR excluded.internal_game_id = '' THEN game_roster_snapshots.internal_game_id ELSE excluded.internal_game_id END," : ""} captured_at = excluded.captured_at, roster_json = excluded.roster_json, player_count = excluded.player_count, updated_at = excluded.updated_at`
       ).bind(...(storage.schemaReady
-        ? [gameId, identity.game.date, capturedAt, rosterJson, roster.length, storage.internalGameId]
-        : [gameId, identity.game.date, capturedAt, rosterJson, roster.length]))
+        ? [snapshotGameId, identity.game.date, capturedAt, rosterJson, roster.length, storage.internalGameId]
+        : [snapshotGameId, identity.game.date, capturedAt, rosterJson, roster.length]))
     ];
     if (!isV3) {
       statements.push(env.AUTH_DB.prepare(
@@ -8465,6 +8585,17 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
       playerCount: roster.length,
       capturedAt,
       roster,
+      unchanged,
+      reasonCode: isV3 ? notice.noticeState : null,
+      snapshotCaptured: true,
+      snapshotCapturedAt: capturedAt,
+      snapshotGameDate: identity.game.date,
+      snapshotInternalGameId: storage.internalGameId,
+      snapshotFresh: isV3 ? true : null,
+      sourceUrl: isV3 ? (noticePayload?.sourceUrl || payload?.sourceUrl || null) : (payload?.sourceUrl || null),
+      httpStatus: isV3 ? Number(noticePayload?.httpStatus || noticePayload?.__fetchMeta?.httpStatus || 0) || null : Number(payload?.httpStatus || payload?.__fetchMeta?.httpStatus || 0) || null,
+      parserResult: "valid",
+      ...(isV3 ? notice : {}),
       rosterResolution: {
         resolutionStage: "canonical_schedule_db",
         resolvedBy: identity.resolvedBy || "canonical_schedule_db",
@@ -8478,6 +8609,18 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
       resolvedBy: identity.resolvedBy || "canonical_schedule_db",
       startAtFound: Boolean(identity.startAt && !Number.isNaN(new Date(identity.startAt).getTime()))
     };
+    if (isV3) {
+      error.diagnostics = {
+        ...(error?.diagnostics && typeof error.diagnostics === "object" ? error.diagnostics : {}),
+        executorStage: error?.diagnostics?.executorStage || "capture_roster_snapshot",
+        internalGameId: storage.internalGameId,
+        gameDate: identity.game.date,
+        sourceUrl: error?.upstreamUrl || error?.diagnostics?.sourceUrl || null,
+        httpStatus: Number(error?.httpStatus || error?.upstreamStatus || error?.diagnostics?.httpStatus || 0) || null,
+        parserResult: error?.diagnostics?.parserResult || "failed",
+        rosterResolution: error.rosterResolution
+      };
+    }
     if (!isV3) {
       await updateRosterFetchState(env.AUTH_DB, gameId, now, { source, errorCode: String(error?.code || "ROSTER_FETCH_FAILED") });
       try {

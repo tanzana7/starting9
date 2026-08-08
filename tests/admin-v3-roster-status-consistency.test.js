@@ -22,13 +22,21 @@ function game(overrides = {}) {
   };
 }
 
-test("snapshot capturedはjob未生成でもToday Opsと個別詳細を完了扱いにする", () => {
-  const target = game({ rosterDiagnostics: { rosterSnapshotExists: true, rosterSnapshotStatus: "captured" } });
+test("fresh snapshotだけをToday Opsと個別詳細で完了扱いにする", () => {
+  const target = game({ rosterDiagnostics: { rosterSnapshotExists: true, rosterSnapshotStatus: "captured", isSnapshotFresh: true, noticeState: "ROSTER_NO_CHANGES" } });
   assert.equal(context.rosterDisplayState(target).status, "ok");
   assert.equal(context.todayOpsStep(target, "roster"), "ok");
-  assert.match(client, /snapshot取得済みのため追加job不要/);
+  assert.match(client, /公式公示を確認しました。変更はありません。/);
   assert.match(client, /NPB識別job:/);
   assert.match(client, /game code:/);
+});
+
+test("stale snapshotは取得済みと表示せず、未実行jobがあれば待機を優先する", () => {
+  const stale = game({ rosterDiagnostics: { rosterSnapshotExists: false, isSnapshotStale: true, staleReason: "ROSTER_SNAPSHOT_CAPTURE_DATE_STALE" } });
+  assert.equal(context.rosterDisplayState(stale).status, "attention");
+  assert.equal(context.todayOpsStep(stale, "roster"), "attention");
+  const pending = game({ rosterDiagnostics: stale.rosterDiagnostics, jobs: [{ job_type: "roster_fetch", status: "pending" }] });
+  assert.equal(context.rosterDisplayState(pending).status, "waiting");
 });
 
 test("failedとretry_waitはsnapshotより優先して注意・待機表示にする", () => {
@@ -50,5 +58,5 @@ test("15時開始試合の表示slotから開始後の固定slotを除外し、1
 
 test("admin-v3のcache busterはロースター状態表示版へ更新される", () => {
   assert.match(page, /admin-v3\.css\?v=automation-v3-13-structured-logs/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-13-structured-logs/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-14-roster-freshness/);
 });

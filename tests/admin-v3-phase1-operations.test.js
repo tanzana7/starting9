@@ -51,7 +51,7 @@ test("管理画面はPhase 1操作を実際のV3 APIへ送信し、理由とキ�
     assert.match(client, new RegExp(suffix.replaceAll("/", "\\/")));
   }
   assert.match(client, /data-v3-operation-reason/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-13-structured-logs/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-14-roster-freshness/);
   assert.match(page, /admin-v3\.css\?v=automation-v3-13-structured-logs/);
 });
 

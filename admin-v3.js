@@ -315,6 +315,64 @@ function rosterDisplayState(game) {
   return { status: "waiting", fallbackStatus: "wait", job: null, detail: "取得予定を待っています。" };
 }
 
+function lineupReasonCode(job, game) {
+  const raw = String(job?.failure_code || job?.error_code || job?.reason_code || game?.lineupSummary?.errorCode || "").trim().toUpperCase();
+  if (["LINEUP_NOT_ANNOUNCED", "LINEUP_NOT_PUBLISHED", "LINEUP_DATA_NOT_ANNOUNCED", "DATA_NOT_ANNOUNCED", "UNANNOUNCED"].includes(raw)) return "LINEUP_NOT_ANNOUNCED";
+  return raw;
+}
+
+function classifyLineupReason(reasonCode) {
+  const code = String(reasonCode || "").toUpperCase();
+  if (code === "LINEUP_NOT_ANNOUNCED") return "unannounced";
+  if (/HTTP|NETWORK|TEMPORARY|TIMEOUT|FETCH_FAILED/.test(code)) return "temporary_error";
+  if (/PARSE|INVALID|INCOMPLETE|TEAM_MISMATCH|PLAYER_ID|INTEGRITY|CONFLICT/.test(code)) return "data_error";
+  if (/MISSING_EXECUTOR|MISSING_HELPER|UNEXPECTED|V3_JOB_FAILED/.test(code)) return "system_error";
+  return code ? "system_error" : "unknown";
+}
+
+function lineupDisplayState(game, now = new Date()) {
+  const state = String(game?.state?.state || "scheduled");
+  if (["lineup_ready", "scored", "ranked", "published"].includes(state)) {
+    return { status: "ok", fallbackStatus: "complete", label: "完了", job: null, reasonCode: "", nextCheckAt: null, detail: "正式スタメン確定済み" };
+  }
+  const jobs = (game?.jobs || [])
+    .filter((job) => ["lineup_fetch", "provisional_lineup_fetch", "final_lineup_fetch"].includes(String(job.job_type || "")))
+    .sort((left, right) => String(right.updated_at || right.completed_at || right.scheduled_at || "")
+      .localeCompare(String(left.updated_at || left.completed_at || left.scheduled_at || "")));
+  const job = jobs[0] || null;
+  const reasonCode = lineupReasonCode(job, game);
+  const classification = classifyLineupReason(reasonCode);
+  const jobStatusLabel = ({ pending: "予定", claimed: "実行中", retry_wait: "retry_wait", completed: "完了", failed: "失敗" })[String(job?.status || "")] || "待機中";
+  const slots = Array.isArray(game?.schedule?.lineupPollingSlots) ? game.schedule.lineupPollingSlots : [];
+  const nextCheckAt = slots.map((slot) => new Date(slot || ""))
+    .filter((slot) => !Number.isNaN(slot.getTime()) && slot.getTime() > now.getTime())
+    .sort((left, right) => left.getTime() - right.getTime())[0]?.toISOString() || null;
+  const nextText = nextCheckAt ? formatV3Jst(nextCheckAt) : "なし";
+
+  if (job?.status === "completed") {
+    return { status: "ok", fallbackStatus: "complete", label: "完了", job, reasonCode, nextCheckAt: null, detail: "スタメン候補取得済み" };
+  }
+  if (job?.status === "retry_wait") {
+    if (classification === "unannounced") {
+      return { status: "waiting", fallbackStatus: "wait", label: "スタメン未発表", job, reasonCode, nextCheckAt, detail: `状態: 次回確認待ち / 次回確認: ${nextText} / reason: ${reasonCode}` };
+    }
+    if (classification === "temporary_error") {
+      return { status: "waiting", fallbackStatus: "wait", label: "一時取得失敗", job, reasonCode, nextCheckAt, detail: `状態: 次回再試行 / 次回確認: ${nextText} / reason: ${reasonCode}` };
+    }
+    return { status: "attention", fallbackStatus: "action", label: classification === "data_error" ? "スタメン取得異常" : "システム異常", job, reasonCode: reasonCode || "V3_JOB_FAILED", nextCheckAt, detail: `状態: 要確認 / reason: ${reasonCode || "V3_JOB_FAILED"}` };
+  }
+  if (["failed", "permanently_failed"].includes(String(job?.status || ""))) {
+    return { status: "attention", fallbackStatus: "action", label: classification === "data_error" ? "スタメン取得異常" : "システム異常", job, reasonCode: reasonCode || "V3_JOB_FAILED", nextCheckAt: null, detail: `状態: 要確認 / reason: ${reasonCode || "V3_JOB_FAILED"}` };
+  }
+  if (job) {
+    return { status: "waiting", fallbackStatus: "wait", label: "取得待ち", job, reasonCode, nextCheckAt, detail: `状態: ${jobStatusLabel}${nextCheckAt ? ` / 次回確認: ${nextText}` : ""}${reasonCode ? ` / reason: ${reasonCode}` : ""}` };
+  }
+  if (nextCheckAt) {
+    return { status: "waiting", fallbackStatus: "wait", label: "次回確認待ち", job: null, reasonCode: "LINEUP_NOT_YET_AVAILABLE", nextCheckAt, detail: `状態: 次回確認待ち / 次回確認: ${nextText} / reason: LINEUP_NOT_YET_AVAILABLE` };
+  }
+  return { status: "attention", fallbackStatus: "action", label: "要確認", job: null, reasonCode: "LINEUP_NOT_ANNOUNCED", nextCheckAt: null, detail: "全polling slot経過後もスタメン未取得 / reason: LINEUP_NOT_ANNOUNCED" };
+}
+
 function todayOpsLatestJob(game, statuses = []) {
   const jobs = (game?.jobs || []).filter((job) => !statuses.length || statuses.includes(String(job.status || "")));
   return [...jobs].sort((left, right) => String(right.completed_at || right.updated_at || right.scheduled_at || "").localeCompare(String(left.completed_at || left.updated_at || left.scheduled_at || "")))[0] || null;
@@ -343,9 +401,7 @@ function todayOpsStep(game, step, now = new Date()) {
     return rosterDisplayState(game).status;
   }
   if (step === "lineup") {
-    if (["lineup_ready", "scored", "ranked", "published"].includes(state)) return "ok";
-    const pollingStart = new Date(schedule.lineupPollingStart || "").getTime();
-    return Number.isFinite(pollingStart) && pollingStart <= now.getTime() ? "attention" : "waiting";
+    return lineupDisplayState(game, now).status;
   }
   if (step === "scoring") return ["scored", "ranked", "published"].includes(state) ? "ok" : "waiting";
   if (step === "ranking") return ["ranked", "published"].includes(state) ? "ok" : "waiting";
@@ -399,6 +455,7 @@ function buildTodayOpsModel(payload, games, now = new Date()) {
       && new Date(game.startAt).getTime() <= now.getTime();
     const publicationOverdue = !published && Number.isFinite(publicationAt) && publicationAt <= now.getTime();
     const attention = Boolean(failedJob || manualAction || lineupOverdue || publicationOverdue);
+    const lineupStatus = lineupDisplayState(game, now);
     return {
       game,
       state,
@@ -408,7 +465,8 @@ function buildTodayOpsModel(payload, games, now = new Date()) {
       steps: {
         probable: todayOpsStep(game, "probable", now),
         roster: todayOpsStep(game, "roster", now),
-        lineup: todayOpsStep(game, "lineup", now),
+        lineup: lineupStatus.status,
+        lineupDetail: lineupStatus.detail,
         scoring: todayOpsStep(game, "scoring", now),
         ranking: todayOpsStep(game, "ranking", now),
         publication: todayOpsStep(game, "publication", now)
@@ -456,8 +514,8 @@ function renderTodayOpsScheduleSync(model) {
   return `<div class="today-ops-diagnostics"><div class="today-ops-diagnostics-heading"><strong>未来試合同期診断</strong>${todayOpsStatusBadge(model.futureScheduleSyncStatus)}</div><div class="today-ops-diagnostic-grid"><span>未来試合</span><strong>${escapeV3(before)} → ${escapeV3(after)} / target ${escapeV3(target)}</strong><span>syncNeeded</span><strong>${escapeV3(sync.syncNeeded === true ? "true" : sync.syncNeeded === false ? "false" : "-")}</strong><span>fetchRange</span><strong>${escapeV3(range)}</strong><span>expandedTo30Days</span><strong>${escapeV3(sync.expandedTo30Days === true ? "true" : "false")}</strong><span>取得 / 追加 / 更新</span><strong>${escapeV3(`${sync.gamesFetched ?? 0} / ${sync.gamesInserted ?? 0} / ${sync.gamesUpdated ?? 0}`)}</strong><span>skipReason</span><strong>${escapeV3(sync.skipReason || "-")}</strong><span>errorCode</span><strong>${escapeV3(sync.errorCode || "-")}</strong><span>lastScheduleSyncAt</span><strong>${escapeV3(lastSync)}</strong></div></div>`;
 }
 
-function renderTodayOpsStep(label, status) {
-  return `<div class="today-ops-step"><span>${escapeV3(label)}</span>${todayOpsStatusBadge(status)}</div>`;
+function renderTodayOpsStep(label, status, detail = "") {
+  return `<div class="today-ops-step"><span>${escapeV3(label)}</span>${todayOpsStatusBadge(status)}${detail ? `<small>${escapeV3(detail)}</small>` : ""}</div>`;
 }
 
 function renderTodayOps(payload, games) {
@@ -465,7 +523,7 @@ function renderTodayOps(payload, games) {
   const cronLastDetail = model.cronLastRunAt ? formatV3Jst(model.cronLastRunAt) : "記録なし";
   const nextCronDetail = model.nextCronEstimate ? formatV3Jst(model.nextCronEstimate) : "不明";
   const gameCards = model.gameModels.length
-    ? model.gameModels.map(({ game, state, status, nextAction, steps }) => `<article class="today-ops-game"><div class="today-ops-game-heading"><strong>${escapeV3(gameDateForFilter(game))} ${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}</strong>${todayOpsStatusBadge(status)}</div><div class="today-ops-game-meta"><span>state: ${escapeV3(state)}</span><span>次: ${escapeV3(nextAction)}</span></div><div class="today-ops-steps">${renderTodayOpsStep("予告先発", steps.probable)}${renderTodayOpsStep("ロースター", steps.roster)}${renderTodayOpsStep("スタメン", steps.lineup)}${renderTodayOpsStep("採点", steps.scoring)}${renderTodayOpsStep("ランキング", steps.ranking)}${renderTodayOpsStep("公開", steps.publication)}</div></article>`).join("")
+    ? model.gameModels.map(({ game, state, status, nextAction, steps }) => `<article class="today-ops-game"><div class="today-ops-game-heading"><strong>${escapeV3(gameDateForFilter(game))} ${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}</strong>${todayOpsStatusBadge(status)}</div><div class="today-ops-game-meta"><span>state: ${escapeV3(state)}</span><span>次: ${escapeV3(nextAction)}</span></div><div class="today-ops-steps">${renderTodayOpsStep("予告先発", steps.probable)}${renderTodayOpsStep("ロースター", steps.roster)}${renderTodayOpsStep("スタメン", steps.lineup, steps.lineupDetail)}${renderTodayOpsStep("採点", steps.scoring)}${renderTodayOpsStep("ランキング", steps.ranking)}${renderTodayOpsStep("公開", steps.publication)}</div></article>`).join("")
     : "<p class=muted>本日の対象試合はありません。</p>";
   return `<section class="today-ops-panel" aria-labelledby="todayOpsHeading"><div class="today-ops-heading"><div><h3 id="todayOpsHeading">Today Ops / Automation Health</h3><p>本日のV3自動処理を試合単位で確認します。</p></div>${todayOpsStatusBadge(model.overallStatus)}</div><div class="today-ops-metrics"><div><strong>${escapeV3(model.todayGames.length)}</strong><span>今日の試合</span></div><div><strong>${escapeV3(model.openJobs)}</strong><span>open job</span></div><div><strong>${escapeV3(model.retryWaitJobs)}</strong><span>retry_wait</span></div><div><strong>${escapeV3(model.failedJobs)}</strong><span>failed</span></div><div><strong>${escapeV3(model.futureGames)}</strong><span>未来試合登録数</span></div><div><strong>${escapeV3(model.cronSchedule)}</strong><span>Cron設定${model.cronDescription ? `（${escapeV3(model.cronDescription)}）` : ""}</span></div><div><strong>${escapeV3(cronLastDetail)}</strong><span>Cron最終監査</span></div><div><strong>${escapeV3(nextCronDetail)}</strong><span>次Cron目安</span></div><div><strong>${escapeV3(model.cronStatus === "attention" ? "ATTENTION" : "直近")}</strong><span>Cron状態</span></div></div><div class="today-ops-notices"><span>最後に完了: ${renderTodayOpsJob(model.latestCompleted)}</span><span>最後に失敗: ${renderTodayOpsJob(model.latestFailed)}</span><span>${model.futureShortage ? "未来試合が3試合未満" : "未来試合数は充足"}</span><span>${model.cronStale ? "Cron監査が古い、または未記録" : "Cron監査は直近"}</span></div>${renderTodayOpsScheduleSync(model)}<div class="today-ops-games">${gameCards}</div></section>`;
 }
@@ -482,10 +540,10 @@ function formatTimelineTime(value) {
   return value ? formatV3Jst(value) : "";
 }
 
-function timelineStep(name, job, fallbackStatus, detail = "", scheduledAt = "") {
-  const status = job ? String(job.status) : fallbackStatus;
-  const klass = job ? statusClass(status) : statusClass(fallbackStatus);
-  const label = job ? statusLabel(status) : ({ complete: "完了", scheduled: "予定", wait: "待機中", action: "要対応" }[fallbackStatus] || "待機中");
+function timelineStep(name, job, fallbackStatus, detail = "", scheduledAt = "", labelOverride = "", statusOverride = "") {
+  const status = statusOverride || (job ? String(job.status) : fallbackStatus);
+  const klass = status === "complete" ? "complete" : status === "action" ? "action" : status === "wait" ? "wait" : statusClass(status);
+  const label = labelOverride || (job ? statusLabel(status) : ({ complete: "完了", scheduled: "予定", wait: "待機中", action: "要対応" }[fallbackStatus] || "待機中"));
   const time = scheduledAt || (job ? (status === "retry_wait" ? job.next_retry_at : job.scheduled_at) : "");
   const failure = job?.failure_code ? ` / ${job.failure_code}` : "";
   return `<article class="timeline-step ${klass}"><span class="status-badge ${klass === "complete" ? "ok" : klass === "retry" ? "retry" : klass === "failed" || klass === "action" ? "action" : klass === "excluded" ? "excluded" : "wait"}">${escapeV3(label)}</span><h4>${escapeV3(name)}</h4><p class="step-time">${escapeV3(formatTimelineTime(time) || (detail && !failure ? detail : "予定未定"))}</p><p>${escapeV3(detail || failure || (job ? `試行 ${job.attempt_count || 0}/${job.max_attempts || 0}` : ""))}</p></article>`;
@@ -608,6 +666,7 @@ function renderTimeline(game) {
   const rankingJob = latestV3Job(game, "ranking_rebuild");
   const publishJob = latestV3Job(game, "publish");
   const rosterState = rosterDisplayState(game);
+  const lineupState = lineupDisplayState(game);
   const displayRosterSlots = rosterDisplaySlots(game, schedule.rosterFetchSlots);
   const probableJob = latestV3Job(game, "probable_starter_fetch");
   const probableSlot = schedule.probableStarterNextAt ? new Date(schedule.probableStarterNextAt) : null;
@@ -621,7 +680,7 @@ function renderTimeline(game) {
     timelineStep("ロースター取得", rosterState.job, rosterState.fallbackStatus, rosterState.job?.failure_code || rosterTimelineDetails(game), displayRosterSlots),
     timelineStep("予想締切", predictionJob, state === "scheduled" ? "scheduled" : "complete", "締切は開始時刻から60分前", schedule.predictionDeadline),
     timelineStep("NPB識別情報解決", identityJob, identityFallback, `job: ${identityDisplay.jobStatus} / game code: ${identityDisplay.code}`),
-    timelineStep("スタメン取得", lineupJob, identityStatus ? "scheduled" : "wait", `${formatTimelineTime(schedule.lineupPollingSlots)}（10分間隔）`, schedule.lineupPollingStart),
+    timelineStep("スタメン取得", lineupState.job || lineupJob, lineupState.fallbackStatus, lineupState.detail, lineupState.nextCheckAt || schedule.lineupPollingStart, lineupState.label, lineupState.fallbackStatus),
     timelineStep("正式スタメン確定", finalizeJob, state === "lineup_ready" || state === "scored" || state === "ranked" || state === "published" ? "complete" : "scheduled", "最新候補を開始2分後に確定", schedule.finalLineupAt),
     timelineStep("採点", scoreJob, ["scored", "ranked", "published"].includes(state) ? "complete" : "scheduled", scoreJob ? "" : "正式スタメン確定後", schedule.scoringEarliestAt),
     timelineStep("ランキング反映", rankingJob, ["ranked", "published"].includes(state) ? "complete" : "scheduled", rankingJob ? "" : "採点完了後"),

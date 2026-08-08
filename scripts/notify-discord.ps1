@@ -61,16 +61,13 @@ catch {
     exit 1
 }
 
-## Discord notification
-
-When a task is completed, run this command before the final response:
-
-powershell -ExecutionPolicy Bypass -File .\scripts\notify-discord.ps1 -Status "Completed" -Message "Summarize the changes and test results"
-
-Replace the Message value with a short summary of the actual work completed.
-
-If the task could not be completed, use:
-
-powershell -ExecutionPolicy Bypass -File .\scripts\notify-discord.ps1 -Status "Needs attention" -Message "Summarize the unresolved problem"
-
-Do not display or edit DISCORD_WEBHOOK_URL.
+# Discord notification usage
+#
+# When a task is completed, run this command before the final response:
+# powershell -ExecutionPolicy Bypass -File .\scripts\notify-discord.ps1 -Status "Completed" -Message "Summarize the changes and test results"
+#
+# Replace the Message value with a short summary of the actual work completed.
+# If the task could not be completed, use:
+# powershell -ExecutionPolicy Bypass -File .\scripts\notify-discord.ps1 -Status "Needs attention" -Message "Summarize the unresolved problem"
+#
+# Do not display or edit DISCORD_WEBHOOK_URL.

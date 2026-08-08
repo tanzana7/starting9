@@ -148,6 +148,10 @@ const AUTOMATION_FUTURE_SCHEDULE_LOOKAHEAD_DAYS = 14;
 const AUTOMATION_SCHEDULE_MAX_LOOKAHEAD_DAYS = 30;
 const AUTOMATION_MIN_FUTURE_GAMES = 3;
 const AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const V3_CRON_SCHEDULE = "* * * * *";
+const V3_CRON_INTERVAL_MINUTES = 1;
+const V3_CRON_GRACE_MINUTES = 2;
+const V3_CRON_DESCRIPTION = "毎分";
 const WORKFLOW_LOG_RETENTION_HOURS = 48;
 const WORKFLOW_LOG_DEFAULT_LIMIT = 50;
 const WORKFLOW_LOG_MAX_LIMIT = 200;
@@ -513,6 +517,40 @@ async function runScheduledGameAutomationV3(env, now) {
     ).bind(...values).run();
   };
 
+  const writeScheduleSyncAudit = async (diagnostics) => {
+    const anchor = await env.AUTH_DB.prepare(
+      `SELECT internal_game_id
+         FROM games
+        WHERE internal_game_id IS NOT NULL AND internal_game_id <> ''
+        ORDER BY game_date, start_time, internal_game_id
+        LIMIT 1`
+    ).first();
+    if (!anchor?.internal_game_id) return;
+    const auditColumns = await getTableColumnSet(env.AUTH_DB, "game_automation_v3_audit");
+    const columns = [
+      ...(auditColumns.has("event_type") ? ["event_type"] : []),
+      "internal_game_id", "job_type", "state_before", "state_after",
+      "failure_code", "failure_message", "occurred_at", "source"
+    ];
+    const errorCode = diagnostics?.errorCode || null;
+    const message = JSON.stringify({ ...diagnostics, lastScheduleSyncAt: diagnostics?.lastScheduleSyncAt || now.toISOString() });
+    const values = [
+      ...(auditColumns.has("event_type") ? ["schedule_sync"] : []),
+      anchor.internal_game_id,
+      "schedule_sync",
+      "scheduled",
+      diagnostics?.status || "unknown",
+      errorCode,
+      message,
+      diagnostics?.lastScheduleSyncAt || now.toISOString(),
+      "cron"
+    ];
+    await env.AUTH_DB.prepare(
+      `INSERT INTO game_automation_v3_audit (${columns.join(", ")})
+       VALUES (${columns.map((_, index) => `?${index + 1}`).join(", ")})`
+    ).bind(...values).run();
+  };
+
   let scheduleSync = null;
   try {
     scheduleSync = await ensureFutureFightersSchedule(env, now);
@@ -520,16 +558,26 @@ async function runScheduledGameAutomationV3(env, now) {
   } catch (error) {
     scheduleSync = {
       status: "failed",
+      syncNeeded: true,
       futureGamesBefore: null,
       futureGamesAfter: null,
+      futureGamesTarget: AUTOMATION_MIN_FUTURE_GAMES,
       gamesFetched: 0,
       gamesInserted: 0,
       gamesUpdated: 0,
       fetchRangeStart: "",
       fetchRangeEnd: "",
-      skipReason: error?.code || "SCHEDULE_SYNC_FAILED"
+      expandedTo30Days: false,
+      skipReason: error?.code || "SCHEDULE_SYNC_FAILED",
+      errorCode: error?.code || "SCHEDULE_FETCH_FAILED",
+      lastScheduleSyncAt: now.toISOString()
     };
     console.warn(`[GAME_SCHEDULE_BUFFER] status=failed code=${scheduleSync.skipReason}`);
+  }
+  try {
+    await writeScheduleSyncAudit(scheduleSync);
+  } catch (error) {
+    console.error(`[GAME_SCHEDULE_BUFFER] audit_write_failed code=${error?.code || "SCHEDULE_SYNC_AUDIT_WRITE_FAILED"}`);
   }
 
   const result = await runGameAutomationV3(env, now, {
@@ -2605,14 +2653,19 @@ async function ensureFutureFightersSchedule(env, now) {
   if (!initialPlan.shouldFetch) {
     return {
       status: "skipped",
+      syncNeeded: false,
       futureGamesBefore,
       futureGamesAfter: futureGamesBefore,
+      futureGamesTarget: AUTOMATION_MIN_FUTURE_GAMES,
       gamesFetched: 0,
       gamesInserted: 0,
       gamesUpdated: 0,
       fetchRangeStart: initialPlan.fetchRangeStart,
       fetchRangeEnd: initialPlan.fetchRangeEnd,
+      expandedTo30Days: false,
       skipReason: initialPlan.skipReason,
+      errorCode: null,
+      lastScheduleSyncAt: now.toISOString(),
       results: []
     };
   }
@@ -2638,16 +2691,22 @@ async function ensureFutureFightersSchedule(env, now) {
   const gamesInserted = results.reduce((total, result) => total + Number(result?.gamesInserted || 0), 0);
   const gamesUpdated = results.reduce((total, result) => total + Number(result?.gamesUpdated || 0), 0);
   const failed = results.some((result) => result?.status === "failed");
+  const firstError = results.find((result) => result?.status === "failed");
   return {
     status: failed ? "partial_failure" : futureGamesAfter >= AUTOMATION_MIN_FUTURE_GAMES ? "success" : "insufficient_future_games",
+    syncNeeded: true,
     futureGamesBefore,
     futureGamesAfter,
+    futureGamesTarget: AUTOMATION_MIN_FUTURE_GAMES,
     gamesFetched,
     gamesInserted,
     gamesUpdated,
     fetchRangeStart: dates[0] || "",
     fetchRangeEnd: lastDate || dates[dates.length - 1] || "",
+    expandedTo30Days: Boolean(lastDate && initialPlan.fetchRangeEnd && lastDate > initialPlan.fetchRangeEnd),
     skipReason: futureGamesAfter >= AUTOMATION_MIN_FUTURE_GAMES ? "FUTURE_GAMES_BUFFER_FILLED" : "FUTURE_GAMES_BUFFER_NOT_REACHED",
+    errorCode: firstError?.errorCode || null,
+    lastScheduleSyncAt: now.toISOString(),
     results
   };
 }
@@ -3422,6 +3481,31 @@ async function handleAdminV3Overview(request, env, cors) {
   } catch (error) {
     console.warn(`[ADMIN_V3_OVERVIEW] stage=future_games_count_read failureCode=${error?.code || "V3_FUTURE_GAMES_COUNT_READ_FAILED"}`);
   }
+  let futureScheduleSync = null;
+  try {
+    const syncAudit = await env.AUTH_DB.prepare(
+      `SELECT failure_code, failure_message, occurred_at
+         FROM game_automation_v3_audit
+        WHERE event_type = 'schedule_sync'
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT 1`
+    ).first();
+    if (syncAudit) {
+      let parsed = {};
+      try {
+        parsed = JSON.parse(syncAudit.failure_message || "{}");
+      } catch {
+        parsed = {};
+      }
+      futureScheduleSync = {
+        ...parsed,
+        errorCode: syncAudit.failure_code || parsed.errorCode || null,
+        lastScheduleSyncAt: syncAudit.occurred_at || parsed.lastScheduleSyncAt || null
+      };
+    }
+  } catch (error) {
+    console.warn(`[ADMIN_V3_OVERVIEW] stage=schedule_sync_diagnostic_read failureCode=${error?.code || "V3_SCHEDULE_SYNC_DIAGNOSTIC_READ_FAILED"}`);
+  }
   const rows = [];
   let probableStarterColumns = new Set();
   try {
@@ -3677,9 +3761,14 @@ async function handleAdminV3Overview(request, env, cors) {
     todayOps: {
       cronLastRunAt,
       cronLastRunSource: "game_automation_v3_audit",
+      cronSchedule: V3_CRON_SCHEDULE,
+      cronIntervalMinutes: V3_CRON_INTERVAL_MINUTES,
+      cronGraceMinutes: V3_CRON_GRACE_MINUTES,
+      cronDescription: V3_CRON_DESCRIPTION,
       futureGamesCount,
       futureGamesMinimum: AUTOMATION_MIN_FUTURE_GAMES,
-      futureGamesDefinition: "game_date > JST today"
+      futureGamesDefinition: "game_date > JST today",
+      futureScheduleSync
     },
     games: rows
   }, 200, cors);

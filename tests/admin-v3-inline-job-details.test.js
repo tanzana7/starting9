@@ -47,6 +47,6 @@ test("job詳細はPC二列・モバイル一列で長文を折り返し、キャ
   assert.match(css, /\.job-detail-value[^}]*overflow-wrap: anywhere/);
   assert.match(css, /\.job-detail-pre[^}]*white-space: pre-wrap/);
   assert.match(css, /@media \(max-width: 720px\)[\s\S]*\.job-detail-grid \{ grid-template-columns: 1fr; \}/);
-  assert.match(page, /admin-v3\.css\?v=automation-v3-11-scoring-terminal-recovery/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-11-scoring-terminal-recovery/);
+  assert.match(page, /admin-v3\.css\?v=automation-v3-12-ranking-noop-scoring-revision/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-12-ranking-noop-scoring-revision/);
 });

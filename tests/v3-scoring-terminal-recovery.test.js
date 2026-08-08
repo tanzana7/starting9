@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const v3 = await import(pathToFileURL(path.join(root, "game-automation-v3.js")));
+const authWorker = await import(pathToFileURL(path.join(root, "auth-worker.js")));
 
 const GAME_ID = "c099db0c-da34-425c-bd38-69e29ddc1064";
 const START_AT = "2026-08-08T06:00:00.000Z";
@@ -28,6 +29,9 @@ function d1(database) {
           };
         }
       };
+    },
+    batch(statements) {
+      return Promise.all(statements.map((statement) => statement.run()));
     }
   };
 }
@@ -99,6 +103,75 @@ test("max-attempt retry_wait is eligible for recovery without being treated as a
   assert.equal(v3.isV3OpenJobStatus("retry_wait"), true);
 });
 
+test("terminal ranking failure receives a deterministic recovery slot", async () => {
+  const database = setup();
+  try {
+    database.exec(`
+      UPDATE game_automation_v3_state SET state = 'scored' WHERE internal_game_id = '${GAME_ID}';
+      INSERT INTO game_jobs_v3
+        (internal_game_id, job_type, scheduled_at, scheduled_slot_at, status, attempt_count, max_attempts, created_at, updated_at, failure_code, failure_message)
+        VALUES ('${GAME_ID}', 'ranking_rebuild', '2026-08-08T06:10:00.000Z', '2026-08-08T06:10:00.000Z', 'failed', 12, 12, '${FINAL_LINEUP_AT}', '2026-08-08T08:12:00.000Z', 'V3_SCORING_REVISION_REQUIRED', '有効な採点revisionがありません。');
+    `);
+    const result = await v3.planMainWorkflowJobs(d1(database), [{
+      internalGameId: GAME_ID,
+      startAt: START_AT,
+      gameStatus: "scheduled",
+      isActive: 1,
+      deletedAt: null
+    }], new Date("2026-08-08T08:13:00.000Z"));
+    const ranking = result.planned.find((entry) => entry.plan?.jobType === "ranking_rebuild");
+    assert.equal(ranking.reasonCode, "V3_RANKING_RECOVERY_JOB_CREATED");
+    assert.equal(ranking.recoveryOfJobId, 2);
+    assert.equal(ranking.plan.scheduledSlotAt.toISOString(), "2026-08-08T06:10:01.000Z");
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id = ?1 AND job_type = 'ranking_rebuild'").get(GAME_ID).count, 2);
+  } finally {
+    database.close();
+  }
+});
+
+test("no-op scoring has a persisted completed active revision for ranking", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE game_scoring_revisions (
+        id TEXT PRIMARY KEY NOT NULL,
+        internal_game_id TEXT NOT NULL,
+        game_id TEXT NOT NULL,
+        revision_number INTEGER NOT NULL,
+        lineup_revision_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        completed_at TEXT,
+        is_active INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(internal_game_id, lineup_revision_id),
+        UNIQUE(internal_game_id, revision_number)
+      );
+    `);
+    const revision = await authWorker.ensurePersistedScoringRevision(d1(database), {
+      gameId: GAME_ID,
+      internalGameId: GAME_ID,
+      lineupRevisionId: `${GAME_ID}:1`,
+      reason: "V3_SCORING_NO_PREDICTIONS",
+      now: new Date("2026-08-08T08:29:00.000Z")
+    });
+    assert.equal(revision.id, `${GAME_ID}:scoring:1`);
+    assert.equal(database.prepare("SELECT status, is_active, reason FROM game_scoring_revisions WHERE id = ?1").get(revision.id).status, "completed");
+    assert.equal(database.prepare("SELECT is_active FROM game_scoring_revisions WHERE id = ?1").get(revision.id).is_active, 1);
+    assert.equal(database.prepare("SELECT reason FROM game_scoring_revisions WHERE id = ?1").get(revision.id).reason, "V3_SCORING_NO_PREDICTIONS");
+  } finally {
+    database.close();
+  }
+});
+
+test("通常の予想があるrevision欠落はランキングno-opへ変換しない", () => {
+  const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+  assert.match(worker, /V3_SCORING_REVISION_REQUIRED/);
+  assert.match(worker, /completion\.eligiblePredictionCount === 0/);
+  assert.match(worker, /V3_RANKING_NO_ENTRIES/);
+});
+
 test("admin-v3 ignores a historical failure when a newer recovery job is open", () => {
   const client = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
   const runtime = fs.readFileSync(path.join(root, "game-automation-v3.js"), "utf8");
@@ -106,7 +179,7 @@ test("admin-v3 ignores a historical failure when a newer recovery job is open", 
   assert.match(client, /hasNewerV3Job/);
   assert.match(client, /currentFailedV3Jobs/);
   assert.match(runtime, /V3_SCORE_RECOVERY_JOB_CREATED/);
-  assert.match(page, /automation-v3-11-scoring-terminal-recovery/);
+  assert.match(page, /automation-v3-12-ranking-noop-scoring-revision/);
 });
 
 test("V3 score executor releases stale processing before a recovery claim", () => {

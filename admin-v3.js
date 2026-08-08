@@ -308,15 +308,23 @@ function hasNewerV3Job(game, candidateJob, statuses = null) {
     && v3JobTimestamp(job) >= candidateTimestamp);
 }
 
+function isNoOpRankingRevisionJob(game, job) {
+  return String(job?.job_type || "") === "ranking_rebuild"
+    && String(job?.failure_code || "") === "V3_SCORING_REVISION_REQUIRED"
+    && Boolean(game?.scoringSummary?.noOpReason || game?.rankingSummary?.noOpReason);
+}
+
 function currentFailedV3Jobs(game, types = []) {
   return (game?.jobs || []).filter((job) => String(job.status || "") === "failed"
     && (!types.length || types.includes(String(job.job_type || "")))
+    && !isNoOpRankingRevisionJob(game, job)
     && !hasNewerV3Job(game, job));
 }
 
 function currentRetryWaitV3Jobs(game, types = []) {
   return (game?.jobs || []).filter((job) => String(job.status || "") === "retry_wait"
     && (!types.length || types.includes(String(job.job_type || "")))
+    && !isNoOpRankingRevisionJob(game, job)
     && !hasNewerV3Job(game, job));
 }
 
@@ -968,7 +976,10 @@ function renderScoringView(game) {
   const noOpNotice = scoring.noOpReason
     ? `<div class="v3-operation-result" data-v3-scoring-no-op>予想0件または採点対象なしのため、採点はno-opで完了しました。<code>${escapeV3(scoring.noOpReason)}</code></div>`
     : "";
-  return `${renderSelectedGameHeader(game, "採点・ランキング", "採点プレビュー、ランキング再構築、結果公開を段階的に実行します。")}<section class="v3-panel"><div class="detail-grid"><div><dt>対象予想数</dt><dd>${escapeV3(scoring.eligiblePredictionCount ?? "-")}</dd></div><div><dt>採点済み / 失敗</dt><dd>${escapeV3(`${scoring.scoredPredictionCount ?? "-"} / ${scoring.failedPredictionCount ?? "-"}`)}</dd></div><div><dt>active scoring revision</dt><dd>${escapeV3(details.ranking?.activeScoringRevision?.id || "-")}</dd></div><div><dt>ranking</dt><dd>${escapeV3(details.ranking?.ranking?.gameStatus || "-")}</dd></div><div><dt>publication</dt><dd>${escapeV3(publication.status || "pending")}</dd></div><div><dt>publishedAt</dt><dd>${escapeV3(formatV3Jst(publication.publishedAt))}</dd></div><div><dt>公開lineup revision</dt><dd>${escapeV3(publication.publishedLineupRevision?.revision_id || publication.publishedLineupRevision?.id || "-")}</dd></div><div><dt>公開scoring revision</dt><dd>${escapeV3(publication.publishedScoringRevision?.id || "-")}</dd></div></div>${noOpNotice}${v3ReasonInputMarkup("操作理由")}<div class="v3-operation-actions"><button type="button" data-v3-scoring-preview>再採点プレビュー</button><button type="button" data-v3-scoring-confirm>再採点実行</button><button type="button" data-v3-ranking-rebuild>ランキング再構築</button><button type="button" data-v3-publish>公開</button><button type="button" data-v3-republish>再公開</button></div><div class="v3-operation-result" data-v3-operation-result>${v3State.rescorePreview?.internalGameId === game.internalGameId ? `previewId: ${escapeV3(v3State.rescorePreview.previewId || "-")}` : ""}</div><h3>処理job</h3>${renderJobRows(game, ["score", "ranking_rebuild", "publish"])}</section>`;
+  const rankingNoOpNotice = details.ranking?.rankingNoOpReason
+    ? `<div class="v3-operation-result" data-v3-ranking-no-op>ランキング対象なしのため、ランキング反映はno-opで完了します。<code>${escapeV3(details.ranking.rankingNoOpReason)}</code></div>`
+    : "";
+  return `${renderSelectedGameHeader(game, "採点・ランキング", "採点プレビュー、ランキング再構築、結果公開を段階的に実行します。")}<section class="v3-panel"><div class="detail-grid"><div><dt>対象予想数</dt><dd>${escapeV3(scoring.eligiblePredictionCount ?? "-")}</dd></div><div><dt>採点済み / 失敗</dt><dd>${escapeV3(`${scoring.scoredPredictionCount ?? "-"} / ${scoring.failedPredictionCount ?? "-"}`)}</dd></div><div><dt>active scoring revision</dt><dd>${escapeV3(details.ranking?.activeScoringRevision?.id || "-")}</dd></div><div><dt>ranking</dt><dd>${escapeV3(details.ranking?.ranking?.gameStatus || "-")}</dd></div><div><dt>publication</dt><dd>${escapeV3(publication.status || "pending")}</dd></div><div><dt>publishedAt</dt><dd>${escapeV3(formatV3Jst(publication.publishedAt))}</dd></div><div><dt>公開lineup revision</dt><dd>${escapeV3(publication.publishedLineupRevision?.revision_id || publication.publishedLineupRevision?.id || "-")}</dd></div><div><dt>公開scoring revision</dt><dd>${escapeV3(publication.publishedScoringRevision?.id || "-")}</dd></div></div>${noOpNotice}${rankingNoOpNotice}${v3ReasonInputMarkup("操作理由")}<div class="v3-operation-actions"><button type="button" data-v3-scoring-preview>再採点プレビュー</button><button type="button" data-v3-scoring-confirm>再採点実行</button><button type="button" data-v3-ranking-rebuild>ランキング再構築</button><button type="button" data-v3-publish>公開</button><button type="button" data-v3-republish>再公開</button></div><div class="v3-operation-result" data-v3-operation-result>${v3State.rescorePreview?.internalGameId === game.internalGameId ? `previewId: ${escapeV3(v3State.rescorePreview.previewId || "-")}` : ""}</div><h3>処理job</h3>${renderJobRows(game, ["score", "ranking_rebuild", "publish"])}</section>`;
 }
 
 function renderScheduleView(games) {

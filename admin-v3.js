@@ -56,6 +56,8 @@ const v3State = {
   jobDetailsOpen: new Set(),
   jobDetailsLoading: new Set(),
   jobDetailsCopyStatus: new Map(),
+  automationLogs: null,
+  automationLogFilters: { runId: "", internalGameId: "", jobType: "", status: "", reasonCode: "", failureCode: "" },
   rescorePreview: null,
   busy: new Set()
 };
@@ -1005,7 +1007,27 @@ function renderEmergencyView(game) {
 }
 
 function renderDiagnosticsView(game) {
-  return `${renderSelectedGameHeader(game, "診断・監査", "UUID、job、lease、failure codeなどの技術情報をこの画面へ集約しています。")}<section class="diagnostics-list">${renderGameControls(game, true)}</section>`;
+  return `${renderSelectedGameHeader(game, "診断・監査", "UUID、job、lease、failure codeなどの技術情報をこの画面へ集約しています。")}${renderAutomationLogs()}<section class="diagnostics-list">${renderGameControls(game, true)}</section>`;
+}
+
+function renderAutomationLogs() {
+  const logs = v3State.automationLogs;
+  const filters = v3State.automationLogFilters;
+  const input = (key, label, placeholder = "") => `<label>${escapeV3(label)}<input type="text" value="${escapeV3(filters[key])}" placeholder="${escapeV3(placeholder)}" data-v3-automation-log-filter="${escapeV3(key)}"></label>`;
+  if (!logs) return `<section class="v3-panel automation-logs-panel"><div class="view-heading"><div><h3>V3 Cron監査</h3><p>runId、planner、executor、状態遷移を次回Cronから確認できます。</p></div></div><p class="muted">監査ログを読み込んでいます。</p></section>`;
+  if (logs.error) return `<section class="v3-panel automation-logs-panel"><div class="view-heading"><div><h3>V3 Cron監査</h3><p>監査APIの失敗は管理者セッションを終了させません。</p></div></div><p class="attention-text">${escapeV3(logs.error)}</p></section>`;
+  const summary = logs.latestCronSummary;
+  const summaryDetails = summary?.details || {};
+  const counts = summaryDetails.counts || {};
+  const summaryMarkup = summary
+    ? `<div class="automation-log-summary"><strong>最新Cron</strong><span>${escapeV3(summary.occurredAt || "-")}</span><span>runId: <code>${escapeV3(summaryDetails.runId || "-")}</code></span><span>status: ${escapeV3(summaryDetails.status || "-")}</span><span>games ${escapeV3(counts.games ?? 0)} / created ${escapeV3(counts.created ?? 0)} / claimed ${escapeV3(counts.claimed ?? 0)} / processed ${escapeV3(counts.processed ?? 0)} / failed ${escapeV3(counts.failed ?? 0)}</span><pre>${escapeV3(JSON.stringify(summaryDetails, null, 2))}</pre></div>`
+    : `<p class="muted">Cronサマリーはまだありません。次回のV3 Cron実行後に表示されます。</p>`;
+  const runMarkup = (logs.gameRuns || []).slice(0, 20).map((run) => `<div class="automation-log-run"><strong>${escapeV3(run.latestOccurredAt || "-")}</strong><code>${escapeV3(run.runId)}</code><span>events ${escapeV3(run.events)} / failures ${escapeV3(run.failureCount)} / games ${escapeV3((run.internalGameIds || []).length)}</span></div>`).join("") || `<p class="muted">run単位の監査はありません。</p>`;
+  const timelineMarkup = (logs.jobTimeline || []).slice(0, 100).map((row) => {
+    const detail = row.details || {};
+    return `<div class="automation-log-row"><time>${escapeV3(row.occurredAt || "-")}</time><span>${escapeV3(row.eventType || "job")}</span><code>${escapeV3(row.jobType || "-")}</code><span>${escapeV3(detail.status || row.stateAfter || "-")}</span><span>${escapeV3(row.failureCode || detail.reasonCode || "-")}</span><small>${escapeV3(row.internalGameId || "-")} / run ${escapeV3(detail.runId || "-")}</small><pre>${escapeV3(JSON.stringify(detail, null, 2))}</pre></div>`;
+  }).join("") || `<p class="muted">条件に一致するjob監査はありません。</p>`;
+  return `<section class="v3-panel automation-logs-panel"><div class="view-heading"><div><h3>V3 Cron監査</h3><p>planner、executor、状態遷移、run単位の集計を既存V3監査から表示します。</p></div><button type="button" data-v3-automation-log-refresh>監査を更新</button></div><div class="automation-log-filters">${input("runId", "runId")}${input("internalGameId", "internalGameId")}${input("jobType", "jobType", "lineup_fetch")}${input("status", "status", "completed")}${input("reasonCode", "reasonCode")}${input("failureCode", "failureCode")}<button type="button" data-v3-automation-log-refresh>絞り込む</button></div>${summaryMarkup}<details open><summary>game run summaries（${escapeV3((logs.gameRuns || []).length)}）</summary><div class="automation-log-runs">${runMarkup}</div></details><details open><summary>job timeline（${escapeV3((logs.jobTimeline || []).length)}）</summary><div class="automation-log-timeline">${timelineMarkup}</div></details></section>`;
 }
 
 function renderCurrentV3View() {
@@ -1078,6 +1100,8 @@ async function loadV3() {
     const session = await v3Fetch("/api/admin/me");
     if (!session.admin) throw new Error("管理者権限がありません。");
     const payload = await v3Fetch("/api/admin/v3/overview");
+    payload.automationLogs = await v3Fetch("/api/admin/v3/automation-logs?limit=100").catch((error) => ({ error: `${error.code || "V3_AUTOMATION_LOG_FAILED"}: ${error.message}` }));
+    v3State.automationLogs = payload.automationLogs;
     renderV3(payload);
     await loadV3OperationDetails();
     setV3Status(`${payload.games?.length || 0}試合を表示しました。`);
@@ -1114,6 +1138,16 @@ function chooseV3View(view) {
 document.addEventListener("click", async (event) => {
   const navButton = event.target.closest("[data-v3-view]");
   if (navButton) { chooseV3View(navButton.dataset.v3View); return; }
+  const automationLogRefresh = event.target.closest("[data-v3-automation-log-refresh]");
+  if (automationLogRefresh) {
+    document.querySelectorAll("[data-v3-automation-log-filter]").forEach((field) => {
+      if (Object.prototype.hasOwnProperty.call(v3State.automationLogFilters, field.dataset.v3AutomationLogFilter)) v3State.automationLogFilters[field.dataset.v3AutomationLogFilter] = field.value.trim();
+    });
+    const query = new URLSearchParams({ ...v3State.automationLogFilters, limit: "100" });
+    v3State.automationLogs = await v3Fetch(`/api/admin/v3/automation-logs?${query.toString()}`).catch((error) => ({ error: `${error.code || "V3_AUTOMATION_LOG_FAILED"}: ${error.message}` }));
+    renderCurrentV3View();
+    return;
+  }
   const selectButton = event.target.closest("[data-v3-select-game]");
   if (selectButton) {
     v3State.selectedGameId = selectButton.dataset.v3SelectGame;

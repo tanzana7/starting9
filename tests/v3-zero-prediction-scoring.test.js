@@ -38,5 +38,5 @@ test("採点no-opの監査結果を管理画面へ返し、公開条件へ接続
   assert.match(worker, /scoring_status = 'scored'/);
   assert.match(admin, /data-v3-scoring-no-op/);
   assert.match(admin, /予想0件または採点対象なし/);
-  assert.match(html, /automation-v3-12-ranking-noop-scoring-revision/);
+  assert.match(html, /automation-v3-13-structured-logs/);
 });

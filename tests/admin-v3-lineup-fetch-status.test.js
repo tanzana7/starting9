@@ -83,6 +83,6 @@ test("Today Opsはlineup reasonと次回確認を同じ表示契約へ渡す", (
   assert.match(client, /lineupDetail/);
   assert.match(client, /renderTodayOpsStep\("スタメン", steps\.lineup, steps\.lineupDetail\)/);
   assert.match(client, /次回確認待ち/);
-  assert.match(page, /admin-v3\.css\?v=automation-v3-9-lineup-unexpected/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-9-lineup-unexpected/);
+  assert.match(page, /admin-v3\.css\?v=automation-v3-10-zero-prediction-scoring/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-10-zero-prediction-scoring/);
 });

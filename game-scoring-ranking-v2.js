@@ -73,8 +73,9 @@ export function canCreateScoringRevision({ rankingEligibilityStatus = "eligible"
 }
 
 export function isScoringComplete({ eligiblePredictionCount = 0, scoredPredictionCount = 0, excludedPredictionCount = 0, failedPredictionCount = 0 } = {}) {
-  return Number(failedPredictionCount) === 0
-    && Number(eligiblePredictionCount) === Number(scoredPredictionCount) + Number(excludedPredictionCount);
+  if (Number(failedPredictionCount) !== 0) return false;
+  if (Number(eligiblePredictionCount) === 0) return true;
+  return Number(eligiblePredictionCount) === Number(scoredPredictionCount) + Number(excludedPredictionCount);
 }
 
 export function getRankingReflectionKey({ internalGameId = "", scoringRevisionId = "", rankingEligibilityVersion = 0 } = {}) {

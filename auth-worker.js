@@ -488,8 +488,11 @@ async function runScheduledGameAutomationV3(env, now) {
     const statusAfter = String(job?.status || (failure ? "retry_wait" : "completed"));
     const probableStarter = execution?.probableStarter || null;
     const dataStatus = execution?.dataStatus || probableStarter?.dataStatus || null;
+    const noOpReason = execution?.noOpReason || null;
     const failureCode = failure?.code || execution?.failureCode || job?.failure_code || probableStarter?.errorCode || null;
-    const failureBaseMessage = failure?.message || execution?.failureMessage || job?.failure_message || null;
+    const failureBaseMessage = failure?.message || execution?.failureMessage || job?.failure_message
+      || (noOpReason ? `採点対象なし: ${noOpReason}` : null);
+    if (eventType === "job" && noOpReason) eventType = "scoring_no_op";
     let failureMessage = failureBaseMessage;
     if (failure?.diagnostics && typeof failure.diagnostics === "object") {
       try {
@@ -893,11 +896,26 @@ async function executeV3LineupExecutor({ env, internalGameId, now, target, state
 }
 
 async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore }) {
+  const revisions = await getV3LineupRevisionRows(env.AUTH_DB, internalGameId, internalGameId);
+  if (!revisions.some((row) => Number(row.is_final) === 1)) {
+    throw createV3Error("V3_FINAL_LINEUP_REQUIRED", "正式スタメン確定済みの採点対象がありません。", { retryable: false });
+  }
   const claimed = await claimGameLineupForScoring(env.AUTH_DB, internalGameId, now);
-  if (claimed) await scoreClaimedGameLineup(env.AUTH_DB, claimed, now);
+  const result = claimed ? await scoreClaimedGameLineup(env.AUTH_DB, claimed, now) : null;
   const lineup = await getGameLineup(env.AUTH_DB, { gameId: internalGameId, internalGameId });
   if (!lineup || lineup.scoring_status !== "scored") throw createV3Error("V3_SCORING_NOT_COMPLETE", "V3採点が完了していません。");
-  return { status: "scored", stateBefore, stateAfter: "scored" };
+  return {
+    status: result?.status || "scored",
+    stateBefore,
+    stateAfter: "scored",
+    noOpReason: result?.noOpReason || null,
+    scoringRevisionId: result?.scoringRevisionId || null,
+    scoring: result ? {
+      processed: Number(result.processed || 0),
+      scored: Number(result.scored || 0),
+      excluded: Number(result.excluded || 0)
+    } : null
+  };
 }
 
 async function executeV3RankingExecutor({ env, internalGameId, now, stateBefore }) {
@@ -4643,6 +4661,17 @@ async function handleAdminV3RankingGet(env, cors, context) {
   const ranking = await getRankingGameState(env.AUTH_DB, context.metadata.gameId, context.id);
   const completion = await getScoringCompletionState(env.AUTH_DB, context.metadata);
   const activeRevision = await getActiveScoringRevision(env.AUTH_DB, context.id);
+  let noOpReason = null;
+  try {
+    const noOpAudit = await env.AUTH_DB.prepare(
+      `SELECT failure_message FROM game_automation_v3_audit
+         WHERE internal_game_id = ?1 AND job_type = 'score' AND event_type = 'scoring_no_op'
+         ORDER BY occurred_at DESC LIMIT 1`
+    ).bind(context.id).first();
+    noOpReason = noOpAudit?.failure_message || null;
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+  }
   let reflection = null;
   try {
     reflection = await env.AUTH_DB.prepare(
@@ -4654,7 +4683,7 @@ async function handleAdminV3RankingGet(env, cors, context) {
     gameStatus: ranking.game_status, publicationStatus: ranking.publication_status,
     rankingEligible: Number(ranking.is_ranking_eligible || 0) === 1,
     scoredPrivateAt: ranking.scored_private_at, publishedAt: ranking.published_at
-  } : null, scoring: completion, activeScoringRevision: activeRevision, reflection }, 200, cors);
+  } : null, scoring: { ...completion, noOpReason }, activeScoringRevision: activeRevision, reflection }, 200, cors);
 }
 
 async function handleAdminV3RankingRebuild(request, env, cors, context, user) {
@@ -13715,6 +13744,168 @@ async function prepareGamePredictionScoring(db, gameReference, actualLineup, isT
     scoreDistribution: Object.fromEntries(
       Array.from(distribution.entries()).sort((left, right) => left[0] - right[0]).map(([score, count]) => [String(score), count])
     )
+  };
+}
+
+async function scoreClaimedGameLineup(db, record, now, isTestPrediction = 0) {
+  const storedLineup = parseStoredActualLineup(record.actual_lineup_json);
+  const actualResult = sanitizeActualLineupForScoring(storedLineup, { allowUnresolvedPlayer: true });
+  if (!actualResult.ok) {
+    throw new Error(`stored actual lineup is invalid: ${actualResult.error}`);
+  }
+
+  const currentLineupRevision = await getCurrentLineupRevisionForScoring(db, record.game_id);
+  const revisionId = record.scoring_lineup_revision_id
+    || currentLineupRevision?.revisionId
+    || `${record.game_id}:1`;
+  const revision = await beginGameScoringRevision(db, {
+    gameId: record.game_id,
+    internalGameId: record.internal_game_id || "",
+    lineupRevisionId: revisionId,
+    reason: Number(record.scoring_revision || 0) > 0 ? "lineup_correction" : "initial_scoring",
+    now
+  });
+  if (revision.existingCompleted) {
+    await db.prepare(
+      "UPDATE game_lineups SET scoring_status = 'scored', scoring_started_at = NULL, last_error = NULL, updated_at = ?1 WHERE game_id = ?2 AND scoring_status = 'processing'"
+    ).bind(now.toISOString(), record.game_id).run();
+    return {
+      processed: 0,
+      scored: 0,
+      excluded: 0,
+      failed: 0,
+      maxScore: SCORING_MAX_SCORE,
+      perfectCount: 0,
+      newPerfectAchievers: 0,
+      scoredAt: now.toISOString(),
+      lineupRevisionId: revisionId,
+      scoringRevision: revision.number,
+      scoringRevisionId: revision.id,
+      status: "already_scored"
+    };
+  }
+
+  try {
+    const scoring = await prepareGamePredictionScoring(
+      db,
+      { gameId: record.game_id, internalGameId: record.internal_game_id || "" },
+      actualResult.lineup,
+      isTestPrediction
+    );
+    if (scoring.failed > 0) {
+      const error = new Error("stored predictions include validation errors");
+      error.code = "prediction_validation_failed";
+      error.processed = scoring.processed;
+      error.failed = scoring.failed;
+      error.validationErrors = scoring.validationErrors;
+      throw error;
+    }
+    const result = await persistGamePredictionScoring(
+      db,
+      record.game_id,
+      actualResult.lineup,
+      scoring,
+      now,
+      isTestPrediction,
+      record.internal_game_id || "",
+      revision.number
+    );
+    await completeGameScoringRevision(db, {
+      internalGameId: record.internal_game_id || "",
+      scoringRevisionId: revision.id,
+      now
+    });
+    const noOpReason = scoring.processed === 0
+      ? "V3_SCORING_NO_PREDICTIONS"
+      : scoring.scored === 0 && scoring.excluded === scoring.processed
+        ? "V3_SCORING_NO_ELIGIBLE_PREDICTIONS"
+        : null;
+    return { ...result, scoringRevisionId: revision.id, status: noOpReason ? "no_op_success" : "scored", noOpReason };
+  } catch (error) {
+    await failGameScoringRevision(db, { scoringRevisionId: revision.id, error, now });
+    throw error;
+  }
+}
+
+async function persistGamePredictionScoring(db, gameId, actualLineup, scoring, now, isTestPrediction = 0, internalGameId = "", scoringRevisionNumber = null) {
+  const scoredAt = now.toISOString();
+  const actualLineupJson = JSON.stringify(actualLineup);
+  const scoreSql = isTestPrediction
+    ? `UPDATE predictions
+          SET score = ?1, max_score = ?2, scored_at = ?3, status = 'scored', actual_lineup_json = ?4
+        WHERE id = ?5 AND game_id = ?6 AND is_test_prediction = 1`
+    : `UPDATE predictions
+          SET score = ?1, max_score = ?2, scored_at = ?3, status = 'scored', actual_lineup_json = ?4
+        WHERE id = ?5 AND game_id = ?6`;
+  const statements = scoring.outcomes.map((outcome) => db.prepare(scoreSql).bind(
+    outcome.score.total, SCORING_MAX_SCORE, scoredAt, actualLineupJson, outcome.id, gameId
+  ));
+  try {
+    const predictionColumns = await getTableColumnSet(db, "predictions");
+    if (predictionColumns.has("scoring_status") && predictionColumns.has("scoring_exclusion_reason")) {
+      for (const exclusion of scoring.exclusions || []) {
+        statements.push(db.prepare(
+          `UPDATE predictions
+              SET scoring_status = 'excluded', scoring_exclusion_reason = ?, updated_at = ?
+            WHERE id = ? AND game_id = ? AND is_test_prediction = ?`
+        ).bind(exclusion.reason, scoredAt, exclusion.id, gameId, isTestPrediction ? 1 : 0));
+      }
+    }
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+  }
+
+  const predictionStatementCount = statements.length;
+  statements.push(db.prepare(
+    `UPDATE game_lineups
+        SET scoring_status = 'scored', scored_at = ?1, scoring_started_at = NULL,
+            last_error = NULL, processed_predictions = ?2, perfect_count = ?3,
+            new_perfect_achievers = ?4, updated_at = ?1
+      WHERE game_id = ?5 AND scoring_status = 'processing'`
+  ).bind(scoredAt, scoring.processed, scoring.perfectCount, 0, gameId));
+  const rankingStatement = await createGameRankingScoredPrivateStatement(db, gameId, scoredAt, 0, internalGameId);
+  const effectiveRankingStatement = isTestPrediction
+    ? await createGameRankingScoredPrivateStatement(db, gameId, scoredAt, 1, internalGameId)
+    : rankingStatement;
+  if (isTestPrediction && effectiveRankingStatement) statements.push(effectiveRankingStatement);
+  else if (rankingStatement) statements.push(rankingStatement);
+
+  const results = await db.batch(statements);
+  const predictionResults = results.slice(0, scoring.outcomes.length);
+  if (predictionResults.some((result) => Number(result?.meta?.changes || 0) !== 1)) {
+    throw new Error("prediction score update count mismatch");
+  }
+  const gameLineupResult = results[predictionStatementCount];
+  if (Number(gameLineupResult?.meta?.changes || 0) !== 1) {
+    throw new Error("game lineup scoring state update mismatch");
+  }
+  if (effectiveRankingStatement && Number(results[results.length - 1]?.meta?.changes || 0) !== 1) {
+    throw new Error("game ranking private state update mismatch");
+  }
+
+  const revision = await getCurrentLineupRevisionForScoring(db, gameId);
+  const scoringRevision = Number(scoringRevisionNumber || await getNextScoringRevision(db, gameId));
+  await recordScoringRevisionMetadata(db, {
+    gameId,
+    internalGameId,
+    lineupRevisionId: revision?.revisionId || `${gameId}:${Number(revision?.version || 1)}`,
+    scoringRevision,
+    scoredBy: "system",
+    scoredAt,
+    isTestPrediction
+  });
+
+  return {
+    processed: scoring.processed,
+    scored: scoring.scored,
+    excluded: scoring.excluded || 0,
+    failed: scoring.failed || 0,
+    maxScore: SCORING_MAX_SCORE,
+    perfectCount: scoring.perfectCount,
+    newPerfectAchievers: 0,
+    scoredAt,
+    lineupRevisionId: revision?.revisionId || `${gameId}:${Number(revision?.version || 1)}`,
+    scoringRevision
   };
 }
 

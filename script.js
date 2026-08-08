@@ -8529,29 +8529,16 @@ function renderGameDayNoticeStatus() {
   const container = document.getElementById("gameDayNoticeStatus");
   if (!container) return;
   const record = state.gameDayNotice.record;
-  if (!record && !state.gameDayNotice.isLoading && !state.gameDayNotice.message) {
+  const registeredCount = Number(record?.registeredCount || 0);
+  const removedCount = Number(record?.removedCount || 0);
+  const hasNotice = record?.sourceStatus !== "error" && (registeredCount > 0 || removedCount > 0);
+  if (!hasNotice) {
     container.classList.add("hidden");
     container.innerHTML = "";
     return;
   }
   container.classList.remove("hidden");
-  if (state.gameDayNotice.isLoading) {
-    container.innerHTML = "<span>本日の公示を確認中です。</span>";
-    return;
-  }
-  if (state.gameDayNotice.message) {
-    container.innerHTML = `<span>${escapeHtml(state.gameDayNotice.message)}</span>`;
-    return;
-  }
-  if (record.sourceStatus === "error") {
-    container.innerHTML = "<span>公示情報を確認できていません。候補選手が最新でない可能性があります。</span>";
-    return;
-  }
-  const counts = record.registeredCount || record.removedCount
-    ? `（登録${record.registeredCount || 0}人・抹消${record.removedCount || 0}人）`
-    : "";
-  const checkedAt = record.checkedAt ? ` 最終確認：${formatDateTime(record.checkedAt)}` : "";
-  container.innerHTML = `<strong>本日の公示</strong><span>${escapeHtml(record.noticeLabel || "本日の対象球団の公示は確認できていません")}${escapeHtml(counts)}${escapeHtml(checkedAt)}</span>`;
+  container.innerHTML = `<span>選手登録・抹消：登録${registeredCount}人 / 抹消${removedCount}人</span>`;
 }
 
 async function refreshGameDayNoticeStatus({ force = false } = {}) {

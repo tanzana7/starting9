@@ -14,7 +14,6 @@ test("通常画面に試合ステータスカードと未来試合セレクタ�
   for (const id of ["publicGameStatusCard", "publicGameStatusBadge", "publicGameStatusGrid", "publicGameSelect"]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
-  assert.match(html, /NEXT GAME/);
   assert.match(html, /予想する試合/);
   assert.match(html, /for="publicGameSelect"/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*#predictionForm > \.public-game-status-card[\s\S]*grid-column: 1 \/ -1/);
@@ -69,7 +68,7 @@ test("スマホではカードを2列、試合選択を1列にして横溢れを
 
 test("公開画面のJS/CSS cache busterを更新する", () => {
   assert.match(html, /style\.css\?v=public-hide-system-status-1/);
-  assert.match(html, /script\.js\?v=public-hide-system-status-1/);
+    assert.match(html, /script\.js\?v=public-user-facing-copy-1/);
 });
 
 test("通常画面は管理用システム表示を初期HTMLから非表示にする", () => {
@@ -79,4 +78,15 @@ test("通常画面は管理用システム表示を初期HTMLから非表示に�
   }
   assert.match(html, /id="adminDetails"[^>]*hidden[^>]*aria-hidden="true"/);
   assert.match(script, /adminDetails\.hidden = !isAdminScreenOpen/);
+});
+
+test("通常画面は公示なし・取得失敗を表示せず、公示ありだけ自然な要約を表示する", () => {
+  assert.doesNotMatch(html, /NEXT GAME/);
+  const start = script.indexOf("function renderGameDayNoticeStatus");
+  const end = script.indexOf("async function refreshGameDayNoticeStatus", start);
+  const renderer = script.slice(start, end);
+  assert.match(renderer, /const hasNotice =/);
+  assert.match(renderer, /container\.classList\.add\("hidden"\)/);
+  assert.match(renderer, /選手登録・抹消/);
+  assert.doesNotMatch(renderer, /確認できていません|確認中です|最終確認/);
 });

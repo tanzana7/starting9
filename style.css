@@ -3858,6 +3858,101 @@ textarea:focus {
   font-size: 0.8rem;
 }
 
+.public-game-status-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #cfe1f1;
+  border-radius: 8px;
+  background: #f7fbff;
+}
+
+.public-game-status-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.public-game-status-heading h3 {
+  margin: 0;
+  color: var(--fighters-deep-blue);
+  font-size: 1rem;
+}
+
+.public-game-status-badge {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  padding: 4px 10px;
+  border: 1px solid #c8d8e6;
+  border-radius: 999px;
+  color: #536a82;
+  background: #ffffff;
+  font-size: 0.76rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.public-game-status-badge.is-ok {
+  border-color: #9bcfb1;
+  color: #1e6a43;
+  background: #f1fbf5;
+}
+
+.public-game-status-badge.is-attention {
+  border-color: #e1b95b;
+  color: #7a4d00;
+  background: #fff9e8;
+}
+
+.public-game-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.public-game-status-grid > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #d7e5f2;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.public-game-status-grid > div:nth-child(1),
+.public-game-status-grid > div:nth-child(8) {
+  grid-column: span 2;
+}
+
+.public-game-status-grid span,
+.public-game-selector label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.public-game-status-grid strong {
+  min-width: 0;
+  color: var(--fighters-deep-blue);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.public-game-selector {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.public-game-selector select {
+  width: 100%;
+  min-width: 0;
+}
+
 .score-insights {
   display: grid;
   gap: 10px;
@@ -5212,6 +5307,7 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
   }
 
   .app-layout:not(.is-admin-screen) #predictionForm > #gameDayNoticeStatus,
+  .app-layout:not(.is-admin-screen) #predictionForm > .public-game-status-card,
   .app-layout:not(.is-admin-screen) #predictionForm > .lineup-builder,
   .app-layout:not(.is-admin-screen) #predictionForm > .message,
   .app-layout:not(.is-admin-screen) #predictionForm > .prediction-deadline-status {
@@ -5413,6 +5509,29 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
 
   .app-layout:not(.is-admin-screen) #savePredictionButton {
     min-width: 220px;
+  }
+}
+
+@media (max-width: 600px) {
+  .public-game-status-card {
+    padding: 12px;
+  }
+
+  .public-game-status-heading {
+    align-items: flex-start;
+  }
+
+  .public-game-status-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .public-game-status-grid > div:nth-child(1),
+  .public-game-status-grid > div:nth-child(8) {
+    grid-column: 1 / -1;
+  }
+
+  .public-game-selector {
+    grid-template-columns: 1fr;
   }
 }
 

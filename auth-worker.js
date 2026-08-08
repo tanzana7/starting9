@@ -338,6 +338,9 @@ export default {
       if (path === "/api/prediction-target" && request.method === "GET") {
         return await handleGetPredictionTarget(request, env, cors);
       }
+      if (path === "/api/public/games" && request.method === "GET") {
+        return await handleGetPublicGames(request, env, cors);
+      }
       if (path === "/api/probable-starter" && request.method === "GET") {
         return await handleGetProbableStarter(request, env, cors);
       }
@@ -10710,6 +10713,59 @@ function serializePredictionTarget(game) {
 async function handleGetPredictionTarget(request, env, cors) {
   const target = await getServerPredictionTarget(env.AUTH_DB, new Date());
   const response = jsonResponse({ ok: true, target, generatedAt: new Date().toISOString() }, 200, cors);
+  response.headers.set("Cache-Control", "no-store");
+  return response;
+}
+
+async function handleGetPublicGames(request, env, cors) {
+  const now = new Date();
+  const today = getJstDateString(now);
+  const result = await env.AUTH_DB.prepare(
+    `SELECT games.internal_game_id, games.game_date, games.start_time,
+            games.home_team, games.away_team, games.game_status,
+            COALESCE(workflow.legacy_game_id, schedule.game_id, '') AS legacy_game_id,
+            COALESCE(workflow.workflow_status, '') AS workflow_status,
+            COALESCE(lineup.publication_status, ranking.publication_status, '') AS publication_status,
+            COALESCE(lineup.published_at, ranking.published_at, '') AS published_at
+       FROM games
+       LEFT JOIN game_workflow_state AS workflow
+         ON workflow.internal_game_id = games.internal_game_id
+       LEFT JOIN detected_game_schedule AS schedule
+         ON schedule.internal_game_id = games.internal_game_id
+       LEFT JOIN game_lineups AS lineup
+         ON lineup.internal_game_id = games.internal_game_id
+       LEFT JOIN ranking_games AS ranking
+         ON ranking.internal_game_id = games.internal_game_id
+      WHERE games.game_date >= ?1
+        AND games.game_status NOT IN ('cancelled', 'canceled', 'postponed')
+        AND games.is_active = 1
+        AND games.deleted_at IS NULL
+      ORDER BY games.start_time ASC
+      LIMIT 50`
+  ).bind(today).all();
+
+  const games = (result.results || []).map((row) => {
+    const startAt = new Date(row.start_time);
+    const publicationStatus = String(row.publication_status || "");
+    return {
+      internalGameId: row.internal_game_id,
+      gameId: row.legacy_game_id || row.internal_game_id,
+      date: row.game_date || "",
+      startTime: Number.isNaN(startAt.getTime())
+        ? String(row.start_time || "").slice(11, 16)
+        : new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Tokyo", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(startAt),
+      startAt: row.start_time || "",
+      homeTeam: row.home_team || "",
+      awayTeam: row.away_team || "",
+      gameStatus: row.game_status || "scheduled",
+      workflowState: row.workflow_status || "",
+      publicationStatus,
+      publishedAt: row.published_at || null,
+      isPublished: publicationStatus === "published" || Boolean(row.published_at)
+    };
+  });
+
+  const response = jsonResponse({ ok: true, games, generatedAt: now.toISOString() }, 200, cors);
   response.headers.set("Cache-Control", "no-store");
   return response;
 }

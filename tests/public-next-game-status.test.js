@@ -68,5 +68,5 @@ test("スマホではカードを2列、試合選択を1列にして横溢れを
 
 test("公開画面のJS/CSS cache busterを更新する", () => {
   assert.match(html, /style\.css\?v=public-next-game-status-1/);
-  assert.match(html, /script\.js\?v=public-next-game-status-1/);
+  assert.match(html, /script\.js\?v=account-prediction-save-auth-1/);
 });

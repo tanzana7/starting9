@@ -428,10 +428,6 @@ export default {
       if (autoScoringTestRoute) {
         return await requireAndRetireLegacyAdminMutation(request, env, cors);
       }
-      const adminTestRoute = parseAdminTestRoute(path);
-      if (adminTestRoute) {
-        return await requireAndRetireLegacyAdminMutation(request, env, cors);
-      }
       const adminTestGameRoute = parseAdminTestGameRoute(path);
       if (adminTestGameRoute) {
         return await requireAndRetireLegacyAdminMutation(request, env, cors);
@@ -456,8 +452,17 @@ export default {
     } catch (error) {
       const endpoint = url.pathname;
       const failureCode = String(error?.code || "AUTH_API_INTERNAL_ERROR");
-      console.error(`[AUTH_API] endpoint=${endpoint} authenticated=unknown userId= resolvedRole= failureCode=${failureCode}`);
-      return jsonResponse({ ok: false, code: failureCode, error: "認証処理に失敗しました。" }, 500, cors);
+      const failureDetail = String(error?.message || "").replace(/[\r\n]+/g, " ").slice(0, 240);
+      const predictionRoute = path === "/api/predictions/current";
+      const routeFailureCode = predictionRoute
+        ? (request.method === "GET" ? "PREDICTION_READ_FAILED" : request.method === "DELETE" ? "PREDICTION_DELETE_FAILED" : "PREDICTION_SAVE_FAILED")
+        : failureCode;
+      console.error(`[AUTH_API] endpoint=${endpoint} authenticated=unknown userId= resolvedRole= failureCode=${routeFailureCode} detail=${failureDetail}`);
+      return jsonResponse({
+        ok: false,
+        code: routeFailureCode,
+        error: predictionRoute ? "アカウント予想の保存処理に失敗しました。" : "認証処理に失敗しました。"
+      }, 500, cors);
     }
   },
 
@@ -15723,7 +15728,7 @@ async function handleGetCurrentPrediction(request, env, cors) {
   // Retired legacy reader: resolveApiGameReference(env.AUTH_DB, requestGameId)
   const session = await getSessionUser(request, env);
   if (!session) {
-    return jsonResponse({ ok: false, error: "予想を確認するにはログインしてください。" }, 401, cors);
+    return jsonResponse({ ok: false, code: "AUTH_REQUIRED", error: "予想を確認するにはログインしてください。" }, 401, cors);
   }
 
   const reference = await resolveV3PredictionReference(env.AUTH_DB, new URL(request.url).searchParams.get("internalGameId"));
@@ -15807,7 +15812,7 @@ async function isTestRankingGame(db, gameId) {
 async function handlePutCurrentPrediction(request, env, cors) {
   const session = await getSessionUser(request, env);
   if (!session) {
-    return jsonResponse({ ok: false, error: "予想を保存するにはログインしてください。" }, 401, cors);
+    return jsonResponse({ ok: false, code: "AUTH_REQUIRED", error: "予想を保存するにはログインしてください。" }, 401, cors);
   }
 
   const input = await readJson(request);
@@ -15831,6 +15836,9 @@ async function handlePutCurrentPrediction(request, env, cors) {
   }
   if (!reference.ok) {
     await recordPredictionResolutionFailure(env.AUTH_DB, { code: reference.code, diagnostics: reference.diagnostics });
+    if (reference.code === "INTERNAL_GAME_ID_REQUIRED") {
+      return jsonResponse({ ok: false, code: "INVALID_GAME_ID", error: "対象試合のinternalGameIdが不正です。", resolution: reference.diagnostics || null }, 400, cors);
+    }
     const status = reference.code === "GAME_SCHEDULE_NOT_FOUND" ? 503 : 400;
     return jsonResponse({ ok: false, code: reference.code, error: "対象試合の日程を確認できないため、予想は保存できません。", resolution: reference.diagnostics || null }, status, cors);
   }
@@ -15951,7 +15959,7 @@ async function handleDeleteCurrentPrediction(request, env, cors) {
   // Retired legacy reader: resolveApiGameReference(env.AUTH_DB, requestGameId)
   const session = await getSessionUser(request, env);
   if (!session) {
-    return jsonResponse({ ok: false, error: "予想を削除するにはログインしてください。" }, 401, cors);
+    return jsonResponse({ ok: false, code: "AUTH_REQUIRED", error: "予想を削除するにはログインしてください。" }, 401, cors);
   }
 
   const reference = await resolveV3PredictionReference(env.AUTH_DB, new URL(request.url).searchParams.get("internalGameId"));

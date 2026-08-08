@@ -6366,6 +6366,27 @@ function getPredictionAccountUser() {
   return window.starting9Auth?.getUser?.() || null;
 }
 
+function getPredictionAccountSaveErrorMessage(error) {
+  const code = String(error?.code || "");
+  const status = Number(error?.status || 0);
+  if (code === "AUTH_REQUIRED" || status === 401) {
+    return "端末には保存しました。ログインするとアカウントにも保存できます。";
+  }
+  if (code === "SESSION_EXPIRED" || code === "AUTH_SESSION_EXPIRED") {
+    return "端末には保存しました。ログイン状態が切れているため、再ログインしてください。";
+  }
+  if (code === "PREDICTION_DEADLINE_PASSED" || code === "PREDICTION_CLOSED" || status === 409 && /受付|締切/.test(String(error?.message || ""))) {
+    return "予想受付は終了しました。";
+  }
+  if (code === "INVALID_GAME_ID" || code === "INTERNAL_GAME_ID_REQUIRED" || code === "GAME_SCHEDULE_NOT_FOUND" || code === "GAME_ID_RESOLUTION_FAILED") {
+    return "対象試合を確認できないため、アカウント保存できませんでした。";
+  }
+  if (code === "PREDICTION_SAVE_FAILED" || status >= 500) {
+    return "端末には保存しましたが、アカウント保存に失敗しました。時間をおいて再試行してください。";
+  }
+  return "端末には保存しましたが、アカウント保存に失敗しました。";
+}
+
 async function syncPredictionFromAccount({ force = false } = {}) {
   const user = getPredictionAccountUser();
   if (!user) {
@@ -6603,7 +6624,10 @@ async function savePredictionToAccount(prediction = state.prediction) {
     });
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok) {
-      throw new Error(payload?.error || `HTTP ${response.status}`);
+      const error = new Error(payload?.error || `HTTP ${response.status}`);
+      error.code = payload?.code || "PREDICTION_SAVE_FAILED";
+      error.status = response.status;
+      throw error;
     }
 
     state.predictionRemote.status = "success";
@@ -6617,7 +6641,8 @@ async function savePredictionToAccount(prediction = state.prediction) {
   } catch (error) {
     console.error("アカウント予想の保存に失敗しました", error.message);
     state.predictionRemote.status = "error";
-    state.predictionRemote.message = `端末には保存しましたが、アカウント保存に失敗しました。${error.message ? ` ${error.message}` : ""}`;
+    state.predictionRemote.message = getPredictionAccountSaveErrorMessage(error)
+      || "端末には保存しましたが、アカウント保存に失敗しました。";
     return false;
   } finally {
     state.predictionRemote.isSaving = false;

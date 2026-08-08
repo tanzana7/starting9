@@ -331,6 +331,7 @@ function currentRetryWaitV3Jobs(game, types = []) {
 }
 
 function rosterDisplayState(game) {
+  const diagnostics = game?.rosterDiagnostics || {};
   const jobs = (game?.jobs || []).filter((job) => String(job.job_type || "") === "roster_fetch");
   const byRecent = (left, right) => String(right.updated_at || right.completed_at || right.scheduled_at || "")
     .localeCompare(String(left.updated_at || left.completed_at || left.scheduled_at || ""));
@@ -338,17 +339,22 @@ function rosterDisplayState(game) {
   if (failedJob) return { status: "attention", fallbackStatus: "action", job: failedJob, detail: failedJob.failure_code || "ロースター取得に失敗しました。" };
   const retryJob = [...jobs].filter((job) => String(job.status || "") === "retry_wait").sort(byRecent)[0] || null;
   if (retryJob) return { status: "waiting", fallbackStatus: "wait", job: retryJob, detail: retryJob.failure_code || "次回取得を待っています。" };
-  if (game?.rosterDiagnostics?.rosterSnapshotExists === true) {
+  const openJob = [...jobs].filter((job) => ["pending", "claimed"].includes(String(job.status || ""))).sort(byRecent)[0] || null;
+  if (openJob) return { status: "waiting", fallbackStatus: "wait", job: openJob, detail: "取得処理を待っています。" };
+  if (diagnostics.isSnapshotStale === true) {
+    return { status: "attention", fallbackStatus: "action", job: null, detail: diagnostics.staleReason || "ROSTER_SNAPSHOT_STALE" };
+  }
+  if (diagnostics.rosterSnapshotExists === true && diagnostics.isSnapshotFresh !== false) {
     const completedJob = [...jobs].filter((job) => String(job.status || "") === "completed").sort(byRecent)[0] || null;
     return {
       status: "ok",
       fallbackStatus: "complete",
       job: completedJob,
-      detail: completedJob ? "ロースターsnapshot取得済み" : "snapshot取得済みのため追加job不要"
+      detail: diagnostics.noticeState === "ROSTER_CHANGES_CAPTURED"
+        ? "公式公示の変更を記録しました。"
+        : "公式公示を確認しました。変更はありません。"
     };
   }
-  const openJob = [...jobs].filter((job) => ["pending", "claimed"].includes(String(job.status || ""))).sort(byRecent)[0] || null;
-  if (openJob) return { status: "waiting", fallbackStatus: "wait", job: openJob, detail: "取得処理を待っています。" };
   return { status: "waiting", fallbackStatus: "wait", job: null, detail: "取得予定を待っています。" };
 }
 
@@ -722,6 +728,9 @@ function rosterTimelineDetails(game) {
   if (diagnostics.insertAttempted) details.push(`INSERT: ${diagnostics.insertedRowCount || 0}件`);
   if (diagnostics.claimResult && diagnostics.claimResult !== "not_attempted") details.push(`claim: ${diagnostics.claimResult}`);
   if (diagnostics.rosterSnapshotExists) details.push(`snapshot: ${diagnostics.rosterSnapshotStatus || "captured"}`);
+  if (diagnostics.isSnapshotStale) details.push(`snapshot要確認: ${diagnostics.staleReason || "ROSTER_SNAPSHOT_STALE"}`);
+  if (diagnostics.noticeState) details.push(`公式確認: ${diagnostics.noticeState}`);
+  if (Number.isFinite(Number(diagnostics.totalRosterChanges))) details.push(`変更数: ${diagnostics.totalRosterChanges}`);
   return details.join(" / ") || "本日の予定slot";
 }
 
@@ -777,11 +786,18 @@ function renderRosterSummary(game) {
     ["planning", diagnostics.planningSkipped ? `skip: ${diagnostics.skipReason || "-"}` : "継続"],
     ["INSERT", diagnostics.insertAttempted ? `${diagnostics.insertedRowCount || 0}件` : "未実行"],
     ["claim", diagnostics.claimResult || "未実行"],
-    ["snapshot", diagnostics.rosterSnapshotExists ? `${diagnostics.rosterSnapshotStatus || "captured"} / ${diagnostics.rosterSnapshotPlayerCount || 0}人` : "未取得"]
+    ["snapshot", diagnostics.rosterSnapshotExists ? `${diagnostics.rosterSnapshotStatus || "captured"} / ${diagnostics.rosterSnapshotPlayerCount || 0}人` : "未取得"],
+    ["snapshot取得時刻", formatV3Jst(diagnostics.rosterSnapshotCapturedAt)],
+    ["snapshot対象日", diagnostics.rosterSnapshotGameDate || ""],
+    ["freshness", diagnostics.isSnapshotStale ? `stale: ${diagnostics.staleReason || "ROSTER_SNAPSHOT_STALE"}` : diagnostics.isSnapshotFresh ? "fresh" : "未確認"],
+    ["公式確認", diagnostics.noticeState || ""],
+    ["登録/抹消", Number.isFinite(Number(diagnostics.totalRosterChanges)) ? `home +${diagnostics.registeredCountHome || 0}/-${diagnostics.deregisteredCountHome || 0}, away +${diagnostics.registeredCountAway || 0}/-${diagnostics.deregisteredCountAway || 0}` : ""],
+    ["取得元", diagnostics.sourceUrl || ""],
+    ["解析", diagnostics.parserResult || ""]
   ].filter(([, value]) => value && value !== "-");
-  const successAt = job?.status === "completed" ? formatV3Jst(job.completed_at || job.updated_at) : diagnostics.rosterSnapshotExists ? "snapshot captured" : "-";
+  const successAt = job?.status === "completed" ? formatV3Jst(job.completed_at || job.updated_at) : diagnostics.isSnapshotFresh ? formatV3Jst(diagnostics.rosterSnapshotCapturedAt) : "-";
   const nextAt = job ? formatV3Jst(job.next_retry_at || job.scheduled_at) : rosterState.status === "ok" ? "追加取得不要" : "予定未定";
-  const result = job ? `${job.failure_code || "V3 job"} / ${statusLabel(job.status)}` : rosterState.status === "ok" ? "snapshot captured / job未生成" : "履歴なし";
+  const result = job ? `${job.failure_code || "V3 job"} / ${statusLabel(job.status)}` : rosterState.detail || "履歴なし";
   const attempts = job ? `${job.attempt_count || 0}/${job.max_attempts || 0}` : rosterState.status === "ok" ? "不要" : "-";
   return `<div class="roster-summary"><div><strong>最終成功</strong><span>${escapeV3(successAt)}</span></div><div><strong>次回取得予定</strong><span>${escapeV3(nextAt)}</span></div><div><strong>取得元・結果</strong><span>${escapeV3(result)}</span></div><div><strong>試行</strong><span>${escapeV3(attempts)}</span></div>${diagnosticRows.map(([label, value]) => `<div><strong>${escapeV3(label)}</strong><span>${escapeV3(value)}</span></div>`).join("")}</div>`;
 }

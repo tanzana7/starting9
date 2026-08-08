@@ -73,7 +73,7 @@ test("V3管理画面は現在値・入力欄・保存操作を持ち、更新後
   assert.ok(client.includes("${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}"));
   assert.match(client, /await loadV3\(\)/);
   assert.match(page, /admin-v3\.css\?v=automation-v3-13-structured-logs/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-13-structured-logs/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-14-roster-freshness/);
 });
 
 test("home/away修正APIはinternalGameId単位で関連データの影響を警告する", () => {

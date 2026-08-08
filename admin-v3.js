@@ -324,12 +324,28 @@ function buildTodayOpsModel(payload, games, now = new Date()) {
   const hasReportedFutureGames = typeof reportedFutureGames === "number" && Number.isFinite(reportedFutureGames);
   const futureGames = hasReportedFutureGames ? reportedFutureGames : activeFutureGames.length;
   const futureGamesMinimum = Number(payload?.todayOps?.futureGamesMinimum) || 3;
+  const futureScheduleSync = payload?.todayOps?.futureScheduleSync || null;
+  const syncAfter = Number(futureScheduleSync?.futureGamesAfter);
+  const syncTarget = Number(futureScheduleSync?.futureGamesTarget) || futureGamesMinimum;
+  const futureScheduleSyncAttention = Boolean(
+    futureScheduleSync?.errorCode
+      || (Number.isFinite(syncAfter) && syncAfter < syncTarget)
+      || (futureScheduleSync?.syncNeeded && Number.isFinite(syncAfter) && syncAfter < syncTarget
+        && Number(futureScheduleSync?.gamesInserted || 0) === 0
+        && Number(futureScheduleSync?.gamesUpdated || 0) === 0)
+  );
   const allJobs = todayGames.flatMap((game) => game.jobs || []);
   const latestCompleted = todayOpsLatestJob({ jobs: allJobs }, ["completed"]);
   const latestFailed = todayOpsLatestJob({ jobs: allJobs }, ["failed"]);
   const cronLastRunAt = payload?.todayOps?.cronLastRunAt || null;
-  const cronAge = cronLastRunAt ? now.getTime() - new Date(cronLastRunAt).getTime() : Number.POSITIVE_INFINITY;
-  const cronStale = !cronLastRunAt || !Number.isFinite(cronAge) || cronAge > 15 * 60 * 1000;
+  const cronIntervalMinutes = Number(payload?.todayOps?.cronIntervalMinutes) || 1;
+  const cronGraceMinutes = Number.isFinite(Number(payload?.todayOps?.cronGraceMinutes)) ? Number(payload.todayOps.cronGraceMinutes) : 2;
+  const cronIntervalMs = Number.isFinite(cronIntervalMinutes) && cronIntervalMinutes > 0 ? cronIntervalMinutes * 60 * 1000 : 0;
+  const cronGraceMs = Number.isFinite(cronGraceMinutes) && cronGraceMinutes >= 0 ? cronGraceMinutes * 60 * 1000 : 0;
+  const cronLastRunMs = cronLastRunAt ? new Date(cronLastRunAt).getTime() : Number.NaN;
+  const nextCronEstimateMs = Number.isFinite(cronLastRunMs) && cronIntervalMs ? cronLastRunMs + cronIntervalMs : Number.NaN;
+  const nextCronEstimate = Number.isFinite(nextCronEstimateMs) ? new Date(nextCronEstimateMs).toISOString() : null;
+  const cronStale = !Number.isFinite(cronLastRunMs) || !Number.isFinite(nextCronEstimateMs) || now.getTime() > nextCronEstimateMs + cronGraceMs;
   const futureShortage = futureGames < futureGamesMinimum;
   const gameModels = todayGames.map((game) => {
     const state = String(game?.state?.state || "scheduled");
@@ -358,15 +374,22 @@ function buildTodayOpsModel(payload, games, now = new Date()) {
       }
     };
   });
-  const attention = gameModels.some((model) => model.attention) || futureShortage || cronStale;
+  const attention = gameModels.some((model) => model.attention) || futureShortage || cronStale || futureScheduleSyncAttention;
   return {
     todayGames,
     gameModels,
     futureGames,
     futureGamesMinimum,
     futureShortage,
+    futureScheduleSync,
+    futureScheduleSyncAttention,
+    futureScheduleSyncStatus: futureScheduleSyncAttention ? "attention" : futureScheduleSync ? "ok" : "waiting",
     cronLastRunAt,
     cronStale,
+    cronSchedule: payload?.todayOps?.cronSchedule || "* * * * *",
+    cronDescription: payload?.todayOps?.cronDescription || "毎分",
+    nextCronEstimate,
+    cronStatus: cronStale ? "attention" : "ok",
     overallStatus: attention ? "attention" : gameModels.some((model) => model.status === "waiting") ? "waiting" : "ok",
     openJobs: allJobs.filter((job) => ["pending", "claimed", "retry_wait"].includes(job.status)).length,
     retryWaitJobs: allJobs.filter((job) => job.status === "retry_wait").length,
@@ -381,17 +404,29 @@ function renderTodayOpsJob(job) {
   return `${escapeV3(V3_JOB_LABELS[job.job_type] || job.job_type)} / ${escapeV3(formatV3Jst(job.completed_at || job.updated_at || job.scheduled_at))}`;
 }
 
+function renderTodayOpsScheduleSync(model) {
+  const sync = model.futureScheduleSync;
+  if (!sync) return `<div class="today-ops-diagnostics"><div class="today-ops-diagnostics-heading"><strong>未来試合同期診断</strong>${todayOpsStatusBadge("waiting")}</div><p class="muted">まだ同期監査がありません。</p></div>`;
+  const before = sync.futureGamesBefore ?? "-";
+  const after = sync.futureGamesAfter ?? "-";
+  const target = sync.futureGamesTarget ?? model.futureGamesMinimum;
+  const range = sync.fetchRangeStart || sync.fetchRangeEnd ? `${sync.fetchRangeStart || "-"} 〜 ${sync.fetchRangeEnd || "-"}` : "-";
+  const lastSync = sync.lastScheduleSyncAt ? formatV3Jst(sync.lastScheduleSyncAt) : "-";
+  return `<div class="today-ops-diagnostics"><div class="today-ops-diagnostics-heading"><strong>未来試合同期診断</strong>${todayOpsStatusBadge(model.futureScheduleSyncStatus)}</div><div class="today-ops-diagnostic-grid"><span>未来試合</span><strong>${escapeV3(before)} → ${escapeV3(after)} / target ${escapeV3(target)}</strong><span>syncNeeded</span><strong>${escapeV3(sync.syncNeeded === true ? "true" : sync.syncNeeded === false ? "false" : "-")}</strong><span>fetchRange</span><strong>${escapeV3(range)}</strong><span>expandedTo30Days</span><strong>${escapeV3(sync.expandedTo30Days === true ? "true" : "false")}</strong><span>取得 / 追加 / 更新</span><strong>${escapeV3(`${sync.gamesFetched ?? 0} / ${sync.gamesInserted ?? 0} / ${sync.gamesUpdated ?? 0}`)}</strong><span>skipReason</span><strong>${escapeV3(sync.skipReason || "-")}</strong><span>errorCode</span><strong>${escapeV3(sync.errorCode || "-")}</strong><span>lastScheduleSyncAt</span><strong>${escapeV3(lastSync)}</strong></div></div>`;
+}
+
 function renderTodayOpsStep(label, status) {
   return `<div class="today-ops-step"><span>${escapeV3(label)}</span>${todayOpsStatusBadge(status)}</div>`;
 }
 
 function renderTodayOps(payload, games) {
   const model = buildTodayOpsModel(payload, games);
-  const cronDetail = model.cronLastRunAt ? formatV3Jst(model.cronLastRunAt) : "記録なし";
+  const cronLastDetail = model.cronLastRunAt ? formatV3Jst(model.cronLastRunAt) : "記録なし";
+  const nextCronDetail = model.nextCronEstimate ? formatV3Jst(model.nextCronEstimate) : "不明";
   const gameCards = model.gameModels.length
     ? model.gameModels.map(({ game, state, status, nextAction, steps }) => `<article class="today-ops-game"><div class="today-ops-game-heading"><strong>${escapeV3(gameDateForFilter(game))} ${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}</strong>${todayOpsStatusBadge(status)}</div><div class="today-ops-game-meta"><span>state: ${escapeV3(state)}</span><span>次: ${escapeV3(nextAction)}</span></div><div class="today-ops-steps">${renderTodayOpsStep("予告先発", steps.probable)}${renderTodayOpsStep("ロースター", steps.roster)}${renderTodayOpsStep("スタメン", steps.lineup)}${renderTodayOpsStep("採点", steps.scoring)}${renderTodayOpsStep("ランキング", steps.ranking)}${renderTodayOpsStep("公開", steps.publication)}</div></article>`).join("")
     : "<p class=muted>本日の対象試合はありません。</p>";
-  return `<section class="today-ops-panel" aria-labelledby="todayOpsHeading"><div class="today-ops-heading"><div><h3 id="todayOpsHeading">Today Ops / Automation Health</h3><p>本日のV3自動処理を試合単位で確認します。</p></div>${todayOpsStatusBadge(model.overallStatus)}</div><div class="today-ops-metrics"><div><strong>${model.todayGames.length}</strong><span>今日の試合</span></div><div><strong>${escapeV3(model.openJobs)}</strong><span>open job</span></div><div><strong>${escapeV3(model.retryWaitJobs)}</strong><span>retry_wait</span></div><div><strong>${escapeV3(model.failedJobs)}</strong><span>failed</span></div><div><strong>${escapeV3(model.futureGames)}</strong><span>未来試合登録数</span></div><div><strong>${escapeV3(cronDetail)}</strong><span>Cron最終監査</span></div></div><div class="today-ops-notices"><span>最後に完了: ${renderTodayOpsJob(model.latestCompleted)}</span><span>最後に失敗: ${renderTodayOpsJob(model.latestFailed)}</span><span>${model.futureShortage ? "未来試合が3試合未満" : "未来試合数は充足"}</span><span>${model.cronStale ? "Cron監査が古い、または未記録" : "Cron監査は直近"}</span></div><div class="today-ops-games">${gameCards}</div></section>`;
+  return `<section class="today-ops-panel" aria-labelledby="todayOpsHeading"><div class="today-ops-heading"><div><h3 id="todayOpsHeading">Today Ops / Automation Health</h3><p>本日のV3自動処理を試合単位で確認します。</p></div>${todayOpsStatusBadge(model.overallStatus)}</div><div class="today-ops-metrics"><div><strong>${escapeV3(model.todayGames.length)}</strong><span>今日の試合</span></div><div><strong>${escapeV3(model.openJobs)}</strong><span>open job</span></div><div><strong>${escapeV3(model.retryWaitJobs)}</strong><span>retry_wait</span></div><div><strong>${escapeV3(model.failedJobs)}</strong><span>failed</span></div><div><strong>${escapeV3(model.futureGames)}</strong><span>未来試合登録数</span></div><div><strong>${escapeV3(model.cronSchedule)}</strong><span>Cron設定${model.cronDescription ? `（${escapeV3(model.cronDescription)}）` : ""}</span></div><div><strong>${escapeV3(cronLastDetail)}</strong><span>Cron最終監査</span></div><div><strong>${escapeV3(nextCronDetail)}</strong><span>次Cron目安</span></div><div><strong>${escapeV3(model.cronStatus === "attention" ? "ATTENTION" : "直近")}</strong><span>Cron状態</span></div></div><div class="today-ops-notices"><span>最後に完了: ${renderTodayOpsJob(model.latestCompleted)}</span><span>最後に失敗: ${renderTodayOpsJob(model.latestFailed)}</span><span>${model.futureShortage ? "未来試合が3試合未満" : "未来試合数は充足"}</span><span>${model.cronStale ? "Cron監査が古い、または未記録" : "Cron監査は直近"}</span></div>${renderTodayOpsScheduleSync(model)}<div class="today-ops-games">${gameCards}</div></section>`;
 }
 
 function renderGameSummary(game, buttonLabel = "試合進行を見る") {

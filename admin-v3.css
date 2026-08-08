@@ -57,7 +57,7 @@ button:disabled { cursor: wait; opacity: .65; }
 .today-ops-status.ok { background: #e5f5ea; color: #21683d; }
 .today-ops-status.waiting { background: #edf3f8; color: #526477; }
 .today-ops-status.attention { background: #fde9e9; color: #9d3636; }
-.today-ops-metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-top: 13px; }
+.today-ops-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 13px; }
 .today-ops-metrics > div { min-width: 0; padding: 9px; background: #f8fafc; border: 1px solid #e5ebf1; border-radius: 6px; }
 .today-ops-metrics strong, .today-ops-metrics span { display: block; overflow-wrap: anywhere; }
 .today-ops-metrics strong { color: #1b5c8b; font-size: 17px; }
@@ -68,6 +68,11 @@ button:disabled { cursor: wait; opacity: .65; }
 .today-ops-steps { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; margin-top: 9px; }
 .today-ops-step { min-width: 0; padding: 7px; background: #fff; border: 1px solid #e5ebf1; border-radius: 5px; }
 .today-ops-step > span { display: block; margin-bottom: 5px; color: #526477; font-size: 11px; }
+.today-ops-diagnostics { margin-top: 12px; padding: 11px; background: #f8fafc; border: 1px solid #e0e8ef; border-radius: 6px; }
+.today-ops-diagnostics-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.today-ops-diagnostic-grid { display: grid; grid-template-columns: minmax(150px, .5fr) minmax(0, 1.5fr); gap: 5px 12px; margin-top: 8px; font-size: 12px; }
+.today-ops-diagnostic-grid span { color: #526477; }
+.today-ops-diagnostic-grid strong { min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
 .games { display: grid; gap: 10px; }
 .game-card { padding: 14px; }
 .game-heading { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
@@ -182,6 +187,7 @@ button:disabled { cursor: wait; opacity: .65; }
   .v3-toolbar button { width: 100%; }
   .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .today-ops-metrics, .today-ops-steps { grid-template-columns: 1fr; }
+  .today-ops-diagnostic-grid { grid-template-columns: 1fr; gap: 2px; }
   .timeline { display: flex; overflow-x: auto; padding-bottom: 4px; }
   .timeline-step { flex: 0 0 165px; }
   .roster-summary, .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

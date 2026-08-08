@@ -2583,16 +2583,19 @@ async function syncFightersScheduleForDate(env, date, now) {
 }
 
 async function countFutureFightersGames(db, now) {
+  const current = now instanceof Date ? now : new Date(now);
+  const todayJst = getJstDateString(current);
+  if (!todayJst) return 0;
   const result = await db.prepare(
     `SELECT COUNT(*) AS count
        FROM games
       WHERE internal_game_id IS NOT NULL AND internal_game_id <> ''
-        AND start_time > ?1
+        AND game_date > ?1
         AND (is_active IS NULL OR is_active = 1)
         AND (deleted_at IS NULL OR deleted_at = '')
         AND (game_status IS NULL OR game_status NOT IN ('cancelled', 'canceled', 'postponed', 'service_unavailable'))
         AND (LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')`
-  ).bind((now instanceof Date ? now : new Date(now)).toISOString()).first();
+  ).bind(todayJst).first();
   return Number(result?.count || 0);
 }
 
@@ -3403,6 +3406,7 @@ async function handleAdminV3Overview(request, env, cors) {
     return jsonResponse({ ok: false, code: "V3_OVERVIEW_INTERNAL_ERROR", error: "V3管理画面の概要を取得できませんでした。" }, 500, cors);
   }
   if (!schema.ready) return jsonResponse({ ok: false, code: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", schema }, 503, cors);
+  const overviewNow = new Date();
   let cronLastRunAt = null;
   try {
     const cronAudit = await env.AUTH_DB.prepare(
@@ -3412,8 +3416,13 @@ async function handleAdminV3Overview(request, env, cors) {
   } catch (error) {
     console.warn(`[ADMIN_V3_OVERVIEW] stage=cron_audit_read failureCode=${error?.code || "V3_CRON_AUDIT_READ_FAILED"}`);
   }
+  let futureGamesCount = null;
+  try {
+    futureGamesCount = await countFutureFightersGames(env.AUTH_DB, overviewNow);
+  } catch (error) {
+    console.warn(`[ADMIN_V3_OVERVIEW] stage=future_games_count_read failureCode=${error?.code || "V3_FUTURE_GAMES_COUNT_READ_FAILED"}`);
+  }
   const rows = [];
-  const overviewNow = new Date();
   let probableStarterColumns = new Set();
   try {
     probableStarterColumns = await getTableColumnSet(env.AUTH_DB, "probable_starters");
@@ -3665,7 +3674,13 @@ async function handleAdminV3Overview(request, env, cors) {
     featureFlag: V3_FEATURE_FLAG,
     enabled: isGameAutomationV3Enabled(env),
     schema,
-    todayOps: { cronLastRunAt, cronLastRunSource: "game_automation_v3_audit" },
+    todayOps: {
+      cronLastRunAt,
+      cronLastRunSource: "game_automation_v3_audit",
+      futureGamesCount,
+      futureGamesMinimum: AUTOMATION_MIN_FUTURE_GAMES,
+      futureGamesDefinition: "game_date > JST today"
+    },
     games: rows
   }, 200, cors);
 }

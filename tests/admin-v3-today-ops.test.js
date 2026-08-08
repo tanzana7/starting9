@@ -86,13 +86,24 @@ test("Today Opsはfailed job・未来試合不足・古いCronをATTENTIONと判
   assert.equal(model.gameModels[0].status, "attention");
 });
 
+test("Today OpsはoverviewのJST基準futureGamesCountをschedule syncと同じ正として使う", () => {
+  const model = context.buildTodayOpsModel(
+    { todayOps: { cronLastRunAt: "2026-08-08T06:55:00.000Z", futureGamesCount: 2, futureGamesMinimum: 3 } },
+    [game(), game({ internalGameId: "future-1", gameDate: "2026-08-09" }), game({ internalGameId: "future-2", gameDate: "2026-08-11" })],
+    now
+  );
+  assert.equal(model.futureGames, 2);
+  assert.equal(model.futureShortage, true);
+  assert.equal(model.overallStatus, "attention");
+});
+
 test("overviewはCron監査時刻をToday Opsへ返し、管理画面は専用セクションを描画する", () => {
-  assert.match(worker, /todayOps: \{ cronLastRunAt, cronLastRunSource: "game_automation_v3_audit" \}/);
+  assert.match(worker, /futureGamesDefinition: "game_date > JST today"/);
   assert.match(worker, /WHERE source = 'cron' ORDER BY occurred_at DESC LIMIT 1/);
   assert.match(client, /Today Ops \/ Automation Health/);
   assert.match(client, /futureShortage/);
   assert.match(client, /todayOpsStep/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-7-phase1-today-ops/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-7-phase1-today-ops-future-count/);
   assert.match(page, /admin-v3\.css\?v=automation-v3-7-phase1-today-ops/);
   assert.match(css, /today-ops-panel/);
   assert.match(css, /@media \(max-width: 720px\)[\s\S]*today-ops-metrics, \.today-ops-steps \{ grid-template-columns: 1fr; \}/);

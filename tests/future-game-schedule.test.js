@@ -47,6 +47,8 @@ test("V3 Cronは日程補充をplannerより前に実行し、結果を診断へ
   assert.match(entrypoint, /const result = await runGameAutomationV3\(env, now/);
   assert.match(entrypoint, /return \{ \.\.\.result, scheduleSync \}/);
   assert.match(worker, /async function countFutureFightersGames\(db, now\)/);
+  assert.match(worker, /AND game_date > \?1/);
+  assert.match(worker, /const todayJst = getJstDateString\(current\)/);
   assert.match(worker, /futureGamesBefore/);
   assert.match(worker, /futureGamesAfter/);
   assert.match(worker, /gamesInserted/);

@@ -81,13 +81,14 @@ test("スマホの選手一覧はページ全体でスクロールし、2列の�
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.player-chip \.player-name[\s\S]*text-overflow: ellipsis/);
 });
 
-test("PCの予想入力は900px以上で左420px以上のオーダー表と広い選手一覧を使う", () => {
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(420px, 560px\) minmax\(360px, 1fr\)/);
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.container[\s\S]*width: calc\(100% - 48px\)[\s\S]*max-width: 75rem/);
+test("中幅の予想入力は1カラム、十分な幅では収まる2カラムを使う", () => {
+  assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 1fr\)[\s\S]*width: 100%[\s\S]*max-width: 100%/);
+  assert.match(css, /@media \(max-width: 768px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(css, /@media \(min-width: 1000px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.container[\s\S]*width: calc\(100% - 48px\)[\s\S]*max-width: 75rem/);
+  assert.match(css, /@media \(min-width: 1000px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(380px, 480px\) minmax\(320px, 1fr\)[\s\S]*gap: 20px/);
   assert.match(css, /@media \(min-width: 78\.125rem\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-list[\s\S]*grid-template-columns: repeat\(auto-fit, minmax\(120px, 1fr\)\)/);
-  assert.match(css, /@media \(min-width: 64rem\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(480px, 560px\) minmax\(360px, 1fr\)/);
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-panel[\s\S]*min-width: 360px/);
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-list[\s\S]*min-width: 360px[\s\S]*\.player-chip[\s\S]*min-width: 120px/);
+  assert.match(css, /@media \(min-width: 1000px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-panel[\s\S]*min-width: 0/);
+  assert.match(css, /@media \(min-width: 1000px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-list[\s\S]*min-width: 0[\s\S]*max-width: 100%[\s\S]*\.player-chip[\s\S]*min-width: 120px/);
 });
 
 test("公開画面の残り時間は日・時間・分で表示し、管理画面のタイマーと衝突しない", () => {
@@ -97,7 +98,7 @@ test("公開画面の残り時間は日・時間・分で表示し、管理画�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-player-list-readability-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-prediction-form-overflow-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],
@@ -117,8 +118,8 @@ test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、
 });
 
 test("PCのオーダー行は固定列と省略表示を使い、通知・操作領域はフォーム幅に揃える", () => {
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-slot[\s\S]*grid-template-columns: 30px 54px minmax\(180px, 1fr\) 44px 38px/);
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.lineup-slot\[data-picker="prediction"\][\s\S]*grid-template-columns: 56px minmax\(0, 1fr\) 56px 44px/);
+  assert.match(css, /@media \(min-width: 1000px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-slot[\s\S]*grid-template-columns: 30px 54px minmax\(180px, 1fr\) 44px 38px/);
+  assert.match(css, /@media \(min-width: 1000px\)[\s\S]*\.lineup-slot\[data-picker="prediction"\][\s\S]*grid-template-columns: 56px minmax\(0, 1fr\) 56px 44px/);
   assert.match(css, /\.lineup-slot\[data-picker="prediction"\][\s\S]*column-gap: 12px/);
   assert.match(css, /\.lineup-slot\[data-picker="prediction"\][\s\S]*\.slot-player[\s\S]*padding-inline-start: 12px/);
   assert.match(css, /\.lineup-slot\[data-picker="prediction"\][\s\S]*\.slot-player[\s\S]*width: auto[\s\S]*max-width: none[\s\S]*min-width: 0/);
@@ -130,7 +131,7 @@ test("PCのオーダー行は固定列と省略表示を使い、通知・操作
   assert.match(css, /\.lineup-slot\[data-picker="prediction"\][\s\S]*\.position-control[\s\S]*grid-column: 2[\s\S]*justify-self: center/);
   assert.match(css, /\.lineup-slot\[data-picker="prediction"\][\s\S]*\.slot-player[\s\S]*grid-column: 3/);
   assert.match(css, /\.lineup-slot\[data-picker="prediction"\][\s\S]*\.slot-clear[\s\S]*grid-column: 4/);
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*#predictionForm #predictionLineup > \.lineup-slot\[data-picker="prediction"\][\s\S]*display: grid[\s\S]*grid-template-columns: 56px 56px minmax\(0, 1fr\) 44px[\s\S]*grid-template-areas: "order position player clear"/);
+  assert.match(css, /@media \(min-width: 1000px\)[\s\S]*#predictionForm #predictionLineup > \.lineup-slot\[data-picker="prediction"\][\s\S]*display: grid[\s\S]*grid-template-columns: 56px 56px minmax\(0, 1fr\) 44px[\s\S]*grid-template-areas: "order position player clear"/);
   assert.match(css, /#predictionForm #predictionLineup > \.lineup-slot\[data-picker="prediction"\] > \.slot-order[\s\S]*grid-area: order/);
   assert.match(css, /#predictionForm #predictionLineup > \.lineup-slot\[data-picker="prediction"\] > \.position-control[\s\S]*grid-area: position/);
   assert.match(css, /#predictionForm #predictionLineup > \.lineup-slot\[data-picker="prediction"\] > \.slot-player[\s\S]*grid-area: player/);
@@ -138,12 +139,12 @@ test("PCのオーダー行は固定列と省略表示を使い、通知・操作
   assert.match(css, /#predictionLineup[\s\S]*gap: 6px[\s\S]*border-top: 0/);
   assert.match(css, /#predictionLineup \.lineup-slot\[data-picker="prediction"\][\s\S]*border: 1px solid #d7e1eb[\s\S]*border-radius: 7px[\s\S]*box-shadow: 0 1px 3px/);
   assert.match(css, /#predictionLineup \.lineup-slot\[data-picker="prediction"\]\.is-active[\s\S]*background: #eef6fc[\s\S]*box-shadow: inset 3px 0 0 var\(--fighters-blue\)/);
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.slot-player,[\s\S]*white-space: nowrap/);
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.slot-player,[\s\S]*padding-inline-start: 10px/);
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-category-legend[\s\S]*display: none/);
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*#predictionForm > \.message,[\s\S]*grid-column: 1 \/ -1/);
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*#savePredictionButton[\s\S]*min-width: 220px/);
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*#resetPredictionButton[\s\S]*min-width: 180px/);
+  assert.match(css, /@media \(min-width: 1000px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.slot-player,[\s\S]*white-space: nowrap/);
+  assert.match(css, /@media \(min-width: 1000px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.slot-player,[\s\S]*padding-inline-start: 10px/);
+  assert.match(css, /@media \(min-width: 1000px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-category-legend[\s\S]*display: none/);
+  assert.match(css, /@media \(min-width: 1000px\)[\s\S]*#predictionForm > \.message,[\s\S]*grid-column: 1 \/ -1/);
+  assert.match(css, /@media \(min-width: 1000px\)[\s\S]*#savePredictionButton[\s\S]*min-width: 220px/);
+  assert.match(css, /@media \(min-width: 1000px\)[\s\S]*#resetPredictionButton[\s\S]*min-width: 180px/);
 });
 
 test("iPhone向けTouch Eventsフォールバックも既存のPointer状態更新を利用する", () => {

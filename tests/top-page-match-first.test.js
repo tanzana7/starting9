@@ -36,5 +36,5 @@ test("追加CSSは管理画面のセレクタへ直接適用しない", () => {
   assert.match(normalScreenCss, /body:not\(:has\(\.app-layout\.is-admin-screen\)\)/);
   assert.match(normalScreenCss, /\.app-layout:not\(\.is-admin-screen\)/);
   assert.doesNotMatch(normalScreenCss, /\.admin-details\s*\{/);
-  assert.doesNotMatch(normalScreenCss, /width:\s*\d{4}px/);
+  assert.doesNotMatch(normalScreenCss, /[;{]\s*width:\s*\d{4}px/);
 });

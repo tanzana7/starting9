@@ -19,7 +19,7 @@ test("通常画面は大型カードも試合選択UIも持たず、canonical対
   assert.match(html, /id="publicGameSelectionMeta"/);
   assert.doesNotMatch(predictionForm, /id="publicGameSelect"|試合を選択/);
   assert.doesNotMatch(css, /public-game-picker/);
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*#predictionForm > \.public-game-selection-meta[\s\S]*grid-column: 1 \/ -1/);
+  assert.match(css, /@media \(min-width: 1000px\)[\s\S]*#predictionForm > \.public-game-selection-meta[\s\S]*grid-column: 1 \/ -1/);
   assert.match(script, /function renderPublicGameSelectionMeta\(\)/);
   assert.doesNotMatch(script, /renderPublicGameSelector|handlePublicGameSelectionChange|manualSelection/);
   assert.doesNotMatch(script, /function renderPublicGameStatusCard\(\)/);
@@ -93,7 +93,7 @@ test("スマホでも選択UIを追加せず、補助表示と既存導線を維
 });
 
 test("公開画面のJS/CSS cache busterを更新する", () => {
-  assert.match(html, /style\.css\?v=public-player-list-readability-1/);
+  assert.match(html, /style\.css\?v=public-prediction-form-overflow-1/);
   assert.match(html, /script\.js\?v=public-prediction-form-layout-1/);
 });
 

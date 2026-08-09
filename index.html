@@ -6,7 +6,7 @@
   <title>Starting9</title>
   <link rel="icon" type="image/png" href="./assets/icons/icon-512.png">
   <link rel="apple-touch-icon" href="./assets/icons/icon-512.png">
-  <link rel="stylesheet" href="style.css?v=public-results-after-publish-1">
+  <link rel="stylesheet" href="style.css?v=public-remove-next-game-card-1">
 </head>
 <body>
   <header class="app-header">
@@ -123,21 +123,13 @@
 
       <form id="predictionForm" novalidate>
         <div id="gameDayNoticeStatus" class="game-day-notice-status hidden" aria-live="polite"></div>
-        <section id="publicGameStatusCard" class="public-game-status-card" aria-labelledby="publicGameStatusTitle">
-          <div class="public-game-status-heading">
-            <div>
-              <h3 id="publicGameStatusTitle">次に予想する試合</h3>
-            </div>
-            <span id="publicGameStatusBadge" class="public-game-status-badge is-waiting">確認中</span>
-          </div>
-          <div id="publicGameStatusGrid" class="public-game-status-grid" aria-live="polite"></div>
-          <div class="public-game-selector">
-            <label for="publicGameSelect">試合を選択する</label>
-            <select id="publicGameSelect" aria-describedby="publicGameStatusTitle">
-              <option value="">試合を読み込み中...</option>
-            </select>
-          </div>
-        </section>
+        <div class="public-game-picker">
+          <label for="publicGameSelect">試合を選択</label>
+          <select id="publicGameSelect" aria-describedby="publicGameSelectionMeta">
+            <option value="">試合を読み込み中...</option>
+          </select>
+        </div>
+        <p id="publicGameSelectionMeta" class="public-game-selection-meta" role="status" aria-live="polite"></p>
         <section id="publishedGameActions" class="published-game-actions hidden" aria-live="polite">
           <p id="publishedGameMessage">この試合の予想受付は終了しました。</p>
           <div class="published-game-actions-buttons">
@@ -662,6 +654,6 @@
   <script src="auth.js?v=auth-api-local-20260719"></script>
   <!-- Historical cache-buster contract only; this old asset is not loaded. -->
   <!-- script.js?v=admin-test-data-20260728-10 -->
-  <script src="script.js?v=public-game-card-canonical-source-2"></script>
+  <script src="script.js?v=public-remove-next-game-card-1"></script>
 </body>
 </html>

@@ -3324,7 +3324,7 @@ async function initializePublicGameCatalog() {
   } finally {
     catalog.isLoading = false;
     renderPublicGameSelector();
-    renderPublicGameStatusCard();
+    renderPublicGameSelectionMeta();
   }
 }
 
@@ -3834,7 +3834,7 @@ function renderPredictionDeadline() {
   }
   if (saveButton) saveButton.disabled = Boolean(deadline.isClosed) || state.predictionRemote.isSaving || state.predictionRemote.isSubmitting;
   if (resetButton) resetButton.disabled = Boolean(deadline.isClosed) || state.predictionRemote.isDeleting;
-  renderPublicGameStatusCard();
+  renderPublicGameSelectionMeta();
 }
 
 function renderPredictionDeadlineAdmin() {
@@ -6789,7 +6789,7 @@ async function deletePredictionFromAccount(gameId) {
 
 function renderPredictionAccountStatus() {
   updatePredictionSaveButton();
-  renderPublicGameStatusCard();
+  renderPublicGameSelectionMeta();
 }
 
 function updatePredictionSaveButton() {
@@ -8326,7 +8326,7 @@ function renderAll() {
   renderGameInfoDisplay();
   renderGameSchedulePicker();
   renderPublicGameSelector();
-  renderPublicGameStatusCard();
+  renderPublicGameSelectionMeta();
   renderProbableStarter();
   renderSavedPrediction();
   renderPredictionCta();
@@ -8419,55 +8419,41 @@ function renderPublicPredictionSurface(selectedGame, view) {
   const resultButton = document.getElementById("showSelectedResultButton");
   const nextButton = document.getElementById("selectNextPredictionGameButton");
   const published = view?.label === "結果公開済み";
-  if (editor) editor.classList.toggle("hidden", published);
+  const closed = view?.status === "予想受付は終了しました" || view?.status === "スタメン発表待ち";
+  const locked = published || closed;
+  if (editor) editor.classList.toggle("hidden", locked);
   if (!actions || !message || !resultButton || !nextButton) return;
 
-  actions.classList.toggle("hidden", !published);
-  if (!published) return;
+  actions.classList.toggle("hidden", !locked);
+  if (!locked) return;
 
   const resultGame = findResultHistoryGameForPublicGame(selectedGame);
-  message.textContent = resultGame
+  message.textContent = published && resultGame
     ? "この試合の予想受付は終了しました。公開済みの結果を確認できます。"
     : "この試合の予想受付は終了しました。";
-  resultButton.classList.toggle("hidden", !resultGame);
+  resultButton.classList.toggle("hidden", !published || !resultGame);
   resultButton.disabled = state.resultHistory.isLoading || state.resultHistory.isDetailLoading;
   nextButton.disabled = !findNextPredictionGame();
 }
 
-function renderPublicGameStatusCard() {
-  const card = document.getElementById("publicGameStatusCard");
-  const badge = document.getElementById("publicGameStatusBadge");
-  const grid = document.getElementById("publicGameStatusGrid");
-  if (!card || !badge || !grid) return;
+function renderPublicGameSelectionMeta() {
+  const meta = document.getElementById("publicGameSelectionMeta");
+  if (!meta) return;
   const game = state.predictionTargetGame || state.publicGameCatalog.games.find((item) => item.internalGameId === getCurrentGameId()) || null;
   const deadline = getEffectivePredictionDeadline();
   if (!game && !deadline.game) {
-    badge.className = "public-game-status-badge is-waiting";
-    badge.textContent = "確認中";
-    grid.innerHTML = `<div><span>対象試合</span><strong>試合情報を確認しています</strong></div>`;
+    meta.textContent = "試合情報を確認しています。";
     return;
   }
   const selectedGame = game || deadline.game;
   const view = getPublicGameStatusView(selectedGame, deadline, state.predictionRemote);
-  const title = document.getElementById("publicGameStatusTitle");
-  const matchup = selectedGame.displayLabel || selectedGame.matchupLabel || `${selectedGame.homeTeamName || selectedGame.homeTeam || ""} vs ${selectedGame.awayTeamName || selectedGame.awayTeam || ""}`;
   const savedAt = state.predictionRemote.updatedAt || state.prediction?.savedAt || "";
   const savedText = view.saved
     ? `保存済み${savedAt ? `（${formatPublicJstDateTime(savedAt)}）` : ""}`
     : "未保存";
-  badge.className = `public-game-status-badge is-${view.key}`;
-  badge.textContent = view.label;
-  if (title) title.textContent = view.label === "結果公開済み" ? "結果を確認する試合" : "次に予想する試合";
-  grid.innerHTML = [
-    ["対象試合", matchup],
-    ["試合開始", formatPublicJstDateTime(deadline.startAt || selectedGame.startAt || selectedGame.startDateTime)],
-    ["予想締切", formatPublicJstDateTime(deadline.deadlineAt)],
-    ["締切まで", deadline.status === "open" ? formatPublicRemainingTime(deadline.deadlineAt) : "締切済み"],
-    ["予想状態", view.status],
-    ["あなたの予想", savedText],
-    ["結果", view.label === "結果公開済み" ? "公開済み" : "未公開"],
-    ["次の操作", view.nextAction]
-  ].map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+  meta.textContent = deadline.status === "open"
+    ? `予想締切: ${formatPublicJstDateTime(deadline.deadlineAt)} ・ ${savedText}`
+    : `${view.status} ・ ${savedText}`;
   renderPublicPredictionSurface(selectedGame, view);
 }
 

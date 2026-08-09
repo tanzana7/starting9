@@ -10,13 +10,17 @@ const script = read("script.js");
 const css = read("style.css");
 const worker = read("auth-worker.js");
 
-test("通常画面に試合ステータスカードと未来試合セレクターがある", () => {
-  for (const id of ["publicGameStatusCard", "publicGameStatusBadge", "publicGameStatusGrid", "publicGameSelect"]) {
-    assert.match(html, new RegExp(`id="${id}"`));
+test("通常画面は大型ステータスカードを持たず、シンプルな試合選択だけを表示する", () => {
+  for (const id of ["publicGameStatusCard", "publicGameStatusBadge", "publicGameStatusGrid"]) {
+    assert.doesNotMatch(html, new RegExp(`id="${id}"`));
   }
-  assert.match(html, /予想する試合/);
+  assert.doesNotMatch(html, /public-game-status-card|public-game-status-badge|public-game-status-grid/);
+  assert.match(html, /id="publicGameSelect"/);
+  assert.match(html, /id="publicGameSelectionMeta"/);
   assert.match(html, /for="publicGameSelect"/);
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*#predictionForm > \.public-game-status-card[\s\S]*grid-column: 1 \/ -1/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*#predictionForm > \.public-game-picker[\s\S]*grid-column: 1 \/ -1/);
+  assert.match(script, /function renderPublicGameSelectionMeta\(\)/);
+  assert.doesNotMatch(script, /function renderPublicGameStatusCard\(\)/);
 });
 
 test("未来試合は今日と先の5試合を同じカタログから選択できる", () => {
@@ -63,15 +67,15 @@ test("保存済み予想の表示は対象試合単位で、保存処理と既�
   assert.match(script, /function renderPredictionDeadline\(\)/);
 });
 
-test("スマホではカードを2列、試合選択を1列にして横溢れを抑える", () => {
-  assert.match(css, /@media \(max-width: 600px\)[\s\S]*\.public-game-status-grid[\s\S]*repeat\(2, minmax\(0, 1fr\)\)/);
-  assert.match(css, /@media \(max-width: 600px\)[\s\S]*\.public-game-selector[\s\S]*grid-template-columns: 1fr/);
-  assert.match(css, /public-game-status-grid strong[\s\S]*overflow-wrap: anywhere/);
+test("スマホでは試合選択を1列にして横溢れを抑える", () => {
+  assert.match(css, /@media \(max-width: 600px\)[\s\S]*\.public-game-picker[\s\S]*grid-template-columns: 1fr/);
+  assert.match(css, /\.public-game-picker select \{[\s\S]*min-width: 0/);
+  assert.match(css, /\.public-game-selection-meta \{[\s\S]*font-size: 0\.82rem/);
 });
 
 test("公開画面のJS/CSS cache busterを更新する", () => {
-  assert.match(html, /style\.css\?v=public-results-after-publish-1/);
-  assert.match(html, /script\.js\?v=public-game-card-canonical-source-2/);
+  assert.match(html, /style\.css\?v=public-remove-next-game-card-1/);
+  assert.match(html, /script\.js\?v=public-remove-next-game-card-1/);
 });
 
 test("通常画面は管理用システム表示を初期HTMLから非表示にする", () => {

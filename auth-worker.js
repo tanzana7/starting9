@@ -67,6 +67,7 @@ import {
   getV3ProbableStarterSlots,
   getV3ProbableStarterSourceDate,
   getV3CanonicalRosterSnapshot,
+  getV3RosterSnapshotFreshness,
   normalizeProbableStarterDataStatus,
   resolveCanonicalProbableStarterRow,
   shouldStopProbableStarterScheduling
@@ -7614,23 +7615,47 @@ async function handleGetGameDayStatus(request, env, cors) {
 }
 
 async function handleGetGameDayRoster(request, env, cors) {
-  const gameId = getValidGameId(new URL(request.url).searchParams.get("gameId"));
-  const identity = gameId ? getGameIdentityForPregame(gameId) : null;
-  if (!identity) return jsonResponse({ ok: false, error: "対象試合を指定してください。" }, 400, cors);
+  const internalGameId = String(new URL(request.url).searchParams.get("internalGameId") || "").trim();
+  if (!INTERNAL_GAME_ID_PATTERN.test(internalGameId)) {
+    return jsonResponse({ ok: false, code: "INVALID_INTERNAL_GAME_ID", error: "対象試合を指定してください。" }, 400, cors);
+  }
+  const game = await env.AUTH_DB.prepare(
+    `SELECT internal_game_id, game_date
+       FROM games
+      WHERE internal_game_id = ?1
+      LIMIT 1`
+  ).bind(internalGameId).first();
+  if (!game) {
+    return jsonResponse({ ok: false, code: "INTERNAL_GAME_ID_NOT_FOUND", error: "対象試合を確認できません。" }, 404, cors);
+  }
   const row = await env.AUTH_DB.prepare(
-    `SELECT captured_at, roster_json, player_count, source
-       FROM game_roster_snapshots WHERE game_id = ?1 LIMIT 1`
-  ).bind(gameId).first();
-  const players = row ? parseJsonArray(row.roster_json).filter((player) => player && player.name && player.number && player.position) : [];
-  return jsonResponse({
+    `SELECT internal_game_id, game_date, captured_at, roster_json, player_count, source, status
+       FROM game_roster_snapshots
+      WHERE internal_game_id = ?1
+      ORDER BY updated_at DESC, captured_at DESC
+      LIMIT 1`
+  ).bind(internalGameId).first();
+  return jsonResponse(buildPublicGameDayRosterResponse({
+    internalGameId,
+    gameDate: game.game_date,
+    snapshot: row
+  }), 200, cors);
+}
+
+export function buildPublicGameDayRosterResponse({ internalGameId = "", gameDate = "", snapshot = null } = {}) {
+  const freshness = getV3RosterSnapshotFreshness(snapshot, { internalGameId, gameDate });
+  const players = freshness.isFresh
+    ? parseJsonArray(snapshot?.roster_json).filter((player) => player && player.name && player.number && player.position)
+    : [];
+  return {
     ok: true,
-    gameId,
+    internalGameId,
+    gameDate,
     status: players.length ? "captured" : "pending",
-    capturedAt: row?.captured_at || null,
-    source: row?.source || "",
-    playerCount: players.length || Number(row?.player_count || 0),
+    capturedAt: players.length ? snapshot?.captured_at || null : null,
+    playerCount: players.length,
     players
-  }, 200, cors);
+  };
 }
 
 function getGameTeamCodes(identity) {

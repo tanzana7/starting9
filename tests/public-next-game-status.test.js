@@ -67,8 +67,8 @@ test("スマホではカードを2列、試合選択を1列にして横溢れを
 });
 
 test("公開画面のJS/CSS cache busterを更新する", () => {
-  assert.match(html, /style\.css\?v=public-hide-system-status-1/);
-    assert.match(html, /script\.js\?v=public-roster-reflection-1/);
+  assert.match(html, /style\.css\?v=public-results-after-publish-1/);
+  assert.match(html, /script\.js\?v=public-results-after-publish-1/);
 });
 
 test("通常画面は管理用システム表示を初期HTMLから非表示にする", () => {

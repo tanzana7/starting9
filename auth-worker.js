@@ -11545,14 +11545,68 @@ function parseResultGameRoute(path) {
   }
 }
 
-async function getResultGameMetadata(db, gameId) {
+function formatPublicResultTeamName(value) {
+  const labels = {
+    fighters: "日本ハム",
+    hawks: "ソフトバンク",
+    buffaloes: "オリックス",
+    marines: "ロッテ",
+    eagles: "楽天",
+    lions: "西武",
+    giants: "巨人",
+    tigers: "阪神",
+    baystars: "DeNA",
+    carp: "広島",
+    dragons: "中日",
+    swallows: "ヤクルト"
+  };
+  const key = String(value || "").trim().toLowerCase();
+  return labels[key] || String(value || "").trim();
+}
+
+function createPublicResultDisplayLabel({ gameDate = "", homeTeam = "", awayTeam = "" } = {}) {
+  const home = formatPublicResultTeamName(homeTeam);
+  const away = formatPublicResultTeamName(awayTeam);
+  const matchup = away && home ? `${away} vs ${home}` : "対戦情報を確認中";
+  return [String(gameDate || "").trim(), matchup].filter(Boolean).join(" ");
+}
+
+async function getResultGameMetadata(db, gameReference, resolvedMetadata = null) {
+  const requestedGameId = String(gameReference || "").trim();
+  const resolved = resolvedMetadata || await resolvePredictionGameMetadata(db, requestedGameId);
+  const internalGameId = String(resolved?.internalGameId || (INTERNAL_GAME_ID_PATTERN.test(requestedGameId) ? requestedGameId : "")).trim();
+  if (internalGameId) {
+    const game = await db.prepare(
+      `SELECT internal_game_id, game_date, start_time, home_team, away_team, npb_game_code, stadium
+         FROM games WHERE internal_game_id = ?1 LIMIT 1`
+    ).bind(internalGameId).first();
+    if (game) {
+      const serialized = serializePredictionTarget({
+        gameId: resolved?.legacyGameId || requestedGameId,
+        date: game.game_date,
+        startAt: new Date(game.start_time),
+        homeTeam: game.home_team,
+        awayTeam: game.away_team,
+        gameCode: game.npb_game_code || "",
+        internalGameId,
+        venue: game.stadium || ""
+      });
+      return {
+        ...serialized,
+        gameDate: game.game_date || "",
+        legacyGameId: resolved?.legacyGameId || "",
+        resultId: internalGameId,
+        displayLabel: createPublicResultDisplayLabel({ gameDate: game.game_date, homeTeam: game.home_team, awayTeam: game.away_team })
+      };
+    }
+  }
   try {
     const row = await db.prepare(
       `SELECT game_id, game_date, start_at, home_team, away_team, game_code, venue, internal_game_id
          FROM detected_game_schedule WHERE game_id = ?1 LIMIT 1`
-    ).bind(gameId).first();
+    ).bind(requestedGameId).first();
     if (row) {
-      return serializePredictionTarget({
+      const serialized = serializePredictionTarget({
         gameId: row.game_id,
         date: row.game_date,
         startAt: new Date(row.start_at),
@@ -11562,17 +11616,32 @@ async function getResultGameMetadata(db, gameId) {
         internalGameId: row.internal_game_id || "",
         venue: row.venue || ""
       });
+      return {
+        ...serialized,
+        gameDate: row.game_date || "",
+        legacyGameId: row.game_id,
+        resultId: row.internal_game_id || row.game_id,
+        displayLabel: createPublicResultDisplayLabel({ gameDate: row.game_date, homeTeam: row.home_team, awayTeam: row.away_team })
+      };
     }
   } catch {
     // 既存日程だけで解決できる場合は下の静的日程へ進みます。
   }
-  const identity = getGameIdentityForPregame(gameId);
-  return identity?.game ? serializePredictionTarget({
+  const identity = getGameIdentityForPregame(requestedGameId);
+  const serialized = identity?.game ? serializePredictionTarget({
     ...identity.game,
-    gameId,
+    gameId: requestedGameId,
     startAt: identity.startAt,
     gameCode: identity.gameCode
-  }) : { gameId, date: "", startAt: "", startTime: "", homeTeam: "", awayTeam: "", gameCode: "", venue: "" };
+  }) : { gameId: requestedGameId, date: "", startAt: "", startTime: "", homeTeam: "", awayTeam: "", gameCode: "", venue: "" };
+  return {
+    ...serialized,
+    gameDate: serialized.date || "",
+    legacyGameId: resolved?.legacyGameId || serialized.gameId || "",
+    internalGameId: internalGameId || serialized.internalGameId || "",
+    resultId: internalGameId || serialized.internalGameId || serialized.gameId || requestedGameId,
+    displayLabel: createPublicResultDisplayLabel({ gameDate: serialized.date, homeTeam: serialized.homeTeam, awayTeam: serialized.awayTeam })
+  };
 }
 
 async function handleGetResultGames(request, env, cors) {
@@ -11588,7 +11657,7 @@ async function handleGetResultGames(request, env, cors) {
 
   const rows = await env.AUTH_DB.prepare(
     `WITH latest_predictions AS (
-       SELECT predictions.game_id, predictions.score, predictions.max_score, predictions.scored_at,
+       SELECT predictions.game_id, predictions.internal_game_id, predictions.score, predictions.max_score, predictions.scored_at,
               predictions.updated_at, predictions.status,
               ROW_NUMBER() OVER (
                 PARTITION BY predictions.user_id, predictions.game_id
@@ -11597,7 +11666,7 @@ async function handleGetResultGames(request, env, cors) {
           FROM predictions
          WHERE predictions.user_id = ?1 AND predictions.is_test_prediction = 0
      )
-     SELECT latest_predictions.game_id, latest_predictions.score, latest_predictions.max_score,
+     SELECT latest_predictions.game_id, latest_predictions.internal_game_id, latest_predictions.score, latest_predictions.max_score,
             latest_predictions.scored_at, latest_predictions.updated_at, latest_predictions.status,
             ranking_games.game_date, ranking_games.game_status, ranking_games.publication_status,
             ${eligibilitySelect}
@@ -11619,12 +11688,16 @@ async function handleGetResultGames(request, env, cors) {
   const now = new Date();
   const games = [];
   for (const row of rows.results || []) {
-    const metadata = await getResultGameMetadata(env.AUTH_DB, row.game_id);
-    const resultsPublished = await isGameResultsPublished(env.AUTH_DB, row.game_id, now);
+    const resultId = String(row.internal_game_id || row.game_id || "");
+    const metadata = await getResultGameMetadata(env.AUTH_DB, resultId);
+    const resultsPublished = await isGameResultsPublished(env.AUTH_DB, resultId, now);
     const serviceUnavailable = isServiceUnavailableGameStatus(row.game_status);
     const excluded = String(row.ranking_eligibility_status || "") === "excluded" || serviceUnavailable;
     games.push({
       ...metadata,
+      resultId: metadata.resultId || resultId,
+      internalGameId: metadata.internalGameId || String(row.internal_game_id || ""),
+      legacyGameId: metadata.legacyGameId || row.game_id,
       gameDate: row.game_date || metadata.date,
       resultsPublished,
       score: !excluded && resultsPublished && row.score !== null ? Number(row.score) : null,
@@ -11649,14 +11722,17 @@ async function handleGetResultGame(request, env, cors, gameId) {
   if (!access.ok) return access.response;
   const metadata = await resolvePredictionGameMetadata(env.AUTH_DB, gameId);
   if (!metadata) return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
-  if (await isTestRankingGame(env.AUTH_DB, metadata.gameId)) {
+  const game = await getResultGameMetadata(env.AUTH_DB, gameId, metadata);
+  const resultId = String(game.resultId || metadata.internalGameId || metadata.gameId || gameId);
+  const internalGameId = String(game.internalGameId || metadata.internalGameId || "");
+  if (await isTestRankingGame(env.AUTH_DB, resultId)) {
     return jsonResponse({ ok: false, error: "テスト試合の結果は通常画面で表示できません。" }, 404, cors);
   }
 
-  const rankingState = await getRankingGameState(env.AUTH_DB, metadata.gameId);
+  const rankingState = await getRankingGameState(env.AUTH_DB, resultId, internalGameId);
   const serviceUnavailable = isServiceUnavailableGameStatus(rankingState?.game_status);
-  const rankingEligibility = await getRankingEligibilityState(env.AUTH_DB, metadata.gameId);
-  const row = await getPredictionRow(env.AUTH_DB, access.user.id, metadata.gameId);
+  const rankingEligibility = await getRankingEligibilityState(env.AUTH_DB, resultId, internalGameId);
+  const row = await getPredictionRow(env.AUTH_DB, access.user.id, { gameId: resultId, internalGameId });
   if (!row) {
     return jsonResponse({ ok: false, error: "採点済みの結果が見つかりません。" }, 404, cors);
   }
@@ -11665,8 +11741,10 @@ async function handleGetResultGame(request, env, cors, gameId) {
   if (serviceUnavailable) {
     return jsonResponse({
       ok: true,
-      game: await getResultGameMetadata(env.AUTH_DB, metadata.gameId),
-      gameId: metadata.gameId,
+      game,
+      gameId: resultId,
+      internalGameId,
+      legacyGameId: game.legacyGameId || metadata.legacyGameId || "",
       prediction,
       status: SERVICE_UNAVAILABLE_GAME_STATUS,
       submittedAt: row.submitted_at,
@@ -11691,8 +11769,10 @@ async function handleGetResultGame(request, env, cors, gameId) {
   if (rankingEligibility?.rankingEligibilityStatus !== "eligible") {
     return jsonResponse({
       ok: true,
-      game: await getResultGameMetadata(env.AUTH_DB, metadata.gameId),
-      gameId: metadata.gameId,
+      game,
+      gameId: resultId,
+      internalGameId,
+      legacyGameId: game.legacyGameId || metadata.legacyGameId || "",
       prediction,
       status: "excluded",
       submittedAt: row.submitted_at,
@@ -11717,11 +11797,13 @@ async function handleGetResultGame(request, env, cors, gameId) {
   if (row.status !== "scored") {
     return jsonResponse({ ok: false, error: "採点済みの結果が見つかりません。" }, 404, cors);
   }
-  const resultsPublished = await isGameResultsPublished(env.AUTH_DB, metadata.gameId, new Date());
+  const resultsPublished = await isGameResultsPublished(env.AUTH_DB, resultId, new Date());
   return jsonResponse({
     ok: true,
-    game: await getResultGameMetadata(env.AUTH_DB, metadata.gameId),
-    gameId: metadata.gameId,
+    game,
+    gameId: resultId,
+    internalGameId,
+    legacyGameId: game.legacyGameId || metadata.legacyGameId || "",
     prediction,
     status: resultsPublished ? row.status : "submitted",
     submittedAt: row.submitted_at,

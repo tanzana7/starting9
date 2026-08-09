@@ -33,12 +33,15 @@ test("初期試合は今日の未締切、今日の未公開、次の未来試�
   assert.match(script, /const catalogGame = !state\.publicGameCatalog\.manualSelection/);
 });
 
-test("公開用ゲーム一覧はcanonical internalGameIdとworkflow/publication状態を返す", () => {
+test("公開用ゲーム一覧はcanonical internalGameIdとV3 workflow/publication状態を返す", () => {
   assert.match(worker, /path === "\/api\/public\/games" && request\.method === "GET"/);
   assert.match(worker, /async function handleGetPublicGames\(request, env, cors\)/);
   assert.match(worker, /games\.internal_game_id/);
-  assert.match(worker, /workflow\.workflow_status/);
+  assert.match(worker, /game_automation_v3_state AS workflow/);
+  assert.match(worker, /workflow\.state/);
   assert.match(worker, /lineup\.publication_status/);
+  assert.match(worker, /gameId: row\.internal_game_id/);
+  assert.match(worker, /displayLabel: createPublicGameDisplayLabel/);
   assert.match(worker, /isPublished: publicationStatus === "published"/);
   assert.match(worker, /public game status joins unavailable; using canonical games fallback/);
   assert.match(worker, /SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status/);
@@ -68,7 +71,7 @@ test("スマホではカードを2列、試合選択を1列にして横溢れを
 
 test("公開画面のJS/CSS cache busterを更新する", () => {
   assert.match(html, /style\.css\?v=public-results-after-publish-1/);
-  assert.match(html, /script\.js\?v=public-next-game-after-results-1/);
+  assert.match(html, /script\.js\?v=public-game-card-canonical-source-1/);
 });
 
 test("通常画面は管理用システム表示を初期HTMLから非表示にする", () => {

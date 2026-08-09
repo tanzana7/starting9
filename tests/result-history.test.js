@@ -60,11 +60,12 @@ test("結果詳細APIと通常画面の選択UIはcanonical internalGameIdを優
   assert.match(html, /過去の試合結果/);
 });
 
-test("通常画面はprediction-targetの保存済みgameIdを予想保存と締切判定へ引き継ぐ", () => {
-  assert.match(script, /const nextGame = await resolvePredictionTargetGame\(schedule, true\)/);
+test("通常画面はcanonical public gameのinternalGameIdを予想保存と締切判定へ引き継ぐ", () => {
+  assert.match(script, /const nextGame = catalogGame \|\| await resolvePredictionTargetGame\(schedule, true\)/);
   assert.match(script, /state\.predictionTargetGame = preservedGame/);
   assert.match(script, /async function refreshPredictionTarget\(\{ retryUnannounced = true, useServer = true \} = \{\}\)/);
-  assert.match(script, /if \(!response\.ok \|\| !payload\?\.ok\) return fallback/);
+  assert.match(script, /if \(!state\.isAdminMode\) return null/);
+  assert.match(script, /state\.predictionTargetGameId = state\.probableStarter\.nextGame\?\.internalGameId/);
   assert.match(script, /state\.predictionTargetGame\?\.gameId === gameId \|\| state\.predictionTargetGame\?\.internalGameId === gameId \? state\.predictionTargetGame : null/);
   assert.match(script, /state\.prediction = \{\s*gameId: getCurrentGameId\(\)/);
 });

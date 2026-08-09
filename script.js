@@ -3102,14 +3102,14 @@ async function initializeProbableStarter() {
   const schedule = await getLoadedGameSchedule();
   const previousGame = state.predictionTargetGame || state.probableStarter.nextGame;
   const previousGameId = previousGame?.gameId || state.predictionTargetGameId || "";
-  const nextGame = await resolvePredictionTargetGame(schedule, true);
   const catalogGame = !state.publicGameCatalog.manualSelection && state.publicGameCatalog.games.length
     ? selectInitialPublicGame(state.publicGameCatalog.games)
     : null;
+  const nextGame = catalogGame || await resolvePredictionTargetGame(schedule, true);
   const preservedGame = catalogGame || nextGame || schedule.find((game) => game?.gameId === previousGameId) || state.probableStarter.nextGame || null;
   state.probableStarter.nextGame = preservedGame;
   state.predictionTargetGame = preservedGame;
-  state.predictionTargetGameId = state.probableStarter.nextGame?.gameId || "";
+  state.predictionTargetGameId = state.probableStarter.nextGame?.internalGameId || state.probableStarter.nextGame?.gameId || "";
   if (nextGame && previousGameId && (previousGameId !== state.predictionTargetGameId || previousGame?.internalGameId !== nextGame.internalGameId)) {
     state.predictionTargetNotice = "予想対象試合が次の試合へ切り替わりました。";
     state.prediction = null;
@@ -3131,7 +3131,12 @@ async function initializeProbableStarter() {
 
 async function refreshPredictionTarget({ retryUnannounced = true, useServer = true } = {}) {
   const schedule = await getLoadedGameSchedule();
-  const nextGame = await resolvePredictionTargetGame(schedule, useServer);
+  const catalogGame = state.publicGameCatalog.games.length
+    ? (state.publicGameCatalog.manualSelection
+      ? state.publicGameCatalog.games.find((game) => game?.internalGameId === getCurrentGameId()) || null
+      : selectInitialPublicGame(state.publicGameCatalog.games))
+    : null;
+  const nextGame = catalogGame || await resolvePredictionTargetGame(schedule, useServer);
   const previousGame = state.predictionTargetGame || state.probableStarter.nextGame;
   const previousGameId = state.predictionTargetGameId || previousGame?.gameId || "";
   if (!nextGame) {
@@ -3161,6 +3166,7 @@ async function refreshPredictionTarget({ retryUnannounced = true, useServer = tr
 }
 
 async function resolvePredictionTargetGame(schedule, useServer) {
+  if (!state.isAdminMode) return null;
   const fallback = findNextScheduledGameForStarter(schedule);
   if (!useServer) return fallback;
   const url = buildPredictionTargetApiUrl();
@@ -3206,33 +3212,19 @@ function buildPublicGamesApiUrl() {
   return baseUrl ? `${baseUrl}/api/public/games` : "";
 }
 
-function publicGameIdentityKey(game) {
-  return [
-    getScheduleDate(game),
-    getScheduleStartTime(game),
-    String(game?.homeTeam || "").trim().toLowerCase(),
-    String(game?.awayTeam || "").trim().toLowerCase()
-  ].join("|");
-}
-
 function mergePublicGameSchedules(staticGames = [], apiGames = []) {
-  const merged = new Map();
-  for (const game of Array.isArray(staticGames) ? staticGames : []) {
-    if (!game?.gameId || !isNormalManagedSchedule(game)) continue;
-    merged.set(publicGameIdentityKey(game), { ...game });
-  }
-  for (const game of Array.isArray(apiGames) ? apiGames : []) {
-    const key = publicGameIdentityKey(game);
-    const existing = merged.get(key) || {};
-    merged.set(key, {
-      ...existing,
+  // Public cards are only allowed to use the canonical games API. Static schedule
+  // data can be stale and must not select or label a user-facing prediction game.
+  void staticGames;
+  return (Array.isArray(apiGames) ? apiGames : [])
+    .filter((game) => Boolean(game?.internalGameId) && isNormalManagedSchedule(game))
+    .map((game) => ({
       ...game,
-      gameId: game.gameId || existing.gameId || game.internalGameId,
-      matchupLabel: existing.matchupLabel || `${game.homeTeam || ""} vs ${game.awayTeam || ""}`,
-      startDateTime: game.startAt || existing.startDateTime || ""
-    });
-  }
-  return [...merged.values()]
+      canonical: true,
+      gameId: game.internalGameId,
+      matchupLabel: game.displayLabel || `${game.homeTeamName || game.homeTeam || ""} vs ${game.awayTeamName || game.awayTeam || ""}`,
+      startDateTime: game.startAt || ""
+    }))
     .filter((game) => !isScheduleGameUnavailable(game))
     .sort((left, right) => getScheduleSortValue(left).localeCompare(getScheduleSortValue(right)));
 }
@@ -3240,7 +3232,7 @@ function mergePublicGameSchedules(staticGames = [], apiGames = []) {
 function getPublicSelectableGames(games = [], now = new Date()) {
   const today = getJapanDateString(now);
   const sorted = (Array.isArray(games) ? games : [])
-    .filter((game) => isNormalManagedSchedule(game) && !isScheduleGameUnavailable(game))
+    .filter((game) => game?.canonical === true && Boolean(game?.internalGameId) && isNormalManagedSchedule(game) && !isScheduleGameUnavailable(game))
     .sort((left, right) => getScheduleSortValue(left).localeCompare(getScheduleSortValue(right)));
   const todayGames = sorted.filter((game) => getScheduleDate(game) === today);
   const futureGames = sorted.filter((game) => getScheduleDate(game) > today).slice(0, 5);
@@ -3259,7 +3251,7 @@ function selectInitialPublicGame(games = [], now = new Date()) {
 function formatPublicGameOptionLabel(game) {
   const date = getScheduleDate(game);
   const time = getScheduleStartTime(game);
-  const matchup = game?.matchupLabel || `${game?.homeTeam || ""} vs ${game?.awayTeam || ""}`;
+  const matchup = game?.displayLabel || game?.matchupLabel || `${game?.homeTeamName || game?.homeTeam || ""} vs ${game?.awayTeamName || game?.awayTeam || ""}`;
   return `${date.replace(/^(\d{4})-/, "$1/").replace(/-/, "/")} ${time} ${matchup}`.trim();
 }
 
@@ -3293,7 +3285,6 @@ async function initializePublicGameCatalog() {
   catalog.isLoading = true;
   renderPublicGameSelector();
   try {
-    const staticGames = await getLoadedGameSchedule();
     let apiGames = [];
     const url = buildPublicGamesApiUrl();
     if (url) {
@@ -3303,14 +3294,14 @@ async function initializePublicGameCatalog() {
         apiGames = payload.games;
       }
     }
-    catalog.games = mergePublicGameSchedules(staticGames, apiGames);
+    catalog.games = mergePublicGameSchedules([], apiGames);
     catalog.message = "";
     if (!catalog.manualSelection) {
       const initialGame = selectInitialPublicGame(catalog.games);
       const currentGameId = getCurrentGameId();
       const initialGameId = initialGame?.internalGameId || initialGame?.gameId || "";
       if (initialGame && currentGameId !== initialGameId) {
-        state.predictionTargetGameId = initialGame.gameId || initialGameId;
+        state.predictionTargetGameId = initialGameId;
         state.predictionTargetGame = initialGame;
         state.probableStarter.nextGame = initialGame;
         if (state.predictionRemote.gameId !== initialGameId || (state.prediction && state.prediction.gameId !== initialGameId)) {
@@ -3327,8 +3318,8 @@ async function initializePublicGameCatalog() {
       }
     }
   } catch (error) {
-    catalog.games = mergePublicGameSchedules(await getLoadedGameSchedule(), []);
-    catalog.message = "未来の試合一覧を最新化できませんでした。";
+    catalog.games = [];
+    catalog.message = "試合情報を取得できませんでした。";
     console.warn("公開試合一覧の取得に失敗しました", error.message);
   } finally {
     catalog.isLoading = false;
@@ -3358,7 +3349,7 @@ async function selectPublicGame(selectedId, { manualSelection = true } = {}) {
   state.publicGameCatalog.manualSelection = manualSelection;
   const previousGameId = getCurrentGameId();
   const nextGameId = selectedGame.internalGameId || selectedGame.gameId || "";
-  state.predictionTargetGameId = selectedGame.gameId || nextGameId;
+  state.predictionTargetGameId = nextGameId;
   state.predictionTargetGame = selectedGame;
   state.probableStarter.nextGame = selectedGame;
   if (previousGameId !== nextGameId) {
@@ -8459,7 +8450,7 @@ function renderPublicGameStatusCard() {
   const selectedGame = game || deadline.game;
   const view = getPublicGameStatusView(selectedGame, deadline, state.predictionRemote);
   const title = document.getElementById("publicGameStatusTitle");
-  const matchup = selectedGame.matchupLabel || `${selectedGame.homeTeam || ""} vs ${selectedGame.awayTeam || ""}`;
+  const matchup = selectedGame.displayLabel || selectedGame.matchupLabel || `${selectedGame.homeTeamName || selectedGame.homeTeam || ""} vs ${selectedGame.awayTeamName || selectedGame.awayTeam || ""}`;
   const savedAt = state.predictionRemote.updatedAt || state.prediction?.savedAt || "";
   const savedText = view.saved
     ? `保存済み${savedAt ? `（${formatPublicJstDateTime(savedAt)}）` : ""}`

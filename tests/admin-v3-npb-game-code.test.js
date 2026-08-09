@@ -71,7 +71,7 @@ test("V3管理画面はNPB識別情報を読み取り表示し、手動上書き
   assert.ok(client.includes("${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}"));
   assert.match(client, /loadV3OperationDetails/);
   assert.match(page, /admin-v3\.css\?v=automation-v3-13-structured-logs/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-16-status-evaluation/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-18-score-ranking-publish-deps/);
 });
 
 test("home/away修正APIはinternalGameId単位で関連データの影響を警告する", () => {

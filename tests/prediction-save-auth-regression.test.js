@@ -24,8 +24,8 @@ function createPredictionSaveDb() {
               if (sql.includes("FROM games")) {
                 return {
                   internal_game_id: internalGameId,
-                  game_date: "2026-08-09",
-                  start_time: "2026-08-09T05:00:00.000Z",
+                  game_date: "2099-08-09",
+                  start_time: "2099-08-09T05:00:00.000Z",
                   home_team: "fighters",
                   away_team: "eagles",
                   game_status: "scheduled",

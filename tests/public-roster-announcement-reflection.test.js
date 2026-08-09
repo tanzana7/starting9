@@ -1,0 +1,121 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import vm from "node:vm";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { buildPublicGameDayRosterResponse } from "../auth-worker.js";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+const internalGameId = "348e8d56-9565-474e-96e9-33b1e5ef6ae0";
+const gameDate = "2026-08-09";
+
+function snapshot(overrides = {}) {
+  return {
+    internal_game_id: internalGameId,
+    game_date: gameDate,
+    captured_at: "2026-08-09T03:12:10.291Z",
+    source: "npb-roster",
+    status: "captured",
+    player_count: 2,
+    roster_json: JSON.stringify([
+      { name: "登録選手", number: "12", position: "外野手" },
+      { name: "継続選手", number: "3", position: "捕手" }
+    ]),
+    ...overrides
+  };
+}
+
+function getScriptFunctionSource(name) {
+  const start = script.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `${name} が見つかりません`);
+  let depth = 0;
+  let bodyStarted = false;
+  for (let index = start; index < script.length; index += 1) {
+    if (script[index] === "{") {
+      depth += 1;
+      bodyStarted = true;
+    } else if (script[index] === "}") {
+      depth -= 1;
+      if (bodyStarted && depth === 0) return script.slice(start, index + 1);
+    }
+  }
+  throw new Error(`${name} の終端を見つけられません`);
+}
+
+function createRosterFilterHelpers(storedSnapshot, selectedGame = { internalGameId, date: gameDate }) {
+  const context = vm.createContext({
+    state: { predictionTargetGame: selectedGame, probableStarter: { nextGame: null } },
+    STORAGE_KEYS: { rosterSnapshot: "roster" },
+    loadFromStorage: () => storedSnapshot,
+    getCurrentGameId: () => selectedGame.internalGameId || "",
+    normalizePlayerKey: (value) => String(value || "").normalize("NFKC").replace(/[\s\u3000]/g, "")
+  });
+  const names = [
+    "normalizeRosterSnapshot",
+    "normalizeRosterEntries",
+    "createRosterEntryKey",
+    "canUseRosterSnapshot",
+    "getGameDayRosterTargetInternalGameId",
+    "getRosterSnapshotForCurrentGame",
+    "rosterEntryMatchesPlayer",
+    "isPlayerInCurrentRoster"
+  ];
+  vm.runInContext(`${names.map(getScriptFunctionSource).join("\n")}; this.helpers = { isPlayerInCurrentRoster };`, context);
+  return context.helpers;
+}
+
+test("freshなV3 roster snapshotは公示変更なしでも通常画面候補として返す", () => {
+  const response = buildPublicGameDayRosterResponse({
+    internalGameId,
+    gameDate,
+    snapshot: snapshot()
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.status, "captured");
+  assert.equal(response.playerCount, 2);
+  assert.deepEqual(response.players.map((player) => player.name), ["登録選手", "継続選手"]);
+  assert.equal("source" in response, false);
+});
+
+test("別試合・別日・staleなsnapshotは通常画面候補へ流用しない", () => {
+  for (const invalidSnapshot of [
+    snapshot({ internal_game_id: "35ae1388-02f9-43d3-8643-79acac3cbd34" }),
+    snapshot({ game_date: "2026-08-08" }),
+    snapshot({ captured_at: "2026-08-08T03:12:10.291Z" })
+  ]) {
+    const response = buildPublicGameDayRosterResponse({ internalGameId, gameDate, snapshot: invalidSnapshot });
+    assert.equal(response.status, "pending");
+    assert.equal(response.playerCount, 0);
+    assert.deepEqual(response.players, []);
+  }
+});
+
+test("通常画面は選択試合のUUIDでV3 snapshotを再取得し、旧game_id行を参照しない", () => {
+  assert.match(script, /function getGameDayRosterTargetInternalGameId\(\)/);
+  assert.match(script, /api\/game-day-roster\?internalGameId=/);
+  assert.match(script, /initializeRosterCandidateSync\(\)/);
+  assert.match(script, /snapshot\.internalGameId !== internalGameId/);
+  assert.match(script, /snapshot\.gameDate !== gameDate/);
+  assert.match(worker, /WHERE internal_game_id = \?1\s*\n\s*ORDER BY updated_at DESC, captured_at DESC/);
+  assert.doesNotMatch(worker.slice(worker.indexOf("async function handleGetGameDayRoster"), worker.indexOf("function getGameTeamCodes")), /WHERE game_id = \?1/);
+});
+
+test("snapshotの登録選手は候補に入り、抹消選手は候補から外れる既存フィルタを維持する", async () => {
+  const helpers = await import(pathToFileURL(path.join(root, "game-automation-v3.js")).href);
+  const fresh = helpers.getV3RosterSnapshotFreshness(snapshot(), { internalGameId, gameDate });
+  assert.equal(fresh.isFresh, true);
+  assert.equal(fresh.isStale, false);
+  const filter = createRosterFilterHelpers({
+    internalGameId,
+    gameDate,
+    players: [{ name: "登録選手", number: "12", position: "外野手" }]
+  });
+  assert.equal(filter.isPlayerInCurrentRoster({ name: "登録選手", uniformNumber: "12", isActiveRoster: false }), true);
+  assert.equal(filter.isPlayerInCurrentRoster({ name: "抹消選手", uniformNumber: "53", isActiveRoster: true }), false);
+  assert.match(script, /isPlayerInCurrentRoster\(player\) && player\?\.isBatterCandidate === true/);
+  assert.match(script, /!isPlayerInCurrentRoster\(player\) && player\?\.isBatterCandidate === true/);
+});

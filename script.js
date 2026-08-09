@@ -2877,6 +2877,8 @@ function applyRosterSnapshotDiff(rosterResult) {
 
 function normalizeRosterSnapshot(snapshot) {
   return {
+    internalGameId: typeof snapshot?.internalGameId === "string" ? snapshot.internalGameId : "",
+    gameDate: typeof snapshot?.gameDate === "string" ? snapshot.gameDate.slice(0, 10) : "",
     fetchedAt: typeof snapshot?.fetchedAt === "string" ? snapshot.fetchedAt : "",
     sourceUrl: typeof snapshot?.sourceUrl === "string" ? snapshot.sourceUrl : "",
     method: typeof snapshot?.method === "string" ? snapshot.method : "",
@@ -2962,8 +2964,27 @@ function canUseRosterSnapshot(snapshot) {
   return Boolean(snapshot?.players?.length) && !snapshot.warning;
 }
 
-function isPlayerInCurrentRoster(player) {
+function getGameDayRosterTargetInternalGameId() {
+  return String(
+    state.predictionTargetGame?.internalGameId
+    || state.probableStarter.nextGame?.internalGameId
+    || getCurrentGameId()
+    || ""
+  ).trim();
+}
+
+function getRosterSnapshotForCurrentGame() {
   const snapshot = normalizeRosterSnapshot(loadFromStorage(STORAGE_KEYS.rosterSnapshot));
+  const internalGameId = getGameDayRosterTargetInternalGameId();
+  const gameDate = String(state.predictionTargetGame?.date || "").slice(0, 10);
+  if (!internalGameId || snapshot.internalGameId !== internalGameId || (gameDate && snapshot.gameDate !== gameDate)) {
+    return { ...snapshot, players: [] };
+  }
+  return snapshot;
+}
+
+function isPlayerInCurrentRoster(player) {
+  const snapshot = getRosterSnapshotForCurrentGame();
   if (!canUseRosterSnapshot(snapshot)) {
     return player?.isActiveRoster === true;
   }
@@ -2987,9 +3008,13 @@ function rosterEntryMatchesPlayer(entry, player) {
 }
 
 async function initializeRosterCandidateSync() {
-  const gameSnapshot = await fetchGameDayRosterSnapshot();
-  if (gameSnapshot.ok && gameSnapshot.players.length) {
+  const internalGameId = getGameDayRosterTargetInternalGameId();
+  const gameSnapshot = await fetchGameDayRosterSnapshot(internalGameId);
+  if (internalGameId !== getGameDayRosterTargetInternalGameId()) return;
+  if (gameSnapshot.ok && gameSnapshot.internalGameId === internalGameId && gameSnapshot.players.length) {
     saveToStorage(STORAGE_KEYS.rosterSnapshot, {
+      internalGameId,
+      gameDate: gameSnapshot.gameDate || state.predictionTargetGame?.date || "",
       fetchedAt: gameSnapshot.capturedAt || new Date().toISOString(),
       sourceUrl: "auth-worker://game-day-roster",
       method: "game-day-roster-snapshot",
@@ -3334,7 +3359,8 @@ async function handlePublicGameSelectionChange(event) {
   await Promise.allSettled([
     syncPredictionFromAccount({ force: true }),
     fetchStoredProbableStarter(),
-    refreshGameDayNoticeStatus({ force: true })
+    refreshGameDayNoticeStatus({ force: true }),
+    initializeRosterCandidateSync()
   ]);
   renderAll();
 }
@@ -8566,12 +8592,11 @@ async function refreshGameDayNoticeStatus({ force = false } = {}) {
   }
 }
 
-async function fetchGameDayRosterSnapshot() {
-  const gameId = getGameDayNoticeTargetGameId();
+async function fetchGameDayRosterSnapshot(internalGameId = getGameDayRosterTargetInternalGameId()) {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
-  if (!gameId || !baseUrl) return { ok: false, players: [] };
+  if (!internalGameId || !baseUrl) return { ok: false, players: [] };
   try {
-    const response = await fetch(`${baseUrl}/api/game-day-roster?gameId=${encodeURIComponent(gameId)}`, { credentials: "include", cache: "no-store" });
+    const response = await fetch(`${baseUrl}/api/game-day-roster?internalGameId=${encodeURIComponent(internalGameId)}`, { credentials: "include", cache: "no-store" });
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok || !Array.isArray(payload.players)) return { ok: false, players: [] };
     return payload;

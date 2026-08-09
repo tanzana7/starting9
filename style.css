@@ -4610,12 +4610,18 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
 }
 
 .app-layout:not(.is-admin-screen) .lineup-builder {
-  grid-template-columns: minmax(280px, 0.9fr) minmax(360px, 1.1fr);
-  gap: 24px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .app-layout:not(.is-admin-screen) .lineup-panel,
 .app-layout:not(.is-admin-screen) .player-panel {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -5202,7 +5208,7 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
 }
 
 /* Desktop lineup editor: use the available width without changing mobile behavior. */
-@media (min-width: 900px) {
+@media (min-width: 1000px) {
   body:not(:has(.app-layout.is-admin-screen)) .container {
     width: calc(100% - 48px);
     max-width: 75rem;
@@ -5228,9 +5234,12 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
   }
 
   .app-layout:not(.is-admin-screen) .lineup-builder {
-    grid-template-columns: minmax(420px, 560px) minmax(360px, 1fr);
-    gap: 28px;
+    grid-template-columns: minmax(380px, 480px) minmax(320px, 1fr);
+    gap: 20px;
     width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
   }
 
   .app-layout:not(.is-admin-screen) .lineup-panel,
@@ -5243,7 +5252,6 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
   }
 
   .app-layout:not(.is-admin-screen) .player-panel {
-    min-width: 360px;
     background: #f8fbfe;
   }
 
@@ -5385,7 +5393,8 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
 
   .app-layout:not(.is-admin-screen) .player-list {
     grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    min-width: 360px;
+    min-width: 0;
+    max-width: 100%;
     gap: 10px;
     max-height: none;
     overflow: visible;
@@ -5436,9 +5445,9 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
   }
 }
 
-@media (min-width: 64rem) {
+@media (min-width: 1200px) {
   .app-layout:not(.is-admin-screen) .lineup-builder {
-    grid-template-columns: minmax(480px, 560px) minmax(360px, 1fr);
+    grid-template-columns: minmax(420px, 480px) minmax(320px, 1fr);
   }
 }
 

@@ -5228,7 +5228,7 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
   }
 
   .app-layout:not(.is-admin-screen) .lineup-builder {
-    grid-template-columns: minmax(420px, 560px) minmax(280px, 1fr);
+    grid-template-columns: minmax(420px, 560px) minmax(360px, 1fr);
     gap: 28px;
     width: 100%;
   }
@@ -5243,7 +5243,7 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
   }
 
   .app-layout:not(.is-admin-screen) .player-panel {
-    min-width: 280px;
+    min-width: 360px;
     background: #f8fbfe;
   }
 
@@ -5384,7 +5384,8 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
   }
 
   .app-layout:not(.is-admin-screen) .player-list {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    min-width: 360px;
     gap: 10px;
     max-height: none;
     overflow: visible;
@@ -5394,6 +5395,7 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
 
   .app-layout:not(.is-admin-screen) .player-chip {
     min-height: 56px;
+    min-width: 120px;
     padding: 10px 12px;
     border: 1px solid #c7d7e8;
     border-radius: 7px;
@@ -5402,9 +5404,8 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
 
   .app-layout:not(.is-admin-screen) .player-chip .player-name {
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
 
   .app-layout:not(.is-admin-screen) .player-chip.is-used {
@@ -5431,13 +5432,13 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
 
 @media (min-width: 78.125rem) {
   .app-layout:not(.is-admin-screen) .player-list {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   }
 }
 
 @media (min-width: 64rem) {
   .app-layout:not(.is-admin-screen) .lineup-builder {
-    grid-template-columns: minmax(480px, 560px) minmax(280px, 1fr);
+    grid-template-columns: minmax(480px, 560px) minmax(360px, 1fr);
   }
 }
 

@@ -274,6 +274,13 @@ const state = {
     games: [],
     message: ""
   },
+  publicRoster: {
+    internalGameId: "",
+    gameDate: "",
+    status: "pending",
+    players: [],
+    isLoading: false
+  },
   resultHistory: {
     isLoading: false,
     isDetailLoading: false,
@@ -1653,6 +1660,19 @@ function getPredictionCandidateNames() {
     .map((player) => player.name);
 }
 
+function hasFreshPublicRosterForCurrentGame() {
+  const internalGameId = getGameDayRosterTargetInternalGameId();
+  const gameDate = String(state.predictionTargetGame?.date || "").slice(0, 10);
+  const roster = state.publicRoster;
+  return Boolean(
+    roster
+    && roster.status === "fresh"
+    && roster.internalGameId === internalGameId
+    && (!gameDate || roster.gameDate === gameDate)
+    && roster.players.length
+  );
+}
+
 function setCandidateRosterFilter(filter) {
   state.candidateRosterFilter = filter === "inactive" ? "inactive" : "active";
   saveToStorage(STORAGE_KEYS.candidateRosterFilter, state.candidateRosterFilter);
@@ -2984,6 +3004,11 @@ function getRosterSnapshotForCurrentGame() {
 }
 
 function isPlayerInCurrentRoster(player) {
+  if (!state.isAdminMode) {
+    if (!hasFreshPublicRosterForCurrentGame()) return false;
+    return state.publicRoster.players.some((entry) => rosterEntryMatchesPlayer(entry, player));
+  }
+
   const snapshot = getRosterSnapshotForCurrentGame();
   if (!canUseRosterSnapshot(snapshot)) {
     return player?.isActiveRoster === true;
@@ -3009,9 +3034,27 @@ function rosterEntryMatchesPlayer(entry, player) {
 
 async function initializeRosterCandidateSync() {
   const internalGameId = getGameDayRosterTargetInternalGameId();
+  const gameDate = String(state.predictionTargetGame?.date || "").slice(0, 10);
+  state.publicRoster = {
+    internalGameId,
+    gameDate,
+    status: "pending",
+    players: [],
+    isLoading: true
+  };
+  renderPicker("prediction");
+  renderPredictionDeadline();
   const gameSnapshot = await fetchGameDayRosterSnapshot(internalGameId);
+  state.publicRoster.isLoading = false;
   if (internalGameId !== getGameDayRosterTargetInternalGameId()) return;
   if (gameSnapshot.ok && gameSnapshot.internalGameId === internalGameId && gameSnapshot.players.length) {
+    state.publicRoster = {
+      internalGameId,
+      gameDate: gameSnapshot.gameDate || gameDate,
+      status: "fresh",
+      players: normalizeRosterEntries(gameSnapshot.players),
+      isLoading: false
+    };
     saveToStorage(STORAGE_KEYS.rosterSnapshot, {
       internalGameId,
       gameDate: gameSnapshot.gameDate || state.predictionTargetGame?.date || "",
@@ -3027,12 +3070,11 @@ async function initializeRosterCandidateSync() {
       players: gameSnapshot.players
     });
     renderPicker("prediction");
+    renderPredictionDeadline();
     return;
   }
-  const snapshot = normalizeRosterSnapshot(loadFromStorage(STORAGE_KEYS.rosterSnapshot));
   renderPicker("prediction");
-  // ページ表示は保存済みスナップショットだけを使い、NPB取得は管理者操作またはAuth Cronに委ねる。
-  if (snapshot.players.length) return;
+  renderPredictionDeadline();
 }
 
 function buildNpbWorkerRequestUrl(sourceUrl) {
@@ -3767,7 +3809,7 @@ function renderPredictionDeadline() {
       container.textContent = deadline.message || "予想の受付状況を確認しています。";
     }
   }
-  if (saveButton) saveButton.disabled = Boolean(deadline.isClosed) || state.predictionRemote.isSaving || state.predictionRemote.isSubmitting;
+  if (saveButton) saveButton.disabled = Boolean(deadline.isClosed) || (!state.isAdminMode && !hasFreshPublicRosterForCurrentGame()) || state.predictionRemote.isSaving || state.predictionRemote.isSubmitting;
   if (resetButton) resetButton.disabled = Boolean(deadline.isClosed) || state.predictionRemote.isDeleting;
   renderPublicGameSelectionMeta();
 }
@@ -6735,7 +6777,7 @@ function updatePredictionSaveButton() {
 
   const isSaving = state.predictionRemote.isSaving;
   const isSubmitting = state.predictionRemote.isSubmitting;
-  button.disabled = isSaving || isSubmitting || isPredictionEditingLocked();
+  button.disabled = isSaving || isSubmitting || isPredictionEditingLocked() || (!state.isAdminMode && !hasFreshPublicRosterForCurrentGame());
   button.textContent = isSaving || isSubmitting ? "保存中..." : "予想を保存する";
   button.setAttribute("aria-busy", isSaving || isSubmitting ? "true" : "false");
 }
@@ -9053,6 +9095,7 @@ function renderPicker(pickerName) {
 
 function renderPredictionRosterFilter() {
   const filter = state.candidateRosterFilter === "inactive" ? "inactive" : "active";
+  const publicRosterReady = state.isAdminMode || hasFreshPublicRosterForCurrentGame();
   document.querySelectorAll("[data-roster-filter]").forEach((button) => {
     const isSelected = button.dataset.rosterFilter === filter;
     button.classList.toggle("is-selected", isSelected);
@@ -9062,11 +9105,17 @@ function renderPredictionRosterFilter() {
 
   document.querySelectorAll('.player-chip[data-picker="prediction"]').forEach((chip) => {
     const player = getPlayerData(chip.dataset.player);
-    const shouldShow = filter === "active"
+    const shouldShow = publicRosterReady && (filter === "active"
       ? isPlayerInCurrentRoster(player) && player?.isBatterCandidate === true
-      : !isPlayerInCurrentRoster(player) && player?.isBatterCandidate === true;
+      : !isPlayerInCurrentRoster(player) && player?.isBatterCandidate === true);
     chip.classList.toggle("hidden", !shouldShow);
   });
+
+  const status = document.getElementById("predictionRosterStatus");
+  if (status) {
+    status.textContent = publicRosterReady ? "" : "選手一覧を更新中です。しばらくしてから再度ご確認ください。";
+    status.classList.toggle("hidden", publicRosterReady);
+  }
 }
 
 function renderPositionButton(button, position, index) {

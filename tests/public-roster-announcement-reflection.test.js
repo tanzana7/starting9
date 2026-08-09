@@ -47,7 +47,17 @@ function getScriptFunctionSource(name) {
 
 function createRosterFilterHelpers(storedSnapshot, selectedGame = { internalGameId, date: gameDate }) {
   const context = vm.createContext({
-    state: { predictionTargetGame: selectedGame, probableStarter: { nextGame: null } },
+    state: {
+      isAdminMode: false,
+      predictionTargetGame: selectedGame,
+      probableStarter: { nextGame: null },
+      publicRoster: {
+        internalGameId,
+        gameDate,
+        status: "fresh",
+        players: storedSnapshot?.players || []
+      }
+    },
     STORAGE_KEYS: { rosterSnapshot: "roster" },
     loadFromStorage: () => storedSnapshot,
     getCurrentGameId: () => selectedGame.internalGameId || "",
@@ -61,6 +71,7 @@ function createRosterFilterHelpers(storedSnapshot, selectedGame = { internalGame
     "getGameDayRosterTargetInternalGameId",
     "getRosterSnapshotForCurrentGame",
     "rosterEntryMatchesPlayer",
+    "hasFreshPublicRosterForCurrentGame",
     "isPlayerInCurrentRoster"
   ];
   vm.runInContext(`${names.map(getScriptFunctionSource).join("\n")}; this.helpers = { isPlayerInCurrentRoster };`, context);
@@ -118,4 +129,33 @@ test("snapshotの登録選手は候補に入り、抹消選手は候補から外
   assert.equal(filter.isPlayerInCurrentRoster({ name: "抹消選手", uniformNumber: "53", isActiveRoster: true }), false);
   assert.match(script, /isPlayerInCurrentRoster\(player\) && player\?\.isBatterCandidate === true/);
   assert.match(script, /!isPlayerInCurrentRoster\(player\) && player\?\.isBatterCandidate === true/);
+});
+
+test("freshなcanonical rosterがない場合は静的isActiveRosterを候補へ戻さない", () => {
+  const context = vm.createContext({
+    state: {
+      isAdminMode: false,
+      predictionTargetGame: { internalGameId, date: gameDate },
+      probableStarter: { nextGame: null },
+      publicRoster: { internalGameId, gameDate, status: "pending", players: [] }
+    },
+    STORAGE_KEYS: { rosterSnapshot: "roster" },
+    loadFromStorage: () => ({ players: [] }),
+    getCurrentGameId: () => internalGameId,
+    normalizePlayerKey: (value) => String(value || "").normalize("NFKC").replace(/[\s\u3000]/g, "")
+  });
+  const names = [
+    "normalizeRosterSnapshot",
+    "normalizeRosterEntries",
+    "createRosterEntryKey",
+    "canUseRosterSnapshot",
+    "getGameDayRosterTargetInternalGameId",
+    "getRosterSnapshotForCurrentGame",
+    "rosterEntryMatchesPlayer",
+    "hasFreshPublicRosterForCurrentGame",
+    "isPlayerInCurrentRoster"
+  ];
+  vm.runInContext(`${names.map(getScriptFunctionSource).join("\n")}; this.result = isPlayerInCurrentRoster({ name: "古い選手", uniformNumber: "1", isActiveRoster: true });`, context);
+  assert.equal(context.result, false);
+  assert.match(script, /選手一覧を更新中です/);
 });

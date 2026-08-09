@@ -31,6 +31,6 @@ test("admin-v3はV3自動処理と競合する手動操作を画面から外す"
 });
 
 test("admin-v3のJavaScriptキャッシュバスターは公示整理版へ更新される", () => {
-  assert.match(page, /admin-v3\.js\?v=automation-v3-18-score-ranking-publish-deps/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-19-post-e2e-admin-polish/);
   assert.match(page, /admin-v3\.css\?v=automation-v3-13-structured-logs/);
 });

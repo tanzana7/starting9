@@ -277,9 +277,11 @@ const state = {
   },
   resultHistory: {
     isLoading: false,
+    isDetailLoading: false,
     games: [],
     selectedGameId: "",
-    message: ""
+    message: "",
+    detailError: ""
   },
   yearlyRanking: {
     isLoading: false,
@@ -6291,15 +6293,15 @@ function formatResultHistoryTeamName(value) {
 }
 
 function formatResultHistoryMatchup(game) {
-  const away = formatResultHistoryTeamName(game?.awayTeam);
   const home = formatResultHistoryTeamName(game?.homeTeam);
-  return away && home ? `${away} vs ${home}` : "対戦情報を確認中";
+  const away = formatResultHistoryTeamName(game?.awayTeam);
+  return home && away ? `${home} vs ${away}` : "対戦情報を確認中";
 }
 
 async function refreshResultHistory({ force = false } = {}) {
   const user = getPredictionAccountUser();
   if (!user) {
-    state.resultHistory = { isLoading: false, games: [], selectedGameId: "", message: "ログインすると過去の試合結果を確認できます。" };
+    state.resultHistory = { isLoading: false, isDetailLoading: false, games: [], selectedGameId: "", message: "ログインすると過去の試合結果を確認できます。", detailError: "" };
     renderResultHistory();
     return;
   }
@@ -6307,6 +6309,7 @@ async function refreshResultHistory({ force = false } = {}) {
   const url = buildResultGamesApiUrl();
   if (!url) return;
   state.resultHistory.isLoading = true;
+  state.resultHistory.detailError = "";
   state.resultHistory.message = "過去の試合結果を確認中...";
   renderResultHistory();
   try {
@@ -6341,7 +6344,10 @@ async function handleResultHistoryClick(event) {
 
 async function loadResultHistoryGame(gameId) {
   state.resultHistory.selectedGameId = gameId;
+  state.resultHistory.isDetailLoading = true;
+  state.resultHistory.detailError = "";
   state.resultHistory.message = "試合結果を読み込み中...";
+  renderScoreResult();
   renderResultHistory();
   try {
     const response = await fetch(buildResultGamesApiUrl(gameId), { credentials: "include", cache: "no-store" });
@@ -6370,13 +6376,23 @@ async function loadResultHistoryGame(gameId) {
     }
     const prediction = remotePredictionToLocal({ lineup: payload.prediction.lineup }, payload.updatedAt || payload.submittedAt, gameId);
     const actual = remotePredictionToLocal({ lineup: payload.actualLineup }, payload.scoredAt || "", gameId);
-    state.result = { ...scoreLineup(prediction.lineup, actual.lineup), gameId: payload.internalGameId || payload.gameId || gameId };
+    state.result = {
+      ...scoreLineup(prediction.lineup, actual.lineup),
+      gameId: payload.internalGameId || payload.gameId || gameId,
+      publishedAt: payload.publishedAt || "",
+      totalScore: payload.totalScore ?? payload.score ?? null
+    };
     state.resultHistory.message = "";
     renderScoreResult();
   } catch (error) {
+    state.result = null;
+    state.resultHistory.detailError = "結果を読み込めませんでした。時間をおいて再度お試しください。";
     state.resultHistory.message = "この試合の結果を取得できませんでした。";
     console.error("過去の試合結果の読み込みに失敗しました", error.message);
+  } finally {
+    state.resultHistory.isDetailLoading = false;
   }
+  renderScoreResult();
   renderResultHistory();
 }
 
@@ -6389,7 +6405,7 @@ function renderResultHistory() {
     return;
   }
   if (!history.games.length) {
-    container.innerHTML = `<p class="result-history-message">${escapeHtml(history.message || "採点済みの過去試合はありません。")}</p>`;
+    container.innerHTML = `<p class="result-history-message">${escapeHtml(history.message || "表示できる保存済み予想はありません。")}</p>`;
     return;
   }
   container.innerHTML = history.games.map((game) => {
@@ -9173,6 +9189,16 @@ function renderScoreResult() {
 
   if (!state.result) {
     container.className = "empty-state";
+    if (state.resultHistory.isLoading || state.resultHistory.isDetailLoading) {
+      container.textContent = "結果を読み込み中です。";
+      shareButton.classList.add("hidden");
+      return;
+    }
+    if (state.resultHistory.detailError) {
+      container.textContent = state.resultHistory.detailError;
+      shareButton.classList.add("hidden");
+      return;
+    }
     const resultStatus = state.gameDayNotice.record?.resultStatus;
     container.textContent = resultStatus === "prestart"
       ? "結果は試合開始後に公開されます。"
@@ -9205,6 +9231,12 @@ function renderScoreResult() {
     ? `表示中：${selectedGame.displayLabel || `${selectedGame.gameDate || selectedGame.date || ""} ${formatResultHistoryMatchup(selectedGame)}`}`
     : "表示中の試合結果";
   container.appendChild(resultHeading);
+  if (state.result.publishedAt) {
+    const publishedAt = document.createElement("p");
+    publishedAt.className = "result-selected-game";
+    publishedAt.textContent = `公開：${formatPublicJstDateTime(state.result.publishedAt)}`;
+    container.appendChild(publishedAt);
+  }
   container.appendChild(createResultView(createResultViewModel(state.result)));
   shareButton.classList.remove("hidden");
 }

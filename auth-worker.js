@@ -11567,7 +11567,7 @@ function formatPublicResultTeamName(value) {
 function createPublicResultDisplayLabel({ gameDate = "", homeTeam = "", awayTeam = "" } = {}) {
   const home = formatPublicResultTeamName(homeTeam);
   const away = formatPublicResultTeamName(awayTeam);
-  const matchup = away && home ? `${away} vs ${home}` : "対戦情報を確認中";
+  const matchup = home && away ? `${home} vs ${away}` : "対戦情報を確認中";
   return [String(gameDate || "").trim(), matchup].filter(Boolean).join(" ");
 }
 
@@ -11668,7 +11668,7 @@ async function handleGetResultGames(request, env, cors) {
      )
      SELECT latest_predictions.game_id, latest_predictions.internal_game_id, latest_predictions.score, latest_predictions.max_score,
             latest_predictions.scored_at, latest_predictions.updated_at, latest_predictions.status,
-            ranking_games.game_date, ranking_games.game_status, ranking_games.publication_status,
+            ranking_games.game_date, ranking_games.game_status, ranking_games.publication_status, ranking_games.published_at,
             ${eligibilitySelect}
        FROM latest_predictions
        JOIN ranking_games ON ranking_games.game_id = latest_predictions.game_id
@@ -11702,7 +11702,11 @@ async function handleGetResultGames(request, env, cors) {
       resultsPublished,
       score: !excluded && resultsPublished && row.score !== null ? Number(row.score) : null,
       maxScore: !excluded && resultsPublished && row.max_score !== null ? Number(row.max_score) : null,
+      totalScore: !excluded && resultsPublished && row.score !== null ? Number(row.score) : null,
       scoredAt: !excluded ? (row.scored_at || null) : null,
+      publishedAt: resultsPublished ? (row.published_at || null) : null,
+      resultStatus: resultsPublished ? "published" : (row.publication_status || "scored_private"),
+      gameLabel: metadata.displayLabel || "",
       publicationStatus: row.publication_status || "scored_private",
       serviceUnavailable,
       serviceUnavailableReason: serviceUnavailable ? SCORING_RETRY_EXPIRED_CODE : null,
@@ -11751,7 +11755,10 @@ async function handleGetResultGame(request, env, cors, gameId) {
       updatedAt: row.updated_at,
       score: null,
       maxScore: null,
+      totalScore: null,
       scoredAt: null,
+      publishedAt: rankingState?.published_at || null,
+      resultStatus: SERVICE_UNAVAILABLE_GAME_STATUS,
       actualLineup: null,
       resultsPublished: false,
       serviceUnavailable,
@@ -11779,7 +11786,10 @@ async function handleGetResultGame(request, env, cors, gameId) {
       updatedAt: row.updated_at,
       score: null,
       maxScore: null,
+      totalScore: null,
       scoredAt: null,
+      publishedAt: rankingState?.published_at || null,
+      resultStatus: "excluded",
       actualLineup: null,
       resultsPublished: false,
       serviceUnavailable: false,
@@ -11810,7 +11820,10 @@ async function handleGetResultGame(request, env, cors, gameId) {
     updatedAt: row.updated_at,
     score: resultsPublished && row.score !== null ? Number(row.score) : null,
     maxScore: resultsPublished && row.max_score !== null ? Number(row.max_score) : null,
+    totalScore: resultsPublished && row.score !== null ? Number(row.score) : null,
     scoredAt: resultsPublished ? row.scored_at : null,
+    publishedAt: resultsPublished ? (rankingState?.published_at || null) : null,
+    resultStatus: resultsPublished ? "published" : "scored_private",
     actualLineup: resultsPublished && row.actual_lineup_json ? parseStoredActualLineup(row.actual_lineup_json) : null,
     resultsPublished,
     serviceUnavailable: false,

@@ -91,6 +91,32 @@ function escapeV3(value) {
   return String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]));
 }
 
+function normalizeV3List(value, key = "items") {
+  let candidate = value;
+  if (typeof candidate === "string") {
+    try {
+      candidate = JSON.parse(candidate);
+    } catch {
+      return { items: [], unexpected: true };
+    }
+  }
+  if (Array.isArray(candidate)) return { items: candidate, unexpected: false };
+  if (candidate === undefined || candidate === null) return { items: [], unexpected: false };
+  if (typeof candidate !== "object") return { items: [], unexpected: true };
+
+  const wrapped = candidate[key] ?? candidate.items ?? candidate.results ?? candidate.data;
+  if (wrapped === undefined || wrapped === null) return { items: [], unexpected: true };
+  return normalizeV3List(wrapped, key);
+}
+
+function v3ListItems(value, key = "items") {
+  return normalizeV3List(value, key).items;
+}
+
+function normalizeV3RevisionList(value) {
+  return normalizeV3List(value, "revisions");
+}
+
 function v3StorageGet(key) {
   try { return window.sessionStorage.getItem(key) || ""; } catch { return ""; }
 }
@@ -142,7 +168,7 @@ function statusClass(status) {
 }
 
 function latestV3Job(game, jobType) {
-  return [...(game?.jobs || [])].filter((job) => job.job_type === jobType).sort((left, right) => {
+  return v3ListItems(game?.jobs, "jobs").filter((job) => job.job_type === jobType).sort((left, right) => {
     return String(right.updated_at || right.scheduled_at || "").localeCompare(String(left.updated_at || left.scheduled_at || ""));
   })[0] || null;
 }
@@ -176,7 +202,7 @@ function gameDateForFilter(game) {
 function filteredV3Games(games, filter) {
   const today = v3JstDate();
   const tomorrow = v3ShiftDate(today, 1);
-  return (games || []).filter((game) => {
+  return v3ListItems(games, "games").filter((game) => {
     const date = gameDateForFilter(game);
     if (filter === "today") return date === today;
     if (filter === "tomorrow") return date === tomorrow;
@@ -187,8 +213,9 @@ function filteredV3Games(games, filter) {
 }
 
 function selectedV3Game(games) {
-  const found = (games || []).find((game) => game.internalGameId === v3State.selectedGameId);
-  return found || (games || [])[0] || null;
+  const items = v3ListItems(games, "games");
+  const found = items.find((game) => game.internalGameId === v3State.selectedGameId);
+  return found || items[0] || null;
 }
 
 function selectedV3Details() {
@@ -221,7 +248,7 @@ function renderSummaryCard(label, count, tone = "ok") {
 }
 
 function nextV3Job(game) {
-  return [...(game?.jobs || [])].filter((job) => ["pending", "claimed", "retry_wait"].includes(job.status)).sort((left, right) => String(left.scheduled_at || "").localeCompare(String(right.scheduled_at || "")))[0] || null;
+  return v3ListItems(game?.jobs, "jobs").filter((job) => ["pending", "claimed", "retry_wait"].includes(job.status)).sort((left, right) => String(left.scheduled_at || "").localeCompare(String(right.scheduled_at || "")))[0] || null;
 }
 
 function nextV3ActionText(game) {
@@ -260,7 +287,7 @@ function v3JobTimestamp(job) {
 
 function hasNewerV3Job(game, candidateJob, statuses = null) {
   const candidateTimestamp = v3JobTimestamp(candidateJob);
-  return (game?.jobs || []).some((job) => job !== candidateJob
+  return v3ListItems(game?.jobs, "jobs").some((job) => job !== candidateJob
     && job.job_type === candidateJob?.job_type
     && (!statuses || statuses.includes(String(job.status || "")))
     && v3JobTimestamp(job) >= candidateTimestamp);
@@ -273,14 +300,14 @@ function isNoOpRankingRevisionJob(game, job) {
 }
 
 function currentFailedV3Jobs(game, types = []) {
-  return (game?.jobs || []).filter((job) => String(job.status || "") === "failed"
+  return v3ListItems(game?.jobs, "jobs").filter((job) => String(job.status || "") === "failed"
     && (!types.length || types.includes(String(job.job_type || "")))
     && !isNoOpRankingRevisionJob(game, job)
     && !hasNewerV3Job(game, job));
 }
 
 function currentRetryWaitV3Jobs(game, types = []) {
-  return (game?.jobs || []).filter((job) => String(job.status || "") === "retry_wait"
+  return v3ListItems(game?.jobs, "jobs").filter((job) => String(job.status || "") === "retry_wait"
     && (!types.length || types.includes(String(job.job_type || "")))
     && !isNoOpRankingRevisionJob(game, job)
     && !hasNewerV3Job(game, job));
@@ -327,7 +354,7 @@ function rosterDisplayState(game) {
     .map((slot) => new Date(slot || ""))
     .filter((slot) => !Number.isNaN(slot.getTime()) && slot.getTime() > now.getTime())
     .sort((left, right) => left.getTime() - right.getTime())[0]?.toISOString() || null;
-  const jobs = (game?.jobs || []).filter((job) => String(job.job_type || "") === "roster_fetch");
+  const jobs = v3ListItems(game?.jobs, "jobs").filter((job) => String(job.job_type || "") === "roster_fetch");
   const byRecent = (left, right) => String(right.updated_at || right.completed_at || right.scheduled_at || "")
     .localeCompare(String(left.updated_at || left.completed_at || left.scheduled_at || ""));
   const decisionSeverity = String(diagnostics.severity || "").toUpperCase();
@@ -424,7 +451,7 @@ function lineupDisplayState(game, now = new Date()) {
   if (["lineup_ready", "scored", "ranked", "published"].includes(state)) {
     return { status: "ok", fallbackStatus: "complete", label: "完了", job: null, reasonCode: "", nextCheckAt: null, detail: "正式スタメン確定済み" };
   }
-  const jobs = (game?.jobs || [])
+  const jobs = v3ListItems(game?.jobs, "jobs")
     .filter((job) => ["lineup_fetch", "provisional_lineup_fetch", "final_lineup_fetch"].includes(String(job.job_type || "")))
     .sort((left, right) => String(right.updated_at || right.completed_at || right.scheduled_at || "")
       .localeCompare(String(left.updated_at || left.completed_at || left.scheduled_at || "")));
@@ -468,7 +495,7 @@ function lineupDisplayState(game, now = new Date()) {
 }
 
 function todayOpsLatestJob(game, statuses = []) {
-  const jobs = (game?.jobs || []).filter((job) => !statuses.length || statuses.includes(String(job.status || "")));
+  const jobs = v3ListItems(game?.jobs, "jobs").filter((job) => !statuses.length || statuses.includes(String(job.status || "")));
   return [...jobs].sort((left, right) => String(right.completed_at || right.updated_at || right.scheduled_at || "").localeCompare(String(left.completed_at || left.updated_at || left.scheduled_at || "")))[0] || null;
 }
 
@@ -485,7 +512,7 @@ function todayOpsStep(game, step, now = new Date()) {
   if (normalized) return normalized.status;
   const state = String(game?.state?.state || "scheduled");
   const schedule = game?.schedule || {};
-  const jobs = game?.jobs || [];
+  const jobs = v3ListItems(game?.jobs, "jobs");
   const stepJobTypes = {
     probable: ["probable_starter_fetch"],
     roster: ["roster_fetch"],
@@ -520,9 +547,10 @@ function todayOpsStep(game, step, now = new Date()) {
 }
 
 function buildTodayOpsModel(payload, games, now = new Date()) {
-  const todayGames = filteredV3Games(games || [], "today");
+  const gameItems = v3ListItems(games, "games");
+  const todayGames = filteredV3Games(gameItems, "today");
   const todayJst = v3JstDate(now);
-  const activeFutureGames = (games || []).filter((game) => gameDateForFilter(game) > todayJst && Number(game.isActive ?? 1) !== 0 && !game.deletedAt && (String(game.homeTeam || game.home_team || "").toLowerCase() === "fighters" || String(game.awayTeam || game.away_team || "").toLowerCase() === "fighters"));
+  const activeFutureGames = gameItems.filter((game) => gameDateForFilter(game) > todayJst && Number(game.isActive ?? 1) !== 0 && !game.deletedAt && (String(game.homeTeam || game.home_team || "").toLowerCase() === "fighters" || String(game.awayTeam || game.away_team || "").toLowerCase() === "fighters"));
   const reportedFutureGames = payload?.todayOps?.futureGamesCount;
   const hasReportedFutureGames = typeof reportedFutureGames === "number" && Number.isFinite(reportedFutureGames);
   const futureGames = hasReportedFutureGames ? reportedFutureGames : activeFutureGames.length;
@@ -537,7 +565,7 @@ function buildTodayOpsModel(payload, games, now = new Date()) {
         && Number(futureScheduleSync?.gamesInserted || 0) === 0
         && Number(futureScheduleSync?.gamesUpdated || 0) === 0)
   );
-  const allJobs = todayGames.flatMap((game) => game.jobs || []);
+  const allJobs = todayGames.flatMap((game) => v3ListItems(game?.jobs, "jobs"));
   const latestCompleted = todayOpsLatestJob({ jobs: allJobs }, ["completed"]);
   const latestFailed = todayOpsLatestJob({ jobs: currentFailedV3Jobs({ jobs: allJobs }) }, ["failed"]);
   const cronLastRunAt = payload?.todayOps?.cronLastRunAt || null;
@@ -566,7 +594,7 @@ function buildTodayOpsModel(payload, games, now = new Date()) {
       game,
       state,
       attention,
-      status: attention ? "attention" : game?.jobs?.some((job) => ["pending", "claimed", "retry_wait"].includes(job.status)) ? "waiting" : "ok",
+      status: attention ? "attention" : v3ListItems(game?.jobs, "jobs").some((job) => ["pending", "claimed", "retry_wait"].includes(job.status)) ? "waiting" : "ok",
       nextAction: nextV3ActionText(game),
       steps: {
         probable: todayOpsStep(game, "probable", now),
@@ -855,14 +883,15 @@ function renderRosterSummary(game) {
 }
 
 function renderDashboard(payload, games) {
-  const todayGames = filteredV3Games(payload.games || [], "today");
-  const allJobs = (payload.games || []).flatMap((game) => game.jobs || []);
-  const attention = (payload.games || []).filter(gameHasAttention).length;
+  const allGames = v3ListItems(payload?.games, "games");
+  const todayGames = filteredV3Games(allGames, "today");
+  const allJobs = allGames.flatMap((game) => v3ListItems(game?.jobs, "jobs"));
+  const attention = allGames.filter(gameHasAttention).length;
   const failed = allJobs.filter((job) => job.status === "failed").length;
   const retry = allJobs.filter((job) => job.status === "retry_wait").length;
-  const pendingIdentity = (payload.games || []).filter((game) => ["pending", "retry_wait"].includes(game.npbIdentityState)).length;
-  const completedToday = todayGames.reduce((count, game) => count + (game.jobs || []).filter((job) => job.status === "completed" && String(job.completed_at || "").slice(0, 10) === v3JstDate()).length, 0);
-  const publicationWait = (payload.games || []).filter((game) => game.state?.state === "ranked").length;
+  const pendingIdentity = allGames.filter((game) => ["pending", "retry_wait"].includes(game.npbIdentityState)).length;
+  const completedToday = todayGames.reduce((count, game) => count + v3ListItems(game?.jobs, "jobs").filter((job) => job.status === "completed" && String(job.completed_at || "").slice(0, 10) === v3JstDate()).length, 0);
+  const publicationWait = allGames.filter((game) => game.state?.state === "ranked").length;
   const cards = todayGames.length ? todayGames.map((game) => renderGameSummary(game)).join("") : `<div class="today-empty">本日の試合はありません</div>`;
   return `<div class="view-heading"><div><h2>ダッシュボード</h2><p>本日の試合と要対応項目を最初に確認できます。</p></div></div>${renderTodayOps(payload, games)}<section class="today-card"><h3>本日の試合</h3>${cards}</section><section class="summary-grid">${renderSummaryCard("要対応", attention, attention ? "attention" : "ok")}${renderSummaryCard("失敗job", failed, failed ? "error" : "ok")}${renderSummaryCard("retry_wait", retry, retry ? "attention" : "ok")}${renderSummaryCard("掲載待ち", pendingIdentity, pendingIdentity ? "attention" : "ok")}${renderSummaryCard("本日の完了job", completedToday)}${renderSummaryCard("公開待ち", publicationWait, publicationWait ? "attention" : "ok")}</section><section class="v3-panel"><div class="view-heading"><div><h3>今日の自動処理</h3><p>詳細は試合進行メニューから確認できます。</p></div></div>${todayGames.length ? todayGames.map((game) => `<div class="compact-meta"><strong>${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}</strong><span>次: ${escapeV3(nextV3ActionText(game))}</span><span>${escapeV3(gameHasAttention(game) ? "要対応" : "正常")}</span></div>`).join("") : "<span class=muted>今日の処理履歴はありません。</span>"}</section>`;
 }
@@ -1009,7 +1038,7 @@ async function loadV3JobDetail(internalGameId, jobId, force = false) {
   if (v3State.jobDetailsLoading.has(key)) return;
   if (!force && v3State.jobDetails.has(key)) return;
   const numericJobId = Number(jobId);
-  const selected = (v3State.payload?.games || []).find((game) => game.internalGameId === internalGameId);
+  const selected = v3ListItems(v3State.payload?.games, "games").find((game) => game.internalGameId === internalGameId);
   const listedJob = selected?.jobs?.find((job) => Number(job.id) === numericJobId);
   if (!selected || !Number.isInteger(numericJobId) || numericJobId <= 0 || !listedJob) {
     v3State.jobDetails.set(key, { error: "V3_JOB_DETAIL_INVALID_TARGET" });
@@ -1035,7 +1064,10 @@ function renderLineupView(game) {
   if (!game) return renderSelectedGameHeader(null, "スタメン");
   const details = selectedV3Details();
   const current = details.lineup?.currentRevision;
-  return `${renderSelectedGameHeader(game, "スタメン", "V3が取得・確定したスタメンrevisionを確認します。")}<section class="v3-panel"><div class="detail-grid"><div><dt>最新revision</dt><dd>${escapeV3(current?.revisionId || "未作成")}</dd></div><div><dt>正式確定</dt><dd>${escapeV3(details.lineup?.lineupStatus || "待機")}</dd></div><div><dt>source / finalizedAt</dt><dd>${escapeV3(`${current?.source || "-"} / ${formatV3Jst(details.lineup?.finalizedAt)}`)}</dd></div></div><h3>revision履歴</h3><div class="revision-list">${(details.revisions || []).map((revision) => `<div class="revision-row"><span><strong>${escapeV3(revision.revisionId)}</strong> / ${escapeV3(revision.source)} / ${escapeV3(revision.reason || "-")}</span><span>${revision.isFinal ? "final" : "candidate"} ${escapeV3(formatV3Jst(revision.createdAt))}</span></div>`).join("") || "<span class=muted>revision履歴はありません。</span>"}</div><h3>取得・確定job</h3>${renderJobRows(game, ["lineup_fetch", "lineup_finalize"])}</section>`;
+  const revisions = normalizeV3RevisionList(details.revisions);
+  const revisionMarkup = revisions.items.map((revision) => `<div class="revision-row"><span><strong>${escapeV3(revision.revisionId)}</strong> / ${escapeV3(revision.source)} / ${escapeV3(revision.reason || "-")}</span><span>${revision.isFinal ? "final" : "candidate"} ${escapeV3(formatV3Jst(revision.createdAt))}</span></div>`).join("") || "<span class=muted>revision履歴はありません。</span>";
+  const revisionWarning = revisions.unexpected ? `<p class="v3-operation-result"><code>REVISION_SHAPE_UNEXPECTED</code> revision履歴の形式を確認できませんでした。</p>` : "";
+  return `${renderSelectedGameHeader(game, "スタメン", "V3が取得・確定したスタメンrevisionを確認します。")}<section class="v3-panel"><div class="detail-grid"><div><dt>最新revision</dt><dd>${escapeV3(current?.revisionId || "未作成")}</dd></div><div><dt>正式確定</dt><dd>${escapeV3(details.lineup?.lineupStatus || "待機")}</dd></div><div><dt>source / finalizedAt</dt><dd>${escapeV3(`${current?.source || "-"} / ${formatV3Jst(details.lineup?.finalizedAt)}`)}</dd></div></div><h3>revision履歴</h3>${revisionWarning}<div class="revision-list">${revisionMarkup}</div><h3>取得・確定job</h3>${renderJobRows(game, ["lineup_fetch", "lineup_finalize"])}</section>`;
 }
 
 function renderScoringView(game) {
@@ -1081,21 +1113,23 @@ function renderAutomationLogs() {
   const summary = logs.latestCronSummary;
   const summaryDetails = summary?.details || {};
   const counts = summaryDetails.counts || {};
+  const gameRuns = v3ListItems(logs.gameRuns, "gameRuns");
+  const jobTimeline = v3ListItems(logs.jobTimeline, "jobTimeline");
   const summaryMarkup = summary
     ? `<div class="automation-log-summary"><strong>最新Cron</strong><span>${escapeV3(summary.occurredAt || "-")}</span><span>runId: <code>${escapeV3(summaryDetails.runId || "-")}</code></span><span>status: ${escapeV3(summaryDetails.status || "-")}</span><span>games ${escapeV3(counts.games ?? 0)} / created ${escapeV3(counts.created ?? 0)} / claimed ${escapeV3(counts.claimed ?? 0)} / processed ${escapeV3(counts.processed ?? 0)} / failed ${escapeV3(counts.failed ?? 0)}</span><pre>${escapeV3(JSON.stringify(summaryDetails, null, 2))}</pre></div>`
     : `<p class="muted">Cronサマリーはまだありません。次回のV3 Cron実行後に表示されます。</p>`;
-  const runMarkup = (logs.gameRuns || []).slice(0, 20).map((run) => `<div class="automation-log-run"><strong>${escapeV3(run.latestOccurredAt || "-")}</strong><code>${escapeV3(run.runId)}</code><span>events ${escapeV3(run.events)} / failures ${escapeV3(run.failureCount)} / games ${escapeV3((run.internalGameIds || []).length)}</span></div>`).join("") || `<p class="muted">run単位の監査はありません。</p>`;
-  const timelineMarkup = (logs.jobTimeline || []).slice(0, 100).map((row) => {
+  const runMarkup = gameRuns.slice(0, 20).map((run) => `<div class="automation-log-run"><strong>${escapeV3(run.latestOccurredAt || "-")}</strong><code>${escapeV3(run.runId)}</code><span>events ${escapeV3(run.events)} / failures ${escapeV3(run.failureCount)} / games ${escapeV3(v3ListItems(run.internalGameIds, "internalGameIds").length)}</span></div>`).join("") || `<p class="muted">run単位の監査はありません。</p>`;
+  const timelineMarkup = jobTimeline.slice(0, 100).map((row) => {
     const detail = row.details || {};
     return `<div class="automation-log-row"><time>${escapeV3(row.occurredAt || "-")}</time><span>${escapeV3(row.eventType || "job")}</span><code>${escapeV3(row.jobType || "-")}</code><span>${escapeV3(detail.status || row.stateAfter || "-")}</span><span>${escapeV3(row.failureCode || detail.reasonCode || "-")}</span><small>${escapeV3(row.internalGameId || "-")} / run ${escapeV3(detail.runId || "-")}</small><pre>${escapeV3(JSON.stringify(detail, null, 2))}</pre></div>`;
   }).join("") || `<p class="muted">条件に一致するjob監査はありません。</p>`;
-  return `<section class="v3-panel automation-logs-panel"><div class="view-heading"><div><h3>V3 Cron監査</h3><p>planner、executor、状態遷移、run単位の集計を既存V3監査から表示します。</p></div><button type="button" data-v3-automation-log-refresh>監査を更新</button></div><div class="automation-log-filters">${input("runId", "runId")}${input("internalGameId", "internalGameId")}${input("jobType", "jobType", "lineup_fetch")}${input("status", "status", "completed")}${input("reasonCode", "reasonCode")}${input("failureCode", "failureCode")}<button type="button" data-v3-automation-log-refresh>絞り込む</button></div>${summaryMarkup}<details open><summary>game run summaries（${escapeV3((logs.gameRuns || []).length)}）</summary><div class="automation-log-runs">${runMarkup}</div></details><details open><summary>job timeline（${escapeV3((logs.jobTimeline || []).length)}）</summary><div class="automation-log-timeline">${timelineMarkup}</div></details></section>`;
+  return `<section class="v3-panel automation-logs-panel"><div class="view-heading"><div><h3>V3 Cron監査</h3><p>planner、executor、状態遷移、run単位の集計を既存V3監査から表示します。</p></div><button type="button" data-v3-automation-log-refresh>監査を更新</button></div><div class="automation-log-filters">${input("runId", "runId")}${input("internalGameId", "internalGameId")}${input("jobType", "jobType", "lineup_fetch")}${input("status", "status", "completed")}${input("reasonCode", "reasonCode")}${input("failureCode", "failureCode")}<button type="button" data-v3-automation-log-refresh>絞り込む</button></div>${summaryMarkup}<details open><summary>game run summaries（${escapeV3(gameRuns.length)}）</summary><div class="automation-log-runs">${runMarkup}</div></details><details open><summary>job timeline（${escapeV3(jobTimeline.length)}）</summary><div class="automation-log-timeline">${timelineMarkup}</div></details></section>`;
 }
 
 function renderCurrentV3View() {
   const payload = v3State.payload;
   if (!payload) return;
-  const allGames = payload.games || [];
+  const allGames = v3ListItems(payload.games, "games");
   const games = filteredV3Games(allGames, v3State.filter);
   const game = selectedV3Game(allGames);
   const filteredGame = selectedV3Game(games);
@@ -1131,7 +1165,8 @@ function renderCurrentV3View() {
 }
 
 function renderV3(payload) {
-  v3State.payload = payload;
+  const games = normalizeV3List(payload?.games, "games");
+  v3State.payload = { ...(payload || {}), games: games.items, gamesShapeUnexpected: games.unexpected };
   v3State.lastUpdatedAt = new Date();
   renderCurrentV3View();
 }
@@ -1165,7 +1200,7 @@ async function loadV3() {
     v3State.automationLogs = payload.automationLogs;
     renderV3(payload);
     await loadV3OperationDetails();
-    setV3Status(`${payload.games?.length || 0}試合を表示しました。`);
+    setV3Status(`${v3State.payload.games.length}試合を表示しました。`);
   } catch (error) {
     setV3Status(`${error.code || "V3_ADMIN_REQUEST_FAILED"}: ${error.message}`, true);
   }

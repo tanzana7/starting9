@@ -15,6 +15,9 @@ const wrangler = JSON.parse(fs.readFileSync(path.join(root, "wrangler.auth.produ
 const start = client.indexOf("const TODAY_OPS_STATUS_LABELS");
 const end = client.indexOf("function renderGameSummary", start);
 const todayOpsSource = client.slice(start, end);
+const listStart = client.indexOf("function normalizeV3List");
+const listEnd = client.indexOf("function v3StorageGet", listStart);
+const listSource = client.slice(listStart, listEnd);
 const context = {
   filteredV3Games(games, filter) {
     return filter === "today" ? games.filter((game) => game.gameDate === "2026-08-08") : games;
@@ -25,7 +28,7 @@ const context = {
   formatV3Jst(value) { return String(value || "-"); },
   escapeV3(value) { return String(value ?? ""); }
 };
-vm.runInNewContext(`${todayOpsSource}; globalThis.buildTodayOpsModel = buildTodayOpsModel;`, context);
+vm.runInNewContext(`${listSource}; ${todayOpsSource}; globalThis.buildTodayOpsModel = buildTodayOpsModel;`, context);
 
 function game(overrides = {}) {
   return {
@@ -137,7 +140,7 @@ test("overviewはCron監査時刻をToday Opsへ返し、管理画面は専用�
   assert.match(client, /Today Ops \/ Automation Health/);
   assert.match(client, /futureShortage/);
   assert.match(client, /todayOpsStep/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-18-score-ranking-publish-deps/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-19-post-e2e-admin-polish/);
   assert.match(page, /admin-v3\.css\?v=automation-v3-13-structured-logs/);
   assert.match(css, /today-ops-panel/);
   assert.match(css, /@media \(max-width: 720px\)[\s\S]*today-ops-metrics, \.today-ops-steps \{ grid-template-columns: 1fr; \}/);

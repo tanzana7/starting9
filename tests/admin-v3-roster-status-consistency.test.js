@@ -10,8 +10,10 @@ const client = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
 const page = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 const helperStart = client.indexOf("function rosterDisplaySlots");
 const helperEnd = client.indexOf("function buildTodayOpsModel", helperStart);
+const listStart = client.indexOf("function normalizeV3List");
+const listEnd = client.indexOf("function v3StorageGet", listStart);
 const context = { formatV3Jst: (value) => String(value || "") };
-vm.runInNewContext(`${client.slice(helperStart, helperEnd)}; globalThis.rosterDisplaySlots = rosterDisplaySlots; globalThis.rosterDisplayState = rosterDisplayState; globalThis.todayOpsStep = todayOpsStep;`, context);
+vm.runInNewContext(`${client.slice(listStart, listEnd)}; ${client.slice(helperStart, helperEnd)}; globalThis.rosterDisplaySlots = rosterDisplaySlots; globalThis.rosterDisplayState = rosterDisplayState; globalThis.todayOpsStep = todayOpsStep;`, context);
 
 function game(overrides = {}) {
   return {
@@ -75,5 +77,5 @@ test("15時開始試合の表示slotから開始後の固定slotを除外し、1
 
 test("admin-v3のcache busterはロースター状態表示版へ更新される", () => {
   assert.match(page, /admin-v3\.css\?v=automation-v3-13-structured-logs/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-18-score-ranking-publish-deps/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-19-post-e2e-admin-polish/);
 });

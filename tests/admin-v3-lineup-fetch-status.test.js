@@ -10,6 +10,8 @@ const client = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
 const page = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 const start = client.indexOf("const TODAY_OPS_STATUS_LABELS");
 const end = client.indexOf("function renderGameSummary", start);
+const listStart = client.indexOf("function normalizeV3List");
+const listEnd = client.indexOf("function v3StorageGet", listStart);
 const context = {
   statusLabel(status) {
     return ({ pending: "予定", claimed: "実行中", retry_wait: "retry_wait", completed: "完了", failed: "失敗" })[String(status || "")] || "待機中";
@@ -21,7 +23,7 @@ const context = {
   gameDateForFilter(game) { return game.gameDate; },
   nextV3ActionText() { return "次の処理"; }
 };
-vm.runInNewContext(`${client.slice(start, end)}; globalThis.lineupDisplayState = lineupDisplayState; globalThis.todayOpsStep = todayOpsStep;`, context);
+vm.runInNewContext(`${client.slice(listStart, listEnd)}; ${client.slice(start, end)}; globalThis.lineupDisplayState = lineupDisplayState; globalThis.todayOpsStep = todayOpsStep;`, context);
 
 const now = new Date("2026-08-08T05:23:00.000Z");
 const lineupSlots = ["2026-08-08T05:10:00.000Z", "2026-08-08T05:20:00.000Z", "2026-08-08T05:30:00.000Z", "2026-08-08T05:40:00.000Z", "2026-08-08T05:50:00.000Z", "2026-08-08T06:00:00.000Z"];
@@ -84,5 +86,5 @@ test("Today Opsはlineup reasonと次回確認を同じ表示契約へ渡す", (
   assert.match(client, /renderTodayOpsStep\("スタメン", steps\.lineup, steps\.lineupDetail\)/);
   assert.match(client, /次回確認待ち/);
   assert.match(page, /admin-v3\.css\?v=automation-v3-13-structured-logs/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-18-score-ranking-publish-deps/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-19-post-e2e-admin-polish/);
 });

@@ -62,5 +62,5 @@ test("admin timeline uses phase status instead of treating prerequisite retry_wa
   assert.match(admin, /function timelinePhaseStep\(/);
   assert.match(admin, /timelinePhaseStep\("ランキング反映", game, "ranking"/);
   assert.match(admin, /timelinePhaseStep\("結果公開", game, "publish"/);
-  assert.match(html, /admin-v3\.js\?v=automation-v3-18-score-ranking-publish-deps/);
+  assert.match(html, /admin-v3\.js\?v=automation-v3-19-post-e2e-admin-polish/);
 });

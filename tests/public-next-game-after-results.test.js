@@ -14,8 +14,9 @@ test("公開済み試合では結果導線を表示し、予想入力面を分�
     assert.match(html, new RegExp(`id="${id}"`));
   }
   assert.match(script, /function renderPublicPredictionSurface\(selectedGame, view\)/);
-  assert.match(script, /editor\.classList\.toggle\("hidden", published\)/);
-  assert.match(script, /actions\.classList\.toggle\("hidden", !published\)/);
+  assert.match(script, /const locked = published \|\| closed/);
+  assert.match(script, /editor\.classList\.toggle\("hidden", locked\)/);
+  assert.match(script, /actions\.classList\.toggle\("hidden", !locked\)/);
   assert.match(script, /この試合の予想受付は終了しました。/);
   assert.match(html, /結果を見る/);
   assert.match(html, /次の試合を予想する/);
@@ -51,5 +52,5 @@ test("通常画面の結果と履歴は内部識別子を表示せず、モバ�
 });
 
 test("通常画面の次戦導線は新しいscript cache busterで配信する", () => {
-  assert.match(html, /script\.js\?v=public-game-card-canonical-source-2/);
+  assert.match(html, /script\.js\?v=public-remove-next-game-card-1/);
 });

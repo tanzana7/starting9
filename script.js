@@ -4354,7 +4354,7 @@ function formatAutoScoringStatus(status, publicationStatus = "") {
   return ({ pending: "採点待ち", processing: "採点処理中", scored: "採点済み", failed: "採点失敗", cancelled: "取り消し済み" })[status] || "未予約";
 }
 
-function formatRemainingTime(dueAt) {
+function formatAdminScoringRemainingTime(dueAt) {
   const due = new Date(dueAt || "");
   if (Number.isNaN(due.getTime())) {
     return "-";
@@ -4393,7 +4393,7 @@ function renderAutoScoringPanel() {
     ["対象gameId", record.gameId || state.autoScoring.gameId || "-"],
     ["実スタメン取得", formatDateTime(record.lineupDetectedAt)],
     ["採点予定", formatDateTime(record.scoringDueAt)],
-    ["残り時間", status === "pending" ? formatRemainingTime(record.scoringDueAt) : "-"],
+    ["残り時間", status === "pending" ? formatAdminScoringRemainingTime(record.scoringDueAt) : "-"],
     ["試行回数", `${record.attempts || 0} / ${record.maxAttempts || 3}`],
     ["処理件数", record.processedPredictions === null ? "-" : `${record.processedPredictions}件`],
     ["満点", record.perfectCount === null ? "-" : `${record.perfectCount}件`],

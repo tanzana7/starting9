@@ -47,8 +47,8 @@ test("通常画面の固定幅を避け、保存操作の既存IDを維持する
   assert.match(html, /id="savePredictionButton"/);
 });
 
-test("スマホの通常画面はオーダー表40%と選手一覧60%の2列にする", () => {
-  assert.match(css, /@media \(max-width: 768px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 0\.4fr\) minmax\(0, 0\.6fr\)/);
+test("スマホの通常画面はオーダー表と選手一覧を縦積みにする", () => {
+  assert.match(css, /@media \(max-width: 768px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.lineup-slot[\s\S]*min-width: 0/);
   assert.doesNotMatch(css, /body\s*\{[\s\S]*overflow-x:\s*hidden/);
 });
@@ -82,14 +82,20 @@ test("スマホの選手一覧はページ全体でスクロールし、2列の�
 });
 
 test("PCの予想入力は900px以上で左420px以上のオーダー表と広い選手一覧を使う", () => {
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(420px, 0\.9fr\) minmax\(0, 1\.3fr\)/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(420px, 560px\) minmax\(280px, 1fr\)/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.container[\s\S]*width: calc\(100% - 48px\)[\s\S]*max-width: 75rem/);
   assert.match(css, /@media \(min-width: 78\.125rem\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-list[\s\S]*grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/);
-  assert.match(css, /@media \(min-width: 64rem\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(480px, 0\.95fr\) minmax\(0, 1\.3fr\)/);
+  assert.match(css, /@media \(min-width: 64rem\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(480px, 560px\) minmax\(280px, 1fr\)/);
+});
+
+test("公開画面の残り時間は日・時間・分で表示し、管理画面のタイマーと衝突しない", () => {
+  assert.match(script, /function formatRemainingTime\(targetIso, now = new Date\(\)\)[\s\S]*const days = Math\.floor/);
+  assert.match(script, /function formatAdminScoringRemainingTime\(dueAt\)/);
+  assert.doesNotMatch(script, /function formatRemainingTime\(dueAt\)/);
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-always-next-prediction-form-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-prediction-form-layout-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

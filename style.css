@@ -4617,6 +4617,12 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
   box-sizing: border-box;
 }
 
+.app-layout:not(.is-admin-screen) #predictionEditor {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+
 .app-layout:not(.is-admin-screen) .lineup-panel,
 .app-layout:not(.is-admin-screen) .player-panel {
   box-sizing: border-box;
@@ -5227,7 +5233,7 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
 
   .app-layout:not(.is-admin-screen) #predictionForm > #gameDayNoticeStatus,
   .app-layout:not(.is-admin-screen) #predictionForm > .public-game-selection-meta,
-  .app-layout:not(.is-admin-screen) #predictionForm > .lineup-builder,
+  .app-layout:not(.is-admin-screen) #predictionForm > #predictionEditor,
   .app-layout:not(.is-admin-screen) #predictionForm > .message,
   .app-layout:not(.is-admin-screen) #predictionForm > .prediction-deadline-status {
     grid-column: 1 / -1;

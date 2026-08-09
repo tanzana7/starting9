@@ -39,15 +39,21 @@ test("過去結果APIは採点済みの通常試合だけを一覧化し、公�
   assert.match(worker, /ranking_games\.game_status = 'scored'/);
   assert.match(worker, /ranking_games\.is_test_game = 0/);
   assert.match(worker, /const resultsPublished = await isGameResultsPublished/);
+  assert.match(worker, /SELECT predictions\.game_id, predictions\.internal_game_id/);
+  assert.match(worker, /const resultId = String\(row\.internal_game_id \|\| row\.game_id \|\| ""\)/);
+  assert.match(worker, /resultId: metadata\.resultId \|\| resultId/);
   assert.match(worker, /score: resultsPublished && row\.score !== null/);
   assert.match(worker, /actualLineup: resultsPublished && row\.actual_lineup_json/);
 });
 
-test("gameId指定の結果詳細APIと通常画面の選択UIが存在する", () => {
+test("結果詳細APIと通常画面の選択UIはcanonical internalGameIdを優先する", () => {
   assert.match(worker, /function parseResultGameRoute\(path\)/);
   assert.match(worker, /async function handleGetResultGame\(request, env, cors, gameId\)/);
   assert.match(worker, /const resultGameRoute = parseResultGameRoute\(path\)/);
   assert.match(script, /function buildResultGamesApiUrl\(gameId = ""\)/);
+  assert.match(script, /function getResultHistoryGameId\(game\)/);
+  assert.match(script, /game\?\.resultId \|\| game\?\.internalGameId \|\| game\?\.gameId/);
+  assert.match(script, /await loadResultHistoryGame\(gameId\)/);
   assert.match(script, /function handleResultHistoryClick\(event\)/);
   assert.match(script, /data-result-game-id/);
   assert.match(html, /id="resultHistoryList"/);

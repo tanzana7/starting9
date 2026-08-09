@@ -6282,6 +6282,20 @@ function buildResultGamesApiUrl(gameId = "") {
     : `${baseUrl}/api/results/games`;
 }
 
+function getResultHistoryGameId(game) {
+  return String(game?.resultId || game?.internalGameId || game?.gameId || "");
+}
+
+function formatResultHistoryTeamName(value) {
+  return formatPerfectAchieverOpponent(value);
+}
+
+function formatResultHistoryMatchup(game) {
+  const away = formatResultHistoryTeamName(game?.awayTeam);
+  const home = formatResultHistoryTeamName(game?.homeTeam);
+  return away && home ? `${away} vs ${home}` : "対戦情報を確認中";
+}
+
 async function refreshResultHistory({ force = false } = {}) {
   const user = getPredictionAccountUser();
   if (!user) {
@@ -6303,6 +6317,10 @@ async function refreshResultHistory({ force = false } = {}) {
     }
     state.resultHistory.games = payload.games;
     state.resultHistory.message = payload.games.length ? "" : "採点済みの過去試合はありません。";
+    const latestPublishedGame = payload.games.find((game) => game?.resultsPublished && getResultHistoryGameId(game));
+    if (!state.result && !state.resultHistory.selectedGameId && latestPublishedGame) {
+      await loadResultHistoryGame(getResultHistoryGameId(latestPublishedGame));
+    }
   } catch (error) {
     state.resultHistory.games = [];
     state.resultHistory.message = "過去の試合結果を取得できませんでした。";
@@ -6318,6 +6336,10 @@ async function handleResultHistoryClick(event) {
   if (!target) return;
   const gameId = target.dataset.resultGameId;
   if (!gameId) return;
+  await loadResultHistoryGame(gameId);
+}
+
+async function loadResultHistoryGame(gameId) {
   state.resultHistory.selectedGameId = gameId;
   state.resultHistory.message = "試合結果を読み込み中...";
   renderResultHistory();
@@ -6348,7 +6370,7 @@ async function handleResultHistoryClick(event) {
     }
     const prediction = remotePredictionToLocal({ lineup: payload.prediction.lineup }, payload.updatedAt || payload.submittedAt, gameId);
     const actual = remotePredictionToLocal({ lineup: payload.actualLineup }, payload.scoredAt || "", gameId);
-    state.result = { ...scoreLineup(prediction.lineup, actual.lineup), gameId };
+    state.result = { ...scoreLineup(prediction.lineup, actual.lineup), gameId: payload.internalGameId || payload.gameId || gameId };
     state.resultHistory.message = "";
     renderScoreResult();
   } catch (error) {
@@ -6371,11 +6393,12 @@ function renderResultHistory() {
     return;
   }
   container.innerHTML = history.games.map((game) => {
-    const matchup = game.awayTeam && game.homeTeam ? `${game.awayTeam} vs ${game.homeTeam}` : game.gameId;
+    const gameId = getResultHistoryGameId(game);
+    const matchup = formatResultHistoryMatchup(game);
     const score = game.serviceUnavailable
       ? "集計対象外"
       : game.resultsPublished && game.score !== null ? `${game.score}点` : "結果公開前";
-    return `<button type="button" class="result-history-item${game.gameId === history.selectedGameId ? " is-selected" : ""}" data-result-game-id="${escapeHtml(game.gameId)}"><span><strong>${escapeHtml(game.gameDate || game.date || "日付不明")}</strong><span>${escapeHtml(matchup)}</span><small>${escapeHtml(game.startTime || "")}</small></span><b>${escapeHtml(score)}</b></button>`;
+    return `<button type="button" class="result-history-item${gameId === history.selectedGameId ? " is-selected" : ""}" data-result-game-id="${escapeHtml(gameId)}"><span><strong>${escapeHtml(game.gameDate || game.date || "日付不明")}</strong><span>${escapeHtml(matchup)}</span><small>${escapeHtml(game.startTime || "")}</small></span><b>${escapeHtml(score)}</b></button>`;
   }).join("") + (history.message ? `<p class="result-history-message" role="status">${escapeHtml(history.message)}</p>` : "");
 }
 
@@ -9175,12 +9198,12 @@ function renderScoreResult() {
 
   container.className = "summary-box";
   container.innerHTML = "";
-  const selectedGame = state.resultHistory.games.find((game) => game.gameId === state.result.gameId);
+  const selectedGame = state.resultHistory.games.find((game) => getResultHistoryGameId(game) === state.result.gameId);
   const resultHeading = document.createElement("p");
   resultHeading.className = "result-selected-game";
   resultHeading.textContent = selectedGame
-    ? `表示中：${selectedGame.gameDate || selectedGame.date || ""} ${selectedGame.awayTeam || ""} vs ${selectedGame.homeTeam || ""}`
-    : `表示中の試合：${state.result.gameId || "対象試合"}`;
+    ? `表示中：${selectedGame.displayLabel || `${selectedGame.gameDate || selectedGame.date || ""} ${formatResultHistoryMatchup(selectedGame)}`}`
+    : "表示中の試合結果";
   container.appendChild(resultHeading);
   container.appendChild(createResultView(createResultViewModel(state.result)));
   shareButton.classList.remove("hidden");

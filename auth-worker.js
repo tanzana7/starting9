@@ -62,6 +62,7 @@ import {
   deriveV3DisplaySchedule,
   getV3RosterPlanningDiagnostics,
   getV3RosterStatusDecision,
+  deriveV3PhaseStatus,
   getV3NextAction,
   getV3ProbableStarterSlots,
   getV3ProbableStarterSourceDate,
@@ -630,6 +631,31 @@ async function runScheduledGameAutomationV3(env, now) {
     executeJob: (context) => executeGameAutomationV3Job(context),
     onPlan: async ({ game, plan, job, created, reasonCode, insertedRowCount, existingJobId, existingScheduledSlotAt, existingStatus, diagnostic, plannerDecision = null, stage = "v3_plan", claimResult = null }) => {
       const jobType = String(plan?.jobType || job?.job_type || "");
+      const phaseByJobType = {
+        probable_starter_fetch: "probable_starter",
+        roster_fetch: "roster",
+        prediction_close: "prediction_close",
+        lineup_fetch: "lineup_fetch",
+        lineup_finalize: "lineup_finalize",
+        score: "score",
+        ranking_rebuild: "ranking",
+        publish: "publish"
+      };
+      const phase = phaseByJobType[jobType] || "";
+      const normalizedStatus = phase ? deriveV3PhaseStatus({
+        phase,
+        game,
+        now,
+        workflowState: "scheduled",
+        jobs: job ? [job] : [],
+        snapshot: phase === "roster" ? {
+          exists: diagnostic?.freshSnapshotExists,
+          isFresh: diagnostic?.freshSnapshotExists,
+          isStale: diagnostic?.staleSnapshotExists,
+          staleReason: diagnostic?.staleReason
+        } : null,
+        noticeState: diagnostic?.noticeState || null
+      }) : null;
       const isClaimAudit = stage.endsWith("_claim");
       const isRoster = jobType === "roster_fetch";
       const isProbable = jobType === "probable_starter_fetch";
@@ -661,7 +687,8 @@ async function runScheduledGameAutomationV3(env, now) {
           runId,
           correlationId,
           stage,
-          plannerDecision
+          plannerDecision,
+          normalizedStatus: normalizedStatus?.structuredLogFacts || null
         },
         occurredAt: now
       });
@@ -4106,6 +4133,16 @@ async function handleAdminV3Overview(request, env, cors) {
       }
     };
     const nextAction = getV3NextAction({ schedule, state: resolvedState.state, jobs: jobRows, now: overviewNow });
+    const phaseStatuses = {
+      probable_starter: deriveV3PhaseStatus({ phase: "probable_starter", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, sourceStatus: currentProbableStarterDataStatus }),
+      roster: deriveV3PhaseStatus({ phase: "roster", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, snapshot: canonicalRosterSnapshot, noticeState: rosterDiagnostics.noticeState }),
+      prediction_close: deriveV3PhaseStatus({ phase: "prediction_close", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows }),
+      lineup_fetch: deriveV3PhaseStatus({ phase: "lineup_fetch", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows }),
+      lineup_finalize: deriveV3PhaseStatus({ phase: "lineup_finalize", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows }),
+      score: deriveV3PhaseStatus({ phase: "score", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, noOpReason: scoringSummary.noOpReason }),
+      ranking: deriveV3PhaseStatus({ phase: "ranking", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, noOpReason: rankingSummary.noOpReason }),
+      publish: deriveV3PhaseStatus({ phase: "publish", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows })
+    };
     rows.push({
       ...game,
       state: resolvedState,
@@ -4117,6 +4154,7 @@ async function handleAdminV3Overview(request, env, cors) {
       probableStarter: probableStarterPayload,
       probableStarterDiagnostics,
       rosterDiagnostics,
+      phaseStatuses,
       probableStarterNextCheckAt,
       probableStarterJob: schedule.probableStarterJob,
       auxiliaryErrors: [

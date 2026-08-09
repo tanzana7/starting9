@@ -337,6 +337,140 @@ export function getV3RosterStatusDecision({ game, now = new Date(), snapshot = n
   return { ...base, severity: "ATTENTION", reasonCode: "ROSTER_SNAPSHOT_MISSING_AFTER_DUE", label: "取得漏れの可能性" };
 }
 
+function v3StatusCategory(reasonCode, severity) {
+  const code = String(reasonCode || "").toUpperCase();
+  if (severity === "OK" && /NO_|CAPTURED|PUBLISHED|READY|COMPLETED/.test(code)) return "NO_OP_SUCCESS";
+  if (/PARSE|INVALID|INTEGRITY|MISMATCH|CONFLICT|UNRESOLVED/.test(code)) return "DATA_INTEGRITY";
+  if (/HTTP|NETWORK|TIMEOUT|FETCH|RETRY|TEMPORARY/.test(code)) return "RETRYABLE";
+  if (/UNEXPECTED|MISSING_EXECUTOR|MISSING_HELPER|V3_JOB_FAILED/.test(code)) return "SYSTEM";
+  if (/PENDING|NOT_YET|NOT_ANNOUNCED|NOT_PUBLISHED|NOT_AVAILABLE|MISSING_BEFORE_DUE|WAITING/.test(code)) return "WAITING";
+  return severity === "OK" ? "OK" : "WORKFLOW";
+}
+
+function v3PhaseJob(jobs, types, statuses = []) {
+  return (Array.isArray(jobs) ? jobs : [])
+    .filter((job) => types.includes(String(job?.job_type || job?.jobType || "")))
+    .filter((job) => !statuses.length || statuses.includes(String(job?.status || "")))
+    .sort((left, right) => String(right?.updated_at || right?.completed_at || right?.scheduled_at || "")
+      .localeCompare(String(left?.updated_at || left?.completed_at || left?.scheduled_at || "")))[0] || null;
+}
+
+function v3NormalizedPhaseStatus(phase, fields = {}) {
+  const severity = fields.severity || "WAITING";
+  const reasonCode = fields.reasonCode || "";
+  const attentionReasons = severity === "ATTENTION" ? [reasonCode || "V3_STATUS_REQUIRES_ATTENTION"] : [];
+  return {
+    phase,
+    severity,
+    label: fields.label || "待機",
+    reasonCode,
+    failureCode: fields.failureCode || null,
+    message: fields.message || "",
+    nextCheckAt: fields.nextCheckAt || null,
+    isBeforeDue: Boolean(fields.isBeforeDue),
+    isAfterDue: Boolean(fields.isAfterDue),
+    attentionReasons,
+    normalizedCategory: v3StatusCategory(reasonCode, severity),
+    diagnosticFacts: fields.diagnosticFacts || {},
+    displayLines: [fields.label, reasonCode, fields.nextCheckAt].filter(Boolean),
+    structuredLogFacts: {
+      severity,
+      label: fields.label || "待機",
+      reasonCode,
+      normalizedCategory: v3StatusCategory(reasonCode, severity),
+      nextCheckAt: fields.nextCheckAt || null,
+      isBeforeDue: Boolean(fields.isBeforeDue),
+      isAfterDue: Boolean(fields.isAfterDue),
+      openJobExists: Boolean(fields.openJobExists),
+      retryWaitJobExists: Boolean(fields.retryWaitJobExists),
+      failedJobExists: Boolean(fields.failedJobExists),
+      completedJobExists: Boolean(fields.completedJobExists),
+      attentionReasons,
+      ...(fields.diagnosticFacts || {})
+    }
+  };
+}
+
+// Canonical display/diagnostic evaluation for every V3 phase. It does not
+// influence planning or execution; callers use it for overview and audits.
+export function deriveV3PhaseStatus({ phase, game, now = new Date(), workflowState = "scheduled", jobs = [], snapshot = null, noticeState = null, noOpReason = null, sourceStatus = "" } = {}) {
+  const current = now instanceof Date ? now : new Date(now);
+  const schedule = deriveV3DisplaySchedule(game);
+  if (phase === "roster") {
+    const roster = getV3RosterStatusDecision({ game, now: current, snapshot, jobs, noticeState });
+    return v3NormalizedPhaseStatus(phase, {
+      severity: roster.severity,
+      label: roster.label,
+      reasonCode: roster.reasonCode,
+      message: roster.reasonCode === "ROSTER_SNAPSHOT_MISSING_BEFORE_DUE" ? "現時点では当日公示未確認" : roster.label,
+      nextCheckAt: roster.nextCheckAt,
+      isBeforeDue: roster.isBeforeFirstRosterSlot,
+      isAfterDue: roster.isAfterDueSlot,
+      openJobExists: roster.openRosterJobExists,
+      retryWaitJobExists: String(roster.openRosterJob?.status || "") === "retry_wait",
+      failedJobExists: Boolean(roster.failedRosterJob),
+      completedJobExists: roster.terminalRosterJobExists,
+      diagnosticFacts: {
+        currentJstTime: roster.currentJstTime,
+        freshSnapshotExists: roster.freshSnapshotExists,
+        staleSnapshotExists: roster.staleSnapshotExists,
+        plannedSlots: roster.plannedSlots,
+        dueSlots: roster.dueSlots,
+        selectedSlot: roster.selectedDueSlot
+      }
+    });
+  }
+  const typeMap = {
+    probable_starter: [V3_JOB_TYPE.PROBABLE_STARTER_FETCH],
+    prediction_close: [V3_JOB_TYPE.PREDICTION_CLOSE],
+    lineup_fetch: [V3_JOB_TYPE.LINEUP_FETCH, "provisional_lineup_fetch", "final_lineup_fetch"],
+    lineup_finalize: [V3_JOB_TYPE.LINEUP_FINALIZE],
+    score: [V3_JOB_TYPE.SCORE, "scoring"],
+    ranking: [V3_JOB_TYPE.RANKING_REBUILD],
+    publish: [V3_JOB_TYPE.PUBLISH, "publication"]
+  };
+  if (phase === "probable_starter") {
+    const dataStatus = String(sourceStatus || "unannounced");
+    if (dataStatus === "announced") return v3NormalizedPhaseStatus(phase, { severity: "OK", label: "発表済み", reasonCode: "PROBABLE_STARTER_ANNOUNCED" });
+    if (dataStatus === "integrity_error") return v3NormalizedPhaseStatus(phase, { severity: "ATTENTION", label: "要確認", reasonCode: "DATA_INTEGRITY_ERROR" });
+  }
+  const types = typeMap[phase] || [];
+  const completed = v3PhaseJob(jobs, types, ["completed"]);
+  const retry = v3PhaseJob(jobs, types, ["retry_wait"]);
+  const open = v3PhaseJob(jobs, types, ["pending", "claimed"]);
+  const failed = v3PhaseJob(jobs, types, ["failed", "permanently_failed"]);
+  const latest = completed || retry || open || failed || v3PhaseJob(jobs, types);
+  const failureCode = String(latest?.failure_code || "");
+  const phaseSlots = phase === "lineup_fetch" ? schedule.lineupPollingSlots : [];
+  const nextCheckAt = retry?.next_retry_at || phaseSlots.find((slot) => new Date(slot).getTime() > current.getTime()) || null;
+  const terminalState = {
+    lineup_fetch: ["lineup_ready", "scored", "ranked", "published"],
+    lineup_finalize: ["lineup_ready", "scored", "ranked", "published"],
+    score: ["scored", "ranked", "published"],
+    ranking: ["ranked", "published"],
+    publish: ["published"]
+  };
+  if ((terminalState[phase] || []).includes(String(workflowState))) {
+    return v3NormalizedPhaseStatus(phase, { severity: "OK", label: "完了", reasonCode: `${phase.toUpperCase()}_COMPLETED`, completedJobExists: Boolean(completed) });
+  }
+  if (["score", "ranking"].includes(phase) && noOpReason) {
+    return v3NormalizedPhaseStatus(phase, { severity: "OK", label: "対象なしで完了", reasonCode: noOpReason, completedJobExists: true });
+  }
+  if (completed) return v3NormalizedPhaseStatus(phase, { severity: "OK", label: "完了", reasonCode: `${phase.toUpperCase()}_COMPLETED`, completedJobExists: true });
+  if (retry || open) {
+    const waitingCode = failureCode || (retry ? `${phase.toUpperCase()}_RETRY_WAIT` : `${phase.toUpperCase()}_PENDING`);
+    const integrity = /PARSE|INVALID|INTEGRITY|MISMATCH|CONFLICT|UNEXPECTED|V3_JOB_FAILED/.test(waitingCode);
+    return v3NormalizedPhaseStatus(phase, { severity: integrity ? "ATTENTION" : "WAITING", label: integrity ? "要確認" : retry ? "再試行待ち" : "処理待ち", reasonCode: waitingCode, failureCode: failureCode || null, nextCheckAt, openJobExists: Boolean(open || retry), retryWaitJobExists: Boolean(retry), failedJobExists: false, completedJobExists: false });
+  }
+  if (failed) return v3NormalizedPhaseStatus(phase, { severity: "ATTENTION", label: "要確認", reasonCode: failureCode || `${phase.toUpperCase()}_FAILED`, failureCode: failureCode || null, failedJobExists: true });
+  if (phase === "lineup_fetch") {
+    if (current.getTime() < new Date(schedule.lineupPollingStart).getTime()) return v3NormalizedPhaseStatus(phase, { severity: "WAITING", label: "取得予定", reasonCode: "LINEUP_NOT_YET_AVAILABLE", nextCheckAt: schedule.lineupPollingStart, isBeforeDue: true });
+    return v3NormalizedPhaseStatus(phase, { severity: nextCheckAt ? "WAITING" : "ATTENTION", label: nextCheckAt ? "スタメン未発表" : "要確認", reasonCode: nextCheckAt ? "LINEUP_NOT_ANNOUNCED" : "LINEUP_NOT_PUBLISHED", nextCheckAt, isAfterDue: true });
+  }
+  if (phase === "publish") return v3NormalizedPhaseStatus(phase, { severity: "WAITING", label: "前提処理待ち", reasonCode: "PUBLISH_PREREQUISITE_PENDING" });
+  return v3NormalizedPhaseStatus(phase, { severity: "WAITING", label: "処理待ち", reasonCode: `${phase.toUpperCase()}_PENDING` });
+}
+
 const NEXT_ACTION_LABELS = Object.freeze({
   prediction_close: "予想締切",
   roster_fetch: "ロースター取得",

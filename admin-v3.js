@@ -300,7 +300,27 @@ function rosterDecisionDetail(diagnostics, nextSlot) {
   return [diagnostics?.label, reasonCode, nextText].filter(Boolean).join(" / ");
 }
 
+function normalizedV3PhaseState(game, phase) {
+  const status = game?.phaseStatuses?.[phase];
+  if (!status || !["OK", "WAITING", "ATTENTION"].includes(String(status.severity || "").toUpperCase())) return null;
+  const severity = String(status.severity).toUpperCase();
+  const state = severity === "OK" ? "ok" : severity === "ATTENTION" ? "attention" : "waiting";
+  const detail = status.message || [status.label, status.reasonCode, status.nextCheckAt ? `次回確認: ${formatV3Jst(status.nextCheckAt)}` : ""].filter(Boolean).join(" / ");
+  return {
+    status: state,
+    fallbackStatus: state === "ok" ? "complete" : state === "attention" ? "action" : "wait",
+    label: status.label || "待機",
+    reasonCode: status.reasonCode || "",
+    nextCheckAt: status.nextCheckAt || null,
+    nextSlot: status.nextCheckAt || null,
+    detail,
+    normalizedStatus: status
+  };
+}
+
 function rosterDisplayState(game) {
+  const normalized = normalizedV3PhaseState(game, "roster");
+  if (normalized) return normalized;
   const diagnostics = game?.rosterDiagnostics || {};
   const now = new Date();
   const nextSlot = rosterDisplaySlots(game, game?.schedule?.rosterFetchSlots)
@@ -398,6 +418,8 @@ function classifyLineupReason(reasonCode) {
 }
 
 function lineupDisplayState(game, now = new Date()) {
+  const normalized = normalizedV3PhaseState(game, "lineup_fetch");
+  if (normalized) return normalized;
   const state = String(game?.state?.state || "scheduled");
   if (["lineup_ready", "scored", "ranked", "published"].includes(state)) {
     return { status: "ok", fallbackStatus: "complete", label: "完了", job: null, reasonCode: "", nextCheckAt: null, detail: "正式スタメン確定済み" };
@@ -451,6 +473,16 @@ function todayOpsLatestJob(game, statuses = []) {
 }
 
 function todayOpsStep(game, step, now = new Date()) {
+  const phaseByStep = {
+    probable: "probable_starter",
+    roster: "roster",
+    lineup: "lineup_fetch",
+    scoring: "score",
+    ranking: "ranking",
+    publication: "publish"
+  };
+  const normalized = normalizedV3PhaseState(game, phaseByStep[step]);
+  if (normalized) return normalized.status;
   const state = String(game?.state?.state || "scheduled");
   const schedule = game?.schedule || {};
   const jobs = game?.jobs || [];

@@ -7,6 +7,7 @@ const vm = require("node:vm");
 const root = path.join(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 const script = read("script.js");
+const index = read("index.html");
 const worker = read("auth-worker.js");
 
 test("通常画面の試合カタログはcanonical APIのUUID行だけを採用する", () => {
@@ -57,6 +58,21 @@ test("公開画面はprediction targetの旧日程fallbackでcanonical gameを�
   assert.match(script, /if \(!state\.isAdminMode\) return null;/);
   assert.match(script, /state\.predictionTargetGameId = initialGameId/);
   assert.match(script, /state\.predictionTargetGameId = nextGameId/);
+});
+
+test("通常画面はlocalStorageに残る旧管理試合カードを描画せず、canonical UUIDを公示対象にする", () => {
+  const displayStart = script.indexOf("function renderGameInfoDisplay");
+  const displayEnd = script.indexOf("function getGameDayNoticeTargetGameId", displayStart);
+  const displayRenderer = script.slice(displayStart, displayEnd);
+  assert.match(displayRenderer, /if \(!state\.isAdminMode\)/);
+  assert.match(displayRenderer, /display\.classList\.add\("hidden"\)/);
+  assert.match(displayRenderer, /display\.textContent = ""/);
+
+  const noticeStart = script.indexOf("function getGameDayNoticeTargetGameId");
+  const noticeEnd = script.indexOf("function buildGameDayNoticeApiUrl", noticeStart);
+  const targetResolver = script.slice(noticeStart, noticeEnd);
+  assert.match(targetResolver, /state\.predictionTargetGame\?\.internalGameId \|\| state\.probableStarter\.nextGame\?\.internalGameId/);
+  assert.match(index, /script\.js\?v=public-game-card-canonical-source-2/);
 });
 
 test("公開ゲームAPIはFightersのcanonical games行と表示用チーム名を返す", () => {

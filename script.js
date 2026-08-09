@@ -8620,6 +8620,14 @@ function renderGameInfoDisplay() {
     return;
   }
 
+  // gameInfo is a persisted legacy admin selection. It must never label a
+  // public prediction card after the canonical catalog has selected a game.
+  if (!state.isAdminMode) {
+    display.classList.add("hidden");
+    display.textContent = "";
+    return;
+  }
+
   const matchup = state.gameInfo?.matchup?.trim();
   if (!matchup) {
     display.classList.add("hidden");
@@ -8632,6 +8640,9 @@ function renderGameInfoDisplay() {
 }
 
 function getGameDayNoticeTargetGameId() {
+  if (!state.isAdminMode) {
+    return state.predictionTargetGame?.internalGameId || state.probableStarter.nextGame?.internalGameId || "";
+  }
   return state.nextScheduleId || findNextGameSchedule()?.gameId || state.probableStarter.nextGame?.gameId || "";
 }
 

@@ -75,5 +75,5 @@ test("15時開始試合の表示slotから開始後の固定slotを除外し、1
 
 test("admin-v3のcache busterはロースター状態表示版へ更新される", () => {
   assert.match(page, /admin-v3\.css\?v=automation-v3-13-structured-logs/);
-  assert.match(page, /admin-v3\.js\?v=automation-v3-16-status-evaluation/);
+  assert.match(page, /admin-v3\.js\?v=automation-v3-18-score-ranking-publish-deps/);
 });

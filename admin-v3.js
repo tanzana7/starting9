@@ -656,6 +656,20 @@ function timelineStep(name, job, fallbackStatus, detail = "", scheduledAt = "", 
   return `<article class="timeline-step ${klass}"><span class="status-badge ${klass === "complete" ? "ok" : klass === "retry" ? "retry" : klass === "failed" || klass === "action" ? "action" : klass === "excluded" ? "excluded" : "wait"}">${escapeV3(label)}</span><h4>${escapeV3(name)}</h4><p class="step-time">${escapeV3(formatTimelineTime(time) || (detail && !failure ? detail : "予定未定"))}</p><p>${escapeV3(detail || failure || (job ? `試行 ${job.attempt_count || 0}/${job.max_attempts || 0}` : ""))}</p></article>`;
 }
 
+function timelinePhaseStep(name, game, phase, job, fallbackStatus, detail = "", scheduledAt = "") {
+  const normalized = normalizedV3PhaseState(game, phase);
+  if (!normalized) return timelineStep(name, job, fallbackStatus, detail, scheduledAt);
+  return timelineStep(
+    name,
+    job,
+    normalized.fallbackStatus,
+    normalized.detail || detail,
+    normalized.nextCheckAt || scheduledAt,
+    normalized.label,
+    normalized.fallbackStatus
+  );
+}
+
 function probableStarterTimelineDetails(game, job, now = new Date()) {
   const starter = game?.probableStarter;
   const diagnostics = game?.probableStarterDiagnostics;
@@ -792,9 +806,9 @@ function renderTimeline(game) {
     timelineStep("NPB識別情報解決", identityJob, identityFallback, `job: ${identityDisplay.jobStatus} / game code: ${identityDisplay.code}`),
     timelineStep("スタメン取得", lineupState.job || lineupJob, lineupState.fallbackStatus, lineupState.detail, lineupState.nextCheckAt || schedule.lineupPollingStart, lineupState.label, lineupState.fallbackStatus),
     timelineStep("正式スタメン確定", finalizeJob, state === "lineup_ready" || state === "scored" || state === "ranked" || state === "published" ? "complete" : "scheduled", "最新候補を開始2分後に確定", schedule.finalLineupAt),
-    timelineStep("採点", scoreJob, ["scored", "ranked", "published"].includes(state) ? "complete" : "scheduled", scoreJob ? "" : "正式スタメン確定後", schedule.scoringEarliestAt),
-    timelineStep("ランキング反映", rankingJob, ["ranked", "published"].includes(state) ? "complete" : "scheduled", rankingJob ? "" : "採点完了後"),
-    timelineStep("結果公開", publishJob, state === "published" ? "complete" : "scheduled", "開始10分後", schedule.publicationAt)
+    timelinePhaseStep("採点", game, "score", scoreJob, ["scored", "ranked", "published"].includes(state) ? "complete" : "scheduled", scoreJob ? "" : "正式スタメン確定後", schedule.scoringEarliestAt),
+    timelinePhaseStep("ランキング反映", game, "ranking", rankingJob, ["ranked", "published"].includes(state) ? "complete" : "scheduled", rankingJob ? "" : "採点完了後"),
+    timelinePhaseStep("結果公開", game, "publish", publishJob, state === "published" ? "complete" : "scheduled", "開始10分後", schedule.publicationAt)
   ];
   return `<div class="timeline">${steps.join("")}</div>`;
 }

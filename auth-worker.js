@@ -1077,10 +1077,18 @@ async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore })
   } catch (error) {
     if (!isPregameSchemaError(error)) throw error;
   }
-  const claimed = await claimGameLineupForScoring(env.AUTH_DB, internalGameId, now);
+  const canonicalLineup = await getGameLineup(env.AUTH_DB, { gameId: internalGameId, internalGameId });
+  // game_lineups.game_id may retain a historical compatibility identifier,
+  // while V3 ownership is always internal_game_id. Claim the canonical row
+  // through its stored key so the legacy key never prevents V3 scoring.
+  const claimed = canonicalLineup?.game_id
+    ? await claimGameLineupForScoring(env.AUTH_DB, canonicalLineup.game_id, now, { internalGameId })
+    : null;
   const result = claimed ? await scoreClaimedGameLineup(env.AUTH_DB, claimed, now) : null;
   const lineup = await getGameLineup(env.AUTH_DB, { gameId: internalGameId, internalGameId });
   if (!lineup || lineup.scoring_status !== "scored") throw createV3Error("V3_SCORING_NOT_COMPLETE", "V3採点が完了していません。");
+  const activeRevision = await getActiveScoringRevision(env.AUTH_DB, internalGameId);
+  if (!activeRevision?.id) throw createV3Error("V3_SCORING_REVISION_REQUIRED", "有効な採点revisionがありません。");
   if (result?.scoringRevisionId) {
     try {
       await env.AUTH_DB.prepare(
@@ -1117,7 +1125,30 @@ async function executeV3RankingExecutor({ env, internalGameId, now, stateBefore 
     return { status: "excluded", stateBefore, stateAfter: stateBefore };
   }
   const completion = await getScoringCompletionState(env.AUTH_DB, { gameId: internalGameId, internalGameId });
-  if (!completion.complete) throw createV3Error("V3_SCORING_INCOMPLETE", "全予想の採点が完了していません。");
+  if (!completion.complete) {
+    const lineup = await getGameLineup(env.AUTH_DB, { gameId: internalGameId, internalGameId });
+    const activeRevision = await getActiveScoringRevision(env.AUTH_DB, internalGameId);
+    // Only recover the historical half-completed score state. A completed
+    // revision with incomplete predictions is a data issue and must remain
+    // visible instead of silently changing the scoring basis.
+    if (lineup?.game_id && !activeRevision?.id) {
+      await env.AUTH_DB.prepare(
+        `UPDATE game_lineups
+            SET scoring_status = 'pending', scoring_started_at = NULL,
+                last_error = NULL, updated_at = ?1
+          WHERE internal_game_id = ?2
+            AND scoring_status IN ('pending', 'failed', 'processing', 'scored')`
+      ).bind(now.toISOString(), internalGameId).run();
+      return {
+        status: "score_recovery_scheduled",
+        stateBefore,
+        stateAfter: "lineup_ready",
+        noOpReason: null,
+        recoveryReason: "V3_SCORING_INCOMPLETE"
+      };
+    }
+    throw createV3Error("V3_SCORING_INCOMPLETE", "全予想の採点が完了していません。");
+  }
   let activeRevision = await getActiveScoringRevision(env.AUTH_DB, internalGameId);
   const isNoOpScoring = completion.eligiblePredictionCount === 0 && completion.failedPredictionCount === 0;
   let noOpReason = isNoOpScoring ? "V3_RANKING_NO_ENTRIES" : null;
@@ -14429,25 +14460,34 @@ async function scoreClaimedGameLineup(db, record, now, isTestPrediction = 0) {
 async function persistGamePredictionScoring(db, gameId, actualLineup, scoring, now, isTestPrediction = 0, internalGameId = "", scoringRevisionNumber = null) {
   const scoredAt = now.toISOString();
   const actualLineupJson = JSON.stringify(actualLineup);
+  const predictionScopeColumn = internalGameId ? "internal_game_id" : "game_id";
+  const predictionScopeValue = internalGameId || gameId;
+  let predictionColumns = new Set();
+  try {
+    predictionColumns = await getTableColumnSet(db, "predictions");
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+  }
+  const scoringStatusSet = predictionColumns.has("scoring_status") ? ", scoring_status = 'scored'" : "";
+  const clearExclusionReason = predictionColumns.has("scoring_exclusion_reason") ? ", scoring_exclusion_reason = NULL" : "";
   const scoreSql = isTestPrediction
     ? `UPDATE predictions
-          SET score = ?1, max_score = ?2, scored_at = ?3, status = 'scored', actual_lineup_json = ?4
-        WHERE id = ?5 AND game_id = ?6 AND is_test_prediction = 1`
+          SET score = ?1, max_score = ?2, scored_at = ?3, status = 'scored', actual_lineup_json = ?4${scoringStatusSet}${clearExclusionReason}
+        WHERE id = ?5 AND ${predictionScopeColumn} = ?6 AND is_test_prediction = 1`
     : `UPDATE predictions
-          SET score = ?1, max_score = ?2, scored_at = ?3, status = 'scored', actual_lineup_json = ?4
-        WHERE id = ?5 AND game_id = ?6`;
+          SET score = ?1, max_score = ?2, scored_at = ?3, status = 'scored', actual_lineup_json = ?4${scoringStatusSet}${clearExclusionReason}
+        WHERE id = ?5 AND ${predictionScopeColumn} = ?6`;
   const statements = scoring.outcomes.map((outcome) => db.prepare(scoreSql).bind(
-    outcome.score.total, SCORING_MAX_SCORE, scoredAt, actualLineupJson, outcome.id, gameId
+    outcome.score.total, SCORING_MAX_SCORE, scoredAt, actualLineupJson, outcome.id, predictionScopeValue
   ));
   try {
-    const predictionColumns = await getTableColumnSet(db, "predictions");
     if (predictionColumns.has("scoring_status") && predictionColumns.has("scoring_exclusion_reason")) {
       for (const exclusion of scoring.exclusions || []) {
         statements.push(db.prepare(
           `UPDATE predictions
               SET scoring_status = 'excluded', scoring_exclusion_reason = ?, updated_at = ?
-            WHERE id = ? AND game_id = ? AND is_test_prediction = ?`
-        ).bind(exclusion.reason, scoredAt, exclusion.id, gameId, isTestPrediction ? 1 : 0));
+            WHERE id = ? AND ${predictionScopeColumn} = ? AND is_test_prediction = ?`
+        ).bind(exclusion.reason, scoredAt, exclusion.id, predictionScopeValue, isTestPrediction ? 1 : 0));
       }
     }
   } catch (error) {
@@ -15393,7 +15433,7 @@ function serializeGameLineup(record) {
   };
 }
 
-async function claimGameLineupForScoring(db, gameId, now, { force = false, resetAttempts = false } = {}) {
+async function claimGameLineupForScoring(db, gameId, now, { force = false, resetAttempts = false, internalGameId = "" } = {}) {
   const nowIso = now.toISOString();
   if (force) {
     const prepareResult = await db.prepare(
@@ -15420,7 +15460,7 @@ async function claimGameLineupForScoring(db, gameId, now, { force = false, reset
   if (Number(claimResult?.meta?.changes || 0) !== 1) {
     return null;
   }
-  return await getGameLineup(db, gameId);
+  return await getGameLineup(db, internalGameId ? { gameId, internalGameId } : gameId);
 }
 
 async function getCurrentLineupRevisionForScoring(db, gameId) {
@@ -15459,11 +15499,13 @@ async function recordScoringRevisionMetadata(db, {
   const timestamp = scoredAt instanceof Date ? scoredAt.toISOString() : String(scoredAt || new Date().toISOString());
   const predictionsColumns = await getTableColumnSet(db, "predictions");
   const lineupColumns = await getTableColumnSet(db, "game_lineups");
+  const predictionScopeColumn = internalGameId && predictionsColumns.has("internal_game_id") ? "internal_game_id" : "game_id";
+  const predictionScopeValue = internalGameId && predictionsColumns.has("internal_game_id") ? internalGameId : gameId;
   const statements = [];
   if (predictionsColumns.has("scored_lineup_revision_id") && predictionsColumns.has("scoring_revision") && predictionsColumns.has("scored_by")) {
     statements.push(db.prepare(
-      "UPDATE predictions SET scored_lineup_revision_id = ?1, scoring_revision = ?2, scored_by = ?3 WHERE game_id = ?4 AND status = 'scored' AND is_test_prediction = ?5"
-    ).bind(lineupRevisionId || null, Number(scoringRevision), scoredBy, gameId, isTestPrediction ? 1 : 0));
+      `UPDATE predictions SET scored_lineup_revision_id = ?1, scoring_revision = ?2, scored_by = ?3 WHERE ${predictionScopeColumn} = ?4 AND status = 'scored' AND is_test_prediction = ?5`
+    ).bind(lineupRevisionId || null, Number(scoringRevision), scoredBy, predictionScopeValue, isTestPrediction ? 1 : 0));
   }
   const lineupSet = [];
   const lineupValues = [];
@@ -15492,10 +15534,10 @@ async function recordScoringRevisionMetadata(db, {
                 p.is_test_prediction, ?2, ?3, p.score, p.max_score, p.actual_lineup_json,
                 p.scored_at, ?4, COALESCE(p.scored_at, ?5)
            FROM predictions AS p
-          WHERE p.game_id = ?6
+          WHERE p.${predictionScopeColumn} = ?6
             AND p.status = 'scored'
             AND p.is_test_prediction = ?7`
-      ).bind(internalGameId || null, Number(scoringRevision), lineupRevisionId || null, scoredBy, timestamp, gameId, isTestPrediction ? 1 : 0).run();
+      ).bind(internalGameId || null, Number(scoringRevision), lineupRevisionId || null, scoredBy, timestamp, predictionScopeValue, isTestPrediction ? 1 : 0).run();
     }
   } catch (error) {
     if (!isPregameSchemaError(error)) throw error;

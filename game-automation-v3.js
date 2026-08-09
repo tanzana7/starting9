@@ -95,6 +95,9 @@ const V3_TRANSITION_LIST = Object.freeze([
   { from: V3_STATE.PREDICTION_CLOSED, to: V3_STATE.LINEUP_READY, triggeringJob: V3_JOB_TYPE.LINEUP_FINALIZE, prerequisite: "canonical finalized lineup" },
   { from: V3_STATE.LINEUP_READY, to: V3_STATE.SCORED, triggeringJob: V3_JOB_TYPE.SCORE, prerequisite: "finalized lineup and predictions" },
   { from: V3_STATE.SCORED, to: V3_STATE.RANKED, triggeringJob: V3_JOB_TYPE.RANKING_REBUILD, prerequisite: "completed scoring revision" },
+  // A historic score state can exist without a completed canonical revision.
+  // Reopen only that incomplete scoring phase; ranking and publication remain blocked.
+  { from: V3_STATE.SCORED, to: V3_STATE.LINEUP_READY, triggeringJob: V3_JOB_TYPE.RANKING_REBUILD, prerequisite: "incomplete scoring recovery" },
   { from: V3_STATE.RANKED, to: V3_STATE.PUBLISHED, triggeringJob: V3_JOB_TYPE.PUBLISH, prerequisite: "reflected ranking and publication time" },
   { from: V3_STATE.SCHEDULED, to: V3_STATE.EXCLUDED, triggeringJob: "admin", prerequisite: "game is excluded" },
   { from: V3_STATE.PREDICTION_CLOSED, to: V3_STATE.EXCLUDED, triggeringJob: "admin", prerequisite: "game is excluded" },
@@ -450,11 +453,45 @@ export function deriveV3PhaseStatus({ phase, game, now = new Date(), workflowSta
     ranking: ["ranked", "published"],
     publish: ["published"]
   };
-  if ((terminalState[phase] || []).includes(String(workflowState))) {
-    return v3NormalizedPhaseStatus(phase, { severity: "OK", label: "完了", reasonCode: `${phase.toUpperCase()}_COMPLETED`, completedJobExists: Boolean(completed) });
-  }
+  const stateValue = String(workflowState);
   if (["score", "ranking"].includes(phase) && noOpReason) {
     return v3NormalizedPhaseStatus(phase, { severity: "OK", label: "対象なしで完了", reasonCode: noOpReason, completedJobExists: true });
+  }
+  if (phase === "ranking" && String(retry?.failure_code || "") === "V3_SCORING_INCOMPLETE") {
+    return v3NormalizedPhaseStatus(phase, {
+      severity: "WAITING",
+      label: "採点完了待ち",
+      reasonCode: "V3_SCORING_INCOMPLETE",
+      message: "採点状態を再確認し、必要なら採点をやり直します。",
+      nextCheckAt: retry?.next_retry_at || null,
+      openJobExists: true,
+      retryWaitJobExists: true
+    });
+  }
+  if (phase === "ranking" && !["scored", "ranked", "published"].includes(stateValue)) {
+    return v3NormalizedPhaseStatus(phase, {
+      severity: "WAITING",
+      label: "採点完了待ち",
+      reasonCode: "V3_SCORING_INCOMPLETE",
+      message: "採点完了後にランキング反映を実行します。",
+      nextCheckAt: retry?.next_retry_at || null,
+      openJobExists: Boolean(open || retry),
+      retryWaitJobExists: Boolean(retry)
+    });
+  }
+  if (phase === "publish" && !["ranked", "published"].includes(stateValue)) {
+    return v3NormalizedPhaseStatus(phase, {
+      severity: "WAITING",
+      label: "ランキング反映待ち",
+      reasonCode: "V3_RANKING_INCOMPLETE",
+      message: "ランキング反映後に結果を公開します。",
+      nextCheckAt: retry?.next_retry_at || null,
+      openJobExists: Boolean(open || retry),
+      retryWaitJobExists: Boolean(retry)
+    });
+  }
+  if ((terminalState[phase] || []).includes(stateValue)) {
+    return v3NormalizedPhaseStatus(phase, { severity: "OK", label: "完了", reasonCode: `${phase.toUpperCase()}_COMPLETED`, completedJobExists: Boolean(completed) });
   }
   if (completed) return v3NormalizedPhaseStatus(phase, { severity: "OK", label: "完了", reasonCode: `${phase.toUpperCase()}_COMPLETED`, completedJobExists: true });
   if (retry || open) {

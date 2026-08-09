@@ -11419,15 +11419,12 @@ async function handleGetPublicGames(request, env, cors) {
     result = await env.AUTH_DB.prepare(
       `SELECT games.internal_game_id, games.game_date, games.start_time,
               games.home_team, games.away_team, games.game_status,
-              COALESCE(workflow.legacy_game_id, schedule.game_id, '') AS legacy_game_id,
-              COALESCE(workflow.workflow_status, '') AS workflow_status,
+              COALESCE(workflow.state, '') AS workflow_status,
               COALESCE(lineup.publication_status, ranking.publication_status, '') AS publication_status,
               COALESCE(lineup.published_at, ranking.published_at, '') AS published_at
          FROM games
-         LEFT JOIN game_workflow_state AS workflow
+         LEFT JOIN game_automation_v3_state AS workflow
            ON workflow.internal_game_id = games.internal_game_id
-         LEFT JOIN detected_game_schedule AS schedule
-           ON schedule.internal_game_id = games.internal_game_id
          LEFT JOIN game_lineups AS lineup
            ON lineup.internal_game_id = games.internal_game_id
          LEFT JOIN ranking_games AS ranking
@@ -11436,6 +11433,7 @@ async function handleGetPublicGames(request, env, cors) {
           AND games.game_status NOT IN ('cancelled', 'canceled', 'postponed')
           AND games.is_active = 1
           AND games.deleted_at IS NULL
+          AND (LOWER(games.home_team) = 'fighters' OR LOWER(games.away_team) = 'fighters')
         ORDER BY games.start_time ASC
         LIMIT 50`
     ).bind(today).all();
@@ -11447,6 +11445,7 @@ async function handleGetPublicGames(request, env, cors) {
          FROM games
         WHERE game_date >= ?1
           AND game_status NOT IN ('cancelled', 'canceled', 'postponed')
+          AND (LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')
         ORDER BY start_time ASC
         LIMIT 50`
     ).bind(today).all();
@@ -11457,7 +11456,7 @@ async function handleGetPublicGames(request, env, cors) {
     const publicationStatus = String(row.publication_status || "");
     return {
       internalGameId: row.internal_game_id,
-      gameId: row.legacy_game_id || row.internal_game_id,
+      gameId: row.internal_game_id,
       date: row.game_date || "",
       startTime: Number.isNaN(startAt.getTime())
         ? String(row.start_time || "").slice(11, 16)
@@ -11465,6 +11464,9 @@ async function handleGetPublicGames(request, env, cors) {
       startAt: row.start_time || "",
       homeTeam: row.home_team || "",
       awayTeam: row.away_team || "",
+      homeTeamName: formatPublicResultTeamName(row.home_team),
+      awayTeamName: formatPublicResultTeamName(row.away_team),
+      displayLabel: createPublicGameDisplayLabel({ homeTeam: row.home_team, awayTeam: row.away_team }),
       gameStatus: row.game_status || "scheduled",
       workflowState: row.workflow_status || "",
       publicationStatus,
@@ -11562,6 +11564,12 @@ function formatPublicResultTeamName(value) {
   };
   const key = String(value || "").trim().toLowerCase();
   return labels[key] || String(value || "").trim();
+}
+
+function createPublicGameDisplayLabel({ homeTeam = "", awayTeam = "" } = {}) {
+  const home = formatPublicResultTeamName(homeTeam);
+  const away = formatPublicResultTeamName(awayTeam);
+  return home && away ? `${home} vs ${away}` : "対戦情報を確認中";
 }
 
 function createPublicResultDisplayLabel({ gameDate = "", homeTeam = "", awayTeam = "" } = {}) {

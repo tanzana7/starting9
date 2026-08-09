@@ -51,5 +51,5 @@ test("通常画面の結果と履歴は内部識別子を表示せず、モバ�
 });
 
 test("通常画面の次戦導線は新しいscript cache busterで配信する", () => {
-  assert.match(html, /script\.js\?v=public-next-game-after-results-1/);
+  assert.match(html, /script\.js\?v=public-game-card-canonical-source-1/);
 });

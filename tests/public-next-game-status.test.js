@@ -41,6 +41,22 @@ test("初期試合は今日の受付中、次の受付可能な未来試合の�
   assert.match(script, /const catalogGame = state\.publicGameCatalog\.games\.length/);
 });
 
+test("canonical catalogの未来試合はstatic scheduleに未掲載でもstartAtから締切を判定する", () => {
+  const start = script.indexOf("function resolvePredictionDeadline");
+  const end = script.indexOf("function canUsePredictionDeadlineOverride", start);
+  const resolver = script.slice(start, end);
+  assert.match(resolver, /state\.publicGameCatalog\.games\.find/);
+  assert.match(resolver, /game\.startAt\s*\?\s*new Date\(game\.startAt\)/);
+  assert.match(resolver, /status: isClosed \? "closed" : "open"/);
+});
+
+test("future canonical gameがある場合は対象なし表示ではなく入力フォームを維持する", () => {
+  assert.match(script, /const nextOpen = selectable\.find/);
+  assert.match(script, /state\.predictionTargetGame = initialGame/);
+  assert.match(script, /renderPublicPredictionSurface\(selectedGame\)/);
+  assert.match(script, /if \(editor\) editor\.classList\.remove\("hidden"\)/);
+});
+
 test("公開用ゲーム一覧はcanonical internalGameIdとV3 workflow/publication状態を返す", () => {
   assert.match(worker, /path === "\/api\/public\/games" && request\.method === "GET"/);
   assert.match(worker, /async function handleGetPublicGames\(request, env, cors\)/);
@@ -77,13 +93,13 @@ test("スマホでも選択UIを追加せず、補助表示と既存導線を維
 });
 
 test("公開画面のJS/CSS cache busterを更新する", () => {
-  assert.match(html, /style\.css\?v=public-remove-game-selector-1/);
-  assert.match(html, /script\.js\?v=public-remove-game-selector-1/);
+  assert.match(html, /style\.css\?v=public-always-next-prediction-form-1/);
+  assert.match(html, /script\.js\?v=public-always-next-prediction-form-1/);
 });
 
 test("受付可能なcanonical対象がない場合は入力面を隠し、自然な案内を表示する", () => {
   assert.match(script, /現在、予想受付中の試合はありません。/);
-  assert.match(script, /renderPublicPredictionSurface\(null, null\)/);
+  assert.match(script, /renderPublicPredictionSurface\(null\)/);
   assert.match(script, /if \(!selectedGame\) \{[\s\S]*if \(editor\) editor\.classList\.add\("hidden"\)/);
 });
 

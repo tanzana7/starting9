@@ -98,7 +98,7 @@ test("公開画面の残り時間は日・時間・分で表示し、管理画�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-prediction-form-overflow-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-prediction-form-overflow-2">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],
@@ -115,6 +115,7 @@ test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、
     assert.match(html, new RegExp(`id="${id}"`), `${id}の実DOMがありません`);
   }
   assert.match(css, /#predictionForm > \.message,[\s\S]*grid-column: 1 \/ -1/);
+  assert.match(css, /#predictionForm > #predictionEditor[\s\S]*grid-column: 1 \/ -1/);
 });
 
 test("PCのオーダー行は固定列と省略表示を使い、通知・操作領域はフォーム幅に揃える", () => {

@@ -3858,24 +3858,6 @@ textarea:focus {
   font-size: 0.8rem;
 }
 
-.public-game-picker label {
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 800;
-}
-
-.public-game-picker {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 8px 12px;
-}
-
-.public-game-picker select {
-  width: 100%;
-  min-width: 0;
-}
-
 .public-game-selection-meta {
   min-height: 1.3em;
   margin: -2px 0 0;
@@ -5263,7 +5245,6 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
   }
 
   .app-layout:not(.is-admin-screen) #predictionForm > #gameDayNoticeStatus,
-  .app-layout:not(.is-admin-screen) #predictionForm > .public-game-picker,
   .app-layout:not(.is-admin-screen) #predictionForm > .public-game-selection-meta,
   .app-layout:not(.is-admin-screen) #predictionForm > .lineup-builder,
   .app-layout:not(.is-admin-screen) #predictionForm > .message,
@@ -5470,10 +5451,6 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
 }
 
 @media (max-width: 600px) {
-  .public-game-picker {
-    grid-template-columns: 1fr;
-  }
-
   .published-game-actions-buttons {
     display: grid;
     grid-template-columns: 1fr;

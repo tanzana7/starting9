@@ -46,9 +46,9 @@ test("2026-08-09はstaticの別カードではなくcanonical Fighters対Eagles�
   assert.equal(context.getPublicSelectableGames(games, new Date("2026-08-09T00:17:00.000Z")).map((game) => game.internalGameId).join(","), "348e8d56-9565-474e-96e9-33b1e5ef6ae0");
 });
 
-test("公開カタログとセレクターはAPI displayLabelを優先し、静的日程を上書き元にしない", () => {
+test("公開カタログとcanonical対象表示はAPI displayLabelを優先し、静的日程を上書き元にしない", () => {
   assert.match(script, /const matchup = game\?\.displayLabel \|\| game\?\.matchupLabel/);
-  assert.match(script, /function formatPublicGameOptionLabel\(game\)/);
+  assert.match(script, /function formatPublicPredictionGameLabel\(game\)/);
   assert.match(script, /catalog\.games = mergePublicGameSchedules\(\[\], apiGames\)/);
   assert.match(script, /catalog\.games = \[\];\s*catalog\.message = "試合情報を取得できませんでした。"/);
 });
@@ -72,7 +72,7 @@ test("通常画面はlocalStorageに残る旧管理試合カードを描画せ�
   const noticeEnd = script.indexOf("function buildGameDayNoticeApiUrl", noticeStart);
   const targetResolver = script.slice(noticeStart, noticeEnd);
   assert.match(targetResolver, /state\.predictionTargetGame\?\.internalGameId \|\| state\.probableStarter\.nextGame\?\.internalGameId/);
-  assert.match(index, /script\.js\?v=public-remove-next-game-card-1/);
+  assert.match(index, /script\.js\?v=public-remove-game-selector-1/);
 });
 
 test("公開ゲームAPIはFightersのcanonical games行と表示用チーム名を返す", () => {

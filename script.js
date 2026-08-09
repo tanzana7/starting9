@@ -571,8 +571,10 @@ function bindEvents() {
   document.getElementById("adminTestGameDetail")?.addEventListener("input", renderAdminTestDetailPreview);
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
-  document.getElementById("predictionCtaButton")?.addEventListener("click", scrollToPredictionForm);
+  document.getElementById("predictionCtaButton")?.addEventListener("click", handlePredictionCtaClick);
   document.getElementById("editSavedPredictionButton")?.addEventListener("click", scrollToPredictionForm);
+  document.getElementById("showSelectedResultButton")?.addEventListener("click", showSelectedResult);
+  document.getElementById("selectNextPredictionGameButton")?.addEventListener("click", selectNextPredictionGame);
   document.getElementById("openAdminButton")?.addEventListener("click", openAdminPanel);
   document.getElementById("showYearlyRankingButton")?.addEventListener("click", () => selectRankingView("yearly"));
   document.getElementById("showMonthlyRankingButton")?.addEventListener("click", () => selectRankingView("monthly"));
@@ -3335,12 +3337,25 @@ async function initializePublicGameCatalog() {
   }
 }
 
-async function handlePublicGameSelectionChange(event) {
-  const selectedId = String(event.target?.value || "").trim();
+function isPublicGamePublished(game, remoteState = state.predictionRemote) {
+  const gameIds = [game?.internalGameId, game?.gameId].filter(Boolean);
+  const remoteMatchesGame = Boolean(remoteState?.gameId && gameIds.includes(remoteState.gameId));
+  return Boolean(game?.isPublished || game?.publicationStatus === "published" || (remoteMatchesGame && remoteState?.resultsPublished));
+}
+
+function findNextPredictionGame(now = new Date()) {
+  return getPublicSelectableGames(state.publicGameCatalog.games, now).find((game) => {
+    const gameId = game.internalGameId || game.gameId || "";
+    return gameId && !isPublicGamePublished(game) && resolvePredictionDeadline(gameId, now).status === "open";
+  }) || null;
+}
+
+async function selectPublicGame(selectedId, { manualSelection = true } = {}) {
+  const selectedGameId = String(selectedId || "").trim();
   const selectedGame = getPublicSelectableGames(state.publicGameCatalog.games)
-    .find((game) => [game.internalGameId, game.gameId].includes(selectedId));
+    .find((game) => [game.internalGameId, game.gameId].includes(selectedGameId));
   if (!selectedGame) return;
-  state.publicGameCatalog.manualSelection = true;
+  state.publicGameCatalog.manualSelection = manualSelection;
   const previousGameId = getCurrentGameId();
   const nextGameId = selectedGame.internalGameId || selectedGame.gameId || "";
   state.predictionTargetGameId = selectedGame.gameId || nextGameId;
@@ -3365,6 +3380,17 @@ async function handlePublicGameSelectionChange(event) {
     initializeRosterCandidateSync()
   ]);
   renderAll();
+}
+
+async function handlePublicGameSelectionChange(event) {
+  await selectPublicGame(event.target?.value, { manualSelection: true });
+}
+
+async function selectNextPredictionGame() {
+  const nextGame = findNextPredictionGame();
+  if (!nextGame) return;
+  await selectPublicGame(nextGame.internalGameId || nextGame.gameId, { manualSelection: true });
+  scrollToPredictionForm();
 }
 
 function findNextScheduledGameForStarter(schedule) {
@@ -6402,10 +6428,12 @@ function renderResultHistory() {
   const history = state.resultHistory;
   if (history.isLoading) {
     container.innerHTML = `<p class="result-history-message">${escapeHtml(history.message || "読み込み中...")}</p>`;
+    renderPublicPredictionSurface(state.predictionTargetGame, getPublicGameStatusView(state.predictionTargetGame, getEffectivePredictionDeadline()));
     return;
   }
   if (!history.games.length) {
     container.innerHTML = `<p class="result-history-message">${escapeHtml(history.message || "表示できる保存済み予想はありません。")}</p>`;
+    renderPublicPredictionSurface(state.predictionTargetGame, getPublicGameStatusView(state.predictionTargetGame, getEffectivePredictionDeadline()));
     return;
   }
   container.innerHTML = history.games.map((game) => {
@@ -6416,6 +6444,7 @@ function renderResultHistory() {
       : game.resultsPublished && game.score !== null ? `${game.score}点` : "結果公開前";
     return `<button type="button" class="result-history-item${gameId === history.selectedGameId ? " is-selected" : ""}" data-result-game-id="${escapeHtml(gameId)}"><span><strong>${escapeHtml(game.gameDate || game.date || "日付不明")}</strong><span>${escapeHtml(matchup)}</span><small>${escapeHtml(game.startTime || "")}</small></span><b>${escapeHtml(score)}</b></button>`;
   }).join("") + (history.message ? `<p class="result-history-message" role="status">${escapeHtml(history.message)}</p>` : "");
+  renderPublicPredictionSurface(state.predictionTargetGame, getPublicGameStatusView(state.predictionTargetGame, getEffectivePredictionDeadline()));
 }
 
 function buildCurrentPredictionApiUrl(gameId) {
@@ -8358,7 +8387,7 @@ function formatPublicRemainingTime(value, now = new Date()) {
 
 function getPublicGameStatusView(game, deadline, remoteState = state.predictionRemote, now = new Date()) {
   const workflowState = String(game?.workflowState || "").toLowerCase();
-  const published = Boolean(game?.isPublished || game?.publicationStatus === "published" || remoteState?.resultsPublished);
+  const published = isPublicGamePublished(game, remoteState);
   const saved = Boolean(remoteState?.prediction || (state.prediction && [game?.internalGameId, game?.gameId].includes(state.prediction.gameId)));
   if (published) {
     return { key: "ok", label: "結果公開済み", status: "結果公開済み", saved, nextAction: "結果とランキングを確認できます。" };
@@ -8387,6 +8416,33 @@ function getPublicGameStatusView(game, deadline, remoteState = state.predictionR
   return { key: "waiting", label: "確認中", status: "試合情報を確認しています", saved, nextAction: "試合情報を読み込み中です。" };
 }
 
+function findResultHistoryGameForPublicGame(game) {
+  const identifiers = new Set([game?.internalGameId, game?.gameId].filter(Boolean));
+  return state.resultHistory.games.find((item) => identifiers.has(getResultHistoryGameId(item))) || null;
+}
+
+function renderPublicPredictionSurface(selectedGame, view) {
+  const editor = document.getElementById("predictionEditor");
+  const actions = document.getElementById("publishedGameActions");
+  const message = document.getElementById("publishedGameMessage");
+  const resultButton = document.getElementById("showSelectedResultButton");
+  const nextButton = document.getElementById("selectNextPredictionGameButton");
+  const published = view?.label === "結果公開済み";
+  if (editor) editor.classList.toggle("hidden", published);
+  if (!actions || !message || !resultButton || !nextButton) return;
+
+  actions.classList.toggle("hidden", !published);
+  if (!published) return;
+
+  const resultGame = findResultHistoryGameForPublicGame(selectedGame);
+  message.textContent = resultGame
+    ? "この試合の予想受付は終了しました。公開済みの結果を確認できます。"
+    : "この試合の予想受付は終了しました。";
+  resultButton.classList.toggle("hidden", !resultGame);
+  resultButton.disabled = state.resultHistory.isLoading || state.resultHistory.isDetailLoading;
+  nextButton.disabled = !findNextPredictionGame();
+}
+
 function renderPublicGameStatusCard() {
   const card = document.getElementById("publicGameStatusCard");
   const badge = document.getElementById("publicGameStatusBadge");
@@ -8402,6 +8458,7 @@ function renderPublicGameStatusCard() {
   }
   const selectedGame = game || deadline.game;
   const view = getPublicGameStatusView(selectedGame, deadline, state.predictionRemote);
+  const title = document.getElementById("publicGameStatusTitle");
   const matchup = selectedGame.matchupLabel || `${selectedGame.homeTeam || ""} vs ${selectedGame.awayTeam || ""}`;
   const savedAt = state.predictionRemote.updatedAt || state.prediction?.savedAt || "";
   const savedText = view.saved
@@ -8409,6 +8466,7 @@ function renderPublicGameStatusCard() {
     : "未保存";
   badge.className = `public-game-status-badge is-${view.key}`;
   badge.textContent = view.label;
+  if (title) title.textContent = view.label === "結果公開済み" ? "結果を確認する試合" : "次に予想する試合";
   grid.innerHTML = [
     ["対象試合", matchup],
     ["試合開始", formatPublicJstDateTime(deadline.startAt || selectedGame.startAt || selectedGame.startDateTime)],
@@ -8419,6 +8477,7 @@ function renderPublicGameStatusCard() {
     ["結果", view.label === "結果公開済み" ? "公開済み" : "未公開"],
     ["次の操作", view.nextAction]
   ].map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+  renderPublicPredictionSurface(selectedGame, view);
 }
 
 function renderPredictionTargetNotice() {
@@ -9166,14 +9225,32 @@ function renderPredictionCta() {
   if (!button) return;
   const isLoggedIn = Boolean(getPredictionAccountUser());
   const hasPrediction = Boolean(state.prediction || state.predictionRemote?.prediction);
+  const selectedGame = state.predictionTargetGame || null;
+  const published = isPublicGamePublished(selectedGame);
   button.classList.toggle("hidden", !isLoggedIn);
-  button.textContent = hasPrediction ? "予想を編集する" : "今日のスタメンを予想する";
+  button.textContent = published ? "次の試合を予想する" : hasPrediction ? "予想を編集する" : "この試合を予想する";
+}
+
+function handlePredictionCtaClick() {
+  if (isPublicGamePublished(state.predictionTargetGame)) {
+    void selectNextPredictionGame();
+    return;
+  }
+  scrollToPredictionForm();
 }
 
 function scrollToPredictionForm() {
   const form = document.getElementById("predictionForm");
   form?.scrollIntoView({ behavior: "smooth", block: "start" });
   form?.querySelector("button, input, select")?.focus({ preventScroll: true });
+}
+
+async function showSelectedResult() {
+  const selectedGame = state.predictionTargetGame;
+  const resultGame = findResultHistoryGameForPublicGame(selectedGame);
+  if (!resultGame) return;
+  document.getElementById("scoreResult")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  await loadResultHistoryGame(getResultHistoryGameId(resultGame));
 }
 
 function renderActualLineup() {
@@ -9309,7 +9386,7 @@ function createResultViewModel(result) {
   return {
     total: result.total,
     max: SCORE_MAX,
-    perfectLabel: result.total === SCORE_MAX ? "PERFECT" : "",
+    perfectLabel: result.total === SCORE_MAX ? "完全一致" : "",
     counts,
     breakdown,
     details
@@ -9323,7 +9400,7 @@ function createResultView(viewModel) {
   const hero = document.createElement("div");
   hero.className = "result-hero";
   hero.innerHTML = `
-    <p class="result-label">TOTAL SCORE</p>
+    <p class="result-label">合計点</p>
     <div class="score-total"><strong>${viewModel.total}</strong><span>/ ${viewModel.max} 点</span></div>
     ${viewModel.perfectLabel ? `<p class="score-comment">${escapeHtml(viewModel.perfectLabel)}</p>` : ""}
   `;

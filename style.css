@@ -3953,6 +3953,31 @@ textarea:focus {
   min-width: 0;
 }
 
+.published-game-actions {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #cfe1f1;
+  border-radius: 8px;
+  background: #f7fbff;
+}
+
+.published-game-actions p {
+  margin: 0;
+  color: var(--fighters-deep-blue);
+  font-weight: 800;
+}
+
+.published-game-actions-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.published-game-actions-buttons button {
+  min-height: 40px;
+}
+
 .score-insights {
   display: grid;
   gap: 10px;
@@ -5532,6 +5557,15 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
 
   .public-game-selector {
     grid-template-columns: 1fr;
+  }
+
+  .published-game-actions-buttons {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .published-game-actions-buttons button {
+    width: 100%;
   }
 }
 

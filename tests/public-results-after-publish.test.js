@@ -46,5 +46,5 @@ test("通常画面は公開済み結果を自動選択し、内部IDを表示し
 
 test("通常画面の公開結果修正は新しいcache busterを使う", () => {
   assert.match(html, /style\.css\?v=public-results-after-publish-1/);
-  assert.match(html, /script\.js\?v=public-post-e2e-polish-1/);
+  assert.match(html, /script\.js\?v=public-next-game-after-results-1/);
 });

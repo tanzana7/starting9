@@ -92,7 +92,7 @@ test("通常画面は公開結果の読込中・失敗・完了を内部情報�
 });
 
 test("post-E2E表示修正のcache busterを更新し、旧手動操作を復活させない", () => {
-  assert.match(index, /script\.js\?v=public-game-card-canonical-source-1/);
+  assert.match(index, /script\.js\?v=public-game-card-canonical-source-2/);
   assert.match(adminPage, /admin-v3\.js\?v=automation-v3-19-post-e2e-admin-polish/);
   assert.doesNotMatch(admin, /runAutoScoringNowButton/);
 });

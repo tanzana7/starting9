@@ -71,7 +71,7 @@ test("スマホではカードを2列、試合選択を1列にして横溢れを
 
 test("公開画面のJS/CSS cache busterを更新する", () => {
   assert.match(html, /style\.css\?v=public-results-after-publish-1/);
-  assert.match(html, /script\.js\?v=public-game-card-canonical-source-1/);
+  assert.match(html, /script\.js\?v=public-game-card-canonical-source-2/);
 });
 
 test("通常画面は管理用システム表示を初期HTMLから非表示にする", () => {

@@ -272,8 +272,7 @@ const state = {
   publicGameCatalog: {
     isLoading: false,
     games: [],
-    message: "",
-    manualSelection: false
+    message: ""
   },
   resultHistory: {
     isLoading: false,
@@ -503,7 +502,6 @@ async function initializeAuthDependentFeatures() {
 function bindEvents() {
   document.getElementById("predictionForm").addEventListener("submit", handlePredictionSubmit);
   document.getElementById("resetPredictionButton").addEventListener("click", resetPredictionInput);
-  document.getElementById("publicGameSelect")?.addEventListener("change", handlePublicGameSelectionChange);
   bindAdminEvent("actualForm", "submit", handleActualSubmit);
   bindAdminEvent("fetchNpbButton", "click", handleNpbFetchCandidate);
   bindAdminEvent("checkRosterButton", "click", handleRosterCheck);
@@ -3102,11 +3100,13 @@ async function initializeProbableStarter() {
   const schedule = await getLoadedGameSchedule();
   const previousGame = state.predictionTargetGame || state.probableStarter.nextGame;
   const previousGameId = previousGame?.gameId || state.predictionTargetGameId || "";
-  const catalogGame = !state.publicGameCatalog.manualSelection && state.publicGameCatalog.games.length
+  const catalogGame = state.publicGameCatalog.games.length
     ? selectInitialPublicGame(state.publicGameCatalog.games)
     : null;
   const nextGame = catalogGame || await resolvePredictionTargetGame(schedule, true);
-  const preservedGame = catalogGame || nextGame || schedule.find((game) => game?.gameId === previousGameId) || state.probableStarter.nextGame || null;
+  const preservedGame = catalogGame || nextGame || (state.isAdminMode
+    ? schedule.find((game) => game?.gameId === previousGameId) || state.probableStarter.nextGame
+    : null);
   state.probableStarter.nextGame = preservedGame;
   state.predictionTargetGame = preservedGame;
   state.predictionTargetGameId = state.probableStarter.nextGame?.internalGameId || state.probableStarter.nextGame?.gameId || "";
@@ -3132,9 +3132,7 @@ async function initializeProbableStarter() {
 async function refreshPredictionTarget({ retryUnannounced = true, useServer = true } = {}) {
   const schedule = await getLoadedGameSchedule();
   const catalogGame = state.publicGameCatalog.games.length
-    ? (state.publicGameCatalog.manualSelection
-      ? state.publicGameCatalog.games.find((game) => game?.internalGameId === getCurrentGameId()) || null
-      : selectInitialPublicGame(state.publicGameCatalog.games))
+    ? selectInitialPublicGame(state.publicGameCatalog.games)
     : null;
   const nextGame = catalogGame || await resolvePredictionTargetGame(schedule, useServer);
   const previousGame = state.predictionTargetGame || state.probableStarter.nextGame;
@@ -3243,47 +3241,25 @@ function selectInitialPublicGame(games = [], now = new Date()) {
   const selectable = getPublicSelectableGames(games, now);
   const today = getJapanDateString(now);
   const todayGames = selectable.filter((game) => getScheduleDate(game) === today);
-  const todayOpen = todayGames.find((game) => resolvePredictionDeadline(game.internalGameId || game.gameId, now).status === "open");
-  const todayUnpublished = todayGames.find((game) => !game.isPublished && game.publicationStatus !== "published");
-  return todayOpen || todayUnpublished || selectable.find((game) => getScheduleDate(game) > today) || todayGames[0] || null;
+  const todayOpen = todayGames.find((game) => !isPublicGamePublished(game)
+    && resolvePredictionDeadline(game.internalGameId || game.gameId, now).status === "open");
+  const nextOpen = selectable.find((game) => getScheduleDate(game) > today
+    && !isPublicGamePublished(game)
+    && resolvePredictionDeadline(game.internalGameId || game.gameId, now).status === "open");
+  return todayOpen || nextOpen || null;
 }
 
-function formatPublicGameOptionLabel(game) {
+function formatPublicPredictionGameLabel(game) {
   const date = getScheduleDate(game);
   const time = getScheduleStartTime(game);
   const matchup = game?.displayLabel || game?.matchupLabel || `${game?.homeTeamName || game?.homeTeam || ""} vs ${game?.awayTeamName || game?.awayTeam || ""}`;
   return `${date.replace(/^(\d{4})-/, "$1/").replace(/-/, "/")} ${time} ${matchup}`.trim();
 }
 
-function renderPublicGameSelector() {
-  const select = document.getElementById("publicGameSelect");
-  if (!select) return;
-  const games = getPublicSelectableGames(state.publicGameCatalog.games);
-  const selectedId = getCurrentGameId() || state.predictionTargetGameId;
-  select.innerHTML = "";
-  if (!games.length) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "選択できる試合を確認中...";
-    select.appendChild(option);
-    select.disabled = true;
-    return;
-  }
-  games.forEach((game) => {
-    const option = document.createElement("option");
-    option.value = game.internalGameId || game.gameId || "";
-    option.textContent = formatPublicGameOptionLabel(game);
-    option.selected = Boolean(selectedId && [game.internalGameId, game.gameId].includes(selectedId));
-    select.appendChild(option);
-  });
-  select.disabled = false;
-}
-
 async function initializePublicGameCatalog() {
   const catalog = state.publicGameCatalog;
   if (catalog.isLoading) return;
   catalog.isLoading = true;
-  renderPublicGameSelector();
   try {
     let apiGames = [];
     const url = buildPublicGamesApiUrl();
@@ -3296,26 +3272,31 @@ async function initializePublicGameCatalog() {
     }
     catalog.games = mergePublicGameSchedules([], apiGames);
     catalog.message = "";
-    if (!catalog.manualSelection) {
-      const initialGame = selectInitialPublicGame(catalog.games);
-      const currentGameId = getCurrentGameId();
-      const initialGameId = initialGame?.internalGameId || initialGame?.gameId || "";
-      if (initialGame && currentGameId !== initialGameId) {
-        state.predictionTargetGameId = initialGameId;
-        state.predictionTargetGame = initialGame;
-        state.probableStarter.nextGame = initialGame;
-        if (state.predictionRemote.gameId !== initialGameId || (state.prediction && state.prediction.gameId !== initialGameId)) {
-          state.prediction = null;
-          state.actual = null;
-          state.result = null;
-          state.predictionRemote = createEmptyPredictionRemoteState();
-          removeFromStorage(STORAGE_KEYS.prediction);
-          removeFromStorage(STORAGE_KEYS.actual);
-          removeFromStorage(STORAGE_KEYS.result);
-        }
-        refreshPredictionDeadlineState();
-        void syncPredictionFromAccount({ force: true });
+    const initialGame = selectInitialPublicGame(catalog.games);
+    const currentGameId = getCurrentGameId();
+    const initialGameId = initialGame?.internalGameId || initialGame?.gameId || "";
+    if (initialGame && currentGameId !== initialGameId) {
+      state.predictionTargetGameId = initialGameId;
+      state.predictionTargetGame = initialGame;
+      state.probableStarter.nextGame = initialGame;
+      if (state.predictionRemote.gameId !== initialGameId || (state.prediction && state.prediction.gameId !== initialGameId)) {
+        state.prediction = null;
+        state.actual = null;
+        state.result = null;
+        state.predictionRemote = createEmptyPredictionRemoteState();
+        removeFromStorage(STORAGE_KEYS.prediction);
+        removeFromStorage(STORAGE_KEYS.actual);
+        removeFromStorage(STORAGE_KEYS.result);
       }
+      refreshPredictionDeadlineState();
+      void syncPredictionFromAccount({ force: true });
+    } else if (!initialGame) {
+      state.predictionTargetGameId = "";
+      state.predictionTargetGame = null;
+      state.probableStarter.nextGame = null;
+      state.prediction = null;
+      state.predictionRemote = createEmptyPredictionRemoteState();
+      refreshPredictionDeadlineState();
     }
   } catch (error) {
     catalog.games = [];
@@ -3323,7 +3304,6 @@ async function initializePublicGameCatalog() {
     console.warn("公開試合一覧の取得に失敗しました", error.message);
   } finally {
     catalog.isLoading = false;
-    renderPublicGameSelector();
     renderPublicGameSelectionMeta();
   }
 }
@@ -3341,12 +3321,11 @@ function findNextPredictionGame(now = new Date()) {
   }) || null;
 }
 
-async function selectPublicGame(selectedId, { manualSelection = true } = {}) {
+async function applyPublicPredictionTarget(selectedId) {
   const selectedGameId = String(selectedId || "").trim();
   const selectedGame = getPublicSelectableGames(state.publicGameCatalog.games)
     .find((game) => [game.internalGameId, game.gameId].includes(selectedGameId));
   if (!selectedGame) return;
-  state.publicGameCatalog.manualSelection = manualSelection;
   const previousGameId = getCurrentGameId();
   const nextGameId = selectedGame.internalGameId || selectedGame.gameId || "";
   state.predictionTargetGameId = nextGameId;
@@ -3361,7 +3340,7 @@ async function selectPublicGame(selectedId, { manualSelection = true } = {}) {
     removeFromStorage(STORAGE_KEYS.actual);
     removeFromStorage(STORAGE_KEYS.result);
   }
-  state.predictionTargetNotice = `${formatPublicGameOptionLabel(selectedGame)}を選択中です。`;
+  state.predictionTargetNotice = "";
   refreshPredictionDeadlineState();
   renderAll();
   await Promise.allSettled([
@@ -3373,14 +3352,10 @@ async function selectPublicGame(selectedId, { manualSelection = true } = {}) {
   renderAll();
 }
 
-async function handlePublicGameSelectionChange(event) {
-  await selectPublicGame(event.target?.value, { manualSelection: true });
-}
-
 async function selectNextPredictionGame() {
   const nextGame = findNextPredictionGame();
   if (!nextGame) return;
-  await selectPublicGame(nextGame.internalGameId || nextGame.gameId, { manualSelection: true });
+  await applyPublicPredictionTarget(nextGame.internalGameId || nextGame.gameId);
   scrollToPredictionForm();
 }
 
@@ -8325,7 +8300,6 @@ function removeFromStorage(key) {
 function renderAll() {
   renderGameInfoDisplay();
   renderGameSchedulePicker();
-  renderPublicGameSelector();
   renderPublicGameSelectionMeta();
   renderProbableStarter();
   renderSavedPrediction();
@@ -8418,6 +8392,11 @@ function renderPublicPredictionSurface(selectedGame, view) {
   const message = document.getElementById("publishedGameMessage");
   const resultButton = document.getElementById("showSelectedResultButton");
   const nextButton = document.getElementById("selectNextPredictionGameButton");
+  if (!selectedGame) {
+    if (editor) editor.classList.add("hidden");
+    actions?.classList.add("hidden");
+    return;
+  }
   const published = view?.label === "結果公開済み";
   const closed = view?.status === "予想受付は終了しました" || view?.status === "スタメン発表待ち";
   const locked = published || closed;
@@ -8442,7 +8421,10 @@ function renderPublicGameSelectionMeta() {
   const game = state.predictionTargetGame || state.publicGameCatalog.games.find((item) => item.internalGameId === getCurrentGameId()) || null;
   const deadline = getEffectivePredictionDeadline();
   if (!game && !deadline.game) {
-    meta.textContent = "試合情報を確認しています。";
+    meta.textContent = state.publicGameCatalog.isLoading
+      ? "試合情報を確認しています。"
+      : "現在、予想受付中の試合はありません。";
+    renderPublicPredictionSurface(null, null);
     return;
   }
   const selectedGame = game || deadline.game;
@@ -8451,8 +8433,9 @@ function renderPublicGameSelectionMeta() {
   const savedText = view.saved
     ? `保存済み${savedAt ? `（${formatPublicJstDateTime(savedAt)}）` : ""}`
     : "未保存";
+  const gameLabel = formatPublicPredictionGameLabel(selectedGame);
   meta.textContent = deadline.status === "open"
-    ? `予想締切: ${formatPublicJstDateTime(deadline.deadlineAt)} ・ ${savedText}`
+    ? `${gameLabel} ・ 予想締切: ${formatPublicJstDateTime(deadline.deadlineAt)} ・ ${savedText}`
     : `${view.status} ・ ${savedText}`;
   renderPublicPredictionSurface(selectedGame, view);
 }

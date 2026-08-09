@@ -6,7 +6,7 @@
   <title>Starting9</title>
   <link rel="icon" type="image/png" href="./assets/icons/icon-512.png">
   <link rel="apple-touch-icon" href="./assets/icons/icon-512.png">
-  <link rel="stylesheet" href="style.css?v=public-remove-next-game-card-1">
+  <link rel="stylesheet" href="style.css?v=public-remove-game-selector-1">
 </head>
 <body>
   <header class="app-header">
@@ -123,12 +123,6 @@
 
       <form id="predictionForm" novalidate>
         <div id="gameDayNoticeStatus" class="game-day-notice-status hidden" aria-live="polite"></div>
-        <div class="public-game-picker">
-          <label for="publicGameSelect">試合を選択</label>
-          <select id="publicGameSelect" aria-describedby="publicGameSelectionMeta">
-            <option value="">試合を読み込み中...</option>
-          </select>
-        </div>
         <p id="publicGameSelectionMeta" class="public-game-selection-meta" role="status" aria-live="polite"></p>
         <section id="publishedGameActions" class="published-game-actions hidden" aria-live="polite">
           <p id="publishedGameMessage">この試合の予想受付は終了しました。</p>
@@ -654,6 +648,6 @@
   <script src="auth.js?v=auth-api-local-20260719"></script>
   <!-- Historical cache-buster contract only; this old asset is not loaded. -->
   <!-- script.js?v=admin-test-data-20260728-10 -->
-  <script src="script.js?v=public-remove-next-game-card-1"></script>
+  <script src="script.js?v=public-remove-game-selector-1"></script>
 </body>
 </html>

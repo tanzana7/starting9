@@ -22,13 +22,14 @@ test("公開済み試合では結果導線を表示し、予想入力面を分�
   assert.match(html, /次の試合を予想する/);
 });
 
-test("次戦は既存カタログと締切判定から選び、公開済み試合を避ける", () => {
+test("次戦導線は既存カタログのcanonical対象へ向き、選択UIを復活させない", () => {
   assert.match(script, /function findNextPredictionGame\(now = new Date\(\)\)/);
   assert.match(script, /getPublicSelectableGames\(state\.publicGameCatalog\.games, now\)/);
   assert.match(script, /!isPublicGamePublished\(game\)/);
   assert.match(script, /resolvePredictionDeadline\(gameId, now\)\.status === "open"/);
   assert.match(script, /async function selectNextPredictionGame\(\)/);
-  assert.match(script, /await selectPublicGame\(nextGame\.internalGameId \|\| nextGame\.gameId/);
+  assert.match(script, /await applyPublicPredictionTarget\(nextGame\.internalGameId \|\| nextGame\.gameId/);
+  assert.doesNotMatch(script, /handlePublicGameSelectionChange/);
 });
 
 test("公開済み選択時の結果表示と通常の予想CTAを自然な文言へ切り替える", () => {
@@ -52,5 +53,5 @@ test("通常画面の結果と履歴は内部識別子を表示せず、モバ�
 });
 
 test("通常画面の次戦導線は新しいscript cache busterで配信する", () => {
-  assert.match(html, /script\.js\?v=public-remove-next-game-card-1/);
+  assert.match(html, /script\.js\?v=public-remove-game-selector-1/);
 });

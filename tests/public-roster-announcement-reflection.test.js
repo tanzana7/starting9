@@ -149,6 +149,20 @@ test("通常画面は選択試合のUUIDでV3 snapshotを再取得し、旧game_
   assert.doesNotMatch(worker.slice(worker.indexOf("async function handleGetGameDayRoster"), worker.indexOf("function getGameTeamCodes")), /WHERE game_id = \?1/);
 });
 
+test("公開試合カタログ確定後にbaseline roster取得を再実行し、初期化競合で更新中に固定されない", () => {
+  const catalogStart = script.indexOf("async function initializePublicGameCatalog");
+  const catalogEnd = script.indexOf("function isPublicGamePublished", catalogStart);
+  const catalog = script.slice(catalogStart, catalogEnd);
+  const targetStart = script.indexOf("async function refreshPredictionTarget");
+  const targetEnd = script.indexOf("async function resolvePredictionTargetGame", targetStart);
+  const target = script.slice(targetStart, targetEnd);
+
+  assert.match(catalog, /void initializeRosterCandidateSync\(\);/);
+  assert.match(target, /void initializeRosterCandidateSync\(\);/);
+  assert.match(script, /let publicRosterSyncRequestId = 0;/);
+  assert.match(script, /requestId !== publicRosterSyncRequestId/);
+});
+
 test("snapshotの登録選手は候補に入り、抹消選手は候補から外れる既存フィルタを維持する", async () => {
   const helpers = await import(pathToFileURL(path.join(root, "game-automation-v3.js")).href);
   const fresh = helpers.getV3RosterSnapshotFreshness(snapshot(), { internalGameId, gameDate });

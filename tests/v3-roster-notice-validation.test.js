@@ -66,9 +66,7 @@ test("V3 rosterのplanner診断は当日slotと最新の期限到達slotを共�
   }, "2026-08-08T04:20:00.000Z");
   assert.deepEqual(diagnostics.generatedSlots, [
     "2026-08-08T04:00:00.000Z",
-    "2026-08-08T04:10:00.000Z",
-    "2026-08-08T07:02:00.000Z",
-    "2026-08-08T07:10:00.000Z"
+    "2026-08-08T04:10:00.000Z"
   ]);
   assert.equal(diagnostics.selectedDueSlot, "2026-08-08T04:10:00.000Z");
   assert.equal(diagnostics.selectedSlotReason, "latest_due_roster_slot");

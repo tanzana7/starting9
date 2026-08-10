@@ -279,7 +279,8 @@ const state = {
     gameDate: "",
     status: "pending",
     players: [],
-    isLoading: false
+    isLoading: false,
+    usableUntil: ""
   },
   resultHistory: {
     isLoading: false,
@@ -1660,15 +1661,19 @@ function getPredictionCandidateNames() {
     .map((player) => player.name);
 }
 
-function hasFreshPublicRosterForCurrentGame() {
+function hasUsablePublicRosterForCurrentGame() {
   const internalGameId = getGameDayRosterTargetInternalGameId();
   const gameDate = String(state.predictionTargetGame?.date || "").slice(0, 10);
   const roster = state.publicRoster;
+  const baselineUsableUntil = roster?.status === "baseline"
+    ? Date.parse(String(roster.usableUntil || ""))
+    : Number.POSITIVE_INFINITY;
   return Boolean(
     roster
-    && roster.status === "fresh"
+    && ["fresh", "baseline"].includes(roster.status)
     && roster.internalGameId === internalGameId
     && (!gameDate || roster.gameDate === gameDate)
+    && baselineUsableUntil > Date.now()
     && roster.players.length
   );
 }
@@ -3005,7 +3010,7 @@ function getRosterSnapshotForCurrentGame() {
 
 function isPlayerInCurrentRoster(player) {
   if (!state.isAdminMode) {
-    if (!hasFreshPublicRosterForCurrentGame()) return false;
+    if (!hasUsablePublicRosterForCurrentGame()) return false;
     return state.publicRoster.players.some((entry) => rosterEntryMatchesPlayer(entry, player));
   }
 
@@ -3040,7 +3045,8 @@ async function initializeRosterCandidateSync() {
     gameDate,
     status: "pending",
     players: [],
-    isLoading: true
+    isLoading: true,
+    usableUntil: ""
   };
   renderPicker("prediction");
   renderPredictionDeadline();
@@ -3051,9 +3057,10 @@ async function initializeRosterCandidateSync() {
     state.publicRoster = {
       internalGameId,
       gameDate: gameSnapshot.gameDate || gameDate,
-      status: "fresh",
+      status: gameSnapshot.status === "baseline" ? "baseline" : "fresh",
       players: normalizeRosterEntries(gameSnapshot.players),
-      isLoading: false
+      isLoading: false,
+      usableUntil: gameSnapshot.usableUntil || ""
     };
     saveToStorage(STORAGE_KEYS.rosterSnapshot, {
       internalGameId,
@@ -3063,7 +3070,7 @@ async function initializeRosterCandidateSync() {
       method: "game-day-roster-snapshot",
       warning: "",
       httpStatus: 200,
-      cacheStatus: "game-snapshot",
+      cacheStatus: gameSnapshot.status === "baseline" ? "game-snapshot-baseline" : "game-snapshot",
       stale: false,
       parsedCount: gameSnapshot.players.length,
       announcedCount: gameSnapshot.players.length,
@@ -3628,6 +3635,13 @@ function startPredictionDeadlineTicker() {
   refreshPredictionDeadlineState();
   predictionDeadlineTimerId = setInterval(() => {
     refreshPredictionDeadlineState();
+    if (state.publicRoster.status === "baseline" && !hasUsablePublicRosterForCurrentGame()) {
+      state.publicRoster.status = "pending";
+      state.publicRoster.players = [];
+      state.publicRoster.usableUntil = "";
+      renderPicker("prediction");
+      renderPredictionDeadline();
+    }
     void refreshPredictionTarget({ retryUnannounced: false });
   }, PREDICTION_DEADLINE_REFRESH_MS);
 }
@@ -3809,7 +3823,7 @@ function renderPredictionDeadline() {
       container.textContent = deadline.message || "予想の受付状況を確認しています。";
     }
   }
-  if (saveButton) saveButton.disabled = Boolean(deadline.isClosed) || (!state.isAdminMode && !hasFreshPublicRosterForCurrentGame()) || state.predictionRemote.isSaving || state.predictionRemote.isSubmitting;
+  if (saveButton) saveButton.disabled = Boolean(deadline.isClosed) || (!state.isAdminMode && !hasUsablePublicRosterForCurrentGame()) || state.predictionRemote.isSaving || state.predictionRemote.isSubmitting;
   if (resetButton) resetButton.disabled = Boolean(deadline.isClosed) || state.predictionRemote.isDeleting;
   renderPublicGameSelectionMeta();
 }
@@ -6777,7 +6791,7 @@ function updatePredictionSaveButton() {
 
   const isSaving = state.predictionRemote.isSaving;
   const isSubmitting = state.predictionRemote.isSubmitting;
-  button.disabled = isSaving || isSubmitting || isPredictionEditingLocked() || (!state.isAdminMode && !hasFreshPublicRosterForCurrentGame());
+  button.disabled = isSaving || isSubmitting || isPredictionEditingLocked() || (!state.isAdminMode && !hasUsablePublicRosterForCurrentGame());
   button.textContent = isSaving || isSubmitting ? "保存中..." : "予想を保存する";
   button.setAttribute("aria-busy", isSaving || isSubmitting ? "true" : "false");
 }
@@ -9095,7 +9109,7 @@ function renderPicker(pickerName) {
 
 function renderPredictionRosterFilter() {
   const filter = state.candidateRosterFilter === "inactive" ? "inactive" : "active";
-  const publicRosterReady = state.isAdminMode || hasFreshPublicRosterForCurrentGame();
+  const publicRosterReady = state.isAdminMode || hasUsablePublicRosterForCurrentGame();
   document.querySelectorAll("[data-roster-filter]").forEach((button) => {
     const isSelected = button.dataset.rosterFilter === filter;
     button.classList.toggle("is-selected", isSelected);

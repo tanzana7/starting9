@@ -93,6 +93,7 @@ const RANKING_ACHIEVEMENT_DISPLAY_LIMIT = 3;
 const PREDICTION_SCHEMA_VERSION = 1;
 const PREDICTION_MAX_JSON_BYTES = 16 * 1024;
 const PREDICTION_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
+const PUBLIC_ROSTER_BASELINE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const PREDICTION_TEAM_CODES = new Set(["f", "b", "h", "l", "e", "m", "g", "t", "db", "c", "d", "s"]);
 const PREDICTION_TEAM_SLUG_CODES = Object.freeze({
   fighters: "f",
@@ -7651,7 +7652,7 @@ async function handleGetGameDayRoster(request, env, cors) {
     return jsonResponse({ ok: false, code: "INVALID_INTERNAL_GAME_ID", error: "対象試合を指定してください。" }, 400, cors);
   }
   const game = await env.AUTH_DB.prepare(
-    `SELECT internal_game_id, game_date
+    `SELECT internal_game_id, game_date, start_time, home_team, away_team
        FROM games
       WHERE internal_game_id = ?1
       LIMIT 1`
@@ -7666,18 +7667,44 @@ async function handleGetGameDayRoster(request, env, cors) {
       ORDER BY updated_at DESC, captured_at DESC
       LIMIT 1`
   ).bind(internalGameId).first();
-  return jsonResponse(buildPublicGameDayRosterResponse({
+  const currentResponse = buildPublicGameDayRosterResponse({
     internalGameId,
     gameDate: game.game_date,
     snapshot: row
-  }), 200, cors);
+  });
+  if (currentResponse.status === "captured") {
+    return jsonResponse(currentResponse, 200, cors);
+  }
+
+  let baseline = null;
+  try {
+    const schedule = deriveV3Schedule({ startAt: game.start_time });
+    const now = new Date();
+    if (now < schedule.rosterFetchAt1) {
+      baseline = await findPublicRosterBaseline(env.AUTH_DB, game, now);
+      if (baseline) {
+        return jsonResponse(buildPublicBaselineRosterResponse({
+          internalGameId,
+          gameDate: game.game_date,
+          snapshot: baseline.snapshot,
+          usableUntil: schedule.rosterFetchAt1.toISOString()
+        }), 200, cors);
+      }
+    }
+  } catch {
+    // A missing/invalid schedule must not make the public roster endpoint fail.
+  }
+  return jsonResponse(currentResponse, 200, cors);
+}
+
+function getPublicRosterPlayers(snapshot) {
+  return parseJsonArray(snapshot?.roster_json)
+    .filter((player) => player && player.name && player.number && player.position);
 }
 
 export function buildPublicGameDayRosterResponse({ internalGameId = "", gameDate = "", snapshot = null } = {}) {
   const freshness = getV3RosterSnapshotFreshness(snapshot, { internalGameId, gameDate });
-  const players = freshness.isFresh
-    ? parseJsonArray(snapshot?.roster_json).filter((player) => player && player.name && player.number && player.position)
-    : [];
+  const players = freshness.isFresh ? getPublicRosterPlayers(snapshot) : [];
   return {
     ok: true,
     internalGameId,
@@ -7687,6 +7714,82 @@ export function buildPublicGameDayRosterResponse({ internalGameId = "", gameDate
     playerCount: players.length,
     players
   };
+}
+
+export function isPublicRosterBaselineCandidate(snapshot, { now = new Date(), maxAgeMs = PUBLIC_ROSTER_BASELINE_MAX_AGE_MS } = {}) {
+  const capturedAt = Date.parse(String(snapshot?.captured_at || ""));
+  const nowAt = now instanceof Date ? now.getTime() : Date.parse(String(now || ""));
+  const age = nowAt - capturedAt;
+  return Boolean(
+    snapshot
+    && String(snapshot.status || "").toLowerCase() === "captured"
+    && String(snapshot.source || "").trim().toLowerCase() === "npb-roster"
+    && Number(snapshot.player_count) > 0
+    && getPublicRosterPlayers(snapshot).length > 0
+    && Number.isFinite(capturedAt)
+    && Number.isFinite(nowAt)
+    && age >= 0
+    && age <= maxAgeMs
+  );
+}
+
+export function buildPublicBaselineRosterResponse({ internalGameId = "", gameDate = "", snapshot = null, usableUntil = null } = {}) {
+  const players = isPublicRosterBaselineCandidate(snapshot)
+    ? getPublicRosterPlayers(snapshot)
+    : [];
+  return {
+    ok: true,
+    internalGameId,
+    gameDate,
+    status: players.length ? "baseline" : "pending",
+    capturedAt: players.length ? snapshot?.captured_at || null : null,
+    usableUntil: players.length ? usableUntil : null,
+    playerCount: players.length,
+    players
+  };
+}
+
+async function findPublicRosterBaseline(db, targetGame, now) {
+  const targetTeams = [targetGame?.home_team, targetGame?.away_team]
+    .map((team) => {
+      try {
+        return normalizeScheduleTeamCode(team);
+      } catch {
+        return String(team || "").trim().toLowerCase();
+      }
+    })
+    .filter(Boolean);
+  const baselineTeam = targetTeams.includes(String(FIGHTERS_TEAM_CODE).toLowerCase())
+    ? String(FIGHTERS_TEAM_CODE).toLowerCase()
+    : targetTeams[0];
+  if (!baselineTeam) return null;
+
+  const result = await db.prepare(
+    `SELECT snapshot.internal_game_id, snapshot.game_date, snapshot.captured_at,
+            snapshot.roster_json, snapshot.player_count, snapshot.source, snapshot.status,
+            source_game.home_team AS source_home_team, source_game.away_team AS source_away_team
+       FROM game_roster_snapshots snapshot
+       JOIN games source_game ON source_game.internal_game_id = snapshot.internal_game_id
+      WHERE snapshot.internal_game_id <> ?1
+        AND snapshot.status = 'captured'
+        AND snapshot.source = 'npb-roster'
+        AND snapshot.player_count > 0
+      ORDER BY snapshot.captured_at DESC, snapshot.updated_at DESC
+      LIMIT 50`
+  ).bind(targetGame.internal_game_id).all();
+  const rows = Array.isArray(result?.results) ? result.results : [];
+  const candidate = rows.find((row) => {
+    const sourceTeams = [row.source_home_team, row.source_away_team]
+      .map((team) => {
+        try {
+          return normalizeScheduleTeamCode(team);
+        } catch {
+          return String(team || "").trim().toLowerCase();
+        }
+      });
+    return sourceTeams.includes(baselineTeam) && isPublicRosterBaselineCandidate(row, { now });
+  });
+  return candidate ? { snapshot: candidate } : null;
 }
 
 function getGameTeamCodes(identity) {

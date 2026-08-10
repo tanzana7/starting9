@@ -167,13 +167,14 @@ test("0031は既存NPBコードを保持し、識別情報列を追加する", (
   }
 });
 
-test("lineup fetchは保存済みgames.npb_game_codeをV3 targetへ渡す", () => {
+test("lineup fetchはgamesまたはcanonical game_identifiersのNPBコードをV3 targetへ渡す", () => {
   const executor = worker.slice(worker.indexOf("async function executeGameAutomationV3Job"), worker.indexOf("export async function runScheduledGameAutomation"));
   const targetLoader = worker.slice(worker.indexOf("async function loadV3GameTarget"), worker.indexOf("async function executeGameAutomationV3Job"));
-  assert.match(targetLoader, /gameCode: row\.npb_game_code \|\| ""/);
-  assert.doesNotMatch(targetLoader, /gameCode: row\.npb_game_code \|\| identifiers/);
+  assert.match(targetLoader, /hydrateV3GameIdentityFromIdentifiers/);
+  assert.match(targetLoader, /gameCode: hydrated\.npbGameCode \|\| ""/);
+  assert.doesNotMatch(targetLoader, /legacyGameId.*resolve/);
   assert.match(executor, /gameCode: target\.gameCode/);
-  assert.match(targetLoader, /npbGameUrl: row\.npb_game_url/);
+  assert.match(targetLoader, /npbGameUrl: hydrated\.npbGameUrl/);
   assert.match(executor, /identityOverride: lineupIdentity/);
   assert.match(executor, /NPB_IDENTITY_UNRESOLVED/);
 });

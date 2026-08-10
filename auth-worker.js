@@ -68,6 +68,7 @@ import {
   getV3ProbableStarterSourceDate,
   getV3CanonicalRosterSnapshot,
   getV3RosterSnapshotFreshness,
+  hydrateV3GameIdentityFromIdentifiers,
   normalizeProbableStarterDataStatus,
   resolveCanonicalProbableStarterRow,
   shouldStopProbableStarterScheduling
@@ -821,6 +822,18 @@ async function loadV3GameTarget(db, internalGameId) {
        FROM games WHERE internal_game_id = ?1 LIMIT 1`
   ).bind(id).first();
   if (!row) throw createV3Error("V3_GAME_NOT_REGISTERED", "V3対象試合が日程DBに登録されていません。");
+  const hydrated = await hydrateV3GameIdentityFromIdentifiers(db, {
+    ...row,
+    internalGameId: id,
+    gameDate: row.game_date,
+    startAt: row.start_time,
+    npbGameCode: row.npb_game_code,
+    npbGameUrl: row.npb_game_url,
+    sourceScheduleKey: row.source_schedule_key,
+    npbIdentityStatus: row.npb_identity_status,
+    npbIdentityResolvedAt: row.npb_identity_resolved_at,
+    npbIdentitySource: row.npb_identity_source
+  });
   return {
     ...row,
     internalGameId: row.internal_game_id,
@@ -832,12 +845,12 @@ async function loadV3GameTarget(db, internalGameId) {
     // Historical identifiers remain readable through the retired readers.
     gameId: id,
     legacyGameId: "",
-    gameCode: row.npb_game_code || "",
-    npbGameUrl: row.npb_game_url || "",
-    sourceScheduleKey: row.source_schedule_key || "",
-    npbIdentityStatus: row.npb_identity_status || (row.npb_game_code ? "resolved" : "unresolved"),
-    npbIdentityResolvedAt: row.npb_identity_resolved_at || null,
-    npbIdentitySource: row.npb_identity_source || "",
+    gameCode: hydrated.npbGameCode || "",
+    npbGameUrl: hydrated.npbGameUrl || "",
+    sourceScheduleKey: hydrated.sourceScheduleKey || "",
+    npbIdentityStatus: hydrated.npbIdentityStatus || (hydrated.npbGameCode ? "resolved" : "unresolved"),
+    npbIdentityResolvedAt: hydrated.npbIdentityResolvedAt || null,
+    npbIdentitySource: hydrated.npbIdentitySource || "",
     targetResolution: "v3_games_internal_game_id"
   };
 }

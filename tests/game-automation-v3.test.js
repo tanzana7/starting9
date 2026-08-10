@@ -125,6 +125,57 @@ test("NPB識別情報が未解決の間はlineup jobを計画しない", () => {
   assert.equal(v3.getV3DuePlan({ ...target, npbIdentityStatus: "resolved" }, "prediction_closed", "2026-08-04T08:20:00.000Z").jobType, "lineup_fetch");
 });
 
+test("V3はgamesが空でもgame_identifiersのNPBコードをlineup対象へ補完する", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE games (internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+        home_team TEXT, away_team TEXT, npb_game_code TEXT, npb_identity_status TEXT,
+        game_status TEXT, is_active INTEGER, deleted_at TEXT);
+      CREATE TABLE game_identifiers (id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT,
+        provider TEXT, identifier_type TEXT, identifier_value TEXT, updated_at TEXT);
+      INSERT INTO games VALUES ('${GAME_ID}', '2026-08-11', '2026-08-11T05:00:00.000Z',
+        'fighters', 'lions', NULL, 'unresolved', 'scheduled', 1, NULL);
+      INSERT INTO game_identifiers (internal_game_id, provider, identifier_type, identifier_value, updated_at)
+        VALUES ('${GAME_ID}', 'npb', 'npb_game_code', 'f-l-18', '2026-08-10T09:01:02.659Z');
+    `);
+    const games = await v3.listV3Games(d1(database), new Date("2026-08-11T00:00:00.000Z"));
+    assert.equal(games.length, 1);
+    assert.equal(games[0].npbGameCode, "f-l-18");
+    assert.equal(games[0].npbGameUrl, "https://npb.jp/scores/2026/0811/f-l-18/");
+    assert.equal(games[0].npbIdentityStatus, "resolved");
+    assert.equal(games[0].npbIdentitySource, "game_identifiers");
+    assert.equal(v3.getV3DuePlan(games[0], "prediction_closed", "2026-08-11T04:10:00.000Z").jobType, "lineup_fetch");
+  } finally {
+    database.close();
+  }
+});
+
+test("V3は複数のNPBコードを推測採用せずidentity conflictとして扱う", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE games (internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+        home_team TEXT, away_team TEXT, npb_game_code TEXT, npb_identity_status TEXT,
+        game_status TEXT, is_active INTEGER, deleted_at TEXT);
+      CREATE TABLE game_identifiers (id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT,
+        provider TEXT, identifier_type TEXT, identifier_value TEXT, updated_at TEXT);
+      INSERT INTO games VALUES ('${GAME_ID}', '2026-08-11', '2026-08-11T05:00:00.000Z',
+        'fighters', 'lions', NULL, 'unresolved', 'scheduled', 1, NULL);
+      INSERT INTO game_identifiers (internal_game_id, provider, identifier_type, identifier_value, updated_at)
+        VALUES ('${GAME_ID}', 'npb', 'npb_game_code', 'f-l-18', '2026-08-10T09:01:02.659Z');
+      INSERT INTO game_identifiers (internal_game_id, provider, identifier_type, identifier_value, updated_at)
+        VALUES ('${GAME_ID}', 'npb', 'npb_game_code', 'f-l-19', '2026-08-10T09:01:03.659Z');
+    `);
+    const games = await v3.listV3Games(d1(database), new Date("2026-08-11T00:00:00.000Z"));
+    assert.equal(games[0].npbGameCode, null);
+    assert.equal(games[0].npbIdentityStatus, "conflict");
+    assert.equal(v3.getV3DuePlan(games[0], "prediction_closed", "2026-08-11T04:10:00.000Z"), null);
+  } finally {
+    database.close();
+  }
+});
+
 test("V3の状態機械は正常遷移だけを受け入れ、旧状態名を含めない", () => {
   assert.equal(v3.getV3AllowedTransitions("scheduled", "prediction_closed"), true);
   assert.equal(v3.getV3AllowedTransitions("prediction_closed", "lineup_ready"), true);

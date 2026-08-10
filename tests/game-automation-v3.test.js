@@ -57,6 +57,54 @@ test("V3の派生時刻はDB startAtから固定され、外部IDを要求しな
   assert.equal(v3.getV3DuePlan(game(), "scheduled", "2026-08-04T08:00:00.000Z").jobType, "prediction_close");
 });
 
+test("roster slotは試合開始前だけを表示し、開始時刻と同時刻以後を除外する", () => {
+  const afternoon = v3.getV3RosterSlots({
+    gameDate: "2026-08-11",
+    startAt: "2026-08-11T05:00:00.000Z"
+  }).map((slot) => slot.toISOString());
+  assert.deepEqual(afternoon, [
+    "2026-08-11T03:00:00.000Z",
+    "2026-08-11T03:10:00.000Z"
+  ]);
+
+  const earlyAfternoon = v3.getV3RosterSlots({
+    gameDate: "2026-08-11",
+    startAt: "2026-08-11T04:00:00.000Z"
+  }).map((slot) => slot.toISOString());
+  assert.deepEqual(earlyAfternoon, [
+    "2026-08-11T02:00:00.000Z",
+    "2026-08-11T02:10:00.000Z"
+  ]);
+
+  const noon = v3.getV3RosterSlots({
+    gameDate: "2026-08-11",
+    startAt: "2026-08-11T03:00:00.000Z"
+  }).map((slot) => slot.toISOString());
+  assert.deepEqual(noon, [
+    "2026-08-11T01:00:00.000Z",
+    "2026-08-11T01:10:00.000Z"
+  ]);
+
+  const evening = v3.getV3RosterSlots({
+    gameDate: "2026-08-11",
+    startAt: "2026-08-11T09:00:00.000Z"
+  }).map((slot) => slot.toISOString());
+  assert.deepEqual(evening, [
+    "2026-08-11T07:00:00.000Z",
+    "2026-08-11T07:02:00.000Z",
+    "2026-08-11T07:10:00.000Z"
+  ]);
+
+  const boundary = v3.getV3RosterSlots({
+    gameDate: "2026-08-11",
+    startAt: "2026-08-11T07:02:00.000Z"
+  }).map((slot) => slot.toISOString());
+  assert.deepEqual(boundary, [
+    "2026-08-11T05:02:00.000Z",
+    "2026-08-11T05:12:00.000Z"
+  ]);
+});
+
 test("NPB識別解決は前日18時・当日16時・10分スロットをJSTで計画する", () => {
   const target = { ...game(), gameDate: "2026-08-05", startAt: "2026-08-05T09:00:00.000Z", npbIdentityStatus: "unresolved" };
   const previousDay = v3.getV3IdentityResolvePlans(target, "2026-08-04T09:00:00.000Z");
@@ -325,6 +373,29 @@ test("V3ロースターplannerはslot前missingを待機監査し、slot後だ�
     assert.equal(afterDue.created, 1);
     assert.equal(afterDue.diagnostics[0].reasonCode, "ROSTER_SNAPSHOT_MISSING_AFTER_DUE");
     assert.equal(afterDue.diagnostics[0].severity, "ATTENTION");
+  } finally {
+    database.close();
+  }
+});
+
+test("試合開始後は未処理の過去slotがあってもroster jobを新規作成しない", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE game_roster_snapshots (game_id TEXT PRIMARY KEY, internal_game_id TEXT,
+        game_date TEXT, source TEXT, status TEXT, player_count INTEGER, captured_at TEXT, updated_at TEXT);
+      CREATE TABLE game_jobs_v3 (id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT,
+        job_type TEXT, scheduled_at TEXT, scheduled_slot_at TEXT, status TEXT, attempt_count INTEGER,
+        max_attempts INTEGER, next_retry_at TEXT, claimed_at TEXT, claim_token TEXT,
+        lease_expires_at TEXT, completed_at TEXT, failure_code TEXT, failure_message TEXT,
+        created_at TEXT, updated_at TEXT, UNIQUE(internal_game_id, job_type, scheduled_slot_at));
+    `);
+    const target = { ...game(), gameDate: "2026-08-11", startAt: "2026-08-11T05:00:00.000Z" };
+    const result = await v3.planV3RosterJobs(d1(database), [target], new Date("2026-08-11T07:10:00.000Z"));
+    assert.equal(result.created, 0);
+    assert.equal(result.planned[0].reasonCode, "ROSTER_GAME_ALREADY_STARTED");
+    assert.equal(result.diagnostics[0].selectedDueSlot, "2026-08-11T03:10:00.000Z");
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3").get().count, 0);
   } finally {
     database.close();
   }

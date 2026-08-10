@@ -215,7 +215,9 @@ export function deriveV3DisplaySchedule(game) {
       const [hour, minute] = String(slot).split(":").map(Number);
       return jstV3Slot(gameDate, hour, minute);
     })
-  ];
+  ].filter((slot) => slot instanceof Date
+    && !Number.isNaN(slot.getTime())
+    && slot.getTime() < schedule.startAt.getTime());
   const lineupPollingSlots = [];
   for (let slot = schedule.lineupPollingStart; slot < schedule.finalLineupAt; slot = new Date(slot.getTime() + V3_TIMING.lineupPollingIntervalMinutes * 60 * 1000)) {
     lineupPollingSlots.push(slot);
@@ -1179,6 +1181,13 @@ export async function planV3RosterJobs(db, games = [], now = new Date()) {
         reasonCode: rosterStatus.reasonCode,
         severity: rosterStatus.severity
       });
+      const gameStartAt = new Date(game.startAt || game.start_at || game.startTime || game.start_time || "");
+      if (!Number.isNaN(gameStartAt.getTime()) && current.getTime() >= gameStartAt.getTime()) {
+        diagnostic.planningSkipped = true;
+        diagnostic.skipReason = "ROSTER_GAME_ALREADY_STARTED";
+        planned.push({ game, plan: null, created: false, reasonCode: diagnostic.skipReason, diagnostic: { ...diagnostic } });
+        continue;
+      }
       if (!dueSlots.length) {
         diagnostic.planningSkipped = true;
         diagnostic.skipReason = "ROSTER_NOT_DUE";

@@ -1415,7 +1415,7 @@ export async function listV3Games(db, now = new Date()) {
         AND game_date >= date(?1)
       ORDER BY start_time, internal_game_id`
   ).bind(date).all();
-  return (result.results || []).map((row) => ({
+  const baseGames = (result.results || []).map((row) => ({
     internalGameId: row.internal_game_id,
     gameDate: row.game_date,
     startAt: row.start_time,
@@ -1435,6 +1435,67 @@ export async function listV3Games(db, now = new Date()) {
     isActive: row.is_active,
     deletedAt: row.deleted_at
   }));
+  return Promise.all(baseGames.map((game) => hydrateV3GameIdentityFromIdentifiers(db, game)));
+}
+
+function normalizeV3NpbGameCode(value) {
+  const code = String(value || "").trim().toLowerCase();
+  return /^[a-z0-9]{1,2}-[a-z0-9]{1,2}-\d+$/.test(code) ? code : "";
+}
+
+function buildV3NpbGameUrl(gameDate, gameCode) {
+  const date = String(gameDate || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const code = normalizeV3NpbGameCode(gameCode);
+  if (!date || !code) return null;
+  return `https://npb.jp/scores/${date[1]}/${date[2]}${date[3]}/${code}/`;
+}
+
+// Schedule sync registers NPB identity in game_identifiers before all consumers
+// have necessarily copied it into games. Read that canonical registry value for
+// V3 planning and lineup execution without mutating historical schedule rows.
+export async function hydrateV3GameIdentityFromIdentifiers(db, game = {}) {
+  const existingCode = normalizeV3NpbGameCode(game.npbGameCode || game.npb_game_code);
+  const existingStatus = String(game.npbIdentityStatus || game.npb_identity_status || "").trim();
+  if (existingCode || existingStatus === "manually_overridden") return game;
+
+  const internalGameId = String(game.internalGameId || game.internal_game_id || "").trim();
+  if (!internalGameId) return game;
+  let result;
+  try {
+    result = await db.prepare(
+      `SELECT provider, identifier_type, identifier_value, updated_at
+         FROM game_identifiers
+        WHERE internal_game_id = ?1
+          AND ((provider = 'npb' AND identifier_type = 'npb_game_code')
+            OR (provider = 'schedule_worker' AND identifier_type = 'source_game_key'))
+        ORDER BY updated_at DESC, id DESC`
+    ).bind(internalGameId).all();
+  } catch {
+    // Older test adapters or partially migrated databases should retain the
+    // normal unresolved behavior rather than blocking the V3 runner.
+    return game;
+  }
+  const identifiers = result?.results || [];
+  const codes = [...new Set(identifiers
+    .filter((row) => row.provider === "npb" && row.identifier_type === "npb_game_code")
+    .map((row) => normalizeV3NpbGameCode(row.identifier_value))
+    .filter(Boolean))];
+  if (codes.length === 0) return game;
+  if (codes.length > 1) {
+    return { ...game, npbIdentityStatus: "conflict", npbIdentitySource: "game_identifiers" };
+  }
+  const code = codes[0];
+  const sourceKey = identifiers.find((row) => row.provider === "schedule_worker" && row.identifier_type === "source_game_key")?.identifier_value || null;
+  const updatedAt = identifiers.find((row) => row.provider === "npb" && row.identifier_type === "npb_game_code")?.updated_at || null;
+  return {
+    ...game,
+    npbGameCode: code,
+    npbGameUrl: game.npbGameUrl || game.npb_game_url || buildV3NpbGameUrl(game.gameDate || game.game_date, code),
+    sourceScheduleKey: game.sourceScheduleKey || game.source_schedule_key || sourceKey,
+    npbIdentityStatus: "resolved",
+    npbIdentityResolvedAt: game.npbIdentityResolvedAt || game.npb_identity_resolved_at || updatedAt,
+    npbIdentitySource: "game_identifiers"
+  };
 }
 
 export async function ensureV3State(db, internalGameId, now = new Date()) {

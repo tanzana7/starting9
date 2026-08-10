@@ -74,6 +74,7 @@ let autoScoringCountdownTimerId = null;
 let predictionSaveMessageTimerId = null;
 let predictionDeadlineTimerId = null;
 let gameProgressStatusTimerId = null;
+let publicRosterSyncRequestId = 0;
 const TEST_PREDICTION_LINEUP = [
   { order: 1, player: "大塚瑠晏", position: "遊" },
   { order: 2, player: "清宮幸太郎", position: "一" },
@@ -3040,6 +3041,10 @@ function rosterEntryMatchesPlayer(entry, player) {
 async function initializeRosterCandidateSync() {
   const internalGameId = getGameDayRosterTargetInternalGameId();
   const gameDate = String(state.predictionTargetGame?.date || "").slice(0, 10);
+  if (state.publicRoster.isLoading && state.publicRoster.internalGameId === internalGameId) {
+    return;
+  }
+  const requestId = ++publicRosterSyncRequestId;
   state.publicRoster = {
     internalGameId,
     gameDate,
@@ -3051,8 +3056,8 @@ async function initializeRosterCandidateSync() {
   renderPicker("prediction");
   renderPredictionDeadline();
   const gameSnapshot = await fetchGameDayRosterSnapshot(internalGameId);
+  if (requestId !== publicRosterSyncRequestId || internalGameId !== getGameDayRosterTargetInternalGameId()) return;
   state.publicRoster.isLoading = false;
-  if (internalGameId !== getGameDayRosterTargetInternalGameId()) return;
   if (gameSnapshot.ok && gameSnapshot.internalGameId === internalGameId && gameSnapshot.players.length) {
     state.publicRoster = {
       internalGameId,
@@ -3191,6 +3196,7 @@ async function refreshPredictionTarget({ retryUnannounced = true, useServer = tr
     state.prediction = null;
     state.predictionRemote = createEmptyPredictionRemoteState();
     renderAll();
+    void initializeRosterCandidateSync();
     return;
   }
   if ((nextGame?.gameId || "") !== previousGameId || (nextGame?.internalGameId || "") !== (previousGame?.internalGameId || "")) {
@@ -3209,6 +3215,7 @@ async function refreshPredictionTarget({ retryUnannounced = true, useServer = tr
     renderAll();
     void syncPredictionFromAccount({ force: true });
     void refreshGameDayNoticeStatus({ force: true });
+    void initializeRosterCandidateSync();
     if (nextGame) await fetchStoredProbableStarter();
     return;
   }
@@ -3351,6 +3358,10 @@ async function initializePublicGameCatalog() {
       state.predictionRemote = createEmptyPredictionRemoteState();
       refreshPredictionDeadlineState();
     }
+    // The public catalog can resolve after probable-starter initialization.
+    // Re-run the roster fetch so an earlier empty-target attempt cannot leave
+    // the prediction picker stuck in its loading state.
+    void initializeRosterCandidateSync();
   } catch (error) {
     catalog.games = [];
     catalog.message = "試合情報を取得できませんでした。";

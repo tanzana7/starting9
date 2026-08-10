@@ -98,7 +98,7 @@ test("公開画面の残り時間は日・時間・分で表示し、管理画�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-prediction-form-overflow-2">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-baseline-roster-render-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

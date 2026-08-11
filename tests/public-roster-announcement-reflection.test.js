@@ -158,7 +158,8 @@ test("公開試合カタログ確定後にbaseline roster取得を再実行し�
   const targetEnd = script.indexOf("async function resolvePredictionTargetGame", targetStart);
   const target = script.slice(targetStart, targetEnd);
 
-  assert.match(catalog, /void initializeRosterCandidateSync\(\);/);
+  assert.doesNotMatch(catalog, /void initializeRosterCandidateSync\(\);/);
+  assert.match(script, /const rosterPromise = initializeRosterCandidateSync\(\);/);
   assert.match(target, /void initializeRosterCandidateSync\(\);/);
   assert.match(script, /let publicRosterSyncRequestId = 0;/);
   assert.match(script, /requestId !== publicRosterSyncRequestId/);

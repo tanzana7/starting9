@@ -7,6 +7,7 @@ import test from "node:test";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+const audit = fs.readFileSync(path.join(root, "backend/automation-v3/audit.js"), "utf8");
 const admin = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
 const migration = fs.readFileSync(path.join(root, "migrations", "0033_probable_starter_audit_data_status.sql"), "utf8");
 const v3 = await import(pathToFileURL(path.join(root, "game-automation-v3.js")));
@@ -151,9 +152,9 @@ test("legacyの発表済みrowが残っていても、UUID正規rowの一時失�
 });
 
 test("救済jobの対象slot、実行時刻、監査状態、診断情報を別々に扱う", () => {
-  assert.match(worker, /stateAfter\s*[,=].*statusAfter|statusAfter\s*=\s*String\(job\?\.status/);
-  assert.match(worker, /scheduled_slot_at/);
-  assert.match(worker, /dataStatus/);
+  assert.match(audit, /stateAfter\s*[,=].*statusAfter|statusAfter\s*=\s*String\(job\?\.status/);
+  assert.match(audit, /scheduled_slot_at/);
+  assert.match(audit, /dataStatus/);
   assert.match(worker, /httpStatus/);
   assert.match(worker, /parserResult/);
   assert.match(worker, /candidateCount/);

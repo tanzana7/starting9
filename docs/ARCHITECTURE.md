@@ -64,6 +64,22 @@ The public state is split into `gameCatalog`, `currentGame`, `predictionForm`, `
 
 V3 separates auxiliary jobs from main workflow jobs. The Cron path plans due jobs, claims them atomically with a lease, and invokes the registered executor. A job failure is recorded against its job type and target game; it must not stop unrelated auxiliary jobs or other games.
 
+### Automation Module Boundaries
+
+`game-automation-v3.js` is a compatibility facade. It deliberately preserves existing Worker and test imports while the implementation is organized under `backend/automation-v3`:
+
+| Module | Responsibility | Does not own |
+| --- | --- | --- |
+| `constants.js` | V3 job/state registry, timing constants, transition and error taxonomy | D1 or Worker bindings |
+| `domain.js` | JST schedule derivation, slot eligibility, identity and phase decisions | SQL or HTTP execution |
+| `probable-starter-planner.js` / `planner.js` | probable-starter, roster, identity, and main-workflow planning decisions | claim or job execution |
+| `repository.js` / `roster-repository.js` | canonical V3 game/state/job and roster-snapshot persistence queries | authorization or job rules |
+| `orchestrator.js` | auxiliary/main plan aggregation and atomic due-job claiming | job-type executor implementation |
+| `executor.js` | planner -> claim -> injected job-executor lifecycle and retry completion | application-specific lineup/scoring/publish work |
+| `audit.js` / `diagnostics.js` | pure structured audit-record and Cron-summary construction | D1 writes, routes, or secrets |
+
+`auth-worker.js` remains the composition root. It supplies `AUTH_DB`, authorization, schedule sync, job-type executors, and the thin D1 audit adapter. This is intentional: those are deployment- and application-specific concerns, while the V3 modules remain independently testable.
+
 The normal progression is:
 
 ```text
@@ -77,6 +93,8 @@ schedule / identity
 ```
 
 Each step is state-gated and idempotent. Zero-prediction scoring is a valid completed no-op and still produces the revision state required by downstream ranking and publication.
+
+The scheduler must not use a legacy ID, V1/V2 runner, or manual production mutation as a fallback. NPB identity hydration may read the canonical `game_identifiers` record when a `games` identity field is absent; that normalization is part of the V3 repository read path and leaves the underlying game row unchanged.
 
 ## Data and Revision Boundaries
 

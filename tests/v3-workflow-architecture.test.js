@@ -130,9 +130,16 @@ test("V3 runnerの補助job失敗はmain plannerを停止せず、仮想試合�
 
 test("V3 runtime source has explicit phases and no V2 module dependency", () => {
   const runtime = fs.readFileSync(path.join(root, "game-automation-v3.js"), "utf8");
+  const orchestrator = fs.readFileSync(path.join(root, "backend/automation-v3/orchestrator.js"), "utf8");
+  const executor = fs.readFileSync(path.join(root, "backend/automation-v3/executor.js"), "utf8");
   const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
   const admin = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
-  for (const name of ["planAuxiliaryJobs", "planMainWorkflowJobs", "claimDueJobs", "executeClaimedJobs"]) assert.match(runtime, new RegExp(`export async function ${name}`));
+  for (const name of ["planAuxiliaryJobs", "planMainWorkflowJobs", "claimDueJobs"]) {
+    assert.match(orchestrator, new RegExp(`export async function ${name}`));
+  }
+  assert.match(executor, /export async function executeClaimedJobs/);
+  assert.match(runtime, /export \* from "\.\/backend\/automation-v3\/orchestrator\.js"/);
+  assert.match(runtime, /export \* from "\.\/backend\/automation-v3\/executor\.js"/);
   assert.match(worker, /V3_JOB_EXECUTORS/);
   assert.match(worker, /MISSING_EXECUTOR/);
   for (const jobType of v3.V3_JOB_TYPES) {

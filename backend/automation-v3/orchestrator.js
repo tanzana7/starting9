@@ -1,0 +1,302 @@
+import {
+  V3_ERROR_CLASSES,
+  V3_JOB_TYPE,
+  V3_JOB_TYPES,
+  V3_OPEN_JOB_STATUS_SQL,
+  isV3OpenJobStatus,
+  isV3RankingRecoveryTerminalJob,
+  isV3ScoreRecoveryTerminalJob,
+  isV3TerminalJobStatus,
+  createV3Error
+} from "./constants.js";
+import { claimV3Job, createV3Job, listDueV3Jobs } from "./repository.js";
+import {
+  getV3DuePlan,
+  getV3DuePlans,
+  getV3IdentityResolvePlans,
+  planV3RosterJobs
+} from "./planner.js";
+import { planV3ProbableStarterJobs } from "./probable-starter-planner.js";
+import { isV3GameEligible } from "./domain.js";
+
+// Planner aggregation, planner diagnostics, and atomic claim coordination.
+export function assertV3AuxiliaryJobResult(job, result, now) {
+  const jobType = String(job?.job_type || "");
+  if (!["roster_fetch", "lineup_fetch"].includes(jobType)) return;
+  const status = String(result?.status || "").trim().toLowerCase();
+  const retryableStatuses = new Set(["pending", "retry_wait", "unannounced", "not_announced", "error", "failed"]);
+  if (!retryableStatuses.has(status)) return;
+  const error = createV3Error(
+    String(result?.failureCode || result?.reasonCode || `${jobType.toUpperCase()}_RETRYABLE`),
+    String(result?.failureMessage || result?.message || `${jobType}の次回slotで再試行します。`),
+    { retryable: true }
+  );
+  error.retryAt = result?.nextRetryAt || new Date(new Date(now).getTime() + 10 * 60 * 1000);
+  throw error;
+}
+
+async function hasOpenV3Job(db, internalGameId, jobType) {
+  const row = await db.prepare(
+    `SELECT id FROM game_jobs_v3
+      WHERE internal_game_id = ?1 AND job_type = ?2
+        AND status IN (${V3_OPEN_JOB_STATUS_SQL})
+      LIMIT 1`
+  ).bind(internalGameId, jobType).first();
+  return Boolean(row?.id);
+}
+
+async function readV3StateForPlanning(db, internalGameId) {
+  try {
+    return await db.prepare(
+      "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
+    ).bind(internalGameId).first();
+  } catch {
+    return null;
+  }
+}
+
+function createV3PlanningDiagnostic(game, plan, state) {
+  return {
+    internalGameId: game?.internalGameId || null,
+    jobType: plan?.jobType || null,
+    state: state || "scheduled",
+    scheduledSlotAt: plan?.scheduledSlotAt?.toISOString?.() || null,
+    plannerReached: true,
+    insertAttempted: false,
+    insertedRowCount: 0,
+    claimResult: "not_attempted",
+    executorReached: false,
+    persistenceResult: "not_attempted",
+    reasonCode: null,
+    actualJobExists: false,
+    existingJobId: null,
+    existingStatus: null
+  };
+}
+
+export function normalizeV3PlannerDecision(entry, now = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  const plan = entry?.plan || null;
+  const diagnostic = entry?.diagnostic || {};
+  const job = entry?.job || null;
+  const status = String(entry?.existingStatus || job?.status || diagnostic.existingStatus || "");
+  const scheduledSlotAt = plan?.scheduledSlotAt instanceof Date
+    ? plan.scheduledSlotAt.toISOString()
+    : plan?.scheduledSlotAt || entry?.existingScheduledSlotAt || null;
+  const dueAt = new Date(plan?.scheduledAt || scheduledSlotAt || "");
+  const due = !Number.isNaN(current.getTime()) && !Number.isNaN(dueAt.getTime()) && dueAt.getTime() <= current.getTime();
+  const existing = job?.id ? { id: job.id, status: job.status || null, scheduledSlotAt: job.scheduled_slot_at || null } : null;
+  const existingOpenJob = existing && isV3OpenJobStatus(existing.status) ? existing : null;
+  const existingTerminalJob = existing && isV3TerminalJobStatus(existing.status) ? existing : null;
+  const reasonCode = entry?.reasonCode || diagnostic.reasonCode || null;
+  const shouldRun = Boolean(plan && ![
+    "PROBABLE_STARTER_GAME_NOT_ELIGIBLE",
+    "PROBABLE_STARTER_NOT_DUE",
+    "V3_GAME_NOT_ELIGIBLE",
+    "V3_STATE_NOT_ELIGIBLE"
+  ].includes(String(reasonCode || "")));
+  const canonicalDataReady = typeof diagnostic.canonicalDataReady === "boolean"
+    ? diagnostic.canonicalDataReady
+    : typeof diagnostic.rosterSnapshotExists === "boolean"
+      ? diagnostic.rosterSnapshotExists
+      : null;
+  return {
+    jobType: plan?.jobType || job?.job_type || null,
+    shouldRun,
+    reasonCode,
+    scheduledSlotAt,
+    due,
+    existingOpenJob,
+    existingTerminalJob,
+    canonicalDataReady,
+    insertAttempted: Boolean(entry?.insertAttempted ?? diagnostic.insertAttempted),
+    insertedJobId: entry?.created ? entry?.job?.id || null : null
+  };
+}
+
+function normalizeV3PlanEntries(result, now) {
+  const planned = (result?.planned || []).map((entry) => ({
+    ...entry,
+    plannerDecision: normalizeV3PlannerDecision(entry, now),
+    diagnostic: {
+      ...(entry.diagnostic || {}),
+      plannerDecision: normalizeV3PlannerDecision(entry, now)
+    }
+  }));
+  return { ...(result || {}), planned, diagnostics: planned.map((entry) => ({ ...(entry.diagnostic || {}) })) };
+}
+
+function emptyV3PlanResult(error = null) {
+  return { created: 0, planned: [], diagnostics: [], errors: error ? [{ game: null, plan: null, error }] : [] };
+}
+
+export const V3_JOB_PLANNERS = Object.freeze({
+  [V3_JOB_TYPE.PROBABLE_STARTER_FETCH]: planV3ProbableStarterJobs,
+  [V3_JOB_TYPE.ROSTER_FETCH]: planV3RosterJobs,
+  [V3_JOB_TYPE.NPB_IDENTITY_RESOLVE]: planV3IdentityJobs,
+  [V3_JOB_TYPE.PREDICTION_CLOSE]: planV3MainJobs,
+  [V3_JOB_TYPE.LINEUP_FETCH]: planV3MainJobs,
+  [V3_JOB_TYPE.LINEUP_FINALIZE]: planV3MainJobs,
+  [V3_JOB_TYPE.SCORE]: planV3MainJobs,
+  [V3_JOB_TYPE.RANKING_REBUILD]: planV3MainJobs,
+  [V3_JOB_TYPE.PUBLISH]: planV3MainJobs
+});
+
+export async function planAuxiliaryJobs(db, games = [], now = new Date()) {
+  const run = async (name, planner) => {
+    try {
+      return normalizeV3PlanEntries(await planner(db, games, now), now);
+    } catch (error) {
+      // Auxiliary failures are isolated. The other auxiliary and main planners
+      // still run in the same Cron invocation.
+      return emptyV3PlanResult(error);
+    }
+  };
+  const probablePlan = await run(V3_JOB_TYPE.PROBABLE_STARTER_FETCH, V3_JOB_PLANNERS[V3_JOB_TYPE.PROBABLE_STARTER_FETCH]);
+  const rosterPlan = await run(V3_JOB_TYPE.ROSTER_FETCH, V3_JOB_PLANNERS[V3_JOB_TYPE.ROSTER_FETCH]);
+  const identityPlan = await run(V3_JOB_TYPE.NPB_IDENTITY_RESOLVE, V3_JOB_PLANNERS[V3_JOB_TYPE.NPB_IDENTITY_RESOLVE]);
+  return {
+    probablePlan,
+    rosterPlan,
+    identityPlan,
+    planned: [...probablePlan.planned, ...rosterPlan.planned, ...identityPlan.planned],
+    errors: [...probablePlan.errors, ...rosterPlan.errors, ...identityPlan.errors],
+    created: probablePlan.created + rosterPlan.created + identityPlan.created
+  };
+}
+
+export async function planMainWorkflowJobs(db, games = [], now = new Date()) {
+  try {
+    return normalizeV3PlanEntries(await planV3MainJobs(db, games, now), now);
+  } catch (error) {
+    return emptyV3PlanResult(error);
+  }
+}
+
+export async function claimDueJobs(db, now = new Date(), plannedEntries = []) {
+  const due = await listDueV3Jobs(db, now);
+  const plannedById = new Map(plannedEntries.map((entry) => [String(entry?.job?.id || ""), entry]));
+  const claimed = [];
+  for (const job of due) {
+    const claimedJob = await claimV3Job(db, { jobId: job.id, now });
+    const entry = plannedById.get(String(job.id));
+    const claimResult = claimedJob ? "claimed" : "claim_conflict";
+    if (entry) {
+      entry.plannerDecision = {
+        ...(entry.plannerDecision || normalizeV3PlannerDecision(entry, now)),
+        existingOpenJob: { id: job.id, status: job.status, scheduledSlotAt: job.scheduled_slot_at },
+        insertAttempted: entry.plannerDecision?.insertAttempted ?? false
+      };
+      entry.diagnostic = {
+        ...(entry.diagnostic || {}),
+        actualJobExists: true,
+        jobStatus: claimedJob?.status || job.status || null,
+        claimEligible: isV3OpenJobStatus(job.status),
+        claimResult
+      };
+    }
+    claimed.push({ job, claimed: claimedJob, entry, claimResult });
+  }
+  return { due, claimed };
+}
+
+export async function planV3MainJobs(db, games = [], now = new Date()) {
+  const planned = [];
+  const errors = [];
+  const diagnostics = [];
+  for (const game of Array.isArray(games) ? games : []) {
+    if (!isV3GameEligible(game)) continue;
+    try {
+      const stateRow = await readV3StateForPlanning(db, game.internalGameId);
+      const state = String(stateRow?.state || game.workflowState || "scheduled");
+      const plans = getV3DuePlans(game, state, now);
+      for (const plan of plans) {
+        let effectivePlan = plan;
+        let recoveryOfJobId = null;
+        let diagnostic = createV3PlanningDiagnostic(game, effectivePlan, state);
+        let result = await createV3Job(db, { internalGameId: game.internalGameId, ...effectivePlan });
+        const recoveryJobType = plan.jobType === V3_JOB_TYPE.SCORE
+          ? "score"
+          : plan.jobType === V3_JOB_TYPE.RANKING_REBUILD
+            ? "ranking"
+            : null;
+        const isTerminalRecovery = recoveryJobType
+          && !result.created
+          && (recoveryJobType === "score"
+            ? isV3ScoreRecoveryTerminalJob(result.job)
+            : isV3RankingRecoveryTerminalJob(result.job));
+        if (isTerminalRecovery) {
+          const originalSlot = new Date(plan.scheduledSlotAt);
+          const recoverySlot = new Date(originalSlot.getTime() + 1000);
+          effectivePlan = { ...plan, scheduledSlotAt: recoverySlot, scheduledAt: recoverySlot };
+          recoveryOfJobId = result.job?.id || null;
+          diagnostic = createV3PlanningDiagnostic(game, effectivePlan, state);
+          result = await createV3Job(db, { internalGameId: game.internalGameId, ...effectivePlan });
+          diagnostic.recoveryOfJobId = recoveryOfJobId;
+          diagnostic.recoveryScheduledSlotAt = recoverySlot.toISOString();
+        }
+        diagnostic.insertAttempted = true;
+        diagnostic.insertedRowCount = result.created ? 1 : 0;
+        diagnostic.actualJobExists = Boolean(result.job?.id);
+        diagnostic.existingJobId = result.created ? null : result.job?.id || null;
+        diagnostic.existingStatus = result.created ? "pending" : result.job?.status || null;
+        diagnostic.reasonCode = recoveryOfJobId
+          ? recoveryJobType === "score"
+            ? (result.created ? "V3_SCORE_RECOVERY_JOB_CREATED" : "V3_SCORE_RECOVERY_JOB_ALREADY_EXISTS")
+            : (result.created ? "V3_RANKING_RECOVERY_JOB_CREATED" : "V3_RANKING_RECOVERY_JOB_ALREADY_EXISTS")
+          : (result.created ? "V3_JOB_CREATED" : "V3_JOB_ALREADY_EXISTS");
+        const entry = {
+          game,
+          plan: effectivePlan,
+          ...result,
+          reasonCode: diagnostic.reasonCode,
+          insertedRowCount: diagnostic.insertedRowCount,
+          existingJobId: diagnostic.existingJobId,
+          existingScheduledSlotAt: result.created ? null : result.job?.scheduled_slot_at || null,
+          existingStatus: diagnostic.existingStatus,
+          recoveryOfJobId,
+          diagnostic
+        };
+        planned.push(entry);
+        diagnostics.push({ ...diagnostic });
+      }
+    } catch (error) {
+      errors.push({ game, plan: null, error });
+    }
+  }
+  return {
+    created: planned.filter((entry) => entry.created).length,
+    planned,
+    errors,
+    diagnostics
+  };
+}
+
+export async function planV3IdentityJobs(db, games = [], now = new Date()) {
+  const planned = [];
+  const errors = [];
+  const diagnostics = [];
+  for (const game of Array.isArray(games) ? games : []) {
+    try {
+      const stateRow = await readV3StateForPlanning(db, game.internalGameId);
+      const state = String(stateRow?.state || game.workflowState || "scheduled");
+      const plans = getV3IdentityResolvePlans(game, now, state);
+      const plan = plans[plans.length - 1] || null;
+      if (!plan) continue;
+      const diagnostic = createV3PlanningDiagnostic(game, plan, state);
+      const result = await createV3Job(db, { internalGameId: game.internalGameId, ...plan });
+      diagnostic.insertAttempted = true;
+      diagnostic.insertedRowCount = result.created ? 1 : 0;
+      diagnostic.actualJobExists = Boolean(result.job?.id);
+      diagnostic.existingJobId = result.created ? null : result.job?.id || null;
+      diagnostic.existingStatus = result.created ? "pending" : result.job?.status || null;
+      diagnostic.reasonCode = result.created ? "V3_JOB_CREATED" : "V3_JOB_ALREADY_EXISTS";
+      const entry = { game, plan, ...result, reasonCode: diagnostic.reasonCode, insertedRowCount: diagnostic.insertedRowCount, existingJobId: diagnostic.existingJobId, existingStatus: diagnostic.existingStatus, diagnostic };
+      planned.push(entry);
+      diagnostics.push({ ...diagnostic });
+    } catch (error) {
+      errors.push({ game, plan: null, error });
+    }
+  }
+  return { created: planned.filter((entry) => entry.created).length, planned, errors, diagnostics };
+}

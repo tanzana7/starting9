@@ -174,7 +174,7 @@ test("通常の予想があるrevision欠落はランキングno-opへ変換し�
 
 test("admin-v3 ignores a historical failure when a newer recovery job is open", () => {
   const client = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
-  const runtime = fs.readFileSync(path.join(root, "game-automation-v3.js"), "utf8");
+  const runtime = fs.readFileSync(path.join(root, "backend/automation-v3/orchestrator.js"), "utf8");
   const page = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
   assert.match(client, /hasNewerV3Job/);
   assert.match(client, /currentFailedV3Jobs/);

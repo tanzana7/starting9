@@ -85,6 +85,6 @@ test("Today Opsはlineup reasonと次回確認を同じ表示契約へ渡す", (
   assert.match(client, /lineupDetail/);
   assert.match(client, /renderTodayOpsStep\("スタメン", steps\.lineup, steps\.lineupDetail\)/);
   assert.match(client, /次回確認待ち/);
-  assert.match(page, /admin-v3\.css\?v=ranking-copy-perfect-score-helper-1/);
-  assert.match(page, /admin-v3\.js\?v=ranking-copy-perfect-score-helper-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-perfect-score-fixture-preview-1/);
+  assert.match(page, /admin-v3\.js\?v=admin-perfect-score-fixture-preview-1/);
 });

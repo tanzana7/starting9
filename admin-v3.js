@@ -1,4 +1,6 @@
 const V3_AUTH_PRODUCTION_BASE = "https://starting9-auth.tanzana7.workers.dev";
+// RELEASE_DEBUG_PERFECT_SCORE_FIXTURE is shown only in the admin preview panel.
+const RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY = "release_full_score_debug_1";
 const V3_JOB_TYPE = Object.freeze({
   NPB_IDENTITY_RESOLVE: "npb_identity_resolve",
   PREDICTION_CLOSE: "prediction_close",
@@ -1111,12 +1113,12 @@ function renderPerfectScorePreviewPanel(game) {
   const result = previewState.result;
   const breakdown = result?.scoringBreakdown || {};
   const lineupMarkup = Array.isArray(result?.officialLineup)
-    ? result.officialLineup.map((player) => `<li>${escapeV3(player.battingOrder)}番 ${escapeV3(player.displayName || player.playerName)} / ${escapeV3(player.position)} / ${escapeV3(player.playerId)}</li>`).join("")
+    ? result.officialLineup.map((player) => `<li>${escapeV3(player.battingOrder)}番 ${escapeV3(player.displayName || player.playerName || player.name)} / ${escapeV3(player.position)} / ${escapeV3(player.playerId)}</li>`).join("")
     : "";
   const resultMarkup = result
-    ? `<div class="perfect-score-preview-result"><div class="detail-grid"><div><dt>期待スコア</dt><dd><strong>${escapeV3(result.expectedScore)} / ${escapeV3(result.maxScore)}</strong></dd></div><div><dt>満点判定</dt><dd>${result.isMaxScore ? "満点" : "要確認"}</dd></div><div><dt>lineup revision</dt><dd>${escapeV3(result.lineupRevision?.revisionId || "-")}</dd></div><div><dt>書き込み</dt><dd>なし（previewのみ）</dd></div><div><dt>選手一致</dt><dd>${escapeV3(breakdown.player?.hits ?? 0)} / 9</dd></div><div><dt>打順一致</dt><dd>${escapeV3(breakdown.order?.hits ?? 0)} / 9</dd></div><div><dt>守備一致</dt><dd>${escapeV3(breakdown.position?.hits ?? 0)} / 9</dd></div></div><h4>正式スタメン</h4><ol class="perfect-score-preview-lineup">${lineupMarkup}</ol></div>`
+    ? `<div class="perfect-score-preview-result"><div class="detail-grid"><div><dt>期待スコア</dt><dd><strong>${escapeV3(result.expectedScore)} / ${escapeV3(result.maxScore)}</strong></dd></div><div><dt>満点判定</dt><dd>${result.isMaxScore ? "満点" : "要確認"}</dd></div><div><dt>preview種別</dt><dd>${result.fixtureMode ? "固定fixture" : "正式スタメン"}</dd></div><div><dt>fixtureKey</dt><dd>${escapeV3(result.fixtureKey || "-")}</dd></div><div><dt>lineup revision</dt><dd>${escapeV3(result.lineupRevision?.revisionId || "fixture-local")}</dd></div><div><dt>書き込み</dt><dd>なし（previewのみ）</dd></div><div><dt>選手一致</dt><dd>${escapeV3(breakdown.player?.hits ?? 0)} / 9</dd></div><div><dt>打順一致</dt><dd>${escapeV3(breakdown.order?.hits ?? 0)} / 9</dd></div><div><dt>守備一致</dt><dd>${escapeV3(breakdown.position?.hits ?? 0)} / 9</dd></div></div><h4>${result.fixtureMode ? "固定fixtureスタメン" : "正式スタメン"}</h4><ol class="perfect-score-preview-lineup">${lineupMarkup}</ol></div>`
     : `<p class="muted">正式スタメン確定後に、仮想予想の満点判定を確認できます。</p>`;
-  return `<section class="v3-panel perfect-score-preview-panel"><div class="view-heading"><div><h3>満点確認（管理者preview）</h3><p>正式スタメンから仮想予想を作り、既存の採点コアだけを読み取りでシミュレーションします。</p></div></div><div class="perfect-score-preview-warning">本番予想、ランキング、公開結果、監査データは変更しません。実データ作成は行いません。</div><label class="perfect-score-preview-reason">確認理由<input type="text" maxlength="240" value="${escapeV3(previewState.reason || "")}" placeholder="採点コアの満点確認" data-v3-perfect-score-field="reason"></label><button type="button" data-v3-perfect-score-preview ${previewState.loading ? "disabled" : ""}>満点をpreview</button><p class="v3-operation-result" data-v3-perfect-score-status>${escapeV3(previewState.error || "")}</p>${resultMarkup}</section>`;
+  return `<section class="v3-panel perfect-score-preview-panel"><div class="view-heading"><div><h3>満点確認（管理者preview）</h3><p>正式スタメン、またはリリース前確認用の固定fixtureから仮想予想を作り、既存の採点コアだけを読み取りでシミュレーションします。</p></div></div><div class="perfect-score-preview-warning">本番予想、ランキング、公開結果、監査データは変更しません。固定fixtureはadmin preview専用で、D1にも保存しません。</div><label class="perfect-score-preview-reason">確認理由<input type="text" maxlength="240" value="${escapeV3(previewState.reason || "")}" placeholder="採点コアの満点確認" data-v3-perfect-score-field="reason"></label><div class="v3-operation-actions"><button type="button" data-v3-perfect-score-preview ${previewState.loading ? "disabled" : ""}>正式スタメンからpreview</button><button type="button" data-v3-perfect-score-fixture-preview ${previewState.loading ? "disabled" : ""}>固定fixtureからpreview</button></div><p class="v3-operation-result" data-v3-perfect-score-status>${escapeV3(previewState.error || "")}</p>${resultMarkup}</section>`;
 }
 
 function rankingResetLocalToIso(value) {
@@ -1289,7 +1291,7 @@ async function executeRankingReset() {
   }
 }
 
-async function previewPerfectScore() {
+async function previewPerfectScore(mode = "perfect") {
   const game = selectedV3Game(v3ListItems(v3State.payload?.games, "games"));
   if (!game || v3State.perfectScorePreview.loading) return;
   const reason = v3State.perfectScorePreview.reason.trim();
@@ -1303,7 +1305,12 @@ async function previewPerfectScore() {
   try {
     v3State.perfectScorePreview.result = await v3Fetch("/api/admin/v3/perfect-score-test/preview", {
       method: "POST",
-      body: JSON.stringify({ internalGameId: game.internalGameId, mode: "perfect", reason })
+      body: JSON.stringify({
+        internalGameId: game.internalGameId,
+        mode,
+        ...(mode === "fixture" ? { fixtureKey: RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY } : {}),
+        reason
+      })
     });
   } catch (error) {
     v3State.perfectScorePreview.error = `${error.code || "PERFECT_SCORE_PREVIEW_FAILED"}: ${error.message}`;
@@ -1388,7 +1395,11 @@ document.addEventListener("click", async (event) => {
     return;
   }
   if (event.target.closest("[data-v3-perfect-score-preview]")) {
-    await previewPerfectScore();
+    await previewPerfectScore("perfect");
+    return;
+  }
+  if (event.target.closest("[data-v3-perfect-score-fixture-preview]")) {
+    await previewPerfectScore("fixture");
     return;
   }
   const automationLogRefresh = event.target.closest("[data-v3-automation-log-refresh]");

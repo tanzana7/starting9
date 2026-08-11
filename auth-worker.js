@@ -4794,9 +4794,13 @@ async function handleAdminV3PerfectScorePreview(request, env, cors) {
 
   const input = await readJson(request);
   const mode = String(input?.mode || "").trim().toLowerCase();
+  const fixtureKey = String(input?.fixtureKey || "").trim();
   const reason = String(input?.reason || "").trim();
-  if (mode !== "perfect") return jsonResponse({ ok: false, code: "PERFECT_SCORE_PREVIEW_MODE_INVALID", error: "modeはperfectを指定してください。" }, 400, cors);
+  if (!["perfect", "fixture"].includes(mode)) return jsonResponse({ ok: false, code: "PERFECT_SCORE_PREVIEW_MODE_INVALID", error: "modeはperfectまたはfixtureを指定してください。" }, 400, cors);
   if (!reason || reason.length > 240) return jsonResponse({ ok: false, code: "V3_REASON_REQUIRED", error: "満点preview理由を1〜240文字で入力してください。" }, 400, cors);
+  if (mode === "fixture" && fixtureKey !== RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY) {
+    return jsonResponse({ ok: false, code: "RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY_INVALID", error: "リリース確認用fixtureKeyが不正です。" }, 400, cors);
+  }
 
   let context;
   try {
@@ -4805,20 +4809,34 @@ async function handleAdminV3PerfectScorePreview(request, env, cors) {
     return v3AdminErrorResponse(cors, error, "対象試合を取得できませんでした。");
   }
 
-  const revisions = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
-  const finalRevision = revisions.find((row) => Number(row.is_final) === 1) || null;
-  if (!finalRevision) {
-    return jsonResponse({ ok: false, code: "PERFECT_SCORE_LINEUP_REQUIRED", error: "満点previewには正式スタメンの確定が必要です。" }, 409, cors);
-  }
-  const actualResult = sanitizeActualLineupForScoring(parseStoredActualLineup(finalRevision.actual_lineup_json));
-  if (!actualResult.ok) {
-    return jsonResponse({ ok: false, code: "PERFECT_SCORE_LINEUP_INVALID", error: "正式スタメンを採点用形式として確認できません。" }, 409, cors);
+  let finalRevision = null;
+  let actualResult = null;
+  let officialLineup;
+  let preview;
+  if (mode === "fixture") {
+    // RELEASE_DEBUG_PERFECT_SCORE_FIXTURE is preview-only and never enters a runtime job.
+    officialLineup = buildReleaseDebugPerfectScoreFixtureLineup();
+    preview = buildPerfectScorePreview(officialLineup);
+  } else {
+    const revisions = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
+    finalRevision = revisions.find((row) => Number(row.is_final) === 1) || null;
+    if (!finalRevision) {
+      return jsonResponse({ ok: false, code: "PERFECT_SCORE_LINEUP_REQUIRED", error: "満点previewには正式スタメンの確定が必要です。" }, 409, cors);
+    }
+    actualResult = sanitizeActualLineupForScoring(parseStoredActualLineup(finalRevision.actual_lineup_json));
+    if (!actualResult.ok) {
+      return jsonResponse({ ok: false, code: "PERFECT_SCORE_LINEUP_INVALID", error: "正式スタメンを採点用形式として確認できません。" }, 409, cors);
+    }
+    officialLineup = actualResult.lineup;
+    preview = buildPerfectScorePreview(officialLineup);
   }
 
-  const preview = buildPerfectScorePreview(actualResult.lineup);
   return jsonResponse({
     ok: true,
     previewOnly: true,
+    fixtureMode: mode === "fixture",
+    fixtureKey: mode === "fixture" ? fixtureKey : null,
+    productionWrite: false,
     writes: { database: false, predictions: false, ranking: false, publication: false },
     targetGame: {
       internalGameId: context.id,
@@ -4827,12 +4845,12 @@ async function handleAdminV3PerfectScorePreview(request, env, cors) {
       homeTeam: context.target.home_team || "",
       awayTeam: context.target.away_team || ""
     },
-    lineupRevision: {
+    lineupRevision: finalRevision ? {
       revisionId: finalRevision.revision_id || `${context.metadata.gameId}:${Number(finalRevision.version)}`,
       version: Number(finalRevision.version),
       finalizedAt: finalRevision.finalized_at || null
-    },
-    officialLineup: actualResult.lineup,
+    } : null,
+    officialLineup: mode === "fixture" ? officialLineup : actualResult.lineup,
     virtualPerfectPrediction: preview.prediction,
     scoringBreakdown: preview.breakdown,
     expectedScore: preview.score.total,
@@ -16594,6 +16612,44 @@ function scorePredictionLineup(predictionLineup, actualLineup) {
   return {
     total: Math.min(SCORING_MAX_SCORE, playerScore + orderScore + positionScore),
     counts: { player: playerHits, order: orderHits, position: positionHits }
+  };
+}
+
+// RELEASE_DEBUG_PERFECT_SCORE_FIXTURE is intentionally local to admin preview.
+const RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY = "release_full_score_debug_1";
+const RELEASE_DEBUG_PERFECT_SCORE_FIXTURE = Object.freeze([
+  { battingOrder: 1, position: "2B", name: "西川", fixtureId: "debug_fixture_nishikawa" },
+  { battingOrder: 2, position: "C", name: "中島", fixtureId: "debug_fixture_nakajima" },
+  { battingOrder: 3, position: "SS", name: "エドポロ", fixtureId: "debug_fixture_edopolo" },
+  { battingOrder: 4, position: "RF", name: "リン", fixtureId: "debug_fixture_lin" },
+  { battingOrder: 5, position: "1B", name: "山縣", fixtureId: "debug_fixture_yamagata" },
+  { battingOrder: 6, position: "3B", name: "レイエス", fixtureId: "debug_fixture_reyes" },
+  { battingOrder: 7, position: "LF", name: "藤森", fixtureId: "debug_fixture_fujimori" },
+  { battingOrder: 8, position: "DH", name: "宮崎", fixtureId: "debug_fixture_miyazaki" },
+  { battingOrder: 9, position: "CF", name: "マルティネス", fixtureId: "debug_fixture_martinez" }
+]);
+
+export function buildReleaseDebugPerfectScoreFixtureLineup() {
+  return RELEASE_DEBUG_PERFECT_SCORE_FIXTURE.map((player) => ({
+    battingOrder: player.battingOrder,
+    position: player.position,
+    name: player.name,
+    playerId: player.fixtureId,
+    playerName: player.name,
+    displayName: player.name,
+    teamCode: "fighters",
+    teamId: "F"
+  }));
+}
+
+export function buildReleaseDebugPerfectScoreFixturePreview() {
+  const officialLineup = buildReleaseDebugPerfectScoreFixtureLineup();
+  return {
+    fixtureKey: RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY,
+    fixtureMode: true,
+    productionWrite: false,
+    officialLineup,
+    ...buildPerfectScorePreview(officialLineup)
   };
 }
 

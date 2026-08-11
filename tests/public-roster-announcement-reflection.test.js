@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   buildPublicBaselineRosterResponse,
   buildPublicGameDayRosterResponse,
+  getPublicRosterBaselineUsableUntil,
   isPublicRosterBaselineCandidate
 } from "../auth-worker.js";
 
@@ -218,4 +219,48 @@ test("baselineは利用期限前だけ通常画面の候補として扱う", () 
   assert.equal(filter.isPlayerInCurrentRoster({ name: "基準選手", uniformNumber: "12", isActiveRoster: false }), true);
   assert.match(script, /status === "baseline"/);
   assert.match(script, /usableUntil/);
+});
+
+test("fresh取得が遅延してもbaselineは予想締切まで利用できる", () => {
+  const targetGame = {
+    start_time: "2026-08-11T05:00:00.000Z"
+  };
+  const beforeDeadline = new Date("2026-08-11T03:12:00.000Z");
+  assert.equal(
+    getPublicRosterBaselineUsableUntil(targetGame, { now: beforeDeadline }),
+    "2026-08-11T04:00:00.000Z"
+  );
+  const baselineSnapshot = snapshot({
+    internal_game_id: "35ae1388-02f9-43d3-8643-79acac3cbd34",
+    game_date: "2026-08-08",
+    captured_at: "2026-08-09T03:12:10.291Z"
+  });
+  const response = buildPublicBaselineRosterResponse({
+    internalGameId,
+    gameDate: "2026-08-11",
+    snapshot: baselineSnapshot,
+    usableUntil: getPublicRosterBaselineUsableUntil(targetGame, { now: beforeDeadline })
+  });
+  assert.equal(response.status, "baseline");
+  assert.equal(response.playerCount, 2);
+  assert.equal(response.usableUntil, "2026-08-11T04:00:00.000Z");
+});
+
+test("予想締切後は期限切れbaselineを公開対象へ戻さない", () => {
+  assert.equal(
+    getPublicRosterBaselineUsableUntil(
+      { start_time: "2026-08-11T05:00:00.000Z" },
+      { now: new Date("2026-08-11T04:00:00.000Z") }
+    ),
+    null
+  );
+});
+
+test("公開rosterのbaseline判定はroster取得slotではなく予想締切を基準にする", () => {
+  const handlerStart = worker.indexOf("async function handleGetGameDayRoster");
+  const handlerEnd = worker.indexOf("function getPublicRosterPlayers", handlerStart);
+  const handler = worker.slice(handlerStart, handlerEnd);
+  assert.match(handler, /getPublicRosterBaselineUsableUntil\(game, \{ now \}\)/);
+  assert.match(handler, /usableUntil: baselineUsableUntil/);
+  assert.doesNotMatch(handler, /usableUntil: schedule\.rosterFetchAt1/);
 });

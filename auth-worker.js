@@ -7691,16 +7691,16 @@ async function handleGetGameDayRoster(request, env, cors) {
 
   let baseline = null;
   try {
-    const schedule = deriveV3Schedule({ startAt: game.start_time });
     const now = new Date();
-    if (now < schedule.rosterFetchAt1) {
+    const baselineUsableUntil = getPublicRosterBaselineUsableUntil(game, { now });
+    if (baselineUsableUntil) {
       baseline = await findPublicRosterBaseline(env.AUTH_DB, game, now);
       if (baseline) {
         return jsonResponse(buildPublicBaselineRosterResponse({
           internalGameId,
           gameDate: game.game_date,
           snapshot: baseline.snapshot,
-          usableUntil: schedule.rosterFetchAt1.toISOString()
+          usableUntil: baselineUsableUntil
         }), 200, cors);
       }
     }
@@ -7744,6 +7744,13 @@ export function isPublicRosterBaselineCandidate(snapshot, { now = new Date(), ma
     && age >= 0
     && age <= maxAgeMs
   );
+}
+
+export function getPublicRosterBaselineUsableUntil(game, { now = new Date() } = {}) {
+  const schedule = deriveV3Schedule({ startAt: game?.startAt || game?.start_time });
+  const nowAt = now instanceof Date ? now.getTime() : Date.parse(String(now || ""));
+  if (!Number.isFinite(nowAt) || nowAt >= schedule.predictionDeadline.getTime()) return null;
+  return schedule.predictionDeadline.toISOString();
 }
 
 export function buildPublicBaselineRosterResponse({ internalGameId = "", gameDate = "", snapshot = null, usableUntil = null } = {}) {

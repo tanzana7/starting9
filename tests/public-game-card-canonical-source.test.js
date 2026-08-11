@@ -57,7 +57,7 @@ test("公開画面はcanonical catalogの未来試合を締切判定に使い、
   assert.match(script, /const nextGame = catalogGame \|\| await resolvePredictionTargetGame/);
   assert.match(script, /if \(!state\.isAdminMode\) return null;/);
   assert.match(script, /state\.publicGameCatalog\.games\.find\(\(item\) => item\?\.gameId === gameId/);
-  assert.match(script, /state\.predictionTargetGameId = initialGameId/);
+  assert.match(script, /state\.predictionTargetGameId = state\.probableStarter\.nextGame\?\.internalGameId/);
   assert.doesNotMatch(script, /applyPublicPredictionTarget|selectNextPredictionGame/);
 });
 
@@ -73,7 +73,7 @@ test("通常画面はlocalStorageに残る旧管理試合カードを描画せ�
   const noticeEnd = script.indexOf("function buildGameDayNoticeApiUrl", noticeStart);
   const targetResolver = script.slice(noticeStart, noticeEnd);
   assert.match(targetResolver, /state\.predictionTargetGame\?\.internalGameId \|\| state\.probableStarter\.nextGame\?\.internalGameId/);
-  assert.match(index, /script\.js\?v=public-ranking-copy-perfect-score-helper-1/);
+  assert.match(index, /script\.js\?v=public-frontend-coordinator-1/);
 });
 
 test("公開ゲームAPIはFightersのcanonical games行と表示用チーム名を返す", () => {

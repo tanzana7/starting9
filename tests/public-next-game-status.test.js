@@ -52,7 +52,7 @@ test("canonical catalogの未来試合はstatic scheduleに未掲載でもstartA
 
 test("future canonical gameがある場合は対象なし表示ではなく入力フォームを維持する", () => {
   assert.match(script, /const nextOpen = selectable\.find/);
-  assert.match(script, /state\.predictionTargetGame = initialGame/);
+  assert.match(script, /state\.predictionTargetGame = preservedGame/);
   assert.match(script, /renderPublicPredictionSurface\(selectedGame\)/);
   assert.match(script, /if \(editor\) editor\.classList\.remove\("hidden"\)/);
 });
@@ -94,7 +94,7 @@ test("スマホでも選択UIを追加せず、補助表示と既存導線を維
 
 test("公開画面のJS/CSS cache busterを更新する", () => {
   assert.match(html, /style\.css\?v=public-results-ranking-polish-1/);
-  assert.match(html, /script\.js\?v=public-ranking-copy-perfect-score-helper-1/);
+  assert.match(html, /script\.js\?v=public-frontend-coordinator-1/);
 });
 
 test("受付可能なcanonical対象がない場合は入力面を隠し、自然な案内を表示する", () => {

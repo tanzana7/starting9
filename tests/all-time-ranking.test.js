@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
 const test = require("node:test");
+const { pathToFileURL } = require("node:url");
 
 const root = path.join(__dirname, "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
@@ -59,6 +60,16 @@ test("必要参加数は対象試合数の3分の2を切り上げる", () => {
   for (const [eligibleGames, required] of expected) {
     assert.equal(requiredGames(eligibleGames), required);
   }
+});
+
+test("規定未到達の必要参加数は今後の分母増加を含めて計算する", async () => {
+  const { calculateRankingGamesNeeded } = await import(pathToFileURL(path.join(root, "auth-worker.js")).href);
+  const expected = new Map([[ [2, 6], 6], [[4, 8], 4], [[6, 9], 0], [[5, 9], 3], [[0, 3], 6], [[1, 1], 0]]);
+  for (const [[participated, total], needed] of expected) {
+    assert.equal(calculateRankingGamesNeeded(participated, total), needed, `${participated}/${total}`);
+  }
+  assert.match(worker, /MAX\(2 \* threshold\.eligible_games - 3 \* user_totals\.games_played, 0\) AS games_needed/);
+  assert.match(worker, /gamesNeeded: calculateRankingGamesNeeded\(gamesPlayed, eligibleGames\)/);
 });
 
 test("ランキングmigrationは対象試合とテスト予想の明示フラグ・索引を定義する", () => {
@@ -153,7 +164,7 @@ test("通常画面にはカード型の年間ランキングがあり、手動�
   assert.match(script, /翌年/);
   assert.match(script, /data-yearly-ranking-move/);
   assert.match(script, /規定未到達者を見る/);
-  assert.match(script, /規定まであと/);
+  assert.match(script, /あと.*試合連続参加で規定到達/);
   assert.doesNotMatch(html, />通算</);
   assert.doesNotMatch(script, /rankings\/all-time/);
   assert.doesNotMatch(html, /reloadYearlyRankingButton/);

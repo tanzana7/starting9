@@ -34,6 +34,8 @@ test("結果詳細はUUIDでprediction・ranking・公開状態を読む", () =>
 
 test("通常画面は公開済み結果を自動選択し、内部IDを表示しない", () => {
   assert.match(script, /const latestPublishedGame = payload\.games\.find/);
+  assert.match(script, /if \(!state\.resultHistory\.selectedGameId && latestPublishedGame\)/);
+  assert.doesNotMatch(script, /if \(!state\.result && !state\.resultHistory\.selectedGameId && latestPublishedGame\)/);
   assert.match(script, /await loadResultHistoryGame\(getResultHistoryGameId\(latestPublishedGame\)\)/);
   assert.match(script, /const matchup = formatResultHistoryMatchup\(game\)/);
   assert.match(script, /対戦情報を確認中/);
@@ -44,7 +46,17 @@ test("通常画面は公開済み結果を自動選択し、内部IDを表示し
   assert.match(renderer, /data-result-game-id="\$\{escapeHtml\(gameId\)\}"/);
 });
 
+test("公開結果は予想入力状態から独立して保持し、履歴一覧は最新5件に制限する", () => {
+  assert.match(script, /resultHistory: \{[\s\S]*result: null/);
+  assert.match(script, /const displayedResult = state\.resultHistory\.result \|\| state\.result/);
+  assert.match(script, /state\.resultHistory\.result = \{/);
+  const handlerStart = worker.indexOf("async function handleGetResultGames");
+  const handlerEnd = worker.indexOf("async function handleGetResultGame(", handlerStart);
+  assert.match(worker.slice(handlerStart, handlerEnd), /LIMIT \$\{PUBLIC_RESULT_HISTORY_LIMIT\}/);
+  assert.match(worker, /const PUBLIC_RESULT_HISTORY_LIMIT = 5/);
+});
+
 test("通常画面の公開結果修正は新しいcache busterを使う", () => {
-  assert.match(html, /style\.css\?v=public-baseline-roster-render-1/);
-  assert.match(html, /script\.js\?v=public-baseline-roster-render-1/);
+  assert.match(html, /style\.css\?v=public-results-ranking-polish-1/);
+  assert.match(html, /script\.js\?v=public-results-ranking-polish-1/);
 });

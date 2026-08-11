@@ -87,6 +87,7 @@ const PASSWORD_MAX_LENGTH = 72;
 const PERFECT_ACHIEVERS_DEFAULT_DISPLAY_LIMIT = 3;
 const RANKING_DEFAULT_LIMIT = 50;
 const RANKING_MAX_LIMIT = 100;
+const PUBLIC_RESULT_HISTORY_LIMIT = 5;
 const RANKING_MAX_OFFSET = 1_000_000;
 const MONTHLY_RANKING_MIN_YEAR = 2020;
 const YEARLY_RANKING_MIN_YEAR = 2020;
@@ -6454,7 +6455,7 @@ function createRankingCte() {
            threshold.eligible_games,
            threshold.required_games,
            0 AS is_qualified,
-           MAX(threshold.required_games - user_totals.games_played, 0) AS games_needed,
+           MAX(2 * threshold.eligible_games - 3 * user_totals.games_played, 0) AS games_needed,
            NULL AS ranking_rank
       FROM user_totals CROSS JOIN threshold
      WHERE games_played < required_games
@@ -6576,6 +6577,12 @@ async function getRankingEntryForUser(db, userId, { startAt = null, endAt = null
   return row ? toPublicRankingRow(row) : null;
 }
 
+export function calculateRankingGamesNeeded(participated, total) {
+  const participatedCount = Math.max(0, Number(participated) || 0);
+  const totalCount = Math.max(0, Number(total) || 0);
+  return Math.max(0, 2 * totalCount - 3 * participatedCount);
+}
+
 function toPublicRankingRow(row, achievementSummary = null) {
   const eligibleGames = Number(row.eligible_games || 0);
   const gamesPlayed = Number(row.games_played || 0);
@@ -6587,7 +6594,7 @@ function toPublicRankingRow(row, achievementSummary = null) {
     requiredGames: Number(row.required_games || 0),
     participationRate: eligibleGames > 0 ? gamesPlayed / eligibleGames : 0,
     isQualified: Number(row.is_qualified) === 1,
-    gamesNeeded: Number(row.games_needed || 0),
+    gamesNeeded: calculateRankingGamesNeeded(gamesPlayed, eligibleGames),
     totalScore: Number(row.total_score || 0),
     averageScore: Number(row.average_score || 0),
     perfectCount: Number(row.perfect_count || 0),
@@ -11813,7 +11820,7 @@ async function handleGetResultGames(request, env, cors) {
         )
         AND ranking_games.is_test_game = 0
       ORDER BY ranking_games.game_date DESC, latest_predictions.updated_at DESC, latest_predictions.game_id DESC
-      LIMIT 50`
+      LIMIT ${PUBLIC_RESULT_HISTORY_LIMIT}`
   ).bind(access.user.id).all();
 
   const now = new Date();

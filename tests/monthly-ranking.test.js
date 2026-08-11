@@ -96,7 +96,7 @@ test("月間ランキングは試合日で対象月のみを集計し、規定�
   assert.deepEqual(rows, [
     { username: "alpha", games_played: 2, total_score: 180, perfect_count: 1, is_qualified: 1, games_needed: 0, ranking_rank: 1 },
     { username: "bravo", games_played: 2, total_score: 180, perfect_count: 0, is_qualified: 1, games_needed: 0, ranking_rank: 2 },
-    { username: "charlie", games_played: 1, total_score: 100, perfect_count: 1, is_qualified: 0, games_needed: 1, ranking_rank: null }
+    { username: "charlie", games_played: 1, total_score: 100, perfect_count: 1, is_qualified: 0, games_needed: 3, ranking_rank: null }
   ]);
 
   const yearlyGameCount = db.prepare(`${getRankingCte()} SELECT MAX(eligible_games) AS count FROM combined`).get("2026-01-01", "2027-01-01").count;

@@ -27,6 +27,8 @@ The tests cover the following contracts:
 - migration application and schema compatibility using local test databases
 - V1/V2 retirement and no-legacy-fallback guarantees
 
+Backend domain modules are tested directly as well as through the Worker. Scoring, ranking, and public-results tests import the pure rules from `backend/domain`; ranking repository tests keep the D1-compatible CTE contract under `backend/repositories`. Compatibility tests still import the Worker exports to ensure existing callers keep their public symbols during the incremental split.
+
 ## Static Review Checks
 
 Before a PR is considered ready:

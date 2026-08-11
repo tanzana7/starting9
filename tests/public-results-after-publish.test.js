@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+const publicResults = fs.readFileSync(path.join(root, "backend", "domain", "public-results.js"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 
@@ -17,8 +18,8 @@ test("published済みV3結果はgamesのcanonical rowから一覧メタデータ
   assert.match(resolver, /resultId: internalGameId/);
   assert.match(resolver, /internalGameId,/);
   assert.match(resolver, /displayLabel: createPublicResultDisplayLabel/);
-  assert.match(worker, /fighters: "日本ハム"/);
-  assert.match(worker, /eagles: "楽天"/);
+  assert.match(publicResults, /fighters: "日本ハム"/);
+  assert.match(publicResults, /eagles: "楽天"/);
 });
 
 test("結果詳細はUUIDでprediction・ranking・公開状態を読む", () => {
@@ -53,7 +54,7 @@ test("公開結果は予想入力状態から独立して保持し、履歴一�
   const handlerStart = worker.indexOf("async function handleGetResultGames");
   const handlerEnd = worker.indexOf("async function handleGetResultGame(", handlerStart);
   assert.match(worker.slice(handlerStart, handlerEnd), /LIMIT \$\{PUBLIC_RESULT_HISTORY_LIMIT\}/);
-  assert.match(worker, /const PUBLIC_RESULT_HISTORY_LIMIT = 5/);
+  assert.match(publicResults, /PUBLIC_RESULT_HISTORY_LIMIT = 5/);
 });
 
 test("通常画面の公開結果修正は新しいcache busterを使う", () => {

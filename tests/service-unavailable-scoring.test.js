@@ -6,6 +6,7 @@ const test = require("node:test");
 
 const root = path.join(__dirname, "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+const rankingRepository = fs.readFileSync(path.join(root, "backend", "repositories", "ranking-repository.js"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const migration = fs.readFileSync(path.join(root, "migrations", "0022_service_unavailable_scoring_games.sql"), "utf8");
 
@@ -34,7 +35,7 @@ test("期限切れ試合はservice_unavailableとして保存でき、正常試�
 });
 
 test("service_unavailable試合はランキング共通抽出と自動採点・公開の対象外になる", () => {
-  assert.match(worker, /AND game_status = 'scored'/);
+  assert.match(rankingRepository, /AND game_status = 'scored'/);
   assert.match(worker, /game_status = 'service_unavailable'/);
   assert.match(worker, /async function isServiceUnavailableGame/);
   assert.match(worker, /if \(await isServiceUnavailableGame\(env\.AUTH_DB, gameId\)\)/);
@@ -60,7 +61,7 @@ test("SCORING_RETRY_EXPIRED時に対象外状態を作成し、管理者が解�
 });
 
 test("通常のランキング集計条件はis_ranking_eligibleとscoredを維持する", () => {
-  const cte = worker.match(/function createRankingCte\(\) \{[\s\S]*?return `([\s\S]*?)`;\r?\n\}/)?.[1] || "";
+  const cte = rankingRepository.match(/function createRankingCte\(\) \{[\s\S]*?return `([\s\S]*?)`;\r?\n\}/)?.[1] || "";
   assert.match(cte, /is_ranking_eligible = 1/);
   assert.match(cte, /game_status = 'scored'/);
   assert.doesNotMatch(cte, /service_unavailable.*is_ranking_eligible = 1/);

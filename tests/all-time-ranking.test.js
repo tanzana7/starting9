@@ -7,6 +7,7 @@ const { pathToFileURL } = require("node:url");
 
 const root = path.join(__dirname, "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+const rankingRepository = fs.readFileSync(path.join(root, "backend", "repositories", "ranking-repository.js"), "utf8");
 const migration = fs.readFileSync(path.join(root, "migrations", "0007_all_time_ranking.sql"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
@@ -50,8 +51,8 @@ function insertPrediction(db, { id, userId, gameId, score, isTest = 0, scoredAt 
 }
 
 function getRankingCte() {
-  const match = /function createRankingCte\(\) \{[\s\S]*?return `([\s\S]*?)`;\r?\n\}/.exec(worker);
-  assert.ok(match, "Workerのランキング集計CTEを取得できること");
+  const match = /function createRankingCte\(\) \{[\s\S]*?return `([\s\S]*?)`;\r?\n\}/.exec(rankingRepository);
+  assert.ok(match, "ランキングrepositoryの共通集計CTEを取得できること");
   return match[1];
 }
 
@@ -68,8 +69,8 @@ test("規定未到達の必要参加数は今後の分母増加を含めて計�
   for (const [[participated, total], needed] of expected) {
     assert.equal(calculateRankingGamesNeeded(participated, total), needed, `${participated}/${total}`);
   }
-  assert.match(worker, /MAX\(2 \* threshold\.eligible_games - 3 \* user_totals\.games_played, 0\) AS games_needed/);
-  assert.match(worker, /gamesNeeded: calculateRankingGamesNeeded\(gamesPlayed, eligibleGames\)/);
+  assert.match(rankingRepository, /MAX\(2 \* threshold\.eligible_games - 3 \* user_totals\.games_played, 0\) AS games_needed/);
+  assert.match(fs.readFileSync(path.join(root, "backend", "domain", "ranking.js"), "utf8"), /gamesNeeded: calculateRankingGamesNeeded\(gamesPlayed, eligibleGames\)/);
 });
 
 test("ランキングmigrationは対象試合とテスト予想の明示フラグ・索引を定義する", () => {
@@ -134,8 +135,8 @@ test("年間公開ランキングは内部ID・隠し実績・metadataを返さ�
   assert.match(worker, /\/api\/rankings\/yearly/);
   assert.match(worker, /\/api\/me\/ranking\/yearly/);
   assert.match(worker, /requireAuthenticatedUser\(request, env, cors\)/);
-  assert.match(worker, /achievements\.is_hidden = 0/);
-  assert.match(worker, /RANKING_ACHIEVEMENT_DISPLAY_LIMIT/);
+  assert.match(rankingRepository, /achievements\.is_hidden = 0/);
+  assert.match(rankingRepository, /RANKING_ACHIEVEMENT_DISPLAY_LIMIT/);
   assert.match(worker, /Cache-Control", "public, max-age=30/);
   assert.match(worker, /RANKING_MAX_LIMIT = 100/);
   assert.match(worker, /qualifiedOnly/);

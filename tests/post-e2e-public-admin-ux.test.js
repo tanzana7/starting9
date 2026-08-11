@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const admin = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+const publicResults = fs.readFileSync(path.join(root, "backend", "domain", "public-results.js"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const index = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const adminPage = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
@@ -62,9 +63,7 @@ test("admin-v3はjobsとstructured logsも共通の配列正規化を使う", ()
 });
 
 test("公開結果はhome/away順の日本語labelと安全なpublished表示fieldを返す", () => {
-  const metadataStart = worker.indexOf("function createPublicResultDisplayLabel");
-  const metadataEnd = worker.indexOf("async function getResultGameMetadata", metadataStart);
-  const labels = worker.slice(metadataStart, metadataEnd);
+  const labels = publicResults;
   assert.match(labels, /home && away \? `\$\{home\} vs \$\{away\}`/);
   const list = worker;
   assert.match(list, /ranking_games\.published_at/);

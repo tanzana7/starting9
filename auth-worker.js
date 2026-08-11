@@ -44,6 +44,66 @@ import {
   isScoringComplete
 } from "./game-scoring-ranking-v2.js";
 import {
+  SCORING_LINEUP_SIZE,
+  SCORING_MAX_SCORE,
+  scorePredictionLineup,
+  buildPerfectScorePreview,
+  buildReleaseDebugPerfectScoreFixtureLineup,
+  buildReleaseDebugPerfectScoreFixturePreview,
+  RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY,
+  RELEASE_DEBUG_PERFECT_SCORE_FIXTURE
+} from "./backend/domain/scoring.js";
+import {
+  calculateRankingGamesNeeded,
+  getRankingResetConfirmation,
+  getRankingResetDateBoundary,
+  normalizeRankingResetRequest,
+  selectRankingRowsForDisplay,
+  shouldDisplayRankingRow,
+  toPublicRankingRow
+} from "./backend/domain/ranking.js";
+import {
+  getActiveRankingResetMarker,
+  getPerfectAchieversForDate,
+  getRankingEntryForUser,
+  getRankingForPeriod,
+  getRankingResetPreview,
+  insertRankingResetMarker,
+  listRankingResetMarkers
+} from "./backend/repositories/ranking-repository.js";
+import {
+  PUBLIC_RESULT_HISTORY_LIMIT,
+  formatPublicResultTeamName,
+  createPublicGameDisplayLabel,
+  createPublicResultDisplayLabel
+} from "./backend/domain/public-results.js";
+import { buildAdminReadOnlyPreviewMetadata } from "./backend/admin/preview.js";
+
+// Compatibility exports keep existing tests and internal callers stable while
+// the implementation lives in the domain module.
+export {
+  scorePredictionLineup,
+  buildPerfectScorePreview,
+  buildReleaseDebugPerfectScoreFixtureLineup,
+  buildReleaseDebugPerfectScoreFixturePreview,
+  RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY,
+  RELEASE_DEBUG_PERFECT_SCORE_FIXTURE,
+  calculateRankingGamesNeeded,
+  getRankingResetConfirmation,
+  getRankingResetDateBoundary,
+  normalizeRankingResetRequest,
+  selectRankingRowsForDisplay,
+  shouldDisplayRankingRow,
+  toPublicRankingRow,
+  PUBLIC_RESULT_HISTORY_LIMIT,
+  formatPublicResultTeamName,
+  createPublicGameDisplayLabel,
+  createPublicResultDisplayLabel,
+  getPerfectAchieversForDate,
+  getRankingForPeriod,
+  getRankingResetPreview
+};
+import {
   V3_FEATURE_FLAG,
   V3_TIMING,
   V3_JOB_TYPE,
@@ -87,11 +147,9 @@ const PASSWORD_MAX_LENGTH = 72;
 const PERFECT_ACHIEVERS_DEFAULT_DISPLAY_LIMIT = 3;
 const RANKING_DEFAULT_LIMIT = 50;
 const RANKING_MAX_LIMIT = 100;
-const PUBLIC_RESULT_HISTORY_LIMIT = 5;
 const RANKING_MAX_OFFSET = 1_000_000;
 const MONTHLY_RANKING_MIN_YEAR = 2020;
 const YEARLY_RANKING_MIN_YEAR = 2020;
-const RANKING_ACHIEVEMENT_DISPLAY_LIMIT = 3;
 const PREDICTION_SCHEMA_VERSION = 1;
 const PREDICTION_MAX_JSON_BYTES = 16 * 1024;
 const PREDICTION_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
@@ -112,8 +170,6 @@ const PREDICTION_TEAM_SLUG_CODES = Object.freeze({
   swallows: "s"
 });
 const INTERNAL_GAME_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const SCORING_LINEUP_SIZE = 9;
-const SCORING_MAX_SCORE = 100;
 const AUTO_SCORING_DEFAULT_DELAY_SECONDS = 300;
 const AUTO_SCORING_MAX_DELAY_SECONDS = 24 * 60 * 60;
 const AUTO_SCORING_MAX_ATTEMPTS = 3;
@@ -251,11 +307,6 @@ const PREGAME_TOOL_ERROR_MESSAGES = Object.freeze({
   NPB_SERVICE_BINDING_INVALID: "NPB取得WorkerのService Bindingが不正です。",
   NPB_WORKER_ROUTE_NOT_FOUND: "NPB取得WorkerのAPIルートが見つかりません。",
   NPB_WORKER_HTTP_ERROR: "NPB取得Workerへの接続に失敗しました。"
-});
-const SCORING_RULES = Object.freeze({
-  player: { perHit: 5, bonus: 5 },
-  order: { perHit: 3, bonus: 3 },
-  position: { perHit: 2, bonus: 2 }
 });
 const POSITION_ALIASES = Object.freeze({
   "捕": "捕", C: "捕", "キャッチャー": "捕", "2": "捕",
@@ -4815,8 +4866,8 @@ async function handleAdminV3PerfectScorePreview(request, env, cors) {
   let preview;
   if (mode === "fixture") {
     // RELEASE_DEBUG_PERFECT_SCORE_FIXTURE is preview-only and never enters a runtime job.
-    officialLineup = buildReleaseDebugPerfectScoreFixtureLineup();
-    preview = buildPerfectScorePreview(officialLineup);
+    preview = buildReleaseDebugPerfectScoreFixturePreview();
+    officialLineup = preview.officialLineup;
   } else {
     const revisions = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
     finalRevision = revisions.find((row) => Number(row.is_final) === 1) || null;
@@ -4833,11 +4884,7 @@ async function handleAdminV3PerfectScorePreview(request, env, cors) {
 
   return jsonResponse({
     ok: true,
-    previewOnly: true,
-    fixtureMode: mode === "fixture",
-    fixtureKey: mode === "fixture" ? fixtureKey : null,
-    productionWrite: false,
-    writes: { database: false, predictions: false, ranking: false, publication: false },
+    ...buildAdminReadOnlyPreviewMetadata({ fixtureMode: mode === "fixture", fixtureKey }),
     targetGame: {
       internalGameId: context.id,
       gameDate: context.target.game_date || "",
@@ -4979,13 +5026,7 @@ async function handleAdminV3RankingResetsGet(request, env, cors) {
   const periodType = String(url.searchParams.get("periodType") || "").trim().toLowerCase();
   const periodKey = String(url.searchParams.get("periodKey") || "").trim();
   try {
-    const result = await env.AUTH_DB.prepare(
-      `SELECT id, period_type, period_key, reset_at, reason, created_by, created_at, is_active
-         FROM ranking_reset_markers
-        WHERE (?1 = '' OR period_type = ?1) AND (?2 = '' OR period_key = ?2)
-        ORDER BY created_at DESC, id DESC
-        LIMIT 100`
-    ).bind(periodType, periodKey).all();
+    const result = await listRankingResetMarkers(env.AUTH_DB, { periodType, periodKey });
     return jsonResponse({ ok: true, markers: result.results || [] }, 200, cors);
   } catch (error) {
     return rankingResetAdminError(cors, createV3Error("RANKING_RESET_SCHEMA_UNAVAILABLE", "ランキングリセットのschemaが利用できません。", { httpStatus: 503, cause: error }));
@@ -5022,11 +5063,14 @@ async function handleAdminV3RankingResetExecute(request, env, cors) {
     }
     const createdAt = new Date().toISOString();
     try {
-      await env.AUTH_DB.prepare(
-        `INSERT INTO ranking_reset_markers
-           (period_type, period_key, reset_at, reason, created_by, created_at, is_active)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)`
-      ).bind(input.periodType, input.periodKey, input.resetAt, input.reason, String(access.user.id), createdAt).run();
+      await insertRankingResetMarker(env.AUTH_DB, {
+        periodType: input.periodType,
+        periodKey: input.periodKey,
+        resetAt: input.resetAt,
+        reason: input.reason,
+        createdBy: access.user.id,
+        createdAt
+      });
     } catch (error) {
       if (/unique|constraint/i.test(String(error?.message || error))) {
         return rankingResetAdminError(cors, createV3Error("RANKING_RESET_MARKER_EXISTS", "この期間には既に有効なリセットマーカーがあります。", { httpStatus: 409 }));
@@ -6553,50 +6597,6 @@ function parseMonthlyRankingQuery(searchParams) {
   };
 }
 
-export function normalizeRankingResetRequest(input = {}) {
-  const periodType = String(input.periodType || input.period_type || "").trim().toLowerCase();
-  const periodKey = String(input.periodKey || input.period_key || "").trim();
-  const resetAt = String(input.resetAt || input.reset_at || "").trim();
-  const reason = String(input.reason || "").trim();
-  if (!["yearly", "monthly"].includes(periodType)) {
-    return { ok: false, code: "RANKING_RESET_PERIOD_INVALID", error: "periodTypeはyearlyまたはmonthlyで指定してください。" };
-  }
-  const periodPattern = periodType === "yearly" ? /^\d{4}$/ : /^(\d{4})-(0[1-9]|1[0-2])$/;
-  if (!periodPattern.test(periodKey)) {
-    return { ok: false, code: "RANKING_RESET_PERIOD_INVALID", error: periodType === "yearly" ? "periodKeyはYYYY形式で指定してください。" : "periodKeyはYYYY-MM形式で指定してください。" };
-  }
-  const resetDate = new Date(resetAt);
-  if (!resetAt || Number.isNaN(resetDate.getTime())) {
-    return { ok: false, code: "RANKING_RESET_AT_INVALID", error: "resetAtは有効な日時で指定してください。" };
-  }
-  if (!reason || reason.length > 240) {
-    return { ok: false, code: "RANKING_RESET_REASON_REQUIRED", error: "理由を1〜240文字で入力してください。" };
-  }
-  return {
-    ok: true,
-    periodType,
-    periodKey,
-    resetAt: resetDate.toISOString(),
-    resetBoundary: getRankingResetDateBoundary(resetDate),
-    reason
-  };
-}
-
-export function getRankingResetDateBoundary(value) {
-  const date = value instanceof Date ? value : new Date(String(value || ""));
-  if (Number.isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Tokyo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).format(date);
-}
-
-export function getRankingResetConfirmation(periodType, periodKey) {
-  return `RESET ${String(periodType || "").toUpperCase()} ${String(periodKey || "")}`;
-}
-
 function parseRankingPaginationQuery(searchParams) {
   const rawLimit = searchParams.get("limit");
   const rawOffset = searchParams.get("offset");
@@ -6616,325 +6616,6 @@ function parseRankingPaginationQuery(searchParams) {
     offset: rawOffset === null ? 0 : Number(rawOffset),
     qualifiedOnly: rawQualifiedOnly === null ? true : ["true", "1"].includes(rawQualifiedOnly.trim().toLowerCase())
   };
-}
-
-function createRankingCte() {
-  // ?1 / ?2 are game_date period filters for the selected year or month.
-  return `WITH eligible_games AS (
-    SELECT game_id
-     FROM ranking_games
-     WHERE is_ranking_eligible = 1
-       AND game_status = 'scored'
-       AND is_test_game = 0
-       AND (?1 IS NULL OR game_date >= ?1)
-       AND (?2 IS NULL OR game_date < ?2)
-  ), eligibility AS (
-    SELECT COUNT(*) AS eligible_games FROM eligible_games
-  ), threshold AS (
-    SELECT eligible_games,
-           CAST((eligible_games * 2 + 2) / 3 AS INTEGER) AS required_games
-      FROM eligibility
-  ), user_totals AS (
-    SELECT predictions.user_id,
-           users.username,
-           COUNT(DISTINCT predictions.game_id) AS games_played,
-           SUM(predictions.score) AS total_score,
-           SUM(CASE WHEN predictions.score = predictions.max_score THEN 1 ELSE 0 END) AS perfect_count,
-           MAX(predictions.score) AS best_score,
-           MAX(predictions.scored_at) AS last_scored_at
-      FROM predictions
-      JOIN eligible_games ON eligible_games.game_id = predictions.game_id
-      JOIN users ON users.id = predictions.user_id
-     WHERE predictions.status = 'scored'
-       AND predictions.score IS NOT NULL
-       AND predictions.max_score IS NOT NULL
-       AND predictions.is_test_prediction = 0
-       AND users.status = 'active'
-     GROUP BY predictions.user_id, users.username
-  ), qualified_rows AS (
-    SELECT user_totals.*,
-           threshold.eligible_games,
-           threshold.required_games,
-           1 AS is_qualified,
-           0 AS games_needed,
-           RANK() OVER (
-             ORDER BY (total_score * 1.0 / games_played) DESC,
-                      perfect_count DESC,
-                      total_score DESC,
-                      games_played DESC
-           ) AS ranking_rank
-      FROM user_totals CROSS JOIN threshold
-     WHERE games_played >= required_games
-  ), unqualified_rows AS (
-    SELECT user_totals.*,
-           threshold.eligible_games,
-           threshold.required_games,
-           0 AS is_qualified,
-           MAX(2 * threshold.eligible_games - 3 * user_totals.games_played, 0) AS games_needed,
-           NULL AS ranking_rank
-      FROM user_totals CROSS JOIN threshold
-     WHERE games_played < required_games
-  ), combined AS (
-    SELECT * FROM qualified_rows
-    UNION ALL
-    SELECT * FROM unqualified_rows
-  )`;
-}
-
-function createRankingCteForReset(resetBoundary = "") {
-  const cte = createRankingCte();
-  if (!resetBoundary) return cte;
-  return cte.replace(
-    "       AND (?1 IS NULL OR game_date >= ?1)",
-    "       AND (?1 IS NULL OR game_date >= ?1)\n       AND game_date >= ?3"
-  );
-}
-
-async function getActiveRankingResetMarker(db, { periodType, periodKey, strict = false } = {}) {
-  try {
-    return await db.prepare(
-      `SELECT id, period_type, period_key, reset_at, reason, created_by, created_at, is_active
-         FROM ranking_reset_markers
-        WHERE period_type = ?1 AND period_key = ?2 AND is_active = 1
-        ORDER BY id DESC
-        LIMIT 1`
-    ).bind(periodType, periodKey).first();
-  } catch (error) {
-    if (!strict && /no such table|does not exist/i.test(String(error?.message || error))) return null;
-    throw createV3Error("RANKING_RESET_SCHEMA_UNAVAILABLE", "ランキングリセットのschemaが利用できません。", { httpStatus: 503, cause: error });
-  }
-}
-
-function rankingResetPeriodRange(periodType, periodKey) {
-  if (periodType === "yearly") {
-    const year = Number(periodKey);
-    return { startAt: `${periodKey}-01-01`, endAt: `${String(year + 1).padStart(4, "0")}-01-01` };
-  }
-  const [year, month] = periodKey.split("-").map(Number);
-  return {
-    startAt: `${periodKey}-01`,
-    endAt: new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10)
-  };
-}
-
-export async function getRankingResetPreview(db, { periodType, periodKey, resetAt, resetBoundary = "" } = {}) {
-  const range = rankingResetPeriodRange(periodType, periodKey);
-  const boundary = resetBoundary || getRankingResetDateBoundary(resetAt);
-  const [beforeGames, remainingGames, beforePredictions, remainingPredictions] = await Promise.all([
-    db.prepare(
-      `SELECT COUNT(*) AS count FROM ranking_games
-        WHERE game_date >= ?1 AND game_date < ?2 AND game_date < ?3
-          AND is_ranking_eligible = 1 AND game_status = 'scored' AND is_test_game = 0`
-    ).bind(range.startAt, range.endAt, boundary).first(),
-    db.prepare(
-      `SELECT COUNT(*) AS count FROM ranking_games
-        WHERE game_date >= ?1 AND game_date < ?2 AND game_date >= ?3
-          AND is_ranking_eligible = 1 AND game_status = 'scored' AND is_test_game = 0`
-    ).bind(range.startAt, range.endAt, boundary).first(),
-    db.prepare(
-      `SELECT COUNT(*) AS count FROM predictions
-        JOIN ranking_games ON ranking_games.game_id = predictions.game_id
-        WHERE ranking_games.game_date >= ?1 AND ranking_games.game_date < ?2 AND ranking_games.game_date < ?3
-          AND ranking_games.is_ranking_eligible = 1 AND ranking_games.game_status = 'scored'
-          AND ranking_games.is_test_game = 0 AND predictions.is_test_prediction = 0`
-    ).bind(range.startAt, range.endAt, boundary).first(),
-    db.prepare(
-      `SELECT COUNT(*) AS count FROM predictions
-        JOIN ranking_games ON ranking_games.game_id = predictions.game_id
-        WHERE ranking_games.game_date >= ?1 AND ranking_games.game_date < ?2 AND ranking_games.game_date >= ?3
-          AND ranking_games.is_ranking_eligible = 1 AND ranking_games.game_status = 'scored'
-          AND ranking_games.is_test_game = 0 AND predictions.is_test_prediction = 0`
-    ).bind(range.startAt, range.endAt, boundary).first()
-  ]);
-  return {
-    periodType,
-    periodKey,
-    resetAt: new Date(resetAt).toISOString(),
-    resetBoundary: boundary,
-    periodStart: range.startAt,
-    periodEnd: range.endAt,
-    gamesExcluded: Number(beforeGames?.count || 0),
-    gamesRemaining: Number(remainingGames?.count || 0),
-    predictionsExcluded: Number(beforePredictions?.count || 0),
-    predictionsRemaining: Number(remainingPredictions?.count || 0)
-  };
-}
-
-export async function getPerfectAchieversForDate(db, { date, limit, offset }) {
-  const latestPredictions = `WITH latest_predictions AS (
-    SELECT predictions.id, predictions.user_id, predictions.game_id, predictions.score, predictions.max_score,
-           predictions.opponent_code, predictions.submitted_at, predictions.status, predictions.is_test_prediction,
-           ROW_NUMBER() OVER (
-             PARTITION BY predictions.user_id, predictions.game_id
-             ORDER BY predictions.updated_at DESC, predictions.submitted_at DESC, predictions.id DESC
-           ) AS submission_rank
-      FROM predictions
-  )`;
-  const conditions = `latest_predictions.submission_rank = 1
-       AND latest_predictions.status = 'scored'
-       AND latest_predictions.score IS NOT NULL
-       AND latest_predictions.is_test_prediction = 0
-       AND ranking_games.game_date = ?1
-       AND ranking_games.is_ranking_eligible = 1
-       AND ranking_games.game_status = 'scored'
-       AND ranking_games.is_test_game = 0
-       AND users.status = 'active'
-       AND latest_predictions.score = latest_predictions.max_score`;
-  const [countRow, rowsResult] = await Promise.all([
-    db.prepare(`${latestPredictions}
-      SELECT COUNT(*) AS total_count
-        FROM latest_predictions
-        JOIN ranking_games ON ranking_games.game_id = latest_predictions.game_id
-        JOIN users ON users.id = latest_predictions.user_id
-       WHERE ${conditions}`).bind(date).first(),
-    db.prepare(`${latestPredictions}
-      SELECT users.username,
-             latest_predictions.score,
-             ranking_games.game_date,
-             latest_predictions.opponent_code,
-             latest_predictions.submitted_at
-        FROM latest_predictions
-        JOIN ranking_games ON ranking_games.game_id = latest_predictions.game_id
-        JOIN users ON users.id = latest_predictions.user_id
-       WHERE ${conditions}
-     ORDER BY latest_predictions.submitted_at ASC, latest_predictions.id ASC
-     LIMIT ?2 OFFSET ?3`).bind(date, limit, offset).all()
-  ]);
-
-  const totalCount = Number(countRow?.total_count || 0);
-  return {
-    rows: (rowsResult.results || []).map((row) => ({
-      username: row.username,
-      score: Number(row.score),
-      gameDate: row.game_date,
-      opponent: row.opponent_code || "",
-      submittedAt: row.submitted_at || null
-    })),
-    totalCount
-  };
-}
-
-export async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt = null, endAt = null, periodType = null, periodKey = null }) {
-  const marker = periodType && periodKey ? await getActiveRankingResetMarker(db, { periodType, periodKey }) : null;
-  const resetBoundary = marker ? getRankingResetDateBoundary(marker.reset_at) : "";
-  const cte = createRankingCteForReset(resetBoundary);
-  const qualifiedParam = marker ? 4 : 3;
-  const limitParam = qualifiedParam + 1;
-  const offsetParam = qualifiedParam + 2;
-  const baseBindings = marker ? [startAt, endAt, resetBoundary] : [startAt, endAt];
-  const [summaryRow, countRow, rowsResult] = await Promise.all([
-    db.prepare(`${cte}
-      SELECT COALESCE(MAX(eligible_games), 0) AS eligible_games,
-             COALESCE(MAX(required_games), 0) AS required_games,
-             COALESCE(SUM(CASE WHEN is_qualified = 1 THEN 1 ELSE 0 END), 0) AS qualified_users,
-             COUNT(*) AS total_users
-        FROM combined`).bind(...baseBindings).first(),
-    db.prepare(`${cte}
-      SELECT COUNT(*) AS total_users
-        FROM combined
-       WHERE (?${qualifiedParam} = 0 OR is_qualified = 1)`).bind(...baseBindings, qualifiedOnly ? 1 : 0).first(),
-    db.prepare(`${cte}
-      SELECT user_id, username, games_played, eligible_games, required_games, is_qualified, games_needed,
-             total_score, (total_score * 1.0 / games_played) AS average_score,
-             perfect_count, best_score, last_scored_at, ranking_rank
-        FROM combined
-       WHERE (?${qualifiedParam} = 0 OR is_qualified = 1)
-       ORDER BY is_qualified DESC,
-                ranking_rank ASC,
-                average_score DESC,
-                perfect_count DESC,
-                total_score DESC,
-                games_played DESC,
-                user_id ASC
-       LIMIT ?${limitParam} OFFSET ?${offsetParam}`).bind(...baseBindings, qualifiedOnly ? 1 : 0, limit, offset).all()
-  ]);
-
-  const internalRows = rowsResult.results || [];
-  const achievementsByUser = await getRankingAchievementsByUser(db, internalRows.map((row) => row.user_id));
-  const summary = {
-    eligibleGames: Number(summaryRow?.eligible_games || 0),
-    requiredGames: Number(summaryRow?.required_games || 0),
-    qualifiedUsers: Number(summaryRow?.qualified_users || 0),
-    totalUsers: Number(summaryRow?.total_users || 0)
-  };
-
-  return {
-    rows: internalRows.map((row) => toPublicRankingRow(row, achievementsByUser.get(row.user_id))),
-    summary,
-    pagination: { limit, offset, totalUsers: Number(countRow?.total_users || 0) }
-  };
-}
-
-async function getRankingEntryForUser(db, userId, { startAt = null, endAt = null, periodType = null, periodKey = null } = {}) {
-  const marker = periodType && periodKey ? await getActiveRankingResetMarker(db, { periodType, periodKey }) : null;
-  const resetBoundary = marker ? getRankingResetDateBoundary(marker.reset_at) : "";
-  const cte = createRankingCteForReset(resetBoundary);
-  const userParam = marker ? 4 : 3;
-  const bindings = marker ? [startAt, endAt, resetBoundary, userId] : [startAt, endAt, userId];
-  const row = await db.prepare(`${cte}
-    SELECT user_id, username, games_played, eligible_games, required_games, is_qualified, games_needed,
-           total_score, (total_score * 1.0 / games_played) AS average_score,
-           perfect_count, best_score, last_scored_at, ranking_rank
-      FROM combined
-     WHERE user_id = ?${userParam}
-     LIMIT 1`).bind(...bindings).first();
-  return row ? toPublicRankingRow(row) : null;
-}
-
-export function calculateRankingGamesNeeded(participated, total) {
-  const participatedCount = Math.max(0, Number(participated) || 0);
-  const totalCount = Math.max(0, Number(total) || 0);
-  return Math.max(0, 2 * totalCount - 3 * participatedCount);
-}
-
-function toPublicRankingRow(row, achievementSummary = null) {
-  const eligibleGames = Number(row.eligible_games || 0);
-  const gamesPlayed = Number(row.games_played || 0);
-  return {
-    rank: Number(row.is_qualified) === 1 ? Number(row.ranking_rank) : null,
-    username: row.username,
-    gamesPlayed,
-    eligibleGames,
-    requiredGames: Number(row.required_games || 0),
-    participationRate: eligibleGames > 0 ? gamesPlayed / eligibleGames : 0,
-    isQualified: Number(row.is_qualified) === 1,
-    gamesNeeded: calculateRankingGamesNeeded(gamesPlayed, eligibleGames),
-    totalScore: Number(row.total_score || 0),
-    averageScore: Number(row.average_score || 0),
-    perfectCount: Number(row.perfect_count || 0),
-    bestScore: Number(row.best_score || 0),
-    lastScoredAt: row.last_scored_at || null,
-    ...(achievementSummary ? achievementSummary : {})
-  };
-}
-
-async function getRankingAchievementsByUser(db, userIds) {
-  const uniqueUserIds = Array.from(new Set(userIds.filter(Boolean)));
-  const results = new Map();
-  if (uniqueUserIds.length === 0) return results;
-
-  const placeholders = uniqueUserIds.map((_, index) => `?${index + 1}`).join(", ");
-  const rows = await db.prepare(
-    `SELECT user_achievements.user_id, achievements.code, achievements.name, achievements.icon_key, achievements.rarity
-       FROM user_achievements
-       JOIN achievements ON achievements.id = user_achievements.achievement_id
-      WHERE achievements.is_hidden = 0
-        AND user_achievements.user_id IN (${placeholders})
-      ORDER BY user_achievements.user_id ASC, user_achievements.earned_at DESC, achievements.code ASC`
-  ).bind(...uniqueUserIds).all();
-
-  for (const row of rows.results || []) {
-    const current = results.get(row.user_id) || [];
-    current.push({ code: row.code, name: row.name, iconKey: row.icon_key, rarity: row.rarity });
-    results.set(row.user_id, current);
-  }
-  for (const [userId, achievements] of results) {
-    results.set(userId, {
-      achievements: achievements.slice(0, RANKING_ACHIEVEMENT_DISPLAY_LIMIT),
-      achievementCount: achievements.length
-    });
-  }
-  return results;
 }
 
 async function handleDevelopmentAchievements(env, cors, user) {
@@ -11981,38 +11662,6 @@ function parseResultGameRoute(path) {
   }
 }
 
-function formatPublicResultTeamName(value) {
-  const labels = {
-    fighters: "日本ハム",
-    hawks: "ソフトバンク",
-    buffaloes: "オリックス",
-    marines: "ロッテ",
-    eagles: "楽天",
-    lions: "西武",
-    giants: "巨人",
-    tigers: "阪神",
-    baystars: "DeNA",
-    carp: "広島",
-    dragons: "中日",
-    swallows: "ヤクルト"
-  };
-  const key = String(value || "").trim().toLowerCase();
-  return labels[key] || String(value || "").trim();
-}
-
-function createPublicGameDisplayLabel({ homeTeam = "", awayTeam = "" } = {}) {
-  const home = formatPublicResultTeamName(homeTeam);
-  const away = formatPublicResultTeamName(awayTeam);
-  return home && away ? `${home} vs ${away}` : "対戦情報を確認中";
-}
-
-function createPublicResultDisplayLabel({ gameDate = "", homeTeam = "", awayTeam = "" } = {}) {
-  const home = formatPublicResultTeamName(homeTeam);
-  const away = formatPublicResultTeamName(awayTeam);
-  const matchup = home && away ? `${home} vs ${away}` : "対戦情報を確認中";
-  return [String(gameDate || "").trim(), matchup].filter(Boolean).join(" ");
-}
-
 async function getResultGameMetadata(db, gameReference, resolvedMetadata = null) {
   const requestedGameId = String(gameReference || "").trim();
   const resolved = resolvedMetadata || await resolvePredictionGameMetadata(db, requestedGameId);
@@ -16584,89 +16233,6 @@ function normalizeScoringPosition(value) {
 function hasDuplicateNonDhPositions(lineup) {
   const positions = lineup.map((item) => item.position).filter((position) => position && position !== "指");
   return new Set(positions).size !== positions.length;
-}
-
-function scorePredictionLineup(predictionLineup, actualLineup) {
-  const actualByPlayerId = new Map(actualLineup.map((item) => [item.playerId, item]));
-  let playerHits = 0;
-  let orderHits = 0;
-  let positionHits = 0;
-
-  for (const prediction of predictionLineup) {
-    const actual = actualByPlayerId.get(prediction.playerId);
-    if (!actual) {
-      continue;
-    }
-    playerHits += 1;
-    if (actual.battingOrder === prediction.battingOrder) {
-      orderHits += 1;
-    }
-    if (actual.position === prediction.position) {
-      positionHits += 1;
-    }
-  }
-
-  const playerScore = playerHits * SCORING_RULES.player.perHit + (playerHits === SCORING_LINEUP_SIZE ? SCORING_RULES.player.bonus : 0);
-  const orderScore = orderHits * SCORING_RULES.order.perHit + (orderHits === SCORING_LINEUP_SIZE ? SCORING_RULES.order.bonus : 0);
-  const positionScore = positionHits * SCORING_RULES.position.perHit + (positionHits === SCORING_LINEUP_SIZE ? SCORING_RULES.position.bonus : 0);
-  return {
-    total: Math.min(SCORING_MAX_SCORE, playerScore + orderScore + positionScore),
-    counts: { player: playerHits, order: orderHits, position: positionHits }
-  };
-}
-
-// RELEASE_DEBUG_PERFECT_SCORE_FIXTURE is intentionally local to admin preview.
-const RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY = "release_full_score_debug_1";
-const RELEASE_DEBUG_PERFECT_SCORE_FIXTURE = Object.freeze([
-  { battingOrder: 1, position: "2B", name: "西川", fixtureId: "debug_fixture_nishikawa" },
-  { battingOrder: 2, position: "C", name: "中島", fixtureId: "debug_fixture_nakajima" },
-  { battingOrder: 3, position: "SS", name: "エドポロ", fixtureId: "debug_fixture_edopolo" },
-  { battingOrder: 4, position: "RF", name: "リン", fixtureId: "debug_fixture_lin" },
-  { battingOrder: 5, position: "1B", name: "山縣", fixtureId: "debug_fixture_yamagata" },
-  { battingOrder: 6, position: "3B", name: "レイエス", fixtureId: "debug_fixture_reyes" },
-  { battingOrder: 7, position: "LF", name: "藤森", fixtureId: "debug_fixture_fujimori" },
-  { battingOrder: 8, position: "DH", name: "宮崎", fixtureId: "debug_fixture_miyazaki" },
-  { battingOrder: 9, position: "CF", name: "マルティネス", fixtureId: "debug_fixture_martinez" }
-]);
-
-export function buildReleaseDebugPerfectScoreFixtureLineup() {
-  return RELEASE_DEBUG_PERFECT_SCORE_FIXTURE.map((player) => ({
-    battingOrder: player.battingOrder,
-    position: player.position,
-    name: player.name,
-    playerId: player.fixtureId,
-    playerName: player.name,
-    displayName: player.name,
-    teamCode: "fighters",
-    teamId: "F"
-  }));
-}
-
-export function buildReleaseDebugPerfectScoreFixturePreview() {
-  const officialLineup = buildReleaseDebugPerfectScoreFixtureLineup();
-  return {
-    fixtureKey: RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY,
-    fixtureMode: true,
-    productionWrite: false,
-    officialLineup,
-    ...buildPerfectScorePreview(officialLineup)
-  };
-}
-
-export function buildPerfectScorePreview(actualLineup) {
-  const predictionLineup = actualLineup.map((player) => ({ ...player }));
-  const score = scorePredictionLineup(predictionLineup, actualLineup);
-  const breakdown = {
-    player: { hits: score.counts.player, points: score.counts.player * SCORING_RULES.player.perHit, bonus: score.counts.player === SCORING_LINEUP_SIZE ? SCORING_RULES.player.bonus : 0 },
-    order: { hits: score.counts.order, points: score.counts.order * SCORING_RULES.order.perHit, bonus: score.counts.order === SCORING_LINEUP_SIZE ? SCORING_RULES.order.bonus : 0 },
-    position: { hits: score.counts.position, points: score.counts.position * SCORING_RULES.position.perHit, bonus: score.counts.position === SCORING_LINEUP_SIZE ? SCORING_RULES.position.bonus : 0 },
-    total: score.total
-  };
-  return {
-    prediction: { schemaVersion: PREDICTION_SCHEMA_VERSION, lineup: predictionLineup },
-    score,
-    breakdown
-  };
 }
 
 async function handleGetPerfectAchievers(request, env, cors) {

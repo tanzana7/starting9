@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+const adminPreview = fs.readFileSync(path.join(root, "backend", "admin", "preview.js"), "utf8");
 const admin = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
 const adminPage = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 const publicPage = fs.readFileSync(path.join(root, "index.html"), "utf8");
@@ -54,10 +55,11 @@ test("fixture APIはadmin専用・previewOnly・D1 writeなしで、executeを�
   assert.match(worker, /mode === "fixture"/);
   assert.match(worker, /RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY_INVALID/);
   assert.match(worker, /requireAdminUser\(request, env, cors\)/);
-  assert.match(worker, /previewOnly: true/);
-  assert.match(worker, /fixtureMode: mode === "fixture"/);
-  assert.match(worker, /fixtureKey: mode === "fixture" \? fixtureKey : null/);
-  assert.match(worker, /productionWrite: false/);
+  assert.match(worker, /buildAdminReadOnlyPreviewMetadata/);
+  assert.match(adminPreview, /previewOnly: true/);
+  assert.match(adminPreview, /fixtureMode: Boolean\(fixtureMode\)/);
+  assert.match(adminPreview, /fixtureKey: fixtureMode \? fixtureKey : null/);
+  assert.match(adminPreview, /productionWrite: false/);
   const start = worker.indexOf("async function handleAdminV3PerfectScorePreview");
   const end = worker.indexOf("async function recordV3AdminAudit", start);
   assert.ok(start >= 0 && end > start);

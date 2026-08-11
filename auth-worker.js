@@ -376,6 +376,10 @@ export default {
       if (path === "/api/admin/v3/ranking-resets/execute" && request.method === "POST") {
         return await handleAdminV3RankingResetExecute(request, env, cors);
       }
+      if (path === "/api/admin/v3/perfect-score-test/preview") {
+        if (request.method !== "POST") return jsonResponse({ ok: false, code: "V3_ADMIN_METHOD_NOT_ALLOWED", error: "満点previewはPOSTのみ対応しています。" }, 405, cors);
+        return await handleAdminV3PerfectScorePreview(request, env, cors);
+      }
       const adminV3IdentityResolveRoute = parseAdminV3IdentityResolveRoute(path);
       if (adminV3IdentityResolveRoute && request.method === "POST") {
         return await handleAdminV3IdentityResolve(request, env, cors, adminV3IdentityResolveRoute.internalGameId);
@@ -4782,6 +4786,59 @@ function v3AdminErrorResponse(cors, error, fallback = "V3管理操作に失敗�
     V3_SCHEMA_UNAVAILABLE: 503
   }[code] || 500);
   return jsonResponse({ ok: false, code, error: String(error?.message || fallback) }, status, cors);
+}
+
+async function handleAdminV3PerfectScorePreview(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+
+  const input = await readJson(request);
+  const mode = String(input?.mode || "").trim().toLowerCase();
+  const reason = String(input?.reason || "").trim();
+  if (mode !== "perfect") return jsonResponse({ ok: false, code: "PERFECT_SCORE_PREVIEW_MODE_INVALID", error: "modeはperfectを指定してください。" }, 400, cors);
+  if (!reason || reason.length > 240) return jsonResponse({ ok: false, code: "V3_REASON_REQUIRED", error: "満点preview理由を1〜240文字で入力してください。" }, 400, cors);
+
+  let context;
+  try {
+    context = await loadV3AdminContext(env.AUTH_DB, normalizeV3InternalGameId(input?.internalGameId));
+  } catch (error) {
+    return v3AdminErrorResponse(cors, error, "対象試合を取得できませんでした。");
+  }
+
+  const revisions = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
+  const finalRevision = revisions.find((row) => Number(row.is_final) === 1) || null;
+  if (!finalRevision) {
+    return jsonResponse({ ok: false, code: "PERFECT_SCORE_LINEUP_REQUIRED", error: "満点previewには正式スタメンの確定が必要です。" }, 409, cors);
+  }
+  const actualResult = sanitizeActualLineupForScoring(parseStoredActualLineup(finalRevision.actual_lineup_json));
+  if (!actualResult.ok) {
+    return jsonResponse({ ok: false, code: "PERFECT_SCORE_LINEUP_INVALID", error: "正式スタメンを採点用形式として確認できません。" }, 409, cors);
+  }
+
+  const preview = buildPerfectScorePreview(actualResult.lineup);
+  return jsonResponse({
+    ok: true,
+    previewOnly: true,
+    writes: { database: false, predictions: false, ranking: false, publication: false },
+    targetGame: {
+      internalGameId: context.id,
+      gameDate: context.target.game_date || "",
+      startAt: context.target.start_time || null,
+      homeTeam: context.target.home_team || "",
+      awayTeam: context.target.away_team || ""
+    },
+    lineupRevision: {
+      revisionId: finalRevision.revision_id || `${context.metadata.gameId}:${Number(finalRevision.version)}`,
+      version: Number(finalRevision.version),
+      finalizedAt: finalRevision.finalized_at || null
+    },
+    officialLineup: actualResult.lineup,
+    virtualPerfectPrediction: preview.prediction,
+    scoringBreakdown: preview.breakdown,
+    expectedScore: preview.score.total,
+    maxScore: SCORING_MAX_SCORE,
+    isMaxScore: preview.score.total === SCORING_MAX_SCORE
+  }, 200, cors);
 }
 
 async function recordV3AdminAudit(db, { internalGameId, jobId = null, jobType = "admin_operation", stateBefore = null, stateAfter = null, failureCode = null, failureMessage = null, occurredAt = new Date() } = {}) {
@@ -16537,6 +16594,22 @@ function scorePredictionLineup(predictionLineup, actualLineup) {
   return {
     total: Math.min(SCORING_MAX_SCORE, playerScore + orderScore + positionScore),
     counts: { player: playerHits, order: orderHits, position: positionHits }
+  };
+}
+
+export function buildPerfectScorePreview(actualLineup) {
+  const predictionLineup = actualLineup.map((player) => ({ ...player }));
+  const score = scorePredictionLineup(predictionLineup, actualLineup);
+  const breakdown = {
+    player: { hits: score.counts.player, points: score.counts.player * SCORING_RULES.player.perHit, bonus: score.counts.player === SCORING_LINEUP_SIZE ? SCORING_RULES.player.bonus : 0 },
+    order: { hits: score.counts.order, points: score.counts.order * SCORING_RULES.order.perHit, bonus: score.counts.order === SCORING_LINEUP_SIZE ? SCORING_RULES.order.bonus : 0 },
+    position: { hits: score.counts.position, points: score.counts.position * SCORING_RULES.position.perHit, bonus: score.counts.position === SCORING_LINEUP_SIZE ? SCORING_RULES.position.bonus : 0 },
+    total: score.total
+  };
+  return {
+    prediction: { schemaVersion: PREDICTION_SCHEMA_VERSION, lineup: predictionLineup },
+    score,
+    breakdown
   };
 }
 

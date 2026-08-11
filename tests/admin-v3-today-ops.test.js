@@ -140,8 +140,8 @@ test("overviewはCron監査時刻をToday Opsへ返し、管理画面は専用�
   assert.match(client, /Today Ops \/ Automation Health/);
   assert.match(client, /futureShortage/);
   assert.match(client, /todayOpsStep/);
-  assert.match(page, /admin-v3\.js\?v=ranking-reset-controls-1/);
-  assert.match(page, /admin-v3\.css\?v=ranking-reset-controls-1/);
+  assert.match(page, /admin-v3\.js\?v=ranking-copy-perfect-score-helper-1/);
+  assert.match(page, /admin-v3\.css\?v=ranking-copy-perfect-score-helper-1/);
   assert.match(css, /today-ops-panel/);
   assert.match(css, /@media \(max-width: 720px\)[\s\S]*today-ops-metrics, \.today-ops-steps \{ grid-template-columns: 1fr; \}/);
 });

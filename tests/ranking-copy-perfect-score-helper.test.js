@@ -1,0 +1,66 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const admin = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
+const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+const page = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
+const { buildPerfectScorePreview } = await import(pathToFileURL(path.join(root, "auth-worker.js")).href);
+
+function officialLineup() {
+  return [
+    ["捕", "1"], ["一", "2"], ["二", "3"], ["三", "4"], ["遊", "5"],
+    ["左", "6"], ["中", "7"], ["右", "8"], ["指", "9"]
+  ].map(([position, uniformNumber], index) => ({
+    battingOrder: index + 1,
+    playerId: `F-${uniformNumber}`,
+    playerName: `選手${uniformNumber}`,
+    displayName: `選手${uniformNumber}`,
+    teamCode: "fighters",
+    teamId: "F",
+    uniformNumber,
+    position
+  }));
+}
+
+test("ランキング見出しは自然な文言で、未到達者表示は内部切替で制御できる", () => {
+  assert.doesNotMatch(script, /規定到達ランキング/);
+  assert.match(script, /title\.textContent = "ランキング"/);
+  assert.match(script, /RANKING_DISPLAY_OPTIONS = Object\.freeze\(\{ hideIneligibleRankings: false \}\)/);
+  assert.match(script, /hideIneligibleRankings \? normalizedRows\.filter\(\(row\) => row\?\.isQualified\) : normalizedRows/);
+  assert.match(script, /正式リリース時は、規定到達者のみ表示します。現在はテスト期間のため、規定未到達者も参考表示しています/);
+  assert.match(script, /規定未到達/);
+});
+
+test("満点previewは正式スタメンと既存採点コアから100点を算出する", () => {
+  const result = buildPerfectScorePreview(officialLineup());
+  assert.equal(result.score.total, 100);
+  assert.deepEqual(result.score.counts, { player: 9, order: 9, position: 9 });
+  assert.equal(result.breakdown.total, 100);
+  assert.equal(result.prediction.schemaVersion, 1);
+  assert.equal(result.prediction.lineup.length, 9);
+});
+
+test("満点preview APIはadmin認証、正式スタメン、読み取り専用の契約を持つ", () => {
+  assert.match(worker, /\/api\/admin\/v3\/perfect-score-test\/preview/);
+  assert.match(worker, /requireAdminUser\(request, env, cors\)/);
+  assert.match(worker, /PERFECT_SCORE_LINEUP_REQUIRED/);
+  assert.match(worker, /writes: \{ database: false, predictions: false, ranking: false, publication: false \}/);
+  assert.match(worker, /officialLineup: actualResult\.lineup/);
+  assert.match(worker, /virtualPerfectPrediction: preview\.prediction/);
+  const previewHandler = worker.slice(worker.indexOf("async function handleAdminV3PerfectScorePreview"), worker.indexOf("async function recordV3AdminAudit"));
+  assert.doesNotMatch(previewHandler, /INSERT|UPDATE|DELETE/);
+  assert.doesNotMatch(admin, /perfect-score-test\/execute/);
+  assert.match(admin, /data-v3-perfect-score-preview/);
+  assert.match(page, /ranking-copy-perfect-score-helper-1/);
+});
+
+test("満点previewは本番データ作成やランキングリセット実行を自動で行わない", () => {
+  assert.match(admin, /本番予想、ランキング、公開結果、監査データは変更しません/);
+  assert.doesNotMatch(admin, /data-v3-perfect-score-execute/);
+  assert.doesNotMatch(worker, /perfect-score-test\/execute/);
+});

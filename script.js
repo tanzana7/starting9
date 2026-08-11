@@ -6153,14 +6153,21 @@ function renderRankingHeading(view) {
   const yearlyButton = document.getElementById("showYearlyRankingButton");
   const monthlyButton = document.getElementById("showMonthlyRankingButton");
   const isMonthly = view === "monthly";
-  if (title) title.textContent = isMonthly ? "月間ランキング" : "年間ランキング";
+  if (title) title.textContent = "ランキング";
   if (description) description.textContent = isMonthly
-    ? "この月に正式採点された対象試合の3分の2以上に参加すると順位対象になります。"
-    : "この年に正式採点された対象試合の3分の2以上に参加すると順位対象になります。";
+    ? "正式リリース時は、規定到達者のみ表示します。現在はテスト期間のため、規定未到達者も参考表示しています。"
+    : "正式リリース時は、規定到達者のみ表示します。現在はテスト期間のため、規定未到達者も参考表示しています。";
   yearlyButton?.classList.toggle("is-active", !isMonthly);
   monthlyButton?.classList.toggle("is-active", isMonthly);
   yearlyButton?.setAttribute("aria-selected", String(!isMonthly));
   monthlyButton?.setAttribute("aria-selected", String(isMonthly));
+}
+
+const RANKING_DISPLAY_OPTIONS = Object.freeze({ hideIneligibleRankings: false });
+
+function filterRankingRowsForDisplay(rows, { hideIneligibleRankings = RANKING_DISPLAY_OPTIONS.hideIneligibleRankings } = {}) {
+  const normalizedRows = Array.isArray(rows) ? rows : [];
+  return hideIneligibleRankings ? normalizedRows.filter((row) => row?.isQualified) : normalizedRows;
 }
 
 function renderRankingContent(ranking, { selfTitle, emptyMessage, prefixHtml = "" }) {
@@ -6182,8 +6189,9 @@ function renderRankingContent(ranking, { selfTitle, emptyMessage, prefixHtml = "
     return;
   }
 
-  const qualified = ranking.rows.filter((row) => row.isQualified);
-  const unqualified = ranking.rows.filter((row) => !row.isQualified);
+  const displayRows = filterRankingRowsForDisplay(ranking.rows);
+  const qualified = displayRows.filter((row) => row.isQualified);
+  const unqualified = displayRows.filter((row) => !row.isQualified);
   const selfSection = renderMyRanking(ranking, ranking.self, selfTitle);
   const qualifiedContent = qualified.length
     ? `<ol class="ranking-list">${qualified.map((row) => createRankingCardHtml(row)).join("")}</ol>`
@@ -6197,7 +6205,7 @@ function renderRankingContent(ranking, { selfTitle, emptyMessage, prefixHtml = "
     <p class="ranking-summary">${escapeHtml(summaryText)}</p>
     ${selfSection}
     <section class="ranking-qualified-section" aria-labelledby="rankingQualifiedTitle">
-      <h3 id="rankingQualifiedTitle">規定到達ランキング</h3>
+      <h3 id="rankingQualifiedTitle">ランキング</h3>
       ${qualifiedContent}
     </section>
     ${unqualifiedContent}

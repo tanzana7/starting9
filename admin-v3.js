@@ -68,6 +68,13 @@ const v3State = {
     markers: [],
     loading: false,
     loaded: false
+  },
+  perfectScorePreview: {
+    internalGameId: "",
+    reason: "",
+    loading: false,
+    result: null,
+    error: ""
   }
 };
 
@@ -1094,7 +1101,22 @@ function renderScoringView(game) {
   const rankingNoOpNotice = details.ranking?.rankingNoOpReason
     ? `<div class="v3-operation-result" data-v3-ranking-no-op>ランキング対象なしのため、ランキング反映はno-opで完了します。<code>${escapeV3(details.ranking.rankingNoOpReason)}</code></div>`
     : "";
-  return `${renderSelectedGameHeader(game, "採点・ランキング", "V3が進めた採点・ランキング・公開の状態を確認します。")}<section class="v3-panel"><div class="detail-grid"><div><dt>対象予想数</dt><dd>${escapeV3(scoring.eligiblePredictionCount ?? "-")}</dd></div><div><dt>採点済み / 失敗</dt><dd>${escapeV3(`${scoring.scoredPredictionCount ?? "-"} / ${scoring.failedPredictionCount ?? "-"}`)}</dd></div><div><dt>active scoring revision</dt><dd>${escapeV3(details.ranking?.activeScoringRevision?.id || "-")}</dd></div><div><dt>ranking</dt><dd>${escapeV3(details.ranking?.ranking?.gameStatus || "-")}</dd></div><div><dt>publication</dt><dd>${escapeV3(publication.status || "pending")}</dd></div><div><dt>publishedAt</dt><dd>${escapeV3(formatV3Jst(publication.publishedAt))}</dd></div><div><dt>公開lineup revision</dt><dd>${escapeV3(publication.publishedLineupRevision?.revision_id || publication.publishedLineupRevision?.id || "-")}</dd></div><div><dt>公開scoring revision</dt><dd>${escapeV3(publication.publishedScoringRevision?.id || "-")}</dd></div></div>${noOpNotice}${rankingNoOpNotice}<h3>処理job</h3>${renderJobRows(game, ["score", "ranking_rebuild", "publish"])}</section>`;
+  return `${renderSelectedGameHeader(game, "採点・ランキング", "V3が進めた採点・ランキング・公開の状態を確認します。")}<section class="v3-panel"><div class="detail-grid"><div><dt>対象予想数</dt><dd>${escapeV3(scoring.eligiblePredictionCount ?? "-")}</dd></div><div><dt>採点済み / 失敗</dt><dd>${escapeV3(`${scoring.scoredPredictionCount ?? "-"} / ${scoring.failedPredictionCount ?? "-"}`)}</dd></div><div><dt>active scoring revision</dt><dd>${escapeV3(details.ranking?.activeScoringRevision?.id || "-")}</dd></div><div><dt>ranking</dt><dd>${escapeV3(details.ranking?.ranking?.gameStatus || "-")}</dd></div><div><dt>publication</dt><dd>${escapeV3(publication.status || "pending")}</dd></div><div><dt>publishedAt</dt><dd>${escapeV3(formatV3Jst(publication.publishedAt))}</dd></div><div><dt>公開lineup revision</dt><dd>${escapeV3(publication.publishedLineupRevision?.revision_id || publication.publishedLineupRevision?.id || "-")}</dd></div><div><dt>公開scoring revision</dt><dd>${escapeV3(publication.publishedScoringRevision?.id || "-")}</dd></div></div>${noOpNotice}${rankingNoOpNotice}<h3>処理job</h3>${renderJobRows(game, ["score", "ranking_rebuild", "publish"])}</section>${renderPerfectScorePreviewPanel(game)}`;
+}
+
+function renderPerfectScorePreviewPanel(game) {
+  const previewState = v3State.perfectScorePreview.internalGameId === game.internalGameId
+    ? v3State.perfectScorePreview
+    : { reason: "", loading: false, result: null, error: "" };
+  const result = previewState.result;
+  const breakdown = result?.scoringBreakdown || {};
+  const lineupMarkup = Array.isArray(result?.officialLineup)
+    ? result.officialLineup.map((player) => `<li>${escapeV3(player.battingOrder)}番 ${escapeV3(player.displayName || player.playerName)} / ${escapeV3(player.position)} / ${escapeV3(player.playerId)}</li>`).join("")
+    : "";
+  const resultMarkup = result
+    ? `<div class="perfect-score-preview-result"><div class="detail-grid"><div><dt>期待スコア</dt><dd><strong>${escapeV3(result.expectedScore)} / ${escapeV3(result.maxScore)}</strong></dd></div><div><dt>満点判定</dt><dd>${result.isMaxScore ? "満点" : "要確認"}</dd></div><div><dt>lineup revision</dt><dd>${escapeV3(result.lineupRevision?.revisionId || "-")}</dd></div><div><dt>書き込み</dt><dd>なし（previewのみ）</dd></div><div><dt>選手一致</dt><dd>${escapeV3(breakdown.player?.hits ?? 0)} / 9</dd></div><div><dt>打順一致</dt><dd>${escapeV3(breakdown.order?.hits ?? 0)} / 9</dd></div><div><dt>守備一致</dt><dd>${escapeV3(breakdown.position?.hits ?? 0)} / 9</dd></div></div><h4>正式スタメン</h4><ol class="perfect-score-preview-lineup">${lineupMarkup}</ol></div>`
+    : `<p class="muted">正式スタメン確定後に、仮想予想の満点判定を確認できます。</p>`;
+  return `<section class="v3-panel perfect-score-preview-panel"><div class="view-heading"><div><h3>満点確認（管理者preview）</h3><p>正式スタメンから仮想予想を作り、既存の採点コアだけを読み取りでシミュレーションします。</p></div></div><div class="perfect-score-preview-warning">本番予想、ランキング、公開結果、監査データは変更しません。実データ作成は行いません。</div><label class="perfect-score-preview-reason">確認理由<input type="text" maxlength="240" value="${escapeV3(previewState.reason || "")}" placeholder="採点コアの満点確認" data-v3-perfect-score-field="reason"></label><button type="button" data-v3-perfect-score-preview ${previewState.loading ? "disabled" : ""}>満点をpreview</button><p class="v3-operation-result" data-v3-perfect-score-status>${escapeV3(previewState.error || "")}</p>${resultMarkup}</section>`;
 }
 
 function rankingResetLocalToIso(value) {
@@ -1267,6 +1289,30 @@ async function executeRankingReset() {
   }
 }
 
+async function previewPerfectScore() {
+  const game = selectedV3Game(v3ListItems(v3State.payload?.games, "games"));
+  if (!game || v3State.perfectScorePreview.loading) return;
+  const reason = v3State.perfectScorePreview.reason.trim();
+  if (!reason) {
+    v3State.perfectScorePreview = { ...v3State.perfectScorePreview, internalGameId: game.internalGameId, error: "確認理由を入力してください。" };
+    renderCurrentV3View();
+    return;
+  }
+  v3State.perfectScorePreview = { internalGameId: game.internalGameId, reason, loading: true, result: null, error: "" };
+  renderCurrentV3View();
+  try {
+    v3State.perfectScorePreview.result = await v3Fetch("/api/admin/v3/perfect-score-test/preview", {
+      method: "POST",
+      body: JSON.stringify({ internalGameId: game.internalGameId, mode: "perfect", reason })
+    });
+  } catch (error) {
+    v3State.perfectScorePreview.error = `${error.code || "PERFECT_SCORE_PREVIEW_FAILED"}: ${error.message}`;
+  } finally {
+    v3State.perfectScorePreview.loading = false;
+    renderCurrentV3View();
+  }
+}
+
 function renderV3(payload) {
   const games = normalizeV3List(payload?.games, "games");
   v3State.payload = { ...(payload || {}), games: games.items, gamesShapeUnexpected: games.unexpected };
@@ -1322,8 +1368,12 @@ function chooseV3View(view) {
 
 document.addEventListener("input", (event) => {
   const field = event.target.closest("[data-v3-ranking-reset-field]");
-  if (!field) return;
-  v3State.rankingReset[field.dataset.v3RankingResetField] = field.value;
+  if (field) {
+    v3State.rankingReset[field.dataset.v3RankingResetField] = field.value;
+    return;
+  }
+  const perfectField = event.target.closest("[data-v3-perfect-score-field]");
+  if (perfectField) v3State.perfectScorePreview[perfectField.dataset.v3PerfectScoreField] = perfectField.value;
 });
 
 document.addEventListener("click", async (event) => {
@@ -1335,6 +1385,10 @@ document.addEventListener("click", async (event) => {
   }
   if (event.target.closest("[data-v3-ranking-reset-execute]")) {
     await executeRankingReset();
+    return;
+  }
+  if (event.target.closest("[data-v3-perfect-score-preview]")) {
+    await previewPerfectScore();
     return;
   }
   const automationLogRefresh = event.target.closest("[data-v3-automation-log-refresh]");

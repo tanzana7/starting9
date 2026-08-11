@@ -78,6 +78,11 @@ import {
   createPublicResultDisplayLabel
 } from "./backend/domain/public-results.js";
 import { buildAdminReadOnlyPreviewMetadata } from "./backend/admin/preview.js";
+import {
+  buildV3CronJobAuditInsert,
+  buildV3ScheduleSyncAuditInsert
+} from "./backend/automation-v3/audit.js";
+import { buildV3CronSummary } from "./backend/automation-v3/diagnostics.js";
 
 // Compatibility exports keep existing tests and internal callers stable while
 // the implementation lives in the domain module.
@@ -560,66 +565,20 @@ async function runScheduledGameAutomationV3(env, now) {
   const correlationId = runId;
   const writeAudit = async ({ eventType = "job", job, internalGameId = null, claimToken = null, stateBefore = null, execution = null, failure = null, occurredAt = now } = {}) => {
     const auditColumns = await getTableColumnSet(env.AUTH_DB, "game_automation_v3_audit");
-    const columns = [
-      ...(auditColumns.has("event_type") ? ["event_type"] : []),
-      "internal_game_id", "job_id", "job_type", "scheduled_slot_at", "claim_id",
-      "state_before", "state_after", "attempt_count", "failure_code", "failure_message",
-      ...(auditColumns.has("data_status") ? ["data_status"] : []), "occurred_at", "source"
-    ];
-    const statusAfter = String(job?.status || (failure ? "retry_wait" : "completed"));
-    const probableStarter = execution?.probableStarter || null;
-    const dataStatus = execution?.dataStatus || probableStarter?.dataStatus || null;
-    const noOpReason = execution?.noOpReason || null;
-    const failureCode = failure?.code || execution?.failureCode || job?.failure_code || probableStarter?.errorCode || null;
-    if (eventType === "job" && noOpReason) eventType = execution?.noOpEventType || "scoring_no_op";
-    const noOpMessage = eventType === "ranking_no_op" ? "ランキング対象なし" : "採点対象なし";
-    const failureBaseMessage = failure?.message || execution?.failureMessage || job?.failure_message
-      || (noOpReason ? `${noOpMessage}: ${noOpReason}` : null);
-    const resolvedInternalGameId = job?.internal_game_id || internalGameId || null;
-    const structuredDetails = {
-      schemaVersion: 1,
+    const { columns, values } = buildV3CronJobAuditInsert({
+      auditColumns,
       runId,
       correlationId,
       eventType,
-      stage: execution?.stage || execution?.executorStage || eventType,
-      internalGameId: resolvedInternalGameId,
-      jobId: job?.id || null,
-      jobType: job?.job_type || "plan",
-      scheduledSlotAt: job?.scheduled_slot_at || null,
-      status: statusAfter,
-      stateBefore: execution?.stateBefore || stateBefore || null,
-      stateAfter: execution?.stateAfter || null,
-      attemptCount: Number(job?.attempt_count || 0),
-      reasonCode: execution?.reasonCode || execution?.plannerDecision?.reasonCode || failureCode || null,
-      failureCode,
-      failureMessage: failureBaseMessage ? String(failureBaseMessage).slice(0, 1200) : null,
-      ...execution
-    };
-    let failureMessage = failureBaseMessage;
-    if (failure?.diagnostics && typeof failure.diagnostics === "object") {
-      structuredDetails.diagnostics = failure.diagnostics;
-    }
-    try {
-      failureMessage = `${failureBaseMessage || ""}${failureBaseMessage ? " " : ""}[v3_details=${JSON.stringify(structuredDetails)}]`.slice(0, 8000);
-    } catch {
-      failureMessage = failureBaseMessage;
-    }
-    const values = [
-      ...(auditColumns.has("event_type") ? [eventType] : []),
-      resolvedInternalGameId,
-      job?.id || null,
-      job?.job_type || "plan",
-      job?.scheduled_slot_at || null,
-      job?.claim_token || claimToken || null,
-      execution?.stateBefore || stateBefore || null,
-      execution?.stateAfter || null,
-      Number(job?.attempt_count || 0),
-      failureCode,
-      failureMessage ? String(failureMessage).slice(0, 8000) : null,
-      ...(auditColumns.has("data_status") ? [dataStatus] : []),
-      new Date(occurredAt || job?.completed_at || job?.updated_at || now).toISOString(),
-      "cron"
-    ];
+      job,
+      internalGameId,
+      claimToken,
+      stateBefore,
+      execution,
+      failure,
+      occurredAt,
+      now
+    });
     await env.AUTH_DB.prepare(
       `INSERT INTO game_automation_v3_audit (${columns.join(", ")})
        VALUES (${columns.map((_, index) => `?${index + 1}`).join(", ")})`
@@ -636,30 +595,14 @@ async function runScheduledGameAutomationV3(env, now) {
     ).first();
     if (!anchor?.internal_game_id) return;
     const auditColumns = await getTableColumnSet(env.AUTH_DB, "game_automation_v3_audit");
-    const columns = [
-      ...(auditColumns.has("event_type") ? ["event_type"] : []),
-      "internal_game_id", "job_type", "state_before", "state_after",
-      "failure_code", "failure_message", "occurred_at", "source"
-    ];
-    const errorCode = diagnostics?.errorCode || null;
-    const message = JSON.stringify({
-      ...diagnostics,
+    const { columns, values } = buildV3ScheduleSyncAuditInsert({
+      auditColumns,
+      internalGameId: anchor.internal_game_id,
+      diagnostics,
       runId,
       correlationId,
-      stage: "schedule_sync",
-      lastScheduleSyncAt: diagnostics?.lastScheduleSyncAt || now.toISOString()
+      now
     });
-    const values = [
-      ...(auditColumns.has("event_type") ? ["schedule_sync"] : []),
-      anchor.internal_game_id,
-      "schedule_sync",
-      "scheduled",
-      diagnostics?.status || "unknown",
-      errorCode,
-      message,
-      diagnostics?.lastScheduleSyncAt || now.toISOString(),
-      "cron"
-    ];
     await env.AUTH_DB.prepare(
       `INSERT INTO game_automation_v3_audit (${columns.join(", ")})
        VALUES (${columns.map((_, index) => `?${index + 1}`).join(", ")})`
@@ -808,49 +751,14 @@ async function runScheduledGameAutomationV3(env, now) {
     }
     throw error;
   });
-  const plannedEntries = [
-    ...(result?.probablePlan?.planned || []),
-    ...(result?.rosterPlan?.planned || []),
-    ...(result?.identityPlan?.planned || []),
-    ...(result?.mainPlan?.planned || [])
-  ];
-  const countByJobType = (entries, predicate = () => true) => entries.reduce((counts, entry) => {
-    const jobType = String(entry?.plan?.jobType || entry?.job?.job_type || "unknown");
-    if (predicate(entry)) counts[jobType] = (counts[jobType] || 0) + 1;
-    return counts;
-  }, {});
-  const claimEntries = result?.claimReport?.claimed || [];
-  const summary = {
+  const summary = buildV3CronSummary({
     runId,
     correlationId,
-    stage: "cron_run",
-    startedAt: now.toISOString(),
-    completedAt: new Date().toISOString(),
-    status: Number(result?.failed || 0) > 0 ? "completed_with_errors" : "completed",
-    counts: {
-      games: Number(result?.gameCount || 0),
-      planned: plannedEntries.length,
-      created: Number(result?.created || 0),
-      plannerErrors: Number(result?.failed || 0),
-      due: Number(result?.claimReport?.due?.length || 0),
-      claimed: claimEntries.filter((entry) => entry?.claimResult === "claimed").length,
-      claimConflicts: claimEntries.filter((entry) => entry?.claimResult === "claim_conflict").length,
-      processed: Number(result?.processed || 0),
-      failed: Number(result?.failed || 0)
-    },
-    plannedByJobType: countByJobType(plannedEntries),
-    createdByJobType: countByJobType(plannedEntries, (entry) => entry?.created === true),
-    failedByJobType: countByJobType(plannedEntries, (entry) => Boolean(entry?.error || entry?.reasonCode === "V3_JOB_FAILED")),
-    scheduleSync: scheduleSync ? {
-      status: scheduleSync.status,
-      futureGamesBefore: scheduleSync.futureGamesBefore,
-      futureGamesAfter: scheduleSync.futureGamesAfter,
-      gamesFetched: scheduleSync.gamesFetched,
-      gamesInserted: scheduleSync.gamesInserted,
-      gamesUpdated: scheduleSync.gamesUpdated,
-      errorCode: scheduleSync.errorCode || null
-    } : null
-  };
+    startedAt: now,
+    completedAt: new Date(),
+    result,
+    scheduleSync
+  });
   const anchor = await env.AUTH_DB.prepare(
     `SELECT internal_game_id FROM games WHERE internal_game_id IS NOT NULL AND internal_game_id <> '' ORDER BY game_date, start_time, internal_game_id LIMIT 1`
   ).first().catch(() => null);

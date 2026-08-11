@@ -22,11 +22,12 @@ test("0件または採点対象0件は採点完了として扱い、正式lineup
   }), true);
 
   const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+  const audit = fs.readFileSync(path.join(root, "backend/automation-v3/audit.js"), "utf8");
   assert.match(worker, /V3_FINAL_LINEUP_REQUIRED/);
   assert.match(worker, /V3_SCORING_NO_PREDICTIONS/);
   assert.match(worker, /V3_SCORING_NO_ELIGIBLE_PREDICTIONS/);
   assert.match(worker, /status: noOpReason \? "no_op_success" : "scored"/);
-  assert.match(worker, /eventType === "job" && noOpReason/);
+  assert.match(audit, /eventType === "job" && noOpReason/);
 });
 
 test("採点no-opの監査結果を管理画面へ返し、公開条件へ接続する", () => {

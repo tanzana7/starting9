@@ -57,7 +57,7 @@ test("V3 Cronは日程補充をplannerより前に実行し、結果を診断へ
 });
 
 test("V3試合一覧はgamesに登録済みの未来を日付上限なしで返す", () => {
-  const source = fs.readFileSync(path.join(root, "game-automation-v3.js"), "utf8");
+  const source = fs.readFileSync(path.join(root, "backend/automation-v3/repository.js"), "utf8");
   const listStart = source.indexOf("export async function listV3Games");
   const listEnd = source.indexOf("export async function ensureV3State", listStart);
   const listFunction = source.slice(listStart, listEnd);

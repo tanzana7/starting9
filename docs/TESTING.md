@@ -20,6 +20,7 @@ The tests cover the following contracts:
 - public game selection, result history, roster fallback, and `PublicAppCoordinator`
 - account and admin authentication boundaries
 - V3 planning, claiming, execution, retries, and state transitions
+- V3 module boundaries: pure timing/domain decisions, repository contracts, planner/claim lifecycle, audit record construction, and Cron diagnostics
 - lineup, probable starter, roster, scoring, ranking, and publication progression
 - canonical UUID and NPB identity resolution
 - ranking eligibility and non-destructive reset markers
@@ -28,6 +29,8 @@ The tests cover the following contracts:
 - V1/V2 retirement and no-legacy-fallback guarantees
 
 Backend domain modules are tested directly as well as through the Worker. Scoring, ranking, and public-results tests import the pure rules from `backend/domain`; ranking repository tests keep the D1-compatible CTE contract under `backend/repositories`. Compatibility tests still import the Worker exports to ensure existing callers keep their public symbols during the incremental split.
+
+The V3 automation facade is also tested directly. This proves that the module split keeps the existing Worker-facing exports while the full V3 E2E test continues to exercise `scheduled -> prediction_closed -> lineup_ready -> scored -> ranked -> published` through planner, claim, and executor boundaries.
 
 ## Static Review Checks
 

@@ -4,6 +4,8 @@
 
 The Auth Worker Cron runs every minute. When `ENABLE_GAME_AUTOMATION_V3=true`, it plans and executes V3 jobs for active canonical games. The public page is read-only with respect to workflow state; it does not run V3 jobs or repair data.
 
+The Cron lifecycle is stable across the V3 modules: `repository` loads canonical games and state, `domain` derives JST timing, planners emit idempotent job decisions, `orchestrator` claims due rows under a lease, `executor` invokes the Worker-provided job handler, and pure `audit`/`diagnostics` builders feed the Worker persistence adapter. The decomposition must not change job type, scheduled slot, API contract, schema, or retry behavior.
+
 Admin V3 is the operational surface for:
 
 - Today Ops and per-game workflow status
@@ -23,6 +25,8 @@ When a game appears stuck, inspect these in order:
 5. The latest structured audit entry and Cron summary.
 
 Do not edit D1 rows directly, re-run migrations, or use repair endpoints to bypass an unknown failure. A production repair requires a separately reviewed task with a dry-run, reason, audit record, and rollback plan.
+
+Roster policy is likewise operational, not a manual data-fix flow: before the same-day NPB announcement window, a still-valid baseline roster can support prediction input. Fresh same-day snapshot data takes precedence once available. An expired, stale, or unknown snapshot is not presented as fresh data.
 
 ## Failure Classification
 

@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+const audit = fs.readFileSync(path.join(root, "backend/automation-v3/audit.js"), "utf8");
+const diagnostics = fs.readFileSync(path.join(root, "backend/automation-v3/diagnostics.js"), "utf8");
 const admin = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
 const html = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 const css = fs.readFileSync(path.join(root, "admin-v3.css"), "utf8");
@@ -13,17 +15,17 @@ const css = fs.readFileSync(path.join(root, "admin-v3.css"), "utf8");
 test("V3 Cron監査はrunIdとcorrelationIdをjob単位へ付与する", () => {
   assert.match(worker, /const runId = globalThis\.crypto\?\.randomUUID\?\./);
   assert.match(worker, /const correlationId = runId/);
-  assert.match(worker, /\[v3_details=\$\{JSON\.stringify\(structuredDetails\)\}\]/);
-  assert.match(worker, /plannerDecision/);
-  assert.match(worker, /executorStage/);
+  assert.match(audit, /\[v3_details=\$\{JSON\.stringify\(structuredDetails\)\}\]/);
+  assert.match(audit, /plannerDecision/);
+  assert.match(audit, /executorStage/);
 });
 
 test("V3 Cron監査はsummaryとjobType別の集計を保存する", () => {
   assert.match(worker, /eventType: "cron_run_summary"/);
-  assert.match(worker, /plannedByJobType/);
-  assert.match(worker, /createdByJobType/);
-  assert.match(worker, /claimConflicts/);
-  assert.match(worker, /processed: Number\(result\?\.processed/);
+  assert.match(diagnostics, /plannedByJobType/);
+  assert.match(diagnostics, /createdByJobType/);
+  assert.match(diagnostics, /claimConflicts/);
+  assert.match(diagnostics, /processed: Number\(result\?\.processed/);
 });
 
 test("admin-v3は構造化監査の読み取りAPIと6種類のフィルタを持つ", () => {

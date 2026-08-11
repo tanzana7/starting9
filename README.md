@@ -1,8 +1,17 @@
 # Starting9
 
-Starting9 は、プロ野球のスタメンを試合前に予想し、発表後に採点して楽しむWebアプリです。
+Starting9 は、プロ野球のスタメンを試合前に予想し、公式発表後に採点・公開するWebアプリです。現在は北海道日本ハムファイターズを対象に、予想入力、認証、V3自動化、ランキング、結果公開までをCloudflare上で運用しています。
 
-現在は北海道日本ハムファイターズ専用のMVPとして開発しています。ランキングや全12球団対応はまだ入れず、静的HTML/CSS/JavaScriptとCloudflare Workerで、予想入力・管理者確認・採点までの流れを検証しています。ユーザー名＋パスワード認証は、将来のランキング機能に向けたAPI/D1基盤を準備中です。
+このリポジトリは、静的フロントエンド、認証・アプリAPI、NPB取得Worker、D1スキーマ、管理画面V3を一つの小さなプロダクトとして追跡できる構成です。現行の自動実行系はGame Automation V3で、旧V1/V2 runnerは実行経路から切り離されています。
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [Operations](docs/OPERATIONS.md)
+- [Deployment](docs/DEPLOYMENT.md)
+- [Testing](docs/TESTING.md)
+- [Admin V3 features](docs/ADMIN_FEATURES.md)
+- [Release checklist](docs/RELEASE_CHECKLIST.md)
 
 ## 概要
 
@@ -49,8 +58,10 @@ starting9/
 ├── players.js              # 日本ハム野手マスタ
 ├── game-schedule.js        # 手動管理する試合日程
 ├── cloudflare-worker.js    # NPB公式ページ取得用Worker
-├── auth-worker.js          # D1を使う認証Worker（準備中）
-├── migrations/0001_auth.sql # 認証用D1 migration
+├── auth-worker.js          # 認証・公開API・V3 Cronを持つAuth Worker
+├── game-automation-v3.js   # V3 planner / state / executorの共通ロジック
+├── admin-v3.html/js/css     # 認証済み管理画面V3
+├── migrations/              # D1 schema history
 ├── wrangler.auth.example.jsonc # 認証Worker設定例
 └── README.md               # このファイル
 ```
@@ -93,7 +104,7 @@ http://127.0.0.1:8782/?admin=1
 
 管理者用のURL入力欄、実スタメン貼り付け欄、承認ボタン、自動取得設定などは表示されません。
 
-### 管理者モード
+### 管理者モード（互換画面）
 
 URLに `?admin=1` を付けると表示されます。
 
@@ -115,6 +126,8 @@ index.html?admin=1
 - 仮承認の本承認・修正・取り消し
 - テスト用予想生成
 - テストデータリセット
+
+現在の本番運用・監視は、専用の `admin-v3.html` を使用します。旧画面は互換・確認用として読み取り専用の案内を残しており、V3の通常運用経路ではありません。
 
 ## 実戦テスト済みの内容
 
@@ -194,9 +207,9 @@ https://<worker-url>/?url=https://npb.jp/scores/2026/0707/m-f-12/&debug=1
 - localStorage
 - Cloudflare Workers
 
-## 認証基盤（準備中）
+## 認証とCloudflare構成
 
-メールアドレスを使わないユーザー名＋パスワード認証の土台を、既存のNPB取得Workerとは分離した `auth-worker.js` として追加しています。認証Workerは次のAPIを提供します。
+メールアドレスを使わないユーザー名＋パスワード認証とアプリAPIは、既存のNPB取得Workerとは分離した `auth-worker.js` に集約しています。認証Workerは次のAPIを提供します。
 
 - `POST /api/auth/register`
 - `POST /api/auth/login`
@@ -205,13 +218,13 @@ https://<worker-url>/?url=https://npb.jp/scores/2026/0707/m-f-12/&debug=1
 
 パスワードはWorkerのWeb Crypto APIによるPBKDF2（SHA-256、ユーザーごとのランダムソルト、反復回数100,000）でハッシュ化し、D1には平文や生のセッショントークンを保存しません。セッションは30日間の `s9_session` HttpOnly・Secure・SameSite=Lax Cookieで管理します。
 
-フロントにはログイン/新規登録UIを追加していますが、認証WorkerとD1はまだ本番デプロイしていません。認証APIが利用できない環境でも、未ログインのまま予想入力・保存・採点は利用できます。
+フロントにはログイン・新規登録UIがあり、認証APIが利用できない環境でも未ログインの予想入力は継続できます。アカウント保存、ランキング本人情報、管理画面は認証状態とサーバー認可に依存します。
 
 ### D1とWorkerの設定
 
 `migrations/0001_auth.sql` が `users` と `sessions` テーブルを作成します。`migrations/0005_game_lineups.sql` は、承認済み実スタメンと自動採点の待機・処理・失敗状態を保存します。`migrations/0006_user_achievements.sql` は実績マスタとユーザーごとの取得実績を追加します。`migrations/0009_pregame_automation.sql` は試合単位のロースタースナップショット、試合前取得の進行状態、実スタメンの取得元を追加します。`migrations/0010_game_day_schedule_flow.sql` は当日公示、締切時点の固定、採点結果の非公開・公開状態を追加します。`migrations/0019_game_workflow_logs.sql` は通常試合の自動処理・管理操作ログと90日保持のcleanup状態を追加します。`migrations/0020_probable_starters.sql` は試合ごとの予告先発状態と次回確認時刻を追加します。新migrationは作成後にレビューし、対象D1へ適用してからWorkerを更新してください。
 
-試合前自動処理は `pregame-automation.js` で時刻を一元管理します。日本時間10時から当日公示を1日1系統で監視し、各試合の開始2時間前までは30分間隔、それ以降は締切まで10分間隔で同じ取得結果を当日の対象試合へ配布します。対象球団の公示を検知した場合だけロースターを更新し、試合開始1時間前にスナップショットを固定します。予告先発はAuth Worker Cronが対象試合の開始前だけ取得し、未発表時はD1の`next_check_at`から60分後以降に再確認します。発表済みデータは開始まで固定されます。ブラウザは `/api/probable-starter` の保存済みデータを表示し、管理者の再取得だけが `/api/admin/games/:gameId/probable-starter/refresh` を呼び出します。正式スタメンは同時刻から10分ごとに取得し、正常な9人を保存した時点で採点します。採点結果は試合開始時刻まで非公開とし、開始後のCronでランキング・実績・結果を公開します。Auth Workerは `wrangler.auth.production.jsonc` の `NPB_FETCH_WORKER` Service Bindingを通じて `starting9-npb-fetch` を呼び出します。公開URLを設定する必要はありません。
+試合前自動処理は `game-automation-v3.js` と `auth-worker.js` のV3 planner / executorで時刻と状態を一元管理します。Cronは日本時間の予定slotに従って公示ベースのロースター、予告先発、NPB識別、スタメン、採点、ランキング、公開を独立したjobとして進めます。ブラウザは保存済みAPIデータを表示するだけで、自動化jobを実行しません。Auth Workerは `wrangler.auth.production.jsonc` の `NPB_FETCH_WORKER` Service Bindingを通じて `starting9-npb-fetch` を呼び出します。公開URLを設定する必要はありません。
 
 管理者向けのテスト操作は、通常画面とは別のモードではなく、管理画面内の「開発用テスト」にまとめています。テストAPIは管理者セッションを必須とし、テスト予想は `is_test_prediction` により通常のランキング・実績集計から除外されます。
 
@@ -299,19 +312,18 @@ Closes #12
 
 大きいIssueは、画面・ロジック・READMEなどに分けて小さいIssueへ分割してください。
 
-## 今後やりたい機能
+## 今後の改善候補
 
-- ログイン
-- ランキング
+- 公式リリース前のdebug fixture撤去
+- 公開APIの診断レスポンス境界の整理
 - X共有画像
-- 予告先発取得
 - 公示Bot
 - 成績リンク / 成績表示
-- 管理者画面の分離
-- DB導入
 - 両チーム対応
 - チーム選択対応
 - 他球団対応
+
+リリース前に必ず行う作業は [Release checklist](docs/RELEASE_CHECKLIST.md) で管理します。
 
 ## 開発メモ
 

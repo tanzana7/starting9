@@ -367,6 +367,15 @@ export default {
       if (path === "/api/admin/v3/automation-logs" && request.method === "GET") {
         return await handleAdminV3AutomationLogs(request, env, cors);
       }
+      if (path === "/api/admin/v3/ranking-resets" && request.method === "GET") {
+        return await handleAdminV3RankingResetsGet(request, env, cors);
+      }
+      if (path === "/api/admin/v3/ranking-resets/preview" && request.method === "POST") {
+        return await handleAdminV3RankingResetPreview(request, env, cors);
+      }
+      if (path === "/api/admin/v3/ranking-resets/execute" && request.method === "POST") {
+        return await handleAdminV3RankingResetExecute(request, env, cors);
+      }
       const adminV3IdentityResolveRoute = parseAdminV3IdentityResolveRoute(path);
       if (adminV3IdentityResolveRoute && request.method === "POST") {
         return await handleAdminV3IdentityResolve(request, env, cors, adminV3IdentityResolveRoute.internalGameId);
@@ -4875,6 +4884,89 @@ async function handleAdminV3AutomationLogs(request, env, cors) {
   }
 }
 
+function rankingResetAdminError(cors, error, fallback = "ランキングリセット操作に失敗しました。") {
+  const code = String(error?.code || "RANKING_RESET_FAILED");
+  const status = Number(error?.httpStatus) || ({
+    RANKING_RESET_SCHEMA_UNAVAILABLE: 503,
+    RANKING_RESET_PERIOD_INVALID: 400,
+    RANKING_RESET_AT_INVALID: 400,
+    RANKING_RESET_REASON_REQUIRED: 400,
+    RANKING_RESET_CONFIRMATION_REQUIRED: 400,
+    RANKING_RESET_MARKER_EXISTS: 409
+  }[code] || 500);
+  return jsonResponse({ ok: false, code, error: String(error?.message || fallback) }, status, cors);
+}
+
+async function handleAdminV3RankingResetsGet(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  const url = new URL(request.url);
+  const periodType = String(url.searchParams.get("periodType") || "").trim().toLowerCase();
+  const periodKey = String(url.searchParams.get("periodKey") || "").trim();
+  try {
+    const result = await env.AUTH_DB.prepare(
+      `SELECT id, period_type, period_key, reset_at, reason, created_by, created_at, is_active
+         FROM ranking_reset_markers
+        WHERE (?1 = '' OR period_type = ?1) AND (?2 = '' OR period_key = ?2)
+        ORDER BY created_at DESC, id DESC
+        LIMIT 100`
+    ).bind(periodType, periodKey).all();
+    return jsonResponse({ ok: true, markers: result.results || [] }, 200, cors);
+  } catch (error) {
+    return rankingResetAdminError(cors, createV3Error("RANKING_RESET_SCHEMA_UNAVAILABLE", "ランキングリセットのschemaが利用できません。", { httpStatus: 503, cause: error }));
+  }
+}
+
+async function handleAdminV3RankingResetPreview(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  const input = normalizeRankingResetRequest(await readJson(request));
+  if (!input.ok) return rankingResetAdminError(cors, input);
+  try {
+    const activeMarker = await getActiveRankingResetMarker(env.AUTH_DB, input, { strict: true });
+    const preview = await getRankingResetPreview(env.AUTH_DB, input);
+    return jsonResponse({ ok: true, activeMarker, preview, canExecute: !activeMarker }, 200, cors);
+  } catch (error) {
+    return rankingResetAdminError(cors, error);
+  }
+}
+
+async function handleAdminV3RankingResetExecute(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  const body = await readJson(request);
+  const input = normalizeRankingResetRequest(body);
+  if (!input.ok) return rankingResetAdminError(cors, input);
+  if (String(body?.confirmation || "").trim() !== getRankingResetConfirmation(input.periodType, input.periodKey)) {
+    return rankingResetAdminError(cors, createV3Error("RANKING_RESET_CONFIRMATION_REQUIRED", `確認入力が一致しません。${getRankingResetConfirmation(input.periodType, input.periodKey)} と入力してください。`, { httpStatus: 400 }));
+  }
+  try {
+    const existing = await getActiveRankingResetMarker(env.AUTH_DB, input, { strict: true });
+    if (existing) {
+      return rankingResetAdminError(cors, createV3Error("RANKING_RESET_MARKER_EXISTS", "この期間には既に有効なリセットマーカーがあります。", { httpStatus: 409 }));
+    }
+    const createdAt = new Date().toISOString();
+    try {
+      await env.AUTH_DB.prepare(
+        `INSERT INTO ranking_reset_markers
+           (period_type, period_key, reset_at, reason, created_by, created_at, is_active)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)`
+      ).bind(input.periodType, input.periodKey, input.resetAt, input.reason, String(access.user.id), createdAt).run();
+    } catch (error) {
+      if (/unique|constraint/i.test(String(error?.message || error))) {
+        return rankingResetAdminError(cors, createV3Error("RANKING_RESET_MARKER_EXISTS", "この期間には既に有効なリセットマーカーがあります。", { httpStatus: 409 }));
+      }
+      throw error;
+    }
+    const marker = await getActiveRankingResetMarker(env.AUTH_DB, input, { strict: true });
+    const preview = await getRankingResetPreview(env.AUTH_DB, input);
+    console.info(`[RANKING_RESET] periodType=${input.periodType} periodKey=${input.periodKey} createdBy=${String(access.user.id)} markerId=${String(marker?.id || "")} gamesExcluded=${preview.gamesExcluded} predictionsExcluded=${preview.predictionsExcluded}`);
+    return jsonResponse({ ok: true, marker, preview }, 201, cors);
+  } catch (error) {
+    return rankingResetAdminError(cors, error);
+  }
+}
+
 async function getV3LineupRevisionRows(db, gameId, internalGameId) {
   const columns = await getTableColumnSet(db, "game_lineup_revisions");
   if (internalGameId && !columns.has("internal_game_id")) return [];
@@ -6340,6 +6432,8 @@ function parseYearlyRankingQuery(searchParams) {
   }
   return {
     ok: true,
+    periodType: "yearly",
+    periodKey: String(year),
     year,
     startAt: `${String(year).padStart(4, "0")}-01-01`,
     endAt: `${String(year + 1).padStart(4, "0")}-01-01`,
@@ -6374,12 +6468,58 @@ function parseMonthlyRankingQuery(searchParams) {
   const nextMonthDate = new Date(Date.UTC(year, month, 1));
   return {
     ok: true,
+    periodType: "monthly",
+    periodKey: `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}`,
     year,
     month,
     startAt: `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-01`,
     endAt: nextMonthDate.toISOString().slice(0, 10),
     ...pagination
   };
+}
+
+export function normalizeRankingResetRequest(input = {}) {
+  const periodType = String(input.periodType || input.period_type || "").trim().toLowerCase();
+  const periodKey = String(input.periodKey || input.period_key || "").trim();
+  const resetAt = String(input.resetAt || input.reset_at || "").trim();
+  const reason = String(input.reason || "").trim();
+  if (!["yearly", "monthly"].includes(periodType)) {
+    return { ok: false, code: "RANKING_RESET_PERIOD_INVALID", error: "periodTypeはyearlyまたはmonthlyで指定してください。" };
+  }
+  const periodPattern = periodType === "yearly" ? /^\d{4}$/ : /^(\d{4})-(0[1-9]|1[0-2])$/;
+  if (!periodPattern.test(periodKey)) {
+    return { ok: false, code: "RANKING_RESET_PERIOD_INVALID", error: periodType === "yearly" ? "periodKeyはYYYY形式で指定してください。" : "periodKeyはYYYY-MM形式で指定してください。" };
+  }
+  const resetDate = new Date(resetAt);
+  if (!resetAt || Number.isNaN(resetDate.getTime())) {
+    return { ok: false, code: "RANKING_RESET_AT_INVALID", error: "resetAtは有効な日時で指定してください。" };
+  }
+  if (!reason || reason.length > 240) {
+    return { ok: false, code: "RANKING_RESET_REASON_REQUIRED", error: "理由を1〜240文字で入力してください。" };
+  }
+  return {
+    ok: true,
+    periodType,
+    periodKey,
+    resetAt: resetDate.toISOString(),
+    resetBoundary: getRankingResetDateBoundary(resetDate),
+    reason
+  };
+}
+
+export function getRankingResetDateBoundary(value) {
+  const date = value instanceof Date ? value : new Date(String(value || ""));
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(date);
+}
+
+export function getRankingResetConfirmation(periodType, periodKey) {
+  return `RESET ${String(periodType || "").toUpperCase()} ${String(periodKey || "")}`;
 }
 
 function parseRankingPaginationQuery(searchParams) {
@@ -6466,6 +6606,85 @@ function createRankingCte() {
   )`;
 }
 
+function createRankingCteForReset(resetBoundary = "") {
+  const cte = createRankingCte();
+  if (!resetBoundary) return cte;
+  return cte.replace(
+    "       AND (?1 IS NULL OR game_date >= ?1)",
+    "       AND (?1 IS NULL OR game_date >= ?1)\n       AND game_date >= ?3"
+  );
+}
+
+async function getActiveRankingResetMarker(db, { periodType, periodKey, strict = false } = {}) {
+  try {
+    return await db.prepare(
+      `SELECT id, period_type, period_key, reset_at, reason, created_by, created_at, is_active
+         FROM ranking_reset_markers
+        WHERE period_type = ?1 AND period_key = ?2 AND is_active = 1
+        ORDER BY id DESC
+        LIMIT 1`
+    ).bind(periodType, periodKey).first();
+  } catch (error) {
+    if (!strict && /no such table|does not exist/i.test(String(error?.message || error))) return null;
+    throw createV3Error("RANKING_RESET_SCHEMA_UNAVAILABLE", "ランキングリセットのschemaが利用できません。", { httpStatus: 503, cause: error });
+  }
+}
+
+function rankingResetPeriodRange(periodType, periodKey) {
+  if (periodType === "yearly") {
+    const year = Number(periodKey);
+    return { startAt: `${periodKey}-01-01`, endAt: `${String(year + 1).padStart(4, "0")}-01-01` };
+  }
+  const [year, month] = periodKey.split("-").map(Number);
+  return {
+    startAt: `${periodKey}-01`,
+    endAt: new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10)
+  };
+}
+
+export async function getRankingResetPreview(db, { periodType, periodKey, resetAt, resetBoundary = "" } = {}) {
+  const range = rankingResetPeriodRange(periodType, periodKey);
+  const boundary = resetBoundary || getRankingResetDateBoundary(resetAt);
+  const [beforeGames, remainingGames, beforePredictions, remainingPredictions] = await Promise.all([
+    db.prepare(
+      `SELECT COUNT(*) AS count FROM ranking_games
+        WHERE game_date >= ?1 AND game_date < ?2 AND game_date < ?3
+          AND is_ranking_eligible = 1 AND game_status = 'scored' AND is_test_game = 0`
+    ).bind(range.startAt, range.endAt, boundary).first(),
+    db.prepare(
+      `SELECT COUNT(*) AS count FROM ranking_games
+        WHERE game_date >= ?1 AND game_date < ?2 AND game_date >= ?3
+          AND is_ranking_eligible = 1 AND game_status = 'scored' AND is_test_game = 0`
+    ).bind(range.startAt, range.endAt, boundary).first(),
+    db.prepare(
+      `SELECT COUNT(*) AS count FROM predictions
+        JOIN ranking_games ON ranking_games.game_id = predictions.game_id
+        WHERE ranking_games.game_date >= ?1 AND ranking_games.game_date < ?2 AND ranking_games.game_date < ?3
+          AND ranking_games.is_ranking_eligible = 1 AND ranking_games.game_status = 'scored'
+          AND ranking_games.is_test_game = 0 AND predictions.is_test_prediction = 0`
+    ).bind(range.startAt, range.endAt, boundary).first(),
+    db.prepare(
+      `SELECT COUNT(*) AS count FROM predictions
+        JOIN ranking_games ON ranking_games.game_id = predictions.game_id
+        WHERE ranking_games.game_date >= ?1 AND ranking_games.game_date < ?2 AND ranking_games.game_date >= ?3
+          AND ranking_games.is_ranking_eligible = 1 AND ranking_games.game_status = 'scored'
+          AND ranking_games.is_test_game = 0 AND predictions.is_test_prediction = 0`
+    ).bind(range.startAt, range.endAt, boundary).first()
+  ]);
+  return {
+    periodType,
+    periodKey,
+    resetAt: new Date(resetAt).toISOString(),
+    resetBoundary: boundary,
+    periodStart: range.startAt,
+    periodEnd: range.endAt,
+    gamesExcluded: Number(beforeGames?.count || 0),
+    gamesRemaining: Number(remainingGames?.count || 0),
+    predictionsExcluded: Number(beforePredictions?.count || 0),
+    predictionsRemaining: Number(remainingPredictions?.count || 0)
+  };
+}
+
 export async function getPerfectAchieversForDate(db, { date, limit, offset }) {
   const latestPredictions = `WITH latest_predictions AS (
     SELECT predictions.id, predictions.user_id, predictions.game_id, predictions.score, predictions.max_score,
@@ -6520,25 +6739,31 @@ export async function getPerfectAchieversForDate(db, { date, limit, offset }) {
   };
 }
 
-async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt = null, endAt = null }) {
-  const cte = createRankingCte();
+export async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt = null, endAt = null, periodType = null, periodKey = null }) {
+  const marker = periodType && periodKey ? await getActiveRankingResetMarker(db, { periodType, periodKey }) : null;
+  const resetBoundary = marker ? getRankingResetDateBoundary(marker.reset_at) : "";
+  const cte = createRankingCteForReset(resetBoundary);
+  const qualifiedParam = marker ? 4 : 3;
+  const limitParam = qualifiedParam + 1;
+  const offsetParam = qualifiedParam + 2;
+  const baseBindings = marker ? [startAt, endAt, resetBoundary] : [startAt, endAt];
   const [summaryRow, countRow, rowsResult] = await Promise.all([
     db.prepare(`${cte}
       SELECT COALESCE(MAX(eligible_games), 0) AS eligible_games,
              COALESCE(MAX(required_games), 0) AS required_games,
              COALESCE(SUM(CASE WHEN is_qualified = 1 THEN 1 ELSE 0 END), 0) AS qualified_users,
              COUNT(*) AS total_users
-        FROM combined`).bind(startAt, endAt).first(),
+        FROM combined`).bind(...baseBindings).first(),
     db.prepare(`${cte}
       SELECT COUNT(*) AS total_users
         FROM combined
-       WHERE (?3 = 0 OR is_qualified = 1)`).bind(startAt, endAt, qualifiedOnly ? 1 : 0).first(),
+       WHERE (?${qualifiedParam} = 0 OR is_qualified = 1)`).bind(...baseBindings, qualifiedOnly ? 1 : 0).first(),
     db.prepare(`${cte}
       SELECT user_id, username, games_played, eligible_games, required_games, is_qualified, games_needed,
              total_score, (total_score * 1.0 / games_played) AS average_score,
              perfect_count, best_score, last_scored_at, ranking_rank
         FROM combined
-       WHERE (?3 = 0 OR is_qualified = 1)
+       WHERE (?${qualifiedParam} = 0 OR is_qualified = 1)
        ORDER BY is_qualified DESC,
                 ranking_rank ASC,
                 average_score DESC,
@@ -6546,7 +6771,7 @@ async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt =
                 total_score DESC,
                 games_played DESC,
                 user_id ASC
-       LIMIT ?4 OFFSET ?5`).bind(startAt, endAt, qualifiedOnly ? 1 : 0, limit, offset).all()
+       LIMIT ?${limitParam} OFFSET ?${offsetParam}`).bind(...baseBindings, qualifiedOnly ? 1 : 0, limit, offset).all()
   ]);
 
   const internalRows = rowsResult.results || [];
@@ -6565,15 +6790,19 @@ async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt =
   };
 }
 
-async function getRankingEntryForUser(db, userId, { startAt = null, endAt = null } = {}) {
-  const cte = createRankingCte();
+async function getRankingEntryForUser(db, userId, { startAt = null, endAt = null, periodType = null, periodKey = null } = {}) {
+  const marker = periodType && periodKey ? await getActiveRankingResetMarker(db, { periodType, periodKey }) : null;
+  const resetBoundary = marker ? getRankingResetDateBoundary(marker.reset_at) : "";
+  const cte = createRankingCteForReset(resetBoundary);
+  const userParam = marker ? 4 : 3;
+  const bindings = marker ? [startAt, endAt, resetBoundary, userId] : [startAt, endAt, userId];
   const row = await db.prepare(`${cte}
     SELECT user_id, username, games_played, eligible_games, required_games, is_qualified, games_needed,
            total_score, (total_score * 1.0 / games_played) AS average_score,
            perfect_count, best_score, last_scored_at, ranking_rank
       FROM combined
-     WHERE user_id = ?3
-     LIMIT 1`).bind(startAt, endAt, userId).first();
+     WHERE user_id = ?${userParam}
+     LIMIT 1`).bind(...bindings).first();
   return row ? toPublicRankingRow(row) : null;
 }
 

@@ -288,6 +288,7 @@ const state = {
     isDetailLoading: false,
     games: [],
     selectedGameId: "",
+    result: null,
     message: "",
     detailError: ""
   },
@@ -6214,7 +6215,7 @@ function renderMyRanking(ranking, row, title) {
   }
   const qualification = row.isQualified
     ? `規定到達・現在 ${row.rank}位`
-    : `規定まであと${row.gamesNeeded}試合（規定未到達）`;
+    : `${formatRankingQualification(row)}（規定未到達）`;
   return `<section class="ranking-self">
     <h3>${escapeHtml(title)}</h3>
     <p><strong>平均${escapeHtml(formatRankingScore(row.averageScore))}点</strong> ${escapeHtml(qualification)}</p>
@@ -6227,7 +6228,7 @@ function createRankingCardHtml(row, { reference = false } = {}) {
   const isSelf = Boolean(user && ((row.username && row.username === user.username) || (row.userId && String(row.userId) === String(user.id))));
   const medal = { 1: "🥇", 2: "🥈", 3: "🥉" }[Number(row.rank)] || "";
   const rankLabel = reference ? "参考記録" : `${medal}${row.rank}位`;
-  const qualification = reference ? `規定まであと${row.gamesNeeded}試合` : "規定到達";
+  const qualification = formatRankingQualification(row, { reference });
   return `<li class="ranking-entry${reference ? " is-reference" : ""}${isSelf ? " is-self" : ""}">
     <p class="ranking-rank">${escapeHtml(rankLabel)}</p>
     <div class="ranking-entry-main">
@@ -6237,6 +6238,11 @@ function createRankingCardHtml(row, { reference = false } = {}) {
       <p>合計 ${escapeHtml(row.totalScore)}点・満点 ${escapeHtml(row.perfectCount)}回</p>
     </div>
   </li>`;
+}
+
+function formatRankingQualification(row, { reference = false } = {}) {
+  if (row?.isQualified && !reference) return "規定到達";
+  return `あと${Math.max(0, Number(row?.gamesNeeded || 0))}試合連続参加で規定到達`;
 }
 
 function createRankingAchievementBadgesHtml(row) {
@@ -6320,7 +6326,7 @@ function formatResultHistoryMatchup(game) {
 async function refreshResultHistory({ force = false } = {}) {
   const user = getPredictionAccountUser();
   if (!user) {
-    state.resultHistory = { isLoading: false, isDetailLoading: false, games: [], selectedGameId: "", message: "ログインすると過去の試合結果を確認できます。", detailError: "" };
+    state.resultHistory = { isLoading: false, isDetailLoading: false, games: [], selectedGameId: "", result: null, message: "ログインすると過去の試合結果を確認できます。", detailError: "" };
     renderResultHistory();
     return;
   }
@@ -6340,8 +6346,10 @@ async function refreshResultHistory({ force = false } = {}) {
     state.resultHistory.games = payload.games;
     state.resultHistory.message = payload.games.length ? "" : "採点済みの過去試合はありません。";
     const latestPublishedGame = payload.games.find((game) => game?.resultsPublished && getResultHistoryGameId(game));
-    if (!state.result && !state.resultHistory.selectedGameId && latestPublishedGame) {
+    if (!state.resultHistory.selectedGameId && latestPublishedGame) {
       await loadResultHistoryGame(getResultHistoryGameId(latestPublishedGame));
+    } else if (!latestPublishedGame && !state.resultHistory.selectedGameId) {
+      state.resultHistory.result = null;
     }
   } catch (error) {
     state.resultHistory.games = [];
@@ -6363,6 +6371,7 @@ async function handleResultHistoryClick(event) {
 
 async function loadResultHistoryGame(gameId) {
   state.resultHistory.selectedGameId = gameId;
+  state.resultHistory.result = null;
   state.resultHistory.isDetailLoading = true;
   state.resultHistory.detailError = "";
   state.resultHistory.message = "試合結果を読み込み中...";
@@ -6373,19 +6382,21 @@ async function loadResultHistoryGame(gameId) {
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
     if (payload.serviceUnavailable) {
-      state.result = {
+      state.resultHistory.result = {
         gameId,
         serviceUnavailable: true,
         serviceUnavailableMessage: payload.serviceUnavailableMessage || "この試合はサービス未稼働のため集計対象外です。",
         prediction: payload.prediction || null,
         savedAt: payload.updatedAt || payload.submittedAt || ""
       };
+      state.result = state.resultHistory.result;
       state.resultHistory.message = "";
       renderScoreResult();
       renderResultHistory();
       return;
     }
     if (!payload.resultsPublished) {
+      state.result = null;
       state.resultHistory.message = "この試合の結果はまだ公開されていません。";
       renderResultHistory();
       return;
@@ -6395,16 +6406,18 @@ async function loadResultHistoryGame(gameId) {
     }
     const prediction = remotePredictionToLocal({ lineup: payload.prediction.lineup }, payload.updatedAt || payload.submittedAt, gameId);
     const actual = remotePredictionToLocal({ lineup: payload.actualLineup }, payload.scoredAt || "", gameId);
-    state.result = {
+    state.resultHistory.result = {
       ...scoreLineup(prediction.lineup, actual.lineup),
       gameId: payload.internalGameId || payload.gameId || gameId,
       publishedAt: payload.publishedAt || "",
       totalScore: payload.totalScore ?? payload.score ?? null
     };
+    state.result = state.resultHistory.result;
     state.resultHistory.message = "";
     renderScoreResult();
   } catch (error) {
     state.result = null;
+    state.resultHistory.result = null;
     state.resultHistory.detailError = "結果を読み込めませんでした。時間をおいて再度お試しください。";
     state.resultHistory.message = "この試合の結果を取得できませんでした。";
     console.error("過去の試合結果の読み込みに失敗しました", error.message);
@@ -9229,9 +9242,10 @@ function renderActualLineup() {
 function renderScoreResult() {
   const container = document.getElementById("scoreResult");
   const shareButton = document.getElementById("shareResultButton");
-  renderScoreInsights(state.result?.comparison || null);
+  const displayedResult = state.resultHistory.result || state.result;
+  renderScoreInsights(displayedResult?.comparison || null);
 
-  if (!state.result) {
+  if (!displayedResult) {
     container.className = "empty-state";
     if (state.resultHistory.isLoading || state.resultHistory.isDetailLoading) {
       container.textContent = "結果を読み込み中です。";
@@ -9253,13 +9267,13 @@ function renderScoreResult() {
     return;
   }
 
-  if (state.result.serviceUnavailable) {
+  if (displayedResult.serviceUnavailable) {
     container.className = "empty-state service-unavailable-result";
-    container.innerHTML = `<p>${escapeHtml(state.result.serviceUnavailableMessage || "この試合はサービス未稼働のため集計対象外です。")}</p>`;
-    if (state.result.prediction?.lineup) {
+    container.innerHTML = `<p>${escapeHtml(displayedResult.serviceUnavailableMessage || "この試合はサービス未稼働のため集計対象外です。")}</p>`;
+    if (displayedResult.prediction?.lineup) {
       container.appendChild(createPredictionSummary({
-        lineup: state.result.prediction.lineup,
-        savedAt: state.result.savedAt || ""
+        lineup: displayedResult.prediction.lineup,
+        savedAt: displayedResult.savedAt || ""
       }));
     }
     shareButton.classList.add("hidden");
@@ -9268,20 +9282,20 @@ function renderScoreResult() {
 
   container.className = "summary-box";
   container.innerHTML = "";
-  const selectedGame = state.resultHistory.games.find((game) => getResultHistoryGameId(game) === state.result.gameId);
+  const selectedGame = state.resultHistory.games.find((game) => getResultHistoryGameId(game) === displayedResult.gameId);
   const resultHeading = document.createElement("p");
   resultHeading.className = "result-selected-game";
   resultHeading.textContent = selectedGame
     ? `表示中：${selectedGame.displayLabel || `${selectedGame.gameDate || selectedGame.date || ""} ${formatResultHistoryMatchup(selectedGame)}`}`
     : "表示中の試合結果";
   container.appendChild(resultHeading);
-  if (state.result.publishedAt) {
+  if (displayedResult.publishedAt) {
     const publishedAt = document.createElement("p");
     publishedAt.className = "result-selected-game";
-    publishedAt.textContent = `公開：${formatPublicJstDateTime(state.result.publishedAt)}`;
+    publishedAt.textContent = `公開：${formatPublicJstDateTime(displayedResult.publishedAt)}`;
     container.appendChild(publishedAt);
   }
-  container.appendChild(createResultView(createResultViewModel(state.result)));
+  container.appendChild(createResultView(createResultViewModel(displayedResult)));
   shareButton.classList.remove("hidden");
 }
 

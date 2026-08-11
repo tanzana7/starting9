@@ -180,6 +180,15 @@ button:disabled { cursor: wait; opacity: .65; }
 .automation-log-row { display: grid; grid-template-columns: 150px 145px 150px 100px 160px minmax(0, 1fr); gap: 5px 9px; font-size: 11px; }
 .automation-log-row time, .automation-log-row small { color: #526477; }
 .automation-log-row pre { grid-column: 1 / -1; max-height: 260px; margin: 3px 0 0; overflow: auto; white-space: pre-wrap; font: 11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; user-select: text; }
+.ranking-reset-panel { display: grid; gap: 12px; }
+.ranking-reset-warning { padding: 10px 12px; border-left: 3px solid #bd7b21; background: #fff8e8; color: #604514; }
+.ranking-reset-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
+.ranking-reset-form label { display: grid; gap: 5px; color: #526477; font-size: 12px; font-weight: 700; }
+.ranking-reset-form input, .ranking-reset-form select { min-width: 0; border: 1px solid #b9c8d8; border-radius: 5px; padding: 7px 8px; color: #172033; background: #fff; }
+.ranking-reset-wide { grid-column: 1 / -1; }
+.ranking-reset-preview-result { padding: 10px 12px; background: #f8fafc; border: 1px solid #dbe5ee; border-radius: 5px; }
+.ranking-reset-markers { display: grid; gap: 8px; }
+.ranking-reset-marker { display: flex; flex-wrap: wrap; gap: 7px 14px; padding: 8px 10px; background: #f8fafc; border: 1px solid #e5ebf1; border-radius: 5px; overflow-wrap: anywhere; font-size: 12px; }
 .mobile-nav-toggle { display: none; }
 @media (max-width: 1040px) {
   .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -216,6 +225,8 @@ button:disabled { cursor: wait; opacity: .65; }
   .job-detail-grid { grid-template-columns: 1fr; }
   .job-detail-field-full { grid-column: auto; }
   .job-detail-inline { padding: 10px; }
+  .ranking-reset-form { grid-template-columns: 1fr; }
+  .ranking-reset-wide { grid-column: auto; }
   .v3-lineup-row { grid-template-columns: 36px repeat(2, minmax(0, 1fr)); }
   .v3-lineup-row input:nth-of-type(n + 3) { grid-column: span 1; }
   .game-heading { align-items: flex-start; }

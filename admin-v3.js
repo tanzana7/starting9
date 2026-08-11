@@ -21,13 +21,14 @@ const V3_JOB_TYPES = Object.freeze([
   V3_JOB_TYPE.PROBABLE_STARTER_FETCH,
   V3_JOB_TYPE.ROSTER_FETCH
 ]);
-const V3_VIEWS = ["dashboard", "games", "workflow", "lineup", "scoring", "schedule", "diagnostics"];
+const V3_VIEWS = ["dashboard", "games", "workflow", "lineup", "scoring", "ranking-reset", "schedule", "diagnostics"];
 const V3_VIEW_LABELS = {
   dashboard: "ダッシュボード",
   games: "試合一覧",
   workflow: "試合進行",
   lineup: "スタメン",
   scoring: "採点・ランキング",
+  "ranking-reset": "ランキングリセット",
   schedule: "日程管理",
   diagnostics: "診断・監査"
 };
@@ -55,7 +56,19 @@ const v3State = {
   jobDetailsLoading: new Set(),
   jobDetailsCopyStatus: new Map(),
   automationLogs: null,
-  automationLogFilters: { runId: "", internalGameId: "", jobType: "", status: "", reasonCode: "", failureCode: "" }
+  automationLogFilters: { runId: "", internalGameId: "", jobType: "", status: "", reasonCode: "", failureCode: "" },
+  rankingReset: {
+    periodType: "yearly",
+    periodKey: String(new Date().getFullYear()),
+    resetAtLocal: "",
+    reason: "",
+    confirmation: "",
+    preview: null,
+    activeMarker: null,
+    markers: [],
+    loading: false,
+    loaded: false
+  }
 };
 
 function v3ApiBase() {
@@ -1084,6 +1097,26 @@ function renderScoringView(game) {
   return `${renderSelectedGameHeader(game, "採点・ランキング", "V3が進めた採点・ランキング・公開の状態を確認します。")}<section class="v3-panel"><div class="detail-grid"><div><dt>対象予想数</dt><dd>${escapeV3(scoring.eligiblePredictionCount ?? "-")}</dd></div><div><dt>採点済み / 失敗</dt><dd>${escapeV3(`${scoring.scoredPredictionCount ?? "-"} / ${scoring.failedPredictionCount ?? "-"}`)}</dd></div><div><dt>active scoring revision</dt><dd>${escapeV3(details.ranking?.activeScoringRevision?.id || "-")}</dd></div><div><dt>ranking</dt><dd>${escapeV3(details.ranking?.ranking?.gameStatus || "-")}</dd></div><div><dt>publication</dt><dd>${escapeV3(publication.status || "pending")}</dd></div><div><dt>publishedAt</dt><dd>${escapeV3(formatV3Jst(publication.publishedAt))}</dd></div><div><dt>公開lineup revision</dt><dd>${escapeV3(publication.publishedLineupRevision?.revision_id || publication.publishedLineupRevision?.id || "-")}</dd></div><div><dt>公開scoring revision</dt><dd>${escapeV3(publication.publishedScoringRevision?.id || "-")}</dd></div></div>${noOpNotice}${rankingNoOpNotice}<h3>処理job</h3>${renderJobRows(game, ["score", "ranking_rebuild", "publish"])}</section>`;
 }
 
+function rankingResetLocalToIso(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const withSeconds = raw.length === 16 ? `${raw}:00` : raw;
+  const date = new Date(`${withSeconds}+09:00`);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+}
+
+function renderRankingResetView() {
+  const reset = v3State.rankingReset;
+  const preview = reset.preview;
+  const markerMarkup = reset.markers.length
+    ? reset.markers.map((marker) => `<div class="ranking-reset-marker"><strong>${escapeV3(marker.period_type)} ${escapeV3(marker.period_key)}</strong><span>基準 ${escapeV3(formatV3Jst(marker.reset_at))}</span><span>理由: ${escapeV3(marker.reason)}</span><span>作成 ${escapeV3(formatV3Jst(marker.created_at))}</span></div>`).join("")
+    : `<p class="muted">有効なリセットマーカーはありません。</p>`;
+  const previewMarkup = preview
+    ? `<div class="ranking-reset-preview-result"><strong>プレビュー結果</strong><div class="detail-grid"><div><dt>対象外となる試合</dt><dd>${escapeV3(preview.gamesExcluded)}</dd></div><div><dt>残る対象試合</dt><dd>${escapeV3(preview.gamesRemaining)}</dd></div><div><dt>対象外となる予想</dt><dd>${escapeV3(preview.predictionsExcluded)}</dd></div><div><dt>残る予想</dt><dd>${escapeV3(preview.predictionsRemaining)}</dd></div><div><dt>集計境界</dt><dd>${escapeV3(preview.resetBoundary)} JST</dd></div></div><p class="muted">この操作はデータを削除・更新せず、ランキング集計の境界だけを変更します。</p></div>`
+    : `<p class="muted">プレビューを実行すると、既存データを変更せず影響範囲を確認できます。</p>`;
+  return `<div class="view-heading"><div><h2>ランキングリセット</h2><p>正式リリース前の年間・月間ランキングを、履歴を保持したまま集計境界で切り替えます。</p></div></div><section class="v3-panel ranking-reset-panel"><div class="ranking-reset-warning">実行後は同じ期間に新しいマーカーを重ねて作成できません。予想・採点結果・公開結果は削除されません。</div><div class="ranking-reset-form"><label>期間<select data-v3-ranking-reset-field="periodType"><option value="yearly" ${reset.periodType === "yearly" ? "selected" : ""}>年間</option><option value="monthly" ${reset.periodType === "monthly" ? "selected" : ""}>月間</option></select></label><label>期間キー<input type="text" value="${escapeV3(reset.periodKey)}" placeholder="YYYY または YYYY-MM" data-v3-ranking-reset-field="periodKey"></label><label>リセット基準日時（JST）<input type="datetime-local" value="${escapeV3(reset.resetAtLocal)}" data-v3-ranking-reset-field="resetAtLocal"></label><label class="ranking-reset-wide">理由<input type="text" maxlength="240" value="${escapeV3(reset.reason)}" placeholder="正式リリース前のテストデータを除外するため" data-v3-ranking-reset-field="reason"></label><label class="ranking-reset-wide">実行確認（プレビュー後）<input type="text" value="${escapeV3(reset.confirmation)}" placeholder="RESET YEARLY 2026" data-v3-ranking-reset-field="confirmation"></label></div><div class="v3-operation-actions"><button type="button" data-v3-ranking-reset-preview ${reset.loading ? "disabled" : ""}>影響範囲をプレビュー</button><button type="button" data-v3-ranking-reset-execute ${reset.loading || !preview ? "disabled" : ""}>リセットマーカーを作成</button></div><p class="v3-operation-result" data-v3-ranking-reset-status>${escapeV3(reset.error || "")}</p>${previewMarkup}</section><section class="v3-panel"><h3>有効なリセットマーカー</h3><div class="ranking-reset-markers">${markerMarkup}</div></section>`;
+}
+
 function renderScheduleView(games) {
   const game = selectedV3Game(games);
   const details = selectedV3Details();
@@ -1146,6 +1179,7 @@ function renderCurrentV3View() {
     workflow: () => renderWorkflowView(filteredGame || game),
     lineup: () => renderLineupView(filteredGame || game),
     scoring: () => renderScoringView(filteredGame || game),
+    "ranking-reset": () => renderRankingResetView(),
     schedule: () => renderScheduleView(games),
     diagnostics: () => renderDiagnosticsView(filteredGame || game)
   }[v3State.view]();
@@ -1164,11 +1198,81 @@ function renderCurrentV3View() {
   if (panel) panel.textContent = `schema: ${payload.schema?.ready ? "ready" : "unavailable"} / feature flag: ${payload.enabled ? "enabled" : "disabled"} / 最終更新: ${formatV3Jst(v3State.lastUpdatedAt)}`;
 }
 
+async function loadRankingResetMarkers(force = false) {
+  const reset = v3State.rankingReset;
+  if (reset.loading || (reset.loaded && !force)) return;
+  reset.loading = true;
+  reset.error = "";
+  renderCurrentV3View();
+  try {
+    const result = await v3Fetch("/api/admin/v3/ranking-resets");
+    reset.markers = Array.isArray(result.markers) ? result.markers : [];
+    reset.loaded = true;
+  } catch (error) {
+    reset.error = `${error.code || "RANKING_RESET_READ_FAILED"}: ${error.message}`;
+  } finally {
+    reset.loading = false;
+    renderCurrentV3View();
+  }
+}
+
+function rankingResetRequestBody(includeConfirmation = false) {
+  const reset = v3State.rankingReset;
+  const body = {
+    periodType: reset.periodType,
+    periodKey: reset.periodKey,
+    resetAt: rankingResetLocalToIso(reset.resetAtLocal),
+    reason: reset.reason
+  };
+  if (includeConfirmation) body.confirmation = reset.confirmation;
+  return body;
+}
+
+async function previewRankingReset() {
+  const reset = v3State.rankingReset;
+  if (reset.loading) return;
+  reset.loading = true;
+  reset.error = "";
+  renderCurrentV3View();
+  try {
+    const result = await v3Fetch("/api/admin/v3/ranking-resets/preview", { method: "POST", body: JSON.stringify(rankingResetRequestBody()) });
+    reset.preview = result.preview || null;
+    reset.activeMarker = result.activeMarker || null;
+  } catch (error) {
+    reset.preview = null;
+    reset.error = `${error.code || "RANKING_RESET_PREVIEW_FAILED"}: ${error.message}`;
+  } finally {
+    reset.loading = false;
+    renderCurrentV3View();
+  }
+}
+
+async function executeRankingReset() {
+  const reset = v3State.rankingReset;
+  if (reset.loading || !reset.preview) return;
+  reset.loading = true;
+  reset.error = "";
+  renderCurrentV3View();
+  try {
+    const result = await v3Fetch("/api/admin/v3/ranking-resets/execute", { method: "POST", body: JSON.stringify(rankingResetRequestBody(true)) });
+    reset.preview = result.preview || reset.preview;
+    reset.activeMarker = result.marker || null;
+    reset.markers = [result.marker, ...reset.markers.filter((marker) => marker.id !== result.marker?.id)].filter(Boolean);
+    reset.confirmation = "";
+  } catch (error) {
+    reset.error = `${error.code || "RANKING_RESET_EXECUTE_FAILED"}: ${error.message}`;
+  } finally {
+    reset.loading = false;
+    renderCurrentV3View();
+  }
+}
+
 function renderV3(payload) {
   const games = normalizeV3List(payload?.games, "games");
   v3State.payload = { ...(payload || {}), games: games.items, gamesShapeUnexpected: games.unexpected };
   v3State.lastUpdatedAt = new Date();
   renderCurrentV3View();
+  if (v3State.view === "ranking-reset") loadRankingResetMarkers();
 }
 
 async function loadV3OperationDetails() {
@@ -1211,13 +1315,28 @@ function chooseV3View(view) {
   v3State.view = view;
   updateV3Hash(view, v3State.selectedGameId);
   renderCurrentV3View();
+  if (view === "ranking-reset") loadRankingResetMarkers();
   document.getElementById("v3Navigation")?.classList.remove("open");
   document.getElementById("mobileNavToggle")?.setAttribute("aria-expanded", "false");
 }
 
+document.addEventListener("input", (event) => {
+  const field = event.target.closest("[data-v3-ranking-reset-field]");
+  if (!field) return;
+  v3State.rankingReset[field.dataset.v3RankingResetField] = field.value;
+});
+
 document.addEventListener("click", async (event) => {
   const navButton = event.target.closest("[data-v3-view]");
   if (navButton) { chooseV3View(navButton.dataset.v3View); return; }
+  if (event.target.closest("[data-v3-ranking-reset-preview]")) {
+    await previewRankingReset();
+    return;
+  }
+  if (event.target.closest("[data-v3-ranking-reset-execute]")) {
+    await executeRankingReset();
+    return;
+  }
   const automationLogRefresh = event.target.closest("[data-v3-automation-log-refresh]");
   if (automationLogRefresh) {
     document.querySelectorAll("[data-v3-automation-log-filter]").forEach((field) => {

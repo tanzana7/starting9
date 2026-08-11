@@ -29,6 +29,19 @@ Admin V3
 
 The Pages site serves the static public and admin assets. The Auth Worker owns the application API and the V3 Cron trigger. The NPB Fetch Worker isolates upstream NPB page retrieval and parsing from application state.
 
+## Backend Responsibility Boundaries
+
+`auth-worker.js` is the composition root: it owns request authentication, route dispatch, response headers, and orchestration of the existing V3 workflow. Domain rules and D1 query groups are kept in focused modules so a route can be read as authorization -> domain/repository call -> response.
+
+- `backend/domain/scoring.js` contains the 100-point lineup scoring rules, breakdown, perfect-score preview, and the release-only debug fixture input. It has no Worker, D1, job, or request dependency.
+- `backend/domain/ranking.js` contains participation-threshold math, public row shaping, the future `hideIneligibleRankings` switch, and reset request validation/confirmation text.
+- `backend/domain/public-results.js` contains public team labels, matchup labels, and the five-result history limit. It does not resolve games or read private state.
+- `backend/admin/preview.js` defines the admin preview response contract (`previewOnly` and write flags); it is deliberately not an authorization or execution module.
+- `backend/repositories/ranking-repository.js` contains ranking CTEs and ranking/reset-marker SELECT/INSERT operations. Read-only preview queries and the explicit reset-marker write are separate named functions.
+- Admin authentication and route-specific confirmation remain in the Worker boundary. The repository never authorizes a caller, and domain modules never perform a write.
+
+The current Worker keeps the full route table in one file because it is the deployment entrypoint and because moving dispatch wholesale would change a large, high-risk surface. The extracted modules are therefore intentionally incremental: they reduce domain/query duplication without changing route paths, bindings, schema, or V3 job execution.
+
 ## Canonical Identity
 
 `games.internal_game_id` is the canonical identifier for current application behavior. Public prediction, roster, lineup, scoring, ranking, publication, and V3 job paths use this UUID. Legacy IDs may appear in historical compatibility or audit data, but they are not valid substitutes for current mutation paths.
@@ -78,5 +91,7 @@ The ranking reset marker is a non-destructive boundary for future aggregation. I
 ## Security Boundaries
 
 Admin endpoints call `requireAdminUser` before returning or mutating operational data. Preview endpoints, including the perfect-score preview, are read-only simulations and do not create predictions, rankings, publications, users, or V3 jobs. The release fixture is intentionally isolated to the admin preview path and is not a source for normal scoring.
+
+`RELEASE_DEBUG_PERFECT_SCORE_FIXTURE` uses fixture-local player IDs and must be removed or disabled before formal release. It is never loaded by public results, normal predictions, ranking aggregation, publication, or V3 job planning.
 
 Public responses should contain user-facing labels and result data only. Internal UUIDs, reason codes, cookies, tokens, and raw diagnostic payloads must not be rendered on the normal public page.

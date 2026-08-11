@@ -6,6 +6,7 @@ const test = require("node:test");
 
 const root = path.join(__dirname, "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+const rankingRepository = fs.readFileSync(path.join(root, "backend", "repositories", "ranking-repository.js"), "utf8");
 const migration = fs.readFileSync(path.join(root, "migrations", "0008_monthly_ranking.sql"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
@@ -45,8 +46,8 @@ function insertPrediction(db, { id, userId, gameId, score, isTest = 0, status = 
 }
 
 function getRankingCte() {
-  const match = /function createRankingCte\(\) \{[\s\S]*?return `([\s\S]*?)`;\r?\n\}/.exec(worker);
-  assert.ok(match, "Workerの共通ランキング集計CTEを取得できること");
+  const match = /function createRankingCte\(\) \{[\s\S]*?return `([\s\S]*?)`;\r?\n\}/.exec(rankingRepository);
+  assert.ok(match, "ランキングrepositoryの共通集計CTEを取得できること");
   return match[1];
 }
 

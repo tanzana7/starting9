@@ -8,6 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const admin = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+const adminPreview = fs.readFileSync(path.join(root, "backend", "admin", "preview.js"), "utf8");
 const page = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 const { buildPerfectScorePreview } = await import(pathToFileURL(path.join(root, "auth-worker.js")).href);
 
@@ -49,7 +50,7 @@ test("満点preview APIはadmin認証、正式スタメン、読み取り専用�
   assert.match(worker, /\/api\/admin\/v3\/perfect-score-test\/preview/);
   assert.match(worker, /requireAdminUser\(request, env, cors\)/);
   assert.match(worker, /PERFECT_SCORE_LINEUP_REQUIRED/);
-  assert.match(worker, /writes: \{ database: false, predictions: false, ranking: false, publication: false \}/);
+  assert.match(adminPreview, /database: false[\s\S]*predictions: false[\s\S]*ranking: false[\s\S]*publication: false/);
   assert.match(worker, /officialLineup: mode === "fixture" \? officialLineup : actualResult\.lineup/);
   assert.match(worker, /virtualPerfectPrediction: preview\.prediction/);
   const previewHandler = worker.slice(worker.indexOf("async function handleAdminV3PerfectScorePreview"), worker.indexOf("async function recordV3AdminAudit"));

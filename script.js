@@ -6082,10 +6082,6 @@ function formatPerfectAchieverOpponent(opponent) {
   return labels[value] || value || "対戦相手";
 }
 
-async function initializeYearlyRanking() {
-  await refreshYearlyRanking({ force: true });
-}
-
 async function refreshYearlyRanking({ force = false } = {}) {
   const ranking = state.yearlyRanking;
   if (ranking.isLoading && !force) return;

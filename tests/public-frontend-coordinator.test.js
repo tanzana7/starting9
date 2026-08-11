@@ -87,5 +87,5 @@ test("予想保存・リセット・アカウント同期は最新結果表示�
 });
 
 test("公開画面のキャッシュバスターはCoordinator版へ更新される", () => {
-  assert.match(html, /script\.js\?v=public-frontend-coordinator-1/);
+  assert.match(html, /script\.js\?v=codebase-polish-for-portfolio-1/);
 });

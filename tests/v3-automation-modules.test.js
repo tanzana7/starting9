@@ -96,6 +96,10 @@ test("V3 Cron diagnostics classify every known job type and preserve unclassifie
     v3.normalizeV3DiagnosticJobType({ job: { job_type: "plan" } }),
     "legacy_or_unclassified"
   );
+  assert.equal(
+    v3.normalizeV3DiagnosticJobType({ job: { job_type: "cron_run" } }),
+    "cron_run"
+  );
 
   const summary = v3.buildV3CronSummary({
     startedAt: "2026-08-12T01:00:00.000Z",

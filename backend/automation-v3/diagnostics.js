@@ -1,13 +1,55 @@
+import { V3_JOB_TYPES } from "./constants.js";
+
+// A missing planner shape must remain visible as a classification issue. It
+// must never be presented as a made-up V3 job type.
+export const V3_DIAGNOSTIC_UNCLASSIFIED_JOB_TYPE = "legacy_or_unclassified";
+const V3_DIAGNOSTIC_JOB_TYPES = new Set([
+  ...V3_JOB_TYPES,
+  "schedule_sync",
+  "expired_scoring_recovery",
+  "score_recovery",
+  "ranking_recovery",
+  "service_unavailable",
+  "terminal_recovery"
+]);
+
+export function normalizeV3DiagnosticJobType(entry, fallbackJobType = null) {
+  const candidates = [
+    entry?.plan?.jobType,
+    entry?.plan?.job_type,
+    entry?.job?.job_type,
+    entry?.job?.jobType,
+    entry?.jobType,
+    entry?.job_type,
+    entry?.plannerDecision?.jobType,
+    entry?.diagnostic?.jobType,
+    entry?.diagnosticJobType,
+    fallbackJobType
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  const knownJobType = candidates.find((candidate) => V3_DIAGNOSTIC_JOB_TYPES.has(candidate));
+  return knownJobType
+    || V3_DIAGNOSTIC_UNCLASSIFIED_JOB_TYPE;
+}
+
+function tagPlannedEntries(planResult, fallbackJobType) {
+  return (planResult?.planned || []).map((entry) => ({
+    ...entry,
+    diagnosticJobType: fallbackJobType
+  }));
+}
+
 // Pure Cron summary builder used by the Worker and operational diagnostics.
 export function buildV3CronSummary({ runId, correlationId, startedAt, completedAt = new Date(), result = {}, scheduleSync = null } = {}) {
   const plannedEntries = [
-    ...(result?.probablePlan?.planned || []),
-    ...(result?.rosterPlan?.planned || []),
-    ...(result?.identityPlan?.planned || []),
-    ...(result?.mainPlan?.planned || [])
+    ...tagPlannedEntries(result?.probablePlan, "probable_starter_fetch"),
+    ...tagPlannedEntries(result?.rosterPlan, "roster_fetch"),
+    ...tagPlannedEntries(result?.identityPlan, "npb_identity_resolve"),
+    ...tagPlannedEntries(result?.mainPlan, null)
   ];
   const countByJobType = (entries, predicate = () => true) => entries.reduce((counts, entry) => {
-    const jobType = String(entry?.plan?.jobType || entry?.job?.job_type || "unknown");
+    const jobType = normalizeV3DiagnosticJobType(entry);
     if (predicate(entry)) counts[jobType] = (counts[jobType] || 0) + 1;
     return counts;
   }, {});

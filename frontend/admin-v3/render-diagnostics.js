@@ -24,6 +24,26 @@
   }) {
     const statusLabels = Object.freeze({ ok: "OK", waiting: "WAITING", attention: "ATTENTION" });
 
+    const normalizeDiagnosticJobType = (value) => {
+      const normalized = String(value || "").trim();
+      return normalized === "unknown" || normalized === "plan" || !normalized
+        ? "legacy_or_unclassified"
+        : normalized;
+    };
+
+    const normalizeDiagnosticCounts = (counts) => Object.entries(counts || {}).reduce((normalized, [jobType, count]) => {
+      const key = normalizeDiagnosticJobType(jobType);
+      normalized[key] = (normalized[key] || 0) + Number(count || 0);
+      return normalized;
+    }, {});
+
+    const normalizeCronSummaryDetails = (details) => ({
+      ...details,
+      plannedByJobType: normalizeDiagnosticCounts(details?.plannedByJobType),
+      createdByJobType: normalizeDiagnosticCounts(details?.createdByJobType),
+      failedByJobType: normalizeDiagnosticCounts(details?.failedByJobType)
+    });
+
     function statusClass(status) {
       return status === "attention" ? "attention" : status === "ok" ? "ok" : "waiting";
     }
@@ -193,7 +213,7 @@
       if (!logs) return `<section class="v3-panel automation-logs-panel"><div class="view-heading"><div><h3>V3 Cron監査</h3><p>runId、planner、executor、状態遷移を次回Cronから確認できます。</p></div></div><p class="muted">監査ログを読み込んでいます。</p></section>`;
       if (logs.error) return `<section class="v3-panel automation-logs-panel"><div class="view-heading"><div><h3>V3 Cron監査</h3><p>監査APIの失敗は管理者セッションを終了させません。</p></div></div><p class="attention-text">${escapeHtml(logs.error)}</p></section>`;
       const summary = logs.latestCronSummary;
-      const summaryDetails = summary?.details || {};
+      const summaryDetails = normalizeCronSummaryDetails(summary?.details || {});
       const counts = summaryDetails.counts || {};
       const gameRuns = listItems(logs.gameRuns, "gameRuns");
       const jobTimeline = listItems(logs.jobTimeline, "jobTimeline");

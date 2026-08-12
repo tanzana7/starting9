@@ -1,3 +1,5 @@
+import { normalizeV3DiagnosticJobType } from "./diagnostics.js";
+
 // Pure V3 audit record builders. Persistence remains at the Worker boundary.
 export function buildV3CronJobAuditInsert({
   auditColumns = new Set(),
@@ -31,6 +33,11 @@ export function buildV3CronJobAuditInsert({
   const failureBaseMessage = failure?.message || execution?.failureMessage || job?.failure_message
     || (noOpReason ? `${noOpMessage}: ${noOpReason}` : null);
   const resolvedInternalGameId = job?.internal_game_id || internalGameId || null;
+  const auditJobType = normalizeV3DiagnosticJobType({
+    job,
+    jobType: execution?.jobType,
+    plannerDecision: execution?.plannerDecision
+  });
   const structuredDetails = {
     schemaVersion: 1,
     runId,
@@ -39,7 +46,7 @@ export function buildV3CronJobAuditInsert({
     stage: execution?.stage || execution?.executorStage || resolvedEventType,
     internalGameId: resolvedInternalGameId,
     jobId: job?.id || null,
-    jobType: job?.job_type || "plan",
+    jobType: auditJobType,
     scheduledSlotAt: job?.scheduled_slot_at || null,
     status: statusAfter,
     stateBefore: execution?.stateBefore || stateBefore || null,
@@ -64,7 +71,7 @@ export function buildV3CronJobAuditInsert({
     ...(auditColumns.has("event_type") ? [resolvedEventType] : []),
     resolvedInternalGameId,
     job?.id || null,
-    job?.job_type || "plan",
+    auditJobType,
     job?.scheduled_slot_at || null,
     job?.claim_token || claimToken || null,
     execution?.stateBefore || stateBefore || null,

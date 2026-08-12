@@ -77,6 +77,53 @@ test("V3 Cron diagnostics aggregate planner, claim, executor, and schedule-sync 
   assert.equal(summary.scheduleSync.futureGamesAfter, 3);
 });
 
+test("V3 Cron diagnostics classify every known job type and preserve unclassified history", () => {
+  for (const jobType of [
+    ...v3.V3_JOB_TYPES,
+    "schedule_sync",
+    "expired_scoring_recovery",
+    "service_unavailable",
+    "terminal_recovery"
+  ]) {
+    assert.equal(v3.normalizeV3DiagnosticJobType({ plan: { jobType } }), jobType);
+  }
+
+  assert.equal(
+    v3.normalizeV3DiagnosticJobType({ plan: { jobType: "unknown" } }),
+    "legacy_or_unclassified"
+  );
+  assert.equal(
+    v3.normalizeV3DiagnosticJobType({ job: { job_type: "plan" } }),
+    "legacy_or_unclassified"
+  );
+
+  const summary = v3.buildV3CronSummary({
+    startedAt: "2026-08-12T01:00:00.000Z",
+    result: {
+      probablePlan: { planned: [] },
+      rosterPlan: { planned: [{ plan: null, created: false }] },
+      identityPlan: { planned: [] },
+      mainPlan: { planned: [{ plan: { jobType: "score" }, created: false }] }
+    }
+  });
+
+  assert.deepEqual(summary.plannedByJobType, { roster_fetch: 1, score: 1 });
+  assert.equal(summary.plannedByJobType.unknown, undefined);
+});
+
+test("V3 audit fallback uses an explicit unclassified label without inventing a job type", () => {
+  const record = v3.buildV3CronJobAuditInsert({
+    auditColumns: new Set(["event_type"]),
+    execution: { plannerDecision: { jobType: "roster_fetch" } }
+  });
+  assert.equal(record.structuredDetails.jobType, "roster_fetch");
+  assert.equal(record.values[3], "roster_fetch");
+
+  const legacyRecord = v3.buildV3CronJobAuditInsert({ auditColumns: new Set(["event_type"]) });
+  assert.equal(legacyRecord.structuredDetails.jobType, "legacy_or_unclassified");
+  assert.equal(legacyRecord.values[3], "legacy_or_unclassified");
+});
+
 test("V3 automation modules have no V1/V2 runtime import", () => {
   const sources = fs.readdirSync(path.join(root, "backend/automation-v3"))
     .filter((file) => file.endsWith(".js"))

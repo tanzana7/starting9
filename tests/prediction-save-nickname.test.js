@@ -6,6 +6,7 @@ const test = require("node:test");
 const root = path.join(__dirname, "..");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const predictionForm = fs.readFileSync(path.join(root, "frontend", "public", "prediction-form.js"), "utf8");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 
 function sourceForFunction(source, name) {
@@ -25,11 +26,11 @@ test("通常画面にはニックネーム入力と必須エラーを残さな�
 });
 
 test("予想保存はニックネームなしで9人の入力検証と端末保存を行う", () => {
-  const submit = sourceForFunction(script, "handlePredictionSubmit");
-  assert.match(submit, /const validationError = validateLineup\(lineup, "予想"\)/);
-  assert.match(submit, /saveToStorage\(STORAGE_KEYS\.prediction, state\.prediction\)/);
-  assert.match(submit, /if \(!getPredictionAccountUser\(\)\) \{/);
-  assert.match(submit, /await savePredictionToAccount\(state\.prediction\)/);
+  const submit = sourceForFunction(predictionForm, "handleSubmit");
+  assert.match(submit, /const validationError = deps\.validateLineup\(lineup, "予想"\)/);
+  assert.match(submit, /deps\.storage\.save\(deps\.storageKeys\.prediction, deps\.state\.prediction\)/);
+  assert.match(submit, /if \(!deps\.getPredictionAccountUser\(\)\) \{/);
+  assert.match(submit, /await deps\.savePredictionToAccount\(deps\.state\.prediction\)/);
   assert.doesNotMatch(submit, /nickname/);
 });
 

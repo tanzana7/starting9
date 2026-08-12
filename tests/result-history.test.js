@@ -9,6 +9,7 @@ const authWorkerPath = path.join(root, "auth-worker.js");
 const authWorkerUrl = pathToFileURL(authWorkerPath).href;
 const worker = fs.readFileSync(authWorkerPath, "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const predictionForm = fs.readFileSync(path.join(root, "frontend", "public", "prediction-form.js"), "utf8");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 
 test("試合開始前は対象を維持し、開始時刻到達後は次の試合を選択する", async () => {
@@ -67,5 +68,5 @@ test("通常画面はcanonical public gameのinternalGameIdを予想保存と締
   assert.match(script, /if \(!state\.isAdminMode\) return null/);
   assert.match(script, /state\.predictionTargetGameId = state\.probableStarter\.nextGame\?\.internalGameId/);
   assert.match(script, /state\.predictionTargetGame\?\.gameId === gameId \|\| state\.predictionTargetGame\?\.internalGameId === gameId \? state\.predictionTargetGame : null/);
-  assert.match(script, /state\.prediction = \{\s*gameId: getCurrentGameId\(\)/);
+  assert.match(predictionForm, /deps\.state\.prediction = \{\s*gameId: deps\.getCurrentGameId\(\)/);
 });

@@ -13,6 +13,8 @@ import {
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const publicRoster = fs.readFileSync(path.join(root, "frontend", "public", "roster.js"), "utf8");
+const publicCoordinator = fs.readFileSync(path.join(root, "frontend", "public", "app-coordinator.js"), "utf8");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const internalGameId = "348e8d56-9565-474e-96e9-33b1e5ef6ae0";
 const gameDate = "2026-08-09";
@@ -159,10 +161,10 @@ test("公開試合カタログ確定後にbaseline roster取得を再実行し�
   const target = script.slice(targetStart, targetEnd);
 
   assert.doesNotMatch(catalog, /void initializeRosterCandidateSync\(\);/);
-  assert.match(script, /const rosterPromise = initializeRosterCandidateSync\(\);/);
+  assert.match(publicCoordinator, /const rosterPromise = ops\.initializeRosterCandidateSync\(\);/);
   assert.match(target, /void initializeRosterCandidateSync\(\);/);
   assert.match(script, /let publicRosterSyncRequestId = 0;/);
-  assert.match(script, /requestId !== publicRosterSyncRequestId/);
+  assert.match(publicRoster, /requestId !== deps\.getRosterRequestId\(\)/);
 });
 
 test("snapshotの登録選手は候補に入り、抹消選手は候補から外れる既存フィルタを維持する", async () => {
@@ -177,8 +179,8 @@ test("snapshotの登録選手は候補に入り、抹消選手は候補から外
   });
   assert.equal(filter.isPlayerInCurrentRoster({ name: "登録選手", uniformNumber: "12", isActiveRoster: false }), true);
   assert.equal(filter.isPlayerInCurrentRoster({ name: "抹消選手", uniformNumber: "53", isActiveRoster: true }), false);
-  assert.match(script, /isPlayerInCurrentRoster\(player\) && player\?\.isBatterCandidate === true/);
-  assert.match(script, /!isPlayerInCurrentRoster\(player\) && player\?\.isBatterCandidate === true/);
+  assert.match(publicRoster, /deps\.isPlayerInCurrentRoster\(player\) && player\?\.isBatterCandidate === true/);
+  assert.match(publicRoster, /!deps\.isPlayerInCurrentRoster\(player\) && player\?\.isBatterCandidate === true/);
 });
 
 test("freshなcanonical rosterがない場合は静的isActiveRosterを候補へ戻さない", () => {
@@ -207,7 +209,7 @@ test("freshなcanonical rosterがない場合は静的isActiveRosterを候補へ
   ];
   vm.runInContext(`${names.map(getScriptFunctionSource).join("\n")}; this.result = isPlayerInCurrentRoster({ name: "古い選手", uniformNumber: "1", isActiveRoster: true });`, context);
   assert.equal(context.result, false);
-  assert.match(script, /選手一覧を更新中です/);
+  assert.match(publicRoster, /選手一覧を更新中です/);
 });
 
 test("baselineは利用期限前だけ通常画面の候補として扱う", () => {
@@ -218,8 +220,8 @@ test("baselineは利用期限前だけ通常画面の候補として扱う", () 
     "2099-01-01T00:00:00.000Z"
   );
   assert.equal(filter.isPlayerInCurrentRoster({ name: "基準選手", uniformNumber: "12", isActiveRoster: false }), true);
-  assert.match(script, /status === "baseline"/);
-  assert.match(script, /usableUntil/);
+  assert.match(publicRoster, /gameSnapshot\.status === "baseline"/);
+  assert.match(publicRoster, /usableUntil/);
 });
 
 test("fresh取得が遅延してもbaselineは予想締切まで利用できる", () => {

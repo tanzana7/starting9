@@ -48,7 +48,22 @@ The current Worker keeps the full route table in one file because it is the depl
 
 ## Public Frontend Flow
 
-`script.js` uses `PublicAppCoordinator` as the single browser initialization entrypoint:
+`script.js` is the compatibility entrypoint for the public page. It loads the browser modules in `frontend/public/` before starting `PublicAppCoordinator`; no build step is required. The modules are classic, namespaced scripts so the existing static Pages deployment and legacy global event handlers keep working.
+
+| Module | Responsibility |
+| --- | --- |
+| `state.js` | Public state shape and synchronization boundary |
+| `request-guard.js` | Request sequence tokens and `AbortController` ownership |
+| `storage.js` | Safe localStorage read/write/remove handling |
+| `api-client.js` | Public API request and JSON response boundary |
+| `app-coordinator.js` | Ordered browser initialization and auth-dependent refreshes |
+| `render-results.js` / `render-ranking.js` | Result preservation/history limit and ranking rendering/copy |
+| `roster.js` | Current-game roster synchronization and candidate-list presentation |
+| `prediction-form.js` | Public prediction save/reset interactions |
+
+The compatibility entrypoint keeps only thin delegates for these public contracts while legacy admin-only UI remains isolated from the public startup path.
+
+`PublicAppCoordinator` remains the single browser initialization entrypoint:
 
 1. Bind the DOM and restore local presentation state.
 2. Fetch the canonical public game catalog.

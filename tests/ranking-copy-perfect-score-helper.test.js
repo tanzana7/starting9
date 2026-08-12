@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const publicRanking = fs.readFileSync(path.join(root, "frontend", "public", "render-ranking.js"), "utf8");
 const admin = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const adminPreview = fs.readFileSync(path.join(root, "backend", "admin", "preview.js"), "utf8");
@@ -30,11 +31,11 @@ function officialLineup() {
 
 test("ランキング見出しは自然な文言で、未到達者表示は内部切替で制御できる", () => {
   assert.doesNotMatch(script, /規定到達ランキング/);
-  assert.match(script, /title\.textContent = "ランキング"/);
+  assert.match(publicRanking, /title\.textContent = "ランキング"/);
   assert.match(script, /RANKING_DISPLAY_OPTIONS = Object\.freeze\(\{ hideIneligibleRankings: false \}\)/);
-  assert.match(script, /hideIneligibleRankings \? normalizedRows\.filter\(\(row\) => row\?\.isQualified\) : normalizedRows/);
-  assert.match(script, /正式リリース時は、規定到達者のみ表示します。現在はテスト期間のため、規定未到達者も参考表示しています/);
-  assert.match(script, /規定未到達/);
+  assert.match(publicRanking, /hideIneligibleRankings \? normalizedRows\.filter\(\(row\) => row\?\.isQualified\) : normalizedRows/);
+  assert.match(publicRanking, /正式リリース時は、規定到達者のみ表示します。現在はテスト期間のため、規定未到達者も参考表示しています/);
+  assert.match(publicRanking, /規定未到達/);
 });
 
 test("満点previewは正式スタメンと既存採点コアから100点を算出する", () => {

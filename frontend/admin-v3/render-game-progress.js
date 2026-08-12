@@ -25,6 +25,7 @@
     renderTodayOps,
     renderPerfectScorePreview,
     listItems,
+    filterGames,
     normalizeRevisionList,
     selectedDetails,
     selectedGame,

@@ -71,7 +71,6 @@
       ops.initializeGameSchedule();
       ops.refreshPredictionDeadlineState();
       ops.renderAll();
-      void ops.refreshGameDayNoticeStatus({ force: true });
     }
 
     handleAuthStateChanged() {

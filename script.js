@@ -8544,16 +8544,24 @@ function renderGameInfoDisplay() {
   display.classList.remove("hidden");
 }
 
-function getGameDayNoticeTargetGameId() {
+function getGameDayNoticeTarget() {
   if (!state.isAdminMode) {
-    return state.predictionTargetGame?.internalGameId || state.probableStarter.nextGame?.internalGameId || "";
+    return {
+      internalGameId: state.predictionTargetGame?.internalGameId || state.probableStarter.nextGame?.internalGameId || "",
+      gameId: ""
+    };
   }
-  return state.nextScheduleId || findNextGameSchedule()?.gameId || state.probableStarter.nextGame?.gameId || "";
+  return {
+    internalGameId: "",
+    gameId: state.nextScheduleId || findNextGameSchedule()?.gameId || state.probableStarter.nextGame?.gameId || ""
+  };
 }
 
-function buildGameDayNoticeApiUrl(gameId) {
+function buildGameDayNoticeApiUrl({ internalGameId = "", gameId = "" } = {}) {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
-  return baseUrl && gameId ? `${baseUrl}/api/game-day-status?gameId=${encodeURIComponent(gameId)}` : "";
+  if (!baseUrl) return "";
+  if (internalGameId) return `${baseUrl}/api/game-day-status?internalGameId=${encodeURIComponent(internalGameId)}`;
+  return gameId ? `${baseUrl}/api/game-day-status?gameId=${encodeURIComponent(gameId)}` : "";
 }
 
 function renderGameDayNoticeStatus() {
@@ -8573,9 +8581,11 @@ function renderGameDayNoticeStatus() {
 }
 
 async function refreshGameDayNoticeStatus({ force = false } = {}) {
-  const gameId = getGameDayNoticeTargetGameId();
-  const url = buildGameDayNoticeApiUrl(gameId);
+  const target = getGameDayNoticeTarget();
+  const gameId = target.internalGameId || target.gameId;
+  const url = buildGameDayNoticeApiUrl(target);
   if (!url) return;
+  if (state.gameDayNotice.isLoading && state.gameDayNotice.gameId === gameId) return;
   if (state.gameDayNotice.isLoading && !force) return;
   state.gameDayNotice.isLoading = true;
   state.gameDayNotice.gameId = gameId;
@@ -8584,12 +8594,21 @@ async function refreshGameDayNoticeStatus({ force = false } = {}) {
   try {
     const response = await fetch(url, { credentials: "include", cache: "no-store" });
     const payload = await response.json().catch(() => null);
-    if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+    if (!response.ok || !payload?.ok) {
+      const error = new Error(payload?.error || `HTTP ${response.status}`);
+      error.httpStatus = response.status;
+      throw error;
+    }
     state.gameDayNotice.record = payload;
   } catch (error) {
-    console.error("本日の公示状態取得に失敗しました", error.message);
+    const httpStatus = Number(error?.httpStatus || 0);
+    if (httpStatus >= 500 || !httpStatus) {
+      console.error("本日の公示状態取得に失敗しました", error.message);
+    } else {
+      console.warn("本日の公示状態を確認できませんでした", error.message);
+    }
     state.gameDayNotice.record = null;
-    state.gameDayNotice.message = "公示情報を確認できていません。候補選手が最新でない可能性があります。";
+    state.gameDayNotice.message = "";
   } finally {
     state.gameDayNotice.isLoading = false;
     renderGameDayNoticeStatus();

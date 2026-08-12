@@ -69,11 +69,12 @@ test("通常画面はlocalStorageに残る旧管理試合カードを描画せ�
   assert.match(displayRenderer, /display\.classList\.add\("hidden"\)/);
   assert.match(displayRenderer, /display\.textContent = ""/);
 
-  const noticeStart = script.indexOf("function getGameDayNoticeTargetGameId");
+  const noticeStart = script.indexOf("function getGameDayNoticeTarget");
   const noticeEnd = script.indexOf("function buildGameDayNoticeApiUrl", noticeStart);
   const targetResolver = script.slice(noticeStart, noticeEnd);
   assert.match(targetResolver, /state\.predictionTargetGame\?\.internalGameId \|\| state\.probableStarter\.nextGame\?\.internalGameId/);
-  assert.match(index, /script\.js\?v=public-frontend-modules-1/);
+  assert.match(targetResolver, /internalGameId:/);
+  assert.match(index, /script\.js\?v=public-game-day-status-contract-1/);
 });
 
 test("公開ゲームAPIはFightersのcanonical games行と表示用チーム名を返す", () => {

@@ -7564,11 +7564,20 @@ async function isWorkflowJobSchemaReady(db) {
 }
 
 async function handleGetGameDayStatus(request, env, cors) {
-  const gameId = getValidGameId(new URL(request.url).searchParams.get("gameId"));
-  const identity = gameId ? getGameIdentityForPregame(gameId) : null;
+  const identifier = parseGameDayStatusRequestIdentifier(new URL(request.url).searchParams);
+  const identity = identifier ? await resolvePregameIdentity(env.AUTH_DB, identifier.value) : null;
   if (!identity) return jsonResponse({ ok: false, error: "対象試合を指定してください。" }, 400, cors);
   const status = await getGameDayStatus(env.AUTH_DB, identity);
-  return jsonResponse({ ok: true, gameId, ...status }, 200, cors);
+  return jsonResponse({ ok: true, gameId: identity.gameId, internalGameId: identity.internalGameId || null, ...status }, 200, cors);
+}
+
+export function parseGameDayStatusRequestIdentifier(params) {
+  const internalGameId = String(params?.get("internalGameId") || "").trim();
+  if (INTERNAL_GAME_ID_PATTERN.test(internalGameId)) {
+    return { type: "internalGameId", value: internalGameId };
+  }
+  const gameId = getValidGameId(params?.get("gameId"));
+  return gameId ? { type: "gameId", value: gameId } : null;
 }
 
 async function handleGetGameDayRoster(request, env, cors) {

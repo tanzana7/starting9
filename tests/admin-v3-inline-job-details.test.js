@@ -12,7 +12,8 @@ const page = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 test("job詳細は対象行直下の複数開閉可能なアコーディオンとして描画される", () => {
   assert.match(client, /job-entry/);
   assert.match(client, /renderInlineJobDetail\(game, job\)/);
-  assert.match(client, /jobDetailsOpen: new Set/);
+  const state = fs.readFileSync(path.join(root, "frontend", "admin-v3", "state.js"), "utf8");
+  assert.match(state, /jobDetailsOpen: new Set/);
   assert.match(client, /aria-expanded=\"\$\{open \? \"true\" : \"false\"\}\"/);
   assert.match(client, /aria-controls=\"\$\{escapeV3\(jobDetailDomId\(key\)\)\}\"/);
   assert.match(client, /v3State\.jobDetailsOpen\.delete\(key\)/);
@@ -47,6 +48,6 @@ test("job詳細はPC二列・モバイル一列で長文を折り返し、キャ
   assert.match(css, /\.job-detail-value[^}]*overflow-wrap: anywhere/);
   assert.match(css, /\.job-detail-pre[^}]*white-space: pre-wrap/);
   assert.match(css, /@media \(max-width: 720px\)[\s\S]*\.job-detail-grid \{ grid-template-columns: 1fr; \}/);
-  assert.match(page, /admin-v3\.css\?v=admin-perfect-score-fixture-preview-1/);
-  assert.match(page, /admin-v3\.js\?v=admin-perfect-score-fixture-preview-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-and-repo-polish-1/);
+  assert.match(page, /admin-v3\.js\?v=admin-and-repo-polish-1/);
 });

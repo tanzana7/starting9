@@ -29,6 +29,27 @@ Admin V3
 
 The Pages site serves the static public and admin assets. The Auth Worker owns the application API and the V3 Cron trigger. The NPB Fetch Worker isolates upstream NPB page retrieval and parsing from application state.
 
+## Admin V3 Frontend Flow
+
+Admin V3 remains a build-free static page. Its entrypoint order is explicit:
+
+```text
+admin-v3.html
+  -> frontend/admin-v3/state.js
+  -> frontend/admin-v3/api-client.js
+  -> frontend/admin-v3/app-coordinator.js
+  -> admin-v3.js
+```
+
+| Module | Responsibility | Does not own |
+| --- | --- | --- |
+| `frontend/admin-v3/state.js` | Initial state for selection, job details, logs, reset preview, and perfect-score preview | API calls or DOM writes |
+| `frontend/admin-v3/api-client.js` | Credentialed GET/POST requests and named admin endpoints | authorization decisions or rendering |
+| `frontend/admin-v3/app-coordinator.js` | Event delegation, toolbar bindings, and ordered startup | V3 workflow behavior or database writes |
+| `admin-v3.js` | Screen-specific timeline, Today Ops, job, roster, ranking, and diagnostics rendering | public UI and V3 runtime execution |
+
+These are classic namespaced browser modules so Pages can serve them without a bundler while the existing entrypoint remains compatible with focused tests and incremental extraction.
+
 ## Backend Responsibility Boundaries
 
 `auth-worker.js` is the composition root: it owns request authentication, route dispatch, response headers, and orchestration of the existing V3 workflow. Domain rules and D1 query groups are kept in focused modules so a route can be read as authorization -> domain/repository call -> response.

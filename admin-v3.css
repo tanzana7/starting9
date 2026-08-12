@@ -1,3 +1,4 @@
+/* Foundations and shared controls */
 :root {
   color-scheme: light;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -12,6 +13,7 @@ a { color: #245a91; }
 button { border: 1px solid #b9c8d8; background: #fff; color: #1c3c5a; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
 button:hover:not(:disabled), select:hover { background: #edf4fa; }
 button:disabled { cursor: wait; opacity: .65; }
+/* Application shell and navigation */
 .admin-v3-shell { min-height: 100vh; padding: 24px clamp(14px, 3vw, 36px) 48px; }
 .admin-v3-header { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; max-width: 1400px; margin: 0 auto 18px; padding-bottom: 18px; border-bottom: 1px solid #dce3eb; }
 .admin-v3-brand h1 { margin: 0; font-size: 28px; }
@@ -34,6 +36,7 @@ button:disabled { cursor: wait; opacity: .65; }
 .view-heading { display: flex; justify-content: space-between; align-items: end; gap: 14px; margin: 0 0 12px; }
 .view-heading h2, .view-heading h3 { margin: 0; font-size: 20px; }
 .view-heading p { margin: 3px 0 0; color: #5f6e80; font-size: 13px; }
+/* Dashboard and game-progress surfaces */
 .v3-panel, .game-card, .summary-card, .today-card { background: #fff; border: 1px solid #dce3eb; border-radius: 8px; box-shadow: 0 2px 8px rgba(31, 54, 77, .06); }
 .v3-panel { padding: 15px; }
 .summary-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 9px; margin-bottom: 14px; }

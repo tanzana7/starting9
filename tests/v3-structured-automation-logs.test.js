@@ -41,9 +41,9 @@ test("admin-v3は構造化監査の読み取りAPIと6種類のフィルタを�
 
 test("admin-v3の監査表示は既存V3の読み取り専用導線で、キャッシュバスターを更新する", () => {
   assert.match(admin, /data-v3-automation-log-refresh/);
-  assert.match(admin, /payload\.automationLogs = await v3Fetch/);
+  assert.match(admin, /payload\.automationLogs = await v3Api\.getAutomationLogs/);
   assert.match(css, /\.automation-logs-panel/);
-  assert.match(html, /admin-perfect-score-fixture-preview-1/);
+  assert.match(html, /admin-and-repo-polish-1/);
   const scheduled = worker.slice(worker.indexOf("async scheduled(event, env, ctx)"), worker.indexOf("async function runScheduledGameAutomationV3"));
   assert.doesNotMatch(scheduled, /runGameWorkflows|runDueCompletionWorkflowJobs|INSERT INTO game_workflow_logs/);
 });

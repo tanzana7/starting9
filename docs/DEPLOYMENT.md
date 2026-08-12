@@ -20,6 +20,8 @@ git diff --check
 npx wrangler deploy --dry-run --config wrangler.auth.production.jsonc
 ```
 
+Repository CI (`.github/workflows/ci.yml`) is intentionally limited to dependency installation, Node tests, syntax checks, `git diff --check`, and conflict-marker checks. It has no Cloudflare credentials and never deploys, writes D1, applies migrations, executes `scripts/`, or sends Discord notifications.
+
 Check for conflict markers and confirm that only intended files are changed. Do not execute scripts under `scripts/` as part of a normal release check.
 
 ## Worker Deployment

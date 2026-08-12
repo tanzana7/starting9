@@ -11,6 +11,7 @@ Starting9 は、プロ野球のスタメンを試合前に予想し、公式発�
 - [Deployment](docs/DEPLOYMENT.md)
 - [Testing](docs/TESTING.md)
 - [Admin V3 features](docs/ADMIN_FEATURES.md)
+- [V3 automation modules](docs/V3_AUTOMATION_MODULES.md)
 - [Release checklist](docs/RELEASE_CHECKLIST.md)
 
 ## 概要
@@ -60,7 +61,11 @@ starting9/
 ├── cloudflare-worker.js    # NPB公式ページ取得用Worker
 ├── auth-worker.js          # 認証・公開API・V3 Cronを持つAuth Worker
 ├── game-automation-v3.js   # V3 planner / state / executorの共通ロジック
-├── admin-v3.html/js/css     # 認証済み管理画面V3
+├── frontend/public/         # 公開画面のstate/API/render/coordinator modules
+├── frontend/admin-v3/       # 管理画面V3のstate/API/coordinator modules
+├── admin-v3.html/js/css     # 管理画面V3のHTML、互換entry、CSS
+├── backend/domain/          # scoring/ranking/public-resultsの純粋なドメイン規則
+├── backend/automation-v3/   # V3 constants/domain/planner/repository/executor modules
 ├── migrations/              # D1 schema history
 ├── wrangler.auth.example.jsonc # 認証Worker設定例
 └── README.md               # このファイル
@@ -231,6 +236,24 @@ https://<worker-url>/?url=https://npb.jp/scores/2026/0707/m-f-12/&debug=1
 `auth.js` の `AUTH_API_BASE_URL` は空文字なら同一オリジンの `/api/auth/*` を使います。認証Workerを別ホストで直接呼ぶ場合は、そのHTTPS URLを設定し、Worker側の `AUTH_ALLOWED_ORIGINS` にフロントのオリジンを登録してください。ただし、別サイト間のCookieはブラウザのサードパーティCookie制限を受けるため、本番は同一カスタムオリジン配下へのルーティングを推奨します。
 
 ## 開発ルール
+
+### ローカルCI相当チェック
+
+依存を増やさずNode標準テストを使います。`npm ci` はlockfileを再現し、`npm run check` は全テスト、JavaScript構文、`git diff --check`を順に確認します。
+
+```powershell
+npm ci --ignore-scripts
+npm test
+npm run check
+```
+
+GitHub Actionsの `CI` workflowも同じテスト・構文・競合マーカー確認を行います。CIにはWorker/Pages deploy、D1操作、migration適用、`scripts/`実行、Discord通知を含めません。
+
+### Admin V3の構成
+
+`admin-v3.html` はbuild stepなしで、`frontend/admin-v3/state.js`、`api-client.js`、`app-coordinator.js`、最後に互換entryの`admin-v3.js`を読み込みます。API clientは管理者セッション付き通信だけを担当し、stateは画面状態、coordinatorはイベントと初期化順序を担当します。画面固有のtimeline・job・Today Ops・diagnostics描画はentry側に残し、段階的に分離できる境界を保ちます。
+
+ランキングresetのpreviewは読み取り専用で、executeだけが明示的なconfirmation textとreasonを要求します。perfect-score previewとrelease debug fixtureは管理者限定・previewOnlyで、通常採点、ランキング、公開、V3 job、通常画面へ流れません。
 
 チーム開発では、以下の流れを基本にします。
 

@@ -186,6 +186,8 @@ const AUTO_APPROVE_SETTING_KEY = "auto_approve_enabled";
 const LEGACY_ADMIN_OPERATION_RETIRED_CODE = "LEGACY_ADMIN_OPERATION_RETIRED";
 const LEGACY_ADMIN_OPERATION_RETIRED_MESSAGE = "この操作はGame Automation V3へ移行されました。";
 const LEGACY_AUTOMATION_RETIRED_CODE = "LEGACY_AUTOMATION_RETIRED";
+const PERFECT_ACHIEVER_MUTATION_RETIRED_CODE = "PERFECT_ACHIEVER_MUTATION_RETIRED";
+const PERFECT_ACHIEVER_MUTATION_RETIRED_MESSAGE = "満点者はサーバー側の正式採点結果から自動集計されます。";
 
 // V1/V2 automation and update paths are retired. Production automation uses
 // V3 jobs only; old tables, jobs, logs, and audit rows remain historical
@@ -16248,53 +16250,17 @@ async function handleGetPerfectAchievers(request, env, cors) {
 }
 
 async function handlePostPerfectAchiever(request, env, cors) {
-  const session = await getSessionUser(request, env);
-  if (!session) {
+  const authenticated = await requireAuthenticatedUser(request, env, cors);
+  if (!authenticated.ok) {
     return jsonResponse({ ok: false, error: "満点達成者として登録するにはログインしてください。" }, 401, cors);
   }
-
-  const input = await readJson(request);
-  const gameId = getValidGameId(input?.gameId);
-  const score = input?.score;
-  const maxScore = input?.maxScore;
-
-  if (!gameId) {
-    return jsonResponse({ ok: false, error: "対象試合のgameIdを指定してください。" }, 400, cors);
-  }
-  if (!await isGameResultsPublished(env.AUTH_DB, gameId, new Date())) {
-    return jsonResponse({ ok: false, error: "満点達成者の公開開始時刻前です。" }, 409, cors);
-  }
-  if (!Number.isInteger(score) || !Number.isInteger(maxScore) || maxScore <= 0 || score !== maxScore) {
-    return jsonResponse({ ok: false, error: "満点を達成した場合のみ登録できます。" }, 400, cors);
-  }
-
-  const now = new Date().toISOString();
-  const id = randomToken(16);
-  let insertResult;
-  try {
-    insertResult = await env.AUTH_DB.prepare(
-    `INSERT INTO perfect_achievers
-       (id, user_id, game_id, score, max_score, achieved_at, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
-      `
-    ).bind(id, session.id, gameId, score, maxScore, now).run();
-  } catch (error) {
-    if (String(error?.message || "").toLowerCase().includes("unique")) {
-      return jsonResponse({ ok: false, error: "この試合では既に満点達成者として登録されています。" }, 409, cors);
-    }
-    throw error;
-  }
-
-  if (Number(insertResult?.meta?.changes || 0) !== 1) {
-    return jsonResponse({ ok: false, error: "満点達成者の登録に失敗しました。" }, 409, cors);
-
-  }
-
-  const snapshot = await getPerfectAchieverSnapshot(env.AUTH_DB, gameId, session.id);
   return jsonResponse({
-    ...createPerfectAchieverResponse(gameId, snapshot),
-    registered: true
-  }, 201, cors);
+    ok: false,
+    code: PERFECT_ACHIEVER_MUTATION_RETIRED_CODE,
+    errorCode: PERFECT_ACHIEVER_MUTATION_RETIRED_CODE,
+    error: PERFECT_ACHIEVER_MUTATION_RETIRED_MESSAGE,
+    replacement: "/api/rankings/perfect"
+  }, 410, cors);
 }
 
 async function getPerfectAchieverSnapshot(db, gameId, currentUserId) {

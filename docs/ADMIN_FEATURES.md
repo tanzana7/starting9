@@ -29,3 +29,5 @@ The perfect-score preview is admin-only, preview-only, and read-only. The releas
 ## Retired Surface
 
 The legacy admin screen is retained only as a read-only compatibility notice. V1/V2 mutation routes return the explicit retired contract and are not alternate operational paths.
+
+The historical `POST /api/perfect-achievers` self-registration route is also retired. Public perfect-score rankings are derived from canonical, published server-side scoring records through `GET /api/rankings/perfect`; clients cannot submit authoritative scores, user identities, or achievement rows.

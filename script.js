@@ -303,10 +303,12 @@ const state = {
     message: "",
     year: getJapanYearMonth().year
   },
-  todayPerfectAchievers: {
+  dailyBestNine: {
     isLoading: false,
     requestId: 0,
-    achievers: [],
+    gameId: "",
+    status: "idle",
+    rows: [],
     totalCount: 0,
     message: "",
   },
@@ -472,7 +474,7 @@ const publicResultsRenderer = publicFrontend.createPublicResultsRenderer({
   state,
   storage: publicStorage,
   storageKeys: STORAGE_KEYS,
-  renderScoreInsights,
+    renderScoreInsights,
   escapeHtml,
   createPredictionSummary,
   getResultHistoryGameId,
@@ -552,14 +554,14 @@ const publicAppCoordinator = new publicFrontend.PublicAppCoordinator({
     initializeRosterCandidateSync,
     initializeAuthDependentFeatures,
     initializePredictionRemoteSync,
-    initializeTodayPerfectAchievers,
+    initializeDailyBestNine,
     refreshPredictionDeadlineState,
     refreshGameDayNoticeStatus,
     setScheduleLoaderMessage,
     initializeGameSchedule,
     renderPredictionCta,
-    renderTodayPerfectAchievers,
-    fetchTodayPerfectAchievers,
+    renderDailyBestNine,
+    fetchDailyBestNine,
     syncPredictionFromAccount,
     fetchUserAchievements,
     refreshYearlyRanking,
@@ -4249,7 +4251,7 @@ async function confirmManualRescore() {
     if (!payload) return;
     state.manualRescore.preview = null;
     state.manualRescore.message = `${payload.changedScoreCount}件の点数を対象試合だけ再採点しました。`;
-    await Promise.all([refreshManualRescorePanel({ force: true }), refreshAdminScoringSummary({ force: true }), refreshYearlyRanking({ force: true }), fetchTodayPerfectAchievers({ force: true })]);
+    await Promise.all([refreshManualRescorePanel({ force: true }), refreshAdminScoringSummary({ force: true }), refreshYearlyRanking({ force: true }), fetchDailyBestNine({ force: true })]);
   } catch (error) {
     state.manualRescore.message = error?.message || "再採点を確定できませんでした。";
     renderManualRescorePanel();
@@ -4411,7 +4413,7 @@ async function refreshAutoScoringStatus({ force = false } = {}) {
       state.autoScoring.message = "";
       if (previousStatus !== "scored" && state.autoScoring.record?.status === "scored") {
         void refreshYearlyRanking({ force: true });
-        void fetchTodayPerfectAchievers({ force: true });
+        void fetchDailyBestNine({ force: true });
         if (state.rankingView === "monthly") {
           void refreshMonthlyRanking({ force: true });
         }
@@ -4453,7 +4455,7 @@ async function updateAutoScoring(action, confirmationMessage = "") {
     await refreshAdminScoringSummary({ force: true });
     if (isRunNow) {
       await refreshYearlyRanking({ force: true });
-      await fetchTodayPerfectAchievers({ force: true });
+      await fetchDailyBestNine({ force: true });
       if (state.rankingView === "monthly") {
         await refreshMonthlyRanking({ force: true });
       }
@@ -5676,7 +5678,7 @@ async function runServerScoring() {
     resetAdminScoringPreview();
     await refreshAdminScoringSummary({ force: true });
     await refreshYearlyRanking({ force: true });
-    await fetchTodayPerfectAchievers({ force: true });
+    await fetchDailyBestNine({ force: true });
     if (state.rankingView === "monthly") {
       await refreshMonthlyRanking({ force: true });
     }
@@ -5887,106 +5889,92 @@ function buildMyMonthlyRankingApiUrl({ year, month } = {}) {
   return url.href;
 }
 
-function buildTodayPerfectAchieversApiUrl() {
+function buildDailyBestNineApiUrl(gameId = "") {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
-  if (!baseUrl) return "";
-  const url = new URL(`${baseUrl}/api/rankings/perfect`, window.location.href);
-  url.searchParams.set("date", getJapanDateString());
+  const reference = String(gameId || "").trim();
+  if (!baseUrl || !reference) return "";
+  const url = new URL(`${baseUrl}/api/results/daily-best-nine`, window.location.href);
+  if (state.resultHistory.result?.internalGameId) {
+    url.searchParams.set("internalGameId", reference);
+  } else {
+    url.searchParams.set("gameId", reference);
+  }
   return url.href;
 }
 
-async function initializeTodayPerfectAchievers() {
-  await fetchTodayPerfectAchievers({ force: true });
+function getDailyBestNineGameId() {
+  const result = state.resultHistory.result;
+  return String(result?.internalGameId || result?.gameId || state.resultHistory.selectedGameId || "").trim();
 }
 
-async function fetchTodayPerfectAchievers({ force = false } = {}) {
-  const perfectState = state.todayPerfectAchievers;
-  if (perfectState.isLoading && !force) return;
+function resetDailyBestNine(status = "idle") {
+  state.dailyBestNine = {
+    isLoading: false,
+    requestId: state.dailyBestNine?.requestId || 0,
+    gameId: "",
+    status,
+    rows: [],
+    totalCount: 0,
+    message: ""
+  };
+}
 
-  const url = buildTodayPerfectAchieversApiUrl();
+async function initializeDailyBestNine() {
+  await fetchDailyBestNine({ force: true });
+}
+
+async function fetchDailyBestNine({ gameId = "", force = false } = {}) {
+  const dailyState = state.dailyBestNine;
+  const reference = String(gameId || getDailyBestNineGameId()).trim();
+  if (!reference) {
+    resetDailyBestNine();
+    renderDailyBestNine();
+    return;
+  }
+  if (dailyState.isLoading && !force && dailyState.gameId === reference) return;
+
+  const url = buildDailyBestNineApiUrl(reference);
   if (!url) {
-    perfectState.message = "本日の満点者を取得できませんでした。";
-    renderTodayPerfectAchievers();
+    resetDailyBestNine("error");
+    state.dailyBestNine.message = "今日のベストナインを取得できませんでした。";
+    renderDailyBestNine();
     return;
   }
 
-  const requestId = perfectState.requestId + 1;
-  perfectState.requestId = requestId;
-  perfectState.isLoading = true;
-  perfectState.message = "";
-  renderTodayPerfectAchievers();
+  const requestId = dailyState.requestId + 1;
+  dailyState.requestId = requestId;
+  dailyState.gameId = reference;
+  dailyState.isLoading = true;
+  dailyState.status = "loading";
+  dailyState.rows = [];
+  dailyState.totalCount = 0;
+  dailyState.message = "";
+  renderDailyBestNine();
 
   try {
-    const { response, payload } = await publicApiClient.request(url, {
-      credentials: "include",
+    const { response, payload } = await publicApiClient.get(url, {
       cache: force ? "no-store" : "default"
     });
-    if (!response.ok || !payload?.ok || !Array.isArray(payload.achievers)) {
+    if (!response.ok || !payload?.ok || !Array.isArray(payload.bestNine)) {
       throw new Error(payload?.error || `HTTP ${response.status}`);
     }
-    if (requestId !== perfectState.requestId) return;
-    perfectState.achievers = payload.achievers;
-    perfectState.totalCount = Math.max(0, Number(payload.totalCount || payload.achievers.length));
+    if (requestId !== dailyState.requestId) return;
+    dailyState.status = payload.published ? "published" : "unpublished";
+    dailyState.rows = payload.bestNine;
+    dailyState.totalCount = Math.max(0, Number(payload.totalCount || payload.bestNine.length));
   } catch (error) {
-    if (requestId !== perfectState.requestId) return;
-    console.error("本日の満点者の取得に失敗しました", error.message);
-    perfectState.achievers = [];
-    perfectState.totalCount = 0;
-    perfectState.message = "本日の満点者を取得できませんでした。";
+    if (requestId !== dailyState.requestId) return;
+    console.error("今日のベストナインの取得に失敗しました", error.message);
+    dailyState.status = "error";
+    dailyState.rows = [];
+    dailyState.totalCount = 0;
+    dailyState.message = "今日のベストナインを取得できませんでした。";
   } finally {
-    if (requestId === perfectState.requestId) {
-      perfectState.isLoading = false;
-      renderTodayPerfectAchievers();
+    if (requestId === dailyState.requestId) {
+      dailyState.isLoading = false;
+      renderDailyBestNine();
     }
   }
-}
-
-function renderTodayPerfectAchievers() {
-  const container = document.getElementById("todayPerfectAchieversContent");
-  const count = document.getElementById("todayPerfectAchieversCount");
-  if (!container || !count) return;
-
-  const perfectState = state.todayPerfectAchievers;
-  count.textContent = perfectState.totalCount > 0 ? `${perfectState.totalCount}人` : "";
-  if (perfectState.isLoading) {
-    container.innerHTML = '<p class="perfect-achievers-message">本日の満点者を確認中です。</p>';
-    return;
-  }
-  if (perfectState.message) {
-    container.innerHTML = `<p class="perfect-achievers-message is-error">${escapeHtml(perfectState.message)}</p>`;
-    return;
-  }
-  if (!perfectState.achievers.length) {
-    container.innerHTML = '<p class="perfect-achievers-message">本日の満点者はいません。</p>';
-    return;
-  }
-
-  container.innerHTML = `<ol class="perfect-achievers-list">${perfectState.achievers.map((achiever) => `
-    <li>
-      <span>${escapeHtml(achiever.score)}点</span>
-      <strong>${escapeHtml(achiever.username)}</strong>
-      <time datetime="${escapeHtml(achiever.submittedAt || "")}">${escapeHtml(achiever.gameDate)} ${escapeHtml(formatPerfectAchieverOpponent(achiever.opponent))}</time>
-    </li>
-  `).join("")}</ol>`;
-}
-
-function formatPerfectAchieverOpponent(opponent) {
-  const value = String(opponent || "").trim();
-  const labels = {
-    fighters: "日本ハム",
-    hawks: "ソフトバンク",
-    buffaloes: "オリックス",
-    marines: "ロッテ",
-    eagles: "楽天",
-    lions: "西武",
-    giants: "巨人",
-    tigers: "阪神",
-    baystars: "DeNA",
-    carp: "広島",
-    dragons: "中日",
-    swallows: "ヤクルト"
-  };
-  return labels[value] || value || "対戦相手";
 }
 
 async function refreshYearlyRanking({ force = false } = {}) {
@@ -6301,7 +6289,22 @@ function getResultHistoryGameId(game) {
 }
 
 function formatResultHistoryTeamName(value) {
-  return formatPerfectAchieverOpponent(value);
+  const labels = {
+    fighters: "日本ハム",
+    hawks: "ソフトバンク",
+    buffaloes: "オリックス",
+    marines: "ロッテ",
+    eagles: "楽天",
+    lions: "西武",
+    giants: "巨人",
+    tigers: "阪神",
+    baystars: "DeNA",
+    carp: "広島",
+    dragons: "中日",
+    swallows: "ヤクルト"
+  };
+  const normalized = String(value || "").trim().toLowerCase();
+  return labels[normalized] || String(value || "").trim() || "対戦相手";
 }
 
 function formatResultHistoryMatchup(game) {
@@ -6316,6 +6319,7 @@ async function refreshResultHistory({ force = false } = {}) {
     beginPublicRequest("result", { abort: true });
     beginPublicRequest("resultDetail", { abort: true });
     state.resultHistory = { isLoading: false, isDetailLoading: false, games: [], selectedGameId: "", result: null, message: "ログインすると過去の試合結果を確認できます。", detailError: "" };
+    resetDailyBestNine();
     syncPublicAppState();
     renderResultHistory();
     return;
@@ -6342,6 +6346,7 @@ async function refreshResultHistory({ force = false } = {}) {
       await loadResultHistoryGame(getResultHistoryGameId(latestPublishedGame));
     } else if (!latestPublishedGame && !state.resultHistory.selectedGameId) {
       state.resultHistory.result = null;
+      resetDailyBestNine("unpublished");
     }
   } catch (error) {
     if (!isCurrentPublicRequest("result", request.id)) return;
@@ -6381,6 +6386,7 @@ async function loadResultHistoryGame(gameId) {
     if (payload.serviceUnavailable) {
       state.resultHistory.result = {
         gameId,
+        internalGameId: "",
         serviceUnavailable: true,
         serviceUnavailableMessage: payload.serviceUnavailableMessage || "この試合はサービス未稼働のため集計対象外です。",
         prediction: payload.prediction || null,
@@ -6388,12 +6394,14 @@ async function loadResultHistoryGame(gameId) {
       };
       state.result = state.resultHistory.result;
       state.resultHistory.message = "";
+      resetDailyBestNine("unpublished");
       renderScoreResult();
       renderResultHistory();
       return;
     }
     if (!payload.resultsPublished) {
       state.result = null;
+      resetDailyBestNine("unpublished");
       state.resultHistory.message = "この試合の結果はまだ公開されていません。";
       renderResultHistory();
       return;
@@ -6406,16 +6414,19 @@ async function loadResultHistoryGame(gameId) {
     state.resultHistory.result = {
       ...scoreLineup(prediction.lineup, actual.lineup),
       gameId: payload.internalGameId || payload.gameId || gameId,
+      internalGameId: payload.internalGameId || "",
       publishedAt: payload.publishedAt || "",
       totalScore: payload.totalScore ?? payload.score ?? null
     };
     state.result = state.resultHistory.result;
     state.resultHistory.message = "";
+    await fetchDailyBestNine({ gameId: payload.internalGameId || payload.gameId || gameId, force: true });
     renderScoreResult();
   } catch (error) {
     if (!isCurrentPublicRequest("resultDetail", request.id)) return;
     state.result = null;
     state.resultHistory.result = null;
+    resetDailyBestNine("error");
     state.resultHistory.detailError = "結果を読み込めませんでした。時間をおいて再度お試しください。";
     state.resultHistory.message = "この試合の結果を取得できませんでした。";
     console.error("過去の試合結果の読み込みに失敗しました", error.message);
@@ -8272,7 +8283,7 @@ function renderAll() {
   renderActualLineup();
   renderResultHistory();
   renderScoreResult();
-  renderTodayPerfectAchievers();
+  renderDailyBestNine();
   renderRankingPanel();
   renderAdminFlow();
   renderAdminGameProgressStatus();
@@ -9159,6 +9170,10 @@ function renderActualLineup() {
 
 function renderScoreResult() {
   return publicResultsRenderer.renderScoreResult();
+}
+
+function renderDailyBestNine() {
+  return publicResultsRenderer.renderDailyBestNine();
 }
 
 function renderScoreInsights(comparison) {

@@ -13,6 +13,7 @@
       roster: state.publicRoster,
       results: { latest: null, history: state.resultHistory },
       ranking: { yearly: state.yearlyRanking, monthly: state.monthlyRanking },
+      dailyBestNine: state.dailyBestNine,
       account: { status: "idle", gameId: "" },
       requests: {
         initialization: { started: false, promise: null },
@@ -38,6 +39,7 @@
     appState.results.history = state.resultHistory;
     appState.ranking.yearly = state.yearlyRanking;
     appState.ranking.monthly = state.monthlyRanking;
+    appState.dailyBestNine = state.dailyBestNine;
     appState.account.status = state.predictionRemote.status;
     appState.account.gameId = state.predictionRemote.gameId || "";
   }

@@ -47,7 +47,7 @@
       const authPromise = ops.initializeAuthDependentFeatures();
       await Promise.allSettled([probablePromise, rosterPromise, authPromise]);
       await ops.initializePredictionRemoteSync();
-      ops.initializeTodayPerfectAchievers();
+      await ops.initializeDailyBestNine();
       ops.refreshPredictionDeadlineState();
       ops.syncPublicAppState();
       ops.renderAll();
@@ -82,9 +82,8 @@
       const requestId = ++this.appState.requests.auth.sequence;
       this.appState.requests.auth.promise = (async () => {
         ops.renderPredictionCta();
-        ops.renderTodayPerfectAchievers();
+        ops.renderDailyBestNine();
         const results = await Promise.allSettled([
-          ops.fetchTodayPerfectAchievers({ force: true }),
           ops.syncPredictionFromAccount({ force: true }),
           ops.fetchUserAchievements({ force: true }),
           ops.refreshYearlyRanking({ force: true }),

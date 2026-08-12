@@ -72,4 +72,6 @@ test("rankingとresults moduleは現在の公開文言と最大5件の表示契�
   assert.doesNotMatch(ranking, /規定到達ランキング/);
   assert.match(ranking, /あと\$\{Math\.max\(0, Number\(row\?\.gamesNeeded \|\| 0\)\)\}試合連続参加で規定到達/);
   assert.match(results, /games\.slice\(0, 5\)/);
+  assert.match(results, /renderDailyBestNine/);
+  assert.match(results, /今日のベストナイン/);
 });

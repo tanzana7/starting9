@@ -1,4 +1,5 @@
 import { getRankingResetDateBoundary, toPublicRankingRow } from "../domain/ranking.js";
+import { DAILY_BEST_NINE_LIMIT, toPublicDailyBestNineRow } from "../domain/public-results.js";
 import { createV3Error } from "../../game-automation-v3.js";
 
 const RANKING_ACHIEVEMENT_DISPLAY_LIMIT = 3;
@@ -142,6 +143,72 @@ export async function getPerfectAchieversForDate(db, { date, limit, offset }) {
       opponent: row.opponent_code || "",
       submittedAt: row.submitted_at || null
     })),
+    totalCount: Number(countRow?.total_count || 0)
+  };
+}
+
+async function hasRankingInternalGameId(db) {
+  try {
+    const columns = await db.prepare("PRAGMA table_info(ranking_games)").bind().all();
+    return (columns.results || []).some((column) => column.name === "internal_game_id");
+  } catch {
+    return false;
+  }
+}
+
+export async function getDailyBestNineForGame(db, { internalGameId = "", legacyGameId = "", limit = DAILY_BEST_NINE_LIMIT } = {}) {
+  const canonicalId = String(internalGameId || "").trim();
+  const compatibilityId = String(legacyGameId || "").trim();
+  const useCanonicalId = Boolean(canonicalId) && await hasRankingInternalGameId(db);
+  const gameValue = useCanonicalId ? canonicalId : compatibilityId;
+  if (!gameValue) return { rows: [], totalCount: 0 };
+
+  const latestPredictions = `WITH latest_predictions AS (
+    SELECT predictions.id, predictions.user_id, predictions.game_id, predictions.score, predictions.max_score,
+           predictions.submitted_at, predictions.status, predictions.is_test_prediction, predictions.updated_at,
+           ROW_NUMBER() OVER (
+             PARTITION BY predictions.user_id, predictions.game_id
+             ORDER BY predictions.updated_at DESC, predictions.submitted_at DESC, predictions.id DESC
+           ) AS submission_rank
+      FROM predictions
+  )`;
+  const gameCondition = useCanonicalId
+    ? "ranking_games.internal_game_id = ?1"
+    : "ranking_games.game_id = ?1";
+  const conditions = `latest_predictions.submission_rank = 1
+       AND latest_predictions.status = 'scored'
+       AND latest_predictions.score IS NOT NULL
+       AND latest_predictions.max_score IS NOT NULL
+       AND latest_predictions.is_test_prediction = 0
+       AND ${gameCondition}
+       AND ranking_games.is_ranking_eligible = 1
+       AND ranking_games.game_status = 'scored'
+       AND ranking_games.publication_status = 'published'
+       AND ranking_games.is_test_game = 0
+       AND users.status = 'active'`;
+  const [countRow, rowsResult] = await Promise.all([
+    db.prepare(`${latestPredictions}
+      SELECT COUNT(*) AS total_count
+        FROM latest_predictions
+        JOIN ranking_games ON ranking_games.game_id = latest_predictions.game_id
+        JOIN users ON users.id = latest_predictions.user_id
+       WHERE ${conditions}`).bind(gameValue).first(),
+    db.prepare(`${latestPredictions}
+      SELECT users.username, latest_predictions.score, latest_predictions.max_score,
+             latest_predictions.submitted_at, latest_predictions.user_id
+        FROM latest_predictions
+        JOIN ranking_games ON ranking_games.game_id = latest_predictions.game_id
+        JOIN users ON users.id = latest_predictions.user_id
+       WHERE ${conditions}
+       ORDER BY latest_predictions.score DESC,
+                latest_predictions.submitted_at ASC,
+                users.username ASC,
+                latest_predictions.user_id ASC
+       LIMIT ?2`).bind(gameValue, Math.min(DAILY_BEST_NINE_LIMIT, Math.max(1, Number(limit) || DAILY_BEST_NINE_LIMIT))).all()
+  ]);
+
+  return {
+    rows: (rowsResult.results || []).map((row, index) => toPublicDailyBestNineRow(row, index + 1)),
     totalCount: Number(countRow?.total_count || 0)
   };
 }

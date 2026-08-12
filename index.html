@@ -6,7 +6,7 @@
   <title>Starting9</title>
   <link rel="icon" type="image/png" href="./assets/icons/icon-512.png">
   <link rel="apple-touch-icon" href="./assets/icons/icon-512.png">
-  <link rel="stylesheet" href="style.css?v=public-results-ranking-polish-1">
+  <link rel="stylesheet" href="style.css?v=public-daily-best-nine-1">
 </head>
 <body>
   <header class="app-header">
@@ -605,15 +605,16 @@
         <p id="scoreInsightsNotice" class="score-insights-notice">比較データは参加者が増え次第表示されます。</p>
       </section>
 
-      <section id="todayPerfectAchieversCard" class="perfect-achievers-card" aria-labelledby="todayPerfectAchieversTitle">
-        <div class="perfect-achievers-heading">
+      <section id="dailyBestNineCard" class="daily-best-nine-card hidden" aria-labelledby="dailyBestNineTitle">
+        <div class="daily-best-nine-heading">
           <div>
-            <h3 id="todayPerfectAchieversTitle">本日の満点者</h3>
+            <h3 id="dailyBestNineTitle">今日のベストナイン</h3>
+            <p>この試合の予想上位9人</p>
           </div>
-          <span id="todayPerfectAchieversCount" class="perfect-achievers-count"></span>
+          <span id="dailyBestNineCount" class="daily-best-nine-count"></span>
         </div>
-        <div id="todayPerfectAchieversContent" class="perfect-achievers-content" aria-live="polite">
-          <p class="empty-state">本日の満点者を確認中です。</p>
+        <div id="dailyBestNineContent" class="daily-best-nine-content" aria-live="polite">
+          <p class="empty-state">公開済みの試合結果を確認中です。</p>
         </div>
       </section>
     </section>
@@ -642,15 +643,15 @@
   <script src="auth.js?v=auth-api-local-20260719"></script>
   <!-- Historical cache-buster contract only; this old asset is not loaded. -->
   <!-- script.js?v=admin-test-data-20260728-10 -->
-    <script src="frontend/public/state.js?v=public-game-day-status-contract-1"></script>
-    <script src="frontend/public/request-guard.js?v=public-game-day-status-contract-1"></script>
-    <script src="frontend/public/storage.js?v=public-game-day-status-contract-1"></script>
-    <script src="frontend/public/api-client.js?v=public-game-day-status-contract-1"></script>
-    <script src="frontend/public/app-coordinator.js?v=public-game-day-status-contract-1"></script>
-    <script src="frontend/public/render-results.js?v=public-game-day-status-contract-1"></script>
-    <script src="frontend/public/render-ranking.js?v=public-game-day-status-contract-1"></script>
-    <script src="frontend/public/roster.js?v=public-game-day-status-contract-1"></script>
-    <script src="frontend/public/prediction-form.js?v=public-game-day-status-contract-1"></script>
-    <script src="script.js?v=public-game-day-status-contract-1"></script>
+  <script src="frontend/public/state.js?v=public-daily-best-nine-1"></script>
+    <script src="frontend/public/request-guard.js?v=public-daily-best-nine-1"></script>
+    <script src="frontend/public/storage.js?v=public-daily-best-nine-1"></script>
+    <script src="frontend/public/api-client.js?v=public-daily-best-nine-1"></script>
+    <script src="frontend/public/app-coordinator.js?v=public-daily-best-nine-1"></script>
+    <script src="frontend/public/render-results.js?v=public-daily-best-nine-1"></script>
+    <script src="frontend/public/render-ranking.js?v=public-daily-best-nine-1"></script>
+    <script src="frontend/public/roster.js?v=public-daily-best-nine-1"></script>
+    <script src="frontend/public/prediction-form.js?v=public-daily-best-nine-1"></script>
+    <script src="script.js?v=public-daily-best-nine-1"></script>
 </body>
 </html>

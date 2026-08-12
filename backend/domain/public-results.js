@@ -22,6 +22,19 @@ const PUBLIC_TEAM_LABELS = Object.freeze({
 });
 
 export const PUBLIC_RESULT_HISTORY_LIMIT = 5;
+export const DAILY_BEST_NINE_LIMIT = 9;
+
+export function toPublicDailyBestNineRow(row, rank) {
+  const score = Number(row?.score);
+  const maxScore = Number(row?.max_score);
+  return {
+    rank: Number(rank),
+    username: String(row?.username || ""),
+    score: Number.isFinite(score) ? score : 0,
+    maxScore: Number.isFinite(maxScore) ? maxScore : null,
+    isPerfect: Number.isFinite(score) && Number.isFinite(maxScore) && score === maxScore
+  };
+}
 
 export function formatPublicResultTeamName(value) {
   const key = String(value || "").trim().toLowerCase();

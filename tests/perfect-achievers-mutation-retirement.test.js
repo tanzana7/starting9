@@ -95,7 +95,8 @@ test("public perfect ranking remains server-authoritative and the public UI does
   assert.match(rankingRepositorySource, /latest_predictions\.status = 'scored'/);
   assert.match(rankingRepositorySource, /latest_predictions\.score = latest_predictions\.max_score/);
   assert.match(rankingRepositorySource, /ranking_games\.game_status = 'scored'/);
-  assert.match(publicScript, /\/api\/rankings\/perfect/);
+  assert.match(workerSource, /\/api\/rankings\/perfect/);
+  assert.match(publicScript, /\/api\/results\/daily-best-nine/);
   assert.doesNotMatch(publicScript, /fetch\([^\n]*\/api\/perfect-achievers[^\n]*method:\s*["']POST/);
   assert.doesNotMatch(workerSource.slice(
     workerSource.indexOf("async function handlePostPerfectAchiever"),

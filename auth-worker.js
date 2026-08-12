@@ -65,6 +65,7 @@ import {
 import {
   getActiveRankingResetMarker,
   getPerfectAchieversForDate,
+  getDailyBestNineForGame,
   getRankingEntryForUser,
   getRankingForPeriod,
   getRankingResetPreview,
@@ -73,6 +74,7 @@ import {
 } from "./backend/repositories/ranking-repository.js";
 import {
   PUBLIC_RESULT_HISTORY_LIMIT,
+  DAILY_BEST_NINE_LIMIT,
   formatPublicResultTeamName,
   createPublicGameDisplayLabel,
   createPublicResultDisplayLabel
@@ -105,6 +107,7 @@ export {
   createPublicGameDisplayLabel,
   createPublicResultDisplayLabel,
   getPerfectAchieversForDate,
+  getDailyBestNineForGame,
   getRankingForPeriod,
   getRankingResetPreview
 };
@@ -415,6 +418,9 @@ export default {
       }
       if (path === "/api/results/games" && request.method === "GET") {
         return await handleGetResultGames(request, env, cors);
+      }
+      if (path === "/api/results/daily-best-nine" && request.method === "GET") {
+        return await handleGetDailyBestNine(request, env, cors);
       }
       if (path === "/api/admin/me" && request.method === "GET") {
         return await handleAdminMe(request, env, cors);
@@ -6361,6 +6367,42 @@ async function handleGetPerfectAchieversRanking(request, env, cors) {
     date: options.date,
     achievers: achievers.rows,
     totalCount: achievers.totalCount,
+    updatedAt: new Date().toISOString()
+  }, 200, cors);
+  response.headers.set("Cache-Control", "public, max-age=30");
+  return response;
+}
+
+async function handleGetDailyBestNine(request, env, cors) {
+  const params = new URL(request.url).searchParams;
+  const requestedGameId = String(params.get("internalGameId") || params.get("gameId") || "").trim();
+  if (!requestedGameId) {
+    return jsonResponse({ ok: false, error: "対象試合を指定してください。" }, 400, cors);
+  }
+
+  const metadata = await resolvePredictionGameMetadata(env.AUTH_DB, requestedGameId);
+  if (!metadata) {
+    return jsonResponse({ ok: false, error: "対象試合を確認できません。" }, 404, cors);
+  }
+  const game = await getResultGameMetadata(env.AUTH_DB, requestedGameId, metadata);
+  const internalGameId = String(metadata.internalGameId || game.internalGameId || "").trim();
+  const legacyGameId = String(metadata.legacyGameId || game.legacyGameId || metadata.gameId || "").trim();
+  const rankingState = await getRankingGameState(env.AUTH_DB, legacyGameId, internalGameId);
+  const published = Boolean(rankingState
+    && String(rankingState.game_status || "") === "scored"
+    && String(rankingState.publication_status || "") === "published"
+    && Number(rankingState.is_ranking_eligible || 0) === 1
+    && Number(rankingState.is_test_game || 0) === 0);
+  const bestNine = published
+    ? await getDailyBestNineForGame(env.AUTH_DB, { internalGameId, legacyGameId, limit: DAILY_BEST_NINE_LIMIT })
+    : { rows: [], totalCount: 0 };
+  const response = jsonResponse({
+    ok: true,
+    gameDate: game.gameDate || metadata.date || "",
+    displayLabel: game.displayLabel || createPublicResultDisplayLabel({ gameDate: game.gameDate || metadata.date, homeTeam: game.homeTeam, awayTeam: game.awayTeam }),
+    published,
+    bestNine: bestNine.rows,
+    totalCount: bestNine.totalCount,
     updatedAt: new Date().toISOString()
   }, 200, cors);
   response.headers.set("Cache-Control", "public, max-age=30");

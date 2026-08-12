@@ -117,12 +117,14 @@ test("満点者がいない日も正常な空結果を返し、月間・年間�
   assert.match(worker, /\/api\/rankings\/monthly/);
   assert.match(worker, /\/api\/rankings\/yearly/);
   assert.doesNotMatch(worker, /\/api\/rankings\/daily/);
-  assert.match(html, /id="todayPerfectAchieversCard"/);
+  assert.match(worker, /\/api\/results\/daily-best-nine/);
+  assert.match(html, /id="dailyBestNineCard"/);
   assert.match(html, /id="showMonthlyRankingButton"/);
   assert.match(html, /id="showYearlyRankingButton"/);
   assert.doesNotMatch(html, /showDailyRankingButton/);
-  assert.match(script, /function fetchTodayPerfectAchievers/);
-  assert.match(script, /本日の満点者はいません/);
+  assert.match(script, /function fetchDailyBestNine/);
+  assert.match(script, /daily-best-nine/);
+  assert.doesNotMatch(script, /本日の満点者はいません/);
   assert.doesNotMatch(script, /refreshDailyRanking|showDailyRankingButton|dailyRankingDate/);
 });
 
@@ -130,6 +132,6 @@ test("初期描画は定義済みの本日の満点者描画関数を呼び、�
   const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
   const renderAll = script.slice(script.indexOf("function renderAll()"), script.indexOf("function renderProbableStarter()"));
 
-  assert.match(renderAll, /renderTodayPerfectAchievers\(\)/);
-  assert.doesNotMatch(renderAll, /renderPerfectAchievers\(\)/);
+  assert.match(renderAll, /renderDailyBestNine\(\)/);
+  assert.doesNotMatch(renderAll, /renderTodayPerfectAchievers\(\)/);
 });

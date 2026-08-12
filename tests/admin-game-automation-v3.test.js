@@ -8,11 +8,12 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const page = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 const client = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
+const apiClient = fs.readFileSync(path.join(root, "frontend", "admin-v3", "api-client.js"), "utf8");
 
 test("V3管理画面は既存セッションと管理者APIを使い、サーバー認可を要求する", () => {
   assert.match(page, /admin-v3\.js/);
-  assert.match(client, /credentials:\s*["']include/);
-  assert.match(client, /\/api\/admin\/me/);
+  assert.match(apiClient, /credentials:\s*["']include/);
+  assert.match(apiClient, /\/api\/admin\/me/);
   assert.match(worker, /\/api\/admin\/v3\/overview/);
   assert.match(worker, /requireAdminUser\(request, env, cors\)/);
 });

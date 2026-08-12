@@ -10,6 +10,8 @@
 - [ ] Remove or hide any admin-v3 debug display that is not required for production operations.
 - [ ] Re-run a production-shaped end-to-end Cron completion check, including schedule, roster, lineup, scoring, ranking, and publication.
 
+The fixture and reset marker are intentionally review-only release preparation tools until this checklist is completed. Fixture preview must remain admin-only, `previewOnly: true`, and write-free. The reset marker is a non-destructive aggregation boundary and is executed only with the approved confirmation and reason; it is never a substitute for direct D1 cleanup.
+
 ## Before Each Deployment
 
 - [ ] Start from a clean worktree based on the intended `origin/main`.
@@ -18,6 +20,7 @@
 - [ ] Run `node --check` for every changed JavaScript file.
 - [ ] Run `git diff --check` and conflict-marker checks.
 - [ ] Run the Worker dry-run with `--config wrangler.auth.production.jsonc`.
+- [ ] Run `npm ci --ignore-scripts` and `npm run check`, or confirm the GitHub Actions `CI` workflow passed.
 - [ ] Update the relevant public or admin cache buster when static assets change.
 - [ ] Confirm whether Worker and Pages deployments are both required.
 - [ ] Do not run migrations, D1 writes, repair, reset, or Discord notifications unless explicitly approved.

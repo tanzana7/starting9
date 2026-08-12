@@ -1,0 +1,72 @@
+(function registerAdminV3Coordinator(global) {
+  "use strict";
+
+  function createAdminV3Coordinator({ document, window, state, actions }) {
+    function bindInputEvents() {
+      document.addEventListener("input", (event) => {
+        const field = event.target.closest("[data-v3-ranking-reset-field]");
+        if (field) {
+          state.rankingReset[field.dataset.v3RankingResetField] = field.value;
+          return;
+        }
+        const perfectField = event.target.closest("[data-v3-perfect-score-field]");
+        if (perfectField) state.perfectScorePreview[perfectField.dataset.v3PerfectScoreField] = perfectField.value;
+      });
+    }
+
+    function bindClickEvents() {
+      document.addEventListener("click", async (event) => {
+        const navButton = event.target.closest("[data-v3-view]");
+        if (navButton) { actions.chooseView(navButton.dataset.v3View); return; }
+        if (event.target.closest("[data-v3-ranking-reset-preview]")) { await actions.previewRankingReset(); return; }
+        if (event.target.closest("[data-v3-ranking-reset-execute]")) { await actions.executeRankingReset(); return; }
+        if (event.target.closest("[data-v3-perfect-score-preview]")) { await actions.previewPerfectScore("perfect"); return; }
+        if (event.target.closest("[data-v3-perfect-score-fixture-preview]")) { await actions.previewPerfectScore("fixture"); return; }
+        if (event.target.closest("[data-v3-automation-log-refresh]")) { await actions.refreshAutomationLogs(); return; }
+
+        const selectButton = event.target.closest("[data-v3-select-game]");
+        if (selectButton) { await actions.selectGame(selectButton.dataset.v3SelectGame); return; }
+
+        if (event.target.closest("#mobileNavToggle")) {
+          const navigation = document.getElementById("v3Navigation");
+          const open = navigation?.classList.toggle("open");
+          event.target.closest("#mobileNavToggle")?.setAttribute("aria-expanded", String(Boolean(open)));
+          return;
+        }
+
+        const jobCopyButton = event.target.closest("[data-v3-job-copy]");
+        if (jobCopyButton) { await actions.copyJobDetail(jobCopyButton); return; }
+
+        const jobDetailRefreshButton = event.target.closest("[data-v3-job-detail-refresh]");
+        if (jobDetailRefreshButton) {
+          await actions.refreshJobDetail(jobDetailRefreshButton.dataset.v3JobDetailRefresh, jobDetailRefreshButton.dataset.v3JobDetailRefreshId);
+          return;
+        }
+
+        const jobDetailButton = event.target.closest("[data-v3-job-detail]");
+        if (jobDetailButton) await actions.toggleJobDetail(jobDetailButton.dataset.v3JobDetail, jobDetailButton.dataset.v3JobId);
+      });
+    }
+
+    function bindToolbarEvents() {
+      document.getElementById("refreshV3")?.addEventListener("click", actions.load);
+      document.getElementById("refreshV3View")?.addEventListener("click", actions.load);
+      document.getElementById("v3GameFilter")?.addEventListener("change", (event) => actions.changeFilter(event.target.value));
+      document.getElementById("v3GameSelect")?.addEventListener("change", (event) => actions.selectGameFromToolbar(event.target.value));
+      window.addEventListener("hashchange", actions.handleHashChange);
+    }
+
+    return Object.freeze({
+      start() {
+        bindInputEvents();
+        bindClickEvents();
+        bindToolbarEvents();
+        actions.restoreInitialRoute();
+        actions.load();
+      }
+    });
+  }
+
+  global.Starting9AdminV3 = global.Starting9AdminV3 || {};
+  global.Starting9AdminV3.createAdminV3Coordinator = createAdminV3Coordinator;
+})(window);

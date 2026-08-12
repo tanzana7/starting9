@@ -31,6 +31,6 @@ test("admin-v3はV3自動処理と競合する手動操作を画面から外す"
 });
 
 test("admin-v3のJavaScriptキャッシュバスターは公示整理版へ更新される", () => {
-  assert.match(page, /admin-v3\.js\?v=admin-perfect-score-fixture-preview-1/);
-  assert.match(page, /admin-v3\.css\?v=admin-perfect-score-fixture-preview-1/);
+  assert.match(page, /admin-v3\.js\?v=admin-and-repo-polish-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-and-repo-polish-1/);
 });

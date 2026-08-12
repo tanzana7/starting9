@@ -1,6 +1,11 @@
 const V3_AUTH_PRODUCTION_BASE = "https://starting9-auth.tanzana7.workers.dev";
 // RELEASE_DEBUG_PERFECT_SCORE_FIXTURE is shown only in the admin preview panel.
 const RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY = "release_full_score_debug_1";
+const adminV3Modules = window.Starting9AdminV3;
+
+if (!adminV3Modules?.createAdminV3State || !adminV3Modules?.createAdminV3ApiClient || !adminV3Modules?.createAdminV3Coordinator) {
+  throw new Error("ADMIN_V3_MODULES_NOT_LOADED");
+}
 const V3_JOB_TYPE = Object.freeze({
   NPB_IDENTITY_RESOLVE: "npb_identity_resolve",
   PREDICTION_CLOSE: "prediction_close",
@@ -46,60 +51,18 @@ const V3_JOB_LABELS = {
   roster_fetch: "ロースター取得"
 };
 
-const v3State = {
-  payload: null,
-  view: "dashboard",
-  filter: "all",
-  selectedGameId: "",
-  lastUpdatedAt: null,
-  operationDetails: new Map(),
-  jobDetails: new Map(),
-  jobDetailsOpen: new Set(),
-  jobDetailsLoading: new Set(),
-  jobDetailsCopyStatus: new Map(),
-  automationLogs: null,
-  automationLogFilters: { runId: "", internalGameId: "", jobType: "", status: "", reasonCode: "", failureCode: "" },
-  rankingReset: {
-    periodType: "yearly",
-    periodKey: String(new Date().getFullYear()),
-    resetAtLocal: "",
-    reason: "",
-    confirmation: "",
-    preview: null,
-    activeMarker: null,
-    markers: [],
-    loading: false,
-    loaded: false
-  },
-  perfectScorePreview: {
-    internalGameId: "",
-    reason: "",
-    loading: false,
-    result: null,
-    error: ""
-  }
-};
+// The entrypoint owns screen-specific rendering. State, authenticated requests, and
+// event coordination live in focused classic-script modules loaded by admin-v3.html.
+const v3State = adminV3Modules.createAdminV3State({ releaseFixtureKey: RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY });
+const v3Api = adminV3Modules.createAdminV3ApiClient({
+  fetchImpl: window.fetch.bind(window),
+  location: window.location,
+  productionBase: V3_AUTH_PRODUCTION_BASE
+});
 
-function v3ApiBase() {
-  return ["localhost", "127.0.0.1"].includes(window.location.hostname) ? "http://127.0.0.1:8787" : V3_AUTH_PRODUCTION_BASE;
-}
-
-async function v3Fetch(path, options = {}) {
-  const response = await fetch(`${v3ApiBase()}${path}`, {
-    credentials: "include",
-    ...options,
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) }
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(body.error || `HTTP ${response.status}`);
-    error.code = body.code || "V3_ADMIN_REQUEST_FAILED";
-    error.status = response.status;
-    error.details = body.resolutionDiagnostics || body.diagnostics || null;
-    error.identityState = body.identityState || null;
-    throw error;
-  }
-  return body;
+// Compatibility alias for focused tests and future incremental extraction.
+function v3Fetch(path, options = {}) {
+  return v3Api.request(path, options);
 }
 
 function setV3Status(message, isError = false) {
@@ -1071,7 +1034,7 @@ async function loadV3JobDetail(internalGameId, jobId, force = false) {
   v3State.jobDetails.delete(key);
   renderCurrentV3View();
   try {
-    const detail = await v3Fetch(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/jobs/${encodeURIComponent(numericJobId)}`);
+    const detail = await v3Api.getJobDetail(internalGameId, numericJobId);
     if (detail.internalGameId !== internalGameId || Number(detail.job?.id) !== numericJobId) throw new Error("V3_JOB_DETAIL_ID_MISMATCH");
     v3State.jobDetails.set(key, detail);
   } catch (error) {
@@ -1229,7 +1192,7 @@ async function loadRankingResetMarkers(force = false) {
   reset.error = "";
   renderCurrentV3View();
   try {
-    const result = await v3Fetch("/api/admin/v3/ranking-resets");
+    const result = await v3Api.listRankingResets();
     reset.markers = Array.isArray(result.markers) ? result.markers : [];
     reset.loaded = true;
   } catch (error) {
@@ -1259,7 +1222,7 @@ async function previewRankingReset() {
   reset.error = "";
   renderCurrentV3View();
   try {
-    const result = await v3Fetch("/api/admin/v3/ranking-resets/preview", { method: "POST", body: JSON.stringify(rankingResetRequestBody()) });
+    const result = await v3Api.previewRankingReset(rankingResetRequestBody());
     reset.preview = result.preview || null;
     reset.activeMarker = result.activeMarker || null;
   } catch (error) {
@@ -1278,7 +1241,7 @@ async function executeRankingReset() {
   reset.error = "";
   renderCurrentV3View();
   try {
-    const result = await v3Fetch("/api/admin/v3/ranking-resets/execute", { method: "POST", body: JSON.stringify(rankingResetRequestBody(true)) });
+    const result = await v3Api.executeRankingReset(rankingResetRequestBody(true));
     reset.preview = result.preview || reset.preview;
     reset.activeMarker = result.marker || null;
     reset.markers = [result.marker, ...reset.markers.filter((marker) => marker.id !== result.marker?.id)].filter(Boolean);
@@ -1303,14 +1266,11 @@ async function previewPerfectScore(mode = "perfect") {
   v3State.perfectScorePreview = { internalGameId: game.internalGameId, reason, loading: true, result: null, error: "" };
   renderCurrentV3View();
   try {
-    v3State.perfectScorePreview.result = await v3Fetch("/api/admin/v3/perfect-score-test/preview", {
-      method: "POST",
-      body: JSON.stringify({
-        internalGameId: game.internalGameId,
-        mode,
-        ...(mode === "fixture" ? { fixtureKey: RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY } : {}),
-        reason
-      })
+    v3State.perfectScorePreview.result = await v3Api.previewPerfectScore({
+      internalGameId: game.internalGameId,
+      mode,
+      ...(mode === "fixture" ? { fixtureKey: RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY } : {}),
+      reason
     });
   } catch (error) {
     v3State.perfectScorePreview.error = `${error.code || "PERFECT_SCORE_PREVIEW_FAILED"}: ${error.message}`;
@@ -1340,7 +1300,7 @@ async function loadV3OperationDetails() {
     schedule: v3DetailPath("/schedule")
   };
   const entries = await Promise.all(Object.entries(paths).map(async ([key, path]) => {
-    try { return [key, await v3Fetch(path)]; }
+    try { return [key, await v3Api.getGameOperationDetail(id, path.replace(`/api/admin/v3/games/${encodeURIComponent(id)}`, ""))]; }
     catch (error) { return [key, { ok: false, errorCode: error.code, error: error.message }]; }
   }));
   v3State.operationDetails.set(id, Object.fromEntries(entries));
@@ -1350,10 +1310,10 @@ async function loadV3OperationDetails() {
 async function loadV3() {
   setV3Status("読み込み中…");
   try {
-    const session = await v3Fetch("/api/admin/me");
+    const session = await v3Api.getSession();
     if (!session.admin) throw new Error("管理者権限がありません。");
-    const payload = await v3Fetch("/api/admin/v3/overview");
-    payload.automationLogs = await v3Fetch("/api/admin/v3/automation-logs?limit=100").catch((error) => ({ error: `${error.code || "V3_AUTOMATION_LOG_FAILED"}: ${error.message}` }));
+    const payload = await v3Api.getOverview();
+    payload.automationLogs = await v3Api.getAutomationLogs().catch((error) => ({ error: `${error.code || "V3_AUTOMATION_LOG_FAILED"}: ${error.message}` }));
     v3State.automationLogs = payload.automationLogs;
     renderV3(payload);
     await loadV3OperationDetails();
@@ -1373,129 +1333,92 @@ function chooseV3View(view) {
   document.getElementById("mobileNavToggle")?.setAttribute("aria-expanded", "false");
 }
 
-document.addEventListener("input", (event) => {
-  const field = event.target.closest("[data-v3-ranking-reset-field]");
-  if (field) {
-    v3State.rankingReset[field.dataset.v3RankingResetField] = field.value;
-    return;
-  }
-  const perfectField = event.target.closest("[data-v3-perfect-score-field]");
-  if (perfectField) v3State.perfectScorePreview[perfectField.dataset.v3PerfectScoreField] = perfectField.value;
-});
-
-document.addEventListener("click", async (event) => {
-  const navButton = event.target.closest("[data-v3-view]");
-  if (navButton) { chooseV3View(navButton.dataset.v3View); return; }
-  if (event.target.closest("[data-v3-ranking-reset-preview]")) {
-    await previewRankingReset();
-    return;
-  }
-  if (event.target.closest("[data-v3-ranking-reset-execute]")) {
-    await executeRankingReset();
-    return;
-  }
-  if (event.target.closest("[data-v3-perfect-score-preview]")) {
-    await previewPerfectScore("perfect");
-    return;
-  }
-  if (event.target.closest("[data-v3-perfect-score-fixture-preview]")) {
-    await previewPerfectScore("fixture");
-    return;
-  }
-  const automationLogRefresh = event.target.closest("[data-v3-automation-log-refresh]");
-  if (automationLogRefresh) {
-    document.querySelectorAll("[data-v3-automation-log-filter]").forEach((field) => {
-      if (Object.prototype.hasOwnProperty.call(v3State.automationLogFilters, field.dataset.v3AutomationLogFilter)) v3State.automationLogFilters[field.dataset.v3AutomationLogFilter] = field.value.trim();
-    });
-    const query = new URLSearchParams({ ...v3State.automationLogFilters, limit: "100" });
-    v3State.automationLogs = await v3Fetch(`/api/admin/v3/automation-logs?${query.toString()}`).catch((error) => ({ error: `${error.code || "V3_AUTOMATION_LOG_FAILED"}: ${error.message}` }));
-    renderCurrentV3View();
-    return;
-  }
-  const selectButton = event.target.closest("[data-v3-select-game]");
-  if (selectButton) {
-    v3State.selectedGameId = selectButton.dataset.v3SelectGame;
-    v3StorageSet("starting9.admin-v3.selected-game", v3State.selectedGameId);
-    chooseV3View("workflow");
-    await loadV3OperationDetails();
-    return;
-  }
-  if (event.target.closest("#mobileNavToggle")) {
-    const navigation = document.getElementById("v3Navigation");
-    const open = navigation?.classList.toggle("open");
-    event.target.closest("#mobileNavToggle")?.setAttribute("aria-expanded", String(Boolean(open)));
-    return;
-  }
-  const jobCopyButton = event.target.closest("[data-v3-job-copy]");
-  if (jobCopyButton) {
-    const internalGameId = jobCopyButton.dataset.v3JobCopyGame || "";
-    const jobId = jobCopyButton.dataset.v3JobCopyId || "";
-    const key = jobDetailKey(internalGameId, jobId);
-    const detail = v3State.jobDetails.get(key);
-    const job = detail?.job || detail;
-    let value = "";
-    if (jobCopyButton.dataset.v3JobCopy === "all") value = jobDetailCopyText(internalGameId, detail);
-    else if (jobCopyButton.dataset.v3JobCopy === "failureMessage") value = String(jobField(job, "failure_message", "failureMessage", ""));
-    else {
-      const field = JOB_DETAIL_FIELDS.find((item) => item[1] === jobCopyButton.dataset.v3JobCopy);
-      value = field ? jobField(job, field[0], field[1], field[0] === "job_id" ? job?.id : field[0] === "internal_game_id" ? internalGameId : "") : "";
+async function refreshAutomationLogs() {
+  document.querySelectorAll("[data-v3-automation-log-filter]").forEach((field) => {
+    if (Object.prototype.hasOwnProperty.call(v3State.automationLogFilters, field.dataset.v3AutomationLogFilter)) {
+      v3State.automationLogFilters[field.dataset.v3AutomationLogFilter] = field.value.trim();
     }
-    try {
-      await copyTextSafely(value);
-      v3State.jobDetailsCopyStatus.set(key, "コピーしました");
-      const status = jobCopyButton.closest(".job-detail-inline")?.querySelector(".job-copy-status");
-      if (status) status.textContent = "コピーしました";
-    } catch (error) {
-      v3State.jobDetailsCopyStatus.set(key, "コピーできませんでした");
-      const status = jobCopyButton.closest(".job-detail-inline")?.querySelector(".job-copy-status");
-      if (status) status.textContent = "コピーできませんでした";
-    }
-    return;
-  }
-  const jobDetailRefreshButton = event.target.closest("[data-v3-job-detail-refresh]");
-  if (jobDetailRefreshButton) {
-    await loadV3JobDetail(jobDetailRefreshButton.dataset.v3JobDetailRefresh, jobDetailRefreshButton.dataset.v3JobDetailRefreshId, true);
-    return;
-  }
-  const jobDetailButton = event.target.closest("[data-v3-job-detail]");
-  if (jobDetailButton) {
-    const internalGameId = jobDetailButton.dataset.v3JobDetail;
-    const jobId = jobDetailButton.dataset.v3JobId;
-    const key = jobDetailKey(internalGameId, jobId);
-    if (v3State.jobDetailsOpen.has(key)) {
-      v3State.jobDetailsOpen.delete(key);
-      renderCurrentV3View();
-      return;
-    }
-    v3State.jobDetailsOpen.add(key);
-    renderCurrentV3View();
-    await loadV3JobDetail(internalGameId, jobId);
-    return;
-  }
-});
-
-document.getElementById("refreshV3")?.addEventListener("click", loadV3);
-document.getElementById("refreshV3View")?.addEventListener("click", loadV3);
-document.getElementById("v3GameFilter")?.addEventListener("change", (event) => {
-  v3State.filter = event.target.value;
+  });
+  v3State.automationLogs = await v3Api.getAutomationLogs(v3State.automationLogFilters)
+    .catch((error) => ({ error: `${error.code || "V3_AUTOMATION_LOG_FAILED"}: ${error.message}` }));
   renderCurrentV3View();
-});
-document.getElementById("v3GameSelect")?.addEventListener("change", (event) => {
-  v3State.selectedGameId = event.target.value;
+}
+
+async function selectV3Game(internalGameId, view = "workflow") {
+  v3State.selectedGameId = internalGameId || "";
   v3StorageSet("starting9.admin-v3.selected-game", v3State.selectedGameId);
-  updateV3Hash(v3State.view, v3State.selectedGameId);
+  chooseV3View(view);
+  await loadV3OperationDetails();
+}
+
+async function copyV3JobDetail(jobCopyButton) {
+  const internalGameId = jobCopyButton.dataset.v3JobCopyGame || "";
+  const jobId = jobCopyButton.dataset.v3JobCopyId || "";
+  const key = jobDetailKey(internalGameId, jobId);
+  const detail = v3State.jobDetails.get(key);
+  const job = detail?.job || detail;
+  let value = "";
+  if (jobCopyButton.dataset.v3JobCopy === "all") value = jobDetailCopyText(internalGameId, detail);
+  else if (jobCopyButton.dataset.v3JobCopy === "failureMessage") value = String(jobField(job, "failure_message", "failureMessage", ""));
+  else {
+    const field = JOB_DETAIL_FIELDS.find((item) => item[1] === jobCopyButton.dataset.v3JobCopy);
+    value = field ? jobField(job, field[0], field[1], field[0] === "job_id" ? job?.id : field[0] === "internal_game_id" ? internalGameId : "") : "";
+  }
+  const status = jobCopyButton.closest(".job-detail-inline")?.querySelector(".job-copy-status");
+  try {
+    await copyTextSafely(value);
+    v3State.jobDetailsCopyStatus.set(key, "コピーしました");
+    if (status) status.textContent = "コピーしました";
+  } catch {
+    v3State.jobDetailsCopyStatus.set(key, "コピーできませんでした");
+    if (status) status.textContent = "コピーできませんでした";
+  }
+}
+
+async function toggleV3JobDetail(internalGameId, jobId) {
+  const key = jobDetailKey(internalGameId, jobId);
+  if (v3State.jobDetailsOpen.has(key)) {
+    v3State.jobDetailsOpen.delete(key);
+    renderCurrentV3View();
+    return;
+  }
+  v3State.jobDetailsOpen.add(key);
   renderCurrentV3View();
-  loadV3OperationDetails();
-});
-window.addEventListener("hashchange", () => {
+  await loadV3JobDetail(internalGameId, jobId);
+}
+
+function handleV3HashChange() {
   const hash = readV3Hash();
   v3State.view = hash.view;
   if (hash.gameId) v3State.selectedGameId = hash.gameId;
   renderCurrentV3View();
   loadV3OperationDetails();
-});
+}
 
-const initialV3Hash = readV3Hash();
-v3State.view = initialV3Hash.view;
-v3State.selectedGameId = initialV3Hash.gameId;
-loadV3();
+function restoreInitialV3Route() {
+  const initialV3Hash = readV3Hash();
+  v3State.view = initialV3Hash.view;
+  v3State.selectedGameId = initialV3Hash.gameId;
+}
+
+adminV3Modules.createAdminV3Coordinator({
+  document,
+  window,
+  state: v3State,
+  actions: {
+    load: loadV3,
+    chooseView: chooseV3View,
+    previewRankingReset,
+    executeRankingReset,
+    previewPerfectScore,
+    refreshAutomationLogs,
+    selectGame: (internalGameId) => selectV3Game(internalGameId),
+    copyJobDetail: copyV3JobDetail,
+    refreshJobDetail: (internalGameId, jobId) => loadV3JobDetail(internalGameId, jobId, true),
+    toggleJobDetail: toggleV3JobDetail,
+    changeFilter: (filter) => { v3State.filter = filter; renderCurrentV3View(); },
+    selectGameFromToolbar: (internalGameId) => selectV3Game(internalGameId, v3State.view),
+    handleHashChange: handleV3HashChange,
+    restoreInitialRoute: restoreInitialV3Route
+  }
+}).start();

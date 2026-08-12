@@ -2,7 +2,7 @@
 
 ## Test Commands
 
-The repository uses Node's built-in test runner and does not require a package manager script:
+The repository uses Node's built-in test runner with small, dependency-free package scripts:
 
 ```powershell
 node --test
@@ -10,6 +10,15 @@ node --check script.js
 node --check auth-worker.js
 git diff --check
 ```
+
+The reproducible CI-equivalent command is:
+
+```powershell
+npm ci --ignore-scripts
+npm run check
+```
+
+`check:syntax` walks JavaScript files outside `scripts/` and runs `node --check` without executing application code. GitHub Actions runs the same checks with Node 22. It does not deploy, access D1, apply migrations, execute operational scripts, or send Discord notifications.
 
 For a focused change, run the relevant file first, then run the full suite before merge.
 
@@ -28,6 +37,8 @@ The tests cover the following contracts:
 - admin-only perfect-score preview and release fixture isolation
 - migration application and schema compatibility using local test databases
 - V1/V2 retirement and no-legacy-fallback guarantees
+
+Admin V3 browser modules are covered by tests for script load order, credentialed endpoint routing, state isolation, and the coordinator boundary. The entrypoint retains a `v3Fetch` compatibility delegate while calls are routed through the named API client.
 
 Backend domain modules are tested directly as well as through the Worker. Scoring, ranking, and public-results tests import the pure rules from `backend/domain`; ranking repository tests keep the D1-compatible CTE contract under `backend/repositories`. Compatibility tests still import the Worker exports to ensure existing callers keep their public symbols during the incremental split.
 

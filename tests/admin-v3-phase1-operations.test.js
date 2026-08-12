@@ -54,8 +54,8 @@ test("管理画面は自動進行の確認に限定し、手動Phase 1操作を�
   }
   assert.match(gameProgress, /V3が取得・確定したスタメンrevisionを確認します/);
   assert.match(gameProgress, /V3が進めた採点・ランキング・公開の状態を確認します/);
-  assert.match(page, /admin-v3\.js\?v=admin-v3-render-modules-1/);
-  assert.match(page, /admin-v3\.css\?v=admin-v3-render-modules-1/);
+  assert.match(page, /admin-v3\.js\?v=admin-v3-filter-games-fix-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-v3-filter-games-fix-1/);
 });
 
 test("管理画面のjob詳細は失敗内容を確認でき、ユーザー情報を描画しない", () => {

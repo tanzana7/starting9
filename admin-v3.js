@@ -579,6 +579,7 @@ const v3GameProgressRenderer = adminV3Modules.createAdminV3GameProgressRenderer(
   renderTodayOps: v3DiagnosticsRenderer.renderTodayOps,
   renderPerfectScorePreview: v3PerfectScoreRenderer.render,
   listItems: v3ListItems,
+  filterGames: filteredV3Games,
   normalizeRevisionList: normalizeV3RevisionList,
   selectedDetails: selectedV3Details,
   selectedGame: (games) => selectedV3Game(games),

@@ -10,7 +10,8 @@ const V3_DIAGNOSTIC_JOB_TYPES = new Set([
   "score_recovery",
   "ranking_recovery",
   "service_unavailable",
-  "terminal_recovery"
+  "terminal_recovery",
+  "cron_run"
 ]);
 
 export function normalizeV3DiagnosticJobType(entry, fallbackJobType = null) {

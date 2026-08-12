@@ -37,6 +37,13 @@ Admin V3 remains a build-free static page. Its entrypoint order is explicit:
 admin-v3.html
   -> frontend/admin-v3/state.js
   -> frontend/admin-v3/api-client.js
+  -> frontend/admin-v3/dom.js
+  -> frontend/admin-v3/render-game-progress.js
+  -> frontend/admin-v3/render-job-details.js
+  -> frontend/admin-v3/render-roster.js
+  -> frontend/admin-v3/render-diagnostics.js
+  -> frontend/admin-v3/render-ranking-reset.js
+  -> frontend/admin-v3/render-perfect-score-preview.js
   -> frontend/admin-v3/app-coordinator.js
   -> admin-v3.js
 ```
@@ -46,7 +53,14 @@ admin-v3.html
 | `frontend/admin-v3/state.js` | Initial state for selection, job details, logs, reset preview, and perfect-score preview | API calls or DOM writes |
 | `frontend/admin-v3/api-client.js` | Credentialed GET/POST requests and named admin endpoints | authorization decisions or rendering |
 | `frontend/admin-v3/app-coordinator.js` | Event delegation, toolbar bindings, and ordered startup | V3 workflow behavior or database writes |
-| `admin-v3.js` | Screen-specific timeline, Today Ops, job, roster, ranking, and diagnostics rendering | public UI and V3 runtime execution |
+| `frontend/admin-v3/dom.js` | Shared HTML escaping, JST formatting, and selected-game headers | API calls or state transitions |
+| `frontend/admin-v3/render-game-progress.js` | Dashboard, game list, timeline, workflow, lineup, scoring, and schedule views | API calls or dangerous actions |
+| `frontend/admin-v3/render-job-details.js` | Inline job rows/details, copy controls, and clipboard fallback | authorization or job mutation |
+| `frontend/admin-v3/render-roster.js` | Roster timeline detail and status summary markup | roster fetching or persistence |
+| `frontend/admin-v3/render-diagnostics.js` | Today Ops, game diagnostics, and structured automation log markup | audit writes or authentication |
+| `frontend/admin-v3/render-ranking-reset.js` | Ranking reset preview/execute form and marker display | confirmation validation or API authorization |
+| `frontend/admin-v3/render-perfect-score-preview.js` | Admin-only perfect-score and fixture preview markup | normal scoring, ranking, publication, or V3 jobs |
+| `admin-v3.js` | Compatibility entrypoint, API operations, state transitions, event wiring, and renderer composition | public UI and V3 runtime execution |
 
 These are classic namespaced browser modules so Pages can serve them without a bundler while the existing entrypoint remains compatible with focused tests and incremental extraction.
 

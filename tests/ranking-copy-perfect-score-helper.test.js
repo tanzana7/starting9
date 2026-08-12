@@ -8,6 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const publicRanking = fs.readFileSync(path.join(root, "frontend", "public", "render-ranking.js"), "utf8");
 const admin = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
+const perfectScoreRenderer = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-perfect-score-preview.js"), "utf8");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const adminPreview = fs.readFileSync(path.join(root, "backend", "admin", "preview.js"), "utf8");
 const page = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
@@ -57,12 +58,12 @@ test("満点preview APIはadmin認証、正式スタメン、読み取り専用�
   const previewHandler = worker.slice(worker.indexOf("async function handleAdminV3PerfectScorePreview"), worker.indexOf("async function recordV3AdminAudit"));
   assert.doesNotMatch(previewHandler, /INSERT|UPDATE|DELETE/);
   assert.doesNotMatch(admin, /perfect-score-test\/execute/);
-  assert.match(admin, /data-v3-perfect-score-preview/);
-  assert.match(page, /admin-and-repo-polish-1/);
+  assert.match(perfectScoreRenderer, /data-v3-perfect-score-preview/);
+  assert.match(page, /admin-v3-render-modules-1/);
 });
 
 test("満点previewは本番データ作成やランキングリセット実行を自動で行わない", () => {
-  assert.match(admin, /本番予想、ランキング、公開結果、監査データは変更しません/);
-  assert.doesNotMatch(admin, /data-v3-perfect-score-execute/);
+  assert.match(perfectScoreRenderer, /本番予想、ランキング、公開結果、監査データは変更しません/);
+  assert.doesNotMatch(perfectScoreRenderer, /data-v3-perfect-score-execute/);
   assert.doesNotMatch(worker, /perfect-score-test\/execute/);
 });

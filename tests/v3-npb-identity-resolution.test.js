@@ -296,13 +296,16 @@ test("V3 lineup fetchは保存URLを優先し、未解決時はlegacy fallback�
 
 test("V3管理画面はNPB識別情報とjob監査を読み取り表示する", () => {
   const client = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
+  const diagnostics = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-diagnostics.js"), "utf8");
+  const jobDetails = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-job-details.js"), "utf8");
+  const gameProgress = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-game-progress.js"), "utf8");
   const page = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
-  assert.match(client, /renderAutomationLogs/);
-  assert.match(client, /renderInlineJobDetail/);
-  assert.match(client, /planner decision/);
-  assert.ok(client.includes("${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}"));
-  assert.match(page, /admin-v3\.css\?v=admin-and-repo-polish-1/);
-  assert.match(page, /admin-v3\.js\?v=admin-and-repo-polish-1/);
-  assert.match(client, /NPB自動解決job/);
-  assert.match(client, /解決元/);
+  assert.match(diagnostics, /renderAutomationLogs/);
+  assert.match(jobDetails, /renderInline/);
+  assert.match(jobDetails, /planner decision/);
+  assert.ok(diagnostics.includes("${escapeHtml(game.homeTeam)} vs ${escapeHtml(game.awayTeam)}"));
+  assert.match(page, /admin-v3\.css\?v=admin-v3-render-modules-1/);
+  assert.match(page, /admin-v3\.js\?v=admin-v3-render-modules-1/);
+  assert.match(diagnostics, /NPB自動解決job/);
+  assert.match(diagnostics, /解決元/);
 });

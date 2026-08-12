@@ -8,6 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const page = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 const client = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
+const diagnostics = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-diagnostics.js"), "utf8");
 const apiClient = fs.readFileSync(path.join(root, "frontend", "admin-v3", "api-client.js"), "utf8");
 
 test("V3管理画面は既存セッションと管理者APIを使い、サーバー認可を要求する", () => {
@@ -26,9 +27,9 @@ test("V3管理操作は巨大処理を直接実行せず、V3 jobを投入する
 
 test("V3管理画面はNPB自動解決jobの予定・結果・retryを表示する", () => {
   assert.match(client, /npb_identity_resolve/);
-  assert.match(client, /次回予定/);
-  assert.match(client, /最終実行/);
-  assert.match(client, /次回retry/);
+  assert.match(diagnostics, /次回予定/);
+  assert.match(diagnostics, /最終実行/);
+  assert.match(diagnostics, /次回retry/);
   assert.match(worker, /completed_at/);
   assert.match(worker, /claimed_at/);
 });

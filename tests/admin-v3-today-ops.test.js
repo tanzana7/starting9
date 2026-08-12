@@ -11,24 +11,37 @@ const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const page = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 const css = fs.readFileSync(path.join(root, "admin-v3.css"), "utf8");
 const wrangler = JSON.parse(fs.readFileSync(path.join(root, "wrangler.auth.production.jsonc"), "utf8"));
-
-const start = client.indexOf("const TODAY_OPS_STATUS_LABELS");
-const end = client.indexOf("function renderGameSummary", start);
-const todayOpsSource = client.slice(start, end);
-const listStart = client.indexOf("function normalizeV3List");
-const listEnd = client.indexOf("function v3StorageGet", listStart);
-const listSource = client.slice(listStart, listEnd);
+const diagnosticsSource = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-diagnostics.js"), "utf8");
+const moduleContext = { window: {} };
+vm.runInNewContext(diagnosticsSource, moduleContext);
 const context = {
-  filteredV3Games(games, filter) {
-    return filter === "today" ? games.filter((game) => game.gameDate === "2026-08-08") : games;
-  },
-  v3JstDate() { return "2026-08-08"; },
-  gameDateForFilter(game) { return game.gameDate; },
-  nextV3ActionText() { return "次の処理"; },
-  formatV3Jst(value) { return String(value || "-"); },
-  escapeV3(value) { return String(value ?? ""); }
+  createRenderer() {
+    const modules = moduleContext.window.Starting9AdminV3;
+    return modules.createAdminV3DiagnosticsRenderer({
+      state: { automationLogs: null, automationLogFilters: {} },
+      escapeHtml(value) { return String(value ?? ""); },
+      formatJst(value) { return String(value || "-"); },
+      listItems(value, key = "items") { return Array.isArray(value) ? value : Array.isArray(value?.[key]) ? value[key] : []; },
+      filterGames(games, filter) { return filter === "today" ? games.filter((game) => game.gameDate === "2026-08-08") : games; },
+      jstDate() { return "2026-08-08"; },
+      gameDateForFilter(game) { return game.gameDate; },
+      currentFailedJobs(game) { return (Array.isArray(game?.jobs) ? game.jobs : []).filter((job) => ["failed", "permanently_failed"].includes(job.status)); },
+      currentRetryWaitJobs(game) { return (Array.isArray(game?.jobs) ? game.jobs : []).filter((job) => job.status === "retry_wait"); },
+      normalizedPhaseState() { return null; },
+      rosterDisplayState(game) { return game.rosterDiagnostics?.rosterSnapshotExists ? { status: "ok", detail: "" } : { status: "waiting", detail: "" }; },
+      lineupDisplayState() { return { status: "waiting", detail: "" }; },
+      nextActionText() { return "次の処理"; },
+      renderSelectedGameHeader() { return ""; },
+      renderJobRows() { return ""; },
+      latestJob() { return null; },
+      jobTypes: [],
+      statusLabel(value) { return String(value || ""); },
+      identityStatusLabel(value) { return String(value || ""); }
+    });
+  }
 };
-vm.runInNewContext(`${listSource}; ${todayOpsSource}; globalThis.buildTodayOpsModel = buildTodayOpsModel;`, context);
+const renderer = context.createRenderer();
+context.buildTodayOpsModel = renderer.buildTodayOpsModel;
 
 function game(overrides = {}) {
   return {
@@ -129,19 +142,19 @@ test("future schedule sync診断の成功・skip項目をToday Opsへ表示で�
   assert.match(worker, /futureGamesBefore/);
   assert.match(worker, /futureGamesAfter/);
   assert.match(worker, /expandedTo30Days/);
-  assert.match(client, /未来試合同期診断/);
-  assert.match(client, /lastScheduleSyncAt/);
-  assert.match(client, /futureScheduleSyncAttention/);
+  assert.match(diagnosticsSource, /未来試合同期診断/);
+  assert.match(diagnosticsSource, /lastScheduleSyncAt/);
+  assert.match(diagnosticsSource, /futureScheduleSyncAttention/);
 });
 
 test("overviewはCron監査時刻をToday Opsへ返し、管理画面は専用セクションを描画する", () => {
   assert.match(worker, /futureGamesDefinition: "game_date > JST today"/);
   assert.match(worker, /WHERE source = 'cron' ORDER BY occurred_at DESC LIMIT 1/);
-  assert.match(client, /Today Ops \/ Automation Health/);
-  assert.match(client, /futureShortage/);
-  assert.match(client, /todayOpsStep/);
-  assert.match(page, /admin-v3\.js\?v=admin-and-repo-polish-1/);
-  assert.match(page, /admin-v3\.css\?v=admin-and-repo-polish-1/);
+  assert.match(diagnosticsSource, /Today Ops \/ Automation Health/);
+  assert.match(diagnosticsSource, /futureShortage/);
+  assert.match(diagnosticsSource, /renderStep\("スタメン", steps\.lineup, steps\.lineupDetail\)/);
+  assert.match(page, /admin-v3\.js\?v=admin-v3-render-modules-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-v3-render-modules-1/);
   assert.match(css, /today-ops-panel/);
   assert.match(css, /@media \(max-width: 720px\)[\s\S]*today-ops-metrics, \.today-ops-steps \{ grid-template-columns: 1fr; \}/);
 });

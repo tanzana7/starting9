@@ -8,6 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const adminPreview = fs.readFileSync(path.join(root, "backend", "admin", "preview.js"), "utf8");
 const admin = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
+const perfectScoreRenderer = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-perfect-score-preview.js"), "utf8");
 const adminPage = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 const publicPage = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const publicScript = fs.readFileSync(path.join(root, "script.js"), "utf8");
@@ -69,8 +70,8 @@ test("fixture APIはadmin専用・previewOnly・D1 writeなしで、executeを�
 
 test("fixtureはadmin-v3だけに存在し、通常採点・ランキング・公開・V3 jobから参照されない", () => {
   assert.match(admin, /RELEASE_DEBUG_PERFECT_SCORE_FIXTURE/);
-  assert.match(admin, /data-v3-perfect-score-fixture-preview/);
-  assert.match(adminPage, /admin-and-repo-polish-1/);
+  assert.match(perfectScoreRenderer, /data-v3-perfect-score-fixture-preview/);
+  assert.match(adminPage, /admin-v3-render-modules-1/);
   assert.doesNotMatch(publicPage, /RELEASE_DEBUG_PERFECT_SCORE_FIXTURE|perfect-score-test/);
   assert.doesNotMatch(publicScript, /RELEASE_DEBUG_PERFECT_SCORE_FIXTURE|perfect-score-test/);
   assert.doesNotMatch(v3Runtime, /RELEASE_DEBUG_PERFECT_SCORE_FIXTURE|perfect-score-test/);

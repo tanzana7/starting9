@@ -9,6 +9,7 @@ const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const audit = fs.readFileSync(path.join(root, "backend/automation-v3/audit.js"), "utf8");
 const diagnostics = fs.readFileSync(path.join(root, "backend/automation-v3/diagnostics.js"), "utf8");
 const admin = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
+const adminDiagnostics = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-diagnostics.js"), "utf8");
 const html = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 const css = fs.readFileSync(path.join(root, "admin-v3.css"), "utf8");
 
@@ -32,18 +33,18 @@ test("admin-v3は構造化監査の読み取りAPIと6種類のフィルタを�
   assert.match(worker, /\/api\/admin\/v3\/automation-logs/);
   for (const field of ["runId", "internalGameId", "jobType", "status", "reasonCode", "failureCode"]) {
     assert.match(worker, new RegExp(`searchParams\\.get\\("${field}"\\)`));
-    assert.match(admin, /data-v3-automation-log-filter/);
+    assert.match(adminDiagnostics, /data-v3-automation-log-filter/);
   }
-  assert.match(admin, /game run summaries/);
-  assert.match(admin, /job timeline/);
-  assert.match(admin, /latestCronSummary/);
+  assert.match(adminDiagnostics, /game run summaries/);
+  assert.match(adminDiagnostics, /job timeline/);
+  assert.match(adminDiagnostics, /latestCronSummary/);
 });
 
 test("admin-v3の監査表示は既存V3の読み取り専用導線で、キャッシュバスターを更新する", () => {
-  assert.match(admin, /data-v3-automation-log-refresh/);
+  assert.match(adminDiagnostics, /data-v3-automation-log-refresh/);
   assert.match(admin, /payload\.automationLogs = await v3Api\.getAutomationLogs/);
   assert.match(css, /\.automation-logs-panel/);
-  assert.match(html, /admin-and-repo-polish-1/);
+  assert.match(html, /admin-v3-render-modules-1/);
   const scheduled = worker.slice(worker.indexOf("async scheduled(event, env, ctx)"), worker.indexOf("async function runScheduledGameAutomationV3"));
   assert.doesNotMatch(scheduled, /runGameWorkflows|runDueCompletionWorkflowJobs|INSERT INTO game_workflow_logs/);
 });

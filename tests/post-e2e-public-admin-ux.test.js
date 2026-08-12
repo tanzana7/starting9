@@ -10,6 +10,7 @@ const admin = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const publicResults = fs.readFileSync(path.join(root, "backend", "domain", "public-results.js"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const publicResultsRenderer = fs.readFileSync(path.join(root, "frontend", "public", "render-results.js"), "utf8");
 const index = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const adminPage = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 
@@ -79,9 +80,9 @@ test("公開結果はhome/away順の日本語labelと安全なpublished表示fie
 test("通常画面は公開結果の読込中・失敗・完了を内部情報なしで分離する", () => {
   assert.match(script, /isDetailLoading: false/);
   assert.match(script, /detailError: ""/);
-  assert.match(script, /結果を読み込み中です。/);
+  assert.match(publicResultsRenderer, /結果を読み込み中です。/);
   assert.match(script, /結果を読み込めませんでした。時間をおいて再度お試しください。/);
-  assert.match(script, /公開：\$\{formatPublicJstDateTime\(displayedResult\.publishedAt\)\}/);
+  assert.match(publicResultsRenderer, /公開：\$\{deps\.formatPublicJstDateTime\(displayedResult\.publishedAt\)\}/);
   const historyStart = script.indexOf("function renderResultHistory");
   const historyEnd = script.indexOf("function buildCurrentPredictionApiUrl", historyStart);
   const history = script.slice(historyStart, historyEnd);
@@ -91,7 +92,7 @@ test("通常画面は公開結果の読込中・失敗・完了を内部情報�
 });
 
 test("post-E2E表示修正のcache busterを更新し、旧手動操作を復活させない", () => {
-  assert.match(index, /script\.js\?v=codebase-polish-for-portfolio-1/);
+  assert.match(index, /script\.js\?v=public-frontend-modules-1/);
   assert.match(adminPage, /admin-v3\.js\?v=admin-perfect-score-fixture-preview-1/);
   assert.doesNotMatch(admin, /runAutoScoringNowButton/);
 });

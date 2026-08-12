@@ -18,6 +18,7 @@ For a focused change, run the relevant file first, then run the full suite befor
 The tests cover the following contracts:
 
 - public game selection, result history, roster fallback, and `PublicAppCoordinator`
+- public frontend module loading order, storage safety, API client behavior, and request guards
 - account and admin authentication boundaries
 - V3 planning, claiming, execution, retries, and state transitions
 - V3 module boundaries: pure timing/domain decisions, repository contracts, planner/claim lifecycle, audit record construction, and Cron diagnostics

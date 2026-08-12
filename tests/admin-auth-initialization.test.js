@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
+const { loadPublicFrontendModules } = require("./helpers/load-public-frontend-modules.cjs");
 
 test("初回認証イベントを取りこぼしてもPromise完了後にadmin APIを1回呼ぶ", async () => {
   let resolveAuthReady;
@@ -82,6 +83,7 @@ test("初回認証イベントを取りこぼしてもPromise完了後にadmin A
   // script.jsの読込前に初期イベントが終わった状況を再現します。
   window.dispatchEvent({ type: "starting9-auth-state-changed" });
   const scriptPath = path.join(__dirname, "..", "script.js");
+  loadPublicFrontendModules(context, path.join(__dirname, ".."));
   vm.runInContext(fs.readFileSync(scriptPath, "utf8"), context, { filename: scriptPath });
   vm.runInContext(
     "applyAdminMode = () => {}; initializeGameSchedule = () => {}; renderAll = () => {}; refreshAdminScoringSummary = () => {}; refreshAutoScoringStatus = () => {}; refreshAdminGameWorkflowStatus = () => {}; refreshAdminTestStatus = () => {}; refreshAdminTestAchievements = () => {}; refreshAdminDeploymentInfo = () => {}; renderAdminTestPanel = () => {};",

@@ -45,14 +45,15 @@ test("Workerは予想のPUTとDELETEの両方でサーバー時刻の締切判�
 
 test("クライアントは締切後に入力・保存・リセットを止め、管理者テスト上書きは画面状態だけに限定する", () => {
   const script = read("script.js");
+  const predictionForm = read("frontend/public/prediction-form.js");
   const html = read("index.html");
 
   assert.match(script, /function getPredictionDeadlineMinutesBeforeStart\(\)/);
   assert.match(script, /predictionDeadlineMinutesBeforeStart/);
   assert.match(script, /setInterval\(\(\) => \{[\s\S]*?refreshPredictionDeadlineState\(\);[\s\S]*?refreshPredictionTarget\(\{ retryUnannounced: false \}\)/);
   assert.match(script, /function ensurePredictionEditingAllowed\(\)/);
-  assert.match(script, /async function handlePredictionSubmit[\s\S]*?ensurePredictionEditingAllowed\(\)/);
-  assert.match(script, /function resetPredictionInput\(\) \{\s*if \(!ensurePredictionEditingAllowed\(\)\)/);
+  assert.match(predictionForm, /async function handleSubmit[\s\S]*?deps\.ensurePredictionEditingAllowed\(\)/);
+  assert.match(predictionForm, /function reset\(\) \{\s*if \(!deps\.ensurePredictionEditingAllowed\(\)\)/);
   assert.match(script, /function canUsePredictionDeadlineOverride\(\) \{\s*return state\.appMode === "admin"/);
   assert.match(html, /id="predictionDeadlineStatus"/);
   assert.match(script, /function handlePredictionDeadlineOverrideClick\(event\)/);

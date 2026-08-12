@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
+const { loadPublicFrontendModules } = require("./helpers/load-public-frontend-modules.cjs");
 
 const scriptPath = path.join(__dirname, "..", "script.js");
 const scriptSource = fs.readFileSync(scriptPath, "utf8");
@@ -72,6 +73,7 @@ function createApp({ href = "https://starting9.pages.dev/", user = null, admin =
     setTimeout,
     window
   });
+  loadPublicFrontendModules(context, path.join(__dirname, ".."));
   vm.runInContext(scriptSource, context, { filename: scriptPath });
   vm.runInContext(
     "applyAdminMode = () => {}; initializeGameSchedule = () => {}; renderAll = () => {}; refreshAdminScoringSummary = () => {}; refreshAutoScoringStatus = () => {}; refreshAdminGameWorkflowStatus = () => {}; refreshAdminTestStatus = () => {}; refreshAdminTestAchievements = () => {}; refreshAdminDeploymentInfo = () => {}; renderAdminTestPanel = () => {}; stopAutoFetch = () => {}; stopRosterMonitor = () => {};",

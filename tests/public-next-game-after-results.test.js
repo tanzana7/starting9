@@ -50,5 +50,5 @@ test("通常画面の結果と履歴は内部識別子を表示せず、メイ�
 });
 
 test("通常画面の次戦導線は新しいscript cache busterで配信する", () => {
-  assert.match(html, /script\.js\?v=codebase-polish-for-portfolio-1/);
+  assert.match(html, /script\.js\?v=public-frontend-modules-1/);
 });

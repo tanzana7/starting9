@@ -7,6 +7,7 @@ const root = path.join(__dirname, "..");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const publicRoster = fs.readFileSync(path.join(root, "frontend", "public", "roster.js"), "utf8");
 const normalScreenCss = css.slice(css.lastIndexOf("/* 通常画面:"));
 
 test("通常画面の野球UI調整は管理画面クラスの外側に限定される", () => {
@@ -55,8 +56,8 @@ test("スマホの通常画面はオーダー表と選手一覧を縦積みに�
 
 test("選手フィルターは初期状態をactiveとして保持し、選択状態を読み上げられる", () => {
   assert.match(script, /candidateRosterFilter: "active"/);
-  assert.match(script, /button\.setAttribute\("aria-pressed", isSelected \? "true" : "false"\)/);
-  assert.match(script, /button\.setAttribute\("aria-selected", isSelected \? "true" : "false"\)/);
+  assert.match(publicRoster, /button\.setAttribute\("aria-pressed", isSelected \? "true" : "false"\)/);
+  assert.match(publicRoster, /button\.setAttribute\("aria-selected", isSelected \? "true" : "false"\)/);
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.roster-filter-button\.is-selected[\s\S]*font-weight: 950/);
 });
 

@@ -7,6 +7,7 @@ const vm = require("node:vm");
 const root = path.join(__dirname, "..");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const publicRoster = fs.readFileSync(path.join(root, "frontend", "public", "roster.js"), "utf8");
 const worker = fs.readFileSync(path.join(root, "cloudflare-worker.js"), "utf8");
 const players = fs.readFileSync(path.join(root, "players.js"), "utf8");
 
@@ -98,12 +99,11 @@ test("空白表記を正規化し、前回成功スナップショットを一�
 });
 
 test("現在状態テキストを出さず、最新スナップショットで選手一覧タブを絞り込む", () => {
-  const filter = getFunctionSource("renderPredictionRosterFilter");
   const chip = getFunctionSource("createPlayerChip");
-  assert.match(filter, /isPlayerInCurrentRoster\(player\)/);
-  assert.match(filter, /player\?\.isBatterCandidate === true/);
-  assert.match(filter, /candidateRosterFilter/);
-  assert.match(filter, /data-roster-filter/);
+  assert.match(publicRoster, /deps\.isPlayerInCurrentRoster\(player\)/);
+  assert.match(publicRoster, /player\?\.isBatterCandidate === true/);
+  assert.match(publicRoster, /candidateRosterFilter/);
+  assert.match(publicRoster, /data-roster-filter/);
   assert.match(html, /data-roster-filter="active"[^>]*>登録済み/);
   assert.match(html, /data-roster-filter="inactive"[^>]*>未登録/);
   assert.doesNotMatch(html, /predictionRosterFilterCurrent|現在：出場登録/);

@@ -1,0 +1,24 @@
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
+
+const PUBLIC_MODULES = [
+  "state.js",
+  "request-guard.js",
+  "storage.js",
+  "api-client.js",
+  "app-coordinator.js",
+  "render-results.js",
+  "render-ranking.js",
+  "roster.js",
+  "prediction-form.js"
+];
+
+function loadPublicFrontendModules(context, root) {
+  for (const file of PUBLIC_MODULES) {
+    const filename = path.join(root, "frontend", "public", file);
+    vm.runInContext(fs.readFileSync(filename, "utf8"), context, { filename });
+  }
+}
+
+module.exports = { loadPublicFrontendModules };

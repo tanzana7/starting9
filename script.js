@@ -434,66 +434,26 @@ const state = {
   pointerSuppressClickUntil: 0
 };
 
-const appState = {
-  gameCatalog: state.publicGameCatalog,
-  currentGame: null,
-  predictionForm: { gameId: "", isHydrated: false },
-  roster: state.publicRoster,
-  results: { latest: null, history: state.resultHistory },
-  ranking: { yearly: state.yearlyRanking, monthly: state.monthlyRanking },
-  account: { status: "idle", gameId: "" },
-  requests: {
-    initialization: { started: false, promise: null },
-    auth: { sequence: 0, promise: null },
-    catalog: { sequence: 0, controller: null },
-    roster: { sequence: 0, controller: null },
-    target: { sequence: 0, controller: null },
-    probable: { sequence: 0, controller: null },
-    result: { sequence: 0, controller: null },
-    resultDetail: { sequence: 0, controller: null },
-    account: { sequence: 0, controller: null }
-  }
-};
+const publicFrontend = window.Starting9Public;
+const publicStorage = publicFrontend.createPublicStorage(window.localStorage);
+const appState = publicFrontend.state.createPublicAppState(state);
+const publicRequestGuard = publicFrontend.createPublicRequestGuard(appState.requests);
+const publicApiClient = publicFrontend.createPublicApiClient();
 
 function syncPublicAppState() {
-  appState.gameCatalog = state.publicGameCatalog;
-  appState.currentGame = state.predictionTargetGame || null;
-  appState.predictionForm.gameId = state.predictionTargetGameId || "";
-  appState.predictionForm.isHydrated = Boolean(state.predictionTargetGameId);
-  appState.roster = state.publicRoster;
-  appState.results.latest = state.resultHistory.result || state.result || null;
-  appState.results.history = state.resultHistory;
-  appState.ranking.yearly = state.yearlyRanking;
-  appState.ranking.monthly = state.monthlyRanking;
-  appState.account.status = state.predictionRemote.status;
-  appState.account.gameId = state.predictionRemote.gameId || "";
+  publicFrontend.state.syncPublicAppState(appState, state);
 }
 
 function beginPublicRequest(name, { abort = false } = {}) {
-  const request = appState.requests[name];
-  if (!request) {
-    throw new Error(`Unknown public request: ${name}`);
-  }
-  if (abort && request.controller) {
-    request.controller.abort();
-  }
-  request.sequence += 1;
-  request.controller = abort && typeof AbortController === "function" ? new AbortController() : null;
-  return { id: request.sequence, signal: request.controller?.signal };
+  return publicRequestGuard.begin(name, { abort });
 }
 
 function isCurrentPublicRequest(name, id) {
-  return appState.requests[name]?.sequence === id;
+  return publicRequestGuard.isCurrent(name, id);
 }
 
 function preserveDisplayedPublicResult() {
-  const latest = state.resultHistory.result || state.result || null;
-  state.result = latest;
-  if (latest) {
-    saveToStorage(STORAGE_KEYS.result, latest);
-  } else {
-    removeFromStorage(STORAGE_KEYS.result);
-  }
+  return publicResultsRenderer.preserveDisplayedResult();
 }
 
 function discardStoredStateForGame(gameId) {
@@ -508,108 +468,108 @@ function discardStoredStateForGame(gameId) {
   });
 }
 
-class PublicAppCoordinator {
-  start() {
-    if (appState.requests.initialization.promise) {
-      return appState.requests.initialization.promise;
-    }
-
-    appState.requests.initialization.started = true;
-    appState.requests.initialization.promise = this.initialize().catch((error) => {
-      console.error("公開画面の初期化に失敗しました", error);
-      return null;
-    });
-    return appState.requests.initialization.promise;
+const publicResultsRenderer = publicFrontend.createPublicResultsRenderer({
+  state,
+  storage: publicStorage,
+  storageKeys: STORAGE_KEYS,
+  renderScoreInsights,
+  escapeHtml,
+  createPredictionSummary,
+  getResultHistoryGameId,
+  formatResultHistoryMatchup,
+  formatPublicJstDateTime,
+  createResultView,
+  createResultViewModel
+});
+const publicRankingRenderer = publicFrontend.createPublicRankingRenderer({
+  getPredictionAccountUser,
+  escapeHtml,
+  formatRankingScore,
+  formatParticipationRate,
+  createRankingAchievementBadgesHtml
+});
+const publicRosterController = publicFrontend.createPublicRosterController({
+  state,
+  storage: publicStorage,
+  storageKeys: STORAGE_KEYS,
+  requestGuard: publicRequestGuard,
+  getTargetInternalGameId: getGameDayRosterTargetInternalGameId,
+  getRosterRequestId: () => publicRosterSyncRequestId,
+  setRosterRequestId: (requestId) => { publicRosterSyncRequestId = requestId; },
+  syncPublicAppState,
+  renderPicker,
+  renderPredictionDeadline,
+  fetchGameDayRosterSnapshot,
+  normalizeRosterEntries,
+  hasUsablePublicRosterForCurrentGame,
+  getPlayerData,
+  isPlayerInCurrentRoster
+});
+const publicPredictionFormController = publicFrontend.createPublicPredictionFormController({
+  state,
+  storage: publicStorage,
+  storageKeys: STORAGE_KEYS,
+  ensurePredictionEditingAllowed,
+  updatePredictionSaveButton,
+  clearMessage,
+  getLineupValues,
+  validateLineup,
+  showMessage,
+  markDuplicateSlots,
+  getCurrentGameId,
+  preserveDisplayedResult: preserveDisplayedPublicResult,
+  renderSavedPrediction,
+  renderPredictionCta,
+  renderPredictionAccountStatus,
+  renderPublicGameSelectionMeta,
+  renderPicker,
+  getPredictionAccountUser,
+  showPredictionSaveMessage,
+  savePredictionToAccount,
+  setLineupValues,
+  closeAllPositionMenus,
+  renderScoreResult,
+  deletePredictionFromAccount
+});
+const publicAppCoordinator = new publicFrontend.PublicAppCoordinator({
+  appState,
+  state,
+  operations: {
+    restoreAdminWorkflowLogsExpanded,
+    removeLegacyAdminQueryParameter,
+    buildLineupPicker,
+    loadState,
+    bindEvents,
+    renderScheduleLoadLog,
+    restoreAdminGameInfoInputs,
+    applyAdminMode,
+    syncPublicAppState,
+    renderAll,
+    initializePublicGameCatalog,
+    startAutoScoringCountdown,
+    startPredictionDeadlineTicker,
+    initializeProbableStarter,
+    initializeRosterCandidateSync,
+    initializeAuthDependentFeatures,
+    initializePredictionRemoteSync,
+    initializeTodayPerfectAchievers,
+    refreshPredictionDeadlineState,
+    refreshGameDayNoticeStatus,
+    setScheduleLoaderMessage,
+    initializeGameSchedule,
+    renderPredictionCta,
+    renderTodayPerfectAchievers,
+    fetchTodayPerfectAchievers,
+    syncPredictionFromAccount,
+    fetchUserAchievements,
+    refreshYearlyRanking,
+    refreshMonthlyRanking,
+    refreshAdminAccess,
+    refreshResultHistory
   }
-
-  async initialize() {
-    restoreAdminWorkflowLogsExpanded();
-    removeLegacyAdminQueryParameter();
-    state.isAdminMode = false;
-    buildLineupPicker("prediction", "predictionLineup", "predictionPlayers");
-    buildLineupPicker("actual", "actualLineup", "actualPlayers");
-    loadState();
-    bindEvents();
-    window.addEventListener("ham-schedule-log-updated", renderScheduleLoadLog);
-    renderScheduleLoadLog();
-    restoreAdminGameInfoInputs();
-    applyAdminMode();
-    syncPublicAppState();
-    renderAll();
-
-    await initializePublicGameCatalog();
-    await this.initializeSchedule();
-    startAutoScoringCountdown();
-    startPredictionDeadlineTicker();
-
-    const probablePromise = initializeProbableStarter();
-    // currentGame is canonical after the catalog step; roster loading must not wait
-    // for a separate probable-starter request to finish.
-    const rosterPromise = initializeRosterCandidateSync();
-    const authPromise = initializeAuthDependentFeatures();
-    await Promise.allSettled([probablePromise, rosterPromise, authPromise]);
-    await initializePredictionRemoteSync();
-    initializeTodayPerfectAchievers();
-    refreshPredictionDeadlineState();
-    syncPublicAppState();
-    renderAll();
-    void refreshGameDayNoticeStatus({ force: true });
-  }
-
-  async initializeSchedule() {
-    const scheduleReady = window.HAM_GAME_SCHEDULE_READY;
-    if (scheduleReady && typeof scheduleReady.then === "function") {
-      try {
-        await scheduleReady;
-        if (window.HAM_GAME_SCHEDULE_ERROR) {
-          setScheduleLoaderMessage(window.HAM_GAME_SCHEDULE_ERROR, "error");
-        }
-      } catch (error) {
-        setScheduleLoaderMessage("日程情報を読み込めませんでした。", "error");
-        console.warn("日程データの初期化に失敗しました", error?.message || "unknown error");
-      }
-    }
-    initializeGameSchedule();
-    refreshPredictionDeadlineState();
-    renderAll();
-    void refreshGameDayNoticeStatus({ force: true });
-  }
-
-  handleAuthStateChanged() {
-    if (appState.requests.auth.promise) {
-      return appState.requests.auth.promise;
-    }
-
-    const requestId = ++appState.requests.auth.sequence;
-    appState.requests.auth.promise = (async () => {
-      renderPredictionCta();
-      renderTodayPerfectAchievers();
-      const results = await Promise.allSettled([
-        fetchTodayPerfectAchievers({ force: true }),
-        syncPredictionFromAccount({ force: true }),
-        fetchUserAchievements({ force: true }),
-        refreshYearlyRanking({ force: true }),
-        state.rankingView === "monthly" ? refreshMonthlyRanking({ force: true }) : Promise.resolve(),
-        refreshAdminAccess(),
-        refreshResultHistory({ force: true })
-      ]);
-      results.forEach((result) => {
-        if (result.status === "rejected") {
-          console.error("公開画面の認証依存更新に失敗しました", result.reason?.message || "unknown error");
-        }
-      });
-    })().finally(() => {
-      if (appState.requests.auth.sequence === requestId) {
-        appState.requests.auth.promise = null;
-      }
-    });
-    return appState.requests.auth.promise;
-  }
-}
-
-const publicAppCoordinator = new PublicAppCoordinator();
+});
 if (typeof window !== "undefined") {
-  window.PublicAppCoordinator = PublicAppCoordinator;
+  window.PublicAppCoordinator = publicFrontend.PublicAppCoordinator;
   window.publicAppState = appState;
 }
 
@@ -3177,56 +3137,7 @@ function rosterEntryMatchesPlayer(entry, player) {
 }
 
 async function initializeRosterCandidateSync() {
-  const internalGameId = getGameDayRosterTargetInternalGameId();
-  const gameDate = String(state.predictionTargetGame?.date || "").slice(0, 10);
-  const request = beginPublicRequest("roster", { abort: true });
-  const requestId = request.id;
-  publicRosterSyncRequestId = requestId;
-  state.publicRoster = {
-    internalGameId,
-    gameDate,
-    status: "pending",
-    players: [],
-    isLoading: true,
-    usableUntil: ""
-  };
-  syncPublicAppState();
-  renderPicker("prediction");
-  renderPredictionDeadline();
-  const gameSnapshot = await fetchGameDayRosterSnapshot(internalGameId, { signal: request.signal });
-  if (!isCurrentPublicRequest("roster", requestId) || requestId !== publicRosterSyncRequestId || internalGameId !== getGameDayRosterTargetInternalGameId()) return;
-  state.publicRoster.isLoading = false;
-  if (gameSnapshot.ok && gameSnapshot.internalGameId === internalGameId && gameSnapshot.players.length) {
-    state.publicRoster = {
-      internalGameId,
-      gameDate: gameSnapshot.gameDate || gameDate,
-      status: gameSnapshot.status === "baseline" ? "baseline" : "fresh",
-      players: normalizeRosterEntries(gameSnapshot.players),
-      isLoading: false,
-      usableUntil: gameSnapshot.usableUntil || ""
-    };
-    syncPublicAppState();
-    saveToStorage(STORAGE_KEYS.rosterSnapshot, {
-      internalGameId,
-      gameDate: gameSnapshot.gameDate || state.predictionTargetGame?.date || "",
-      fetchedAt: gameSnapshot.capturedAt || new Date().toISOString(),
-      sourceUrl: "auth-worker://game-day-roster",
-      method: "game-day-roster-snapshot",
-      warning: "",
-      httpStatus: 200,
-      cacheStatus: gameSnapshot.status === "baseline" ? "game-snapshot-baseline" : "game-snapshot",
-      stale: false,
-      parsedCount: gameSnapshot.players.length,
-      announcedCount: gameSnapshot.players.length,
-      players: gameSnapshot.players
-    });
-    renderPicker("prediction");
-    renderPredictionDeadline();
-    return;
-  }
-  syncPublicAppState();
-  renderPicker("prediction");
-  renderPredictionDeadline();
+  return publicRosterController.syncCurrentGameRoster();
 }
 
 function buildNpbWorkerRequestUrl(sourceUrl) {
@@ -3365,8 +3276,7 @@ async function resolvePredictionTargetGame(schedule, useServer) {
   const url = buildPredictionTargetApiUrl();
   if (!url) return fallback;
   try {
-    const response = await fetch(url, { cache: "no-store" });
-    const payload = await response.json().catch(() => null);
+    const { response, payload } = await publicApiClient.get(url);
     if (!response.ok || !payload?.ok) return fallback;
     return payload.target ? normalizeServerPredictionTarget(payload.target) : fallback;
   } catch (error) {
@@ -3496,8 +3406,7 @@ async function initializePublicGameCatalog() {
     let apiGames = [];
     const url = buildPublicGamesApiUrl();
     if (url) {
-      const response = await fetch(url, { cache: "no-store", signal: request.signal });
-      const payload = await response.json().catch(() => null);
+      const { response, payload } = await publicApiClient.get(url, { signal: request.signal });
       if (response.ok && payload?.ok && Array.isArray(payload.games)) {
         apiGames = payload.games;
       }
@@ -3654,8 +3563,7 @@ async function fetchStoredProbableStarter() {
   renderProbableStarter();
 
   try {
-    const response = await fetch(url, { credentials: "include", cache: "no-store", signal: request.signal });
-    const result = await response.json().catch(() => null);
+    const { response, payload: result } = await publicApiClient.get(url, { credentials: "include", signal: request.signal });
     if (!isCurrentPublicRequest("probable", request.id) || getCurrentGameId() !== game.internalGameId) return;
     if (!response.ok || !result?.ok) {
       state.probableStarter.status = "error";
@@ -6009,11 +5917,10 @@ async function fetchTodayPerfectAchievers({ force = false } = {}) {
   renderTodayPerfectAchievers();
 
   try {
-    const response = await fetch(url, {
+    const { response, payload } = await publicApiClient.request(url, {
       credentials: "include",
       cache: force ? "no-store" : "default"
     });
-    const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok || !Array.isArray(payload.achievers)) {
       throw new Error(payload?.error || `HTTP ${response.status}`);
     }
@@ -6103,17 +6010,15 @@ async function refreshYearlyRanking({ force = false } = {}) {
   renderRankingPanel();
 
   try {
-    const publicRequest = fetch(publicUrl, { credentials: "include", cache: force ? "no-store" : "default" })
-      .then(async (response) => {
-        const payload = await response.json().catch(() => null);
+    const publicRequest = publicApiClient.request(publicUrl, { credentials: "include", cache: force ? "no-store" : "default" })
+      .then(({ response, payload }) => {
         if (!response.ok || !Array.isArray(payload?.ranking)) {
           throw new Error(payload?.error || `HTTP ${response.status}`);
         }
         return payload;
       });
-    const selfRequest = user ? fetch(buildMyYearlyRankingApiUrl(period), { credentials: "include", cache: "no-store" })
-      .then(async (response) => {
-        const payload = await response.json().catch(() => null);
+    const selfRequest = user ? publicApiClient.get(buildMyYearlyRankingApiUrl(period), { credentials: "include" })
+      .then(({ response, payload }) => {
         if (!response.ok || !payload?.ok) {
           throw new Error(payload?.error || `HTTP ${response.status}`);
         }
@@ -6167,17 +6072,15 @@ async function refreshMonthlyRanking({ force = false } = {}) {
   renderRankingPanel();
 
   try {
-    const publicRequest = fetch(publicUrl, { credentials: "include", cache: force ? "no-store" : "default" })
-      .then(async (response) => {
-        const payload = await response.json().catch(() => null);
+    const publicRequest = publicApiClient.request(publicUrl, { credentials: "include", cache: force ? "no-store" : "default" })
+      .then(({ response, payload }) => {
         if (!response.ok || !Array.isArray(payload?.ranking)) {
           throw new Error(payload?.error || `HTTP ${response.status}`);
         }
         return payload;
       });
-    const selfRequest = user ? fetch(buildMyMonthlyRankingApiUrl(period), { credentials: "include", cache: "no-store" })
-      .then(async (response) => {
-        const payload = await response.json().catch(() => null);
+    const selfRequest = user ? publicApiClient.get(buildMyMonthlyRankingApiUrl(period), { credentials: "include" })
+      .then(({ response, payload }) => {
         if (!response.ok || !payload?.ok) {
           throw new Error(payload?.error || `HTTP ${response.status}`);
         }
@@ -6299,109 +6202,34 @@ function renderMonthlyRanking() {
 }
 
 function renderRankingHeading(view) {
-  const title = document.getElementById("rankingTitle");
-  const description = document.getElementById("rankingDescription");
-  const yearlyButton = document.getElementById("showYearlyRankingButton");
-  const monthlyButton = document.getElementById("showMonthlyRankingButton");
-  const isMonthly = view === "monthly";
-  if (title) title.textContent = "ランキング";
-  if (description) description.textContent = isMonthly
-    ? "正式リリース時は、規定到達者のみ表示します。現在はテスト期間のため、規定未到達者も参考表示しています。"
-    : "正式リリース時は、規定到達者のみ表示します。現在はテスト期間のため、規定未到達者も参考表示しています。";
-  yearlyButton?.classList.toggle("is-active", !isMonthly);
-  monthlyButton?.classList.toggle("is-active", isMonthly);
-  yearlyButton?.setAttribute("aria-selected", String(!isMonthly));
-  monthlyButton?.setAttribute("aria-selected", String(isMonthly));
+  return publicRankingRenderer.renderHeading(view);
 }
 
 const RANKING_DISPLAY_OPTIONS = Object.freeze({ hideIneligibleRankings: false });
 
 function filterRankingRowsForDisplay(rows, { hideIneligibleRankings = RANKING_DISPLAY_OPTIONS.hideIneligibleRankings } = {}) {
-  const normalizedRows = Array.isArray(rows) ? rows : [];
-  return hideIneligibleRankings ? normalizedRows.filter((row) => row?.isQualified) : normalizedRows;
+  return publicRankingRenderer.filterRows(rows, { hideIneligibleRankings });
 }
 
 function renderRankingContent(ranking, { selfTitle, emptyMessage, prefixHtml = "" }) {
-  const container = document.getElementById("rankingContent");
-  if (!container) return;
-
-  if (ranking.isLoading && !ranking.summary) {
-    container.innerHTML = `${prefixHtml}<p class="empty-state">ランキングを読み込んでいます。</p>`;
-    return;
-  }
-  if (ranking.message) {
-    container.innerHTML = `${prefixHtml}<p class="empty-state">${escapeHtml(ranking.message)}</p>`;
-    return;
-  }
-
-  const summary = ranking.summary;
-  if (!summary || Number(summary.eligibleGames || 0) === 0) {
-    container.innerHTML = `${prefixHtml}<p class="empty-state">${escapeHtml(emptyMessage)}</p>`;
-    return;
-  }
-
-  const displayRows = filterRankingRowsForDisplay(ranking.rows);
-  const qualified = displayRows.filter((row) => row.isQualified);
-  const unqualified = displayRows.filter((row) => !row.isQualified);
-  const selfSection = renderMyRanking(ranking, ranking.self, selfTitle);
-  const qualifiedContent = qualified.length
-    ? `<ol class="ranking-list">${qualified.map((row) => createRankingCardHtml(row)).join("")}</ol>`
-    : '<p class="ranking-empty">まだ規定到達者はいません。</p>';
-  const unqualifiedContent = unqualified.length
-    ? `<details class="ranking-unqualified"><summary>規定未到達者を見る（${unqualified.length}人）</summary><ol class="ranking-list is-reference">${unqualified.map((row) => createRankingCardHtml(row, { reference: true })).join("")}</ol></details>`
-    : "";
-  const summaryText = `対象 ${summary.eligibleGames}試合 / 規定 ${summary.requiredGames}試合以上`;
-  container.innerHTML = `
-    ${prefixHtml}
-    <p class="ranking-summary">${escapeHtml(summaryText)}</p>
-    ${selfSection}
-    <section class="ranking-qualified-section" aria-labelledby="rankingQualifiedTitle">
-      <h3 id="rankingQualifiedTitle">ランキング</h3>
-      ${qualifiedContent}
-    </section>
-    ${unqualifiedContent}
-  `;
+  return publicRankingRenderer.renderContent(ranking, {
+    selfTitle,
+    emptyMessage,
+    prefixHtml,
+    hideIneligibleRankings: RANKING_DISPLAY_OPTIONS.hideIneligibleRankings
+  });
 }
 
 function renderMyRanking(ranking, row, title) {
-  const user = getPredictionAccountUser();
-  if (!user) return "";
-  if (ranking.isLoadingSelf) {
-    return `<section class="ranking-self"><h3>${escapeHtml(title)}</h3><p>成績を読み込んでいます。</p></section>`;
-  }
-  if (!row) {
-    return `<section class="ranking-self"><h3>${escapeHtml(title)}</h3><p>まだランキング対象試合への参加記録がありません。</p></section>`;
-  }
-  const qualification = row.isQualified
-    ? `規定到達・現在 ${row.rank}位`
-    : `${formatRankingQualification(row)}（規定未到達）`;
-  return `<section class="ranking-self">
-    <h3>${escapeHtml(title)}</h3>
-    <p><strong>平均${escapeHtml(formatRankingScore(row.averageScore))}点</strong> ${escapeHtml(qualification)}</p>
-    <p>${escapeHtml(row.gamesPlayed)} / ${escapeHtml(row.eligibleGames)}試合参加・参加率${escapeHtml(formatParticipationRate(row.participationRate))}</p>
-  </section>`;
+  return publicRankingRenderer.renderMyRanking(ranking, row, title);
 }
 
 function createRankingCardHtml(row, { reference = false } = {}) {
-  const user = getPredictionAccountUser();
-  const isSelf = Boolean(user && ((row.username && row.username === user.username) || (row.userId && String(row.userId) === String(user.id))));
-  const medal = { 1: "🥇", 2: "🥈", 3: "🥉" }[Number(row.rank)] || "";
-  const rankLabel = reference ? "参考記録" : `${medal}${row.rank}位`;
-  const qualification = formatRankingQualification(row, { reference });
-  return `<li class="ranking-entry${reference ? " is-reference" : ""}${isSelf ? " is-self" : ""}">
-    <p class="ranking-rank">${escapeHtml(rankLabel)}</p>
-    <div class="ranking-entry-main">
-      <div class="ranking-user-line"><strong>${escapeHtml(row.username)}${isSelf ? "（あなた）" : ""}</strong>${createRankingAchievementBadgesHtml(row)}</div>
-      <p>平均 ${escapeHtml(formatRankingScore(row.averageScore))}点${reference ? "（参考）" : ""}</p>
-      <p>${escapeHtml(row.gamesPlayed)} / ${escapeHtml(row.eligibleGames)}試合・参加率 ${escapeHtml(formatParticipationRate(row.participationRate))}・${escapeHtml(qualification)}</p>
-      <p>合計 ${escapeHtml(row.totalScore)}点・満点 ${escapeHtml(row.perfectCount)}回</p>
-    </div>
-  </li>`;
+  return publicRankingRenderer.createCardHtml(row, { reference });
 }
 
 function formatRankingQualification(row, { reference = false } = {}) {
-  if (row?.isQualified && !reference) return "規定到達";
-  return `あと${Math.max(0, Number(row?.gamesNeeded || 0))}試合連続参加で規定到達`;
+  return publicRankingRenderer.formatQualification(row, { reference });
 }
 
 function createRankingAchievementBadgesHtml(row) {
@@ -6502,15 +6330,14 @@ async function refreshResultHistory({ force = false } = {}) {
   state.resultHistory.message = "過去の試合結果を確認中...";
   renderResultHistory();
   try {
-    const response = await fetch(url, { credentials: "include", cache: "no-store", signal: request.signal });
-    const payload = await response.json().catch(() => null);
+    const { response, payload } = await publicApiClient.get(url, { credentials: "include", signal: request.signal });
     if (!response.ok || !payload?.ok || !Array.isArray(payload.games)) {
       throw new Error(payload?.error || `HTTP ${response.status}`);
     }
     if (!isCurrentPublicRequest("result", request.id)) return;
-    state.resultHistory.games = payload.games;
-    state.resultHistory.message = payload.games.length ? "" : "採点済みの過去試合はありません。";
-    const latestPublishedGame = payload.games.find((game) => game?.resultsPublished && getResultHistoryGameId(game));
+    state.resultHistory.games = publicResultsRenderer.limitHistory(payload.games);
+    state.resultHistory.message = state.resultHistory.games.length ? "" : "採点済みの過去試合はありません。";
+    const latestPublishedGame = state.resultHistory.games.find((game) => game?.resultsPublished && getResultHistoryGameId(game));
     if (!state.resultHistory.selectedGameId && latestPublishedGame) {
       await loadResultHistoryGame(getResultHistoryGameId(latestPublishedGame));
     } else if (!latestPublishedGame && !state.resultHistory.selectedGameId) {
@@ -6548,8 +6375,7 @@ async function loadResultHistoryGame(gameId) {
   renderScoreResult();
   renderResultHistory();
   try {
-    const response = await fetch(buildResultGamesApiUrl(gameId), { credentials: "include", cache: "no-store", signal: request.signal });
-    const payload = await response.json().catch(() => null);
+    const { response, payload } = await publicApiClient.get(buildResultGamesApiUrl(gameId), { credentials: "include", signal: request.signal });
     if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
     if (!isCurrentPublicRequest("resultDetail", request.id)) return;
     if (payload.serviceUnavailable) {
@@ -6715,8 +6541,7 @@ async function syncPredictionFromAccount({ force = false } = {}) {
   renderPredictionAccountStatus();
 
   try {
-    const response = await fetch(url, { credentials: "include", cache: "no-store", signal: request.signal });
-    const payload = await response.json().catch(() => null);
+    const { response, payload } = await publicApiClient.get(url, { credentials: "include", signal: request.signal });
     if (!response.ok || !payload?.ok) {
       throw new Error(payload?.error || `HTTP ${response.status}`);
     }
@@ -6902,14 +6727,13 @@ async function savePredictionToAccount(prediction = state.prediction) {
   updatePredictionSaveButton();
 
   try {
-    const response = await fetch(url, {
+    const { response, payload } = await publicApiClient.request(url, {
       method: "PUT",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       // Retired request shape: body: JSON.stringify({ gameId, prediction: predictionPayload.prediction })
       body: JSON.stringify({ internalGameId: gameId, prediction: predictionPayload.prediction })
     });
-    const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok) {
       const error = new Error(payload?.error || `HTTP ${response.status}`);
       error.code = payload?.code || "PREDICTION_SAVE_FAILED";
@@ -6972,8 +6796,7 @@ async function deletePredictionFromAccount(gameId) {
   state.predictionRemote.message = "アカウントの予想を削除中...";
   renderPredictionAccountStatus();
   try {
-    const response = await fetch(url, { method: "DELETE", credentials: "include" });
-    const payload = await response.json().catch(() => null);
+    const { response, payload } = await publicApiClient.request(url, { method: "DELETE", credentials: "include" });
     if (!response.ok || !payload?.ok) {
       throw new Error(payload?.error || `HTTP ${response.status}`);
     }
@@ -7583,98 +7406,11 @@ function normalizePlayerKey(value) {
 }
 
 async function handlePredictionSubmit(event) {
-  event.preventDefault();
-  if (state.predictionRemote.isSaving || state.predictionRemote.isSubmitting) {
-    return;
-  }
-  if (!ensurePredictionEditingAllowed()) {
-    return;
-  }
-
-  state.predictionRemote.isSubmitting = true;
-  updatePredictionSaveButton();
-  try {
-    clearMessage("predictionError");
-    clearMessage("predictionSaveMessage");
-    clearMessage("predictionResetMessage");
-    clearMessage("resetMessage");
-
-    const lineup = getLineupValues("prediction");
-    const validationError = validateLineup(lineup, "予想");
-
-    if (validationError) {
-      showMessage("predictionError", validationError);
-      markDuplicateSlots("prediction", lineup);
-      return;
-    }
-
-    state.prediction = {
-      gameId: getCurrentGameId(),
-      lineup,
-      savedAt: new Date().toISOString()
-    };
-
-    saveToStorage(STORAGE_KEYS.prediction, state.prediction);
-    preserveDisplayedPublicResult();
-    renderSavedPrediction();
-    renderPredictionCta();
-    renderPredictionAccountStatus();
-    renderPublicGameSelectionMeta();
-    renderPicker("prediction");
-    if (!getPredictionAccountUser()) {
-      showPredictionSaveMessage("この端末に予想を保存しました。");
-      return;
-    }
-
-    const savedToAccount = await savePredictionToAccount(state.prediction);
-    if (savedToAccount) {
-      showPredictionSaveMessage("予想を保存しました。");
-      return;
-    }
-
-    showMessage("predictionError", state.predictionRemote.message || "端末には保存しましたが、アカウントへの保存に失敗しました。");
-  } finally {
-    state.predictionRemote.isSubmitting = false;
-    updatePredictionSaveButton();
-  }
+  return publicPredictionFormController.handleSubmit(event);
 }
 
 function resetPredictionInput() {
-  if (!ensurePredictionEditingAllowed()) {
-    return;
-  }
-  const confirmed = window.confirm("入力中の予想をリセットします。よろしいですか？");
-  if (!confirmed) {
-    return;
-  }
-
-  const remoteGameId = getCurrentGameId();
-  state.prediction = null;
-  preserveDisplayedPublicResult();
-  state.activeOrder.prediction = 0;
-  removeFromStorage(STORAGE_KEYS.prediction);
-
-  document.getElementById("predictionForm").reset();
-  setLineupValues("prediction", []);
-  closeAllPositionMenus();
-  ["predictionPlayerDetails", "predictionResetMessage"].forEach((elementId) => {
-    const element = document.getElementById(elementId);
-    if (elementId === "predictionPlayerDetails") {
-      element.classList.add("hidden");
-      element.innerHTML = "";
-    } else {
-      element.textContent = "予想をリセットしました。";
-    }
-  });
-  clearMessage("predictionError");
-  clearMessage("testPredictionMessage");
-  renderSavedPrediction();
-  renderScoreResult();
-  renderPredictionAccountStatus();
-  renderPicker("prediction");
-  if (remoteGameId && getPredictionAccountUser()) {
-    deletePredictionFromAccount(remoteGameId);
-  }
+  return publicPredictionFormController.reset();
 }
 
 function handleActualSubmit(event) {
@@ -8511,21 +8247,15 @@ function setScheduleLoaderMessage(message, type) {
 }
 
 function saveToStorage(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
+  return publicStorage.save(key, value);
 }
 
 function loadFromStorage(key) {
-  try {
-    const value = localStorage.getItem(key);
-    return value ? JSON.parse(value) : null;
-  } catch (error) {
-    console.error(`localStorageの読み込みに失敗しました: ${key}`, error);
-    return null;
-  }
+  return publicStorage.load(key);
 }
 
 function removeFromStorage(key) {
-  localStorage.removeItem(key);
+  return publicStorage.remove(key);
 }
 
 function renderAll() {
@@ -8871,8 +8601,7 @@ async function fetchGameDayRosterSnapshot(internalGameId = getGameDayRosterTarge
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
   if (!internalGameId || !baseUrl) return { ok: false, players: [] };
   try {
-    const response = await fetch(`${baseUrl}/api/game-day-roster?internalGameId=${encodeURIComponent(internalGameId)}`, { credentials: "include", cache: "no-store", signal });
-    const payload = await response.json().catch(() => null);
+    const { response, payload } = await publicApiClient.get(`${baseUrl}/api/game-day-roster?internalGameId=${encodeURIComponent(internalGameId)}`, { credentials: "include", signal });
     if (!response.ok || !payload?.ok || !Array.isArray(payload.players)) return { ok: false, players: [] };
     return payload;
   } catch (error) {
@@ -9323,28 +9052,7 @@ function renderPicker(pickerName) {
 }
 
 function renderPredictionRosterFilter() {
-  const filter = state.candidateRosterFilter === "inactive" ? "inactive" : "active";
-  const publicRosterReady = state.isAdminMode || hasUsablePublicRosterForCurrentGame();
-  document.querySelectorAll("[data-roster-filter]").forEach((button) => {
-    const isSelected = button.dataset.rosterFilter === filter;
-    button.classList.toggle("is-selected", isSelected);
-    button.setAttribute("aria-pressed", isSelected ? "true" : "false");
-    button.setAttribute("aria-selected", isSelected ? "true" : "false");
-  });
-
-  document.querySelectorAll('.player-chip[data-picker="prediction"]').forEach((chip) => {
-    const player = getPlayerData(chip.dataset.player);
-    const shouldShow = publicRosterReady && (filter === "active"
-      ? isPlayerInCurrentRoster(player) && player?.isBatterCandidate === true
-      : !isPlayerInCurrentRoster(player) && player?.isBatterCandidate === true);
-    chip.classList.toggle("hidden", !shouldShow);
-  });
-
-  const status = document.getElementById("predictionRosterStatus");
-  if (status) {
-    status.textContent = publicRosterReady ? "" : "選手一覧を更新中です。しばらくしてから再度ご確認ください。";
-    status.classList.toggle("hidden", publicRosterReady);
-  }
+  return publicRosterController.renderPredictionRosterFilter();
 }
 
 function renderPositionButton(button, position, index) {
@@ -9431,63 +9139,7 @@ function renderActualLineup() {
 }
 
 function renderScoreResult() {
-  const container = document.getElementById("scoreResult");
-  const shareButton = document.getElementById("shareResultButton");
-  const displayedResult = state.resultHistory.result || state.result;
-  renderScoreInsights(displayedResult?.comparison || null);
-
-  if (!displayedResult) {
-    container.className = "empty-state";
-    if (state.resultHistory.isLoading || state.resultHistory.isDetailLoading) {
-      container.textContent = "結果を読み込み中です。";
-      shareButton.classList.add("hidden");
-      return;
-    }
-    if (state.resultHistory.detailError) {
-      container.textContent = state.resultHistory.detailError;
-      shareButton.classList.add("hidden");
-      return;
-    }
-    const resultStatus = state.gameDayNotice.record?.resultStatus;
-    container.textContent = resultStatus === "prestart"
-      ? "結果は試合開始後に公開されます。"
-      : resultStatus === "preparing"
-        ? "結果を準備中です。"
-        : "採点すると結果が表示されます。";
-    shareButton.classList.add("hidden");
-    return;
-  }
-
-  if (displayedResult.serviceUnavailable) {
-    container.className = "empty-state service-unavailable-result";
-    container.innerHTML = `<p>${escapeHtml(displayedResult.serviceUnavailableMessage || "この試合はサービス未稼働のため集計対象外です。")}</p>`;
-    if (displayedResult.prediction?.lineup) {
-      container.appendChild(createPredictionSummary({
-        lineup: displayedResult.prediction.lineup,
-        savedAt: displayedResult.savedAt || ""
-      }));
-    }
-    shareButton.classList.add("hidden");
-    return;
-  }
-
-  container.className = "summary-box";
-  container.innerHTML = "";
-  const selectedGame = state.resultHistory.games.find((game) => getResultHistoryGameId(game) === displayedResult.gameId);
-  const resultHeading = document.createElement("p");
-  resultHeading.className = "result-selected-game";
-  resultHeading.textContent = selectedGame
-    ? `表示中：${selectedGame.displayLabel || `${selectedGame.gameDate || selectedGame.date || ""} ${formatResultHistoryMatchup(selectedGame)}`}`
-    : "表示中の試合結果";
-  container.appendChild(resultHeading);
-  if (displayedResult.publishedAt) {
-    const publishedAt = document.createElement("p");
-    publishedAt.className = "result-selected-game";
-    publishedAt.textContent = `公開：${formatPublicJstDateTime(displayedResult.publishedAt)}`;
-    container.appendChild(publishedAt);
-  }
-  container.appendChild(createResultView(createResultViewModel(displayedResult)));
-  shareButton.classList.remove("hidden");
+  return publicResultsRenderer.renderScoreResult();
 }
 
 function renderScoreInsights(comparison) {

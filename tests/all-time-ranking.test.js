@@ -10,6 +10,7 @@ const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const rankingRepository = fs.readFileSync(path.join(root, "backend", "repositories", "ranking-repository.js"), "utf8");
 const migration = fs.readFileSync(path.join(root, "migrations", "0007_all_time_ranking.sql"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const publicRanking = fs.readFileSync(path.join(root, "frontend", "public", "render-ranking.js"), "utf8");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 
 function requiredGames(eligibleGames) {
@@ -164,8 +165,8 @@ test("通常画面にはカード型の年間ランキングがあり、手動�
   assert.match(script, /前年/);
   assert.match(script, /翌年/);
   assert.match(script, /data-yearly-ranking-move/);
-  assert.match(script, /規定未到達者を見る/);
-  assert.match(script, /あと.*試合連続参加で規定到達/);
+  assert.match(publicRanking, /規定未到達者を見る/);
+  assert.match(publicRanking, /あと.*試合連続参加で規定到達/);
   assert.doesNotMatch(html, />通算</);
   assert.doesNotMatch(script, /rankings\/all-time/);
   assert.doesNotMatch(html, /reloadYearlyRankingButton/);

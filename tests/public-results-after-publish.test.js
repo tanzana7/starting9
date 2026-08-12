@@ -8,6 +8,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const publicResults = fs.readFileSync(path.join(root, "backend", "domain", "public-results.js"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const publicState = fs.readFileSync(path.join(root, "frontend", "public", "state.js"), "utf8");
+const publicResultsRenderer = fs.readFileSync(path.join(root, "frontend", "public", "render-results.js"), "utf8");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 
 test("published済みV3結果はgamesのcanonical rowから一覧メタデータを作る", () => {
@@ -34,7 +36,7 @@ test("結果詳細はUUIDでprediction・ranking・公開状態を読む", () =>
 });
 
 test("通常画面は公開済み結果を自動選択し、内部IDを表示しない", () => {
-  assert.match(script, /const latestPublishedGame = payload\.games\.find/);
+  assert.match(script, /const latestPublishedGame = state\.resultHistory\.games\.find/);
   assert.match(script, /if \(!state\.resultHistory\.selectedGameId && latestPublishedGame\)/);
   assert.doesNotMatch(script, /if \(!state\.result && !state\.resultHistory\.selectedGameId && latestPublishedGame\)/);
   assert.match(script, /await loadResultHistoryGame\(getResultHistoryGameId\(latestPublishedGame\)\)/);
@@ -48,9 +50,9 @@ test("通常画面は公開済み結果を自動選択し、内部IDを表示し
 });
 
 test("公開結果は予想入力状態から独立して保持し、履歴一覧は最新5件に制限する", () => {
-  assert.match(script, /resultHistory: \{[\s\S]*result: null/);
-  assert.match(script, /const displayedResult = state\.resultHistory\.result \|\| state\.result/);
-  assert.match(script, /state\.resultHistory\.result = \{/);
+  assert.match(publicState, /results: \{ latest: null, history: state\.resultHistory \}/);
+  assert.match(publicResultsRenderer, /const displayedResult = deps\.state\.resultHistory\.result \|\| deps\.state\.result/);
+  assert.match(publicResultsRenderer, /games\.slice\(0, 5\)/);
   const handlerStart = worker.indexOf("async function handleGetResultGames");
   const handlerEnd = worker.indexOf("async function handleGetResultGame(", handlerStart);
   assert.match(worker.slice(handlerStart, handlerEnd), /LIMIT \$\{PUBLIC_RESULT_HISTORY_LIMIT\}/);
@@ -59,5 +61,5 @@ test("公開結果は予想入力状態から独立して保持し、履歴一�
 
 test("通常画面の公開結果修正は新しいcache busterを使う", () => {
   assert.match(html, /style\.css\?v=public-results-ranking-polish-1/);
-  assert.match(html, /script\.js\?v=codebase-polish-for-portfolio-1/);
+  assert.match(html, /script\.js\?v=public-frontend-modules-1/);
 });

@@ -7565,7 +7565,7 @@ async function isWorkflowJobSchemaReady(db) {
 
 async function handleGetGameDayStatus(request, env, cors) {
   const identifier = parseGameDayStatusRequestIdentifier(new URL(request.url).searchParams);
-  const identity = identifier ? await resolvePregameIdentity(env.AUTH_DB, identifier.value) : null;
+  const identity = identifier ? await resolveGameDayStatusIdentity(env.AUTH_DB, identifier) : null;
   if (!identity) return jsonResponse({ ok: false, error: "対象試合を指定してください。" }, 400, cors);
   const status = await getGameDayStatus(env.AUTH_DB, identity);
   return jsonResponse({ ok: true, gameId: identity.gameId, internalGameId: identity.internalGameId || null, ...status }, 200, cors);
@@ -7576,8 +7576,70 @@ export function parseGameDayStatusRequestIdentifier(params) {
   if (INTERNAL_GAME_ID_PATTERN.test(internalGameId)) {
     return { type: "internalGameId", value: internalGameId };
   }
-  const gameId = getValidGameId(params?.get("gameId"));
-  return gameId ? { type: "gameId", value: gameId } : null;
+  const gameId = String(params?.get("gameId") || "").trim();
+  if (INTERNAL_GAME_ID_PATTERN.test(gameId)) {
+    return { type: "internalGameId", value: gameId };
+  }
+  const legacyGameId = getValidGameId(gameId);
+  return legacyGameId ? { type: "legacyGameId", value: legacyGameId } : null;
+}
+
+export async function resolveGameDayStatusIdentity(db, identifier) {
+  if (!identifier?.value) return null;
+
+  // Keep the established compact-ID path independent from the canonical
+  // registry. Game-day notice rows are still keyed by this pregame identity.
+  if (identifier.type === "legacyGameId") {
+    return getGameIdentityForPregame(identifier.value);
+  }
+  if (identifier.type !== "internalGameId" || !INTERNAL_GAME_ID_PATTERN.test(identifier.value)) {
+    return null;
+  }
+
+  const internalGameId = identifier.value;
+  const [game, identifierResult] = await Promise.all([
+    db.prepare(
+      `SELECT internal_game_id, game_date, start_time, home_team, away_team, npb_game_code, game_status
+         FROM games
+        WHERE internal_game_id = ?1
+        LIMIT 1`
+    ).bind(internalGameId).first(),
+    db.prepare(
+      `SELECT identifier_type, identifier_value
+         FROM game_identifiers
+        WHERE internal_game_id = ?1
+        ORDER BY id ASC`
+    ).bind(internalGameId).all()
+  ]);
+  if (!game) return null;
+
+  const identifiers = identifierResult?.results || [];
+  const identifierValue = (types) => String(
+    identifiers.find((row) => types.includes(String(row?.identifier_type || "")))?.identifier_value || ""
+  ).trim();
+  const identifierGameCode = identifierValue(["npb_game_code", "game_code"]);
+  const gameCode = normalizeNpbGameCode(game.npb_game_code) || normalizeNpbGameCode(identifierGameCode);
+  if (!gameCode) return null;
+
+  const storedCompactGameId = getValidGameId(identifierValue(["legacy_compact_game_id"]));
+  const compactGameId = storedCompactGameId || getValidGameId(`${game.game_date}-${gameCode}`);
+  if (!compactGameId) return null;
+
+  const identity = getGameIdentityForPregame(compactGameId, {
+    date: game.game_date,
+    startAt: game.start_time,
+    homeTeam: game.home_team,
+    awayTeam: game.away_team,
+    gameCode,
+    status: game.game_status
+  });
+  if (!identity) return null;
+  return {
+    ...identity,
+    internalGameId,
+    game: { ...identity.game, internalGameId },
+    resolvedBy: "game_day_status_canonical_registry"
+  };
 }
 
 async function handleGetGameDayRoster(request, env, cors) {

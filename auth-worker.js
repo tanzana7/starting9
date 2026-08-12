@@ -641,7 +641,19 @@ async function runScheduledGameAutomationV3(env, now) {
   const result = await runGameAutomationV3(env, now, {
     executeJob: (context) => executeGameAutomationV3Job(context),
     onPlan: async ({ game, plan, job, created, reasonCode, insertedRowCount, existingJobId, existingScheduledSlotAt, existingStatus, diagnostic, plannerDecision = null, stage = "v3_plan", claimResult = null }) => {
-      const jobType = String(plan?.jobType || job?.job_type || "");
+      const jobTypeByPlanStage = {
+        probable_plan: "probable_starter_fetch",
+        roster_plan: "roster_fetch",
+        identity_plan: "npb_identity_resolve"
+      };
+      const jobType = String(
+        plan?.jobType
+        || job?.job_type
+        || plannerDecision?.jobType
+        || diagnostic?.jobType
+        || jobTypeByPlanStage[stage]
+        || "legacy_or_unclassified"
+      );
       const phaseByJobType = {
         probable_starter_fetch: "probable_starter",
         roster_fetch: "roster",

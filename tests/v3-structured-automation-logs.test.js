@@ -24,9 +24,17 @@ test("V3 Cron監査はrunIdとcorrelationIdをjob単位へ付与する", () => {
 test("V3 Cron監査はsummaryとjobType別の集計を保存する", () => {
   assert.match(worker, /eventType: "cron_run_summary"/);
   assert.match(diagnostics, /plannedByJobType/);
+  assert.match(diagnostics, /legacy_or_unclassified/);
   assert.match(diagnostics, /createdByJobType/);
   assert.match(diagnostics, /claimConflicts/);
   assert.match(diagnostics, /processed: Number\(result\?\.processed/);
+  assert.match(worker, /roster_plan: "roster_fetch"/);
+});
+
+test("既存Cronサマリーのunknown/planは監査画面で未分類として表示する", () => {
+  assert.match(adminDiagnostics, /normalizeDiagnosticJobType/);
+  assert.match(adminDiagnostics, /legacy_or_unclassified/);
+  assert.match(adminDiagnostics, /plannedByJobType: normalizeDiagnosticCounts/);
 });
 
 test("admin-v3は構造化監査の読み取りAPIと6種類のフィルタを持つ", () => {

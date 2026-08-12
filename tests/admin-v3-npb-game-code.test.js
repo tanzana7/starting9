@@ -9,6 +9,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const page = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 const client = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
+const diagnostics = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-diagnostics.js"), "utf8");
 const migration = fs.readFileSync(path.join(root, "migrations", "0030_game_automation_v3_npb_code_audit.sql"), "utf8");
 const identityMigration = fs.readFileSync(path.join(root, "migrations", "0031_game_npb_identity_registry.sql"), "utf8");
 
@@ -64,14 +65,14 @@ test("V3管理画面はNPB識別情報を読み取り表示し、手動上書き
   assert.doesNotMatch(client, /非常用手動上書き/);
   assert.doesNotMatch(client, /data-v3-identity-resolve/);
   assert.doesNotMatch(client, /data-v3-orientation-save/);
-  assert.match(client, /NPB自動解決job/);
-  assert.match(client, /解決元/);
-  assert.match(client, /DB home/);
-  assert.match(client, /DB away/);
-  assert.ok(client.includes("${escapeV3(game.homeTeam)} vs ${escapeV3(game.awayTeam)}"));
+  assert.match(diagnostics, /NPB自動解決job/);
+  assert.match(diagnostics, /解決元/);
+  assert.match(diagnostics, /DB home/);
+  assert.match(diagnostics, /DB away/);
+  assert.ok(diagnostics.includes("${escapeHtml(game.homeTeam)} vs ${escapeHtml(game.awayTeam)}"));
   assert.match(client, /loadV3OperationDetails/);
-  assert.match(page, /admin-v3\.css\?v=admin-and-repo-polish-1/);
-  assert.match(page, /admin-v3\.js\?v=admin-and-repo-polish-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-v3-render-modules-1/);
+  assert.match(page, /admin-v3\.js\?v=admin-v3-render-modules-1/);
 });
 
 test("home/away修正APIはinternalGameId単位で関連データの影響を警告する", () => {

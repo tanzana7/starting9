@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const v3 = await import(pathToFileURL(path.join(root, "game-automation-v3.js")));
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
-const admin = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
+const admin = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-game-progress.js"), "utf8");
 const html = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 
 const game = {
@@ -62,5 +62,5 @@ test("admin timeline uses phase status instead of treating prerequisite retry_wa
   assert.match(admin, /function timelinePhaseStep\(/);
   assert.match(admin, /timelinePhaseStep\("ランキング反映", game, "ranking"/);
   assert.match(admin, /timelinePhaseStep\("結果公開", game, "publish"/);
-  assert.match(html, /admin-v3\.js\?v=admin-and-repo-polish-1/);
+  assert.match(html, /admin-v3\.js\?v=admin-v3-render-modules-1/);
 });

@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const admin = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
+const gameProgress = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-game-progress.js"), "utf8");
+const diagnostics = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-diagnostics.js"), "utf8");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const publicResults = fs.readFileSync(path.join(root, "backend", "domain", "public-results.js"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
@@ -46,20 +48,19 @@ test("admin-v3はrevisionの欠損・不正shapeを局所的に扱い、詳細�
     assert.equal(normalized.unexpected, true);
     assert.equal(normalized.items.length, 0);
   }
-  const lineupStart = admin.indexOf("function renderLineupView");
-  const lineupEnd = admin.indexOf("function renderScoringView", lineupStart);
-  const lineup = admin.slice(lineupStart, lineupEnd);
-  assert.match(lineup, /normalizeV3RevisionList\(details\.revisions\)/);
+  const lineupStart = gameProgress.indexOf("function renderLineupView");
+  const lineupEnd = gameProgress.indexOf("function renderScoringView", lineupStart);
+  const lineup = gameProgress.slice(lineupStart, lineupEnd);
+  assert.match(lineup, /normalizeRevisionList\(details\.revisions\)/);
   assert.match(lineup, /REVISION_SHAPE_UNEXPECTED/);
 });
 
 test("admin-v3はjobsとstructured logsも共通の配列正規化を使う", () => {
   assert.match(admin, /v3ListItems\(game\?\.jobs, "jobs"\)/);
-  const logsStart = admin.indexOf("function renderAutomationLogs");
-  const logsEnd = admin.indexOf("function renderCurrentV3View", logsStart);
-  const logs = admin.slice(logsStart, logsEnd);
-  assert.match(logs, /const gameRuns = v3ListItems\(logs\.gameRuns, "gameRuns"\)/);
-  assert.match(logs, /const jobTimeline = v3ListItems\(logs\.jobTimeline, "jobTimeline"\)/);
+  const logsStart = diagnostics.indexOf("function renderAutomationLogs");
+  const logs = diagnostics.slice(logsStart);
+  assert.match(logs, /const gameRuns = listItems\(logs\.gameRuns, "gameRuns"\)/);
+  assert.match(logs, /const jobTimeline = listItems\(logs\.jobTimeline, "jobTimeline"\)/);
   assert.match(admin, /const games = normalizeV3List\(payload\?\.games, "games"\)/);
 });
 
@@ -93,6 +94,6 @@ test("通常画面は公開結果の読込中・失敗・完了を内部情報�
 
 test("post-E2E表示修正のcache busterを更新し、旧手動操作を復活させない", () => {
   assert.match(index, /script\.js\?v=public-frontend-modules-1/);
-  assert.match(adminPage, /admin-v3\.js\?v=admin-and-repo-polish-1/);
+  assert.match(adminPage, /admin-v3\.js\?v=admin-v3-render-modules-1/);
   assert.doesNotMatch(admin, /runAutoScoringNowButton/);
 });

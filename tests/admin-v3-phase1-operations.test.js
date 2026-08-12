@@ -7,6 +7,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const client = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
+const gameProgress = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-game-progress.js"), "utf8");
+const jobDetails = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-job-details.js"), "utf8");
 const page = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 const v3 = await import(pathToFileURL(path.join(root, "game-automation-v3.js")).href);
 
@@ -50,14 +52,14 @@ test("管理画面は自動進行の確認に限定し、手動Phase 1操作を�
   for (const selector of ["data-v3-save-lineup", "data-v3-finalize-lineup", "data-v3-scoring-preview", "data-v3-scoring-confirm", "data-v3-ranking-rebuild", "data-v3-publish", "data-v3-republish", "data-v3-schedule-save", "data-v3-eligibility-save"]) {
     assert.doesNotMatch(client, new RegExp(selector));
   }
-  assert.match(client, /V3が取得・確定したスタメンrevisionを確認します/);
-  assert.match(client, /V3が進めた採点・ランキング・公開の状態を確認します/);
-  assert.match(page, /admin-v3\.js\?v=admin-and-repo-polish-1/);
-  assert.match(page, /admin-v3\.css\?v=admin-and-repo-polish-1/);
+  assert.match(gameProgress, /V3が取得・確定したスタメンrevisionを確認します/);
+  assert.match(gameProgress, /V3が進めた採点・ランキング・公開の状態を確認します/);
+  assert.match(page, /admin-v3\.js\?v=admin-v3-render-modules-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-v3-render-modules-1/);
 });
 
 test("管理画面のjob詳細は失敗内容を確認でき、ユーザー情報を描画しない", () => {
-  assert.match(client, /data-v3-job-detail/);
+  assert.match(jobDetails, /data-v3-job-detail/);
   assert.match(worker, /SELECT id, job_id, job_type, state_before, state_after/);
   assert.doesNotMatch(worker, /SELECT .*email.*FROM game_jobs_v3/);
 });
@@ -119,10 +121,10 @@ test("依存処理は予定未定ではなく前段完了後として返す", ()
 test("overviewは正規の表示用scheduleと次の処理を付加し、UIはそれを描画する", () => {
   assert.match(worker, /deriveV3DisplaySchedule\(game\)/);
   assert.match(worker, /getV3NextAction\(\{ schedule, state: resolvedState\.state/);
-  assert.match(client, /game\.schedule \|\| \{\}/);
-  assert.match(client, /schedule\.predictionDeadline/);
-  assert.match(client, /schedule\.finalLineupAt/);
-  assert.match(client, /schedule\.publicationAt/);
+  assert.match(gameProgress, /game\.schedule \|\| \{\}/);
+  assert.match(gameProgress, /schedule\.predictionDeadline/);
+  assert.match(gameProgress, /schedule\.finalLineupAt/);
+  assert.match(gameProgress, /schedule\.publicationAt/);
 });
 
 test("旧更新APIはV3 stateまたはV3 jobがある試合をlegacy ID経由でも拒否する", () => {

@@ -33,11 +33,12 @@ test("0件または採点対象0件は採点完了として扱い、正式lineup
 test("採点no-opの監査結果を管理画面へ返し、公開条件へ接続する", () => {
   const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
   const admin = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
+  const gameProgress = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-game-progress.js"), "utf8");
   const html = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
   assert.match(worker, /event_type = 'scoring_no_op'/);
   assert.match(worker, /scoring: \{ \.\.\.completion, noOpReason \}/);
   assert.match(worker, /scoring_status = 'scored'/);
-  assert.match(admin, /data-v3-scoring-no-op/);
-  assert.match(admin, /予想0件または採点対象なし/);
-  assert.match(html, /admin-and-repo-polish-1/);
+  assert.match(gameProgress, /data-v3-scoring-no-op/);
+  assert.match(gameProgress, /予想0件または採点対象なし/);
+  assert.match(html, /admin-v3-render-modules-1/);
 });

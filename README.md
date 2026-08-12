@@ -62,7 +62,7 @@ starting9/
 ├── auth-worker.js          # 認証・公開API・V3 Cronを持つAuth Worker
 ├── game-automation-v3.js   # V3 planner / state / executorの共通ロジック
 ├── frontend/public/         # 公開画面のstate/API/render/coordinator modules
-├── frontend/admin-v3/       # 管理画面V3のstate/API/coordinator modules
+├── frontend/admin-v3/       # 管理画面V3のstate/API/DOM/描画/coordinator modules
 ├── admin-v3.html/js/css     # 管理画面V3のHTML、互換entry、CSS
 ├── backend/domain/          # scoring/ranking/public-resultsの純粋なドメイン規則
 ├── backend/automation-v3/   # V3 constants/domain/planner/repository/executor modules
@@ -251,7 +251,7 @@ GitHub Actionsの `CI` workflowも同じテスト・構文・競合マーカー�
 
 ### Admin V3の構成
 
-`admin-v3.html` はbuild stepなしで、`frontend/admin-v3/state.js`、`api-client.js`、`app-coordinator.js`、最後に互換entryの`admin-v3.js`を読み込みます。API clientは管理者セッション付き通信だけを担当し、stateは画面状態、coordinatorはイベントと初期化順序を担当します。画面固有のtimeline・job・Today Ops・diagnostics描画はentry側に残し、段階的に分離できる境界を保ちます。
+`admin-v3.html` はbuild stepなしで、state/API/DOM共通処理、画面描画module群、coordinator、最後に互換entryの`admin-v3.js`を読み込みます。API clientは管理者セッション付き通信だけを担当し、stateは画面状態、DOM moduleは安全な表示整形、render moduleはtimeline/game progress/job詳細/roster/diagnostics/ranking reset/perfect-score previewの描画、coordinatorはイベントと初期化順序を担当します。`admin-v3.js`はAPI操作・状態遷移・イベント配線・module委譲を担う互換entryで、描画markupを重複保持しません。
 
 ランキングresetのpreviewは読み取り専用で、executeだけが明示的なconfirmation textとreasonを要求します。perfect-score previewとrelease debug fixtureは管理者限定・previewOnlyで、通常採点、ランキング、公開、V3 job、通常画面へ流れません。
 

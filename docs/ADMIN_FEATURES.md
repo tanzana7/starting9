@@ -4,7 +4,7 @@
 
 Admin V3 uses the existing session and server-side `requireAdminUser` authorization. A signed-in non-admin user must not be able to read operational data or invoke mutation endpoints.
 
-The static frontend is split into three supporting modules before the compatibility entrypoint: `state.js` owns view state, `api-client.js` owns credentialed admin requests, and `app-coordinator.js` owns event binding and startup order. None of these modules changes server authorization or V3 runtime behavior.
+The static frontend is split into namespaced supporting modules before the compatibility entrypoint: `state.js` owns view state, `api-client.js` owns credentialed admin requests, `dom.js` owns safe display helpers, the render modules own screen markup, and `app-coordinator.js` owns event binding and startup order. `admin-v3.js` remains the compatibility entrypoint for API operations and composition. None of these modules changes server authorization or V3 runtime behavior.
 
 ## Main Areas
 

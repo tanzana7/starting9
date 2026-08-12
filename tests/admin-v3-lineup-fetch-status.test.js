@@ -8,22 +8,20 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const client = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
 const page = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
-const start = client.indexOf("const TODAY_OPS_STATUS_LABELS");
-const end = client.indexOf("function renderGameSummary", start);
-const listStart = client.indexOf("function normalizeV3List");
-const listEnd = client.indexOf("function v3StorageGet", listStart);
+const classifyStart = client.indexOf("function lineupReasonCode");
+const lineupStart = client.indexOf("function lineupDisplayState", classifyStart);
+const lineupEnd = client.indexOf("async function loadV3JobDetail", lineupStart);
 const context = {
   statusLabel(status) {
     return ({ pending: "予定", claimed: "実行中", retry_wait: "retry_wait", completed: "完了", failed: "失敗" })[String(status || "")] || "待機中";
   },
   formatV3Jst(value) { return String(value || "-"); },
   escapeV3(value) { return String(value ?? ""); },
-  filteredV3Games(games, filter) { return filter === "today" ? games : games; },
-  v3JstDate() { return "2026-08-08"; },
-  gameDateForFilter(game) { return game.gameDate; },
-  nextV3ActionText() { return "次の処理"; }
+  v3ListItems(value, key = "items") { return Array.isArray(value) ? value : Array.isArray(value?.[key]) ? value[key] : []; },
+  normalizedV3PhaseState() { return null; },
+  formatV3Jst(value) { return String(value || "-"); }
 };
-vm.runInNewContext(`${client.slice(listStart, listEnd)}; ${client.slice(start, end)}; globalThis.lineupDisplayState = lineupDisplayState; globalThis.todayOpsStep = todayOpsStep;`, context);
+vm.runInNewContext(`${client.slice(classifyStart, lineupStart)}; ${client.slice(lineupStart, lineupEnd)}; globalThis.lineupDisplayState = lineupDisplayState;`, context);
 
 const now = new Date("2026-08-08T05:23:00.000Z");
 const lineupSlots = ["2026-08-08T05:10:00.000Z", "2026-08-08T05:20:00.000Z", "2026-08-08T05:30:00.000Z", "2026-08-08T05:40:00.000Z", "2026-08-08T05:50:00.000Z", "2026-08-08T06:00:00.000Z"];
@@ -45,7 +43,6 @@ test("未発表retry_waitはWAITINGで次回14:30を示す", () => {
   assert.equal(result.label, "スタメン未発表");
   assert.equal(result.nextCheckAt, "2026-08-08T05:30:00.000Z");
   assert.match(result.detail, /LINEUP_NOT_ANNOUNCED/);
-  assert.equal(context.todayOpsStep(game([{ job_type: "lineup_fetch", status: "retry_wait", failure_code: "LINEUP_NOT_ANNOUNCED" }]), "lineup", now), "waiting");
 });
 
 test("HTTP失敗retry_waitは一時取得失敗、parser失敗とV3_JOB_FAILEDはATTENTION", () => {
@@ -82,9 +79,10 @@ test("全polling slot経過後にlineupがなければATTENTION", () => {
 });
 
 test("Today Opsはlineup reasonと次回確認を同じ表示契約へ渡す", () => {
-  assert.match(client, /lineupDetail/);
-  assert.match(client, /renderTodayOpsStep\("スタメン", steps\.lineup, steps\.lineupDetail\)/);
+  const diagnostics = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-diagnostics.js"), "utf8");
+  assert.match(diagnostics, /lineupDetail/);
+  assert.match(diagnostics, /renderStep\("スタメン", steps\.lineup, steps\.lineupDetail\)/);
   assert.match(client, /次回確認待ち/);
-  assert.match(page, /admin-v3\.css\?v=admin-and-repo-polish-1/);
-  assert.match(page, /admin-v3\.js\?v=admin-and-repo-polish-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-v3-render-modules-1/);
+  assert.match(page, /admin-v3\.js\?v=admin-v3-render-modules-1/);
 });

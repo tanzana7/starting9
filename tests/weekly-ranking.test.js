@@ -127,7 +127,7 @@ test("公開画面は年間・月間・週間を切り替え、週間の空表�
   assert.match(html, /id="showYearlyRankingButton"/);
   assert.match(html, /id="showMonthlyRankingButton"/);
   assert.match(html, /id="showWeeklyRankingButton"/);
-  assert.match(html, /public-weekly-ranking-1/);
+  assert.match(html, /public-weekly-ranking-display-range-1/);
   assert.match(script, /function refreshWeeklyRanking/);
   assert.match(script, /buildWeeklyRankingApiUrl/);
   assert.match(script, /selectRankingView\("weekly"\)/);
@@ -135,4 +135,11 @@ test("公開画面は年間・月間・週間を切り替え、週間の空表�
   assert.match(rankingRenderer, /showWeeklyRankingButton/);
   assert.match(publicState, /weekly: state\.weeklyRanking/);
   assert.match(style, /grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
+});
+
+test("週間ランキングの表示終了日は排他的な翌月曜ではなく日曜にする", () => {
+  assert.match(script, /function formatWeeklyRankingDisplayEnd\(endExclusive\)/);
+  assert.match(script, /endDate\.setUTCDate\(endDate\.getUTCDate\(\) - 1\)/);
+  assert.match(script, /const weekEnd = formatWeeklyRankingDisplayEnd\(weekRange\.endAt\)/);
+  assert.match(script, /const weekRange = getJapanWeekRange\(new Date\(`\$\{ranking\.weekStart\}T12:00:00\+09:00`\)\)/);
 });

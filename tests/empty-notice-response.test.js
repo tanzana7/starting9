@@ -124,7 +124,7 @@ test("空公示は初回保存でもcreated_at付きで成功し、既存ロー�
   assert.equal(insert.values[8], 0);
 });
 
-test("公示保存の初回INSERTはcreated_atを含み、管理画面は空公示を成功表示する", () => {
+test("公示保存の初回INSERTはcreated_atを含み、公開bundleに管理表示を残さない", () => {
   const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
   const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 
@@ -132,5 +132,5 @@ test("公示保存の初回INSERTはcreated_atを含み、管理画面は空公�
   assert.match(worker, /VALUES \(\?1, \?2, \?3, \?4, \?5, \?6, \?7, \?8, \?9, 'success', NULL, \?4, \?4\)/);
   assert.match(worker, /isEmpty: registrations\.length === 0 && removals\.length === 0/);
   assert.match(worker, /NOTICE_RESPONSE_INVALID/);
-  assert.match(script, /指定日の登録・抹消は0件です/);
+  assert.doesNotMatch(script, /指定日の登録・抹消は0件です|adminGameDayNotice/);
 });

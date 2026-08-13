@@ -206,8 +206,8 @@ test("V2の日本語チーム名を含むgames行から8月4日の内部試合ID
 });
 
 test("対象試合APIはV3のinternalGameIdを保存処理へ送信する", () => {
-  assert.match(script, /state\.predictionTargetGame\?\.internalGameId \|\| state\.probableStarter\.nextGame\?\.internalGameId \|\| getCurrentLegacyGameId\(\)/);
-  assert.match(script, /body: JSON\.stringify\(\{ gameId, prediction: predictionPayload\.prediction \}\)/);
+  assert.match(script, /function getCurrentGameId\(\)[\s\S]*state\.predictionTargetGame\?\.internalGameId/);
+  assert.match(script, /body: JSON\.stringify\(\{ internalGameId: gameId, prediction: predictionPayload\.prediction \}\)/);
   assert.match(worker, /reference = await resolveV3PredictionReference\(env\.AUTH_DB, input\?\.internalGameId\)/);
   assert.match(worker, /internalGameId: metadata\.internalGameId \|\| ""/);
   assert.match(worker, /const storageGameId = metadata\.internalGameId && existing\?\.game_id/);
@@ -216,10 +216,9 @@ test("対象試合APIはV3のinternalGameIdを保存処理へ送信する", () =
 
 test("対象試合APIの一時障害時は、既存静的日程へ戻って保存対象を失わない", () => {
   const resolver = script.slice(script.indexOf("async function resolvePredictionTargetGame"), script.indexOf("function buildPredictionTargetApiUrl"));
-  assert.match(resolver, /if \(!url\) return fallback;/);
-  assert.match(resolver, /if \(!response\.ok \|\| !payload\?\.ok\) return fallback;/);
-  assert.match(resolver, /return payload\.target \? normalizeServerPredictionTarget\(payload\.target\) : fallback;/);
-  assert.match(resolver, /console\.warn[\s\S]*return fallback;/);
+  assert.match(resolver, /return null;/);
+  assert.match(script, /mergePublicGameSchedules\(\[\], apiGames\)/);
+  assert.match(script, /公開試合一覧の取得に失敗しました/);
 });
 
 test("compact game_code照合は同じ試合日の行だけを候補にする", () => {
@@ -228,13 +227,12 @@ test("compact game_code照合は同じ試合日の行だけを候補にする", 
 });
 
 test("通常画面の保存はUUIDを優先し、締切判定は旧gameIdを利用する", () => {
-  const currentGameId = script.slice(script.indexOf("function getCurrentGameId"), script.indexOf("\nfunction getAdminScoringGameId"));
+  const currentGameId = script.slice(script.indexOf("function getCurrentGameId"), script.indexOf("function getAuthApiBaseUrl"));
   const deadlineGameId = script.slice(script.indexOf("function getPredictionDeadlineGameId"), script.indexOf("\nfunction parseJstScheduleDateTime"));
 
   assert.match(currentGameId, /state\.predictionTargetGame\?\.internalGameId/);
-  assert.match(currentGameId, /getCurrentLegacyGameId\(\)/);
   assert.doesNotMatch(currentGameId, /state\.prediction\?\.gameId/);
-  assert.match(deadlineGameId, /: getCurrentLegacyGameId\(\)/);
+  assert.match(deadlineGameId, /return getCurrentGameId\(\)/);
 });
 
 test("アカウント保存・復元・削除は共通API resolverを使う", () => {

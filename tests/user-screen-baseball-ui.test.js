@@ -92,14 +92,14 @@ test("中幅の予想入力は1カラム、十分な幅では収まる2カラム
   assert.match(css, /@media \(min-width: 1000px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-list[\s\S]*min-width: 0[\s\S]*max-width: 100%[\s\S]*\.player-chip[\s\S]*min-width: 120px/);
 });
 
-test("公開画面の残り時間は日・時間・分で表示し、管理画面のタイマーと衝突しない", () => {
-  assert.match(script, /function formatRemainingTime\(targetIso, now = new Date\(\)\)[\s\S]*const days = Math\.floor/);
-  assert.match(script, /function formatAdminScoringRemainingTime\(dueAt\)/);
-  assert.doesNotMatch(script, /function formatRemainingTime\(dueAt\)/);
+test("公開画面の残り時間表示は公開用関数に分離され、管理画面のタイマーと衝突しない", () => {
+  assert.match(script, /function formatPublicRemainingTime/);
+  assert.match(script, /function formatPublicRemainingTime[\s\S]*const hours = Math\.floor/);
+  assert.doesNotMatch(script, /function formatAdminScoringRemainingTime|function formatRemainingTime/);
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-weekly-ranking-display-range-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-remove-retired-admin-markup-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

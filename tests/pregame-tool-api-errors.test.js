@@ -7,26 +7,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (name) => fs.readFileSync(path.join(root, name), "utf8");
 
-test("試合前処理ツールの各APIは管理者ルートへ接続される", () => {
-  const worker = read("auth-worker.js");
+test("試合前処理ツールは通常公開bundleから除去される", () => {
   const html = read("index.html");
   const script = read("script.js");
-
-  for (const action of ["run-notice", "distribute-notice", "run-roster", "fix-roster", "run-lineup", "publish"]) {
-    assert.match(worker, new RegExp(`pregame-automation/${action}`));
-  }
-  assert.match(worker, /auto-scoring\/run-now/);
-  assert.match(worker, /const access = await requireAdminUser\(request, env, cors\)/);
-  assert.match(worker, /route\.action === "predictions\/summary"/);
-  assert.match(script, /buildAdminGameApiUrl\(gameId, `pregame-automation\/\$\{action\}`\)/);
-  assert.match(script, /buildAdminGameApiUrl\(gameId, "auto-scoring\/run-now"\)/);
-  assert.match(html, /id="runPregameNoticeButton"/);
-  assert.match(html, /id="distributePregameNoticeButton"/);
-  assert.match(html, /id="runPregameRosterButton"/);
-  assert.match(html, /id="fixPregameRosterButton"/);
-  assert.match(html, /id="runPregameLineupButton"/);
-  assert.match(html, /id="runPregameScoringButton"/);
-  assert.match(html, /id="publishPregameResultsButton"/);
+  assert.doesNotMatch(html, /pregame-automation|distributePregameNotice/);
+  assert.doesNotMatch(script, /buildAdminGameApiUrl|runPregameAutomationAction|auto-scoring\/run-now/);
 });
 
 test("NPB WorkerのHTTP・JSON失敗を上流status付きで個別処理する", () => {
@@ -236,12 +221,9 @@ test("採点前提不足は409の安全なコードを返す", () => {
   assert.match(worker, /httpStatus: 409/);
 });
 
-test("管理画面はエラーmessage・code・HTTP statusを表示する", () => {
+test("通常公開bundleに管理画面用の試合前処理エラー表示を含めない", () => {
   const script = read("script.js");
-  assert.match(script, /function getSafePregameActionError\(response, payload, action = ""\)/);
-  assert.match(script, /payload\?\.error/);
-  assert.match(script, /コード：\$\{safeCode\}/);
-  assert.match(script, /HTTP \$\{response\.status\}/);
+  assert.doesNotMatch(script, /getSafePregameActionError|PREGAME_TOOL_FAILED|safeCode/);
 });
 
 test("migration 0009/0010が試合前処理のD1前提を定義する", () => {

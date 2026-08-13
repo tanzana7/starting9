@@ -2,141 +2,18 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
-const vm = require("node:vm");
-const { loadPublicFrontendModules } = require("./helpers/load-public-frontend-modules.cjs");
 
-const scriptPath = path.join(__dirname, "..", "script.js");
-const scriptSource = fs.readFileSync(scriptPath, "utf8");
+const root = path.join(__dirname, "..");
+const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
+const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const adminHtml = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 
-function createApp({ href = "https://starting9.pages.dev/", user = null, admin = false, responseStatus = admin ? 200 : 403, fetchError = false } = {}) {
-  const fetchUrls = [];
-  const historyUrls = [];
-  const listeners = new Map();
-  const authReady = Promise.resolve();
-  const window = {
-    location: new URL(href),
-    history: {
-      state: null,
-      replaceState(_state, _title, url) {
-        historyUrls.push(String(url));
-      }
-    },
-    starting9AuthReady: authReady,
-    starting9Auth: {
-      getUser: () => user,
-      getApiBaseUrl: () => "https://starting9-auth.tanzana7.workers.dev",
-      isInitialized: () => true,
-      whenInitialized: () => authReady
-    },
-    addEventListener(type, listener) {
-      listeners.set(type, [...(listeners.get(type) || []), listener]);
-    }
-  };
-  const context = vm.createContext({
-    URL,
-    URLSearchParams,
-    clearInterval,
-    clearTimeout,
-    console,
-    document: {
-      addEventListener() {},
-      getElementById() {
-        return null;
-      }
-    },
-    fetch: async (url) => {
-      fetchUrls.push(url);
-      if (fetchError) throw new Error("network unavailable");
-      const isAchievementsRequest = String(url).endsWith("/api/me/achievements");
-      const isYearlyPublicRankingRequest = String(url).includes("/api/rankings/yearly");
-      const isYearlyMyRankingRequest = String(url).endsWith("/api/me/ranking/yearly");
-      const isMonthlyPublicRankingRequest = String(url).includes("/api/rankings/monthly");
-      const isMonthlyMyRankingRequest = String(url).endsWith("/api/me/ranking/monthly");
-      return {
-        ok: admin,
-        status: responseStatus,
-        json: async () => {
-          if (!admin) return { ok: false, admin: false };
-          if (isAchievementsRequest) return { ok: true, achievements: [] };
-          if (isYearlyPublicRankingRequest) return { year: 2026, ranking: [], summary: { eligibleGames: 0, requiredGames: 0, qualifiedUsers: 0, totalUsers: 0 }, pagination: { limit: 50, offset: 0, totalUsers: 0 } };
-          if (isYearlyMyRankingRequest) return { ok: true, year: 2026, rankingData: null };
-          if (isMonthlyPublicRankingRequest) return { year: 2026, month: 7, ranking: [], summary: { eligibleGames: 0, requiredGames: 0, qualifiedUsers: 0, totalUsers: 0 }, pagination: { limit: 50, offset: 0, totalUsers: 0 } };
-          if (isMonthlyMyRankingRequest) return { ok: true, year: 2026, month: 7, rankingData: null };
-          return { ok: true, admin: true };
-        }
-      };
-    },
-    Map,
-    Promise,
-    Set,
-    setInterval,
-    setTimeout,
-    window
-  });
-  loadPublicFrontendModules(context, path.join(__dirname, ".."));
-  vm.runInContext(scriptSource, context, { filename: scriptPath });
-  vm.runInContext(
-    "applyAdminMode = () => {}; initializeGameSchedule = () => {}; renderAll = () => {}; refreshAdminScoringSummary = () => {}; refreshAutoScoringStatus = () => {}; refreshAdminGameWorkflowStatus = () => {}; refreshAdminTestStatus = () => {}; refreshAdminTestAchievements = () => {}; refreshAdminDeploymentInfo = () => {}; renderAdminTestPanel = () => {}; stopAutoFetch = () => {}; stopRosterMonitor = () => {};",
-    context
-  );
-
-  return { context, fetchUrls, historyUrls, listeners };
-}
-
-test("旧adminクエリだけを削除し、他クエリとハッシュを維持する", () => {
-  const app = createApp({ href: "https://starting9.pages.dev/?admin=1&game=next#result" });
-  vm.runInContext("removeLegacyAdminQueryParameter()", app.context);
-
-  assert.deepEqual(app.historyUrls, ["https://starting9.pages.dev/?game=next#result"]);
+test("通常公開画面に旧admin入口と管理者状態を持たない", () => {
+  assert.doesNotMatch(html, /openAdminButton|openAdminV3Button|adminModeBadge|adminDetails/);
+  assert.doesNotMatch(script, /openAdminPanel|refreshAdminAccess|state\.adminAccess|state\.isAdminMode/);
 });
 
-test("管理者は初期Promise完了後に一度だけ確認され、ボタンを開閉できる", async () => {
-  const app = createApp({ user: { id: "admin-user", username: "admin" }, admin: true });
-
-  await vm.runInContext("initializeAuthDependentFeatures()", app.context);
-  assert.deepEqual(app.fetchUrls, [
-    "https://starting9-auth.tanzana7.workers.dev/api/me/achievements",
-    "https://starting9-auth.tanzana7.workers.dev/api/rankings/yearly?year=2026&limit=50&qualifiedOnly=false",
-    "https://starting9-auth.tanzana7.workers.dev/api/me/ranking/yearly?year=2026",
-    "https://starting9-auth.tanzana7.workers.dev/api/admin/me",
-    "https://starting9-auth.tanzana7.workers.dev/api/results/games"
-  ]);
-  assert.equal(vm.runInContext("state.adminAccess.status", app.context), "authorized");
-
-  for (let index = 0; index < 3; index += 1) {
-    vm.runInContext("openAdminPanel()", app.context);
-    assert.equal(vm.runInContext("state.adminAccess.status", app.context), "authorized");
-    assert.equal(vm.runInContext("state.appMode", app.context), "admin");
-    vm.runInContext("closeAdminPanel()", app.context);
-    assert.equal(vm.runInContext("state.adminAccess.status", app.context), "authorized");
-    assert.equal(vm.runInContext("state.appMode", app.context), "normal");
-  }
-
-  app.context.window.starting9Auth.getUser = () => null;
-  await vm.runInContext("refreshAdminAccess()", app.context);
-  assert.equal(vm.runInContext("state.adminAccess.status", app.context), "inactive");
-});
-
-test("未ログインでは管理者APIを呼ばず、一般ユーザーは403後に管理状態を持たない", async () => {
-  const signedOut = createApp();
-  await vm.runInContext("refreshAdminAccess()", signedOut.context);
-  assert.equal(signedOut.fetchUrls.length, 0);
-  assert.equal(vm.runInContext("state.adminAccess.status", signedOut.context), "inactive");
-
-  const regularUser = createApp({ user: { id: "user", username: "user" }, admin: false });
-  await vm.runInContext("refreshAdminAccess()", regularUser.context);
-  assert.deepEqual(regularUser.fetchUrls, ["https://starting9-auth.tanzana7.workers.dev/api/admin/me"]);
-  assert.equal(vm.runInContext("state.adminAccess.status", regularUser.context), "inactive");
-});
-
-test("管理者APIの503や通信失敗をログアウト扱いにせず、認証状態を保持する", async () => {
-  const serverUnavailable = createApp({ user: { id: "admin-user", username: "admin" }, admin: false, responseStatus: 503 });
-  await vm.runInContext("refreshAdminAccess()", serverUnavailable.context);
-  assert.equal(vm.runInContext("state.adminAccess.status", serverUnavailable.context), "unavailable");
-  assert.equal(vm.runInContext("getPredictionAccountUser().id", serverUnavailable.context), "admin-user");
-
-  const networkUnavailable = createApp({ user: { id: "admin-user", username: "admin" }, admin: false, fetchError: true });
-  await vm.runInContext("refreshAdminAccess()", networkUnavailable.context);
-  assert.equal(vm.runInContext("state.adminAccess.status", networkUnavailable.context), "unavailable");
-  assert.equal(vm.runInContext("getPredictionAccountUser().id", networkUnavailable.context), "admin-user");
+test("管理画面は独立したadmin-v3入口として残る", () => {
+  assert.match(adminHtml, /admin-v3/);
+  assert.match(adminHtml, /admin-v3\.js/);
 });

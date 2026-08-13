@@ -78,7 +78,6 @@
         }
       });
       deps.clearMessage("predictionError");
-      deps.clearMessage("testPredictionMessage");
       deps.renderSavedPrediction();
       deps.renderScoreResult();
       deps.renderPredictionAccountStatus();

@@ -65,7 +65,7 @@ test("通常画面はcanonical public gameのinternalGameIdを予想保存と締
   assert.match(script, /const nextGame = catalogGame \|\| await resolvePredictionTargetGame\(schedule, true\)/);
   assert.match(script, /state\.predictionTargetGame = preservedGame/);
   assert.match(script, /async function refreshPredictionTarget\(\{ retryUnannounced = true, useServer = true \} = \{\}\)/);
-  assert.match(script, /if \(!state\.isAdminMode\) return null/);
+  assert.doesNotMatch(script, /state\.isAdminMode/);
   assert.match(script, /state\.predictionTargetGameId = state\.probableStarter\.nextGame\?\.internalGameId/);
   assert.match(script, /state\.predictionTargetGame\?\.gameId === gameId \|\| state\.predictionTargetGame\?\.internalGameId === gameId \? state\.predictionTargetGame : null/);
   assert.match(predictionForm, /deps\.state\.prediction = \{\s*gameId: deps\.getCurrentGameId\(\)/);

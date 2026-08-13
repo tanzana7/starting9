@@ -23,23 +23,13 @@
 
     async initialize() {
       const ops = this.operations;
-      ops.restoreAdminWorkflowLogsExpanded();
-      ops.removeLegacyAdminQueryParameter();
-      this.state.isAdminMode = false;
       ops.buildLineupPicker("prediction", "predictionLineup", "predictionPlayers");
-      ops.buildLineupPicker("actual", "actualLineup", "actualPlayers");
       ops.loadState();
       ops.bindEvents();
-      window.addEventListener("ham-schedule-log-updated", ops.renderScheduleLoadLog);
-      ops.renderScheduleLoadLog();
-      ops.restoreAdminGameInfoInputs();
-      ops.applyAdminMode();
       ops.syncPublicAppState();
       ops.renderAll();
 
       await ops.initializePublicGameCatalog();
-      await this.initializeSchedule();
-      ops.startAutoScoringCountdown();
       ops.startPredictionDeadlineTicker();
 
       const probablePromise = ops.initializeProbableStarter();
@@ -52,25 +42,6 @@
       ops.syncPublicAppState();
       ops.renderAll();
       void ops.refreshGameDayNoticeStatus({ force: true });
-    }
-
-    async initializeSchedule() {
-      const ops = this.operations;
-      const scheduleReady = window.HAM_GAME_SCHEDULE_READY;
-      if (scheduleReady && typeof scheduleReady.then === "function") {
-        try {
-          await scheduleReady;
-          if (window.HAM_GAME_SCHEDULE_ERROR) {
-            ops.setScheduleLoaderMessage(window.HAM_GAME_SCHEDULE_ERROR, "error");
-          }
-        } catch (error) {
-          ops.setScheduleLoaderMessage("日程情報を読み込めませんでした。", "error");
-          console.warn("日程データの初期化に失敗しました", error?.message || "unknown error");
-        }
-      }
-      ops.initializeGameSchedule();
-      ops.refreshPredictionDeadlineState();
-      ops.renderAll();
     }
 
     handleAuthStateChanged() {
@@ -89,7 +60,6 @@
           ops.refreshYearlyRanking({ force: true }),
           this.state.rankingView === "monthly" ? ops.refreshMonthlyRanking({ force: true }) : Promise.resolve(),
           this.state.rankingView === "weekly" ? ops.refreshWeeklyRanking({ force: true }) : Promise.resolve(),
-          ops.refreshAdminAccess(),
           ops.refreshResultHistory({ force: true })
         ]);
         results.forEach((result) => {

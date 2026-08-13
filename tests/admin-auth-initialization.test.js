@@ -5,7 +5,7 @@ const test = require("node:test");
 const vm = require("node:vm");
 const { loadPublicFrontendModules } = require("./helpers/load-public-frontend-modules.cjs");
 
-test("初回認証イベントを取りこぼしてもPromise完了後にadmin APIを1回呼ぶ", async () => {
+test("初回認証イベントを取りこぼしてもPromise完了後に公開認証依存APIを一度だけ呼ぶ", async () => {
   let resolveAuthReady;
   const authReady = new Promise((resolve) => {
     resolveAuthReady = resolve;
@@ -15,10 +15,10 @@ test("初回認証イベントを取りこぼしてもPromise完了後にadmin A
 
   const window = {
     location: {
-      href: "https://starting9.pages.dev/?admin=1",
+      href: "https://starting9.pages.dev/",
       hostname: "starting9.pages.dev",
       protocol: "https:",
-      search: "?admin=1"
+      search: ""
     },
     history: {
       state: null,
@@ -101,8 +101,8 @@ test("初回認証イベントを取りこぼしてもPromise完了後にadmin A
     "https://starting9-auth.tanzana7.workers.dev/api/me/achievements",
     "https://starting9-auth.tanzana7.workers.dev/api/rankings/yearly?year=2026&limit=50&qualifiedOnly=false",
     "https://starting9-auth.tanzana7.workers.dev/api/me/ranking/yearly?year=2026",
-    "https://starting9-auth.tanzana7.workers.dev/api/admin/me",
-    "https://starting9-auth.tanzana7.workers.dev/api/results/games"
+      "https://starting9-auth.tanzana7.workers.dev/api/results/games"
   ]);
+  assert.equal(fetchUrls.some((url) => url.includes("/api/admin/")), false);
   assert.equal((listeners.get("starting9-auth-state-changed") || []).length, 1);
 });

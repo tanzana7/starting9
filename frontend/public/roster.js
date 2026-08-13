@@ -60,7 +60,7 @@
 
     function renderPredictionRosterFilter() {
       const filter = deps.state.candidateRosterFilter === "inactive" ? "inactive" : "active";
-      const publicRosterReady = deps.state.isAdminMode || deps.hasUsablePublicRosterForCurrentGame();
+      const publicRosterReady = deps.hasUsablePublicRosterForCurrentGame();
       document.querySelectorAll("[data-roster-filter]").forEach((button) => {
         const isSelected = button.dataset.rosterFilter === filter;
         button.classList.toggle("is-selected", isSelected);

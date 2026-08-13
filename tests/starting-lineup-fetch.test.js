@@ -68,13 +68,9 @@ test("代打を含む不完全な最新オーダーは相手チームの行を�
   assert.equal(extraction.debug.foundFightersTeam, true);
 });
 
-test("フロントは専用Workerへmode=lineupで問い合わせ、失敗コードを個別表示する", () => {
-  assert.match(script, /NPB_WORKER_PRODUCTION_URL = "https:\/\/starting9-npb-fetch\.tanzana7\.workers\.dev\/"/);
-  assert.match(script, /NPB_WORKER_LOCAL_URL = "http:\/\/127\.0\.0\.1:8788\/"/);
-  assert.match(script, /workerUrl\.searchParams\.set\("mode", "lineup"\)/);
-  assert.match(script, /LINEUP_NOT_PUBLISHED/);
-  assert.match(script, /showNpbFetchFailure\(candidate\)/);
-  assert.doesNotMatch(script, /NPB_WORKER_FALLBACK_MESSAGE/);
+test("通常公開bundleは専用Workerへ直接lineup取得を行わず、保存済みV3結果を表示する", () => {
+  assert.doesNotMatch(script, /NPB_WORKER_PRODUCTION_URL|workerUrl\.searchParams\.set\("mode", "lineup"\)|showNpbFetchFailure/);
+  assert.match(script, /fetchStoredProbableStarter|fetchGameDayRosterSnapshot/);
 });
 
 test("WorkerはPagesとローカルだけをCORS許可し、診断コードを返す", () => {

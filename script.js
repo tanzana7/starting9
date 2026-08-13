@@ -5930,6 +5930,13 @@ function getJapanWeekRange(date = new Date()) {
   return { startAt: format(startDate), endAt: format(endDate) };
 }
 
+function formatWeeklyRankingDisplayEnd(endExclusive) {
+  const endDate = new Date(`${String(endExclusive || "")}T12:00:00Z`);
+  if (Number.isNaN(endDate.getTime())) return String(endExclusive || "");
+  endDate.setUTCDate(endDate.getUTCDate() - 1);
+  return endDate.toISOString().slice(0, 10);
+}
+
 function buildMonthlyRankingApiUrl({ year, month, qualifiedOnly = false } = {}) {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
   if (!baseUrl) return "";
@@ -6357,7 +6364,8 @@ function renderWeeklyRanking() {
   const ranking = state.weeklyRanking;
   const current = getJapanWeekRange();
   const isCurrentWeek = ranking.weekStart === current.startAt;
-  const weekEnd = getJapanWeekRange(new Date(`${ranking.weekStart}T12:00:00+09:00`)).endAt;
+  const weekRange = getJapanWeekRange(new Date(`${ranking.weekStart}T12:00:00+09:00`));
+  const weekEnd = formatWeeklyRankingDisplayEnd(weekRange.endAt);
   const firstServiceWeek = getJapanWeekRange(new Date(`${RANKING_SERVICE_START_YEAR}-01-01T12:00:00+09:00`)).startAt;
   const periodControls = `<div class="ranking-month-controls" aria-label="週間ランキングの対象週">
     ${ranking.weekStart > firstServiceWeek ? '<button class="compact-button" type="button" data-weekly-ranking-move="-1">前週</button>' : '<span aria-hidden="true"></span>'}

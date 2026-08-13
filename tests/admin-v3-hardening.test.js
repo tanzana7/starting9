@@ -21,6 +21,7 @@ async function fetchUnauthenticated(pathname, method = "GET") {
 test("admin-v3は検索結果から除外する", () => {
   assert.match(page, /<meta name="robots" content="noindex, nofollow, noarchive">/);
   assert.match(headers, /\/admin-v3\.html[\s\S]*X-Robots-Tag: noindex, nofollow, noarchive/);
+  assert.match(headers, /\/admin-v3\s[\s\S]*X-Robots-Tag: noindex, nofollow, noarchive/);
 });
 
 test("admin-v3に運用向けの防御ヘッダーを付ける", () => {

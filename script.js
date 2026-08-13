@@ -2479,27 +2479,47 @@ function autoFillPredictionPosition(pickerName, lineup, targetIndex) {
       .map((item) => item.position)
       .filter(Boolean)
   );
-  let availablePosition = "";
-  for (const position of player.positions) {
+  const decision = resolveAutoFillPosition(player.positions, usedPositions);
+
+  if (decision.position) {
+    lineup[targetIndex] = createLineupItem(targetIndex, player.name, decision.position);
+  }
+}
+
+// An ambiguous candidate group must stop fallback so a low-priority position is not guessed.
+function resolveAutoFillPosition(positions, usedPositions) {
+  const normalizedUsedPositions = new Set(
+    Array.from(usedPositions || [])
+      .map((position) => normalizePosition(position))
+      .filter(Boolean)
+  );
+
+  for (const position of Array.isArray(positions) ? positions : []) {
     const normalizedPosition = normalizePosition(position);
+    const isConcretePosition = AUTO_FILL_POSITIONS.has(normalizedPosition) || OUTFIELD_POSITIONS.includes(normalizedPosition);
 
-    if (AUTO_FILL_POSITIONS.has(normalizedPosition) && !usedPositions.has(normalizedPosition)) {
-      availablePosition = normalizedPosition;
-      break;
-    }
-
-    if (normalizeDisplayPosition(position) === "外") {
-      const unusedOutfieldPositions = OUTFIELD_POSITIONS.filter((outfieldPosition) => !usedPositions.has(outfieldPosition));
-      if (unusedOutfieldPositions.length === 1) {
-        availablePosition = unusedOutfieldPositions[0];
-        break;
+    if (isConcretePosition) {
+      if (!normalizedUsedPositions.has(normalizedPosition)) {
+        return { position: normalizedPosition, ambiguous: false };
       }
+      continue;
+    }
+
+    if (normalizeDisplayPosition(position) !== "外") {
+      continue;
+    }
+
+    const unusedOutfieldPositions = OUTFIELD_POSITIONS.filter((outfieldPosition) => !normalizedUsedPositions.has(outfieldPosition));
+    if (unusedOutfieldPositions.length === 1) {
+      return { position: unusedOutfieldPositions[0], ambiguous: false };
+    }
+
+    if (unusedOutfieldPositions.length > 1) {
+      return { position: "", ambiguous: true };
     }
   }
 
-  if (availablePosition) {
-    lineup[targetIndex] = createLineupItem(targetIndex, player.name, availablePosition);
-  }
+  return { position: "", ambiguous: false };
 }
 
 function getTargetOrder(pickerName, lineup) {

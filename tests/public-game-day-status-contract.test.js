@@ -195,6 +195,6 @@ test("公示なしはUIを隠し、4xxはwarning、5xxまたは通信失敗だ�
 });
 
 test("公開画面のmoduleとentry pointは同じcache busterを使う", () => {
-  assert.match(html, /frontend\/public\/app-coordinator\.js\?v=public-daily-best-nine-1/);
-  assert.match(html, /script\.js\?v=public-daily-best-nine-1/);
+  assert.match(html, /frontend\/public\/app-coordinator\.js\?v=public-position-auto-fill-ambiguous-of-1/);
+  assert.match(html, /script\.js\?v=public-position-auto-fill-ambiguous-of-1/);
 });

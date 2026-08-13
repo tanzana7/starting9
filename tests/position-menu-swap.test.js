@@ -65,6 +65,17 @@ function runLineupSlotMove(lineup, sourceIndex, targetIndex) {
   return JSON.parse(JSON.stringify(movedLineup));
 }
 
+function resolveAutoFillPosition(positions, usedPositions) {
+  const context = vm.createContext({
+    AUTO_FILL_POSITIONS: new Set(["捕", "一", "二", "三", "遊", "指"]),
+    OUTFIELD_POSITIONS: ["左", "中", "右"],
+    normalizePosition: (value) => ({ "1B": "一", "2B": "二", "3B": "三", OF: "", LF: "左", CF: "中", RF: "右" }[String(value || "")] || String(value || "")),
+    normalizeDisplayPosition: (value) => ["OF", "外", "外野"].includes(String(value || "")) ? "外" : String(value || "")
+  });
+  vm.runInContext(`${getFunctionSource("resolveAutoFillPosition")}; this.run = resolveAutoFillPosition;`, context);
+  return JSON.parse(JSON.stringify(context.run(positions, new Set(usedPositions))));
+}
+
 test("選手一覧に主ポジションの凡例があり、既存カテゴリ色を再利用する", () => {
   assert.match(html, /class="player-category-legend"/);
   assert.match(html, /色は主ポジション/);
@@ -138,4 +149,24 @@ test("保存時の既存重複検証を維持する", () => {
   const validation = getFunctionSource("validateLineup");
   assert.match(validation, /hasDuplicatePositions\(lineup\)/);
   assert.match(validation, /同じ守備位置が複数回選ばれています/);
+});
+
+test("OFの空きが複数ある場合は後続の2Bへ自動入力しない", () => {
+  const result = resolveAutoFillPosition(["1B", "3B", "OF", "2B"], ["一", "三"]);
+  assert.deepEqual(result, { position: "", ambiguous: true });
+});
+
+test("OFの空きがLFだけならLFを自動入力する", () => {
+  const result = resolveAutoFillPosition(["1B", "3B", "OF", "2B"], ["一", "三", "中", "右"]);
+  assert.deepEqual(result, { position: "左", ambiguous: false });
+});
+
+test("外野がすべて埋まっている場合は2Bへ進む", () => {
+  const result = resolveAutoFillPosition(["1B", "3B", "OF", "2B"], ["一", "三", "左", "中", "右"]);
+  assert.deepEqual(result, { position: "二", ambiguous: false });
+});
+
+test("通常の具体ポジション候補は空いている3Bを自動入力する", () => {
+  const result = resolveAutoFillPosition(["1B", "3B"], ["一"]);
+  assert.deepEqual(result, { position: "三", ambiguous: false });
 });

@@ -382,6 +382,9 @@ export default {
       const authRateLimitResponse = enforceAuthRateLimit(request, path, cors);
       if (authRateLimitResponse) return authRateLimitResponse;
 
+      const adminMethodAuthResponse = await requireAdminAuthForMethodMismatch(request, env, cors, path);
+      if (adminMethodAuthResponse) return adminMethodAuthResponse;
+
       if (path === "/api/auth/register" && request.method === "POST") {
         return await handleRegister(request, env, cors);
       }
@@ -4751,6 +4754,34 @@ function parseAdminV3JobRoute(path) {
   } catch {
     return { internalGameId: "" };
   }
+}
+
+const ADMIN_EXACT_ROUTE_METHODS = Object.freeze({
+  "/api/admin/me": ["GET"],
+  "/api/admin/v3/overview": ["GET"],
+  "/api/admin/v3/automation-logs": ["GET"],
+  "/api/admin/v3/ranking-resets": ["GET"],
+  "/api/admin/v3/ranking-resets/preview": ["POST"],
+  "/api/admin/v3/ranking-resets/execute": ["POST"],
+  "/api/admin/v3/perfect-score-test/preview": ["POST"]
+});
+
+function getKnownAdminRouteMethods(path) {
+  if (ADMIN_EXACT_ROUTE_METHODS[path]) return ADMIN_EXACT_ROUTE_METHODS[path];
+  if (parseAdminV3IdentityResolveRoute(path)) return ["POST"];
+  if (parseAdminV3NpbGameCodeRoute(path)) return ["PATCH"];
+  if (parseAdminV3OrientationRoute(path)) return ["PATCH"];
+  if (parseAdminV3JobRoute(path)) return ["POST"];
+  // Phase routes authenticate before checking their action-specific method.
+  if (parseAdminV3Phase1Route(path)) return null;
+  return null;
+}
+
+async function requireAdminAuthForMethodMismatch(request, env, cors, path) {
+  const allowedMethods = getKnownAdminRouteMethods(path);
+  if (!allowedMethods || allowedMethods.includes(request.method)) return null;
+  const access = await requireAdminUser(request, env, cors);
+  return access.ok ? null : access.response;
 }
 
 function parseAdminV3Phase1Route(path) {

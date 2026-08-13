@@ -55,6 +55,7 @@ import {
 } from "./backend/domain/scoring.js";
 import {
   calculateRankingGamesNeeded,
+  getJstWeekRange,
   getRankingResetConfirmation,
   getRankingResetDateBoundary,
   normalizeRankingResetRequest,
@@ -396,6 +397,12 @@ export default {
       }
       if (path === "/api/me/ranking/monthly" && request.method === "GET") {
         return await handleGetMyMonthlyRanking(request, env, cors);
+      }
+      if (path === "/api/rankings/weekly" && request.method === "GET") {
+        return await handleGetWeeklyRanking(request, env, cors);
+      }
+      if (path === "/api/me/ranking/weekly" && request.method === "GET") {
+        return await handleGetMyWeeklyRanking(request, env, cors);
       }
       if (path === "/api/game-day-status" && request.method === "GET") {
         return await handleGetGameDayStatus(request, env, cors);
@@ -6475,6 +6482,39 @@ async function handleGetMyMonthlyRanking(request, env, cors) {
   }, 200, cors);
 }
 
+async function handleGetWeeklyRanking(request, env, cors) {
+  const options = parseWeeklyRankingQuery(new URL(request.url).searchParams);
+  if (!options.ok) {
+    return jsonResponse({ ok: false, error: options.error }, 400, cors);
+  }
+
+  const ranking = await getRankingForPeriod(env.AUTH_DB, { ...options, publishedOnly: true });
+  const response = jsonResponse({
+    weekStart: options.weekStart,
+    weekEnd: options.endAt,
+    weekStartUtc: options.startAtUtc,
+    weekEndUtc: options.endAtUtc,
+    ranking: ranking.rows,
+    summary: ranking.summary,
+    pagination: ranking.pagination,
+    updatedAt: new Date().toISOString()
+  }, 200, cors);
+  response.headers.set("Cache-Control", "public, max-age=30");
+  return response;
+}
+
+async function handleGetMyWeeklyRanking(request, env, cors) {
+  const access = await requireAuthenticatedUser(request, env, cors);
+  if (!access.ok) return access.response;
+
+  const options = parseWeeklyRankingQuery(new URL(request.url).searchParams);
+  if (!options.ok) {
+    return jsonResponse({ ok: false, error: options.error }, 400, cors);
+  }
+  const rankingData = await getRankingEntryForUser(env.AUTH_DB, access.user.id, { ...options, publishedOnly: true });
+  return jsonResponse({ ok: true, weekStart: options.weekStart, weekEnd: options.endAt, rankingData }, 200, cors);
+}
+
 function getJapanYearMonth(now = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Tokyo",
@@ -6557,6 +6597,36 @@ function parseMonthlyRankingQuery(searchParams) {
     month,
     startAt: `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-01`,
     endAt: nextMonthDate.toISOString().slice(0, 10),
+    ...pagination
+  };
+}
+
+export function parseWeeklyRankingQuery(searchParams, now = new Date()) {
+  const current = getJstWeekRange(now);
+  const pagination = parseRankingPaginationQuery(searchParams);
+  if (!pagination.ok) return pagination;
+  const rawWeekStart = searchParams.get("weekStart");
+  const weekStart = rawWeekStart === null || rawWeekStart === "" ? current?.startAt : String(rawWeekStart).trim();
+  if (!current || !/^\d{4}-\d{2}-\d{2}$/.test(weekStart)) {
+    return { ok: false, error: "weekStartはYYYY-MM-DD形式で指定してください。" };
+  }
+
+  const requestedWeek = getJstWeekRange(new Date(`${weekStart}T12:00:00+09:00`));
+  if (!requestedWeek || requestedWeek.startAt !== weekStart) {
+    return { ok: false, error: "weekStartは月曜日の日付で指定してください。" };
+  }
+  if (weekStart > current.startAt) {
+    return { ok: false, error: "未来週の週間ランキングは取得できません。" };
+  }
+  return {
+    ok: true,
+    periodType: "weekly",
+    periodKey: weekStart,
+    weekStart,
+    startAt: requestedWeek.startAt,
+    endAt: requestedWeek.endAt,
+    startAtUtc: requestedWeek.startAtUtc,
+    endAtUtc: requestedWeek.endAtUtc,
     ...pagination
   };
 }

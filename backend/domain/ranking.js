@@ -51,6 +51,44 @@ export function getRankingResetDateBoundary(value) {
   }).format(date);
 }
 
+function formatCalendarDate(date) {
+  return [
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, "0"),
+    String(date.getUTCDate()).padStart(2, "0")
+  ].join("-");
+}
+
+export function getJstWeekRange(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const jstCalendarDate = new Date(Date.UTC(Number(values.year), Number(values.month) - 1, Number(values.day)));
+  const daysSinceMonday = (jstCalendarDate.getUTCDay() + 6) % 7;
+  const startDate = new Date(jstCalendarDate);
+  startDate.setUTCDate(startDate.getUTCDate() - daysSinceMonday);
+  const endDate = new Date(startDate);
+  endDate.setUTCDate(endDate.getUTCDate() + 7);
+  const startAt = formatCalendarDate(startDate);
+  const endAt = formatCalendarDate(endDate);
+
+  return {
+    periodType: "weekly",
+    periodKey: startAt,
+    startAt,
+    endAt,
+    startAtUtc: new Date(`${startAt}T00:00:00+09:00`).toISOString(),
+    endAtUtc: new Date(`${endAt}T00:00:00+09:00`).toISOString()
+  };
+}
+
 export function normalizeRankingResetRequest(input = {}) {
   const periodType = String(input.periodType || input.period_type || "").trim().toLowerCase();
   const periodKey = String(input.periodKey || input.period_key || "").trim();

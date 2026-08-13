@@ -766,7 +766,7 @@ button:disabled {
 
 .ranking-tabs {
   display: inline-grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   overflow: hidden;
   border: 1px solid #9db6d4;
   border-radius: 7px;

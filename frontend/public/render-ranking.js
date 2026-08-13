@@ -7,13 +7,18 @@
       const description = document.getElementById("rankingDescription");
       const yearlyButton = document.getElementById("showYearlyRankingButton");
       const monthlyButton = document.getElementById("showMonthlyRankingButton");
+      const weeklyButton = document.getElementById("showWeeklyRankingButton");
+      const isYearly = view === "yearly";
       const isMonthly = view === "monthly";
+      const isWeekly = view === "weekly";
       if (title) title.textContent = "ランキング";
       if (description) description.textContent = "正式リリース時は、規定到達者のみ表示します。現在はテスト期間のため、規定未到達者も参考表示しています。";
-      yearlyButton?.classList.toggle("is-active", !isMonthly);
+      yearlyButton?.classList.toggle("is-active", isYearly);
       monthlyButton?.classList.toggle("is-active", isMonthly);
-      yearlyButton?.setAttribute("aria-selected", String(!isMonthly));
+      weeklyButton?.classList.toggle("is-active", isWeekly);
+      yearlyButton?.setAttribute("aria-selected", String(isYearly));
       monthlyButton?.setAttribute("aria-selected", String(isMonthly));
+      weeklyButton?.setAttribute("aria-selected", String(isWeekly));
     }
 
     function filterRows(rows, { hideIneligibleRankings = false } = {}) {

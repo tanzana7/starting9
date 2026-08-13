@@ -324,6 +324,17 @@ const state = {
     message: "",
     ...getJapanYearMonth()
   },
+  weeklyRanking: {
+    isLoading: false,
+    isLoadingSelf: false,
+    requestId: 0,
+    rows: [],
+    summary: null,
+    pagination: null,
+    self: null,
+    message: "",
+    weekStart: getJapanWeekRange().startAt
+  },
   predictionRemote: {
     isLoading: false,
     isSaving: false,
@@ -566,6 +577,7 @@ const publicAppCoordinator = new publicFrontend.PublicAppCoordinator({
     fetchUserAchievements,
     refreshYearlyRanking,
     refreshMonthlyRanking,
+    refreshWeeklyRanking,
     refreshAdminAccess,
     refreshResultHistory
   }
@@ -683,6 +695,7 @@ function bindEvents() {
   document.getElementById("openAdminButton")?.addEventListener("click", openAdminPanel);
   document.getElementById("showYearlyRankingButton")?.addEventListener("click", () => selectRankingView("yearly"));
   document.getElementById("showMonthlyRankingButton")?.addEventListener("click", () => selectRankingView("monthly"));
+  document.getElementById("showWeeklyRankingButton")?.addEventListener("click", () => selectRankingView("weekly"));
   document.getElementById("rankingContent")?.addEventListener("click", handleRankingPeriodContentClick);
   document.getElementById("resultHistoryList")?.addEventListener("click", handleResultHistoryClick);
   document.getElementById("closeAdminButton")?.addEventListener("click", closeAdminPanel);
@@ -4436,6 +4449,8 @@ async function refreshAutoScoringStatus({ force = false } = {}) {
         void fetchDailyBestNine({ force: true });
         if (state.rankingView === "monthly") {
           void refreshMonthlyRanking({ force: true });
+        } else if (state.rankingView === "weekly") {
+          void refreshWeeklyRanking({ force: true });
         }
       }
     }
@@ -4478,6 +4493,8 @@ async function updateAutoScoring(action, confirmationMessage = "") {
       await fetchDailyBestNine({ force: true });
       if (state.rankingView === "monthly") {
         await refreshMonthlyRanking({ force: true });
+      } else if (state.rankingView === "weekly") {
+        await refreshWeeklyRanking({ force: true });
       }
     }
   } catch (error) {
@@ -5701,6 +5718,8 @@ async function runServerScoring() {
     await fetchDailyBestNine({ force: true });
     if (state.rankingView === "monthly") {
       await refreshMonthlyRanking({ force: true });
+    } else if (state.rankingView === "weekly") {
+      await refreshWeeklyRanking({ force: true });
     }
     renderAutoScoringPanel();
   } catch (error) {
@@ -5889,6 +5908,28 @@ function getJapanYearMonth(date = new Date()) {
   return { year: Number(values.year), month: Number(values.month) };
 }
 
+function getJapanWeekRange(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const calendarDate = new Date(Date.UTC(Number(values.year), Number(values.month) - 1, Number(values.day)));
+  const daysSinceMonday = (calendarDate.getUTCDay() + 6) % 7;
+  const startDate = new Date(calendarDate);
+  startDate.setUTCDate(startDate.getUTCDate() - daysSinceMonday);
+  const endDate = new Date(startDate);
+  endDate.setUTCDate(endDate.getUTCDate() + 7);
+  const format = (value) => [
+    value.getUTCFullYear(),
+    String(value.getUTCMonth() + 1).padStart(2, "0"),
+    String(value.getUTCDate()).padStart(2, "0")
+  ].join("-");
+  return { startAt: format(startDate), endAt: format(endDate) };
+}
+
 function buildMonthlyRankingApiUrl({ year, month, qualifiedOnly = false } = {}) {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
   if (!baseUrl) return "";
@@ -5906,6 +5947,24 @@ function buildMyMonthlyRankingApiUrl({ year, month } = {}) {
   const url = new URL(`${baseUrl}/api/me/ranking/monthly`, window.location.href);
   url.searchParams.set("year", String(year));
   url.searchParams.set("month", String(month));
+  return url.href;
+}
+
+function buildWeeklyRankingApiUrl({ weekStart, qualifiedOnly = false } = {}) {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  if (!baseUrl) return "";
+  const url = new URL(`${baseUrl}/api/rankings/weekly`, window.location.href);
+  url.searchParams.set("weekStart", String(weekStart));
+  url.searchParams.set("limit", String(RANKING_DISPLAY_LIMIT));
+  url.searchParams.set("qualifiedOnly", qualifiedOnly ? "true" : "false");
+  return url.href;
+}
+
+function buildMyWeeklyRankingApiUrl({ weekStart } = {}) {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  if (!baseUrl) return "";
+  const url = new URL(`${baseUrl}/api/me/ranking/weekly`, window.location.href);
+  url.searchParams.set("weekStart", String(weekStart));
   return url.href;
 }
 
@@ -6121,14 +6180,78 @@ async function refreshMonthlyRanking({ force = false } = {}) {
   }
 }
 
+async function refreshWeeklyRanking({ force = false } = {}) {
+  const ranking = state.weeklyRanking;
+  if (ranking.isLoading && !force) return;
+  const period = { weekStart: ranking.weekStart };
+  const publicUrl = buildWeeklyRankingApiUrl({ ...period, qualifiedOnly: false });
+  if (!publicUrl) {
+    ranking.message = "ランキングの接続先を確認できません。";
+    renderRankingPanel();
+    return;
+  }
+
+  const user = getPredictionAccountUser();
+  const requestId = ranking.requestId + 1;
+  ranking.requestId = requestId;
+  ranking.isLoading = true;
+  ranking.isLoadingSelf = Boolean(user);
+  ranking.message = "";
+  if (!user) ranking.self = null;
+  renderRankingPanel();
+
+  try {
+    const publicRequest = publicApiClient.request(publicUrl, { credentials: "include", cache: force ? "no-store" : "default" })
+      .then(({ response, payload }) => {
+        if (!response.ok || !Array.isArray(payload?.ranking)) {
+          throw new Error(payload?.error || `HTTP ${response.status}`);
+        }
+        return payload;
+      });
+    const selfRequest = user ? publicApiClient.get(buildMyWeeklyRankingApiUrl(period), { credentials: "include" })
+      .then(({ response, payload }) => {
+        if (!response.ok || !payload?.ok) {
+          throw new Error(payload?.error || `HTTP ${response.status}`);
+        }
+        return payload.rankingData || null;
+      })
+      .catch((error) => {
+        console.error("自分の週間成績の取得に失敗しました", error.message);
+        return null;
+      }) : Promise.resolve(null);
+    const [publicPayload, self] = await Promise.all([publicRequest, selfRequest]);
+    if (requestId !== ranking.requestId || ranking.weekStart !== period.weekStart) return;
+    ranking.rows = publicPayload.ranking;
+    ranking.summary = publicPayload.summary || null;
+    ranking.pagination = publicPayload.pagination || null;
+    ranking.self = self;
+  } catch (error) {
+    if (requestId !== ranking.requestId) return;
+    console.error("週間ランキングの取得に失敗しました", error.message);
+    ranking.rows = [];
+    ranking.summary = null;
+    ranking.pagination = null;
+    ranking.self = null;
+    ranking.message = "週間ランキングの取得に失敗しました。";
+  } finally {
+    if (requestId === ranking.requestId) {
+      ranking.isLoading = false;
+      ranking.isLoadingSelf = false;
+      renderRankingPanel();
+    }
+  }
+}
+
 function selectRankingView(view) {
-  if (view !== "yearly" && view !== "monthly") return;
+  if (!["yearly", "monthly", "weekly"].includes(view)) return;
   state.rankingView = view;
   renderRankingPanel();
   if (view === "yearly") {
     void refreshYearlyRanking({ force: true });
-  } else {
+  } else if (view === "monthly") {
     void refreshMonthlyRanking({ force: true });
+  } else {
+    void refreshWeeklyRanking({ force: true });
   }
 }
 
@@ -6146,6 +6269,22 @@ function handleRankingPeriodContentClick(event) {
         void refreshYearlyRanking({ force: true });
       }
     }
+    return;
+  }
+  const weeklyButton = event.target.closest("[data-weekly-ranking-move]");
+  if (weeklyButton && !weeklyButton.disabled) {
+    const weeklyDirection = Number(weeklyButton.dataset.weeklyRankingMove);
+    if (!Number.isInteger(weeklyDirection) || weeklyDirection === 0) return;
+    const weekly = state.weeklyRanking;
+    const candidateWeek = new Date(`${weekly.weekStart}T12:00:00+09:00`);
+    candidateWeek.setUTCDate(candidateWeek.getUTCDate() + weeklyDirection * 7);
+    const nextWeek = getJapanWeekRange(candidateWeek).startAt;
+    const currentWeek = getJapanWeekRange();
+    const firstServiceWeek = getJapanWeekRange(new Date(`${RANKING_SERVICE_START_YEAR}-01-01T12:00:00+09:00`)).startAt;
+    if (nextWeek < firstServiceWeek || nextWeek > currentWeek.startAt) return;
+    weekly.weekStart = nextWeek;
+    weekly.self = null;
+    void refreshWeeklyRanking({ force: true });
     return;
   }
   const button = event.target.closest("[data-monthly-ranking-move]");
@@ -6172,6 +6311,10 @@ function renderRankingPanel() {
 
   if (state.rankingView === "monthly") {
     renderMonthlyRanking();
+    return;
+  }
+  if (state.rankingView === "weekly") {
+    renderWeeklyRanking();
     return;
   }
 
@@ -6205,6 +6348,25 @@ function renderMonthlyRanking() {
   renderRankingContent(ranking, {
     selfTitle: "あなたの月間成績",
     emptyMessage: "この月のランキング対象試合はありません。",
+    prefixHtml: periodControls
+  });
+}
+
+function renderWeeklyRanking() {
+  renderRankingHeading("weekly");
+  const ranking = state.weeklyRanking;
+  const current = getJapanWeekRange();
+  const isCurrentWeek = ranking.weekStart === current.startAt;
+  const weekEnd = getJapanWeekRange(new Date(`${ranking.weekStart}T12:00:00+09:00`)).endAt;
+  const firstServiceWeek = getJapanWeekRange(new Date(`${RANKING_SERVICE_START_YEAR}-01-01T12:00:00+09:00`)).startAt;
+  const periodControls = `<div class="ranking-month-controls" aria-label="週間ランキングの対象週">
+    ${ranking.weekStart > firstServiceWeek ? '<button class="compact-button" type="button" data-weekly-ranking-move="-1">前週</button>' : '<span aria-hidden="true"></span>'}
+    <strong>${escapeHtml(ranking.weekStart)}〜${escapeHtml(weekEnd)}</strong>
+    ${isCurrentWeek ? '<span aria-hidden="true"></span>' : '<button class="compact-button" type="button" data-weekly-ranking-move="1">次週</button>'}
+  </div>`;
+  renderRankingContent(ranking, {
+    selfTitle: "あなたの週間成績",
+    emptyMessage: "今週はまだ公開済み試合がありません。",
     prefixHtml: periodControls
   });
 }

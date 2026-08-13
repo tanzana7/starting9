@@ -10,7 +10,6 @@ const normalScreenCss = css.slice(css.lastIndexOf("/* 通常画面:"));
 
 test("TOPは試合情報、予告先発、CTA、説明、β版の順で視覚配置する", () => {
   assert.match(normalScreenCss, /grid-template-areas:[\s\S]*"game game"[\s\S]*"starter starter"[\s\S]*"hero hero"[\s\S]*"lead lead"[\s\S]*"beta beta"/);
-  assert.match(html, /id="gameInfoDisplay"/);
   assert.match(html, /id="probableStarterDisplay"/);
   assert.match(html, /id="predictionCtaButton"/);
   assert.match(html, /class="beta-panel"/);
@@ -21,7 +20,6 @@ test("ロゴとアカウント操作はコンパクトなTOP領域として維�
   assert.match(normalScreenCss, /#authPanel\s*\{[\s\S]*padding: 0/);
   assert.match(html, /id="openLoginButton"/);
   assert.match(html, /id="openRegisterButton"/);
-  assert.match(html, /id="openAdminButton"/);
   assert.match(html, /id="logoutButton"/);
 });
 

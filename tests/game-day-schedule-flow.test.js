@@ -62,8 +62,7 @@ test("試合前自動処理は公示・非公開採点・開始後公開の責�
   assert.match(migration, /rosters_json TEXT NOT NULL DEFAULT '\{\}'/);
   assert.match(migration, /publication_status/);
   assert.match(html, /id="gameDayNoticeStatus"/);
-  assert.match(html, /id="runPregameNoticeButton"/);
-  assert.match(html, /id="publishPregameResultsButton"/);
+  assert.doesNotMatch(html, /id="runPregameNoticeButton"|id="publishPregameResultsButton"/);
   assert.match(script, /api\/game-day-status/);
-  assert.match(script, /結果の公開判定を実行しました/);
+  assert.doesNotMatch(script, /結果の公開判定を実行しました/);
 });

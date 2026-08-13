@@ -55,26 +55,19 @@ test("公開カタログとcanonical対象表示はAPI displayLabelを優先し�
 
 test("公開画面はcanonical catalogの未来試合を締切判定に使い、旧日程fallbackで上書きしない", () => {
   assert.match(script, /const nextGame = catalogGame \|\| await resolvePredictionTargetGame/);
-  assert.match(script, /if \(!state\.isAdminMode\) return null;/);
+  assert.doesNotMatch(script, /state\.isAdminMode/);
   assert.match(script, /state\.publicGameCatalog\.games\.find\(\(item\) => item\?\.gameId === gameId/);
   assert.match(script, /state\.predictionTargetGameId = state\.probableStarter\.nextGame\?\.internalGameId/);
   assert.doesNotMatch(script, /applyPublicPredictionTarget|selectNextPredictionGame/);
 });
 
 test("通常画面はlocalStorageに残る旧管理試合カードを描画せず、canonical UUIDを公示対象にする", () => {
-  const displayStart = script.indexOf("function renderGameInfoDisplay");
-  const displayEnd = script.indexOf("function getGameDayNoticeTargetGameId", displayStart);
-  const displayRenderer = script.slice(displayStart, displayEnd);
-  assert.match(displayRenderer, /if \(!state\.isAdminMode\)/);
-  assert.match(displayRenderer, /display\.classList\.add\("hidden"\)/);
-  assert.match(displayRenderer, /display\.textContent = ""/);
-
   const noticeStart = script.indexOf("function getGameDayNoticeTarget");
   const noticeEnd = script.indexOf("function buildGameDayNoticeApiUrl", noticeStart);
   const targetResolver = script.slice(noticeStart, noticeEnd);
   assert.match(targetResolver, /state\.predictionTargetGame\?\.internalGameId \|\| state\.probableStarter\.nextGame\?\.internalGameId/);
   assert.match(targetResolver, /internalGameId:/);
-  assert.match(index, /script\.js\?v=public-weekly-ranking-display-range-1/);
+  assert.match(index, /script\.js\?v=public-remove-retired-admin-markup-1/);
 });
 
 test("公開ゲームAPIはFightersのcanonical games行と表示用チーム名を返す", () => {

@@ -35,8 +35,7 @@ test("ブラウザは保存済みAPIだけを読み、NPB Workerのstarter取得
   assert.doesNotMatch(script, /searchParams\.set\("mode", "starter"\)/);
 });
 
-test("管理者の再取得だけがAuth Workerの管理APIへPOSTする", () => {
-  assert.match(script, /buildAdminGameApiUrl\(gameId, "probable-starter\/refresh"\)/);
-  assert.match(script, /method: "POST"/);
-  assert.match(script, /credentials: "include"/);
+test("通常公開bundleから予告先発の管理者再取得処理を除去する", () => {
+  assert.doesNotMatch(script, /buildAdminGameApiUrl|probable-starter\/refresh|method: "POST"/);
+  assert.match(script, /fetchStoredProbableStarter\(\)/);
 });

@@ -50,7 +50,7 @@ test("0028 backfills eligibility and scoring revision history without deleting l
   }
 });
 
-test("admin eligibility API and user result expose the explicit exclusion state", () => {
+test("eligibility APIは維持し、公開bundleにadmin操作を含めない", () => {
   const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
   const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
   const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
@@ -59,8 +59,8 @@ test("admin eligibility API and user result expose the explicit exclusion state"
   assert.match(worker, /ranking_eligibility_history/);
   assert.match(worker, /RANKING_GAME_EXCLUDED/);
   assert.match(worker, /rankingExcludedMessage/);
-  assert.match(html, /adminGameProgressBoard/);
-  assert.match(script, /data-ranking-eligibility-action/);
+  assert.doesNotMatch(html, /adminGameProgressBoard/);
+  assert.doesNotMatch(script, /data-ranking-eligibility-action/);
 });
 
 test("V3 state rules remain the only workflow transition contract", async () => {

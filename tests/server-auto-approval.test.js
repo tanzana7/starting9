@@ -61,11 +61,8 @@ test("手動承認とCron自動承認は同じサーバー側の承認コアを�
   assert.match(worker, /const existing = await getGameLineup\(env\.AUTH_DB, \{ gameId, internalGameId \}\);\s+if \(existing\) \{\s+return \{\s+status: isFinalCapture \? "already_captured" : "provisional"/s);
 });
 
-test("管理画面のチェックは既定ONで、サーバー設定を読んでからブラウザ側自動承認に使う", () => {
-  assert.match(html, /id="autoApproveCheckbox" type="checkbox" checked/);
-  assert.match(script, /\/api\/admin\/automation\/settings/);
-  assert.match(script, /credentials: "include", cache: "no-store"/);
-  assert.match(script, /state\.autoApproval\.loaded/);
-  assert.match(script, /state\.autoApproval\.enabled/);
-  assert.doesNotMatch(script, /localStorage\.setItem\([^\n]*autoApproveCheckbox/);
+test("自動承認設定はWorker側に残し、通常公開bundleへ管理UIを含めない", () => {
+  assert.doesNotMatch(html, /autoApproveCheckbox/);
+  assert.doesNotMatch(script, /\/api\/admin\/automation\/settings|state\.autoApproval/);
+  assert.match(worker, /async function handleAdminAutomationSettingsGet/);
 });

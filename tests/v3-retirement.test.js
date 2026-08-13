@@ -81,15 +81,11 @@ test("normal client uses internalGameId for prediction and probable-starter APIs
   assert.doesNotMatch(probable, /legacyGameId/);
   assert.match(current, /internalGameId/);
   assert.match(deadline, /getCurrentGameId\(\)/);
-  assert.match(deadline, /: getCurrentGameId\(\)/);
+  assert.match(deadline, /return getCurrentGameId\(\)/);
 });
 
-test("legacy admin screen is visibly read-only and points to V3", () => {
-  assert.match(index, /legacyAdminReadOnlyNotice/);
-  assert.match(index, /admin-v3\.html/);
-  assert.match(client, /applyLegacyAdminReadOnlyMode\(adminDetails\)/);
-  assert.match(client, /LEGACY_ADMIN_READ_ONLY_EVENT_IDS/);
-  assert.match(client, /element\.closest\("#adminDetails"\)/);
-  assert.match(client, /legacyAdminReadOnlyNotice/);
-  assert.match(client, /read-only/);
+test("旧admin画面は通常公開bundleから除去され、V3管理画面は独立して残る", () => {
+  assert.doesNotMatch(index, /legacyAdminReadOnlyNotice|adminDetails|admin-v3\.html/);
+  assert.doesNotMatch(client, /applyLegacyAdminReadOnlyMode|LEGACY_ADMIN_READ_ONLY_EVENT_IDS|legacyAdminReadOnlyNotice/);
+  assert.match(fs.readFileSync(path.join(root, "admin-v3.html"), "utf8"), /admin-v3/);
 });

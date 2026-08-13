@@ -6,7 +6,7 @@
   <title>Starting9</title>
   <link rel="icon" type="image/png" href="./assets/icons/icon-512.png">
   <link rel="apple-touch-icon" href="./assets/icons/icon-512.png">
-  <link rel="stylesheet" href="style.css?v=public-weekly-ranking-display-range-1">
+  <link rel="stylesheet" href="style.css?v=public-remove-retired-admin-markup-1">
 </head>
 <body>
   <header class="app-header">
@@ -18,8 +18,6 @@
         <strong>🚧 β版</strong>
         <span>現在は北海道日本ハムファイターズのみ対応しています。今後対応球団を追加予定です。</span>
       </section>
-      <p id="adminModeBadge" class="admin-mode-badge hidden">管理者モード</p>
-      <p id="gameInfoDisplay" class="game-info-display hidden" aria-live="polite"></p>
       <section id="probableStarterDisplay" class="probable-starter-card hidden" aria-live="polite"></section>
       <div id="authPanel" class="auth-panel" aria-live="polite">
         <div id="authLoggedOut" class="auth-state">
@@ -31,8 +29,6 @@
         </div>
         <div id="authLoggedIn" class="auth-state hidden">
           <span><strong id="authUsername"></strong> でログイン中</span>
-          <button id="openAdminButton" class="auth-button hidden" type="button">管理画面</button>
-          <a id="openAdminV3Button" class="auth-button hidden" href="admin-v3.html">自動運転V3</a>
           <button id="logoutButton" class="auth-button" type="button">ログアウト</button>
         </div>
         <section id="achievementsPanel" class="achievements-panel hidden" aria-labelledby="achievementsTitle">
@@ -175,406 +171,7 @@
       <button id="sharePredictionButton" class="secondary-button hidden" type="button">予想をXで共有</button>
     </section>
 
-    <details id="adminDetails" class="admin-details hidden" hidden aria-hidden="true">
-      <summary>
-        <span>管理画面</span>
-        <small>実スタメン登録・採点・運用確認</small>
-      </summary>
 
-      <p id="legacyAdminReadOnlyNotice" role="status">旧管理画面は読み取り専用です。現在の運用操作は<a href="admin-v3.html">Game Automation V3管理画面</a>を使用してください。</p>
-
-      <div class="admin-screen-actions">
-        <button id="closeAdminButton" class="secondary-button compact-button" type="button">通常画面へ戻る</button>
-      </div>
-
-      <details id="adminPregameTools" class="admin-test-details">
-        <summary>
-          <span>緊急復旧</span>
-          <small>通常は使用せず、Cronで解決できない場合だけ限定的に実行します。</small>
-        </summary>
-        <section class="admin-test-panel" aria-labelledby="admin-pregame-tools-title">
-          <div>
-            <p class="area-label">EMERGENCY RECOVERY</p>
-            <h3 id="admin-pregame-tools-title">通常は使用しない手動復旧</h3>
-            <p>自動処理の本体はCloudflare Cronと永続workflowです。ここでは障害調査・復旧時だけ、対象試合を確認して限定操作します。</p>
-          </div>
-          <div class="admin-server-scoring-actions">
-            <button id="runPregameNoticeButton" class="secondary-button compact-button" type="button">公示取得を1回実行</button>
-            <button id="distributePregameNoticeButton" class="secondary-button compact-button" type="button">公示結果を当日試合へ配布</button>
-            <button id="runPregameRosterButton" class="secondary-button compact-button" type="button">ロースター取得を1回実行</button>
-            <button id="fixPregameRosterButton" class="secondary-button compact-button" type="button">ロースターを固定</button>
-            <button id="runPregameLineupButton" class="secondary-button compact-button" type="button">正式スタメン取得を1回実行</button>
-            <button id="runPregameScoringButton" class="secondary-button compact-button" type="button">採点を1回実行</button>
-            <button id="publishPregameResultsButton" class="secondary-button compact-button" type="button">公開処理を1回実行</button>
-          </div>
-          <p id="adminPregameAutomationToolsMessage" class="message" role="status" aria-live="polite"></p>
-        </section>
-      </details>
-
-      <section class="card lineup-card admin-card" aria-labelledby="actual-title">
-        <div class="section-heading">
-          <div>
-            <h2 id="actual-title">実際のスタメン入力</h2>
-            <p>発表されたスタメンを貼り付け、プレビュー確認後に採点できます。</p>
-          </div>
-        </div>
-
-        <form id="actualForm" novalidate>
-          <div class="parser-panel">
-            <div id="adminFlowStatus" class="admin-flow-status" aria-live="polite"></div>
-          <div class="npb-fetch-panel">
-              <section id="adminGameWorkflowStatus" class="admin-game-workflow-status hidden" aria-live="polite">
-                <div id="adminGameWorkflowSummary" class="admin-game-workflow-summary"></div>
-                <div class="admin-game-workflow-actions">
-                  <button id="toggleGameWorkflowPauseButton" class="danger-button compact-button" type="button">緊急停止</button>
-                </div>
-                <p id="adminGameWorkflowMessage" class="message" role="status"></p>
-              </section>
-              <section id="adminReleaseReadiness" class="admin-release-readiness hidden" aria-labelledby="adminReleaseReadinessTitle">
-                <div class="admin-release-readiness-heading">
-                  <div>
-                    <h3 id="adminReleaseReadinessTitle">リリース準備状況</h3>
-                    <p>新規試合のCron自動処理と後続ジョブの状態を確認します。</p>
-                  </div>
-                  <button id="refreshAdminReleaseReadinessButton" class="secondary-button compact-button" type="button">再読み込み</button>
-                </div>
-                <div id="adminReleaseReadinessContent" aria-live="polite"></div>
-              </section>
-              <section id="adminGameProgressBoard" class="admin-game-progress-board hidden" aria-labelledby="adminGameProgressTitle">
-                <div class="admin-game-progress-heading">
-                  <div>
-                    <h3 id="adminGameProgressTitle">試合進行ステータス</h3>
-                    <p>現在の管理対象試合を、保存済みデータと進行ログから表示します。</p>
-                  </div>
-                  <button id="refreshAdminGameProgressButton" class="secondary-button compact-button" type="button">手動更新</button>
-                </div>
-                <div id="adminGameProgressContent" aria-live="polite"></div>
-              </section>
-              <section id="adminWorkflowLogsPanel" class="admin-workflow-logs hidden" aria-labelledby="adminWorkflowLogsTitle">
-                <div class="admin-workflow-logs-heading">
-                  <div>
-                    <h3 id="adminWorkflowLogsTitle">試合進行ログ</h3>
-                    <p>通常試合の自動処理と管理者操作の履歴です。</p>
-                  </div>
-                  <div class="admin-workflow-logs-heading-actions">
-                    <button id="toggleAdminWorkflowLogsButton" class="secondary-button compact-button" type="button" aria-expanded="false" aria-controls="adminWorkflowLogsContent">ログを表示</button>
-                    <button id="refreshAdminWorkflowLogsButton" class="secondary-button compact-button" type="button">再読み込み</button>
-                  </div>
-                </div>
-                <div id="adminWorkflowLogsContent" class="admin-workflow-logs-content hidden">
-                  <div class="admin-workflow-log-filters" aria-label="試合進行ログの絞り込み">
-                  <input id="adminWorkflowLogGameId" type="text" placeholder="gameId（任意）" aria-label="gameIdで絞り込み">
-                  <select id="adminWorkflowLogEventType" aria-label="種別で絞り込み">
-                    <option value="">すべての種別</option>
-                    <option value="schedule_sync">試合予定取得</option>
-                    <option value="notice_fetch">公示取得</option>
-                    <option value="roster_fixed">ロースター固定</option>
-                    <option value="prediction_target_switched">対象試合切り替え</option>
-                    <option value="probable_starter_fetch_started">予告先発取得開始</option>
-                    <option value="probable_starter_unannounced">予告先発未発表</option>
-                    <option value="probable_starter_announced">予告先発取得</option>
-                    <option value="probable_starter_fetch_failed">予告先発取得失敗</option>
-                    <option value="probable_starter_manual_refresh">予告先発手動再取得</option>
-                    <option value="lineup_fetch">実スタメン取得</option>
-                    <option value="final_lineup_fetch">最終スタメン取得</option>
-                    <option value="lineup_fallback">仮スタメンへフォールバック</option>
-                    <option value="scoring_started">採点開始</option>
-                    <option value="scoring_succeeded">採点成功</option>
-                    <option value="scoring_failed">採点失敗</option>
-                    <option value="result_published">結果正式公開</option>
-                    <option value="ranking_reflected">ランキング反映</option>
-                    <option value="admin_manual_operation">管理者手動操作</option>
-                    <option value="admin_lineup_approved">管理者スタメン登録</option>
-                    <option value="admin_lineup_revision">管理者スタメン修正</option>
-                    <option value="admin_rescore_confirmed">管理者再採点</option>
-                    <option value="prediction_target_switch_skipped">次戦なし</option>
-                    <option value="scoring_skipped">採点見送り</option>
-                    <option value="result_publish_failed">結果公開失敗</option>
-                  </select>
-                  <select id="adminWorkflowLogStatus" aria-label="状態で絞り込み">
-                    <option value="">すべての状態</option>
-                    <option value="success">成功</option>
-                    <option value="warning">注意</option>
-                    <option value="error">エラー</option>
-                    <option value="info">情報</option>
-                  </select>
-                  </div>
-                  <p id="adminWorkflowLogsMessage" class="message" role="status" aria-live="polite"></p>
-                  <div id="adminWorkflowLogsList" class="admin-workflow-logs-list" aria-live="polite"></div>
-                </div>
-              </section>
-              <section id="adminGameIdentityRepairsPanel" class="admin-game-identity-repairs hidden" aria-labelledby="adminGameIdentityRepairsTitle">
-                <div class="admin-game-identity-repairs-heading">
-                  <div>
-                    <h3 id="adminGameIdentityRepairsTitle">試合ID修復</h3>
-                    <p>dry-runで確認した安全な計画だけを、監査を確認しながら1件ずつ実行できます。</p>
-                  </div>
-                  <button id="refreshAdminGameIdentityRepairsButton" class="secondary-button compact-button" type="button">修復候補を確認</button>
-                </div>
-                <p id="adminGameIdentityRepairsMessage" class="message" role="status" aria-live="polite"></p>
-                <div id="adminGameIdentityRepairCoverage" class="game-identity-repair-coverage" aria-live="polite"></div>
-                <div id="adminGameIdentityRepairLastResult" class="game-identity-repair-last-result" aria-live="polite"></div>
-                <div id="adminGameIdentityRepairsList" class="admin-game-identity-repairs-list" aria-live="polite"></div>
-              </section>
-              <div class="schedule-loader">
-                <p class="schedule-loader-title">登録済み試合スケジュール</p>
-                <div id="nextGameScheduleSummary" class="schedule-next-summary hidden" aria-live="polite"></div>
-                <div class="schedule-loader-row">
-                  <select id="gameScheduleSelect" aria-label="登録済み試合を選択">
-                    <option value="">登録済み試合を選択</option>
-                  </select>
-                  <button id="loadNextGameButton" class="secondary-button compact-button" type="button">次の試合を読み込む</button>
-                  <button id="loadTodayGameButton" class="secondary-button compact-button" type="button">今日の試合を読み込む</button>
-                  <button id="loadSelectedGameButton" class="secondary-button compact-button" type="button">選択した試合を読み込む</button>
-                </div>
-                <p id="scheduleLoaderMessage" class="message" role="status" aria-live="polite"></p>
-                <div id="loadedScheduleInfo" class="auto-fetch-summary hidden" aria-live="polite"></div>
-                <section class="schedule-log-panel" aria-labelledby="schedule-log-title">
-                  <h3 id="schedule-log-title">試合日程読み込みログ</h3>
-                  <pre id="scheduleLoadLog" class="schedule-load-log" aria-live="polite"></pre>
-                  <div class="schedule-log-actions">
-                    <button id="copyScheduleLogButton" class="secondary-button compact-button" type="button">ログをコピー</button>
-                    <button id="clearScheduleLogButton" class="secondary-button compact-button" type="button">ログを消去</button>
-                  </div>
-                </section>
-              </div>
-              <label for="matchupInput">対戦カード名</label>
-              <input id="matchupInput" type="text" maxlength="40" placeholder="例：日本ハム vs 西武">
-              <label for="npbUrlInput">NPB公式試合ページURL</label>
-              <div class="npb-url-row">
-                <input id="npbUrlInput" type="url" inputmode="url" placeholder="https://npb.jp/scores/2026/0707/m-f-12/">
-                <button id="fetchNpbButton" class="secondary-button compact-button" type="button">NPB公式ページから候補取得</button>
-              </div>
-              <div class="probable-starter-admin-panel">
-                <div class="probable-starter-admin-heading">
-                  <div>
-                    <p class="preview-title">予告先発</p>
-                    <p class="field-help">次の日ハム戦とNPB公式ページのカードを照合します。</p>
-                  </div>
-                  <button id="fetchProbableStarterButton" class="secondary-button compact-button" type="button">予告先発を再取得</button>
-                </div>
-                <p id="probableStarterAdminStatus" class="message" role="status" aria-live="polite"></p>
-                <div id="probableStarterAdminLog" class="probable-starter-admin-log hidden" aria-live="polite"></div>
-              </div>
-              <label for="gameStartInput">試合開始日時</label>
-              <div class="auto-fetch-row">
-                <input id="gameStartInput" type="datetime-local" readonly>
-                <button id="editGameStartButton" class="secondary-button compact-button" type="button">日時を手動で変更</button>
-                <button id="resetGameStartButton" class="secondary-button compact-button hidden" type="button">自動値に戻す</button>
-              </div>
-              <section id="adminPredictionDeadlineStatus" class="admin-prediction-deadline hidden" aria-live="polite"></section>
-              <label class="auto-approve-option" for="autoApproveCheckbox">
-                <input id="autoApproveCheckbox" type="checkbox" checked>
-                <span>チェック全OKなら自動で本承認する</span>
-              </label>
-              <button id="checkRosterButton" class="secondary-button compact-button" type="button">1軍登録状況を確認</button>
-              <div class="auto-fetch-row">
-                <button id="startRosterMonitorButton" class="secondary-button compact-button" type="button">ロースター自動取得を開始</button>
-                <button id="stopRosterMonitorButton" class="secondary-button compact-button" type="button" disabled>ロースター自動取得を停止</button>
-              </div>
-              <div id="rosterSnapshotSummary" class="auto-fetch-summary hidden" aria-live="polite"></div>
-              <p id="autoFetchStatus" class="message auto-fetch-message" role="status" aria-live="polite"></p>
-              <div id="autoFetchSummary" class="auto-fetch-summary" aria-live="polite"></div>
-              <div id="autoFetchValidation" class="auto-fetch-validation hidden" aria-live="polite"></div>
-              <div id="autoFetchLog" class="auto-fetch-log hidden" aria-live="polite"></div>
-              <p id="npbFetchMessage" class="message npb-message" role="status" aria-live="polite"></p>
-            </div>
-            <label for="actualPasteInput">実スタメン貼り付け</label>
-            <textarea id="actualPasteInput" rows="7" placeholder="1 中 松本剛&#10;2 一 清宮幸太郎&#10;3 指 レイエス"></textarea>
-            <div class="parser-actions">
-              <button id="parseActualButton" class="secondary-button compact-button" type="button">候補を読み取る</button>
-              <button id="applyParsedActualButton" class="primary-button compact-button hidden" type="button">承認して実スタメンに登録</button>
-              <button id="clearActualCandidateButton" class="secondary-button compact-button hidden" type="button">候補をクリア</button>
-              <button id="approveProvisionalButton" class="primary-button compact-button hidden" type="button">本承認する</button>
-              <button id="editProvisionalButton" class="secondary-button compact-button hidden" type="button">修正する</button>
-              <button id="cancelProvisionalButton" class="danger-button compact-button hidden" type="button">仮承認を取り消す</button>
-            </div>
-            <p id="parserError" class="message error-message" role="alert" aria-live="polite"></p>
-            <div id="actualPreview" class="parser-preview hidden" aria-live="polite"></div>
-          </div>
-
-          <div class="lineup-builder" data-picker="actual">
-            <div class="lineup-panel">
-              <h3>実際のオーダー</h3>
-              <div id="actualLineup" class="slot-list"></div>
-            </div>
-            <div class="player-panel">
-              <h3>選手一覧</h3>
-              <div id="actualPlayers" class="player-list"></div>
-              <div id="actualPlayerDetails" class="player-detail-panel hidden" aria-live="polite"></div>
-            </div>
-          </div>
-          <p id="actualError" class="message error-message" role="alert" aria-live="polite"></p>
-          <button class="primary-button" type="submit">採点する</button>
-        </form>
-
-        <section id="adminServerScoringPanel" class="admin-server-scoring" aria-labelledby="admin-server-scoring-title">
-          <div class="admin-server-scoring-heading">
-            <div>
-              <p class="area-label">SERVER SCORING</p>
-              <h3 id="admin-server-scoring-title">保存済み予想の一括採点</h3>
-              <p>採点テストはDBを変更しません。本番採点はテスト成功後にだけ実行できます。</p>
-            </div>
-          </div>
-          <div id="adminServerScoringSummary" class="admin-server-scoring-summary" aria-live="polite"></div>
-          <div class="admin-server-scoring-actions">
-            <button id="testServerScoringButton" class="secondary-button compact-button" type="button">採点テスト</button>
-            <button id="runServerScoringButton" class="danger-button compact-button" type="button" disabled>本番採点</button>
-          </div>
-          <p id="adminServerScoringMessage" class="message" role="status" aria-live="polite"></p>
-          <div id="adminServerScoringPreview" class="admin-server-scoring-preview hidden" aria-live="polite"></div>
-        </section>
-
-        <section id="adminAutoScoringPanel" class="admin-auto-scoring" aria-labelledby="admin-auto-scoring-title">
-          <div class="admin-server-scoring-heading">
-            <div>
-              <p class="area-label">AUTO SCORING</p>
-              <h3 id="admin-auto-scoring-title">実スタメン取得後の自動採点</h3>
-              <p>正式スタメンを保存するとCronが自動採点し、結果は試合開始時刻まで非公開で保持します。</p>
-            </div>
-          </div>
-          <div id="adminAutoScoringSummary" class="admin-auto-scoring-summary" aria-live="polite"></div>
-          <div class="admin-server-scoring-actions">
-            <button id="runAutoScoringNowButton" class="secondary-button compact-button" type="button" disabled>今すぐ採点</button>
-            <button id="retryAutoScoringButton" class="secondary-button compact-button" type="button" disabled>再試行</button>
-            <button id="cancelAutoScoringButton" class="danger-button compact-button" type="button" disabled>自動採点を取り消し</button>
-          </div>
-          <p id="adminAutoScoringMessage" class="message" role="status" aria-live="polite"></p>
-        </section>
-
-        <section id="adminManualRescorePanel" class="admin-server-scoring" aria-labelledby="admin-manual-rescore-title">
-          <div class="admin-server-scoring-heading">
-            <div>
-              <p class="area-label">MANUAL RESCORE</p>
-              <h3 id="admin-manual-rescore-title">正式スタメン修正と再採点</h3>
-              <p>この画面で選択中のgameIdだけを対象にします。修正版の保存後にプレビューを確認し、確定時だけ結果を置き換えます。</p>
-            </div>
-          </div>
-          <div id="adminManualRescoreSummary" class="admin-server-scoring-summary" aria-live="polite"></div>
-          <label for="manualRescoreReason">修正理由</label>
-          <input id="manualRescoreReason" type="text" maxlength="240" placeholder="例：公式スタメンの守備位置訂正">
-          <div class="admin-server-scoring-actions">
-            <button id="saveLineupRevisionButton" class="secondary-button compact-button" type="button">修正版を保存</button>
-            <button id="previewManualRescoreButton" class="secondary-button compact-button" type="button">再採点プレビュー</button>
-            <button id="confirmManualRescoreButton" class="danger-button compact-button" type="button" disabled>再採点を確定</button>
-            <button id="restorePreviousLineupButton" class="secondary-button compact-button" type="button">直前versionへ戻す</button>
-          </div>
-          <p id="adminManualRescoreMessage" class="message" role="status" aria-live="polite"></p>
-          <div id="adminManualRescorePreview" class="admin-server-scoring-preview hidden" aria-live="polite"></div>
-          <div id="adminManualRescoreHistory" class="admin-server-scoring-preview hidden" aria-live="polite"></div>
-        </section>
-      </section>
-
-      <details id="adminTestDetails" class="admin-test-details">
-        <summary>
-          <span>開発用テスト</span>
-          <small>表示・動作確認用です。本番のサーバー判定は変更しません。</small>
-        </summary>
-        <section class="admin-test-warning" aria-label="開発用テストの注意">
-          <strong>管理者専用の確認操作です。</strong>
-          <p>テスト予想とテスト実績は通常のランキング・実績集計から除外されます。</p>
-        </section>
-        <section class="admin-auto-scoring-test-panel" aria-labelledby="admin-auto-scoring-test-title">
-          <div class="admin-auto-scoring-test-heading">
-            <span class="test-badge">TEST</span>
-            <div>
-              <p class="area-label">AUTO SCORING TEST</p>
-              <h3 id="admin-auto-scoring-test-title">自動採点テスト</h3>
-              <p>締切日時と正解スタメンを設定して、締切後の自動採点・結果公開を確認できます。</p>
-            </div>
-          </div>
-          <form id="adminAutoScoringTestCreateForm" class="admin-auto-scoring-test-form">
-            <label>試合名<input id="autoScoringTestTitle" required maxlength="160" placeholder="例：自動採点確認戦"></label>
-            <label>試合日<input id="autoScoringTestDate" type="date" required></label>
-            <label>試合開始<input id="autoScoringTestStartAt" type="datetime-local" required></label>
-            <label>予想締切<input id="autoScoringTestDeadlineAt" type="datetime-local" required></label>
-            <div class="admin-test-deadline-presets" aria-label="締切日時の入力補助">
-              <span>締切補助</span>
-              <button type="button" class="secondary-button compact-button" data-auto-test-deadline-minutes="1">1分後</button>
-              <button type="button" class="secondary-button compact-button" data-auto-test-deadline-minutes="3">3分後</button>
-              <button type="button" class="secondary-button compact-button" data-auto-test-deadline-minutes="5">5分後</button>
-              <button type="button" class="secondary-button compact-button" data-auto-test-deadline-minutes="10">10分後</button>
-            </div>
-            <label>対戦相手<input id="autoScoringTestOpponent" value="e" maxlength="8" required></label>
-            <label>球場<input id="autoScoringTestVenue" maxlength="160"></label>
-            <label class="admin-auto-scoring-test-wide">ロースター<small>1行1選手、9人以上。選手名または「選手名,守備位置」</small><textarea id="autoScoringTestRoster" required rows="5" placeholder="水谷瞬\n松本剛\n郡司裕也"></textarea></label>
-            <label class="admin-auto-scoring-test-wide">自動採点用正解スタメン<small>1 中 水谷瞬 の形式で9行</small><textarea id="autoScoringTestAnswerLineup" required rows="5" placeholder="1 中 水谷瞬\n2 左 松本剛"></textarea><output id="autoScoringTestAnswerPreview" class="admin-auto-scoring-test-preview" aria-live="polite">入力内容のプレビューがここに表示されます。</output></label>
-            <button class="primary-button admin-auto-scoring-test-wide" type="submit">自動採点テストを作成</button>
-          </form>
-          <p id="adminAutoScoringTestMessage" class="message" role="status" aria-live="polite"></p>
-          <div id="adminAutoScoringTestList" class="admin-auto-scoring-test-list" aria-live="polite"></div>
-          <div id="adminAutoScoringTestDetail" class="admin-auto-scoring-test-detail" aria-live="polite"></div>
-        </section>
-        <section class="admin-test-panel admin-test-game-panel" aria-labelledby="admin-test-game-title">
-          <div>
-            <p class="area-label">TEST GAME DATA</p>
-            <h3 id="admin-test-game-title">テスト試合</h3>
-            <p>本番日程やCronには登録されません。作成した試合だけで受付・採点・訂正を確認できます。</p>
-          </div>
-          <form id="adminTestGameCreateForm" class="admin-test-game-form" novalidate>
-            <label for="adminTestGameTitle">試合名</label>
-            <input id="adminTestGameTitle" type="text" maxlength="120" placeholder="例：採点フロー確認テスト">
-            <label for="adminTestGameDate">試合日</label>
-            <input id="adminTestGameDate" type="date">
-            <label for="adminTestGameStartAt">試合開始日時</label>
-            <input id="adminTestGameStartAt" type="datetime-local">
-            <label for="adminTestGameDeadlineAt">予想締切日時</label>
-            <input id="adminTestGameDeadlineAt" type="datetime-local">
-            <label for="adminTestGameOpponent">対戦相手</label>
-            <input id="adminTestGameOpponent" type="text" maxlength="80" placeholder="例：楽天イーグルス">
-            <label for="adminTestGameVenue">球場</label>
-            <input id="adminTestGameVenue" type="text" maxlength="120" placeholder="例：エスコンフィールド">
-            <label for="adminTestGameRoster">ロースター（1行1人、名前 または 名前,守備位置）</label>
-            <textarea id="adminTestGameRoster" rows="7" placeholder="水谷瞬,外野手&#10;松本剛,外野手&#10;郡司裕也,捕手&#10;レイエス,DH"></textarea>
-            <p id="adminTestGameRosterPreview" class="admin-test-game-preview" aria-live="polite">入力すると登録内容を確認できます。</p>
-            <label for="adminTestGameMemo">管理者メモ（任意）</label>
-            <textarea id="adminTestGameMemo" rows="3" maxlength="2000"></textarea>
-            <button class="primary-button compact-button" type="submit">テスト試合を作成</button>
-          </form>
-          <p id="adminTestGameMessage" class="message" role="status" aria-live="polite"></p>
-          <div id="adminTestGamesList" class="admin-test-games-list" aria-live="polite"></div>
-          <div id="adminTestGameDetail" class="admin-test-game-detail hidden" aria-live="polite"></div>
-        </section>
-        <section class="admin-test-panel" aria-labelledby="admin-test-status-title">
-          <div>
-            <p class="area-label">TEST STATUS</p>
-            <h3 id="admin-test-status-title">テスト情報</h3>
-          </div>
-          <div id="adminTestInfo" class="admin-test-info" aria-live="polite"></div>
-          <p id="adminTestMessage" class="message" role="status" aria-live="polite"></p>
-        </section>
-        <section id="adminTestPredictionDeadlineStatus" class="admin-prediction-deadline hidden" aria-live="polite"></section>
-        <section class="admin-test-panel" aria-labelledby="admin-test-tools-title">
-          <div>
-            <p class="area-label">TEST TOOLS</p>
-            <h3 id="admin-test-tools-title">検証用操作</h3>
-            <p>完全一致予想は、ログイン中の管理者自身の予想だけを対象にします。</p>
-          </div>
-          <div class="admin-test-actions">
-            <button id="createPerfectPredictionButton" class="danger-button" type="button">完全一致予想を作成</button>
-            <button id="generateTestPredictionButton" class="secondary-button" type="button">ダミー予想を入力</button>
-            <button id="runAdminTestCronButton" class="secondary-button" type="button">Cronを手動実行</button>
-            <button id="resetButton" class="danger-button" type="button">テストデータをリセット</button>
-          </div>
-          <p id="testPredictionMessage" class="message success-message" aria-live="polite"></p>
-          <p id="resetMessage" class="message success-message" aria-live="polite"></p>
-        </section>
-        <section class="admin-test-panel" aria-labelledby="admin-test-achievements-title">
-          <div>
-            <p class="area-label">ACHIEVEMENT TEST</p>
-            <h3 id="admin-test-achievements-title">実績テスト</h3>
-            <p>テスト付与はログイン中の管理者自身だけを対象にします。</p>
-          </div>
-          <div class="admin-test-actions">
-            <button class="secondary-button" type="button" data-achievement-grant="beta_predictor">ベータテスターを付与</button>
-            <button class="secondary-button" type="button" data-achievement-grant="first_prediction">初予想を付与</button>
-            <button class="secondary-button" type="button" data-achievement-grant="perfect_prediction">パーフェクトを付与</button>
-            <button id="refreshAdminTestAchievementsButton" class="secondary-button" type="button">実績一覧を再取得</button>
-          </div>
-          <div id="adminTestAchievements" class="admin-test-achievements" aria-live="polite"></div>
-        </section>
-      </details>
-    </details>
 
     <section class="card result-card" aria-labelledby="result-title">
       <div class="section-heading">
@@ -640,19 +237,16 @@
 
   <script src="players.js?v=split-drag-20260709"></script>
   <script src="game-schedule.js?v=20260718-probable-starter"></script>
-  <script type="module" src="pregame-automation.js?v=20260722-2"></script>
   <script src="auth.js?v=auth-api-local-20260719"></script>
-  <!-- Historical cache-buster contract only; this old asset is not loaded. -->
-  <!-- script.js?v=admin-test-data-20260728-10 -->
-  <script src="frontend/public/state.js?v=public-weekly-ranking-display-range-1"></script>
-    <script src="frontend/public/request-guard.js?v=public-weekly-ranking-display-range-1"></script>
-    <script src="frontend/public/storage.js?v=public-weekly-ranking-display-range-1"></script>
-    <script src="frontend/public/api-client.js?v=public-weekly-ranking-display-range-1"></script>
-    <script src="frontend/public/app-coordinator.js?v=public-weekly-ranking-display-range-1"></script>
-    <script src="frontend/public/render-results.js?v=public-weekly-ranking-display-range-1"></script>
-    <script src="frontend/public/render-ranking.js?v=public-weekly-ranking-display-range-1"></script>
-    <script src="frontend/public/roster.js?v=public-weekly-ranking-display-range-1"></script>
-    <script src="frontend/public/prediction-form.js?v=public-weekly-ranking-display-range-1"></script>
-    <script src="script.js?v=public-weekly-ranking-display-range-1"></script>
+  <script src="frontend/public/state.js?v=public-remove-retired-admin-markup-1"></script>
+  <script src="frontend/public/request-guard.js?v=public-remove-retired-admin-markup-1"></script>
+  <script src="frontend/public/storage.js?v=public-remove-retired-admin-markup-1"></script>
+  <script src="frontend/public/api-client.js?v=public-remove-retired-admin-markup-1"></script>
+  <script src="frontend/public/app-coordinator.js?v=public-remove-retired-admin-markup-1"></script>
+  <script src="frontend/public/render-results.js?v=public-remove-retired-admin-markup-1"></script>
+  <script src="frontend/public/render-ranking.js?v=public-remove-retired-admin-markup-1"></script>
+  <script src="frontend/public/roster.js?v=public-remove-retired-admin-markup-1"></script>
+  <script src="frontend/public/prediction-form.js?v=public-remove-retired-admin-markup-1"></script>
+  <script src="script.js?v=public-remove-retired-admin-markup-1"></script>
 </body>
 </html>

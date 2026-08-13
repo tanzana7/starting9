@@ -60,12 +60,9 @@ test("再採点可能期限は試合日のJST終了から7日間で、予測デ�
   assert.doesNotMatch(worker, /DELETE FROM predictions WHERE game_date/);
 });
 
-test("管理画面は選択中gameId、version、理由、プレビュー、確定、復元を同一パネルで扱う", () => {
+test("再採点の危険操作は通常公開画面へ露出しない", () => {
   for (const id of ["adminManualRescorePanel", "manualRescoreReason", "saveLineupRevisionButton", "previewManualRescoreButton", "confirmManualRescoreButton", "restorePreviousLineupButton"]) {
-    assert.match(html, new RegExp(`id="${id}"`));
+    assert.doesNotMatch(html, new RegExp(`id="${id}"`));
   }
-  assert.match(script, /function getManualRescoreMetadata/);
-  assert.match(script, /state\.manualRescore\.gameId = requestGameId/);
-  assert.match(script, /他の日の試合は変更されません/);
-  assert.match(script, /refreshManualRescorePanel\(\{ force: true \}\)/);
+  assert.doesNotMatch(script, /getManualRescoreMetadata|refreshManualRescorePanel|confirmManualRescore/);
 });

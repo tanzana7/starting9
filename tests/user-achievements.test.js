@@ -52,14 +52,11 @@ test("実績APIは本人の取得と管理者テスト用の本人付与・削�
   assert.match(worker, /user_id = \?1/);
 });
 
-test("通常画面と管理画面内テストに実績の表示・検証導線を持つ", () => {
+test("通常画面はユーザー実績だけを表示し、管理者テスト導線を含めない", () => {
   assert.match(html, /id="achievementsPanel"/);
   assert.match(html, /id="achievementsList"/);
-  assert.match(html, /id="adminTestAchievements"/);
   assert.match(script, /function fetchUserAchievements/);
-  assert.match(script, /function refreshAdminTestAchievements/);
-  assert.match(script, /function grantAdminTestAchievement/);
-  assert.match(script, /function removeAdminTestAchievement/);
+  assert.doesNotMatch(script, /adminTestAchievements|grantAdminTestAchievement|removeAdminTestAchievement/);
   assert.match(script, /const hasAchievements = state\.achievements\.items\.length > 0/);
   assert.match(script, /panel\.classList\.toggle\("hidden", !user \|\| !hasAchievements\)/);
   assert.doesNotMatch(script, /取得済み実績はありません/);

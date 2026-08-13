@@ -43,8 +43,7 @@ test("初期試合は今日の受付中、次の受付可能な未来試合の�
 
 test("canonical catalogの未来試合はstatic scheduleに未掲載でもstartAtから締切を判定する", () => {
   const start = script.indexOf("function resolvePredictionDeadline");
-  const end = script.indexOf("function canUsePredictionDeadlineOverride", start);
-  const resolver = script.slice(start, end);
+  const resolver = script.slice(start, script.indexOf("function getEffectivePredictionDeadline", start));
   assert.match(resolver, /state\.publicGameCatalog\.games\.find/);
   assert.match(resolver, /game\.startAt\s*\?\s*new Date\(game\.startAt\)/);
   assert.match(resolver, /status: isClosed \? "closed" : "open"/);
@@ -93,8 +92,8 @@ test("スマホでも選択UIを追加せず、補助表示と既存導線を維
 });
 
 test("公開画面のJS/CSS cache busterを更新する", () => {
-  assert.match(html, /style\.css\?v=public-weekly-ranking-display-range-1/);
-  assert.match(html, /script\.js\?v=public-weekly-ranking-display-range-1/);
+  assert.match(html, /style\.css\?v=public-remove-retired-admin-markup-1/);
+  assert.match(html, /script\.js\?v=public-remove-retired-admin-markup-1/);
 });
 
 test("受付可能なcanonical対象がない場合は入力面を隠し、自然な案内を表示する", () => {
@@ -105,19 +104,19 @@ test("受付可能なcanonical対象がない場合は入力面を隠し、自�
 
 test("旧localStorageの選択値はcanonical予想対象を上書きしない", () => {
   const currentGameStart = script.indexOf("function getCurrentGameId");
-  const currentGameEnd = script.indexOf("function getCurrentLegacyGameId", currentGameStart);
+  const currentGameEnd = script.indexOf("function getAuthApiBaseUrl", currentGameStart);
   const currentGameResolver = script.slice(currentGameStart, currentGameEnd);
   assert.match(currentGameResolver, /state\.predictionTargetGame\?\.internalGameId/);
   assert.doesNotMatch(currentGameResolver, /state\.gameInfo\.selectedGameId|localStorage/);
 });
 
-test("通常画面は管理用システム表示を初期HTMLから非表示にする", () => {
-  const publicMarkup = html.slice(0, html.indexOf('<details id="adminDetails"'));
+test("通常画面は管理用システム表示をbundleから除去する", () => {
+  const publicMarkup = html;
   for (const internalLabel of ["schema ready", "feature flag", "Cron最終監査", "V3 job", "diagnostics", "internal state"]) {
     assert.doesNotMatch(publicMarkup, new RegExp(internalLabel, "i"));
   }
-  assert.match(html, /id="adminDetails"[^>]*hidden[^>]*aria-hidden="true"/);
-  assert.match(script, /adminDetails\.hidden = !isAdminScreenOpen/);
+  assert.doesNotMatch(publicMarkup, /adminDetails|adminPregameTools|adminServerScoring/);
+  assert.doesNotMatch(script, /renderAdminFlow|refreshAdminAccess|runServerScoring/);
 });
 
 test("通常画面は公示なし・取得失敗を表示せず、公示ありだけ自然な要約を表示する", () => {

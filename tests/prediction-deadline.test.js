@@ -43,7 +43,7 @@ test("Workerは予想のPUTとDELETEの両方でサーバー時刻の締切判�
   assert.match(deadlinePolicy, /PREDICTION_DEADLINE_PASSED/);
 });
 
-test("クライアントは締切後に入力・保存・リセットを止め、管理者テスト上書きは画面状態だけに限定する", () => {
+test("クライアントは締切後に入力・保存・リセットを止める", () => {
   const script = read("script.js");
   const predictionForm = read("frontend/public/prediction-form.js");
   const html = read("index.html");
@@ -54,27 +54,14 @@ test("クライアントは締切後に入力・保存・リセットを止め�
   assert.match(script, /function ensurePredictionEditingAllowed\(\)/);
   assert.match(predictionForm, /async function handleSubmit[\s\S]*?deps\.ensurePredictionEditingAllowed\(\)/);
   assert.match(predictionForm, /function reset\(\) \{\s*if \(!deps\.ensurePredictionEditingAllowed\(\)\)/);
-  assert.match(script, /function canUsePredictionDeadlineOverride\(\) \{\s*return state\.appMode === "admin"/);
   assert.match(html, /id="predictionDeadlineStatus"/);
-  assert.match(script, /function handlePredictionDeadlineOverrideClick\(event\)/);
-  assert.match(script, /data-prediction-deadline-override/);
+  assert.doesNotMatch(script, /canUsePredictionDeadlineOverride|handlePredictionDeadlineOverrideClick|data-prediction-deadline-override/);
 });
 
-test("管理画面には締切の開始・締切・状態・テスト上書きを表示する", () => {
+test("通常公開画面に管理者向け締切テストUIを含めない", () => {
   const script = read("script.js");
   const html = read("index.html");
 
-  assert.match(html, /id="adminPredictionDeadlineStatus"/);
-  assert.match(html, /id="adminTestPredictionDeadlineStatus"/);
-  assert.match(script, /function renderPredictionDeadlineAdmin\(\)/);
-  for (const label of ["試合開始", "予想締切", "受付状態", "開発上書き"]) {
-    assert.match(script, new RegExp(label));
-  }
-  assert.match(script, /state\.appMode === "admin"/);
-  assert.match(script, /state\.appMode === "admin" && state\.adminAccess\.status === "authorized"/);
-  assert.match(script, /function renderPredictionDeadlinePanel\(container, deadline, shouldShow\)/);
-  assert.match(script, /\["auto", "自動"\]/);
-  assert.match(script, /\["before", "締切前"\]/);
-  assert.match(script, /\["after", "締切後"\]/);
-  assert.doesNotMatch(html, /development-deadline-title/);
+  assert.doesNotMatch(html, /adminPredictionDeadlineStatus|adminTestPredictionDeadlineStatus|development-deadline-title/);
+  assert.doesNotMatch(script, /renderPredictionDeadlineAdmin|renderPredictionDeadlinePanel|appMode|adminAccess/);
 });

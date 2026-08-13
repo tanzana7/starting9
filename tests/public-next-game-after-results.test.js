@@ -40,7 +40,7 @@ test("通常の予想CTAは現在のcanonical予想対象だけへスクロー�
 });
 
 test("通常画面の結果と履歴は内部識別子を表示せず、メイン予想欄から独立する", () => {
-  const publicMarkup = html.slice(0, html.indexOf('<details id="adminDetails"'));
+  const publicMarkup = html;
   for (const internalLabel of ["internalGameId", "UUID", "Cron", "diagnostics", "reasonCode", "schema"]) {
     assert.doesNotMatch(publicMarkup, new RegExp(internalLabel, "i"));
   }
@@ -50,5 +50,5 @@ test("通常画面の結果と履歴は内部識別子を表示せず、メイ�
 });
 
 test("通常画面の次戦導線は新しいscript cache busterで配信する", () => {
-  assert.match(html, /script\.js\?v=public-weekly-ranking-display-range-1/);
+  assert.match(html, /script\.js\?v=public-remove-retired-admin-markup-1/);
 });

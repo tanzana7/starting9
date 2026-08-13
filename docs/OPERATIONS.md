@@ -46,6 +46,12 @@ Structured logs may include game UUIDs, job types, status, slot times, safe fail
 
 The NPB Fetch Worker has bounded debug diagnostics for parser investigation. These diagnostics are not a replacement for authorization and should not be copied into the public UI.
 
+## Request Protection
+
+JSON mutation endpoints require `Content-Type: application/json`. The Worker rejects malformed JSON with `400`, unsupported content types with `415`, and bodies above the default 64 KiB limit with `413`. Prediction saves allow 128 KiB and the admin preview surface allows 256 KiB because those payloads have separately reviewed shapes.
+
+Login and registration also have a short-window, IP-based soft limit that returns `429` with `Retry-After`. This limiter is intentionally isolate-local and is not a global abuse-control system: Cloudflare edge controls or a separately approved durable limiter remain future work if stronger cross-isolate enforcement is required. Unknown login users still run the fixed dummy PBKDF2 verification before receiving the same generic authentication failure.
+
 ## Preflight Checklist
 
 - Production Worker version and bindings match the intended release.

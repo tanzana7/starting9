@@ -152,6 +152,17 @@ const USERNAME_MIN_LENGTH = 3;
 const USERNAME_MAX_LENGTH = 16;
 const PASSWORD_MIN_LENGTH = 8;
 const PASSWORD_MAX_LENGTH = 72;
+const JSON_BODY_MAX_BYTES = 64 * 1024;
+const PREDICTION_JSON_BODY_MAX_BYTES = 128 * 1024;
+const ADMIN_PREVIEW_JSON_BODY_MAX_BYTES = 256 * 1024;
+const AUTH_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const AUTH_RATE_LIMITS = Object.freeze({
+  "/api/auth/login": 10,
+  "/api/auth/register": 5
+});
+const authRateLimitBuckets = new Map();
+const DUMMY_PASSWORD_SALT = new TextEncoder().encode("starting9-auth-dummy-salt-v1");
+const DUMMY_PASSWORD_HASH = new Uint8Array(PASSWORD_HASH_BITS / 8);
 // 開発中は1試合につき先着3人。本番候補は30人です。
 const PERFECT_ACHIEVERS_DEFAULT_DISPLAY_LIMIT = 3;
 const RANKING_DEFAULT_LIMIT = 50;
@@ -368,6 +379,9 @@ export default {
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
     try {
+      const authRateLimitResponse = enforceAuthRateLimit(request, path, cors);
+      if (authRateLimitResponse) return authRateLimitResponse;
+
       if (path === "/api/auth/register" && request.method === "POST") {
         return await handleRegister(request, env, cors);
       }
@@ -544,6 +558,9 @@ export default {
 
       return jsonResponse({ ok: false, error: "認証APIのパスまたはHTTPメソッドが不正です。" }, 404, cors);
     } catch (error) {
+      if (error?.isRequestBodyError) {
+        return jsonResponse({ ok: false, code: error.code, error: error.message }, error.httpStatus, cors);
+      }
       const endpoint = url.pathname;
       const failureCode = String(error?.code || "AUTH_API_INTERNAL_ERROR");
       const failureDetail = String(error?.message || "").replace(/[\r\n]+/g, " ").slice(0, 240);
@@ -3723,12 +3740,14 @@ async function handleLogin(request, env, cors) {
   ).bind(usernameNormalized).first();
 
   if (!user || user.status !== "active") {
+    await verifyDummyPassword(input.password);
     return jsonResponse({ ok: false, error: "ユーザー名またはパスワードが正しくありません。" }, 401, cors);
   }
 
   const iterations = Number(user.password_iterations);
   // 過去にWorker上限を超える値で作成されたレコードは書き換えず、再設定導線へ委ねます。
   if (!Number.isInteger(iterations) || iterations < 1 || iterations > PBKDF2_MAX_ITERATIONS) {
+    await verifyDummyPassword(input.password);
     return jsonResponse({ ok: false, error: "ユーザー名またはパスワードが正しくありません。" }, 401, cors);
   }
 
@@ -4778,7 +4797,7 @@ async function handleAdminV3PerfectScorePreview(request, env, cors) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) return access.response;
 
-  const input = await readJson(request);
+  const input = await readJson(request, { maxBytes: ADMIN_PREVIEW_JSON_BODY_MAX_BYTES });
   const mode = String(input?.mode || "").trim().toLowerCase();
   const fixtureKey = String(input?.fixtureKey || "").trim();
   const reason = String(input?.reason || "").trim();
@@ -16578,7 +16597,7 @@ async function handlePutCurrentPrediction(request, env, cors) {
     return jsonResponse({ ok: false, code: "AUTH_REQUIRED", error: "予想を保存するにはログインしてください。" }, 401, cors);
   }
 
-  const input = await readJson(request);
+  const input = await readJson(request, { maxBytes: PREDICTION_JSON_BODY_MAX_BYTES });
   let reference;
   try {
     // Retired legacy form: resolveApiGameReference(env.AUTH_DB, input?.gameId).
@@ -17513,12 +17532,99 @@ function publicUser(user) {
   };
 }
 
-async function readJson(request) {
-  try {
-    return await request.json();
-  } catch {
-    return null;
+async function readJson(request, options) {
+  return readJsonWithLimit(request, options);
+}
+
+async function readJsonWithLimit(request, { maxBytes = JSON_BODY_MAX_BYTES } = {}) {
+  const contentType = String(request.headers.get("Content-Type") || "")
+    .split(";", 1)[0]
+    .trim()
+    .toLowerCase();
+  if (contentType !== "application/json") {
+    throw createRequestBodyError("JSON_CONTENT_TYPE_REQUIRED", "Content-Type: application/json が必要です。", 415);
   }
+
+  const declaredLength = request.headers.get("Content-Length");
+  if (/^\d+$/.test(String(declaredLength || "")) && Number(declaredLength) > maxBytes) {
+    throw createRequestBodyError("REQUEST_BODY_TOO_LARGE", "リクエスト本文が大きすぎます。", 413);
+  }
+
+  const bytes = await readRequestBodyBytes(request, maxBytes);
+  if (bytes.byteLength === 0) {
+    throw createRequestBodyError("INVALID_JSON_BODY", "JSON本文を読み取れません。", 400);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw createRequestBodyError("INVALID_JSON_BODY", "JSON本文の形式が不正です。", 400);
+  }
+  return parsed;
+}
+
+async function readRequestBodyBytes(request, maxBytes) {
+  if (!request.body) return new Uint8Array();
+  const reader = request.body.getReader();
+  const chunks = [];
+  let totalBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+    totalBytes += chunk.byteLength;
+    if (totalBytes > maxBytes) {
+      try { await reader.cancel(); } catch { /* body is already rejected */ }
+      throw createRequestBodyError("REQUEST_BODY_TOO_LARGE", "リクエスト本文が大きすぎます。", 413);
+    }
+    chunks.push(chunk);
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+function createRequestBodyError(code, message, httpStatus) {
+  return Object.assign(new Error(message), { code, httpStatus, isRequestBodyError: true });
+}
+
+function getClientAddress(request) {
+  const forwarded = request.headers.get("CF-Connecting-IP")
+    || request.headers.get("X-Real-IP")
+    || request.headers.get("X-Forwarded-For")?.split(",", 1)[0]
+    || "unknown";
+  return String(forwarded).trim().slice(0, 128) || "unknown";
+}
+
+function enforceAuthRateLimit(request, path, cors, now = Date.now()) {
+  if (request.method !== "POST" || !Object.prototype.hasOwnProperty.call(AUTH_RATE_LIMITS, path)) return null;
+  const limit = AUTH_RATE_LIMITS[path];
+  const key = `${path}:${getClientAddress(request)}`;
+  const existing = authRateLimitBuckets.get(key) || [];
+  const recent = existing.filter((timestamp) => now - timestamp < AUTH_RATE_LIMIT_WINDOW_MS);
+  if (recent.length >= limit) {
+    const retryAfterSeconds = Math.max(1, Math.ceil((AUTH_RATE_LIMIT_WINDOW_MS - (now - recent[0])) / 1000));
+    const headers = new Headers(cors);
+    headers.set("Retry-After", String(retryAfterSeconds));
+    return jsonResponse({ ok: false, code: "AUTH_RATE_LIMITED", error: "試行回数が多すぎます。しばらく待ってから再試行してください。" }, 429, headers);
+  }
+  recent.push(now);
+  authRateLimitBuckets.set(key, recent);
+  if (authRateLimitBuckets.size > 10_000) {
+    const firstKey = authRateLimitBuckets.keys().next().value;
+    if (firstKey) authRateLimitBuckets.delete(firstKey);
+  }
+  return null;
+}
+
+export function resetAuthRateLimitsForTests() {
+  authRateLimitBuckets.clear();
 }
 
 async function derivePasswordHash(password, salt, iterations) {
@@ -17535,6 +17641,11 @@ async function derivePasswordHash(password, salt, iterations) {
     PASSWORD_HASH_BITS
   );
   return new Uint8Array(bits);
+}
+
+export async function verifyDummyPassword(password) {
+  const actual = await derivePasswordHash(password, DUMMY_PASSWORD_SALT, PBKDF2_ITERATIONS);
+  return constantTimeEqual(actual, DUMMY_PASSWORD_HASH);
 }
 
 async function sha256Base64Url(value) {

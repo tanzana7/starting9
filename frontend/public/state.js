@@ -12,7 +12,7 @@
       predictionForm: { gameId: "", isHydrated: false },
       roster: state.publicRoster,
       results: { latest: null, history: state.resultHistory },
-      ranking: { yearly: state.yearlyRanking, monthly: state.monthlyRanking },
+      ranking: { yearly: state.yearlyRanking, monthly: state.monthlyRanking, weekly: state.weeklyRanking },
       dailyBestNine: state.dailyBestNine,
       account: { status: "idle", gameId: "" },
       requests: {
@@ -39,6 +39,7 @@
     appState.results.history = state.resultHistory;
     appState.ranking.yearly = state.yearlyRanking;
     appState.ranking.monthly = state.monthlyRanking;
+    appState.ranking.weekly = state.weeklyRanking;
     appState.dailyBestNine = state.dailyBestNine;
     appState.account.status = state.predictionRemote.status;
     appState.account.gameId = state.predictionRemote.gameId || "";

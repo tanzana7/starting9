@@ -284,10 +284,17 @@ function createRankingCteForReset(resetBoundary = "") {
   );
 }
 
-export async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt = null, endAt = null, periodType = null, periodKey = null }) {
+function createRankingCteForPublishedPeriod(resetBoundary = "") {
+  return createRankingCteForReset(resetBoundary).replace(
+    "       AND game_status = 'scored'\n       AND is_test_game = 0",
+    "       AND game_status = 'scored'\n       AND publication_status = 'published'\n       AND is_test_game = 0"
+  );
+}
+
+export async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt = null, endAt = null, periodType = null, periodKey = null, publishedOnly = false }) {
   const marker = periodType && periodKey ? await getActiveRankingResetMarker(db, { periodType, periodKey }) : null;
   const resetBoundary = marker ? getRankingResetDateBoundary(marker.reset_at) : "";
-  const cte = createRankingCteForReset(resetBoundary);
+  const cte = publishedOnly ? createRankingCteForPublishedPeriod(resetBoundary) : createRankingCteForReset(resetBoundary);
   const qualifiedParam = marker ? 4 : 3;
   const limitParam = qualifiedParam + 1;
   const offsetParam = qualifiedParam + 2;
@@ -333,10 +340,10 @@ export async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, st
   };
 }
 
-export async function getRankingEntryForUser(db, userId, { startAt = null, endAt = null, periodType = null, periodKey = null } = {}) {
+export async function getRankingEntryForUser(db, userId, { startAt = null, endAt = null, periodType = null, periodKey = null, publishedOnly = false } = {}) {
   const marker = periodType && periodKey ? await getActiveRankingResetMarker(db, { periodType, periodKey }) : null;
   const resetBoundary = marker ? getRankingResetDateBoundary(marker.reset_at) : "";
-  const cte = createRankingCteForReset(resetBoundary);
+  const cte = publishedOnly ? createRankingCteForPublishedPeriod(resetBoundary) : createRankingCteForReset(resetBoundary);
   const userParam = marker ? 4 : 3;
   const bindings = marker ? [startAt, endAt, resetBoundary, userId] : [startAt, endAt, userId];
   const row = await db.prepare(`${cte}

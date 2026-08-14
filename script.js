@@ -4173,10 +4173,17 @@ function createPredictionSummary(prediction) {
   list.className = "lineup-list";
   normalizeLineup(prediction.lineup).forEach((lineupItem, index) => {
     const listItem = document.createElement("li");
-    applyPlayerCategoryClass(listItem, lineupItem.player);
+    const normalizedPosition = normalizePosition(lineupItem.position);
+    const positionCategory = normalizedPosition ? getPositionCategory(normalizedPosition) : "empty";
+    listItem.className = "saved-lineup-row";
     listItem.innerHTML = `
-      <strong>${index + 1}番</strong>
-      <span>${escapeHtml(lineupItem.position)} ${escapeHtml(lineupItem.player)}</span>
+      <strong class="saved-lineup-order">${index + 1}番</strong>
+      <span class="saved-lineup-detail">
+        <span class="result-position-tile saved-position-chip is-${positionCategory}" aria-label="守備位置 ${escapeHtml(normalizedPosition || "未選択")}">
+          ${escapeHtml(normalizedPosition || "－")}
+        </span>
+        <span class="saved-lineup-name">${escapeHtml(lineupItem.player)}</span>
+      </span>
     `;
     list.appendChild(listItem);
   });

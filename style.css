@@ -3058,6 +3058,69 @@ textarea:focus {
   background: #f7fbff;
 }
 
+/* 保存済み予想は、行ではなく打順・守備位置・選手名を個別に見せる。 */
+body:not(:has(.app-layout.is-admin-screen)) .lineup-list {
+  gap: 10px;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .lineup-list li.saved-lineup-row {
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid #d9dee7;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-order {
+  color: var(--fighters-deep-blue);
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-detail {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .saved-position-chip.result-position-tile {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  box-shadow: none;
+  font-size: 0.82rem;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 7px 10px;
+  border: 1px solid #d9dee7;
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--text);
+  font-weight: 800;
+}
+
+@media (max-width: 767px) {
+  body:not(:has(.app-layout.is-admin-screen)) .lineup-list {
+    gap: 8px;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .lineup-list li.saved-lineup-row {
+    grid-template-columns: 42px minmax(0, 1fr);
+    gap: 8px;
+    padding: 8px;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-detail {
+    gap: 6px;
+  }
+}
+
 .result-dashboard {
   display: grid;
   gap: 16px;

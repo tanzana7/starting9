@@ -44,11 +44,12 @@ test("通常画面の結果と履歴は内部識別子を表示せず、メイ�
   for (const internalLabel of ["internalGameId", "UUID", "Cron", "diagnostics", "reasonCode", "schema"]) {
     assert.doesNotMatch(publicMarkup, new RegExp(internalLabel, "i"));
   }
-  assert.match(script, /data-result-game-id="\$\{escapeHtml\(gameId\)\}"/);
+  assert.match(script, /data-result-history-toggle/);
+  assert.match(script, /data-result-history-select/);
   assert.doesNotMatch(script.slice(script.indexOf("function renderResultHistory"), script.indexOf("function buildCurrentPredictionApiUrl")), /: game\.gameId/);
   assert.doesNotMatch(css, /published-game-actions/);
 });
 
 test("通常画面の次戦導線は新しいscript cache busterで配信する", () => {
-  assert.match(html, /script\.js\?v=public-roster-reflection-hotfix-1/);
+  assert.match(html, /script\.js\?v=public-ranking-weekly-past-results-dropdown-1/);
 });

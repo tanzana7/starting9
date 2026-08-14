@@ -88,12 +88,13 @@ test("通常画面は公開結果の読込中・失敗・完了を内部情報�
   const historyEnd = script.indexOf("function buildCurrentPredictionApiUrl", historyStart);
   const history = script.slice(historyStart, historyEnd);
   assert.doesNotMatch(history, /game\.gameId/);
-  assert.match(history, /data-result-game-id="\$\{escapeHtml\(gameId\)\}"/);
+  assert.match(history, /data-result-history-toggle/);
+  assert.match(history, /data-result-history-select/);
   assert.match(script, /return home && away \? `\$\{home\} vs \$\{away\}`/);
 });
 
 test("post-E2E表示修正のcache busterを更新し、旧手動操作を復活させない", () => {
-  assert.match(index, /script\.js\?v=public-roster-reflection-hotfix-1/);
+  assert.match(index, /script\.js\?v=public-ranking-weekly-past-results-dropdown-1/);
   assert.match(adminPage, /admin-v3\.js\?v=admin-v3-roster-source-snapshot-mismatch-1/);
   assert.doesNotMatch(admin, /runAutoScoringNowButton/);
 });

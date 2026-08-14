@@ -182,6 +182,7 @@ const state = {
     isDetailLoading: false,
     games: [],
     selectedGameId: "",
+    isExpanded: false,
     result: null,
     message: "",
     detailError: ""
@@ -206,7 +207,7 @@ const state = {
     totalCount: 0,
     message: "",
   },
-  rankingView: "yearly",
+  rankingView: "weekly",
   monthlyRanking: {
     isLoading: false,
     isLoadingSelf: false,
@@ -423,7 +424,7 @@ async function initializeAuthDependentFeatures() {
   // 認証依存の取得はcanonical game確定後に、この初期化経路だけで開始します。
     const results = await Promise.allSettled([
       fetchUserAchievements({ force: true }),
-      refreshYearlyRanking({ force: true }),
+      refreshWeeklyRanking({ force: true }),
       refreshResultHistory({ force: true })
     ]);
     results.forEach((result, index) => {
@@ -447,6 +448,7 @@ function bindEvents() {
   document.getElementById("showWeeklyRankingButton")?.addEventListener("click", () => selectRankingView("weekly"));
   document.getElementById("rankingContent")?.addEventListener("click", handleRankingPeriodContentClick);
   document.getElementById("resultHistoryList")?.addEventListener("click", handleResultHistoryClick);
+  document.getElementById("resultHistoryList")?.addEventListener("change", handleResultHistoryChange);
   document.addEventListener("pointermove", handlePointerInteractionMove, { passive: false });
   document.addEventListener("pointerup", handlePointerInteractionEnd);
   document.addEventListener("pointercancel", handlePointerInteractionCancel);
@@ -2690,7 +2692,7 @@ async function refreshResultHistory({ force = false } = {}) {
   if (!user) {
     beginPublicRequest("result", { abort: true });
     beginPublicRequest("resultDetail", { abort: true });
-    state.resultHistory = { isLoading: false, isDetailLoading: false, games: [], selectedGameId: "", result: null, message: "ログインすると過去の試合結果を確認できます。", detailError: "" };
+    state.resultHistory = { isLoading: false, isDetailLoading: false, games: [], selectedGameId: "", isExpanded: false, result: null, message: "ログインすると過去の試合結果を確認できます。", detailError: "" };
     resetDailyBestNine();
     syncPublicAppState();
     renderResultHistory();
@@ -2735,11 +2737,25 @@ async function refreshResultHistory({ force = false } = {}) {
 }
 
 async function handleResultHistoryClick(event) {
+  const toggle = event.target instanceof Element ? event.target.closest("[data-result-history-toggle]") : null;
+  if (toggle) {
+    state.resultHistory.isExpanded = !state.resultHistory.isExpanded;
+    renderResultHistory();
+    return;
+  }
   const target = event.target instanceof Element ? event.target.closest("[data-result-game-id]") : null;
   if (!target) return;
   const gameId = target.dataset.resultGameId;
   if (!gameId) return;
   await loadResultHistoryGame(gameId);
+}
+
+async function handleResultHistoryChange(event) {
+  const select = event.target instanceof HTMLSelectElement
+    ? event.target.closest("[data-result-history-select]")
+    : null;
+  if (!select?.value) return;
+  await loadResultHistoryGame(select.value);
 }
 
 async function loadResultHistoryGame(gameId) {
@@ -2826,14 +2842,21 @@ function renderResultHistory() {
     renderPublicPredictionSurface(state.predictionTargetGame, getPublicGameStatusView(state.predictionTargetGame, getEffectivePredictionDeadline()));
     return;
   }
-  container.innerHTML = history.games.map((game) => {
+  const options = history.games.map((game) => {
     const gameId = getResultHistoryGameId(game);
     const matchup = formatResultHistoryMatchup(game);
-    const score = game.serviceUnavailable
-      ? "集計対象外"
-      : game.resultsPublished && game.score !== null ? `${game.score}点` : "結果公開前";
-    return `<button type="button" class="result-history-item${gameId === history.selectedGameId ? " is-selected" : ""}" data-result-game-id="${escapeHtml(gameId)}"><span><strong>${escapeHtml(game.gameDate || game.date || "日付不明")}</strong><span>${escapeHtml(matchup)}</span><small>${escapeHtml(game.startTime || "")}</small></span><b>${escapeHtml(score)}</b></button>`;
-  }).join("") + (history.message ? `<p class="result-history-message" role="status">${escapeHtml(history.message)}</p>` : "");
+    return `<option value="${escapeHtml(gameId)}"${gameId === history.selectedGameId ? " selected" : ""}>${escapeHtml(game.gameDate || game.date || "日付不明")} ${escapeHtml(matchup)}${game.startTime ? `（${escapeHtml(game.startTime)}）` : ""}</option>`;
+  }).join("");
+  const selectedGame = history.games.find((game) => getResultHistoryGameId(game) === history.selectedGameId);
+  const selectedLabel = selectedGame
+    ? `${selectedGame.gameDate || selectedGame.date || "日付不明"} ${formatResultHistoryMatchup(selectedGame)}`
+    : "";
+  container.innerHTML = `<div class="result-history-controls">
+      <button type="button" class="secondary-button result-history-toggle" data-result-history-toggle aria-expanded="${history.isExpanded ? "true" : "false"}">${history.isExpanded ? "閉じる" : "過去の成績を見る"}</button>
+      ${history.isExpanded ? `<label class="result-history-select-label" for="resultHistorySelect">試合を選択<select id="resultHistorySelect" data-result-history-select><option value="">試合を選択</option>${options}</select></label>` : ""}
+    </div>
+    ${history.isExpanded && selectedLabel ? `<p class="result-selected-game">選択中：${escapeHtml(selectedLabel)}</p>` : ""}
+    ${history.message ? `<p class="result-history-message" role="status">${escapeHtml(history.message)}</p>` : ""}`;
   renderPublicPredictionSurface(state.predictionTargetGame, getPublicGameStatusView(state.predictionTargetGame, getEffectivePredictionDeadline()));
 }
 

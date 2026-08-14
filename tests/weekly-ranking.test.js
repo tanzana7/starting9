@@ -124,13 +124,16 @@ test("weekly APIはcurrent weekを既定にし、月曜以外と未来週を拒�
 });
 
 test("公開画面は年間・月間・週間を切り替え、週間の空表示とモバイル用3分割タブを持つ", () => {
-  assert.match(html, /id="showYearlyRankingButton"/);
+  assert.match(html, /id="showWeeklyRankingButton" class="ranking-tab is-active"[^>]*>週間<\/button>/);
   assert.match(html, /id="showMonthlyRankingButton"/);
-  assert.match(html, /id="showWeeklyRankingButton"/);
+  assert.match(html, /id="showYearlyRankingButton" class="ranking-tab"[^>]*>年間<\/button>/);
+  assert.ok(html.indexOf(">週間</button>") < html.indexOf(">月間</button>"));
+  assert.ok(html.indexOf(">月間</button>") < html.indexOf(">年間</button>"));
   assert.match(html, /public-scoreboard-ui-refresh-1/);
   assert.match(script, /function refreshWeeklyRanking/);
   assert.match(script, /buildWeeklyRankingApiUrl/);
   assert.match(script, /selectRankingView\("weekly"\)/);
+  assert.match(script, /rankingView: "weekly"/);
   assert.match(script, /今週はまだ公開済み試合がありません/);
   assert.match(rankingRenderer, /showWeeklyRankingButton/);
   assert.match(publicState, /weekly: state\.weeklyRanking/);

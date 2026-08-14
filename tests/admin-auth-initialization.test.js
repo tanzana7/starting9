@@ -60,6 +60,8 @@ test("初回認証イベントを取りこぼしてもPromise完了後に公開�
       const isYearlyMyRankingRequest = String(url).endsWith("/api/me/ranking/yearly");
       const isMonthlyPublicRankingRequest = String(url).includes("/api/rankings/monthly");
       const isMonthlyMyRankingRequest = String(url).endsWith("/api/me/ranking/monthly");
+      const isWeeklyPublicRankingRequest = String(url).includes("/api/rankings/weekly");
+      const isWeeklyMyRankingRequest = String(url).endsWith("/api/me/ranking/weekly");
       return {
         ok: true,
         json: async () => {
@@ -68,6 +70,8 @@ test("初回認証イベントを取りこぼしてもPromise完了後に公開�
           if (isYearlyMyRankingRequest) return { ok: true, year: 2026, rankingData: null };
           if (isMonthlyPublicRankingRequest) return { year: 2026, month: 7, ranking: [], summary: { eligibleGames: 0, requiredGames: 0, qualifiedUsers: 0, totalUsers: 0 }, pagination: { limit: 50, offset: 0, totalUsers: 0 } };
           if (isMonthlyMyRankingRequest) return { ok: true, year: 2026, month: 7, rankingData: null };
+          if (isWeeklyPublicRankingRequest) return { weekStart: "2026-08-10", endAt: "2026-08-17", ranking: [], summary: { eligibleGames: 0, requiredGames: 0, qualifiedUsers: 0, totalUsers: 0 }, pagination: { limit: 50, offset: 0, totalUsers: 0 } };
+          if (isWeeklyMyRankingRequest) return { ok: true, weekStart: "2026-08-10", rankingData: null };
           return { ok: true, admin: true };
         }
       };
@@ -99,8 +103,8 @@ test("初回認証イベントを取りこぼしてもPromise完了後に公開�
 
   assert.deepEqual(fetchUrls, [
     "https://starting9-auth.tanzana7.workers.dev/api/me/achievements",
-    "https://starting9-auth.tanzana7.workers.dev/api/rankings/yearly?year=2026&limit=50&qualifiedOnly=false",
-    "https://starting9-auth.tanzana7.workers.dev/api/me/ranking/yearly?year=2026",
+    "https://starting9-auth.tanzana7.workers.dev/api/rankings/weekly?weekStart=2026-08-10&limit=50&qualifiedOnly=false",
+    "https://starting9-auth.tanzana7.workers.dev/api/me/ranking/weekly?weekStart=2026-08-10",
       "https://starting9-auth.tanzana7.workers.dev/api/results/games"
   ]);
   assert.equal(fetchUrls.some((url) => url.includes("/api/admin/")), false);

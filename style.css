@@ -3330,6 +3330,30 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-name {
   gap: 7px;
 }
 
+.result-history-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+}
+
+.result-history-toggle {
+  margin: 0;
+}
+
+.result-history-select-label {
+  display: grid;
+  min-width: min(100%, 360px);
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.result-history-select-label select {
+  width: 100%;
+}
+
 .result-history-item {
   display: flex;
   width: 100%;

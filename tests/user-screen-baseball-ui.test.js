@@ -93,7 +93,7 @@ test("中幅の予想入力は1カラム、十分な幅では収まる2カラム
 });
 
 test("公開画面のページ分岐は900pxを境にし、タブレット以下を1カラムにする", () => {
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\)[\s\S]*grid-template-columns: minmax\(0, 1\.18fr\) minmax\(320px, 0\.82fr\)/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\)[\s\S]*grid-template-columns: minmax\(0, 1\.34fr\) minmax\(300px, 0\.66fr\)/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*> \.lineup-card[\s\S]*grid-column: 1/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*> \.result-card[\s\S]*grid-column: 2/);
   assert.match(css, /@media \(min-width: 768px\) and \(max-width: 899px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\)[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
@@ -107,6 +107,12 @@ test("PCの登録済み・未登録選手一覧は2列固定で内容に追従�
   assert.match(html, /data-roster-filter="inactive"/);
 });
 
+test("PCの予想入力エリアは左カラムを広げ、オーダーを1列で維持する", () => {
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.app-layout:not\(\.is-admin-screen\)[\s\S]*grid-template-columns: minmax\(0, 1\.34fr\) minmax\(300px, 0\.66fr\)/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 0\.92fr\) minmax\(0, 1\.08fr\)/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) #predictionLineup[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+});
+
 test("公開画面の残り時間表示は公開用関数に分離され、管理画面のタイマーと衝突しない", () => {
   assert.match(script, /function formatPublicRemainingTime/);
   assert.match(script, /function formatPublicRemainingTime[\s\S]*const hours = Math\.floor/);
@@ -114,7 +120,7 @@ test("公開画面の残り時間表示は公開用関数に分離され、管�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-player-list-two-columns-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-prediction-area-wide-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

@@ -683,6 +683,7 @@ function createPositionControl(pickerName, index, slot) {
 
   button.className = "position-button is-empty";
   button.type = "button";
+  button.draggable = shouldUseNativeDrag(pickerName);
   button.textContent = "?";
   button.setAttribute("aria-label", `${index + 1}番の守備位置を選択`);
   button.setAttribute("aria-haspopup", "menu");
@@ -887,11 +888,6 @@ function handlePositionDragStart(event, button, slot) {
   }
 
   const position = slot.dataset.position;
-
-  if (!position) {
-    event.preventDefault();
-    return;
-  }
 
   button.dataset.skipClick = "true";
   setDragData(event, {

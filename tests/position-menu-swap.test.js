@@ -175,6 +175,7 @@ test("実DOM風のpointerdown→pointermove→pointerupでposition chipだけが
     POINTER_DRAG_DISTANCE: 6,
     POINTER_LONG_PRESS_MS: 500,
     isPredictionEditingLocked: () => false,
+    closeAllPositionMenus: () => {},
     movePositionBetweenSlots: (...args) => {
       swap = args;
     }

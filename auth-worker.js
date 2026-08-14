@@ -754,7 +754,11 @@ async function runScheduledGameAutomationV3(env, now) {
     },
     onSuccess: async ({ job, claimToken, result: execution, now: completedAt }) => {
       try {
-        await writeAudit({ job, claimToken, execution: { ...(execution || {}), runId, correlationId, stage: "executor_completed" }, occurredAt: job?.completed_at || job?.updated_at || completedAt });
+        const auditExecution = { ...(execution || {}) };
+        // The full roster is already persisted in the snapshot. Keep the audit
+        // payload compact so source/snapshot diagnostics remain parseable.
+        delete auditExecution.roster;
+        await writeAudit({ job, claimToken, execution: { ...auditExecution, runId, correlationId, stage: "executor_completed" }, occurredAt: job?.completed_at || job?.updated_at || completedAt });
       } catch (error) {
         console.error(`[GAME_AUTOMATION_V3] audit_write_failed code=${error?.code || "V3_AUDIT_WRITE_FAILED"}`);
       }

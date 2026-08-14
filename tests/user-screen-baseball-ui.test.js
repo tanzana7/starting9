@@ -75,6 +75,15 @@ test("タッチ端末向けに長押しドラッグで選手と守備位置を�
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.lineup-slot\.is-dragging[\s\S]*box-shadow/);
 });
 
+test("予想オーダーの守備位置チップはPCでdrag可能で、既存の行dropへ接続される", () => {
+  assert.match(script, /button\.draggable = shouldUseNativeDrag\(pickerName\)/);
+  assert.match(script, /button\.addEventListener\("dragstart", \(event\) => handlePositionDragStart\(event, button, slot\)\)/);
+  assert.match(script, /if \(dragData\.kind === "position"\)/);
+  assert.match(script, /movePositionBetweenSlots\(slot\.dataset\.picker, dragData\.sourceOrder, Number\(slot\.dataset\.order\)\)/);
+  assert.match(css, /\.position-button\[draggable="true"\][\s\S]*cursor: grab/);
+  assert.match(css, /\.position-button\.is-dragging/);
+});
+
 test("スマホの選手一覧はページ全体でスクロールし、1人1行の表示になる", () => {
   assert.match(css, /@media \(max-width: 768px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-list[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.player-list[\s\S]*max-height: none/);
@@ -167,7 +176,7 @@ test("保存済み予想は打順・守備位置チップ・選手名ブロッ�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-ranking-weekly-past-results-dropdown-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-position-chip-swap-dnd-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

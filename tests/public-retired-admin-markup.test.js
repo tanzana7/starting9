@@ -7,9 +7,9 @@ const root = path.join(__dirname, "..");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const adminHtml = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
-const scriptCacheBuster = "public-ranking-weekly-past-results-dropdown-1";
+const scriptCacheBuster = "public-position-chip-swap-dnd-1";
 const moduleCacheBuster = "public-scoreboard-ui-refresh-1";
-const styleCacheBuster = "public-ranking-weekly-past-results-dropdown-1";
+const styleCacheBuster = "public-position-chip-swap-dnd-1";
 
 test("通常公開HTMLに旧admin・緊急復旧・test markupを含めない", () => {
   for (const marker of [

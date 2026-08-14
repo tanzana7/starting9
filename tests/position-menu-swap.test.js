@@ -91,6 +91,31 @@ test("選手を削除すると選手と守備位置を同時にクリアする",
   assert.deepEqual(JSON.parse(JSON.stringify(result[0])), { order: 1, player: "", position: "" });
 });
 
+test("守備位置チップはPCでdrag可能で、未選択の?もswap対象になる", () => {
+  const positionControl = getFunctionSource("createPositionControl");
+  const dragStart = getFunctionSource("handlePositionDragStart");
+  assert.match(positionControl, /button\.draggable = shouldUseNativeDrag\(pickerName\)/);
+  assert.doesNotMatch(dragStart, /if \(!position\)/);
+  assert.match(dragStart, /kind: "position"/);
+  assert.match(dragStart, /position,/);
+});
+
+test("守備位置チップのdragは同じ行では変更せず、別行では選手名を維持してswapする", () => {
+  const lineup = [
+    { player: "レイエス", position: "指" },
+    { player: "郡司裕也", position: "三" },
+    { player: "未選択", position: "" }
+  ];
+  const sameRow = JSON.parse(JSON.stringify(runLineupFunction("moveLineupPosition", lineup, 0, 0)));
+  assert.deepEqual(sameRow.slice(0, 3), lineup.map((item, index) => ({ order: index + 1, ...item })));
+  const swapped = JSON.parse(JSON.stringify(runLineupFunction("moveLineupPosition", lineup, 0, 1)));
+  assert.deepEqual(swapped.slice(0, 3).map((item) => item.position), ["三", "指", ""]);
+  assert.deepEqual(swapped.slice(0, 3).map((item) => item.player), ["レイエス", "郡司裕也", "未選択"]);
+  const emptySwap = JSON.parse(JSON.stringify(runLineupFunction("moveLineupPosition", lineup, 0, 2)));
+  assert.deepEqual(emptySwap.slice(0, 3).map((item) => item.position), ["", "三", "指"]);
+  assert.deepEqual(emptySwap.slice(0, 3).map((item) => item.player), ["レイエス", "郡司裕也", "未選択"]);
+});
+
 test("別選手を設定すると前の選手の守備位置を引き継がない", () => {
   const result = runLineupFunction("moveLineupItem", [{ player: "田宮裕涼", position: "捕" }], "清宮幸太郎", 0, null);
   assert.deepEqual(JSON.parse(JSON.stringify(result[0])), { order: 1, player: "清宮幸太郎", position: "" });

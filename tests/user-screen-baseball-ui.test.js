@@ -107,10 +107,12 @@ test("PCの登録済み・未登録選手一覧は2列固定で内容に追従�
   assert.match(html, /data-roster-filter="inactive"/);
 });
 
-test("PCの予想入力エリアは左カラムを広げ、オーダーを1列で維持する", () => {
+test("PCの予想入力エリアは左カラムを広げ、オーダーを1から5番・6から9番の2列で配置する", () => {
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.app-layout:not\(\.is-admin-screen\)[\s\S]*grid-template-columns: minmax\(0, 1\.34fr\) minmax\(300px, 0\.66fr\)/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 0\.92fr\) minmax\(0, 1\.08fr\)/);
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) #predictionLineup[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) #predictionLineup[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)[\s\S]*grid-template-rows: repeat\(5, minmax\(0, auto\)\)[\s\S]*grid-auto-flow: column/);
+  assert.match(css, /@media \(min-width: 768px\) and \(max-width: 899px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) #predictionLineup[\s\S]*grid-template-columns: minmax\(0, 1fr\)[\s\S]*grid-auto-flow: row/);
+  assert.match(css, /@media \(max-width: 767px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) #predictionLineup[\s\S]*grid-template-columns: minmax\(0, 1fr\)[\s\S]*grid-auto-flow: row/);
 });
 
 test("公開画面の残り時間表示は公開用関数に分離され、管理画面のタイマーと衝突しない", () => {
@@ -120,7 +122,7 @@ test("公開画面の残り時間表示は公開用関数に分離され、管�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-prediction-area-wide-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-prediction-order-two-columns-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

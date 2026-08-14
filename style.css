@@ -5916,7 +5916,10 @@ body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .r
   }
 
   body:not(:has(.app-layout.is-admin-screen)) #predictionLineup {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: repeat(5, minmax(0, auto));
+    grid-auto-flow: column;
+    gap: 8px 12px;
   }
 
   body:not(:has(.app-layout.is-admin-screen)) .player-list {
@@ -5945,6 +5948,12 @@ body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .r
   body:not(:has(.app-layout.is-admin-screen)) .lineup-builder {
     grid-template-columns: minmax(0, 1fr);
     gap: 18px;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) #predictionLineup {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    grid-auto-flow: row;
   }
 
   body:not(:has(.app-layout.is-admin-screen)) .player-list {
@@ -5978,6 +5987,12 @@ body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .r
   body:not(:has(.app-layout.is-admin-screen)) .lineup-builder {
     grid-template-columns: minmax(0, 1fr);
     gap: 16px;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) #predictionLineup {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    grid-auto-flow: row;
   }
 
   body:not(:has(.app-layout.is-admin-screen)) .lineup-panel,

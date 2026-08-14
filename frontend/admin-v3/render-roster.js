@@ -4,6 +4,12 @@
   function createAdminV3RosterRenderer({ stateLabel, escapeHtml, formatJst, formatTimelineTime, rosterDisplaySlots, rosterDisplayState, statusLabel }) {
     function timelineDetails(game) {
       const diagnostics = game?.rosterDiagnostics || {};
+      const comparison = diagnostics.sourceSnapshotComparison || diagnostics.previousSnapshotComparison || null;
+      const previousComparison = diagnostics.previousSnapshotComparison || null;
+      const mismatchComparison = previousComparison?.mismatch ? previousComparison : comparison;
+      const playerNames = (players) => (Array.isArray(players) ? players : [])
+        .map((player) => `${player?.name || "不明"}${player?.number ? ` #${player.number}` : ""}`)
+        .join(" / ");
       const details = [];
       const generatedSlots = rosterDisplaySlots(game, diagnostics.generatedSlots);
       const dueSlots = rosterDisplaySlots(game, diagnostics.dueSlots);
@@ -20,6 +26,10 @@
       if (diagnostics.isSnapshotStale) details.push(`snapshot要確認: ${diagnostics.staleReason || "ROSTER_SNAPSHOT_STALE"}`);
       if (diagnostics.noticeState) details.push(`公式確認: ${diagnostics.noticeState}`);
       if (Number.isFinite(Number(diagnostics.totalRosterChanges))) details.push(`変更数: ${diagnostics.totalRosterChanges}`);
+      if (comparison?.reasonCodes?.length) details.push(`source/snapshot: ${comparison.reasonCodes.join(", ")}`);
+      if (mismatchComparison?.expectedMissing?.length) details.push(`sourceに存在・snapshot欠落: ${playerNames(mismatchComparison.expectedMissing)}`);
+      if (mismatchComparison?.removedStillPresent?.length) details.push(`sourceから消失・snapshot残存: ${playerNames(mismatchComparison.removedStillPresent)}`);
+      if (previousComparison?.mismatch && comparison?.status === "OK") details.push("直前snapshot差分: 取得時に検知・更新済み");
       return details.join(" / ") || "本日の予定slot";
     }
 
@@ -27,6 +37,12 @@
       const rosterState = rosterDisplayState(game);
       const job = rosterState.job;
       const diagnostics = game?.rosterDiagnostics || {};
+      const comparison = diagnostics.sourceSnapshotComparison || diagnostics.previousSnapshotComparison || null;
+      const previousComparison = diagnostics.previousSnapshotComparison || null;
+      const mismatchComparison = previousComparison?.mismatch ? previousComparison : comparison;
+      const playerNames = (players) => (Array.isArray(players) ? players : [])
+        .map((player) => `${player?.name || "不明"}${player?.number ? ` #${player.number}` : ""}`)
+        .join(" / ");
       const generatedSlots = rosterDisplaySlots(game, diagnostics.generatedSlots);
       const dueSlots = rosterDisplaySlots(game, diagnostics.dueSlots);
       const diagnosticRows = [
@@ -47,6 +63,14 @@
         ["snapshot取得時刻", formatJst(diagnostics.rosterSnapshotCapturedAt)],
         ["snapshot対象日", diagnostics.rosterSnapshotGameDate || ""],
         ["公示対象日", diagnostics.sourceDate || ""],
+        ["source/snapshot", comparison?.reasonCodes?.length ? comparison.reasonCodes.join(", ") : comparison?.status || ""],
+        ["source欠落選手", playerNames(mismatchComparison?.expectedMissing)],
+        ["snapshot残存選手", playerNames(mismatchComparison?.removedStillPresent)],
+        ["直前比較", previousComparison?.reasonCodes?.length ? `${previousComparison.reasonCodes.join(", ")}${comparison?.status === "OK" ? " / 取得後更新済み" : ""}` : ""],
+        ["source fingerprint", diagnostics.sourceFingerprint || ""],
+        ["snapshot fingerprint", diagnostics.snapshotFingerprint || ""],
+        ["source取得時刻", comparison?.sourceFetchedAt || diagnostics.fetchedAt || ""],
+        ["比較時snapshot時刻", comparison?.snapshotCapturedAt || diagnostics.rosterSnapshotCapturedAt || ""],
         ["freshness", diagnostics.isSnapshotStale ? `stale: ${diagnostics.staleReason || "ROSTER_SNAPSHOT_STALE"}` : diagnostics.isSnapshotFresh ? "fresh" : "未確認"],
         ["公式確認", diagnostics.noticeState || ""],
         ["登録/抹消", Number.isFinite(Number(diagnostics.totalRosterChanges)) ? `home +${diagnostics.registeredCountHome || 0}/-${diagnostics.deregisteredCountHome || 0}, away +${diagnostics.registeredCountAway || 0}/-${diagnostics.deregisteredCountAway || 0}` : ""],

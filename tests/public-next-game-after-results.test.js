@@ -24,7 +24,7 @@ test("メイン予想対象は公開済み・締切済み試合を避け、canon
   assert.match(script, /function selectInitialPublicGame\(games = \[\], now = new Date\(\)\)/);
   assert.match(script, /!isPublicGamePublished\(game\)/);
   assert.match(script, /resolvePredictionDeadline\(game\.internalGameId \|\| game\.gameId, now\)\.status === "open"/);
-  assert.match(script, /return todayOpen \|\| nextOpen \|\| null/);
+  assert.match(script, /return todayUpcoming \|\| todayOpen \|\| nextOpen \|\| null/);
   assert.doesNotMatch(script, /selectNextPredictionGame|applyPublicPredictionTarget/);
 });
 
@@ -50,5 +50,5 @@ test("通常画面の結果と履歴は内部識別子を表示せず、メイ�
 });
 
 test("通常画面の次戦導線は新しいscript cache busterで配信する", () => {
-  assert.match(html, /script\.js\?v=public-saved-lineup-blocks-1/);
+  assert.match(html, /script\.js\?v=public-roster-reflection-hotfix-1/);
 });

@@ -152,6 +152,48 @@ test("通常画面は選択試合のUUIDでV3 snapshotを再取得し、旧game_
   assert.doesNotMatch(worker.slice(worker.indexOf("async function handleGetGameDayRoster"), worker.indexOf("function getGameTeamCodes")), /WHERE game_id = \?1/);
 });
 
+test("同じcanonical UUIDのroster responseを受けると公開候補の再描画へ反映する", async () => {
+  const context = vm.createContext({ window: { Starting9Public: {} } });
+  vm.runInContext(publicRoster, context);
+  const renderedNames = [];
+  const state = {
+    predictionTargetGame: { internalGameId, date: gameDate },
+    publicRoster: { internalGameId: "", gameDate: "", status: "pending", players: [] }
+  };
+  let requestId = 0;
+  const controller = context.window.Starting9Public.createPublicRosterController({
+    state,
+    requestGuard: {
+      begin: () => ({ id: ++requestId, signal: undefined }),
+      isCurrent: (_name, id) => id === requestId
+    },
+    getTargetInternalGameId: () => internalGameId,
+    getRosterRequestId: () => requestId,
+    setRosterRequestId: () => {},
+    syncPublicAppState: () => {},
+    renderPicker: () => renderedNames.push(...state.publicRoster.players.map((player) => player.name)),
+    renderPredictionDeadline: () => {},
+    fetchGameDayRosterSnapshot: async (requestedId) => ({
+      ok: true,
+      internalGameId: requestedId,
+      gameDate,
+      status: "captured",
+      players: [{ name: "公開候補選手", number: "12", position: "外野手" }]
+    }),
+    normalizeRosterEntries: (players) => players,
+    storage: { save: () => {} },
+    storageKeys: { rosterSnapshot: "roster" },
+    hasUsablePublicRosterForCurrentGame: () => true,
+    getPlayerData: () => null,
+    isPlayerInCurrentRoster: () => true
+  });
+
+  await controller.syncCurrentGameRoster();
+
+  assert.equal(state.publicRoster.internalGameId, internalGameId);
+  assert.deepEqual(renderedNames, ["公開候補選手"]);
+});
+
 test("公開試合カタログ確定後にbaseline roster取得を再実行し、初期化競合で更新中に固定されない", () => {
   const catalogStart = script.indexOf("async function initializePublicGameCatalog");
   const catalogEnd = script.indexOf("function isPublicGamePublished", catalogStart);

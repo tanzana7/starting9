@@ -5917,8 +5917,12 @@ body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .r
 
   body:not(:has(.app-layout.is-admin-screen)) .player-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-rows: minmax(0, auto);
+    min-width: 0;
+    max-width: 100%;
     max-height: none;
     overflow: visible;
+    align-items: stretch;
   }
 }
 

@@ -9,7 +9,7 @@ const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const adminHtml = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 const scriptCacheBuster = "public-next-prediction-target-regression-1";
 const moduleCacheBuster = "public-scoreboard-ui-refresh-1";
-const styleCacheBuster = "public-prediction-area-wide-1";
+const styleCacheBuster = "public-prediction-order-two-columns-1";
 
 test("通常公開HTMLに旧admin・緊急復旧・test markupを含めない", () => {
   for (const marker of [

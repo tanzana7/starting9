@@ -231,7 +231,7 @@ test("createdAt <= claimedAt <= completedAt <= updatedAtをjob操作で保証す
   }
 });
 
-test("09:00救済完了後は12:00到達後に次slotを1件だけ生成する", async () => {
+test("24時間以内は到達した時間slotを1件ずつ生成する", async () => {
   const database = new DatabaseSync(":memory:");
   database.exec(`
     CREATE TABLE game_jobs_v3 (
@@ -258,7 +258,9 @@ test("09:00救済完了後は12:00到達後に次slotを1件だけ生成する",
       .run(GAME_ID, GAME_ID, "NPB_HTTP_ERROR", "前回の投手", "前回の投手", "2026-08-07T02:00:00.000Z", "2026-08-07T02:00:00.000Z");
     const game = { internalGameId: GAME_ID, gameDate: "2026-08-07", startAt: "2026-08-07T09:00:00.000Z", gameStatus: "scheduled", isActive: 1 };
     const before = await v3.planV3ProbableStarterJobs(db, [game], new Date("2026-08-07T02:59:00.000Z"));
-    assert.equal(before.created, 0);
+    assert.equal(before.created, 1);
+    assert.equal(before.planned[0].job.scheduled_slot_at, "2026-08-07T02:00:00.000Z");
+    database.prepare("UPDATE game_jobs_v3 SET status = 'completed' WHERE scheduled_slot_at = '2026-08-07T02:00:00.000Z'").run();
     const after = await v3.planV3ProbableStarterJobs(db, [game], new Date("2026-08-07T03:01:00.000Z"));
     assert.equal(after.created, 1);
     assert.equal(after.planned[0].job.scheduled_slot_at, "2026-08-07T03:00:00.000Z");

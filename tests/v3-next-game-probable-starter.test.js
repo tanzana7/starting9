@@ -103,7 +103,7 @@ test("過去slotのCron復旧は同じjobを再生成せず、V3 stateなしで�
     assert.equal(first.created, 1);
     assert.equal(second.created, 0);
     assert.equal(row.job_type, "probable_starter_fetch");
-    assert.equal(row.scheduled_slot_at, "2026-08-06T09:00:00.000Z");
+    assert.equal(row.scheduled_slot_at, "2026-08-06T10:00:00.000Z");
     assert.equal(row.status, "completed");
     assert.equal(row.attempt_count, 1);
     assert.deepEqual(executed, ["probable_starter_fetch"]);

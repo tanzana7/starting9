@@ -218,9 +218,102 @@ function v3NormalizedPhaseStatus(phase, fields = {}) {
   };
 }
 
+const PROBABLE_STARTER_ACTIVE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const PROBABLE_STARTER_RECHECK_INTERVAL_MS = 60 * 60 * 1000;
+
+// A missing starter is operationally actionable close to game time, but is
+// expected during the earlier publication window. Keep this decision pure so
+// admin diagnostics can share the same rule without changing the runner.
+export function getV3ProbableStarterHealthDecision({
+  game,
+  now = new Date(),
+  dataStatus = "unannounced",
+  status = "",
+  errorCode = "",
+  integrityErrorReason = "",
+  homePitcherName = "",
+  awayPitcherName = "",
+  probableStarter = null
+} = {}) {
+  const current = now instanceof Date ? now : new Date(now);
+  const startAt = new Date(game?.startAt || game?.start_at || game?.startTime || game?.start_time || "");
+  if (Number.isNaN(current.getTime()) || Number.isNaN(startAt.getTime())) return null;
+
+  const row = probableStarter || {};
+  const normalizedDataStatus = normalizeProbableStarterDataStatus({
+    dataStatus: row.dataStatus || row.data_status || dataStatus,
+    status: row.status || status,
+    errorCode: row.errorCode || row.error_code || errorCode,
+    integrityErrorReason: row.integrityErrorReason || row.integrity_error_reason || integrityErrorReason,
+    homePitcherName: row.homePitcherName || row.home_pitcher_name || homePitcherName,
+    awayPitcherName: row.awayPitcherName || row.away_pitcher_name || awayPitcherName
+  });
+  if (normalizedDataStatus === "announced") {
+    return {
+      severity: "OK",
+      label: "発表済み",
+      reasonCode: "PROBABLE_STARTER_ANNOUNCED",
+      normalizedDataStatus,
+      within24Hours: false,
+      remainingMilliseconds: Math.max(0, startAt.getTime() - current.getTime()),
+      nextCheckAt: null
+    };
+  }
+
+  const remainingMilliseconds = startAt.getTime() - current.getTime();
+  if (remainingMilliseconds <= 0) {
+    return {
+      severity: "ATTENTION",
+      label: "要確認",
+      reasonCode: "PROBABLE_STARTER_GAME_STARTED",
+      message: "試合開始後も予告先発が確定していません。",
+      normalizedDataStatus,
+      within24Hours: true,
+      remainingMilliseconds,
+      isAfterDue: true,
+      nextCheckAt: null
+    };
+  }
+  if (remainingMilliseconds > PROBABLE_STARTER_ACTIVE_WINDOW_MS) return null;
+
+  const normalizedErrorCode = String(row.errorCode || row.error_code || errorCode || "").trim().toUpperCase();
+  const normalizedIntegrityReason = String(row.integrityErrorReason || row.integrity_error_reason || integrityErrorReason || "").trim().toUpperCase();
+  const identityIssue = normalizedDataStatus === "integrity_error"
+    || /IDENTITY|MISMATCH|CONFLICT|UNRESOLVED/.test(`${normalizedErrorCode} ${normalizedIntegrityReason}`);
+  const sourceUnavailable = normalizedDataStatus === "transient_error"
+    || Boolean(normalizedErrorCode);
+  const reasonCode = identityIssue
+    ? "PROBABLE_STARTER_IDENTITY_UNRESOLVED_WITHIN_24H"
+    : sourceUnavailable
+      ? "PROBABLE_STARTER_SOURCE_UNAVAILABLE_WITHIN_24H"
+      : normalizedDataStatus === "partial"
+        ? "PROBABLE_STARTER_PARTIAL_WITHIN_24H"
+        : "PROBABLE_STARTER_MISSING_WITHIN_24H";
+  const suppliedNextCheckAt = new Date(row.nextCheckAt || row.next_check_at || "");
+  const maxNextCheckAt = new Date(Math.min(
+    current.getTime() + PROBABLE_STARTER_RECHECK_INTERVAL_MS,
+    startAt.getTime() - 30 * 60 * 1000
+  ));
+  const nextCheckAt = suppliedNextCheckAt > current && suppliedNextCheckAt <= maxNextCheckAt
+    ? suppliedNextCheckAt
+    : maxNextCheckAt > current ? maxNextCheckAt : null;
+  return {
+    severity: "ATTENTION",
+    label: "要確認",
+    reasonCode,
+    message: reasonCode === "PROBABLE_STARTER_MISSING_WITHIN_24H"
+      ? "試合開始24時間以内ですが、予告先発が未取得です。"
+      : "試合開始24時間以内の予告先発取得に問題があります。",
+    normalizedDataStatus,
+    within24Hours: true,
+    remainingMilliseconds,
+    nextCheckAt: nextCheckAt?.toISOString() || null
+  };
+}
+
 // Canonical display/diagnostic evaluation for every V3 phase. It does not
 // influence planning or execution; callers use it for overview and audits.
-export function deriveV3PhaseStatus({ phase, game, now = new Date(), workflowState = "scheduled", jobs = [], snapshot = null, noticeState = null, noOpReason = null, sourceStatus = "" } = {}) {
+export function deriveV3PhaseStatus({ phase, game, now = new Date(), workflowState = "scheduled", jobs = [], snapshot = null, noticeState = null, noOpReason = null, sourceStatus = "", probableStarter = null } = {}) {
   const current = now instanceof Date ? now : new Date(now);
   const schedule = deriveV3DisplaySchedule(game);
   if (phase === "roster") {
@@ -257,9 +350,27 @@ export function deriveV3PhaseStatus({ phase, game, now = new Date(), workflowSta
     publish: [V3_JOB_TYPE.PUBLISH, "publication"]
   };
   if (phase === "probable_starter") {
-    const dataStatus = String(sourceStatus || "unannounced");
-    if (dataStatus === "announced") return v3NormalizedPhaseStatus(phase, { severity: "OK", label: "発表済み", reasonCode: "PROBABLE_STARTER_ANNOUNCED" });
-    if (dataStatus === "integrity_error") return v3NormalizedPhaseStatus(phase, { severity: "ATTENTION", label: "要確認", reasonCode: "DATA_INTEGRITY_ERROR" });
+    const probableStarterDecision = getV3ProbableStarterHealthDecision({
+      game,
+      now: current,
+      dataStatus: sourceStatus || "unannounced",
+      probableStarter
+    });
+    if (probableStarterDecision) {
+      return v3NormalizedPhaseStatus(phase, {
+        severity: probableStarterDecision.severity,
+        label: probableStarterDecision.label,
+        reasonCode: probableStarterDecision.reasonCode,
+        message: probableStarterDecision.message,
+        nextCheckAt: probableStarterDecision.nextCheckAt,
+        isAfterDue: probableStarterDecision.isAfterDue,
+        diagnosticFacts: {
+          remainingMilliseconds: probableStarterDecision.remainingMilliseconds,
+          within24Hours: probableStarterDecision.within24Hours,
+          normalizedDataStatus: probableStarterDecision.normalizedDataStatus
+        }
+      });
+    }
   }
   const types = typeMap[phase] || [];
   const completed = v3PhaseJob(jobs, types, ["completed"]);
@@ -564,6 +675,23 @@ export function getV3ProbableStarterSlots(game) {
   ];
   return [...new Map(slots
     .filter((slot) => slot && !Number.isNaN(slot.getTime()) && slot.getTime() <= startAt.getTime())
+    .map((slot) => [slot.toISOString(), slot]))
+    .values()]
+    .sort((left, right) => left.getTime() - right.getTime());
+}
+
+export function getV3ProbableStarterPollingSlots(game) {
+  const baseSlots = getV3ProbableStarterSlots(game);
+  const startAt = new Date(game?.startAt || game?.start_at || game?.startTime || game?.start_time || "");
+  if (Number.isNaN(startAt.getTime())) return baseSlots;
+  const hourlyStart = new Date(startAt.getTime() - 24 * 60 * 60 * 1000);
+  const finalPollingAt = new Date(startAt.getTime() - 30 * 60 * 1000);
+  const hourlySlots = [];
+  for (let slotAt = new Date(Math.ceil(hourlyStart.getTime() / (60 * 60 * 1000)) * (60 * 60 * 1000)); slotAt <= finalPollingAt; slotAt = new Date(slotAt.getTime() + 60 * 60 * 1000)) {
+    hourlySlots.push(slotAt);
+  }
+  return [...new Map([...baseSlots, ...hourlySlots]
+    .filter((slot) => slot instanceof Date && !Number.isNaN(slot.getTime()) && slot.getTime() <= startAt.getTime())
     .map((slot) => [slot.toISOString(), slot]))
     .values()]
     .sort((left, right) => left.getTime() - right.getTime());

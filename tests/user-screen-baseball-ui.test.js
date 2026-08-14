@@ -138,20 +138,20 @@ test("PC/スマホの選手一覧もカード型で表示する", () => {
   assert.match(css, /@media \(max-width: 767px\)[\s\S]*\.player-list \.player-chip[\s\S]*min-height: 48px/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(css, /@media \(max-width: 767px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
-  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list \.player-chip\.is-used[\s\S]*background: #eef2f6/);
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list \.player-chip\.is-used[\s\S]*background: #ffffff/);
 });
 
 test("公開予想画面の選手カードは主ポジション色を使わず中立表示にする", () => {
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list \.player-chip\.is-category-catcher,[\s\S]*\.player-chip\.is-category-infielder,[\s\S]*\.player-chip\.is-category-outfielder,[\s\S]*\.player-chip\.is-category-dh[\s\S]*border-color: #c7d7e8[\s\S]*background: #ffffff/);
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-category-legend[\s\S]*display: none/);
-  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list \.player-chip\.is-used[\s\S]*background: #eef2f6/);
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list \.player-chip\.is-used[\s\S]*background: #ffffff/);
 });
 
 test("公開予想画面の選手カードは白背景と適度な間隔を使う", () => {
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list \.player-chip[\s\S]*background: #ffffff/);
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list[\s\S]*gap: 14px/);
   assert.match(css, /@media \(max-width: 767px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list[\s\S]*gap: 12px/);
-  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list \.player-chip\.is-used[\s\S]*background: #eef2f6/);
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list \.player-chip\.is-used[\s\S]*background: #ffffff/);
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {

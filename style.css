@@ -6125,7 +6125,7 @@ body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip.is-categor
 
 body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip.is-used {
   border-color: #d2dce6;
-  background: #eef2f6;
+  background: #ffffff;
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .player-category-legend {

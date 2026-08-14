@@ -695,6 +695,7 @@ function createPositionControl(pickerName, index, slot) {
   button.addEventListener("click", (event) => {
     event.stopPropagation();
     if (pickerName === "prediction" && !ensurePredictionEditingAllowed()) return;
+    if (Date.now() < state.pointerSuppressClickUntil) return;
     if (button.dataset.skipClick === "true") {
       button.dataset.skipClick = "false";
       return;

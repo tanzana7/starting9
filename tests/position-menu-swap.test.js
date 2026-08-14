@@ -98,6 +98,7 @@ test("守備位置チップはPCでdrag可能で、未選択の?もswap対象に
   assert.match(positionControl, /button\.dataset\.picker = pickerName/);
   assert.match(positionControl, /button\.dataset\.order = String\(index\)/);
   assert.match(positionControl, /button\.addEventListener\("pointerdown"/);
+  assert.match(positionControl, /Date\.now\(\) < state\.pointerSuppressClickUntil/);
   assert.match(positionPointerDown, /event\.pointerType !== "mouse"/);
   assert.match(positionPointerDown, /activateOnMove: true/);
   assert.doesNotMatch(dragStart, /if \(!position\)/);

@@ -7,7 +7,8 @@ const root = path.join(__dirname, "..");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const adminHtml = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
-const cacheBuster = "public-scoreboard-ui-refresh-1";
+const scriptCacheBuster = "public-next-prediction-target-regression-1";
+const moduleCacheBuster = "public-scoreboard-ui-refresh-1";
 
 test("通常公開HTMLに旧admin・緊急復旧・test markupを含めない", () => {
   for (const marker of [
@@ -59,10 +60,10 @@ test("admin-v3の運用画面は公開bundleと分離して残る", () => {
   assert.match(adminHtml, /ranking/i);
 });
 
-test("公開静的scriptとmoduleのcache busterを統一する", () => {
-  assert.match(html, new RegExp(`script\\.js\\?v=${cacheBuster}`));
-  assert.match(html, new RegExp(`style\\.css\\?v=${cacheBuster}`));
+test("公開entry scriptのcache busterを更新し、既存moduleの読み込みを維持する", () => {
+  assert.match(html, new RegExp(`script\\.js\\?v=${scriptCacheBuster}`));
+  assert.match(html, new RegExp(`style\\.css\\?v=${moduleCacheBuster}`));
   for (const match of html.matchAll(/frontend\/public\/[^\"']+\.js\?v=([^\"']+)/g)) {
-    assert.equal(match[1], cacheBuster);
+    assert.equal(match[1], moduleCacheBuster);
   }
 });

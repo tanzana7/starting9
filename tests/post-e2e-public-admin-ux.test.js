@@ -93,7 +93,7 @@ test("通常画面は公開結果の読込中・失敗・完了を内部情報�
 });
 
 test("post-E2E表示修正のcache busterを更新し、旧手動操作を復活させない", () => {
-  assert.match(index, /script\.js\?v=public-scoreboard-ui-refresh-1/);
+  assert.match(index, /script\.js\?v=public-next-prediction-target-regression-1/);
   assert.match(adminPage, /admin-v3\.js\?v=admin-v3-filter-games-fix-1/);
   assert.doesNotMatch(admin, /runAutoScoringNowButton/);
 });

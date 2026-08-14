@@ -31,12 +31,14 @@ test("未来試合はcanonical catalogに保持し、通常画面は受付可能
   assert.match(script, /const todayGames = sorted\.filter\(\(game\) => getScheduleDate\(game\) === today\)/);
   assert.match(script, /const futureGames = sorted\.filter\(\(game\) => getScheduleDate\(game\) > today\)\.slice\(0, 5\)/);
   assert.match(script, /function selectInitialPublicGame\(games = \[\], now = new Date\(\)\)/);
-  assert.match(script, /return todayOpen \|\| nextOpen \|\| null/);
+  assert.match(script, /return todayUpcoming \|\| todayOpen \|\| nextOpen \|\| null/);
   assert.match(script, /syncPredictionFromAccount\(\{ force: true \}\)/);
 });
 
 test("初期試合は今日の受付中、次の受付可能な未来試合の順で選ぶ", () => {
   assert.match(script, /function selectInitialPublicGame\(games = \[\], now = new Date\(\)\)/);
+  assert.match(script, /const todayUpcoming = todayGames\.find/);
+  assert.match(script, /startAt > now/);
   assert.match(script, /const todayOpen = todayGames\.find\(\(game\) => !isPublicGamePublished\(game\)/);
   assert.match(script, /const nextOpen = selectable\.find\(\(game\) => getScheduleDate\(game\) > today/);
   assert.match(script, /const catalogGame = state\.publicGameCatalog\.games\.length/);
@@ -75,6 +77,10 @@ test("canonical catalogの締切判定は未定義のstatic schedule helperに�
   assert.equal(
     context.selectInitialPublicGame(games, new Date("2026-08-14T09:00:00.000Z")).internalGameId,
     "tomorrow"
+  );
+  assert.equal(
+    context.selectInitialPublicGame(games, new Date("2026-08-14T08:30:00.000Z")).internalGameId,
+    "today"
   );
 });
 
@@ -131,7 +137,7 @@ test("スマホでも選択UIを追加せず、補助表示と既存導線を維
 
 test("公開画面のJS/CSS cache busterを更新する", () => {
   assert.match(html, /style\.css\?v=public-result-player-block-width-1/);
-  assert.match(html, /script\.js\?v=public-saved-lineup-blocks-1/);
+  assert.match(html, /script\.js\?v=public-roster-reflection-hotfix-1/);
 });
 
 test("受付可能なcanonical対象がない場合は入力面を隠し、自然な案内を表示する", () => {

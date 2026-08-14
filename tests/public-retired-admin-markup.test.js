@@ -7,7 +7,7 @@ const root = path.join(__dirname, "..");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const adminHtml = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
-const scriptCacheBuster = "public-saved-lineup-blocks-1";
+const scriptCacheBuster = "public-roster-reflection-hotfix-1";
 const moduleCacheBuster = "public-scoreboard-ui-refresh-1";
 const styleCacheBuster = "public-result-player-block-width-1";
 

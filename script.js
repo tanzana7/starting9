@@ -1630,12 +1630,17 @@ function selectInitialPublicGame(games = [], now = new Date()) {
   const selectable = getPublicSelectableGames(games, now);
   const today = getJapanDateString(now);
   const todayGames = selectable.filter((game) => getScheduleDate(game) === today);
+  const todayUpcoming = todayGames.find((game) => {
+    if (isPublicGamePublished(game)) return false;
+    const startAt = game?.startAt ? new Date(game.startAt) : parseJstScheduleDateTime(game);
+    return Number.isFinite(startAt?.getTime()) && startAt > now;
+  });
   const todayOpen = todayGames.find((game) => !isPublicGamePublished(game)
     && resolvePredictionDeadline(game.internalGameId || game.gameId, now).status === "open");
   const nextOpen = selectable.find((game) => getScheduleDate(game) > today
     && !isPublicGamePublished(game)
     && resolvePredictionDeadline(game.internalGameId || game.gameId, now).status === "open");
-  return todayOpen || nextOpen || null;
+  return todayUpcoming || todayOpen || nextOpen || null;
 }
 
 function formatPublicPredictionGameLabel(game) {

@@ -130,7 +130,7 @@ test("スマホでも選択UIを追加せず、補助表示と既存導線を維
 });
 
 test("公開画面のJS/CSS cache busterを更新する", () => {
-  assert.match(html, /style\.css\?v=public-scoreboard-ui-refresh-1/);
+  assert.match(html, /style\.css\?v=public-responsive-layout-1/);
   assert.match(html, /script\.js\?v=public-next-prediction-target-regression-1/);
 });
 

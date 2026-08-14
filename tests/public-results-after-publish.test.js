@@ -46,7 +46,9 @@ test("通常画面は公開済み結果を自動選択し、内部IDを表示し
   const rendererEnd = script.indexOf("function buildCurrentPredictionApiUrl", rendererStart);
   const renderer = script.slice(rendererStart, rendererEnd);
   assert.doesNotMatch(renderer, /: game\.gameId/);
-  assert.match(renderer, /data-result-game-id="\$\{escapeHtml\(gameId\)\}"/);
+  assert.match(renderer, /data-result-history-toggle/);
+  assert.match(renderer, /data-result-history-select/);
+  assert.doesNotMatch(renderer, /class="result-history-item/);
 });
 
 test("公開結果は予想入力状態から独立して保持し、履歴一覧は最新5件に制限する", () => {
@@ -60,6 +62,6 @@ test("公開結果は予想入力状態から独立して保持し、履歴一�
 });
 
 test("通常画面の公開結果修正は新しいcache busterを使う", () => {
-  assert.match(html, /style\.css\?v=public-result-player-block-width-1/);
-  assert.match(html, /script\.js\?v=public-roster-reflection-hotfix-1/);
+  assert.match(html, /style\.css\?v=public-ranking-weekly-past-results-dropdown-1/);
+  assert.match(html, /script\.js\?v=public-ranking-weekly-past-results-dropdown-1/);
 });

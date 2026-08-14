@@ -59,6 +59,13 @@ test("結果詳細APIと通常画面の選択UIはcanonical internalGameIdを優
   assert.match(script, /data-result-game-id/);
   assert.match(html, /id="resultHistoryList"/);
   assert.match(html, /過去の試合結果/);
+  assert.match(script, /isExpanded: false/);
+  assert.match(script, /data-result-history-toggle/);
+  assert.match(script, /data-result-history-select/);
+  assert.match(script, /過去の成績を見る/);
+  const rendererStart = script.indexOf("function renderResultHistory");
+  const rendererEnd = script.indexOf("function buildCurrentPredictionApiUrl", rendererStart);
+  assert.doesNotMatch(script.slice(rendererStart, rendererEnd), /result-history-item/);
 });
 
 test("通常画面はcanonical public gameのinternalGameIdを予想保存と締切判定へ引き継ぐ", () => {

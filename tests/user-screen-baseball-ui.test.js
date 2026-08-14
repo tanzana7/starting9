@@ -92,6 +92,14 @@ test("中幅の予想入力は1カラム、十分な幅では収まる2カラム
   assert.match(css, /@media \(min-width: 1000px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-list[\s\S]*min-width: 0[\s\S]*max-width: 100%[\s\S]*\.player-chip[\s\S]*min-width: 120px/);
 });
 
+test("公開画面のページ分岐は900pxを境にし、タブレット以下を1カラムにする", () => {
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\)[\s\S]*grid-template-columns: minmax\(0, 1\.18fr\) minmax\(320px, 0\.82fr\)/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*> \.lineup-card[\s\S]*grid-column: 1/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*> \.result-card[\s\S]*grid-column: 2/);
+  assert.match(css, /@media \(min-width: 768px\) and \(max-width: 899px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\)[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(css, /@media \(max-width: 767px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+});
+
 test("公開画面の残り時間表示は公開用関数に分離され、管理画面のタイマーと衝突しない", () => {
   assert.match(script, /function formatPublicRemainingTime/);
   assert.match(script, /function formatPublicRemainingTime[\s\S]*const hours = Math\.floor/);
@@ -99,7 +107,7 @@ test("公開画面の残り時間表示は公開用関数に分離され、管�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-scoreboard-ui-refresh-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-responsive-layout-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

@@ -9,6 +9,7 @@ const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const adminHtml = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 const scriptCacheBuster = "public-next-prediction-target-regression-1";
 const moduleCacheBuster = "public-scoreboard-ui-refresh-1";
+const styleCacheBuster = "public-responsive-layout-1";
 
 test("通常公開HTMLに旧admin・緊急復旧・test markupを含めない", () => {
   for (const marker of [
@@ -62,7 +63,7 @@ test("admin-v3の運用画面は公開bundleと分離して残る", () => {
 
 test("公開entry scriptのcache busterを更新し、既存moduleの読み込みを維持する", () => {
   assert.match(html, new RegExp(`script\\.js\\?v=${scriptCacheBuster}`));
-  assert.match(html, new RegExp(`style\\.css\\?v=${moduleCacheBuster}`));
+  assert.match(html, new RegExp(`style\\.css\\?v=${styleCacheBuster}`));
   for (const match of html.matchAll(/frontend\/public\/[^\"']+\.js\?v=([^\"']+)/g)) {
     assert.equal(match[1], moduleCacheBuster);
   }

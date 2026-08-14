@@ -92,24 +92,25 @@ test("中幅の予想入力は1カラム、十分な幅では収まる2カラム
   assert.match(css, /@media \(min-width: 1000px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-list[\s\S]*min-width: 0[\s\S]*max-width: 100%[\s\S]*\.player-chip[\s\S]*min-width: 120px/);
 });
 
-test("公開画面のページ分岐は900pxを境にし、タブレット以下を1カラムにする", () => {
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\)[\s\S]*grid-template-columns: minmax\(0, 1\.34fr\) minmax\(300px, 0\.66fr\)/);
+test("公開画面は900px以上でも予想入力から結果までを縦積みにする", () => {
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\)[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*> \.lineup-card[\s\S]*grid-column: 1/);
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*> \.result-card[\s\S]*grid-column: 2/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*> \.result-card[\s\S]*grid-column: 1[\s\S]*grid-row: 4/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*> #rankingPanel[\s\S]*grid-column: 1[\s\S]*grid-row: 5/);
   assert.match(css, /@media \(min-width: 768px\) and \(max-width: 899px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\)[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(css, /@media \(max-width: 767px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
 });
 
-test("PCの登録済み・未登録選手一覧は1人1行で縦スクロールできる", () => {
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list[\s\S]*grid-template-columns: minmax\(0, 1fr\)[\s\S]*grid-auto-rows: minmax\(0, auto\)[\s\S]*max-width: 100%/);
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list[\s\S]*max-height: 560px[\s\S]*overflow-y: auto[\s\S]*overflow-x: clip/);
-  assert.doesNotMatch(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list[\s\S]*grid-template-columns: repeat\((?:2|auto-fit)/);
+test("PCの登録済み・未登録選手一覧はカードgridで表示する", () => {
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list[\s\S]*grid-template-columns: repeat\(auto-fit, minmax\(120px, 1fr\)\)[\s\S]*max-width: 100%/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list[\s\S]*max-height: none[\s\S]*overflow: visible/);
+  assert.doesNotMatch(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list[\s\S]*grid-template-columns: minmax\(0, 1fr\)[\s\S]*max-height: 560px/);
   assert.match(html, /data-roster-filter="active"/);
   assert.match(html, /data-roster-filter="inactive"/);
 });
 
-test("PCの予想入力エリアは左カラムを広げ、オーダーを1から9番の1列で維持する", () => {
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.app-layout:not\(\.is-admin-screen\)[\s\S]*grid-template-columns: minmax\(0, 1\.34fr\) minmax\(300px, 0\.66fr\)/);
+test("PCの予想入力エリアを全幅にし、オーダーを1から9番の1列で維持する", () => {
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.app-layout:not\(\.is-admin-screen\)[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 0\.92fr\) minmax\(0, 1\.08fr\)/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) #predictionLineup[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
   assert.doesNotMatch(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) #predictionLineup[\s\S]*grid-auto-flow: column/);
@@ -124,7 +125,7 @@ test("公開画面の残り時間表示は公開用関数に分離され、管�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-player-list-single-row-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-results-below-prediction-layout-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

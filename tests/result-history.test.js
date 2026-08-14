@@ -58,7 +58,7 @@ test("結果詳細APIと通常画面の選択UIはcanonical internalGameIdを優
   assert.match(script, /function handleResultHistoryClick\(event\)/);
   assert.match(script, /data-result-game-id/);
   assert.match(html, /id="resultHistoryList"/);
-  assert.match(html, /過去の試合結果/);
+  assert.match(html, /過去の試合成績/);
   assert.match(script, /isExpanded: false/);
   assert.match(script, /data-result-history-toggle/);
   assert.match(script, /data-result-history-select/);

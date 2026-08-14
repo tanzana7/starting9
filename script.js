@@ -701,7 +701,7 @@ function createPositionControl(pickerName, index, slot) {
     }
     togglePositionMenu(menu, button, pickerName, index);
   });
-  button.addEventListener("pointerdown", (event) => handlePositionPointerDown(event, button));
+  button.addEventListener("pointerdown", (event) => handlePositionPointerDown(event, button, slot));
   if (pickerName === "actual") {
     button.addEventListener("dragstart", (event) => handlePositionDragStart(event, button, slot));
     button.addEventListener("dragend", (event) => handlePositionDragEnd(event, button));
@@ -981,14 +981,16 @@ function handleLineupPointerDown(event, slot) {
   beginPointerInteraction(event, slot, "lineup");
 }
 
-function handlePositionPointerDown(event, button) {
-  if (button.dataset.picker !== "prediction" || event.pointerType !== "mouse") return;
+function handlePositionPointerDown(event, button, slot) {
+  if (button.dataset.picker !== "prediction" || event.pointerType !== "mouse" || isPredictionEditingLocked()) return;
   event.stopPropagation();
-  beginPointerInteraction(event, button, "position", { allowMouse: true, activateOnMove: true });
+  slot.dataset.positionParentDraggable = slot.draggable ? "true" : "false";
+  slot.draggable = false;
+  beginPointerInteraction(event, button, "position", { allowMouse: true, activateOnMove: true, nativeDragOwner: slot });
 }
 
 function beginPointerInteraction(event, element, kind, options) {
-  const { allowMouse = false, activateOnMove = false } = options || {};
+  const { allowMouse = false, activateOnMove = false, nativeDragOwner = null } = options || {};
   if (element.dataset.picker !== "prediction" || (event.pointerType === "mouse" && !allowMouse) || isPredictionEditingLocked()) return;
   if (kind === "lineup" && event.target instanceof Element && event.target.closest("button, .position-menu")) return;
 
@@ -1008,6 +1010,7 @@ function beginPointerInteraction(event, element, kind, options) {
     pointerType: event.pointerType || "",
     activeTouchIdentifier: event.inputSource === "touch" ? event.pointerId : null,
     activateOnMove,
+    nativeDragOwner,
     timerId: activateOnMove ? null : setTimeout(() => activatePointerInteraction(interaction), POINTER_LONG_PRESS_MS)
   };
 
@@ -1100,6 +1103,10 @@ function clearPointerInteraction() {
 
   clearTimeout(interaction.timerId);
   interaction.element.classList.remove("is-pressing", "is-dragging");
+  if (interaction.kind === "position" && interaction.nativeDragOwner) {
+    interaction.nativeDragOwner.draggable = interaction.nativeDragOwner.dataset.positionParentDraggable === "true";
+    delete interaction.nativeDragOwner.dataset.positionParentDraggable;
+  }
   document.querySelectorAll(".lineup-slot.is-drop-target").forEach((slot) => {
     slot.classList.remove("is-drop-target");
   });

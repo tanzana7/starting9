@@ -183,7 +183,8 @@ test("実DOM風のpointerdown→pointermove→pointerupでposition chipだけが
     `${getFunctionSource("handlePositionPointerDown")}; ${getFunctionSource("beginPointerInteraction")}; ${getFunctionSource("activatePointerInteraction")}; ${getFunctionSource("handlePointerInteractionMove")}; ${getFunctionSource("handlePointerInteractionEnd")}; ${getFunctionSource("handlePointerInteractionCancel")}; ${getFunctionSource("clearPointerInteraction")}; this.handlePositionPointerDown = handlePositionPointerDown; this.handlePointerInteractionMove = handlePointerInteractionMove; this.handlePointerInteractionEnd = handlePointerInteractionEnd;`,
     context
   );
-  source.addEventListener("pointerdown", (event) => context.handlePositionPointerDown(event, source));
+  source.draggable = true;
+  source.addEventListener("pointerdown", (event) => context.handlePositionPointerDown(event, source, source));
   document.addEventListener("pointermove", (event) => context.handlePointerInteractionMove(event));
   document.addEventListener("pointerup", (event) => context.handlePointerInteractionEnd(event));
 
@@ -202,6 +203,7 @@ test("実DOM風のpointerdown→pointermove→pointerupでposition chipだけが
   assert.deepEqual(swap, ["prediction", 0, 1]);
   assert.equal(source.dataset.order, "0");
   assert.equal(target.dataset.order, "1");
+  assert.equal(source.draggable, true);
 });
 
 test("守備位置チップのdragは同じ行では変更せず、別行では選手名を維持してswapする", () => {

@@ -5916,10 +5916,8 @@ body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .r
   }
 
   body:not(:has(.app-layout.is-admin-screen)) #predictionLineup {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-template-rows: repeat(5, minmax(0, auto));
-    grid-auto-flow: column;
-    gap: 8px 12px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
   }
 
   body:not(:has(.app-layout.is-admin-screen)) .player-list {

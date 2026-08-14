@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const vm = require("node:vm");
 
 const root = path.join(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
@@ -41,10 +42,47 @@ test("初期試合は今日の受付中、次の受付可能な未来試合の�
   assert.match(script, /const catalogGame = state\.publicGameCatalog\.games\.length/);
 });
 
+test("canonical catalogの締切判定は未定義のstatic schedule helperに依存せず、次の受付可能試合へ進む", () => {
+  const resolverStart = script.indexOf("function parseJstScheduleDateTime");
+  const resolverEnd = script.indexOf("function getEffectivePredictionDeadline", resolverStart);
+  const selectionStart = script.indexOf("function getPublicSelectableGames");
+  const selectionEnd = script.indexOf("function formatPublicPredictionGameLabel", selectionStart);
+  const context = {
+    state: { publicGameCatalog: { games: [] }, predictionTargetGame: null },
+    window: { STARTING9_PREGAME_CONFIG: {} },
+    isPublicGamePublished: () => false,
+    isNormalManagedSchedule: () => true,
+    getScheduleDate: (game) => game.date,
+    getScheduleStartTime: (game) => game.startTime,
+    getScheduleSortValue: (game) => `${game.date}T${game.startTime}`,
+    getJapanDateString: (date) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tokyo" }).format(date),
+    Date,
+    Intl
+  };
+  vm.createContext(context);
+  vm.runInContext(`${script.slice(resolverStart, resolverEnd)}\n${script.slice(selectionStart, selectionEnd)}`, context);
+
+  const games = [
+    { internalGameId: "today", canonical: true, date: "2026-08-14", startTime: "18:00", startAt: "2026-08-14T09:00:00.000Z" },
+    { internalGameId: "tomorrow", canonical: true, date: "2026-08-15", startTime: "14:00", startAt: "2026-08-15T05:00:00.000Z" }
+  ];
+  context.state.publicGameCatalog.games = games;
+
+  assert.equal(
+    context.selectInitialPublicGame(games, new Date("2026-08-14T02:26:00.000Z")).internalGameId,
+    "today"
+  );
+  assert.equal(
+    context.selectInitialPublicGame(games, new Date("2026-08-14T09:00:00.000Z")).internalGameId,
+    "tomorrow"
+  );
+});
+
 test("canonical catalogの未来試合はstatic scheduleに未掲載でもstartAtから締切を判定する", () => {
   const start = script.indexOf("function resolvePredictionDeadline");
   const resolver = script.slice(start, script.indexOf("function getEffectivePredictionDeadline", start));
   assert.match(resolver, /state\.publicGameCatalog\.games\.find/);
+  assert.doesNotMatch(resolver, /getHamGameSchedule/);
   assert.match(resolver, /game\.startAt\s*\?\s*new Date\(game\.startAt\)/);
   assert.match(resolver, /status: isClosed \? "closed" : "open"/);
 });

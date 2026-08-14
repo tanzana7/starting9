@@ -1953,8 +1953,7 @@ function isScheduleGameUnavailable(game) {
 }
 
 function resolvePredictionDeadline(gameId, now = new Date()) {
-  const game = getHamGameSchedule().find((item) => item?.gameId === gameId || item?.internalGameId === gameId)
-    || state.publicGameCatalog.games.find((item) => item?.gameId === gameId || item?.internalGameId === gameId)
+  const game = state.publicGameCatalog.games.find((item) => item?.gameId === gameId || item?.internalGameId === gameId)
     || (state.predictionTargetGame?.gameId === gameId || state.predictionTargetGame?.internalGameId === gameId ? state.predictionTargetGame : null);
   if (!game) {
     return {

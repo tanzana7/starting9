@@ -20,6 +20,7 @@ import {
 import {
   createFightersPlayerId,
   findFightersPlayerByName,
+  inspectFightersRosterMaster,
   FIGHTERS_TEAM_CODE,
   FIGHTERS_TEAM_ID
 } from "./fighters-player-master.js";
@@ -1947,10 +1948,11 @@ function parseSafeWorkflowJobMetadata(value) {
 function sanitizeWorkflowExecutionDiagnostics(details = {}) {
   if (!details || typeof details !== "object" || Array.isArray(details)) return null;
   const result = {};
-  const numericKeys = ["claimedJobId", "lineupHttpStatus"];
+  const numericKeys = ["claimedJobId", "lineupHttpStatus", "rosterMasterResolvedCount", "rosterMasterUnresolvedCount"];
   const stringKeys = [
     "claimedJobType", "resolvedNpbGameCode", "lineupSourceUrl", "lineupParseStage",
-    "lineupDataClassification", "dataNotAnnouncedReason", "rosterResolutionStage", "rosterResolvedBy"
+    "lineupDataClassification", "dataNotAnnouncedReason", "rosterResolutionStage", "rosterResolvedBy",
+    "rosterMasterResolutionReasonCode", "rosterMasterUnresolvedNames"
   ];
   for (const key of numericKeys) {
     if (Number.isInteger(Number(details[key])) && Number(details[key]) > 0) result[key] = Number(details[key]);
@@ -2018,6 +2020,17 @@ function getWorkflowExecutionDiagnostics({ job = null, target = null, result = n
     diagnostics.sourceSnapshotComparison = result?.sourceSnapshotComparison
       || error?.diagnostics?.sourceSnapshotComparison
       || null;
+    const masterResolution = error?.rosterResolution?.masterResolution || result?.rosterResolution?.masterResolution;
+    if (masterResolution) {
+      diagnostics.rosterMasterResolutionReasonCode = String(masterResolution.reasonCode || "");
+      diagnostics.rosterMasterResolvedCount = Number(masterResolution.resolvedCount || 0);
+      diagnostics.rosterMasterUnresolvedCount = Number(masterResolution.unresolvedCount || 0);
+      diagnostics.rosterMasterUnresolvedNames = (Array.isArray(masterResolution.unresolvedPlayers) ? masterResolution.unresolvedPlayers : [])
+        .map((entry) => String(entry?.name || "").trim())
+        .filter(Boolean)
+        .join(",")
+        .slice(0, 500);
+    }
   }
   return sanitizeWorkflowExecutionDiagnostics(diagnostics) || {};
 }
@@ -9044,6 +9057,7 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
     if (!roster || payload.warning) {
       throw createPregameError(isV3 ? "ROSTER_PARSE_FAILED" : "INVALID_ROSTER", "NPBロースターの解析結果が不完全です。", { retryable: isV3 });
     }
+    const masterResolution = inspectFightersRosterMaster(roster);
     const noticePayload = isV3
       ? await fetchNpbWorkerJson(env, { mode: "notice", date: identity.game.date })
       : null;
@@ -9174,8 +9188,8 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
       rosterResolution: {
         resolutionStage: "canonical_schedule_db",
         resolvedBy: identity.resolvedBy || "canonical_schedule_db",
-        startAtFound: Boolean(identity.startAt && !Number.isNaN(new Date(identity.startAt).getTime())
-        )
+        startAtFound: Boolean(identity.startAt && !Number.isNaN(new Date(identity.startAt).getTime())),
+        masterResolution
       }
     };
   } catch (error) {

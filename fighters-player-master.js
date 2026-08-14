@@ -10,7 +10,7 @@ export const FIGHTERS_PLAYER_MASTER = [
   ["中島卓也","9",["中島","中島卓也"]], ["清宮幸太郎","21",["清宮","清宮幸太郎"]], ["有薗直輝","39",["有薗","有薗直輝"]],
   ["水野達稀","43",["水野","水野達稀"]], ["阪口樂","44",["阪口","阪口樂","阪口楽"]], ["大塚瑠晏","49",["大塚","大塚瑠晏"]],
   ["半田南十","51",["半田","半田南十"]], ["山縣秀","54",["山縣","山縣秀"]], ["細川凌平","56",["細川","細川凌平"]],
-  ["奈良間大己","58",["奈良間","奈良間大己"]], ["明瀬諒介","65",["明瀬","明瀬諒介"]], ["西川遥輝","7",["西川","西川遥輝"]],
+  ["奈良間大己","58",["奈良間","奈良間大己"]], ["常谷拓輝","95",["常谷","常谷拓輝","常谷 拓輝","常谷　拓輝","ツネヤ ヒロキ","ツネヤヒロキ"]], ["明瀬諒介","65",["明瀬","明瀬諒介"]], ["西川遥輝","7",["西川","西川遥輝"]],
   ["淺間大基","8",["淺間","浅間","淺間大基","浅間大基"]], ["宮崎一樹","36",["宮崎","宮崎一樹"]], ["エドポロケイン","42",["エドポロ","エドポロケイン"]],
   ["五十幡亮汰","50",["五十幡","五十幡亮汰"]], ["水谷瞬","53",["水谷","水谷瞬"]], ["今川優馬","61",["今川","今川優馬"]],
   ["万波中正","66",["万波","万波中正"]], ["レイエス","99",["レイエス","F.レイエス","Ｆ．レイエス"]], ["矢澤宏太","12",["矢澤","矢沢","矢澤宏太","矢沢宏太"]]
@@ -26,6 +26,54 @@ export function findFightersPlayerByName(name) {
   const matches = FIGHTERS_PLAYER_MASTER.filter((player) => [player.name, ...player.aliases]
     .some((candidate) => normalizeFightersPlayerName(candidate) === normalized));
   return matches.length === 1 ? matches[0] : null;
+}
+
+function findFightersPlayerByUniformNumber(uniformNumber) {
+  const normalized = String(uniformNumber || "").trim();
+  if (!normalized) return null;
+  const matches = FIGHTERS_PLAYER_MASTER.filter((player) => player.uniformNumber === normalized);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+export function resolveFightersRosterEntry(entry) {
+  const byName = findFightersPlayerByName(entry?.name);
+  const byUniformNumber = findFightersPlayerByUniformNumber(entry?.number);
+  if (byName && byUniformNumber && byName.uniformNumber !== byUniformNumber.uniformNumber) {
+    return { player: null, reasonCode: "ROSTER_PLAYER_UNMAPPED_FROM_SOURCE" };
+  }
+  if (byName) return { player: byName, resolvedBy: "alias" };
+  if (byUniformNumber) return { player: byUniformNumber, resolvedBy: "uniform_number" };
+  return {
+    player: null,
+    reasonCode: entry?.name ? "ROSTER_PLAYER_MISSING_FROM_MASTER" : "ROSTER_PLAYER_UNMAPPED_FROM_SOURCE"
+  };
+}
+
+export function inspectFightersRosterMaster(entries) {
+  const unresolvedPlayers = [];
+  let resolvedCount = 0;
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const resolution = resolveFightersRosterEntry(entry);
+    if (resolution.player) {
+      resolvedCount += 1;
+      continue;
+    }
+    unresolvedPlayers.push({
+      name: String(entry?.name || "").slice(0, 80),
+      number: String(entry?.number || "").slice(0, 20),
+      reasonCode: resolution.reasonCode
+    });
+  }
+  const reasonCode = unresolvedPlayers.find((entry) => entry.reasonCode === "ROSTER_PLAYER_MISSING_FROM_MASTER")
+    ? "ROSTER_PLAYER_MISSING_FROM_MASTER"
+    : unresolvedPlayers[0]?.reasonCode || "ROSTER_PLAYERS_RESOLVED";
+  return {
+    status: unresolvedPlayers.length ? "attention" : "resolved",
+    reasonCode,
+    resolvedCount,
+    unresolvedCount: unresolvedPlayers.length,
+    unresolvedPlayers: unresolvedPlayers.slice(0, 20)
+  };
 }
 
 export function createFightersPlayerId(uniformNumber) {

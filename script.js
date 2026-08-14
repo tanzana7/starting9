@@ -1025,6 +1025,7 @@ function beginPointerInteraction(event, element, kind, options) {
 
 function activatePointerInteraction(interaction) {
   if (state.pointerInteraction !== interaction || isPredictionEditingLocked()) return;
+  if (interaction.kind === "position") closeAllPositionMenus();
   interaction.active = true;
   interaction.element.classList.remove("is-pressing");
   interaction.element.classList.add("is-dragging");

@@ -75,8 +75,8 @@ test("タッチ端末向けに長押しドラッグで選手と守備位置を�
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.lineup-slot\.is-dragging[\s\S]*box-shadow/);
 });
 
-test("スマホの選手一覧はページ全体でスクロールし、2列のコンパクト表示になる", () => {
-  assert.match(css, /@media \(max-width: 768px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-list[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+test("スマホの選手一覧はページ全体でスクロールし、1人1行の表示になる", () => {
+  assert.match(css, /@media \(max-width: 768px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-list[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.player-list[\s\S]*max-height: none/);
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.player-list[\s\S]*overflow: visible/);
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.player-chip \.player-name[\s\S]*text-overflow: ellipsis/);
@@ -100,9 +100,10 @@ test("公開画面のページ分岐は900pxを境にし、タブレット以下
   assert.match(css, /@media \(max-width: 767px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
 });
 
-test("PCの登録済み・未登録選手一覧は2列固定で内容に追従する", () => {
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)[\s\S]*grid-auto-rows: minmax\(0, auto\)[\s\S]*max-width: 100%/);
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list[\s\S]*max-height: none[\s\S]*overflow: visible/);
+test("PCの登録済み・未登録選手一覧は1人1行で縦スクロールできる", () => {
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list[\s\S]*grid-template-columns: minmax\(0, 1fr\)[\s\S]*grid-auto-rows: minmax\(0, auto\)[\s\S]*max-width: 100%/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list[\s\S]*max-height: 560px[\s\S]*overflow-y: auto[\s\S]*overflow-x: clip/);
+  assert.doesNotMatch(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list[\s\S]*grid-template-columns: repeat\((?:2|auto-fit)/);
   assert.match(html, /data-roster-filter="active"/);
   assert.match(html, /data-roster-filter="inactive"/);
 });
@@ -122,7 +123,7 @@ test("公開画面の残り時間表示は公開用関数に分離され、管�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-prediction-order-two-columns-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-player-list-single-row-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

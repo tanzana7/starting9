@@ -6261,7 +6261,7 @@ body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip:focus-visi
 /* Experimental mobile prediction layout: keep the order and roster visible side by side. */
 @media (max-width: 767px) {
   body:not(:has(.app-layout.is-admin-screen)) .lineup-builder {
-    grid-template-columns: minmax(0, 44fr) minmax(0, 56fr);
+    grid-template-columns: minmax(0, 60fr) minmax(0, 40fr);
     gap: 8px;
     align-items: stretch;
     width: 100%;

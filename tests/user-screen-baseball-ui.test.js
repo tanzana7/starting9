@@ -49,7 +49,7 @@ test("通常画面の固定幅を避け、保存操作の既存IDを維持する
 });
 
 test("スマホの通常画面はオーダー表と選手一覧を2ペインにする", () => {
-  assert.match(css, /@media \(max-width: 767px\)[\s\S]*\.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 44fr\) minmax\(0, 56fr\)/);
+  assert.match(css, /@media \(max-width: 767px\)[\s\S]*\.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 60fr\) minmax\(0, 40fr\)/);
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.lineup-slot[\s\S]*min-width: 0/);
   assert.doesNotMatch(css, /body\s*\{[\s\S]*overflow-x:\s*hidden/);
 });
@@ -176,7 +176,7 @@ test("保存済み予想は打順・守備位置チップ・選手名ブロッ�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-mobile-two-pane-prediction-trial-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-mobile-two-pane-width-balance-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

@@ -8,13 +8,13 @@ const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
 
 test("public mobile prediction layout keeps order and roster in two panes", () => {
-  assert.match(html, /style\.css\?v=public-mobile-two-pane-prediction-trial-1/);
+  assert.match(html, /style\.css\?v=public-mobile-two-pane-width-balance-1/);
   assert.match(html, /class="lineup-builder"/);
   assert.match(html, /id="predictionLineup" class="slot-list"/);
   assert.match(html, /id="predictionPlayers" class="player-list"/);
   assert.match(
     css,
-    /@media \(max-width: 767px\)[\s\S]*?\.lineup-builder \{[\s\S]*?grid-template-columns: minmax\(0, 44fr\) minmax\(0, 56fr\)/,
+    /@media \(max-width: 767px\)[\s\S]*?\.lineup-builder \{[\s\S]*?grid-template-columns: minmax\(0, 60fr\) minmax\(0, 40fr\)/,
   );
   assert.match(css, /max-height: min\(72vh, 620px\)/);
   assert.match(css, /overflow-y: auto/);

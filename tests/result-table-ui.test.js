@@ -109,6 +109,13 @@ test("結果テーブルの選手カードは守備位置と名前を薄い枠�
   assert.match(css, /\.result-player-card \.result-player-name\s*\{[\s\S]*border: 0/);
 });
 
+test("結果テーブルの選手名ブロックはPCとスマホで幅を揃える", () => {
+  assert.match(css, /\.result-player-name\s*\{[\s\S]*width: 132px[\s\S]*min-width: 132px[\s\S]*max-width: 132px/);
+  assert.match(css, /\.result-player-card \.result-player-name\s*\{[\s\S]*flex: 0 0 132px[\s\S]*min-width: 132px/);
+  assert.match(css, /@media \(max-width: 430px\)[\s\S]*\.result-player-name\s*\{[\s\S]*width: 112px[\s\S]*min-width: 112px[\s\S]*max-width: 112px[\s\S]*\.result-player-card \.result-player-name\s*\{[\s\S]*flex-basis: 112px[\s\S]*min-width: 112px/);
+  assert.match(css, /\.result-player-name\s*\{[\s\S]*overflow-wrap: anywhere/);
+});
+
 test("採点結果テーブルはスマホでも内容を保持して横スクロールできる", () => {
   assert.match(css, /\.result-table-wrap\s*\{[\s\S]*overflow-x: auto/);
   assert.match(css, /\.result-table\s*\{[\s\S]*min-width: 700px/);

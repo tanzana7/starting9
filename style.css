@@ -6041,3 +6041,51 @@ body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .r
     padding-inline: 8px;
   }
 }
+
+/* 予想オーダーの選手名は、結果表示と揃えたブロック型の選択領域にする。 */
+body:not(:has(.app-layout.is-admin-screen)) #predictionLineup .slot-player {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 42px;
+  padding: 7px 12px;
+  border: 1px solid #c7d7e8;
+  border-radius: 7px;
+  background: #f7fbff;
+  box-shadow: 0 1px 2px rgba(25, 54, 82, 0.08);
+  color: var(--fighters-deep-blue);
+  line-height: 1.25;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  text-overflow: clip;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) #predictionLineup .slot-player .player-name {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: normal;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) #predictionLineup .slot-player.slot-empty {
+  border-style: dashed;
+  background: #fbfcfd;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) #predictionLineup .lineup-slot.is-locked .slot-player {
+  cursor: default;
+  opacity: 0.78;
+}
+
+@media (max-width: 767px) {
+  body:not(:has(.app-layout.is-admin-screen)) #predictionLineup .slot-player {
+    min-height: 44px;
+    padding: 8px 12px;
+  }
+}

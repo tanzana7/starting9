@@ -110,9 +110,84 @@ function latestV3RosterJob(jobs, statuses) {
       .localeCompare(String(left?.updated_at || left?.completed_at || left?.scheduled_at || "")))[0] || null;
 }
 
+function rosterPlayerKey(player) {
+  const number = String(player?.number || player?.uniformNumber || player?.uniform_number || "").trim();
+  if (number) return `number:${number}`;
+  const name = String(player?.name || player?.playerName || "").replace(/[\s\u3000]/g, "").toLowerCase();
+  return name ? `name:${name}` : "";
+}
+
+function rosterPlayerSummary(player) {
+  return {
+    name: String(player?.name || player?.playerName || "").trim(),
+    number: String(player?.number || player?.uniformNumber || player?.uniform_number || "").trim(),
+    position: String(player?.position || "").trim()
+  };
+}
+
+function rosterPlayerName(player) {
+  return String(player?.name || player?.playerName || "").replace(/[\s\u3000]/g, "").toLowerCase();
+}
+
+// Compare the official roster payload with the snapshot that public/admin reads.
+// This is intentionally pure: it observes source drift without changing the
+// fetch, planner, or persistence contract.
+export function compareV3RosterSourceSnapshot({
+  sourceRoster = [],
+  snapshotRoster = [],
+  sourceDate = null,
+  sourceFetchedAt = null,
+  snapshotCapturedAt = null,
+  sourceFingerprint = null,
+  snapshotFingerprint = null
+} = {}) {
+  const sourceByKey = new Map((Array.isArray(sourceRoster) ? sourceRoster : [])
+    .map((player) => [rosterPlayerKey(player), player])
+    .filter(([key]) => key));
+  const snapshotByKey = new Map((Array.isArray(snapshotRoster) ? snapshotRoster : [])
+    .map((player) => [rosterPlayerKey(player), player])
+    .filter(([key]) => key));
+  const expectedMissing = [...sourceByKey.entries()]
+    .filter(([key, player]) => !snapshotByKey.has(key) || rosterPlayerName(snapshotByKey.get(key)) !== rosterPlayerName(player))
+    .map(([, player]) => rosterPlayerSummary(player));
+  const removedStillPresent = [...snapshotByKey.entries()]
+    .filter(([key, player]) => !sourceByKey.has(key) || rosterPlayerName(sourceByKey.get(key)) !== rosterPlayerName(player))
+    .map(([, player]) => rosterPlayerSummary(player));
+  const mismatch = expectedMissing.length > 0 || removedStillPresent.length > 0;
+  const sourceFetchedMs = new Date(sourceFetchedAt || "").getTime();
+  const snapshotCapturedMs = new Date(snapshotCapturedAt || "").getTime();
+  const stale = mismatch
+    && Number.isFinite(sourceFetchedMs)
+    && Number.isFinite(snapshotCapturedMs)
+    && sourceFetchedMs > snapshotCapturedMs;
+  const reasonCodes = [
+    ...(expectedMissing.length ? ["ROSTER_EXPECTED_PLAYER_MISSING"] : []),
+    ...(removedStillPresent.length ? ["ROSTER_REMOVED_PLAYER_STILL_PRESENT"] : []),
+    ...(mismatch ? ["ROSTER_SOURCE_SNAPSHOT_MISMATCH"] : []),
+    ...(stale ? ["ROSTER_SNAPSHOT_STALE"] : [])
+  ];
+  return {
+    status: mismatch ? "ATTENTION" : "OK",
+    mismatch,
+    remainingMismatch: mismatch,
+    stale,
+    reasonCode: reasonCodes[0] || null,
+    reasonCodes,
+    sourceDate: sourceDate || null,
+    sourceFetchedAt: sourceFetchedAt || null,
+    snapshotCapturedAt: snapshotCapturedAt || null,
+    sourceFingerprint: sourceFingerprint || null,
+    snapshotFingerprint: snapshotFingerprint || null,
+    sourcePlayerCount: sourceByKey.size,
+    snapshotPlayerCount: snapshotByKey.size,
+    expectedMissing,
+    removedStillPresent
+  };
+}
+
 // This decision is shared by planning/audit and the admin overview. A missing
 // snapshot is expected until the first roster slot is due; it is not stale data.
-export function getV3RosterStatusDecision({ game, now = new Date(), snapshot = null, jobs = [], noticeState = null } = {}) {
+export function getV3RosterStatusDecision({ game, now = new Date(), snapshot = null, jobs = [], noticeState = null, sourceSnapshotComparison = null } = {}) {
   const current = now instanceof Date ? now : new Date(now);
   const slotDiagnostics = getV3RosterPlanningDiagnostics(game, current);
   const plannedSlots = slotDiagnostics.generatedSlots;
@@ -143,8 +218,13 @@ export function getV3RosterStatusDecision({ game, now = new Date(), snapshot = n
     openRosterJobExists: Boolean(openRosterJob),
     terminalRosterJobExists,
     openRosterJob,
-    failedRosterJob
+    failedRosterJob,
+    sourceSnapshotComparison
   };
+  if (sourceSnapshotComparison?.remainingMismatch === true || sourceSnapshotComparison?.status === "ATTENTION") {
+    const reasonCode = sourceSnapshotComparison.reasonCode || sourceSnapshotComparison.reasonCodes?.[0] || "ROSTER_SOURCE_SNAPSHOT_MISMATCH";
+    return { ...base, severity: "ATTENTION", reasonCode, label: "公式sourceとsnapshotが不一致" };
+  }
   if (freshSnapshotExists) {
     const changesCaptured = String(noticeState || "") === "ROSTER_CHANGES_CAPTURED";
     return { ...base, severity: "OK", reasonCode: changesCaptured ? "ROSTER_CHANGES_CAPTURED" : "ROSTER_NO_CHANGES", label: changesCaptured ? "公示確認済み（変更あり）" : "公示確認済み" };
@@ -313,11 +393,11 @@ export function getV3ProbableStarterHealthDecision({
 
 // Canonical display/diagnostic evaluation for every V3 phase. It does not
 // influence planning or execution; callers use it for overview and audits.
-export function deriveV3PhaseStatus({ phase, game, now = new Date(), workflowState = "scheduled", jobs = [], snapshot = null, noticeState = null, noOpReason = null, sourceStatus = "", probableStarter = null } = {}) {
+export function deriveV3PhaseStatus({ phase, game, now = new Date(), workflowState = "scheduled", jobs = [], snapshot = null, noticeState = null, noOpReason = null, sourceStatus = "", probableStarter = null, sourceSnapshotComparison = null } = {}) {
   const current = now instanceof Date ? now : new Date(now);
   const schedule = deriveV3DisplaySchedule(game);
   if (phase === "roster") {
-    const roster = getV3RosterStatusDecision({ game, now: current, snapshot, jobs, noticeState });
+    const roster = getV3RosterStatusDecision({ game, now: current, snapshot, jobs, noticeState, sourceSnapshotComparison });
     return v3NormalizedPhaseStatus(phase, {
       severity: roster.severity,
       label: roster.label,

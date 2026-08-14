@@ -131,6 +131,7 @@ import {
   deriveV3DisplaySchedule,
   getV3RosterPlanningDiagnostics,
   getV3RosterStatusDecision,
+  compareV3RosterSourceSnapshot,
   deriveV3PhaseStatus,
   getV3NextAction,
   getV3ProbableStarterPollingSlots,
@@ -1954,6 +1955,29 @@ function sanitizeWorkflowExecutionDiagnostics(details = {}) {
     if (typeof details[key] === "string" && details[key]) result[key] = details[key].slice(0, key === "lineupSourceUrl" ? 240 : 120);
   }
   if (typeof details.rosterStartAtFound === "boolean") result.rosterStartAtFound = details.rosterStartAtFound;
+  const comparison = details.sourceSnapshotComparison || details.rosterSourceSnapshotComparison;
+  if (comparison && typeof comparison === "object" && !Array.isArray(comparison)) {
+    result.sourceSnapshotComparison = {
+      status: typeof comparison.status === "string" ? comparison.status.slice(0, 20) : "",
+      mismatch: Boolean(comparison.mismatch),
+      remainingMismatch: Boolean(comparison.remainingMismatch),
+      stale: Boolean(comparison.stale),
+      reasonCode: typeof comparison.reasonCode === "string" ? comparison.reasonCode.slice(0, 100) : null,
+      reasonCodes: Array.isArray(comparison.reasonCodes) ? comparison.reasonCodes.filter((code) => typeof code === "string").slice(0, 8) : [],
+      sourceDate: typeof comparison.sourceDate === "string" ? comparison.sourceDate.slice(0, 40) : null,
+      sourceFetchedAt: typeof comparison.sourceFetchedAt === "string" ? comparison.sourceFetchedAt.slice(0, 40) : null,
+      snapshotCapturedAt: typeof comparison.snapshotCapturedAt === "string" ? comparison.snapshotCapturedAt.slice(0, 40) : null,
+      sourceFingerprint: typeof comparison.sourceFingerprint === "string" ? comparison.sourceFingerprint.slice(0, 240) : null,
+      snapshotFingerprint: typeof comparison.snapshotFingerprint === "string" ? comparison.snapshotFingerprint.slice(0, 240) : null,
+      sourcePlayerCount: Number.isFinite(Number(comparison.sourcePlayerCount)) ? Number(comparison.sourcePlayerCount) : null,
+      snapshotPlayerCount: Number.isFinite(Number(comparison.snapshotPlayerCount)) ? Number(comparison.snapshotPlayerCount) : null,
+      expectedMissing: Array.isArray(comparison.expectedMissing) ? comparison.expectedMissing.filter((player) => player && typeof player === "object").slice(0, 12) : [],
+      removedStillPresent: Array.isArray(comparison.removedStillPresent) ? comparison.removedStillPresent.filter((player) => player && typeof player === "object").slice(0, 12) : []
+    };
+  }
+  for (const key of ["sourceFingerprint", "snapshotFingerprint"]) {
+    if (typeof details[key] === "string" && details[key]) result[key] = details[key].slice(0, 240);
+  }
   return Object.keys(result).length ? result : null;
 }
 
@@ -1985,6 +2009,11 @@ function getWorkflowExecutionDiagnostics({ job = null, target = null, result = n
     diagnostics.rosterResolutionStage = String(error?.rosterResolution?.resolutionStage || result?.rosterResolution?.resolutionStage || "resolvePregameIdentity");
     diagnostics.rosterResolvedBy = String(error?.rosterResolution?.resolvedBy || result?.rosterResolution?.resolvedBy || "");
     diagnostics.rosterStartAtFound = Boolean(error?.rosterResolution?.startAtFound ?? result?.rosterResolution?.startAtFound);
+    diagnostics.sourceFingerprint = result?.sourceFingerprint || error?.diagnostics?.sourceFingerprint || "";
+    diagnostics.snapshotFingerprint = result?.snapshotFingerprint || error?.diagnostics?.snapshotFingerprint || "";
+    diagnostics.sourceSnapshotComparison = result?.sourceSnapshotComparison
+      || error?.diagnostics?.sourceSnapshotComparison
+      || null;
   }
   return sanitizeWorkflowExecutionDiagnostics(diagnostics) || {};
 }
@@ -4054,7 +4083,9 @@ async function handleAdminV3Overview(request, env, cors) {
       terminalRosterJobExists: false,
       reasonCode: null,
       severity: null,
-      label: null
+      label: null,
+      sourceSnapshotComparison: null,
+      previousSnapshotComparison: null
     };
     const resolvedState = state || { state: "scheduled", version: 0 };
     const jobRows = jobs.results || [];
@@ -4122,7 +4153,10 @@ async function handleAdminV3Overview(request, env, cors) {
       now: overviewNow,
       snapshot: canonicalRosterSnapshot,
       jobs: rosterJobRows,
-      noticeState: latestRosterAuditDetails.noticeState || latestRosterAuditDetails.reasonCode || null
+      noticeState: latestRosterAuditDetails.noticeState || latestRosterAuditDetails.reasonCode || null,
+      sourceSnapshotComparison: latestRosterAuditDetails.sourceSnapshotComparison
+        || latestRosterAuditDetails.diagnostics?.sourceSnapshotComparison
+        || null
     });
     const currentRosterJob = selectedRosterJob || rosterStatusDecision.openRosterJob || null;
     rosterDiagnostics = {
@@ -4146,6 +4180,12 @@ async function handleAdminV3Overview(request, env, cors) {
       sourceUrl: latestRosterAuditDetails.sourceUrl || null,
       httpStatus: latestRosterAuditDetails.httpStatus || null,
       parserResult: latestRosterAuditDetails.parserResult || null,
+      sourceSnapshotComparison: latestRosterAuditDetails.sourceSnapshotComparison
+        || latestRosterAuditDetails.diagnostics?.sourceSnapshotComparison
+        || null,
+      previousSnapshotComparison: latestRosterAuditDetails.previousSnapshotComparison || null,
+      sourceFingerprint: latestRosterAuditDetails.sourceFingerprint || null,
+      snapshotFingerprint: latestRosterAuditDetails.snapshotFingerprint || null,
       registeredCountHome: latestRosterAuditDetails.registeredCountHome ?? null,
       deregisteredCountHome: latestRosterAuditDetails.deregisteredCountHome ?? null,
       registeredCountAway: latestRosterAuditDetails.registeredCountAway ?? null,
@@ -4246,7 +4286,7 @@ async function handleAdminV3Overview(request, env, cors) {
           nextCheckAt: probableStarterNextCheckAt
         }
       }),
-      roster: deriveV3PhaseStatus({ phase: "roster", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, snapshot: canonicalRosterSnapshot, noticeState: rosterDiagnostics.noticeState }),
+      roster: deriveV3PhaseStatus({ phase: "roster", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, snapshot: canonicalRosterSnapshot, noticeState: rosterDiagnostics.noticeState, sourceSnapshotComparison: rosterDiagnostics.sourceSnapshotComparison }),
       prediction_close: deriveV3PhaseStatus({ phase: "prediction_close", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows }),
       lineup_fetch: deriveV3PhaseStatus({ phase: "lineup_fetch", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows }),
       lineup_finalize: deriveV3PhaseStatus({ phase: "lineup_finalize", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows }),
@@ -8993,6 +9033,7 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
     ? await env.AUTH_DB.prepare("SELECT game_id, game_date, captured_at, source, status, player_count, roster_json FROM game_roster_snapshots WHERE internal_game_id = ?1 ORDER BY updated_at DESC, captured_at DESC LIMIT 1").bind(storage.internalGameId).first()
     : await env.AUTH_DB.prepare("SELECT game_id, roster_json FROM game_roster_snapshots WHERE game_id = ?1 LIMIT 1").bind(gameId).first();
   if (existing && !force && !isV3) return { status: "already_captured" };
+  let previousSnapshotComparison = null;
   try {
     const payload = await fetchNpbWorkerJson(env, { mode: "roster" });
     const roster = normalizeRosterForSnapshot(payload.players);
@@ -9007,6 +9048,18 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
         gameDate: identity.game.date,
         homeTeam: identity.game.homeTeam,
         awayTeam: identity.game.awayTeam
+      })
+      : null;
+    const sourceFetchedAt = String((isV3 ? noticePayload?.fetchedAt : payload.fetchedAt) || payload.fetchedAt || now.toISOString());
+    previousSnapshotComparison = existing?.roster_json
+      ? compareV3RosterSourceSnapshot({
+        sourceRoster: roster,
+        snapshotRoster: parseJsonArray(existing.roster_json),
+        sourceDate: noticePayload?.pageDate || null,
+        sourceFetchedAt,
+        snapshotCapturedAt: existing.captured_at || null,
+        sourceFingerprint: rosterFingerprint(roster),
+        snapshotFingerprint: rosterFingerprint(parseJsonArray(existing.roster_json))
       })
       : null;
     if (isV3 && (payload?.stale || noticePayload?.stale)) {
@@ -9037,13 +9090,31 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
       };
       throw error;
     }
-    const capturedAt = String((isV3 ? noticePayload?.fetchedAt : payload.fetchedAt) || payload.fetchedAt || now.toISOString());
+    const capturedAt = sourceFetchedAt;
     const rosterJson = JSON.stringify(roster);
     const previousRosterJson = existing;
     const unchanged = Boolean(previousRosterJson?.roster_json && rosterFingerprint(parseJsonArray(previousRosterJson.roster_json)) === rosterFingerprint(roster));
     if (unchanged && !isV3) {
       if (!isV3) await updateRosterFetchState(env.AUTH_DB, gameId, now, { source, success: true, pregame, pregameMarker, fetchSlot });
-      return { status: "unchanged", playerCount: roster.length, capturedAt, roster, unchanged: true };
+      return {
+        status: "unchanged",
+        playerCount: roster.length,
+        capturedAt,
+        roster,
+        unchanged: true,
+        sourceFingerprint: rosterFingerprint(roster),
+        snapshotFingerprint: rosterFingerprint(roster),
+        sourceSnapshotComparison: compareV3RosterSourceSnapshot({
+          sourceRoster: roster,
+          snapshotRoster: roster,
+          sourceDate: noticePayload?.pageDate || null,
+          sourceFetchedAt,
+          snapshotCapturedAt: capturedAt,
+          sourceFingerprint: rosterFingerprint(roster),
+          snapshotFingerprint: rosterFingerprint(roster)
+        }),
+        previousSnapshotComparison
+      };
     }
     // V3 owns a UUID-keyed snapshot row. Older legacy-keyed rows are historical only.
     const snapshotGameId = isV3 ? storage.internalGameId : gameId;
@@ -9078,6 +9149,18 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
       snapshotGameDate: identity.game.date,
       snapshotInternalGameId: storage.internalGameId,
       snapshotFresh: isV3 ? true : null,
+      sourceFingerprint: rosterFingerprint(roster),
+      snapshotFingerprint: rosterFingerprint(roster),
+      sourceSnapshotComparison: compareV3RosterSourceSnapshot({
+        sourceRoster: roster,
+        snapshotRoster: roster,
+        sourceDate: noticePayload?.pageDate || null,
+        sourceFetchedAt,
+        snapshotCapturedAt: capturedAt,
+        sourceFingerprint: rosterFingerprint(roster),
+        snapshotFingerprint: rosterFingerprint(roster)
+      }),
+      previousSnapshotComparison,
       sourceUrl: isV3 ? (noticePayload?.sourceUrl || payload?.sourceUrl || null) : (payload?.sourceUrl || null),
       httpStatus: isV3 ? Number(noticePayload?.httpStatus || noticePayload?.__fetchMeta?.httpStatus || 0) || null : Number(payload?.httpStatus || payload?.__fetchMeta?.httpStatus || 0) || null,
       parserResult: "valid",
@@ -9109,6 +9192,7 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
         sourceUrl: error?.upstreamUrl || error?.diagnostics?.sourceUrl || null,
         httpStatus: Number(error?.httpStatus || error?.upstreamStatus || error?.diagnostics?.httpStatus || 0) || null,
         parserResult: error?.diagnostics?.parserResult || "failed",
+        sourceSnapshotComparison: previousSnapshotComparison,
         rosterResolution: error.rosterResolution
       };
     }

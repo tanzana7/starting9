@@ -33,6 +33,6 @@ test("admin-v3はV3自動処理と競合する手動操作を画面から外す"
 });
 
 test("admin-v3のJavaScriptキャッシュバスターは公示整理版へ更新される", () => {
-  assert.match(page, /admin-v3\.js\?v=admin-v3-filter-games-fix-1/);
-  assert.match(page, /admin-v3\.css\?v=admin-v3-filter-games-fix-1/);
+  assert.match(page, /admin-v3\.js\?v=admin-v3-roster-source-snapshot-mismatch-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-v3-roster-source-snapshot-mismatch-1/);
 });

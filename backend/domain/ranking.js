@@ -51,6 +51,19 @@ export function getRankingResetDateBoundary(value) {
   }).format(date);
 }
 
+// Public ranking cutoffs use the same JST calendar-day boundary as the
+// existing non-destructive reset markers.
+export function getRankingCutoffBoundary(value) {
+  return getRankingResetDateBoundary(value);
+}
+
+export function getEffectiveRankingCutoffBoundary({ releaseCutoffAt = "", resetAt = "" } = {}) {
+  return [
+    getRankingCutoffBoundary(releaseCutoffAt),
+    getRankingCutoffBoundary(resetAt)
+  ].filter(Boolean).sort().at(-1) || "";
+}
+
 function formatCalendarDate(date) {
   return [
     date.getUTCFullYear(),

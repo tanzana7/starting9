@@ -1,4 +1,9 @@
-import { getRankingResetDateBoundary, toPublicRankingRow } from "../domain/ranking.js";
+import {
+  getEffectiveRankingCutoffBoundary,
+  getRankingCutoffBoundary,
+  getRankingResetDateBoundary,
+  toPublicRankingRow
+} from "../domain/ranking.js";
 import { DAILY_BEST_NINE_LIMIT, toPublicDailyBestNineRow } from "../domain/public-results.js";
 import { createV3Error } from "../../game-automation-v3.js";
 
@@ -94,7 +99,12 @@ export async function getRankingResetPreview(db, { periodType, periodKey, resetA
   };
 }
 
-export async function getPerfectAchieversForDate(db, { date, limit, offset }) {
+export async function getPerfectAchieversForDate(db, { date, limit, offset, releaseCutoffAt = "" }) {
+  const releaseCutoffBoundary = getRankingCutoffBoundary(releaseCutoffAt);
+  if (releaseCutoffBoundary && String(date || "") < releaseCutoffBoundary) {
+    return { rows: [], totalCount: 0 };
+  }
+
   const latestPredictions = `WITH latest_predictions AS (
     SELECT predictions.id, predictions.user_id, predictions.game_id, predictions.score, predictions.max_score,
            predictions.opponent_code, predictions.submitted_at, predictions.status, predictions.is_test_prediction,
@@ -291,14 +301,21 @@ function createRankingCteForPublishedPeriod(resetBoundary = "") {
   );
 }
 
-export async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt = null, endAt = null, periodType = null, periodKey = null, publishedOnly = false }) {
+function resolveRankingCutoffBoundary(marker, releaseCutoffAt = "") {
+  return getEffectiveRankingCutoffBoundary({
+    releaseCutoffAt,
+    resetAt: marker?.reset_at || ""
+  });
+}
+
+export async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt = null, endAt = null, periodType = null, periodKey = null, publishedOnly = false, releaseCutoffAt = "" }) {
   const marker = periodType && periodKey ? await getActiveRankingResetMarker(db, { periodType, periodKey }) : null;
-  const resetBoundary = marker ? getRankingResetDateBoundary(marker.reset_at) : "";
-  const cte = publishedOnly ? createRankingCteForPublishedPeriod(resetBoundary) : createRankingCteForReset(resetBoundary);
-  const qualifiedParam = marker ? 4 : 3;
+  const cutoffBoundary = resolveRankingCutoffBoundary(marker, releaseCutoffAt);
+  const cte = publishedOnly ? createRankingCteForPublishedPeriod(cutoffBoundary) : createRankingCteForReset(cutoffBoundary);
+  const qualifiedParam = cutoffBoundary ? 4 : 3;
   const limitParam = qualifiedParam + 1;
   const offsetParam = qualifiedParam + 2;
-  const baseBindings = marker ? [startAt, endAt, resetBoundary] : [startAt, endAt];
+  const baseBindings = cutoffBoundary ? [startAt, endAt, cutoffBoundary] : [startAt, endAt];
   const [summaryRow, countRow, rowsResult] = await Promise.all([
     db.prepare(`${cte}
       SELECT COALESCE(MAX(eligible_games), 0) AS eligible_games,
@@ -340,12 +357,12 @@ export async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, st
   };
 }
 
-export async function getRankingEntryForUser(db, userId, { startAt = null, endAt = null, periodType = null, periodKey = null, publishedOnly = false } = {}) {
+export async function getRankingEntryForUser(db, userId, { startAt = null, endAt = null, periodType = null, periodKey = null, publishedOnly = false, releaseCutoffAt = "" } = {}) {
   const marker = periodType && periodKey ? await getActiveRankingResetMarker(db, { periodType, periodKey }) : null;
-  const resetBoundary = marker ? getRankingResetDateBoundary(marker.reset_at) : "";
-  const cte = publishedOnly ? createRankingCteForPublishedPeriod(resetBoundary) : createRankingCteForReset(resetBoundary);
-  const userParam = marker ? 4 : 3;
-  const bindings = marker ? [startAt, endAt, resetBoundary, userId] : [startAt, endAt, userId];
+  const cutoffBoundary = resolveRankingCutoffBoundary(marker, releaseCutoffAt);
+  const cte = publishedOnly ? createRankingCteForPublishedPeriod(cutoffBoundary) : createRankingCteForReset(cutoffBoundary);
+  const userParam = cutoffBoundary ? 4 : 3;
+  const bindings = cutoffBoundary ? [startAt, endAt, cutoffBoundary, userId] : [startAt, endAt, userId];
   const row = await db.prepare(`${cte}
     SELECT user_id, username, games_played, eligible_games, required_games, is_qualified, games_needed,
            total_score, (total_score * 1.0 / games_played) AS average_score,

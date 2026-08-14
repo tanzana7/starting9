@@ -6418,7 +6418,7 @@ async function handleGetPerfectAchieversRanking(request, env, cors) {
     return jsonResponse({ ok: false, error: options.error }, 400, cors);
   }
 
-  const achievers = await getPerfectAchieversForDate(env.AUTH_DB, options);
+  const achievers = await getPerfectAchieversForDate(env.AUTH_DB, { ...options, releaseCutoffAt: env.PUBLIC_RANKING_RELEASED_AT });
   const response = jsonResponse({
     ok: true,
     date: options.date,
@@ -6471,7 +6471,7 @@ async function handleGetYearlyRanking(request, env, cors) {
   if (!options.ok) {
     return jsonResponse({ ok: false, error: options.error }, 400, cors);
   }
-  const ranking = await getRankingForPeriod(env.AUTH_DB, options);
+  const ranking = await getRankingForPeriod(env.AUTH_DB, { ...options, releaseCutoffAt: env.PUBLIC_RANKING_RELEASED_AT });
   const response = jsonResponse({
     year: options.year,
     ranking: ranking.rows,
@@ -6491,7 +6491,7 @@ async function handleGetMyYearlyRanking(request, env, cors) {
   if (!options.ok) {
     return jsonResponse({ ok: false, error: options.error }, 400, cors);
   }
-  const rankingData = await getRankingEntryForUser(env.AUTH_DB, access.user.id, options);
+  const rankingData = await getRankingEntryForUser(env.AUTH_DB, access.user.id, { ...options, releaseCutoffAt: env.PUBLIC_RANKING_RELEASED_AT });
   return jsonResponse({ ok: true, year: options.year, rankingData }, 200, cors);
 }
 
@@ -6501,7 +6501,7 @@ async function handleGetMonthlyRanking(request, env, cors) {
     return jsonResponse({ ok: false, error: options.error }, 400, cors);
   }
 
-  const ranking = await getRankingForPeriod(env.AUTH_DB, options);
+  const ranking = await getRankingForPeriod(env.AUTH_DB, { ...options, releaseCutoffAt: env.PUBLIC_RANKING_RELEASED_AT });
   const response = jsonResponse({
     year: options.year,
     month: options.month,
@@ -6523,7 +6523,7 @@ async function handleGetMyMonthlyRanking(request, env, cors) {
     return jsonResponse({ ok: false, error: options.error }, 400, cors);
   }
 
-  const rankingData = await getRankingEntryForUser(env.AUTH_DB, access.user.id, options);
+  const rankingData = await getRankingEntryForUser(env.AUTH_DB, access.user.id, { ...options, releaseCutoffAt: env.PUBLIC_RANKING_RELEASED_AT });
   return jsonResponse({
     ok: true,
     year: options.year,
@@ -6538,7 +6538,7 @@ async function handleGetWeeklyRanking(request, env, cors) {
     return jsonResponse({ ok: false, error: options.error }, 400, cors);
   }
 
-  const ranking = await getRankingForPeriod(env.AUTH_DB, { ...options, publishedOnly: true });
+  const ranking = await getRankingForPeriod(env.AUTH_DB, { ...options, publishedOnly: true, releaseCutoffAt: env.PUBLIC_RANKING_RELEASED_AT });
   const response = jsonResponse({
     weekStart: options.weekStart,
     weekEnd: options.endAt,
@@ -6561,7 +6561,7 @@ async function handleGetMyWeeklyRanking(request, env, cors) {
   if (!options.ok) {
     return jsonResponse({ ok: false, error: options.error }, 400, cors);
   }
-  const rankingData = await getRankingEntryForUser(env.AUTH_DB, access.user.id, { ...options, publishedOnly: true });
+  const rankingData = await getRankingEntryForUser(env.AUTH_DB, access.user.id, { ...options, publishedOnly: true, releaseCutoffAt: env.PUBLIC_RANKING_RELEASED_AT });
   return jsonResponse({ ok: true, weekStart: options.weekStart, weekEnd: options.endAt, rankingData }, 200, cors);
 }
 

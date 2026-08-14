@@ -133,7 +133,7 @@ import {
   getV3RosterStatusDecision,
   deriveV3PhaseStatus,
   getV3NextAction,
-  getV3ProbableStarterSlots,
+  getV3ProbableStarterPollingSlots,
   getV3ProbableStarterSourceDate,
   getV3CanonicalRosterSnapshot,
   getV3RosterSnapshotFreshness,
@@ -1376,17 +1376,35 @@ function normalizeProbableStarterTeam(value) {
     : "";
 }
 
-function findProbableStarterGame(target, games) {
+export function findProbableStarterGame(target, games) {
   const expectedDate = String(target?.date || "");
   const expectedHome = normalizeProbableStarterTeam(target?.homeTeam);
   const expectedAway = normalizeProbableStarterTeam(target?.awayTeam);
   if (!expectedHome || !expectedAway) return null;
-  const exact = (Array.isArray(games) ? games : []).find((game) => {
+  const candidates = (Array.isArray(games) ? games : []).filter((game) => {
+    return !expectedDate || String(game?.date || "") === expectedDate;
+  });
+  const exact = candidates.find((game) => {
     return (!expectedDate || String(game?.date || "") === expectedDate)
       && normalizeProbableStarterTeam(game?.homeTeam) === expectedHome
       && normalizeProbableStarterTeam(game?.awayTeam) === expectedAway;
   });
-  return exact || null;
+  if (exact) return { ...exact, matchOrientation: "exact" };
+  const reversed = candidates.find((game) =>
+    normalizeProbableStarterTeam(game?.homeTeam) === expectedAway
+      && normalizeProbableStarterTeam(game?.awayTeam) === expectedHome
+  );
+  if (!reversed) return null;
+  return {
+    ...reversed,
+    homeTeam: expectedHome,
+    awayTeam: expectedAway,
+    homeTeamName: reversed.awayTeamName,
+    awayTeamName: reversed.homeTeamName,
+    homeStarter: reversed.awayStarter,
+    awayStarter: reversed.homeStarter,
+    matchOrientation: "reversed"
+  };
 }
 
 export function serializeProbableStarterRow(row) {
@@ -1636,6 +1654,7 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
     diagnostics.fetchedGameDate = matched?.date || null;
     diagnostics.fetchedHomeTeam = matched?.homeTeam || null;
     diagnostics.fetchedAwayTeam = matched?.awayTeam || null;
+    diagnostics.fetchedMatchOrientation = matched?.matchOrientation || null;
     diagnostics.fetchedNpbGameCode = matched?.npbGameCode || matched?.gameCode || matched?.npb_game_code || null;
     diagnostics.rawStatus = matched ? "announced" : "unannounced";
     diagnostics.rawDataStatus = diagnostics.rawStatus;
@@ -1660,7 +1679,7 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
     const normalizedFetchedAt = String(payload.fetchedAt || fetchedAt);
     const announcedAt = freshFullyAnnounced ? (previous?.announced_at || normalizedFetchedAt) : (previous?.announced_at || null);
     const nextFixedSlot = source === "v3"
-      ? getV3ProbableStarterSlots({ gameDate: target?.nextGameDate, startAt: target?.startAt })
+      ? getV3ProbableStarterPollingSlots({ gameDate: target?.nextGameDate, startAt: target?.startAt })
         .find((slot) => slot.getTime() > current.getTime())
       : null;
     const nextCheckAt = announced
@@ -1716,7 +1735,7 @@ async function runProbableStarterFetch(env, target, now, { source = "cron" } = {
   } catch (error) {
     const errorCode = String(error?.code || "PROBABLE_STARTER_FETCH_FAILED").slice(0, 80);
     const nextFixedSlot = source === "v3"
-      ? getV3ProbableStarterSlots({ gameDate: target?.nextGameDate, startAt: target?.startAt })
+      ? getV3ProbableStarterPollingSlots({ gameDate: target?.nextGameDate, startAt: target?.startAt })
         .find((slot) => slot.getTime() > current.getTime())
       : null;
     let nextCheckAt = new Date(current.getTime() + PROBABLE_STARTER_RETRY_INTERVAL_MS);
@@ -4154,7 +4173,7 @@ async function handleAdminV3Overview(request, env, cors) {
       severity: rosterStatusDecision.severity,
       label: rosterStatusDecision.label
     };
-    const probableSlots = getV3ProbableStarterSlots(game).map((slot) => slot.toISOString());
+    const probableSlots = getV3ProbableStarterPollingSlots(game).map((slot) => slot.toISOString());
     const probableJobSlots = new Set(jobRows
       .filter((job) => String(job.job_type || "") === "probable_starter_fetch")
       .map((job) => String(job.scheduled_slot_at || "")));
@@ -4164,10 +4183,18 @@ async function handleAdminV3Overview(request, env, cors) {
     const nextProbableSlot = missingDueProbableSlot
       || probableSlots.find((slot) => new Date(slot).getTime() > overviewNow.getTime() && !probableJobSlots.has(slot))
       || "";
-    const probableStarterNextCheckAt = serializedProbableStarter?.nextCheckAt
-      || probableStarterDiagnostics?.nextCheckAt
-      || nextProbableSlot
-      || null;
+    const probableStarterNextCandidates = [
+      serializedProbableStarter?.nextCheckAt,
+      probableStarterDiagnostics?.nextCheckAt,
+      nextProbableSlot
+    ]
+      .map((value) => new Date(value || ""))
+      .filter((value) => !Number.isNaN(value.getTime()) && value.getTime() > overviewNow.getTime())
+      .sort((left, right) => left.getTime() - right.getTime());
+    const probableStarterNextCheckAt = serializedProbableStarter?.dataStatus === "announced"
+      ? null
+      : probableStarterNextCandidates[0]?.toISOString() || null;
+    probableStarterDiagnostics.nextCheckAt = probableStarterNextCheckAt;
     const probableStarterActualJob = jobRows
       .filter((job) => String(job.job_type || "") === "probable_starter_fetch"
         && probableStarterNextCheckAt
@@ -4202,7 +4229,23 @@ async function handleAdminV3Overview(request, env, cors) {
     };
     const nextAction = getV3NextAction({ schedule, state: resolvedState.state, jobs: jobRows, now: overviewNow });
     const phaseStatuses = {
-      probable_starter: deriveV3PhaseStatus({ phase: "probable_starter", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, sourceStatus: currentProbableStarterDataStatus }),
+      probable_starter: deriveV3PhaseStatus({
+        phase: "probable_starter",
+        game,
+        now: overviewNow,
+        workflowState: resolvedState.state,
+        jobs: jobRows,
+        sourceStatus: currentProbableStarterDataStatus,
+        probableStarter: {
+          dataStatus: currentProbableStarterDataStatus,
+          status: probableStarterPayload?.status,
+          errorCode: currentProbableStarterErrorCode,
+          integrityErrorReason: probableStarterRowAudit.integrityErrorReason,
+          homePitcherName: serializedProbableStarter?.homePitcherName,
+          awayPitcherName: serializedProbableStarter?.awayPitcherName,
+          nextCheckAt: probableStarterNextCheckAt
+        }
+      }),
       roster: deriveV3PhaseStatus({ phase: "roster", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, snapshot: canonicalRosterSnapshot, noticeState: rosterDiagnostics.noticeState }),
       prediction_close: deriveV3PhaseStatus({ phase: "prediction_close", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows }),
       lineup_fetch: deriveV3PhaseStatus({ phase: "lineup_fetch", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows }),

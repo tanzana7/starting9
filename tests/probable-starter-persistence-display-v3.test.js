@@ -49,8 +49,24 @@ test("公開APIはadmin-v3と同じinternalGameId優先rowを返し、HTTP 200�
   assert.match(script, /status === "announced" && !hasAnyPitcher/);
 });
 
-test("予告先発候補はhome/away完全一致だけを採用し、逆向き候補を使わない", () => {
-  const findBlock = worker.slice(worker.indexOf("function findProbableStarterGame"), worker.indexOf("export function serializeProbableStarterRow"));
-  assert.match(findBlock, /return exact \|\| null/);
-  assert.doesNotMatch(findBlock, /const teams = new Set/);
+test("予告先発候補は公式ページのhome/away向きを対象試合へ正規化する", async () => {
+  const { findProbableStarterGame } = await import(pathToFileURL(workerPath));
+  const matched = findProbableStarterGame({
+    date: "2026-08-14",
+    homeTeam: "fighters",
+    awayTeam: "buffaloes"
+  }, [{
+    date: "2026-08-14",
+    homeTeam: "buffaloes",
+    awayTeam: "fighters",
+    homeTeamName: "オリックス・バファローズ",
+    awayTeamName: "北海道日本ハムファイターズ",
+    homeStarter: { name: "髙島 泰都" },
+    awayStarter: { name: "達 孝太" }
+  }]);
+  assert.equal(matched.matchOrientation, "reversed");
+  assert.equal(matched.homeTeam, "fighters");
+  assert.equal(matched.awayTeam, "buffaloes");
+  assert.equal(matched.homeStarter.name, "達 孝太");
+  assert.equal(matched.awayStarter.name, "髙島 泰都");
 });

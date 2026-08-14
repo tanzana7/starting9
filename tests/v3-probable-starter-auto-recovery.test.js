@@ -89,7 +89,7 @@ test("予告先発は前日18時と当日slotをJSTで安定生成する", () =>
   ]);
 });
 
-test("期限到達済みの最新未実行slotを1件だけ救済し、次slotを先取りしない", async () => {
+test("期限到達済みの最新未実行slotを1件だけ救済し、次の時間slotを先取りしない", async () => {
   const database = createDb();
   try {
     const db = d1(database);
@@ -100,7 +100,7 @@ test("期限到達済みの最新未実行slotを1件だけ救済し、次slot�
     const now = new Date("2026-08-07T01:17:00.000Z");
     const first = await v3.planV3ProbableStarterJobs(db, [game()], now);
     assert.equal(first.created, 1);
-    assert.equal(first.planned[0].job.scheduled_slot_at, "2026-08-07T00:00:00.000Z");
+    assert.equal(first.planned[0].job.scheduled_slot_at, "2026-08-07T01:00:00.000Z");
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE scheduled_slot_at = '2026-08-07T03:00:00.000Z'").get().count, 0);
     const second = await v3.planV3ProbableStarterJobs(db, [game()], now);
     assert.equal(second.created, 0);
@@ -135,7 +135,7 @@ test("古いslotのopen jobがある間は次slotを並列生成しない", asyn
     database.prepare("UPDATE game_jobs_v3 SET status = 'completed' WHERE internal_game_id = ?").run(GAME_ID);
     const resumed = await v3.planV3ProbableStarterJobs(db, [game()], now);
     assert.equal(resumed.created, 1);
-    assert.equal(resumed.planned[0].job.scheduled_slot_at, "2026-08-07T03:00:00.000Z");
+    assert.equal(resumed.planned[0].job.scheduled_slot_at, "2026-08-07T04:00:00.000Z");
   } finally {
     database.close();
   }

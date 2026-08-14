@@ -1,6 +1,6 @@
 import { V3_JOB_TYPE, V3_OPEN_JOB_STATUS_SQL } from "./constants.js";
 import {
-  getV3ProbableStarterSlots,
+  getV3ProbableStarterPollingSlots,
   isV3GameEligible,
   normalizeProbableStarterDataStatus,
   resolveCanonicalProbableStarterRow,
@@ -58,7 +58,7 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
       recordDiagnostic();
       continue;
     }
-    const generatedSlots = getV3ProbableStarterSlots(game);
+    const generatedSlots = getV3ProbableStarterPollingSlots(game);
     diagnostic.generatedSlots = generatedSlots.map((slot) => slot.toISOString());
     const slots = generatedSlots.filter((slot) => slot.getTime() <= current.getTime());
     diagnostic.dueSlots = slots.map((slot) => slot.toISOString());

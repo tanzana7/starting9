@@ -5923,12 +5923,13 @@ body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .r
   }
 
   body:not(:has(.app-layout.is-admin-screen)) .player-list {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
     grid-auto-rows: minmax(0, auto);
     min-width: 0;
     max-width: 100%;
-    max-height: none;
-    overflow: visible;
+    max-height: 560px;
+    overflow-y: auto;
+    overflow-x: clip;
     align-items: stretch;
   }
 }
@@ -5957,7 +5958,7 @@ body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .r
   }
 
   body:not(:has(.app-layout.is-admin-screen)) .player-list {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
     max-height: none;
     overflow: visible;
   }
@@ -6002,7 +6003,7 @@ body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .r
   }
 
   body:not(:has(.app-layout.is-admin-screen)) .player-list {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
     max-height: none;
     overflow: visible;
   }

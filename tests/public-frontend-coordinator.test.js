@@ -84,5 +84,5 @@ test("予想保存・リセット・アカウント同期は最新結果表示�
 
 test("公開画面のキャッシュバスターはmodule分割版へ更新される", () => {
   assert.match(html, /script\.js\?v=public-next-prediction-target-regression-1/);
-  assert.match(html, /style\.css\?v=public-results-below-prediction-layout-1/);
+  assert.match(html, /style\.css\?v=public-player-grid-two-columns-final-1/);
 });

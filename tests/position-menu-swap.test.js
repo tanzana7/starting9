@@ -94,10 +94,114 @@ test("選手を削除すると選手と守備位置を同時にクリアする",
 test("守備位置チップはPCでdrag可能で、未選択の?もswap対象になる", () => {
   const positionControl = getFunctionSource("createPositionControl");
   const dragStart = getFunctionSource("handlePositionDragStart");
-  assert.match(positionControl, /button\.draggable = shouldUseNativeDrag\(pickerName\)/);
+  const positionPointerDown = getFunctionSource("handlePositionPointerDown");
+  assert.match(positionControl, /button\.dataset\.picker = pickerName/);
+  assert.match(positionControl, /button\.dataset\.order = String\(index\)/);
+  assert.match(positionControl, /button\.addEventListener\("pointerdown"/);
+  assert.match(positionPointerDown, /event\.pointerType !== "mouse"/);
+  assert.match(positionPointerDown, /activateOnMove: true/);
   assert.doesNotMatch(dragStart, /if \(!position\)/);
   assert.match(dragStart, /kind: "position"/);
   assert.match(dragStart, /position,/);
+});
+
+test("実DOM風のpointerdown→pointermove→pointerupでposition chipだけがswapされる", () => {
+  class FakeClassList {
+    constructor() {
+      this.values = new Set();
+    }
+
+    add(...names) {
+      names.forEach((name) => this.values.add(name));
+    }
+
+    remove(...names) {
+      names.forEach((name) => this.values.delete(name));
+    }
+  }
+
+  class FakeElement extends EventTarget {
+    constructor(dataset) {
+      super();
+      this.dataset = dataset;
+      this.classList = new FakeClassList();
+      this.capturedPointerId = null;
+    }
+
+    setPointerCapture(pointerId) {
+      this.capturedPointerId = pointerId;
+    }
+
+    hasPointerCapture(pointerId) {
+      return this.capturedPointerId === pointerId;
+    }
+
+    releasePointerCapture(pointerId) {
+      if (this.capturedPointerId === pointerId) this.capturedPointerId = null;
+    }
+
+    closest() {
+      return this;
+    }
+  }
+
+  class FakeDocument extends EventTarget {
+    constructor(target) {
+      super();
+      this.target = target;
+    }
+
+    elementFromPoint() {
+      return this.target;
+    }
+
+    querySelectorAll(selector) {
+      return selector.includes('data-picker="prediction"') ? [source, target] : [];
+    }
+  }
+
+  const source = new FakeElement({ picker: "prediction", order: "0" });
+  const target = new FakeElement({ picker: "prediction", order: "1" });
+  const document = new FakeDocument(target);
+  let swap = null;
+  const context = vm.createContext({
+    document,
+    Element: FakeElement,
+    Date,
+    Math,
+    setTimeout,
+    clearTimeout,
+    state: { pointerInteraction: null, pointerSuppressClickUntil: 0 },
+    POINTER_DRAG_DISTANCE: 6,
+    POINTER_LONG_PRESS_MS: 500,
+    isPredictionEditingLocked: () => false,
+    movePositionBetweenSlots: (...args) => {
+      swap = args;
+    }
+  });
+  vm.runInContext(
+    `${getFunctionSource("handlePositionPointerDown")}; ${getFunctionSource("beginPointerInteraction")}; ${getFunctionSource("activatePointerInteraction")}; ${getFunctionSource("handlePointerInteractionMove")}; ${getFunctionSource("handlePointerInteractionEnd")}; ${getFunctionSource("handlePointerInteractionCancel")}; ${getFunctionSource("clearPointerInteraction")}; this.handlePositionPointerDown = handlePositionPointerDown; this.handlePointerInteractionMove = handlePointerInteractionMove; this.handlePointerInteractionEnd = handlePointerInteractionEnd;`,
+    context
+  );
+  source.addEventListener("pointerdown", (event) => context.handlePositionPointerDown(event, source));
+  document.addEventListener("pointermove", (event) => context.handlePointerInteractionMove(event));
+  document.addEventListener("pointerup", (event) => context.handlePointerInteractionEnd(event));
+
+  const pointerEvent = (type, values) => {
+    const event = new Event(type, { bubbles: true, cancelable: true });
+    Object.entries({ pointerId: 7, pointerType: "mouse", inputSource: "pointer", ...values }).forEach(([key, value]) => {
+      Object.defineProperty(event, key, { configurable: true, value });
+    });
+    return event;
+  };
+
+  source.dispatchEvent(pointerEvent("pointerdown", { clientX: 0, clientY: 0 }));
+  document.dispatchEvent(pointerEvent("pointermove", { clientX: 20, clientY: 0 }));
+  document.dispatchEvent(pointerEvent("pointerup", { clientX: 20, clientY: 0 }));
+
+  assert.deepEqual(swap, ["prediction", 0, 1]);
+  assert.equal(source.dataset.order, "0");
+  assert.equal(target.dataset.order, "1");
 });
 
 test("守備位置チップのdragは同じ行では変更せず、別行では選手名を維持してswapする", () => {

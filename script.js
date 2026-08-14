@@ -683,7 +683,10 @@ function createPositionControl(pickerName, index, slot) {
 
   button.className = "position-button is-empty";
   button.type = "button";
-  button.draggable = shouldUseNativeDrag(pickerName);
+  button.dataset.picker = pickerName;
+  button.dataset.order = String(index);
+  button.dataset.positionDnd = pickerName === "prediction" ? "true" : "false";
+  button.draggable = pickerName === "actual" && shouldUseNativeDrag(pickerName);
   button.textContent = "?";
   button.setAttribute("aria-label", `${index + 1}番の守備位置を選択`);
   button.setAttribute("aria-haspopup", "menu");
@@ -698,8 +701,11 @@ function createPositionControl(pickerName, index, slot) {
     }
     togglePositionMenu(menu, button, pickerName, index);
   });
-  button.addEventListener("dragstart", (event) => handlePositionDragStart(event, button, slot));
-  button.addEventListener("dragend", (event) => handlePositionDragEnd(event, button));
+  button.addEventListener("pointerdown", (event) => handlePositionPointerDown(event, button));
+  if (pickerName === "actual") {
+    button.addEventListener("dragstart", (event) => handlePositionDragStart(event, button, slot));
+    button.addEventListener("dragend", (event) => handlePositionDragEnd(event, button));
+  }
 
   menu.id = menuId;
   menu.className = "position-menu hidden";
@@ -975,8 +981,15 @@ function handleLineupPointerDown(event, slot) {
   beginPointerInteraction(event, slot, "lineup");
 }
 
-function beginPointerInteraction(event, element, kind) {
-  if (element.dataset.picker !== "prediction" || event.pointerType === "mouse" || isPredictionEditingLocked()) return;
+function handlePositionPointerDown(event, button) {
+  if (button.dataset.picker !== "prediction" || event.pointerType !== "mouse") return;
+  event.stopPropagation();
+  beginPointerInteraction(event, button, "position", { allowMouse: true, activateOnMove: true });
+}
+
+function beginPointerInteraction(event, element, kind, options) {
+  const { allowMouse = false, activateOnMove = false } = options || {};
+  if (element.dataset.picker !== "prediction" || (event.pointerType === "mouse" && !allowMouse) || isPredictionEditingLocked()) return;
   if (kind === "lineup" && event.target instanceof Element && event.target.closest("button, .position-menu")) return;
 
   clearPointerInteraction();
@@ -985,7 +998,7 @@ function beginPointerInteraction(event, element, kind) {
     element,
     kind,
     pickerName: element.dataset.picker,
-    sourceIndex: kind === "lineup" ? Number(element.dataset.order) : null,
+    sourceIndex: kind === "lineup" || kind === "position" ? Number(element.dataset.order) : null,
     player: element.dataset.player,
     startX: event.clientX,
     startY: event.clientY,
@@ -994,7 +1007,8 @@ function beginPointerInteraction(event, element, kind) {
     inputSource: event.inputSource || "pointer",
     pointerType: event.pointerType || "",
     activeTouchIdentifier: event.inputSource === "touch" ? event.pointerId : null,
-    timerId: setTimeout(() => activatePointerInteraction(interaction), POINTER_LONG_PRESS_MS)
+    activateOnMove,
+    timerId: activateOnMove ? null : setTimeout(() => activatePointerInteraction(interaction), POINTER_LONG_PRESS_MS)
   };
 
   state.pointerInteraction = interaction;
@@ -1025,9 +1039,13 @@ function handlePointerInteractionMove(event) {
   const distance = Math.hypot(event.clientX - interaction.startX, event.clientY - interaction.startY);
   if (!interaction.active) {
     if (distance > POINTER_DRAG_DISTANCE) {
-      clearPointerInteraction();
+      if (interaction.activateOnMove) {
+        activatePointerInteraction(interaction);
+      } else {
+        clearPointerInteraction();
+      }
     }
-    return;
+    if (!interaction.active) return;
   }
 
   event.preventDefault();
@@ -1057,6 +1075,8 @@ function handlePointerInteractionEnd(event) {
     if (Number.isInteger(targetIndex)) {
       if (interaction.kind === "lineup") {
         moveLineupSlot(interaction.pickerName, interaction.sourceIndex, targetIndex);
+      } else if (interaction.kind === "position") {
+        movePositionBetweenSlots(interaction.pickerName, interaction.sourceIndex, targetIndex);
       } else {
         assignPlayerToSlot(interaction.pickerName, interaction.player, targetIndex, null);
       }
@@ -3885,7 +3905,7 @@ function renderPicker(pickerName) {
     applyPlayerCategoryClass(slot, player);
     renderPositionButton(positionButton, position, index);
     positionButton.disabled = isLocked;
-    positionButton.draggable = shouldUseNativeDrag(pickerName) && Boolean(position) && !isLocked;
+    positionButton.draggable = pickerName === "actual" && shouldUseNativeDrag(pickerName) && Boolean(position) && !isLocked;
     clearButton.disabled = isLocked;
     clearButton.classList.toggle("hidden", !player);
     const dragHandle = slot.querySelector(".slot-drag-handle");

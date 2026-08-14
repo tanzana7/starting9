@@ -2760,6 +2760,14 @@ textarea:focus {
   cursor: grabbing;
 }
 
+.position-button[data-position-dnd="true"] {
+  cursor: grab;
+}
+
+.position-button[data-position-dnd="true"]:active {
+  cursor: grabbing;
+}
+
 .position-button.is-dragging {
   opacity: 0.62;
   box-shadow:

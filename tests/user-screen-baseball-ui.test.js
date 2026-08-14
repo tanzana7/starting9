@@ -99,7 +99,7 @@ test("公開画面の残り時間表示は公開用関数に分離され、管�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-remove-retired-admin-markup-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-scoreboard-ui-refresh-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],
@@ -117,6 +117,16 @@ test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、
   }
   assert.match(css, /#predictionForm > \.message,[\s\S]*grid-column: 1 \/ -1/);
   assert.match(css, /#predictionForm > #predictionEditor[\s\S]*grid-column: 1 \/ -1/);
+});
+
+test("公開画面はスコアボード風の落ち着いたテーマを使い、管理画面へ漏らさない", () => {
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \{/);
+  assert.match(css, /--fighters-deep-blue: #14213d/);
+  assert.match(css, /background: #f4f6f8/);
+  assert.match(css, /\.daily-best-nine-card[\s\S]*border-left-color: var\(--fighters-gold\)/);
+  assert.match(css, /\.ranking-tab\.is-active[\s\S]*background: var\(--fighters-deep-blue\)/);
+  assert.match(css, /\.ranking-achievement-badge\.is-epic[\s\S]*background: #fbf7e8/);
+  assert.doesNotMatch(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.admin-details\s*\{/);
 });
 
 test("PCのオーダー行は固定列と省略表示を使い、通知・操作領域はフォーム幅に揃える", () => {

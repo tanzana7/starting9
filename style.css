@@ -5501,3 +5501,368 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
     justify-self: end;
   }
 }
+
+/* 公開画面: 野球の記録表・スコアボードを意識した落ち着いた配色 */
+body:not(:has(.app-layout.is-admin-screen)) {
+  --fighters-blue: #1f3b5b;
+  --fighters-deep-blue: #14213d;
+  --fighters-sky: #eef1f4;
+  --fighters-gold: #b28704;
+  --text: #172033;
+  --muted: #667085;
+  --border: #d9dee7;
+  --surface: #ffffff;
+  --shadow: 0 2px 8px rgba(23, 32, 51, 0.06);
+  background: #f4f6f8;
+  color: var(--text);
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .app-header {
+  background: var(--fighters-deep-blue);
+  border-bottom: 4px solid var(--fighters-gold);
+  box-shadow: none;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .header-inner {
+  padding-top: 24px;
+  padding-bottom: 28px;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .team-label,
+body:not(:has(.app-layout.is-admin-screen)) .probable-starter-meta,
+body:not(:has(.app-layout.is-admin-screen)) .probable-starter-message {
+  color: #d5deea;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .lead {
+  border-left-color: #b28704;
+  color: #c8d3df;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .beta-panel {
+  border-color: #465b73;
+  color: #b9c7d6;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .game-info-display {
+  border-color: #526983;
+  border-radius: 4px;
+  color: #ffffff;
+  background: #1e395a;
+  box-shadow: none;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .auth-panel {
+  border-color: #405873;
+  border-radius: 4px;
+  background: #1b2f4a;
+  box-shadow: none;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) #authPanel .auth-button {
+  border-color: #71839a;
+  border-radius: 4px;
+  background: transparent;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) #authPanel .auth-button:hover,
+body:not(:has(.app-layout.is-admin-screen)) #authPanel .auth-button:focus-visible {
+  background: #29425f;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) #authPanel .auth-button.is-primary {
+  border-color: #d1ad4a;
+  color: #172033;
+  background: #d1ad4a;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .probable-starter-card {
+  border-color: #526983;
+  border-radius: 4px;
+  background: #223d5d;
+  box-shadow: none;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .probable-starter-card.is-success {
+  border-color: #78a98a;
+  background: #204b3a;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .probable-starter-card.is-error {
+  border-color: #d38c85;
+  background: #5a2c30;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .hero-panel {
+  border-color: #3d5874;
+  border-radius: 4px;
+  background: #1b2f4a;
+  box-shadow: none;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .hero-kicker {
+  color: #d6b458;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .hero-panel .hero-copy > p:last-child {
+  color: #c8d3df;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .hero-cta {
+  border-color: #d1ad4a;
+  border-radius: 4px;
+  color: #172033;
+  background: #d1ad4a;
+  box-shadow: none;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .hero-cta:hover,
+body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
+  background: #e0c36f;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .area-label,
+body:not(:has(.app-layout.is-admin-screen)) .ranking-heading h2,
+body:not(:has(.app-layout.is-admin-screen)) .ranking-qualified-section h3,
+body:not(:has(.app-layout.is-admin-screen)) .ranking-self h3 {
+  color: var(--fighters-deep-blue);
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .card,
+body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) > .card {
+  border-color: var(--border);
+  border-radius: 4px;
+  box-shadow: var(--shadow);
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .how-to-panel {
+  border-left-color: var(--fighters-gold);
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .daily-best-nine-card {
+  border-color: var(--border);
+  border-left-color: var(--fighters-gold);
+  border-radius: 4px;
+  background: #ffffff;
+  box-shadow: var(--shadow);
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .daily-best-nine-list li {
+  border-color: #e1d6ad;
+  border-radius: 3px;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .daily-best-nine-rank,
+body:not(:has(.app-layout.is-admin-screen)) .ranking-rank {
+  color: var(--fighters-gold);
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .daily-best-nine-badge {
+  border-radius: 3px;
+  color: #172033;
+  background: #d1ad4a;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .ranking-tabs {
+  border-color: #aeb8c5;
+  border-radius: 4px;
+  background: #f5f6f7;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .ranking-tab {
+  border-right-color: #aeb8c5;
+  color: #526276;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .ranking-tab.is-active {
+  color: #ffffff;
+  background: var(--fighters-deep-blue);
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .ranking-self {
+  border-color: #cfd6df;
+  border-left-color: var(--fighters-gold);
+  border-radius: 4px;
+  background: #f8f8f6;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .ranking-entry {
+  border-color: var(--border);
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .ranking-achievement-badge.is-rare {
+  border-color: #9cafc2;
+  color: #34516e;
+  background: #f1f4f7;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .ranking-achievement-badge.is-epic {
+  border-color: #d1bc77;
+  color: #765900;
+  background: #fbf7e8;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .ranking-achievement-badge.is-limited {
+  border-color: #d1bc77;
+  color: #765900;
+  background: #fbf7e8;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) input,
+body:not(:has(.app-layout.is-admin-screen)) select,
+body:not(:has(.app-layout.is-admin-screen)) textarea {
+  border-color: var(--border);
+  border-radius: 4px;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) input:focus,
+body:not(:has(.app-layout.is-admin-screen)) select:focus,
+body:not(:has(.app-layout.is-admin-screen)) textarea:focus {
+  border-color: var(--fighters-blue);
+  outline-color: rgba(178, 135, 4, 0.24);
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .primary-button,
+body:not(:has(.app-layout.is-admin-screen)) .secondary-button,
+body:not(:has(.app-layout.is-admin-screen)) .danger-button {
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .primary-button {
+  color: #ffffff;
+  background: var(--fighters-deep-blue);
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .primary-button:hover,
+body:not(:has(.app-layout.is-admin-screen)) .primary-button:focus-visible {
+  background: #1f3b5b;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .secondary-button {
+  border-color: #9aaabd;
+  color: var(--fighters-deep-blue);
+  background: #ffffff;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .secondary-button:hover,
+body:not(:has(.app-layout.is-admin-screen)) .secondary-button:focus-visible {
+  background: #f1f4f7;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .prediction-deadline-status {
+  padding: 8px 10px;
+  border-left: 3px solid var(--fighters-gold);
+  border-radius: 0 3px 3px 0;
+  background: #fbf7e8;
+  color: var(--fighters-deep-blue);
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .prediction-deadline-status.is-closed,
+body:not(:has(.app-layout.is-admin-screen)) .prediction-deadline-status.is-unavailable {
+  border-left-color: var(--error);
+  background: var(--error-bg);
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .lineup-card {
+  border-top-color: var(--fighters-gold);
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .lineup-panel,
+body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .player-panel {
+  border-color: var(--border);
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .lineup-slot.is-active {
+  border-color: #c8d2dd;
+  background: #f1f4f7;
+  box-shadow: inset 3px 0 0 var(--fighters-blue);
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .lineup-slot.is-drop-target {
+  border-color: #d1bc77;
+  background: #fbf7e8;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .roster-filter {
+  border-bottom-color: #c7d0db;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .roster-filter-button.is-selected {
+  border-color: transparent;
+  color: var(--fighters-deep-blue);
+  box-shadow: inset 0 -2px 0 var(--fighters-gold), 0 1px 3px rgba(23, 32, 51, 0.08);
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .position-button {
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .position-button.is-catcher {
+  color: #34516e;
+  background: #f1f4f7;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .position-button.is-infielder {
+  color: #765900;
+  background: #fbf7e8;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .position-button.is-outfielder {
+  color: #28613c;
+  background: #f1f7f2;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .position-button.is-dh {
+  color: #714c62;
+  background: #f7f0f3;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .position-button:hover,
+body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .position-button:focus-visible {
+  box-shadow: 0 0 0 3px rgba(178, 135, 4, 0.2);
+  filter: none;
+  transform: none;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .player-chip:hover,
+body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .player-chip:focus-visible {
+  border-color: #c5a84d;
+  background: #fbf7e8;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .result-card {
+  border-top-color: var(--fighters-deep-blue);
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .result-hero {
+  border-radius: 4px;
+  background: var(--fighters-deep-blue);
+}
+
+@media (max-width: 759px) {
+  body:not(:has(.app-layout.is-admin-screen)) .header-inner {
+    padding-top: 16px;
+    padding-bottom: 20px;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .ranking-tabs {
+    width: 100%;
+  }
+}
+
+@media (max-width: 430px) {
+  body:not(:has(.app-layout.is-admin-screen)) .ranking-tab {
+    min-width: 0;
+    padding-inline: 8px;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .game-info-display {
+    font-size: 1.18rem;
+  }
+}

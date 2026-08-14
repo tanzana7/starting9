@@ -132,8 +132,17 @@ test("予想オーダーの選手名と未選択表示はブロック型の選�
   assert.match(css, /@media \(max-width: 767px\)[\s\S]*#predictionLineup \.slot-player[\s\S]*min-height: 44px/);
 });
 
+test("PC/スマホの選手一覧もカード型で表示する", () => {
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list \.player-chip[\s\S]*min-height: 48px[\s\S]*padding: 9px 12px[\s\S]*border: 1px solid #c7d7e8[\s\S]*border-radius: 7px[\s\S]*background: #f7fbff/);
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list \.player-chip \.player-name[\s\S]*overflow-wrap: anywhere/);
+  assert.match(css, /@media \(max-width: 767px\)[\s\S]*\.player-list \.player-chip[\s\S]*min-height: 48px/);
+  assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(css, /@media \(max-width: 767px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list \.player-chip\.is-used[\s\S]*background: #eef2f6/);
+});
+
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-prediction-player-blocks-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-player-list-block-cards-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

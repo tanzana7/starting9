@@ -125,8 +125,15 @@ test("公開画面の残り時間表示は公開用関数に分離され、管�
   assert.doesNotMatch(script, /function formatAdminScoringRemainingTime|function formatRemainingTime/);
 });
 
+test("予想オーダーの選手名と未選択表示はブロック型の選択領域になる", () => {
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) #predictionLineup \.slot-player[\s\S]*min-height: 42px[\s\S]*padding: 7px 12px[\s\S]*border: 1px solid #c7d7e8[\s\S]*border-radius: 7px[\s\S]*background: #f7fbff/);
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) #predictionLineup \.slot-player\.slot-empty[\s\S]*border-style: dashed[\s\S]*background: #fbfcfd/);
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) #predictionLineup \.slot-player \.player-name[\s\S]*overflow-wrap: anywhere/);
+  assert.match(css, /@media \(max-width: 767px\)[\s\S]*#predictionLineup \.slot-player[\s\S]*min-height: 44px/);
+});
+
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-player-grid-two-columns-final-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-prediction-player-blocks-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

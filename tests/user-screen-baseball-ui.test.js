@@ -126,6 +126,7 @@ test("公開画面はスコアボード風の落ち着いたテーマを使い�
   assert.match(css, /\.daily-best-nine-card[\s\S]*border-left-color: var\(--fighters-gold\)/);
   assert.match(css, /\.ranking-tab\.is-active[\s\S]*background: var\(--fighters-deep-blue\)/);
   assert.match(css, /\.ranking-achievement-badge\.is-epic[\s\S]*background: #fbf7e8/);
+  assert.match(css, /\.achievement-card\.is-epic \.achievement-icon[\s\S]*color: #d6b458/);
   assert.doesNotMatch(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.admin-details\s*\{/);
 });
 

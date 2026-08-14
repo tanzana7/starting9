@@ -5559,6 +5559,16 @@ body:not(:has(.app-layout.is-admin-screen)) .auth-panel {
   box-shadow: none;
 }
 
+body:not(:has(.app-layout.is-admin-screen)) .achievement-card.is-rare .achievement-icon,
+body:not(:has(.app-layout.is-admin-screen)) .achievement-card.is-rare .achievement-rarity {
+  color: #b7c9da;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .achievement-card.is-epic .achievement-icon,
+body:not(:has(.app-layout.is-admin-screen)) .achievement-card.is-epic .achievement-rarity {
+  color: #d6b458;
+}
+
 body:not(:has(.app-layout.is-admin-screen)) #authPanel .auth-button {
   border-color: #71839a;
   border-radius: 4px;

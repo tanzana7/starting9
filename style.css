@@ -3255,7 +3255,9 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-name {
 .result-player-name {
   display: inline-block;
   box-sizing: border-box;
-  max-width: 100%;
+  width: 132px;
+  min-width: 132px;
+  max-width: 132px;
   padding: 3px 7px;
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -3292,8 +3294,8 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-name {
 }
 
 .result-player-card .result-player-name {
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: 0 0 132px;
+  min-width: 132px;
   border: 0;
   border-radius: 0;
 }
@@ -3730,6 +3732,17 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-name {
 
   .result-table .result-player-cell {
     min-width: 108px;
+  }
+
+  .result-player-name {
+    width: 112px;
+    min-width: 112px;
+    max-width: 112px;
+  }
+
+  .result-player-card .result-player-name {
+    flex-basis: 112px;
+    min-width: 112px;
   }
 }
 

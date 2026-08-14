@@ -6111,29 +6111,21 @@ body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip .player-na
   white-space: normal;
 }
 
+body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip.is-category-catcher,
+body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip.is-category-infielder,
+body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip.is-category-outfielder,
+body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip.is-category-dh {
+  border-color: #c7d7e8;
+  background: #f7fbff;
+}
+
 body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip.is-used {
   border-color: #d2dce6;
   background: #eef2f6;
 }
 
-body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip.is-category-catcher {
-  border-color: #c8ddea;
-  background: #f3f8fc;
-}
-
-body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip.is-category-infielder {
-  border-color: #e9dfae;
-  background: #fdf9e9;
-}
-
-body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip.is-category-outfielder {
-  border-color: #c8ddcd;
-  background: #f3f9f4;
-}
-
-body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip.is-category-dh {
-  border-color: #e3c9d9;
-  background: #fcf6fa;
+body:not(:has(.app-layout.is-admin-screen)) .player-category-legend {
+  display: none;
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip:hover,

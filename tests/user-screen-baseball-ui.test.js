@@ -141,8 +141,14 @@ test("PC/スマホの選手一覧もカード型で表示する", () => {
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list \.player-chip\.is-used[\s\S]*background: #eef2f6/);
 });
 
+test("公開予想画面の選手カードは主ポジション色を使わず中立表示にする", () => {
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list \.player-chip\.is-category-catcher,[\s\S]*\.player-chip\.is-category-infielder,[\s\S]*\.player-chip\.is-category-outfielder,[\s\S]*\.player-chip\.is-category-dh[\s\S]*border-color: #c7d7e8[\s\S]*background: #f7fbff/);
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-category-legend[\s\S]*display: none/);
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list \.player-chip\.is-used[\s\S]*background: #eef2f6/);
+});
+
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-player-list-block-cards-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-neutral-player-cards-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

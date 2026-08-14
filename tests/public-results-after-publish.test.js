@@ -60,6 +60,6 @@ test("公開結果は予想入力状態から独立して保持し、履歴一�
 });
 
 test("通常画面の公開結果修正は新しいcache busterを使う", () => {
-  assert.match(html, /style\.css\?v=public-responsive-layout-1/);
+  assert.match(html, /style\.css\?v=public-player-list-two-columns-1/);
   assert.match(html, /script\.js\?v=public-next-prediction-target-regression-1/);
 });

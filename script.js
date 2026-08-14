@@ -3318,7 +3318,7 @@ function setLineupValues(pickerName, lineup) {
 
 function createLineupItem(index, player, position) {
   const normalizedPlayer = player ? normalizePlayerName(player) : "";
-  const normalizedPosition = normalizedPlayer && position ? normalizePosition(position) : "";
+  const normalizedPosition = position ? normalizePosition(position) : "";
 
   return {
     order: index + 1,

@@ -212,16 +212,16 @@ test("守備位置チップのdragは同じ行では変更せず、別行では�
   const lineup = [
     { player: "レイエス", position: "指" },
     { player: "郡司裕也", position: "三" },
-    { player: "未選択", position: "" }
+    { player: "", position: "" }
   ];
   const sameRow = JSON.parse(JSON.stringify(runLineupFunction("moveLineupPosition", lineup, 0, 0)));
   assert.deepEqual(sameRow.slice(0, 3), lineup.map((item, index) => ({ order: index + 1, ...item })));
   const swapped = JSON.parse(JSON.stringify(runLineupFunction("moveLineupPosition", lineup, 0, 1)));
   assert.deepEqual(swapped.slice(0, 3).map((item) => item.position), ["三", "指", ""]);
-  assert.deepEqual(swapped.slice(0, 3).map((item) => item.player), ["レイエス", "郡司裕也", "未選択"]);
+  assert.deepEqual(swapped.slice(0, 3).map((item) => item.player), ["レイエス", "郡司裕也", ""]);
   const emptySwap = JSON.parse(JSON.stringify(runLineupFunction("moveLineupPosition", lineup, 0, 2)));
   assert.deepEqual(emptySwap.slice(0, 3).map((item) => item.position), ["", "三", "指"]);
-  assert.deepEqual(emptySwap.slice(0, 3).map((item) => item.player), ["レイエス", "郡司裕也", "未選択"]);
+  assert.deepEqual(emptySwap.slice(0, 3).map((item) => item.player), ["レイエス", "郡司裕也", ""]);
 });
 
 test("別選手を設定すると前の選手の守備位置を引き継がない", () => {

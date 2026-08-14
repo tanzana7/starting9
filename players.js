@@ -322,6 +322,20 @@ const players = [
     defaultPosition: null
   },
   {
+    name: "常谷拓輝",
+    uniformNumber: "95",
+    aliases: ["常谷", "常谷拓輝", "常谷 拓輝", "常谷　拓輝", "ツネヤ ヒロキ", "ツネヤヒロキ"],
+    registeredPosition: "内野手",
+    playerType: "batter",
+    isBatterCandidate: true,
+    isActiveRoster: false,
+    category: "infielder",
+    mainCategory: "infielder",
+    subCategory: null,
+    positions: ["二", "遊", "三"],
+    defaultPosition: null
+  },
+  {
     name: "西川遥輝",
     uniformNumber: "7",
     aliases: ["西川", "西川遥", "西川遥輝", "西川 遥輝", "西川　遥輝"],

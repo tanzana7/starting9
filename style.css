@@ -6257,3 +6257,54 @@ body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip:focus-visi
     padding: 9px 12px;
   }
 }
+
+/* Experimental mobile prediction layout: keep the order and roster visible side by side. */
+@media (max-width: 767px) {
+  body:not(:has(.app-layout.is-admin-screen)) .lineup-builder {
+    grid-template-columns: minmax(0, 44fr) minmax(0, 56fr);
+    gap: 8px;
+    align-items: stretch;
+    width: 100%;
+    min-width: 0;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .lineup-panel,
+  body:not(:has(.app-layout.is-admin-screen)) .player-panel {
+    min-width: 0;
+    max-height: min(72vh, 620px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .lineup-panel,
+  body:not(:has(.app-layout.is-admin-screen)) .player-panel {
+    padding: 6px;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .slot-list,
+  body:not(:has(.app-layout.is-admin-screen)) .player-list {
+    min-width: 0;
+    width: 100%;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .player-list {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) #predictionLineup .slot-player,
+  body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip {
+    min-height: 44px;
+    padding: 8px 9px;
+  }
+}

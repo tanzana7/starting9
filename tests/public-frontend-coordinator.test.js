@@ -84,5 +84,5 @@ test("予想保存・リセット・アカウント同期は最新結果表示�
 
 test("公開画面のキャッシュバスターはmodule分割版へ更新される", () => {
   assert.match(html, /script\.js\?v=public-position-chip-dnd-fix-1/);
-  assert.match(html, /style\.css\?v=public-position-chip-dnd-fix-1/);
+  assert.match(html, /style\.css\?v=public-mobile-two-pane-prediction-trial-1/);
 });

@@ -133,11 +133,16 @@ test("保存済み予想の表示は対象試合単位で、保存処理と既�
 test("スマホでも選択UIを追加せず、補助表示と既存導線を維持する", () => {
   assert.doesNotMatch(css, /public-game-picker/);
   assert.match(css, /\.public-game-selection-meta \{[\s\S]*font-size: 0\.82rem/);
+  assert.match(script, /function getPublicPredictionGameMetaLines\(game\)/);
+  assert.match(script, /public-game-meta-date/);
+  assert.match(script, /public-game-meta-matchup/);
+  assert.match(script, /public-game-meta-status/);
+  assert.match(css, /@media \(max-width: 767px\)[\s\S]*#publicGameSelectionMeta \{[\s\S]*display: grid;[\s\S]*font-size: 0\.76rem/);
 });
 
 test("公開画面のJS/CSS cache busterを更新する", () => {
-  assert.match(html, /style\.css\?v=public-mobile-drag-ghost-sticky-player-header-1/);
-  assert.match(html, /script\.js\?v=public-mobile-drag-ghost-sticky-player-header-1/);
+  assert.match(html, /style\.css\?v=public-mobile-compact-game-meta-1/);
+  assert.match(html, /script\.js\?v=public-mobile-compact-game-meta-1/);
 });
 
 test("受付可能なcanonical対象がない場合は入力面を隠し、自然な案内を表示する", () => {

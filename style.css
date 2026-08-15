@@ -6399,3 +6399,39 @@ body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip:focus-visi
     padding: 8px 9px;
   }
 }
+
+/* Keep the mobile game context compact so the prediction panes start sooner. */
+@media (max-width: 767px) {
+  body:not(:has(.app-layout.is-admin-screen)) .lineup-card {
+    padding: 10px 12px;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .lineup-card .section-heading {
+    gap: 4px;
+    margin-bottom: 6px;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .lineup-card .section-heading p {
+    font-size: 0.74rem;
+    line-height: 1.35;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) #publicGameSelectionMeta {
+    display: grid;
+    gap: 1px;
+    min-height: 0;
+    margin: -4px 0 5px;
+    font-size: 0.76rem;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) #publicGameSelectionMeta .public-game-meta-line {
+    display: block;
+    min-width: 0;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .lineup-builder {
+    gap: 6px;
+  }
+}

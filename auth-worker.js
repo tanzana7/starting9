@@ -8011,6 +8011,7 @@ export function buildPublicGameDayRosterResponse({ internalGameId = "", gameDate
     internalGameId,
     gameDate,
     status: players.length ? "captured" : "pending",
+    displayRosterSource: players.length ? "fresh_snapshot" : null,
     capturedAt: players.length ? snapshot?.captured_at || null : null,
     playerCount: players.length,
     players
@@ -8050,6 +8051,7 @@ export function buildPublicBaselineRosterResponse({ internalGameId = "", gameDat
     internalGameId,
     gameDate,
     status: players.length ? "baseline" : "pending",
+    displayRosterSource: players.length ? "latest_official_snapshot" : null,
     capturedAt: players.length ? snapshot?.captured_at || null : null,
     usableUntil: players.length ? usableUntil : null,
     playerCount: players.length,

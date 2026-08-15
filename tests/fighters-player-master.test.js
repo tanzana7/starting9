@@ -33,6 +33,7 @@ test("柴田獅子はF-31・DH・非アクティブとして公開masterに存�
   assert.match(publicPlayers, /name:\s*"柴田獅子"[\s\S]*?uniformNumber:\s*"31"/);
   assert.match(publicPlayers, /name:\s*"柴田獅子"[\s\S]*?registeredPosition:\s*"DH"/);
   assert.match(publicPlayers, /name:\s*"柴田獅子"[\s\S]*?isActiveRoster:\s*false/);
+  assert.match(publicPlayers, /name:\s*"柴田獅子"[\s\S]*?predictionCandidateRole:\s*"fielder"/);
   assert.match(publicPlayers, /name:\s*"柴田獅子"[\s\S]*?positions:\s*\["指"\]/);
 });
 

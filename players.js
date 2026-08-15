@@ -343,6 +343,7 @@ const players = [
     playerType: "batter",
     isBatterCandidate: true,
     isActiveRoster: false,
+    predictionCandidateRole: "fielder",
     category: "dh",
     mainCategory: "dh",
     subCategory: null,

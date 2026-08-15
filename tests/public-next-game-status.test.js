@@ -141,8 +141,8 @@ test("スマホでも選択UIを追加せず、補助表示と既存導線を維
 });
 
 test("公開画面のJS/CSS cache busterを更新する", () => {
-  assert.match(html, /style\.css\?v=public-player-tabs-registered-fielders-other-sachiya-1/);
-  assert.match(html, /script\.js\?v=public-player-tabs-registered-fielders-other-sachiya-1/);
+  assert.match(html, /style\.css\?v=public-player-tabs-active-other-sachiya-yazawa-1/);
+  assert.match(html, /script\.js\?v=public-player-tabs-active-other-sachiya-yazawa-1/);
 });
 
 test("受付可能なcanonical対象がない場合は入力面を隠し、自然な案内を表示する", () => {

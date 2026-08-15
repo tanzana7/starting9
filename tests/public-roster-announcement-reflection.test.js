@@ -102,7 +102,7 @@ test("freshなV3 roster snapshotは公示変更なしでも通常画面候補と
   assert.equal("source" in response, false);
 });
 
-test("矢澤は投手sourceでも登録野手、山﨑福也は特殊DHとしてその他に分類する", () => {
+test("矢澤は投手sourceでも出場候補、山﨑福也は特殊DHとしてその他に分類する", () => {
   const { isRegisteredFielderCandidate } = createRosterFilterHelpers({
     players: [{ name: "矢澤宏太", number: "12", position: "投手" }, { name: "山﨑福也", number: "18", position: "投手" }]
   });

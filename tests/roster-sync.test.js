@@ -99,14 +99,14 @@ test("空白表記を正規化し、前回成功スナップショットを一�
   assert.equal(isRosterSnapshotFresh({ fetchedAt: "2026-07-21T07:59:59.000Z" }, now), false);
 });
 
-test("現在状態テキストを出さず、最新スナップショットで登録野手・その他を絞り込む", () => {
+test("現在状態テキストを出さず、最新スナップショットで出場候補・その他を絞り込む", () => {
   const chip = getFunctionSource("createPlayerChip");
   assert.match(publicRoster, /deps\.isPlayerInCurrentRoster\(player\)/);
   assert.match(publicRoster, /isRegisteredFielderCandidate/);
   assert.match(publicRoster, /player\?\.isBatterCandidate === true/);
   assert.match(publicRoster, /candidateRosterFilter/);
   assert.match(publicRoster, /data-roster-filter/);
-  assert.match(html, /data-roster-filter="active"[^>]*>登録野手/);
+  assert.match(html, /data-roster-filter="active"[^>]*>出場候補/);
   assert.match(html, /data-roster-filter="inactive"[^>]*>その他/);
   assert.doesNotMatch(html, />登録済み</);
   assert.doesNotMatch(html, />未登録</);
@@ -115,7 +115,7 @@ test("現在状態テキストを出さず、最新スナップショットで�
   assert.doesNotMatch(script, /predictionRosterFilterCurrent|roster-status-badge/);
 });
 
-test("矢澤宏太は投手の公式登録区分でもroster在籍時は登録野手候補として扱う", () => {
+test("矢澤宏太は投手の公式登録区分でもroster在籍時は出場候補として扱う", () => {
   assert.match(players, /name:\s*"矢澤宏太"[\s\S]*?registeredPosition:\s*"投手"/);
   assert.match(players, /name:\s*"矢澤宏太"[\s\S]*?predictionCandidateRole:\s*"fielder"/);
   assert.match(players, /name:\s*"矢澤宏太"[\s\S]*?isBatterCandidate:\s*true/);

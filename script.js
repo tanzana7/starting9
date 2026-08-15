@@ -572,7 +572,7 @@ function hasUsablePublicRosterForCurrentGame() {
     : Number.POSITIVE_INFINITY;
   return Boolean(
     roster
-    && ["fresh", "baseline", "stale", "fallback"].includes(roster.status)
+    && ["fresh", "baseline", "stale", "fallback", "attention"].includes(roster.status)
     && roster.internalGameId === internalGameId
     && (!gameDate || roster.gameDate === gameDate)
     && (roster.status !== "baseline" || baselineUsableUntil > Date.now())

@@ -29,11 +29,12 @@ test("常谷拓輝はスペース・カナを含む既存alias方式とF-背番�
   assert.equal(createFightersPlayerId(resolved.player?.uniformNumber), "F-95");
 });
 
-test("柴田獅子はF-31・DH・非アクティブとして公開masterに存在する", () => {
+test("柴田獅子はF-31・投手登録・DH候補・非アクティブとして公開masterに存在する", () => {
   assert.match(publicPlayers, /name:\s*"柴田獅子"[\s\S]*?uniformNumber:\s*"31"/);
-  assert.match(publicPlayers, /name:\s*"柴田獅子"[\s\S]*?registeredPosition:\s*"DH"/);
+  assert.match(publicPlayers, /name:\s*"柴田獅子"[\s\S]*?registeredPosition:\s*"投手"/);
   assert.match(publicPlayers, /name:\s*"柴田獅子"[\s\S]*?isActiveRoster:\s*false/);
   assert.match(publicPlayers, /name:\s*"柴田獅子"[\s\S]*?predictionCandidateRole:\s*"fielder"/);
+  assert.match(publicPlayers, /name:\s*"柴田獅子"[\s\S]*?predictionCandidateLabel:\s*"DH候補"/);
   assert.match(publicPlayers, /name:\s*"柴田獅子"[\s\S]*?positions:\s*\["指"\]/);
 });
 

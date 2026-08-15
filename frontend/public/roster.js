@@ -2,13 +2,32 @@
   const publicFrontend = window.Starting9Public = window.Starting9Public || {};
 
   function createPublicRosterController(deps) {
+    function getStoredRosterFallback(internalGameId, gameDate) {
+      const snapshot = typeof deps.getRosterSnapshotForCurrentGame === "function"
+        ? deps.getRosterSnapshotForCurrentGame()
+        : null;
+      const players = deps.normalizeRosterEntries(snapshot?.players);
+      if (!snapshot || snapshot.internalGameId !== internalGameId || (gameDate && snapshot.gameDate !== gameDate) || !players.length) {
+        return null;
+      }
+      return {
+        internalGameId,
+        gameDate: snapshot.gameDate || gameDate,
+        players,
+        status: "stale",
+        isLoading: true,
+        usableUntil: ""
+      };
+    }
+
     async function syncCurrentGameRoster() {
       const internalGameId = deps.getTargetInternalGameId();
       const gameDate = String(deps.state.predictionTargetGame?.date || "").slice(0, 10);
       const request = deps.requestGuard.begin("roster", { abort: true });
       const requestId = request.id;
       deps.setRosterRequestId(requestId);
-      deps.state.publicRoster = {
+      const storedFallback = getStoredRosterFallback(internalGameId, gameDate);
+      deps.state.publicRoster = storedFallback || {
         internalGameId,
         gameDate,
         status: "pending",
@@ -29,10 +48,13 @@
 
       deps.state.publicRoster.isLoading = false;
       if (gameSnapshot.ok && gameSnapshot.internalGameId === internalGameId && gameSnapshot.players.length) {
+        const snapshotStatus = ["baseline", "stale", "fallback"].includes(gameSnapshot.status)
+          ? gameSnapshot.status
+          : "fresh";
         deps.state.publicRoster = {
           internalGameId,
           gameDate: gameSnapshot.gameDate || gameDate,
-          status: gameSnapshot.status === "baseline" ? "baseline" : "fresh",
+          status: snapshotStatus,
           players: deps.normalizeRosterEntries(gameSnapshot.players),
           isLoading: false,
           usableUntil: gameSnapshot.usableUntil || ""
@@ -52,6 +74,11 @@
           announcedCount: gameSnapshot.players.length,
           players: gameSnapshot.players
         });
+      } else if (storedFallback) {
+        deps.state.publicRoster = {
+          ...storedFallback,
+          isLoading: false
+        };
       }
       deps.syncPublicAppState();
       deps.renderPicker("prediction");
@@ -61,6 +88,8 @@
     function renderPredictionRosterFilter() {
       const filter = deps.state.candidateRosterFilter === "inactive" ? "inactive" : "active";
       const publicRosterReady = deps.hasUsablePublicRosterForCurrentGame();
+      const rosterStatus = String(deps.state.publicRoster?.status || "pending");
+      const hasFallbackRoster = ["baseline", "stale", "fallback"].includes(rosterStatus) && publicRosterReady;
       document.querySelectorAll("[data-roster-filter]").forEach((button) => {
         const isSelected = button.dataset.rosterFilter === filter;
         button.classList.toggle("is-selected", isSelected);
@@ -78,8 +107,13 @@
 
       const status = document.getElementById("predictionRosterStatus");
       if (status) {
-        status.textContent = publicRosterReady ? "" : "選手一覧を更新中です。しばらくしてから再度ご確認ください。";
-        status.classList.toggle("hidden", publicRosterReady);
+        const message = hasFallbackRoster
+          ? "選手情報の更新を確認中です。表示中の選手一覧は前回取得データの場合があります。"
+          : publicRosterReady
+            ? ""
+            : "選手情報を更新中です。選手一覧を取得できるまでお待ちください。";
+        status.textContent = message;
+        status.classList.toggle("hidden", !message);
       }
     }
 

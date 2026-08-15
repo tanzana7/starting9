@@ -194,6 +194,93 @@ test("同じcanonical UUIDのroster responseを受けると公開候補の再描
   assert.deepEqual(renderedNames, ["公開候補選手"]);
 });
 
+test("更新待ちでも同一試合の保存済みrosterを暫定表示し、警告を出す", async () => {
+  const context = vm.createContext({ window: { Starting9Public: {} } });
+  vm.runInContext(publicRoster, context);
+  const renderedNames = [];
+  const state = {
+    candidateRosterFilter: "active",
+    predictionTargetGame: { internalGameId, date: gameDate },
+    publicRoster: { internalGameId: "", gameDate: "", status: "pending", players: [] }
+  };
+  let requestId = 0;
+  const storedPlayers = [{ name: "前回取得選手", number: "12", position: "外野手" }];
+  const controller = context.window.Starting9Public.createPublicRosterController({
+    state,
+    requestGuard: {
+      begin: () => ({ id: ++requestId, signal: undefined }),
+      isCurrent: (_name, id) => id === requestId
+    },
+    getTargetInternalGameId: () => internalGameId,
+    getRosterRequestId: () => requestId,
+    setRosterRequestId: () => {},
+    getRosterSnapshotForCurrentGame: () => ({ internalGameId, gameDate, players: storedPlayers }),
+    syncPublicAppState: () => {},
+    renderPicker: () => renderedNames.push(...state.publicRoster.players.map((player) => player.name)),
+    renderPredictionDeadline: () => {},
+    fetchGameDayRosterSnapshot: async () => ({ ok: true, internalGameId, gameDate, status: "pending", players: [] }),
+    normalizeRosterEntries: (players) => players || [],
+    hasUsablePublicRosterForCurrentGame: () => state.publicRoster.status === "stale" && state.publicRoster.players.length > 0,
+    getPlayerData: () => null,
+    isPlayerInCurrentRoster: () => true
+  });
+
+  await controller.syncCurrentGameRoster();
+
+  assert.equal(state.publicRoster.status, "stale");
+  assert.deepEqual(state.publicRoster.players, storedPlayers);
+  assert.deepEqual(renderedNames, ["前回取得選手", "前回取得選手"]);
+  assert.match(publicRoster, /前回取得データの場合があります/);
+  assert.match(publicRoster, /選手情報を更新中です/);
+});
+
+test("stale fallbackは警告を表示しつつ候補chipを隠さない", () => {
+  const createElement = (dataset = {}) => ({
+    dataset,
+    classList: {
+      values: new Set(),
+      toggle(name, enabled) {
+        if (enabled) this.values.add(name);
+        else this.values.delete(name);
+      }
+    },
+    setAttribute() {},
+    textContent: "",
+    disabled: false
+  });
+  const activeButton = createElement({ rosterFilter: "active" });
+  const inactiveButton = createElement({ rosterFilter: "inactive" });
+  const chip = createElement({ picker: "prediction", player: "前回取得選手" });
+  const status = createElement();
+  const fakeDocument = {
+    querySelectorAll(selector) {
+      if (selector === "[data-roster-filter]") return [activeButton, inactiveButton];
+      if (selector === '.player-chip[data-picker="prediction"]') return [chip];
+      return [];
+    },
+    getElementById(id) {
+      return id === "predictionRosterStatus" ? status : null;
+    }
+  };
+  const context = vm.createContext({ document: fakeDocument, window: { Starting9Public: {} } });
+  vm.runInContext(publicRoster, context);
+  const controller = context.window.Starting9Public.createPublicRosterController({
+    state: {
+      candidateRosterFilter: "active",
+      publicRoster: { status: "stale", players: [{ name: "前回取得選手" }] }
+    },
+    hasUsablePublicRosterForCurrentGame: () => true,
+    getPlayerData: () => ({ isBatterCandidate: true }),
+    isPlayerInCurrentRoster: () => true
+  });
+
+  controller.renderPredictionRosterFilter();
+
+  assert.equal(chip.classList.values.has("hidden"), false);
+  assert.equal(status.classList.values.has("hidden"), false);
+  assert.match(status.textContent, /前回取得データの場合があります/);
+});
+
 test("公開試合カタログ確定後にbaseline roster取得を再実行し、初期化競合で更新中に固定されない", () => {
   const catalogStart = script.indexOf("async function initializePublicGameCatalog");
   const catalogEnd = script.indexOf("function isPublicGamePublished", catalogStart);
@@ -251,7 +338,7 @@ test("freshなcanonical rosterがない場合は静的isActiveRosterを候補へ
   ];
   vm.runInContext(`${names.map(getScriptFunctionSource).join("\n")}; this.result = isPlayerInCurrentRoster({ name: "古い選手", uniformNumber: "1", isActiveRoster: true });`, context);
   assert.equal(context.result, false);
-  assert.match(publicRoster, /選手一覧を更新中です/);
+  assert.match(publicRoster, /選手情報を更新中です/);
 });
 
 test("baselineは利用期限前だけ通常画面の候補として扱う", () => {

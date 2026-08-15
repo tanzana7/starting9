@@ -6247,6 +6247,48 @@ body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip:focus-visi
   box-shadow: 0 2px 6px rgba(25, 54, 82, 0.1);
 }
 
+.mobile-drag-ghost {
+  position: fixed;
+  z-index: 1001;
+  top: 0;
+  left: 0;
+  display: flex;
+  width: max-content;
+  max-width: min(70vw, 220px);
+  min-height: 44px;
+  align-items: center;
+  padding: 8px 12px;
+  border: 1px solid rgba(104, 116, 128, 0.72);
+  border-radius: 6px;
+  color: #34404c;
+  background: rgba(226, 231, 236, 0.9);
+  box-shadow: 0 5px 14px rgba(20, 46, 72, 0.18);
+  font-weight: 800;
+  pointer-events: none;
+  overflow-wrap: anywhere;
+  transform: translate3d(-9999px, -9999px, 0);
+}
+
+@media (max-width: 767px) {
+  .position-menu.is-mobile-position-menu {
+    position: fixed;
+    top: auto;
+    right: auto;
+    max-width: calc(100vw - 16px);
+  }
+
+  .app-layout:not(.is-admin-screen) #predictionLineup .slot-player,
+  .app-layout:not(.is-admin-screen) #predictionLineup .position-control,
+  .app-layout:not(.is-admin-screen) #predictionLineup .position-button {
+    min-height: 44px;
+  }
+
+  .app-layout:not(.is-admin-screen) #predictionLineup .position-control,
+  .app-layout:not(.is-admin-screen) #predictionLineup .position-button {
+    height: 44px;
+  }
+}
+
 @media (max-width: 767px) {
   body:not(:has(.app-layout.is-admin-screen)) .player-list {
     gap: 12px;

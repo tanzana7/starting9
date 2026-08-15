@@ -196,5 +196,5 @@ test("公示なしはUIを隠し、4xxはwarning、5xxまたは通信失敗だ�
 
 test("公開画面のmoduleとentry pointは同じcache busterを使う", () => {
   assert.match(html, /frontend\/public\/app-coordinator\.js\?v=public-scoreboard-ui-refresh-1/);
-  assert.match(html, /script\.js\?v=public-position-chip-dnd-fix-1/);
+  assert.match(html, /script\.js\?v=public-mobile-drag-ghost-position-menu-1/);
 });

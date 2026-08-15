@@ -6,9 +6,10 @@ import path from "node:path";
 const root = path.resolve(import.meta.dirname, "..");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
+const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 
 test("public mobile prediction layout keeps order and roster in two panes", () => {
-  assert.match(html, /style\.css\?v=public-mobile-prediction-slot-width-1/);
+  assert.match(html, /style\.css\?v=public-mobile-drag-ghost-position-menu-1/);
   assert.match(html, /class="lineup-builder"/);
   assert.match(html, /id="predictionLineup" class="slot-list"/);
   assert.match(html, /id="predictionPlayers" class="player-list"/);
@@ -22,6 +23,19 @@ test("public mobile prediction layout keeps order and roster in two panes", () =
   assert.match(css, /min-height: 44px/);
   assert.match(css, /grid-template-columns: 28px minmax\(0, 1fr\) 40px auto/);
   assert.match(css, /grid-template-areas: "order player position clear"/);
+});
+
+test("mobile drag feedback and position menu stay within the viewport", () => {
+  assert.match(script, /function createMobileDragGhost\(interaction\)/);
+  assert.match(script, /function updateMobileDragGhost\(interaction, clientX, clientY\)/);
+  assert.match(script, /function clearMobileDragGhost\(interaction\)/);
+  assert.match(script, /createMobileDragGhost\(interaction\)/);
+  assert.match(script, /clearMobileDragGhost\(interaction\)/);
+  assert.match(script, /function positionMobilePositionMenu\(menu, button\)/);
+  assert.match(script, /window\.innerWidth - menuRect\.width - viewportPadding/);
+  assert.match(css, /\.mobile-drag-ghost \{/);
+  assert.match(css, /\.position-menu\.is-mobile-position-menu \{/);
+  assert.match(css, /max-width: calc\(100vw - 16px\)/);
 });
 
 test("desktop public player list remains a two-column grid", () => {

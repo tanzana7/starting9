@@ -741,8 +741,29 @@ function togglePositionMenu(menu, button, pickerName, index) {
   if (shouldOpen) {
     updatePositionMenuState(menu, pickerName, index);
     menu.classList.remove("hidden");
+    positionMobilePositionMenu(menu, button);
     button.setAttribute("aria-expanded", "true");
   }
+}
+
+function positionMobilePositionMenu(menu, button) {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+  if (!window.matchMedia("(max-width: 767px)").matches) return;
+
+  menu.classList.add("is-mobile-position-menu");
+  const buttonRect = button.getBoundingClientRect();
+  const menuRect = menu.getBoundingClientRect();
+  const viewportPadding = 8;
+  const maxLeft = Math.max(viewportPadding, window.innerWidth - menuRect.width - viewportPadding);
+  const left = Math.min(Math.max(viewportPadding, buttonRect.left), maxLeft);
+  const preferredTop = buttonRect.bottom + 6;
+  const maxTop = window.innerHeight - menuRect.height - viewportPadding;
+  const top = maxTop >= viewportPadding
+    ? Math.min(preferredTop, maxTop)
+    : viewportPadding;
+
+  menu.style.left = `${Math.round(left)}px`;
+  menu.style.top = `${Math.round(Math.max(viewportPadding, top))}px`;
 }
 
 function updatePositionMenuState(menu, pickerName, index) {
@@ -807,6 +828,9 @@ function createPositionSelectionLineup(lineup, targetIndex, position) {
 function closeAllPositionMenus() {
   document.querySelectorAll(".position-menu").forEach((menu) => {
     menu.classList.add("hidden");
+    menu.classList.remove("is-mobile-position-menu");
+    menu.style.removeProperty("left");
+    menu.style.removeProperty("top");
   });
   document.querySelectorAll(".position-button").forEach((button) => {
     button.setAttribute("aria-expanded", "false");
@@ -1030,6 +1054,9 @@ function activatePointerInteraction(interaction) {
   interaction.active = true;
   interaction.element.classList.remove("is-pressing");
   interaction.element.classList.add("is-dragging");
+  if ((interaction.kind === "player" || interaction.kind === "lineup") && typeof createMobileDragGhost === "function") {
+    createMobileDragGhost(interaction);
+  }
   try {
     interaction.element.setPointerCapture(interaction.pointerId);
   } catch {
@@ -1054,6 +1081,9 @@ function handlePointerInteractionMove(event) {
   }
 
   event.preventDefault();
+  if (typeof updateMobileDragGhost === "function") {
+    updateMobileDragGhost(interaction, event.clientX, event.clientY);
+  }
   const target = document.elementFromPoint(event.clientX, event.clientY)?.closest(
     `.lineup-slot[data-picker="${interaction.pickerName}"]`
   );
@@ -1105,6 +1135,9 @@ function clearPointerInteraction() {
 
   clearTimeout(interaction.timerId);
   interaction.element.classList.remove("is-pressing", "is-dragging");
+  if (typeof clearMobileDragGhost === "function") {
+    clearMobileDragGhost(interaction);
+  }
   if (interaction.kind === "position" && interaction.nativeDragOwner) {
     interaction.nativeDragOwner.draggable = interaction.nativeDragOwner.dataset.positionParentDraggable === "true";
     delete interaction.nativeDragOwner.dataset.positionParentDraggable;
@@ -1120,6 +1153,36 @@ function clearPointerInteraction() {
     // Pointer capture cleanup is best effort.
   }
   state.pointerInteraction = null;
+}
+
+function createMobileDragGhost(interaction) {
+  if (interaction.pointerType !== "touch" || !interaction.player || typeof document === "undefined") return;
+
+  const ghost = document.createElement("div");
+  ghost.className = "mobile-drag-ghost";
+  ghost.textContent = interaction.player;
+  ghost.setAttribute("aria-hidden", "true");
+  document.body.appendChild(ghost);
+  interaction.ghost = ghost;
+  updateMobileDragGhost(interaction, interaction.startX, interaction.startY);
+}
+
+function updateMobileDragGhost(interaction, clientX, clientY) {
+  const ghost = interaction.ghost;
+  if (!ghost || typeof window === "undefined") return;
+
+  const viewportPadding = 8;
+  const maxLeft = Math.max(viewportPadding, window.innerWidth - ghost.offsetWidth - viewportPadding);
+  const maxTop = Math.max(viewportPadding, window.innerHeight - ghost.offsetHeight - viewportPadding);
+  const left = Math.min(Math.max(viewportPadding, clientX + 12), maxLeft);
+  const top = Math.min(Math.max(viewportPadding, clientY + 12), maxTop);
+  ghost.style.transform = `translate3d(${Math.round(left)}px, ${Math.round(top)}px, 0)`;
+}
+
+function clearMobileDragGhost(interaction) {
+  if (!interaction?.ghost) return;
+  interaction.ghost.remove();
+  interaction.ghost = null;
 }
 
 function createTouchPointerEvent(touch, sourceEvent) {

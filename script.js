@@ -1174,8 +1174,11 @@ function updateMobileDragGhost(interaction, clientX, clientY) {
   const viewportPadding = 8;
   const maxLeft = Math.max(viewportPadding, window.innerWidth - ghost.offsetWidth - viewportPadding);
   const maxTop = Math.max(viewportPadding, window.innerHeight - ghost.offsetHeight - viewportPadding);
-  const left = Math.min(Math.max(viewportPadding, clientX + 12), maxLeft);
-  const top = Math.min(Math.max(viewportPadding, clientY + 12), maxTop);
+  const ghostOffset = 40;
+  const preferredLeft = clientX - ghost.offsetWidth / 2;
+  const preferredTop = clientY - ghost.offsetHeight - ghostOffset;
+  const left = Math.min(Math.max(viewportPadding, preferredLeft), maxLeft);
+  const top = Math.min(Math.max(viewportPadding, preferredTop), maxTop);
   ghost.style.transform = `translate3d(${Math.round(left)}px, ${Math.round(top)}px, 0)`;
 }
 

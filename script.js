@@ -339,6 +339,7 @@ const publicRosterController = publicFrontend.createPublicRosterController({
   renderPredictionDeadline,
   fetchGameDayRosterSnapshot,
   normalizeRosterEntries,
+  getRosterSnapshotForCurrentGame,
   hasUsablePublicRosterForCurrentGame,
   getPlayerData,
   isPlayerInCurrentRoster
@@ -571,10 +572,10 @@ function hasUsablePublicRosterForCurrentGame() {
     : Number.POSITIVE_INFINITY;
   return Boolean(
     roster
-    && ["fresh", "baseline"].includes(roster.status)
+    && ["fresh", "baseline", "stale", "fallback"].includes(roster.status)
     && roster.internalGameId === internalGameId
     && (!gameDate || roster.gameDate === gameDate)
-    && baselineUsableUntil > Date.now()
+    && (roster.status !== "baseline" || baselineUsableUntil > Date.now())
     && roster.players.length
   );
 }

@@ -1743,6 +1743,15 @@ function formatPublicPredictionGameLabel(game) {
   return `${date.replace(/^(\d{4})-/, "$1/").replace(/-/, "/")} ${time} ${matchup}`.trim();
 }
 
+function getPublicPredictionGameMetaLines(game) {
+  const date = String(getScheduleDate(game) || "").replace(/^(\d{4})-/, "$1/").replace(/-/, "/");
+  const time = String(getScheduleStartTime(game) || "");
+  const dateTime = `${date} ${time}`.trim();
+  const label = formatPublicPredictionGameLabel(game);
+  const matchup = label.startsWith(dateTime) ? label.slice(dateTime.length).trim() : label;
+  return { dateTime, matchup: matchup || "対戦カード未定" };
+}
+
 function setPublicCurrentGame(nextGame) {
   const previousGame = state.predictionTargetGame;
   const previousId = String(state.predictionTargetGameId || previousGame?.internalGameId || "");
@@ -3764,10 +3773,19 @@ function renderPublicGameSelectionMeta() {
   const savedText = view.saved
     ? `保存済み${savedAt ? `（${formatPublicJstDateTime(savedAt)}）` : ""}`
     : "未保存";
-  const gameLabel = formatPublicPredictionGameLabel(selectedGame);
-  meta.textContent = deadline.status === "open"
-    ? `${gameLabel} ・ 予想締切: ${formatPublicJstDateTime(deadline.deadlineAt)} ・ ${savedText}`
-    : `${view.status} ・ ${savedText}`;
+  if (deadline.status === "open") {
+    const gameMeta = getPublicPredictionGameMetaLines(selectedGame);
+    const compactDeadline = formatPublicJstDateTime(deadline.deadlineAt)
+      .replace(/^\d{4}\//, "")
+      .replace(/^0/, "");
+    meta.innerHTML = `
+      <span class="public-game-meta-line public-game-meta-date">${escapeHtml(gameMeta.dateTime)}</span>
+      <span class="public-game-meta-line public-game-meta-matchup">${escapeHtml(gameMeta.matchup)}</span>
+      <span class="public-game-meta-line public-game-meta-status">予想締切: ${escapeHtml(compactDeadline)} ・ ${escapeHtml(savedText)}</span>
+    `;
+  } else {
+    meta.textContent = `${view.status} ・ ${savedText}`;
+  }
   renderPublicPredictionSurface(selectedGame);
 }
 

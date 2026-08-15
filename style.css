@@ -6300,6 +6300,31 @@ body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip:focus-visi
   }
 }
 
+/* Keep the roster heading and filter visible while only the player cards scroll. */
+@media (max-width: 767px) {
+  body:not(:has(.app-layout.is-admin-screen)) .player-panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    max-height: min(72vh, 620px);
+    overflow: hidden;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .player-list-heading,
+  body:not(:has(.app-layout.is-admin-screen)) .roster-filter {
+    flex: 0 0 auto;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .player-panel .player-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
+    overflow: hidden auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
 /* Experimental mobile prediction layout: keep the order and roster visible side by side. */
 @media (max-width: 767px) {
   body:not(:has(.app-layout.is-admin-screen)) .lineup-builder {

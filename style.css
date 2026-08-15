@@ -6464,3 +6464,48 @@ body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip:focus-visi
     font-size: 0.68rem;
   }
 }
+
+/* Keep mobile roster controls above an independent, scrollable card frame. */
+@media (max-width: 767px) {
+  body:not(:has(.app-layout.is-admin-screen)) .player-panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    overflow: hidden;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .player-list-heading,
+  body:not(:has(.app-layout.is-admin-screen)) .player-panel > .roster-filter,
+  body:not(:has(.app-layout.is-admin-screen)) .player-category-legend {
+    flex: 0 0 auto;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .player-list-frame {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 0;
+    padding: 2px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #ffffff;
+    overflow: hidden;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .player-list-frame .player-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
+    overflow: hidden auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .player-list-frame .message,
+  body:not(:has(.app-layout.is-admin-screen)) .player-list-frame .player-detail-panel {
+    flex: 0 0 auto;
+  }
+}

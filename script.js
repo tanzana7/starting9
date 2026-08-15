@@ -4573,10 +4573,10 @@ function showPlayerDetails(pickerName, playerName) {
 
   const npbasePlayerUrl = getNpbasePlayerUrl(player);
   const classification = isRegisteredFielderCandidate(player) ? "出場候補" : "その他";
+  const predictionCandidateLabel = getPredictionCandidateLabel(player, classification);
   const positions = createPlayerPositionBadgesHtml(player.name);
   panel.className = "player-detail-overlay";
   panel.setAttribute("aria-hidden", "false");
-  const mainCategory = player.mainCategory || player.category;
   panel.innerHTML = `
     <div class="player-detail-dialog" role="document">
       <div class="player-detail-header">
@@ -4588,8 +4588,8 @@ function showPlayerDetails(pickerName, playerName) {
       </div>
       <dl class="player-detail-meta">
         <div><dt>背番号</dt><dd>${escapeHtml(player.uniformNumber || "-")}</dd></div>
-        <div><dt>分類</dt><dd>${escapeHtml(classification)}</dd></div>
-        <div><dt>登録区分</dt><dd>${escapeHtml(playerCategoryNames[mainCategory] || player.registeredPosition || "未設定")}</dd></div>
+        <div><dt>登録区分</dt><dd>${escapeHtml(player.registeredPosition || "未設定")}</dd></div>
+        <div><dt>S9上の扱い</dt><dd>${escapeHtml(predictionCandidateLabel)}</dd></div>
       </dl>
       <div class="player-detail-positions">
         <strong>守備候補</strong>
@@ -4613,6 +4613,13 @@ function showPlayerDetails(pickerName, playerName) {
     closePlayerDetails();
   });
   panel.querySelector(".player-detail-close")?.focus();
+}
+
+function getPredictionCandidateLabel(player, classification = "その他") {
+  const explicitLabel = String(player?.predictionCandidateLabel || "").trim();
+  if (explicitLabel) return explicitLabel;
+  if (player?.predictionCandidateRole === "special_dh") return "特殊DH候補";
+  return classification;
 }
 
 function handlePlayerDetailsOverlayClick(event) {

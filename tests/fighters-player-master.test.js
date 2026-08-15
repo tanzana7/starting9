@@ -29,6 +29,24 @@ test("常谷拓輝はスペース・カナを含む既存alias方式とF-背番�
   assert.equal(createFightersPlayerId(resolved.player?.uniformNumber), "F-95");
 });
 
+test("柴田獅子はF-31・DH・非アクティブとして公開masterに存在する", () => {
+  assert.match(publicPlayers, /name:\s*"柴田獅子"[\s\S]*?uniformNumber:\s*"31"/);
+  assert.match(publicPlayers, /name:\s*"柴田獅子"[\s\S]*?registeredPosition:\s*"DH"/);
+  assert.match(publicPlayers, /name:\s*"柴田獅子"[\s\S]*?isActiveRoster:\s*false/);
+  assert.match(publicPlayers, /name:\s*"柴田獅子"[\s\S]*?positions:\s*\["指"\]/);
+});
+
+test("柴田獅子はスペース・カナを含むaliasとF-31で解決できる", () => {
+  for (const name of ["柴田", "柴田獅子", "柴田 獅子", "シバタ レオ", "シバタレオ"]) {
+    const player = findFightersPlayerByName(name);
+    assert.equal(player?.name, "柴田獅子", name);
+    assert.equal(player?.uniformNumber, "31");
+  }
+  const resolved = resolveFightersRosterEntry({ number: "31", name: "柴田 獅子" });
+  assert.equal(resolved.player?.name, "柴田獅子");
+  assert.equal(createFightersPlayerId(resolved.player?.uniformNumber), "F-31");
+});
+
 test("source rosterの未解決選手は捨てずにreason code付きATTENTION情報へ変換する", () => {
   const result = inspectFightersRosterMaster([
     { number: "95", name: "常谷 拓輝", position: "内野手" },

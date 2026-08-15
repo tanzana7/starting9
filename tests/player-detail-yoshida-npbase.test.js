@@ -36,11 +36,11 @@ test("詳細パネルは吉田の個別URL、他選手の汎用URL、NPBaseリ�
   assert.doesNotMatch(script, /NPBase公認|NPBase公式連携|提供: NPBase/);
 });
 
-test("詳細パネルは登録区分とS9上の候補分類を別データとして表示する", () => {
-  assert.match(script, /function getPredictionCandidateLabel\(player, classification = "その他"\)/);
+test("詳細パネルは登録区分だけを表示し、内部候補分類を表示しない", () => {
   assert.match(script, /<dt>登録区分<\/dt><dd>\$\{escapeHtml\(player\.registeredPosition \|\| "未設定"\)\}<\/dd>/);
-  assert.match(script, /<dt>S9上の扱い<\/dt><dd>\$\{escapeHtml\(predictionCandidateLabel\)\}<\/dd>/);
-  assert.doesNotMatch(script, /<dt>登録区分<\/dt><dd>\$\{escapeHtml\(playerCategoryNames\[mainCategory\]/);
+  assert.doesNotMatch(script, /<dt>S9上の扱い<\/dt>/);
+  assert.doesNotMatch(script, /predictionCandidateLabel/);
+  assert.doesNotMatch(script, /<dt>分類<\/dt>/);
   assert.match(players, /name: "矢澤宏太"[\s\S]*?registeredPosition: "投手"[\s\S]*?predictionCandidateLabel: "野手運用候補"/);
   assert.match(players, /name: "山﨑福也"[\s\S]*?registeredPosition: "投手"[\s\S]*?predictionCandidateLabel: "特殊DH候補"/);
   assert.match(players, /name: "柴田獅子"[\s\S]*?registeredPosition: "投手"[\s\S]*?predictionCandidateLabel: "DH候補"/);
@@ -55,7 +55,7 @@ test("詳細パネルはPC modal、スマホ bottom sheet、閉じる操作を�
 });
 
 test("公開assetのcache busterは登録区分分離版へ更新される", () => {
-  assert.match(html, /players\.js\?v=public-player-detail-registered-position-1/);
-  assert.match(html, /script\.js\?v=public-player-detail-registered-position-1/);
-  assert.match(html, /style\.css\?v=public-player-detail-registered-position-1/);
+  assert.match(html, /players\.js\?v=public-player-detail-hide-internal-role-1/);
+  assert.match(html, /script\.js\?v=public-player-detail-hide-internal-role-1/);
+  assert.match(html, /style\.css\?v=public-player-detail-hide-internal-role-1/);
 });

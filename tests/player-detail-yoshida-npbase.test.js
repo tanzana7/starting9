@@ -55,7 +55,7 @@ test("詳細パネルはPC modal、スマホ bottom sheet、閉じる操作を�
 });
 
 test("公開assetのcache busterは登録区分分離版へ更新される", () => {
-  assert.match(html, /players\.js\?v=public-player-detail-hide-internal-role-1/);
-  assert.match(html, /script\.js\?v=public-player-detail-hide-internal-role-1/);
-  assert.match(html, /style\.css\?v=public-player-detail-hide-internal-role-1/);
+  assert.match(html, /players\.js\?v=public-result-share-image-lovefighters-starting9-1/);
+  assert.match(html, /script\.js\?v=public-result-share-image-lovefighters-starting9-1/);
+  assert.match(html, /style\.css\?v=public-result-share-image-lovefighters-starting9-1/);
 });

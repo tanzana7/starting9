@@ -6,7 +6,7 @@
   <title>Starting9</title>
   <link rel="icon" type="image/png" href="./assets/icons/icon-512.png">
   <link rel="apple-touch-icon" href="./assets/icons/icon-512.png">
-  <link rel="stylesheet" href="style.css?v=public-player-detail-hide-internal-role-1">
+  <link rel="stylesheet" href="style.css?v=public-result-share-image-lovefighters-starting9-1">
 </head>
 <body>
   <header class="app-header">
@@ -185,6 +185,13 @@
 
       <div id="scoreResult" class="empty-state">採点すると結果が表示されます。</div>
       <button id="shareResultButton" class="secondary-button hidden" type="button">結果をXで共有</button>
+      <div id="resultShareActions" class="result-share-actions hidden" aria-label="結果の共有">
+        <button id="generateResultImageButton" class="secondary-button" type="button">結果画像を生成</button>
+        <button id="saveResultImageButton" class="secondary-button" type="button" disabled>結果画像を保存</button>
+        <button id="shareResultImageButton" class="secondary-button hidden" type="button">画像を共有</button>
+        <button id="copyResultShareTextButton" class="secondary-button" type="button">投稿文をコピー</button>
+        <p id="resultShareMessage" class="result-share-message" role="status" aria-live="polite"></p>
+      </div>
       <section id="resultHistory" class="result-history" aria-labelledby="resultHistoryTitle">
         <div class="result-history-heading">
           <div>
@@ -237,18 +244,18 @@
 
   </main>
 
-  <script src="players.js?v=public-player-detail-hide-internal-role-1"></script>
+  <script src="players.js?v=public-result-share-image-lovefighters-starting9-1"></script>
   <script src="game-schedule.js?v=20260718-probable-starter"></script>
   <script src="auth.js?v=auth-api-local-20260719"></script>
-  <script src="frontend/public/state.js?v=public-player-detail-hide-internal-role-1"></script>
-  <script src="frontend/public/request-guard.js?v=public-player-detail-hide-internal-role-1"></script>
-  <script src="frontend/public/storage.js?v=public-player-detail-hide-internal-role-1"></script>
-  <script src="frontend/public/api-client.js?v=public-player-detail-hide-internal-role-1"></script>
-  <script src="frontend/public/app-coordinator.js?v=public-player-detail-hide-internal-role-1"></script>
-  <script src="frontend/public/render-results.js?v=public-player-detail-hide-internal-role-1"></script>
-  <script src="frontend/public/render-ranking.js?v=public-player-detail-hide-internal-role-1"></script>
-  <script src="frontend/public/roster.js?v=public-player-detail-hide-internal-role-1"></script>
-  <script src="frontend/public/prediction-form.js?v=public-player-detail-hide-internal-role-1"></script>
-  <script src="script.js?v=public-player-detail-hide-internal-role-1"></script>
+  <script src="frontend/public/state.js?v=public-result-share-image-lovefighters-starting9-1"></script>
+  <script src="frontend/public/request-guard.js?v=public-result-share-image-lovefighters-starting9-1"></script>
+  <script src="frontend/public/storage.js?v=public-result-share-image-lovefighters-starting9-1"></script>
+  <script src="frontend/public/api-client.js?v=public-result-share-image-lovefighters-starting9-1"></script>
+  <script src="frontend/public/app-coordinator.js?v=public-result-share-image-lovefighters-starting9-1"></script>
+  <script src="frontend/public/render-results.js?v=public-result-share-image-lovefighters-starting9-1"></script>
+  <script src="frontend/public/render-ranking.js?v=public-result-share-image-lovefighters-starting9-1"></script>
+  <script src="frontend/public/roster.js?v=public-result-share-image-lovefighters-starting9-1"></script>
+  <script src="frontend/public/prediction-form.js?v=public-result-share-image-lovefighters-starting9-1"></script>
+  <script src="script.js?v=public-result-share-image-lovefighters-starting9-1"></script>
 </body>
 </html>

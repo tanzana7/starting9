@@ -8,6 +8,9 @@ const STORAGE_KEYS = {
 };
 const LINEUP_SIZE = 9;
 const SCORE_MAX = 100;
+const SHARE_HASHTAGS = "#lovefighters #starting9";
+let resultShareImageBlob = null;
+let resultShareImageResultKey = "";
 const SCORE_RULES = {
   player: {
     perHit: 5,
@@ -445,6 +448,10 @@ function bindEvents() {
   document.getElementById("refreshAchievementsButton")?.addEventListener("click", () => fetchUserAchievements({ force: true }));
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
   document.getElementById("shareResultButton").addEventListener("click", shareResult);
+  document.getElementById("generateResultImageButton")?.addEventListener("click", generateResultShareImage);
+  document.getElementById("saveResultImageButton")?.addEventListener("click", saveResultShareImage);
+  document.getElementById("shareResultImageButton")?.addEventListener("click", shareResultImage);
+  document.getElementById("copyResultShareTextButton")?.addEventListener("click", copyResultShareText);
   document.getElementById("predictionCtaButton")?.addEventListener("click", handlePredictionCtaClick);
   document.getElementById("editSavedPredictionButton")?.addEventListener("click", scrollToPredictionForm);
   document.getElementById("showYearlyRankingButton")?.addEventListener("click", () => selectRankingView("yearly"));
@@ -4139,7 +4146,9 @@ function scrollToPredictionForm() {
 }
 
 function renderScoreResult() {
-  return publicResultsRenderer.renderScoreResult();
+  const result = publicResultsRenderer.renderScoreResult();
+  renderResultShareControls();
+  return result;
 }
 
 function renderDailyBestNine() {
@@ -4405,7 +4414,7 @@ function createPredictionShareText(prediction) {
     ...lineup.map((item, index) => `${index + 1}番 ${item.position} ${item.player}`),
     ...(serviceUrl ? ["", serviceUrl] : []),
     "",
-    "#日ハム #lovefighters #スタメン予想"
+    SHARE_HASHTAGS
   ];
 
   return lines.join("\n");
@@ -4427,10 +4436,265 @@ function createResultShareText(result) {
     `打順的中：${viewModel.counts.order} / ${LINEUP_SIZE}`,
     `守備位置的中：${viewModel.counts.position} / ${LINEUP_SIZE}`,
     "",
-    "#日ハム #lovefighters #スタメン予想"
+    SHARE_HASHTAGS
   ];
 
   return lines.join("\n");
+}
+
+function getDisplayedResultForShare() {
+  return state.resultHistory?.result || state.result || null;
+}
+
+function getResultShareKey(result) {
+  if (!result) return "";
+  return String(result.gameId || result.internalGameId || result.id || result.publishedAt || "current");
+}
+
+function canShareResultImage() {
+  return typeof navigator !== "undefined"
+    && typeof navigator.share === "function"
+    && typeof navigator.canShare === "function";
+}
+
+function renderResultShareControls() {
+  const actions = document.getElementById("resultShareActions");
+  const saveButton = document.getElementById("saveResultImageButton");
+  const shareButton = document.getElementById("shareResultImageButton");
+  if (!actions || !saveButton || !shareButton) return;
+
+  const result = getDisplayedResultForShare();
+  const resultKey = getResultShareKey(result);
+  if (resultKey !== resultShareImageResultKey) {
+    resultShareImageBlob = null;
+    resultShareImageResultKey = resultKey;
+  }
+  const visible = Boolean(result && !result.serviceUnavailable);
+  actions.classList.toggle("hidden", !visible);
+  saveButton.disabled = !resultShareImageBlob;
+  shareButton.classList.toggle("hidden", !canShareResultImage());
+}
+
+function getResultShareGameMeta(result) {
+  const target = state.predictionTargetGame || {};
+  const dateValue = result?.gameDate || result?.date || result?.game_date
+    || target.gameDate || target.date || state.gameInfo?.gameStartAt || "";
+  const matchup = result?.matchupLabel || result?.matchup
+    || target.matchupLabel || state.gameInfo?.matchup || "";
+  let date = String(dateValue || "");
+  if (dateValue) {
+    const parsed = new Date(dateValue);
+    if (!Number.isNaN(parsed.getTime())) {
+      date = new Intl.DateTimeFormat("ja-JP", {
+        timeZone: "Asia/Tokyo",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+      }).format(parsed);
+    }
+  }
+  return { date, matchup };
+}
+
+function getResultShareRows(result) {
+  const details = createResultViewModel(result).details || [];
+  return Array.from({ length: LINEUP_SIZE }, (_, index) => {
+    const detail = details[index] || {};
+    return {
+      order: index + 1,
+      prediction: [detail.position, detail.player].filter(Boolean).join(" ") || "未選択",
+      actual: [detail.actualPosition, detail.actualPlayer].filter(Boolean).join(" ") || "未発表"
+    };
+  });
+}
+
+function drawResultShareImage(canvas, result) {
+  const width = 1200;
+  const height = 630;
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Canvas context is unavailable");
+
+  const viewModel = createResultViewModel(result);
+  const meta = getResultShareGameMeta(result);
+  const rows = getResultShareRows(result);
+  context.fillStyle = "#f4f6f8";
+  context.fillRect(0, 0, width, height);
+  context.fillStyle = "#0b2c5c";
+  context.fillRect(0, 0, width, 142);
+  context.fillStyle = "#d4a017";
+  context.fillRect(0, 136, width, 6);
+  context.fillStyle = "#ffffff";
+  context.font = "700 42px sans-serif";
+  context.fillText("Starting9", 52, 62);
+  context.font = "600 24px sans-serif";
+  context.fillText("結果発表", 54, 105);
+  context.textAlign = "right";
+  context.font = "500 22px sans-serif";
+  context.fillText(meta.date || "試合結果", width - 52, 60);
+  context.fillText(meta.matchup || "", width - 52, 98);
+  context.textAlign = "left";
+
+  context.fillStyle = "#ffffff";
+  context.fillRect(52, 170, 310, 132);
+  context.fillStyle = "#172033";
+  context.font = "600 22px sans-serif";
+  context.fillText("スコア", 78, 210);
+  context.fillStyle = "#0b2c5c";
+  context.font = "700 54px sans-serif";
+  context.fillText(`${viewModel.total} / ${viewModel.max}`, 78, 270);
+  context.fillStyle = "#667085";
+  context.font = "500 18px sans-serif";
+  context.fillText(`出場 ${viewModel.counts.player}/9  打順 ${viewModel.counts.order}/9  守備 ${viewModel.counts.position}/9`, 78, 292);
+  if (viewModel.perfectLabel) {
+    context.fillStyle = "#d4a017";
+    context.fillRect(390, 185, 210, 54);
+    context.fillStyle = "#172033";
+    context.font = "700 24px sans-serif";
+    context.fillText("完全一致", 430, 221);
+  }
+
+  context.fillStyle = "#172033";
+  context.font = "700 20px sans-serif";
+  context.fillText("予想", 650, 198);
+  context.fillText("実際", 930, 198);
+  context.font = "600 16px sans-serif";
+  rows.forEach((row, index) => {
+    const y = 228 + index * 34;
+    context.fillStyle = index % 2 ? "#eef2f5" : "#ffffff";
+    context.fillRect(52, y - 23, 1096, 32);
+    context.fillStyle = "#667085";
+    context.fillText(`${row.order}番`, 70, y);
+    context.fillStyle = "#172033";
+    context.fillText(row.prediction.slice(0, 18), 650, y);
+    context.fillText(row.actual.slice(0, 18), 930, y);
+  });
+
+  context.fillStyle = "#0b2c5c";
+  context.font = "600 22px sans-serif";
+  context.fillText(SHARE_HASHTAGS, 52, 594);
+  return canvas;
+}
+
+function createResultShareImageBlob(result) {
+  return new Promise((resolve, reject) => {
+    if (typeof document === "undefined" || typeof document.createElement !== "function") {
+      reject(new Error("画像生成に対応していない環境です。"));
+      return;
+    }
+    const canvas = document.createElement("canvas");
+    if (typeof canvas.toBlob !== "function") {
+      reject(new Error("PNG生成に対応していない環境です。"));
+      return;
+    }
+    try {
+      drawResultShareImage(canvas, result);
+      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("画像生成に失敗しました。")), "image/png");
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+function setResultShareMessage(message) {
+  const element = document.getElementById("resultShareMessage");
+  if (element) element.textContent = message || "";
+}
+
+async function generateResultShareImage() {
+  const result = getDisplayedResultForShare();
+  if (!result) {
+    setResultShareMessage("共有する採点結果がありません。");
+    return;
+  }
+  try {
+    resultShareImageBlob = await createResultShareImageBlob(result);
+    resultShareImageResultKey = getResultShareKey(result);
+    const saveButton = document.getElementById("saveResultImageButton");
+    if (saveButton) saveButton.disabled = false;
+    setResultShareMessage(canShareResultImage()
+      ? "結果画像を生成しました。保存または画像共有ができます。"
+      : "結果画像を生成しました。画像を保存して、Xに貼り付けて投稿してください。");
+  } catch (error) {
+    setResultShareMessage(error?.message || "結果画像の生成に失敗しました。");
+  }
+}
+
+function saveResultShareImage() {
+  if (!resultShareImageBlob) {
+    setResultShareMessage("先に「結果画像を生成」を押してください。");
+    return;
+  }
+  const url = URL.createObjectURL(resultShareImageBlob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "starting9-result.png";
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  setResultShareMessage("結果画像を保存しました。");
+}
+
+async function copyResultShareText() {
+  const result = getDisplayedResultForShare();
+  if (!result) {
+    setResultShareMessage("共有する採点結果がありません。");
+    return;
+  }
+  const text = createResultShareText(result);
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      textarea.remove();
+    }
+    setResultShareMessage("投稿文をコピーしました。");
+  } catch {
+    setResultShareMessage("投稿文をコピーできませんでした。表示された文面をお使いください。");
+  }
+}
+
+async function shareResultImage() {
+  const result = getDisplayedResultForShare();
+  if (!result) {
+    setResultShareMessage("共有する採点結果がありません。");
+    return;
+  }
+  try {
+    if (!resultShareImageBlob) {
+      await generateResultShareImage();
+    }
+    if (!resultShareImageBlob || !canShareResultImage()) {
+      saveResultShareImage();
+      await copyResultShareText();
+      setResultShareMessage("画像を保存して、Xに貼り付けて投稿してください。");
+      return;
+    }
+    const file = new File([resultShareImageBlob], "starting9-result.png", { type: "image/png" });
+    if (!navigator.canShare({ files: [file] })) {
+      saveResultShareImage();
+      await copyResultShareText();
+      setResultShareMessage("画像を保存して、Xに貼り付けて投稿してください。");
+      return;
+    }
+    await navigator.share({
+      title: "Starting9 結果発表",
+      text: createResultShareText(result),
+      files: [file]
+    });
+    setResultShareMessage("画像を共有しました。");
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    setResultShareMessage("画像共有に失敗しました。画像を保存して投稿してください。");
+  }
 }
 
 function openXShare(text) {

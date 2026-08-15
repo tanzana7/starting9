@@ -27,6 +27,14 @@ test("予告先発カードは発表済み・未発表・失敗で同じ表示�
   assert.match(css, /\.probable-starter-card\.is-error/);
 });
 
+test("予告先発カードはNPB公式ではなく汎用NPBase matchupsへリンクする", () => {
+  assert.match(script, /const NPBASE_MATCHUPS_URL = "https:\/\/npbase\.jp\/\?view=labo&tool=matchups&day=today&sort=average&order=desc"/);
+  assert.match(script, /対予告先発成績/);
+  assert.match(script, /target="_blank" rel="noopener noreferrer"/);
+  assert.doesNotMatch(script, />NPB公式<\/a>/);
+  assert.match(script, /createProbableStarterHeadingHtml\(\)/);
+});
+
 test("ブラウザは保存済みAPIだけを読み、NPB Workerのstarter取得を起動しない", () => {
   assert.match(script, /function buildProbableStarterApiUrl\(gameId\)/);
   assert.match(script, /\/api\/probable-starter\?gameId=/);

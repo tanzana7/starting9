@@ -29,6 +29,7 @@ const POINTER_LONG_PRESS_MS = 250;
 const POINTER_DRAG_DISTANCE = 8;
 const DRAG_DATA_TYPE = "application/x-ham-starting9-player";
 const NPB_STARTER_SOURCE_URL = "https://npb.jp/announcement/starter/";
+const NPBASE_MATCHUPS_URL = "https://npbase.jp/?view=labo&tool=matchups&day=today&sort=average&order=desc";
 const RANKING_DISPLAY_LIMIT = 50;
 const MONTHLY_RANKING_MIN_YEAR = 2020;
 const YEARLY_RANKING_MIN_YEAR = 2020;
@@ -3827,7 +3828,7 @@ function renderProbableStarterDisplay() {
   if (probableStarter.status === "loading") {
     container.className = "probable-starter-card is-loading";
     container.innerHTML = `
-      <p class="probable-starter-label">予告先発</p>
+      ${createProbableStarterHeadingHtml()}
       <p class="probable-starter-message">予告先発を取得中...</p>
     `;
     return;
@@ -3857,13 +3858,9 @@ function renderProbableStarterDisplay() {
 
   const dateText = formatProbableStarterDate(matchedGame.date || probableStarter.nextGame.date);
   const gameInfo = `${dateText} ${matchedGame.startTime || probableStarter.nextGame.startTime || ""}`.trim();
-  const sourceUrl = probableStarter.sourceUrl || NPB_STARTER_SOURCE_URL;
   container.className = "probable-starter-card is-success";
   container.innerHTML = `
-    <div class="probable-starter-heading">
-      <p class="probable-starter-label">予告先発</p>
-      <a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">NPB公式</a>
-    </div>
+    ${createProbableStarterHeadingHtml()}
     <div class="probable-starter-grid">
       ${createProbableStarterTeamHtml("日本ハム", fightersStarter.fighters?.name)}
       ${createProbableStarterTeamHtml(fightersStarter.opponentName || "相手チーム", fightersStarter.opponent?.name)}
@@ -3879,11 +3876,20 @@ function renderProbableStarterNotice(container, status, nextGame) {
   container.className = `probable-starter-card ${isError ? "is-error" : "is-pending"}`;
   if (isReferenceMismatch) container.classList.add("is-error");
   container.innerHTML = `
-    <p class="probable-starter-label">予告先発</p>
+    ${createProbableStarterHeadingHtml()}
     <p class="probable-starter-message">${isReferenceMismatch ? "予告先発の試合参照を確認できませんでした。" : isError ? "予告先発を取得できませんでした。" : "現在、次の試合の予告先発はまだ発表されていません。"}</p>
     <p class="probable-starter-meta">${isReferenceMismatch ? "試合情報を更新して再確認します。" : isError ? "次回の自動更新で再試行します。" : "発表され次第、自動で表示されます。"}</p>
     ${isError || isReferenceMismatch ? "" : `<p class="probable-starter-meta">${escapeHtml(formatScheduledGameForLog(nextGame))}</p>`}
     ${!isError && !isReferenceMismatch && state.probableStarter.nextCheckAt ? `<p class="probable-starter-meta">次回自動確認：${escapeHtml(formatDateTime(state.probableStarter.nextCheckAt))}</p>` : ""}
+  `;
+}
+
+function createProbableStarterHeadingHtml() {
+  return `
+    <div class="probable-starter-heading">
+      <p class="probable-starter-label">予告先発</p>
+      <a href="${NPBASE_MATCHUPS_URL}" target="_blank" rel="noopener noreferrer">対予告先発成績</a>
+    </div>
   `;
 }
 

@@ -24,10 +24,10 @@ function loadPublicModule(name, extra = {}) {
 
 test("公開画面のentry pointは分割moduleを読み込んでCoordinatorを一経路で起動する", () => {
   const moduleScripts = ["state", "request-guard", "storage", "api-client", "app-coordinator", "render-results", "render-ranking", "roster", "prediction-form"];
-  const scriptOffset = html.indexOf("script.js?v=public-clear-roster-warning-latest-snapshot-1");
+  const scriptOffset = html.indexOf("script.js?v=public-probable-starter-npbase-link-1");
   assert.ok(scriptOffset > 0);
   moduleScripts.forEach((name) => {
-    const offset = html.indexOf(`${modulePath(name)}?v=public-clear-roster-warning-latest-snapshot-1`);
+    const offset = html.indexOf(`${modulePath(name)}?v=public-probable-starter-npbase-link-1`);
     assert.ok(offset >= 0, `${name} module is loaded`);
     assert.ok(offset < scriptOffset, `${name} loads before the entry point`);
   });
@@ -83,6 +83,6 @@ test("予想保存・リセット・アカウント同期は最新結果表示�
 });
 
 test("公開画面のキャッシュバスターはmodule分割版へ更新される", () => {
-  assert.match(html, /script\.js\?v=public-clear-roster-warning-latest-snapshot-1/);
-  assert.match(html, /style\.css\?v=public-clear-roster-warning-latest-snapshot-1/);
+  assert.match(html, /script\.js\?v=public-probable-starter-npbase-link-1/);
+  assert.match(html, /style\.css\?v=public-probable-starter-npbase-link-1/);
 });

@@ -6,7 +6,7 @@
   <title>Starting9</title>
   <link rel="icon" type="image/png" href="./assets/icons/icon-512.png">
   <link rel="apple-touch-icon" href="./assets/icons/icon-512.png">
-  <link rel="stylesheet" href="style.css?v=public-mobile-player-list-top-align-1">
+  <link rel="stylesheet" href="style.css?v=public-mobile-player-list-frame-1">
 </head>
 <body>
   <header class="app-header">
@@ -141,9 +141,11 @@
               <span class="player-category-legend-item is-category-outfielder">外野手</span>
               <span class="player-category-legend-item is-category-dh">DHメイン</span>
             </div>
-            <div id="predictionPlayers" class="player-list"></div>
-            <p id="predictionRosterStatus" class="message" role="status" aria-live="polite"></p>
-            <div id="predictionPlayerDetails" class="player-detail-panel hidden" aria-live="polite"></div>
+            <div class="player-list-frame">
+              <div id="predictionPlayers" class="player-list"></div>
+              <p id="predictionRosterStatus" class="message" role="status" aria-live="polite"></p>
+              <div id="predictionPlayerDetails" class="player-detail-panel hidden" aria-live="polite"></div>
+            </div>
           </div>
         </div>
         <p id="predictionError" class="message error-message" role="alert" aria-live="polite"></p>
@@ -247,6 +249,6 @@
   <script src="frontend/public/render-ranking.js?v=public-scoreboard-ui-refresh-1"></script>
   <script src="frontend/public/roster.js?v=public-scoreboard-ui-refresh-1"></script>
   <script src="frontend/public/prediction-form.js?v=public-scoreboard-ui-refresh-1"></script>
-  <script src="script.js?v=public-mobile-player-list-top-align-1"></script>
+  <script src="script.js?v=public-mobile-player-list-frame-1"></script>
 </body>
 </html>

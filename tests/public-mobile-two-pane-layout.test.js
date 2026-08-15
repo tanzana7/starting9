@@ -9,7 +9,7 @@ const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 
 test("public mobile prediction layout keeps order and roster in two panes", () => {
-  assert.match(html, /style\.css\?v=public-mobile-player-list-top-align-1/);
+  assert.match(html, /style\.css\?v=public-mobile-player-list-frame-1/);
   assert.match(html, /class="lineup-builder"/);
   assert.match(html, /id="predictionLineup" class="slot-list"/);
   assert.match(html, /id="predictionPlayers" class="player-list"/);
@@ -55,5 +55,18 @@ test("desktop public player list remains a two-column grid", () => {
   assert.match(
     css,
     /@media \(min-width: 900px\)[\s\S]*?\.player-list \{[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)/,
+  );
+});
+
+test("mobile roster controls sit above an independent player list frame", () => {
+  assert.match(html, /class="player-list-frame"/);
+  assert.match(
+    css,
+    /@media \(max-width: 767px\)[\s\S]*?\.player-panel \{[\s\S]*?border: 0;[\s\S]*?background: transparent;/,
+  );
+  assert.match(css, /\.player-list-frame \{[\s\S]*?border: 1px solid var\(--border\)/);
+  assert.match(
+    css,
+    /\.player-list-frame \.player-list \{[\s\S]*?overflow: hidden auto;[\s\S]*?-webkit-overflow-scrolling: touch;/,
   );
 });

@@ -30,6 +30,7 @@ const POINTER_DRAG_DISTANCE = 8;
 const DRAG_DATA_TYPE = "application/x-ham-starting9-player";
 const NPB_STARTER_SOURCE_URL = "https://npb.jp/announcement/starter/";
 const NPBASE_MATCHUPS_URL = "https://npbase.jp/?view=labo&tool=matchups&day=today&sort=average&order=desc";
+const NPBASE_PLAYER_FALLBACK_URL = "https://npbase.jp/";
 const RANKING_DISPLAY_LIMIT = 50;
 const MONTHLY_RANKING_MIN_YEAR = 2020;
 const YEARLY_RANKING_MIN_YEAR = 2020;
@@ -466,6 +467,7 @@ function bindEvents() {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       closeAllPositionMenus();
+      closePlayerDetails();
     }
   });
 }
@@ -851,6 +853,27 @@ function createPlayerChip(pickerName, player) {
   button.innerHTML = createPlayerLabelHtml(player);
   applyPlayerCategoryClass(button, player);
 
+  if (pickerName === "prediction") {
+    const detailButton = document.createElement("span");
+    detailButton.className = "player-chip-detail-button";
+    detailButton.textContent = "詳細";
+    detailButton.setAttribute("role", "button");
+    detailButton.setAttribute("draggable", "false");
+    detailButton.tabIndex = 0;
+    detailButton.setAttribute("aria-label", `${player}の詳細を開く`);
+    const openDetails = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!button.disabled) showPlayerDetails(pickerName, player);
+    };
+    detailButton.addEventListener("pointerdown", (event) => event.stopPropagation());
+    detailButton.addEventListener("click", openDetails);
+    detailButton.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") openDetails(event);
+    });
+    button.appendChild(detailButton);
+  }
+
   button.addEventListener("click", () => {
     if (Date.now() < state.pointerSuppressClickUntil) return;
     if (button.dataset.skipClick === "true") {
@@ -858,7 +881,6 @@ function createPlayerChip(pickerName, player) {
       return;
     }
 
-    showPlayerDetails(pickerName, player);
     if (pickerName === "prediction" && !ensurePredictionEditingAllowed()) return;
     assignPlayerToActiveSlot(pickerName, player);
   });
@@ -4549,14 +4571,64 @@ function showPlayerDetails(pickerName, playerName) {
     return;
   }
 
-  panel.classList.remove("hidden");
+  const npbasePlayerUrl = getNpbasePlayerUrl(player);
+  const classification = isRegisteredFielderCandidate(player) ? "出場候補" : "その他";
+  const positions = createPlayerPositionBadgesHtml(player.name);
+  panel.className = "player-detail-overlay";
+  panel.setAttribute("aria-hidden", "false");
   const mainCategory = player.mainCategory || player.category;
   panel.innerHTML = `
-    <strong>${escapeHtml(player.name)}</strong>
-    <span>カテゴリ：${escapeHtml(playerCategoryNames[mainCategory] || "未設定")}</span>
-    <div class="player-detail-positions">
-      <span>守備候補：</span>
-      ${createPlayerPositionBadgesHtml(player.name)}
+    <div class="player-detail-dialog" role="document">
+      <div class="player-detail-header">
+        <div>
+          <p class="player-detail-kicker">選手詳細</p>
+          <h2 id="playerDetailTitle">${escapeHtml(player.name)}</h2>
+        </div>
+        <button class="player-detail-close" type="button" aria-label="選手詳細を閉じる">×</button>
+      </div>
+      <dl class="player-detail-meta">
+        <div><dt>背番号</dt><dd>${escapeHtml(player.uniformNumber || "-")}</dd></div>
+        <div><dt>分類</dt><dd>${escapeHtml(classification)}</dd></div>
+        <div><dt>登録区分</dt><dd>${escapeHtml(playerCategoryNames[mainCategory] || player.registeredPosition || "未設定")}</dd></div>
+      </dl>
+      <div class="player-detail-positions">
+        <strong>守備候補</strong>
+        ${positions}
+      </div>
+      <p class="player-detail-notice">成績表示は準備中です。現在はNPBaseへのリンクから確認できます。</p>
+      <div class="player-detail-links">
+        <a href="${escapeHtml(npbasePlayerUrl)}" target="_blank" rel="noopener noreferrer">選手成績を見る（NPBase）</a>
+        <a href="${NPBASE_MATCHUPS_URL}" target="_blank" rel="noopener noreferrer">対予告先発成績（NPBase）</a>
+      </div>
+      <button class="primary-button player-detail-select" type="button">この選手を選択</button>
     </div>
   `;
+  panel.classList.remove("hidden");
+  if (panel.dataset.bound !== "true") {
+    panel.addEventListener("click", handlePlayerDetailsOverlayClick);
+    panel.dataset.bound = "true";
+  }
+  panel.querySelector(".player-detail-close")?.addEventListener("click", closePlayerDetails);
+  panel.querySelector(".player-detail-select")?.addEventListener("click", () => {
+    assignPlayerToActiveSlot(pickerName, player.name);
+    closePlayerDetails();
+  });
+  panel.querySelector(".player-detail-close")?.focus();
+}
+
+function handlePlayerDetailsOverlayClick(event) {
+  if (event.target === event.currentTarget) closePlayerDetails();
+}
+
+function closePlayerDetails() {
+  document.querySelectorAll(".player-detail-overlay").forEach((panel) => {
+    panel.classList.add("hidden");
+    panel.setAttribute("aria-hidden", "true");
+    panel.innerHTML = "";
+  });
+}
+
+function getNpbasePlayerUrl(player) {
+  const candidate = String(player?.npbasePlayerUrl || "").trim();
+  return candidate.startsWith("https://npbase.jp/") ? candidate : NPBASE_PLAYER_FALLBACK_URL;
 }

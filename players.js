@@ -87,6 +87,7 @@ const players = [
     name: "吉田賢吾",
     uniformNumber: "60",
     aliases: ["吉田", "吉田賢", "吉田賢吾", "吉田 賢吾", "吉田　賢吾"],
+    npbasePlayerUrl: "https://npbase.jp/players/f-1ndh33l",
     registeredPosition: "捕手",
     playerType: "batter",
     isBatterCandidate: true,

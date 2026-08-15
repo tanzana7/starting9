@@ -23,6 +23,7 @@
         gameDate: snapshot.gameDate || gameDate,
         players,
         status: "stale",
+        displayRosterSource: "fallback_snapshot",
         isLoading: true,
         usableUntil: ""
       };
@@ -40,6 +41,7 @@
         gameDate,
         status: "pending",
         players: [],
+        displayRosterSource: "",
         isLoading: true,
         usableUntil: ""
       };
@@ -62,6 +64,9 @@
           internalGameId,
           gameDate: gameSnapshot.gameDate || gameDate,
           status: snapshotStatus,
+          displayRosterSource: typeof gameSnapshot.displayRosterSource === "string"
+            ? gameSnapshot.displayRosterSource
+            : snapshotStatus === "fresh" ? "fresh_snapshot" : "",
           players: deps.normalizeRosterEntries(gameSnapshot.players),
           isLoading: false,
           usableUntil: gameSnapshot.usableUntil || ""
@@ -96,7 +101,12 @@
       const filter = deps.state.candidateRosterFilter === "inactive" ? "inactive" : "active";
       const publicRosterReady = deps.hasUsablePublicRosterForCurrentGame();
       const rosterStatus = String(deps.state.publicRoster?.status || "pending");
-      const hasFallbackRoster = ["baseline", "stale", "fallback", "attention"].includes(rosterStatus) && publicRosterReady;
+      const displayRosterSource = String(deps.state.publicRoster?.displayRosterSource || "");
+      const hasLatestOfficialRoster = displayRosterSource === "latest_official_snapshot";
+      const hasFallbackRoster = ["baseline", "stale", "fallback"].includes(rosterStatus)
+        && publicRosterReady
+        && !hasLatestOfficialRoster;
+      const hasRosterAttention = rosterStatus === "attention";
       const isRegisteredFielderCandidate = (player) => typeof deps.isRegisteredFielderCandidate === "function"
         ? deps.isRegisteredFielderCandidate(player)
         : deps.isPlayerInCurrentRoster(player)
@@ -119,7 +129,7 @@
 
       const status = document.getElementById("predictionRosterStatus");
       if (status) {
-        const message = hasFallbackRoster
+        const message = hasFallbackRoster || hasRosterAttention
           ? "選手情報の更新を確認中です。表示中の選手一覧は前回取得データの場合があります。"
           : publicRosterReady
             ? ""

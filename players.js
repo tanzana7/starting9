@@ -336,6 +336,20 @@ const players = [
     defaultPosition: null
   },
   {
+    name: "柴田獅子",
+    uniformNumber: "31",
+    aliases: ["柴田", "柴田獅子", "柴田 獅子", "柴田　獅子", "シバタ レオ", "シバタレオ"],
+    registeredPosition: "DH",
+    playerType: "batter",
+    isBatterCandidate: true,
+    isActiveRoster: false,
+    category: "dh",
+    mainCategory: "dh",
+    subCategory: null,
+    positions: ["指"],
+    defaultPosition: "指"
+  },
+  {
     name: "西川遥輝",
     uniformNumber: "7",
     aliases: ["西川", "西川遥", "西川遥輝", "西川 遥輝", "西川　遥輝"],

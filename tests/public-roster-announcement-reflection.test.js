@@ -194,6 +194,51 @@ test("同じcanonical UUIDのroster responseを受けると公開候補の再描
   assert.deepEqual(renderedNames, ["公開候補選手"]);
 });
 
+test("captured rosterは警告を解除し、選手一覧を表示する", () => {
+  const createElement = (dataset = {}) => ({
+    dataset,
+    classList: {
+      values: new Set(),
+      toggle(name, enabled) {
+        if (enabled) this.values.add(name);
+        else this.values.delete(name);
+      }
+    },
+    setAttribute() {},
+    textContent: ""
+  });
+  const status = createElement();
+  const chip = createElement({ picker: "prediction", player: "正式取得選手" });
+  const fakeDocument = {
+    querySelectorAll(selector) {
+      if (selector === "[data-roster-filter]") return [];
+      if (selector === '.player-chip[data-picker="prediction"]') return [chip];
+      return [];
+    },
+    getElementById(id) {
+      return id === "predictionRosterStatus" ? status : null;
+    }
+  };
+  const context = vm.createContext({ document: fakeDocument, window: { Starting9Public: {} } });
+  vm.runInContext(publicRoster, context);
+  const controller = context.window.Starting9Public.createPublicRosterController({
+    state: {
+      candidateRosterFilter: "active",
+      predictionTargetGame: { internalGameId, date: gameDate },
+      publicRoster: { internalGameId, gameDate, status: "pending", players: [] }
+    },
+    hasUsablePublicRosterForCurrentGame: () => true,
+    getPlayerData: () => ({ isBatterCandidate: true }),
+    isPlayerInCurrentRoster: () => true
+  });
+
+  controller.renderPredictionRosterFilter();
+
+  assert.equal(status.textContent, "");
+  assert.equal(status.classList.values.has("hidden"), true);
+  assert.equal(chip.classList.values.has("hidden"), false);
+});
+
 test("更新待ちでも同一試合の保存済みrosterを暫定表示し、警告を出す", async () => {
   const context = vm.createContext({ window: { Starting9Public: {} } });
   vm.runInContext(publicRoster, context);

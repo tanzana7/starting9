@@ -2,6 +2,13 @@
   const publicFrontend = window.Starting9Public = window.Starting9Public || {};
 
   function createPublicRosterController(deps) {
+    function normalizeSnapshotStatus(snapshot) {
+      const status = String(snapshot?.status || "").trim().toLowerCase();
+      if (status === "captured" || status === "fresh") return "fresh";
+      if (["baseline", "stale", "fallback"].includes(status)) return status;
+      return "pending";
+    }
+
     function getStoredRosterFallback(internalGameId, gameDate) {
       const snapshot = typeof deps.getRosterSnapshotForCurrentGame === "function"
         ? deps.getRosterSnapshotForCurrentGame()
@@ -47,10 +54,9 @@
       }
 
       deps.state.publicRoster.isLoading = false;
-      if (gameSnapshot.ok && gameSnapshot.internalGameId === internalGameId && gameSnapshot.players.length) {
-        const snapshotStatus = ["baseline", "stale", "fallback"].includes(gameSnapshot.status)
-          ? gameSnapshot.status
-          : "fresh";
+      const snapshotStatus = normalizeSnapshotStatus(gameSnapshot);
+      if (gameSnapshot.ok && gameSnapshot.internalGameId === internalGameId
+        && gameSnapshot.players.length && snapshotStatus !== "pending") {
         deps.state.publicRoster = {
           internalGameId,
           gameDate: gameSnapshot.gameDate || gameDate,

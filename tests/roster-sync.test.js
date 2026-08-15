@@ -7,6 +7,7 @@ const vm = require("node:vm");
 const root = path.join(__dirname, "..");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const authWorker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const publicRoster = fs.readFileSync(path.join(root, "frontend", "public", "roster.js"), "utf8");
 const worker = fs.readFileSync(path.join(root, "cloudflare-worker.js"), "utf8");
 const players = fs.readFileSync(path.join(root, "players.js"), "utf8");
@@ -117,4 +118,14 @@ test("Workerは現在の出場選手一覧を直接取得し、ゼロ件を成�
   assert.match(worker, /if \(!extraction\.players\.length\)/);
   assert.match(worker, /ROSTER_CACHE_TTL_SECONDS = 30 \* 60/);
   assert.match(worker, /cacheStatus: "stale-fallback"/);
+});
+
+test("正式roster refreshは取得Workerの30分Cacheを強制回避し、source取得情報を監査へ渡す", () => {
+  assert.match(worker, /forceRefresh = \["1", "true", "yes"\]/);
+  assert.match(worker, /if \(!forceRefresh\)/);
+  assert.match(worker, /"Cache-Control": "no-cache, no-store, max-age=0"/);
+  assert.match(worker, /cacheStatus: forceRefresh \? "bypass" : "miss"/);
+  assert.match(authWorker, /mode: "roster",[\s\S]*force: force \|\| isV3 \? "1" : undefined/);
+  assert.match(authWorker, /rosterSourceCacheStatus/);
+  assert.match(authWorker, /rosterSourceFetchedAt/);
 });

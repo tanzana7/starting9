@@ -6303,6 +6303,30 @@ body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip:focus-visi
     overflow-wrap: anywhere;
   }
 
+  body:not(:has(.app-layout.is-admin-screen)) #predictionLineup > .lineup-slot[data-picker="prediction"] {
+    grid-template-columns: 28px minmax(0, 1fr) 40px auto;
+    grid-template-areas: "order player position clear";
+    gap: 6px;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) #predictionLineup > .lineup-slot[data-picker="prediction"] > .slot-order {
+    grid-area: order;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) #predictionLineup > .lineup-slot[data-picker="prediction"] > .slot-player {
+    grid-area: player;
+    width: auto;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) #predictionLineup > .lineup-slot[data-picker="prediction"] > .position-control {
+    grid-area: position;
+    justify-self: center;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) #predictionLineup > .lineup-slot[data-picker="prediction"] > .slot-clear {
+    grid-area: clear;
+  }
+
   body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip {
     min-height: 44px;
     padding: 8px 9px;

@@ -8,7 +8,7 @@ const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
 
 test("public mobile prediction layout keeps order and roster in two panes", () => {
-  assert.match(html, /style\.css\?v=public-mobile-two-pane-width-balance-1/);
+  assert.match(html, /style\.css\?v=public-mobile-prediction-slot-width-1/);
   assert.match(html, /class="lineup-builder"/);
   assert.match(html, /id="predictionLineup" class="slot-list"/);
   assert.match(html, /id="predictionPlayers" class="player-list"/);
@@ -20,6 +20,8 @@ test("public mobile prediction layout keeps order and roster in two panes", () =
   assert.match(css, /overflow-y: auto/);
   assert.match(css, /\.player-list \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(css, /min-height: 44px/);
+  assert.match(css, /grid-template-columns: 28px minmax\(0, 1fr\) 40px auto/);
+  assert.match(css, /grid-template-areas: "order player position clear"/);
 });
 
 test("desktop public player list remains a two-column grid", () => {

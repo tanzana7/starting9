@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   buildPublicBaselineRosterResponse,
   buildPublicGameDayRosterResponse,
+  getPublicRosterQualityFromAuditDetails,
   getPublicRosterBaselineUsableUntil,
   isPublicRosterBaselineCandidate
 } from "../auth-worker.js";
@@ -192,6 +193,23 @@ test("同じcanonical UUIDのroster responseを受けると公開候補の再描
 
   assert.equal(state.publicRoster.internalGameId, internalGameId);
   assert.deepEqual(renderedNames, ["公開候補選手"]);
+});
+
+test("source/snapshot mismatchの監査はpublicでもATTENTIONとして扱う", () => {
+  const details = JSON.stringify({
+    sourceSnapshotComparison: {
+      status: "ATTENTION",
+      mismatch: true,
+      reasonCode: "ROSTER_SOURCE_SNAPSHOT_MISMATCH"
+    }
+  });
+  assert.deepEqual(
+    getPublicRosterQualityFromAuditDetails(`[v3_details=${details}]`),
+    { attention: true, reasonCode: "ROSTER_SOURCE_SNAPSHOT_MISMATCH" }
+  );
+  assert.deepEqual(getPublicRosterQualityFromAuditDetails(JSON.stringify({
+    sourceSnapshotComparison: { status: "OK", mismatch: false, stale: false }
+  })), { attention: false, reasonCode: null });
 });
 
 test("captured rosterは警告を解除し、選手一覧を表示する", () => {

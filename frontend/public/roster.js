@@ -5,6 +5,7 @@
     function normalizeSnapshotStatus(snapshot) {
       const status = String(snapshot?.status || "").trim().toLowerCase();
       if (status === "captured" || status === "fresh") return "fresh";
+      if (status === "attention") return "attention";
       if (["baseline", "stale", "fallback"].includes(status)) return status;
       return "pending";
     }
@@ -95,7 +96,7 @@
       const filter = deps.state.candidateRosterFilter === "inactive" ? "inactive" : "active";
       const publicRosterReady = deps.hasUsablePublicRosterForCurrentGame();
       const rosterStatus = String(deps.state.publicRoster?.status || "pending");
-      const hasFallbackRoster = ["baseline", "stale", "fallback"].includes(rosterStatus) && publicRosterReady;
+      const hasFallbackRoster = ["baseline", "stale", "fallback", "attention"].includes(rosterStatus) && publicRosterReady;
       document.querySelectorAll("[data-roster-filter]").forEach((button) => {
         const isSelected = button.dataset.rosterFilter === filter;
         button.classList.toggle("is-selected", isSelected);

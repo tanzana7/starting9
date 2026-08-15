@@ -7936,6 +7936,14 @@ async function handleGetGameDayRoster(request, env, cors) {
     snapshot: row
   });
   if (currentResponse.status === "captured") {
+    const quality = await readPublicRosterQuality(env.AUTH_DB, internalGameId);
+    if (quality.attention) {
+      return jsonResponse({
+        ...currentResponse,
+        status: "attention",
+        warning: "最新ロースターと表示中の選手一覧に差分がある可能性があります。"
+      }, 200, cors);
+    }
     return jsonResponse(currentResponse, 200, cors);
   }
 
@@ -7958,6 +7966,36 @@ async function handleGetGameDayRoster(request, env, cors) {
     // A missing/invalid schedule must not make the public roster endpoint fail.
   }
   return jsonResponse(currentResponse, 200, cors);
+}
+
+export function getPublicRosterQualityFromAuditDetails(failureMessage) {
+  const details = parseV3AuditDetails(failureMessage);
+  const comparison = details.sourceSnapshotComparison || details.rosterSourceSnapshotComparison;
+  if (!comparison || typeof comparison !== "object" || Array.isArray(comparison)) {
+    return { attention: false, reasonCode: null };
+  }
+  const attention = comparison.status === "ATTENTION"
+    || comparison.mismatch === true
+    || comparison.remainingMismatch === true
+    || comparison.stale === true;
+  return {
+    attention,
+    reasonCode: typeof comparison.reasonCode === "string" ? comparison.reasonCode : null
+  };
+}
+
+async function readPublicRosterQuality(db, internalGameId) {
+  try {
+    const row = await db.prepare(
+      `SELECT failure_message
+         FROM game_automation_v3_audit
+        WHERE internal_game_id = ?1 AND job_type = 'roster_fetch' AND event_type = 'job'
+        ORDER BY occurred_at DESC, id DESC LIMIT 1`
+    ).bind(internalGameId).first();
+    return getPublicRosterQualityFromAuditDetails(row?.failure_message);
+  } catch {
+    return { attention: false, reasonCode: null };
+  }
 }
 
 function getPublicRosterPlayers(snapshot) {

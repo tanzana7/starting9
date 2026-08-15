@@ -433,13 +433,14 @@ async function cacheLineupResponse(source, responseBody) {
 async function handleRosterRequest(requestUrl, isDebug) {
   const rosterUrlValue = requestUrl.searchParams.get("url") || "https://npb.jp/announcement/roster/";
   const validation = validateRosterUrl(rosterUrlValue);
+  const forceRefresh = ["1", "true", "yes"].includes(String(requestUrl.searchParams.get("force") || "").toLowerCase());
 
   if (!validation.ok) {
     return jsonResponse({ ok: false, error: validation.error }, 400);
   }
 
   try {
-    const source = await fetchRosterSource(requestUrl, validation.url);
+    const source = await fetchRosterSource(requestUrl, validation.url, { forceRefresh });
     if (!source.ok) {
       return jsonResponse({ ok: false, code: "ROSTER_FETCH_FAILED", error: "NPB公式登録ページを取得できませんでした。" }, 502);
     }
@@ -723,18 +724,20 @@ async function createContentHash(value) {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
-async function fetchRosterSource(requestUrl, sourceUrl) {
+async function fetchRosterSource(requestUrl, sourceUrl, { forceRefresh = false } = {}) {
   const cache = caches.default;
   const cacheKey = new Request(`${requestUrl.origin}/__starting9/roster-cache?source=${encodeURIComponent(sourceUrl)}`);
   let cached = null;
-  try {
-    const cachedResponse = await cache.match(cacheKey);
-    cached = cachedResponse ? await readCachedRosterSource(cachedResponse) : null;
-  } catch {
-    // Cache APIの障害時も、公式ページへの新規取得は試みる。
+  if (!forceRefresh) {
+    try {
+      const cachedResponse = await cache.match(cacheKey);
+      cached = cachedResponse ? await readCachedRosterSource(cachedResponse) : null;
+    } catch {
+      // Cache APIの障害時も、公式ページへの新規取得は試みる。
+    }
   }
 
-  if (cached && !cached.isExpired) {
+  if (!forceRefresh && cached && !cached.isExpired) {
     return {
       ok: true,
       html: cached.html,
@@ -749,6 +752,8 @@ async function fetchRosterSource(requestUrl, sourceUrl) {
     const response = await fetch(sourceUrl, {
       cache: "no-store",
       headers: {
+        "Cache-Control": "no-cache, no-store, max-age=0",
+        Pragma: "no-cache",
         "User-Agent": "Starting9 MVP Cloudflare Worker"
       }
     });
@@ -786,7 +791,7 @@ async function fetchRosterSource(requestUrl, sourceUrl) {
       html,
       httpStatus: response.status,
       fetchedAt,
-      cacheStatus: "miss",
+      cacheStatus: forceRefresh ? "bypass" : "miss",
       stale: false
     };
   } catch (error) {

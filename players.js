@@ -476,6 +476,21 @@ const players = [
     defaultPosition: "指"
   },
   {
+    name: "山﨑福也",
+    uniformNumber: "18",
+    aliases: ["山崎福也", "山﨑福也", "山崎 福也", "山﨑 福也", "ヤマサキサチヤ", "ヤマサキ サチヤ", "さちや", "サチヤ"],
+    registeredPosition: "投手",
+    playerType: "pitcher",
+    isBatterCandidate: true,
+    isActiveRoster: false,
+    predictionCandidateRole: "special_dh",
+    category: "dh",
+    mainCategory: "dh",
+    subCategory: "pitcher",
+    positions: ["指"],
+    defaultPosition: "指"
+  },
+  {
     name: "矢澤宏太",
     uniformNumber: "12",
     aliases: ["矢澤", "矢沢", "矢澤宏", "矢澤宏太", "矢澤 宏太", "矢澤　宏太", "矢沢宏太"],
@@ -483,6 +498,7 @@ const players = [
     playerType: "twoWay",
     isBatterCandidate: true,
     isActiveRoster: false,
+    predictionCandidateRole: "fielder",
     category: "outfielder",
     mainCategory: "outfielder",
     subCategory: null,

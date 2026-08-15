@@ -81,9 +81,10 @@ function createRosterFilterHelpers(storedSnapshot, selectedGame = { internalGame
     "getRosterSnapshotForCurrentGame",
     "rosterEntryMatchesPlayer",
     "hasUsablePublicRosterForCurrentGame",
-    "isPlayerInCurrentRoster"
+    "isPlayerInCurrentRoster",
+    "isRegisteredFielderCandidate"
   ];
-  vm.runInContext(`${names.map(getScriptFunctionSource).join("\n")}; this.helpers = { isPlayerInCurrentRoster };`, context);
+  vm.runInContext(`${names.map(getScriptFunctionSource).join("\n")}; this.helpers = { isPlayerInCurrentRoster, isRegisteredFielderCandidate };`, context);
   return context.helpers;
 }
 
@@ -99,6 +100,26 @@ test("freshなV3 roster snapshotは公示変更なしでも通常画面候補と
   assert.equal(response.playerCount, 2);
   assert.deepEqual(response.players.map((player) => player.name), ["登録選手", "継続選手"]);
   assert.equal("source" in response, false);
+});
+
+test("矢澤は投手sourceでも登録野手、山﨑福也は特殊DHとしてその他に分類する", () => {
+  const { isRegisteredFielderCandidate } = createRosterFilterHelpers({
+    players: [{ name: "矢澤宏太", number: "12", position: "投手" }, { name: "山﨑福也", number: "18", position: "投手" }]
+  });
+  assert.equal(isRegisteredFielderCandidate({
+    name: "矢澤宏太",
+    uniformNumber: "12",
+    registeredPosition: "投手",
+    isBatterCandidate: true,
+    predictionCandidateRole: "fielder"
+  }), true);
+  assert.equal(isRegisteredFielderCandidate({
+    name: "山﨑福也",
+    uniformNumber: "18",
+    registeredPosition: "投手",
+    isBatterCandidate: true,
+    predictionCandidateRole: "special_dh"
+  }), false);
 });
 
 test("当日公示前は直近7日以内の同一球団snapshotを安全なbaselineとして返す", () => {
@@ -371,8 +392,8 @@ test("snapshotの登録選手は候補に入り、抹消選手は候補から外
   });
   assert.equal(filter.isPlayerInCurrentRoster({ name: "登録選手", uniformNumber: "12", isActiveRoster: false }), true);
   assert.equal(filter.isPlayerInCurrentRoster({ name: "抹消選手", uniformNumber: "53", isActiveRoster: true }), false);
-  assert.match(publicRoster, /deps\.isPlayerInCurrentRoster\(player\) && player\?\.isBatterCandidate === true/);
-  assert.match(publicRoster, /!deps\.isPlayerInCurrentRoster\(player\) && player\?\.isBatterCandidate === true/);
+  assert.match(publicRoster, /isRegisteredFielderCandidate/);
+  assert.match(publicRoster, /!isRegisteredFielderCandidate\(player\) && player\?\.isBatterCandidate === true/);
 });
 
 test("freshなcanonical rosterがない場合は静的isActiveRosterを候補へ戻さない", () => {

@@ -97,6 +97,11 @@
       const publicRosterReady = deps.hasUsablePublicRosterForCurrentGame();
       const rosterStatus = String(deps.state.publicRoster?.status || "pending");
       const hasFallbackRoster = ["baseline", "stale", "fallback", "attention"].includes(rosterStatus) && publicRosterReady;
+      const isRegisteredFielderCandidate = (player) => typeof deps.isRegisteredFielderCandidate === "function"
+        ? deps.isRegisteredFielderCandidate(player)
+        : deps.isPlayerInCurrentRoster(player)
+          && player?.isBatterCandidate === true
+          && player?.predictionCandidateRole !== "special_dh";
       document.querySelectorAll("[data-roster-filter]").forEach((button) => {
         const isSelected = button.dataset.rosterFilter === filter;
         button.classList.toggle("is-selected", isSelected);
@@ -107,8 +112,8 @@
       document.querySelectorAll('.player-chip[data-picker="prediction"]').forEach((chip) => {
         const player = deps.getPlayerData(chip.dataset.player);
         const shouldShow = publicRosterReady && (filter === "active"
-          ? deps.isPlayerInCurrentRoster(player) && player?.isBatterCandidate === true
-          : !deps.isPlayerInCurrentRoster(player) && player?.isBatterCandidate === true);
+          ? isRegisteredFielderCandidate(player)
+          : !isRegisteredFielderCandidate(player) && player?.isBatterCandidate === true);
         chip.classList.toggle("hidden", !shouldShow);
       });
 

@@ -47,6 +47,25 @@ test("柴田獅子はスペース・カナを含むaliasとF-31で解決でき�
   assert.equal(createFightersPlayerId(resolved.player?.uniformNumber), "F-31");
 });
 
+test("山﨑福也はF-18・DH特殊候補としてalias解決できる", () => {
+  for (const name of ["山崎福也", "山﨑福也", "山崎 福也", "山﨑 福也", "ヤマサキサチヤ", "ヤマサキ サチヤ", "さちや", "サチヤ"]) {
+    const player = findFightersPlayerByName(name);
+    assert.equal(player?.name, "山﨑福也", name);
+    assert.equal(player?.uniformNumber, "18");
+  }
+  const resolved = resolveFightersRosterEntry({ number: "18", name: "山崎 福也" });
+  assert.equal(resolved.player?.name, "山﨑福也");
+  assert.equal(createFightersPlayerId(resolved.player?.uniformNumber), "F-18");
+});
+
+test("山﨑福也は公開masterでDH特殊候補・非アクティブとして管理する", () => {
+  assert.match(publicPlayers, /name:\s*"山﨑福也"[\s\S]*?uniformNumber:\s*"18"/);
+  assert.match(publicPlayers, /name:\s*"山﨑福也"[\s\S]*?registeredPosition:\s*"投手"/);
+  assert.match(publicPlayers, /name:\s*"山﨑福也"[\s\S]*?predictionCandidateRole:\s*"special_dh"/);
+  assert.match(publicPlayers, /name:\s*"山﨑福也"[\s\S]*?isActiveRoster:\s*false/);
+  assert.match(publicPlayers, /name:\s*"山﨑福也"[\s\S]*?positions:\s*\["指"\]/);
+});
+
 test("source rosterの未解決選手は捨てずにreason code付きATTENTION情報へ変換する", () => {
   const result = inspectFightersRosterMaster([
     { number: "95", name: "常谷 拓輝", position: "内野手" },

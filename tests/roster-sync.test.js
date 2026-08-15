@@ -99,17 +99,26 @@ test("空白表記を正規化し、前回成功スナップショットを一�
   assert.equal(isRosterSnapshotFresh({ fetchedAt: "2026-07-21T07:59:59.000Z" }, now), false);
 });
 
-test("現在状態テキストを出さず、最新スナップショットで選手一覧タブを絞り込む", () => {
+test("現在状態テキストを出さず、最新スナップショットで登録野手・その他を絞り込む", () => {
   const chip = getFunctionSource("createPlayerChip");
   assert.match(publicRoster, /deps\.isPlayerInCurrentRoster\(player\)/);
+  assert.match(publicRoster, /isRegisteredFielderCandidate/);
   assert.match(publicRoster, /player\?\.isBatterCandidate === true/);
   assert.match(publicRoster, /candidateRosterFilter/);
   assert.match(publicRoster, /data-roster-filter/);
-  assert.match(html, /data-roster-filter="active"[^>]*>登録済み/);
-  assert.match(html, /data-roster-filter="inactive"[^>]*>未登録/);
+  assert.match(html, /data-roster-filter="active"[^>]*>登録野手/);
+  assert.match(html, /data-roster-filter="inactive"[^>]*>その他/);
+  assert.doesNotMatch(html, />登録済み</);
+  assert.doesNotMatch(html, />未登録</);
   assert.doesNotMatch(html, /predictionRosterFilterCurrent|現在：出場登録/);
   assert.doesNotMatch(chip, /roster-status-badge|出場登録外/);
   assert.doesNotMatch(script, /predictionRosterFilterCurrent|roster-status-badge/);
+});
+
+test("矢澤宏太は投手の公式登録区分でもroster在籍時は登録野手候補として扱う", () => {
+  assert.match(players, /name:\s*"矢澤宏太"[\s\S]*?registeredPosition:\s*"投手"/);
+  assert.match(players, /name:\s*"矢澤宏太"[\s\S]*?predictionCandidateRole:\s*"fielder"/);
+  assert.match(players, /name:\s*"矢澤宏太"[\s\S]*?isBatterCandidate:\s*true/);
 });
 
 test("Workerは現在の出場選手一覧を直接取得し、ゼロ件を成功扱いにしない", () => {

@@ -110,7 +110,7 @@ test("公開画面は900px以上でも予想入力から結果までを縦積み
   assert.match(css, /@media \(max-width: 767px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
 });
 
-test("PCの登録済み・未登録選手一覧は2列カードgridで表示する", () => {
+test("PCの登録野手・その他選手一覧は2列カードgridで表示する", () => {
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)[\s\S]*max-width: 100%/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list[\s\S]*max-height: none[\s\S]*overflow: visible/);
   assert.doesNotMatch(css, /@media \(min-width: 900px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.player-list[\s\S]*grid-template-columns: repeat\(auto-fit/);
@@ -176,7 +176,7 @@ test("保存済み予想は打順・守備位置チップ・選手名ブロッ�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-roster-warning-clear-shibata-master-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-player-tabs-registered-fielders-other-sachiya-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

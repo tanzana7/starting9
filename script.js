@@ -342,7 +342,8 @@ const publicRosterController = publicFrontend.createPublicRosterController({
   getRosterSnapshotForCurrentGame,
   hasUsablePublicRosterForCurrentGame,
   getPlayerData,
-  isPlayerInCurrentRoster
+  isPlayerInCurrentRoster,
+  isRegisteredFielderCandidate
 });
 const publicPredictionFormController = publicFrontend.createPublicPredictionFormController({
   state,
@@ -1568,6 +1569,12 @@ function getRosterSnapshotForCurrentGame() {
 function isPlayerInCurrentRoster(player) {
   if (!hasUsablePublicRosterForCurrentGame()) return false;
   return state.publicRoster.players.some((entry) => rosterEntryMatchesPlayer(entry, player));
+}
+
+function isRegisteredFielderCandidate(player) {
+  if (!player || player.isBatterCandidate !== true) return false;
+  if (player.predictionCandidateRole === "special_dh") return false;
+  return isPlayerInCurrentRoster(player);
 }
 
 function rosterEntryMatchesPlayer(entry, player) {

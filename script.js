@@ -4598,7 +4598,6 @@ function showPlayerDetails(pickerName, playerName) {
       <p class="player-detail-notice">成績表示は準備中です。現在はNPBaseへのリンクから確認できます。</p>
       <div class="player-detail-links">
         <a href="${escapeHtml(npbasePlayerUrl)}" target="_blank" rel="noopener noreferrer">選手成績を見る（NPBase）</a>
-        <a href="${NPBASE_MATCHUPS_URL}" target="_blank" rel="noopener noreferrer">対予告先発成績（NPBase）</a>
       </div>
       <button class="primary-button player-detail-select" type="button">この選手を選択</button>
     </div>

@@ -27,7 +27,9 @@ test("詳細パネルは吉田の個別URL、他選手の汎用URL、NPBaseリ�
   assert.match(script, /const NPBASE_PLAYER_FALLBACK_URL = "https:\/\/npbase\.jp\/"/);
   assert.match(script, /function getNpbasePlayerUrl\(player\)/);
   assert.match(script, /選手成績を見る（NPBase）/);
-  assert.match(script, /対予告先発成績（NPBase）/);
+  assert.doesNotMatch(script, /対予告先発成績（NPBase）/);
+  assert.match(script, /function createProbableStarterHeadingHtml\(\)/);
+  assert.match(script, /対予告先発成績/);
   assert.match(script, /target="_blank" rel="noopener noreferrer"/);
   assert.match(script, /成績表示は準備中です。現在はNPBaseへのリンクから確認できます。/);
   assert.match(script, /この選手を選択/);
@@ -43,7 +45,7 @@ test("詳細パネルはPC modal、スマホ bottom sheet、閉じる操作を�
 });
 
 test("公開assetのcache busterは選手詳細版へ更新される", () => {
-  assert.match(html, /players\.js\?v=public-player-detail-yoshida-npbase-1/);
-  assert.match(html, /script\.js\?v=public-player-detail-yoshida-npbase-1/);
-  assert.match(html, /style\.css\?v=public-player-detail-yoshida-npbase-1/);
+  assert.match(html, /players\.js\?v=public-player-detail-remove-matchup-link-1/);
+  assert.match(html, /script\.js\?v=public-player-detail-remove-matchup-link-1/);
+  assert.match(html, /style\.css\?v=public-player-detail-remove-matchup-link-1/);
 });

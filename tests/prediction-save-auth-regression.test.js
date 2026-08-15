@@ -108,5 +108,5 @@ test("認証・締切・対象試合エラーを画面側で分離し、local保
   assert.match(clientSource, /PREDICTION_DEADLINE_PASSED/);
   assert.match(clientSource, /INVALID_GAME_ID/);
   assert.match(clientSource, /saveToStorage\(STORAGE_KEYS\.prediction, state\.prediction\)/);
-  assert.match(htmlSource, /script\.js\?v=public-probable-starter-npbase-link-1/);
+  assert.match(htmlSource, /script\.js\?v=public-player-detail-yoshida-npbase-1/);
 });

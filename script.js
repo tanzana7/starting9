@@ -11,6 +11,8 @@ const SCORE_MAX = 100;
 const SHARE_HASHTAGS = "#lovefighters #starting9";
 let resultShareImageBlob = null;
 let resultShareImageResultKey = "";
+let resultShareImagePreviewUrl = "";
+let resultShareImageGenerationPromise = null;
 const SCORE_RULES = {
   player: {
     perHit: 5,
@@ -4148,6 +4150,7 @@ function scrollToPredictionForm() {
 function renderScoreResult() {
   const result = publicResultsRenderer.renderScoreResult();
   renderResultShareControls();
+  void autoGenerateResultShareImage();
   return result;
 }
 
@@ -4468,11 +4471,35 @@ function renderResultShareControls() {
   if (resultKey !== resultShareImageResultKey) {
     resultShareImageBlob = null;
     resultShareImageResultKey = resultKey;
+    clearResultShareImagePreview();
   }
   const visible = Boolean(result && !result.serviceUnavailable);
   actions.classList.toggle("hidden", !visible);
   saveButton.disabled = !resultShareImageBlob;
   shareButton.classList.toggle("hidden", !canShareResultImage());
+}
+
+function clearResultShareImagePreview() {
+  const preview = document.getElementById("resultSharePreview");
+  const image = document.getElementById("resultSharePreviewImage");
+  if (resultShareImagePreviewUrl && typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
+    URL.revokeObjectURL(resultShareImagePreviewUrl);
+  }
+  resultShareImagePreviewUrl = "";
+  if (image) image.removeAttribute("src");
+  preview?.classList.add("hidden");
+}
+
+function renderResultShareImagePreview(blob) {
+  const preview = document.getElementById("resultSharePreview");
+  const image = document.getElementById("resultSharePreviewImage");
+  if (!preview || !image || !blob || typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return;
+  if (resultShareImagePreviewUrl && typeof URL.revokeObjectURL === "function") {
+    URL.revokeObjectURL(resultShareImagePreviewUrl);
+  }
+  resultShareImagePreviewUrl = URL.createObjectURL(blob);
+  image.src = resultShareImagePreviewUrl;
+  preview.classList.remove("hidden");
 }
 
 function getResultShareGameMeta(result) {
@@ -4611,6 +4638,7 @@ async function generateResultShareImage() {
   try {
     resultShareImageBlob = await createResultShareImageBlob(result);
     resultShareImageResultKey = getResultShareKey(result);
+    renderResultShareImagePreview(resultShareImageBlob);
     const saveButton = document.getElementById("saveResultImageButton");
     if (saveButton) saveButton.disabled = false;
     setResultShareMessage(canShareResultImage()
@@ -4619,6 +4647,25 @@ async function generateResultShareImage() {
   } catch (error) {
     setResultShareMessage(error?.message || "結果画像の生成に失敗しました。");
   }
+}
+
+async function autoGenerateResultShareImage() {
+  const result = getDisplayedResultForShare();
+  if (!result || result.serviceUnavailable) {
+    clearResultShareImagePreview();
+    return;
+  }
+  const resultKey = getResultShareKey(result);
+  if (resultShareImageBlob && resultShareImageResultKey === resultKey) {
+    renderResultShareImagePreview(resultShareImageBlob);
+    return;
+  }
+  if (resultShareImageGenerationPromise) return resultShareImageGenerationPromise;
+  resultShareImageGenerationPromise = generateResultShareImage()
+    .finally(() => {
+      resultShareImageGenerationPromise = null;
+    });
+  return resultShareImageGenerationPromise;
 }
 
 function saveResultShareImage() {

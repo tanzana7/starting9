@@ -16,13 +16,18 @@ test("共有ハッシュタグはlovefightersとstarting9だけに統一され�
 });
 
 test("結果共有UIに画像生成・保存・コピー・画像共有の導線がある", () => {
-  assert.match(html, /id="generateResultImageButton"[^>]*>結果画像を生成/);
+  assert.match(html, /id="resultSharePreview"[^>]*class="result-share-preview hidden"/);
+  assert.match(html, /id="resultSharePreviewImage"[^>]*alt="結果共有画像プレビュー"/);
+  assert.match(html, /id="generateResultImageButton"[^>]*>画像を再生成/);
   assert.match(html, /id="saveResultImageButton"[^>]*>結果画像を保存/);
   assert.match(html, /id="copyResultShareTextButton"[^>]*>投稿文をコピー/);
   assert.match(html, /id="shareResultImageButton"[^>]*>画像を共有/);
   assert.match(script, /addEventListener\("click", generateResultShareImage\)/);
   assert.match(script, /addEventListener\("click", saveResultShareImage\)/);
   assert.match(script, /addEventListener\("click", copyResultShareText\)/);
+  assert.match(script, /void autoGenerateResultShareImage\(\)/);
+  assert.match(script, /function autoGenerateResultShareImage\(\)/);
+  assert.match(script, /renderResultShareImagePreview\(resultShareImageBlob\)/);
 });
 
 test("結果画像はCanvasの1200x630 PNGとして必要情報を描画する", () => {
@@ -52,5 +57,5 @@ test("共有UIは公開画面で折り返し可能で、モバイル横幅を圧
   assert.match(style, /flex-wrap:\s*wrap/);
   assert.match(style, /\.result-share-actions button[\s\S]*min-width:\s*0/);
   assert.match(style, /@media \(max-width: 759px\)[\s\S]*\.result-share-actions button/);
-  assert.match(html, /public-result-share-image-lovefighters-starting9-1/);
+  assert.match(html, /public-auto-render-result-share-image-1/);
 });

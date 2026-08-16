@@ -36,7 +36,17 @@ test("指定されたファイターズ選手は確定済みNPBase個別URLを�
     "阪口樂": "https://npbase.jp/players/f-7tugjj",
     "大塚瑠晏": "https://npbase.jp/players/f-4plurc",
     "半田南十": "https://npbase.jp/players/f-1kg6l7k",
-    "山縣秀": "https://npbase.jp/players/f-pxuom"
+    "山縣秀": "https://npbase.jp/players/f-pxuom",
+    "明瀬諒介": "https://npbase.jp/players/f-1m5zpg7",
+    "常谷拓輝": "https://npbase.jp/players/f-v25xs7",
+    "柴田獅子": "https://npbase.jp/players/f-1u7vn8r",
+    "西川遥輝": "https://npbase.jp/players/f-1gddgeu",
+    "淺間大基": "https://npbase.jp/players/f-mtjvw6",
+    "宮崎一樹": "https://npbase.jp/players/f-f6j0np",
+    "エドポロケイン": "https://npbase.jp/players/f-ylxr6d",
+    "水谷瞬": "https://npbase.jp/players/f-2rkir7",
+    "山﨑福也": "https://npbase.jp/players/f-11yvncc",
+    "矢澤宏太": "https://npbase.jp/players/f-1krpu0l"
   };
 
   for (const [name, url] of Object.entries(expectedLinks)) {
@@ -46,6 +56,7 @@ test("指定されたファイターズ選手は確定済みNPBase個別URLを�
   }
   assert.equal((players.match(/npbasePlayerUrl:/g) || []).length, Object.keys(expectedLinks).length);
   assert.match(players, /aliases: \["吉田", "吉田賢", "吉田賢吾", "吉田 賢吾"/);
+  assert.doesNotMatch(players, /name: "西川愛也"/);
 });
 
 test("選手カードに選択と分離した詳細導線を持つ", () => {
@@ -88,7 +99,7 @@ test("詳細パネルはPC modal、スマホ bottom sheet、閉じる操作を�
 });
 
 test("公開assetのcache busterは追加NPBaseリンク版へ更新される", () => {
-  assert.match(html, /players\.js\?v=public-npbase-player-links-fighters-2/);
-  assert.match(html, /script\.js\?v=public-npbase-player-links-fighters-2/);
-  assert.match(html, /style\.css\?v=public-npbase-player-links-fighters-2/);
+  assert.match(html, /players\.js\?v=public-npbase-player-links-fighters-3/);
+  assert.match(html, /script\.js\?v=public-npbase-player-links-fighters-3/);
+  assert.match(html, /style\.css\?v=public-npbase-player-links-fighters-3/);
 });

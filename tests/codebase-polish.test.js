@@ -32,6 +32,6 @@ test("public static assets use the current cache buster and no dead ranking wrap
   const index = read("index.html");
   const script = read("script.js");
 
-  assert.match(index, /script\.js\?v=public-auto-render-result-share-image-1/);
+  assert.match(index, /script\.js\?v=public-remove-result-share-ui-1/);
   assert.doesNotMatch(script, /function\s+initializeYearlyRanking\s*\(/);
 });

@@ -67,7 +67,7 @@ test("通常画面はlocalStorageに残る旧管理試合カードを描画せ�
   const targetResolver = script.slice(noticeStart, noticeEnd);
   assert.match(targetResolver, /state\.predictionTargetGame\?\.internalGameId \|\| state\.probableStarter\.nextGame\?\.internalGameId/);
   assert.match(targetResolver, /internalGameId:/);
-  assert.match(index, /script\.js\?v=public-auto-render-result-share-image-1/);
+  assert.match(index, /script\.js\?v=public-remove-result-share-ui-1/);
 });
 
 test("公開ゲームAPIはFightersのcanonical games行と表示用チーム名を返す", () => {

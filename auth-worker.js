@@ -8042,8 +8042,8 @@ export function getPublicRosterBaselineUsableUntil(game, { now = new Date() } = 
   return schedule.predictionDeadline.toISOString();
 }
 
-export function buildPublicBaselineRosterResponse({ internalGameId = "", gameDate = "", snapshot = null, usableUntil = null } = {}) {
-  const players = isPublicRosterBaselineCandidate(snapshot)
+export function buildPublicBaselineRosterResponse({ internalGameId = "", gameDate = "", snapshot = null, usableUntil = null, now = new Date() } = {}) {
+  const players = isPublicRosterBaselineCandidate(snapshot, { now })
     ? getPublicRosterPlayers(snapshot)
     : [];
   return {

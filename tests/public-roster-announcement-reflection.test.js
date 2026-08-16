@@ -136,7 +136,8 @@ test("当日公示前は直近7日以内の同一球団snapshotを安全なbasel
     internalGameId,
     gameDate: "2026-08-11",
     snapshot: baselineSnapshot,
-    usableUntil: "2026-08-11T04:00:00.000Z"
+    usableUntil: "2026-08-11T04:00:00.000Z",
+    now: new Date("2026-08-10T00:00:00.000Z")
   });
   assert.equal(response.status, "baseline");
   assert.equal(response.displayRosterSource, "latest_official_snapshot");
@@ -505,7 +506,8 @@ test("fresh取得が遅延してもbaselineは予想締切まで利用できる"
     internalGameId,
     gameDate: "2026-08-11",
     snapshot: baselineSnapshot,
-    usableUntil: getPublicRosterBaselineUsableUntil(targetGame, { now: beforeDeadline })
+    usableUntil: getPublicRosterBaselineUsableUntil(targetGame, { now: beforeDeadline }),
+    now: beforeDeadline
   });
   assert.equal(response.status, "baseline");
   assert.equal(response.playerCount, 2);

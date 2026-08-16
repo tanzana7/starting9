@@ -26,7 +26,17 @@ test("指定されたファイターズ選手は確定済みNPBase個別URLを�
     "五十幡亮汰": "https://npbase.jp/players/f-1rd2j8y",
     "今川優馬": "https://npbase.jp/players/f-zwuzkb",
     "万波中正": "https://npbase.jp/players/f-yttgzb",
-    "レイエス": "https://npbase.jp/players/f-1tybbot"
+    "レイエス": "https://npbase.jp/players/f-1tybbot",
+    "マルティネス": "https://npbase.jp/players/f-fx01ju",
+    "清水優心": "https://npbase.jp/players/f-hrpoyu",
+    "リン": "https://npbase.jp/players/f-36873h",
+    "藤森海斗": "https://npbase.jp/players/f-13ny4he",
+    "梅林優貴": "https://npbase.jp/players/f-1uppkus",
+    "中島卓也": "https://npbase.jp/players/f-xefqsf",
+    "阪口樂": "https://npbase.jp/players/f-7tugjj",
+    "大塚瑠晏": "https://npbase.jp/players/f-4plurc",
+    "半田南十": "https://npbase.jp/players/f-1kg6l7k",
+    "山縣秀": "https://npbase.jp/players/f-pxuom"
   };
 
   for (const [name, url] of Object.entries(expectedLinks)) {
@@ -77,8 +87,8 @@ test("詳細パネルはPC modal、スマホ bottom sheet、閉じる操作を�
   assert.match(css, /@media \(max-width: 767px\)[\s\S]*\.player-detail-overlay[\s\S]*align-items: end[\s\S]*\.player-detail-dialog[\s\S]*border-radius: 16px 16px 0 0/);
 });
 
-test("公開assetのscript.js cache busterは案内文削除版へ更新される", () => {
-  assert.match(html, /players\.js\?v=public-npbase-player-links-fighters-1/);
-  assert.match(html, /script\.js\?v=public-player-detail-remove-preparing-text-1/);
-  assert.match(html, /style\.css\?v=public-player-detail-remove-preparing-text-1/);
+test("公開assetのcache busterは追加NPBaseリンク版へ更新される", () => {
+  assert.match(html, /players\.js\?v=public-npbase-player-links-fighters-2/);
+  assert.match(html, /script\.js\?v=public-npbase-player-links-fighters-2/);
+  assert.match(html, /style\.css\?v=public-npbase-player-links-fighters-2/);
 });

@@ -32,6 +32,6 @@ test("public static assets use the current cache buster and no dead ranking wrap
   const index = read("index.html");
   const script = read("script.js");
 
-  assert.match(index, /script\.js\?v=public-player-detail-remove-preparing-text-1/);
+  assert.match(index, /script\.js\?v=public-npbase-player-links-fighters-2/);
   assert.doesNotMatch(script, /function\s+initializeYearlyRanking\s*\(/);
 });

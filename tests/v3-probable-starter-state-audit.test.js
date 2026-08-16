@@ -60,7 +60,7 @@ test("dataStatus正規化と後続slot停止判定を共有する", () => {
   );
   assert.deepEqual(
     v3.shouldStopProbableStarterScheduling({ status: "announced", homePitcherName: "A", awayPitcherName: "B", startAt: "2026-08-07T09:00:00.000Z", now: "2026-08-07T03:00:00.000Z" }),
-    { shouldStopScheduling: true, normalizedDataStatus: "announced", reasonCode: "PROBABLE_STARTER_ALREADY_ANNOUNCED" }
+    { shouldStopScheduling: true, normalizedDataStatus: "announced", reasonCode: "PROBABLE_STARTER_ANNOUNCED" }
   );
 });
 

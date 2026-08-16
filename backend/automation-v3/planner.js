@@ -107,13 +107,6 @@ export async function planV3RosterJobs(db, games = [], now = new Date()) {
         reasonCode: rosterStatus.reasonCode,
         severity: rosterStatus.severity
       });
-      const gameStartAt = new Date(game.startAt || game.start_at || game.startTime || game.start_time || "");
-      if (!Number.isNaN(gameStartAt.getTime()) && current.getTime() >= gameStartAt.getTime()) {
-        diagnostic.planningSkipped = true;
-        diagnostic.skipReason = "ROSTER_GAME_ALREADY_STARTED";
-        planned.push({ game, plan: null, created: false, reasonCode: diagnostic.skipReason, diagnostic: { ...diagnostic } });
-        continue;
-      }
       if (!dueSlots.length) {
         diagnostic.planningSkipped = true;
         diagnostic.skipReason = "ROSTER_NOT_DUE";

@@ -4568,7 +4568,6 @@ function showPlayerDetails(pickerName, playerName) {
         <strong>守備候補</strong>
         ${positions}
       </div>
-      <p class="player-detail-notice">成績表示は準備中です。現在はNPBaseへのリンクから確認できます。</p>
       <div class="player-detail-links">
         <a href="${escapeHtml(npbasePlayerUrl)}" target="_blank" rel="noopener noreferrer">選手成績を見る（NPBase）</a>
       </div>

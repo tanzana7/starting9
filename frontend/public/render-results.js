@@ -18,7 +18,6 @@
 
     function renderScoreResult() {
       const container = document.getElementById("scoreResult");
-      const shareButton = document.getElementById("shareResultButton");
       const displayedResult = deps.state.resultHistory.result || deps.state.result;
       deps.renderScoreInsights(displayedResult?.comparison || null);
 
@@ -26,12 +25,10 @@
         container.className = "empty-state";
         if (deps.state.resultHistory.isLoading || deps.state.resultHistory.isDetailLoading) {
           container.textContent = "結果を読み込み中です。";
-          shareButton.classList.add("hidden");
           return;
         }
         if (deps.state.resultHistory.detailError) {
           container.textContent = deps.state.resultHistory.detailError;
-          shareButton.classList.add("hidden");
           return;
         }
         const resultStatus = deps.state.gameDayNotice.record?.resultStatus;
@@ -40,7 +37,6 @@
           : resultStatus === "preparing"
             ? "結果を準備中です。"
             : "採点すると結果が表示されます。";
-        shareButton.classList.add("hidden");
         return;
       }
 
@@ -73,7 +69,6 @@
         container.appendChild(publishedAt);
       }
       container.appendChild(deps.createResultView(deps.createResultViewModel(displayedResult)));
-      shareButton.classList.remove("hidden");
     }
 
     function renderDailyBestNine() {

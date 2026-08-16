@@ -9,9 +9,32 @@ const players = fs.readFileSync(path.join(root, "players.js"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
 
-test("吉田賢吾だけに確定済みNPBase個別URLを持たせる", () => {
-  assert.match(players, /name: "吉田賢吾"[\s\S]*?npbasePlayerUrl: "https:\/\/npbase\.jp\/players\/f-1ndh33l"/);
-  assert.equal((players.match(/npbasePlayerUrl:/g) || []).length, 1);
+test("指定されたファイターズ選手は確定済みNPBase個別URLを持つ", () => {
+  const expectedLinks = {
+    "郡司裕也": "https://npbase.jp/players/f-8yhj0v",
+    "進藤勇也": "https://npbase.jp/players/f-ckoojm",
+    "吉田賢吾": "https://npbase.jp/players/f-1ndh33l",
+    "田宮裕涼": "https://npbase.jp/players/f-17pwqx1",
+    "上川畑大悟": "https://npbase.jp/players/f-16ef16m",
+    "野村佑希": "https://npbase.jp/players/f-f0dol0",
+    "カストロ": "https://npbase.jp/players/f-1tx69x3",
+    "清宮幸太郎": "https://npbase.jp/players/f-1o4ka09",
+    "有薗直輝": "https://npbase.jp/players/f-1sp62if",
+    "水野達稀": "https://npbase.jp/players/f-ff2or2",
+    "細川凌平": "https://npbase.jp/players/f-48itsm",
+    "奈良間大己": "https://npbase.jp/players/f-1ogsyoy",
+    "五十幡亮汰": "https://npbase.jp/players/f-1rd2j8y",
+    "今川優馬": "https://npbase.jp/players/f-zwuzkb",
+    "万波中正": "https://npbase.jp/players/f-yttgzb",
+    "レイエス": "https://npbase.jp/players/f-1tybbot"
+  };
+
+  for (const [name, url] of Object.entries(expectedLinks)) {
+    const playerBlock = players.match(new RegExp(`name: "${name}"[\\s\\S]*?(?=\\n  \\},|$)`))?.[0];
+    assert.ok(playerBlock, `${name} のplayers master登録が見つかりません`);
+    assert.match(playerBlock, new RegExp(`npbasePlayerUrl: "${url.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}"`));
+  }
+  assert.equal((players.match(/npbasePlayerUrl:/g) || []).length, Object.keys(expectedLinks).length);
   assert.match(players, /aliases: \["吉田", "吉田賢", "吉田賢吾", "吉田 賢吾"/);
 });
 
@@ -54,8 +77,8 @@ test("詳細パネルはPC modal、スマホ bottom sheet、閉じる操作を�
   assert.match(css, /@media \(max-width: 767px\)[\s\S]*\.player-detail-overlay[\s\S]*align-items: end[\s\S]*\.player-detail-dialog[\s\S]*border-radius: 16px 16px 0 0/);
 });
 
-test("公開assetのcache busterは登録区分分離版へ更新される", () => {
-  assert.match(html, /players\.js\?v=public-player-detail-hide-internal-role-1/);
+test("公開assetのplayers.js cache busterはNPBaseリンク版へ更新される", () => {
+  assert.match(html, /players\.js\?v=public-npbase-player-links-fighters-1/);
   assert.match(html, /script\.js\?v=public-player-detail-hide-internal-role-1/);
   assert.match(html, /style\.css\?v=public-player-detail-hide-internal-role-1/);
 });

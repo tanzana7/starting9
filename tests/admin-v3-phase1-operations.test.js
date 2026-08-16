@@ -108,6 +108,14 @@ test("V3次の処理は現在時刻より未来の未完了処理を選び、完
   assert.equal(afterDeadline.nextActionAt, "2026-08-06T08:10:00.000Z");
 });
 
+test("期限到達済みの未完了処理は次の処理なしにせず要救済として返す", () => {
+  const schedule = v3.deriveV3DisplaySchedule({ gameDate: "2026-08-06", startAt: "2026-08-06T09:00:00.000Z" });
+  const overdue = v3.getV3NextAction({ schedule, state: "scheduled", now: "2026-08-06T09:05:00.000Z" });
+  assert.equal(overdue.nextAction, "roster_fetch");
+  assert.equal(overdue.nextActionAt, "2026-08-06T07:00:00.000Z");
+  assert.equal(overdue.isOverdue, true);
+});
+
 test("依存処理は予定未定ではなく前段完了後として返す", () => {
   const schedule = v3.deriveV3DisplaySchedule({ gameDate: "2026-08-06", startAt: "2026-08-06T09:00:00.000Z" });
   const scoring = v3.getV3NextAction({ schedule, state: "lineup_ready", now: "2026-08-06T09:05:00.000Z" });

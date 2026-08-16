@@ -548,17 +548,32 @@ export function getV3NextAction({ schedule, state = "scheduled", jobs = [], now 
     if (!enabled || completed(jobType)) return;
     for (const value of Array.isArray(values) ? values : [values]) {
       const at = new Date(value || "");
-      if (!Number.isNaN(at.getTime()) && at.getTime() > current.getTime()) candidates.push({ action, at });
+      if (!Number.isNaN(at.getTime())) {
+        candidates.push({ action, at, due: at.getTime() <= current.getTime() });
+      }
     }
   };
   add("prediction_close", schedule.predictionDeadline, "prediction_close", state === "scheduled");
   add("roster_fetch", schedule.rosterFetchSlots, "roster_fetch", !["lineup_ready", "scored", "ranked", "published"].includes(String(state)));
   add("lineup_fetch", schedule.lineupPollingSlots, "lineup_fetch", ["scheduled", "prediction_closed", "manual_action_required"].includes(String(state)));
   add("lineup_finalize", schedule.finalLineupAt, "lineup_finalize", ["scheduled", "prediction_closed", "manual_action_required"].includes(String(state)));
-  add("score", schedule.scoringEarliestAt, "score", ["scheduled", "prediction_closed", "lineup_ready", "manual_action_required"].includes(String(state)));
+  add("score", schedule.scoringEarliestAt, "score", ["scheduled", "prediction_closed"].includes(String(state)));
   add("publish", schedule.publicationAt, "publish", String(state) === "ranked");
-  const next = candidates.sort((left, right) => left.at.getTime() - right.at.getTime())[0];
+  const next = candidates
+    .filter((candidate) => !candidate.due)
+    .sort((left, right) => left.at.getTime() - right.at.getTime())[0];
   if (next) return { nextAction: next.action, nextActionAt: next.at.toISOString(), nextActionLabel: NEXT_ACTION_LABELS[next.action] };
+  const overdue = candidates
+    .filter((candidate) => candidate.due)
+    .sort((left, right) => left.at.getTime() - right.at.getTime())[0];
+  if (overdue) {
+    return {
+      nextAction: overdue.action,
+      nextActionAt: overdue.at.toISOString(),
+      nextActionLabel: NEXT_ACTION_LABELS[overdue.action],
+      isOverdue: true
+    };
+  }
   if (["lineup_ready", "manual_action_required"].includes(String(state)) && !completed("score")) {
     return { nextAction: "score_after_final_lineup", nextActionAt: null, nextActionLabel: "採点（正式スタメン確定後）" };
   }
@@ -669,13 +684,13 @@ export function shouldStopProbableStarterScheduling({
   if (normalizedDataStatus === "integrity_error") {
     return { shouldStopScheduling: true, normalizedDataStatus, reasonCode: "DATA_INTEGRITY_ERROR" };
   }
+  if (normalizedDataStatus === "announced") {
+    return { shouldStopScheduling: true, normalizedDataStatus, reasonCode: "PROBABLE_STARTER_ANNOUNCED" };
+  }
   const current = now instanceof Date ? now : new Date(now);
   const start = new Date(startAt || "");
   if (!Number.isNaN(current.getTime()) && !Number.isNaN(start.getTime()) && start.getTime() <= current.getTime()) {
     return { shouldStopScheduling: true, normalizedDataStatus, reasonCode: "PROBABLE_STARTER_GAME_STARTED" };
-  }
-  if (normalizedDataStatus === "announced") {
-    return { shouldStopScheduling: true, normalizedDataStatus, reasonCode: "PROBABLE_STARTER_ALREADY_ANNOUNCED" };
   }
   return { shouldStopScheduling: false, normalizedDataStatus, reasonCode: null };
 }

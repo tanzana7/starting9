@@ -89,8 +89,8 @@ test("監査observerが停止しても、lineup_finalizeの計画・claim・exec
     const state = database.prepare(
       "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1"
     ).get(internalGameId);
-    assert.equal(result.mainPlan.planned[0].plan.jobType, "lineup_finalize");
-    assert.equal(result.processed, 1);
+    assert.equal(result.mainPlan.planned.find((item) => item.plan?.jobType === "lineup_finalize")?.plan.jobType, "lineup_finalize");
+    assert.equal(result.processed, 2);
     assert.equal(job.job_type, "lineup_finalize");
     assert.equal(job.status, "completed");
     assert.equal(state.state, "lineup_ready");

@@ -429,7 +429,7 @@ test("V3ロースターplannerはslot前missingを待機監査し、slot後だ�
   }
 });
 
-test("試合開始後は未処理の過去slotがあってもroster jobを新規作成しない", async () => {
+test("試合開始後でもsnapshotが無ければ最新のroster slotを救済する", async () => {
   const database = new DatabaseSync(":memory:");
   try {
     database.exec(`
@@ -443,10 +443,10 @@ test("試合開始後は未処理の過去slotがあってもroster jobを新規
     `);
     const target = { ...game(), gameDate: "2026-08-11", startAt: "2026-08-11T05:00:00.000Z" };
     const result = await v3.planV3RosterJobs(d1(database), [target], new Date("2026-08-11T07:10:00.000Z"));
-    assert.equal(result.created, 0);
-    assert.equal(result.planned[0].reasonCode, "ROSTER_GAME_ALREADY_STARTED");
+    assert.equal(result.created, 1);
+    assert.equal(result.planned[0].reasonCode, "ROSTER_JOB_CREATED");
     assert.equal(result.diagnostics[0].selectedDueSlot, "2026-08-11T03:10:00.000Z");
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3").get().count, 0);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3").get().count, 1);
   } finally {
     database.close();
   }

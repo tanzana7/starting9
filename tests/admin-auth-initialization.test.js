@@ -5,6 +5,18 @@ const test = require("node:test");
 const vm = require("node:vm");
 const { loadPublicFrontendModules } = require("./helpers/load-public-frontend-modules.cjs");
 
+const FIXED_NOW = "2026-08-13T00:00:00.000Z";
+const NativeDate = Date;
+class FixedDate extends NativeDate {
+  constructor(...args) {
+    super(...(args.length ? args : [FIXED_NOW]));
+  }
+
+  static now() {
+    return NativeDate.parse(FIXED_NOW);
+  }
+}
+
 test("初回認証イベントを取りこぼしてもPromise完了後に公開認証依存APIを一度だけ呼ぶ", async () => {
   let resolveAuthReady;
   const authReady = new Promise((resolve) => {
@@ -52,6 +64,7 @@ test("初回認証イベントを取りこぼしてもPromise完了後に公開�
     clearInterval,
     clearTimeout,
     console,
+    Date: FixedDate,
     document,
     fetch: async (url) => {
       fetchUrls.push(url);

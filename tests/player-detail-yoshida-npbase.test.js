@@ -54,7 +54,7 @@ test("詳細パネルは吉田の個別URL、他選手の汎用URL、NPBaseリ�
   assert.match(script, /function createProbableStarterHeadingHtml\(\)/);
   assert.match(script, /対予告先発成績/);
   assert.match(script, /target="_blank" rel="noopener noreferrer"/);
-  assert.match(script, /成績表示は準備中です。現在はNPBaseへのリンクから確認できます。/);
+  assert.doesNotMatch(script, /成績表示は準備中です|現在はNPBaseへのリンクから確認できます/);
   assert.match(script, /この選手を選択/);
   assert.doesNotMatch(script, /NPBase公認|NPBase公式連携|提供: NPBase/);
 });
@@ -77,8 +77,8 @@ test("詳細パネルはPC modal、スマホ bottom sheet、閉じる操作を�
   assert.match(css, /@media \(max-width: 767px\)[\s\S]*\.player-detail-overlay[\s\S]*align-items: end[\s\S]*\.player-detail-dialog[\s\S]*border-radius: 16px 16px 0 0/);
 });
 
-test("公開assetのplayers.js cache busterはNPBaseリンク版へ更新される", () => {
+test("公開assetのscript.js cache busterは案内文削除版へ更新される", () => {
   assert.match(html, /players\.js\?v=public-npbase-player-links-fighters-1/);
-  assert.match(html, /script\.js\?v=public-remove-result-share-ui-1/);
-  assert.match(html, /style\.css\?v=public-remove-result-share-ui-1/);
+  assert.match(html, /script\.js\?v=public-player-detail-remove-preparing-text-1/);
+  assert.match(html, /style\.css\?v=public-player-detail-remove-preparing-text-1/);
 });

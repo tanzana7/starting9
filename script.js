@@ -1860,6 +1860,12 @@ function isPublicGamePublished(game, remoteState = state.predictionRemote) {
   return Boolean(game?.isPublished || game?.publicationStatus === "published" || (remoteMatchesGame && remoteState?.resultsPublished));
 }
 
+function getLatestPublicPublishedGame() {
+  return state.publicGameCatalog.games
+    .filter((game) => Boolean(game?.internalGameId) && isPublicGamePublished(game))
+    .sort((left, right) => getScheduleSortValue(right).localeCompare(getScheduleSortValue(left)))[0] || null;
+}
+
 function buildProbableStarterApiUrl(gameId) {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
   const game = gameId && typeof gameId === "object" ? gameId : { gameId };
@@ -2851,10 +2857,14 @@ async function refreshResultHistory({ force = false } = {}) {
     state.resultHistory.games = publicResultsRenderer.limitHistory(payload.games);
     state.resultHistory.isReady = true;
     state.resultHistory.message = state.resultHistory.games.length ? "" : "採点済みの過去試合はありません。";
-    const latestPublishedGame = state.resultHistory.games.find((game) => game?.resultsPublished && getResultHistoryGameId(game));
-    if (!state.resultHistory.selectedGameId && latestPublishedGame) {
-      await loadResultHistoryGame(getResultHistoryGameId(latestPublishedGame));
-    } else if (!latestPublishedGame && !state.resultHistory.selectedGameId) {
+    const latestPublicPublishedGame = getLatestPublicPublishedGame();
+    const latestParticipatedPublishedGame = latestPublicPublishedGame
+      ? state.resultHistory.games.find((game) => game?.resultsPublished
+        && getResultHistoryGameId(game) === getResultHistoryGameId(latestPublicPublishedGame))
+      : null;
+    if (!state.resultHistory.selectedGameId && latestParticipatedPublishedGame) {
+      await loadResultHistoryGame(getResultHistoryGameId(latestParticipatedPublishedGame));
+    } else if (!latestParticipatedPublishedGame && !state.resultHistory.selectedGameId) {
       state.resultHistory.result = null;
       clearStoredPublicResult();
       resetDailyBestNine("unpublished");

@@ -58,7 +58,7 @@ test("通常画面は自分が参加した最新の公開済み結果だけを�
 
 test("前回未参加時は最新結果カードを出さず、過去結果導線だけを残す", () => {
   assert.match(publicResultsRenderer, /result-history-no-participation/);
-  assert.match(publicResultsRenderer, /前回参加した試合結果はありません。過去の試合成績から確認できます。/);
+  assert.match(publicResultsRenderer, /参加していません。過去に参加した試合は「過去の試合成績を見る」から確認できます。/);
   assert.match(publicResultsRenderer, /前回\（\$\{date\}）の採点結果/);
   assert.match(publicResultsRenderer, /legend\.classList\.toggle\("hidden", !hasResult\)/);
   assert.match(script, /state\.resultHistory\.games = publicResultsRenderer\.limitHistory\(payload\.games\)/);

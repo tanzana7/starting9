@@ -141,7 +141,7 @@ test("スマホでも選択UIを追加せず、補助表示と既存導線を維
 });
 
 test("公開画面のJS/CSS cache busterを更新する", () => {
-  assert.match(html, /style\.css\?v=public-release-prep-audit-1/);
+  assert.match(html, /style\.css\?v=public-legal-contact-pages-1/);
   assert.match(html, /script\.js\?v=public-release-prep-audit-1/);
 });
 

@@ -19,6 +19,44 @@ test("公開HTMLには公開準備向けの基本メタ情報があり、noindex
   assert.doesNotMatch(html, /name="robots" content="noindex/i);
 });
 
+test("公開トップと遊び方から利用規約・プライバシー・問い合わせへ移動できる", () => {
+  for (const file of ["index.html", "how-to-play.html"]) {
+    const html = read(file);
+    assert.match(html, /href="\.\/how-to-play\.html"/);
+    assert.match(html, /href="\.\/terms\.html"/);
+    assert.match(html, /href="\.\/privacy\.html"/);
+    assert.match(html, /href="\.\/contact\.html"/);
+  }
+});
+
+test("法務・問い合わせページは公開ページとしてmeta情報と相互導線を持つ", () => {
+  for (const file of ["terms.html", "privacy.html", "contact.html"]) {
+    const html = read(file);
+    assert.match(html, /<title>Starting9 \| [^<]+<\/title>/);
+    assert.match(html, /<meta name="description" content="[^"]+">/);
+    assert.match(html, /<meta property="og:title"/);
+    assert.match(html, /<meta property="og:description"/);
+    assert.doesNotMatch(html, /name="robots" content="noindex/i);
+    assert.match(html, /href="\.\/terms\.html"/);
+    assert.match(html, /href="\.\/privacy\.html"/);
+    assert.match(html, /href="\.\/contact\.html"/);
+  }
+});
+
+test("法務・問い合わせページは非公式サービスと外部リンク方針を明記する", () => {
+  const terms = read("terms.html");
+  const privacy = read("privacy.html");
+  const contact = read("contact.html");
+  assert.match(terms, /NPB、球団、選手、NPBaseその他の団体・サービスとは公式な関係がありません/);
+  assert.doesNotMatch(`${terms}${privacy}${contact}`, /NPBase公認|NPBase公式連携|NPBaseのデータを転載|スクレイピング|キャッシュ/);
+  assert.match(privacy, /Cloudflare Pages、Cloudflare Workers、Cloudflare D1/);
+  assert.match(privacy, /外部サイトのデータを転載・収集・保存するものではありません/);
+  assert.match(contact, /https:\/\/x\.com\/n3_mmy/);
+  assert.match(contact, /不具合報告/);
+  assert.match(contact, /削除依頼/);
+  assert.match(contact, /リンク掲載/);
+});
+
 test("公開画面に管理・修復・fixtureの一般導線やdebug残骸を含めない", () => {
   const html = read("index.html");
   const script = read("script.js");

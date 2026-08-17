@@ -24,10 +24,10 @@ function loadPublicModule(name, extra = {}) {
 
 test("公開画面のentry pointは分割moduleを読み込んでCoordinatorを一経路で起動する", () => {
   const moduleScripts = ["state", "request-guard", "storage", "api-client", "app-coordinator", "render-results", "render-ranking", "roster", "prediction-form"];
-  const scriptOffset = html.indexOf("script.js?v=public-lazy-load-result-history-1");
+  const scriptOffset = html.indexOf("script.js?v=public-optimize-initial-load-noncritical-1");
   assert.ok(scriptOffset > 0);
   moduleScripts.forEach((name) => {
-    const offset = html.indexOf(`${modulePath(name)}?v=public-lazy-load-result-history-1`);
+    const offset = html.indexOf(`${modulePath(name)}?v=public-optimize-initial-load-noncritical-1`);
     assert.ok(offset >= 0, `${name} module is loaded`);
     assert.ok(offset < scriptOffset, `${name} loads before the entry point`);
   });
@@ -63,6 +63,28 @@ test("公開リクエストはsequenceとAbortControllerで古い応答を無効
   assert.equal(requests.catalog.controller.signal.aborted, false);
 });
 
+test("公開メタデータは同一タブの短TTLキャッシュを再利用する", async () => {
+  const values = new Map();
+  let requestCount = 0;
+  const publicFrontend = loadPublicModule("api-client", {
+    sessionStorage: {
+      getItem: (key) => values.get(key) || null,
+      setItem: (key, value) => values.set(key, value),
+      removeItem: (key) => values.delete(key)
+    }
+  });
+  const client = publicFrontend.createPublicApiClient(async () => {
+    requestCount += 1;
+    return { ok: true, status: 200, json: async () => ({ ok: true, value: requestCount }) };
+  });
+  const first = await client.getCached("/api/public/games", { cacheKey: "public-games-test", ttlMs: 30_000 });
+  const second = await client.getCached("/api/public/games", { cacheKey: "public-games-test", ttlMs: 30_000 });
+  assert.equal(first.fromCache, false);
+  assert.equal(second.fromCache, true);
+  assert.equal(requestCount, 1);
+  assert.equal(JSON.stringify(second.payload), JSON.stringify(first.payload));
+});
+
 test("canonicalゲーム設定はlegacy/localStorageの古い試合を予想対象へ戻さない", () => {
   const start = script.indexOf("function setPublicCurrentGame");
   const end = script.indexOf("async function initializePublicGameCatalog", start);
@@ -83,6 +105,15 @@ test("予想保存・リセット・アカウント同期は最新結果表示�
 });
 
 test("公開画面のキャッシュバスターはmodule分割版へ更新される", () => {
-  assert.match(html, /script\.js\?v=public-lazy-load-result-history-1/);
-  assert.match(html, /style\.css\?v=public-lazy-load-result-history-1/);
+  assert.match(html, /script\.js\?v=public-optimize-initial-load-noncritical-1/);
+  assert.match(html, /style\.css\?v=public-optimize-initial-load-noncritical-1/);
+});
+
+test("認証後の補助データはcritical UIの完了後にアイドル開始する", () => {
+  const coordinator = read(modulePath("app-coordinator"));
+  assert.match(coordinator, /ops\.syncPredictionFromAccount\(\{ force: true \}\)/);
+  assert.match(coordinator, /ops\.refreshResultHistory\(\{ force: true \}\)/);
+  assert.match(coordinator, /requestIdleCallback/);
+  assert.match(coordinator, /ops\.refreshYearlyRanking\(\{ force: true \}\)/);
+  assert.match(coordinator, /ops\.fetchUserAchievements\(\{ force: true \}\)/);
 });

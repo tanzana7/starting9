@@ -33,7 +33,7 @@
       // Keep the first paint independent from the public catalog and all optional data.
       // Game-dependent work starts after the catalog resolves, while auth/result metadata
       // can make progress in parallel.
-      void ops.fetchPreviousResultGame({ force: true });
+      void ops.fetchPreviousResultGame({ force: false });
       void ops.initializeAuthDependentFeatures().catch((error) => {
         console.error("認証依存の後続初期化に失敗しました", error);
       });
@@ -66,19 +66,32 @@
       this.appState.requests.auth.promise = (async () => {
         ops.renderPredictionCta();
         ops.renderDailyBestNine();
-        const results = await Promise.allSettled([
+        const criticalResults = await Promise.allSettled([
           ops.syncPredictionFromAccount({ force: true }),
-          ops.fetchUserAchievements({ force: true }),
-          ops.refreshYearlyRanking({ force: true }),
-          this.state.rankingView === "monthly" ? ops.refreshMonthlyRanking({ force: true }) : Promise.resolve(),
-          this.state.rankingView === "weekly" ? ops.refreshWeeklyRanking({ force: true }) : Promise.resolve(),
           ops.refreshResultHistory({ force: true })
         ]);
-        results.forEach((result) => {
+        criticalResults.forEach((result) => {
           if (result.status === "rejected") {
             console.error("公開画面の認証依存更新に失敗しました", result.reason?.message || "unknown error");
           }
         });
+        const loadNonCritical = () => Promise.allSettled([
+          ops.fetchUserAchievements({ force: true }),
+          ops.refreshYearlyRanking({ force: true }),
+          this.state.rankingView === "monthly" ? ops.refreshMonthlyRanking({ force: true }) : Promise.resolve(),
+          this.state.rankingView === "weekly" ? ops.refreshWeeklyRanking({ force: true }) : Promise.resolve()
+        ]).then((results) => {
+          results.forEach((result) => {
+            if (result.status === "rejected") {
+              console.error("公開画面の補助データ更新に失敗しました", result.reason?.message || "unknown error");
+            }
+          });
+        });
+        if (typeof window?.requestIdleCallback === "function") {
+          window.requestIdleCallback(() => { void loadNonCritical(); }, { timeout: 1500 });
+        } else {
+          setTimeout(() => { void loadNonCritical(); }, 0);
+        }
       })().finally(() => {
         if (this.appState.requests.auth.sequence === requestId) {
           this.appState.requests.auth.promise = null;

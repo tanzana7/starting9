@@ -82,8 +82,8 @@ test("公開結果は予想入力状態から独立して保持し、履歴一�
 });
 
 test("通常画面の公開結果修正は新しいcache busterを使う", () => {
-  assert.match(html, /style\.css\?v=public-lazy-load-result-history-1/);
-  assert.match(html, /script\.js\?v=public-lazy-load-result-history-1/);
+  assert.match(html, /style\.css\?v=public-optimize-initial-load-noncritical-1/);
+  assert.match(html, /script\.js\?v=public-optimize-initial-load-noncritical-1/);
 });
 
 test("結果表示の公開文言は前回基準で、旧採点待ち文言を残さない", () => {
@@ -117,7 +117,7 @@ test("前回公開試合APIは公開ゲーム一覧と分離し、過去・当�
 
 test("前回結果の読み込みはランキング・ベストナインの完了を待たずに開始する", () => {
   const coordinatorStart = fs.readFileSync(path.join(root, "frontend", "public", "app-coordinator.js"), "utf8");
-  assert.match(coordinatorStart, /void ops\.fetchPreviousResultGame\(\{ force: true \}\)/);
+  assert.match(coordinatorStart, /void ops\.fetchPreviousResultGame\(\{ force: false \}\)/);
   assert.match(coordinatorStart, /void ops\.initializePublicGameCatalog\(\)\s*\.then/);
   assert.match(coordinatorStart, /void Promise\.allSettled\(\[[\s\S]*ops\.initializePredictionRemoteSync\(\),[\s\S]*ops\.initializeDailyBestNine\(\)[\s\S]*\]\)/);
   assert.doesNotMatch(coordinatorStart, /await ops\.initializePublicGameCatalog\(\)/);

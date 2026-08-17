@@ -34,7 +34,7 @@ test("通常の予想CTAは現在のcanonical予想対象だけへスクロー�
   assert.match(script, /function handlePredictionCtaClick\(\)/);
   assert.match(script, /scrollToPredictionForm\(\);/);
   assert.doesNotMatch(script, /次の試合を予想する/);
-  assert.match(html, /<h2 id="result-title">最新の採点結果<\/h2>/);
+  assert.match(html, /<h2 id="result-title">前回の採点結果<\/h2>/);
   assert.match(script, /<p class="result-label">合計点<\/p>/);
   assert.match(script, /perfectLabel: result\.total === SCORE_MAX \? "完全一致"/);
 });
@@ -51,5 +51,5 @@ test("通常画面の結果と履歴は内部識別子を表示せず、メイ�
 });
 
 test("通常画面の次戦導線は新しいscript cache busterで配信する", () => {
-  assert.match(html, /script\.js\?v=public-hide-comparison-default-own-latest-result-1/);
+  assert.match(html, /script\.js\?v=public-previous-result-wording-1/);
 });

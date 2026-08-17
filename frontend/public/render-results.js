@@ -27,11 +27,41 @@
       return participated ? storedResult : null;
     }
 
+    function getLatestPublicPublishedGame() {
+      const games = Array.isArray(deps.state.publicGameCatalog?.games)
+        ? deps.state.publicGameCatalog.games
+        : [];
+      return games
+        .filter((game) => Boolean(game?.internalGameId)
+          && (game?.isPublished || game?.publicationStatus === "published"))
+        .sort((left, right) => String(right?.startAt || right?.date || "").localeCompare(String(left?.startAt || left?.date || "")))[0] || null;
+    }
+
+    function formatPreviousResultDate(game) {
+      const rawDate = String(game?.gameDate || game?.date || "");
+      const match = rawDate.match(/(?:^|\/)(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+      if (match) return `${Number(match[2])}/${Number(match[3])}`;
+      const shortMatch = rawDate.match(/^(\d{1,2})[-/](\d{1,2})$/);
+      return shortMatch ? `${Number(shortMatch[1])}/${Number(shortMatch[2])}` : "";
+    }
+
+    function updateResultHeader(game, hasResult) {
+      const heading = document.getElementById("result-title");
+      const legend = document.getElementById("result-legend");
+      const date = formatPreviousResultDate(game);
+      if (heading) heading.textContent = date ? `前回（${date}）の採点結果` : "前回の採点結果";
+      if (legend) legend.classList.toggle("hidden", !hasResult);
+    }
+
     function renderScoreResult() {
       const container = document.getElementById("scoreResult");
       if (!container) return;
       const history = deps.state.resultHistory;
       const displayedResult = getDisplayedResult();
+      const selectedGame = displayedResult
+        ? history.games.find((game) => deps.getResultHistoryGameId(game) === displayedResult.gameId)
+        : null;
+      updateResultHeader(selectedGame || getLatestPublicPublishedGame(), Boolean(displayedResult));
       // Keep score comparison data available internally, but do not render it in the public result UI for now.
 
       if (!displayedResult) {
@@ -57,9 +87,9 @@
         const resultStatus = deps.state.gameDayNotice.record?.resultStatus;
         container.textContent = resultStatus === "prestart"
           ? "結果は試合開始後に公開されます。"
-          : resultStatus === "preparing"
-            ? "結果を準備中です。"
-            : "採点すると結果が表示されます。";
+            : resultStatus === "preparing"
+              ? "結果を準備中です。"
+              : "結果公開後に表示されます。";
         return;
       }
 
@@ -78,7 +108,6 @@
 
       container.className = "summary-box";
       container.innerHTML = "";
-      const selectedGame = deps.state.resultHistory.games.find((game) => deps.getResultHistoryGameId(game) === displayedResult.gameId);
       const resultHeading = document.createElement("p");
       resultHeading.className = "result-selected-game";
       resultHeading.textContent = selectedGame

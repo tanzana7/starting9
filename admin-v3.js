@@ -1,6 +1,4 @@
 const V3_AUTH_PRODUCTION_BASE = "https://starting9-auth.tanzana7.workers.dev";
-// RELEASE_DEBUG_PERFECT_SCORE_FIXTURE is shown only in the admin preview panel.
-const RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY = "release_full_score_debug_1";
 const adminV3Modules = window.Starting9AdminV3;
 
 if (!adminV3Modules?.createAdminV3State
@@ -63,7 +61,7 @@ const V3_JOB_LABELS = {
 
 // The entrypoint owns screen-specific rendering. State, authenticated requests, and
 // event coordination live in focused classic-script modules loaded by admin-v3.html.
-const v3State = adminV3Modules.createAdminV3State({ releaseFixtureKey: RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY });
+const v3State = adminV3Modules.createAdminV3State();
 const v3Api = adminV3Modules.createAdminV3ApiClient({
   fetchImpl: window.fetch.bind(window),
   location: window.location,
@@ -696,7 +694,7 @@ async function executeRankingReset() {
   }
 }
 
-async function previewPerfectScore(mode = "perfect") {
+async function previewPerfectScore() {
   const game = selectedV3Game(v3ListItems(v3State.payload?.games, "games"));
   if (!game || v3State.perfectScorePreview.loading) return;
   const reason = v3State.perfectScorePreview.reason.trim();
@@ -710,8 +708,6 @@ async function previewPerfectScore(mode = "perfect") {
   try {
     v3State.perfectScorePreview.result = await v3Api.previewPerfectScore({
       internalGameId: game.internalGameId,
-      mode,
-      ...(mode === "fixture" ? { fixtureKey: RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY } : {}),
       reason
     });
   } catch (error) {

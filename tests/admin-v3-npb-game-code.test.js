@@ -71,8 +71,8 @@ test("V3管理画面はNPB識別情報を読み取り表示し、手動上書き
   assert.match(diagnostics, /DB away/);
   assert.ok(diagnostics.includes("${escapeHtml(game.homeTeam)} vs ${escapeHtml(game.awayTeam)}"));
   assert.match(client, /loadV3OperationDetails/);
-  assert.match(page, /admin-v3\.css\?v=admin-v3-roster-source-snapshot-mismatch-1/);
-  assert.match(page, /admin-v3\.js\?v=admin-v3-roster-source-snapshot-mismatch-1/);
+  assert.match(page, /admin-v3\.css\?v=public-release-fixture-cleanup-1/);
+  assert.match(page, /admin-v3\.js\?v=public-release-fixture-cleanup-1/);
 });
 
 test("home/away修正APIはinternalGameId単位で関連データの影響を警告する", () => {

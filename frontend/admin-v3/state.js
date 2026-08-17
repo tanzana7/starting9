@@ -1,7 +1,7 @@
 (function registerAdminV3State(global) {
   "use strict";
 
-  function createAdminV3State({ releaseFixtureKey }) {
+  function createAdminV3State() {
     return {
       payload: null,
       view: "dashboard",
@@ -32,8 +32,7 @@
         reason: "",
         loading: false,
         result: null,
-        error: "",
-        fixtureKey: releaseFixtureKey
+        error: ""
       }
     };
   }

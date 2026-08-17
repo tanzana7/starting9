@@ -3233,36 +3233,56 @@ textarea:focus {
   background: #f7fbff;
 }
 
-/* 保存済み予想は、行ではなく打順・守備位置・選手名を個別に見せる。 */
+/* 保存済み予想は、打順・守備位置・選手名を揃えた簡易スタメン表として見せる。 */
 body:not(:has(.app-layout.is-admin-screen)) .lineup-list {
   gap: 10px;
 }
 
-body:not(:has(.app-layout.is-admin-screen)) .lineup-list li.saved-lineup-row {
-  grid-template-columns: 48px minmax(0, 1fr);
+body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-table-header {
+  display: grid;
+  grid-template-columns: 48px 40px minmax(0, 1fr);
   gap: 12px;
   align-items: center;
-  padding: 8px 10px;
+  margin: 12px 0 0;
+  padding: 7px 10px;
+  border: 1px solid var(--fighters-deep-blue);
+  border-radius: 5px 5px 0 0;
+  color: #ffffff;
+  background: var(--fighters-deep-blue);
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-table-header span:nth-child(2) {
+  text-align: center;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .lineup-list li.saved-lineup-row {
+  grid-template-columns: 48px 40px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 7px 10px;
   border: 1px solid #d9dee7;
-  border-radius: 7px;
+  border-radius: 0;
   background: #ffffff;
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-order {
+  grid-column: 1;
   color: var(--fighters-deep-blue);
   font-weight: 900;
   white-space: nowrap;
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-detail {
-  display: flex;
+  display: contents;
   min-width: 0;
-  align-items: center;
-  gap: 8px;
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .saved-position-chip.result-position-tile {
-  flex: 0 0 32px;
+  grid-column: 2;
+  justify-self: center;
   width: 32px;
   height: 32px;
   box-shadow: none;
@@ -3270,15 +3290,15 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-position-chip.result-position
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-name {
+  grid-column: 3;
   box-sizing: border-box;
-  flex: 0 0 108px;
-  width: 108px;
-  min-width: 108px;
-  max-width: 108px;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
   overflow-wrap: anywhere;
   padding: 7px 10px;
   border: 1px solid #d9dee7;
-  border-radius: 6px;
+  border-radius: 3px;
   background: #ffffff;
   color: var(--text);
   font-weight: 800;
@@ -3289,14 +3309,17 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-name {
     gap: 8px;
   }
 
-  body:not(:has(.app-layout.is-admin-screen)) .lineup-list li.saved-lineup-row {
-    grid-template-columns: 42px minmax(0, 1fr);
-    gap: 8px;
-    padding: 8px;
+  body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-table-header {
+    grid-template-columns: 40px 38px minmax(0, 1fr);
+    gap: 7px;
+    margin-top: 10px;
+    padding: 6px 7px;
   }
 
-  body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-detail {
-    gap: 6px;
+  body:not(:has(.app-layout.is-admin-screen)) .lineup-list li.saved-lineup-row {
+    grid-template-columns: 40px 38px minmax(0, 1fr);
+    gap: 7px;
+    padding: 7px;
   }
 }
 

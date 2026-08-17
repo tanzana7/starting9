@@ -8,6 +8,7 @@ const root = path.join(__dirname, "..");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
+const publicResultsRenderer = fs.readFileSync(path.join(root, "frontend/public/render-results.js"), "utf8");
 
 function sourceForFunction(name) {
   const start = script.indexOf(`function ${name}(`);
@@ -66,6 +67,11 @@ test("比較データがある場合は値のあるカードだけを表示で�
   assert.match(source, /top: comparison\?\.top \?\? comparison\?\.topPercent \?\? comparison\?\.percentile/);
   assert.match(source, /card\.classList\.toggle\("hidden", !hasValue\)/);
   assert.match(source, /valueElement\.textContent = hasValue \? String\(value\) : ""/);
+});
+
+test("公開結果画面ではスコア比較ブロックを表示しない", () => {
+  assert.match(html, /<section id="scoreInsights" class="score-insights hidden"/);
+  assert.doesNotMatch(publicResultsRenderer, /deps\.renderScoreInsights\(/);
 });
 
 test("実際の打順照合は内部処理として維持し、結果テーブルには表示しない", () => {

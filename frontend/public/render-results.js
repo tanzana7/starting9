@@ -19,7 +19,7 @@
     function renderScoreResult() {
       const container = document.getElementById("scoreResult");
       const displayedResult = deps.state.resultHistory.result || deps.state.result;
-      deps.renderScoreInsights(displayedResult?.comparison || null);
+      // Keep score comparison data available internally, but do not render it in the public result UI for now.
 
       if (!displayedResult) {
         container.className = "empty-state";

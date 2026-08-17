@@ -67,7 +67,7 @@ test("通常画面はlocalStorageに残る旧管理試合カードを描画せ�
   const targetResolver = script.slice(noticeStart, noticeEnd);
   assert.match(targetResolver, /state\.predictionTargetGame\?\.internalGameId \|\| state\.probableStarter\.nextGame\?\.internalGameId/);
   assert.match(targetResolver, /internalGameId:/);
-  assert.match(index, /script\.js\?v=public-npbase-player-links-fighters-3/);
+  assert.match(index, /script\.js\?v=public-hide-score-comparison-block-1/);
 });
 
 test("公開ゲームAPIはFightersのcanonical games行と表示用チーム名を返す", () => {

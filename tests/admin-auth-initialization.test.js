@@ -113,12 +113,13 @@ test("初回認証イベントを取りこぼしてもPromise完了後に公開�
 
   resolveAuthReady();
   await initialization;
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.deepEqual(fetchUrls, [
+    "https://starting9-auth.tanzana7.workers.dev/api/results/games",
     "https://starting9-auth.tanzana7.workers.dev/api/me/achievements",
     "https://starting9-auth.tanzana7.workers.dev/api/rankings/weekly?weekStart=2026-08-10&limit=50&qualifiedOnly=false",
-    "https://starting9-auth.tanzana7.workers.dev/api/me/ranking/weekly?weekStart=2026-08-10",
-      "https://starting9-auth.tanzana7.workers.dev/api/results/games"
+    "https://starting9-auth.tanzana7.workers.dev/api/me/ranking/weekly?weekStart=2026-08-10"
   ]);
   assert.equal(fetchUrls.some((url) => url.includes("/api/admin/")), false);
   assert.equal((listeners.get("starting9-auth-state-changed") || []).length, 1);

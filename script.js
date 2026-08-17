@@ -38,6 +38,8 @@ const YEARLY_RANKING_MIN_YEAR = 2020;
 const RANKING_SERVICE_START_YEAR = 2026;
 const PREDICTION_DEADLINE_REFRESH_MS = 30 * 1000;
 const ROSTER_SNAPSHOT_CACHE_TTL_MS = 60 * 60 * 1000;
+const PUBLIC_GAMES_SESSION_CACHE_TTL_MS = 30 * 1000;
+const PREVIOUS_RESULT_SESSION_CACHE_TTL_MS = 30 * 1000;
 const AUTO_FILL_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "指"]);
 const OUTFIELD_POSITIONS = ["左", "中", "右"];
 // 日程・NPB取得の長いチームコードは維持し、選手IDだけ短い球団IDを使います。
@@ -383,6 +385,15 @@ const publicPredictionFormController = publicFrontend.createPublicPredictionForm
   renderScoreResult,
   deletePredictionFromAccount
 });
+
+function schedulePublicNonCritical(callback) {
+  if (typeof window?.requestIdleCallback === "function") {
+    window.requestIdleCallback(callback, { timeout: 1500 });
+    return;
+  }
+  setTimeout(callback, 0);
+}
+
 const publicAppCoordinator = new publicFrontend.PublicAppCoordinator({
   appState,
   state,
@@ -436,17 +447,27 @@ async function initializeAuthDependentFeatures() {
   await ready;
   // 初期イベントは待機中に発火していても、解決済みPromiseから現在状態を必ず評価できます。
   window.addEventListener("starting9-auth-state-changed", handleAuthStateChanged);
-  // 認証依存の取得は公開カタログを待たず、結果・ランキング・実績を並行して開始します。
-    const results = await Promise.allSettled([
-      fetchUserAchievements({ force: true }),
-      refreshWeeklyRanking({ force: true }),
-      refreshResultHistory({ force: true })
-    ]);
-    results.forEach((result, index) => {
-      if (result.status === "rejected") {
-        const labels = ["実績", "ランキング", "過去結果"];
-      console.error(`${labels[index]}の初期化に失敗しました`, result.reason?.message || "unknown error");
+  // 前回結果だけを先に確定し、実績・ランキングは初回描画後のアイドル時間に回します。
+  const resultStatus = await Promise.allSettled([
+    refreshResultHistory({ force: false })
+  ]);
+  resultStatus.forEach((result) => {
+    if (result.status === "rejected") {
+      console.error("過去結果の初期化に失敗しました", result.reason?.message || "unknown error");
     }
+  });
+  schedulePublicNonCritical(() => {
+    void Promise.allSettled([
+      fetchUserAchievements({ force: false }),
+      refreshWeeklyRanking({ force: false })
+    ]).then((results) => {
+      results.forEach((result, index) => {
+        if (result.status === "rejected") {
+          const labels = ["実績", "ランキング"];
+          console.error(`${labels[index]}の初期化に失敗しました`, result.reason?.message || "unknown error");
+        }
+      });
+    });
   });
 }
 
@@ -1843,7 +1864,11 @@ async function initializePublicGameCatalog() {
     let apiGames = [];
     const url = buildPublicGamesApiUrl();
     if (url) {
-      const { response, payload } = await publicApiClient.get(url, { signal: request.signal });
+      const { response, payload } = await publicApiClient.getCached(url, {
+        cacheKey: "public-games",
+        ttlMs: PUBLIC_GAMES_SESSION_CACHE_TTL_MS,
+        signal: request.signal
+      });
       if (response.ok && payload?.ok && Array.isArray(payload.games)) {
         apiGames = payload.games;
       }
@@ -1892,7 +1917,13 @@ async function fetchPreviousResultGame({ force = false } = {}) {
   syncPublicAppState();
   renderScoreResult();
   try {
-    const { response, payload } = await publicApiClient.get(url, { signal: request.signal });
+    const requestOptions = {
+      cacheKey: "previous-result-game",
+      ttlMs: PREVIOUS_RESULT_SESSION_CACHE_TTL_MS,
+      signal: request.signal
+    };
+    if (force) requestOptions.cache = "no-store";
+    const { response, payload } = await publicApiClient.getCached(url, requestOptions);
     if (!response.ok || !payload?.ok || (payload.game !== null && typeof payload.game !== "object")) {
       throw new Error(payload?.error || `HTTP ${response.status}`);
     }

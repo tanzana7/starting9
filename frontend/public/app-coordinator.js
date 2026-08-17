@@ -26,25 +26,34 @@
       ops.buildLineupPicker("prediction", "predictionLineup", "predictionPlayers");
       ops.loadState();
       ops.bindEvents();
+      this.state.publicGameCatalog.isLoading = true;
       ops.syncPublicAppState();
       ops.renderAll();
 
-      await ops.initializePublicGameCatalog();
-      ops.startPredictionDeadlineTicker();
-
+      // Keep the first paint independent from the public catalog and all optional data.
+      // Game-dependent work starts after the catalog resolves, while auth/result metadata
+      // can make progress in parallel.
       void ops.fetchPreviousResultGame({ force: true });
-      const probablePromise = ops.initializeProbableStarter();
-      const rosterPromise = ops.initializeRosterCandidateSync();
-      const authPromise = ops.initializeAuthDependentFeatures();
-      void Promise.allSettled([probablePromise, rosterPromise, authPromise]);
-      void Promise.allSettled([
-        ops.initializePredictionRemoteSync(),
-        ops.initializeDailyBestNine()
-      ]);
-      ops.refreshPredictionDeadlineState();
-      ops.syncPublicAppState();
-      ops.renderAll();
-      void ops.refreshGameDayNoticeStatus({ force: true });
+      void ops.initializeAuthDependentFeatures().catch((error) => {
+        console.error("認証依存の後続初期化に失敗しました", error);
+      });
+      void ops.initializePublicGameCatalog()
+        .then(() => {
+          ops.startPredictionDeadlineTicker();
+          void Promise.allSettled([
+            ops.initializeProbableStarter(),
+            ops.initializeRosterCandidateSync(),
+            ops.initializePredictionRemoteSync(),
+            ops.initializeDailyBestNine()
+          ]);
+          ops.refreshPredictionDeadlineState();
+          ops.syncPublicAppState();
+          ops.renderAll();
+          void ops.refreshGameDayNoticeStatus({ force: true });
+        })
+        .catch((error) => {
+          console.error("公開試合情報の後続初期化に失敗しました", error);
+        });
     }
 
     handleAuthStateChanged() {

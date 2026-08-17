@@ -1860,10 +1860,20 @@ function isPublicGamePublished(game, remoteState = state.predictionRemote) {
   return Boolean(game?.isPublished || game?.publicationStatus === "published" || (remoteMatchesGame && remoteState?.resultsPublished));
 }
 
-function getLatestPublicPublishedGame() {
+function getLatestPublicGame() {
+  const now = Date.now();
   return state.publicGameCatalog.games
-    .filter((game) => Boolean(game?.internalGameId) && isPublicGamePublished(game))
+    .filter((game) => {
+      if (!game?.internalGameId) return false;
+      const startAt = game?.startAt ? new Date(game.startAt).getTime() : Number.NaN;
+      return !Number.isFinite(startAt) || startAt <= now;
+    })
     .sort((left, right) => getScheduleSortValue(right).localeCompare(getScheduleSortValue(left)))[0] || null;
+}
+
+function getLatestPublicPublishedGame() {
+  const latestGame = getLatestPublicGame();
+  return latestGame && isPublicGamePublished(latestGame) ? latestGame : null;
 }
 
 function buildProbableStarterApiUrl(gameId) {

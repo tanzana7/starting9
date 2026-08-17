@@ -27,14 +27,22 @@
       return participated ? storedResult : null;
     }
 
-    function getLatestPublicPublishedGame() {
+    function getPreviousPublicGame() {
       const games = Array.isArray(deps.state.publicGameCatalog?.games)
         ? deps.state.publicGameCatalog.games
         : [];
+      const now = Date.now();
       return games
-        .filter((game) => Boolean(game?.internalGameId)
-          && (game?.isPublished || game?.publicationStatus === "published"))
+        .filter((game) => {
+          if (!game?.internalGameId) return false;
+          const startAt = game?.startAt ? new Date(game.startAt).getTime() : Number.NaN;
+          return !Number.isFinite(startAt) || startAt <= now;
+        })
         .sort((left, right) => String(right?.startAt || right?.date || "").localeCompare(String(left?.startAt || left?.date || "")))[0] || null;
+    }
+
+    function isPublicGamePublished(game) {
+      return Boolean(game?.isPublished || game?.publicationStatus === "published");
     }
 
     function formatPreviousResultDate(game) {
@@ -58,18 +66,14 @@
       if (!container) return;
       const history = deps.state.resultHistory;
       const displayedResult = getDisplayedResult();
+      const previousGame = getPreviousPublicGame();
       const selectedGame = displayedResult
         ? history.games.find((game) => deps.getResultHistoryGameId(game) === displayedResult.gameId)
         : null;
-      updateResultHeader(selectedGame || getLatestPublicPublishedGame(), Boolean(displayedResult));
+      updateResultHeader(selectedGame || previousGame, Boolean(displayedResult));
       // Keep score comparison data available internally, but do not render it in the public result UI for now.
 
       if (!displayedResult) {
-        if (history.isReady && !history.isLoading && !history.isDetailLoading && !history.selectedGameId && !history.games.length) {
-          container.className = "result-history-no-participation";
-          container.textContent = "参加していません。過去に参加した試合は「過去の試合成績を見る」から確認できます。";
-          return;
-        }
         if (!history.isReady) {
           container.className = "empty-state";
           container.textContent = "結果を確認中です。";
@@ -82,6 +86,16 @@
         }
         if (history.detailError) {
           container.textContent = history.detailError;
+          return;
+        }
+        if (previousGame && isPublicGamePublished(previousGame)) {
+          container.className = "result-history-no-participation";
+          container.textContent = "前回は参加していません。過去に参加した試合は「過去の試合成績を見る」から確認できます。";
+          return;
+        }
+        if (previousGame && !isPublicGamePublished(previousGame)) {
+          container.className = "empty-state";
+          container.textContent = "結果公開後に表示されます。";
           return;
         }
         const resultStatus = deps.state.gameDayNotice.record?.resultStatus;

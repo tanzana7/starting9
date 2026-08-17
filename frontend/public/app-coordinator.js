@@ -32,12 +32,15 @@
       await ops.initializePublicGameCatalog();
       ops.startPredictionDeadlineTicker();
 
+      void ops.fetchPreviousResultGame({ force: true });
       const probablePromise = ops.initializeProbableStarter();
       const rosterPromise = ops.initializeRosterCandidateSync();
       const authPromise = ops.initializeAuthDependentFeatures();
-      await Promise.allSettled([probablePromise, rosterPromise, authPromise]);
-      await ops.initializePredictionRemoteSync();
-      await ops.initializeDailyBestNine();
+      void Promise.allSettled([probablePromise, rosterPromise, authPromise]);
+      void Promise.allSettled([
+        ops.initializePredictionRemoteSync(),
+        ops.initializeDailyBestNine()
+      ]);
       ops.refreshPredictionDeadlineState();
       ops.syncPublicAppState();
       ops.renderAll();

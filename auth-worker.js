@@ -435,6 +435,9 @@ export default {
       if (path === "/api/public/games" && request.method === "GET") {
         return await handleGetPublicGames(request, env, cors);
       }
+      if (path === "/api/public/previous-result-game" && request.method === "GET") {
+        return await handleGetPreviousResultGame(request, env, cors);
+      }
       if (path === "/api/probable-starter" && request.method === "GET") {
         return await handleGetProbableStarter(request, env, cors);
       }
@@ -11950,6 +11953,66 @@ async function handleGetPublicGames(request, env, cors) {
   });
 
   const response = jsonResponse({ ok: true, games, generatedAt: now.toISOString() }, 200, cors);
+  response.headers.set("Cache-Control", "no-store");
+  return response;
+}
+
+async function handleGetPreviousResultGame(request, env, cors) {
+  const now = new Date();
+  const today = getJstDateString(now);
+  let result;
+  try {
+    result = await env.AUTH_DB.prepare(
+      `SELECT internal_game_id, game_date, start_time, home_team, away_team
+         FROM games
+        WHERE game_date <= ?1
+          AND game_status NOT IN ('cancelled', 'canceled', 'postponed')
+          AND is_active = 1
+          AND deleted_at IS NULL
+          AND (LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')
+        ORDER BY game_date DESC, start_time DESC
+        LIMIT 30`
+    ).bind(today).all();
+  } catch (error) {
+    console.warn("previous result game optional game columns unavailable; using canonical games fallback", error instanceof Error ? error.message : "unknown error");
+    result = await env.AUTH_DB.prepare(
+      `SELECT internal_game_id, game_date, start_time, home_team, away_team
+         FROM games
+        WHERE game_date <= ?1
+          AND game_status NOT IN ('cancelled', 'canceled', 'postponed')
+          AND (LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')
+        ORDER BY game_date DESC, start_time DESC
+        LIMIT 30`
+    ).bind(today).all();
+  }
+
+  let game = null;
+  for (const row of result.results || []) {
+    const internalGameId = String(row.internal_game_id || "").trim();
+    if (!INTERNAL_GAME_ID_PATTERN.test(internalGameId)) continue;
+    if (!await isGameResultsPublished(env.AUTH_DB, internalGameId, now)) continue;
+    let resultPublishedAt = null;
+    try {
+      const publication = await env.AUTH_DB.prepare(
+        "SELECT published_at FROM ranking_games WHERE game_id = ?1 LIMIT 1"
+      ).bind(internalGameId).first();
+      resultPublishedAt = publication?.published_at || null;
+    } catch (error) {
+      console.warn("previous result publication timestamp unavailable", error instanceof Error ? error.message : "unknown error");
+    }
+    game = {
+      internalGameId,
+      gameDate: row.game_date || "",
+      startAt: row.start_time || "",
+      homeTeam: row.home_team || "",
+      awayTeam: row.away_team || "",
+      resultPublishedAt,
+      state: "published"
+    };
+    break;
+  }
+
+  const response = jsonResponse({ ok: true, game, generatedAt: now.toISOString() }, 200, cors);
   response.headers.set("Cache-Control", "no-store");
   return response;
 }

@@ -36,9 +36,10 @@ test("結果詳細はUUIDでprediction・ranking・公開状態を読む", () =>
 });
 
 test("通常画面は自分が参加した最新の公開済み結果だけを自動選択する", () => {
-  assert.match(script, /function getLatestPublicPublishedGame\(\)/);
-  assert.match(script, /const latestParticipatedPublishedGame = latestPublicPublishedGame/);
-  assert.match(script, /getResultHistoryGameId\(game\) === getResultHistoryGameId\(latestPublicPublishedGame\)/);
+  assert.match(worker, /path === "\/api\/public\/previous-result-game" && request\.method === "GET"/);
+  assert.match(script, /function fetchPreviousResultGame\(\{ force = false \} = \{\}\)/);
+  assert.match(script, /const previousResultGame = state\.previousResultGame\.isReady \? state\.previousResultGame\.game : null/);
+  assert.match(script, /getResultHistoryGameId\(game\) === String\(previousResultGame\.internalGameId \|\| ""\)/);
   assert.match(script, /if \(!state\.resultHistory\.selectedGameId && latestParticipatedPublishedGame\)/);
   assert.match(script, /await loadResultHistoryGame\(getResultHistoryGameId\(latestParticipatedPublishedGame\)\)/);
   assert.match(publicResultsRenderer, /if \(!history\.isReady\) return null/);
@@ -59,8 +60,8 @@ test("通常画面は自分が参加した最新の公開済み結果だけを�
 test("前回未参加時は最新結果カードを出さず、過去結果導線だけを残す", () => {
   assert.match(publicResultsRenderer, /result-history-no-participation/);
   assert.match(publicResultsRenderer, /前回は参加していません。過去に参加した試合は「過去の試合成績を見る」から確認できます。/);
-  assert.match(publicResultsRenderer, /if \(previousGame && isPublicGamePublished\(previousGame\)\)/);
-  assert.match(publicResultsRenderer, /if \(previousGame && !isPublicGamePublished\(previousGame\)\)/);
+  assert.match(publicResultsRenderer, /if \(previousGame\)/);
+  assert.match(publicResultsRenderer, /ログインすると前回の採点結果を確認できます。/);
   assert.match(publicResultsRenderer, /前回\（\$\{date\}）の採点結果/);
   assert.match(publicResultsRenderer, /legend\.classList\.toggle\("hidden", !hasResult\)/);
   assert.match(script, /state\.resultHistory\.games = publicResultsRenderer\.limitHistory\(payload\.games\)/);
@@ -81,8 +82,8 @@ test("公開結果は予想入力状態から独立して保持し、履歴一�
 });
 
 test("通常画面の公開結果修正は新しいcache busterを使う", () => {
-  assert.match(html, /style\.css\?v=public-previous-result-not-participated-wording-1/);
-  assert.match(html, /script\.js\?v=public-previous-result-not-participated-wording-1/);
+  assert.match(html, /style\.css\?v=public-previous-result-api-state-loading-1/);
+  assert.match(html, /script\.js\?v=public-previous-result-api-state-loading-1/);
 });
 
 test("結果表示の公開文言は前回基準で、旧採点待ち文言を残さない", () => {
@@ -95,8 +96,31 @@ test("結果表示の公開文言は前回基準で、旧採点待ち文言を�
 
 test("前回の公開状態で未参加文言と公開待ち文言を分ける", () => {
   assert.match(publicResultsRenderer, /function getPreviousPublicGame\(\)/);
-  assert.match(publicResultsRenderer, /function isPublicGamePublished\(game\)/);
   assert.match(publicResultsRenderer, /前回は参加していません。/);
   assert.match(publicResultsRenderer, /結果公開後に表示されます。/);
   assert.doesNotMatch(publicResultsRenderer, /前回参加した試合結果はありません。過去に参加した試合/);
+});
+
+test("前回公開試合APIは公開ゲーム一覧と分離し、過去・当日だけを既存公開判定で返す", () => {
+  const start = worker.indexOf("async function handleGetPreviousResultGame");
+  const end = worker.indexOf("async function handleGetProbableStarter", start);
+  const handler = worker.slice(start, end);
+  assert.match(handler, /WHERE game_date <= \?1/);
+  assert.match(handler, /ORDER BY game_date DESC, start_time DESC/);
+  assert.match(handler, /isGameResultsPublished\(env\.AUTH_DB, internalGameId, now\)/);
+  assert.match(handler, /INTERNAL_GAME_ID_PATTERN\.test\(internalGameId\)/);
+  assert.match(handler, /LOWER\(home_team\) = 'fighters' OR LOWER\(away_team\) = 'fighters'/);
+  assert.match(handler, /state: "published"/);
+  assert.match(handler, /let game = null/);
+  assert.match(handler, /Cache-Control/, "公開メタデータはno-storeで返す");
+});
+
+test("前回結果の読み込みはランキング・ベストナインの完了を待たずに開始する", () => {
+  const coordinatorStart = fs.readFileSync(path.join(root, "frontend", "public", "app-coordinator.js"), "utf8");
+  assert.match(coordinatorStart, /void ops\.fetchPreviousResultGame\(\{ force: true \}\)/);
+  assert.match(coordinatorStart, /void Promise\.allSettled\(\[\s*ops\.initializePredictionRemoteSync\(\),\s*ops\.initializeDailyBestNine\(\)\s*\]\)/);
+  assert.doesNotMatch(coordinatorStart, /await ops\.initializeDailyBestNine\(\)/);
+  assert.doesNotMatch(coordinatorStart, /await ops\.initializePredictionRemoteSync\(\)/);
+  assert.match(publicResultsRenderer, /previousResultGame\?\.isLoading/);
+  assert.match(publicResultsRenderer, /previousResultGame\?\.message/);
 });

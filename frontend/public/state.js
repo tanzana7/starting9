@@ -11,6 +11,7 @@
       currentGame: null,
       predictionForm: { gameId: "", isHydrated: false },
       roster: state.publicRoster,
+      previousResultGame: state.previousResultGame,
       results: { latest: null, history: state.resultHistory },
       ranking: { yearly: state.yearlyRanking, monthly: state.monthlyRanking, weekly: state.weeklyRanking },
       dailyBestNine: state.dailyBestNine,
@@ -22,6 +23,7 @@
         roster: createRequestState(),
         target: createRequestState(),
         probable: createRequestState(),
+        previousResultGame: createRequestState(),
         result: createRequestState(),
         resultDetail: createRequestState(),
         account: createRequestState()
@@ -35,6 +37,7 @@
     appState.predictionForm.gameId = state.predictionTargetGameId || "";
     appState.predictionForm.isHydrated = Boolean(state.predictionTargetGameId);
     appState.roster = state.publicRoster;
+    appState.previousResultGame = state.previousResultGame;
     appState.results.latest = state.resultHistory.result || state.result || null;
     appState.results.history = state.resultHistory;
     appState.ranking.yearly = state.yearlyRanking;

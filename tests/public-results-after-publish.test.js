@@ -41,7 +41,7 @@ test("通常画面は自分が参加した最新の公開済み結果だけを�
   assert.match(script, /const previousResultGame = state\.previousResultGame\.isReady \? state\.previousResultGame\.game : null/);
   assert.match(script, /getResultHistoryGameId\(game\) === String\(previousResultGame\.internalGameId \|\| ""\)/);
   assert.match(script, /if \(!state\.resultHistory\.selectedGameId && latestParticipatedPublishedGame\)/);
-  assert.match(script, /await loadResultHistoryGame\(getResultHistoryGameId\(latestParticipatedPublishedGame\)\)/);
+  assert.match(script, /void loadResultHistoryGame\(getResultHistoryGameId\(latestParticipatedPublishedGame\)\)/);
   assert.match(publicResultsRenderer, /if \(!history\.isReady\) return null/);
   assert.match(publicResultsRenderer, /history\.games\.some\(\(game\) => deps\.getResultHistoryGameId\(game\) === resultId\)/);
   assert.match(script, /state\.resultHistory = \{ isLoading: false, isDetailLoading: false, isReady: true, games: \[\]/);
@@ -82,8 +82,8 @@ test("公開結果は予想入力状態から独立して保持し、履歴一�
 });
 
 test("通常画面の公開結果修正は新しいcache busterを使う", () => {
-  assert.match(html, /style\.css\?v=public-reduce-initial-loading-latency-1/);
-  assert.match(html, /script\.js\?v=public-reduce-initial-loading-latency-1/);
+  assert.match(html, /style\.css\?v=public-lazy-load-result-history-1/);
+  assert.match(html, /script\.js\?v=public-lazy-load-result-history-1/);
 });
 
 test("結果表示の公開文言は前回基準で、旧採点待ち文言を残さない", () => {

@@ -191,6 +191,7 @@ const state = {
     isDetailLoading: false,
     isReady: false,
     games: [],
+    detailCache: Object.create(null),
     selectedGameId: "",
     isExpanded: false,
     result: null,
@@ -2879,7 +2880,7 @@ async function refreshResultHistory({ force = false } = {}) {
     beginPublicRequest("result", { abort: true });
     beginPublicRequest("resultDetail", { abort: true });
     clearStoredPublicResult();
-    state.resultHistory = { isLoading: false, isDetailLoading: false, isReady: true, games: [], selectedGameId: "", isExpanded: false, result: null, message: "ログインすると過去の試合結果を確認できます。", detailError: "" };
+    state.resultHistory = { isLoading: false, isDetailLoading: false, isReady: true, games: [], detailCache: Object.create(null), selectedGameId: "", isExpanded: false, result: null, message: "ログインすると過去の試合結果を確認できます。", detailError: "" };
     resetDailyBestNine();
     syncPublicAppState();
     renderScoreResult();
@@ -2911,7 +2912,8 @@ async function refreshResultHistory({ force = false } = {}) {
         && getResultHistoryGameId(game) === String(previousResultGame.internalGameId || ""))
       : null;
     if (!state.resultHistory.selectedGameId && latestParticipatedPublishedGame) {
-      await loadResultHistoryGame(getResultHistoryGameId(latestParticipatedPublishedGame));
+      // The list can render immediately; only the previous game's detail is fetched after it.
+      void loadResultHistoryGame(getResultHistoryGameId(latestParticipatedPublishedGame));
     } else if (!latestParticipatedPublishedGame && !state.resultHistory.selectedGameId) {
       state.resultHistory.result = null;
       clearStoredPublicResult();
@@ -2939,6 +2941,9 @@ async function handleResultHistoryClick(event) {
   const toggle = event.target instanceof Element ? event.target.closest("[data-result-history-toggle]") : null;
   if (toggle) {
     state.resultHistory.isExpanded = !state.resultHistory.isExpanded;
+    if (state.resultHistory.isExpanded && getPredictionAccountUser() && !state.resultHistory.isReady && !state.resultHistory.isLoading) {
+      void refreshResultHistory({ force: false });
+    }
     renderResultHistory();
     return;
   }
@@ -2958,6 +2963,24 @@ async function handleResultHistoryChange(event) {
 }
 
 async function loadResultHistoryGame(gameId) {
+  const cached = state.resultHistory.detailCache?.[gameId];
+  if (cached) {
+    state.resultHistory.selectedGameId = gameId;
+    state.resultHistory.result = cached;
+    state.result = cached;
+    state.resultHistory.isDetailLoading = false;
+    state.resultHistory.detailError = "";
+    state.resultHistory.message = "";
+    if (cached.serviceUnavailable) {
+      resetDailyBestNine("unpublished");
+    } else {
+      void fetchDailyBestNine({ gameId: cached.internalGameId || gameId, force: false });
+    }
+    syncPublicAppState();
+    renderScoreResult();
+    renderResultHistory();
+    return;
+  }
   const request = beginPublicRequest("resultDetail", { abort: true });
   state.resultHistory.selectedGameId = gameId;
   state.resultHistory.result = null;
@@ -2979,6 +3002,7 @@ async function loadResultHistoryGame(gameId) {
         prediction: payload.prediction || null,
         savedAt: payload.updatedAt || payload.submittedAt || ""
       };
+      state.resultHistory.detailCache[gameId] = state.resultHistory.result;
       state.result = state.resultHistory.result;
       state.resultHistory.message = "";
       resetDailyBestNine("unpublished");
@@ -3005,9 +3029,10 @@ async function loadResultHistoryGame(gameId) {
       publishedAt: payload.publishedAt || "",
       totalScore: payload.totalScore ?? payload.score ?? null
     };
+    state.resultHistory.detailCache[gameId] = state.resultHistory.result;
     state.result = state.resultHistory.result;
     state.resultHistory.message = "";
-    await fetchDailyBestNine({ gameId: payload.internalGameId || payload.gameId || gameId, force: true });
+    void fetchDailyBestNine({ gameId: payload.internalGameId || payload.gameId || gameId, force: true });
     renderScoreResult();
   } catch (error) {
     if (!isCurrentPublicRequest("resultDetail", request.id)) return;
@@ -3031,16 +3056,6 @@ function renderResultHistory() {
   const container = document.getElementById("resultHistoryList");
   if (!container) return;
   const history = state.resultHistory;
-  if (history.isLoading) {
-    container.innerHTML = `<p class="result-history-message">${escapeHtml(history.message || "読み込み中...")}</p>`;
-    renderPublicPredictionSurface(state.predictionTargetGame, getPublicGameStatusView(state.predictionTargetGame, getEffectivePredictionDeadline()));
-    return;
-  }
-  if (!history.games.length) {
-    container.innerHTML = `<p class="result-history-message">${escapeHtml(history.message || "表示できる保存済み予想はありません。")}</p>`;
-    renderPublicPredictionSurface(state.predictionTargetGame, getPublicGameStatusView(state.predictionTargetGame, getEffectivePredictionDeadline()));
-    return;
-  }
   const options = history.games.map((game) => {
     const gameId = getResultHistoryGameId(game);
     const matchup = formatResultHistoryMatchup(game);
@@ -3050,12 +3065,16 @@ function renderResultHistory() {
   const selectedLabel = selectedGame
     ? `${selectedGame.gameDate || selectedGame.date || "日付不明"} ${formatResultHistoryMatchup(selectedGame)}`
     : "";
+  const details = history.isLoading
+    ? (history.isExpanded ? `<p class="result-history-message" role="status">${escapeHtml(history.message || "過去の試合成績を読み込んでいます...")}</p>` : "")
+    : !history.games.length
+      ? (history.isExpanded || history.message ? `<p class="result-history-message" role="status">${escapeHtml(history.message || "表示できる保存済み予想はありません。")}</p>` : "")
+      : `${history.isExpanded && selectedLabel ? `<p class="result-selected-game">選択中：${escapeHtml(selectedLabel)}</p>` : ""}${history.message ? `<p class="result-history-message" role="status">${escapeHtml(history.message)}</p>` : ""}`;
   container.innerHTML = `<div class="result-history-controls">
       <button type="button" class="secondary-button result-history-toggle" data-result-history-toggle aria-expanded="${history.isExpanded ? "true" : "false"}">${history.isExpanded ? "閉じる" : "過去の成績を見る"}</button>
-      ${history.isExpanded ? `<label class="result-history-select-label" for="resultHistorySelect">試合を選択<select id="resultHistorySelect" data-result-history-select><option value="">試合を選択</option>${options}</select></label>` : ""}
+      ${history.isExpanded && history.games.length ? `<label class="result-history-select-label" for="resultHistorySelect">試合を選択<select id="resultHistorySelect" data-result-history-select><option value="">試合を選択</option>${options}</select></label>` : ""}
     </div>
-    ${history.isExpanded && selectedLabel ? `<p class="result-selected-game">選択中：${escapeHtml(selectedLabel)}</p>` : ""}
-    ${history.message ? `<p class="result-history-message" role="status">${escapeHtml(history.message)}</p>` : ""}`;
+    ${details}`;
   renderPublicPredictionSurface(state.predictionTargetGame, getPublicGameStatusView(state.predictionTargetGame, getEffectivePredictionDeadline()));
 }
 

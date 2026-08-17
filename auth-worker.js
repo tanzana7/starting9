@@ -12159,6 +12159,7 @@ async function getResultGameMetadata(db, gameReference, resolvedMetadata = null)
 
 async function handleGetResultGames(request, env, cors) {
   const access = await requireAuthenticatedUser(request, env, cors);
+  if (!access.ok) return access.response;
   const rankingColumns = await getTableColumnSet(env.AUTH_DB, "ranking_games");
   const eligibilitySelect = rankingColumns.has("ranking_eligibility_status")
     ? "ranking_games.ranking_eligibility_status, ranking_games.ranking_eligibility_reason, ranking_games.ranking_eligibility_note"
@@ -12166,8 +12167,6 @@ async function handleGetResultGames(request, env, cors) {
   const eligibilityCondition = rankingColumns.has("ranking_eligibility_status")
     ? "OR ranking_games.ranking_eligibility_status <> 'eligible'"
     : "";
-  if (!access.ok) return access.response;
-
   const rows = await env.AUTH_DB.prepare(
     `WITH latest_predictions AS (
        SELECT predictions.game_id, predictions.internal_game_id, predictions.score, predictions.max_score, predictions.scored_at,
@@ -12199,14 +12198,15 @@ async function handleGetResultGames(request, env, cors) {
   ).bind(access.user.id).all();
 
   const now = new Date();
-  const games = [];
-  for (const row of rows.results || []) {
+  const games = await Promise.all((rows.results || []).map(async (row) => {
     const resultId = String(row.internal_game_id || row.game_id || "");
-    const metadata = await getResultGameMetadata(env.AUTH_DB, resultId);
-    const resultsPublished = await isGameResultsPublished(env.AUTH_DB, resultId, now);
+    const [metadata, resultsPublished] = await Promise.all([
+      getResultGameMetadata(env.AUTH_DB, resultId),
+      isGameResultsPublished(env.AUTH_DB, resultId, now)
+    ]);
     const serviceUnavailable = isServiceUnavailableGameStatus(row.game_status);
     const excluded = String(row.ranking_eligibility_status || "") === "excluded" || serviceUnavailable;
-    games.push({
+    return {
       ...metadata,
       resultId: metadata.resultId || resultId,
       internalGameId: metadata.internalGameId || String(row.internal_game_id || ""),
@@ -12229,8 +12229,8 @@ async function handleGetResultGames(request, env, cors) {
       rankingEligibilityNote: row.ranking_eligibility_note || null,
       rankingExcluded: excluded,
       rankingExcludedMessage: excluded ? "この試合はランキング対象外です。" : null
-    });
-  }
+    };
+  }));
   return jsonResponse({ ok: true, games }, 200, cors);
 }
 

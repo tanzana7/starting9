@@ -68,6 +68,15 @@ test("結果詳細APIと通常画面の選択UIはcanonical internalGameIdを優
   assert.doesNotMatch(script.slice(rendererStart, rendererEnd), /result-history-item/);
 });
 
+test("過去結果は一覧を先に描画し、詳細を遅延取得・セッション内キャッシュする", () => {
+  assert.match(script, /void loadResultHistoryGame\(getResultHistoryGameId\(latestParticipatedPublishedGame\)\)/);
+  assert.match(script, /detailCache: Object\.create\(null\)/);
+  assert.match(script, /const cached = state\.resultHistory\.detailCache\?\.\[gameId\]/);
+  assert.match(script, /history\.isExpanded && history\.games\.length/);
+  assert.doesNotMatch(script, /await fetchDailyBestNine\(\{ gameId: payload\.internalGameId/);
+  assert.match(worker, /const games = await Promise\.all\(\(rows\.results \|\| \[\]\)\.map/);
+});
+
 test("通常画面はcanonical public gameのinternalGameIdを予想保存と締切判定へ引き継ぐ", () => {
   assert.match(script, /const nextGame = catalogGame \|\| await resolvePredictionTargetGame\(schedule, true\)/);
   assert.match(script, /state\.predictionTargetGame = preservedGame/);

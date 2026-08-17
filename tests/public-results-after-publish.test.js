@@ -36,9 +36,11 @@ test("結果詳細はUUIDでprediction・ranking・公開状態を読む", () =>
 });
 
 test("通常画面は自分が参加した最新の公開済み結果だけを自動選択する", () => {
-  assert.match(script, /const latestPublishedGame = state\.resultHistory\.games\.find/);
-  assert.match(script, /if \(!state\.resultHistory\.selectedGameId && latestPublishedGame\)/);
-  assert.match(script, /await loadResultHistoryGame\(getResultHistoryGameId\(latestPublishedGame\)\)/);
+  assert.match(script, /function getLatestPublicPublishedGame\(\)/);
+  assert.match(script, /const latestParticipatedPublishedGame = latestPublicPublishedGame/);
+  assert.match(script, /getResultHistoryGameId\(game\) === getResultHistoryGameId\(latestPublicPublishedGame\)/);
+  assert.match(script, /if \(!state\.resultHistory\.selectedGameId && latestParticipatedPublishedGame\)/);
+  assert.match(script, /await loadResultHistoryGame\(getResultHistoryGameId\(latestParticipatedPublishedGame\)\)/);
   assert.match(publicResultsRenderer, /if \(!history\.isReady\) return null/);
   assert.match(publicResultsRenderer, /history\.games\.some\(\(game\) => deps\.getResultHistoryGameId\(game\) === resultId\)/);
   assert.match(script, /state\.resultHistory = \{ isLoading: false, isDetailLoading: false, isReady: true, games: \[\]/);

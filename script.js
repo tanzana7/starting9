@@ -435,7 +435,7 @@ async function initializeAuthDependentFeatures() {
   await ready;
   // 初期イベントは待機中に発火していても、解決済みPromiseから現在状態を必ず評価できます。
   window.addEventListener("starting9-auth-state-changed", handleAuthStateChanged);
-  // 認証依存の取得はcanonical game確定後に、この初期化経路だけで開始します。
+  // 認証依存の取得は公開カタログを待たず、結果・ランキング・実績を並行して開始します。
     const results = await Promise.allSettled([
       fetchUserAchievements({ force: true }),
       refreshWeeklyRanking({ force: true }),
@@ -3855,7 +3855,7 @@ function getPublicGameStatusView(game, deadline, remoteState = state.predictionR
 function renderPublicPredictionSurface(selectedGame) {
   const editor = document.getElementById("predictionEditor");
   if (!selectedGame) {
-    if (editor) editor.classList.add("hidden");
+    if (editor) editor.classList.toggle("hidden", !state.publicGameCatalog.isLoading);
     return;
   }
   if (editor) editor.classList.remove("hidden");

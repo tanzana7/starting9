@@ -425,7 +425,7 @@ test("公開試合カタログ確定後にbaseline roster取得を再実行し�
   const target = script.slice(targetStart, targetEnd);
 
   assert.doesNotMatch(catalog, /void initializeRosterCandidateSync\(\);/);
-  assert.match(publicCoordinator, /const rosterPromise = ops\.initializeRosterCandidateSync\(\);/);
+  assert.match(publicCoordinator, /void ops\.initializePublicGameCatalog\(\)\s*\.then\([\s\S]*ops\.initializeRosterCandidateSync\(\)/);
   assert.match(target, /void initializeRosterCandidateSync\(\);/);
   assert.match(script, /let publicRosterSyncRequestId = 0;/);
   assert.match(publicRoster, /requestId !== deps\.getRosterRequestId\(\)/);

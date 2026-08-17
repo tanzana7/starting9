@@ -141,14 +141,14 @@ test("スマホでも選択UIを追加せず、補助表示と既存導線を維
 });
 
 test("公開画面のJS/CSS cache busterを更新する", () => {
-  assert.match(html, /style\.css\?v=public-previous-result-api-state-loading-1/);
-  assert.match(html, /script\.js\?v=public-previous-result-api-state-loading-1/);
+  assert.match(html, /style\.css\?v=public-reduce-initial-loading-latency-1/);
+  assert.match(html, /script\.js\?v=public-reduce-initial-loading-latency-1/);
 });
 
 test("受付可能なcanonical対象がない場合は入力面を隠し、自然な案内を表示する", () => {
   assert.match(script, /現在、予想受付中の試合はありません。/);
   assert.match(script, /renderPublicPredictionSurface\(null\)/);
-  assert.match(script, /if \(!selectedGame\) \{[\s\S]*if \(editor\) editor\.classList\.add\("hidden"\)/);
+  assert.match(script, /if \(!selectedGame\) \{[\s\S]*if \(editor\) editor\.classList\.toggle\("hidden", !state\.publicGameCatalog\.isLoading\)/);
 });
 
 test("旧localStorageの選択値はcanonical予想対象を上書きしない", () => {

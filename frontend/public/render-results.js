@@ -28,21 +28,7 @@
     }
 
     function getPreviousPublicGame() {
-      const games = Array.isArray(deps.state.publicGameCatalog?.games)
-        ? deps.state.publicGameCatalog.games
-        : [];
-      const now = Date.now();
-      return games
-        .filter((game) => {
-          if (!game?.internalGameId) return false;
-          const startAt = game?.startAt ? new Date(game.startAt).getTime() : Number.NaN;
-          return !Number.isFinite(startAt) || startAt <= now;
-        })
-        .sort((left, right) => String(right?.startAt || right?.date || "").localeCompare(String(left?.startAt || left?.date || "")))[0] || null;
-    }
-
-    function isPublicGamePublished(game) {
-      return Boolean(game?.isPublished || game?.publicationStatus === "published");
+      return deps.state.previousResultGame?.game || null;
     }
 
     function formatPreviousResultDate(game) {
@@ -74,6 +60,21 @@
       // Keep score comparison data available internally, but do not render it in the public result UI for now.
 
       if (!displayedResult) {
+        if (deps.state.previousResultGame?.isLoading || !deps.state.previousResultGame?.isReady) {
+          container.className = "empty-state";
+          container.textContent = "前回の結果を確認中です。";
+          return;
+        }
+        if (deps.state.previousResultGame?.message) {
+          container.className = "empty-state";
+          container.textContent = deps.state.previousResultGame.message;
+          return;
+        }
+        if (!deps.getPredictionAccountUser()) {
+          container.className = "empty-state";
+          container.textContent = "ログインすると前回の採点結果を確認できます。";
+          return;
+        }
         if (!history.isReady) {
           container.className = "empty-state";
           container.textContent = "結果を確認中です。";
@@ -88,22 +89,12 @@
           container.textContent = history.detailError;
           return;
         }
-        if (previousGame && isPublicGamePublished(previousGame)) {
+        if (previousGame) {
           container.className = "result-history-no-participation";
           container.textContent = "前回は参加していません。過去に参加した試合は「過去の試合成績を見る」から確認できます。";
           return;
         }
-        if (previousGame && !isPublicGamePublished(previousGame)) {
-          container.className = "empty-state";
-          container.textContent = "結果公開後に表示されます。";
-          return;
-        }
-        const resultStatus = deps.state.gameDayNotice.record?.resultStatus;
-        container.textContent = resultStatus === "prestart"
-          ? "結果は試合開始後に公開されます。"
-            : resultStatus === "preparing"
-              ? "結果を準備中です。"
-              : "結果公開後に表示されます。";
+        container.textContent = "結果公開後に表示されます。";
         return;
       }
 

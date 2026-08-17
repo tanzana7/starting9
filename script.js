@@ -172,6 +172,12 @@ const state = {
     games: [],
     message: ""
   },
+  previousResultGame: {
+    isLoading: false,
+    isReady: false,
+    game: null,
+    message: ""
+  },
   publicRoster: {
     internalGameId: "",
     gameDate: "",
@@ -312,6 +318,7 @@ function discardStoredStateForGame(gameId) {
 
 const publicResultsRenderer = publicFrontend.createPublicResultsRenderer({
   state,
+  getPredictionAccountUser,
   storage: publicStorage,
   storageKeys: STORAGE_KEYS,
     renderScoreInsights,
@@ -385,6 +392,7 @@ const publicAppCoordinator = new publicFrontend.PublicAppCoordinator({
     syncPublicAppState,
     renderAll,
     initializePublicGameCatalog,
+    fetchPreviousResultGame,
     startPredictionDeadlineTicker,
     initializeProbableStarter,
     initializeRosterCandidateSync,
@@ -1724,6 +1732,11 @@ function buildPublicGamesApiUrl() {
   return baseUrl ? `${baseUrl}/api/public/games` : "";
 }
 
+function buildPreviousResultGameApiUrl() {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  return baseUrl ? `${baseUrl}/api/public/previous-result-game` : "";
+}
+
 function mergePublicGameSchedules(staticGames = [], apiGames = []) {
   // Public cards are only allowed to use the canonical games API. Static schedule
   // data can be stale and must not select or label a user-facing prediction game.
@@ -1860,20 +1873,45 @@ function isPublicGamePublished(game, remoteState = state.predictionRemote) {
   return Boolean(game?.isPublished || game?.publicationStatus === "published" || (remoteMatchesGame && remoteState?.resultsPublished));
 }
 
-function getLatestPublicGame() {
-  const now = Date.now();
-  return state.publicGameCatalog.games
-    .filter((game) => {
-      if (!game?.internalGameId) return false;
-      const startAt = game?.startAt ? new Date(game.startAt).getTime() : Number.NaN;
-      return !Number.isFinite(startAt) || startAt <= now;
-    })
-    .sort((left, right) => getScheduleSortValue(right).localeCompare(getScheduleSortValue(left)))[0] || null;
-}
-
-function getLatestPublicPublishedGame() {
-  const latestGame = getLatestPublicGame();
-  return latestGame && isPublicGamePublished(latestGame) ? latestGame : null;
+async function fetchPreviousResultGame({ force = false } = {}) {
+  const previous = state.previousResultGame;
+  if (previous.isLoading && !force) return;
+  const request = beginPublicRequest("previousResultGame", { abort: true });
+  const url = buildPreviousResultGameApiUrl();
+  if (!url) {
+    previous.isReady = true;
+    previous.game = null;
+    previous.message = "前回の結果を確認できませんでした。";
+    renderScoreResult();
+    return;
+  }
+  previous.isLoading = true;
+  previous.isReady = false;
+  previous.message = "";
+  syncPublicAppState();
+  renderScoreResult();
+  try {
+    const { response, payload } = await publicApiClient.get(url, { signal: request.signal });
+    if (!response.ok || !payload?.ok || (payload.game !== null && typeof payload.game !== "object")) {
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
+    if (!isCurrentPublicRequest("previousResultGame", request.id)) return;
+    previous.game = payload.game || null;
+    previous.isReady = true;
+  } catch (error) {
+    if (!isCurrentPublicRequest("previousResultGame", request.id)) return;
+    previous.game = null;
+    previous.isReady = true;
+    previous.message = "前回の結果を確認できませんでした。";
+    console.warn("前回の公開結果試合の取得に失敗しました", error.message);
+  } finally {
+    if (isCurrentPublicRequest("previousResultGame", request.id)) {
+      previous.isLoading = false;
+      syncPublicAppState();
+      renderScoreResult();
+      if (getPredictionAccountUser()) void refreshResultHistory({ force: true });
+    }
+  }
 }
 
 function buildProbableStarterApiUrl(gameId) {
@@ -2867,10 +2905,10 @@ async function refreshResultHistory({ force = false } = {}) {
     state.resultHistory.games = publicResultsRenderer.limitHistory(payload.games);
     state.resultHistory.isReady = true;
     state.resultHistory.message = state.resultHistory.games.length ? "" : "採点済みの過去試合はありません。";
-    const latestPublicPublishedGame = getLatestPublicPublishedGame();
-    const latestParticipatedPublishedGame = latestPublicPublishedGame
+    const previousResultGame = state.previousResultGame.isReady ? state.previousResultGame.game : null;
+    const latestParticipatedPublishedGame = previousResultGame
       ? state.resultHistory.games.find((game) => game?.resultsPublished
-        && getResultHistoryGameId(game) === getResultHistoryGameId(latestPublicPublishedGame))
+        && getResultHistoryGameId(game) === String(previousResultGame.internalGameId || ""))
       : null;
     if (!state.resultHistory.selectedGameId && latestParticipatedPublishedGame) {
       await loadResultHistoryGame(getResultHistoryGameId(latestParticipatedPublishedGame));

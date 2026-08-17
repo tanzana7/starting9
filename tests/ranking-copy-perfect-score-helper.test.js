@@ -35,7 +35,7 @@ test("ランキング見出しは自然な文言で、未到達者表示は内�
   assert.match(publicRanking, /title\.textContent = "ランキング"/);
   assert.match(script, /RANKING_DISPLAY_OPTIONS = Object\.freeze\(\{ hideIneligibleRankings: false \}\)/);
   assert.match(publicRanking, /hideIneligibleRankings \? normalizedRows\.filter\(\(row\) => row\?\.isQualified\) : normalizedRows/);
-  assert.match(publicRanking, /正式リリース時は、規定到達者のみ表示します。現在はテスト期間のため、規定未到達者も参考表示しています/);
+  assert.match(publicRanking, /公開済み試合の参加状況と成績をもとにランキングを表示しています/);
   assert.match(publicRanking, /規定未到達/);
 });
 

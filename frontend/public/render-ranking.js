@@ -12,7 +12,7 @@
       const isMonthly = view === "monthly";
       const isWeekly = view === "weekly";
       if (title) title.textContent = "ランキング";
-      if (description) description.textContent = "正式リリース時は、規定到達者のみ表示します。現在はテスト期間のため、規定未到達者も参考表示しています。";
+      if (description) description.textContent = "公開済み試合の参加状況と成績をもとにランキングを表示しています。";
       yearlyButton?.classList.toggle("is-active", isYearly);
       monthlyButton?.classList.toggle("is-active", isMonthly);
       weeklyButton?.classList.toggle("is-active", isWeekly);

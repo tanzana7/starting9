@@ -59,6 +59,8 @@ test("通常画面は自分が参加した最新の公開済み結果だけを�
 test("前回未参加時は最新結果カードを出さず、過去結果導線だけを残す", () => {
   assert.match(publicResultsRenderer, /result-history-no-participation/);
   assert.match(publicResultsRenderer, /前回参加した試合結果はありません。過去の試合成績から確認できます。/);
+  assert.match(publicResultsRenderer, /前回\（\$\{date\}）の採点結果/);
+  assert.match(publicResultsRenderer, /legend\.classList\.toggle\("hidden", !hasResult\)/);
   assert.match(script, /state\.resultHistory\.games = publicResultsRenderer\.limitHistory\(payload\.games\)/);
   assert.match(script, /state\.resultHistory\.message = state\.resultHistory\.games\.length \? "" : "採点済みの過去試合はありません。"/);
   assert.match(script, /data-result-history-toggle/);
@@ -77,6 +79,14 @@ test("公開結果は予想入力状態から独立して保持し、履歴一�
 });
 
 test("通常画面の公開結果修正は新しいcache busterを使う", () => {
-  assert.match(html, /style\.css\?v=public-hide-comparison-default-own-latest-result-1/);
-  assert.match(html, /script\.js\?v=public-hide-comparison-default-own-latest-result-1/);
+  assert.match(html, /style\.css\?v=public-previous-result-wording-1/);
+  assert.match(html, /script\.js\?v=public-previous-result-wording-1/);
+});
+
+test("結果表示の公開文言は前回基準で、旧採点待ち文言を残さない", () => {
+  assert.match(html, /id="result-title">前回の採点結果/);
+  assert.match(html, /id="result-legend" class="hidden">◎は完全一致、◯はスタメン入り、×はスタメン外です。/);
+  assert.doesNotMatch(html, /最新の採点結果|採点すると結果が表示されます/);
+  assert.doesNotMatch(publicResultsRenderer, /採点すると結果が表示されます/);
+  assert.match(publicResultsRenderer, /結果公開後に表示されます/);
 });

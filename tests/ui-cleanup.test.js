@@ -16,7 +16,7 @@ test("通常画面は開発用エリア見出しと番号バッジを表示し�
   assert.doesNotMatch(css, /\.step-badge|\.admin-step|\.area-heading|\.result-area-heading/);
   assert.match(html, /id="prediction-title">スタメン予想入力/);
   assert.match(html, /id="saved-title">あなたの予想/);
-  assert.match(html, /id="result-title">最新の採点結果/);
+  assert.match(html, /id="result-title">前回の採点結果/);
 });
 
 test("年間ランキングはサービス開始年より前と当年より後へ移動するボタンを描画しない", () => {

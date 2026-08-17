@@ -4467,6 +4467,11 @@ function createPredictionSummary(prediction) {
   meta.className = "summary-meta";
   meta.textContent = `最後に更新：${formatDateTime(prediction.savedAt)}`;
 
+  const tableHeader = document.createElement("div");
+  tableHeader.className = "saved-lineup-table-header";
+  tableHeader.setAttribute("aria-hidden", "true");
+  tableHeader.innerHTML = "<span>打順</span><span>守備</span><span>選手名</span>";
+
   const list = document.createElement("ul");
   list.className = "lineup-list";
   normalizeLineup(prediction.lineup).forEach((lineupItem, index) => {
@@ -4486,7 +4491,7 @@ function createPredictionSummary(prediction) {
     list.appendChild(listItem);
   });
 
-  wrapper.append(title, meta, list);
+  wrapper.append(title, meta, tableHeader, list);
   return wrapper;
 }
 

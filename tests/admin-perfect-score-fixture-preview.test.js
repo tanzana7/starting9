@@ -68,10 +68,11 @@ test("fixture APIはadmin専用・previewOnly・D1 writeなしで、executeを�
   assert.doesNotMatch(worker, /perfect-score-test\/execute/);
 });
 
-test("fixtureはadmin-v3だけに存在し、通常採点・ランキング・公開・V3 jobから参照されない", () => {
-  assert.match(admin, /RELEASE_DEBUG_PERFECT_SCORE_FIXTURE/);
-  assert.match(perfectScoreRenderer, /data-v3-perfect-score-fixture-preview/);
-  assert.match(adminPage, /admin-v3-roster-source-snapshot-mismatch-1/);
+test("固定fixtureはadmin-v3の本番assetと導線から除去され、正式previewだけが残る", () => {
+  assert.doesNotMatch(admin, /RELEASE_DEBUG_PERFECT_SCORE_FIXTURE|fixtureKey|data-v3-perfect-score-fixture-preview/);
+  assert.doesNotMatch(perfectScoreRenderer, /固定fixture|fixtureKey|data-v3-perfect-score-fixture-preview/);
+  assert.match(perfectScoreRenderer, /data-v3-perfect-score-preview/);
+  assert.match(adminPage, /public-release-fixture-cleanup-1/);
   assert.doesNotMatch(publicPage, /RELEASE_DEBUG_PERFECT_SCORE_FIXTURE|perfect-score-test/);
   assert.doesNotMatch(publicScript, /RELEASE_DEBUG_PERFECT_SCORE_FIXTURE|perfect-score-test/);
   assert.doesNotMatch(v3Runtime, /RELEASE_DEBUG_PERFECT_SCORE_FIXTURE|perfect-score-test/);

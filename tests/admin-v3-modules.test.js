@@ -39,17 +39,17 @@ function loadModules() {
 test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む", () => {
   const scripts = [...page.matchAll(/<script src="([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(scripts, [
-    "frontend/admin-v3/state.js?v=admin-v3-roster-source-snapshot-mismatch-1",
-    "frontend/admin-v3/api-client.js?v=admin-v3-roster-source-snapshot-mismatch-1",
-    "frontend/admin-v3/dom.js?v=admin-v3-roster-source-snapshot-mismatch-1",
-    "frontend/admin-v3/render-game-progress.js?v=admin-v3-roster-source-snapshot-mismatch-1",
-    "frontend/admin-v3/render-job-details.js?v=admin-v3-roster-source-snapshot-mismatch-1",
-    "frontend/admin-v3/render-roster.js?v=admin-v3-roster-source-snapshot-mismatch-1",
-    "frontend/admin-v3/render-diagnostics.js?v=admin-v3-roster-source-snapshot-mismatch-1",
-    "frontend/admin-v3/render-ranking-reset.js?v=admin-v3-roster-source-snapshot-mismatch-1",
-    "frontend/admin-v3/render-perfect-score-preview.js?v=admin-v3-roster-source-snapshot-mismatch-1",
-    "frontend/admin-v3/app-coordinator.js?v=admin-v3-roster-source-snapshot-mismatch-1",
-    "admin-v3.js?v=admin-v3-roster-source-snapshot-mismatch-1"
+    "frontend/admin-v3/state.js?v=public-release-fixture-cleanup-1",
+    "frontend/admin-v3/api-client.js?v=public-release-fixture-cleanup-1",
+    "frontend/admin-v3/dom.js?v=public-release-fixture-cleanup-1",
+    "frontend/admin-v3/render-game-progress.js?v=public-release-fixture-cleanup-1",
+    "frontend/admin-v3/render-job-details.js?v=public-release-fixture-cleanup-1",
+    "frontend/admin-v3/render-roster.js?v=public-release-fixture-cleanup-1",
+    "frontend/admin-v3/render-diagnostics.js?v=public-release-fixture-cleanup-1",
+    "frontend/admin-v3/render-ranking-reset.js?v=public-release-fixture-cleanup-1",
+    "frontend/admin-v3/render-perfect-score-preview.js?v=public-release-fixture-cleanup-1",
+    "frontend/admin-v3/app-coordinator.js?v=public-release-fixture-cleanup-1",
+    "admin-v3.js?v=public-release-fixture-cleanup-1"
   ]);
   const modules = loadModules();
   assert.equal(typeof modules.createAdminV3State, "function");
@@ -93,10 +93,10 @@ test("admin API clientは認証付きGET/POSTとendpoint境界を集約する", 
   assert.match(calls[1].url, /perfect-score-test\/preview/);
 });
 
-test("stateはdangerous previewとfixtureの状態を通常workflow stateから分離する", () => {
-  const state = loadModules().createAdminV3State({ releaseFixtureKey: "release_full_score_debug_1" });
+test("stateは管理者previewの状態を通常workflow stateから分離する", () => {
+  const state = loadModules().createAdminV3State();
   assert.equal(state.rankingReset.preview, null);
   assert.equal(state.rankingReset.confirmation, "");
-  assert.equal(state.perfectScorePreview.fixtureKey, "release_full_score_debug_1");
+  assert.equal("fixtureKey" in state.perfectScorePreview, false);
   assert.equal(state.perfectScorePreview.result, null);
 });

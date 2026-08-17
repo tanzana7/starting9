@@ -67,7 +67,7 @@
       if (!displayedResult) {
         if (history.isReady && !history.isLoading && !history.isDetailLoading && !history.selectedGameId && !history.games.length) {
           container.className = "result-history-no-participation";
-          container.textContent = "前回参加した試合結果はありません。過去の試合成績から確認できます。";
+          container.textContent = "参加していません。過去に参加した試合は「過去の試合成績を見る」から確認できます。";
           return;
         }
         if (!history.isReady) {

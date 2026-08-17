@@ -3504,6 +3504,12 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-name {
   font-size: 0.82rem;
 }
 
+.result-history-no-participation {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
 .result-history-list {
   display: grid;
   gap: 7px;

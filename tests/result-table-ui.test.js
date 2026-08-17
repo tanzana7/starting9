@@ -53,10 +53,8 @@ test("判定バッジは○×だけでなく判定対象ラベルを表示する
   assert.match(css, /\.hit-badge\s*\{[\s\S]*font-size: 0\.74rem/);
 });
 
-test("比較データがない場合はプレースホルダーカードを隠して案内だけを表示する", () => {
+test("比較データの内部rendererは将来復活用に維持する", () => {
   const source = sourceForFunction("renderScoreInsights");
-  assert.match(html, /id="scoreInsightsGrid" class="score-insights-grid hidden"/);
-  assert.match(html, /id="scoreInsightsNotice" class="score-insights-notice">比較データは参加者が増え次第表示されます。/);
   assert.match(source, /comparison\?\.average \?\? comparison\?\.averageScore/);
   assert.match(source, /grid\.classList\.toggle\("hidden", !hasData\)/);
   assert.match(source, /notice\.classList\.toggle\("hidden", hasData\)/);
@@ -70,7 +68,7 @@ test("比較データがある場合は値のあるカードだけを表示で�
 });
 
 test("公開結果画面ではスコア比較ブロックを表示しない", () => {
-  assert.match(html, /<section id="scoreInsights" class="score-insights hidden"/);
+  assert.doesNotMatch(html, /scoreInsights|スコアの比較|全国平均|比較データは参加者が増え次第表示されます/);
   assert.doesNotMatch(publicResultsRenderer, /deps\.renderScoreInsights\(/);
 });
 

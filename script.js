@@ -183,6 +183,7 @@ const state = {
   resultHistory: {
     isLoading: false,
     isDetailLoading: false,
+    isReady: false,
     games: [],
     selectedGameId: "",
     isExpanded: false,
@@ -2823,9 +2824,11 @@ async function refreshResultHistory({ force = false } = {}) {
   if (!user) {
     beginPublicRequest("result", { abort: true });
     beginPublicRequest("resultDetail", { abort: true });
-    state.resultHistory = { isLoading: false, isDetailLoading: false, games: [], selectedGameId: "", isExpanded: false, result: null, message: "ログインすると過去の試合結果を確認できます。", detailError: "" };
+    clearStoredPublicResult();
+    state.resultHistory = { isLoading: false, isDetailLoading: false, isReady: true, games: [], selectedGameId: "", isExpanded: false, result: null, message: "ログインすると過去の試合結果を確認できます。", detailError: "" };
     resetDailyBestNine();
     syncPublicAppState();
+    renderScoreResult();
     renderResultHistory();
     return;
   }
@@ -2835,6 +2838,7 @@ async function refreshResultHistory({ force = false } = {}) {
   const url = buildResultGamesApiUrl();
   if (!url) return;
   state.resultHistory.isLoading = true;
+  state.resultHistory.isReady = false;
   state.resultHistory.detailError = "";
   state.resultHistory.message = "過去の試合結果を確認中...";
   renderResultHistory();
@@ -2845,23 +2849,29 @@ async function refreshResultHistory({ force = false } = {}) {
     }
     if (!isCurrentPublicRequest("result", request.id)) return;
     state.resultHistory.games = publicResultsRenderer.limitHistory(payload.games);
+    state.resultHistory.isReady = true;
     state.resultHistory.message = state.resultHistory.games.length ? "" : "採点済みの過去試合はありません。";
     const latestPublishedGame = state.resultHistory.games.find((game) => game?.resultsPublished && getResultHistoryGameId(game));
     if (!state.resultHistory.selectedGameId && latestPublishedGame) {
       await loadResultHistoryGame(getResultHistoryGameId(latestPublishedGame));
     } else if (!latestPublishedGame && !state.resultHistory.selectedGameId) {
       state.resultHistory.result = null;
+      clearStoredPublicResult();
       resetDailyBestNine("unpublished");
     }
   } catch (error) {
     if (!isCurrentPublicRequest("result", request.id)) return;
     state.resultHistory.games = [];
+    state.resultHistory.isReady = true;
+    state.resultHistory.result = null;
+    clearStoredPublicResult();
     state.resultHistory.message = "過去の試合結果を取得できませんでした。";
     console.error("過去の試合結果の取得に失敗しました", error.message);
   } finally {
     if (isCurrentPublicRequest("result", request.id)) {
       state.resultHistory.isLoading = false;
       syncPublicAppState();
+      renderScoreResult();
       renderResultHistory();
     }
   }
@@ -3700,6 +3710,13 @@ function loadFromStorage(key) {
 
 function removeFromStorage(key) {
   return publicStorage.remove(key);
+}
+
+function clearStoredPublicResult() {
+  state.result = null;
+  if (typeof window !== "undefined" && window.localStorage) {
+    removeFromStorage(STORAGE_KEYS.result);
+  }
 }
 
 function renderAll() {

@@ -35,11 +35,14 @@ test("結果詳細はUUIDでprediction・ranking・公開状態を読む", () =>
   assert.match(handler, /internalGameId,/);
 });
 
-test("通常画面は公開済み結果を自動選択し、内部IDを表示しない", () => {
+test("通常画面は自分が参加した最新の公開済み結果だけを自動選択する", () => {
   assert.match(script, /const latestPublishedGame = state\.resultHistory\.games\.find/);
   assert.match(script, /if \(!state\.resultHistory\.selectedGameId && latestPublishedGame\)/);
-  assert.doesNotMatch(script, /if \(!state\.result && !state\.resultHistory\.selectedGameId && latestPublishedGame\)/);
   assert.match(script, /await loadResultHistoryGame\(getResultHistoryGameId\(latestPublishedGame\)\)/);
+  assert.match(publicResultsRenderer, /if \(!history\.isReady\) return null/);
+  assert.match(publicResultsRenderer, /history\.games\.some\(\(game\) => deps\.getResultHistoryGameId\(game\) === resultId\)/);
+  assert.match(script, /state\.resultHistory = \{ isLoading: false, isDetailLoading: false, isReady: true, games: \[\]/);
+  assert.match(script, /state\.result = null;\s+removeFromStorage\(STORAGE_KEYS\.result\);/);
   assert.match(script, /const matchup = formatResultHistoryMatchup\(game\)/);
   assert.match(script, /対戦情報を確認中/);
   const rendererStart = script.indexOf("function renderResultHistory");
@@ -51,9 +54,19 @@ test("通常画面は公開済み結果を自動選択し、内部IDを表示し
   assert.doesNotMatch(renderer, /class="result-history-item/);
 });
 
+test("前回未参加時は最新結果カードを出さず、過去結果導線だけを残す", () => {
+  assert.match(publicResultsRenderer, /result-history-no-participation/);
+  assert.match(publicResultsRenderer, /前回参加した試合結果はありません。過去の試合成績から確認できます。/);
+  assert.match(script, /state\.resultHistory\.games = publicResultsRenderer\.limitHistory\(payload\.games\)/);
+  assert.match(script, /state\.resultHistory\.message = state\.resultHistory\.games\.length \? "" : "採点済みの過去試合はありません。"/);
+  assert.match(script, /data-result-history-toggle/);
+  assert.match(script, /data-result-history-select/);
+});
+
 test("公開結果は予想入力状態から独立して保持し、履歴一覧は最新5件に制限する", () => {
   assert.match(publicState, /results: \{ latest: null, history: state\.resultHistory \}/);
-  assert.match(publicResultsRenderer, /const displayedResult = deps\.state\.resultHistory\.result \|\| deps\.state\.result/);
+  assert.match(publicResultsRenderer, /function getDisplayedResult\(\)/);
+  assert.match(publicResultsRenderer, /const displayedResult = getDisplayedResult\(\)/);
   assert.match(publicResultsRenderer, /games\.slice\(0, 5\)/);
   const handlerStart = worker.indexOf("async function handleGetResultGames");
   const handlerEnd = worker.indexOf("async function handleGetResultGame(", handlerStart);
@@ -62,6 +75,6 @@ test("公開結果は予想入力状態から独立して保持し、履歴一�
 });
 
 test("通常画面の公開結果修正は新しいcache busterを使う", () => {
-  assert.match(html, /style\.css\?v=public-saved-lineup-player-width-1/);
-  assert.match(html, /script\.js\?v=public-saved-lineup-player-width-1/);
+  assert.match(html, /style\.css\?v=public-hide-comparison-default-own-latest-result-1/);
+  assert.match(html, /script\.js\?v=public-hide-comparison-default-own-latest-result-1/);
 });

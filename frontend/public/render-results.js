@@ -16,19 +16,42 @@
       return Array.isArray(games) ? games.slice(0, 5) : [];
     }
 
+    function getDisplayedResult() {
+      const history = deps.state.resultHistory;
+      if (!history.isReady) return null;
+      if (history.result) return history.result;
+
+      const storedResult = deps.state.result;
+      const resultId = deps.getResultHistoryGameId(storedResult);
+      const participated = resultId && history.games.some((game) => deps.getResultHistoryGameId(game) === resultId);
+      return participated ? storedResult : null;
+    }
+
     function renderScoreResult() {
       const container = document.getElementById("scoreResult");
-      const displayedResult = deps.state.resultHistory.result || deps.state.result;
+      if (!container) return;
+      const history = deps.state.resultHistory;
+      const displayedResult = getDisplayedResult();
       // Keep score comparison data available internally, but do not render it in the public result UI for now.
 
       if (!displayedResult) {
+        if (history.isReady && !history.isLoading && !history.isDetailLoading && !history.selectedGameId && !history.games.length) {
+          container.className = "result-history-no-participation";
+          container.textContent = "前回参加した試合結果はありません。過去の試合成績から確認できます。";
+          return;
+        }
+        if (!history.isReady) {
+          container.className = "empty-state";
+          container.textContent = "結果を確認中です。";
+          return;
+        }
         container.className = "empty-state";
-        if (deps.state.resultHistory.isLoading || deps.state.resultHistory.isDetailLoading) {
+        if (history.isLoading || history.isDetailLoading) {
           container.textContent = "結果を読み込み中です。";
           return;
         }
-        if (deps.state.resultHistory.detailError) {
-          container.textContent = deps.state.resultHistory.detailError;
+        if (history.detailError) {
+          container.textContent = history.detailError;
           return;
         }
         const resultStatus = deps.state.gameDayNotice.record?.resultStatus;

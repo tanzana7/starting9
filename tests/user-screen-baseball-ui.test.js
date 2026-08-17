@@ -171,12 +171,12 @@ test("保存済み予想は打順・守備位置チップ・選手名ブロッ�
   assert.match(script, /class="saved-lineup-name"/);
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.lineup-list li\.saved-lineup-row[\s\S]*grid-template-columns: 48px minmax\(0, 1fr\)[\s\S]*border: 1px solid #d9dee7[\s\S]*background: #ffffff/);
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.saved-lineup-detail[\s\S]*display: flex/);
-  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.saved-lineup-name[\s\S]*border: 1px solid #d9dee7[\s\S]*background: #ffffff/);
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.saved-lineup-name[\s\S]*box-sizing: border-box[\s\S]*flex: 0 0 108px[\s\S]*width: 108px[\s\S]*min-width: 108px[\s\S]*max-width: 108px[\s\S]*border: 1px solid #d9dee7[\s\S]*background: #ffffff/);
   assert.match(css, /@media \(max-width: 767px\)[\s\S]*\.lineup-list li\.saved-lineup-row[\s\S]*grid-template-columns: 42px minmax\(0, 1fr\)[\s\S]*gap: 8px/);
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-hide-score-comparison-block-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-saved-lineup-player-width-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

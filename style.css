@@ -3270,7 +3270,11 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-position-chip.result-position
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-name {
-  min-width: 0;
+  box-sizing: border-box;
+  flex: 0 0 108px;
+  width: 108px;
+  min-width: 108px;
+  max-width: 108px;
   overflow-wrap: anywhere;
   padding: 7px 10px;
   border: 1px solid #d9dee7;

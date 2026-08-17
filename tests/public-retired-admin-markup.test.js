@@ -7,9 +7,9 @@ const root = path.join(__dirname, "..");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const adminHtml = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
-const scriptCacheBuster = "public-optimize-initial-load-noncritical-1";
-const moduleCacheBuster = "public-optimize-initial-load-noncritical-1";
-const styleCacheBuster = "public-optimize-initial-load-noncritical-1";
+const scriptCacheBuster = "public-release-prep-audit-1";
+const moduleCacheBuster = "public-release-prep-audit-1";
+const styleCacheBuster = "public-release-prep-audit-1";
 
 test("通常公開HTMLに旧admin・緊急復旧・test markupを含めない", () => {
   for (const marker of [

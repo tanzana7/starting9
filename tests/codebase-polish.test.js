@@ -28,10 +28,10 @@ test("the example Worker config documents V3 as an explicit opt-in", () => {
   assert.match(config, /"ENABLE_GAME_AUTOMATION_V3"\s*:\s*"false"/);
 });
 
-test("public static assets use the current cache buster and no dead ranking wrapper remains", () => {
+test("public static assets use the release audit cache buster and no dead ranking wrapper remains", () => {
   const index = read("index.html");
   const script = read("script.js");
 
-  assert.match(index, /script\.js\?v=public-optimize-initial-load-noncritical-1/);
+  assert.match(index, /script\.js\?v=public-release-prep-audit-1/);
   assert.doesNotMatch(script, /function\s+initializeYearlyRanking\s*\(/);
 });

@@ -129,7 +129,7 @@ test("公開画面は年間・月間・週間を切り替え、週間の空表�
   assert.match(html, /id="showYearlyRankingButton" class="ranking-tab"[^>]*>年間<\/button>/);
   assert.ok(html.indexOf(">週間</button>") < html.indexOf(">月間</button>"));
   assert.ok(html.indexOf(">月間</button>") < html.indexOf(">年間</button>"));
-  assert.match(html, /public-optimize-initial-load-noncritical-1/);
+  assert.match(html, /public-release-prep-audit-1/);
   assert.match(script, /function refreshWeeklyRanking/);
   assert.match(script, /buildWeeklyRankingApiUrl/);
   assert.match(script, /selectRankingView\("weekly"\)/);

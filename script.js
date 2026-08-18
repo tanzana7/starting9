@@ -7,23 +7,24 @@ const STORAGE_KEYS = {
   candidateRosterFilter: "hamStarting9CandidateRosterFilter"
 };
 const LINEUP_SIZE = 9;
-const SCORE_MAX = 100;
+const SCORE_MAX = 99;
 const SHARE_HASHTAGS = "#lovefighters #starting9";
 const SCORE_RULES = {
   player: {
     perHit: 5,
-    bonus: 5,
-    max: 50
+    max: 45
   },
   order: {
     perHit: 3,
-    bonus: 3,
-    max: 30
+    max: 27
   },
   position: {
     perHit: 2,
-    bonus: 2,
-    max: 20
+    max: 18
+  },
+  perfect: {
+    perHit: 1,
+    max: 9
   }
 };
 const POINTER_LONG_PRESS_MS = 250;
@@ -3638,10 +3639,11 @@ function scoreLineup(predictionLineup, actualLineup) {
     const isInStartingLineup = Boolean(actualItem);
     const isExactOrder = Boolean(actualItem && actualItem.order === predictionItem.order);
     const isExactPosition = isInStartingLineup && actualItem.position === predictionItem.position;
+    const isPerfect = isInStartingLineup && isExactOrder && isExactPosition;
     const point = (isInStartingLineup ? SCORE_RULES.player.perHit : 0) +
       (isExactOrder ? SCORE_RULES.order.perHit : 0) +
-      (isExactPosition ? SCORE_RULES.position.perHit : 0);
-    const isPerfect = isInStartingLineup && isExactOrder && isExactPosition;
+      (isExactPosition ? SCORE_RULES.position.perHit : 0) +
+      (isPerfect ? SCORE_RULES.perfect.perHit : 0);
 
     return {
       order: index + 1,
@@ -3655,6 +3657,7 @@ function scoreLineup(predictionLineup, actualLineup) {
       isPlayerHit: isInStartingLineup,
       isOrderHit: isExactOrder,
       isPositionHit: isExactPosition,
+      isPerfect,
       point,
       mark: isPerfect ? "◎" : isInStartingLineup ? "◯" : "×",
       label: isPerfect ? "完全一致" : isInStartingLineup ? "スタメン入り" : "外れ"
@@ -3664,7 +3667,7 @@ function scoreLineup(predictionLineup, actualLineup) {
   const breakdown = createScoreBreakdown(counts);
 
   return {
-    total: Math.min(SCORE_MAX, breakdown.player.total + breakdown.order.total + breakdown.position.total),
+    total: breakdown.player.total + breakdown.order.total + breakdown.position.total + breakdown.perfect.total,
     max: SCORE_MAX,
     counts,
     breakdown,
@@ -3710,7 +3713,8 @@ function getHitCounts(details) {
   return {
     player: details.filter((detail) => detail.isPlayerHit).length,
     order: details.filter((detail) => detail.isOrderHit).length,
-    position: details.filter((detail) => detail.isPositionHit).length
+    position: details.filter((detail) => detail.isPositionHit).length,
+    perfect: details.filter((detail) => detail.isPlayerHit && detail.isOrderHit && detail.isPositionHit).length
   };
 }
 
@@ -3718,25 +3722,29 @@ function createScoreBreakdown(counts) {
   const playerBase = counts.player * SCORE_RULES.player.perHit;
   const orderBase = counts.order * SCORE_RULES.order.perHit;
   const positionBase = counts.position * SCORE_RULES.position.perHit;
+  const perfectHits = Number.isFinite(Number(counts.perfect)) ? Number(counts.perfect) : 0;
+  const perfectBase = perfectHits * SCORE_RULES.perfect.perHit;
 
   return {
     player: {
       base: playerBase,
-      bonus: counts.player === LINEUP_SIZE ? SCORE_RULES.player.bonus : 0,
-      total: playerBase + (counts.player === LINEUP_SIZE ? SCORE_RULES.player.bonus : 0),
+      total: playerBase,
       max: SCORE_RULES.player.max
     },
     order: {
       base: orderBase,
-      bonus: counts.order === LINEUP_SIZE ? SCORE_RULES.order.bonus : 0,
-      total: orderBase + (counts.order === LINEUP_SIZE ? SCORE_RULES.order.bonus : 0),
+      total: orderBase,
       max: SCORE_RULES.order.max
     },
     position: {
       base: positionBase,
-      bonus: counts.position === LINEUP_SIZE ? SCORE_RULES.position.bonus : 0,
-      total: positionBase + (counts.position === LINEUP_SIZE ? SCORE_RULES.position.bonus : 0),
+      total: positionBase,
       max: SCORE_RULES.position.max
+    },
+    perfect: {
+      base: perfectBase,
+      total: perfectBase,
+      max: SCORE_RULES.perfect.max
     }
   };
 }
@@ -4354,13 +4362,14 @@ function createResultViewModel(result) {
       isPositionHit
     };
   });
-  const counts = result.counts || getHitCounts(details);
-  const breakdown = result.breakdown || createScoreBreakdown(counts);
+  const counts = getHitCounts(details);
+  const breakdown = createScoreBreakdown(counts);
+  const total = breakdown.player.total + breakdown.order.total + breakdown.position.total + breakdown.perfect.total;
 
   return {
-    total: result.total,
+    total,
     max: SCORE_MAX,
-    perfectLabel: result.total === SCORE_MAX ? "完全一致" : "",
+    perfectLabel: total === SCORE_MAX ? "完全一致" : "",
     counts,
     breakdown,
     details
@@ -4399,6 +4408,7 @@ function createResultFallbackView(viewModel) {
     ${createBreakdownItem("出場得点", viewModel.breakdown.player.total, viewModel.breakdown.player.max, `出場的中：${viewModel.counts.player} / ${LINEUP_SIZE}`)}
     ${createBreakdownItem("打順得点", viewModel.breakdown.order.total, viewModel.breakdown.order.max, `打順的中：${viewModel.counts.order} / ${LINEUP_SIZE}`)}
     ${createBreakdownItem("守備位置得点", viewModel.breakdown.position.total, viewModel.breakdown.position.max, `守備位置的中：${viewModel.counts.position} / ${LINEUP_SIZE}`)}
+    ${createBreakdownItem("完全一致ボーナス", viewModel.breakdown.perfect.total, viewModel.breakdown.perfect.max, `完全一致：${viewModel.counts.perfect} / ${LINEUP_SIZE}`)}
   `;
   const tableWrap = document.createElement("div");
   tableWrap.className = "result-table-wrap";
@@ -4534,13 +4544,16 @@ function createResultCanvas(viewModel) {
   y += heroHeight + sectionGap;
 
   drawRoundedRect(padding, y, contentWidth, breakdownHeight, 6, "#f8fbff", colors.border);
+  const perfectBreakdown = viewModel.breakdown.perfect || { total: 0, max: LINEUP_SIZE };
+  const perfectCount = Number.isFinite(Number(viewModel.counts.perfect)) ? Number(viewModel.counts.perfect) : 0;
   const breakdowns = [
-    ["出場得点", viewModel.breakdown.player, viewModel.counts.player],
-    ["打順得点", viewModel.breakdown.order, viewModel.counts.order],
-    ["守備位置得点", viewModel.breakdown.position, viewModel.counts.position]
+    ["出場得点", viewModel.breakdown.player, viewModel.counts.player, "出場的中"],
+    ["打順得点", viewModel.breakdown.order, viewModel.counts.order, "打順的中"],
+    ["守備位置得点", viewModel.breakdown.position, viewModel.counts.position, "守備位置的中"],
+    ["完全一致ボーナス", perfectBreakdown, perfectCount, "完全一致"]
   ];
   const breakdownWidth = contentWidth / breakdowns.length;
-  breakdowns.forEach(([label, score, count], index) => {
+  breakdowns.forEach(([label, score, count, countLabel], index) => {
     const x = padding + index * breakdownWidth;
     if (index > 0) {
       context.strokeStyle = colors.border;
@@ -4551,7 +4564,7 @@ function createResultCanvas(viewModel) {
     }
     drawText(label, x + 8, y + 15, breakdownWidth - 16, "800 9px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.muted, "left");
     drawText(`${score.total} / ${score.max}`, x + 8, y + 37, breakdownWidth - 16, "900 15px Arial, sans-serif", colors.text, "left");
-    drawText(`${label.replace("得点", "的中")}：${count} / ${LINEUP_SIZE}`, x + 8, y + 57, breakdownWidth - 16, "800 8px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.muted, "left");
+    drawText(`${countLabel}：${count} / ${LINEUP_SIZE}`, x + 8, y + 57, breakdownWidth - 16, "800 8px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.muted, "left");
   });
   y += breakdownHeight + sectionGap;
 
@@ -4585,7 +4598,7 @@ function createResultCanvas(viewModel) {
     const actualX = actualColumnX + 4;
     const judgementX = tableX + orderWidth + playerWidth * 2;
     const pointValue = Number(detail.point);
-    const isPerfectRow = pointValue >= 10;
+    const isPerfectRow = Boolean(detail.isPerfect ?? (pointValue >= 11));
     const isZeroRow = pointValue === 0;
     const rowFill = isPerfectRow ? "#fffaf0" : isZeroRow ? "#fbfcfd" : colors.row;
     const rowBorder = isPerfectRow ? "#e6c978" : isZeroRow ? "#e2e8ed" : colors.grid;

@@ -7,11 +7,12 @@
  */
 
 export const SCORING_LINEUP_SIZE = 9;
-export const SCORING_MAX_SCORE = 100;
+export const SCORING_MAX_SCORE = 99;
 export const SCORING_RULES = Object.freeze({
-  player: Object.freeze({ perHit: 5, bonus: 5 }),
-  order: Object.freeze({ perHit: 3, bonus: 3 }),
-  position: Object.freeze({ perHit: 2, bonus: 2 })
+  player: Object.freeze({ perHit: 5, max: 45 }),
+  order: Object.freeze({ perHit: 3, max: 27 }),
+  position: Object.freeze({ perHit: 2, max: 18 }),
+  perfect: Object.freeze({ perHit: 1, max: 9 })
 });
 
 const PREDICTION_SCHEMA_VERSION = 1;
@@ -21,26 +22,28 @@ export function scorePredictionLineup(predictionLineup, actualLineup) {
   let playerHits = 0;
   let orderHits = 0;
   let positionHits = 0;
+  let perfectHits = 0;
 
   for (const prediction of predictionLineup) {
     const actual = actualByPlayerId.get(prediction.playerId);
     if (!actual) continue;
 
     playerHits += 1;
-    if (actual.battingOrder === prediction.battingOrder) orderHits += 1;
-    if (actual.position === prediction.position) positionHits += 1;
+    const isOrderHit = actual.battingOrder === prediction.battingOrder;
+    const isPositionHit = actual.position === prediction.position;
+    if (isOrderHit) orderHits += 1;
+    if (isPositionHit) positionHits += 1;
+    if (isOrderHit && isPositionHit) perfectHits += 1;
   }
 
-  const playerScore = playerHits * SCORING_RULES.player.perHit
-    + (playerHits === SCORING_LINEUP_SIZE ? SCORING_RULES.player.bonus : 0);
-  const orderScore = orderHits * SCORING_RULES.order.perHit
-    + (orderHits === SCORING_LINEUP_SIZE ? SCORING_RULES.order.bonus : 0);
-  const positionScore = positionHits * SCORING_RULES.position.perHit
-    + (positionHits === SCORING_LINEUP_SIZE ? SCORING_RULES.position.bonus : 0);
+  const playerScore = playerHits * SCORING_RULES.player.perHit;
+  const orderScore = orderHits * SCORING_RULES.order.perHit;
+  const positionScore = positionHits * SCORING_RULES.position.perHit;
+  const perfectScore = perfectHits * SCORING_RULES.perfect.perHit;
 
   return {
-    total: Math.min(SCORING_MAX_SCORE, playerScore + orderScore + positionScore),
-    counts: { player: playerHits, order: orderHits, position: positionHits }
+    total: playerScore + orderScore + positionScore + perfectScore,
+    counts: { player: playerHits, order: orderHits, position: positionHits, perfect: perfectHits }
   };
 }
 
@@ -51,17 +54,26 @@ export function buildPerfectScorePreview(actualLineup) {
     player: {
       hits: score.counts.player,
       points: score.counts.player * SCORING_RULES.player.perHit,
-      bonus: score.counts.player === SCORING_LINEUP_SIZE ? SCORING_RULES.player.bonus : 0
+      total: score.counts.player * SCORING_RULES.player.perHit,
+      max: SCORING_RULES.player.max
     },
     order: {
       hits: score.counts.order,
       points: score.counts.order * SCORING_RULES.order.perHit,
-      bonus: score.counts.order === SCORING_LINEUP_SIZE ? SCORING_RULES.order.bonus : 0
+      total: score.counts.order * SCORING_RULES.order.perHit,
+      max: SCORING_RULES.order.max
     },
     position: {
       hits: score.counts.position,
       points: score.counts.position * SCORING_RULES.position.perHit,
-      bonus: score.counts.position === SCORING_LINEUP_SIZE ? SCORING_RULES.position.bonus : 0
+      total: score.counts.position * SCORING_RULES.position.perHit,
+      max: SCORING_RULES.position.max
+    },
+    perfect: {
+      hits: score.counts.perfect,
+      points: score.counts.perfect * SCORING_RULES.perfect.perHit,
+      total: score.counts.perfect * SCORING_RULES.perfect.perHit,
+      max: SCORING_RULES.perfect.max
     },
     total: score.total
   };

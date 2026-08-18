@@ -3475,7 +3475,7 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
 
 .hit-breakdown {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0;
   overflow: hidden;
   border: 1px solid #b9cfe2;
@@ -4581,7 +4581,7 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
 
 .guide-score-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
 

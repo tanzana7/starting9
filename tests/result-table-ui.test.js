@@ -161,7 +161,7 @@ test("結果Canvasは判定列・行高・点数バッジを微調整する", ()
   assert.match(canvas, /const displayWidth = Math\.min\(590/);
   assert.match(canvas, /const rowHeight = 50/);
   assert.match(canvas, /const judgementWidth = displayWidth < 480 \? 94 : 126/);
-  assert.match(canvas, /const isPerfectRow = pointValue >= 10/);
+  assert.match(canvas, /const isPerfectRow = Boolean\(detail\.isPerfect \?\? \(pointValue >= 11\)\)/);
   assert.match(canvas, /const isZeroRow = pointValue === 0/);
   assert.match(canvas, /const pointFill = isPerfectRow/);
   assert.match(canvas, /context\.fillStyle = isPerfectRow \? "#fff8e8" : isFullMatch \? "#f5fbff" : "#f1f4f7"/);
@@ -242,13 +242,14 @@ test("結果Canvasは代表的な採点結果を実行時に描画できる", ()
   }));
   const rendered = context.render({
     total: 48,
-    max: 100,
+    max: 99,
     perfectLabel: "",
-    counts: { player: 6, order: 3, position: 5 },
+    counts: { player: 6, order: 3, position: 2, perfect: 1 },
     breakdown: {
-      player: { total: 30, max: 50 },
-      order: { total: 9, max: 30 },
-      position: { total: 10, max: 20 }
+      player: { total: 30, max: 45 },
+      order: { total: 9, max: 27 },
+      position: { total: 10, max: 18 },
+      perfect: { total: 1, max: 9 }
     },
     details
   });

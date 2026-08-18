@@ -2996,7 +2996,7 @@ textarea:focus {
 
 .player-detail-dialog {
   display: grid;
-  width: min(100%, 480px);
+  width: min(100%, 240px);
   max-height: min(720px, calc(100vh - 40px));
   gap: 16px;
   overflow: auto;
@@ -3242,7 +3242,7 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary {
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-image {
   display: grid;
   gap: 3px;
-  width: min(100%, 480px);
+  width: min(100%, 240px);
   min-width: 0;
 }
 

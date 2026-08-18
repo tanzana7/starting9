@@ -4534,7 +4534,7 @@ function createSavedPredictionPreview(prediction) {
 
 function createSavedPredictionCanvas(prediction) {
   if (!prediction) return null;
-  const displayWidth = Math.min(480, Math.max(320, (window.innerWidth || 480) - 32));
+  const displayWidth = Math.min(240, Math.max(208, (window.innerWidth || 240) - 32));
   const renderScale = 2;
   const canvasHeight = 476;
   const canvas = document.createElement("canvas");

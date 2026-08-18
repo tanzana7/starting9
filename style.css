@@ -3235,17 +3235,17 @@ textarea:focus {
 
 /* 保存済み予想は、元のブロック感を残したコンパクトなスタメン表として見せる。 */
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary {
-  width: min(100%, 520px);
+  width: min(100%, 470px);
   min-width: 0;
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-table-header {
   display: grid;
-  grid-template-columns: 48px 44px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: 42px 40px minmax(0, 1fr);
+  gap: 6px;
   align-items: center;
-  margin: 10px 0 0;
-  padding: 7px 10px;
+  margin: 6px 0 0;
+  padding: 5px 7px;
   border: 1px solid var(--fighters-deep-blue);
   border-radius: 5px 5px 0 0;
   color: #ffffff;
@@ -3260,8 +3260,8 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-table-header span:nth-
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary > .lineup-list {
-  gap: 6px;
-  padding: 6px;
+  gap: 3px;
+  padding: 4px;
   border: 1px solid #cfd7e2;
   border-top: 0;
   border-radius: 0 0 5px 5px;
@@ -3269,11 +3269,11 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary > .lineup-list
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary li.saved-lineup-row {
-  grid-template-columns: 48px 44px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: 42px 40px minmax(0, 1fr);
+  gap: 6px;
   align-items: center;
   min-width: 0;
-  padding: 6px 8px;
+  padding: 4px 6px;
   border: 1px solid #d9dee7;
   border-radius: 5px;
   background: #f8fbff;
@@ -3284,7 +3284,7 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary .saved-lineup-
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 30px;
+  min-height: 28px;
   border-radius: 4px;
   background: #edf3fa;
   color: var(--fighters-deep-blue);
@@ -3300,8 +3300,8 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary .saved-lineup-
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary .saved-position-chip.result-position-tile {
   grid-column: 2;
   justify-self: center;
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   box-shadow: 0 1px 2px rgba(16, 42, 75, 0.12);
   font-size: 0.82rem;
 }
@@ -3313,13 +3313,17 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary .saved-lineup-
   min-width: 0;
   max-width: none;
   overflow-wrap: anywhere;
-  padding: 7px 10px;
+  padding: 5px 8px;
   border: 1px solid #d9dee7;
   border-radius: 4px;
   background: #ffffff;
   color: var(--text);
   font-weight: 800;
   box-shadow: 0 1px 2px rgba(16, 42, 75, 0.06);
+}
+
+body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
+  margin-bottom: -4px;
 }
 
 @media (max-width: 767px) {
@@ -3329,25 +3333,29 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary .saved-lineup-
 
   body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-table-header {
     grid-template-columns: 40px 38px minmax(0, 1fr);
-    gap: 7px;
-    margin-top: 8px;
-    padding: 6px 7px;
+    gap: 6px;
+    margin-top: 5px;
+    padding: 5px 6px;
   }
 
   body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary > .lineup-list {
-    gap: 5px;
-    padding: 5px;
+    gap: 3px;
+    padding: 4px;
   }
 
   body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary li.saved-lineup-row {
     grid-template-columns: 40px 38px minmax(0, 1fr);
-    gap: 7px;
-    padding: 6px;
+    gap: 6px;
+    padding: 5px;
   }
 
   body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary .saved-position-chip.result-position-tile {
     width: 32px;
     height: 32px;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary .saved-lineup-name {
+    padding: 5px 7px;
   }
 }
 

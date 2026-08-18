@@ -177,12 +177,12 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
   assert.match(script, /className = "saved-lineup-canvas"/);
   assert.match(script, /title\.textContent = "保存済みのスタメン予想"/);
   assert.match(script, /meta\.textContent = `最後に更新：\$\{formatDateTime\(prediction\.savedAt\)\}`/);
-  assert.match(script, /const displayWidth = Math\.min\(560/);
-  assert.match(script, /const tableWidth = displayWidth - 12/);
+  assert.match(script, /const displayWidth = Math\.min\(480/);
+  assert.match(script, /const tableWidth = displayWidth - 8/);
   assert.doesNotMatch(script, /drawLeftText\("あなたの予想"/);
   assert.doesNotMatch(script, /drawLeftText\(`最後に更新：/);
-  assert.match(script, /nameWidth - 20/);
-  assert.match(html, /id="saveSavedPredictionImageButton"[^>]*>画像として保存/);
+  assert.match(script, /nameWidth - 14/);
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) #editSavedPredictionButton,[\s\S]*#sharePredictionButton,[\s\S]*#saveSavedPredictionImageButton[\s\S]*display: none !important/);
   assert.match(script, /saveSavedPredictionImage/);
   assert.match(script, /canvas\.toBlob/);
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.saved-lineup-summary[\s\S]*width: min\(100%, 470px\)/);
@@ -195,7 +195,7 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-saved-lineup-canvas-compact-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-saved-lineup-canvas-tight-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

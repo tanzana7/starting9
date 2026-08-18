@@ -4534,7 +4534,7 @@ function createSavedPredictionPreview(prediction) {
 
 function createSavedPredictionCanvas(prediction) {
   if (!prediction) return null;
-  const displayWidth = Math.min(560, Math.max(320, (window.innerWidth || 560) - 32));
+  const displayWidth = Math.min(480, Math.max(320, (window.innerWidth || 480) - 32));
   const renderScale = 2;
   const canvasHeight = 476;
   const canvas = document.createElement("canvas");
@@ -4606,9 +4606,9 @@ function createSavedPredictionCanvas(prediction) {
   context.fillStyle = "#ffffff";
   context.fillRect(0, 0, displayWidth, canvasHeight);
 
-  const tableX = 6;
+  const tableX = 4;
   const tableY = 12;
-  const tableWidth = displayWidth - 12;
+  const tableWidth = displayWidth - 8;
   const headerHeight = 40;
   const rowHeight = 46;
   const orderWidth = 52;
@@ -4618,7 +4618,7 @@ function createSavedPredictionCanvas(prediction) {
   drawRoundedRect(tableX, tableY, tableWidth, headerHeight, 7, colors.navy, colors.navy);
   drawCenteredText("打順", tableX, tableY + headerHeight / 2, orderWidth, "900 14px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#ffffff");
   drawCenteredText("守備", tableX + orderWidth, tableY + headerHeight / 2, positionWidth, "900 14px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#ffffff");
-  drawLeftText("選手名", tableX + orderWidth + positionWidth + 8, tableY + headerHeight / 2, nameWidth - 16, "900 14px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#ffffff");
+  drawLeftText("選手名", tableX + orderWidth + positionWidth + 6, tableY + headerHeight / 2, nameWidth - 10, "900 14px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#ffffff");
 
   normalizeLineup(prediction.lineup).forEach((lineupItem, index) => {
     const rowY = tableY + headerHeight + index * rowHeight;
@@ -4632,8 +4632,8 @@ function createSavedPredictionCanvas(prediction) {
     drawCenteredText(`${index + 1}番`, tableX + 5, rowY + rowHeight / 2, orderWidth - 10, "900 15px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.navy);
     drawRoundedRect(tableX + orderWidth + 7, rowY + 6, positionWidth - 14, rowHeight - 12, 12, colors.position[category] || colors.position.empty, colors.border);
     drawCenteredText(normalizedPosition || "－", tableX + orderWidth + 7, rowY + rowHeight / 2, positionWidth - 14, "900 15px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
-    drawRoundedRect(tableX + orderWidth + positionWidth + 4, rowY + 5, nameWidth - 8, rowHeight - 10, 5, colors.name, colors.border);
-    drawLeftText(lineupItem.player || "未選択", tableX + orderWidth + positionWidth + 10, rowY + rowHeight / 2, nameWidth - 20, "800 15px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
+    drawRoundedRect(tableX + orderWidth + positionWidth + 3, rowY + 5, nameWidth - 6, rowHeight - 10, 5, colors.name, colors.border);
+    drawLeftText(lineupItem.player || "未選択", tableX + orderWidth + positionWidth + 8, rowY + rowHeight / 2, nameWidth - 14, "800 15px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
   });
 
   return canvas;

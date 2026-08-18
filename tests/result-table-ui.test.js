@@ -129,6 +129,7 @@ test("採点結果テーブルは保存済み予想に近い青い表組みで�
   assert.match(css, /\.result-table \.result-order-cell strong\s*\{[\s\S]*color: #ffffff[\s\S]*background: var\(--fighters-blue\)/);
   assert.match(css, /\.result-table tbody tr td:first-child\s*\{[\s\S]*border-left: 1px solid #d3dfeb/);
   assert.match(css, /\.result-table tbody tr td:last-child\s*\{[\s\S]*border-right: 1px solid #d3dfeb/);
-  assert.match(css, /\.result-judgement-stack\s*\{[\s\S]*display: flex/);
+  assert.match(css, /\.result-judgement-stack\s*\{[\s\S]*display: flex[\s\S]*flex-wrap: nowrap/);
+  assert.match(css, /\.result-judgement-stack \.hit-badge\s*\{[\s\S]*min-width: 0[\s\S]*font-size: 0\.62rem/);
   assert.match(css, /\.result-player-name\s*\{[\s\S]*overflow-wrap: anywhere/);
 });

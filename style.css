@@ -3650,14 +3650,19 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
 
 .result-judgement-stack {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-width: max-content;
   justify-content: center;
-  gap: 3px;
+  gap: 2px;
 }
 
 .result-judgement-stack .hit-badge {
-  padding: 3px 4px;
-  font-size: 0.65rem;
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 26px;
+  padding: 3px 3px;
+  gap: 2px;
+  font-size: 0.62rem;
 }
 
 .result-table .result-point-cell {

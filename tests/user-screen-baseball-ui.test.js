@@ -179,16 +179,16 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
   assert.match(script, /meta\.textContent = `最後に更新：\$\{formatDateTime\(prediction\.savedAt\)\}`/);
   assert.match(script, /const displayWidth = Math\.min\(240/);
   assert.match(script, /const tableWidth = displayWidth - 8/);
-  assert.match(script, /drawCenteredText\(`\$\{index \+ 1\}`, tableX \+ 5, rowY \+ rowHeight \/ 2/);
-  assert.match(script, /17px \\\"Courier New\\\", \\\"Lucida Console\\\", monospace/);
-  assert.match(script, /monospace", "#ffffff"/);
+  assert.match(script, /const drawDigitalOrderNumber = \(value, x, y, width, height, color\)/);
+  assert.match(script, /drawDigitalOrderNumber\(index \+ 1, orderBlockX \+ 10, rowY \+ 9, orderBlockWidth - 20, rowHeight - 18, "#ffffff"\)/);
   assert.match(script, /navy: "#0b5ea8"/);
   assert.match(script, /order: "#0b5ea8"/);
   assert.match(script, /drawCenteredText\("選手名", tableX \+ orderWidth \+ positionWidth, tableY \+ headerHeight \/ 2, nameWidth/);
+  assert.match(script, /drawCenteredText\(lineupItem\.player \|\| "未選択", tableX \+ orderWidth \+ positionWidth \+ 3, rowY \+ rowHeight \/ 2, nameWidth - 6/);
   assert.doesNotMatch(script, /drawCenteredText\(`\$\{index \+ 1\}番`/);
   assert.doesNotMatch(script, /drawLeftText\("あなたの予想"/);
   assert.doesNotMatch(script, /drawLeftText\(`最後に更新：/);
-  assert.match(script, /nameWidth - 14/);
+  assert.match(script, /nameWidth - 6/);
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) #editSavedPredictionButton,[\s\S]*#sharePredictionButton,[\s\S]*#saveSavedPredictionImageButton[\s\S]*display: none !important/);
   assert.match(script, /saveSavedPredictionImage/);
   assert.match(script, /canvas\.toBlob/);
@@ -202,7 +202,7 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-saved-lineup-canvas-fighters-order-number-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-saved-lineup-canvas-player-name-digital-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

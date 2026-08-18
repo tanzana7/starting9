@@ -27,16 +27,17 @@ function findActualLineupItem(predictionItem, actualLineup) {
 
 test("採点結果テーブルは同じ打順を予想と実際で比較する", () => {
   const source = sourceForFunction("createResultTable");
-  assert.match(source, /colspan="2" class="result-group-heading">あなたの予想/);
-  assert.match(source, /colspan="2" class="result-group-heading result-actual-group-heading">実際のスタメン/);
-  assert.match(source, /colspan="3" class="result-group-heading">判定/);
-  assert.match(source, /rowspan="2" class="result-point-heading">点数/);
-  assert.match(source, /rowspan="2" class="result-order-heading">打順/);
+  assert.match(source, /<th class="result-group-heading">あなたの予想/);
+  assert.match(source, /<th class="result-group-heading result-actual-group-heading">実際のスタメン/);
+  assert.match(source, /<th class="result-group-heading">判定/);
+  assert.match(source, /<th class="result-point-heading">点数/);
+  assert.match(source, /<th class="result-order-heading">打順/);
   assert.doesNotMatch(source, /実際の打順<\/th>/);
   assert.doesNotMatch(source, /実際は/);
   assert.doesNotMatch(source, /result-actual-order-note/);
   assert.match(source, /createResultPlayerCardHtml\(detail\.player, detail\.position\)/);
   assert.match(source, /createResultPlayerCardHtml\(detail\.actualPlayer \|\| "-", detail\.actualPosition\)/);
+  assert.match(source, /class="result-judgement-stack"/);
   assert.match(source, /createHitBadge\(detail\.isPlayerHit, "出場"\)/);
   assert.match(source, /createHitBadge\(detail\.isOrderHit, "打順"\)/);
   assert.match(source, /createHitBadge\(detail\.isPositionHit, "守備"\)/);
@@ -102,26 +103,32 @@ test("結果テーブルの選手セルにはカテゴリ背景クラスを付�
   assert.match(css, /\.result-player-name\s*\{[\s\S]*background: #ffffff/);
   assert.match(css, /\.result-player-name\s*\{[\s\S]*border: 1px solid var\(--border\)/);
   assert.match(css, /\.result-player-name\s*\{[\s\S]*border-radius: 7px/);
-  assert.match(css, /\.result-player-name\s*\{[\s\S]*font-size: 1\.05rem/);
-  assert.match(css, /\.result-player-name\s*\{[\s\S]*font-weight: 500/);
+  assert.match(css, /\.result-player-name\s*\{[\s\S]*font-size: 0\.92rem/);
+  assert.match(css, /\.result-player-name\s*\{[\s\S]*font-weight: 800/);
 });
 
 test("結果テーブルの選手カードは守備位置と名前を薄い枠線で一体化する", () => {
   assert.match(css, /\.result-player-card\s*\{[\s\S]*border: 1px solid var\(--border\)/);
   assert.match(css, /\.result-player-card\s*\{[\s\S]*border-radius: 7px/);
-  assert.match(css, /\.result-player-card \.result-position-tile\s*\{[\s\S]*border-right: 1px solid var\(--border\)/);
+  assert.match(css, /\.result-player-card \.result-position-tile\s*\{[\s\S]*border-right: 1px solid #b9cfe2/);
   assert.match(css, /\.result-player-card \.result-player-name\s*\{[\s\S]*border: 0/);
 });
 
 test("結果テーブルの選手名ブロックはPCとスマホで幅を揃える", () => {
-  assert.match(css, /\.result-player-name\s*\{[\s\S]*width: 132px[\s\S]*min-width: 132px[\s\S]*max-width: 132px/);
-  assert.match(css, /\.result-player-card \.result-player-name\s*\{[\s\S]*flex: 0 0 132px[\s\S]*min-width: 132px/);
-  assert.match(css, /@media \(max-width: 430px\)[\s\S]*\.result-player-name\s*\{[\s\S]*width: 112px[\s\S]*min-width: 112px[\s\S]*max-width: 112px[\s\S]*\.result-player-card \.result-player-name\s*\{[\s\S]*flex-basis: 112px[\s\S]*min-width: 112px/);
+  assert.match(css, /\.result-player-name\s*\{[\s\S]*width: auto[\s\S]*min-width: 0[\s\S]*max-width: none/);
+  assert.match(css, /\.result-player-card \.result-player-name\s*\{[\s\S]*flex: 1 1 auto/);
+  assert.match(css, /@media \(max-width: 767px\)[\s\S]*\.result-player-name\s*\{[\s\S]*width: auto[\s\S]*min-width: 0[\s\S]*max-width: none/);
   assert.match(css, /\.result-player-name\s*\{[\s\S]*overflow-wrap: anywhere/);
 });
 
-test("採点結果テーブルはスマホでも内容を保持して横スクロールできる", () => {
+test("採点結果テーブルは保存済み予想に近い青い表組みでスマホにも収める", () => {
   assert.match(css, /\.result-table-wrap\s*\{[\s\S]*overflow-x: auto/);
-  assert.match(css, /\.result-table\s*\{[\s\S]*min-width: 700px/);
+  assert.match(css, /\.result-table\s*\{[\s\S]*min-width: 520px/);
+  assert.match(css, /\.result-table\s*\{[\s\S]*border-spacing: 0 5px/);
+  assert.match(css, /\.result-table th\s*\{[\s\S]*color: #ffffff[\s\S]*background: var\(--fighters-blue\)/);
+  assert.match(css, /\.result-table \.result-order-cell strong\s*\{[\s\S]*color: #ffffff[\s\S]*background: var\(--fighters-blue\)/);
+  assert.match(css, /\.result-table tbody tr td:first-child\s*\{[\s\S]*border-left: 1px solid #d3dfeb/);
+  assert.match(css, /\.result-table tbody tr td:last-child\s*\{[\s\S]*border-right: 1px solid #d3dfeb/);
+  assert.match(css, /\.result-judgement-stack\s*\{[\s\S]*display: flex/);
   assert.match(css, /\.result-player-name\s*\{[\s\S]*overflow-wrap: anywhere/);
 });

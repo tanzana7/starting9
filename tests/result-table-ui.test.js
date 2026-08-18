@@ -150,9 +150,10 @@ test("採点結果は既存のviewModelからCanvas画像として表示する",
   assert.match(canvas, /viewModel\.details\.forEach/);
   assert.match(canvas, /drawPlayerCard\(detail\.player, detail\.position/);
   assert.match(canvas, /drawPlayerCard\(detail\.actualPlayer/);
-  assert.match(canvas, /drawPerfectBadge/);
-  assert.match(canvas, /if \(isPerfectRow\)/);
-  assert.doesNotMatch(canvas, /drawJudgement\(/);
+  assert.match(canvas, /drawJudgement\(detail\.isPlayerHit, "出場"/);
+  assert.match(canvas, /drawJudgement\(detail\.isOrderHit, "打順"/);
+  assert.match(canvas, /drawJudgement\(detail\.isPositionHit, "守備"/);
+  assert.doesNotMatch(canvas, /drawPerfectBadge|"PERFECT"/);
 });
 
 test("結果Canvasは判定列・行高・点数バッジを微調整する", () => {
@@ -168,14 +169,14 @@ test("結果Canvasは判定列・行高・点数バッジを微調整する", ()
   assert.match(canvas, /drawRoundedRect\(pointX \+ pointBadgeInset/);
   assert.match(canvas, /const scoreStartX = padding \+ \(contentWidth - totalTextWidth - scoreGap - maxTextWidth\) \/ 2/);
   assert.match(canvas, /Starting9 結果発表/);
-  assert.match(canvas, /drawText\("PERFECT", x, y \+ height \/ 2, width, `950 \$\{displayWidth < 480 \? 10 : 12\}px Arial/);
   assert.match(canvas, /const scoreGroupWidth = totalTextWidth \+ scoreGap \+ maxTextWidth/);
   assert.match(canvas, /drawText\("合計点", scoreStartX, y \+ 29, scoreGroupWidth/);
   assert.match(canvas, /isZeroRow \? "#fbfcfd"/);
   assert.match(canvas, /isZeroRow \? "#f8fafb"/);
+  assert.match(canvas, /hit: "#2f5d83"/);
+  assert.match(canvas, /miss: "#9aaaba"/);
   assert.match(canvas, /perfect: "#f0c766"/);
   assert.match(canvas, /perfectBorder: "#d4aa52"/);
-  assert.match(canvas, /drawText\("PERFECT"/);
   assert.match(canvas, /`950 \$\{displayWidth < 480 \? 13 : 15\}px Arial/);
   assert.match(canvas, /drawPlayerCard\(detail\.actualPlayer \|\| "-", detail\.actualPosition,[\s\S]*actualCardFill, actualCardBorder\)/);
   assert.match(canvas, /`700 \$\{fontSize\}px "Yu Gothic"/);

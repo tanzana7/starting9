@@ -6370,7 +6370,40 @@ body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .r
 
 body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .result-hero {
   border-radius: 4px;
-  background: var(--fighters-deep-blue);
+  background: #164a79;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) > .result-card {
+  border-color: #bfd3e5;
+  background: #eef5fb;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .result-dashboard {
+  background: #eef5fb;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .result-table-wrap {
+  border-color: #b9cfe2;
+  background: #e7f0f8;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .result-table th,
+body:not(:has(.app-layout.is-admin-screen)) .result-table .result-order-cell strong {
+  background: #1168a8;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .result-table tbody td {
+  background: #ffffff;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .hit-breakdown {
+  border-color: #bfd3e5;
+  background: #f8fbff;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .breakdown-item {
+  border-right-color: #bfd3e5;
+  background: #f8fbff;
 }
 
 @media (max-width: 759px) {

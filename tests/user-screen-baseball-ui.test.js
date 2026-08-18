@@ -179,6 +179,9 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
   assert.match(script, /meta\.textContent = `最後に更新：\$\{formatDateTime\(prediction\.savedAt\)\}`/);
   assert.match(script, /const displayWidth = Math\.min\(240/);
   assert.match(script, /const tableWidth = displayWidth - 8/);
+  assert.match(script, /drawCenteredText\(`\$\{index \+ 1\}`, tableX \+ 5, rowY \+ rowHeight \/ 2,[\s\S]*"#ffffff"/);
+  assert.match(script, /order: "#102a4b"/);
+  assert.doesNotMatch(script, /drawCenteredText\(`\$\{index \+ 1\}番`/);
   assert.doesNotMatch(script, /drawLeftText\("あなたの予想"/);
   assert.doesNotMatch(script, /drawLeftText\(`最後に更新：/);
   assert.match(script, /nameWidth - 14/);
@@ -195,7 +198,7 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-saved-lineup-canvas-half-width-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-saved-lineup-canvas-batting-order-navy-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

@@ -3406,14 +3406,15 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
 
 .result-dashboard {
   display: grid;
-  gap: 16px;
+  gap: 12px;
+  width: min(100%, 620px);
 }
 
 .result-hero {
-  padding: 20px;
-  border-radius: 8px;
+  padding: 16px;
+  border-radius: 7px;
   color: #ffffff;
-  background: linear-gradient(135deg, var(--fighters-blue), var(--fighters-deep-blue));
+  background: var(--fighters-deep-blue);
 }
 
 .result-label {
@@ -3443,9 +3444,9 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
 
 .score-comment {
   display: inline-flex;
-  margin: 14px 0 0;
-  padding: 6px 12px;
-  border-radius: 999px;
+  margin: 10px 0 0;
+  padding: 5px 10px;
+  border-radius: 5px;
   color: var(--fighters-deep-blue);
   background: #ffffff;
   font-weight: 900;
@@ -3454,16 +3455,25 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
 .hit-breakdown {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid #b9cfe2;
+  border-radius: 7px;
+  background: #f7fbff;
 }
 
 .breakdown-item {
   display: grid;
   gap: 4px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  padding: 10px;
+  border: 0;
+  border-right: 1px solid #b9cfe2;
+  border-radius: 0;
   background: #f7fbff;
+}
+
+.breakdown-item:last-child {
+  border-right: 0;
 }
 
 .breakdown-item span {
@@ -3474,7 +3484,7 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
 
 .breakdown-item strong {
   color: var(--fighters-deep-blue);
-  font-size: 1.45rem;
+  font-size: 1.2rem;
   line-height: 1.2;
 }
 
@@ -3485,108 +3495,156 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
 
 .result-table-wrap {
   overflow-x: auto;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #ffffff;
+  border: 1px solid #b9cfe2;
+  border-radius: 7px;
+  background: #f3f6fa;
 }
 
 .result-table {
   width: 100%;
-  min-width: 700px;
-  border-collapse: collapse;
+  min-width: 520px;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
 }
 
 .result-table th,
 .result-table td {
-  padding: 11px 10px;
-  border-bottom: 1px solid var(--border);
-  text-align: left;
+  padding: 7px 6px;
+  border-right: 1px solid #d3dfeb;
+  border-bottom: 1px solid #d3dfeb;
+  text-align: center;
   vertical-align: middle;
   white-space: nowrap;
 }
 
 .result-table th {
-  color: var(--fighters-deep-blue);
-  background: var(--fighters-sky);
-  font-size: 0.86rem;
+  color: #ffffff;
+  background: var(--fighters-blue);
+  font-size: 0.78rem;
   font-weight: 900;
 }
 
-.result-table .result-group-heading,
+.result-table th:last-child,
+.result-table td:last-child {
+  border-right: 0;
+}
+
 .result-table .result-order-heading,
-.result-table .result-point-heading,
-.result-table .result-subheading {
+.result-table .result-point-heading {
   text-align: center;
+}
+
+.result-table .result-order-heading,
+.result-table .result-order-cell {
+  width: 46px;
+}
+
+.result-table .result-point-heading,
+.result-table .result-point-cell {
+  width: 44px;
 }
 
 .result-table .result-actual-group-heading,
 .result-table .result-actual-group-cell {
-  border-left: 1px solid var(--border);
+  border-left: 1px solid #b9cfe2;
 }
 
-.result-table .result-subheading {
-  color: var(--muted);
-  background: #f7fbff;
-  font-size: 0.76rem;
+.result-table tbody td {
+  background: #f8fbff;
 }
 
 .result-table .result-player-cell {
-  min-width: 118px;
+  min-width: 0;
   white-space: normal;
 }
 
 .result-player-name {
-  display: inline-block;
+  display: block;
   box-sizing: border-box;
-  width: 132px;
-  min-width: 132px;
-  max-width: 132px;
-  padding: 3px 7px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  padding: 6px 5px;
+  border: 0;
+  border-radius: 0;
   background: #ffffff;
   color: inherit;
-  font-size: 1.05rem;
-  font-weight: 500;
-  line-height: 1.25;
+  font-size: 0.92rem;
+  font-weight: 800;
+  line-height: 1.2;
   overflow-wrap: anywhere;
+  text-align: center;
 }
 
 .result-player-card {
-  display: inline-flex;
+  display: flex;
   align-items: stretch;
   box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
   max-width: 100%;
   overflow: hidden;
-  border: 1px solid var(--border);
+  border: 1px solid #b9cfe2;
   border-radius: 7px;
   background: #ffffff;
   vertical-align: middle;
 }
 
 .result-player-card .result-position-tile {
-  flex: 0 0 34px;
+  flex: 0 0 30px;
   align-self: stretch;
-  width: 34px;
+  width: 30px;
   height: auto;
-  min-height: 32px;
+  min-height: 30px;
   border: 0;
-  border-right: 1px solid var(--border);
+  border-right: 1px solid #b9cfe2;
   border-radius: 0;
   box-shadow: none;
 }
 
 .result-player-card .result-player-name {
-  flex: 0 0 132px;
-  min-width: 132px;
+  flex: 1 1 auto;
   border: 0;
   border-radius: 0;
 }
 
+.result-table .result-order-cell strong {
+  display: inline-flex;
+  min-width: 30px;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: #ffffff;
+  background: var(--fighters-blue);
+  font-size: 1rem;
+  font-weight: 900;
+}
+
+.result-table .result-judgements-cell {
+  white-space: normal;
+}
+
+.result-judgement-stack {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 3px;
+}
+
+.result-judgement-stack .hit-badge {
+  padding: 3px 4px;
+  font-size: 0.65rem;
+}
+
 .result-table .result-point-cell {
-  min-width: 54px;
   color: var(--fighters-deep-blue);
-  text-align: right;
+  text-align: center;
+}
+
+.result-table .result-point-cell strong {
+  font-size: 1rem;
 }
 
 .result-history {
@@ -4040,22 +4098,19 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
   }
 
   .result-table {
-    min-width: 700px;
+    min-width: 520px;
   }
 
   .result-table .result-player-cell {
-    min-width: 108px;
+    min-width: 0;
   }
 
   .result-player-name {
-    width: 112px;
-    min-width: 112px;
-    max-width: 112px;
-  }
-
-  .result-player-card .result-player-name {
-    flex-basis: 112px;
-    min-width: 112px;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    padding: 6px 4px;
+    font-size: 0.84rem;
   }
 }
 

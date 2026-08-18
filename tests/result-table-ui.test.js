@@ -169,7 +169,11 @@ test("結果Canvasは判定列・行高・点数バッジを微調整する", ()
   assert.match(canvas, /drawRoundedRect\(pointX \+ pointBadgeInset/);
   assert.match(canvas, /const scoreStartX = padding \+ \(contentWidth - totalTextWidth - scoreGap - maxTextWidth\) \/ 2/);
   assert.match(canvas, /Starting9 結果発表/);
-  assert.match(canvas, /950 \$\{displayWidth < 480 \? 10 : 13\}px Arial/);
+  assert.match(canvas, /950 \$\{displayWidth < 480 \? 10 : 14\}px Arial/);
+  assert.match(canvas, /const scoreGroupWidth = totalTextWidth \+ scoreGap \+ maxTextWidth/);
+  assert.match(canvas, /drawText\("合計点", scoreStartX, y \+ 29, scoreGroupWidth/);
+  assert.match(canvas, /isZeroRow \? "#fdfefe"/);
+  assert.match(canvas, /isZeroRow \? "#f3f6f8"/);
 });
 
 test("結果Canvasは列座標を使用前に初期化する", () => {

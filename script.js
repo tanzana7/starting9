@@ -4501,7 +4501,7 @@ function createResultCanvas(viewModel) {
   };
   const drawJudgement = (isHit, label, x, y, width, height) => {
     drawRoundedRect(x, y, width, height, 5, isHit ? colors.hit : colors.miss, null);
-    drawText(isHit ? "○" : "×", x + 2, y + height / 2, Math.max(10, width * 0.34), `950 ${displayWidth < 480 ? 10 : 13}px Arial, sans-serif`, "#ffffff");
+    drawText(isHit ? "○" : "×", x + 2, y + height / 2, Math.max(10, width * 0.34), `950 ${displayWidth < 480 ? 10 : 14}px Arial, sans-serif`, "#ffffff");
     drawText(label, x + width * 0.34, y + height / 2, width * 0.62, `900 ${displayWidth < 480 ? 8 : 9}px Arial, sans-serif`, "#ffffff");
   };
 
@@ -4512,7 +4512,6 @@ function createResultCanvas(viewModel) {
   let y = padding;
   drawRoundedRect(padding, y, contentWidth, heroHeight, 6, colors.hero, null);
   drawText("Starting9 結果発表", padding + 14, y + 11, 150, "800 9px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#b8dcf5", "left");
-  drawText("合計点", padding + 14, y + 29, 80, "900 10px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#d7ecff", "left");
   const totalFont = `950 ${displayWidth < 480 ? 36 : 42}px Arial, sans-serif`;
   const maxFont = `900 ${displayWidth < 480 ? 15 : 18}px Arial, sans-serif`;
   const maxLabel = `/ ${viewModel.max} 点`;
@@ -4522,6 +4521,8 @@ function createResultCanvas(viewModel) {
   const maxTextWidth = context.measureText(maxLabel).width;
   const scoreGap = displayWidth < 480 ? 8 : 12;
   const scoreStartX = padding + (contentWidth - totalTextWidth - scoreGap - maxTextWidth) / 2;
+  const scoreGroupWidth = totalTextWidth + scoreGap + maxTextWidth;
+  drawText("合計点", scoreStartX, y + 29, scoreGroupWidth, "900 10px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#d7ecff");
   drawText(viewModel.total, scoreStartX, y + 54, totalTextWidth, totalFont, "#ffffff", "left");
   drawText(maxLabel, scoreStartX + totalTextWidth + scoreGap, y + 57, maxTextWidth, maxFont, "#eaf4ff", "left");
   if (viewModel.perfectLabel) {
@@ -4584,8 +4585,8 @@ function createResultCanvas(viewModel) {
     const pointValue = Number(detail.point);
     const isPerfectRow = pointValue >= 10;
     const isZeroRow = pointValue === 0;
-    const rowFill = isPerfectRow ? "#f3faff" : isZeroRow ? "#fbfcfd" : colors.row;
-    const rowBorder = isPerfectRow ? "#a7cce8" : isZeroRow ? "#e0e7ee" : colors.grid;
+    const rowFill = isPerfectRow ? "#f3faff" : isZeroRow ? "#fdfefe" : colors.row;
+    const rowBorder = isPerfectRow ? "#a7cce8" : isZeroRow ? "#e2e9ef" : colors.grid;
     context.lineWidth = 1;
     drawRoundedRect(tableX, rowY, contentWidth, rowHeight, 6, rowFill, rowBorder);
     context.fillStyle = "#f7fbff";
@@ -4600,8 +4601,8 @@ function createResultCanvas(viewModel) {
     drawJudgement(detail.isOrderHit, "打順", judgementX + 4 + chipWidth + chipGap, rowY + 13, chipWidth, 26);
     drawJudgement(detail.isPositionHit, "守備", judgementX + 4 + (chipWidth + chipGap) * 2, rowY + 13, chipWidth, 26);
     const pointX = judgementX + judgementWidth;
-    const pointFill = isPerfectRow ? "#dff1ff" : isZeroRow ? "#f0f3f6" : "#eaf4ff";
-    const pointBorder = isPerfectRow ? "#82b6dc" : isZeroRow ? "#cbd6df" : colors.border;
+    const pointFill = isPerfectRow ? "#dff1ff" : isZeroRow ? "#f3f6f8" : "#eaf4ff";
+    const pointBorder = isPerfectRow ? "#82b6dc" : isZeroRow ? "#d0dbe4" : colors.border;
     const pointBadgeInset = displayWidth < 480 ? 6 : 8;
     drawRoundedRect(pointX + pointBadgeInset, rowY + 12, pointWidth - pointBadgeInset * 2, 28, 6, pointFill, pointBorder);
     drawText(detail.point, pointX + pointBadgeInset, rowY + rowHeight / 2, pointWidth - pointBadgeInset * 2, `900 ${displayWidth < 480 ? 12 : 14}px Arial, sans-serif`, colors.text);

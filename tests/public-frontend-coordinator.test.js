@@ -123,5 +123,6 @@ test("前回試合と結果一覧は初期表示で並列取得し、前回取�
   const previousFetcher = script.slice(script.indexOf("function fetchPreviousResultGame"), script.indexOf("function buildProbableStarterApiUrl", script.indexOf("function fetchPreviousResultGame")));
   assert.match(initializer, /Promise\.allSettled\(\[[\s\S]*fetchPreviousResultGame\(\{ force: false \}\)[\s\S]*refreshResultHistory\(\{ force: false \}\)/);
   assert.match(previousFetcher, /resolveResultHistorySelection\(\)/);
+  assert.match(previousFetcher, /previous\.isLoading \|\| previous\.isReady/);
   assert.doesNotMatch(previousFetcher, /refreshResultHistory\(\{ force: true \}\)/);
 });

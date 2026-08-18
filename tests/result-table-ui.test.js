@@ -139,3 +139,18 @@ test("公開結果エリアは保存済み予想に近い青白い配色を使�
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.result-table th,[\s\S]*background: #1168a8/);
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.result-table tbody td\s*\{[\s\S]*background: #ffffff/);
 });
+
+test("採点結果は既存のviewModelからCanvas画像として表示する", () => {
+  const view = sourceForFunction("createResultView");
+  const canvas = sourceForFunction("createResultCanvas");
+  assert.match(view, /createResultCanvas\(viewModel\)/);
+  assert.match(view, /className = "result-canvas"/);
+  assert.match(view, /setAttribute\("role", "img"\)/);
+  assert.match(canvas, /viewModel\.breakdown\.player/);
+  assert.match(canvas, /viewModel\.details\.forEach/);
+  assert.match(canvas, /drawPlayerCard\(detail\.player, detail\.position/);
+  assert.match(canvas, /drawPlayerCard\(detail\.actualPlayer/);
+  assert.match(canvas, /drawJudgement\(detail\.isPlayerHit, "出場"/);
+  assert.match(canvas, /drawJudgement\(detail\.isOrderHit, "打順"/);
+  assert.match(canvas, /drawJudgement\(detail\.isPositionHit, "守備"/);
+});

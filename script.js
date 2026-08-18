@@ -4416,7 +4416,7 @@ function createResultCanvas(viewModel) {
   const heroHeight = 78;
   const breakdownHeight = 70;
   const headerHeight = 38;
-  const rowHeight = 52;
+  const rowHeight = 50;
   const rowGap = 4;
   const sectionGap = 10;
   const tableHeight = headerHeight + viewModel.details.length * rowHeight + Math.max(0, viewModel.details.length - 1) * rowGap;
@@ -4501,7 +4501,7 @@ function createResultCanvas(viewModel) {
   };
   const drawJudgement = (isHit, label, x, y, width, height) => {
     drawRoundedRect(x, y, width, height, 5, isHit ? colors.hit : colors.miss, null);
-    drawText(isHit ? "○" : "×", x + 2, y + height / 2, Math.max(10, width * 0.34), `950 ${displayWidth < 480 ? 10 : 12}px Arial, sans-serif`, "#ffffff");
+    drawText(isHit ? "○" : "×", x + 2, y + height / 2, Math.max(10, width * 0.34), `950 ${displayWidth < 480 ? 10 : 13}px Arial, sans-serif`, "#ffffff");
     drawText(label, x + width * 0.34, y + height / 2, width * 0.62, `900 ${displayWidth < 480 ? 8 : 9}px Arial, sans-serif`, "#ffffff");
   };
 
@@ -4511,7 +4511,8 @@ function createResultCanvas(viewModel) {
   const contentWidth = displayWidth - padding * 2;
   let y = padding;
   drawRoundedRect(padding, y, contentWidth, heroHeight, 6, colors.hero, null);
-  drawText("合計点", padding + 14, y + 15, 80, "900 10px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#d7ecff", "left");
+  drawText("Starting9 結果発表", padding + 14, y + 11, 150, "800 9px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#b8dcf5", "left");
+  drawText("合計点", padding + 14, y + 29, 80, "900 10px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#d7ecff", "left");
   const totalFont = `950 ${displayWidth < 480 ? 36 : 42}px Arial, sans-serif`;
   const maxFont = `900 ${displayWidth < 480 ? 15 : 18}px Arial, sans-serif`;
   const maxLabel = `/ ${viewModel.max} 点`;
@@ -4521,8 +4522,8 @@ function createResultCanvas(viewModel) {
   const maxTextWidth = context.measureText(maxLabel).width;
   const scoreGap = displayWidth < 480 ? 8 : 12;
   const scoreStartX = padding + (contentWidth - totalTextWidth - scoreGap - maxTextWidth) / 2;
-  drawText(viewModel.total, scoreStartX, y + 49, totalTextWidth, totalFont, "#ffffff", "left");
-  drawText(maxLabel, scoreStartX + totalTextWidth + scoreGap, y + 52, maxTextWidth, maxFont, "#eaf4ff", "left");
+  drawText(viewModel.total, scoreStartX, y + 54, totalTextWidth, totalFont, "#ffffff", "left");
+  drawText(maxLabel, scoreStartX + totalTextWidth + scoreGap, y + 57, maxTextWidth, maxFont, "#eaf4ff", "left");
   if (viewModel.perfectLabel) {
     drawRoundedRect(displayWidth - 96, y + 13, 74, 26, 5, "#ffffff", null);
     drawText(viewModel.perfectLabel, displayWidth - 96, y + 26, 74, "900 10px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.hero);

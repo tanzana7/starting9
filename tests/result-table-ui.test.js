@@ -158,7 +158,7 @@ test("採点結果は既存のviewModelからCanvas画像として表示する",
 test("結果Canvasは判定列・行高・点数バッジを微調整する", () => {
   const canvas = sourceForFunction("createResultCanvas");
   assert.match(canvas, /const displayWidth = Math\.min\(590/);
-  assert.match(canvas, /const rowHeight = 52/);
+  assert.match(canvas, /const rowHeight = 50/);
   assert.match(canvas, /const judgementWidth = displayWidth < 480 \? 94 : 126/);
   assert.match(canvas, /const chipGap = 4/);
   assert.match(canvas, /const isPerfectRow = pointValue >= 10/);
@@ -168,6 +168,8 @@ test("結果Canvasは判定列・行高・点数バッジを微調整する", ()
   assert.match(canvas, /const pointBadgeInset = displayWidth < 480 \? 6 : 8/);
   assert.match(canvas, /drawRoundedRect\(pointX \+ pointBadgeInset/);
   assert.match(canvas, /const scoreStartX = padding \+ \(contentWidth - totalTextWidth - scoreGap - maxTextWidth\) \/ 2/);
+  assert.match(canvas, /Starting9 結果発表/);
+  assert.match(canvas, /950 \$\{displayWidth < 480 \? 10 : 13\}px Arial/);
 });
 
 test("結果Canvasは列座標を使用前に初期化する", () => {
@@ -239,5 +241,5 @@ test("結果Canvasは代表的な採点結果を実行時に描画できる", ()
   });
 
   assert.equal(rendered.width, 1180);
-  assert.equal(rendered.height, 2 * (12 + 78 + 10 + 70 + 10 + 38 + 9 * 52 + 8 * 4 + 12));
+  assert.equal(rendered.height, 2 * (12 + 78 + 10 + 70 + 10 + 38 + 9 * 50 + 8 * 4 + 12));
 });

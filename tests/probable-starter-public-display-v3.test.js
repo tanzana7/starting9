@@ -54,5 +54,5 @@ test("通常画面はcanonical catalogのhome/away順を表示し、反転候補
 });
 
 test("script.jsの表示接続変更に対応するキャッシュバスターが更新されている", () => {
-  assert.match(html, /script\.js\?v=public-saved-lineup-canvas-batting-order-navy-1/);
+  assert.match(html, /script\.js\?v=public-saved-lineup-canvas-fighters-order-number-1/);
 });

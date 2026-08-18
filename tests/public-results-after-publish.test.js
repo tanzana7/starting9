@@ -85,7 +85,7 @@ test("公開結果は予想入力状態から独立して保持し、履歴一�
 });
 
 test("通常画面の公開結果修正は新しいcache busterを使う", () => {
-  assert.match(html, /style\.css\?v=public-max99-scoring-1/);
+  assert.match(html, /style\.css\?v=public-beta-release-qa-fixes-1/);
   assert.match(html, /script\.js\?v=public-max99-scoring-1/);
 });
 

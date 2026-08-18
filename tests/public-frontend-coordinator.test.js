@@ -106,7 +106,7 @@ test("予想保存・リセット・アカウント同期は最新結果表示�
 
 test("公開画面のキャッシュバスターはmodule分割版へ更新される", () => {
   assert.match(html, /script\.js\?v=public-max99-scoring-1/);
-  assert.match(html, /style\.css\?v=public-max99-scoring-1/);
+  assert.match(html, /style\.css\?v=public-beta-release-qa-fixes-1/);
 });
 
 test("認証後の補助データはcritical UIの完了後にアイドル開始する", () => {

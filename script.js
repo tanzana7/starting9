@@ -4438,8 +4438,8 @@ function createResultCanvas(viewModel) {
     grid: "#d3dfeb",
     row: "#ffffff",
     order: "#1168a8",
-    hit: "#173b63",
-    miss: "#8799ab",
+    hit: "#2f5d83",
+    miss: "#9aaaba",
     position: {
       "category-catcher": "#eaf5fc",
       "category-infielder": "#fff8df",
@@ -4477,17 +4477,17 @@ function createResultCanvas(viewModel) {
     let fontSize = displayWidth < 480 ? 12 : 15;
     const text = String(value || "-");
     while (fontSize > 10) {
-      context.font = `800 ${fontSize}px "Yu Gothic", "Noto Sans JP", sans-serif`;
+      context.font = `700 ${fontSize}px "Yu Gothic", "Noto Sans JP", sans-serif`;
       if (context.measureText(text).width <= width - 10) break;
       fontSize -= 1;
     }
-    drawText(text, x, y + height / 2, width, `800 ${fontSize}px "Yu Gothic", "Noto Sans JP", sans-serif`, colors.text);
+    drawText(text, x, y + height / 2, width, `700 ${fontSize}px "Yu Gothic", "Noto Sans JP", sans-serif`, colors.text);
   };
-  const drawPlayerCard = (player, position, x, y, width, height) => {
+  const drawPlayerCard = (player, position, x, y, width, height, cardFill = colors.row) => {
     const normalizedPosition = normalizePosition(position);
     const category = normalizedPosition ? getPositionCategory(normalizedPosition) : "empty";
     context.lineWidth = 1.5;
-    drawRoundedRect(x, y, width, height, 6, colors.row, colors.border);
+    drawRoundedRect(x, y, width, height, 6, cardFill, colors.border);
     const tileWidth = Math.min(30, Math.max(24, width * 0.22));
     context.fillStyle = colors.position[category] || colors.position.empty;
     context.fillRect(x + 1, y + 1, tileWidth - 1, height - 2);
@@ -4589,23 +4589,24 @@ function createResultCanvas(viewModel) {
     const rowBorder = isPerfectRow ? "#a7cce8" : isZeroRow ? "#e2e9ef" : colors.grid;
     context.lineWidth = 1;
     drawRoundedRect(tableX, rowY, contentWidth, rowHeight, 6, rowFill, rowBorder);
-    context.fillStyle = "#f7fbff";
+    const isFullMatch = detail.isPlayerHit && detail.isOrderHit && detail.isPositionHit;
+    context.fillStyle = isFullMatch ? "#f5fbff" : "#eef7fd";
     context.fillRect(actualColumnX + 1, rowY + 1, playerWidth - 2, rowHeight - 2);
     drawRoundedRect(tableX + 5, rowY + 6, orderWidth - 10, rowHeight - 12, 5, colors.order, null);
     drawText(detail.order, tableX + 5, rowY + rowHeight / 2, orderWidth - 10, `900 ${displayWidth < 480 ? 14 : 16}px Arial, sans-serif`, "#ffffff");
     drawPlayerCard(detail.player, detail.position, predictedX, rowY + 6, playerWidth - 8, rowHeight - 12);
-    drawPlayerCard(detail.actualPlayer || "-", detail.actualPosition, actualX, rowY + 6, playerWidth - 8, rowHeight - 12);
+    drawPlayerCard(detail.actualPlayer || "-", detail.actualPosition, actualX, rowY + 6, playerWidth - 8, rowHeight - 12, isFullMatch ? "#f8fcff" : "#f2f8fc");
     const chipGap = 4;
     const chipWidth = (judgementWidth - 10 - chipGap * 2) / 3;
     drawJudgement(detail.isPlayerHit, "出場", judgementX + 4, rowY + 13, chipWidth, 26);
     drawJudgement(detail.isOrderHit, "打順", judgementX + 4 + chipWidth + chipGap, rowY + 13, chipWidth, 26);
     drawJudgement(detail.isPositionHit, "守備", judgementX + 4 + (chipWidth + chipGap) * 2, rowY + 13, chipWidth, 26);
     const pointX = judgementX + judgementWidth;
-    const pointFill = isPerfectRow ? "#dff1ff" : isZeroRow ? "#f3f6f8" : "#eaf4ff";
-    const pointBorder = isPerfectRow ? "#82b6dc" : isZeroRow ? "#d0dbe4" : colors.border;
-    const pointBadgeInset = displayWidth < 480 ? 6 : 8;
+    const pointFill = isPerfectRow ? "#d9f0ff" : isZeroRow ? "#f4f7f9" : "#e8f3fc";
+    const pointBorder = isPerfectRow ? "#6faad2" : isZeroRow ? "#c5d1dc" : "#9cbdd8";
+    const pointBadgeInset = displayWidth < 480 ? 6 : 9;
     drawRoundedRect(pointX + pointBadgeInset, rowY + 12, pointWidth - pointBadgeInset * 2, 28, 6, pointFill, pointBorder);
-    drawText(detail.point, pointX + pointBadgeInset, rowY + rowHeight / 2, pointWidth - pointBadgeInset * 2, `900 ${displayWidth < 480 ? 12 : 14}px Arial, sans-serif`, colors.text);
+    drawText(detail.point, pointX + pointBadgeInset, rowY + rowHeight / 2, pointWidth - pointBadgeInset * 2, `950 ${displayWidth < 480 ? 13 : 15}px Arial, sans-serif`, colors.text);
   });
 
   return canvas;

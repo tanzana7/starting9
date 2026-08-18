@@ -164,8 +164,8 @@ test("結果Canvasは判定列・行高・点数バッジを微調整する", ()
   assert.match(canvas, /const isPerfectRow = pointValue >= 10/);
   assert.match(canvas, /const isZeroRow = pointValue === 0/);
   assert.match(canvas, /const pointFill = isPerfectRow/);
-  assert.match(canvas, /context\.fillStyle = "#f7fbff"/);
-  assert.match(canvas, /const pointBadgeInset = displayWidth < 480 \? 6 : 8/);
+  assert.match(canvas, /context\.fillStyle = isFullMatch \? "#f5fbff" : "#eef7fd"/);
+  assert.match(canvas, /const pointBadgeInset = displayWidth < 480 \? 6 : 9/);
   assert.match(canvas, /drawRoundedRect\(pointX \+ pointBadgeInset/);
   assert.match(canvas, /const scoreStartX = padding \+ \(contentWidth - totalTextWidth - scoreGap - maxTextWidth\) \/ 2/);
   assert.match(canvas, /Starting9 結果発表/);
@@ -173,7 +173,12 @@ test("結果Canvasは判定列・行高・点数バッジを微調整する", ()
   assert.match(canvas, /const scoreGroupWidth = totalTextWidth \+ scoreGap \+ maxTextWidth/);
   assert.match(canvas, /drawText\("合計点", scoreStartX, y \+ 29, scoreGroupWidth/);
   assert.match(canvas, /isZeroRow \? "#fdfefe"/);
-  assert.match(canvas, /isZeroRow \? "#f3f6f8"/);
+  assert.match(canvas, /isZeroRow \? "#f4f7f9"/);
+  assert.match(canvas, /hit: "#2f5d83"/);
+  assert.match(canvas, /miss: "#9aaaba"/);
+  assert.match(canvas, /`950 \$\{displayWidth < 480 \? 13 : 15\}px Arial/);
+  assert.match(canvas, /drawPlayerCard\(detail\.actualPlayer \|\| "-", detail\.actualPosition,[\s\S]*isFullMatch \? "#f8fcff" : "#f2f8fc"/);
+  assert.match(canvas, /`700 \$\{fontSize\}px "Yu Gothic"/);
 });
 
 test("結果Canvasは列座標を使用前に初期化する", () => {

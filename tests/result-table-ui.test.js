@@ -133,3 +133,9 @@ test("採点結果テーブルは保存済み予想に近い青い表組みで�
   assert.match(css, /\.result-judgement-stack \.hit-badge\s*\{[\s\S]*min-width: 0[\s\S]*font-size: 0\.62rem/);
   assert.match(css, /\.result-player-name\s*\{[\s\S]*overflow-wrap: anywhere/);
 });
+
+test("公開結果エリアは保存済み予想に近い青白い配色を使う", () => {
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.app-layout:not\(\.is-admin-screen\) > \.result-card\s*\{[\s\S]*background: #eef5fb/);
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.result-table th,[\s\S]*background: #1168a8/);
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.result-table tbody td\s*\{[\s\S]*background: #ffffff/);
+});

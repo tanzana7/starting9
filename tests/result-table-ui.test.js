@@ -154,3 +154,15 @@ test("採点結果は既存のviewModelからCanvas画像として表示する",
   assert.match(canvas, /drawJudgement\(detail\.isOrderHit, "打順"/);
   assert.match(canvas, /drawJudgement\(detail\.isPositionHit, "守備"/);
 });
+
+test("結果Canvasは判定列・行高・点数バッジを微調整する", () => {
+  const canvas = sourceForFunction("createResultCanvas");
+  assert.match(canvas, /const rowHeight = 52/);
+  assert.match(canvas, /const judgementWidth = displayWidth < 480 \? 94 : 126/);
+  assert.match(canvas, /const chipGap = 4/);
+  assert.match(canvas, /const isPerfectRow = pointValue >= 10/);
+  assert.match(canvas, /const isZeroRow = pointValue === 0/);
+  assert.match(canvas, /const pointFill = isPerfectRow/);
+  assert.match(canvas, /context\.fillStyle = "#f7fbff"/);
+  assert.match(canvas, /drawRoundedRect\(pointX \+ 5/);
+});

@@ -150,9 +150,9 @@ test("採点結果は既存のviewModelからCanvas画像として表示する",
   assert.match(canvas, /viewModel\.details\.forEach/);
   assert.match(canvas, /drawPlayerCard\(detail\.player, detail\.position/);
   assert.match(canvas, /drawPlayerCard\(detail\.actualPlayer/);
-  assert.match(canvas, /drawJudgement\(detail\.isPlayerHit, "出場"/);
-  assert.match(canvas, /drawJudgement\(detail\.isOrderHit, "打順"/);
-  assert.match(canvas, /drawJudgement\(detail\.isPositionHit, "守備"/);
+  assert.match(canvas, /drawPerfectBadge/);
+  assert.match(canvas, /if \(isPerfectRow\)/);
+  assert.doesNotMatch(canvas, /drawJudgement\(/);
 });
 
 test("結果Canvasは判定列・行高・点数バッジを微調整する", () => {
@@ -160,27 +160,27 @@ test("結果Canvasは判定列・行高・点数バッジを微調整する", ()
   assert.match(canvas, /const displayWidth = Math\.min\(590/);
   assert.match(canvas, /const rowHeight = 50/);
   assert.match(canvas, /const judgementWidth = displayWidth < 480 \? 94 : 126/);
-  assert.match(canvas, /const chipGap = 4/);
   assert.match(canvas, /const isPerfectRow = pointValue >= 10/);
   assert.match(canvas, /const isZeroRow = pointValue === 0/);
   assert.match(canvas, /const pointFill = isPerfectRow/);
-  assert.match(canvas, /context\.fillStyle = isFullMatch \? "#f5fbff" : "#eef7fd"/);
+  assert.match(canvas, /context\.fillStyle = isPerfectRow \? "#fff8e8" : isFullMatch \? "#f5fbff" : "#f1f4f7"/);
   assert.match(canvas, /const pointBadgeInset = displayWidth < 480 \? 6 : 9/);
   assert.match(canvas, /drawRoundedRect\(pointX \+ pointBadgeInset/);
   assert.match(canvas, /const scoreStartX = padding \+ \(contentWidth - totalTextWidth - scoreGap - maxTextWidth\) \/ 2/);
   assert.match(canvas, /Starting9 結果発表/);
-  assert.match(canvas, /950 \$\{displayWidth < 480 \? 10 : 14\}px Arial/);
+  assert.match(canvas, /drawText\("PERFECT", x, y \+ height \/ 2, width, `950 \$\{displayWidth < 480 \? 10 : 12\}px Arial/);
   assert.match(canvas, /const scoreGroupWidth = totalTextWidth \+ scoreGap \+ maxTextWidth/);
   assert.match(canvas, /drawText\("合計点", scoreStartX, y \+ 29, scoreGroupWidth/);
-  assert.match(canvas, /isZeroRow \? "#fdfefe"/);
-  assert.match(canvas, /isZeroRow \? "#f4f7f9"/);
-  assert.match(canvas, /hit: "#2f5d83"/);
-  assert.match(canvas, /miss: "#9aaaba"/);
+  assert.match(canvas, /isZeroRow \? "#fbfcfd"/);
+  assert.match(canvas, /isZeroRow \? "#f8fafb"/);
+  assert.match(canvas, /perfect: "#f0c766"/);
+  assert.match(canvas, /perfectBorder: "#d4aa52"/);
+  assert.match(canvas, /drawText\("PERFECT"/);
   assert.match(canvas, /`950 \$\{displayWidth < 480 \? 13 : 15\}px Arial/);
   assert.match(canvas, /drawPlayerCard\(detail\.actualPlayer \|\| "-", detail\.actualPosition,[\s\S]*actualCardFill, actualCardBorder\)/);
   assert.match(canvas, /`700 \$\{fontSize\}px "Yu Gothic"/);
-  assert.match(canvas, /const actualCardFill = isFullMatch \? "#f8fcff" : "#eaf4fc"/);
-  assert.match(canvas, /const actualCardBorder = isFullMatch \? colors\.border : "#7daed2"/);
+  assert.match(canvas, /const actualCardFill = isPerfectRow \? "#fff6dc" : isFullMatch \? "#f8fcff" : "#f1f4f7"/);
+  assert.match(canvas, /const actualCardBorder = isPerfectRow \? colors\.perfectBorder : isFullMatch \? colors\.border : "#c8d3dd"/);
   assert.match(canvas, /context\.moveTo\(pointX, rowY \+ 8\)/);
 });
 

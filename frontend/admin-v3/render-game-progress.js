@@ -31,8 +31,35 @@
     selectedGame,
     jstDate,
     jobTypes,
-    jobLabels
+    jobLabels,
+    manualOperation
   }) {
+    const MANUAL_STAGE_TYPES = Object.freeze([
+      ["schedule_register", "日程登録", false],
+      ["probable_starter_fetch", "予告先発取得", true],
+      ["roster_fetch", "ロースター取得", true],
+      ["prediction_close", "予想締切", true],
+      ["npb_identity_resolve", "NPB識別情報解決", true],
+      ["lineup_fetch", "スタメン取得", true],
+      ["lineup_finalize", "正式スタメン確定", true],
+      ["score", "採点", true],
+      ["ranking_rebuild", "ランキング反映", true],
+      ["publish", "結果公開", true]
+    ]);
+
+    function renderManualControls(game) {
+      if (!game?.internalGameId) return "";
+      const rows = MANUAL_STAGE_TYPES.map(([jobType, label, canRun]) => {
+        const operation = typeof manualOperation === "function" ? manualOperation(game.internalGameId, jobType) || {} : {};
+        const loading = operation.status === "loading";
+        const result = operation.message ? `<small class="manual-job-result ${operation.error ? "error" : "success"}">${escapeHtml(operation.message)}</small>` : "";
+        const runButton = canRun
+          ? `<button type="button" data-v3-job-run="${escapeHtml(game.internalGameId)}" data-v3-job-type="${escapeHtml(jobType)}" ${loading ? "disabled" : ""}>再実行</button>`
+          : `<span class="manual-job-unavailable">正式runnerなし</span>`;
+        return `<div class="manual-job-row"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(operation.diagnosis?.currentWorkflowState || game.state?.state || "scheduled")}</span><div class="manual-job-actions"><button type="button" data-v3-job-diagnose="${escapeHtml(game.internalGameId)}" data-v3-job-type="${escapeHtml(jobType)}" ${loading ? "disabled" : ""}>診断</button>${runButton}</div>${result}</div>`;
+      }).join("");
+      return `<section class="v3-panel manual-job-controls" aria-labelledby="manualJobControlsHeading"><div class="view-heading"><div><h3 id="manualJobControlsHeading">V3工程の診断・手動再実行</h3><p>再実行は正式V3 jobを投入し、Cronのexecutorへ渡します。日程登録は診断のみです。</p></div></div><div class="manual-job-list">${rows}</div></section>`;
+    }
     function renderGameSummary(game, buttonLabel = "試合進行を見る") {
       const identity = identityStatusLabel(game.npbIdentityStatus, game.npbIdentityState);
       const probable = game.probableStarter;
@@ -182,7 +209,7 @@
     function renderWorkflowView(game) {
       if (!game) return renderSelectedGameHeader(null, "試合進行");
       const identity = npbIdentityDisplay(game);
-      return `${renderSelectedGameHeader(game, "試合進行", "V3 jobの状態と監査結果を試合単位で確認します。自動処理はCronが実行します。")}<section class="v3-panel"><div class="compact-meta"><span>現在: <strong>${escapeHtml(game.state?.state || "scheduled")}</strong></span><span>次の処理: <strong>${escapeHtml(nextActionText(game))}</strong></span><span>NPB識別job: <strong>${escapeHtml(identity.jobStatus)}</strong></span><span>NPB game code: <strong>${escapeHtml(identity.code)}</strong></span></div>${renderTimeline(game)}<details class="roster-details"><summary>ロースター取得の詳細</summary>${renderRosterSummary(game)}</details><h3>job履歴</h3>${renderJobRows(game, jobTypes)}</section>`;
+      return `${renderSelectedGameHeader(game, "試合進行", "V3 jobの状態と監査結果を試合単位で確認します。自動処理はCronが実行します。")}<section class="v3-panel"><div class="compact-meta"><span>現在: <strong>${escapeHtml(game.state?.state || "scheduled")}</strong></span><span>次の処理: <strong>${escapeHtml(nextActionText(game))}</strong></span><span>NPB識別job: <strong>${escapeHtml(identity.jobStatus)}</strong></span><span>NPB game code: <strong>${escapeHtml(identity.code)}</strong></span></div>${renderTimeline(game)}<details class="roster-details"><summary>ロースター取得の詳細</summary>${renderRosterSummary(game)}</details><h3>job履歴</h3>${renderJobRows(game, jobTypes)}</section>${renderManualControls(game)}`;
     }
 
     function renderLineupView(game) {
@@ -213,7 +240,7 @@
       return `${renderSelectedGameHeader(game, "日程管理", "日程とV3が算出した処理時刻を確認します。")}<section class="v3-panel"><div class="detail-grid"><div><dt>試合開始</dt><dd>${escapeHtml(formatJst(schedule?.startAt || game.startAt))}</dd></div><div><dt>予想締切</dt><dd>${escapeHtml(formatJst(schedule?.predictionDeadline))}</dd></div><div><dt>lineupPollingStart</dt><dd>${escapeHtml(formatJst(schedule?.lineupPollingStart))}</dd></div><div><dt>ランキング対象状態</dt><dd>${escapeHtml(details.eligibility?.rankingEligibility?.rankingEligibilityStatus || "未取得")}</dd></div></div><p class="muted">日程とランキング対象状態は自動処理の監査情報として表示しています。</p></section>`;
     }
 
-    return Object.freeze({ renderGameSummary, renderTimeline, renderDashboard, renderGamesView, renderWorkflowView, renderLineupView, renderScoringView, renderScheduleView });
+    return Object.freeze({ renderGameSummary, renderTimeline, renderDashboard, renderGamesView, renderWorkflowView, renderLineupView, renderScoringView, renderScheduleView, renderManualControls });
   }
 
   global.Starting9AdminV3 = global.Starting9AdminV3 || {};

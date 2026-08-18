@@ -169,6 +169,15 @@ button:disabled { cursor: wait; opacity: .65; }
 .diagnostics-list { display: grid; gap: 9px; }
 .diagnostics-list .game-card { box-shadow: none; }
 .automation-logs-panel { margin-bottom: 14px; }
+.manual-job-controls { margin-top: 14px; }
+.manual-job-list { display: grid; gap: 7px; }
+.manual-job-row { display: grid; grid-template-columns: minmax(150px, .9fr) minmax(120px, 1fr) auto; gap: 8px 12px; align-items: center; padding: 8px 10px; border: 1px solid #e0e8ef; border-radius: 5px; background: #f8fafc; }
+.manual-job-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.manual-job-actions button { min-width: 58px; }
+.manual-job-result { grid-column: 1 / -1; overflow-wrap: anywhere; }
+.manual-job-result.success { color: #17633c; }
+.manual-job-result.error { color: #a22d2d; }
+.manual-job-unavailable { color: #718197; font-size: 12px; }
 .automation-log-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 10px 0 13px; }
 .automation-log-filters label { display: grid; gap: 4px; color: #526477; font-size: 11px; }
 .automation-log-filters input { min-width: 0; padding: 6px 8px; border: 1px solid #b9c8d8; border-radius: 4px; color: #172033; background: #fff; }
@@ -222,6 +231,8 @@ button:disabled { cursor: wait; opacity: .65; }
   .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .today-ops-metrics, .today-ops-steps { grid-template-columns: 1fr; }
   .today-ops-diagnostic-grid { grid-template-columns: 1fr; gap: 2px; }
+  .manual-job-row { grid-template-columns: 1fr; gap: 5px; }
+  .manual-job-actions { justify-content: flex-start; }
   .automation-log-filters, .automation-log-summary { grid-template-columns: 1fr 1fr; }
   .automation-log-summary pre { grid-column: 1 / -1; }
   .automation-log-row { grid-template-columns: 1fr 1fr; }

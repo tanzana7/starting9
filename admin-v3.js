@@ -68,6 +68,53 @@ const v3Api = adminV3Modules.createAdminV3ApiClient({
   productionBase: V3_AUTH_PRODUCTION_BASE
 });
 
+function manualOperationKey(internalGameId, jobType) {
+  return `${String(internalGameId || "")}:${String(jobType || "")}`;
+}
+
+function manualOperation(internalGameId, jobType) {
+  return v3State.manualOperations.get(manualOperationKey(internalGameId, jobType)) || null;
+}
+
+function setManualOperation(internalGameId, jobType, value) {
+  v3State.manualOperations.set(manualOperationKey(internalGameId, jobType), value);
+  renderCurrentV3View();
+}
+
+async function diagnoseV3Job(internalGameId, jobType) {
+  const previous = manualOperation(internalGameId, jobType) || {};
+  setManualOperation(internalGameId, jobType, { ...previous, status: "loading", error: false, message: "診断中…" });
+  try {
+    const diagnosis = await v3Api.diagnoseJob(internalGameId, jobType);
+    const message = diagnosis.canRun
+      ? `実行可能 / 現在state: ${diagnosis.currentWorkflowState || "-"}`
+      : `実行不可 / ${diagnosis.cannotRunReason || "理由不明"}`;
+    setManualOperation(internalGameId, jobType, { status: "ready", diagnosis, error: false, message });
+  } catch (error) {
+    setManualOperation(internalGameId, jobType, { status: "error", error: true, message: `${error.code || "V3_JOB_DIAGNOSE_FAILED"}: ${error.message}` });
+  }
+}
+
+async function runV3Job(internalGameId, jobType) {
+  const label = V3_JOB_LABELS[jobType] || jobType;
+  const dangerous = new Set(["prediction_close", "lineup_finalize", "score", "ranking_rebuild", "publish"]);
+  const confirmation = dangerous.has(jobType)
+    ? `この操作は「${label}」として試合状態を進めます。採点・ランキング・公開に影響する可能性があります。本当に実行しますか？`
+    : `V3正式job「${label}」を再実行キューへ投入します。実行しますか？`;
+  if (!window.confirm(confirmation)) return;
+  const reason = window.prompt("操作理由を入力してください（1〜240文字）", `admin-v3: ${label} の手動再実行`);
+  if (!String(reason || "").trim()) return;
+  const previous = manualOperation(internalGameId, jobType) || {};
+  setManualOperation(internalGameId, jobType, { ...previous, status: "loading", error: false, message: "正式V3 jobを投入中…" });
+  try {
+    const result = await v3Api.runJob(internalGameId, { jobType, reason: String(reason).trim(), confirmed: true });
+    setManualOperation(internalGameId, jobType, { status: "success", error: false, diagnosis: result.diagnosis, message: result.created ? `job #${result.job?.id || "-"} を投入しました。状態を再取得しました。` : `同じslotのjobが既に存在します（#${result.job?.id || "-"}）。` });
+    await loadV3();
+  } catch (error) {
+    setManualOperation(internalGameId, jobType, { status: "error", error: true, message: `${error.code || "V3_JOB_RUN_FAILED"}: ${error.message}` });
+  }
+}
+
 // Compatibility alias for focused tests and future incremental extraction.
 function v3Fetch(path, options = {}) {
   return v3Api.request(path, options);
@@ -583,7 +630,8 @@ const v3GameProgressRenderer = adminV3Modules.createAdminV3GameProgressRenderer(
   selectedGame: (games) => selectedV3Game(games),
   jstDate: v3JstDate,
   jobTypes: V3_JOB_TYPES,
-  jobLabels: V3_JOB_LABELS
+  jobLabels: V3_JOB_LABELS,
+  manualOperation
 });
 
 function renderCurrentV3View() {
@@ -844,6 +892,8 @@ adminV3Modules.createAdminV3Coordinator({
     previewPerfectScore,
     refreshAutomationLogs,
     selectGame: (internalGameId) => selectV3Game(internalGameId),
+    diagnoseJob: diagnoseV3Job,
+    runJob: runV3Job,
     copyJobDetail: copyV3JobDetail,
     refreshJobDetail: (internalGameId, jobId) => loadV3JobDetail(internalGameId, jobId, true),
     toggleJobDetail: toggleV3JobDetail,

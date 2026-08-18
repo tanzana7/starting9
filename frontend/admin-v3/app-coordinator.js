@@ -23,6 +23,17 @@
         if (event.target.closest("[data-v3-perfect-score-preview]")) { await actions.previewPerfectScore("perfect"); return; }
         if (event.target.closest("[data-v3-automation-log-refresh]")) { await actions.refreshAutomationLogs(); return; }
 
+        const diagnoseButton = event.target.closest("[data-v3-job-diagnose]");
+        if (diagnoseButton) {
+          await actions.diagnoseJob(diagnoseButton.dataset.v3JobDiagnose, diagnoseButton.dataset.v3JobType);
+          return;
+        }
+        const runButton = event.target.closest("[data-v3-job-run]");
+        if (runButton) {
+          await actions.runJob(runButton.dataset.v3JobRun, runButton.dataset.v3JobType);
+          return;
+        }
+
         const selectButton = event.target.closest("[data-v3-select-game]");
         if (selectButton) { await actions.selectGame(selectButton.dataset.v3SelectGame); return; }
 

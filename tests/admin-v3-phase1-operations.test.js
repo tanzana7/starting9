@@ -48,14 +48,17 @@ test("旧job操作APIは安全条件を維持し、admin-v3の通常画面は読
   assert.doesNotMatch(client, /data-v3-job-cancel/);
 });
 
-test("管理画面は自動進行の確認に限定し、手動Phase 1操作を表示しない", () => {
+test("管理画面は旧直接編集操作を表示せず、正式V3 jobの診断・再実行導線を表示する", () => {
   for (const selector of ["data-v3-save-lineup", "data-v3-finalize-lineup", "data-v3-scoring-preview", "data-v3-scoring-confirm", "data-v3-ranking-rebuild", "data-v3-publish", "data-v3-republish", "data-v3-schedule-save", "data-v3-eligibility-save"]) {
     assert.doesNotMatch(client, new RegExp(selector));
   }
   assert.match(gameProgress, /V3が取得・確定したスタメンrevisionを確認します/);
   assert.match(gameProgress, /V3が進めた採点・ランキング・公開の状態を確認します/);
-  assert.match(page, /admin-v3\.js\?v=public-release-fixture-cleanup-1/);
-  assert.match(page, /admin-v3\.css\?v=public-release-fixture-cleanup-1/);
+  assert.match(gameProgress, /data-v3-job-diagnose/);
+  assert.match(gameProgress, /data-v3-job-run/);
+  assert.match(gameProgress, /正式V3 jobを投入/);
+  assert.match(page, /admin-v3\.js\?v=admin-v3-all-job-manual-controls-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-v3-all-job-manual-controls-1/);
 });
 
 test("管理画面のjob詳細は失敗内容を確認でき、ユーザー情報を描画しない", () => {

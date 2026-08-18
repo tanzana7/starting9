@@ -4438,8 +4438,9 @@ function createResultCanvas(viewModel) {
     grid: "#d3dfeb",
     row: "#ffffff",
     order: "#1168a8",
-    hit: "#2f5d83",
-    miss: "#9aaaba",
+    perfect: "#f0c766",
+    perfectBorder: "#d4aa52",
+    perfectText: "#5f4617",
     position: {
       "category-catcher": "#eaf5fc",
       "category-infielder": "#fff8df",
@@ -4499,10 +4500,9 @@ function createResultCanvas(viewModel) {
     drawText(normalizedPosition || "－", x + 1, y + height / 2, tileWidth - 1, "900 13px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
     drawName(player || "-", x + tileWidth + 2, y, width - tileWidth - 2, height);
   };
-  const drawJudgement = (isHit, label, x, y, width, height) => {
-    drawRoundedRect(x, y, width, height, 5, isHit ? colors.hit : colors.miss, null);
-    drawText(isHit ? "○" : "×", x + 2, y + height / 2, Math.max(10, width * 0.34), `950 ${displayWidth < 480 ? 10 : 14}px Arial, sans-serif`, "#ffffff");
-    drawText(label, x + width * 0.34, y + height / 2, width * 0.62, `900 ${displayWidth < 480 ? 8 : 9}px Arial, sans-serif`, "#ffffff");
+  const drawPerfectBadge = (x, y, width, height) => {
+    drawRoundedRect(x, y, width, height, 6, colors.perfect, colors.perfectBorder);
+    drawText("PERFECT", x, y + height / 2, width, `950 ${displayWidth < 480 ? 10 : 12}px Arial, sans-serif`, colors.perfectText);
   };
 
   context.fillStyle = colors.background;
@@ -4585,24 +4585,22 @@ function createResultCanvas(viewModel) {
     const pointValue = Number(detail.point);
     const isPerfectRow = pointValue >= 10;
     const isZeroRow = pointValue === 0;
-    const rowFill = isPerfectRow ? "#f3faff" : isZeroRow ? "#fdfefe" : colors.row;
-    const rowBorder = isPerfectRow ? "#a7cce8" : isZeroRow ? "#e2e9ef" : colors.grid;
+    const rowFill = isPerfectRow ? "#fffaf0" : isZeroRow ? "#fbfcfd" : colors.row;
+    const rowBorder = isPerfectRow ? "#e6c978" : isZeroRow ? "#e2e8ed" : colors.grid;
     context.lineWidth = 1;
     drawRoundedRect(tableX, rowY, contentWidth, rowHeight, 6, rowFill, rowBorder);
     const isFullMatch = detail.isPlayerHit && detail.isOrderHit && detail.isPositionHit;
-    context.fillStyle = isFullMatch ? "#f5fbff" : "#eef7fd";
+    context.fillStyle = isPerfectRow ? "#fff8e8" : isFullMatch ? "#f5fbff" : "#f1f4f7";
     context.fillRect(actualColumnX + 1, rowY + 1, playerWidth - 2, rowHeight - 2);
     drawRoundedRect(tableX + 5, rowY + 6, orderWidth - 10, rowHeight - 12, 5, colors.order, null);
     drawText(detail.order, tableX + 5, rowY + rowHeight / 2, orderWidth - 10, `900 ${displayWidth < 480 ? 14 : 16}px Arial, sans-serif`, "#ffffff");
     drawPlayerCard(detail.player, detail.position, predictedX, rowY + 6, playerWidth - 8, rowHeight - 12);
-    const actualCardFill = isFullMatch ? "#f8fcff" : "#eaf4fc";
-    const actualCardBorder = isFullMatch ? colors.border : "#7daed2";
+    const actualCardFill = isPerfectRow ? "#fff6dc" : isFullMatch ? "#f8fcff" : "#f1f4f7";
+    const actualCardBorder = isPerfectRow ? colors.perfectBorder : isFullMatch ? colors.border : "#c8d3dd";
     drawPlayerCard(detail.actualPlayer || "-", detail.actualPosition, actualX, rowY + 6, playerWidth - 8, rowHeight - 12, actualCardFill, actualCardBorder);
-    const chipGap = 4;
-    const chipWidth = (judgementWidth - 10 - chipGap * 2) / 3;
-    drawJudgement(detail.isPlayerHit, "出場", judgementX + 4, rowY + 13, chipWidth, 26);
-    drawJudgement(detail.isOrderHit, "打順", judgementX + 4 + chipWidth + chipGap, rowY + 13, chipWidth, 26);
-    drawJudgement(detail.isPositionHit, "守備", judgementX + 4 + (chipWidth + chipGap) * 2, rowY + 13, chipWidth, 26);
+    if (isPerfectRow) {
+      drawPerfectBadge(judgementX + 8, rowY + 13, judgementWidth - 16, 26);
+    }
     const pointX = judgementX + judgementWidth;
     context.strokeStyle = "#c2d7e9";
     context.lineWidth = 1;
@@ -4610,11 +4608,11 @@ function createResultCanvas(viewModel) {
     context.moveTo(pointX, rowY + 8);
     context.lineTo(pointX, rowY + rowHeight - 8);
     context.stroke();
-    const pointFill = isPerfectRow ? "#d9f0ff" : isZeroRow ? "#f4f7f9" : "#e8f3fc";
-    const pointBorder = isPerfectRow ? "#6faad2" : isZeroRow ? "#c5d1dc" : "#9cbdd8";
+    const pointFill = isPerfectRow ? "#fff1c7" : isZeroRow ? "#f8fafb" : "#eef2f5";
+    const pointBorder = isPerfectRow ? colors.perfectBorder : isZeroRow ? "#d9e2e9" : "#c2ceda";
     const pointBadgeInset = displayWidth < 480 ? 6 : 9;
     drawRoundedRect(pointX + pointBadgeInset, rowY + 12, pointWidth - pointBadgeInset * 2, 28, 6, pointFill, pointBorder);
-    drawText(detail.point, pointX + pointBadgeInset, rowY + rowHeight / 2, pointWidth - pointBadgeInset * 2, `950 ${displayWidth < 480 ? 13 : 15}px Arial, sans-serif`, colors.text);
+    drawText(detail.point, pointX + pointBadgeInset, rowY + rowHeight / 2, pointWidth - pointBadgeInset * 2, `950 ${displayWidth < 480 ? 13 : 15}px Arial, sans-serif`, isPerfectRow ? colors.perfectText : colors.text);
   });
 
   return canvas;

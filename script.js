@@ -195,6 +195,7 @@ const state = {
     games: [],
     detailCache: Object.create(null),
     selectedGameId: "",
+    displayMode: "previous",
     isExpanded: false,
     result: null,
     message: "",
@@ -2912,7 +2913,7 @@ async function refreshResultHistory({ force = false } = {}) {
     beginPublicRequest("result", { abort: true });
     beginPublicRequest("resultDetail", { abort: true });
     clearStoredPublicResult();
-    state.resultHistory = { isLoading: false, isDetailLoading: false, isReady: true, games: [], detailCache: Object.create(null), selectedGameId: "", isExpanded: false, result: null, message: "ログインすると過去の試合結果を確認できます。", detailError: "" };
+    state.resultHistory = { isLoading: false, isDetailLoading: false, isReady: true, games: [], detailCache: Object.create(null), selectedGameId: "", displayMode: "previous", isExpanded: false, result: null, message: "ログインすると過去の試合結果を確認できます。", detailError: "" };
     resetDailyBestNine();
     syncPublicAppState();
     renderScoreResult();
@@ -2945,7 +2946,7 @@ async function refreshResultHistory({ force = false } = {}) {
       : null;
     if (!state.resultHistory.selectedGameId && latestParticipatedPublishedGame) {
       // The list can render immediately; only the previous game's detail is fetched after it.
-      void loadResultHistoryGame(getResultHistoryGameId(latestParticipatedPublishedGame));
+      void loadResultHistoryGame(getResultHistoryGameId(latestParticipatedPublishedGame), { manual: false });
     } else if (!latestParticipatedPublishedGame && !state.resultHistory.selectedGameId) {
       state.resultHistory.result = null;
       clearStoredPublicResult();
@@ -2994,10 +2995,11 @@ async function handleResultHistoryChange(event) {
   await loadResultHistoryGame(select.value);
 }
 
-async function loadResultHistoryGame(gameId) {
+async function loadResultHistoryGame(gameId, { manual = true } = {}) {
   const cached = state.resultHistory.detailCache?.[gameId];
   if (cached) {
     state.resultHistory.selectedGameId = gameId;
+    state.resultHistory.displayMode = manual ? "selected" : "previous";
     state.resultHistory.result = cached;
     state.result = cached;
     state.resultHistory.isDetailLoading = false;
@@ -3015,6 +3017,7 @@ async function loadResultHistoryGame(gameId) {
   }
   const request = beginPublicRequest("resultDetail", { abort: true });
   state.resultHistory.selectedGameId = gameId;
+  state.resultHistory.displayMode = manual ? "selected" : "previous";
   state.resultHistory.result = null;
   state.resultHistory.isDetailLoading = true;
   state.resultHistory.detailError = "";

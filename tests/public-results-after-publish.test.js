@@ -38,9 +38,9 @@ test("結果詳細はUUIDでprediction・ranking・公開状態を読む", () =>
 test("通常画面は自分が参加した最新の公開済み結果だけを自動選択する", () => {
   assert.match(worker, /path === "\/api\/public\/previous-result-game" && request\.method === "GET"/);
   assert.match(script, /function fetchPreviousResultGame\(\{ force = false \} = \{\}\)/);
-  assert.match(script, /const previousResultGame = state\.previousResultGame\.isReady \? state\.previousResultGame\.game : null/);
-  assert.match(script, /getResultHistoryGameId\(game\) === String\(previousResultGame\.internalGameId \|\| ""\)/);
-  assert.match(script, /if \(!state\.resultHistory\.selectedGameId && latestParticipatedPublishedGame\)/);
+  assert.match(script, /function resolveResultHistorySelection\(\)/);
+  assert.match(script, /getResultHistoryGameId\(game\) === String\(previousGame\.internalGameId \|\| ""\)/);
+  assert.match(script, /if \(latestParticipatedPublishedGame\)/);
   assert.match(script, /void loadResultHistoryGame\(getResultHistoryGameId\(latestParticipatedPublishedGame\), \{ manual: false \}\)/);
   assert.match(publicResultsRenderer, /if \(!history\.isReady\) return null/);
   assert.match(publicResultsRenderer, /history\.games\.some\(\(game\) => deps\.getResultHistoryGameId\(game\) === resultId\)/);
@@ -86,7 +86,7 @@ test("公開結果は予想入力状態から独立して保持し、履歴一�
 
 test("通常画面の公開結果修正は新しいcache busterを使う", () => {
   assert.match(html, /style\.css\?v=public-beta-release-qa-fixes-1/);
-  assert.match(html, /script\.js\?v=public-max99-scoring-1/);
+  assert.match(html, /script\.js\?v=public-result-actual-lineup-basis-performance-1/);
 });
 
 test("結果表示の公開文言は前回基準で、旧採点待ち文言を残さない", () => {

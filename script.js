@@ -292,6 +292,7 @@ const publicStorage = publicFrontend.createPublicStorage(window.localStorage);
 const appState = publicFrontend.state.createPublicAppState(state);
 const publicRequestGuard = publicFrontend.createPublicRequestGuard(appState.requests);
 const publicApiClient = publicFrontend.createPublicApiClient();
+let previousResultGameRequestPromise = null;
 
 function syncPublicAppState() {
   publicFrontend.state.syncPublicAppState(appState, state);
@@ -449,8 +450,9 @@ async function initializeAuthDependentFeatures() {
   await ready;
   // 初期イベントは待機中に発火していても、解決済みPromiseから現在状態を必ず評価できます。
   window.addEventListener("starting9-auth-state-changed", handleAuthStateChanged);
-  // 前回結果だけを先に確定し、実績・ランキングは初回描画後のアイドル時間に回します。
+  // 前回試合の確認と参加済み結果一覧は並列で進め、一覧取得後の重複再取得を避けます。
   const resultStatus = await Promise.allSettled([
+    fetchPreviousResultGame({ force: false }),
     refreshResultHistory({ force: false })
   ]);
   resultStatus.forEach((result) => {
@@ -1916,51 +1918,57 @@ function isPublicGamePublished(game, remoteState = state.predictionRemote) {
   return Boolean(game?.isPublished || game?.publicationStatus === "published" || (remoteMatchesGame && remoteState?.resultsPublished));
 }
 
-async function fetchPreviousResultGame({ force = false } = {}) {
+function fetchPreviousResultGame({ force = false } = {}) {
   const previous = state.previousResultGame;
-  if (previous.isLoading && !force) return;
-  const request = beginPublicRequest("previousResultGame", { abort: true });
-  const url = buildPreviousResultGameApiUrl();
-  if (!url) {
-    previous.isReady = true;
-    previous.game = null;
-    previous.message = "前回の結果を確認できませんでした。";
-    renderScoreResult();
-    return;
-  }
-  previous.isLoading = true;
-  previous.isReady = false;
-  previous.message = "";
-  syncPublicAppState();
-  renderScoreResult();
-  try {
-    const requestOptions = {
-      cacheKey: "previous-result-game",
-      ttlMs: PREVIOUS_RESULT_SESSION_CACHE_TTL_MS,
-      signal: request.signal
-    };
-    if (force) requestOptions.cache = "no-store";
-    const { response, payload } = await publicApiClient.getCached(url, requestOptions);
-    if (!response.ok || !payload?.ok || (payload.game !== null && typeof payload.game !== "object")) {
-      throw new Error(payload?.error || `HTTP ${response.status}`);
-    }
-    if (!isCurrentPublicRequest("previousResultGame", request.id)) return;
-    previous.game = payload.game || null;
-    previous.isReady = true;
-  } catch (error) {
-    if (!isCurrentPublicRequest("previousResultGame", request.id)) return;
-    previous.game = null;
-    previous.isReady = true;
-    previous.message = "前回の結果を確認できませんでした。";
-    console.warn("前回の公開結果試合の取得に失敗しました", error.message);
-  } finally {
-    if (isCurrentPublicRequest("previousResultGame", request.id)) {
-      previous.isLoading = false;
-      syncPublicAppState();
+  if (previous.isLoading && !force) return previousResultGameRequestPromise || Promise.resolve();
+  const requestPromise = (async () => {
+    const request = beginPublicRequest("previousResultGame", { abort: true });
+    const url = buildPreviousResultGameApiUrl();
+    if (!url) {
+      previous.isReady = true;
+      previous.game = null;
+      previous.message = "前回の結果を確認できませんでした。";
       renderScoreResult();
-      if (getPredictionAccountUser()) void refreshResultHistory({ force: true });
+      return;
     }
-  }
+    previous.isLoading = true;
+    previous.isReady = false;
+    previous.message = "";
+    syncPublicAppState();
+    renderScoreResult();
+    try {
+      const requestOptions = {
+        cacheKey: "previous-result-game",
+        ttlMs: PREVIOUS_RESULT_SESSION_CACHE_TTL_MS,
+        signal: request.signal
+      };
+      if (force) requestOptions.cache = "no-store";
+      const { response, payload } = await publicApiClient.getCached(url, requestOptions);
+      if (!response.ok || !payload?.ok || (payload.game !== null && typeof payload.game !== "object")) {
+        throw new Error(payload?.error || `HTTP ${response.status}`);
+      }
+      if (!isCurrentPublicRequest("previousResultGame", request.id)) return;
+      previous.game = payload.game || null;
+      previous.isReady = true;
+    } catch (error) {
+      if (!isCurrentPublicRequest("previousResultGame", request.id)) return;
+      previous.game = null;
+      previous.isReady = true;
+      previous.message = "前回の結果を確認できませんでした。";
+      console.warn("前回の公開結果試合の取得に失敗しました", error.message);
+    } finally {
+      if (isCurrentPublicRequest("previousResultGame", request.id)) {
+        previous.isLoading = false;
+        syncPublicAppState();
+        renderScoreResult();
+        resolveResultHistorySelection();
+      }
+    }
+  })();
+  previousResultGameRequestPromise = requestPromise;
+  return requestPromise.finally(() => {
+    if (previousResultGameRequestPromise === requestPromise) previousResultGameRequestPromise = null;
+  });
 }
 
 function buildProbableStarterApiUrl(gameId) {
@@ -2897,6 +2905,27 @@ function getResultHistoryGameId(game) {
   return String(game?.resultId || game?.internalGameId || game?.gameId || "");
 }
 
+function resolveResultHistorySelection() {
+  const history = state.resultHistory;
+  const previousGame = state.previousResultGame.isReady ? state.previousResultGame.game : null;
+  if (!history.isReady || !state.previousResultGame.isReady || history.selectedGameId || history.isDetailLoading) return;
+
+  const latestParticipatedPublishedGame = previousGame
+    ? history.games.find((game) => game?.resultsPublished
+      && getResultHistoryGameId(game) === String(previousGame.internalGameId || ""))
+    : null;
+  if (latestParticipatedPublishedGame) {
+    void loadResultHistoryGame(getResultHistoryGameId(latestParticipatedPublishedGame), { manual: false });
+    return;
+  }
+
+  history.result = null;
+  clearStoredPublicResult();
+  resetDailyBestNine("unpublished");
+  syncPublicAppState();
+  renderScoreResult();
+}
+
 function formatResultHistoryTeamName(value) {
   const labels = {
     fighters: "日本ハム",
@@ -2954,19 +2983,9 @@ async function refreshResultHistory({ force = false } = {}) {
     state.resultHistory.games = publicResultsRenderer.limitHistory(payload.games);
     state.resultHistory.isReady = true;
     state.resultHistory.message = state.resultHistory.games.length ? "" : "採点済みの過去試合はありません。";
-    const previousResultGame = state.previousResultGame.isReady ? state.previousResultGame.game : null;
-    const latestParticipatedPublishedGame = previousResultGame
-      ? state.resultHistory.games.find((game) => game?.resultsPublished
-        && getResultHistoryGameId(game) === String(previousResultGame.internalGameId || ""))
-      : null;
-    if (!state.resultHistory.selectedGameId && latestParticipatedPublishedGame) {
-      // The list can render immediately; only the previous game's detail is fetched after it.
-      void loadResultHistoryGame(getResultHistoryGameId(latestParticipatedPublishedGame), { manual: false });
-    } else if (!latestParticipatedPublishedGame && !state.resultHistory.selectedGameId) {
-      state.resultHistory.result = null;
-      clearStoredPublicResult();
-      resetDailyBestNine("unpublished");
-    }
+    // 前回試合の確認が先に終わっていれば、その場で詳細取得を開始します。
+    // 未完了なら前回取得側の完了処理から同じ一覧を使って選択します。
+    resolveResultHistorySelection();
   } catch (error) {
     if (!isCurrentPublicRequest("result", request.id)) return;
     state.resultHistory.games = [];
@@ -3672,6 +3691,8 @@ function scoreLineup(predictionLineup, actualLineup) {
     counts,
     breakdown,
     details,
+    predictionLineup: normalizedPrediction,
+    actualLineup: normalizedActual,
     scoredAt: new Date().toISOString()
   };
 }
@@ -4323,6 +4344,57 @@ function renderScoreInsights(comparison) {
   });
 }
 
+function createActualBasisDetails(sourceDetails, actualLineup = []) {
+  const hasProvidedActualLineup = Array.isArray(actualLineup) && actualLineup.length > 0;
+  const actualItems = hasProvidedActualLineup
+    ? actualLineup
+    : sourceDetails.map((detail) => ({
+      order: detail.actualOrder || detail.order,
+      player: detail.actualPlayer || "",
+      playerId: detail.actualPlayerId || "",
+      position: detail.actualPosition || ""
+    }));
+  const byPlayerId = new Map();
+  const byPlayerName = new Map();
+  sourceDetails.forEach((detail) => {
+    const playerId = String(detail.playerId || "").trim();
+    const playerKey = normalizePlayerKey(detail.player);
+    if (playerId) byPlayerId.set(playerId, detail);
+    if (playerKey) byPlayerName.set(playerKey, detail);
+  });
+
+  return Array.from({ length: LINEUP_SIZE }, (_, index) => {
+    const actualItem = actualItems.find((item) => Number(item?.order || item?.battingOrder) === index + 1)
+      || (hasProvidedActualLineup ? {} : actualItems[index] || {});
+    const actualPlayer = String(actualItem.player || actualItem.name || actualItem.playerName || "").trim();
+    const actualPlayerId = String(actualItem.playerId || "").trim();
+    const predictionDetail = (actualPlayerId && byPlayerId.get(actualPlayerId)) || byPlayerName.get(normalizePlayerKey(actualPlayer)) || null;
+    const isPlayerHit = Boolean(predictionDetail);
+    const isOrderHit = Boolean(predictionDetail?.isOrderHit);
+    const isPositionHit = Boolean(predictionDetail?.isPositionHit);
+    const isPerfect = Boolean(predictionDetail?.isPerfect ?? (isPlayerHit && isOrderHit && isPositionHit));
+    return {
+      ...(predictionDetail || {}),
+      order: index + 1,
+      predictionOrder: predictionDetail ? Number(predictionDetail.order) || null : null,
+      player: predictionDetail?.player || "",
+      playerId: predictionDetail?.playerId || "",
+      position: predictionDetail?.position || "",
+      actualOrder: index + 1,
+      actualPlayer,
+      actualPlayerId,
+      actualPosition: actualItem.position || "",
+      isPlayerHit,
+      isOrderHit,
+      isPositionHit,
+      isPerfect,
+      point: predictionDetail ? Number(predictionDetail.point || 0) : 0,
+      mark: isPerfect ? "◎" : isPlayerHit ? "◯" : "×",
+      label: isPerfect ? "完全一致" : isPlayerHit ? "スタメン入り" : "外れ"
+    };
+  });
+}
+
 function createResultViewModel(result) {
   const sourceDetails = Array.isArray(result.details) ? result.details : [];
   const actualOrderById = new Map();
@@ -4342,7 +4414,7 @@ function createResultViewModel(result) {
     }
   });
 
-  const details = sourceDetails.map((detail) => {
+  const normalizedDetails = sourceDetails.map((detail) => {
     const isPlayerHit = Boolean(detail.isPlayerHit ?? detail.mark !== "×");
     const isOrderHit = Boolean(detail.isOrderHit ?? detail.mark === "◎");
     const isPositionHit = Boolean(detail.isPositionHit ?? detail.mark === "◎");
@@ -4362,6 +4434,7 @@ function createResultViewModel(result) {
       isPositionHit
     };
   });
+  const details = createActualBasisDetails(normalizedDetails, result.actualLineup);
   const counts = getHitCounts(details);
   const breakdown = createScoreBreakdown(counts);
   const total = breakdown.player.total + breakdown.order.total + breakdown.position.total + breakdown.perfect.total;
@@ -4372,7 +4445,8 @@ function createResultViewModel(result) {
     perfectLabel: total === SCORE_MAX ? "完全一致" : "",
     counts,
     breakdown,
-    details
+    details,
+    displayBasis: "actual-lineup"
   };
 }
 
@@ -4495,7 +4569,7 @@ function createResultCanvas(viewModel) {
     }
     drawText(text, x, y + height / 2, width, `700 ${fontSize}px "Yu Gothic", "Noto Sans JP", sans-serif`, colors.text);
   };
-  const drawPlayerCard = (player, position, x, y, width, height, cardFill = colors.row, cardBorder = colors.border) => {
+  const drawPlayerCard = (player, position, x, y, width, height, cardFill = colors.row, cardBorder = colors.border, orderLabel = "") => {
     const normalizedPosition = normalizePosition(position);
     const category = normalizedPosition ? getPositionCategory(normalizedPosition) : "empty";
     context.lineWidth = 1.5;
@@ -4509,7 +4583,10 @@ function createResultCanvas(viewModel) {
     context.lineTo(x + tileWidth, y + height - 1);
     context.stroke();
     drawText(normalizedPosition || "－", x + 1, y + height / 2, tileWidth - 1, "900 13px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
-    drawName(player || "-", x + tileWidth + 2, y, width - tileWidth - 2, height);
+    const displayName = orderLabel
+      ? `${orderLabel === "未予想" ? "未予想" : `${orderLabel}番`} ${player || ""}`.trim()
+      : player || "-";
+    drawName(displayName, x + tileWidth + 2, y, width - tileWidth - 2, height);
   };
   const drawJudgement = (isHit, label, x, y, width, height) => {
     drawRoundedRect(x, y, width, height, 5, isHit ? colors.hit : colors.miss, null);
@@ -4574,7 +4651,7 @@ function createResultCanvas(viewModel) {
   const judgementWidth = displayWidth < 480 ? 94 : 126;
   const playerWidth = (contentWidth - orderWidth - pointWidth - judgementWidth) / 2;
   const columns = [orderWidth, playerWidth, playerWidth, judgementWidth, pointWidth];
-  const headings = ["打順", "あなたの予想", "実際のスタメン", "判定", "点数"];
+  const headings = ["打順", "実際のスタメン", "あなたの予想", "判定", "点数"];
   drawRoundedRect(tableX, y, contentWidth, headerHeight, 6, colors.header, null);
   let columnX = tableX;
   columns.forEach((width, index) => {
@@ -4592,8 +4669,8 @@ function createResultCanvas(viewModel) {
 
   viewModel.details.forEach((detail, index) => {
     const rowY = y + index * (rowHeight + rowGap);
-    const predictedColumnX = tableX + orderWidth;
-    const actualColumnX = predictedColumnX + playerWidth;
+    const actualColumnX = tableX + orderWidth;
+    const predictedColumnX = actualColumnX + playerWidth;
     const predictedX = predictedColumnX + 4;
     const actualX = actualColumnX + 4;
     const judgementX = tableX + orderWidth + playerWidth * 2;
@@ -4609,10 +4686,10 @@ function createResultCanvas(viewModel) {
     context.fillRect(actualColumnX + 1, rowY + 1, playerWidth - 2, rowHeight - 2);
     drawRoundedRect(tableX + 5, rowY + 6, orderWidth - 10, rowHeight - 12, 5, colors.order, null);
     drawText(detail.order, tableX + 5, rowY + rowHeight / 2, orderWidth - 10, `900 ${displayWidth < 480 ? 14 : 16}px Arial, sans-serif`, "#ffffff");
-    drawPlayerCard(detail.player, detail.position, predictedX, rowY + 6, playerWidth - 8, rowHeight - 12);
     const actualCardFill = isPerfectRow ? "#fff6dc" : isFullMatch ? "#f8fcff" : "#f1f4f7";
     const actualCardBorder = isPerfectRow ? colors.perfectBorder : isFullMatch ? colors.border : "#c8d3dd";
     drawPlayerCard(detail.actualPlayer || "-", detail.actualPosition, actualX, rowY + 6, playerWidth - 8, rowHeight - 12, actualCardFill, actualCardBorder);
+    drawPlayerCard(detail.player || "未予想", detail.position, predictedX, rowY + 6, playerWidth - 8, rowHeight - 12, colors.row, colors.border, detail.predictionOrder || "未予想");
     const chipGap = 4;
     const chipWidth = (judgementWidth - 10 - chipGap * 2) / 3;
     drawJudgement(detail.isPlayerHit, "出場", judgementX + 4, rowY + 13, chipWidth, 26);
@@ -4652,8 +4729,8 @@ function createResultTable(details) {
     <thead>
       <tr>
         <th class="result-order-heading">打順</th>
-        <th class="result-group-heading">あなたの予想</th>
         <th class="result-group-heading result-actual-group-heading">実際のスタメン</th>
+        <th class="result-group-heading">あなたの予想</th>
         <th class="result-group-heading">判定</th>
         <th class="result-point-heading">点数</th>
       </tr>
@@ -4666,8 +4743,8 @@ function createResultTable(details) {
     const row = document.createElement("tr");
     row.innerHTML = `
       <td class="result-order-cell"><strong>${detail.order}</strong></td>
-      <td class="result-player-cell">${createResultPlayerCardHtml(detail.player, detail.position)}</td>
       <td class="result-player-cell result-actual-group-cell">${createResultPlayerCardHtml(detail.actualPlayer || "-", detail.actualPosition)}</td>
+      <td class="result-player-cell">${createResultPlayerCardHtml(detail.player || "未予想", detail.position, detail.predictionOrder || "未予想")}</td>
       <td class="result-judgements-cell">
         <span class="result-judgement-stack">
           ${createHitBadge(detail.isPlayerHit, "出場")}
@@ -4683,11 +4760,14 @@ function createResultTable(details) {
   return table;
 }
 
-function createResultPlayerCardHtml(player, position) {
+function createResultPlayerCardHtml(player, position, orderLabel = "") {
+  const displayOrder = orderLabel
+    ? orderLabel === "未予想" ? "未予想" : `${orderLabel}番`
+    : "";
   return `
     <span class="result-player-card">
       ${createResultPositionTileHtml(position)}
-      <span class="result-player-name">${escapeHtml(player || "-")}</span>
+      <span class="result-player-name">${displayOrder ? `<small class="result-player-order">${escapeHtml(displayOrder)}</small>` : ""}${escapeHtml(player || "-")}</span>
     </span>
   `;
 }

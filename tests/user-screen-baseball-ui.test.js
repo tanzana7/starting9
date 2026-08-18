@@ -179,8 +179,12 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
   assert.match(script, /meta\.textContent = `最後に更新：\$\{formatDateTime\(prediction\.savedAt\)\}`/);
   assert.match(script, /const displayWidth = Math\.min\(240/);
   assert.match(script, /const tableWidth = displayWidth - 8/);
-  assert.match(script, /drawCenteredText\(`\$\{index \+ 1\}`, tableX \+ 5, rowY \+ rowHeight \/ 2,[\s\S]*17px Impact,[\s\S]*"#ffffff"/);
-  assert.match(script, /order: "#102a4b"/);
+  assert.match(script, /drawCenteredText\(`\$\{index \+ 1\}`, tableX \+ 5, rowY \+ rowHeight \/ 2/);
+  assert.match(script, /17px \\\"Courier New\\\", \\\"Lucida Console\\\", monospace/);
+  assert.match(script, /monospace", "#ffffff"/);
+  assert.match(script, /navy: "#0b5ea8"/);
+  assert.match(script, /order: "#0b5ea8"/);
+  assert.match(script, /drawCenteredText\("選手名", tableX \+ orderWidth \+ positionWidth, tableY \+ headerHeight \/ 2, nameWidth/);
   assert.doesNotMatch(script, /drawCenteredText\(`\$\{index \+ 1\}番`/);
   assert.doesNotMatch(script, /drawLeftText\("あなたの予想"/);
   assert.doesNotMatch(script, /drawLeftText\(`最後に更新：/);

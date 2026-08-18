@@ -41,7 +41,7 @@ test("通常画面は自分が参加した最新の公開済み結果だけを�
   assert.match(script, /const previousResultGame = state\.previousResultGame\.isReady \? state\.previousResultGame\.game : null/);
   assert.match(script, /getResultHistoryGameId\(game\) === String\(previousResultGame\.internalGameId \|\| ""\)/);
   assert.match(script, /if \(!state\.resultHistory\.selectedGameId && latestParticipatedPublishedGame\)/);
-  assert.match(script, /void loadResultHistoryGame\(getResultHistoryGameId\(latestParticipatedPublishedGame\)\)/);
+  assert.match(script, /void loadResultHistoryGame\(getResultHistoryGameId\(latestParticipatedPublishedGame\), \{ manual: false \}\)/);
   assert.match(publicResultsRenderer, /if \(!history\.isReady\) return null/);
   assert.match(publicResultsRenderer, /history\.games\.some\(\(game\) => deps\.getResultHistoryGameId\(game\) === resultId\)/);
   assert.match(script, /state\.resultHistory = \{ isLoading: false, isDetailLoading: false, isReady: true, games: \[\]/);
@@ -63,6 +63,9 @@ test("前回未参加時は最新結果カードを出さず、過去結果導�
   assert.match(publicResultsRenderer, /if \(previousGame\)/);
   assert.match(publicResultsRenderer, /ログインすると前回の採点結果を確認できます。/);
   assert.match(publicResultsRenderer, /前回\（\$\{date\}）の採点結果/);
+  assert.match(publicResultsRenderer, /function updateResultHeader\(game, hasResult, displayMode = "previous"\)/);
+  assert.match(publicResultsRenderer, /date \? `\$\{date\}の採点結果` : "選択した試合の採点結果"/);
+  assert.match(publicResultsRenderer, /history\.displayMode/);
   assert.match(publicResultsRenderer, /legend\.classList\.toggle\("hidden", !hasResult\)/);
   assert.match(script, /state\.resultHistory\.games = publicResultsRenderer\.limitHistory\(payload\.games\)/);
   assert.match(script, /state\.resultHistory\.message = state\.resultHistory\.games\.length \? "" : "採点済みの過去試合はありません。"/);

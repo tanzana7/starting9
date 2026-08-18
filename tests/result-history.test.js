@@ -69,12 +69,21 @@ test("結果詳細APIと通常画面の選択UIはcanonical internalGameIdを優
 });
 
 test("過去結果は一覧を先に描画し、詳細を遅延取得・セッション内キャッシュする", () => {
-  assert.match(script, /void loadResultHistoryGame\(getResultHistoryGameId\(latestParticipatedPublishedGame\)\)/);
+  assert.match(script, /void loadResultHistoryGame\(getResultHistoryGameId\(latestParticipatedPublishedGame\), \{ manual: false \}\)/);
   assert.match(script, /detailCache: Object\.create\(null\)/);
   assert.match(script, /const cached = state\.resultHistory\.detailCache\?\.\[gameId\]/);
   assert.match(script, /history\.isExpanded && history\.games\.length/);
   assert.doesNotMatch(script, /await fetchDailyBestNine\(\{ gameId: payload\.internalGameId/);
   assert.match(worker, /const games = await Promise\.all\(\(rows\.results \|\| \[\]\)\.map/);
+});
+
+test("前回自動表示と過去結果の手動選択で採点結果見出しの文脈を分ける", () => {
+  const renderer = fs.readFileSync(path.join(root, "frontend", "public", "render-results.js"), "utf8");
+  assert.match(script, /async function loadResultHistoryGame\(gameId, \{ manual = true \} = \{\}\)/);
+  assert.match(script, /loadResultHistoryGame\(getResultHistoryGameId\(latestParticipatedPublishedGame\), \{ manual: false \}\)/);
+  assert.match(renderer, /displayMode === "selected"/);
+  assert.match(renderer, /`\$\{date\}の採点結果`/);
+  assert.match(renderer, /`前回（\$\{date\}）の採点結果`/);
 });
 
 test("通常画面はcanonical public gameのinternalGameIdを予想保存と締切判定へ引き継ぐ", () => {

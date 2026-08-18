@@ -27,7 +27,7 @@ test("公開画面のentry pointは分割moduleを読み込んでCoordinatorを�
   const scriptOffset = html.indexOf("script.js?v=public-saved-lineup-canvas-bahnschrift-order-1");
   assert.ok(scriptOffset > 0);
   moduleScripts.forEach((name) => {
-    const offset = html.indexOf(`${modulePath(name)}?v=public-release-prep-audit-1`);
+    const offset = html.indexOf(`${modulePath(name)}?v=public-past-result-date-heading-1`);
     assert.ok(offset >= 0, `${name} module is loaded`);
     assert.ok(offset < scriptOffset, `${name} loads before the entry point`);
   });

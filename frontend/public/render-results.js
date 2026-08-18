@@ -39,11 +39,15 @@
       return shortMatch ? `${Number(shortMatch[1])}/${Number(shortMatch[2])}` : "";
     }
 
-    function updateResultHeader(game, hasResult) {
+    function updateResultHeader(game, hasResult, displayMode = "previous") {
       const heading = document.getElementById("result-title");
       const legend = document.getElementById("result-legend");
       const date = formatPreviousResultDate(game);
-      if (heading) heading.textContent = date ? `前回（${date}）の採点結果` : "前回の採点結果";
+      if (heading) {
+        heading.textContent = displayMode === "selected"
+          ? (date ? `${date}の採点結果` : "選択した試合の採点結果")
+          : (date ? `前回（${date}）の採点結果` : "前回の採点結果");
+      }
       if (legend) legend.classList.toggle("hidden", !hasResult);
     }
 
@@ -56,7 +60,7 @@
       const selectedGame = displayedResult
         ? history.games.find((game) => deps.getResultHistoryGameId(game) === displayedResult.gameId)
         : null;
-      updateResultHeader(selectedGame || previousGame, Boolean(displayedResult));
+      updateResultHeader(selectedGame || previousGame, Boolean(displayedResult), history.displayMode);
       // Keep score comparison data available internally, but do not render it in the public result UI for now.
 
       if (!displayedResult) {

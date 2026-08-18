@@ -3233,17 +3233,18 @@ textarea:focus {
   background: #f7fbff;
 }
 
-/* 保存済み予想は、打順・守備位置・選手名を揃えた簡易スタメン表として見せる。 */
-body:not(:has(.app-layout.is-admin-screen)) .lineup-list {
-  gap: 10px;
+/* 保存済み予想は、元のブロック感を残したコンパクトなスタメン表として見せる。 */
+body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary {
+  width: min(100%, 620px);
+  min-width: 0;
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-table-header {
   display: grid;
-  grid-template-columns: 48px 40px minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: 56px 48px minmax(0, 1fr);
+  gap: 10px;
   align-items: center;
-  margin: 12px 0 0;
+  margin: 10px 0 0;
   padding: 7px 10px;
   border: 1px solid var(--fighters-deep-blue);
   border-radius: 5px 5px 0 0;
@@ -3258,38 +3259,54 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-table-header span:nth-
   text-align: center;
 }
 
-body:not(:has(.app-layout.is-admin-screen)) .lineup-list li.saved-lineup-row {
-  grid-template-columns: 48px 40px minmax(0, 1fr);
-  gap: 12px;
-  align-items: center;
-  padding: 7px 10px;
-  border: 1px solid #d9dee7;
-  border-radius: 0;
-  background: #ffffff;
+body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary > .lineup-list {
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid #cfd7e2;
+  border-top: 0;
+  border-radius: 0 0 5px 5px;
+  background: #f3f6fa;
 }
 
-body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-order {
+body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary li.saved-lineup-row {
+  grid-template-columns: 56px 48px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid #d9dee7;
+  border-radius: 5px;
+  background: #f8fbff;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary .saved-lineup-order {
   grid-column: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  border-radius: 4px;
+  background: #edf3fa;
   color: var(--fighters-deep-blue);
   font-weight: 900;
   white-space: nowrap;
 }
 
-body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-detail {
+body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary .saved-lineup-detail {
   display: contents;
   min-width: 0;
 }
 
-body:not(:has(.app-layout.is-admin-screen)) .saved-position-chip.result-position-tile {
+body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary .saved-position-chip.result-position-tile {
   grid-column: 2;
   justify-self: center;
-  width: 32px;
-  height: 32px;
-  box-shadow: none;
+  width: 34px;
+  height: 34px;
+  box-shadow: 0 1px 2px rgba(16, 42, 75, 0.12);
   font-size: 0.82rem;
 }
 
-body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-name {
+body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary .saved-lineup-name {
   grid-column: 3;
   box-sizing: border-box;
   width: 100%;
@@ -3298,28 +3315,35 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-name {
   overflow-wrap: anywhere;
   padding: 7px 10px;
   border: 1px solid #d9dee7;
-  border-radius: 3px;
+  border-radius: 4px;
   background: #ffffff;
   color: var(--text);
   font-weight: 800;
+  box-shadow: 0 1px 2px rgba(16, 42, 75, 0.06);
 }
 
 @media (max-width: 767px) {
-  body:not(:has(.app-layout.is-admin-screen)) .lineup-list {
-    gap: 8px;
-  }
-
   body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-table-header {
     grid-template-columns: 40px 38px minmax(0, 1fr);
     gap: 7px;
-    margin-top: 10px;
+    margin-top: 8px;
     padding: 6px 7px;
   }
 
-  body:not(:has(.app-layout.is-admin-screen)) .lineup-list li.saved-lineup-row {
+  body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary > .lineup-list {
+    gap: 5px;
+    padding: 5px;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary li.saved-lineup-row {
     grid-template-columns: 40px 38px minmax(0, 1fr);
     gap: 7px;
-    padding: 7px;
+    padding: 6px;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary .saved-position-chip.result-position-tile {
+    width: 32px;
+    height: 32px;
   }
 }
 

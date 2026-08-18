@@ -4460,6 +4460,7 @@ function createResultPositionTileHtml(position) {
 
 function createPredictionSummary(prediction) {
   const wrapper = document.createElement("div");
+  wrapper.className = "saved-lineup-summary";
   const title = document.createElement("strong");
   title.textContent = "保存済みのスタメン予想";
 

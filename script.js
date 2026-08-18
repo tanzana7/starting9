@@ -4410,7 +4410,7 @@ function createResultFallbackView(viewModel) {
 function createResultCanvas(viewModel) {
   if (!viewModel || !Array.isArray(viewModel.details)) return null;
   const viewportWidth = typeof window === "undefined" ? 620 : window.innerWidth || 620;
-  const displayWidth = Math.min(620, Math.max(320, viewportWidth - 32));
+  const displayWidth = Math.min(590, Math.max(320, viewportWidth - 32));
   const renderScale = 2;
   const padding = 12;
   const heroHeight = 78;
@@ -4512,8 +4512,17 @@ function createResultCanvas(viewModel) {
   let y = padding;
   drawRoundedRect(padding, y, contentWidth, heroHeight, 6, colors.hero, null);
   drawText("合計点", padding + 14, y + 15, 80, "900 10px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#d7ecff", "left");
-  drawText(viewModel.total, padding + 14, y + 49, 100, `950 ${displayWidth < 480 ? 36 : 42}px Arial, sans-serif`, "#ffffff", "left");
-  drawText(`/ ${viewModel.max} 点`, padding + 116, y + 52, 100, `900 ${displayWidth < 480 ? 15 : 18}px Arial, sans-serif`, "#eaf4ff", "left");
+  const totalFont = `950 ${displayWidth < 480 ? 36 : 42}px Arial, sans-serif`;
+  const maxFont = `900 ${displayWidth < 480 ? 15 : 18}px Arial, sans-serif`;
+  const maxLabel = `/ ${viewModel.max} 点`;
+  context.font = totalFont;
+  const totalTextWidth = context.measureText(String(viewModel.total ?? "")).width;
+  context.font = maxFont;
+  const maxTextWidth = context.measureText(maxLabel).width;
+  const scoreGap = displayWidth < 480 ? 8 : 12;
+  const scoreStartX = padding + (contentWidth - totalTextWidth - scoreGap - maxTextWidth) / 2;
+  drawText(viewModel.total, scoreStartX, y + 49, totalTextWidth, totalFont, "#ffffff", "left");
+  drawText(maxLabel, scoreStartX + totalTextWidth + scoreGap, y + 52, maxTextWidth, maxFont, "#eaf4ff", "left");
   if (viewModel.perfectLabel) {
     drawRoundedRect(displayWidth - 96, y + 13, 74, 26, 5, "#ffffff", null);
     drawText(viewModel.perfectLabel, displayWidth - 96, y + 26, 74, "900 10px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.hero);
@@ -4574,8 +4583,8 @@ function createResultCanvas(viewModel) {
     const pointValue = Number(detail.point);
     const isPerfectRow = pointValue >= 10;
     const isZeroRow = pointValue === 0;
-    const rowFill = isPerfectRow ? "#f5fbff" : isZeroRow ? "#f8fafc" : colors.row;
-    const rowBorder = isPerfectRow ? "#9dc5e3" : isZeroRow ? "#dbe3eb" : colors.grid;
+    const rowFill = isPerfectRow ? "#f3faff" : isZeroRow ? "#fbfcfd" : colors.row;
+    const rowBorder = isPerfectRow ? "#a7cce8" : isZeroRow ? "#e0e7ee" : colors.grid;
     context.lineWidth = 1;
     drawRoundedRect(tableX, rowY, contentWidth, rowHeight, 6, rowFill, rowBorder);
     context.fillStyle = "#f7fbff";
@@ -4592,8 +4601,9 @@ function createResultCanvas(viewModel) {
     const pointX = judgementX + judgementWidth;
     const pointFill = isPerfectRow ? "#dff1ff" : isZeroRow ? "#f0f3f6" : "#eaf4ff";
     const pointBorder = isPerfectRow ? "#82b6dc" : isZeroRow ? "#cbd6df" : colors.border;
-    drawRoundedRect(pointX + 5, rowY + 12, pointWidth - 10, 28, 6, pointFill, pointBorder);
-    drawText(detail.point, pointX + 5, rowY + rowHeight / 2, pointWidth - 10, `900 ${displayWidth < 480 ? 12 : 14}px Arial, sans-serif`, colors.text);
+    const pointBadgeInset = displayWidth < 480 ? 6 : 8;
+    drawRoundedRect(pointX + pointBadgeInset, rowY + 12, pointWidth - pointBadgeInset * 2, 28, 6, pointFill, pointBorder);
+    drawText(detail.point, pointX + pointBadgeInset, rowY + rowHeight / 2, pointWidth - pointBadgeInset * 2, `900 ${displayWidth < 480 ? 12 : 14}px Arial, sans-serif`, colors.text);
   });
 
   return canvas;

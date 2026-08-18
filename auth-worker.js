@@ -493,6 +493,15 @@ export default {
       if (adminV3JobRoute && request.method === "POST") {
         return await handleAdminV3JobCreate(request, env, cors, adminV3JobRoute.internalGameId);
       }
+      const adminV3JobControlRoute = parseAdminV3JobControlRoute(path);
+      if (adminV3JobControlRoute) {
+        if (adminV3JobControlRoute.action === "diagnose" && request.method === "GET") {
+          return await handleAdminV3JobDiagnose(request, env, cors, adminV3JobControlRoute.internalGameId);
+        }
+        if (adminV3JobControlRoute.action === "run" && request.method === "POST") {
+          return await handleAdminV3JobCreate(request, env, cors, adminV3JobControlRoute.internalGameId);
+        }
+      }
       if ([
         "/api/admin/mode-capabilities",
         "/api/admin/automation/health",
@@ -4816,6 +4825,127 @@ async function handleAdminV3OrientationUpdate(request, env, cors, internalGameId
   }
 }
 
+const V3_MANUAL_JOB_STATE_GATES = Object.freeze({
+  prediction_close: Object.freeze(["scheduled", "manual_action_required"]),
+  lineup_fetch: Object.freeze(["prediction_closed", "manual_action_required"]),
+  lineup_finalize: Object.freeze(["prediction_closed", "manual_action_required"]),
+  score: Object.freeze(["lineup_ready", "manual_action_required"]),
+  ranking_rebuild: Object.freeze(["scored", "manual_action_required"]),
+  publish: Object.freeze(["ranked", "manual_action_required"])
+});
+const V3_MANUAL_JOB_DANGEROUS = new Set([
+  "prediction_close", "lineup_finalize", "score", "ranking_rebuild", "publish"
+]);
+
+function getV3ManualJobGate(jobType, state) {
+  const allowedStates = V3_MANUAL_JOB_STATE_GATES[jobType];
+  if (!allowedStates) {
+    return {
+      canRun: V3_JOB_TYPES.includes(jobType),
+      cannotRunReason: V3_JOB_TYPES.includes(jobType) ? null : "V3_JOB_TYPE_INVALID",
+      nextExpectedState: null
+    };
+  }
+  const currentState = String(state || "scheduled");
+  return {
+    canRun: allowedStates.includes(currentState),
+    cannotRunReason: allowedStates.includes(currentState)
+      ? null
+      : `現在のstate=${currentState}では実行できません。必要なstate: ${allowedStates.join(" / ")}`,
+    nextExpectedState: V3_JOB_REGISTRY[jobType]?.transitionTo || null
+  };
+}
+
+async function getV3ManualJobDiagnosis(db, internalGameId, jobType, target = null) {
+  const id = normalizeV3InternalGameId(internalGameId);
+  const stateRow = await db.prepare(
+    "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
+  ).bind(id).first();
+  const currentState = String(stateRow?.state || "scheduled");
+  if (!V3_JOB_TYPES.includes(jobType)) {
+    if (jobType === "schedule_register") {
+      return {
+        ok: true,
+        jobType,
+        internalGameId: id,
+        currentWorkflowState: currentState,
+        latestJobStatus: null,
+        latestJobId: null,
+        latestJobScheduledAt: null,
+        latestJobClaimedAt: null,
+        latestJobCompletedAt: null,
+        latestJobError: null,
+        canRun: false,
+        cannotRunReason: "V3のschedule_register手動runnerはありません。日程同期Cronの監査を確認してください。",
+        nextExpectedState: null,
+        relatedDataSummary: {
+          formalRunner: false,
+          gameRegistered: Boolean(target),
+          gameDate: target?.game_date || null,
+          startAt: target?.start_time || null,
+          npbGameCode: target?.npb_game_code || null,
+          npbIdentityStatus: target?.npb_identity_status || null
+        }
+      };
+    }
+    throw createV3Error("V3_JOB_TYPE_INVALID", "V3ジョブ種別が不正です。", { httpStatus: 400 });
+  }
+  const latest = await db.prepare(
+    `SELECT id, status, scheduled_at, claimed_at, completed_at, failure_code, failure_message
+       FROM game_jobs_v3
+      WHERE internal_game_id = ?1 AND job_type = ?2
+      ORDER BY updated_at DESC, id DESC LIMIT 1`
+  ).bind(id, jobType).first();
+  const gate = getV3ManualJobGate(jobType, currentState);
+  const relatedDataSummary = {
+    npbGameCode: target?.npb_game_code || null,
+    npbIdentityStatus: target?.npb_identity_status || null,
+    gameDate: target?.game_date || null,
+    startAt: target?.start_time || null,
+    formalRunner: true
+  };
+  if (["lineup_fetch", "lineup_finalize", "score", "publish"].includes(jobType)) {
+    try {
+      const revisions = await getV3LineupRevisionRows(db, id, id);
+      relatedDataSummary.latestLineupRevision = revisions[0]?.revision_id || null;
+      relatedDataSummary.finalLineupRevision = revisions.find((row) => Number(row.is_final) === 1)?.revision_id || null;
+      relatedDataSummary.lineupRevisionCount = revisions.length;
+    } catch {
+      relatedDataSummary.lineupRevisionRead = "unavailable";
+    }
+  }
+  return {
+    ok: true,
+    jobType,
+    internalGameId: id,
+    currentWorkflowState: currentState,
+    latestJobStatus: latest?.status || null,
+    latestJobId: latest?.id || null,
+    latestJobScheduledAt: latest?.scheduled_at || null,
+    latestJobClaimedAt: latest?.claimed_at || null,
+    latestJobCompletedAt: latest?.completed_at || null,
+    latestJobError: latest ? { code: latest.failure_code || null, message: latest.failure_message || null } : null,
+    canRun: gate.canRun,
+    cannotRunReason: gate.cannotRunReason,
+    nextExpectedState: gate.nextExpectedState,
+    relatedDataSummary
+  };
+}
+
+async function handleAdminV3JobDiagnose(request, env, cors, internalGameId) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  const url = new URL(request.url);
+  const jobType = String(url.searchParams.get("jobType") || "").trim();
+  try {
+    const id = normalizeV3InternalGameId(internalGameId);
+    const target = await loadV3GameTarget(env.AUTH_DB, id);
+    return jsonResponse(await getV3ManualJobDiagnosis(env.AUTH_DB, id, jobType, target), 200, cors);
+  } catch (error) {
+    return v3AdminErrorResponse(cors, error, "V3ジョブ診断に失敗しました。");
+  }
+}
+
 async function handleAdminV3JobCreate(request, env, cors, internalGameId) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) return access.response;
@@ -4824,14 +4954,15 @@ async function handleAdminV3JobCreate(request, env, cors, internalGameId) {
   try {
     const id = normalizeV3InternalGameId(internalGameId);
     if (!V3_JOB_TYPES.includes(jobType)) throw createV3Error("V3_JOB_TYPE_INVALID", "V3ジョブ種別が不正です。");
-    const game = (await listV3Games(env.AUTH_DB, new Date())).find((row) => row.internalGameId === id);
-    if (!game) throw createV3Error("V3_GAME_NOT_REGISTERED", "V3対象試合が日程DBに登録されていません。");
-    if (["lineup_fetch", "lineup_finalize"].includes(jobType)
-      && !["resolved", "manually_overridden"].includes(String(game.npbIdentityStatus || ""))) {
-      throw createV3Error("NPB_IDENTITY_PENDING", "NPB識別情報が解決するまでスタメン取得ジョブを投入できません。");
+    const reason = String(input?.reason || "").trim();
+    if (!reason || reason.length > 240) throw createV3Error("V3_REASON_REQUIRED", "手動再実行理由を1〜240文字で入力してください。", { httpStatus: 400 });
+    if (V3_MANUAL_JOB_DANGEROUS.has(jobType) && input?.confirmed !== true) {
+      throw createV3Error("V3_CONFIRMATION_REQUIRED", "危険な工程は確認済みフラグが必要です。", { httpStatus: 409 });
     }
+    const target = await loadV3GameTarget(env.AUTH_DB, id);
+    const diagnosis = await getV3ManualJobDiagnosis(env.AUTH_DB, id, jobType, target);
+    if (!diagnosis.canRun) throw createV3Error("V3_MANUAL_JOB_PREREQUISITE", diagnosis.cannotRunReason || "現在の状態では実行できません。", { httpStatus: 409 });
     const now = new Date();
-    const schedule = deriveV3Schedule(game);
     const created = await createV3Job(env.AUTH_DB, {
       internalGameId: id,
       jobType,
@@ -4839,15 +4970,28 @@ async function handleAdminV3JobCreate(request, env, cors, internalGameId) {
       scheduledSlotAt: input?.scheduledSlotAt || now,
       source: "admin"
     });
-    return jsonResponse({ ok: true, job: created.job, created: created.created, schedule: {
-      predictionDeadline: schedule.predictionDeadline.toISOString(),
-      lineupPollingStart: schedule.lineupPollingStart.toISOString(),
-      finalLineupAt: schedule.finalLineupAt.toISOString(),
-      publicationAt: schedule.publicationAt.toISOString()
-    } }, 200, cors);
+    const detail = `[v3_details=${JSON.stringify({ reason, actorId: access.user?.id || null, action: "manual_job_run", jobType })}]`;
+    await recordV3AdminAudit(env.AUTH_DB, {
+      internalGameId: id,
+      jobId: created.job?.id || null,
+      jobType: `admin:${jobType}`,
+      stateBefore: diagnosis.currentWorkflowState,
+      stateAfter: diagnosis.currentWorkflowState,
+      failureMessage: detail
+    });
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "v3_admin_manual_job_run",
+      status: "info",
+      gameId: id,
+      occurredAt: now,
+      message: "V3管理者が正式jobを手動投入しました。",
+      metadata: { internalGameId: id, jobType, jobId: created.job?.id || null, reason, updatedBy: access.user?.id || null },
+      source: "admin"
+    });
+    return jsonResponse({ ok: true, job: created.job, created: created.created, diagnosis }, 202, cors);
   } catch (error) {
     const code = String(error?.code || "V3_ADMIN_JOB_CREATE_FAILED");
-    const status = code === "V3_GAME_NOT_REGISTERED" ? 404 : 400;
+    const status = Number(error?.httpStatus) || (code === "V3_GAME_NOT_REGISTERED" ? 404 : 400);
     return jsonResponse({ ok: false, code, error: String(error?.message || "V3ジョブを作成できませんでした。") }, status, cors);
   }
 }
@@ -4859,6 +5003,16 @@ function parseAdminV3JobRoute(path) {
     return { internalGameId: decodeURIComponent(match[1]) };
   } catch {
     return { internalGameId: "" };
+  }
+}
+
+function parseAdminV3JobControlRoute(path) {
+  const match = /^\/api\/admin\/v3\/games\/([^/]+)\/jobs\/(diagnose|run)$/.exec(path);
+  if (!match) return null;
+  try {
+    return { internalGameId: decodeURIComponent(match[1]), action: match[2] };
+  } catch {
+    return { internalGameId: "", action: "invalid" };
   }
 }
 
@@ -4878,6 +5032,7 @@ function getKnownAdminRouteMethods(path) {
   if (parseAdminV3NpbGameCodeRoute(path)) return ["PATCH"];
   if (parseAdminV3OrientationRoute(path)) return ["PATCH"];
   if (parseAdminV3JobRoute(path)) return ["POST"];
+  if (parseAdminV3JobControlRoute(path)) return parseAdminV3JobControlRoute(path).action === "diagnose" ? ["GET"] : ["POST"];
   // Phase routes authenticate before checking their action-specific method.
   if (parseAdminV3Phase1Route(path)) return null;
   return null;

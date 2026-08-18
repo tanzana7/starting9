@@ -13,6 +13,7 @@
       jobDetailsOpen: new Set(),
       jobDetailsLoading: new Set(),
       jobDetailsCopyStatus: new Map(),
+      manualOperations: new Map(),
       automationLogs: null,
       automationLogFilters: { runId: "", internalGameId: "", jobType: "", status: "", reasonCode: "", failureCode: "" },
       rankingReset: {

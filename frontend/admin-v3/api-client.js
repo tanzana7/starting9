@@ -54,6 +54,16 @@
       getGameOperationDetail(internalGameId, suffix) {
         return request(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}${suffix}`);
       },
+      diagnoseJob(internalGameId, jobType) {
+        const query = new URLSearchParams({ jobType: String(jobType || "") });
+        return request(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/jobs/diagnose?${query.toString()}`);
+      },
+      runJob(internalGameId, body) {
+        return request(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/jobs/run`, {
+          method: "POST",
+          body: JSON.stringify(body)
+        });
+      },
       listRankingResets: () => request(ADMIN_V3_ENDPOINTS.rankingResets),
       previewRankingReset: (body) => post(ADMIN_V3_ENDPOINTS.rankingResetPreview, body),
       executeRankingReset: (body) => post(ADMIN_V3_ENDPOINTS.rankingResetExecute, body),

@@ -20,7 +20,7 @@ test("admin-v3はロースターを公示ベースで読み取り表示し、未
   assert.match(worker, /getV3RosterPlanningDiagnostics/);
 });
 
-test("admin-v3はV3自動処理と競合する手動操作を画面から外す", () => {
+test("admin-v3は旧直接編集操作を外し、V3正式jobの安全な再実行だけを表示する", () => {
   assert.doesNotMatch(page, /data-v3-view="emergency"/);
   for (const selector of [
     "data-v3-identity-resolve", "data-v3-orientation-save", "data-v3-code-save",
@@ -30,9 +30,11 @@ test("admin-v3はV3自動処理と競合する手動操作を画面から外す"
     "data-v3-job-retry", "data-v3-job-cancel"
   ]) assert.doesNotMatch(client, new RegExp(selector));
   assert.match(gameProgress, /job履歴/);
+  assert.match(gameProgress, /V3工程の診断・手動再実行/);
+  assert.match(gameProgress, /data-v3-job-run/);
 });
 
 test("admin-v3のJavaScriptキャッシュバスターは公示整理版へ更新される", () => {
-  assert.match(page, /admin-v3\.js\?v=public-release-fixture-cleanup-1/);
-  assert.match(page, /admin-v3\.css\?v=public-release-fixture-cleanup-1/);
+  assert.match(page, /admin-v3\.js\?v=admin-v3-all-job-manual-controls-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-v3-all-job-manual-controls-1/);
 });

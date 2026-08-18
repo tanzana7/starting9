@@ -124,8 +124,11 @@ test("結果テーブルの選手名ブロックはPCとスマホで幅を揃え
 test("採点結果テーブルは保存済み予想に近い青い表組みでスマホにも収める", () => {
   assert.match(css, /\.result-table-wrap\s*\{[\s\S]*overflow-x: auto/);
   assert.match(css, /\.result-table\s*\{[\s\S]*min-width: 520px/);
+  assert.match(css, /\.result-table\s*\{[\s\S]*border-spacing: 0 5px/);
   assert.match(css, /\.result-table th\s*\{[\s\S]*color: #ffffff[\s\S]*background: var\(--fighters-blue\)/);
   assert.match(css, /\.result-table \.result-order-cell strong\s*\{[\s\S]*color: #ffffff[\s\S]*background: var\(--fighters-blue\)/);
+  assert.match(css, /\.result-table tbody tr td:first-child\s*\{[\s\S]*border-left: 1px solid #d3dfeb/);
+  assert.match(css, /\.result-table tbody tr td:last-child\s*\{[\s\S]*border-right: 1px solid #d3dfeb/);
   assert.match(css, /\.result-judgement-stack\s*\{[\s\S]*display: flex/);
   assert.match(css, /\.result-player-name\s*\{[\s\S]*overflow-wrap: anywhere/);
 });

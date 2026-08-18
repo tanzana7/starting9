@@ -9,7 +9,7 @@ const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 
 test("public mobile prediction layout keeps order and roster in two panes", () => {
-  assert.match(html, /style\.css\?v=public-saved-lineup-tight-spacing-1/);
+  assert.match(html, /style\.css\?v=public-saved-lineup-image-export-1/);
   assert.match(html, /class="lineup-builder"/);
   assert.match(html, /id="predictionLineup" class="slot-list"/);
   assert.match(html, /id="predictionPlayers" class="player-list"/);

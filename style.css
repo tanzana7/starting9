@@ -3245,7 +3245,7 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-table-header {
   gap: 6px;
   align-items: center;
   margin: 6px 0 0;
-  padding: 5px 7px;
+  padding: 5px 4px;
   border: 1px solid var(--fighters-deep-blue);
   border-radius: 5px 5px 0 0;
   color: #ffffff;
@@ -3261,7 +3261,7 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-table-header span:nth-
 
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary > .lineup-list {
   gap: 3px;
-  padding: 4px;
+  padding: 4px 2px 4px 4px;
   border: 1px solid #cfd7e2;
   border-top: 0;
   border-radius: 0 0 5px 5px;
@@ -3273,7 +3273,7 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary li.saved-lineu
   gap: 6px;
   align-items: center;
   min-width: 0;
-  padding: 4px 6px;
+  padding: 4px 2px 4px 4px;
   border: 1px solid #d9dee7;
   border-radius: 5px;
   background: #f8fbff;
@@ -3335,18 +3335,18 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
     grid-template-columns: 40px 38px minmax(0, 1fr);
     gap: 6px;
     margin-top: 5px;
-    padding: 5px 6px;
+    padding: 5px 3px;
   }
 
   body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary > .lineup-list {
     gap: 3px;
-    padding: 4px;
+    padding: 4px 2px 4px 4px;
   }
 
   body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary li.saved-lineup-row {
     grid-template-columns: 40px 38px minmax(0, 1fr);
     gap: 6px;
-    padding: 5px;
+    padding: 5px 2px 5px 4px;
   }
 
   body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary .saved-position-chip.result-position-tile {
@@ -5183,7 +5183,8 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
 
 .app-layout:not(.is-admin-screen) #resetPredictionButton,
 .app-layout:not(.is-admin-screen) #editSavedPredictionButton,
-.app-layout:not(.is-admin-screen) #sharePredictionButton {
+.app-layout:not(.is-admin-screen) #sharePredictionButton,
+.app-layout:not(.is-admin-screen) #saveSavedPredictionImageButton {
   width: auto;
   min-width: 150px;
 }
@@ -5240,7 +5241,8 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
   .app-layout:not(.is-admin-screen) .primary-button,
   .app-layout:not(.is-admin-screen) #resetPredictionButton,
   .app-layout:not(.is-admin-screen) #editSavedPredictionButton,
-  .app-layout:not(.is-admin-screen) #sharePredictionButton {
+  .app-layout:not(.is-admin-screen) #sharePredictionButton,
+  .app-layout:not(.is-admin-screen) #saveSavedPredictionImageButton {
     width: 100%;
   }
 

@@ -476,6 +476,7 @@ function bindEvents() {
   document.getElementById("resetPredictionButton").addEventListener("click", resetPredictionInput);
   document.getElementById("refreshAchievementsButton")?.addEventListener("click", () => fetchUserAchievements({ force: true }));
   document.getElementById("sharePredictionButton").addEventListener("click", sharePrediction);
+  document.getElementById("saveSavedPredictionImageButton")?.addEventListener("click", saveSavedPredictionImage);
   document.getElementById("predictionCtaButton")?.addEventListener("click", handlePredictionCtaClick);
   document.getElementById("editSavedPredictionButton")?.addEventListener("click", scrollToPredictionForm);
   document.getElementById("showYearlyRankingButton")?.addEventListener("click", () => selectRankingView("yearly"));
@@ -4226,12 +4227,14 @@ function renderSavedPrediction() {
   const container = document.getElementById("savedPrediction");
   const editButton = document.getElementById("editSavedPredictionButton");
   const shareButton = document.getElementById("sharePredictionButton");
+  const imageButton = document.getElementById("saveSavedPredictionImageButton");
 
   if (!state.prediction) {
     container.className = "empty-state";
     container.textContent = "まだ予想が保存されていません。";
     editButton?.classList.add("hidden");
     shareButton.classList.add("hidden");
+    imageButton?.classList.add("hidden");
     return;
   }
 
@@ -4241,6 +4244,7 @@ function renderSavedPrediction() {
   container.appendChild(createPredictionSummary(state.prediction));
   editButton?.classList.remove("hidden");
   shareButton.classList.remove("hidden");
+  imageButton?.classList.remove("hidden");
 }
 
 function renderPredictionCta() {
@@ -4505,6 +4509,146 @@ function formatDateTime(isoString) {
     minute: "2-digit",
     timeZone: "Asia/Tokyo"
   }).format(new Date(isoString));
+}
+
+function saveSavedPredictionImage() {
+  const prediction = state.prediction;
+  if (!prediction) {
+    showMessage("predictionError", "保存する予想がありません。");
+    return;
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = 1200;
+  canvas.height = 820;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    showMessage("predictionError", "画像を生成できませんでした。");
+    return;
+  }
+
+  const colors = {
+    navy: "#102a4b",
+    gold: "#d5a11e",
+    text: "#1c2d3f",
+    muted: "#607284",
+    row: "#f8fbff",
+    border: "#d9dee7",
+    order: "#edf3fa",
+    name: "#ffffff",
+    position: {
+      "category-catcher": "#eaf5fc",
+      "category-infielder": "#fff8df",
+      "category-outfielder": "#eaf6ed",
+      "category-dh": "#f9eaf2",
+      empty: "#edf1f5"
+    }
+  };
+  const drawRoundedRect = (x, y, width, height, radius, fill, stroke) => {
+    const safeRadius = Math.min(radius, width / 2, height / 2);
+    context.beginPath();
+    context.moveTo(x + safeRadius, y);
+    context.arcTo(x + width, y, x + width, y + height, safeRadius);
+    context.arcTo(x + width, y + height, x, y + height, safeRadius);
+    context.arcTo(x, y + height, x, y, safeRadius);
+    context.arcTo(x, y, x + width, y, safeRadius);
+    context.closePath();
+    if (fill) {
+      context.fillStyle = fill;
+      context.fill();
+    }
+    if (stroke) {
+      context.strokeStyle = stroke;
+      context.stroke();
+    }
+  };
+  const fitText = (value, maxWidth) => {
+    const text = String(value || "");
+    if (context.measureText(text).width <= maxWidth) return text;
+    let fitted = text;
+    while (fitted.length > 1 && context.measureText(`${fitted}…`).width > maxWidth) {
+      fitted = fitted.slice(0, -1);
+    }
+    return `${fitted}…`;
+  };
+  const drawCenteredText = (value, x, y, width, font, color) => {
+    context.font = font;
+    context.fillStyle = color;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText(fitText(value, width), x + width / 2, y);
+  };
+  const drawLeftText = (value, x, y, width, font, color) => {
+    context.font = font;
+    context.fillStyle = color;
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.fillText(fitText(value, width), x, y);
+  };
+
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = colors.navy;
+  context.fillRect(0, 0, canvas.width, 126);
+  context.fillStyle = colors.gold;
+  context.fillRect(0, 122, canvas.width, 4);
+  drawLeftText("あなたの予想", 90, 48, 700, "700 25px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#dbe8f5");
+  drawLeftText("保存済みのスタメン予想", 90, 88, 850, "900 38px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#ffffff");
+  drawLeftText(`最後に更新：${formatDateTime(prediction.savedAt)}`, 90, 154, 600, "500 21px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.muted);
+
+  const tableX = 90;
+  const tableY = 190;
+  const tableWidth = 1020;
+  const headerHeight = 52;
+  const rowHeight = 56;
+  const orderWidth = 100;
+  const positionWidth = 100;
+  const nameWidth = tableWidth - orderWidth - positionWidth;
+  context.lineWidth = 2;
+  drawRoundedRect(tableX, tableY, tableWidth, headerHeight, 7, colors.navy, colors.navy);
+  drawCenteredText("打順", tableX, tableY + headerHeight / 2, orderWidth, "900 21px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#ffffff");
+  drawCenteredText("守備", tableX + orderWidth, tableY + headerHeight / 2, positionWidth, "900 21px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#ffffff");
+  drawLeftText("選手名", tableX + orderWidth + positionWidth + 20, tableY + headerHeight / 2, nameWidth - 40, "900 21px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#ffffff");
+
+  normalizeLineup(prediction.lineup).forEach((lineupItem, index) => {
+    const rowY = tableY + headerHeight + index * rowHeight;
+    const normalizedPosition = normalizePosition(lineupItem.position);
+    const category = normalizedPosition ? getPositionCategory(normalizedPosition) : "empty";
+    context.fillStyle = index % 2 === 0 ? colors.row : "#f2f6fa";
+    context.fillRect(tableX, rowY, tableWidth, rowHeight);
+    context.strokeStyle = colors.border;
+    context.strokeRect(tableX, rowY, tableWidth, rowHeight);
+    drawRoundedRect(tableX + 10, rowY + 8, orderWidth - 20, rowHeight - 16, 5, colors.order, null);
+    drawCenteredText(`${index + 1}番`, tableX + 10, rowY + rowHeight / 2, orderWidth - 20, "900 22px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.navy);
+    drawRoundedRect(tableX + orderWidth + 14, rowY + 8, positionWidth - 28, rowHeight - 16, 16, colors.position[category] || colors.position.empty, colors.border);
+    drawCenteredText(normalizedPosition || "－", tableX + orderWidth + 14, rowY + rowHeight / 2, positionWidth - 28, "900 21px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
+    drawRoundedRect(tableX + orderWidth + positionWidth + 10, rowY + 7, nameWidth - 20, rowHeight - 14, 5, colors.name, colors.border);
+    drawLeftText(lineupItem.player || "未選択", tableX + orderWidth + positionWidth + 28, rowY + rowHeight / 2, nameWidth - 56, "800 22px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
+  });
+
+  const dateToken = String(prediction.savedAt || "").slice(0, 10).replace(/[^0-9-]/g, "") || "saved-lineup";
+  const filename = `starting9-saved-lineup-${dateToken}.png`;
+  const download = (url, shouldRevoke) => {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    if (shouldRevoke) window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  if (typeof canvas.toBlob === "function") {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        showMessage("predictionError", "画像を保存できませんでした。");
+        return;
+      }
+      download(URL.createObjectURL(blob), true);
+    }, "image/png");
+    return;
+  }
+  download(canvas.toDataURL("image/png"), false);
 }
 
 function sharePrediction() {

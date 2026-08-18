@@ -24,7 +24,7 @@ function loadPublicModule(name, extra = {}) {
 
 test("公開画面のentry pointは分割moduleを読み込んでCoordinatorを一経路で起動する", () => {
   const moduleScripts = ["state", "request-guard", "storage", "api-client", "app-coordinator", "render-results", "render-ranking", "roster", "prediction-form"];
-  const scriptOffset = html.indexOf("script.js?v=public-saved-lineup-canvas-player-name-digital-1");
+  const scriptOffset = html.indexOf("script.js?v=public-saved-lineup-canvas-digital-connected-1");
   assert.ok(scriptOffset > 0);
   moduleScripts.forEach((name) => {
     const offset = html.indexOf(`${modulePath(name)}?v=public-release-prep-audit-1`);
@@ -105,8 +105,8 @@ test("予想保存・リセット・アカウント同期は最新結果表示�
 });
 
 test("公開画面のキャッシュバスターはmodule分割版へ更新される", () => {
-  assert.match(html, /script\.js\?v=public-saved-lineup-canvas-player-name-digital-1/);
-  assert.match(html, /style\.css\?v=public-saved-lineup-canvas-player-name-digital-1/);
+  assert.match(html, /script\.js\?v=public-saved-lineup-canvas-digital-connected-1/);
+  assert.match(html, /style\.css\?v=public-saved-lineup-canvas-digital-connected-1/);
 });
 
 test("認証後の補助データはcritical UIの完了後にアイドル開始する", () => {

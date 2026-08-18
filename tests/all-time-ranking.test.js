@@ -47,7 +47,7 @@ function insertPrediction(db, { id, userId, gameId, score, isTest = 0, scoredAt 
        (id, user_id, game_id, prediction_json, schema_version, game_date, home_team, away_team, opponent_code, is_home,
         submitted_at, updated_at, status, score, max_score, scored_at, is_test_prediction)
      VALUES (?1, ?2, ?3, '{"schemaVersion":1,"lineup":[]}', 1, '2026-07-21', 'f', 'm', 'm', 1,
-             ?4, ?4, 'scored', ?5, 100, ?4, ?6)`
+             ?4, ?4, 'scored', ?5, 99, ?4, ?6)`
   ).run(id, userId, gameId, scoredAt, score, isTest);
 }
 
@@ -92,13 +92,13 @@ test("対象外試合・未採点・テスト予想を除き、規定と競技�
   for (const gameId of ["g1", "g2", "g3"]) insertRankingGame(db, gameId);
   insertRankingGame(db, "outside", "2026-07-21", 0);
 
-  insertPrediction(db, { id: "p1", userId: "u1", gameId: "g1", score: 100, scoredAt: "2026-07-21T10:00:00.000Z" });
+  insertPrediction(db, { id: "p1", userId: "u1", gameId: "g1", score: 99, scoredAt: "2026-07-21T10:00:00.000Z" });
   insertPrediction(db, { id: "p2", userId: "u1", gameId: "g2", score: 80, scoredAt: "2026-07-21T10:01:00.000Z" });
   insertPrediction(db, { id: "p3", userId: "u2", gameId: "g1", score: 90, scoredAt: "2026-07-21T09:00:00.000Z" });
   insertPrediction(db, { id: "p4", userId: "u2", gameId: "g2", score: 90, scoredAt: "2026-07-21T09:01:00.000Z" });
-  insertPrediction(db, { id: "p5", userId: "u3", gameId: "g1", score: 100 });
-  insertPrediction(db, { id: "p6", userId: "u4", gameId: "g1", score: 100, isTest: 1 });
-  insertPrediction(db, { id: "p7", userId: "u1", gameId: "outside", score: 100 });
+  insertPrediction(db, { id: "p5", userId: "u3", gameId: "g1", score: 99 });
+  insertPrediction(db, { id: "p6", userId: "u4", gameId: "g1", score: 99, isTest: 1 });
+  insertPrediction(db, { id: "p7", userId: "u1", gameId: "outside", score: 99 });
   db.prepare("UPDATE predictions SET status = 'submitted', score = NULL, scored_at = NULL WHERE id = 'p7'").run();
 
   const rows = db.prepare(`${getRankingCte()}
@@ -106,9 +106,9 @@ test("対象外試合・未採点・テスト予想を除き、規定と競技�
       FROM combined
      ORDER BY is_qualified DESC, ranking_rank ASC, username ASC`).all("2026-01-01", "2027-01-01").map((row) => ({ ...row }));
   assert.deepEqual(rows, [
-    { username: "alpha", games_played: 2, total_score: 180, perfect_count: 1, is_qualified: 1, ranking_rank: 1 },
-    { username: "bravo", games_played: 2, total_score: 180, perfect_count: 0, is_qualified: 1, ranking_rank: 2 },
-    { username: "charlie", games_played: 1, total_score: 100, perfect_count: 1, is_qualified: 0, ranking_rank: null }
+    { username: "bravo", games_played: 2, total_score: 180, perfect_count: 0, is_qualified: 1, ranking_rank: 1 },
+    { username: "alpha", games_played: 2, total_score: 179, perfect_count: 1, is_qualified: 1, ranking_rank: 2 },
+    { username: "charlie", games_played: 1, total_score: 99, perfect_count: 1, is_qualified: 0, ranking_rank: null }
   ]);
   assert.throws(() => insertPrediction(db, { id: "duplicate", userId: "u1", gameId: "g1", score: 60 }));
 });

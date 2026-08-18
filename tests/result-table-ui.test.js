@@ -238,7 +238,8 @@ test("結果Canvasは代表的な採点結果を実行時に描画できる", ()
     isPlayerHit: index % 2 === 0,
     isOrderHit: index % 3 === 0,
     isPositionHit: index % 4 === 0,
-    point: index === 0 ? 10 : index === 1 ? 0 : 7
+    isPerfect: index === 0,
+    point: index === 0 ? 11 : index === 1 ? 0 : 7
   }));
   const rendered = context.render({
     total: 48,

@@ -62,7 +62,7 @@ function insertPrediction(db, id, gameId, userId) {
     `INSERT INTO predictions
        (id, user_id, game_id, prediction_json, schema_version, game_date, home_team, away_team, opponent_code, is_home,
         submitted_at, updated_at, status, score, max_score, scored_at, is_test_prediction)
-     VALUES (?1, ?2, ?3, '{}', 1, ?4, 'f', 'm', 'm', 1, ?5, ?5, 'scored', 90, 100, ?5, 0)`
+     VALUES (?1, ?2, ?3, '{}', 1, ?4, 'f', 'm', 'm', 1, ?5, ?5, 'scored', 90, 99, ?5, 0)`
   ).run(id, userId, gameId, "2026-08-10", "2026-08-10T10:00:00.000Z");
 }
 

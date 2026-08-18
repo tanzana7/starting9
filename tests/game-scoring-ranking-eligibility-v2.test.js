@@ -33,7 +33,7 @@ test("0028 backfills eligibility and scoring revision history without deleting l
       INSERT INTO games (internal_game_id, game_date, start_time, home_team, away_team, game_status, created_at, updated_at)
       VALUES ('${internalGameId}', '2026-08-04', '2026-08-04T09:00:00Z', 'hawks', 'fighters', 'completed', '2026-08-01', '2026-08-04');
       INSERT INTO predictions (id, user_id, game_id, internal_game_id, prediction_json, game_date, home_team, away_team, opponent_code, is_home, submitted_at, updated_at, status, score, max_score, scored_at, actual_lineup_json, is_test_prediction)
-      VALUES ('prediction-1', 'fixture-user', '2026-08-04-h-f-15', '${internalGameId}', '[]', '2026-08-04', 'hawks', 'fighters', 'f', 1, '2026-08-04T08:00:00Z', '2026-08-04T12:00:00Z', 'scored', 100, 100, '2026-08-04T12:00:00Z', '[]', 0);
+      VALUES ('prediction-1', 'fixture-user', '2026-08-04-h-f-15', '${internalGameId}', '[]', '2026-08-04', 'hawks', 'fighters', 'f', 1, '2026-08-04T08:00:00Z', '2026-08-04T12:00:00Z', 'scored', 99, 99, '2026-08-04T12:00:00Z', '[]', 0);
       INSERT INTO ranking_games (game_id, internal_game_id, game_date, is_ranking_eligible, game_status, is_test_game, created_at, updated_at, publication_status)
       VALUES ('2026-08-04-h-f-15', '${internalGameId}', '2026-08-04', 1, 'scored', 0, '2026-08-04', '2026-08-04', 'published');
     `);
@@ -44,7 +44,7 @@ test("0028 backfills eligibility and scoring revision history without deleting l
     assert.deepEqual({ status: prediction.scoring_status, reason: prediction.scoring_exclusion_reason }, { status: "scored", reason: null });
     const revision = db.prepare("SELECT revision_number, status, reason, is_active FROM game_scoring_revisions WHERE internal_game_id = ?").get(internalGameId);
     assert.deepEqual({ revision: revision.revision_number, status: revision.status, reason: revision.reason, active: revision.is_active }, { revision: 1, status: "completed", reason: "initial_scoring", active: 1 });
-    assert.equal(db.prepare("SELECT score FROM predictions WHERE id = 'prediction-1'").get().score, 100);
+    assert.equal(db.prepare("SELECT score FROM predictions WHERE id = 'prediction-1'").get().score, 99);
   } finally {
     db.close();
   }

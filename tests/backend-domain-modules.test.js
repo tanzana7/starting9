@@ -4,6 +4,8 @@ import {
   buildPerfectScorePreview,
   buildReleaseDebugPerfectScoreFixturePreview,
   RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY,
+  SCORING_MAX_SCORE,
+  SCORING_RULES,
   scorePredictionLineup
 } from "../backend/domain/scoring.js";
 import {
@@ -19,6 +21,13 @@ import {
 import { buildAdminReadOnlyPreviewMetadata } from "../backend/admin/preview.js";
 
 test("scoring domain uses the 99-point per-player model and is pure", () => {
+  assert.equal(SCORING_MAX_SCORE, 99);
+  assert.deepEqual(SCORING_RULES, {
+    player: { perHit: 5, max: 45 },
+    order: { perHit: 3, max: 27 },
+    position: { perHit: 2, max: 18 },
+    perfect: { perHit: 1, max: 9 }
+  });
   const lineup = [
     { battingOrder: 1, position: "2B", playerId: "p1", name: "A" },
     { battingOrder: 2, position: "C", playerId: "p2", name: "B" }

@@ -41,7 +41,7 @@ function insertPrediction(db, { id, userId, gameId, score, isTest = 0, status = 
        (id, user_id, game_id, prediction_json, schema_version, game_date, home_team, away_team, opponent_code, is_home,
         submitted_at, updated_at, status, score, max_score, scored_at, is_test_prediction)
      VALUES (?1, ?2, ?3, '{"schemaVersion":1,"lineup":[]}', 1, '2026-07-21', 'f', 'm', 'm', 1,
-             '2026-07-21T10:00:00.000Z', '2026-07-21T10:00:00.000Z', ?4, ?5, 100, '2026-07-21T10:00:00.000Z', ?6)`
+             '2026-07-21T10:00:00.000Z', '2026-07-21T10:00:00.000Z', ?4, ?5, 99, '2026-07-21T10:00:00.000Z', ?6)`
   ).run(id, userId, gameId, status, score, isTest);
 }
 
@@ -80,13 +80,13 @@ test("月間ランキングは試合日で対象月のみを集計し、規定�
   }
   insertRankingGame(db, "test-july", "2026-07-20", { testGame: 1 });
 
-  insertPrediction(db, { id: "a1", userId: "u1", gameId: "j1", score: 100 });
+  insertPrediction(db, { id: "a1", userId: "u1", gameId: "j1", score: 99 });
   insertPrediction(db, { id: "a2", userId: "u1", gameId: "j2", score: 80 });
   insertPrediction(db, { id: "b1", userId: "u2", gameId: "j1", score: 90 });
   insertPrediction(db, { id: "b2", userId: "u2", gameId: "j2", score: 90 });
-  insertPrediction(db, { id: "c1", userId: "u3", gameId: "j1", score: 100 });
-  insertPrediction(db, { id: "d1", userId: "u4", gameId: "a1", score: 100 });
-  insertPrediction(db, { id: "test1", userId: "u1", gameId: "j3", score: 100, isTest: 1 });
+  insertPrediction(db, { id: "c1", userId: "u3", gameId: "j1", score: 99 });
+  insertPrediction(db, { id: "d1", userId: "u4", gameId: "a1", score: 99 });
+  insertPrediction(db, { id: "test1", userId: "u1", gameId: "j3", score: 99, isTest: 1 });
   insertPrediction(db, { id: "unscored", userId: "u2", gameId: "j3", score: null, status: "submitted" });
 
   const { startAt, endAt } = monthRange(2026, 7);
@@ -95,9 +95,9 @@ test("月間ランキングは試合日で対象月のみを集計し、規定�
       FROM combined
      ORDER BY is_qualified DESC, ranking_rank ASC, username ASC`).all(startAt, endAt).map((row) => ({ ...row }));
   assert.deepEqual(rows, [
-    { username: "alpha", games_played: 2, total_score: 180, perfect_count: 1, is_qualified: 1, games_needed: 0, ranking_rank: 1 },
-    { username: "bravo", games_played: 2, total_score: 180, perfect_count: 0, is_qualified: 1, games_needed: 0, ranking_rank: 2 },
-    { username: "charlie", games_played: 1, total_score: 100, perfect_count: 1, is_qualified: 0, games_needed: 3, ranking_rank: null }
+    { username: "bravo", games_played: 2, total_score: 180, perfect_count: 0, is_qualified: 1, games_needed: 0, ranking_rank: 1 },
+    { username: "alpha", games_played: 2, total_score: 179, perfect_count: 1, is_qualified: 1, games_needed: 0, ranking_rank: 2 },
+    { username: "charlie", games_played: 1, total_score: 99, perfect_count: 1, is_qualified: 0, games_needed: 3, ranking_rank: null }
   ]);
 
   const yearlyGameCount = db.prepare(`${getRankingCte()} SELECT MAX(eligible_games) AS count FROM combined`).get("2026-01-01", "2027-01-01").count;

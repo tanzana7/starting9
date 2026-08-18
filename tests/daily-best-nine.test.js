@@ -76,7 +76,7 @@ function insertUser(db, id, username) {
 }
 
 function insertPrediction(db, { id, userId, gameId, score, submittedAt, updatedAt = submittedAt, isTest = 0 }) {
-  db.prepare("INSERT INTO predictions VALUES (?, ?, ?, ?, 100, ?, ?, 'scored', ?)").run(
+    db.prepare("INSERT INTO predictions VALUES (?, ?, ?, ?, 99, ?, ?, 'scored', ?)").run(
     id, userId, gameId, score, submittedAt, updatedAt, isTest
   );
 }
@@ -95,7 +95,7 @@ test("今日のベストナインは公開済み採点結果をscore desc、提�
   users.slice(3).forEach(([id], index) => insertPrediction(db, {
     id: `p${index + 4}`, userId: id, gameId, score: 98 - index, submittedAt: `2026-08-12T08:${String(index + 1).padStart(2, "0")}:00.000Z`
   }));
-  insertPrediction(db, { id: "test", userId: "u11", gameId, score: 100, submittedAt: "2026-08-12T07:00:00.000Z", isTest: 1 });
+  insertPrediction(db, { id: "test", userId: "u11", gameId, score: 99, submittedAt: "2026-08-12T07:00:00.000Z", isTest: 1 });
 
   const result = await getDailyBestNineForGame(createD1Adapter(db), { internalGameId, legacyGameId: gameId });
   assert.equal(result.totalCount, 11);
@@ -110,8 +110,8 @@ test("同時刻の同点はnickname昇順で安定し、満点情報はserver sc
   const { db, internalGameId, gameId } = createDatabase();
   insertUser(db, "u1", "bravo");
   insertUser(db, "u2", "alpha");
-  insertPrediction(db, { id: "p1", userId: "u1", gameId, score: 100, submittedAt: "2026-08-12T08:00:00.000Z" });
-  insertPrediction(db, { id: "p2", userId: "u2", gameId, score: 100, submittedAt: "2026-08-12T08:00:00.000Z" });
+  insertPrediction(db, { id: "p1", userId: "u1", gameId, score: 99, submittedAt: "2026-08-12T08:00:00.000Z" });
+  insertPrediction(db, { id: "p2", userId: "u2", gameId, score: 99, submittedAt: "2026-08-12T08:00:00.000Z" });
   const result = await getDailyBestNineForGame(createD1Adapter(db), { internalGameId, legacyGameId: gameId });
   assert.deepEqual(result.rows.map((row) => [row.username, row.isPerfect]), [["alpha", true], ["bravo", true]]);
 });
@@ -120,7 +120,7 @@ test("未公開試合・採点前試合・参加者0件はベストナインを�
   const { getDailyBestNineForGame } = await import(workerUrl);
   const unpublished = createDatabase({ published: false });
   insertUser(unpublished.db, "u1", "hidden");
-  insertPrediction(unpublished.db, { id: "p1", userId: "u1", gameId: unpublished.gameId, score: 100, submittedAt: "2026-08-12T08:00:00.000Z" });
+  insertPrediction(unpublished.db, { id: "p1", userId: "u1", gameId: unpublished.gameId, score: 99, submittedAt: "2026-08-12T08:00:00.000Z" });
   assert.deepEqual(await getDailyBestNineForGame(createD1Adapter(unpublished.db), unpublished), { rows: [], totalCount: 0 });
 
   const empty = createDatabase();

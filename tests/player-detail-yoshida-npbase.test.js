@@ -101,5 +101,5 @@ test("詳細パネルはPC modal、スマホ bottom sheet、閉じる操作を�
 test("公開assetのcache busterは追加NPBaseリンク版へ更新される", () => {
   assert.match(html, /players\.js\?v=public-past-result-date-heading-1/);
   assert.match(html, /script\.js\?v=public-max99-scoring-1/);
-  assert.match(html, /style\.css\?v=public-max99-scoring-1/);
+  assert.match(html, /style\.css\?v=public-beta-release-qa-fixes-1/);
 });

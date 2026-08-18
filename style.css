@@ -5433,6 +5433,16 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
     padding-bottom: 20px;
   }
 
+  body:not(:has(.app-layout.is-admin-screen)) .header-inner > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .lead,
+  body:not(:has(.app-layout.is-admin-screen)) .beta-panel {
+    overflow-wrap: anywhere;
+  }
+
   body:not(:has(.app-layout.is-admin-screen)) .header-logo {
     width: min(100%, 250px);
   }
@@ -5466,6 +5476,22 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
 
   body:not(:has(.app-layout.is-admin-screen)) .probable-starter-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .probable-starter-heading {
+    min-width: 0;
+    align-items: flex-start;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .probable-starter-heading > * {
+    min-width: 0;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .probable-starter-heading a {
+    max-width: 45%;
+    overflow-wrap: anywhere;
+    text-align: right;
+    white-space: normal;
   }
 }
 

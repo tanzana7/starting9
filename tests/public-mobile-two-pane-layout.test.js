@@ -9,7 +9,7 @@ const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 
 test("public mobile prediction layout keeps order and roster in two panes", () => {
-  assert.match(html, /style\.css\?v=public-max99-scoring-1/);
+  assert.match(html, /style\.css\?v=public-beta-release-qa-fixes-1/);
   assert.match(html, /class="lineup-builder"/);
   assert.match(html, /id="predictionLineup" class="slot-list"/);
   assert.match(html, /id="predictionPlayers" class="player-list"/);
@@ -68,5 +68,27 @@ test("mobile roster controls sit above an independent player list frame", () => 
   assert.match(
     css,
     /\.player-list-frame \.player-list \{[\s\S]*?overflow: hidden auto;[\s\S]*?-webkit-overflow-scrolling: touch;/,
+  );
+});
+
+test("mobile probable starter heading keeps its external link inside the viewport", () => {
+  assert.match(
+    css,
+    /@media \(max-width: 759px\)[\s\S]*?\.probable-starter-heading \{[\s\S]*?min-width: 0;[\s\S]*?align-items: flex-start;/
+  );
+  assert.match(
+    css,
+    /\.probable-starter-heading a \{[\s\S]*?max-width: 45%;[\s\S]*?overflow-wrap: anywhere;[\s\S]*?white-space: normal;/
+  );
+});
+
+test("mobile public header content can shrink and wrap instead of being clipped", () => {
+  assert.match(
+    css,
+    /@media \(max-width: 759px\)[\s\S]*?\.header-inner > \* \{[\s\S]*?min-width: 0;[\s\S]*?max-width: 100%;/
+  );
+  assert.match(
+    css,
+    /\.lead,[\s\S]*?\.beta-panel \{[\s\S]*?overflow-wrap: anywhere;/
   );
 });

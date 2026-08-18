@@ -24,7 +24,7 @@ function loadPublicModule(name, extra = {}) {
 
 test("公開画面のentry pointは分割moduleを読み込んでCoordinatorを一経路で起動する", () => {
   const moduleScripts = ["state", "request-guard", "storage", "api-client", "app-coordinator", "render-results", "render-ranking", "roster", "prediction-form"];
-  const scriptOffset = html.indexOf("script.js?v=public-max99-scoring-1");
+  const scriptOffset = html.indexOf("script.js?v=public-result-actual-lineup-basis-performance-1");
   assert.ok(scriptOffset > 0);
   moduleScripts.forEach((name) => {
     const offset = html.indexOf(`${modulePath(name)}?v=public-past-result-date-heading-1`);
@@ -105,7 +105,7 @@ test("予想保存・リセット・アカウント同期は最新結果表示�
 });
 
 test("公開画面のキャッシュバスターはmodule分割版へ更新される", () => {
-  assert.match(html, /script\.js\?v=public-max99-scoring-1/);
+  assert.match(html, /script\.js\?v=public-result-actual-lineup-basis-performance-1/);
   assert.match(html, /style\.css\?v=public-beta-release-qa-fixes-1/);
 });
 
@@ -116,4 +116,12 @@ test("認証後の補助データはcritical UIの完了後にアイドル開始
   assert.match(coordinator, /requestIdleCallback/);
   assert.match(coordinator, /ops\.refreshYearlyRanking\(\{ force: true \}\)/);
   assert.match(coordinator, /ops\.fetchUserAchievements\(\{ force: true \}\)/);
+});
+
+test("前回試合と結果一覧は初期表示で並列取得し、前回取得完了時に一覧を再取得しない", () => {
+  const initializer = script.slice(script.indexOf("async function initializeAuthDependentFeatures"), script.indexOf("function bindEvents", script.indexOf("async function initializeAuthDependentFeatures")));
+  const previousFetcher = script.slice(script.indexOf("function fetchPreviousResultGame"), script.indexOf("function buildProbableStarterApiUrl", script.indexOf("function fetchPreviousResultGame")));
+  assert.match(initializer, /Promise\.allSettled\(\[[\s\S]*fetchPreviousResultGame\(\{ force: false \}\)[\s\S]*refreshResultHistory\(\{ force: false \}\)/);
+  assert.match(previousFetcher, /resolveResultHistorySelection\(\)/);
+  assert.doesNotMatch(previousFetcher, /refreshResultHistory\(\{ force: true \}\)/);
 });

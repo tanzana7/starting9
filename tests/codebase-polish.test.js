@@ -32,6 +32,6 @@ test("public static assets use the release audit cache buster and no dead rankin
   const index = read("index.html");
   const script = read("script.js");
 
-  assert.match(index, /script\.js\?v=public-max99-scoring-1/);
+  assert.match(index, /script\.js\?v=public-result-actual-lineup-basis-performance-1/);
   assert.doesNotMatch(script, /function\s+initializeYearlyRanking\s*\(/);
 });

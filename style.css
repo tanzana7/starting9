@@ -3242,8 +3242,14 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary {
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-image {
   display: grid;
   gap: 3px;
-  width: min(100%, 560px);
+  width: min(100%, 480px);
   min-width: 0;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) #editSavedPredictionButton,
+body:not(:has(.app-layout.is-admin-screen)) #sharePredictionButton,
+body:not(:has(.app-layout.is-admin-screen)) #saveSavedPredictionImageButton {
+  display: none !important;
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-image-title {

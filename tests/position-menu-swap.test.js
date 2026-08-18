@@ -60,7 +60,7 @@ function runLineupSlotMove(lineup, sourceIndex, targetIndex) {
     normalizePlayerName: (value) => String(value || "").trim(),
     normalizePosition: (value) => String(value || "")
   });
-  vm.runInContext(`${getFunctionSource("createLineupItem")}; ${getFunctionSource("normalizeLineup")}; ${getFunctionSource("moveLineupSlot")}; this.run = moveLineupSlot;`, context);
+  vm.runInContext(`${getFunctionSource("createLineupItem")}; ${getFunctionSource("normalizeLineup")}; ${getFunctionSource("findNextEmptyIndex")}; ${getFunctionSource("moveLineupSlot")}; this.run = moveLineupSlot;`, context);
   context.run("actual", sourceIndex, targetIndex);
   return JSON.parse(JSON.stringify(movedLineup));
 }

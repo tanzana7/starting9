@@ -39,11 +39,11 @@ test("ランキング見出しは自然な文言で、未到達者表示は内�
   assert.match(publicRanking, /規定未到達/);
 });
 
-test("満点previewは正式スタメンと既存採点コアから100点を算出する", () => {
+test("満点previewは正式スタメンと既存採点コアから99点を算出する", () => {
   const result = buildPerfectScorePreview(officialLineup());
-  assert.equal(result.score.total, 100);
-  assert.deepEqual(result.score.counts, { player: 9, order: 9, position: 9 });
-  assert.equal(result.breakdown.total, 100);
+  assert.equal(result.score.total, 99);
+  assert.deepEqual(result.score.counts, { player: 9, order: 9, position: 9, perfect: 9 });
+  assert.equal(result.breakdown.total, 99);
   assert.equal(result.prediction.schemaVersion, 1);
   assert.equal(result.prediction.lineup.length, 9);
 });

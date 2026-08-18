@@ -40,14 +40,14 @@ test("RELEASE_DEBUG_PERFECT_SCORE_FIXTUREは指定された9人・打順・守�
   ]);
 });
 
-test("fixture previewは同一fixtureの仮想正解・仮想予想を100点で返す", () => {
+test("fixture previewは同一fixtureの仮想正解・仮想予想を99点で返す", () => {
   const result = buildReleaseDebugPerfectScoreFixturePreview();
   assert.equal(result.fixtureKey, "release_full_score_debug_1");
   assert.equal(result.fixtureMode, true);
   assert.equal(result.productionWrite, false);
-  assert.equal(result.score.total, 100);
-  assert.deepEqual(result.score.counts, { player: 9, order: 9, position: 9 });
-  assert.deepEqual(result.breakdown.total, 100);
+  assert.equal(result.score.total, 99);
+  assert.deepEqual(result.score.counts, { player: 9, order: 9, position: 9, perfect: 9 });
+  assert.deepEqual(result.breakdown.total, 99);
   assert.deepEqual(result.prediction.lineup, result.officialLineup);
 });
 

@@ -18,7 +18,7 @@ import {
 } from "../backend/domain/public-results.js";
 import { buildAdminReadOnlyPreviewMetadata } from "../backend/admin/preview.js";
 
-test("scoring domain keeps the existing 100-point breakdown and is pure", () => {
+test("scoring domain uses the 99-point per-player model and is pure", () => {
   const lineup = [
     { battingOrder: 1, position: "2B", playerId: "p1", name: "A" },
     { battingOrder: 2, position: "C", playerId: "p2", name: "B" }
@@ -26,10 +26,28 @@ test("scoring domain keeps the existing 100-point breakdown and is pure", () => 
   const actual = lineup.map((player) => ({ ...player }));
   const prediction = lineup.map((player) => ({ ...player }));
   const result = scorePredictionLineup(prediction, actual);
-  assert.equal(result.total, 20);
+  assert.equal(result.total, 22);
+  assert.deepEqual(result.counts, { player: 2, order: 2, position: 2, perfect: 2 });
   assert.deepEqual(prediction, lineup);
   assert.deepEqual(actual, lineup);
-  assert.equal(buildPerfectScorePreview(actual).score.total, 20);
+  assert.equal(buildPerfectScorePreview(actual).score.total, 22);
+});
+
+test("perfect bonus is awarded per slot and whole-category bonuses are not applied", () => {
+  const actual = Array.from({ length: 9 }, (_, index) => ({
+    battingOrder: index + 1,
+    position: index === 0 ? "C" : "2B",
+    playerId: `p${index + 1}`,
+    name: `選手${index + 1}`
+  }));
+  const prediction = actual.map((player, index) => ({
+    ...player,
+    position: index === 0 ? "1B" : player.position
+  }));
+  const result = scorePredictionLineup(prediction, actual);
+
+  assert.deepEqual(result.counts, { player: 9, order: 9, position: 8, perfect: 8 });
+  assert.equal(result.total, 96);
 });
 
 test("release debug fixture stays preview-only and scores itself perfectly", () => {
@@ -37,7 +55,8 @@ test("release debug fixture stays preview-only and scores itself perfectly", () 
   assert.equal(preview.fixtureKey, RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY);
   assert.equal(preview.fixtureMode, true);
   assert.equal(preview.productionWrite, false);
-  assert.equal(preview.score.total, 100);
+  assert.equal(preview.score.total, 99);
+  assert.deepEqual(preview.score.counts, { player: 9, order: 9, position: 9, perfect: 9 });
   assert.equal(preview.officialLineup.length, 9);
   assert.deepEqual(preview.officialLineup.map(({ battingOrder, position, name }) => ({ battingOrder, position, name })), [
     { battingOrder: 1, position: "2B", name: "西川" },

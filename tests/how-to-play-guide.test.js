@@ -15,17 +15,20 @@ test("トップページから遊び方・採点ルールへ移動でき、案�
   assert.match(html, /<title>遊び方・採点ルール \| Starting9<\/title>/);
 });
 
-test("案内ページの採点ルールは現在の100点方式と一致する", () => {
-  assert.match(script, /player:\s*\{[\s\S]*perHit: 5[\s\S]*bonus: 5[\s\S]*max: 50/);
-  assert.match(script, /order:\s*\{[\s\S]*perHit: 3[\s\S]*bonus: 3[\s\S]*max: 30/);
-  assert.match(script, /position:\s*\{[\s\S]*perHit: 2[\s\S]*bonus: 2[\s\S]*max: 20/);
+test("案内ページの採点ルールは現在の99点方式と一致する", () => {
+  assert.match(script, /player:\s*\{[\s\S]*perHit: 5[\s\S]*max: 45/);
+  assert.match(script, /order:\s*\{[\s\S]*perHit: 3[\s\S]*max: 27/);
+  assert.match(script, /position:\s*\{[\s\S]*perHit: 2[\s\S]*max: 18/);
+  assert.match(script, /perfect:\s*\{[\s\S]*perHit: 1[\s\S]*max: 9/);
   assert.match(html, /1人につき5点/);
-  assert.match(html, /9人全員一致でボーナス5点/);
   assert.match(html, /1人につき3点/);
-  assert.match(html, /9人全員一致でボーナス3点/);
   assert.match(html, /1人につき2点/);
-  assert.match(html, /9人全員一致でボーナス2点/);
-  assert.match(html, /合計100点/);
+  assert.match(html, /1人につき1点/);
+  assert.match(html, /最大45点/);
+  assert.match(html, /最大27点/);
+  assert.match(html, /最大18点/);
+  assert.match(html, /最大9点/);
+  assert.match(html, /合計99点/);
 });
 
 test("案内ページは現在のランキング区分と非公式サービスの注意書きを説明する", () => {

@@ -4241,7 +4241,7 @@ function renderSavedPrediction() {
   setLineupValues("prediction", state.prediction.lineup);
   container.className = "summary-box";
   container.innerHTML = "";
-  container.appendChild(createPredictionSummary(state.prediction));
+  container.appendChild(createSavedPredictionPreview(state.prediction));
   editButton?.classList.remove("hidden");
   shareButton.classList.remove("hidden");
   imageButton?.classList.remove("hidden");
@@ -4511,21 +4511,28 @@ function formatDateTime(isoString) {
   }).format(new Date(isoString));
 }
 
-function saveSavedPredictionImage() {
-  const prediction = state.prediction;
-  if (!prediction) {
-    showMessage("predictionError", "保存する予想がありません。");
-    return;
+function createSavedPredictionPreview(prediction) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "saved-lineup-image";
+  const canvas = createSavedPredictionCanvas(prediction);
+  if (!canvas) {
+    wrapper.textContent = "保存済み予想を表示できませんでした。";
+    return wrapper;
   }
+  canvas.className = "saved-lineup-canvas";
+  canvas.setAttribute("role", "img");
+  canvas.setAttribute("aria-label", "保存済みのスタメン予想。打順、守備位置、選手名を表示しています。");
+  wrapper.appendChild(canvas);
+  return wrapper;
+}
 
+function createSavedPredictionCanvas(prediction) {
+  if (!prediction) return null;
   const canvas = document.createElement("canvas");
   canvas.width = 1200;
   canvas.height = 820;
   const context = canvas.getContext("2d");
-  if (!context) {
-    showMessage("predictionError", "画像を生成できませんでした。");
-    return;
-  }
+  if (!context) return null;
 
   const colors = {
     navy: "#102a4b",
@@ -4623,8 +4630,24 @@ function saveSavedPredictionImage() {
     drawRoundedRect(tableX + orderWidth + 14, rowY + 8, positionWidth - 28, rowHeight - 16, 16, colors.position[category] || colors.position.empty, colors.border);
     drawCenteredText(normalizedPosition || "－", tableX + orderWidth + 14, rowY + rowHeight / 2, positionWidth - 28, "900 21px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
     drawRoundedRect(tableX + orderWidth + positionWidth + 10, rowY + 7, nameWidth - 20, rowHeight - 14, 5, colors.name, colors.border);
-    drawLeftText(lineupItem.player || "未選択", tableX + orderWidth + positionWidth + 28, rowY + rowHeight / 2, nameWidth - 56, "800 22px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
+    drawLeftText(lineupItem.player || "未選択", tableX + orderWidth + positionWidth + 18, rowY + rowHeight / 2, nameWidth - 36, "800 22px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
   });
+
+  return canvas;
+}
+
+function saveSavedPredictionImage() {
+  const prediction = state.prediction;
+  if (!prediction) {
+    showMessage("predictionError", "保存する予想がありません。");
+    return;
+  }
+
+  const canvas = document.querySelector("#savedPrediction canvas.saved-lineup-canvas") || createSavedPredictionCanvas(prediction);
+  if (!canvas) {
+    showMessage("predictionError", "画像を生成できませんでした。");
+    return;
+  }
 
   const dateToken = String(prediction.savedAt || "").slice(0, 10).replace(/[^0-9-]/g, "") || "saved-lineup";
   const filename = `starting9-saved-lineup-${dateToken}.png`;

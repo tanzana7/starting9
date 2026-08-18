@@ -4629,7 +4629,7 @@ function createSavedPredictionCanvas(prediction) {
     context.strokeStyle = colors.border;
     context.strokeRect(tableX, rowY, tableWidth, rowHeight);
     drawRoundedRect(tableX + 5, rowY + 6, orderWidth - 10, rowHeight - 12, 4, colors.order, null);
-    drawCenteredText(`${index + 1}`, tableX + 5, rowY + rowHeight / 2, orderWidth - 10, "700 17px \"Arial Narrow Bold\", \"Arial Narrow\", Arial, sans-serif", "#ffffff");
+    drawCenteredText(`${index + 1}`, tableX + 5, rowY + rowHeight / 2, orderWidth - 10, "800 17px \"Bahnschrift SemiBold\", \"Bahnschrift\", \"Arial Narrow Bold\", \"Arial Narrow\", Arial, sans-serif", "#ffffff");
     drawRoundedRect(tableX + orderWidth + 7, rowY + 6, positionWidth - 14, rowHeight - 12, 12, colors.position[category] || colors.position.empty, colors.border);
     drawCenteredText(normalizedPosition || "－", tableX + orderWidth + 7, rowY + rowHeight / 2, positionWidth - 14, "900 15px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
     drawRoundedRect(tableX + orderWidth + positionWidth + 3, rowY + 5, nameWidth - 6, rowHeight - 10, 5, colors.name, colors.border);

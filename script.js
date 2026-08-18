@@ -4416,7 +4416,7 @@ function createResultCanvas(viewModel) {
   const heroHeight = 78;
   const breakdownHeight = 70;
   const headerHeight = 38;
-  const rowHeight = 56;
+  const rowHeight = 52;
   const rowGap = 4;
   const sectionGap = 10;
   const tableHeight = headerHeight + viewModel.details.length * rowHeight + Math.max(0, viewModel.details.length - 1) * rowGap;
@@ -4433,13 +4433,13 @@ function createResultCanvas(viewModel) {
     hero: "#164a79",
     header: "#1168a8",
     text: "#172033",
-    muted: "#667085",
+    muted: "#55687b",
     border: "#b9cfe2",
     grid: "#d3dfeb",
     row: "#ffffff",
     order: "#1168a8",
     hit: "#173b63",
-    miss: "#93a3b5",
+    miss: "#8799ab",
     position: {
       "category-catcher": "#eaf5fc",
       "category-infielder": "#fff8df",
@@ -4545,7 +4545,7 @@ function createResultCanvas(viewModel) {
   const tableX = padding;
   const orderWidth = displayWidth < 480 ? 38 : 46;
   const pointWidth = displayWidth < 480 ? 34 : 44;
-  const judgementWidth = displayWidth < 480 ? 88 : 116;
+  const judgementWidth = displayWidth < 480 ? 94 : 126;
   const playerWidth = (contentWidth - orderWidth - pointWidth - judgementWidth) / 2;
   const columns = [orderWidth, playerWidth, playerWidth, judgementWidth, pointWidth];
   const headings = ["打順", "あなたの予想", "実際のスタメン", "判定", "点数"];
@@ -4566,24 +4566,33 @@ function createResultCanvas(viewModel) {
 
   viewModel.details.forEach((detail, index) => {
     const rowY = y + index * (rowHeight + rowGap);
+    const pointValue = Number(detail.point);
+    const isPerfectRow = pointValue >= 10;
+    const isZeroRow = pointValue === 0;
+    const rowFill = isPerfectRow ? "#f5fbff" : isZeroRow ? "#f8fafc" : colors.row;
+    const rowBorder = isPerfectRow ? "#9dc5e3" : isZeroRow ? "#dbe3eb" : colors.grid;
     context.lineWidth = 1;
-    drawRoundedRect(tableX, rowY, contentWidth, rowHeight, 6, colors.row, colors.grid);
-    drawRoundedRect(tableX + 5, rowY + 7, orderWidth - 10, rowHeight - 14, 5, colors.order, null);
+    drawRoundedRect(tableX, rowY, contentWidth, rowHeight, 6, rowFill, rowBorder);
+    context.fillStyle = "#f7fbff";
+    context.fillRect(actualColumnX + 1, rowY + 1, playerWidth - 2, rowHeight - 2);
+    drawRoundedRect(tableX + 5, rowY + 6, orderWidth - 10, rowHeight - 12, 5, colors.order, null);
     drawText(detail.order, tableX + 5, rowY + rowHeight / 2, orderWidth - 10, `900 ${displayWidth < 480 ? 14 : 16}px Arial, sans-serif`, "#ffffff");
     const predictedColumnX = tableX + orderWidth;
     const actualColumnX = predictedColumnX + playerWidth;
     const predictedX = predictedColumnX + 4;
     const actualX = actualColumnX + 4;
-    drawPlayerCard(detail.player, detail.position, predictedX, rowY + 7, playerWidth - 8, rowHeight - 14);
-    drawPlayerCard(detail.actualPlayer || "-", detail.actualPosition, actualX, rowY + 7, playerWidth - 8, rowHeight - 14);
+    drawPlayerCard(detail.player, detail.position, predictedX, rowY + 6, playerWidth - 8, rowHeight - 12);
+    drawPlayerCard(detail.actualPlayer || "-", detail.actualPosition, actualX, rowY + 6, playerWidth - 8, rowHeight - 12);
     const judgementX = tableX + orderWidth + playerWidth * 2;
-    const chipGap = 2;
+    const chipGap = 4;
     const chipWidth = (judgementWidth - 10 - chipGap * 2) / 3;
-    drawJudgement(detail.isPlayerHit, "出場", judgementX + 4, rowY + 15, chipWidth, 25);
-    drawJudgement(detail.isOrderHit, "打順", judgementX + 4 + chipWidth + chipGap, rowY + 15, chipWidth, 25);
-    drawJudgement(detail.isPositionHit, "守備", judgementX + 4 + (chipWidth + chipGap) * 2, rowY + 15, chipWidth, 25);
+    drawJudgement(detail.isPlayerHit, "出場", judgementX + 4, rowY + 13, chipWidth, 26);
+    drawJudgement(detail.isOrderHit, "打順", judgementX + 4 + chipWidth + chipGap, rowY + 13, chipWidth, 26);
+    drawJudgement(detail.isPositionHit, "守備", judgementX + 4 + (chipWidth + chipGap) * 2, rowY + 13, chipWidth, 26);
     const pointX = judgementX + judgementWidth;
-    drawRoundedRect(pointX + 5, rowY + 14, pointWidth - 10, 28, 6, "#eaf4ff", colors.border);
+    const pointFill = isPerfectRow ? "#dff1ff" : isZeroRow ? "#f0f3f6" : "#eaf4ff";
+    const pointBorder = isPerfectRow ? "#82b6dc" : isZeroRow ? "#cbd6df" : colors.border;
+    drawRoundedRect(pointX + 5, rowY + 12, pointWidth - 10, 28, 6, pointFill, pointBorder);
     drawText(detail.point, pointX + 5, rowY + rowHeight / 2, pointWidth - 10, `900 ${displayWidth < 480 ? 12 : 14}px Arial, sans-serif`, colors.text);
   });
 

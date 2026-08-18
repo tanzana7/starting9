@@ -786,9 +786,10 @@ function togglePositionMenu(menu, button, pickerName, index) {
 
 function positionMobilePositionMenu(menu, button) {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
-  if (!window.matchMedia("(max-width: 767px)").matches) return;
 
-  menu.classList.add("is-mobile-position-menu");
+  const isMobile = window.matchMedia("(max-width: 767px)").matches;
+  menu.classList.toggle("is-mobile-position-menu", isMobile);
+  menu.classList.add("is-viewport-positioned");
   const buttonRect = button.getBoundingClientRect();
   const menuRect = menu.getBoundingClientRect();
   const viewportPadding = 8;
@@ -866,7 +867,7 @@ function createPositionSelectionLineup(lineup, targetIndex, position) {
 function closeAllPositionMenus() {
   document.querySelectorAll(".position-menu").forEach((menu) => {
     menu.classList.add("hidden");
-    menu.classList.remove("is-mobile-position-menu");
+    menu.classList.remove("is-mobile-position-menu", "is-viewport-positioned");
     menu.style.removeProperty("left");
     menu.style.removeProperty("top");
   });
@@ -1328,6 +1329,7 @@ function assignPlayerToActiveSlot(pickerName, player) {
   const lineup = getLineupValues(pickerName);
   const currentIndex = lineup.findIndex((item) => item.player === player);
   const targetIndex = getTargetOrder(pickerName, lineup);
+  if (targetIndex < 0) return;
   const targetPlayer = lineup[targetIndex]?.player || "";
   const targetPosition = targetPlayer === player ? lineup[targetIndex]?.position || "" : "";
 
@@ -1348,7 +1350,7 @@ function assignPlayerToSlot(pickerName, player, targetIndex, sourceIndex) {
   const movedLineup = moveLineupItem(lineup, player, targetIndex, sourceIndex);
   autoFillPredictionPosition(pickerName, movedLineup, targetIndex);
   setLineupValues(pickerName, movedLineup);
-  state.activeOrder[pickerName] = targetIndex;
+  state.activeOrder[pickerName] = findNextEmptyIndex(movedLineup, targetIndex);
   clearMessage(pickerName === "prediction" ? "predictionError" : "actualError");
   renderPicker(pickerName);
 }
@@ -1393,7 +1395,7 @@ function moveLineupSlot(pickerName, sourceIndex, targetIndex) {
 
   lineup[sourceIndex] = createLineupItem(sourceIndex, targetItem.player, targetItem.position);
   lineup[targetIndex] = createLineupItem(targetIndex, sourceItem.player, sourceItem.position);
-  state.activeOrder[pickerName] = targetIndex;
+  state.activeOrder[pickerName] = findNextEmptyIndex(lineup, targetIndex);
   setLineupValues(pickerName, lineup);
   clearMessage(pickerName === "prediction" ? "predictionError" : "actualError");
 }
@@ -1472,10 +1474,12 @@ function resolveAutoFillPosition(positions, usedPositions) {
 }
 
 function getTargetOrder(pickerName, lineup) {
-  const activeIndex = state.activeOrder[pickerName] ?? 0;
+  const activeIndex = Number.isInteger(state.activeOrder[pickerName])
+    ? state.activeOrder[pickerName]
+    : -1;
 
-  if (!lineup[activeIndex]?.player) {
-    return activeIndex;
+  if (activeIndex < 0) {
+    return findFirstEmptyIndex(lineup);
   }
 
   return activeIndex;
@@ -1489,7 +1493,17 @@ function findNextEmptyIndex(lineup, startIndex) {
     }
   }
 
-  return startIndex;
+  return -1;
+}
+
+function findFirstEmptyIndex(lineup) {
+  for (let index = 0; index < LINEUP_SIZE; index += 1) {
+    if (!lineup[index]?.player) {
+      return index;
+    }
+  }
+
+  return -1;
 }
 
 function clearSlot(pickerName, index) {

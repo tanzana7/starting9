@@ -2840,6 +2840,13 @@ textarea:focus {
   box-shadow: 0 10px 24px rgba(20, 46, 72, 0.2);
 }
 
+.position-menu.is-viewport-positioned {
+  position: fixed;
+  top: auto;
+  right: auto;
+  max-width: calc(100vw - 16px);
+}
+
 .position-menu-option {
   display: inline-grid;
   width: 36px;

@@ -4613,12 +4613,12 @@ function createSavedPredictionCanvas(prediction) {
     const halfHeight = height / 2;
     const drawHorizontal = (segmentY) => {
       context.beginPath();
-      context.moveTo(x + thickness + cut, segmentY);
-      context.lineTo(x + width - thickness - cut, segmentY);
-      context.lineTo(x + width - thickness, segmentY + thickness / 2);
-      context.lineTo(x + width - thickness - cut, segmentY + thickness);
-      context.lineTo(x + thickness + cut, segmentY + thickness);
-      context.lineTo(x + thickness, segmentY + thickness / 2);
+      context.moveTo(x + thickness * 0.55 + cut, segmentY);
+      context.lineTo(x + width - thickness * 0.55 - cut, segmentY);
+      context.lineTo(x + width - thickness * 0.55, segmentY + thickness / 2);
+      context.lineTo(x + width - thickness * 0.55 - cut, segmentY + thickness);
+      context.lineTo(x + thickness * 0.55 + cut, segmentY + thickness);
+      context.lineTo(x + thickness * 0.55, segmentY + thickness / 2);
       context.closePath();
       context.fill();
     };
@@ -4637,10 +4637,10 @@ function createSavedPredictionCanvas(prediction) {
     if (activeSegments.includes("a")) drawHorizontal(y);
     if (activeSegments.includes("g")) drawHorizontal(y + halfHeight - thickness / 2);
     if (activeSegments.includes("d")) drawHorizontal(y + height - thickness);
-    if (activeSegments.includes("f")) drawVertical(x, y + thickness, halfHeight - thickness * 1.5);
-    if (activeSegments.includes("b")) drawVertical(x + width - thickness, y + thickness, halfHeight - thickness * 1.5);
-    if (activeSegments.includes("e")) drawVertical(x, y + halfHeight + thickness / 2, halfHeight - thickness * 1.5);
-    if (activeSegments.includes("c")) drawVertical(x + width - thickness, y + halfHeight + thickness / 2, halfHeight - thickness * 1.5);
+    if (activeSegments.includes("f")) drawVertical(x, y + thickness / 2, halfHeight + thickness / 2);
+    if (activeSegments.includes("b")) drawVertical(x + width - thickness, y + thickness / 2, halfHeight + thickness / 2);
+    if (activeSegments.includes("e")) drawVertical(x, y + halfHeight - thickness / 2, halfHeight + thickness / 2);
+    if (activeSegments.includes("c")) drawVertical(x + width - thickness, y + halfHeight - thickness / 2, halfHeight + thickness / 2);
   };
   const drawLeftText = (value, x, y, width, font, color) => {
     context.font = font;
@@ -4678,7 +4678,11 @@ function createSavedPredictionCanvas(prediction) {
     drawRoundedRect(tableX + 5, rowY + 6, orderWidth - 10, rowHeight - 12, 4, colors.order, null);
     const orderBlockX = tableX + 5;
     const orderBlockWidth = orderWidth - 10;
-    drawDigitalOrderNumber(index + 1, orderBlockX + 10, rowY + 9, orderBlockWidth - 20, rowHeight - 18, "#ffffff");
+    const digitalWidth = Math.min(18, orderBlockWidth - 18);
+    const digitalHeight = Math.min(24, rowHeight - 20);
+    const digitalX = orderBlockX + (orderBlockWidth - digitalWidth) / 2;
+    const digitalY = rowY + (rowHeight - digitalHeight) / 2;
+    drawDigitalOrderNumber(index + 1, digitalX, digitalY, digitalWidth, digitalHeight, "#ffffff");
     drawRoundedRect(tableX + orderWidth + 7, rowY + 6, positionWidth - 14, rowHeight - 12, 12, colors.position[category] || colors.position.empty, colors.border);
     drawCenteredText(normalizedPosition || "－", tableX + orderWidth + 7, rowY + rowHeight / 2, positionWidth - 14, "900 15px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
     drawRoundedRect(tableX + orderWidth + positionWidth + 3, rowY + 5, nameWidth - 6, rowHeight - 10, 5, colors.name, colors.border);

@@ -4483,11 +4483,11 @@ function createResultCanvas(viewModel) {
     }
     drawText(text, x, y + height / 2, width, `700 ${fontSize}px "Yu Gothic", "Noto Sans JP", sans-serif`, colors.text);
   };
-  const drawPlayerCard = (player, position, x, y, width, height, cardFill = colors.row) => {
+  const drawPlayerCard = (player, position, x, y, width, height, cardFill = colors.row, cardBorder = colors.border) => {
     const normalizedPosition = normalizePosition(position);
     const category = normalizedPosition ? getPositionCategory(normalizedPosition) : "empty";
     context.lineWidth = 1.5;
-    drawRoundedRect(x, y, width, height, 6, cardFill, colors.border);
+    drawRoundedRect(x, y, width, height, 6, cardFill, cardBorder);
     const tileWidth = Math.min(30, Math.max(24, width * 0.22));
     context.fillStyle = colors.position[category] || colors.position.empty;
     context.fillRect(x + 1, y + 1, tileWidth - 1, height - 2);
@@ -4595,13 +4595,21 @@ function createResultCanvas(viewModel) {
     drawRoundedRect(tableX + 5, rowY + 6, orderWidth - 10, rowHeight - 12, 5, colors.order, null);
     drawText(detail.order, tableX + 5, rowY + rowHeight / 2, orderWidth - 10, `900 ${displayWidth < 480 ? 14 : 16}px Arial, sans-serif`, "#ffffff");
     drawPlayerCard(detail.player, detail.position, predictedX, rowY + 6, playerWidth - 8, rowHeight - 12);
-    drawPlayerCard(detail.actualPlayer || "-", detail.actualPosition, actualX, rowY + 6, playerWidth - 8, rowHeight - 12, isFullMatch ? "#f8fcff" : "#f2f8fc");
+    const actualCardFill = isFullMatch ? "#f8fcff" : "#eaf4fc";
+    const actualCardBorder = isFullMatch ? colors.border : "#7daed2";
+    drawPlayerCard(detail.actualPlayer || "-", detail.actualPosition, actualX, rowY + 6, playerWidth - 8, rowHeight - 12, actualCardFill, actualCardBorder);
     const chipGap = 4;
     const chipWidth = (judgementWidth - 10 - chipGap * 2) / 3;
     drawJudgement(detail.isPlayerHit, "出場", judgementX + 4, rowY + 13, chipWidth, 26);
     drawJudgement(detail.isOrderHit, "打順", judgementX + 4 + chipWidth + chipGap, rowY + 13, chipWidth, 26);
     drawJudgement(detail.isPositionHit, "守備", judgementX + 4 + (chipWidth + chipGap) * 2, rowY + 13, chipWidth, 26);
     const pointX = judgementX + judgementWidth;
+    context.strokeStyle = "#c2d7e9";
+    context.lineWidth = 1;
+    context.beginPath();
+    context.moveTo(pointX, rowY + 8);
+    context.lineTo(pointX, rowY + rowHeight - 8);
+    context.stroke();
     const pointFill = isPerfectRow ? "#d9f0ff" : isZeroRow ? "#f4f7f9" : "#e8f3fc";
     const pointBorder = isPerfectRow ? "#6faad2" : isZeroRow ? "#c5d1dc" : "#9cbdd8";
     const pointBadgeInset = displayWidth < 480 ? 6 : 9;

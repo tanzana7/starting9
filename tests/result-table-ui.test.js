@@ -177,8 +177,11 @@ test("結果Canvasは判定列・行高・点数バッジを微調整する", ()
   assert.match(canvas, /hit: "#2f5d83"/);
   assert.match(canvas, /miss: "#9aaaba"/);
   assert.match(canvas, /`950 \$\{displayWidth < 480 \? 13 : 15\}px Arial/);
-  assert.match(canvas, /drawPlayerCard\(detail\.actualPlayer \|\| "-", detail\.actualPosition,[\s\S]*isFullMatch \? "#f8fcff" : "#f2f8fc"/);
+  assert.match(canvas, /drawPlayerCard\(detail\.actualPlayer \|\| "-", detail\.actualPosition,[\s\S]*actualCardFill, actualCardBorder\)/);
   assert.match(canvas, /`700 \$\{fontSize\}px "Yu Gothic"/);
+  assert.match(canvas, /const actualCardFill = isFullMatch \? "#f8fcff" : "#eaf4fc"/);
+  assert.match(canvas, /const actualCardBorder = isFullMatch \? colors\.border : "#7daed2"/);
+  assert.match(canvas, /context\.moveTo\(pointX, rowY \+ 8\)/);
 });
 
 test("結果Canvasは列座標を使用前に初期化する", () => {

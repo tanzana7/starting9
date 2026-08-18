@@ -3235,14 +3235,14 @@ textarea:focus {
 
 /* 保存済み予想は、元のブロック感を残したコンパクトなスタメン表として見せる。 */
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary {
-  width: min(100%, 620px);
+  width: min(100%, 520px);
   min-width: 0;
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-table-header {
   display: grid;
-  grid-template-columns: 56px 48px minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: 48px 44px minmax(0, 1fr);
+  gap: 8px;
   align-items: center;
   margin: 10px 0 0;
   padding: 7px 10px;
@@ -3269,8 +3269,8 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary > .lineup-list
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary li.saved-lineup-row {
-  grid-template-columns: 56px 48px minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: 48px 44px minmax(0, 1fr);
+  gap: 8px;
   align-items: center;
   min-width: 0;
   padding: 6px 8px;
@@ -3323,6 +3323,10 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary .saved-lineup-
 }
 
 @media (max-width: 767px) {
+  body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary {
+    width: 100%;
+  }
+
   body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-table-header {
     grid-template-columns: 40px 38px minmax(0, 1fr);
     gap: 7px;

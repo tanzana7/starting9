@@ -4595,53 +4595,6 @@ function createSavedPredictionCanvas(prediction) {
     context.textBaseline = "middle";
     context.fillText(fitText(value, width), x + width / 2, y);
   };
-  const drawDigitalOrderNumber = (value, x, y, width, height, color) => {
-    const segments = {
-      1: ["b", "c"],
-      2: ["a", "b", "g", "e", "d"],
-      3: ["a", "b", "g", "c", "d"],
-      4: ["f", "g", "b", "c"],
-      5: ["a", "f", "g", "c", "d"],
-      6: ["a", "f", "g", "e", "c", "d"],
-      7: ["a", "b", "c"],
-      8: ["a", "b", "c", "d", "e", "f", "g"],
-      9: ["a", "b", "c", "d", "f", "g"]
-    };
-    const activeSegments = segments[Number(value)] || [];
-    const thickness = Math.max(3, Math.round(width * 0.17));
-    const cut = Math.max(1, Math.round(thickness * 0.45));
-    const halfHeight = height / 2;
-    const drawHorizontal = (segmentY) => {
-      context.beginPath();
-      context.moveTo(x + thickness * 0.55 + cut, segmentY);
-      context.lineTo(x + width - thickness * 0.55 - cut, segmentY);
-      context.lineTo(x + width - thickness * 0.55, segmentY + thickness / 2);
-      context.lineTo(x + width - thickness * 0.55 - cut, segmentY + thickness);
-      context.lineTo(x + thickness * 0.55 + cut, segmentY + thickness);
-      context.lineTo(x + thickness * 0.55, segmentY + thickness / 2);
-      context.closePath();
-      context.fill();
-    };
-    const drawVertical = (segmentX, segmentY, segmentHeight) => {
-      context.beginPath();
-      context.moveTo(segmentX, segmentY + cut);
-      context.lineTo(segmentX + thickness / 2, segmentY);
-      context.lineTo(segmentX + thickness, segmentY + cut);
-      context.lineTo(segmentX + thickness, segmentY + segmentHeight - cut);
-      context.lineTo(segmentX + thickness / 2, segmentY + segmentHeight);
-      context.lineTo(segmentX, segmentY + segmentHeight - cut);
-      context.closePath();
-      context.fill();
-    };
-    context.fillStyle = color;
-    if (activeSegments.includes("a")) drawHorizontal(y);
-    if (activeSegments.includes("g")) drawHorizontal(y + halfHeight - thickness / 2);
-    if (activeSegments.includes("d")) drawHorizontal(y + height - thickness);
-    if (activeSegments.includes("f")) drawVertical(x, y + thickness / 2, halfHeight + thickness / 2);
-    if (activeSegments.includes("b")) drawVertical(x + width - thickness, y + thickness / 2, halfHeight + thickness / 2);
-    if (activeSegments.includes("e")) drawVertical(x, y + halfHeight - thickness / 2, halfHeight + thickness / 2);
-    if (activeSegments.includes("c")) drawVertical(x + width - thickness, y + halfHeight - thickness / 2, halfHeight + thickness / 2);
-  };
   const drawLeftText = (value, x, y, width, font, color) => {
     context.font = font;
     context.fillStyle = color;
@@ -4676,17 +4629,11 @@ function createSavedPredictionCanvas(prediction) {
     context.strokeStyle = colors.border;
     context.strokeRect(tableX, rowY, tableWidth, rowHeight);
     drawRoundedRect(tableX + 5, rowY + 6, orderWidth - 10, rowHeight - 12, 4, colors.order, null);
-    const orderBlockX = tableX + 5;
-    const orderBlockWidth = orderWidth - 10;
-    const digitalWidth = Math.min(18, orderBlockWidth - 18);
-    const digitalHeight = Math.min(24, rowHeight - 20);
-    const digitalX = orderBlockX + (orderBlockWidth - digitalWidth) / 2;
-    const digitalY = rowY + (rowHeight - digitalHeight) / 2;
-    drawDigitalOrderNumber(index + 1, digitalX, digitalY, digitalWidth, digitalHeight, "#ffffff");
+    drawCenteredText(`${index + 1}`, tableX + 5, rowY + rowHeight / 2, orderWidth - 10, "900 17px Impact, \"Arial Black\", \"Arial Narrow Bold\", sans-serif", "#ffffff");
     drawRoundedRect(tableX + orderWidth + 7, rowY + 6, positionWidth - 14, rowHeight - 12, 12, colors.position[category] || colors.position.empty, colors.border);
     drawCenteredText(normalizedPosition || "－", tableX + orderWidth + 7, rowY + rowHeight / 2, positionWidth - 14, "900 15px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
     drawRoundedRect(tableX + orderWidth + positionWidth + 3, rowY + 5, nameWidth - 6, rowHeight - 10, 5, colors.name, colors.border);
-    drawCenteredText(lineupItem.player || "未選択", tableX + orderWidth + positionWidth + 3, rowY + rowHeight / 2, nameWidth - 6, "800 15px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
+    drawCenteredText(lineupItem.player || "未選択", tableX + orderWidth + positionWidth + 3, rowY + rowHeight / 2, nameWidth - 6, "800 17px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
   });
 
   return canvas;

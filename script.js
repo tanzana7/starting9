@@ -4413,12 +4413,12 @@ function createResultCanvas(viewModel) {
   const displayWidth = Math.min(620, Math.max(320, viewportWidth - 32));
   const renderScale = 2;
   const padding = 12;
-  const heroHeight = 88;
-  const breakdownHeight = 78;
+  const heroHeight = 78;
+  const breakdownHeight = 70;
   const headerHeight = 38;
   const rowHeight = 56;
   const rowGap = 4;
-  const sectionGap = 12;
+  const sectionGap = 10;
   const tableHeight = headerHeight + viewModel.details.length * rowHeight + Math.max(0, viewModel.details.length - 1) * rowGap;
   const canvasHeight = padding + heroHeight + sectionGap + breakdownHeight + sectionGap + tableHeight + padding;
   const canvas = document.createElement("canvas");
@@ -4501,7 +4501,8 @@ function createResultCanvas(viewModel) {
   };
   const drawJudgement = (isHit, label, x, y, width, height) => {
     drawRoundedRect(x, y, width, height, 5, isHit ? colors.hit : colors.miss, null);
-    drawText(`${isHit ? "○" : "×"} ${label}`, x, y + height / 2, width, `900 ${displayWidth < 480 ? 8 : 9}px Arial, sans-serif`, "#ffffff");
+    drawText(isHit ? "○" : "×", x + 2, y + height / 2, Math.max(10, width * 0.34), `950 ${displayWidth < 480 ? 10 : 12}px Arial, sans-serif`, "#ffffff");
+    drawText(label, x + width * 0.34, y + height / 2, width * 0.62, `900 ${displayWidth < 480 ? 8 : 9}px Arial, sans-serif`, "#ffffff");
   };
 
   context.fillStyle = colors.background;
@@ -4510,12 +4511,12 @@ function createResultCanvas(viewModel) {
   const contentWidth = displayWidth - padding * 2;
   let y = padding;
   drawRoundedRect(padding, y, contentWidth, heroHeight, 6, colors.hero, null);
-  drawText("合計点", padding + 14, y + 17, 80, "900 11px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#d7ecff", "left");
-  drawText(viewModel.total, padding + 14, y + 55, 100, `950 ${displayWidth < 480 ? 39 : 45}px Arial, sans-serif`, "#ffffff", "left");
-  drawText(`/ ${viewModel.max} 点`, padding + 116, y + 58, 100, `900 ${displayWidth < 480 ? 16 : 19}px Arial, sans-serif`, "#eaf4ff", "left");
+  drawText("合計点", padding + 14, y + 15, 80, "900 10px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#d7ecff", "left");
+  drawText(viewModel.total, padding + 14, y + 49, 100, `950 ${displayWidth < 480 ? 36 : 42}px Arial, sans-serif`, "#ffffff", "left");
+  drawText(`/ ${viewModel.max} 点`, padding + 116, y + 52, 100, `900 ${displayWidth < 480 ? 15 : 18}px Arial, sans-serif`, "#eaf4ff", "left");
   if (viewModel.perfectLabel) {
-    drawRoundedRect(displayWidth - 96, y + 16, 74, 28, 5, "#ffffff", null);
-    drawText(viewModel.perfectLabel, displayWidth - 96, y + 30, 74, "900 11px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.hero);
+    drawRoundedRect(displayWidth - 96, y + 13, 74, 26, 5, "#ffffff", null);
+    drawText(viewModel.perfectLabel, displayWidth - 96, y + 26, 74, "900 10px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.hero);
   }
   y += heroHeight + sectionGap;
 
@@ -4535,9 +4536,9 @@ function createResultCanvas(viewModel) {
       context.lineTo(x, y + breakdownHeight);
       context.stroke();
     }
-    drawText(label, x + 8, y + 17, breakdownWidth - 16, "800 10px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.muted, "left");
-    drawText(`${score.total} / ${score.max}`, x + 8, y + 40, breakdownWidth - 16, "900 16px Arial, sans-serif", colors.text, "left");
-    drawText(`${label.replace("得点", "的中")}：${count} / ${LINEUP_SIZE}`, x + 8, y + 62, breakdownWidth - 16, "800 9px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.muted, "left");
+    drawText(label, x + 8, y + 15, breakdownWidth - 16, "800 9px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.muted, "left");
+    drawText(`${score.total} / ${score.max}`, x + 8, y + 37, breakdownWidth - 16, "900 15px Arial, sans-serif", colors.text, "left");
+    drawText(`${label.replace("得点", "的中")}：${count} / ${LINEUP_SIZE}`, x + 8, y + 57, breakdownWidth - 16, "800 8px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.muted, "left");
   });
   y += breakdownHeight + sectionGap;
 
@@ -4548,9 +4549,16 @@ function createResultCanvas(viewModel) {
   const playerWidth = (contentWidth - orderWidth - pointWidth - judgementWidth) / 2;
   const columns = [orderWidth, playerWidth, playerWidth, judgementWidth, pointWidth];
   const headings = ["打順", "あなたの予想", "実際のスタメン", "判定", "点数"];
+  drawRoundedRect(tableX, y, contentWidth, headerHeight, 6, colors.header, null);
   let columnX = tableX;
   columns.forEach((width, index) => {
-    drawRoundedRect(columnX, y, width, headerHeight, index === 0 || index === columns.length - 1 ? 5 : 0, colors.header, null);
+    if (index > 0) {
+      context.strokeStyle = "rgba(255, 255, 255, 0.22)";
+      context.beginPath();
+      context.moveTo(columnX, y + 5);
+      context.lineTo(columnX, y + headerHeight - 5);
+      context.stroke();
+    }
     drawText(headings[index], columnX, y + headerHeight / 2, width, `900 ${displayWidth < 480 ? 9 : 11}px \"Yu Gothic\", \"Noto Sans JP\", sans-serif`, "#ffffff");
     columnX += width;
   });
@@ -4562,17 +4570,21 @@ function createResultCanvas(viewModel) {
     drawRoundedRect(tableX, rowY, contentWidth, rowHeight, 6, colors.row, colors.grid);
     drawRoundedRect(tableX + 5, rowY + 7, orderWidth - 10, rowHeight - 14, 5, colors.order, null);
     drawText(detail.order, tableX + 5, rowY + rowHeight / 2, orderWidth - 10, `900 ${displayWidth < 480 ? 14 : 16}px Arial, sans-serif`, "#ffffff");
-    const predictedX = tableX + orderWidth + 4;
-    const actualX = predictedX + playerWidth;
+    const predictedColumnX = tableX + orderWidth;
+    const actualColumnX = predictedColumnX + playerWidth;
+    const predictedX = predictedColumnX + 4;
+    const actualX = actualColumnX + 4;
     drawPlayerCard(detail.player, detail.position, predictedX, rowY + 7, playerWidth - 8, rowHeight - 14);
-    drawPlayerCard(detail.actualPlayer || "-", detail.actualPosition, actualX + 4, rowY + 7, playerWidth - 8, rowHeight - 14);
+    drawPlayerCard(detail.actualPlayer || "-", detail.actualPosition, actualX, rowY + 7, playerWidth - 8, rowHeight - 14);
     const judgementX = tableX + orderWidth + playerWidth * 2;
     const chipGap = 2;
     const chipWidth = (judgementWidth - 10 - chipGap * 2) / 3;
     drawJudgement(detail.isPlayerHit, "出場", judgementX + 4, rowY + 15, chipWidth, 25);
     drawJudgement(detail.isOrderHit, "打順", judgementX + 4 + chipWidth + chipGap, rowY + 15, chipWidth, 25);
     drawJudgement(detail.isPositionHit, "守備", judgementX + 4 + (chipWidth + chipGap) * 2, rowY + 15, chipWidth, 25);
-    drawText(detail.point, judgementX + judgementWidth, rowY + rowHeight / 2, pointWidth, `900 ${displayWidth < 480 ? 13 : 15}px Arial, sans-serif`, colors.text);
+    const pointX = judgementX + judgementWidth;
+    drawRoundedRect(pointX + 5, rowY + 14, pointWidth - 10, 28, 6, "#eaf4ff", colors.border);
+    drawText(detail.point, pointX + 5, rowY + rowHeight / 2, pointWidth - 10, `900 ${displayWidth < 480 ? 12 : 14}px Arial, sans-serif`, colors.text);
   });
 
   return canvas;

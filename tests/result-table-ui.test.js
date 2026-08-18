@@ -166,3 +166,12 @@ test("結果Canvasは判定列・行高・点数バッジを微調整する", ()
   assert.match(canvas, /context\.fillStyle = "#f7fbff"/);
   assert.match(canvas, /drawRoundedRect\(pointX \+ 5/);
 });
+
+test("結果Canvasは列座標を使用前に初期化する", () => {
+  const canvas = sourceForFunction("createResultCanvas");
+  const actualColumnDeclaration = canvas.indexOf("const actualColumnX = predictedColumnX + playerWidth;");
+  const actualColumnUse = canvas.indexOf("context.fillRect(actualColumnX + 1");
+  assert.notEqual(actualColumnDeclaration, -1);
+  assert.notEqual(actualColumnUse, -1);
+  assert.ok(actualColumnDeclaration < actualColumnUse, "actualColumnXを宣言前に参照しない");
+});

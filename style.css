@@ -3240,8 +3240,21 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary {
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-image {
-  width: min(100%, 470px);
+  display: grid;
+  gap: 3px;
+  width: min(100%, 640px);
   min-width: 0;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-image-title {
+  color: var(--fighters-deep-blue);
+  font-size: 1rem;
+  font-weight: 900;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-image-meta {
+  color: var(--muted);
+  font-size: 0.82rem;
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-canvas {

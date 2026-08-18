@@ -175,7 +175,12 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
   assert.match(script, /createSavedPredictionPreview\(state\.prediction\)/);
   assert.match(script, /createSavedPredictionCanvas\(prediction\)/);
   assert.match(script, /className = "saved-lineup-canvas"/);
-  assert.match(script, /nameWidth - 36/);
+  assert.match(script, /title\.textContent = "保存済みのスタメン予想"/);
+  assert.match(script, /meta\.textContent = `最後に更新：\$\{formatDateTime\(prediction\.savedAt\)\}`/);
+  assert.match(script, /const tableWidth = displayWidth - 16/);
+  assert.doesNotMatch(script, /drawLeftText\("あなたの予想"/);
+  assert.doesNotMatch(script, /drawLeftText\(`最後に更新：/);
+  assert.match(script, /nameWidth - 20/);
   assert.match(html, /id="saveSavedPredictionImageButton"[^>]*>画像として保存/);
   assert.match(script, /saveSavedPredictionImage/);
   assert.match(script, /canvas\.toBlob/);

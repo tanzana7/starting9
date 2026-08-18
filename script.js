@@ -4534,7 +4534,7 @@ function createSavedPredictionPreview(prediction) {
 
 function createSavedPredictionCanvas(prediction) {
   if (!prediction) return null;
-  const displayWidth = Math.min(640, Math.max(320, (window.innerWidth || 640) - 32));
+  const displayWidth = Math.min(560, Math.max(320, (window.innerWidth || 560) - 32));
   const renderScale = 2;
   const canvasHeight = 476;
   const canvas = document.createElement("canvas");
@@ -4606,9 +4606,9 @@ function createSavedPredictionCanvas(prediction) {
   context.fillStyle = "#ffffff";
   context.fillRect(0, 0, displayWidth, canvasHeight);
 
-  const tableX = 8;
+  const tableX = 6;
   const tableY = 12;
-  const tableWidth = displayWidth - 16;
+  const tableWidth = displayWidth - 12;
   const headerHeight = 40;
   const rowHeight = 46;
   const orderWidth = 52;

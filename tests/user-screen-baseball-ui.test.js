@@ -177,7 +177,8 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
   assert.match(script, /className = "saved-lineup-canvas"/);
   assert.match(script, /title\.textContent = "保存済みのスタメン予想"/);
   assert.match(script, /meta\.textContent = `最後に更新：\$\{formatDateTime\(prediction\.savedAt\)\}`/);
-  assert.match(script, /const tableWidth = displayWidth - 16/);
+  assert.match(script, /const displayWidth = Math\.min\(560/);
+  assert.match(script, /const tableWidth = displayWidth - 12/);
   assert.doesNotMatch(script, /drawLeftText\("あなたの予想"/);
   assert.doesNotMatch(script, /drawLeftText\(`最後に更新：/);
   assert.match(script, /nameWidth - 20/);
@@ -194,7 +195,7 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-saved-lineup-canvas-display-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-saved-lineup-canvas-compact-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

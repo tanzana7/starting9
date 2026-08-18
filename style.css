@@ -3242,7 +3242,7 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-summary {
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-image {
   display: grid;
   gap: 3px;
-  width: min(100%, 640px);
+  width: min(100%, 560px);
   min-width: 0;
 }
 

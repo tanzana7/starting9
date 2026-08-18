@@ -4566,6 +4566,11 @@ function createResultCanvas(viewModel) {
 
   viewModel.details.forEach((detail, index) => {
     const rowY = y + index * (rowHeight + rowGap);
+    const predictedColumnX = tableX + orderWidth;
+    const actualColumnX = predictedColumnX + playerWidth;
+    const predictedX = predictedColumnX + 4;
+    const actualX = actualColumnX + 4;
+    const judgementX = tableX + orderWidth + playerWidth * 2;
     const pointValue = Number(detail.point);
     const isPerfectRow = pointValue >= 10;
     const isZeroRow = pointValue === 0;
@@ -4577,13 +4582,8 @@ function createResultCanvas(viewModel) {
     context.fillRect(actualColumnX + 1, rowY + 1, playerWidth - 2, rowHeight - 2);
     drawRoundedRect(tableX + 5, rowY + 6, orderWidth - 10, rowHeight - 12, 5, colors.order, null);
     drawText(detail.order, tableX + 5, rowY + rowHeight / 2, orderWidth - 10, `900 ${displayWidth < 480 ? 14 : 16}px Arial, sans-serif`, "#ffffff");
-    const predictedColumnX = tableX + orderWidth;
-    const actualColumnX = predictedColumnX + playerWidth;
-    const predictedX = predictedColumnX + 4;
-    const actualX = actualColumnX + 4;
     drawPlayerCard(detail.player, detail.position, predictedX, rowY + 6, playerWidth - 8, rowHeight - 12);
     drawPlayerCard(detail.actualPlayer || "-", detail.actualPosition, actualX, rowY + 6, playerWidth - 8, rowHeight - 12);
-    const judgementX = tableX + orderWidth + playerWidth * 2;
     const chipGap = 4;
     const chipWidth = (judgementWidth - 10 - chipGap * 2) / 3;
     drawJudgement(detail.isPlayerHit, "出場", judgementX + 4, rowY + 13, chipWidth, 26);

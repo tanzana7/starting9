@@ -47,7 +47,7 @@ function insertPrediction(db, id, gameId) {
     `INSERT INTO predictions
        (id, user_id, game_id, prediction_json, schema_version, game_date, home_team, away_team, opponent_code, is_home,
         submitted_at, updated_at, status, score, max_score, scored_at, is_test_prediction)
-     VALUES (?1, 'u1', ?2, '{}', 1, ?3, 'f', 'l', 'l', 1, ?4, ?4, 'scored', 80, 100, ?4, 0)`
+     VALUES (?1, 'u1', ?2, '{}', 1, ?3, 'f', 'l', 'l', 1, ?4, ?4, 'scored', 80, 99, ?4, 0)`
   ).run(id, gameId, gameId.startsWith("before") ? "2026-08-11" : "2026-08-12", "2026-08-12T10:00:00.000Z");
 }
 

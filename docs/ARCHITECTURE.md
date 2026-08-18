@@ -68,7 +68,7 @@ These are classic namespaced browser modules so Pages can serve them without a b
 
 `auth-worker.js` is the composition root: it owns request authentication, route dispatch, response headers, and orchestration of the existing V3 workflow. Domain rules and D1 query groups are kept in focused modules so a route can be read as authorization -> domain/repository call -> response.
 
-- `backend/domain/scoring.js` contains the 100-point lineup scoring rules, breakdown, perfect-score preview, and the release-only debug fixture input. It has no Worker, D1, job, or request dependency.
+- `backend/domain/scoring.js` contains the MAX99 per-player lineup scoring rules, breakdown, perfect-score preview, and the release-only debug fixture input. It has no Worker, D1, job, or request dependency.
 - `backend/domain/ranking.js` contains participation-threshold math, public row shaping, the future `hideIneligibleRankings` switch, and reset request validation/confirmation text.
 - `backend/domain/public-results.js` contains public team labels, matchup labels, and the five-result history limit. It does not resolve games or read private state.
 - `backend/admin/preview.js` defines the admin preview response contract (`previewOnly` and write flags); it is deliberately not an authorization or execution module.

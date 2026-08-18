@@ -29,6 +29,8 @@ test("案内ページの採点ルールは現在の99点方式と一致する", 
   assert.match(html, /最大18点/);
   assert.match(html, /最大9点/);
   assert.match(html, /合計99点/);
+  assert.doesNotMatch(html, /100点/);
+  assert.doesNotMatch(html, /全員.*ボーナス/);
 });
 
 test("案内ページは現在のランキング区分と非公式サービスの注意書きを説明する", () => {

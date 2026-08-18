@@ -75,14 +75,14 @@ function insertGame(db, gameId, gameDate, publicationStatus = "published") {
   ).run(gameId, gameDate, `${gameDate}T10:00:00.000Z`, publicationStatus);
 }
 
-function insertPrediction(db, { id, userId, gameId, gameDate, score = 100, submittedAt = `${gameDate}T09:00:00.000Z` }) {
+function insertPrediction(db, { id, userId, gameId, gameDate, score = 99, submittedAt = `${gameDate}T09:00:00.000Z` }) {
   db.prepare(
     `INSERT INTO predictions
        (id, user_id, game_id, prediction_json, schema_version, game_date, home_team, away_team,
         opponent_code, is_home, submitted_at, updated_at, status, score, max_score,
         scored_at, is_test_prediction)
      VALUES (?1, ?2, ?3, '{}', 1, ?4, 'fighters', 'lions', 'lions', 1,
-             ?5, ?5, 'scored', ?6, 100, ?5, 0)`
+             ?5, ?5, 'scored', ?6, 99, ?5, 0)`
   ).run(id, userId, gameId, gameDate, submittedAt, score);
 }
 
@@ -181,8 +181,8 @@ test("perfect rankingはrelease cutoff前を除外し、daily-best-nineは過去
   insertUser(db, "u1", "alpha");
   insertGame(db, "pre", "2026-08-13");
   insertGame(db, "post", "2026-08-14");
-  insertPrediction(db, { id: "p-pre", userId: "u1", gameId: "pre", gameDate: "2026-08-13", score: 100 });
-  insertPrediction(db, { id: "p-post", userId: "u1", gameId: "post", gameDate: "2026-08-14", score: 100 });
+  insertPrediction(db, { id: "p-pre", userId: "u1", gameId: "pre", gameDate: "2026-08-13", score: 99 });
+  insertPrediction(db, { id: "p-post", userId: "u1", gameId: "post", gameDate: "2026-08-14", score: 99 });
   const adapter = createD1Adapter(db);
   const releaseCutoffAt = "2026-08-14T00:00:00+09:00";
 

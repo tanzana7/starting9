@@ -53,7 +53,7 @@ function createPost(body, authenticated = true) {
 }
 
 test("perfect-achievers mutation requires authentication before returning the retired contract", async () => {
-  const response = await worker.fetch(createPost({ gameId: "fake", score: 100, maxScore: 100 }, false), { AUTH_DB: {} }, {});
+  const response = await worker.fetch(createPost({ gameId: "fake", score: 99, maxScore: 99 }, false), { AUTH_DB: {} }, {});
   const payload = await response.json();
 
   assert.equal(response.status, 401);
@@ -67,8 +67,8 @@ test("client-provided score, user identity, and game ID cannot create a perfect-
     gameId: "forged-game",
     userId: "other-user",
     nickname: "forged-name",
-    score: 100,
-    maxScore: 100
+    score: 99,
+    maxScore: 99
   }), { AUTH_DB: db }, {});
   const payload = await response.json();
 

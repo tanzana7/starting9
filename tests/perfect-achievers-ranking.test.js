@@ -49,7 +49,7 @@ function insertRankingGame(db, gameId, gameDate, { eligible = 1, status = "score
   ).run(gameId, gameDate, eligible, status);
 }
 
-function insertPrediction(db, { id, userId, gameId, score, maxScore = 100, status = "scored", submittedAt = "2026-07-23T09:00:00.000Z", updatedAt = submittedAt, opponent = "marines" }) {
+function insertPrediction(db, { id, userId, gameId, score, maxScore = 99, status = "scored", submittedAt = "2026-07-23T09:00:00.000Z", updatedAt = submittedAt, opponent = "marines" }) {
   db.raw.prepare(
     `INSERT INTO predictions
        (id, user_id, game_id, prediction_json, schema_version, game_date, home_team, away_team, opponent_code, is_home,
@@ -67,16 +67,16 @@ test("本日の満点者は公開済み正式採点の満点だけを返す", as
   }
   insertRankingGame(db, "published", "2026-07-23");
   insertRankingGame(db, "unpublished", "2026-07-23", { eligible: 0 });
-  insertPrediction(db, { id: "p1", userId: "u1", gameId: "published", score: 100, submittedAt: "2026-07-23T09:00:00.000Z" });
-  insertPrediction(db, { id: "p2", userId: "u2", gameId: "published", score: 99 });
-  insertPrediction(db, { id: "p3", userId: "u3", gameId: "unpublished", score: 100 });
+  insertPrediction(db, { id: "p1", userId: "u1", gameId: "published", score: 99, submittedAt: "2026-07-23T09:00:00.000Z" });
+  insertPrediction(db, { id: "p2", userId: "u2", gameId: "published", score: 98 });
+  insertPrediction(db, { id: "p3", userId: "u3", gameId: "unpublished", score: 99 });
   insertPrediction(db, { id: "p4", userId: "u4", gameId: "published", score: null, status: "submitted" });
 
   const achievers = await getPerfectAchieversForDate(db, { date: "2026-07-23", limit: 50, offset: 0 });
   assert.equal(achievers.totalCount, 1);
   assert.deepEqual(achievers.rows, [{
     username: "perfect",
-    score: 100,
+    score: 99,
     gameDate: "2026-07-23",
     opponent: "marines",
     submittedAt: "2026-07-23T09:00:00.000Z"
@@ -96,7 +96,7 @@ test("同一ユーザー・同一試合は最新提出だけを満点者判定�
   `);
   database.prepare("INSERT INTO users VALUES ('u1', 'latest', 'active')").run();
   database.prepare("INSERT INTO ranking_games VALUES ('g1', '2026-07-23', 1, 'scored', 0, 'published')").run();
-  database.prepare("INSERT INTO predictions VALUES ('old', 'u1', 'g1', 100, 100, 'hawks', '2026-07-23T09:00:00.000Z', '2026-07-23T09:00:00.000Z', 'scored', 0)").run();
+  database.prepare("INSERT INTO predictions VALUES ('old', 'u1', 'g1', 99, 99, 'hawks', '2026-07-23T09:00:00.000Z', '2026-07-23T09:00:00.000Z', 'scored', 0)").run();
   database.prepare("INSERT INTO predictions VALUES ('new', 'u1', 'g1', NULL, NULL, 'hawks', '2026-07-23T10:00:00.000Z', '2026-07-23T10:00:00.000Z', 'submitted', 0)").run();
 
   const achievers = await getPerfectAchieversForDate(createD1Adapter(database), { date: "2026-07-23", limit: 50, offset: 0 });

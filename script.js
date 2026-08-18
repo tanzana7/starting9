@@ -1920,7 +1920,9 @@ function isPublicGamePublished(game, remoteState = state.predictionRemote) {
 
 function fetchPreviousResultGame({ force = false } = {}) {
   const previous = state.previousResultGame;
-  if (previous.isLoading && !force) return previousResultGameRequestPromise || Promise.resolve();
+  if (!force && (previous.isLoading || previous.isReady)) {
+    return previousResultGameRequestPromise || Promise.resolve();
+  }
   const requestPromise = (async () => {
     const request = beginPublicRequest("previousResultGame", { abort: true });
     const url = buildPreviousResultGameApiUrl();

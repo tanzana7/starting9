@@ -3410,6 +3410,27 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
   width: min(100%, 620px);
 }
 
+.result-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid #b9cfe2;
+  border-radius: 7px;
+  background: #eef5fb;
+}
+
+.result-canvas-text-fallback {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .result-hero {
   padding: 16px;
   border-radius: 7px;

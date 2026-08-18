@@ -175,3 +175,66 @@ test("結果Canvasは列座標を使用前に初期化する", () => {
   assert.notEqual(actualColumnUse, -1);
   assert.ok(actualColumnDeclaration < actualColumnUse, "actualColumnXを宣言前に参照しない");
 });
+
+test("結果Canvasは代表的な採点結果を実行時に描画できる", () => {
+  const drawContext = {
+    scale() {},
+    beginPath() {},
+    moveTo() {},
+    arcTo() {},
+    closePath() {},
+    fill() {},
+    stroke() {},
+    fillRect() {},
+    lineTo() {},
+    fillText() {},
+    measureText(value) {
+      return { width: String(value).length * 8 };
+    }
+  };
+  const fakeCanvas = {
+    getContext() {
+      return drawContext;
+    }
+  };
+  const context = vm.createContext({
+    window: { innerWidth: 1200 },
+    document: {
+      createElement(tagName) {
+        assert.equal(tagName, "canvas");
+        return fakeCanvas;
+      }
+    },
+    normalizePosition: (value) => value,
+    getPositionCategory: () => "category-infielder",
+    LINEUP_SIZE: 9
+  });
+  vm.runInContext(`${sourceForFunction("createResultCanvas")}; this.render = createResultCanvas;`, context);
+
+  const details = Array.from({ length: 9 }, (_, index) => ({
+    order: index + 1,
+    player: `予想${index + 1}`,
+    position: "遊",
+    actualPlayer: `実際${index + 1}`,
+    actualPosition: "遊",
+    isPlayerHit: index % 2 === 0,
+    isOrderHit: index % 3 === 0,
+    isPositionHit: index % 4 === 0,
+    point: index === 0 ? 10 : index === 1 ? 0 : 7
+  }));
+  const rendered = context.render({
+    total: 48,
+    max: 100,
+    perfectLabel: "",
+    counts: { player: 6, order: 3, position: 5 },
+    breakdown: {
+      player: { total: 30, max: 50 },
+      order: { total: 9, max: 30 },
+      position: { total: 10, max: 20 }
+    },
+    details
+  });
+
+  assert.equal(rendered.width, 1240);
+  assert.equal(rendered.height, 2 * (12 + 78 + 10 + 70 + 10 + 38 + 9 * 52 + 8 * 4 + 12));
+});

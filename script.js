@@ -4545,13 +4545,13 @@ function createSavedPredictionCanvas(prediction) {
   context.scale(renderScale, renderScale);
 
   const colors = {
-    navy: "#102a4b",
+    navy: "#0b5ea8",
     gold: "#d5a11e",
     text: "#1c2d3f",
     muted: "#607284",
     row: "#f8fbff",
-    border: "#d9dee7",
-    order: "#102a4b",
+    border: "#b9cfe3",
+    order: "#0b5ea8",
     name: "#ffffff",
     position: {
       "category-catcher": "#eaf5fc",
@@ -4618,7 +4618,7 @@ function createSavedPredictionCanvas(prediction) {
   drawRoundedRect(tableX, tableY, tableWidth, headerHeight, 7, colors.navy, colors.navy);
   drawCenteredText("打順", tableX, tableY + headerHeight / 2, orderWidth, "900 14px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#ffffff");
   drawCenteredText("守備", tableX + orderWidth, tableY + headerHeight / 2, positionWidth, "900 14px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#ffffff");
-  drawLeftText("選手名", tableX + orderWidth + positionWidth + 6, tableY + headerHeight / 2, nameWidth - 10, "900 14px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#ffffff");
+  drawCenteredText("選手名", tableX + orderWidth + positionWidth, tableY + headerHeight / 2, nameWidth, "900 14px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", "#ffffff");
 
   normalizeLineup(prediction.lineup).forEach((lineupItem, index) => {
     const rowY = tableY + headerHeight + index * rowHeight;
@@ -4629,7 +4629,7 @@ function createSavedPredictionCanvas(prediction) {
     context.strokeStyle = colors.border;
     context.strokeRect(tableX, rowY, tableWidth, rowHeight);
     drawRoundedRect(tableX + 5, rowY + 6, orderWidth - 10, rowHeight - 12, 4, colors.order, null);
-    drawCenteredText(`${index + 1}`, tableX + 5, rowY + rowHeight / 2, orderWidth - 10, "900 17px Impact, \"Arial Black\", \"Arial Narrow Bold\", sans-serif", "#ffffff");
+    drawCenteredText(`${index + 1}`, tableX + 5, rowY + rowHeight / 2, orderWidth - 10, "900 17px \"Courier New\", \"Lucida Console\", monospace", "#ffffff");
     drawRoundedRect(tableX + orderWidth + 7, rowY + 6, positionWidth - 14, rowHeight - 12, 12, colors.position[category] || colors.position.empty, colors.border);
     drawCenteredText(normalizedPosition || "－", tableX + orderWidth + 7, rowY + rowHeight / 2, positionWidth - 14, "900 15px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
     drawRoundedRect(tableX + orderWidth + positionWidth + 3, rowY + 5, nameWidth - 6, rowHeight - 10, 5, colors.name, colors.border);

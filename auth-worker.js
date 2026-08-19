@@ -1109,7 +1109,23 @@ async function executeV3LineupExecutor({ env, internalGameId, now, target, state
       provisionalLookup: "game_lineup_revisions.internal_game_id"
     }), { internalGameId, now, target, job, lineupIdentity, stage: "finalize_official_lineup" });
   }
-  if (jobType === V3_JOB_TYPE.LINEUP_FETCH) return { status: result.status, stateBefore, stateAfter: stateBefore };
+  if (jobType === V3_JOB_TYPE.LINEUP_FETCH) {
+    const lineupDataHealth = await getV3LineupDataHealth(env.AUTH_DB, internalGameId, stateBefore);
+    if (!lineupDataHealth.available) {
+      throw createV3Error("V3_LINEUP_DATA_HEALTH_UNAVAILABLE", "lineup_fetchの候補データを確認できないため、完了扱いにできません。", {
+        retryable: true,
+        diagnostics: { executorStage: "verify_lineup_fetch_side_effect", internalGameId, status: result.status, ...lineupDataHealth }
+      });
+    }
+    if (!lineupDataHealth.ready) {
+      throw createV3Error("LINEUP_FETCH_COMPLETED_WITHOUT_CANDIDATE", "lineup_fetchは完了しましたが、candidate/canonical lineupが作成されていません。", {
+        retryable: true,
+        retryAt: new Date(new Date(now).getTime() + 60 * 1000),
+        diagnostics: { executorStage: "verify_lineup_fetch_side_effect", internalGameId, status: result.status, ...lineupDataHealth }
+      });
+    }
+    return { status: result.status, stateBefore, stateAfter: stateBefore, lineupDataHealth };
+  }
   return { status: result.status, stateBefore, stateAfter: "lineup_ready" };
 }
 
@@ -4125,6 +4141,7 @@ async function handleAdminV3Overview(request, env, cors) {
     };
     const resolvedState = state || { state: "scheduled", version: 0 };
     const jobRows = jobs.results || [];
+    const lineupDataHealth = await getV3LineupDataHealth(env.AUTH_DB, game.internalGameId, resolvedState.state);
     const latestJob = (types) => jobRows
       .filter((job) => types.includes(String(job.job_type || "")))
       .sort((left, right) => String(right.updated_at || right.scheduled_at || "").localeCompare(String(left.updated_at || left.scheduled_at || "")))[0] || null;
@@ -4303,13 +4320,14 @@ async function handleAdminV3Overview(request, env, cors) {
         completedAt: null
       }
     };
-    const nextAction = getV3NextAction({ schedule, state: resolvedState.state, jobs: jobRows, now: overviewNow });
+    const nextAction = getV3NextAction({ schedule, state: resolvedState.state, jobs: jobRows, now: overviewNow, lineupDataHealth });
     const workflowDiagnostics = getV3WorkflowDiagnostics({
       schedule,
       state: resolvedState.state,
       game,
       jobs: jobRows,
-      now: overviewNow
+      now: overviewNow,
+      lineupDataHealth
     });
     const phaseStatuses = {
       probable_starter: deriveV3PhaseStatus({
@@ -4331,7 +4349,7 @@ async function handleAdminV3Overview(request, env, cors) {
       }),
       roster: deriveV3PhaseStatus({ phase: "roster", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, snapshot: canonicalRosterSnapshot, noticeState: rosterDiagnostics.noticeState, sourceSnapshotComparison: rosterDiagnostics.sourceSnapshotComparison }),
       prediction_close: deriveV3PhaseStatus({ phase: "prediction_close", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows }),
-      lineup_fetch: deriveV3PhaseStatus({ phase: "lineup_fetch", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows }),
+      lineup_fetch: deriveV3PhaseStatus({ phase: "lineup_fetch", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, lineupDataHealth }),
       lineup_finalize: deriveV3PhaseStatus({ phase: "lineup_finalize", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows }),
       score: deriveV3PhaseStatus({ phase: "score", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, noOpReason: scoringSummary.noOpReason }),
       ranking: deriveV3PhaseStatus({ phase: "ranking", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, noOpReason: rankingSummary.noOpReason }),
@@ -4341,6 +4359,7 @@ async function handleAdminV3Overview(request, env, cors) {
       ...game,
       state: resolvedState,
       jobs: jobRows,
+      lineupDataHealth,
       lineupSummary,
       scoringSummary,
       rankingSummary,
@@ -4925,6 +4944,14 @@ async function getV3ManualJobDiagnosis(db, internalGameId, jobType, target = nul
     } catch {
       relatedDataSummary.lineupRevisionRead = "unavailable";
     }
+    const lineupDataHealth = await getV3LineupDataHealth(db, id, currentState);
+    Object.assign(relatedDataSummary, {
+      lineupDataHealthAvailable: lineupDataHealth.available,
+      candidateExists: lineupDataHealth.candidateExists,
+      canonicalDataReady: lineupDataHealth.canonicalDataReady,
+      finalizedLineupExists: lineupDataHealth.finalizedLineupExists,
+      completedWithoutCandidate: String(latest?.status || "") === "completed" && lineupDataHealth.available && !lineupDataHealth.ready
+    });
   }
   return {
     ok: true,
@@ -5351,6 +5378,43 @@ async function getV3LineupRevisionRows(db, gameId, internalGameId) {
   const bindings = [columns.has("internal_game_id") && internalGameId ? internalGameId : gameId];
   const rows = await db.prepare(`SELECT * FROM game_lineup_revisions WHERE ${where} ORDER BY version DESC`).bind(...bindings).all();
   return rows.results || [];
+}
+
+async function getV3LineupDataHealth(db, internalGameId, workflowState = "scheduled") {
+  const health = {
+    available: false,
+    candidateExists: null,
+    canonicalDataReady: null,
+    finalizedLineupExists: null,
+    workflowStateAtLeastLineupReady: ["lineup_ready", "scored", "ranked", "published"].includes(String(workflowState)),
+    ready: null,
+    candidateCount: null,
+    finalizedCount: null
+  };
+  try {
+    const revisions = await getV3LineupRevisionRows(db, internalGameId, internalGameId);
+    const candidates = revisions.filter((row) => Number(row.is_final || 0) !== 1
+      && Array.isArray(parseStoredActualLineup(row.actual_lineup_json))
+      && parseStoredActualLineup(row.actual_lineup_json).length > 0);
+    const finalized = revisions.filter((row) => Number(row.is_final || 0) === 1
+      && Array.isArray(parseStoredActualLineup(row.actual_lineup_json))
+      && parseStoredActualLineup(row.actual_lineup_json).length > 0);
+    const canonical = await getGameLineup(db, { gameId: internalGameId, internalGameId });
+    const canonicalLineup = parseStoredActualLineup(canonical?.actual_lineup_json);
+    health.available = true;
+    health.candidateExists = candidates.length > 0;
+    health.canonicalDataReady = Array.isArray(canonicalLineup) && canonicalLineup.length > 0;
+    health.finalizedLineupExists = finalized.length > 0;
+    health.candidateCount = candidates.length;
+    health.finalizedCount = finalized.length;
+    health.ready = health.candidateExists
+      || health.canonicalDataReady
+      || health.finalizedLineupExists
+      || health.workflowStateAtLeastLineupReady;
+  } catch {
+    // Keep overview/diagnose available on deployments without the V3 lineup schema.
+  }
+  return health;
 }
 
 function serializeV3LineupRevision(row, previous = null) {

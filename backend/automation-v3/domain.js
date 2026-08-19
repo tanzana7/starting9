@@ -393,7 +393,7 @@ export function getV3ProbableStarterHealthDecision({
 
 // Canonical display/diagnostic evaluation for every V3 phase. It does not
 // influence planning or execution; callers use it for overview and audits.
-export function deriveV3PhaseStatus({ phase, game, now = new Date(), workflowState = "scheduled", jobs = [], snapshot = null, noticeState = null, noOpReason = null, sourceStatus = "", probableStarter = null, sourceSnapshotComparison = null } = {}) {
+export function deriveV3PhaseStatus({ phase, game, now = new Date(), workflowState = "scheduled", jobs = [], snapshot = null, noticeState = null, noOpReason = null, sourceStatus = "", probableStarter = null, sourceSnapshotComparison = null, lineupDataHealth = null } = {}) {
   const current = now instanceof Date ? now : new Date(now);
   const schedule = deriveV3DisplaySchedule(game);
   if (phase === "roster") {
@@ -469,6 +469,21 @@ export function deriveV3PhaseStatus({ phase, game, now = new Date(), workflowSta
     publish: ["published"]
   };
   const stateValue = String(workflowState);
+  const lineupFetchCompletedWithoutCandidate = phase === "lineup_fetch"
+    && Boolean(completed)
+    && lineupDataHealth?.available === true
+    && lineupDataHealth?.ready === false;
+  if (lineupFetchCompletedWithoutCandidate) {
+    return v3NormalizedPhaseStatus(phase, {
+      severity: "ATTENTION",
+      label: "候補なしの完了扱い",
+      reasonCode: "LINEUP_FETCH_COMPLETED_WITHOUT_CANDIDATE",
+      message: "lineup_fetch jobはcompletedですがcandidate/canonical lineupがありません。再取得が必要です。",
+      isAfterDue: true,
+      completedJobExists: true,
+      diagnosticFacts: { ...lineupDataHealth }
+    });
+  }
   if (["score", "ranking"].includes(phase) && noOpReason) {
     return v3NormalizedPhaseStatus(phase, { severity: "OK", label: "対象なしで完了", reasonCode: noOpReason, completedJobExists: true });
   }
@@ -537,12 +552,18 @@ function hasFinishedV3Job(jobs, jobType) {
   return jobs.some((job) => job.job_type === jobType && ["completed", "cancelled"].includes(job.status));
 }
 
-export function getV3NextAction({ schedule, state = "scheduled", jobs = [], now = new Date() } = {}) {
+export function getV3NextAction({ schedule, state = "scheduled", jobs = [], now = new Date(), lineupDataHealth = null } = {}) {
   const current = now instanceof Date ? now : new Date(now);
   if (!schedule || Number.isNaN(current.getTime()) || ["excluded", "published"].includes(String(state))) {
     return { nextAction: null, nextActionAt: null, nextActionLabel: null };
   }
-  const completed = (jobType) => hasFinishedV3Job(jobs, jobType);
+  const finalLineupAt = new Date(schedule.finalLineupAt || "");
+  const lineupRecoveryWindowOpen = Number.isNaN(finalLineupAt.getTime()) || current < finalLineupAt;
+  const completed = (jobType) => hasFinishedV3Job(jobs, jobType)
+    && !(jobType === "lineup_fetch"
+      && lineupRecoveryWindowOpen
+      && lineupDataHealth?.available === true
+      && lineupDataHealth?.ready === false);
   const stateValue = String(state);
   const predictionDeadline = new Date(schedule.predictionDeadline || "");
   const predictionDeadlineElapsed = !Number.isNaN(predictionDeadline.getTime())
@@ -643,7 +664,7 @@ export function getV3CompletedStateMismatches({ state = V3_STATE.SCHEDULED, jobs
     }));
 }
 
-export function getV3WorkflowDiagnostics({ schedule, state = "scheduled", game = {}, jobs = [], now = new Date() } = {}) {
+export function getV3WorkflowDiagnostics({ schedule, state = "scheduled", game = {}, jobs = [], now = new Date(), lineupDataHealth = null } = {}) {
   const current = now instanceof Date ? now : new Date(now);
   const stateValue = String(state || "scheduled");
   const predictionDeadline = new Date(schedule?.predictionDeadline || "");
@@ -662,6 +683,15 @@ export function getV3WorkflowDiagnostics({ schedule, state = "scheduled", game =
   const lineupStateAllowed = ["prediction_closed", "manual_action_required"].includes(stateValue);
   let lineupCanRun = lineupStateAllowed;
   const lineupBlockingReasons = [];
+  const lineupFetchCompletedWithoutCandidate = lineupDataHealth?.available === true
+    && lineupDataHealth?.ready === false
+    && String(latestV3JobByType(jobs, "lineup_fetch")?.status || "") === "completed";
+  if (lineupFetchCompletedWithoutCandidate) {
+    lineupBlockingReasons.push({
+      code: "LINEUP_FETCH_COMPLETED_WITHOUT_CANDIDATE",
+      message: "lineup_fetch jobはcompletedですがcandidate/canonical lineupがありません。再取得が必要です。"
+    });
+  }
   if (!lineupStateAllowed) {
     lineupCanRun = false;
     if (predictionDeadlineElapsed) {
@@ -721,6 +751,10 @@ export function getV3WorkflowDiagnostics({ schedule, state = "scheduled", game =
     completedStateMismatches,
     lineupFetch: {
       canRun: lineupCanRun,
+      completedWithoutCandidate: lineupFetchCompletedWithoutCandidate,
+      candidateExists: lineupDataHealth?.candidateExists ?? null,
+      canonicalDataReady: lineupDataHealth?.canonicalDataReady ?? null,
+      finalizedLineupExists: lineupDataHealth?.finalizedLineupExists ?? null,
       blockingReasonCode: lineupBlockingReason?.code || null,
       blockingReason: lineupBlockingReason?.message || null,
       blockingReasons: lineupBlockingReasons

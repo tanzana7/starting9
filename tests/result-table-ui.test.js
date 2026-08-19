@@ -34,11 +34,20 @@ function createActualBasisDetails(sourceDetails, actualLineup) {
   return context.build(sourceDetails, actualLineup);
 }
 
-test("採点結果テーブルは実際のスタメン順を基準に予想と実際を比較する", () => {
+function createDisplayDetails(sourceDetails, actualLineup) {
+  const context = vm.createContext({
+    LINEUP_SIZE: 9,
+    normalizePlayerKey: (value) => String(value || "").normalize("NFKC").replace(/[\s\u3000]/g, "")
+  });
+  vm.runInContext(`${sourceForFunction("createActualBasisDetails")};${sourceForFunction("mergeRawPredictionSlots")}; this.build = (source, actual) => mergeRawPredictionSlots(source, createActualBasisDetails(source, actual));`, context);
+  return context.build(sourceDetails, actualLineup);
+}
+
+test("採点結果テーブルは予想欄を先に、実際のスタメン順で比較する", () => {
   const source = sourceForFunction("createResultTable");
-  assert.match(source, /<th class="result-group-heading result-actual-group-heading">実際のスタメン/);
   assert.match(source, /<th class="result-group-heading">あなたの予想/);
-  assert.ok(source.indexOf("実際のスタメン") < source.indexOf("あなたの予想"));
+  assert.match(source, /<th class="result-group-heading result-actual-group-heading">実際のスタメン/);
+  assert.ok(source.indexOf("あなたの予想") < source.indexOf("実際のスタメン"));
   assert.match(source, /<th class="result-group-heading">判定/);
   assert.match(source, /<th class="result-point-heading">点数/);
   assert.match(source, /<th class="result-order-heading">打順/);
@@ -55,6 +64,7 @@ test("採点結果テーブルは実際のスタメン順を基準に予想と�
   assert.equal((source.match(/createHitBadge\(detail\./g) || []).length, 3);
   const viewModel = sourceForFunction("createResultViewModel");
   assert.match(viewModel, /createActualBasisDetails\(normalizedDetails, result\.actualLineup\)/);
+  assert.match(viewModel, /mergeRawPredictionSlots\(normalizedDetails, actualBasisDetails\)/);
 });
 
 test("結果表示モデルは実際のスタメン順に並べ、同じ選手の予想と行点を保持する", () => {
@@ -62,16 +72,20 @@ test("結果表示モデルは実際のスタメン順に並べ、同じ選手�
     { order: 1, player: "別選手", position: "遊", actualOrder: null, point: 0, isPlayerHit: false, isOrderHit: false, isPositionHit: false },
     { order: 2, player: "カストロ", position: "中", actualOrder: 7, actualPlayer: "今川優馬", actualPosition: "左", point: 7, isPlayerHit: true, isOrderHit: false, isPositionHit: true },
     { order: 3, player: "レイエス", position: "指", actualOrder: 4, actualPlayer: "吉田賢吾", actualPosition: "一", point: 7, isPlayerHit: true, isOrderHit: false, isPositionHit: true },
-    { order: 5, player: "今川優馬", position: "右", actualOrder: 2, actualPlayer: "有薗直輝", actualPosition: "三", point: 5, isPlayerHit: true, isOrderHit: false, isPositionHit: false }
+    { order: 4, player: "野村佑希", position: "左", point: 0, isPlayerHit: false, isOrderHit: false, isPositionHit: false },
+    { order: 5, player: "今川優馬", position: "右", actualOrder: 2, actualPlayer: "有薗直輝", actualPosition: "三", point: 5, isPlayerHit: true, isOrderHit: false, isPositionHit: false },
+    { order: 7, player: "有薗直輝", position: "三", actualOrder: 5, point: 7, isPlayerHit: true, isOrderHit: false, isPositionHit: true }
   ];
   const actualLineup = [
     { order: 1, player: "水野達稀", position: "遊", playerId: "p1" },
     { order: 2, player: "今川優馬", position: "左", playerId: "p2" },
     { order: 3, player: "吉田賢吾", position: "一", playerId: "p3" },
     { order: 4, player: "レイエス", position: "指", playerId: "p4" },
-    { order: 7, player: "カストロ", position: "中", playerId: "p5" }
+    { order: 5, player: "有薗直輝", position: "三", playerId: "p5" },
+    { order: 7, player: "カストロ", position: "中", playerId: "p6" }
   ];
   const details = createActualBasisDetails(sourceDetails, actualLineup);
+  const displayDetails = createDisplayDetails(sourceDetails, actualLineup);
 
   assert.equal(details[0].order, 1);
   assert.equal(details[0].actualPlayer, "水野達稀");
@@ -92,17 +106,36 @@ test("結果表示モデルは実際のスタメン順に並べ、同じ選手�
   assert.equal(details[6].player, "カストロ");
   assert.equal(details[6].predictionOrder, 2);
   assert.equal(details[6].point, 7);
-  assert.equal(details.reduce((total, detail) => total + detail.point, 0), 19);
+  assert.equal(details.reduce((total, detail) => total + detail.point, 0), 26);
+  assert.equal(displayDetails[0].player, "別選手");
+  assert.equal(displayDetails[1].player, "カストロ");
+  assert.equal(displayDetails[2].player, "レイエス");
+  assert.equal(displayDetails[2].actualPlayer, "吉田賢吾");
+  assert.equal(displayDetails[2].point, 0);
+  assert.equal(displayDetails[3].player, "野村佑希");
+  assert.equal(displayDetails[3].actualPlayer, "レイエス");
+  assert.equal(displayDetails[3].point, 7);
+  assert.equal(displayDetails[6].player, "有薗直輝");
+  assert.equal(displayDetails[6].actualPlayer, "カストロ");
+  assert.equal(displayDetails[6].point, 7);
 });
 
-test("実際選手を予想していない場合だけ未予想になり、実際選手順を維持する", () => {
-  const details = createActualBasisDetails([
-    { order: 3, player: "レイエス", position: "指", actualPlayer: "吉田賢吾", actualPosition: "一", point: 7, isPlayerHit: true, isOrderHit: false, isPositionHit: true },
+test("実際選手基準の点数と予想スロット表示を分離する", () => {
+  const sourceDetails = [
+    { order: 3, player: "レイエス", position: "指", point: 7, isPlayerHit: true, isOrderHit: false, isPositionHit: true },
     { order: 5, player: "今川優馬", position: "右", actualOrder: 2, point: 5, isPlayerHit: true, isOrderHit: false, isPositionHit: false }
-  ], [
+  ];
+  const details = createActualBasisDetails(sourceDetails, [
     { order: 1, player: "水野達稀", position: "遊", playerId: "p1" },
     { order: 2, player: "今川優馬", position: "左", playerId: "p2" },
-    { order: 3, player: "吉田賢吾", position: "一", playerId: "p3" }
+    { order: 3, player: "吉田賢吾", position: "一", playerId: "p3" },
+    { order: 4, player: "レイエス", position: "指", playerId: "p4" }
+  ]);
+  const displayDetails = createDisplayDetails(sourceDetails, [
+    { order: 1, player: "水野達稀", position: "遊", playerId: "p1" },
+    { order: 2, player: "今川優馬", position: "左", playerId: "p2" },
+    { order: 3, player: "吉田賢吾", position: "一", playerId: "p3" },
+    { order: 4, player: "レイエス", position: "指", playerId: "p4" }
   ]);
 
   assert.equal(details[1].player, "今川優馬");
@@ -113,9 +146,14 @@ test("実際選手を予想していない場合だけ未予想になり、実�
   assert.equal(details[2].isPlayerHit, false);
   assert.equal(details[2].isOrderHit, false);
   assert.equal(details[2].isPositionHit, false);
+  assert.equal(displayDetails[2].player, "レイエス");
+  assert.equal(displayDetails[2].actualPlayer, "吉田賢吾");
+  assert.equal(displayDetails[2].point, 0);
+  assert.equal(displayDetails[3].player, "");
+  assert.equal(displayDetails[3].actualPlayer, "レイエス");
 });
 
-test("実スタメン配列がない保存済み結果も予想スロット順を維持する", () => {
+test("実スタメン配列がない保存済み結果も実際選手順を維持する", () => {
   const sourceDetails = [
     {
       order: 1,
@@ -260,9 +298,9 @@ test("採点結果は既存のviewModelからCanvas画像として表示する",
   assert.match(view, /setAttribute\("role", "img"\)/);
   assert.match(canvas, /viewModel\.breakdown\.player/);
   assert.match(canvas, /viewModel\.details\.forEach/);
-  assert.match(canvas, /drawPlayerCard\(detail\.actualPlayer \|\| "-", detail\.actualPosition/);
   assert.match(canvas, /drawPlayerCard\(detail\.player \|\| "未予想", detail\.position/);
-  assert.ok(canvas.indexOf("drawPlayerCard(detail.actualPlayer") < canvas.indexOf("drawPlayerCard(detail.player"));
+  assert.match(canvas, /drawPlayerCard\(detail\.actualPlayer \|\| "-", detail\.actualPosition/);
+  assert.ok(canvas.indexOf("drawPlayerCard(detail.player") < canvas.indexOf("drawPlayerCard(detail.actualPlayer"));
   assert.doesNotMatch(canvas, /detail\.predictionOrder/);
   assert.match(canvas, /drawJudgement\(detail\.isPlayerHit, "出場"/);
   assert.match(canvas, /drawJudgement\(detail\.isOrderHit, "打順"/);
@@ -301,8 +339,8 @@ test("結果Canvasは判定列・行高・点数バッジを微調整する", ()
 
 test("結果Canvasは列座標を使用前に初期化する", () => {
   const canvas = sourceForFunction("createResultCanvas");
-  const actualColumnDeclaration = canvas.indexOf("const actualColumnX = tableX + orderWidth;");
-  const predictedColumnDeclaration = canvas.indexOf("const predictedColumnX = actualColumnX + playerWidth;");
+  const predictedColumnDeclaration = canvas.indexOf("const predictedColumnX = tableX + orderWidth;");
+  const actualColumnDeclaration = canvas.indexOf("const actualColumnX = predictedColumnX + playerWidth;");
   const actualColumnUse = canvas.indexOf("context.fillRect(actualColumnX + 1");
   assert.notEqual(predictedColumnDeclaration, -1);
   assert.notEqual(actualColumnDeclaration, -1);

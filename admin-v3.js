@@ -218,7 +218,9 @@ function npbIdentityDisplay(game) {
     job,
     jobStatus: diagnostics?.completedWithoutCode || (job?.status === "completed" && !code)
       ? "完了扱い / code未解決"
-      : job ? statusLabel(job.status) : identityState === "pending" ? "待機中" : "未作成",
+      : diagnostics?.blocking && !code
+        ? "未解決 / code未解決"
+        : job ? statusLabel(job.status) : identityState === "pending" ? "待機中" : "未作成",
     code: code || "掲載待ち"
   };
 }
@@ -228,7 +230,7 @@ function gameHasAttention(game) {
   if (["unresolved", "manual_action_required"].includes(String(game?.npbIdentityState || ""))) return true;
   const diagnostics = game?.workflowDiagnostics || {};
   if (diagnostics.predictionClose?.overdue || diagnostics.predictionClose?.stateMismatch) return true;
-  if (diagnostics.identity?.completedWithoutCode || diagnostics.lineupFetch?.blockingReasonCode === "PREDICTION_CLOSE_STATE_TRANSITION_MISSING") return true;
+  if (diagnostics.identity?.blocking || diagnostics.lineupFetch?.blockingReasons?.length) return true;
   return currentFailedV3Jobs(game).length > 0
     || currentRetryWaitV3Jobs(game).length > 0;
 }

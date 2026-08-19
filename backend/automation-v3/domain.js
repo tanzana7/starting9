@@ -628,34 +628,40 @@ export function getV3WorkflowDiagnostics({ schedule, state = "scheduled", game =
   const identityJob = latestV3JobByType(jobs, "npb_identity_resolve");
   const npbGameCode = String(game?.npbGameCode || game?.npb_game_code || "").trim();
   const identityCompletedWithoutCode = String(identityJob?.status || "") === "completed" && !npbGameCode;
+  const identityNeedsAttention = !npbGameCode
+    && (predictionDeadlineElapsed || ["completed", "retry_wait", "failed"].includes(String(identityJob?.status || "")));
   const lineupStateAllowed = ["prediction_closed", "manual_action_required"].includes(stateValue);
   let lineupCanRun = lineupStateAllowed;
-  let lineupBlockingReasonCode = null;
-  let lineupBlockingReason = null;
+  const lineupBlockingReasons = [];
   if (!lineupStateAllowed) {
     lineupCanRun = false;
-    if (!predictionDeadlineElapsed) {
-      lineupBlockingReasonCode = null;
-      lineupBlockingReason = null;
-    } else {
-      lineupBlockingReasonCode = predictionCloseStateMismatch
-        ? "PREDICTION_CLOSE_STATE_TRANSITION_MISSING"
-        : "PREDICTION_CLOSE_STATE_GATE";
-      lineupBlockingReason = predictionCloseStateMismatch
-        ? "prediction_close jobは完了していますがworkflow stateがscheduledのままです。"
-        : "prediction_close完了後のworkflow state遷移待ちです。";
+    if (predictionDeadlineElapsed) {
+      lineupBlockingReasons.push({
+        code: predictionCloseStateMismatch
+          ? "PREDICTION_CLOSE_STATE_TRANSITION_MISSING"
+          : "PREDICTION_CLOSE_STATE_GATE",
+        message: predictionCloseStateMismatch
+          ? "prediction_close jobは完了していますがworkflow stateがscheduledのままです。"
+          : predictionCloseCompleted
+            ? "prediction_close完了後のworkflow state遷移待ちです。"
+            : "prediction_close未完了のためlineup_fetchはstate gateで実行できません。"
+      });
     }
-  } else if (!npbGameCode) {
-    lineupCanRun = false;
-    lineupBlockingReasonCode = "NPB_GAME_CODE_NOT_AVAILABLE";
-    lineupBlockingReason = identityCompletedWithoutCode
-      ? "NPB識別jobは完了扱いですがgame codeが未解決です。"
-      : "NPB game codeが未解決のためスタメン取得を実行できません。";
-  } else if (!["resolved", "manually_overridden"].includes(String(game?.npbIdentityState || game?.npb_identity_state || ""))) {
-    lineupCanRun = false;
-    lineupBlockingReasonCode = "NPB_IDENTITY_UNRESOLVED";
-    lineupBlockingReason = "NPB試合識別情報の解決待ちです。";
   }
+  if (!npbGameCode && (predictionDeadlineElapsed || lineupStateAllowed)) {
+    lineupCanRun = false;
+    lineupBlockingReasons.push({
+      code: "NPB_GAME_CODE_NOT_AVAILABLE",
+      message: identityCompletedWithoutCode
+        ? "NPB識別jobは完了扱いですがgame codeが未解決です。"
+        : "NPB game codeが未解決のためスタメン取得を実行できません。"
+    });
+  }
+  if (npbGameCode && lineupStateAllowed && !["resolved", "manually_overridden"].includes(String(game?.npbIdentityState || game?.npb_identity_state || ""))) {
+    lineupCanRun = false;
+    lineupBlockingReasons.push({ code: "NPB_IDENTITY_UNRESOLVED", message: "NPB試合識別情報の解決待ちです。" });
+  }
+  const lineupBlockingReason = lineupBlockingReasons[0] || null;
   return {
     predictionClose: {
       deadlineAt: Number.isNaN(predictionDeadline.getTime()) ? null : predictionDeadline.toISOString(),
@@ -676,12 +682,18 @@ export function getV3WorkflowDiagnostics({ schedule, state = "scheduled", game =
       jobStatus: identityJob?.status || "not_created",
       jobId: identityJob?.id || null,
       completedWithoutCode: identityCompletedWithoutCode,
-      warning: identityCompletedWithoutCode ? "NPB識別jobは完了扱いですがgame codeが未解決です。" : null
+      blocking: identityNeedsAttention,
+      warning: identityNeedsAttention
+        ? identityCompletedWithoutCode
+          ? "NPB識別jobは完了扱いですがgame codeが未解決です。"
+          : "NPB game codeが未解決です。NPB未発表とは別に識別情報の確認が必要です。"
+        : null
     },
     lineupFetch: {
       canRun: lineupCanRun,
-      blockingReasonCode: lineupBlockingReasonCode,
-      blockingReason: lineupBlockingReason
+      blockingReasonCode: lineupBlockingReason?.code || null,
+      blockingReason: lineupBlockingReason?.message || null,
+      blockingReasons: lineupBlockingReasons
     }
   };
 }

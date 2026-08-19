@@ -24,7 +24,7 @@ function loadPublicModule(name, extra = {}) {
 
 test("公開画面のentry pointは分割moduleを読み込んでCoordinatorを一経路で起動する", () => {
   const moduleScripts = ["state", "request-guard", "storage", "api-client", "app-coordinator", "render-results", "render-ranking", "roster", "prediction-form"];
-  const scriptOffset = html.indexOf("script.js?v=public-result-display-prediction-slot-score-actual-1");
+  const scriptOffset = html.indexOf("script.js?v=public-result-loading-speed-improvement-1");
   assert.ok(scriptOffset > 0);
   moduleScripts.forEach((name) => {
     const offset = html.indexOf(`${modulePath(name)}?v=public-past-result-date-heading-1`);
@@ -83,6 +83,23 @@ test("公開メタデータは同一タブの短TTLキャッシュを再利用�
   assert.equal(second.fromCache, true);
   assert.equal(requestCount, 1);
   assert.equal(JSON.stringify(second.payload), JSON.stringify(first.payload));
+  const bypassed = await client.getCached("/api/public/games", { cacheKey: "public-games-test", ttlMs: 30_000, cache: "no-store" });
+  assert.equal(bypassed.fromCache, false);
+  assert.equal(requestCount, 2);
+  values.set("starting9:public-api:v1:expired-test", JSON.stringify({ expiresAt: Date.now() - 1, status: 200, payload: { ok: true, value: "stale" } }));
+  const expired = await client.getCached("/api/public/games", { cacheKey: "expired-test", ttlMs: 30_000 });
+  assert.equal(expired.fromCache, false);
+  assert.equal(requestCount, 3);
+});
+
+test("結果表示は当日公開済み試合を先行取得し、履歴はユーザー別短TTLで再利用する", () => {
+  const coordinator = read(modulePath("app-coordinator"));
+  assert.match(script, /function getFastPreviousResultGame\(\)/);
+  assert.match(script, /function maybeLoadFastPreviousResult\(\)/);
+  assert.match(script, /RESULT_HISTORY_SESSION_CACHE_TTL_MS = 30 \* 1000/);
+  assert.match(script, /cacheKey: userId \? `result-history:\$\{userId\}`/);
+  assert.match(script, /fastPrevious && response\.status === 404/);
+  assert.match(coordinator, /void ops\.maybeLoadFastPreviousResult\(\)/);
 });
 
 test("canonicalゲーム設定はlegacy/localStorageの古い試合を予想対象へ戻さない", () => {
@@ -105,7 +122,7 @@ test("予想保存・リセット・アカウント同期は最新結果表示�
 });
 
 test("公開画面のキャッシュバスターはmodule分割版へ更新される", () => {
-  assert.match(html, /script\.js\?v=public-result-display-prediction-slot-score-actual-1/);
+  assert.match(html, /script\.js\?v=public-result-loading-speed-improvement-1/);
   assert.match(html, /style\.css\?v=public-beta-release-qa-fixes-1/);
 });
 

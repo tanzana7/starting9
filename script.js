@@ -41,6 +41,7 @@ const PREDICTION_DEADLINE_REFRESH_MS = 30 * 1000;
 const ROSTER_SNAPSHOT_CACHE_TTL_MS = 60 * 60 * 1000;
 const PUBLIC_GAMES_SESSION_CACHE_TTL_MS = 30 * 1000;
 const PREVIOUS_RESULT_SESSION_CACHE_TTL_MS = 30 * 1000;
+const RESULT_HISTORY_SESSION_CACHE_TTL_MS = 30 * 1000;
 const AUTO_FILL_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "指"]);
 const OUTFIELD_POSITIONS = ["左", "中", "右"];
 // 日程・NPB取得の長いチームコードは維持し、選手IDだけ短い球団IDを使います。
@@ -293,6 +294,7 @@ const appState = publicFrontend.state.createPublicAppState(state);
 const publicRequestGuard = publicFrontend.createPublicRequestGuard(appState.requests);
 const publicApiClient = publicFrontend.createPublicApiClient();
 let previousResultGameRequestPromise = null;
+let fastPreviousResultRequestPromise = null;
 
 function syncPublicAppState() {
   publicFrontend.state.syncPublicAppState(appState, state);
@@ -424,7 +426,8 @@ const publicAppCoordinator = new publicFrontend.PublicAppCoordinator({
     refreshYearlyRanking,
     refreshMonthlyRanking,
     refreshWeeklyRanking,
-    refreshResultHistory
+    refreshResultHistory,
+    maybeLoadFastPreviousResult
   }
 });
 if (typeof window !== "undefined") {
@@ -1778,6 +1781,34 @@ function buildPreviousResultGameApiUrl() {
   return baseUrl ? `${baseUrl}/api/public/previous-result-game` : "";
 }
 
+function getFastPreviousResultGame() {
+  const games = Array.isArray(state.publicGameCatalog.games) ? state.publicGameCatalog.games : [];
+  const now = Date.now();
+  return games
+    .filter((game) => {
+      if (!game?.internalGameId || !isPublicGamePublished(game)) return false;
+      const startAt = game.startAt ? new Date(game.startAt) : parseJstScheduleDateTime(game);
+      return startAt && !Number.isNaN(startAt.getTime()) && startAt.getTime() <= now;
+    })
+    .sort((left, right) => getScheduleSortValue(left).localeCompare(getScheduleSortValue(right)))
+    .pop() || null;
+}
+
+function maybeLoadFastPreviousResult() {
+  const user = getPredictionAccountUser();
+  const candidate = getFastPreviousResultGame();
+  const history = state.resultHistory;
+  if (!user || !candidate || history.selectedGameId || history.result || history.isDetailLoading || fastPreviousResultRequestPromise) {
+    return null;
+  }
+  const requestPromise = loadResultHistoryGame(candidate.internalGameId, { manual: false, fastPrevious: true });
+  const trackedPromise = requestPromise.finally(() => {
+    if (fastPreviousResultRequestPromise === trackedPromise) fastPreviousResultRequestPromise = null;
+  });
+  fastPreviousResultRequestPromise = trackedPromise;
+  return trackedPromise;
+}
+
 function mergePublicGameSchedules(staticGames = [], apiGames = []) {
   // Public cards are only allowed to use the canonical games API. Static schedule
   // data can be stale and must not select or label a user-facing prediction game.
@@ -2968,7 +2999,7 @@ async function refreshResultHistory({ force = false } = {}) {
   }
   if (state.resultHistory.isLoading || (!force && state.resultHistory.games.length > 0)) return;
   const request = beginPublicRequest("result", { abort: true });
-  beginPublicRequest("resultDetail", { abort: true });
+  if (!fastPreviousResultRequestPromise) beginPublicRequest("resultDetail", { abort: true });
   const url = buildResultGamesApiUrl();
   if (!url) return;
   state.resultHistory.isLoading = true;
@@ -2976,8 +3007,17 @@ async function refreshResultHistory({ force = false } = {}) {
   state.resultHistory.detailError = "";
   state.resultHistory.message = "過去の試合結果を確認中...";
   renderResultHistory();
+  void maybeLoadFastPreviousResult();
   try {
-    const { response, payload } = await publicApiClient.get(url, { credentials: "include", signal: request.signal });
+    const userId = String(user.id || user.userId || "").trim();
+    const requestOptions = {
+      cacheKey: userId ? `result-history:${userId}` : "",
+      ttlMs: RESULT_HISTORY_SESSION_CACHE_TTL_MS,
+      credentials: "include",
+      signal: request.signal
+    };
+    if (force) requestOptions.cache = "no-store";
+    const { response, payload } = await publicApiClient.getCached(url, requestOptions);
     if (!response.ok || !payload?.ok || !Array.isArray(payload.games)) {
       throw new Error(payload?.error || `HTTP ${response.status}`);
     }
@@ -3031,9 +3071,10 @@ async function handleResultHistoryChange(event) {
   await loadResultHistoryGame(select.value);
 }
 
-async function loadResultHistoryGame(gameId, { manual = true } = {}) {
+async function loadResultHistoryGame(gameId, { manual = true, fastPrevious = false } = {}) {
   const cached = state.resultHistory.detailCache?.[gameId];
   if (cached) {
+    if (fastPrevious) return cached;
     state.resultHistory.selectedGameId = gameId;
     state.resultHistory.displayMode = manual ? "selected" : "previous";
     state.resultHistory.result = cached;
@@ -3062,7 +3103,15 @@ async function loadResultHistoryGame(gameId, { manual = true } = {}) {
   renderResultHistory();
   try {
     const { response, payload } = await publicApiClient.get(buildResultGamesApiUrl(gameId), { credentials: "include", signal: request.signal });
-    if (!response.ok || !payload?.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+    if (!response.ok || !payload?.ok) {
+      if (fastPrevious && response.status === 404) {
+        state.resultHistory.selectedGameId = "";
+        state.resultHistory.detailError = "";
+        state.resultHistory.message = "";
+        return;
+      }
+      throw new Error(payload?.error || `HTTP ${response.status}`);
+    }
     if (!isCurrentPublicRequest("resultDetail", request.id)) return;
     if (payload.serviceUnavailable) {
       state.resultHistory.result = {
@@ -3093,15 +3142,25 @@ async function loadResultHistoryGame(gameId, { manual = true } = {}) {
     }
     const prediction = remotePredictionToLocal({ lineup: payload.prediction.lineup }, payload.updatedAt || payload.submittedAt, gameId);
     const actual = remotePredictionToLocal({ lineup: payload.actualLineup }, payload.scoredAt || "", gameId);
-    state.resultHistory.result = {
+    const nextResult = {
       ...scoreLineup(prediction.lineup, actual.lineup),
       gameId: payload.internalGameId || payload.gameId || gameId,
       internalGameId: payload.internalGameId || "",
       publishedAt: payload.publishedAt || "",
       totalScore: payload.totalScore ?? payload.score ?? null
     };
-    state.resultHistory.detailCache[gameId] = state.resultHistory.result;
-    state.result = state.resultHistory.result;
+    state.resultHistory.detailCache[gameId] = nextResult;
+    if (fastPrevious) {
+      state.resultHistory.isReady = true;
+      state.resultHistory.result = nextResult;
+      state.result = nextResult;
+      state.resultHistory.message = "";
+      void fetchDailyBestNine({ gameId: payload.internalGameId || payload.gameId || gameId, force: false });
+      renderScoreResult();
+      return nextResult;
+    }
+    state.resultHistory.result = nextResult;
+    state.result = nextResult;
     state.resultHistory.message = "";
     void fetchDailyBestNine({ gameId: payload.internalGameId || payload.gameId || gameId, force: true });
     renderScoreResult();

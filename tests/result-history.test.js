@@ -79,7 +79,7 @@ test("過去結果は一覧を先に描画し、詳細を遅延取得・セッ�
 
 test("前回自動表示と過去結果の手動選択で採点結果見出しの文脈を分ける", () => {
   const renderer = fs.readFileSync(path.join(root, "frontend", "public", "render-results.js"), "utf8");
-  assert.match(script, /async function loadResultHistoryGame\(gameId, \{ manual = true \} = \{\}\)/);
+  assert.match(script, /async function loadResultHistoryGame\(gameId, \{ manual = true, fastPrevious = false \} = \{\}\)/);
   assert.match(script, /loadResultHistoryGame\(getResultHistoryGameId\(latestParticipatedPublishedGame\), \{ manual: false \}\)/);
   assert.match(renderer, /displayMode === "selected"/);
   assert.match(renderer, /`\$\{date\}の採点結果`/);

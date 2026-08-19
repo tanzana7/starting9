@@ -43,7 +43,7 @@
     }
 
     async function getCached(url, { cacheKey = url, ttlMs = 0, ...options } = {}) {
-      const cached = readSessionCache(cacheKey, ttlMs);
+      const cached = options.cache === "no-store" ? null : readSessionCache(cacheKey, ttlMs);
       if (cached) {
         return {
           response: { ok: true, status: cached.status || 200 },

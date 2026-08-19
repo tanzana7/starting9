@@ -39,6 +39,7 @@
       });
       void ops.initializePublicGameCatalog()
         .then(() => {
+          void ops.maybeLoadFastPreviousResult();
           ops.startPredictionDeadlineTicker();
           void Promise.allSettled([
             ops.initializeProbableStarter(),

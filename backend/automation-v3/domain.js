@@ -615,6 +615,34 @@ function latestV3JobByType(jobs, jobType) {
     .sort((left, right) => String(right?.updated_at || right?.scheduled_at || "").localeCompare(String(left?.updated_at || left?.scheduled_at || "")))[0] || null;
 }
 
+// A V3 main job may persist its business side effect before the runner stores
+// the workflow boundary. Keep the expected boundary in one pure contract so
+// the runner and admin diagnostics classify the same mismatch.
+export const V3_COMPLETED_STATE_TRANSITIONS = Object.freeze([
+  Object.freeze({ jobType: V3_JOB_TYPE.PREDICTION_CLOSE, from: V3_STATE.SCHEDULED, to: V3_STATE.PREDICTION_CLOSED, label: "予想締切" }),
+  Object.freeze({ jobType: V3_JOB_TYPE.LINEUP_FINALIZE, from: V3_STATE.PREDICTION_CLOSED, to: V3_STATE.LINEUP_READY, label: "正式スタメン確定" }),
+  Object.freeze({ jobType: V3_JOB_TYPE.SCORE, from: V3_STATE.LINEUP_READY, to: V3_STATE.SCORED, label: "採点" }),
+  Object.freeze({ jobType: V3_JOB_TYPE.RANKING_REBUILD, from: V3_STATE.SCORED, to: V3_STATE.RANKED, label: "ランキング反映" }),
+  Object.freeze({ jobType: V3_JOB_TYPE.PUBLISH, from: V3_STATE.RANKED, to: V3_STATE.PUBLISHED, label: "結果公開" })
+]);
+
+export function getV3CompletedStateMismatches({ state = V3_STATE.SCHEDULED, jobs = [] } = {}) {
+  const stateValue = String(state || V3_STATE.SCHEDULED);
+  return V3_COMPLETED_STATE_TRANSITIONS
+    .filter((transition) => stateValue === transition.from)
+    .map((transition) => ({ transition, job: latestV3JobByType(jobs, transition.jobType) }))
+    .filter(({ job }) => String(job?.status || "") === "completed")
+    .map(({ transition, job }) => ({
+      code: `${transition.jobType.toUpperCase()}_STATE_TRANSITION_MISSING`,
+      message: `${transition.label}jobはcompletedですがworkflow stateが${transition.from}のままです。`,
+      jobType: transition.jobType,
+      jobId: job?.id || null,
+      completedAt: job?.completed_at || null,
+      from: transition.from,
+      to: transition.to
+    }));
+}
+
 export function getV3WorkflowDiagnostics({ schedule, state = "scheduled", game = {}, jobs = [], now = new Date() } = {}) {
   const current = now instanceof Date ? now : new Date(now);
   const stateValue = String(state || "scheduled");
@@ -626,6 +654,7 @@ export function getV3WorkflowDiagnostics({ schedule, state = "scheduled", game =
   const predictionCloseCompleted = String(predictionCloseJob?.status || "") === "completed";
   const predictionCloseStateMismatch = predictionDeadlineElapsed && stateValue === "scheduled" && predictionCloseCompleted;
   const identityJob = latestV3JobByType(jobs, "npb_identity_resolve");
+  const completedStateMismatches = getV3CompletedStateMismatches({ state: stateValue, jobs });
   const npbGameCode = String(game?.npbGameCode || game?.npb_game_code || "").trim();
   const identityCompletedWithoutCode = String(identityJob?.status || "") === "completed" && !npbGameCode;
   const identityNeedsAttention = !npbGameCode
@@ -689,6 +718,7 @@ export function getV3WorkflowDiagnostics({ schedule, state = "scheduled", game =
           : "NPB game codeが未解決です。NPB未発表とは別に識別情報の確認が必要です。"
         : null
     },
+    completedStateMismatches,
     lineupFetch: {
       canRun: lineupCanRun,
       blockingReasonCode: lineupBlockingReason?.code || null,

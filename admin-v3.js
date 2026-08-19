@@ -230,6 +230,7 @@ function gameHasAttention(game) {
   if (["unresolved", "manual_action_required"].includes(String(game?.npbIdentityState || ""))) return true;
   const diagnostics = game?.workflowDiagnostics || {};
   if (diagnostics.predictionClose?.overdue || diagnostics.predictionClose?.stateMismatch) return true;
+  if (diagnostics.completedStateMismatches?.length) return true;
   if (diagnostics.identity?.blocking || diagnostics.lineupFetch?.blockingReasons?.length) return true;
   return currentFailedV3Jobs(game).length > 0
     || currentRetryWaitV3Jobs(game).length > 0;
@@ -292,6 +293,7 @@ function nextV3Job(game) {
 function nextV3ActionText(game) {
   const schedule = game?.schedule || {};
   const diagnostics = game?.workflowDiagnostics || {};
+  if (diagnostics.completedStateMismatches?.length) return "completed後の状態再同期 / 要確認";
   if (schedule.isBlocked && schedule.nextActionLabel) return `${schedule.nextActionLabel} / 要確認`;
   if (diagnostics.lineupFetch?.blockingReason && diagnostics.predictionClose?.deadlineElapsed) {
     return `${schedule.nextActionLabel || "スタメン取得"} / 要確認`;

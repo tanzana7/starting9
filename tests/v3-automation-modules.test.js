@@ -65,7 +65,13 @@ test("V3 Cron diagnostics aggregate planner, claim, executor, and schedule-sync 
       identityPlan: { planned: [] },
       mainPlan: { planned: [] },
       claimReport: { due: [{}], claimed: [{ claimResult: "claimed" }] },
-      processed: 1
+      processed: 1,
+      stateReconciliation: {
+        recovered: 1,
+        failed: 0,
+        recoveredByJobType: { prediction_close: 1 },
+        skipped: []
+      }
     },
     scheduleSync: { status: "skipped", futureGamesBefore: 3, futureGamesAfter: 3, gamesFetched: 0, gamesInserted: 0, gamesUpdated: 0 }
   });
@@ -73,6 +79,8 @@ test("V3 Cron diagnostics aggregate planner, claim, executor, and schedule-sync 
   assert.equal(summary.status, "completed");
   assert.equal(summary.counts.planned, 2);
   assert.equal(summary.counts.claimed, 1);
+  assert.equal(summary.stateReconciliation.recovered, 1);
+  assert.deepEqual(summary.stateReconciliation.recoveredByJobType, { prediction_close: 1 });
   assert.deepEqual(summary.createdByJobType, { probable_starter_fetch: 1 });
   assert.equal(summary.scheduleSync.futureGamesAfter, 3);
 });

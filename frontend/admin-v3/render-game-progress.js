@@ -207,6 +207,9 @@
       const messages = [
         diagnostics.predictionClose?.warning,
         diagnostics.identity?.warning,
+        ...(diagnostics.completedStateMismatches || [])
+          .filter((mismatch) => mismatch.jobType !== "prediction_close")
+          .map((mismatch) => `${mismatch.code}: ${mismatch.message}`),
         ...(diagnostics.lineupFetch?.blockingReasons || []).map((reason) => `${reason.code}: ${reason.message}`)
       ].filter(Boolean);
       if (!messages.length) return "";

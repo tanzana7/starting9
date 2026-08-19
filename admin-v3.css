@@ -157,6 +157,7 @@ button:disabled { cursor: wait; opacity: .65; }
 .v3-operation-reason input { width: min(420px, 100%); }
 .v3-operation-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 9px 0; }
 .v3-operation-result { min-height: 1.3em; color: #1b5c8b; overflow-wrap: anywhere; }
+.v3-operation-warning { margin: 10px 0 0; padding: 9px 10px; border-left: 3px solid #d39a2e; color: #6e4d16; background: #fff8e8; font-size: 12px; line-height: 1.5; }
 .npb-identity-diagnostics { margin: 8px 0; color: #526477; font-size: 12px; }
 .npb-identity-diagnostics summary, .v3-panel summary { cursor: pointer; color: #1b5c8b; font-weight: 700; }
 .npb-diagnostic-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 6px 12px; margin: 10px 0; }

@@ -32,7 +32,10 @@ test("公開済み試合はread-onlyで、後続V3 jobは対象外試合へ投�
 test("正式処理済み試合の中止は強い確認を要求する", () => {
   assert.match(worker, /V3_STRONG_CONFIRMATION_REQUIRED/);
   assert.match(worker, /confirmationText.*中止/);
+  assert.match(worker, /V3_RANKING_REVOCATION_CONFIRMATION_REQUIRED/);
+  assert.match(worker, /rankingConfirmationText.*ランキング取消/);
   assert.match(renderer, /data-v3-schedule-confirmation-text/);
+  assert.match(renderer, /data-v3-schedule-ranking-confirmation-text/);
 });
 
 test("ランキング対象外化はAPI単体でも確認必須で、公開済み試合はread-only", () => {
@@ -55,6 +58,6 @@ test("公開UIは中止・サービス対象外を選択対象から除外しつ
 });
 
 test("admin-v3のcache busterは中止操作版へ更新されている", () => {
-  assert.match(page, /admin-v3-cancel-game-operation-1/);
+  assert.match(page, /admin-v3-cancel-game-ranking-revoke-1/);
   assert.doesNotMatch(page, /admin-v3-add-game-preview-1/);
 });

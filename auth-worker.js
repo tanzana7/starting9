@@ -5985,17 +5985,30 @@ async function handleAdminV3RankingGet(env, cors, context) {
          FROM ranking_reflection_revisions WHERE internal_game_id = ?1 ORDER BY ranking_update_revision DESC LIMIT 1`
     ).bind(context.id).first();
   } catch (error) { if (!isPregameSchemaError(error)) throw error; }
+  const reflectionAudit = await getV3RankingReflectionAudit(env.AUTH_DB, context.id);
   return jsonResponse({ ok: true, internalGameId: context.id, ranking: ranking ? {
     gameStatus: ranking.game_status, publicationStatus: ranking.publication_status,
     rankingEligible: Number(ranking.is_ranking_eligible || 0) === 1,
     scoredPrivateAt: ranking.scored_private_at, publishedAt: ranking.published_at
-  } : null, scoring: { ...completion, noOpReason }, rankingNoOpReason, activeScoringRevision: activeRevision, reflection }, 200, cors);
+  } : null, scoring: { ...completion, noOpReason }, rankingNoOpReason, activeScoringRevision: activeRevision, reflection, reflectionAudit }, 200, cors);
 }
 
 async function handleAdminV3RankingRebuild(request, env, cors, context, user) {
   const input = await readJson(request);
   const reason = String(input?.reason || "").trim();
   if (!reason || reason.length > 240) throw createV3Error("V3_REASON_REQUIRED", "ランキング再構築理由を入力してください。", { httpStatus: 400 });
+  const eligibility = await getRankingEligibilityState(env.AUTH_DB, context.metadata.gameId, context.id);
+  if (eligibility?.rankingEligibilityStatus !== RANKING_ELIGIBILITY_STATUS.ELIGIBLE) {
+    return jsonResponse({
+      ok: true,
+      internalGameId: context.id,
+      noOp: true,
+      reason,
+      noOpReason: "RANKING_REFLECTION_REVOKED_BY_ELIGIBILITY",
+      rankingRevoked: true,
+      rankingEligibility: eligibility
+    }, 200, cors);
+  }
   const completion = await getScoringCompletionState(env.AUTH_DB, context.metadata);
   if (!completion.complete) throw createV3Error("V3_SCORING_INCOMPLETE", "全予想の採点が完了していません。", { httpStatus: 409 });
   const activeRevision = await getActiveScoringRevision(env.AUTH_DB, context.id);
@@ -6112,21 +6125,38 @@ async function handleAdminV3EligibilityUpdate(request, env, cors, context, user)
   const stateRow = await env.AUTH_DB.prepare(
     "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
   ).bind(context.id).first();
+  const currentState = String(stateRow?.state || "scheduled");
+  const reflectionAudit = status === RANKING_ELIGIBILITY_STATUS.EXCLUDED
+    ? await getV3RankingReflectionAudit(env.AUTH_DB, context.id)
+    : null;
+  const rankingRevocationRequired = status === RANKING_ELIGIBILITY_STATUS.EXCLUDED
+    && (reflectionAudit?.hasReflectedRevision === true || currentState === "ranked");
+  if (rankingRevocationRequired && !reflectionAudit?.available) {
+    throw createV3Error("V3_RANKING_REFLECTION_STATE_UNAVAILABLE", "ランキング反映履歴を確認できないため、ランキング取消を安全に実行できません。", { httpStatus: 503 });
+  }
+  if (rankingRevocationRequired && String(input?.rankingConfirmationText || "").trim() !== "ランキング取消") {
+    throw createV3Error("V3_RANKING_REVOCATION_CONFIRMATION_REQUIRED", "ランキング反映済み試合の対象外化には「ランキング取消」の入力確認が必要です。", { httpStatus: 409 });
+  }
   const lineup = await getGameLineup(env.AUTH_DB, context.metadata);
-  if (String(stateRow?.state || "") === "published" || Boolean(lineup?.published_at)) {
+  if (currentState === "published" || Boolean(lineup?.published_at)) {
     throw createV3Error("V3_PUBLISHED_READ_ONLY", "公開済み試合のランキング対象状態は変更できません。", { httpStatus: 409 });
   }
   const previous = await getRankingEligibilityState(env.AUTH_DB, context.metadata.gameId, context.id);
   if (previous && previous.rankingEligibilityStatus === status && String(previous.rankingEligibilityReason || "") === reason && String(previous.rankingEligibilityNote || "") === String(input?.note || "").trim()) {
     return jsonResponse({ ok: true, internalGameId: context.id, noOp: true, rankingEligibility: previous }, 200, cors);
   }
-  const eligibility = await setRankingEligibility(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, status, reason, note: String(input?.note || "").trim(), updatedBy: `admin:${user.id}`, now: new Date() });
-  const rankingJob = await createV3AdminActionJob(env.AUTH_DB, context.id, "ranking_rebuild", new Date(), "admin", {
-    allowAfterCompleted: true,
-    scheduledSlotAt: eligibility?.rankingEligibilityUpdatedAt || new Date()
-  });
-  await recordV3AdminAudit(env.AUTH_DB, { internalGameId: context.id, jobType: "admin:ranking_eligibility", stateAfter: status });
-  return jsonResponse({ ok: true, internalGameId: context.id, rankingEligibility: eligibility, rankingJob }, 200, cors);
+  const eligibility = await setRankingEligibility(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, status, reason, note: String(input?.note || "").trim(), reflectionStatus: rankingRevocationRequired ? "revoked" : "excluded", updatedBy: `admin:${user.id}`, now: new Date() });
+  const rankingRevocation = rankingRevocationRequired
+    ? { required: true, wasReflected: reflectionAudit.hasReflectedRevision, status: "revoked", affectedScopes: reflectionAudit.affectedScopes, rebuildExecuted: false, sourceOfTruth: "ranking_games_eligibility_filter" }
+    : { required: false, wasReflected: false, status: null, affectedScopes: [], rebuildExecuted: false, sourceOfTruth: "ranking_games_eligibility_filter" };
+  const rankingJob = rankingRevocationRequired
+    ? { created: false, noOp: true, reason: "RANKING_REFLECTION_REVOKED_BY_ELIGIBILITY", job: null }
+    : await createV3AdminActionJob(env.AUTH_DB, context.id, "ranking_rebuild", new Date(), "admin", {
+      allowAfterCompleted: true,
+      scheduledSlotAt: eligibility?.rankingEligibilityUpdatedAt || new Date()
+    });
+  await recordV3AdminAudit(env.AUTH_DB, { internalGameId: context.id, jobType: "admin:ranking_eligibility", stateAfter: status, failureMessage: `[v3_details=${JSON.stringify({ reason, rankingRevocation })}]` });
+  return jsonResponse({ ok: true, internalGameId: context.id, rankingEligibility: eligibility, rankingJob, rankingRevocation }, 200, cors);
 }
 
 async function handleAdminV3ScheduleGet(env, cors, context) {
@@ -6137,6 +6167,8 @@ async function handleAdminV3ScheduleGet(env, cors, context) {
   const currentState = String(stateRow?.state || "scheduled");
   const lineup = await getGameLineup(env.AUTH_DB, context.metadata);
   const publishedReadOnly = currentState === "published" || Boolean(lineup?.published_at);
+  const rankingReflection = await getV3RankingReflectionAudit(env.AUTH_DB, context.id);
+  const rankingRevocationRequired = currentState === "ranked" || rankingReflection.hasReflectedRevision === true;
   let lastStatusChange = null;
   let stoppedJobs = [];
   try {
@@ -6174,6 +6206,13 @@ async function handleAdminV3ScheduleGet(env, cors, context) {
       publishedReadOnly,
       currentState,
       strongConfirmationRequired: ["lineup_ready", "scored", "ranked"].includes(currentState),
+      rankingRevocationConfirmationRequired: rankingRevocationRequired,
+      rankingReflection: {
+        ...rankingReflection,
+        revocationStatus: rankingRevocationRequired ? "revoked_on_cancel" : null,
+        rebuildRequired: false,
+        sourceOfTruth: "ranking_games_eligibility_filter"
+      },
       reason: lastStatusChange?.reason || null,
       changedBy: lastStatusChange?.changed_by || null,
       changedAt: lastStatusChange?.changed_at || null,
@@ -6183,7 +6222,13 @@ async function handleAdminV3ScheduleGet(env, cors, context) {
           ? "この試合はサービス対象外です。予想・採点・ランキングの対象外です。"
           : "この試合は中止になりました。予想・採点・ランキングの対象外です。")
         : null,
-      nextSafeAction: publishedReadOnly ? "diagnose_or_audit_only" : unavailable ? "保存済み予想の閲覧のみ" : "中止理由と確認を入力して対象外化"
+      nextSafeAction: publishedReadOnly
+        ? "diagnose_or_audit_only"
+        : unavailable
+          ? "保存済み予想の閲覧のみ"
+          : rankingRevocationRequired
+            ? "中止理由・中止・ランキング取消を入力して対象外化"
+            : "中止理由と確認を入力して対象外化"
     }
   } }, 200, cors);
 }
@@ -6205,8 +6250,13 @@ async function handleAdminV3ScheduleUpdate(request, env, cors, context, user) {
     "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
   ).bind(context.id).first();
   const currentState = String(stateRow?.state || "scheduled");
+  const rankingReflection = await getV3RankingReflectionAudit(env.AUTH_DB, context.id);
+  const rankingRevocationRequired = currentState === "ranked" || rankingReflection.hasReflectedRevision === true;
   if (currentState === "published") {
     throw createV3Error("V3_SCHEDULE_CHANGE_TOO_LATE", "正式スタメン確定後の日程変更は今回の運用範囲では実行できません。", { httpStatus: 409 });
+  }
+  if (rankingRevocationRequired && !rankingReflection.available) {
+    throw createV3Error("V3_RANKING_REFLECTION_STATE_UNAVAILABLE", "ランキング反映履歴を確認できないため、中止によるランキング取消を安全に実行できません。", { httpStatus: 503 });
   }
   if (currentState === "excluded" && requestedStatus === "scheduled") {
     throw createV3Error("V3_SCHEDULE_REOPEN_UNSUPPORTED", "対象外試合の再開は公開後訂正フローの対象です。", { httpStatus: 409 });
@@ -6223,6 +6273,10 @@ async function handleAdminV3ScheduleUpdate(request, env, cors, context, user) {
     && String(input?.confirmationText || "").trim() !== "中止") {
     throw createV3Error("V3_STRONG_CONFIRMATION_REQUIRED", "正式処理済み試合の中止・対象外化には「中止」の入力確認が必要です。", { httpStatus: 409 });
   }
+  if (rankingRevocationRequired && requestedStatus !== "scheduled"
+    && String(input?.rankingConfirmationText || "").trim() !== "ランキング取消") {
+    throw createV3Error("V3_RANKING_REVOCATION_CONFIRMATION_REQUIRED", "ランキング反映済み試合の中止・対象外化には「ランキング取消」の入力確認が必要です。", { httpStatus: 409 });
+  }
   const body = {
     startAt: input?.startAt || context.target.start_time,
     gameDate: context.target.game_date,
@@ -6231,7 +6285,8 @@ async function handleAdminV3ScheduleUpdate(request, env, cors, context, user) {
     status: requestedStatus,
     npbGameCode: context.target.gameCode || "",
     stadium: context.target.stadium || "",
-    reason
+    reason,
+    rankingReflectionStatus: rankingRevocationRequired ? "revoked" : "excluded"
   };
   const synthetic = new Request("https://starting9.internal/api/admin/v3/schedule", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const response = await handleAdminGameScheduleUpdate(synthetic, env, cors, context.metadata, user);
@@ -6250,8 +6305,30 @@ async function handleAdminV3ScheduleUpdate(request, env, cors, context, user) {
       throw error;
     }
   }
-  await recordV3AdminAudit(env.AUTH_DB, { internalGameId: context.id, jobType: "admin:schedule", stateBefore: currentState, stateAfter, failureMessage: `[v3_details=${JSON.stringify({ reason, status: requestedStatus, confirmed: input?.confirmed === true, pendingJobsRescheduled })}]` });
-  return jsonResponse({ ...payload, internalGameId: context.id, stateBefore: currentState, stateAfter, pendingJobsRescheduled }, response.status, cors);
+  const rankingRevocation = rankingRevocationRequired && requestedStatus !== "scheduled"
+    ? {
+      required: true,
+      wasReflected: rankingReflection.hasReflectedRevision,
+      status: "revoked",
+      affectedScopes: rankingReflection.affectedScopes,
+      rebuildExecuted: false,
+      sourceOfTruth: "ranking_games_eligibility_filter"
+    }
+    : { required: false, wasReflected: false, status: null, affectedScopes: [], rebuildExecuted: false, sourceOfTruth: "ranking_games_eligibility_filter" };
+  const detail = `[v3_details=${JSON.stringify({ reason, status: requestedStatus, confirmed: input?.confirmed === true, rankingConfirmationText: input?.rankingConfirmationText || null, rankingRevocation, pendingJobsRescheduled })}]`;
+  await recordV3AdminAudit(env.AUTH_DB, { internalGameId: context.id, jobType: "admin:cancel_game_with_ranking_revoke", stateBefore: currentState, stateAfter, failureMessage: detail });
+  if (rankingRevocation.required) {
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "ranking_reflection_revoked",
+      status: "success",
+      gameId: context.metadata.gameId,
+      occurredAt: new Date(),
+      message: "中止・対象外化に伴いランキングreflectionを無効化しました。",
+      metadata: { internalGameId: context.id, affectedScopes: rankingRevocation.affectedScopes, sourceOfTruth: rankingRevocation.sourceOfTruth, rebuildExecuted: false },
+      source: "admin"
+    }).catch(() => {});
+  }
+  return jsonResponse({ ...payload, internalGameId: context.id, stateBefore: currentState, stateAfter, pendingJobsRescheduled, rankingRevocation }, response.status, cors);
 }
 
 async function reschedulePendingV3Jobs(db, internalGameId, schedule) {
@@ -7661,6 +7738,7 @@ async function handleAdminGameScheduleUpdate(request, env, cors, metadata, user)
           status: RANKING_ELIGIBILITY_STATUS.EXCLUDED,
           reason: cancellationReason,
           note: reason,
+          reflectionStatus: input?.rankingReflectionStatus === "revoked" ? "revoked" : "excluded",
           updatedBy: user?.id ? `admin:${user.id}` : "admin",
           now
         });
@@ -13378,9 +13456,51 @@ async function recordRankingReflectionRevision(db, {
   }
 }
 
+const RANKING_REFLECTION_SCOPES = Object.freeze([
+  "yearly",
+  "monthly",
+  "weekly",
+  "perfect",
+  "daily-best-nine"
+]);
+
+async function getV3RankingReflectionAudit(db, internalGameId) {
+  const result = {
+    available: false,
+    hasReflectedRevision: false,
+    latestStatus: null,
+    latestScoringRevisionId: null,
+    latestRankingUpdateRevision: null,
+    affectedScopes: []
+  };
+  if (!internalGameId) return result;
+  try {
+    const rows = await db.prepare(
+      `SELECT scoring_revision_id, ranking_update_revision, status, reflected_at
+         FROM ranking_reflection_revisions
+        WHERE internal_game_id = ?1
+        ORDER BY ranking_update_revision DESC LIMIT 100`
+    ).bind(internalGameId).all();
+    const reflections = rows.results || [];
+    const latest = reflections[0] || null;
+    result.available = true;
+    result.hasReflectedRevision = reflections.some((row) => String(row.status || "") === "reflected");
+    result.latestStatus = latest?.status || null;
+    result.latestScoringRevisionId = latest?.scoring_revision_id || null;
+    result.latestRankingUpdateRevision = latest?.ranking_update_revision === undefined
+      ? null
+      : Number(latest.ranking_update_revision);
+    result.affectedScopes = result.hasReflectedRevision ? [...RANKING_REFLECTION_SCOPES] : [];
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+    result.errorCode = "V3_RANKING_REFLECTION_SCHEMA_UNAVAILABLE";
+  }
+  return result;
+}
+
 async function setRankingEligibility(db, {
   gameId, internalGameId = "", status, reason = null, note = null,
-  updatedBy = "admin", now = new Date()
+  updatedBy = "admin", now = new Date(), reflectionStatus = "excluded"
 } = {}) {
   const nextStatus = normalizeRankingEligibilityStatus(status);
   if (!gameId) throw createPregameError("RANKING_GAME_REQUIRED", "対象試合がありません。", { httpStatus: 400 });
@@ -13422,7 +13542,8 @@ async function setRankingEligibility(db, {
   if (nextStatus === RANKING_ELIGIBILITY_STATUS.EXCLUDED) {
     await cancelUnstartedRankingJobs(db, internalGameId || current.internal_game_id || "", now);
     await setCanonicalEligibilityWorkflowStatus(db, internalGameId || current.internal_game_id || "", "ranking_excluded", now);
-    await recordRankingReflectionRevision(db, { internalGameId: internalGameId || current.internal_game_id || "", eligibilityVersion: version, status: "excluded", now });
+    const nextReflectionStatus = reflectionStatus === "revoked" ? "revoked" : "excluded";
+    await recordRankingReflectionRevision(db, { internalGameId: internalGameId || current.internal_game_id || "", eligibilityVersion: version, status: nextReflectionStatus, now });
   } else if (nextStatus === RANKING_ELIGIBILITY_STATUS.PENDING_ADMIN_DECISION) {
     await cancelUnstartedRankingJobs(db, internalGameId || current.internal_game_id || "", now);
     await setCanonicalEligibilityWorkflowStatus(db, internalGameId || current.internal_game_id || "", "ranking_exclusion_pending", now);

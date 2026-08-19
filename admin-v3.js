@@ -115,6 +115,21 @@ async function runV3Job(internalGameId, jobType) {
   }
 }
 
+async function reconcileV3State(internalGameId) {
+  if (!window.confirm("成果物を確認できた場合だけworkflow stateを1段階再同期します。公開済み試合は読み取り専用です。実行しますか？")) return;
+  const reason = window.prompt("状態再同期の理由を入力してください（1〜240文字）", "admin-v3: completed jobと成果物の整合性確認");
+  if (!String(reason || "").trim()) return;
+  const previous = manualOperation(internalGameId, "state_reconcile") || {};
+  setManualOperation(internalGameId, "state_reconcile", { ...previous, status: "loading", error: false, message: "成果物を確認して状態を再同期中…" });
+  try {
+    const result = await v3Api.reconcileState(internalGameId, { reason: String(reason).trim(), confirmed: true });
+    setManualOperation(internalGameId, "state_reconcile", { status: "success", error: false, message: `${result.stateBefore} → ${result.stateAfter} を再同期しました。` });
+    await loadV3();
+  } catch (error) {
+    setManualOperation(internalGameId, "state_reconcile", { status: "error", error: true, message: `${error.code || "V3_STATE_RECONCILE_FAILED"}: ${error.message}` });
+  }
+}
+
 // Compatibility alias for focused tests and future incremental extraction.
 function v3Fetch(path, options = {}) {
   return v3Api.request(path, options);
@@ -231,6 +246,7 @@ function gameHasAttention(game) {
   const diagnostics = game?.workflowDiagnostics || {};
   if (diagnostics.predictionClose?.overdue || diagnostics.predictionClose?.stateMismatch) return true;
   if (diagnostics.completedStateMismatches?.length) return true;
+  if (diagnostics.artifactBlockingReasons?.length) return true;
   if (diagnostics.identity?.blocking || diagnostics.lineupFetch?.blockingReasons?.length) return true;
   return currentFailedV3Jobs(game).length > 0
     || currentRetryWaitV3Jobs(game).length > 0;
@@ -294,6 +310,7 @@ function nextV3ActionText(game) {
   const schedule = game?.schedule || {};
   const diagnostics = game?.workflowDiagnostics || {};
   if (diagnostics.completedStateMismatches?.length) return "completed後の状態再同期 / 要確認";
+  if (diagnostics.artifactBlockingReasons?.length) return "成果物未反映 / 正式V3操作が必要";
   if (schedule.isBlocked && schedule.nextActionLabel) return `${schedule.nextActionLabel} / 要確認`;
   if (diagnostics.lineupFetch?.blockingReason && diagnostics.predictionClose?.deadlineElapsed) {
     return `${schedule.nextActionLabel || "スタメン取得"} / 要確認`;
@@ -909,6 +926,7 @@ adminV3Modules.createAdminV3Coordinator({
     selectGame: (internalGameId) => selectV3Game(internalGameId),
     diagnoseJob: diagnoseV3Job,
     runJob: runV3Job,
+    reconcileState: reconcileV3State,
     copyJobDetail: copyV3JobDetail,
     refreshJobDetail: (internalGameId, jobId) => loadV3JobDetail(internalGameId, jobId, true),
     toggleJobDetail: toggleV3JobDetail,

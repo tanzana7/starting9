@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { deriveV3PhaseStatus } from "../game-automation-v3.js";
+import { deriveV3PhaseStatus, getV3WorkflowDiagnostics as v3WorkflowDiagnostics } from "../game-automation-v3.js";
 
 const game = { internalGameId: "9b0e9956-9565-474e-96e9-33b1e5ef6ae0", gameDate: "2026-08-09", startAt: "2026-08-09T06:00:00.000Z" };
 const missingSnapshot = { exists: false, isFresh: false, isStale: true, staleReason: "ROSTER_SNAPSHOT_MISSING" };
@@ -51,6 +51,44 @@ test("completed lineup_fetch without candidate is attention", () => {
   assert.equal(status.severity, "ATTENTION");
   assert.equal(status.reasonCode, "LINEUP_FETCH_COMPLETED_WITHOUT_CANDIDATE");
   assert.match(status.message, /candidate\/canonical lineup/);
+});
+
+test("completed後の成果物不足はlineup_finalize/score/ranking/publishを成功扱いにしない", () => {
+  const baseJob = (job_type) => ({ job_type, status: "completed", id: 99, completed_at: "2026-08-19T05:02:00.000Z" });
+  const artifactHealth = {
+    available: true,
+    lineup: { available: true, candidateExists: true, finalizedLineupExists: false, ready: true },
+    scoring: { available: true, ready: false },
+    ranking: { available: true, reflected: false },
+    publication: { available: true, published: false }
+  };
+  const cases = [
+    ["lineup_finalize", "prediction_closed", "LINEUP_FINALIZE_COMPLETED_WITHOUT_FINALIZED_LINEUP"],
+    ["score", "lineup_ready", "SCORING_COMPLETED_WITHOUT_SCORE"],
+    ["ranking", "scored", "RANKING_COMPLETED_WITHOUT_REFLECTION"],
+    ["publish", "ranked", "PUBLISH_COMPLETED_WITHOUT_PUBLICATION"]
+  ];
+  for (const [phase, workflowState, reasonCode] of cases) {
+    const jobType = phase === "ranking" ? "ranking_rebuild" : phase;
+    const status = deriveV3PhaseStatus({ phase, game, workflowState, jobs: [baseJob(jobType)], workflowArtifactHealth: artifactHealth });
+    assert.equal(status.severity, "ATTENTION");
+    assert.equal(status.reasonCode, reasonCode);
+  }
+});
+
+test("artifact mismatch diagnostics expose all completed jobs requiring recovery", () => {
+  const diagnostics = v3WorkflowDiagnostics({
+    state: "lineup_ready",
+    jobs: [{ job_type: "score", status: "completed", id: 3 }],
+    workflowArtifactHealth: {
+      available: true,
+      lineup: { available: true, candidateExists: true, finalizedLineupExists: true, ready: true },
+      scoring: { available: true, ready: false },
+      ranking: { available: true, reflected: false },
+      publication: { available: true, published: false }
+    }
+  });
+  assert.equal(diagnostics.artifactBlockingReasons[0]?.code, "SCORING_COMPLETED_WITHOUT_SCORE");
 });
 
 test("共通phase判定はstructured logs用の共通factsを返す", () => {

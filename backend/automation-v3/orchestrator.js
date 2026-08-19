@@ -98,6 +98,35 @@ async function readV3LineupDataHealth(db, internalGameId, workflowState = "sched
   return health;
 }
 
+async function readV3WorkflowArtifactHealth(db, internalGameId, workflowState = "scheduled") {
+  const lineup = await readV3LineupDataHealth(db, internalGameId, workflowState);
+  const health = {
+    available: lineup.available,
+    lineup,
+    scoreReady: false,
+    rankingReflected: false,
+    publicationReady: false
+  };
+  try {
+    const canonical = await db.prepare(
+      `SELECT scoring_status, scored_at, publication_status, published_at
+         FROM game_lineups WHERE internal_game_id = ?1 LIMIT 1`
+    ).bind(internalGameId).first();
+    health.scoreReady = String(canonical?.scoring_status || "") === "scored" && Boolean(canonical?.scored_at);
+    health.publicationReady = String(canonical?.publication_status || "") === "published" && Boolean(canonical?.published_at);
+    const reflection = await db.prepare(
+      `SELECT status FROM ranking_reflection_revisions
+        WHERE internal_game_id = ?1
+        ORDER BY ranking_update_revision DESC, id DESC LIMIT 1`
+    ).bind(internalGameId).first();
+    health.rankingReflected = String(reflection?.status || "") === "reflected";
+  } catch {
+    // Legacy or partially migrated schemas must not trigger speculative jobs.
+    health.available = false;
+  }
+  return health;
+}
+
 async function readV3StateForPlanning(db, internalGameId) {
   try {
     return await db.prepare(
@@ -277,6 +306,9 @@ export async function planV3MainJobs(db, games = [], now = new Date()) {
           : plan.jobType === V3_JOB_TYPE.RANKING_REBUILD
             ? "ranking"
             : null;
+        const artifactRecoveryType = [V3_JOB_TYPE.LINEUP_FINALIZE, V3_JOB_TYPE.PUBLISH].includes(plan.jobType)
+          ? plan.jobType
+          : null;
         const isTerminalRecovery = recoveryJobType
           && !result.created
           && (recoveryJobType === "score"
@@ -292,6 +324,36 @@ export async function planV3MainJobs(db, games = [], now = new Date()) {
           diagnostic.recoveryOfJobId = recoveryOfJobId;
           diagnostic.recoveryScheduledSlotAt = recoverySlot.toISOString();
           recoveryKind = recoveryJobType;
+        } else if (artifactRecoveryType && !result.created && isV3TerminalJobStatus(result.job?.status)) {
+          const health = await readV3WorkflowArtifactHealth(db, game.internalGameId, state);
+          const missingArtifact = artifactRecoveryType === V3_JOB_TYPE.LINEUP_FINALIZE
+            ? health.available && health.lineup.finalizedLineupExists === false && health.lineup.candidateExists === true
+            : health.available && health.publicationReady === false && health.rankingReflected === true;
+          Object.assign(diagnostic, {
+            ...health,
+            completedWithoutArtifact: missingArtifact,
+            recoveryReason: missingArtifact ? `${artifactRecoveryType.toUpperCase()}_COMPLETED_WITHOUT_ARTIFACT` : null
+          });
+          if (missingArtifact) {
+            const openRecovery = await hasOpenV3Job(db, game.internalGameId, artifactRecoveryType);
+            recoveryOfJobId = result.job?.id || null;
+            recoveryKind = artifactRecoveryType;
+            if (!openRecovery) {
+              const originalSlot = new Date(plan.scheduledSlotAt);
+              const recoveryTimestamp = Math.max(originalSlot.getTime(), new Date(now).getTime()) + 1000;
+              const recoverySlot = new Date(recoveryTimestamp);
+              effectivePlan = { ...plan, scheduledSlotAt: recoverySlot, scheduledAt: recoverySlot };
+              diagnostic = {
+                ...createV3PlanningDiagnostic(game, effectivePlan, state),
+                ...health,
+                completedWithoutArtifact: true,
+                recoveryReason: `${artifactRecoveryType.toUpperCase()}_COMPLETED_WITHOUT_ARTIFACT`
+              };
+              result = await createV3Job(db, { internalGameId: game.internalGameId, ...effectivePlan });
+              diagnostic.recoveryOfJobId = recoveryOfJobId;
+              diagnostic.recoveryScheduledSlotAt = recoverySlot.toISOString();
+            }
+          }
         } else if (plan.jobType === V3_JOB_TYPE.LINEUP_FETCH
           && !result.created
           && isV3TerminalJobStatus(result.job?.status)) {
@@ -334,9 +396,12 @@ export async function planV3MainJobs(db, games = [], now = new Date()) {
         diagnostic.reasonCode = recoveryKind === "lineup"
           ? (result.created ? "V3_LINEUP_RECOVERY_JOB_CREATED" : diagnostic.reasonCode || "V3_LINEUP_RECOVERY_JOB_ALREADY_EXISTS")
           : recoveryOfJobId
-          ? recoveryJobType === "score"
-            ? (result.created ? "V3_SCORE_RECOVERY_JOB_CREATED" : "V3_SCORE_RECOVERY_JOB_ALREADY_EXISTS")
-            : (result.created ? "V3_RANKING_RECOVERY_JOB_CREATED" : "V3_RANKING_RECOVERY_JOB_ALREADY_EXISTS")
+          ? ({
+              score: result.created ? "V3_SCORE_RECOVERY_JOB_CREATED" : "V3_SCORE_RECOVERY_JOB_ALREADY_EXISTS",
+              ranking: result.created ? "V3_RANKING_RECOVERY_JOB_CREATED" : "V3_RANKING_RECOVERY_JOB_ALREADY_EXISTS",
+              lineup_finalize: result.created ? "V3_LINEUP_FINALIZE_RECOVERY_JOB_CREATED" : "V3_LINEUP_FINALIZE_RECOVERY_JOB_ALREADY_EXISTS",
+              publish: result.created ? "V3_PUBLISH_RECOVERY_JOB_CREATED" : "V3_PUBLISH_RECOVERY_JOB_ALREADY_EXISTS"
+            }[recoveryKind] || (result.created ? "V3_RECOVERY_JOB_CREATED" : "V3_RECOVERY_JOB_ALREADY_EXISTS"))
           : (result.created ? "V3_JOB_CREATED" : "V3_JOB_ALREADY_EXISTS");
         const entry = {
           game,

@@ -38,19 +38,59 @@ async function invokeV3Observer(observer, args = [], timeoutMs = V3_OBSERVER_TIM
   }
 }
 
-async function canReconcileCompletedV3StateTransition(db, internalGameId, transition) {
-  // ranking_rebuild has an intentional completed/no-op branch for excluded
-  // games. Only a reflected ranking revision proves that ranked is safe.
-  if (transition.jobType !== V3_JOB_TYPE.RANKING_REBUILD) return true;
+function hasStoredLineupPayload(value) {
+  if (typeof value !== "string" || !value.trim()) return false;
   try {
-    const reflection = await db.prepare(
-      `SELECT status
-         FROM ranking_reflection_revisions
-        WHERE internal_game_id = ?1
-        ORDER BY ranking_update_revision DESC, id DESC
-        LIMIT 1`
-    ).bind(internalGameId).first();
-    return String(reflection?.status || "") === "reflected";
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) && parsed.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function canReconcileCompletedV3StateTransition(db, internalGameId, transition) {
+  try {
+    switch (transition.jobType) {
+      case V3_JOB_TYPE.PREDICTION_CLOSE:
+        return true;
+      case V3_JOB_TYPE.LINEUP_FINALIZE: {
+        const final = await db.prepare(
+          `SELECT actual_lineup_json
+             FROM game_lineup_revisions
+            WHERE internal_game_id = ?1 AND is_final = 1
+            ORDER BY version DESC LIMIT 1`
+        ).bind(internalGameId).first();
+        return hasStoredLineupPayload(final?.actual_lineup_json);
+      }
+      case V3_JOB_TYPE.SCORE: {
+        const lineup = await db.prepare(
+          `SELECT scoring_status, scored_at
+             FROM game_lineups
+            WHERE internal_game_id = ?1 LIMIT 1`
+        ).bind(internalGameId).first();
+        return String(lineup?.scoring_status || "") === "scored" && Boolean(lineup?.scored_at);
+      }
+      case V3_JOB_TYPE.RANKING_REBUILD: {
+        const reflection = await db.prepare(
+          `SELECT status
+             FROM ranking_reflection_revisions
+            WHERE internal_game_id = ?1
+            ORDER BY ranking_update_revision DESC, id DESC
+            LIMIT 1`
+        ).bind(internalGameId).first();
+        return String(reflection?.status || "") === "reflected";
+      }
+      case V3_JOB_TYPE.PUBLISH: {
+        const publication = await db.prepare(
+          `SELECT publication_status, published_at
+             FROM game_lineups
+            WHERE internal_game_id = ?1 LIMIT 1`
+        ).bind(internalGameId).first();
+        return String(publication?.publication_status || "") === "published" && Boolean(publication?.published_at);
+      }
+      default:
+        return false;
+    }
   } catch {
     return false;
   }
@@ -84,7 +124,12 @@ async function reconcileCompletedV3StateTransitions(env, games = [], now = new D
         ).bind(game.internalGameId, transition.jobType).first();
         if (!completedJob) break;
         if (!(await canReconcileCompletedV3StateTransition(env.AUTH_DB, game.internalGameId, transition))) {
-          skipped.push({ jobType: transition.jobType, jobId: Number(completedJob.id), reason: "SIDE_EFFECT_CONFIRMATION_REQUIRED" });
+          skipped.push({
+            jobType: transition.jobType,
+            jobId: Number(completedJob.id),
+            reason: "V3_COMPLETED_WITHOUT_REQUIRED_ARTIFACT",
+            code: `${String(transition.jobType).toUpperCase()}_COMPLETED_WITHOUT_ARTIFACT`
+          });
           break;
         }
         await transitionV3State(env.AUTH_DB, {

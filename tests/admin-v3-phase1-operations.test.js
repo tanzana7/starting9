@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+const v3Domain = fs.readFileSync(path.join(root, "backend", "automation-v3", "domain.js"), "utf8");
 const client = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
 const gameProgress = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-game-progress.js"), "utf8");
 const jobDetails = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-job-details.js"), "utf8");
@@ -57,8 +58,21 @@ test("管理画面は旧直接編集操作を表示せず、正式V3 jobの診�
   assert.match(gameProgress, /data-v3-job-diagnose/);
   assert.match(gameProgress, /data-v3-job-run/);
   assert.match(gameProgress, /正式V3 jobを投入/);
-  assert.match(page, /admin-v3\.js\?v=admin-v3-completed-state-reconcile-1/);
-  assert.match(page, /admin-v3\.css\?v=admin-v3-completed-state-reconcile-1/);
+  assert.match(page, /admin-v3\.js\?v=admin-v3-v3-recovery-operations-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-v3-v3-recovery-operations-1/);
+});
+
+test("V3 completed jobは成果物確認なしにstateを自動前進させず、admin状態再同期を使う", () => {
+  assert.match(worker, /handleAdminV3StateReconcile/);
+  assert.match(worker, /V3_STATE_RECONCILE_ARTIFACT_MISSING/);
+  assert.match(worker, /V3_PUBLISHED_READ_ONLY/);
+  assert.match(worker, /workflowArtifactHealth/);
+  assert.match(v3Domain, /LINEUP_FINALIZE_COMPLETED_WITHOUT_FINALIZED_LINEUP/);
+  assert.match(v3Domain, /SCORING_COMPLETED_WITHOUT_SCORE/);
+  assert.match(v3Domain, /PUBLISH_COMPLETED_WITHOUT_PUBLICATION/);
+  assert.match(worker, /assertV3GameNotPublished/);
+  assert.match(gameProgress, /成果物を確認して状態再同期/);
+  assert.match(client, /reconcileV3State/);
 });
 
 test("管理画面のjob詳細は失敗内容を確認でき、ユーザー情報を描画しない", () => {

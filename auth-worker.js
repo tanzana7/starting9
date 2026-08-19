@@ -134,6 +134,7 @@ import {
   getV3RosterStatusDecision,
   compareV3RosterSourceSnapshot,
   deriveV3PhaseStatus,
+  getV3ArtifactMismatch,
   getV3NextAction,
   getV3WorkflowDiagnostics,
   getV3ProbableStarterPollingSlots,
@@ -1126,7 +1127,26 @@ async function executeV3LineupExecutor({ env, internalGameId, now, target, state
     }
     return { status: result.status, stateBefore, stateAfter: stateBefore, lineupDataHealth };
   }
-  return { status: result.status, stateBefore, stateAfter: "lineup_ready" };
+  const finalizedHealth = await getV3LineupDataHealth(env.AUTH_DB, internalGameId, stateBefore);
+  if (!finalizedHealth.available) {
+    throw createV3Error("V3_LINEUP_DATA_HEALTH_UNAVAILABLE", "正式スタメンの確定状態を確認できないため、完了扱いにできません。", {
+      retryable: true,
+      diagnostics: { executorStage: "verify_lineup_finalize_side_effect", internalGameId, ...finalizedHealth }
+    });
+  }
+  if (!finalizedHealth.finalizedLineupExists) {
+    const code = finalizedHealth.candidateExists
+      ? "LINEUP_FINALIZE_COMPLETED_WITHOUT_FINALIZED_LINEUP"
+      : "LINEUP_FINALIZE_COMPLETED_WITHOUT_CANDIDATE";
+    throw createV3Error(code, finalizedHealth.candidateExists
+      ? "lineup_finalizeは完了しましたが正式スタメンが保存されていません。"
+      : "lineup_finalizeは完了しましたがcandidateがありません。", {
+        retryable: true,
+        retryAt: new Date(new Date(now).getTime() + 60 * 1000),
+        diagnostics: { executorStage: "verify_lineup_finalize_side_effect", internalGameId, ...finalizedHealth }
+      });
+  }
+  return { status: result.status, stateBefore, stateAfter: "lineup_ready", lineupDataHealth: finalizedHealth };
 }
 
 async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore }) {
@@ -1276,7 +1296,20 @@ async function executeV3PublishExecutor({ env, internalGameId, now, target, stat
   }
   const result = await publishScoredGameResults(env, internalGameId, now, { internalGameId, target, source: "v3" });
   if (!result.published && result.status !== "already_published") throw createV3Error("V3_PUBLICATION_NOT_READY", "V3公開条件を満たしていません。");
-  return { status: result.status, stateBefore, stateAfter: "published" };
+  const publishedLineup = await getGameLineup(env.AUTH_DB, { gameId: internalGameId, internalGameId });
+  if (String(publishedLineup?.publication_status || "") !== "published" || !publishedLineup?.published_at) {
+    throw createV3Error("PUBLISH_COMPLETED_WITHOUT_PUBLICATION", "公開処理は完了扱いですがpublication_status/published_atが反映されていません。", {
+      retryable: true,
+      retryAt: new Date(new Date(now).getTime() + 60 * 1000),
+      diagnostics: {
+        executorStage: "verify_publish_side_effect",
+        internalGameId,
+        publicationStatus: publishedLineup?.publication_status || null,
+        publishedAt: publishedLineup?.published_at || null
+      }
+    });
+  }
+  return { status: result.status, stateBefore, stateAfter: "published", publication: { status: publishedLineup.publication_status, publishedAt: publishedLineup.published_at } };
 }
 
 // The registry is the executable contract. Every V3 job type has one named
@@ -4142,6 +4175,7 @@ async function handleAdminV3Overview(request, env, cors) {
     const resolvedState = state || { state: "scheduled", version: 0 };
     const jobRows = jobs.results || [];
     const lineupDataHealth = await getV3LineupDataHealth(env.AUTH_DB, game.internalGameId, resolvedState.state);
+    const workflowArtifactHealth = await getV3WorkflowArtifactHealth(env.AUTH_DB, game.internalGameId, resolvedState.state);
     const latestJob = (types) => jobRows
       .filter((job) => types.includes(String(job.job_type || "")))
       .sort((left, right) => String(right.updated_at || right.scheduled_at || "").localeCompare(String(left.updated_at || left.scheduled_at || "")))[0] || null;
@@ -4327,7 +4361,8 @@ async function handleAdminV3Overview(request, env, cors) {
       game,
       jobs: jobRows,
       now: overviewNow,
-      lineupDataHealth
+      lineupDataHealth,
+      workflowArtifactHealth
     });
     const phaseStatuses = {
       probable_starter: deriveV3PhaseStatus({
@@ -4349,17 +4384,18 @@ async function handleAdminV3Overview(request, env, cors) {
       }),
       roster: deriveV3PhaseStatus({ phase: "roster", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, snapshot: canonicalRosterSnapshot, noticeState: rosterDiagnostics.noticeState, sourceSnapshotComparison: rosterDiagnostics.sourceSnapshotComparison }),
       prediction_close: deriveV3PhaseStatus({ phase: "prediction_close", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows }),
-      lineup_fetch: deriveV3PhaseStatus({ phase: "lineup_fetch", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, lineupDataHealth }),
-      lineup_finalize: deriveV3PhaseStatus({ phase: "lineup_finalize", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows }),
-      score: deriveV3PhaseStatus({ phase: "score", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, noOpReason: scoringSummary.noOpReason }),
-      ranking: deriveV3PhaseStatus({ phase: "ranking", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, noOpReason: rankingSummary.noOpReason }),
-      publish: deriveV3PhaseStatus({ phase: "publish", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows })
+      lineup_fetch: deriveV3PhaseStatus({ phase: "lineup_fetch", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, lineupDataHealth, workflowArtifactHealth }),
+      lineup_finalize: deriveV3PhaseStatus({ phase: "lineup_finalize", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, workflowArtifactHealth }),
+      score: deriveV3PhaseStatus({ phase: "score", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, noOpReason: scoringSummary.noOpReason, workflowArtifactHealth }),
+      ranking: deriveV3PhaseStatus({ phase: "ranking", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, noOpReason: rankingSummary.noOpReason, workflowArtifactHealth }),
+      publish: deriveV3PhaseStatus({ phase: "publish", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, workflowArtifactHealth })
     };
     rows.push({
       ...game,
       state: resolvedState,
       jobs: jobRows,
       lineupDataHealth,
+      workflowArtifactHealth,
       lineupSummary,
       scoringSummary,
       rankingSummary,
@@ -4868,7 +4904,7 @@ const V3_MANUAL_JOB_DANGEROUS = new Set([
   "prediction_close", "lineup_finalize", "score", "ranking_rebuild", "publish"
 ]);
 
-function getV3ManualJobGate(jobType, state) {
+function getV3ManualJobGate(jobType, state, { workflowArtifactHealth = null } = {}) {
   const allowedStates = V3_MANUAL_JOB_STATE_GATES[jobType];
   if (!allowedStates) {
     return {
@@ -4878,6 +4914,28 @@ function getV3ManualJobGate(jobType, state) {
     };
   }
   const currentState = String(state || "scheduled");
+  if (currentState === "published" || workflowArtifactHealth?.publication?.published === true) {
+    return {
+      canRun: false,
+      cannotRunReason: "公開済み試合は読み取り専用です。再実行・再採点・ランキング再構築・再公開はadmin-v3から実行できません。",
+      reasonCode: "V3_PUBLISHED_READ_ONLY",
+      nextExpectedState: null
+    };
+  }
+  const lineup = workflowArtifactHealth?.lineup;
+  if (jobType === "lineup_finalize" && workflowArtifactHealth?.available === true
+    && lineup?.candidateExists !== true && lineup?.finalizedLineupExists !== true) {
+    return { canRun: false, cannotRunReason: "正式確定の前提となるlineup candidateがありません。先にlineup_fetchを再実行してください。", reasonCode: "V3_LINEUP_CANDIDATE_REQUIRED", nextExpectedState: V3_JOB_REGISTRY[jobType]?.transitionTo || null };
+  }
+  if (jobType === "score" && workflowArtifactHealth?.available === true && lineup?.finalizedLineupExists !== true) {
+    return { canRun: false, cannotRunReason: "採点には正式確定済みlineupが必要です。", reasonCode: "V3_FINALIZED_LINEUP_REQUIRED", nextExpectedState: V3_JOB_REGISTRY[jobType]?.transitionTo || null };
+  }
+  if (jobType === "ranking_rebuild" && workflowArtifactHealth?.scoring?.available === true && workflowArtifactHealth.scoring.ready !== true) {
+    return { canRun: false, cannotRunReason: "ランキング反映には採点成果物が必要です。", reasonCode: "V3_SCORE_ARTIFACT_REQUIRED", nextExpectedState: V3_JOB_REGISTRY[jobType]?.transitionTo || null };
+  }
+  if (jobType === "publish" && workflowArtifactHealth?.ranking?.available === true && workflowArtifactHealth.ranking.reflected !== true) {
+    return { canRun: false, cannotRunReason: "結果公開にはランキングreflectionが必要です。", reasonCode: "V3_RANKING_REFLECTION_REQUIRED", nextExpectedState: V3_JOB_REGISTRY[jobType]?.transitionTo || null };
+  }
   return {
     canRun: allowedStates.includes(currentState),
     cannotRunReason: allowedStates.includes(currentState)
@@ -4893,6 +4951,7 @@ async function getV3ManualJobDiagnosis(db, internalGameId, jobType, target = nul
     "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
   ).bind(id).first();
   const currentState = String(stateRow?.state || "scheduled");
+  const workflowArtifactHealth = await getV3WorkflowArtifactHealth(db, id, currentState);
   if (!V3_JOB_TYPES.includes(jobType)) {
     if (jobType === "schedule_register") {
       return {
@@ -4927,7 +4986,7 @@ async function getV3ManualJobDiagnosis(db, internalGameId, jobType, target = nul
       WHERE internal_game_id = ?1 AND job_type = ?2
       ORDER BY updated_at DESC, id DESC LIMIT 1`
   ).bind(id, jobType).first();
-  const gate = getV3ManualJobGate(jobType, currentState);
+  const gate = getV3ManualJobGate(jobType, currentState, { workflowArtifactHealth });
   const relatedDataSummary = {
     npbGameCode: target?.npb_game_code || null,
     npbIdentityStatus: target?.npb_identity_status || null,
@@ -4950,7 +5009,8 @@ async function getV3ManualJobDiagnosis(db, internalGameId, jobType, target = nul
       candidateExists: lineupDataHealth.candidateExists,
       canonicalDataReady: lineupDataHealth.canonicalDataReady,
       finalizedLineupExists: lineupDataHealth.finalizedLineupExists,
-      completedWithoutCandidate: String(latest?.status || "") === "completed" && lineupDataHealth.available && !lineupDataHealth.ready
+      completedWithoutCandidate: String(latest?.status || "") === "completed" && lineupDataHealth.available && !lineupDataHealth.ready,
+      artifactHealth: workflowArtifactHealth
     });
   }
   return {
@@ -4966,9 +5026,29 @@ async function getV3ManualJobDiagnosis(db, internalGameId, jobType, target = nul
     latestJobError: latest ? { code: latest.failure_code || null, message: latest.failure_message || null } : null,
     canRun: gate.canRun,
     cannotRunReason: gate.cannotRunReason,
+    reasonCode: gate.reasonCode || null,
     nextExpectedState: gate.nextExpectedState,
-    relatedDataSummary
+    relatedDataSummary,
+    workflowArtifactHealth,
+    completedArtifactMismatch: latest?.status === "completed"
+      ? getV3ArtifactMismatch({
+        phase: jobType === "ranking_rebuild" ? "ranking" : jobType === "score" ? "score" : jobType,
+        completedJob: latest,
+        workflowArtifactHealth
+      })
+      : null
   };
+}
+
+async function assertV3GameNotPublished(db, internalGameId) {
+  const stateRow = await db.prepare(
+    "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
+  ).bind(internalGameId).first();
+  const state = String(stateRow?.state || "scheduled");
+  const lineup = await getGameLineup(db, { gameId: internalGameId, internalGameId });
+  if (state === "published" || String(lineup?.publication_status || "") === "published" || Boolean(lineup?.published_at)) {
+    throw createV3Error("V3_PUBLISHED_READ_ONLY", "公開済み試合は診断以外の管理操作を実行できません。", { httpStatus: 409 });
+  }
 }
 
 async function handleAdminV3JobDiagnose(request, env, cors, internalGameId) {
@@ -4993,6 +5073,7 @@ async function handleAdminV3JobCreate(request, env, cors, internalGameId) {
   try {
     const id = normalizeV3InternalGameId(internalGameId);
     if (!V3_JOB_TYPES.includes(jobType)) throw createV3Error("V3_JOB_TYPE_INVALID", "V3ジョブ種別が不正です。");
+    await assertV3GameNotPublished(env.AUTH_DB, id);
     const reason = String(input?.reason || "").trim();
     if (!reason || reason.length > 240) throw createV3Error("V3_REASON_REQUIRED", "手動再実行理由を1〜240文字で入力してください。", { httpStatus: 400 });
     if (V3_MANUAL_JOB_DANGEROUS.has(jobType) && input?.confirmed !== true) {
@@ -5085,7 +5166,7 @@ async function requireAdminAuthForMethodMismatch(request, env, cors, path) {
 }
 
 function parseAdminV3Phase1Route(path) {
-  const match = /^\/api\/admin\/v3\/games\/([^/]+)\/(lineup|lineup-revisions|lineup-finalize|scoring\/preview|scoring\/confirm|ranking|ranking\/rebuild|publication|publication\/publish|publication\/republish|ranking-eligibility|schedule|jobs\/(\d+)(?:\/(retry|cancel))?)$/.exec(path);
+  const match = /^\/api\/admin\/v3\/games\/([^/]+)\/(lineup|lineup-revisions|lineup-finalize|scoring\/preview|scoring\/confirm|ranking|ranking\/rebuild|publication|publication\/publish|publication\/republish|ranking-eligibility|schedule|reconcile-state|jobs\/(\d+)(?:\/(retry|cancel))?)$/.exec(path);
   if (!match) return null;
   try {
     return { internalGameId: decodeURIComponent(match[1]), action: match[2], jobId: match[3] || "", jobOperation: match[4] || "" };
@@ -5417,6 +5498,118 @@ async function getV3LineupDataHealth(db, internalGameId, workflowState = "schedu
   return health;
 }
 
+async function handleAdminV3StateReconcile(request, env, cors, context, user) {
+  const input = await readJson(request);
+  const reason = String(input?.reason || "").trim();
+  if (!reason || reason.length > 240) throw createV3Error("V3_REASON_REQUIRED", "状態再同期理由を1〜240文字で入力してください。", { httpStatus: 400 });
+  if (input?.confirmed !== true) throw createV3Error("V3_CONFIRMATION_REQUIRED", "状態再同期には確認済みフラグが必要です。", { httpStatus: 409 });
+  const stateRow = await env.AUTH_DB.prepare(
+    "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
+  ).bind(context.id).first();
+  const stateBefore = String(stateRow?.state || "scheduled");
+  const artifactHealth = await getV3WorkflowArtifactHealth(env.AUTH_DB, context.id, stateBefore);
+  if (stateBefore === "published" || artifactHealth.publication.published) {
+    throw createV3Error("V3_PUBLISHED_READ_ONLY", "公開済み試合は読み取り専用です。状態再同期は実行できません。", { httpStatus: 409 });
+  }
+  const jobs = await env.AUTH_DB.prepare(
+    `SELECT job_type, status, id, completed_at
+       FROM game_jobs_v3 WHERE internal_game_id = ?1
+      ORDER BY completed_at DESC, updated_at DESC, id DESC`
+  ).bind(context.id).all();
+  const latestCompleted = (jobType) => (jobs.results || []).find((job) => job.job_type === jobType && job.status === "completed") || null;
+  const candidates = [
+    { from: "scheduled", to: "prediction_closed", jobType: "prediction_close", ready: Boolean(latestCompleted("prediction_close")) },
+    { from: "prediction_closed", to: "lineup_ready", jobType: "lineup_finalize", ready: Boolean(latestCompleted("lineup_finalize") && artifactHealth.lineup.finalizedLineupExists) },
+    { from: "lineup_ready", to: "scored", jobType: "score", ready: Boolean(latestCompleted("score") && artifactHealth.scoring.ready) },
+    { from: "scored", to: "ranked", jobType: "ranking_rebuild", ready: Boolean(latestCompleted("ranking_rebuild") && artifactHealth.ranking.reflected) },
+    { from: "ranked", to: "published", jobType: "publish", ready: Boolean(latestCompleted("publish") && artifactHealth.publication.published) }
+  ];
+  const transition = candidates.find((candidate) => candidate.from === stateBefore);
+  if (!transition?.ready) {
+    throw createV3Error("V3_STATE_RECONCILE_ARTIFACT_MISSING", "completed jobまたは必要な成果物が確認できないため、状態を再同期できません。", {
+      httpStatus: 409,
+      diagnostics: { stateBefore, artifactHealth, candidates }
+    });
+  }
+  const now = new Date();
+  await transitionV3State(env.AUTH_DB, { internalGameId: context.id, from: transition.from, to: transition.to, now });
+  const detail = `[v3_details=${JSON.stringify({ action: "state_reconcile", reason, actorId: user?.id || null, jobType: transition.jobType, artifactHealth })}]`;
+  await recordV3AdminAudit(env.AUTH_DB, {
+    internalGameId: context.id,
+    jobType: "admin:state_reconcile",
+    stateBefore,
+    stateAfter: transition.to,
+    failureMessage: detail
+  });
+  await recordWorkflowLog(env.AUTH_DB, {
+    eventType: "v3_admin_state_reconcile",
+    status: "success",
+    gameId: context.id,
+    occurredAt: now,
+    message: "V3管理者が成果物確認済みのworkflow stateを再同期しました。",
+    metadata: { internalGameId: context.id, stateBefore, stateAfter: transition.to, jobType: transition.jobType, reason, updatedBy: user?.id || null },
+    source: "admin"
+  });
+  return jsonResponse({ ok: true, internalGameId: context.id, stateBefore, stateAfter: transition.to, jobType: transition.jobType, artifactHealth }, 200, cors);
+}
+
+// Completed V3 jobs are not sufficient evidence for recovery.  Keep the
+// artifact checks together so Cron, admin diagnosis, and phase rendering use
+// the same postcondition contract without mutating data during diagnosis.
+async function getV3WorkflowArtifactHealth(db, internalGameId, workflowState = "scheduled") {
+  const lineup = await getV3LineupDataHealth(db, internalGameId, workflowState);
+  const health = {
+    available: lineup.available,
+    lineup,
+    scoring: { available: false, ready: false, scoreExists: false, complete: null, scoringStatus: null, scoredAt: null, scoringRevisionId: null },
+    ranking: { available: false, reflected: false, gameStatus: null, publicationStatus: null },
+    publication: { available: false, published: false, publicationStatus: null, publishedAt: null }
+  };
+  try {
+    const canonical = await getGameLineup(db, { gameId: internalGameId, internalGameId });
+    const completion = await getScoringCompletionState(db, { gameId: internalGameId, internalGameId });
+    const scoringStatus = String(canonical?.scoring_status || "");
+    const scoredAt = canonical?.scored_at || null;
+    health.scoring = {
+      available: true,
+      ready: scoringStatus === "scored" && Boolean(scoredAt) && completion.complete !== false,
+      scoreExists: scoringStatus === "scored" && Boolean(scoredAt),
+      complete: completion.complete,
+      scoringStatus: scoringStatus || null,
+      scoredAt,
+      scoringRevisionId: completion.scoringRevisionId || null
+    };
+    health.publication = {
+      available: true,
+      published: String(canonical?.publication_status || "") === "published" && Boolean(canonical?.published_at),
+      publicationStatus: canonical?.publication_status || null,
+      publishedAt: canonical?.published_at || null
+    };
+  } catch (error) {
+    health.scoring = {
+      ...health.scoring,
+      available: false,
+      errorCode: String(error?.code || "V3_SCORING_ARTIFACT_READ_FAILED")
+    };
+  }
+  try {
+    const reflection = await getRankingReflectionState(db, internalGameId);
+    health.ranking = {
+      available: true,
+      reflected: Boolean(reflection?.reflected),
+      gameStatus: reflection?.row?.game_status || null,
+      publicationStatus: reflection?.row?.publication_status || null
+    };
+  } catch (error) {
+    health.ranking = {
+      ...health.ranking,
+      available: false,
+      errorCode: String(error?.code || "V3_RANKING_ARTIFACT_READ_FAILED")
+    };
+  }
+  return health;
+}
+
 function serializeV3LineupRevision(row, previous = null) {
   const result = serializeLineupRevision(row);
   result.lineup = parseStoredActualLineup(row.actual_lineup_json) || [];
@@ -5474,6 +5667,7 @@ async function handleAdminV3Phase1Route(request, env, cors, route) {
   }
   try {
     const { id, target, metadata } = context;
+    if (request.method !== "GET") await assertV3GameNotPublished(env.AUTH_DB, id);
     if (route.action === "lineup" && request.method === "GET") return await handleAdminV3LineupGet(env, cors, context);
     if (route.action === "lineup-revisions" && request.method === "GET") return await handleAdminV3LineupRevisionsGet(env, cors, context);
     if (route.action === "lineup-revisions" && request.method === "POST") return await handleAdminV3LineupRevisionCreate(request, env, cors, context, access.user);
@@ -5488,6 +5682,7 @@ async function handleAdminV3Phase1Route(request, env, cors, route) {
     if (route.action === "ranking-eligibility" && request.method === "PUT") return await handleAdminV3EligibilityUpdate(request, env, cors, context, access.user);
     if (route.action === "schedule" && request.method === "GET") return await handleAdminV3ScheduleGet(env, cors, context);
     if (route.action === "schedule" && request.method === "PUT") return await handleAdminV3ScheduleUpdate(request, env, cors, context, access.user);
+    if (route.action === "reconcile-state" && request.method === "POST") return await handleAdminV3StateReconcile(request, env, cors, context, access.user);
     if (route.action.startsWith("jobs/") && request.method === "GET") return await handleAdminV3JobDetail(env, cors, context, route.jobId);
     if (route.action.startsWith("jobs/") && request.method === "POST" && route.jobOperation === "retry") return await handleAdminV3JobRetry(request, env, cors, context, route.jobId, access.user);
     if (route.action.startsWith("jobs/") && request.method === "POST" && route.jobOperation === "cancel") return await handleAdminV3JobCancel(request, env, cors, context, route.jobId, access.user);

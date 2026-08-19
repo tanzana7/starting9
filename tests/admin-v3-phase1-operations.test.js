@@ -57,8 +57,8 @@ test("管理画面は旧直接編集操作を表示せず、正式V3 jobの診�
   assert.match(gameProgress, /data-v3-job-diagnose/);
   assert.match(gameProgress, /data-v3-job-run/);
   assert.match(gameProgress, /正式V3 jobを投入/);
-  assert.match(page, /admin-v3\.js\?v=admin-v3-all-job-manual-controls-1/);
-  assert.match(page, /admin-v3\.css\?v=admin-v3-all-job-manual-controls-1/);
+  assert.match(page, /admin-v3\.js\?v=admin-v3-deadline-state-gate-diagnostics-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-v3-deadline-state-gate-diagnostics-1/);
 });
 
 test("管理画面のjob詳細は失敗内容を確認でき、ユーザー情報を描画しない", () => {
@@ -114,9 +114,40 @@ test("V3次の処理は現在時刻より未来の未完了処理を選び、完
 test("期限到達済みの未完了処理は次の処理なしにせず要救済として返す", () => {
   const schedule = v3.deriveV3DisplaySchedule({ gameDate: "2026-08-06", startAt: "2026-08-06T09:00:00.000Z" });
   const overdue = v3.getV3NextAction({ schedule, state: "scheduled", now: "2026-08-06T09:05:00.000Z" });
-  assert.equal(overdue.nextAction, "roster_fetch");
-  assert.equal(overdue.nextActionAt, "2026-08-06T07:00:00.000Z");
+  assert.equal(overdue.nextAction, "prediction_close");
+  assert.equal(overdue.nextActionAt, "2026-08-06T08:00:00.000Z");
   assert.equal(overdue.isOverdue, true);
+});
+
+test("締切job完了後もscheduledのままならlineup_fetchではなく状態不整合を返す", () => {
+  const schedule = v3.deriveV3DisplaySchedule({ gameDate: "2026-08-06", startAt: "2026-08-06T09:00:00.000Z" });
+  const blocked = v3.getV3NextAction({
+    schedule,
+    state: "scheduled",
+    now: "2026-08-06T09:05:00.000Z",
+    jobs: [{ job_type: "prediction_close", status: "completed" }]
+  });
+  assert.equal(blocked.nextAction, "prediction_close_state_sync");
+  assert.equal(blocked.isBlocked, true);
+  assert.match(blocked.blockingReason, /scheduled/);
+});
+
+test("V3 workflow診断は締切状態、識別code、スタメンstate gateを分離して返す", () => {
+  const schedule = v3.deriveV3DisplaySchedule({ gameDate: "2026-08-06", startAt: "2026-08-06T09:00:00.000Z" });
+  const diagnostics = v3.getV3WorkflowDiagnostics({
+    schedule,
+    state: "scheduled",
+    game: { npbIdentityState: "manual_action_required" },
+    now: "2026-08-06T09:05:00.000Z",
+    jobs: [
+      { id: 12, job_type: "prediction_close", status: "completed" },
+      { id: 13, job_type: "npb_identity_resolve", status: "completed" }
+    ]
+  });
+  assert.equal(diagnostics.predictionClose.stateMismatch, true);
+  assert.equal(diagnostics.identity.completedWithoutCode, true);
+  assert.equal(diagnostics.lineupFetch.canRun, false);
+  assert.equal(diagnostics.lineupFetch.blockingReasonCode, "PREDICTION_CLOSE_STATE_TRANSITION_MISSING");
 });
 
 test("依存処理は予定未定ではなく前段完了後として返す", () => {
@@ -132,7 +163,9 @@ test("依存処理は予定未定ではなく前段完了後として返す", ()
 test("overviewは正規の表示用scheduleと次の処理を付加し、UIはそれを描画する", () => {
   assert.match(worker, /deriveV3DisplaySchedule\(game\)/);
   assert.match(worker, /getV3NextAction\(\{ schedule, state: resolvedState\.state/);
+  assert.match(worker, /getV3WorkflowDiagnostics\(\{/);
   assert.match(gameProgress, /game\.schedule \|\| \{\}/);
+  assert.match(gameProgress, /data-v3-workflow-diagnostics/);
   assert.match(gameProgress, /schedule\.predictionDeadline/);
   assert.match(gameProgress, /schedule\.finalLineupAt/);
   assert.match(gameProgress, /schedule\.publicationAt/);

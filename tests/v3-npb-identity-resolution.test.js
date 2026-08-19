@@ -294,6 +294,23 @@ test("V3 lineup fetchは保存URLを優先し、未解決時はlegacy fallback�
   assert.doesNotMatch(v3Section, /resolvePregameIdentity/);
 });
 
+test("NPB識別未解決jobは完了扱いにせず正式runnerの再試行・要対応へ送る", () => {
+  assert.match(worker, /NPB_IDENTITY_PENDING/);
+  assert.match(worker, /NPB_IDENTITY_MANUAL_ACTION_REQUIRED/);
+  assert.match(worker, /retryAt: getNextV3IdentityRetryAt\(now\)/);
+  assert.doesNotMatch(
+    worker.slice(worker.indexOf("async function executeV3IdentityResolutionJob"), worker.indexOf("async function executeV3IdentityExecutor")),
+    /status: identityState/
+  );
+});
+
+test("admin overviewは締切・識別・lineup state gateの診断を返す", () => {
+  const gameProgress = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-game-progress.js"), "utf8");
+  assert.match(worker, /workflowDiagnostics/);
+  assert.match(worker, /getV3WorkflowDiagnostics\(\{/);
+  assert.match(gameProgress, /data-v3-workflow-diagnostics/);
+});
+
 test("V3管理画面はNPB識別情報とjob監査を読み取り表示する", () => {
   const client = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
   const diagnostics = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-diagnostics.js"), "utf8");
@@ -304,8 +321,8 @@ test("V3管理画面はNPB識別情報とjob監査を読み取り表示する", 
   assert.match(jobDetails, /renderInline/);
   assert.match(jobDetails, /planner decision/);
   assert.ok(diagnostics.includes("${escapeHtml(game.homeTeam)} vs ${escapeHtml(game.awayTeam)}"));
-  assert.match(page, /admin-v3\.css\?v=admin-v3-all-job-manual-controls-1/);
-  assert.match(page, /admin-v3\.js\?v=admin-v3-all-job-manual-controls-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-v3-deadline-state-gate-diagnostics-1/);
+  assert.match(page, /admin-v3\.js\?v=admin-v3-deadline-state-gate-diagnostics-1/);
   assert.match(diagnostics, /NPB自動解決job/);
   assert.match(diagnostics, /解決元/);
 });

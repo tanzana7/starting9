@@ -31,7 +31,7 @@ test("未来試合はcanonical catalogに保持し、通常画面は受付可能
   assert.match(script, /const todayGames = sorted\.filter\(\(game\) => getScheduleDate\(game\) === today\)/);
   assert.match(script, /const futureGames = sorted\.filter\(\(game\) => getScheduleDate\(game\) > today\)\.slice\(0, 5\)/);
   assert.match(script, /function selectInitialPublicGame\(games = \[\], now = new Date\(\)\)/);
-  assert.match(script, /return todayUpcoming \|\| todayOpen \|\| nextOpen \|\| null/);
+  assert.match(script, /return todayUpcoming \|\| todayOpen \|\| nextOpen \|\| unavailableToday\[0\] \|\| null/);
   assert.match(script, /syncPredictionFromAccount\(\{ force: true \}\)/);
 });
 
@@ -97,7 +97,7 @@ test("future canonical gameがある場合は対象なし表示ではなく入�
   assert.match(script, /const nextOpen = selectable\.find/);
   assert.match(script, /state\.predictionTargetGame = preservedGame/);
   assert.match(script, /renderPublicPredictionSurface\(selectedGame\)/);
-  assert.match(script, /if \(editor\) editor\.classList\.remove\("hidden"\)/);
+  assert.match(script, /editor\.classList\.toggle\("hidden", isScheduleGameUnavailable\(selectedGame\)\)/);
 });
 
 test("公開用ゲーム一覧はcanonical internalGameIdとV3 workflow/publication状態を返す", () => {

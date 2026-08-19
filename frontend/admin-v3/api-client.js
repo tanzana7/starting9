@@ -77,6 +77,12 @@
           body: JSON.stringify(body)
         });
       },
+      updateRankingEligibility(internalGameId, body) {
+        return request(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/ranking-eligibility`, {
+          method: "PUT",
+          body: JSON.stringify(body)
+        });
+      },
       listRankingResets: () => request(ADMIN_V3_ENDPOINTS.rankingResets),
       previewRankingReset: (body) => post(ADMIN_V3_ENDPOINTS.rankingResetPreview, body),
       executeRankingReset: (body) => post(ADMIN_V3_ENDPOINTS.rankingResetExecute, body),

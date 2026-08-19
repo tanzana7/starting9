@@ -182,7 +182,14 @@ button:disabled { cursor: wait; opacity: .65; }
 .v3-schedule-form label { display: grid; gap: 5px; color: #526477; font-size: 12px; font-weight: 700; }
 .v3-schedule-form label:nth-of-type(3) { display: flex; grid-column: 1 / -1; align-items: center; gap: 6px; font-weight: 500; }
 .v3-schedule-form button { justify-self: start; }
+.v3-cancellation-meta { margin-bottom: 12px; }
+.v3-ranking-exclusion-form { display: grid; grid-template-columns: minmax(220px, 1fr) auto; gap: 10px 14px; margin-top: 10px; padding: 12px; border: 1px solid #ead9ad; border-radius: 6px; background: #fffaf0; }
+.v3-ranking-exclusion-form label { display: grid; gap: 5px; color: #526477; font-size: 12px; font-weight: 700; }
+.v3-ranking-exclusion-form label:nth-of-type(2) { display: flex; align-items: center; gap: 6px; font-weight: 500; }
+.v3-ranking-exclusion-form input[type="text"] { min-width: 0; padding: 7px 8px; border: 1px solid #b9c8d8; border-radius: 5px; color: #172033; background: #fff; }
+.v3-ranking-exclusion-form button { grid-column: 1 / -1; justify-self: start; }
 @media (max-width: 720px) { .v3-schedule-form { grid-template-columns: 1fr; } .v3-schedule-form label:nth-of-type(3) { grid-column: auto; } }
+@media (max-width: 720px) { .v3-ranking-exclusion-form { grid-template-columns: 1fr; } .v3-ranking-exclusion-form button { grid-column: auto; } }
 .automation-log-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 10px 0 13px; }
 .automation-log-filters label { display: grid; gap: 4px; color: #526477; font-size: 11px; }
 .automation-log-filters input { min-width: 0; padding: 6px 8px; border: 1px solid #b9c8d8; border-radius: 4px; color: #172033; background: #fff; }

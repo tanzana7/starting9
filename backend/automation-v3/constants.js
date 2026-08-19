@@ -115,6 +115,7 @@ const V3_TRANSITION_LIST = Object.freeze([
     .map((from) => ({ from, to: V3_STATE.MANUAL_ACTION_REQUIRED, triggeringJob: "admin", prerequisite: "manual intervention" }))
   ,...[V3_STATE.PREDICTION_CLOSED, V3_STATE.LINEUP_READY, V3_STATE.SCORED, V3_STATE.RANKED, V3_STATE.PUBLISHED]
     .map((to) => ({ from: V3_STATE.MANUAL_ACTION_REQUIRED, to, triggeringJob: "admin", prerequisite: "manual intervention resolved" }))
+  ,{ from: V3_STATE.MANUAL_ACTION_REQUIRED, to: V3_STATE.EXCLUDED, triggeringJob: "admin", prerequisite: "game is excluded" }
 ]);
 export const V3_TRANSITIONS = Object.freeze(Object.fromEntries(
   V3_TRANSITION_LIST.map((transition) => [`${transition.from}->${transition.to}`, Object.freeze(transition)])

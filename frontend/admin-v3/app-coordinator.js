@@ -44,6 +44,11 @@
           await actions.saveSchedule(scheduleButton.dataset.v3ScheduleSave);
           return;
         }
+        const rankingExcludeButton = event.target.closest("[data-v3-ranking-exclude]");
+        if (rankingExcludeButton) {
+          await actions.excludeFromRanking(rankingExcludeButton.dataset.v3RankingExclude);
+          return;
+        }
 
         const selectButton = event.target.closest("[data-v3-select-game]");
         if (selectButton) { await actions.selectGame(selectButton.dataset.v3SelectGame); return; }

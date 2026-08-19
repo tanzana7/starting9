@@ -1822,7 +1822,6 @@ function mergePublicGameSchedules(staticGames = [], apiGames = []) {
       matchupLabel: game.displayLabel || `${game.homeTeamName || game.homeTeam || ""} vs ${game.awayTeamName || game.awayTeam || ""}`,
       startDateTime: game.startAt || ""
     }))
-    .filter((game) => !isScheduleGameUnavailable(game))
     .sort((left, right) => getScheduleSortValue(left).localeCompare(getScheduleSortValue(right)));
 }
 
@@ -1839,6 +1838,9 @@ function getPublicSelectableGames(games = [], now = new Date()) {
 function selectInitialPublicGame(games = [], now = new Date()) {
   const selectable = getPublicSelectableGames(games, now);
   const today = getJapanDateString(now);
+  const unavailableToday = (Array.isArray(games) ? games : [])
+    .filter((game) => getScheduleDate(game) === today && isScheduleGameUnavailable(game))
+    .sort((left, right) => getScheduleSortValue(left).localeCompare(getScheduleSortValue(right)));
   const todayGames = selectable.filter((game) => getScheduleDate(game) === today);
   const todayUpcoming = todayGames.find((game) => {
     if (isPublicGamePublished(game)) return false;
@@ -1850,7 +1852,7 @@ function selectInitialPublicGame(games = [], now = new Date()) {
   const nextOpen = selectable.find((game) => getScheduleDate(game) > today
     && !isPublicGamePublished(game)
     && resolvePredictionDeadline(game.internalGameId || game.gameId, now).status === "open");
-  return todayUpcoming || todayOpen || nextOpen || null;
+  return todayUpcoming || todayOpen || nextOpen || unavailableToday[0] || null;
 }
 
 function formatPublicPredictionGameLabel(game) {
@@ -2232,7 +2234,7 @@ function getPredictionDeadlineMinutesBeforeStart() {
 }
 
 function isScheduleGameUnavailable(game) {
-  return ["cancelled", "canceled", "postponed"].includes(String(game?.status || "").toLowerCase());
+  return ["cancelled", "canceled", "postponed", "service_unavailable"].includes(String(game?.status || game?.gameStatus || "").toLowerCase());
 }
 
 function resolvePredictionDeadline(gameId, now = new Date()) {
@@ -2254,7 +2256,9 @@ function resolvePredictionDeadline(gameId, now = new Date()) {
       gameId,
       game,
       status: "unavailable",
-      message: "この試合は予想を受け付けていません。",
+      message: String(game?.status || game?.gameStatus || "").toLowerCase() === "service_unavailable"
+        ? "この試合はサービス対象外です。予想・採点・ランキングの対象外です。"
+        : "この試合は中止になりました。予想・採点・ランキングの対象外です。",
       startAt: "",
       deadlineAt: "",
       isClosed: true
@@ -3983,6 +3987,16 @@ function getPublicGameStatusView(game, deadline, remoteState = state.predictionR
   const workflowState = String(game?.workflowState || "").toLowerCase();
   const published = isPublicGamePublished(game, remoteState);
   const saved = Boolean(remoteState?.prediction || (state.prediction && [game?.internalGameId, game?.gameId].includes(state.prediction.gameId)));
+  if (isScheduleGameUnavailable(game)) {
+    const serviceUnavailable = String(game?.status || game?.gameStatus || "").toLowerCase() === "service_unavailable";
+    return {
+      key: "unavailable",
+      label: serviceUnavailable ? "サービス対象外" : "中止",
+      status: serviceUnavailable ? "この試合はサービス対象外です" : "この試合は中止になりました",
+      saved,
+      nextAction: "この試合は予想・採点・ランキングの対象外です。"
+    };
+  }
   if (published) {
     return { key: "ok", label: "結果公開済み", status: "結果公開済み", saved, nextAction: "結果とランキングを確認できます。" };
   }
@@ -4016,7 +4030,7 @@ function renderPublicPredictionSurface(selectedGame) {
     if (editor) editor.classList.toggle("hidden", !state.publicGameCatalog.isLoading);
     return;
   }
-  if (editor) editor.classList.remove("hidden");
+  if (editor) editor.classList.toggle("hidden", isScheduleGameUnavailable(selectedGame));
 }
 
 function renderPublicGameSelectionMeta() {

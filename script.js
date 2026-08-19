@@ -4346,48 +4346,43 @@ function renderScoreInsights(comparison) {
   });
 }
 
-function createActualBasisDetails(sourceDetails, actualLineup = []) {
+function createSlotBasisDetails(sourceDetails, actualLineup = []) {
   const hasProvidedActualLineup = Array.isArray(actualLineup) && actualLineup.length > 0;
   const actualItems = hasProvidedActualLineup
     ? actualLineup
     : sourceDetails.map((detail) => ({
-      order: detail.actualOrder || detail.order,
+      order: detail.order,
       player: detail.actualPlayer || "",
       playerId: detail.actualPlayerId || "",
       position: detail.actualPosition || ""
     }));
+
   return Array.from({ length: LINEUP_SIZE }, (_, index) => {
-    const actualItem = actualItems.find((item) => Number(item?.order || item?.battingOrder) === index + 1)
-      || (hasProvidedActualLineup ? {} : actualItems[index] || {});
+    const slot = index + 1;
+    const sourceDetail = sourceDetails.find((detail) => Number(detail.order) === slot) || {};
+    const actualItem = actualItems.find((item) => Number(item?.order || item?.battingOrder) === slot)
+      || (!hasProvidedActualLineup ? actualItems[index] || {} : {});
     const actualPlayer = String(actualItem.player || actualItem.name || actualItem.playerName || "").trim();
     const actualPlayerId = String(actualItem.playerId || "").trim();
-    const predictionDetail = sourceDetails.find((detail) => {
-      if (Number(detail.actualOrder) === index + 1) return true;
-      const predictedPlayerId = String(detail.playerId || "").trim();
-      if (actualPlayerId && predictedPlayerId && predictedPlayerId === actualPlayerId) return true;
-      const predictedPlayer = String(detail.player || "").trim();
-      return Boolean(actualPlayer && predictedPlayer && normalizePlayerKey(predictedPlayer) === normalizePlayerKey(actualPlayer));
-    }) || null;
-    const isPlayerHit = Boolean(predictionDetail?.isPlayerHit);
-    const isOrderHit = Boolean(predictionDetail?.isOrderHit);
-    const isPositionHit = Boolean(predictionDetail?.isPositionHit);
-    const isPerfect = Boolean(predictionDetail?.isPerfect ?? (isPlayerHit && isOrderHit && isPositionHit));
+    const isPlayerHit = Boolean(sourceDetail.isPlayerHit);
+    const isOrderHit = Boolean(sourceDetail.isOrderHit);
+    const isPositionHit = Boolean(sourceDetail.isPositionHit);
+    const isPerfect = Boolean(sourceDetail.isPerfect ?? (isPlayerHit && isOrderHit && isPositionHit));
+
     return {
-      ...(predictionDetail || {}),
-      order: index + 1,
-      predictionOrder: predictionDetail ? Number(predictionDetail.order) || null : null,
-      player: predictionDetail?.player || "",
-      playerId: predictionDetail?.playerId || "",
-      position: predictionDetail?.position || "",
-      actualOrder: index + 1,
-      actualPlayer,
-      actualPlayerId,
-      actualPosition: actualItem.position || "",
+      ...sourceDetail,
+      order: slot,
+      player: sourceDetail.player || "",
+      playerId: sourceDetail.playerId || "",
+      position: sourceDetail.position || "",
+      actualPlayer: actualPlayer || sourceDetail.actualPlayer || "",
+      actualPlayerId: actualPlayerId || sourceDetail.actualPlayerId || "",
+      actualPosition: actualItem.position || sourceDetail.actualPosition || "",
       isPlayerHit,
       isOrderHit,
       isPositionHit,
       isPerfect,
-      point: predictionDetail ? Number(predictionDetail.point || 0) : 0,
+      point: Number(sourceDetail.point || 0),
       mark: isPerfect ? "◎" : isPlayerHit ? "◯" : "×",
       label: isPerfect ? "完全一致" : isPlayerHit ? "スタメン入り" : "外れ"
     };
@@ -4396,43 +4391,21 @@ function createActualBasisDetails(sourceDetails, actualLineup = []) {
 
 function createResultViewModel(result) {
   const sourceDetails = Array.isArray(result.details) ? result.details : [];
-  const hasActualLineup = Array.isArray(result.actualLineup) && result.actualLineup.length > 0;
-  const actualOrderById = new Map();
-  const actualOrderByName = new Map();
-  if (!hasActualLineup) {
-    sourceDetails.forEach((detail) => {
-      const order = Number(detail.order);
-      if (!Number.isInteger(order) || order < 1) return;
-      const actualPlayerId = typeof detail.actualPlayerId === "string" ? detail.actualPlayerId.trim() : "";
-      const actualPlayerKey = normalizePlayerKey(detail.actualPlayer);
-      if (actualPlayerId) actualOrderById.set(actualPlayerId, order);
-      if (actualPlayerKey) actualOrderByName.set(actualPlayerKey, order);
-    });
-  }
 
   const normalizedDetails = sourceDetails.map((detail) => {
     const isPlayerHit = Boolean(detail.isPlayerHit ?? detail.mark !== "×");
     const isOrderHit = Boolean(detail.isOrderHit ?? detail.mark === "◎");
     const isPositionHit = Boolean(detail.isPositionHit ?? detail.mark === "◎");
-    const playerId = typeof detail.playerId === "string" ? detail.playerId.trim() : "";
-    const existingActualOrder = Number(detail.actualOrder);
-    const actualOrder = Number.isInteger(existingActualOrder) && existingActualOrder > 0
-      ? existingActualOrder
-      : hasActualLineup
-        ? null
-        : actualOrderById.get(playerId) || actualOrderByName.get(normalizePlayerKey(detail.player)) || null;
-
     return {
       ...detail,
       actualPlayer: detail.actualPlayer || "",
       actualPosition: detail.actualPosition || "",
-      actualOrder,
       isPlayerHit,
       isOrderHit,
       isPositionHit
     };
   });
-  const details = createActualBasisDetails(normalizedDetails, result.actualLineup);
+  const details = createSlotBasisDetails(normalizedDetails, result.actualLineup);
   const counts = getHitCounts(details);
   const breakdown = createScoreBreakdown(counts);
   const total = breakdown.player.total + breakdown.order.total + breakdown.position.total + breakdown.perfect.total;
@@ -4444,7 +4417,7 @@ function createResultViewModel(result) {
     counts,
     breakdown,
     details,
-    displayBasis: "actual-lineup"
+    displayBasis: "prediction-slot"
   };
 }
 

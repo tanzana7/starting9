@@ -4356,13 +4356,10 @@ function createActualBasisDetails(sourceDetails, actualLineup = []) {
       playerId: detail.actualPlayerId || "",
       position: detail.actualPosition || ""
     }));
-  const byPlayerId = new Map();
-  const byPlayerName = new Map();
+  const predictionDetailsByOrder = new Map();
   sourceDetails.forEach((detail) => {
-    const playerId = String(detail.playerId || "").trim();
-    const playerKey = normalizePlayerKey(detail.player);
-    if (playerId) byPlayerId.set(playerId, detail);
-    if (playerKey) byPlayerName.set(playerKey, detail);
+    const order = Number(detail.order);
+    if (Number.isInteger(order) && order > 0) predictionDetailsByOrder.set(order, detail);
   });
 
   return Array.from({ length: LINEUP_SIZE }, (_, index) => {
@@ -4370,8 +4367,8 @@ function createActualBasisDetails(sourceDetails, actualLineup = []) {
       || (hasProvidedActualLineup ? {} : actualItems[index] || {});
     const actualPlayer = String(actualItem.player || actualItem.name || actualItem.playerName || "").trim();
     const actualPlayerId = String(actualItem.playerId || "").trim();
-    const predictionDetail = (actualPlayerId && byPlayerId.get(actualPlayerId)) || byPlayerName.get(normalizePlayerKey(actualPlayer)) || null;
-    const isPlayerHit = Boolean(predictionDetail);
+    const predictionDetail = predictionDetailsByOrder.get(index + 1) || null;
+    const isPlayerHit = Boolean(predictionDetail?.isPlayerHit);
     const isOrderHit = Boolean(predictionDetail?.isOrderHit);
     const isPositionHit = Boolean(predictionDetail?.isPositionHit);
     const isPerfect = Boolean(predictionDetail?.isPerfect ?? (isPlayerHit && isOrderHit && isPositionHit));

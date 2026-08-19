@@ -53,33 +53,33 @@ test("採点結果テーブルは実際の打順を基準に予想と実際を�
   assert.equal((source.match(/createHitBadge\(detail\./g) || []).length, 3);
 });
 
-test("結果表示モデルは実際のスタメン順に並べ、予想打順と行点を保持する", () => {
+test("結果表示モデルは実際のスタメン順に並べ、同じ打順スロットの予想と行点を保持する", () => {
   const sourceDetails = [
     { order: 1, player: "別選手", position: "遊", actualOrder: null, point: 0, isPlayerHit: false, isOrderHit: false, isPositionHit: false },
-    { order: 5, player: "今川優馬", position: "右", actualOrder: 2, point: 5, isPlayerHit: true, isOrderHit: false, isPositionHit: false },
-    { order: 2, player: "カストロ", position: "中", actualOrder: 7, point: 7, isPlayerHit: true, isOrderHit: false, isPositionHit: true }
+    { order: 2, player: "カストロ", position: "中", actualOrder: 7, point: 7, isPlayerHit: true, isOrderHit: false, isPositionHit: true },
+    { order: 3, player: "レイエス", position: "指", actualOrder: null, point: 7, isPlayerHit: true, isOrderHit: false, isPositionHit: true }
   ];
   const actualLineup = [
     { order: 1, player: "別選手", position: "遊", playerId: "p1" },
     { order: 2, player: "今川優馬", position: "左", playerId: "p2" },
-    { order: 7, player: "カストロ", position: "中", playerId: "p3" }
+    { order: 3, player: "吉田賢吾", position: "一", playerId: "p3" }
   ];
   const details = createActualBasisDetails(sourceDetails, actualLineup);
 
   assert.equal(details[0].order, 1);
   assert.equal(details[0].actualPlayer, "別選手");
+  assert.equal(details[0].player, "別選手");
   assert.equal(details[0].predictionOrder, 1);
   assert.equal(details[1].order, 2);
   assert.equal(details[1].actualPlayer, "今川優馬");
-  assert.equal(details[1].predictionOrder, 5);
-  assert.equal(details[1].point, 5);
-  assert.equal(details[2].order, 3);
-  assert.equal(details[2].actualPlayer, "");
-  assert.equal(details[2].predictionOrder, null);
-  assert.equal(details[2].point, 0);
-  assert.equal(details[6].actualPlayer, "カストロ");
-  assert.equal(details[6].predictionOrder, 2);
-  assert.equal(details.reduce((total, detail) => total + detail.point, 0), 12);
+  assert.equal(details[1].player, "カストロ");
+  assert.equal(details[1].predictionOrder, 2);
+  assert.equal(details[1].point, 7);
+  assert.equal(details[2].actualPlayer, "吉田賢吾");
+  assert.equal(details[2].player, "レイエス");
+  assert.equal(details[2].predictionOrder, 3);
+  assert.equal(details[2].point, 7);
+  assert.equal(details.reduce((total, detail) => total + detail.point, 0), 14);
 });
 
 test("実スタメン配列がない保存済み結果もactualOrderを基準に並べる", () => {
@@ -112,11 +112,13 @@ test("実スタメン配列がない保存済み結果もactualOrderを基準に
   const details = createActualBasisDetails(sourceDetails, []);
 
   assert.equal(details[0].actualPlayer, "カストロ");
-  assert.equal(details[0].predictionOrder, 2);
-  assert.equal(details[0].point, 7);
+  assert.equal(details[0].player, "今川優馬");
+  assert.equal(details[0].predictionOrder, 1);
+  assert.equal(details[0].point, 5);
   assert.equal(details[1].actualPlayer, "今川優馬");
-  assert.equal(details[1].predictionOrder, 1);
-  assert.equal(details[1].point, 5);
+  assert.equal(details[1].player, "カストロ");
+  assert.equal(details[1].predictionOrder, 2);
+  assert.equal(details[1].point, 7);
 });
 
 test("判定バッジは○×だけでなく判定対象ラベルを表示する", () => {

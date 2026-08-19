@@ -49,6 +49,6 @@ test("job詳細はPC二列・モバイル一列で長文を折り返し、キャ
   assert.match(css, /\.job-detail-value[^}]*overflow-wrap: anywhere/);
   assert.match(css, /\.job-detail-pre[^}]*white-space: pre-wrap/);
   assert.match(css, /@media \(max-width: 720px\)[\s\S]*\.job-detail-grid \{ grid-template-columns: 1fr; \}/);
-  assert.match(page, /admin-v3\.css\?v=admin-v3-v3-recovery-operations-1/);
-  assert.match(page, /admin-v3\.js\?v=admin-v3-v3-recovery-operations-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-v3-v3-schedule-operations-1/);
+  assert.match(page, /admin-v3\.js\?v=admin-v3-v3-schedule-operations-1/);
 });

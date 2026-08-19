@@ -271,7 +271,19 @@
       const details = selectedDetails();
       const schedule = details.schedule?.schedule;
       if (!game) return `<div class="view-heading"><div><h2>日程管理</h2><p>対象試合を選択してください。</p></div></div>`;
-      return `${renderSelectedGameHeader(game, "日程管理", "日程とV3が算出した処理時刻を確認します。")}<section class="v3-panel"><div class="detail-grid"><div><dt>試合開始</dt><dd>${escapeHtml(formatJst(schedule?.startAt || game.startAt))}</dd></div><div><dt>予想締切</dt><dd>${escapeHtml(formatJst(schedule?.predictionDeadline))}</dd></div><div><dt>lineupPollingStart</dt><dd>${escapeHtml(formatJst(schedule?.lineupPollingStart))}</dd></div><div><dt>ランキング対象状態</dt><dd>${escapeHtml(details.eligibility?.rankingEligibility?.rankingEligibilityStatus || "未取得")}</dd></div></div><p class="muted">日程とランキング対象状態は自動処理の監査情報として表示しています。</p></section>`;
+      const start = new Date(schedule?.startAt || game.startAt || "");
+      const localStart = Number.isNaN(start.getTime()) ? "" : [
+        `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}-${String(start.getDate()).padStart(2, "0")}`,
+        `${String(start.getHours()).padStart(2, "0")}:${String(start.getMinutes()).padStart(2, "0")}`
+      ].join("T");
+      const status = String(game.gameStatus || "scheduled");
+      const operation = typeof manualOperation === "function" ? manualOperation(game.internalGameId, "schedule") || {} : {};
+      const result = operation.message ? `<small class="manual-job-result ${operation.error ? "error" : "success"}">${escapeHtml(operation.message)}</small>` : "";
+      const readOnly = String(game?.state?.state || "") === "published" || game?.workflowArtifactHealth?.publication?.published === true;
+      const controls = readOnly
+        ? `<p class="muted">公開済み試合は読み取り専用です。日程変更は公開後訂正フローで扱います。</p>`
+        : `<form class="v3-schedule-form" data-v3-schedule-form="${escapeHtml(game.internalGameId)}"><label>開始時刻 <input type="datetime-local" data-v3-schedule-start value="${escapeHtml(localStart)}" required></label><label>状態 <select data-v3-schedule-status><option value="scheduled" ${status === "scheduled" ? "selected" : ""}>scheduled（予定）</option><option value="cancelled" ${status === "cancelled" ? "selected" : ""}>cancelled（中止）</option><option value="postponed" ${status === "postponed" ? "selected" : ""}>postponed（延期）</option><option value="service_unavailable" ${status === "service_unavailable" ? "selected" : ""}>service_unavailable（対象外）</option></select></label><label><input type="checkbox" data-v3-schedule-confirm> 締切後の変更・中止を確認しました</label><button type="button" data-v3-schedule-save="${escapeHtml(game.internalGameId)}" ${operation.status === "loading" ? "disabled" : ""}>日程を更新</button></form>${result}`;
+      return `${renderSelectedGameHeader(game, "日程管理", "日程とV3が算出した処理時刻を確認します。状態変更は理由・確認・監査付きです。")}<section class="v3-panel"><div class="detail-grid"><div><dt>試合開始</dt><dd>${escapeHtml(formatJst(schedule?.startAt || game.startAt))}</dd></div><div><dt>予想締切</dt><dd>${escapeHtml(formatJst(schedule?.predictionDeadline))}</dd></div><div><dt>lineupPollingStart</dt><dd>${escapeHtml(formatJst(schedule?.lineupPollingStart))}</dd></div><div><dt>ランキング対象状態</dt><dd>${escapeHtml(details.eligibility?.rankingEligibility?.rankingEligibilityStatus || "未取得")}</dd></div></div>${controls}<p class="muted">中止・対象外試合は未実行jobを停止し、公開済み試合は変更できません。追加試合の登録は既存の日程同期・登録契約の拡張が必要なため、今回は対象外です。</p></section>`;
     }
 
     return Object.freeze({ renderGameSummary, renderTimeline, renderDashboard, renderGamesView, renderWorkflowView, renderLineupView, renderScoringView, renderScheduleView, renderManualControls });

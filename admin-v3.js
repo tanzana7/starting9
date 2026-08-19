@@ -130,6 +130,26 @@ async function reconcileV3State(internalGameId) {
   }
 }
 
+async function saveV3Schedule(internalGameId) {
+  const form = [...document.querySelectorAll("[data-v3-schedule-form]")]
+    .find((element) => element.dataset.v3ScheduleForm === String(internalGameId || ""));
+  if (!form) return;
+  const startAt = form.querySelector("[data-v3-schedule-start]")?.value || "";
+  const status = form.querySelector("[data-v3-schedule-status]")?.value || "scheduled";
+  const reason = window.prompt("日程変更理由を入力してください（1〜240文字）", "admin-v3: 日程状態・開始時刻を更新");
+  if (!String(reason || "").trim()) return;
+  const confirmed = form.querySelector("[data-v3-schedule-confirm]")?.checked === true;
+  const previous = manualOperation(internalGameId, "schedule") || {};
+  setManualOperation(internalGameId, "schedule", { ...previous, status: "loading", error: false, message: "日程を更新中…" });
+  try {
+    const result = await v3Api.updateSchedule(internalGameId, { startAt, status, reason: String(reason).trim(), confirmed });
+    setManualOperation(internalGameId, "schedule", { status: "success", error: false, message: `${result.stateBefore || "-"} → ${result.stateAfter || result.stateBefore || "-"} / 日程を更新しました。` });
+    await loadV3();
+  } catch (error) {
+    setManualOperation(internalGameId, "schedule", { status: "error", error: true, message: `${error.code || "V3_SCHEDULE_UPDATE_FAILED"}: ${error.message}` });
+  }
+}
+
 // Compatibility alias for focused tests and future incremental extraction.
 function v3Fetch(path, options = {}) {
   return v3Api.request(path, options);
@@ -927,6 +947,7 @@ adminV3Modules.createAdminV3Coordinator({
     diagnoseJob: diagnoseV3Job,
     runJob: runV3Job,
     reconcileState: reconcileV3State,
+    saveSchedule: saveV3Schedule,
     copyJobDetail: copyV3JobDetail,
     refreshJobDetail: (internalGameId, jobId) => loadV3JobDetail(internalGameId, jobId, true),
     toggleJobDetail: toggleV3JobDetail,

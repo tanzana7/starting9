@@ -38,6 +38,11 @@
           await actions.reconcileState(reconcileButton.dataset.v3StateReconcile);
           return;
         }
+        const scheduleButton = event.target.closest("[data-v3-schedule-save]");
+        if (scheduleButton) {
+          await actions.saveSchedule(scheduleButton.dataset.v3ScheduleSave);
+          return;
+        }
 
         const selectButton = event.target.closest("[data-v3-select-game]");
         if (selectButton) { await actions.selectGame(selectButton.dataset.v3SelectGame); return; }

@@ -38,6 +38,45 @@ async function invokeV3Observer(observer, args = [], timeoutMs = V3_OBSERVER_TIM
   }
 }
 
+async function reconcileCompletedPredictionCloseState(env, games = [], now = new Date(), { onError = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS } = {}) {
+  let recovered = 0;
+  let failed = 0;
+  const recoveredJobIds = [];
+  for (const game of Array.isArray(games) ? games : []) {
+    try {
+      const stateRow = await env.AUTH_DB.prepare(
+        "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
+      ).bind(game.internalGameId).first();
+      if (String(stateRow?.state || "") !== V3_STATE.SCHEDULED) continue;
+      const completedJob = await env.AUTH_DB.prepare(
+        `SELECT id, completed_at
+           FROM game_jobs_v3
+          WHERE internal_game_id = ?1
+            AND job_type = ?2
+            AND status = 'completed'
+          ORDER BY completed_at DESC, id DESC
+          LIMIT 1`
+      ).bind(game.internalGameId, V3_JOB_TYPE.PREDICTION_CLOSE).first();
+      if (!completedJob) continue;
+      await transitionV3State(env.AUTH_DB, {
+        internalGameId: game.internalGameId,
+        from: V3_STATE.SCHEDULED,
+        to: V3_STATE.PREDICTION_CLOSED,
+        now
+      });
+      recovered += 1;
+      recoveredJobIds.push(Number(completedJob.id));
+    } catch (error) {
+      failed += 1;
+      await invokeV3Observer(onError, [error, {
+        game,
+        stage: "prediction_close_state_reconcile"
+      }], observerTimeoutMs);
+    }
+  }
+  return { recovered, failed, recoveredJobIds };
+}
+
 // Claim execution lifecycle. Job-type business executors remain injected by auth-worker.
 export async function executeClaimedJobs(env, claims = [], games = [], now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS } = {}) {
   let processed = 0;
@@ -131,6 +170,12 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     }
   }
 
+  // A completed close job can outlive a failed state transition. Restore that
+  // workflow boundary through the normal V3 transition contract before planning
+  // lineup jobs; this never writes the state table directly.
+  const stateReconciliation = await reconcileCompletedPredictionCloseState(env, games, now, { onError, observerTimeoutMs });
+  failed += stateReconciliation.failed;
+
   // Phase boundaries are explicit: an auxiliary decision never short-circuits
   // the main workflow planner for the same or another game.
   const auxiliary = await planAuxiliaryJobs(env.AUTH_DB, games, now);
@@ -160,6 +205,7 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     created: auxiliary.created + mainPlan.created,
     processed: execution.processed,
     failed: failed + execution.failed,
+    stateReconciliation,
     probablePlan: auxiliary.probablePlan,
     rosterPlan: auxiliary.rosterPlan,
     identityPlan: auxiliary.identityPlan,

@@ -8,6 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const v3Domain = fs.readFileSync(path.join(root, "backend", "automation-v3", "domain.js"), "utf8");
 const client = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
+const apiClient = fs.readFileSync(path.join(root, "frontend", "admin-v3", "api-client.js"), "utf8");
 const gameProgress = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-game-progress.js"), "utf8");
 const jobDetails = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-job-details.js"), "utf8");
 const page = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
@@ -58,8 +59,8 @@ test("管理画面は旧直接編集操作を表示せず、正式V3 jobの診�
   assert.match(gameProgress, /data-v3-job-diagnose/);
   assert.match(gameProgress, /data-v3-job-run/);
   assert.match(gameProgress, /正式V3 jobを投入/);
-  assert.match(page, /admin-v3\.js\?v=admin-v3-v3-recovery-operations-1/);
-  assert.match(page, /admin-v3\.css\?v=admin-v3-v3-recovery-operations-1/);
+  assert.match(page, /admin-v3\.js\?v=admin-v3-v3-schedule-operations-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-v3-v3-schedule-operations-1/);
 });
 
 test("V3 completed jobは成果物確認なしにstateを自動前進させず、admin状態再同期を使う", () => {
@@ -270,6 +271,33 @@ test("job retry/cancelと日程変更は原子的条件・理由・pending限定
   assert.match(worker, /failureCode: before\?\.failure_code/);
   assert.match(worker, /status = 'pending'/);
   assert.match(worker, /predictionReopened: false/);
+});
+
+test("日程状態変更は確認・公開read-only・V3 state除外を持つ", () => {
+  assert.match(worker, /V3_SCHEDULE_STATUS_INVALID/);
+  assert.match(worker, /V3_SCHEDULE_CHANGE_TOO_LATE/);
+  assert.match(worker, /V3_SCHEDULE_REOPEN_UNSUPPORTED/);
+  assert.match(worker, /input\?\.confirmed !== true/);
+  assert.match(worker, /cancelOpenV3Jobs/);
+  assert.match(worker, /to: "excluded"/);
+  assert.match(worker, /service_unavailable/);
+});
+
+test("日程変更はretry_waitを含む未実行jobを再配置し、retry情報を消去する", () => {
+  assert.match(worker, /status IN \('pending', 'retry_wait'\)[\s\S]*next_retry_at = NULL/);
+  assert.match(worker, /scheduledSlotAt: slot/);
+  assert.match(worker, /details\.push\(\{ id: Number\(openJob\.id\)/);
+});
+
+test("V3診断は予告先発・ロースターの成果物と次の安全な操作を返す", () => {
+  assert.match(worker, /probableStarterExists/);
+  assert.match(worker, /legacyRowDetected/);
+  assert.match(worker, /rosterSnapshotFresh/);
+  assert.match(worker, /nextSafeAction/);
+  assert.match(worker, /manualActionRequired/);
+  assert.match(apiClient, /updateSchedule/);
+  assert.match(gameProgress, /data-v3-schedule-save/);
+  assert.match(gameProgress, /締切後の変更・中止を確認しました/);
 });
 
 test("V3の通常管理画面には緊急操作メニューを置かない", () => {

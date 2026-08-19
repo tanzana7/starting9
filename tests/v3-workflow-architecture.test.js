@@ -70,13 +70,87 @@ test("planner decisionは表示予定と実在jobを分離した契約を返す"
     diagnostic: { insertAttempted: true }
   }, new Date("2026-08-08T07:01:00.000Z"));
   assert.deepEqual(Object.keys(decision).sort(), [
-    "canonicalDataReady", "due", "existingOpenJob", "existingTerminalJob", "insertAttempted",
-    "insertedJobId", "jobType", "reasonCode", "scheduledSlotAt", "shouldRun"
+    "candidateExists", "canonicalDataReady", "due", "existingOpenJob", "existingTerminalJob",
+    "finalizedLineupExists", "insertAttempted", "insertedJobId", "jobType", "lineupDataReady",
+    "reasonCode", "scheduledSlotAt", "shouldRun"
   ].sort());
   assert.equal(decision.jobType, "roster_fetch");
   assert.equal(decision.due, true);
   assert.equal(decision.existingOpenJob.status, "pending");
   assert.equal(decision.insertedJobId, 7);
+});
+
+test("lineup_fetchのcompleted後にcandidateがなければ回復slotを再計画する", async () => {
+  const database = new DatabaseSync(":memory:");
+  const id = "33333333-3333-4333-8333-333333333333";
+  try {
+    database.exec(`
+      CREATE TABLE games (internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+        home_team TEXT, away_team TEXT, npb_game_code TEXT, npb_identity_status TEXT,
+        game_status TEXT, is_active INTEGER, deleted_at TEXT);
+      CREATE TABLE game_automation_v3_state (internal_game_id TEXT PRIMARY KEY, state TEXT,
+        prediction_closed_at TEXT, lineup_finalized_at TEXT, scoring_revision_id TEXT,
+        ranked_at TEXT, published_at TEXT, excluded_at TEXT, failure_code TEXT,
+        failure_message TEXT, version INTEGER, created_at TEXT, updated_at TEXT);
+      CREATE TABLE game_lineup_revisions (internal_game_id TEXT, version INTEGER, is_final INTEGER,
+        actual_lineup_json TEXT);
+      CREATE TABLE game_lineups (internal_game_id TEXT PRIMARY KEY, actual_lineup_json TEXT);
+      CREATE TABLE game_jobs_v3 (id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT,
+        job_type TEXT, scheduled_at TEXT, scheduled_slot_at TEXT, status TEXT, attempt_count INTEGER,
+        max_attempts INTEGER, next_retry_at TEXT, claimed_at TEXT, claim_token TEXT,
+        lease_expires_at TEXT, completed_at TEXT, failure_code TEXT, failure_message TEXT,
+        created_at TEXT, updated_at TEXT,
+        UNIQUE(internal_game_id, job_type, scheduled_slot_at));
+      INSERT INTO games VALUES ('${id}', '2026-08-19', '2026-08-19T05:00:00.000Z',
+        'fighters', 'hawks', 'f-h-19', 'resolved', 'scheduled', 1, NULL);
+      INSERT INTO game_automation_v3_state VALUES ('${id}', 'prediction_closed', NULL, NULL, NULL,
+        NULL, NULL, NULL, NULL, NULL, 0, '2026-08-19T03:00:00.000Z', '2026-08-19T04:50:00.000Z');
+      INSERT INTO game_jobs_v3 (id, internal_game_id, job_type, scheduled_at, scheduled_slot_at,
+        status, attempt_count, max_attempts, completed_at, created_at, updated_at)
+      VALUES (3861, '${id}', 'lineup_fetch', '2026-08-19T04:50:00.000Z', '2026-08-19T04:50:00.000Z',
+        'completed', 1, 12, '2026-08-19T04:50:02.000Z', '2026-08-19T04:50:00.000Z', '2026-08-19T04:50:02.000Z');
+    `);
+    const db = {
+      prepare(sql) {
+        const statement = database.prepare(sql);
+        return {
+          all: async (...args) => ({ results: statement.all(...args) }),
+          first: async (...args) => statement.get(...args),
+          run: async (...args) => ({ meta: { changes: Number(statement.run(...args).changes || 0) } }),
+          bind(...args) {
+            return {
+              all: async () => ({ results: statement.all(...args) }),
+              first: async () => statement.get(...args),
+              run: async () => ({ meta: { changes: Number(statement.run(...args).changes || 0) } })
+            };
+          }
+        };
+      }
+    };
+    const result = await v3.planV3MainJobs(db, [{
+      internalGameId: id,
+      gameDate: "2026-08-19",
+      startAt: "2026-08-19T05:00:00.000Z",
+      homeTeam: "fighters",
+      awayTeam: "hawks",
+      npbGameCode: "f-h-19",
+      npbIdentityStatus: "resolved",
+      gameStatus: "scheduled",
+      isActive: 1
+    }], new Date("2026-08-19T04:50:00.000Z"));
+    const entry = result.planned.find((item) => item.plan?.jobType === "lineup_fetch");
+    assert.ok(entry);
+    assert.equal(entry.reasonCode, "V3_LINEUP_RECOVERY_JOB_CREATED");
+    assert.equal(entry.recoveryOfJobId, 3861);
+    assert.equal(entry.diagnostic.completedWithoutCandidate, true);
+    assert.equal(entry.plan.scheduledSlotAt.toISOString(), "2026-08-19T04:50:01.000Z");
+    const recovery = database.prepare(
+      "SELECT status FROM game_jobs_v3 WHERE internal_game_id = ?1 AND job_type = 'lineup_fetch' AND id <> 3861"
+    ).get(id);
+    assert.equal(recovery.status, "pending");
+  } finally {
+    database.close();
+  }
 });
 
 test("V3 runnerの補助job失敗はmain plannerを停止せず、仮想試合をpublishedまで進める", async () => {
@@ -133,6 +207,13 @@ test("V3 runnerの補助job失敗はmain plannerを停止せず、仮想試合�
   } finally {
     database.close();
   }
+});
+
+test("lineup_fetchはcandidate/canonical dataなしでcompletedにせず、admin診断へ渡す", () => {
+  const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+  assert.match(worker, /getV3LineupDataHealth\(env\.AUTH_DB, internalGameId, stateBefore\)/);
+  assert.match(worker, /LINEUP_FETCH_COMPLETED_WITHOUT_CANDIDATE/);
+  assert.match(worker, /completedWithoutCandidate/);
 });
 
 test("V3 runtime source has explicit phases and no V2 module dependency", () => {

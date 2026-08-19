@@ -32,6 +32,27 @@ test("共通phase判定はlineupの待機・異常とscore/ranking no-op、publi
   assert.equal(publish.reasonCode, "PUBLISH_PREREQUISITE_PENDING");
 });
 
+test("completed lineup_fetch without candidate is attention", () => {
+  const status = deriveV3PhaseStatus({
+    phase: "lineup_fetch",
+    workflowState: "prediction_closed",
+    now: "2026-08-19T05:01:00.000Z",
+    game,
+    jobs: [{ job_type: "lineup_fetch", status: "completed", completed_at: "2026-08-19T05:00:02.000Z" }],
+    lineupDataHealth: {
+      available: true,
+      candidateExists: false,
+      canonicalDataReady: false,
+      finalizedLineupExists: false,
+      workflowStateAtLeastLineupReady: false,
+      ready: false
+    }
+  });
+  assert.equal(status.severity, "ATTENTION");
+  assert.equal(status.reasonCode, "LINEUP_FETCH_COMPLETED_WITHOUT_CANDIDATE");
+  assert.match(status.message, /candidate\/canonical lineup/);
+});
+
 test("共通phase判定はstructured logs用の共通factsを返す", () => {
   const status = deriveV3PhaseStatus({ phase: "roster", game, now: "2026-08-08T23:32:00.000Z", snapshot: missingSnapshot });
   for (const key of ["severity", "label", "reasonCode", "normalizedCategory", "nextCheckAt", "isBeforeDue", "isAfterDue", "openJobExists", "retryWaitJobExists", "failedJobExists", "completedJobExists", "attentionReasons"]) {

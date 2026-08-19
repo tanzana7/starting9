@@ -179,7 +179,7 @@ test("admin-v3 ignores a historical failure when a newer recovery job is open", 
   assert.match(client, /hasNewerV3Job/);
   assert.match(client, /currentFailedV3Jobs/);
   assert.match(runtime, /V3_SCORE_RECOVERY_JOB_CREATED/);
-  assert.match(page, /admin-v3-completed-state-reconcile-1/);
+  assert.match(page, /admin-v3-v3-recovery-operations-1/);
 });
 
 test("V3 score executor releases stale processing before a recovery claim", () => {

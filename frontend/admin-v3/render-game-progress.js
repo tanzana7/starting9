@@ -52,13 +52,17 @@
       const rows = MANUAL_STAGE_TYPES.map(([jobType, label, canRun]) => {
         const operation = typeof manualOperation === "function" ? manualOperation(game.internalGameId, jobType) || {} : {};
         const loading = operation.status === "loading";
+        const publishedReadOnly = String(game?.state?.state || "") === "published" || game?.workflowArtifactHealth?.publication?.published === true;
         const result = operation.message ? `<small class="manual-job-result ${operation.error ? "error" : "success"}">${escapeHtml(operation.message)}</small>` : "";
-        const runButton = canRun
+        const runButton = canRun && !publishedReadOnly
           ? `<button type="button" data-v3-job-run="${escapeHtml(game.internalGameId)}" data-v3-job-type="${escapeHtml(jobType)}" ${loading ? "disabled" : ""}>再実行</button>`
-          : `<span class="manual-job-unavailable">正式runnerなし</span>`;
+          : `<span class="manual-job-unavailable">${publishedReadOnly ? "公開済み / 読み取り専用" : "正式runnerなし"}</span>`;
         return `<div class="manual-job-row"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(operation.diagnosis?.currentWorkflowState || game.state?.state || "scheduled")}</span><div class="manual-job-actions"><button type="button" data-v3-job-diagnose="${escapeHtml(game.internalGameId)}" data-v3-job-type="${escapeHtml(jobType)}" ${loading ? "disabled" : ""}>診断</button>${runButton}</div>${result}</div>`;
       }).join("");
-      return `<section class="v3-panel manual-job-controls" aria-labelledby="manualJobControlsHeading"><div class="view-heading"><div><h3 id="manualJobControlsHeading">V3工程の診断・手動再実行</h3><p>再実行は正式V3 jobを投入し、Cronのexecutorへ渡します。日程登録は診断のみです。</p></div></div><div class="manual-job-list">${rows}</div></section>`;
+      const reconcileOperation = typeof manualOperation === "function" ? manualOperation(game.internalGameId, "state_reconcile") || {} : {};
+      const reconcileResult = reconcileOperation.message ? `<small class="manual-job-result ${reconcileOperation.error ? "error" : "success"}">${escapeHtml(reconcileOperation.message)}</small>` : "";
+      const reconcileLoading = reconcileOperation.status === "loading";
+      return `<section class="v3-panel manual-job-controls" aria-labelledby="manualJobControlsHeading"><div class="view-heading"><div><h3 id="manualJobControlsHeading">V3工程の診断・手動再実行</h3><p>再実行は正式V3 jobを投入し、Cronのexecutorへ渡します。状態再同期は成果物確認済みの場合だけ実行できます。</p></div></div><div class="manual-job-list">${rows}</div><div class="manual-job-row manual-state-reconcile"><strong>workflow state</strong><span>${escapeHtml(game.state?.state || "scheduled")}</span><div class="manual-job-actions"><button type="button" data-v3-state-reconcile="${escapeHtml(game.internalGameId)}" ${reconcileLoading ? "disabled" : ""}>成果物を確認して状態再同期</button></div>${reconcileResult}</div></section>`;
     }
     function renderGameSummary(game, buttonLabel = "試合進行を見る") {
       const identity = identityStatusLabel(game.npbIdentityStatus, game.npbIdentityState);
@@ -210,6 +214,7 @@
         ...(diagnostics.completedStateMismatches || [])
           .filter((mismatch) => mismatch.jobType !== "prediction_close")
           .map((mismatch) => `${mismatch.code}: ${mismatch.message}`),
+        ...(diagnostics.artifactBlockingReasons || []).map((reason) => `${reason.code}: ${reason.message}`),
         ...(diagnostics.lineupFetch?.blockingReasons || []).map((reason) => `${reason.code}: ${reason.message}`)
       ].filter(Boolean);
       if (!messages.length) return "";

@@ -393,7 +393,7 @@ export function getV3ProbableStarterHealthDecision({
 
 // Canonical display/diagnostic evaluation for every V3 phase. It does not
 // influence planning or execution; callers use it for overview and audits.
-export function deriveV3PhaseStatus({ phase, game, now = new Date(), workflowState = "scheduled", jobs = [], snapshot = null, noticeState = null, noOpReason = null, sourceStatus = "", probableStarter = null, sourceSnapshotComparison = null, lineupDataHealth = null } = {}) {
+export function deriveV3PhaseStatus({ phase, game, now = new Date(), workflowState = "scheduled", jobs = [], snapshot = null, noticeState = null, noOpReason = null, sourceStatus = "", probableStarter = null, sourceSnapshotComparison = null, lineupDataHealth = null, workflowArtifactHealth = null } = {}) {
   const current = now instanceof Date ? now : new Date(now);
   const schedule = deriveV3DisplaySchedule(game);
   if (phase === "roster") {
@@ -482,6 +482,23 @@ export function deriveV3PhaseStatus({ phase, game, now = new Date(), workflowSta
       isAfterDue: true,
       completedJobExists: true,
       diagnosticFacts: { ...lineupDataHealth }
+    });
+  }
+  const artifactMismatch = getV3ArtifactMismatch({
+    phase,
+    completedJob: completed,
+    lineupDataHealth,
+    workflowArtifactHealth
+  });
+  if (artifactMismatch) {
+    return v3NormalizedPhaseStatus(phase, {
+      severity: "ATTENTION",
+      label: "成果物未反映",
+      reasonCode: artifactMismatch.code,
+      message: artifactMismatch.message,
+      isAfterDue: true,
+      completedJobExists: true,
+      diagnosticFacts: artifactMismatch.diagnosticFacts
     });
   }
   if (["score", "ranking"].includes(phase) && noOpReason) {
@@ -664,7 +681,61 @@ export function getV3CompletedStateMismatches({ state = V3_STATE.SCHEDULED, jobs
     }));
 }
 
-export function getV3WorkflowDiagnostics({ schedule, state = "scheduled", game = {}, jobs = [], now = new Date(), lineupDataHealth = null } = {}) {
+function artifactLineupHealth(lineupDataHealth, workflowArtifactHealth) {
+  return workflowArtifactHealth?.lineup || lineupDataHealth || null;
+}
+
+// A terminal job is only a lifecycle fact.  The business artifact is the
+// proof that the job can be treated as successful by the next phase.
+export function getV3ArtifactMismatch({ phase, completedJob = null, lineupDataHealth = null, workflowArtifactHealth = null } = {}) {
+  if (String(completedJob?.status || "") !== "completed") return null;
+  const lineup = artifactLineupHealth(lineupDataHealth, workflowArtifactHealth);
+  const checks = {
+    lineup_fetch: {
+      health: lineup,
+      ready: lineup?.ready === true,
+      code: "LINEUP_FETCH_COMPLETED_WITHOUT_CANDIDATE",
+      message: "lineup_fetchはcompletedですがcandidate/canonical/finalized lineupがありません。"
+    },
+    lineup_finalize: {
+      health: lineup,
+      ready: lineup?.finalizedLineupExists === true,
+      code: lineup?.candidateExists === false ? "LINEUP_FINALIZE_COMPLETED_WITHOUT_CANDIDATE" : "LINEUP_FINALIZE_COMPLETED_WITHOUT_FINALIZED_LINEUP",
+      message: lineup?.candidateExists === false
+        ? "lineup_finalizeはcompletedですがcandidateがありません。正式スタメン確定を再実行できません。"
+        : "lineup_finalizeはcompletedですがfinalized lineupがありません。candidateからの確定が必要です。"
+    },
+    score: {
+      health: workflowArtifactHealth?.scoring,
+      ready: workflowArtifactHealth?.scoring?.ready === true,
+      code: "SCORING_COMPLETED_WITHOUT_SCORE",
+      message: "scoring jobはcompletedですが採点結果またはscoring revisionがありません。"
+    },
+    ranking: {
+      health: workflowArtifactHealth?.ranking,
+      ready: workflowArtifactHealth?.ranking?.reflected === true,
+      code: "RANKING_COMPLETED_WITHOUT_REFLECTION",
+      message: "ranking_updateはcompletedですがranking reflectionがありません。"
+    },
+    publish: {
+      health: workflowArtifactHealth?.publication,
+      ready: workflowArtifactHealth?.publication?.published === true,
+      code: "PUBLISH_COMPLETED_WITHOUT_PUBLICATION",
+      message: "result_publishはcompletedですがpublication_status/published_atが反映されていません。"
+    }
+  }[String(phase || "")];
+  if (!checks?.health || checks.health.available !== true || checks.ready) return null;
+  return {
+    code: checks.code,
+    message: checks.message,
+    phase,
+    jobId: completedJob.id || null,
+    completedAt: completedJob.completed_at || null,
+    diagnosticFacts: { ...(checks.health || {}) }
+  };
+}
+
+export function getV3WorkflowDiagnostics({ schedule, state = "scheduled", game = {}, jobs = [], now = new Date(), lineupDataHealth = null, workflowArtifactHealth = null } = {}) {
   const current = now instanceof Date ? now : new Date(now);
   const stateValue = String(state || "scheduled");
   const predictionDeadline = new Date(schedule?.predictionDeadline || "");
@@ -676,6 +747,14 @@ export function getV3WorkflowDiagnostics({ schedule, state = "scheduled", game =
   const predictionCloseStateMismatch = predictionDeadlineElapsed && stateValue === "scheduled" && predictionCloseCompleted;
   const identityJob = latestV3JobByType(jobs, "npb_identity_resolve");
   const completedStateMismatches = getV3CompletedStateMismatches({ state: stateValue, jobs });
+  const artifactBlockingReasons = ["lineup_fetch", "lineup_finalize", "score", "ranking", "publish"]
+    .map((phase) => getV3ArtifactMismatch({
+      phase,
+      completedJob: latestV3JobByType(jobs, phase === "score" ? "score" : phase === "ranking" ? "ranking_rebuild" : phase),
+      lineupDataHealth,
+      workflowArtifactHealth
+    }))
+    .filter(Boolean);
   const npbGameCode = String(game?.npbGameCode || game?.npb_game_code || "").trim();
   const identityCompletedWithoutCode = String(identityJob?.status || "") === "completed" && !npbGameCode;
   const identityNeedsAttention = !npbGameCode
@@ -749,6 +828,7 @@ export function getV3WorkflowDiagnostics({ schedule, state = "scheduled", game =
         : null
     },
     completedStateMismatches,
+    artifactBlockingReasons,
     lineupFetch: {
       canRun: lineupCanRun,
       completedWithoutCandidate: lineupFetchCompletedWithoutCandidate,

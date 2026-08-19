@@ -33,6 +33,11 @@
           await actions.runJob(runButton.dataset.v3JobRun, runButton.dataset.v3JobType);
           return;
         }
+        const reconcileButton = event.target.closest("[data-v3-state-reconcile]");
+        if (reconcileButton) {
+          await actions.reconcileState(reconcileButton.dataset.v3StateReconcile);
+          return;
+        }
 
         const selectButton = event.target.closest("[data-v3-select-game]");
         if (selectButton) { await actions.selectGame(selectButton.dataset.v3SelectGame); return; }

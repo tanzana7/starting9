@@ -99,6 +99,69 @@ test("監査observerが停止しても、lineup_finalizeの計画・claim・exec
   }
 });
 
+test("completed prediction_closeのstate遷移漏れを正式V3 transitionで復旧してlineupを計画する", async () => {
+  const database = new DatabaseSync(":memory:");
+  const internalGameId = "122a8838-9e5c-4d64-88b7-7a8b43181aed";
+  try {
+    database.exec(`
+      CREATE TABLE games (
+        internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+        home_team TEXT, away_team TEXT, npb_game_code TEXT, npb_identity_status TEXT,
+        game_status TEXT, is_active INTEGER, deleted_at TEXT
+      );
+      CREATE TABLE game_identifiers (
+        id INTEGER PRIMARY KEY, internal_game_id TEXT, provider TEXT,
+        identifier_type TEXT, identifier_value TEXT, updated_at TEXT
+      );
+      CREATE TABLE game_automation_v3_state (
+        internal_game_id TEXT PRIMARY KEY, state TEXT, prediction_closed_at TEXT,
+        lineup_finalized_at TEXT, scoring_revision_id TEXT, ranked_at TEXT,
+        published_at TEXT, excluded_at TEXT, failure_code TEXT, failure_message TEXT,
+        version INTEGER, created_at TEXT, updated_at TEXT
+      );
+      CREATE TABLE game_jobs_v3 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT, job_type TEXT,
+        scheduled_at TEXT, scheduled_slot_at TEXT, status TEXT, attempt_count INTEGER,
+        max_attempts INTEGER, next_retry_at TEXT, claimed_at TEXT, claim_token TEXT,
+        lease_expires_at TEXT, completed_at TEXT, failure_code TEXT, failure_message TEXT,
+        created_at TEXT, updated_at TEXT,
+        UNIQUE(internal_game_id, job_type, scheduled_slot_at)
+      );
+      INSERT INTO games VALUES (
+        '${internalGameId}', '2026-08-19', '2026-08-19T05:00:00.000Z',
+        'fighters', 'hawks', 'f-h-19', 'resolved', 'scheduled', 1, NULL
+      );
+      INSERT INTO game_identifiers VALUES (
+        1, '${internalGameId}', 'npb', 'npb_game_code', 'f-h-19',
+        '2026-08-19T03:00:00.000Z'
+      );
+      INSERT INTO game_automation_v3_state VALUES (
+        '${internalGameId}', 'scheduled', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0,
+        '2026-08-19T03:00:00.000Z', '2026-08-19T03:00:00.000Z'
+      );
+      INSERT INTO game_jobs_v3 (
+        internal_game_id, job_type, scheduled_at, scheduled_slot_at, status,
+        attempt_count, max_attempts, completed_at, created_at, updated_at
+      ) VALUES (
+        '${internalGameId}', 'prediction_close', '2026-08-19T04:00:00.000Z',
+        '2026-08-19T04:00:00.000Z', 'completed', 1, 12,
+        '2026-08-19T04:00:01.000Z', '2026-08-19T04:00:00.000Z', '2026-08-19T04:00:01.000Z'
+      );
+    `);
+    const env = { AUTH_DB: d1(database), ENABLE_GAME_AUTOMATION_V3: "true" };
+    const result = await v3.runGameAutomationV3(env, new Date("2026-08-19T04:10:00.000Z"), {
+      executeJob: async ({ job }) => ({ status: "retry_wait", failureCode: "LINEUP_NOT_ANNOUNCED", stateBefore: job.job_type === "lineup_fetch" ? "prediction_closed" : "scheduled" })
+    });
+    const state = database.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1").get(internalGameId);
+    assert.equal(state.state, "prediction_closed");
+    assert.equal(result.stateReconciliation.recovered, 1);
+    assert.equal(result.stateReconciliation.recoveredJobIds.length, 1);
+    assert.equal(result.mainPlan.planned.some((item) => item.plan?.jobType === "lineup_fetch"), true);
+  } finally {
+    database.close();
+  }
+});
+
 test("f-l-19相当のidentity hydration後は18:02のlineup_finalizeを生成する", async () => {
   const game = {
     internalGameId: "022a8838-9e5c-4d64-88b7-7a8b43181aed",

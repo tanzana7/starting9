@@ -94,6 +94,26 @@ test("結果表示モデルは実際のスタメン順に並べ、実際の選�
   assert.equal(details.reduce((total, detail) => total + detail.point, 0), 19);
 });
 
+test("actualPlayerのスロット情報を別選手の予想へ誤流用せず、未予想実スタメンを0点にする", () => {
+  const details = createActualBasisDetails([
+    { order: 3, player: "レイエス", position: "指", actualPlayer: "吉田賢吾", actualPosition: "一", point: 7, isPlayerHit: true, isOrderHit: false, isPositionHit: true },
+    { order: 5, player: "今川優馬", position: "右", actualOrder: 2, point: 5, isPlayerHit: true, isOrderHit: false, isPositionHit: false }
+  ], [
+    { order: 1, player: "水野達稀", position: "遊", playerId: "p1" },
+    { order: 2, player: "今川優馬", position: "左", playerId: "p2" },
+    { order: 3, player: "吉田賢吾", position: "一", playerId: "p3" }
+  ]);
+
+  assert.equal(details[1].player, "今川優馬");
+  assert.equal(details[1].point, 5);
+  assert.equal(details[2].actualPlayer, "吉田賢吾");
+  assert.equal(details[2].player, "");
+  assert.equal(details[2].point, 0);
+  assert.equal(details[2].isPlayerHit, false);
+  assert.equal(details[2].isOrderHit, false);
+  assert.equal(details[2].isPositionHit, false);
+});
+
 test("実スタメン配列がない保存済み結果もactualOrderを基準に並べる", () => {
   const sourceDetails = [
     {

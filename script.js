@@ -4363,9 +4363,8 @@ function createActualBasisDetails(sourceDetails, actualLineup = []) {
     const actualPlayerId = String(actualItem.playerId || "").trim();
     const predictionDetail = sourceDetails.find((detail) => {
       if (Number(detail.actualOrder) === index + 1) return true;
-      if (actualPlayerId && String(detail.actualPlayerId || "").trim() === actualPlayerId) return true;
-      const detailActualPlayer = String(detail.actualPlayer || "").trim();
-      if (actualPlayer && detailActualPlayer && normalizePlayerKey(detailActualPlayer) === normalizePlayerKey(actualPlayer)) return true;
+      const predictedPlayerId = String(detail.playerId || "").trim();
+      if (actualPlayerId && predictedPlayerId && predictedPlayerId === actualPlayerId) return true;
       const predictedPlayer = String(detail.player || "").trim();
       return Boolean(actualPlayer && predictedPlayer && normalizePlayerKey(predictedPlayer) === normalizePlayerKey(actualPlayer));
     }) || null;
@@ -4397,22 +4396,19 @@ function createActualBasisDetails(sourceDetails, actualLineup = []) {
 
 function createResultViewModel(result) {
   const sourceDetails = Array.isArray(result.details) ? result.details : [];
+  const hasActualLineup = Array.isArray(result.actualLineup) && result.actualLineup.length > 0;
   const actualOrderById = new Map();
   const actualOrderByName = new Map();
-  sourceDetails.forEach((detail) => {
-    const order = Number(detail.order);
-    if (!Number.isInteger(order) || order < 1) {
-      return;
-    }
-    const actualPlayerId = typeof detail.actualPlayerId === "string" ? detail.actualPlayerId.trim() : "";
-    const actualPlayerKey = normalizePlayerKey(detail.actualPlayer);
-    if (actualPlayerId) {
-      actualOrderById.set(actualPlayerId, order);
-    }
-    if (actualPlayerKey) {
-      actualOrderByName.set(actualPlayerKey, order);
-    }
-  });
+  if (!hasActualLineup) {
+    sourceDetails.forEach((detail) => {
+      const order = Number(detail.order);
+      if (!Number.isInteger(order) || order < 1) return;
+      const actualPlayerId = typeof detail.actualPlayerId === "string" ? detail.actualPlayerId.trim() : "";
+      const actualPlayerKey = normalizePlayerKey(detail.actualPlayer);
+      if (actualPlayerId) actualOrderById.set(actualPlayerId, order);
+      if (actualPlayerKey) actualOrderByName.set(actualPlayerKey, order);
+    });
+  }
 
   const normalizedDetails = sourceDetails.map((detail) => {
     const isPlayerHit = Boolean(detail.isPlayerHit ?? detail.mark !== "×");
@@ -4422,7 +4418,9 @@ function createResultViewModel(result) {
     const existingActualOrder = Number(detail.actualOrder);
     const actualOrder = Number.isInteger(existingActualOrder) && existingActualOrder > 0
       ? existingActualOrder
-      : actualOrderById.get(playerId) || actualOrderByName.get(normalizePlayerKey(detail.player)) || null;
+      : hasActualLineup
+        ? null
+        : actualOrderById.get(playerId) || actualOrderByName.get(normalizePlayerKey(detail.player)) || null;
 
     return {
       ...detail,

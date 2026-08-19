@@ -543,6 +543,29 @@ export function getV3NextAction({ schedule, state = "scheduled", jobs = [], now 
     return { nextAction: null, nextActionAt: null, nextActionLabel: null };
   }
   const completed = (jobType) => hasFinishedV3Job(jobs, jobType);
+  const stateValue = String(state);
+  const predictionDeadline = new Date(schedule.predictionDeadline || "");
+  const predictionDeadlineElapsed = !Number.isNaN(predictionDeadline.getTime())
+    && predictionDeadline.getTime() <= current.getTime();
+  if (stateValue === "scheduled" && predictionDeadlineElapsed) {
+    const predictionCloseCompleted = jobs.some((job) => job.job_type === "prediction_close" && job.status === "completed");
+    if (!predictionCloseCompleted) {
+      return {
+        nextAction: "prediction_close",
+        nextActionAt: predictionDeadline.toISOString(),
+        nextActionLabel: NEXT_ACTION_LABELS.prediction_close,
+        isOverdue: true
+      };
+    }
+    return {
+      nextAction: "prediction_close_state_sync",
+      nextActionAt: null,
+      nextActionLabel: "締切状態の整合性確認",
+      isOverdue: true,
+      isBlocked: true,
+      blockingReason: "prediction_close jobは完了していますがworkflow stateがscheduledのままです。"
+    };
+  }
   const candidates = [];
   const add = (action, values, jobType, enabled = true) => {
     if (!enabled || completed(jobType)) return;
@@ -553,12 +576,12 @@ export function getV3NextAction({ schedule, state = "scheduled", jobs = [], now 
       }
     }
   };
-  add("prediction_close", schedule.predictionDeadline, "prediction_close", state === "scheduled");
-  add("roster_fetch", schedule.rosterFetchSlots, "roster_fetch", !["lineup_ready", "scored", "ranked", "published"].includes(String(state)));
-  add("lineup_fetch", schedule.lineupPollingSlots, "lineup_fetch", ["scheduled", "prediction_closed", "manual_action_required"].includes(String(state)));
-  add("lineup_finalize", schedule.finalLineupAt, "lineup_finalize", ["scheduled", "prediction_closed", "manual_action_required"].includes(String(state)));
-  add("score", schedule.scoringEarliestAt, "score", ["scheduled", "prediction_closed"].includes(String(state)));
-  add("publish", schedule.publicationAt, "publish", String(state) === "ranked");
+  add("prediction_close", schedule.predictionDeadline, "prediction_close", stateValue === "scheduled");
+  add("roster_fetch", schedule.rosterFetchSlots, "roster_fetch", !["lineup_ready", "scored", "ranked", "published"].includes(stateValue));
+  add("lineup_fetch", schedule.lineupPollingSlots, "lineup_fetch", ["prediction_closed", "manual_action_required"].includes(stateValue));
+  add("lineup_finalize", schedule.finalLineupAt, "lineup_finalize", ["prediction_closed", "manual_action_required"].includes(stateValue));
+  add("score", schedule.scoringEarliestAt, "score", ["scheduled", "prediction_closed"].includes(stateValue));
+  add("publish", schedule.publicationAt, "publish", stateValue === "ranked");
   const next = candidates
     .filter((candidate) => !candidate.due)
     .sort((left, right) => left.at.getTime() - right.at.getTime())[0];
@@ -574,16 +597,93 @@ export function getV3NextAction({ schedule, state = "scheduled", jobs = [], now 
       isOverdue: true
     };
   }
-  if (["lineup_ready", "manual_action_required"].includes(String(state)) && !completed("score")) {
+  if (["lineup_ready", "manual_action_required"].includes(stateValue) && !completed("score")) {
     return { nextAction: "score_after_final_lineup", nextActionAt: null, nextActionLabel: "採点（正式スタメン確定後）" };
   }
-  if (String(state) === "scored" && !completed("ranking_rebuild")) {
+  if (stateValue === "scored" && !completed("ranking_rebuild")) {
     return { nextAction: "ranking_after_scoring", nextActionAt: null, nextActionLabel: "ランキング反映（採点完了後）" };
   }
-  if (String(state) === "ranked" && !completed("publish")) {
+  if (stateValue === "ranked" && !completed("publish")) {
     return { nextAction: "publish", nextActionAt: schedule.publicationAt, nextActionLabel: NEXT_ACTION_LABELS.publish };
   }
   return { nextAction: null, nextActionAt: null, nextActionLabel: null };
+}
+
+function latestV3JobByType(jobs, jobType) {
+  return (Array.isArray(jobs) ? jobs : [])
+    .filter((job) => String(job?.job_type || job?.jobType || "") === jobType)
+    .sort((left, right) => String(right?.updated_at || right?.scheduled_at || "").localeCompare(String(left?.updated_at || left?.scheduled_at || "")))[0] || null;
+}
+
+export function getV3WorkflowDiagnostics({ schedule, state = "scheduled", game = {}, jobs = [], now = new Date() } = {}) {
+  const current = now instanceof Date ? now : new Date(now);
+  const stateValue = String(state || "scheduled");
+  const predictionDeadline = new Date(schedule?.predictionDeadline || "");
+  const predictionDeadlineElapsed = !Number.isNaN(predictionDeadline.getTime())
+    && !Number.isNaN(current.getTime())
+    && predictionDeadline.getTime() <= current.getTime();
+  const predictionCloseJob = latestV3JobByType(jobs, "prediction_close");
+  const predictionCloseCompleted = String(predictionCloseJob?.status || "") === "completed";
+  const predictionCloseStateMismatch = predictionDeadlineElapsed && stateValue === "scheduled" && predictionCloseCompleted;
+  const identityJob = latestV3JobByType(jobs, "npb_identity_resolve");
+  const npbGameCode = String(game?.npbGameCode || game?.npb_game_code || "").trim();
+  const identityCompletedWithoutCode = String(identityJob?.status || "") === "completed" && !npbGameCode;
+  const lineupStateAllowed = ["prediction_closed", "manual_action_required"].includes(stateValue);
+  let lineupCanRun = lineupStateAllowed;
+  let lineupBlockingReasonCode = null;
+  let lineupBlockingReason = null;
+  if (!lineupStateAllowed) {
+    lineupCanRun = false;
+    if (!predictionDeadlineElapsed) {
+      lineupBlockingReasonCode = null;
+      lineupBlockingReason = null;
+    } else {
+      lineupBlockingReasonCode = predictionCloseStateMismatch
+        ? "PREDICTION_CLOSE_STATE_TRANSITION_MISSING"
+        : "PREDICTION_CLOSE_STATE_GATE";
+      lineupBlockingReason = predictionCloseStateMismatch
+        ? "prediction_close jobは完了していますがworkflow stateがscheduledのままです。"
+        : "prediction_close完了後のworkflow state遷移待ちです。";
+    }
+  } else if (!npbGameCode) {
+    lineupCanRun = false;
+    lineupBlockingReasonCode = "NPB_GAME_CODE_NOT_AVAILABLE";
+    lineupBlockingReason = identityCompletedWithoutCode
+      ? "NPB識別jobは完了扱いですがgame codeが未解決です。"
+      : "NPB game codeが未解決のためスタメン取得を実行できません。";
+  } else if (!["resolved", "manually_overridden"].includes(String(game?.npbIdentityState || game?.npb_identity_state || ""))) {
+    lineupCanRun = false;
+    lineupBlockingReasonCode = "NPB_IDENTITY_UNRESOLVED";
+    lineupBlockingReason = "NPB試合識別情報の解決待ちです。";
+  }
+  return {
+    predictionClose: {
+      deadlineAt: Number.isNaN(predictionDeadline.getTime()) ? null : predictionDeadline.toISOString(),
+      deadlineElapsed: predictionDeadlineElapsed,
+      jobStatus: predictionCloseJob?.status || "not_created",
+      jobId: predictionCloseJob?.id || null,
+      completed: predictionCloseCompleted,
+      overdue: predictionDeadlineElapsed && !predictionCloseCompleted,
+      stateMismatch: predictionCloseStateMismatch,
+      warning: predictionCloseStateMismatch
+        ? "締切jobは完了していますがworkflow stateがscheduledのままです。"
+        : predictionDeadlineElapsed && !predictionCloseCompleted
+          ? "予想締切を過ぎていますが締切jobが完了していません。"
+          : null
+    },
+    identity: {
+      codePresent: Boolean(npbGameCode),
+      jobStatus: identityJob?.status || "not_created",
+      jobId: identityJob?.id || null,
+      completedWithoutCode: identityCompletedWithoutCode,
+      warning: identityCompletedWithoutCode ? "NPB識別jobは完了扱いですがgame codeが未解決です。" : null
+    },
+    lineupFetch: {
+      canRun: lineupCanRun,
+      blockingReasonCode: lineupBlockingReasonCode,
+      blockingReason: lineupBlockingReason
+    }
+  };
 }
 
 export function getV3NpbIdentityState(game, now = new Date()) {

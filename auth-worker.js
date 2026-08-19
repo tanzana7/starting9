@@ -135,6 +135,7 @@ import {
   compareV3RosterSourceSnapshot,
   deriveV3PhaseStatus,
   getV3NextAction,
+  getV3WorkflowDiagnostics,
   getV3ProbableStarterPollingSlots,
   getV3ProbableStarterSourceDate,
   getV3CanonicalRosterSnapshot,
@@ -938,14 +939,17 @@ async function executeV3IdentityResolutionJob(env, internalGameId, now) {
     };
   }
   const identityState = String(payload?.identityState || "");
-  if (identityState === "pending" || identityState === "manual_action_required") {
-    const requiresManualAction = identityState === "manual_action_required";
-    return {
-      status: identityState,
-      identityResolved: false,
-      failureCode: requiresManualAction ? payload?.code || null : null,
-      failureMessage: requiresManualAction ? payload?.error || null : null
-    };
+  if (identityState === "pending") {
+    throw createV3Error(payload?.code || "NPB_IDENTITY_PENDING", payload?.error || "NPB試合識別情報の掲載を待っています。", {
+      retryable: true,
+      retryAt: getNextV3IdentityRetryAt(now)
+    });
+  }
+  if (identityState === "manual_action_required") {
+    throw createV3Error(payload?.code || "NPB_IDENTITY_MANUAL_ACTION_REQUIRED", payload?.error || "NPB試合識別情報の手動確認が必要です。", {
+      retryable: true,
+      retryAt: getNextV3IdentityRetryAt(now)
+    });
   }
   if (identityState === "retry_wait") {
     const error = createV3Error(payload?.code || "NPB_IDENTITY_RETRY_WAIT", payload?.error || "NPB識別情報の掲載を待っています。", {
@@ -4300,6 +4304,13 @@ async function handleAdminV3Overview(request, env, cors) {
       }
     };
     const nextAction = getV3NextAction({ schedule, state: resolvedState.state, jobs: jobRows, now: overviewNow });
+    const workflowDiagnostics = getV3WorkflowDiagnostics({
+      schedule,
+      state: resolvedState.state,
+      game,
+      jobs: jobRows,
+      now: overviewNow
+    });
     const phaseStatuses = {
       probable_starter: deriveV3PhaseStatus({
         phase: "probable_starter",
@@ -4340,6 +4351,7 @@ async function handleAdminV3Overview(request, env, cors) {
       phaseStatuses,
       probableStarterNextCheckAt,
       probableStarterJob: schedule.probableStarterJob,
+      workflowDiagnostics,
       auxiliaryErrors: [
         ...(state?.errorCode ? [{ field: "state", errorCode: state.errorCode }] : []),
         ...(jobs.errorCode ? [{ field: "jobs", errorCode: jobs.errorCode }] : []),

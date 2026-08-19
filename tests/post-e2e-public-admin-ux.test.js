@@ -95,6 +95,6 @@ test("通常画面は公開結果の読込中・失敗・完了を内部情報�
 
 test("post-E2E表示修正のcache busterを更新し、旧手動操作を復活させない", () => {
   assert.match(index, /script\.js\?v=public-result-loading-speed-improvement-1/);
-  assert.match(adminPage, /admin-v3\.js\?v=admin-v3-all-job-manual-controls-1/);
+  assert.match(adminPage, /admin-v3\.js\?v=admin-v3-deadline-state-gate-diagnostics-1/);
   assert.doesNotMatch(admin, /runAutoScoringNowButton/);
 });

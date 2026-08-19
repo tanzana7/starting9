@@ -213,9 +213,12 @@ function npbIdentityDisplay(game) {
   const job = latestV3Job(game, "npb_identity_resolve");
   const code = String(game?.npbGameCode || game?.npb_game_code || "").trim();
   const identityState = String(game?.npbIdentityState || "");
+  const diagnostics = game?.workflowDiagnostics?.identity;
   return {
     job,
-    jobStatus: job ? statusLabel(job.status) : identityState === "pending" ? "待機中" : "未作成",
+    jobStatus: diagnostics?.completedWithoutCode || (job?.status === "completed" && !code)
+      ? "完了扱い / code未解決"
+      : job ? statusLabel(job.status) : identityState === "pending" ? "待機中" : "未作成",
     code: code || "掲載待ち"
   };
 }
@@ -223,6 +226,9 @@ function npbIdentityDisplay(game) {
 function gameHasAttention(game) {
   if (String(game?.state?.state || "") === "manual_action_required") return true;
   if (["unresolved", "manual_action_required"].includes(String(game?.npbIdentityState || ""))) return true;
+  const diagnostics = game?.workflowDiagnostics || {};
+  if (diagnostics.predictionClose?.overdue || diagnostics.predictionClose?.stateMismatch) return true;
+  if (diagnostics.identity?.completedWithoutCode || diagnostics.lineupFetch?.blockingReasonCode === "PREDICTION_CLOSE_STATE_TRANSITION_MISSING") return true;
   return currentFailedV3Jobs(game).length > 0
     || currentRetryWaitV3Jobs(game).length > 0;
 }
@@ -283,6 +289,11 @@ function nextV3Job(game) {
 
 function nextV3ActionText(game) {
   const schedule = game?.schedule || {};
+  const diagnostics = game?.workflowDiagnostics || {};
+  if (schedule.isBlocked && schedule.nextActionLabel) return `${schedule.nextActionLabel} / 要確認`;
+  if (diagnostics.lineupFetch?.blockingReason && diagnostics.predictionClose?.deadlineElapsed) {
+    return `${schedule.nextActionLabel || "スタメン取得"} / 要確認`;
+  }
   if (schedule.nextActionLabel) return `${schedule.nextActionLabel}${schedule.nextActionAt ? ` ${formatV3Jst(schedule.nextActionAt)}` : ""}`;
   const next = nextV3Job(game);
   return next ? `${V3_JOB_LABELS[next.job_type] || next.job_type} ${formatV3Jst(next.scheduled_at)}` : "なし";

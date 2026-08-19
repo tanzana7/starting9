@@ -54,5 +54,5 @@ test("通常画面はcanonical catalogのhome/away順を表示し、反転候補
 });
 
 test("script.jsの表示接続変更に対応するキャッシュバスターが更新されている", () => {
-  assert.match(html, /script\.js\?v=public-result-slot-basis-display-fix-1/);
+  assert.match(html, /script\.js\?v=public-result-actual-based-prediction-left-1/);
 });

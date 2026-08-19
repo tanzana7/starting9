@@ -4356,18 +4356,19 @@ function createActualBasisDetails(sourceDetails, actualLineup = []) {
       playerId: detail.actualPlayerId || "",
       position: detail.actualPosition || ""
     }));
-  const predictionDetailsByOrder = new Map();
-  sourceDetails.forEach((detail) => {
-    const order = Number(detail.order);
-    if (Number.isInteger(order) && order > 0) predictionDetailsByOrder.set(order, detail);
-  });
-
   return Array.from({ length: LINEUP_SIZE }, (_, index) => {
     const actualItem = actualItems.find((item) => Number(item?.order || item?.battingOrder) === index + 1)
       || (hasProvidedActualLineup ? {} : actualItems[index] || {});
     const actualPlayer = String(actualItem.player || actualItem.name || actualItem.playerName || "").trim();
     const actualPlayerId = String(actualItem.playerId || "").trim();
-    const predictionDetail = predictionDetailsByOrder.get(index + 1) || null;
+    const predictionDetail = sourceDetails.find((detail) => {
+      if (Number(detail.actualOrder) === index + 1) return true;
+      if (actualPlayerId && String(detail.actualPlayerId || "").trim() === actualPlayerId) return true;
+      const detailActualPlayer = String(detail.actualPlayer || "").trim();
+      if (actualPlayer && detailActualPlayer && normalizePlayerKey(detailActualPlayer) === normalizePlayerKey(actualPlayer)) return true;
+      const predictedPlayer = String(detail.player || "").trim();
+      return Boolean(actualPlayer && predictedPlayer && normalizePlayerKey(predictedPlayer) === normalizePlayerKey(actualPlayer));
+    }) || null;
     const isPlayerHit = Boolean(predictionDetail?.isPlayerHit);
     const isOrderHit = Boolean(predictionDetail?.isOrderHit);
     const isPositionHit = Boolean(predictionDetail?.isPositionHit);
@@ -4568,11 +4569,15 @@ function createResultCanvas(viewModel) {
     }
     drawText(text, x, y + height / 2, width, `700 ${fontSize}px "Yu Gothic", "Noto Sans JP", sans-serif`, colors.text);
   };
-  const drawPlayerCard = (player, position, x, y, width, height, cardFill = colors.row, cardBorder = colors.border, orderLabel = "") => {
+  const drawPlayerCard = (player, position, x, y, width, height, cardFill = colors.row, cardBorder = colors.border) => {
     const normalizedPosition = normalizePosition(position);
     const category = normalizedPosition ? getPositionCategory(normalizedPosition) : "empty";
     context.lineWidth = 1.5;
     drawRoundedRect(x, y, width, height, 6, cardFill, cardBorder);
+    if (player === "未予想") {
+      drawText(player, x, y + height / 2, width, `700 ${displayWidth < 480 ? 11 : 13}px "Yu Gothic", "Noto Sans JP", sans-serif`, colors.muted);
+      return;
+    }
     const tileWidth = Math.min(30, Math.max(24, width * 0.22));
     context.fillStyle = colors.position[category] || colors.position.empty;
     context.fillRect(x + 1, y + 1, tileWidth - 1, height - 2);
@@ -4582,9 +4587,7 @@ function createResultCanvas(viewModel) {
     context.lineTo(x + tileWidth, y + height - 1);
     context.stroke();
     drawText(normalizedPosition || "－", x + 1, y + height / 2, tileWidth - 1, "900 13px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
-    const displayName = orderLabel
-      ? `${orderLabel === "未予想" ? "未予想" : `${orderLabel}番`} ${player || ""}`.trim()
-      : player || "-";
+    const displayName = player || "-";
     drawName(displayName, x + tileWidth + 2, y, width - tileWidth - 2, height);
   };
   const drawJudgement = (isHit, label, x, y, width, height) => {
@@ -4650,7 +4653,7 @@ function createResultCanvas(viewModel) {
   const judgementWidth = displayWidth < 480 ? 94 : 126;
   const playerWidth = (contentWidth - orderWidth - pointWidth - judgementWidth) / 2;
   const columns = [orderWidth, playerWidth, playerWidth, judgementWidth, pointWidth];
-  const headings = ["打順", "実際のスタメン", "あなたの予想", "判定", "点数"];
+  const headings = ["打順", "あなたの予想", "実際のスタメン", "判定", "点数"];
   drawRoundedRect(tableX, y, contentWidth, headerHeight, 6, colors.header, null);
   let columnX = tableX;
   columns.forEach((width, index) => {
@@ -4668,8 +4671,8 @@ function createResultCanvas(viewModel) {
 
   viewModel.details.forEach((detail, index) => {
     const rowY = y + index * (rowHeight + rowGap);
-    const actualColumnX = tableX + orderWidth;
-    const predictedColumnX = actualColumnX + playerWidth;
+    const predictedColumnX = tableX + orderWidth;
+    const actualColumnX = predictedColumnX + playerWidth;
     const predictedX = predictedColumnX + 4;
     const actualX = actualColumnX + 4;
     const judgementX = tableX + orderWidth + playerWidth * 2;
@@ -4687,8 +4690,8 @@ function createResultCanvas(viewModel) {
     drawText(detail.order, tableX + 5, rowY + rowHeight / 2, orderWidth - 10, `900 ${displayWidth < 480 ? 14 : 16}px Arial, sans-serif`, "#ffffff");
     const actualCardFill = isPerfectRow ? "#fff6dc" : isFullMatch ? "#f8fcff" : "#f1f4f7";
     const actualCardBorder = isPerfectRow ? colors.perfectBorder : isFullMatch ? colors.border : "#c8d3dd";
+    drawPlayerCard(detail.player || "未予想", detail.position, predictedX, rowY + 6, playerWidth - 8, rowHeight - 12, colors.row, colors.border);
     drawPlayerCard(detail.actualPlayer || "-", detail.actualPosition, actualX, rowY + 6, playerWidth - 8, rowHeight - 12, actualCardFill, actualCardBorder);
-    drawPlayerCard(detail.player || "未予想", detail.position, predictedX, rowY + 6, playerWidth - 8, rowHeight - 12, colors.row, colors.border, detail.predictionOrder || "未予想");
     const chipGap = 4;
     const chipWidth = (judgementWidth - 10 - chipGap * 2) / 3;
     drawJudgement(detail.isPlayerHit, "出場", judgementX + 4, rowY + 13, chipWidth, 26);
@@ -4728,8 +4731,8 @@ function createResultTable(details) {
     <thead>
       <tr>
         <th class="result-order-heading">打順</th>
-        <th class="result-group-heading result-actual-group-heading">実際のスタメン</th>
         <th class="result-group-heading">あなたの予想</th>
+        <th class="result-group-heading result-actual-group-heading">実際のスタメン</th>
         <th class="result-group-heading">判定</th>
         <th class="result-point-heading">点数</th>
       </tr>
@@ -4742,8 +4745,8 @@ function createResultTable(details) {
     const row = document.createElement("tr");
     row.innerHTML = `
       <td class="result-order-cell"><strong>${detail.order}</strong></td>
+      <td class="result-player-cell">${createResultPlayerCardHtml(detail.player || "未予想", detail.position)}</td>
       <td class="result-player-cell result-actual-group-cell">${createResultPlayerCardHtml(detail.actualPlayer || "-", detail.actualPosition)}</td>
-      <td class="result-player-cell">${createResultPlayerCardHtml(detail.player || "未予想", detail.position, detail.predictionOrder || "未予想")}</td>
       <td class="result-judgements-cell">
         <span class="result-judgement-stack">
           ${createHitBadge(detail.isPlayerHit, "出場")}
@@ -4759,14 +4762,18 @@ function createResultTable(details) {
   return table;
 }
 
-function createResultPlayerCardHtml(player, position, orderLabel = "") {
-  const displayOrder = orderLabel
-    ? orderLabel === "未予想" ? "未予想" : `${orderLabel}番`
-    : "";
+function createResultPlayerCardHtml(player, position) {
+  if (player === "未予想") {
+    return `
+      <span class="result-player-card result-player-card-empty">
+        <span class="result-player-name">未予想</span>
+      </span>
+    `;
+  }
   return `
     <span class="result-player-card">
       ${createResultPositionTileHtml(position)}
-      <span class="result-player-name">${displayOrder ? `<small class="result-player-order">${escapeHtml(displayOrder)}</small>` : ""}${escapeHtml(player || "-")}</span>
+      <span class="result-player-name">${escapeHtml(player || "-")}</span>
     </span>
   `;
 }

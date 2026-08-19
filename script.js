@@ -4396,6 +4396,19 @@ function createActualBasisDetails(sourceDetails, actualLineup = []) {
   });
 }
 
+function mergeRawPredictionSlots(sourceDetails, actualBasisDetails) {
+  return actualBasisDetails.map((detail, index) => {
+    const predictionDetail = sourceDetails.find((sourceDetail) => Number(sourceDetail.order) === index + 1) || {};
+    return {
+      ...detail,
+      player: predictionDetail.player || "",
+      playerId: predictionDetail.playerId || "",
+      position: predictionDetail.position || "",
+      predictionOrder: predictionDetail.player ? Number(predictionDetail.order) || null : null
+    };
+  });
+}
+
 function createResultViewModel(result) {
   const sourceDetails = Array.isArray(result.details) ? result.details : [];
 
@@ -4412,7 +4425,8 @@ function createResultViewModel(result) {
       isPositionHit
     };
   });
-  const details = createActualBasisDetails(normalizedDetails, result.actualLineup);
+  const actualBasisDetails = createActualBasisDetails(normalizedDetails, result.actualLineup);
+  const details = mergeRawPredictionSlots(normalizedDetails, actualBasisDetails);
   const counts = getHitCounts(details);
   const breakdown = createScoreBreakdown(counts);
   const total = breakdown.player.total + breakdown.order.total + breakdown.position.total + breakdown.perfect.total;
@@ -4631,7 +4645,7 @@ function createResultCanvas(viewModel) {
   const judgementWidth = displayWidth < 480 ? 94 : 126;
   const playerWidth = (contentWidth - orderWidth - pointWidth - judgementWidth) / 2;
   const columns = [orderWidth, playerWidth, playerWidth, judgementWidth, pointWidth];
-  const headings = ["打順", "実際のスタメン", "あなたの予想", "判定", "点数"];
+  const headings = ["打順", "あなたの予想", "実際のスタメン", "判定", "点数"];
   drawRoundedRect(tableX, y, contentWidth, headerHeight, 6, colors.header, null);
   let columnX = tableX;
   columns.forEach((width, index) => {
@@ -4649,10 +4663,10 @@ function createResultCanvas(viewModel) {
 
   viewModel.details.forEach((detail, index) => {
     const rowY = y + index * (rowHeight + rowGap);
-    const actualColumnX = tableX + orderWidth;
-    const predictedColumnX = actualColumnX + playerWidth;
-    const actualX = actualColumnX + 4;
+    const predictedColumnX = tableX + orderWidth;
+    const actualColumnX = predictedColumnX + playerWidth;
     const predictedX = predictedColumnX + 4;
+    const actualX = actualColumnX + 4;
     const judgementX = tableX + orderWidth + playerWidth * 2;
     const pointValue = Number(detail.point);
     const isPerfectRow = Boolean(detail.isPerfect ?? (pointValue >= 11));
@@ -4668,8 +4682,8 @@ function createResultCanvas(viewModel) {
     drawText(detail.order, tableX + 5, rowY + rowHeight / 2, orderWidth - 10, `900 ${displayWidth < 480 ? 14 : 16}px Arial, sans-serif`, "#ffffff");
     const actualCardFill = isPerfectRow ? "#fff6dc" : isFullMatch ? "#f8fcff" : "#f1f4f7";
     const actualCardBorder = isPerfectRow ? colors.perfectBorder : isFullMatch ? colors.border : "#c8d3dd";
-    drawPlayerCard(detail.actualPlayer || "-", detail.actualPosition, actualX, rowY + 6, playerWidth - 8, rowHeight - 12, actualCardFill, actualCardBorder);
     drawPlayerCard(detail.player || "未予想", detail.position, predictedX, rowY + 6, playerWidth - 8, rowHeight - 12, colors.row, colors.border);
+    drawPlayerCard(detail.actualPlayer || "-", detail.actualPosition, actualX, rowY + 6, playerWidth - 8, rowHeight - 12, actualCardFill, actualCardBorder);
     const chipGap = 4;
     const chipWidth = (judgementWidth - 10 - chipGap * 2) / 3;
     drawJudgement(detail.isPlayerHit, "出場", judgementX + 4, rowY + 13, chipWidth, 26);
@@ -4709,8 +4723,8 @@ function createResultTable(details) {
     <thead>
       <tr>
         <th class="result-order-heading">打順</th>
-        <th class="result-group-heading result-actual-group-heading">実際のスタメン</th>
         <th class="result-group-heading">あなたの予想</th>
+        <th class="result-group-heading result-actual-group-heading">実際のスタメン</th>
         <th class="result-group-heading">判定</th>
         <th class="result-point-heading">点数</th>
       </tr>
@@ -4723,8 +4737,8 @@ function createResultTable(details) {
     const row = document.createElement("tr");
     row.innerHTML = `
       <td class="result-order-cell"><strong>${detail.order}</strong></td>
-      <td class="result-player-cell result-actual-group-cell">${createResultPlayerCardHtml(detail.actualPlayer || "-", detail.actualPosition)}</td>
       <td class="result-player-cell">${createResultPlayerCardHtml(detail.player || "未予想", detail.position)}</td>
+      <td class="result-player-cell result-actual-group-cell">${createResultPlayerCardHtml(detail.actualPlayer || "-", detail.actualPosition)}</td>
       <td class="result-judgements-cell">
         <span class="result-judgement-stack">
           ${createHitBadge(detail.isPlayerHit, "出場")}

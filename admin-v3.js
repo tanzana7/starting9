@@ -10,7 +10,8 @@ if (!adminV3Modules?.createAdminV3State
   || !adminV3Modules?.createAdminV3RosterRenderer
   || !adminV3Modules?.createAdminV3DiagnosticsRenderer
   || !adminV3Modules?.createAdminV3RankingResetRenderer
-  || !adminV3Modules?.createAdminV3PerfectScoreRenderer) {
+  || !adminV3Modules?.createAdminV3PerfectScoreRenderer
+  || !adminV3Modules?.createAdminV3ManualGamePreviewRenderer) {
   throw new Error("ADMIN_V3_MODULES_NOT_LOADED");
 }
 const v3Dom = adminV3Modules.createAdminV3Dom();
@@ -36,7 +37,7 @@ const V3_JOB_TYPES = Object.freeze([
   V3_JOB_TYPE.PROBABLE_STARTER_FETCH,
   V3_JOB_TYPE.ROSTER_FETCH
 ]);
-const V3_VIEWS = ["dashboard", "games", "workflow", "lineup", "scoring", "ranking-reset", "schedule", "diagnostics"];
+const V3_VIEWS = ["dashboard", "games", "workflow", "lineup", "scoring", "ranking-reset", "schedule", "add-game-preview", "diagnostics"];
 const V3_VIEW_LABELS = {
   dashboard: "ダッシュボード",
   games: "試合一覧",
@@ -45,7 +46,8 @@ const V3_VIEW_LABELS = {
   scoring: "採点・ランキング",
   "ranking-reset": "ランキングリセット",
   schedule: "日程管理",
-  diagnostics: "診断・監査"
+  diagnostics: "診断・監査",
+  "add-game-preview": "追加試合プレビュー"
 };
 const V3_JOB_LABELS = {
   npb_identity_resolve: "NPB識別情報解決",
@@ -631,6 +633,7 @@ const v3RosterRenderer = adminV3Modules.createAdminV3RosterRenderer({
 });
 const v3PerfectScoreRenderer = adminV3Modules.createAdminV3PerfectScoreRenderer({ state: v3State, escapeHtml: escapeV3 });
 const v3RankingResetRenderer = adminV3Modules.createAdminV3RankingResetRenderer({ state: v3State, escapeHtml: escapeV3, formatJst: formatV3Jst });
+const v3ManualGamePreviewRenderer = adminV3Modules.createAdminV3ManualGamePreviewRenderer({ escapeHtml: escapeV3 });
 const v3DiagnosticsRenderer = adminV3Modules.createAdminV3DiagnosticsRenderer({
   state: v3State,
   escapeHtml: escapeV3,
@@ -708,6 +711,7 @@ function renderCurrentV3View() {
     scoring: () => v3GameProgressRenderer.renderScoringView(filteredGame || game),
     "ranking-reset": () => v3RankingResetRenderer.render(),
     schedule: () => v3GameProgressRenderer.renderScheduleView(games),
+    "add-game-preview": () => v3ManualGamePreviewRenderer.render(v3State.manualGamePreview),
     diagnostics: () => v3DiagnosticsRenderer.renderView(filteredGame || game)
   }[v3State.view]();
   document.querySelectorAll("[data-v3-view]").forEach((button) => {
@@ -814,6 +818,38 @@ async function previewPerfectScore() {
     v3State.perfectScorePreview.error = `${error.code || "PERFECT_SCORE_PREVIEW_FAILED"}: ${error.message}`;
   } finally {
     v3State.perfectScorePreview.loading = false;
+    renderCurrentV3View();
+  }
+}
+
+function manualGamePreviewInput() {
+  const form = document.querySelector("[data-v3-manual-game-preview-form]");
+  const value = (field) => form?.querySelector(`[data-v3-manual-game-field="${field}"]`)?.value || "";
+  return {
+    gameDate: value("gameDate"),
+    startAt: value("startAt"),
+    homeTeam: value("homeTeam"),
+    awayTeam: value("awayTeam"),
+    venue: value("venue"),
+    npbGameCode: value("npbGameCode") || null,
+    rankingEligible: Boolean(form?.querySelector('[data-v3-manual-game-field="rankingEligible"]')?.checked),
+    reason: value("reason"),
+    confirmPreview: Boolean(form?.querySelector('[data-v3-manual-game-field="confirmPreview"]')?.checked)
+  };
+}
+
+async function previewManualGame() {
+  const input = manualGamePreviewInput();
+  const preview = v3State.manualGamePreview;
+  if (preview.loading) return;
+  v3State.manualGamePreview = { loading: true, result: null, error: "", input };
+  renderCurrentV3View();
+  try {
+    v3State.manualGamePreview.result = await v3Api.previewManualGame(input);
+  } catch (error) {
+    v3State.manualGamePreview.error = `${error.code || "MANUAL_GAME_PREVIEW_FAILED"}: ${error.message}`;
+  } finally {
+    v3State.manualGamePreview.loading = false;
     renderCurrentV3View();
   }
 }
@@ -942,6 +978,7 @@ adminV3Modules.createAdminV3Coordinator({
     previewRankingReset,
     executeRankingReset,
     previewPerfectScore,
+    previewManualGame,
     refreshAutomationLogs,
     selectGame: (internalGameId) => selectV3Game(internalGameId),
     diagnoseJob: diagnoseV3Job,

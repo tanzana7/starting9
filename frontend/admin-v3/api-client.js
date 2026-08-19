@@ -8,7 +8,8 @@
     rankingResets: "/api/admin/v3/ranking-resets",
     rankingResetPreview: "/api/admin/v3/ranking-resets/preview",
     rankingResetExecute: "/api/admin/v3/ranking-resets/execute",
-    perfectScorePreview: "/api/admin/v3/perfect-score-test/preview"
+    perfectScorePreview: "/api/admin/v3/perfect-score-test/preview",
+    manualGamePreview: "/api/admin/v3/schedule/add-game/preview"
   });
 
   function createAdminV3ApiClient({ fetchImpl, location, productionBase }) {
@@ -79,7 +80,8 @@
       listRankingResets: () => request(ADMIN_V3_ENDPOINTS.rankingResets),
       previewRankingReset: (body) => post(ADMIN_V3_ENDPOINTS.rankingResetPreview, body),
       executeRankingReset: (body) => post(ADMIN_V3_ENDPOINTS.rankingResetExecute, body),
-      previewPerfectScore: (body) => post(ADMIN_V3_ENDPOINTS.perfectScorePreview, body)
+      previewPerfectScore: (body) => post(ADMIN_V3_ENDPOINTS.perfectScorePreview, body),
+      previewManualGame: (body) => post(ADMIN_V3_ENDPOINTS.manualGamePreview, body)
     });
   }
 

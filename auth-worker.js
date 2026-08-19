@@ -82,6 +82,7 @@ import {
   createPublicResultDisplayLabel
 } from "./backend/domain/public-results.js";
 import { buildAdminReadOnlyPreviewMetadata } from "./backend/admin/preview.js";
+import { buildManualGamePreview } from "./backend/admin/manual-game-preview.js";
 import {
   buildV3CronJobAuditInsert,
   buildV3ScheduleSyncAuditInsert
@@ -467,6 +468,9 @@ export default {
       }
       if (path === "/api/admin/v3/ranking-resets/preview" && request.method === "POST") {
         return await handleAdminV3RankingResetPreview(request, env, cors);
+      }
+      if (path === "/api/admin/v3/schedule/add-game/preview" && request.method === "POST") {
+        return await handleAdminV3ManualGamePreview(request, env, cors);
       }
       if (path === "/api/admin/v3/ranking-resets/execute" && request.method === "POST") {
         return await handleAdminV3RankingResetExecute(request, env, cors);
@@ -5223,6 +5227,7 @@ const ADMIN_EXACT_ROUTE_METHODS = Object.freeze({
   "/api/admin/v3/automation-logs": ["GET"],
   "/api/admin/v3/ranking-resets": ["GET"],
   "/api/admin/v3/ranking-resets/preview": ["POST"],
+  "/api/admin/v3/schedule/add-game/preview": ["POST"],
   "/api/admin/v3/ranking-resets/execute": ["POST"],
   "/api/admin/v3/perfect-score-test/preview": ["POST"]
 });
@@ -5351,6 +5356,21 @@ async function handleAdminV3PerfectScorePreview(request, env, cors) {
     maxScore: SCORING_MAX_SCORE,
     isMaxScore: preview.score.total === SCORING_MAX_SCORE
   }, 200, cors);
+}
+
+async function handleAdminV3ManualGamePreview(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  try {
+    const input = await readJson(request, { maxBytes: ADMIN_PREVIEW_JSON_BODY_MAX_BYTES });
+    const preview = await buildManualGamePreview(env.AUTH_DB, input);
+    return jsonResponse(preview, 200, cors);
+  } catch (error) {
+    const status = Number(error?.httpStatus) || 500;
+    const code = String(error?.code || "MANUAL_GAME_PREVIEW_FAILED");
+    const message = String(error?.message || "追加試合プレビューに失敗しました。");
+    return jsonResponse({ ok: false, mode: "preview_only", willWrite: false, code, error: message }, status, cors);
+  }
 }
 
 async function recordV3AdminAudit(db, { internalGameId, jobId = null, jobType = "admin_operation", stateBefore = null, stateAfter = null, failureCode = null, failureMessage = null, occurredAt = new Date() } = {}) {

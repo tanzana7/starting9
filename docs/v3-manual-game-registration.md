@@ -2,7 +2,13 @@
 
 ## Status
 
-これは実装前の設計資料です。現時点では **STOP** とし、production D1へのmigration適用、remote write、追加試合の作成API実装は行いません。
+これは追加試合の本登録に関する設計資料です。現時点では本登録を **STOP** とし、production D1へのmigration適用、remote write、追加試合のcommit API実装は行いません。
+
+次Phaseとして、admin-v3専用の `POST /api/admin/v3/schedule/add-game/preview` をread-onlyで実装します。このendpointは入力検証、既存`games`/`game_identifiers`/`detected_game_schedule`の重複候補、deterministicな`idempotencyKey`、schema readiness、想定planだけを返し、`willWrite: false`を保証します。本登録API、commitボタン、V3 state/job/auditの作成は引き続き未実装です。
+
+previewの`idempotencyKey`は `manual-game:v1:{gameDate}:{normalizedStartAt}:{homeTeam}:{awayTeam}:{npbGameCode|no-code}` です。`startAt`を含むため時刻変更は別previewとして再確認します。同日同カードの時刻違い、home/away逆向き、同一NPB codeは候補またはwarningとして表示し、exact duplicateと同一NPB codeはblocking扱いにします。
+
+admin-v3には「追加試合プレビュー」だけを表示し、画面上でも「この操作は書き込みを行わない」「本登録は未実装」と明示します。public UIには導線を追加しません。
 
 前回のSTOP理由は、`games`、identity registry、`detected_game_schedule`、V3 state/job、ranking、public catalogを一括して冪等に初期化する正式サービスがなく、`games`の重複をDBレベルで防げないことでした。本案では、既存の日程同期を壊さず、追加試合を同じcanonical経路へ入れるための前提を定義します。
 

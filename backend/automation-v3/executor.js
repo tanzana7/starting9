@@ -1,5 +1,5 @@
-import { V3_JOB_STATUS, V3_JOB_TYPE, V3_STATE, isGameAutomationV3Enabled } from "./constants.js";
-import { isV3GameEligible } from "./domain.js";
+import { V3_JOB_STATUS, V3_JOB_TYPE, V3_STATE, createV3Error, isGameAutomationV3Enabled } from "./constants.js";
+import { isV3GameEligible, V3_COMPLETED_STATE_TRANSITIONS } from "./domain.js";
 import {
   completeV3Job,
   createV3Job,
@@ -38,43 +38,74 @@ async function invokeV3Observer(observer, args = [], timeoutMs = V3_OBSERVER_TIM
   }
 }
 
-async function reconcileCompletedPredictionCloseState(env, games = [], now = new Date(), { onError = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS } = {}) {
+async function canReconcileCompletedV3StateTransition(db, internalGameId, transition) {
+  // ranking_rebuild has an intentional completed/no-op branch for excluded
+  // games. Only a reflected ranking revision proves that ranked is safe.
+  if (transition.jobType !== V3_JOB_TYPE.RANKING_REBUILD) return true;
+  try {
+    const reflection = await db.prepare(
+      `SELECT status
+         FROM ranking_reflection_revisions
+        WHERE internal_game_id = ?1
+        ORDER BY ranking_update_revision DESC, id DESC
+        LIMIT 1`
+    ).bind(internalGameId).first();
+    return String(reflection?.status || "") === "reflected";
+  } catch {
+    return false;
+  }
+}
+
+async function reconcileCompletedV3StateTransitions(env, games = [], now = new Date(), { onError = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS } = {}) {
   let recovered = 0;
   let failed = 0;
   const recoveredJobIds = [];
+  const recoveredByJobType = {};
+  const skipped = [];
   for (const game of Array.isArray(games) ? games : []) {
     try {
-      const stateRow = await env.AUTH_DB.prepare(
-        "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
-      ).bind(game.internalGameId).first();
-      if (String(stateRow?.state || "") !== V3_STATE.SCHEDULED) continue;
-      const completedJob = await env.AUTH_DB.prepare(
-        `SELECT id, completed_at
-           FROM game_jobs_v3
-          WHERE internal_game_id = ?1
-            AND job_type = ?2
-            AND status = 'completed'
-          ORDER BY completed_at DESC, id DESC
-          LIMIT 1`
-      ).bind(game.internalGameId, V3_JOB_TYPE.PREDICTION_CLOSE).first();
-      if (!completedJob) continue;
-      await transitionV3State(env.AUTH_DB, {
-        internalGameId: game.internalGameId,
-        from: V3_STATE.SCHEDULED,
-        to: V3_STATE.PREDICTION_CLOSED,
-        now
-      });
-      recovered += 1;
-      recoveredJobIds.push(Number(completedJob.id));
+      // Walk only the finite canonical graph. This also repairs multiple
+      // consecutive post-completion transition failures in one Cron run.
+      for (let step = 0; step < V3_COMPLETED_STATE_TRANSITIONS.length; step += 1) {
+        const stateRow = await env.AUTH_DB.prepare(
+          "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
+        ).bind(game.internalGameId).first();
+        const currentState = String(stateRow?.state || "");
+        const transition = V3_COMPLETED_STATE_TRANSITIONS.find((candidate) => candidate.from === currentState);
+        if (!transition) break;
+        const completedJob = await env.AUTH_DB.prepare(
+          `SELECT id, completed_at
+             FROM game_jobs_v3
+            WHERE internal_game_id = ?1
+              AND job_type = ?2
+              AND status = 'completed'
+            ORDER BY completed_at DESC, updated_at DESC, id DESC
+            LIMIT 1`
+        ).bind(game.internalGameId, transition.jobType).first();
+        if (!completedJob) break;
+        if (!(await canReconcileCompletedV3StateTransition(env.AUTH_DB, game.internalGameId, transition))) {
+          skipped.push({ jobType: transition.jobType, jobId: Number(completedJob.id), reason: "SIDE_EFFECT_CONFIRMATION_REQUIRED" });
+          break;
+        }
+        await transitionV3State(env.AUTH_DB, {
+          internalGameId: game.internalGameId,
+          from: transition.from,
+          to: transition.to,
+          now
+        });
+        recovered += 1;
+        recoveredJobIds.push(Number(completedJob.id));
+        recoveredByJobType[transition.jobType] = (recoveredByJobType[transition.jobType] || 0) + 1;
+      }
     } catch (error) {
       failed += 1;
       await invokeV3Observer(onError, [error, {
         game,
-        stage: "prediction_close_state_reconcile"
+        stage: "completed_state_reconcile"
       }], observerTimeoutMs);
     }
   }
-  return { recovered, failed, recoveredJobIds };
+  return { recovered, failed, recoveredJobIds, recoveredByJobType, skipped };
 }
 
 // Claim execution lifecycle. Job-type business executors remain injected by auth-worker.
@@ -100,13 +131,16 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
       if (typeof executeJob !== "function") throw createV3Error("MISSING_EXECUTOR", "V3ジョブexecutorが注入されていません。");
       const result = await executeJob({ env, job: claimed, internalGameId: claimed.internal_game_id, now: executionNow });
       assertV3AuxiliaryJobResult(claimed, result, executionNow);
-      await completeV3Job(env.AUTH_DB, {
+      const completed = await completeV3Job(env.AUTH_DB, {
         jobId: claimed.id,
         claimToken: claimed.claim_token,
         now: executionNow,
         failureCode: result?.failureCode || null,
         failureMessage: result?.failureMessage || null
       });
+      if (!completed) {
+        throw createV3Error("V3_JOB_COMPLETION_CONFLICT", "V3ジョブの完了状態を確定できませんでした。状態遷移は行いません。", { retryable: true });
+      }
       if (result?.stateAfter && result.stateBefore && result.stateAfter !== result.stateBefore) {
         await transitionV3State(env.AUTH_DB, {
           internalGameId: claimed.internal_game_id,
@@ -170,10 +204,10 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     }
   }
 
-  // A completed close job can outlive a failed state transition. Restore that
-  // workflow boundary through the normal V3 transition contract before planning
-  // lineup jobs; this never writes the state table directly.
-  const stateReconciliation = await reconcileCompletedPredictionCloseState(env, games, now, { onError, observerTimeoutMs });
+  // A completed main job can outlive a failed state transition. Restore only
+  // the matching canonical boundary through the normal V3 transition contract
+  // before planning downstream jobs; this never writes the state table directly.
+  const stateReconciliation = await reconcileCompletedV3StateTransitions(env, games, now, { onError, observerTimeoutMs });
   failed += stateReconciliation.failed;
 
   // Phase boundaries are explicit: an auxiliary decision never short-circuits

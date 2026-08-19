@@ -76,6 +76,12 @@ export function buildV3CronSummary({ runId, correlationId, startedAt, completedA
     plannedByJobType: countByJobType(plannedEntries),
     createdByJobType: countByJobType(plannedEntries, (entry) => entry?.created === true),
     failedByJobType: countByJobType(plannedEntries, (entry) => Boolean(entry?.error || entry?.reasonCode === "V3_JOB_FAILED")),
+    stateReconciliation: result?.stateReconciliation ? {
+      recovered: Number(result.stateReconciliation.recovered || 0),
+      failed: Number(result.stateReconciliation.failed || 0),
+      recoveredByJobType: result.stateReconciliation.recoveredByJobType || {},
+      skipped: Array.isArray(result.stateReconciliation.skipped) ? result.stateReconciliation.skipped : []
+    } : null,
     scheduleSync: scheduleSync ? {
       status: scheduleSync.status,
       futureGamesBefore: scheduleSync.futureGamesBefore,

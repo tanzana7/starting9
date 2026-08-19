@@ -40,6 +40,13 @@ test("V3 architecture has one state, lifecycle, type, and transition contract", 
   assert.equal(v3.getV3TransitionDefinition("scheduled", "prediction_closed").triggeringJob, "prediction_close");
   assert.equal(v3.getV3TransitionDefinition("ranked", "published").prerequisite, "reflected ranking and publication time");
   assert.equal(v3.getV3TransitionDefinition("scheduled", "ranked"), null);
+  assert.deepEqual(v3.V3_COMPLETED_STATE_TRANSITIONS.map(({ jobType, from, to }) => [jobType, from, to]), [
+    ["prediction_close", "scheduled", "prediction_closed"],
+    ["lineup_finalize", "prediction_closed", "lineup_ready"],
+    ["score", "lineup_ready", "scored"],
+    ["ranking_rebuild", "scored", "ranked"],
+    ["publish", "ranked", "published"]
+  ]);
 });
 
 test("全job typeが補助/主系レジストリへ登録されている", () => {
@@ -138,6 +145,8 @@ test("V3 runtime source has explicit phases and no V2 module dependency", () => 
     assert.match(orchestrator, new RegExp(`export async function ${name}`));
   }
   assert.match(executor, /export async function executeClaimedJobs/);
+  assert.match(executor, /V3_JOB_COMPLETION_CONFLICT/);
+  assert.match(executor, /reconcileCompletedV3StateTransitions/);
   assert.match(runtime, /export \* from "\.\/backend\/automation-v3\/orchestrator\.js"/);
   assert.match(runtime, /export \* from "\.\/backend\/automation-v3\/executor\.js"/);
   assert.match(worker, /V3_JOB_EXECUTORS/);

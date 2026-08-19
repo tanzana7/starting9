@@ -57,8 +57,8 @@ test("管理画面は旧直接編集操作を表示せず、正式V3 jobの診�
   assert.match(gameProgress, /data-v3-job-diagnose/);
   assert.match(gameProgress, /data-v3-job-run/);
   assert.match(gameProgress, /正式V3 jobを投入/);
-  assert.match(page, /admin-v3\.js\?v=admin-v3-lineup-fetch-blocking-diagnostics-1/);
-  assert.match(page, /admin-v3\.css\?v=admin-v3-lineup-fetch-blocking-diagnostics-1/);
+  assert.match(page, /admin-v3\.js\?v=admin-v3-completed-state-reconcile-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-v3-completed-state-reconcile-1/);
 });
 
 test("管理画面のjob詳細は失敗内容を確認でき、ユーザー情報を描画しない", () => {
@@ -164,6 +164,22 @@ test("V3 workflow診断は締切状態、識別code、スタメンstate gateを�
   assert.equal(overdueWithoutClose.predictionClose.overdue, true);
   assert.equal(overdueWithoutClose.lineupFetch.blockingReasonCode, "PREDICTION_CLOSE_STATE_GATE");
   assert.match(overdueWithoutClose.lineupFetch.blockingReason, /prediction_close未完了/);
+});
+
+test("completed済み主処理のstate遷移漏れをjob種別ごとに診断する", () => {
+  const mismatches = [
+    ["prediction_closed", "lineup_finalize", "LINEUP_FINALIZE_STATE_TRANSITION_MISSING"],
+    ["lineup_ready", "score", "SCORE_STATE_TRANSITION_MISSING"],
+    ["scored", "ranking_rebuild", "RANKING_REBUILD_STATE_TRANSITION_MISSING"],
+    ["ranked", "publish", "PUBLISH_STATE_TRANSITION_MISSING"]
+  ];
+  for (const [state, jobType, code] of mismatches) {
+    const diagnostics = v3.getV3WorkflowDiagnostics({
+      state,
+      jobs: [{ id: 21, job_type: jobType, status: "completed", completed_at: "2026-08-06T09:00:00.000Z" }]
+    });
+    assert.equal(diagnostics.completedStateMismatches[0]?.code, code);
+  }
 });
 
 test("依存処理は予定未定ではなく前段完了後として返す", () => {

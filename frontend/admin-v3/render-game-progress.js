@@ -164,7 +164,22 @@
       const rankingJob = latestJob(game, "ranking_rebuild");
       const publishJob = latestJob(game, "publish");
       const rosterState = rosterDisplayState(game);
-      const lineupState = lineupDisplayState(game);
+      const baseLineupState = lineupDisplayState(game);
+      const lineupGate = game?.workflowDiagnostics?.lineupFetch || {};
+      const lineupState = lineupGate.blockingReasons?.length
+        ? {
+            ...baseLineupState,
+            fallbackStatus: "action",
+            label: lineupGate.blockingReasons.length > 1
+              ? "複数の前提未解決"
+              : lineupGate.blockingReasonCode === "NPB_GAME_CODE_NOT_AVAILABLE"
+                ? "NPB識別情報待ち"
+                : "state gateで待機",
+            reasonCode: lineupGate.blockingReasonCode || "V3_LINEUP_FETCH_BLOCKED",
+            detail: lineupGate.blockingReasons.map((reason) => `${reason.code}: ${reason.message}`).join(" / "),
+            nextCheckAt: null
+          }
+        : baseLineupState;
       const displayRosterSlots = rosterDisplaySlots(game, schedule.rosterFetchSlots);
       const probableJob = latestJob(game, "probable_starter_fetch");
       const probableSlot = schedule.probableStarterNextAt ? new Date(schedule.probableStarterNextAt) : null;
@@ -192,7 +207,7 @@
       const messages = [
         diagnostics.predictionClose?.warning,
         diagnostics.identity?.warning,
-        diagnostics.lineupFetch?.blockingReason
+        ...(diagnostics.lineupFetch?.blockingReasons || []).map((reason) => `${reason.code}: ${reason.message}`)
       ].filter(Boolean);
       if (!messages.length) return "";
       return `<div class="v3-operation-result" data-v3-workflow-diagnostics><strong>状態診断</strong><ul>${messages.map((message) => `<li>${escapeHtml(message)}</li>`).join("")}</ul></div>`;

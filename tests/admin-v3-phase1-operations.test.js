@@ -57,8 +57,8 @@ test("管理画面は旧直接編集操作を表示せず、正式V3 jobの診�
   assert.match(gameProgress, /data-v3-job-diagnose/);
   assert.match(gameProgress, /data-v3-job-run/);
   assert.match(gameProgress, /正式V3 jobを投入/);
-  assert.match(page, /admin-v3\.js\?v=admin-v3-deadline-state-gate-diagnostics-1/);
-  assert.match(page, /admin-v3\.css\?v=admin-v3-deadline-state-gate-diagnostics-1/);
+  assert.match(page, /admin-v3\.js\?v=admin-v3-lineup-fetch-blocking-diagnostics-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-v3-lineup-fetch-blocking-diagnostics-1/);
 });
 
 test("管理画面のjob詳細は失敗内容を確認でき、ユーザー情報を描画しない", () => {
@@ -146,8 +146,24 @@ test("V3 workflow診断は締切状態、識別code、スタメンstate gateを�
   });
   assert.equal(diagnostics.predictionClose.stateMismatch, true);
   assert.equal(diagnostics.identity.completedWithoutCode, true);
+  assert.equal(diagnostics.identity.blocking, true);
   assert.equal(diagnostics.lineupFetch.canRun, false);
   assert.equal(diagnostics.lineupFetch.blockingReasonCode, "PREDICTION_CLOSE_STATE_TRANSITION_MISSING");
+  assert.deepEqual(diagnostics.lineupFetch.blockingReasons.map((reason) => reason.code), [
+    "PREDICTION_CLOSE_STATE_TRANSITION_MISSING",
+    "NPB_GAME_CODE_NOT_AVAILABLE"
+  ]);
+
+  const overdueWithoutClose = v3.getV3WorkflowDiagnostics({
+    schedule,
+    state: "scheduled",
+    game: {},
+    now: "2026-08-06T09:05:00.000Z",
+    jobs: []
+  });
+  assert.equal(overdueWithoutClose.predictionClose.overdue, true);
+  assert.equal(overdueWithoutClose.lineupFetch.blockingReasonCode, "PREDICTION_CLOSE_STATE_GATE");
+  assert.match(overdueWithoutClose.lineupFetch.blockingReason, /prediction_close未完了/);
 });
 
 test("依存処理は予定未定ではなく前段完了後として返す", () => {
@@ -166,6 +182,8 @@ test("overviewは正規の表示用scheduleと次の処理を付加し、UIは�
   assert.match(worker, /getV3WorkflowDiagnostics\(\{/);
   assert.match(gameProgress, /game\.schedule \|\| \{\}/);
   assert.match(gameProgress, /data-v3-workflow-diagnostics/);
+  assert.match(gameProgress, /複数の前提未解決/);
+  assert.match(gameProgress, /blockingReasons/);
   assert.match(gameProgress, /schedule\.predictionDeadline/);
   assert.match(gameProgress, /schedule\.finalLineupAt/);
   assert.match(gameProgress, /schedule\.publicationAt/);

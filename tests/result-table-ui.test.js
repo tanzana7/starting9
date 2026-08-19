@@ -25,18 +25,20 @@ function findActualLineupItem(predictionItem, actualLineup) {
   return context.find(predictionItem, actualLineup);
 }
 
-function createSlotBasisDetails(sourceDetails, actualLineup) {
+function createActualBasisDetails(sourceDetails, actualLineup) {
   const context = vm.createContext({
     LINEUP_SIZE: 9,
+    normalizePlayerKey: (value) => String(value || "").normalize("NFKC").replace(/[\s\u3000]/g, "")
   });
-  vm.runInContext(`${sourceForFunction("createSlotBasisDetails")}; this.build = createSlotBasisDetails;`, context);
+  vm.runInContext(`${sourceForFunction("createActualBasisDetails")}; this.build = createActualBasisDetails;`, context);
   return context.build(sourceDetails, actualLineup);
 }
 
-test("採点結果テーブルは打順スロットを基準に予想と実際を比較する", () => {
+test("採点結果テーブルは実際のスタメン順を基準に予想と実際を比較する", () => {
   const source = sourceForFunction("createResultTable");
-  assert.match(source, /<th class="result-group-heading">あなたの予想/);
   assert.match(source, /<th class="result-group-heading result-actual-group-heading">実際のスタメン/);
+  assert.match(source, /<th class="result-group-heading">あなたの予想/);
+  assert.ok(source.indexOf("実際のスタメン") < source.indexOf("あなたの予想"));
   assert.match(source, /<th class="result-group-heading">判定/);
   assert.match(source, /<th class="result-point-heading">点数/);
   assert.match(source, /<th class="result-order-heading">打順/);
@@ -52,60 +54,65 @@ test("採点結果テーブルは打順スロットを基準に予想と実際�
   assert.match(source, /createHitBadge\(detail\.isPositionHit, "守備"\)/);
   assert.equal((source.match(/createHitBadge\(detail\./g) || []).length, 3);
   const viewModel = sourceForFunction("createResultViewModel");
-  assert.match(viewModel, /createSlotBasisDetails\(normalizedDetails, result\.actualLineup\)/);
-  assert.doesNotMatch(viewModel, /createActualBasisDetails/);
+  assert.match(viewModel, /createActualBasisDetails\(normalizedDetails, result\.actualLineup\)/);
 });
 
-test("結果表示モデルは予想スロット順に並べ、実際のスタメンも同じスロットを表示する", () => {
+test("結果表示モデルは実際のスタメン順に並べ、同じ選手の予想と行点を保持する", () => {
   const sourceDetails = [
-    { order: 1, player: "水野達稀", position: "遊", point: 11, isPlayerHit: true, isOrderHit: true, isPositionHit: true, isPerfect: true },
-    { order: 2, player: "カストロ", position: "中", actualOrder: 7, point: 7, isPlayerHit: true, isOrderHit: false, isPositionHit: true },
-    { order: 3, player: "レイエス", position: "指", actualOrder: 4, point: 7, isPlayerHit: true, isOrderHit: false, isPositionHit: true },
-    { order: 4, player: "野村佑希", position: "左", point: 0, isPlayerHit: false, isOrderHit: false, isPositionHit: false },
-    { order: 5, player: "今川優馬", position: "右", actualOrder: 2, point: 5, isPlayerHit: true, isOrderHit: false, isPositionHit: false }
+    { order: 1, player: "別選手", position: "遊", actualOrder: null, point: 0, isPlayerHit: false, isOrderHit: false, isPositionHit: false },
+    { order: 2, player: "カストロ", position: "中", actualOrder: 7, actualPlayer: "今川優馬", actualPosition: "左", point: 7, isPlayerHit: true, isOrderHit: false, isPositionHit: true },
+    { order: 3, player: "レイエス", position: "指", actualOrder: 4, actualPlayer: "吉田賢吾", actualPosition: "一", point: 7, isPlayerHit: true, isOrderHit: false, isPositionHit: true },
+    { order: 5, player: "今川優馬", position: "右", actualOrder: 2, actualPlayer: "有薗直輝", actualPosition: "三", point: 5, isPlayerHit: true, isOrderHit: false, isPositionHit: false }
   ];
   const actualLineup = [
     { order: 1, player: "水野達稀", position: "遊", playerId: "p1" },
     { order: 2, player: "今川優馬", position: "左", playerId: "p2" },
     { order: 3, player: "吉田賢吾", position: "一", playerId: "p3" },
     { order: 4, player: "レイエス", position: "指", playerId: "p4" },
-    { order: 5, player: "有薗直輝", position: "三", playerId: "p5" },
-    { order: 7, player: "カストロ", position: "中", playerId: "p6" }
+    { order: 7, player: "カストロ", position: "中", playerId: "p5" }
   ];
-  const details = createSlotBasisDetails(sourceDetails, actualLineup);
+  const details = createActualBasisDetails(sourceDetails, actualLineup);
 
   assert.equal(details[0].order, 1);
-  assert.equal(details[0].player, "水野達稀");
   assert.equal(details[0].actualPlayer, "水野達稀");
+  assert.equal(details[0].player, "");
   assert.equal(details[1].order, 2);
   assert.equal(details[1].actualPlayer, "今川優馬");
-  assert.equal(details[1].player, "カストロ");
-  assert.equal(details[1].point, 7);
+  assert.equal(details[1].player, "今川優馬");
+  assert.equal(details[1].predictionOrder, 5);
+  assert.equal(details[1].point, 5);
   assert.equal(details[2].actualPlayer, "吉田賢吾");
-  assert.equal(details[2].player, "レイエス");
-  assert.equal(details[2].point, 7);
-  assert.equal(details[3].player, "野村佑希");
+  assert.equal(details[2].player, "");
+  assert.equal(details[2].point, 0);
   assert.equal(details[3].actualPlayer, "レイエス");
-  assert.equal(details[3].point, 0);
-  assert.equal(details[4].player, "今川優馬");
-  assert.equal(details[4].actualPlayer, "有薗直輝");
+  assert.equal(details[3].player, "レイエス");
+  assert.equal(details[3].predictionOrder, 3);
+  assert.equal(details[3].point, 7);
+  assert.equal(details[6].actualPlayer, "カストロ");
+  assert.equal(details[6].player, "カストロ");
+  assert.equal(details[6].predictionOrder, 2);
+  assert.equal(details[6].point, 7);
+  assert.equal(details.reduce((total, detail) => total + detail.point, 0), 19);
 });
 
-test("予想スロットが空欄の場合だけ未予想になり、実際選手基準で並べ替えない", () => {
-  const details = createSlotBasisDetails([
-    { order: 1, player: "カストロ", position: "中", point: 7, isPlayerHit: true, isOrderHit: false, isPositionHit: true },
-    { order: 2, player: "", position: "", point: 0, isPlayerHit: false, isOrderHit: false, isPositionHit: false }
+test("実際選手を予想していない場合だけ未予想になり、実際選手順を維持する", () => {
+  const details = createActualBasisDetails([
+    { order: 3, player: "レイエス", position: "指", actualPlayer: "吉田賢吾", actualPosition: "一", point: 7, isPlayerHit: true, isOrderHit: false, isPositionHit: true },
+    { order: 5, player: "今川優馬", position: "右", actualOrder: 2, point: 5, isPlayerHit: true, isOrderHit: false, isPositionHit: false }
   ], [
-    { order: 1, player: "今川優馬", position: "左", playerId: "p1" },
-    { order: 2, player: "カストロ", position: "中", playerId: "p2" }
+    { order: 1, player: "水野達稀", position: "遊", playerId: "p1" },
+    { order: 2, player: "今川優馬", position: "左", playerId: "p2" },
+    { order: 3, player: "吉田賢吾", position: "一", playerId: "p3" }
   ]);
 
-  assert.equal(details[0].player, "カストロ");
-  assert.equal(details[0].actualPlayer, "今川優馬");
-  assert.equal(details[0].point, 7);
-  assert.equal(details[1].player, "");
-  assert.equal(details[1].actualPlayer, "カストロ");
-  assert.equal(details[1].point, 0);
+  assert.equal(details[1].player, "今川優馬");
+  assert.equal(details[1].point, 5);
+  assert.equal(details[2].actualPlayer, "吉田賢吾");
+  assert.equal(details[2].player, "");
+  assert.equal(details[2].point, 0);
+  assert.equal(details[2].isPlayerHit, false);
+  assert.equal(details[2].isOrderHit, false);
+  assert.equal(details[2].isPositionHit, false);
 });
 
 test("実スタメン配列がない保存済み結果も予想スロット順を維持する", () => {
@@ -135,13 +142,15 @@ test("実スタメン配列がない保存済み結果も予想スロット順�
       isPositionHit: true
     }
   ];
-  const details = createSlotBasisDetails(sourceDetails, []);
+  const details = createActualBasisDetails(sourceDetails, []);
 
   assert.equal(details[0].actualPlayer, "今川優馬");
   assert.equal(details[0].player, "今川優馬");
+  assert.equal(details[0].predictionOrder, 1);
   assert.equal(details[0].point, 5);
   assert.equal(details[1].actualPlayer, "カストロ");
   assert.equal(details[1].player, "カストロ");
+  assert.equal(details[1].predictionOrder, 2);
   assert.equal(details[1].point, 7);
 });
 
@@ -174,13 +183,12 @@ test("公開結果画面ではスコア比較ブロックを表示しない", ()
   assert.doesNotMatch(publicResultsRenderer, /deps\.renderScoreInsights\(/);
 });
 
-test("実際の打順照合は採点内部に維持し、表示モデルは予想スロット順にする", () => {
+test("実際の打順照合は採点内部に維持し、表示モデルは実際の選手順にする", () => {
   const scoring = sourceForFunction("findActualLineupItem");
   assert.match(scoring, /item\.playerId === playerId/);
   assert.match(scoring, /normalizePlayerKey\(item\.player\)/);
   assert.match(sourceForFunction("scoreLineup"), /actualOrder: actualItem\?\.order \|\| null/);
   const table = sourceForFunction("createResultTable");
-  assert.doesNotMatch(table, /detail\.predictionOrder/);
   assert.doesNotMatch(table, /実際は/);
 
   const idMatch = findActualLineupItem(
@@ -252,8 +260,9 @@ test("採点結果は既存のviewModelからCanvas画像として表示する",
   assert.match(view, /setAttribute\("role", "img"\)/);
   assert.match(canvas, /viewModel\.breakdown\.player/);
   assert.match(canvas, /viewModel\.details\.forEach/);
-  assert.match(canvas, /drawPlayerCard\(detail\.player \|\| "未予想", detail\.position/);
   assert.match(canvas, /drawPlayerCard\(detail\.actualPlayer \|\| "-", detail\.actualPosition/);
+  assert.match(canvas, /drawPlayerCard\(detail\.player \|\| "未予想", detail\.position/);
+  assert.ok(canvas.indexOf("drawPlayerCard(detail.actualPlayer") < canvas.indexOf("drawPlayerCard(detail.player"));
   assert.doesNotMatch(canvas, /detail\.predictionOrder/);
   assert.match(canvas, /drawJudgement\(detail\.isPlayerHit, "出場"/);
   assert.match(canvas, /drawJudgement\(detail\.isOrderHit, "打順"/);
@@ -292,8 +301,8 @@ test("結果Canvasは判定列・行高・点数バッジを微調整する", ()
 
 test("結果Canvasは列座標を使用前に初期化する", () => {
   const canvas = sourceForFunction("createResultCanvas");
-  const predictedColumnDeclaration = canvas.indexOf("const predictedColumnX = tableX + orderWidth;");
-  const actualColumnDeclaration = canvas.indexOf("const actualColumnX = predictedColumnX + playerWidth;");
+  const actualColumnDeclaration = canvas.indexOf("const actualColumnX = tableX + orderWidth;");
+  const predictedColumnDeclaration = canvas.indexOf("const predictedColumnX = actualColumnX + playerWidth;");
   const actualColumnUse = canvas.indexOf("context.fillRect(actualColumnX + 1");
   assert.notEqual(predictedColumnDeclaration, -1);
   assert.notEqual(actualColumnDeclaration, -1);

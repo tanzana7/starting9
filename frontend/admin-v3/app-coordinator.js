@@ -21,6 +21,7 @@
         if (event.target.closest("[data-v3-ranking-reset-preview]")) { await actions.previewRankingReset(); return; }
         if (event.target.closest("[data-v3-ranking-reset-execute]")) { await actions.executeRankingReset(); return; }
         if (event.target.closest("[data-v3-perfect-score-preview]")) { await actions.previewPerfectScore("perfect"); return; }
+        if (event.target.closest("[data-v3-manual-game-preview]")) { await actions.previewManualGame(); return; }
         if (event.target.closest("[data-v3-automation-log-refresh]")) { await actions.refreshAutomationLogs(); return; }
 
         const diagnoseButton = event.target.closest("[data-v3-job-diagnose]");

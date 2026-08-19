@@ -34,6 +34,11 @@
         loading: false,
         result: null,
         error: ""
+      },
+      manualGamePreview: {
+        loading: false,
+        result: null,
+        error: ""
       }
     };
   }

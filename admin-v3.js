@@ -143,10 +143,11 @@ async function saveV3Schedule(internalGameId) {
   if (!String(reason || "").trim()) return;
   const confirmed = form.querySelector("[data-v3-schedule-confirm]")?.checked === true;
   const confirmationText = form.querySelector("[data-v3-schedule-confirmation-text]")?.value?.trim() || "";
+  const rankingConfirmationText = form.querySelector("[data-v3-schedule-ranking-confirmation-text]")?.value?.trim() || "";
   const previous = manualOperation(internalGameId, "schedule") || {};
   setManualOperation(internalGameId, "schedule", { ...previous, status: "loading", error: false, message: "日程を更新中…" });
   try {
-    const result = await v3Api.updateSchedule(internalGameId, { startAt, status, reason: String(reason).trim(), confirmed, confirmationText });
+    const result = await v3Api.updateSchedule(internalGameId, { startAt, status, reason: String(reason).trim(), confirmed, confirmationText, rankingConfirmationText });
     setManualOperation(internalGameId, "schedule", { status: "success", error: false, message: `${result.stateBefore || "-"} → ${result.stateAfter || result.stateBefore || "-"} / 日程を更新しました。` });
     await loadV3();
   } catch (error) {
@@ -160,12 +161,14 @@ async function excludeV3GameFromRanking(internalGameId) {
   if (!form) return;
   const reason = form.querySelector("[data-v3-ranking-exclusion-reason]")?.value?.trim() || "";
   const confirmed = form.querySelector("[data-v3-ranking-exclusion-confirm]")?.checked === true;
-  if (!reason || !confirmed) {
+  const rankingConfirmationText = form.querySelector("[data-v3-ranking-exclusion-confirmation-text]")?.value?.trim() || "";
+  const schedule = selectedDetails()?.schedule?.schedule?.operation || {};
+  if (!reason || !confirmed || (schedule.rankingRevocationConfirmationRequired && rankingConfirmationText !== "ランキング取消")) {
     setV3Status("ランキング対象外の理由を入力し、確認にチェックしてください。", true);
     return;
   }
   try {
-    await v3Api.updateRankingEligibility(internalGameId, { status: "excluded", reason, confirmed });
+    await v3Api.updateRankingEligibility(internalGameId, { status: "excluded", reason, confirmed, rankingConfirmationText });
     await loadV3();
   } catch (error) {
     setV3Status(`${error.code || "RANKING_ELIGIBILITY_UPDATE_FAILED"}: ${error.message}`, true);

@@ -10,6 +10,14 @@
 - NPB game-code and home/away administrative mutations now use the same published read-only boundary and require reason/confirmation where the mutation is manual.
 - Manual job diagnosis reports artifact presence, the latest safe action, whether automatic recovery is expected, and whether manual attention is required.
 
+### Ranking reflection revocation for unpublished games
+
+- A `ranked` or historically reflected, unpublished game requires both the normal `中止` confirmation and the typed `ランキング取消` confirmation.
+- The operation never deletes `games`, predictions, V3 jobs, lineup history, or audit data. It uses the existing eligibility service to set `ranking_games.is_ranking_eligible` to false and records the reflection revision as `revoked`.
+- Yearly, monthly, weekly, perfect, and daily-best-nine views are query-time derived from the eligible/scored game set, so no per-user score decrement or materialized ranking repair is required.
+- If the reflection history cannot be read, the operation stops with an explicit error before changing the game. Published games remain read-only.
+- admin-v3 displays the reflection status, affected scopes, stopped jobs, revocation result, and the source-of-truth mode.
+
 ## Deliberately not implemented here
 
 ### Adding a new game

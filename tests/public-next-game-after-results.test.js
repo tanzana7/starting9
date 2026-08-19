@@ -16,7 +16,7 @@ test("公開済み試合の結果導線は結果セクションに残し、メ�
   assert.match(html, /id="predictionEditor"/);
   assert.match(script, /function renderPublicPredictionSurface\(selectedGame\)/);
   assert.match(script, /if \(!selectedGame\) \{/);
-  assert.match(script, /if \(editor\) editor\.classList\.remove\("hidden"\)/);
+  assert.match(script, /editor\.classList\.toggle\("hidden", isScheduleGameUnavailable\(selectedGame\)\)/);
   assert.doesNotMatch(script, /findResultHistoryGameForPublicGame|selectNextPredictionGame/);
 });
 
@@ -24,7 +24,7 @@ test("メイン予想対象は公開済み・締切済み試合を避け、canon
   assert.match(script, /function selectInitialPublicGame\(games = \[\], now = new Date\(\)\)/);
   assert.match(script, /!isPublicGamePublished\(game\)/);
   assert.match(script, /resolvePredictionDeadline\(game\.internalGameId \|\| game\.gameId, now\)\.status === "open"/);
-  assert.match(script, /return todayUpcoming \|\| todayOpen \|\| nextOpen \|\| null/);
+  assert.match(script, /return todayUpcoming \|\| todayOpen \|\| nextOpen \|\| unavailableToday\[0\] \|\| null/);
   assert.doesNotMatch(script, /selectNextPredictionGame|applyPublicPredictionTarget/);
 });
 

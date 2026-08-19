@@ -124,7 +124,7 @@ test("管理APIはpreview/executeを分離し、管理者確認とcache buster�
   assert.match(worker, /RANKING_RESET_CONFIRMATION_REQUIRED/);
   assert.match(worker, /RANKING_RESET_MARKER_EXISTS/);
   assert.match(adminScript, /ranking-reset-controls-1|ranking-reset/);
-  assert.match(adminHtml, /admin-v3\.css\?v=admin-v3-add-game-preview-1/);
-  assert.match(adminHtml, /admin-v3\.js\?v=admin-v3-add-game-preview-1/);
+  assert.match(adminHtml, /admin-v3\.css\?v=admin-v3-cancel-game-operation-1/);
+  assert.match(adminHtml, /admin-v3\.js\?v=admin-v3-cancel-game-operation-1/);
   assert.match(adminHtml, /data-v3-view="ranking-reset"/);
 });

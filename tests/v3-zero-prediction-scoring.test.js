@@ -40,5 +40,5 @@ test("採点no-opの監査結果を管理画面へ返し、公開条件へ接続
   assert.match(worker, /scoring_status = 'scored'/);
   assert.match(gameProgress, /data-v3-scoring-no-op/);
   assert.match(gameProgress, /予想0件または採点対象なし/);
-  assert.match(html, /admin-v3-add-game-preview-1/);
+  assert.match(html, /admin-v3-cancel-game-operation-1/);
 });

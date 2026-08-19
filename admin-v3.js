@@ -138,17 +138,37 @@ async function saveV3Schedule(internalGameId) {
   if (!form) return;
   const startAt = form.querySelector("[data-v3-schedule-start]")?.value || "";
   const status = form.querySelector("[data-v3-schedule-status]")?.value || "scheduled";
-  const reason = window.prompt("日程変更理由を入力してください（1〜240文字）", "admin-v3: 日程状態・開始時刻を更新");
+  const reasonField = form.querySelector("[data-v3-schedule-reason]");
+  const reason = reasonField?.value?.trim() || window.prompt("日程変更理由を入力してください（1〜240文字）", "admin-v3: 日程状態・開始時刻を更新");
   if (!String(reason || "").trim()) return;
   const confirmed = form.querySelector("[data-v3-schedule-confirm]")?.checked === true;
+  const confirmationText = form.querySelector("[data-v3-schedule-confirmation-text]")?.value?.trim() || "";
   const previous = manualOperation(internalGameId, "schedule") || {};
   setManualOperation(internalGameId, "schedule", { ...previous, status: "loading", error: false, message: "日程を更新中…" });
   try {
-    const result = await v3Api.updateSchedule(internalGameId, { startAt, status, reason: String(reason).trim(), confirmed });
+    const result = await v3Api.updateSchedule(internalGameId, { startAt, status, reason: String(reason).trim(), confirmed, confirmationText });
     setManualOperation(internalGameId, "schedule", { status: "success", error: false, message: `${result.stateBefore || "-"} → ${result.stateAfter || result.stateBefore || "-"} / 日程を更新しました。` });
     await loadV3();
   } catch (error) {
     setManualOperation(internalGameId, "schedule", { status: "error", error: true, message: `${error.code || "V3_SCHEDULE_UPDATE_FAILED"}: ${error.message}` });
+  }
+}
+
+async function excludeV3GameFromRanking(internalGameId) {
+  const form = [...document.querySelectorAll("[data-v3-ranking-exclusion-form]")]
+    .find((element) => element.dataset.v3RankingExclusionForm === String(internalGameId || ""));
+  if (!form) return;
+  const reason = form.querySelector("[data-v3-ranking-exclusion-reason]")?.value?.trim() || "";
+  const confirmed = form.querySelector("[data-v3-ranking-exclusion-confirm]")?.checked === true;
+  if (!reason || !confirmed) {
+    setV3Status("ランキング対象外の理由を入力し、確認にチェックしてください。", true);
+    return;
+  }
+  try {
+    await v3Api.updateRankingEligibility(internalGameId, { status: "excluded", reason, confirmed });
+    await loadV3();
+  } catch (error) {
+    setV3Status(`${error.code || "RANKING_ELIGIBILITY_UPDATE_FAILED"}: ${error.message}`, true);
   }
 }
 
@@ -985,6 +1005,7 @@ adminV3Modules.createAdminV3Coordinator({
     runJob: runV3Job,
     reconcileState: reconcileV3State,
     saveSchedule: saveV3Schedule,
+    excludeFromRanking: excludeV3GameFromRanking,
     copyJobDetail: copyV3JobDetail,
     refreshJobDetail: (internalGameId, jobId) => loadV3JobDetail(internalGameId, jobId, true),
     toggleJobDetail: toggleV3JobDetail,

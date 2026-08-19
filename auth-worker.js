@@ -5165,6 +5165,9 @@ async function handleAdminV3JobCreate(request, env, cors, internalGameId) {
       throw createV3Error("V3_CONFIRMATION_REQUIRED", "危険な工程は確認済みフラグが必要です。", { httpStatus: 409 });
     }
     const target = await loadV3GameTarget(env.AUTH_DB, id);
+    if (["cancelled", "canceled", "postponed", "service_unavailable"].includes(String(target.gameStatus || "").toLowerCase())) {
+      throw createV3Error("V3_GAME_UNAVAILABLE", "中止または対象外の試合では後続V3 jobを再実行できません。", { httpStatus: 409 });
+    }
     const diagnosis = await getV3ManualJobDiagnosis(env.AUTH_DB, id, jobType, target);
     if (!diagnosis.canRun) throw createV3Error("V3_MANUAL_JOB_PREREQUISITE", diagnosis.cannotRunReason || "現在の状態では実行できません。", { httpStatus: 409 });
     const now = new Date();
@@ -5284,6 +5287,8 @@ function v3AdminErrorResponse(cors, error, fallback = "V3管理操作に失敗�
     V3_INTERNAL_GAME_ID_REQUIRED: 400,
     V3_JOB_NOT_FOUND: 404,
     V3_JOB_OPERATION_INVALID: 409,
+    V3_GAME_UNAVAILABLE: 409,
+    V3_STRONG_CONFIRMATION_REQUIRED: 409,
     V3_REASON_REQUIRED: 400,
     V3_SCHEDULE_UPDATE_FAILED: 409,
     V3_SCHEMA_UNAVAILABLE: 503
@@ -6101,6 +6106,16 @@ async function handleAdminV3EligibilityUpdate(request, env, cors, context, user)
   const reason = String(input?.reason || "").trim();
   if (!reason || reason.length > 240) throw createV3Error("V3_REASON_REQUIRED", "ランキング対象状態の変更理由を入力してください。", { httpStatus: 400 });
   if (!Object.values(RANKING_ELIGIBILITY_STATUS).includes(status)) throw createV3Error("V3_RANKING_ELIGIBILITY_INVALID", "ランキング対象状態が不正です。", { httpStatus: 400 });
+  if (status === RANKING_ELIGIBILITY_STATUS.EXCLUDED && input?.confirmed !== true) {
+    throw createV3Error("V3_CONFIRMATION_REQUIRED", "ランキング対象外化には確認済みフラグが必要です。", { httpStatus: 409 });
+  }
+  const stateRow = await env.AUTH_DB.prepare(
+    "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
+  ).bind(context.id).first();
+  const lineup = await getGameLineup(env.AUTH_DB, context.metadata);
+  if (String(stateRow?.state || "") === "published" || Boolean(lineup?.published_at)) {
+    throw createV3Error("V3_PUBLISHED_READ_ONLY", "公開済み試合のランキング対象状態は変更できません。", { httpStatus: 409 });
+  }
   const previous = await getRankingEligibilityState(env.AUTH_DB, context.metadata.gameId, context.id);
   if (previous && previous.rankingEligibilityStatus === status && String(previous.rankingEligibilityReason || "") === reason && String(previous.rankingEligibilityNote || "") === String(input?.note || "").trim()) {
     return jsonResponse({ ok: true, internalGameId: context.id, noOp: true, rankingEligibility: previous }, 200, cors);
@@ -6116,13 +6131,60 @@ async function handleAdminV3EligibilityUpdate(request, env, cors, context, user)
 
 async function handleAdminV3ScheduleGet(env, cors, context) {
   const schedule = deriveV3Schedule(context.target);
+  const stateRow = await env.AUTH_DB.prepare(
+    "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
+  ).bind(context.id).first();
+  const currentState = String(stateRow?.state || "scheduled");
+  const lineup = await getGameLineup(env.AUTH_DB, context.metadata);
+  const publishedReadOnly = currentState === "published" || Boolean(lineup?.published_at);
+  let lastStatusChange = null;
+  let stoppedJobs = [];
+  try {
+    lastStatusChange = await env.AUTH_DB.prepare(
+      `SELECT previous_status, next_status, reason, changed_by, changed_at
+         FROM game_schedule_change_history
+        WHERE internal_game_id = ?1 AND next_status IN ('cancelled', 'canceled', 'postponed', 'service_unavailable')
+        ORDER BY changed_at DESC LIMIT 1`
+    ).bind(context.id).first();
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+  }
+  try {
+    const stopped = await env.AUTH_DB.prepare(
+      `SELECT job_type, COUNT(*) AS count
+         FROM game_jobs_v3
+        WHERE internal_game_id = ?1 AND status = 'cancelled'
+        GROUP BY job_type ORDER BY job_type`
+    ).bind(context.id).all();
+    stoppedJobs = (stopped.results || []).map((row) => ({ jobType: row.job_type, count: Number(row.count || 0) }));
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+  }
+  const gameStatus = String(context.target.gameStatus || "scheduled").toLowerCase();
+  const unavailable = ["cancelled", "canceled", "postponed", "service_unavailable"].includes(gameStatus);
   return jsonResponse({ ok: true, internalGameId: context.id, schedule: {
     gameDate: context.target.game_date, startAt: schedule.startAt.toISOString(),
     predictionDeadline: schedule.predictionDeadline.toISOString(),
     lineupPollingStart: schedule.lineupPollingStart.toISOString(),
     finalLineupAt: schedule.finalLineupAt.toISOString(), publicationAt: schedule.publicationAt.toISOString(),
     homeTeam: context.target.home_team, awayTeam: context.target.away_team,
-    gameStatus: context.target.gameStatus, isActive: context.target.isActive
+    gameStatus: context.target.gameStatus, isActive: context.target.isActive,
+    operation: {
+      canCancel: !publishedReadOnly && ["scheduled", "prediction_closed", "manual_action_required", "lineup_ready", "scored", "ranked", "excluded"].includes(currentState),
+      publishedReadOnly,
+      currentState,
+      strongConfirmationRequired: ["lineup_ready", "scored", "ranked"].includes(currentState),
+      reason: lastStatusChange?.reason || null,
+      changedBy: lastStatusChange?.changed_by || null,
+      changedAt: lastStatusChange?.changed_at || null,
+      stoppedJobs,
+      publicNotice: unavailable
+        ? (gameStatus === "service_unavailable"
+          ? "この試合はサービス対象外です。予想・採点・ランキングの対象外です。"
+          : "この試合は中止になりました。予想・採点・ランキングの対象外です。")
+        : null,
+      nextSafeAction: publishedReadOnly ? "diagnose_or_audit_only" : unavailable ? "保存済み予想の閲覧のみ" : "中止理由と確認を入力して対象外化"
+    }
   } }, 200, cors);
 }
 
@@ -6143,7 +6205,7 @@ async function handleAdminV3ScheduleUpdate(request, env, cors, context, user) {
     "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
   ).bind(context.id).first();
   const currentState = String(stateRow?.state || "scheduled");
-  if (["lineup_ready", "scored", "ranked", "published"].includes(currentState)) {
+  if (currentState === "published") {
     throw createV3Error("V3_SCHEDULE_CHANGE_TOO_LATE", "正式スタメン確定後の日程変更は今回の運用範囲では実行できません。", { httpStatus: 409 });
   }
   if (currentState === "excluded" && requestedStatus === "scheduled") {
@@ -6153,6 +6215,13 @@ async function handleAdminV3ScheduleUpdate(request, env, cors, context, user) {
     if (input?.confirmed !== true) {
       throw createV3Error("V3_CONFIRMATION_REQUIRED", "締切後の日程変更・中止には確認済みフラグが必要です。", { httpStatus: 409 });
     }
+  }
+  if (["lineup_ready", "scored", "ranked"].includes(currentState) && requestedStatus === "scheduled") {
+    throw createV3Error("V3_SCHEDULE_CHANGE_TOO_LATE", "正式処理が進んだ試合の再開は今回の運用範囲では実行できません。", { httpStatus: 409 });
+  }
+  if (["lineup_ready", "scored", "ranked"].includes(currentState) && requestedStatus !== "scheduled"
+    && String(input?.confirmationText || "").trim() !== "中止") {
+    throw createV3Error("V3_STRONG_CONFIRMATION_REQUIRED", "正式処理済み試合の中止・対象外化には「中止」の入力確認が必要です。", { httpStatus: 409 });
   }
   const body = {
     startAt: input?.startAt || context.target.start_time,
@@ -6172,7 +6241,7 @@ async function handleAdminV3ScheduleUpdate(request, env, cors, context, user) {
     ? await reschedulePendingV3Jobs(env.AUTH_DB, context.id, payload.schedule)
     : { rescheduled: 0, cancelled: await cancelOpenV3Jobs(env.AUTH_DB, context.id, reason) };
   let stateAfter = currentState;
-  if (requestedStatus !== "scheduled" && ["scheduled", "prediction_closed", "lineup_ready", "scored", "ranked"].includes(currentState)) {
+  if (requestedStatus !== "scheduled" && ["scheduled", "prediction_closed", "manual_action_required", "lineup_ready", "scored", "ranked"].includes(currentState)) {
     try {
       const excluded = await transitionV3State(env.AUTH_DB, { internalGameId: context.id, from: currentState, to: "excluded", now: new Date() });
       stateAfter = excluded?.state || "excluded";
@@ -7595,6 +7664,9 @@ async function handleAdminGameScheduleUpdate(request, env, cors, metadata, user)
           updatedBy: user?.id ? `admin:${user.id}` : "admin",
           now
         });
+        await env.AUTH_DB.prepare(
+          "UPDATE ranking_games SET game_status = ?1, updated_at = ?2 WHERE game_id = ?3"
+        ).bind(status, now.toISOString(), metadata.gameId).run();
       }
     }
 
@@ -12494,7 +12566,7 @@ async function handleGetPublicGames(request, env, cors) {
          LEFT JOIN ranking_games AS ranking
            ON ranking.internal_game_id = games.internal_game_id
         WHERE games.game_date >= ?1
-          AND games.game_status NOT IN ('cancelled', 'canceled', 'postponed')
+          AND games.game_status IS NOT NULL
           AND games.is_active = 1
           AND games.deleted_at IS NULL
           AND (LOWER(games.home_team) = 'fighters' OR LOWER(games.away_team) = 'fighters')
@@ -12508,7 +12580,7 @@ async function handleGetPublicGames(request, env, cors) {
       `SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status
          FROM games
         WHERE game_date >= ?1
-          AND game_status NOT IN ('cancelled', 'canceled', 'postponed')
+          AND game_status IS NOT NULL
           AND (LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')
         ORDER BY start_time ASC
         LIMIT 50`

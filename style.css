@@ -7262,6 +7262,55 @@ body:not(:has(.app-layout.is-admin-screen)) .probable-starter-fetched {
   color: #c2def4;
 }
 
+/* Mobile prediction UI: keep the two panes and place the position control next to the order. */
+@media (max-width: 767px) {
+  body:not(:has(.app-layout.is-admin-screen)) .lineup-builder {
+    grid-template-columns: minmax(0, 60fr) minmax(0, 40fr);
+    gap: 8px;
+    align-items: stretch;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .lineup-panel,
+  body:not(:has(.app-layout.is-admin-screen)) .player-panel {
+    min-width: 0;
+    max-height: min(72vh, 620px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) #predictionLineup > .lineup-slot[data-picker="prediction"] {
+    grid-template-columns: 28px 40px minmax(0, 1fr) auto;
+    grid-template-areas: "order position player clear";
+    gap: 6px;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) #predictionLineup > .lineup-slot[data-picker="prediction"] > .slot-order {
+    grid-area: order;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) #predictionLineup > .lineup-slot[data-picker="prediction"] > .position-control {
+    grid-area: position;
+    justify-self: center;
+    z-index: 2;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) #predictionLineup > .lineup-slot[data-picker="prediction"] > .slot-player {
+    grid-area: player;
+    min-width: 0;
+    width: auto;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) #predictionLineup > .lineup-slot[data-picker="prediction"] > .slot-clear {
+    grid-area: clear;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .position-menu.is-viewport-positioned {
+    z-index: 1400;
+  }
+}
+
 @media (max-width: 759px) {
   body:not(:has(.app-layout.is-admin-screen)) .header-logo {
     width: min(100%, 236px);

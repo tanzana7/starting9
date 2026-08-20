@@ -91,9 +91,9 @@ test("スマホの選手一覧はページ全体でスクロールし、1人1行
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.player-chip \.player-name[\s\S]*text-overflow: ellipsis/);
 });
 
-test("中幅の予想入力は1カラム、十分な幅では収まる2カラムを使う", () => {
+test("中幅の予想入力は2カラムを維持し、十分な幅では広く使う", () => {
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 1fr\)[\s\S]*width: 100%[\s\S]*max-width: 100%/);
-  assert.match(css, /@media \(max-width: 768px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(css, /@media \(max-width: 767px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 60fr\) minmax\(0, 40fr\)/);
   assert.match(css, /@media \(min-width: 1000px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.container[\s\S]*width: calc\(100% - 48px\)[\s\S]*max-width: 75rem/);
   assert.match(css, /@media \(min-width: 1000px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(380px, 480px\) minmax\(320px, 1fr\)[\s\S]*gap: 20px/);
   assert.match(css, /@media \(min-width: 78\.125rem\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-list[\s\S]*grid-template-columns: repeat\(auto-fit, minmax\(120px, 1fr\)\)/);
@@ -107,7 +107,13 @@ test("公開画面は900px以上でも予想入力から結果までを縦積み
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*> \.result-card[\s\S]*grid-column: 1[\s\S]*grid-row: 4/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*> #rankingPanel[\s\S]*grid-column: 1[\s\S]*grid-row: 5/);
   assert.match(css, /@media \(min-width: 768px\) and \(max-width: 899px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\)[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
-  assert.match(css, /@media \(max-width: 767px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+});
+
+test("スマホの予想入力は2カラムを維持し、守備位置を打順の隣に置く", () => {
+  assert.match(css, /@media \(max-width: 767px\)[\s\S]*?\.lineup-builder \{[\s\S]*?grid-template-columns: minmax\(0, 60fr\) minmax\(0, 40fr\)/);
+  assert.match(css, /#predictionLineup > \.lineup-slot\[data-picker="prediction"\][\s\S]*?grid-template-areas: "order position player clear"/);
+  assert.match(css, /#predictionLineup > \.lineup-slot\[data-picker="prediction"\] > \.position-control[\s\S]*?grid-area: position/);
+  assert.match(css, /\.position-menu\.is-viewport-positioned[\s\S]*?z-index: 1400/);
 });
 
 test("PCの出場候補・その他選手一覧は2列カードgridで表示する", () => {
@@ -204,7 +210,7 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-home-final-copy-polish-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-mobile-two-pane-position-menu-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],
@@ -231,8 +237,8 @@ test("公開予想入力は結果画面と共通の青系テーマを使い、�
   assert.match(css, /#predictionForm \.position-menu[\s\S]*border-color: #9fc2df/);
   assert.match(css, /#predictionForm \.player-chip[\s\S]*border-color: #b9cfe2/);
   assert.match(css, /#predictionForm \.lineup-slot\.is-drop-target/);
-  assert.match(html, /style\.css\?v=public-home-final-copy-polish-1/);
-  assert.match(html, /script\.js\?v=public-home-final-copy-polish-1/);
+  assert.match(html, /style\.css\?v=public-mobile-two-pane-position-menu-1/);
+  assert.match(html, /script\.js\?v=public-mobile-two-pane-position-menu-1/);
   assert.match(script, /function togglePositionMenu\(/);
   assert.match(script, /function handlePlayerDragStart\(/);
   assert.match(script, /function assignPlayerToActiveSlot\(/);

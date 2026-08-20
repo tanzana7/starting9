@@ -9,7 +9,7 @@ const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 
 test("public mobile prediction layout keeps order and roster in two panes", () => {
-  assert.match(html, /style\.css\?v=public-home-final-copy-polish-1/);
+  assert.match(html, /style\.css\?v=public-mobile-two-pane-position-menu-1/);
   assert.match(html, /class="lineup-builder"/);
   assert.match(html, /id="predictionLineup" class="slot-list"/);
   assert.match(html, /id="predictionPlayers" class="player-list"/);
@@ -21,8 +21,8 @@ test("public mobile prediction layout keeps order and roster in two panes", () =
   assert.match(css, /overflow-y: auto/);
   assert.match(css, /\.player-list \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(css, /min-height: 44px/);
-  assert.match(css, /grid-template-columns: 28px minmax\(0, 1fr\) 40px auto/);
-  assert.match(css, /grid-template-areas: "order player position clear"/);
+  assert.match(css, /grid-template-columns: 28px 40px minmax\(0, 1fr\) auto/);
+  assert.match(css, /grid-template-areas: "order position player clear"/);
 });
 
 test("mobile drag feedback and position menu stay within the viewport", () => {
@@ -40,6 +40,7 @@ test("mobile drag feedback and position menu stay within the viewport", () => {
   assert.match(script, /window\.innerWidth - menuRect\.width - viewportPadding/);
   assert.match(css, /\.mobile-drag-ghost \{/);
   assert.match(css, /\.position-menu\.is-mobile-position-menu \{/);
+  assert.match(css, /\.position-menu\.is-viewport-positioned \{\s*z-index: 1400;/);
   assert.match(css, /max-width: calc\(100vw - 16px\)/);
   assert.match(css, /\.player-panel \{[\s\S]*?display: flex;[\s\S]*?overflow: hidden;/);
   assert.match(css, /\.player-panel \.player-list \{[\s\S]*?overflow: hidden auto;[\s\S]*?-webkit-overflow-scrolling: touch;/);

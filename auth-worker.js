@@ -7295,6 +7295,11 @@ async function handleGetDailyBestNine(request, env, cors) {
     gameDate: game.gameDate || metadata.date || "",
     displayLabel: game.displayLabel || createPublicResultDisplayLabel({ gameDate: game.gameDate || metadata.date, homeTeam: game.homeTeam, awayTeam: game.awayTeam }),
     published,
+    gameStatus: rankingState?.game_status || game.gameStatus || "",
+    rankingExcluded: Boolean(rankingState && Number(rankingState.is_ranking_eligible || 0) !== 1),
+    resultAvailability: published
+      ? "published"
+      : (rankingState && Number(rankingState.is_ranking_eligible || 0) !== 1 ? "excluded" : "unpublished"),
     bestNine: bestNine.rows,
     totalCount: bestNine.totalCount,
     updatedAt: new Date().toISOString()
@@ -12628,6 +12633,10 @@ async function handleGetPredictionTarget(request, env, cors) {
 async function handleGetPublicGames(request, env, cors) {
   const now = new Date();
   const today = getJstDateString(now);
+  const rankingColumns = await getTableColumnSet(env.AUTH_DB, "ranking_games");
+  const rankingEligibilitySelect = rankingColumns.has("ranking_eligibility_status")
+    ? ", ranking.ranking_eligibility_status"
+    : ", NULL AS ranking_eligibility_status";
   let result;
   try {
     result = await env.AUTH_DB.prepare(
@@ -12635,7 +12644,7 @@ async function handleGetPublicGames(request, env, cors) {
               games.home_team, games.away_team, games.game_status,
               COALESCE(workflow.state, '') AS workflow_status,
               COALESCE(lineup.publication_status, ranking.publication_status, '') AS publication_status,
-              COALESCE(lineup.published_at, ranking.published_at, '') AS published_at
+              COALESCE(lineup.published_at, ranking.published_at, '') AS published_at${rankingEligibilitySelect}
          FROM games
          LEFT JOIN game_automation_v3_state AS workflow
            ON workflow.internal_game_id = games.internal_game_id
@@ -12668,6 +12677,10 @@ async function handleGetPublicGames(request, env, cors) {
   const games = (result.results || []).map((row) => {
     const startAt = new Date(row.start_time);
     const publicationStatus = String(row.publication_status || "");
+    const gameStatus = String(row.game_status || "scheduled").toLowerCase();
+    const rankingExcluded = row.ranking_eligibility_status !== null
+      && row.ranking_eligibility_status !== undefined
+      && row.ranking_eligibility_status !== "eligible";
     return {
       internalGameId: row.internal_game_id,
       gameId: row.internal_game_id,
@@ -12685,7 +12698,9 @@ async function handleGetPublicGames(request, env, cors) {
       workflowState: row.workflow_status || "",
       publicationStatus,
       publishedAt: row.published_at || null,
-      isPublished: publicationStatus === "published" || Boolean(row.published_at)
+      isPublished: publicationStatus === "published" || Boolean(row.published_at),
+      rankingEligibilityStatus: row.ranking_eligibility_status || (gameStatus === "scheduled" ? "eligible" : null),
+      rankingExcluded: rankingExcluded || ["cancelled", "canceled", "postponed", "service_unavailable"].includes(gameStatus)
     };
   });
 
@@ -12700,23 +12715,24 @@ async function handleGetPreviousResultGame(request, env, cors) {
   let result;
   try {
     result = await env.AUTH_DB.prepare(
-      `SELECT internal_game_id, game_date, start_time, home_team, away_team
+      `SELECT games.internal_game_id, games.game_date, games.start_time, games.home_team, games.away_team,
+              games.game_status, ranking.ranking_eligibility_status
          FROM games
-        WHERE game_date <= ?1
-          AND game_status NOT IN ('cancelled', 'canceled', 'postponed')
-          AND is_active = 1
-          AND deleted_at IS NULL
-          AND (LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')
-        ORDER BY game_date DESC, start_time DESC
-        LIMIT 30`
+         LEFT JOIN ranking_games AS ranking ON ranking.internal_game_id = games.internal_game_id
+        WHERE games.game_date <= ?1
+          AND games.is_active = 1
+          AND games.deleted_at IS NULL
+          AND (LOWER(games.home_team) = 'fighters' OR LOWER(games.away_team) = 'fighters')
+        ORDER BY games.game_date DESC, games.start_time DESC
+         LIMIT 30`
     ).bind(today).all();
   } catch (error) {
     console.warn("previous result game optional game columns unavailable; using canonical games fallback", error instanceof Error ? error.message : "unknown error");
     result = await env.AUTH_DB.prepare(
-      `SELECT internal_game_id, game_date, start_time, home_team, away_team
+      `SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status,
+              NULL AS ranking_eligibility_status
          FROM games
         WHERE game_date <= ?1
-          AND game_status NOT IN ('cancelled', 'canceled', 'postponed')
           AND (LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')
         ORDER BY game_date DESC, start_time DESC
         LIMIT 30`
@@ -12727,7 +12743,14 @@ async function handleGetPreviousResultGame(request, env, cors) {
   for (const row of result.results || []) {
     const internalGameId = String(row.internal_game_id || "").trim();
     if (!INTERNAL_GAME_ID_PATTERN.test(internalGameId)) continue;
-    if (!await isGameResultsPublished(env.AUTH_DB, internalGameId, now)) continue;
+    const gameStatus = String(row.game_status || "scheduled").toLowerCase();
+    const rankingExcluded = row.ranking_eligibility_status !== null
+      && row.ranking_eligibility_status !== undefined
+      && row.ranking_eligibility_status !== "eligible";
+    const unavailable = ["cancelled", "canceled", "postponed", "service_unavailable"].includes(gameStatus)
+      || rankingExcluded;
+    const resultsPublished = !unavailable && await isGameResultsPublished(env.AUTH_DB, internalGameId, now);
+    if (!resultsPublished && !unavailable) continue;
     let resultPublishedAt = null;
     try {
       const publication = await env.AUTH_DB.prepare(
@@ -12743,8 +12766,13 @@ async function handleGetPreviousResultGame(request, env, cors) {
       startAt: row.start_time || "",
       homeTeam: row.home_team || "",
       awayTeam: row.away_team || "",
-      resultPublishedAt,
-      state: "published"
+      resultPublishedAt: resultsPublished ? resultPublishedAt : null,
+      state: unavailable ? "excluded" : "published",
+      status: gameStatus,
+      gameStatus: row.game_status || "scheduled",
+      resultsPublished,
+      rankingExcluded: unavailable,
+      rankingEligibilityStatus: row.ranking_eligibility_status || (unavailable ? "excluded" : "eligible")
     };
     break;
   }
@@ -12926,7 +12954,7 @@ async function handleGetResultGames(request, env, cors) {
           (latest_predictions.status = 'scored'
            AND ranking_games.game_status = 'scored'
            AND ranking_games.is_ranking_eligible = 1)
-          OR ranking_games.game_status = 'service_unavailable'
+          OR ranking_games.game_status IN ('cancelled', 'canceled', 'postponed', 'service_unavailable')
           ${eligibilityCondition}
         )
         AND ranking_games.is_test_game = 0
@@ -12942,7 +12970,11 @@ async function handleGetResultGames(request, env, cors) {
       isGameResultsPublished(env.AUTH_DB, resultId, now)
     ]);
     const serviceUnavailable = isServiceUnavailableGameStatus(row.game_status);
-    const excluded = String(row.ranking_eligibility_status || "") === "excluded" || serviceUnavailable;
+    const statusExcluded = ["cancelled", "canceled", "postponed"].includes(String(row.game_status || "").toLowerCase());
+    const eligibilityExcluded = row.ranking_eligibility_status !== null
+      && row.ranking_eligibility_status !== undefined
+      && row.ranking_eligibility_status !== "eligible";
+    const excluded = eligibilityExcluded || statusExcluded || serviceUnavailable;
     return {
       ...metadata,
       resultId: metadata.resultId || resultId,
@@ -12956,6 +12988,10 @@ async function handleGetResultGames(request, env, cors) {
       scoredAt: !excluded ? (row.scored_at || null) : null,
       publishedAt: resultsPublished ? (row.published_at || null) : null,
       resultStatus: resultsPublished ? "published" : (row.publication_status || "scored_private"),
+      gameStatus: row.game_status || "scheduled",
+      resultAvailability: excluded
+        ? (serviceUnavailable ? "service_unavailable" : "excluded")
+        : (resultsPublished ? "published" : "unpublished"),
       gameLabel: metadata.displayLabel || "",
       publicationStatus: row.publication_status || "scored_private",
       serviceUnavailable,
@@ -12965,7 +13001,7 @@ async function handleGetResultGames(request, env, cors) {
       rankingEligibilityReason: row.ranking_eligibility_reason || (serviceUnavailable ? "data_invalid" : null),
       rankingEligibilityNote: row.ranking_eligibility_note || null,
       rankingExcluded: excluded,
-      rankingExcludedMessage: excluded ? "この試合はランキング対象外です。" : null
+      rankingExcludedMessage: excluded ? "この試合は予想・採点・ランキングの対象外です。" : null
     };
   }));
   return jsonResponse({ ok: true, games }, 200, cors);
@@ -12984,7 +13020,9 @@ async function handleGetResultGame(request, env, cors, gameId) {
   }
 
   const rankingState = await getRankingGameState(env.AUTH_DB, resultId, internalGameId);
-  const serviceUnavailable = isServiceUnavailableGameStatus(rankingState?.game_status);
+  const gameStatus = String(rankingState?.game_status || game?.gameStatus || "").toLowerCase();
+  const serviceUnavailable = isServiceUnavailableGameStatus(gameStatus);
+  const cancelled = ["cancelled", "canceled", "postponed"].includes(gameStatus);
   const rankingEligibility = await getRankingEligibilityState(env.AUTH_DB, resultId, internalGameId);
   const row = await getPredictionRow(env.AUTH_DB, access.user.id, { gameId: resultId, internalGameId });
   if (!row) {
@@ -12992,7 +13030,7 @@ async function handleGetResultGame(request, env, cors, gameId) {
   }
   const prediction = parseStoredPrediction(row.prediction_json);
   if (!prediction) return jsonResponse({ ok: false, error: "保存済み予想の読み込みに失敗しました。" }, 500, cors);
-  if (serviceUnavailable) {
+  if (serviceUnavailable || cancelled) {
     return jsonResponse({
       ok: true,
       game,
@@ -13000,7 +13038,7 @@ async function handleGetResultGame(request, env, cors, gameId) {
       internalGameId,
       legacyGameId: game.legacyGameId || metadata.legacyGameId || "",
       prediction,
-      status: SERVICE_UNAVAILABLE_GAME_STATUS,
+      status: serviceUnavailable ? SERVICE_UNAVAILABLE_GAME_STATUS : "excluded",
       submittedAt: row.submitted_at,
       updatedAt: row.updated_at,
       score: null,
@@ -13008,19 +13046,23 @@ async function handleGetResultGame(request, env, cors, gameId) {
       totalScore: null,
       scoredAt: null,
       publishedAt: rankingState?.published_at || null,
-      resultStatus: SERVICE_UNAVAILABLE_GAME_STATUS,
+      resultStatus: serviceUnavailable ? SERVICE_UNAVAILABLE_GAME_STATUS : "excluded",
+      gameStatus: rankingState?.game_status || gameStatus || "service_unavailable",
+      resultAvailability: serviceUnavailable ? "service_unavailable" : "excluded",
       actualLineup: null,
       resultsPublished: false,
       serviceUnavailable,
       serviceUnavailableReason: serviceUnavailable ? SCORING_RETRY_EXPIRED_CODE : null,
-      serviceUnavailableMessage: serviceUnavailable ? SERVICE_UNAVAILABLE_MESSAGE : null,
+      serviceUnavailableMessage: serviceUnavailable
+        ? "この試合はサービス対象外です。予想・採点・ランキングの対象外です。"
+        : "この試合は中止になりました。予想・採点・ランキングの対象外です。",
       rankingExcluded: true,
       rankingEligibilityStatus: rankingEligibility?.rankingEligibilityStatus || "excluded",
       rankingEligibilityReason: rankingEligibility?.rankingEligibilityReason || null,
       rankingEligibilityNote: rankingEligibility?.rankingEligibilityNote || null,
       rankingEligibilityMessage: rankingEligibility?.rankingEligibilityStatus === "pending_admin_decision"
         ? "公式記録の確認中のため、ランキング対象を管理者が判断しています。"
-        : "この試合はランキング対象外です。"
+        : "この試合は予想・採点・ランキングの対象外です。"
     }, 200, cors);
   }
   if (rankingEligibility?.rankingEligibilityStatus !== "eligible") {
@@ -13040,6 +13082,8 @@ async function handleGetResultGame(request, env, cors, gameId) {
       scoredAt: null,
       publishedAt: rankingState?.published_at || null,
       resultStatus: "excluded",
+      gameStatus: rankingState?.game_status || gameStatus || "excluded",
+      resultAvailability: "excluded",
       actualLineup: null,
       resultsPublished: false,
       serviceUnavailable: false,
@@ -13051,7 +13095,7 @@ async function handleGetResultGame(request, env, cors, gameId) {
       rankingEligibilityNote: rankingEligibility?.rankingEligibilityNote || null,
       rankingEligibilityMessage: rankingEligibility?.rankingEligibilityStatus === "pending_admin_decision"
         ? "公式記録の確認中のため、ランキング対象を管理者が判断しています。"
-        : "この試合はランキング対象外です。"
+        : "この試合は予想・採点・ランキングの対象外です。"
     }, 200, cors);
   }
   if (row.status !== "scored") {
@@ -13074,6 +13118,8 @@ async function handleGetResultGame(request, env, cors, gameId) {
     scoredAt: resultsPublished ? row.scored_at : null,
     publishedAt: resultsPublished ? (rankingState?.published_at || null) : null,
     resultStatus: resultsPublished ? "published" : "scored_private",
+    gameStatus: rankingState?.game_status || gameStatus || "scheduled",
+    resultAvailability: resultsPublished ? "published" : "unpublished",
     actualLineup: resultsPublished && row.actual_lineup_json ? parseStoredActualLineup(row.actual_lineup_json) : null,
     resultsPublished,
     serviceUnavailable: false,

@@ -99,7 +99,7 @@ test("詳細パネルはPC modal、スマホ bottom sheet、閉じる操作を�
 });
 
 test("公開assetのcache busterは追加NPBaseリンク版へ更新される", () => {
-  assert.match(html, /players\.js\?v=public-past-result-date-heading-1/);
-  assert.match(html, /script\.js\?v=public-result-loading-speed-improvement-1/);
-  assert.match(html, /style\.css\?v=public-beta-release-qa-fixes-1/);
+  assert.match(html, /players\.js\?v=public-cancelled-excluded-result-display-1/);
+  assert.match(html, /script\.js\?v=public-cancelled-excluded-result-display-1/);
+  assert.match(html, /style\.css\?v=public-cancelled-excluded-result-display-1/);
 });

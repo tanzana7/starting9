@@ -40,8 +40,8 @@ test("通常画面は自分が参加した最新の公開済み結果だけを�
   assert.match(script, /function fetchPreviousResultGame\(\{ force = false \} = \{\}\)/);
   assert.match(script, /function resolveResultHistorySelection\(\)/);
   assert.match(script, /getResultHistoryGameId\(game\) === String\(previousGame\.internalGameId \|\| ""\)/);
-  assert.match(script, /if \(latestParticipatedPublishedGame\)/);
-  assert.match(script, /void loadResultHistoryGame\(getResultHistoryGameId\(latestParticipatedPublishedGame\), \{ manual: false \}\)/);
+  assert.match(script, /if \(latestParticipatedResultGame\)/);
+  assert.match(script, /void loadResultHistoryGame\(getResultHistoryGameId\(latestParticipatedResultGame\), \{ manual: false \}\)/);
   assert.match(publicResultsRenderer, /if \(!history\.isReady\) return null/);
   assert.match(publicResultsRenderer, /history\.games\.some\(\(game\) => deps\.getResultHistoryGameId\(game\) === resultId\)/);
   assert.match(script, /state\.resultHistory = \{ isLoading: false, isDetailLoading: false, isReady: true, games: \[\]/);
@@ -85,8 +85,8 @@ test("公開結果は予想入力状態から独立して保持し、履歴一�
 });
 
 test("通常画面の公開結果修正は新しいcache busterを使う", () => {
-  assert.match(html, /style\.css\?v=public-beta-release-qa-fixes-1/);
-  assert.match(html, /script\.js\?v=public-result-loading-speed-improvement-1/);
+  assert.match(html, /style\.css\?v=public-cancelled-excluded-result-display-1/);
+  assert.match(html, /script\.js\?v=public-cancelled-excluded-result-display-1/);
 });
 
 test("結果表示の公開文言は前回基準で、旧採点待ち文言を残さない", () => {
@@ -113,7 +113,7 @@ test("前回公開試合APIは公開ゲーム一覧と分離し、過去・当�
   assert.match(handler, /isGameResultsPublished\(env\.AUTH_DB, internalGameId, now\)/);
   assert.match(handler, /INTERNAL_GAME_ID_PATTERN\.test\(internalGameId\)/);
   assert.match(handler, /LOWER\(home_team\) = 'fighters' OR LOWER\(away_team\) = 'fighters'/);
-  assert.match(handler, /state: "published"/);
+  assert.match(handler, /state: unavailable \? "excluded" : "published"/);
   assert.match(handler, /let game = null/);
   assert.match(handler, /Cache-Control/, "公開メタデータはno-storeで返す");
 });

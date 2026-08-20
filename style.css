@@ -1956,6 +1956,24 @@ textarea:focus {
   background: #f8fbff;
 }
 
+.result-unavailable-card {
+  display: grid;
+  gap: 8px;
+  border-style: solid;
+  border-color: #b9d0e3;
+  color: var(--muted);
+  background: #f7fbff;
+}
+
+.result-unavailable-title {
+  color: var(--fighters-deep-blue);
+  font-size: 1.05rem;
+}
+
+.result-unavailable-card p {
+  margin: 0;
+}
+
 .parser-panel {
   display: grid;
   gap: 10px;

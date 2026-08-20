@@ -43,12 +43,18 @@
       const heading = document.getElementById("result-title");
       const legend = document.getElementById("result-legend");
       const date = formatPreviousResultDate(game);
+      const availability = deps.getPublicResultAvailability?.(game) || null;
       if (heading) {
-        heading.textContent = displayMode === "selected"
+        heading.textContent = availability
+          ? (displayMode === "selected" ? "選択した試合の結果" : "前回の試合結果")
+          : displayMode === "selected"
           ? (date ? `${date}の採点結果` : "選択した試合の採点結果")
           : (date ? `前回（${date}）の採点結果` : "前回の採点結果");
       }
-      if (legend) legend.classList.toggle("hidden", !hasResult);
+      if (legend) {
+        legend.classList.toggle("hidden", !hasResult);
+        if (availability) legend.classList.add("hidden");
+      }
     }
 
     function renderScoreResult() {
@@ -60,7 +66,8 @@
       const selectedGame = displayedResult
         ? history.games.find((game) => deps.getResultHistoryGameId(game) === displayedResult.gameId)
         : null;
-      updateResultHeader(selectedGame || previousGame, Boolean(displayedResult), history.displayMode);
+      const availability = deps.getPublicResultAvailability?.(displayedResult || selectedGame || previousGame) || null;
+      updateResultHeader(selectedGame || previousGame, Boolean(displayedResult) && !availability, history.displayMode);
       // Keep score comparison data available internally, but do not render it in the public result UI for now.
 
       if (!displayedResult) {
@@ -72,6 +79,12 @@
         if (deps.state.previousResultGame?.message) {
           container.className = "empty-state";
           container.textContent = deps.state.previousResultGame.message;
+          return;
+        }
+        const previousAvailability = deps.getPublicResultAvailability?.(previousGame) || null;
+        if (previousAvailability) {
+          container.className = "empty-state result-unavailable-card";
+          container.innerHTML = `<strong class="result-unavailable-title">${deps.escapeHtml(previousAvailability.title)}</strong><p>${deps.escapeHtml(previousAvailability.message)}</p>`;
           return;
         }
         if (!deps.getPredictionAccountUser()) {
@@ -102,16 +115,15 @@
         return;
       }
 
-      if (displayedResult.serviceUnavailable) {
-        container.className = "empty-state service-unavailable-result";
-        container.innerHTML = `<p>${deps.escapeHtml(displayedResult.serviceUnavailableMessage || "この試合はサービス未稼働のため集計対象外です。")}</p>`;
+      if (availability) {
+        container.className = "empty-state result-unavailable-card";
+        container.innerHTML = `<strong class="result-unavailable-title">${deps.escapeHtml(availability.title)}</strong><p>${deps.escapeHtml(availability.message)}</p>`;
         if (displayedResult.prediction?.lineup) {
           container.appendChild(deps.createPredictionSummary({
             lineup: displayedResult.prediction.lineup,
             savedAt: displayedResult.savedAt || ""
           }));
         }
-        shareButton.classList.add("hidden");
         return;
       }
 
@@ -139,10 +151,12 @@
       if (!card || !container || !count) return;
 
       const bestNine = deps.state.dailyBestNine;
+      const displayedResult = deps.state.resultHistory.result || deps.state.result || null;
+      const unavailable = deps.getPublicResultAvailability?.(displayedResult) || null;
       const isPublished = bestNine.status === "published";
-      card.classList.toggle("hidden", !isPublished);
+      card.classList.toggle("hidden", !isPublished || Boolean(unavailable));
       count.textContent = bestNine.totalCount > 0 ? `${bestNine.totalCount}人中` : "";
-      if (!isPublished) {
+      if (!isPublished || unavailable) {
         container.innerHTML = "";
         return;
       }

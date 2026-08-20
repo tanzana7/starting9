@@ -289,6 +289,10 @@ const state = {
 };
 
 const publicFrontend = window.Starting9Public;
+const formatPlayerNameForDisplay = publicFrontend.formatPlayerNameForDisplay || ((player) => {
+  if (typeof player === "object" && player !== null) return String(player.name || player.playerName || "");
+  return String(player || "");
+});
 const publicStorage = publicFrontend.createPublicStorage(window.localStorage);
 const appState = publicFrontend.state.createPublicAppState(state);
 const publicRequestGuard = publicFrontend.createPublicRequestGuard(appState.requests);
@@ -889,7 +893,7 @@ function createPlayerChip(pickerName, player) {
   button.type = "button";
   button.dataset.picker = pickerName;
   button.dataset.player = player;
-  button.title = player;
+  button.title = formatPlayerNameForDisplay(player);
   button.draggable = shouldUseNativeDrag(pickerName);
   button.innerHTML = createPlayerLabelHtml(player);
   applyPlayerCategoryClass(button, player);
@@ -901,7 +905,7 @@ function createPlayerChip(pickerName, player) {
     detailButton.setAttribute("role", "button");
     detailButton.setAttribute("draggable", "false");
     detailButton.tabIndex = 0;
-    detailButton.setAttribute("aria-label", `${player}の詳細を開く`);
+    detailButton.setAttribute("aria-label", `${formatPlayerNameForDisplay(player)}の詳細を開く`);
     const openDetails = (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -1226,7 +1230,7 @@ function createMobileDragGhost(interaction) {
 
   const ghost = document.createElement("div");
   ghost.className = "mobile-drag-ghost";
-  ghost.textContent = interaction.player;
+  ghost.textContent = formatPlayerNameForDisplay(interaction.player);
   ghost.setAttribute("aria-hidden", "true");
   document.body.appendChild(ghost);
   interaction.ghost = ghost;
@@ -4215,7 +4219,7 @@ function createProbableStarterTeamHtml(teamName, starterName) {
   return `
     <div class="probable-starter-team">
       <span>${escapeHtml(teamName)}</span>
-      <strong>${escapeHtml(starterName || "未発表")}</strong>
+      <strong>${escapeHtml(formatPlayerNameForDisplay(starterName || "未発表"))}</strong>
     </div>
   `;
 }
@@ -4701,7 +4705,7 @@ function createResultCanvas(viewModel) {
     context.lineTo(x + tileWidth, y + height - 1);
     context.stroke();
     drawText(normalizedPosition || "－", x + 1, y + height / 2, tileWidth - 1, "900 13px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
-    const displayName = player || "-";
+    const displayName = formatPlayerNameForDisplay(player || "-");
     drawName(displayName, x + tileWidth + 2, y, width - tileWidth - 2, height);
   };
   const drawJudgement = (isHit, label, x, y, width, height) => {
@@ -4887,7 +4891,7 @@ function createResultPlayerCardHtml(player, position) {
   return `
     <span class="result-player-card">
       ${createResultPositionTileHtml(position)}
-      <span class="result-player-name">${escapeHtml(player || "-")}</span>
+      <span class="result-player-name">${escapeHtml(formatPlayerNameForDisplay(player || "-"))}</span>
     </span>
   `;
 }
@@ -4940,7 +4944,7 @@ function createPredictionSummary(prediction) {
         <span class="result-position-tile saved-position-chip is-${positionCategory}" aria-label="守備位置 ${escapeHtml(normalizedPosition || "未選択")}">
           ${escapeHtml(normalizedPosition || "－")}
         </span>
-        <span class="saved-lineup-name">${escapeHtml(lineupItem.player)}</span>
+        <span class="saved-lineup-name">${escapeHtml(formatPlayerNameForDisplay(lineupItem.player))}</span>
       </span>
     `;
     list.appendChild(listItem);
@@ -5083,7 +5087,7 @@ function createSavedPredictionCanvas(prediction) {
     drawRoundedRect(tableX + orderWidth + 7, rowY + 6, positionWidth - 14, rowHeight - 12, 12, colors.position[category] || colors.position.empty, colors.border);
     drawCenteredText(normalizedPosition || "－", tableX + orderWidth + 7, rowY + rowHeight / 2, positionWidth - 14, "900 15px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
     drawRoundedRect(tableX + orderWidth + positionWidth + 3, rowY + 5, nameWidth - 6, rowHeight - 10, 5, colors.name, colors.border);
-    drawCenteredText(lineupItem.player || "未選択", tableX + orderWidth + positionWidth + 3, rowY + rowHeight / 2, nameWidth - 6, "800 17px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
+    drawCenteredText(formatPlayerNameForDisplay(lineupItem.player || "未選択"), tableX + orderWidth + positionWidth + 3, rowY + rowHeight / 2, nameWidth - 6, "800 17px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.text);
   });
 
   return canvas;
@@ -5144,7 +5148,7 @@ function createPredictionShareText(prediction) {
     "ハムスタメンチャレンジ予想",
     ...(gameLabel ? ["", gameLabel] : []),
     "",
-    ...lineup.map((item, index) => `${index + 1}番 ${item.position} ${item.player}`),
+    ...lineup.map((item, index) => `${index + 1}番 ${item.position} ${formatPlayerNameForDisplay(item.player)}`),
     ...(serviceUrl ? ["", serviceUrl] : []),
     "",
     SHARE_HASHTAGS
@@ -5260,7 +5264,7 @@ function getPositionCategory(position) {
 }
 
 function createPlayerLabelHtml(playerName) {
-  return `<span class="player-name">${escapeHtml(playerName)}</span>`;
+  return `<span class="player-name">${escapeHtml(formatPlayerNameForDisplay(playerName))}</span>`;
 }
 
 function getPlayerCategoryClass(playerName) {
@@ -5307,7 +5311,7 @@ function showPlayerDetails(pickerName, playerName) {
       <div class="player-detail-header">
         <div>
           <p class="player-detail-kicker">選手詳細</p>
-          <h2 id="playerDetailTitle">${escapeHtml(player.name)}</h2>
+          <h2 id="playerDetailTitle">${escapeHtml(formatPlayerNameForDisplay(player))}</h2>
         </div>
         <button class="player-detail-close" type="button" aria-label="選手詳細を閉じる">×</button>
       </div>

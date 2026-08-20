@@ -379,6 +379,7 @@ test("結果Canvasは代表的な採点結果を実行時に描画できる", ()
     },
     normalizePosition: (value) => value,
     getPositionCategory: () => "category-infielder",
+    formatPlayerNameForDisplay: (value) => String(value || ""),
     LINEUP_SIZE: 9
   });
   vm.runInContext(`${sourceForFunction("createResultCanvas")}; this.render = createResultCanvas;`, context);

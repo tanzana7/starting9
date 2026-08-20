@@ -27,6 +27,8 @@ test("予告先発カードは発表済み・未発表・失敗で同じ表示�
   assert.match(css, /\.probable-starter-card\.is-error/);
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.probable-starter-card\.is-success[\s\S]*background: #214f7d/);
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.probable-starter-heading a[\s\S]*color: #f1d276/);
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.probable-starter-heading a[\s\S]*border-radius: 999px/);
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.probable-starter-card\.is-success[\s\S]*border-left-color: #c6ab64/);
 });
 
 test("予告先発カードはNPB公式ではなく汎用NPBase matchupsへリンクする", () => {

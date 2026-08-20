@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { deriveV3PhaseStatus, getV3WorkflowDiagnostics as v3WorkflowDiagnostics } from "../game-automation-v3.js";
+import { deriveV3DisplaySchedule, deriveV3PhaseStatus, getV3WorkflowDiagnostics as v3WorkflowDiagnostics } from "../game-automation-v3.js";
 
 const game = { internalGameId: "9b0e9956-9565-474e-96e9-33b1e5ef6ae0", gameDate: "2026-08-09", startAt: "2026-08-09T06:00:00.000Z" };
 const missingSnapshot = { exists: false, isFresh: false, isStale: true, staleReason: "ROSTER_SNAPSHOT_MISSING" };
@@ -89,6 +89,59 @@ test("artifact mismatch diagnostics expose all completed jobs requiring recovery
     }
   });
   assert.equal(diagnostics.artifactBlockingReasons[0]?.code, "SCORING_COMPLETED_WITHOUT_SCORE");
+});
+
+test("下流成果物がある場合は古いlineup state gateを現在状態にしない", () => {
+  const diagnostics = v3WorkflowDiagnostics({
+    state: "scored",
+    game: { npbGameCode: "f-h-20", npbIdentityState: "resolved" },
+    jobs: [
+      { id: 12, job_type: "prediction_close", status: "completed" },
+      { id: 13, job_type: "lineup_fetch", status: "retry_wait", failure_code: "PREDICTION_CLOSE_STATE_GATE" },
+      { id: 14, job_type: "lineup_finalize", status: "completed", completed_at: "2026-08-20T05:00:00.000Z" }
+    ],
+    lineupDataHealth: {
+      available: true,
+      candidateExists: true,
+      canonicalDataReady: true,
+      finalizedLineupExists: true,
+      workflowStateAtLeastLineupReady: true,
+      ready: true
+    }
+  });
+  assert.equal(diagnostics.lineupFetch.currentStageStatus, "completed");
+  assert.equal(diagnostics.lineupFetch.blockingReasonCode, null);
+  assert.equal(diagnostics.lineupFetch.blockingReasons.length, 0);
+  assert.equal(diagnostics.lineupFetch.overriddenByDownstreamArtifact, true);
+  assert.equal(diagnostics.lineupFetch.historicalWarnings[0]?.code, "PREDICTION_CLOSE_STATE_GATE");
+  assert.equal(diagnostics.lineupFetch.staleBlockingReason.code, "PREDICTION_CLOSE_STATE_GATE");
+});
+
+test("下流成果物があり過去の締切gateを検出できる場合は履歴へ分離する", () => {
+  const schedule = deriveV3DisplaySchedule({ gameDate: "2026-08-06", startAt: "2026-08-06T09:00:00.000Z" });
+  const diagnostics = v3WorkflowDiagnostics({
+    schedule,
+    state: "scored",
+    game: { npbGameCode: "f-h-06", npbIdentityState: "resolved" },
+    now: "2026-08-06T09:05:00.000Z",
+    jobs: [{ id: 12, job_type: "prediction_close", status: "completed" }],
+    lineupDataHealth: { available: true, candidateExists: true, canonicalDataReady: true, finalizedLineupExists: true, workflowStateAtLeastLineupReady: true, ready: true }
+  });
+  assert.equal(diagnostics.lineupFetch.currentStageStatus, "completed");
+  assert.equal(diagnostics.lineupFetch.blockingReasonCode, null);
+  assert.equal(diagnostics.lineupFetch.historicalWarnings[0]?.code, "PREDICTION_CLOSE_STATE_GATE");
+  assert.equal(diagnostics.lineupFetch.staleBlockingReason.code, "PREDICTION_CLOSE_STATE_GATE");
+});
+
+test("excluded試合は古い工程警告より対象外表示を優先する", () => {
+  const status = deriveV3PhaseStatus({
+    phase: "lineup_fetch",
+    workflowState: "excluded",
+    jobs: [{ job_type: "lineup_fetch", status: "retry_wait", failure_code: "PREDICTION_CLOSE_STATE_GATE" }]
+  });
+  assert.equal(status.severity, "OK");
+  assert.equal(status.label, "対象外");
+  assert.equal(status.reasonCode, "V3_GAME_EXCLUDED");
 });
 
 test("共通phase判定はstructured logs用の共通factsを返す", () => {

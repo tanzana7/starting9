@@ -209,6 +209,10 @@
 
     function renderWorkflowDiagnostics(game) {
       const diagnostics = game?.workflowDiagnostics || {};
+      const historicalLineupWarnings = diagnostics.lineupFetch?.historicalWarnings || [];
+      const historicalNote = diagnostics.lineupFetch?.currentStageStatus === "excluded"
+        ? "現在は対象外試合として処理を停止しています。"
+        : "現在は後続成果物によりスタメン取得を完了扱いにしています。";
       const messages = [
         diagnostics.predictionClose?.warning,
         diagnostics.identity?.warning,
@@ -218,8 +222,11 @@
         ...(diagnostics.artifactBlockingReasons || []).map((reason) => `${reason.code}: ${reason.message}`),
         ...(diagnostics.lineupFetch?.blockingReasons || []).map((reason) => `${reason.code}: ${reason.message}`)
       ].filter(Boolean);
-      if (!messages.length) return "";
-      return `<div class="v3-operation-result" data-v3-workflow-diagnostics><strong>状態診断</strong><ul>${messages.map((message) => `<li>${escapeHtml(message)}</li>`).join("")}</ul></div>`;
+      const history = historicalLineupWarnings.length
+        ? `<details class="v3-operation-result historical-warning" data-v3-historical-warnings><summary>過去の警告（現在状態には影響しません）</summary><ul>${historicalLineupWarnings.map((warning) => `<li>${escapeHtml(`${warning.code}: ${warning.message}`)}</li>`).join("")}</ul><p>${escapeHtml(historicalNote)}</p></details>`
+        : "";
+      if (!messages.length) return history;
+      return `${history}<div class="v3-operation-result" data-v3-workflow-diagnostics><strong>現在の状態診断</strong><ul>${messages.map((message) => `<li>${escapeHtml(message)}</li>`).join("")}</ul></div>`;
     }
 
     function renderDashboard(payload, games) {

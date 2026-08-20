@@ -395,6 +395,14 @@ export function getV3ProbableStarterHealthDecision({
 // influence planning or execution; callers use it for overview and audits.
 export function deriveV3PhaseStatus({ phase, game, now = new Date(), workflowState = "scheduled", jobs = [], snapshot = null, noticeState = null, noOpReason = null, sourceStatus = "", probableStarter = null, sourceSnapshotComparison = null, lineupDataHealth = null, workflowArtifactHealth = null } = {}) {
   const current = now instanceof Date ? now : new Date(now);
+  if (String(workflowState || "") === "excluded") {
+    return v3NormalizedPhaseStatus(phase, {
+      severity: "OK",
+      label: "対象外",
+      reasonCode: "V3_GAME_EXCLUDED",
+      message: "この試合はV3の処理対象外です。"
+    });
+  }
   const schedule = deriveV3DisplaySchedule(game);
   if (phase === "roster") {
     const roster = getV3RosterStatusDecision({ game, now: current, snapshot, jobs, noticeState, sourceSnapshotComparison });
@@ -760,8 +768,13 @@ export function getV3WorkflowDiagnostics({ schedule, state = "scheduled", game =
   const identityNeedsAttention = !npbGameCode
     && (predictionDeadlineElapsed || ["completed", "retry_wait", "failed"].includes(String(identityJob?.status || "")));
   const lineupStateAllowed = ["prediction_closed", "manual_action_required"].includes(stateValue);
+  const lineupArtifact = artifactLineupHealth(lineupDataHealth, workflowArtifactHealth);
+  const lineupOverriddenByDownstreamArtifact = stateValue === "excluded"
+    || ["lineup_ready", "scored", "ranked", "published"].includes(stateValue)
+    || lineupArtifact?.ready === true;
   let lineupCanRun = lineupStateAllowed;
   const lineupBlockingReasons = [];
+  const historicalLineupWarnings = [];
   const lineupFetchCompletedWithoutCandidate = lineupDataHealth?.available === true
     && lineupDataHealth?.ready === false
     && String(latestV3JobByType(jobs, "lineup_fetch")?.status || "") === "completed";
@@ -774,7 +787,7 @@ export function getV3WorkflowDiagnostics({ schedule, state = "scheduled", game =
   if (!lineupStateAllowed) {
     lineupCanRun = false;
     if (predictionDeadlineElapsed) {
-      lineupBlockingReasons.push({
+      const stateGate = {
         code: predictionCloseStateMismatch
           ? "PREDICTION_CLOSE_STATE_TRANSITION_MISSING"
           : "PREDICTION_CLOSE_STATE_GATE",
@@ -783,23 +796,44 @@ export function getV3WorkflowDiagnostics({ schedule, state = "scheduled", game =
           : predictionCloseCompleted
             ? "prediction_close完了後のworkflow state遷移待ちです。"
             : "prediction_close未完了のためlineup_fetchはstate gateで実行できません。"
-      });
+      };
+      (lineupOverriddenByDownstreamArtifact ? historicalLineupWarnings : lineupBlockingReasons).push(stateGate);
     }
   }
   if (!npbGameCode && (predictionDeadlineElapsed || lineupStateAllowed)) {
     lineupCanRun = false;
-    lineupBlockingReasons.push({
+    const identityGate = {
       code: "NPB_GAME_CODE_NOT_AVAILABLE",
       message: identityCompletedWithoutCode
         ? "NPB識別jobは完了扱いですがgame codeが未解決です。"
         : "NPB game codeが未解決のためスタメン取得を実行できません。"
-    });
+    };
+    (lineupOverriddenByDownstreamArtifact ? historicalLineupWarnings : lineupBlockingReasons).push(identityGate);
   }
   if (npbGameCode && lineupStateAllowed && !["resolved", "manually_overridden"].includes(String(game?.npbIdentityState || game?.npb_identity_state || ""))) {
     lineupCanRun = false;
     lineupBlockingReasons.push({ code: "NPB_IDENTITY_UNRESOLVED", message: "NPB試合識別情報の解決待ちです。" });
   }
   const lineupBlockingReason = lineupBlockingReasons[0] || null;
+  const lineupCurrentStatus = stateValue === "excluded"
+    ? "excluded"
+    : lineupOverriddenByDownstreamArtifact
+      ? "completed"
+      : lineupBlockingReason
+        ? "blocked"
+        : "pending";
+  const latestEffectiveLineupJob = ["lineup_finalize", "final_lineup_fetch", "provisional_lineup_fetch", "lineup_fetch"]
+    .map((jobType) => latestV3JobByType(jobs, jobType))
+    .filter(Boolean)
+    .sort((left, right) => String(right?.updated_at || right?.completed_at || right?.scheduled_at || "").localeCompare(String(left?.updated_at || left?.completed_at || left?.scheduled_at || "")))[0] || null;
+  const latestLineupFetchJob = latestV3JobByType(jobs, "lineup_fetch");
+  const staleLineupFailureCode = String(latestLineupFetchJob?.failure_code || "").trim();
+  if (lineupOverriddenByDownstreamArtifact && staleLineupFailureCode && !historicalLineupWarnings.some((warning) => warning.code === staleLineupFailureCode)) {
+    historicalLineupWarnings.push({
+      code: staleLineupFailureCode,
+      message: "過去のlineup_fetch診断です。現在の後続成果物には影響しません。"
+    });
+  }
   return {
     predictionClose: {
       deadlineAt: Number.isNaN(predictionDeadline.getTime()) ? null : predictionDeadline.toISOString(),
@@ -830,6 +864,14 @@ export function getV3WorkflowDiagnostics({ schedule, state = "scheduled", game =
     completedStateMismatches,
     artifactBlockingReasons,
     lineupFetch: {
+      currentStageStatus: lineupCurrentStatus,
+      latestEffectiveJob: latestEffectiveLineupJob ? {
+        id: latestEffectiveLineupJob.id || null,
+        jobType: latestEffectiveLineupJob.job_type || null,
+        status: latestEffectiveLineupJob.status || null,
+        completedAt: latestEffectiveLineupJob.completed_at || null
+      } : null,
+      artifactStatus: lineupArtifact || null,
       canRun: lineupCanRun,
       completedWithoutCandidate: lineupFetchCompletedWithoutCandidate,
       candidateExists: lineupDataHealth?.candidateExists ?? null,
@@ -837,7 +879,10 @@ export function getV3WorkflowDiagnostics({ schedule, state = "scheduled", game =
       finalizedLineupExists: lineupDataHealth?.finalizedLineupExists ?? null,
       blockingReasonCode: lineupBlockingReason?.code || null,
       blockingReason: lineupBlockingReason?.message || null,
-      blockingReasons: lineupBlockingReasons
+      blockingReasons: lineupBlockingReasons,
+      historicalWarnings: historicalLineupWarnings,
+      staleBlockingReason: historicalLineupWarnings[0] || null,
+      overriddenByDownstreamArtifact: lineupOverriddenByDownstreamArtifact
     }
   };
 }

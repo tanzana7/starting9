@@ -59,7 +59,7 @@ test("満点preview APIはadmin認証、正式スタメン、読み取り専用�
   assert.doesNotMatch(previewHandler, /INSERT|UPDATE|DELETE/);
   assert.doesNotMatch(admin, /perfect-score-test\/execute/);
   assert.match(perfectScoreRenderer, /data-v3-perfect-score-preview/);
-  assert.match(page, /admin-v3-click-handlers-fix-1/);
+  assert.match(page, /admin-v3-unavailable-reference-fix-1/);
 });
 
 test("満点previewは本番データ作成やランキングリセット実行を自動で行わない", () => {

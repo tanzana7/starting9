@@ -49,21 +49,21 @@
 
     function renderManualControls(game) {
       if (!game?.internalGameId) return "";
+      const gameUnavailable = ["cancelled", "canceled", "postponed", "service_unavailable"].includes(String(game?.gameStatus || "").toLowerCase());
       const rows = MANUAL_STAGE_TYPES.map(([jobType, label, canRun]) => {
         const operation = typeof manualOperation === "function" ? manualOperation(game.internalGameId, jobType) || {} : {};
         const loading = operation.status === "loading";
         const publishedReadOnly = String(game?.state?.state || "") === "published" || game?.workflowArtifactHealth?.publication?.published === true;
-        const unavailable = ["cancelled", "canceled", "postponed", "service_unavailable"].includes(String(game?.gameStatus || "").toLowerCase());
         const result = operation.message ? `<small class="manual-job-result ${operation.error ? "error" : "success"}">${escapeHtml(operation.message)}</small>` : "";
-        const runButton = canRun && !publishedReadOnly && !unavailable
+        const runButton = canRun && !publishedReadOnly && !gameUnavailable
           ? `<button type="button" data-v3-job-run="${escapeHtml(game.internalGameId)}" data-v3-job-type="${escapeHtml(jobType)}" ${loading ? "disabled" : ""}>再実行</button>`
-          : `<span class="manual-job-unavailable">${publishedReadOnly ? "公開済み / 読み取り専用" : unavailable ? "中止・対象外 / 停止" : "正式runnerなし"}</span>`;
+          : `<span class="manual-job-unavailable">${publishedReadOnly ? "公開済み / 読み取り専用" : gameUnavailable ? "中止・対象外 / 停止" : "正式runnerなし"}</span>`;
         return `<div class="manual-job-row"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(operation.diagnosis?.currentWorkflowState || game.state?.state || "scheduled")}</span><div class="manual-job-actions"><button type="button" data-v3-job-diagnose="${escapeHtml(game.internalGameId)}" data-v3-job-type="${escapeHtml(jobType)}" ${loading ? "disabled" : ""}>診断</button>${runButton}</div>${result}</div>`;
       }).join("");
       const reconcileOperation = typeof manualOperation === "function" ? manualOperation(game.internalGameId, "state_reconcile") || {} : {};
       const reconcileResult = reconcileOperation.message ? `<small class="manual-job-result ${reconcileOperation.error ? "error" : "success"}">${escapeHtml(reconcileOperation.message)}</small>` : "";
       const reconcileLoading = reconcileOperation.status === "loading";
-      return `<section class="v3-panel manual-job-controls" aria-labelledby="manualJobControlsHeading"><div class="view-heading"><div><h3 id="manualJobControlsHeading">V3工程の診断・手動再実行</h3><p>再実行は正式V3 jobを投入し、Cronのexecutorへ渡します。状態再同期は成果物確認済みの場合だけ実行できます。</p></div></div><div class="manual-job-list">${rows}</div><div class="manual-job-row manual-state-reconcile"><strong>workflow state</strong><span>${escapeHtml(game.state?.state || "scheduled")}</span><div class="manual-job-actions"><button type="button" data-v3-state-reconcile="${escapeHtml(game.internalGameId)}" ${reconcileLoading || unavailable ? "disabled" : ""}>成果物を確認して状態再同期</button></div>${reconcileResult}</div></section>`;
+      return `<section class="v3-panel manual-job-controls" aria-labelledby="manualJobControlsHeading"><div class="view-heading"><div><h3 id="manualJobControlsHeading">V3工程の診断・手動再実行</h3><p>再実行は正式V3 jobを投入し、Cronのexecutorへ渡します。状態再同期は成果物確認済みの場合だけ実行できます。</p></div></div><div class="manual-job-list">${rows}</div><div class="manual-job-row manual-state-reconcile"><strong>workflow state</strong><span>${escapeHtml(game.state?.state || "scheduled")}</span><div class="manual-job-actions"><button type="button" data-v3-state-reconcile="${escapeHtml(game.internalGameId)}" ${reconcileLoading || gameUnavailable ? "disabled" : ""}>成果物を確認して状態再同期</button></div>${reconcileResult}</div></section>`;
     }
     function renderGameSummary(game, buttonLabel = "試合進行を見る") {
       const identity = identityStatusLabel(game.npbIdentityStatus, game.npbIdentityState);

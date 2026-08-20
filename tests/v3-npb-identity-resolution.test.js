@@ -321,8 +321,8 @@ test("V3管理画面はNPB識別情報とjob監査を読み取り表示する", 
   assert.match(jobDetails, /renderInline/);
   assert.match(jobDetails, /planner decision/);
   assert.ok(diagnostics.includes("${escapeHtml(game.homeTeam)} vs ${escapeHtml(game.awayTeam)}"));
-  assert.match(page, /admin-v3\.css\?v=admin-v3-click-handlers-fix-1/);
-  assert.match(page, /admin-v3\.js\?v=admin-v3-click-handlers-fix-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-v3-unavailable-reference-fix-1/);
+  assert.match(page, /admin-v3\.js\?v=admin-v3-unavailable-reference-fix-1/);
   assert.match(diagnostics, /NPB自動解決job/);
   assert.match(diagnostics, /解決元/);
 });

@@ -333,6 +333,7 @@ const publicResultsRenderer = publicFrontend.createPublicResultsRenderer({
   escapeHtml,
   createPredictionSummary,
   getResultHistoryGameId,
+  getPublicResultAvailability,
   formatResultHistoryMatchup,
   formatPublicJstDateTime,
   createResultView,
@@ -2233,8 +2234,46 @@ function getPredictionDeadlineMinutesBeforeStart() {
   return Number.isFinite(configured) && configured > 0 ? configured : 60;
 }
 
+function getPublicGameUnavailableKind(game) {
+  const gameStatus = String(game?.gameStatus || "").toLowerCase();
+  const status = String(game?.status || "").toLowerCase();
+  const availability = String(game?.resultAvailability || "").toLowerCase();
+  if (gameStatus === "service_unavailable" || status === "service_unavailable" || availability === "service_unavailable") return "service_unavailable";
+  if (["cancelled", "canceled"].includes(gameStatus) || ["cancelled", "canceled"].includes(status)) return "cancelled";
+  if (gameStatus === "postponed" || status === "postponed") return "postponed";
+  if (game?.rankingExcluded === true || game?.rankingEligibilityStatus === "excluded" || status === "excluded" || availability === "excluded") return "excluded";
+  return "";
+}
+
 function isScheduleGameUnavailable(game) {
-  return ["cancelled", "canceled", "postponed", "service_unavailable"].includes(String(game?.status || game?.gameStatus || "").toLowerCase());
+  return Boolean(getPublicGameUnavailableKind(game));
+}
+
+function getPublicResultAvailability(result) {
+  const kind = getPublicGameUnavailableKind(result);
+  if (!kind) return null;
+  if (kind === "service_unavailable") {
+    return {
+      key: kind,
+      shortLabel: "対象外",
+      title: "この試合はサービス対象外です",
+      message: "この試合は予想・採点・ランキングの対象外です。"
+    };
+  }
+  if (kind === "cancelled") {
+    return {
+      key: kind,
+      shortLabel: "中止",
+      title: "この試合は中止になりました",
+      message: "この試合は予想・採点・ランキングの対象外です。"
+    };
+  }
+  return {
+    key: "excluded",
+    shortLabel: "対象外",
+    title: "この試合は対象外です",
+    message: "この試合は予想・採点・ランキングの対象外です。"
+  };
 }
 
 function resolvePredictionDeadline(gameId, now = new Date()) {
@@ -2947,12 +2986,12 @@ function resolveResultHistorySelection() {
   const previousGame = state.previousResultGame.isReady ? state.previousResultGame.game : null;
   if (!history.isReady || !state.previousResultGame.isReady || history.selectedGameId || history.isDetailLoading) return;
 
-  const latestParticipatedPublishedGame = previousGame
-    ? history.games.find((game) => game?.resultsPublished
+  const latestParticipatedResultGame = previousGame
+    ? history.games.find((game) => (game?.resultsPublished || getPublicResultAvailability(game))
       && getResultHistoryGameId(game) === String(previousGame.internalGameId || ""))
     : null;
-  if (latestParticipatedPublishedGame) {
-    void loadResultHistoryGame(getResultHistoryGameId(latestParticipatedPublishedGame), { manual: false });
+  if (latestParticipatedResultGame) {
+    void loadResultHistoryGame(getResultHistoryGameId(latestParticipatedResultGame), { manual: false });
     return;
   }
 
@@ -3086,7 +3125,7 @@ async function loadResultHistoryGame(gameId, { manual = true, fastPrevious = fal
     state.resultHistory.isDetailLoading = false;
     state.resultHistory.detailError = "";
     state.resultHistory.message = "";
-    if (cached.serviceUnavailable) {
+    if (getPublicResultAvailability(cached)) {
       resetDailyBestNine("unpublished");
     } else {
       void fetchDailyBestNine({ gameId: cached.internalGameId || gameId, force: false });
@@ -3117,12 +3156,18 @@ async function loadResultHistoryGame(gameId, { manual = true, fastPrevious = fal
       throw new Error(payload?.error || `HTTP ${response.status}`);
     }
     if (!isCurrentPublicRequest("resultDetail", request.id)) return;
-    if (payload.serviceUnavailable) {
+    const availability = getPublicResultAvailability(payload);
+    if (availability) {
       state.resultHistory.result = {
-        gameId,
-        internalGameId: "",
-        serviceUnavailable: true,
-        serviceUnavailableMessage: payload.serviceUnavailableMessage || "この試合はサービス未稼働のため集計対象外です。",
+        gameId: payload.gameId || gameId,
+        internalGameId: payload.internalGameId || "",
+        status: payload.status || (availability.key === "service_unavailable" ? "service_unavailable" : "excluded"),
+        gameStatus: payload.gameStatus || payload.game?.gameStatus || "",
+        resultAvailability: availability.key,
+        rankingExcluded: true,
+        rankingEligibilityStatus: payload.rankingEligibilityStatus || "excluded",
+        serviceUnavailable: availability.key === "service_unavailable",
+        serviceUnavailableMessage: availability.message,
         prediction: payload.prediction || null,
         savedAt: payload.updatedAt || payload.submittedAt || ""
       };
@@ -3193,11 +3238,13 @@ function renderResultHistory() {
   const options = history.games.map((game) => {
     const gameId = getResultHistoryGameId(game);
     const matchup = formatResultHistoryMatchup(game);
-    return `<option value="${escapeHtml(gameId)}"${gameId === history.selectedGameId ? " selected" : ""}>${escapeHtml(game.gameDate || game.date || "日付不明")} ${escapeHtml(matchup)}${game.startTime ? `（${escapeHtml(game.startTime)}）` : ""}</option>`;
+    const availability = getPublicResultAvailability(game);
+    const statusLabel = availability ? `［${availability.shortLabel}］` : "";
+    return `<option value="${escapeHtml(gameId)}"${gameId === history.selectedGameId ? " selected" : ""}>${escapeHtml(game.gameDate || game.date || "日付不明")} ${escapeHtml(matchup)}${game.startTime ? `（${escapeHtml(game.startTime)}）` : ""}${statusLabel}</option>`;
   }).join("");
   const selectedGame = history.games.find((game) => getResultHistoryGameId(game) === history.selectedGameId);
   const selectedLabel = selectedGame
-    ? `${selectedGame.gameDate || selectedGame.date || "日付不明"} ${formatResultHistoryMatchup(selectedGame)}`
+    ? `${selectedGame.gameDate || selectedGame.date || "日付不明"} ${formatResultHistoryMatchup(selectedGame)}${getPublicResultAvailability(selectedGame) ? `［${getPublicResultAvailability(selectedGame).shortLabel}］` : ""}`
     : "";
   const details = history.isLoading
     ? (history.isExpanded ? `<p class="result-history-message" role="status">${escapeHtml(history.message || "過去の試合成績を読み込んでいます...")}</p>` : "")
@@ -3987,12 +4034,14 @@ function getPublicGameStatusView(game, deadline, remoteState = state.predictionR
   const workflowState = String(game?.workflowState || "").toLowerCase();
   const published = isPublicGamePublished(game, remoteState);
   const saved = Boolean(remoteState?.prediction || (state.prediction && [game?.internalGameId, game?.gameId].includes(state.prediction.gameId)));
-  if (isScheduleGameUnavailable(game)) {
-    const serviceUnavailable = String(game?.status || game?.gameStatus || "").toLowerCase() === "service_unavailable";
+  const unavailableKind = getPublicGameUnavailableKind(game);
+  if (unavailableKind) {
     return {
       key: "unavailable",
-      label: serviceUnavailable ? "サービス対象外" : "中止",
-      status: serviceUnavailable ? "この試合はサービス対象外です" : "この試合は中止になりました",
+      label: unavailableKind === "service_unavailable" ? "サービス対象外" : unavailableKind === "excluded" ? "対象外" : "中止",
+      status: unavailableKind === "service_unavailable"
+        ? "この試合はサービス対象外です"
+        : unavailableKind === "excluded" ? "この試合は対象外です" : "この試合は中止になりました",
       saved,
       nextAction: "この試合は予想・採点・ランキングの対象外です。"
     };

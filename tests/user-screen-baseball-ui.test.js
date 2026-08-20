@@ -182,11 +182,11 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
   assert.match(script, /drawCenteredText\(`\$\{index \+ 1\}`, tableX \+ 5, rowY \+ rowHeight \/ 2, orderWidth - 10, "800 17px \\\"Bahnschrift SemiBold\\\", \\\"Bahnschrift\\\", \\\"Arial Narrow Bold\\\", \\\"Arial Narrow\\\", Arial, sans-serif", "#ffffff"\)/);
   assert.match(script, /const positionWidth = 52/);
   assert.doesNotMatch(script, /drawDigitalOrderNumber/);
-  assert.match(script, /drawCenteredText\(lineupItem\.player \|\| "未選択",[\s\S]*"800 17px \\\"Yu Gothic\\\"/);
+  assert.match(script, /drawCenteredText\(formatPlayerNameForDisplay\(lineupItem\.player \|\| "未選択"\),[\s\S]*"800 17px \\\"Yu Gothic\\\"/);
   assert.match(script, /navy: "#0b5ea8"/);
   assert.match(script, /order: "#0b5ea8"/);
   assert.match(script, /drawCenteredText\("選手名", tableX \+ orderWidth \+ positionWidth, tableY \+ headerHeight \/ 2, nameWidth/);
-  assert.match(script, /drawCenteredText\(lineupItem\.player \|\| "未選択", tableX \+ orderWidth \+ positionWidth \+ 3, rowY \+ rowHeight \/ 2, nameWidth - 6/);
+  assert.match(script, /drawCenteredText\(formatPlayerNameForDisplay\(lineupItem\.player \|\| "未選択"\), tableX \+ orderWidth \+ positionWidth \+ 3, rowY \+ rowHeight \/ 2, nameWidth - 6/);
   assert.doesNotMatch(script, /drawCenteredText\(`\$\{index \+ 1\}番`/);
   assert.doesNotMatch(script, /drawLeftText\("あなたの予想"/);
   assert.doesNotMatch(script, /drawLeftText\(`最後に更新：/);
@@ -204,7 +204,7 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-prediction-input-blue-ui-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-japanese-player-display-name-spacing-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],
@@ -231,8 +231,8 @@ test("公開予想入力は結果画面と共通の青系テーマを使い、�
   assert.match(css, /#predictionForm \.position-menu[\s\S]*border-color: #9fc2df/);
   assert.match(css, /#predictionForm \.player-chip[\s\S]*border-color: #b9cfe2/);
   assert.match(css, /#predictionForm \.lineup-slot\.is-drop-target/);
-  assert.match(html, /style\.css\?v=public-prediction-input-blue-ui-1/);
-  assert.match(html, /script\.js\?v=public-prediction-input-blue-ui-1/);
+  assert.match(html, /style\.css\?v=public-japanese-player-display-name-spacing-1/);
+  assert.match(html, /script\.js\?v=public-japanese-player-display-name-spacing-1/);
   assert.match(script, /function togglePositionMenu\(/);
   assert.match(script, /function handlePlayerDragStart\(/);
   assert.match(script, /function assignPlayerToActiveSlot\(/);

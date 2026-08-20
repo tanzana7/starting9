@@ -195,6 +195,6 @@ test("公示なしはUIを隠し、4xxはwarning、5xxまたは通信失敗だ�
 });
 
 test("公開画面のmoduleとentry pointは同じcache busterを使う", () => {
-  assert.match(html, /frontend\/public\/app-coordinator\.js\?v=public-japanese-player-display-name-spacing-1/);
-  assert.match(html, /script\.js\?v=public-japanese-player-display-name-spacing-1/);
+  assert.match(html, /frontend\/public\/app-coordinator\.js\?v=public-home-hero-polish-1/);
+  assert.match(html, /script\.js\?v=public-home-hero-polish-1/);
 });

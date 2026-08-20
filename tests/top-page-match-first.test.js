@@ -16,7 +16,7 @@ test("TOPは試合情報、予告先発、CTA、説明、β版の順で視覚配
 });
 
 test("ロゴとアカウント操作はコンパクトなTOP領域として維持する", () => {
-  assert.match(normalScreenCss, /\.header-logo\s*\{[\s\S]*width: min\(100%, 300px\)/);
+  assert.match(normalScreenCss, /\.header-logo\s*\{[\s\S]*width: min\(100%, 276px\)/);
   assert.match(normalScreenCss, /#authPanel\s*\{[\s\S]*padding: 0/);
   assert.match(html, /id="openLoginButton"/);
   assert.match(html, /id="openRegisterButton"/);

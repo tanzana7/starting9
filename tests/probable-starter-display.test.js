@@ -25,14 +25,21 @@ test("予告先発カードは発表済み・未発表・失敗で同じ表示�
   assert.match(script, /container\.className = `probable-starter-card \$\{isError \? "is-error" : "is-pending"\}`/);
   assert.match(css, /\.probable-starter-card[\s\S]*?min-height: 128px/);
   assert.match(css, /\.probable-starter-card\.is-error/);
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.probable-starter-card\.is-success[\s\S]*background: #214f7d/);
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.probable-starter-heading a[\s\S]*color: #f1d276/);
 });
 
 test("予告先発カードはNPB公式ではなく汎用NPBase matchupsへリンクする", () => {
   assert.match(script, /const NPBASE_MATCHUPS_URL = "https:\/\/npbase\.jp\/\?view=labo&tool=matchups&day=today&sort=average&order=desc"/);
-  assert.match(script, /対予告先発成績/);
+  assert.match(script, /対予告先発成績を見る/);
   assert.match(script, /target="_blank" rel="noopener noreferrer"/);
   assert.doesNotMatch(script, />NPB公式<\/a>/);
   assert.match(script, /createProbableStarterHeadingHtml\(\)/);
+});
+
+test("公開トップの予告先発情報は更新時刻として表示する", () => {
+  assert.doesNotMatch(script, /取得：\$\{escapeHtml\(formatDateTime\(probableStarter\.fetchedAt\)\)\}/);
+  assert.match(script, /予告先発情報：\$\{escapeHtml\(formatDateTime\(probableStarter\.fetchedAt\)\)\} 更新/);
 });
 
 test("ブラウザは保存済みAPIだけを読み、NPB Workerのstarter取得を起動しない", () => {

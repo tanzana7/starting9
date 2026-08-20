@@ -7212,3 +7212,52 @@ body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip:focus-visi
     flex: 0 0 auto;
   }
 }
+
+/* 公開トップの第一印象を、結果画面と同じ青・紺・金のトーンへ寄せる。 */
+body:not(:has(.app-layout.is-admin-screen)) .header-logo {
+  width: min(100%, 276px);
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .probable-starter-card {
+  border-color: #668db4;
+  background: #214f7d;
+  box-shadow: 0 4px 12px rgba(8, 37, 73, 0.16);
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .probable-starter-card.is-success {
+  border-color: #d6b458;
+  background: #214f7d;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .probable-starter-card.is-pending,
+body:not(:has(.app-layout.is-admin-screen)) .probable-starter-card.is-loading {
+  border-color: #668db4;
+  background: #294d73;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .probable-starter-heading a {
+  color: #f1d276;
+  text-decoration-color: rgba(241, 210, 118, 0.65);
+  text-underline-offset: 3px;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .probable-starter-team {
+  border-color: rgba(175, 211, 241, 0.52);
+  background: #2b608f;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) .probable-starter-fetched {
+  color: #c2def4;
+}
+
+@media (max-width: 759px) {
+  body:not(:has(.app-layout.is-admin-screen)) .header-logo {
+    width: min(100%, 236px);
+  }
+}
+
+@media (max-width: 430px) {
+  body:not(:has(.app-layout.is-admin-screen)) .header-logo {
+    width: min(100%, 208px);
+  }
+}

@@ -204,7 +204,7 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-japanese-player-display-name-spacing-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-home-hero-polish-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],
@@ -231,8 +231,8 @@ test("公開予想入力は結果画面と共通の青系テーマを使い、�
   assert.match(css, /#predictionForm \.position-menu[\s\S]*border-color: #9fc2df/);
   assert.match(css, /#predictionForm \.player-chip[\s\S]*border-color: #b9cfe2/);
   assert.match(css, /#predictionForm \.lineup-slot\.is-drop-target/);
-  assert.match(html, /style\.css\?v=public-japanese-player-display-name-spacing-1/);
-  assert.match(html, /script\.js\?v=public-japanese-player-display-name-spacing-1/);
+  assert.match(html, /style\.css\?v=public-home-hero-polish-1/);
+  assert.match(html, /script\.js\?v=public-home-hero-polish-1/);
   assert.match(script, /function togglePositionMenu\(/);
   assert.match(script, /function handlePlayerDragStart\(/);
   assert.match(script, /function assignPlayerToActiveSlot\(/);
@@ -247,6 +247,11 @@ test("公開画面はスコアボード風の落ち着いたテーマを使い�
   assert.match(css, /\.ranking-achievement-badge\.is-epic[\s\S]*background: #fbf7e8/);
   assert.match(css, /\.achievement-card\.is-epic \.achievement-icon[\s\S]*color: #d6b458/);
   assert.doesNotMatch(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.admin-details\s*\{/);
+});
+
+test("トップの案内文は自動採点を案内する", () => {
+  assert.match(html, /発表後に99点満点で自動採点されます。/);
+  assert.doesNotMatch(html, /発表後に99点満点で採点しよう。/);
 });
 
 test("PCのオーダー行は固定列と省略表示を使い、通知・操作領域はフォーム幅に揃える", () => {

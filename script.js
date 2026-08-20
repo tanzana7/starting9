@@ -4188,7 +4188,7 @@ function renderProbableStarterDisplay() {
       ${createProbableStarterTeamHtml(fightersStarter.opponentName || "相手チーム", fightersStarter.opponent?.name)}
     </div>
     <p class="probable-starter-meta">${escapeHtml(gameInfo)}${matchedGame.venue ? ` ・ ${escapeHtml(matchedGame.venue)}` : ""}</p>
-    <p class="probable-starter-fetched">取得：${escapeHtml(formatDateTime(probableStarter.fetchedAt))}</p>
+    <p class="probable-starter-fetched">予告先発情報：${escapeHtml(formatDateTime(probableStarter.fetchedAt))} 更新</p>
   `;
 }
 
@@ -4210,7 +4210,7 @@ function createProbableStarterHeadingHtml() {
   return `
     <div class="probable-starter-heading">
       <p class="probable-starter-label">予告先発</p>
-      <a href="${NPBASE_MATCHUPS_URL}" target="_blank" rel="noopener noreferrer">対予告先発成績</a>
+      <a href="${NPBASE_MATCHUPS_URL}" target="_blank" rel="noopener noreferrer">対予告先発成績を見る</a>
     </div>
   `;
 }

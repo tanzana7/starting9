@@ -4451,13 +4451,21 @@ function getDuplicatedPositions(lineup) {
   return new Set(Array.from(counts.entries()).filter((entry) => entry[1] > 1).map((entry) => entry[0]));
 }
 
+function isSavedPredictionComplete(prediction) {
+  if (!prediction || !Array.isArray(prediction.lineup)) {
+    return false;
+  }
+
+  return normalizeLineup(prediction.lineup).every((item) => item.player && item.position);
+}
+
 function renderSavedPrediction() {
   const container = document.getElementById("savedPrediction");
   const editButton = document.getElementById("editSavedPredictionButton");
   const shareButton = document.getElementById("sharePredictionButton");
   const imageButton = document.getElementById("saveSavedPredictionImageButton");
 
-  if (!state.prediction) {
+  if (!isSavedPredictionComplete(state.prediction)) {
     container.className = "empty-state";
     container.textContent = "まだ予想が保存されていません。";
     editButton?.classList.add("hidden");

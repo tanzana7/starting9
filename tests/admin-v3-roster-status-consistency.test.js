@@ -76,6 +76,6 @@ test("15時開始試合の表示slotから開始後の固定slotを除外し、1
 });
 
 test("admin-v3のcache busterはロースター状態表示版へ更新される", () => {
-  assert.match(page, /admin-v3\.css\?v=admin-v3-current-stage-status-fix-1/);
-  assert.match(page, /admin-v3\.js\?v=admin-v3-current-stage-status-fix-1/);
+  assert.match(page, /admin-v3\.css\?v=public-roster-snapshot-mismatch-and-lineup-retry-1/);
+  assert.match(page, /admin-v3\.js\?v=public-roster-snapshot-mismatch-and-lineup-retry-1/);
 });

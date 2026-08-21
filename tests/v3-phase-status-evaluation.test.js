@@ -32,6 +32,18 @@ test("共通phase判定はlineupの待機・異常とscore/ranking no-op、publi
   assert.equal(publish.reasonCode, "PUBLISH_PREREQUISITE_PENDING");
 });
 
+test("lineup retryの過去時刻を次回確認として表示しない", () => {
+  const now = new Date("2026-08-09T07:00:00.000Z");
+  const status = deriveV3PhaseStatus({
+    phase: "lineup_fetch",
+    game,
+    now,
+    jobs: [{ job_type: "lineup_fetch", status: "retry_wait", failure_code: "LINEUP_NOT_ANNOUNCED", next_retry_at: "2026-08-09T06:50:00.000Z" }]
+  });
+  assert.equal(status.reasonCode, "LINEUP_NOT_ANNOUNCED");
+  assert.equal(status.nextCheckAt, "2026-08-09T07:10:00.000Z");
+});
+
 test("completed lineup_fetch without candidate is attention", () => {
   const status = deriveV3PhaseStatus({
     phase: "lineup_fetch",

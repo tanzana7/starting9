@@ -67,6 +67,17 @@ test("sourceとsnapshotが一致する場合はATTENTIONにしない", () => {
   assert.deepEqual(result.reasonCodes, []);
 });
 
+test("同じ背番号でも登録区分が変わったsource/snapshotは一致扱いしない", () => {
+  const result = compareV3RosterSourceSnapshot({
+    sourceRoster: [{ number: "8", name: "淺間大基", position: "外野手" }],
+    snapshotRoster: [{ number: "8", name: "淺間大基", position: "投手" }]
+  });
+
+  assert.equal(result.mismatch, true);
+  assert.ok(result.reasonCodes.includes("ROSTER_EXPECTED_PLAYER_MISSING"));
+  assert.ok(result.reasonCodes.includes("ROSTER_REMOVED_PLAYER_STILL_PRESENT"));
+});
+
 test("fresh snapshotでもsource/snapshot差分が残ればroster判定はATTENTION", () => {
   const result = getV3RosterStatusDecision({
     game,
@@ -82,6 +93,18 @@ test("fresh snapshotでもsource/snapshot差分が残ればroster判定はATTENT
 
   assert.equal(result.severity, "ATTENTION");
   assert.equal(result.reasonCode, "ROSTER_REMOVED_PLAYER_STILL_PRESENT");
+});
+
+test("fresh snapshotでも公式liveとの照合前は成功扱いしない", () => {
+  const result = getV3RosterStatusDecision({
+    game,
+    now: "2026-08-14T09:30:00.000Z",
+    snapshot: { exists: true, isFresh: true }
+  });
+
+  assert.equal(result.severity, "ATTENTION");
+  assert.equal(result.reasonCode, "ROSTER_SNAPSHOT_LIVE_CHECK_REQUIRED");
+  assert.equal(result.snapshotVerificationRequired, true);
 });
 
 test("source/snapshot比較はauditとadmin roster表示へ接続される", () => {

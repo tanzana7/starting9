@@ -18,7 +18,7 @@
       if (diagnostics.selectedDueSlot) details.push(`選択slot: ${formatJst(diagnostics.selectedDueSlot)}`);
       const rosterState = rosterDisplayState(game);
       if (diagnostics.actualJobExists) details.push(`job: ${statusLabel(diagnostics.jobStatus)}${diagnostics.existingJobId ? ` #${diagnostics.existingJobId}` : ""}`);
-      else details.push(rosterState.status === "ok" ? "job未生成理由: snapshot取得済みのため追加job不要" : "job未生成");
+      else details.push(diagnostics.snapshotVerificationRequired ? "job未生成理由: 公式live照合のため再取得予定" : "job未生成");
       if (diagnostics.planningSkipped) details.push(`planning: skip (${diagnostics.skipReason || "理由不明"})`);
       if (diagnostics.insertAttempted) details.push(`INSERT: ${diagnostics.insertedRowCount || 0}件`);
       if (diagnostics.claimResult && diagnostics.claimResult !== "not_attempted") details.push(`claim: ${diagnostics.claimResult}`);
@@ -27,6 +27,7 @@
       if (diagnostics.noticeState) details.push(`公式確認: ${diagnostics.noticeState}`);
       if (Number.isFinite(Number(diagnostics.totalRosterChanges))) details.push(`変更数: ${diagnostics.totalRosterChanges}`);
       if (comparison?.reasonCodes?.length) details.push(`source/snapshot: ${comparison.reasonCodes.join(", ")}`);
+      if (diagnostics.snapshotVerificationRequired) details.push("snapshot: 公式liveとのfingerprint照合が必要");
       if (mismatchComparison?.expectedMissing?.length) details.push(`sourceに存在・snapshot欠落: ${playerNames(mismatchComparison.expectedMissing)}`);
       if (mismatchComparison?.removedStillPresent?.length) details.push(`sourceから消失・snapshot残存: ${playerNames(mismatchComparison.removedStillPresent)}`);
       if (previousComparison?.mismatch && comparison?.status === "OK") details.push("直前snapshot差分: 取得時に検知・更新済み");
@@ -53,7 +54,7 @@
         ["生成slot", formatTimelineTime(generatedSlots)],
         ["期限到達slot", formatTimelineTime(dueSlots)],
         ["選択slot", formatJst(diagnostics.selectedDueSlot)],
-        ["job実在", diagnostics.actualJobExists ? `${statusLabel(diagnostics.jobStatus)}${diagnostics.existingJobId ? ` (#${diagnostics.existingJobId})` : ""}` : rosterState.status === "ok" ? "未生成（snapshot取得済み）" : "未生成"],
+        ["job実在", diagnostics.actualJobExists ? `${statusLabel(diagnostics.jobStatus)}${diagnostics.existingJobId ? ` (#${diagnostics.existingJobId})` : ""}` : diagnostics.snapshotVerificationRequired ? "未生成（公式live照合待ち）" : "未生成"],
         ["planning", diagnostics.planningSkipped ? `skip: ${diagnostics.skipReason || "-"}` : "継続"],
         ["INSERT", diagnostics.insertAttempted ? `${diagnostics.insertedRowCount || 0}件` : "未実行"],
         ["claim", diagnostics.claimResult || "未実行"],

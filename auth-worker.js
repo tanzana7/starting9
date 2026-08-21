@@ -4274,6 +4274,7 @@ async function handleAdminV3Overview(request, env, cors) {
       sourceSnapshotComparison: latestRosterAuditDetails.sourceSnapshotComparison
         || latestRosterAuditDetails.diagnostics?.sourceSnapshotComparison
         || null,
+      snapshotVerificationRequired: rosterStatusDecision.snapshotVerificationRequired,
       previousSnapshotComparison: latestRosterAuditDetails.previousSnapshotComparison || null,
       sourceFingerprint: latestRosterAuditDetails.sourceFingerprint || null,
       snapshotFingerprint: latestRosterAuditDetails.snapshotFingerprint || null,
@@ -8681,6 +8682,29 @@ async function handleGetGameDayRoster(request, env, cors) {
     snapshot: row
   });
   if (currentResponse.status === "captured") {
+    const capturedAt = new Date(row?.captured_at || "").getTime();
+    const shouldVerifyLive = !Number.isFinite(capturedAt)
+      || Date.now() - capturedAt >= 10 * 60 * 1000;
+    if (shouldVerifyLive) {
+      const refreshed = await fetchLatestPublicRoster(env, game);
+      if (refreshed) {
+        const sourceSnapshotComparison = compareV3RosterSourceSnapshot({
+          sourceRoster: refreshed.players,
+          snapshotRoster: parseJsonArray(row?.roster_json),
+          sourceFetchedAt: refreshed.capturedAt,
+          snapshotCapturedAt: row?.captured_at || null,
+          sourceFingerprint: rosterFingerprint(refreshed.players),
+          snapshotFingerprint: rosterFingerprint(parseJsonArray(row?.roster_json))
+        });
+        return jsonResponse({
+          ...refreshed,
+          warning: sourceSnapshotComparison.mismatch ? "公式liveとcanonical snapshotに差分があります。正式roster_fetchで更新します。" : null,
+          snapshotStatus: "captured",
+          snapshotCapturedAt: row?.captured_at || null,
+          sourceSnapshotComparison
+        }, 200, cors);
+      }
+    }
     const quality = await readPublicRosterQuality(env.AUTH_DB, internalGameId);
     if (quality.attention) {
       const refreshed = await fetchLatestPublicRoster(env, game);

@@ -34,6 +34,6 @@ test("admin-v3の対象外判定は行ループ外の再同期ボタンでも同
 });
 
 test("admin-v3の静的asset cache busterはReferenceError修正版を指す", () => {
-  assert.match(pageSource, /admin-v3-current-stage-status-fix-1/);
+  assert.match(pageSource, /public-roster-snapshot-mismatch-and-lineup-retry-1/);
   assert.doesNotMatch(pageSource, /admin-v3-add-game-preview-1/);
 });

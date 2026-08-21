@@ -73,11 +73,11 @@ test("取得slot後のopen roster jobは取得中として待機する", () => {
 test("取得成功は変更なしと変更ありをOKとして区別し、失敗はsnapshotを成功扱いにしない", () => {
   const fresh = { exists: true, isFresh: true, isStale: false, staleReason: null };
   assert.deepEqual(
-    { severity: getV3RosterStatusDecision({ game, now: "2026-08-09T04:20:00.000Z", snapshot: fresh, noticeState: "ROSTER_NO_CHANGES" }).severity,
-      reasonCode: getV3RosterStatusDecision({ game, now: "2026-08-09T04:20:00.000Z", snapshot: fresh, noticeState: "ROSTER_NO_CHANGES" }).reasonCode },
+    { severity: getV3RosterStatusDecision({ game, now: "2026-08-09T04:20:00.000Z", snapshot: fresh, noticeState: "ROSTER_NO_CHANGES", sourceSnapshotComparison: { status: "OK", remainingMismatch: false } }).severity,
+      reasonCode: getV3RosterStatusDecision({ game, now: "2026-08-09T04:20:00.000Z", snapshot: fresh, noticeState: "ROSTER_NO_CHANGES", sourceSnapshotComparison: { status: "OK", remainingMismatch: false } }).reasonCode },
     { severity: "OK", reasonCode: "ROSTER_NO_CHANGES" }
   );
-  assert.equal(getV3RosterStatusDecision({ game, now: "2026-08-09T04:20:00.000Z", snapshot: fresh, noticeState: "ROSTER_CHANGES_CAPTURED" }).reasonCode, "ROSTER_CHANGES_CAPTURED");
+  assert.equal(getV3RosterStatusDecision({ game, now: "2026-08-09T04:20:00.000Z", snapshot: fresh, noticeState: "ROSTER_CHANGES_CAPTURED", sourceSnapshotComparison: { status: "OK", remainingMismatch: false } }).reasonCode, "ROSTER_CHANGES_CAPTURED");
   const failed = getV3RosterStatusDecision({
     game,
     now: "2026-08-09T04:20:00.000Z",

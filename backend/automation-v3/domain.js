@@ -129,6 +129,19 @@ function rosterPlayerName(player) {
   return String(player?.name || player?.playerName || "").replace(/[\s\u3000]/g, "").toLowerCase();
 }
 
+function rosterPlayerPosition(player) {
+  return String(player?.position || player?.registeredPosition || player?.registered_position || "").trim().toLowerCase();
+}
+
+function rosterPlayerMatches(left, right) {
+  const leftName = rosterPlayerName(left);
+  const rightName = rosterPlayerName(right);
+  if (!leftName || !rightName || leftName !== rightName) return false;
+  const leftPosition = rosterPlayerPosition(left);
+  const rightPosition = rosterPlayerPosition(right);
+  return !leftPosition || !rightPosition || leftPosition === rightPosition;
+}
+
 // Compare the official roster payload with the snapshot that public/admin reads.
 // This is intentionally pure: it observes source drift without changing the
 // fetch, planner, or persistence contract.
@@ -148,10 +161,10 @@ export function compareV3RosterSourceSnapshot({
     .map((player) => [rosterPlayerKey(player), player])
     .filter(([key]) => key));
   const expectedMissing = [...sourceByKey.entries()]
-    .filter(([key, player]) => !snapshotByKey.has(key) || rosterPlayerName(snapshotByKey.get(key)) !== rosterPlayerName(player))
+    .filter(([key, player]) => !snapshotByKey.has(key) || !rosterPlayerMatches(snapshotByKey.get(key), player))
     .map(([, player]) => rosterPlayerSummary(player));
   const removedStillPresent = [...snapshotByKey.entries()]
-    .filter(([key, player]) => !sourceByKey.has(key) || rosterPlayerName(sourceByKey.get(key)) !== rosterPlayerName(player))
+    .filter(([key, player]) => !sourceByKey.has(key) || !rosterPlayerMatches(sourceByKey.get(key), player))
     .map(([, player]) => rosterPlayerSummary(player));
   const mismatch = expectedMissing.length > 0 || removedStillPresent.length > 0;
   const sourceFetchedMs = new Date(sourceFetchedAt || "").getTime();
@@ -214,6 +227,7 @@ export function getV3RosterStatusDecision({ game, now = new Date(), snapshot = n
     isBeforeFirstRosterSlot,
     isAfterDueSlot,
     freshSnapshotExists,
+    snapshotVerificationRequired: freshSnapshotExists && !sourceSnapshotComparison,
     staleSnapshotExists,
     openRosterJobExists: Boolean(openRosterJob),
     terminalRosterJobExists,
@@ -226,6 +240,9 @@ export function getV3RosterStatusDecision({ game, now = new Date(), snapshot = n
     return { ...base, severity: "ATTENTION", reasonCode, label: "公式sourceとsnapshotが不一致" };
   }
   if (freshSnapshotExists) {
+    if (!sourceSnapshotComparison) {
+      return { ...base, severity: "ATTENTION", reasonCode: "ROSTER_SNAPSHOT_LIVE_CHECK_REQUIRED", label: "公式liveとの照合待ち" };
+    }
     const changesCaptured = String(noticeState || "") === "ROSTER_CHANGES_CAPTURED";
     return { ...base, severity: "OK", reasonCode: changesCaptured ? "ROSTER_CHANGES_CAPTURED" : "ROSTER_NO_CHANGES", label: changesCaptured ? "公示確認済み（変更あり）" : "公示確認済み" };
   }
@@ -468,7 +485,12 @@ export function deriveV3PhaseStatus({ phase, game, now = new Date(), workflowSta
   const latest = completed || retry || open || failed || v3PhaseJob(jobs, types);
   const failureCode = String(latest?.failure_code || "");
   const phaseSlots = phase === "lineup_fetch" ? schedule.lineupPollingSlots : [];
-  const nextCheckAt = retry?.next_retry_at || phaseSlots.find((slot) => new Date(slot).getTime() > current.getTime()) || null;
+  const retryAt = new Date(retry?.next_retry_at || "");
+  const futureRetryAt = !Number.isNaN(retryAt.getTime()) && retryAt.getTime() > current.getTime() ? retryAt.toISOString() : null;
+  const futureLineupSlot = phaseSlots.find((slot) => new Date(slot).getTime() > current.getTime()) || null;
+  const nextCheckAt = futureRetryAt
+    || futureLineupSlot
+    || (phase === "lineup_fetch" && retry ? new Date(current.getTime() + 10 * 60 * 1000).toISOString() : null);
   const terminalState = {
     lineup_fetch: ["lineup_ready", "scored", "ranked", "published"],
     lineup_finalize: ["lineup_ready", "scored", "ranked", "published"],

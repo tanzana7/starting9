@@ -342,7 +342,7 @@ test("予告先発announcedでもロースターの期限到達slotは独立し�
   }
 });
 
-test("V3ロースターsnapshotは対象試合日とJST取得日が一致するときだけfreshとしてjob生成を止める", async () => {
+test("V3ロースターsnapshotはslot処理済みの場合だけ同じjobを再生成しない", async () => {
   const database = new DatabaseSync(":memory:");
   try {
     database.exec(`
@@ -372,12 +372,38 @@ test("V3ロースターsnapshotは対象試合日とJST取得日が一致する�
 
     database.prepare("UPDATE game_roster_snapshots SET game_date = ?1, captured_at = ?2, updated_at = ?2 WHERE game_id = 'legacy-row'")
       .run("2026-08-07", "2026-08-07T07:50:00.000Z");
+    database.prepare("UPDATE game_jobs_v3 SET status = 'completed', completed_at = ?1 WHERE internal_game_id = ?2")
+      .run("2026-08-07T07:50:00.000Z", GAME_ID);
     const fresh = await v3.getV3CanonicalRosterSnapshot(d1(database), GAME_ID, { gameDate: target.gameDate });
     assert.equal(fresh.exists, true);
     assert.equal(fresh.isFresh, true);
     const freshPlan = await v3.planV3RosterJobs(d1(database), [target], new Date("2026-08-07T07:50:00.000Z"));
     assert.equal(freshPlan.created, 0);
-    assert.equal(freshPlan.planned[0].reasonCode, "ROSTER_SNAPSHOT_ALREADY_EXISTS");
+    assert.equal(freshPlan.planned[0].reasonCode, "ROSTER_SLOT_ALREADY_PROCESSED");
+  } finally {
+    database.close();
+  }
+});
+
+test("fresh snapshotがあっても未処理の最新roster slotは公式再取得jobを計画する", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE game_roster_snapshots (game_id TEXT PRIMARY KEY, internal_game_id TEXT,
+        game_date TEXT, source TEXT, status TEXT, player_count INTEGER, captured_at TEXT, updated_at TEXT);
+      CREATE TABLE game_jobs_v3 (id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT,
+        job_type TEXT, scheduled_at TEXT, scheduled_slot_at TEXT, status TEXT, attempt_count INTEGER,
+        max_attempts INTEGER, next_retry_at TEXT, claimed_at TEXT, claim_token TEXT,
+        lease_expires_at TEXT, completed_at TEXT, failure_code TEXT, failure_message TEXT,
+        created_at TEXT, updated_at TEXT, UNIQUE(internal_game_id, job_type, scheduled_slot_at));
+      INSERT INTO game_roster_snapshots VALUES ('canonical', '${GAME_ID}', '2026-08-07', 'npb-roster', 'captured', 31,
+        '2026-08-07T07:40:00.000Z', '2026-08-07T07:40:00.000Z');
+    `);
+    const target = { ...game(), gameDate: "2026-08-07", startAt: "2026-08-07T09:00:00.000Z" };
+    const result = await v3.planV3RosterJobs(d1(database), [target], new Date("2026-08-07T07:50:00.000Z"));
+    assert.equal(result.created, 1);
+    assert.equal(result.planned[0].reasonCode, "ROSTER_JOB_CREATED");
+    assert.equal(result.planned[0].plan.scheduledSlotAt.toISOString(), "2026-08-07T07:10:00.000Z");
   } finally {
     database.close();
   }

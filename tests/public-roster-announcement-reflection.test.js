@@ -177,6 +177,22 @@ test("通常画面は選択試合のUUIDでV3 snapshotを再取得し、旧game_
   assert.doesNotMatch(worker.slice(worker.indexOf("async function handleGetGameDayRoster"), worker.indexOf("function getGameTeamCodes")), /WHERE game_id = \?1/);
 });
 
+test("新鮮なsnapshotがない公開rosterはNPB公式をread-only refreshし、最新登録を隠さない", () => {
+  const handler = worker.slice(worker.indexOf("async function handleGetGameDayRoster"), worker.indexOf("export function getPublicRosterQualityFromAuditDetails"));
+  assert.match(handler, /fetchLatestPublicRoster\(env, game\)/);
+  assert.match(handler, /fetchNpbWorkerJson\(env, \{ mode: "roster", force: "1" \}\)/);
+  assert.match(handler, /displayRosterSource: "latest_official_live"/);
+  assert.match(handler, /formal roster_fetch job/);
+  assert.match(publicRoster, /\["latest_official_snapshot", "latest_official_live"\]\.includes/);
+});
+
+test("大塚瑠晏はplayer masterと公式背番号49で内野手候補として解決できる", () => {
+  const players = fs.readFileSync(path.join(root, "players.js"), "utf8");
+  const master = fs.readFileSync(path.join(root, "fighters-player-master.js"), "utf8");
+  assert.match(players, /name: "大塚瑠晏"[\s\S]*uniformNumber: "49"[\s\S]*registeredPosition: "内野手"[\s\S]*isBatterCandidate: true[\s\S]*isActiveRoster: true/);
+  assert.match(master, /\["大塚瑠晏","49",\["大塚","大塚瑠晏"\]\]/);
+});
+
 test("同じcanonical UUIDのroster responseを受けると公開候補の再描画へ反映する", async () => {
   const context = vm.createContext({ window: { Starting9Public: {} } });
   vm.runInContext(publicRoster, context);

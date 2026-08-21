@@ -8683,6 +8683,8 @@ async function handleGetGameDayRoster(request, env, cors) {
   if (currentResponse.status === "captured") {
     const quality = await readPublicRosterQuality(env.AUTH_DB, internalGameId);
     if (quality.attention) {
+      const refreshed = await fetchLatestPublicRoster(env, game);
+      if (refreshed) return jsonResponse(refreshed, 200, cors);
       return jsonResponse({
         ...currentResponse,
         status: "attention",
@@ -8691,6 +8693,13 @@ async function handleGetGameDayRoster(request, env, cors) {
     }
     return jsonResponse(currentResponse, 200, cors);
   }
+
+  // A stale or missing game snapshot must not hide a newly registered player
+  // until the next V3 roster job happens to persist its result. This is a
+  // read-only refresh; persistence and audit remain the responsibility of the
+  // formal roster_fetch job.
+  const refreshed = await fetchLatestPublicRoster(env, game);
+  if (refreshed) return jsonResponse(refreshed, 200, cors);
 
   let baseline = null;
   try {
@@ -8711,6 +8720,30 @@ async function handleGetGameDayRoster(request, env, cors) {
     // A missing/invalid schedule must not make the public roster endpoint fail.
   }
   return jsonResponse(currentResponse, 200, cors);
+}
+
+async function fetchLatestPublicRoster(env, game) {
+  try {
+    const payload = await fetchNpbWorkerJson(env, { mode: "roster", force: "1" });
+    if (payload?.stale === true) return null;
+    const players = normalizeRosterForSnapshot(payload?.players);
+    if (!players) return null;
+    return {
+      ok: true,
+      internalGameId: String(game?.internal_game_id || ""),
+      gameDate: String(game?.game_date || ""),
+      status: "fresh",
+      displayRosterSource: "latest_official_live",
+      capturedAt: payload?.fetchedAt || null,
+      sourceUrl: payload?.sourceUrl || null,
+      cacheStatus: payload?.cacheStatus || "bypass",
+      playerCount: players.length,
+      players
+    };
+  } catch (error) {
+    console.warn(`[PUBLIC_ROSTER] live refresh unavailable code=${error?.code || "UNKNOWN"}`);
+    return null;
+  }
 }
 
 export function getPublicRosterQualityFromAuditDetails(failureMessage) {

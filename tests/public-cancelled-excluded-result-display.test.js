@@ -57,5 +57,5 @@ test("cancelled/excluded games stop prediction input and are labeled in history"
   assert.match(script, /if \(editor\) editor\.classList\.toggle\("hidden", isScheduleGameUnavailable\(selectedGame\)\)/);
   assert.match(script, /const statusLabel = availability \? `［\$\{availability\.shortLabel\}］` : ""/);
   assert.match(script, /rankingExcluded === true/);
-  assert.match(html, /public-position-menu-portal-1/);
+  assert.match(html, /public-prediction-image-roster-otsuka-fix-1/);
 });

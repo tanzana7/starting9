@@ -102,7 +102,7 @@
       const publicRosterReady = deps.hasUsablePublicRosterForCurrentGame();
       const rosterStatus = String(deps.state.publicRoster?.status || "pending");
       const displayRosterSource = String(deps.state.publicRoster?.displayRosterSource || "");
-      const hasLatestOfficialRoster = displayRosterSource === "latest_official_snapshot";
+      const hasLatestOfficialRoster = ["latest_official_snapshot", "latest_official_live"].includes(displayRosterSource);
       const hasFallbackRoster = ["baseline", "stale", "fallback"].includes(rosterStatus)
         && publicRosterReady
         && !hasLatestOfficialRoster;

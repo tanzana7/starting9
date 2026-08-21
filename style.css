@@ -3473,9 +3473,15 @@ body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-image {
 }
 
 body:not(:has(.app-layout.is-admin-screen)) #editSavedPredictionButton,
-body:not(:has(.app-layout.is-admin-screen)) #sharePredictionButton,
-body:not(:has(.app-layout.is-admin-screen)) #saveSavedPredictionImageButton {
+body:not(:has(.app-layout.is-admin-screen)) #sharePredictionButton {
   display: none !important;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) #saveSavedPredictionImageButton {
+  display: inline-flex;
+  width: min(100%, 240px);
+  margin-top: 8px;
+  justify-content: center;
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .saved-lineup-image-title {

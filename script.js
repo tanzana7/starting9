@@ -4659,7 +4659,7 @@ function createResultCanvas(viewModel) {
   if (!viewModel || !Array.isArray(viewModel.details)) return null;
   const viewportWidth = typeof window === "undefined" ? 620 : window.innerWidth || 620;
   const displayWidth = Math.min(590, Math.max(320, viewportWidth - 32));
-  const renderScale = 2;
+  const renderScale = Math.max(2, Math.min(3, window.devicePixelRatio || 1));
   const padding = 12;
   const heroHeight = 78;
   const breakdownHeight = 70;
@@ -5139,7 +5139,51 @@ function createSavedPredictionCanvas(prediction) {
   return canvas;
 }
 
-function saveSavedPredictionImage() {
+function getSavedPredictionImageFilename(prediction) {
+  const dateToken = String(prediction?.savedAt || "")
+    .slice(0, 10)
+    .replace(/[^0-9]/g, "") || "saved-lineup";
+  return `starting9-prediction-${dateToken}.png`;
+}
+
+function createPngBlob(canvas) {
+  return new Promise((resolve) => {
+    if (typeof canvas?.toBlob !== "function") {
+      resolve(null);
+      return;
+    }
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        resolve(null);
+        return;
+      }
+      resolve(blob.type === "image/png" ? blob : new Blob([blob], { type: "image/png" }));
+    }, "image/png");
+  });
+}
+
+function downloadPredictionImage(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+
+  // iOS Safari may ignore download= for a generated blob. Opening the PNG keeps
+  // the output usable as an image even when the browser cannot download it.
+  const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent || "")
+    || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  if (isIos) {
+    const imageWindow = window.open(url, "_blank", "noopener,noreferrer");
+    if (!imageWindow) showMessage("predictionError", "画像を開けませんでした。もう一度お試しください。");
+  }
+  window.setTimeout(() => URL.revokeObjectURL(url), isIos ? 60_000 : 1_000);
+}
+
+async function saveSavedPredictionImage() {
   const prediction = state.prediction;
   if (!prediction) {
     showMessage("predictionError", "保存する予想がありません。");
@@ -5152,29 +5196,37 @@ function saveSavedPredictionImage() {
     return;
   }
 
-  const dateToken = String(prediction.savedAt || "").slice(0, 10).replace(/[^0-9-]/g, "") || "saved-lineup";
-  const filename = `starting9-saved-lineup-${dateToken}.png`;
-  const download = (url, shouldRevoke) => {
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    if (shouldRevoke) window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-  };
-
-  if (typeof canvas.toBlob === "function") {
-    canvas.toBlob((blob) => {
-      if (!blob) {
-        showMessage("predictionError", "画像を保存できませんでした。");
-        return;
-      }
-      download(URL.createObjectURL(blob), true);
-    }, "image/png");
+  const filename = getSavedPredictionImageFilename(prediction);
+  const blob = await createPngBlob(canvas);
+  if (!blob) {
+    showMessage("predictionError", "画像を生成できませんでした。");
     return;
   }
-  download(canvas.toDataURL("image/png"), false);
+
+  const file = typeof File === "function"
+    ? new File([blob], filename, { type: "image/png" })
+    : null;
+  let canShareFiles = false;
+  try {
+    canShareFiles = Boolean(file)
+      && typeof navigator.share === "function"
+      && (!navigator.canShare || navigator.canShare({ files: [file] }));
+  } catch {
+    canShareFiles = false;
+  }
+  if (canShareFiles) {
+    try {
+      await navigator.share({
+        files: [file],
+        title: "Starting9 保存済み予想"
+      });
+      return;
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+    }
+  }
+
+  downloadPredictionImage(blob, filename);
 }
 
 function sharePrediction() {

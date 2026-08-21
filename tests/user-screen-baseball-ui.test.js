@@ -197,7 +197,8 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
   assert.doesNotMatch(script, /drawLeftText\("あなたの予想"/);
   assert.doesNotMatch(script, /drawLeftText\(`最後に更新：/);
   assert.match(script, /nameWidth - 6/);
-  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) #editSavedPredictionButton,[\s\S]*#sharePredictionButton,[\s\S]*#saveSavedPredictionImageButton[\s\S]*display: none !important/);
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) #editSavedPredictionButton,[\s\S]*#sharePredictionButton[\s\S]*display: none !important/);
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) #saveSavedPredictionImageButton[\s\S]*display: inline-flex/);
   assert.match(script, /saveSavedPredictionImage/);
   assert.match(script, /canvas\.toBlob/);
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.saved-lineup-summary[\s\S]*width: min\(100%, 470px\)/);
@@ -210,7 +211,7 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-position-menu-portal-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-prediction-image-roster-otsuka-fix-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],
@@ -237,8 +238,8 @@ test("公開予想入力は結果画面と共通の青系テーマを使い、�
   assert.match(css, /#predictionForm \.position-menu[\s\S]*border-color: #9fc2df/);
   assert.match(css, /#predictionForm \.player-chip[\s\S]*border-color: #b9cfe2/);
   assert.match(css, /#predictionForm \.lineup-slot\.is-drop-target/);
-  assert.match(html, /style\.css\?v=public-position-menu-portal-1/);
-  assert.match(html, /script\.js\?v=public-position-menu-portal-1/);
+  assert.match(html, /style\.css\?v=public-prediction-image-roster-otsuka-fix-1/);
+  assert.match(html, /script\.js\?v=public-prediction-image-roster-otsuka-fix-1/);
   assert.match(script, /function togglePositionMenu\(/);
   assert.match(script, /function handlePlayerDragStart\(/);
   assert.match(script, /function assignPlayerToActiveSlot\(/);

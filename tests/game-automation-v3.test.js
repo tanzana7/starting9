@@ -378,8 +378,9 @@ test("V3ロースターsnapshotはslot処理済みの場合だけ同じjobを再
     assert.equal(fresh.exists, true);
     assert.equal(fresh.isFresh, true);
     const freshPlan = await v3.planV3RosterJobs(d1(database), [target], new Date("2026-08-07T07:50:00.000Z"));
-    assert.equal(freshPlan.created, 0);
-    assert.equal(freshPlan.planned[0].reasonCode, "ROSTER_SLOT_ALREADY_PROCESSED");
+    assert.equal(freshPlan.created, 1);
+    assert.equal(freshPlan.planned[0].reasonCode, "ROSTER_REVALIDATION_JOB_CREATED");
+    assert.equal(freshPlan.planned[0].plan.scheduledSlotAt.toISOString(), "2026-08-07T07:50:00.000Z");
   } finally {
     database.close();
   }

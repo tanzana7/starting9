@@ -23,6 +23,8 @@
       if (diagnostics.insertAttempted) details.push(`INSERT: ${diagnostics.insertedRowCount || 0}件`);
       if (diagnostics.claimResult && diagnostics.claimResult !== "not_attempted") details.push(`claim: ${diagnostics.claimResult}`);
       if (diagnostics.rosterSnapshotExists) details.push(`snapshot: ${diagnostics.rosterSnapshotStatus || "captured"}`);
+      if (diagnostics.publicCandidateSource) details.push(`public採用source: ${diagnostics.publicCandidateSource}${diagnostics.publicCandidateVerified ? " / verified" : " / unverified"}`);
+      if (diagnostics.publicCandidateWarning) details.push(`public warning: ${diagnostics.publicCandidateWarning}`);
       if (diagnostics.isSnapshotStale) details.push(`snapshot要確認: ${diagnostics.staleReason || "ROSTER_SNAPSHOT_STALE"}`);
       if (diagnostics.noticeState) details.push(`公式確認: ${diagnostics.noticeState}`);
       if (Number.isFinite(Number(diagnostics.totalRosterChanges))) details.push(`変更数: ${diagnostics.totalRosterChanges}`);
@@ -61,6 +63,9 @@
         ["open roster job", diagnostics.openJobExists ? "あり" : "なし"],
         ["terminal roster job", diagnostics.terminalRosterJobExists ? "あり" : "なし"],
         ["snapshot", diagnostics.rosterSnapshotExists ? `${diagnostics.rosterSnapshotStatus || "captured"} / ${diagnostics.rosterSnapshotPlayerCount || 0}人` : "未取得"],
+        ["public採用source", diagnostics.publicCandidateSource || "未確認"],
+        ["public候補検証", diagnostics.publicCandidateVerified === true ? "verified" : diagnostics.publicCandidateSource ? "unverified" : "未確認"],
+        ["public候補warning", diagnostics.publicCandidateWarning || ""],
         ["snapshot取得時刻", formatJst(diagnostics.rosterSnapshotCapturedAt)],
         ["snapshot対象日", diagnostics.rosterSnapshotGameDate || ""],
         ["公示対象日", diagnostics.sourceDate || ""],

@@ -24,6 +24,10 @@
         players,
         status: "stale",
         displayRosterSource: "fallback_snapshot",
+        sourceOfTruth: "stale_snapshot",
+        rosterUse: "stale_snapshot",
+        canUseForPrediction: true,
+        warning: "公式liveを取得できないため、前回取得データを表示しています。",
         isLoading: true,
         usableUntil: ""
       };
@@ -36,7 +40,7 @@
       const requestId = request.id;
       deps.setRosterRequestId(requestId);
       const storedFallback = getStoredRosterFallback(internalGameId, gameDate);
-      deps.state.publicRoster = storedFallback || {
+      deps.state.publicRoster = {
         internalGameId,
         gameDate,
         status: "pending",
@@ -58,8 +62,26 @@
 
       deps.state.publicRoster.isLoading = false;
       const snapshotStatus = normalizeSnapshotStatus(gameSnapshot);
+      const acceptedSources = ["official_live", "verified_snapshot", "stale_snapshot", "baseline_snapshot"];
+      const apiSource = String(gameSnapshot.rosterUse || gameSnapshot.sourceOfTruth || "");
+      const legacyApiSource = gameSnapshot.displayRosterSource === "latest_official_live" && gameSnapshot.status === "fresh"
+        ? "official_live"
+        : gameSnapshot.displayRosterSource === "stale_snapshot" && gameSnapshot.status === "stale"
+          ? "stale_snapshot"
+          : gameSnapshot.displayRosterSource === "baseline_snapshot" && gameSnapshot.status === "baseline"
+            ? "baseline_snapshot"
+            : "";
+      const adoptedApiSource = acceptedSources.includes(apiSource) ? apiSource : legacyApiSource;
+      const canUseApiRoster = (gameSnapshot.canUseForPrediction === true && acceptedSources.includes(apiSource))
+        || Boolean(adoptedApiSource);
       if (gameSnapshot.ok && gameSnapshot.internalGameId === internalGameId
-        && gameSnapshot.players.length && snapshotStatus !== "pending") {
+        && gameSnapshot.players.length && snapshotStatus !== "pending" && canUseApiRoster) {
+        const cached = typeof deps.getRosterSnapshotForCurrentGame === "function"
+          ? deps.getRosterSnapshotForCurrentGame()
+          : null;
+        if (cached?.fingerprint && gameSnapshot.fingerprint && cached.fingerprint !== gameSnapshot.fingerprint) {
+          deps.storage.remove(deps.storageKeys.rosterSnapshot);
+        }
         deps.state.publicRoster = {
           internalGameId,
           gameDate: gameSnapshot.gameDate || gameDate,
@@ -67,6 +89,14 @@
           displayRosterSource: typeof gameSnapshot.displayRosterSource === "string"
             ? gameSnapshot.displayRosterSource
             : snapshotStatus === "fresh" ? "fresh_snapshot" : "",
+          sourceOfTruth: adoptedApiSource,
+          rosterUse: adoptedApiSource,
+          canUseForPrediction: true,
+          verified: gameSnapshot.verified === true,
+          fingerprint: gameSnapshot.fingerprint || "",
+          verifiedAt: gameSnapshot.verifiedAt || "",
+          officialPlayerCount: gameSnapshot.officialPlayerCount ?? null,
+          snapshotPlayerCount: gameSnapshot.snapshotPlayerCount ?? null,
           players: deps.normalizeRosterEntries(gameSnapshot.players),
           isLoading: false,
           usableUntil: gameSnapshot.usableUntil || ""
@@ -83,6 +113,14 @@
           cacheStatus: gameSnapshot.cacheStatus
             || (gameSnapshot.status === "baseline" ? "game-snapshot-baseline" : "game-snapshot"),
           stale: gameSnapshot.stale === true || ["baseline", "stale", "attention"].includes(snapshotStatus),
+          fingerprint: gameSnapshot.fingerprint || "",
+          verifiedAt: gameSnapshot.verifiedAt || "",
+          sourceOfTruth: adoptedApiSource,
+          rosterUse: adoptedApiSource,
+          verified: gameSnapshot.verified === true,
+          officialPlayerCount: gameSnapshot.officialPlayerCount ?? null,
+          snapshotPlayerCount: gameSnapshot.snapshotPlayerCount ?? null,
+          canUseForPrediction: true,
           parsedCount: gameSnapshot.players.length,
           announcedCount: gameSnapshot.players.length,
           players: gameSnapshot.players

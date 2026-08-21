@@ -83,6 +83,6 @@ test("Today Opsはlineup reasonと次回確認を同じ表示契約へ渡す", (
   assert.match(diagnostics, /lineupDetail/);
   assert.match(diagnostics, /renderStep\("スタメン", steps\.lineup, steps\.lineupDetail\)/);
   assert.match(client, /次回確認待ち/);
-  assert.match(page, /admin-v3\.css\?v=public-roster-snapshot-mismatch-and-lineup-retry-1/);
-  assert.match(page, /admin-v3\.js\?v=public-roster-snapshot-mismatch-and-lineup-retry-1/);
+  assert.match(page, /admin-v3\.css\?v=public-roster-source-of-truth-1/);
+  assert.match(page, /admin-v3\.js\?v=public-roster-source-of-truth-1/);
 });

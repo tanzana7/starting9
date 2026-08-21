@@ -18,6 +18,34 @@ import {
 import { getV3CanonicalRosterSnapshot } from "./roster-repository.js";
 import { createV3Job } from "./repository.js";
 
+function parseV3AuditDetails(failureMessage) {
+  const text = String(failureMessage || "").trim();
+  const marker = text.indexOf("[v3_details=");
+  if (marker >= 0) {
+    try { return JSON.parse(text.slice(marker + "[v3_details=".length).replace(/\]\s*$/, "")); } catch { return {}; }
+  }
+  if (text.startsWith("{")) {
+    try { return JSON.parse(text); } catch { return {}; }
+  }
+  return {};
+}
+
+async function getLatestRosterSourceComparison(db, internalGameId) {
+  try {
+    const row = await db.prepare(
+      `SELECT failure_message
+         FROM game_automation_v3_audit
+        WHERE internal_game_id = ?1 AND job_type = 'roster_fetch' AND event_type = 'job'
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT 1`
+    ).bind(internalGameId).first();
+    const details = parseV3AuditDetails(row?.failure_message);
+    return details.sourceSnapshotComparison || details.diagnostics?.sourceSnapshotComparison || null;
+  } catch {
+    return null;
+  }
+}
+
 // Main workflow and auxiliary planners retain the existing job-slot contract.
 export async function planV3RosterJobs(db, games = [], now = new Date()) {
   const planned = [];
@@ -58,6 +86,8 @@ export async function planV3RosterJobs(db, games = [], now = new Date()) {
       isAfterDueSlot: false,
       freshSnapshotExists: false,
       snapshotVerificationRequired: false,
+      sourceSnapshotComparison: null,
+      rosterRevalidationRequired: false,
       staleSnapshotExists: false,
       terminalRosterJobExists: false,
       reasonCode: null,
@@ -83,7 +113,15 @@ export async function planV3RosterJobs(db, games = [], now = new Date()) {
           WHERE internal_game_id = ?1 AND job_type = ?2
           ORDER BY scheduled_slot_at DESC, id DESC`
       ).bind(game.internalGameId, "roster_fetch").all()).results || [];
-      const rosterStatus = getV3RosterStatusDecision({ game, now: current, snapshot, jobs: rosterJobs });
+      const sourceSnapshotComparison = await getLatestRosterSourceComparison(db, game.internalGameId);
+      const rosterStatus = getV3RosterStatusDecision({ game, now: current, snapshot, jobs: rosterJobs, sourceSnapshotComparison });
+      const rosterRevalidationRequired = Boolean(
+        snapshot.exists
+        && (rosterStatus.snapshotVerificationRequired
+          || sourceSnapshotComparison?.mismatch === true
+          || sourceSnapshotComparison?.remainingMismatch === true
+          || sourceSnapshotComparison?.status === "ATTENTION")
+      );
       Object.assign(diagnostic, {
         selectedDueSlot: rosterStatus.selectedDueSlot,
         rosterSnapshotExists: snapshot.exists,
@@ -103,6 +141,8 @@ export async function planV3RosterJobs(db, games = [], now = new Date()) {
         isAfterDueSlot: rosterStatus.isAfterDueSlot,
         freshSnapshotExists: rosterStatus.freshSnapshotExists,
         snapshotVerificationRequired: rosterStatus.snapshotVerificationRequired,
+        sourceSnapshotComparison,
+        rosterRevalidationRequired,
         staleSnapshotExists: rosterStatus.staleSnapshotExists,
         openJobExists: rosterStatus.openRosterJobExists,
         terminalRosterJobExists: rosterStatus.terminalRosterJobExists,
@@ -143,6 +183,19 @@ export async function planV3RosterJobs(db, games = [], now = new Date()) {
         continue;
       }
       if (selectedExistingJob) {
+        if (rosterRevalidationRequired && ["completed", "failed", "cancelled"].includes(String(selectedExistingJob.status || ""))) {
+          const revalidationSlot = new Date(Math.max(current.getTime(), selectedDueSlot.getTime()));
+          const revalidationPlan = { jobType: "roster_fetch", scheduledSlotAt: revalidationSlot, scheduledAt: revalidationSlot };
+          const result = await createV3Job(db, { internalGameId: game.internalGameId, ...revalidationPlan });
+          diagnostic.insertAttempted = true;
+          diagnostic.insertedRowCount = result.created ? 1 : 0;
+          diagnostic.insertReasonCode = result.created ? "ROSTER_REVALIDATION_JOB_CREATED" : "ROSTER_REVALIDATION_JOB_EXISTS";
+          diagnostic.actualJobExists = Boolean(result.job?.id || selectedExistingJob.id);
+          diagnostic.jobStatus = result.job?.status || selectedExistingJob.status;
+          diagnostic.existingJobId = result.job?.id || selectedExistingJob.id;
+          planned.push({ game, plan: revalidationPlan, ...result, reasonCode: diagnostic.insertReasonCode, diagnostic: { ...diagnostic } });
+          continue;
+        }
         diagnostic.insertReasonCode = "ROSTER_SLOT_ALREADY_PROCESSED";
         diagnostic.skipReason = diagnostic.insertReasonCode;
         planned.push({

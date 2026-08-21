@@ -46,4 +46,7 @@ test("保存済み予想は高DPI PNGを生成し、対応端末では画像File
   assert.match(script, /window\.open\(url, "_blank", "noopener,noreferrer"\)/);
   assert.match(html, /id="saveSavedPredictionImageButton"/);
   assert.doesNotMatch(css, /#saveSavedPredictionImageButton \{\s*display: none !important/);
+  assert.match(script, /function isSavedPredictionComplete\(prediction\)/);
+  assert.match(script, /if \(!isSavedPredictionComplete\(state\.prediction\)\)/);
+  assert.match(css, /#saveSavedPredictionImageButton:not\(\.hidden\)[\s\S]*display: inline-flex/);
 });

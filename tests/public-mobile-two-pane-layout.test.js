@@ -9,13 +9,13 @@ const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 
 test("public mobile prediction layout keeps order and roster in two panes", () => {
-  assert.match(html, /style\.css\?v=public-roster-source-of-truth-1/);
+  assert.match(html, /style\.css\?v=public-mobile-ui-blockers-1/);
   assert.match(html, /class="lineup-builder"/);
   assert.match(html, /id="predictionLineup" class="slot-list"/);
   assert.match(html, /id="predictionPlayers" class="player-list"/);
   assert.match(
     css,
-    /@media \(max-width: 767px\)[\s\S]*?\.lineup-builder \{[\s\S]*?grid-template-columns: minmax\(0, 60fr\) minmax\(0, 40fr\)/,
+    /@media \(max-width: 767px\)[\s\S]*?\.lineup-builder \{[\s\S]*?grid-template-columns: minmax\(0, 56fr\) minmax\(0, 44fr\)/,
   );
   assert.match(css, /max-height: min\(72vh, 620px\)/);
   assert.match(css, /overflow-y: auto/);
@@ -86,6 +86,7 @@ test("mobile probable starter heading keeps its external link inside the viewpor
     css,
     /\.probable-starter-heading a \{[\s\S]*?max-width: 45%;[\s\S]*?overflow-wrap: anywhere;[\s\S]*?white-space: normal;/
   );
+  assert.match(css, /\.probable-starter-heading a \{[\s\S]*?flex: 1 1 100%;[\s\S]*?max-width: 100%;[\s\S]*?white-space: normal;/);
 });
 
 test("mobile public header content can shrink and wrap instead of being clipped", () => {
@@ -97,4 +98,11 @@ test("mobile public header content can shrink and wrap instead of being clipped"
     css,
     /\.lead,[\s\S]*?\.beta-panel \{[\s\S]*?overflow-wrap: anywhere;/
   );
+});
+
+test("390px/430pxの公開画面は横幅を制約し、2カラムの子要素を縮められる", () => {
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \{[\s\S]*?width: 100%;[\s\S]*?max-width: 100%;[\s\S]*?overflow-x: clip;/);
+  assert.match(css, /@media \(max-width: 767px\)[\s\S]*?\.lineup-builder \{[\s\S]*?grid-template-columns: minmax\(0, 56fr\) minmax\(0, 44fr\)[\s\S]*?width: 100%;[\s\S]*?max-width: 100%;/);
+  assert.match(css, /\.lineup-panel,[\s\S]*?\.player-panel,[\s\S]*?\.lineup-slot,[\s\S]*?\.player-chip \{[\s\S]*?min-width: 0;[\s\S]*?max-width: 100%;/);
+  assert.match(css, /@media \(max-width: 430px\)[\s\S]*?\.container \{[\s\S]*?width: calc\(100% - 16px\);/);
 });

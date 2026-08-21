@@ -3477,7 +3477,7 @@ body:not(:has(.app-layout.is-admin-screen)) #sharePredictionButton {
   display: none !important;
 }
 
-body:not(:has(.app-layout.is-admin-screen)) #saveSavedPredictionImageButton {
+body:not(:has(.app-layout.is-admin-screen)) #saveSavedPredictionImageButton:not(.hidden) {
   display: inline-flex;
   width: min(100%, 240px);
   margin-top: 8px;
@@ -7332,5 +7332,129 @@ body:not(:has(.app-layout.is-admin-screen)) .probable-starter-fetched {
 @media (max-width: 430px) {
   body:not(:has(.app-layout.is-admin-screen)) .header-logo {
     width: min(100%, 208px);
+  }
+}
+
+/* Final public mobile guard: keep both panes inside the viewport without changing the portal menu. */
+@media (max-width: 767px) {
+  body:not(:has(.app-layout.is-admin-screen)) {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: clip;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .container,
+  body:not(:has(.app-layout.is-admin-screen)) .header-inner,
+  body:not(:has(.app-layout.is-admin-screen)) .app-layout,
+  body:not(:has(.app-layout.is-admin-screen)) .app-layout > .card,
+  body:not(:has(.app-layout.is-admin-screen)) .lineup-card,
+  body:not(:has(.app-layout.is-admin-screen)) #predictionForm,
+  body:not(:has(.app-layout.is-admin-screen)) #predictionEditor {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .header-inner > *,
+  body:not(:has(.app-layout.is-admin-screen)) .lead,
+  body:not(:has(.app-layout.is-admin-screen)) .beta-panel,
+  body:not(:has(.app-layout.is-admin-screen)) .hero-panel,
+  body:not(:has(.app-layout.is-admin-screen)) .hero-copy,
+  body:not(:has(.app-layout.is-admin-screen)) .hero-cta,
+  body:not(:has(.app-layout.is-admin-screen)) .auth-panel,
+  body:not(:has(.app-layout.is-admin-screen)) .auth-state,
+  body:not(:has(.app-layout.is-admin-screen)) .auth-actions,
+  body:not(:has(.app-layout.is-admin-screen)) .probable-starter-card,
+  body:not(:has(.app-layout.is-admin-screen)) .probable-starter-heading,
+  body:not(:has(.app-layout.is-admin-screen)) .probable-starter-grid,
+  body:not(:has(.app-layout.is-admin-screen)) .probable-starter-team {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .auth-panel,
+  body:not(:has(.app-layout.is-admin-screen)) .auth-actions {
+    width: 100%;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .auth-state {
+    align-items: flex-start;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .auth-state > span,
+  body:not(:has(.app-layout.is-admin-screen)) .auth-button {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .auth-button {
+    flex: 1 1 0;
+    white-space: normal;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .probable-starter-heading {
+    flex-wrap: wrap;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .probable-starter-heading a {
+    flex: 1 1 100%;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    text-align: left;
+    white-space: normal;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .probable-starter-team strong,
+  body:not(:has(.app-layout.is-admin-screen)) .hero-panel h1,
+  body:not(:has(.app-layout.is-admin-screen)) .hero-panel p,
+  body:not(:has(.app-layout.is-admin-screen)) .lead,
+  body:not(:has(.app-layout.is-admin-screen)) .beta-panel {
+    overflow-wrap: anywhere;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .lineup-builder {
+    grid-template-columns: minmax(0, 56fr) minmax(0, 44fr);
+    gap: 6px;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .lineup-panel,
+  body:not(:has(.app-layout.is-admin-screen)) .player-panel,
+  body:not(:has(.app-layout.is-admin-screen)) .slot-list,
+  body:not(:has(.app-layout.is-admin-screen)) .player-list,
+  body:not(:has(.app-layout.is-admin-screen)) .player-list-frame,
+  body:not(:has(.app-layout.is-admin-screen)) .lineup-slot,
+  body:not(:has(.app-layout.is-admin-screen)) .player-chip {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .lineup-panel,
+  body:not(:has(.app-layout.is-admin-screen)) .player-panel {
+    overflow-x: clip;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .player-list {
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .player-chip .player-name,
+  body:not(:has(.app-layout.is-admin-screen)) #predictionLineup .slot-player {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+}
+
+@media (max-width: 430px) {
+  body:not(:has(.app-layout.is-admin-screen)) .container {
+    width: calc(100% - 16px);
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .lineup-builder {
+    grid-template-columns: minmax(0, 56fr) minmax(0, 44fr);
   }
 }

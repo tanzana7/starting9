@@ -740,6 +740,16 @@ function artifactLineupHealth(lineupDataHealth, workflowArtifactHealth) {
   return workflowArtifactHealth?.lineup || lineupDataHealth || null;
 }
 
+function isVerifiedLineupArtifact(health) {
+  if (!health || health.available !== true) return false;
+  // New health payloads carry an explicit verification bit. The fallback is
+  // kept for older admin payloads, while runtime readers now always populate
+  // artifactVerified from structural validation rather than workflow state.
+  return typeof health.artifactVerified === "boolean"
+    ? health.artifactVerified
+    : health.ready === true;
+}
+
 // A terminal job is only a lifecycle fact.  The business artifact is the
 // proof that the job can be treated as successful by the next phase.
 export function getV3ArtifactMismatch({ phase, completedJob = null, lineupDataHealth = null, workflowArtifactHealth = null } = {}) {
@@ -748,7 +758,7 @@ export function getV3ArtifactMismatch({ phase, completedJob = null, lineupDataHe
   const checks = {
     lineup_fetch: {
       health: lineup,
-      ready: lineup?.ready === true,
+      ready: isVerifiedLineupArtifact(lineup),
       healthUnavailableCode: "V3_LINEUP_DATA_HEALTH_UNAVAILABLE",
       healthUnavailableMessage: "lineup_fetchの成果物ヘルスを確認できないため、完了扱いにできません。",
       code: "LINEUP_FETCH_COMPLETED_WITHOUT_CANDIDATE",
@@ -756,7 +766,8 @@ export function getV3ArtifactMismatch({ phase, completedJob = null, lineupDataHe
     },
     lineup_finalize: {
       health: lineup,
-      ready: lineup?.finalizedLineupExists === true,
+      ready: lineup?.finalizedValid === true
+        || (typeof lineup?.finalizedValid !== "boolean" && lineup?.finalizedLineupExists === true),
       healthUnavailableCode: "V3_LINEUP_DATA_HEALTH_UNAVAILABLE",
       healthUnavailableMessage: "正式スタメンの成果物ヘルスを確認できないため、完了扱いにできません。",
       code: lineup?.candidateExists === false ? "LINEUP_FINALIZE_COMPLETED_WITHOUT_CANDIDATE" : "LINEUP_FINALIZE_COMPLETED_WITHOUT_FINALIZED_LINEUP",

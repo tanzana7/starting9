@@ -569,12 +569,31 @@ function lineupDisplayState(game, now = new Date()) {
   const diagnosticText = lineupDiagnosticText(diagnostics);
   const jobStatusLabel = ({ pending: "予定", claimed: "実行中", retry_wait: "retry_wait", completed: "完了", failed: "失敗" })[String(job?.status || "")] || "待機中";
   const slots = Array.isArray(game?.schedule?.lineupPollingSlots) ? game.schedule.lineupPollingSlots : [];
-  const nextCheckAt = slots.map((slot) => new Date(slot || ""))
+  let nextCheckAt = slots.map((slot) => new Date(slot || ""))
     .filter((slot) => !Number.isNaN(slot.getTime()) && slot.getTime() > now.getTime())
     .sort((left, right) => left.getTime() - right.getTime())[0]?.toISOString() || null;
+  if (!nextCheckAt && job?.status === "retry_wait" && classification !== "data_error") {
+    nextCheckAt = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
+  }
   const nextText = nextCheckAt ? formatV3Jst(nextCheckAt) : "なし";
 
   if (job?.status === "completed") {
+    const artifactStatus = game?.workflowDiagnostics?.lineupFetch?.artifactStatus;
+    const artifactUnavailable = artifactStatus && artifactStatus.available === false;
+    const artifactUnverified = artifactStatus && artifactStatus.available === true && artifactStatus.artifactVerified !== true;
+    if (game?.workflowDiagnostics?.lineupFetch?.completedWithoutCandidate || artifactUnavailable || artifactUnverified) {
+      return {
+        status: "attention",
+        fallbackStatus: "action",
+        label: artifactUnavailable ? "成果物未検証" : "候補なしの完了扱い",
+        job,
+        reasonCode: artifactUnavailable ? "V3_LINEUP_DATA_HEALTH_UNAVAILABLE" : "LINEUP_FETCH_COMPLETED_WITHOUT_CANDIDATE",
+        nextCheckAt: new Date(now.getTime() + 10 * 60 * 1000).toISOString(),
+        detail: artifactUnavailable
+          ? "lineup_fetchはcompletedですが成果物ヘルスを確認できません。再診断が必要です。"
+          : "lineup_fetchはcompletedですが有効なcandidate/canonical lineupがありません。再取得が必要です。"
+      };
+    }
     return { status: "ok", fallbackStatus: "complete", label: "完了", job, reasonCode, nextCheckAt: null, detail: "スタメン候補取得済み" };
   }
   if (job?.status === "retry_wait") {

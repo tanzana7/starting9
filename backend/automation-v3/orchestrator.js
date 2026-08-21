@@ -18,6 +18,7 @@ import {
 } from "./planner.js";
 import { planV3ProbableStarterJobs } from "./probable-starter-planner.js";
 import { isV3GameEligible } from "./domain.js";
+import { assessV3LineupArtifact } from "./lineup-artifacts.js";
 
 // Planner aggregation, planner diagnostics, and atomic claim coordination.
 export function assertV3AuxiliaryJobResult(job, result, now) {
@@ -45,26 +46,33 @@ async function hasOpenV3Job(db, internalGameId, jobType) {
   return Boolean(row?.id);
 }
 
-function hasStoredLineupPayload(value) {
-  if (typeof value !== "string" || !value.trim()) return false;
+function parseStoredLineupPayload(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
   try {
     const parsed = JSON.parse(value);
-    return Array.isArray(parsed) && parsed.length > 0;
+    return Array.isArray(parsed) ? parsed : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
 async function readV3LineupDataHealth(db, internalGameId, workflowState = "scheduled") {
   const health = {
     available: false,
+    verificationStatus: "unavailable",
     candidateExists: null,
+    candidateValid: null,
     canonicalDataReady: null,
+    canonicalValid: null,
     finalizedLineupExists: null,
+    finalizedValid: null,
     workflowStateAtLeastLineupReady: ["lineup_ready", "scored", "ranked", "published"].includes(String(workflowState)),
     ready: null,
+    artifactVerified: null,
     candidateCount: null,
-    finalizedCount: null
+    candidateValidCount: null,
+    finalizedCount: null,
+    finalizedValidCount: null
   };
   try {
     const revisions = await db.prepare(
@@ -74,8 +82,10 @@ async function readV3LineupDataHealth(db, internalGameId, workflowState = "sched
         ORDER BY version DESC`
     ).bind(internalGameId).all();
     const rows = revisions.results || [];
-    const candidates = rows.filter((row) => Number(row.is_final || 0) !== 1 && hasStoredLineupPayload(row.actual_lineup_json));
-    const finalized = rows.filter((row) => Number(row.is_final || 0) === 1 && hasStoredLineupPayload(row.actual_lineup_json));
+    const candidates = rows.filter((row) => Number(row.is_final || 0) !== 1);
+    const finalized = rows.filter((row) => Number(row.is_final || 0) === 1);
+    const candidateChecks = candidates.map((row) => assessV3LineupArtifact(parseStoredLineupPayload(row.actual_lineup_json)));
+    const finalizedChecks = finalized.map((row) => assessV3LineupArtifact(parseStoredLineupPayload(row.actual_lineup_json)));
     const canonical = await db.prepare(
       `SELECT actual_lineup_json
          FROM game_lineups
@@ -83,15 +93,20 @@ async function readV3LineupDataHealth(db, internalGameId, workflowState = "sched
         LIMIT 1`
     ).bind(internalGameId).first();
     health.available = true;
-    health.candidateExists = candidates.length > 0;
-    health.canonicalDataReady = hasStoredLineupPayload(canonical?.actual_lineup_json);
-    health.finalizedLineupExists = finalized.length > 0;
+    const canonicalCheck = assessV3LineupArtifact(parseStoredLineupPayload(canonical?.actual_lineup_json));
+    health.candidateExists = candidateChecks.some((check) => check.ok);
+    health.candidateValid = health.candidateExists;
+    health.canonicalDataReady = canonicalCheck.ok;
+    health.canonicalValid = canonicalCheck.ok;
+    health.finalizedLineupExists = finalizedChecks.some((check) => check.ok);
+    health.finalizedValid = health.finalizedLineupExists;
     health.candidateCount = candidates.length;
+    health.candidateValidCount = candidateChecks.filter((check) => check.ok).length;
     health.finalizedCount = finalized.length;
-    health.ready = health.candidateExists
-      || health.canonicalDataReady
-      || health.finalizedLineupExists
-      || health.workflowStateAtLeastLineupReady;
+    health.finalizedValidCount = finalizedChecks.filter((check) => check.ok).length;
+    health.ready = health.candidateValid || health.canonicalValid || health.finalizedValid;
+    health.artifactVerified = health.ready;
+    health.verificationStatus = health.ready ? "verified" : "missing_or_invalid";
   } catch {
     // Unknown/legacy schemas must not trigger a speculative recovery job.
   }
@@ -327,7 +342,9 @@ export async function planV3MainJobs(db, games = [], now = new Date()) {
         } else if (artifactRecoveryType && !result.created && isV3TerminalJobStatus(result.job?.status)) {
           const health = await readV3WorkflowArtifactHealth(db, game.internalGameId, state);
           const missingArtifact = artifactRecoveryType === V3_JOB_TYPE.LINEUP_FINALIZE
-            ? health.available && health.lineup.finalizedLineupExists === false && health.lineup.candidateExists === true
+            ? health.available
+              && (health.lineup.finalizedValid === false || health.lineup.finalizedLineupExists === false)
+              && (health.lineup.candidateValid === true || health.lineup.candidateExists === true)
             : health.available && health.publicationReady === false && health.rankingReflected === true;
           Object.assign(diagnostic, {
             ...health,

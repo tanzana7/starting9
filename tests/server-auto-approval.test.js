@@ -58,7 +58,7 @@ test("手動承認とCron自動承認は同じサーバー側の承認コアを�
   assert.match(worker, /async function approveActualLineupForAutoScoring/);
   assert.match(worker, /const record = await approveActualLineupForAutoScoring\(env, gameId, actualResult\.lineup, detectedAt/);
   assert.match(worker, /if \(existing && options\.preventOverwrite\) \{\s+return existing;/s);
-  assert.match(worker, /const existing = await getGameLineup\(env\.AUTH_DB, \{ gameId, internalGameId \}\);\s+if \(existing\) \{\s+return \{\s+status: isFinalCapture \? "already_captured" : "provisional"/s);
+  assert.match(worker, /const existing = await getGameLineup\(env\.AUTH_DB, \{ gameId, internalGameId \}\);\s+const existingLineup = parseStoredActualLineup\(existing\?\.actual_lineup_json\);\s+const existingArtifact = assessV3LineupArtifact\(existingLineup\);\s+if \(existing && existingArtifact\.ok\)/s);
 });
 
 test("自動承認設定はWorker側に残し、通常公開bundleへ管理UIを含めない", () => {

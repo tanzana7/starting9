@@ -70,6 +70,22 @@ test("game-day-statusはsnapshot取得不能をunknownとして返す", () => {
   });
 });
 
+test("game-day-statusはlive rosterが使える場合にgame-day-rosterと同じsourceを返す", () => {
+  assert.deepEqual(buildGameDayStatusRosterSummary({
+    liveRoster: {
+      status: "fresh",
+      displayRosterSource: "latest_official_live",
+      playerCount: 31
+    }
+  }), {
+    status: "fresh",
+    displayRosterSource: "latest_official_live",
+    playerCount: 31,
+    playerCountSource: "latest_official_live",
+    warning: null
+  });
+});
+
 function createCanonicalGameDb({ internalGameId, gameRow, scheduleRow }) {
   return {
     prepare(sql) {

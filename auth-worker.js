@@ -4274,6 +4274,7 @@ async function handleAdminV3Overview(request, env, cors) {
       sourceSnapshotComparison: latestRosterAuditDetails.sourceSnapshotComparison
         || latestRosterAuditDetails.diagnostics?.sourceSnapshotComparison
         || null,
+      snapshotVerificationRequired: rosterStatusDecision.snapshotVerificationRequired,
       previousSnapshotComparison: latestRosterAuditDetails.previousSnapshotComparison || null,
       sourceFingerprint: latestRosterAuditDetails.sourceFingerprint || null,
       snapshotFingerprint: latestRosterAuditDetails.snapshotFingerprint || null,
@@ -8579,7 +8580,7 @@ async function handleGetGameDayStatus(request, env, cors) {
   const identifier = parseGameDayStatusRequestIdentifier(new URL(request.url).searchParams);
   const identity = identifier ? await resolveGameDayStatusIdentity(env.AUTH_DB, identifier) : null;
   if (!identity) return jsonResponse({ ok: false, error: "対象試合を指定してください。" }, 400, cors);
-  const status = await getGameDayStatus(env.AUTH_DB, identity);
+  const status = await getGameDayStatus(env.AUTH_DB, identity, env);
   return jsonResponse({ ok: true, gameId: identity.gameId, internalGameId: identity.internalGameId || null, ...status }, 200, cors);
 }
 
@@ -8681,6 +8682,29 @@ async function handleGetGameDayRoster(request, env, cors) {
     snapshot: row
   });
   if (currentResponse.status === "captured") {
+    const capturedAt = new Date(row?.captured_at || "").getTime();
+    const shouldVerifyLive = !Number.isFinite(capturedAt)
+      || Date.now() - capturedAt >= 10 * 60 * 1000;
+    if (shouldVerifyLive) {
+      const refreshed = await fetchLatestPublicRoster(env, game);
+      if (refreshed) {
+        const sourceSnapshotComparison = compareV3RosterSourceSnapshot({
+          sourceRoster: refreshed.players,
+          snapshotRoster: parseJsonArray(row?.roster_json),
+          sourceFetchedAt: refreshed.capturedAt,
+          snapshotCapturedAt: row?.captured_at || null,
+          sourceFingerprint: rosterFingerprint(refreshed.players),
+          snapshotFingerprint: rosterFingerprint(parseJsonArray(row?.roster_json))
+        });
+        return jsonResponse({
+          ...refreshed,
+          warning: sourceSnapshotComparison.mismatch ? "公式liveとcanonical snapshotに差分があります。正式roster_fetchで更新します。" : null,
+          snapshotStatus: "captured",
+          snapshotCapturedAt: row?.captured_at || null,
+          sourceSnapshotComparison
+        }, 200, cors);
+      }
+    }
     const quality = await readPublicRosterQuality(env.AUTH_DB, internalGameId);
     if (quality.attention) {
       const refreshed = await fetchLatestPublicRoster(env, game);
@@ -9355,7 +9379,7 @@ function getAutomationHealth() {
   return { available: false, cronLastRunAt: null, cronLastSuccessAt: null, cronLastErrorAt: null, cronLastError: "", processedGameCount: 0 };
 }
 
-async function getGameDayStatus(db, identity) {
+async function getGameDayStatus(db, identity, env = null) {
   const [gameResult, noticeResult, lineupResult] = await db.batch([
     db.prepare("SELECT * FROM game_day_notice_games WHERE game_id = ?1 LIMIT 1").bind(identity.gameId),
     db.prepare("SELECT notice_date, source_url, fetched_at, registered_count, removed_count, status, last_error_code FROM game_day_notices WHERE notice_date = ?1 LIMIT 1").bind(identity.game.date),
@@ -9364,6 +9388,42 @@ async function getGameDayStatus(db, identity) {
   const game = gameResult?.results?.[0] || null;
   const notice = noticeResult?.results?.[0] || null;
   const lineup = lineupResult?.results?.[0] || null;
+  let rosterSnapshot = null;
+  let rosterSnapshotAvailable = true;
+  if (identity.internalGameId) {
+    try {
+      rosterSnapshot = await db.prepare(
+        `SELECT internal_game_id, game_date, captured_at, player_count, source, status
+           FROM game_roster_snapshots
+          WHERE internal_game_id = ?1
+          ORDER BY updated_at DESC, captured_at DESC
+          LIMIT 1`
+      ).bind(identity.internalGameId).first();
+    } catch {
+      rosterSnapshotAvailable = false;
+    }
+  }
+  let roster = buildGameDayStatusRosterSummary({
+    internalGameId: identity.internalGameId || "",
+    gameDate: identity.game.date,
+    snapshot: rosterSnapshot,
+    snapshotAvailable: rosterSnapshotAvailable
+  });
+  if (env && roster.status !== "fresh") {
+    const liveRoster = await fetchLatestPublicRoster(env, {
+      ...identity.game,
+      internal_game_id: identity.internalGameId
+    });
+    if (liveRoster) {
+      roster = buildGameDayStatusRosterSummary({
+        internalGameId: identity.internalGameId || "",
+        gameDate: identity.game.date,
+        snapshot: rosterSnapshot,
+        liveRoster,
+        snapshotAvailable: rosterSnapshotAvailable
+      });
+    }
+  }
   const now = new Date();
   const resultStatus = now < identity.startAt
     ? "prestart"
@@ -9384,11 +9444,69 @@ async function getGameDayStatus(db, identity) {
     afterDeadline: Number(game?.after_deadline_notice || 0) === 1,
     registeredCount: Number(game?.registered_count || 0),
     removedCount: Number(game?.removed_count || 0),
+    registeredCountSource: "game_day_notice",
+    rosterStatus: roster.status,
+    rosterDisplaySource: roster.displayRosterSource,
+    rosterPlayerCount: roster.playerCount,
+    rosterPlayerCountSource: roster.playerCountSource,
+    rosterWarning: roster.warning,
     sourceUrl: notice?.source_url || GAME_DAY_NOTICE_SOURCE,
     fetchedAt: notice?.fetched_at || null,
     sourceStatus: notice?.status || "waiting",
     hasError: Boolean(notice?.status === GAME_DAY_NOTICE_STATUS.ERROR),
     resultStatus
+  };
+}
+
+export function buildGameDayStatusRosterSummary({ internalGameId = "", gameDate = "", snapshot = null, liveRoster = null, snapshotAvailable = true } = {}) {
+  if (liveRoster?.status === "fresh" && liveRoster?.displayRosterSource === "latest_official_live") {
+    return {
+      status: "fresh",
+      displayRosterSource: "latest_official_live",
+      playerCount: Number(liveRoster.playerCount || 0),
+      playerCountSource: "latest_official_live",
+      warning: null
+    };
+  }
+  if (!snapshotAvailable) {
+    return {
+      status: "unknown",
+      displayRosterSource: null,
+      playerCount: 0,
+      playerCountSource: "unavailable",
+      warning: "試合別ロースター状態を確認できません。"
+    };
+  }
+
+  const freshness = getV3RosterSnapshotFreshness(snapshot, { internalGameId, gameDate });
+  const playerCount = Number(snapshot?.player_count || 0);
+  const hasCapturedRoster = String(snapshot?.status || "") === "captured"
+    && String(snapshot?.source || "") === "npb-roster"
+    && playerCount > 0;
+  if (freshness.isFresh) {
+    return {
+      status: "fresh",
+      displayRosterSource: "fresh_snapshot",
+      playerCount,
+      playerCountSource: "game_roster_snapshot",
+      warning: null
+    };
+  }
+  if (hasCapturedRoster) {
+    return {
+      status: "stale",
+      displayRosterSource: "stale_snapshot",
+      playerCount,
+      playerCountSource: "game_roster_snapshot",
+      warning: `最新の公式ロースターを確認できないため、前回取得データを表示しています（${freshness.staleReason || "ROSTER_SNAPSHOT_STALE"}）。`
+    };
+  }
+  return {
+    status: "pending",
+    displayRosterSource: null,
+    playerCount: 0,
+    playerCountSource: "game_roster_snapshot",
+    warning: "試合別ロースターはまだ確認できていません。"
   };
 }
 

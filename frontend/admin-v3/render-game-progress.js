@@ -222,11 +222,12 @@
         ...(diagnostics.artifactBlockingReasons || []).map((reason) => `${reason.code}: ${reason.message}`),
         ...(diagnostics.lineupFetch?.blockingReasons || []).map((reason) => `${reason.code}: ${reason.message}`)
       ].filter(Boolean);
+      const uniqueMessages = [...new Set(messages)];
       const history = historicalLineupWarnings.length
         ? `<details class="v3-operation-result historical-warning" data-v3-historical-warnings><summary>過去の警告（現在状態には影響しません）</summary><ul>${historicalLineupWarnings.map((warning) => `<li>${escapeHtml(`${warning.code}: ${warning.message}`)}</li>`).join("")}</ul><p>${escapeHtml(historicalNote)}</p></details>`
         : "";
-      if (!messages.length) return history;
-      return `${history}<div class="v3-operation-result" data-v3-workflow-diagnostics><strong>現在の状態診断</strong><ul>${messages.map((message) => `<li>${escapeHtml(message)}</li>`).join("")}</ul></div>`;
+      if (!uniqueMessages.length) return history;
+      return `${history}<div class="v3-operation-result" data-v3-workflow-diagnostics><strong>現在の状態診断</strong><ul>${uniqueMessages.map((message) => `<li>${escapeHtml(message)}</li>`).join("")}</ul></div>`;
     }
 
     function renderDashboard(payload, games) {

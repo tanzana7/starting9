@@ -202,6 +202,14 @@ test("新鮮なsnapshotがない公開rosterはNPB公式をread-only refreshし�
   assert.match(publicRoster, /\["latest_official_snapshot", "latest_official_live"\]\.includes/);
 });
 
+test("同日snapshotが古い場合も公式liveとfingerprint比較して候補を返す", () => {
+  const handler = worker.slice(worker.indexOf("async function handleGetGameDayRoster"), worker.indexOf("export function getPublicRosterQualityFromAuditDetails"));
+  assert.match(handler, /shouldVerifyLive/);
+  assert.match(handler, /compareV3RosterSourceSnapshot/);
+  assert.match(handler, /sourceSnapshotComparison\.mismatch/);
+  assert.match(handler, /正式roster_fetchで更新します/);
+});
+
 test("大塚瑠晏はplayer masterと公式背番号49で内野手候補として解決できる", () => {
   const players = fs.readFileSync(path.join(root, "players.js"), "utf8");
   const master = fs.readFileSync(path.join(root, "fighters-player-master.js"), "utf8");

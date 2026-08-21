@@ -32,6 +32,18 @@ test("共通phase判定はlineupの待機・異常とscore/ranking no-op、publi
   assert.equal(publish.reasonCode, "PUBLISH_PREREQUISITE_PENDING");
 });
 
+test("lineup retryの過去時刻を次回確認として表示しない", () => {
+  const now = new Date("2026-08-09T07:00:00.000Z");
+  const status = deriveV3PhaseStatus({
+    phase: "lineup_fetch",
+    game,
+    now,
+    jobs: [{ job_type: "lineup_fetch", status: "retry_wait", failure_code: "LINEUP_NOT_ANNOUNCED", next_retry_at: "2026-08-09T06:50:00.000Z" }]
+  });
+  assert.equal(status.reasonCode, "LINEUP_NOT_ANNOUNCED");
+  assert.equal(status.nextCheckAt, "2026-08-09T07:10:00.000Z");
+});
+
 test("completed lineup_fetch without candidate is attention", () => {
   const status = deriveV3PhaseStatus({
     phase: "lineup_fetch",
@@ -73,6 +85,24 @@ test("completed後の成果物不足はlineup_finalize/score/ranking/publishを�
     const status = deriveV3PhaseStatus({ phase, game, workflowState, jobs: [baseJob(jobType)], workflowArtifactHealth: artifactHealth });
     assert.equal(status.severity, "ATTENTION");
     assert.equal(status.reasonCode, reasonCode);
+  }
+});
+
+test("completed jobでも成果物ヘルス取得不能なら現在状態を未検証にする", () => {
+  const baseJob = (job_type) => ({ job_type, status: "completed", id: 100, completed_at: "2026-08-19T05:02:00.000Z" });
+  const cases = [
+    ["lineup_fetch", "prediction_closed", "V3_LINEUP_DATA_HEALTH_UNAVAILABLE"],
+    ["lineup_finalize", "prediction_closed", "V3_LINEUP_DATA_HEALTH_UNAVAILABLE"],
+    ["score", "lineup_ready", "V3_SCORING_DATA_HEALTH_UNAVAILABLE"],
+    ["ranking", "scored", "V3_RANKING_DATA_HEALTH_UNAVAILABLE"],
+    ["publish", "ranked", "V3_PUBLICATION_DATA_HEALTH_UNAVAILABLE"]
+  ];
+  for (const [phase, workflowState, reasonCode] of cases) {
+    const jobType = phase === "ranking" ? "ranking_rebuild" : phase;
+    const status = deriveV3PhaseStatus({ phase, game, workflowState, jobs: [baseJob(jobType)] });
+    assert.equal(status.severity, "ATTENTION");
+    assert.equal(status.reasonCode, reasonCode);
+    assert.match(status.message, /成果物ヘルス/);
   }
 });
 

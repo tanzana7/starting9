@@ -57,6 +57,7 @@ export async function planV3RosterJobs(db, games = [], now = new Date()) {
       isBeforeFirstRosterSlot: false,
       isAfterDueSlot: false,
       freshSnapshotExists: false,
+      snapshotVerificationRequired: false,
       staleSnapshotExists: false,
       terminalRosterJobExists: false,
       reasonCode: null,
@@ -101,6 +102,7 @@ export async function planV3RosterJobs(db, games = [], now = new Date()) {
         isBeforeFirstRosterSlot: rosterStatus.isBeforeFirstRosterSlot,
         isAfterDueSlot: rosterStatus.isAfterDueSlot,
         freshSnapshotExists: rosterStatus.freshSnapshotExists,
+        snapshotVerificationRequired: rosterStatus.snapshotVerificationRequired,
         staleSnapshotExists: rosterStatus.staleSnapshotExists,
         openJobExists: rosterStatus.openRosterJobExists,
         terminalRosterJobExists: rosterStatus.terminalRosterJobExists,
@@ -111,12 +113,6 @@ export async function planV3RosterJobs(db, games = [], now = new Date()) {
         diagnostic.planningSkipped = true;
         diagnostic.skipReason = "ROSTER_NOT_DUE";
         planned.push({ game, plan: null, created: false, reasonCode: diagnostic.reasonCode, diagnostic: { ...diagnostic } });
-        continue;
-      }
-      if (snapshot.exists) {
-        diagnostic.planningSkipped = true;
-        diagnostic.skipReason = "ROSTER_SNAPSHOT_ALREADY_EXISTS";
-        planned.push({ game, plan: null, created: false, reasonCode: diagnostic.skipReason, diagnostic: { ...diagnostic } });
         continue;
       }
       const openJob = rosterJobs.find((job) => ["pending", "claimed", "retry_wait"].includes(String(job.status || "")));

@@ -76,6 +76,24 @@ test("completed後の成果物不足はlineup_finalize/score/ranking/publishを�
   }
 });
 
+test("completed jobでも成果物ヘルス取得不能なら現在状態を未検証にする", () => {
+  const baseJob = (job_type) => ({ job_type, status: "completed", id: 100, completed_at: "2026-08-19T05:02:00.000Z" });
+  const cases = [
+    ["lineup_fetch", "prediction_closed", "V3_LINEUP_DATA_HEALTH_UNAVAILABLE"],
+    ["lineup_finalize", "prediction_closed", "V3_LINEUP_DATA_HEALTH_UNAVAILABLE"],
+    ["score", "lineup_ready", "V3_SCORING_DATA_HEALTH_UNAVAILABLE"],
+    ["ranking", "scored", "V3_RANKING_DATA_HEALTH_UNAVAILABLE"],
+    ["publish", "ranked", "V3_PUBLICATION_DATA_HEALTH_UNAVAILABLE"]
+  ];
+  for (const [phase, workflowState, reasonCode] of cases) {
+    const jobType = phase === "ranking" ? "ranking_rebuild" : phase;
+    const status = deriveV3PhaseStatus({ phase, game, workflowState, jobs: [baseJob(jobType)] });
+    assert.equal(status.severity, "ATTENTION");
+    assert.equal(status.reasonCode, reasonCode);
+    assert.match(status.message, /成果物ヘルス/);
+  }
+});
+
 test("artifact mismatch diagnostics expose all completed jobs requiring recovery", () => {
   const diagnostics = v3WorkflowDiagnostics({
     state: "lineup_ready",

@@ -702,12 +702,16 @@ export function getV3ArtifactMismatch({ phase, completedJob = null, lineupDataHe
     lineup_fetch: {
       health: lineup,
       ready: lineup?.ready === true,
+      healthUnavailableCode: "V3_LINEUP_DATA_HEALTH_UNAVAILABLE",
+      healthUnavailableMessage: "lineup_fetchの成果物ヘルスを確認できないため、完了扱いにできません。",
       code: "LINEUP_FETCH_COMPLETED_WITHOUT_CANDIDATE",
       message: "lineup_fetchはcompletedですがcandidate/canonical/finalized lineupがありません。"
     },
     lineup_finalize: {
       health: lineup,
       ready: lineup?.finalizedLineupExists === true,
+      healthUnavailableCode: "V3_LINEUP_DATA_HEALTH_UNAVAILABLE",
+      healthUnavailableMessage: "正式スタメンの成果物ヘルスを確認できないため、完了扱いにできません。",
       code: lineup?.candidateExists === false ? "LINEUP_FINALIZE_COMPLETED_WITHOUT_CANDIDATE" : "LINEUP_FINALIZE_COMPLETED_WITHOUT_FINALIZED_LINEUP",
       message: lineup?.candidateExists === false
         ? "lineup_finalizeはcompletedですがcandidateがありません。正式スタメン確定を再実行できません。"
@@ -716,23 +720,40 @@ export function getV3ArtifactMismatch({ phase, completedJob = null, lineupDataHe
     score: {
       health: workflowArtifactHealth?.scoring,
       ready: workflowArtifactHealth?.scoring?.ready === true,
+      healthUnavailableCode: "V3_SCORING_DATA_HEALTH_UNAVAILABLE",
+      healthUnavailableMessage: "採点成果物ヘルスを確認できないため、完了扱いにできません。",
       code: "SCORING_COMPLETED_WITHOUT_SCORE",
       message: "scoring jobはcompletedですが採点結果またはscoring revisionがありません。"
     },
     ranking: {
       health: workflowArtifactHealth?.ranking,
       ready: workflowArtifactHealth?.ranking?.reflected === true,
+      healthUnavailableCode: "V3_RANKING_DATA_HEALTH_UNAVAILABLE",
+      healthUnavailableMessage: "ランキング成果物ヘルスを確認できないため、完了扱いにできません。",
       code: "RANKING_COMPLETED_WITHOUT_REFLECTION",
       message: "ranking_updateはcompletedですがranking reflectionがありません。"
     },
     publish: {
       health: workflowArtifactHealth?.publication,
       ready: workflowArtifactHealth?.publication?.published === true,
+      healthUnavailableCode: "V3_PUBLICATION_DATA_HEALTH_UNAVAILABLE",
+      healthUnavailableMessage: "公開成果物ヘルスを確認できないため、完了扱いにできません。",
       code: "PUBLISH_COMPLETED_WITHOUT_PUBLICATION",
       message: "result_publishはcompletedですがpublication_status/published_atが反映されていません。"
     }
   }[String(phase || "")];
-  if (!checks?.health || checks.health.available !== true || checks.ready) return null;
+  if (!checks) return null;
+  if (!checks.health || checks.health.available !== true) {
+    return {
+      code: checks.healthUnavailableCode,
+      message: checks.healthUnavailableMessage,
+      phase,
+      jobId: completedJob.id || null,
+      completedAt: completedJob.completed_at || null,
+      diagnosticFacts: { ...(checks.health || {}), artifactHealthAvailable: false }
+    };
+  }
+  if (checks.ready) return null;
   return {
     code: checks.code,
     message: checks.message,

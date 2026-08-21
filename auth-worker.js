@@ -8865,7 +8865,7 @@ export function buildPublicBaselineRosterResponse({ internalGameId = "", gameDat
     internalGameId,
     gameDate,
     status: players.length ? "baseline" : "pending",
-    displayRosterSource: players.length ? "latest_official_snapshot" : null,
+    displayRosterSource: players.length ? "baseline_snapshot" : null,
     capturedAt: players.length ? snapshot?.captured_at || null : null,
     usableUntil: players.length ? usableUntil : null,
     playerCount: players.length,

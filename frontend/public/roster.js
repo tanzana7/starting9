@@ -78,10 +78,11 @@
           fetchedAt: gameSnapshot.capturedAt || new Date().toISOString(),
           sourceUrl: "auth-worker://game-day-roster",
           method: "game-day-roster-snapshot",
-          warning: "",
+          warning: typeof gameSnapshot.warning === "string" ? gameSnapshot.warning : "",
           httpStatus: 200,
-          cacheStatus: gameSnapshot.status === "baseline" ? "game-snapshot-baseline" : "game-snapshot",
-          stale: false,
+          cacheStatus: gameSnapshot.cacheStatus
+            || (gameSnapshot.status === "baseline" ? "game-snapshot-baseline" : "game-snapshot"),
+          stale: gameSnapshot.stale === true || ["baseline", "stale", "attention"].includes(snapshotStatus),
           parsedCount: gameSnapshot.players.length,
           announcedCount: gameSnapshot.players.length,
           players: gameSnapshot.players

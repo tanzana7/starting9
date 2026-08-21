@@ -8719,6 +8719,14 @@ async function handleGetGameDayRoster(request, env, cors) {
   } catch {
     // A missing/invalid schedule must not make the public roster endpoint fail.
   }
+  const staleResponse = buildPublicStaleRosterResponse({
+    internalGameId,
+    gameDate: game.game_date,
+    snapshot: row
+  });
+  if (staleResponse.status === "stale") {
+    return jsonResponse(staleResponse, 200, cors);
+  }
   return jsonResponse(currentResponse, 200, cors);
 }
 
@@ -8791,6 +8799,34 @@ export function buildPublicGameDayRosterResponse({ internalGameId = "", gameDate
     status: players.length ? "captured" : "pending",
     displayRosterSource: players.length ? "fresh_snapshot" : null,
     capturedAt: players.length ? snapshot?.captured_at || null : null,
+    playerCount: players.length,
+    players
+  };
+}
+
+export function buildPublicStaleRosterResponse({ internalGameId = "", gameDate = "", snapshot = null } = {}) {
+  const expectedId = String(internalGameId || "").trim();
+  const expectedDate = String(gameDate || "").slice(0, 10);
+  const snapshotId = String(snapshot?.internal_game_id || snapshot?.internalGameId || "").trim();
+  const snapshotDate = String(snapshot?.game_date || snapshot?.gameDate || "").slice(0, 10);
+  const players = String(snapshot?.status || "") === "captured"
+    && snapshotId === expectedId
+    && snapshotDate === expectedDate
+    && String(snapshot?.source || "") === "npb-roster"
+    && Number(snapshot?.player_count ?? snapshot?.playerCount ?? 0) > 0
+    ? getPublicRosterPlayers(snapshot)
+    : [];
+  const freshness = getV3RosterSnapshotFreshness(snapshot, { internalGameId: expectedId, gameDate: expectedDate });
+  return {
+    ok: true,
+    internalGameId: expectedId,
+    gameDate: expectedDate,
+    status: players.length ? "stale" : "pending",
+    displayRosterSource: players.length ? "stale_snapshot" : null,
+    capturedAt: players.length ? snapshot?.captured_at || null : null,
+    cacheStatus: players.length ? "game-snapshot-stale" : null,
+    staleReason: players.length ? freshness.staleReason || "ROSTER_SNAPSHOT_STALE" : null,
+    warning: players.length ? "最新の公式ロースターを確認できないため、同一試合の前回取得データを表示しています。" : null,
     playerCount: players.length,
     players
   };

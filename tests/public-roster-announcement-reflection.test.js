@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   buildPublicBaselineRosterResponse,
   buildPublicGameDayRosterResponse,
+  buildPublicStaleRosterResponse,
   getPublicRosterQualityFromAuditDetails,
   getPublicRosterBaselineUsableUntil,
   isPublicRosterBaselineCandidate
@@ -101,6 +102,21 @@ test("freshなV3 roster snapshotは公示変更なしでも通常画面候補と
   assert.equal(response.playerCount, 2);
   assert.deepEqual(response.players.map((player) => player.name), ["登録選手", "継続選手"]);
   assert.equal("source" in response, false);
+});
+
+test("公式取得失敗時も同一試合の古いsnapshotはstale警告付きで返す", () => {
+  const response = buildPublicStaleRosterResponse({
+    internalGameId,
+    gameDate,
+    snapshot: snapshot({ captured_at: "2026-08-08T03:12:10.291Z" })
+  });
+
+  assert.equal(response.status, "stale");
+  assert.equal(response.displayRosterSource, "stale_snapshot");
+  assert.equal(response.cacheStatus, "game-snapshot-stale");
+  assert.equal(response.staleReason, "ROSTER_SNAPSHOT_CAPTURE_DATE_STALE");
+  assert.match(response.warning, /前回取得データ/);
+  assert.equal(response.playerCount, 2);
 });
 
 test("矢澤は投手sourceでも出場候補、山﨑福也は特殊DHとしてその他に分類する", () => {

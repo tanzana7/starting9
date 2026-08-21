@@ -195,6 +195,6 @@ test("公示なしはUIを隠し、4xxはwarning、5xxまたは通信失敗だ�
 });
 
 test("公開画面のmoduleとentry pointは同じcache busterを使う", () => {
-  assert.match(html, /frontend\/public\/app-coordinator\.js\?v=public-prediction-image-roster-otsuka-fix-1/);
-  assert.match(html, /script\.js\?v=public-prediction-image-roster-otsuka-fix-1/);
+  assert.match(html, /frontend\/public\/app-coordinator\.js\?v=public-roster-reliability-audit-1/);
+  assert.match(html, /script\.js\?v=public-roster-reliability-audit-1/);
 });

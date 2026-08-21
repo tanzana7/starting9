@@ -12,10 +12,63 @@ const script = read("script.js");
 const coordinator = read("frontend/public/app-coordinator.js");
 const html = read("index.html");
 const {
+  buildGameDayStatusRosterSummary,
   parseGameDayStatusRequestIdentifier,
   resolveApiGameReference,
   resolveGameDayStatusIdentity
 } = await import(pathToFileURL(workerPath).href);
+
+test("game-day-statusは公示件数と表示用roster状態を分離し、fresh snapshotを明示する", () => {
+  const result = buildGameDayStatusRosterSummary({
+    internalGameId: "34005ba3-cf62-4dee-81ca-bf427731c560",
+    gameDate: "2026-08-21",
+    snapshot: {
+      internal_game_id: "34005ba3-cf62-4dee-81ca-bf427731c560",
+      game_date: "2026-08-21",
+      captured_at: "2026-08-21T01:06:53.867Z",
+      player_count: 31,
+      source: "npb-roster",
+      status: "captured"
+    }
+  });
+  assert.deepEqual(result, {
+    status: "fresh",
+    displayRosterSource: "fresh_snapshot",
+    playerCount: 31,
+    playerCountSource: "game_roster_snapshot",
+    warning: null
+  });
+});
+
+test("game-day-statusはstale snapshotをfresh扱いせずwarningを返す", () => {
+  const result = buildGameDayStatusRosterSummary({
+    internalGameId: "34005ba3-cf62-4dee-81ca-bf427731c560",
+    gameDate: "2026-08-21",
+    snapshot: {
+      internal_game_id: "34005ba3-cf62-4dee-81ca-bf427731c560",
+      game_date: "2026-08-20",
+      captured_at: "2026-08-20T01:06:53.867Z",
+      player_count: 31,
+      source: "npb-roster",
+      status: "captured"
+    }
+  });
+  assert.equal(result.status, "stale");
+  assert.equal(result.displayRosterSource, "stale_snapshot");
+  assert.equal(result.playerCount, 31);
+  assert.match(result.warning, /ROSTER_SNAPSHOT_GAME_DATE_MISMATCH/);
+});
+
+test("game-day-statusはsnapshot取得不能をunknownとして返す", () => {
+  const result = buildGameDayStatusRosterSummary({ snapshotAvailable: false });
+  assert.deepEqual(result, {
+    status: "unknown",
+    displayRosterSource: null,
+    playerCount: 0,
+    playerCountSource: "unavailable",
+    warning: "試合別ロースター状態を確認できません。"
+  });
+});
 
 function createCanonicalGameDb({ internalGameId, gameRow, scheduleRow }) {
   return {

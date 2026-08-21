@@ -9328,6 +9328,27 @@ async function getGameDayStatus(db, identity) {
   const game = gameResult?.results?.[0] || null;
   const notice = noticeResult?.results?.[0] || null;
   const lineup = lineupResult?.results?.[0] || null;
+  let rosterSnapshot = null;
+  let rosterSnapshotAvailable = true;
+  if (identity.internalGameId) {
+    try {
+      rosterSnapshot = await db.prepare(
+        `SELECT internal_game_id, game_date, captured_at, player_count, source, status
+           FROM game_roster_snapshots
+          WHERE internal_game_id = ?1
+          ORDER BY updated_at DESC, captured_at DESC
+          LIMIT 1`
+      ).bind(identity.internalGameId).first();
+    } catch {
+      rosterSnapshotAvailable = false;
+    }
+  }
+  const roster = buildGameDayStatusRosterSummary({
+    internalGameId: identity.internalGameId || "",
+    gameDate: identity.game.date,
+    snapshot: rosterSnapshot,
+    snapshotAvailable: rosterSnapshotAvailable
+  });
   const now = new Date();
   const resultStatus = now < identity.startAt
     ? "prestart"
@@ -9348,11 +9369,60 @@ async function getGameDayStatus(db, identity) {
     afterDeadline: Number(game?.after_deadline_notice || 0) === 1,
     registeredCount: Number(game?.registered_count || 0),
     removedCount: Number(game?.removed_count || 0),
+    registeredCountSource: "game_day_notice",
+    rosterStatus: roster.status,
+    rosterDisplaySource: roster.displayRosterSource,
+    rosterPlayerCount: roster.playerCount,
+    rosterPlayerCountSource: roster.playerCountSource,
+    rosterWarning: roster.warning,
     sourceUrl: notice?.source_url || GAME_DAY_NOTICE_SOURCE,
     fetchedAt: notice?.fetched_at || null,
     sourceStatus: notice?.status || "waiting",
     hasError: Boolean(notice?.status === GAME_DAY_NOTICE_STATUS.ERROR),
     resultStatus
+  };
+}
+
+export function buildGameDayStatusRosterSummary({ internalGameId = "", gameDate = "", snapshot = null, snapshotAvailable = true } = {}) {
+  if (!snapshotAvailable) {
+    return {
+      status: "unknown",
+      displayRosterSource: null,
+      playerCount: 0,
+      playerCountSource: "unavailable",
+      warning: "試合別ロースター状態を確認できません。"
+    };
+  }
+
+  const freshness = getV3RosterSnapshotFreshness(snapshot, { internalGameId, gameDate });
+  const playerCount = Number(snapshot?.player_count || 0);
+  const hasCapturedRoster = String(snapshot?.status || "") === "captured"
+    && String(snapshot?.source || "") === "npb-roster"
+    && playerCount > 0;
+  if (freshness.isFresh) {
+    return {
+      status: "fresh",
+      displayRosterSource: "fresh_snapshot",
+      playerCount,
+      playerCountSource: "game_roster_snapshot",
+      warning: null
+    };
+  }
+  if (hasCapturedRoster) {
+    return {
+      status: "stale",
+      displayRosterSource: "stale_snapshot",
+      playerCount,
+      playerCountSource: "game_roster_snapshot",
+      warning: `最新の公式ロースターを確認できないため、前回取得データを表示しています（${freshness.staleReason || "ROSTER_SNAPSHOT_STALE"}）。`
+    };
+  }
+  return {
+    status: "pending",
+    displayRosterSource: null,
+    playerCount: 0,
+    playerCountSource: "game_roster_snapshot",
+    warning: "試合別ロースターはまだ確認できていません。"
   };
 }
 

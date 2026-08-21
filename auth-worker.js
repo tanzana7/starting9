@@ -88,6 +88,7 @@ import {
   buildV3ScheduleSyncAuditInsert
 } from "./backend/automation-v3/audit.js";
 import { buildV3CronSummary } from "./backend/automation-v3/diagnostics.js";
+import { assessV3LineupArtifact } from "./backend/automation-v3/lineup-artifacts.js";
 
 // Compatibility exports keep existing tests and internal callers stable while
 // the implementation lives in the domain module.
@@ -1138,7 +1139,10 @@ async function executeV3LineupExecutor({ env, internalGameId, now, target, state
       diagnostics: { executorStage: "verify_lineup_finalize_side_effect", internalGameId, ...finalizedHealth }
     });
   }
-  if (!finalizedHealth.finalizedLineupExists) {
+  const finalizedVerified = typeof finalizedHealth.finalizedValid === "boolean"
+    ? finalizedHealth.finalizedValid
+    : finalizedHealth.finalizedLineupExists === true;
+  if (!finalizedVerified) {
     const code = finalizedHealth.candidateExists
       ? "LINEUP_FINALIZE_COMPLETED_WITHOUT_FINALIZED_LINEUP"
       : "LINEUP_FINALIZE_COMPLETED_WITHOUT_CANDIDATE";
@@ -5597,34 +5601,50 @@ async function getV3LineupRevisionRows(db, gameId, internalGameId) {
 async function getV3LineupDataHealth(db, internalGameId, workflowState = "scheduled") {
   const health = {
     available: false,
+    verificationStatus: "unavailable",
     candidateExists: null,
+    candidateValid: null,
     canonicalDataReady: null,
+    canonicalValid: null,
     finalizedLineupExists: null,
+    finalizedValid: null,
     workflowStateAtLeastLineupReady: ["lineup_ready", "scored", "ranked", "published"].includes(String(workflowState)),
     ready: null,
+    artifactVerified: null,
     candidateCount: null,
-    finalizedCount: null
+    candidateValidCount: null,
+    finalizedCount: null,
+    finalizedValidCount: null,
+    validation: null
   };
   try {
     const revisions = await getV3LineupRevisionRows(db, internalGameId, internalGameId);
-    const candidates = revisions.filter((row) => Number(row.is_final || 0) !== 1
-      && Array.isArray(parseStoredActualLineup(row.actual_lineup_json))
-      && parseStoredActualLineup(row.actual_lineup_json).length > 0);
-    const finalized = revisions.filter((row) => Number(row.is_final || 0) === 1
-      && Array.isArray(parseStoredActualLineup(row.actual_lineup_json))
-      && parseStoredActualLineup(row.actual_lineup_json).length > 0);
+    const candidates = revisions.filter((row) => Number(row.is_final || 0) !== 1);
+    const finalized = revisions.filter((row) => Number(row.is_final || 0) === 1);
+    const candidateChecks = candidates.map((row) => ({ row, check: assessV3LineupArtifact(parseStoredActualLineup(row.actual_lineup_json)) }));
+    const finalizedChecks = finalized.map((row) => ({ row, check: assessV3LineupArtifact(parseStoredActualLineup(row.actual_lineup_json)) }));
     const canonical = await getGameLineup(db, { gameId: internalGameId, internalGameId });
     const canonicalLineup = parseStoredActualLineup(canonical?.actual_lineup_json);
+    const canonicalCheck = assessV3LineupArtifact(canonicalLineup);
     health.available = true;
-    health.candidateExists = candidates.length > 0;
-    health.canonicalDataReady = Array.isArray(canonicalLineup) && canonicalLineup.length > 0;
-    health.finalizedLineupExists = finalized.length > 0;
+    health.candidateExists = candidateChecks.some(({ check }) => check.ok);
+    health.candidateValid = health.candidateExists;
+    health.canonicalDataReady = canonicalCheck.ok;
+    health.canonicalValid = canonicalCheck.ok;
+    health.finalizedLineupExists = finalizedChecks.some(({ check }) => check.ok);
+    health.finalizedValid = health.finalizedLineupExists;
     health.candidateCount = candidates.length;
+    health.candidateValidCount = candidateChecks.filter(({ check }) => check.ok).length;
     health.finalizedCount = finalized.length;
-    health.ready = health.candidateExists
-      || health.canonicalDataReady
-      || health.finalizedLineupExists
-      || health.workflowStateAtLeastLineupReady;
+    health.finalizedValidCount = finalizedChecks.filter(({ check }) => check.ok).length;
+    health.ready = health.candidateValid || health.canonicalValid || health.finalizedValid;
+    health.artifactVerified = health.ready;
+    health.verificationStatus = health.ready ? "verified" : "missing_or_invalid";
+    health.validation = {
+      candidate: candidateChecks[0]?.check?.diagnostics || null,
+      canonical: canonicalCheck.diagnostics,
+      finalized: finalizedChecks[0]?.check?.diagnostics || null
+    };
   } catch {
     // Keep overview/diagnose available on deployments without the V3 lineup schema.
   }
@@ -10487,7 +10507,9 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
   const isFinalCapture = phase === "final";
   const isV3 = source === "v3";
   const existing = await getGameLineup(env.AUTH_DB, { gameId, internalGameId });
-  if (existing) {
+  const existingLineup = parseStoredActualLineup(existing?.actual_lineup_json);
+  const existingArtifact = assessV3LineupArtifact(existingLineup);
+  if (existing && existingArtifact.ok) {
     return {
       status: isFinalCapture ? "already_captured" : "provisional",
       reused: true,

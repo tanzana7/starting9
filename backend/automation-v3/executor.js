@@ -17,6 +17,7 @@ import {
   planAuxiliaryJobs,
   planMainWorkflowJobs
 } from "./orchestrator.js";
+import { assessV3LineupArtifact } from "./lineup-artifacts.js";
 
 // Audit observers must never hold the workflow planner or executor hostage.
 // D1 audit writes are operational telemetry; the V3 job lifecycle is the
@@ -38,11 +39,11 @@ async function invokeV3Observer(observer, args = [], timeoutMs = V3_OBSERVER_TIM
   }
 }
 
-function hasStoredLineupPayload(value) {
+function hasVerifiedLineupPayload(value) {
   if (typeof value !== "string" || !value.trim()) return false;
   try {
     const parsed = JSON.parse(value);
-    return Array.isArray(parsed) && parsed.length > 0;
+    return assessV3LineupArtifact(parsed).ok;
   } catch {
     return false;
   }
@@ -60,7 +61,7 @@ async function canReconcileCompletedV3StateTransition(db, internalGameId, transi
             WHERE internal_game_id = ?1 AND is_final = 1
             ORDER BY version DESC LIMIT 1`
         ).bind(internalGameId).first();
-        return hasStoredLineupPayload(final?.actual_lineup_json);
+        return hasVerifiedLineupPayload(final?.actual_lineup_json);
       }
       case V3_JOB_TYPE.SCORE: {
         const lineup = await db.prepare(

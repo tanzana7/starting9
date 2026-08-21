@@ -78,11 +78,34 @@ test("全polling slot経過後にlineupがなければATTENTION", () => {
   assert.match(result.detail, /全polling slot経過後/);
 });
 
+test("completed jobでもartifact healthが未検証なら完了表示にしない", () => {
+  const result = context.lineupDisplayState(game([
+    { job_type: "lineup_fetch", status: "completed", completed_at: "2026-08-08T05:20:00.000Z" }
+  ], {
+    workflowDiagnostics: {
+      lineupFetch: {
+        completedWithoutCandidate: true,
+        artifactStatus: { available: true, artifactVerified: false }
+      }
+    }
+  }), now);
+  assert.equal(result.status, "attention");
+  assert.equal(result.reasonCode, "LINEUP_FETCH_COMPLETED_WITHOUT_CANDIDATE");
+});
+
+test("未発表retryの次回確認は過去slotではなく未来時刻になる", () => {
+  const result = context.lineupDisplayState(game([
+    { job_type: "lineup_fetch", status: "retry_wait", failure_code: "LINEUP_NOT_ANNOUNCED", next_retry_at: "2026-08-08T05:20:00.000Z" }
+  ]), new Date("2026-08-08T06:01:00.000Z"));
+  assert.equal(result.status, "waiting");
+  assert.ok(new Date(result.nextCheckAt).getTime() > new Date("2026-08-08T06:01:00.000Z").getTime());
+});
+
 test("Today Opsはlineup reasonと次回確認を同じ表示契約へ渡す", () => {
   const diagnostics = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-diagnostics.js"), "utf8");
   assert.match(diagnostics, /lineupDetail/);
   assert.match(diagnostics, /renderStep\("スタメン", steps\.lineup, steps\.lineupDetail\)/);
   assert.match(client, /次回確認待ち/);
-  assert.match(page, /admin-v3\.css\?v=public-roster-source-of-truth-1/);
-  assert.match(page, /admin-v3\.js\?v=public-roster-source-of-truth-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-v3-lineup-artifact-health-1/);
+  assert.match(page, /admin-v3\.js\?v=admin-v3-lineup-artifact-health-1/);
 });

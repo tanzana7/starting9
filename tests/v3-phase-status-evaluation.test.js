@@ -106,6 +106,26 @@ test("completed jobでも成果物ヘルス取得不能なら現在状態を未�
   }
 });
 
+test("workflow stateが進んでいてもartifactVerified=falseならlineup_fetchを完了扱いしない", () => {
+  const status = deriveV3PhaseStatus({
+    phase: "lineup_fetch",
+    workflowState: "prediction_closed",
+    game,
+    jobs: [{ job_type: "lineup_fetch", status: "completed", id: 101 }],
+    lineupDataHealth: {
+      available: true,
+      candidateExists: true,
+      canonicalDataReady: true,
+      finalizedLineupExists: false,
+      workflowStateAtLeastLineupReady: true,
+      ready: true,
+      artifactVerified: false
+    }
+  });
+  assert.equal(status.severity, "ATTENTION");
+  assert.equal(status.reasonCode, "LINEUP_FETCH_COMPLETED_WITHOUT_CANDIDATE");
+});
+
 test("artifact mismatch diagnostics expose all completed jobs requiring recovery", () => {
   const diagnostics = v3WorkflowDiagnostics({
     state: "lineup_ready",

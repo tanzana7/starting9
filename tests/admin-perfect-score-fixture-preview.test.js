@@ -72,7 +72,7 @@ test("固定fixtureはadmin-v3の本番assetと導線から除去され、正式
   assert.doesNotMatch(admin, /RELEASE_DEBUG_PERFECT_SCORE_FIXTURE|fixtureKey|data-v3-perfect-score-fixture-preview/);
   assert.doesNotMatch(perfectScoreRenderer, /固定fixture|fixtureKey|data-v3-perfect-score-fixture-preview/);
   assert.match(perfectScoreRenderer, /data-v3-perfect-score-preview/);
-  assert.match(adminPage, /public-roster-source-of-truth-1/);
+  assert.match(adminPage, /admin-v3-lineup-artifact-health-1/);
   assert.doesNotMatch(publicPage, /RELEASE_DEBUG_PERFECT_SCORE_FIXTURE|perfect-score-test/);
   assert.doesNotMatch(publicScript, /RELEASE_DEBUG_PERFECT_SCORE_FIXTURE|perfect-score-test/);
   assert.doesNotMatch(v3Runtime, /RELEASE_DEBUG_PERFECT_SCORE_FIXTURE|perfect-score-test/);

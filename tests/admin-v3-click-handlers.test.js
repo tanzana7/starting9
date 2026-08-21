@@ -63,7 +63,7 @@ test("admin-v3の動的click delegationはElement以外のtargetでも例外な�
 });
 
 test("admin-v3の各操作data属性とcache busterがentrypointで一致する", () => {
-  const buster = "public-roster-source-of-truth-1";
+  const buster = "admin-v3-lineup-artifact-health-1";
   assert.match(html, new RegExp(`admin-v3\.html|admin-v3\.js\\?v=${buster}`));
   assert.match(html, new RegExp(`app-coordinator\\.js\\?v=${buster}`));
   assert.match(source, /\[data-v3-select-game\]/);

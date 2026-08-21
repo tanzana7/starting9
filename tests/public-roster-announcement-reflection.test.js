@@ -156,7 +156,7 @@ test("当日公示前は直近7日以内の同一球団snapshotを安全なbasel
     now: new Date("2026-08-10T00:00:00.000Z")
   });
   assert.equal(response.status, "baseline");
-  assert.equal(response.displayRosterSource, "latest_official_snapshot");
+  assert.equal(response.displayRosterSource, "baseline_snapshot");
   assert.equal(response.usableUntil, "2026-08-11T04:00:00.000Z");
   assert.equal(response.playerCount, 2);
 });
@@ -313,7 +313,7 @@ test("captured rosterは警告を解除し、選手一覧を表示する", () =>
   assert.equal(chip.classList.values.has("hidden"), false);
 });
 
-test("最新公式snapshotを翌日targetへ表示するbaselineは強いwarningを出さない", () => {
+test("別試合の公式snapshotをbaseline表示する場合は更新確認のwarningを出す", () => {
   const createElement = (dataset = {}) => ({
     dataset,
     classList: {
@@ -345,7 +345,7 @@ test("最新公式snapshotを翌日targetへ表示するbaselineは強いwarning
       candidateRosterFilter: "active",
       publicRoster: {
         status: "baseline",
-        displayRosterSource: "latest_official_snapshot",
+        displayRosterSource: "baseline_snapshot",
         players: [{ name: "最新公式選手" }]
       }
     },
@@ -356,8 +356,8 @@ test("最新公式snapshotを翌日targetへ表示するbaselineは強いwarning
 
   controller.renderPredictionRosterFilter();
 
-  assert.equal(status.textContent, "");
-  assert.equal(status.classList.values.has("hidden"), true);
+  assert.match(status.textContent, /前回取得データの場合があります/);
+  assert.equal(status.classList.values.has("hidden"), false);
   assert.equal(chip.classList.values.has("hidden"), false);
 });
 

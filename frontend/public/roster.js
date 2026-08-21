@@ -106,7 +106,7 @@
       const hasLatestOfficialRoster = ["latest_official_snapshot", "latest_official_live"].includes(displayRosterSource);
       const hasFallbackRoster = ["baseline", "stale", "fallback"].includes(rosterStatus)
         && publicRosterReady
-        && !hasLatestOfficialRoster;
+        && (!hasLatestOfficialRoster || rosterStatus === "baseline");
       const hasRosterAttention = rosterStatus === "attention";
       const isRegisteredFielderCandidate = (player) => typeof deps.isRegisteredFielderCandidate === "function"
         ? deps.isRegisteredFielderCandidate(player)

@@ -35,6 +35,6 @@ test("admin-v3は旧直接編集操作を外し、V3正式jobの安全な再実�
 });
 
 test("admin-v3のJavaScriptキャッシュバスターは公示整理版へ更新される", () => {
-  assert.match(page, /admin-v3\.js\?v=public-roster-snapshot-mismatch-and-lineup-retry-1/);
-  assert.match(page, /admin-v3\.css\?v=public-roster-snapshot-mismatch-and-lineup-retry-1/);
+  assert.match(page, /admin-v3\.js\?v=public-roster-source-of-truth-1/);
+  assert.match(page, /admin-v3\.css\?v=public-roster-source-of-truth-1/);
 });

@@ -41,6 +41,10 @@ test("sourceに今川がいてsnapshotにいない場合はATTENTION理由を返
   assert.ok(result.reasonCodes.includes("ROSTER_SNAPSHOT_STALE"));
   assert.deepEqual(result.expectedMissing.map((player) => player.name), ["今川優馬", "宮西尚生"]);
   assert.deepEqual(result.removedStillPresent.map((player) => player.name), ["矢澤宏太"]);
+  assert.equal(result.playerCountDelta, 1);
+  assert.equal(result.fingerprintMatched, false);
+  assert.deepEqual(result.officialOnly.map((player) => player.name), ["今川優馬", "宮西尚生"]);
+  assert.deepEqual(result.snapshotOnly.map((player) => player.name), ["矢澤宏太"]);
 });
 
 test("sourceから消えた矢澤がsnapshotに残る場合は専用理由を返す", () => {
@@ -55,16 +59,21 @@ test("sourceから消えた矢澤がsnapshotに残る場合は専用理由を返
 });
 
 test("sourceとsnapshotが一致する場合はATTENTIONにしない", () => {
+  const fingerprint = "same-fingerprint";
   const result = compareV3RosterSourceSnapshot({
     sourceRoster,
     snapshotRoster: sourceRoster,
     sourceFetchedAt: "2026-08-14T08:00:00.000Z",
-    snapshotCapturedAt: "2026-08-14T08:00:00.000Z"
+    snapshotCapturedAt: "2026-08-14T08:00:00.000Z",
+    sourceFingerprint: fingerprint,
+    snapshotFingerprint: fingerprint
   });
 
   assert.equal(result.status, "OK");
   assert.equal(result.mismatch, false);
   assert.deepEqual(result.reasonCodes, []);
+  assert.equal(result.fingerprintMatched, true);
+  assert.equal(result.verifiedAt, "2026-08-14T08:00:00.000Z");
 });
 
 test("同じ背番号でも登録区分が変わったsource/snapshotは一致扱いしない", () => {

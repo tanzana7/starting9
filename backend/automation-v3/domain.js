@@ -121,7 +121,7 @@ function rosterPlayerSummary(player) {
   return {
     name: String(player?.name || player?.playerName || "").trim(),
     number: String(player?.number || player?.uniformNumber || player?.uniform_number || "").trim(),
-    position: String(player?.position || "").trim()
+    position: String(player?.position || player?.registeredPosition || player?.registered_position || "").trim()
   };
 }
 
@@ -166,7 +166,24 @@ export function compareV3RosterSourceSnapshot({
   const removedStillPresent = [...snapshotByKey.entries()]
     .filter(([key, player]) => !sourceByKey.has(key) || !rosterPlayerMatches(sourceByKey.get(key), player))
     .map(([, player]) => rosterPlayerSummary(player));
-  const mismatch = expectedMissing.length > 0 || removedStillPresent.length > 0;
+  const changedCategory = [...sourceByKey.entries()]
+    .filter(([key, player]) => {
+      const snapshotPlayer = snapshotByKey.get(key);
+      return Boolean(snapshotPlayer)
+        && rosterPlayerName(snapshotPlayer) === rosterPlayerName(player)
+        && rosterPlayerPosition(snapshotPlayer) !== rosterPlayerPosition(player);
+    })
+    .map(([key, player]) => ({
+      official: rosterPlayerSummary(player),
+      snapshot: rosterPlayerSummary(snapshotByKey.get(key))
+    }));
+  const playerCountDelta = sourceByKey.size - snapshotByKey.size;
+  const mismatch = expectedMissing.length > 0
+    || removedStillPresent.length > 0
+    || changedCategory.length > 0
+    || playerCountDelta !== 0;
+  const fingerprintMatched = !mismatch
+    && Boolean(sourceFingerprint && snapshotFingerprint && sourceFingerprint === snapshotFingerprint);
   const sourceFetchedMs = new Date(sourceFetchedAt || "").getTime();
   const snapshotCapturedMs = new Date(snapshotCapturedAt || "").getTime();
   const stale = mismatch
@@ -176,6 +193,8 @@ export function compareV3RosterSourceSnapshot({
   const reasonCodes = [
     ...(expectedMissing.length ? ["ROSTER_EXPECTED_PLAYER_MISSING"] : []),
     ...(removedStillPresent.length ? ["ROSTER_REMOVED_PLAYER_STILL_PRESENT"] : []),
+    ...(changedCategory.length ? ["ROSTER_CATEGORY_CHANGED"] : []),
+    ...(playerCountDelta !== 0 ? ["ROSTER_PLAYER_COUNT_MISMATCH"] : []),
     ...(mismatch ? ["ROSTER_SOURCE_SNAPSHOT_MISMATCH"] : []),
     ...(stale ? ["ROSTER_SNAPSHOT_STALE"] : [])
   ];
@@ -193,6 +212,12 @@ export function compareV3RosterSourceSnapshot({
     snapshotFingerprint: snapshotFingerprint || null,
     sourcePlayerCount: sourceByKey.size,
     snapshotPlayerCount: snapshotByKey.size,
+    playerCountDelta,
+    fingerprintMatched,
+    verifiedAt: fingerprintMatched ? (sourceFetchedAt || null) : null,
+    officialOnly: expectedMissing,
+    snapshotOnly: removedStillPresent,
+    changedCategory,
     expectedMissing,
     removedStillPresent
   };

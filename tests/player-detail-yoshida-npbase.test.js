@@ -99,7 +99,7 @@ test("詳細パネルはPC modal、スマホ bottom sheet、閉じる操作を�
 });
 
 test("公開assetのcache busterは追加NPBaseリンク版へ更新される", () => {
-  assert.match(html, /players\.js\?v=public-roster-reliability-audit-1/);
-  assert.match(html, /script\.js\?v=public-roster-reliability-audit-1/);
-  assert.match(html, /style\.css\?v=public-roster-reliability-audit-1/);
+  assert.match(html, /players\.js\?v=public-roster-source-of-truth-1/);
+  assert.match(html, /script\.js\?v=public-roster-source-of-truth-1/);
+  assert.match(html, /style\.css\?v=public-roster-source-of-truth-1/);
 });

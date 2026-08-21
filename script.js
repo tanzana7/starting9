@@ -623,6 +623,8 @@ function hasUsablePublicRosterForCurrentGame() {
     : Number.POSITIVE_INFINITY;
   return Boolean(
     roster
+    && roster.canUseForPrediction === true
+    && ["official_live", "verified_snapshot", "stale_snapshot", "baseline_snapshot"].includes(String(roster.rosterUse || roster.sourceOfTruth || ""))
     && ["fresh", "baseline", "stale", "fallback", "attention"].includes(roster.status)
     && roster.internalGameId === internalGameId
     && (!gameDate || roster.gameDate === gameDate)
@@ -1593,6 +1595,12 @@ function normalizeRosterSnapshot(snapshot) {
     warning: typeof snapshot?.warning === "string" ? snapshot.warning : "",
     httpStatus: Number(snapshot?.httpStatus) || 0,
     cacheStatus: typeof snapshot?.cacheStatus === "string" ? snapshot.cacheStatus : "",
+    sourceOfTruth: typeof snapshot?.sourceOfTruth === "string" ? snapshot.sourceOfTruth : "",
+    rosterUse: typeof snapshot?.rosterUse === "string" ? snapshot.rosterUse : "",
+    canUseForPrediction: snapshot?.canUseForPrediction === true,
+    verified: snapshot?.verified === true,
+    fingerprint: typeof snapshot?.fingerprint === "string" ? snapshot.fingerprint : "",
+    verifiedAt: typeof snapshot?.verifiedAt === "string" ? snapshot.verifiedAt : "",
     stale: snapshot?.stale === true,
     parsedCount: Number(snapshot?.parsedCount) || 0,
     announcedCount: Number(snapshot?.announcedCount) || 0,

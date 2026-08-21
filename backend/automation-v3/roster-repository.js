@@ -42,13 +42,26 @@ export function getV3RosterSnapshotFreshness(snapshot, { internalGameId = "", ga
 export async function getV3CanonicalRosterSnapshot(db, internalGameId, { gameDate = "" } = {}) {
   const id = normalizeV3InternalGameId(internalGameId);
   try {
-    const row = await db.prepare(
-      `SELECT game_id, internal_game_id, game_date, source, status, player_count, captured_at, updated_at
-         FROM game_roster_snapshots
-        WHERE internal_game_id = ?1
-        ORDER BY updated_at DESC, captured_at DESC
-        LIMIT 1`
-    ).bind(id).first();
+    let row = null;
+    let hasRosterJson = true;
+    try {
+      row = await db.prepare(
+        `SELECT game_id, internal_game_id, game_date, source, status, player_count, captured_at, updated_at, roster_json
+           FROM game_roster_snapshots
+          WHERE internal_game_id = ?1
+          ORDER BY updated_at DESC, captured_at DESC
+          LIMIT 1`
+      ).bind(id).first();
+    } catch {
+      hasRosterJson = false;
+      row = await db.prepare(
+        `SELECT game_id, internal_game_id, game_date, source, status, player_count, captured_at, updated_at
+           FROM game_roster_snapshots
+          WHERE internal_game_id = ?1
+          ORDER BY updated_at DESC, captured_at DESC
+          LIMIT 1`
+      ).bind(id).first();
+    }
     const freshness = getV3RosterSnapshotFreshness(row, { internalGameId: id, gameDate });
     return {
       schemaAvailable: true,
@@ -62,6 +75,7 @@ export async function getV3CanonicalRosterSnapshot(db, internalGameId, { gameDat
       source: row?.source || null,
       status: row?.status || null,
       playerCount: Number(row?.player_count || 0),
+      roster_json: hasRosterJson ? row?.roster_json || null : null,
       capturedAt: row?.captured_at || null,
       updatedAt: row?.updated_at || null
     };
@@ -78,6 +92,7 @@ export async function getV3CanonicalRosterSnapshot(db, internalGameId, { gameDat
       source: null,
       status: null,
       playerCount: 0,
+      roster_json: null,
       capturedAt: null,
       updatedAt: null
     };

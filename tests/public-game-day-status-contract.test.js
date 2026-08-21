@@ -82,7 +82,10 @@ test("game-day-statusはlive rosterが使える場合にgame-day-rosterと同じ
     displayRosterSource: "latest_official_live",
     playerCount: 31,
     playerCountSource: "latest_official_live",
-    warning: null
+    warning: null,
+    officialPlayerCount: 31,
+    snapshotPlayerCount: null,
+    sourceSnapshotComparison: null
   });
 });
 
@@ -264,6 +267,6 @@ test("公示なしはUIを隠し、4xxはwarning、5xxまたは通信失敗だ�
 });
 
 test("公開画面のmoduleとentry pointは同じcache busterを使う", () => {
-  assert.match(html, /frontend\/public\/app-coordinator\.js\?v=public-roster-reliability-audit-1/);
-  assert.match(html, /script\.js\?v=public-roster-reliability-audit-1/);
+  assert.match(html, /frontend\/public\/app-coordinator\.js\?v=public-roster-source-of-truth-1/);
+  assert.match(html, /script\.js\?v=public-roster-source-of-truth-1/);
 });

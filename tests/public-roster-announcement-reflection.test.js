@@ -64,6 +64,9 @@ function createRosterFilterHelpers(storedSnapshot, selectedGame = { internalGame
         internalGameId,
         gameDate,
         status,
+        sourceOfTruth: status === "baseline" ? "baseline_snapshot" : "verified_snapshot",
+        rosterUse: status === "baseline" ? "baseline_snapshot" : "verified_snapshot",
+        canUseForPrediction: true,
         players: storedSnapshot?.players || [],
         usableUntil
       }
@@ -89,7 +92,7 @@ function createRosterFilterHelpers(storedSnapshot, selectedGame = { internalGame
   return context.helpers;
 }
 
-test("freshなV3 roster snapshotは公示変更なしでも通常画面候補として返す", () => {
+test("同日V3 roster snapshot単独は公式live確認前の未検証状態として返す", () => {
   const response = buildPublicGameDayRosterResponse({
     internalGameId,
     gameDate,
@@ -99,6 +102,12 @@ test("freshなV3 roster snapshotは公示変更なしでも通常画面候補と
   assert.equal(response.ok, true);
   assert.equal(response.status, "captured");
   assert.equal(response.displayRosterSource, "fresh_snapshot");
+  assert.equal(response.sourceOfTruth, "canonical_snapshot");
+  assert.equal(response.rosterUse, "none");
+  assert.equal(response.freshness, "unverified");
+  assert.equal(response.canUseForPrediction, false);
+  assert.equal(response.verified, false);
+  assert.match(response.warning, /公式liveとの一致確認/);
   assert.equal(response.playerCount, 2);
   assert.deepEqual(response.players.map((player) => player.name), ["登録選手", "継続選手"]);
   assert.equal("source" in response, false);
@@ -157,6 +166,10 @@ test("当日公示前は直近7日以内の同一球団snapshotを安全なbasel
   });
   assert.equal(response.status, "baseline");
   assert.equal(response.displayRosterSource, "baseline_snapshot");
+  assert.equal(response.sourceOfTruth, "baseline_snapshot");
+  assert.equal(response.rosterUse, "baseline_snapshot");
+  assert.equal(response.canUseForPrediction, true);
+  assert.equal(response.verified, false);
   assert.equal(response.usableUntil, "2026-08-11T04:00:00.000Z");
   assert.equal(response.playerCount, 2);
 });
@@ -198,15 +211,15 @@ test("新鮮なsnapshotがない公開rosterはNPB公式をread-only refreshし�
   assert.match(handler, /fetchLatestPublicRoster\(env, game\)/);
   assert.match(handler, /fetchNpbWorkerJson\(env, \{ mode: "roster", force: "1" \}\)/);
   assert.match(handler, /displayRosterSource: "latest_official_live"/);
-  assert.match(handler, /formal roster_fetch job/);
+  assert.match(handler, /正式roster_fetchで更新します/);
   assert.match(publicRoster, /\["latest_official_snapshot", "latest_official_live"\]\.includes/);
 });
 
 test("同日snapshotが古い場合も公式liveとfingerprint比較して候補を返す", () => {
   const handler = worker.slice(worker.indexOf("async function handleGetGameDayRoster"), worker.indexOf("export function getPublicRosterQualityFromAuditDetails"));
-  assert.match(handler, /shouldVerifyLive/);
+  assert.match(handler, /fetchLatestPublicRoster\(env, game\)/);
   assert.match(handler, /compareV3RosterSourceSnapshot/);
-  assert.match(handler, /sourceSnapshotComparison\.mismatch/);
+  assert.match(handler, /sourceSnapshotComparison/);
   assert.match(handler, /正式roster_fetchで更新します/);
 });
 
@@ -243,6 +256,9 @@ test("同じcanonical UUIDのroster responseを受けると公開候補の再描
       internalGameId: requestedId,
       gameDate,
       status: "captured",
+      sourceOfTruth: "official_live",
+      rosterUse: "official_live",
+      canUseForPrediction: true,
       players: [{ name: "公開候補選手", number: "12", position: "外野手" }]
     }),
     normalizeRosterEntries: (players) => players,
@@ -404,7 +420,7 @@ test("更新待ちでも同一試合の保存済みrosterを暫定表示し、�
 
   assert.equal(state.publicRoster.status, "stale");
   assert.deepEqual(state.publicRoster.players, storedPlayers);
-  assert.deepEqual(renderedNames, ["前回取得選手", "前回取得選手"]);
+  assert.deepEqual(renderedNames, ["前回取得選手"]);
   assert.match(publicRoster, /前回取得データの場合があります/);
   assert.match(publicRoster, /選手情報を更新中です/);
 });

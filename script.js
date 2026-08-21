@@ -63,6 +63,7 @@ const DEFAULT_PLAYER_TEAM_CODE = "fighters";
 let predictionSaveMessageTimerId = null;
 let predictionDeadlineTimerId = null;
 let publicRosterSyncRequestId = 0;
+let openPositionMenuState = null;
 const FIGHTERS_TEAM_KEYWORDS = [
   "北海道日本ハムファイターズ",
   "北海道日本ハム",
@@ -504,6 +505,8 @@ function bindEvents() {
   document.addEventListener("touchmove", handleTouchInteractionMove, { passive: false });
   document.addEventListener("touchend", handleTouchInteractionEnd, { passive: false });
   document.addEventListener("touchcancel", handleTouchInteractionCancel, { passive: false });
+  window.addEventListener("resize", repositionOpenPositionMenu, { passive: true });
+  window.addEventListener("scroll", repositionOpenPositionMenu, { passive: true, capture: true });
   document.querySelectorAll("[data-roster-filter]").forEach((button) => {
     button.addEventListener("click", () => setCandidateRosterFilter(button.dataset.rosterFilter));
   });
@@ -779,6 +782,7 @@ function createPositionControl(pickerName, index, slot) {
   });
 
   control.append(button, menu);
+  menu._positionMenuHost = control;
   return control;
 }
 
@@ -792,13 +796,42 @@ function togglePositionMenu(menu, button, pickerName, index) {
     menu.classList.remove("hidden");
     positionMobilePositionMenu(menu, button);
     button.setAttribute("aria-expanded", "true");
+    if (menu.classList.contains("is-portal-position-menu")) {
+      openPositionMenuState = { menu, button };
+    }
   }
+}
+
+function mountPositionMenuPortal(menu) {
+  if (typeof document === "undefined" || !document.body) return;
+  if (!menu._positionMenuHost) {
+    menu._positionMenuHost = menu.parentElement;
+  }
+  if (menu.parentElement !== document.body) {
+    document.body.appendChild(menu);
+  }
+  menu.classList.add("is-portal-position-menu");
+}
+
+function restorePositionMenuHost(menu) {
+  const host = menu._positionMenuHost;
+  if (host && menu.parentElement !== host) {
+    host.appendChild(menu);
+  }
+  menu.classList.remove("is-portal-position-menu");
 }
 
 function positionMobilePositionMenu(menu, button) {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
 
   const isMobile = window.matchMedia("(max-width: 767px)").matches;
+  if (!isMobile) {
+    restorePositionMenuHost(menu);
+    menu.classList.remove("is-mobile-position-menu", "is-viewport-positioned");
+    return;
+  }
+
+  mountPositionMenuPortal(menu);
   menu.classList.toggle("is-mobile-position-menu", isMobile);
   menu.classList.add("is-viewport-positioned");
   const buttonRect = button.getBoundingClientRect();
@@ -814,6 +847,17 @@ function positionMobilePositionMenu(menu, button) {
 
   menu.style.left = `${Math.round(left)}px`;
   menu.style.top = `${Math.round(Math.max(viewportPadding, top))}px`;
+}
+
+function repositionOpenPositionMenu() {
+  const openMenu = openPositionMenuState;
+  if (!openMenu || openMenu.menu.classList.contains("hidden")) return;
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+  if (!window.matchMedia("(max-width: 767px)").matches) {
+    closeAllPositionMenus();
+    return;
+  }
+  positionMobilePositionMenu(openMenu.menu, openMenu.button);
 }
 
 function updatePositionMenuState(menu, pickerName, index) {
@@ -881,10 +925,12 @@ function closeAllPositionMenus() {
     menu.classList.remove("is-mobile-position-menu", "is-viewport-positioned");
     menu.style.removeProperty("left");
     menu.style.removeProperty("top");
+    restorePositionMenuHost(menu);
   });
   document.querySelectorAll(".position-button").forEach((button) => {
     button.setAttribute("aria-expanded", "false");
   });
+  openPositionMenuState = null;
 }
 
 function createPlayerChip(pickerName, player) {

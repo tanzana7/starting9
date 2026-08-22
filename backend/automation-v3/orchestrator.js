@@ -36,13 +36,14 @@ export function assertV3AuxiliaryJobResult(job, result, now) {
   throw error;
 }
 
-async function hasOpenV3Job(db, internalGameId, jobType) {
+async function hasOpenV3Job(db, internalGameId, jobType, excludeJobId = null) {
   const row = await db.prepare(
     `SELECT id FROM game_jobs_v3
       WHERE internal_game_id = ?1 AND job_type = ?2
+        AND (?3 IS NULL OR id <> ?3)
         AND status IN (${V3_OPEN_JOB_STATUS_SQL})
       LIMIT 1`
-  ).bind(internalGameId, jobType).first();
+  ).bind(internalGameId, jobType, excludeJobId).first();
   return Boolean(row?.id);
 }
 
@@ -324,12 +325,30 @@ export async function planV3MainJobs(db, games = [], now = new Date()) {
         const artifactRecoveryType = [V3_JOB_TYPE.LINEUP_FINALIZE, V3_JOB_TYPE.PUBLISH].includes(plan.jobType)
           ? plan.jobType
           : null;
+        const predictionCloseRecovery = plan.jobType === V3_JOB_TYPE.PREDICTION_CLOSE
+          && !result.created
+          && isV3ScoreRecoveryTerminalJob(result.job);
         const isTerminalRecovery = recoveryJobType
           && !result.created
           && (recoveryJobType === "score"
             ? isV3ScoreRecoveryTerminalJob(result.job)
             : isV3RankingRecoveryTerminalJob(result.job));
-        if (isTerminalRecovery) {
+        if (predictionCloseRecovery) {
+          const openRecovery = await hasOpenV3Job(db, game.internalGameId, V3_JOB_TYPE.PREDICTION_CLOSE, result.job?.id || null);
+          recoveryOfJobId = result.job?.id || null;
+          recoveryKind = "prediction_close";
+          if (!openRecovery) {
+            const recoverySlot = new Date(new Date(now).getTime() + 1000);
+            effectivePlan = { ...plan, scheduledSlotAt: recoverySlot, scheduledAt: new Date(now) };
+            diagnostic = createV3PlanningDiagnostic(game, effectivePlan, state);
+            result = await createV3Job(db, { internalGameId: game.internalGameId, ...effectivePlan });
+            diagnostic.recoveryOfJobId = recoveryOfJobId;
+            diagnostic.recoveryScheduledSlotAt = recoverySlot.toISOString();
+          } else {
+            diagnostic.reasonCode = "V3_PREDICTION_CLOSE_RECOVERY_JOB_ALREADY_EXISTS";
+            diagnostic.recoveryOfJobId = recoveryOfJobId;
+          }
+        } else if (isTerminalRecovery) {
           const originalSlot = new Date(plan.scheduledSlotAt);
           const recoverySlot = new Date(originalSlot.getTime() + 1000);
           effectivePlan = { ...plan, scheduledSlotAt: recoverySlot, scheduledAt: recoverySlot };
@@ -414,6 +433,7 @@ export async function planV3MainJobs(db, games = [], now = new Date()) {
           ? (result.created ? "V3_LINEUP_RECOVERY_JOB_CREATED" : diagnostic.reasonCode || "V3_LINEUP_RECOVERY_JOB_ALREADY_EXISTS")
           : recoveryOfJobId
           ? ({
+              prediction_close: result.created ? "V3_PREDICTION_CLOSE_RECOVERY_JOB_CREATED" : "V3_PREDICTION_CLOSE_RECOVERY_JOB_ALREADY_EXISTS",
               score: result.created ? "V3_SCORE_RECOVERY_JOB_CREATED" : "V3_SCORE_RECOVERY_JOB_ALREADY_EXISTS",
               ranking: result.created ? "V3_RANKING_RECOVERY_JOB_CREATED" : "V3_RANKING_RECOVERY_JOB_ALREADY_EXISTS",
               lineup_finalize: result.created ? "V3_LINEUP_FINALIZE_RECOVERY_JOB_CREATED" : "V3_LINEUP_FINALIZE_RECOVERY_JOB_ALREADY_EXISTS",

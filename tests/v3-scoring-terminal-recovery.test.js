@@ -96,6 +96,42 @@ test("terminal score failure is preserved while a deterministic recovery job is 
   }
 });
 
+test("締切jobのterminal failureは現在時刻基準の回復jobへ再計画される", async () => {
+  const database = setup();
+  try {
+    database.exec(`
+      UPDATE game_automation_v3_state SET state = 'scheduled' WHERE internal_game_id = '${GAME_ID}';
+      DELETE FROM game_jobs_v3 WHERE job_type = 'score';
+      INSERT INTO game_jobs_v3
+        (internal_game_id, job_type, scheduled_at, scheduled_slot_at, status, attempt_count, max_attempts, created_at, updated_at, failure_code, failure_message)
+        VALUES ('${GAME_ID}', 'prediction_close', '2026-08-08T05:00:00.000Z', '2026-08-08T05:00:00.000Z', 'failed', 12, 12, '${START_AT}', '2026-08-08T08:12:00.000Z', 'PREDICTION_CLOSE_FAILED', '締切処理に失敗しました。');
+    `);
+    const game = {
+      internalGameId: GAME_ID,
+      startAt: START_AT,
+      gameStatus: "scheduled",
+      isActive: 1,
+      deletedAt: null
+    };
+    const now = new Date("2026-08-08T08:13:00.000Z");
+    const first = await v3.planMainWorkflowJobs(d1(database), [game], now);
+    const recovery = first.planned.find((entry) => entry.plan?.jobType === "prediction_close");
+    assert.equal(first.created, 1);
+    assert.equal(recovery.reasonCode, "V3_PREDICTION_CLOSE_RECOVERY_JOB_CREATED");
+    assert.equal(recovery.recoveryOfJobId, 2);
+    assert.equal(recovery.plan.scheduledSlotAt.toISOString(), "2026-08-08T08:13:01.000Z");
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id = ?1 AND job_type = 'prediction_close'").get(GAME_ID).count, 2);
+
+    const second = await v3.planMainWorkflowJobs(d1(database), [game], now);
+    const repeated = second.planned.find((entry) => entry.plan?.jobType === "prediction_close");
+    assert.equal(second.created, 0);
+    assert.equal(repeated.reasonCode, "V3_PREDICTION_CLOSE_RECOVERY_JOB_ALREADY_EXISTS");
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id = ?1 AND job_type = 'prediction_close'").get(GAME_ID).count, 2);
+  } finally {
+    database.close();
+  }
+});
+
 test("max-attempt retry_wait is eligible for recovery without being treated as an open runnable job", () => {
   assert.equal(v3.isV3ScoreRecoveryTerminalJob({ status: "retry_wait", attempt_count: 12, max_attempts: 12 }), true);
   assert.equal(v3.isV3ScoreRecoveryTerminalJob({ status: "retry_wait", attempt_count: 11, max_attempts: 12 }), false);

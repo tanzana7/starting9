@@ -249,7 +249,7 @@ test("公開画面はcanonical internalGameIdを公示状態APIへ送る", () =>
 test("公開初期化はcurrent game確定後に公示状態を一度だけ取得する", () => {
   assert.equal((coordinator.match(/refreshGameDayNoticeStatus\(\{ force: true \}\)/g) || []).length, 1);
   assert.match(coordinator, /void ops\.initializePublicGameCatalog\(\)\s*\.then/);
-  assert.match(coordinator, /void ops\.refreshGameDayNoticeStatus\(\{ force: true \}\)/);
+  assert.match(coordinator, /scheduleOptionalWork\(\(\) => ops\.refreshGameDayNoticeStatus\(\{ force: true \}\)\)/);
   const start = script.indexOf("async function refreshGameDayNoticeStatus");
   const end = script.indexOf("async function fetchGameDayRosterSnapshot", start);
   assert.match(script.slice(start, end), /state\.gameDayNotice\.isLoading && state\.gameDayNotice\.gameId === gameId/);

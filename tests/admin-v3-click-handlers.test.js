@@ -70,7 +70,7 @@ test("admin-v3の明示的な中止ボタンは既存のcancel操作へ委譲す
 });
 
 test("admin-v3の各操作data属性とcache busterがentrypointで一致する", () => {
-  const buster = "admin-v3-manual-cancel-confirmation-1";
+  const buster = "admin-v3-manual-cancel-button-1";
   assert.match(html, new RegExp(`admin-v3\.html|admin-v3\.js\\?v=${buster}`));
   assert.match(html, new RegExp(`app-coordinator\\.js\\?v=${buster}`));
   assert.match(source, /\[data-v3-select-game\]/);

@@ -24,6 +24,6 @@ test("admin game progress renderer receives the filterGames dependency it uses",
 test("admin-v3 static assets use the filterGames hotfix cache buster", () => {
   const html = read("admin-v3.html");
 
-  assert.match(html, /admin-v3-manual-cancel-confirmation-1/);
+  assert.match(html, /admin-v3-manual-cancel-button-1/);
   assert.doesNotMatch(html, /admin-v3-render-modules-1/);
 });

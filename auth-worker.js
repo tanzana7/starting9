@@ -6438,6 +6438,19 @@ async function handleAdminV3ScheduleUpdate(request, env, cors, context, user) {
     "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
   ).bind(context.id).first();
   const currentState = String(stateRow?.state || "scheduled");
+  const currentGameStatus = String(context.target.gameStatus || "").trim().toLowerCase();
+  if (requestedStatus === "cancelled" && currentState === "excluded" && ["cancelled", "canceled"].includes(currentGameStatus)) {
+    return jsonResponse({
+      ok: true,
+      internalGameId: context.id,
+      alreadyCancelled: true,
+      stateBefore: currentState,
+      stateAfter: currentState,
+      pendingJobsRescheduled: { rescheduled: 0, cancelled: 0 },
+      rankingRevocation: { required: false, wasReflected: false, status: "already_revoked_or_excluded", affectedScopes: [], rebuildExecuted: false, sourceOfTruth: "ranking_games_eligibility_filter" },
+      message: "対象試合は既に中止済みです。追加の対象外処理は実行していません。"
+    }, 200, cors);
+  }
   const rankingReflection = await getV3RankingReflectionAudit(env.AUTH_DB, context.id);
   const rankingRevocationRequired = currentState === "ranked" || rankingReflection.hasReflectedRevision === true;
   if (currentState === "published") {

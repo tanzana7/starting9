@@ -65,6 +65,9 @@ test("公開entry scriptのcache busterを更新し、既存moduleの読み込�
   assert.match(html, new RegExp(`script\\.js\\?v=${scriptCacheBuster}`));
   assert.match(html, new RegExp(`style\\.css\\?v=${styleCacheBuster}`));
   for (const match of html.matchAll(/frontend\/public\/[^\"']+\.js\?v=([^\"']+)/g)) {
-    assert.equal(match[1], moduleCacheBuster);
+    const expectedCacheBuster = match[0].startsWith("frontend/public/render-results.js?")
+      ? "public-cancelled-result-date-display-1"
+      : moduleCacheBuster;
+    assert.equal(match[1], expectedCacheBuster);
   }
 });

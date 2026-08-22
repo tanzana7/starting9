@@ -48,6 +48,7 @@ test("public UI renders a status card and suppresses normal result/canvas output
   assert.match(renderer, /result-unavailable-card/);
   assert.match(renderer, /const availability = deps\.getPublicResultAvailability/);
   assert.match(renderer, /if \(availability\) \{/);
+  assert.match(renderer, /date \? `前回（\$\{date\}）の試合結果`/);
   assert.match(renderer, /deps\.createPredictionSummary/);
   assert.doesNotMatch(renderer, /if \(displayedResult\.serviceUnavailable\)/);
   assert.match(renderer, /card\.classList\.toggle\("hidden", !isPublished \|\| Boolean\(unavailable\)\)/);

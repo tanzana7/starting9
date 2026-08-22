@@ -33,7 +33,7 @@
 
     function formatPreviousResultDate(game) {
       const rawDate = String(game?.gameDate || game?.date || "");
-      const match = rawDate.match(/(?:^|\/)(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+      const match = rawDate.match(/(?:^|\/)(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:$|T|\s)/);
       if (match) return `${Number(match[2])}/${Number(match[3])}`;
       const shortMatch = rawDate.match(/^(\d{1,2})[-/](\d{1,2})$/);
       return shortMatch ? `${Number(shortMatch[1])}/${Number(shortMatch[2])}` : "";
@@ -45,11 +45,15 @@
       const date = formatPreviousResultDate(game);
       const availability = deps.getPublicResultAvailability?.(game) || null;
       if (heading) {
-        heading.textContent = availability
-          ? (displayMode === "selected" ? "選択した試合の結果" : "前回の試合結果")
-          : displayMode === "selected"
-          ? (date ? `${date}の採点結果` : "選択した試合の採点結果")
-          : (date ? `前回（${date}）の採点結果` : "前回の採点結果");
+        if (availability) {
+          heading.textContent = displayMode === "selected"
+            ? (date ? `選択した試合（${date}）の結果` : "選択した試合の結果")
+            : (date ? `前回（${date}）の試合結果` : "前回の試合結果");
+        } else {
+          heading.textContent = displayMode === "selected"
+            ? (date ? `${date}の採点結果` : "選択した試合の採点結果")
+            : (date ? `前回（${date}）の採点結果` : "前回の採点結果");
+        }
       }
       if (legend) {
         legend.classList.toggle("hidden", !hasResult);

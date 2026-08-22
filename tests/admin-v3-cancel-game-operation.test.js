@@ -59,7 +59,7 @@ test("公開UIは中止・サービス対象外を選択対象から除外しつ
 });
 
 test("admin-v3のcache busterは中止操作版へ更新されている", () => {
-  assert.match(page, /admin-v3-manual-cancel-confirmation-1/);
+  assert.match(page, /admin-v3-manual-cancel-button-1/);
   assert.doesNotMatch(page, /admin-v3-add-game-preview-1/);
 });
 
@@ -71,4 +71,11 @@ test("admin-v3は中止操作を明示し、保存済みの安全確認を既存
   assert.match(client, /reasonField\.value/);
   assert.match(client, /confirmField\.checked = true/);
   assert.match(client, /statusField\.value = "cancelled"/);
+});
+
+test("中止済み試合への同じ中止要求は冪等に完了し、再処理しない", () => {
+  assert.match(worker, /alreadyCancelled: true/);
+  assert.match(worker, /対象試合は既に中止済みです。追加の対象外処理は実行していません。/);
+  assert.match(worker, /currentState === "excluded"/);
+  assert.match(worker, /\["cancelled", "canceled"\]\.includes\(currentGameStatus\)/);
 });

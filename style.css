@@ -625,6 +625,18 @@ button:disabled {
   font-weight: 800;
 }
 
+.official-source-note {
+  margin: 6px 0 0;
+  color: #d7ecff;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.official-source-note a {
+  color: inherit;
+  font-weight: 800;
+}
+
 .probable-starter-team strong {
   min-width: 0;
   overflow-wrap: anywhere;
@@ -5127,6 +5139,12 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
   margin: 0;
   color: var(--muted);
   font-size: 0.78rem;
+}
+
+.site-footer .site-disclaimer {
+  flex: 1 1 100%;
+  max-width: 72rem;
+  line-height: 1.7;
 }
 
 .site-footer nav {

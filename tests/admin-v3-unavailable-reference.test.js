@@ -34,6 +34,6 @@ test("admin-v3の対象外判定は行ループ外の再同期ボタンでも同
 });
 
 test("admin-v3の静的asset cache busterはReferenceError修正版を指す", () => {
-  assert.match(pageSource, /admin-v3-manual-cancel-button-1/);
+  assert.match(pageSource, /admin-v3-fetch-safety-status-1/);
   assert.doesNotMatch(pageSource, /admin-v3-add-game-preview-1/);
 });

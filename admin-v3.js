@@ -776,7 +776,10 @@ function renderCurrentV3View() {
   }
   const view = document.getElementById("v3View");
   if (!view) return;
-  view.innerHTML = {
+  const externalFetchNotice = payload.npbFetchDisabled
+    ? '<div class="v3-operation-result attention" data-v3-external-fetch-disabled><strong>NPB公式情報の取得を一時停止しています。</strong><span>新規の予告先発・ロースター・スタメン取得は停止中です。既存の保存済みデータと履歴は保持されます。</span></div>'
+    : "";
+  view.innerHTML = externalFetchNotice + {
     dashboard: () => v3GameProgressRenderer.renderDashboard(payload, games),
     games: () => v3GameProgressRenderer.renderGamesView(games),
     workflow: () => v3GameProgressRenderer.renderWorkflowView(filteredGame || game),
@@ -799,7 +802,7 @@ function renderCurrentV3View() {
   const filter = document.getElementById("v3GameFilter");
   if (filter) filter.value = v3State.filter;
   const panel = document.getElementById("v3Schema");
-  if (panel) panel.textContent = `schema: ${payload.schema?.ready ? "ready" : "unavailable"} / feature flag: ${payload.enabled ? "enabled" : "disabled"} / 最終更新: ${formatV3Jst(v3State.lastUpdatedAt)}`;
+  if (panel) panel.textContent = `schema: ${payload.schema?.ready ? "ready" : "unavailable"} / feature flag: ${payload.enabled ? "enabled" : "disabled"} / NPB取得: ${payload.npbFetchDisabled ? "停止中" : "有効"} / 最終更新: ${formatV3Jst(v3State.lastUpdatedAt)}`;
 }
 
 async function loadRankingResetMarkers(force = false) {

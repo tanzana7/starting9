@@ -26,7 +26,7 @@ test("予告先発APIはinternalGameIdで正規試合を解決し、同じprobab
   assert.match(worker, /startAt: metadata\.startAt \|\| game\.start_at \|\| ""/);
   assert.match(worker, /homeProbableStarter:/);
   assert.match(worker, /awayProbableStarter:/);
-  assert.match(worker, /state: probableStarter\?\.status \|\| "empty"/);
+  assert.match(worker, /state: externalFetchDisabled \? "external_fetch_disabled" : probableStarter\?\.status \|\| "empty"/);
   assert.match(worker, /confirmed: Boolean\(probableStarter\?\.isConfirmed\)/);
 });
 
@@ -54,5 +54,5 @@ test("通常画面はcanonical catalogのhome/away順を表示し、反転候補
 });
 
 test("script.jsの表示接続変更に対応するキャッシュバスターが更新されている", () => {
-  assert.match(html, /script\.js\?v=public-load-performance-optimization-1/);
+  assert.match(html, /script\.js\?v=public-compliance-disclaimer-and-fetch-safety-1/);
 });

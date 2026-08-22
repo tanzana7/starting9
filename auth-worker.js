@@ -8837,7 +8837,7 @@ export async function resolveGameDayStatusIdentity(db, identifier) {
   return {
     ...identity,
     internalGameId,
-    game: { ...identity.game, internalGameId },
+    game: { ...identity.game, status: game.game_status || identity.game.status, gameStatus: game.game_status || identity.game.gameStatus, internalGameId },
     resolvedBy: "game_day_status_canonical_registry"
   };
 }
@@ -9708,11 +9708,12 @@ async function getGameDayStatus(db, identity, env = null) {
     }
   }
   const now = new Date();
-  const resultStatus = now < identity.startAt
-    ? "prestart"
-    : lineup?.publication_status === "published"
-      ? "published"
-      : "preparing";
+  const resultStatus = resolveGameDayResultStatus({
+    gameStatus: identity.game?.status || identity.game?.gameStatus,
+    startAt: identity.startAt,
+    publicationStatus: lineup?.publication_status,
+    now
+  });
   return {
     noticeStatus: game?.notice_status || GAME_DAY_NOTICE_STATUS.WAITING,
     noticeLabel: game?.notice_status === GAME_DAY_NOTICE_STATUS.DETECTED
@@ -9742,6 +9743,17 @@ async function getGameDayStatus(db, identity, env = null) {
     hasError: Boolean(notice?.status === GAME_DAY_NOTICE_STATUS.ERROR),
     resultStatus
   };
+}
+
+export function resolveGameDayResultStatus({ gameStatus = "", startAt = null, publicationStatus = "", now = new Date() } = {}) {
+  const normalizedStatus = String(gameStatus || "").trim().toLowerCase();
+  if (["cancelled", "canceled", "postponed", "service_unavailable", "excluded"].includes(normalizedStatus)) {
+    return normalizedStatus === "canceled" ? "cancelled" : normalizedStatus;
+  }
+  const current = now instanceof Date ? now : new Date(now);
+  const start = startAt instanceof Date ? startAt : new Date(startAt || "");
+  if (!Number.isNaN(start.getTime()) && current < start) return "prestart";
+  return publicationStatus === "published" ? "published" : "preparing";
 }
 
 export function buildGameDayStatusRosterSummary({ internalGameId = "", gameDate = "", snapshot = null, liveRoster = null, snapshotAvailable = true, sourceSnapshotComparison = null } = {}) {

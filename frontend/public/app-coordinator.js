@@ -31,9 +31,7 @@
       ops.renderAll();
 
       // Keep the first paint independent from the public catalog and all optional data.
-      // Game-dependent work starts after the catalog resolves, while auth/result metadata
-      // can make progress in parallel.
-      void ops.fetchPreviousResultGame({ force: false });
+      // Result history is loaded after auth is ready and scheduled as non-critical work.
       void ops.initializeAuthDependentFeatures().catch((error) => {
         console.error("認証依存の後続初期化に失敗しました", error);
       });
@@ -44,8 +42,7 @@
           void Promise.allSettled([
             ops.initializeProbableStarter(),
             ops.initializeRosterCandidateSync(),
-            ops.initializePredictionRemoteSync(),
-            ops.initializeDailyBestNine()
+            ops.initializePredictionRemoteSync()
           ]);
           ops.refreshPredictionDeadlineState();
           ops.syncPublicAppState();
@@ -68,8 +65,7 @@
         ops.renderPredictionCta();
         ops.renderDailyBestNine();
         const criticalResults = await Promise.allSettled([
-          ops.syncPredictionFromAccount({ force: true }),
-          ops.refreshResultHistory({ force: true })
+          ops.syncPredictionFromAccount({ force: true })
         ]);
         criticalResults.forEach((result) => {
           if (result.status === "rejected") {
@@ -77,6 +73,7 @@
           }
         });
         const loadNonCritical = () => Promise.allSettled([
+          ops.refreshResultHistory({ force: true }),
           ops.fetchUserAchievements({ force: true }),
           ops.refreshYearlyRanking({ force: true }),
           this.state.rankingView === "monthly" ? ops.refreshMonthlyRanking({ force: true }) : Promise.resolve(),

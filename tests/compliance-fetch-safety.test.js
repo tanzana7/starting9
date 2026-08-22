@@ -96,7 +96,7 @@ test("公開表示には非公式表記・出典・停止中表示があり、�
   const index = read("index.html");
   const script = read("script.js");
   const admin = read("admin-v3.js");
-  for (const file of ["index.html", "terms.html", "privacy.html", "contact.html"]) {
+  for (const file of ["index.html", "how-to-play.html", "terms.html", "privacy.html", "contact.html"]) {
     const html = read(file);
     assert.match(html, /非公式ファンメイドサービス/);
     assert.match(html, /NPB・各球団とは関係のない/);

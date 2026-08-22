@@ -23,6 +23,7 @@ function createHarness() {
     runJob: async (...args) => calls.push(["runJob", ...args]),
     reconcileState: async (...args) => calls.push(["reconcileState", ...args]),
     saveSchedule: async (...args) => calls.push(["saveSchedule", ...args]),
+    cancelGame: async (...args) => calls.push(["cancelGame", ...args]),
     excludeFromRanking: async (...args) => calls.push(["excludeFromRanking", ...args]),
     selectGame: async (...args) => calls.push(["selectGame", ...args]),
     copyJobDetail: async (...args) => calls.push(["copyJobDetail", ...args]),
@@ -62,12 +63,19 @@ test("admin-v3の動的click delegationはElement以外のtargetでも例外な�
   ]);
 });
 
+test("admin-v3の明示的な中止ボタンは既存のcancel操作へ委譲する", async () => {
+  const { listeners, calls } = createHarness();
+  await listeners.click({ target: targetFor("[data-v3-schedule-cancel]", { v3ScheduleCancel: "game-1" }) });
+  assert.deepEqual(calls.at(-1), ["cancelGame", "game-1"]);
+});
+
 test("admin-v3の各操作data属性とcache busterがentrypointで一致する", () => {
-  const buster = "admin-v3-lineup-artifact-health-1";
+  const buster = "admin-v3-manual-cancel-confirmation-1";
   assert.match(html, new RegExp(`admin-v3\.html|admin-v3\.js\\?v=${buster}`));
   assert.match(html, new RegExp(`app-coordinator\\.js\\?v=${buster}`));
   assert.match(source, /\[data-v3-select-game\]/);
   assert.match(source, /\[data-v3-job-detail\]/);
   assert.match(source, /\[data-v3-job-diagnose\]/);
   assert.match(source, /\[data-v3-job-run\]/);
+  assert.match(source, /\[data-v3-schedule-cancel\]/);
 });

@@ -183,6 +183,9 @@ button:disabled { cursor: wait; opacity: .65; }
 .v3-schedule-form label { display: grid; gap: 5px; color: #526477; font-size: 12px; font-weight: 700; }
 .v3-schedule-form label:nth-of-type(3) { display: flex; grid-column: 1 / -1; align-items: center; gap: 6px; font-weight: 500; }
 .v3-schedule-form button { justify-self: start; }
+.v3-schedule-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.v3-schedule-actions .danger-button { border-color: #bd5a5a; color: #8b2525; background: #fff8f8; }
+.v3-schedule-actions .danger-button:hover:not(:disabled) { background: #fff0f0; }
 .v3-cancellation-meta { margin-bottom: 12px; }
 .v3-ranking-exclusion-form { display: grid; grid-template-columns: minmax(220px, 1fr) auto; gap: 10px 14px; margin-top: 10px; padding: 12px; border: 1px solid #ead9ad; border-radius: 6px; background: #fffaf0; }
 .v3-ranking-exclusion-form label { display: grid; gap: 5px; color: #526477; font-size: 12px; font-weight: 700; }

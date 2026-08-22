@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const client = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
 const renderer = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-game-progress.js"), "utf8");
 const page = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 const constants = await import(pathToFileURL(path.join(root, "backend", "automation-v3", "constants.js")).href);
@@ -58,6 +59,16 @@ test("公開UIは中止・サービス対象外を選択対象から除外しつ
 });
 
 test("admin-v3のcache busterは中止操作版へ更新されている", () => {
-  assert.match(page, /admin-v3-lineup-artifact-health-1/);
+  assert.match(page, /admin-v3-manual-cancel-confirmation-1/);
   assert.doesNotMatch(page, /admin-v3-add-game-preview-1/);
+});
+
+test("admin-v3は中止操作を明示し、保存済みの安全確認を既存APIへ渡す", () => {
+  assert.match(renderer, /この試合を中止にする/);
+  assert.match(renderer, /data-v3-schedule-cancel/);
+  assert.match(renderer, /scheduleOperation\.canCancel/);
+  assert.match(client, /requestV3GameCancellation/);
+  assert.match(client, /reasonField\.value/);
+  assert.match(client, /confirmField\.checked = true/);
+  assert.match(client, /statusField\.value = "cancelled"/);
 });

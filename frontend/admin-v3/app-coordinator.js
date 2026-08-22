@@ -51,6 +51,11 @@
           await actions.saveSchedule(scheduleButton.dataset.v3ScheduleSave);
           return;
         }
+        const cancelButton = closestFromEvent(event, "[data-v3-schedule-cancel]");
+        if (cancelButton) {
+          await actions.cancelGame(cancelButton.dataset.v3ScheduleCancel);
+          return;
+        }
         const rankingExcludeButton = closestFromEvent(event, "[data-v3-ranking-exclude]");
         if (rankingExcludeButton) {
           await actions.excludeFromRanking(rankingExcludeButton.dataset.v3RankingExclude);

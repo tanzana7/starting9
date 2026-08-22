@@ -275,6 +275,7 @@ function buildNpbGameUrl(date, gameCode) {
 function extractScheduleGames(html, date) {
   if (typeof html !== "string" || !html.includes("試合日程")) return null;
   const result = [];
+  const scoreStatuses = extractOfficialScoreStatuses(html, date);
   const rows = html.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/giu) || [];
   const [, monthText, dayText] = String(date).match(/^\d{4}-(\d{2})-(\d{2})$/) || [];
   const targetMonth = Number(monthText);
@@ -290,9 +291,36 @@ function extractScheduleGames(html, date) {
     const time = /\b([01]\d|2[0-3]):[0-5]\d\b/.exec(text)?.[0] || "";
     if (unique.length !== 2 || !time) continue;
     const scoreCode = /\/scores\/\d{4}\/\d{4}\/([a-z0-9]+-[a-z0-9]+-\d+)\//i.exec(row)?.[1] || "";
-    result.push({ homeTeam: unique[0], awayTeam: unique[1], startTime: time, gameCode: scoreCode, venue: "", status: classifyOfficialCancellationText(text).officialCancelled ? "cancelled" : "scheduled" });
+    const scoreStatus = scoreStatuses.find((item) => item.homeTeam === unique[0] && item.awayTeam === unique[1]);
+    result.push({
+      homeTeam: unique[0],
+      awayTeam: unique[1],
+      startTime: time,
+      gameCode: scoreCode || scoreStatus?.gameCode || "",
+      venue: "",
+      status: classifyOfficialCancellationText(text).officialCancelled || scoreStatus?.officialCancelled ? "cancelled" : "scheduled"
+    });
   }
   return result;
+}
+
+function extractOfficialScoreStatuses(html, date) {
+  const dateMatch = /<div\b[^>]*class=["'][^"']*score_box[^"']*date[^"']*["'][^>]*>[\s\S]*?(20\d{2})\s*<br\s*\/?>\s*(\d{1,2})\/(\d{1,2})/i.exec(html);
+  if (!dateMatch || `${dateMatch[1]}-${String(dateMatch[2]).padStart(2, "0")}-${String(dateMatch[3]).padStart(2, "0")}` !== String(date)) return [];
+  const blocks = html.match(/<a\b[^>]*href=["']\/scores\/\d{4}\/\d{4}\/([a-z0-9]+-[a-z0-9]+-\d+)\/["'][^>]*>[\s\S]*?<\/a>/giu) || [];
+  return blocks.map((block) => {
+    const gameCode = /href=["']\/scores\/\d{4}\/\d{4}\/([a-z0-9]+-[a-z0-9]+-\d+)\//i.exec(block)?.[1] || "";
+    const teamNames = [...block.matchAll(/\b(?:alt|title)=["']([^"']+)["']/giu)].map((match) => match[1]);
+    const teams = STARTER_TEAM_ALIASES
+      .filter((team) => teamNames.some((name) => team.aliases.some((alias) => name.includes(alias))))
+      .map((team) => team.key);
+    return {
+      gameCode,
+      homeTeam: teams[0] || "",
+      awayTeam: teams[1] || "",
+      officialCancelled: classifyOfficialCancellationText(block).officialCancelled
+    };
+  }).filter((item) => item.gameCode && item.homeTeam && item.awayTeam);
 }
 
 function withCors(response, corsHeaders) {

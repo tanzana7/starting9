@@ -37,6 +37,18 @@ test("公式日程の中止行をcancelledとして正規化する", () => {
   });
 });
 
+test("当日速報カードの中止状態を日程行へ引き継ぐ", () => {
+  const html = [
+    "<h1>試合日程</h1>",
+    "<div class=\"score_box date\"><div>2026<br>8/22 Sat.</div></div>",
+    "<div class=\"score_box\"><a href=\"/scores/2026/0822/m-f-18/\"><img alt=\"千葉ロッテマリーンズ\"><img alt=\"北海道日本ハムファイターズ\"><div class=\"state\">（ZOZOマリン）<br>中止</div></a></div>",
+    "<table><tr id=\"date0822\"><th>8/22（土）</th><td>ロッテ - 日本ハム</td><td>ZOZOマリン 18:00</td></tr></table>"
+  ].join("");
+  const games = extractScheduleGames(html, "2026-08-22");
+  assert.equal(games?.[0]?.gameCode, "m-f-18");
+  assert.equal(games?.[0]?.status, "cancelled");
+});
+
 test("当日の日程を短い間隔で再確認し、公式中止を既存の正式除外経路へ接続する", () => {
   assert.match(authSource, /CURRENT_DAY_SCHEDULE_SYNC_INTERVAL_MS = 5 \* 60 \* 1000/);
   assert.match(authSource, /syncCurrentDayFightersSchedule\(env, now\)/);

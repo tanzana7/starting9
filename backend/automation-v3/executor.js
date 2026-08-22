@@ -242,6 +242,15 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     try {
       const stateRow = await ensureV3State(env.AUTH_DB, game.internalGameId, now);
       if (!isV3GameEligible(game) && stateRow.state !== V3_STATE.EXCLUDED) {
+        const unavailable = ["cancelled", "canceled", "postponed", "service_unavailable"].includes(String(game?.gameStatus || "").toLowerCase());
+        if (unavailable) {
+          await invokeV3Observer(onError, [createV3Error(
+            "OFFICIAL_CANCELLATION_RECONCILE_REQUIRED",
+            "中止・対象外状態を正式反映できるまで、V3状態を自動前進させません。",
+            { retryable: true }
+          ), { game, stateBefore: stateRow.state, stage: "official_cancellation_reconcile" }], observerTimeoutMs);
+          continue;
+        }
         await transitionV3State(env.AUTH_DB, { internalGameId: game.internalGameId, from: stateRow.state, to: V3_STATE.EXCLUDED, now });
       }
     } catch (error) {

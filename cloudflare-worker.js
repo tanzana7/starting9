@@ -17,6 +17,7 @@ const CORS_BASE_HEADERS = {
 const NPB_SCORE_PATH_PATTERN = /^\/scores\/(\d{4})\/(\d{2})(\d{2})\/([a-z0-9]+-[a-z0-9]+-\d+)\/$/i;
 const LINEUP_ERROR_MESSAGES = {
   GAME_NOT_FOUND: "対象試合を特定できませんでした。",
+  GAME_CANCELLED: "NPB公式でこの試合の中止が確認されました。",
   NPB_HTTP_ERROR: "NPB公式ページを取得できませんでした。",
   WORKER_FETCH_FAILED: "NPB公式ページへの接続に失敗しました。",
   TIMEOUT: "NPB公式ページの取得がタイムアウトしました。",
@@ -187,6 +188,14 @@ export default {
     }
 
     const extraction = extractNpbOrderText(upstream.html);
+    const cancellation = classifyOfficialCancellationText(upstream.html);
+    if (!extraction.lineupText && cancellation.officialCancelled) {
+      return withCors(lineupErrorResponse("GAME_CANCELLED", 409, {
+        sourceUrl: source.url,
+        cancellationStatus: "official_cancelled",
+        cancellationReason: "NPB公式ページに明示的な中止表示があり、通常のスタメン情報がありません。"
+      }), corsHeaders);
+    }
     if (!extraction.lineupText) {
       const code = classifyLineupExtractionFailure(extraction);
       return withCors(lineupErrorResponse(code, 422, {
@@ -281,7 +290,7 @@ function extractScheduleGames(html, date) {
     const time = /\b([01]\d|2[0-3]):[0-5]\d\b/.exec(text)?.[0] || "";
     if (unique.length !== 2 || !time) continue;
     const scoreCode = /\/scores\/\d{4}\/\d{4}\/([a-z0-9]+-[a-z0-9]+-\d+)\//i.exec(row)?.[1] || "";
-    result.push({ homeTeam: unique[0], awayTeam: unique[1], startTime: time, gameCode: scoreCode, venue: "", status: /中止|延期/.test(text) ? "cancelled" : "scheduled" });
+    result.push({ homeTeam: unique[0], awayTeam: unique[1], startTime: time, gameCode: scoreCode, venue: "", status: classifyOfficialCancellationText(text).officialCancelled ? "cancelled" : "scheduled" });
   }
   return result;
 }
@@ -1393,6 +1402,17 @@ function classifyLineupExtractionFailure(extraction) {
   return "PARSE_FAILED";
 }
 
+function classifyOfficialCancellationText(value) {
+  const text = normalizeWhitespace(htmlToPlainText(value));
+  const hasMarker = /(?:中止|延期)/u.test(text);
+  const tentative = /(?:中止|延期)(?:の可能性|が検討|を検討|予定|になる可能性|の見込み)/u.test(text);
+  return {
+    officialCancelled: hasMarker && !tentative,
+    marker: hasMarker ? (text.includes("中止") ? "中止" : "延期") : null,
+    tentative
+  };
+}
+
 function htmlToPlainText(html) {
   return String(html || "")
     .replace(/<script[\s\S]*?<\/script>/gi, "\n")
@@ -1578,8 +1598,10 @@ function getExtractionMethod(extraction) {
 }
 
 export {
+  classifyOfficialCancellationText,
   createLineupSourceFromIdentity,
   createLineupSourceUrl,
+  extractScheduleGames,
   extractNpbOrderText,
   validateTargetUrl
 };

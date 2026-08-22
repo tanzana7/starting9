@@ -273,6 +273,7 @@ const PROBABLE_STARTER_RETRY_INTERVAL_MS = 60 * 60 * 1000;
 const ROSTER_MINIMUM_PLAYER_COUNT = 20;
 const ROSTER_AUTO_FETCH_RETRY_INTERVAL_MS = 30 * 60 * 1000;
 const ROSTER_AUTO_FETCH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const CURRENT_DAY_SCHEDULE_SYNC_INTERVAL_MS = 5 * 60 * 1000;
 const TEST_GAME_DEFAULT_OPPONENT_CODE = "e";
 const TEST_GAME_DEFAULT_REOPEN_MINUTES = 60;
 const GAME_DAY_NOTICE_SOURCE = "https://npb.jp/announcement/roster/";
@@ -665,6 +666,34 @@ async function runScheduledGameAutomationV3(env, now) {
     ).bind(...values).run();
   };
 
+  let currentDayScheduleSync = null;
+  try {
+    currentDayScheduleSync = await syncCurrentDayFightersSchedule(env, now);
+    console.log(`[GAME_SCHEDULE_CURRENT_DAY] status=${currentDayScheduleSync.status} date=${currentDayScheduleSync.date || ""} changed=${currentDayScheduleSync.status === "success_changed"}`);
+  } catch (error) {
+    currentDayScheduleSync = {
+      status: "failed",
+      date: getJstDateString(now),
+      errorCode: error?.code || "CURRENT_DAY_SCHEDULE_SYNC_FAILED",
+      lastScheduleSyncAt: now.toISOString()
+    };
+    console.warn(`[GAME_SCHEDULE_CURRENT_DAY] status=failed date=${currentDayScheduleSync.date || ""} code=${currentDayScheduleSync.errorCode}`);
+  }
+
+  let officialCancellation = null;
+  try {
+    officialCancellation = await reconcileOfficialGameCancellations(env, now);
+  } catch (error) {
+    officialCancellation = {
+      checked: 0,
+      applied: 0,
+      skipped: 0,
+      failed: 1,
+      errorCode: error?.code || "OFFICIAL_CANCELLATION_RECONCILE_FAILED"
+    };
+    console.warn(`[GAME_OFFICIAL_CANCELLATION] status=failed code=${officialCancellation.errorCode}`);
+  }
+
   let scheduleSync = null;
   try {
     scheduleSync = await ensureFutureFightersSchedule(env, now);
@@ -693,6 +722,8 @@ async function runScheduledGameAutomationV3(env, now) {
   } catch (error) {
     console.error(`[GAME_SCHEDULE_BUFFER] audit_write_failed code=${error?.code || "SCHEDULE_SYNC_AUDIT_WRITE_FAILED"}`);
   }
+  scheduleSync.currentDay = currentDayScheduleSync;
+  scheduleSync.officialCancellation = officialCancellation;
 
   const result = await runGameAutomationV3(env, now, {
     executeJob: (context) => executeGameAutomationV3Job(context),
@@ -847,6 +878,97 @@ async function runScheduledGameAutomationV3(env, now) {
     console.error(`[GAME_AUTOMATION_V3] enabled=true code=${result.errorCode}`);
   }
   return { ...result, scheduleSync, runId, correlationId, summary };
+}
+
+async function reconcileOfficialGameCancellations(env, now) {
+  const summary = { checked: 0, applied: 0, skipped: 0, failed: 0, gameIds: [], errors: [] };
+  const games = await listV3Games(env.AUTH_DB, now);
+  for (const game of games) {
+    const status = String(game?.gameStatus || "").trim().toLowerCase();
+    if (!["cancelled", "canceled", "postponed", "service_unavailable"].includes(status)) continue;
+    summary.checked += 1;
+    const stateRow = await env.AUTH_DB.prepare(
+      "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
+    ).bind(game.internalGameId).first();
+    if (!stateRow || String(stateRow.state || "") === "excluded") {
+      summary.skipped += 1;
+      continue;
+    }
+    try {
+      const result = await applyOfficialGameCancellation(env, game, String(stateRow.state || "scheduled"), now);
+      if (result?.status === "applied") {
+        summary.applied += 1;
+        summary.gameIds.push(game.internalGameId);
+      } else {
+        summary.skipped += 1;
+      }
+    } catch (error) {
+      summary.failed += 1;
+      summary.errors.push({ internalGameId: game.internalGameId, code: error?.code || "OFFICIAL_CANCELLATION_FAILED" });
+      console.warn(`[GAME_OFFICIAL_CANCELLATION] internalGameId=${game.internalGameId} status=failed code=${error?.code || "OFFICIAL_CANCELLATION_FAILED"}`);
+    }
+  }
+  return summary;
+}
+
+async function applyOfficialGameCancellation(env, game, stateBefore, now) {
+  const internalGameId = String(game?.internalGameId || "").trim();
+  if (!internalGameId) return { status: "skipped", reason: "missing_internal_game_id" };
+  const currentLineup = await getGameLineup(env.AUTH_DB, { gameId: internalGameId, internalGameId });
+  if (stateBefore === "published" || currentLineup?.published_at) {
+    throw createV3Error("OFFICIAL_CANCELLATION_REQUIRES_ADMIN_REVIEW", "公開済み試合の中止は自動変更せず、管理者確認が必要です。", { retryable: false });
+  }
+  const reflection = await getV3RankingReflectionAudit(env.AUTH_DB, internalGameId);
+  if ((stateBefore === "ranked" || reflection.hasReflectedRevision) && !reflection.available) {
+    throw createV3Error("OFFICIAL_CANCELLATION_REQUIRES_ADMIN_REVIEW", "ランキング反映履歴を確認できないため、公式中止を自動反映できません。", { retryable: true });
+  }
+  const context = await loadV3AdminContext(env.AUTH_DB, internalGameId);
+  const requestedStatus = String(game.gameStatus || "cancelled").toLowerCase() === "service_unavailable"
+    ? "service_unavailable"
+    : "cancelled";
+  const reason = requestedStatus === "service_unavailable"
+    ? "NPB公式情報でサービス対象外状態を確認したため自動反映"
+    : "NPB公式情報で試合中止を確認したため自動反映";
+  const synthetic = new Request("https://starting9.internal/api/admin/v3/schedule", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      startAt: context.target.start_time,
+      gameDate: context.target.game_date,
+      homeTeam: context.target.home_team,
+      awayTeam: context.target.away_team,
+      status: requestedStatus,
+      npbGameCode: context.target.gameCode || "",
+      stadium: context.target.stadium || "",
+      reason,
+      rankingReflectionStatus: reflection.hasReflectedRevision ? "revoked" : "excluded"
+    })
+  });
+  const response = await handleAdminGameScheduleUpdate(synthetic, env, new Headers(), context.metadata, { id: "npb-official" });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload?.ok) {
+    throw createV3Error(payload?.code || "OFFICIAL_CANCELLATION_FAILED", payload?.error || "NPB公式中止の反映に失敗しました。", { retryable: response.status >= 500 });
+  }
+  const cancelledJobs = await cancelOpenV3Jobs(env.AUTH_DB, internalGameId, reason);
+  const transitioned = await transitionV3State(env.AUTH_DB, { internalGameId, from: stateBefore, to: "excluded", now });
+  await recordV3AdminAudit(env.AUTH_DB, {
+    internalGameId,
+    jobType: "system:official_cancellation",
+    stateBefore,
+    stateAfter: transitioned?.state || "excluded",
+    failureMessage: `[v3_details=${JSON.stringify({ source: "npb_official", status: requestedStatus, reason, cancelledJobs, rankingReflection: reflection })}]`,
+    occurredAt: now
+  });
+  await recordWorkflowLog(env.AUTH_DB, {
+    eventType: "official_game_cancelled",
+    status: "success",
+    gameId: context.metadata.gameId,
+    occurredAt: now,
+    message: reason,
+    metadata: { internalGameId, status: requestedStatus, cancelledJobs, source: "npb_official" },
+    source: "system"
+  }).catch(() => {});
+  return { status: "applied", stateAfter: transitioned?.state || "excluded", cancelledJobs };
 }
 
 async function loadV3GameTarget(db, internalGameId) {
@@ -1103,6 +1225,15 @@ async function executeV3LineupExecutor({ env, internalGameId, now, target, state
     });
   } catch (error) {
     if (jobType === V3_JOB_TYPE.LINEUP_FETCH) {
+      if (String(error?.code || "").toUpperCase() === "GAME_CANCELLED") {
+        const cancellation = await applyOfficialGameCancellation(env, target, stateBefore, now);
+        return {
+          status: "official_cancelled",
+          stateBefore,
+          stateAfter: stateBefore,
+          cancellation
+        };
+      }
       throw enrichV3LineupExecutorError(normalizeV3LineupFetchError(error, now), {
         internalGameId, now, target, job, lineupIdentity
       });
@@ -1365,6 +1496,7 @@ export async function executeGameAutomationV3Job({ env, job, internalGameId, now
 
 export function normalizeV3LineupFetchError(error, now = new Date()) {
   const rawCode = String(error?.code || "LINEUP_FETCH_FAILED").trim().toUpperCase();
+  if (rawCode === "GAME_CANCELLED") return error;
   const validation = error?.validation || {};
   const unannounced = ["LINEUP_NOT_ANNOUNCED", "LINEUP_NOT_PUBLISHED"].includes(rawCode)
     || (rawCode === "LINEUP_INVALID_PLAYER_COUNT" && Number(validation.parsedCount || 0) === 0);
@@ -3021,9 +3153,18 @@ async function syncTodayFightersSchedule(env, now) {
   };
 }
 
-async function syncFightersScheduleForDate(env, date, now) {
-  const state = await env.AUTH_DB.prepare("SELECT next_check_at FROM game_schedule_check_state WHERE schedule_date = ?1 LIMIT 1").bind(date).first();
-  if (!state?.next_check_at || new Date(state.next_check_at) <= now) {
+async function syncCurrentDayFightersSchedule(env, now) {
+  const date = getJstDateString(now);
+  if (!date) return { status: "skipped", date: "", reason: "CURRENT_DAY_UNAVAILABLE" };
+  return syncFightersScheduleForDate(env, date, now, { intervalMs: CURRENT_DAY_SCHEDULE_SYNC_INTERVAL_MS });
+}
+
+async function syncFightersScheduleForDate(env, date, now, { intervalMs = AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS } = {}) {
+  const state = await env.AUTH_DB.prepare("SELECT next_check_at, last_checked_at FROM game_schedule_check_state WHERE schedule_date = ?1 LIMIT 1").bind(date).first();
+  const lastCheckedAt = new Date(state?.last_checked_at || "");
+  const intervalDue = Number.isNaN(lastCheckedAt.getTime())
+    || now.getTime() - lastCheckedAt.getTime() >= Math.max(60 * 1000, Number(intervalMs) || AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS);
+  if (!state?.next_check_at || new Date(state.next_check_at) <= now || intervalDue) {
     const payload = await fetchNpbWorkerJson(env, { mode: "schedule", date });
     if (!Array.isArray(payload.games)) throw createPregameError("SCHEDULE_RESPONSE_INVALID", "NPB日程レスポンスが不正です。");
     const registry = await getGameIdentityRegistryAvailability(env.AUTH_DB);
@@ -3109,7 +3250,7 @@ async function syncFightersScheduleForDate(env, date, now) {
           : [game.gameId, sourceGameKey, date, startAt.toISOString(), game.homeTeam, game.awayTeam, game.gameCode || null, game.venue || null, gameStatus, now.toISOString()])));
       }
     }
-    const nextCheck = new Date(now.getTime() + AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS).toISOString();
+    const nextCheck = new Date(now.getTime() + Math.max(60 * 1000, Number(intervalMs) || AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS)).toISOString();
     statements.push(env.AUTH_DB.prepare(
       `INSERT INTO game_schedule_check_state (schedule_date, next_check_at, last_checked_at, last_error_code, updated_at)
        VALUES (?1, ?2, ?3, NULL, ?3)

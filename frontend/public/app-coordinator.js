@@ -24,7 +24,9 @@
     scheduleOptionalWork(callback) {
       const run = () => {
         try {
-          void Promise.resolve(callback());
+          void Promise.resolve(callback()).catch((error) => {
+            console.error("公開画面の遅延初期化に失敗しました", error);
+          });
         } catch (error) {
           console.error("公開画面の遅延初期化に失敗しました", error);
         }

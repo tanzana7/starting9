@@ -123,7 +123,7 @@ test("前回結果の読み込みはランキング・ベストナインの完�
   const entryScript = script.slice(script.indexOf("async function initializeAuthDependentFeatures"), script.indexOf("function bindEvents", script.indexOf("async function initializeAuthDependentFeatures")));
   assert.doesNotMatch(coordinatorStart, /void ops\.fetchPreviousResultGame\(\{ force: false \}\)/);
   assert.match(coordinatorStart, /void ops\.initializePublicGameCatalog\(\)\s*\.then/);
-  assert.match(coordinatorStart, /void Promise\.allSettled\(\[[\s\S]*ops\.initializePredictionRemoteSync\(\)[\s\S]*\]\)/);
+  assert.match(coordinatorStart, /scheduleOptionalWork\(\(\) => Promise\.allSettled\([\s\S]*ops\.initializePredictionRemoteSync\(\)[\s\S]*\]\)/);
   assert.doesNotMatch(coordinatorStart, /ops\.initializeDailyBestNine\(\)/);
   assert.doesNotMatch(coordinatorStart, /await ops\.initializePublicGameCatalog\(\)/);
   assert.match(entryScript, /schedulePublicNonCritical\(\(\) =>/);

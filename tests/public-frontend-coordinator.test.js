@@ -153,6 +153,7 @@ test("初期catalog後のcritical pathでdaily-best-nineを取得しない", () 
     coordinator.indexOf("void ops.initializePublicGameCatalog()"),
     coordinator.indexOf("handleAuthStateChanged()")
   );
+  assert.match(catalogFollowup, /scheduleOptionalWork\(\(\) => Promise\.allSettled/);
   assert.match(catalogFollowup, /initializeProbableStarter\(\)/);
   assert.match(catalogFollowup, /initializeRosterCandidateSync\(\)/);
   assert.doesNotMatch(catalogFollowup, /initializeDailyBestNine\(\)/);

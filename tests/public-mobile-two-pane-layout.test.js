@@ -9,7 +9,7 @@ const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 
 test("public mobile prediction layout keeps order and roster in two panes", () => {
-  assert.match(html, /style\.css\?v=public-mobile-overflow-and-image-button-fix-1/);
+  assert.match(html, /style\.css\?v=public-player-detail-modal-width-polish-1/);
   assert.doesNotMatch(html, /public-mobile-ui-blockers-1|public-roster-source-of-truth-1/);
   assert.match(html, /class="lineup-builder"/);
   assert.match(html, /id="predictionLineup" class="slot-list"/);

@@ -57,5 +57,5 @@ test("cancelled/excluded games stop prediction input and are labeled in history"
   assert.match(script, /if \(editor\) editor\.classList\.toggle\("hidden", isScheduleGameUnavailable\(selectedGame\)\)/);
   assert.match(script, /const statusLabel = availability \? `［\$\{availability\.shortLabel\}］` : ""/);
   assert.match(script, /rankingExcluded === true/);
-  assert.match(html, /public-mobile-overflow-and-image-button-fix-1/);
+  assert.match(html, /public-player-detail-modal-width-polish-1/);
 });

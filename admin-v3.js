@@ -155,6 +155,37 @@ async function saveV3Schedule(internalGameId) {
   }
 }
 
+async function requestV3GameCancellation(internalGameId) {
+  const form = [...document.querySelectorAll("[data-v3-schedule-form]")]
+    .find((element) => element.dataset.v3ScheduleForm === String(internalGameId || ""));
+  if (!form) return;
+  if (!window.confirm("この試合を中止にします。予想・採点・ランキングの対象外となり、未実行のV3 jobを停止します。続行しますか？")) return;
+
+  const reasonField = form.querySelector("[data-v3-schedule-reason]");
+  if (!reasonField?.value?.trim()) {
+    const reason = window.prompt("中止理由を入力してください（1〜240文字）", "NPB公式発表による試合中止");
+    if (!String(reason || "").trim()) return;
+    reasonField.value = String(reason).trim();
+  }
+  const confirmationField = form.querySelector("[data-v3-schedule-confirmation-text]");
+  if (confirmationField && !confirmationField.value.trim()) {
+    const confirmation = window.prompt("正式処理済み試合のため「中止」と入力してください。", "中止");
+    if (String(confirmation || "").trim() !== "中止") return;
+    confirmationField.value = String(confirmation).trim();
+  }
+  const rankingConfirmationField = form.querySelector("[data-v3-schedule-ranking-confirmation-text]");
+  if (rankingConfirmationField && !rankingConfirmationField.value.trim()) {
+    const confirmation = window.prompt("ランキング取消を確認するため「ランキング取消」と入力してください。", "ランキング取消");
+    if (String(confirmation || "").trim() !== "ランキング取消") return;
+    rankingConfirmationField.value = String(confirmation).trim();
+  }
+  const statusField = form.querySelector("[data-v3-schedule-status]");
+  if (statusField) statusField.value = "cancelled";
+  const confirmField = form.querySelector("[data-v3-schedule-confirm]");
+  if (confirmField) confirmField.checked = true;
+  await saveV3Schedule(internalGameId);
+}
+
 async function excludeV3GameFromRanking(internalGameId) {
   const form = [...document.querySelectorAll("[data-v3-ranking-exclusion-form]")]
     .find((element) => element.dataset.v3RankingExclusionForm === String(internalGameId || ""));
@@ -1027,6 +1058,7 @@ adminV3Modules.createAdminV3Coordinator({
     runJob: runV3Job,
     reconcileState: reconcileV3State,
     saveSchedule: saveV3Schedule,
+    cancelGame: requestV3GameCancellation,
     excludeFromRanking: excludeV3GameFromRanking,
     copyJobDetail: copyV3JobDetail,
     refreshJobDetail: (internalGameId, jobId) => loadV3JobDetail(internalGameId, jobId, true),

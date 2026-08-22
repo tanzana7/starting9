@@ -24,10 +24,10 @@ function loadPublicModule(name, extra = {}) {
 
 test("公開画面のentry pointは分割moduleを読み込んでCoordinatorを一経路で起動する", () => {
   const moduleScripts = ["state", "request-guard", "storage", "api-client", "app-coordinator", "render-results", "render-ranking", "roster", "prediction-form"];
-  const scriptOffset = html.indexOf("script.js?v=public-player-detail-modal-width-polish-1");
+  const scriptOffset = html.indexOf("script.js?v=public-load-performance-optimization-1");
   assert.ok(scriptOffset > 0);
   moduleScripts.forEach((name) => {
-    const offset = html.indexOf(`${modulePath(name)}?v=public-player-detail-modal-width-polish-1`);
+    const offset = html.indexOf(`${modulePath(name)}?v=public-load-performance-optimization-1`);
     assert.ok(offset >= 0, `${name} module is loaded`);
     assert.ok(offset < scriptOffset, `${name} loads before the entry point`);
   });
@@ -122,8 +122,8 @@ test("予想保存・リセット・アカウント同期は最新結果表示�
 });
 
 test("公開画面のキャッシュバスターはmodule分割版へ更新される", () => {
-  assert.match(html, /script\.js\?v=public-player-detail-modal-width-polish-1/);
-  assert.match(html, /style\.css\?v=public-player-detail-modal-width-polish-1/);
+  assert.match(html, /script\.js\?v=public-load-performance-optimization-1/);
+  assert.match(html, /style\.css\?v=public-load-performance-optimization-1/);
 });
 
 test("認証後の補助データはcritical UIの完了後にアイドル開始する", () => {
@@ -135,11 +135,26 @@ test("認証後の補助データはcritical UIの完了後にアイドル開始
   assert.match(coordinator, /ops\.fetchUserAchievements\(\{ force: true \}\)/);
 });
 
-test("前回試合と結果一覧は初期表示で並列取得し、前回取得完了時に一覧を再取得しない", () => {
+test("前回試合と結果一覧は初期表示をブロックせず、同じidle処理で重複取得しない", () => {
   const initializer = script.slice(script.indexOf("async function initializeAuthDependentFeatures"), script.indexOf("function bindEvents", script.indexOf("async function initializeAuthDependentFeatures")));
   const previousFetcher = script.slice(script.indexOf("function fetchPreviousResultGame"), script.indexOf("function buildProbableStarterApiUrl", script.indexOf("function fetchPreviousResultGame")));
-  assert.match(initializer, /Promise\.allSettled\(\[[\s\S]*fetchPreviousResultGame\(\{ force: false \}\)[\s\S]*refreshResultHistory\(\{ force: false \}\)/);
+  assert.match(initializer, /schedulePublicNonCritical\(\(\) =>/);
+  assert.match(initializer, /fetchPreviousResultGame\(\{ force: false \}\)/);
+  assert.match(initializer, /refreshResultHistory\(\{ force: false \}\)/);
+  assert.doesNotMatch(initializer, /const resultStatus = await Promise\.allSettled/);
   assert.match(previousFetcher, /resolveResultHistorySelection\(\)/);
   assert.match(previousFetcher, /previous\.isLoading \|\| previous\.isReady/);
   assert.doesNotMatch(previousFetcher, /refreshResultHistory\(\{ force: true \}\)/);
+});
+
+test("初期catalog後のcritical pathでdaily-best-nineを取得しない", () => {
+  const coordinator = read(modulePath("app-coordinator"));
+  const catalogFollowup = coordinator.slice(
+    coordinator.indexOf("void ops.initializePublicGameCatalog()"),
+    coordinator.indexOf("handleAuthStateChanged()")
+  );
+  assert.match(catalogFollowup, /initializeProbableStarter\(\)/);
+  assert.match(catalogFollowup, /initializeRosterCandidateSync\(\)/);
+  assert.doesNotMatch(catalogFollowup, /initializeDailyBestNine\(\)/);
+  assert.doesNotMatch(catalogFollowup, /fetchPreviousResultGame\(\{ force: false \}\)/);
 });

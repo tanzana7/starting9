@@ -97,5 +97,5 @@ test("既存打順へのドラッグ移動後も次の空き打順へ移動す�
 test("守備位置メニューはviewport固定クラスとcache busterを持つ", () => {
   assert.match(script, /is-viewport-positioned/);
   assert.match(css, /\.position-menu\.is-viewport-positioned\s*\{/);
-  assert.match(html, /public-player-detail-modal-width-polish-1/);
+  assert.match(html, /public-load-performance-optimization-1/);
 });

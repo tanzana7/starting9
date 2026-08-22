@@ -459,24 +459,16 @@ async function initializeAuthDependentFeatures() {
   await ready;
   // 初期イベントは待機中に発火していても、解決済みPromiseから現在状態を必ず評価できます。
   window.addEventListener("starting9-auth-state-changed", handleAuthStateChanged);
-  // 前回試合の確認と参加済み結果一覧は並列で進め、一覧取得後の重複再取得を避けます。
-  const resultStatus = await Promise.allSettled([
-    fetchPreviousResultGame({ force: false }),
-    refreshResultHistory({ force: false })
-  ]);
-  resultStatus.forEach((result) => {
-    if (result.status === "rejected") {
-      console.error("過去結果の初期化に失敗しました", result.reason?.message || "unknown error");
-    }
-  });
   schedulePublicNonCritical(() => {
     void Promise.allSettled([
+      fetchPreviousResultGame({ force: false }),
+      refreshResultHistory({ force: false }),
       fetchUserAchievements({ force: false }),
       refreshWeeklyRanking({ force: false })
     ]).then((results) => {
       results.forEach((result, index) => {
         if (result.status === "rejected") {
-          const labels = ["実績", "ランキング"];
+          const labels = ["前回結果", "過去結果", "実績", "ランキング"];
           console.error(`${labels[index]}の初期化に失敗しました`, result.reason?.message || "unknown error");
         }
       });

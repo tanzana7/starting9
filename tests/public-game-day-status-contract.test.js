@@ -15,8 +15,22 @@ const {
   buildGameDayStatusRosterSummary,
   parseGameDayStatusRequestIdentifier,
   resolveApiGameReference,
-  resolveGameDayStatusIdentity
+  resolveGameDayStatusIdentity,
+  resolveGameDayResultStatus
 } = await import(pathToFileURL(workerPath).href);
+
+test("game-day-statusは中止状態を時刻ベースのpreparingより優先する", () => {
+  assert.equal(resolveGameDayResultStatus({
+    gameStatus: "cancelled",
+    startAt: "2026-08-22T09:00:00.000Z",
+    now: new Date("2026-08-22T09:30:00.000Z")
+  }), "cancelled");
+  assert.equal(resolveGameDayResultStatus({
+    gameStatus: "service_unavailable",
+    startAt: "2026-08-22T09:00:00.000Z",
+    now: new Date("2026-08-22T09:30:00.000Z")
+  }), "service_unavailable");
+});
 
 test("game-day-statusは公示件数と表示用roster状態を分離し、fresh snapshotを明示する", () => {
   const result = buildGameDayStatusRosterSummary({

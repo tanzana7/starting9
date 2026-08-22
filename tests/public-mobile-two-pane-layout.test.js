@@ -9,7 +9,8 @@ const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 
 test("public mobile prediction layout keeps order and roster in two panes", () => {
-  assert.match(html, /style\.css\?v=public-mobile-ui-blockers-1/);
+  assert.match(html, /style\.css\?v=public-mobile-overflow-and-image-button-fix-1/);
+  assert.doesNotMatch(html, /public-mobile-ui-blockers-1|public-roster-source-of-truth-1/);
   assert.match(html, /class="lineup-builder"/);
   assert.match(html, /id="predictionLineup" class="slot-list"/);
   assert.match(html, /id="predictionPlayers" class="player-list"/);
@@ -105,4 +106,6 @@ test("390px/430pxの公開画面は横幅を制約し、2カラムの子要素�
   assert.match(css, /@media \(max-width: 767px\)[\s\S]*?\.lineup-builder \{[\s\S]*?grid-template-columns: minmax\(0, 56fr\) minmax\(0, 44fr\)[\s\S]*?width: 100%;[\s\S]*?max-width: 100%;/);
   assert.match(css, /\.lineup-panel,[\s\S]*?\.player-panel,[\s\S]*?\.lineup-slot,[\s\S]*?\.player-chip \{[\s\S]*?min-width: 0;[\s\S]*?max-width: 100%;/);
   assert.match(css, /@media \(max-width: 430px\)[\s\S]*?\.container \{[\s\S]*?width: calc\(100% - 16px\);/);
+  assert.match(css, /\.header-inner > \*,[\s\S]*?\.auth-button \{[\s\S]*?min-width: 0;[\s\S]*?max-width: 100%;/);
+  assert.match(css, /\.probable-starter-heading a \{[\s\S]*?overflow-wrap: anywhere;[\s\S]*?white-space: normal;/);
 });

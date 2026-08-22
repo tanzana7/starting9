@@ -2089,6 +2089,13 @@ function applyStoredProbableStarter(probableStarter, gameMetadata = {}) {
   state.probableStarter.dataStatus = probableStarter?.dataStatus || (probableStarter?.partial ? "partial" : status);
   state.probableStarter.referenceDiagnostics = null;
   const hasAnyPitcher = Boolean(String(probableStarter?.homePitcherName || "").trim() || String(probableStarter?.awayPitcherName || "").trim());
+  if (status === "external_fetch_disabled" || probableStarter?.errorCode === "EXTERNAL_FETCH_DISABLED") {
+    state.probableStarter.status = "external_fetch_disabled";
+    state.probableStarter.message = "公式情報の取得を一時停止しています。";
+    state.probableStarter.matchedGame = null;
+    state.probableStarter.games = [];
+    return;
+  }
   if (!probableStarter || status === "empty" || status === "unannounced" || (status === "announced" && !hasAnyPitcher)) {
     state.probableStarter.status = "unannounced";
     state.probableStarter.message = "予告先発はまだ発表されていません";
@@ -2178,6 +2185,11 @@ async function fetchStoredProbableStarter() {
     const { response, payload: result } = await publicApiClient.get(url, { credentials: "include", signal: request.signal });
     if (!isCurrentPublicRequest("probable", request.id) || getCurrentGameId() !== game.internalGameId) return;
     if (!response.ok || !result?.ok) {
+      if (result?.code === "EXTERNAL_FETCH_DISABLED" || result?.externalFetchDisabled === true) {
+        state.probableStarter.status = "external_fetch_disabled";
+        state.probableStarter.message = "公式情報の取得を一時停止しています。";
+        return;
+      }
       state.probableStarter.status = "error";
       state.probableStarter.message = "予告先発を取得できませんでした";
       return;
@@ -4207,6 +4219,11 @@ function renderProbableStarterDisplay() {
     return;
   }
 
+  if (probableStarter.status === "external_fetch_disabled") {
+    renderProbableStarterNotice(container, "external_fetch_disabled", probableStarter.nextGame);
+    return;
+  }
+
   if (probableStarter.status === "game_reference_mismatch") {
     renderProbableStarterNotice(container, "game_reference_mismatch", probableStarter.nextGame);
     return;
@@ -4240,13 +4257,14 @@ function renderProbableStarterDisplay() {
 
 function renderProbableStarterNotice(container, status, nextGame) {
   const isError = status === "error";
+  const isExternalFetchDisabled = status === "external_fetch_disabled";
   const isReferenceMismatch = status === "game_reference_mismatch";
-  container.className = `probable-starter-card ${isError ? "is-error" : "is-pending"}`;
+  container.className = `probable-starter-card ${isError || isExternalFetchDisabled ? "is-error" : "is-pending"}`;
   if (isReferenceMismatch) container.classList.add("is-error");
   container.innerHTML = `
     ${createProbableStarterHeadingHtml()}
-    <p class="probable-starter-message">${isReferenceMismatch ? "予告先発の試合参照を確認できませんでした。" : isError ? "予告先発を取得できませんでした。" : "現在、次の試合の予告先発はまだ発表されていません。"}</p>
-    <p class="probable-starter-meta">${isReferenceMismatch ? "試合情報を更新して再確認します。" : isError ? "次回の自動更新で再試行します。" : "発表され次第、自動で表示されます。"}</p>
+    <p class="probable-starter-message">${isReferenceMismatch ? "予告先発の試合参照を確認できませんでした。" : isExternalFetchDisabled ? "公式情報の取得を一時停止しています。" : isError ? "予告先発を取得できませんでした。" : "現在、次の試合の予告先発はまだ発表されていません。"}</p>
+    <p class="probable-starter-meta">${isReferenceMismatch ? "試合情報を更新して再確認します。" : isExternalFetchDisabled ? "取得を再開した後に確認できます。" : isError ? "次回の自動更新で再試行します。" : "発表され次第、自動で表示されます。"}</p>
     ${isError || isReferenceMismatch ? "" : `<p class="probable-starter-meta">${escapeHtml(formatScheduledGameForLog(nextGame))}</p>`}
     ${!isError && !isReferenceMismatch && state.probableStarter.nextCheckAt ? `<p class="probable-starter-meta">次回自動確認：${escapeHtml(formatDateTime(state.probableStarter.nextCheckAt))}</p>` : ""}
   `;
@@ -4258,6 +4276,7 @@ function createProbableStarterHeadingHtml() {
       <p class="probable-starter-label">予告先発</p>
       <a href="${NPBASE_MATCHUPS_URL}" target="_blank" rel="noopener noreferrer">対予告先発成績を見る</a>
     </div>
+    <p class="official-source-note">試合情報の確認元: <a href="https://npb.jp/" target="_blank" rel="noopener noreferrer">NPB公式サイト</a></p>
   `;
 }
 

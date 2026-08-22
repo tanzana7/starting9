@@ -61,6 +61,26 @@
       }
 
       deps.state.publicRoster.isLoading = false;
+      if (gameSnapshot.externalFetchDisabled === true) {
+        deps.state.publicRoster = {
+          internalGameId,
+          gameDate: gameSnapshot.gameDate || gameDate,
+          status: "attention",
+          displayRosterSource: "",
+          sourceOfTruth: "none",
+          rosterUse: "none",
+          canUseForPrediction: false,
+          players: [],
+          warning: "公式情報の取得を一時停止しています。",
+          externalFetchDisabled: true,
+          isLoading: false,
+          usableUntil: ""
+        };
+        deps.syncPublicAppState();
+        deps.renderPicker("prediction");
+        deps.renderPredictionDeadline();
+        return;
+      }
       const snapshotStatus = normalizeSnapshotStatus(gameSnapshot);
       const acceptedSources = ["official_live", "verified_snapshot", "stale_snapshot", "baseline_snapshot"];
       const apiSource = String(gameSnapshot.rosterUse || gameSnapshot.sourceOfTruth || "");
@@ -168,7 +188,9 @@
 
       const status = document.getElementById("predictionRosterStatus");
       if (status) {
-        const message = hasFallbackRoster || hasRosterAttention
+        const message = deps.state.publicRoster?.externalFetchDisabled
+          ? "公式情報の取得を一時停止しています。"
+          : hasFallbackRoster || hasRosterAttention
           ? "選手情報の更新を確認中です。表示中の選手一覧は前回取得データの場合があります。"
           : publicRosterReady
             ? ""

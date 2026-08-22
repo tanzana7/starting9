@@ -22,7 +22,7 @@ test("予告先発は未発表と取得失敗を異なる案内として表示�
 
 test("予告先発カードは発表済み・未発表・失敗で同じ表示領域を維持する", () => {
   assert.match(script, /container\.className = "probable-starter-card is-success"/);
-  assert.match(script, /container\.className = `probable-starter-card \$\{isError \? "is-error" : "is-pending"\}`/);
+  assert.match(script, /container\.className = `probable-starter-card \$\{isError \|\| isExternalFetchDisabled \? "is-error" : "is-pending"\}`/);
   assert.match(css, /\.probable-starter-card[\s\S]*?min-height: 128px/);
   assert.match(css, /\.probable-starter-card\.is-error/);
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.probable-starter-card\.is-success[\s\S]*background: #214f7d/);

@@ -4,6 +4,8 @@ const LINEUP_SIZE = 9;
 const LINEUP_CACHE_TTL_SECONDS = 5 * 60;
 const ROSTER_CACHE_TTL_SECONDS = 30 * 60;
 const NPB_FETCH_TIMEOUT_MS = 12_000;
+const NPB_USER_AGENT = "Starting9/1.0 (+https://starting9.pages.dev/contact.html; non-commercial fan-made lineup prediction service)";
+const EXTERNAL_FETCH_DISABLED_MESSAGE = "公式情報の取得を一時停止しています。";
 const NOTICE_SOURCE_URL = "https://npb.jp/announcement/roster/";
 const DEFAULT_ALLOWED_ORIGINS = [
   "https://starting9.pages.dev",
@@ -18,6 +20,7 @@ const NPB_SCORE_PATH_PATTERN = /^\/scores\/(\d{4})\/(\d{2})(\d{2})\/([a-z0-9]+-[
 const LINEUP_ERROR_MESSAGES = {
   GAME_NOT_FOUND: "対象試合を特定できませんでした。",
   GAME_CANCELLED: "NPB公式でこの試合の中止が確認されました。",
+  EXTERNAL_FETCH_DISABLED: "公式情報の取得を一時停止しています。",
   NPB_HTTP_ERROR: "NPB公式ページを取得できませんでした。",
   WORKER_FETCH_FAILED: "NPB公式ページへの接続に失敗しました。",
   TIMEOUT: "NPB公式ページの取得がタイムアウトしました。",
@@ -25,6 +28,7 @@ const LINEUP_ERROR_MESSAGES = {
   PARSE_FAILED: "NPB公式ページからスタメンを解析できませんでした。",
   INVALID_LINEUP: "取得したスタメンの内容を確認できませんでした。"
 };
+const inFlightNpbFetches = new Map();
 const FIGHTERS_TEAM_KEYWORDS = [
   "北海道日本ハムファイターズ",
   "北海道日本ハム",
@@ -149,6 +153,14 @@ export default {
 
     const requestUrl = new URL(request.url);
     const mode = requestUrl.searchParams.get("mode") || "lineup";
+    if (String(env?.NPB_FETCH_DISABLED || "").toLowerCase() === "true") {
+      return withCors(jsonResponse({
+        ok: false,
+        code: "EXTERNAL_FETCH_DISABLED",
+        error: EXTERNAL_FETCH_DISABLED_MESSAGE,
+        source: "npb-public-information"
+      }, 503), corsHeaders);
+    }
     if (mode === "starter") {
       return withCors(await handleStarterRequest(requestUrl.searchParams.get("debug") === "1"), corsHeaders);
     }
@@ -382,29 +394,53 @@ function createLineupSourceFromIdentity(date, gameCode) {
 }
 
 async function fetchNpbScorePage(sourceUrl) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), NPB_FETCH_TIMEOUT_MS);
+  const upstream = await fetchNpbBody(sourceUrl, { purpose: "score-page" });
+  if (!upstream.ok) return { ok: false, code: upstream.code, status: 502, httpStatus: upstream.httpStatus };
+  return { ok: true, html: upstream.body, httpStatus: upstream.httpStatus };
+}
 
-  try {
-    const response = await fetch(sourceUrl, {
-      cache: "no-store",
-      signal: controller.signal,
-      headers: {
-        "User-Agent": "Starting9 MVP Cloudflare Worker"
+function shareNpbFetch(key, fetcher) {
+  const existing = inFlightNpbFetches.get(key);
+  if (existing) return existing;
+  const pending = Promise.resolve().then(fetcher).finally(() => {
+    if (inFlightNpbFetches.get(key) === pending) inFlightNpbFetches.delete(key);
+  });
+  inFlightNpbFetches.set(key, pending);
+  return pending;
+}
+
+async function fetchNpbBody(sourceUrl, { purpose = "page", headers = {}, asBytes = false } = {}) {
+  const key = `${purpose}:${sourceUrl}`;
+  return shareNpbFetch(key, async () => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), NPB_FETCH_TIMEOUT_MS);
+    try {
+      const response = await fetch(sourceUrl, {
+        cache: "no-store",
+        signal: controller.signal,
+        headers: { "User-Agent": NPB_USER_AGENT, ...headers }
+      });
+      if (!response.ok) {
+        return { ok: false, code: "NPB_HTTP_ERROR", httpStatus: response.status, contentType: response.headers.get("Content-Type") || "", body: asBytes ? new Uint8Array() : "" };
       }
-    });
-
-    if (!response.ok) {
-      return { ok: false, code: "NPB_HTTP_ERROR", status: 502, httpStatus: response.status };
+      return {
+        ok: true,
+        httpStatus: response.status,
+        contentType: response.headers.get("Content-Type") || "",
+        body: asBytes ? new Uint8Array(await response.arrayBuffer()) : await response.text()
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        code: error?.name === "AbortError" ? "TIMEOUT" : "WORKER_FETCH_FAILED",
+        httpStatus: 0,
+        contentType: "",
+        body: asBytes ? new Uint8Array() : ""
+      };
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    return { ok: true, html: await response.text(), httpStatus: response.status };
-  } catch (error) {
-    const isTimeout = error?.name === "AbortError";
-    return { ok: false, code: isTimeout ? "TIMEOUT" : "WORKER_FETCH_FAILED", status: 502 };
-  } finally {
-    clearTimeout(timeoutId);
-  }
+  });
 }
 
 function lineupErrorResponse(code, status, details = {}) {
@@ -571,38 +607,33 @@ async function handleNoticeRequest(requestUrl, isDebug) {
 }
 
 async function fetchNoticeSource() {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), NPB_FETCH_TIMEOUT_MS);
   try {
-    const response = await fetch(NOTICE_SOURCE_URL, {
-      cache: "no-store",
-      signal: controller.signal,
-      headers: {
-        "Cache-Control": "no-cache",
-        "User-Agent": "Starting9 MVP Cloudflare Worker"
-      }
+    const source = await fetchNpbBody(NOTICE_SOURCE_URL, {
+      purpose: "notice-page",
+      headers: { "Cache-Control": "no-cache" },
+      asBytes: true
     });
-    const contentType = response.headers.get("Content-Type") || "";
-    const bytes = new Uint8Array(await response.arrayBuffer());
+    const contentType = source.contentType || "";
+    const bytes = source.body;
     const decoded = decodeNoticeHtml(bytes, contentType);
     const diagnostics = createNoticeSourceDiagnostics({
       contentType,
-      httpStatus: response.status,
+      httpStatus: source.httpStatus,
       bodyLength: bytes.byteLength,
       html: decoded.html,
       charset: decoded.charset
     });
-    if (!response.ok) {
-      return { ok: false, code: "NOTICE_FETCH_FAILED", httpStatus: response.status, diagnostics };
+    if (!source.ok) {
+      return { ok: false, code: source.code === "NPB_HTTP_ERROR" ? "NOTICE_FETCH_FAILED" : source.code, httpStatus: source.httpStatus, diagnostics };
     }
     if (!isHtmlContentType(contentType)) {
-      console.log(`[NPB_NOTICE] content-type-invalid source=${NOTICE_SOURCE_URL} status=${response.status} contentType=${contentType || "-"} bodyLength=${bytes.byteLength}`);
-      return { ok: false, code: "NOTICE_CONTENT_TYPE_INVALID", httpStatus: response.status, diagnostics };
+      console.log(`[NPB_NOTICE] content-type-invalid source=${NOTICE_SOURCE_URL} status=${source.httpStatus} contentType=${contentType || "-"} bodyLength=${bytes.byteLength}`);
+      return { ok: false, code: "NOTICE_CONTENT_TYPE_INVALID", httpStatus: source.httpStatus, diagnostics };
     }
     return {
       ok: true,
       html: decoded.html,
-      httpStatus: response.status,
+      httpStatus: source.httpStatus,
       contentType,
       bodyLength: bytes.byteLength,
       diagnostics,
@@ -611,9 +642,7 @@ async function fetchNoticeSource() {
       stale: false
     };
   } catch (error) {
-    return { ok: false, error: error?.name === "AbortError" ? "NPB公式公示ページの取得がタイムアウトしました。" : "NPB公式公示ページを取得できませんでした。" };
-  } finally {
-    clearTimeout(timer);
+    return { ok: false, code: error?.code || "NOTICE_FETCH_FAILED", error: "NPB公式公示ページを取得できませんでした。" };
   }
 }
 
@@ -786,16 +815,15 @@ async function fetchRosterSource(requestUrl, sourceUrl, { forceRefresh = false }
   }
 
   try {
-    const response = await fetch(sourceUrl, {
-      cache: "no-store",
+    const source = await fetchNpbBody(sourceUrl, {
+      purpose: "roster-page",
       headers: {
         "Cache-Control": "no-cache, no-store, max-age=0",
-        Pragma: "no-cache",
-        "User-Agent": "Starting9 MVP Cloudflare Worker"
+        Pragma: "no-cache"
       }
     });
 
-    if (!response.ok) {
+    if (!source.ok) {
       if (cached) {
         return {
           ok: true,
@@ -806,16 +834,16 @@ async function fetchRosterSource(requestUrl, sourceUrl, { forceRefresh = false }
           stale: true
         };
       }
-      return { ok: false, error: `NPB公式登録ページを取得できませんでした。HTTP ${response.status}` };
+      return { ok: false, error: `NPB公式登録ページを取得できませんでした。HTTP ${source.httpStatus}` };
     }
 
-    const html = await response.text();
+    const html = source.body;
     const fetchedAt = new Date().toISOString();
     const headers = new Headers({
       "Content-Type": "text/html; charset=UTF-8",
       "Cache-Control": `public, max-age=${ROSTER_CACHE_TTL_SECONDS}`,
       "X-Starting9-Roster-Fetched-At": fetchedAt,
-      "X-Starting9-Roster-Http-Status": String(response.status)
+      "X-Starting9-Roster-Http-Status": String(source.httpStatus)
     });
     try {
       await cache.put(cacheKey, new Response(html, { headers }));
@@ -826,7 +854,7 @@ async function fetchRosterSource(requestUrl, sourceUrl, { forceRefresh = false }
     return {
       ok: true,
       html,
-      httpStatus: response.status,
+      httpStatus: source.httpStatus,
       fetchedAt,
       cacheStatus: forceRefresh ? "bypass" : "miss",
       stale: false
@@ -862,23 +890,19 @@ async function handleStarterRequest(isDebug) {
   const fetchedAt = new Date().toISOString();
 
   try {
-    const response = await fetch(STARTER_SOURCE_URL, {
-      cache: "no-store",
-      headers: {
-        "User-Agent": "Starting9 MVP Cloudflare Worker"
-      }
-    });
+    const source = await fetchNpbBody(STARTER_SOURCE_URL, { purpose: "starter-page" });
 
-    if (!response.ok) {
+    if (!source.ok) {
       return jsonResponse({
         ok: false,
         sourceUrl: STARTER_SOURCE_URL,
         fetchedAt,
-        error: `NPB公式予告先発ページを取得できませんでした。HTTP ${response.status}`
+        code: source.code || "STARTER_FETCH_FAILED",
+        error: `NPB公式予告先発ページを取得できませんでした。HTTP ${source.httpStatus || 502}`
       }, 502);
     }
 
-    const html = await response.text();
+    const html = source.body;
     const parsed = parseStarterPage(html);
     const responseBody = {
       ok: true,

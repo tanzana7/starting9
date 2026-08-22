@@ -269,6 +269,7 @@ const GAME_IDENTITY_AUDIT_TABLES = Object.freeze([
 ]);
 const NPB_SERVICE_BINDING_INTERNAL_ORIGIN = "https://npb-fetch.internal";
 const NPB_FETCH_TIMEOUT_MS = 15_000;
+const EXTERNAL_FETCH_DISABLED_MESSAGE = "公式情報の取得を一時停止しています。";
 const PROBABLE_STARTER_RETRY_INTERVAL_MS = 60 * 60 * 1000;
 const ROSTER_MINIMUM_PLAYER_COUNT = 20;
 const ROSTER_AUTO_FETCH_RETRY_INTERVAL_MS = 30 * 60 * 1000;
@@ -307,6 +308,7 @@ const PREGAME_TOOL_ERROR_MESSAGES = Object.freeze({
   NOTICE_DISTRIBUTION_FAILED: "公示結果の当日試合への配布に失敗しました。",
   NOTICE_NOT_FOUND: "保存済みの公示結果がありません。",
   NOTICE_SCHEMA_NOT_READY: "公示保存用データベースが準備されていません。",
+  EXTERNAL_FETCH_DISABLED: EXTERNAL_FETCH_DISABLED_MESSAGE,
   ROSTER_FETCH_FAILED: "NPB公式のロースター取得に失敗しました。",
   ROSTER_PARSE_FAILED: "NPB公式のロースターを解析できませんでした。",
   ROSTER_SCHEMA_NOT_READY: "ロースター保存用データベースが準備されていません。",
@@ -2030,6 +2032,7 @@ function getProbableStarterJobMaxAttempts(startAt, now) {
 
 export function getWorkflowJobErrorCode(error) {
   const code = String(error?.code || "").toUpperCase();
+  if (code === "EXTERNAL_FETCH_DISABLED") return code;
   if (["WORKFLOW_TRANSITION_INVALID", "WORKFLOW_STATE_CONFLICT"].includes(code)
     || String(error?.message || "") === "試合進行状態を final_lineup_captured から scored_private へ変更できません。") {
     return "WORKFLOW_STATE_TRANSITION_FAILED";
@@ -4595,6 +4598,8 @@ async function handleAdminV3Overview(request, env, cors) {
     ok: true,
     featureFlag: V3_FEATURE_FLAG,
     enabled: isGameAutomationV3Enabled(env),
+    npbFetchDisabled: String(env?.NPB_FETCH_DISABLED || "").toLowerCase() === "true",
+    npbFetchStatus: String(env?.NPB_FETCH_DISABLED || "").toLowerCase() === "true" ? "external_fetch_disabled" : "enabled",
     schema,
     todayOps: {
       cronLastRunAt,
@@ -8726,7 +8731,9 @@ export function normalizePregameToolError(action, error) {
   const rawCode = String(error?.code || "").trim();
   let code = rawCode;
 
-  if (isPregameSchemaError(error)) {
+  if (rawCode === "EXTERNAL_FETCH_DISABLED") {
+    code = rawCode;
+  } else if (isPregameSchemaError(error)) {
     code = metadata.schemaCode || "PREGAME_SCHEMA_NOT_READY";
   } else if (Number(error?.upstreamStatus) === 404) {
     code = "NPB_WORKER_ROUTE_NOT_FOUND";
@@ -8751,7 +8758,8 @@ export function normalizePregameToolError(action, error) {
   }
 
   let status = Number(error?.httpStatus || 0) || 500;
-  if (code === "LINEUP_NOT_PUBLISHED" || code === "SCORING_LINEUP_REQUIRED" || code === "SCORING_IN_PROGRESS" || code === "NOTICE_NOT_FOUND") status = 409;
+  if (code === "EXTERNAL_FETCH_DISABLED") status = 503;
+  else if (code === "LINEUP_NOT_PUBLISHED" || code === "SCORING_LINEUP_REQUIRED" || code === "SCORING_IN_PROGRESS" || code === "NOTICE_NOT_FOUND") status = 409;
   else if (code === "GAME_NOT_FOUND") status = 404;
   else if (code.endsWith("_SCHEMA_NOT_READY") || code === "NPB_SERVICE_BINDING_MISSING" || code === "NPB_SERVICE_BINDING_INVALID") status = 503;
   else if (code.endsWith("_PARSE_FAILED") || code === "LINEUP_INVALID" || code === "NOTICE_RESPONSE_INVALID") status = 422;
@@ -8781,7 +8789,14 @@ async function handleGetGameDayStatus(request, env, cors) {
   const identity = identifier ? await resolveGameDayStatusIdentity(env.AUTH_DB, identifier) : null;
   if (!identity) return jsonResponse({ ok: false, error: "対象試合を指定してください。" }, 400, cors);
   const status = await getGameDayStatus(env.AUTH_DB, identity, env);
-  return jsonResponse({ ok: true, gameId: identity.gameId, internalGameId: identity.internalGameId || null, ...status }, 200, cors);
+  return jsonResponse({
+    ok: true,
+    gameId: identity.gameId,
+    internalGameId: identity.internalGameId || null,
+    npbFetchDisabled: String(env?.NPB_FETCH_DISABLED || "").toLowerCase() === "true",
+    npbFetchStatus: String(env?.NPB_FETCH_DISABLED || "").toLowerCase() === "true" ? "external_fetch_disabled" : "enabled",
+    ...status
+  }, 200, cors);
 }
 
 export function parseGameDayStatusRequestIdentifier(params) {
@@ -8868,6 +8883,25 @@ async function handleGetGameDayRoster(request, env, cors) {
   ).bind(internalGameId).first();
   if (!game) {
     return jsonResponse({ ok: false, code: "INTERNAL_GAME_ID_NOT_FOUND", error: "対象試合を確認できません。" }, 404, cors);
+  }
+  if (String(env?.NPB_FETCH_DISABLED || "").toLowerCase() === "true") {
+    return jsonResponse(withPublicRosterContract({
+      ok: true,
+      internalGameId,
+      gameDate: game.game_date,
+      status: "attention",
+      rosterStatus: "attention",
+      displayRosterSource: null,
+      sourceOfTruth: "none",
+      playerCount: 0,
+      players: [],
+      externalFetchDisabled: true,
+      warning: EXTERNAL_FETCH_DISABLED_MESSAGE,
+      nextSafeAction: "retry_when_external_fetch_enabled"
+    }, {
+      warning: EXTERNAL_FETCH_DISABLED_MESSAGE,
+      nextSafeAction: "retry_when_external_fetch_enabled"
+    }), 200, cors);
   }
   const row = await env.AUTH_DB.prepare(
     `SELECT internal_game_id, game_date, captured_at, roster_json, player_count, source, status
@@ -9964,6 +9998,13 @@ export async function fetchNpbWorkerJson(env, params) {
     upstreamMode,
     upstreamTransport: "service-binding"
   };
+  if (String(env?.NPB_FETCH_DISABLED || "").toLowerCase() === "true") {
+    throw createPregameError("EXTERNAL_FETCH_DISABLED", EXTERNAL_FETCH_DISABLED_MESSAGE, {
+      httpStatus: 503,
+      retryable: true,
+      ...upstreamDetails
+    });
+  }
   let binding;
   let request;
   try {
@@ -10000,6 +10041,7 @@ export async function fetchNpbWorkerJson(env, params) {
         externalStatus: payload?.httpStatus,
         contentType: response.headers.get("content-type") || "",
         upstreamUrl: payload?.sourceUrl,
+        retryable: upstreamCode === "EXTERNAL_FETCH_DISABLED",
         ...upstreamDetails
       });
     }
@@ -13303,6 +13345,7 @@ async function handleGetProbableStarter(request, env, cors) {
     if (!game) return jsonResponse({ ok: false, code: "V3_GAME_NOT_FOUND", error: "対象試合が見つかりません。" }, 404, cors);
     const row = await readProbableStarterRow(env.AUTH_DB, { internalGameId: suppliedInternalGameId });
     const probableStarter = serializeProbableStarterRow(row);
+    const externalFetchDisabled = String(env?.NPB_FETCH_DISABLED || "").toLowerCase() === "true";
     const response = jsonResponse({
       ok: true,
       internalGameId: suppliedInternalGameId,
@@ -13314,10 +13357,12 @@ async function handleGetProbableStarter(request, env, cors) {
       awayTeam: game.away_team || "",
       source: probableStarter?.source || "",
       fetchedAt: probableStarter?.fetchedAt || null,
-      status: probableStarter?.status || "empty",
-      dataStatus: probableStarter?.dataStatus || "unannounced",
-      state: probableStarter?.status || "empty",
-      errorCode: probableStarter?.errorCode || null,
+      status: externalFetchDisabled ? "external_fetch_disabled" : probableStarter?.status || "empty",
+      dataStatus: externalFetchDisabled ? "external_fetch_disabled" : probableStarter?.dataStatus || "unannounced",
+      state: externalFetchDisabled ? "external_fetch_disabled" : probableStarter?.status || "empty",
+      errorCode: externalFetchDisabled ? "EXTERNAL_FETCH_DISABLED" : probableStarter?.errorCode || null,
+      externalFetchDisabled,
+      message: externalFetchDisabled ? EXTERNAL_FETCH_DISABLED_MESSAGE : null,
       lastFailureCode: probableStarter?.lastFailureCode || null,
       isConfirmed: Boolean(probableStarter?.isConfirmed),
       confirmed: Boolean(probableStarter?.isConfirmed),
@@ -13880,6 +13925,7 @@ async function recordPregameLineupAttempt(db, gameId, identity, now, error, phas
 
 function classifyLineupErrorCode(error) {
   const raw = String(error?.code || "LINEUP_FETCH_FAILED").slice(0, 80);
+  if (raw === "EXTERNAL_FETCH_DISABLED") return raw;
   if (["GAME_NOT_FOUND", "SCHEDULE_UNAVAILABLE"].includes(raw)) return "LINEUP_GAME_NOT_FOUND";
   if (raw === "LINEUP_URL_BUILD_FAILED") return raw;
   if (["NPB_HTTP_ERROR", "NPB_WORKER_HTTP_ERROR", "NPB_WORKER_TIMEOUT", "NPB_SERVICE_BINDING_MISSING", "NPB_SERVICE_BINDING_INVALID"].includes(raw)) {

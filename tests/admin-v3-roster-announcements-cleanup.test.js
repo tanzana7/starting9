@@ -35,6 +35,6 @@ test("admin-v3は旧直接編集操作を外し、V3正式jobの安全な再実�
 });
 
 test("admin-v3のJavaScriptキャッシュバスターは公示整理版へ更新される", () => {
-  assert.match(page, /admin-v3\.js\?v=admin-v3-manual-cancel-button-1/);
-  assert.match(page, /admin-v3\.css\?v=admin-v3-manual-cancel-button-1/);
+  assert.match(page, /admin-v3\.js\?v=admin-v3-fetch-safety-status-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-v3-fetch-safety-status-1/);
 });

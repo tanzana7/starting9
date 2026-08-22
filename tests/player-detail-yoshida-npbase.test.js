@@ -96,10 +96,16 @@ test("詳細パネルはPC modal、スマホ bottom sheet、閉じる操作を�
   assert.match(script, /player-detail-close/);
   assert.match(css, /\.player-detail-overlay\s*\{[\s\S]*position: fixed[\s\S]*inset: 0/);
   assert.match(css, /@media \(max-width: 767px\)[\s\S]*\.player-detail-overlay[\s\S]*align-items: end[\s\S]*\.player-detail-dialog[\s\S]*border-radius: 16px 16px 0 0/);
+  assert.match(css, /\.player-detail-dialog\s*\{[\s\S]*width: min\(100%, 440px\)[\s\S]*padding: 24px/);
+  assert.match(css, /\.player-detail-meta\s*\{[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)/);
+  assert.match(css, /\.player-detail-meta > div\s*\{[\s\S]*min-width: 0[\s\S]*padding: 12px 14px/);
+  assert.match(css, /\.player-detail-positions\s*\{[\s\S]*flex-wrap: wrap[\s\S]*gap: 8px/);
+  assert.match(css, /\.player-detail-links a\s*\{[\s\S]*max-width: 100%[\s\S]*padding: 10px 14px[\s\S]*min-height: 44px/);
+  assert.match(css, /\.player-detail-select\s*\{[\s\S]*width: 100%[\s\S]*min-height: 46px/);
 });
 
 test("公開assetのcache busterは追加NPBaseリンク版へ更新される", () => {
-  assert.match(html, /players\.js\?v=public-mobile-overflow-and-image-button-fix-1/);
-  assert.match(html, /script\.js\?v=public-mobile-overflow-and-image-button-fix-1/);
-  assert.match(html, /style\.css\?v=public-mobile-overflow-and-image-button-fix-1/);
+  assert.match(html, /players\.js\?v=public-player-detail-modal-width-polish-1/);
+  assert.match(html, /script\.js\?v=public-player-detail-modal-width-polish-1/);
+  assert.match(html, /style\.css\?v=public-player-detail-modal-width-polish-1/);
 });

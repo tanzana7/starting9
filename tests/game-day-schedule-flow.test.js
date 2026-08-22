@@ -50,7 +50,7 @@ test("試合前自動処理は公示・非公開採点・開始後公開の責�
   assert.match(auth, /mode: "notice"/);
   assert.match(auth, /\/api\/game-day-roster/);
   assert.match(auth, /snapshotTeams = Array\.isArray\(rosters\.fighters\)/);
-  assert.match(auth, /resultStatus = now < identity\.startAt/);
+  assert.match(auth, /resolveGameDayResultStatus\(\{/);
   assert.match(auth, /runScheduledGameAutomationV3/);
   assert.match(auth, /V3_JOB_TYPE\.ROSTER_FETCH/);
   assert.doesNotMatch(auth, /runDueGameDayScheduleJobs/);

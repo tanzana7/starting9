@@ -21,6 +21,21 @@
       return this.appState.requests.initialization.promise;
     }
 
+    scheduleOptionalWork(callback) {
+      const run = () => {
+        try {
+          void Promise.resolve(callback());
+        } catch (error) {
+          console.error("公開画面の遅延初期化に失敗しました", error);
+        }
+      };
+      if (typeof window?.requestIdleCallback === "function") {
+        window.requestIdleCallback(run, { timeout: 1200 });
+      } else {
+        setTimeout(run, 0);
+      }
+    }
+
     async initialize() {
       const ops = this.operations;
       ops.buildLineupPicker("prediction", "predictionLineup", "predictionPlayers");
@@ -39,15 +54,15 @@
         .then(() => {
           void ops.maybeLoadFastPreviousResult();
           ops.startPredictionDeadlineTicker();
-          void Promise.allSettled([
+          this.scheduleOptionalWork(() => Promise.allSettled([
             ops.initializeProbableStarter(),
             ops.initializeRosterCandidateSync(),
             ops.initializePredictionRemoteSync()
-          ]);
+          ]));
           ops.refreshPredictionDeadlineState();
           ops.syncPublicAppState();
           ops.renderAll();
-          void ops.refreshGameDayNoticeStatus({ force: true });
+          this.scheduleOptionalWork(() => ops.refreshGameDayNoticeStatus({ force: true }));
         })
         .catch((error) => {
           console.error("公開試合情報の後続初期化に失敗しました", error);

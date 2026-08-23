@@ -6,6 +6,7 @@
     overview: "/api/admin/v3/overview",
     automationLogs: "/api/admin/v3/automation-logs",
     rankingResets: "/api/admin/v3/ranking-resets",
+    rankingExclusionGames: "/api/admin/v3/ranking-exclusion/games",
     rankingResetPreview: "/api/admin/v3/ranking-resets/preview",
     rankingResetExecute: "/api/admin/v3/ranking-resets/execute",
     perfectScorePreview: "/api/admin/v3/perfect-score-test/preview",
@@ -84,6 +85,14 @@
         });
       },
       listRankingResets: () => request(ADMIN_V3_ENDPOINTS.rankingResets),
+      listRankingExclusionGames(filters = {}) {
+        const query = new URLSearchParams({
+          scope: filters.scope || "past",
+          search: filters.search || "",
+          limit: String(filters.limit || 30)
+        });
+        return request(`${ADMIN_V3_ENDPOINTS.rankingExclusionGames}?${query.toString()}`);
+      },
       previewRankingReset: (body) => post(ADMIN_V3_ENDPOINTS.rankingResetPreview, body),
       executeRankingReset: (body) => post(ADMIN_V3_ENDPOINTS.rankingResetExecute, body),
       previewPerfectScore: (body) => post(ADMIN_V3_ENDPOINTS.perfectScorePreview, body),

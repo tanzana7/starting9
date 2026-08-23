@@ -54,7 +54,7 @@ test("診断表示はATTENTIONを強調し、詳細を折りたためる", () =>
 });
 
 test("admin-v3の全静的assetがjob診断用cache busterを使う", () => {
-  const matches = pageSource.match(/admin-v3-v3-job-diagnostics-1/g) || [];
+  const matches = pageSource.match(/admin-v3-ranking-exclusion-game-picker-1/g) || [];
   assert.equal(matches.length, 13);
   assert.doesNotMatch(pageSource, /admin-v3-fetch-safety-status-1/);
 });

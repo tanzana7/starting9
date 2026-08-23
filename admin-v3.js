@@ -44,7 +44,7 @@ const V3_VIEW_LABELS = {
   workflow: "試合進行",
   lineup: "スタメン",
   scoring: "採点・ランキング",
-  "ranking-reset": "ランキングリセット",
+  "ranking-reset": "ランキング対象外",
   schedule: "日程管理",
   diagnostics: "診断・監査",
   "add-game-preview": "追加試合プレビュー"
@@ -194,10 +194,13 @@ async function excludeV3GameFromRanking(internalGameId) {
   const confirmed = form.querySelector("[data-v3-ranking-exclusion-confirm]")?.checked === true;
   const rankingConfirmationText = form.querySelector("[data-v3-ranking-exclusion-confirmation-text]")?.value?.trim() || "";
   const schedule = selectedDetails()?.schedule?.schedule?.operation || {};
-  if (!reason || !confirmed || (schedule.rankingRevocationConfirmationRequired && rankingConfirmationText !== "ランキング取消")) {
+  const rankingRevocationConfirmationRequired = form.dataset.v3RankingRevocationRequired === "true"
+    || schedule.rankingRevocationConfirmationRequired === true;
+  if (!reason || !confirmed || (rankingRevocationConfirmationRequired && rankingConfirmationText !== "ランキング取消")) {
     setV3Status("ランキング対象外の理由を入力し、確認にチェックしてください。", true);
     return;
   }
+  if (!window.confirm("この試合をランキング対象外にします。保存済み予想と監査履歴は保持されます。続行しますか？")) return;
   try {
     await v3Api.updateRankingEligibility(internalGameId, { status: "excluded", reason, confirmed, rankingConfirmationText });
     await loadV3();
@@ -823,6 +826,29 @@ async function loadRankingResetMarkers(force = false) {
   }
 }
 
+async function loadRankingExclusionGames(force = false) {
+  const reset = v3State.rankingReset;
+  if (reset.gamesLoading || (reset.gamesLoaded && !force)) return;
+  reset.gamesLoading = true;
+  reset.gamesError = "";
+  renderCurrentV3View();
+  try {
+    const result = await v3Api.listRankingExclusionGames({ scope: "past", search: "", limit: 30 });
+    reset.games = Array.isArray(result.games) ? result.games : [];
+    reset.gamesLoaded = true;
+  } catch (error) {
+    reset.games = [];
+    reset.gamesError = `${error.code || "RANKING_EXCLUSION_GAMES_READ_FAILED"}: ${error.message}`;
+  } finally {
+    reset.gamesLoading = false;
+    renderCurrentV3View();
+  }
+}
+
+function renderRankingExclusionGames() {
+  if (v3State.view === "ranking-reset") renderCurrentV3View();
+}
+
 function rankingResetRequestBody(includeConfirmation = false) {
   const reset = v3State.rankingReset;
   const body = {
@@ -935,7 +961,10 @@ function renderV3(payload) {
   v3State.payload = { ...(payload || {}), games: games.items, gamesShapeUnexpected: games.unexpected };
   v3State.lastUpdatedAt = new Date();
   renderCurrentV3View();
-  if (v3State.view === "ranking-reset") loadRankingResetMarkers();
+  if (v3State.view === "ranking-reset") {
+    loadRankingResetMarkers();
+    loadRankingExclusionGames();
+  }
 }
 
 async function loadV3OperationDetails() {
@@ -978,7 +1007,10 @@ function chooseV3View(view) {
   v3State.view = view;
   updateV3Hash(view, v3State.selectedGameId);
   renderCurrentV3View();
-  if (view === "ranking-reset") loadRankingResetMarkers();
+  if (view === "ranking-reset") {
+    loadRankingResetMarkers();
+    loadRankingExclusionGames();
+  }
   document.getElementById("v3Navigation")?.classList.remove("open");
   document.getElementById("mobileNavToggle")?.setAttribute("aria-expanded", "false");
 }
@@ -1053,6 +1085,8 @@ adminV3Modules.createAdminV3Coordinator({
     chooseView: chooseV3View,
     previewRankingReset,
     executeRankingReset,
+    refreshRankingExclusionGames: loadRankingExclusionGames,
+    renderRankingExclusionGames,
     previewPerfectScore,
     previewManualGame,
     refreshAutomationLogs,

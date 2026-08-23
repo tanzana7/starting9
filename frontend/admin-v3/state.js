@@ -25,6 +25,12 @@
         preview: null,
         activeMarker: null,
         markers: [],
+        games: [],
+        gameFilter: "all",
+        gameSearch: "",
+        gamesLoading: false,
+        gamesLoaded: false,
+        gamesError: "",
         loading: false,
         loaded: false
       },

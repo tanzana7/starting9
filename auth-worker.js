@@ -5953,12 +5953,21 @@ async function handleAdminV3RankingExclusionGamesGet(request, env, cors) {
   for (const row of rows.results || []) {
     const gameStatus = String(row.game_status || "scheduled").toLowerCase();
     const workflowState = String(row.workflow_state || "scheduled");
-    const eligibilityStatus = row.ranking_eligibility_status
+    const hasRankingRecord = Boolean(row.ranking_game_id);
+    const explicitEligibilityStatus = row.ranking_eligibility_status
       ? normalizeRankingEligibilityStatus(row.ranking_eligibility_status)
-      : (Number(row.is_ranking_eligible) === 1 ? RANKING_ELIGIBILITY_STATUS.ELIGIBLE : null);
-    const rankingExcluded = eligibilityStatus === RANKING_ELIGIBILITY_STATUS.EXCLUDED
-      || Number(row.is_ranking_eligible) !== 1
-      || ["cancelled", "canceled", "postponed", "service_unavailable"].includes(gameStatus);
+      : null;
+    const hasExplicitExclusion = hasRankingRecord
+      && (Boolean(row.ranking_eligibility_status) || Boolean(row.ranking_eligibility_reason) || Boolean(row.ranking_eligibility_updated_at));
+    const isCancelledOrUnavailable = ["cancelled", "canceled", "postponed", "service_unavailable"].includes(gameStatus);
+    const rankingEligibleFlag = hasRankingRecord && Number(row.is_ranking_eligible) === 1;
+    const rankingExcluded = explicitEligibilityStatus === RANKING_ELIGIBILITY_STATUS.EXCLUDED
+      || (hasExplicitExclusion && Number(row.is_ranking_eligible) !== 1)
+      || isCancelledOrUnavailable;
+    const eligibilityStatus = rankingExcluded
+      ? RANKING_ELIGIBILITY_STATUS.EXCLUDED
+      : explicitEligibilityStatus
+        || (rankingEligibleFlag ? RANKING_ELIGIBILITY_STATUS.ELIGIBLE : null);
     const lineupPublished = String(row.lineup_publication_status || "") === "published" || Boolean(row.lineup_published_at);
     const rankingPublished = String(row.ranking_publication_status || "") === "published" || Boolean(row.ranking_published_at);
     const resultsPublished = lineupPublished || rankingPublished || ["published"].includes(workflowState);
@@ -5974,10 +5983,43 @@ async function handleAdminV3RankingExclusionGamesGet(request, env, cors) {
     }
     const rankingRevocationConfirmationRequired = ranked || reflectionAudit.hasReflectedRevision === true;
     const publishedReadOnly = resultsPublished || workflowState === "published";
+    const rankingReflectionStatus = reflectionAudit.latestStatus === "revoked"
+      ? "revoked"
+      : reflectionAudit.hasReflectedRevision && !rankingExcluded
+        ? "reflected"
+        : "not_reflected";
     const canExclude = Boolean(row.ranking_game_id)
       && !publishedReadOnly
       && !rankingExcluded
       && eligibilityStatus === RANKING_ELIGIBILITY_STATUS.ELIGIBLE;
+    const statusExclusionLabel = gameStatus === "postponed"
+      ? "延期により対象外"
+      : ["cancelled", "canceled"].includes(gameStatus)
+        ? "中止により対象外"
+        : gameStatus === "service_unavailable"
+          ? "サービス対象外"
+          : null;
+    const statusExclusionActionLabel = gameStatus === "postponed"
+      ? "延期により対象外済み"
+      : ["cancelled", "canceled"].includes(gameStatus)
+        ? "中止により対象外済み"
+        : gameStatus === "service_unavailable"
+          ? "サービス対象外済み"
+          : null;
+    const rankingStatusLabel = statusExclusionLabel
+      ? statusExclusionLabel
+      : rankingExcluded
+        ? "手動で対象外"
+        : (scored || ranked || reflectionAudit.hasReflectedRevision)
+          ? "対象"
+          : "ランキング処理前";
+    const rankingActionLabel = statusExclusionActionLabel
+      ? statusExclusionActionLabel
+      : rankingExcluded
+        ? "ランキング対象外済み"
+        : canExclude
+          ? "ランキング対象外にする"
+          : "ランキング処理前";
     const updatedAt = [
       row.game_updated_at, row.workflow_updated_at, row.lineup_updated_at,
       row.ranking_updated_at, row.ranking_eligibility_updated_at
@@ -5994,13 +6036,16 @@ async function handleAdminV3RankingExclusionGamesGet(request, env, cors) {
       resultsPublished,
       scored,
       ranked,
-      rankingEligible: eligibilityStatus === RANKING_ELIGIBILITY_STATUS.ELIGIBLE && Number(row.is_ranking_eligible) === 1,
-      rankingEligibilityStatus: eligibilityStatus,
+      rankingEligible: rankingEligibleFlag && eligibilityStatus === RANKING_ELIGIBILITY_STATUS.ELIGIBLE,
+      rankingEligibilityStatus: eligibilityStatus || "pending",
       rankingEligibilityReason: row.ranking_eligibility_reason || null,
       rankingEligibilityNote: row.ranking_eligibility_note || null,
       rankingEligibilityUpdatedBy: row.ranking_eligibility_updated_by || null,
       rankingEligibilityUpdatedAt: row.ranking_eligibility_updated_at || null,
       rankingExcluded,
+      rankingStatusLabel,
+      rankingReflectionStatus,
+      rankingActionLabel,
       rankingRevocationConfirmationRequired,
       rankingReflection: {
         available: reflectionAudit.available,
@@ -6013,9 +6058,9 @@ async function handleAdminV3RankingExclusionGamesGet(request, env, cors) {
       actionUnavailableReason: publishedReadOnly
         ? "公開済み試合は読み取り専用です。"
         : rankingExcluded
-          ? "すでにランキング対象外です。"
+          ? rankingActionLabel
           : !row.ranking_game_id
-            ? "ランキング記録がないため操作対象外です。"
+            ? "ランキング処理前のため、対象外化はまだ実行できません。"
             : null,
       lastUpdatedAt: updatedAt
     });

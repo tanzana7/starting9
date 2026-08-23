@@ -230,6 +230,21 @@ button:disabled { cursor: wait; opacity: .65; }
 .ranking-reset-preview-result { padding: 10px 12px; background: #f8fafc; border: 1px solid #dbe5ee; border-radius: 5px; }
 .ranking-reset-markers { display: grid; gap: 8px; }
 .ranking-reset-marker { display: flex; flex-wrap: wrap; gap: 7px 14px; padding: 8px 10px; background: #f8fafc; border: 1px solid #e5ebf1; border-radius: 5px; overflow-wrap: anywhere; font-size: 12px; }
+.ranking-game-picker-panel { display: grid; gap: 10px; }
+.ranking-game-picker-toolbar { display: grid; grid-template-columns: minmax(150px, .35fr) minmax(220px, 1fr) auto; gap: 9px 12px; align-items: end; }
+.ranking-game-picker-toolbar label { display: grid; gap: 5px; color: #526477; font-size: 12px; font-weight: 700; }
+.ranking-game-picker-toolbar input, .ranking-game-picker-toolbar select { min-width: 0; border: 1px solid #b9c8d8; border-radius: 5px; padding: 7px 8px; color: #172033; background: #fff; }
+.ranking-game-picker-list { display: grid; gap: 9px; }
+.ranking-game-picker-row { display: grid; grid-template-columns: minmax(250px, 1.1fr) minmax(280px, 1fr) minmax(280px, 1fr); gap: 10px 14px; padding: 11px 12px; border: 1px solid #dbe5ee; border-radius: 6px; background: #f8fafc; overflow-wrap: anywhere; }
+.ranking-game-picker-main, .ranking-game-picker-meta { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 5px 12px; min-width: 0; color: #526477; font-size: 12px; }
+.ranking-game-picker-main strong { color: #1b5c8b; }
+.ranking-game-picker-main code { font-size: 10px; overflow-wrap: anywhere; }
+.ranking-game-picker-action { min-width: 0; }
+.ranking-game-action { display: inline-block; padding: 8px 10px; border-radius: 5px; font-size: 12px; font-weight: 700; }
+.ranking-game-action.success { color: #28623f; background: #eef8f1; border: 1px solid #b8d8c1; }
+.ranking-game-exclusion-form { margin-top: 0; grid-template-columns: 1fr; padding: 0; border: 0; background: transparent; }
+.ranking-game-exclusion-form button { grid-column: auto; }
+.ranking-game-exclusion-form label { font-size: 11px; }
 .perfect-score-preview-panel { display: grid; gap: 11px; }
 .perfect-score-preview-warning { padding: 9px 11px; border-left: 3px solid #2b789d; background: #eef8fc; color: #214b61; }
 .perfect-score-preview-reason { display: grid; gap: 5px; color: #526477; font-size: 12px; font-weight: 700; }
@@ -299,6 +314,7 @@ button:disabled { cursor: wait; opacity: .65; }
   .job-detail-inline { padding: 10px; }
   .ranking-reset-form { grid-template-columns: 1fr; }
   .ranking-reset-wide { grid-column: auto; }
+  .ranking-game-picker-toolbar, .ranking-game-picker-row { grid-template-columns: 1fr; }
   .manual-game-preview-form, .manual-game-preview-grid { grid-template-columns: 1fr; }
   .manual-game-preview-wide { grid-column: auto; }
   .v3-lineup-row { grid-template-columns: 36px repeat(2, minmax(0, 1fr)); }

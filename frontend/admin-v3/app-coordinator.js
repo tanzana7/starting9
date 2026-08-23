@@ -18,6 +18,18 @@
         }
         const perfectField = closestFromEvent(event, "[data-v3-perfect-score-field]");
         if (perfectField) state.perfectScorePreview[perfectField.dataset.v3PerfectScoreField] = perfectField.value;
+        const rankingSearch = closestFromEvent(event, "[data-v3-ranking-exclusion-search]");
+        if (rankingSearch) {
+          state.rankingReset.gameSearch = rankingSearch.value;
+          actions.renderRankingExclusionGames();
+        }
+      });
+      document.addEventListener("change", (event) => {
+        const rankingFilter = closestFromEvent(event, "[data-v3-ranking-exclusion-filter]");
+        if (rankingFilter) {
+          state.rankingReset.gameFilter = rankingFilter.value;
+          actions.renderRankingExclusionGames();
+        }
       });
     }
 
@@ -30,6 +42,7 @@
         if (closestFromEvent(event, "[data-v3-perfect-score-preview]")) { await actions.previewPerfectScore("perfect"); return; }
         if (closestFromEvent(event, "[data-v3-manual-game-preview]")) { await actions.previewManualGame(); return; }
         if (closestFromEvent(event, "[data-v3-automation-log-refresh]")) { await actions.refreshAutomationLogs(); return; }
+        if (closestFromEvent(event, "[data-v3-ranking-exclusion-refresh]")) { await actions.refreshRankingExclusionGames(true); return; }
 
         const diagnoseButton = closestFromEvent(event, "[data-v3-job-diagnose]");
         if (diagnoseButton) {

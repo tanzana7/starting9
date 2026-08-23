@@ -470,6 +470,9 @@ export default {
       if (path === "/api/admin/v3/ranking-resets" && request.method === "GET") {
         return await handleAdminV3RankingResetsGet(request, env, cors);
       }
+      if (path === "/api/admin/v3/ranking-exclusion/games" && request.method === "GET") {
+        return await handleAdminV3RankingExclusionGamesGet(request, env, cors);
+      }
       if (path === "/api/admin/v3/ranking-resets/preview" && request.method === "POST") {
         return await handleAdminV3RankingResetPreview(request, env, cors);
       }
@@ -5640,6 +5643,7 @@ const ADMIN_EXACT_ROUTE_METHODS = Object.freeze({
   "/api/admin/v3/overview": ["GET"],
   "/api/admin/v3/automation-logs": ["GET"],
   "/api/admin/v3/ranking-resets": ["GET"],
+  "/api/admin/v3/ranking-exclusion/games": ["GET"],
   "/api/admin/v3/ranking-resets/preview": ["POST"],
   "/api/admin/v3/schedule/add-game/preview": ["POST"],
   "/api/admin/v3/ranking-resets/execute": ["POST"],
@@ -5900,6 +5904,124 @@ function rankingResetAdminError(cors, error, fallback = "ランキングリセ�
     RANKING_RESET_MARKER_EXISTS: 409
   }[code] || 500);
   return jsonResponse({ ok: false, code, error: String(error?.message || fallback) }, status, cors);
+}
+
+async function handleAdminV3RankingExclusionGamesGet(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+
+  const url = new URL(request.url);
+  const scope = String(url.searchParams.get("scope") || "past").trim().toLowerCase() === "all" ? "all" : "past";
+  const search = String(url.searchParams.get("search") || "").trim().toLowerCase().slice(0, 120);
+  const requestedLimit = Number.parseInt(url.searchParams.get("limit") || "30", 10);
+  const limit = Math.min(100, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : 30));
+  const today = getJstDateString(new Date());
+  const searchLike = `%${search}%`;
+  const rows = await env.AUTH_DB.prepare(
+    `SELECT games.internal_game_id, games.game_date, games.start_time,
+            games.home_team, games.away_team, games.npb_game_code,
+            games.game_status, games.updated_at AS game_updated_at,
+            workflow.state AS workflow_state, workflow.updated_at AS workflow_updated_at,
+            lineup.scoring_status, lineup.publication_status AS lineup_publication_status,
+            lineup.published_at AS lineup_published_at, lineup.updated_at AS lineup_updated_at,
+            ranking.game_id AS ranking_game_id, ranking.is_ranking_eligible,
+            ranking.ranking_eligibility_status, ranking.ranking_eligibility_reason,
+            ranking.ranking_eligibility_note, ranking.ranking_eligibility_updated_by,
+            ranking.ranking_eligibility_updated_at, ranking.game_status AS ranking_game_status,
+            ranking.publication_status AS ranking_publication_status,
+            ranking.published_at AS ranking_published_at, ranking.updated_at AS ranking_updated_at
+       FROM games
+       LEFT JOIN game_automation_v3_state AS workflow
+         ON workflow.internal_game_id = games.internal_game_id
+       LEFT JOIN game_lineups AS lineup
+         ON lineup.internal_game_id = games.internal_game_id
+       LEFT JOIN ranking_games AS ranking
+         ON ranking.internal_game_id = games.internal_game_id
+      WHERE games.internal_game_id IS NOT NULL
+        AND games.internal_game_id <> ''
+        AND games.deleted_at IS NULL
+        AND (?1 = 'all' OR games.game_date <= ?2)
+        AND (?3 = '' OR LOWER(games.game_date) LIKE ?4
+          OR LOWER(games.home_team) LIKE ?4 OR LOWER(games.away_team) LIKE ?4
+          OR LOWER(COALESCE(games.npb_game_code, '')) LIKE ?4
+          OR LOWER(games.internal_game_id) LIKE ?4)
+      ORDER BY games.game_date DESC, games.start_time DESC, games.internal_game_id DESC
+      LIMIT ?5`
+  ).bind(scope, today, search, searchLike, limit).all();
+
+  const games = [];
+  for (const row of rows.results || []) {
+    const gameStatus = String(row.game_status || "scheduled").toLowerCase();
+    const workflowState = String(row.workflow_state || "scheduled");
+    const eligibilityStatus = row.ranking_eligibility_status
+      ? normalizeRankingEligibilityStatus(row.ranking_eligibility_status)
+      : (Number(row.is_ranking_eligible) === 1 ? RANKING_ELIGIBILITY_STATUS.ELIGIBLE : null);
+    const rankingExcluded = eligibilityStatus === RANKING_ELIGIBILITY_STATUS.EXCLUDED
+      || Number(row.is_ranking_eligible) !== 1
+      || ["cancelled", "canceled", "postponed", "service_unavailable"].includes(gameStatus);
+    const lineupPublished = String(row.lineup_publication_status || "") === "published" || Boolean(row.lineup_published_at);
+    const rankingPublished = String(row.ranking_publication_status || "") === "published" || Boolean(row.ranking_published_at);
+    const resultsPublished = lineupPublished || rankingPublished || ["published"].includes(workflowState);
+    const scored = String(row.scoring_status || "") === "scored"
+      || ["scored", "ranked", "published"].includes(workflowState)
+      || String(row.ranking_game_status || "") === "scored";
+    const ranked = ["ranked", "published"].includes(workflowState);
+    let reflectionAudit = { available: false, hasReflectedRevision: false, latestStatus: null, affectedScopes: [] };
+    try {
+      reflectionAudit = await getV3RankingReflectionAudit(env.AUTH_DB, row.internal_game_id);
+    } catch (error) {
+      console.warn(`[ADMIN_V3_RANKING_EXCLUSION] internalGameId=${row.internal_game_id} stage=reflection_read failureCode=${error?.code || "RANKING_REFLECTION_READ_FAILED"}`);
+    }
+    const rankingRevocationConfirmationRequired = ranked || reflectionAudit.hasReflectedRevision === true;
+    const publishedReadOnly = resultsPublished || workflowState === "published";
+    const canExclude = Boolean(row.ranking_game_id)
+      && !publishedReadOnly
+      && !rankingExcluded
+      && eligibilityStatus === RANKING_ELIGIBILITY_STATUS.ELIGIBLE;
+    const updatedAt = [
+      row.game_updated_at, row.workflow_updated_at, row.lineup_updated_at,
+      row.ranking_updated_at, row.ranking_eligibility_updated_at
+    ].filter(Boolean).sort().at(-1) || null;
+    games.push({
+      internalGameId: row.internal_game_id,
+      gameDate: row.game_date || "",
+      startAt: row.start_time || "",
+      homeTeam: row.home_team || "",
+      awayTeam: row.away_team || "",
+      npbGameCode: row.npb_game_code || null,
+      gameStatus: row.game_status || "scheduled",
+      workflowState,
+      resultsPublished,
+      scored,
+      ranked,
+      rankingEligible: eligibilityStatus === RANKING_ELIGIBILITY_STATUS.ELIGIBLE && Number(row.is_ranking_eligible) === 1,
+      rankingEligibilityStatus: eligibilityStatus,
+      rankingEligibilityReason: row.ranking_eligibility_reason || null,
+      rankingEligibilityNote: row.ranking_eligibility_note || null,
+      rankingEligibilityUpdatedBy: row.ranking_eligibility_updated_by || null,
+      rankingEligibilityUpdatedAt: row.ranking_eligibility_updated_at || null,
+      rankingExcluded,
+      rankingRevocationConfirmationRequired,
+      rankingReflection: {
+        available: reflectionAudit.available,
+        hasReflectedRevision: reflectionAudit.hasReflectedRevision,
+        latestStatus: reflectionAudit.latestStatus,
+        affectedScopes: reflectionAudit.affectedScopes || []
+      },
+      canExclude,
+      publishedReadOnly,
+      actionUnavailableReason: publishedReadOnly
+        ? "公開済み試合は読み取り専用です。"
+        : rankingExcluded
+          ? "すでにランキング対象外です。"
+          : !row.ranking_game_id
+            ? "ランキング記録がないため操作対象外です。"
+            : null,
+      lastUpdatedAt: updatedAt
+    });
+  }
+
+  return jsonResponse({ ok: true, scope, search, limit, games, generatedAt: new Date().toISOString() }, 200, cors);
 }
 
 async function handleAdminV3RankingResetsGet(request, env, cors) {

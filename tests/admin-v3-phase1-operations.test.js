@@ -59,8 +59,8 @@ test("管理画面は旧直接編集操作を表示せず、正式V3 jobの診�
   assert.match(gameProgress, /data-v3-job-diagnose/);
   assert.match(gameProgress, /data-v3-job-run/);
   assert.match(gameProgress, /正式V3 jobを投入/);
-  assert.match(page, /admin-v3\.js\?v=admin-v3-fetch-safety-status-1/);
-  assert.match(page, /admin-v3\.css\?v=admin-v3-fetch-safety-status-1/);
+  assert.match(page, /admin-v3\.js\?v=admin-v3-v3-job-diagnostics-1/);
+  assert.match(page, /admin-v3\.css\?v=admin-v3-v3-job-diagnostics-1/);
 });
 
 test("V3 completed jobは成果物確認なしにstateを自動前進させず、admin状態再同期を使う", () => {

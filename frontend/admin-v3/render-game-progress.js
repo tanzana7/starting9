@@ -47,6 +47,108 @@
       ["publish", "結果公開", true]
     ]);
 
+    function diagnosticValue(value) {
+      if (value === null || value === undefined || value === "") return "-";
+      if (typeof value === "boolean") return value ? "あり" : "なし";
+      return String(value);
+    }
+
+    function renderDiagnosticGrid(items) {
+      return `<dl class="v3-job-diagnostic-grid">${items.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(diagnosticValue(value))}</dd></div>`).join("")}</dl>`;
+    }
+
+    function renderJobDiagnosis(diagnosis) {
+      const context = diagnosis?.diagnosticContext;
+      if (!diagnosis || !context) return "";
+      const latest = context.latestJob || {};
+      const related = diagnosis.relatedDataSummary || {};
+      const artifact = context.artifactHealth || diagnosis.workflowArtifactHealth || {};
+      const lineup = artifact.lineup || related.artifactHealth?.lineup || {};
+      const recovery = context.recovery || {};
+      const cancellation = context.cancellation || {};
+      const attention = diagnosis.manualActionRequired || diagnosis.completedArtifactMismatch || context.jobTimelineError || context.workflowTransitionsError;
+      const terminal = latest.status === "failed" || (latest.status === "retry_wait" && Number(latest.attemptCount || 0) >= Number(latest.maxAttempts || 0));
+      const currentStatus = diagnosis.completedArtifactMismatch
+        ? `ATTENTION / ${diagnosis.completedArtifactMismatch.code}`
+        : terminal ? `ATTENTION / ${latest.status} terminal` : diagnosis.canRun ? "実行可能" : "実行不可";
+      const jobMarkup = renderDiagnosticGrid([
+        ["現在workflow state", diagnosis.currentWorkflowState],
+        ["現在の診断", currentStatus],
+        ["job id", latest.id || diagnosis.latestJobId],
+        ["status", latest.status || diagnosis.latestJobStatus],
+        ["scheduledAt", latest.scheduledAt || diagnosis.latestJobScheduledAt],
+        ["scheduledSlotAt", latest.scheduledSlotAt],
+        ["createdAt", latest.createdAt],
+        ["claimedAt", latest.claimedAt || diagnosis.latestJobClaimedAt],
+        ["completedAt", latest.completedAt || diagnosis.latestJobCompletedAt],
+        ["failedAt", latest.failedAt],
+        ["attempt", latest.attemptCount],
+        ["terminal", terminal],
+        ["nextRetryAt", latest.nextRetryAt],
+        ["last reason/error", latest.failureCode || diagnosis.latestJobError?.code || latest.failureMessage || diagnosis.latestJobError?.message]
+      ]);
+      const recoveryMarkup = renderDiagnosticGrid([
+        ["terminal job", recovery.terminalJobId ? `#${recovery.terminalJobId} (${recovery.terminalStatus})` : "なし"],
+        ["recovery job created", recovery.recoveryJobCreated],
+        ["recovery job id", recovery.recoveryJobId ? `#${recovery.recoveryJobId}` : null],
+        ["recovery status", recovery.recoveryJobStatus],
+        ["recovery scheduledAt", recovery.recoveryScheduledAt],
+        ["recovery completedAt", recovery.recoveryCompletedAt],
+        ["recovery note", recovery.reason]
+      ]);
+      const artifactMarkup = renderDiagnosticGrid([
+        ["artifact health", artifact.available === false ? "unavailable" : artifact.available === true ? "available" : null],
+        ["lineup candidate", lineup.candidateExists],
+        ["candidate id", lineup.candidateId],
+        ["candidate internalGameId", lineup.candidateInternalGameId],
+        ["candidate row count", lineup.candidateRowCount],
+        ["candidate createdAt", lineup.candidateCreatedAt],
+        ["candidate count / valid", lineup.candidateCount === null || lineup.candidateCount === undefined ? null : `${lineup.candidateCount} / ${lineup.candidateValidCount ?? "-"}`],
+        ["canonical exists", lineup.canonicalExists ?? lineup.canonicalDataReady],
+        ["canonical id", lineup.canonicalId],
+        ["canonical internalGameId", lineup.canonicalInternalGameId],
+        ["canonical row count", lineup.canonicalRowCount],
+        ["canonical createdAt", lineup.canonicalCreatedAt],
+        ["finalized exists", lineup.finalizedLineupExists],
+        ["finalized id", lineup.finalizedId],
+        ["finalized internalGameId", lineup.finalizedInternalGameId],
+        ["finalized row count", lineup.finalizedRowCount],
+        ["finalized createdAt", lineup.finalizedCreatedAt],
+        ["finalized valid", lineup.finalizedValid],
+        ["artifact verification", lineup.verificationStatus || (lineup.artifactVerified ? "verified" : null)],
+        ["scoring eligibility", artifact.scoring?.ready === true ? "eligible" : artifact.scoring?.available === false ? "unknown" : "not_ready"],
+        ["row validation", lineup.validation ? JSON.stringify(lineup.validation) : null]
+      ]);
+      const transitions = Array.isArray(context.workflowTransitions) && context.workflowTransitions.length
+        ? `<ul class="v3-job-diagnostic-list">${context.workflowTransitions.slice(0, 8).map((item) => `<li>${escapeHtml(`${item.occurredAt || "-"} / ${item.jobType || "job"} #${item.jobId || "-"}: ${item.stateBefore || "-"} → ${item.stateAfter || "-"}${item.failureCode ? ` / ${item.failureCode}` : ""}`)}</li>`).join("")}</ul>`
+        : "<p class=muted>state遷移履歴はありません。</p>";
+      const timeline = Array.isArray(context.jobTimeline) && context.jobTimeline.length
+        ? `<ul class="v3-job-diagnostic-list">${context.jobTimeline.slice(0, 8).map((item) => `<li>${escapeHtml(`#${item.id || "-"} ${item.status || "-"} / slot ${item.scheduledSlotAt || "-"} / attempt ${item.attemptCount ?? "-"}${item.failureCode ? ` / ${item.failureCode}` : ""}`)}</li>`).join("")}</ul>`
+        : "<p class=muted>同種job履歴はありません。</p>";
+      const npbMarkup = renderDiagnosticGrid([
+        ["NPB response code", context.npbResponse?.code || related.npbResponseCode],
+        ["NPB response source", context.npbResponse?.source],
+        ["last observed", context.npbResponse?.lastObservedAt],
+        ["response/error", context.npbResponse?.message || diagnosis.latestJobError?.message]
+      ]);
+      const cancellationMarkup = renderDiagnosticGrid([
+        ["gameStatus", cancellation.gameStatus],
+        ["cancellationStatus", cancellation.cancellationStatus],
+        ["source", cancellation.source],
+        ["reason", cancellation.reason],
+        ["detectedAt", cancellation.detectedAt],
+        ["cancelledAt", cancellation.cancelledAt],
+        ["excludedAt", cancellation.excludedAt],
+        ["stopped jobs", cancellation.stoppedJobsTotal],
+        ["rankingExcluded", cancellation.rankingExcluded],
+        ["read-only", cancellation.readOnly]
+      ]);
+      const safeAction = cancellation.isUnavailable
+        ? "中止・対象外のためlineup_fetch以降は不要です。停止jobと中止監査を確認してください。"
+        : diagnosis.nextSafeAction || diagnosis.cannotRunReason || "成果物と現在状態を確認してください。";
+      return `<details class="v3-job-diagnostic ${attention ? "attention" : ""}" data-v3-job-diagnostic ${attention ? "open" : ""}><summary>詳細診断${attention ? " / ATTENTION" : ""}</summary><section><h4>job lifecycle</h4>${jobMarkup}</section><section><h4>recovery / retry</h4>${recoveryMarkup}<h5>同種job履歴</h5>${timeline}</section><section><h4>workflow state transition</h4>${transitions}</section><section><h4>artifact health</h4>${artifactMarkup}</section><section><h4>NPB response / blocking reason</h4>${npbMarkup}<p class="v3-job-diagnostic-note">${escapeHtml(safeAction)}</p></section><section><h4>cancelled / excluded</h4>${cancellationMarkup}</section></details>`;
+    }
+
     function renderManualControls(game) {
       if (!game?.internalGameId) return "";
       const gameUnavailable = ["cancelled", "canceled", "postponed", "service_unavailable"].includes(String(game?.gameStatus || "").toLowerCase());
@@ -58,7 +160,7 @@
         const runButton = canRun && !publishedReadOnly && !gameUnavailable
           ? `<button type="button" data-v3-job-run="${escapeHtml(game.internalGameId)}" data-v3-job-type="${escapeHtml(jobType)}" ${loading ? "disabled" : ""}>再実行</button>`
           : `<span class="manual-job-unavailable">${publishedReadOnly ? "公開済み / 読み取り専用" : gameUnavailable ? "中止・対象外 / 停止" : "正式runnerなし"}</span>`;
-        return `<div class="manual-job-row"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(operation.diagnosis?.currentWorkflowState || game.state?.state || "scheduled")}</span><div class="manual-job-actions"><button type="button" data-v3-job-diagnose="${escapeHtml(game.internalGameId)}" data-v3-job-type="${escapeHtml(jobType)}" ${loading ? "disabled" : ""}>診断</button>${runButton}</div>${result}</div>`;
+        return `<div class="manual-job-row"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(operation.diagnosis?.currentWorkflowState || game.state?.state || "scheduled")}</span><div class="manual-job-actions"><button type="button" data-v3-job-diagnose="${escapeHtml(game.internalGameId)}" data-v3-job-type="${escapeHtml(jobType)}" ${loading ? "disabled" : ""}>診断</button>${runButton}</div>${result}${renderJobDiagnosis(operation.diagnosis)}</div>`;
       }).join("");
       const reconcileOperation = typeof manualOperation === "function" ? manualOperation(game.internalGameId, "state_reconcile") || {} : {};
       const reconcileResult = reconcileOperation.message ? `<small class="manual-job-result ${reconcileOperation.error ? "error" : "success"}">${escapeHtml(reconcileOperation.message)}</small>` : "";

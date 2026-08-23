@@ -52,7 +52,7 @@ test("admin-v3の監査表示は既存V3の読み取り専用導線で、キャ�
   assert.match(adminDiagnostics, /data-v3-automation-log-refresh/);
   assert.match(admin, /payload\.automationLogs = await v3Api\.getAutomationLogs/);
   assert.match(css, /\.automation-logs-panel/);
-  assert.match(html, /admin-v3-fetch-safety-status-1/);
+  assert.match(html, /admin-v3-v3-job-diagnostics-1/);
   const scheduled = worker.slice(worker.indexOf("async scheduled(event, env, ctx)"), worker.indexOf("async function runScheduledGameAutomationV3"));
   assert.doesNotMatch(scheduled, /runGameWorkflows|runDueCompletionWorkflowJobs|INSERT INTO game_workflow_logs/);
 });

@@ -5135,6 +5135,228 @@ function getV3ManualJobGate(jobType, state, { workflowArtifactHealth = null } = 
   };
 }
 
+function v3DiagnosticReasonCode(value) {
+  const text = String(value || "");
+  return text.match(/[A-Z][A-Z0-9_]{5,}/)?.[0] || null;
+}
+
+async function getV3AdminJobDiagnosticContext(db, internalGameId, jobType, latestJob, workflowArtifactHealth, target, currentState) {
+  const context = {
+    latestJob: latestJob ? {
+      id: Number(latestJob.id || 0) || null,
+      jobType: latestJob.job_type || jobType,
+      status: latestJob.status || null,
+      scheduledAt: latestJob.scheduled_at || null,
+      scheduledSlotAt: latestJob.scheduled_slot_at || null,
+      createdAt: latestJob.created_at || null,
+      updatedAt: latestJob.updated_at || null,
+      claimedAt: latestJob.claimed_at || null,
+      completedAt: latestJob.completed_at || null,
+      failedAt: latestJob.status === "failed" ? (latestJob.updated_at || null) : null,
+      attemptCount: Number(latestJob.attempt_count || 0),
+      maxAttempts: Number(latestJob.max_attempts || 0),
+      nextRetryAt: latestJob.next_retry_at || null,
+      failureCode: latestJob.failure_code || null,
+      failureMessage: latestJob.failure_message || null
+    } : null,
+    jobTimeline: [],
+    recovery: {
+      terminalJobId: null,
+      terminalStatus: null,
+      recoveryJobCreated: false,
+      recoveryJobId: null,
+      recoveryJobStatus: null,
+      recoveryScheduledAt: null,
+      recoveryCompletedAt: null,
+      reason: null
+    },
+    workflowTransitions: [],
+    npbResponse: {
+      code: null,
+      source: null,
+      lastObservedAt: null,
+      message: null
+    },
+    cancellation: {
+      isUnavailable: ["cancelled", "canceled", "postponed", "service_unavailable"].includes(String(target?.game_status || target?.gameStatus || "").toLowerCase()),
+      gameStatus: target?.game_status || target?.gameStatus || "scheduled",
+      cancellationStatus: null,
+      source: null,
+      reason: null,
+      detectedAt: null,
+      cancelledAt: null,
+      excludedAt: null,
+      stoppedJobs: [],
+      stoppedJobsTotal: 0,
+      rankingExcluded: null,
+      readOnly: currentState === "published"
+    },
+    artifactHealth: workflowArtifactHealth || null
+  };
+
+  try {
+    const rows = await db.prepare(
+      `SELECT id, job_type, status, scheduled_at, scheduled_slot_at, attempt_count,
+              max_attempts, next_retry_at, claimed_at, lease_expires_at, completed_at,
+              failure_code, failure_message, created_at, updated_at
+         FROM game_jobs_v3
+        WHERE internal_game_id = ?1 AND job_type = ?2
+        ORDER BY id DESC LIMIT 50`
+    ).bind(internalGameId, jobType).all();
+    context.jobTimeline = (rows.results || []).map((row) => ({
+      id: Number(row.id || 0) || null,
+      status: row.status || null,
+      scheduledAt: row.scheduled_at || null,
+      scheduledSlotAt: row.scheduled_slot_at || null,
+      createdAt: row.created_at || null,
+      updatedAt: row.updated_at || null,
+      claimedAt: row.claimed_at || null,
+      completedAt: row.completed_at || null,
+      failedAt: row.status === "failed" ? (row.updated_at || null) : null,
+      attemptCount: Number(row.attempt_count || 0),
+      maxAttempts: Number(row.max_attempts || 0),
+      nextRetryAt: row.next_retry_at || null,
+      failureCode: row.failure_code || null,
+      failureMessage: row.failure_message || null
+    }));
+    if (latestJob?.failure_code || latestJob?.failure_message) {
+      context.npbResponse = {
+        ...context.npbResponse,
+        code: latestJob.failure_code || v3DiagnosticReasonCode(latestJob.failure_message),
+        lastObservedAt: latestJob.updated_at || latestJob.completed_at || null,
+        message: latestJob.failure_message || null
+      };
+    }
+    const terminal = context.jobTimeline.find((row) => ["failed", "retry_wait"].includes(row.status)
+      && (row.status === "failed" || row.attemptCount >= row.maxAttempts)) || null;
+    const recovery = terminal && context.jobTimeline
+      .filter((row) => Number(row.id || 0) > Number(terminal.id || 0))
+      .sort((left, right) => Number(left.id || 0) - Number(right.id || 0))[0] || null;
+    if (terminal) {
+      context.recovery.terminalJobId = terminal.id;
+      context.recovery.terminalStatus = terminal.status;
+      context.recovery.recoveryJobCreated = Boolean(recovery);
+      context.recovery.recoveryJobId = recovery?.id || null;
+      context.recovery.recoveryJobStatus = recovery?.status || null;
+      context.recovery.recoveryScheduledAt = recovery?.scheduledAt || null;
+      context.recovery.recoveryCompletedAt = recovery?.completedAt || null;
+      context.recovery.reason = recovery
+        ? "terminal jobの後に同種jobが作成されています。"
+        : "terminal job後の同種jobは確認できません。"
+    }
+  } catch (error) {
+    context.jobTimelineError = String(error?.code || "V3_JOB_TIMELINE_UNAVAILABLE");
+  }
+
+  try {
+    const audits = await db.prepare(
+      `SELECT id, job_id, job_type, scheduled_slot_at, state_before, state_after,
+              attempt_count, failure_code, failure_message, occurred_at, source, event_type
+         FROM game_automation_v3_audit
+        WHERE internal_game_id = ?1
+          AND (job_type = ?2 OR job_type LIKE ?3)
+        ORDER BY occurred_at DESC, id DESC LIMIT 100`
+    ).bind(internalGameId, jobType, `%${jobType}%`).all();
+    const auditRows = audits.results || [];
+    context.workflowTransitions = auditRows
+      .filter((row) => row.state_before || row.state_after)
+      .slice(0, 30)
+      .map((row) => ({
+        id: row.id,
+        jobId: row.job_id || null,
+        jobType: row.job_type || null,
+        stateBefore: row.state_before || null,
+        stateAfter: row.state_after || null,
+        status: row.event_type || "job",
+        failureCode: row.failure_code || null,
+        occurredAt: row.occurred_at || null,
+        source: row.source || null
+      }));
+    const relevant = auditRows.find((row) => row.failure_code || row.failure_message);
+    const auditDetails = parseV3AuditDetails(relevant?.failure_message);
+    const code = relevant?.failure_code || auditDetails.reasonCode || v3DiagnosticReasonCode(relevant?.failure_message);
+    if (code || relevant) {
+      context.npbResponse = {
+        code: code || null,
+        source: auditDetails.source || auditDetails.sourceUrl || null,
+        lastObservedAt: relevant?.occurred_at || null,
+        message: relevant?.failure_message || auditDetails.message || null
+      };
+    }
+  } catch (error) {
+    context.workflowTransitionsError = String(error?.code || "V3_WORKFLOW_TRANSITION_UNAVAILABLE");
+  }
+
+  try {
+    const history = await db.prepare(
+      `SELECT next_status, reason, changed_by, changed_at
+         FROM game_schedule_change_history
+        WHERE internal_game_id = ?1
+        ORDER BY changed_at DESC LIMIT 20`
+    ).bind(internalGameId).all();
+    const rows = history.results || [];
+    const cancellation = rows.find((row) => ["cancelled", "canceled", "postponed", "service_unavailable"].includes(String(row.next_status || "").toLowerCase()));
+    if (cancellation) {
+      const nextStatus = String(cancellation.next_status || "").toLowerCase();
+      const reason = cancellation.reason || null;
+      const reasonText = `${reason || ""} ${cancellation.changed_by || ""}`;
+      context.cancellation = {
+        ...context.cancellation,
+        cancellationStatus: nextStatus,
+        source: /official|npb|game_cancelled|雨天|中止/.test(reasonText.toLowerCase()) ? "official_npb" : "manual_admin",
+        reason,
+        detectedAt: nextStatus === "cancelled" ? cancellation.changed_at || null : null,
+        cancelledAt: nextStatus === "cancelled" ? cancellation.changed_at || null : null,
+        excludedAt: currentState === "excluded" ? cancellation.changed_at || null : null
+      };
+    }
+  } catch {
+    // Older deployments may not have the optional schedule history table.
+  }
+  try {
+    const official = await db.prepare(
+      `SELECT event_type, occurred_at, message, error_code, metadata
+         FROM game_workflow_logs
+        WHERE game_id = ?1 AND event_type IN ('official_game_cancelled', 'game_cancelled')
+        ORDER BY occurred_at DESC LIMIT 5`
+    ).bind(internalGameId).all();
+    const event = (official.results || [])[0];
+    if (event && (!context.cancellation.cancelledAt || new Date(event.occurred_at || 0).getTime() > new Date(context.cancellation.cancelledAt || 0).getTime())) {
+      let metadata = {};
+      try { metadata = JSON.parse(event.metadata || "{}"); } catch { metadata = {}; }
+      context.cancellation = {
+        ...context.cancellation,
+        cancellationStatus: metadata.status || context.cancellation.cancellationStatus || "cancelled",
+        source: metadata.source || "official_npb",
+        reason: event.message || context.cancellation.reason,
+        detectedAt: event.occurred_at || context.cancellation.detectedAt,
+        cancelledAt: event.occurred_at || context.cancellation.cancelledAt,
+        excludedAt: currentState === "excluded" ? event.occurred_at || context.cancellation.excludedAt : context.cancellation.excludedAt
+      };
+    }
+  } catch {
+    // Workflow logs are supplementary; the admin diagnosis remains available without them.
+  }
+  try {
+    const stopped = await db.prepare(
+      `SELECT job_type, COUNT(*) AS count
+         FROM game_jobs_v3
+        WHERE internal_game_id = ?1 AND status = 'cancelled'
+        GROUP BY job_type ORDER BY job_type`
+    ).bind(internalGameId).all();
+    context.cancellation.stoppedJobs = (stopped.results || []).map((row) => ({ jobType: row.job_type, count: Number(row.count || 0) }));
+    context.cancellation.stoppedJobsTotal = context.cancellation.stoppedJobs.reduce((sum, row) => sum + row.count, 0);
+  } catch {
+    // Keep cancellation diagnostics available even when job history is unavailable.
+  }
+  context.cancellation.rankingExcluded = target?.ranking_eligible === false
+    || target?.rankingEligible === false
+    || currentState === "excluded"
+    ? true
+    : null;
+  return context;
+}
+
 async function getV3ManualJobDiagnosis(db, internalGameId, jobType, target = null) {
   const id = normalizeV3InternalGameId(internalGameId);
   const stateRow = await db.prepare(
@@ -5171,12 +5393,23 @@ async function getV3ManualJobDiagnosis(db, internalGameId, jobType, target = nul
     throw createV3Error("V3_JOB_TYPE_INVALID", "V3ジョブ種別が不正です。", { httpStatus: 400 });
   }
   const latest = await db.prepare(
-    `SELECT id, status, scheduled_at, claimed_at, completed_at, failure_code, failure_message
+    `SELECT id, status, scheduled_at, scheduled_slot_at, created_at, updated_at,
+            claimed_at, completed_at, attempt_count, max_attempts, next_retry_at,
+            failure_code, failure_message
        FROM game_jobs_v3
       WHERE internal_game_id = ?1 AND job_type = ?2
       ORDER BY updated_at DESC, id DESC LIMIT 1`
   ).bind(id, jobType).first();
   const gate = getV3ManualJobGate(jobType, currentState, { workflowArtifactHealth });
+  const diagnosticContext = await getV3AdminJobDiagnosticContext(
+    db,
+    id,
+    jobType,
+    latest,
+    workflowArtifactHealth,
+    target,
+    currentState
+  );
   const relatedDataSummary = {
     npbGameCode: target?.npb_game_code || null,
     npbIdentityStatus: target?.npb_identity_status || null,
@@ -5298,7 +5531,8 @@ async function getV3ManualJobDiagnosis(db, internalGameId, jobType, target = nul
     allowedOperation: gate.canRun ? `V3正式job ${jobType} の再実行` : null,
     disallowedOperation: gate.canRun ? null : "stateまたは成果物の前提を満たさない操作",
     workflowArtifactHealth,
-    completedArtifactMismatch
+    completedArtifactMismatch,
+    diagnosticContext
   };
 }
 
@@ -5761,6 +5995,19 @@ async function getV3LineupDataHealth(db, internalGameId, workflowState = "schedu
     candidateValidCount: null,
     finalizedCount: null,
     finalizedValidCount: null,
+    candidateId: null,
+    candidateInternalGameId: null,
+    candidateRowCount: null,
+    candidateCreatedAt: null,
+    canonicalExists: false,
+    canonicalId: null,
+    canonicalInternalGameId: null,
+    canonicalRowCount: null,
+    canonicalCreatedAt: null,
+    finalizedId: null,
+    finalizedInternalGameId: null,
+    finalizedRowCount: null,
+    finalizedCreatedAt: null,
     validation: null
   };
   try {
@@ -5772,6 +6019,8 @@ async function getV3LineupDataHealth(db, internalGameId, workflowState = "schedu
     const canonical = await getGameLineup(db, { gameId: internalGameId, internalGameId });
     const canonicalLineup = parseStoredActualLineup(canonical?.actual_lineup_json);
     const canonicalCheck = assessV3LineupArtifact(canonicalLineup);
+    const validCandidate = candidateChecks.find(({ check }) => check.ok);
+    const validFinalized = finalizedChecks.find(({ check }) => check.ok);
     health.available = true;
     health.candidateExists = candidateChecks.some(({ check }) => check.ok);
     health.candidateValid = health.candidateExists;
@@ -5783,6 +6032,19 @@ async function getV3LineupDataHealth(db, internalGameId, workflowState = "schedu
     health.candidateValidCount = candidateChecks.filter(({ check }) => check.ok).length;
     health.finalizedCount = finalized.length;
     health.finalizedValidCount = finalizedChecks.filter(({ check }) => check.ok).length;
+    health.candidateId = validCandidate?.row?.revision_id || validCandidate?.row?.id || null;
+    health.candidateInternalGameId = validCandidate?.row?.internal_game_id || validCandidate?.row?.game_id || null;
+    health.candidateRowCount = validCandidate ? validCandidate.check.diagnostics.playerCount : null;
+    health.candidateCreatedAt = validCandidate?.row?.created_at || validCandidate?.row?.updated_at || null;
+    health.canonicalExists = Boolean(canonical);
+    health.canonicalId = canonical?.revision_id || canonical?.id || null;
+    health.canonicalInternalGameId = canonical?.internal_game_id || canonical?.game_id || null;
+    health.canonicalRowCount = canonicalCheck.ok ? canonicalCheck.diagnostics.playerCount : Array.isArray(canonicalLineup) ? canonicalLineup.length : null;
+    health.canonicalCreatedAt = canonical?.created_at || canonical?.updated_at || null;
+    health.finalizedId = validFinalized?.row?.revision_id || validFinalized?.row?.id || null;
+    health.finalizedInternalGameId = validFinalized?.row?.internal_game_id || validFinalized?.row?.game_id || null;
+    health.finalizedRowCount = validFinalized ? validFinalized.check.diagnostics.playerCount : null;
+    health.finalizedCreatedAt = validFinalized?.row?.created_at || validFinalized?.row?.updated_at || null;
     health.ready = health.candidateValid || health.canonicalValid || health.finalizedValid;
     health.artifactVerified = health.ready;
     health.verificationStatus = health.ready ? "verified" : "missing_or_invalid";

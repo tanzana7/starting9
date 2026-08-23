@@ -112,6 +112,38 @@ test("adapts completed lineup fetch without candidate as missing artifact", () =
   assert.equal(evaluated.stages.lineup_fetch.recoveryRecommended, true);
 });
 
+test("adapts external fetch disabled into a blocked roster stage", () => {
+  const { adapted, evaluated } = evaluateAdapter({
+    game: { internalGameId: GAME_ID, gameStatus: "scheduled", workflowState: "scheduled" },
+    externalFlags: { NPB_FETCH_DISABLED: true },
+    diagnostics: { roster: { dueAt: NOW.toISOString() } }
+  });
+  assert.equal(adapted.evaluatorInput.externalFlags.NPB_FETCH_DISABLED, true);
+  assert.equal(adapted.evaluatorInput.stageDefinitions.roster_fetch.externalFetchDisabled, true);
+  assert.equal(evaluated.stages.roster_fetch.healthStatus, V35_STAGE_HEALTH.BLOCKED_BY_EXTERNAL_FETCH_DISABLED);
+  assert.equal(evaluated.stages.roster_fetch.recoveryRecommended, false);
+});
+
+test("adapts ranking exclusion into ranking and publication no-ops", () => {
+  const { adapted, evaluated } = evaluateAdapter({
+    game: {
+      internalGameId: GAME_ID,
+      gameStatus: "scheduled",
+      workflowState: "scheduled",
+      rankingExcluded: true
+    },
+    diagnostics: {
+      ranking_reflect: { dueAt: NOW.toISOString() },
+      publish: { dueAt: NOW.toISOString() }
+    }
+  });
+  assert.equal(adapted.evaluatorInput.rankingExcluded, true);
+  assert.equal(evaluated.stages.ranking_reflect.healthStatus, V35_STAGE_HEALTH.BLOCKED_BY_PREREQUISITE);
+  assert.equal(evaluated.stages.ranking_reflect.blockingReason, "RANKING_EXCLUDED");
+  assert.equal(evaluated.stages.publish.healthStatus, V35_STAGE_HEALTH.BLOCKED_BY_PREREQUISITE);
+  assert.equal(evaluated.stages.publish.nextSafeAction, "no_op");
+});
+
 test("adapts a normal completed flow through publication", () => {
   const { adapted, evaluated } = evaluateAdapter({
     game: { internalGameId: GAME_ID, gameStatus: "scheduled", workflowState: "prediction_closed", gameDate: "2026-08-23" },

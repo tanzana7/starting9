@@ -37,9 +37,21 @@ test("ランキング対象外画面に中止・公開済み・採点済みを�
   assert.match(state, /gameSearch: ""/);
 });
 
+test("ランキング状態は処理前・中止・手動除外・反映済みを分離して表示する", () => {
+  assert.match(worker, /rankingEligibilityStatus: eligibilityStatus \|\| "pending"/);
+  assert.match(worker, /rankingStatusLabel/);
+  assert.match(worker, /rankingReflectionStatus/);
+  assert.match(worker, /rankingActionLabel/);
+  assert.match(worker, /ランキング処理前/);
+  assert.match(worker, /中止により対象外済み/);
+  assert.match(renderer, /ランキング処理前/);
+  assert.match(renderer, /反映取消済み/);
+  assert.match(renderer, /game\.rankingActionLabel/);
+});
+
 test("8/22中止試合を履歴表示でき、public側へ管理操作を露出しない", () => {
   assert.match(renderer, /ランキング対象外済み/);
   assert.match(renderer, /gameStatus/);
-  assert.match(page, /admin-v3-ranking-exclusion-game-picker-1/);
+  assert.match(page, /admin-v3-ranking-status-labels-1/);
   assert.doesNotMatch(read("script.js"), /ranking-exclusion\/games/);
 });

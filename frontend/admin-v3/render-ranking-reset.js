@@ -14,9 +14,10 @@
     }
 
     function eligibilityLabel(game) {
-      if (game.rankingExcluded) return "対象外";
-      if (game.rankingEligible === true) return "対象";
-      return "未登録";
+      if (game.rankingStatusLabel) return game.rankingStatusLabel;
+      if (game.rankingExcluded) return "手動で対象外";
+      if (game.rankingEligible === true && (game.scored || game.ranked)) return "対象";
+      return "ランキング処理前";
     }
 
     function matchesFilter(game, filter) {
@@ -35,14 +36,18 @@
 
     function renderGameAction(game) {
       if (game.publishedReadOnly) return `<span class="ranking-game-action muted">公開済み・読み取り専用</span>`;
-      if (game.rankingExcluded) return `<span class="ranking-game-action success">ランキング対象外済み</span>`;
+      if (game.rankingExcluded) return `<span class="ranking-game-action success">${escapeHtml(game.rankingActionLabel || "ランキング対象外済み")}</span>`;
       if (!game.canExclude) return `<span class="ranking-game-action muted">${escapeHtml(game.actionUnavailableReason || "操作対象外")}</span>`;
       return `<form class="v3-ranking-exclusion-form ranking-game-exclusion-form" data-v3-ranking-exclusion-form="${escapeHtml(game.internalGameId)}" data-v3-ranking-revocation-required="${game.rankingRevocationConfirmationRequired ? "true" : "false"}"><label>対象外理由<input type="text" data-v3-ranking-exclusion-reason maxlength="240" placeholder="ランキング対象外の理由" required></label><label class="ranking-exclusion-confirm"><input type="checkbox" data-v3-ranking-exclusion-confirm> 対象外にすることを確認</label>${game.rankingRevocationConfirmationRequired ? `<label>取消確認<input type="text" data-v3-ranking-exclusion-confirmation-text placeholder="ランキング取消と入力" data-v3-ranking-exclusion-confirmation-text></label>` : ""}<button type="button" data-v3-ranking-exclude="${escapeHtml(game.internalGameId)}">ランキング対象外にする</button></form>`;
     }
 
     function renderGame(game) {
       const timestamp = formatJst(game.startAt || game.gameDate);
-      const reflection = game.rankingReflection?.hasReflectedRevision ? "反映済み" : (game.rankingReflection?.latestStatus || "未反映");
+      const reflection = game.rankingReflectionStatus === "revoked"
+        ? "反映取消済み"
+        : game.rankingReflectionStatus === "reflected" || game.rankingReflection?.hasReflectedRevision && !game.rankingExcluded
+          ? "反映済み"
+          : "未反映";
       return `<article class="ranking-game-picker-row"><div class="ranking-game-picker-main"><strong>${escapeHtml(timestamp)} JST</strong><strong>${escapeHtml(game.homeTeam)} vs ${escapeHtml(game.awayTeam)}</strong><span>internalGameId: <code>${escapeHtml(game.internalGameId)}</code></span><span>NPB: ${escapeHtml(game.npbGameCode || "未解決")}</span></div><div class="ranking-game-picker-meta"><span>状態: <strong>${escapeHtml(statusLabel(game))}</strong></span><span>workflow: ${escapeHtml(game.workflowState || "-")}</span><span>採点: ${game.scored ? "完了" : "未完了"}</span><span>ranking: ${escapeHtml(eligibilityLabel(game))} / ${escapeHtml(reflection)}</span><span>更新: ${escapeHtml(formatJst(game.lastUpdatedAt))}</span></div><div class="ranking-game-picker-action">${renderGameAction(game)}</div></article>`;
     }
 

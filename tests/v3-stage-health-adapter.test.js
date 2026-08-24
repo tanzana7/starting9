@@ -133,6 +133,29 @@ test("uses the normal admin probable-starter overview data as the formal V3.5 ar
   assert.equal(evaluated.stages.probable_starter.recoveryRecommended, false);
 });
 
+test("announced reason code remains a normal ready result, not a missing-artifact reason", () => {
+  const { adapted, evaluated } = evaluateAdapter({
+    game: { internalGameId: GAME_ID, gameStatus: "scheduled", workflowState: "scheduled" },
+    jobs: [job("probable_starter_fetch", "completed")],
+    artifacts: {
+      probable_starter: {
+        dataStatus: "announced",
+        reasonCode: "PROBABLE_STARTER_ANNOUNCED",
+        homePitcherName: "伊藤大海",
+        awayPitcherName: "平良海馬",
+        source: "npb",
+        internalGameId: GAME_ID
+      }
+    }
+  });
+  assert.equal(adapted.evaluatorInput.artifacts.probable_starter.available, true);
+  assert.equal(adapted.evaluatorInput.artifacts.probable_starter.valid, true);
+  assert.equal(adapted.evaluatorInput.artifacts.probable_starter.reason, null);
+  assert.equal(evaluated.stages.probable_starter.healthStatus, V35_STAGE_HEALTH.COMPLETED_ARTIFACT_READY);
+  assert.equal(evaluated.stages.probable_starter.nextSafeAction, "no_op");
+  assert.equal(evaluated.stages.probable_starter.recoveryRecommended, false);
+});
+
 test("does not treat an unannounced probable-starter overview as a ready artifact", () => {
   const { evaluated } = evaluateAdapter({
     game: { internalGameId: GAME_ID, gameStatus: "scheduled", workflowState: "scheduled" },

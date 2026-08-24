@@ -24,6 +24,13 @@ test("V3.5 derived diagnostics exposes effective state, stages, warnings and sou
   }
 });
 
+test("V3.5 probable-starter artifact receives the canonical admin overview row", () => {
+  const worker = read("auth-worker.js");
+  const helper = worker.slice(worker.indexOf("function buildV35AdminDerivedDiagnostics"), worker.indexOf("async function handleAdminV3Overview"));
+  assert.match(helper, /probable_starter:\s*probableStarter/);
+  assert.match(worker, /probableStarter:\s*serializedProbableStarter/);
+});
+
 test("admin-v3 renders V3.5 diagnostics as read-only stage health", () => {
   const renderer = read("frontend/admin-v3/render-game-progress.js");
   assert.match(renderer, /renderV35DerivedDiagnostics/);

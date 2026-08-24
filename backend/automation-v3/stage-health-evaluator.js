@@ -40,10 +40,10 @@ export const V35_EFFECTIVE_STATE = Object.freeze({
 
 const STAGE_NAMES = Object.freeze([
   "schedule_registration",
+  "npb_game_identify",
   "probable_starter",
   "roster_fetch",
   "prediction_close",
-  "npb_game_identify",
   "lineup_fetch",
   "lineup_finalize",
   "scoring",
@@ -239,7 +239,8 @@ export function evaluateV35Stage({
   currentTime = new Date(),
   internalGameId = null,
   cancelled = false,
-  rankingExcluded = false
+  rankingExcluded = false,
+  scheduleRegistered = false
 } = {}) {
   const normalizedDefinition = normalizeDefinition(normalizeStageName(stageName), definition);
   const now = asDate(currentTime) || new Date();
@@ -278,6 +279,15 @@ export function evaluateV35Stage({
       attentionLevel: "INFO"
     };
   }
+  if (normalizedDefinition.stageName === "schedule_registration" && scheduleRegistered) return {
+    ...base,
+    healthStatus: V35_STAGE_HEALTH.COMPLETED_ARTIFACT_READY,
+    nextSafeAction: "no_op",
+    attentionLevel: "INFO"
+  };
+  // A future stage is expected to wait, even when its eventual prerequisite
+  // artifact does not exist yet. Only evaluate blockers once the stage is due.
+  if (!due) return base;
   if (normalizedDefinition.externalFetchDisabled) return {
     ...base,
     healthStatus: V35_STAGE_HEALTH.BLOCKED_BY_EXTERNAL_FETCH_DISABLED,
@@ -299,7 +309,6 @@ export function evaluateV35Stage({
     nextSafeAction: "wait_for_prerequisite",
     attentionLevel: "INFO"
   };
-  if (!due) return base;
   if (!job) return {
     ...base,
     ...recoveryResult(V35_STAGE_HEALTH.MISSING_JOB, "MISSING_DUE_JOB"),
@@ -409,6 +418,13 @@ function cancellationEffectiveState(gameStatus, cancellationInfo, excluded) {
   return normalizeGameStatus({ gameStatus, cancellationInfo, excluded });
 }
 
+function statesEquivalent(left, right) {
+  const normalize = (value) => value === V35_EFFECTIVE_STATE.SCHEDULE_REGISTERED
+    ? V35_EFFECTIVE_STATE.SCHEDULED
+    : value;
+  return normalize(left) === normalize(right);
+}
+
 export function evaluateV35Automation({
   internalGameId = null,
   gameStatus = "scheduled",
@@ -432,14 +448,15 @@ export function evaluateV35Automation({
     currentTime,
     internalGameId,
     cancelled: Boolean(cancellationState),
-    rankingExcluded
+    rankingExcluded,
+    scheduleRegistered
   })]));
   const effectiveState = cancellationState || effectiveStateFromEvidence({ stages, artifacts, scheduleRegistered });
   const persistedState = String(persistedWorkflowState || V3_STATE.SCHEDULED);
   return {
     effectiveState,
     persistedState,
-    stateMismatch: effectiveState !== persistedState,
+    stateMismatch: !statesEquivalent(effectiveState, persistedState),
     stages
   };
 }

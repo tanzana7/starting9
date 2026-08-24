@@ -31,6 +31,10 @@ test("admin-v3 renders V3.5 diagnostics as read-only stage health", () => {
   assert.match(renderer, /persistedState/);
   assert.match(renderer, /stateMismatch/);
   assert.match(renderer, /stageHealth/);
+  assert.match(renderer, /scheduled（日程登録済み）/);
+  assert.match(renderer, /状態:/);
+  assert.match(renderer, /理由:/);
+  assert.match(renderer, /対応:/);
   assert.match(renderer, /healthStatus/);
   assert.match(renderer, /recoveryReason/);
   assert.match(renderer, /V3\.5診断を取得できませんでした。現行V3の動作には影響ありません。/);
@@ -39,9 +43,17 @@ test("admin-v3 renders V3.5 diagnostics as read-only stage health", () => {
   assert.match(renderer, /renderManualControls\(game\)/);
 });
 
+test("admin-v3 keeps the V3.5 stage order readable", () => {
+  const renderer = read("frontend/admin-v3/render-game-progress.js");
+  assert.ok(renderer.indexOf('schedule_registration: "日程登録"') < renderer.indexOf('npb_game_identify: "NPB識別"'));
+  assert.ok(renderer.indexOf('npb_game_identify: "NPB識別"') < renderer.indexOf('probable_starter: "予告先発"'));
+  assert.ok(renderer.indexOf('probable_starter: "予告先発"') < renderer.indexOf('roster_fetch: "ロースター取得"'));
+  assert.ok(renderer.indexOf('roster_fetch: "ロースター取得"') < renderer.indexOf('prediction_close: "予想締切"'));
+});
+
 test("admin-v3 uses the V3.5 derived diagnostics cache buster", () => {
   const page = read("admin-v3.html");
-  const expected = "admin-v3-v35-derived-diagnostics-visible-1";
+  const expected = "admin-v3-v35-diagnostics-readability-1";
   assert.match(page, new RegExp(expected));
   assert.doesNotMatch(page, /admin-v3-ranking-status-labels-1/);
 });

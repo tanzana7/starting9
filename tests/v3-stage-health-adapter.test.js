@@ -50,8 +50,8 @@ test("adapts a prediction-close gate incident without changing runtime state", (
   assert.equal(adapted.evaluatorInput.jobs[0].failureCode, "V3_JOB_FAILED");
   assert.equal(evaluated.stages.prediction_close.healthStatus, V35_STAGE_HEALTH.TERMINAL_FAILED);
   assert.equal(evaluated.stages.prediction_close.recoveryRecommended, true);
-  assert.equal(evaluated.stages.lineup_fetch.healthStatus, V35_STAGE_HEALTH.BLOCKED_BY_PREREQUISITE);
-  assert.equal(evaluated.stages.lineup_fetch.nextSafeAction, "wait_for_prerequisite");
+  assert.equal(evaluated.stages.lineup_fetch.healthStatus, V35_STAGE_HEALTH.NOT_DUE);
+  assert.equal(evaluated.stages.lineup_fetch.nextSafeAction, "wait");
 });
 
 test("adapts cancelled game priority and suppresses recovery for open jobs", () => {
@@ -167,6 +167,24 @@ test("adapts a normal completed flow through publication", () => {
   for (const stageName of ["prediction_close", "lineup_finalize", "scoring", "ranking_reflect", "publish"]) {
     assert.equal(evaluated.stages[stageName].healthStatus, V35_STAGE_HEALTH.COMPLETED_ARTIFACT_READY, stageName);
   }
+});
+
+test("adapter exposes stages in operational order", () => {
+  const { evaluated } = evaluateAdapter({
+    game: { internalGameId: GAME_ID, gameStatus: "scheduled", workflowState: "scheduled" }
+  });
+  assert.deepEqual(Object.keys(evaluated.stages), [
+    "schedule_registration",
+    "npb_game_identify",
+    "probable_starter",
+    "roster_fetch",
+    "prediction_close",
+    "lineup_fetch",
+    "lineup_finalize",
+    "scoring",
+    "ranking_reflect",
+    "publish"
+  ]);
 });
 
 test("adapter is pure and does not call database or job functions supplied as unknown input", () => {

@@ -348,10 +348,10 @@
       const stages = diagnostics.stages && typeof diagnostics.stages === "object" ? diagnostics.stages : {};
       const stageLabels = {
         schedule_registration: "日程登録",
+        npb_game_identify: "NPB識別",
         probable_starter: "予告先発",
         roster_fetch: "ロースター取得",
         prediction_close: "予想締切",
-        npb_game_identify: "NPB識別",
         lineup_fetch: "スタメン取得",
         lineup_finalize: "正式スタメン確定",
         scoring: "採点",
@@ -361,16 +361,16 @@
       const stageRows = Object.entries(stageLabels).map(([stage, label]) => {
         const item = stages[stage] || {};
         const attentionClass = item.attentionLevel === "ATTENTION" ? " v35-stage-attention" : "";
-        const detail = [item.blockingReason, item.recoveryReason, item.nextSafeAction]
-          .filter(Boolean)
-          .join(" / ");
-        return `<div class="v35-stage-row${attentionClass}"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(item.healthStatus || "UNKNOWN")}</span><span>${escapeHtml(detail || "-")}</span></div>`;
+        const reason = item.blockingReason || item.recoveryReason || (item.healthStatus === "NOT_DUE" ? "まだdue前" : "-");
+        const action = item.nextSafeAction || "-";
+        return `<div class="v35-stage-row${attentionClass}"><strong>${escapeHtml(label)}</strong><span>状態: ${escapeHtml(item.healthStatus || "UNKNOWN")}</span><span>理由: ${escapeHtml(reason)}</span><span>対応: ${escapeHtml(action)}</span></div>`;
       }).join("");
       const warnings = Array.isArray(diagnostics.warnings) ? diagnostics.warnings.filter(Boolean) : [];
       const warningMarkup = warnings.length
         ? `<ul class="v35-derived-warnings">${warnings.map((warning) => `<li>${escapeHtml(`${warning.code || "WARNING"}: ${warning.message || ""}`)}</li>`).join("")}</ul>`
         : "<p class=muted>派生診断上の警告はありません。</p>";
-      return `<section class="v35-derived-diagnostics" data-v35-derived-diagnostics><div class="v35-derived-header"><div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(readOnlyNote)}</p></div><span class="v35-derived-status">表示専用</span></div><div class="v35-derived-meta"><span>effectiveState: <strong>${escapeHtml(diagnostics.effectiveState || "-")}</strong></span><span>persistedState: ${escapeHtml(diagnostics.persistedState || "-")}</span><span>stateMismatch: <strong>${diagnostics.stateMismatch ? "あり" : "なし"}</strong></span></div><h4>stageHealth</h4><div class="v35-stage-list">${stageRows}</div><h4>warnings</h4>${warningMarkup}</section>`;
+      const stateLabel = (value) => value === "schedule_registered" ? "scheduled（日程登録済み）" : (value || "-");
+      return `<section class="v35-derived-diagnostics" data-v35-derived-diagnostics><div class="v35-derived-header"><div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(readOnlyNote)}</p></div><span class="v35-derived-status">表示専用</span></div><div class="v35-derived-state-grid"><div><span>effectiveState</span><strong>${escapeHtml(stateLabel(diagnostics.effectiveState))}</strong></div><div><span>persistedState</span><strong>${escapeHtml(stateLabel(diagnostics.persistedState))}</strong></div><div><span>stateMismatch</span><strong>${diagnostics.stateMismatch ? "あり" : "なし"}</strong></div></div><h4>stageHealth</h4><div class="v35-stage-list">${stageRows}</div><h4>warnings</h4>${warningMarkup}</section>`;
     }
 
     function renderDashboard(payload, games) {

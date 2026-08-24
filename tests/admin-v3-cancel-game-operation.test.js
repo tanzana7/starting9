@@ -59,7 +59,7 @@ test("公開UIは中止・サービス対象外を選択対象から除外しつ
 });
 
 test("admin-v3のcache busterは中止操作版へ更新されている", () => {
-  assert.match(page, /admin-v3-v35-derived-diagnostics-1/);
+  assert.match(page, /admin-v3-v35-derived-diagnostics-visible-1/);
   assert.doesNotMatch(page, /admin-v3-add-game-preview-1/);
 });
 

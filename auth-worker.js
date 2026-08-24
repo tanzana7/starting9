@@ -91,6 +91,7 @@ import { buildV3CronSummary } from "./backend/automation-v3/diagnostics.js";
 import { assessV3LineupArtifact } from "./backend/automation-v3/lineup-artifacts.js";
 import { adaptV35Input } from "./backend/automation-v3/stage-health-adapter.js";
 import { evaluateV35Automation } from "./backend/automation-v3/stage-health-evaluator.js";
+import { planShadowRecovery } from "./backend/automation-v3/shadow-recovery-planner.js";
 
 // Compatibility exports keep existing tests and internal callers stable while
 // the implementation lives in the domain module.
@@ -4177,6 +4178,56 @@ function buildV35AdminDerivedDiagnostics({ env, game, resolvedState, jobRows, ro
   }
 }
 
+function buildV35AdminShadowRecoveryPlan({ env, game, resolvedState, derivedDiagnostics, overviewNow }) {
+  const enabled = String(env?.V35_SHADOW_RECOVERY_PLAN_ENABLED ?? "true").toLowerCase() !== "false";
+  if (!enabled) {
+    return {
+      enabled: false,
+      mode: "shadow_read_only",
+      canExecute: false,
+      error: "feature_flag_disabled"
+    };
+  }
+  if (!derivedDiagnostics || derivedDiagnostics.enabled === false || derivedDiagnostics.status === "unavailable") {
+    return {
+      enabled: false,
+      mode: "shadow_read_only",
+      canExecute: false,
+      error: derivedDiagnostics?.errorCode || "V35_DERIVED_DIAGNOSTICS_UNAVAILABLE"
+    };
+  }
+  try {
+    const persistedState = resolvedState?.state || "scheduled";
+    const rankingExcluded = game?.rankingEligible === false
+      || game?.ranking_eligible === 0
+      || game?.rankingExcluded === true
+      || game?.ranking_excluded === true;
+    const plan = planShadowRecovery({
+      game: {
+        ...game,
+        gameStatus: game?.gameStatus || game?.game_status || "scheduled",
+        persistedWorkflowState: persistedState,
+        rankingExcluded
+      },
+      derivedDiagnostics,
+      now: overviewNow,
+      flags: {
+        externalFetchDisabled: String(env?.NPB_FETCH_DISABLED || "").toLowerCase() === "true",
+        manualAttention: persistedState === "manual_action_required" || game?.manualAttention === true
+      }
+    });
+    return { enabled: true, ...plan, error: null };
+  } catch (error) {
+    console.warn(`[ADMIN_V3_OVERVIEW] internalGameId=${game?.internalGameId || "unknown"} stage=shadow_recovery_plan failureCode=${error?.code || "V35_SHADOW_RECOVERY_PLAN_FAILED"}`);
+    return {
+      enabled: false,
+      mode: "shadow_read_only",
+      canExecute: false,
+      error: String(error?.code || "V35_SHADOW_RECOVERY_PLAN_FAILED")
+    };
+  }
+}
+
 async function handleAdminV3Overview(request, env, cors) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) return access.response;
@@ -4661,6 +4712,13 @@ async function handleAdminV3Overview(request, env, cors) {
       phaseStatuses,
       overviewNow
     });
+    const v35ShadowRecoveryPlan = buildV35AdminShadowRecoveryPlan({
+      env,
+      game,
+      resolvedState,
+      derivedDiagnostics: v35DerivedDiagnostics,
+      overviewNow
+    });
     rows.push({
       ...game,
       state: resolvedState,
@@ -4684,7 +4742,8 @@ async function handleAdminV3Overview(request, env, cors) {
         ...(jobs.errorCode ? [{ field: "jobs", errorCode: jobs.errorCode }] : []),
         ...(probableStarterError ? [{ field: "probableStarter", errorCode: probableStarterError }] : [])
       ],
-      schedule: { ...schedule, ...nextAction }
+      schedule: { ...schedule, ...nextAction },
+      v35ShadowRecoveryPlan
     });
   }
   return jsonResponse({

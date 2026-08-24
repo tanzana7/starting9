@@ -4102,7 +4102,7 @@ async function handleAdminMe(request, env, cors) {
   }, 200, cors);
 }
 
-function buildV35AdminDerivedDiagnostics({ env, game, resolvedState, jobRows, rosterDiagnostics, lineupDataHealth, workflowArtifactHealth, phaseStatuses, overviewNow }) {
+function buildV35AdminDerivedDiagnostics({ env, game, resolvedState, jobRows, probableStarter, rosterDiagnostics, lineupDataHealth, workflowArtifactHealth, phaseStatuses, overviewNow }) {
   const enabled = String(env?.V35_DERIVED_DIAGNOSTICS_ENABLED ?? "true").toLowerCase() !== "false";
   if (!enabled) return { enabled: false, mode: "read_only", reason: "feature_flag_disabled" };
   try {
@@ -4119,6 +4119,7 @@ function buildV35AdminDerivedDiagnostics({ env, game, resolvedState, jobRows, ro
       npb_game_identify: game?.npbGameCode || game?.npb_game_code
         ? { available: true, valid: true, verificationStatus: "identity_verified", reason: null }
         : null,
+      probable_starter: probableStarter,
       lineup_fetch: lineupDataHealth,
       lineup_finalize: workflowArtifactHealth?.lineup || lineupDataHealth,
       scoring: workflowArtifactHealth?.scoring,
@@ -4706,6 +4707,7 @@ async function handleAdminV3Overview(request, env, cors) {
       game,
       resolvedState,
       jobRows,
+      probableStarter: serializedProbableStarter,
       rosterDiagnostics,
       lineupDataHealth,
       workflowArtifactHealth,

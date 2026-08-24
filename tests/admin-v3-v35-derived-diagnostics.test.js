@@ -25,18 +25,23 @@ test("V3.5 derived diagnostics exposes effective state, stages, warnings and sou
 test("admin-v3 renders V3.5 diagnostics as read-only stage health", () => {
   const renderer = read("frontend/admin-v3/render-game-progress.js");
   assert.match(renderer, /renderV35DerivedDiagnostics/);
-  assert.match(renderer, /V3\.5派生診断（試験中・read-only）/);
+  assert.match(renderer, /V3\.5診断（試験中・read-only）/);
   assert.match(renderer, /data-v35-derived-diagnostics/);
   assert.match(renderer, /effectiveState/);
+  assert.match(renderer, /persistedState/);
+  assert.match(renderer, /stateMismatch/);
+  assert.match(renderer, /stageHealth/);
   assert.match(renderer, /healthStatus/);
   assert.match(renderer, /recoveryReason/);
+  assert.match(renderer, /V3\.5診断を取得できませんでした。現行V3の動作には影響ありません。/);
+  assert.match(renderer, /if \(!diagnostics \|\| diagnostics\.enabled === false \|\| diagnostics\.status === "unavailable"\)/);
   assert.match(renderer, /renderV35DerivedDiagnostics\(game\)/);
   assert.match(renderer, /renderManualControls\(game\)/);
 });
 
 test("admin-v3 uses the V3.5 derived diagnostics cache buster", () => {
   const page = read("admin-v3.html");
-  const expected = "admin-v3-v35-derived-diagnostics-1";
+  const expected = "admin-v3-v35-derived-diagnostics-visible-1";
   assert.match(page, new RegExp(expected));
   assert.doesNotMatch(page, /admin-v3-ranking-status-labels-1/);
 });

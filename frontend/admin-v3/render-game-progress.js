@@ -334,9 +334,16 @@
 
     function renderV35DerivedDiagnostics(game) {
       const diagnostics = game?.v35DerivedDiagnostics;
-      if (!diagnostics || diagnostics.enabled === false) return "";
-      if (diagnostics.status === "unavailable") {
-        return `<section class="v35-derived-diagnostics v3-operation-result" data-v35-derived-diagnostics><strong>V3.5派生診断: 取得不能</strong><p>${escapeHtml(diagnostics.warning || "派生診断を確認できませんでした。")}</p><code>${escapeHtml(diagnostics.errorCode || "V35_DERIVED_DIAGNOSTICS_FAILED")}</code></section>`;
+      const title = "V3.5診断（試験中・read-only）";
+      const readOnlyNote = "この診断はjob作成・state変更・DB書き込みを行いません。現行V3の状態を読み取り、V3.5視点で派生判定しています。";
+      if (!diagnostics || diagnostics.enabled === false || diagnostics.status === "unavailable") {
+        const reason = diagnostics?.reason || diagnostics?.errorCode || "V35_DERIVED_DIAGNOSTICS_UNAVAILABLE";
+        const message = diagnostics?.status === "unavailable"
+          ? (diagnostics.warning || "V3.5診断を取得できませんでした。現行V3の動作には影響ありません。")
+          : diagnostics?.enabled === false
+            ? `V3.5診断は無効です。理由: ${reason}`
+            : "V3.5診断を取得できませんでした。現行V3の動作には影響ありません。";
+        return `<section class="v35-derived-diagnostics v35-derived-diagnostics-unavailable" data-v35-derived-diagnostics><div class="v35-derived-header"><div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(readOnlyNote)}</p></div><span class="v35-derived-status">要確認</span></div><p class="v35-derived-message">${escapeHtml(message)}</p><code>${escapeHtml(reason)}</code></section>`;
       }
       const stages = diagnostics.stages && typeof diagnostics.stages === "object" ? diagnostics.stages : {};
       const stageLabels = {
@@ -363,7 +370,7 @@
       const warningMarkup = warnings.length
         ? `<ul class="v35-derived-warnings">${warnings.map((warning) => `<li>${escapeHtml(`${warning.code || "WARNING"}: ${warning.message || ""}`)}</li>`).join("")}</ul>`
         : "<p class=muted>派生診断上の警告はありません。</p>";
-      return `<details class="v35-derived-diagnostics" data-v35-derived-diagnostics><summary>V3.5派生診断（試験中・read-only）</summary><p class="muted">既存V3のjob・成果物・状態を読み取り、現在の実効状態を派生表示しています。自動処理や状態は変更しません。</p><div class="v35-derived-meta"><span>実効状態: <strong>${escapeHtml(diagnostics.effectiveState || "-")}</strong></span><span>保存状態: ${escapeHtml(diagnostics.persistedState || "-")}</span><span>state不一致: ${diagnostics.stateMismatch ? "あり" : "なし"}</span></div><div class="v35-stage-list">${stageRows}</div><h4>警告</h4>${warningMarkup}</details>`;
+      return `<section class="v35-derived-diagnostics" data-v35-derived-diagnostics><div class="v35-derived-header"><div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(readOnlyNote)}</p></div><span class="v35-derived-status">表示専用</span></div><div class="v35-derived-meta"><span>effectiveState: <strong>${escapeHtml(diagnostics.effectiveState || "-")}</strong></span><span>persistedState: ${escapeHtml(diagnostics.persistedState || "-")}</span><span>stateMismatch: <strong>${diagnostics.stateMismatch ? "あり" : "なし"}</strong></span></div><h4>stageHealth</h4><div class="v35-stage-list">${stageRows}</div><h4>warnings</h4>${warningMarkup}</section>`;
     }
 
     function renderDashboard(payload, games) {
@@ -388,7 +395,7 @@
     function renderWorkflowView(game) {
       if (!game) return renderSelectedGameHeader(null, "試合進行");
       const identity = npbIdentityDisplay(game);
-      return `${renderSelectedGameHeader(game, "試合進行", "V3 jobの状態と監査結果を試合単位で確認します。自動処理はCronが実行します。")}<section class="v3-panel"><div class="compact-meta"><span>現在: <strong>${escapeHtml(game.state?.state || "scheduled")}</strong></span><span>次の処理: <strong>${escapeHtml(nextActionText(game))}</strong></span><span>NPB識別job: <strong>${escapeHtml(identity.jobStatus)}</strong></span><span>NPB game code: <strong>${escapeHtml(identity.code)}</strong></span></div>${renderWorkflowDiagnostics(game)}${renderV35DerivedDiagnostics(game)}${renderTimeline(game)}<details class="roster-details"><summary>ロースター取得の詳細</summary>${renderRosterSummary(game)}</details><h3>job履歴</h3>${renderJobRows(game, jobTypes)}</section>${renderManualControls(game)}`;
+      return `${renderSelectedGameHeader(game, "試合進行", "V3 jobの状態と監査結果を試合単位で確認します。自動処理はCronが実行します。")}<section class="v3-panel">${renderV35DerivedDiagnostics(game)}<div class="compact-meta"><span>現在: <strong>${escapeHtml(game.state?.state || "scheduled")}</strong></span><span>次の処理: <strong>${escapeHtml(nextActionText(game))}</strong></span><span>NPB識別job: <strong>${escapeHtml(identity.jobStatus)}</strong></span><span>NPB game code: <strong>${escapeHtml(identity.code)}</strong></span></div>${renderWorkflowDiagnostics(game)}${renderTimeline(game)}<details class="roster-details"><summary>ロースター取得の詳細</summary>${renderRosterSummary(game)}</details><h3>job履歴</h3>${renderJobRows(game, jobTypes)}</section>${renderManualControls(game)}`;
     }
 
     function renderLineupView(game) {

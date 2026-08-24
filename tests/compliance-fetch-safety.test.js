@@ -106,5 +106,5 @@ test("公開表示には非公式表記・出典・停止中表示があり、�
   assert.match(index, /public-compliance-disclaimer-and-fetch-safety-1/);
   assert.match(script, /公式情報の取得を一時停止しています。/);
   assert.match(admin, /NPB公式情報の取得を一時停止しています。/);
-  assert.match(read("admin-v3.html"), /admin-v3-v35-derived-diagnostics-1/);
+  assert.match(read("admin-v3.html"), /admin-v3-v35-derived-diagnostics-visible-1/);
 });

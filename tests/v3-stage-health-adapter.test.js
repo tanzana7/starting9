@@ -112,6 +112,42 @@ test("adapts completed lineup fetch without candidate as missing artifact", () =
   assert.equal(evaluated.stages.lineup_fetch.recoveryRecommended, true);
 });
 
+test("uses the normal admin probable-starter overview data as the formal V3.5 artifact", () => {
+  const { adapted, evaluated } = evaluateAdapter({
+    game: { internalGameId: GAME_ID, gameStatus: "scheduled", workflowState: "scheduled" },
+    jobs: [job("probable_starter_fetch", "completed")],
+    diagnostics: {
+      probable_starter: {
+        dataStatus: "announced",
+        homePitcherName: "伊藤大海",
+        awayPitcherName: "平良海馬",
+        source: "npb",
+        fetchedAt: NOW.toISOString(),
+        internalGameId: GAME_ID
+      }
+    }
+  });
+  assert.equal(adapted.evaluatorInput.artifacts.probable_starter.available, true);
+  assert.equal(adapted.evaluatorInput.artifacts.probable_starter.source, "npb");
+  assert.equal(evaluated.stages.probable_starter.healthStatus, V35_STAGE_HEALTH.COMPLETED_ARTIFACT_READY);
+  assert.equal(evaluated.stages.probable_starter.recoveryRecommended, false);
+});
+
+test("does not treat an unannounced probable-starter overview as a ready artifact", () => {
+  const { evaluated } = evaluateAdapter({
+    game: { internalGameId: GAME_ID, gameStatus: "scheduled", workflowState: "scheduled" },
+    jobs: [job("probable_starter_fetch", "completed")],
+    diagnostics: {
+      probable_starter: {
+        dataStatus: "unannounced",
+        homePitcherName: "",
+        awayPitcherName: ""
+      }
+    }
+  });
+  assert.equal(evaluated.stages.probable_starter.healthStatus, V35_STAGE_HEALTH.COMPLETED_ARTIFACT_MISSING);
+});
+
 test("adapts external fetch disabled into a blocked roster stage", () => {
   const { adapted, evaluated } = evaluateAdapter({
     game: { internalGameId: GAME_ID, gameStatus: "scheduled", workflowState: "scheduled" },

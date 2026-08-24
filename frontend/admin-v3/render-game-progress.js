@@ -373,6 +373,30 @@
       return `<section class="v35-derived-diagnostics" data-v35-derived-diagnostics><div class="v35-derived-header"><div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(readOnlyNote)}</p></div><span class="v35-derived-status">表示専用</span></div><div class="v35-derived-state-grid"><div><span>effectiveState</span><strong>${escapeHtml(stateLabel(diagnostics.effectiveState))}</strong></div><div><span>persistedState</span><strong>${escapeHtml(stateLabel(diagnostics.persistedState))}</strong></div><div><span>stateMismatch</span><strong>${diagnostics.stateMismatch ? "あり" : "なし"}</strong></div></div><h4>stageHealth</h4><div class="v35-stage-list">${stageRows}</div><h4>warnings</h4>${warningMarkup}</section>`;
     }
 
+    function renderV35ShadowRecoveryPlan(game) {
+      const plan = game?.v35ShadowRecoveryPlan;
+      const title = "V3.5復旧提案（試験中・read-only）";
+      const readOnlyNote = "この提案は実行されません。job作成・state変更・DB書き込みは行いません。";
+      if (!plan || plan.enabled === false || plan.error) {
+        const reason = plan?.error || "V35_SHADOW_RECOVERY_PLAN_UNAVAILABLE";
+        return `<section class="v35-shadow-recovery-plan v35-shadow-recovery-plan-unavailable" data-v35-shadow-recovery-plan><div class="v35-derived-header"><div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(readOnlyNote)}</p></div><span class="v35-derived-status">要確認</span></div><p class="v35-derived-message">V3.5復旧提案を生成できませんでした。現行V3の動作には影響ありません。</p><code>${escapeHtml(reason)}</code></section>`;
+      }
+      const itemMarkup = (item) => `<article class="v35-shadow-plan-item"><strong>${escapeHtml(item.stage || "-")}</strong><span>action: ${escapeHtml(item.actionType || "-")}</span><span>reason: ${escapeHtml(item.reason || "-")}</span><span>priority: ${escapeHtml(item.priority || "-")}</span><span>blocked: ${item.blocked ? "true" : "false"}</span><span>blockedReason: ${escapeHtml(item.blockedReason || "-")}</span><code>${escapeHtml(item.idempotencyKey || "-")}</code></article>`;
+      const recommendations = Array.isArray(plan.recommendations) ? plan.recommendations : [];
+      const blockedRecommendations = Array.isArray(plan.blockedRecommendations) ? plan.blockedRecommendations : [];
+      const noActionReasons = Array.isArray(plan.noActionReasons) ? plan.noActionReasons.filter(Boolean) : [];
+      const recommendationsMarkup = recommendations.length
+        ? recommendations.map(itemMarkup).join("")
+        : "<p class=muted>推奨アクションはありません。</p>";
+      const blockedMarkup = blockedRecommendations.length
+        ? blockedRecommendations.map(itemMarkup).join("")
+        : "<p class=muted>保留中の提案はありません。</p>";
+      const noActionMarkup = noActionReasons.length
+        ? `<ul class="v35-shadow-plan-reasons">${noActionReasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>`
+        : "<p class=muted>実行なし理由はありません。</p>";
+      return `<section class="v35-shadow-recovery-plan" data-v35-shadow-recovery-plan><div class="v35-derived-header"><div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(readOnlyNote)}</p></div><span class="v35-derived-status">表示専用</span></div><div class="v35-shadow-plan-state"><div><span>mode</span><strong>${escapeHtml(plan.mode || "shadow_read_only")}</strong></div><div><span>canExecute</span><strong>false</strong></div><div><span>hasRecommendedActions</span><strong>${plan.hasRecommendedActions ? "true" : "false"}</strong></div></div><h4>推奨</h4><div class="v35-shadow-plan-list">${recommendationsMarkup}</div><h4>保留</h4><div class="v35-shadow-plan-list">${blockedMarkup}</div><h4>実行なし理由</h4>${noActionMarkup}</section>`;
+    }
+
     function renderDashboard(payload, games) {
       const allGames = listItems(payload?.games, "games");
       const todayGames = filterGames(allGames, "today");
@@ -395,7 +419,7 @@
     function renderWorkflowView(game) {
       if (!game) return renderSelectedGameHeader(null, "試合進行");
       const identity = npbIdentityDisplay(game);
-      return `${renderSelectedGameHeader(game, "試合進行", "V3 jobの状態と監査結果を試合単位で確認します。自動処理はCronが実行します。")}<section class="v3-panel">${renderV35DerivedDiagnostics(game)}<div class="compact-meta"><span>現在: <strong>${escapeHtml(game.state?.state || "scheduled")}</strong></span><span>次の処理: <strong>${escapeHtml(nextActionText(game))}</strong></span><span>NPB識別job: <strong>${escapeHtml(identity.jobStatus)}</strong></span><span>NPB game code: <strong>${escapeHtml(identity.code)}</strong></span></div>${renderWorkflowDiagnostics(game)}${renderTimeline(game)}<details class="roster-details"><summary>ロースター取得の詳細</summary>${renderRosterSummary(game)}</details><h3>job履歴</h3>${renderJobRows(game, jobTypes)}</section>${renderManualControls(game)}`;
+      return `${renderSelectedGameHeader(game, "試合進行", "V3 jobの状態と監査結果を試合単位で確認します。自動処理はCronが実行します。")}<section class="v3-panel">${renderV35DerivedDiagnostics(game)}${renderV35ShadowRecoveryPlan(game)}<div class="compact-meta"><span>現在: <strong>${escapeHtml(game.state?.state || "scheduled")}</strong></span><span>次の処理: <strong>${escapeHtml(nextActionText(game))}</strong></span><span>NPB識別job: <strong>${escapeHtml(identity.jobStatus)}</strong></span><span>NPB game code: <strong>${escapeHtml(identity.code)}</strong></span></div>${renderWorkflowDiagnostics(game)}${renderTimeline(game)}<details class="roster-details"><summary>ロースター取得の詳細</summary>${renderRosterSummary(game)}</details><h3>job履歴</h3>${renderJobRows(game, jobTypes)}</section>${renderManualControls(game)}`;
     }
 
     function renderLineupView(game) {

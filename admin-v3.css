@@ -274,6 +274,15 @@ button:disabled { cursor: wait; opacity: .65; }
 .manual-game-preview-result pre { max-height: 260px; margin: 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .manual-game-preview-loading { color: #1b5c8b; }
 .manual-game-preview-error { padding: 9px 11px; color: #a22d2d; background: #fff5f5; border: 1px solid #efc3c3; border-radius: 5px; overflow-wrap: anywhere; }
+.v35-derived-diagnostics { margin: 12px 0; padding: 10px 12px; border: 1px solid #c8d8e5; border-radius: 6px; background: #f7fafc; color: #31465a; }
+.v35-derived-diagnostics > summary { cursor: pointer; color: #1d527c; font-weight: 700; }
+.v35-derived-diagnostics > p { margin: 8px 0; }
+.v35-derived-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 8px 0; font-size: 12px; }
+.v35-stage-list { display: grid; gap: 4px; }
+.v35-stage-row { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(180px, 1fr) minmax(180px, 2fr); gap: 8px; align-items: baseline; padding: 6px 8px; border: 1px solid #e2eaf0; border-radius: 4px; background: #fff; font-size: 12px; overflow-wrap: anywhere; }
+.v35-stage-row span:nth-child(2) { color: #1d527c; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.v35-stage-attention { border-color: #e3c477; background: #fffaf0; }
+.v35-derived-warnings { margin: 6px 0 0; padding-left: 20px; color: #705326; font-size: 12px; }
 .mobile-nav-toggle { display: none; }
 @media (max-width: 1040px) {
   .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -316,6 +325,7 @@ button:disabled { cursor: wait; opacity: .65; }
   .ranking-reset-wide { grid-column: auto; }
   .ranking-game-picker-toolbar, .ranking-game-picker-row { grid-template-columns: 1fr; }
   .manual-game-preview-form, .manual-game-preview-grid { grid-template-columns: 1fr; }
+  .v35-stage-row { grid-template-columns: 1fr; gap: 2px; }
   .manual-game-preview-wide { grid-column: auto; }
   .v3-lineup-row { grid-template-columns: 36px repeat(2, minmax(0, 1fr)); }
   .v3-lineup-row input:nth-of-type(n + 3) { grid-column: span 1; }

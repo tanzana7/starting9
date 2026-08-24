@@ -332,6 +332,40 @@
       return `${history}<div class="v3-operation-result" data-v3-workflow-diagnostics><strong>現在の状態診断</strong><ul>${uniqueMessages.map((message) => `<li>${escapeHtml(message)}</li>`).join("")}</ul></div>`;
     }
 
+    function renderV35DerivedDiagnostics(game) {
+      const diagnostics = game?.v35DerivedDiagnostics;
+      if (!diagnostics || diagnostics.enabled === false) return "";
+      if (diagnostics.status === "unavailable") {
+        return `<section class="v35-derived-diagnostics v3-operation-result" data-v35-derived-diagnostics><strong>V3.5派生診断: 取得不能</strong><p>${escapeHtml(diagnostics.warning || "派生診断を確認できませんでした。")}</p><code>${escapeHtml(diagnostics.errorCode || "V35_DERIVED_DIAGNOSTICS_FAILED")}</code></section>`;
+      }
+      const stages = diagnostics.stages && typeof diagnostics.stages === "object" ? diagnostics.stages : {};
+      const stageLabels = {
+        schedule_registration: "日程登録",
+        probable_starter: "予告先発",
+        roster_fetch: "ロースター取得",
+        prediction_close: "予想締切",
+        npb_game_identify: "NPB識別",
+        lineup_fetch: "スタメン取得",
+        lineup_finalize: "正式スタメン確定",
+        scoring: "採点",
+        ranking_reflect: "ランキング反映",
+        publish: "結果公開"
+      };
+      const stageRows = Object.entries(stageLabels).map(([stage, label]) => {
+        const item = stages[stage] || {};
+        const attentionClass = item.attentionLevel === "ATTENTION" ? " v35-stage-attention" : "";
+        const detail = [item.blockingReason, item.recoveryReason, item.nextSafeAction]
+          .filter(Boolean)
+          .join(" / ");
+        return `<div class="v35-stage-row${attentionClass}"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(item.healthStatus || "UNKNOWN")}</span><span>${escapeHtml(detail || "-")}</span></div>`;
+      }).join("");
+      const warnings = Array.isArray(diagnostics.warnings) ? diagnostics.warnings.filter(Boolean) : [];
+      const warningMarkup = warnings.length
+        ? `<ul class="v35-derived-warnings">${warnings.map((warning) => `<li>${escapeHtml(`${warning.code || "WARNING"}: ${warning.message || ""}`)}</li>`).join("")}</ul>`
+        : "<p class=muted>派生診断上の警告はありません。</p>";
+      return `<details class="v35-derived-diagnostics" data-v35-derived-diagnostics><summary>V3.5派生診断（試験中・read-only）</summary><p class="muted">既存V3のjob・成果物・状態を読み取り、現在の実効状態を派生表示しています。自動処理や状態は変更しません。</p><div class="v35-derived-meta"><span>実効状態: <strong>${escapeHtml(diagnostics.effectiveState || "-")}</strong></span><span>保存状態: ${escapeHtml(diagnostics.persistedState || "-")}</span><span>state不一致: ${diagnostics.stateMismatch ? "あり" : "なし"}</span></div><div class="v35-stage-list">${stageRows}</div><h4>警告</h4>${warningMarkup}</details>`;
+    }
+
     function renderDashboard(payload, games) {
       const allGames = listItems(payload?.games, "games");
       const todayGames = filterGames(allGames, "today");
@@ -354,7 +388,7 @@
     function renderWorkflowView(game) {
       if (!game) return renderSelectedGameHeader(null, "試合進行");
       const identity = npbIdentityDisplay(game);
-      return `${renderSelectedGameHeader(game, "試合進行", "V3 jobの状態と監査結果を試合単位で確認します。自動処理はCronが実行します。")}<section class="v3-panel"><div class="compact-meta"><span>現在: <strong>${escapeHtml(game.state?.state || "scheduled")}</strong></span><span>次の処理: <strong>${escapeHtml(nextActionText(game))}</strong></span><span>NPB識別job: <strong>${escapeHtml(identity.jobStatus)}</strong></span><span>NPB game code: <strong>${escapeHtml(identity.code)}</strong></span></div>${renderWorkflowDiagnostics(game)}${renderTimeline(game)}<details class="roster-details"><summary>ロースター取得の詳細</summary>${renderRosterSummary(game)}</details><h3>job履歴</h3>${renderJobRows(game, jobTypes)}</section>${renderManualControls(game)}`;
+      return `${renderSelectedGameHeader(game, "試合進行", "V3 jobの状態と監査結果を試合単位で確認します。自動処理はCronが実行します。")}<section class="v3-panel"><div class="compact-meta"><span>現在: <strong>${escapeHtml(game.state?.state || "scheduled")}</strong></span><span>次の処理: <strong>${escapeHtml(nextActionText(game))}</strong></span><span>NPB識別job: <strong>${escapeHtml(identity.jobStatus)}</strong></span><span>NPB game code: <strong>${escapeHtml(identity.code)}</strong></span></div>${renderWorkflowDiagnostics(game)}${renderV35DerivedDiagnostics(game)}${renderTimeline(game)}<details class="roster-details"><summary>ロースター取得の詳細</summary>${renderRosterSummary(game)}</details><h3>job履歴</h3>${renderJobRows(game, jobTypes)}</section>${renderManualControls(game)}`;
     }
 
     function renderLineupView(game) {

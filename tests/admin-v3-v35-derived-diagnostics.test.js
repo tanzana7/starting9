@@ -1,0 +1,42 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import test from "node:test";
+
+const root = new URL("../", import.meta.url);
+const read = (path) => fs.readFileSync(new URL(path, root), "utf8");
+
+test("admin-v3 overview attaches V3.5 derived diagnostics without changing V3 operations", () => {
+  const worker = read("auth-worker.js");
+  const overview = worker.slice(worker.indexOf("async function handleAdminV3Overview"), worker.indexOf("async function handleAdminV3IdentityResolve"));
+  assert.match(worker, /import \{ adaptV35Input \} from \"\.\/backend\/automation-v3\/stage-health-adapter\.js\"/);
+  assert.match(worker, /import \{ evaluateV35Automation \} from \"\.\/backend\/automation-v3\/stage-health-evaluator\.js\"/);
+  assert.match(overview, /v35DerivedDiagnostics/);
+  assert.doesNotMatch(overview, /transitionV3State\([^)]*v35|createV3Job\([^)]*v35/i);
+});
+
+test("V3.5 derived diagnostics exposes effective state, stages, warnings and source summary", () => {
+  const worker = read("auth-worker.js");
+  const helper = worker.slice(worker.indexOf("function buildV35AdminDerivedDiagnostics"), worker.indexOf("async function handleAdminV3Overview"));
+  for (const field of ["adaptV35Input", "evaluateV35Automation", "effectiveState", "persistedState", "stateMismatch", "stages", "warnings", "sourceSummary"]) {
+    assert.match(helper, new RegExp(field));
+  }
+});
+
+test("admin-v3 renders V3.5 diagnostics as read-only stage health", () => {
+  const renderer = read("frontend/admin-v3/render-game-progress.js");
+  assert.match(renderer, /renderV35DerivedDiagnostics/);
+  assert.match(renderer, /V3\.5派生診断（試験中・read-only）/);
+  assert.match(renderer, /data-v35-derived-diagnostics/);
+  assert.match(renderer, /effectiveState/);
+  assert.match(renderer, /healthStatus/);
+  assert.match(renderer, /recoveryReason/);
+  assert.match(renderer, /renderV35DerivedDiagnostics\(game\)/);
+  assert.match(renderer, /renderManualControls\(game\)/);
+});
+
+test("admin-v3 uses the V3.5 derived diagnostics cache buster", () => {
+  const page = read("admin-v3.html");
+  const expected = "admin-v3-v35-derived-diagnostics-1";
+  assert.match(page, new RegExp(expected));
+  assert.doesNotMatch(page, /admin-v3-ranking-status-labels-1/);
+});

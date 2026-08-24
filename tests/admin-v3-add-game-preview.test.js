@@ -133,7 +133,7 @@ test("detected_game_scheduleが利用できない場合も状態を明示してp
 
 test("admin-v3にpreview panelはあるが、本登録commit導線はない", () => {
   assert.match(adminPage, /data-v3-view="add-game-preview"/);
-  assert.match(adminPage, /render-manual-game-preview\.js\?v=admin-v3-ranking-status-labels-1/);
+  assert.match(adminPage, /render-manual-game-preview\.js\?v=admin-v3-v35-derived-diagnostics-1/);
   assert.match(adminScript, /previewManualGame/);
   assert.match(renderer, /この操作は書き込みを行いません/);
   assert.match(renderer, /本登録は未実装です/);

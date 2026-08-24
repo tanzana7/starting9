@@ -4,10 +4,10 @@
 
 const STAGES = Object.freeze([
   "schedule_registration",
+  "npb_game_identify",
   "probable_starter",
   "roster_fetch",
   "prediction_close",
-  "npb_game_identify",
   "lineup_fetch",
   "lineup_finalize",
   "scoring",

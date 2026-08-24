@@ -71,6 +71,38 @@ test("completed prediction close with a valid marker exposes persisted state mis
   assert.equal(result.stateMismatch, true);
 });
 
+test("schedule_registered is equivalent to persisted scheduled and marks registration complete", () => {
+  const result = evaluate({ scheduleRegistered: true });
+  assert.equal(result.effectiveState, V35_EFFECTIVE_STATE.SCHEDULE_REGISTERED);
+  assert.equal(result.persistedState, "scheduled");
+  assert.equal(result.stateMismatch, false);
+  assert.equal(result.stages.schedule_registration.healthStatus, V35_STAGE_HEALTH.COMPLETED_ARTIFACT_READY);
+});
+
+test("future stages stay not due instead of reporting prerequisite blockers", () => {
+  const future = "2026-08-23T07:00:00.000Z";
+  const result = evaluate({
+    stageDefinitions: {
+      lineup_fetch: { dueAt: future, prerequisiteMet: false, prerequisiteReason: "PREDICTION_CLOSE_STATE_GATE" },
+      scoring: { dueAt: future, prerequisiteMet: false, prerequisiteReason: "LINEUP_FINALIZE_ARTIFACT_MISSING" }
+    }
+  });
+  assert.equal(result.stages.lineup_fetch.healthStatus, V35_STAGE_HEALTH.NOT_DUE);
+  assert.equal(result.stages.lineup_fetch.blockingReason, null);
+  assert.equal(result.stages.scoring.healthStatus, V35_STAGE_HEALTH.NOT_DUE);
+  assert.equal(result.stages.scoring.blockingReason, null);
+});
+
+test("due stage still reports a missing prerequisite as blocked", () => {
+  const result = evaluate({
+    stageDefinitions: {
+      scoring: { dueAt: NOW.toISOString(), prerequisiteMet: false, prerequisiteReason: "LINEUP_FINALIZE_ARTIFACT_MISSING" }
+    }
+  });
+  assert.equal(result.stages.scoring.healthStatus, V35_STAGE_HEALTH.BLOCKED_BY_PREREQUISITE);
+  assert.equal(result.stages.scoring.blockingReason, "LINEUP_FINALIZE_ARTIFACT_MISSING");
+});
+
 test("due slot without a job is a missing job and recommends recovery", () => {
   const result = evaluate({ stageDefinitions: stage("roster_fetch") });
   const health = result.stages.roster_fetch;

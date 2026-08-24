@@ -1,6 +1,7 @@
 // V3.5 Phase 1.5: adapt existing V3-shaped data for the derive-only evaluator.
 // This module is intentionally pure. It does not read D1, fetch, create jobs,
 // mutate workflow state, or connect to a runtime entrypoint.
+import { deriveV35StageDueSchedule } from "./stage-due-schedule.js";
 
 const STAGES = Object.freeze([
   "schedule_registration",
@@ -236,29 +237,42 @@ function cancellationInfo(game, source) {
   };
 }
 
-function stageSource(source, diagnostics, stageName) {
+function stageSource(source, diagnostics, stageName, derivedStageSchedule) {
   const provided = objectOrEmpty(source.stageDefinitions);
   const diagnosticStages = objectOrEmpty(diagnostics.stages || diagnostics.stageHealth || diagnostics.stage_health);
   const direct = objectOrEmpty(provided[stageName] || diagnosticStages[stageName] || diagnostics[stageName]);
   const job = Array.isArray(source.jobs)
     ? source.jobs.map(normalizeJob).find((entry) => entry.stageName === stageName)
     : null;
-  const dueAt = first(
+  const jobDueAt = job?.scheduledSlotAt || job?.scheduledAt || null;
+  const explicitDueAt = first(
     direct,
     "dueAt", "due_at", "deadlineAt", "deadline_at", "selectedSlot", "selected_slot", "scheduledSlotAt", "scheduled_slot_at"
   )
     || (stageName === "prediction_close" ? first(diagnostics.predictionClose || {}, "deadlineAt", "deadline_at") : null)
     || (stageName === "lineup_fetch" ? first(diagnostics.lineupFetch || {}, "dueAt", "due_at", "selectedSlot", "selected_slot") : null)
     || (stageName === "roster_fetch" ? first(diagnostics.roster || {}, "dueAt", "due_at", "selectedSlot", "selected_slot") : null)
-    || job?.scheduledSlotAt
     || null;
-  return { direct, dueAt, job };
+  const derived = objectOrEmpty(derivedStageSchedule?.stages?.[stageName]);
+  const dueAt = jobDueAt || explicitDueAt || derived.dueAt || null;
+  const dueAtSource = jobDueAt
+    ? "job"
+    : explicitDueAt
+      ? "diagnostic"
+      : derived.dueAt
+        ? derived.source || "derived_from_game_start"
+        : null;
+  const dueSlots = first(direct, "slots", "dueSlots", "due_slots")
+    || first(diagnostics[stageName] || {}, "slots", "dueSlots", "due_slots")
+    || derived.slots
+    || null;
+  return { direct, dueAt, dueAtSource, dueSlots, job };
 }
 
-function buildStageDefinitions(source, diagnostics, artifacts, disabled, game, jobs) {
+function buildStageDefinitions(source, diagnostics, artifacts, disabled, game, jobs, derivedStageSchedule) {
   const definitions = {};
   for (const stageName of STAGES) {
-    const { direct, dueAt } = stageSource({ ...source, jobs }, diagnostics, stageName);
+    const { direct, dueAt, dueAtSource, dueSlots } = stageSource({ ...source, jobs }, diagnostics, stageName, derivedStageSchedule);
     const blockingReason = first(direct, "blockingReason", "blocking_reason", "blockingReasonCode", "blocking_reason_code")
       || first(diagnostics[stageName] || {}, "blockingReason", "blocking_reason", "blockingReasonCode", "blocking_reason_code");
     const lineupGate = ["lineup_fetch", "lineup_finalize"].includes(stageName)
@@ -271,6 +285,8 @@ function buildStageDefinitions(source, diagnostics, artifacts, disabled, game, j
     const requiredArtifactMissing = artifactRequired && !(artifacts[artifactRequired]?.available && artifacts[artifactRequired]?.valid);
     definitions[stageName] = {
       dueAt,
+      dueAtSource,
+      dueSlots,
       selectedSlot: first(direct, "selectedSlot", "selected_slot") || dueAt,
       ...(lineupGate ? { prerequisiteMet: false, prerequisiteReason: blockingReason || "PREDICTION_CLOSE_STATE_GATE" } : {}),
       ...(requiredArtifactMissing ? { prerequisiteMet: false, prerequisiteReason: `${artifactRequired.toUpperCase()}_ARTIFACT_MISSING` } : {}),
@@ -285,6 +301,7 @@ function buildStageDefinitions(source, diagnostics, artifacts, disabled, game, j
 export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostics = {}, now = new Date(), externalFlags = {} } = {}) {
   const normalizedGame = objectOrEmpty(game);
   const normalizedDiagnostics = objectOrEmpty(diagnostics);
+  const derivedStageSchedule = deriveV35StageDueSchedule({ game: normalizedGame });
   const internalGameId = first(normalizedGame, "internalGameId", "internal_game_id");
   const gameStatus = first(normalizedGame, "gameStatus", "game_status") || "scheduled";
   const persistedWorkflowState = first(normalizedGame, "workflowState", "workflow_state", "state") || "scheduled";
@@ -311,13 +328,14 @@ export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostic
   const cancellation = cancellationInfo(normalizedGame, { cancellationInfo: first(normalizedGame, "cancellationInfo", "cancellation_info") });
   const excluded = cancellation.excluded;
   if (!internalGameId) warnings.push(warning("INTERNAL_GAME_ID_MISSING", "The game has no internalGameId."));
+  if (!derivedStageSchedule.available) warnings.push(warning("STAGE_DUE_SCHEDULE_UNAVAILABLE", "Game start time is unavailable, so derived stage due times cannot be evaluated."));
   const unknownJobs = normalizedJobs.filter((job) => !STAGES.includes(job.stageName));
   if (unknownJobs.length) warnings.push(warning("UNKNOWN_JOB_STAGE", "Some jobs could not be mapped to a V3.5 stage."));
   if (externalDisabled) warnings.push(warning("NPB_FETCH_DISABLED", "External NPB fetching is disabled."));
   if (evaluatorArtifacts.roster_fetch?.publicUsable && !evaluatorArtifacts.roster_fetch?.canonicalSnapshotAvailable) {
     warnings.push(warning("PUBLIC_ROSTER_WITHOUT_FORMAL_SNAPSHOT", "Public roster data is usable, but the formal canonical snapshot is missing.", "roster_fetch"));
   }
-  const stageDefinitions = buildStageDefinitions({ artifacts, externalFlags }, normalizedDiagnostics, evaluatorArtifacts, externalDisabled, normalizedGame, normalizedJobs);
+  const stageDefinitions = buildStageDefinitions({ artifacts, externalFlags }, normalizedDiagnostics, evaluatorArtifacts, externalDisabled, normalizedGame, normalizedJobs, derivedStageSchedule);
   const scheduleRegistered = Boolean(
     first(normalizedGame, "scheduleRegistered", "schedule_registered")
     ?? normalizedGame.gameDate
@@ -331,6 +349,7 @@ export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostic
       startAt: first(normalizedGame, "startAt", "start_at", "gameStartAt", "game_start_at"),
       currentTime: now,
       stageDefinitions,
+      derivedStageSchedule,
       jobs: normalizedJobs,
       artifacts: evaluatorArtifacts,
       cancellationInfo: cancellation,
@@ -362,6 +381,7 @@ export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostic
         provided: Object.keys(normalizedDiagnostics).length > 0,
         keys: Object.keys(normalizedDiagnostics)
       },
+      derivedStageSchedule,
       externalFetchDisabled: externalDisabled,
       cancellation,
       warningCount: warnings.length

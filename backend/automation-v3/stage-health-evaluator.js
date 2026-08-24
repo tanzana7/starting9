@@ -196,6 +196,10 @@ function normalizeDefinition(stageName, definition = {}) {
   return {
     stageName,
     dueAt: valueOr(source, "dueAt", "due_at", "scheduledSlotAt", "scheduled_slot_at"),
+    dueAtSource: valueOr(source, "dueAtSource", "due_at_source") || null,
+    dueSlots: Array.isArray(valueOr(source, "dueSlots", "due_slots", "slots"))
+      ? valueOr(source, "dueSlots", "due_slots", "slots").map(iso).filter(Boolean)
+      : [],
     selectedSlot: valueOr(source, "selectedSlot", "selected_slot", "dueAt", "due_at", "scheduledSlotAt", "scheduled_slot_at"),
     prerequisiteMet,
     prerequisiteSpecified,
@@ -252,6 +256,8 @@ export function evaluateV35Stage({
   const base = {
     healthStatus: due ? V35_STAGE_HEALTH.DUE : V35_STAGE_HEALTH.NOT_DUE,
     dueAt: iso(normalizedDefinition.dueAt),
+    dueAtSource: normalizedDefinition.dueAtSource,
+    dueSlots: normalizedDefinition.dueSlots,
     selectedSlot: iso(selectedSlot),
     job: job || null,
     artifactHealth,

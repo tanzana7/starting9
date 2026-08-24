@@ -38,6 +38,7 @@ const EXTERNAL_FETCH_STAGES = new Set([
 ]);
 
 const ARTIFACT_ALIASES = Object.freeze({
+  probable_starter: ["probable_starter", "probableStarter", "probable_starter_fetch"],
   roster_fetch: ["roster_fetch", "roster", "rosterSnapshot", "roster_snapshot"],
   prediction_close: ["prediction_close", "predictionClose", "prediction_close_marker"],
   lineup_fetch: ["lineup_fetch", "lineupFetch", "lineup", "lineupData"],
@@ -195,6 +196,36 @@ function rosterArtifact(raw, game = {}) {
   };
 }
 
+function probableStarterArtifact(raw, game = {}) {
+  const value = artifactCandidate(raw) || {};
+  const health = artifactCandidate(value.health) || value;
+  const homeStarter = artifactCandidate(first(health, "homeProbableStarter", "home_probable_starter")) || {};
+  const awayStarter = artifactCandidate(first(health, "awayProbableStarter", "away_probable_starter")) || {};
+  const homePitcherName = first(health, "homePitcherName", "home_pitcher_name") || first(homeStarter, "name", "playerName");
+  const awayPitcherName = first(health, "awayPitcherName", "away_pitcher_name") || first(awayStarter, "name", "playerName");
+  const dataStatus = String(first(health, "dataStatus", "data_status") || "").trim().toLowerCase();
+  const announced = dataStatus === "announced"
+    || health.fullyAnnounced === true
+    || health.fully_announced === true
+    || health.isConfirmed === true
+    || health.confirmed === true;
+  const available = Boolean(homePitcherName && awayPitcherName && announced);
+  return {
+    available,
+    valid: available,
+    fresh: available,
+    source: first(health, "source", "sourceType") || null,
+    capturedAt: normalizeDate(first(health, "fetchedAt", "fetched_at", "updatedAt", "updated_at")),
+    fingerprint: first(health, "fingerprint", "sourceFingerprint"),
+    verificationStatus: available ? "verified" : "unverified",
+    internalGameId: first(health, "internalGameId", "internal_game_id") || first(game, "internalGameId", "internal_game_id"),
+    rowCount: null,
+    reason: available ? null : first(health, "errorCode", "error_code", "reason", "reasonCode") || "PROBABLE_STARTER_NOT_ANNOUNCED",
+    blockingReason: available ? null : "PROBABLE_STARTER_ARTIFACT_MISSING",
+    nextSafeAction: available ? "no_op" : "wait_or_recover"
+  };
+}
+
 function findArtifact(source, stageName, diagnostics, game) {
   const supplied = objectOrEmpty(source.artifacts);
   const diagnosticArtifacts = objectOrEmpty(diagnostics.artifactHealth || diagnostics.artifacts || diagnostics.workflowArtifactHealth);
@@ -203,10 +234,13 @@ function findArtifact(source, stageName, diagnostics, game) {
     ?? aliases.map((key) => diagnosticArtifacts[key]).find((value) => value !== undefined)
     ?? (stageName === "lineup_fetch" ? diagnostics.lineupFetch?.artifactStatus : null)
     ?? (stageName === "prediction_close" ? diagnostics.predictionClose : null)
+    ?? (stageName === "probable_starter" ? (diagnostics.probable_starter || diagnostics.probableStarter) : null)
     ?? (stageName === "roster_fetch" ? diagnostics.roster : null)
     ?? (stageName === "roster_fetch" ? first(game, "rosterSnapshot", "roster_snapshot", "rosterHealth") : null);
   if (raw === undefined || raw === null) return null;
-  return stageName === "roster_fetch" ? rosterArtifact(raw, game) : genericArtifact(raw, stageName);
+  if (stageName === "roster_fetch") return rosterArtifact(raw, game);
+  if (stageName === "probable_starter") return probableStarterArtifact(raw, game);
+  return genericArtifact(raw, stageName);
 }
 
 function externalFetchDisabled(source, diagnostics, game) {

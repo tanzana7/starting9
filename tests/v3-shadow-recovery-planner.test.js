@@ -84,6 +84,20 @@ test("completed lineup without artifact produces a lineup recovery intent", () =
   assert.equal(plan.recommendations[0].reason, "COMPLETED_ARTIFACT_MISSING");
 });
 
+test("ready probable-starter artifact does not produce a recovery intent", () => {
+  const plan = planShadowRecovery(input({
+    probable_starter: stage("COMPLETED_ARTIFACT_READY", {
+      recoveryRecommended: false,
+      artifactHealth: { available: true, valid: true },
+      dueAt: NOW
+    })
+  }));
+  assert.equal(plan.canExecute, false);
+  assert.equal(plan.hasRecommendedActions, false);
+  assert.equal(plan.recommendations.some(({ stage: stageName }) => stageName === "probable_starter"), false);
+  assert.ok(plan.noActionReasons.includes("probable_starter:no_action"));
+});
+
 test("retry_wait due proposes retry requeue and preserves a diagnostic idempotency key", () => {
   const plan = planShadowRecovery(input({
     roster_fetch: stage("RETRY_WAIT_DUE", { recoveryRecommended: true, dueAt: NOW })

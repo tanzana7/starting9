@@ -56,6 +56,22 @@ test("missing roster snapshot produces a roster recovery intent", () => {
   assert.equal(plan.recommendations[0].reason, "ROSTER_SNAPSHOT_MISSING");
 });
 
+test("derived due missing job produces a read-only would action", () => {
+  const plan = planShadowRecovery(input({
+    npb_game_identify: stage("MISSING_JOB", {
+      recoveryRecommended: true,
+      recoveryReason: "MISSING_DUE_JOB",
+      dueAt: "2026-08-24T09:00:00.000Z",
+      dueAtSource: "derived_from_game_start"
+    })
+  }));
+  assert.equal(plan.canExecute, false);
+  assert.equal(plan.hasRecommendedActions, true);
+  assert.equal(plan.recommendations[0].stage, "npb_game_identify");
+  assert.equal(plan.recommendations[0].actionType, "would_schedule_recovery_job");
+  assert.match(plan.recommendations[0].idempotencyKey, /npb_game_identify/);
+});
+
 test("completed lineup without artifact produces a lineup recovery intent", () => {
   const plan = planShadowRecovery(input({
     lineup_fetch: stage("COMPLETED_ARTIFACT_MISSING", {

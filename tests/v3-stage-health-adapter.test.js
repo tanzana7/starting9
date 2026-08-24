@@ -7,7 +7,7 @@ const NOW = new Date("2026-08-23T06:00:00.000Z");
 const GAME_ID = "22222222-2222-4222-8222-222222222222";
 
 function evaluateAdapter(input) {
-  const adapted = adaptV35Input({ ...input, now: NOW });
+  const adapted = adaptV35Input({ ...input, now: input.now || NOW });
   return { adapted, evaluated: evaluateV35Automation(adapted.evaluatorInput) };
 }
 
@@ -185,6 +185,82 @@ test("adapter exposes stages in operational order", () => {
     "ranking_reflect",
     "publish"
   ]);
+});
+
+test("derives due slots when no job or diagnostic slot exists", () => {
+  const { adapted, evaluated } = evaluateAdapter({
+    game: {
+      internalGameId: GAME_ID,
+      gameDate: "2026-08-25",
+      startAt: "2026-08-25T09:00:00.000Z",
+      gameStatus: "scheduled",
+      workflowState: "scheduled"
+    },
+    jobs: [],
+    diagnostics: {}
+  });
+  assert.equal(adapted.sourceSummary.derivedStageSchedule.source, "derived_from_game_start");
+  assert.equal(adapted.evaluatorInput.stageDefinitions.npb_game_identify.dueAtSource, "derived_from_game_start");
+  assert.equal(evaluated.stages.npb_game_identify.dueAt, "2026-08-24T09:00:00.000Z");
+  assert.equal(evaluated.stages.npb_game_identify.dueAtSource, "derived_from_game_start");
+  assert.deepEqual(evaluated.stages.roster_fetch.dueSlots, [
+    "2026-08-25T07:00:00.000Z",
+    "2026-08-25T07:02:00.000Z",
+    "2026-08-25T07:10:00.000Z"
+  ]);
+});
+
+test("job and explicit diagnostic due times take precedence over derived schedule", () => {
+  const adapted = adaptV35Input({
+    game: {
+      internalGameId: GAME_ID,
+      gameDate: "2026-08-25",
+      startAt: "2026-08-25T09:00:00.000Z",
+      workflowState: "scheduled"
+    },
+    jobs: [job("prediction_close", "pending", { scheduled_at: "2026-08-25T08:55:00.000Z", scheduled_slot_at: "2026-08-25T08:55:00.000Z" })],
+    diagnostics: { roster: { dueAt: "2026-08-25T07:05:00.000Z" } },
+    now: NOW
+  });
+  assert.equal(adapted.evaluatorInput.stageDefinitions.prediction_close.dueAt, "2026-08-25T08:55:00.000Z");
+  assert.equal(adapted.evaluatorInput.stageDefinitions.prediction_close.dueAtSource, "job");
+  assert.equal(adapted.evaluatorInput.stageDefinitions.roster_fetch.dueAt, "2026-08-25T07:05:00.000Z");
+  assert.equal(adapted.evaluatorInput.stageDefinitions.roster_fetch.dueAtSource, "diagnostic");
+});
+
+test("derived due time turns a missing due job into a recovery diagnostic", () => {
+  const { evaluated } = evaluateAdapter({
+    game: {
+      internalGameId: GAME_ID,
+      gameDate: "2026-08-25",
+      startAt: "2026-08-25T09:00:00.000Z",
+      gameStatus: "scheduled",
+      workflowState: "scheduled"
+    },
+    now: new Date("2026-08-25T08:05:00.000Z"),
+    jobs: [],
+    diagnostics: {}
+  });
+  assert.equal(evaluated.stages.prediction_close.healthStatus, "MISSING_JOB");
+  assert.equal(evaluated.stages.prediction_close.recoveryRecommended, true);
+  assert.equal(evaluated.stages.prediction_close.recoveryReason, "MISSING_DUE_JOB");
+});
+
+test("derived due time never recommends recovery for cancelled games", () => {
+  const { evaluated } = evaluateAdapter({
+    game: {
+      internalGameId: GAME_ID,
+      gameDate: "2026-08-25",
+      startAt: "2026-08-25T09:00:00.000Z",
+      gameStatus: "cancelled",
+      workflowState: "excluded"
+    },
+    now: new Date("2026-08-25T08:05:00.000Z"),
+    jobs: [],
+    diagnostics: {}
+  });
+  assert.equal(evaluated.stages.prediction_close.healthStatus, "BLOCKED_BY_CANCELLED");
+  assert.equal(evaluated.stages.prediction_close.recoveryRecommended, false);
 });
 
 test("adapter is pure and does not call database or job functions supplied as unknown input", () => {

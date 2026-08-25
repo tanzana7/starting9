@@ -165,15 +165,38 @@ function rosterArtifact(raw, game = {}) {
     first(health, "publicUsable", "public_usable")
     ?? (String(source || "").toLowerCase() === "latest_official_live" && publicVerified)
   );
+  const noticeState = String(first(health, "noticeState", "notice_state", "reasonCode", "reason_code") || "").trim().toUpperCase();
+  const snapshotStatus = String(first(
+    health,
+    "rosterSnapshotStatus",
+    "roster_snapshot_status",
+    "snapshotStatus",
+    "snapshot_status"
+  ) || first(snapshot, "status") || "").trim().toLowerCase();
+  const rosterNoChanges = noticeState === "ROSTER_NO_CHANGES";
+  const capturedSnapshot = snapshotStatus === "captured";
   const snapshotAvailable = Boolean(
-    first(health, "canonicalSnapshotAvailable", "canonical_snapshot_available", "snapshotExists", "snapshot_exists")
-    ?? (Object.keys(snapshot).length > 0 && snapshot.available !== false)
+    rosterNoChanges
+    || capturedSnapshot
+    || (first(health, "canonicalSnapshotAvailable", "canonical_snapshot_available", "snapshotExists", "snapshot_exists", "rosterSnapshotExists", "roster_snapshot_exists")
+      ?? (Object.keys(snapshot).length > 0 && snapshot.available !== false))
   );
   const snapshotVerified = Boolean(first(health, "snapshotVerified", "snapshot_verified", "verifiedSnapshot", "verified_snapshot") ?? snapshot.verified);
-  const snapshotValid = Boolean(first(health, "snapshotValid", "snapshot_valid") ?? snapshot.valid ?? (snapshotAvailable && snapshotVerified));
-  const available = health.available !== undefined ? Boolean(health.available) : snapshotAvailable;
-  const valid = health.valid !== undefined ? Boolean(health.valid) : snapshotValid;
+  const snapshotValid = Boolean(
+    rosterNoChanges
+    || capturedSnapshot
+    || first(health, "snapshotValid", "snapshot_valid")
+    || snapshot.valid
+    || (snapshotAvailable && snapshotVerified)
+  );
+  const available = rosterNoChanges || capturedSnapshot
+    ? true
+    : health.available !== undefined ? Boolean(health.available) : snapshotAvailable;
+  const valid = rosterNoChanges || capturedSnapshot
+    ? true
+    : health.valid !== undefined ? Boolean(health.valid) : snapshotValid;
   const reason = first(health, "reason", "reasonCode", "staleReason")
+    || (rosterNoChanges ? "ROSTER_NO_CHANGES" : null)
     || (!snapshotAvailable && publicUsable ? "ROSTER_SNAPSHOT_MISSING" : null);
   return {
     available,
@@ -187,7 +210,9 @@ function rosterArtifact(raw, game = {}) {
     rowCount: first(health, "rowCount", "row_count") || first(snapshot, "rowCount", "row_count"),
     reason,
     blockingReason: first(health, "blockingReason", "blocking_reason") || (reason === "ROSTER_SNAPSHOT_MISSING" ? "ROSTER_SNAPSHOT_MISSING" : null),
-    nextSafeAction: first(health, "nextSafeAction", "next_safe_action") || (reason === "ROSTER_SNAPSHOT_MISSING" ? "roster_fetch" : valid ? "no_op" : "wait_or_recover"),
+    nextSafeAction: rosterNoChanges || capturedSnapshot
+      ? "no_op"
+      : first(health, "nextSafeAction", "next_safe_action") || (reason === "ROSTER_SNAPSHOT_MISSING" ? "roster_fetch" : valid ? "no_op" : "wait_or_recover"),
     publicUsable,
     publicSource: source,
     publicVerified,

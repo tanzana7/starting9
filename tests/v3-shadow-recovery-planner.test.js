@@ -56,6 +56,22 @@ test("missing roster snapshot produces a roster recovery intent", () => {
   assert.equal(plan.recommendations[0].reason, "ROSTER_SNAPSHOT_MISSING");
 });
 
+test("published roster no-changes does not produce a roster recovery intent", () => {
+  const plan = planShadowRecovery(input({
+    roster_fetch: stage("COMPLETED_ARTIFACT_READY", {
+      artifactHealth: { available: true, valid: true, reason: "ROSTER_NO_CHANGES" },
+      recoveryRecommended: false,
+      nextSafeAction: "no_op"
+    })
+  }, {
+    game: { gameStatus: "finished" },
+    derivedDiagnostics: { effectiveState: "published", persistedState: "published" }
+  }));
+  assert.equal(plan.canExecute, false);
+  assert.equal(plan.hasRecommendedActions, false);
+  assert.equal(plan.recommendations.some(({ stage }) => stage === "roster_fetch"), false);
+});
+
 test("derived due missing job produces a read-only would action", () => {
   const plan = planShadowRecovery(input({
     npb_game_identify: stage("MISSING_JOB", {

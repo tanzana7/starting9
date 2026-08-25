@@ -9,7 +9,7 @@ const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 
 test("public mobile prediction layout keeps order and roster in two panes", () => {
-  assert.match(html, /style\.css\?v=public-compliance-disclaimer-and-fetch-safety-1/);
+  assert.match(html, /style\.css\?v=public-position-menu-left-clamp-1/);
   assert.doesNotMatch(html, /public-mobile-ui-blockers-1|public-roster-source-of-truth-1/);
   assert.match(html, /class="lineup-builder"/);
   assert.match(html, /id="predictionLineup" class="slot-list"/);
@@ -42,7 +42,8 @@ test("mobile drag feedback and position menu stay within the viewport", () => {
   assert.match(script, /function restorePositionMenuHost\(menu\)/);
   assert.match(script, /window\.addEventListener\("resize", repositionOpenPositionMenu/);
   assert.match(script, /window\.addEventListener\("scroll", repositionOpenPositionMenu/);
-  assert.match(script, /window\.innerWidth - menuRect\.width - viewportPadding/);
+  assert.match(script, /function getViewportClampedMenuLeft\(/);
+  assert.match(script, /getViewportClampedMenuLeft\(buttonRect\.left, menuRect\.width, window\.innerWidth, viewportPadding\)/);
   assert.match(css, /\.mobile-drag-ghost \{/);
   assert.match(css, /\.position-menu\.is-mobile-position-menu \{/);
   assert.match(css, /\.position-menu\.is-portal-position-menu \{[\s\S]*position: fixed;[\s\S]*z-index: 1400/);

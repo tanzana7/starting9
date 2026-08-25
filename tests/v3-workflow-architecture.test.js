@@ -238,3 +238,13 @@ test("V3 runtime source has explicit phases and no V2 module dependency", () => 
   }
   assert.doesNotMatch(runtime, /game-automation-v2/);
 });
+
+test("planner failure is isolated so the due-job claim phase remains reachable", () => {
+  const executor = fs.readFileSync(path.join(root, "backend/automation-v3/executor.js"), "utf8");
+  assert.match(executor, /async function runV3PlannerPhase\([\s\S]*?catch \(error\) \{[\s\S]*?return emptyV3PlanResult\(error/);
+  assert.match(executor, /const auxiliary = await runV3PlannerPhase\(/);
+  assert.match(executor, /const mainPlan = await runV3PlannerPhase\(/);
+  const mainPlanIndex = executor.indexOf("const mainPlan = await runV3PlannerPhase(");
+  const claimIndex = executor.indexOf("const claimReport = await claimDueJobs(");
+  assert.ok(mainPlanIndex >= 0 && claimIndex > mainPlanIndex, "claim phase must follow isolated planner phases");
+});

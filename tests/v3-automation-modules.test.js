@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -83,6 +84,39 @@ test("V3 Cron diagnostics aggregate planner, claim, executor, and schedule-sync 
   assert.deepEqual(summary.stateReconciliation.recoveredByJobType, { prediction_close: 1 });
   assert.deepEqual(summary.createdByJobType, { probable_starter_fetch: 1 });
   assert.equal(summary.scheduleSync.futureGamesAfter, 3);
+});
+
+test("due-job query includes pending and ready retry jobs but excludes future retries", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE game_jobs_v3 (
+        id INTEGER PRIMARY KEY,
+        status TEXT NOT NULL,
+        scheduled_at TEXT NOT NULL,
+        next_retry_at TEXT,
+        lease_expires_at TEXT
+      );
+      INSERT INTO game_jobs_v3 VALUES
+        (1, 'pending', '2026-08-25T07:56:00.000Z', NULL, NULL),
+        (2, 'retry_wait', '2026-08-25T07:55:00.000Z', '2026-08-25T07:57:00.000Z', NULL),
+        (3, 'retry_wait', '2026-08-25T07:55:00.000Z', '2026-08-25T08:01:00.000Z', NULL);
+    `);
+    const db = {
+      prepare(sql) {
+        const statement = database.prepare(sql);
+        return {
+          bind(...params) {
+            return { all: async () => ({ results: statement.all(...params) }) };
+          }
+        };
+      }
+    };
+    const due = await v3.listDueV3Jobs(db, new Date("2026-08-25T08:00:00.000Z"));
+    assert.deepEqual(due.map((job) => job.id), [2, 1]);
+  } finally {
+    database.close();
+  }
 });
 
 test("V3 Cron diagnostics classify every known job type and preserve unclassified history", () => {

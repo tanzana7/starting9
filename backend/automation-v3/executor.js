@@ -39,6 +39,26 @@ async function invokeV3Observer(observer, args = [], timeoutMs = V3_OBSERVER_TIM
   }
 }
 
+function emptyV3PlanResult(error = null, plan = null) {
+  return {
+    created: 0,
+    planned: [],
+    diagnostics: [],
+    errors: error ? [{ game: null, plan, error }] : []
+  };
+}
+
+async function runV3PlannerPhase(planner, db, games, now, plan) {
+  try {
+    return await planner(db, games, now);
+  } catch (error) {
+    // Planning is best-effort. The due-job lifecycle must still run so an
+    // already-created pending/retry_wait job is not stranded by a planner
+    // failure in the same Cron invocation.
+    return emptyV3PlanResult(error, plan);
+  }
+}
+
 function hasVerifiedLineupPayload(value) {
   if (typeof value !== "string" || !value.trim()) return false;
   try {
@@ -267,8 +287,20 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
 
   // Phase boundaries are explicit: an auxiliary decision never short-circuits
   // the main workflow planner for the same or another game.
-  const auxiliary = await planAuxiliaryJobs(env.AUTH_DB, games, now);
-  const mainPlan = await planMainWorkflowJobs(env.AUTH_DB, games, now);
+  const auxiliary = await runV3PlannerPhase(
+    planAuxiliaryJobs,
+    env.AUTH_DB,
+    games,
+    now,
+    "auxiliary"
+  );
+  const mainPlan = await runV3PlannerPhase(
+    planMainWorkflowJobs,
+    env.AUTH_DB,
+    games,
+    now,
+    "main"
+  );
   const allPlanned = [...auxiliary.planned, ...mainPlan.planned];
   const reportPlan = async (entries, stage) => {
     for (const entry of entries) {

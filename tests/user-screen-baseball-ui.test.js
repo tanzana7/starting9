@@ -239,7 +239,7 @@ test("公開予想入力は結果画面と共通の青系テーマを使い、�
   assert.match(css, /#predictionForm \.player-chip[\s\S]*border-color: #b9cfe2/);
   assert.match(css, /#predictionForm \.lineup-slot\.is-drop-target/);
   assert.match(html, /style\.css\?v=public-position-menu-left-clamp-1/);
-  assert.match(html, /script\.js\?v=public-position-menu-left-clamp-1/);
+  assert.match(html, /script\.js\?v=public-position-menu-pc-narrow-clamp-1/);
   assert.match(script, /function togglePositionMenu\(/);
   assert.match(script, /function handlePlayerDragStart\(/);
   assert.match(script, /function assignPlayerToActiveSlot\(/);

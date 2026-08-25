@@ -97,7 +97,7 @@ test("既存打順へのドラッグ移動後も次の空き打順へ移動す�
 test("守備位置メニューはviewport固定クラスとcache busterを持つ", () => {
   assert.match(script, /is-viewport-positioned/);
   assert.match(css, /\.position-menu\.is-viewport-positioned\s*\{/);
-  assert.match(html, /public-position-menu-left-clamp-1/);
+  assert.match(html, /public-position-menu-pc-narrow-clamp-1/);
 });
 
 test("守備位置メニューの最終leftはviewport内にclampされる", () => {
@@ -116,4 +116,18 @@ test("守備位置メニューの最終leftはviewport内にclampされる", () 
   assert.match(script, /menu\.style\.transform = "none"/);
   assert.match(css, /box-sizing: border-box/);
   assert.match(css, /max-width: calc\(100vw - 16px\)/);
+});
+
+test("PC narrow viewportでも守備位置メニューをportal/fixed経路でviewport内に再配置する", () => {
+  assert.match(script, /function getPositionMenuViewportSize\(\)/);
+  assert.match(script, /window\.visualViewport\?\.addEventListener\("resize", repositionOpenPositionMenu/);
+  assert.match(script, /window\.visualViewport\?\.addEventListener\("scroll", repositionOpenPositionMenu/);
+  assert.match(script, /mountPositionMenuPortal\(menu\);[\s\S]*menu\.classList\.add\("is-viewport-positioned"\)/);
+  assert.doesNotMatch(script, /if \(!isMobile\) \{[\s\S]*restorePositionMenuHost\(menu\);[\s\S]*return;/);
+  const start = script.indexOf("function getViewportClampedMenuLeft");
+  const end = script.indexOf("\n}\n", start) + 3;
+  const context = vm.createContext({});
+  vm.runInContext(`${script.slice(start, end)}; this.clamp = getViewportClampedMenuLeft;`, context);
+  assert.equal(context.clamp(0, 218, 640, 8), 8);
+  assert.equal(context.clamp(620, 218, 640, 8), 414);
 });

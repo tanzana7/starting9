@@ -498,6 +498,8 @@ function bindEvents() {
   document.addEventListener("touchend", handleTouchInteractionEnd, { passive: false });
   document.addEventListener("touchcancel", handleTouchInteractionCancel, { passive: false });
   window.addEventListener("resize", repositionOpenPositionMenu, { passive: true });
+  window.visualViewport?.addEventListener("resize", repositionOpenPositionMenu, { passive: true });
+  window.visualViewport?.addEventListener("scroll", repositionOpenPositionMenu, { passive: true });
   window.addEventListener("scroll", repositionOpenPositionMenu, { passive: true, capture: true });
   document.querySelectorAll("[data-roster-filter]").forEach((button) => {
     button.addEventListener("click", () => setCandidateRosterFilter(button.dataset.rosterFilter));
@@ -826,29 +828,37 @@ function getViewportClampedMenuLeft(preferredLeft, menuWidth, viewportWidth, vie
   return Math.min(Math.max(padding, Number(preferredLeft) || 0), maxLeft);
 }
 
+function getPositionMenuViewportSize() {
+  const visualViewport = typeof window !== "undefined" ? window.visualViewport : null;
+  const windowWidth = typeof window !== "undefined" ? Number(window.innerWidth) : 0;
+  const windowHeight = typeof window !== "undefined" ? Number(window.innerHeight) : 0;
+  const documentWidth = typeof document !== "undefined" ? Number(document.documentElement?.clientWidth) : 0;
+  const documentHeight = typeof document !== "undefined" ? Number(document.documentElement?.clientHeight) : 0;
+  return {
+    width: Number(visualViewport?.width) || documentWidth || windowWidth || 0,
+    height: Number(visualViewport?.height) || documentHeight || windowHeight || 0,
+  };
+}
+
 function positionMobilePositionMenu(menu, button) {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
 
   const isMobile = window.matchMedia("(max-width: 767px)").matches;
-  if (!isMobile) {
-    restorePositionMenuHost(menu);
-    menu.classList.remove("is-mobile-position-menu", "is-viewport-positioned");
-    return;
-  }
-
   mountPositionMenuPortal(menu);
   menu.classList.toggle("is-mobile-position-menu", isMobile);
   menu.classList.add("is-viewport-positioned");
   const viewportPadding = 8;
+  const viewport = getPositionMenuViewportSize();
+  const maxMenuWidth = Math.max(0, viewport.width - viewportPadding * 2);
   menu.style.right = "auto";
   menu.style.transform = "none";
-  menu.style.maxWidth = `calc(100vw - ${viewportPadding * 2}px)`;
+  menu.style.maxWidth = `${maxMenuWidth}px`;
   menu.style.boxSizing = "border-box";
   const buttonRect = button.getBoundingClientRect();
   const menuRect = menu.getBoundingClientRect();
-  const left = getViewportClampedMenuLeft(buttonRect.left, menuRect.width, window.innerWidth, viewportPadding);
+  const left = getViewportClampedMenuLeft(buttonRect.left, menuRect.width, viewport.width, viewportPadding);
   const preferredTop = buttonRect.bottom + 6;
-  const maxTop = window.innerHeight - menuRect.height - viewportPadding;
+  const maxTop = viewport.height - menuRect.height - viewportPadding;
   const top = maxTop >= viewportPadding
     ? Math.min(preferredTop, maxTop)
     : viewportPadding;

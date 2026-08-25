@@ -7,7 +7,7 @@ const root = path.join(__dirname, "..");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const adminHtml = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
-const scriptCacheBuster = "public-position-menu-left-clamp-1";
+const scriptCacheBuster = "public-position-menu-pc-narrow-clamp-1";
 const moduleCacheBuster = "public-compliance-disclaimer-and-fetch-safety-1";
 const styleCacheBuster = "public-position-menu-left-clamp-1";
 

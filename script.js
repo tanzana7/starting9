@@ -815,6 +815,17 @@ function restorePositionMenuHost(menu) {
   menu.classList.remove("is-portal-position-menu");
 }
 
+function getViewportClampedMenuLeft(preferredLeft, menuWidth, viewportWidth, viewportPadding = 8) {
+  const padding = Math.max(0, Number(viewportPadding) || 0);
+  const width = Math.max(0, Number(viewportWidth) || 0);
+  const safeMenuWidth = Math.min(
+    Math.max(0, Number(menuWidth) || 0),
+    Math.max(0, width - padding * 2)
+  );
+  const maxLeft = Math.max(padding, width - safeMenuWidth - padding);
+  return Math.min(Math.max(padding, Number(preferredLeft) || 0), maxLeft);
+}
+
 function positionMobilePositionMenu(menu, button) {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
 
@@ -828,11 +839,14 @@ function positionMobilePositionMenu(menu, button) {
   mountPositionMenuPortal(menu);
   menu.classList.toggle("is-mobile-position-menu", isMobile);
   menu.classList.add("is-viewport-positioned");
+  const viewportPadding = 8;
+  menu.style.right = "auto";
+  menu.style.transform = "none";
+  menu.style.maxWidth = `calc(100vw - ${viewportPadding * 2}px)`;
+  menu.style.boxSizing = "border-box";
   const buttonRect = button.getBoundingClientRect();
   const menuRect = menu.getBoundingClientRect();
-  const viewportPadding = 8;
-  const maxLeft = Math.max(viewportPadding, window.innerWidth - menuRect.width - viewportPadding);
-  const left = Math.min(Math.max(viewportPadding, buttonRect.left), maxLeft);
+  const left = getViewportClampedMenuLeft(buttonRect.left, menuRect.width, window.innerWidth, viewportPadding);
   const preferredTop = buttonRect.bottom + 6;
   const maxTop = window.innerHeight - menuRect.height - viewportPadding;
   const top = maxTop >= viewportPadding
@@ -919,6 +933,10 @@ function closeAllPositionMenus() {
     menu.classList.remove("is-mobile-position-menu", "is-viewport-positioned");
     menu.style.removeProperty("left");
     menu.style.removeProperty("top");
+    menu.style.removeProperty("right");
+    menu.style.removeProperty("transform");
+    menu.style.removeProperty("max-width");
+    menu.style.removeProperty("box-sizing");
     restorePositionMenuHost(menu);
   });
   document.querySelectorAll(".position-button").forEach((button) => {

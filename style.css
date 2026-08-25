@@ -2874,6 +2874,9 @@ textarea:focus {
   position: fixed;
   top: auto;
   right: auto;
+  left: auto;
+  box-sizing: border-box;
+  transform: none;
   max-width: calc(100vw - 16px);
 }
 
@@ -7028,6 +7031,9 @@ body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip:focus-visi
     position: fixed;
     top: auto;
     right: auto;
+    left: auto;
+    box-sizing: border-box;
+    transform: none;
     max-width: calc(100vw - 16px);
   }
 

@@ -101,11 +101,8 @@ test("守備位置メニューはviewport固定クラスとcache busterを持つ
 });
 
 test("守備位置メニューの最終leftはviewport内にclampされる", () => {
-  const start = script.indexOf("function getViewportClampedMenuLeft");
-  assert.notEqual(start, -1);
-  const end = script.indexOf("\n}\n", start) + 3;
   const context = vm.createContext({});
-  vm.runInContext(`${script.slice(start, end)}; this.clamp = getViewportClampedMenuLeft;`, context);
+  vm.runInContext(`${getFunctionSource("getViewportClampedMenuLeft")}; this.clamp = getViewportClampedMenuLeft;`, context);
   assert.equal(context.clamp(-40, 218, 390, 8), 8);
   assert.equal(context.clamp(380, 218, 390, 8), 164);
   assert.equal(context.clamp(-40, 218, 430, 8), 8);
@@ -124,10 +121,8 @@ test("PC narrow viewportでも守備位置メニューをportal/fixed経路でvi
   assert.match(script, /window\.visualViewport\?\.addEventListener\("scroll", repositionOpenPositionMenu/);
   assert.match(script, /mountPositionMenuPortal\(menu\);[\s\S]*menu\.classList\.add\("is-viewport-positioned"\)/);
   assert.doesNotMatch(script, /if \(!isMobile\) \{[\s\S]*restorePositionMenuHost\(menu\);[\s\S]*return;/);
-  const start = script.indexOf("function getViewportClampedMenuLeft");
-  const end = script.indexOf("\n}\n", start) + 3;
   const context = vm.createContext({});
-  vm.runInContext(`${script.slice(start, end)}; this.clamp = getViewportClampedMenuLeft;`, context);
+  vm.runInContext(`${getFunctionSource("getViewportClampedMenuLeft")}; this.clamp = getViewportClampedMenuLeft;`, context);
   assert.equal(context.clamp(0, 218, 640, 8), 8);
   assert.equal(context.clamp(620, 218, 640, 8), 414);
 });

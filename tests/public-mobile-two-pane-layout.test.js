@@ -43,7 +43,8 @@ test("mobile drag feedback and position menu stay within the viewport", () => {
   assert.match(script, /window\.addEventListener\("resize", repositionOpenPositionMenu/);
   assert.match(script, /window\.addEventListener\("scroll", repositionOpenPositionMenu/);
   assert.match(script, /function getViewportClampedMenuLeft\(/);
-  assert.match(script, /getViewportClampedMenuLeft\(buttonRect\.left, menuRect\.width, window\.innerWidth, viewportPadding\)/);
+  assert.match(script, /getViewportClampedMenuLeft\(buttonRect\.left, menuRect\.width, viewport\.width, viewportPadding\)/);
+  assert.match(script, /function getPositionMenuViewportSize\(\)/);
   assert.match(css, /\.mobile-drag-ghost \{/);
   assert.match(css, /\.position-menu\.is-mobile-position-menu \{/);
   assert.match(css, /\.position-menu\.is-portal-position-menu \{[\s\S]*position: fixed;[\s\S]*z-index: 1400/);

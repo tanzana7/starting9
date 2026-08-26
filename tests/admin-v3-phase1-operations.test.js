@@ -220,6 +220,11 @@ test("overviewは正規の表示用scheduleと次の処理を付加し、UIは�
   assert.match(gameProgress, /schedule\.publicationAt/);
 });
 
+test("published済みの次の処理は未処理stageではなく公開済みと表示する", () => {
+  assert.match(client, /workflowState.*published/);
+  assert.match(client, /公開済み/);
+});
+
 test("旧更新APIはV3 stateまたはV3 jobがある試合をlegacy ID経由でも拒否する", () => {
   assert.match(worker, /predictions\/score-predictions/);
   assert.match(worker, /game_automation_v3_state WHERE internal_game_id = \?1[\s\S]*game_jobs_v3 WHERE internal_game_id = \?1/);

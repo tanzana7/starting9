@@ -388,6 +388,8 @@ function nextV3Job(game) {
 function nextV3ActionText(game) {
   const schedule = game?.schedule || {};
   const diagnostics = game?.workflowDiagnostics || {};
+  const workflowState = String(game?.state?.state || game?.workflowState || game?.workflow_state || "").trim().toLowerCase();
+  if (workflowState === "published") return "公開済み";
   if (diagnostics.completedStateMismatches?.length) return "completed後の状態再同期 / 要確認";
   if (diagnostics.artifactBlockingReasons?.length) return "成果物未反映 / 正式V3操作が必要";
   if (schedule.isBlocked && schedule.nextActionLabel) return `${schedule.nextActionLabel} / 要確認`;

@@ -151,6 +151,37 @@ test("adapts completed lineup fetch without candidate as missing artifact", () =
   assert.equal(evaluated.stages.lineup_fetch.recoveryRecommended, true);
 });
 
+test("uses completed normal lineup overview data as a ready artifact without a lineup job", () => {
+  const { adapted, evaluated } = evaluateAdapter({
+    game: { internalGameId: GAME_ID, gameStatus: "scheduled", workflowState: "prediction_closed" },
+    diagnostics: {
+      lineupFetch: {
+        dueAt: NOW.toISOString(),
+        status: "completed",
+        reasonCode: "LINEUP_FETCH_COMPLETED"
+      }
+    }
+  });
+  assert.equal(adapted.evaluatorInput.artifacts.lineup_fetch.reason, "LINEUP_FETCH_COMPLETED");
+  assert.equal(evaluated.stages.lineup_fetch.healthStatus, V35_STAGE_HEALTH.COMPLETED_ARTIFACT_READY);
+  assert.equal(evaluated.stages.lineup_fetch.nextSafeAction, "no_op");
+});
+
+test("published downstream artifacts make lineup fetch ready without a recovery proposal", () => {
+  const { evaluated } = evaluateAdapter({
+    game: { internalGameId: GAME_ID, gameStatus: "scheduled", workflowState: "published", startAt: "2026-08-23T08:00:00.000Z" },
+    now: new Date("2026-08-23T10:00:00.000Z"),
+    artifacts: {
+      lineup_finalize: { available: true, valid: true },
+      scoring: { available: true, valid: true },
+      ranking_reflect: { available: true, valid: true },
+      publish: { available: true, valid: true }
+    }
+  });
+  assert.equal(evaluated.stages.lineup_fetch.healthStatus, V35_STAGE_HEALTH.COMPLETED_ARTIFACT_READY);
+  assert.equal(evaluated.stages.lineup_fetch.recoveryRecommended, false);
+});
+
 test("uses the normal admin probable-starter overview data as the formal V3.5 artifact", () => {
   const { adapted, evaluated } = evaluateAdapter({
     game: { internalGameId: GAME_ID, gameStatus: "scheduled", workflowState: "scheduled" },

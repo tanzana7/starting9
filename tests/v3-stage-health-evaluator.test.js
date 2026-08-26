@@ -194,6 +194,15 @@ test("lineup candidate/canonical health is represented before finalization", () 
   assert.equal(result.effectiveState, V35_EFFECTIVE_STATE.LINEUP_DATA_READY);
 });
 
+test("ready lineup artifact is successful even when the lineup job row is absent", () => {
+  const result = evaluate({
+    stageDefinitions: stage("lineup_fetch"),
+    artifacts: { lineup_fetch: artifact({ source: "normal_admin_overview" }) }
+  });
+  assert.equal(result.stages.lineup_fetch.healthStatus, V35_STAGE_HEALTH.COMPLETED_ARTIFACT_READY);
+  assert.equal(result.stages.lineup_fetch.nextSafeAction, "no_op");
+});
+
 test("external fetch disabled blocks a stage without planning recovery", () => {
   const result = evaluate({
     stageDefinitions: stage("roster_fetch", { externalFetchDisabled: true })

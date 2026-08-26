@@ -357,6 +357,38 @@ function buildStageDefinitions(source, diagnostics, artifacts, disabled, game, j
   return definitions;
 }
 
+function artifactReady(value) {
+  return Boolean(value?.available && value?.valid);
+}
+
+function lineupFetchCompleted(diagnostics) {
+  const lineup = objectOrEmpty(diagnostics.lineupFetch || diagnostics.lineup_fetch);
+  const status = String(first(lineup, "status", "jobStatus", "phaseStatus") || "").trim().toLowerCase();
+  const reason = String(first(lineup, "reason", "reasonCode", "completionCode") || "").trim().toUpperCase();
+  return status === "completed" && reason === "LINEUP_FETCH_COMPLETED";
+}
+
+function derivePublishedLineupFetchArtifact(game, diagnostics, artifacts) {
+  if (artifactReady(artifacts.lineup_fetch)) return null;
+  const persistedState = String(first(game, "workflowState", "workflow_state", "state") || "").trim().toLowerCase();
+  const downstreamReady = ["lineup_finalize", "scoring", "ranking_reflect", "publish"].some((stageName) => artifactReady(artifacts[stageName]));
+  if (!lineupFetchCompleted(diagnostics) && !(persistedState === "published" && downstreamReady)) return null;
+  return {
+    available: true,
+    valid: true,
+    fresh: true,
+    source: lineupFetchCompleted(diagnostics) ? "normal_admin_overview" : "derived_from_published_artifact",
+    capturedAt: null,
+    fingerprint: null,
+    verificationStatus: "verified",
+    internalGameId: first(game, "internalGameId", "internal_game_id"),
+    rowCount: null,
+    reason: "LINEUP_FETCH_COMPLETED",
+    blockingReason: null,
+    nextSafeAction: "no_op"
+  };
+}
+
 export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostics = {}, now = new Date(), externalFlags = {} } = {}) {
   const normalizedGame = objectOrEmpty(game);
   const normalizedDiagnostics = objectOrEmpty(diagnostics);
@@ -382,6 +414,16 @@ export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostic
         warnings.push(warning("ROSTER_SNAPSHOT_MISSING", "Formal roster snapshot is missing.", stageName));
       }
     }
+  }
+  const derivedLineupFetchArtifact = derivePublishedLineupFetchArtifact(normalizedGame, normalizedDiagnostics, evaluatorArtifacts);
+  if (derivedLineupFetchArtifact) {
+    evaluatorArtifacts.lineup_fetch = derivedLineupFetchArtifact;
+    artifactSummary.lineup_fetch = {
+      available: true,
+      valid: true,
+      source: derivedLineupFetchArtifact.source,
+      reason: derivedLineupFetchArtifact.reason
+    };
   }
   const externalDisabled = externalFetchDisabled({ externalFlags }, normalizedDiagnostics, normalizedGame);
   const cancellation = cancellationInfo(normalizedGame, { cancellationInfo: first(normalizedGame, "cancellationInfo", "cancellation_info") });

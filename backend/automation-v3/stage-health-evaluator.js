@@ -315,6 +315,12 @@ export function evaluateV35Stage({
     nextSafeAction: "wait_for_prerequisite",
     attentionLevel: "INFO"
   };
+  if (normalizedDefinition.stageName === "lineup_fetch" && artifactHealth.valid && artifactHealth.available) return {
+    ...base,
+    healthStatus: V35_STAGE_HEALTH.COMPLETED_ARTIFACT_READY,
+    nextSafeAction: "no_op",
+    attentionLevel: "INFO"
+  };
   if (!job) return {
     ...base,
     ...recoveryResult(V35_STAGE_HEALTH.MISSING_JOB, "MISSING_DUE_JOB"),

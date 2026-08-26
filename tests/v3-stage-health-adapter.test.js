@@ -91,6 +91,45 @@ test("keeps public official-live usability separate from a missing formal roster
   assert.ok(adapted.warnings.some(({ code }) => code === "PUBLIC_ROSTER_WITHOUT_FORMAL_SNAPSHOT"));
 });
 
+test("treats roster no-changes with a captured snapshot as a ready artifact", () => {
+  const { adapted, evaluated } = evaluateAdapter({
+    game: { internalGameId: GAME_ID, gameStatus: "scheduled", workflowState: "published" },
+    jobs: [job("roster_fetch", "completed")],
+    diagnostics: {
+      roster: {
+        dueAt: NOW.toISOString(),
+        noticeState: "ROSTER_NO_CHANGES",
+        rosterSnapshotExists: true,
+        rosterSnapshotStatus: "captured",
+        nextSafeAction: "roster_fetch"
+      }
+    }
+  });
+  const roster = adapted.evaluatorInput.artifacts.roster_fetch;
+  assert.equal(roster.available, true);
+  assert.equal(roster.valid, true);
+  assert.equal(roster.reason, "ROSTER_NO_CHANGES");
+  assert.equal(roster.nextSafeAction, "no_op");
+  assert.equal(evaluated.stages.roster_fetch.healthStatus, V35_STAGE_HEALTH.COMPLETED_ARTIFACT_READY);
+  assert.equal(evaluated.stages.roster_fetch.recoveryRecommended, false);
+});
+
+test("treats a captured roster snapshot as ready even without a notice state", () => {
+  const { evaluated } = evaluateAdapter({
+    game: { internalGameId: GAME_ID, gameStatus: "scheduled", workflowState: "published" },
+    jobs: [job("roster_fetch", "completed")],
+    diagnostics: {
+      roster: {
+        dueAt: NOW.toISOString(),
+        rosterSnapshotStatus: "captured",
+        rosterSnapshotExists: true
+      }
+    }
+  });
+  assert.equal(evaluated.stages.roster_fetch.healthStatus, V35_STAGE_HEALTH.COMPLETED_ARTIFACT_READY);
+  assert.equal(evaluated.stages.roster_fetch.nextSafeAction, "no_op");
+});
+
 test("adapts completed lineup fetch without candidate as missing artifact", () => {
   const { evaluated } = evaluateAdapter({
     game: { internalGameId: GAME_ID, gameStatus: "scheduled", workflowState: "prediction_closed" },

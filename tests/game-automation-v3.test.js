@@ -200,6 +200,14 @@ test("V3全job typeはstate gateから各plannerへ到達できる", () => {
   assert.deepEqual(v3.getV3DuePlans(target, "ranked", "2026-08-04T09:11:00.000Z").map((plan) => plan.jobType), ["publish"]);
 });
 
+test("formal plannerはstate表記を正規化してdue後のprediction_closeを正式job候補にする", () => {
+  const target = { ...game(), startAt: "2026-08-04T09:00:00.000Z" };
+  assert.deepEqual(
+    v3.getV3FormalDuePlans(target, "  SCHEDULED ", "2026-08-04T08:00:00.000Z").map((plan) => plan.jobType),
+    ["prediction_close"]
+  );
+});
+
 test("V3 job slot is unique and claim is atomic", async () => {
   const statements = [];
   const db = {

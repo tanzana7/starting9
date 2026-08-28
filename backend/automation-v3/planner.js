@@ -283,6 +283,17 @@ export const V3_JOB_STATE_GATES = Object.freeze({
   publish: ["ranked"]
 });
 
+function normalizePlanningState(state, fallback = V3_STATE.SCHEDULED) {
+  const normalized = String(state || "").trim().toLowerCase();
+  return normalized || fallback;
+}
+
+// The formal planner uses the same due schedule as the V3.5 diagnostic, but
+// remains the only layer allowed to create runtime jobs.
+export function getV3FormalDuePlans(game, state, now = new Date()) {
+  return getV3DuePlans(game, normalizePlanningState(state), now);
+}
+
 export function getV3DuePlans(game, state, now = new Date()) {
   if (!isV3GameEligible(game)) return [];
   const schedule = deriveV3Schedule(game);

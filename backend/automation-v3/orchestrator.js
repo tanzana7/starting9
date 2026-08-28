@@ -12,7 +12,7 @@ import {
 import { claimV3Job, createV3Job, listDueV3Jobs } from "./repository.js";
 import {
   getV3DuePlan,
-  getV3DuePlans,
+  getV3FormalDuePlans,
   getV3IdentityResolvePlans,
   planV3RosterJobs
 } from "./planner.js";
@@ -309,9 +309,27 @@ export async function planV3MainJobs(db, games = [], now = new Date()) {
     if (!isV3GameEligible(game)) continue;
     try {
       const stateRow = await readV3StateForPlanning(db, game.internalGameId);
-      const state = String(stateRow?.state || game.workflowState || "scheduled");
-      const plans = getV3DuePlans(game, state, now);
+      const state = String(stateRow?.state || game.workflowState || "scheduled").trim().toLowerCase() || "scheduled";
+      const workflowArtifacts = await readV3WorkflowArtifactHealth(db, game.internalGameId, state);
+      if (state === "published" || workflowArtifacts.publicationReady) continue;
+      const plans = getV3FormalDuePlans(game, state, now);
       for (const plan of plans) {
+        const artifactReady = plan.jobType === V3_JOB_TYPE.LINEUP_FETCH
+          ? workflowArtifacts.available && workflowArtifacts.lineup.ready === true
+          : plan.jobType === V3_JOB_TYPE.LINEUP_FINALIZE
+            ? workflowArtifacts.available && workflowArtifacts.lineup.finalizedValid === true
+            : plan.jobType === V3_JOB_TYPE.SCORE
+              ? workflowArtifacts.scoreReady
+              : plan.jobType === V3_JOB_TYPE.RANKING_REBUILD
+                ? workflowArtifacts.rankingReflected
+                : false;
+        const downstreamArtifactReady = plan.jobType === V3_JOB_TYPE.PREDICTION_CLOSE
+          && workflowArtifacts.available
+          && (workflowArtifacts.lineup.ready === true
+            || workflowArtifacts.scoreReady
+            || workflowArtifacts.rankingReflected
+            || workflowArtifacts.publicationReady);
+        if (artifactReady || downstreamArtifactReady) continue;
         let effectivePlan = plan;
         let recoveryOfJobId = null;
         let recoveryKind = null;

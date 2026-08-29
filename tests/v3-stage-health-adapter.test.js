@@ -182,6 +182,45 @@ test("published downstream artifacts make lineup fetch ready without a recovery 
   assert.equal(evaluated.stages.lineup_fetch.recoveryRecommended, false);
 });
 
+test("after the lineup window, an existing finalize job supersedes lineup fetch", () => {
+  const { adapted, evaluated } = evaluateAdapter({
+    game: {
+      internalGameId: GAME_ID,
+      gameDate: "2026-08-29",
+      startAt: "2026-08-29T05:00:00.000Z",
+      gameStatus: "scheduled",
+      workflowState: "prediction_closed"
+    },
+    now: new Date("2026-08-29T05:10:00.000Z"),
+    jobs: [job("lineup_finalize", "retry_wait", {
+      scheduled_slot_at: "2026-08-29T05:02:00.000Z",
+      next_retry_at: "2026-08-29T05:20:00.000Z"
+    })]
+  });
+  const lineupFetch = evaluated.stages.lineup_fetch;
+  assert.equal(adapted.evaluatorInput.stageDefinitions.lineup_fetch.prerequisiteReason, "LINEUP_FETCH_SUPERSEDED_BY_LINEUP_FINALIZE");
+  assert.equal(lineupFetch.healthStatus, V35_STAGE_HEALTH.BLOCKED_BY_PREREQUISITE);
+  assert.equal(lineupFetch.recoveryRecommended, false);
+  assert.equal(lineupFetch.nextSafeAction, "wait_for_prerequisite");
+});
+
+test("after the lineup window, missing finalize is reported without lineup fetch recovery", () => {
+  const { evaluated } = evaluateAdapter({
+    game: {
+      internalGameId: GAME_ID,
+      gameDate: "2026-08-29",
+      startAt: "2026-08-29T05:00:00.000Z",
+      gameStatus: "scheduled",
+      workflowState: "prediction_closed"
+    },
+    now: new Date("2026-08-29T05:10:00.000Z"),
+    jobs: []
+  });
+  assert.equal(evaluated.stages.lineup_fetch.healthStatus, V35_STAGE_HEALTH.BLOCKED_BY_PREREQUISITE);
+  assert.equal(evaluated.stages.lineup_fetch.blockingReason, "LINEUP_FETCH_WINDOW_CLOSED_NO_FINALIZE");
+  assert.equal(evaluated.stages.lineup_fetch.recoveryRecommended, false);
+});
+
 test("uses the normal admin probable-starter overview data as the formal V3.5 artifact", () => {
   const { adapted, evaluated } = evaluateAdapter({
     game: { internalGameId: GAME_ID, gameStatus: "scheduled", workflowState: "scheduled" },

@@ -106,16 +106,20 @@ test("WorkerはPagesとローカルだけをCORS許可し、診断コードを�
 test("WorkerのlineupルートはCORS付きの正規化済みスタメンを返す", async () => {
   const { default: worker } = await loadWorkerHelpers();
   const originalFetch = globalThis.fetch;
+  const requestedUrls = [];
   const rows = [
     [1, "遊", "水野"], [2, "一", "清宮幸"], [3, "DH", "レイエス"],
     [4, "右", "万波"], [5, "左", "郡司"], [6, "三", "野村"],
     [7, "中", "五十幡"], [8, "二", "山縣"], [9, "捕", "清水優"]
   ];
 
-  globalThis.fetch = async () => new Response(
-    `<div id="player-order"><h4>最新のオーダー</h4><h5>北海道日本ハムファイターズ</h5><table>${createOrderRows(rows)}</table></div>`,
-    { status: 200 }
-  );
+  globalThis.fetch = async (request) => {
+    requestedUrls.push(String(request.url || request));
+    return new Response(
+      `<div id="player-order"><h4>最新のオーダー</h4><h5>北海道日本ハムファイターズ</h5><table>${createOrderRows(rows)}</table></div>`,
+      { status: 200 }
+    );
+  };
 
   try {
     const response = await worker.fetch(
@@ -130,6 +134,7 @@ test("WorkerのlineupルートはCORS付きの正規化済みスタメンを返�
     assert.equal(response.headers.get("Access-Control-Allow-Origin"), "https://starting9.pages.dev");
     assert.equal(body.lineup.length, 9);
     assert.equal(body.lineup[0].playerName, "水野達稀");
+    assert.deepEqual(requestedUrls, ["https://npb.jp/scores/2026/0720/b-f-18/"]);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -163,12 +168,48 @@ test("保存コードが404の場合、公式同日スコアインデックス�
     assert.equal(body.lineup.length, 9);
     assert.equal(body.diagnostics.attemptedUrl, "https://npb.jp/scores/2026/0829/f-m-21/");
     assert.equal(body.diagnostics.finalSelectedUrl, resolvedUrl);
+    assert.equal(body.diagnostics.sourceIndexUrl, indexUrl);
     assert.equal(body.diagnostics.originalStoredGameCode, "f-m-21");
     assert.equal(body.diagnostics.resolvedScorePageCode, "f-m-20");
     assert.equal(body.diagnostics.originStatus, 404);
     assert.equal(body.diagnostics.fetchWorkerStatus, 200);
     assert.equal(body.diagnostics.fallbackUsed, true);
     assert.equal(body.diagnostics.fallbackCandidateCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("home/awayが逆順でも公式ページの表示順でfallback候補を照合する", async () => {
+  const { default: worker } = await loadWorkerHelpers();
+  const originalFetch = globalThis.fetch;
+  const indexUrl = "https://npb.jp/scores/2026/0829/";
+  const resolvedUrl = "https://npb.jp/scores/2026/0829/m-f-20/";
+  globalThis.fetch = async (request) => {
+    const url = String(request.url || request);
+    if (url.endsWith("/m-f-21/")) return new Response("", { status: 404 });
+    if (url === indexUrl) return new Response(createScoreIndexHtml([
+      { code: "m-f-20", homeTeam: "千葉ロッテマリーンズ", awayTeam: "北海道日本ハムファイターズ" }
+    ]), { status: 200 });
+    if (url === resolvedUrl) return new Response(createOfficialScorePageHtml({
+      homeTeam: "千葉ロッテマリーンズ",
+      awayTeam: "北海道日本ハムファイターズ"
+    }), { status: 200 });
+    return new Response("", { status: 404 });
+  };
+
+  try {
+    const response = await worker.fetch(new Request(
+      "https://worker.example/?mode=lineup&date=2026-08-29&gameCode=m-f-21&homeTeam=marines&awayTeam=fighters&startAt=2026-08-29T05:00:00.000Z&venue=%E3%82%A8%E3%82%B9%E3%82%B3%E3%83%B3%EF%BC%A6",
+      { headers: { Origin: "https://starting9.pages.dev" } }
+    ), { NPB_ALLOWED_ORIGINS: "https://starting9.pages.dev" });
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.gameCode, "m-f-20");
+    assert.equal(body.sourceUrl, resolvedUrl);
+    assert.equal(body.diagnostics.sourceIndexUrl, indexUrl);
+    assert.equal(body.diagnostics.fallbackUsed, true);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -229,6 +270,8 @@ test("公式候補が複数一致する場合は曖昧なまま採用せず、�
 
     assert.equal(response.status, 502);
     assert.equal(body.code, "NPB_SCORE_PAGE_AMBIGUOUS");
+    assert.equal(body.diagnostics.errorCode, "NPB_SCORE_PAGE_AMBIGUOUS");
+    assert.equal(body.diagnostics.sourceIndexUrl, indexUrl);
     assert.equal(body.diagnostics.fallbackUsed, false);
     assert.equal(body.diagnostics.fallbackCandidateCount, 2);
   } finally {

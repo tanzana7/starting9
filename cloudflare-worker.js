@@ -312,8 +312,7 @@ function extractScheduleGames(html, date) {
     const dateMatch = /(\d{1,2})\s*[/月]\s*(\d{1,2})/.exec(text);
     if (dateMatch) activeDateMatches = Number(dateMatch[1]) === targetMonth && Number(dateMatch[2]) === targetDay;
     if (!activeDateMatches) continue;
-    const names = STARTER_TEAM_ALIASES.filter((team) => team.aliases.some((alias) => text.includes(alias))).map((team) => team.key);
-    const unique = [...new Set(names)];
+    const unique = extractNpbTeamsFromText(text);
     const time = /\b([01]\d|2[0-3]):[0-5]\d\b/.exec(text)?.[0] || "";
     if (unique.length !== 2 || !time) continue;
     const scoreCode = /\/scores\/\d{4}\/\d{4}\/([a-z0-9]+-[a-z0-9]+-\d+)\//i.exec(row)?.[1] || "";
@@ -337,9 +336,7 @@ function extractOfficialScoreStatuses(html, date) {
   return blocks.map((block) => {
     const gameCode = /href=["']\/scores\/\d{4}\/\d{4}\/([a-z0-9]+-[a-z0-9]+-\d+)\//i.exec(block)?.[1] || "";
     const teamNames = [...block.matchAll(/\b(?:alt|title)=["']([^"']+)["']/giu)].map((match) => match[1]);
-    const teams = STARTER_TEAM_ALIASES
-      .filter((team) => teamNames.some((name) => team.aliases.some((alias) => name.includes(alias))))
-      .map((team) => team.key);
+    const teams = extractNpbTeamsInDisplayOrder(teamNames);
     return {
       gameCode,
       homeTeam: teams[0] || "",
@@ -429,6 +426,7 @@ function createLineupResolutionDiagnostics(source, upstream, overrides = {}) {
   return {
     attemptedUrl: source?.url || null,
     finalSelectedUrl: overrides.finalSelectedUrl || (upstream?.ok ? source?.url || null : null),
+    sourceIndexUrl: overrides.sourceIndexUrl || null,
     originalStoredGameCode: source?.originalStoredGameCode || source?.gameCode || null,
     resolvedScorePageCode: overrides.resolvedScorePageCode || (upstream?.ok ? source?.gameCode || null : null),
     originStatus: Number(overrides.originStatus || upstream?.httpStatus || 0) || null,
@@ -451,6 +449,28 @@ function normalizeNpbTeam(value) {
     const normalizedAlias = String(alias).replace(/[\s\u3000]/g, "").replace(/[・.]/g, "").toLowerCase();
     return normalizedAlias === raw || raw.includes(normalizedAlias) || normalizedAlias.includes(raw);
   }))?.key || "";
+}
+
+function extractNpbTeamsInDisplayOrder(values) {
+  const teams = [];
+  for (const value of Array.isArray(values) ? values : [values]) {
+    const team = normalizeNpbTeam(value);
+    if (team && !teams.includes(team)) teams.push(team);
+  }
+  return teams.slice(0, 2);
+}
+
+function extractNpbTeamsFromText(value) {
+  const text = String(value || "");
+  return STARTER_TEAM_ALIASES
+    .map((team) => ({
+      key: team.key,
+      index: Math.min(...team.aliases.map((alias) => text.indexOf(alias)).filter((index) => index >= 0))
+    }))
+    .filter((team) => Number.isFinite(team.index))
+    .sort((left, right) => left.index - right.index)
+    .map((team) => team.key)
+    .slice(0, 2);
 }
 
 function normalizeNpbVenue(value) {
@@ -477,9 +497,7 @@ function extractOfficialScorePageIdentity(html, date) {
   const heading = /<h3\b[^>]*>([\s\S]*?)<\/h3>/i.exec(String(html || ""));
   const gameInfo = /◇開始\s*([01]\d|2[0-3]):([0-5]\d)/i.exec(decodeHtml(String(html || "")));
   const teamText = decodeHtml(String(heading?.[1] || "").replace(/<[^>]+>/g, " "));
-  const teams = STARTER_TEAM_ALIASES
-    .filter((team) => team.aliases.some((alias) => teamText.includes(alias)))
-    .map((team) => team.key);
+  const teams = extractNpbTeamsFromText(teamText);
   return {
     date: pageDate,
     homeTeam: teams[0] || "",
@@ -520,6 +538,7 @@ async function resolveOfficialScorePage(source, initialUpstream = null) {
         originStatus: initialOriginStatus,
         fetchWorkerStatus: initialWorkerStatus,
         fallbackUsed: false,
+        sourceIndexUrl: indexUrl,
         fallbackRejectReasons: ["SCORE_INDEX_FETCH_FAILED"]
       })
     };
@@ -561,7 +580,8 @@ async function resolveOfficialScorePage(source, initialUpstream = null) {
     fallbackCandidateCount: candidates.length,
     fallbackRejectReasons: rejectReasons,
     originStatus: initialOriginStatus,
-    fetchWorkerStatus: initialWorkerStatus
+    fetchWorkerStatus: initialWorkerStatus,
+    sourceIndexUrl: indexUrl
   };
   if (exactMatches.length === 1) {
     return {

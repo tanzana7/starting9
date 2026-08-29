@@ -2383,8 +2383,10 @@ function sanitizeWorkflowExecutionDiagnostics(details = {}) {
     result.lineupNpbResolution = {
       attemptedUrl: typeof lineupResolution.attemptedUrl === "string" ? lineupResolution.attemptedUrl.slice(0, 240) : null,
       finalSelectedUrl: typeof lineupResolution.finalSelectedUrl === "string" ? lineupResolution.finalSelectedUrl.slice(0, 240) : null,
+      sourceIndexUrl: typeof lineupResolution.sourceIndexUrl === "string" ? lineupResolution.sourceIndexUrl.slice(0, 240) : null,
       originalStoredGameCode: typeof lineupResolution.originalStoredGameCode === "string" ? lineupResolution.originalStoredGameCode.slice(0, 80) : null,
       resolvedScorePageCode: typeof lineupResolution.resolvedScorePageCode === "string" ? lineupResolution.resolvedScorePageCode.slice(0, 80) : null,
+      errorCode: typeof lineupResolution.errorCode === "string" ? lineupResolution.errorCode.slice(0, 80) : null,
       originStatus: Number.isFinite(Number(lineupResolution.originStatus)) ? Number(lineupResolution.originStatus) : null,
       fetchWorkerStatus: Number.isFinite(Number(lineupResolution.fetchWorkerStatus)) ? Number(lineupResolution.fetchWorkerStatus) : null,
       fallbackUsed: lineupResolution.fallbackUsed === true,
@@ -2437,8 +2439,10 @@ function getWorkflowExecutionDiagnostics({ job = null, target = null, result = n
       diagnostics.lineupNpbResolution = lineupResolution;
       diagnostics.lineupAttemptedUrl = lineupResolution.attemptedUrl || "";
       diagnostics.lineupFinalSelectedUrl = lineupResolution.finalSelectedUrl || "";
+      diagnostics.lineupSourceIndexUrl = lineupResolution.sourceIndexUrl || "";
       diagnostics.lineupOriginalStoredGameCode = lineupResolution.originalStoredGameCode || "";
       diagnostics.lineupResolvedScorePageCode = lineupResolution.resolvedScorePageCode || "";
+      diagnostics.lineupResolutionErrorCode = lineupResolution.errorCode || "";
       diagnostics.lineupOriginStatus = lineupResolution.originStatus;
       diagnostics.lineupFetchWorkerStatus = lineupResolution.fetchWorkerStatus;
       diagnostics.lineupFallbackUsed = lineupResolution.fallbackUsed === true;
@@ -10901,12 +10905,13 @@ function createPregameError(code, message, details = {}) {
 function sanitizeNpbLineupDiagnostics(details) {
   if (!details || typeof details !== "object" || Array.isArray(details)) return null;
   const result = {};
-  const urlKeys = ["attemptedUrl", "finalSelectedUrl"];
+  const urlKeys = ["attemptedUrl", "finalSelectedUrl", "sourceIndexUrl"];
   for (const key of urlKeys) {
     if (typeof details[key] === "string" && /^https:\/\/npb\.jp\//i.test(details[key])) result[key] = details[key].slice(0, 240);
   }
   if (typeof details.originalStoredGameCode === "string" && details.originalStoredGameCode) result.originalStoredGameCode = details.originalStoredGameCode.slice(0, 80);
   if (typeof details.resolvedScorePageCode === "string" && details.resolvedScorePageCode) result.resolvedScorePageCode = details.resolvedScorePageCode.slice(0, 80);
+  if (typeof details.errorCode === "string" && details.errorCode) result.errorCode = details.errorCode.slice(0, 80);
   for (const key of ["originStatus", "fetchWorkerStatus", "fallbackCandidateCount"]) {
     if (Number.isFinite(Number(details[key])) && Number(details[key]) >= 0) result[key] = Number(details[key]);
   }

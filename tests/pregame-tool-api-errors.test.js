@@ -145,7 +145,9 @@ test("notice・roster・lineupは同じService Binding経由で取得し、上�
           sourceUrl: "https://npb.jp/scores/2026/0731/fighters-marines-1800/",
           diagnostics: {
             attemptedUrl: "https://npb.jp/scores/2026/0731/fighters-marines-1800/",
+            sourceIndexUrl: "https://npb.jp/scores/2026/0731/",
             originalStoredGameCode: "fighters-marines-1800",
+            errorCode: "NPB_HTTP_ERROR",
             originStatus: 404,
             fetchWorkerStatus: 502,
             fallbackUsed: false,
@@ -161,6 +163,8 @@ test("notice・roster・lineupは同じService Binding経由で取得し、上�
     (error) => error?.externalStatus === 404
       && error?.upstreamUrl === "https://npb.jp/scores/2026/0731/fighters-marines-1800/"
       && error?.npbDiagnostics?.originStatus === 404
+      && error?.npbDiagnostics?.sourceIndexUrl === "https://npb.jp/scores/2026/0731/"
+      && error?.npbDiagnostics?.errorCode === "NPB_HTTP_ERROR"
       && error?.npbDiagnostics?.fallbackUsed === false
   );
   const routeError = normalizePregameToolError("run-notice", { code: "NPB_HTTP_ERROR", upstreamStatus: 404 });

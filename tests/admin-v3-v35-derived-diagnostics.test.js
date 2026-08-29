@@ -31,6 +31,12 @@ test("V3.5 probable-starter artifact receives the canonical admin overview row",
   assert.match(worker, /probableStarter:\s*serializedProbableStarter/);
 });
 
+test("admin-v3 job projection preserves internal game identity for V3.5 job scoping", () => {
+  const worker = read("auth-worker.js");
+  const overview = worker.slice(worker.indexOf("async function handleAdminV3Overview"), worker.indexOf("async function handleAdminV3IdentityResolve"));
+  assert.match(overview, /SELECT id, internal_game_id, job_type, status, scheduled_at/);
+});
+
 test("admin-v3 renders V3.5 diagnostics as read-only stage health", () => {
   const renderer = read("frontend/admin-v3/render-game-progress.js");
   assert.match(renderer, /renderV35DerivedDiagnostics/);

@@ -4492,7 +4492,7 @@ async function handleAdminV3Overview(request, env, cors) {
     }
     try {
       jobs = await env.AUTH_DB.prepare(
-        `SELECT id, job_type, status, scheduled_at, scheduled_slot_at, attempt_count,
+        `SELECT id, internal_game_id, job_type, status, scheduled_at, scheduled_slot_at, attempt_count,
                 max_attempts, next_retry_at, claimed_at, lease_expires_at, completed_at,
                 failure_code, failure_message, updated_at
            FROM game_jobs_v3 WHERE internal_game_id = ?1 ORDER BY scheduled_at, id`

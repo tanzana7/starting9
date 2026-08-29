@@ -144,6 +144,7 @@ test("V3はgamesが空でもgame_identifiersのNPBコードをlineup対象へ補
     assert.equal(games[0].npbGameCode, "f-l-18");
     assert.equal(games[0].npbGameUrl, "https://npb.jp/scores/2026/0811/f-l-18/");
     assert.equal(games[0].npbIdentityStatus, "resolved");
+    assert.equal(games[0].npbIdentityState, "resolved");
     assert.equal(games[0].npbIdentitySource, "game_identifiers");
     assert.equal(v3.getV3DuePlan(games[0], "prediction_closed", "2026-08-11T04:10:00.000Z").jobType, "lineup_fetch");
   } finally {

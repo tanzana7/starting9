@@ -16,6 +16,8 @@ const STAGES = Object.freeze([
   "publish"
 ]);
 
+const LINEUP_FINALIZE_SUPERSEDING_STATUSES = new Set(["pending", "claimed", "retry_wait", "completed"]);
+
 const JOB_TYPE_TO_STAGE = Object.freeze({
   probable_starter_fetch: "probable_starter",
   roster_fetch: "roster_fetch",
@@ -57,6 +59,13 @@ function first(object, ...keys) {
 
 function objectOrEmpty(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function asDate(value) {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (value === null || value === undefined || value === "") return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function normalizeDate(value) {
@@ -330,6 +339,20 @@ function stageSource(source, diagnostics, stageName, derivedStageSchedule) {
 
 function buildStageDefinitions(source, diagnostics, artifacts, disabled, game, jobs, derivedStageSchedule) {
   const definitions = {};
+  const currentTime = asDate(source.currentTime || source.now) || new Date();
+  const finalizeDueAt = asDate(derivedStageSchedule?.stages?.lineup_finalize?.dueAt);
+  const internalGameId = first(game, "internalGameId", "internal_game_id");
+  const finalizeJobExists = Array.isArray(jobs)
+    && Boolean(internalGameId)
+    && jobs.some((job) => {
+      const jobGameId = first(job, "internalGameId", "internal_game_id");
+      const status = String(first(job, "status", "jobStatus") || "").trim().toLowerCase();
+      return normalizeStage(first(job, "stageName", "stage", "jobType", "job_type")) === "lineup_finalize"
+        && String(jobGameId || "") === String(internalGameId)
+        && LINEUP_FINALIZE_SUPERSEDING_STATUSES.has(status);
+    });
+  const lineupFetchWindowClosed = Boolean(finalizeDueAt && currentTime >= finalizeDueAt);
+  const lineupArtifactReady = Boolean(artifacts.lineup_fetch?.available && artifacts.lineup_fetch?.valid);
   for (const stageName of STAGES) {
     const { direct, dueAt, dueAtSource, dueSlots } = stageSource({ ...source, jobs }, diagnostics, stageName, derivedStageSchedule);
     const blockingReason = first(direct, "blockingReason", "blocking_reason", "blockingReasonCode", "blocking_reason_code")
@@ -349,6 +372,14 @@ function buildStageDefinitions(source, diagnostics, artifacts, disabled, game, j
       selectedSlot: first(direct, "selectedSlot", "selected_slot") || dueAt,
       ...(lineupGate ? { prerequisiteMet: false, prerequisiteReason: blockingReason || "PREDICTION_CLOSE_STATE_GATE" } : {}),
       ...(requiredArtifactMissing ? { prerequisiteMet: false, prerequisiteReason: `${artifactRequired.toUpperCase()}_ARTIFACT_MISSING` } : {}),
+      ...(stageName === "lineup_fetch" && lineupFetchWindowClosed && !lineupArtifactReady
+        ? {
+            prerequisiteMet: false,
+            prerequisiteReason: finalizeJobExists
+              ? "LINEUP_FETCH_SUPERSEDED_BY_LINEUP_FINALIZE"
+              : "LINEUP_FETCH_WINDOW_CLOSED_NO_FINALIZE"
+          }
+        : {}),
       externalFetchDisabled: disabled && EXTERNAL_FETCH_STAGES.has(stageName),
       manualAttention: Boolean(first(direct, "manualAttention", "manual_attention") || diagnostics.manualAttention || diagnostics.manual_attention),
       rankingExcluded: Boolean(game.rankingExcluded || game.ranking_excluded)
@@ -436,7 +467,7 @@ export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostic
   if (evaluatorArtifacts.roster_fetch?.publicUsable && !evaluatorArtifacts.roster_fetch?.canonicalSnapshotAvailable) {
     warnings.push(warning("PUBLIC_ROSTER_WITHOUT_FORMAL_SNAPSHOT", "Public roster data is usable, but the formal canonical snapshot is missing.", "roster_fetch"));
   }
-  const stageDefinitions = buildStageDefinitions({ artifacts, externalFlags }, normalizedDiagnostics, evaluatorArtifacts, externalDisabled, normalizedGame, normalizedJobs, derivedStageSchedule);
+  const stageDefinitions = buildStageDefinitions({ artifacts, externalFlags, currentTime: now }, normalizedDiagnostics, evaluatorArtifacts, externalDisabled, normalizedGame, normalizedJobs, derivedStageSchedule);
   const scheduleRegistered = Boolean(
     first(normalizedGame, "scheduleRegistered", "schedule_registered")
     ?? normalizedGame.gameDate

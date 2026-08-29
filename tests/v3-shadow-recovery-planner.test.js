@@ -100,6 +100,22 @@ test("completed lineup without artifact produces a lineup recovery intent", () =
   assert.equal(plan.recommendations[0].reason, "COMPLETED_ARTIFACT_MISSING");
 });
 
+test("superseded lineup fetch produces no recovery recommendation while finalize retries", () => {
+  const plan = planShadowRecovery(input({
+    lineup_fetch: stage("BLOCKED_BY_PREREQUISITE", {
+      blockingReason: "LINEUP_FETCH_SUPERSEDED_BY_LINEUP_FINALIZE",
+      nextSafeAction: "wait_for_prerequisite",
+      dueAt: NOW
+    }),
+    lineup_finalize: stage("RETRY_WAIT_NOT_DUE", {
+      nextSafeAction: "wait_until_retry"
+    })
+  }));
+  assert.equal(plan.recommendations.some(({ stage: stageName }) => stageName === "lineup_fetch"), false);
+  assert.equal(plan.blockedRecommendations.some(({ stage: stageName }) => stageName === "lineup_fetch"), false);
+  assert.ok(plan.noActionReasons.includes("lineup_fetch:window_closed"));
+});
+
 test("ready probable-starter artifact does not produce a recovery intent", () => {
   const plan = planShadowRecovery(input({
     probable_starter: stage("COMPLETED_ARTIFACT_READY", {

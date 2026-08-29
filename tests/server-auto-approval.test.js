@@ -47,7 +47,7 @@ test("設定はD1に保存され、管理者限定のGET/PUT APIでのみ更新�
 });
 
 test("Cronはブラウザに依存せず、最終スタメンだけ同じ承認コアを通す", () => {
-  assert.match(worker, /ctx\.waitUntil\(runScheduledGameAutomationV3\(env, scheduledAt\)\)/);
+  assert.match(worker, /ctx\.waitUntil\(runScheduledGameAutomationV3\(env, scheduledAt(?:, \{ runId \})?\)\)/);
   assert.match(worker, /captureOfficialLineup\(env, target\.gameId, now/);
   assert.match(worker, /scoringDueAt: new Date\(identity\.startAt\.getTime\(\) \+ 2 \* 60 \* 1000\)/);
   assert.match(worker, /approveActualLineupForAutoScoring\(env, gameId, actual\.lineup, detectedAt/);

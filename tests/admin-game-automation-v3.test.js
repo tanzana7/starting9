@@ -37,6 +37,6 @@ test("V3管理画面はNPB自動解決jobの予定・結果・retryを表示す�
 test("V3の通常Cronはfeature flag有効時だけ実行し、旧Cronを自動起動しない", () => {
   const scheduled = worker.slice(worker.indexOf("async scheduled(event, env, ctx)"), worker.indexOf("export async function runScheduledGameAutomation"));
   assert.match(scheduled, /isGameAutomationV3Enabled\(env\)/);
-  assert.match(scheduled, /runScheduledGameAutomationV3\(env, scheduledAt\)/);
+  assert.match(scheduled, /runScheduledGameAutomationV3\(env, scheduledAt(?:, \{ runId \})?\)/);
   assert.doesNotMatch(scheduled, /runScheduledGameAutomation\(env, scheduledAt\)/);
 });

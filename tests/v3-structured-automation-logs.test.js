@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+const executor = fs.readFileSync(path.join(root, "backend", "automation-v3", "executor.js"), "utf8");
 const audit = fs.readFileSync(path.join(root, "backend/automation-v3/audit.js"), "utf8");
 const diagnostics = fs.readFileSync(path.join(root, "backend/automation-v3/diagnostics.js"), "utf8");
 const admin = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
@@ -29,6 +30,34 @@ test("V3 Cron監査はsummaryとjobType別の集計を保存する", () => {
   assert.match(diagnostics, /claimConflicts/);
   assert.match(diagnostics, /processed: Number\(result\?\.processed/);
   assert.match(worker, /roster_plan: "roster_fetch"/);
+});
+
+test("V3 Cron監査はruntime開始・game・claim・summaryを既存auditへ記録する", () => {
+  for (const eventType of [
+    "CRON_HANDLER_STARTED",
+    "CRON_HANDLER_FLAGS",
+    "V3_RUN_STARTED",
+    "V3_ELIGIBLE_GAMES",
+    "V3_AUXILIARY_PLAN_SUMMARY",
+    "V3_FORMAL_DUE_PLAN_SUMMARY",
+    "V3_CLAIM_PHASE_STARTED",
+    "V3_CLAIM_EXECUTION_SUMMARY",
+    "V3_EXECUTION_SUMMARY",
+    "V3_RUN_ERROR",
+    "CRON_HANDLER_FINISHED"
+  ]) {
+    assert.match(worker, new RegExp(`"${eventType}"`));
+  }
+  assert.match(worker, /writeV3RuntimeAudit/);
+  assert.match(executor, /gameIds: games\.map/);
+  assert.match(worker, /createdJobCount/);
+  assert.match(worker, /executedJobCount/);
+});
+
+test("V3 Cron監査はaudit失敗を本体処理へ伝播させない", () => {
+  assert.match(worker, /runtime_audit_failed/);
+  assert.match(worker, /return false;/);
+  assert.match(worker, /onPhase: async \(phase\)/);
 });
 
 test("既存Cronサマリーのunknown/planは監査画面で未分類として表示する", () => {

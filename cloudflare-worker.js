@@ -191,10 +191,21 @@ export default {
       return withCors(jsonResponse({ ...cachedLineup, cacheStatus: "hit", stale: false }), corsHeaders);
     }
 
-    const upstream = await fetchNpbScorePage(source.url);
+    let selectedSource = source;
+    let upstream = await fetchNpbScorePage(source.url);
+    let resolutionDiagnostics = createLineupResolutionDiagnostics(source, upstream);
     if (!upstream.ok) {
-      return withCors(lineupErrorResponse(upstream.code, upstream.status, {
+      const fallback = await resolveOfficialScorePage(source, upstream);
+      resolutionDiagnostics = fallback.diagnostics;
+      if (fallback.ok) {
+        selectedSource = fallback.source;
+        upstream = fallback.upstream;
+      }
+    }
+    if (!upstream.ok) {
+      return withCors(lineupErrorResponse(resolutionDiagnostics.errorCode || upstream.code, upstream.status, {
         sourceUrl: source.url,
+        diagnostics: resolutionDiagnostics,
         ...(upstream.httpStatus ? { httpStatus: upstream.httpStatus } : {})
       }), corsHeaders);
     }
@@ -203,7 +214,8 @@ export default {
     const cancellation = classifyOfficialCancellationText(upstream.html);
     if (!extraction.lineupText && cancellation.officialCancelled) {
       return withCors(lineupErrorResponse("GAME_CANCELLED", 409, {
-        sourceUrl: source.url,
+        sourceUrl: selectedSource.url,
+        diagnostics: resolutionDiagnostics,
         cancellationStatus: "official_cancelled",
         cancellationReason: "NPB公式ページに明示的な中止表示があり、通常のスタメン情報がありません。"
       }), corsHeaders);
@@ -211,17 +223,18 @@ export default {
     if (!extraction.lineupText) {
       const code = classifyLineupExtractionFailure(extraction);
       return withCors(lineupErrorResponse(code, 422, {
-        sourceUrl: source.url,
-        ...(isDebug ? { debug: createDebugInfo(source.url, upstream.httpStatus, extraction) } : {})
+        sourceUrl: selectedSource.url,
+        diagnostics: resolutionDiagnostics,
+        ...(isDebug ? { debug: createDebugInfo(selectedSource.url, upstream.httpStatus, extraction) } : {})
       }), corsHeaders);
     }
 
     const responseBody = {
       ok: true,
-      sourceUrl: source.url,
+      sourceUrl: selectedSource.url,
       fetchedAt: new Date().toISOString(),
-      date: source.date,
-      gameCode: source.gameCode,
+      date: selectedSource.date,
+      gameCode: selectedSource.gameCode,
       method: getExtractionMethod(extraction),
       team: "fighters",
       lineup: extraction.rows.map((row) => ({
@@ -231,7 +244,8 @@ export default {
       })),
       lineupText: extraction.lineupText,
       cacheStatus: "miss",
-      stale: false
+      stale: false,
+      diagnostics: resolutionDiagnostics
     };
     await cacheLineupResponse(source, responseBody);
     return withCors(jsonResponse(responseBody), corsHeaders);
@@ -298,8 +312,7 @@ function extractScheduleGames(html, date) {
     const dateMatch = /(\d{1,2})\s*[/月]\s*(\d{1,2})/.exec(text);
     if (dateMatch) activeDateMatches = Number(dateMatch[1]) === targetMonth && Number(dateMatch[2]) === targetDay;
     if (!activeDateMatches) continue;
-    const names = STARTER_TEAM_ALIASES.filter((team) => team.aliases.some((alias) => text.includes(alias))).map((team) => team.key);
-    const unique = [...new Set(names)];
+    const unique = extractNpbTeamsFromText(text);
     const time = /\b([01]\d|2[0-3]):[0-5]\d\b/.exec(text)?.[0] || "";
     if (unique.length !== 2 || !time) continue;
     const scoreCode = /\/scores\/\d{4}\/\d{4}\/([a-z0-9]+-[a-z0-9]+-\d+)\//i.exec(row)?.[1] || "";
@@ -323,9 +336,7 @@ function extractOfficialScoreStatuses(html, date) {
   return blocks.map((block) => {
     const gameCode = /href=["']\/scores\/\d{4}\/\d{4}\/([a-z0-9]+-[a-z0-9]+-\d+)\//i.exec(block)?.[1] || "";
     const teamNames = [...block.matchAll(/\b(?:alt|title)=["']([^"']+)["']/giu)].map((match) => match[1]);
-    const teams = STARTER_TEAM_ALIASES
-      .filter((team) => teamNames.some((name) => team.aliases.some((alias) => name.includes(alias))))
-      .map((team) => team.key);
+    const teams = extractNpbTeamsInDisplayOrder(teamNames);
     return {
       gameCode,
       homeTeam: teams[0] || "",
@@ -350,7 +361,7 @@ function createLineupSourceUrl(searchParams) {
   const requestedGameCode = String(searchParams.get("gameCode") || "").trim();
 
   if (requestedDate || requestedGameCode) {
-    return createLineupSourceFromIdentity(requestedDate, requestedGameCode);
+    return attachLineupTargetMetadata(createLineupSourceFromIdentity(requestedDate, requestedGameCode), searchParams);
   }
 
   // Compatibility path for existing admin bookmarks. It still accepts only a strict NPB score URL.
@@ -364,7 +375,19 @@ function createLineupSourceUrl(searchParams) {
     return { ok: false, code: "GAME_NOT_FOUND" };
   }
 
-  return createLineupSourceFromIdentity(validation.date, validation.gameCode);
+  return attachLineupTargetMetadata(createLineupSourceFromIdentity(validation.date, validation.gameCode), searchParams);
+}
+
+function attachLineupTargetMetadata(source, searchParams) {
+  if (!source?.ok) return source;
+  return {
+    ...source,
+    originalStoredGameCode: source.gameCode,
+    homeTeam: String(searchParams.get("homeTeam") || searchParams.get("home_team") || "").trim(),
+    awayTeam: String(searchParams.get("awayTeam") || searchParams.get("away_team") || "").trim(),
+    startAt: String(searchParams.get("startAt") || searchParams.get("start_at") || "").trim(),
+    venue: String(searchParams.get("venue") || searchParams.get("stadium") || "").trim()
+  };
 }
 
 function createLineupSourceFromIdentity(date, gameCode) {
@@ -397,6 +420,189 @@ async function fetchNpbScorePage(sourceUrl) {
   const upstream = await fetchNpbBody(sourceUrl, { purpose: "score-page" });
   if (!upstream.ok) return { ok: false, code: upstream.code, status: 502, httpStatus: upstream.httpStatus };
   return { ok: true, html: upstream.body, httpStatus: upstream.httpStatus };
+}
+
+function createLineupResolutionDiagnostics(source, upstream, overrides = {}) {
+  return {
+    attemptedUrl: source?.url || null,
+    finalSelectedUrl: overrides.finalSelectedUrl || (upstream?.ok ? source?.url || null : null),
+    sourceIndexUrl: overrides.sourceIndexUrl || null,
+    originalStoredGameCode: source?.originalStoredGameCode || source?.gameCode || null,
+    resolvedScorePageCode: overrides.resolvedScorePageCode || (upstream?.ok ? source?.gameCode || null : null),
+    originStatus: Number(overrides.originStatus || upstream?.httpStatus || 0) || null,
+    fetchWorkerStatus: Number(overrides.fetchWorkerStatus || (upstream?.ok ? 200 : upstream?.status || 0)) || null,
+    fallbackUsed: overrides.fallbackUsed === true,
+    fallbackCandidateCount: Number.isFinite(Number(overrides.fallbackCandidateCount)) ? Number(overrides.fallbackCandidateCount) : 0,
+    fallbackRejectReasons: Array.isArray(overrides.fallbackRejectReasons)
+      ? overrides.fallbackRejectReasons.filter((reason) => typeof reason === "string").slice(0, 20)
+      : [],
+    ...(overrides.errorCode ? { errorCode: overrides.errorCode } : {})
+  };
+}
+
+function normalizeNpbTeam(value) {
+  const raw = String(value || "").replace(/[\s\u3000]/g, "").replace(/[・.]/g, "").toLowerCase();
+  if (!raw) return "";
+  const exact = STARTER_TEAM_ALIASES.find((team) => team.key === raw);
+  if (exact) return exact.key;
+  return STARTER_TEAM_ALIASES.find((team) => team.aliases.some((alias) => {
+    const normalizedAlias = String(alias).replace(/[\s\u3000]/g, "").replace(/[・.]/g, "").toLowerCase();
+    return normalizedAlias === raw || raw.includes(normalizedAlias) || normalizedAlias.includes(raw);
+  }))?.key || "";
+}
+
+function extractNpbTeamsInDisplayOrder(values) {
+  const teams = [];
+  for (const value of Array.isArray(values) ? values : [values]) {
+    const team = normalizeNpbTeam(value);
+    if (team && !teams.includes(team)) teams.push(team);
+  }
+  return teams.slice(0, 2);
+}
+
+function extractNpbTeamsFromText(value) {
+  const text = String(value || "");
+  return STARTER_TEAM_ALIASES
+    .map((team) => ({
+      key: team.key,
+      index: Math.min(...team.aliases.map((alias) => text.indexOf(alias)).filter((index) => index >= 0))
+    }))
+    .filter((team) => Number.isFinite(team.index))
+    .sort((left, right) => left.index - right.index)
+    .map((team) => team.key)
+    .slice(0, 2);
+}
+
+function normalizeNpbVenue(value) {
+  return String(value || "")
+    .replace(/[\s\u3000]/g, "")
+    .replace(/[・.]/g, "")
+    .replace(/Ｆ/g, "F")
+    .toLowerCase();
+}
+
+function formatJstStartTime(startAt) {
+  const parsed = new Date(startAt || "");
+  if (Number.isNaN(parsed.getTime())) return "";
+  const jst = new Date(parsed.getTime() + 9 * 60 * 60 * 1000);
+  return `${String(jst.getUTCHours()).padStart(2, "0")}:${String(jst.getUTCMinutes()).padStart(2, "0")}`;
+}
+
+function extractOfficialScorePageIdentity(html, date) {
+  const pageDateMatch = /<time\b[^>]*>\s*(20\d{2})年\s*(\d{1,2})月\s*(\d{1,2})日/i.exec(String(html || ""));
+  const pageDate = pageDateMatch
+    ? `${pageDateMatch[1]}-${String(pageDateMatch[2]).padStart(2, "0")}-${String(pageDateMatch[3]).padStart(2, "0")}`
+    : "";
+  const place = /<span\b[^>]*class=["'][^"']*place[^"']*["'][^>]*>([\s\S]*?)<\/span>/i.exec(String(html || ""));
+  const heading = /<h3\b[^>]*>([\s\S]*?)<\/h3>/i.exec(String(html || ""));
+  const gameInfo = /◇開始\s*([01]\d|2[0-3]):([0-5]\d)/i.exec(decodeHtml(String(html || "")));
+  const teamText = decodeHtml(String(heading?.[1] || "").replace(/<[^>]+>/g, " "));
+  const teams = extractNpbTeamsFromText(teamText);
+  return {
+    date: pageDate,
+    homeTeam: teams[0] || "",
+    awayTeam: teams[1] || "",
+    startTime: gameInfo ? `${gameInfo[1]}:${gameInfo[2]}` : "",
+    venue: decodeHtml(String(place?.[1] || "").replace(/<[^>]+>/g, " ")).trim()
+  };
+}
+
+function scoreCandidateRejectionReasons(candidate, identity, source) {
+  const reasons = [];
+  if (!identity.date) reasons.push("DATE_UNAVAILABLE");
+  else if (identity.date !== source.date) reasons.push("DATE_MISMATCH");
+  const expectedHome = normalizeNpbTeam(source.homeTeam);
+  const expectedAway = normalizeNpbTeam(source.awayTeam);
+  if (expectedHome && identity.homeTeam !== expectedHome) reasons.push("HOME_TEAM_MISMATCH");
+  if (expectedAway && identity.awayTeam !== expectedAway) reasons.push("AWAY_TEAM_MISMATCH");
+  const expectedStartTime = formatJstStartTime(source.startAt);
+  if (expectedStartTime && !identity.startTime) reasons.push("START_TIME_UNAVAILABLE");
+  else if (expectedStartTime && identity.startTime !== expectedStartTime) reasons.push("START_TIME_MISMATCH");
+  const expectedVenue = normalizeNpbVenue(source.venue);
+  if (expectedVenue && !identity.venue) reasons.push("VENUE_UNAVAILABLE");
+  else if (expectedVenue && normalizeNpbVenue(identity.venue) !== expectedVenue) reasons.push("VENUE_MISMATCH");
+  if (!identity.homeTeam || !identity.awayTeam) reasons.push("TEAMS_UNAVAILABLE");
+  return reasons;
+}
+
+async function resolveOfficialScorePage(source, initialUpstream = null) {
+  const initialOriginStatus = Number(initialUpstream?.httpStatus || 0) || null;
+  const initialWorkerStatus = Number(initialUpstream?.status || 0) || null;
+  const [year, month, day] = String(source.date || "").split("-");
+  const indexUrl = `https://npb.jp/scores/${year}/${month}${day}/`;
+  const index = await fetchNpbScorePage(indexUrl);
+  if (!index.ok) {
+    return {
+      ok: false,
+      diagnostics: createLineupResolutionDiagnostics(source, index, {
+        originStatus: initialOriginStatus,
+        fetchWorkerStatus: initialWorkerStatus,
+        fallbackUsed: false,
+        sourceIndexUrl: indexUrl,
+        fallbackRejectReasons: ["SCORE_INDEX_FETCH_FAILED"]
+      })
+    };
+  }
+  const candidates = extractOfficialScoreStatuses(index.html, source.date);
+  const rejectReasons = [];
+  const exactMatches = [];
+  const expectedHome = normalizeNpbTeam(source.homeTeam);
+  const expectedAway = normalizeNpbTeam(source.awayTeam);
+  for (const candidate of candidates) {
+    const teamRejectReasons = [];
+    if (expectedHome && candidate.homeTeam !== expectedHome) teamRejectReasons.push("HOME_TEAM_MISMATCH");
+    if (expectedAway && candidate.awayTeam !== expectedAway) teamRejectReasons.push("AWAY_TEAM_MISMATCH");
+    if (teamRejectReasons.length) {
+      rejectReasons.push(`${candidate.gameCode}:${teamRejectReasons.join(",")}`);
+      continue;
+    }
+    const candidateSource = createLineupSourceFromIdentity(source.date, candidate.gameCode);
+    if (!candidateSource.ok) {
+      rejectReasons.push(`${candidate.gameCode}:INVALID_CODE`);
+      continue;
+    }
+    const candidatePage = await fetchNpbScorePage(candidateSource.url);
+    if (!candidatePage.ok) {
+      rejectReasons.push(`${candidate.gameCode}:HTTP_${candidatePage.httpStatus || 0}`);
+      continue;
+    }
+    const identity = extractOfficialScorePageIdentity(candidatePage.html, source.date);
+    const reasons = scoreCandidateRejectionReasons(candidate, identity, source);
+    if (reasons.length) {
+      rejectReasons.push(`${candidate.gameCode}:${reasons.join(",")}`);
+      continue;
+    }
+    exactMatches.push({ source: { ...candidateSource, originalStoredGameCode: source.originalStoredGameCode }, upstream: candidatePage });
+  }
+  if (!candidates.length) rejectReasons.push("SCORE_INDEX_NO_CANDIDATES");
+  const baseDiagnostics = {
+    fallbackUsed: exactMatches.length === 1,
+    fallbackCandidateCount: candidates.length,
+    fallbackRejectReasons: rejectReasons,
+    originStatus: initialOriginStatus,
+    fetchWorkerStatus: initialWorkerStatus,
+    sourceIndexUrl: indexUrl
+  };
+  if (exactMatches.length === 1) {
+    return {
+      ok: true,
+      source: exactMatches[0].source,
+      upstream: exactMatches[0].upstream,
+      diagnostics: createLineupResolutionDiagnostics(source, exactMatches[0].upstream, {
+        ...baseDiagnostics,
+        fetchWorkerStatus: 200,
+        finalSelectedUrl: exactMatches[0].source.url,
+        resolvedScorePageCode: exactMatches[0].source.gameCode
+      })
+    };
+  }
+  return {
+    ok: false,
+    diagnostics: createLineupResolutionDiagnostics(source, null, {
+      ...baseDiagnostics,
+      errorCode: exactMatches.length > 1 ? "NPB_SCORE_PAGE_AMBIGUOUS" : "NPB_HTTP_ERROR"
+    })
+  };
 }
 
 function shareNpbFetch(key, fetcher) {
@@ -1653,6 +1859,7 @@ export {
   classifyOfficialCancellationText,
   createLineupSourceFromIdentity,
   createLineupSourceUrl,
+  extractOfficialScorePageIdentity,
   extractScheduleGames,
   extractNpbOrderText,
   validateTargetUrl

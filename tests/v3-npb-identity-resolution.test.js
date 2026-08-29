@@ -288,7 +288,10 @@ test("日程同期はgamesへNPB識別情報を渡し、公式WorkerはURLを返
 
 test("V3 lineup fetchは保存URLを優先し、未解決時はlegacy fallbackを使わない", () => {
   assert.match(worker, /createV3LineupIdentity/);
-  assert.match(worker, /fetchNpbWorkerJson\(env, \{ mode: "lineup", url: identityOverride\.sourceUrl \}\)/);
+  assert.match(worker, /const lineupFetchParams = \{/);
+  assert.match(worker, /fetchNpbWorkerJson\(env, lineupFetchParams\)/);
+  assert.match(worker, /homeTeam: identity\.game\.homeTeam/);
+  assert.match(worker, /awayTeam: identity\.game\.awayTeam/);
   assert.match(worker, /NPB_IDENTITY_UNRESOLVED/);
   const v3Section = worker.slice(worker.indexOf("function createV3LineupIdentity"), worker.indexOf("async function executeGameAutomationV3Job"));
   assert.doesNotMatch(v3Section, /resolvePregameIdentity/);

@@ -1238,6 +1238,7 @@ function createV3LineupIdentity(target) {
       startAt,
       homeTeam: target.home_team,
       awayTeam: target.away_team,
+      venue: target.venue || target.stadium || "",
       status: target.game_status
     },
     resolvedBy: "v3_games_npb_identity"
@@ -1345,11 +1346,14 @@ async function executeV3PredictionCloseExecutor({ env, internalGameId, stateBefo
 }
 
 function enrichV3LineupExecutorError(error, { internalGameId, now, target, job, lineupIdentity, stage = "capture_official_lineup" } = {}) {
+  const npbFetchDiagnostics = sanitizeNpbLineupDiagnostics(error?.npbDiagnostics);
   const diagnostics = {
     ...(error?.diagnostics && typeof error.diagnostics === "object" ? error.diagnostics : {}),
     executorStage: stage,
     sourceUrl: lineupIdentity?.sourceUrl || target?.npbGameUrl || null,
     httpStatus: Number(error?.httpStatus || error?.upstreamStatus || 0) || null,
+    originStatus: Number(error?.externalStatus || npbFetchDiagnostics?.originStatus || 0) || null,
+    npbFetchDiagnostics,
     selectedSlot: job?.scheduled_slot_at || null,
     internalGameId,
     npbGameCode: lineupIdentity?.gameCode || target?.gameCode || target?.npb_game_code || null,
@@ -1456,7 +1460,7 @@ async function executeV3LineupExecutor({ env, internalGameId, now, target, state
         diagnostics: { executorStage: "verify_lineup_fetch_side_effect", internalGameId, status: result.status, ...lineupDataHealth }
       });
     }
-    return { status: result.status, stateBefore, stateAfter: stateBefore, lineupDataHealth };
+    return { status: result.status, stateBefore, stateAfter: stateBefore, lineupDataHealth, npbDiagnostics: result.npbDiagnostics || null };
   }
   const finalizedHealth = await getV3LineupDataHealth(env.AUTH_DB, internalGameId, stateBefore);
   if (!finalizedHealth.available) {
@@ -1480,7 +1484,7 @@ async function executeV3LineupExecutor({ env, internalGameId, now, target, state
         diagnostics: { executorStage: "verify_lineup_finalize_side_effect", internalGameId, ...finalizedHealth }
       });
   }
-  return { status: result.status, stateBefore, stateAfter: "lineup_ready", lineupDataHealth: finalizedHealth };
+  return { status: result.status, stateBefore, stateAfter: "lineup_ready", lineupDataHealth: finalizedHealth, npbDiagnostics: result.npbDiagnostics || null };
 }
 
 async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore }) {
@@ -2349,9 +2353,13 @@ function parseSafeWorkflowJobMetadata(value) {
 function sanitizeWorkflowExecutionDiagnostics(details = {}) {
   if (!details || typeof details !== "object" || Array.isArray(details)) return null;
   const result = {};
-  const numericKeys = ["claimedJobId", "lineupHttpStatus", "rosterMasterResolvedCount", "rosterMasterUnresolvedCount"];
+  const numericKeys = [
+    "claimedJobId", "lineupHttpStatus", "lineupOriginStatus", "lineupFetchWorkerStatus", "lineupFallbackCandidateCount",
+    "rosterMasterResolvedCount", "rosterMasterUnresolvedCount"
+  ];
   const stringKeys = [
     "claimedJobType", "resolvedNpbGameCode", "lineupSourceUrl", "lineupParseStage",
+    "lineupAttemptedUrl", "lineupFinalSelectedUrl", "lineupOriginalStoredGameCode", "lineupResolvedScorePageCode",
     "lineupDataClassification", "dataNotAnnouncedReason", "rosterResolutionStage", "rosterResolvedBy",
     "rosterMasterResolutionReasonCode", "rosterMasterUnresolvedNames",
     "rosterSourceCacheStatus", "rosterSourceFetchedAt"
@@ -2363,6 +2371,31 @@ function sanitizeWorkflowExecutionDiagnostics(details = {}) {
     if (typeof details[key] === "string" && details[key]) result[key] = details[key].slice(0, key === "lineupSourceUrl" ? 240 : 120);
   }
   if (typeof details.rosterStartAtFound === "boolean") result.rosterStartAtFound = details.rosterStartAtFound;
+  if (typeof details.lineupFallbackUsed === "boolean") result.lineupFallbackUsed = details.lineupFallbackUsed;
+  if (Array.isArray(details.lineupFallbackRejectReasons)) {
+    result.lineupFallbackRejectReasons = details.lineupFallbackRejectReasons
+      .filter((reason) => typeof reason === "string")
+      .slice(0, 20)
+      .map((reason) => reason.slice(0, 160));
+  }
+  const lineupResolution = details.lineupNpbResolution || details.npbFetchDiagnostics;
+  if (lineupResolution && typeof lineupResolution === "object" && !Array.isArray(lineupResolution)) {
+    result.lineupNpbResolution = {
+      attemptedUrl: typeof lineupResolution.attemptedUrl === "string" ? lineupResolution.attemptedUrl.slice(0, 240) : null,
+      finalSelectedUrl: typeof lineupResolution.finalSelectedUrl === "string" ? lineupResolution.finalSelectedUrl.slice(0, 240) : null,
+      sourceIndexUrl: typeof lineupResolution.sourceIndexUrl === "string" ? lineupResolution.sourceIndexUrl.slice(0, 240) : null,
+      originalStoredGameCode: typeof lineupResolution.originalStoredGameCode === "string" ? lineupResolution.originalStoredGameCode.slice(0, 80) : null,
+      resolvedScorePageCode: typeof lineupResolution.resolvedScorePageCode === "string" ? lineupResolution.resolvedScorePageCode.slice(0, 80) : null,
+      errorCode: typeof lineupResolution.errorCode === "string" ? lineupResolution.errorCode.slice(0, 80) : null,
+      originStatus: Number.isFinite(Number(lineupResolution.originStatus)) ? Number(lineupResolution.originStatus) : null,
+      fetchWorkerStatus: Number.isFinite(Number(lineupResolution.fetchWorkerStatus)) ? Number(lineupResolution.fetchWorkerStatus) : null,
+      fallbackUsed: lineupResolution.fallbackUsed === true,
+      fallbackCandidateCount: Number.isFinite(Number(lineupResolution.fallbackCandidateCount)) ? Number(lineupResolution.fallbackCandidateCount) : 0,
+      fallbackRejectReasons: Array.isArray(lineupResolution.fallbackRejectReasons)
+        ? lineupResolution.fallbackRejectReasons.filter((reason) => typeof reason === "string").slice(0, 20).map((reason) => reason.slice(0, 160))
+        : []
+    };
+  }
   const comparison = details.sourceSnapshotComparison || details.rosterSourceSnapshotComparison;
   if (comparison && typeof comparison === "object" && !Array.isArray(comparison)) {
     result.sourceSnapshotComparison = {
@@ -2401,6 +2434,21 @@ function getWorkflowExecutionDiagnostics({ job = null, target = null, result = n
     if (target?.gameCode) diagnostics.resolvedNpbGameCode = String(target.gameCode);
     if (/^https:\/\/npb\.jp\//i.test(sourceUrl)) diagnostics.lineupSourceUrl = sourceUrl;
     diagnostics.lineupHttpStatus = Number(error?.upstreamStatus || error?.httpStatus || error?.externalStatus || 0);
+    const lineupResolution = error?.npbDiagnostics || result?.npbDiagnostics || null;
+    if (lineupResolution) {
+      diagnostics.lineupNpbResolution = lineupResolution;
+      diagnostics.lineupAttemptedUrl = lineupResolution.attemptedUrl || "";
+      diagnostics.lineupFinalSelectedUrl = lineupResolution.finalSelectedUrl || "";
+      diagnostics.lineupSourceIndexUrl = lineupResolution.sourceIndexUrl || "";
+      diagnostics.lineupOriginalStoredGameCode = lineupResolution.originalStoredGameCode || "";
+      diagnostics.lineupResolvedScorePageCode = lineupResolution.resolvedScorePageCode || "";
+      diagnostics.lineupResolutionErrorCode = lineupResolution.errorCode || "";
+      diagnostics.lineupOriginStatus = lineupResolution.originStatus;
+      diagnostics.lineupFetchWorkerStatus = lineupResolution.fetchWorkerStatus;
+      diagnostics.lineupFallbackUsed = lineupResolution.fallbackUsed === true;
+      diagnostics.lineupFallbackCandidateCount = lineupResolution.fallbackCandidateCount;
+      diagnostics.lineupFallbackRejectReasons = lineupResolution.fallbackRejectReasons || [];
+    }
     diagnostics.lineupParseStage = String(error?.parseStage || (result ? "official_lineup" : ""));
     diagnostics.lineupDataClassification = result?.reused
       ? "stored"
@@ -2794,6 +2842,7 @@ export function validateWorkflowJobTarget({
       startAt,
       homeTeam,
       awayTeam,
+      venue: schedule?.venue || "",
       gameCode,
       status: gameRow?.game_status || schedule?.game_status || "scheduled",
       sourceGameKey,
@@ -2825,7 +2874,7 @@ export async function resolveWorkflowJobTarget(db, internalGameId) {
   ).bind(normalizedInternalGameId).first();
   const gameRow = await getWorkflowGameRow(db, normalizedInternalGameId);
   const scheduleResult = await db.prepare(
-    `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, game_status, internal_game_id
+    `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, venue, game_status, internal_game_id
        FROM detected_game_schedule
       WHERE internal_game_id = ?1
       ORDER BY game_date ASC, start_at ASC, game_id ASC`
@@ -10808,6 +10857,7 @@ export async function fetchNpbWorkerJson(env, params) {
         externalStatus: payload?.httpStatus,
         contentType: response.headers.get("content-type") || "",
         upstreamUrl: payload?.sourceUrl,
+        npbDiagnostics: payload?.diagnostics,
         retryable: upstreamCode === "EXTERNAL_FETCH_DISABLED",
         ...upstreamDetails
       });
@@ -10845,9 +10895,34 @@ function createPregameError(code, message, details = {}) {
   if (typeof details.contentType === "string" && details.contentType) error.contentType = details.contentType.slice(0, 120);
   if (typeof details.fetchEndpoint === "string" && details.fetchEndpoint) error.fetchEndpoint = details.fetchEndpoint.slice(0, 240);
   if (typeof details.parseStage === "string" && details.parseStage) error.parseStage = details.parseStage.slice(0, 80);
+  const npbDiagnostics = sanitizeNpbLineupDiagnostics(details.npbDiagnostics);
+  if (npbDiagnostics) error.npbDiagnostics = npbDiagnostics;
   const validation = sanitizeLineupValidationDetails(details.validation);
   if (validation) error.validation = validation;
   return error;
+}
+
+function sanitizeNpbLineupDiagnostics(details) {
+  if (!details || typeof details !== "object" || Array.isArray(details)) return null;
+  const result = {};
+  const urlKeys = ["attemptedUrl", "finalSelectedUrl", "sourceIndexUrl"];
+  for (const key of urlKeys) {
+    if (typeof details[key] === "string" && /^https:\/\/npb\.jp\//i.test(details[key])) result[key] = details[key].slice(0, 240);
+  }
+  if (typeof details.originalStoredGameCode === "string" && details.originalStoredGameCode) result.originalStoredGameCode = details.originalStoredGameCode.slice(0, 80);
+  if (typeof details.resolvedScorePageCode === "string" && details.resolvedScorePageCode) result.resolvedScorePageCode = details.resolvedScorePageCode.slice(0, 80);
+  if (typeof details.errorCode === "string" && details.errorCode) result.errorCode = details.errorCode.slice(0, 80);
+  for (const key of ["originStatus", "fetchWorkerStatus", "fallbackCandidateCount"]) {
+    if (Number.isFinite(Number(details[key])) && Number(details[key]) >= 0) result[key] = Number(details[key]);
+  }
+  if (typeof details.fallbackUsed === "boolean") result.fallbackUsed = details.fallbackUsed;
+  if (Array.isArray(details.fallbackRejectReasons)) {
+    result.fallbackRejectReasons = details.fallbackRejectReasons
+      .filter((reason) => typeof reason === "string")
+      .slice(0, 20)
+      .map((reason) => reason.slice(0, 160));
+  }
+  return Object.keys(result).length ? result : null;
 }
 
 function normalizeRosterForSnapshot(players) {
@@ -11506,8 +11581,18 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
     return { status: isFinalCapture ? "not_due" : "superseded_after_start", superseded: !isFinalCapture };
   }
   try {
+    const lineupFetchParams = {
+      mode: "lineup",
+      url: identityOverride?.sourceUrl,
+      date: identity.game.date,
+      gameCode: identity.gameCode,
+      homeTeam: identity.game.homeTeam,
+      awayTeam: identity.game.awayTeam,
+      startAt: identity.startAt.toISOString(),
+      venue: identity.game.venue
+    };
     const payload = identityOverride?.sourceUrl
-      ? await fetchNpbWorkerJson(env, { mode: "lineup", url: identityOverride.sourceUrl })
+      ? await fetchNpbWorkerJson(env, lineupFetchParams)
       : await fetchNpbWorkerJson(env, { mode: "lineup", date: identity.game.date, gameCode: identity.gameCode });
     const actual = createOfficialLineupFromNpb(payload.lineup);
     if (!actual.ok) {
@@ -11515,6 +11600,7 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
         parseStage: "official_lineup",
         validation: { ...actual.validation, detectedTeams: payload.team ? [String(payload.team)] : [] },
         upstreamUrl: payload.sourceUrl,
+        npbDiagnostics: payload.diagnostics,
         upstreamMode: "lineup"
       });
     }
@@ -11525,7 +11611,7 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
         validation: actual.validation || null,
         source
       });
-      return { status: "provisional", sourceUrl: payload.sourceUrl, lineup: actual.lineup, detectedAt: detectedAt.toISOString(), lineupRevision: revision };
+      return { status: "provisional", sourceUrl: payload.sourceUrl, lineup: actual.lineup, detectedAt: detectedAt.toISOString(), lineupRevision: revision, npbDiagnostics: payload.diagnostics || null };
     }
     const revision = await saveLineupCandidateRevision(env.AUTH_DB, {
       gameId,
@@ -11557,7 +11643,7 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
           WHERE game_id = ?2`
       ).bind(now.toISOString(), gameId).run();
     }
-    return { status: "captured", sourceUrl: payload.sourceUrl, autoScoring: serializeGameLineup(record), lineupRevision: revision };
+    return { status: "captured", sourceUrl: payload.sourceUrl, autoScoring: serializeGameLineup(record), lineupRevision: revision, npbDiagnostics: payload.diagnostics || null };
   } catch (error) {
     if (!isV3) {
       try {

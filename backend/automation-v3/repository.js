@@ -54,7 +54,11 @@ export async function listV3Games(db, now = new Date()) {
     isActive: row.is_active,
     deletedAt: row.deleted_at
   }));
-  return Promise.all(baseGames.map((game) => hydrateV3GameIdentityFromIdentifiers(db, game)));
+  const hydratedGames = await Promise.all(baseGames.map((game) => hydrateV3GameIdentityFromIdentifiers(db, game)));
+  return hydratedGames.map((game) => ({
+    ...game,
+    npbIdentityState: getV3NpbIdentityState(game, current)
+  }));
 }
 
 function normalizeV3NpbGameCode(value) {

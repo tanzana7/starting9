@@ -29,7 +29,7 @@ function section(source, start, end) {
 test("production scheduled entrypoint runs V3 only and disabled V3 does not fall back", () => {
   const scheduled = section(worker, "async scheduled(event, env, ctx)", "async function runScheduledGameAutomationV3");
   assert.match(scheduled, /isGameAutomationV3Enabled\(env\)/);
-  assert.match(scheduled, /runScheduledGameAutomationV3\(env, scheduledAt\)/);
+  assert.match(scheduled, /runScheduledGameAutomationV3\(env, scheduledAt(?:, \{ runId \})?\)/);
   assert.doesNotMatch(scheduled, /runScheduledGameAutomation\(/);
   assert.doesNotMatch(scheduled, /runGameWorkflows\(/);
 });

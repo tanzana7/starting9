@@ -252,11 +252,17 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
   return { processed, failed };
 }
 
-export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS } = {}) {
+export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, onPhase = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS } = {}) {
   if (!isGameAutomationV3Enabled(env)) return { enabled: false, processed: 0, created: 0 };
   const schema = await getV3SchemaState(env.AUTH_DB);
   if (!schema.ready) return { enabled: true, schemaReady: false, errorCode: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", processed: 0, created: 0 };
   const games = await listV3Games(env.AUTH_DB, now);
+  await invokeV3Observer(onPhase, [{
+    stage: "eligible_games",
+    now,
+    gameCount: games.length,
+    gameIds: games.map((game) => game?.internalGameId).filter(Boolean).slice(0, 100)
+  }], observerTimeoutMs);
   let failed = 0;
   for (const game of games) {
     try {
@@ -317,12 +323,25 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     await invokeV3Observer(onError, [entry.error, { game: entry.game, plan: entry.plan, stage: "planner" }], observerTimeoutMs);
   }
 
+  await invokeV3Observer(onPhase, [{
+    stage: "claim_phase_started",
+    now,
+    gameCount: games.length,
+    plannedCount: allPlanned.length
+  }], observerTimeoutMs);
   const claimReport = await claimDueJobs(env.AUTH_DB, now, allPlanned);
   const execution = await executeClaimedJobs(env, claimReport.claimed, games, now, { executeJob, onError, onSuccess, onPlan, observerTimeoutMs });
+  await invokeV3Observer(onPhase, [{
+    stage: "claim_execution_completed",
+    now,
+    claimReport,
+    execution
+  }], observerTimeoutMs);
   return {
     enabled: true,
     schemaReady: true,
     gameCount: games.length,
+    gameIds: games.map((game) => game?.internalGameId).filter(Boolean),
     created: auxiliary.created + mainPlan.created,
     processed: execution.processed,
     failed: failed + execution.failed,

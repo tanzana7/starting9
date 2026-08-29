@@ -170,6 +170,23 @@ test("V3 audit fallback uses an explicit unclassified label without inventing a 
   assert.equal(legacyRecord.values[3], "legacy_or_unclassified");
 });
 
+test("V3 roster audit keeps a compact comparison summary before the truncated details", () => {
+  const record = v3.buildV3CronJobAuditInsert({
+    job: { internal_game_id: "8cd8869c-6ae5-47a5-8792-5bc89d20ef18", job_type: "roster_fetch", status: "completed" },
+    execution: {
+      status: "captured",
+      reasonCode: "ROSTER_NO_CHANGES",
+      sourceSnapshotComparison: { status: "OK", mismatch: false, remainingMismatch: false, stale: false },
+      largeDetail: "x".repeat(12000)
+    }
+  });
+  const failureMessage = record.values[record.columns.indexOf("failure_message")];
+
+  assert.equal(failureMessage.length, 8000);
+  assert.match(failureMessage, /\[v3_summary=\{"schemaVersion":1,"jobType":"roster_fetch"/);
+  assert.match(failureMessage, /"sourceSnapshotComparison":\{"status":"OK","mismatch":false,"remainingMismatch":false,"stale":false/);
+});
+
 test("V3 automation modules have no V1/V2 runtime import", () => {
   const sources = fs.readdirSync(path.join(root, "backend/automation-v3"))
     .filter((file) => file.endsWith(".js"))

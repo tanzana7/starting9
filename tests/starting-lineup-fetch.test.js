@@ -180,6 +180,80 @@ test("保存コードが404の場合、公式同日スコアインデックス�
   }
 });
 
+test("公式同日スコアインデックスが403の場合、公式月次日程の速報リンクからfallbackする", async () => {
+  const { default: worker } = await loadWorkerHelpers();
+  const originalFetch = globalThis.fetch;
+  const scoreIndexUrl = "https://npb.jp/scores/2026/0829/";
+  const scheduleIndexUrl = "https://npb.jp/games/2026/schedule_08_detail.html";
+  const resolvedUrl = "https://npb.jp/scores/2026/0829/f-m-20/";
+  globalThis.fetch = async (request) => {
+    const url = String(request.url || request);
+    if (url.endsWith("/f-m-21/")) return new Response("", { status: 404 });
+    if (url === scoreIndexUrl) return new Response("<html>blocked</html>", { status: 403 });
+    if (url === scheduleIndexUrl) return new Response(createScoreIndexHtml([
+      { code: "f-m-20", homeTeam: "北海道日本ハムファイターズ", awayTeam: "千葉ロッテマリーンズ" }
+    ]), { status: 200 });
+    if (url === resolvedUrl) return new Response(createOfficialScorePageHtml(), { status: 200 });
+    return new Response("", { status: 404 });
+  };
+
+  try {
+    const response = await worker.fetch(new Request(
+      "https://worker.example/?mode=lineup&date=2026-08-29&gameCode=f-m-21&homeTeam=fighters&awayTeam=marines&startAt=2026-08-29T05:00:00.000Z&venue=%E3%82%A8%E3%82%B9%E3%82%B3%E3%83%B3%EF%BC%A6",
+      { headers: { Origin: "https://starting9.pages.dev" } }
+    ), { NPB_ALLOWED_ORIGINS: "https://starting9.pages.dev" });
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.gameCode, "f-m-20");
+    assert.equal(body.diagnostics.sourceIndexUrl, scheduleIndexUrl);
+    assert.equal(body.diagnostics.indexFallbackUsed, true);
+    assert.deepEqual(body.diagnostics.indexFetchAttempts, [
+      { url: scoreIndexUrl, originStatus: 403, fetchWorkerStatus: 502, errorCode: "NPB_HTTP_ERROR", bodySummary: "blocked" },
+      { url: scheduleIndexUrl, originStatus: 200, fetchWorkerStatus: 200, errorCode: null, bodySummary: null }
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("公式indexの代替取得に成功しても対象候補がなければretry可能な失敗を返す", async () => {
+  const { default: worker } = await loadWorkerHelpers();
+  const originalFetch = globalThis.fetch;
+  const scoreIndexUrl = "https://npb.jp/scores/2026/0829/";
+  const scheduleIndexUrl = "https://npb.jp/games/2026/schedule_08_detail.html";
+  globalThis.fetch = async (request) => {
+    const url = String(request.url || request);
+    if (url.endsWith("/f-m-21/")) return new Response("", { status: 404 });
+    if (url === scoreIndexUrl) return new Response("blocked", { status: 403 });
+    if (url === scheduleIndexUrl) return new Response(createScoreIndexHtml([
+      { code: "l-e-21", homeTeam: "埼玉西武ライオンズ", awayTeam: "東北楽天ゴールデンイーグルス" }
+    ]), { status: 200 });
+    if (url.endsWith("/l-e-21/")) return new Response(createOfficialScorePageHtml({
+      homeTeam: "埼玉西武ライオンズ",
+      awayTeam: "東北楽天ゴールデンイーグルス"
+    }), { status: 200 });
+    return new Response("", { status: 404 });
+  };
+
+  try {
+    const response = await worker.fetch(new Request(
+      "https://worker.example/?mode=lineup&date=2026-08-29&gameCode=f-m-21&homeTeam=fighters&awayTeam=marines&startAt=2026-08-29T05:00:00.000Z",
+      { headers: { Origin: "https://starting9.pages.dev" } }
+    ), { NPB_ALLOWED_ORIGINS: "https://starting9.pages.dev" });
+    const body = await response.json();
+
+    assert.equal(response.status, 502);
+    assert.equal(body.code, "NPB_HTTP_ERROR");
+    assert.equal(body.diagnostics.sourceIndexUrl, scheduleIndexUrl);
+    assert.equal(body.diagnostics.indexFallbackUsed, true);
+    assert.match(body.diagnostics.fallbackRejectReasons.join(" "), /SCORE_INDEX_NO_CANDIDATES|HOME_TEAM_MISMATCH/);
+    assert.equal(body.diagnostics.resolvedScorePageCode, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("home/awayが逆順でも公式ページの表示順でfallback候補を照合する", async () => {
   const { default: worker } = await loadWorkerHelpers();
   const originalFetch = globalThis.fetch;

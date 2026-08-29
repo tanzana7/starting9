@@ -152,7 +152,11 @@ test("notice・roster・lineupは同じService Binding経由で取得し、上�
             fetchWorkerStatus: 502,
             fallbackUsed: false,
             fallbackCandidateCount: 0,
-            fallbackRejectReasons: ["SCORE_INDEX_FETCH_FAILED"]
+            fallbackRejectReasons: ["SCORE_INDEX_FETCH_FAILED"],
+            indexFetchAttempts: [
+              { url: "https://npb.jp/scores/2026/0731/", originStatus: 404, fetchWorkerStatus: 502, errorCode: "NPB_HTTP_ERROR", bodySummary: "not found" }
+            ],
+            indexFallbackUsed: false
           }
         }), { status: 502 });
       }
@@ -166,6 +170,9 @@ test("notice・roster・lineupは同じService Binding経由で取得し、上�
       && error?.npbDiagnostics?.sourceIndexUrl === "https://npb.jp/scores/2026/0731/"
       && error?.npbDiagnostics?.errorCode === "NPB_HTTP_ERROR"
       && error?.npbDiagnostics?.fallbackUsed === false
+      && error?.npbDiagnostics?.indexFetchAttempts?.[0]?.originStatus === 404
+      && error?.npbDiagnostics?.indexFetchAttempts?.[0]?.bodySummary === "not found"
+      && error?.npbDiagnostics?.indexFallbackUsed === false
   );
   const routeError = normalizePregameToolError("run-notice", { code: "NPB_HTTP_ERROR", upstreamStatus: 404 });
   assert.deepEqual(routeError, {

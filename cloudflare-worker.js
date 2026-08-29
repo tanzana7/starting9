@@ -418,7 +418,7 @@ function createLineupSourceFromIdentity(date, gameCode) {
 
 async function fetchNpbScorePage(sourceUrl) {
   const upstream = await fetchNpbBody(sourceUrl, { purpose: "score-page" });
-  if (!upstream.ok) return { ok: false, code: upstream.code, status: 502, httpStatus: upstream.httpStatus };
+  if (!upstream.ok) return { ok: false, code: upstream.code, status: 502, httpStatus: upstream.httpStatus, bodySummary: upstream.bodySummary || null };
   return { ok: true, html: upstream.body, httpStatus: upstream.httpStatus };
 }
 
@@ -436,6 +436,16 @@ function createLineupResolutionDiagnostics(source, upstream, overrides = {}) {
     fallbackRejectReasons: Array.isArray(overrides.fallbackRejectReasons)
       ? overrides.fallbackRejectReasons.filter((reason) => typeof reason === "string").slice(0, 20)
       : [],
+    indexFetchAttempts: Array.isArray(overrides.indexFetchAttempts)
+      ? overrides.indexFetchAttempts.slice(0, 4).map((attempt) => ({
+        url: typeof attempt?.url === "string" ? attempt.url.slice(0, 240) : null,
+        originStatus: Number(attempt?.originStatus || 0) || null,
+        fetchWorkerStatus: Number(attempt?.fetchWorkerStatus || 0) || null,
+        errorCode: typeof attempt?.errorCode === "string" ? attempt.errorCode.slice(0, 80) : null,
+        bodySummary: typeof attempt?.bodySummary === "string" ? attempt.bodySummary.slice(0, 240) : null
+      }))
+      : [],
+    indexFallbackUsed: overrides.indexFallbackUsed === true,
     ...(overrides.errorCode ? { errorCode: overrides.errorCode } : {})
   };
 }
@@ -530,16 +540,35 @@ async function resolveOfficialScorePage(source, initialUpstream = null) {
   const initialWorkerStatus = Number(initialUpstream?.status || 0) || null;
   const [year, month, day] = String(source.date || "").split("-");
   const indexUrl = `https://npb.jp/scores/${year}/${month}${day}/`;
-  const index = await fetchNpbScorePage(indexUrl);
-  if (!index.ok) {
+  const scheduleIndexUrl = `https://npb.jp/games/${year}/schedule_${month}_detail.html`;
+  const indexAttempts = [];
+  let index = null;
+  let selectedIndexUrl = indexUrl;
+  for (const candidateUrl of [indexUrl, scheduleIndexUrl]) {
+    const candidate = await fetchNpbScorePage(candidateUrl);
+    indexAttempts.push({
+      url: candidateUrl,
+      originStatus: candidate.httpStatus || null,
+      fetchWorkerStatus: candidate.ok ? 200 : candidate.status || null,
+      errorCode: candidate.ok ? null : candidate.code || "NPB_HTTP_ERROR",
+      bodySummary: candidate.ok ? null : candidate.bodySummary || null
+    });
+    if (candidate.ok) {
+      index = candidate;
+      selectedIndexUrl = candidateUrl;
+      break;
+    }
+  }
+  if (!index?.ok) {
     return {
       ok: false,
-      diagnostics: createLineupResolutionDiagnostics(source, index, {
+      diagnostics: createLineupResolutionDiagnostics(source, initialUpstream, {
         originStatus: initialOriginStatus,
         fetchWorkerStatus: initialWorkerStatus,
         fallbackUsed: false,
         sourceIndexUrl: indexUrl,
-        fallbackRejectReasons: ["SCORE_INDEX_FETCH_FAILED"]
+        fallbackRejectReasons: ["SCORE_INDEX_FETCH_FAILED"],
+        indexFetchAttempts: indexAttempts
       })
     };
   }
@@ -581,7 +610,9 @@ async function resolveOfficialScorePage(source, initialUpstream = null) {
     fallbackRejectReasons: rejectReasons,
     originStatus: initialOriginStatus,
     fetchWorkerStatus: initialWorkerStatus,
-    sourceIndexUrl: indexUrl
+    sourceIndexUrl: selectedIndexUrl,
+    indexFetchAttempts: indexAttempts,
+    indexFallbackUsed: selectedIndexUrl !== indexUrl
   };
   if (exactMatches.length === 1) {
     return {
@@ -627,7 +658,15 @@ async function fetchNpbBody(sourceUrl, { purpose = "page", headers = {}, asBytes
         headers: { "User-Agent": NPB_USER_AGENT, ...headers }
       });
       if (!response.ok) {
-        return { ok: false, code: "NPB_HTTP_ERROR", httpStatus: response.status, contentType: response.headers.get("Content-Type") || "", body: asBytes ? new Uint8Array() : "" };
+        const errorBody = asBytes ? "" : await response.text().catch(() => "");
+        return {
+          ok: false,
+          code: "NPB_HTTP_ERROR",
+          httpStatus: response.status,
+          contentType: response.headers.get("Content-Type") || "",
+          bodySummary: errorBody.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 240),
+          body: asBytes ? new Uint8Array() : ""
+        };
       }
       return {
         ok: true,

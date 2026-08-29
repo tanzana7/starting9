@@ -2393,7 +2393,17 @@ function sanitizeWorkflowExecutionDiagnostics(details = {}) {
       fallbackCandidateCount: Number.isFinite(Number(lineupResolution.fallbackCandidateCount)) ? Number(lineupResolution.fallbackCandidateCount) : 0,
       fallbackRejectReasons: Array.isArray(lineupResolution.fallbackRejectReasons)
         ? lineupResolution.fallbackRejectReasons.filter((reason) => typeof reason === "string").slice(0, 20).map((reason) => reason.slice(0, 160))
-        : []
+        : [],
+      indexFetchAttempts: Array.isArray(lineupResolution.indexFetchAttempts)
+        ? lineupResolution.indexFetchAttempts.slice(0, 4).map((attempt) => ({
+          url: typeof attempt?.url === "string" ? attempt.url.slice(0, 240) : null,
+          originStatus: Number(attempt?.originStatus || 0) || null,
+          fetchWorkerStatus: Number(attempt?.fetchWorkerStatus || 0) || null,
+          errorCode: typeof attempt?.errorCode === "string" ? attempt.errorCode.slice(0, 80) : null,
+          bodySummary: typeof attempt?.bodySummary === "string" ? attempt.bodySummary.slice(0, 240) : null
+        }))
+        : [],
+      indexFallbackUsed: lineupResolution.indexFallbackUsed === true
     };
   }
   const comparison = details.sourceSnapshotComparison || details.rosterSourceSnapshotComparison;
@@ -10922,6 +10932,16 @@ function sanitizeNpbLineupDiagnostics(details) {
       .slice(0, 20)
       .map((reason) => reason.slice(0, 160));
   }
+  if (Array.isArray(details.indexFetchAttempts)) {
+    result.indexFetchAttempts = details.indexFetchAttempts.slice(0, 4).map((attempt) => ({
+      url: typeof attempt?.url === "string" ? attempt.url.slice(0, 240) : null,
+      originStatus: Number(attempt?.originStatus || 0) || null,
+      fetchWorkerStatus: Number(attempt?.fetchWorkerStatus || 0) || null,
+      errorCode: typeof attempt?.errorCode === "string" ? attempt.errorCode.slice(0, 80) : null,
+      bodySummary: typeof attempt?.bodySummary === "string" ? attempt.bodySummary.slice(0, 240) : null
+    }));
+  }
+  if (typeof details.indexFallbackUsed === "boolean") result.indexFallbackUsed = details.indexFallbackUsed;
   return Object.keys(result).length ? result : null;
 }
 

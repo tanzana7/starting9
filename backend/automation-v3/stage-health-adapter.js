@@ -16,6 +16,8 @@ const STAGES = Object.freeze([
   "publish"
 ]);
 
+const LINEUP_FINALIZE_SUPERSEDING_STATUSES = new Set(["pending", "claimed", "retry_wait", "completed"]);
+
 const JOB_TYPE_TO_STAGE = Object.freeze({
   probable_starter_fetch: "probable_starter",
   roster_fetch: "roster_fetch",
@@ -339,8 +341,16 @@ function buildStageDefinitions(source, diagnostics, artifacts, disabled, game, j
   const definitions = {};
   const currentTime = asDate(source.currentTime || source.now) || new Date();
   const finalizeDueAt = asDate(derivedStageSchedule?.stages?.lineup_finalize?.dueAt);
+  const internalGameId = first(game, "internalGameId", "internal_game_id");
   const finalizeJobExists = Array.isArray(jobs)
-    && jobs.some((job) => normalizeStage(first(job, "stageName", "stage", "jobType", "job_type")) === "lineup_finalize");
+    && Boolean(internalGameId)
+    && jobs.some((job) => {
+      const jobGameId = first(job, "internalGameId", "internal_game_id");
+      const status = String(first(job, "status", "jobStatus") || "").trim().toLowerCase();
+      return normalizeStage(first(job, "stageName", "stage", "jobType", "job_type")) === "lineup_finalize"
+        && String(jobGameId || "") === String(internalGameId)
+        && LINEUP_FINALIZE_SUPERSEDING_STATUSES.has(status);
+    });
   const lineupFetchWindowClosed = Boolean(finalizeDueAt && currentTime >= finalizeDueAt);
   const lineupArtifactReady = Boolean(artifacts.lineup_fetch?.available && artifacts.lineup_fetch?.valid);
   for (const stageName of STAGES) {

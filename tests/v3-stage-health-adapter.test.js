@@ -204,6 +204,38 @@ test("after the lineup window, an existing finalize job supersedes lineup fetch"
   assert.equal(lineupFetch.nextSafeAction, "wait_for_prerequisite");
 });
 
+test("only the same game's active or completed finalize job supersedes lineup fetch", () => {
+  const baseInput = {
+    game: {
+      internalGameId: GAME_ID,
+      gameDate: "2026-08-29",
+      startAt: "2026-08-29T05:00:00.000Z",
+      gameStatus: "scheduled",
+      workflowState: "prediction_closed"
+    },
+    now: new Date("2026-08-29T05:10:00.000Z")
+  };
+  for (const status of ["pending", "claimed", "retry_wait", "completed"]) {
+    const { adapted } = evaluateAdapter({
+      ...baseInput,
+      jobs: [job("lineup_finalize", status)]
+    });
+    assert.equal(adapted.evaluatorInput.stageDefinitions.lineup_fetch.prerequisiteReason, "LINEUP_FETCH_SUPERSEDED_BY_LINEUP_FINALIZE", status);
+  }
+  for (const status of ["failed", "cancelled", "expired", "unknown"]) {
+    const { adapted } = evaluateAdapter({
+      ...baseInput,
+      jobs: [job("lineup_finalize", status)]
+    });
+    assert.equal(adapted.evaluatorInput.stageDefinitions.lineup_fetch.prerequisiteReason, "LINEUP_FETCH_WINDOW_CLOSED_NO_FINALIZE", status);
+  }
+  const { adapted } = evaluateAdapter({
+    ...baseInput,
+    jobs: [job("lineup_finalize", "retry_wait", { internal_game_id: "44444444-4444-4444-8444-444444444444" })]
+  });
+  assert.equal(adapted.evaluatorInput.stageDefinitions.lineup_fetch.prerequisiteReason, "LINEUP_FETCH_WINDOW_CLOSED_NO_FINALIZE");
+});
+
 test("after the lineup window, missing finalize is reported without lineup fetch recovery", () => {
   const { evaluated } = evaluateAdapter({
     game: {

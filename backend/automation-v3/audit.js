@@ -1,5 +1,25 @@
 import { normalizeV3DiagnosticJobType } from "./diagnostics.js";
 
+function buildV3RosterAuditSummary(details, jobType) {
+  if (jobType !== "roster_fetch") return null;
+  const comparison = details?.sourceSnapshotComparison || details?.diagnostics?.sourceSnapshotComparison || null;
+  return {
+    schemaVersion: 1,
+    jobType,
+    status: details?.status || null,
+    reasonCode: details?.reasonCode || null,
+    sourceSnapshotComparison: comparison
+      ? {
+        status: comparison.status || null,
+        mismatch: comparison.mismatch === true,
+        remainingMismatch: comparison.remainingMismatch === true,
+        stale: comparison.stale === true,
+        reasonCode: comparison.reasonCode || null
+      }
+      : null
+  };
+}
+
 // Pure V3 audit record builders. Persistence remains at the Worker boundary.
 export function buildV3CronJobAuditInsert({
   auditColumns = new Set(),
@@ -60,9 +80,12 @@ export function buildV3CronJobAuditInsert({
   if (failure?.diagnostics && typeof failure.diagnostics === "object") {
     structuredDetails.diagnostics = failure.diagnostics;
   }
+  const auditSummary = buildV3RosterAuditSummary(structuredDetails, auditJobType);
   let failureMessage = failureBaseMessage;
   try {
-    failureMessage = `${failureBaseMessage || ""}${failureBaseMessage ? " " : ""}[v3_details=${JSON.stringify(structuredDetails)}]`.slice(0, 8000);
+    const summaryMarker = auditSummary ? `[v3_summary=${JSON.stringify(auditSummary)}]` : "";
+    const detailsMarker = `[v3_details=${JSON.stringify(structuredDetails)}]`;
+    failureMessage = `${failureBaseMessage || ""}${failureBaseMessage ? " " : ""}${summaryMarker}${detailsMarker}`.slice(0, 8000);
   } catch {
     failureMessage = failureBaseMessage;
   }

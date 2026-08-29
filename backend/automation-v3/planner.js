@@ -20,6 +20,13 @@ import { createV3Job } from "./repository.js";
 
 function parseV3AuditDetails(failureMessage) {
   const text = String(failureMessage || "").trim();
+  const summaryMarker = text.indexOf("[v3_summary=");
+  if (summaryMarker >= 0) {
+    const summaryEnd = text.indexOf("]", summaryMarker + "[v3_summary=".length);
+    if (summaryEnd > summaryMarker) {
+      try { return JSON.parse(text.slice(summaryMarker + "[v3_summary=".length, summaryEnd)); } catch { /* fall through to the legacy marker */ }
+    }
+  }
   const marker = text.indexOf("[v3_details=");
   if (marker >= 0) {
     try { return JSON.parse(text.slice(marker + "[v3_details=".length).replace(/\]\s*$/, "")); } catch { return {}; }

@@ -196,7 +196,7 @@ test("18:00開始試合は17:40/17:50/18:00をpollingし、18:02以後はfinaliz
   assert.deepEqual(finalizePlans.map((plan) => [plan.jobType, plan.scheduledSlotAt.toISOString()]), [["lineup_finalize", "2026-08-12T09:02:00.000Z"]]);
 });
 
-test("scheduled runnerはschedule sync後もsummaryまたはfailed監査へ到達する契約を維持する", () => {
+test("scheduled runnerは日程同期が遅くてもV3 automationを先に実行し、summaryまたはfailed監査へ到達する", () => {
   const workerPath = path.join(root, "auth-worker.js");
   const source = fs.readFileSync(workerPath, "utf8");
   const runnerStart = source.indexOf("async function runScheduledGameAutomationV3");
@@ -205,4 +205,19 @@ test("scheduled runnerはschedule sync後もsummaryまたはfailed監査へ到�
   assert.match(runner, /runGameAutomationV3\(/);
   assert.match(runner, /eventType:\s*"cron_run_summary"/);
   assert.match(runner, /eventType:\s*"cron_run_failed"/);
+});
+
+test("V3 automationの実行開始は外部日程同期より先である", () => {
+  const workerPath = path.join(root, "auth-worker.js");
+  const source = fs.readFileSync(workerPath, "utf8");
+  const runnerStart = source.indexOf("async function runScheduledGameAutomationV3");
+  const runner = source.slice(runnerStart);
+  const automationIndex = runner.indexOf("const result = await runGameAutomationV3(env, now");
+  const scheduleIndex = runner.indexOf("const scheduleSync = await runScheduleSync()");
+  assert.ok(automationIndex >= 0, "V3 automation invocation is missing");
+  assert.ok(scheduleIndex >= 0, "deferred schedule sync is missing");
+  assert.ok(automationIndex < scheduleIndex, "schedule sync must not delay V3 automation");
+  assert.match(runner, /const runScheduleSync = async \(\) =>/);
+  assert.match(runner, /syncCurrentDayFightersSchedule\(env, now\)/);
+  assert.match(runner, /ensureFutureFightersSchedule\(env, now\)/);
 });

@@ -752,20 +752,6 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     ).bind(...values).run();
   };
 
-  let currentDayScheduleSync = null;
-  try {
-    currentDayScheduleSync = await syncCurrentDayFightersSchedule(env, now);
-    console.log(`[GAME_SCHEDULE_CURRENT_DAY] status=${currentDayScheduleSync.status} date=${currentDayScheduleSync.date || ""} changed=${currentDayScheduleSync.status === "success_changed"}`);
-  } catch (error) {
-    currentDayScheduleSync = {
-      status: "failed",
-      date: getJstDateString(now),
-      errorCode: error?.code || "CURRENT_DAY_SCHEDULE_SYNC_FAILED",
-      lastScheduleSyncAt: now.toISOString()
-    };
-    console.warn(`[GAME_SCHEDULE_CURRENT_DAY] status=failed date=${currentDayScheduleSync.date || ""} code=${currentDayScheduleSync.errorCode}`);
-  }
-
   let officialCancellation = null;
   try {
     officialCancellation = await reconcileOfficialGameCancellations(env, now);
@@ -780,36 +766,56 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     console.warn(`[GAME_OFFICIAL_CANCELLATION] status=failed code=${officialCancellation.errorCode}`);
   }
 
-  let scheduleSync = null;
-  try {
-    scheduleSync = await ensureFutureFightersSchedule(env, now);
-    console.log(`[GAME_SCHEDULE_BUFFER] before=${scheduleSync.futureGamesBefore} after=${scheduleSync.futureGamesAfter} fetched=${scheduleSync.gamesFetched} inserted=${scheduleSync.gamesInserted} updated=${scheduleSync.gamesUpdated} range=${scheduleSync.fetchRangeStart || ""}..${scheduleSync.fetchRangeEnd || ""} skip=${scheduleSync.skipReason || ""}`);
-  } catch (error) {
-    scheduleSync = {
-      status: "failed",
-      syncNeeded: true,
-      futureGamesBefore: null,
-      futureGamesAfter: null,
-      futureGamesTarget: AUTOMATION_MIN_FUTURE_GAMES,
-      gamesFetched: 0,
-      gamesInserted: 0,
-      gamesUpdated: 0,
-      fetchRangeStart: "",
-      fetchRangeEnd: "",
-      expandedTo30Days: false,
-      skipReason: error?.code || "SCHEDULE_SYNC_FAILED",
-      errorCode: error?.code || "SCHEDULE_FETCH_FAILED",
-      lastScheduleSyncAt: now.toISOString()
-    };
-    console.warn(`[GAME_SCHEDULE_BUFFER] status=failed code=${scheduleSync.skipReason}`);
-  }
-  try {
-    await writeScheduleSyncAudit(scheduleSync);
-  } catch (error) {
-    console.error(`[GAME_SCHEDULE_BUFFER] audit_write_failed code=${error?.code || "SCHEDULE_SYNC_AUDIT_WRITE_FAILED"}`);
-  }
-  scheduleSync.currentDay = currentDayScheduleSync;
-  scheduleSync.officialCancellation = officialCancellation;
+  // Schedule synchronization can fan out across the lookahead window and
+  // wait on the external NPB service. Run the existing V3 pipeline first so a
+  // due job for an already-registered game is never held behind that buffer.
+  const runScheduleSync = async () => {
+    let currentDayScheduleSync = null;
+    try {
+      currentDayScheduleSync = await syncCurrentDayFightersSchedule(env, now);
+      console.log(`[GAME_SCHEDULE_CURRENT_DAY] status=${currentDayScheduleSync.status} date=${currentDayScheduleSync.date || ""} changed=${currentDayScheduleSync.status === "success_changed"}`);
+    } catch (error) {
+      currentDayScheduleSync = {
+        status: "failed",
+        date: getJstDateString(now),
+        errorCode: error?.code || "CURRENT_DAY_SCHEDULE_SYNC_FAILED",
+        lastScheduleSyncAt: now.toISOString()
+      };
+      console.warn(`[GAME_SCHEDULE_CURRENT_DAY] status=failed date=${currentDayScheduleSync.date || ""} code=${currentDayScheduleSync.errorCode}`);
+    }
+
+    let scheduleSync = null;
+    try {
+      scheduleSync = await ensureFutureFightersSchedule(env, now);
+      console.log(`[GAME_SCHEDULE_BUFFER] before=${scheduleSync.futureGamesBefore} after=${scheduleSync.futureGamesAfter} fetched=${scheduleSync.gamesFetched} inserted=${scheduleSync.gamesInserted} updated=${scheduleSync.gamesUpdated} range=${scheduleSync.fetchRangeStart || ""}..${scheduleSync.fetchRangeEnd || ""} skip=${scheduleSync.skipReason || ""}`);
+    } catch (error) {
+      scheduleSync = {
+        status: "failed",
+        syncNeeded: true,
+        futureGamesBefore: null,
+        futureGamesAfter: null,
+        futureGamesTarget: AUTOMATION_MIN_FUTURE_GAMES,
+        gamesFetched: 0,
+        gamesInserted: 0,
+        gamesUpdated: 0,
+        fetchRangeStart: "",
+        fetchRangeEnd: "",
+        expandedTo30Days: false,
+        skipReason: error?.code || "SCHEDULE_SYNC_FAILED",
+        errorCode: error?.code || "SCHEDULE_FETCH_FAILED",
+        lastScheduleSyncAt: now.toISOString()
+      };
+      console.warn(`[GAME_SCHEDULE_BUFFER] status=failed code=${scheduleSync.skipReason}`);
+    }
+    try {
+      await writeScheduleSyncAudit(scheduleSync);
+    } catch (error) {
+      console.error(`[GAME_SCHEDULE_BUFFER] audit_write_failed code=${error?.code || "SCHEDULE_SYNC_AUDIT_WRITE_FAILED"}`);
+    }
+    scheduleSync.currentDay = currentDayScheduleSync;
+    scheduleSync.officialCancellation = officialCancellation;
+    return scheduleSync;
+  };
 
   const summarizePlanResult = (planResult) => ({
     created: Number(planResult?.created || 0),
@@ -994,6 +1000,7 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     }
     throw error;
   });
+  const scheduleSync = await runScheduleSync();
   await writeV3RuntimeAudit(env, {
     eventType: "V3_AUXILIARY_PLAN_SUMMARY",
     runId,

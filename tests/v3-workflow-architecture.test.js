@@ -241,10 +241,37 @@ test("V3 runtime source has explicit phases and no V2 module dependency", () => 
 
 test("planner failure is isolated so the due-job claim phase remains reachable", () => {
   const executor = fs.readFileSync(path.join(root, "backend/automation-v3/executor.js"), "utf8");
-  assert.match(executor, /async function runV3PlannerPhase\([\s\S]*?catch \(error\) \{[\s\S]*?return emptyV3PlanResult\(error/);
+  assert.match(executor, /async function runV3PlannerPhase\([\s\S]*?catch \(error\) \{[\s\S]*?emptyV3PlannerPhaseResult\(error/);
   assert.match(executor, /const auxiliary = await runV3PlannerPhase\(/);
   assert.match(executor, /const mainPlan = await runV3PlannerPhase\(/);
   const mainPlanIndex = executor.indexOf("const mainPlan = await runV3PlannerPhase(");
   const claimIndex = executor.indexOf("const claimReport = await claimDueJobs(");
-  assert.ok(mainPlanIndex >= 0 && claimIndex > mainPlanIndex, "claim phase must follow isolated planner phases");
+  const runFinishedIndex = executor.indexOf('stage: "run_finished"', claimIndex);
+  const optionalScheduleIndex = executor.indexOf("scheduleOptional(optionalPromise)", runFinishedIndex);
+  assert.ok(mainPlanIndex >= 0 && claimIndex > mainPlanIndex && runFinishedIndex > claimIndex && optionalScheduleIndex > runFinishedIndex, "formal plan and claim must complete before optional work");
+  assert.doesNotMatch(executor, /runV3PhaseWithTimeout/);
+  assert.doesNotMatch(executor, /Promise\.race/);
+  assert.doesNotMatch(executor.slice(executor.indexOf("async function runV3PlannerPhase"), executor.indexOf("function hasVerifiedLineupPayload")), /Promise\.race/);
+  assert.match(executor, /scheduleOptional/);
+  assert.match(executor, /observerScheduler/);
+  assert.match(executor, /reconciliation_started/);
+  assert.match(executor, /formal_plan_started/);
+  assert.match(executor, /formal_due_plan_summary/);
+  assert.match(executor, /formal_plan_error/);
+  assert.match(executor, /auxiliary_plan_finished/);
+  assert.match(executor, /stage: "run_finished"/);
+});
+
+test("formal plan summaryはclaim前に記録され、schedule syncはcritical path後へ分離される", () => {
+  const executor = fs.readFileSync(path.join(root, "backend/automation-v3/executor.js"), "utf8");
+  const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+  const formalFinished = executor.indexOf('stage: "formal_plan_finished"');
+  const formalSummary = executor.indexOf('stage: "formal_due_plan_summary"');
+  const claimStarted = executor.indexOf('stage: "claim_phase_started"');
+  assert.ok(formalFinished >= 0 && formalSummary > formalFinished && claimStarted > formalSummary);
+  const criticalFinished = worker.indexOf('eventType: "CRON_CRITICAL_PATH_FINISHED"');
+  const scheduleSync = worker.indexOf("const scheduleSyncPromise = runScheduleSync()");
+  assert.ok(criticalFinished >= 0 && scheduleSync > criticalFinished);
+  assert.match(worker, /formal_plan_error: "V3_FORMAL_PLAN_ERROR"/);
+  assert.match(worker, /scheduleOptional\(scheduleSyncPromise\)/);
 });

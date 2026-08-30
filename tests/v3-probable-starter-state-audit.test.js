@@ -351,6 +351,15 @@ test("09:00のtransient_errorは12:00 slotを抑止せず、12:58時点で1件�
     const env = { ENABLE_GAME_AUTOMATION_V3: "true", AUTH_DB: db };
     const executed = [];
     const planEvents = [];
+    const first = await v3.runGameAutomationV3(env, new Date("2026-08-07T03:58:00.000Z"), {
+      executeJob: async ({ job, now }) => {
+        executed.push({ job, now });
+        return { stateBefore: "scheduled", stateAfter: "scheduled" };
+      },
+      onPlan: (entry) => {
+        if (entry.plan?.jobType === "probable_starter_fetch") planEvents.push(entry);
+      }
+    });
     const result = await v3.runGameAutomationV3(env, new Date("2026-08-07T03:58:00.000Z"), {
       executeJob: async ({ job, now }) => {
         executed.push({ job, now });
@@ -360,14 +369,15 @@ test("09:00のtransient_errorは12:00 slotを抑止せず、12:58時点で1件�
         if (entry.plan?.jobType === "probable_starter_fetch") planEvents.push(entry);
       }
     });
-    assert.equal(result.created, 1);
+    assert.equal(first.created, 1);
+    assert.equal(first.processed, 0);
     assert.equal(result.processed, 1);
     assert.equal(executed.length, 1);
     assert.equal(executed[0].job.scheduled_slot_at, "2026-08-07T03:00:00.000Z");
     assert.equal(executed[0].job.status, "claimed");
     assert.equal(executed[0].job.attempt_count, 1);
-    assert.deepEqual(planEvents.map((entry) => entry.stage), ["probable_plan", "probable_claim"]);
-    assert.equal(planEvents.at(-1).diagnostic.claimResult, "claimed");
+    assert.deepEqual(planEvents.map((entry) => entry.stage), ["probable_plan", "probable_claim", "probable_plan"]);
+    assert.equal(planEvents.find((entry) => entry.stage === "probable_claim")?.diagnostic.claimResult, "claimed");
     assert.ok(Date.parse(executed[0].now.toISOString()) >= Date.parse("2026-08-07T03:58:00.000Z"));
     const rows = database.prepare("SELECT status, scheduled_slot_at, attempt_count, claimed_at, completed_at FROM game_jobs_v3 WHERE internal_game_id = ? ORDER BY scheduled_slot_at").all(GAME_ID);
     assert.deepEqual(rows.map((row) => [row.status, row.scheduled_slot_at, row.attempt_count, row.claimed_at, row.completed_at]), [

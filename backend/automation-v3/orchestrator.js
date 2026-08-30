@@ -17,7 +17,7 @@ import {
   planV3RosterJobs
 } from "./planner.js";
 import { planV3ProbableStarterJobs } from "./probable-starter-planner.js";
-import { isV3GameEligible } from "./domain.js";
+import { isV3GameEligible, V3_COMPLETED_STATE_TRANSITIONS } from "./domain.js";
 import { assessV3LineupArtifact } from "./lineup-artifacts.js";
 
 // Planner aggregation, planner diagnostics, and atomic claim coordination.
@@ -151,6 +151,33 @@ async function readV3StateForPlanning(db, internalGameId) {
   } catch {
     return null;
   }
+}
+
+async function deriveV3PlanningState(db, internalGameId, persistedState = "scheduled") {
+  let effectiveState = String(persistedState || "scheduled").trim().toLowerCase() || "scheduled";
+  for (const transition of V3_COMPLETED_STATE_TRANSITIONS) {
+    if (effectiveState !== transition.from) break;
+    let completed = null;
+    try {
+      completed = await db.prepare(
+        `SELECT id FROM game_jobs_v3
+          WHERE internal_game_id = ?1 AND job_type = ?2 AND status = 'completed'
+          ORDER BY completed_at DESC, updated_at DESC, id DESC LIMIT 1`
+      ).bind(internalGameId, transition.jobType).first();
+    } catch {
+      break;
+    }
+    if (!completed) break;
+    const artifacts = await readV3WorkflowArtifactHealth(db, internalGameId, effectiveState);
+    const artifactReady = transition.jobType === V3_JOB_TYPE.PREDICTION_CLOSE
+      || transition.jobType === V3_JOB_TYPE.LINEUP_FINALIZE && artifacts.lineup.finalizedValid === true
+      || transition.jobType === V3_JOB_TYPE.SCORE && artifacts.scoreReady
+      || transition.jobType === V3_JOB_TYPE.RANKING_REBUILD && artifacts.rankingReflected
+      || transition.jobType === V3_JOB_TYPE.PUBLISH && artifacts.publicationReady;
+    if (!artifactReady) break;
+    effectiveState = transition.to;
+  }
+  return effectiveState;
 }
 
 function createV3PlanningDiagnostic(game, plan, state) {
@@ -309,7 +336,8 @@ export async function planV3MainJobs(db, games = [], now = new Date()) {
     if (!isV3GameEligible(game)) continue;
     try {
       const stateRow = await readV3StateForPlanning(db, game.internalGameId);
-      const state = String(stateRow?.state || game.workflowState || "scheduled").trim().toLowerCase() || "scheduled";
+      const persistedState = String(stateRow?.state || game.workflowState || "scheduled").trim().toLowerCase() || "scheduled";
+      const state = await deriveV3PlanningState(db, game.internalGameId, persistedState);
       const workflowArtifacts = await readV3WorkflowArtifactHealth(db, game.internalGameId, state);
       if (state === "published" || workflowArtifacts.publicationReady) continue;
       const plans = getV3FormalDuePlans(game, state, now);

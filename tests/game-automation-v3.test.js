@@ -250,7 +250,7 @@ test("V3 runnerは同じDB行をprediction closeからpublishまで一度ずつ�
     for (const at of ["2026-08-04T08:00:00.000Z", "2026-08-04T08:10:00.000Z", "2026-08-04T09:02:00.000Z", "2026-08-04T09:03:00.000Z", "2026-08-04T09:10:00.000Z", "2026-08-04T09:11:00.000Z"]) {
       await v3.runGameAutomationV3(env, new Date(at), { executeJob });
     }
-    assert.deepEqual(executed, ["roster_fetch", "probable_starter_fetch", "prediction_close", "lineup_fetch", "lineup_finalize", "score", "ranking_rebuild", "publish"]);
+    assert.deepEqual(executed, ["prediction_close", "roster_fetch", "probable_starter_fetch", "lineup_fetch", "lineup_finalize", "score", "ranking_rebuild", "publish"]);
     assert.equal(database.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1").get(GAME_ID).state, "published");
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id = ?1").get(GAME_ID).count, 8);
   } finally {

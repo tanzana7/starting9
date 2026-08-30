@@ -656,7 +656,11 @@ export default {
       }));
       return;
     }
-    ctx.waitUntil(runScheduledGameAutomationV3(env, scheduledAt, { runId }));
+    ctx.waitUntil(runScheduledGameAutomationV3(env, scheduledAt, {
+      runId,
+      scheduleOptional: (promise) => ctx.waitUntil(promise),
+      observerScheduler: (promise) => ctx.waitUntil(promise)
+    }));
   }
 };
 
@@ -696,7 +700,7 @@ async function writeV3RuntimeAudit(env, { eventType, runId, correlationId = runI
   }
 }
 
-async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = null } = {}) {
+async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = null, scheduleOptional = null, observerScheduler = null } = {}) {
   const runId = providedRunId || globalThis.crypto?.randomUUID?.() || `v3-run-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const correlationId = runId;
   await writeV3RuntimeAudit(env, {
@@ -727,6 +731,18 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
        VALUES (${columns.map((_, index) => `?${index + 1}`).join(", ")})`
     ).bind(...values).run();
   };
+  let cronHandlerFinished = false;
+  const writeCronHandlerFinished = async (status, details = {}) => {
+    if (cronHandlerFinished) return;
+    cronHandlerFinished = true;
+    await writeV3RuntimeAudit(env, {
+      eventType: "CRON_HANDLER_FINISHED",
+      runId,
+      correlationId,
+      now,
+      execution: { stage: "cron_handler_finished", status, ...details }
+    });
+  };
 
   const writeScheduleSyncAudit = async (diagnostics) => {
     const anchor = await env.AUTH_DB.prepare(
@@ -752,24 +768,23 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     ).bind(...values).run();
   };
 
-  let officialCancellation = null;
-  try {
-    officialCancellation = await reconcileOfficialGameCancellations(env, now);
-  } catch (error) {
-    officialCancellation = {
-      checked: 0,
-      applied: 0,
-      skipped: 0,
-      failed: 1,
-      errorCode: error?.code || "OFFICIAL_CANCELLATION_RECONCILE_FAILED"
-    };
-    console.warn(`[GAME_OFFICIAL_CANCELLATION] status=failed code=${officialCancellation.errorCode}`);
-  }
-
   // Schedule synchronization can fan out across the lookahead window and
   // wait on the external NPB service. Run the existing V3 pipeline first so a
   // due job for an already-registered game is never held behind that buffer.
   const runScheduleSync = async () => {
+    let officialCancellation = null;
+    try {
+      officialCancellation = await reconcileOfficialGameCancellations(env, now);
+    } catch (error) {
+      officialCancellation = {
+        checked: 0,
+        applied: 0,
+        skipped: 0,
+        failed: 1,
+        errorCode: error?.code || "OFFICIAL_CANCELLATION_RECONCILE_FAILED"
+      };
+      console.warn(`[GAME_OFFICIAL_CANCELLATION] status=failed code=${officialCancellation.errorCode}`);
+    }
     let currentDayScheduleSync = null;
     try {
       currentDayScheduleSync = await syncCurrentDayFightersSchedule(env, now);
@@ -837,13 +852,28 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
 
   const result = await runGameAutomationV3(env, now, {
     executeJob: (context) => executeGameAutomationV3Job(context),
+    scheduleOptional,
+    observerScheduler,
     onPhase: async (phase) => {
       const eventTypeByStage = {
         eligible_games: "V3_ELIGIBLE_GAMES",
+        reconciliation_started: "V3_RECONCILIATION_STARTED",
+        reconciliation_finished: "V3_RECONCILIATION_FINISHED",
+        formal_plan_started: "V3_FORMAL_PLAN_STARTED",
+        formal_plan_finished: "V3_FORMAL_PLAN_FINISHED",
+        formal_plan_error: "V3_FORMAL_PLAN_ERROR",
+        formal_due_plan_summary: "V3_FORMAL_DUE_PLAN_SUMMARY",
+        auxiliary_plan_started: "V3_AUXILIARY_PLAN_STARTED",
+        auxiliary_plan_finished: "V3_AUXILIARY_PLAN_FINISHED",
+        auxiliary_plan_summary: "V3_AUXILIARY_PLAN_SUMMARY",
         claim_phase_started: "V3_CLAIM_PHASE_STARTED",
-        claim_execution_completed: "V3_CLAIM_EXECUTION_SUMMARY"
+        claim_execution_completed: "V3_CLAIM_EXECUTION_SUMMARY",
+        run_finished: "V3_RUN_FINISHED"
       };
       const execution = { ...phase };
+      if (phase.stage === "formal_plan_finished" || phase.stage === "formal_plan_error" || phase.stage === "formal_due_plan_summary" || phase.stage === "auxiliary_plan_finished" || phase.stage === "auxiliary_plan_summary") {
+        execution.plan = summarizePlanResult(phase.plan);
+      }
       if (phase.stage === "claim_execution_completed") {
         const claimReport = phase.claimReport || {};
         execution.claimReport = {
@@ -975,7 +1005,7 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
           console.error(`[GAME_AUTOMATION_V3] audit_write_failed code=${auditError?.code || "V3_AUDIT_WRITE_FAILED"}`);
         }
       }
-    }
+     }
     }).catch(async (error) => {
     await writeV3RuntimeAudit(env, {
       eventType: "V3_RUN_ERROR",
@@ -983,8 +1013,9 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
       correlationId,
       now,
       execution: { stage: "v3_run_error", errorReason: error?.code || error?.message || "V3_CRON_RUN_FAILED" },
-      failure: error
-    });
+       failure: error
+     });
+    await writeCronHandlerFinished("failed", { errorReason: error?.code || error?.message || "V3_CRON_RUN_FAILED" });
     const anchor = await env.AUTH_DB.prepare(
       `SELECT internal_game_id FROM games WHERE internal_game_id IS NOT NULL AND internal_game_id <> '' ORDER BY game_date, start_time, internal_game_id LIMIT 1`
     ).first().catch(() => null);
@@ -1000,27 +1031,52 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     }
     throw error;
   });
-  const scheduleSync = await runScheduleSync();
+  try {
   await writeV3RuntimeAudit(env, {
-    eventType: "V3_AUXILIARY_PLAN_SUMMARY",
+    eventType: "CRON_CRITICAL_PATH_FINISHED",
     runId,
     correlationId,
     now,
     execution: {
-      stage: "auxiliary_planner_summary",
-      probableStarter: summarizePlanResult(result?.probablePlan),
-      roster: summarizePlanResult(result?.rosterPlan),
-      identity: summarizePlanResult(result?.identityPlan),
-      errors: Number(result?.auxiliaryPlan?.errors?.length || 0)
+      stage: "cron_critical_path_finished",
+      createdJobCount: Number(result?.created || 0),
+      executedJobCount: Number(result?.processed || 0),
+      failedJobCount: Number(result?.failed || 0)
     }
   });
-  await writeV3RuntimeAudit(env, {
-    eventType: "V3_FORMAL_DUE_PLAN_SUMMARY",
-    runId,
-    correlationId,
-    now,
-    execution: { stage: "formal_due_plan_summary", main: summarizePlanResult(result?.mainPlan) }
-  });
+  let scheduleSync = null;
+  if (typeof scheduleOptional === "function") {
+    const scheduleSyncPromise = runScheduleSync().catch(async (error) => {
+      await writeV3RuntimeAudit(env, {
+        eventType: "V3_SCHEDULE_SYNC_ERROR",
+        runId,
+        correlationId,
+        now,
+        execution: { stage: "schedule_sync", errorReason: error?.code || error?.message || "SCHEDULE_SYNC_FAILED" },
+        failure: error
+      });
+      return { status: "failed", errorCode: error?.code || "SCHEDULE_SYNC_FAILED" };
+    });
+    scheduleOptional(scheduleSyncPromise);
+    scheduleSync = { status: "scheduled", pending: true };
+  } else {
+    scheduleSync = await runScheduleSync();
+  }
+  if (!result?.optionalScheduled) {
+    await writeV3RuntimeAudit(env, {
+      eventType: "V3_AUXILIARY_PLAN_SUMMARY",
+      runId,
+      correlationId,
+      now,
+      execution: {
+        stage: "auxiliary_planner_summary",
+        probableStarter: summarizePlanResult(result?.probablePlan),
+        roster: summarizePlanResult(result?.rosterPlan),
+        identity: summarizePlanResult(result?.identityPlan),
+        errors: Number(result?.auxiliaryPlan?.errors?.length || 0)
+      }
+    });
+  }
   let workflowStates = [];
   try {
     const gameIds = Array.isArray(result?.gameIds) ? result.gameIds.filter(Boolean).slice(0, 100) : [];
@@ -1072,14 +1128,20 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
   if (result?.schemaReady === false) {
     console.error(`[GAME_AUTOMATION_V3] enabled=true code=${result.errorCode}`);
   }
-  await writeV3RuntimeAudit(env, {
-    eventType: "CRON_HANDLER_FINISHED",
-    runId,
-    correlationId,
-    now,
-    execution: { stage: "cron_handler_finished", status: "completed", publishedReached: workflowStates.some((row) => String(row?.state || "") === "published") }
-  });
+  await writeCronHandlerFinished("completed", { publishedReached: workflowStates.some((row) => String(row?.state || "") === "published") });
   return { ...result, scheduleSync, runId, correlationId, summary };
+  } catch (error) {
+    await writeV3RuntimeAudit(env, {
+      eventType: "V3_RUN_ERROR",
+      runId,
+      correlationId,
+      now,
+      execution: { stage: "v3_run_error", errorReason: error?.code || error?.message || "V3_CRON_RUN_FAILED" },
+      failure: error
+    });
+    await writeCronHandlerFinished("failed", { errorReason: error?.code || error?.message || "V3_CRON_RUN_FAILED" });
+    throw error;
+  }
 }
 
 async function reconcileOfficialGameCancellations(env, now) {

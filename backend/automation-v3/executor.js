@@ -22,21 +22,27 @@ import { assessV3LineupArtifact } from "./lineup-artifacts.js";
 // Audit observers must never hold the workflow planner or executor hostage.
 // D1 audit writes are operational telemetry; the V3 job lifecycle is the
 // authoritative path and must continue when telemetry is slow or unavailable.
+// The observer promise is handed to the runtime scheduler when one is
+// available. There is deliberately no timeout race: a timeout cannot cancel a
+// side-effectful audit callback and would leave a late write running in the
+// background. Every rejection is observed before it is scheduled or ignored.
 const V3_OBSERVER_TIMEOUT_MS = 1000;
 
-async function invokeV3Observer(observer, args = [], timeoutMs = V3_OBSERVER_TIMEOUT_MS) {
-  if (typeof observer !== "function") return true;
-  let timer = null;
+function invokeV3Observer(observer, args = [], _timeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null) {
+  if (typeof observer !== "function") return Promise.resolve(true);
   const parameters = Array.isArray(args) ? args : [args];
-  try {
-    const observed = Promise.resolve().then(() => observer(...parameters));
-    const timeout = new Promise((resolve) => {
-      timer = setTimeout(() => resolve(false), timeoutMs);
-    });
-    return await Promise.race([observed.then(() => true).catch(() => false), timeout]);
-  } finally {
-    if (timer) clearTimeout(timer);
+  const observed = Promise.resolve()
+    .then(() => observer(...parameters))
+    .then(() => true)
+    .catch(() => false);
+  if (typeof observerScheduler === "function") {
+    try {
+      observerScheduler(observed);
+    } catch {
+      // Scheduling telemetry must not affect the V3 lifecycle.
+    }
   }
+  return Promise.resolve(true);
 }
 
 function emptyV3PlanResult(error = null, plan = null) {
@@ -48,14 +54,27 @@ function emptyV3PlanResult(error = null, plan = null) {
   };
 }
 
+function emptyV3PlannerPhaseResult(error = null, plan = null) {
+  const base = emptyV3PlanResult(error, plan);
+  if (plan !== "auxiliary") return base;
+  return {
+    ...base,
+    probablePlan: emptyV3PlanResult(),
+    rosterPlan: emptyV3PlanResult(),
+    identityPlan: emptyV3PlanResult()
+  };
+}
+
 async function runV3PlannerPhase(planner, db, games, now, plan) {
   try {
-    return await planner(db, games, now);
+    const result = await planner(db, games, now);
+    const normalized = result || emptyV3PlannerPhaseResult(null, plan);
+    return { ...normalized, phaseStatus: normalized.errors?.length ? "failed" : "completed" };
   } catch (error) {
     // Planning is best-effort. The due-job lifecycle must still run so an
     // already-created pending/retry_wait job is not stranded by a planner
     // failure in the same Cron invocation.
-    return emptyV3PlanResult(error, plan);
+    return { ...emptyV3PlannerPhaseResult(error, plan), phaseStatus: "failed" };
   }
 }
 
@@ -117,7 +136,7 @@ async function canReconcileCompletedV3StateTransition(db, internalGameId, transi
   }
 }
 
-async function reconcileCompletedV3StateTransitions(env, games = [], now = new Date(), { onError = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS } = {}) {
+async function reconcileCompletedV3StateTransitions(env, games = [], now = new Date(), { onError = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null } = {}) {
   let recovered = 0;
   let failed = 0;
   const recoveredJobIds = [];
@@ -168,27 +187,102 @@ async function reconcileCompletedV3StateTransitions(env, games = [], now = new D
       await invokeV3Observer(onError, [error, {
         game,
         stage: "completed_state_reconcile"
-      }], observerTimeoutMs);
+      }], observerTimeoutMs, observerScheduler);
     }
   }
   return { recovered, failed, recoveredJobIds, recoveredByJobType, skipped };
 }
 
+const emptyV3ReconciliationResult = () => ({
+  recovered: 0,
+  failed: 0,
+  recoveredJobIds: [],
+  recoveredByJobType: {},
+  skipped: []
+});
+
+async function runV3OptionalPhases(env, games, now, {
+  auxiliaryPlanner,
+  onError,
+  onPlan,
+  onPhase,
+  observerTimeoutMs,
+  observerScheduler
+} = {}) {
+  let stateReconciliation = emptyV3ReconciliationResult();
+  await invokeV3Observer(onPhase, [{ stage: "reconciliation_started", now, gameCount: games.length }], observerTimeoutMs, observerScheduler);
+  try {
+    stateReconciliation = await reconcileCompletedV3StateTransitions(env, games, now, { onError, observerTimeoutMs, observerScheduler });
+    await invokeV3Observer(onPhase, [{
+      stage: "reconciliation_finished",
+      now,
+      status: "completed",
+      stateReconciliation,
+      errorCode: null
+    }], observerTimeoutMs, observerScheduler);
+  } catch (error) {
+    await invokeV3Observer(onError, [error, { stage: "reconciliation" }], observerTimeoutMs, observerScheduler);
+    await invokeV3Observer(onPhase, [{
+      stage: "reconciliation_finished",
+      now,
+      status: "failed",
+      stateReconciliation,
+      errorCode: error?.code || "V3_RECONCILIATION_FAILED"
+    }], observerTimeoutMs, observerScheduler);
+  }
+
+  await invokeV3Observer(onPhase, [{ stage: "auxiliary_plan_started", now, gameCount: games.length }], observerTimeoutMs, observerScheduler);
+  const auxiliary = await runV3PlannerPhase(auxiliaryPlanner, env.AUTH_DB, games, now, "auxiliary");
+  for (const [plan, stage] of [
+    [auxiliary.probablePlan, "probable_plan"],
+    [auxiliary.rosterPlan, "roster_plan"],
+    [auxiliary.identityPlan, "identity_plan"]
+  ]) {
+    for (const entry of plan?.planned || []) {
+      await invokeV3Observer(onPlan, [{ ...entry, stage, now, plannerDecision: entry.plannerDecision }], observerTimeoutMs, observerScheduler);
+    }
+  }
+  await invokeV3Observer(onPhase, [{
+    stage: "auxiliary_plan_finished",
+    now,
+    status: auxiliary.phaseStatus || "completed",
+    plan: auxiliary,
+    errorCode: auxiliary.errors[0]?.error?.code || null
+  }], observerTimeoutMs, observerScheduler);
+  await invokeV3Observer(onPhase, [{
+    stage: "auxiliary_plan_summary",
+    now,
+    plan: auxiliary
+  }], observerTimeoutMs, observerScheduler);
+  return { stateReconciliation, auxiliary };
+}
+
 // Claim execution lifecycle. Job-type business executors remain injected by auth-worker.
-export async function executeClaimedJobs(env, claims = [], games = [], now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS } = {}) {
+export async function executeClaimedJobs(env, claims = [], games = [], now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null } = {}) {
   let processed = 0;
   let failed = 0;
   for (const claim of claims) {
     const { job, claimed, entry, claimResult } = claim;
-    if (entry && onPlan) {
+    if (onPlan) {
+      const claimEntry = entry || {
+        game: games.find((game) => game?.internalGameId === job?.internal_game_id) || null,
+        plan: {
+          jobType: job?.job_type || null,
+          scheduledAt: job?.scheduled_at || null,
+          scheduledSlotAt: job?.scheduled_slot_at || null
+        },
+        job,
+        diagnostic: {}
+      };
       await invokeV3Observer(onPlan, [{
-        ...entry,
-        stage: entry.plan?.jobType === "probable_starter_fetch"
+        ...claimEntry,
+        diagnostic: { ...(claimEntry.diagnostic || {}), claimResult },
+        stage: claimEntry.plan?.jobType === "probable_starter_fetch"
           ? "probable_claim"
-          : `${entry.plan?.jobType || job.job_type}_claim`,
+          : `${claimEntry.plan?.jobType || job.job_type}_claim`,
         claimResult,
         now
-      }], observerTimeoutMs);
+      }], observerTimeoutMs, observerScheduler);
     }
     if (!claimed) continue;
     processed += 1;
@@ -218,7 +312,7 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
         });
       }
       const completedJob = await env.AUTH_DB.prepare("SELECT * FROM game_jobs_v3 WHERE id = ?1 LIMIT 1").bind(Number(claimed.id)).first();
-      await invokeV3Observer(onSuccess, [{ job: completedJob || { ...claimed, status: V3_JOB_STATUS.COMPLETED, completed_at: executionNow.toISOString(), updated_at: executionNow.toISOString() }, claimToken: claimed.claim_token, result, now: executionNow }], observerTimeoutMs);
+      await invokeV3Observer(onSuccess, [{ job: completedJob || { ...claimed, status: V3_JOB_STATUS.COMPLETED, completed_at: executionNow.toISOString(), updated_at: executionNow.toISOString() }, claimToken: claimed.claim_token, result, now: executionNow }], observerTimeoutMs, observerScheduler);
       if (claimed.job_type === V3_JOB_TYPE.NPB_IDENTITY_RESOLVE && result?.identityResolved) {
         const followupGame = games.find((game) => game.internalGameId === claimed.internal_game_id);
         if (followupGame) {
@@ -246,13 +340,13 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
         retryAt: error?.retryAt || new Date(executionNow.getTime() + 10 * 60 * 1000)
       });
       const retryJob = await env.AUTH_DB.prepare("SELECT * FROM game_jobs_v3 WHERE id = ?1 LIMIT 1").bind(Number(claimed.id)).first();
-      await invokeV3Observer(onError, [error, { job: retryJob || claimed, claimToken: claimed.claim_token, stage: "execute", stateBefore: claimed.status }], observerTimeoutMs);
+      await invokeV3Observer(onError, [error, { job: retryJob || claimed, claimToken: claimed.claim_token, stage: "execute", stateBefore: claimed.status }], observerTimeoutMs, observerScheduler);
     }
   }
   return { processed, failed };
 }
 
-export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, onPhase = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS } = {}) {
+export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, onPhase = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, formalPlanner = planMainWorkflowJobs, auxiliaryPlanner = planAuxiliaryJobs, scheduleOptional = null } = {}) {
   if (!isGameAutomationV3Enabled(env)) return { enabled: false, processed: 0, created: 0 };
   const schema = await getV3SchemaState(env.AUTH_DB);
   if (!schema.ready) return { enabled: true, schemaReady: false, errorCode: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", processed: 0, created: 0 };
@@ -262,7 +356,7 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     now,
     gameCount: games.length,
     gameIds: games.map((game) => game?.internalGameId).filter(Boolean).slice(0, 100)
-  }], observerTimeoutMs);
+  }], observerTimeoutMs, observerScheduler);
   let failed = 0;
   for (const game of games) {
     try {
@@ -274,53 +368,63 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
             "OFFICIAL_CANCELLATION_RECONCILE_REQUIRED",
             "中止・対象外状態を正式反映できるまで、V3状態を自動前進させません。",
             { retryable: true }
-          ), { game, stateBefore: stateRow.state, stage: "official_cancellation_reconcile" }], observerTimeoutMs);
+          ), { game, stateBefore: stateRow.state, stage: "official_cancellation_reconcile" }], observerTimeoutMs, observerScheduler);
           continue;
         }
         await transitionV3State(env.AUTH_DB, { internalGameId: game.internalGameId, from: stateRow.state, to: V3_STATE.EXCLUDED, now });
       }
     } catch (error) {
       failed += 1;
-      await invokeV3Observer(onError, [error, { game, stage: "state_prepare" }], observerTimeoutMs);
+      await invokeV3Observer(onError, [error, { game, stage: "state_prepare" }], observerTimeoutMs, observerScheduler);
     }
   }
 
-  // A completed main job can outlive a failed state transition. Restore only
-  // the matching canonical boundary through the normal V3 transition contract
-  // before planning downstream jobs; this never writes the state table directly.
-  const stateReconciliation = await reconcileCompletedV3StateTransitions(env, games, now, { onError, observerTimeoutMs });
-  failed += stateReconciliation.failed;
-
-  // Phase boundaries are explicit: an auxiliary decision never short-circuits
-  // the main workflow planner for the same or another game.
-  const auxiliary = await runV3PlannerPhase(
-    planAuxiliaryJobs,
-    env.AUTH_DB,
-    games,
+  // The formal workflow planner has priority over optional auxiliary work.
+  await invokeV3Observer(onPhase, [{
+    stage: "formal_plan_started",
     now,
-    "auxiliary"
-  );
+    gameCount: games.length
+  }], observerTimeoutMs, observerScheduler);
   const mainPlan = await runV3PlannerPhase(
-    planMainWorkflowJobs,
+    formalPlanner,
     env.AUTH_DB,
     games,
     now,
-    "main"
+    "formal"
   );
-  const allPlanned = [...auxiliary.planned, ...mainPlan.planned];
+  await invokeV3Observer(onPhase, [{
+    stage: "formal_plan_finished",
+    now,
+    status: mainPlan.phaseStatus || "completed",
+    plan: mainPlan,
+    errorCode: mainPlan.errors[0]?.error?.code || null
+  }], observerTimeoutMs, observerScheduler);
+  if (mainPlan.phaseStatus === "failed" || mainPlan.errors.length) {
+    await invokeV3Observer(onPhase, [{
+      stage: "formal_plan_error",
+      now,
+      status: "failed",
+      plan: mainPlan,
+      errorCode: mainPlan.errors[0]?.error?.code || "V3_FORMAL_PLAN_FAILED"
+    }], observerTimeoutMs, observerScheduler);
+  }
+  await invokeV3Observer(onPhase, [{
+    stage: "formal_due_plan_summary",
+    now,
+    plan: mainPlan
+  }], observerTimeoutMs, observerScheduler);
+
+  const allPlanned = [...mainPlan.planned];
   const reportPlan = async (entries, stage) => {
     for (const entry of entries) {
       if (!onPlan) continue;
-      await invokeV3Observer(onPlan, [{ ...entry, stage, now, plannerDecision: entry.plannerDecision }], observerTimeoutMs);
+      await invokeV3Observer(onPlan, [{ ...entry, stage, now, plannerDecision: entry.plannerDecision }], observerTimeoutMs, observerScheduler);
     }
   };
-  await reportPlan(auxiliary.probablePlan.planned, "probable_plan");
-  await reportPlan(auxiliary.rosterPlan.planned, "roster_plan");
-  await reportPlan(auxiliary.identityPlan.planned, "identity_plan");
   await reportPlan(mainPlan.planned, "main_plan");
-  for (const entry of [...auxiliary.errors, ...mainPlan.errors]) {
+  for (const entry of mainPlan.errors) {
     failed += 1;
-    await invokeV3Observer(onError, [entry.error, { game: entry.game, plan: entry.plan, stage: "planner" }], observerTimeoutMs);
+    await invokeV3Observer(onError, [entry.error, { game: entry.game, plan: entry.plan, stage: "planner" }], observerTimeoutMs, observerScheduler);
   }
 
   await invokeV3Observer(onPhase, [{
@@ -328,29 +432,57 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     now,
     gameCount: games.length,
     plannedCount: allPlanned.length
-  }], observerTimeoutMs);
+  }], observerTimeoutMs, observerScheduler);
   const claimReport = await claimDueJobs(env.AUTH_DB, now, allPlanned);
-  const execution = await executeClaimedJobs(env, claimReport.claimed, games, now, { executeJob, onError, onSuccess, onPlan, observerTimeoutMs });
+  const execution = await executeClaimedJobs(env, claimReport.claimed, games, now, { executeJob, onError, onSuccess, onPlan, observerTimeoutMs, observerScheduler });
   await invokeV3Observer(onPhase, [{
     stage: "claim_execution_completed",
     now,
     claimReport,
     execution
-  }], observerTimeoutMs);
-  return {
+  }], observerTimeoutMs, observerScheduler);
+  await invokeV3Observer(onPhase, [{
+    stage: "run_finished",
+    now,
+    criticalPath: true,
+    createdJobCount: mainPlan.created,
+    executedJobCount: execution.processed,
+    failedJobCount: failed + execution.failed
+  }], observerTimeoutMs, observerScheduler);
+  const criticalResult = {
     enabled: true,
     schemaReady: true,
     gameCount: games.length,
     gameIds: games.map((game) => game?.internalGameId).filter(Boolean),
-    created: auxiliary.created + mainPlan.created,
+    created: mainPlan.created,
     processed: execution.processed,
     failed: failed + execution.failed,
-    stateReconciliation,
-    probablePlan: auxiliary.probablePlan,
-    rosterPlan: auxiliary.rosterPlan,
-    identityPlan: auxiliary.identityPlan,
     mainPlan,
-    auxiliaryPlan: auxiliary,
     claimReport
+  };
+  const optionalPromise = runV3OptionalPhases(env, games, now, {
+    auxiliaryPlanner,
+    onError,
+    onPlan,
+    onPhase,
+    observerTimeoutMs,
+    observerScheduler
+  }).catch(async (error) => {
+    await invokeV3Observer(onError, [error, { stage: "optional" }], observerTimeoutMs, observerScheduler);
+    return { stateReconciliation: emptyV3ReconciliationResult(), auxiliary: emptyV3PlannerPhaseResult(error, "auxiliary") };
+  });
+  if (typeof scheduleOptional === "function") {
+    scheduleOptional(optionalPromise);
+    return { ...criticalResult, optionalScheduled: true };
+  }
+  const optional = await optionalPromise;
+  return {
+    ...criticalResult,
+    stateReconciliation: optional.stateReconciliation,
+    probablePlan: optional.auxiliary.probablePlan,
+    rosterPlan: optional.auxiliary.rosterPlan,
+    identityPlan: optional.auxiliary.identityPlan,
+    auxiliaryPlan: optional.auxiliary,
+    created: criticalResult.created + optional.auxiliary.created
   };
 }

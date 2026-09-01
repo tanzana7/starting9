@@ -8,6 +8,26 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const v3 = await import(pathToFileURL(path.join(root, "game-automation-v3.js")).href);
 
+function d1(database) {
+  return {
+    prepare(sql) {
+      const statement = database.prepare(sql);
+      return {
+        all: async (...args) => ({ results: statement.all(...args) }),
+        first: async (...args) => statement.get(...args),
+        run: async (...args) => ({ meta: { changes: Number(statement.run(...args).changes || 0) } }),
+        bind(...args) {
+          return {
+            all: async () => ({ results: statement.all(...args) }),
+            first: async () => statement.get(...args),
+            run: async () => ({ meta: { changes: Number(statement.run(...args).changes || 0) } })
+          };
+        }
+      };
+    }
+  };
+}
+
 test("V3 facade keeps the public automation contracts while implementation is modular", () => {
   for (const name of [
     "runGameAutomationV3",
@@ -114,6 +134,60 @@ test("due-job query includes pending and ready retry jobs but excludes future re
     };
     const due = await v3.listDueV3Jobs(db, new Date("2026-08-25T08:00:00.000Z"));
     assert.deepEqual(due.map((job) => job.id), [2, 1]);
+  } finally {
+    database.close();
+  }
+});
+
+test("共有planning engineは別gameまたはIDなしjobを対象gameの既存jobとして扱わない", () => {
+  const game = {
+    internalGameId: "8cd8869c-6ae5-47a5-8792-5bc89d20ef18",
+    gameDate: "2026-08-30",
+    startAt: "2026-08-30T09:00:00.000Z",
+    homeTeam: "fighters",
+    awayTeam: "marines",
+    gameStatus: "scheduled",
+    isActive: 1
+  };
+  const jobs = [
+    { internal_game_id: "other-game", job_type: "roster_fetch", status: "completed" },
+    { job_type: "roster_fetch", status: "completed" }
+  ];
+  const state = v3.buildV3PlanningState({
+    game,
+    persistedState: "probable_starter_ready",
+    jobs,
+    now: new Date("2026-08-30T07:01:00.000Z")
+  });
+  assert.equal(state.effectiveState, "probable_starter_ready");
+  const plan = v3.buildStagePlan(state, "roster_fetch");
+  assert.equal(plan.existingJob, null);
+  assert.equal(plan.shouldCreateJob, true);
+});
+
+test("due-job claimは50/100件制限で後続gameをstarveさせず、複数batchをdrainする", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE game_jobs_v3 (
+        id INTEGER PRIMARY KEY, internal_game_id TEXT, job_type TEXT,
+        scheduled_at TEXT NOT NULL, scheduled_slot_at TEXT NOT NULL, status TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL, max_attempts INTEGER NOT NULL, next_retry_at TEXT,
+        claimed_at TEXT, claim_token TEXT, lease_expires_at TEXT, completed_at TEXT,
+        failure_code TEXT, failure_message TEXT, created_at TEXT, updated_at TEXT
+      );
+    `);
+    const insert = database.prepare(`
+      INSERT INTO game_jobs_v3
+        (id, internal_game_id, job_type, scheduled_at, scheduled_slot_at, status,
+         attempt_count, max_attempts, created_at, updated_at)
+      VALUES (?, ?, 'prediction_close', '2026-08-30T07:00:00.000Z', '2026-08-30T07:00:00.000Z', 'pending', 0, 12, '2026-08-30T06:00:00.000Z', '2026-08-30T06:00:00.000Z')
+    `);
+    for (let id = 1; id <= 101; id += 1) insert.run(id, `game-${id}`);
+    const report = await v3.claimDueJobs(d1(database), new Date("2026-08-30T08:00:00.000Z"));
+    assert.equal(report.due.length, 101);
+    assert.equal(report.claimed.filter((entry) => entry.claimed).length, 101);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE status = 'claimed'").get().count, 101);
   } finally {
     database.close();
   }

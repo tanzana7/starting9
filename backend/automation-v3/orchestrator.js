@@ -322,28 +322,47 @@ export async function planMainWorkflowJobs(db, games = [], now = new Date()) {
 }
 
 export async function claimDueJobs(db, now = new Date(), plannedEntries = []) {
-  const due = await listDueV3Jobs(db, now);
-  const plannedById = new Map(plannedEntries.map((entry) => [String(entry?.job?.id || ""), entry]));
+  // Drain the due set in bounded batches. The repository query remains
+  // bounded, while this prevents the oldest 50 rows from starving later
+  // games/stages during a busy Cron tick. Claim conditions stay atomic in
+  // claimV3Job and a concurrent runner naturally removes its rows from the
+  // next batch.
+  const seen = new Set();
+  const due = [];
   const claimed = [];
-  for (const job of due) {
-    const claimedJob = await claimV3Job(db, { jobId: job.id, now });
-    const entry = plannedById.get(String(job.id));
-    const claimResult = claimedJob ? "claimed" : "claim_conflict";
-    if (entry) {
-      entry.plannerDecision = {
-        ...(entry.plannerDecision || normalizeV3PlannerDecision(entry, now)),
-        existingOpenJob: { id: job.id, status: job.status, scheduledSlotAt: job.scheduled_slot_at },
-        insertAttempted: entry.plannerDecision?.insertAttempted ?? false
-      };
-      entry.diagnostic = {
-        ...(entry.diagnostic || {}),
-        actualJobExists: true,
-        jobStatus: claimedJob?.status || job.status || null,
-        claimEligible: isV3OpenJobStatus(job.status),
-        claimResult
-      };
+  const plannedById = new Map(plannedEntries.map((entry) => [String(entry?.job?.id || ""), entry]));
+  const batchSize = 100;
+  const maxBatches = 20;
+  for (let batch = 0; batch < maxBatches; batch += 1) {
+    const rows = await listDueV3Jobs(db, now, batchSize);
+    const fresh = rows.filter((job) => {
+      const key = String(job?.id || "");
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    due.push(...fresh);
+    for (const job of fresh) {
+      const claimedJob = await claimV3Job(db, { jobId: job.id, now });
+      const entry = plannedById.get(String(job.id));
+      const claimResult = claimedJob ? "claimed" : "claim_conflict";
+      if (entry) {
+        entry.plannerDecision = {
+          ...(entry.plannerDecision || normalizeV3PlannerDecision(entry, now)),
+          existingOpenJob: { id: job.id, status: job.status, scheduledSlotAt: job.scheduled_slot_at },
+          insertAttempted: entry.plannerDecision?.insertAttempted ?? false
+        };
+        entry.diagnostic = {
+          ...(entry.diagnostic || {}),
+          actualJobExists: true,
+          jobStatus: claimedJob?.status || job.status || null,
+          claimEligible: isV3OpenJobStatus(job.status),
+          claimResult
+        };
+      }
+      claimed.push({ job, claimed: claimedJob, entry, claimResult });
     }
-    claimed.push({ job, claimed: claimedJob, entry, claimResult });
+    if (fresh.length === 0 || rows.length < batchSize) break;
   }
   return { due, claimed };
 }

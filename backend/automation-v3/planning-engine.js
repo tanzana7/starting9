@@ -14,6 +14,17 @@ const JOB_TYPE_BY_STAGE = Object.freeze({
 
 const OPEN_STATUSES = new Set(["pending", "claimed", "retry_wait"]);
 const STAGES = Object.freeze(Object.keys(JOB_TYPE_BY_STAGE));
+const STATE_ORDER = Object.freeze([
+  "scheduled",
+  "probable_starter_ready",
+  "roster_ready",
+  "prediction_closed",
+  "lineup_ready",
+  "scored",
+  "ranked",
+  "published"
+]);
+const LATE_LINEUP_FETCH_MAX_MS = 24 * 60 * 60 * 1000;
 
 function normalize(value) {
   return String(value || "").trim().toLowerCase();
@@ -24,6 +35,18 @@ function asDate(value) {
   if (value === null || value === undefined || value === "") return null;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function stateRank(value) {
+  const index = STATE_ORDER.indexOf(normalize(value));
+  return index < 0 ? 0 : index;
+}
+
+function isPublishedGame(game = {}) {
+  return normalize(first(game, "workflowState", "workflow_state", "state")) === "published"
+    || normalize(first(game, "publicationStatus", "publication_status")) === "published"
+    || Boolean(first(game, "publishedAt", "published_at"))
+    || first(game, "isPublished", "is_published") === true;
 }
 
 function first(object, ...keys) {
@@ -87,6 +110,29 @@ export function isV3JobForStage(job, stageOrJobType) {
   return consistentStages.has(expected);
 }
 
+export function getLateLineupFetchDecision({ game = {}, effectiveState = null, now = new Date(), finalLineupAt = null } = {}) {
+  const current = asDate(now);
+  const finalAt = asDate(finalLineupAt);
+  if (!current || !finalAt || current < finalAt) {
+    return { late: false, allowed: false, reasonCode: null, deadline: null };
+  }
+  if (isPublishedGame(game)) {
+    return { late: true, allowed: false, reasonCode: "ALREADY_PUBLISHED", deadline: null };
+  }
+  if (stateRank(effectiveState || first(game, "workflowState", "workflow_state", "state")) < stateRank("prediction_closed")) {
+    return { late: true, allowed: false, reasonCode: "PREDICTION_CLOSE_STATE_GATE", deadline: null };
+  }
+  const startAt = asDate(first(game, "startAt", "start_at", "gameStartAt", "game_start_at"));
+  if (!startAt) {
+    return { late: true, allowed: false, reasonCode: "LINEUP_FETCH_LATE_WINDOW_UNAVAILABLE", deadline: null };
+  }
+  const deadline = new Date(startAt.getTime() + LATE_LINEUP_FETCH_MAX_MS);
+  if (current > deadline) {
+    return { late: true, allowed: false, reasonCode: "LINEUP_FETCH_LATE_WINDOW_EXPIRED", deadline: deadline.toISOString() };
+  }
+  return { late: true, allowed: true, reasonCode: "LATE_LINEUP_FETCH_REQUIRED", deadline: deadline.toISOString() };
+}
+
 function jobBelongsToGame(job, gameId) {
   if (!gameId) return false;
   const id = first(job, "internalGameId", "internal_game_id");
@@ -125,17 +171,14 @@ function effectiveStateOf(input) {
   const completed = (stage, ...jobTypes) => scopedJobs.some((job) => isV3JobForStage(job, jobTypes[0] || stage)
     && normalize(first(job, "status", "jobStatus")) === "completed");
   const artifactFor = (stage, jobType) => artifactReady(artifacts[stage] || artifacts[jobType]);
-  const order = ["scheduled", "probable_starter_ready", "roster_ready", "prediction_closed", "lineup_ready", "scored", "ranked", "published"];
-  const rank = (state) => {
-    const index = order.indexOf(normalize(state));
-    return index < 0 ? 0 : index;
-  };
+  const rank = stateRank;
   const protectedStates = new Set(["excluded", "failed", "manual_action_required"]);
   if (protectedStates.has(explicit)) return explicit;
   if (protectedStates.has(persisted)) return persisted;
   let state = rank(explicit) >= rank(persisted) ? explicit : persisted;
   const evidence = [
     ["probable_starter_ready", completed("probable_starter_fetch", "probable_starter_fetch") || artifactFor("probable_starter", "probable_starter_fetch")],
+    ["roster_ready", completed("roster_fetch") || artifactFor("roster_fetch")],
     ["prediction_closed", completed("prediction_close", "prediction_close") || artifactFor("prediction_close", "prediction_close")],
     ["lineup_ready", artifactFor("lineup_finalize", "lineup_finalize")],
     ["scored", artifactFor("scoring", "score")],
@@ -248,10 +291,20 @@ export function buildStagePlan(planningState, stage) {
       : `${stage.toUpperCase()}_STATE_GATE`;
     return { ...plan, blocked: true, blockedReason, reasonCode: blockedReason };
   }
-  if (stage === "lineup_fetch" && now >= (asDate(schedule.finalLineupAt) || new Date(0))) {
-    return { ...plan, blocked: true, blockedReason: "LINEUP_FETCH_WINDOW_CLOSED_NO_FINALIZE", reasonCode: "LINEUP_FETCH_WINDOW_CLOSED" };
-  }
   if (plan.artifactReady) return { ...plan, reasonCode: "ARTIFACT_READY" };
+  const lateLineupFetch = stage === "lineup_fetch"
+    ? getLateLineupFetchDecision({ game, effectiveState, now, finalLineupAt: schedule.finalLineupAt })
+    : null;
+  if (lateLineupFetch?.late && !lateLineupFetch.allowed) {
+    if (OPEN_STATUSES.has(status)) return { ...plan, reasonCode: "OPEN_JOB_EXISTS" };
+    return {
+      ...plan,
+      blocked: true,
+      blockedReason: lateLineupFetch.reasonCode,
+      reasonCode: lateLineupFetch.reasonCode,
+      diagnostics: { ...plan.diagnostics, lateWindowDeadline: lateLineupFetch.deadline }
+    };
+  }
   if (status === "completed") {
     if (["lineup_fetch", "lineup_finalize", "publish"].includes(stage)) {
       return { ...plan, shouldCreateJob: true, insertAllowed: true, reasonCode: "COMPLETED_ARTIFACT_MISSING" };
@@ -262,11 +315,25 @@ export function buildStagePlan(planningState, stage) {
   if (["lineup_fetch", "lineup_finalize"].includes(stage) && !identityResolved) {
     return { ...plan, blocked: true, blockedReason: "NPB_IDENTITY_UNRESOLVED", reasonCode: "NPB_IDENTITY_UNRESOLVED" };
   }
-  if (stage === "lineup_finalize" && artifacts.lineup_fetch?.available === true
-    && !(artifacts.lineup_fetch?.candidateValid || artifacts.lineup_fetch?.candidateExists || artifact?.candidateValid || artifact?.candidateExists)) {
+  const lineupFetchHasCandidate = Boolean(artifacts.lineup_fetch && (
+    artifacts.lineup_fetch.candidateValid === true
+    || artifacts.lineup_fetch.candidateExists === true
+    || artifacts.lineup_fetch.canonicalDataReady === true
+    || artifacts.lineup_fetch.canonicalValid === true
+  ));
+  if (stage === "lineup_finalize" && !lineupFetchHasCandidate) {
     return { ...plan, blocked: true, blockedReason: "LINEUP_FETCH_ARTIFACT_MISSING", reasonCode: "LINEUP_FETCH_ARTIFACT_MISSING" };
   }
   if (stage === "ranking_reflect" && now < (asDate(schedule.publicationAt) || new Date(0))) return { ...plan, reasonCode: "PUBLICATION_NOT_DUE" };
+  if (lateLineupFetch?.allowed) {
+    return {
+      ...plan,
+      shouldCreateJob: true,
+      insertAllowed: true,
+      reasonCode: "LATE_LINEUP_FETCH_REQUIRED",
+      diagnostics: { ...plan.diagnostics, lateWindowDeadline: lateLineupFetch.deadline }
+    };
+  }
   return { ...plan, shouldCreateJob: true, insertAllowed: true, reasonCode: "DUE_JOB_MISSING" };
 }
 

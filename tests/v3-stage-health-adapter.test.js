@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { adaptV35Input } from "../backend/automation-v3/stage-health-adapter.js";
 import { evaluateV35Automation, V35_EFFECTIVE_STATE, V35_STAGE_HEALTH } from "../backend/automation-v3/stage-health-evaluator.js";
+import { planShadowRecovery } from "../backend/automation-v3/shadow-recovery-planner.js";
 
 const NOW = new Date("2026-08-23T06:00:00.000Z");
 const GAME_ID = "22222222-2222-4222-8222-222222222222";
@@ -217,6 +218,8 @@ test("after the lineup window, an existing finalize job supersedes lineup fetch"
       internalGameId: GAME_ID,
       gameDate: "2026-08-29",
       startAt: "2026-08-29T05:00:00.000Z",
+      npbGameCode: "f-h-21",
+      npbIdentityStatus: "resolved",
       gameStatus: "scheduled",
       workflowState: "prediction_closed"
     },
@@ -239,6 +242,8 @@ test("only the same game's active or completed finalize job supersedes lineup fe
       internalGameId: GAME_ID,
       gameDate: "2026-08-29",
       startAt: "2026-08-29T05:00:00.000Z",
+      npbGameCode: "f-h-21",
+      npbIdentityStatus: "resolved",
       gameStatus: "scheduled",
       workflowState: "prediction_closed"
     },
@@ -252,33 +257,86 @@ test("only the same game's active or completed finalize job supersedes lineup fe
     assert.equal(adapted.evaluatorInput.stageDefinitions.lineup_fetch.prerequisiteReason, "LINEUP_FETCH_SUPERSEDED_BY_LINEUP_FINALIZE", status);
   }
   for (const status of ["failed", "cancelled", "expired", "unknown"]) {
-    const { adapted } = evaluateAdapter({
+    const { adapted, evaluated } = evaluateAdapter({
       ...baseInput,
       jobs: [job("lineup_finalize", status)]
     });
-    assert.equal(adapted.evaluatorInput.stageDefinitions.lineup_fetch.prerequisiteReason, "LINEUP_FETCH_WINDOW_CLOSED_NO_FINALIZE", status);
+    assert.equal(adapted.evaluatorInput.stageDefinitions.lineup_fetch.prerequisiteReason, undefined, status);
+    assert.equal(evaluated.stages.lineup_fetch.healthStatus, V35_STAGE_HEALTH.MISSING_JOB, status);
   }
-  const { adapted } = evaluateAdapter({
+  const { adapted, evaluated } = evaluateAdapter({
     ...baseInput,
     jobs: [job("lineup_finalize", "retry_wait", { internal_game_id: "44444444-4444-4444-8444-444444444444" })]
   });
-  assert.equal(adapted.evaluatorInput.stageDefinitions.lineup_fetch.prerequisiteReason, "LINEUP_FETCH_WINDOW_CLOSED_NO_FINALIZE");
+  assert.equal(adapted.evaluatorInput.stageDefinitions.lineup_fetch.prerequisiteReason, undefined);
+  assert.equal(evaluated.stages.lineup_fetch.healthStatus, V35_STAGE_HEALTH.MISSING_JOB);
 });
 
-test("after the lineup window, missing finalize is reported without lineup fetch recovery", () => {
-  const { evaluated } = evaluateAdapter({
+test("after the lineup window, missing finalize receives bounded late lineup fetch recovery", () => {
+  const { adapted, evaluated } = evaluateAdapter({
     game: {
       internalGameId: GAME_ID,
       gameDate: "2026-08-29",
       startAt: "2026-08-29T05:00:00.000Z",
+      npbGameCode: "f-h-21",
+      npbIdentityStatus: "resolved",
       gameStatus: "scheduled",
       workflowState: "prediction_closed"
     },
     now: new Date("2026-08-29T05:10:00.000Z"),
     jobs: []
   });
+  assert.equal(adapted.evaluatorInput.stageDefinitions.lineup_fetch.prerequisiteReason, undefined);
+  assert.equal(evaluated.stages.lineup_fetch.healthStatus, V35_STAGE_HEALTH.MISSING_JOB);
+  assert.equal(evaluated.stages.lineup_fetch.blockingReason, "MISSING_DUE_JOB");
+  assert.equal(evaluated.stages.lineup_fetch.recoveryRecommended, true);
+  const recovery = planShadowRecovery({
+    game: { internalGameId: GAME_ID, gameStatus: "scheduled", persistedWorkflowState: "prediction_closed" },
+    derivedDiagnostics: evaluated,
+    now: new Date("2026-08-29T05:10:00.000Z")
+  });
+  assert.equal(recovery.hasRecommendedActions, true);
+  const lineupRecovery = recovery.recommendations.find(({ stage }) => stage === "lineup_fetch");
+  assert.equal(lineupRecovery?.actionType, "would_schedule_recovery_job");
+});
+
+test("persisted prediction_closed prevents V3.5 effectiveState rollback", () => {
+  const { evaluated } = evaluateAdapter({
+    game: {
+      internalGameId: GAME_ID,
+      gameDate: "2026-09-01",
+      startAt: "2026-09-01T09:00:00.000Z",
+      npbGameCode: "f-h-21",
+      npbIdentityStatus: "resolved",
+      gameStatus: "scheduled",
+      workflowState: "prediction_closed",
+      isActive: 1
+    },
+    persistedWorkflowState: "prediction_closed",
+    now: new Date("2026-09-01T13:30:00.000Z"),
+    diagnostics: { effectiveState: "probable_starter_ready" },
+    jobs: []
+  });
+  assert.equal(evaluated.effectiveState, V35_EFFECTIVE_STATE.PREDICTION_CLOSED);
+  assert.equal(evaluated.stateMismatch, false);
+});
+
+test("late lineup fetch outside the 24-hour bound remains explicitly blocked", () => {
+  const { evaluated } = evaluateAdapter({
+    game: {
+      internalGameId: GAME_ID,
+      gameDate: "2026-09-01",
+      startAt: "2026-09-01T09:00:00.000Z",
+      gameStatus: "scheduled",
+      workflowState: "prediction_closed",
+      isActive: 1
+    },
+    now: new Date("2026-09-02T09:01:00.000Z"),
+    diagnostics: { effectiveState: "prediction_closed" },
+    jobs: []
+  });
   assert.equal(evaluated.stages.lineup_fetch.healthStatus, V35_STAGE_HEALTH.BLOCKED_BY_PREREQUISITE);
-  assert.equal(evaluated.stages.lineup_fetch.blockingReason, "LINEUP_FETCH_WINDOW_CLOSED_NO_FINALIZE");
+  assert.equal(evaluated.stages.lineup_fetch.blockingReason, "LINEUP_FETCH_LATE_WINDOW_EXPIRED");
   assert.equal(evaluated.stages.lineup_fetch.recoveryRecommended, false);
 });
 

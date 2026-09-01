@@ -71,6 +71,23 @@ test("completed prediction close with a valid marker exposes persisted state mis
   assert.equal(result.stateMismatch, true);
 });
 
+test("persisted progress is a floor for effective state evidence", () => {
+  const result = evaluate({
+    persistedWorkflowState: "prediction_closed",
+    stageDefinitions: {
+      probable_starter: { dueAt: NOW.toISOString(), prerequisiteMet: true }
+    }
+  });
+  assert.equal(result.effectiveState, V35_EFFECTIVE_STATE.PREDICTION_CLOSED);
+  assert.equal(result.stateMismatch, false);
+
+  const scored = evaluate({
+    persistedWorkflowState: "scored",
+    stageDefinitions: { lineup_fetch: { dueAt: NOW.toISOString(), prerequisiteMet: true } }
+  });
+  assert.equal(scored.effectiveState, V35_EFFECTIVE_STATE.SCORED);
+});
+
 test("schedule_registered is equivalent to persisted scheduled and marks registration complete", () => {
   const result = evaluate({ scheduleRegistered: true });
   assert.equal(result.effectiveState, V35_EFFECTIVE_STATE.SCHEDULE_REGISTERED);

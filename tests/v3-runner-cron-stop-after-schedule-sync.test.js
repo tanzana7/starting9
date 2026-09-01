@@ -32,6 +32,11 @@ function d1(database) {
 test("補助plannerが停止しても、formal plan・lineup_finalizeのclaim・executorは完走する", async () => {
   const database = new DatabaseSync(":memory:");
   const internalGameId = "022a8838-9e5c-4d64-88b7-7a8b43181aed";
+  const lineupCandidate = JSON.stringify(Array.from({ length: 9 }, (_, index) => ({
+    battingOrder: index + 1,
+    position: "P",
+    playerId: `player-${index + 1}`
+  })));
   try {
     database.exec(`
       CREATE TABLE games (
@@ -57,6 +62,13 @@ test("補助plannerが停止しても、formal plan・lineup_finalizeのclaim・
         created_at TEXT, updated_at TEXT,
         UNIQUE(internal_game_id, job_type, scheduled_slot_at)
       );
+      CREATE TABLE game_lineup_revisions (
+        internal_game_id TEXT, version INTEGER, is_final INTEGER, actual_lineup_json TEXT
+      );
+      CREATE TABLE game_lineups (
+        internal_game_id TEXT PRIMARY KEY, actual_lineup_json TEXT, scoring_status TEXT,
+        scored_at TEXT, publication_status TEXT, published_at TEXT
+      );
       INSERT INTO games VALUES (
         '${internalGameId}', '2026-08-12', '2026-08-12T09:00:00.000Z',
         'fighters', 'lions', NULL, 'unresolved', 'scheduled', 1, NULL
@@ -70,6 +82,10 @@ test("補助plannerが停止しても、formal plan・lineup_finalizeのclaim・
         NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1,
         '2026-08-12T08:00:00.000Z', '2026-08-12T08:00:00.000Z'
       );
+      INSERT INTO game_lineup_revisions VALUES (
+        '${internalGameId}', 1, 0, '${lineupCandidate.replace(/'/g, "''")}'
+      );
+      INSERT INTO game_lineups VALUES ('${internalGameId}', NULL, NULL, NULL, 'private', NULL);
     `);
     const env = { AUTH_DB: d1(database), ENABLE_GAME_AUTOMATION_V3: "true" };
     const now = new Date("2026-08-12T09:03:00.000Z");
@@ -172,7 +188,7 @@ test("completed prediction_closeのstate遷移漏れを正式V3 transitionで復
   }
 });
 
-test("f-l-19相当のidentity hydration後は18:02のlineup_finalizeを生成する", async () => {
+test("f-l-19相当のidentity hydration後は18:02にlate lineup_fetchを生成する", async () => {
   const game = {
     internalGameId: "022a8838-9e5c-4d64-88b7-7a8b43181aed",
     gameDate: "2026-08-12",
@@ -184,7 +200,7 @@ test("f-l-19相当のidentity hydration後は18:02のlineup_finalizeを生成す
   };
   const plans = v3.getV3DuePlans(game, "prediction_closed", new Date("2026-08-12T09:02:00.000Z"));
   assert.deepEqual(plans.map((plan) => [plan.jobType, plan.scheduledSlotAt.toISOString()]), [
-    ["lineup_finalize", "2026-08-12T09:02:00.000Z"]
+    ["lineup_fetch", "2026-08-12T09:00:00.000Z"]
   ]);
 });
 
@@ -257,8 +273,8 @@ test("18:00開始試合は17:40/17:50/18:00をpollingし、18:02以後はfinaliz
     const plans = v3.getV3DuePlans(game, "prediction_closed", new Date(slot));
     assert.deepEqual(plans.map((plan) => [plan.jobType, plan.scheduledSlotAt.toISOString()]), [["lineup_fetch", slot]]);
   }
-  const finalizePlans = v3.getV3DuePlans(game, "prediction_closed", new Date("2026-08-12T09:02:00.000Z"));
-  assert.deepEqual(finalizePlans.map((plan) => [plan.jobType, plan.scheduledSlotAt.toISOString()]), [["lineup_finalize", "2026-08-12T09:02:00.000Z"]]);
+  const latePlans = v3.getV3DuePlans(game, "prediction_closed", new Date("2026-08-12T09:02:00.000Z"));
+  assert.deepEqual(latePlans.map((plan) => [plan.jobType, plan.scheduledSlotAt.toISOString()]), [["lineup_fetch", "2026-08-12T09:00:00.000Z"]]);
 });
 
 test("scheduled runnerは日程同期が遅くてもV3 automationを先に実行し、summaryまたはfailed監査へ到達する", () => {

@@ -209,6 +209,345 @@ test("repository-derived effectiveStateを指定したformal planはjob配列の
   assert.equal(plans[2].blockedReason, "PREDICTION_CLOSE_STATE_GATE");
 });
 
+test("prediction_close完了後は古いstateでもlineup_fetchのgateを解除する", () => {
+  const target = {
+    ...game(),
+    npbGameCode: "f-h-21",
+    npbIdentityStatus: "resolved"
+  };
+  const planningState = v3.buildV3PlanningState({
+    game: target,
+    persistedState: "scheduled",
+    jobs: [{
+      internal_game_id: GAME_ID,
+      job_type: "prediction_close:prediction_close",
+      status: "completed"
+    }],
+    now: new Date("2026-08-04T08:20:00.000Z")
+  });
+  const plans = v3.buildStagePlans(planningState, ["prediction_close", "lineup_fetch"]);
+  assert.equal(planningState.effectiveState, "prediction_closed");
+  assert.equal(plans[0].shouldCreateJob, false);
+  assert.equal(plans[1].shouldCreateJob, true);
+  assert.notEqual(plans[1].blockedReason, "PREDICTION_CLOSE_STATE_GATE");
+});
+
+test("共有job判定は全composite表記を認識し、矛盾projectionを拒否する", () => {
+  const cases = [
+    ["prediction_close:prediction_close", "prediction_close"],
+    ["lineup_fetch:lineup_fetch", "lineup_fetch"],
+    ["lineup_finalize:lineup_finalize", "lineup_finalize"],
+    ["scoring:scoring", "scoring"],
+    ["ranking_reflect:ranking_reflect", "ranking_reflect"],
+    ["publish:publish", "publish"]
+  ];
+  for (const [jobType, stage] of cases) {
+    assert.equal(v3.isV3JobForStage({ internal_game_id: GAME_ID, job_type: jobType }, stage), true, jobType);
+  }
+  assert.equal(v3.isV3JobForStage({ job_type: "prediction_close", stage: "lineup_fetch" }, "prediction_close"), false);
+  assert.equal(v3.isV3JobForStage({ jobType: "prediction_close", type: "scoring" }, "prediction_close"), false);
+  assert.equal(v3.isV3JobForStage({ job_type: "lineup_fetch:lineup_fetch", stageName: "lineup_finalize" }, "lineup_fetch"), false);
+});
+
+test("finalLineupAt後はverified candidateからlineup_finalizeを計画する", () => {
+  const target = {
+    ...game(),
+    npbGameCode: "f-h-21",
+    npbIdentityStatus: "resolved"
+  };
+  const plans = v3.buildStagePlans(v3.buildV3PlanningState({
+    game: target,
+    persistedState: "prediction_closed",
+    artifacts: {
+      lineup_fetch: {
+        available: true,
+        ready: true,
+        artifactVerified: true,
+        candidateExists: true,
+        candidateValid: true,
+        finalizedValid: false
+      }
+    },
+    now: new Date("2026-08-04T09:03:00.000Z")
+  }), ["lineup_fetch", "lineup_finalize"]);
+  assert.equal(plans[0].blockedReason, "LINEUP_FETCH_WINDOW_CLOSED_NO_FINALIZE");
+  assert.equal(plans[1].shouldCreateJob, true);
+  assert.equal(plans[1].reasonCode, "DUE_JOB_MISSING");
+});
+
+test("prediction_closed以降もscoringからpublishまでdue契約を維持する", () => {
+  const target = { ...game(), npbGameCode: "f-h-21", npbIdentityStatus: "resolved" };
+  const scorePlan = v3.buildStagePlan(v3.buildV3PlanningState({
+    game: target,
+    persistedState: "lineup_ready",
+    now: new Date("2026-08-04T09:03:00.000Z")
+  }), "scoring");
+  assert.equal(scorePlan.shouldCreateJob, true);
+
+  const beforePublication = v3.buildStagePlan(v3.buildV3PlanningState({
+    game: target,
+    persistedState: "scored",
+    now: new Date("2026-08-04T09:09:00.000Z")
+  }), "ranking_reflect");
+  assert.equal(beforePublication.shouldCreateJob, false);
+  assert.equal(beforePublication.reasonCode, "NOT_DUE");
+
+  const ranking = v3.buildStagePlan(v3.buildV3PlanningState({
+    game: target,
+    persistedState: "scored",
+    now: new Date("2026-08-04T09:10:00.000Z")
+  }), "ranking_reflect");
+  assert.equal(ranking.shouldCreateJob, true);
+
+  const publish = v3.buildStagePlan(v3.buildV3PlanningState({
+    game: target,
+    persistedState: "ranked",
+    now: new Date("2026-08-04T09:11:00.000Z")
+  }), "publish");
+  assert.equal(publish.shouldCreateJob, true);
+});
+
+test("保護状態は成果物の存在だけで自動進行しない", () => {
+  const target = { ...game(), npbGameCode: "f-h-21", npbIdentityStatus: "resolved" };
+  const artifacts = { publish: { available: true, valid: true } };
+  assert.equal(v3.buildV3PlanningState({
+    game: target,
+    persistedState: "failed",
+    artifacts
+  }).effectiveState, "failed");
+  assert.equal(v3.buildV3PlanningState({
+    game: target,
+    effectiveState: "manual_action_required",
+    persistedState: "scheduled",
+    artifacts
+  }).effectiveState, "manual_action_required");
+});
+
+test("lineup_finalize completed時は古いstateを成果物付きでlineup_readyへ追随させる", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    const lineup = JSON.stringify(Array.from({ length: 9 }, (_, index) => ({
+      battingOrder: index + 1,
+      position: "P",
+      playerId: `player-${index + 1}`,
+      playerName: `Player ${index + 1}`
+    })));
+    database.exec(`
+      CREATE TABLE game_automation_v3_state (internal_game_id TEXT PRIMARY KEY, state TEXT,
+        prediction_closed_at TEXT, lineup_finalized_at TEXT, scoring_revision_id TEXT,
+        ranked_at TEXT, published_at TEXT, excluded_at TEXT, failure_code TEXT,
+        failure_message TEXT, version INTEGER, created_at TEXT, updated_at TEXT);
+      CREATE TABLE game_jobs_v3 (id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT,
+        job_type TEXT, status TEXT, attempt_count INTEGER, max_attempts INTEGER,
+        next_retry_at TEXT, lease_expires_at TEXT, claim_token TEXT, failure_code TEXT,
+        failure_message TEXT, created_at TEXT, claimed_at TEXT, completed_at TEXT, updated_at TEXT);
+      CREATE TABLE game_lineup_revisions (internal_game_id TEXT, is_final INTEGER,
+        actual_lineup_json TEXT, version INTEGER);
+      INSERT INTO game_automation_v3_state VALUES
+        ('${GAME_ID}', 'scheduled', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0,
+         '${START}', '${START}');
+      INSERT INTO game_jobs_v3
+        (internal_game_id, job_type, status, attempt_count, max_attempts, claim_token,
+         created_at, claimed_at, updated_at)
+        VALUES ('${GAME_ID}', 'prediction_close', 'completed', 1, 12, NULL,
+          '${START}', '${START}', '${START}');
+      INSERT INTO game_jobs_v3
+        (internal_game_id, job_type, status, attempt_count, max_attempts, claim_token,
+         created_at, claimed_at, updated_at)
+        VALUES ('${GAME_ID}', 'lineup_finalize', 'claimed', 1, 12, 'claim-token',
+          '${START}', '${START}', '${START}');
+      INSERT INTO game_lineup_revisions VALUES ('${GAME_ID}', 1, '${lineup}', 1);
+    `);
+    const claimed = database.prepare("SELECT * FROM game_jobs_v3 WHERE job_type = 'lineup_finalize'").get();
+    const result = await v3.executeClaimedJobs(
+      { AUTH_DB: d1(database) },
+      [{ job: claimed, claimed, entry: null, claimResult: "claimed" }],
+      [{ internalGameId: GAME_ID }],
+      new Date("2026-08-04T09:03:00.000Z"),
+      { executeJob: async () => ({ status: "completed", stateBefore: "scheduled", stateAfter: "lineup_ready" }) }
+    );
+    assert.equal(result.processed, 1);
+    assert.equal(result.failed, 0);
+    assert.equal(database.prepare("SELECT status FROM game_jobs_v3 WHERE job_type = 'lineup_finalize'").get().status, "completed");
+    assert.equal(database.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1").get(GAME_ID).state, "lineup_ready");
+  } finally {
+    database.close();
+  }
+});
+
+test("executor reconciliationはcomposite completed jobを使い、先行stateを巻き戻さない", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    const lineup = JSON.stringify(Array.from({ length: 9 }, (_, index) => ({
+      battingOrder: index + 1,
+      position: "P",
+      playerId: `player-${index + 1}`,
+      playerName: `Player ${index + 1}`
+    })));
+    database.exec(`
+      CREATE TABLE game_automation_v3_state (internal_game_id TEXT PRIMARY KEY, state TEXT,
+        prediction_closed_at TEXT, lineup_finalized_at TEXT, scoring_revision_id TEXT,
+        ranked_at TEXT, published_at TEXT, excluded_at TEXT, failure_code TEXT,
+        failure_message TEXT, version INTEGER, created_at TEXT, updated_at TEXT);
+      CREATE TABLE game_jobs_v3 (id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT,
+        job_type TEXT, status TEXT, attempt_count INTEGER, max_attempts INTEGER,
+        next_retry_at TEXT, lease_expires_at TEXT, claim_token TEXT, failure_code TEXT,
+        failure_message TEXT, created_at TEXT, claimed_at TEXT, completed_at TEXT, updated_at TEXT);
+      CREATE TABLE game_lineup_revisions (internal_game_id TEXT, is_final INTEGER,
+        actual_lineup_json TEXT, version INTEGER);
+      INSERT INTO game_automation_v3_state VALUES
+        ('${GAME_ID}', 'scheduled', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0,
+         '${START}', '${START}');
+      INSERT INTO game_jobs_v3
+        (internal_game_id, job_type, status, attempt_count, max_attempts, created_at, completed_at, updated_at)
+        VALUES ('${GAME_ID}', 'prediction_close:prediction_close', 'completed', 1, 12,
+          '${START}', '${START}', '${START}');
+      INSERT INTO game_jobs_v3
+        (internal_game_id, job_type, status, attempt_count, max_attempts, claim_token,
+         created_at, claimed_at, updated_at)
+        VALUES ('${GAME_ID}', 'lineup_finalize:lineup_finalize', 'claimed', 1, 12, 'claim-token',
+          '${START}', '${START}', '${START}');
+      INSERT INTO game_lineup_revisions VALUES ('${GAME_ID}', 1, '${lineup}', 1);
+    `);
+    const claimed = database.prepare("SELECT * FROM game_jobs_v3 WHERE job_type LIKE 'lineup_finalize%' ").get();
+    const result = await v3.executeClaimedJobs(
+      { AUTH_DB: d1(database) },
+      [{ job: claimed, claimed, entry: null, claimResult: "claimed" }],
+      [{ internalGameId: GAME_ID }],
+      new Date("2026-08-04T09:03:00.000Z"),
+      { executeJob: async () => ({ status: "completed", stateBefore: "prediction_closed", stateAfter: "lineup_ready" }) }
+    );
+    assert.equal(result.failed, 0);
+    assert.equal(database.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1").get(GAME_ID).state, "lineup_ready");
+
+    database.prepare("UPDATE game_automation_v3_state SET state = 'published' WHERE internal_game_id = ?1").run(GAME_ID);
+    await v3.executeClaimedJobs(
+      { AUTH_DB: d1(database) },
+      [],
+      [{ internalGameId: GAME_ID }],
+      new Date("2026-08-04T09:03:00.000Z"),
+      { executeJob: async () => ({}) }
+    );
+    assert.equal(database.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1").get(GAME_ID).state, "published");
+  } finally {
+    database.close();
+  }
+});
+
+test("canonical identity hydration後のformal plannerはlineup_finalizeをblockedにしない", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    const candidate = JSON.stringify(Array.from({ length: 9 }, (_, index) => ({
+      battingOrder: index + 1,
+      position: "P",
+      playerId: `player-${index + 1}`,
+      playerName: `Player ${index + 1}`
+    })));
+    database.exec(`
+      CREATE TABLE games (internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+        home_team TEXT, away_team TEXT, npb_game_code TEXT, npb_identity_status TEXT,
+        game_status TEXT, is_active INTEGER, deleted_at TEXT);
+      CREATE TABLE game_identifiers (id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT,
+        provider TEXT, identifier_type TEXT, identifier_value TEXT, updated_at TEXT);
+      CREATE TABLE game_automation_v3_state (internal_game_id TEXT PRIMARY KEY, state TEXT);
+      CREATE TABLE game_jobs_v3 (id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT,
+        job_type TEXT, status TEXT, attempt_count INTEGER, max_attempts INTEGER,
+        next_retry_at TEXT, lease_expires_at TEXT, claim_token TEXT, failure_code TEXT,
+        failure_message TEXT, created_at TEXT, claimed_at TEXT, completed_at TEXT, updated_at TEXT,
+        scheduled_at TEXT, scheduled_slot_at TEXT);
+      CREATE TABLE game_lineup_revisions (internal_game_id TEXT, is_final INTEGER,
+        actual_lineup_json TEXT, version INTEGER);
+      CREATE TABLE game_lineups (internal_game_id TEXT, actual_lineup_json TEXT,
+        scoring_status TEXT, scored_at TEXT, publication_status TEXT, published_at TEXT);
+      CREATE TABLE ranking_reflection_revisions (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        internal_game_id TEXT, ranking_update_revision INTEGER, status TEXT);
+      INSERT INTO games VALUES
+        ('${GAME_ID}', '2026-08-04', '${START}', 'fighters', 'hawks', 'f-h-20', 'unresolved', 'scheduled', 1, NULL);
+      INSERT INTO game_identifiers (internal_game_id, provider, identifier_type, identifier_value, updated_at)
+        VALUES ('${GAME_ID}', 'npb', 'npb_game_code', 'f-h-21', '${START}');
+      INSERT INTO game_automation_v3_state VALUES ('${GAME_ID}', 'prediction_closed');
+      INSERT INTO game_lineup_revisions VALUES ('${GAME_ID}', 0, '${candidate}', 1);
+      INSERT INTO game_lineups VALUES ('${GAME_ID}', '${candidate}', 'pending', NULL, 'private', NULL);
+    `);
+    const [hydratedGame] = await v3.listV3Games(d1(database), new Date("2026-08-04T09:03:00.000Z"));
+    assert.equal(hydratedGame.npbGameCode, "f-h-21");
+    assert.equal(hydratedGame.npbIdentityStatus, "resolved");
+    const result = await v3.planV3MainJobs(
+      d1(database),
+      [hydratedGame],
+      new Date("2026-08-04T09:03:00.000Z")
+    );
+    const finalize = result.planned.find((entry) => entry.plan?.jobType === "lineup_finalize");
+    assert.equal(finalize?.created, true);
+    assert.notEqual(finalize?.sharedPlan?.blockedReason, "NPB_IDENTITY_UNRESOLVED");
+
+    const unresolved = v3.buildStagePlan(v3.buildV3PlanningState({
+      game: { ...hydratedGame, npbGameCode: null, npbIdentityStatus: "unresolved" },
+      persistedState: "prediction_closed",
+      artifacts: { lineup_fetch: { available: true, candidateExists: true, candidateValid: true } },
+      now: new Date("2026-08-04T09:03:00.000Z")
+    }), "lineup_finalize");
+    assert.equal(unresolved.blockedReason, "NPB_IDENTITY_UNRESOLVED");
+  } finally {
+    database.close();
+  }
+});
+
+test("stale scheduled stateはcompleted成果物からpublishまで進み、公開jobを重複作成しない", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    const finalLineup = JSON.stringify(Array.from({ length: 9 }, (_, index) => ({
+      battingOrder: index + 1,
+      position: "P",
+      playerId: `player-${index + 1}`,
+      playerName: `Player ${index + 1}`
+    })));
+    database.exec(`
+      CREATE TABLE game_automation_v3_state (internal_game_id TEXT PRIMARY KEY, state TEXT);
+      CREATE TABLE game_jobs_v3 (id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT,
+        job_type TEXT, status TEXT, attempt_count INTEGER, max_attempts INTEGER,
+        next_retry_at TEXT, lease_expires_at TEXT, claim_token TEXT, failure_code TEXT,
+        failure_message TEXT, created_at TEXT, claimed_at TEXT, completed_at TEXT, updated_at TEXT,
+        scheduled_at TEXT, scheduled_slot_at TEXT);
+      CREATE TABLE game_lineup_revisions (internal_game_id TEXT, is_final INTEGER,
+        actual_lineup_json TEXT, version INTEGER);
+      CREATE TABLE game_lineups (internal_game_id TEXT, actual_lineup_json TEXT,
+        scoring_status TEXT, scored_at TEXT, publication_status TEXT, published_at TEXT);
+      CREATE TABLE ranking_reflection_revisions (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        internal_game_id TEXT, ranking_update_revision INTEGER, status TEXT);
+      INSERT INTO game_automation_v3_state VALUES ('${GAME_ID}', 'scheduled');
+      INSERT INTO game_jobs_v3 (internal_game_id, job_type, status, attempt_count, max_attempts,
+        created_at, completed_at, updated_at, scheduled_at, scheduled_slot_at)
+        VALUES
+        ('${GAME_ID}', 'prediction_close', 'completed', 1, 12, '${START}', '${START}', '${START}', '${START}', '${START}'),
+        ('${GAME_ID}', 'lineup_finalize', 'completed', 1, 12, '${START}', '${START}', '${START}', '${START}', '${START}'),
+        ('${GAME_ID}', 'score', 'completed', 1, 12, '${START}', '${START}', '${START}', '${START}', '${START}'),
+        ('${GAME_ID}', 'ranking_rebuild', 'completed', 1, 12, '${START}', '${START}', '${START}', '${START}', '${START}');
+      INSERT INTO game_lineup_revisions VALUES ('${GAME_ID}', 1, '${finalLineup}', 1);
+      INSERT INTO game_lineups VALUES ('${GAME_ID}', '${finalLineup}', 'scored', '${START}', 'private', NULL);
+      INSERT INTO ranking_reflection_revisions (internal_game_id, ranking_update_revision, status)
+        VALUES ('${GAME_ID}', 1, 'reflected');
+    `);
+    const target = { ...game(), npbGameCode: "f-h-21", npbIdentityStatus: "resolved" };
+    const now = new Date("2026-08-04T09:10:00.000Z");
+    const firstPlan = await v3.planV3MainJobs(d1(database), [target], now);
+    assert.equal(firstPlan.created, 1);
+    assert.equal(firstPlan.planned.find((entry) => entry.plan?.jobType === "publish")?.created, true);
+
+    const secondPlan = await v3.planV3MainJobs(d1(database), [target], now);
+    assert.equal(secondPlan.created, 0);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE job_type = 'publish'").get().count, 1);
+
+    database.prepare("UPDATE game_jobs_v3 SET status = 'completed', completed_at = ?1 WHERE job_type = 'publish'").run(now.toISOString());
+    database.prepare("UPDATE game_lineups SET publication_status = 'published', published_at = ?1").run(now.toISOString());
+    const publishedPlan = await v3.planV3MainJobs(d1(database), [target], now);
+    assert.equal(publishedPlan.created, 0);
+    assert.equal(publishedPlan.planned.length, 0);
+  } finally {
+    database.close();
+  }
+});
+
 test("V3はgamesが空でもgame_identifiersのNPBコードをlineup対象へ補完する", async () => {
   const database = new DatabaseSync(":memory:");
   try {

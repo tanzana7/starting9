@@ -17,6 +17,7 @@ import {
   planAuxiliaryJobs,
   planMainWorkflowJobs
 } from "./orchestrator.js";
+import { isV3JobForStage } from "./planning-engine.js";
 import { assessV3LineupArtifact } from "./lineup-artifacts.js";
 
 // Audit observers must never hold the workflow planner or executor hostage.
@@ -153,15 +154,17 @@ async function reconcileCompletedV3StateTransitions(env, games = [], now = new D
         const currentState = String(stateRow?.state || "");
         const transition = V3_COMPLETED_STATE_TRANSITIONS.find((candidate) => candidate.from === currentState);
         if (!transition) break;
-        const completedJob = await env.AUTH_DB.prepare(
-          `SELECT id, completed_at
+        const completedJobs = await env.AUTH_DB.prepare(
+          `SELECT *
              FROM game_jobs_v3
             WHERE internal_game_id = ?1
-              AND job_type = ?2
-              AND status = 'completed'
-            ORDER BY completed_at DESC, updated_at DESC, id DESC
-            LIMIT 1`
-        ).bind(game.internalGameId, transition.jobType).first();
+              AND status = 'completed'`
+        ).bind(game.internalGameId).all();
+        const completedJob = (completedJobs.results || [])
+          .filter((job) => isV3JobForStage(job, transition.jobType))
+          .sort((left, right) => String(right.completed_at || right.updated_at || right.created_at || "")
+            .localeCompare(String(left.completed_at || left.updated_at || left.created_at || ""))
+            || Number(right.id || 0) - Number(left.id || 0))[0] || null;
         if (!completedJob) break;
         if (!(await canReconcileCompletedV3StateTransition(env.AUTH_DB, game.internalGameId, transition))) {
           skipped.push({
@@ -302,14 +305,37 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
         throw createV3Error("V3_JOB_COMPLETION_CONFLICT", "V3ジョブの完了状態を確定できませんでした。状態遷移は行いません。", { retryable: true });
       }
       if (result?.stateAfter && result.stateBefore && result.stateAfter !== result.stateBefore) {
-        await transitionV3State(env.AUTH_DB, {
-          internalGameId: claimed.internal_game_id,
-          from: result.stateBefore,
-          to: result.stateAfter,
-          now: executionNow,
-          failureCode: null,
-          failureMessage: null
-        });
+        // A prior completed job may have persisted its artifact while its
+        // state transition was lost. Reconcile that finite graph first so a
+        // stale state cannot make the current transition invalid. The
+        // reconciliation is artifact-checked and never regresses state.
+        await reconcileCompletedV3StateTransitions(
+          env,
+          games.filter((game) => game?.internalGameId === claimed.internal_game_id),
+          executionNow,
+          { onError, observerTimeoutMs, observerScheduler }
+        );
+        const currentStateRow = await env.AUTH_DB.prepare(
+          "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
+        ).bind(claimed.internal_game_id).first();
+        const currentState = String(currentStateRow?.state || "");
+        if (currentState === result.stateAfter) {
+          // The reconciliation already applied this transition.
+        } else if (currentState === result.stateBefore) {
+          await transitionV3State(env.AUTH_DB, {
+            internalGameId: claimed.internal_game_id,
+            from: result.stateBefore,
+            to: result.stateAfter,
+            now: executionNow,
+            failureCode: null,
+            failureMessage: null
+          });
+        } else {
+          throw createV3Error(
+            "V3_STATE_VERSION_CONFLICT",
+            `V3状態が想定前提と一致しません: ${currentState || "unknown"} (expected ${result.stateBefore})`
+          );
+        }
       }
       const completedJob = await env.AUTH_DB.prepare("SELECT * FROM game_jobs_v3 WHERE id = ?1 LIMIT 1").bind(Number(claimed.id)).first();
       await invokeV3Observer(onSuccess, [{ job: completedJob || { ...claimed, status: V3_JOB_STATUS.COMPLETED, completed_at: executionNow.toISOString(), updated_at: executionNow.toISOString() }, claimToken: claimed.claim_token, result, now: executionNow }], observerTimeoutMs, observerScheduler);

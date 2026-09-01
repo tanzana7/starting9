@@ -25,15 +25,63 @@ export async function listV3Games(db, now = new Date()) {
   }
   const optionalColumns = ["npb_game_url", "source_schedule_key", "npb_identity_status", "npb_identity_resolved_at", "npb_identity_source"]
     .filter((column) => columns.has(column));
-  const result = await db.prepare(
-    `SELECT internal_game_id, game_date, start_time, home_team, away_team,
-            npb_game_code${optionalColumns.length ? `, ${optionalColumns.join(", ")}` : ""},
-            game_status, is_active, deleted_at
-       FROM games
-      WHERE internal_game_id IS NOT NULL AND internal_game_id <> ''
-        AND game_date >= date(?1)
-      ORDER BY start_time, internal_game_id`
-  ).bind(date).all();
+
+  const gameColumns = `games.internal_game_id, games.game_date, games.start_time, games.home_team, games.away_team,
+            games.npb_game_code${optionalColumns.length ? `, ${optionalColumns.map((column) => `games.${column}`).join(", ")}` : ""},
+            games.game_status, games.is_active, games.deleted_at`;
+  const excludedGameStatusSql = "'cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded'";
+  const unfinishedWorkflowStateSql = "'scheduled', 'probable_starter_ready', 'roster_ready', 'prediction_closed', 'lineup_ready', 'scored', 'ranked'";
+  const excludedWorkflowStateSql = "'published', 'cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded'";
+  let result;
+  try {
+    // Keep unfinished games discoverable after startAt. The current-day arm
+    // preserves future scheduling, while the state/publication arm retains a
+    // delayed run until it is actually published.
+    const publicationStatus = "CASE WHEN lineup.publication_status = 'published' OR ranking.publication_status = 'published' THEN 'published' ELSE COALESCE(lineup.publication_status, ranking.publication_status, '') END";
+    const publishedAt = "COALESCE(lineup.published_at, ranking.published_at)";
+    result = await db.prepare(
+      `SELECT ${gameColumns}, workflow.state AS workflow_state,
+              ${publicationStatus} AS publication_status, ${publishedAt} AS published_at
+         FROM games
+         LEFT JOIN game_automation_v3_state AS workflow
+           ON workflow.internal_game_id = games.internal_game_id
+         LEFT JOIN game_lineups AS lineup
+           ON lineup.internal_game_id = games.internal_game_id
+         LEFT JOIN ranking_games AS ranking
+           ON ranking.internal_game_id = games.internal_game_id
+        WHERE games.internal_game_id IS NOT NULL AND games.internal_game_id <> ''
+           AND games.is_active = 1
+           AND games.deleted_at IS NULL
+           AND LOWER(COALESCE(games.game_status, '')) NOT IN (${excludedGameStatusSql})
+           AND (${publishedAt} IS NULL)
+           AND LOWER(COALESCE(${publicationStatus}, '')) <> 'published'
+           AND (
+             games.game_date >= date(?1)
+             OR LOWER(COALESCE(workflow.state, '')) IN (${unfinishedWorkflowStateSql})
+           )
+           AND LOWER(COALESCE(workflow.state, '')) NOT IN (${excludedWorkflowStateSql})
+         ORDER BY games.start_time, games.internal_game_id`
+    ).bind(date).all();
+  } catch (error) {
+    // Older adapters/databases may not expose the publication joins. Keep the
+    // established current-day discovery contract in that environment.
+    console.warn(`[V3_DISCOVERY_FALLBACK] ${JSON.stringify({
+      mode: "legacy_current_day_fallback",
+      asOfDateJst: date,
+      historicalUnpublishedRetention: false,
+      reason: String(error?.message || "enriched_query_failed").slice(0, 200)
+    })}`);
+    result = await db.prepare(
+      `SELECT ${gameColumns}
+         FROM games
+        WHERE games.internal_game_id IS NOT NULL AND games.internal_game_id <> ''
+           AND games.is_active = 1
+           AND games.deleted_at IS NULL
+           AND LOWER(COALESCE(games.game_status, '')) NOT IN (${excludedGameStatusSql})
+           AND games.game_date >= date(?1)
+         ORDER BY games.start_time, games.internal_game_id`
+    ).bind(date).all();
+  }
   const baseGames = (result.results || []).map((row) => ({
     internalGameId: row.internal_game_id,
     gameDate: row.game_date,
@@ -50,6 +98,10 @@ export async function listV3Games(db, now = new Date()) {
       npbIdentityStatus: row.npb_identity_status || (row.npb_game_code ? "resolved" : "unresolved"),
       startAt: row.start_time
     }, current),
+    workflowState: row.workflow_state || null,
+    publicationStatus: row.publication_status || "",
+    publishedAt: row.published_at || null,
+    isPublished: row.publication_status === "published" || Boolean(row.published_at),
     gameStatus: row.game_status,
     isActive: row.is_active,
     deletedAt: row.deleted_at

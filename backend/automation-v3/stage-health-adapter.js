@@ -2,6 +2,7 @@
 // This module is intentionally pure. It does not read D1, fetch, create jobs,
 // mutate workflow state, or connect to a runtime entrypoint.
 import { deriveV35StageDueSchedule } from "./stage-due-schedule.js";
+import { buildStagePlans, buildV3PlanningState } from "./planning-engine.js";
 
 const STAGES = Object.freeze([
   "schedule_registration",
@@ -468,6 +469,27 @@ export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostic
     warnings.push(warning("PUBLIC_ROSTER_WITHOUT_FORMAL_SNAPSHOT", "Public roster data is usable, but the formal canonical snapshot is missing.", "roster_fetch"));
   }
   const stageDefinitions = buildStageDefinitions({ artifacts, externalFlags, currentTime: now }, normalizedDiagnostics, evaluatorArtifacts, externalDisabled, normalizedGame, normalizedJobs, derivedStageSchedule);
+  const planningState = buildV3PlanningState({
+    game: normalizedGame,
+    jobs: normalizedJobs,
+    artifacts: evaluatorArtifacts,
+    effectiveState: first(normalizedDiagnostics, "effectiveState", "effective_state"),
+    persistedState: persistedWorkflowState,
+    now
+  });
+  const planningPlans = buildStagePlans(planningState);
+  for (const plan of planningPlans) {
+    if (plan.blocked && stageDefinitions[plan.stage]) {
+      stageDefinitions[plan.stage] = {
+        ...stageDefinitions[plan.stage],
+        prerequisiteMet: false,
+        prerequisiteReason: stageDefinitions[plan.stage].prerequisiteReason || plan.blockedReason,
+        planningPlan: plan
+      };
+    } else if (stageDefinitions[plan.stage]) {
+      stageDefinitions[plan.stage] = { ...stageDefinitions[plan.stage], planningPlan: plan };
+    }
+  }
   const scheduleRegistered = Boolean(
     first(normalizedGame, "scheduleRegistered", "schedule_registered")
     ?? normalizedGame.gameDate
@@ -488,7 +510,8 @@ export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostic
       excluded,
       rankingExcluded: Boolean(first(normalizedGame, "rankingExcluded", "ranking_excluded")),
       scheduleRegistered,
-      externalFlags: { ...externalFlags, NPB_FETCH_DISABLED: externalDisabled }
+      externalFlags: { ...externalFlags, NPB_FETCH_DISABLED: externalDisabled },
+      planningPlans
     },
     warnings,
     sourceSummary: {

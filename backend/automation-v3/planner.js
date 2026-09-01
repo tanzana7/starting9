@@ -17,6 +17,7 @@ import {
 } from "./domain.js";
 import { getV3CanonicalRosterSnapshot } from "./roster-repository.js";
 import { createV3Job } from "./repository.js";
+import { buildStagePlans, buildV3PlanningState } from "./planning-engine.js";
 
 function parseV3AuditDetails(failureMessage) {
   const text = String(failureMessage || "").trim();
@@ -278,7 +279,8 @@ export function getV3IdentityResolvePlans(game, now = new Date(), workflowState 
 }
 
 function isV3NpbIdentityResolved(game) {
-  return ["resolved", "manually_overridden"].includes(String(game?.npbIdentityStatus || game?.npb_identity_status || "").trim());
+  const code = String(game?.npbGameCode || game?.npb_game_code || "").trim();
+  return Boolean(code) && ["resolved", "manually_overridden"].includes(String(game?.npbIdentityStatus || game?.npb_identity_status || "").trim());
 }
 
 export const V3_JOB_STATE_GATES = Object.freeze({
@@ -302,32 +304,14 @@ export function getV3FormalDuePlans(game, state, now = new Date()) {
 }
 
 export function getV3DuePlans(game, state, now = new Date()) {
-  if (!isV3GameEligible(game)) return [];
-  const schedule = deriveV3Schedule(game);
-  const current = now instanceof Date ? now : new Date(now);
-  if (Number.isNaN(current.getTime())) return [];
-  const plans = [];
-  if (V3_JOB_STATE_GATES.prediction_close.includes(String(state)) && current >= schedule.predictionDeadline) {
-    plans.push({ jobType: "prediction_close", scheduledSlotAt: schedule.predictionDeadline, scheduledAt: schedule.predictionDeadline });
-  }
-  const lineupState = V3_JOB_STATE_GATES.lineup_fetch.includes(String(state));
-  if (lineupState && current >= schedule.lineupPollingStart && current < schedule.finalLineupAt && isV3NpbIdentityResolved(game)) {
-    const slot = getV3LineupSlot(schedule.startAt, current);
-    if (slot) plans.push({ jobType: "lineup_fetch", scheduledSlotAt: slot, scheduledAt: slot });
-  }
-  if (V3_JOB_STATE_GATES.lineup_finalize.includes(String(state)) && current >= schedule.finalLineupAt && isV3NpbIdentityResolved(game)) {
-    plans.push({ jobType: "lineup_finalize", scheduledSlotAt: schedule.finalLineupAt, scheduledAt: schedule.finalLineupAt });
-  }
-  if (V3_JOB_STATE_GATES.score.includes(String(state)) && current >= schedule.finalLineupAt) {
-    plans.push({ jobType: "score", scheduledSlotAt: schedule.finalLineupAt, scheduledAt: schedule.finalLineupAt });
-  }
-  if (V3_JOB_STATE_GATES.ranking_rebuild.includes(String(state))) {
-    plans.push({ jobType: "ranking_rebuild", scheduledSlotAt: schedule.publicationAt, scheduledAt: schedule.publicationAt });
-  }
-  if (V3_JOB_STATE_GATES.publish.includes(String(state)) && current >= schedule.publicationAt) {
-    plans.push({ jobType: "publish", scheduledSlotAt: schedule.publicationAt, scheduledAt: schedule.publicationAt });
-  }
-  return plans;
+  const sharedPlans = buildStagePlans(buildV3PlanningState({ game, persistedState: state, now }), [
+    "prediction_close", "lineup_fetch", "lineup_finalize", "scoring", "ranking_reflect", "publish"
+  ]);
+  return sharedPlans.filter((plan) => plan.shouldCreateJob).map((plan) => ({
+    jobType: plan.jobType,
+    scheduledSlotAt: new Date(plan.selectedSlotAt),
+    scheduledAt: new Date(plan.selectedSlotAt)
+  }));
 }
 
 export function getV3DuePlan(game, state, now = new Date()) {

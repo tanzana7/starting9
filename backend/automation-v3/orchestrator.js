@@ -20,7 +20,7 @@ import { planV3ProbableStarterJobs } from "./probable-starter-planner.js";
 import { isV3GameEligible } from "./domain.js";
 import { assessV3LineupArtifact } from "./lineup-artifacts.js";
 import { getV3CanonicalRosterSnapshot } from "./roster-repository.js";
-import { buildStagePlans, buildV3PlanningState } from "./planning-engine.js";
+import { buildStagePlans, buildV3PlanningState, isV3JobForStage } from "./planning-engine.js";
 
 // Planner aggregation, planner diagnostics, and atomic claim coordination.
 export function assertV3AuxiliaryJobResult(job, result, now) {
@@ -155,7 +155,11 @@ async function readV3StateForPlanning(db, internalGameId) {
   }
 }
 
-async function deriveV3PlanningState(db, internalGameId, persistedState = "scheduled") {
+async function deriveV3PlanningState(db, gameOrId, persistedState = "scheduled", now = new Date()) {
+  const game = typeof gameOrId === "string"
+    ? { internalGameId: gameOrId }
+    : (gameOrId || {});
+  const internalGameId = game.internalGameId || game.internal_game_id;
   let jobs = [];
   try {
     const result = await db.prepare(
@@ -166,21 +170,35 @@ async function deriveV3PlanningState(db, internalGameId, persistedState = "sched
     jobs = [];
   }
   const workflowArtifacts = await readV3WorkflowArtifactHealth(db, internalGameId, persistedState);
-  return buildV3PlanningState({
-    game: { internalGameId },
+  const rosterSnapshot = await getV3CanonicalRosterSnapshot(db, internalGameId, {
+    gameDate: game.gameDate || game.game_date
+  });
+  const artifacts = {
+    roster_fetch: {
+      available: Boolean(rosterSnapshot?.exists),
+      valid: Boolean(rosterSnapshot?.exists && !rosterSnapshot?.isStale)
+    },
+    prediction_close: {
+      available: jobs.some((job) => isV3JobForStage(job, "prediction_close") && String(job?.status || "").toLowerCase() === "completed"),
+      valid: jobs.some((job) => isV3JobForStage(job, "prediction_close") && String(job?.status || "").toLowerCase() === "completed")
+    },
+    lineup_fetch: workflowArtifacts.lineup,
+    lineup_finalize: {
+      available: workflowArtifacts.lineup.finalizedValid,
+      valid: workflowArtifacts.lineup.finalizedValid
+    },
+    scoring: { available: workflowArtifacts.scoreReady, valid: workflowArtifacts.scoreReady },
+    ranking_reflect: { available: workflowArtifacts.rankingReflected, valid: workflowArtifacts.rankingReflected },
+    publish: { available: workflowArtifacts.publicationReady, valid: workflowArtifacts.publicationReady }
+  };
+  const planningState = buildV3PlanningState({
+    game,
     persistedState,
     jobs,
-    artifacts: {
-      lineup_finalize: {
-        available: workflowArtifacts.lineup.finalizedValid,
-        valid: workflowArtifacts.lineup.finalizedValid
-      },
-      scoring: { available: workflowArtifacts.scoreReady, valid: workflowArtifacts.scoreReady },
-      ranking_reflect: { available: workflowArtifacts.rankingReflected, valid: workflowArtifacts.rankingReflected },
-      publish: { available: workflowArtifacts.publicationReady, valid: workflowArtifacts.publicationReady }
-    },
-    now: new Date()
-  }).effectiveState;
+    artifacts,
+    now
+  });
+  return { ...planningState, artifacts, workflowArtifacts, rosterSnapshot };
 }
 
 function createV3PlanningDiagnostic(game, plan, state) {
@@ -254,7 +272,18 @@ function normalizeV3PlanEntries(result, now) {
       plannerDecision: normalizeV3PlannerDecision(entry, now)
     }
   }));
-  return { ...(result || {}), planned, diagnostics: planned.map((entry) => ({ ...(entry.diagnostic || {}) })) };
+  const diagnostics = Array.isArray(result?.diagnostics)
+    ? result.diagnostics.map((diagnostic) => ({ ...diagnostic }))
+    : [];
+  for (const entry of planned) {
+    const entryDiagnostic = { ...(entry.diagnostic || {}) };
+    const match = diagnostics.findIndex((diagnostic) =>
+      String(diagnostic.internalGameId || "") === String(entry.game?.internalGameId || "")
+      && String(diagnostic.stage || diagnostic.jobType || "") === String(entry.plan?.stage || entry.plan?.jobType || ""));
+    if (match >= 0) diagnostics[match] = { ...diagnostics[match], ...entryDiagnostic };
+    else diagnostics.push(entryDiagnostic);
+  }
+  return { ...(result || {}), planned, diagnostics };
 }
 
 function emptyV3PlanResult(error = null) {
@@ -377,30 +406,42 @@ export async function planV3MainJobs(db, games = [], now = new Date()) {
     try {
       const stateRow = await readV3StateForPlanning(db, game.internalGameId);
       const persistedState = String(stateRow?.state || game.workflowState || "scheduled").trim().toLowerCase() || "scheduled";
-      const state = await deriveV3PlanningState(db, game.internalGameId, persistedState);
-      const workflowArtifacts = await readV3WorkflowArtifactHealth(db, game.internalGameId, state);
+      const derivedPlanningState = await deriveV3PlanningState(db, game, persistedState, now);
+      const state = derivedPlanningState.effectiveState;
+      const workflowArtifacts = derivedPlanningState.workflowArtifacts || await readV3WorkflowArtifactHealth(db, game.internalGameId, state);
       if (state === "published" || workflowArtifacts.publicationReady) continue;
       const existingJobs = await readV3JobsForPlanning(db, game.internalGameId);
-      const rosterSnapshot = await getV3CanonicalRosterSnapshot(db, game.internalGameId, { gameDate: game.gameDate || game.game_date });
       const sharedPlanningState = buildV3PlanningState({
+        ...derivedPlanningState,
         game,
         persistedState,
         effectiveState: state,
         jobs: existingJobs,
-        artifacts: {
-          roster_fetch: {
-            available: Boolean(rosterSnapshot?.exists),
-            valid: Boolean(rosterSnapshot?.exists && !rosterSnapshot?.isStale)
-          },
-          lineup_fetch: workflowArtifacts.lineup,
-          lineup_finalize: { available: workflowArtifacts.lineup.finalizedValid, valid: workflowArtifacts.lineup.finalizedValid },
-          scoring: { available: workflowArtifacts.scoreReady, valid: workflowArtifacts.scoreReady },
-          ranking_reflect: { available: workflowArtifacts.rankingReflected, valid: workflowArtifacts.rankingReflected },
-          publish: { available: workflowArtifacts.publicationReady, valid: workflowArtifacts.publicationReady }
-        },
         now
       });
-      const plans = buildStagePlans(sharedPlanningState).filter((entry) => entry.shouldCreateJob).map((entry) => ({
+      const stagePlans = buildStagePlans(sharedPlanningState);
+      for (const stagePlan of stagePlans) {
+        diagnostics.push({
+          internalGameId: game.internalGameId || null,
+          stage: stagePlan.stage,
+          jobType: stagePlan.jobType,
+          effectiveState: sharedPlanningState.effectiveState,
+          persistedState: sharedPlanningState.persistedState,
+          stateMismatch: sharedPlanningState.stateMismatch,
+          due: stagePlan.due,
+          selectedSlotAt: stagePlan.selectedSlotAt,
+          shouldCreateJob: stagePlan.shouldCreateJob,
+          insertAllowed: stagePlan.insertAllowed,
+          blocked: stagePlan.blocked,
+          blockedReason: stagePlan.blockedReason,
+          reasonCode: stagePlan.reasonCode,
+          existingJobId: stagePlan.existingJob?.id || null,
+          existingStatus: stagePlan.existingJob?.status || null,
+          insertAttempted: false,
+          insertedRowCount: 0
+        });
+      }
+      const plans = stagePlans.filter((entry) => entry.shouldCreateJob).map((entry) => ({
         jobType: entry.jobType,
         scheduledSlotAt: new Date(entry.selectedSlotAt),
         scheduledAt: new Date(entry.selectedSlotAt),

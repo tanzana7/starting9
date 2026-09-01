@@ -671,6 +671,87 @@ test("V3 job slot is unique and claim is atomic", async () => {
   assert.match(statements[0].sql, /UNIQUE|game_jobs_v3/);
 });
 
+test("orchestratorは開始後のprediction_closed gameをlineup_fetchのformal jobへ接続する", async () => {
+  const database = new DatabaseSync(":memory:");
+  const internalGameId = "8b6f5d0a-7ad5-4dc1-a541-0d5ca6c4c9a2";
+  try {
+    database.exec(`
+      CREATE TABLE games (
+        internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+        home_team TEXT, away_team TEXT, npb_game_code TEXT, npb_identity_status TEXT,
+        game_status TEXT, is_active INTEGER, deleted_at TEXT
+      );
+      CREATE TABLE game_automation_v3_state (
+        internal_game_id TEXT PRIMARY KEY, state TEXT, version INTEGER,
+        created_at TEXT, updated_at TEXT
+      );
+      CREATE TABLE game_jobs_v3 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT, job_type TEXT,
+        scheduled_at TEXT, scheduled_slot_at TEXT, status TEXT, attempt_count INTEGER,
+        max_attempts INTEGER, next_retry_at TEXT, claimed_at TEXT, claim_token TEXT,
+        lease_expires_at TEXT, completed_at TEXT, failure_code TEXT, failure_message TEXT,
+        created_at TEXT, updated_at TEXT,
+        UNIQUE(internal_game_id, job_type, scheduled_slot_at)
+      );
+      INSERT INTO games VALUES (
+        '${internalGameId}', '2026-08-04', '2026-08-04T09:00:00.000Z',
+        'fighters', 'hawks', 'f-h-21', 'resolved', 'scheduled', 1, NULL
+      );
+      INSERT INTO game_automation_v3_state VALUES (
+        '${internalGameId}', 'prediction_closed', 1,
+        '2026-08-04T08:00:00.000Z', '2026-08-04T08:00:00.000Z'
+      );
+      INSERT INTO game_jobs_v3 (
+        internal_game_id, job_type, scheduled_at, scheduled_slot_at, status,
+        attempt_count, max_attempts, completed_at, created_at, updated_at
+      ) VALUES (
+        '${internalGameId}', 'prediction_close', '2026-08-04T08:00:00.000Z',
+        '2026-08-04T08:00:00.000Z', 'completed', 1, 12,
+        '2026-08-04T08:00:01.000Z', '2026-08-04T08:00:00.000Z', '2026-08-04T08:00:01.000Z'
+      );
+    `);
+    const env = { AUTH_DB: d1(database), ENABLE_GAME_AUTOMATION_V3: "true" };
+    let optionalPromise = null;
+    const now = new Date("2026-08-04T09:01:00.000Z");
+    const result = await v3.runGameAutomationV3(env, now, {
+      scheduleOptional: (promise) => { optionalPromise = promise; },
+      executeJob: async ({ job }) => ({
+        status: "completed",
+        stateBefore: job.job_type === "lineup_fetch" ? "prediction_closed" : "scheduled",
+        stateAfter: "prediction_closed"
+      })
+    });
+    const lineupPlan = result.mainPlan.planned.find((entry) => entry.plan?.jobType === "lineup_fetch");
+    const lineupDiagnostic = result.mainPlan.diagnostics.find((entry) =>
+      entry.internalGameId === internalGameId && entry.stage === "lineup_fetch"
+    );
+    const lineupJob = database.prepare(
+      "SELECT * FROM game_jobs_v3 WHERE internal_game_id = ?1 AND job_type = 'lineup_fetch'"
+    ).get(internalGameId);
+    const expectedLineupSlot = v3.deriveV3DisplaySchedule({
+      gameDate: "2026-08-04",
+      startAt: "2026-08-04T09:00:00.000Z"
+    }).lineupPollingSlots
+      .filter((slot) => new Date(slot).getTime() <= now.getTime())
+      .at(-1);
+
+    assert.equal(result.gameCount, 1, "startAt後でも未公開gameはeligibleであること");
+    assert.ok(lineupPlan, JSON.stringify(result.mainPlan));
+    assert.equal(lineupPlan?.created, true, "formal planがlineup_fetchのinsertへ接続されること");
+    assert.equal(lineupPlan?.plan?.jobType, "lineup_fetch");
+    assert.equal(lineupDiagnostic?.shouldCreateJob, true, "stage判定をdiagnosticsから検出できること");
+    assert.equal(lineupDiagnostic?.blocked, false);
+    assert.equal(lineupDiagnostic?.reasonCode, "V3_JOB_CREATED");
+    assert.equal(lineupJob?.internal_game_id, internalGameId);
+    assert.equal(lineupJob?.scheduled_at, expectedLineupSlot);
+    assert.equal(lineupJob?.scheduled_slot_at, expectedLineupSlot);
+    assert.equal(lineupJob?.status, "completed");
+    assert.equal(typeof optionalPromise?.then, "function");
+  } finally {
+    database.close();
+  }
+});
+
 test("V3 runnerは同じDB行をprediction closeからpublishまで一度ずつ進める", async () => {
   const database = new DatabaseSync(":memory:");
   try {

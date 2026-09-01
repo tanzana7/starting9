@@ -207,7 +207,8 @@ function normalizeDefinition(stageName, definition = {}) {
     externalFetchDisabled: Boolean(source.externalFetchDisabled || source.external_fetch_disabled),
     manualAttention: Boolean(source.manualAttention || source.manual_attention),
     readyToClaim: Boolean(source.readyToClaim || source.ready_to_claim),
-    rankingExcluded: Boolean(source.rankingExcluded || source.ranking_excluded)
+    rankingExcluded: Boolean(source.rankingExcluded || source.ranking_excluded),
+    planningPlan: source.planningPlan || null
   };
 }
 
@@ -265,7 +266,8 @@ export function evaluateV35Stage({
     nextSafeAction: due ? "plan_or_claim" : "wait",
     recoveryRecommended: false,
     recoveryReason: null,
-    attentionLevel: "INFO"
+    attentionLevel: "INFO",
+    formalPlan: normalizedDefinition.planningPlan || null
   };
 
   if (cancelled) return {

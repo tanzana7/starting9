@@ -54,6 +54,35 @@ test("adapts a prediction-close gate incident without changing runtime state", (
   assert.equal(evaluated.stages.lineup_fetch.nextSafeAction, "wait");
 });
 
+test("V3.5の9/1型MISSING_DUE_JOBとformal planningが一致する", () => {
+  const { adapted, evaluated } = evaluateAdapter({
+    game: {
+      internalGameId: GAME_ID,
+      gameDate: "2026-09-01",
+      startAt: "2026-09-01T09:00:00.000Z",
+      homeTeam: "fighters",
+      awayTeam: "hawks",
+      npbGameCode: "f-h-21",
+      npbIdentityStatus: "resolved",
+      gameStatus: "scheduled",
+      workflowState: "scheduled",
+      isActive: 1
+    },
+    now: new Date("2026-09-01T08:42:00.000Z"),
+    jobs: [
+      job("probable_starter_fetch", "completed", { scheduled_slot_at: "2026-08-31T09:00:00.000Z" }),
+      job("npb_identity_resolve", "completed", { scheduled_slot_at: "2026-08-31T09:00:00.000Z" })
+    ],
+    diagnostics: { effectiveState: "probable_starter_ready" }
+  });
+  assert.equal(evaluated.stages.roster_fetch.healthStatus, V35_STAGE_HEALTH.MISSING_JOB);
+  assert.equal(evaluated.stages.prediction_close.healthStatus, V35_STAGE_HEALTH.MISSING_JOB);
+  assert.equal(evaluated.stages.lineup_fetch.blockingReason, "PREDICTION_CLOSE_STATE_GATE");
+  assert.equal(adapted.evaluatorInput.planningPlans.find((plan) => plan.stage === "roster_fetch").shouldCreateJob, true);
+  assert.equal(adapted.evaluatorInput.planningPlans.find((plan) => plan.stage === "prediction_close").shouldCreateJob, true);
+  assert.equal(adapted.evaluatorInput.planningPlans.find((plan) => plan.stage === "lineup_fetch").blockedReason, "PREDICTION_CLOSE_STATE_GATE");
+});
+
 test("adapts cancelled game priority and suppresses recovery for open jobs", () => {
   const { evaluated } = evaluateAdapter({
     game: { internalGameId: GAME_ID, gameStatus: "cancelled", workflowState: "excluded" },

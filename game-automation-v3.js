@@ -6,6 +6,7 @@ export * from "./backend/automation-v3/lineup-artifacts.js";
 export * from "./backend/automation-v3/probable-starter-planner.js";
 export * from "./backend/automation-v3/roster-repository.js";
 export * from "./backend/automation-v3/planner.js";
+export * from "./backend/automation-v3/planning-engine.js";
 export * from "./backend/automation-v3/repository.js";
 export * from "./backend/automation-v3/orchestrator.js";
 export * from "./backend/automation-v3/executor.js";

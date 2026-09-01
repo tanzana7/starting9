@@ -19,6 +19,8 @@ import {
 import { planV3ProbableStarterJobs } from "./probable-starter-planner.js";
 import { isV3GameEligible, V3_COMPLETED_STATE_TRANSITIONS } from "./domain.js";
 import { assessV3LineupArtifact } from "./lineup-artifacts.js";
+import { getV3CanonicalRosterSnapshot } from "./roster-repository.js";
+import { buildStagePlans, buildV3PlanningState } from "./planning-engine.js";
 
 // Planner aggregation, planner diagnostics, and atomic claim coordination.
 export function assertV3AuxiliaryJobResult(job, result, now) {
@@ -258,6 +260,24 @@ function emptyV3PlanResult(error = null) {
   return { created: 0, planned: [], diagnostics: [], errors: error ? [{ game: null, plan: null, error }] : [] };
 }
 
+async function readV3JobsForPlanning(db, internalGameId) {
+  try {
+    const result = await db.prepare(
+      `SELECT * FROM game_jobs_v3 WHERE internal_game_id = ?1 ORDER BY scheduled_slot_at, id`
+    ).bind(internalGameId).all();
+    return result.results || [];
+  } catch {
+    return [];
+  }
+}
+
+function isPredictionCloseRecoveryJob(job) {
+  const status = String(job?.status || "").trim().toLowerCase();
+  if (status === "failed") return true;
+  return status === "retry_wait"
+    && Number(job?.attempt_count ?? job?.attemptCount ?? 0) >= Number(job?.max_attempts ?? job?.maxAttempts ?? 0);
+}
+
 export const V3_JOB_PLANNERS = Object.freeze({
   [V3_JOB_TYPE.PROBABLE_STARTER_FETCH]: planV3ProbableStarterJobs,
   [V3_JOB_TYPE.ROSTER_FETCH]: planV3RosterJobs,
@@ -340,7 +360,32 @@ export async function planV3MainJobs(db, games = [], now = new Date()) {
       const state = await deriveV3PlanningState(db, game.internalGameId, persistedState);
       const workflowArtifacts = await readV3WorkflowArtifactHealth(db, game.internalGameId, state);
       if (state === "published" || workflowArtifacts.publicationReady) continue;
-      const plans = getV3FormalDuePlans(game, state, now);
+      const existingJobs = await readV3JobsForPlanning(db, game.internalGameId);
+      const rosterSnapshot = await getV3CanonicalRosterSnapshot(db, game.internalGameId, { gameDate: game.gameDate || game.game_date });
+      const sharedPlanningState = buildV3PlanningState({
+        game,
+        persistedState,
+        effectiveState: state,
+        jobs: existingJobs,
+        artifacts: {
+          roster_fetch: {
+            available: Boolean(rosterSnapshot?.exists),
+            valid: Boolean(rosterSnapshot?.exists && !rosterSnapshot?.isStale)
+          },
+          lineup_fetch: workflowArtifacts.lineup,
+          lineup_finalize: { available: workflowArtifacts.lineup.finalizedValid, valid: workflowArtifacts.lineup.finalizedValid },
+          scoring: { available: workflowArtifacts.scoreReady, valid: workflowArtifacts.scoreReady },
+          ranking_reflect: { available: workflowArtifacts.rankingReflected, valid: workflowArtifacts.rankingReflected },
+          publish: { available: workflowArtifacts.publicationReady, valid: workflowArtifacts.publicationReady }
+        },
+        now
+      });
+      const plans = buildStagePlans(sharedPlanningState).filter((entry) => entry.shouldCreateJob).map((entry) => ({
+        jobType: entry.jobType,
+        scheduledSlotAt: new Date(entry.selectedSlotAt),
+        scheduledAt: new Date(entry.selectedSlotAt),
+        sharedPlan: entry
+      }));
       for (const plan of plans) {
         const artifactReady = plan.jobType === V3_JOB_TYPE.LINEUP_FETCH
           ? workflowArtifacts.available && workflowArtifacts.lineup.ready === true
@@ -373,7 +418,7 @@ export async function planV3MainJobs(db, games = [], now = new Date()) {
           : null;
         const predictionCloseRecovery = plan.jobType === V3_JOB_TYPE.PREDICTION_CLOSE
           && !result.created
-          && isV3ScoreRecoveryTerminalJob(result.job);
+          && isPredictionCloseRecoveryJob(result.job);
         const isTerminalRecovery = recoveryJobType
           && !result.created
           && (recoveryJobType === "score"

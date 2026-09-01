@@ -77,9 +77,8 @@ function buildV3NpbGameUrl(gameDate, gameCode) {
 // have necessarily copied it into games. Read that canonical registry value for
 // V3 planning and lineup execution without mutating historical schedule rows.
 export async function hydrateV3GameIdentityFromIdentifiers(db, game = {}) {
-  const existingCode = normalizeV3NpbGameCode(game.npbGameCode || game.npb_game_code);
   const existingStatus = String(game.npbIdentityStatus || game.npb_identity_status || "").trim();
-  if (existingCode || existingStatus === "manually_overridden") return game;
+  if (existingStatus === "manually_overridden") return game;
 
   const internalGameId = String(game.internalGameId || game.internal_game_id || "").trim();
   if (!internalGameId) return game;
@@ -113,7 +112,7 @@ export async function hydrateV3GameIdentityFromIdentifiers(db, game = {}) {
   return {
     ...game,
     npbGameCode: code,
-    npbGameUrl: game.npbGameUrl || game.npb_game_url || buildV3NpbGameUrl(game.gameDate || game.game_date, code),
+    npbGameUrl: buildV3NpbGameUrl(game.gameDate || game.game_date, code),
     sourceScheduleKey: game.sourceScheduleKey || game.source_schedule_key || sourceKey,
     npbIdentityStatus: "resolved",
     npbIdentityResolvedAt: game.npbIdentityResolvedAt || game.npb_identity_resolved_at || updatedAt,

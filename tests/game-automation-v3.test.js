@@ -122,7 +122,91 @@ test("NPB識別解決は前日18時・当日16時・10分スロットをJSTで�
 test("NPB識別情報が未解決の間はlineup jobを計画しない", () => {
   const target = { ...game(), npbIdentityStatus: "unresolved" };
   assert.equal(v3.getV3DuePlan(target, "prediction_closed", "2026-08-04T08:20:00.000Z"), null);
-  assert.equal(v3.getV3DuePlan({ ...target, npbIdentityStatus: "resolved" }, "prediction_closed", "2026-08-04T08:20:00.000Z").jobType, "lineup_fetch");
+  assert.equal(v3.getV3DuePlan({ ...target, npbGameCode: "f-l-18", npbIdentityStatus: "resolved" }, "prediction_closed", "2026-08-04T08:20:00.000Z").jobType, "lineup_fetch");
+});
+
+test("9/1型fixtureはV3 formal planでもV3.5と同じdue判断を返す", () => {
+  const target = {
+    internalGameId: "fixture-2026-09-01-fighters-hawks",
+    gameDate: "2026-09-01",
+    startAt: "2026-09-01T09:00:00.000Z",
+    homeTeam: "fighters",
+    awayTeam: "hawks",
+    npbGameCode: "f-h-21",
+    npbIdentityStatus: "resolved",
+    gameStatus: "scheduled",
+    isActive: 1,
+    deletedAt: null,
+    workflowState: "scheduled"
+  };
+  const now = new Date("2026-09-01T08:42:00.000Z");
+  const plans = v3.buildStagePlans(v3.buildV3PlanningState({
+    game: target,
+    persistedState: "scheduled",
+    effectiveState: "probable_starter_ready",
+    jobs: [{ internal_game_id: target.internalGameId, job_type: "probable_starter_fetch", status: "completed" }],
+    artifacts: {},
+    now
+  }));
+  assert.equal(plans.find((plan) => plan.stage === "roster_fetch").shouldCreateJob, true);
+  assert.equal(plans.find((plan) => plan.stage === "prediction_close").shouldCreateJob, true);
+  assert.equal(plans.find((plan) => plan.stage === "lineup_fetch").blockedReason, "PREDICTION_CLOSE_STATE_GATE");
+});
+
+test("planning engineはread-onlyで、due plan結果だけを返す", () => {
+  const target = { ...game(), npbGameCode: "f-l-18", npbIdentityStatus: "resolved" };
+  const plans = v3.buildStagePlans(v3.buildV3PlanningState({
+    game: target,
+    persistedState: "scheduled",
+    now: new Date("2026-08-04T08:00:00.000Z")
+  }));
+  assert.equal(plans.find((plan) => plan.stage === "prediction_close").insertAllowed, true);
+  assert.equal(plans.find((plan) => plan.stage === "prediction_close").shouldCreateJob, true);
+});
+
+test("planning engineは別gameまたはgame IDなしのjobで既存job扱いしない", () => {
+  const target = {
+    ...game(),
+    internalGameId: "target-game",
+    npbGameCode: "f-l-18",
+    npbIdentityStatus: "resolved"
+  };
+  const base = {
+    game: target,
+    persistedState: "scheduled",
+    effectiveState: "probable_starter_ready",
+    now: new Date("2026-08-04T08:00:00.000Z")
+  };
+  for (const status of ["pending", "claimed", "retry_wait", "completed"]) {
+    const plans = v3.buildStagePlans(v3.buildV3PlanningState({
+      ...base,
+      jobs: [
+        { internal_game_id: "other-game", job_type: "prediction_close", status },
+        { job_type: "prediction_close", status }
+      ]
+    }), ["prediction_close"]);
+    assert.equal(plans[0].shouldCreateJob, true, `status=${status}`);
+    assert.equal(plans[0].existingJob, null, `status=${status}`);
+  }
+});
+
+test("repository-derived effectiveStateを指定したformal planはjob配列の再推定に依存しない", () => {
+  const target = {
+    ...game(),
+    internalGameId: "derived-state-game",
+    npbGameCode: "f-h-21",
+    npbIdentityStatus: "resolved"
+  };
+  const plans = v3.buildStagePlans(v3.buildV3PlanningState({
+    game: target,
+    persistedState: "scheduled",
+    effectiveState: "probable_starter_ready",
+    jobs: [],
+    now: new Date("2026-09-01T08:42:00.000Z")
+  }), ["roster_fetch", "prediction_close", "lineup_fetch"]);
+  assert.equal(plans[0].shouldCreateJob, true);
+  assert.equal(plans[1].shouldCreateJob, true);
+  assert.equal(plans[2].blockedReason, "PREDICTION_CLOSE_STATE_GATE");
 });
 
 test("V3はgamesが空でもgame_identifiersのNPBコードをlineup対象へ補完する", async () => {
@@ -147,6 +231,31 @@ test("V3はgamesが空でもgame_identifiersのNPBコードをlineup対象へ補
     assert.equal(games[0].npbIdentityState, "resolved");
     assert.equal(games[0].npbIdentitySource, "game_identifiers");
     assert.equal(v3.getV3DuePlan(games[0], "prediction_closed", "2026-08-11T04:10:00.000Z").jobType, "lineup_fetch");
+  } finally {
+    database.close();
+  }
+});
+
+test("古いgames側のNPB identityはcanonical game_identifiersで再評価する", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE games (internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+        home_team TEXT, away_team TEXT, npb_game_code TEXT, npb_identity_status TEXT,
+        game_status TEXT, is_active INTEGER, deleted_at TEXT);
+      CREATE TABLE game_identifiers (id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT,
+        provider TEXT, identifier_type TEXT, identifier_value TEXT, updated_at TEXT);
+      INSERT INTO games VALUES ('${GAME_ID}', '2026-08-11', '2026-08-11T05:00:00.000Z',
+        'fighters', 'lions', 'f-l-17', 'unresolved', 'scheduled', 1, NULL);
+      INSERT INTO game_identifiers (internal_game_id, provider, identifier_type, identifier_value, updated_at)
+        VALUES ('${GAME_ID}', 'npb', 'npb_game_code', 'f-l-18', '2026-08-10T09:01:02.659Z');
+    `);
+    const games = await v3.listV3Games(d1(database), new Date("2026-08-11T00:00:00.000Z"));
+    assert.equal(games[0].npbGameCode, "f-l-18");
+    assert.equal(games[0].npbGameUrl, "https://npb.jp/scores/2026/0811/f-l-18/");
+    assert.equal(games[0].npbIdentityStatus, "resolved");
+    assert.equal(games[0].npbIdentityState, "resolved");
+    assert.equal(v3.getV3DuePlan(games[0], "prediction_closed", "2026-08-11T09:02:00.000Z").jobType, "lineup_finalize");
   } finally {
     database.close();
   }
@@ -188,7 +297,7 @@ test("V3の状態機械は正常遷移だけを受け入れ、旧状態名を含
 });
 
 test("V3全job typeはstate gateから各plannerへ到達できる", () => {
-  const target = { ...game(), npbIdentityStatus: "resolved" };
+  const target = { ...game(), npbGameCode: "f-l-18", npbIdentityStatus: "resolved" };
   assert.deepEqual(v3.V3_JOB_TYPES, [
     "npb_identity_resolve", "prediction_close", "lineup_fetch", "lineup_finalize",
     "score", "ranking_rebuild", "publish", "probable_starter_fetch", "roster_fetch"
@@ -197,7 +306,8 @@ test("V3全job typeはstate gateから各plannerへ到達できる", () => {
   assert.deepEqual(v3.getV3DuePlans(target, "prediction_closed", "2026-08-04T08:20:00.000Z").map((plan) => plan.jobType), ["lineup_fetch"]);
   assert.deepEqual(v3.getV3DuePlans(target, "prediction_closed", "2026-08-04T09:03:00.000Z").map((plan) => plan.jobType), ["lineup_finalize"]);
   assert.deepEqual(v3.getV3DuePlans(target, "lineup_ready", "2026-08-04T09:03:00.000Z").map((plan) => plan.jobType), ["score"]);
-  assert.deepEqual(v3.getV3DuePlans(target, "scored", "2026-08-04T09:03:00.000Z").map((plan) => plan.jobType), ["ranking_rebuild"]);
+  assert.deepEqual(v3.getV3DuePlans(target, "scored", "2026-08-04T09:09:00.000Z").map((plan) => plan.jobType), []);
+  assert.deepEqual(v3.getV3DuePlans(target, "scored", "2026-08-04T09:10:00.000Z").map((plan) => plan.jobType), ["ranking_rebuild"]);
   assert.deepEqual(v3.getV3DuePlans(target, "ranked", "2026-08-04T09:11:00.000Z").map((plan) => plan.jobType), ["publish"]);
 });
 

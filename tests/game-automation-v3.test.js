@@ -575,6 +575,213 @@ test("V3はgamesが空でもgame_identifiersのNPBコードをlineup対象へ補
   }
 });
 
+test("実repository discoveryは開始後の未公開gameを保持し、published gameを除外する", async () => {
+  const database = new DatabaseSync(":memory:");
+  const targetId = "0f30b9bb-c8b0-4dc4-a8c9-c47777851362";
+  const pastId = "1f30b9bb-c8b0-4dc4-a8c9-c47777851362";
+  const publishedId = "2f30b9bb-c8b0-4dc4-a8c9-c47777851362";
+  const currentUninitializedId = "3f30b9bb-c8b0-4dc4-a8c9-c47777851362";
+  const pastUninitializedId = "4f30b9bb-c8b0-4dc4-a8c9-c47777851362";
+  const cancelledId = "5f30b9bb-c8b0-4dc4-a8c9-c47777851362";
+  const serviceUnavailableId = "6f30b9bb-c8b0-4dc4-a8c9-c47777851362";
+  const excludedId = "7f30b9bb-c8b0-4dc4-a8c9-c47777851362";
+  const inactiveId = "8f30b9bb-c8b0-4dc4-a8c9-c47777851362";
+  const deletedId = "9f30b9bb-c8b0-4dc4-a8c9-c47777851362";
+  try {
+    database.exec(`
+      CREATE TABLE games (
+        internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+        home_team TEXT, away_team TEXT, npb_game_code TEXT, npb_identity_status TEXT,
+        game_status TEXT, is_active INTEGER, deleted_at TEXT
+      );
+      CREATE TABLE game_automation_v3_state (internal_game_id TEXT PRIMARY KEY, state TEXT);
+      CREATE TABLE game_lineups (
+        internal_game_id TEXT PRIMARY KEY, publication_status TEXT, published_at TEXT
+      );
+      CREATE TABLE ranking_games (
+        internal_game_id TEXT PRIMARY KEY, publication_status TEXT, published_at TEXT
+      );
+      INSERT INTO games VALUES
+        ('${targetId}', '2026-09-01', '2026-09-01T09:00:00.000Z', 'fighters', 'hawks', 'f-h-21', 'resolved', 'scheduled', 1, NULL),
+        ('${pastId}', '2026-08-31', '2026-08-31T09:00:00.000Z', 'fighters', 'hawks', 'f-h-20', 'resolved', 'scheduled', 1, NULL),
+        ('${publishedId}', '2026-09-01', '2026-09-01T09:00:00.000Z', 'fighters', 'hawks', 'f-h-22', 'resolved', 'scheduled', 1, NULL),
+        ('${currentUninitializedId}', '2026-09-01', '2026-09-01T10:00:00.000Z', 'fighters', 'hawks', 'f-h-23', 'resolved', 'scheduled', 1, NULL),
+        ('${pastUninitializedId}', '2026-08-30', '2026-08-30T09:00:00.000Z', 'fighters', 'hawks', 'f-h-19', 'resolved', 'scheduled', 1, NULL),
+        ('${cancelledId}', '2026-09-01', '2026-09-01T11:00:00.000Z', 'fighters', 'hawks', 'f-h-24', 'resolved', 'cancelled', 1, NULL),
+        ('${serviceUnavailableId}', '2026-09-01', '2026-09-01T12:00:00.000Z', 'fighters', 'hawks', 'f-h-25', 'resolved', 'service_unavailable', 1, NULL),
+        ('${excludedId}', '2026-09-01', '2026-09-01T13:00:00.000Z', 'fighters', 'hawks', 'f-h-26', 'resolved', 'scheduled', 1, NULL),
+        ('${inactiveId}', '2026-09-01', '2026-09-01T14:00:00.000Z', 'fighters', 'hawks', 'f-h-27', 'resolved', 'scheduled', 0, NULL),
+        ('${deletedId}', '2026-09-01', '2026-09-01T15:00:00.000Z', 'fighters', 'hawks', 'f-h-28', 'resolved', 'scheduled', 1, '2026-09-01T00:00:00.000Z');
+      INSERT INTO game_automation_v3_state VALUES
+        ('${targetId}', 'prediction_closed'),
+        ('${pastId}', 'ranked'),
+        ('${publishedId}', 'published'),
+        ('${excludedId}', 'excluded');
+      INSERT INTO game_lineups VALUES
+        ('${targetId}', 'pending', NULL),
+        ('${pastId}', 'scored_private', NULL),
+        ('${publishedId}', 'published', '2026-09-01T10:00:00.000Z');
+    `);
+    const games = await v3.listV3Games(
+      d1(database),
+      new Date("2026-09-01T12:40:00.000Z")
+    );
+    const ids = games.map((entry) => entry.internalGameId);
+    assert.ok(ids.includes(targetId), "開始後でも未公開prediction_closed gameを候補に含めること");
+    assert.ok(ids.includes(pastId), "前日でも未公開stateのgameを候補に保持すること");
+    assert.ok(ids.includes(currentUninitializedId), "当日のstateなしgameは既存初期化対象として保持すること");
+    assert.ok(!ids.includes(publishedId), "published gameを候補から除外すること");
+    for (const excludedIdValue of [pastUninitializedId, cancelledId, serviceUnavailableId, excludedId, inactiveId, deletedId]) {
+      assert.ok(!ids.includes(excludedIdValue), `除外対象gameを候補に含めないこと: ${excludedIdValue}`);
+    }
+    assert.equal(games.find((entry) => entry.internalGameId === targetId)?.workflowState, "prediction_closed");
+    assert.equal(games.find((entry) => entry.internalGameId === targetId)?.isPublished, false);
+  } finally {
+    database.close();
+  }
+});
+
+test("enriched discovery queryが失敗した場合はcurrent-day fallbackを診断ログに残す", async () => {
+  const database = new DatabaseSync(":memory:");
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (message) => warnings.push(String(message));
+  try {
+    database.exec(`
+      CREATE TABLE games (
+        internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+        home_team TEXT, away_team TEXT, npb_game_code TEXT, npb_identity_status TEXT,
+        game_status TEXT, is_active INTEGER, deleted_at TEXT
+      );
+      INSERT INTO games VALUES ('fallback-game', '2026-09-01', '2026-09-01T09:00:00.000Z',
+        'fighters', 'hawks', 'f-h-21', 'resolved', 'scheduled', 1, NULL);
+    `);
+    const games = await v3.listV3Games(d1(database), new Date("2026-09-01T12:40:00.000Z"));
+    assert.equal(games.length, 1);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /V3_DISCOVERY_FALLBACK/);
+    assert.match(warnings[0], /legacy_current_day_fallback/);
+    assert.match(warnings[0], /historicalUnpublishedRetention":false/);
+  } finally {
+    console.warn = originalWarn;
+    database.close();
+  }
+});
+
+test("過去日の未公開workflow stateはpublishedまで候補に保持する", async () => {
+  const database = new DatabaseSync(":memory:");
+  const states = ["scheduled", "probable_starter_ready", "roster_ready", "prediction_closed", "lineup_ready", "scored", "ranked"];
+  try {
+    database.exec(`
+      CREATE TABLE games (
+        internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+        home_team TEXT, away_team TEXT, npb_game_code TEXT, npb_identity_status TEXT,
+        game_status TEXT, is_active INTEGER, deleted_at TEXT
+      );
+      CREATE TABLE game_automation_v3_state (internal_game_id TEXT PRIMARY KEY, state TEXT);
+      CREATE TABLE game_lineups (internal_game_id TEXT PRIMARY KEY, publication_status TEXT, published_at TEXT);
+      CREATE TABLE ranking_games (internal_game_id TEXT PRIMARY KEY, publication_status TEXT, published_at TEXT);
+    `);
+    const insertGame = database.prepare(
+      "INSERT INTO games VALUES (?1, '2026-08-31', '2026-08-31T09:00:00.000Z', 'fighters', 'hawks', ?2, 'resolved', 'scheduled', 1, NULL)"
+    );
+    const insertState = database.prepare("INSERT INTO game_automation_v3_state VALUES (?1, ?2)");
+    states.forEach((state, index) => {
+      const id = `state-${index}`;
+      insertGame.run(id, `f-h-${index + 1}`);
+      insertState.run(id, state);
+    });
+    const games = await v3.listV3Games(d1(database), new Date("2026-09-01T12:40:00.000Z"));
+    assert.deepEqual(new Set(games.map((game) => game.workflowState)), new Set(states));
+    assert.equal(games.length, states.length);
+  } finally {
+    database.close();
+  }
+});
+
+test("実repository discoveryからformal plannerのlineup_fetch insertまで到達する", async () => {
+  const database = new DatabaseSync(":memory:");
+  const internalGameId = "3f30b9bb-c8b0-4dc4-a8c9-c47777851362";
+  const historicalUninitializedId = "4f30b9bb-c8b0-4dc4-a8c9-c47777851362";
+  try {
+    database.exec(`
+      CREATE TABLE games (
+        internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+        home_team TEXT, away_team TEXT, npb_game_code TEXT, npb_identity_status TEXT,
+        game_status TEXT, is_active INTEGER, deleted_at TEXT
+      );
+      CREATE TABLE game_automation_v3_state (
+        internal_game_id TEXT PRIMARY KEY, state TEXT, version INTEGER,
+        created_at TEXT, updated_at TEXT
+      );
+      CREATE TABLE game_jobs_v3 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT, job_type TEXT,
+        scheduled_at TEXT, scheduled_slot_at TEXT, status TEXT, attempt_count INTEGER,
+        max_attempts INTEGER, next_retry_at TEXT, claimed_at TEXT, claim_token TEXT,
+        lease_expires_at TEXT, completed_at TEXT, failure_code TEXT, failure_message TEXT,
+        created_at TEXT, updated_at TEXT,
+        UNIQUE(internal_game_id, job_type, scheduled_slot_at)
+      );
+      CREATE TABLE game_lineups (
+        internal_game_id TEXT PRIMARY KEY, actual_lineup_json TEXT,
+        scoring_status TEXT, scored_at TEXT, publication_status TEXT, published_at TEXT
+      );
+      CREATE TABLE game_lineup_revisions (
+        internal_game_id TEXT, is_final INTEGER, actual_lineup_json TEXT, version INTEGER
+      );
+      CREATE TABLE ranking_reflection_revisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT,
+        ranking_update_revision INTEGER, status TEXT
+      );
+      INSERT INTO games VALUES (
+        '${internalGameId}', '2026-09-01', '2026-09-01T09:00:00.000Z',
+        'fighters', 'hawks', 'f-h-21', 'resolved', 'scheduled', 1, NULL
+      );
+      INSERT INTO games VALUES (
+        '${historicalUninitializedId}', '2026-08-30', '2026-08-30T09:00:00.000Z',
+        'fighters', 'hawks', 'f-h-20', 'resolved', 'scheduled', 1, NULL
+      );
+      INSERT INTO game_automation_v3_state VALUES (
+        '${internalGameId}', 'prediction_closed', 1,
+        '2026-09-01T08:00:00.000Z', '2026-09-01T08:00:00.000Z'
+      );
+      INSERT INTO game_lineups VALUES ('${internalGameId}', NULL, NULL, NULL, 'private', NULL);
+    `);
+    let optionalPromise = null;
+    const result = await v3.runGameAutomationV3(
+      { AUTH_DB: d1(database), ENABLE_GAME_AUTOMATION_V3: "true" },
+      new Date("2026-09-01T08:10:00.000Z"),
+      {
+        scheduleOptional: (promise) => { optionalPromise = promise; },
+        auxiliaryPlanner: async () => ({ created: 0, planned: [], diagnostics: [], errors: [] }),
+        executeJob: async ({ job }) => ({
+          status: "completed",
+          stateBefore: job.job_type === "lineup_fetch" ? "prediction_closed" : "scheduled",
+          stateAfter: "prediction_closed"
+        })
+      }
+    );
+    if (optionalPromise) await optionalPromise;
+    const lineupJob = database.prepare(
+      "SELECT * FROM game_jobs_v3 WHERE internal_game_id = ?1 AND job_type = 'lineup_fetch'"
+    ).get(internalGameId);
+    assert.equal(result.gameCount, 1);
+    assert.equal(result.mainPlan.created, 1);
+    assert.equal(result.mainPlan.planned[0]?.plan?.jobType, "lineup_fetch");
+    assert.equal(lineupJob?.internal_game_id, internalGameId);
+    assert.equal(lineupJob?.scheduled_slot_at, "2026-09-01T08:10:00.000Z");
+    assert.equal(lineupJob?.status, "completed");
+    assert.equal(database.prepare(
+      "SELECT COUNT(*) AS count FROM game_automation_v3_state WHERE internal_game_id = ?1"
+    ).get(historicalUninitializedId).count, 0);
+    assert.equal(database.prepare(
+      "SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id = ?1"
+    ).get(historicalUninitializedId).count, 0);
+  } finally {
+    database.close();
+  }
+});
+
 test("古いgames側のNPB identityはcanonical game_identifiersで再評価する", async () => {
   const database = new DatabaseSync(":memory:");
   try {

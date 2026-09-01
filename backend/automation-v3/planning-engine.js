@@ -33,6 +33,60 @@ function first(object, ...keys) {
   return null;
 }
 
+function normalizedJobTypeTokens(value) {
+  return normalize(value).split(/[:/]/).map((token) => token.trim()).filter(Boolean);
+}
+
+const STAGE_ALIASES = Object.freeze({
+  probable_starter: "probable_starter",
+  probable_starter_fetch: "probable_starter",
+  roster_fetch: "roster_fetch",
+  prediction_close: "prediction_close",
+  lineup_fetch: "lineup_fetch",
+  lineup_finalize: "lineup_finalize",
+  scoring: "scoring",
+  score: "scoring",
+  ranking_reflect: "ranking_reflect",
+  ranking_rebuild: "ranking_reflect",
+  ranking: "ranking_reflect",
+  publish: "publish"
+});
+
+function canonicalStageToken(value) {
+  return STAGE_ALIASES[normalize(value)] || null;
+}
+
+function canonicalStagesFromValue(value) {
+  return new Set(normalizedJobTypeTokens(value)
+    .map(canonicalStageToken)
+    .filter(Boolean));
+}
+
+function mergeConsistentStageSets(fieldSets) {
+  const knownSets = fieldSets.filter((stages) => stages.size > 0);
+  if (!knownSets.length) return new Set();
+  const intersection = new Set(knownSets[0]);
+  for (const stages of knownSets.slice(1)) {
+    for (const stage of intersection) {
+      if (!stages.has(stage)) intersection.delete(stage);
+    }
+  }
+  return intersection;
+}
+
+// Job projections can expose both a canonical job_type and a display stage.
+// Require all known fields to agree instead of accepting a match from any one
+// field, because a contradictory projection must never suppress another stage.
+export function isV3JobForStage(job, stageOrJobType) {
+  const expected = canonicalStageToken(stageOrJobType);
+  if (!expected || !job || typeof job !== "object") return false;
+  const values = ["job_type", "jobType", "stage", "stageName", "type"]
+    .map((key) => job[key])
+    .filter((value) => value !== undefined && value !== null && String(value).trim() !== "");
+  const consistentStages = mergeConsistentStageSets(values.map(canonicalStagesFromValue));
+  return consistentStages.has(expected);
+}
+
 function jobBelongsToGame(job, gameId) {
   if (!gameId) return false;
   const id = first(job, "internalGameId", "internal_game_id");
@@ -47,9 +101,8 @@ function artifactReady(value) {
 function stageJobs(jobs, stage, gameId) {
   const jobType = JOB_TYPE_BY_STAGE[stage];
   return (Array.isArray(jobs) ? jobs : []).filter((job) => {
-    const type = normalize(first(job, "jobType", "job_type", "stage", "stageName"));
     return jobBelongsToGame(job, gameId)
-      && (type === stage || type === normalize(jobType));
+      && isV3JobForStage(job, stage || jobType);
   });
 }
 
@@ -64,20 +117,35 @@ function latestJob(jobs, stage, gameId, slot) {
 
 function effectiveStateOf(input) {
   const explicit = normalize(input.effectiveState || "");
-  if (explicit) return explicit;
   const persisted = normalize(input.persistedState || input.workflowState || "scheduled") || "scheduled";
   const jobs = Array.isArray(input.jobs) ? input.jobs : [];
   const gameId = first(input.game, "internalGameId", "internal_game_id") || input.gameId;
   const scopedJobs = jobs.filter((job) => jobBelongsToGame(job, gameId));
-  const completed = (type) => scopedJobs.some((job) => normalize(first(job, "jobType", "job_type")) === type
+  const artifacts = input.artifacts || {};
+  const completed = (stage, ...jobTypes) => scopedJobs.some((job) => isV3JobForStage(job, jobTypes[0] || stage)
     && normalize(first(job, "status", "jobStatus")) === "completed");
-  if (completed("publish")) return "published";
-  if (completed("ranking_rebuild")) return "ranked";
-  if (completed("score")) return "scored";
-  if (completed("lineup_finalize")) return "lineup_ready";
-  if (completed("prediction_close")) return "prediction_closed";
-  if (persisted === "scheduled" && completed("probable_starter_fetch")) return "probable_starter_ready";
-  return persisted;
+  const artifactFor = (stage, jobType) => artifactReady(artifacts[stage] || artifacts[jobType]);
+  const order = ["scheduled", "probable_starter_ready", "roster_ready", "prediction_closed", "lineup_ready", "scored", "ranked", "published"];
+  const rank = (state) => {
+    const index = order.indexOf(normalize(state));
+    return index < 0 ? 0 : index;
+  };
+  const protectedStates = new Set(["excluded", "failed", "manual_action_required"]);
+  if (protectedStates.has(explicit)) return explicit;
+  if (protectedStates.has(persisted)) return persisted;
+  let state = rank(explicit) >= rank(persisted) ? explicit : persisted;
+  const evidence = [
+    ["probable_starter_ready", completed("probable_starter_fetch", "probable_starter_fetch") || artifactFor("probable_starter", "probable_starter_fetch")],
+    ["prediction_closed", completed("prediction_close", "prediction_close") || artifactFor("prediction_close", "prediction_close")],
+    ["lineup_ready", artifactFor("lineup_finalize", "lineup_finalize")],
+    ["scored", artifactFor("scoring", "score")],
+    ["ranked", artifactFor("ranking_reflect", "ranking_rebuild")],
+    ["published", artifactFor("publish", "publish")]
+  ];
+  for (const [candidate, available] of evidence) {
+    if (available && rank(candidate) > rank(state)) state = candidate;
+  }
+  return state || "scheduled";
 }
 
 function dueAtFor(schedule, stage) {
@@ -124,7 +192,7 @@ export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], eff
     }
   };
   const planningJobs = Array.isArray(jobs) ? jobs : [];
-  const state = effectiveStateOf({ game, effectiveState, persistedState: persistedState || game.workflowState || game.workflow_state, jobs: planningJobs });
+  const state = effectiveStateOf({ game, effectiveState, persistedState: persistedState || game.workflowState || game.workflow_state, jobs: planningJobs, artifacts });
   const gameId = first(game, "internalGameId", "internal_game_id");
   return {
     game,

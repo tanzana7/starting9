@@ -17,7 +17,7 @@ import {
   planV3RosterJobs
 } from "./planner.js";
 import { planV3ProbableStarterJobs } from "./probable-starter-planner.js";
-import { isV3GameEligible, V3_COMPLETED_STATE_TRANSITIONS } from "./domain.js";
+import { isV3GameEligible } from "./domain.js";
 import { assessV3LineupArtifact } from "./lineup-artifacts.js";
 import { getV3CanonicalRosterSnapshot } from "./roster-repository.js";
 import { buildStagePlans, buildV3PlanningState } from "./planning-engine.js";
@@ -156,30 +156,31 @@ async function readV3StateForPlanning(db, internalGameId) {
 }
 
 async function deriveV3PlanningState(db, internalGameId, persistedState = "scheduled") {
-  let effectiveState = String(persistedState || "scheduled").trim().toLowerCase() || "scheduled";
-  for (const transition of V3_COMPLETED_STATE_TRANSITIONS) {
-    if (effectiveState !== transition.from) break;
-    let completed = null;
-    try {
-      completed = await db.prepare(
-        `SELECT id FROM game_jobs_v3
-          WHERE internal_game_id = ?1 AND job_type = ?2 AND status = 'completed'
-          ORDER BY completed_at DESC, updated_at DESC, id DESC LIMIT 1`
-      ).bind(internalGameId, transition.jobType).first();
-    } catch {
-      break;
-    }
-    if (!completed) break;
-    const artifacts = await readV3WorkflowArtifactHealth(db, internalGameId, effectiveState);
-    const artifactReady = transition.jobType === V3_JOB_TYPE.PREDICTION_CLOSE
-      || transition.jobType === V3_JOB_TYPE.LINEUP_FINALIZE && artifacts.lineup.finalizedValid === true
-      || transition.jobType === V3_JOB_TYPE.SCORE && artifacts.scoreReady
-      || transition.jobType === V3_JOB_TYPE.RANKING_REBUILD && artifacts.rankingReflected
-      || transition.jobType === V3_JOB_TYPE.PUBLISH && artifacts.publicationReady;
-    if (!artifactReady) break;
-    effectiveState = transition.to;
+  let jobs = [];
+  try {
+    const result = await db.prepare(
+      "SELECT * FROM game_jobs_v3 WHERE internal_game_id = ?1 ORDER BY scheduled_slot_at, id"
+    ).bind(internalGameId).all();
+    jobs = result.results || [];
+  } catch {
+    jobs = [];
   }
-  return effectiveState;
+  const workflowArtifacts = await readV3WorkflowArtifactHealth(db, internalGameId, persistedState);
+  return buildV3PlanningState({
+    game: { internalGameId },
+    persistedState,
+    jobs,
+    artifacts: {
+      lineup_finalize: {
+        available: workflowArtifacts.lineup.finalizedValid,
+        valid: workflowArtifacts.lineup.finalizedValid
+      },
+      scoring: { available: workflowArtifacts.scoreReady, valid: workflowArtifacts.scoreReady },
+      ranking_reflect: { available: workflowArtifacts.rankingReflected, valid: workflowArtifacts.rankingReflected },
+      publish: { available: workflowArtifacts.publicationReady, valid: workflowArtifacts.publicationReady }
+    },
+    now: new Date()
+  }).effectiveState;
 }
 
 function createV3PlanningDiagnostic(game, plan, state) {

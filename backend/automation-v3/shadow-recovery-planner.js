@@ -139,7 +139,7 @@ function stagePlan({ game, stage, item, flags, now, noActionReasons }) {
     return null;
   }
   if (healthStatus === "BLOCKED_BY_PREREQUISITE") {
-    if (["LINEUP_FETCH_SUPERSEDED_BY_LINEUP_FINALIZE", "LINEUP_FETCH_WINDOW_CLOSED_NO_FINALIZE"].includes(String(item?.blockingReason || "").trim())) {
+    if (String(item?.blockingReason || "").trim() === "LINEUP_FETCH_SUPERSEDED_BY_LINEUP_FINALIZE") {
       addNoAction(noActionReasons, `${stage}:window_closed`);
       return null;
     }

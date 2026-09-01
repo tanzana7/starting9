@@ -51,6 +51,21 @@ const STAGE_NAMES = Object.freeze([
   "publish"
 ]);
 
+const EFFECTIVE_STATE_ORDER = Object.freeze([
+  "scheduled",
+  "schedule_registered",
+  "npb_identity_ready",
+  "probable_starter_ready",
+  "roster_ready",
+  "prediction_closed",
+  "lineup_data_ready",
+  "lineup_ready",
+  "scored",
+  "ranked",
+  "published"
+]);
+const PROTECTED_STATES = new Set(["cancelled", "canceled", "postponed", "excluded", "failed", "manual_action_required"]);
+
 const JOB_TYPE_BY_STAGE = Object.freeze({
   probable_starter: "probable_starter_fetch",
   roster_fetch: "roster_fetch",
@@ -428,6 +443,18 @@ function effectiveStateFromEvidence({ stages, artifacts, scheduleRegistered }) {
   return V35_EFFECTIVE_STATE.SCHEDULED;
 }
 
+function progressRank(value) {
+  const normalized = normalizeStatus(value);
+  const index = EFFECTIVE_STATE_ORDER.indexOf(normalized);
+  return index < 0 ? 0 : index;
+}
+
+function monotonicEffectiveState(evidenceState, persistedState) {
+  const persisted = normalizeStatus(persistedState);
+  if (PROTECTED_STATES.has(persisted)) return persisted;
+  return progressRank(persisted) > progressRank(evidenceState) ? persisted : evidenceState;
+}
+
 function cancellationEffectiveState(gameStatus, cancellationInfo, excluded) {
   return normalizeGameStatus({ gameStatus, cancellationInfo, excluded });
 }
@@ -451,8 +478,9 @@ export function evaluateV35Automation({
   excluded = false,
   rankingExcluded = false,
   scheduleRegistered = false
-} = {}) {
+  } = {}) {
   const cancellationState = cancellationEffectiveState(gameStatus, cancellationInfo, excluded);
+  const persistedState = String(persistedWorkflowState || V3_STATE.SCHEDULED);
   const definitions = definitionsByStage(stageDefinitions);
   const stages = Object.fromEntries(STAGE_NAMES.map((stageName) => [stageName, evaluateV35Stage({
     stageName,
@@ -465,8 +493,8 @@ export function evaluateV35Automation({
     rankingExcluded,
     scheduleRegistered
   })]));
-  const effectiveState = cancellationState || effectiveStateFromEvidence({ stages, artifacts, scheduleRegistered });
-  const persistedState = String(persistedWorkflowState || V3_STATE.SCHEDULED);
+  const evidenceState = effectiveStateFromEvidence({ stages, artifacts, scheduleRegistered });
+  const effectiveState = cancellationState || monotonicEffectiveState(evidenceState, persistedState);
   return {
     effectiveState,
     persistedState,

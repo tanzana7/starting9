@@ -2,7 +2,7 @@
 // This module is intentionally pure. It does not read D1, fetch, create jobs,
 // mutate workflow state, or connect to a runtime entrypoint.
 import { deriveV35StageDueSchedule } from "./stage-due-schedule.js";
-import { buildStagePlans, buildV3PlanningState } from "./planning-engine.js";
+import { buildStagePlans, buildV3PlanningState, getLateLineupFetchDecision } from "./planning-engine.js";
 
 const STAGES = Object.freeze([
   "schedule_registration",
@@ -338,7 +338,7 @@ function stageSource(source, diagnostics, stageName, derivedStageSchedule) {
   return { direct, dueAt, dueAtSource, dueSlots, job };
 }
 
-function buildStageDefinitions(source, diagnostics, artifacts, disabled, game, jobs, derivedStageSchedule) {
+function buildStageDefinitions(source, diagnostics, artifacts, disabled, game, jobs, derivedStageSchedule, planningState) {
   const definitions = {};
   const currentTime = asDate(source.currentTime || source.now) || new Date();
   const finalizeDueAt = asDate(derivedStageSchedule?.stages?.lineup_finalize?.dueAt);
@@ -354,6 +354,12 @@ function buildStageDefinitions(source, diagnostics, artifacts, disabled, game, j
     });
   const lineupFetchWindowClosed = Boolean(finalizeDueAt && currentTime >= finalizeDueAt);
   const lineupArtifactReady = Boolean(artifacts.lineup_fetch?.available && artifacts.lineup_fetch?.valid);
+  const lateLineupFetch = getLateLineupFetchDecision({
+    game,
+    effectiveState: planningState?.effectiveState,
+    now: currentTime,
+    finalLineupAt: finalizeDueAt
+  });
   for (const stageName of STAGES) {
     const { direct, dueAt, dueAtSource, dueSlots } = stageSource({ ...source, jobs }, diagnostics, stageName, derivedStageSchedule);
     const blockingReason = first(direct, "blockingReason", "blocking_reason", "blockingReasonCode", "blocking_reason_code")
@@ -374,13 +380,14 @@ function buildStageDefinitions(source, diagnostics, artifacts, disabled, game, j
       ...(lineupGate ? { prerequisiteMet: false, prerequisiteReason: blockingReason || "PREDICTION_CLOSE_STATE_GATE" } : {}),
       ...(requiredArtifactMissing ? { prerequisiteMet: false, prerequisiteReason: `${artifactRequired.toUpperCase()}_ARTIFACT_MISSING` } : {}),
       ...(stageName === "lineup_fetch" && lineupFetchWindowClosed && !lineupArtifactReady
-        ? {
-            prerequisiteMet: false,
-            prerequisiteReason: finalizeJobExists
-              ? "LINEUP_FETCH_SUPERSEDED_BY_LINEUP_FINALIZE"
-              : "LINEUP_FETCH_WINDOW_CLOSED_NO_FINALIZE"
-          }
-        : {}),
+        && (finalizeJobExists || !lateLineupFetch.allowed)
+         ? {
+             prerequisiteMet: false,
+             prerequisiteReason: finalizeJobExists
+               ? "LINEUP_FETCH_SUPERSEDED_BY_LINEUP_FINALIZE"
+               : lateLineupFetch.reasonCode || "LINEUP_FETCH_WINDOW_CLOSED_NO_FINALIZE"
+           }
+         : {}),
       externalFetchDisabled: disabled && EXTERNAL_FETCH_STAGES.has(stageName),
       manualAttention: Boolean(first(direct, "manualAttention", "manual_attention") || diagnostics.manualAttention || diagnostics.manual_attention),
       rankingExcluded: Boolean(game.rankingExcluded || game.ranking_excluded)
@@ -468,7 +475,6 @@ export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostic
   if (evaluatorArtifacts.roster_fetch?.publicUsable && !evaluatorArtifacts.roster_fetch?.canonicalSnapshotAvailable) {
     warnings.push(warning("PUBLIC_ROSTER_WITHOUT_FORMAL_SNAPSHOT", "Public roster data is usable, but the formal canonical snapshot is missing.", "roster_fetch"));
   }
-  const stageDefinitions = buildStageDefinitions({ artifacts, externalFlags, currentTime: now }, normalizedDiagnostics, evaluatorArtifacts, externalDisabled, normalizedGame, normalizedJobs, derivedStageSchedule);
   const planningState = buildV3PlanningState({
     game: normalizedGame,
     jobs: normalizedJobs,
@@ -478,6 +484,16 @@ export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostic
     now
   });
   const planningPlans = buildStagePlans(planningState);
+  const stageDefinitions = buildStageDefinitions(
+    { artifacts, externalFlags, currentTime: now },
+    normalizedDiagnostics,
+    evaluatorArtifacts,
+    externalDisabled,
+    normalizedGame,
+    normalizedJobs,
+    derivedStageSchedule,
+    planningState
+  );
   for (const plan of planningPlans) {
     if (plan.blocked && stageDefinitions[plan.stage]) {
       stageDefinitions[plan.stage] = {
@@ -487,7 +503,13 @@ export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostic
         planningPlan: plan
       };
     } else if (stageDefinitions[plan.stage]) {
-      stageDefinitions[plan.stage] = { ...stageDefinitions[plan.stage], planningPlan: plan };
+      stageDefinitions[plan.stage] = {
+        ...stageDefinitions[plan.stage],
+        ...(plan.shouldCreateJob && ["PREDICTION_CLOSE_STATE_GATE", "LINEUP_FETCH_WINDOW_CLOSED_NO_FINALIZE"].includes(stageDefinitions[plan.stage].prerequisiteReason)
+          ? { prerequisiteMet: true, prerequisiteReason: null }
+          : {}),
+        planningPlan: plan
+      };
     }
   }
   const scheduleRegistered = Boolean(

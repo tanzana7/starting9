@@ -170,6 +170,10 @@ test("V3 runnerの補助job失敗はmain plannerを停止せず、仮想試合�
         max_attempts INTEGER, next_retry_at TEXT, claimed_at TEXT, claim_token TEXT,
         lease_expires_at TEXT, completed_at TEXT, failure_code TEXT, failure_message TEXT,
         created_at TEXT, updated_at TEXT, UNIQUE(internal_game_id, job_type, scheduled_slot_at));
+      CREATE TABLE game_lineup_revisions (internal_game_id TEXT, version INTEGER, is_final INTEGER,
+        actual_lineup_json TEXT);
+      CREATE TABLE game_lineups (internal_game_id TEXT PRIMARY KEY, actual_lineup_json TEXT,
+        scoring_status TEXT, scored_at TEXT, publication_status TEXT, published_at TEXT);
       INSERT INTO games VALUES ('${id}', '2026-08-08', '2026-08-08T09:00:00.000Z',
         'hawks', 'fighters', 'h-f-18', 'resolved', 'scheduled', 1, NULL);
     `);
@@ -182,9 +186,18 @@ test("V3 runnerの補助job失敗はmain plannerを停止せず、仮想試合�
       ranking_rebuild: ["scored", "ranked"],
       publish: ["ranked", "published"]
     };
+    const lineupCandidate = JSON.stringify(Array.from({ length: 9 }, (_, index) => ({
+      battingOrder: index + 1,
+      position: "P",
+      playerId: `player-${index + 1}`
+    })));
     const executeJob = async ({ job }) => {
       executed.push(job.job_type);
       if (job.job_type === "roster_fetch") return { status: "retry_wait", failureCode: "HTTP_FETCH_FAILED" };
+      if (job.job_type === "lineup_fetch") {
+        database.prepare("INSERT INTO game_lineup_revisions VALUES (?1, 1, 0, ?2)").run(id, lineupCandidate);
+        database.prepare("INSERT OR REPLACE INTO game_lineups (internal_game_id, actual_lineup_json, scoring_status, scored_at, publication_status, published_at) VALUES (?1, ?2, 'pending', NULL, 'private', NULL)").run(id, lineupCandidate);
+      }
       const transition = stateAfter[job.job_type];
       return transition
         ? { status: "completed", stateBefore: transition[0], stateAfter: transition[1] }

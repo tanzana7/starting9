@@ -33,6 +33,12 @@ function first(object, ...keys) {
   return null;
 }
 
+function jobBelongsToGame(job, gameId) {
+  if (!gameId) return false;
+  const id = first(job, "internalGameId", "internal_game_id");
+  return Boolean(id) && String(id) === String(gameId);
+}
+
 function artifactReady(value) {
   return Boolean(value && (value.valid === true || value.ready === true
     || (value.available === true && value.verificationStatus === "verified")));
@@ -41,9 +47,8 @@ function artifactReady(value) {
 function stageJobs(jobs, stage, gameId) {
   const jobType = JOB_TYPE_BY_STAGE[stage];
   return (Array.isArray(jobs) ? jobs : []).filter((job) => {
-    const id = first(job, "internalGameId", "internal_game_id");
     const type = normalize(first(job, "jobType", "job_type", "stage", "stageName"));
-    return (!gameId || String(id) === String(gameId))
+    return jobBelongsToGame(job, gameId)
       && (type === stage || type === normalize(jobType));
   });
 }
@@ -62,7 +67,9 @@ function effectiveStateOf(input) {
   if (explicit) return explicit;
   const persisted = normalize(input.persistedState || input.workflowState || "scheduled") || "scheduled";
   const jobs = Array.isArray(input.jobs) ? input.jobs : [];
-  const completed = (type) => jobs.some((job) => normalize(first(job, "jobType", "job_type")) === type
+  const gameId = first(input.game, "internalGameId", "internal_game_id") || input.gameId;
+  const scopedJobs = jobs.filter((job) => jobBelongsToGame(job, gameId));
+  const completed = (type) => scopedJobs.some((job) => normalize(first(job, "jobType", "job_type")) === type
     && normalize(first(job, "status", "jobStatus")) === "completed");
   if (completed("publish")) return "published";
   if (completed("ranking_rebuild")) return "ranked";

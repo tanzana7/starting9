@@ -274,6 +274,14 @@ const YEARLY_RANKING_MIN_YEAR = 2020;
 const PREDICTION_SCHEMA_VERSION = 1;
 const PREDICTION_MAX_JSON_BYTES = 16 * 1024;
 const V3_PUBLISH_VERIFICATION_TIMEOUT_MS = 5 * 1000;
+const PUBLIC_GAME_LIST_LIMIT = 20;
+const PUBLIC_PREVIOUS_RESULT_CANDIDATE_LIMIT = 10;
+const ADMIN_V3_DEFAULT_GAME_LIMIT = 10;
+const ADMIN_V3_MAX_GAME_LIMIT = 20;
+const ADMIN_V3_JOB_READ_LIMIT = 100;
+const ADMIN_V3_LOG_DEFAULT_LIMIT = 50;
+const ADMIN_V3_LOG_MAX_LIMIT = 100;
+const ADMIN_V3_LOG_LOOKBACK_MINUTES = 6 * 60;
 const PREDICTION_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
 const PUBLIC_ROSTER_BASELINE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const PREDICTION_TEAM_CODES = new Set(["f", "b", "h", "l", "e", "m", "g", "t", "db", "c", "d", "s"]);
@@ -688,6 +696,8 @@ export default {
       if (error?.isRequestBodyError) {
         return jsonResponse({ ok: false, code: error.code, error: error.message }, error.httpStatus, cors);
       }
+      const d1Failure = classifyD1ReadError(error);
+      if (d1Failure) return createD1ReadFailureResponse(cors, d1Failure);
       const endpoint = url.pathname;
       const failureCode = String(error?.code || "AUTH_API_INTERNAL_ERROR");
       const failureDetail = String(error?.message || "").replace(/[\r\n]+/g, " ").slice(0, 240);
@@ -4842,10 +4852,20 @@ async function handleAdminV3Overview(request, env, cors) {
   let games;
   try {
     schema = await getV3SchemaState(env.AUTH_DB);
-    games = await listV3Games(env.AUTH_DB, new Date());
+    const requestUrl = new URL(request.url);
+    const requestedLimit = Number.parseInt(requestUrl.searchParams.get("limit") || "", 10);
+    const gameLimit = Math.min(ADMIN_V3_MAX_GAME_LIMIT, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : ADMIN_V3_DEFAULT_GAME_LIMIT));
+    const internalGameId = String(requestUrl.searchParams.get("internalGameId") || "").trim().slice(0, 128);
+    games = await listV3Games(env.AUTH_DB, new Date(), {
+      internalGameId,
+      limit: gameLimit,
+      recentFirst: true
+    });
   } catch (error) {
     const code = String(error?.code || "V3_OVERVIEW_INTERNAL_ERROR");
     console.error(`[ADMIN_V3_OVERVIEW] stage=base_read failureCode=${code}`);
+    const d1Failure = classifyD1ReadError(error);
+    if (d1Failure) return createD1ReadFailureResponse(cors, d1Failure);
     return jsonResponse({ ok: false, code: "V3_OVERVIEW_INTERNAL_ERROR", error: "V3管理画面の概要を取得できませんでした。" }, 500, cors);
   }
   if (!schema.ready) return jsonResponse({ ok: false, code: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", schema }, 503, cors);
@@ -4914,7 +4934,7 @@ async function handleAdminV3Overview(request, env, cors) {
         `SELECT id, internal_game_id, job_type, status, scheduled_at, scheduled_slot_at, attempt_count,
                 max_attempts, next_retry_at, claimed_at, lease_expires_at, completed_at,
                 failure_code, failure_message, updated_at
-           FROM game_jobs_v3 WHERE internal_game_id = ?1 ORDER BY scheduled_at, id`
+           FROM game_jobs_v3 WHERE internal_game_id = ?1 ORDER BY scheduled_at, id LIMIT ${ADMIN_V3_JOB_READ_LIMIT}`
       ).bind(game.internalGameId).all();
     } catch (error) {
       const code = String(error?.code || "V3_JOBS_READ_FAILED");
@@ -6589,17 +6609,36 @@ async function handleAdminV3AutomationLogs(request, env, cors) {
     reasonCode: String(url.searchParams.get("reasonCode") || "").trim(),
     failureCode: String(url.searchParams.get("failureCode") || "").trim()
   };
-  const requestedLimit = Number(url.searchParams.get("limit") || 100);
-  const limit = Math.max(50, Math.min(100, Number.isFinite(requestedLimit) ? requestedLimit : 100));
+  const requestedLimit = Number(url.searchParams.get("limit") || ADMIN_V3_LOG_DEFAULT_LIMIT);
+  const limit = Math.min(ADMIN_V3_LOG_MAX_LIMIT, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : ADMIN_V3_LOG_DEFAULT_LIMIT));
+  const requestedLookbackMinutes = Number(url.searchParams.get("lookbackMinutes") || ADMIN_V3_LOG_LOOKBACK_MINUTES);
+  const lookbackMinutes = Math.min(24 * 60, Math.max(5, Number.isFinite(requestedLookbackMinutes) ? requestedLookbackMinutes : ADMIN_V3_LOG_LOOKBACK_MINUTES));
+  const since = new Date(Date.now() - lookbackMinutes * 60 * 1000).toISOString();
+  const auditParams = [since];
+  const auditConditions = ["occurred_at >= ?1"];
+  if (filters.internalGameId) {
+    auditParams.push(filters.internalGameId);
+    auditConditions.push(`internal_game_id = ?${auditParams.length}`);
+  }
+  if (filters.jobType) {
+    auditParams.push(filters.jobType);
+    auditConditions.push(`job_type = ?${auditParams.length}`);
+  }
+  if (filters.failureCode) {
+    auditParams.push(filters.failureCode);
+    auditConditions.push(`failure_code = ?${auditParams.length}`);
+  }
+  auditParams.push(limit);
   try {
     const result = await env.AUTH_DB.prepare(
       `SELECT id, internal_game_id, job_id, job_type, scheduled_slot_at,
               state_before, state_after, attempt_count, failure_code,
               failure_message, occurred_at, source, event_type
          FROM game_automation_v3_audit
+        WHERE ${auditConditions.join(" AND ")}
         ORDER BY occurred_at DESC, id DESC
-        LIMIT 500`
-    ).all();
+        LIMIT ?${auditParams.length}`
+    ).bind(...auditParams).all();
     const allRows = (result.results || []).map((row) => {
       const details = parseV3AuditDetails(row.failure_message);
       return {
@@ -6643,9 +6682,11 @@ async function handleAdminV3AutomationLogs(request, env, cors) {
       runMap.set(runKey, run);
     }
     const gameRuns = [...runMap.values()].map((run) => ({ ...run, internalGameIds: [...run.internalGameIds] })).slice(0, 100);
-    return jsonResponse({ ok: true, filters, limit, rows, latestCronSummary, gameRuns, jobTimeline: rows.filter((row) => row.jobId !== null) }, 200, cors);
+    return jsonResponse({ ok: true, filters, limit, lookbackMinutes, since, rows, latestCronSummary, gameRuns, jobTimeline: rows.filter((row) => row.jobId !== null) }, 200, cors);
   } catch (error) {
     console.error(`[ADMIN_V3_AUTOMATION_LOGS] stage=read failureCode=${error?.code || "V3_AUTOMATION_LOG_READ_FAILED"}`);
+    const d1Failure = classifyD1ReadError(error);
+    if (d1Failure) return createD1ReadFailureResponse(cors, d1Failure);
     return jsonResponse({ ok: false, code: "V3_AUTOMATION_LOG_READ_FAILED", error: "V3自動運転ログを取得できませんでした。" }, 500, cors);
   }
 }
@@ -9958,6 +9999,35 @@ export function normalizePregameToolError(action, error) {
 function isPregameSchemaError(error) {
   const message = String(error?.message || "").toLowerCase();
   return /no such table|no such column|has no column named|does not exist|schema.*not ready|migration/.test(message);
+}
+
+function isD1ReadLimitError(error) {
+  const code = String(error?.code || error?.cause?.code || "").toLowerCase();
+  const message = String(error?.message || error?.cause?.message || "").toLowerCase();
+  return code === "7500"
+    || /row read limit|daily row read limit|free tier.*read limit|read limit.*exceed/.test(message);
+}
+
+export function classifyD1ReadError(error) {
+  if (isD1ReadLimitError(error)) {
+    return {
+      code: "D1_READ_LIMIT_EXCEEDED",
+      status: 503,
+      message: "データベースの読み取り上限に達しています。UTC日次リセット後に再試行してください。",
+      retryAfter: "next_utc_day"
+    };
+  }
+  const code = String(error?.code || error?.cause?.code || "").toUpperCase();
+  const message = String(error?.message || error?.cause?.message || "").toLowerCase();
+  if (code === "D1_ERROR" || code.startsWith("D1_") || /sqlite|\bd1(?:[_ -]?error|[_ -]?database)?\b/.test(message)) {
+    return {
+      code: "DB_UNAVAILABLE",
+      status: 503,
+      message: "データベースに一時的に接続できません。時間をおいて再試行してください。",
+      retryAfter: null
+    };
+  }
+  return null;
 }
 
 async function isWorkflowJobSchemaReady(db) {
@@ -14539,7 +14609,12 @@ async function handleGetPredictionTarget(request, env, cors) {
 async function handleGetPublicGames(request, env, cors) {
   const now = new Date();
   const today = getJstDateString(now);
-  const rankingColumns = await getTableColumnSet(env.AUTH_DB, "ranking_games");
+  let rankingColumns = new Set();
+  try {
+    rankingColumns = await getTableColumnSet(env.AUTH_DB, "ranking_games");
+  } catch (error) {
+    if (isD1ReadLimitError(error)) throw error;
+  }
   const rankingEligibilitySelect = rankingColumns.has("ranking_eligibility_status")
     ? ", ranking.ranking_eligibility_status"
     : ", NULL AS ranking_eligibility_status";
@@ -14564,20 +14639,25 @@ async function handleGetPublicGames(request, env, cors) {
           AND games.deleted_at IS NULL
           AND (LOWER(games.home_team) = 'fighters' OR LOWER(games.away_team) = 'fighters')
         ORDER BY games.start_time ASC
-        LIMIT 50`
+        LIMIT ${PUBLIC_GAME_LIST_LIMIT}`
     ).bind(today).all();
   } catch (error) {
+    if (isD1ReadLimitError(error)) throw error;
     // Public selection must remain available when an older optional status column is absent.
     console.warn("public game status joins unavailable; using canonical games fallback", error instanceof Error ? error.message : "unknown error");
-    result = await env.AUTH_DB.prepare(
-      `SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status
-         FROM games
-        WHERE game_date >= ?1
-          AND game_status IS NOT NULL
-          AND (LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')
-        ORDER BY start_time ASC
-        LIMIT 50`
-    ).bind(today).all();
+    try {
+      result = await env.AUTH_DB.prepare(
+        `SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status
+           FROM games
+          WHERE game_date >= ?1
+            AND game_status IS NOT NULL
+            AND (LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')
+          ORDER BY start_time ASC
+          LIMIT ${PUBLIC_GAME_LIST_LIMIT}`
+      ).bind(today).all();
+    } catch (fallbackError) {
+      throw fallbackError;
+    }
   }
 
   const games = (result.results || []).map((row) => {
@@ -14622,27 +14702,39 @@ async function handleGetPreviousResultGame(request, env, cors) {
   try {
     result = await env.AUTH_DB.prepare(
       `SELECT games.internal_game_id, games.game_date, games.start_time, games.home_team, games.away_team,
-              games.game_status, ranking.ranking_eligibility_status
+              games.game_status, ranking.ranking_eligibility_status,
+              ranking.publication_status, ranking.published_at, ranking.is_test_game
          FROM games
          LEFT JOIN ranking_games AS ranking ON ranking.internal_game_id = games.internal_game_id
         WHERE games.game_date <= ?1
           AND games.is_active = 1
           AND games.deleted_at IS NULL
           AND (LOWER(games.home_team) = 'fighters' OR LOWER(games.away_team) = 'fighters')
+          AND (
+            LOWER(COALESCE(games.game_status, '')) IN ('cancelled', 'canceled', 'postponed', 'service_unavailable')
+            OR (ranking.ranking_eligibility_status IS NOT NULL AND ranking.ranking_eligibility_status <> 'eligible')
+            OR (ranking.publication_status = 'published' AND COALESCE(ranking.is_test_game, 0) <> 1)
+          )
         ORDER BY games.game_date DESC, games.start_time DESC
-         LIMIT 30`
+         LIMIT ${PUBLIC_PREVIOUS_RESULT_CANDIDATE_LIMIT}`
     ).bind(today).all();
   } catch (error) {
+    if (isD1ReadLimitError(error)) throw error;
     console.warn("previous result game optional game columns unavailable; using canonical games fallback", error instanceof Error ? error.message : "unknown error");
-    result = await env.AUTH_DB.prepare(
-      `SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status,
-              NULL AS ranking_eligibility_status
-         FROM games
-        WHERE game_date <= ?1
-          AND (LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')
-        ORDER BY game_date DESC, start_time DESC
-        LIMIT 30`
-    ).bind(today).all();
+    try {
+      result = await env.AUTH_DB.prepare(
+        `SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status,
+                NULL AS ranking_eligibility_status
+           FROM games
+          WHERE game_date <= ?1
+            AND (LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')
+          ORDER BY game_date DESC, start_time DESC
+          LIMIT ${PUBLIC_PREVIOUS_RESULT_CANDIDATE_LIMIT}`
+      ).bind(today).all();
+    } catch (fallbackError) {
+      if (isD1ReadLimitError(fallbackError)) throw fallbackError;
+      throw fallbackError;
+    }
   }
 
   let game = null;
@@ -14655,16 +14747,20 @@ async function handleGetPreviousResultGame(request, env, cors) {
       && row.ranking_eligibility_status !== "eligible";
     const unavailable = ["cancelled", "canceled", "postponed", "service_unavailable"].includes(gameStatus)
       || rankingExcluded;
-    const resultsPublished = !unavailable && await isGameResultsPublished(env.AUTH_DB, internalGameId, now);
+    const directPublished = row.publication_status === "published" && Number(row.is_test_game || 0) !== 1;
+    const resultsPublished = !unavailable && (directPublished
+      || (row.publication_status === undefined && await isGameResultsPublished(env.AUTH_DB, internalGameId, now)));
     if (!resultsPublished && !unavailable) continue;
-    let resultPublishedAt = null;
-    try {
-      const publication = await env.AUTH_DB.prepare(
-        "SELECT published_at FROM ranking_games WHERE game_id = ?1 LIMIT 1"
-      ).bind(internalGameId).first();
-      resultPublishedAt = publication?.published_at || null;
-    } catch (error) {
-      console.warn("previous result publication timestamp unavailable", error instanceof Error ? error.message : "unknown error");
+    let resultPublishedAt = row.published_at || null;
+    if (resultsPublished && !resultPublishedAt) {
+      try {
+        const publication = await env.AUTH_DB.prepare(
+          "SELECT published_at FROM ranking_games WHERE game_id = ?1 LIMIT 1"
+        ).bind(internalGameId).first();
+        resultPublishedAt = publication?.published_at || null;
+      } catch (error) {
+        console.warn("previous result publication timestamp unavailable", error instanceof Error ? error.message : "unknown error");
+      }
     }
     game = {
       internalGameId,
@@ -15037,9 +15133,18 @@ async function handleGetResultGame(request, env, cors, gameId) {
   }, 200, cors);
 }
 
+const tableColumnSetCache = new WeakMap();
+
 async function getTableColumnSet(db, table) {
+  const cacheKey = String(table || "");
+  const cachedByTable = tableColumnSetCache.get(db);
+  if (cachedByTable?.has(cacheKey)) return cachedByTable.get(cacheKey);
   const result = await db.prepare(`PRAGMA table_info(${table})`).bind().all();
-  return new Set((result.results || []).map((row) => String(row.name || "")));
+  const columns = new Set((result.results || []).map((row) => String(row.name || "")));
+  const nextCache = cachedByTable || new Map();
+  nextCache.set(cacheKey, columns);
+  tableColumnSetCache.set(db, nextCache);
+  return columns;
 }
 
 async function saveLineupCandidateRevision(db, {
@@ -20785,6 +20890,21 @@ function jsonResponse(payload, status, headers) {
   const responseHeaders = new Headers(headers);
   responseHeaders.set("Content-Type", "application/json; charset=utf-8");
   return new Response(JSON.stringify(payload), { status, headers: responseHeaders });
+}
+
+function createD1ReadFailureResponse(cors, failure) {
+  const responseHeaders = new Headers(cors);
+  if (failure?.retryAfter === "next_utc_day") {
+    const now = new Date();
+    const nextUtcDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+    responseHeaders.set("Retry-After", String(Math.max(1, Math.ceil((nextUtcDay.getTime() - now.getTime()) / 1000))));
+  }
+  return jsonResponse({
+    ok: false,
+    code: failure?.code || "DB_UNAVAILABLE",
+    error: failure?.message || "データベースに一時的に接続できません。時間をおいて再試行してください。",
+    retryAt: failure?.retryAfter === "next_utc_day" ? "next_utc_day" : null
+  }, Number(failure?.status) || 503, responseHeaders);
 }
 
 function noStoreJsonResponse(payload, status, headers) {

@@ -75,7 +75,7 @@ async function loadCurrentUser() {
   } catch (error) {
     console.error("認証状態の確認に失敗しました", error.message);
     authState.user = null;
-    setAuthStatus("認証APIに接続できません（予想機能は利用できます）", "warning");
+    setAuthStatus(toAuthConnectionStatus(error), "warning");
   } finally {
     finishAuthInitialization();
   }
@@ -257,7 +257,11 @@ async function requestAuth(path, options = {}) {
   }
 
   if (!response.ok || payload?.ok === false) {
-    throw new Error(payload?.error || "認証APIの処理に失敗しました。");
+    const error = new Error(payload?.error || "認証APIの処理に失敗しました。");
+    error.status = response.status;
+    error.code = payload?.code || "";
+    error.payload = payload;
+    throw error;
   }
   return payload || {};
 }
@@ -284,8 +288,24 @@ function setAuthStatus(message, type) {
 }
 
 function toUserAuthError(error) {
+  if (error?.code === "D1_READ_LIMIT_EXCEEDED" || Number(error?.status) === 503) {
+    return "認証サービスが一時的に利用できません。時間をおいて再度お試しください。";
+  }
+  if ([401, 403].includes(Number(error?.status))) {
+    return "ログイン状態を確認できません。ログイン情報を確認してください。";
+  }
   if (error?.message && !error.message.includes("Failed to fetch")) {
     return error.message;
   }
   return "認証APIに接続できません。時間をおいて再度お試しください。";
+}
+
+function toAuthConnectionStatus(error) {
+  if (error?.code === "D1_READ_LIMIT_EXCEEDED" || Number(error?.status) === 503) {
+    return "認証サービスが一時的に利用できません。時間をおいて再試行してください。";
+  }
+  if ([401, 403].includes(Number(error?.status))) {
+    return "ログイン状態を確認できません。未ログインとして利用できます。";
+  }
+  return "認証APIに接続できません。時間をおいて再試行してください。";
 }

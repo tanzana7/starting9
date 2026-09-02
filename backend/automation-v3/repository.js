@@ -13,9 +13,15 @@ export async function getV3SchemaState(db) {
   };
 }
 
-export async function listV3Games(db, now = new Date()) {
+export async function listV3Games(db, now = new Date(), options = {}) {
   const current = now instanceof Date ? now : new Date(now);
   const date = new Date(current.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const scopedInternalGameId = String(options?.internalGameId || "").trim().slice(0, 128);
+  const requestedLimit = Number(options?.limit);
+  const limit = Number.isInteger(requestedLimit) && requestedLimit > 0
+    ? Math.min(50, requestedLimit)
+    : null;
+  const recentFirst = options?.recentFirst === true;
   let columns = new Set();
   try {
     const schema = await db.prepare("PRAGMA table_info(games)").all();
@@ -32,6 +38,19 @@ export async function listV3Games(db, now = new Date()) {
   const excludedGameStatusSql = "'cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded'";
   const unfinishedWorkflowStateSql = "'scheduled', 'probable_starter_ready', 'roster_ready', 'prediction_closed', 'lineup_ready', 'scored', 'ranked'";
   const excludedWorkflowStateSql = "'published', 'cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded'";
+  const enrichedParams = [date];
+  const scopedConditions = [];
+  if (scopedInternalGameId) {
+    enrichedParams.push(scopedInternalGameId);
+    scopedConditions.push(`games.internal_game_id = ?${enrichedParams.length}`);
+  }
+  const scopedFilterSql = scopedConditions.length ? ` AND ${scopedConditions.join(" AND ")}` : "";
+  const orderSql = recentFirst
+    ? "games.start_time DESC, games.internal_game_id DESC"
+    : "games.start_time, games.internal_game_id";
+  const enrichedLimitSql = limit
+    ? ` LIMIT ?${enrichedParams.push(limit)}`
+    : "";
   let result;
   try {
     // Keep unfinished games discoverable after startAt. The current-day arm
@@ -60,8 +79,9 @@ export async function listV3Games(db, now = new Date()) {
              OR LOWER(COALESCE(workflow.state, '')) IN (${unfinishedWorkflowStateSql})
            )
            AND LOWER(COALESCE(workflow.state, '')) NOT IN (${excludedWorkflowStateSql})
-         ORDER BY games.start_time, games.internal_game_id`
-    ).bind(date).all();
+           ${scopedFilterSql}
+         ORDER BY ${orderSql}${enrichedLimitSql}`
+    ).bind(...enrichedParams).all();
   } catch (error) {
     // Older adapters/databases may not expose the publication joins. Keep the
     // established current-day discovery contract in that environment.
@@ -71,6 +91,16 @@ export async function listV3Games(db, now = new Date()) {
       historicalUnpublishedRetention: false,
       reason: String(error?.message || "enriched_query_failed").slice(0, 200)
     })}`);
+    const fallbackParams = [date];
+    const fallbackConditions = [];
+    if (scopedInternalGameId) {
+      fallbackParams.push(scopedInternalGameId);
+      fallbackConditions.push(`games.internal_game_id = ?${fallbackParams.length}`);
+    }
+    const fallbackFilterSql = fallbackConditions.length ? ` AND ${fallbackConditions.join(" AND ")}` : "";
+    const fallbackLimitSql = limit
+      ? ` LIMIT ?${fallbackParams.push(limit)}`
+      : "";
     result = await db.prepare(
       `SELECT ${gameColumns}
          FROM games
@@ -79,8 +109,9 @@ export async function listV3Games(db, now = new Date()) {
            AND games.deleted_at IS NULL
            AND LOWER(COALESCE(games.game_status, '')) NOT IN (${excludedGameStatusSql})
            AND games.game_date >= date(?1)
-         ORDER BY games.start_time, games.internal_game_id`
-    ).bind(date).all();
+           ${fallbackFilterSql}
+         ORDER BY ${orderSql}${fallbackLimitSql}`
+    ).bind(...fallbackParams).all();
   }
   const baseGames = (result.results || []).map((row) => ({
     internalGameId: row.internal_game_id,

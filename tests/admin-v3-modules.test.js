@@ -23,6 +23,7 @@ function loadModules() {
     "state",
     "api-client",
     "dom",
+    "render-manual-lineup",
     "render-game-progress",
     "render-job-details",
     "render-roster",
@@ -39,23 +40,25 @@ function loadModules() {
 test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む", () => {
   const scripts = [...page.matchAll(/<script src="([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(scripts, [
-    "frontend/admin-v3/state.js?v=admin-v3-v35-diagnostics-readability-1",
-    "frontend/admin-v3/api-client.js?v=admin-v3-v35-diagnostics-readability-1",
+    "frontend/admin-v3/state.js?v=admin-v3-v35-diagnostics-readability-1-manual-lineup-1",
+    "frontend/admin-v3/api-client.js?v=admin-v3-v35-diagnostics-readability-1-manual-lineup-1",
     "frontend/admin-v3/dom.js?v=admin-v3-v35-diagnostics-readability-1",
-    "frontend/admin-v3/render-game-progress.js?v=admin-v3-v35-shadow-recovery-plan-1",
+    "frontend/admin-v3/render-manual-lineup.js?v=manual-lineup-semi-auto-beta-1",
+    "frontend/admin-v3/render-game-progress.js?v=admin-v3-v35-shadow-recovery-plan-1-manual-lineup-1",
     "frontend/admin-v3/render-job-details.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-roster.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-diagnostics.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-ranking-reset.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-perfect-score-preview.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-manual-game-preview.js?v=admin-v3-v35-diagnostics-readability-1",
-    "frontend/admin-v3/app-coordinator.js?v=admin-v3-v35-diagnostics-readability-1",
-    "admin-v3.js?v=admin-v3-v35-diagnostics-readability-1"
+    "frontend/admin-v3/app-coordinator.js?v=admin-v3-v35-diagnostics-readability-1-manual-lineup-1",
+    "admin-v3.js?v=admin-v3-v35-diagnostics-readability-1-manual-lineup-1"
   ]);
   const modules = loadModules();
   assert.equal(typeof modules.createAdminV3State, "function");
   assert.equal(typeof modules.createAdminV3ApiClient, "function");
   assert.equal(typeof modules.createAdminV3Dom, "function");
+  assert.equal(typeof modules.createAdminV3ManualLineupRenderer, "function");
   assert.equal(typeof modules.createAdminV3GameProgressRenderer, "function");
   assert.equal(typeof modules.createAdminV3JobDetailsRenderer, "function");
   assert.equal(typeof modules.createAdminV3RosterRenderer, "function");

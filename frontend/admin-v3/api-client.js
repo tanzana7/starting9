@@ -56,6 +56,12 @@
       getGameOperationDetail(internalGameId, suffix) {
         return request(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}${suffix}`);
       },
+      saveManualLineup(internalGameId, body) {
+        return post(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/lineup-revisions`, body);
+      },
+      finalizeManualLineup(internalGameId, body) {
+        return post(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/lineup-finalize`, body);
+      },
       diagnoseJob(internalGameId, jobType) {
         const query = new URLSearchParams({ jobType: String(jobType || "") });
         return request(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/jobs/diagnose?${query.toString()}`);

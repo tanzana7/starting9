@@ -287,4 +287,5 @@ test("formal plan summaryはclaim前に記録され、schedule syncはcritical p
   assert.ok(criticalFinished >= 0 && scheduleSync > criticalFinished);
   assert.match(worker, /formal_plan_error: "V3_FORMAL_PLAN_ERROR"/);
   assert.match(worker, /scheduleOptional\(scheduleSyncPromise\)/);
+  assert.match(worker, /writeCriticalPathFinished: writeCronCriticalPathFinished/);
 });

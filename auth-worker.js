@@ -152,6 +152,98 @@ import {
   shouldStopProbableStarterScheduling
 } from "./game-automation-v3.js";
 
+// This timeout boundary is intentionally limited to read-only verification.
+// Publish writes, job lifecycle updates, and state transitions must never be
+// wrapped in a timeout that leaves a side-effecting promise running.
+export function withV3ReadOnlyTimeout(readOperation, { timeoutMs = 5 * 1000, onTimeout = null } = {}) {
+  if (typeof readOperation !== "function") {
+    throw createV3Error("V3_READ_OPERATION_REQUIRED", "V3 read-only operationが必要です。", { retryable: false });
+  }
+  const timeout = Number(timeoutMs);
+  if (!Number.isFinite(timeout) || timeout <= 0) {
+    throw createV3Error("V3_READ_TIMEOUT_INVALID", "V3 read-only timeoutが不正です。", { retryable: false });
+  }
+  let timer = null;
+  const readPromise = Promise.resolve().then(() => readOperation());
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      try {
+        const timeoutError = typeof onTimeout === "function"
+          ? onTimeout()
+          : createV3Error("V3_READ_TIMEOUT", "V3 read-only operationがtimeoutしました。", { retryable: true });
+        reject(timeoutError instanceof Error ? timeoutError : createV3Error("V3_READ_TIMEOUT", "V3 read-only operationがtimeoutしました。", { retryable: true }));
+      } catch (error) {
+        reject(error);
+      }
+    }, timeout);
+  });
+  return Promise.race([readPromise, timeoutPromise]).finally(() => {
+    if (timer !== null) clearTimeout(timer);
+  });
+}
+
+export async function writeV3TerminalAuditOnce(writeRuntimeAudit, state, payload, maxAttempts = 2) {
+  if (state?.recorded) return true;
+  if (typeof writeRuntimeAudit !== "function") return false;
+  const attempts = Math.max(1, Number(maxAttempts) || 1);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      if (await writeRuntimeAudit(payload) === true) {
+        if (state && typeof state === "object") state.recorded = true;
+        return true;
+      }
+    } catch {
+      // Leave recorded=false so a later best-effort call can retry.
+    }
+  }
+  return false;
+}
+
+export async function writeV3FatalRunAudits({
+  writeRuntimeAudit,
+  writeCriticalPathFinished,
+  writeHandlerFinished,
+  runId,
+  correlationId = runId,
+  now = new Date(),
+  error = null
+} = {}) {
+  const errorReason = error?.code || error?.message || "V3_CRON_RUN_FAILED";
+  const context = {
+    status: "failed",
+    terminal: "fatal_error",
+    errorReason,
+    jobId: error?.job?.id || error?.jobId || null,
+    internalGameId: error?.internalGameId || error?.job?.internal_game_id || null,
+    stage: error?.stage || error?.job?.job_type || "unknown"
+  };
+  const attempt = async (callback, ...args) => {
+    try {
+      if (typeof callback === "function") await callback(...args);
+    } catch {
+      // Each audit is independent; one failed write must not hide the others.
+    }
+  };
+  await attempt(writeRuntimeAudit, {
+    eventType: "V3_EXECUTION_SUMMARY",
+    runId,
+    correlationId,
+    now,
+    execution: { stage: "execution_summary", ...context },
+    failure: error
+  });
+  await attempt(writeRuntimeAudit, {
+    eventType: "V3_RUN_ERROR",
+    runId,
+    correlationId,
+    now,
+    execution: { stage: "v3_run_error", ...context },
+    failure: error
+  });
+  await attempt(writeCriticalPathFinished, "failed", { errorReason, ...context });
+  await attempt(writeHandlerFinished, "failed", { errorReason, ...context });
+}
+
 const SESSION_COOKIE_NAME = "s9_session";
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const PBKDF2_ITERATIONS = 100_000;
@@ -181,6 +273,7 @@ const MONTHLY_RANKING_MIN_YEAR = 2020;
 const YEARLY_RANKING_MIN_YEAR = 2020;
 const PREDICTION_SCHEMA_VERSION = 1;
 const PREDICTION_MAX_JSON_BYTES = 16 * 1024;
+const V3_PUBLISH_VERIFICATION_TIMEOUT_MS = 5 * 1000;
 const PREDICTION_POSITIONS = new Set(["捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
 const PUBLIC_ROSTER_BASELINE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const PREDICTION_TEAM_CODES = new Set(["f", "b", "h", "l", "e", "m", "g", "t", "db", "c", "d", "s"]);
@@ -732,17 +825,33 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
        VALUES (${columns.map((_, index) => `?${index + 1}`).join(", ")})`
     ).bind(...values).run();
   };
-  let cronHandlerFinished = false;
+  const cronCriticalPathAuditState = { recorded: false };
+  const writeCronCriticalPathFinished = async (status, details = {}) => {
+    return writeV3TerminalAuditOnce(
+      (payload) => writeV3RuntimeAudit(env, payload),
+      cronCriticalPathAuditState,
+      {
+        eventType: "CRON_CRITICAL_PATH_FINISHED",
+        runId,
+        correlationId,
+        now,
+        execution: { stage: "cron_critical_path_finished", status, ...details }
+      }
+    );
+  };
+  const cronHandlerAuditState = { recorded: false };
   const writeCronHandlerFinished = async (status, details = {}) => {
-    if (cronHandlerFinished) return;
-    cronHandlerFinished = true;
-    await writeV3RuntimeAudit(env, {
-      eventType: "CRON_HANDLER_FINISHED",
-      runId,
-      correlationId,
-      now,
-      execution: { stage: "cron_handler_finished", status, ...details }
-    });
+    return writeV3TerminalAuditOnce(
+      (payload) => writeV3RuntimeAudit(env, payload),
+      cronHandlerAuditState,
+      {
+        eventType: "CRON_HANDLER_FINISHED",
+        runId,
+        correlationId,
+        now,
+        execution: { stage: "cron_handler_finished", status, ...details }
+      }
+    );
   };
 
   const writeScheduleSyncAudit = async (diagnostics) => {
@@ -881,11 +990,19 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
           due: Array.isArray(claimReport.due) ? claimReport.due.length : 0,
           claimed: Array.isArray(claimReport.claimed) ? claimReport.claimed.length : 0,
           claimedJobIds: (Array.isArray(claimReport.claimed) ? claimReport.claimed : []).slice(0, 100).map((entry) => entry?.job?.id || null).filter(Boolean),
-          results: (Array.isArray(claimReport.claimed) ? claimReport.claimed : []).slice(0, 100).map((entry) => ({ jobId: entry?.job?.id || null, result: entry?.claimResult || null }))
+          results: (Array.isArray(claimReport.claimed) ? claimReport.claimed : []).slice(0, 100).map((entry) => ({
+            jobId: entry?.job?.id || null,
+            result: entry?.claimResult || null,
+            errorCode: entry?.claimError?.code || null
+          }))
         };
         execution.executionSummary = {
           processed: Number(phase.execution?.processed || 0),
-          failed: Number(phase.execution?.failed || 0)
+          failed: Number(phase.execution?.failed || 0),
+          retryWait: Number(phase.execution?.retryWait || 0),
+          terminalFailed: Number(phase.execution?.terminalFailed || 0),
+          failedJobIds: Array.isArray(phase.execution?.failedJobIds) ? phase.execution.failedJobIds.slice(0, 100) : [],
+          retryErrors: Array.isArray(phase.execution?.retryErrors) ? phase.execution.retryErrors.slice(0, 20) : []
         };
       }
       await writeV3RuntimeAudit(env, {
@@ -1008,15 +1125,15 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
       }
      }
     }).catch(async (error) => {
-    await writeV3RuntimeAudit(env, {
-      eventType: "V3_RUN_ERROR",
+    await writeV3FatalRunAudits({
+      writeRuntimeAudit: (payload) => writeV3RuntimeAudit(env, payload),
+      writeCriticalPathFinished: writeCronCriticalPathFinished,
+      writeHandlerFinished: writeCronHandlerFinished,
       runId,
       correlationId,
       now,
-      execution: { stage: "v3_run_error", errorReason: error?.code || error?.message || "V3_CRON_RUN_FAILED" },
-       failure: error
-     });
-    await writeCronHandlerFinished("failed", { errorReason: error?.code || error?.message || "V3_CRON_RUN_FAILED" });
+      error
+    });
     const anchor = await env.AUTH_DB.prepare(
       `SELECT internal_game_id FROM games WHERE internal_game_id IS NOT NULL AND internal_game_id <> '' ORDER BY game_date, start_time, internal_game_id LIMIT 1`
     ).first().catch(() => null);
@@ -1033,17 +1150,12 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     throw error;
   });
   try {
-  await writeV3RuntimeAudit(env, {
-    eventType: "CRON_CRITICAL_PATH_FINISHED",
-    runId,
-    correlationId,
-    now,
-    execution: {
-      stage: "cron_critical_path_finished",
-      createdJobCount: Number(result?.created || 0),
-      executedJobCount: Number(result?.processed || 0),
-      failedJobCount: Number(result?.failed || 0)
-    }
+  await writeCronCriticalPathFinished("completed", {
+    createdJobCount: Number(result?.created || 0),
+    executedJobCount: Number(result?.processed || 0),
+    failedJobCount: Number(result?.failed || 0),
+    retryWaitJobCount: Number(result?.retryWait || 0),
+    terminalFailedJobCount: Number(result?.terminalFailed || 0)
   });
   let scheduleSync = null;
   if (typeof scheduleOptional === "function") {
@@ -1101,6 +1213,10 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
       createdJobCount: Number(result?.created || 0),
       executedJobCount: Number(result?.processed || 0),
       failedJobCount: Number(result?.failed || 0),
+      retryWaitJobCount: Number(result?.retryWait || 0),
+      terminalFailedJobCount: Number(result?.terminalFailed || 0),
+      failedJobIds: Array.isArray(result?.failedJobIds) ? result.failedJobIds.slice(0, 100) : [],
+      retryErrors: Array.isArray(result?.retryErrors) ? result.retryErrors.slice(0, 20) : [],
       workflowStateUpdates: result?.stateReconciliation || null,
       workflowStates,
       publishedReached: workflowStates.some((row) => String(row?.state || "") === "published")
@@ -1132,15 +1248,15 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
   await writeCronHandlerFinished("completed", { publishedReached: workflowStates.some((row) => String(row?.state || "") === "published") });
   return { ...result, scheduleSync, runId, correlationId, summary };
   } catch (error) {
-    await writeV3RuntimeAudit(env, {
-      eventType: "V3_RUN_ERROR",
+    await writeV3FatalRunAudits({
+      writeRuntimeAudit: (payload) => writeV3RuntimeAudit(env, payload),
+      writeCriticalPathFinished: writeCronCriticalPathFinished,
+      writeHandlerFinished: writeCronHandlerFinished,
       runId,
       correlationId,
       now,
-      execution: { stage: "v3_run_error", errorReason: error?.code || error?.message || "V3_CRON_RUN_FAILED" },
-      failure: error
+      error
     });
-    await writeCronHandlerFinished("failed", { errorReason: error?.code || error?.message || "V3_CRON_RUN_FAILED" });
     throw error;
   }
 }
@@ -1768,7 +1884,23 @@ async function executeV3PublishExecutor({ env, internalGameId, now, target, stat
   }
   const result = await publishScoredGameResults(env, internalGameId, now, { internalGameId, target, source: "v3" });
   if (!result.published && result.status !== "already_published") throw createV3Error("V3_PUBLICATION_NOT_READY", "V3公開条件を満たしていません。");
-  const publishedLineup = await getGameLineup(env.AUTH_DB, { gameId: internalGameId, internalGameId });
+  const publishedLineup = await withV3ReadOnlyTimeout(
+    () => getGameLineup(env.AUTH_DB, { gameId: internalGameId, internalGameId }),
+    {
+      timeoutMs: V3_PUBLISH_VERIFICATION_TIMEOUT_MS,
+      onTimeout: () => createV3Error("PUBLISH_VERIFICATION_TIMEOUT", "公開結果のread-only検証がtimeoutしました。", {
+        retryable: true,
+        retryAt: new Date(new Date(now).getTime() + 60 * 1000),
+        diagnostics: {
+          executorStage: "verify_publish_side_effect",
+          internalGameId,
+          publicationStatus: null,
+          publishedAt: null,
+          verificationTimedOut: true
+        }
+      })
+    }
+  );
   if (String(publishedLineup?.publication_status || "") !== "published" || !publishedLineup?.published_at) {
     throw createV3Error("PUBLISH_COMPLETED_WITHOUT_PUBLICATION", "公開処理は完了扱いですがpublication_status/published_atが反映されていません。", {
       retryable: true,

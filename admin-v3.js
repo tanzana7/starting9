@@ -11,7 +11,8 @@ if (!adminV3Modules?.createAdminV3State
   || !adminV3Modules?.createAdminV3DiagnosticsRenderer
   || !adminV3Modules?.createAdminV3RankingResetRenderer
   || !adminV3Modules?.createAdminV3PerfectScoreRenderer
-  || !adminV3Modules?.createAdminV3ManualGamePreviewRenderer) {
+  || !adminV3Modules?.createAdminV3ManualGamePreviewRenderer
+  || !adminV3Modules?.createAdminV3ManualLineupRenderer) {
   throw new Error("ADMIN_V3_MODULES_NOT_LOADED");
 }
 const v3Dom = adminV3Modules.createAdminV3Dom();
@@ -356,6 +357,66 @@ function selectedV3Game(games) {
 
 function selectedV3Details() {
   return v3State.operationDetails.get(v3State.selectedGameId) || {};
+}
+
+function manualLineupRowsFromRevision(revision) {
+  const lineup = Array.isArray(revision?.lineup) ? revision.lineup : [];
+  return Array.from({ length: 9 }, (_, index) => {
+    const expectedOrder = index + 1;
+    const entry = lineup.find((row) => Number(row?.battingOrder ?? row?.order) === expectedOrder) || lineup[index] || {};
+    return {
+      battingOrder: Number(entry.battingOrder ?? entry.order) || expectedOrder,
+      position: String(entry.position || ""),
+      playerId: String(entry.playerId || ""),
+      playerName: String(entry.playerName || entry.displayName || ""),
+      uniformNumber: entry.uniformNumber === null || entry.uniformNumber === undefined ? "" : String(entry.uniformNumber),
+      search: ""
+    };
+  });
+}
+
+function manualLineupHasInput(state) {
+  return Boolean(state?.reason)
+    || (state?.rows || []).some((row) => row?.playerId || row?.playerName || row?.position || row?.search);
+}
+
+function ensureV3ManualLineupState(internalGameId, details = null) {
+  const id = String(internalGameId || "");
+  const sameGame = v3State.manualLineup.gameId === id && v3State.manualLineup.rows.length === 9;
+  if (sameGame && details?.lineup && !v3State.manualLineup.detailsHydrated && !manualLineupHasInput(v3State.manualLineup)) {
+    const revision = details.lineup.currentRevision || details.lineup.finalRevision || null;
+    v3State.manualLineup = {
+      ...v3State.manualLineup,
+      rows: revision ? manualLineupRowsFromRevision(revision) : v3State.manualLineup.rows,
+      reason: revision?.reason || v3State.manualLineup.reason,
+      latestRevision: revision || v3State.manualLineup.latestRevision,
+      detailsHydrated: true
+    };
+  }
+  if (sameGame) return v3State.manualLineup;
+  v3State.manualLineup = {
+    ...v3State.manualLineup,
+    gameId: id,
+    rows: v3ManualLineupRenderer.createBlankRows(),
+    reason: "",
+    confirmed: false,
+    latestRevision: null,
+    detailsHydrated: Boolean(details?.lineup),
+    loading: false,
+    error: "",
+    message: ""
+  };
+  if (details?.lineup) {
+    const revision = details.lineup.currentRevision || details.lineup.finalRevision || null;
+    v3State.manualLineup = {
+      ...v3State.manualLineup,
+      rows: revision ? manualLineupRowsFromRevision(revision) : v3State.manualLineup.rows,
+      reason: revision?.reason || "",
+      latestRevision: revision,
+      detailsHydrated: true
+    };
+  }
+  return v3State.manualLineup;
 }
 
 function v3DetailPath(suffix) {
@@ -712,6 +773,7 @@ const v3RosterRenderer = adminV3Modules.createAdminV3RosterRenderer({
 const v3PerfectScoreRenderer = adminV3Modules.createAdminV3PerfectScoreRenderer({ state: v3State, escapeHtml: escapeV3 });
 const v3RankingResetRenderer = adminV3Modules.createAdminV3RankingResetRenderer({ state: v3State, escapeHtml: escapeV3, formatJst: formatV3Jst });
 const v3ManualGamePreviewRenderer = adminV3Modules.createAdminV3ManualGamePreviewRenderer({ escapeHtml: escapeV3 });
+const v3ManualLineupRenderer = adminV3Modules.createAdminV3ManualLineupRenderer({ escapeHtml: escapeV3 });
 const v3DiagnosticsRenderer = adminV3Modules.createAdminV3DiagnosticsRenderer({
   state: v3State,
   escapeHtml: escapeV3,
@@ -764,8 +826,103 @@ const v3GameProgressRenderer = adminV3Modules.createAdminV3GameProgressRenderer(
   jstDate: v3JstDate,
   jobTypes: V3_JOB_TYPES,
   jobLabels: V3_JOB_LABELS,
-  manualOperation
+  manualOperation,
+  renderManualLineup: (game, details) => v3ManualLineupRenderer.render(game, details, ensureV3ManualLineupState(game?.internalGameId, details))
 });
+
+function updateV3ManualLineupRow(index, patch) {
+  const state = ensureV3ManualLineupState(v3State.selectedGameId);
+  if (!state.rows[index]) return;
+  state.rows[index] = { ...state.rows[index], ...patch };
+  state.error = "";
+  state.message = "";
+  renderCurrentV3View();
+  if (Object.prototype.hasOwnProperty.call(patch, "search")) {
+    const field = document.querySelector(`[data-v3-manual-lineup-search="${Number(index)}"]`);
+    if (field) {
+      field.focus();
+      field.setSelectionRange(field.value.length, field.value.length);
+    }
+  }
+}
+
+function selectV3ManualLineupPlayer(index, playerId) {
+  const catalog = v3State.operationDetails.get(v3State.selectedGameId)?.lineup?.playerCatalog || [];
+  const player = catalog.find((candidate) => candidate.playerId === playerId);
+  if (!player) return;
+  updateV3ManualLineupRow(index, {
+    playerId: player.playerId,
+    playerName: player.playerName,
+    uniformNumber: player.uniformNumber,
+    search: ""
+  });
+}
+
+function manualLineupPayload(state) {
+  return {
+    confirmed: state.confirmed === true,
+    reason: String(state.reason || "").trim(),
+    lineup: state.rows.map((row) => ({
+      battingOrder: Number(row.battingOrder),
+      position: row.position,
+      playerName: row.playerName,
+      uniformNumber: row.uniformNumber,
+      playerId: row.playerId
+    }))
+  };
+}
+
+async function saveV3ManualLineup() {
+  const state = ensureV3ManualLineupState(v3State.selectedGameId);
+  if (!state.reason || !state.confirmed) {
+    state.error = "入力理由を入力し、内容確認にチェックしてください。";
+    renderCurrentV3View();
+    return;
+  }
+  state.loading = true;
+  state.error = "";
+  state.message = "手動スタメンを保存中…";
+  renderCurrentV3View();
+  try {
+    const result = await v3Api.saveManualLineup(v3State.selectedGameId, manualLineupPayload(state));
+    state.latestRevision = result.revision || null;
+    state.message = state.latestRevision ? `revision ${state.latestRevision.revisionId || state.latestRevision.version || "-"} を保存しました。` : "手動スタメンを保存しました。";
+  } catch (error) {
+    state.error = `${error.code || "V3_MANUAL_LINEUP_SAVE_FAILED"}: ${error.message}`;
+  } finally {
+    state.loading = false;
+    renderCurrentV3View();
+  }
+}
+
+async function finalizeV3ManualLineup() {
+  const state = ensureV3ManualLineupState(v3State.selectedGameId);
+  if (!state.latestRevision || !state.confirmed) {
+    state.error = "先に下書きを保存し、入力内容を確認してください。";
+    renderCurrentV3View();
+    return;
+  }
+  if (!window.confirm("この9人を正式スタメンとして確定します。確定後は採点対象となり、次回の正式V3 Cronが後続処理を行います。続行しますか？")) return;
+  state.loading = true;
+  state.error = "";
+  state.message = "正式スタメンを確定中…";
+  renderCurrentV3View();
+  try {
+    await v3Api.finalizeManualLineup(v3State.selectedGameId, {
+      lineupRevisionId: state.latestRevision.revisionId,
+      version: state.latestRevision.version,
+      reason: state.reason,
+      confirmed: true
+    });
+    state.message = "正式スタメンを確定しました。採点は正式V3 Cronへ引き継ぎます。";
+    await loadV3OperationDetails();
+  } catch (error) {
+    state.error = `${error.code || "V3_MANUAL_LINEUP_FINALIZE_FAILED"}: ${error.message}`;
+  } finally {
+    state.loading = false;
+    renderCurrentV3View();
+  }
+}
 
 function renderCurrentV3View() {
   const payload = v3State.payload;
@@ -1091,6 +1248,10 @@ adminV3Modules.createAdminV3Coordinator({
     renderRankingExclusionGames,
     previewPerfectScore,
     previewManualGame,
+    updateManualLineupRow: updateV3ManualLineupRow,
+    selectManualLineupPlayer: selectV3ManualLineupPlayer,
+    saveManualLineup: saveV3ManualLineup,
+    finalizeManualLineup: finalizeV3ManualLineup,
     refreshAutomationLogs,
     selectGame: (internalGameId) => selectV3Game(internalGameId),
     diagnoseJob: diagnoseV3Job,

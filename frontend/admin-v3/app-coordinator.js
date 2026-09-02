@@ -22,6 +22,11 @@
         if (rankingSearch) {
           state.rankingReset.gameSearch = rankingSearch.value;
           actions.renderRankingExclusionGames();
+          return;
+        }
+        const manualSearch = closestFromEvent(event, "[data-v3-manual-lineup-search]");
+        if (manualSearch) {
+          actions.updateManualLineupRow(Number(manualSearch.dataset.v3ManualLineupSearch), { search: manualSearch.value });
         }
       });
       document.addEventListener("change", (event) => {
@@ -29,6 +34,26 @@
         if (rankingFilter) {
           state.rankingReset.gameFilter = rankingFilter.value;
           actions.renderRankingExclusionGames();
+          return;
+        }
+        const order = closestFromEvent(event, "[data-v3-manual-lineup-order]");
+        if (order) {
+          actions.updateManualLineupRow(Number(order.dataset.v3ManualLineupOrder), { battingOrder: Number(order.value) });
+          return;
+        }
+        const position = closestFromEvent(event, "[data-v3-manual-lineup-position]");
+        if (position) {
+          actions.updateManualLineupRow(Number(position.dataset.v3ManualLineupPosition), { position: position.value });
+          return;
+        }
+        const reason = closestFromEvent(event, "[data-v3-manual-lineup-reason]");
+        if (reason) {
+          state.manualLineup.reason = reason.value;
+          return;
+        }
+        const confirm = closestFromEvent(event, "[data-v3-manual-lineup-confirm]");
+        if (confirm) {
+          state.manualLineup.confirmed = confirm.checked === true;
         }
       });
     }
@@ -43,6 +68,13 @@
         if (closestFromEvent(event, "[data-v3-manual-game-preview]")) { await actions.previewManualGame(); return; }
         if (closestFromEvent(event, "[data-v3-automation-log-refresh]")) { await actions.refreshAutomationLogs(); return; }
         if (closestFromEvent(event, "[data-v3-ranking-exclusion-refresh]")) { await actions.refreshRankingExclusionGames(true); return; }
+        const manualPlayer = closestFromEvent(event, "[data-v3-manual-lineup-player]");
+        if (manualPlayer) {
+          actions.selectManualLineupPlayer(Number(manualPlayer.dataset.v3ManualLineupPlayer), manualPlayer.dataset.v3ManualLineupPlayerId);
+          return;
+        }
+        if (closestFromEvent(event, "[data-v3-manual-lineup-save]")) { await actions.saveManualLineup(); return; }
+        if (closestFromEvent(event, "[data-v3-manual-lineup-finalize]")) { await actions.finalizeManualLineup(); return; }
 
         const diagnoseButton = closestFromEvent(event, "[data-v3-job-diagnose]");
         if (diagnoseButton) {

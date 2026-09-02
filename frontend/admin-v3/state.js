@@ -45,6 +45,24 @@
         loading: false,
         result: null,
         error: ""
+      },
+      manualLineup: {
+        gameId: "",
+        rows: Array.from({ length: 9 }, (_, index) => ({
+          battingOrder: index + 1,
+          position: "",
+          playerId: "",
+          playerName: "",
+          uniformNumber: "",
+          search: ""
+        })),
+        reason: "",
+        confirmed: false,
+        latestRevision: null,
+        detailsHydrated: false,
+        loading: false,
+        error: "",
+        message: ""
       }
     };
   }

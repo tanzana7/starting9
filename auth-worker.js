@@ -20,6 +20,7 @@ import {
 import {
   createFightersPlayerId,
   findFightersPlayerByName,
+  FIGHTERS_PLAYER_MASTER,
   inspectFightersRosterMaster,
   FIGHTERS_TEAM_CODE,
   FIGHTERS_TEAM_ID
@@ -7266,7 +7267,9 @@ async function handleAdminV3LineupGet(env, cors, context) {
     finalRevision: final ? serializeV3LineupRevision(final) : null,
     lineupStatus: lineup?.scoring_status || (final ? "finalized" : "pending"),
     finalizedAt: lineup?.finalized_at || final?.finalized_at || null,
-    finalizedBy: lineup?.finalized_by || final?.finalized_by || null
+    finalizedBy: lineup?.finalized_by || final?.finalized_by || null,
+    managedTeam: { teamCode: FIGHTERS_TEAM_CODE, teamId: FIGHTERS_TEAM_ID, name: "北海道日本ハムファイターズ" },
+    playerCatalog: getManualLineupPlayerCatalog()
   }, 200, cors);
 }
 
@@ -7280,10 +7283,17 @@ async function handleAdminV3LineupRevisionsGet(env, cors, context) {
 }
 
 async function handleAdminV3LineupRevisionCreate(request, env, cors, context, user) {
+  assertManagedManualLineupGame(context);
   const input = await readJson(request);
+  if (input?.confirmed !== true) throw createV3Error("V3_CONFIRMATION_REQUIRED", "手動スタメンの入力確認が必要です。", { httpStatus: 409 });
   const reason = String(input?.reason || "").trim();
   if (!reason || reason.length > 240) throw createV3Error("V3_REASON_REQUIRED", "スタメン修正理由を1〜240文字で入力してください。", { httpStatus: 400 });
-  const actual = sanitizeActualLineupForScoring(input?.lineup || input?.actualLineup, { allowUnresolvedPlayer: true });
+  const currentLineup = await getGameLineup(env.AUTH_DB, context.metadata);
+  const stateRow = await env.AUTH_DB.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(context.id).first();
+  if (!isManualLineupEditAllowed({ workflowState: stateRow?.state, scoringStatus: currentLineup?.scoring_status, publicationStatus: currentLineup?.publication_status })) {
+    throw createV3Error("V3_LINEUP_EDIT_LOCKED", "採点開始後または公開済みの試合はスタメンを変更できません。", { httpStatus: 409 });
+  }
+  const actual = normalizeManualLineupInput(input?.lineup || input?.actualLineup);
   if (!actual.ok) throw createV3Error("V3_LINEUP_INVALID", actual.error, { httpStatus: 400 });
   const rows = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
   const latest = rows[0] || null;
@@ -7299,8 +7309,8 @@ async function handleAdminV3LineupRevisionCreate(request, env, cors, context, us
     capturedAt: new Date(),
     reason,
     createdBy: user.id,
-    validation: { source: "admin", playerCount: actual.lineup.length, unresolvedPlayerCount: actual.lineup.filter((row) => !row.playerId).length },
-    allowUnresolvedPlayer: true
+    validation: { source: "manual", inputAt: new Date().toISOString(), inputBy: user.id, playerCount: actual.lineup.length, unresolvedPlayerCount: 0 },
+    allowUnresolvedPlayer: false
   });
   await recordWorkflowLog(env.AUTH_DB, { eventType: "v3_admin_lineup_revision", status: "success", gameId: context.metadata.gameId, occurredAt: new Date(), message: "V3管理者がスタメンrevisionを作成しました。", metadata: { internalGameId: context.id, revisionId: revision.revision_id || `${context.metadata.gameId}:${revision.version}` }, source: "admin" });
   await recordV3AdminAudit(env.AUTH_DB, { internalGameId: context.id, jobType: "admin:lineup_revision" });
@@ -7308,9 +7318,16 @@ async function handleAdminV3LineupRevisionCreate(request, env, cors, context, us
 }
 
 async function handleAdminV3LineupFinalize(request, env, cors, context, user) {
+  assertManagedManualLineupGame(context);
   const input = await readJson(request);
+  if (input?.confirmed !== true) throw createV3Error("V3_CONFIRMATION_REQUIRED", "正式スタメンの入力確認が必要です。", { httpStatus: 409 });
   const reason = String(input?.reason || "").trim();
   if (!reason || reason.length > 240) throw createV3Error("V3_REASON_REQUIRED", "正式スタメン確定理由を1〜240文字で入力してください。", { httpStatus: 400 });
+  const currentLineup = await getGameLineup(env.AUTH_DB, context.metadata);
+  const stateRow = await env.AUTH_DB.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(context.id).first();
+  if (!isManualLineupEditAllowed({ workflowState: stateRow?.state, scoringStatus: currentLineup?.scoring_status, publicationStatus: currentLineup?.publication_status })) {
+    throw createV3Error("V3_LINEUP_EDIT_LOCKED", "採点開始後または公開済みの試合はスタメンを確定できません。", { httpStatus: 409 });
+  }
   const rows = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
   const requestedId = String(input?.lineupRevisionId || input?.revisionId || "");
   const requestedVersion = Number(input?.version);
@@ -7318,7 +7335,6 @@ async function handleAdminV3LineupFinalize(request, env, cors, context, user) {
   if (!revision) throw createV3Error("V3_LINEUP_REVISION_NOT_FOUND", "正式スタメンrevisionが見つかりません。", { httpStatus: 404 });
   const actual = sanitizeActualLineupForScoring(parseStoredActualLineup(revision.actual_lineup_json));
   if (!actual.ok) throw createV3Error("V3_LINEUP_INVALID", actual.error, { httpStatus: 409 });
-  const currentLineup = await getGameLineup(env.AUTH_DB, context.metadata);
   const currentFinalRevisionId = String(currentLineup?.final_lineup_revision_id || "");
   const requestedRevisionId = String(revision.revision_id || `${revision.game_id}:${Number(revision.version)}`);
   if (currentFinalRevisionId === requestedRevisionId && Number(revision.is_final || 0) === 1) {
@@ -7334,8 +7350,7 @@ async function handleAdminV3LineupFinalize(request, env, cors, context, user) {
   await linkFinalLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, version: Number(revision.version), finalizedAt: new Date(), finalizedBy: "admin" });
   const state = await env.AUTH_DB.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(context.id).first();
   await recordV3AdminAudit(env.AUTH_DB, { internalGameId: context.id, jobType: "admin:lineup_finalize", stateBefore: state?.state || null, stateAfter: "lineup_ready" });
-  const scoreJob = currentLineup?.scoring_status === "scored" ? null : await createV3AdminActionJob(env.AUTH_DB, context.id, "score", new Date());
-  return jsonResponse({ ok: true, internalGameId: context.id, finalizedRevision: serializeV3LineupRevision({ ...revision, is_final: 1, is_current: 1, finalized_by: "admin", finalized_at: new Date().toISOString() }), scoreJob, rescoreRequired: currentLineup?.scoring_status === "scored" }, 200, cors);
+  return jsonResponse({ ok: true, internalGameId: context.id, finalizedRevision: serializeV3LineupRevision({ ...revision, is_final: 1, is_current: 1, finalized_by: "admin", finalized_at: new Date().toISOString() }), scoreJob: null, nextAction: "formal_cron_score", rescoreRequired: false }, 200, cors);
 }
 
 function v3RescoreBody(input, context) {
@@ -12130,6 +12145,20 @@ async function adoptPersistedLineupCandidate(env, gameId, now, { internalGameId 
 async function captureOfficialLineup(env, gameId, now, { force = false, phase = "provisional", autoApproveEnabled = true, internalGameId = "", target = null, identityOverride = null, source = "legacy" } = {}) {
   const isFinalCapture = phase === "final";
   const isV3 = source === "v3";
+  if (isV3) {
+    const manualRows = await getV3LineupRevisionRows(env.AUTH_DB, gameId, internalGameId);
+    const manualFinal = manualRows.find((row) => Number(row.is_final || 0) === 1
+      && ["manual", "manual-revision"].includes(String(row.source || "").trim().toLowerCase()));
+    if (manualFinal) {
+      return {
+        status: "manual_finalized",
+        reused: true,
+        manualLineupProtected: true,
+        lineupRevision: manualFinal,
+        lineupSource: manualFinal.source
+      };
+    }
+  }
   const existing = await getGameLineup(env.AUTH_DB, { gameId, internalGameId });
   const existingLineup = parseStoredActualLineup(existing?.actual_lineup_json);
   const existingArtifact = assessV3LineupArtifact(existingLineup);
@@ -19572,6 +19601,76 @@ function toSafeAutoScoringError(error) {
 
 function sanitizeActualLineupForScoring(value, options = {}) {
   return sanitizeScoringLineup(value, "実スタメン", options);
+}
+
+const MANUAL_LINEUP_EDIT_LOCKED_STATES = new Set(["scored", "ranked", "published"]);
+
+export function getManualLineupPlayerCatalog() {
+  return FIGHTERS_PLAYER_MASTER.map((player) => ({
+    playerName: player.name,
+    displayName: player.name,
+    uniformNumber: player.uniformNumber,
+    playerId: createFightersPlayerId(player.uniformNumber),
+    teamCode: FIGHTERS_TEAM_CODE,
+    teamId: FIGHTERS_TEAM_ID
+  }));
+}
+
+export function normalizeManualLineupInput(value) {
+  if (!Array.isArray(value) || value.length !== SCORING_LINEUP_SIZE) {
+    return { ok: false, error: "手動スタメンはFightersの9人分を入力してください。" };
+  }
+  const lineup = value.map((entry) => {
+    const playerName = String(entry?.playerName || entry?.name || "").trim();
+    const player = findFightersPlayerByName(playerName);
+    const uniformNumber = String(entry?.uniformNumber ?? entry?.number ?? "").trim();
+    const playerId = String(entry?.playerId || "").trim();
+    const canonicalId = player ? createFightersPlayerId(player.uniformNumber) : "";
+    return {
+      battingOrder: Number(entry?.battingOrder ?? entry?.order),
+      position: normalizeScoringPosition(entry?.position),
+      playerName: player?.name || playerName,
+      displayName: player?.name || playerName,
+      uniformNumber: player?.uniformNumber || uniformNumber,
+      playerId: canonicalId || playerId || null,
+      teamCode: FIGHTERS_TEAM_CODE,
+      teamId: FIGHTERS_TEAM_ID,
+      resolutionStatus: player ? "resolved" : "unresolved",
+      rawPlayerName: playerName || "不明",
+      _matchedPlayer: player,
+      _inputUniformNumber: uniformNumber,
+      _inputPlayerId: playerId
+    };
+  });
+  if (lineup.some((entry) => !entry._matchedPlayer)) {
+    return { ok: false, error: "Fighters選手マスターにない選手は登録できません。" };
+  }
+  if (lineup.some((entry) => entry._inputUniformNumber && entry._inputUniformNumber !== entry.uniformNumber)) {
+    return { ok: false, error: "選手名と背番号が一致しません。" };
+  }
+  if (lineup.some((entry) => entry._inputPlayerId && entry._inputPlayerId !== entry.playerId)) {
+    return { ok: false, error: "選手IDがFightersマスターと一致しません。" };
+  }
+  const sanitized = sanitizeActualLineupForScoring(lineup.map(({ _matchedPlayer, _inputUniformNumber, _inputPlayerId, ...entry }) => entry));
+  if (!sanitized.ok) return sanitized;
+  return sanitized;
+}
+
+export function isManualLineupEditAllowed({ workflowState = "scheduled", scoringStatus = "", publicationStatus = "" } = {}) {
+  const state = String(workflowState || "").trim().toLowerCase();
+  const scoring = String(scoringStatus || "").trim().toLowerCase();
+  const publication = String(publicationStatus || "").trim().toLowerCase();
+  return !MANUAL_LINEUP_EDIT_LOCKED_STATES.has(state)
+    && !["processing", "scored"].includes(scoring)
+    && publication !== "published";
+}
+
+function assertManagedManualLineupGame(context) {
+  const teamCodes = [context?.metadata?.homeCode, context?.metadata?.awayCode]
+    .map((value) => String(value || "").trim().toLowerCase());
+  if (!teamCodes.some((value) => value === "f" || value === FIGHTERS_TEAM_CODE)) {
+    throw createV3Error("V3_MANAGED_TEAM_NOT_IN_GAME", "現在のβ版はFightersを含む試合だけ手動スタメン入力に対応しています。", { httpStatus: 409 });
+  }
 }
 
 function sanitizeScoringLineup(value, label, { allowUnresolvedPlayer = false } = {}) {

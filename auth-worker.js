@@ -276,6 +276,10 @@ const PREDICTION_MAX_JSON_BYTES = 16 * 1024;
 const V3_PUBLISH_VERIFICATION_TIMEOUT_MS = 5 * 1000;
 const PUBLIC_GAME_LIST_LIMIT = 20;
 const PUBLIC_PREVIOUS_RESULT_CANDIDATE_LIMIT = 10;
+const PUBLIC_GAMES_CACHE_FRESH_TTL_SECONDS = 60;
+const PUBLIC_PREVIOUS_RESULT_CACHE_FRESH_TTL_SECONDS = 300;
+const PUBLIC_CACHE_STALE_TTL_SECONDS = 24 * 60 * 60;
+const PUBLIC_CACHE_KEY_VERSION = "v1";
 const ADMIN_V3_DEFAULT_GAME_LIMIT = 10;
 const ADMIN_V3_MAX_GAME_LIMIT = 20;
 const ADMIN_V3_JOB_READ_LIMIT = 100;
@@ -480,10 +484,6 @@ export default {
       return new Response(null, { status: 204, headers: cors });
     }
 
-    if (!env.AUTH_DB) {
-      return jsonResponse({ ok: false, error: "認証サービスが現在利用できません。" }, 503, cors);
-    }
-
     const origin = request.headers.get("Origin");
     if (origin && !isAllowedOrigin(origin, env)) {
       return jsonResponse({ ok: false, error: "許可されていないオリジンです。" }, 403, cors);
@@ -491,6 +491,19 @@ export default {
 
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
+
+    if (path === "/health" && request.method === "GET") {
+      return noStoreJsonResponse({
+        ok: true,
+        service: "starting9-auth",
+        database: "not_checked",
+        generatedAt: new Date().toISOString()
+      }, 200, cors);
+    }
+
+    if (!env.AUTH_DB) {
+      return jsonResponse({ ok: false, error: "認証サービスが現在利用できません。" }, 503, cors);
+    }
 
     try {
       const authRateLimitResponse = enforceAuthRateLimit(request, path, cors);
@@ -545,10 +558,26 @@ export default {
         return await handleGetPredictionTarget(request, env, cors);
       }
       if (path === "/api/public/games" && request.method === "GET") {
-        return await handleGetPublicGames(request, env, cors);
+        return await handlePublicReadWithCache({
+          request,
+          env,
+          ctx,
+          cors,
+          kind: "games",
+          freshTtlSeconds: PUBLIC_GAMES_CACHE_FRESH_TTL_SECONDS,
+          originHandler: () => handleGetPublicGames(request, env, cors)
+        });
       }
       if (path === "/api/public/previous-result-game" && request.method === "GET") {
-        return await handleGetPreviousResultGame(request, env, cors);
+        return await handlePublicReadWithCache({
+          request,
+          env,
+          ctx,
+          cors,
+          kind: "previous-result-game",
+          freshTtlSeconds: PUBLIC_PREVIOUS_RESULT_CACHE_FRESH_TTL_SECONDS,
+          originHandler: () => handleGetPreviousResultGame(request, env, cors)
+        });
       }
       if (path === "/api/probable-starter" && request.method === "GET") {
         return await handleGetProbableStarter(request, env, cors);
@@ -14604,6 +14633,118 @@ async function handleGetPredictionTarget(request, env, cors) {
   const response = jsonResponse({ ok: true, target, generatedAt: new Date().toISOString() }, 200, cors);
   response.headers.set("Cache-Control", "no-store");
   return response;
+}
+
+function getPublicCache(env) {
+  return env?.PUBLIC_CACHE || globalThis.caches?.default || null;
+}
+
+function createPublicCacheKey(request, kind, freshness) {
+  const url = new URL(request.url);
+  const keyUrl = new URL(`https://starting9-public-cache.invalid/${PUBLIC_CACHE_KEY_VERSION}/${kind}/${freshness}`);
+  keyUrl.search = url.search;
+  return new Request(keyUrl.toString(), { method: "GET" });
+}
+
+async function readPublicCachePayload(response) {
+  if (!response || response.status !== 200) return null;
+  try {
+    const payload = await response.clone().json();
+    return payload && typeof payload === "object" && !Array.isArray(payload) && payload.ok === true
+      ? payload
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function createPublicCacheStoreResponse(payload, ttlSeconds) {
+  return new Response(JSON.stringify(payload), {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": `public, max-age=${ttlSeconds}`
+    }
+  });
+}
+
+function createPublicCacheResponse(payload, cors, cacheStatus, stale, source) {
+  return jsonResponse({
+    ...payload,
+    cacheStatus,
+    stale: Boolean(stale),
+    source
+  }, 200, cors);
+}
+
+async function matchPublicCache(cache, key) {
+  if (!cache) return null;
+  try {
+    return await readPublicCachePayload(await cache.match(key));
+  } catch (error) {
+    console.warn("public cache read failed", error instanceof Error ? error.message : "unknown error");
+    return null;
+  }
+}
+
+async function schedulePublicCacheWrites(cache, keys, payload, ctx, freshnessTtlSeconds) {
+  if (!cache) return;
+  const write = Promise.all([
+    cache.put(keys.fresh, createPublicCacheStoreResponse(payload, freshnessTtlSeconds)),
+    cache.put(keys.stale, createPublicCacheStoreResponse(payload, PUBLIC_CACHE_STALE_TTL_SECONDS))
+  ]).catch((error) => {
+    console.warn("public cache write failed", error instanceof Error ? error.message : "unknown error");
+  });
+  if (typeof ctx?.waitUntil === "function") ctx.waitUntil(write);
+  else await write;
+}
+
+async function getD1FailureFromResponse(response) {
+  if (!response || response.status !== 503) return null;
+  try {
+    const payload = await response.clone().json();
+    return ["D1_READ_LIMIT_EXCEEDED", "DB_UNAVAILABLE"].includes(String(payload?.code || ""))
+      ? payload
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function handlePublicReadWithCache({ request, env, ctx, cors, kind, freshTtlSeconds, originHandler }) {
+  const cache = getPublicCache(env);
+  if (!cache) return await originHandler();
+
+  const keys = {
+    fresh: createPublicCacheKey(request, kind, "fresh"),
+    stale: createPublicCacheKey(request, kind, "stale")
+  };
+  const cachedPayload = await matchPublicCache(cache, keys.fresh);
+  if (cachedPayload) return createPublicCacheResponse(cachedPayload, cors, "hit", false, "public_cache");
+
+  let response;
+  try {
+    response = await originHandler();
+  } catch (error) {
+    if (!classifyD1ReadError(error)) throw error;
+    const stalePayload = await matchPublicCache(cache, keys.stale);
+    if (stalePayload) return createPublicCacheResponse(stalePayload, cors, "stale", true, "public_cache_stale");
+    throw error;
+  }
+
+  const responseFailure = await getD1FailureFromResponse(response);
+  if (responseFailure) {
+    const stalePayload = await matchPublicCache(cache, keys.stale);
+    if (stalePayload) return createPublicCacheResponse(stalePayload, cors, "stale", true, "public_cache_stale");
+    return response;
+  }
+
+  const payload = await readPublicCachePayload(response);
+  if (!payload) return response;
+  if (response.headers.has("Set-Cookie")) return response;
+
+  await schedulePublicCacheWrites(cache, keys, payload, ctx, freshTtlSeconds);
+  return createPublicCacheResponse(payload, cors, "miss", false, "d1");
 }
 
 async function handleGetPublicGames(request, env, cors) {

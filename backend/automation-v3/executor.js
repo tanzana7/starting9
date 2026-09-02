@@ -445,7 +445,7 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
   return { processed, failed, retryWait, terminalFailed, failedJobIds, retryErrors };
 }
 
-export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, onPhase = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, formalPlanner = planMainWorkflowJobs, auxiliaryPlanner = planAuxiliaryJobs, scheduleOptional = null } = {}) {
+export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, onPhase = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, formalPlanner = planMainWorkflowJobs, auxiliaryPlanner = planAuxiliaryJobs, scheduleOptional = null, disabledJobTypes = [] } = {}) {
   if (!isGameAutomationV3Enabled(env)) return { enabled: false, processed: 0, created: 0 };
   const schema = await getV3SchemaState(env.AUTH_DB);
   if (!schema.ready) return { enabled: true, schemaReady: false, errorCode: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", processed: 0, created: 0 };
@@ -574,7 +574,7 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     gameCount: games.length,
     plannedCount: allPlanned.length
   }], observerTimeoutMs, observerScheduler);
-  const claimReport = await claimDueJobs(env.AUTH_DB, now, allPlanned).catch(async (error) => {
+  const claimReport = await claimDueJobs(env.AUTH_DB, now, allPlanned, { disabledJobTypes }).catch(async (error) => {
     failed += 1;
     await invokeV3Observer(onError, [error, { stage: "claim" }], observerTimeoutMs, observerScheduler);
     return {

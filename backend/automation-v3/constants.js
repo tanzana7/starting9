@@ -16,6 +16,37 @@ export const V3_TIMING = Object.freeze({
 });
 
 export const V3_FEATURE_FLAG = "ENABLE_GAME_AUTOMATION_V3";
+
+function readBooleanFlag(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  return ["1", "true", "yes", "on"].includes(String(value).trim().toLowerCase());
+}
+
+// Operational mode is resolved from environment flags so V3's automatic
+// fetch implementation remains available for a future V5 rollout. V4 only
+// changes which stages the formal runner plans and claims.
+export function getV3OperationalMode(env = {}) {
+  const semiAuto = readBooleanFlag(env.ENABLE_SEMI_AUTO_LINEUP, false);
+  const autoProbableStarter = readBooleanFlag(env.ENABLE_AUTO_PROBABLE_STARTER, true);
+  const autoRosterFetch = semiAuto
+    ? false
+    : readBooleanFlag(env.ENABLE_AUTO_ROSTER_FETCH, true);
+  const autoLineupFetch = semiAuto
+    ? false
+    : readBooleanFlag(env.ENABLE_AUTO_LINEUP_FETCH, true);
+  const disabledJobTypes = [
+    ...(!autoRosterFetch ? [V3_JOB_TYPE.ROSTER_FETCH] : []),
+    ...(!autoLineupFetch ? [V3_JOB_TYPE.LINEUP_FETCH] : [])
+  ];
+  return Object.freeze({
+    mode: semiAuto ? "v4_semi_auto" : "v3_auto",
+    isV4SemiAuto: semiAuto,
+    autoProbableStarter,
+    autoRosterFetch,
+    autoLineupFetch,
+    disabledJobTypes: Object.freeze(disabledJobTypes)
+  });
+}
 export const V3_STATE = Object.freeze({
   SCHEDULED: "scheduled",
   PREDICTION_CLOSED: "prediction_closed",

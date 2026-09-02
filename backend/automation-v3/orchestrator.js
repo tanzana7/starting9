@@ -320,7 +320,7 @@ export const V3_JOB_PLANNERS = Object.freeze({
   [V3_JOB_TYPE.PUBLISH]: planV3MainJobs
 });
 
-export async function planAuxiliaryJobs(db, games = [], now = new Date()) {
+export async function planAuxiliaryJobs(db, games = [], now = new Date(), { autoProbableStarter = true, autoRosterFetch = true } = {}) {
   const run = async (name, planner) => {
     try {
       return normalizeV3PlanEntries(await planner(db, games, now), now);
@@ -330,8 +330,12 @@ export async function planAuxiliaryJobs(db, games = [], now = new Date()) {
       return emptyV3PlanResult(error);
     }
   };
-  const probablePlan = await run(V3_JOB_TYPE.PROBABLE_STARTER_FETCH, V3_JOB_PLANNERS[V3_JOB_TYPE.PROBABLE_STARTER_FETCH]);
-  const rosterPlan = await run(V3_JOB_TYPE.ROSTER_FETCH, V3_JOB_PLANNERS[V3_JOB_TYPE.ROSTER_FETCH]);
+  const probablePlan = autoProbableStarter
+    ? await run(V3_JOB_TYPE.PROBABLE_STARTER_FETCH, V3_JOB_PLANNERS[V3_JOB_TYPE.PROBABLE_STARTER_FETCH])
+    : { created: 0, planned: [], diagnostics: [{ stage: "probable_starter_fetch", reasonCode: "AUTO_PROBABLE_STARTER_DISABLED" }], errors: [] };
+  const rosterPlan = autoRosterFetch
+    ? await run(V3_JOB_TYPE.ROSTER_FETCH, V3_JOB_PLANNERS[V3_JOB_TYPE.ROSTER_FETCH])
+    : { created: 0, planned: [], diagnostics: [{ stage: "roster_fetch", reasonCode: "V4_AUTO_ROSTER_FETCH_DISABLED" }], errors: [] };
   const identityPlan = await run(V3_JOB_TYPE.NPB_IDENTITY_RESOLVE, V3_JOB_PLANNERS[V3_JOB_TYPE.NPB_IDENTITY_RESOLVE]);
   return {
     probablePlan,
@@ -343,15 +347,15 @@ export async function planAuxiliaryJobs(db, games = [], now = new Date()) {
   };
 }
 
-export async function planMainWorkflowJobs(db, games = [], now = new Date()) {
+export async function planMainWorkflowJobs(db, games = [], now = new Date(), options = {}) {
   try {
-    return normalizeV3PlanEntries(await planV3MainJobs(db, games, now), now);
+    return normalizeV3PlanEntries(await planV3MainJobs(db, games, now, options), now);
   } catch (error) {
     return emptyV3PlanResult(error);
   }
 }
 
-export async function claimDueJobs(db, now = new Date(), plannedEntries = []) {
+export async function claimDueJobs(db, now = new Date(), plannedEntries = [], { disabledJobTypes = [] } = {}) {
   // Drain the due set in bounded batches. The repository query remains
   // bounded, while this prevents the oldest 50 rows from starving later
   // games/stages during a busy Cron tick. Claim conditions stay atomic in
@@ -361,6 +365,8 @@ export async function claimDueJobs(db, now = new Date(), plannedEntries = []) {
   const due = [];
   const claimed = [];
   const plannedById = new Map(plannedEntries.map((entry) => [String(entry?.job?.id || ""), entry]));
+  const disabled = new Set(disabledJobTypes);
+  const skipped = [];
   const batchSize = 100;
   const maxBatches = 20;
   let cursor = null;
@@ -375,6 +381,10 @@ export async function claimDueJobs(db, now = new Date(), plannedEntries = []) {
     });
     due.push(...fresh);
     for (const job of fresh) {
+      if ([...disabled].some((stage) => isV3JobForStage(job, stage))) {
+        skipped.push({ job, reasonCode: "V4_AUTO_FETCH_DISABLED" });
+        continue;
+      }
       let claimedJob = null;
       let claimError = null;
       try {
@@ -415,10 +425,10 @@ export async function claimDueJobs(db, now = new Date(), plannedEntries = []) {
     cursor = nextCursor;
     if (rows.length < batchSize) break;
   }
-  return { due, claimed };
+  return { due, claimed, skipped };
 }
 
-export async function planV3MainJobs(db, games = [], now = new Date()) {
+export async function planV3MainJobs(db, games = [], now = new Date(), { disabledStages = [] } = {}) {
   const planned = [];
   const errors = [];
   const diagnostics = [];
@@ -440,7 +450,10 @@ export async function planV3MainJobs(db, games = [], now = new Date()) {
         jobs: existingJobs,
         now
       });
-      const stagePlans = buildStagePlans(sharedPlanningState);
+      const stagePlans = buildStagePlans(sharedPlanningState, undefined, {
+        disabledStages,
+        disabledReason: "V4_AUTO_FETCH_DISABLED"
+      });
       for (const stagePlan of stagePlans) {
         diagnostics.push({
           internalGameId: game.internalGameId || null,
@@ -480,8 +493,7 @@ export async function planV3MainJobs(db, games = [], now = new Date()) {
                 : false;
         const downstreamArtifactReady = plan.jobType === V3_JOB_TYPE.PREDICTION_CLOSE
           && workflowArtifacts.available
-          && (workflowArtifacts.lineup.ready === true
-            || workflowArtifacts.scoreReady
+          && (workflowArtifacts.scoreReady
             || workflowArtifacts.rankingReflected
             || workflowArtifacts.publicationReady);
         if (artifactReady || downstreamArtifactReady) continue;

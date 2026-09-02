@@ -176,18 +176,27 @@ function effectiveStateOf(input) {
   if (protectedStates.has(explicit)) return explicit;
   if (protectedStates.has(persisted)) return persisted;
   let state = rank(explicit) >= rank(persisted) ? explicit : persisted;
-  const evidence = [
-    ["probable_starter_ready", completed("probable_starter_fetch", "probable_starter_fetch") || artifactFor("probable_starter", "probable_starter_fetch")],
-    ["roster_ready", completed("roster_fetch") || artifactFor("roster_fetch")],
-    ["prediction_closed", completed("prediction_close", "prediction_close") || artifactFor("prediction_close", "prediction_close")],
-    ["lineup_ready", artifactFor("lineup_finalize", "lineup_finalize")],
-    ["scored", artifactFor("scoring", "score")],
-    ["ranked", artifactFor("ranking_reflect", "ranking_rebuild")],
-    ["published", artifactFor("publish", "publish")]
-  ];
-  for (const [candidate, available] of evidence) {
-    if (available && rank(candidate) > rank(state)) state = candidate;
-  }
+  const probableReady = completed("probable_starter_fetch", "probable_starter_fetch")
+    || artifactFor("probable_starter", "probable_starter_fetch");
+  const rosterReady = completed("roster_fetch") || artifactFor("roster_fetch");
+  const predictionClosed = completed("prediction_close", "prediction_close")
+    || artifactFor("prediction_close", "prediction_close");
+  const lineupReady = artifactFor("lineup_finalize", "lineup_finalize");
+  const scored = artifactFor("scoring", "score");
+  const ranked = artifactFor("ranking_reflect", "ranking_rebuild");
+  const published = artifactFor("publish", "publish");
+
+  if (probableReady && rank("probable_starter_ready") > rank(state)) state = "probable_starter_ready";
+  if (rosterReady && rank("roster_ready") > rank(state)) state = "roster_ready";
+  // A finalized lineup is not enough to skip the prediction-close boundary.
+  // Manual V4 input may arrive before the deadline, so downstream state can
+  // advance only after persisted state or a completed close artifact proves
+  // that the prediction phase has ended.
+  if (predictionClosed && rank("prediction_closed") > rank(state)) state = "prediction_closed";
+  if (lineupReady && rank(state) >= rank("prediction_closed") && rank("lineup_ready") > rank(state)) state = "lineup_ready";
+  if (scored && rank(state) >= rank("lineup_ready") && rank("scored") > rank(state)) state = "scored";
+  if (ranked && rank(state) >= rank("scored") && rank("ranked") > rank(state)) state = "ranked";
+  if (published && rank(state) >= rank("ranked") && rank("published") > rank(state)) state = "published";
   return state || "scheduled";
 }
 
@@ -252,7 +261,7 @@ export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], eff
   };
 }
 
-export function buildStagePlan(planningState, stage) {
+export function buildStagePlan(planningState, stage, { disabled = false, disabledReason = "AUTO_FETCH_DISABLED" } = {}) {
   const state = planningState || buildV3PlanningState();
   const { game, gameId, artifacts, jobs, effectiveState, schedule, now, identityResolved } = state;
   const dueAt = dueAtFor(schedule, stage);
@@ -275,10 +284,19 @@ export function buildStagePlan(planningState, stage) {
     shouldCreateJob: false,
     insertAllowed: false,
     blocked: false,
+    disabled: false,
     blockedReason: null,
     reasonCode: null,
     diagnostics: { effectiveState, persistedState: state.persistedState, stateMismatch: state.stateMismatch }
   };
+  if (disabled) {
+    return {
+      ...plan,
+      disabled: true,
+      reasonCode: disabledReason,
+      diagnostics: { ...plan.diagnostics, disabled: true, disabledReason }
+    };
+  }
   if (!isV3GameEligible(game)) return { ...plan, blocked: true, blockedReason: "GAME_NOT_ELIGIBLE", reasonCode: "GAME_NOT_ELIGIBLE" };
   if (effectiveState === "published" || state.persistedState === "published") return { ...plan, reasonCode: "ALREADY_PUBLISHED" };
   if (["ranking_reflect", "publish"].includes(stage) && (game.rankingExcluded || game.ranking_excluded)) {
@@ -337,8 +355,12 @@ export function buildStagePlan(planningState, stage) {
   return { ...plan, shouldCreateJob: true, insertAllowed: true, reasonCode: "DUE_JOB_MISSING" };
 }
 
-export function buildStagePlans(planningState, stages = STAGES) {
-  return stages.map((stage) => buildStagePlan(planningState, stage));
+export function buildStagePlans(planningState, stages = STAGES, { disabledStages = [], disabledReason = "AUTO_FETCH_DISABLED" } = {}) {
+  const disabled = new Set(disabledStages);
+  return stages.map((stage) => buildStagePlan(planningState, stage, {
+    disabled: disabled.has(stage),
+    disabledReason
+  }));
 }
 
 export { JOB_TYPE_BY_STAGE, STAGES };

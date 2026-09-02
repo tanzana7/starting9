@@ -938,10 +938,13 @@ function renderCurrentV3View() {
   }
   const view = document.getElementById("v3View");
   if (!view) return;
+  const v4Notice = payload.automationMode?.isV4SemiAuto
+    ? '<div class="v3-operation-result attention" data-v3-v4-mode><strong>V4半自動運営</strong><span>予告先発: 自動取得 / ロースター: 自動取得OFF（独立manual roster管理はP1） / スタメン: 自動取得OFF / 正式スタメン: 手動</span><span>次の運営操作: Fightersの9人を入力して正式確定。確定後は予想締切・採点・ランキング・公開を正式Cronが継続します。</span></div>'
+    : "";
   const externalFetchNotice = payload.npbFetchDisabled
     ? '<div class="v3-operation-result attention" data-v3-external-fetch-disabled><strong>NPB公式情報の取得を一時停止しています。</strong><span>新規の予告先発・ロースター・スタメン取得は停止中です。既存の保存済みデータと履歴は保持されます。</span></div>'
     : "";
-  view.innerHTML = externalFetchNotice + {
+  view.innerHTML = v4Notice + externalFetchNotice + {
     dashboard: () => v3GameProgressRenderer.renderDashboard(payload, games),
     games: () => v3GameProgressRenderer.renderGamesView(games),
     workflow: () => v3GameProgressRenderer.renderWorkflowView(filteredGame || game),
@@ -964,7 +967,7 @@ function renderCurrentV3View() {
   const filter = document.getElementById("v3GameFilter");
   if (filter) filter.value = v3State.filter;
   const panel = document.getElementById("v3Schema");
-  if (panel) panel.textContent = `schema: ${payload.schema?.ready ? "ready" : "unavailable"} / feature flag: ${payload.enabled ? "enabled" : "disabled"} / NPB取得: ${payload.npbFetchDisabled ? "停止中" : "有効"} / 最終更新: ${formatV3Jst(v3State.lastUpdatedAt)}`;
+  if (panel) panel.textContent = `schema: ${payload.schema?.ready ? "ready" : "unavailable"} / mode: ${payload.automationMode?.mode || "v3_auto"} / 予告先発: ${payload.automationMode?.autoProbableStarter ? "自動" : "停止"} / roster: ${payload.automationMode?.autoRosterFetch ? "自動" : "手動"} / lineup: ${payload.automationMode?.autoLineupFetch ? "自動" : "手動"} / NPB取得: ${payload.npbFetchDisabled ? "停止中" : "有効"} / 最終更新: ${formatV3Jst(v3State.lastUpdatedAt)}`;
 }
 
 async function loadRankingResetMarkers(force = false) {

@@ -143,6 +143,9 @@ import {
   getV3ArtifactMismatch,
   getV3NextAction,
   getV3WorkflowDiagnostics,
+  getV3OperationalMode,
+  planMainWorkflowJobs,
+  planAuxiliaryJobs,
   getV3ProbableStarterPollingSlots,
   getV3ProbableStarterSourceDate,
   getV3CanonicalRosterSnapshot,
@@ -1000,8 +1003,24 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     }))
   });
 
+  const operationalMode = getV3OperationalMode(env);
   const result = await runGameAutomationV3(env, now, {
-    executeJob: (context) => executeGameAutomationV3Job(context),
+    executeJob: (context) => operationalMode.disabledJobTypes.includes(String(context?.job?.job_type || ""))
+      ? {
+        status: "skipped",
+        reasonCode: "V4_AUTO_FETCH_DISABLED",
+        stateBefore: null,
+        stateAfter: null
+      }
+      : executeGameAutomationV3Job(context),
+    formalPlanner: (db, games, plannerNow) => planMainWorkflowJobs(db, games, plannerNow, {
+      disabledStages: operationalMode.disabledJobTypes
+    }),
+    auxiliaryPlanner: (db, games, plannerNow) => planAuxiliaryJobs(db, games, plannerNow, {
+      autoProbableStarter: operationalMode.autoProbableStarter,
+      autoRosterFetch: operationalMode.autoRosterFetch
+    }),
+    disabledJobTypes: operationalMode.disabledJobTypes,
     scheduleOptional,
     observerScheduler,
     onPhase: async (phase) => {
@@ -1035,7 +1054,9 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
         execution.claimReport = {
           due: Array.isArray(claimReport.due) ? claimReport.due.length : 0,
           claimed: Array.isArray(claimReport.claimed) ? claimReport.claimed.length : 0,
+          skipped: Array.isArray(claimReport.skipped) ? claimReport.skipped.length : 0,
           claimedJobIds: (Array.isArray(claimReport.claimed) ? claimReport.claimed : []).slice(0, 100).map((entry) => entry?.job?.id || null).filter(Boolean),
+          skippedJobIds: (Array.isArray(claimReport.skipped) ? claimReport.skipped : []).slice(0, 100).map((entry) => entry?.job?.id || null).filter(Boolean),
           results: (Array.isArray(claimReport.claimed) ? claimReport.claimed : []).slice(0, 100).map((entry) => ({
             jobId: entry?.job?.id || null,
             result: entry?.claimResult || null,
@@ -5408,6 +5429,7 @@ async function handleAdminV3Overview(request, env, cors) {
     ok: true,
     featureFlag: V3_FEATURE_FLAG,
     enabled: isGameAutomationV3Enabled(env),
+    automationMode: getV3OperationalMode(env),
     npbFetchDisabled: String(env?.NPB_FETCH_DISABLED || "").toLowerCase() === "true",
     npbFetchStatus: String(env?.NPB_FETCH_DISABLED || "").toLowerCase() === "true" ? "external_fetch_disabled" : "enabled",
     schema,

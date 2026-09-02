@@ -289,3 +289,85 @@ test("formal plan summaryはclaim前に記録され、schedule syncはcritical p
   assert.match(worker, /scheduleOptional\(scheduleSyncPromise\)/);
   assert.match(worker, /writeCriticalPathFinished: writeCronCriticalPathFinished/);
 });
+
+test("eligible後のformal entry checkpointは重いstate準備より先に記録される", () => {
+  const executor = fs.readFileSync(path.join(root, "backend/automation-v3/executor.js"), "utf8");
+  const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+  const eligible = executor.indexOf('stage: "eligible_games"');
+  const postEligible = executor.indexOf('stage: "post_eligible_started"');
+  const formalStarted = executor.indexOf('stage: "formal_plan_started"');
+  const inputStarted = executor.indexOf('stage: "formal_plan_input_started"');
+  const plannerCall = executor.indexOf("const mainPlan = await runV3PlannerPhase(");
+  assert.ok(eligible >= 0 && postEligible > eligible && formalStarted > postEligible);
+  assert.ok(inputStarted > formalStarted && plannerCall > inputStarted);
+  assert.doesNotMatch(executor.slice(eligible, formalStarted), /ensureV3State|transitionV3State/);
+  assert.match(worker, /post_eligible_started: "V3_POST_ELIGIBLE_PHASE_STARTED"/);
+  assert.match(worker, /formal_plan_input_started: "V3_FORMAL_PLAN_INPUT_STARTED"/);
+  assert.match(worker, /formal_plan_input_finished: "V3_FORMAL_PLAN_INPUT_FINISHED"/);
+  assert.match(worker, /formal_plan_input_error: "V3_FORMAL_PLAN_INPUT_ERROR"/);
+});
+
+test("formal planner失敗でもentry visibilityを保ちclaim phaseとrun finishedへ進む", async () => {
+  const database = new DatabaseSync(":memory:");
+  const id = "55555555-5555-4555-8555-555555555555";
+  let optionalPromise = null;
+  try {
+    database.exec(`
+      CREATE TABLE games (
+        internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+        home_team TEXT, away_team TEXT, npb_game_code TEXT, npb_identity_status TEXT,
+        game_status TEXT, is_active INTEGER, deleted_at TEXT
+      );
+      CREATE TABLE game_automation_v3_state (
+        internal_game_id TEXT PRIMARY KEY, state TEXT, prediction_closed_at TEXT,
+        lineup_finalized_at TEXT, scoring_revision_id TEXT, ranked_at TEXT,
+        published_at TEXT, excluded_at TEXT, failure_code TEXT, failure_message TEXT,
+        version INTEGER, created_at TEXT, updated_at TEXT
+      );
+      CREATE TABLE game_jobs_v3 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT, job_type TEXT,
+        scheduled_at TEXT, scheduled_slot_at TEXT, status TEXT, attempt_count INTEGER,
+        max_attempts INTEGER, next_retry_at TEXT, claimed_at TEXT, claim_token TEXT,
+        lease_expires_at TEXT, completed_at TEXT, failure_code TEXT, failure_message TEXT,
+        created_at TEXT, updated_at TEXT,
+        UNIQUE(internal_game_id, job_type, scheduled_slot_at)
+      );
+      INSERT INTO games VALUES ('${id}', '2026-09-02', '2026-09-02T09:00:00.000Z',
+        'fighters', 'hawks', 'f-h-22', 'resolved', 'scheduled', 1, NULL);
+      INSERT INTO game_automation_v3_state VALUES ('${id}', 'scheduled', NULL, NULL, NULL,
+        NULL, NULL, NULL, NULL, NULL, 0, '2026-09-01T09:00:00.000Z', '2026-09-01T09:00:00.000Z');
+    `);
+    const phases = [];
+    const env = { AUTH_DB: d1(database), ENABLE_GAME_AUTOMATION_V3: "true" };
+    const result = await v3.runGameAutomationV3(env, new Date("2026-09-02T05:32:00.000Z"), {
+      formalPlanner: async () => {
+        throw Object.assign(new Error("input hydration failed"), { code: "V3_FORMAL_PLAN_INPUT_FAILED" });
+      },
+      auxiliaryPlanner: async () => ({
+        created: 0,
+        planned: [],
+        errors: [],
+        probablePlan: { created: 0, planned: [], errors: [] },
+        rosterPlan: { created: 0, planned: [], errors: [] },
+        identityPlan: { created: 0, planned: [], errors: [] }
+      }),
+      scheduleOptional: (promise) => { optionalPromise = promise; },
+      onPhase: (phase) => phases.push(phase),
+      executeJob: async () => ({ status: "completed" })
+    });
+    await optionalPromise;
+    assert.equal(result.mainPlan.phaseStatus, "failed");
+    const stages = phases.map((phase) => phase.stage);
+    assert.ok(stages.indexOf("eligible_games") < stages.indexOf("post_eligible_started"));
+    assert.ok(stages.indexOf("formal_plan_started") < stages.indexOf("formal_plan_input_started"));
+    assert.ok(stages.includes("formal_plan_input_error"));
+    assert.ok(stages.includes("formal_plan_error"));
+    assert.ok(stages.includes("claim_phase_started"));
+    assert.ok(stages.includes("claim_execution_completed"));
+    assert.ok(stages.includes("run_finished"));
+    assert.equal(phases.find((phase) => phase.stage === "formal_plan_input_started")?.eligibleGameCount, 1);
+    assert.equal(phases.find((phase) => phase.stage === "formal_plan_input_finished")?.failedGameCount, 1);
+  } finally {
+    database.close();
+  }
+});

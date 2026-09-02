@@ -204,6 +204,34 @@ const emptyV3ReconciliationResult = () => ({
   skipped: []
 });
 
+async function prepareV3GameStates(env, games = [], now = new Date(), { onError = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null } = {}) {
+  let prepared = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const game of Array.isArray(games) ? games : []) {
+    try {
+      const stateRow = await ensureV3State(env.AUTH_DB, game.internalGameId, now);
+      prepared += 1;
+      if (isV3GameEligible(game) || stateRow.state === V3_STATE.EXCLUDED) continue;
+      const unavailable = ["cancelled", "canceled", "postponed", "service_unavailable"].includes(String(game?.gameStatus || "").toLowerCase());
+      if (unavailable) {
+        skipped += 1;
+        await invokeV3Observer(onError, [createV3Error(
+          "OFFICIAL_CANCELLATION_RECONCILE_REQUIRED",
+          "中止・対象外状態を正式反映できるまで、V3状態を自動前進させません。",
+          { retryable: true }
+        ), { game, stateBefore: stateRow.state, stage: "official_cancellation_reconcile" }], observerTimeoutMs, observerScheduler);
+        continue;
+      }
+      await transitionV3State(env.AUTH_DB, { internalGameId: game.internalGameId, from: stateRow.state, to: V3_STATE.EXCLUDED, now });
+    } catch (error) {
+      failed += 1;
+      await invokeV3Observer(onError, [error, { game, stage: "state_prepare" }], observerTimeoutMs, observerScheduler);
+    }
+  }
+  return { prepared, skipped, failed };
+}
+
 async function runV3OptionalPhases(env, games, now, {
   auxiliaryPlanner,
   onError,
@@ -212,6 +240,26 @@ async function runV3OptionalPhases(env, games, now, {
   observerTimeoutMs,
   observerScheduler
 } = {}) {
+  let statePreparation = { prepared: 0, skipped: 0, failed: 0 };
+  await invokeV3Observer(onPhase, [{ stage: "state_prepare_started", now, gameCount: games.length }], observerTimeoutMs, observerScheduler);
+  try {
+    statePreparation = await prepareV3GameStates(env, games, now, { onError, observerTimeoutMs, observerScheduler });
+    await invokeV3Observer(onPhase, [{
+      stage: "state_prepare_finished",
+      now,
+      status: statePreparation.failed ? "completed_with_errors" : "completed",
+      statePreparation
+    }], observerTimeoutMs, observerScheduler);
+  } catch (error) {
+    await invokeV3Observer(onError, [error, { stage: "state_prepare" }], observerTimeoutMs, observerScheduler);
+    await invokeV3Observer(onPhase, [{
+      stage: "state_prepare_finished",
+      now,
+      status: "failed",
+      statePreparation,
+      errorCode: error?.code || "V3_STATE_PREPARATION_FAILED"
+    }], observerTimeoutMs, observerScheduler);
+  }
   let stateReconciliation = emptyV3ReconciliationResult();
   await invokeV3Observer(onPhase, [{ stage: "reconciliation_started", now, gameCount: games.length }], observerTimeoutMs, observerScheduler);
   try {
@@ -257,7 +305,7 @@ async function runV3OptionalPhases(env, games, now, {
     now,
     plan: auxiliary
   }], observerTimeoutMs, observerScheduler);
-  return { stateReconciliation, auxiliary };
+  return { statePreparation, stateReconciliation, auxiliary };
 }
 
 // Claim execution lifecycle. Job-type business executors remain injected by auth-worker.
@@ -409,32 +457,42 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     gameIds: games.map((game) => game?.internalGameId).filter(Boolean).slice(0, 100)
   }], observerTimeoutMs, observerScheduler);
   let failed = 0;
-  for (const game of games) {
-    try {
-      const stateRow = await ensureV3State(env.AUTH_DB, game.internalGameId, now);
-      if (!isV3GameEligible(game) && stateRow.state !== V3_STATE.EXCLUDED) {
-        const unavailable = ["cancelled", "canceled", "postponed", "service_unavailable"].includes(String(game?.gameStatus || "").toLowerCase());
-        if (unavailable) {
-          await invokeV3Observer(onError, [createV3Error(
-            "OFFICIAL_CANCELLATION_RECONCILE_REQUIRED",
-            "中止・対象外状態を正式反映できるまで、V3状態を自動前進させません。",
-            { retryable: true }
-          ), { game, stateBefore: stateRow.state, stage: "official_cancellation_reconcile" }], observerTimeoutMs, observerScheduler);
-          continue;
-        }
-        await transitionV3State(env.AUTH_DB, { internalGameId: game.internalGameId, from: stateRow.state, to: V3_STATE.EXCLUDED, now });
-      }
-    } catch (error) {
-      failed += 1;
-      await invokeV3Observer(onError, [error, { game, stage: "state_prepare" }], observerTimeoutMs, observerScheduler);
-    }
-  }
 
-  // The formal workflow planner has priority over optional auxiliary work.
+  // The formal workflow planner has priority over all state preparation and
+  // optional work. Keep this checkpoint before any per-game hydration or
+  // diagnostic preparation so an eligible-only stall is observable.
+  const eligibleGameIds = games.map((game) => game?.internalGameId).filter(Boolean).slice(0, 100);
+  await invokeV3Observer(onPhase, [{
+    stage: "post_eligible_started",
+    now,
+    phase: "post_eligible",
+    gameCount: games.length,
+    eligibleGameCount: games.length,
+    processingGameIds: eligibleGameIds,
+    completedGameCount: 0,
+    failedGameCount: 0,
+    skippedGameCount: 0
+  }], observerTimeoutMs, observerScheduler);
   await invokeV3Observer(onPhase, [{
     stage: "formal_plan_started",
     now,
-    gameCount: games.length
+    phase: "formal_plan",
+    gameCount: games.length,
+    eligibleGameCount: games.length,
+    processingGameIds: eligibleGameIds
+  }], observerTimeoutMs, observerScheduler);
+  const formalPlanInputStartedAt = Date.now();
+  await invokeV3Observer(onPhase, [{
+    stage: "formal_plan_input_started",
+    now,
+    phase: "formal_plan_input",
+    gameCount: games.length,
+    eligibleGameCount: games.length,
+    processingGameIds: eligibleGameIds,
+    completedGameCount: 0,
+    failedGameCount: 0,
+    skippedGameCount: 0,
+    elapsedMs: 0
   }], observerTimeoutMs, observerScheduler);
   const mainPlan = await runV3PlannerPhase(
     formalPlanner,
@@ -450,6 +508,38 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     plan: mainPlan,
     errorCode: mainPlan.errors[0]?.error?.code || null
   }], observerTimeoutMs, observerScheduler);
+  await invokeV3Observer(onPhase, [{
+    stage: "formal_plan_input_finished",
+    now,
+    phase: "formal_plan_input",
+    status: mainPlan.phaseStatus || "completed",
+    gameCount: games.length,
+    eligibleGameCount: games.length,
+    processingGameIds: eligibleGameIds,
+    completedGameCount: Math.max(0, games.length - mainPlan.errors.length),
+    failedGameCount: mainPlan.errors.length,
+    skippedGameCount: 0,
+    plannedCount: mainPlan.planned.length,
+    errorCount: mainPlan.errors.length,
+    elapsedMs: Math.max(0, Date.now() - formalPlanInputStartedAt)
+  }], observerTimeoutMs, observerScheduler);
+  if (mainPlan.phaseStatus === "failed" || mainPlan.errors.length) {
+    await invokeV3Observer(onPhase, [{
+      stage: "formal_plan_input_error",
+      now,
+      phase: "formal_plan_input",
+      status: "failed",
+      gameCount: games.length,
+      eligibleGameCount: games.length,
+      processingGameIds: eligibleGameIds,
+      completedGameCount: Math.max(0, games.length - mainPlan.errors.length),
+      failedGameCount: mainPlan.errors.length,
+      skippedGameCount: 0,
+      errorCount: mainPlan.errors.length,
+      elapsedMs: Math.max(0, Date.now() - formalPlanInputStartedAt),
+      errorCode: mainPlan.errors[0]?.error?.code || "V3_FORMAL_PLAN_INPUT_FAILED"
+    }], observerTimeoutMs, observerScheduler);
+  }
   if (mainPlan.phaseStatus === "failed" || mainPlan.errors.length) {
     await invokeV3Observer(onPhase, [{
       stage: "formal_plan_error",
@@ -551,6 +641,7 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
   const optional = await optionalPromise;
   return {
     ...criticalResult,
+    statePreparation: optional.statePreparation,
     stateReconciliation: optional.stateReconciliation,
     probablePlan: optional.auxiliary.probablePlan,
     rosterPlan: optional.auxiliary.rosterPlan,

@@ -967,6 +967,12 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     onPhase: async (phase) => {
       const eventTypeByStage = {
         eligible_games: "V3_ELIGIBLE_GAMES",
+        post_eligible_started: "V3_POST_ELIGIBLE_PHASE_STARTED",
+        formal_plan_input_started: "V3_FORMAL_PLAN_INPUT_STARTED",
+        formal_plan_input_finished: "V3_FORMAL_PLAN_INPUT_FINISHED",
+        formal_plan_input_error: "V3_FORMAL_PLAN_INPUT_ERROR",
+        state_prepare_started: "V3_STATE_PREPARATION_STARTED",
+        state_prepare_finished: "V3_STATE_PREPARATION_FINISHED",
         reconciliation_started: "V3_RECONCILIATION_STARTED",
         reconciliation_finished: "V3_RECONCILIATION_FINISHED",
         formal_plan_started: "V3_FORMAL_PLAN_STARTED",

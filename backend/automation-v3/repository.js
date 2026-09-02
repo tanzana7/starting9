@@ -281,15 +281,26 @@ export async function retryV3Job(db, { jobId, claimToken, attemptCount, maxAttem
   return { updated: Number(result?.meta?.changes || 0) === 1, status: terminal ? "failed" : "retry_wait" };
 }
 
-export async function listDueV3Jobs(db, now = new Date(), limit = 50) {
+export async function listDueV3Jobs(db, now = new Date(), limit = 50, cursor = null) {
   const timestamp = (now instanceof Date ? now : new Date(now)).toISOString();
+  const boundedLimit = Math.max(1, Math.min(100, Number(limit) || 50));
+  const cursorScheduledAt = String(cursor?.scheduledAt || cursor?.scheduled_at || "");
+  const cursorId = Number(cursor?.id);
+  const hasCursor = Boolean(cursorScheduledAt) && Number.isFinite(cursorId);
+  const cursorClause = hasCursor
+    ? "AND (scheduled_at > ?3 OR (scheduled_at = ?3 AND id > ?4))"
+    : "";
+  const params = hasCursor
+    ? [timestamp, boundedLimit, cursorScheduledAt, cursorId]
+    : [timestamp, boundedLimit];
   const result = await db.prepare(
     `SELECT * FROM game_jobs_v3
       WHERE (status IN ('pending', 'retry_wait')
          OR (status = 'claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?1))
         AND scheduled_at <= ?1
         AND (next_retry_at IS NULL OR next_retry_at <= ?1)
+        ${cursorClause}
       ORDER BY scheduled_at, id LIMIT ?2`
-  ).bind(timestamp, Math.max(1, Math.min(100, Number(limit) || 50))).all();
+  ).bind(...params).all();
   return result.results || [];
 }

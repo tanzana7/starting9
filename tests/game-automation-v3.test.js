@@ -941,6 +941,179 @@ test("V3 job slot is unique and claim is atomic", async () => {
   assert.match(statements[0].sql, /UNIQUE|game_jobs_v3/);
 });
 
+test("一つのjobのexecutor失敗でも次のjobを処理し、失敗jobをretryへ送る", async () => {
+  const database = new DatabaseSync(":memory:");
+  const firstId = "6e4f2f3b-2de9-49fb-89b1-5e3f3ac9b001";
+  const secondId = "6e4f2f3b-2de9-49fb-89b1-5e3f3ac9b002";
+  try {
+    database.exec(`
+      CREATE TABLE game_jobs_v3 (
+        id INTEGER PRIMARY KEY, internal_game_id TEXT, job_type TEXT, status TEXT,
+        scheduled_at TEXT,
+        attempt_count INTEGER, max_attempts INTEGER, next_retry_at TEXT,
+        lease_expires_at TEXT, claim_token TEXT, failure_code TEXT, failure_message TEXT,
+        created_at TEXT, claimed_at TEXT, completed_at TEXT, updated_at TEXT
+      );
+      INSERT INTO game_jobs_v3
+        (id, internal_game_id, job_type, status, attempt_count, max_attempts,
+         claim_token, created_at, claimed_at, updated_at)
+      VALUES
+        (1, '${firstId}', 'publish', 'claimed', 1, 12, 'token-1',
+         '2026-08-04T09:00:00.000Z', '2026-08-04T09:00:00.000Z', '2026-08-04T09:00:00.000Z'),
+        (2, '${secondId}', 'publish', 'claimed', 1, 12, 'token-2',
+         '2026-08-04T09:00:00.000Z', '2026-08-04T09:00:00.000Z', '2026-08-04T09:00:00.000Z');
+    `);
+    const executed = [];
+    const result = await v3.executeClaimedJobs(
+      { AUTH_DB: d1(database) },
+      [1, 2].map((id) => {
+        const job = database.prepare("SELECT * FROM game_jobs_v3 WHERE id = ?1").get(id);
+        return { job, claimed: job, entry: null, claimResult: "claimed" };
+      }),
+      [],
+      new Date("2026-08-04T09:03:00.000Z"),
+      {
+        executeJob: async ({ job }) => {
+          executed.push(job.id);
+          if (job.id === 1) throw new Error("publish stalled");
+          return { status: "completed", stateBefore: "scheduled", stateAfter: "scheduled" };
+        }
+      }
+    );
+    assert.deepEqual(executed, [1, 2]);
+    assert.equal(result.processed, 2);
+    assert.equal(result.failed, 1);
+    assert.equal(result.retryWait, 1);
+    assert.equal(database.prepare("SELECT status FROM game_jobs_v3 WHERE id = 1").get().status, "retry_wait");
+    assert.equal(database.prepare("SELECT status FROM game_jobs_v3 WHERE id = 2").get().status, "completed");
+  } finally {
+    database.close();
+  }
+});
+
+test("lease期限切れのclaimed jobは次回claim対象になる", async () => {
+  const database = new DatabaseSync(":memory:");
+  const jobId = 7;
+  try {
+    database.exec(`
+      CREATE TABLE game_jobs_v3 (
+        id INTEGER PRIMARY KEY, internal_game_id TEXT, job_type TEXT, status TEXT,
+        scheduled_at TEXT, attempt_count INTEGER, max_attempts INTEGER, next_retry_at TEXT,
+        lease_expires_at TEXT, claim_token TEXT, created_at TEXT, claimed_at TEXT,
+        completed_at TEXT, updated_at TEXT
+      );
+      INSERT INTO game_jobs_v3
+        (id, internal_game_id, job_type, status, scheduled_at, attempt_count, max_attempts,
+        lease_expires_at, created_at, claimed_at, updated_at)
+      VALUES (${jobId}, '${GAME_ID}', 'publish', 'claimed', '2026-08-04T08:00:00.000Z', 4, 12,
+        '2026-08-04T08:59:00.000Z', '2026-08-04T08:00:00.000Z',
+        '2026-08-04T08:54:00.000Z', '2026-08-04T08:54:00.000Z');
+    `);
+    const now = new Date("2026-08-04T09:00:00.000Z");
+    const due = await v3.listDueV3Jobs(d1(database), now);
+    assert.equal(due.some((job) => job.id === jobId), true);
+    const reclaimed = await v3.claimV3Job(d1(database), { jobId, now });
+    assert.equal(reclaimed.status, "claimed");
+    assert.equal(reclaimed.attempt_count, 5);
+    assert.ok(reclaimed.lease_expires_at > now.toISOString());
+  } finally {
+    database.close();
+  }
+});
+
+test("一件のclaim例外でも同じbatchの後続jobをclaimする", async () => {
+  const jobs = [
+    { id: 1, internal_game_id: GAME_ID, job_type: "publish", status: "pending", scheduled_at: START },
+    { id: 2, internal_game_id: GAME_ID, job_type: "publish", status: "pending", scheduled_at: START }
+  ];
+  const db = {
+    prepare(sql) {
+      return {
+        bind(...parameters) {
+          return {
+            all: async () => ({ results: sql.includes("LIMIT ?2") ? jobs : [] }),
+            first: async () => {
+              if (sql.includes("SELECT created_at")) return { created_at: START };
+              const job = jobs.find((row) => row.id === Number(parameters[0]));
+              return job ? { ...job, status: "claimed", claim_token: "new-token" } : null;
+            },
+            run: async () => {
+              if (sql.startsWith("UPDATE game_jobs_v3") && Number(parameters[3]) === 1) {
+                throw new Error("transient claim failure");
+              }
+              return { meta: { changes: 1 } };
+            }
+          };
+        }
+      };
+    }
+  };
+  const report = await v3.claimDueJobs(db, new Date("2026-08-04T09:00:00.000Z"));
+  assert.equal(report.due.length, 2);
+  assert.equal(report.claimed[0].claimResult, "claim_error");
+  assert.equal(report.claimed[0].claimed, null);
+  assert.equal(report.claimed[1].claimResult, "claimed");
+  assert.equal(report.claimed[1].claimed.id, 2);
+});
+
+test("先頭batchのclaim例外を越えて101件目以降のdue jobをclaimする", async () => {
+  const database = new DatabaseSync(":memory:");
+  let listCalls = 0;
+  try {
+    database.exec(`
+      CREATE TABLE game_jobs_v3 (
+        id INTEGER PRIMARY KEY, internal_game_id TEXT, job_type TEXT,
+        scheduled_at TEXT NOT NULL, scheduled_slot_at TEXT NOT NULL, status TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL, max_attempts INTEGER NOT NULL, next_retry_at TEXT,
+        claimed_at TEXT, claim_token TEXT, lease_expires_at TEXT, completed_at TEXT,
+        failure_code TEXT, failure_message TEXT, created_at TEXT, updated_at TEXT
+      );
+    `);
+    const insert = database.prepare(`
+      INSERT INTO game_jobs_v3
+        (id, internal_game_id, job_type, scheduled_at, scheduled_slot_at, status,
+         attempt_count, max_attempts, created_at, updated_at)
+      VALUES (?, ?, 'publish', '2026-08-04T08:00:00.000Z', '2026-08-04T08:00:00.000Z', 'pending', 0, 12,
+              '2026-08-04T07:00:00.000Z', '2026-08-04T07:00:00.000Z')
+    `);
+    for (let id = 1; id <= 101; id += 1) insert.run(id, `game-${id}`);
+
+    const base = d1(database);
+    const db = {
+      prepare(sql) {
+        if (sql.includes("ORDER BY scheduled_at")) listCalls += 1;
+        const prepared = base.prepare(sql);
+        return {
+          ...prepared,
+          bind(...parameters) {
+            const bound = prepared.bind(...parameters);
+            return {
+              ...bound,
+              run: async () => {
+                if (sql.startsWith("UPDATE game_jobs_v3") && Number(parameters[3]) === 1) {
+                  throw new Error("transient claim failure");
+                }
+                return bound.run();
+              }
+            };
+          }
+        };
+      }
+    };
+
+    const report = await v3.claimDueJobs(db, new Date("2026-08-04T09:00:00.000Z"));
+    assert.equal(report.due.length, 101);
+    assert.equal(report.claimed[0].claimResult, "claim_error");
+    assert.equal(report.claimed[0].claimed, null);
+    assert.equal(report.claimed.at(-1).claimed.id, 101);
+    assert.equal(database.prepare("SELECT status FROM game_jobs_v3 WHERE id = 1").get().status, "pending");
+    assert.equal(database.prepare("SELECT status FROM game_jobs_v3 WHERE id = 101").get().status, "claimed");
+    assert.equal(listCalls, 2);
+  } finally {
+    database.close();
+  }
+});
+
 test("orchestratorは開始後のprediction_closed gameをlineup_fetchのformal jobへ接続する", async () => {
   const database = new DatabaseSync(":memory:");
   const internalGameId = "8b6f5d0a-7ad5-4dc1-a541-0d5ca6c4c9a2";

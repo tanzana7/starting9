@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import worker from "../auth-worker.js";
 import {
   createOfficialLineupFromNpb,
   executeGameAutomationV3Job,
@@ -11,7 +12,10 @@ import {
   normalizeV3LineupFetchError,
   selectV3LineupFinalizeCandidate,
   shouldSkipV3LineupFetchAfterStart,
-  getV3LateLineupFetchWindowDecision
+  getV3LateLineupFetchWindowDecision,
+  withV3ReadOnlyTimeout,
+  writeV3TerminalAuditOnce,
+  writeV3FatalRunAudits
 } from "../auth-worker.js";
 import { buildStagePlan, buildV3PlanningState } from "../backend/automation-v3/planning-engine.js";
 
@@ -226,6 +230,28 @@ test("V3 late lineup fetch uses the same 24-hour boundary as planning", () => {
   assert.deepEqual(
     getV3LateLineupFetchWindowDecision({ startAt, now: new Date("2026-09-02T09:00:00.001Z") }),
     { available: true, allowed: false, reasonCode: "LINEUP_FETCH_LATE_WINDOW_EXPIRED", deadline: "2026-09-02T09:00:00.000Z" }
+  );
+});
+
+test("publishのread-only検証timeoutはretryableな診断エラーになる", async () => {
+  await assert.rejects(
+    withV3ReadOnlyTimeout(
+      () => new Promise((resolve) => setTimeout(() => resolve({ publication_status: "pending" }), 50)),
+      {
+        timeoutMs: 5,
+        onTimeout: () => Object.assign(new Error("verification timed out"), {
+          code: "PUBLISH_VERIFICATION_TIMEOUT",
+          retryable: true,
+          diagnostics: { verificationTimedOut: true }
+        })
+      }
+    ),
+    (error) => {
+      assert.equal(error.code, "PUBLISH_VERIFICATION_TIMEOUT");
+      assert.equal(error.retryable, true);
+      assert.equal(error.diagnostics.verificationTimedOut, true);
+      return true;
+    }
   );
 });
 
@@ -517,4 +543,130 @@ test("lineup executor diagnostics retain unexpected exception context without se
   assert.match(workerSource, /exceptionMessage/);
   assert.match(workerSource, /selectedSlot/);
   assert.match(workerSource, /NPB_GAME_CODE_NOT_AVAILABLE/);
+});
+
+test("terminal audit failure is not marked as completed and can be retried", async () => {
+  const state = { recorded: false };
+  let attempts = 0;
+  const first = await writeV3TerminalAuditOnce(async () => {
+    attempts += 1;
+    return false;
+  }, state, { eventType: "CRON_HANDLER_FINISHED" }, 1);
+
+  assert.equal(first, false);
+  assert.equal(state.recorded, false);
+  assert.equal(attempts, 1);
+
+  const second = await writeV3TerminalAuditOnce(async () => true, state, { eventType: "CRON_HANDLER_FINISHED" }, 1);
+  assert.equal(second, true);
+  assert.equal(state.recorded, true);
+});
+
+test("fatal V3 run emits execution summary, run error, and both terminal audits", async () => {
+  const events = [];
+  let criticalCount = 0;
+  let handlerCount = 0;
+  const fatal = Object.assign(new Error("publish failed"), {
+    code: "V3_PUBLISH_FAILED",
+    job: { id: 4787, internal_game_id: "game-1", job_type: "publish" },
+    stage: "publish"
+  });
+
+  await writeV3FatalRunAudits({
+    writeRuntimeAudit: async (payload) => {
+      events.push({ eventType: payload.eventType, execution: payload.execution });
+    },
+    writeCriticalPathFinished: async (status, details) => {
+      criticalCount += 1;
+      assert.equal(status, "failed");
+      assert.equal(details.jobId, 4787);
+      assert.equal(details.stage, "publish");
+    },
+    writeHandlerFinished: async (status, details) => {
+      handlerCount += 1;
+      assert.equal(status, "failed");
+      assert.equal(details.internalGameId, "game-1");
+    },
+    runId: "run-1",
+    now: new Date("2026-09-02T01:43:00.000Z"),
+    error: fatal
+  });
+
+  assert.deepEqual(events.map((event) => event.eventType), ["V3_EXECUTION_SUMMARY", "V3_RUN_ERROR"]);
+  assert.equal(events[0].execution.status, "failed");
+  assert.equal(events[0].execution.errorReason, "V3_PUBLISH_FAILED");
+  assert.equal(events[0].execution.jobId, 4787);
+  assert.equal(criticalCount, 1);
+  assert.equal(handlerCount, 1);
+});
+
+test("fatal audit write failure does not block later terminal audit attempts", async () => {
+  const calls = [];
+  await writeV3FatalRunAudits({
+    writeRuntimeAudit: async (payload) => {
+      calls.push(payload.eventType);
+      if (payload.eventType === "V3_EXECUTION_SUMMARY") throw new Error("audit unavailable");
+    },
+    writeCriticalPathFinished: async () => calls.push("CRON_CRITICAL_PATH_FINISHED"),
+    writeHandlerFinished: async () => calls.push("CRON_HANDLER_FINISHED"),
+    runId: "run-audit-failure",
+    error: Object.assign(new Error("fatal"), { code: "V3_FATAL" })
+  });
+
+  assert.deepEqual(calls, [
+    "V3_EXECUTION_SUMMARY",
+    "V3_RUN_ERROR",
+    "CRON_CRITICAL_PATH_FINISHED",
+    "CRON_HANDLER_FINISHED"
+  ]);
+});
+
+test("scheduled handlerのfatal V3経路でもterminal auditを試行する", async () => {
+  const events = [];
+  const failure = Object.assign(new Error("schema probe failed"), { code: "V3_SCHEMA_PROBE_FAILED" });
+  const db = {
+    prepare(sql) {
+      if (sql.includes("sqlite_master")) {
+        return { all: async () => { throw failure; } };
+      }
+      if (sql.includes("SELECT internal_game_id FROM games")) {
+        return { first: async () => ({ internal_game_id: "anchor-game" }) };
+      }
+      if (sql.startsWith("PRAGMA table_info(game_automation_v3_audit)")) {
+        return {
+          bind: () => ({
+            all: async () => ({ results: [{ name: "event_type" }, { name: "data_status" }] })
+          })
+        };
+      }
+      if (sql.includes("INSERT INTO game_automation_v3_audit")) {
+        return {
+          bind: (...values) => ({
+            run: async () => {
+              events.push(values[0]);
+              return { meta: { changes: 1 } };
+            }
+          })
+        };
+      }
+      throw new Error(`unexpected SQL in scheduler fatal fixture: ${sql}`);
+    }
+  };
+  const waiters = [];
+  const ctx = { waitUntil(promise) { waiters.push(Promise.resolve(promise)); } };
+  await worker.scheduled(
+    { scheduledTime: Date.parse("2026-09-02T01:43:00.000Z") },
+    { AUTH_DB: db, ENABLE_GAME_AUTOMATION_V3: "true" },
+    ctx
+  );
+  const settled = await Promise.allSettled(waiters);
+  assert.equal(settled.some((result) => result.status === "rejected"), true);
+  for (const eventType of [
+    "V3_EXECUTION_SUMMARY",
+    "V3_RUN_ERROR",
+    "CRON_CRITICAL_PATH_FINISHED",
+    "CRON_HANDLER_FINISHED"
+  ]) {
+    assert.ok(events.includes(eventType), eventType);
+  }
 });

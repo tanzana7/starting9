@@ -363,8 +363,10 @@ export async function claimDueJobs(db, now = new Date(), plannedEntries = []) {
   const plannedById = new Map(plannedEntries.map((entry) => [String(entry?.job?.id || ""), entry]));
   const batchSize = 100;
   const maxBatches = 20;
+  let cursor = null;
   for (let batch = 0; batch < maxBatches; batch += 1) {
-    const rows = await listDueV3Jobs(db, now, batchSize);
+    const rows = await listDueV3Jobs(db, now, batchSize, cursor);
+    if (rows.length === 0) break;
     const fresh = rows.filter((job) => {
       const key = String(job?.id || "");
       if (!key || seen.has(key)) return false;
@@ -373,9 +375,20 @@ export async function claimDueJobs(db, now = new Date(), plannedEntries = []) {
     });
     due.push(...fresh);
     for (const job of fresh) {
-      const claimedJob = await claimV3Job(db, { jobId: job.id, now });
+      let claimedJob = null;
+      let claimError = null;
+      try {
+        claimedJob = await claimV3Job(db, { jobId: job.id, now });
+      } catch (error) {
+        // A single malformed or transiently unavailable row must not prevent
+        // later games/stages in the same batch from being claimed.
+        claimError = {
+          code: error?.code || "V3_JOB_CLAIM_FAILED",
+          message: String(error?.message || "V3ジョブのclaimに失敗しました。")
+        };
+      }
       const entry = plannedById.get(String(job.id));
-      const claimResult = claimedJob ? "claimed" : "claim_conflict";
+      const claimResult = claimError ? "claim_error" : claimedJob ? "claimed" : "claim_conflict";
       if (entry) {
         entry.plannerDecision = {
           ...(entry.plannerDecision || normalizeV3PlannerDecision(entry, now)),
@@ -387,12 +400,20 @@ export async function claimDueJobs(db, now = new Date(), plannedEntries = []) {
           actualJobExists: true,
           jobStatus: claimedJob?.status || job.status || null,
           claimEligible: isV3OpenJobStatus(job.status),
-          claimResult
+          claimResult,
+          claimErrorCode: claimError?.code || null
         };
       }
-      claimed.push({ job, claimed: claimedJob, entry, claimResult });
+      claimed.push({ job, claimed: claimedJob, entry, claimResult, claimError });
     }
-    if (fresh.length === 0 || rows.length < batchSize) break;
+    const lastRow = rows[rows.length - 1];
+    const nextCursor = {
+      scheduledAt: lastRow?.scheduled_at || null,
+      id: Number(lastRow?.id)
+    };
+    if (!nextCursor.scheduledAt || !Number.isFinite(nextCursor.id)) break;
+    cursor = nextCursor;
+    if (rows.length < batchSize) break;
   }
   return { due, claimed };
 }

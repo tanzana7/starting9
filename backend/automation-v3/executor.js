@@ -264,6 +264,10 @@ async function runV3OptionalPhases(env, games, now, {
 export async function executeClaimedJobs(env, claims = [], games = [], now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null } = {}) {
   let processed = 0;
   let failed = 0;
+  let retryWait = 0;
+  let terminalFailed = 0;
+  const failedJobIds = [];
+  const retryErrors = [];
   for (const claim of claims) {
     const { job, claimed, entry, claimResult } = claim;
     if (onPlan) {
@@ -354,22 +358,43 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
       }
     } catch (rawError) {
       failed += 1;
+      failedJobIds.push(claimed.id);
       const error = normalizeV3ExecutionError(rawError);
-      await retryV3Job(env.AUTH_DB, {
-        jobId: claimed.id,
-        claimToken: claimed.claim_token,
-        attemptCount: claimed.attempt_count,
-        maxAttempts: claimed.max_attempts,
-        now: executionNow,
-        errorCode: error.code,
-        errorMessage: formatV3JobFailureMessage(error),
-        retryAt: error?.retryAt || new Date(executionNow.getTime() + 10 * 60 * 1000)
-      });
-      const retryJob = await env.AUTH_DB.prepare("SELECT * FROM game_jobs_v3 WHERE id = ?1 LIMIT 1").bind(Number(claimed.id)).first();
-      await invokeV3Observer(onError, [error, { job: retryJob || claimed, claimToken: claimed.claim_token, stage: "execute", stateBefore: claimed.status }], observerTimeoutMs, observerScheduler);
+      try {
+        const retryResult = await retryV3Job(env.AUTH_DB, {
+          jobId: claimed.id,
+          claimToken: claimed.claim_token,
+          attemptCount: claimed.attempt_count,
+          maxAttempts: claimed.max_attempts,
+          now: executionNow,
+          errorCode: error.code,
+          errorMessage: formatV3JobFailureMessage(error),
+          retryAt: error?.retryAt || new Date(executionNow.getTime() + 10 * 60 * 1000)
+        });
+        if (retryResult?.updated && retryResult?.status === V3_JOB_STATUS.RETRY_WAIT) retryWait += 1;
+        if (retryResult?.updated && retryResult?.status === V3_JOB_STATUS.FAILED) terminalFailed += 1;
+        const retryJob = await env.AUTH_DB.prepare("SELECT * FROM game_jobs_v3 WHERE id = ?1 LIMIT 1").bind(Number(claimed.id)).first();
+        await invokeV3Observer(onError, [error, { job: retryJob || claimed, claimToken: claimed.claim_token, stage: "execute", stateBefore: claimed.status }], observerTimeoutMs, observerScheduler);
+      } catch (retryError) {
+        // Failure handling is isolated as well. If the lifecycle update or
+        // diagnostic read is unavailable, preserve the original failure and
+        // continue with the next claimed job instead of freezing the run.
+        retryErrors.push({
+          jobId: claimed.id,
+          code: retryError?.code || "V3_JOB_FAILURE_HANDLING_FAILED",
+          message: String(retryError?.message || "V3ジョブ失敗処理に失敗しました。")
+        });
+        await invokeV3Observer(onError, [error, {
+          job: claimed,
+          claimToken: claimed.claim_token,
+          stage: "execute",
+          stateBefore: claimed.status,
+          retryError: retryErrors[retryErrors.length - 1]
+        }], observerTimeoutMs, observerScheduler);
+      }
     }
   }
-  return { processed, failed };
+  return { processed, failed, retryWait, terminalFailed, failedJobIds, retryErrors };
 }
 
 export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, onPhase = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, formalPlanner = planMainWorkflowJobs, auxiliaryPlanner = planAuxiliaryJobs, scheduleOptional = null } = {}) {
@@ -459,8 +484,27 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     gameCount: games.length,
     plannedCount: allPlanned.length
   }], observerTimeoutMs, observerScheduler);
-  const claimReport = await claimDueJobs(env.AUTH_DB, now, allPlanned);
-  const execution = await executeClaimedJobs(env, claimReport.claimed, games, now, { executeJob, onError, onSuccess, onPlan, observerTimeoutMs, observerScheduler });
+  const claimReport = await claimDueJobs(env.AUTH_DB, now, allPlanned).catch(async (error) => {
+    failed += 1;
+    await invokeV3Observer(onError, [error, { stage: "claim" }], observerTimeoutMs, observerScheduler);
+    return {
+      due: [],
+      claimed: [],
+      errors: [{ code: error?.code || "V3_CLAIM_PHASE_FAILED", message: String(error?.message || "V3ジョブclaim phaseに失敗しました。") }]
+    };
+  });
+  const execution = await executeClaimedJobs(env, claimReport.claimed, games, now, { executeJob, onError, onSuccess, onPlan, observerTimeoutMs, observerScheduler }).catch(async (error) => {
+    failed += 1;
+    await invokeV3Observer(onError, [error, { stage: "execute" }], observerTimeoutMs, observerScheduler);
+    return {
+      processed: 0,
+      failed: 1,
+      retryWait: 0,
+      terminalFailed: 0,
+      failedJobIds: [],
+      retryErrors: [{ code: error?.code || "V3_EXECUTION_PHASE_FAILED", message: String(error?.message || "V3ジョブexecution phaseに失敗しました。") }]
+    };
+  });
   await invokeV3Observer(onPhase, [{
     stage: "claim_execution_completed",
     now,
@@ -473,7 +517,9 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     criticalPath: true,
     createdJobCount: mainPlan.created,
     executedJobCount: execution.processed,
-    failedJobCount: failed + execution.failed
+    failedJobCount: failed + execution.failed,
+    retryWaitCount: execution.retryWait,
+    terminalFailedJobCount: execution.terminalFailed
   }], observerTimeoutMs, observerScheduler);
   const criticalResult = {
     enabled: true,
@@ -483,6 +529,7 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     created: mainPlan.created,
     processed: execution.processed,
     failed: failed + execution.failed,
+    execution,
     mainPlan,
     claimReport
   };

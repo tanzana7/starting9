@@ -201,6 +201,7 @@ const PREDICTION_TEAM_SLUG_CODES = Object.freeze({
 const INTERNAL_GAME_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const AUTO_SCORING_DEFAULT_DELAY_SECONDS = 300;
 const AUTO_SCORING_MAX_DELAY_SECONDS = 24 * 60 * 60;
+const V3_LATE_LINEUP_FETCH_WINDOW_MS = 24 * 60 * 60 * 1000;
 const AUTO_SCORING_MAX_ATTEMPTS = 3;
 const AUTO_SCORING_CRON_BATCH_SIZE = 10;
 const AUTO_SCORING_PROCESSING_TIMEOUT_MS = 10 * 60 * 1000;
@@ -1416,6 +1417,11 @@ async function executeV3PredictionCloseExecutor({ env, internalGameId, stateBefo
 
 function enrichV3LineupExecutorError(error, { internalGameId, now, target, job, lineupIdentity, stage = "capture_official_lineup" } = {}) {
   const npbFetchDiagnostics = sanitizeNpbLineupDiagnostics(error?.npbDiagnostics);
+  const lineupParserDiagnostics = sanitizeLineupParserDiagnostics(
+    error?.parserDiagnostics
+      || error?.diagnostics?.lineupParserDiagnostics
+      || npbFetchDiagnostics?.parserDiagnostics
+  );
   const diagnostics = {
     ...(error?.diagnostics && typeof error.diagnostics === "object" ? error.diagnostics : {}),
     executorStage: stage,
@@ -1429,6 +1435,7 @@ function enrichV3LineupExecutorError(error, { internalGameId, now, target, job, 
     homeTeam: target?.home_team || target?.homeTeam || null,
     awayTeam: target?.away_team || target?.awayTeam || null
   };
+  if (lineupParserDiagnostics) diagnostics.lineupParserDiagnostics = lineupParserDiagnostics;
   const code = String(error?.code || "").trim().toUpperCase();
   if (code && code !== "V3_JOB_FAILED") {
     error.diagnostics = diagnostics;
@@ -1470,6 +1477,28 @@ async function executeV3LineupExecutor({ env, internalGameId, now, target, state
         }
       }
     );
+  }
+  if (jobType === V3_JOB_TYPE.LINEUP_FETCH) {
+    const startAt = lineupIdentity.startAt instanceof Date
+      ? lineupIdentity.startAt
+      : new Date(lineupIdentity.startAt || target?.startAt || target?.start_time || "");
+    const current = now instanceof Date ? now : new Date(now);
+    const lateWindow = getV3LateLineupFetchWindowDecision({ startAt, now: current });
+    if (lateWindow.reasonCode === "LINEUP_FETCH_LATE_WINDOW_EXPIRED") {
+      throw createV3Error("LINEUP_FETCH_LATE_WINDOW_EXPIRED", "試合開始から24時間を超過したため、late lineup_fetchを実行しません。", {
+        retryable: false,
+        diagnostics: {
+          executorStage: "late_lineup_fetch_window",
+          internalGameId,
+          startAt: startAt.toISOString(),
+          now: current.toISOString(),
+          lateWindowDeadline: lateWindow.deadline,
+          reasonCode: "LINEUP_FETCH_LATE_WINDOW_EXPIRED",
+          artifactCreated: false,
+          completedWithoutCandidate: false
+        }
+      });
+    }
   }
   let result;
   try {
@@ -1519,17 +1548,45 @@ async function executeV3LineupExecutor({ env, internalGameId, now, target, state
     if (!lineupDataHealth.available) {
       throw createV3Error("V3_LINEUP_DATA_HEALTH_UNAVAILABLE", "lineup_fetchの候補データを確認できないため、完了扱いにできません。", {
         retryable: true,
-        diagnostics: { executorStage: "verify_lineup_fetch_side_effect", internalGameId, status: result.status, ...lineupDataHealth }
+        diagnostics: {
+          executorStage: "verify_lineup_fetch_side_effect",
+          internalGameId,
+          status: result.status,
+          artifactCreated: false,
+          completedWithoutCandidate: true,
+          parserDiagnostics: result.parserDiagnostics || null,
+          npbDiagnostics: result.npbDiagnostics || null,
+          ...lineupDataHealth
+        }
       });
     }
     if (!lineupDataHealth.ready) {
       throw createV3Error("LINEUP_FETCH_COMPLETED_WITHOUT_CANDIDATE", "lineup_fetchは完了しましたが、candidate/canonical lineupが作成されていません。", {
         retryable: true,
         retryAt: new Date(new Date(now).getTime() + 60 * 1000),
-        diagnostics: { executorStage: "verify_lineup_fetch_side_effect", internalGameId, status: result.status, ...lineupDataHealth }
+        diagnostics: {
+          executorStage: "verify_lineup_fetch_side_effect",
+          internalGameId,
+          status: result.status,
+          artifactCreated: false,
+          completedWithoutCandidate: true,
+          parserDiagnostics: result.parserDiagnostics || null,
+          npbDiagnostics: result.npbDiagnostics || null,
+          ...lineupDataHealth
+        }
       });
     }
-    return { status: result.status, stateBefore, stateAfter: stateBefore, lineupDataHealth, npbDiagnostics: result.npbDiagnostics || null };
+    return {
+      status: result.status,
+      stateBefore,
+      stateAfter: stateBefore,
+      artifactCreated: true,
+      completedWithoutCandidate: false,
+      lineupDataHealth,
+      lineupValidation: result.lineupValidation || null,
+      parserDiagnostics: result.parserDiagnostics || null,
+      npbDiagnostics: result.npbDiagnostics || null
+    };
   }
   const finalizedHealth = await getV3LineupDataHealth(env.AUTH_DB, internalGameId, stateBefore);
   if (!finalizedHealth.available) {
@@ -1553,7 +1610,15 @@ async function executeV3LineupExecutor({ env, internalGameId, now, target, state
         diagnostics: { executorStage: "verify_lineup_finalize_side_effect", internalGameId, ...finalizedHealth }
       });
   }
-  return { status: result.status, stateBefore, stateAfter: "lineup_ready", lineupDataHealth: finalizedHealth, npbDiagnostics: result.npbDiagnostics || null };
+  return {
+    status: result.status,
+    stateBefore,
+    stateAfter: "lineup_ready",
+    lineupDataHealth: finalizedHealth,
+    lineupValidation: result.lineupValidation || null,
+    parserDiagnostics: result.parserDiagnostics || null,
+    npbDiagnostics: result.npbDiagnostics || null
+  };
 }
 
 async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore }) {
@@ -1766,8 +1831,20 @@ export function normalizeV3LineupFetchError(error, now = new Date()) {
   const rawCode = String(error?.code || "LINEUP_FETCH_FAILED").trim().toUpperCase();
   if (rawCode === "GAME_CANCELLED") return error;
   const validation = error?.validation || {};
+  const parserInputAvailable = error?.parserDiagnostics
+    || error?.npbDiagnostics?.parserDiagnostics
+    || validation.rawLineupSectionFound === true;
+  const parserRejectedEmpty = rawCode === "LINEUP_INVALID_PLAYER_COUNT"
+    && Number(validation.parsedCount || 0) === 0
+    && Boolean(parserInputAvailable);
+  if (parserRejectedEmpty) {
+    error.retryable = true;
+    error.retryAt = new Date(new Date(now).getTime() + 10 * 60 * 1000);
+    error.reasonCode = "LINEUP_PARSER_REJECTED";
+    return error;
+  }
   const unannounced = ["LINEUP_NOT_ANNOUNCED", "LINEUP_NOT_PUBLISHED"].includes(rawCode)
-    || (rawCode === "LINEUP_INVALID_PLAYER_COUNT" && Number(validation.parsedCount || 0) === 0);
+    || (rawCode === "LINEUP_INVALID_PLAYER_COUNT" && Number(validation.parsedCount || 0) === 0 && !parserInputAvailable);
   if (!unannounced) return error;
   const normalized = createV3Error("LINEUP_NOT_ANNOUNCED", "NPB公式でスタメンがまだ発表されていません。", {
     retryable: true,
@@ -1776,8 +1853,32 @@ export function normalizeV3LineupFetchError(error, now = new Date()) {
     originalErrorCode: rawCode,
     parseStage: error?.parseStage || validation.parseStage || "official_lineup"
   });
+  const originalDiagnostics = [error?.diagnostics, error?.workflowDiagnostics]
+    .find((value) => value && typeof value === "object" && !Array.isArray(value)) || {};
+  const preservedDiagnostics = {};
+  for (const key of ["artifactCreated", "completedWithoutCandidate"]) {
+    if (typeof originalDiagnostics[key] === "boolean") preservedDiagnostics[key] = originalDiagnostics[key];
+  }
+  for (const key of ["candidateCount", "totalCandidatePlayerCount"]) {
+    if (Number.isInteger(Number(originalDiagnostics[key])) && Number(originalDiagnostics[key]) >= 0) {
+      preservedDiagnostics[key] = Number(originalDiagnostics[key]);
+    }
+  }
+  for (const key of ["sourceSelectionStage", "sourceSelectionReason", "parserStage", "parserReason", "validationReason"]) {
+    if (typeof originalDiagnostics[key] === "string" && originalDiagnostics[key]) {
+      preservedDiagnostics[key] = originalDiagnostics[key].slice(0, 120);
+    }
+  }
+  if (Object.keys(preservedDiagnostics).length) normalized.diagnostics = preservedDiagnostics;
   normalized.validation = validation;
   normalized.upstreamUrl = error?.upstreamUrl || null;
+  if (Number(error?.httpStatus) > 0) normalized.httpStatus = Number(error.httpStatus);
+  if (Number(error?.upstreamStatus) > 0) normalized.upstreamStatus = Number(error.upstreamStatus);
+  if (Number(error?.externalStatus) > 0) normalized.externalStatus = Number(error.externalStatus);
+  const npbDiagnostics = sanitizeNpbLineupDiagnostics(error?.npbDiagnostics);
+  if (npbDiagnostics) normalized.npbDiagnostics = npbDiagnostics;
+  const parserDiagnostics = sanitizeLineupParserDiagnostics(error?.parserDiagnostics || npbDiagnostics?.parserDiagnostics);
+  if (parserDiagnostics) normalized.parserDiagnostics = parserDiagnostics;
   return normalized;
 }
 
@@ -2360,7 +2461,8 @@ function sanitizeLineupValidationDetails(details = {}) {
     "expectedCount", "parsedCount", "resolvedPlayerCount", "validPositionCount",
     "missingPositionCount", "duplicateBattingOrderCount", "duplicatePlayerCount",
     "battingOrderMin", "battingOrderMax", "parsedHomeCount", "parsedAwayCount",
-    "expectedHomeCount", "expectedAwayCount", "httpStatus"
+    "expectedHomeCount", "expectedAwayCount", "httpStatus", "extractedHomePlayerCount",
+    "extractedAwayPlayerCount", "totalCandidatePlayerCount"
   ];
   const stringKeys = ["parseStage", "reason", "validationReason", "sourceUrlHost"];
   const result = {};
@@ -2381,7 +2483,36 @@ function sanitizeLineupValidationDetails(details = {}) {
     result.battingOrderRange = { min: result.battingOrderMin ?? null, max: result.battingOrderMax ?? null };
   }
   if (typeof details.retryable === "boolean") result.retryable = details.retryable;
+  if (typeof details.rawLineupSectionFound === "boolean") result.rawLineupSectionFound = details.rawLineupSectionFound;
   if (typeof details.nextAttemptAt === "string" && details.nextAttemptAt) result.nextAttemptAt = details.nextAttemptAt.slice(0, 40);
+  return Object.keys(result).length ? result : null;
+}
+
+function sanitizeLineupParserDiagnostics(details = {}) {
+  if (!details || typeof details !== "object" || Array.isArray(details)) return null;
+  const parserStage = details.parserStage || details.parseStage || details.failedAt;
+  const parserReason = details.parserReason || details.validationReason || details.validationError || details.reason || details.errorCode;
+  const homeCount = details.extractedHomePlayerCount ?? details.parsedHomeCount ?? details.foundRows;
+  const awayCount = details.extractedAwayPlayerCount ?? details.parsedAwayCount;
+  const totalCount = details.totalCandidatePlayerCount ?? details.candidateCount ?? details.parsedCount ?? homeCount;
+  const result = {};
+  if (typeof parserStage === "string" && parserStage) result.parserStage = parserStage.slice(0, 80);
+  if (typeof parserReason === "string" && parserReason) result.parserReason = parserReason.slice(0, 120);
+  if (typeof details.rawLineupSectionFound === "boolean") result.rawLineupSectionFound = details.rawLineupSectionFound;
+  else if (typeof details.foundOrderHeading === "boolean") result.rawLineupSectionFound = details.foundOrderHeading;
+  for (const [key, value] of [
+    ["extractedHomePlayerCount", homeCount],
+    ["extractedAwayPlayerCount", awayCount],
+    ["totalCandidatePlayerCount", totalCount]
+  ]) {
+    if (Number.isFinite(Number(value)) && Number(value) >= 0) result[key] = Number(value);
+  }
+  if (Array.isArray(details.rejectReasons)) {
+    result.rejectReasons = details.rejectReasons
+      .filter((reason) => typeof reason === "string")
+      .slice(0, 20)
+      .map((reason) => reason.slice(0, 160));
+  }
   return Object.keys(result).length ? result : null;
 }
 
@@ -2428,13 +2559,18 @@ function sanitizeWorkflowExecutionDiagnostics(details = {}) {
   ];
   const stringKeys = [
     "claimedJobType", "resolvedNpbGameCode", "lineupSourceUrl", "lineupParseStage",
-    "lineupAttemptedUrl", "lineupFinalSelectedUrl", "lineupOriginalStoredGameCode", "lineupResolvedScorePageCode",
+    "lineupAttemptedUrl", "lineupFinalSelectedUrl", "lineupSourceIndexUrl", "lineupOriginalStoredGameCode", "lineupResolvedScorePageCode",
+    "lineupResolutionErrorCode",
+    "sourceSelectionStage", "sourceSelectionReason", "parserReason", "validationReason",
     "lineupDataClassification", "dataNotAnnouncedReason", "rosterResolutionStage", "rosterResolvedBy",
     "rosterMasterResolutionReasonCode", "rosterMasterUnresolvedNames",
     "rosterSourceCacheStatus", "rosterSourceFetchedAt"
   ];
   for (const key of numericKeys) {
     if (Number.isInteger(Number(details[key])) && Number(details[key]) > 0) result[key] = Number(details[key]);
+  }
+  for (const key of ["candidateCount", "totalCandidatePlayerCount"]) {
+    if (Number.isInteger(Number(details[key])) && Number(details[key]) >= 0) result[key] = Number(details[key]);
   }
   for (const key of stringKeys) {
     if (typeof details[key] === "string" && details[key]) result[key] = details[key].slice(0, key === "lineupSourceUrl" ? 240 : 120);
@@ -2475,6 +2611,11 @@ function sanitizeWorkflowExecutionDiagnostics(details = {}) {
       indexFallbackUsed: lineupResolution.indexFallbackUsed === true
     };
   }
+  const lineupParser = details.lineupParserDiagnostics || details.parserDiagnostics;
+  const lineupParserDiagnostics = sanitizeLineupParserDiagnostics(lineupParser);
+  if (lineupParserDiagnostics) result.lineupParserDiagnostics = lineupParserDiagnostics;
+  if (typeof details.artifactCreated === "boolean") result.artifactCreated = details.artifactCreated;
+  if (typeof details.completedWithoutCandidate === "boolean") result.completedWithoutCandidate = details.completedWithoutCandidate;
   const comparison = details.sourceSnapshotComparison || details.rosterSourceSnapshotComparison;
   if (comparison && typeof comparison === "object" && !Array.isArray(comparison)) {
     result.sourceSnapshotComparison = {
@@ -2513,7 +2654,10 @@ function getWorkflowExecutionDiagnostics({ job = null, target = null, result = n
     if (target?.gameCode) diagnostics.resolvedNpbGameCode = String(target.gameCode);
     if (/^https:\/\/npb\.jp\//i.test(sourceUrl)) diagnostics.lineupSourceUrl = sourceUrl;
     diagnostics.lineupHttpStatus = Number(error?.upstreamStatus || error?.httpStatus || error?.externalStatus || 0);
-    const lineupResolution = error?.npbDiagnostics || result?.npbDiagnostics || null;
+    const lineupResolution = error?.npbDiagnostics
+      || error?.diagnostics?.npbDiagnostics
+      || result?.npbDiagnostics
+      || null;
     if (lineupResolution) {
       diagnostics.lineupNpbResolution = lineupResolution;
       diagnostics.lineupAttemptedUrl = lineupResolution.attemptedUrl || "";
@@ -2528,6 +2672,15 @@ function getWorkflowExecutionDiagnostics({ job = null, target = null, result = n
       diagnostics.lineupFallbackCandidateCount = lineupResolution.fallbackCandidateCount;
       diagnostics.lineupFallbackRejectReasons = lineupResolution.fallbackRejectReasons || [];
     }
+    const lineupParserDiagnostics = error?.parserDiagnostics
+      || error?.diagnostics?.lineupParserDiagnostics
+      || error?.diagnostics?.parserDiagnostics
+      || result?.parserDiagnostics
+      || result?.lineupParserDiagnostics
+      || lineupResolution?.parserDiagnostics;
+    if (lineupParserDiagnostics) diagnostics.lineupParserDiagnostics = lineupParserDiagnostics;
+    if (typeof error?.diagnostics?.artifactCreated === "boolean") diagnostics.artifactCreated = error.diagnostics.artifactCreated;
+    if (typeof error?.diagnostics?.completedWithoutCandidate === "boolean") diagnostics.completedWithoutCandidate = error.diagnostics.completedWithoutCandidate;
     diagnostics.lineupParseStage = String(error?.parseStage || (result ? "official_lineup" : ""));
     diagnostics.lineupDataClassification = result?.reused
       ? "stored"
@@ -10848,6 +11001,28 @@ export function isBeforeGameStart(startAt, now = new Date()) {
     && current.getTime() < start.getTime();
 }
 
+export function getV3LateLineupFetchWindowDecision({ startAt, now = new Date() } = {}) {
+  const start = startAt instanceof Date ? startAt : new Date(startAt);
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(current.getTime())) {
+    return { available: false, allowed: false, reasonCode: "LINEUP_FETCH_LATE_WINDOW_UNAVAILABLE", deadline: null };
+  }
+  const deadline = new Date(start.getTime() + V3_LATE_LINEUP_FETCH_WINDOW_MS);
+  if (current.getTime() > deadline.getTime()) {
+    return { available: true, allowed: false, reasonCode: "LINEUP_FETCH_LATE_WINDOW_EXPIRED", deadline: deadline.toISOString() };
+  }
+  return { available: true, allowed: true, reasonCode: null, deadline: deadline.toISOString() };
+}
+
+export function shouldSkipV3LineupFetchAfterStart({ source = "legacy", phase = "provisional", startAt, now = new Date() } = {}) {
+  // Legacy pregame automation intentionally stops provisional capture after
+  // first pitch. V3 late recovery must still fetch the official page so the
+  // formal lineup artifact can be created without manual intervention.
+  return phase !== "final"
+    && source !== "v3"
+    && !isBeforeGameStart(startAt, now);
+}
+
 function assertOfficialLineupSaveAllowed(gameId, now = new Date()) {
   const identity = getGameIdentityForPregame(gameId);
   if (!identity) {
@@ -10930,14 +11105,38 @@ export async function fetchNpbWorkerJson(env, params) {
     }
     if (!response.ok || !payload?.ok) {
       const upstreamCode = payload?.code || (response.status === 422 ? "NPB_RESPONSE_INVALID" : "NPB_HTTP_ERROR");
+      const normalizedUpstreamCode = String(upstreamCode).toUpperCase();
+      const parserRejected = params?.mode === "lineup" && [
+        "LINEUP_INVALID",
+        "LINEUP_INVALID_PLAYER_COUNT",
+        "LINEUP_INVALID_POSITION",
+        "LINEUP_DUPLICATE_PLAYER",
+        "LINEUP_PLAYER_RESOLUTION_FAILED",
+        "LINEUP_PARSE_FAILED"
+      ].includes(normalizedUpstreamCode);
+      const sourceSelectionRejected = params?.mode === "lineup"
+        && normalizedUpstreamCode === "NPB_SCORE_PAGE_AMBIGUOUS";
+      const artifactRejected = parserRejected || sourceSelectionRejected;
       throw createPregameError(upstreamCode, payload?.error || "NPB取得Workerがエラーを返しました。", {
         httpStatus: response.status,
         upstreamStatus: response.status,
         externalStatus: payload?.httpStatus,
         contentType: response.headers.get("content-type") || "",
         upstreamUrl: payload?.sourceUrl,
-        npbDiagnostics: payload?.diagnostics,
-        retryable: upstreamCode === "EXTERNAL_FETCH_DISABLED",
+        npbDiagnostics: {
+          ...(payload?.diagnostics && typeof payload.diagnostics === "object" ? payload.diagnostics : {}),
+          ...(payload?.debug && typeof payload.debug === "object" ? { parserDiagnostics: payload.debug } : {})
+        },
+        ...(artifactRejected ? {
+          artifactCreated: false,
+          completedWithoutCandidate: true,
+          candidateCount: 0,
+          totalCandidatePlayerCount: 0,
+          ...(sourceSelectionRejected
+            ? { sourceSelectionStage: "resolve_official_score_page", sourceSelectionReason: normalizedUpstreamCode }
+            : { parserStage: "npb_worker_validation", parserReason: normalizedUpstreamCode, validationReason: normalizedUpstreamCode })
+        } : {}),
+        retryable: artifactRejected || upstreamCode === "EXTERNAL_FETCH_DISABLED",
         ...upstreamDetails
       });
     }
@@ -10976,8 +11175,25 @@ function createPregameError(code, message, details = {}) {
   if (typeof details.parseStage === "string" && details.parseStage) error.parseStage = details.parseStage.slice(0, 80);
   const npbDiagnostics = sanitizeNpbLineupDiagnostics(details.npbDiagnostics);
   if (npbDiagnostics) error.npbDiagnostics = npbDiagnostics;
+  const parserDiagnostics = sanitizeLineupParserDiagnostics(
+    details.parserDiagnostics || npbDiagnostics?.parserDiagnostics
+  );
+  if (parserDiagnostics) error.parserDiagnostics = parserDiagnostics;
   const validation = sanitizeLineupValidationDetails(details.validation);
   if (validation) error.validation = validation;
+  const diagnostics = {};
+  for (const key of ["artifactCreated", "completedWithoutCandidate"]) {
+    if (typeof details[key] === "boolean") diagnostics[key] = details[key];
+  }
+  for (const key of ["candidateCount", "totalCandidatePlayerCount"]) {
+    if (Number.isFinite(Number(details[key])) && Number(details[key]) >= 0) diagnostics[key] = Number(details[key]);
+  }
+  for (const key of ["sourceSelectionStage", "sourceSelectionReason", "parserStage", "parserReason", "validationReason"]) {
+    if (typeof details[key] === "string" && details[key]) diagnostics[key] = details[key].slice(0, 120);
+  }
+  if (Object.keys(diagnostics).length) {
+    error.diagnostics = diagnostics;
+  }
   return error;
 }
 
@@ -11011,6 +11227,10 @@ function sanitizeNpbLineupDiagnostics(details) {
     }));
   }
   if (typeof details.indexFallbackUsed === "boolean") result.indexFallbackUsed = details.indexFallbackUsed;
+  const parserDiagnostics = sanitizeLineupParserDiagnostics(
+    details.parserDiagnostics || details.parser || details.debug
+  );
+  if (parserDiagnostics) result.parserDiagnostics = parserDiagnostics;
   return Object.keys(result).length ? result : null;
 }
 
@@ -11025,7 +11245,7 @@ function normalizeRosterForSnapshot(players) {
   return normalized;
 }
 
-function createOfficialLineupFromNpb(lineup) {
+export function createOfficialLineupFromNpb(lineup) {
   const parsedCount = Array.isArray(lineup) ? lineup.length : 0;
   const validation = {
     parseStage: "official_lineup",
@@ -11039,14 +11259,26 @@ function createOfficialLineupFromNpb(lineup) {
     duplicateBattingOrderCount: 0,
     duplicatePlayerCount: 0,
     battingOrderMin: null,
-    battingOrderMax: null
+    battingOrderMax: null,
+    rawLineupSectionFound: Array.isArray(lineup),
+    extractedHomePlayerCount: parsedCount,
+    extractedAwayPlayerCount: null,
+    totalCandidatePlayerCount: parsedCount
   };
-  const invalid = (code, error, extra = {}) => ({
-    ok: false,
-    code,
-    error,
-    validation: sanitizeLineupValidationDetails({ ...validation, ...extra, validationReason: code })
-  });
+  const invalid = (code, error, extra = {}) => {
+    const details = { ...validation, ...extra, validationReason: code };
+    return {
+      ok: false,
+      code,
+      error,
+      validation: sanitizeLineupValidationDetails(details),
+      parserDiagnostics: sanitizeLineupParserDiagnostics({
+        ...details,
+        parserStage: validation.parseStage,
+        parserReason: code
+      })
+    };
+  };
   if (!Array.isArray(lineup) || lineup.length !== SCORING_LINEUP_SIZE) {
     return invalid("LINEUP_INVALID_PLAYER_COUNT", "NPBのスタメン人数が9人ではありません。");
   }
@@ -11097,11 +11329,27 @@ function createOfficialLineupFromNpb(lineup) {
     });
   }
   const sanitized = sanitizeActualLineupForScoring(result, { allowUnresolvedPlayer: true });
-  return sanitized.ok ? { ok: true, lineup: sanitized.lineup, validation: { ...validation, valid: true, unresolvedPlayerCount: sanitized.lineup.filter((row) => !row.playerId).length } } : {
-    ...invalid("LINEUP_INVALID_POSITION", sanitized.error || "NPBの守備位置を検証できません。", {
+  if (!sanitized.ok) {
+    return invalid("LINEUP_INVALID_POSITION", sanitized.error || "NPBの守備位置を検証できません。", {
       resolvedPlayerCount: result.length,
       validPositionCount: result.length,
       missingPositionCount: 1
+    });
+  }
+  const successValidation = {
+    ...validation,
+    valid: true,
+    unresolvedPlayerCount: sanitized.lineup.filter((row) => !row.playerId).length,
+    validationReason: "VALID"
+  };
+  return {
+    ok: true,
+    lineup: sanitized.lineup,
+    validation: successValidation,
+    parserDiagnostics: sanitizeLineupParserDiagnostics({
+      ...successValidation,
+      parserStage: validation.parseStage,
+      parserReason: "VALID"
     })
   };
 }
@@ -11664,7 +11912,12 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
   }
   const identity = identityOverride;
   if (!isV3) await ensurePregameAutomationRow(env.AUTH_DB, identity, now);
-  if (isFinalCapture ? now < identity.finalLineupFetchAt : !isBeforeGameStart(identity.startAt, now)) {
+  if (isFinalCapture ? now < identity.finalLineupFetchAt : shouldSkipV3LineupFetchAfterStart({
+    source,
+    phase,
+    startAt: identity.startAt,
+    now
+  })) {
     // 試合開始後に残った仮スタメンjobは「未発表」ではない。
     // executorがfinal_lineup_fetchを後続作成できるよう、正常な引き継ぎ結果にする。
     return { status: isFinalCapture ? "not_due" : "superseded_after_start", superseded: !isFinalCapture };
@@ -11678,18 +11931,25 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
       homeTeam: identity.game.homeTeam,
       awayTeam: identity.game.awayTeam,
       startAt: identity.startAt.toISOString(),
-      venue: identity.game.venue
+      venue: identity.game.venue,
+      debug: isV3 ? "1" : undefined
     };
     const payload = identityOverride?.sourceUrl
       ? await fetchNpbWorkerJson(env, lineupFetchParams)
-      : await fetchNpbWorkerJson(env, { mode: "lineup", date: identity.game.date, gameCode: identity.gameCode });
+      : await fetchNpbWorkerJson(env, { mode: "lineup", date: identity.game.date, gameCode: identity.gameCode, debug: isV3 ? "1" : undefined });
     const actual = createOfficialLineupFromNpb(payload.lineup);
     if (!actual.ok) {
       throw createPregameError(actual.code || "LINEUP_PARSE_FAILED", actual.error, {
         parseStage: "official_lineup",
         validation: { ...actual.validation, detectedTeams: payload.team ? [String(payload.team)] : [] },
         upstreamUrl: payload.sourceUrl,
-        npbDiagnostics: payload.diagnostics,
+        parserDiagnostics: actual.parserDiagnostics,
+        artifactCreated: false,
+        completedWithoutCandidate: true,
+        npbDiagnostics: {
+          ...(payload.diagnostics && typeof payload.diagnostics === "object" ? payload.diagnostics : {}),
+          ...(payload.debug && typeof payload.debug === "object" ? { parserDiagnostics: payload.debug } : {})
+        },
         upstreamMode: "lineup"
       });
     }
@@ -11700,7 +11960,16 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
         validation: actual.validation || null,
         source
       });
-      return { status: "provisional", sourceUrl: payload.sourceUrl, lineup: actual.lineup, detectedAt: detectedAt.toISOString(), lineupRevision: revision, npbDiagnostics: payload.diagnostics || null };
+      return {
+        status: "provisional",
+        sourceUrl: payload.sourceUrl,
+        lineup: actual.lineup,
+        detectedAt: detectedAt.toISOString(),
+        lineupRevision: revision,
+        lineupValidation: actual.validation || null,
+        parserDiagnostics: actual.parserDiagnostics || null,
+        npbDiagnostics: payload.diagnostics || null
+      };
     }
     const revision = await saveLineupCandidateRevision(env.AUTH_DB, {
       gameId,
@@ -11732,7 +12001,15 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
           WHERE game_id = ?2`
       ).bind(now.toISOString(), gameId).run();
     }
-    return { status: "captured", sourceUrl: payload.sourceUrl, autoScoring: serializeGameLineup(record), lineupRevision: revision, npbDiagnostics: payload.diagnostics || null };
+    return {
+      status: "captured",
+      sourceUrl: payload.sourceUrl,
+      autoScoring: serializeGameLineup(record),
+      lineupRevision: revision,
+      lineupValidation: actual.validation || null,
+      parserDiagnostics: actual.parserDiagnostics || null,
+      npbDiagnostics: payload.diagnostics || null
+    };
   } catch (error) {
     if (!isV3) {
       try {

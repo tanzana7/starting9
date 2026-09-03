@@ -15,6 +15,17 @@
   }
 
   function createAdminV3ManualLineupRenderer({ escapeHtml }) {
+    function renderCandidates(catalog, row, index) {
+      const players = Array.isArray(catalog) ? catalog : [];
+      const search = String(row?.search || "").trim().toLocaleLowerCase();
+      const candidates = players.filter((player) => !search
+        || `${player.playerName} ${player.uniformNumber}`.toLocaleLowerCase().includes(search)).slice(0, 6);
+      const selected = players.find((player) => player.playerId === row?.playerId);
+      return candidates.length
+        ? candidates.map((player) => `<button type="button" class="manual-lineup-candidate ${selected?.playerId === player.playerId ? "selected" : ""}" data-v3-manual-lineup-player="${escapeHtml(String(index))}" data-v3-manual-lineup-player-id="${escapeHtml(player.playerId)}">${escapeHtml(player.playerName)} <small>#${escapeHtml(player.uniformNumber)}</small></button>`).join("")
+        : `<span class="muted">候補がありません</span>`;
+    }
+
     function render(game, details, state = {}) {
       const lineupDetails = details?.lineup || {};
       const catalog = Array.isArray(lineupDetails.playerCatalog) ? lineupDetails.playerCatalog : [];
@@ -24,23 +35,17 @@
         || Boolean(lineupDetails.finalRevision?.isFinal)
         || Boolean(details?.publication?.publication?.publishedAt);
       const cards = rows.map((row, index) => {
-        const search = String(row.search || "").trim().toLocaleLowerCase();
-        const candidates = catalog.filter((player) => !search
-          || `${player.playerName} ${player.uniformNumber}`.toLocaleLowerCase().includes(search)).slice(0, 6);
         const selected = catalog.find((player) => player.playerId === row.playerId);
-        const candidateMarkup = candidates.length
-          ? candidates.map((player) => `<button type="button" class="manual-lineup-candidate ${selected?.playerId === player.playerId ? "selected" : ""}" data-v3-manual-lineup-player="${escapeHtml(String(index))}" data-v3-manual-lineup-player-id="${escapeHtml(player.playerId)}">${escapeHtml(player.playerName)} <small>#${escapeHtml(player.uniformNumber)}</small></button>`).join("")
-          : `<span class="muted">候補がありません</span>`;
         const positionOptions = POSITIONS.map((position) => `<option value="${escapeHtml(position)}" ${row.position === position ? "selected" : ""}>${escapeHtml(position || "守備位置を選択")}</option>`).join("");
         const orderOptions = Array.from({ length: 9 }, (_, order) => order + 1).map((order) => `<option value="${order}" ${Number(row.battingOrder) === order ? "selected" : ""}>${order}番</option>`).join("");
-        return `<article class="manual-lineup-card"><div class="manual-lineup-card-heading"><strong>${index + 1}人目</strong><span>${escapeHtml(selected?.playerName || "未選択")}</span></div><label>選手を検索<input type="search" value="${escapeHtml(row.search || "")}" placeholder="名前または背番号" data-v3-manual-lineup-search="${index}" ${locked ? "disabled" : ""}></label><div class="manual-lineup-candidates" aria-label="選手候補">${candidateMarkup}</div><div class="manual-lineup-card-fields"><label>打順<select data-v3-manual-lineup-order="${index}" ${locked ? "disabled" : ""}>${orderOptions}</select></label><label>守備位置<select data-v3-manual-lineup-position="${index}" ${locked ? "disabled" : ""}>${positionOptions}</select></label></div></article>`;
+        return `<article class="manual-lineup-card"><div class="manual-lineup-card-heading"><strong>${index + 1}人目</strong><span>${escapeHtml(selected?.playerName || "未選択")}</span></div><label>選手を検索<input type="search" value="${escapeHtml(row.search || "")}" placeholder="名前または背番号" data-v3-manual-lineup-search="${index}" ${locked ? "disabled" : ""}></label><div class="manual-lineup-candidates" aria-label="選手候補" data-v3-manual-lineup-candidates="${index}">${renderCandidates(catalog, row, index)}</div><div class="manual-lineup-card-fields"><label>打順<select data-v3-manual-lineup-order="${index}" ${locked ? "disabled" : ""}>${orderOptions}</select></label><label>守備位置<select data-v3-manual-lineup-position="${index}" ${locked ? "disabled" : ""}>${positionOptions}</select></label></div></article>`;
       }).join("");
       const message = state.error ? `<p class="manual-lineup-message error">${escapeHtml(state.error)}</p>` : state.message ? `<p class="manual-lineup-message success">${escapeHtml(state.message)}</p>` : "";
       const disabled = locked || state.loading;
       return `<section class="manual-lineup-editor" data-v3-manual-lineup-editor><div class="manual-lineup-header"><div><h3>Fighters 手動スタメン</h3><p>対象チーム1チーム・9人を選択します。選手名はマスター照合され、未登録名や重複は保存できません。</p></div><span class="manual-lineup-team">${escapeHtml(lineupDetails.managedTeam?.name || "Fighters")}</span></div><div class="manual-lineup-grid">${cards}</div><label class="manual-lineup-reason">入力理由<textarea rows="2" maxlength="240" placeholder="例: 公式発表を確認" data-v3-manual-lineup-reason ${disabled ? "disabled" : ""}>${escapeHtml(state.reason || "")}</textarea></label><label class="manual-lineup-confirm"><input type="checkbox" data-v3-manual-lineup-confirm ${state.confirmed ? "checked" : ""} ${disabled ? "disabled" : ""}> 入力内容を確認しました</label><div class="manual-lineup-actions"><button type="button" data-v3-manual-lineup-save ${disabled ? "disabled" : ""}>下書きを保存</button><button type="button" class="primary-button" data-v3-manual-lineup-finalize ${disabled || !state.latestRevision ? "disabled" : ""}>正式スタメンを確定</button></div>${locked ? `<p class="muted">採点開始後・公開後はスタメンを変更できません。</p>` : `<p class="muted">確定後はスコアjobを手動投入せず、次回の正式V3 Cronが採点へ進めます。</p>`}${message}</section>`;
     }
 
-    return Object.freeze({ createBlankRows, render });
+    return Object.freeze({ createBlankRows, renderCandidates, render });
   }
 
   global.Starting9AdminV3 = global.Starting9AdminV3 || {};

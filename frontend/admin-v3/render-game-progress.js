@@ -402,14 +402,32 @@
       const allGames = listItems(payload?.games, "games");
       const todayGames = filterGames(allGames, "today");
       const allJobs = allGames.flatMap((game) => listItems(game?.jobs, "jobs"));
-      const attention = allGames.filter(gameHasAttention).length;
-      const failed = allJobs.filter((job) => job.status === "failed").length;
-      const retry = allJobs.filter((job) => job.status === "retry_wait").length;
-      const pendingIdentity = allGames.filter((game) => ["pending", "retry_wait"].includes(game.npbIdentityState)).length;
+      const todayJobs = todayGames.flatMap((game) => listItems(game?.jobs, "jobs"));
+      const historicalGames = allGames.filter((game) => !todayGames.includes(game));
+      const historicalJobs = historicalGames.flatMap((game) => listItems(game?.jobs, "jobs"));
+      const v4SemiAuto = payload?.automationMode?.isV4SemiAuto === true;
+      const operationAttention = (game) => {
+        if (!v4SemiAuto) return gameHasAttention(game);
+        const state = String(game?.state?.state || "");
+        const diagnostics = game?.workflowDiagnostics || {};
+        const jobs = listItems(game?.jobs, "jobs");
+        return ["manual_action_required"].includes(state)
+          || ["unresolved", "manual_action_required"].includes(String(game?.npbIdentityState || ""))
+          || diagnostics.predictionClose?.overdue === true
+          || diagnostics.predictionClose?.stateMismatch === true
+          || diagnostics.completedStateMismatches?.length > 0
+          || diagnostics.identity?.blocking === true
+          || jobs.some((job) => ["failed", "retry_wait", "manual_action_required"].includes(String(job.status || "")));
+      };
+      const attention = todayGames.filter(operationAttention).length;
+      const failed = todayJobs.filter((job) => job.status === "failed").length;
+      const retry = todayJobs.filter((job) => job.status === "retry_wait").length;
+      const historicalFailed = historicalJobs.filter((job) => job.status === "failed").length;
+      const pendingIdentity = todayGames.filter((game) => ["pending", "retry_wait"].includes(game.npbIdentityState)).length;
       const completedToday = todayGames.reduce((count, game) => count + listItems(game?.jobs, "jobs").filter((job) => job.status === "completed" && String(job.completed_at || "").slice(0, 10) === jstDate()).length, 0);
-      const publicationWait = allGames.filter((game) => game.state?.state === "ranked").length;
+      const publicationWait = todayGames.filter((game) => game.state?.state === "ranked").length;
       const cards = todayGames.length ? todayGames.map((game) => renderGameSummary(game)).join("") : `<div class="today-empty">本日の試合はありません</div>`;
-      return `<div class="view-heading"><div><h2>ダッシュボード</h2><p>本日の試合と要対応項目を最初に確認できます。</p></div></div>${renderTodayOps(payload, games)}<section class="today-card"><h3>本日の試合</h3>${cards}</section><section class="summary-grid">${renderSummaryCard("要対応", attention, attention ? "attention" : "ok")}${renderSummaryCard("失敗job", failed, failed ? "error" : "ok")}${renderSummaryCard("retry_wait", retry, retry ? "attention" : "ok")}${renderSummaryCard("掲載待ち", pendingIdentity, pendingIdentity ? "attention" : "ok")}${renderSummaryCard("本日の完了job", completedToday)}${renderSummaryCard("公開待ち", publicationWait, publicationWait ? "attention" : "ok")}</section><section class="v3-panel"><div class="view-heading"><div><h3>今日の自動処理</h3><p>詳細は試合進行メニューから確認できます。</p></div></div>${todayGames.length ? todayGames.map((game) => `<div class="compact-meta"><strong>${escapeHtml(game.homeTeam)} vs ${escapeHtml(game.awayTeam)}</strong><span>次: ${escapeHtml(nextActionText(game))}</span><span>${escapeHtml(gameHasAttention(game) ? "要対応" : "正常")}</span></div>`).join("") : "<span class=muted>今日の処理履歴はありません。</span>"}</section>`;
+      return `<div class="view-heading"><div><h2>ダッシュボード</h2><p>今日の運営状態と、過去試合の残留jobを分けて確認できます。</p></div></div>${renderTodayOps(payload, games)}<section class="today-card"><h3>本日の試合</h3>${cards}</section><section class="summary-grid">${renderSummaryCard("今日の要対応", attention, attention ? "attention" : "ok")}${renderSummaryCard("今日の失敗job", failed, failed ? "error" : "ok")}${renderSummaryCard("今日のretry_wait", retry, retry ? "attention" : "ok")}${renderSummaryCard("過去の失敗job", historicalFailed, historicalFailed ? "attention" : "ok")}${renderSummaryCard("今日の掲載待ち", pendingIdentity, pendingIdentity ? "attention" : "ok")}${renderSummaryCard("本日の完了job", completedToday)}${renderSummaryCard("今日の公開待ち", publicationWait, publicationWait ? "attention" : "ok")}</section><section class="v3-panel"><div class="view-heading"><div><h3>今日の自動処理</h3><p>詳細は試合進行メニューから確認できます。</p></div></div>${todayGames.length ? todayGames.map((game) => `<div class="compact-meta"><strong>${escapeHtml(game.homeTeam)} vs ${escapeHtml(game.awayTeam)}</strong><span>次: ${escapeHtml(nextActionText(game))}</span><span>${escapeHtml(operationAttention(game) ? "要対応" : "正常")}</span></div>`).join("") : "<span class=muted>今日の処理履歴はありません。</span>"}</section>`;
     }
 
     function renderGamesView(games) {

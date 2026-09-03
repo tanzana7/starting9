@@ -40,6 +40,18 @@
     return String(value || "").replace(/[\s\u3000]/g, "");
   }
 
+  function getPlayerDetails(player) {
+    const source = typeof player === "object" && player !== null ? player : null;
+    const candidates = [source?.name, source?.playerName, source?.displayName, player];
+    const details = global.Starting9FightersPlayerDetails;
+    if (!details) return null;
+    for (const candidate of candidates) {
+      const detail = details[compactName(candidate)];
+      if (detail) return detail;
+    }
+    return null;
+  }
+
   function formatJapanesePlayerNameForDisplay(name, playerMeta = null) {
     const raw = String(name || "").trim();
     if (!raw) return raw;
@@ -129,4 +141,5 @@
   publicFrontend.getPlayerBattingHandedness = getPlayerBattingHandedness;
   publicFrontend.getPlayerBattingClass = getPlayerBattingClass;
   publicFrontend.getPlayerUniformNumber = getPlayerUniformNumber;
+  publicFrontend.getPlayerDetails = getPlayerDetails;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -49,6 +49,22 @@
       return `<span class="player-name${className ? ` ${className}` : ""}">${numberMarkup}${escapeHtml(player?.playerName || "")}</span>`;
     }
 
+    function playerDetailMarkup(player) {
+      const detail = global.Starting9Public?.getPlayerDetails?.(player);
+      if (!detail) return "";
+      const rows = [
+        ["背番号", detail.uniformNumber],
+        ["登録区分", detail.registrationType],
+        ["カテゴリ", detail.category],
+        ["生年月日", detail.birthDate],
+        ["身長/体重", detail.heightCm && detail.weightKg ? `${detail.heightCm}cm / ${detail.weightKg}kg` : ""],
+        ["投打", detail.throwingHand && detail.battingHand ? `${detail.throwingHand}投${detail.battingHand}打` : ""],
+        ["備考", detail.note]
+      ].filter(([, value]) => String(value || "").trim());
+      if (!rows.length) return "";
+      return `<details class="player-inline-details"><summary>詳細</summary><dl>${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl></details>`;
+    }
+
     function renderCandidates(catalog, row, index) {
       const players = Array.isArray(catalog) ? catalog : [];
       const search = String(row?.search || "").trim().toLocaleLowerCase();
@@ -56,7 +72,7 @@
         || `${player.playerName} ${player.uniformNumber}`.toLocaleLowerCase().includes(search)).slice(0, 6);
       const selected = players.find((player) => player.playerId === row?.playerId);
       return candidates.length
-        ? candidates.map((player) => `<button type="button" class="manual-lineup-candidate ${selected?.playerId === player.playerId ? "selected" : ""}" data-v3-manual-lineup-player="${escapeHtml(String(index))}" data-v3-manual-lineup-player-id="${escapeHtml(player.playerId)}">${playerName(player)}${player.manualRosterActive === false ? " <small>roster外（確認要）</small>" : ""}</button>`).join("")
+        ? candidates.map((player) => `<div class="manual-player-candidate-row"><button type="button" class="manual-lineup-candidate ${selected?.playerId === player.playerId ? "selected" : ""}" data-v3-manual-lineup-player="${escapeHtml(String(index))}" data-v3-manual-lineup-player-id="${escapeHtml(player.playerId)}">${playerName(player)}${player.manualRosterActive === false ? " <small>roster外（確認要）</small>" : ""}</button>${playerDetailMarkup(player)}</div>`).join("")
         : `<span class="muted">候補がありません</span>`;
     }
 
@@ -72,7 +88,7 @@
         const selected = catalog.find((player) => player.playerId === row.playerId);
         const positionOptions = POSITIONS.map((position) => `<option value="${escapeHtml(position)}" ${row.position === position ? "selected" : ""}>${escapeHtml(position || "守備位置を選択")}</option>`).join("");
         const orderOptions = Array.from({ length: 9 }, (_, order) => order + 1).map((order) => `<option value="${order}" ${Number(row.battingOrder) === order ? "selected" : ""}>${order}番</option>`).join("");
-        return `<article class="manual-lineup-card"><div class="manual-lineup-card-heading"><strong>${index + 1}人目</strong><span>${selected ? playerName(selected) : "未選択"}</span></div><label>選手を検索<input type="search" value="${escapeHtml(row.search || "")}" placeholder="名前または背番号" data-v3-manual-lineup-search="${index}" ${locked ? "disabled" : ""}></label><div class="manual-lineup-candidates" aria-label="選手候補" data-v3-manual-lineup-candidates="${index}">${renderCandidates(catalog, row, index)}</div><div class="manual-lineup-card-fields"><label>打順<select data-v3-manual-lineup-order="${index}" ${locked ? "disabled" : ""}>${orderOptions}</select></label><label>守備位置<select data-v3-manual-lineup-position="${index}" ${locked ? "disabled" : ""}>${positionOptions}</select></label></div></article>`;
+        return `<article class="manual-lineup-card"><div class="manual-lineup-card-heading"><strong>${index + 1}人目</strong><span>${selected ? playerName(selected) : "未選択"}</span>${selected ? playerDetailMarkup(selected) : ""}</div><label>選手を検索<input type="search" value="${escapeHtml(row.search || "")}" placeholder="名前または背番号" data-v3-manual-lineup-search="${index}" ${locked ? "disabled" : ""}></label><div class="manual-lineup-candidates" aria-label="選手候補" data-v3-manual-lineup-candidates="${index}">${renderCandidates(catalog, row, index)}</div><div class="manual-lineup-card-fields"><label>打順<select data-v3-manual-lineup-order="${index}" ${locked ? "disabled" : ""}>${orderOptions}</select></label><label>守備位置<select data-v3-manual-lineup-position="${index}" ${locked ? "disabled" : ""}>${positionOptions}</select></label></div></article>`;
       }).join("");
       const message = state.error ? `<p class="manual-lineup-message error">${escapeHtml(state.error)}</p>` : state.message ? `<p class="manual-lineup-message success">${escapeHtml(state.message)}</p>` : "";
       const disabled = locked || state.loading;

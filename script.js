@@ -5087,10 +5087,18 @@ function createPredictionSummary(prediction) {
         <span class="result-position-tile saved-position-chip is-${positionCategory}" aria-label="守備位置 ${escapeHtml(normalizedPosition || "未選択")}">
           ${escapeHtml(normalizedPosition || "－")}
         </span>
-        ${createPlayerNameHtml(lineupItem.player, "saved-lineup-name")}
+        <span class="saved-lineup-player-cell">
+          ${createPlayerNameHtml(lineupItem.player, "saved-lineup-name")}
+          ${createPlayerDetailTriggerHtml(lineupItem.player)}
+        </span>
       </span>
     `;
     list.appendChild(listItem);
+  });
+
+  list.addEventListener("click", (event) => {
+    const trigger = event.target.closest?.("[data-player-detail-only]");
+    if (trigger) showPlayerDetails("prediction", trigger.dataset.playerDetailOnly, { allowSelect: false });
   });
 
   wrapper.append(title, meta, tableHeader, list);
@@ -5405,9 +5413,11 @@ function getPlayerData(playerName) {
   const masterPlayer = players.find((player) => normalizePlayerKey(player.name) === playerKey) || null;
   const rosterPlayer = normalizeRosterEntries(state.publicRoster?.players).find((player) => normalizePlayerKey(player.name) === playerKey) || null;
   const sourcePlayer = source && playerKey ? source : null;
-  return masterPlayer && rosterPlayer
+  const mergedPlayer = masterPlayer && rosterPlayer
     ? { ...masterPlayer, ...rosterPlayer, ...sourcePlayer }
     : masterPlayer || rosterPlayer || sourcePlayer;
+  const playerDetails = publicFrontend.getPlayerDetails?.(mergedPlayer || rawName);
+  return playerDetails ? { ...(mergedPlayer || {}), ...playerDetails } : mergedPlayer;
 }
 
 function createPlayerCategoryBadgeHtml(playerName) {
@@ -5469,6 +5479,12 @@ function createPlayerLabelHtml(playerName) {
   return createPlayerNameHtml(playerName);
 }
 
+function createPlayerDetailTriggerHtml(playerName) {
+  const player = getPlayerData(playerName);
+  if (!player || !window.Starting9Public?.getPlayerDetails?.(player)) return "";
+  return `<button type="button" class="player-detail-inline-button" data-player-detail-only="${escapeHtml(player.name || playerName)}">詳細</button>`;
+}
+
 function createPlayerNameHtml(playerName, baseClass = "player-name") {
   const player = getPlayerData(playerName);
   const battingClass = window.Starting9Public?.getPlayerBattingClass?.(player) || "";
@@ -5505,7 +5521,7 @@ function showSlotPlayerDetails(pickerName, slot) {
   }
 }
 
-function showPlayerDetails(pickerName, playerName) {
+function showPlayerDetails(pickerName, playerName, { allowSelect = true } = {}) {
   const player = getPlayerData(playerName);
   const panel = document.getElementById(`${pickerName}PlayerDetails`);
 
@@ -5515,6 +5531,16 @@ function showPlayerDetails(pickerName, playerName) {
 
   const npbasePlayerUrl = getNpbasePlayerUrl(player);
   const positions = createPlayerPositionBadgesHtml(player.name);
+  const detailRows = [
+    ["背番号", player.uniformNumber],
+    ["登録区分", player.registrationType],
+    ["カテゴリ", player.category],
+    ["生年月日", player.birthDate],
+    ["身長/体重", player.heightCm && player.weightKg ? `${player.heightCm}cm / ${player.weightKg}kg` : ""],
+    ["投打", player.throwingHand && player.battingHand ? `${player.throwingHand}投${player.battingHand}打` : ""],
+    ["備考", player.note]
+  ].filter(([, value]) => String(value || "").trim());
+  const detailMeta = detailRows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
   panel.className = "player-detail-overlay";
   panel.setAttribute("aria-hidden", "false");
   panel.innerHTML = `
@@ -5527,8 +5553,7 @@ function showPlayerDetails(pickerName, playerName) {
         <button class="player-detail-close" type="button" aria-label="選手詳細を閉じる">×</button>
       </div>
       <dl class="player-detail-meta">
-        <div><dt>背番号</dt><dd>${escapeHtml(player.uniformNumber || "-")}</dd></div>
-        <div><dt>登録区分</dt><dd>${escapeHtml(player.registeredPosition || "未設定")}</dd></div>
+        ${detailMeta || `<div><dt>登録区分</dt><dd>${escapeHtml(player.registeredPosition || "未設定")}</dd></div>`}
       </dl>
       <div class="player-detail-positions">
         <strong>守備候補</strong>
@@ -5537,7 +5562,7 @@ function showPlayerDetails(pickerName, playerName) {
       <div class="player-detail-links">
         <a href="${escapeHtml(npbasePlayerUrl)}" target="_blank" rel="noopener noreferrer">選手成績を見る（NPBase）</a>
       </div>
-      <button class="primary-button player-detail-select" type="button">この選手を選択</button>
+      ${allowSelect ? '<button class="primary-button player-detail-select" type="button">この選手を選択</button>' : ""}
     </div>
   `;
   panel.classList.remove("hidden");

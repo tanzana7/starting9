@@ -3610,13 +3610,13 @@ function predictionsMatch(left, right) {
   return leftLineup === rightLineup;
 }
 
-async function savePredictionToAccount(prediction = state.prediction) {
+async function savePredictionToAccount(prediction = state.prediction, { allowAuthProbe = false } = {}) {
   if (!ensurePredictionEditingAllowed()) {
     return false;
   }
   const user = getPredictionAccountUser();
   const gameId = getCurrentGameId();
-  if (!user) {
+  if (!user && !allowAuthProbe) {
     return false;
   }
   if (!prediction || !gameId) {

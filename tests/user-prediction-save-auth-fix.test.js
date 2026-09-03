@@ -21,7 +21,7 @@ function createController() {
   return context.window.Starting9Public.createPublicPredictionFormController;
 }
 
-function createDeps({ user = null, waitForAuthInitialization, getPredictionAccountStatus } = {}) {
+function createDeps({ user = null, waitForAuthInitialization, getPredictionAccountStatus, savePredictionToAccount } = {}) {
   const calls = { localSave: 0, accountSave: 0, messages: [] };
   let currentUser = user;
   const deps = {
@@ -35,7 +35,7 @@ function createDeps({ user = null, waitForAuthInitialization, getPredictionAccou
     clearMessage: () => {},
     getLineupValues: () => Array.from({ length: 9 }, (_, index) => ({ order: index + 1, player: `選手${index + 1}`, position: "" })),
     validateLineup: () => "",
-    showMessage: () => {},
+    showMessage: (_id, message) => { if (message) calls.messages.push(message); },
     markDuplicateSlots: () => {},
     getCurrentGameId: () => "game-1",
     preserveDisplayedResult: () => {},
@@ -48,8 +48,9 @@ function createDeps({ user = null, waitForAuthInitialization, getPredictionAccou
     getPredictionAccountStatus: getPredictionAccountStatus || (() => ({ errorCode: "", errorStatus: 0 })),
     waitForAuthInitialization: waitForAuthInitialization || (() => Promise.resolve()),
     showPredictionSaveMessage: (message) => calls.messages.push(message),
-    savePredictionToAccount: async () => {
+    savePredictionToAccount: async (...args) => {
       calls.accountSave += 1;
+      if (typeof savePredictionToAccount === "function") return savePredictionToAccount(...args);
       return true;
     },
     storage: {
@@ -148,15 +149,46 @@ test("保存APIの401は認証状態を無効化し、credentials includeを維�
 
 test("変更した公開assetのcache busterを更新する", () => {
   assert.match(htmlSource, /auth\.js\?v=d1-read-limit-resilience-20260902&user-prediction-save-auth-fix-20260903/);
-  assert.match(htmlSource, /frontend\/public\/prediction-form\.js\?v=public-compliance-disclaimer-and-fetch-safety-1&user-prediction-save-auth-fix-20260903/);
-  assert.match(htmlSource, /script\.js\?v=public-position-menu-pc-narrow-clamp-1&user-prediction-save-auth-fix-20260903/);
+  assert.match(htmlSource, /frontend\/public\/prediction-form\.js\?v=public-compliance-disclaimer-and-fetch-safety-1&user-save-auth-unavailable-fix-20260903/);
+  assert.match(htmlSource, /script\.js\?v=public-position-menu-pc-narrow-clamp-1&user-save-auth-unavailable-fix-20260903/);
 });
 
-test("認証初期化失敗時は端末保存とアカウント保留を区別する", async () => {
+test("認証初期化失敗時も保存APIの成功をアカウント保存へ反映する", async () => {
   const create = createController();
   const { deps, calls } = createDeps({ getPredictionAccountStatus: () => ({ errorCode: "DB_UNAVAILABLE", errorStatus: 503 }) });
   await submit(create(deps).handleSubmit, deps);
-  assert.equal(calls.accountSave, 0);
-  assert.match(calls.messages[0], /認証サービスを確認できないため/);
+  assert.equal(calls.accountSave, 1);
+  assert.deepEqual(calls.messages, ["予想を保存しました。"]);
   assert.doesNotMatch(calls.messages[0], /ログインするとアカウントにも保存できます/);
+});
+
+test("認証確認不能時は保存APIを一度だけ試し、既存セッションの成功を反映する", async () => {
+  const create = createController();
+  let probeOptions = null;
+  const { deps, calls } = createDeps({
+    getPredictionAccountStatus: () => ({ errorCode: "AUTH_API_UNAVAILABLE", errorStatus: 0 }),
+    savePredictionToAccount: async (_prediction, options) => {
+      probeOptions = options;
+      return true;
+    }
+  });
+  await submit(create(deps).handleSubmit, deps);
+  assert.equal(calls.accountSave, 1);
+  assert.equal(probeOptions?.allowAuthProbe, true);
+  assert.deepEqual(calls.messages, ["予想を保存しました。"]);
+});
+
+test("認証確認不能時の保存API失敗は端末保存成功とアカウント保存成功を混同しない", async () => {
+  const create = createController();
+  const { deps, calls } = createDeps({
+    getPredictionAccountStatus: () => ({ errorCode: "D1_READ_LIMIT_EXCEEDED", errorStatus: 503 }),
+    savePredictionToAccount: async () => {
+      deps.state.predictionRemote.message = "端末には保存しましたが、データベースが一時的に混雑しています。";
+      return false;
+    }
+  });
+  await submit(create(deps).handleSubmit, deps);
+  assert.equal(calls.accountSave, 1);
+  assert.match(calls.messages[0], /データベースが一時的に混雑/);
+  assert.doesNotMatch(calls.messages[0], /予想を保存しました。$/);
 });

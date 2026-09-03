@@ -48,9 +48,18 @@
             : null;
           const authUnavailable = Number(authStatus?.errorStatus || 0) === 503
             || Boolean(authStatus?.errorCode && authStatus.errorCode !== "AUTH_REQUIRED");
-          deps.showPredictionSaveMessage(authUnavailable
-            ? "この端末に予想を保存しました。認証サービスを確認できないため、アカウント保存は保留です。"
-            : "この端末に予想を保存しました。ログインするとアカウントにも保存できます。");
+          if (authUnavailable) {
+            // 認証確認だけが失敗した場合は、既存セッションを保存APIで一度だけ判定します。
+            // API側の401/503/通信失敗をそのまま分類し、無限retryは行いません。
+            const savedToAccount = await deps.savePredictionToAccount(deps.state.prediction, { allowAuthProbe: true });
+            if (savedToAccount) {
+              deps.showPredictionSaveMessage("予想を保存しました。");
+            } else {
+              deps.showMessage("predictionError", deps.state.predictionRemote.message || "端末には保存しましたが、アカウント保存の結果を確認できませんでした。");
+            }
+          } else {
+            deps.showPredictionSaveMessage("この端末に予想を保存しました。ログインするとアカウントにも保存できます。");
+          }
           return;
         }
 

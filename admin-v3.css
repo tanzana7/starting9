@@ -294,6 +294,30 @@ button:disabled { cursor: wait; opacity: .65; }
 .manual-lineup-message { margin: 0; padding: 8px 10px; border-radius: 5px; overflow-wrap: anywhere; }
 .manual-lineup-message.error { color: #a22d2d; background: #fff5f5; border: 1px solid #efc3c3; }
 .manual-lineup-message.success { color: #17633c; background: #f1faf3; border: 1px solid #bfe1c8; }
+.manual-roster-editor { display: grid; gap: 12px; margin-top: 14px; padding: 14px; border: 1px solid #c8d8e5; border-radius: 7px; background: #fbfdff; }
+.manual-roster-header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.manual-roster-header h2 { margin: 0; color: #1d527c; font-size: 18px; }
+.manual-roster-header p { margin: 5px 0 0; color: #526477; font-size: 12px; }
+.manual-roster-team { flex: 0 0 auto; padding: 5px 8px; border-radius: 999px; color: #1d527c; background: #e8f2f8; font-size: 11px; font-weight: 700; }
+.manual-roster-notice { padding: 9px 10px; color: #705326; background: #fffaf0; border: 1px solid #e3c477; border-radius: 5px; font-size: 12px; }
+.manual-roster-search { display: grid; gap: 4px; color: #526477; font-size: 12px; font-weight: 700; }
+.manual-roster-search input, .manual-roster-row select, .manual-roster-row textarea { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid #b9c8d8; border-radius: 5px; padding: 7px 8px; color: #172033; background: #fff; }
+.manual-roster-candidates { display: grid; gap: 5px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.manual-roster-candidate { display: grid; gap: 3px; padding: 7px 8px; border: 1px solid #dbe5ee; border-radius: 5px; color: #1b5c8b; background: #f8fafc; text-align: left; cursor: pointer; }
+.manual-roster-candidate:disabled { cursor: default; opacity: .65; }
+.manual-roster-candidate small, .manual-roster-row small { color: #718197; }
+.manual-roster-list { display: grid; gap: 7px; }
+.manual-roster-list h3 { margin: 2px 0; color: #1d527c; font-size: 14px; }
+.manual-roster-row { display: grid; grid-template-columns: minmax(150px, 1.1fr) minmax(120px, .6fr) minmax(180px, 1fr) auto; gap: 8px; align-items: end; padding: 8px; border: 1px solid #dbe5ee; border-radius: 5px; background: #fff; }
+.manual-roster-row > div { display: grid; gap: 3px; min-width: 0; }
+.manual-roster-row label { display: grid; gap: 3px; color: #526477; font-size: 11px; font-weight: 700; }
+.manual-roster-row textarea { min-height: 36px; resize: vertical; }
+.manual-roster-confirm { display: flex; align-items: center; gap: 7px; color: #334a62; font-size: 12px; }
+.manual-roster-confirm input { width: auto; }
+.manual-roster-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.manual-roster-message { margin: 0; padding: 8px 10px; border-radius: 5px; overflow-wrap: anywhere; }
+.manual-roster-message.error { color: #a22d2d; background: #fff5f5; border: 1px solid #efc3c3; }
+.manual-roster-message.success { color: #17633c; background: #f1faf3; border: 1px solid #bfe1c8; }
 .manual-game-preview-loading { color: #1b5c8b; }
 .manual-game-preview-error { padding: 9px 11px; color: #a22d2d; background: #fff5f5; border: 1px solid #efc3c3; border-radius: 5px; overflow-wrap: anywhere; }
 .v35-derived-diagnostics { margin: 12px 0; padding: 10px 12px; border: 1px solid #c8d8e5; border-radius: 6px; background: #f7fafc; color: #31465a; }
@@ -371,6 +395,8 @@ button:disabled { cursor: wait; opacity: .65; }
   .ranking-game-picker-toolbar, .ranking-game-picker-row { grid-template-columns: 1fr; }
   .manual-game-preview-form, .manual-game-preview-grid { grid-template-columns: 1fr; }
   .manual-lineup-grid { grid-template-columns: 1fr; }
+  .manual-roster-candidates { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .manual-roster-row { grid-template-columns: 1fr; align-items: stretch; }
   .v35-stage-row { grid-template-columns: 1fr; gap: 2px; }
   .v35-derived-state-grid { grid-template-columns: 1fr; }
   .v35-shadow-plan-state { grid-template-columns: 1fr; }

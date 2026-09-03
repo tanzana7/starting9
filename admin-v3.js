@@ -12,7 +12,8 @@ if (!adminV3Modules?.createAdminV3State
   || !adminV3Modules?.createAdminV3RankingResetRenderer
   || !adminV3Modules?.createAdminV3PerfectScoreRenderer
   || !adminV3Modules?.createAdminV3ManualGamePreviewRenderer
-  || !adminV3Modules?.createAdminV3ManualLineupRenderer) {
+  || !adminV3Modules?.createAdminV3ManualLineupRenderer
+  || !adminV3Modules?.createAdminV3ManualRosterRenderer) {
   throw new Error("ADMIN_V3_MODULES_NOT_LOADED");
 }
 const v3Dom = adminV3Modules.createAdminV3Dom();
@@ -38,12 +39,13 @@ const V3_JOB_TYPES = Object.freeze([
   V3_JOB_TYPE.PROBABLE_STARTER_FETCH,
   V3_JOB_TYPE.ROSTER_FETCH
 ]);
-const V3_VIEWS = ["dashboard", "games", "workflow", "lineup", "scoring", "ranking-reset", "schedule", "add-game-preview", "diagnostics"];
+const V3_VIEWS = ["dashboard", "games", "workflow", "lineup", "roster", "scoring", "ranking-reset", "schedule", "add-game-preview", "diagnostics"];
 const V3_VIEW_LABELS = {
   dashboard: "ダッシュボード",
   games: "試合一覧",
   workflow: "試合進行",
   lineup: "スタメン",
+  roster: "ロースター管理",
   scoring: "採点・ランキング",
   "ranking-reset": "ランキング対象外",
   schedule: "日程管理",
@@ -774,6 +776,7 @@ const v3PerfectScoreRenderer = adminV3Modules.createAdminV3PerfectScoreRenderer(
 const v3RankingResetRenderer = adminV3Modules.createAdminV3RankingResetRenderer({ state: v3State, escapeHtml: escapeV3, formatJst: formatV3Jst });
 const v3ManualGamePreviewRenderer = adminV3Modules.createAdminV3ManualGamePreviewRenderer({ escapeHtml: escapeV3 });
 const v3ManualLineupRenderer = adminV3Modules.createAdminV3ManualLineupRenderer({ escapeHtml: escapeV3 });
+const v3ManualRosterRenderer = adminV3Modules.createAdminV3ManualRosterRenderer({ escapeHtml: escapeV3 });
 const v3DiagnosticsRenderer = adminV3Modules.createAdminV3DiagnosticsRenderer({
   state: v3State,
   escapeHtml: escapeV3,
@@ -937,6 +940,79 @@ async function finalizeV3ManualLineup() {
   }
 }
 
+function updateManualRosterSearch(value) {
+  v3State.manualRoster.search = String(value ?? "");
+  v3State.manualRoster.error = "";
+  const candidates = document.querySelector("[data-v3-manual-roster-candidates]");
+  if (candidates) candidates.innerHTML = v3ManualRosterRenderer.renderCandidates(v3State.manualRoster);
+}
+
+function updateManualRosterEntry(playerId, patch) {
+  const entry = v3State.manualRoster.entries.find((item) => item.playerId === playerId);
+  if (!entry) return;
+  Object.assign(entry, patch);
+  v3State.manualRoster.error = "";
+  v3State.manualRoster.message = "";
+  renderCurrentV3View();
+}
+
+function addManualRosterPlayer(playerId) {
+  const catalogPlayer = v3State.manualRoster.catalog.find((player) => player.playerId === playerId);
+  if (!catalogPlayer) return;
+  const existing = v3State.manualRoster.entries.find((entry) => entry.playerId === playerId);
+  if (existing) existing.status = "active";
+  else v3State.manualRoster.entries.push({ playerId, status: "active", note: "" });
+  v3State.manualRoster.error = "";
+  v3State.manualRoster.message = "";
+  renderCurrentV3View();
+}
+
+async function loadManualRoster(force = false) {
+  const roster = v3State.manualRoster;
+  if (roster.loading || (roster.loaded && !force)) return;
+  roster.loading = true;
+  roster.error = "";
+  renderCurrentV3View();
+  try {
+    const result = await v3Api.getManualRoster(roster.teamCode);
+    const serverRoster = result.roster || {};
+    roster.entries = Array.isArray(serverRoster.entries) ? serverRoster.entries.map((entry) => ({ playerId: entry.playerId, status: entry.status, note: entry.note || "" })) : [];
+    roster.catalog = Array.isArray(result.playerCatalog) ? result.playerCatalog : [];
+    roster.schemaAvailable = serverRoster.schemaAvailable !== false;
+    roster.updatedAt = serverRoster.updatedAt || null;
+    roster.updatedBy = serverRoster.updatedBy || null;
+    roster.loaded = true;
+  } catch (error) {
+    roster.error = `${error.code || "MANUAL_ROSTER_READ_FAILED"}: ${error.message}`;
+    roster.schemaAvailable = error.status !== 503;
+  } finally {
+    roster.loading = false;
+    renderCurrentV3View();
+  }
+}
+
+async function saveManualRoster() {
+  const roster = v3State.manualRoster;
+  if (!roster.confirmed) { roster.error = "内容を確認してから保存してください。"; renderCurrentV3View(); return; }
+  roster.loading = true;
+  roster.error = "";
+  roster.message = "ロースターを保存中…";
+  renderCurrentV3View();
+  try {
+    const result = await v3Api.saveManualRoster({ teamCode: roster.teamCode, entries: roster.entries, confirmed: true });
+    const saved = result.roster || {};
+    roster.entries = Array.isArray(saved.entries) ? saved.entries.map((entry) => ({ playerId: entry.playerId, status: entry.status, note: entry.note || "" })) : roster.entries;
+    roster.updatedAt = saved.updatedAt || roster.updatedAt;
+    roster.updatedBy = saved.updatedBy || roster.updatedBy;
+    roster.message = "manual rosterを保存しました。スタメンは別画面で入力・確定します。";
+  } catch (error) {
+    roster.error = `${error.code || "MANUAL_ROSTER_SAVE_FAILED"}: ${error.message}`;
+  } finally {
+    roster.loading = false;
+    renderCurrentV3View();
+  }
+}
+
 function renderCurrentV3View() {
   const payload = v3State.payload;
   if (!payload) return;
@@ -952,7 +1028,7 @@ function renderCurrentV3View() {
   const view = document.getElementById("v3View");
   if (!view) return;
   const v4Notice = payload.automationMode?.isV4SemiAuto
-    ? '<div class="v3-operation-result attention" data-v3-v4-mode><strong>V4半自動運営</strong><span>予告先発: 自動取得 / ロースター: 自動取得OFF（手動管理はP1） / スタメン: 自動取得OFF / 正式スタメン: 手動</span><span>次の運営操作: Fightersの9人を入力して正式確定（選手を検索し、打順・守備位置・理由を確認）。確定後は予想締切・採点・ランキング・公開を正式Cronが継続します。</span></div>'
+    ? '<div class="v3-operation-result attention" data-v3-v4-mode><strong>V4半自動運営</strong><span>予告先発: 自動取得 / ロースター: Fightersロースターを手動管理 / スタメン: 自動取得OFF / 正式スタメン: 手動</span><span>ロースター更新はスタメンを変更しません。ロースター管理とスタメン確定をそれぞれ確認後、予想締切・採点・ランキング・公開を正式Cronへ引き継ぎます。</span></div>'
     : "";
   const externalFetchNotice = payload.npbFetchDisabled
     ? '<div class="v3-operation-result attention" data-v3-external-fetch-disabled><strong>NPB公式情報の取得を一時停止しています。</strong><span>新規の予告先発・ロースター・スタメン取得は停止中です。既存の保存済みデータと履歴は保持されます。</span></div>'
@@ -962,6 +1038,7 @@ function renderCurrentV3View() {
     games: () => v3GameProgressRenderer.renderGamesView(games),
     workflow: () => v3GameProgressRenderer.renderWorkflowView(filteredGame || game),
     lineup: () => v3GameProgressRenderer.renderLineupView(filteredGame || game),
+    roster: () => v3ManualRosterRenderer.render(v3State.manualRoster),
     scoring: () => v3GameProgressRenderer.renderScoringView(filteredGame || game),
     "ranking-reset": () => v3RankingResetRenderer.render(),
     schedule: () => v3GameProgressRenderer.renderScheduleView(games),
@@ -1171,6 +1248,7 @@ async function loadV3() {
     v3State.automationLogs = payload.automationLogs;
     renderV3(payload);
     await loadV3OperationDetails();
+    if (v3State.view === "roster") await loadManualRoster();
     setV3Status(`${v3State.payload.games.length}試合を表示しました。`);
   } catch (error) {
     setV3Status(`${error.code || "V3_ADMIN_REQUEST_FAILED"}: ${error.message}`, true);
@@ -1186,6 +1264,7 @@ function chooseV3View(view) {
     loadRankingResetMarkers();
     loadRankingExclusionGames();
   }
+  if (view === "roster") loadManualRoster();
   document.getElementById("v3Navigation")?.classList.remove("open");
   document.getElementById("mobileNavToggle")?.setAttribute("aria-expanded", "false");
 }
@@ -1243,6 +1322,7 @@ function handleV3HashChange() {
   if (hash.gameId) v3State.selectedGameId = hash.gameId;
   renderCurrentV3View();
   loadV3OperationDetails();
+  if (v3State.view === "roster") loadManualRoster();
 }
 
 function restoreInitialV3Route() {
@@ -1269,6 +1349,10 @@ adminV3Modules.createAdminV3Coordinator({
     selectManualLineupPlayer: selectV3ManualLineupPlayer,
     saveManualLineup: saveV3ManualLineup,
     finalizeManualLineup: finalizeV3ManualLineup,
+    updateManualRosterSearch,
+    updateManualRosterEntry,
+    addManualRosterPlayer,
+    saveManualRoster,
     refreshAutomationLogs,
     selectGame: (internalGameId) => selectV3Game(internalGameId),
     diagnoseJob: diagnoseV3Job,

@@ -3,6 +3,7 @@
 
   function createAdminV3Coordinator({ document, window, state, actions }) {
     const composingManualSearches = new Set();
+    let manualRosterSearchComposing = false;
 
     function closestFromEvent(event, selector) {
       const target = event?.target;
@@ -23,13 +24,20 @@
       document.addEventListener("compositionstart", (event) => {
         const field = closestFromEvent(event, "[data-v3-manual-lineup-search]");
         if (field) composingManualSearches.add(manualSearchIndex(field));
+        if (closestFromEvent(event, "[data-v3-manual-roster-search]")) manualRosterSearchComposing = true;
       });
       document.addEventListener("compositionend", (event) => {
         const field = closestFromEvent(event, "[data-v3-manual-lineup-search]");
-        if (!field) return;
-        const index = manualSearchIndex(field);
-        composingManualSearches.delete(index);
-        actions.updateManualLineupSearch(index, field.value);
+        if (field) {
+          const index = manualSearchIndex(field);
+          composingManualSearches.delete(index);
+          actions.updateManualLineupSearch(index, field.value);
+        }
+        const rosterField = closestFromEvent(event, "[data-v3-manual-roster-search]");
+        if (rosterField) {
+          manualRosterSearchComposing = false;
+          actions.updateManualRosterSearch(rosterField.value);
+        }
       });
       document.addEventListener("keydown", (event) => {
         const field = closestFromEvent(event, "[data-v3-manual-lineup-search]");
@@ -56,6 +64,11 @@
         if (manualSearch) {
           if (isManualSearchComposing(event, manualSearch)) return;
           actions.updateManualLineupSearch(manualSearchIndex(manualSearch), manualSearch.value);
+        }
+        const rosterSearch = closestFromEvent(event, "[data-v3-manual-roster-search]");
+        if (rosterSearch) {
+          if (event.isComposing || manualRosterSearchComposing) return;
+          actions.updateManualRosterSearch(rosterSearch.value);
         }
       });
       document.addEventListener("change", (event) => {
@@ -84,6 +97,12 @@
         if (confirm) {
           state.manualLineup.confirmed = confirm.checked === true;
         }
+        const rosterStatus = closestFromEvent(event, "[data-v3-manual-roster-status]");
+        if (rosterStatus) { actions.updateManualRosterEntry(rosterStatus.dataset.v3ManualRosterStatus, { status: rosterStatus.value }); return; }
+        const rosterNote = closestFromEvent(event, "[data-v3-manual-roster-note]");
+        if (rosterNote) { actions.updateManualRosterEntry(rosterNote.dataset.v3ManualRosterNote, { note: rosterNote.value }); return; }
+        const rosterConfirm = closestFromEvent(event, "[data-v3-manual-roster-confirm]");
+        if (rosterConfirm) { state.manualRoster.confirmed = rosterConfirm.checked === true; }
       });
     }
 
@@ -104,6 +123,11 @@
         }
         if (closestFromEvent(event, "[data-v3-manual-lineup-save]")) { await actions.saveManualLineup(); return; }
         if (closestFromEvent(event, "[data-v3-manual-lineup-finalize]")) { await actions.finalizeManualLineup(); return; }
+        const rosterAdd = closestFromEvent(event, "[data-v3-manual-roster-add]");
+        if (rosterAdd) { actions.addManualRosterPlayer(rosterAdd.dataset.v3ManualRosterAdd); return; }
+        const rosterRemove = closestFromEvent(event, "[data-v3-manual-roster-remove]");
+        if (rosterRemove) { actions.updateManualRosterEntry(rosterRemove.dataset.v3ManualRosterRemove, { status: "inactive" }); return; }
+        if (closestFromEvent(event, "[data-v3-manual-roster-save]")) { await actions.saveManualRoster(); return; }
 
         const diagnoseButton = closestFromEvent(event, "[data-v3-job-diagnose]");
         if (diagnoseButton) {

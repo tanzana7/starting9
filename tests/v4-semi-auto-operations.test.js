@@ -323,9 +323,9 @@ test("V4 admin表示は自動/手動の責務と次の運営操作を明示す�
   assert.match(workerSource, /automationMode: getV3OperationalMode\(env\)/);
   assert.match(adminSource, /data-v3-v4-mode/);
   assert.match(adminSource, /V4半自動運営/);
-  assert.match(adminSource, /ロースター: 自動取得OFF/);
+  assert.match(adminSource, /ロースター: Fightersロースターを手動管理/);
   assert.match(adminSource, /スタメン: 自動取得OFF/);
-  assert.match(adminSource, /次の運営操作: Fightersの9人を入力して正式確定/);
+  assert.match(adminSource, /ロースター管理とスタメン確定をそれぞれ確認/);
   assert.match(wranglerSource, /"ENABLE_AUTO_PROBABLE_STARTER": "true"/);
   assert.match(wranglerSource, /"ENABLE_AUTO_ROSTER_FETCH": "false"/);
   assert.match(wranglerSource, /"ENABLE_AUTO_LINEUP_FETCH": "false"/);

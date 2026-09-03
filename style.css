@@ -2713,8 +2713,39 @@ textarea:focus {
 }
 
 .slot-player .player-name {
+  position: relative;
+  padding-left: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.player-name--bat-right,
+.player-name--bat-left,
+.player-name--bat-switch {
+  padding-left: 8px;
+}
+
+.player-name--bat-right::before,
+.player-name--bat-left::before,
+.player-name--bat-switch::before {
+  position: absolute;
+  inset: 1px auto 1px 0;
+  width: 4px;
+  border-radius: 999px;
+  content: "";
+}
+
+.player-name--bat-right::before { background: #d64545; }
+.player-name--bat-left::before { background: #2878c8; }
+.player-name--bat-switch::before { background: #2f9a62; }
+
+.player-number {
+  display: inline-block;
+  margin-right: 4px;
+  color: #5f7082;
+  font-size: .82em;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 

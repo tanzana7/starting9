@@ -62,6 +62,71 @@
     return formatJapanesePlayerNameForDisplay(source, metadata);
   }
 
+  function normalizeBattingHand(value) {
+    const normalized = String(value ?? "").normalize("NFKC").trim().toLowerCase();
+    if (!normalized) return "";
+    if (["r", "rh", "right", "右", "右打", "右打ち"].includes(normalized)) return "right";
+    if (["l", "lh", "left", "左", "左打", "左打ち"].includes(normalized)) return "left";
+    if (["s", "switch", "both", "両", "両打", "両打ち", "スイッチ"].includes(normalized)) return "switch";
+    return "";
+  }
+
+  function readBattingHand(value) {
+    if (!value || typeof value !== "object") return "";
+    const directFields = ["bats", "battingSide", "batSide"];
+    for (const field of directFields) {
+      const hand = normalizeBattingHand(value[field]);
+      if (hand) return hand;
+    }
+
+    const nested = [value.handedness, value.metadata, value.meta, value.rawMetadata, value.raw];
+    for (const entry of nested) {
+      if (typeof entry === "string") {
+        const explicit = entry.normalize("NFKC").toLowerCase();
+        if (explicit.includes("左打") || explicit.includes("left-handed batter") || explicit.includes("left-handed hitter")) return "left";
+        if (explicit.includes("両打") || explicit.includes("switch-hitter") || explicit.includes("switch hitter")) return "switch";
+        if (explicit.includes("右打") || explicit.includes("right-handed batter") || explicit.includes("right-handed hitter")) return "right";
+      }
+      if (!entry || typeof entry !== "object") continue;
+      for (const field of directFields) {
+        const hand = normalizeBattingHand(entry[field]);
+        if (hand) return hand;
+      }
+    }
+    return "";
+  }
+
+  function getPlayerBattingHandedness(player) {
+    return readBattingHand(player);
+  }
+
+  function getPlayerBattingClass(player) {
+    const hand = getPlayerBattingHandedness(player);
+    return hand ? `player-name--bat-${hand}` : "";
+  }
+
+  function normalizePlayerNumber(value) {
+    const normalized = String(value ?? "").normalize("NFKC").trim();
+    return /^\d{1,3}$/.test(normalized) ? normalized : "";
+  }
+
+  function getPlayerUniformNumber(player) {
+    if (!player || typeof player !== "object") return "";
+    const fields = ["uniformNumber", "jerseyNumber", "number", "playerNumber", "backNumber", "uniform_no", "jersey_no"];
+    const sources = [player, player.metadata, player.meta, player.rawMetadata, player.raw];
+    for (const source of sources) {
+      if (!source || typeof source !== "object") continue;
+      for (const field of fields) {
+        const number = normalizePlayerNumber(source[field]);
+        if (number) return number;
+      }
+    }
+    return "";
+  }
+
   publicFrontend.formatJapanesePlayerNameForDisplay = formatJapanesePlayerNameForDisplay;
   publicFrontend.formatPlayerNameForDisplay = formatPlayerNameForDisplay;
+  publicFrontend.getPlayerBattingHandedness = getPlayerBattingHandedness;
+  publicFrontend.getPlayerBattingClass = getPlayerBattingClass;
+  publicFrontend.getPlayerUniformNumber = getPlayerUniformNumber;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -175,7 +175,7 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
   assert.match(script, /class="saved-lineup-order"/);
   assert.match(script, /class="saved-lineup-detail"/);
   assert.match(script, /class="result-position-tile saved-position-chip is-\$\{positionCategory\}"/);
-  assert.match(script, /class="saved-lineup-name"/);
+  assert.match(script, /saved-lineup-name/);
   assert.match(script, /saved-lineup-table-header/);
   assert.match(script, /<span>打順<\/span><span>守備<\/span><span>選手名<\/span>/);
   assert.match(script, /createSavedPredictionPreview\(state\.prediction\)/);
@@ -211,7 +211,7 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-position-menu-left-clamp-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-position-menu-left-clamp-1-bat-line-1-player-number-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

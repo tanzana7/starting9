@@ -1647,11 +1647,22 @@ function normalizeRosterEntries(players) {
     }
 
     seen.add(key);
-    normalizedEntries.push({
+    const normalizedEntry = {
       position: String(source.position || "").trim(),
       number: String(source.number || "").trim(),
       name: displayName
-    });
+    };
+    const handSources = [source, source.handedness, source.metadata, source.meta, source.rawMetadata, source.raw];
+    for (const handSource of handSources) {
+      if (!handSource || typeof handSource !== "object") continue;
+      ["bats", "battingSide", "batSide"].forEach((field) => {
+        if (normalizedEntry[field] === undefined && handSource[field] !== undefined && handSource[field] !== null) {
+          normalizedEntry[field] = String(handSource[field]).slice(0, 20);
+        }
+      });
+    }
+    if (typeof source.handedness === "string") normalizedEntry.handedness = source.handedness.slice(0, 40);
+    normalizedEntries.push(normalizedEntry);
   });
 
   return normalizedEntries;
@@ -5016,14 +5027,14 @@ function createResultPlayerCardHtml(player, position) {
   if (player === "未予想") {
     return `
       <span class="result-player-card result-player-card-empty">
-        <span class="result-player-name">未予想</span>
+        ${createPlayerNameHtml("未予想", "result-player-name")}
       </span>
     `;
   }
   return `
     <span class="result-player-card">
       ${createResultPositionTileHtml(position)}
-      <span class="result-player-name">${escapeHtml(formatPlayerNameForDisplay(player || "-"))}</span>
+      ${createPlayerNameHtml(player || "-", "result-player-name")}
     </span>
   `;
 }
@@ -5076,7 +5087,7 @@ function createPredictionSummary(prediction) {
         <span class="result-position-tile saved-position-chip is-${positionCategory}" aria-label="守備位置 ${escapeHtml(normalizedPosition || "未選択")}">
           ${escapeHtml(normalizedPosition || "－")}
         </span>
-        <span class="saved-lineup-name">${escapeHtml(formatPlayerNameForDisplay(lineupItem.player))}</span>
+        ${createPlayerNameHtml(lineupItem.player, "saved-lineup-name")}
       </span>
     `;
     list.appendChild(listItem);
@@ -5388,8 +5399,15 @@ function escapeHtml(value) {
 }
 
 function getPlayerData(playerName) {
-  const playerKey = normalizePlayerKey(playerName);
-  return players.find((player) => normalizePlayerKey(player.name) === playerKey) || null;
+  const source = playerName && typeof playerName === "object" ? playerName : null;
+  const rawName = source?.name || source?.playerName || source?.displayName || playerName;
+  const playerKey = normalizePlayerKey(rawName);
+  const masterPlayer = players.find((player) => normalizePlayerKey(player.name) === playerKey) || null;
+  const rosterPlayer = normalizeRosterEntries(state.publicRoster?.players).find((player) => normalizePlayerKey(player.name) === playerKey) || null;
+  const sourcePlayer = source && playerKey ? source : null;
+  return masterPlayer && rosterPlayer
+    ? { ...masterPlayer, ...rosterPlayer, ...sourcePlayer }
+    : masterPlayer || rosterPlayer || sourcePlayer;
 }
 
 function createPlayerCategoryBadgeHtml(playerName) {
@@ -5448,7 +5466,16 @@ function getPositionCategory(position) {
 }
 
 function createPlayerLabelHtml(playerName) {
-  return `<span class="player-name">${escapeHtml(formatPlayerNameForDisplay(playerName))}</span>`;
+  return createPlayerNameHtml(playerName);
+}
+
+function createPlayerNameHtml(playerName, baseClass = "player-name") {
+  const player = getPlayerData(playerName);
+  const battingClass = window.Starting9Public?.getPlayerBattingClass?.(player) || "";
+  const uniformNumber = window.Starting9Public?.getPlayerUniformNumber?.(player) || "";
+  const classes = [baseClass, battingClass].filter(Boolean).join(" ");
+  const numberMarkup = uniformNumber ? `<span class="player-number" aria-hidden="true">[${escapeHtml(uniformNumber)}]</span> ` : "";
+  return `<span class="${classes}">${numberMarkup}${escapeHtml(formatPlayerNameForDisplay(playerName, player))}</span>`;
 }
 
 function getPlayerCategoryClass(playerName) {

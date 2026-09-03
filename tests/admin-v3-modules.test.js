@@ -21,6 +21,7 @@ function loadModules() {
   vm.createContext(context);
   for (const name of [
     "state",
+    "../public/player-display",
     "api-client",
     "dom",
     "render-manual-lineup",
@@ -42,6 +43,7 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
   const scripts = [...page.matchAll(/<script src="([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(scripts, [
     "frontend/admin-v3/state.js?v=admin-v3-v35-diagnostics-readability-1-manual-lineup-1",
+    "frontend/public/player-display.js?v=public-player-display-1-batting-hand-player-number-1",
     "frontend/admin-v3/api-client.js?v=same-origin-auth-session-1",
     "frontend/admin-v3/dom.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-manual-lineup.js?v=manual-lineup-semi-auto-beta-2-ime",

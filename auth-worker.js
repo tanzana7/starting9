@@ -93,6 +93,12 @@ import { assessV3LineupArtifact } from "./backend/automation-v3/lineup-artifacts
 import { adaptV35Input } from "./backend/automation-v3/stage-health-adapter.js";
 import { evaluateV35Automation } from "./backend/automation-v3/stage-health-evaluator.js";
 import { planShadowRecovery } from "./backend/automation-v3/shadow-recovery-planner.js";
+import {
+  MANUAL_ROSTER_TEAM,
+  getManualRoster,
+  saveManualRoster,
+  prioritizeManualRosterCatalog
+} from "./backend/automation-v3/manual-roster-repository.js";
 
 // Compatibility exports keep existing tests and internal callers stable while
 // the implementation lives in the domain module.
@@ -601,6 +607,9 @@ export default {
       }
       if (path === "/api/admin/v3/overview" && request.method === "GET") {
         return await handleAdminV3Overview(request, env, cors);
+      }
+      if (path === "/api/admin/v3/manual-roster" && ["GET", "PUT"].includes(request.method)) {
+        return await handleAdminV3ManualRoster(request, env, cors);
       }
       if (path === "/api/admin/v3/automation-logs" && request.method === "GET") {
         return await handleAdminV3AutomationLogs(request, env, cors);
@@ -6470,6 +6479,7 @@ function parseAdminV3JobControlRoute(path) {
 const ADMIN_EXACT_ROUTE_METHODS = Object.freeze({
   "/api/admin/me": ["GET"],
   "/api/admin/v3/overview": ["GET"],
+  "/api/admin/v3/manual-roster": ["GET", "PUT"],
   "/api/admin/v3/automation-logs": ["GET"],
   "/api/admin/v3/ranking-resets": ["GET"],
   "/api/admin/v3/ranking-exclusion/games": ["GET"],
@@ -6535,7 +6545,9 @@ function v3AdminErrorResponse(cors, error, fallback = "V3管理操作に失敗�
     V3_STRONG_CONFIRMATION_REQUIRED: 409,
     V3_REASON_REQUIRED: 400,
     V3_SCHEDULE_UPDATE_FAILED: 409,
-    V3_SCHEMA_UNAVAILABLE: 503
+    V3_SCHEMA_UNAVAILABLE: 503,
+    MANUAL_ROSTER_SCHEMA_UNAVAILABLE: 503,
+    MANUAL_ROSTER_CONFIRMATION_REQUIRED: 409
   }[code] || 500);
   return jsonResponse({ ok: false, code, error: String(error?.message || fallback) }, status, cors);
 }
@@ -7281,6 +7293,13 @@ async function handleAdminV3LineupGet(env, cors, context) {
   const rows = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
   const current = rows.find((row) => Number(row.is_current) === 1) || rows[0] || null;
   const final = rows.find((row) => Number(row.is_final) === 1) || null;
+  const manualRoster = await getManualRoster(env.AUTH_DB, { teamCode: MANUAL_ROSTER_TEAM.teamCode }).catch(() => ({
+    schemaAvailable: false,
+    team: MANUAL_ROSTER_TEAM,
+    source: "manual",
+    entries: [],
+    errorCode: "MANUAL_ROSTER_SCHEMA_UNAVAILABLE"
+  }));
   return jsonResponse({
     ok: true,
     internalGameId: context.id,
@@ -7291,8 +7310,40 @@ async function handleAdminV3LineupGet(env, cors, context) {
     finalizedAt: lineup?.finalized_at || final?.finalized_at || null,
     finalizedBy: lineup?.finalized_by || final?.finalized_by || null,
     managedTeam: { teamCode: FIGHTERS_TEAM_CODE, teamId: FIGHTERS_TEAM_ID, name: "北海道日本ハムファイターズ" },
-    playerCatalog: getManualLineupPlayerCatalog()
+    manualRoster,
+    playerCatalog: getManualLineupPlayerCatalog({ manualRoster })
   }, 200, cors);
+}
+
+async function handleAdminV3ManualRoster(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  try {
+    const teamCode = new URL(request.url).searchParams.get("teamCode") || MANUAL_ROSTER_TEAM.teamCode;
+    if (request.method === "GET") {
+      const roster = await getManualRoster(env.AUTH_DB, { teamCode });
+      if (!roster.schemaAvailable) return jsonResponse({ ok: false, code: roster.errorCode, error: "manual roster schemaが未適用です。" }, 503, cors);
+      return jsonResponse({ ok: true, roster, playerCatalog: getManualLineupPlayerCatalog({ manualRoster: roster }) }, 200, cors);
+    }
+    const input = await readJson(request, { maxBytes: ADMIN_PREVIEW_JSON_BODY_MAX_BYTES });
+    if (input?.confirmed !== true) {
+      return jsonResponse({ ok: false, code: "MANUAL_ROSTER_CONFIRMATION_REQUIRED", error: "ロースター更新の確認が必要です。" }, 409, cors);
+    }
+    const roster = await saveManualRoster(env.AUTH_DB, {
+      teamCode: input?.teamCode || input?.team,
+      entries: input?.entries,
+      updatedBy: `admin:${String(access.user?.id || "unknown")}`,
+      catalog: getManualLineupPlayerCatalog(),
+      now: new Date()
+    });
+    return jsonResponse({ ok: true, roster, playerCatalog: getManualLineupPlayerCatalog({ manualRoster: roster }) }, 200, cors);
+  } catch (error) {
+    if (!error?.code) {
+      console.error("[MANUAL_ROSTER] operation failed", String(error?.message || "unknown error").slice(0, 240));
+      return jsonResponse({ ok: false, code: "MANUAL_ROSTER_OPERATION_FAILED", error: "manual roster操作に失敗しました。" }, 500, cors);
+    }
+    return v3AdminErrorResponse(cors, error, "manual rosterを更新できませんでした。");
+  }
 }
 
 async function handleAdminV3LineupRevisionsGet(env, cors, context) {
@@ -19627,8 +19678,8 @@ function sanitizeActualLineupForScoring(value, options = {}) {
 
 const MANUAL_LINEUP_EDIT_LOCKED_STATES = new Set(["scored", "ranked", "published"]);
 
-export function getManualLineupPlayerCatalog() {
-  return FIGHTERS_PLAYER_MASTER.map((player) => ({
+export function getManualLineupPlayerCatalog({ manualRoster = null } = {}) {
+  const catalog = FIGHTERS_PLAYER_MASTER.map((player) => ({
     playerName: player.name,
     displayName: player.name,
     uniformNumber: player.uniformNumber,
@@ -19636,6 +19687,7 @@ export function getManualLineupPlayerCatalog() {
     teamCode: FIGHTERS_TEAM_CODE,
     teamId: FIGHTERS_TEAM_ID
   }));
+  return prioritizeManualRosterCatalog(catalog, manualRoster);
 }
 
 export function normalizeManualLineupInput(value) {

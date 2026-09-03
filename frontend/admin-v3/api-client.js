@@ -10,7 +10,8 @@
     rankingResetPreview: "/api/admin/v3/ranking-resets/preview",
     rankingResetExecute: "/api/admin/v3/ranking-resets/execute",
     perfectScorePreview: "/api/admin/v3/perfect-score-test/preview",
-    manualGamePreview: "/api/admin/v3/schedule/add-game/preview"
+    manualGamePreview: "/api/admin/v3/schedule/add-game/preview",
+    manualRoster: "/api/admin/v3/manual-roster"
   });
 
   function createAdminV3ApiClient({ fetchImpl, location, productionBase }) {
@@ -61,6 +62,12 @@
       },
       finalizeManualLineup(internalGameId, body) {
         return post(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/lineup-finalize`, body);
+      },
+      getManualRoster(teamCode = "fighters") {
+        return request(`${ADMIN_V3_ENDPOINTS.manualRoster}?teamCode=${encodeURIComponent(teamCode)}`);
+      },
+      saveManualRoster(body) {
+        return request(ADMIN_V3_ENDPOINTS.manualRoster, { method: "PUT", body: JSON.stringify(body) });
       },
       diagnoseJob(internalGameId, jobType) {
         const query = new URLSearchParams({ jobType: String(jobType || "") });

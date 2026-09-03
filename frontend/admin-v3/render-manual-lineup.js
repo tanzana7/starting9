@@ -22,7 +22,7 @@
         || `${player.playerName} ${player.uniformNumber}`.toLocaleLowerCase().includes(search)).slice(0, 6);
       const selected = players.find((player) => player.playerId === row?.playerId);
       return candidates.length
-        ? candidates.map((player) => `<button type="button" class="manual-lineup-candidate ${selected?.playerId === player.playerId ? "selected" : ""}" data-v3-manual-lineup-player="${escapeHtml(String(index))}" data-v3-manual-lineup-player-id="${escapeHtml(player.playerId)}">${escapeHtml(player.playerName)} <small>#${escapeHtml(player.uniformNumber)}</small></button>`).join("")
+        ? candidates.map((player) => `<button type="button" class="manual-lineup-candidate ${selected?.playerId === player.playerId ? "selected" : ""}" data-v3-manual-lineup-player="${escapeHtml(String(index))}" data-v3-manual-lineup-player-id="${escapeHtml(player.playerId)}">${escapeHtml(player.playerName)} <small>#${escapeHtml(player.uniformNumber)}${player.manualRosterActive === false ? " / roster外（確認要）" : ""}</small></button>`).join("")
         : `<span class="muted">候補がありません</span>`;
     }
 

@@ -63,6 +63,20 @@
         loading: false,
         error: "",
         message: ""
+      },
+      manualRoster: {
+        teamCode: "fighters",
+        entries: [],
+        catalog: [],
+        search: "",
+        confirmed: false,
+        loading: false,
+        loaded: false,
+        schemaAvailable: null,
+        updatedAt: null,
+        updatedBy: null,
+        error: "",
+        message: ""
       }
     };
   }

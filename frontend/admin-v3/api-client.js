@@ -16,9 +16,13 @@
 
   function createAdminV3ApiClient({ fetchImpl, location, productionBase }) {
     function apiBase() {
-      return ["localhost", "127.0.0.1"].includes(location.hostname)
-        ? "http://127.0.0.1:8787"
-        : productionBase;
+      if (["localhost", "127.0.0.1"].includes(location.hostname)) {
+        return "http://127.0.0.1:8787";
+      }
+      if (productionBase) {
+        return productionBase.replace(/\/+$/, "");
+      }
+      return location.origin || `${location.protocol || "https:"}//${location.host || location.hostname}`;
     }
 
     async function request(path, options = {}) {

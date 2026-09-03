@@ -1,2 +1,1 @@
-# The Pages app is static; send only the direct audit URL to the existing Auth Worker.
-/api/admin/audit/game-identities https://starting9-auth.tanzana7.workers.dev/api/admin/audit/game-identities 307
+# API requests are handled by functions/api/[[path]].js so session cookies stay on the Pages origin.

@@ -1,4 +1,5 @@
-const V3_AUTH_PRODUCTION_BASE = "https://starting9-auth.tanzana7.workers.dev";
+// 本番ではPages Function経由の同一オリジンAPIを使い、Auth WorkerのCookieを再利用します。
+const V3_AUTH_PRODUCTION_BASE = "";
 const adminV3Modules = window.Starting9AdminV3;
 
 if (!adminV3Modules?.createAdminV3State

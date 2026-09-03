@@ -1,5 +1,5 @@
-const AUTH_PRODUCTION_API_BASE_URL = "https://starting9-auth.tanzana7.workers.dev";
-// 認証APIの送信先はここだけで決めます。日程・NPB取得のWorker URLとは別です。
+// 本番のPages配下では同一オリジンのPages Functionを使い、Cookieを再読込でも維持します。
+// file://で直接開く場合は認証APIを使わず、誤ったCookie境界を作りません。
 const AUTH_API_BASE_URL = resolveAuthApiBaseUrl();
 const AUTH_USERNAME_MIN_LENGTH = 3;
 const AUTH_USERNAME_MAX_LENGTH = 16;
@@ -42,7 +42,11 @@ function resolveAuthApiBaseUrl() {
     return "http://127.0.0.1:8787";
   }
 
-  return AUTH_PRODUCTION_API_BASE_URL;
+  if (window.location.protocol === "http:" || window.location.protocol === "https:") {
+    return window.location.origin;
+  }
+
+  return "";
 }
 
 document.addEventListener("DOMContentLoaded", initializeAuth);

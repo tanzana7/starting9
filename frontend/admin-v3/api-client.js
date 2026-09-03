@@ -22,11 +22,25 @@
     }
 
     async function request(path, options = {}) {
-      const response = await fetchImpl(`${apiBase()}${path}`, {
-        credentials: "include",
-        ...options,
-        headers: { "Content-Type": "application/json", ...(options.headers || {}) }
-      });
+      const headers = { ...(options.headers || {}) };
+      if (options.body !== undefined && !Object.keys(headers).some((key) => key.toLowerCase() === "content-type")) {
+        headers["Content-Type"] = "application/json";
+      }
+      let response;
+      try {
+        response = await fetchImpl(`${apiBase()}${path}`, {
+          ...options,
+          method: options.method || "GET",
+          credentials: "include",
+          headers
+        });
+      } catch (cause) {
+        const error = new Error("管理APIへ接続できません。通信状況を確認して再試行してください。");
+        error.code = "NETWORK_ERROR";
+        error.status = 0;
+        error.cause = cause;
+        throw error;
+      }
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
         const error = new Error(body.error || `HTTP ${response.status}`);

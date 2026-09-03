@@ -29,7 +29,7 @@ test("job詳細は既存GET APIをjobIdとinternalGameIdで検証し、キャッ
   assert.match(renderer, /data-v3-job-detail-refresh/);
   assert.match(client, /detail\.internalGameId !== internalGameId/);
   assert.match(client, /Number\(detail\.job\?\.id\) !== numericJobId/);
-  assert.match(client, /error\.code \|\| "V3_JOB_DETAIL_FAILED"/);
+  assert.match(client, /formatV3AdminError\(error, "V3_JOB_DETAIL_FAILED"\)/);
 });
 
 test("failure message、UUID、監査JSONを選択・コピーでき、Clipboard fallbackを持つ", () => {

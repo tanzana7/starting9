@@ -78,6 +78,9 @@ async function loadCurrentUser() {
     setAuthStatus(toAuthConnectionStatus(error), "warning");
   } finally {
     finishAuthInitialization();
+    if (!authState.user && shouldOpenLoginFromQuery()) {
+      openAuthModal("login");
+    }
   }
 }
 
@@ -112,6 +115,7 @@ async function handleLoginSubmit(event) {
     closeAuthModal();
     renderAuthState();
     setAuthStatus("ログインしました。", "success");
+    redirectToAuthReturnTo();
   } catch (error) {
     console.error("ログインに失敗しました", error.message);
     showAuthError("login", toUserAuthError(error));
@@ -148,6 +152,7 @@ async function handleRegisterSubmit(event) {
     closeAuthModal();
     renderAuthState();
     setAuthStatus("登録してログインしました。", "success");
+    redirectToAuthReturnTo();
   } catch (error) {
     console.error("ユーザー登録に失敗しました", error.message);
     showAuthError("register", toUserAuthError(error));
@@ -197,6 +202,27 @@ function openAuthModal(mode) {
   modal.setAttribute("aria-hidden", "false");
   const usernameInput = document.getElementById(authState.mode === "register" ? "authRegisterUsername" : "authLoginUsername");
   usernameInput.focus();
+}
+
+function shouldOpenLoginFromQuery() {
+  return new URLSearchParams(window.location.search).get("auth") === "login";
+}
+
+function getSafeAuthReturnTo() {
+  const value = new URLSearchParams(window.location.search).get("returnTo") || "";
+  if (!value.startsWith("/") || value.startsWith("//")) return "";
+  try {
+    const target = new URL(value, window.location.origin);
+    if (target.origin !== window.location.origin) return "";
+    return `${target.pathname}${target.search}${target.hash}`;
+  } catch {
+    return "";
+  }
+}
+
+function redirectToAuthReturnTo() {
+  const returnTo = getSafeAuthReturnTo();
+  if (returnTo) window.location.replace(returnTo);
 }
 
 function closeAuthModal() {

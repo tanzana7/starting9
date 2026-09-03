@@ -81,6 +81,33 @@ function manualOperation(internalGameId, jobType) {
   return v3State.manualOperations.get(manualOperationKey(internalGameId, jobType)) || null;
 }
 
+function configureAdminLoginLink() {
+  const link = document.getElementById("adminLoginLink");
+  if (!link) return;
+  const returnTo = `${window.location.pathname || "/admin-v3.html"}${window.location.search || ""}${window.location.hash || ""}`;
+  const loginUrl = new URL("index.html", window.location.href);
+  loginUrl.searchParams.set("auth", "login");
+  loginUrl.searchParams.set("returnTo", returnTo);
+  link.href = `${loginUrl.pathname}${loginUrl.search}`;
+}
+
+function adminAuthErrorMessage(error) {
+  const status = Number(error?.status);
+  if (status === 401 || error?.code === "AUTH_REQUIRED") {
+    return "ログインが必要です。ログイン画面から認証すると、この管理画面へ戻れます。";
+  }
+  if (status === 403 || error?.code === "ADMIN_ROLE_REQUIRED") {
+    return "ログイン中のアカウントに管理者権限がありません。";
+  }
+  if (status === 503 || error?.code === "D1_READ_LIMIT_EXCEEDED" || error?.code === "DB_UNAVAILABLE") {
+    return "認証サービスが一時的に利用できません。時間をおいて再試行してください。";
+  }
+  if (error?.message && !String(error.message).includes("Failed to fetch")) {
+    return "管理画面を読み込めませんでした。入力内容またはサーバー状態を確認してください。";
+  }
+  return "認証APIへ接続できません。通信状況を確認して再試行してください。";
+}
+
 function setManualOperation(internalGameId, jobType, value) {
   v3State.manualOperations.set(manualOperationKey(internalGameId, jobType), value);
   renderCurrentV3View();
@@ -1251,7 +1278,7 @@ async function loadV3() {
     if (v3State.view === "roster") await loadManualRoster();
     setV3Status(`${v3State.payload.games.length}試合を表示しました。`);
   } catch (error) {
-    setV3Status(`${error.code || "V3_ADMIN_REQUEST_FAILED"}: ${error.message}`, true);
+    setV3Status(adminAuthErrorMessage(error), true);
   }
 }
 
@@ -1330,6 +1357,8 @@ function restoreInitialV3Route() {
   v3State.view = initialV3Hash.view;
   v3State.selectedGameId = initialV3Hash.gameId;
 }
+
+configureAdminLoginLink();
 
 adminV3Modules.createAdminV3Coordinator({
   document,

@@ -68,6 +68,9 @@ test("公開entry scriptのcache busterを更新し、既存moduleの読み込�
     const expectedCacheBuster = match[0].startsWith("frontend/public/render-results.js?")
       ? "public-cancelled-result-date-display-1"
       : moduleCacheBuster;
-    assert.equal(match[1], expectedCacheBuster);
+    const isPredictionForm = match[0].startsWith("frontend/public/prediction-form.js?");
+    assert.equal(match[1], isPredictionForm
+      ? `${moduleCacheBuster}&user-prediction-save-auth-fix-20260903`
+      : expectedCacheBuster);
   }
 });

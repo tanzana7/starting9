@@ -15,7 +15,8 @@ const authState = {
   user: null,
   mode: "login",
   isLoading: false,
-  isInitialized: false
+  isInitialized: false,
+  error: null
 };
 
 window.starting9Auth = {
@@ -23,6 +24,14 @@ window.starting9Auth = {
   getApiBaseUrl: () => AUTH_API_BASE_URL,
   openLogin: () => openAuthModal("login"),
   isInitialized: () => authState.isInitialized,
+  getStatus: () => ({
+    isInitialized: authState.isInitialized,
+    isLoading: authState.isLoading,
+    authenticated: Boolean(authState.user?.id && authState.user?.username),
+    errorCode: authState.error?.code || "",
+    errorStatus: Number(authState.error?.status || 0)
+  }),
+  markSessionExpired,
   whenInitialized: () => authInitializationPromise
 };
 window.starting9AuthReady = authInitializationPromise;
@@ -69,14 +78,18 @@ async function loadCurrentUser() {
     return;
   }
 
+  authState.isLoading = true;
+  authState.error = null;
   try {
     const response = await requestAuth("/api/auth/me");
     authState.user = response.authenticated ? response.user : null;
   } catch (error) {
     console.error("認証状態の確認に失敗しました", error.message);
     authState.user = null;
+    authState.error = { code: error?.code || "AUTH_API_UNAVAILABLE", status: Number(error?.status || 0) };
     setAuthStatus(toAuthConnectionStatus(error), "warning");
   } finally {
+    authState.isLoading = false;
     finishAuthInitialization();
     if (!authState.user && shouldOpenLoginFromQuery()) {
       openAuthModal("login");
@@ -111,6 +124,7 @@ async function handleLoginSubmit(event) {
       body: { username, password }
     });
     authState.user = response.user;
+    authState.error = null;
     document.getElementById("authLoginForm").reset();
     closeAuthModal();
     renderAuthState();
@@ -148,6 +162,7 @@ async function handleRegisterSubmit(event) {
       body: { username, password, passwordConfirmation }
     });
     authState.user = response.user;
+    authState.error = null;
     document.getElementById("authRegisterForm").reset();
     closeAuthModal();
     renderAuthState();
@@ -170,6 +185,7 @@ async function handleLogout() {
   try {
     await requestAuth("/api/auth/logout", { method: "POST" });
     authState.user = null;
+    authState.error = null;
     renderAuthState();
     setAuthStatus("ログアウトしました。", "success");
   } catch (error) {
@@ -247,6 +263,13 @@ function renderAuthState({ notify = true } = {}) {
       detail: { authenticated: isAuthenticated, user: authState.user }
     }));
   }
+}
+
+function markSessionExpired() {
+  authState.user = null;
+  authState.error = { code: "AUTH_SESSION_EXPIRED", status: 401 };
+  renderAuthState();
+  setAuthStatus("ログイン状態が切れています。再ログインしてください。", "warning");
 }
 
 function validateAuthCredentials(username, password) {

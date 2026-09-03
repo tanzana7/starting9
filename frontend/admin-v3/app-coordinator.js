@@ -2,11 +2,39 @@
   "use strict";
 
   function createAdminV3Coordinator({ document, window, state, actions }) {
+    const composingManualSearches = new Set();
+
     function closestFromEvent(event, selector) {
       const target = event?.target;
       if (target && typeof target.closest === "function") return target.closest(selector);
       const parent = target?.parentElement;
       return parent && typeof parent.closest === "function" ? parent.closest(selector) : null;
+    }
+
+    function manualSearchIndex(field) {
+      return Number(field?.dataset?.v3ManualLineupSearch);
+    }
+
+    function isManualSearchComposing(event, field) {
+      return event?.isComposing === true || composingManualSearches.has(manualSearchIndex(field));
+    }
+
+    function bindManualSearchCompositionEvents() {
+      document.addEventListener("compositionstart", (event) => {
+        const field = closestFromEvent(event, "[data-v3-manual-lineup-search]");
+        if (field) composingManualSearches.add(manualSearchIndex(field));
+      });
+      document.addEventListener("compositionend", (event) => {
+        const field = closestFromEvent(event, "[data-v3-manual-lineup-search]");
+        if (!field) return;
+        const index = manualSearchIndex(field);
+        composingManualSearches.delete(index);
+        actions.updateManualLineupSearch(index, field.value);
+      });
+      document.addEventListener("keydown", (event) => {
+        const field = closestFromEvent(event, "[data-v3-manual-lineup-search]");
+        if (field && event.key === "Enter" && isManualSearchComposing(event, field)) event.preventDefault();
+      });
     }
 
     function bindInputEvents() {
@@ -26,7 +54,8 @@
         }
         const manualSearch = closestFromEvent(event, "[data-v3-manual-lineup-search]");
         if (manualSearch) {
-          actions.updateManualLineupRow(Number(manualSearch.dataset.v3ManualLineupSearch), { search: manualSearch.value });
+          if (isManualSearchComposing(event, manualSearch)) return;
+          actions.updateManualLineupSearch(manualSearchIndex(manualSearch), manualSearch.value);
         }
       });
       document.addEventListener("change", (event) => {
@@ -141,6 +170,7 @@
 
     return Object.freeze({
       start() {
+        bindManualSearchCompositionEvents();
         bindInputEvents();
         bindClickEvents();
         bindToolbarEvents();

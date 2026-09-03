@@ -147,6 +147,24 @@ test("future schedule sync診断の成功・skip項目をToday Opsへ表示で�
   assert.match(diagnosticsSource, /futureScheduleSyncAttention/);
 });
 
+test("V4 Today Opsは今日の運営判定と過去試合の残留jobを分離し、停止中の取得を待機表示する", () => {
+  const historical = game({
+    internalGameId: "historical-1",
+    gameDate: "2026-08-07",
+    jobs: [{ job_type: "publish", status: "failed", failure_code: "OLD_FAILURE" }]
+  });
+  const model = context.buildTodayOpsModel(
+    { automationMode: { isV4SemiAuto: true }, todayOps: { ...payload.todayOps, futureGamesCount: 3 } },
+    [game({ jobs: [], rosterDiagnostics: { rosterSnapshotExists: false } }), historical, game({ internalGameId: "future-1", gameDate: "2026-08-09" }), game({ internalGameId: "future-2", gameDate: "2026-08-10" }), game({ internalGameId: "future-3", gameDate: "2026-08-11" })],
+    now
+  );
+  assert.equal(model.todayFailedJobs, 0);
+  assert.equal(model.historicalFailedJobs, 1);
+  assert.equal(model.gameModels[0].steps.roster, "waiting");
+  assert.equal(model.gameModels[0].steps.lineup, "waiting");
+  assert.equal(model.overallStatus, "ok");
+});
+
 test("overviewはCron監査時刻をToday Opsへ返し、管理画面は専用セクションを描画する", () => {
   assert.match(worker, /futureGamesDefinition: "game_date > JST today"/);
   assert.match(worker, /WHERE source = 'cron' ORDER BY occurred_at DESC LIMIT 1/);

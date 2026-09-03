@@ -43,16 +43,16 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
     "frontend/admin-v3/state.js?v=admin-v3-v35-diagnostics-readability-1-manual-lineup-1",
     "frontend/admin-v3/api-client.js?v=admin-v3-v35-diagnostics-readability-1-manual-lineup-1",
     "frontend/admin-v3/dom.js?v=admin-v3-v35-diagnostics-readability-1",
-    "frontend/admin-v3/render-manual-lineup.js?v=manual-lineup-semi-auto-beta-1",
-    "frontend/admin-v3/render-game-progress.js?v=admin-v3-v35-shadow-recovery-plan-1-manual-lineup-1",
+    "frontend/admin-v3/render-manual-lineup.js?v=manual-lineup-semi-auto-beta-2-ime",
+    "frontend/admin-v3/render-game-progress.js?v=admin-v3-v35-shadow-recovery-plan-1-manual-lineup-1-v4-ops",
     "frontend/admin-v3/render-job-details.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-roster.js?v=admin-v3-v35-diagnostics-readability-1",
-    "frontend/admin-v3/render-diagnostics.js?v=admin-v3-v35-diagnostics-readability-1",
+    "frontend/admin-v3/render-diagnostics.js?v=admin-v3-v35-diagnostics-readability-1-v4-ops",
     "frontend/admin-v3/render-ranking-reset.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-perfect-score-preview.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-manual-game-preview.js?v=admin-v3-v35-diagnostics-readability-1",
-    "frontend/admin-v3/app-coordinator.js?v=admin-v3-v35-diagnostics-readability-1-manual-lineup-1",
-    "admin-v3.js?v=admin-v3-v35-diagnostics-readability-1-manual-lineup-1"
+    "frontend/admin-v3/app-coordinator.js?v=admin-v3-v35-diagnostics-readability-1-manual-lineup-1-ime",
+    "admin-v3.js?v=admin-v3-v35-diagnostics-readability-1-manual-lineup-2-ime-v4-ops"
   ]);
   const modules = loadModules();
   assert.equal(typeof modules.createAdminV3State, "function");

@@ -108,6 +108,17 @@ function adminAuthErrorMessage(error) {
   return "認証APIへ接続できません。通信状況を確認して再試行してください。";
 }
 
+function formatV3AdminError(error, fallbackCode) {
+  const code = error?.code || fallbackCode;
+  const status = Number(error?.status);
+  if ([401, 403, 503].includes(status)
+    || ["AUTH_REQUIRED", "ADMIN_ROLE_REQUIRED", "D1_READ_LIMIT_EXCEEDED", "DB_UNAVAILABLE"].includes(error?.code)
+    || !status) {
+    return `${code}: ${adminAuthErrorMessage(error)}`;
+  }
+  return `${code}: 管理操作に失敗しました。入力内容とサーバー状態を確認してください。`;
+}
+
 function setManualOperation(internalGameId, jobType, value) {
   v3State.manualOperations.set(manualOperationKey(internalGameId, jobType), value);
   renderCurrentV3View();
@@ -123,7 +134,7 @@ async function diagnoseV3Job(internalGameId, jobType) {
       : `実行不可 / ${diagnosis.cannotRunReason || "理由不明"}`;
     setManualOperation(internalGameId, jobType, { status: "ready", diagnosis, error: false, message });
   } catch (error) {
-    setManualOperation(internalGameId, jobType, { status: "error", error: true, message: `${error.code || "V3_JOB_DIAGNOSE_FAILED"}: ${error.message}` });
+    setManualOperation(internalGameId, jobType, { status: "error", error: true, message: formatV3AdminError(error, "V3_JOB_DIAGNOSE_FAILED") });
   }
 }
 
@@ -143,7 +154,7 @@ async function runV3Job(internalGameId, jobType) {
     setManualOperation(internalGameId, jobType, { status: "success", error: false, diagnosis: result.diagnosis, message: result.created ? `job #${result.job?.id || "-"} を投入しました。状態を再取得しました。` : `同じslotのjobが既に存在します（#${result.job?.id || "-"}）。` });
     await loadV3();
   } catch (error) {
-    setManualOperation(internalGameId, jobType, { status: "error", error: true, message: `${error.code || "V3_JOB_RUN_FAILED"}: ${error.message}` });
+    setManualOperation(internalGameId, jobType, { status: "error", error: true, message: formatV3AdminError(error, "V3_JOB_RUN_FAILED") });
   }
 }
 
@@ -158,7 +169,7 @@ async function reconcileV3State(internalGameId) {
     setManualOperation(internalGameId, "state_reconcile", { status: "success", error: false, message: `${result.stateBefore} → ${result.stateAfter} を再同期しました。` });
     await loadV3();
   } catch (error) {
-    setManualOperation(internalGameId, "state_reconcile", { status: "error", error: true, message: `${error.code || "V3_STATE_RECONCILE_FAILED"}: ${error.message}` });
+    setManualOperation(internalGameId, "state_reconcile", { status: "error", error: true, message: formatV3AdminError(error, "V3_STATE_RECONCILE_FAILED") });
   }
 }
 
@@ -181,7 +192,7 @@ async function saveV3Schedule(internalGameId) {
     setManualOperation(internalGameId, "schedule", { status: "success", error: false, message: `${result.stateBefore || "-"} → ${result.stateAfter || result.stateBefore || "-"} / 日程を更新しました。` });
     await loadV3();
   } catch (error) {
-    setManualOperation(internalGameId, "schedule", { status: "error", error: true, message: `${error.code || "V3_SCHEDULE_UPDATE_FAILED"}: ${error.message}` });
+    setManualOperation(internalGameId, "schedule", { status: "error", error: true, message: formatV3AdminError(error, "V3_SCHEDULE_UPDATE_FAILED") });
   }
 }
 
@@ -235,7 +246,7 @@ async function excludeV3GameFromRanking(internalGameId) {
     await v3Api.updateRankingEligibility(internalGameId, { status: "excluded", reason, confirmed, rankingConfirmationText });
     await loadV3();
   } catch (error) {
-    setV3Status(`${error.code || "RANKING_ELIGIBILITY_UPDATE_FAILED"}: ${error.message}`, true);
+    setV3Status(formatV3AdminError(error, "RANKING_ELIGIBILITY_UPDATE_FAILED"), true);
   }
 }
 
@@ -766,7 +777,7 @@ async function loadV3JobDetail(internalGameId, jobId, force = false) {
     if (detail.internalGameId !== internalGameId || Number(detail.job?.id) !== numericJobId) throw new Error("V3_JOB_DETAIL_ID_MISMATCH");
     v3State.jobDetails.set(key, detail);
   } catch (error) {
-    v3State.jobDetails.set(key, { error: `${error.code || "V3_JOB_DETAIL_FAILED"}: ${error.message}` });
+    v3State.jobDetails.set(key, { error: formatV3AdminError(error, "V3_JOB_DETAIL_FAILED") });
   } finally {
     v3State.jobDetailsLoading.delete(key);
     renderCurrentV3View();
@@ -931,7 +942,7 @@ async function saveV3ManualLineup() {
     state.latestRevision = result.revision || null;
     state.message = state.latestRevision ? `revision ${state.latestRevision.revisionId || state.latestRevision.version || "-"} を保存しました。` : "手動スタメンを保存しました。";
   } catch (error) {
-    state.error = `${error.code || "V3_MANUAL_LINEUP_SAVE_FAILED"}: ${error.message}`;
+    state.error = formatV3AdminError(error, "V3_MANUAL_LINEUP_SAVE_FAILED");
   } finally {
     state.loading = false;
     renderCurrentV3View();
@@ -960,7 +971,7 @@ async function finalizeV3ManualLineup() {
     state.message = "正式スタメンを確定しました。採点は正式V3 Cronへ引き継ぎます。";
     await loadV3OperationDetails();
   } catch (error) {
-    state.error = `${error.code || "V3_MANUAL_LINEUP_FINALIZE_FAILED"}: ${error.message}`;
+    state.error = formatV3AdminError(error, "V3_MANUAL_LINEUP_FINALIZE_FAILED");
   } finally {
     state.loading = false;
     renderCurrentV3View();
@@ -1010,7 +1021,7 @@ async function loadManualRoster(force = false) {
     roster.updatedBy = serverRoster.updatedBy || null;
     roster.loaded = true;
   } catch (error) {
-    roster.error = `${error.code || "MANUAL_ROSTER_READ_FAILED"}: ${error.message}`;
+    roster.error = formatV3AdminError(error, "MANUAL_ROSTER_READ_FAILED");
     roster.schemaAvailable = error.status !== 503;
   } finally {
     roster.loading = false;
@@ -1033,7 +1044,7 @@ async function saveManualRoster() {
     roster.updatedBy = saved.updatedBy || roster.updatedBy;
     roster.message = "manual rosterを保存しました。スタメンは別画面で入力・確定します。";
   } catch (error) {
-    roster.error = `${error.code || "MANUAL_ROSTER_SAVE_FAILED"}: ${error.message}`;
+    roster.error = formatV3AdminError(error, "MANUAL_ROSTER_SAVE_FAILED");
   } finally {
     roster.loading = false;
     renderCurrentV3View();
@@ -1098,7 +1109,7 @@ async function loadRankingResetMarkers(force = false) {
     reset.markers = Array.isArray(result.markers) ? result.markers : [];
     reset.loaded = true;
   } catch (error) {
-    reset.error = `${error.code || "RANKING_RESET_READ_FAILED"}: ${error.message}`;
+    reset.error = formatV3AdminError(error, "RANKING_RESET_READ_FAILED");
   } finally {
     reset.loading = false;
     renderCurrentV3View();
@@ -1117,7 +1128,7 @@ async function loadRankingExclusionGames(force = false) {
     reset.gamesLoaded = true;
   } catch (error) {
     reset.games = [];
-    reset.gamesError = `${error.code || "RANKING_EXCLUSION_GAMES_READ_FAILED"}: ${error.message}`;
+    reset.gamesError = formatV3AdminError(error, "RANKING_EXCLUSION_GAMES_READ_FAILED");
   } finally {
     reset.gamesLoading = false;
     renderCurrentV3View();
@@ -1152,7 +1163,7 @@ async function previewRankingReset() {
     reset.activeMarker = result.activeMarker || null;
   } catch (error) {
     reset.preview = null;
-    reset.error = `${error.code || "RANKING_RESET_PREVIEW_FAILED"}: ${error.message}`;
+    reset.error = formatV3AdminError(error, "RANKING_RESET_PREVIEW_FAILED");
   } finally {
     reset.loading = false;
     renderCurrentV3View();
@@ -1172,7 +1183,7 @@ async function executeRankingReset() {
     reset.markers = [result.marker, ...reset.markers.filter((marker) => marker.id !== result.marker?.id)].filter(Boolean);
     reset.confirmation = "";
   } catch (error) {
-    reset.error = `${error.code || "RANKING_RESET_EXECUTE_FAILED"}: ${error.message}`;
+    reset.error = formatV3AdminError(error, "RANKING_RESET_EXECUTE_FAILED");
   } finally {
     reset.loading = false;
     renderCurrentV3View();
@@ -1196,7 +1207,7 @@ async function previewPerfectScore() {
       reason
     });
   } catch (error) {
-    v3State.perfectScorePreview.error = `${error.code || "PERFECT_SCORE_PREVIEW_FAILED"}: ${error.message}`;
+    v3State.perfectScorePreview.error = formatV3AdminError(error, "PERFECT_SCORE_PREVIEW_FAILED");
   } finally {
     v3State.perfectScorePreview.loading = false;
     renderCurrentV3View();
@@ -1228,7 +1239,7 @@ async function previewManualGame() {
   try {
     v3State.manualGamePreview.result = await v3Api.previewManualGame(input);
   } catch (error) {
-    v3State.manualGamePreview.error = `${error.code || "MANUAL_GAME_PREVIEW_FAILED"}: ${error.message}`;
+    v3State.manualGamePreview.error = formatV3AdminError(error, "MANUAL_GAME_PREVIEW_FAILED");
   } finally {
     v3State.manualGamePreview.loading = false;
     renderCurrentV3View();
@@ -1259,7 +1270,7 @@ async function loadV3OperationDetails() {
   };
   const entries = await Promise.all(Object.entries(paths).map(async ([key, path]) => {
     try { return [key, await v3Api.getGameOperationDetail(id, path.replace(`/api/admin/v3/games/${encodeURIComponent(id)}`, ""))]; }
-    catch (error) { return [key, { ok: false, errorCode: error.code, error: error.message }]; }
+    catch (error) { return [key, { ok: false, errorCode: error.code, error: formatV3AdminError(error, "V3_OPERATION_DETAIL_FAILED") }]; }
   }));
   v3State.operationDetails.set(id, Object.fromEntries(entries));
   renderCurrentV3View();
@@ -1271,7 +1282,7 @@ async function loadV3() {
     const session = await v3Api.getSession();
     if (!session.admin) throw new Error("管理者権限がありません。");
     const payload = await v3Api.getOverview();
-    payload.automationLogs = await v3Api.getAutomationLogs().catch((error) => ({ error: `${error.code || "V3_AUTOMATION_LOG_FAILED"}: ${error.message}` }));
+    payload.automationLogs = await v3Api.getAutomationLogs().catch((error) => ({ error: formatV3AdminError(error, "V3_AUTOMATION_LOG_FAILED") }));
     v3State.automationLogs = payload.automationLogs;
     renderV3(payload);
     await loadV3OperationDetails();
@@ -1303,7 +1314,7 @@ async function refreshAutomationLogs() {
     }
   });
   v3State.automationLogs = await v3Api.getAutomationLogs(v3State.automationLogFilters)
-    .catch((error) => ({ error: `${error.code || "V3_AUTOMATION_LOG_FAILED"}: ${error.message}` }));
+    .catch((error) => ({ error: formatV3AdminError(error, "V3_AUTOMATION_LOG_FAILED") }));
   renderCurrentV3View();
 }
 

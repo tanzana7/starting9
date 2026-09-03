@@ -389,6 +389,8 @@ const publicPredictionFormController = publicFrontend.createPublicPredictionForm
   renderPublicGameSelectionMeta,
   renderPicker,
   getPredictionAccountUser,
+  getPredictionAccountStatus,
+  waitForAuthInitialization: waitForPredictionAuthInitialization,
   showPredictionSaveMessage,
   savePredictionToAccount,
   setLineupValues,
@@ -3363,6 +3365,23 @@ function getPredictionAccountUser() {
   return window.starting9Auth?.getUser?.() || null;
 }
 
+function getPredictionAccountStatus() {
+  return window.starting9Auth?.getStatus?.() || {
+    isInitialized: Boolean(window.starting9Auth?.isInitialized?.()),
+    authenticated: Boolean(getPredictionAccountUser()),
+    errorCode: "",
+    errorStatus: 0
+  };
+}
+
+function waitForPredictionAuthInitialization() {
+  const auth = window.starting9Auth;
+  const ready = typeof auth?.whenInitialized === "function"
+    ? auth.whenInitialized()
+    : window.starting9AuthReady;
+  return ready && typeof ready.then === "function" ? ready : Promise.resolve();
+}
+
 function getPredictionAccountSaveErrorMessage(error) {
   const code = String(error?.code || "");
   const status = Number(error?.status || 0);
@@ -3370,13 +3389,22 @@ function getPredictionAccountSaveErrorMessage(error) {
     return "端末には保存しました。ログイン状態が切れているため、再ログインしてください。";
   }
   if (code === "AUTH_REQUIRED" || status === 401) {
-    return "端末には保存しました。ログインするとアカウントにも保存できます。";
+    return "端末には保存しましたが、ログイン状態が切れています。再ログインしてください。";
+  }
+  if (status === 403) {
+    return "端末には保存しましたが、アカウント保存の権限がありません。";
   }
   if (code === "PREDICTION_DEADLINE_PASSED" || code === "PREDICTION_CLOSED" || status === 409 && /受付|締切/.test(String(error?.message || ""))) {
     return "予想受付は終了しました。";
   }
   if (code === "INVALID_GAME_ID" || code === "INTERNAL_GAME_ID_REQUIRED" || code === "GAME_SCHEDULE_NOT_FOUND" || code === "GAME_ID_RESOLUTION_FAILED") {
     return "対象試合を確認できないため、アカウント保存できませんでした。";
+  }
+  if (code === "NETWORK_ERROR" || status === 0) {
+    return "端末には保存しましたが、アカウント保存に失敗しました。通信状況を確認して再試行してください。";
+  }
+  if (code === "D1_READ_LIMIT_EXCEEDED" || status === 503) {
+    return "端末には保存しましたが、データベースが一時的に混雑しています。時間をおいて再試行してください。";
   }
   if (code === "PREDICTION_SAVE_FAILED" || status >= 500) {
     return "端末には保存しましたが、アカウント保存に失敗しました。時間をおいて再試行してください。";
@@ -3646,6 +3674,9 @@ async function savePredictionToAccount(prediction = state.prediction) {
     return true;
   } catch (error) {
     console.error("アカウント予想の保存に失敗しました", error.message);
+    if (Number(error?.status || 0) === 401 || error?.code === "AUTH_REQUIRED") {
+      window.starting9Auth?.markSessionExpired?.();
+    }
     state.predictionRemote.status = "error";
     state.predictionRemote.message = getPredictionAccountSaveErrorMessage(error)
       || "端末には保存しましたが、アカウント保存に失敗しました。";

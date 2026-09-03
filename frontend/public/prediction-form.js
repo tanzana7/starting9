@@ -35,8 +35,22 @@
         deps.renderPredictionAccountStatus();
         deps.renderPublicGameSelectionMeta();
         deps.renderPicker("prediction");
+        if (typeof deps.waitForAuthInitialization === "function") {
+          try {
+            await deps.waitForAuthInitialization();
+          } catch {
+            // 認証初期化の失敗は端末保存を壊さず、現在の認証状態で安全に分岐します。
+          }
+        }
         if (!deps.getPredictionAccountUser()) {
-          deps.showPredictionSaveMessage("この端末に予想を保存しました。");
+          const authStatus = typeof deps.getPredictionAccountStatus === "function"
+            ? deps.getPredictionAccountStatus()
+            : null;
+          const authUnavailable = Number(authStatus?.errorStatus || 0) === 503
+            || Boolean(authStatus?.errorCode && authStatus.errorCode !== "AUTH_REQUIRED");
+          deps.showPredictionSaveMessage(authUnavailable
+            ? "この端末に予想を保存しました。認証サービスを確認できないため、アカウント保存は保留です。"
+            : "この端末に予想を保存しました。ログインするとアカウントにも保存できます。");
           return;
         }
 

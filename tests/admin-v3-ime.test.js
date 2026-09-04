@@ -77,3 +77,30 @@ test("manual lineup rendererは候補欄を独立更新できるDOM境界を持�
   assert.match(markup, /data-v3-manual-lineup-candidates="0"/);
   assert.match(renderer.renderCandidates([{ playerId: "p1", playerName: "田中", uniformNumber: "1" }], { search: "田" }, 0), /田中/);
 });
+
+test("manual lineup入力中のスタメン確認は9枠・守備・背番号・左右ライン・重複を表示する", () => {
+  const modules = loadModule("render-manual-lineup");
+  const renderer = modules.createAdminV3ManualLineupRenderer({ escapeHtml: (value) => String(value ?? "") });
+  const rows = renderer.createBlankRows();
+  rows[0] = { ...rows[0], playerId: "p1", playerName: "水谷 瞬", uniformNumber: "53", position: "右" };
+  rows[1] = { ...rows[1], playerId: "p1", playerName: "水谷 瞬", uniformNumber: "53", position: "左" };
+  rows[2] = { ...rows[2], playerId: "p2", playerName: "水野 達稀", uniformNumber: "43", position: "遊" };
+  const markup = renderer.render(
+    { gameDate: "2026-09-04", homeTeam: "fighters", awayTeam: "hawks", startAt: "2026-09-04T09:00:00.000Z", internalGameId: "game-1" },
+    { lineup: { playerCatalog: [
+      { playerId: "p1", playerName: "水谷 瞬", uniformNumber: "53", bats: "R" },
+      { playerId: "p2", playerName: "水野 達稀", uniformNumber: "43", bats: "L" }
+    ] } },
+    { rows }
+  );
+  assert.equal((markup.match(/data-v3-manual-lineup-confirmation-row/g) || []).length, 9);
+  assert.match(markup, /data-v3-manual-lineup-confirmation/);
+  assert.match(markup, /水谷 瞬/);
+  assert.match(markup, /\[53\]/);
+  assert.match(markup, /水野 達稀/);
+  assert.match(markup, /player-name--bat-right/);
+  assert.match(markup, /player-name--bat-left/);
+  assert.match(markup, /守備未設定/);
+  assert.match(markup, /manual-lineup-duplicate-warning/);
+  assert.match(markup, /重複/);
+});

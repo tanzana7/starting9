@@ -280,8 +280,19 @@ button:disabled { cursor: wait; opacity: .65; }
 .manual-lineup-target strong { font-size: 13px; }
 .manual-lineup-target code { color: #60758c; font-size: 10px; overflow-wrap: anywhere; }
 .manual-lineup-confirmation-preview { min-width: 0; padding: 9px 10px; border: 1px solid #dce8f2; border-radius: 5px; background: #fff; color: #334a62; font-size: 12px; }
-.manual-lineup-confirmation-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px 12px; margin: 7px 0 0; padding-left: 20px; }
-.manual-lineup-confirmation-list li { min-width: 0; overflow-wrap: anywhere; }
+.manual-lineup-confirmation-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px 12px; margin: 7px 0 0; padding: 0; list-style: none; }
+.manual-lineup-confirmation-row { position: relative; display: grid; grid-template-columns: 38px 62px minmax(0, 1fr); gap: 6px; align-items: start; min-width: 0; padding: 5px 6px 5px 10px; border: 1px solid #e5edf4; border-radius: 4px; background: #fbfdff; overflow-wrap: anywhere; }
+.manual-lineup-confirmation-row::before { position: absolute; inset: 4px auto 4px 0; width: 4px; border-radius: 999px; content: ""; }
+.manual-lineup-confirmation-row:has(.player-name--bat-right)::before { background: #d64545; }
+.manual-lineup-confirmation-row:has(.player-name--bat-left)::before { background: #2878c8; }
+.manual-lineup-confirmation-row:has(.player-name--bat-switch)::before { background: #2f9a62; }
+.manual-lineup-confirmation-row.is-duplicate { border-color: #e5b7b7; background: #fff8f8; }
+.manual-lineup-confirmation-order, .manual-lineup-confirmation-position { color: #526477; font-size: 12px; font-weight: 700; }
+.manual-lineup-confirmation-player { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 6px; min-width: 0; color: #1d527c; font-size: 12px; }
+.manual-lineup-confirmation-player .player-name { min-width: 0; overflow-wrap: anywhere; }
+.manual-lineup-confirmation-warning, .manual-lineup-duplicate-warning { color: #a22d2d; font-size: 11px; font-weight: 700; }
+.manual-lineup-duplicate-warning { margin: 7px 0 0; padding: 6px 8px; border-left: 3px solid #bd5a5a; background: #fff5f5; }
+.manual-lineup-confirmation-empty { color: #718197; }
 .manual-lineup-safety-warning { margin: 0; padding: 9px 10px; border-left: 3px solid #bd5a5a; background: #fff5f5; color: #8b2525; font-size: 12px; line-height: 1.5; }
 .manual-lineup-header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 14px; align-items: flex-start; }
 .manual-lineup-header h3 { margin: 0; color: #1d527c; }
@@ -476,6 +487,7 @@ button:disabled { cursor: wait; opacity: .65; }
   .manual-game-preview-wide { grid-column: auto; }
   .v3-selected-game-context { min-width: 0; width: 100%; }
   .manual-lineup-confirmation-list { grid-template-columns: 1fr; }
+  .manual-lineup-confirmation-row { grid-template-columns: 38px 62px minmax(0, 1fr); }
   .v3-lineup-row { grid-template-columns: 36px repeat(2, minmax(0, 1fr)); }
   .v3-lineup-row input:nth-of-type(n + 3) { grid-column: span 1; }
   .game-heading { align-items: flex-start; }

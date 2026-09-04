@@ -299,6 +299,8 @@ test("手動スタメンはjob投入なしで保存・確定し、自動取得�
   assert.match(adminSource, /selectionSafetyNotice/);
   assert.match(uiSource, /manual-lineup-target/);
   assert.match(uiSource, /manual-lineup-confirmation-list/);
+  assert.match(uiSource, /manual-lineup-confirmation-row/);
+  assert.match(uiSource, /manual-lineup-duplicate-warning/);
 });
 
 test("manual lineupのsave/finalize APIは実handler経由で保存し、score jobを直接投入しない", async () => {

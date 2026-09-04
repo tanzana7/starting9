@@ -54,9 +54,9 @@ test("診断表示はATTENTIONを強調し、詳細を折りたためる", () =>
 });
 
 test("admin-v3のmanual lineup safety変更assetが専用cache busterを使う", () => {
-  assert.match(pageSource, /admin-v3\.css\?v=manual-lineup-finalize-safety-1/);
+  assert.match(pageSource, /admin-v3\.css\?v=manual-lineup-confirmation-1/);
   assert.match(pageSource, /admin-v3\.js\?v=manual-lineup-finalize-safety-1/);
-  assert.match(pageSource, /render-manual-lineup\.js\?v=manual-lineup-finalize-safety-1/);
+  assert.match(pageSource, /render-manual-lineup\.js\?v=manual-lineup-confirmation-1/);
   assert.match(pageSource, /render-game-progress\.js\?v=manual-lineup-finalize-safety-1/);
   assert.doesNotMatch(pageSource, /admin-v3-fetch-safety-status-1/);
 });

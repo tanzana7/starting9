@@ -172,7 +172,7 @@ test("overviewはCron監査時刻をToday Opsへ返し、管理画面は専用�
   assert.match(diagnosticsSource, /futureShortage/);
   assert.match(diagnosticsSource, /renderStep\("スタメン", steps\.lineup, steps\.lineupDetail\)/);
   assert.match(page, /admin-v3\.js\?v=manual-lineup-finalize-safety-1/);
-  assert.match(page, /admin-v3\.css\?v=manual-lineup-finalize-safety-1/);
+  assert.match(page, /admin-v3\.css\?v=manual-lineup-confirmation-1/);
   assert.match(css, /today-ops-panel/);
   assert.match(css, /@media \(max-width: 720px\)[\s\S]*today-ops-metrics, \.today-ops-steps \{ grid-template-columns: 1fr; \}/);
 });

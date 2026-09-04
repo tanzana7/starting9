@@ -13,6 +13,7 @@ import {
   MANUAL_ROSTER_TEAM,
   getManualRoster,
   prioritizeManualRosterCatalog,
+  saveManualRoster,
   validateManualRosterEntries
 } from "../backend/automation-v3/manual-roster-repository.js";
 
@@ -129,6 +130,43 @@ test("manual roster repositoryはlineupテーブルへ触れず、取得件数�
   const result = await getManualRoster(env.AUTH_DB);
   assert.equal(result.schemaAvailable, true);
   assert.equal(result.entries.length, 0);
+});
+
+test("manual rosterの空保存は全野手をinactiveとして永続化し、static fallbackへ戻らない", async () => {
+  const { env } = await makeEnv();
+  const catalog = getManualLineupPlayerCatalog();
+  const saved = await saveManualRoster(env.AUTH_DB, {
+    teamCode: "fighters",
+    entries: [],
+    updatedBy: "admin:empty-roster",
+    now: new Date("2026-09-04T00:00:00.000Z"),
+    catalog
+  });
+  assert.equal(saved.source, "manual");
+  assert.equal(saved.isManualSaved, true);
+  assert.ok(saved.entries.length > 0);
+  assert.ok(saved.entries.every((entry) => entry.status === "inactive"));
+  assert.equal(saved.updatedBy, "admin:empty-roster");
+
+  const reread = await getManualRoster(env.AUTH_DB);
+  assert.equal(reread.source, "manual");
+  assert.equal(reread.isManualSaved, true);
+  assert.deepEqual(reread.entries.map((entry) => entry.status), saved.entries.map((entry) => entry.status));
+  const prioritized = prioritizeManualRosterCatalog(catalog, reread);
+  assert.equal(prioritized.some((player) => player.manualRosterActive === true), false);
+  assert.ok(prioritized.filter((player) => player.manualRosterStatus === "inactive").length > 0);
+});
+
+test("manual保存済み空状態は行が空でもfallbackを使わない契約を維持する", () => {
+  const catalog = [{ playerId: "F-1", playerName: "保存済み空状態" }];
+  const prioritized = prioritizeManualRosterCatalog(catalog, {
+    schemaAvailable: true,
+    source: "manual",
+    isManualSaved: true,
+    entries: []
+  });
+  assert.equal(prioritized[0].manualRosterActive, false);
+  assert.equal(prioritized[0].manualRosterSource, null);
 });
 
 test("manual roster UIはIME検索・確認保存・lineup分離を明示する", () => {

@@ -85,7 +85,7 @@
 
   function readBattingHand(value) {
     if (!value || typeof value !== "object") return "";
-    const directFields = ["bats", "battingSide", "batSide"];
+    const directFields = ["bats", "battingSide", "batSide", "battingHand"];
     for (const field of directFields) {
       const hand = normalizeBattingHand(value[field]);
       if (hand) return hand;
@@ -105,7 +105,7 @@
         if (hand) return hand;
       }
     }
-    return "";
+    return normalizeBattingHand(getPlayerDetails(value)?.battingHand);
   }
 
   function getPlayerBattingHandedness(player) {

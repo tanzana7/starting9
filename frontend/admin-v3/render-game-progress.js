@@ -445,11 +445,16 @@
       if (!game) return renderSelectedGameHeader(null, "スタメン");
       const details = selectedDetails();
       const current = details.lineup?.currentRevision;
+      const finalRevision = details.lineup?.finalRevision || (current?.isFinal ? current : null);
+      const canonicalStatus = details.lineup?.lineupStatus || "pending";
+      const persistedState = game.state?.state || game.workflowState || "scheduled";
+      const effectiveState = game.effectiveState || game.workflowDiagnostics?.effectiveState || game.workflowDiagnostics?.state || persistedState;
       const revisions = normalizeRevisionList(details.revisions);
       const revisionMarkup = revisions.items.map((revision) => `<div class="revision-row"><span><strong>${escapeHtml(revision.revisionId)}</strong> / ${escapeHtml(revision.source)} / ${escapeHtml(revision.reason || "-")}</span><span>${revision.isFinal ? "final" : "candidate"} ${escapeHtml(formatJst(revision.createdAt))}</span></div>`).join("") || "<span class=muted>revision履歴はありません。</span>";
       const revisionWarning = revisions.unexpected ? `<p class="v3-operation-result"><code>REVISION_SHAPE_UNEXPECTED</code> revision履歴の形式を確認できませんでした。</p>` : "";
+      const stateWarning = persistedState !== effectiveState ? `<p class="v3-operation-warning" data-v3-state-mismatch-warning>workflow state不一致: persisted=${escapeHtml(persistedState)} / effective=${escapeHtml(effectiveState)}。成果物の反映後に正式Cronの状態同期を待ってください。</p>` : "";
       const manualMarkup = typeof renderManualLineup === "function" ? renderManualLineup(game, details) : "";
-      return `${renderSelectedGameHeader(game, "スタメン", "V3が取得・確定したスタメンrevisionを確認します。")}<section class="v3-panel"><div class="detail-grid"><div><dt>最新revision</dt><dd>${escapeHtml(current?.revisionId || "未作成")}</dd></div><div><dt>正式確定</dt><dd>${escapeHtml(details.lineup?.lineupStatus || "待機")}</dd></div><div><dt>source / finalizedAt</dt><dd>${escapeHtml(`${current?.source || "-"} / ${formatJst(details.lineup?.finalizedAt)}`)}</dd></div></div><h3>revision履歴</h3>${revisionWarning}<div class="revision-list">${revisionMarkup}</div><h3>取得・確定job</h3>${renderJobRows(game, ["lineup_fetch", "lineup_finalize"])}</section>${manualMarkup}`;
+      return `${renderSelectedGameHeader(game, "スタメン", "V3が取得・確定したスタメンrevisionを確認します。")}<section class="v3-panel"><div class="detail-grid"><div><dt>最新revision</dt><dd>${escapeHtml(current?.revisionId || "未作成")}</dd></div><div><dt>revision状態</dt><dd>${finalRevision?.isFinal ? "final（正式revision）" : "candidate（下書き）"}</dd></div><div><dt>canonical lineup</dt><dd>${escapeHtml(canonicalStatus)}</dd></div><div><dt>workflow persisted</dt><dd>${escapeHtml(persistedState)}</dd></div><div><dt>workflow effective</dt><dd>${escapeHtml(effectiveState)}</dd></div><div><dt>finalizedAt</dt><dd>${escapeHtml(formatJst(details.lineup?.finalizedAt || finalRevision?.finalizedAt))}</dd></div></div>${stateWarning}<p class="muted">revisionの正式確定とcanonical lineupの採点状態は別管理です。canonicalがpendingでもrevision finalの確定記録は保持されます。</p><h3>revision履歴</h3>${revisionWarning}<div class="revision-list">${revisionMarkup}</div><h3>取得・確定job</h3>${renderJobRows(game, ["lineup_fetch", "lineup_finalize"])}</section>${manualMarkup}`;
     }
 
     function renderScoringView(game) {

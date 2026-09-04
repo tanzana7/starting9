@@ -53,10 +53,10 @@ test("診断表示はATTENTIONを強調し、詳細を折りたためる", () =>
   assert.match(cssSource, /\.v3-job-diagnostic-grid/);
 });
 
-test("admin-v3の変更済みassetがshadow recovery plan用cache busterを使う", () => {
-  const matches = pageSource.match(/admin-v3-v35-diagnostics-readability-1/g) || [];
-  assert.equal(matches.length, 10);
-  const shadowMatches = pageSource.match(/admin-v3-v35-shadow-recovery-plan-1/g) || [];
-  assert.equal(shadowMatches.length, 2);
+test("admin-v3のmanual lineup safety変更assetが専用cache busterを使う", () => {
+  assert.match(pageSource, /admin-v3\.css\?v=manual-lineup-finalize-safety-1/);
+  assert.match(pageSource, /admin-v3\.js\?v=manual-lineup-finalize-safety-1/);
+  assert.match(pageSource, /render-manual-lineup\.js\?v=manual-lineup-finalize-safety-1/);
+  assert.match(pageSource, /render-game-progress\.js\?v=manual-lineup-finalize-safety-1/);
   assert.doesNotMatch(pageSource, /admin-v3-fetch-safety-status-1/);
 });

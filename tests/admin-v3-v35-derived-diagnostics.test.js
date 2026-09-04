@@ -77,8 +77,8 @@ test("admin-v3 uses the V3.5 derived diagnostics cache buster", () => {
   const page = read("admin-v3.html");
   const expected = "admin-v3-v35-diagnostics-readability-1";
   assert.match(page, new RegExp(expected));
-  assert.match(page, /admin-v3\.css\?v=admin-v3-v35-shadow-recovery-plan-1/);
-  assert.match(page, /render-game-progress\.js\?v=admin-v3-v35-shadow-recovery-plan-1/);
+  assert.match(page, /admin-v3\.css\?v=manual-lineup-finalize-safety-1/);
+  assert.match(page, /render-game-progress\.js\?v=manual-lineup-finalize-safety-1/);
   assert.doesNotMatch(page, /admin-v3-ranking-status-labels-1/);
 });
 

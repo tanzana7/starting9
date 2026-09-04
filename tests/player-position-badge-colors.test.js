@@ -6,6 +6,7 @@ const vm = require("node:vm");
 
 const root = path.join(__dirname, "..");
 const publicDisplaySource = fs.readFileSync(path.join(root, "frontend", "public", "player-display.js"), "utf8");
+const fightersDetailsSource = fs.readFileSync(path.join(root, "frontend", "public", "fighters-player-details.js"), "utf8");
 const publicScriptSource = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const lineupRendererSource = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-manual-lineup.js"), "utf8");
 const rosterRendererSource = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-manual-roster.js"), "utf8");
@@ -24,6 +25,13 @@ function loadPublicDisplay() {
   return context.window.Starting9Public;
 }
 
+function loadPublicDisplayWithFightersDetails() {
+  const context = { window: { Starting9Public: {} } };
+  vm.runInNewContext(fightersDetailsSource, context);
+  vm.runInNewContext(publicDisplaySource, context);
+  return context.window.Starting9Public;
+}
+
 function loadAdminRenderers() {
   const context = { window: { Starting9Public: loadPublicDisplay() } };
   vm.runInNewContext(`${lineupRendererSource}\n${rosterRendererSource}`, context);
@@ -36,6 +44,14 @@ test("打席左右だけを右・左・両の色ラインclassへ変換する", 
   assert.equal(helpers.getPlayerBattingClass({ battingSide: "左打" }), "player-name--bat-left");
   assert.equal(helpers.getPlayerBattingClass({ batSide: "switch" }), "player-name--bat-switch");
   assert.equal(helpers.getPlayerBattingClass({ handedness: "右投左打" }), "player-name--bat-left");
+});
+
+test("Fighters静的詳細の投打情報から打席左右ラインclassを解決する", () => {
+  const helpers = loadPublicDisplayWithFightersDetails();
+  assert.equal(helpers.getPlayerBattingClass({ playerName: "水谷 瞬" }), "player-name--bat-right");
+  assert.equal(helpers.getPlayerBattingClass({ playerName: "郡司 裕也" }), "player-name--bat-right");
+  assert.equal(helpers.getPlayerBattingClass({ playerName: "水野 達稀" }), "player-name--bat-left");
+  assert.equal(helpers.getPlayerBattingClass({ playerName: "矢澤 宏太" }), "player-name--bat-left");
 });
 
 test("守備位置の右左や投球左右は打席左右として誤表示しない", () => {
@@ -110,6 +126,23 @@ test("admin manual roster候補と登録済み表示に打席左右ラインclas
   const html = renderer.render(state);
   assert.match(html, /player-name player-name--bat-left">[\s\S]*\[1\][\s\S]*左打選手/);
   assert.match(html, /class="player-name">[\s\S]*\[2\][\s\S]*不明選手/);
+});
+
+test("admin表示もFighters静的詳細の打席左右を選手名へ反映する", () => {
+  const context = { window: { Starting9Public: loadPublicDisplayWithFightersDetails() } };
+  vm.runInNewContext(`${lineupRendererSource}\n${rosterRendererSource}`, context);
+  const lineupRenderer = context.window.Starting9AdminV3.createAdminV3ManualLineupRenderer({ escapeHtml });
+  const rosterRenderer = context.window.Starting9AdminV3.createAdminV3ManualRosterRenderer({ escapeHtml });
+  const catalog = [
+    { playerId: "F-53", playerName: "水谷 瞬", uniformNumber: "53" },
+    { playerId: "F-43", playerName: "水野 達稀", uniformNumber: "43" }
+  ];
+  const lineup = lineupRenderer.renderCandidates(catalog, { search: "" }, 0);
+  const roster = rosterRenderer.render({ catalog, entries: [] });
+  assert.match(lineup, /player-name player-name--bat-right[\s\S]*\[53\][\s\S]*水谷 瞬/);
+  assert.match(lineup, /player-name player-name--bat-left[\s\S]*\[43\][\s\S]*水野 達稀/);
+  assert.match(roster, /player-name player-name--bat-right[\s\S]*\[53\][\s\S]*水谷 瞬/);
+  assert.match(roster, /player-name player-name--bat-left[\s\S]*\[43\][\s\S]*水野 達稀/);
 });
 
 test("admin表示は不正な背番号を表示せず、正常値は#形式を重ねない", () => {

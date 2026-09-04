@@ -396,6 +396,44 @@ function selectedV3Game(games) {
   return found || items[0] || null;
 }
 
+function isV3FightersGame(game) {
+  const teamCodes = [game?.homeTeam, game?.awayTeam, game?.home_team, game?.away_team]
+    .map((value) => String(value || "").trim().toLowerCase());
+  return teamCodes.includes("f") || teamCodes.includes("fighters");
+}
+
+function isV3UncompletedGame(game) {
+  const workflowState = String(game?.state?.state || game?.workflowState || game?.workflow_status || "scheduled").trim().toLowerCase();
+  const gameStatus = String(game?.gameStatus || game?.game_status || "scheduled").trim().toLowerCase();
+  return !["published", "cancelled", "canceled", "service_unavailable", "excluded"].includes(workflowState)
+    && !["completed", "cancelled", "canceled", "service_unavailable"].includes(gameStatus);
+}
+
+function preferredV3OperationalGame(games, now = new Date()) {
+  const today = v3JstDate(now);
+  return v3ListItems(games, "games")
+    .filter((game) => isV3FightersGame(game) && gameDateForFilter(game) === today && isV3UncompletedGame(game))
+    .sort((left, right) => String(left.startAt || left.start_time || "").localeCompare(String(right.startAt || right.start_time || "")))[0] || null;
+}
+
+function manualLineupFinalizeSafety(game, now = new Date()) {
+  const gameDate = gameDateForFilter(game);
+  const startAt = game?.startAt || game?.start_at || game?.startTime || game?.start_time || "";
+  const today = v3JstDate(now);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(gameDate) || gameDate !== today) {
+    return { allowed: false, code: "V3_MANUAL_LINEUP_FINALIZE_NOT_TODAY", message: `本日(${today})以外の試合には正式スタメンを確定できません。対象試合日: ${gameDate || "不明"}` };
+  }
+  const parsedStartAt = new Date(startAt);
+  if (Number.isNaN(parsedStartAt.getTime())) {
+    return { allowed: false, code: "V3_MANUAL_LINEUP_FINALIZE_SCHEDULE_REQUIRED", message: "試合開始時刻を確認できないため、正式スタメンを確定できません。" };
+  }
+  const deadline = new Date(parsedStartAt.getTime() - 60 * 60 * 1000);
+  if (now.getTime() < deadline.getTime()) {
+    return { allowed: false, code: "V3_MANUAL_LINEUP_FINALIZE_NOT_DUE", message: `予想締切(${formatV3Jst(deadline)})前のため、正式スタメンを確定できません。` };
+  }
+  return { allowed: true, code: "", message: "" };
+}
+
 function selectedV3Details() {
   return v3State.operationDetails.get(v3State.selectedGameId) || {};
 }
@@ -814,7 +852,7 @@ const v3RosterRenderer = adminV3Modules.createAdminV3RosterRenderer({
 const v3PerfectScoreRenderer = adminV3Modules.createAdminV3PerfectScoreRenderer({ state: v3State, escapeHtml: escapeV3 });
 const v3RankingResetRenderer = adminV3Modules.createAdminV3RankingResetRenderer({ state: v3State, escapeHtml: escapeV3, formatJst: formatV3Jst });
 const v3ManualGamePreviewRenderer = adminV3Modules.createAdminV3ManualGamePreviewRenderer({ escapeHtml: escapeV3 });
-const v3ManualLineupRenderer = adminV3Modules.createAdminV3ManualLineupRenderer({ escapeHtml: escapeV3 });
+const v3ManualLineupRenderer = adminV3Modules.createAdminV3ManualLineupRenderer({ escapeHtml: escapeV3, formatJst: formatV3Jst, getFinalizeSafety: manualLineupFinalizeSafety });
 const v3ManualRosterRenderer = adminV3Modules.createAdminV3ManualRosterRenderer({ escapeHtml: escapeV3 });
 const v3DiagnosticsRenderer = adminV3Modules.createAdminV3DiagnosticsRenderer({
   state: v3State,
@@ -957,7 +995,24 @@ async function finalizeV3ManualLineup() {
     renderCurrentV3View();
     return;
   }
-  if (!window.confirm("この9人を正式スタメンとして確定します。確定後は採点対象となり、次回の正式V3 Cronが後続処理を行います。続行しますか？")) return;
+  const game = selectedV3Game(v3ListItems(v3State.payload?.games, "games"));
+  const safety = manualLineupFinalizeSafety(game);
+  if (!safety.allowed) {
+    state.error = safety.message;
+    renderCurrentV3View();
+    return;
+  }
+  const lineupSummary = state.rows.map((row, index) => `${index + 1}番 ${row.playerName || "未選択"} / ${row.position || "守備位置未選択"}`).join("\n");
+  const confirmation = [
+    "この試合に正式スタメンを確定します。",
+    `試合日: ${gameDateForFilter(game)}`,
+    `対戦: ${game?.homeTeam || "-"} vs ${game?.awayTeam || "-"}`,
+    `開始: ${formatV3Jst(game?.startAt || game?.start_time)} JST`,
+    `internalGameId: ${game?.internalGameId || "-"}`,
+    lineupSummary,
+    "内容を確認して続行しますか？"
+  ].join("\n");
+  if (!window.confirm(confirmation)) return;
   state.loading = true;
   state.error = "";
   state.message = "正式スタメンを確定中…";
@@ -1057,7 +1112,24 @@ function renderCurrentV3View() {
   if (!payload) return;
   const allGames = v3ListItems(payload.games, "games");
   const games = filteredV3Games(allGames, v3State.filter);
-  const game = selectedV3Game(allGames);
+  let game = selectedV3Game(allGames);
+  if (!v3State.selectionValidated) {
+    const preferred = preferredV3OperationalGame(allGames);
+    if (preferred && preferred.internalGameId !== game?.internalGameId) {
+      v3State.selectionSafetyNotice = `保存済みの選択を使わず、本日の未完了Fighters戦（${gameDateForFilter(preferred)} ${preferred.homeTeam} vs ${preferred.awayTeam}）を操作対象にしました。`;
+      v3State.selectedGameId = preferred.internalGameId;
+      v3StorageSet("starting9.admin-v3.selected-game", preferred.internalGameId);
+      updateV3Hash(v3State.view, preferred.internalGameId);
+      game = preferred;
+    } else {
+      const selectedDate = game ? gameDateForFilter(game) : "";
+      const selectedState = String(game?.state?.state || game?.workflowState || "scheduled").trim().toLowerCase();
+      v3State.selectionSafetyNotice = game && selectedDate > v3JstDate() && selectedState === "scheduled"
+        ? `現在の選択は未来のscheduled試合（${selectedDate} ${game.homeTeam} vs ${game.awayTeam}）です。正式スタメンを確定する前に対象試合を確認してください。`
+        : "";
+    }
+    v3State.selectionValidated = true;
+  }
   const filteredGame = selectedV3Game(games);
   if (game && v3State.selectedGameId !== game.internalGameId) {
     v3State.selectedGameId = game.internalGameId;
@@ -1072,7 +1144,8 @@ function renderCurrentV3View() {
   const externalFetchNotice = payload.npbFetchDisabled
     ? '<div class="v3-operation-result attention" data-v3-external-fetch-disabled><strong>NPB公式情報の取得を一時停止しています。</strong><span>新規の予告先発・ロースター・スタメン取得は停止中です。既存の保存済みデータと履歴は保持されます。</span></div>'
     : "";
-  view.innerHTML = v4Notice + externalFetchNotice + {
+  const selectionNotice = v3State.selectionSafetyNotice ? `<div class="v3-operation-result attention" data-v3-selection-safety-warning>${escapeV3(v3State.selectionSafetyNotice)}<span>正式スタメン確定前に、対象試合の日付・対戦カード・開始時刻・internalGameIdを確認してください。</span></div>` : "";
+  view.innerHTML = selectionNotice + v4Notice + externalFetchNotice + {
     dashboard: () => v3GameProgressRenderer.renderDashboard(payload, games),
     games: () => v3GameProgressRenderer.renderGamesView(games),
     workflow: () => v3GameProgressRenderer.renderWorkflowView(filteredGame || game),
@@ -1321,6 +1394,8 @@ async function refreshAutomationLogs() {
 
 async function selectV3Game(internalGameId, view = "workflow") {
   v3State.selectedGameId = internalGameId || "";
+  v3State.selectionValidated = true;
+  v3State.selectionSafetyNotice = "";
   v3StorageSet("starting9.admin-v3.selected-game", v3State.selectedGameId);
   chooseV3View(view);
   await loadV3OperationDetails();
@@ -1368,6 +1443,8 @@ function restoreInitialV3Route() {
   const initialV3Hash = readV3Hash();
   v3State.view = initialV3Hash.view;
   v3State.selectedGameId = initialV3Hash.gameId;
+  v3State.selectionValidated = false;
+  v3State.selectionSafetyNotice = "";
 }
 
 configureAdminLoginLink();

@@ -30,7 +30,8 @@
 
   function renderSelectedGameHeader(game, title, description = "") {
     if (!game) return `<div class="today-empty">対象試合を選択してください。</div>`;
-    return `<div class="view-heading"><div><h2>${escapeHtml(title)}</h2><p>${escapeHtml(description)}</p></div><div class="compact-meta"><strong>${escapeHtml(game.homeTeam)} vs ${escapeHtml(game.awayTeam)}</strong><span>${escapeHtml(formatJst(game.startAt))} JST</span></div></div>`;
+    const gameDate = String(game.gameDate || game.game_date || "").slice(0, 10) || formatJst(game.startAt).slice(0, 10);
+    return `<div class="view-heading"><div><h2>${escapeHtml(title)}</h2><p>${escapeHtml(description)}</p></div><div class="v3-selected-game-context" data-v3-selected-game-context><strong>${escapeHtml(gameDate)} / ${escapeHtml(game.homeTeam)} vs ${escapeHtml(game.awayTeam)}</strong><span>開始 ${escapeHtml(formatJst(game.startAt))} JST</span><code>internalGameId: ${escapeHtml(game.internalGameId || "-")}</code></div></div>`;
   }
 
   function createAdminV3Dom() {

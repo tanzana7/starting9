@@ -7,6 +7,8 @@
       view: "dashboard",
       filter: "all",
       selectedGameId: "",
+      selectionValidated: false,
+      selectionSafetyNotice: "",
       lastUpdatedAt: null,
       operationDetails: new Map(),
       jobDetails: new Map(),

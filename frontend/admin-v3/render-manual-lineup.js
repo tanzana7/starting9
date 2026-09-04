@@ -14,7 +14,7 @@
     }));
   }
 
-  function createAdminV3ManualLineupRenderer({ escapeHtml }) {
+  function createAdminV3ManualLineupRenderer({ escapeHtml, formatJst, getFinalizeSafety }) {
     function battingClass(player) {
       if (global.Starting9Public?.getPlayerBattingClass) return global.Starting9Public.getPlayerBattingClass(player);
       const source = player && typeof player === "object" ? player : {};
@@ -80,6 +80,12 @@
       const lineupDetails = details?.lineup || {};
       const catalog = Array.isArray(lineupDetails.playerCatalog) ? lineupDetails.playerCatalog : [];
       const rows = Array.isArray(state.rows) && state.rows.length === 9 ? state.rows : createBlankRows();
+      const finalizeSafety = typeof getFinalizeSafety === "function" ? getFinalizeSafety(game) : { allowed: true, message: "" };
+      const gameDate = String(game?.gameDate || game?.game_date || "").slice(0, 10) || "不明";
+      const startAt = typeof formatJst === "function" ? formatJst(game?.startAt || game?.start_time) : String(game?.startAt || game?.start_time || "-");
+      const targetMarkup = `<div class="manual-lineup-target" data-v3-manual-lineup-target><strong>正式スタメン確定対象</strong><span>${escapeHtml(gameDate)} / ${escapeHtml(game?.homeTeam || "-")} vs ${escapeHtml(game?.awayTeam || "-")}</span><span>開始 ${escapeHtml(startAt)} JST</span><code>internalGameId: ${escapeHtml(game?.internalGameId || "-")}</code></div>`;
+      const lineupSummary = `<ol class="manual-lineup-confirmation-list">${rows.map((row, index) => `<li>${index + 1}番: ${escapeHtml(row?.playerName || "未選択")} / ${escapeHtml(row?.position || "守備位置未選択")}</li>`).join("")}</ol>`;
+      const safetyMarkup = finalizeSafety.allowed ? "" : `<p class="manual-lineup-safety-warning" data-v3-manual-lineup-safety-warning>${escapeHtml(finalizeSafety.message)}</p>`;
       const locked = ["scored", "ranked", "published"].includes(String(game?.state?.state || game?.workflowState || "").toLowerCase())
         || ["processing", "scored"].includes(String(lineupDetails.lineupStatus || "").toLowerCase())
         || Boolean(lineupDetails.finalRevision?.isFinal)
@@ -92,7 +98,7 @@
       }).join("");
       const message = state.error ? `<p class="manual-lineup-message error">${escapeHtml(state.error)}</p>` : state.message ? `<p class="manual-lineup-message success">${escapeHtml(state.message)}</p>` : "";
       const disabled = locked || state.loading;
-      return `<section class="manual-lineup-editor" data-v3-manual-lineup-editor><div class="manual-lineup-header"><div><h3>Fighters 手動スタメン</h3><p>対象チーム1チーム・9人を選択します。選手名はマスター照合され、未登録名や重複は保存できません。</p></div><span class="manual-lineup-team">${escapeHtml(lineupDetails.managedTeam?.name || "Fighters")}</span></div><div class="manual-lineup-grid">${cards}</div><label class="manual-lineup-reason">入力理由<textarea rows="2" maxlength="240" placeholder="例: 公式発表を確認" data-v3-manual-lineup-reason ${disabled ? "disabled" : ""}>${escapeHtml(state.reason || "")}</textarea></label><label class="manual-lineup-confirm"><input type="checkbox" data-v3-manual-lineup-confirm ${state.confirmed ? "checked" : ""} ${disabled ? "disabled" : ""}> 入力内容を確認しました</label><div class="manual-lineup-actions"><button type="button" data-v3-manual-lineup-save ${disabled ? "disabled" : ""}>下書きを保存</button><button type="button" class="primary-button" data-v3-manual-lineup-finalize ${disabled || !state.latestRevision ? "disabled" : ""}>正式スタメンを確定</button></div>${locked ? `<p class="muted">採点開始後・公開後はスタメンを変更できません。</p>` : `<p class="muted">確定後はスコアjobを手動投入せず、次回の正式V3 Cronが採点へ進めます。</p>`}${message}</section>`;
+      return `<section class="manual-lineup-editor" data-v3-manual-lineup-editor>${targetMarkup}<div class="manual-lineup-header"><div><h3>Fighters 手動スタメン</h3><p>対象チーム1チーム・9人を選択します。選手名はマスター照合され、未登録名や重複は保存できません。</p></div><span class="manual-lineup-team">${escapeHtml(lineupDetails.managedTeam?.name || "Fighters")}</span></div><div class="manual-lineup-grid">${cards}</div><div class="manual-lineup-confirmation-preview"><strong>確定内容</strong>${lineupSummary}</div><label class="manual-lineup-reason">入力理由<textarea rows="2" maxlength="240" placeholder="例: 公式発表を確認" data-v3-manual-lineup-reason ${disabled ? "disabled" : ""}>${escapeHtml(state.reason || "")}</textarea></label><label class="manual-lineup-confirm"><input type="checkbox" data-v3-manual-lineup-confirm ${state.confirmed ? "checked" : ""} ${disabled ? "disabled" : ""}> 入力内容を確認しました</label>${safetyMarkup}<div class="manual-lineup-actions"><button type="button" data-v3-manual-lineup-save ${disabled ? "disabled" : ""}>下書きを保存</button><button type="button" class="primary-button" data-v3-manual-lineup-finalize ${disabled || !state.latestRevision || !finalizeSafety.allowed ? "disabled" : ""}>正式スタメンを確定</button></div>${locked ? `<p class="muted">採点開始後・公開後はスタメンを変更できません。</p>` : `<p class="muted">確定後はスコアjobを手動投入せず、次回の正式V3 Cronが採点へ進めます。</p>`}${message}</section>`;
     }
 
     return Object.freeze({ createBlankRows, renderCandidates, render });

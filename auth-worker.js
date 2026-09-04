@@ -7392,6 +7392,15 @@ async function handleAdminV3LineupRevisionCreate(request, env, cors, context, us
 
 async function handleAdminV3LineupFinalize(request, env, cors, context, user) {
   assertManagedManualLineupGame(context);
+  const now = new Date();
+  const finalizeWindow = getManualLineupFinalizeDecision({
+    gameDate: context.target?.game_date,
+    startAt: context.target?.start_time,
+    now
+  });
+  if (!finalizeWindow.allowed) {
+    throw createV3Error(finalizeWindow.code, finalizeWindow.message, { httpStatus: 409, retryable: false });
+  }
   const input = await readJson(request);
   if (input?.confirmed !== true) throw createV3Error("V3_CONFIRMATION_REQUIRED", "正式スタメンの入力確認が必要です。", { httpStatus: 409 });
   const reason = String(input?.reason || "").trim();
@@ -7417,10 +7426,10 @@ async function handleAdminV3LineupFinalize(request, env, cors, context, user) {
     throw createV3Error("V3_LINEUP_FINALIZE_IN_PROGRESS", "採点中は別のスタメンrevisionへ差し替えできません。", { httpStatus: 409 });
   }
   if (!currentLineup || currentLineup.scoring_status !== "scored") {
-    await saveActualLineupForAutoScoring(env.AUTH_DB, context.metadata.gameId, actual.lineup, new Date(), { allowAfterStart: true, now: new Date(), source: "manual", internalGameId: context.id, scoringDueAt: new Date() });
+    await saveActualLineupForAutoScoring(env.AUTH_DB, context.metadata.gameId, actual.lineup, now, { allowAfterStart: true, now, source: "manual", internalGameId: context.id, scoringDueAt: now });
   }
-  await activateLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, version: Number(revision.version), finalizedAt: new Date(), finalizedBy: "admin" });
-  await linkFinalLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, version: Number(revision.version), finalizedAt: new Date(), finalizedBy: "admin" });
+  await activateLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, version: Number(revision.version), finalizedAt: now, finalizedBy: "admin" });
+  await linkFinalLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, version: Number(revision.version), finalizedAt: now, finalizedBy: "admin" });
   const state = await env.AUTH_DB.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(context.id).first();
   await recordV3AdminAudit(env.AUTH_DB, { internalGameId: context.id, jobType: "admin:lineup_finalize", stateBefore: state?.state || null, stateAfter: "lineup_ready" });
   return jsonResponse({ ok: true, internalGameId: context.id, finalizedRevision: serializeV3LineupRevision({ ...revision, is_final: 1, is_current: 1, finalized_by: "admin", finalized_at: new Date().toISOString() }), scoreJob: null, nextAction: "formal_cron_score", rescoreRequired: false }, 200, cors);
@@ -19737,6 +19746,59 @@ export function isManualLineupEditAllowed({ workflowState = "scheduled", scoring
   return !MANUAL_LINEUP_EDIT_LOCKED_STATES.has(state)
     && !["processing", "scored"].includes(scoring)
     && publication !== "published";
+}
+
+export function getManualLineupFinalizeDecision({ gameDate = "", startAt = "", now = new Date() } = {}) {
+  const current = now instanceof Date ? now : new Date(now);
+  const normalizedGameDate = String(gameDate || "").trim().slice(0, 10);
+  if (Number.isNaN(current.getTime()) || !/^\d{4}-\d{2}-\d{2}$/.test(normalizedGameDate)) {
+    return {
+      allowed: false,
+      code: "V3_MANUAL_LINEUP_FINALIZE_SCHEDULE_REQUIRED",
+      message: "試合日と開始時刻を確認できないため、正式スタメンを確定できません。"
+    };
+  }
+  const today = getJstDateString(current);
+  if (normalizedGameDate !== today) {
+    return {
+      allowed: false,
+      code: "V3_MANUAL_LINEUP_FINALIZE_NOT_TODAY",
+      message: `本日(${today})以外の試合には正式スタメンを確定できません。対象試合日: ${normalizedGameDate}`,
+      gameDate: normalizedGameDate,
+      today
+    };
+  }
+  const parsedStartAt = parseManagedGameStart(startAt, normalizedGameDate);
+  if (!parsedStartAt || getJstDateString(parsedStartAt) !== normalizedGameDate) {
+    return {
+      allowed: false,
+      code: "V3_MANUAL_LINEUP_FINALIZE_SCHEDULE_REQUIRED",
+      message: "試合開始時刻を確認できないため、正式スタメンを確定できません。",
+      gameDate: normalizedGameDate,
+      today
+    };
+  }
+  const predictionDeadlineAt = new Date(parsedStartAt.getTime() - V3_TIMING.predictionDeadlineMinutes * 60 * 1000);
+  if (current.getTime() < predictionDeadlineAt.getTime()) {
+    return {
+      allowed: false,
+      code: "V3_MANUAL_LINEUP_FINALIZE_NOT_DUE",
+      message: `予想締切(${predictionDeadlineAt.toISOString()})前のため、正式スタメンを確定できません。`,
+      gameDate: normalizedGameDate,
+      today,
+      startAt: parsedStartAt.toISOString(),
+      predictionDeadlineAt: predictionDeadlineAt.toISOString()
+    };
+  }
+  return {
+    allowed: true,
+    code: "",
+    message: "",
+    gameDate: normalizedGameDate,
+    today,
+    startAt: parsedStartAt.toISOString(),
+    predictionDeadlineAt: predictionDeadlineAt.toISOString()
+  };
 }
 
 function assertManagedManualLineupGame(context) {

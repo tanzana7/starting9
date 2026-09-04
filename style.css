@@ -2724,32 +2724,34 @@ textarea:focus {
 .player-name--bat-left,
 .player-name--bat-switch {
   box-sizing: border-box;
-  padding-left: 8px;
+  padding-left: 0;
 }
 
-.player-name--bat-right::before,
-.player-name--bat-left::before,
-.player-name--bat-switch::before {
+.lineup-slot,
+.saved-lineup-row {
+  position: relative;
+}
+
+.lineup-slot:has(.player-name--bat-right)::before,
+.lineup-slot:has(.player-name--bat-left)::before,
+.lineup-slot:has(.player-name--bat-switch)::before,
+.saved-lineup-row:has(.player-name--bat-right)::before,
+.saved-lineup-row:has(.player-name--bat-left)::before,
+.saved-lineup-row:has(.player-name--bat-switch)::before {
   position: absolute;
-  inset: 3px auto 3px 0;
+  z-index: 1;
+  inset: 4px auto 4px 0;
   width: 4px;
   border-radius: 999px;
   content: "";
 }
 
-.player-name--bat-right::before { background: #d64545; }
-.player-name--bat-left::before { background: #2878c8; }
-.player-name--bat-switch::before { background: #2f9a62; }
-
-/* Keep the accent at the name box edge while leaving the text readable in every public layout. */
-.slot-player .player-name.player-name--bat-right,
-.slot-player .player-name.player-name--bat-left,
-.slot-player .player-name.player-name--bat-switch,
-.result-player-name.player-name--bat-right,
-.result-player-name.player-name--bat-left,
-.result-player-name.player-name--bat-switch {
-  padding-left: 8px;
-}
+.lineup-slot:has(.player-name--bat-right)::before,
+.saved-lineup-row:has(.player-name--bat-right)::before { background: #d64545; }
+.lineup-slot:has(.player-name--bat-left)::before,
+.saved-lineup-row:has(.player-name--bat-left)::before { background: #2878c8; }
+.lineup-slot:has(.player-name--bat-switch)::before,
+.saved-lineup-row:has(.player-name--bat-switch)::before { background: #2f9a62; }
 
 .player-number {
   display: inline-block;

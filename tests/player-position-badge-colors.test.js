@@ -169,12 +169,13 @@ test("色ラインは固定幅でスマホ表示を圧迫せず、未知・空�
   const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
   const adminCss = fs.readFileSync(path.join(root, "admin-v3.css"), "utf8");
   for (const source of [css, adminCss]) {
-    assert.match(source, /player-name--bat-right[\s\S]*box-sizing: border-box[\s\S]*padding-left: 8px/);
-    assert.match(source, /player-name--bat-right::before[\s\S]*inset: 3px auto 3px 0[\s\S]*width: 4px/);
-    assert.match(source, /player-name--bat-right::before \{ background: #d64545; \}/);
-    assert.match(source, /player-name--bat-left::before \{ background: #2878c8; \}/);
-    assert.match(source, /player-name--bat-switch::before \{ background: #2f9a62; \}/);
+    assert.match(source, /:has\(\.player-name--bat-right\)::before[\s\S]*inset: 4px auto 4px 0[\s\S]*width: 4px/);
+    assert.match(source, /:has\(\.player-name--bat-right\)::before[\s\S]*background: #d64545/);
+    assert.match(source, /:has\(\.player-name--bat-left\)::before[\s\S]*background: #2878c8/);
+    assert.match(source, /:has\(\.player-name--bat-switch\)::before[\s\S]*background: #2f9a62/);
   }
-  assert.match(css, /\.slot-player \.player-name\.player-name--bat-right/);
-  assert.match(css, /\.result-player-name\.player-name--bat-left/);
+  assert.match(css, /\.lineup-slot:has\(\.player-name--bat-right\)::before/);
+  assert.match(css, /\.saved-lineup-row:has\(\.player-name--bat-left\)::before/);
+  assert.match(adminCss, /\.manual-player-candidate-row:has\(\.player-name--bat-right\)::before/);
+  assert.match(adminCss, /\.manual-roster-row:has\(\.player-name--bat-left\)::before/);
 });

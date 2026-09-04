@@ -293,13 +293,45 @@ button:disabled { cursor: wait; opacity: .65; }
 .manual-roster-row .player-name { display: inline-block; }
 .player-name--bat-right,
 .player-name--bat-left,
-.player-name--bat-switch { position: relative; box-sizing: border-box; padding-left: 8px; }
-.player-name--bat-right::before,
-.player-name--bat-left::before,
-.player-name--bat-switch::before { position: absolute; inset: 3px auto 3px 0; width: 4px; border-radius: 999px; content: ""; }
-.player-name--bat-right::before { background: #d64545; }
-.player-name--bat-left::before { background: #2878c8; }
-.player-name--bat-switch::before { background: #2f9a62; }
+.player-name--bat-switch { box-sizing: border-box; padding-left: 0; }
+
+.manual-player-candidate-row,
+.manual-lineup-card-heading,
+.manual-roster-candidate,
+.manual-roster-row { position: relative; }
+
+.manual-player-candidate-row:has(.player-name--bat-right)::before,
+.manual-player-candidate-row:has(.player-name--bat-left)::before,
+.manual-player-candidate-row:has(.player-name--bat-switch)::before,
+.manual-lineup-card-heading:has(.player-name--bat-right)::before,
+.manual-lineup-card-heading:has(.player-name--bat-left)::before,
+.manual-lineup-card-heading:has(.player-name--bat-switch)::before,
+.manual-roster-candidate:has(.player-name--bat-right)::before,
+.manual-roster-candidate:has(.player-name--bat-left)::before,
+.manual-roster-candidate:has(.player-name--bat-switch)::before,
+.manual-roster-row:has(.player-name--bat-right)::before,
+.manual-roster-row:has(.player-name--bat-left)::before,
+.manual-roster-row:has(.player-name--bat-switch)::before {
+  position: absolute;
+  z-index: 1;
+  inset: 4px auto 4px 0;
+  width: 4px;
+  border-radius: 999px;
+  content: "";
+}
+
+.manual-player-candidate-row:has(.player-name--bat-right)::before,
+.manual-lineup-card-heading:has(.player-name--bat-right)::before,
+.manual-roster-candidate:has(.player-name--bat-right)::before,
+.manual-roster-row:has(.player-name--bat-right)::before { background: #d64545; }
+.manual-player-candidate-row:has(.player-name--bat-left)::before,
+.manual-lineup-card-heading:has(.player-name--bat-left)::before,
+.manual-roster-candidate:has(.player-name--bat-left)::before,
+.manual-roster-row:has(.player-name--bat-left)::before { background: #2878c8; }
+.manual-player-candidate-row:has(.player-name--bat-switch)::before,
+.manual-lineup-card-heading:has(.player-name--bat-switch)::before,
+.manual-roster-candidate:has(.player-name--bat-switch)::before,
+.manual-roster-row:has(.player-name--bat-switch)::before { background: #2f9a62; }
 .player-number {
   display: inline-block;
   margin-right: 4px;

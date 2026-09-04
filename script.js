@@ -1647,11 +1647,22 @@ function normalizeRosterEntries(players) {
     }
 
     seen.add(key);
-    normalizedEntries.push({
+    const normalizedEntry = {
       position: String(source.position || "").trim(),
       number: String(source.number || "").trim(),
       name: displayName
-    });
+    };
+    const handSources = [source, source.handedness, source.metadata, source.meta, source.rawMetadata, source.raw];
+    for (const handSource of handSources) {
+      if (!handSource || typeof handSource !== "object") continue;
+      ["bats", "battingSide", "batSide"].forEach((field) => {
+        if (normalizedEntry[field] === undefined && handSource[field] !== undefined && handSource[field] !== null) {
+          normalizedEntry[field] = String(handSource[field]).slice(0, 20);
+        }
+      });
+    }
+    if (typeof source.handedness === "string") normalizedEntry.handedness = source.handedness.slice(0, 40);
+    normalizedEntries.push(normalizedEntry);
   });
 
   return normalizedEntries;
@@ -5016,14 +5027,14 @@ function createResultPlayerCardHtml(player, position) {
   if (player === "未予想") {
     return `
       <span class="result-player-card result-player-card-empty">
-        <span class="result-player-name">未予想</span>
+        ${createPlayerNameHtml("未予想", "result-player-name")}
       </span>
     `;
   }
   return `
     <span class="result-player-card">
       ${createResultPositionTileHtml(position)}
-      <span class="result-player-name">${escapeHtml(formatPlayerNameForDisplay(player || "-"))}</span>
+      ${createPlayerNameHtml(player || "-", "result-player-name")}
     </span>
   `;
 }
@@ -5076,10 +5087,18 @@ function createPredictionSummary(prediction) {
         <span class="result-position-tile saved-position-chip is-${positionCategory}" aria-label="守備位置 ${escapeHtml(normalizedPosition || "未選択")}">
           ${escapeHtml(normalizedPosition || "－")}
         </span>
-        <span class="saved-lineup-name">${escapeHtml(formatPlayerNameForDisplay(lineupItem.player))}</span>
+        <span class="saved-lineup-player-cell">
+          ${createPlayerNameHtml(lineupItem.player, "saved-lineup-name")}
+          ${createPlayerDetailTriggerHtml(lineupItem.player)}
+        </span>
       </span>
     `;
     list.appendChild(listItem);
+  });
+
+  list.addEventListener("click", (event) => {
+    const trigger = event.target.closest?.("[data-player-detail-only]");
+    if (trigger) showPlayerDetails("prediction", trigger.dataset.playerDetailOnly, { allowSelect: false });
   });
 
   wrapper.append(title, meta, tableHeader, list);
@@ -5388,8 +5407,17 @@ function escapeHtml(value) {
 }
 
 function getPlayerData(playerName) {
-  const playerKey = normalizePlayerKey(playerName);
-  return players.find((player) => normalizePlayerKey(player.name) === playerKey) || null;
+  const source = playerName && typeof playerName === "object" ? playerName : null;
+  const rawName = source?.name || source?.playerName || source?.displayName || playerName;
+  const playerKey = normalizePlayerKey(rawName);
+  const masterPlayer = players.find((player) => normalizePlayerKey(player.name) === playerKey) || null;
+  const rosterPlayer = normalizeRosterEntries(state.publicRoster?.players).find((player) => normalizePlayerKey(player.name) === playerKey) || null;
+  const sourcePlayer = source && playerKey ? source : null;
+  const mergedPlayer = masterPlayer && rosterPlayer
+    ? { ...masterPlayer, ...rosterPlayer, ...sourcePlayer }
+    : masterPlayer || rosterPlayer || sourcePlayer;
+  const playerDetails = publicFrontend.getPlayerDetails?.(mergedPlayer || rawName);
+  return playerDetails ? { ...(mergedPlayer || {}), ...playerDetails } : mergedPlayer;
 }
 
 function createPlayerCategoryBadgeHtml(playerName) {
@@ -5448,7 +5476,22 @@ function getPositionCategory(position) {
 }
 
 function createPlayerLabelHtml(playerName) {
-  return `<span class="player-name">${escapeHtml(formatPlayerNameForDisplay(playerName))}</span>`;
+  return createPlayerNameHtml(playerName);
+}
+
+function createPlayerDetailTriggerHtml(playerName) {
+  const player = getPlayerData(playerName);
+  if (!player || !window.Starting9Public?.getPlayerDetails?.(player)) return "";
+  return `<button type="button" class="player-detail-inline-button" data-player-detail-only="${escapeHtml(player.name || playerName)}">詳細</button>`;
+}
+
+function createPlayerNameHtml(playerName, baseClass = "player-name") {
+  const player = getPlayerData(playerName);
+  const battingClass = window.Starting9Public?.getPlayerBattingClass?.(player) || "";
+  const uniformNumber = window.Starting9Public?.getPlayerUniformNumber?.(player) || "";
+  const classes = [baseClass, battingClass].filter(Boolean).join(" ");
+  const numberMarkup = uniformNumber ? `<span class="player-number" aria-hidden="true">[${escapeHtml(uniformNumber)}]</span> ` : "";
+  return `<span class="${classes}">${numberMarkup}${escapeHtml(formatPlayerNameForDisplay(playerName, player))}</span>`;
 }
 
 function getPlayerCategoryClass(playerName) {
@@ -5478,7 +5521,7 @@ function showSlotPlayerDetails(pickerName, slot) {
   }
 }
 
-function showPlayerDetails(pickerName, playerName) {
+function showPlayerDetails(pickerName, playerName, { allowSelect = true } = {}) {
   const player = getPlayerData(playerName);
   const panel = document.getElementById(`${pickerName}PlayerDetails`);
 
@@ -5488,6 +5531,16 @@ function showPlayerDetails(pickerName, playerName) {
 
   const npbasePlayerUrl = getNpbasePlayerUrl(player);
   const positions = createPlayerPositionBadgesHtml(player.name);
+  const detailRows = [
+    ["背番号", player.uniformNumber],
+    ["登録区分", player.registrationType],
+    ["カテゴリ", player.category],
+    ["生年月日", player.birthDate],
+    ["身長/体重", player.heightCm && player.weightKg ? `${player.heightCm}cm / ${player.weightKg}kg` : ""],
+    ["投打", player.throwingHand && player.battingHand ? `${player.throwingHand}投${player.battingHand}打` : ""],
+    ["備考", player.note]
+  ].filter(([, value]) => String(value || "").trim());
+  const detailMeta = detailRows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
   panel.className = "player-detail-overlay";
   panel.setAttribute("aria-hidden", "false");
   panel.innerHTML = `
@@ -5500,8 +5553,7 @@ function showPlayerDetails(pickerName, playerName) {
         <button class="player-detail-close" type="button" aria-label="選手詳細を閉じる">×</button>
       </div>
       <dl class="player-detail-meta">
-        <div><dt>背番号</dt><dd>${escapeHtml(player.uniformNumber || "-")}</dd></div>
-        <div><dt>登録区分</dt><dd>${escapeHtml(player.registeredPosition || "未設定")}</dd></div>
+        ${detailMeta || `<div><dt>登録区分</dt><dd>${escapeHtml(player.registeredPosition || "未設定")}</dd></div>`}
       </dl>
       <div class="player-detail-positions">
         <strong>守備候補</strong>
@@ -5510,7 +5562,7 @@ function showPlayerDetails(pickerName, playerName) {
       <div class="player-detail-links">
         <a href="${escapeHtml(npbasePlayerUrl)}" target="_blank" rel="noopener noreferrer">選手成績を見る（NPBase）</a>
       </div>
-      <button class="primary-button player-detail-select" type="button">この選手を選択</button>
+      ${allowSelect ? '<button class="primary-button player-detail-select" type="button">この選手を選択</button>' : ""}
     </div>
   `;
   panel.classList.remove("hidden");

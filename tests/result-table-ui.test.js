@@ -245,7 +245,7 @@ test("結果テーブルの選手セルにはカテゴリ背景クラスを付�
   assert.doesNotMatch(table, /getPlayerCategoryClassNames\(detail\.(player|actualPlayer)\)/);
   assert.match(card, /class="result-player-card"/);
   assert.match(card, /createResultPositionTileHtml\(position\)/);
-  assert.match(card, /class="result-player-name"/);
+  assert.match(card, /result-player-name/);
   assert.match(card, /function createResultPlayerCardHtml\(player, position\)/);
   assert.match(card, /result-player-card-empty/);
   assert.doesNotMatch(card, /result-player-order/);

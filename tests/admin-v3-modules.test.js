@@ -21,6 +21,7 @@ function loadModules() {
   vm.createContext(context);
   for (const name of [
     "state",
+    "../public/player-display",
     "api-client",
     "dom",
     "render-manual-lineup",
@@ -42,10 +43,12 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
   const scripts = [...page.matchAll(/<script src="([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(scripts, [
     "frontend/admin-v3/state.js?v=admin-v3-v35-diagnostics-readability-1-manual-lineup-1",
+    "frontend/public/fighters-player-details.js?v=fighters-player-details-20260903-1",
+    "frontend/public/player-display.js?v=public-player-display-1-batting-hand-player-number-1-player-details-1",
     "frontend/admin-v3/api-client.js?v=same-origin-auth-session-1",
     "frontend/admin-v3/dom.js?v=admin-v3-v35-diagnostics-readability-1",
-    "frontend/admin-v3/render-manual-lineup.js?v=manual-lineup-semi-auto-beta-2-ime",
-    "frontend/admin-v3/render-manual-roster.js?v=manual-roster-semi-auto-beta-1",
+    "frontend/admin-v3/render-manual-lineup.js?v=manual-lineup-semi-auto-beta-2-ime-player-details-1",
+    "frontend/admin-v3/render-manual-roster.js?v=manual-roster-semi-auto-beta-1-player-details-1",
     "frontend/admin-v3/render-game-progress.js?v=admin-v3-v35-shadow-recovery-plan-1-manual-lineup-1-v4-ops",
     "frontend/admin-v3/render-job-details.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-roster.js?v=admin-v3-v35-diagnostics-readability-1",

@@ -455,8 +455,7 @@ function manualLineupRowsFromRevision(revision) {
 }
 
 function manualLineupHasInput(state) {
-  return Boolean(state?.reason)
-    || (state?.rows || []).some((row) => row?.playerId || row?.playerName || row?.position || row?.search);
+  return (state?.rows || []).some((row) => row?.playerId || row?.playerName || row?.position || row?.search);
 }
 
 function ensureV3ManualLineupState(internalGameId, details = null) {
@@ -954,7 +953,6 @@ function selectV3ManualLineupPlayer(index, playerId) {
 function manualLineupPayload(state) {
   return {
     confirmed: state.confirmed === true,
-    reason: String(state.reason || "").trim(),
     lineup: state.rows.map((row) => ({
       battingOrder: Number(row.battingOrder),
       position: row.position,
@@ -967,8 +965,8 @@ function manualLineupPayload(state) {
 
 async function saveV3ManualLineup() {
   const state = ensureV3ManualLineupState(v3State.selectedGameId);
-  if (!state.reason || !state.confirmed) {
-    state.error = "入力理由を入力し、内容確認にチェックしてください。";
+  if (!state.confirmed) {
+    state.error = "入力内容を確認してから保存してください。";
     renderCurrentV3View();
     return;
   }
@@ -1021,13 +1019,56 @@ async function finalizeV3ManualLineup() {
     await v3Api.finalizeManualLineup(v3State.selectedGameId, {
       lineupRevisionId: state.latestRevision.revisionId,
       version: state.latestRevision.version,
-      reason: state.reason,
       confirmed: true
     });
     state.message = "正式スタメンを確定しました。採点は正式V3 Cronへ引き継ぎます。";
     await loadV3OperationDetails();
   } catch (error) {
     state.error = formatV3AdminError(error, "V3_MANUAL_LINEUP_FINALIZE_FAILED");
+  } finally {
+    state.loading = false;
+    renderCurrentV3View();
+  }
+}
+
+async function cancelV3ManualLineupRevision(revisionId) {
+  const state = ensureV3ManualLineupState(v3State.selectedGameId);
+  const game = selectedV3Game(v3ListItems(v3State.payload?.games, "games"));
+  const revision = state.latestRevision;
+  if (!revision || String(revision.revisionId || revision.version || "") !== String(revisionId || "")) {
+    state.error = "取消対象のmanual revisionが見つかりません。画面を更新してください。";
+    renderCurrentV3View();
+    return;
+  }
+  const lineupSummary = state.rows.map((row, index) => `${index + 1}番 ${row.playerName || "未選択"} / ${row.position || "守備位置未選択"}`).join("\n");
+  const confirmation = [
+    "未来のscheduled試合に保存されたmanual revisionを取消します。",
+    `試合日: ${gameDateForFilter(game)}`,
+    `対戦: ${game?.homeTeam || "-"} vs ${game?.awayTeam || "-"}`,
+    `開始: ${formatV3Jst(game?.startAt || game?.start_time)} JST`,
+    `internalGameId: ${game?.internalGameId || "-"}`,
+    `revisionId: ${revision.revisionId || revision.version || "-"}`,
+    `finalizedAt: ${revision.finalizedAt || "-"}`,
+    lineupSummary,
+    "この操作は正式スタメンを未確定へ戻します。続行しますか？"
+  ].join("\n");
+  if (!window.confirm(confirmation)) return;
+  state.loading = true;
+  state.error = "";
+  state.message = "manual revisionを取消中…";
+  renderCurrentV3View();
+  try {
+    await v3Api.cancelManualLineupRevision(v3State.selectedGameId, revisionId, {
+      confirmed: true,
+      confirmationText: "CANCEL_MANUAL_LINEUP_REVISION"
+    });
+    state.latestRevision = null;
+    state.rows = v3ManualLineupRenderer.createBlankRows();
+    state.confirmed = false;
+    state.message = "manual revisionを取消しました。正式スタメンは未確定です。";
+    await loadV3OperationDetails();
+  } catch (error) {
+    state.error = formatV3AdminError(error, "V3_MANUAL_LINEUP_REVISION_CANCEL_FAILED");
   } finally {
     state.loading = false;
     renderCurrentV3View();
@@ -1073,6 +1114,8 @@ async function loadManualRoster(force = false) {
     roster.entries = Array.isArray(serverRoster.entries) ? serverRoster.entries.map((entry) => ({ playerId: entry.playerId, status: entry.status, note: entry.note || "" })) : [];
     roster.catalog = Array.isArray(result.playerCatalog) ? result.playerCatalog : [];
     roster.schemaAvailable = serverRoster.schemaAvailable !== false;
+    roster.source = serverRoster.source || null;
+    roster.isManualSaved = serverRoster.isManualSaved === true;
     roster.updatedAt = serverRoster.updatedAt || null;
     roster.updatedBy = serverRoster.updatedBy || null;
     roster.loaded = true;
@@ -1098,6 +1141,8 @@ async function saveManualRoster() {
     roster.entries = Array.isArray(saved.entries) ? saved.entries.map((entry) => ({ playerId: entry.playerId, status: entry.status, note: entry.note || "" })) : roster.entries;
     roster.updatedAt = saved.updatedAt || roster.updatedAt;
     roster.updatedBy = saved.updatedBy || roster.updatedBy;
+    roster.source = saved.source || "manual";
+    roster.isManualSaved = saved.isManualSaved === true;
     roster.message = "manual rosterを保存しました。スタメンは別画面で入力・確定します。";
   } catch (error) {
     roster.error = formatV3AdminError(error, "MANUAL_ROSTER_SAVE_FAILED");
@@ -1467,6 +1512,7 @@ adminV3Modules.createAdminV3Coordinator({
     selectManualLineupPlayer: selectV3ManualLineupPlayer,
     saveManualLineup: saveV3ManualLineup,
     finalizeManualLineup: finalizeV3ManualLineup,
+    cancelManualLineup: cancelV3ManualLineupRevision,
     updateManualRosterSearch,
     updateManualRosterEntry,
     addManualRosterPlayer,

@@ -95,6 +95,7 @@ import { evaluateV35Automation } from "./backend/automation-v3/stage-health-eval
 import { planShadowRecovery } from "./backend/automation-v3/shadow-recovery-planner.js";
 import {
   MANUAL_ROSTER_TEAM,
+  STATIC_FIGHTERS_BATTER_CATALOG,
   getManualRoster,
   saveManualRoster,
   prioritizeManualRosterCatalog
@@ -644,6 +645,10 @@ export default {
       const adminV3OrientationRoute = parseAdminV3OrientationRoute(path);
       if (adminV3OrientationRoute && request.method === "PATCH") {
         return await handleAdminV3OrientationUpdate(request, env, cors, adminV3OrientationRoute.internalGameId);
+      }
+      const adminV3LineupRevisionCancelRoute = parseAdminV3LineupRevisionCancelRoute(path);
+      if (adminV3LineupRevisionCancelRoute && request.method === "POST") {
+        return await handleAdminV3LineupRevisionCancel(request, env, cors, adminV3LineupRevisionCancelRoute);
       }
       const adminV3Phase1Route = parseAdminV3Phase1Route(path);
       if (adminV3Phase1Route) {
@@ -6496,6 +6501,7 @@ function getKnownAdminRouteMethods(path) {
   if (parseAdminV3OrientationRoute(path)) return ["PATCH"];
   if (parseAdminV3JobRoute(path)) return ["POST"];
   if (parseAdminV3JobControlRoute(path)) return parseAdminV3JobControlRoute(path).action === "diagnose" ? ["GET"] : ["POST"];
+  if (parseAdminV3LineupRevisionCancelRoute(path)) return ["POST"];
   // Phase routes authenticate before checking their action-specific method.
   if (parseAdminV3Phase1Route(path)) return null;
   return null;
@@ -6515,6 +6521,16 @@ function parseAdminV3Phase1Route(path) {
     return { internalGameId: decodeURIComponent(match[1]), action: match[2], jobId: match[3] || "", jobOperation: match[4] || "" };
   } catch {
     return { internalGameId: "", action: "invalid" };
+  }
+}
+
+function parseAdminV3LineupRevisionCancelRoute(path) {
+  const match = /^\/api\/admin\/v3\/games\/([^/]+)\/lineup-revisions\/([^/]+)\/cancel$/.exec(path);
+  if (!match) return null;
+  try {
+    return { internalGameId: decodeURIComponent(match[1]), revisionId: decodeURIComponent(match[2]) };
+  } catch {
+    return { internalGameId: "", revisionId: "" };
   }
 }
 
@@ -6544,6 +6560,10 @@ function v3AdminErrorResponse(cors, error, fallback = "V3管理操作に失敗�
     V3_GAME_UNAVAILABLE: 409,
     V3_STRONG_CONFIRMATION_REQUIRED: 409,
     V3_REASON_REQUIRED: 400,
+    V3_MANUAL_LINEUP_REVISION_CANCEL_NOT_ALLOWED: 409,
+    V3_MANUAL_LINEUP_REVISION_NOT_FOUND: 404,
+    V3_MANUAL_LINEUP_REVISION_NOT_ACTIVE: 409,
+    V3_MANUAL_LINEUP_REVISION_LINK_MISMATCH: 409,
     V3_SCHEDULE_UPDATE_FAILED: 409,
     V3_SCHEMA_UNAVAILABLE: 503,
     MANUAL_ROSTER_SCHEMA_UNAVAILABLE: 503,
@@ -7296,7 +7316,8 @@ async function handleAdminV3LineupGet(env, cors, context) {
   const manualRoster = await getManualRoster(env.AUTH_DB, { teamCode: MANUAL_ROSTER_TEAM.teamCode }).catch(() => ({
     schemaAvailable: false,
     team: MANUAL_ROSTER_TEAM,
-    source: "manual",
+    source: "static-fallback",
+    isManualSaved: false,
     entries: [],
     errorCode: "MANUAL_ROSTER_SCHEMA_UNAVAILABLE"
   }));
@@ -7359,8 +7380,7 @@ async function handleAdminV3LineupRevisionCreate(request, env, cors, context, us
   assertManagedManualLineupGame(context);
   const input = await readJson(request);
   if (input?.confirmed !== true) throw createV3Error("V3_CONFIRMATION_REQUIRED", "手動スタメンの入力確認が必要です。", { httpStatus: 409 });
-  const reason = String(input?.reason || "").trim();
-  if (!reason || reason.length > 240) throw createV3Error("V3_REASON_REQUIRED", "スタメン修正理由を1〜240文字で入力してください。", { httpStatus: 400 });
+  const reason = String(input?.reason || "").trim().slice(0, 240) || "V4半自動運営: 管理者入力";
   const currentLineup = await getGameLineup(env.AUTH_DB, context.metadata);
   const stateRow = await env.AUTH_DB.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(context.id).first();
   if (!isManualLineupEditAllowed({ workflowState: stateRow?.state, scoringStatus: currentLineup?.scoring_status, publicationStatus: currentLineup?.publication_status })) {
@@ -7390,6 +7410,126 @@ async function handleAdminV3LineupRevisionCreate(request, env, cors, context, us
   return jsonResponse({ ok: true, internalGameId: context.id, noOp: false, revision: serializeV3LineupRevision(revision) }, 201, cors);
 }
 
+const MANUAL_LINEUP_REVISION_CANCEL_CONFIRMATION = "CANCEL_MANUAL_LINEUP_REVISION";
+
+export function getManualLineupRevisionCancelDecision({ gameDate = "", workflowState = "scheduled", revision = null, canonical = null, now = new Date() } = {}) {
+  const source = String(revision?.source || "").trim().toLowerCase();
+  if (!revision) return { allowed: false, code: "V3_MANUAL_LINEUP_REVISION_NOT_FOUND", message: "取消対象のスタメンrevisionが見つかりません。" };
+  if (!['manual', 'manual-revision'].includes(source)) {
+    return { allowed: false, code: "V3_MANUAL_LINEUP_REVISION_CANCEL_NOT_ALLOWED", message: "自動取得のスタメンrevisionは取消できません。" };
+  }
+  if (Number(revision.is_current || 0) !== 1 && Number(revision.is_final || 0) !== 1) {
+    return { allowed: false, code: "V3_MANUAL_LINEUP_REVISION_NOT_ACTIVE", message: "現在有効なスタメンrevisionだけを取消できます。" };
+  }
+  const targetDate = String(gameDate || "").slice(0, 10);
+  const today = getJstDateString(now);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate) || targetDate <= today) {
+    return { allowed: false, code: "V3_MANUAL_LINEUP_REVISION_CANCEL_NOT_ALLOWED", message: "取消対象は明日以降の試合に限ります。" };
+  }
+  const state = String(workflowState || "scheduled").trim().toLowerCase();
+  if (state !== "scheduled" || ["lineup_ready", "scored", "ranked", "published", "manual_action_required"].includes(state)) {
+    return { allowed: false, code: "V3_MANUAL_LINEUP_REVISION_CANCEL_NOT_ALLOWED", message: "scheduled状態の未来試合以外は取消できません。" };
+  }
+  const scoringStatus = String(canonical?.scoring_status || "").toLowerCase();
+  const publicationStatus = String(canonical?.publication_status || "").toLowerCase();
+  if (["processing", "scored"].includes(scoringStatus) || publicationStatus === "published" || canonical?.published_at) {
+    return { allowed: false, code: "V3_MANUAL_LINEUP_REVISION_CANCEL_NOT_ALLOWED", message: "採点開始後または公開済みのスタメンは取消できません。" };
+  }
+  const revisionId = String(revision.revision_id || `${revision.game_id}:${Number(revision.version)}`);
+  if (!canonical) return { allowed: true, canonicalLinked: false, revisionId };
+  const canonicalRevisionId = String(canonical.final_lineup_revision_id || "");
+  if (canonicalRevisionId) {
+    if (canonicalRevisionId !== revisionId) {
+      return { allowed: false, code: "V3_MANUAL_LINEUP_REVISION_LINK_MISMATCH", message: "canonicalスタメンと取消対象revisionの紐付けが一致しません。" };
+    }
+    return { allowed: true, canonicalLinked: true, canonicalLinkType: "revision_id", revisionId };
+  }
+  if (canonical.lineup_fingerprint && revision.lineup_fingerprint && String(canonical.lineup_fingerprint) === String(revision.lineup_fingerprint)) {
+    return { allowed: true, canonicalLinked: true, canonicalLinkType: "fingerprint", revisionId };
+  }
+  return { allowed: false, code: "V3_MANUAL_LINEUP_REVISION_LINK_MISMATCH", message: "canonicalスタメンの紐付けを安全に確認できないため取消を拒否しました。" };
+}
+
+async function getCanonicalLineupForManualRevisionCancel(db, internalGameId) {
+  const columns = await getTableColumnSet(db, "game_lineups");
+  if (!columns.has("internal_game_id")) {
+    throw createV3Error("V3_LINEUP_SCHEMA_UNAVAILABLE", "canonicalスタメンのUUID保存先が準備されていません。", { httpStatus: 503 });
+  }
+  const selectable = [
+    "game_id", "internal_game_id", "actual_lineup_json", "lineup_fingerprint", "scoring_status", "publication_status", "published_at",
+    "final_lineup_revision_id", "finalized_at", "finalized_by"
+  ].filter((column) => columns.has(column));
+  return db.prepare(`SELECT ${selectable.join(", ")} FROM game_lineups WHERE internal_game_id = ?1 LIMIT 1`).bind(internalGameId).first();
+}
+
+async function handleAdminV3LineupRevisionCancel(request, env, cors, route) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  if (!route.internalGameId || !route.revisionId) return jsonResponse({ ok: false, code: "V3_INTERNAL_GAME_ID_REQUIRED", error: "internalGameIdまたはrevisionIdが不正です。" }, 400, cors);
+  let context;
+  try {
+    context = await loadV3AdminContext(env.AUTH_DB, route.internalGameId);
+    assertManagedManualLineupGame(context);
+    const input = await readJson(request, { maxBytes: ADMIN_PREVIEW_JSON_BODY_MAX_BYTES });
+    if (input?.confirmed !== true || String(input?.confirmationText || "") !== MANUAL_LINEUP_REVISION_CANCEL_CONFIRMATION) {
+      throw createV3Error("V3_STRONG_CONFIRMATION_REQUIRED", "manual revision取消には強い確認が必要です。", { httpStatus: 409 });
+    }
+    const stateRow = await env.AUTH_DB.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(context.id).first();
+    const revisions = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
+    const revision = revisions.find((row) => String(row.revision_id || `${row.game_id}:${Number(row.version)}`) === String(route.revisionId));
+    const canonical = await getCanonicalLineupForManualRevisionCancel(env.AUTH_DB, context.id);
+    const decision = getManualLineupRevisionCancelDecision({ gameDate: context.target?.game_date, workflowState: stateRow?.state, revision, canonical, now: new Date() });
+    if (!decision.allowed) throw createV3Error(decision.code, decision.message, { httpStatus: decision.code === "V3_MANUAL_LINEUP_REVISION_NOT_FOUND" ? 404 : 409 });
+
+    const revisionColumns = await getTableColumnSet(env.AUTH_DB, "game_lineup_revisions");
+    if (!(revisionColumns.has("internal_game_id") && revisionColumns.has("is_current") && revisionColumns.has("is_final") && revisionColumns.has("superseded_at"))) {
+      throw createV3Error("V3_LINEUP_SCHEMA_UNAVAILABLE", "revision取消に必要なschemaが準備されていません。", { httpStatus: 503 });
+    }
+    const now = new Date().toISOString();
+    const revisionFields = ["is_current = 0", "is_final = 0", "superseded_at = ?1"];
+    const revisionValues = [now];
+    if (revisionColumns.has("finalized_at")) { revisionFields.push(`finalized_at = ?${revisionValues.length + 1}`); revisionValues.push(null); }
+    if (revisionColumns.has("finalized_by")) { revisionFields.push(`finalized_by = ?${revisionValues.length + 1}`); revisionValues.push(null); }
+    revisionValues.push(context.id, Number(revision.version));
+    const revisionScope = `internal_game_id = ?${revisionValues.length - 1} AND version = ?${revisionValues.length}`;
+    const statements = [env.AUTH_DB.prepare(`UPDATE game_lineup_revisions SET ${revisionFields.join(", ")} WHERE ${revisionScope} AND source IN ('manual', 'manual-revision') AND (is_current = 1 OR is_final = 1)`).bind(...revisionValues)];
+    if (decision.canonicalLinked && canonical) {
+      const canonicalColumns = await getTableColumnSet(env.AUTH_DB, "game_lineups");
+      const fields = [];
+      const values = [];
+      const add = (column, value) => { if (canonicalColumns.has(column)) { fields.push(`${column} = ?${values.length + 1}`); values.push(value); } };
+      add("actual_lineup_json", "[]");
+      add("lineup_fingerprint", "");
+      add("lineup_source", "manual-invalidated");
+      add("scoring_status", "pending");
+      add("scoring_started_at", null);
+      add("scored_at", null);
+      add("last_error", "MANUAL_LINEUP_REVISION_CANCELLED");
+      add("processed_predictions", null);
+      add("perfect_count", null);
+      add("new_perfect_achievers", null);
+      add("publication_status", "pending");
+      add("published_at", null);
+      add("final_lineup_revision_id", null);
+      add("finalized_at", null);
+      add("finalized_by", null);
+      add("updated_at", now);
+      if (!fields.length) throw createV3Error("V3_LINEUP_SCHEMA_UNAVAILABLE", "canonicalスタメンの取消先が準備されていません。", { httpStatus: 503 });
+      values.push(context.id);
+      const where = decision.canonicalLinkType === "fingerprint" ? "internal_game_id = ?" + values.length + " AND lineup_fingerprint = ?" + (values.length + 1) : "internal_game_id = ?" + values.length + " AND final_lineup_revision_id = ?" + (values.length + 1);
+      values.push(decision.canonicalLinkType === "fingerprint" ? revision.lineup_fingerprint : decision.revisionId);
+      statements.push(env.AUTH_DB.prepare(`UPDATE game_lineups SET ${fields.join(", ")} WHERE ${where}`).bind(...values));
+    }
+    await env.AUTH_DB.batch(statements);
+    try {
+      await recordV3AdminAudit(env.AUTH_DB, { internalGameId: context.id, jobType: "admin:lineup_revision_cancel", stateBefore: stateRow?.state || null, stateAfter: stateRow?.state || null, failureMessage: `revisionId=${decision.revisionId}` });
+    } catch { /* audit failure must not undo the safe invalidation */ }
+    return jsonResponse({ ok: true, internalGameId: context.id, canceledRevisionId: decision.revisionId, canonicalInvalidated: Boolean(decision.canonicalLinked), nextAction: "manual_lineup_required" }, 200, cors);
+  } catch (error) {
+    return v3AdminErrorResponse(cors, error, "manual revisionを取消できませんでした。");
+  }
+}
+
 async function handleAdminV3LineupFinalize(request, env, cors, context, user) {
   assertManagedManualLineupGame(context);
   const now = new Date();
@@ -7403,8 +7543,6 @@ async function handleAdminV3LineupFinalize(request, env, cors, context, user) {
   }
   const input = await readJson(request);
   if (input?.confirmed !== true) throw createV3Error("V3_CONFIRMATION_REQUIRED", "正式スタメンの入力確認が必要です。", { httpStatus: 409 });
-  const reason = String(input?.reason || "").trim();
-  if (!reason || reason.length > 240) throw createV3Error("V3_REASON_REQUIRED", "正式スタメン確定理由を1〜240文字で入力してください。", { httpStatus: 400 });
   const currentLineup = await getGameLineup(env.AUTH_DB, context.metadata);
   const stateRow = await env.AUTH_DB.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(context.id).first();
   if (!isManualLineupEditAllowed({ workflowState: stateRow?.state, scoringStatus: currentLineup?.scoring_status, publicationStatus: currentLineup?.publication_status })) {
@@ -19686,16 +19824,41 @@ function sanitizeActualLineupForScoring(value, options = {}) {
 }
 
 const MANUAL_LINEUP_EDIT_LOCKED_STATES = new Set(["scored", "ranked", "published"]);
+const FIGHTERS_PITCHER_UNIFORM_NUMBERS = new Set(["12", "13", "14", "15", "16", "17", "18", "19", "20", "22", "24", "25", "26", "27", "28", "29", "30", "31", "32", "34", "35", "37", "40", "41", "45", "46", "47", "48", "52", "55", "62", "63", "67", "74", "93", "94", "96", "113", "114", "117", "121", "122", "124", "140", "154", "159"]);
+const FIGHTERS_POSITION_CATEGORIES = Object.freeze({
+  catcher: new Set(["2", "3", "10", "33", "38", "57", "60", "64", "98", "120"]),
+  infielder: new Set(["4", "5", "6", "9", "21", "39", "43", "44", "49", "51", "54", "56", "58", "65", "95", "111"]),
+  outfielder: new Set(["7", "8", "36", "42", "50", "53", "61", "66", "99", "125", "127", "168"])
+});
+function manualRosterCategory(uniformNumber) {
+  const number = String(uniformNumber || "");
+  if (FIGHTERS_POSITION_CATEGORIES.catcher.has(number)) return "捕手";
+  if (FIGHTERS_POSITION_CATEGORIES.infielder.has(number)) return "内野手";
+  if (FIGHTERS_POSITION_CATEGORIES.outfielder.has(number)) return "外野手";
+  return "";
+}
 
 export function getManualLineupPlayerCatalog({ manualRoster = null } = {}) {
-  const catalog = FIGHTERS_PLAYER_MASTER.map((player) => ({
+  const masterCatalog = FIGHTERS_PLAYER_MASTER.map((player) => ({
     playerName: player.name,
     displayName: player.name,
     uniformNumber: player.uniformNumber,
     playerId: createFightersPlayerId(player.uniformNumber),
     teamCode: FIGHTERS_TEAM_CODE,
-    teamId: FIGHTERS_TEAM_ID
+    teamId: FIGHTERS_TEAM_ID,
+    category: manualRosterCategory(player.uniformNumber),
+    manualRosterEligible: !FIGHTERS_PITCHER_UNIFORM_NUMBERS.has(String(player.uniformNumber || ""))
   }));
+  const knownIds = new Set(masterCatalog.map((player) => player.playerId));
+  const catalog = masterCatalog.concat(STATIC_FIGHTERS_BATTER_CATALOG
+    .filter((player) => !knownIds.has(player.playerId))
+    .map((player) => ({
+      ...player,
+      displayName: player.playerName,
+      teamCode: FIGHTERS_TEAM_CODE,
+      teamId: FIGHTERS_TEAM_ID,
+      manualRosterEligible: true
+    })));
   return prioritizeManualRosterCatalog(catalog, manualRoster);
 }
 

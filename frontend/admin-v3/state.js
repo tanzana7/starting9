@@ -75,6 +75,8 @@
         loading: false,
         loaded: false,
         schemaAvailable: null,
+        source: null,
+        isManualSaved: false,
         updatedAt: null,
         updatedBy: null,
         error: "",

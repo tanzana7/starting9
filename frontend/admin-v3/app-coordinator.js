@@ -88,11 +88,6 @@
           actions.updateManualLineupRow(Number(position.dataset.v3ManualLineupPosition), { position: position.value });
           return;
         }
-        const reason = closestFromEvent(event, "[data-v3-manual-lineup-reason]");
-        if (reason) {
-          state.manualLineup.reason = reason.value;
-          return;
-        }
         const confirm = closestFromEvent(event, "[data-v3-manual-lineup-confirm]");
         if (confirm) {
           state.manualLineup.confirmed = confirm.checked === true;
@@ -123,6 +118,8 @@
         }
         if (closestFromEvent(event, "[data-v3-manual-lineup-save]")) { await actions.saveManualLineup(); return; }
         if (closestFromEvent(event, "[data-v3-manual-lineup-finalize]")) { await actions.finalizeManualLineup(); return; }
+        const lineupCancel = closestFromEvent(event, "[data-v3-manual-lineup-revision-cancel]");
+        if (lineupCancel) { await actions.cancelManualLineup(lineupCancel.dataset.v3ManualLineupRevisionCancel); return; }
         const rosterAdd = closestFromEvent(event, "[data-v3-manual-roster-add]");
         if (rosterAdd) { actions.addManualRosterPlayer(rosterAdd.dataset.v3ManualRosterAdd); return; }
         const rosterRemove = closestFromEvent(event, "[data-v3-manual-roster-remove]");

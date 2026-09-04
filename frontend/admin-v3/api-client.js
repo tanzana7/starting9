@@ -81,6 +81,9 @@
       finalizeManualLineup(internalGameId, body) {
         return post(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/lineup-finalize`, body);
       },
+      cancelManualLineupRevision(internalGameId, revisionId, body = {}) {
+        return post(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/lineup-revisions/${encodeURIComponent(revisionId)}/cancel`, body);
+      },
       getManualRoster(teamCode = "fighters") {
         return request(`${ADMIN_V3_ENDPOINTS.manualRoster}?teamCode=${encodeURIComponent(teamCode)}`);
       },

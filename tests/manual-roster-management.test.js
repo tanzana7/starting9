@@ -138,7 +138,7 @@ test("manual roster UIはIME検索・確認保存・lineup分離を明示する"
   assert.match(admin, /updateManualRosterSearch/);
   assert.match(coordinator, /data-v3-manual-roster-search/);
   assert.match(coordinator, /compositionend/);
-  assert.match(ui, /ロースター更新はスタメン下書き・確定を変更しません/);
+  assert.match(ui, /manual roster更新はmanual lineupを変更しません/);
   assert.match(ui, /data-v3-manual-roster-confirm/);
   assert.doesNotMatch(ui, /data-v3-manual-roster-player-id-input/);
   assert.match(css, /manual-roster-row/);

@@ -293,10 +293,10 @@ button:disabled { cursor: wait; opacity: .65; }
 .manual-roster-row .player-name { display: inline-block; }
 .player-name--bat-right,
 .player-name--bat-left,
-.player-name--bat-switch { position: relative; padding-left: 8px; }
+.player-name--bat-switch { position: relative; box-sizing: border-box; padding-left: 8px; }
 .player-name--bat-right::before,
 .player-name--bat-left::before,
-.player-name--bat-switch::before { position: absolute; inset: 1px auto 1px 0; width: 4px; border-radius: 999px; content: ""; }
+.player-name--bat-switch::before { position: absolute; inset: 3px auto 3px 0; width: 4px; border-radius: 999px; content: ""; }
 .player-name--bat-right::before { background: #d64545; }
 .player-name--bat-left::before { background: #2878c8; }
 .player-name--bat-switch::before { background: #2f9a62; }

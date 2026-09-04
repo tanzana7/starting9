@@ -2723,6 +2723,7 @@ textarea:focus {
 .player-name--bat-right,
 .player-name--bat-left,
 .player-name--bat-switch {
+  box-sizing: border-box;
   padding-left: 8px;
 }
 
@@ -2730,7 +2731,7 @@ textarea:focus {
 .player-name--bat-left::before,
 .player-name--bat-switch::before {
   position: absolute;
-  inset: 1px auto 1px 0;
+  inset: 3px auto 3px 0;
   width: 4px;
   border-radius: 999px;
   content: "";
@@ -2739,6 +2740,16 @@ textarea:focus {
 .player-name--bat-right::before { background: #d64545; }
 .player-name--bat-left::before { background: #2878c8; }
 .player-name--bat-switch::before { background: #2f9a62; }
+
+/* Keep the accent at the name box edge while leaving the text readable in every public layout. */
+.slot-player .player-name.player-name--bat-right,
+.slot-player .player-name.player-name--bat-left,
+.slot-player .player-name.player-name--bat-switch,
+.result-player-name.player-name--bat-right,
+.result-player-name.player-name--bat-left,
+.result-player-name.player-name--bat-switch {
+  padding-left: 8px;
+}
 
 .player-number {
   display: inline-block;

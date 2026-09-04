@@ -65,6 +65,40 @@
       return `<details class="player-inline-details"><summary>詳細</summary><dl>${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl></details>`;
     }
 
+    function confirmationKey(row) {
+      const playerId = String(row?.playerId || "").trim();
+      if (playerId) return `id:${playerId}`;
+      const playerName = String(row?.playerName || "").normalize("NFKC").replace(/\s+/g, "").trim();
+      return playerName ? `name:${playerName}` : "";
+    }
+
+    function renderLineupConfirmation(rows, catalog) {
+      const duplicateCounts = new Map();
+      rows.forEach((row) => {
+        const key = confirmationKey(row);
+        if (key) duplicateCounts.set(key, (duplicateCounts.get(key) || 0) + 1);
+      });
+      const duplicateNames = new Set();
+      const markup = rows.map((row, index) => {
+        const selected = catalog.find((player) => player.playerId === row?.playerId);
+        const displayPlayer = selected || row;
+        const hasPlayer = Boolean(String(row?.playerName || "").trim());
+        const key = confirmationKey(row);
+        const duplicated = Boolean(key && duplicateCounts.get(key) > 1);
+        if (duplicated) duplicateNames.add(String(row?.playerName || "選手未入力").trim());
+        const playerMarkup = hasPlayer
+          ? `${playerName(displayPlayer)}${selected ? playerDetailMarkup(selected) : ""}`
+          : `<span class="manual-lineup-confirmation-empty">未入力</span>`;
+        const rosterWarning = selected?.manualRosterActive === false ? `<small class="manual-lineup-confirmation-warning">ロースター外（確認要）</small>` : "";
+        const duplicateWarning = duplicated ? `<small class="manual-lineup-confirmation-warning">重複</small>` : "";
+        return `<li class="manual-lineup-confirmation-row${duplicated ? " is-duplicate" : ""}" data-v3-manual-lineup-confirmation-row><span class="manual-lineup-confirmation-order">${index + 1}番</span><span class="manual-lineup-confirmation-position">${escapeHtml(row?.position || "守備未設定")}</span><div class="manual-lineup-confirmation-player">${playerMarkup}${rosterWarning}${duplicateWarning}</div></li>`;
+      }).join("");
+      const duplicateNotice = duplicateNames.size
+        ? `<p class="manual-lineup-duplicate-warning" data-v3-manual-lineup-duplicate-warning>同じ選手が複数の打順に入力されています: ${escapeHtml([...duplicateNames].join("、"))}</p>`
+        : "";
+      return `${duplicateNotice}<ol class="manual-lineup-confirmation-list" data-v3-manual-lineup-confirmation>${markup}</ol>`;
+    }
+
     function renderCandidates(catalog, row, index) {
       const players = Array.isArray(catalog) ? catalog : [];
       const search = String(row?.search || "").trim().toLocaleLowerCase();
@@ -84,7 +118,7 @@
       const gameDate = String(game?.gameDate || game?.game_date || "").slice(0, 10) || "不明";
       const startAt = typeof formatJst === "function" ? formatJst(game?.startAt || game?.start_time) : String(game?.startAt || game?.start_time || "-");
       const targetMarkup = `<div class="manual-lineup-target" data-v3-manual-lineup-target><strong>正式スタメン確定対象</strong><span>${escapeHtml(gameDate)} / ${escapeHtml(game?.homeTeam || "-")} vs ${escapeHtml(game?.awayTeam || "-")}</span><span>開始 ${escapeHtml(startAt)} JST</span><code>internalGameId: ${escapeHtml(game?.internalGameId || "-")}</code></div>`;
-      const lineupSummary = `<ol class="manual-lineup-confirmation-list">${rows.map((row, index) => `<li>${index + 1}番: ${escapeHtml(row?.playerName || "未選択")} / ${escapeHtml(row?.position || "守備位置未選択")}</li>`).join("")}</ol>`;
+      const lineupSummary = renderLineupConfirmation(rows, catalog);
       const safetyMarkup = finalizeSafety.allowed ? "" : `<p class="manual-lineup-safety-warning" data-v3-manual-lineup-safety-warning>${escapeHtml(finalizeSafety.message)}</p>`;
       const locked = ["scored", "ranked", "published"].includes(String(game?.state?.state || game?.workflowState || "").toLowerCase())
         || ["processing", "scored"].includes(String(lineupDetails.lineupStatus || "").toLowerCase())
@@ -98,7 +132,7 @@
       }).join("");
       const message = state.error ? `<p class="manual-lineup-message error">${escapeHtml(state.error)}</p>` : state.message ? `<p class="manual-lineup-message success">${escapeHtml(state.message)}</p>` : "";
       const disabled = locked || state.loading;
-      return `<section class="manual-lineup-editor" data-v3-manual-lineup-editor>${targetMarkup}<div class="manual-lineup-header"><div><h3>Fighters 手動スタメン</h3><p>対象チーム1チーム・9人を選択します。選手名はマスター照合され、未登録名や重複は保存できません。</p></div><span class="manual-lineup-team">${escapeHtml(lineupDetails.managedTeam?.name || "Fighters")}</span></div><div class="manual-lineup-grid">${cards}</div><div class="manual-lineup-confirmation-preview"><strong>確定内容</strong>${lineupSummary}</div><label class="manual-lineup-reason">入力理由<textarea rows="2" maxlength="240" placeholder="例: 公式発表を確認" data-v3-manual-lineup-reason ${disabled ? "disabled" : ""}>${escapeHtml(state.reason || "")}</textarea></label><label class="manual-lineup-confirm"><input type="checkbox" data-v3-manual-lineup-confirm ${state.confirmed ? "checked" : ""} ${disabled ? "disabled" : ""}> 入力内容を確認しました</label>${safetyMarkup}<div class="manual-lineup-actions"><button type="button" data-v3-manual-lineup-save ${disabled ? "disabled" : ""}>下書きを保存</button><button type="button" class="primary-button" data-v3-manual-lineup-finalize ${disabled || !state.latestRevision || !finalizeSafety.allowed ? "disabled" : ""}>正式スタメンを確定</button></div>${locked ? `<p class="muted">採点開始後・公開後はスタメンを変更できません。</p>` : `<p class="muted">確定後はスコアjobを手動投入せず、次回の正式V3 Cronが採点へ進めます。</p>`}${message}</section>`;
+      return `<section class="manual-lineup-editor" data-v3-manual-lineup-editor>${targetMarkup}<div class="manual-lineup-header"><div><h3>Fighters 手動スタメン</h3><p>対象チーム1チーム・9人を選択します。選手名はマスター照合され、未登録名や重複は保存できません。</p></div><span class="manual-lineup-team">${escapeHtml(lineupDetails.managedTeam?.name || "Fighters")}</span></div><div class="manual-lineup-grid">${cards}</div><div class="manual-lineup-confirmation-preview" data-v3-manual-lineup-confirmation-preview><strong>スタメン確認（入力中）</strong>${lineupSummary}</div><label class="manual-lineup-reason">入力理由<textarea rows="2" maxlength="240" placeholder="例: 公式発表を確認" data-v3-manual-lineup-reason ${disabled ? "disabled" : ""}>${escapeHtml(state.reason || "")}</textarea></label><label class="manual-lineup-confirm"><input type="checkbox" data-v3-manual-lineup-confirm ${state.confirmed ? "checked" : ""} ${disabled ? "disabled" : ""}> 入力内容を確認しました</label>${safetyMarkup}<div class="manual-lineup-actions"><button type="button" data-v3-manual-lineup-save ${disabled ? "disabled" : ""}>下書きを保存</button><button type="button" class="primary-button" data-v3-manual-lineup-finalize ${disabled || !state.latestRevision || !finalizeSafety.allowed ? "disabled" : ""}>正式スタメンを確定</button></div>${locked ? `<p class="muted">採点開始後・公開後はスタメンを変更できません。</p>` : `<p class="muted">確定後はスコアjobを手動投入せず、次回の正式V3 Cronが採点へ進めます。</p>`}${message}</section>`;
     }
 
     return Object.freeze({ createBlankRows, renderCandidates, render });

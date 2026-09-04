@@ -1,6 +1,17 @@
 const MAX_MANUAL_ROSTER_ENTRIES = 100;
 const MAX_NOTE_LENGTH = 240;
 
+// These are display/selection fallbacks only. They are never persisted until
+// an operator explicitly saves a manual roster. Pitchers remain outside the
+// fallback so the lineup catalog cannot present them as default batters.
+export const STATIC_FIGHTERS_BATTER_CATALOG = Object.freeze([
+  { playerName: "日渡騰輝", uniformNumber: "120", playerId: "F-120", category: "捕手" },
+  { playerName: "濵田泰希", uniformNumber: "111", playerId: "F-111", category: "内野手" },
+  { playerName: "藤田大清", uniformNumber: "125", playerId: "F-125", category: "外野手" },
+  { playerName: "山口アタル", uniformNumber: "127", playerId: "F-127", category: "外野手" },
+  { playerName: "星野ひので", uniformNumber: "168", playerId: "F-168", category: "外野手" }
+]);
+
 export const MANUAL_ROSTER_TEAM = Object.freeze({
   teamCode: "fighters",
   teamId: "F",
@@ -70,13 +81,39 @@ export function serializeManualRosterRows(rows) {
   return (Array.isArray(rows) ? rows : []).slice(0, MAX_MANUAL_ROSTER_ENTRIES).map(rowToEntry);
 }
 
+export function normalizeManualRosterPlayerName(value) {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .replace(/^\[\d{1,3}\]\s*/, "")
+    .replace(/[\s\u3000]/g, "")
+    .replace(/[．。]/g, ".")
+    .toLowerCase();
+}
+
+function staticFallbackCatalog(catalog) {
+  return (Array.isArray(catalog) ? catalog : []).map((player) => ({
+    ...player,
+    manualRosterStatus: player.manualRosterEligible === false ? null : "active",
+    manualRosterActive: player.manualRosterEligible === false ? false : true,
+    manualRosterNote: "",
+    manualRosterSource: player.manualRosterEligible === false ? null : "static-fallback",
+    _manualRosterRank: player.manualRosterEligible === false ? 2 : 0,
+    _catalogIndex: 0
+  })).sort((a, b) => a._manualRosterRank - b._manualRosterRank || a._catalogIndex - b._catalogIndex)
+    .map(({ _manualRosterRank, _catalogIndex, ...player }) => player);
+}
+
 export function prioritizeManualRosterCatalog(catalog, rosterRows = []) {
   if (rosterRows == null) return Array.isArray(catalog) ? catalog.map((player) => ({ ...player, manualRosterStatus: null, manualRosterActive: null, manualRosterNote: "", manualRosterSource: null })) : [];
-  if (rosterRows?.schemaAvailable === false) return (Array.isArray(catalog) ? catalog : []).map((player) => ({ ...player, manualRosterStatus: null, manualRosterActive: null, manualRosterNote: "", manualRosterSource: null }));
   const rows = Array.isArray(rosterRows) ? rosterRows : rosterRows?.entries || [];
+  const source = String(rosterRows?.source || "");
+  if (rosterRows?.schemaAvailable === false || source === "static-fallback" || rows.length === 0) return staticFallbackCatalog(catalog);
   const byId = new Map(rows.map((row) => [String(row?.playerId || row?.player_id || "").trim(), row]));
+  const byName = new Map(rows.map((row) => [normalizeManualRosterPlayerName(row?.playerName || row?.name), row]).filter(([name]) => name));
   return (Array.isArray(catalog) ? catalog : []).map((player, index) => {
-    const row = byId.get(String(player?.playerId || ""));
+    const row = byId.get(String(player?.playerId || ""))
+      || byName.get(normalizeManualRosterPlayerName(player?.playerName || player?.name))
+      || byName.get(normalizeManualRosterPlayerName(player?.displayName));
     const status = row ? String(row.status || "active").toLowerCase() : null;
     return {
       ...player,
@@ -105,14 +142,15 @@ export async function getManualRoster(db, { teamCode = MANUAL_ROSTER_TEAM.teamCo
     return {
       schemaAvailable: true,
       team,
-      source: "manual",
+      source: entries.length ? "manual" : "static-fallback",
+      isManualSaved: entries.length > 0,
       entries,
       updatedAt: entries.reduce((latest, entry) => entry.updatedAt > latest ? entry.updatedAt : latest, null),
       updatedBy: entries[0]?.updatedBy || null
     };
   } catch (error) {
     if (/no such table|manual_team_rosters/i.test(String(error?.message || error))) {
-      return { schemaAvailable: false, team, source: "manual", entries: [], errorCode: "MANUAL_ROSTER_SCHEMA_UNAVAILABLE" };
+      return { schemaAvailable: false, team, source: "static-fallback", isManualSaved: false, entries: [], errorCode: "MANUAL_ROSTER_SCHEMA_UNAVAILABLE" };
     }
     throw error;
   }

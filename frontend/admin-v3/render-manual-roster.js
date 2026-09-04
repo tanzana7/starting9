@@ -51,6 +51,17 @@
     }
     function catalogFor(state) { return Array.isArray(state?.catalog) ? state.catalog : []; }
     function entriesFor(state) { return Array.isArray(state?.entries) ? state.entries : []; }
+    function rosterStats(state) {
+      const catalog = catalogFor(state);
+      const active = catalog.filter((player) => player.manualRosterActive === true).length;
+      const inactive = catalog.filter((player) => player.manualRosterActive === false && player.manualRosterStatus === "inactive").length;
+      const categories = new Map();
+      catalog.filter((player) => player.manualRosterActive === true).forEach((player) => {
+        const category = String(player.category || "").trim();
+        if (category) categories.set(category, (categories.get(category) || 0) + 1);
+      });
+      return { active, inactive, categories };
+    }
     function playerFor(state, playerId) {
       return catalogFor(state).find((player) => player.playerId === playerId) || { playerId, playerName: "不明な選手", uniformNumber: "-" };
     }
@@ -66,11 +77,14 @@
     }
     function render(state = {}) {
       const entries = entriesFor(state);
+      const stats = rosterStats(state);
+      const sourceLabel = state.isManualSaved === true || state.source === "manual" ? "manual保存済み" : "静的初期候補（未保存）";
+      const categorySummary = [...stats.categories.entries()].map(([category, count]) => `${category} ${count}人`).join(" / ") || "カテゴリ情報なし";
       const rows = entries.length ? entries.map((entry) => {
         const player = playerFor(state, entry.playerId);
         return `<div class="manual-roster-row" data-v3-manual-roster-entry="${escape(entry.playerId)}"><div><strong>${playerName(player)}</strong>${playerDetailMarkup(player)}<small>ID: ${escape(player.playerId)}</small></div><label>状態<select data-v3-manual-roster-status="${escape(entry.playerId)}"><option value="active"${entry.status === "active" ? " selected" : ""}>active</option><option value="inactive"${entry.status === "inactive" ? " selected" : ""}>inactive</option></select></label><label>メモ<textarea maxlength="240" data-v3-manual-roster-note="${escape(entry.playerId)}">${escape(entry.note || "")}</textarea></label><button type="button" class="secondary" data-v3-manual-roster-remove="${escape(entry.playerId)}">inactiveにする</button></div>`;
       }).join("") : '<p class="muted">まだ登録されていません。候補から選手を追加してください。</p>';
-      return `<section class="manual-roster-editor" data-v3-manual-roster><header class="manual-roster-header"><div><h2>Fighters ロースター管理</h2><p>V4半自動βの公式ロースターです。ロースター更新はスタメン下書き・確定を変更しません。</p></div><span class="manual-roster-team">manual / Fighters</span></header>${state.schemaAvailable === false ? '<p class="manual-roster-message error">manual roster schemaが未適用です。管理者にmigration適用を依頼してください。</p>' : ""}<div class="manual-roster-notice"><strong>重要:</strong> 正式スタメンの入力・確定は「スタメン」画面で別に行います。ロースターから自動でスタメン確定はされません。</div><p class="muted">最終更新: ${escape(state.updatedAt || "-")} / ${escape(state.updatedBy || "-")}</p><label class="manual-roster-search">選手を検索<input type="search" data-v3-manual-roster-search value="${escape(state.search || "")}" placeholder="選手名または背番号"></label><div class="manual-roster-candidates" data-v3-manual-roster-candidates>${renderCandidates(state)}</div><div class="manual-roster-list"><h3>登録済み（${entries.length}人）</h3>${rows}</div><label class="manual-roster-confirm"><input type="checkbox" data-v3-manual-roster-confirm${state.confirmed ? " checked" : ""}> 内容を確認しました（保存で既存行を更新します）</label><div class="manual-roster-actions"><button type="button" data-v3-manual-roster-save${state.loading ? " disabled" : ""}>${state.loading ? "保存中…" : "ロースターを保存"}</button></div>${state.error ? `<p class="manual-roster-message error">${escape(state.error)}</p>` : ""}${state.message ? `<p class="manual-roster-message success">${escape(state.message)}</p>` : ""}<p class="muted">未登録の選手は削除せず、状態をinactiveにして履歴を保持します。更新者・更新時刻・manual sourceを記録します。</p></section>`;
+      return `<section class="manual-roster-editor" data-v3-manual-roster><header class="manual-roster-header"><div><h2>Fighters ロースター管理</h2><p>Fighters全体を対象にしたV4半自動βの候補管理です。選択中の試合には依存しません。</p></div><span class="manual-roster-team">manual / Fighters</span></header>${state.schemaAvailable === false ? '<p class="manual-roster-message error">manual roster schemaが未適用です。保存にはmigrationが必要です。</p>' : ""}<div class="manual-roster-notice"><strong>重要:</strong> 正式スタメンの入力・確定は「スタメン」画面で別に行います。ロースターから自動でスタメン確定はされません。manual roster更新はmanual lineupを変更しません。</div><div class="manual-roster-meta"><span>表示元: ${escape(sourceLabel)}</span><span>active: ${stats.active}人 / inactive: ${stats.inactive}人</span><span>${escape(categorySummary)}</span></div><p class="muted">最終更新: ${escape(state.updatedAt || "-")} / 更新者: ${escape(state.updatedBy || "-")}</p><label class="manual-roster-search">選手を検索<input type="search" data-v3-manual-roster-search value="${escape(state.search || "")}" placeholder="選手名または背番号"></label><div class="manual-roster-candidates" data-v3-manual-roster-candidates>${renderCandidates(state)}</div><div class="manual-roster-list"><h3>手動登録済み（${entries.length}人）</h3>${rows}</div><label class="manual-roster-confirm"><input type="checkbox" data-v3-manual-roster-confirm${state.confirmed ? " checked" : ""}> 内容を確認しました（保存で既存行を更新します）</label><div class="manual-roster-actions"><button type="button" data-v3-manual-roster-save${state.loading ? " disabled" : ""}>${state.loading ? "保存中…" : "ロースターを保存"}</button></div>${state.error ? `<p class="manual-roster-message error">${escape(state.error)}</p>` : ""}${state.message ? `<p class="manual-roster-message success">${escape(state.message)}</p>` : ""}<p class="muted">未登録の選手は削除せず、状態をinactiveにして履歴を保持します。更新者・更新時刻・manual sourceを記録します。</p></section>`;
     }
     return Object.freeze({ render, renderCandidates });
   }

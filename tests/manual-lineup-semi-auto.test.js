@@ -349,6 +349,33 @@ test("manual lineupのsave/finalize APIは実handler経由で保存し、score j
   }
 });
 
+test("manual lineupは入力理由なしで保存でき、未来scheduledのmanual revisionだけを安全に取消できる", async () => {
+  const integration = await createManualLineupIntegrationDb({ gameDate: "2026-09-08", startTime: "2026-09-08T09:00:00.000Z" });
+  try {
+    const path = `/api/admin/v3/games/${INTEGRATION_GAME_ID}`;
+    const save = await adminRequest(integration.env, `${path}/lineup-revisions`, { lineup: validManualLineup(), confirmed: true });
+    assert.equal(save.status, 201);
+    const saved = await save.json();
+    integration.database.prepare("UPDATE game_lineup_revisions SET is_current = 1, is_final = 1 WHERE game_id = ?1 AND version = ?2").run(INTEGRATION_GAME_ID, saved.revision.version);
+    integration.database.prepare("INSERT INTO game_lineups (id, game_id, internal_game_id, actual_lineup_json, lineup_fingerprint, scoring_status, lineup_source, publication_status, final_lineup_revision_id) VALUES ('lineup-1', ?1, ?1, ?2, ?3, 'pending', 'manual', 'pending', ?4)").run(INTEGRATION_GAME_ID, JSON.stringify(validManualLineup()), saved.revision.lineupFingerprint || "", saved.revision.revisionId);
+    const cancel = await adminRequest(integration.env, `${path}/lineup-revisions/${encodeURIComponent(saved.revision.revisionId)}/cancel`, { confirmed: true, confirmationText: "CANCEL_MANUAL_LINEUP_REVISION" });
+    const body = await cancel.json();
+    assert.equal(cancel.status, 200, JSON.stringify(body));
+    assert.equal(body.canonicalInvalidated, true);
+    const revision = integration.database.prepare("SELECT is_current, is_final, superseded_at FROM game_lineup_revisions WHERE game_id = ?1 AND version = ?2").get(INTEGRATION_GAME_ID, saved.revision.version);
+    assert.equal(revision.is_current, 0);
+    assert.equal(revision.is_final, 0);
+    assert.ok(revision.superseded_at);
+    const canonical = integration.database.prepare("SELECT actual_lineup_json, lineup_source, scoring_status, final_lineup_revision_id FROM game_lineups WHERE internal_game_id = ?1").get(INTEGRATION_GAME_ID);
+    assert.equal(canonical.actual_lineup_json, "[]");
+    assert.equal(canonical.lineup_source, "manual-invalidated");
+    assert.equal(canonical.scoring_status, "pending");
+    assert.equal(canonical.final_lineup_revision_id, null);
+  } finally {
+    integration.database.close();
+  }
+});
+
 test("manual lineup finalizeは別日のfuture gameをDB変更なしで拒否する", async () => {
   const integration = await createManualLineupIntegrationDb({ gameDate: "2026-09-08", startTime: "2026-09-08T09:00:00.000Z" });
   try {

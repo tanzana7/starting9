@@ -42,13 +42,13 @@ function loadModules() {
 test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む", () => {
   const scripts = [...page.matchAll(/<script src="([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(scripts, [
-    "frontend/admin-v3/state.js?v=manual-lineup-finalize-safety-1",
+    "frontend/admin-v3/state.js?v=independent-roster-lineup-safety-1",
     "frontend/public/fighters-player-details.js?v=fighters-player-details-20260903-1",
     "frontend/public/player-display.js?v=public-player-display-1-batting-hand-player-number-1-player-details-1",
-    "frontend/admin-v3/api-client.js?v=same-origin-auth-session-1",
+    "frontend/admin-v3/api-client.js?v=independent-roster-lineup-safety-1",
     "frontend/admin-v3/dom.js?v=manual-lineup-finalize-safety-1",
-    "frontend/admin-v3/render-manual-lineup.js?v=manual-lineup-confirmation-1",
-    "frontend/admin-v3/render-manual-roster.js?v=manual-roster-semi-auto-beta-1-player-details-1",
+    "frontend/admin-v3/render-manual-lineup.js?v=independent-roster-lineup-safety-1",
+    "frontend/admin-v3/render-manual-roster.js?v=independent-roster-lineup-safety-1",
     "frontend/admin-v3/render-game-progress.js?v=manual-lineup-finalize-safety-1",
     "frontend/admin-v3/render-job-details.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-roster.js?v=admin-v3-v35-diagnostics-readability-1",
@@ -56,8 +56,8 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
     "frontend/admin-v3/render-ranking-reset.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-perfect-score-preview.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-manual-game-preview.js?v=admin-v3-v35-diagnostics-readability-1",
-    "frontend/admin-v3/app-coordinator.js?v=admin-v3-v35-diagnostics-readability-1-manual-lineup-1-ime",
-    "admin-v3.js?v=manual-lineup-finalize-safety-1"
+    "frontend/admin-v3/app-coordinator.js?v=independent-roster-lineup-safety-1",
+    "admin-v3.js?v=independent-roster-lineup-safety-1"
   ]);
   const modules = loadModules();
   assert.equal(typeof modules.createAdminV3State, "function");

@@ -122,5 +122,5 @@ test("manual mutationのpreflightはPUT/POSTとContent-Type/credentialsを許可
 });
 
 test("admin-v3は変更済みapi-client cache busterを読み込む", () => {
-  assert.match(htmlSource, /frontend\/admin-v3\/api-client\.js\?v=same-origin-auth-session-1/);
+  assert.match(htmlSource, /frontend\/admin-v3\/api-client\.js\?v=independent-roster-lineup-safety-1/);
 });

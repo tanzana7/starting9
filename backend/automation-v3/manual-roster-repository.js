@@ -107,7 +107,8 @@ export function prioritizeManualRosterCatalog(catalog, rosterRows = []) {
   if (rosterRows == null) return Array.isArray(catalog) ? catalog.map((player) => ({ ...player, manualRosterStatus: null, manualRosterActive: null, manualRosterNote: "", manualRosterSource: null })) : [];
   const rows = Array.isArray(rosterRows) ? rosterRows : rosterRows?.entries || [];
   const source = String(rosterRows?.source || "");
-  if (rosterRows?.schemaAvailable === false || source === "static-fallback" || rows.length === 0) return staticFallbackCatalog(catalog);
+  const isManualSaved = rosterRows?.isManualSaved === true || source === "manual";
+  if (rosterRows?.schemaAvailable === false || source === "static-fallback" || (!isManualSaved && rows.length === 0)) return staticFallbackCatalog(catalog);
   const byId = new Map(rows.map((row) => [String(row?.playerId || row?.player_id || "").trim(), row]));
   const byName = new Map(rows.map((row) => [normalizeManualRosterPlayerName(row?.playerName || row?.name), row]).filter(([name]) => name));
   return (Array.isArray(catalog) ? catalog : []).map((player, index) => {
@@ -159,11 +160,25 @@ export async function getManualRoster(db, { teamCode = MANUAL_ROSTER_TEAM.teamCo
 export async function saveManualRoster(db, { teamCode = MANUAL_ROSTER_TEAM.teamCode, entries, updatedBy, now = new Date(), catalog = [] } = {}) {
   const team = normalizeManualRosterTeam(teamCode);
   const normalized = validateManualRosterEntries(entries, catalog);
+  // The existing per-player table has no roster header row, so materialize an
+  // explicit empty save as inactive eligible players instead of losing the
+  // distinction between "saved empty" and "never saved".
+  const persistedEntries = normalized.length
+    ? normalized
+    : (() => {
+      const seen = new Set();
+      return (Array.isArray(catalog) ? catalog : [])
+        .filter((player) => player?.manualRosterEligible !== false)
+        .map((player) => String(player?.playerId || "").trim())
+        .filter((playerId) => playerId && !seen.has(playerId) && seen.add(playerId))
+        .slice(0, MAX_MANUAL_ROSTER_ENTRIES)
+        .map((playerId) => ({ playerId, status: "inactive", note: "" }));
+    })();
   const actor = String(updatedBy || "").trim().slice(0, 160);
   if (!actor) throw manualRosterError("MANUAL_ROSTER_UPDATED_BY_REQUIRED", "更新者を特定できません。", 400);
   const updatedAt = now instanceof Date ? now.toISOString() : new Date(now).toISOString();
   try {
-    const statements = normalized.map((entry) => db.prepare(
+    const statements = persistedEntries.map((entry) => db.prepare(
       `INSERT INTO manual_team_rosters
          (team_code, team_id, player_id, status, roster_source, note, updated_at, updated_by)
        VALUES (?1, ?2, ?3, ?4, 'manual', ?5, ?6, ?7)

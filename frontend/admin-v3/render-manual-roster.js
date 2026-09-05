@@ -49,6 +49,19 @@
       if (!rows.length) return "";
       return `<details class="player-inline-details"><summary>詳細</summary><dl>${rows.map(([label, value]) => `<div><dt>${escape(label)}</dt><dd>${escape(value)}</dd></div>`).join("")}</dl></details>`;
     }
+    function playerCategory(player) {
+      return String(player?.category || (player?.manualRosterEligible === false ? "投手" : "未分類")).trim();
+    }
+    function sortPlayersByUniformNumber(players) {
+      return [...players].sort((left, right) => {
+        const leftNumber = Number.parseInt(String(left?.uniformNumber || ""), 10);
+        const rightNumber = Number.parseInt(String(right?.uniformNumber || ""), 10);
+        const leftRank = Number.isFinite(leftNumber) ? leftNumber : Number.POSITIVE_INFINITY;
+        const rightRank = Number.isFinite(rightNumber) ? rightNumber : Number.POSITIVE_INFINITY;
+        return leftRank - rightRank
+          || String(left?.playerName || left?.displayName || "").localeCompare(String(right?.playerName || right?.displayName || ""), "ja");
+      });
+    }
     function catalogFor(state) { return Array.isArray(state?.catalog) ? state.catalog : []; }
     function entriesFor(state) { return Array.isArray(state?.entries) ? state.entries : []; }
     function rosterStats(state) {
@@ -67,13 +80,21 @@
     }
     function renderCandidates(state) {
       const query = String(state?.search || "").trim().toLowerCase();
-      const selected = new Set(entriesFor(state).map((entry) => entry.playerId));
-      const candidates = catalogFor(state).filter((player) => {
-        const haystack = `${player.playerName} ${player.uniformNumber} ${player.displayName || ""}`.toLowerCase();
+      const selected = new Map(entriesFor(state).map((entry) => [entry.playerId, entry.status || "active"]));
+      const candidates = sortPlayersByUniformNumber(catalogFor(state).filter((player) => {
+        if (player.manualRosterEligible === false) return false;
+        const haystack = `${player.playerName} ${player.uniformNumber} ${player.displayName || ""} ${playerCategory(player)}`.toLowerCase();
         return !query || haystack.includes(query);
-      }).slice(0, 12);
+      }));
       if (!candidates.length) return '<p class="muted">候補がありません。既知の選手名・背番号で検索してください。</p>';
-      return candidates.map((player) => `<div class="manual-player-candidate-row"><button type="button" class="manual-roster-candidate${selected.has(player.playerId) ? " selected" : ""}" data-v3-manual-roster-add="${escape(player.playerId)}"${selected.has(player.playerId) ? " disabled" : ""}><strong>${playerName(player)}</strong>${player.manualRosterStatus === "inactive" ? "<small>inactive</small>" : ""}</button>${playerDetailMarkup(player)}</div>`).join("");
+      return candidates.map((player) => {
+        const playerId = String(player.playerId || "");
+        const hasEntry = selected.has(playerId);
+        const status = selected.get(playerId) || player.manualRosterStatus || "active";
+        const isActive = status === "active";
+        const actionLabel = isActive && hasEntry ? "登録済み" : isActive ? "activeに追加" : "inactive / active化";
+        return `<div class="manual-player-candidate-row"><button type="button" class="manual-roster-candidate${hasEntry ? " selected" : ""}${!isActive ? " inactive" : ""}" data-v3-manual-roster-add="${escape(playerId)}"${isActive && hasEntry ? " disabled" : ""}><strong>${playerName(player)}</strong><small class="manual-player-candidate-meta">${escape(playerCategory(player))} / ${escape(status)} / ${escape(actionLabel)}</small></button>${playerDetailMarkup(player)}</div>`;
+      }).join("");
     }
     function render(state = {}) {
       const entries = entriesFor(state);

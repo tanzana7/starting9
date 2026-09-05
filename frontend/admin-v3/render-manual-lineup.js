@@ -65,6 +65,21 @@
       return `<details class="player-inline-details"><summary>詳細</summary><dl>${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl></details>`;
     }
 
+    function playerCategory(player) {
+      return String(player?.category || (player?.manualRosterEligible === false ? "投手" : "未分類")).trim();
+    }
+
+    function sortPlayersByUniformNumber(players) {
+      return [...players].sort((left, right) => {
+        const leftNumber = Number.parseInt(String(left?.uniformNumber || ""), 10);
+        const rightNumber = Number.parseInt(String(right?.uniformNumber || ""), 10);
+        const leftRank = Number.isFinite(leftNumber) ? leftNumber : Number.POSITIVE_INFINITY;
+        const rightRank = Number.isFinite(rightNumber) ? rightNumber : Number.POSITIVE_INFINITY;
+        return leftRank - rightRank
+          || String(left?.playerName || "").localeCompare(String(right?.playerName || ""), "ja");
+      });
+    }
+
     function confirmationKey(row) {
       const playerId = String(row?.playerId || "").trim();
       if (playerId) return `id:${playerId}`;
@@ -102,11 +117,15 @@
     function renderCandidates(catalog, row, index) {
       const players = Array.isArray(catalog) ? catalog : [];
       const search = String(row?.search || "").trim().toLocaleLowerCase();
-      const candidates = players.filter((player) => !search
-        || `${player.playerName} ${player.uniformNumber}`.toLocaleLowerCase().includes(search)).slice(0, 6);
+      const candidates = sortPlayersByUniformNumber(players.filter((player) => !search
+        || `${player.playerName} ${player.uniformNumber} ${playerCategory(player)}`.toLocaleLowerCase().includes(search)));
       const selected = players.find((player) => player.playerId === row?.playerId);
       return candidates.length
-        ? candidates.map((player) => `<div class="manual-player-candidate-row"><button type="button" class="manual-lineup-candidate ${selected?.playerId === player.playerId ? "selected" : ""}" data-v3-manual-lineup-player="${escapeHtml(String(index))}" data-v3-manual-lineup-player-id="${escapeHtml(player.playerId)}">${playerName(player)}${player.manualRosterActive === false ? " <small>roster外（確認要）</small>" : ""}</button>${playerDetailMarkup(player)}</div>`).join("")
+        ? candidates.map((player) => {
+          const selectedPlayer = selected?.playerId === player.playerId;
+          const rosterLabel = player.manualRosterActive === false ? "ロースター外（確認要）" : "ロースター内";
+          return `<div class="manual-player-candidate-row"><button type="button" class="manual-lineup-candidate${selectedPlayer ? " selected" : ""}" aria-pressed="${selectedPlayer ? "true" : "false"}" data-v3-manual-lineup-player="${escapeHtml(String(index))}" data-v3-manual-lineup-player-id="${escapeHtml(player.playerId)}">${playerName(player)}<small class="manual-player-candidate-meta">${escapeHtml(playerCategory(player))} / ${escapeHtml(rosterLabel)}</small></button>${playerDetailMarkup(player)}</div>`;
+        }).join("")
         : `<span class="muted">候補がありません</span>`;
     }
 

@@ -7588,3 +7588,18 @@ body:not(:has(.app-layout.is-admin-screen)) .probable-starter-fetched {
     grid-template-columns: minmax(0, 56fr) minmax(0, 44fr);
   }
 }
+
+/* Keep the public editing target distinct from batting-side colors. */
+body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .lineup-slot.is-active,
+body:not(:has(.app-layout.is-admin-screen)) .lineup-slot.is-active {
+  border-color: #d5a11e;
+  background: #fff8e5;
+  box-shadow: 0 3px 8px rgba(146, 102, 0, 0.14);
+  outline: 1px solid rgba(213, 161, 30, 0.45);
+  outline-offset: -1px;
+}
+
+body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .position-menu-option.is-current {
+  border-color: #d5a11e;
+  background: #fff8e5;
+}

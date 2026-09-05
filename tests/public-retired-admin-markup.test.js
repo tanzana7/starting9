@@ -11,7 +11,7 @@ const scriptCacheBuster = "public-position-menu-pc-narrow-clamp-1";
 const moduleCacheBuster = "public-compliance-disclaimer-and-fetch-safety-1";
 const playerDisplayCacheBuster = "public-player-display-1-batting-hand-player-number-1-player-details-1";
 const fightersPlayerDetailsCacheBuster = "fighters-player-details-20260903-1";
-const styleCacheBuster = "public-position-menu-left-clamp-1-bat-line-1-player-number-1-player-details-1-bat-line-row-accent-1";
+const styleCacheBuster = "public-position-menu-left-clamp-1-bat-line-1-player-number-1-player-details-1-bat-line-row-accent-1-public-selected-highlight-1";
 
 test("通常公開HTMLに旧admin・緊急復旧・test markupを含めない", () => {
   for (const marker of [

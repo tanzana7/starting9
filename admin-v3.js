@@ -940,7 +940,8 @@ function updateV3ManualLineupSearch(index, value) {
   const details = v3State.operationDetails.get(v3State.selectedGameId) || {};
   const catalog = details.lineup?.playerCatalog || [];
   const candidates = document.querySelector(`[data-v3-manual-lineup-candidates="${Number(index)}"]`);
-  if (candidates) candidates.innerHTML = v3ManualLineupRenderer.renderCandidates(catalog, row, Number(index));
+  const manualRoster = details.lineup?.manualRoster || null;
+  if (candidates) candidates.innerHTML = v3ManualLineupRenderer.renderCandidates(catalog, row, Number(index), manualRoster);
 }
 
 function selectV3ManualLineupPlayer(index, playerId) {

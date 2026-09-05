@@ -14,7 +14,7 @@
     }));
   }
 
-  function createAdminV3ManualLineupRenderer({ escapeHtml, formatJst, getFinalizeSafety }) {
+  function createAdminV3ManualLineupRenderer({ escapeHtml, formatJst, getFinalizeSafety, getGameDayStatus }) {
     function battingClass(player) {
       if (global.Starting9Public?.getPlayerBattingClass) return global.Starting9Public.getPlayerBattingClass(player);
       const source = player && typeof player === "object" ? player : {};
@@ -136,7 +136,15 @@
       const finalizeSafety = typeof getFinalizeSafety === "function" ? getFinalizeSafety(game) : { allowed: true, message: "" };
       const gameDate = String(game?.gameDate || game?.game_date || "").slice(0, 10) || "不明";
       const startAt = typeof formatJst === "function" ? formatJst(game?.startAt || game?.start_time) : String(game?.startAt || game?.start_time || "-");
-      const targetMarkup = `<div class="manual-lineup-target" data-v3-manual-lineup-target><strong>正式スタメン確定対象</strong><span>${escapeHtml(gameDate)} / ${escapeHtml(game?.homeTeam || "-")} vs ${escapeHtml(game?.awayTeam || "-")}</span><span>開始 ${escapeHtml(startAt)} JST</span><code>internalGameId: ${escapeHtml(game?.internalGameId || "-")}</code></div>`;
+      const dayStatus = typeof getGameDayStatus === "function" ? getGameDayStatus(game) : { key: "unknown", label: "日付不明", tone: "warning" };
+      const persistedState = String(game?.state?.state || game?.workflowState || "scheduled");
+      const effectiveState = String(game?.effectiveState || game?.workflowDiagnostics?.effectiveState || persistedState);
+      const stateMismatch = persistedState !== effectiveState;
+      const targetWarning = dayStatus.isFuture
+        ? "これは未来試合です。正式運用対象ではありません。read-only確認に留めてください。"
+        : dayStatus.isPast ? "これは本日以外の試合です。対象日とinternalGameIdを確認してください。" : dayStatus.key === "unknown" ? "対象日を確認できないため、正式スタメン確定は行わないでください。" : "";
+      const mismatchWarning = stateMismatch ? `effectiveState: ${effectiveState} / persistedState: ${persistedState}。成果物と状態の不一致を確認してください。` : "";
+      const targetMarkup = `<div class="manual-lineup-target${dayStatus.tone === "future" ? " is-future" : dayStatus.tone === "past" ? " is-past" : ""}" data-v3-manual-lineup-target><strong>正式スタメン確定対象</strong><span class="manual-lineup-target-status">${escapeHtml(dayStatus.label || "日付不明")}</span><span>${escapeHtml(gameDate)} / ${escapeHtml(game?.homeTeam || "-")} vs ${escapeHtml(game?.awayTeam || "-")}</span><span>開始 ${escapeHtml(startAt)} JST</span><span>workflow: persisted ${escapeHtml(persistedState)} / effective ${escapeHtml(effectiveState)}</span><code>internalGameId: ${escapeHtml(game?.internalGameId || "-")}</code>${targetWarning ? `<p class="manual-lineup-target-warning">${escapeHtml(targetWarning)}</p>` : ""}${mismatchWarning ? `<p class="manual-lineup-target-mismatch">${escapeHtml(mismatchWarning)}</p>` : ""}</div>`;
       const lineupSummary = renderLineupConfirmation(rows, catalog);
       const safetyMarkup = finalizeSafety.allowed ? "" : `<p class="manual-lineup-safety-warning" data-v3-manual-lineup-safety-warning>${escapeHtml(finalizeSafety.message)}</p>`;
       const locked = ["scored", "ranked", "published"].includes(String(game?.state?.state || game?.workflowState || "").toLowerCase())
@@ -153,7 +161,7 @@
       const disabled = locked || state.loading;
        const revision = state.latestRevision;
        const cancelableSource = ["manual", "manual-revision"].includes(String(revision?.source || ""));
-       const futureScheduled = String(game?.gameDate || game?.game_date || "") > new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tokyo" }).format(new Date());
+       const futureScheduled = dayStatus.isFuture;
        const cancelMarkup = revision && cancelableSource && futureScheduled && !details?.publication?.publication?.publishedAt
          ? `<button type="button" class="secondary manual-lineup-cancel" data-v3-manual-lineup-revision-cancel="${escapeHtml(String(revision.revisionId || revision.version || ""))}">このmanual revisionを取消</button><small class="muted">未来のscheduled試合のみ。取消後は正式スタメン未確定に戻ります。</small>`
          : "";

@@ -42,7 +42,7 @@ test("manual roster保存済み行はstatic fallbackに戻らず、名前fallbac
 
 test("manual roster rendererはFighters全体・source・人数・カテゴリを表示し、lineupとは独立と明示する", () => {
   const source = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-manual-roster.js"), "utf8");
-  assert.match(source, /Fighters全体を対象/);
+  assert.match(source, /Fighters-wide/);
   assert.match(source, /表示元:/);
   assert.match(source, /active:/);
   assert.match(source, /inactive:/);

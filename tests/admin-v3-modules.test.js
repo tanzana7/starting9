@@ -24,6 +24,7 @@ function loadModules() {
     "../public/player-display",
     "api-client",
     "dom",
+    "selection-safety",
     "render-manual-lineup",
     "render-manual-roster",
     "render-game-progress",
@@ -42,12 +43,13 @@ function loadModules() {
 test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む", () => {
   const scripts = [...page.matchAll(/<script src="([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(scripts, [
-    "frontend/admin-v3/state.js?v=independent-roster-lineup-safety-1",
+    "frontend/admin-v3/state.js?v=independent-roster-lineup-safety-1-game-selection-safety-1",
     "frontend/public/fighters-player-details.js?v=fighters-player-details-20260903-1",
     "frontend/public/player-display.js?v=public-player-display-1-batting-hand-player-number-1-player-details-1",
     "frontend/admin-v3/api-client.js?v=independent-roster-lineup-safety-1",
     "frontend/admin-v3/dom.js?v=manual-lineup-finalize-safety-1",
-    "frontend/admin-v3/render-manual-lineup.js?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1",
+    "frontend/admin-v3/selection-safety.js?v=admin-game-selection-safety-1",
+    "frontend/admin-v3/render-manual-lineup.js?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1-game-selection-safety-1",
     "frontend/admin-v3/render-manual-roster.js?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1",
     "frontend/admin-v3/render-game-progress.js?v=manual-lineup-finalize-safety-1",
     "frontend/admin-v3/render-job-details.js?v=admin-v3-v35-diagnostics-readability-1",
@@ -57,12 +59,13 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
     "frontend/admin-v3/render-perfect-score-preview.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-manual-game-preview.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/app-coordinator.js?v=independent-roster-lineup-safety-1-preserve-picker-scroll-1",
-    "admin-v3.js?v=independent-roster-lineup-safety-1"
+    "admin-v3.js?v=independent-roster-lineup-safety-1-game-selection-safety-1"
   ]);
   const modules = loadModules();
   assert.equal(typeof modules.createAdminV3State, "function");
   assert.equal(typeof modules.createAdminV3ApiClient, "function");
   assert.equal(typeof modules.createAdminV3Dom, "function");
+  assert.equal(typeof modules.createAdminV3SelectionSafety, "function");
   assert.equal(typeof modules.createAdminV3ManualLineupRenderer, "function");
   assert.equal(typeof modules.createAdminV3ManualRosterRenderer, "function");
   assert.equal(typeof modules.createAdminV3GameProgressRenderer, "function");

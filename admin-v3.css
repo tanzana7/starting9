@@ -529,6 +529,12 @@ button:disabled { cursor: wait; opacity: .65; }
   .v3-lineup-row input:nth-of-type(n + 3) { grid-column: span 1; }
   .game-heading { align-items: flex-start; }
   .game-heading code { display: none; }
+  .admin-v3-shell button,
+  .admin-v3-shell input,
+  .admin-v3-shell select,
+  .admin-v3-shell textarea { font-size: 16px; }
+  .manual-lineup-candidate,
+  .manual-roster-candidate { touch-action: manipulation; }
 }
 @media (max-width: 390px) {
   .v3-nav { grid-template-columns: 1fr; }

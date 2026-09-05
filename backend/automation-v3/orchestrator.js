@@ -59,6 +59,14 @@ function parseStoredLineupPayload(value) {
   }
 }
 
+function lineupRevisionIdentity(row) {
+  const revisionId = String(row?.revision_id || "").trim();
+  if (revisionId) return revisionId;
+  const gameId = String(row?.game_id || "").trim();
+  const version = Number(row?.version);
+  return gameId && Number.isInteger(version) ? `${gameId}:${version}` : "";
+}
+
 async function readV3LineupDataHealth(db, internalGameId, workflowState = "scheduled") {
   const health = {
     available: false,
@@ -75,7 +83,9 @@ async function readV3LineupDataHealth(db, internalGameId, workflowState = "sched
     candidateCount: null,
     candidateValidCount: null,
     finalizedCount: null,
-    finalizedValidCount: null
+    finalizedValidCount: null,
+    canonicalFinalized: false,
+    canonicalFinalLineupRevisionId: null
   };
   try {
     const revisions = await db.prepare(
@@ -87,6 +97,7 @@ async function readV3LineupDataHealth(db, internalGameId, workflowState = "sched
     const rows = revisions.results || [];
     const candidates = rows.filter((row) => Number(row.is_final || 0) !== 1);
     const finalized = rows.filter((row) => Number(row.is_final || 0) === 1);
+    const revisionChecks = rows.map((row) => ({ row, check: assessV3LineupArtifact(parseStoredLineupPayload(row.actual_lineup_json)) }));
     const candidateChecks = candidates.map((row) => assessV3LineupArtifact(parseStoredLineupPayload(row.actual_lineup_json)));
     const finalizedChecks = finalized.map((row) => assessV3LineupArtifact(parseStoredLineupPayload(row.actual_lineup_json)));
     const canonical = await db.prepare(
@@ -95,18 +106,38 @@ async function readV3LineupDataHealth(db, internalGameId, workflowState = "sched
         WHERE internal_game_id = ?1
         LIMIT 1`
     ).bind(internalGameId).first();
+    // Manual finalize writes the canonical final-revision link after the
+    // revision row is activated. Read that marker independently so older
+    // adapters without the column remain compatible with revision-only data.
+    let canonicalFinalLineupRevisionId = null;
+    try {
+      const canonicalMarker = await db.prepare(
+        `SELECT final_lineup_revision_id
+           FROM game_lineups
+          WHERE internal_game_id = ?1
+          LIMIT 1`
+      ).bind(internalGameId).first();
+      canonicalFinalLineupRevisionId = String(canonicalMarker?.final_lineup_revision_id || "").trim() || null;
+    } catch {
+      canonicalFinalLineupRevisionId = null;
+    }
     health.available = true;
     const canonicalCheck = assessV3LineupArtifact(parseStoredLineupPayload(canonical?.actual_lineup_json));
     health.candidateExists = candidateChecks.some((check) => check.ok);
     health.candidateValid = health.candidateExists;
     health.canonicalDataReady = canonicalCheck.ok;
     health.canonicalValid = canonicalCheck.ok;
-    health.finalizedLineupExists = finalizedChecks.some((check) => check.ok);
+    health.canonicalFinalLineupRevisionId = canonicalFinalLineupRevisionId;
+    health.canonicalFinalized = Boolean(canonicalFinalLineupRevisionId
+      && canonicalCheck.ok
+      && revisionChecks.some(({ row, check }) => check.ok && lineupRevisionIdentity(row) === canonicalFinalLineupRevisionId));
+    health.finalizedLineupExists = finalizedChecks.some((check) => check.ok) || health.canonicalFinalized;
     health.finalizedValid = health.finalizedLineupExists;
     health.candidateCount = candidates.length;
     health.candidateValidCount = candidateChecks.filter((check) => check.ok).length;
     health.finalizedCount = finalized.length;
-    health.finalizedValidCount = finalizedChecks.filter((check) => check.ok).length;
+    health.finalizedValidCount = finalizedChecks.filter((check) => check.ok).length
+      + (health.canonicalFinalized && !finalizedChecks.some((check) => check.ok) ? 1 : 0);
     health.ready = health.candidateValid || health.canonicalValid || health.finalizedValid;
     health.artifactVerified = health.ready;
     health.verificationStatus = health.ready ? "verified" : "missing_or_invalid";

@@ -69,15 +69,72 @@
       return String(player?.category || (player?.manualRosterEligible === false ? "投手" : "未分類")).trim();
     }
 
-    function sortPlayersByUniformNumber(players) {
-      return [...players].sort((left, right) => {
-        const leftNumber = Number.parseInt(String(left?.uniformNumber || ""), 10);
-        const rightNumber = Number.parseInt(String(right?.uniformNumber || ""), 10);
-        const leftRank = Number.isFinite(leftNumber) ? leftNumber : Number.POSITIVE_INFINITY;
-        const rightRank = Number.isFinite(rightNumber) ? rightNumber : Number.POSITIVE_INFINITY;
-        return leftRank - rightRank
-          || String(left?.playerName || "").localeCompare(String(right?.playerName || ""), "ja");
-      });
+    function normalizePlayerName(value) {
+      return String(value ?? "")
+        .normalize("NFKC")
+        .replace(/^\[\d{1,3}\]\s*/, "")
+        .replace(/[\s\u3000]/g, "")
+        .replace(/[．。]/g, ".")
+        .toLowerCase();
+    }
+
+    function manualRosterEntries(manualRoster) {
+      if (Array.isArray(manualRoster)) return manualRoster;
+      return Array.isArray(manualRoster?.entries) ? manualRoster.entries : [];
+    }
+
+    function hasManualRosterData(manualRoster) {
+      if (Array.isArray(manualRoster)) return true;
+      return Boolean(manualRoster && manualRoster.schemaAvailable !== false && manualRoster.source !== "static-fallback");
+    }
+
+    function playerRosterState(player, manualRoster) {
+      const entries = manualRosterEntries(manualRoster);
+      const byId = new Map(entries
+        .map((entry) => [String(entry?.playerId || entry?.player_id || "").trim(), entry])
+        .filter(([playerId]) => playerId));
+      const playerId = String(player?.playerId || "").trim();
+      let entry = playerId ? byId.get(playerId) : null;
+      if (!entry && (!playerId || byId.size === 0)) {
+        const playerNameKey = normalizePlayerName(player?.playerName || player?.name || player?.displayName);
+        if (playerNameKey) {
+          entry = entries.find((candidate) => normalizePlayerName(candidate?.playerName || candidate?.name || candidate?.displayName) === playerNameKey) || null;
+        }
+      }
+      if (entry) {
+        const status = String(entry.status || "active").trim().toLowerCase();
+        return { inRoster: true, active: status === "active", status: status || "inactive" };
+      }
+      if (hasManualRosterData(manualRoster)) return { inRoster: false, active: false, status: "outside" };
+
+      const catalogStatus = String(player?.manualRosterStatus || "").trim().toLowerCase();
+      if (catalogStatus === "active" || player?.manualRosterActive === true) return { inRoster: true, active: true, status: "active" };
+      if (catalogStatus === "inactive") return { inRoster: true, active: false, status: "inactive" };
+      return { inRoster: false, active: false, status: "outside" };
+    }
+
+    function numericUniformNumber(player) {
+      const value = String(uniformNumber(player)).normalize("NFKC").trim();
+      if (!/^\d+$/.test(value)) return Number.POSITIVE_INFINITY;
+      const number = Number(value);
+      return Number.isFinite(number) ? number : Number.POSITIVE_INFINITY;
+    }
+
+    function sortPlayersByRosterAndUniformNumber(players, manualRoster) {
+      return [...players].map((player, index) => ({ player, index, roster: playerRosterState(player, manualRoster) })).sort((left, right) => {
+        const leftRosterRank = left.roster.active ? 0 : 1;
+        const rightRosterRank = right.roster.active ? 0 : 1;
+        return leftRosterRank - rightRosterRank
+          || numericUniformNumber(left.player) - numericUniformNumber(right.player)
+          || String(left.player?.playerName || left.player?.displayName || "").localeCompare(String(right.player?.playerName || right.player?.displayName || ""), "ja")
+          || left.index - right.index;
+      }).map(({ player }) => player);
+    }
+
+    function playerRosterLabel(roster) {
+      if (roster.active) return "ロースター内 / active";
+      if (roster.inRoster) return "ロースター内 / inactive（確認要）";
+      return "ロースター外（確認要） / 未登録";
     }
 
     function confirmationKey(row) {
@@ -114,16 +171,16 @@
       return `${duplicateNotice}<ol class="manual-lineup-confirmation-list" data-v3-manual-lineup-confirmation>${markup}</ol>`;
     }
 
-    function renderCandidates(catalog, row, index) {
+    function renderCandidates(catalog, row, index, manualRoster = null) {
       const players = Array.isArray(catalog) ? catalog : [];
       const search = String(row?.search || "").trim().toLocaleLowerCase();
-      const candidates = sortPlayersByUniformNumber(players.filter((player) => !search
-        || `${player.playerName} ${player.uniformNumber} ${playerCategory(player)}`.toLocaleLowerCase().includes(search)));
+      const candidates = sortPlayersByRosterAndUniformNumber(players.filter((player) => !search
+        || `${player.playerName} ${player.uniformNumber} ${playerCategory(player)}`.toLocaleLowerCase().includes(search)), manualRoster);
       const selected = players.find((player) => player.playerId === row?.playerId);
       return candidates.length
         ? candidates.map((player) => {
           const selectedPlayer = selected?.playerId === player.playerId;
-          const rosterLabel = player.manualRosterActive === false ? "ロースター外（確認要）" : "ロースター内";
+          const rosterLabel = playerRosterLabel(playerRosterState(player, manualRoster));
           return `<div class="manual-player-candidate-row"><button type="button" class="manual-lineup-candidate${selectedPlayer ? " selected" : ""}" aria-pressed="${selectedPlayer ? "true" : "false"}" data-v3-manual-lineup-player="${escapeHtml(String(index))}" data-v3-manual-lineup-player-id="${escapeHtml(player.playerId)}">${playerName(player)}<small class="manual-player-candidate-meta">${escapeHtml(playerCategory(player))} / ${escapeHtml(rosterLabel)}</small></button>${playerDetailMarkup(player)}</div>`;
         }).join("")
         : `<span class="muted">候補がありません</span>`;
@@ -155,7 +212,7 @@
         const selected = catalog.find((player) => player.playerId === row.playerId);
         const positionOptions = POSITIONS.map((position) => `<option value="${escapeHtml(position)}" ${row.position === position ? "selected" : ""}>${escapeHtml(position || "守備位置を選択")}</option>`).join("");
         const orderOptions = Array.from({ length: 9 }, (_, order) => order + 1).map((order) => `<option value="${order}" ${Number(row.battingOrder) === order ? "selected" : ""}>${order}番</option>`).join("");
-        return `<article class="manual-lineup-card"><div class="manual-lineup-card-heading"><strong>${index + 1}人目</strong><span>${selected ? playerName(selected) : "未選択"}</span>${selected ? playerDetailMarkup(selected) : ""}</div><label>選手を検索<input type="search" value="${escapeHtml(row.search || "")}" placeholder="名前または背番号" data-v3-manual-lineup-search="${index}" ${locked ? "disabled" : ""}></label><div class="manual-lineup-candidates" aria-label="選手候補" data-v3-manual-lineup-candidates="${index}">${renderCandidates(catalog, row, index)}</div><div class="manual-lineup-card-fields"><label>打順<select data-v3-manual-lineup-order="${index}" ${locked ? "disabled" : ""}>${orderOptions}</select></label><label>守備位置<select data-v3-manual-lineup-position="${index}" ${locked ? "disabled" : ""}>${positionOptions}</select></label></div></article>`;
+        return `<article class="manual-lineup-card"><div class="manual-lineup-card-heading"><strong>${index + 1}人目</strong><span>${selected ? playerName(selected) : "未選択"}</span>${selected ? playerDetailMarkup(selected) : ""}</div><label>選手を検索<input type="search" value="${escapeHtml(row.search || "")}" placeholder="名前または背番号" data-v3-manual-lineup-search="${index}" ${locked ? "disabled" : ""}></label><div class="manual-lineup-candidates" aria-label="選手候補" data-v3-manual-lineup-candidates="${index}">${renderCandidates(catalog, row, index, lineupDetails.manualRoster)}</div><div class="manual-lineup-card-fields"><label>打順<select data-v3-manual-lineup-order="${index}" ${locked ? "disabled" : ""}>${orderOptions}</select></label><label>守備位置<select data-v3-manual-lineup-position="${index}" ${locked ? "disabled" : ""}>${positionOptions}</select></label></div></article>`;
       }).join("");
       const message = state.error ? `<p class="manual-lineup-message error">${escapeHtml(state.error)}</p>` : state.message ? `<p class="manual-lineup-message success">${escapeHtml(state.message)}</p>` : "";
       const disabled = locked || state.loading;
@@ -168,7 +225,7 @@
        return `<section class="manual-lineup-editor" data-v3-manual-lineup-editor>${targetMarkup}<div class="manual-lineup-header"><div><h3>Fighters 手動スタメン</h3><p>対象チーム1チーム・9人を選択します。選手名はマスター照合され、未登録名や重複は保存できません。ロースター外は警告のみで、スタメン確定の必須条件ではありません。</p></div><span class="manual-lineup-team">${escapeHtml(lineupDetails.managedTeam?.name || "Fighters")}</span></div><div class="manual-lineup-grid">${cards}</div><div class="manual-lineup-confirmation-preview" data-v3-manual-lineup-confirmation-preview><strong>スタメン確認（入力中）</strong>${lineupSummary}</div><label class="manual-lineup-confirm"><input type="checkbox" data-v3-manual-lineup-confirm ${state.confirmed ? "checked" : ""} ${disabled ? "disabled" : ""}> 入力内容を確認しました</label>${safetyMarkup}<div class="manual-lineup-actions"><button type="button" data-v3-manual-lineup-save ${disabled ? "disabled" : ""}>下書きを保存</button><button type="button" class="primary-button" data-v3-manual-lineup-finalize ${disabled || !state.latestRevision || !finalizeSafety.allowed ? "disabled" : ""}>正式スタメンを確定</button>${cancelMarkup}</div>${locked ? `<p class="muted">採点開始後・公開後はスタメンを変更できません。</p>` : `<p class="muted">確定後はスコアjobを手動投入せず、次回の正式V3 Cronが採点へ進めます。</p>`}${message}</section>`;
     }
 
-    return Object.freeze({ createBlankRows, renderCandidates, render });
+    return Object.freeze({ createBlankRows, renderCandidates, render, sortPlayersByRosterAndUniformNumber });
   }
 
   global.Starting9AdminV3 = global.Starting9AdminV3 || {};

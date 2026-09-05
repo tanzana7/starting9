@@ -1818,9 +1818,36 @@ async function executeV3LineupExecutor({ env, internalGameId, now, target, state
   };
 }
 
+function v3LineupRevisionIdentity(row) {
+  const revisionId = String(row?.revision_id || "").trim();
+  if (revisionId) return revisionId;
+  const gameId = String(row?.game_id || "").trim();
+  const version = Number(row?.version);
+  return gameId && Number.isInteger(version) ? `${gameId}:${version}` : "";
+}
+
+async function hasV3CanonicalFinalLineup(db, internalGameId, revisions) {
+  try {
+    const canonical = await db.prepare(
+      `SELECT final_lineup_revision_id
+         FROM game_lineups
+        WHERE internal_game_id = ?1
+        LIMIT 1`
+    ).bind(internalGameId).first();
+    const marker = String(canonical?.final_lineup_revision_id || "").trim();
+    return Boolean(marker && (Array.isArray(revisions) ? revisions : []).some((row) =>
+      v3LineupRevisionIdentity(row) === marker
+      && assessV3LineupArtifact(parseStoredActualLineup(row.actual_lineup_json)).ok));
+  } catch {
+    return false;
+  }
+}
+
 async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore }) {
   const revisions = await getV3LineupRevisionRows(env.AUTH_DB, internalGameId, internalGameId);
-  if (!revisions.some((row) => Number(row.is_final) === 1)) {
+  const hasFinalizedRevision = revisions.some((row) => Number(row.is_final) === 1)
+    || await hasV3CanonicalFinalLineup(env.AUTH_DB, internalGameId, revisions);
+  if (!hasFinalizedRevision) {
     throw createV3Error("V3_FINAL_LINEUP_REQUIRED", "正式スタメン確定済みの採点対象がありません。", { retryable: false });
   }
   // A terminal score job can leave the canonical lineup in processing. The

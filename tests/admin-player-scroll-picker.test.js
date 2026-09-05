@@ -24,7 +24,7 @@ function loadRenderers() {
   return context.window.Starting9AdminV3;
 }
 
-test("manual lineup候補は全件を背番号順のスクロール対象として描画する", () => {
+test("manual lineup候補はactive rosterを先頭にして各グループを背番号順のスクロール対象として描画する", () => {
   const renderers = loadRenderers();
   const renderer = renderers.createAdminV3ManualLineupRenderer({ escapeHtml });
   const catalog = [
@@ -33,13 +33,53 @@ test("manual lineup候補は全件を背番号順のスクロール対象とし�
     { playerId: "F-43", playerName: "水野 達稀", uniformNumber: "43", category: "内野手", manualRosterActive: false }
   ];
   const html = renderer.renderCandidates(catalog, { search: "" }, 0);
-  assert.ok(html.indexOf("[3]") < html.indexOf("[43]"));
-  assert.ok(html.indexOf("[43]") < html.indexOf("[53]"));
-  assert.match(html, /捕手 \/ ロースター内/);
-  assert.match(html, /内野手 \/ ロースター外（確認要）/);
+  assert.ok(html.indexOf("[3]") < html.indexOf("[53]"));
+  assert.ok(html.indexOf("[53]") < html.indexOf("[43]"));
+  assert.match(html, /捕手 \/ ロースター内 \/ active/);
+  assert.match(html, /内野手 \/ ロースター外（確認要） \/ 未登録/);
   assert.match(html, /data-v3-manual-lineup-player-id="F-53"/);
   assert.match(html, /manual-player-candidate-meta/);
   assert.doesNotMatch(html, /slice\(0, 6\)/);
+});
+
+test("manual lineup候補はplayerIdを優先し、必要時だけ既存の名前正規化でroster判定する", () => {
+  const renderers = loadRenderers();
+  const renderer = renderers.createAdminV3ManualLineupRenderer({ escapeHtml });
+  const catalog = [
+    { playerId: "F-53", playerName: "同名", uniformNumber: "53", category: "外野手" },
+    { playerId: "F-3", playerName: "同名", uniformNumber: "3", category: "捕手" },
+    { playerId: "", playerName: "  名前　fallback。 ", uniformNumber: "7", category: "内野手" },
+    { playerId: "F-2", playerName: "ロースター外", uniformNumber: "2", category: "内野手" },
+    { playerId: "F-99", playerName: "番号不明", uniformNumber: "", category: "外野手" }
+  ];
+  const manualRoster = {
+    isManualSaved: true,
+    entries: [
+      { playerId: "F-53", playerName: "同名", status: "active" },
+      { playerId: "F-3", playerName: "同名", status: "inactive" },
+      { playerId: "", playerName: "[7] 名前\u3000fallback。", status: "active" }
+    ]
+  };
+  const html = renderer.renderCandidates(catalog, { search: "" }, 0, manualRoster);
+  assert.ok(html.indexOf("[53]") < html.indexOf("[2]"));
+  assert.ok(html.indexOf("[2]") < html.indexOf("[3]"));
+  assert.ok(html.indexOf("[3]") < html.indexOf("番号不明"));
+  assert.match(html, /同名[\s\S]*ロースター内 \/ active/);
+  assert.match(html, /同名[\s\S]*ロースター内 \/ inactive（確認要）/);
+  assert.ok(html.indexOf("名前") < html.indexOf("[53]"));
+  assert.match(html, /ロースター外（確認要） \/ 未登録/);
+});
+
+test("manual rosterのstatic fallbackではcatalogのactive表示と優先順を維持する", () => {
+  const renderers = loadRenderers();
+  const renderer = renderers.createAdminV3ManualLineupRenderer({ escapeHtml });
+  const html = renderer.renderCandidates([
+    { playerId: "F-18", playerName: "投手", uniformNumber: "18", manualRosterActive: false, manualRosterStatus: null },
+    { playerId: "F-53", playerName: "野手", uniformNumber: "53", manualRosterActive: true, manualRosterStatus: "active" }
+  ], { search: "" }, 0, { schemaAvailable: false, source: "static-fallback", entries: [] });
+  assert.ok(html.indexOf("[53]") < html.indexOf("[18]"));
+  assert.match(html, /野手[\s\S]*ロースター内 \/ active/);
+  assert.match(html, /投手[\s\S]*ロースター外（確認要） \/ 未登録/);
 });
 
 test("manual roster候補はactive/inactiveを含む全選手をスクロール選択できる", () => {
@@ -74,8 +114,18 @@ test("admin-v3候補領域は内部スクロールとcache busterを持つ", () 
   assert.match(css, /\.manual-roster-candidates[^\{]*\{[^}]*max-height: 300px/);
   assert.match(css, /\.manual-roster-candidates[^\{]*\{[^}]*overflow-y: auto/);
   assert.match(css, /overscroll-behavior: contain/);
-  assert.match(html, /admin-v3\.css\?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1/);
-  assert.match(html, /render-manual-lineup\.js\?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1/);
+  assert.match(html, /admin-v3\.css\?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1-selection-highlight-1-lineup-order-mobile-zoom-1/);
+  assert.match(html, /render-manual-lineup\.js\?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1-game-selection-safety-1-lineup-order-mobile-zoom-1/);
   assert.match(html, /render-manual-roster\.js\?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1/);
+});
+
+test("admin-v3のmobile候補タップは16px以上・touch-actionを使い、viewportでズームを無効化しない", () => {
+  const mobileBlock = css.slice(css.indexOf("@media (max-width: 720px)"));
+  assert.match(mobileBlock, /\.admin-v3-shell button[\s\S]*\.admin-v3-shell textarea \{ font-size: 16px; \}/);
+  assert.match(mobileBlock, /\.manual-lineup-candidate,[\s\S]*\.manual-roster-candidate \{ touch-action: manipulation; \}/);
+  assert.doesNotMatch(html, /user-scalable\s*=\s*["']?no/i);
+  assert.doesNotMatch(html, /maximum-scale\s*=\s*1(?:\.0+)?/i);
+  assert.match(mobileBlock, /\.manual-lineup-grid \{ grid-template-columns: 1fr; \}/);
+  assert.match(css, /\.manual-lineup-candidates[^\{]*\{[^}]*overflow-y: auto/);
 });
 

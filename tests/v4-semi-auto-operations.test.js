@@ -102,6 +102,11 @@ function planningDb(state) {
               if (query.includes("select actual_lineup_json") && query.includes("from game_lineups")) {
                 return { actual_lineup_json: lineupJson };
               }
+              if (query.includes("select final_lineup_revision_id") && query.includes("from game_lineups")) {
+                return state.canonicalFinalRevisionId
+                  ? { final_lineup_revision_id: state.canonicalFinalRevisionId }
+                  : null;
+              }
               if (query.includes("select scoring_status")) {
                 return state.scoreReady
                   ? { scoring_status: "scored", scored_at: "2026-09-02T09:10:00.000Z", publication_status: null, published_at: null }
@@ -115,7 +120,12 @@ function planningDb(state) {
             async all() {
               if (query.includes("from game_jobs_v3")) return { results: state.jobs || [] };
               if (query.includes("from game_lineup_revisions")) {
-                return { results: [{ is_final: 1, actual_lineup_json: lineupJson }] };
+                return { results: [{
+                  game_id: "fighters-game",
+                  version: state.finalizedRevisionAvailable === false ? 7 : 1,
+                  is_final: state.finalizedRevisionAvailable === false ? 0 : 1,
+                  actual_lineup_json: lineupJson
+                }] };
               }
               return { results: [] };
             },
@@ -254,6 +264,64 @@ test("V4実試合相当: manual lineup確定からformal Cronのclose/score/rank
   );
   assert.equal(rankedPlans.find((entry) => entry.stage === "publish").shouldCreateJob, true);
   assert.doesNotMatch(finalizeSourceForTest(), /createV3AdminActionJob/);
+});
+
+test("V4 formal plannerはcanonicalのmanual finalリンクをlineup_ready証跡としてscoringへ進める", async () => {
+  const now = new Date("2026-09-02T10:05:00.000Z");
+  const state = {
+    persistedState: "prediction_closed",
+    jobs: [],
+    nextId: 200,
+    scoreReady: false,
+    rankingReflected: false,
+    canonicalFinalRevisionId: "fighters-game:7",
+    finalizedRevisionAvailable: false
+  };
+  const result = await v3.planMainWorkflowJobs(
+    planningDb(state),
+    [game()],
+    now,
+    { disabledStages: ["roster_fetch", "lineup_fetch"] }
+  );
+  const score = result.planned.find((entry) => entry.plan?.jobType === "score");
+  assert.equal(score?.created, true);
+  assert.equal(score?.plan?.sharedPlan?.blocked, false);
+  assert.equal(score?.plan?.sharedPlan?.diagnostics?.stateMismatch, true);
+  assert.equal(result.planned.some((entry) => entry.plan?.jobType === "lineup_finalize"), false);
+  assert.equal(result.planned.some((entry) => entry.plan?.jobType === "lineup_fetch"), false);
+  assert.equal(state.jobs.filter((job) => job.job_type === "score").length, 1);
+});
+
+test("V4 formal plannerはscore完了後にranking_reflect、publishまで連鎖する", async () => {
+  const now = new Date("2026-09-02T10:05:00.000Z");
+  const state = {
+    persistedState: "prediction_closed",
+    jobs: [],
+    nextId: 300,
+    scoreReady: false,
+    rankingReflected: false,
+    canonicalFinalRevisionId: `${GAME_ID}:8`
+  };
+  const disabledStages = ["roster_fetch", "lineup_fetch"];
+  const first = await v3.planMainWorkflowJobs(planningDb(state), [game()], now, { disabledStages });
+  const score = state.jobs.find((job) => job.job_type === "score");
+  assert.equal(first.created, 1);
+  assert.ok(score);
+
+  score.status = "completed";
+  state.scoreReady = true;
+  const second = await v3.planMainWorkflowJobs(planningDb(state), [game()], now, { disabledStages });
+  const ranking = state.jobs.find((job) => job.job_type === "ranking_rebuild");
+  assert.equal(second.created, 1);
+  assert.ok(ranking);
+  assert.equal(second.planned.some((entry) => entry.plan?.jobType === "score"), false);
+
+  ranking.status = "completed";
+  state.rankingReflected = true;
+  const third = await v3.planMainWorkflowJobs(planningDb(state), [game()], now, { disabledStages });
+  assert.equal(third.created, 1);
+  assert.equal(state.jobs.filter((job) => job.job_type === "publish").length, 1);
+  assert.equal(third.planned.find((entry) => entry.plan?.jobType === "publish")?.plan?.sharedPlan?.blocked, false);
 });
 
 function finalizeSourceForTest() {

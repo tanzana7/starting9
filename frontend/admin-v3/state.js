@@ -7,6 +7,7 @@
       view: "dashboard",
       filter: "all",
       selectedGameId: "",
+      selectionSource: "default",
       selectionValidated: false,
       selectionSafetyNotice: "",
       lastUpdatedAt: null,

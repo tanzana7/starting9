@@ -3,6 +3,7 @@
 // mutate workflow state, or connect to a runtime entrypoint.
 import { deriveV35StageDueSchedule } from "./stage-due-schedule.js";
 import { buildStagePlans, buildV3PlanningState, getLateLineupFetchDecision } from "./planning-engine.js";
+import { getV3OperationalMode } from "./constants.js";
 
 const STAGES = Object.freeze([
   "schedule_registration",
@@ -50,6 +51,33 @@ const ARTIFACT_ALIASES = Object.freeze({
   ranking_reflect: ["ranking_reflect", "ranking", "rankingReflection", "ranking_rebuild"],
   publish: ["publish", "publication", "publicationMarker", "publish_marker"]
 });
+
+const V4_MANUAL_STAGES = Object.freeze(["roster_fetch", "lineup_fetch", "lineup_finalize"]);
+
+function normalizeMode(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+export function resolveV35OperationalMode({ automationMode = null, operationalMode = null, env = {} } = {}) {
+  const supplied = objectOrEmpty(automationMode || operationalMode);
+  const configured = getV3OperationalMode(env);
+  const isV4SemiAuto = supplied.isV4SemiAuto === true
+    || normalizeMode(supplied.mode) === "v4_semi_auto"
+    || normalizeMode(supplied.schema) === "v4_semi_auto"
+    || normalizeMode(configured.mode) === "v4_semi_auto";
+  const disabledStages = isV4SemiAuto
+    ? ["roster_fetch", "lineup_fetch"]
+    : Array.isArray(supplied.disabledStages) ? supplied.disabledStages : [];
+  return Object.freeze({
+    mode: isV4SemiAuto ? "v4_semi_auto" : normalizeMode(supplied.mode) || configured.mode,
+    isV4SemiAuto,
+    autoProbableStarter: supplied.autoProbableStarter === undefined ? configured.autoProbableStarter : Boolean(supplied.autoProbableStarter),
+    autoRosterFetch: isV4SemiAuto ? false : supplied.autoRosterFetch === undefined ? configured.autoRosterFetch : Boolean(supplied.autoRosterFetch),
+    autoLineupFetch: isV4SemiAuto ? false : supplied.autoLineupFetch === undefined ? configured.autoLineupFetch : Boolean(supplied.autoLineupFetch),
+    disabledStages: Object.freeze(disabledStages),
+    diagnosticManualStages: Object.freeze(isV4SemiAuto ? [...V4_MANUAL_STAGES] : [])
+  });
+}
 
 function first(object, ...keys) {
   for (const key of keys) {
@@ -126,19 +154,31 @@ function genericArtifact(raw, stageName) {
   const candidateExists = first(health, "candidateExists", "candidate_exists");
   const canonicalReady = first(health, "canonicalDataReady", "canonical_data_ready", "canonicalExists");
   const finalizedExists = first(health, "finalizedLineupExists", "finalized_lineup_exists");
+  const canonicalFinalRevisionId = first(health, "canonicalFinalRevisionId", "canonical_final_revision_id", "finalLineupRevisionId", "final_lineup_revision_id");
+  const canonicalFinalRevisionValid = first(health, "canonicalFinalRevisionValid", "canonical_final_revision_valid");
+  const finalizedValid = first(health, "finalizedValid", "finalized_valid");
+  const revisionMatches = first(health, "revisionMatches", "revision_matches");
+  const revisionMismatch = health.revisionMismatch === true
+    || health.revision_mismatch === true
+    || health.reprocessRequired === true
+    || health.reprocess_required === true
+    || revisionMatches === false;
+  const canonicalFinalInvalid = canonicalFinalRevisionValid === false;
   const available = health.available !== undefined
     ? Boolean(health.available)
     : Boolean(health.present ?? health.exists ?? health.ready ?? health.valid ?? candidateExists ?? canonicalReady ?? finalizedExists);
   const inferredValid = stageName === "lineup_fetch"
     ? candidateExists === true || canonicalReady === true || health.ready === true
     : stageName === "lineup_finalize"
-      ? finalizedExists === true || health.finalizedValid === true || health.ready === true
+      ? finalizedExists === true || finalizedValid === true || canonicalFinalRevisionValid === true || health.ready === true
       : stageName === "ranking_reflect"
         ? health.reflected === true || health.ready === true
         : stageName === "publish"
           ? health.published === true || health.ready === true
           : health.valid === true || health.artifactVerified === true || health.ready === true;
-  const valid = health.valid !== undefined ? Boolean(health.valid) : inferredValid;
+  const valid = (health.valid !== undefined ? Boolean(health.valid) : inferredValid)
+    && !revisionMismatch
+    && !canonicalFinalInvalid;
   return {
     available,
     valid,
@@ -154,7 +194,17 @@ function genericArtifact(raw, stageName) {
     nextSafeAction: first(health, "nextSafeAction", "next_safe_action") || (valid ? "no_op" : "wait_or_recover"),
     ...(candidateExists !== null ? { candidateExists } : {}),
     ...(canonicalReady !== null ? { canonicalDataReady: canonicalReady } : {}),
-    ...(finalizedExists !== null ? { finalizedLineupExists: finalizedExists } : {})
+    ...(finalizedExists !== null ? { finalizedLineupExists: finalizedExists } : {}),
+    ...(finalizedValid !== null ? { finalizedValid } : {}),
+    ...(canonicalFinalRevisionId !== null ? { canonicalFinalRevisionId } : {}),
+    ...(canonicalFinalRevisionValid !== null ? { canonicalFinalRevisionValid } : {}),
+    ...(revisionMismatch ? { revisionMismatch: true } : {}),
+    ...(health.reprocessRequired === true ? { reprocessRequired: true } : {}),
+    ...(["scoring", "ranking_reflect", "publish"].includes(stageName) ? {
+      scoringRevisionId: first(health, "scoringRevisionId", "scoring_revision_id", "currentScoringRevisionId", "current_scoring_revision_id"),
+      reflectedScoringRevisionId: first(health, "reflectedScoringRevisionId", "reflected_scoring_revision_id"),
+      revisionMatches
+    } : {})
   };
 }
 
@@ -338,7 +388,7 @@ function stageSource(source, diagnostics, stageName, derivedStageSchedule) {
   return { direct, dueAt, dueAtSource, dueSlots, job };
 }
 
-function buildStageDefinitions(source, diagnostics, artifacts, disabled, game, jobs, derivedStageSchedule, planningState) {
+function buildStageDefinitions(source, diagnostics, artifacts, disabled, game, jobs, derivedStageSchedule, planningState, operationalMode) {
   const definitions = {};
   const currentTime = asDate(source.currentTime || source.now) || new Date();
   const finalizeDueAt = asDate(derivedStageSchedule?.stages?.lineup_finalize?.dueAt);
@@ -389,6 +439,7 @@ function buildStageDefinitions(source, diagnostics, artifacts, disabled, game, j
            }
          : {}),
       externalFetchDisabled: disabled && EXTERNAL_FETCH_STAGES.has(stageName),
+      manualMode: operationalMode.isV4SemiAuto && operationalMode.diagnosticManualStages.includes(stageName),
       manualAttention: Boolean(first(direct, "manualAttention", "manual_attention") || diagnostics.manualAttention || diagnostics.manual_attention),
       rankingExcluded: Boolean(game.rankingExcluded || game.ranking_excluded)
     };
@@ -428,16 +479,18 @@ function derivePublishedLineupFetchArtifact(game, diagnostics, artifacts) {
   };
 }
 
-export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostics = {}, now = new Date(), externalFlags = {} } = {}) {
+export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostics = {}, now = new Date(), externalFlags = {}, automationMode = null, operationalMode = null, env = {} } = {}) {
   const normalizedGame = objectOrEmpty(game);
   const normalizedDiagnostics = objectOrEmpty(diagnostics);
   const derivedStageSchedule = deriveV35StageDueSchedule({ game: normalizedGame });
   const internalGameId = first(normalizedGame, "internalGameId", "internal_game_id");
   const gameStatus = first(normalizedGame, "gameStatus", "game_status") || "scheduled";
   const persistedWorkflowState = first(normalizedGame, "workflowState", "workflow_state", "state") || "scheduled";
+  const resolvedOperationalMode = resolveV35OperationalMode({ automationMode, operationalMode, env });
   const normalizedJobs = (Array.isArray(jobs) ? jobs : []).map(normalizeJob);
   const evaluatorArtifacts = {};
   const warnings = [];
+  const informationalNotices = [];
   const artifactSummary = {};
   for (const stageName of STAGES) {
     const artifact = findArtifact({ artifacts, externalFlags }, stageName, normalizedDiagnostics, normalizedGame);
@@ -450,7 +503,11 @@ export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostic
         reason: artifact.reason || null
       };
       if (artifact.reason === "ROSTER_SNAPSHOT_MISSING") {
-        warnings.push(warning("ROSTER_SNAPSHOT_MISSING", "Formal roster snapshot is missing.", stageName));
+        if (resolvedOperationalMode.isV4SemiAuto && stageName === "roster_fetch") {
+          informationalNotices.push(warning("V4_MANUAL_ROSTER_SNAPSHOT_NOT_REQUIRED", "V4 manual roster運用では、roster snapshotは正式処理の成立条件ではありません。", stageName));
+        } else {
+          warnings.push(warning("ROSTER_SNAPSHOT_MISSING", "Formal roster snapshot is missing.", stageName));
+        }
       }
     }
   }
@@ -472,7 +529,7 @@ export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostic
   const unknownJobs = normalizedJobs.filter((job) => !STAGES.includes(job.stageName));
   if (unknownJobs.length) warnings.push(warning("UNKNOWN_JOB_STAGE", "Some jobs could not be mapped to a V3.5 stage."));
   if (externalDisabled) warnings.push(warning("NPB_FETCH_DISABLED", "External NPB fetching is disabled."));
-  if (evaluatorArtifacts.roster_fetch?.publicUsable && !evaluatorArtifacts.roster_fetch?.canonicalSnapshotAvailable) {
+  if (!resolvedOperationalMode.isV4SemiAuto && evaluatorArtifacts.roster_fetch?.publicUsable && !evaluatorArtifacts.roster_fetch?.canonicalSnapshotAvailable) {
     warnings.push(warning("PUBLIC_ROSTER_WITHOUT_FORMAL_SNAPSHOT", "Public roster data is usable, but the formal canonical snapshot is missing.", "roster_fetch"));
   }
   const planningState = buildV3PlanningState({
@@ -483,7 +540,12 @@ export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostic
     persistedState: persistedWorkflowState,
     now
   });
-  const planningPlans = buildStagePlans(planningState);
+  const planningPlans = buildStagePlans(planningState, undefined, {
+    disabledStages: resolvedOperationalMode.isV4SemiAuto
+      ? resolvedOperationalMode.diagnosticManualStages
+      : resolvedOperationalMode.disabledStages,
+    disabledReason: "V4_AUTO_FETCH_DISABLED"
+  });
   const stageDefinitions = buildStageDefinitions(
     { artifacts, externalFlags, currentTime: now },
     normalizedDiagnostics,
@@ -492,7 +554,8 @@ export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostic
     normalizedGame,
     normalizedJobs,
     derivedStageSchedule,
-    planningState
+    planningState,
+    resolvedOperationalMode
   );
   for (const plan of planningPlans) {
     if (plan.blocked && stageDefinitions[plan.stage]) {
@@ -533,9 +596,12 @@ export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostic
       rankingExcluded: Boolean(first(normalizedGame, "rankingExcluded", "ranking_excluded")),
       scheduleRegistered,
       externalFlags: { ...externalFlags, NPB_FETCH_DISABLED: externalDisabled },
-      planningPlans
+      planningPlans,
+      operationalMode: resolvedOperationalMode
     },
     warnings,
+    informationalNotices,
+    operationalMode: resolvedOperationalMode,
     sourceSummary: {
       game: {
         internalGameIdPresent: Boolean(internalGameId),
@@ -561,7 +627,8 @@ export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostic
       derivedStageSchedule,
       externalFetchDisabled: externalDisabled,
       cancellation,
-      warningCount: warnings.length
+      warningCount: warnings.length,
+      informationalNoticeCount: informationalNotices.length
     }
   };
 }

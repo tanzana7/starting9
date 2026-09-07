@@ -23,22 +23,75 @@ const baseFacts = {
 };
 
 test("revision一致・公開成果物ありだけを完了と表示する", () => {
-  const result = deriveAdminV3GameProgressStatus(baseFacts);
+  const result = deriveAdminV3GameProgressStatus({
+    ...baseFacts,
+    lineup: { ...baseFacts.lineup, canonicalFinalRevisionValid: true },
+    jobs: [
+      { job_type: "roster_fetch", status: "pending" },
+      { job_type: "lineup_fetch", status: "pending" },
+      { job_type: "lineup_finalize", status: "pending" },
+      { job_type: "publish", status: "failed", failure_code: "STALE_HISTORICAL_FAILURE" }
+    ]
+  });
   assert.equal(result.key, "completed");
   assert.equal(result.label, "完了");
   assert.equal(result.revisionMatches, true);
 });
 
-test("公開済み試合でも現在revisionと旧reflectionが不一致なら再処理中になる", () => {
+test("V4 semi-autoのROSTER_SNAPSHOT_MISSINGと補助stageのmissing jobは完了を上書きしない", () => {
+  const result = deriveAdminV3GameProgressStatus({
+    ...baseFacts,
+    lineup: { ...baseFacts.lineup, canonicalFinalRevisionValid: true },
+    phaseStatuses: {
+      roster: { status: "missing", reasonCode: "ROSTER_SNAPSHOT_MISSING" },
+      lineup_fetch: { status: "missing", reasonCode: "MISSING_DUE_JOB" },
+      lineup_finalize: { status: "missing", reasonCode: "MISSING_JOB" }
+    },
+    operationalMode: { mode: "v4_semi_auto", isV4SemiAuto: true, autoRosterFetch: false, autoLineupFetch: false }
+  });
+  assert.equal(result.key, "completed");
+});
+
+test("manual lineup artifactが有効ならlineup_finalize jobがなくても完了になる", () => {
+  const result = deriveAdminV3GameProgressStatus({
+    ...baseFacts,
+    lineup: { ...baseFacts.lineup, canonicalFinalRevisionValid: true },
+    jobs: []
+  });
+  assert.equal(result.key, "completed");
+});
+
+test("公開済み試合でも現在revisionと旧reflectionが不一致なら要対応になる", () => {
   const result = deriveAdminV3GameProgressStatus({
     ...baseFacts,
     currentScoringRevisionId: "score-b",
     reflectedScoringRevisionId: "score-a",
     ranking: { reflected: true }
   });
-  assert.equal(result.key, "reprocessing");
-  assert.match(result.reason, /現在の採点revision/);
+  assert.equal(result.key, "needs_attention");
+  assert.match(result.reason, /現在の採点・ランキング・公開成果物/);
   assert.equal(result.revisionMatches, false);
+});
+
+test("current ranking revision mismatchは要対応として表示する", () => {
+  const result = deriveAdminV3GameProgressStatus({
+    ...baseFacts,
+    lineup: { ...baseFacts.lineup, canonicalFinalRevisionValid: true },
+    currentScoringRevisionId: "score-b",
+    reflectedScoringRevisionId: "score-a",
+    publication: { published: true }
+  });
+  assert.equal(result.key, "needs_attention");
+  assert.equal(result.revisionMatches, false);
+});
+
+test("publication artifactが無効ならpublished stateでも要対応になる", () => {
+  const result = deriveAdminV3GameProgressStatus({
+    ...baseFacts,
+    lineup: { ...baseFacts.lineup, canonicalFinalRevisionValid: true },
+    publication: { published: false }
+  });
+  assert.equal(result.key, "needs_attention");
 });
 
 test("現在revisionの途中jobがある場合は進行中より再処理中を優先する", () => {
@@ -171,4 +224,34 @@ test("試合進行UIは完了・再処理中・要対応・進行中・予定を
   for (const label of ["完了", "再処理中", "要対応", "進行中", "予定"]) assert.match(html, new RegExp(label));
   assert.match(html, /data-v3-game-progress-status="reprocessing"/);
   assert.match(html, /最近のFighters戦を新しい順に表示します/);
+});
+
+test("完了jobのtimelineは予定slotではなく完了日時を表示する", () => {
+  const context = { window: {}, Intl, Date };
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-game-progress.js"), "utf8"), context);
+  const renderer = context.window.Starting9AdminV3.createAdminV3GameProgressRenderer({
+    formatJst: (value) => String(value || "-"),
+    formatTimelineTime: (value) => String(value || ""),
+    statusLabel: (value) => String(value || ""),
+    statusClass: (value) => value === "completed" ? "complete" : String(value || "wait"),
+    npbIdentityDisplay: () => ({ jobStatus: "resolved", code: "2026090601" }),
+    latestJob: (game, jobType) => (game.jobs || []).find((job) => job.job_type === jobType) || null,
+    normalizedPhaseState: () => null,
+    rosterDisplayState: () => ({ fallbackStatus: "complete", job: null }),
+    lineupDisplayState: () => ({ fallbackStatus: "complete", job: null }),
+    rosterDisplaySlots: () => [],
+    rosterTimelineDetails: () => "",
+    escapeHtml: (value) => String(value ?? "")
+  });
+  const html = renderer.renderTimeline({
+    state: { state: "published" },
+    npbIdentityStatus: "resolved",
+    npbIdentityState: "resolved",
+    probableStarterDiagnostics: { candidateCount: null },
+    schedule: { startAt: "2026-09-06T09:00:00.000Z", publicationAt: "2026-09-06T07:10:00.000Z" },
+    jobs: [{ job_type: "publish", status: "completed", scheduled_at: "2026-09-06T07:10:00.000Z", completed_at: "2026-09-07T07:47:00.000Z" }]
+  });
+  assert.match(html, /完了日時: 2026-09-07T07:47:00\.000Z/);
+  assert.doesNotMatch(html, /完了日時: 2026-09-06T07:10:00\.000Z/);
 });

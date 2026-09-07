@@ -53,7 +53,7 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
     "frontend/admin-v3/render-manual-lineup.js?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1-game-selection-safety-1-lineup-order-mobile-zoom-1",
     "frontend/admin-v3/render-lineup-correction.js?v=admin-v3-lineup-correction-1",
     "frontend/admin-v3/render-manual-roster.js?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1",
-    "frontend/admin-v3/render-game-progress.js?v=manual-lineup-finalize-safety-1",
+    "frontend/admin-v3/render-game-progress.js?v=manual-lineup-finalize-safety-1-admin-v3-game-progress-history-1",
     "frontend/admin-v3/render-job-details.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-roster.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-diagnostics.js?v=admin-v3-v35-diagnostics-readability-1-v4-ops",
@@ -61,7 +61,7 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
     "frontend/admin-v3/render-perfect-score-preview.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-manual-game-preview.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/app-coordinator.js?v=independent-roster-lineup-safety-1-preserve-picker-scroll-1",
-    "admin-v3.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-lineup-order-mobile-zoom-1-lineup-correction-1"
+    "admin-v3.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-lineup-order-mobile-zoom-1-lineup-correction-1-admin-v3-game-progress-history-1"
   ]);
   const modules = loadModules();
   assert.equal(typeof modules.createAdminV3State, "function");

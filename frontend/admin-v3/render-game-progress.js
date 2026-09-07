@@ -430,9 +430,33 @@
       return `<div class="view-heading"><div><h2>ダッシュボード</h2><p>今日の運営状態と、過去試合の残留jobを分けて確認できます。</p></div></div>${renderTodayOps(payload, games)}<section class="today-card"><h3>本日の試合</h3>${cards}</section><section class="summary-grid">${renderSummaryCard("今日の要対応", attention, attention ? "attention" : "ok")}${renderSummaryCard("今日の失敗job", failed, failed ? "error" : "ok")}${renderSummaryCard("今日のretry_wait", retry, retry ? "attention" : "ok")}${renderSummaryCard("過去の失敗job", historicalFailed, historicalFailed ? "attention" : "ok")}${renderSummaryCard("今日の掲載待ち", pendingIdentity, pendingIdentity ? "attention" : "ok")}${renderSummaryCard("本日の完了job", completedToday)}${renderSummaryCard("今日の公開待ち", publicationWait, publicationWait ? "attention" : "ok")}</section><section class="v3-panel"><div class="view-heading"><div><h3>今日の自動処理</h3><p>詳細は試合進行メニューから確認できます。</p></div></div>${todayGames.length ? todayGames.map((game) => `<div class="compact-meta"><strong>${escapeHtml(game.homeTeam)} vs ${escapeHtml(game.awayTeam)}</strong><span>次: ${escapeHtml(nextActionText(game))}</span><span>${escapeHtml(operationAttention(game) ? "要対応" : "正常")}</span></div>`).join("") : "<span class=muted>今日の処理履歴はありません。</span>"}</section>`;
     }
 
+    function displayStatusForGame(game) {
+      const supplied = game?.displayStatus;
+      if (supplied?.key && supplied?.label) return supplied;
+      const workflowState = String(game?.state?.state || game?.workflowState || "scheduled").toLowerCase();
+      if (workflowState === "published" || game?.workflowArtifactHealth?.publication?.published === true) {
+        return { key: "completed", label: "完了", reason: "公開済みです。", stage: "publish" };
+      }
+      if (gameHasAttention(game)) return { key: "needs_attention", label: "要対応", reason: "診断またはjob履歴を確認してください。", stage: "workflow" };
+      const date = gameDateForFilter(game);
+      const today = typeof jstDate === "function" ? jstDate() : "";
+      if (date && today && date > today) return { key: "scheduled", label: "予定", reason: "未来試合です。", stage: "schedule" };
+      return { key: "in_progress", label: "進行中", reason: "通常の処理対象です。", stage: workflowState };
+    }
+
+    function displayStatusClass(key) {
+      return ({ completed: "ok", reprocessing: "retry", needs_attention: "action", in_progress: "running", scheduled: "scheduled" }[String(key || "")] || "wait");
+    }
+
     function renderGamesView(games) {
-      const rows = games.map((game) => `<tr><td>${escapeHtml(gameDateForFilter(game))}</td><td>${escapeHtml(formatJst(game.startAt, false))}</td><td>${escapeHtml(game.homeTeam)}</td><td>${escapeHtml(game.awayTeam)}</td><td>${escapeHtml(game.state?.state || "scheduled")}</td><td>${escapeHtml(identityStatusLabel(game.npbIdentityStatus, game.npbIdentityState))}</td><td>${escapeHtml(nextActionText(game))}</td><td>${gameHasAttention(game) ? "<span class=attention-badge>要対応</span>" : "<span class=\"status-badge ok\">正常</span>"}</td><td><button type="button" data-v3-select-game="${escapeHtml(game.internalGameId)}">詳細</button></td></tr>`).join("");
-      return `<div class="view-heading"><div><h2>試合一覧</h2><p>日付、進行状態、次の処理を比較します。</p></div></div><div class="games-table-wrap"><table class="games-table"><thead><tr><th>日付</th><th>開始</th><th>home</th><th>away</th><th>state</th><th>NPB</th><th>次の処理</th><th>対応</th><th></th></tr></thead><tbody>${rows || "<tr><td colspan=9>対象試合はありません。</td></tr>"}</tbody></table></div>`;
+      const rows = games.map((game) => {
+        const progress = displayStatusForGame(game);
+        const progressClass = displayStatusClass(progress.key);
+        const reason = progress.reason ? `<small class="game-progress-reason">${escapeHtml(progress.reason)}</small>` : "";
+        const response = progress.key === "needs_attention" ? "<span class=attention-badge>要対応</span>" : progress.key === "completed" ? "<span class=\"status-badge ok\">read-only</span>" : "<span class=\"status-badge wait\">確認</span>";
+        return `<tr><td>${escapeHtml(gameDateForFilter(game))}</td><td>${escapeHtml(formatJst(game.startAt, false))}</td><td>${escapeHtml(game.homeTeam)}</td><td>${escapeHtml(game.awayTeam)}</td><td><span class="status-badge ${progressClass}" data-v3-game-progress-status="${escapeHtml(progress.key)}">${escapeHtml(progress.label)}</span>${reason}</td><td>${escapeHtml(progress.stage || "-")}</td><td>${escapeHtml(game.state?.state || "scheduled")}</td><td>${escapeHtml(identityStatusLabel(game.npbIdentityStatus, game.npbIdentityState))}</td><td>${escapeHtml(nextActionText(game))}</td><td>${response}</td><td><button type="button" data-v3-select-game="${escapeHtml(game.internalGameId)}">詳細</button></td></tr>`;
+      }).join("");
+      return `<div class="view-heading"><div><h2>試合進行</h2><p>最近のFighters戦を新しい順に表示します。公開済み試合も履歴として残し、完了判定は現在の採点revisionと反映・公開成果物の一致で確認します。</p></div></div><div class="games-table-wrap"><table class="games-table"><thead><tr><th>日付</th><th>開始</th><th>home</th><th>away</th><th>進行状況</th><th>次段階</th><th>workflow</th><th>NPB</th><th>次の処理</th><th>対応</th><th></th></tr></thead><tbody>${rows || "<tr><td colspan=11>対象試合はありません。</td></tr>"}</tbody></table></div>`;
     }
 
     function renderWorkflowView(game) {

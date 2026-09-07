@@ -93,6 +93,7 @@ import { assessV3LineupArtifact } from "./backend/automation-v3/lineup-artifacts
 import { adaptV35Input } from "./backend/automation-v3/stage-health-adapter.js";
 import { evaluateV35Automation } from "./backend/automation-v3/stage-health-evaluator.js";
 import { planShadowRecovery } from "./backend/automation-v3/shadow-recovery-planner.js";
+import { deriveAdminV3GameProgressStatus } from "./backend/automation-v3/admin-progress-status.js";
 import {
   MANUAL_ROSTER_TEAM,
   STATIC_FIGHTERS_BATTER_CATALOG,
@@ -4958,7 +4959,8 @@ async function handleAdminV3Overview(request, env, cors) {
     games = await listV3Games(env.AUTH_DB, new Date(), {
       internalGameId,
       limit: gameLimit,
-      recentFirst: true
+      recentFirst: true,
+      includeRecentHistory: true
     });
   } catch (error) {
     const code = String(error?.code || "V3_OVERVIEW_INTERNAL_ERROR");
@@ -5446,6 +5448,14 @@ async function handleAdminV3Overview(request, env, cors) {
       derivedDiagnostics: v35DerivedDiagnostics,
       overviewNow
     });
+    const displayStatus = await getV3AdminProgressDisplayStatus(env.AUTH_DB, {
+      game,
+      resolvedState,
+      jobRows,
+      lineupDataHealth,
+      workflowArtifactHealth,
+      now: overviewNow
+    });
     rows.push({
       ...game,
       state: resolvedState,
@@ -5460,6 +5470,7 @@ async function handleAdminV3Overview(request, env, cors) {
       probableStarterDiagnostics,
       rosterDiagnostics,
       phaseStatuses,
+      displayStatus,
       v35DerivedDiagnostics,
       probableStarterNextCheckAt,
       probableStarterJob: schedule.probableStarterJob,
@@ -5495,6 +5506,43 @@ async function handleAdminV3Overview(request, env, cors) {
     },
     games: rows
   }, 200, cors);
+}
+
+async function getV3AdminProgressDisplayStatus(db, { game, resolvedState, jobRows, lineupDataHealth, workflowArtifactHealth, now }) {
+  let latestReflection = null;
+  try {
+    latestReflection = await db.prepare(
+      `SELECT scoring_revision_id, status, ranking_update_revision
+         FROM ranking_reflection_revisions
+        WHERE internal_game_id = ?1
+        ORDER BY ranking_update_revision DESC, id DESC
+        LIMIT 1`
+    ).bind(game.internalGameId).first();
+  } catch (error) {
+    if (!isPregameSchemaError(error)) {
+      console.warn(`[ADMIN_V3_OVERVIEW] internalGameId=${game.internalGameId} stage=progress_reflection_read failureCode=${error?.code || "V3_PROGRESS_REFLECTION_READ_FAILED"}`);
+    }
+  }
+  const reflectedScoringRevisionId = latestReflection?.status === "reflected"
+    ? latestReflection.scoring_revision_id || null
+    : null;
+  const displayStatus = deriveAdminV3GameProgressStatus({
+    game,
+    now,
+    workflowState: resolvedState?.state,
+    jobs: jobRows,
+    lineup: lineupDataHealth,
+    scoring: workflowArtifactHealth?.scoring,
+    ranking: workflowArtifactHealth?.ranking,
+    publication: workflowArtifactHealth?.publication,
+    currentScoringRevisionId: workflowArtifactHealth?.scoring?.scoringRevisionId,
+    reflectedScoringRevisionId
+  });
+  return {
+    ...displayStatus,
+    latestReflectionStatus: latestReflection?.status || null,
+    latestReflectionRevision: latestReflection?.ranking_update_revision ?? null
+  };
 }
 
 async function handleAdminV3IdentityResolve(request, env, cors, internalGameId, options = {}) {
@@ -7348,6 +7396,8 @@ async function getV3LineupDataHealth(db, internalGameId, workflowState = "schedu
     canonicalInternalGameId: null,
     canonicalRowCount: null,
     canonicalCreatedAt: null,
+    canonicalFinalRevisionId: null,
+    canonicalFinalRevisionValid: null,
     finalizedId: null,
     finalizedInternalGameId: null,
     finalizedRowCount: null,
@@ -7385,6 +7435,10 @@ async function getV3LineupDataHealth(db, internalGameId, workflowState = "schedu
     health.canonicalInternalGameId = canonical?.internal_game_id || canonical?.game_id || null;
     health.canonicalRowCount = canonicalCheck.ok ? canonicalCheck.diagnostics.playerCount : Array.isArray(canonicalLineup) ? canonicalLineup.length : null;
     health.canonicalCreatedAt = canonical?.created_at || canonical?.updated_at || null;
+    const canonicalFinalRevisionId = String(canonical?.final_lineup_revision_id || "").trim();
+    health.canonicalFinalRevisionId = canonicalFinalRevisionId || null;
+    health.canonicalFinalRevisionValid = Boolean(canonicalFinalRevisionId && finalizedChecks.some(({ row, check }) =>
+      v3LineupRevisionIdentity(row) === canonicalFinalRevisionId && check.ok));
     health.finalizedId = validFinalized?.row?.revision_id || validFinalized?.row?.id || null;
     health.finalizedInternalGameId = validFinalized?.row?.internal_game_id || validFinalized?.row?.game_id || null;
     health.finalizedRowCount = validFinalized ? validFinalized.check.diagnostics.playerCount : null;

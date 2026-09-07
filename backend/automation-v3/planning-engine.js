@@ -152,13 +152,16 @@ function stageJobs(jobs, stage, gameId) {
   });
 }
 
-function latestJob(jobs, stage, gameId, slot) {
+function latestJob(jobs, stage, gameId, now = null) {
   const selected = stageJobs(jobs, stage, gameId);
   if (!selected.length) return null;
-  const wanted = asDate(slot)?.getTime();
-  return selected.find((job) => wanted && asDate(first(job, "scheduledSlotAt", "scheduled_slot_at"))?.getTime() === wanted)
-    || selected.sort((a, b) => (asDate(first(b, "scheduledSlotAt", "scheduled_slot_at"))?.getTime() || 0)
-      - (asDate(first(a, "scheduledSlotAt", "scheduled_slot_at"))?.getTime() || 0))[0];
+  const current = asDate(now)?.getTime();
+  const dueSelected = Number.isFinite(current)
+    ? selected.filter((job) => (asDate(first(job, "scheduledSlotAt", "scheduled_slot_at"))?.getTime() || 0) <= current)
+    : selected;
+  const candidates = dueSelected.length ? dueSelected : selected;
+  return candidates.sort((a, b) => (asDate(first(b, "scheduledSlotAt", "scheduled_slot_at"))?.getTime() || 0)
+    - (asDate(first(a, "scheduledSlotAt", "scheduled_slot_at"))?.getTime() || 0))[0];
 }
 
 function effectiveStateOf(input) {
@@ -269,7 +272,7 @@ export function buildStagePlan(planningState, stage, { disabled = false, disable
   const selectedSlotAt = ["roster_fetch", "lineup_fetch"].includes(stage)
     ? dueSlots.filter((slot) => now >= slot).at(-1) || dueSlots[0] || dueAt
     : dueAt;
-  const job = latestJob(jobs, stage, gameId, selectedSlotAt);
+  const job = latestJob(jobs, stage, gameId, now);
   const status = normalize(first(job, "status", "jobStatus"));
   const artifact = artifacts[stage] || artifacts[JOB_TYPE_BY_STAGE[stage]];
   const due = Boolean(selectedSlotAt && now >= selectedSlotAt);
@@ -324,12 +327,58 @@ export function buildStagePlan(planningState, stage, { disabled = false, disable
     };
   }
   if (status === "completed") {
+    if ((stage === "ranking_reflect" && artifact?.revisionMismatch === true) || stage === "publish") {
+      // A completed job whose current artifact is stale or missing is
+      // historical evidence only. Keep it immutable and allocate a fresh due
+      // slot so the uniqueness key cannot absorb the new execution.
+      const recoverySlot = new Date(Math.max(
+        now.getTime(),
+        selectedSlotAt?.getTime() || 0
+      ) + 1);
+      const revisionMismatch = stage === "ranking_reflect" && artifact?.revisionMismatch === true;
+      return {
+        ...plan,
+        selectedSlotAt: recoverySlot.toISOString(),
+        shouldCreateJob: true,
+        insertAllowed: true,
+        reasonCode: revisionMismatch ? "COMPLETED_ARTIFACT_REVISION_MISMATCH" : "COMPLETED_ARTIFACT_MISSING",
+        diagnostics: {
+          ...plan.diagnostics,
+          rankingRevisionMismatch: revisionMismatch,
+          recoverySlotAt: recoverySlot.toISOString()
+        }
+      };
+    }
     if (["lineup_fetch", "lineup_finalize", "publish"].includes(stage)) {
       return { ...plan, shouldCreateJob: true, insertAllowed: true, reasonCode: "COMPLETED_ARTIFACT_MISSING" };
     }
     return { ...plan, reasonCode: "COMPLETED_JOB_EXISTS" };
   }
-  if (OPEN_STATUSES.has(status)) return { ...plan, reasonCode: "OPEN_JOB_EXISTS" };
+  if (OPEN_STATUSES.has(status)) {
+    const recoveryStage = ["scoring", "ranking_reflect"].includes(stage);
+    const terminalSource = recoveryStage
+      ? stageJobs(jobs, stage, gameId)
+        .filter((candidate) => candidate?.id !== job?.id
+          && ["completed", "failed", "cancelled"].includes(normalize(first(candidate, "status", "jobStatus"))))
+        .sort((a, b) => (asDate(first(b, "scheduledSlotAt", "scheduled_slot_at"))?.getTime() || 0)
+          - (asDate(first(a, "scheduledSlotAt", "scheduled_slot_at"))?.getTime() || 0))[0]
+      : null;
+    if (status === "pending" && terminalSource) {
+      return {
+        ...plan,
+        shouldCreateJob: false,
+        insertAllowed: false,
+        reasonCode: "RECOVERY_JOB_ALREADY_EXISTS",
+        diagnostics: {
+          ...plan.diagnostics,
+          recoveryKind: stage === "scoring" ? "score" : "ranking",
+          recoveryOfJobId: terminalSource.id || null,
+          recoveryJobId: job?.id || null
+        }
+      };
+    }
+    return { ...plan, reasonCode: "OPEN_JOB_EXISTS" };
+  }
   if (["lineup_fetch", "lineup_finalize"].includes(stage) && !identityResolved) {
     return { ...plan, blocked: true, blockedReason: "NPB_IDENTITY_UNRESOLVED", reasonCode: "NPB_IDENTITY_UNRESOLVED" };
   }

@@ -1200,9 +1200,11 @@ async function loadV3LineupCorrections(force = false) {
     const result = await v3Api.listLineupCorrections();
     correction.games = Array.isArray(result.games) ? result.games : [];
     correction.gamesLoaded = true;
-    const selected = correction.games.some((game) => String(game.internalGameId) === correction.selectedGameId)
+    const selectedGame = correction.games.find((game) => String(game.internalGameId) === correction.selectedGameId);
+    const selectableGames = correction.games.filter((game) => game.correctionAvailable !== false);
+    const selected = selectedGame && selectedGame.correctionAvailable !== false
       ? correction.selectedGameId
-      : String(correction.games[0]?.internalGameId || "");
+      : String(selectableGames[0]?.internalGameId || "");
     correction.selectedGameId = selected;
     if (selected) await loadV3LineupCorrectionDetails(selected, true);
   } catch (error) {
@@ -1217,11 +1219,17 @@ async function loadV3LineupCorrections(force = false) {
 function selectV3LineupCorrection(internalGameId) {
   const id = String(internalGameId || "");
   if (!id || id === v3State.lineupCorrection.selectedGameId) return loadV3LineupCorrectionDetails(id);
+  const target = v3State.lineupCorrection.games.find((game) => String(game.internalGameId) === id);
   v3State.lineupCorrection.selectedGameId = id;
   v3State.lineupCorrection.details = null;
   v3State.lineupCorrection.rows = [];
   v3State.lineupCorrection.reason = "";
   v3State.lineupCorrection.confirmed = false;
+  if (target?.correctionAvailable === false) {
+    v3State.lineupCorrection.error = target.correctionUnavailableReason || "この試合は修正できません。";
+    renderCurrentV3View();
+    return Promise.resolve();
+  }
   return loadV3LineupCorrectionDetails(id, true);
 }
 

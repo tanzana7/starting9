@@ -83,10 +83,14 @@
       const gameButtons = games.length
         ? games.map((game) => {
           const active = String(game.internalGameId) === selectedGameId;
-          return `<button type="button" class="lineup-correction-game${active ? " is-selected" : ""}" data-v3-lineup-correction-game="${escapeHtml(game.internalGameId)}" aria-pressed="${active ? "true" : "false"}"><strong>${escapeHtml(game.gameDate || "不明")}</strong><span>${escapeHtml(game.homeTeam || "-")} vs ${escapeHtml(game.awayTeam || "-")}</span><small>${escapeHtml(game.workflowState || "state不明")} / ${escapeHtml(game.publicationStatus || "未公開")}</small></button>`;
+          const available = game.correctionAvailable !== false;
+          const reason = available
+            ? `${game.workflowState || "state不明"} / ${game.publicationStatus || "未公開"}`
+            : (game.correctionUnavailableReason || "修正不可");
+          return `<button type="button" class="lineup-correction-game${active ? " is-selected" : ""}" data-v3-lineup-correction-game="${escapeHtml(game.internalGameId)}" aria-pressed="${active ? "true" : "false"}"${available ? "" : " disabled"}><strong>${escapeHtml(game.gameDate || "不明")}</strong><span>${escapeHtml(game.homeTeam || "-")} vs ${escapeHtml(game.awayTeam || "-")}</span><small>${escapeHtml(reason)}</small></button>`;
         }).join("")
-        : `<p class="muted">canonical final lineupを持つ過去のFighters戦はありません。</p>`;
-      const targetMarkup = target ? `<div class="lineup-correction-target"><strong>${escapeHtml(target.gameDate || "不明")} / ${escapeHtml(target.homeTeam || "-")} vs ${escapeHtml(target.awayTeam || "-")}</strong><span>開始: ${escapeHtml(formatJst(target.startAt) || "-")} JST</span><code>internalGameId: ${escapeHtml(target.internalGameId || "-")}</code><span>workflow: ${escapeHtml(target.workflowState || "-")} / scoring: ${escapeHtml(target.scoringStatus || "-")} / publish: ${escapeHtml(target.publicationStatus || "-")} / ranking: ${escapeHtml(target.rankingStatus || "-")}</span></div>` : "";
+        : `<p class="muted">過去のFighters戦はありません。</p>`;
+      const targetMarkup = target ? `<div class="lineup-correction-target"><strong>${escapeHtml(target.gameDate || "不明")} / ${escapeHtml(target.homeTeam || "-")} vs ${escapeHtml(target.awayTeam || "-")}</strong><span>開始: ${escapeHtml(formatJst(target.startAt) || "-")} JST</span><code>internalGameId: ${escapeHtml(target.internalGameId || "-")}</code><span>workflow: ${escapeHtml(target.workflowState || "-")} / scoring: ${escapeHtml(target.scoringStatus || "-")} / publish: ${escapeHtml(target.publicationStatus || "-")} / ranking: ${escapeHtml(target.rankingStatus || "-")}</span>${target.correctionAvailable === false ? `<strong class="error">${escapeHtml(target.correctionUnavailableReason || "修正不可")}</strong>` : ""}</div>` : "";
       if (state.loading && !details) return `<section class="lineup-correction-editor"><h2>スタメン修正</h2><p>過去のcanonical final lineupを読み込み中…</p></section>`;
       const cards = details ? rows.map((row, index) => {
         const positionOptions = POSITIONS.map((position) => `<option value="${escapeHtml(position)}" ${value(row, "position") === position ? "selected" : ""}>${escapeHtml(position || "守備位置を選択")}</option>`).join("");

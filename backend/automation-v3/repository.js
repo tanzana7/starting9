@@ -38,6 +38,23 @@ export async function listV3Games(db, now = new Date(), options = {}) {
   const excludedGameStatusSql = "'cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded'";
   const unfinishedWorkflowStateSql = "'scheduled', 'probable_starter_ready', 'roster_ready', 'prediction_closed', 'lineup_ready', 'scored', 'ranked'";
   const excludedWorkflowStateSql = "'published', 'cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded'";
+  let hasGameJobsTable = false;
+  try {
+    const jobTable = await db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'game_jobs_v3' LIMIT 1"
+    ).first();
+    hasGameJobsTable = Boolean(jobTable?.name);
+  } catch {
+    hasGameJobsTable = false;
+  }
+  const correctionPendingSql = hasGameJobsTable
+    ? `EXISTS (
+        SELECT 1 FROM game_jobs_v3 AS correction_job
+         WHERE correction_job.internal_game_id = games.internal_game_id
+           AND correction_job.job_type = 'score'
+           AND correction_job.status IN ('pending', 'claimed', 'retry_wait')
+      )`
+    : "0";
   const enrichedParams = [date];
   const scopedConditions = [];
   if (scopedInternalGameId) {
@@ -77,6 +94,10 @@ export async function listV3Games(db, now = new Date(), options = {}) {
            AND (
              games.game_date >= date(?1)
              OR LOWER(COALESCE(workflow.state, '')) IN (${unfinishedWorkflowStateSql})
+             OR (
+               LOWER(COALESCE(workflow.state, '')) = 'manual_action_required'
+               AND ${correctionPendingSql}
+             )
            )
            AND LOWER(COALESCE(workflow.state, '')) NOT IN (${excludedWorkflowStateSql})
            ${scopedFilterSql}

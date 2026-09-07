@@ -80,6 +80,9 @@ function planningDb(state) {
               if (query.includes("select state from game_automation_v3_state")) {
                 return { state: state.persistedState || "scheduled" };
               }
+              if (query.includes("select scoring_revision_id from game_automation_v3_state")) {
+                return { scoring_revision_id: state.scoringRevisionId || null };
+              }
               if (query.includes("select * from game_jobs_v3") && query.includes("where internal_game_id")) {
                 const job = (state.jobs || []).find((entry) => String(entry.internal_game_id) === String(params[0])
                   && String(entry.job_type) === String(params[1])
@@ -109,11 +112,13 @@ function planningDb(state) {
               }
               if (query.includes("select scoring_status")) {
                 return state.scoreReady
-                  ? { scoring_status: "scored", scored_at: "2026-09-02T09:10:00.000Z", publication_status: null, published_at: null }
+                  ? { scoring_status: "scored", scored_at: "2026-09-02T09:10:00.000Z", publication_status: state.publicationStatus || null, published_at: state.publishedAt || null }
                   : null;
               }
-              if (query.includes("select status from ranking_reflection_revisions")) {
-                return state.rankingReflected ? { status: "reflected" } : null;
+              if (query.includes("from ranking_reflection_revisions")) {
+                return state.rankingReflected
+                  ? { status: "reflected", scoring_revision_id: state.reflectionScoringRevisionId || state.scoringRevisionId || null }
+                  : null;
               }
               return null;
             },
@@ -300,6 +305,8 @@ test("V4 formal plannerはscore完了後にranking_reflect、publishまで連鎖
     nextId: 300,
     scoreReady: false,
     rankingReflected: false,
+    scoringRevisionId: null,
+    reflectionScoringRevisionId: null,
     canonicalFinalRevisionId: `${GAME_ID}:8`
   };
   const disabledStages = ["roster_fetch", "lineup_fetch"];
@@ -310,6 +317,7 @@ test("V4 formal plannerはscore完了後にranking_reflect、publishまで連鎖
 
   score.status = "completed";
   state.scoreReady = true;
+  state.scoringRevisionId = "score-revision-1";
   const second = await v3.planMainWorkflowJobs(planningDb(state), [game()], now, { disabledStages });
   const ranking = state.jobs.find((job) => job.job_type === "ranking_rebuild");
   assert.equal(second.created, 1);
@@ -318,10 +326,71 @@ test("V4 formal plannerはscore完了後にranking_reflect、publishまで連鎖
 
   ranking.status = "completed";
   state.rankingReflected = true;
+  state.reflectionScoringRevisionId = state.scoringRevisionId;
   const third = await v3.planMainWorkflowJobs(planningDb(state), [game()], now, { disabledStages });
   assert.equal(third.created, 1);
   assert.equal(state.jobs.filter((job) => job.job_type === "publish").length, 1);
   assert.equal(third.planned.find((entry) => entry.plan?.jobType === "publish")?.plan?.sharedPlan?.blocked, false);
+});
+
+test("published済みcorrectionの二周目は旧reflection/jobを保持したままranking Bとpublish Bへ進む", async () => {
+  const now = new Date("2026-09-02T10:05:00.000Z");
+  const oldRankingSlot = "2026-09-02T09:10:00.000Z";
+  const state = {
+    persistedState: "scored",
+    jobs: [
+      { id: 401, internal_game_id: GAME_ID, job_type: "score", status: "completed", scheduled_slot_at: "2026-09-02T09:05:00.000Z" },
+      { id: 402, internal_game_id: GAME_ID, job_type: "ranking_rebuild", status: "completed", scheduled_slot_at: oldRankingSlot },
+      { id: 403, internal_game_id: GAME_ID, job_type: "publish", status: "completed", scheduled_slot_at: "2026-09-02T09:10:00.000Z" }
+    ],
+    nextId: 403,
+    scoreReady: true,
+    rankingReflected: true,
+    scoringRevisionId: "score-revision-b",
+    reflectionScoringRevisionId: "score-revision-a",
+    canonicalFinalRevisionId: `${GAME_ID}:2`,
+    publicationStatus: "pending",
+    publishedAt: null
+  };
+  const disabledStages = ["roster_fetch", "lineup_fetch"];
+  const rankingPlan = await v3.planMainWorkflowJobs(
+    planningDb(state),
+    [game()],
+    now,
+    { disabledStages }
+  );
+  const rankingB = state.jobs.find((job) => job.job_type === "ranking_rebuild" && job.id !== 402);
+  assert.equal(rankingPlan.created, 1);
+  assert.ok(rankingB, "旧completed ranking jobとは別の新jobを生成すること");
+  assert.notEqual(rankingB.scheduled_slot_at, oldRankingSlot);
+  assert.equal(rankingPlan.planned.find((entry) => entry.plan?.jobType === "ranking_rebuild")?.plan?.sharedPlan?.reasonCode, "COMPLETED_ARTIFACT_REVISION_MISMATCH");
+
+  rankingB.status = "completed";
+  state.reflectionScoringRevisionId = state.scoringRevisionId;
+  const publishPlan = await v3.planMainWorkflowJobs(
+    planningDb(state),
+    [game()],
+    now,
+    { disabledStages }
+  );
+  const publishB = state.jobs.find((job) => job.job_type === "publish" && job.id !== 403);
+  assert.equal(publishPlan.created, 1);
+  assert.ok(publishB, "current scoring revisionのreflection後にpublish jobを生成すること");
+  assert.notEqual(publishB.id, 403);
+  assert.notEqual(publishB.scheduled_slot_at, "2026-09-02T09:10:00.000Z");
+
+  publishB.status = "completed";
+  state.persistedState = "published";
+  state.publicationStatus = "published";
+  state.publishedAt = "2026-09-02T10:06:00.000Z";
+  const completed = await v3.planMainWorkflowJobs(
+    planningDb(state),
+    [game()],
+    now,
+    { disabledStages }
+  );
+  assert.equal(completed.created, 0);
+  assert.equal(completed.planned.length, 0, "二周目完了後に不要なjobを増やさないこと");
 });
 
 function finalizeSourceForTest() {

@@ -93,9 +93,11 @@ button:disabled { cursor: wait; opacity: .65; }
 .attention-badge { background: #fff3dc; color: #91600d; }
 .status-badge.ok { background: #e5f5ea; color: #21683d; }
 .status-badge.wait { background: #edf3f8; color: #526477; }
+.status-badge.running { background: #e8f2f8; color: #1d527c; }
 .status-badge.retry { background: #fff3dc; color: #91600d; }
 .status-badge.failed, .status-badge.action { background: #fde9e9; color: #9d3636; }
 .status-badge.excluded { background: #eceff2; color: #5f6e80; }
+.game-progress-reason { display: block; max-width: 240px; margin-top: 4px; color: #5f6e80; line-height: 1.45; overflow-wrap: anywhere; }
 .game-card-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .game-card-actions button { padding: 6px 10px; }
 .games-table-wrap { overflow-x: auto; background: #fff; border: 1px solid #dce3eb; border-radius: 8px; }

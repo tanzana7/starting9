@@ -390,6 +390,7 @@ function filteredV3Games(games, filter) {
   const today = v3JstDate();
   const tomorrow = v3ShiftDate(today, 1);
   return v3ListItems(games, "games").filter((game) => {
+    if (!isV3FightersGame(game)) return false;
     const date = gameDateForFilter(game);
     if (filter === "today") return date === today;
     if (filter === "tomorrow") return date === tomorrow;

@@ -22,6 +22,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
     ? Math.min(50, requestedLimit)
     : null;
   const recentFirst = options?.recentFirst === true;
+  const includeRecentHistory = options?.includeRecentHistory === true;
   let columns = new Set();
   try {
     const schema = await db.prepare("PRAGMA table_info(games)").all();
@@ -38,6 +39,9 @@ export async function listV3Games(db, now = new Date(), options = {}) {
   const excludedGameStatusSql = "'cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded'";
   const unfinishedWorkflowStateSql = "'scheduled', 'probable_starter_ready', 'roster_ready', 'prediction_closed', 'lineup_ready', 'scored', 'ranked'";
   const excludedWorkflowStateSql = "'published', 'cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded'";
+  const adminHistoryExcludedWorkflowStateSql = "'cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded'";
+  const fightersGameSql = `(LOWER(COALESCE(games.home_team, '')) IN ('f', 'fighters')
+             OR LOWER(COALESCE(games.away_team, '')) IN ('f', 'fighters'))`;
   let hasGameJobsTable = false;
   try {
     const jobTable = await db.prepare(
@@ -55,7 +59,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
            AND correction_job.status IN ('pending', 'claimed', 'retry_wait')
       )`
     : "0";
-  const enrichedParams = [date];
+  const enrichedParams = includeRecentHistory ? [] : [date];
   const scopedConditions = [];
   if (scopedInternalGameId) {
     enrichedParams.push(scopedInternalGameId);
@@ -65,16 +69,32 @@ export async function listV3Games(db, now = new Date(), options = {}) {
   const orderSql = recentFirst
     ? "games.start_time DESC, games.internal_game_id DESC"
     : "games.start_time, games.internal_game_id";
+  const publicationStatus = "CASE WHEN lineup.publication_status = 'published' OR ranking.publication_status = 'published' THEN 'published' ELSE COALESCE(lineup.publication_status, ranking.publication_status, '') END";
+  const publishedAt = "COALESCE(lineup.published_at, ranking.published_at)";
   const enrichedLimitSql = limit
     ? ` LIMIT ?${enrichedParams.push(limit)}`
     : "";
+  const publicationFilterSql = includeRecentHistory
+    ? ""
+    : `AND (${publishedAt} IS NULL)
+           AND LOWER(COALESCE(${publicationStatus}, '')) <> 'published'`;
+  const discoveryFilterSql = includeRecentHistory
+    ? `AND ${fightersGameSql}
+           AND LOWER(COALESCE(workflow.state, '')) NOT IN (${adminHistoryExcludedWorkflowStateSql})`
+    : `AND (
+             games.game_date >= date(?1)
+             OR LOWER(COALESCE(workflow.state, '')) IN (${unfinishedWorkflowStateSql})
+             OR (
+               LOWER(COALESCE(workflow.state, '')) = 'manual_action_required'
+               AND ${correctionPendingSql}
+             )
+           )
+           AND LOWER(COALESCE(workflow.state, '')) NOT IN (${excludedWorkflowStateSql})`;
   let result;
   try {
     // Keep unfinished games discoverable after startAt. The current-day arm
     // preserves future scheduling, while the state/publication arm retains a
     // delayed run until it is actually published.
-    const publicationStatus = "CASE WHEN lineup.publication_status = 'published' OR ranking.publication_status = 'published' THEN 'published' ELSE COALESCE(lineup.publication_status, ranking.publication_status, '') END";
-    const publishedAt = "COALESCE(lineup.published_at, ranking.published_at)";
     result = await db.prepare(
       `SELECT ${gameColumns}, workflow.state AS workflow_state,
               ${publicationStatus} AS publication_status, ${publishedAt} AS published_at
@@ -89,17 +109,8 @@ export async function listV3Games(db, now = new Date(), options = {}) {
            AND games.is_active = 1
            AND games.deleted_at IS NULL
            AND LOWER(COALESCE(games.game_status, '')) NOT IN (${excludedGameStatusSql})
-           AND (${publishedAt} IS NULL)
-           AND LOWER(COALESCE(${publicationStatus}, '')) <> 'published'
-           AND (
-             games.game_date >= date(?1)
-             OR LOWER(COALESCE(workflow.state, '')) IN (${unfinishedWorkflowStateSql})
-             OR (
-               LOWER(COALESCE(workflow.state, '')) = 'manual_action_required'
-               AND ${correctionPendingSql}
-             )
-           )
-           AND LOWER(COALESCE(workflow.state, '')) NOT IN (${excludedWorkflowStateSql})
+           ${publicationFilterSql}
+           ${discoveryFilterSql}
            ${scopedFilterSql}
          ORDER BY ${orderSql}${enrichedLimitSql}`
     ).bind(...enrichedParams).all();
@@ -112,7 +123,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
       historicalUnpublishedRetention: false,
       reason: String(error?.message || "enriched_query_failed").slice(0, 200)
     })}`);
-    const fallbackParams = [date];
+    const fallbackParams = includeRecentHistory ? [] : [date];
     const fallbackConditions = [];
     if (scopedInternalGameId) {
       fallbackParams.push(scopedInternalGameId);
@@ -129,7 +140,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
            AND games.is_active = 1
            AND games.deleted_at IS NULL
            AND LOWER(COALESCE(games.game_status, '')) NOT IN (${excludedGameStatusSql})
-           AND games.game_date >= date(?1)
+           ${includeRecentHistory ? `AND ${fightersGameSql.replaceAll("games.", "")}` : "AND games.game_date >= date(?1)"}
            ${fallbackFilterSql}
          ORDER BY ${orderSql}${fallbackLimitSql}`
     ).bind(...fallbackParams).all();

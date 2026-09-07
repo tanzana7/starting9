@@ -154,6 +154,9 @@ async function readV3WorkflowArtifactHealth(db, internalGameId, workflowState = 
     lineup,
     scoreReady: false,
     rankingReflected: false,
+    rankingRevisionMismatch: false,
+    rankingScoringRevisionId: null,
+    reflectedScoringRevisionId: null,
     publicationReady: false
   };
   try {
@@ -163,12 +166,48 @@ async function readV3WorkflowArtifactHealth(db, internalGameId, workflowState = 
     ).bind(internalGameId).first();
     health.scoreReady = String(canonical?.scoring_status || "") === "scored" && Boolean(canonical?.scored_at);
     health.publicationReady = String(canonical?.publication_status || "") === "published" && Boolean(canonical?.published_at);
-    const reflection = await db.prepare(
-      `SELECT status FROM ranking_reflection_revisions
-        WHERE internal_game_id = ?1
-        ORDER BY ranking_update_revision DESC, id DESC LIMIT 1`
-    ).bind(internalGameId).first();
-    health.rankingReflected = String(reflection?.status || "") === "reflected";
+    let currentScoringRevision = null;
+    let currentScoringRevisionAvailable = false;
+    try {
+      currentScoringRevision = await db.prepare(
+        `SELECT scoring_revision_id
+           FROM game_automation_v3_state
+          WHERE internal_game_id = ?1 LIMIT 1`
+      ).bind(internalGameId).first();
+      currentScoringRevisionAvailable = Boolean(currentScoringRevision);
+    } catch {
+      // Legacy adapters may not expose the revision marker. Production
+      // schemas use the revision-aware path below.
+    }
+    let reflection = null;
+    try {
+      reflection = await db.prepare(
+        `SELECT status, scoring_revision_id
+           FROM ranking_reflection_revisions
+          WHERE internal_game_id = ?1
+          ORDER BY ranking_update_revision DESC, id DESC LIMIT 1`
+      ).bind(internalGameId).first();
+    } catch {
+      reflection = await db.prepare(
+        `SELECT status FROM ranking_reflection_revisions
+          WHERE internal_game_id = ?1
+          ORDER BY ranking_update_revision DESC, id DESC LIMIT 1`
+      ).bind(internalGameId).first();
+    }
+    const currentScoringRevisionId = String(currentScoringRevision?.scoring_revision_id || "").trim();
+    const reflectedScoringRevisionId = String(reflection?.scoring_revision_id || "").trim();
+    const reflected = String(reflection?.status || "") === "reflected";
+    health.rankingReflected = currentScoringRevisionAvailable
+      ? Boolean(currentScoringRevisionId && reflected && reflectedScoringRevisionId === currentScoringRevisionId)
+      : reflected;
+    health.rankingRevisionMismatch = Boolean(
+      currentScoringRevisionAvailable
+      && currentScoringRevisionId
+      && reflected
+      && reflectedScoringRevisionId !== currentScoringRevisionId
+    );
+    health.rankingScoringRevisionId = currentScoringRevisionId || null;
+    health.reflectedScoringRevisionId = reflectedScoringRevisionId || null;
   } catch {
     // Legacy or partially migrated schemas must not trigger speculative jobs.
     health.available = false;
@@ -219,7 +258,11 @@ async function deriveV3PlanningState(db, gameOrId, persistedState = "scheduled",
       valid: workflowArtifacts.lineup.finalizedValid
     },
     scoring: { available: workflowArtifacts.scoreReady, valid: workflowArtifacts.scoreReady },
-    ranking_reflect: { available: workflowArtifacts.rankingReflected, valid: workflowArtifacts.rankingReflected },
+    ranking_reflect: {
+      available: workflowArtifacts.rankingReflected,
+      valid: workflowArtifacts.rankingReflected,
+      revisionMismatch: workflowArtifacts.rankingRevisionMismatch === true
+    },
     publish: { available: workflowArtifacts.publicationReady, valid: workflowArtifacts.publicationReady }
   };
   const planningState = buildV3PlanningState({
@@ -512,6 +555,43 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
         scheduledAt: new Date(entry.selectedSlotAt),
         sharedPlan: entry
       }));
+      for (const stagePlan of stagePlans.filter((entry) => entry.reasonCode === "RECOVERY_JOB_ALREADY_EXISTS")) {
+        const recoveryKind = stagePlan.stage === "scoring" ? "score" : "ranking";
+        const recoveryReasonCode = recoveryKind === "score"
+          ? "V3_SCORE_RECOVERY_JOB_ALREADY_EXISTS"
+          : "V3_RANKING_RECOVERY_JOB_ALREADY_EXISTS";
+        const recoveryPlan = {
+          jobType: stagePlan.jobType,
+          scheduledSlotAt: new Date(stagePlan.selectedSlotAt),
+          scheduledAt: new Date(stagePlan.selectedSlotAt),
+          sharedPlan: stagePlan
+        };
+        const diagnostic = {
+          ...createV3PlanningDiagnostic(game, recoveryPlan, state),
+          recoveryOfJobId: stagePlan.diagnostics?.recoveryOfJobId || null,
+          recoveryJobId: stagePlan.diagnostics?.recoveryJobId || stagePlan.existingJob?.id || null,
+          actualJobExists: Boolean(stagePlan.existingJob?.id),
+          existingJobId: stagePlan.existingJob?.id || null,
+          existingStatus: stagePlan.existingJob?.status || null,
+          insertAttempted: false,
+          insertedRowCount: 0,
+          reasonCode: recoveryReasonCode
+        };
+        planned.push({
+          game,
+          plan: recoveryPlan,
+          created: false,
+          job: stagePlan.existingJob || null,
+          reasonCode: recoveryReasonCode,
+          recoveryOfJobId: diagnostic.recoveryOfJobId,
+          insertedRowCount: 0,
+          existingJobId: diagnostic.existingJobId,
+          existingScheduledSlotAt: stagePlan.existingJob?.scheduled_slot_at || null,
+          existingStatus: diagnostic.existingStatus,
+          diagnostic
+        });
+        diagnostics.push(diagnostic);
+      }
       for (const plan of plans) {
         const artifactReady = plan.jobType === V3_JOB_TYPE.LINEUP_FETCH
           ? workflowArtifacts.available && workflowArtifacts.lineup.ready === true

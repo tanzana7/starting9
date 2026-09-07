@@ -54,13 +54,16 @@ function requestHeaders() {
   return { Cookie: `s9_session=${encodeURIComponent(SESSION)}`, Origin: "https://starting9.test", "Content-Type": "application/json" };
 }
 
-async function createDb({ gameDate = "2026-09-05", state = "published" } = {}) {
+async function createDb({ gameDate = "2026-09-05", state = "published", canonicalRevisionId = `${GAME_ID}:1` } = {}) {
   const database = new DatabaseSync(":memory:");
   const tokenHash = await hash(SESSION);
   const original = lineup();
   const canonicalLineup = normalizeManualLineupInput(original).lineup;
   const originalJson = JSON.stringify(canonicalLineup);
   const originalFingerprint = await hash(originalJson);
+  const canonicalRevisionSql = canonicalRevisionId === null
+    ? "NULL"
+    : `'${String(canonicalRevisionId).replaceAll("'", "''")}'`;
   database.exec(`
     CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT, status TEXT, role TEXT);
     CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT, token_hash TEXT, created_at TEXT, expires_at TEXT, last_used_at TEXT);
@@ -77,7 +80,7 @@ async function createDb({ gameDate = "2026-09-05", state = "published" } = {}) {
     INSERT INTO sessions VALUES ('session-1', '1', '${tokenHash}', '2026-09-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z');
     INSERT INTO games VALUES ('${GAME_ID}', '${gameDate}', '${gameDate}T09:00:00+09:00', 'fighters', 'hawks', 'f-h-22', 'scheduled', 1, NULL);
     INSERT INTO game_automation_v3_state VALUES ('${GAME_ID}', '${state}', 3, NULL, '2026-09-05T01:00:00.000Z', 'old-score', '2026-09-05T02:00:00.000Z', 'old-score', NULL, NULL, NULL, '2026-09-01T00:00:00.000Z', '2026-09-05T03:00:00.000Z');
-    INSERT INTO game_lineups VALUES ('lineup-1', '${GAME_ID}', '${GAME_ID}', '${originalJson.replaceAll("'", "''")}', '${originalFingerprint}', 1, '2026-09-05T01:00:00.000Z', NULL, NULL, '2026-09-05T02:00:00.000Z', 'scored', 1, NULL, 10, 1, 0, 'manual', 'published', '2026-09-05T03:00:00.000Z', '${GAME_ID}:1', '2026-09-05T01:00:00.000Z', 'admin', '2026-09-05T01:00:00.000Z', '2026-09-05T03:00:00.000Z');
+    INSERT INTO game_lineups VALUES ('lineup-1', '${GAME_ID}', '${GAME_ID}', '${originalJson.replaceAll("'", "''")}', '${originalFingerprint}', 1, '2026-09-05T01:00:00.000Z', NULL, NULL, '2026-09-05T02:00:00.000Z', 'scored', 1, NULL, 10, 1, 0, 'manual', 'published', '2026-09-05T03:00:00.000Z', ${canonicalRevisionSql}, '2026-09-05T01:00:00.000Z', 'admin', '2026-09-05T01:00:00.000Z', '2026-09-05T03:00:00.000Z');
     INSERT INTO game_lineup_revisions VALUES ('${GAME_ID}', 1, '${GAME_ID}:1', '${GAME_ID}', '${originalJson.replaceAll("'", "''")}', '${originalFingerprint}', 'manual-revision', '2026-09-05T01:00:00.000Z', '2026-09-05T01:00:00.000Z', 1, 'initial', 1, NULL, '{"ok":true}', 0, 1, '2026-09-05T01:00:00.000Z', 'admin');
     INSERT INTO ranking_games VALUES ('${GAME_ID}', '${GAME_ID}', '${gameDate}', 1, '2026-09-05T02:00:00.000Z', 'scored', 0, 'published', '2026-09-05T02:00:00.000Z', '2026-09-05T03:00:00.000Z', '2026-09-01T00:00:00.000Z', '2026-09-05T03:00:00.000Z');
     INSERT INTO predictions VALUES ('prediction-1', '${GAME_ID}', 'unchanged-prediction');
@@ -106,6 +109,16 @@ test("スタメン修正はcanonical finalを読み取り、一覧・詳細で�
   assert.equal(detail.canonicalRevision.revisionId, `${GAME_ID}:1`);
   assert.equal(detail.readOnlyStatuses.publicationStatus, "published");
   assert.equal(detail.playerCatalog.length > 9, true);
+});
+
+test("canonical不備の過去試合は一覧から消さず、修正不可理由をread-only表示する", async () => {
+  const { env } = await createDb({ canonicalRevisionId: null });
+  const response = await adminRequest(env, "/api/admin/v3/lineup-corrections");
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.games.length, 1);
+  assert.equal(payload.games[0].correctionAvailable, false);
+  assert.match(payload.games[0].correctionUnavailableReason, /canonical final lineup revision/);
 });
 
 test("スタメン修正は新revisionを保持し、予想を触らず、正式score jobだけへ引き継ぐ", async () => {

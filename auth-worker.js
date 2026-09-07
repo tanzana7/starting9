@@ -7114,7 +7114,7 @@ async function getV3CanonicalFinalRevision(db, internalGameId, revisions = null)
   return { canonical, revision, lineup: actual.lineup, validation: artifact };
 }
 
-function serializeV3LineupCorrectionTarget(target, stateRow, canonicalResult, ranking = null) {
+function serializeV3LineupCorrectionTarget(target, stateRow, canonicalResult, ranking = null, availability = {}) {
   const lineup = canonicalResult?.canonical || {};
   return {
     internalGameId: target.internalGameId,
@@ -7128,7 +7128,11 @@ function serializeV3LineupCorrectionTarget(target, stateRow, canonicalResult, ra
     publicationStatus: lineup.publication_status || ranking?.publication_status || null,
     publishedAt: lineup.published_at || ranking?.published_at || null,
     rankingStatus: ranking?.game_status || null,
-    canonicalRevision: canonicalResult?.revision ? serializeV3LineupRevision(canonicalResult.revision) : null
+    canonicalRevision: canonicalResult?.revision ? serializeV3LineupRevision(canonicalResult.revision) : null,
+    correctionAvailable: availability.available !== false,
+    correctionUnavailableReason: availability.available === false
+      ? String(availability.reason || "修正に必要なcanonical final lineupを確認できません。")
+      : null
   };
 }
 
@@ -7164,7 +7168,22 @@ async function handleAdminV3LineupCorrectionsGet(request, env, cors) {
         const status = await getV3LineupCorrectionStatus(env, context);
         games.push(serializeV3LineupCorrectionTarget(context.target, status.stateRow, status.canonical, status.ranking));
       } catch (error) {
-        if (!["V3_LINEUP_CORRECTION_FINAL_LINEUP_REQUIRED", "V3_LINEUP_CORRECTION_FINAL_LINEUP_INVALID"].includes(String(error?.code || ""))) throw error;
+        const code = String(error?.code || "");
+        if (code === "V3_LINEUP_CORRECTION_FINAL_LINEUP_REQUIRED") {
+          games.push(serializeV3LineupCorrectionTarget(context.target, null, null, null, {
+            available: false,
+            reason: "修正不可: canonical final lineup revisionが見つかりません。"
+          }));
+          continue;
+        }
+        if (code === "V3_LINEUP_CORRECTION_FINAL_LINEUP_INVALID") {
+          games.push(serializeV3LineupCorrectionTarget(context.target, null, null, null, {
+            available: false,
+            reason: "修正不可: canonical final lineupの検証に失敗しました。"
+          }));
+          continue;
+        }
+        throw error;
       }
     }
     return jsonResponse({ ok: true, asOfDateJst: today, games }, 200, cors);

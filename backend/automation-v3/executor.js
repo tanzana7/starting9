@@ -112,13 +112,46 @@ async function canReconcileCompletedV3StateTransition(db, internalGameId, transi
         return String(lineup?.scoring_status || "") === "scored" && Boolean(lineup?.scored_at);
       }
       case V3_JOB_TYPE.RANKING_REBUILD: {
-        const reflection = await db.prepare(
-          `SELECT status
-             FROM ranking_reflection_revisions
-            WHERE internal_game_id = ?1
-            ORDER BY ranking_update_revision DESC, id DESC
-            LIMIT 1`
-        ).bind(internalGameId).first();
+        let currentScoringRevision = null;
+        let currentScoringRevisionAvailable = false;
+        try {
+          currentScoringRevision = await db.prepare(
+            `SELECT scoring_revision_id
+               FROM game_automation_v3_state
+              WHERE internal_game_id = ?1 LIMIT 1`
+          ).bind(internalGameId).first();
+          currentScoringRevisionAvailable = Boolean(currentScoringRevision);
+        } catch {
+          // Legacy schemas without the revision marker retain status-only
+          // reconciliation compatibility.
+        }
+        let reflection = null;
+        try {
+          reflection = await db.prepare(
+            `SELECT status, scoring_revision_id
+               FROM ranking_reflection_revisions
+              WHERE internal_game_id = ?1
+              ORDER BY ranking_update_revision DESC, id DESC
+              LIMIT 1`
+          ).bind(internalGameId).first();
+        } catch {
+          reflection = await db.prepare(
+            `SELECT status
+               FROM ranking_reflection_revisions
+              WHERE internal_game_id = ?1
+              ORDER BY ranking_update_revision DESC, id DESC
+              LIMIT 1`
+          ).bind(internalGameId).first();
+        }
+        const currentScoringRevisionId = String(currentScoringRevision?.scoring_revision_id || "").trim();
+        const reflectedScoringRevisionId = String(reflection?.scoring_revision_id || "").trim();
+        if (currentScoringRevisionAvailable) {
+          return Boolean(
+            currentScoringRevisionId
+            && String(reflection?.status || "") === "reflected"
+            && reflectedScoringRevisionId === currentScoringRevisionId
+          );
+        }
         return String(reflection?.status || "") === "reflected";
       }
       case V3_JOB_TYPE.PUBLISH: {

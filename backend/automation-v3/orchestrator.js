@@ -155,6 +155,7 @@ async function readV3WorkflowArtifactHealth(db, internalGameId, workflowState = 
     scoreReady: false,
     rankingReflected: false,
     rankingRevisionMismatch: false,
+    rankingReprocessRequired: false,
     rankingScoringRevisionId: null,
     reflectedScoringRevisionId: null,
     publicationReady: false
@@ -205,6 +206,12 @@ async function readV3WorkflowArtifactHealth(db, internalGameId, workflowState = 
       && currentScoringRevisionId
       && reflected
       && reflectedScoringRevisionId !== currentScoringRevisionId
+    );
+    health.rankingReprocessRequired = Boolean(
+      health.scoreReady
+      && currentScoringRevisionAvailable
+      && currentScoringRevisionId
+      && (!reflected || reflectedScoringRevisionId !== currentScoringRevisionId)
     );
     health.rankingScoringRevisionId = currentScoringRevisionId || null;
     health.reflectedScoringRevisionId = reflectedScoringRevisionId || null;
@@ -261,7 +268,8 @@ async function deriveV3PlanningState(db, gameOrId, persistedState = "scheduled",
     ranking_reflect: {
       available: workflowArtifacts.rankingReflected,
       valid: workflowArtifacts.rankingReflected,
-      revisionMismatch: workflowArtifacts.rankingRevisionMismatch === true
+      revisionMismatch: workflowArtifacts.rankingRevisionMismatch === true,
+      reprocessRequired: workflowArtifacts.rankingReprocessRequired === true
     },
     publish: { available: workflowArtifacts.publicationReady, valid: workflowArtifacts.publicationReady }
   };

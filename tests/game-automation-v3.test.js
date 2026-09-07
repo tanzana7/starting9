@@ -947,6 +947,144 @@ test("published済みcorrectionをformal runnerのscore B→ranking B→publish 
   }
 });
 
+test("途中状態のcorrectionはranked state gateを越え、既存publish retry_waitを再開する", async () => {
+  const database = new DatabaseSync(":memory:");
+  const internalGameId = "8e7d6c5b-4a39-4b28-9c17-2f6e5d4c3b20";
+  const lineupJson = JSON.stringify(Array.from({ length: 9 }, (_, index) => ({
+    battingOrder: index + 1,
+    position: index === 0 ? "捕" : "内野",
+    playerId: `fighters-midflight-${index + 1}`,
+    playerName: `Fighters Midflight ${index + 1}`,
+    uniformNumber: String(index + 1)
+  })));
+  const firstRunAt = new Date("2026-09-01T00:00:00.000Z");
+  const publishRetryAt = new Date(firstRunAt.getTime() + 10_000).toISOString();
+  try {
+    database.exec(`
+      CREATE TABLE games (
+        internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+        home_team TEXT, away_team TEXT, npb_game_code TEXT, npb_identity_status TEXT,
+        game_status TEXT, is_active INTEGER, deleted_at TEXT
+      );
+      CREATE TABLE game_automation_v3_state (
+        internal_game_id TEXT PRIMARY KEY, state TEXT, version INTEGER,
+        prediction_closed_at TEXT, lineup_finalized_at TEXT, scoring_revision_id TEXT,
+        ranked_at TEXT, published_at TEXT, excluded_at TEXT, failure_code TEXT,
+        failure_message TEXT, created_at TEXT, updated_at TEXT
+      );
+      CREATE TABLE game_lineups (
+        internal_game_id TEXT PRIMARY KEY, game_id TEXT, actual_lineup_json TEXT,
+        final_lineup_revision_id TEXT, scoring_status TEXT, scored_at TEXT,
+        publication_status TEXT, published_at TEXT
+      );
+      CREATE TABLE game_lineup_revisions (
+        internal_game_id TEXT, game_id TEXT, version INTEGER, revision_id TEXT,
+        is_final INTEGER, actual_lineup_json TEXT
+      );
+      CREATE TABLE ranking_games (
+        internal_game_id TEXT PRIMARY KEY, publication_status TEXT, published_at TEXT,
+        game_status TEXT
+      );
+      CREATE TABLE ranking_reflection_revisions (
+        id INTEGER PRIMARY KEY, internal_game_id TEXT, scoring_revision_id TEXT,
+        ranking_update_revision INTEGER, status TEXT
+      );
+      CREATE TABLE predictions (
+        id TEXT PRIMARY KEY, user_id TEXT, game_id TEXT, score INTEGER,
+        max_score INTEGER, status TEXT, scored_at TEXT, is_test_prediction INTEGER
+      );
+      CREATE TABLE game_jobs_v3 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT, job_type TEXT,
+        scheduled_at TEXT, scheduled_slot_at TEXT, status TEXT, attempt_count INTEGER,
+        max_attempts INTEGER, next_retry_at TEXT, claimed_at TEXT, claim_token TEXT,
+        lease_expires_at TEXT, completed_at TEXT, failure_code TEXT, failure_message TEXT,
+        created_at TEXT, updated_at TEXT,
+        UNIQUE(internal_game_id, job_type, scheduled_slot_at)
+      );
+      INSERT INTO games VALUES ('${internalGameId}', '2026-08-31', '2026-08-31T09:00:00.000Z', 'fighters', 'hawks', 'f-h-100', 'resolved', 'scheduled', 1, NULL);
+      INSERT INTO game_automation_v3_state VALUES ('${internalGameId}', 'ranked', 8, '2026-08-31T00:00:00.000Z', '2026-08-31T01:00:00.000Z', 'score-revision-b', '2026-08-31T02:00:00.000Z', NULL, NULL, NULL, NULL, '2026-08-01T00:00:00.000Z', '2026-08-31T02:00:00.000Z');
+      INSERT INTO game_lineups VALUES ('${internalGameId}', '${internalGameId}', '${lineupJson}', '${internalGameId}:2', 'scored', '2026-08-31T01:30:00.000Z', 'pending', NULL);
+      INSERT INTO game_lineup_revisions VALUES ('${internalGameId}', '${internalGameId}', 2, '${internalGameId}:2', 1, '${lineupJson}');
+      INSERT INTO ranking_games VALUES ('${internalGameId}', 'pending', NULL, 'scored');
+      INSERT INTO ranking_reflection_revisions VALUES (1, '${internalGameId}', 'score-revision-a', 1, 'reflected');
+      INSERT INTO predictions VALUES ('prediction-midflight-1', 'user-midflight', '${internalGameId}', 90, 100, 'scored', '2026-08-31T01:40:00.000Z', 0);
+      INSERT INTO game_jobs_v3 (internal_game_id, job_type, scheduled_at, scheduled_slot_at, status, attempt_count, max_attempts, next_retry_at, failure_code, created_at, updated_at)
+        VALUES
+          ('${internalGameId}', 'score', '2026-08-31T01:10:00.000Z', '2026-08-31T01:10:00.000Z', 'completed', 1, 12, NULL, NULL, '2026-08-31T01:10:00.000Z', '2026-08-31T01:10:00.000Z'),
+          ('${internalGameId}', 'ranking_rebuild', '2026-08-31T01:10:00.000Z', '2026-08-31T01:10:00.000Z', 'completed', 1, 12, NULL, NULL, '2026-08-31T01:10:00.000Z', '2026-08-31T01:10:00.000Z'),
+          ('${internalGameId}', 'publish', '2026-08-31T01:10:00.000Z', '2026-08-31T01:10:00.000Z', 'completed', 1, 12, NULL, NULL, '2026-08-31T01:10:00.000Z', '2026-08-31T01:10:00.000Z'),
+          ('${internalGameId}', 'score', '2026-08-31T01:11:00.000Z', '2026-08-31T01:11:00.000Z', 'completed', 1, 12, NULL, NULL, '2026-08-31T01:11:00.000Z', '2026-08-31T01:11:00.000Z'),
+          ('${internalGameId}', 'publish', '2026-08-31T01:12:00.000Z', '2026-08-31T01:12:00.000Z', 'retry_wait', 1, 12, '${publishRetryAt}', 'V3_RANKING_REVISION_NOT_REFLECTED', '2026-08-31T01:12:00.000Z', '2026-08-31T01:12:00.000Z');
+    `);
+
+    const before = await v3.listV3Games(d1(database), firstRunAt);
+    assert.equal(before.some((game) => game.internalGameId === internalGameId), true);
+
+    const executionTypes = [];
+    const errors = [];
+    let optionalPromise = null;
+    const run = async (now) => {
+      optionalPromise = null;
+      const result = await v3.runGameAutomationV3(
+        { AUTH_DB: d1(database), ENABLE_GAME_AUTOMATION_V3: "true" },
+        now,
+        {
+          formalPlanner: (db, games, plannerNow) => v3.planMainWorkflowJobs(db, games, plannerNow, {
+            disabledStages: ["roster_fetch", "lineup_fetch"]
+          }),
+          auxiliaryPlanner: async () => ({ created: 0, planned: [], diagnostics: [], errors: [] }),
+          scheduleOptional: (promise) => { optionalPromise = promise; },
+          onError: (error) => { errors.push({ code: error?.code || null, message: String(error?.message || "") }); },
+          executeJob: async ({ job, now: executionNow }) => {
+            executionTypes.push(job.job_type);
+            if (job.job_type === "ranking_rebuild") {
+              database.prepare("INSERT INTO ranking_reflection_revisions VALUES (2, ?1, 'score-revision-b', 2, 'reflected')").run(internalGameId);
+              database.prepare("UPDATE ranking_games SET publication_status = 'scored_private', game_status = 'scored' WHERE internal_game_id = ?1").run(internalGameId);
+              return { status: "ranked", stateBefore: "ranked", stateAfter: "ranked" };
+            }
+            database.prepare("UPDATE game_lineups SET publication_status = 'published', published_at = ?1 WHERE internal_game_id = ?2").run(executionNow.toISOString(), internalGameId);
+            database.prepare("UPDATE ranking_games SET publication_status = 'published', published_at = ?1 WHERE internal_game_id = ?2").run(executionNow.toISOString(), internalGameId);
+            return { status: "published", stateBefore: "ranked", stateAfter: "published" };
+          }
+        }
+      );
+      if (optionalPromise) await optionalPromise;
+      return result;
+    };
+
+    const first = await run(firstRunAt);
+    assert.equal(first.execution.failed, 0, JSON.stringify(errors));
+    assert.equal(first.mainPlan.created, 1, JSON.stringify(first.mainPlan.diagnostics));
+    assert.deepEqual(executionTypes, []);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id = ?1 AND job_type = 'ranking_rebuild'").get(internalGameId).count, 2);
+
+    const second = await run(new Date(firstRunAt.getTime() + 2_000));
+    assert.equal(second.execution.failed, 0, JSON.stringify(errors));
+    assert.deepEqual(executionTypes, ["ranking_rebuild"]);
+    assert.equal(database.prepare("SELECT scoring_revision_id FROM ranking_reflection_revisions WHERE id = 2").get().scoring_revision_id, "score-revision-b");
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM ranking_reflection_revisions WHERE internal_game_id = ?1").get(internalGameId).count, 2);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count, SUM(score) AS total FROM predictions WHERE game_id = ?1 AND is_test_prediction = 0").get(internalGameId).count, 1);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count, SUM(score) AS total FROM predictions WHERE game_id = ?1 AND is_test_prediction = 0").get(internalGameId).total, 90);
+
+    const third = await run(new Date(firstRunAt.getTime() + 12_000));
+    assert.equal(third.execution.failed, 0, JSON.stringify(errors));
+    assert.deepEqual(executionTypes, ["ranking_rebuild", "publish"]);
+    assert.equal(database.prepare("SELECT status FROM game_jobs_v3 WHERE internal_game_id = ?1 AND job_type = 'publish' AND scheduled_slot_at = '2026-08-31T01:12:00.000Z'").get(internalGameId).status, "completed");
+    assert.equal(database.prepare("SELECT publication_status FROM game_lineups WHERE internal_game_id = ?1").get(internalGameId).publication_status, "published");
+    assert.equal(database.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1").get(internalGameId).state, "published");
+    assert.equal((await v3.listV3Games(d1(database), new Date(firstRunAt.getTime() + 12_000))).some((game) => game.internalGameId === internalGameId), false);
+
+    const jobCount = database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id = ?1").get(internalGameId).count;
+    const fourth = await run(new Date(firstRunAt.getTime() + 14_000));
+    assert.equal(fourth.execution.failed, 0, JSON.stringify(errors));
+    assert.deepEqual(executionTypes, ["ranking_rebuild", "publish"]);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM ranking_reflection_revisions WHERE internal_game_id = ?1").get(internalGameId).count, 2);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id = ?1").get(internalGameId).count, jobCount);
+  } finally {
+    database.close();
+  }
+});
+
 test("実repository discoveryからformal plannerのlineup_fetch insertまで到達する", async () => {
   const database = new DatabaseSync(":memory:");
   const internalGameId = "3f30b9bb-c8b0-4dc4-a8c9-c47777851362";

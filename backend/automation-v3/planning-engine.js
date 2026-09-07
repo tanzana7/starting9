@@ -306,7 +306,10 @@ export function buildStagePlan(planningState, stage, { disabled = false, disable
     return { ...plan, blocked: true, blockedReason: "RANKING_EXCLUDED", reasonCode: "RANKING_EXCLUDED" };
   }
   if (!due) return { ...plan, reasonCode: "NOT_DUE" };
-  if (!stateAllows(effectiveState, stage)) {
+  const rankingReprocessingAllowed = stage === "ranking_reflect"
+    && effectiveState === "ranked"
+    && artifact?.reprocessRequired === true;
+  if (!stateAllows(effectiveState, stage) && !rankingReprocessingAllowed) {
     const blockedReason = ["lineup_fetch", "lineup_finalize"].includes(stage) && effectiveState !== "prediction_closed"
       ? "PREDICTION_CLOSE_STATE_GATE"
       : `${stage.toUpperCase()}_STATE_GATE`;
@@ -327,7 +330,9 @@ export function buildStagePlan(planningState, stage, { disabled = false, disable
     };
   }
   if (status === "completed") {
-    if ((stage === "ranking_reflect" && artifact?.revisionMismatch === true) || stage === "publish") {
+    if ((stage === "ranking_reflect"
+      && (artifact?.revisionMismatch === true || artifact?.reprocessRequired === true))
+      || stage === "publish") {
       // A completed job whose current artifact is stale or missing is
       // historical evidence only. Keep it immutable and allocate a fresh due
       // slot so the uniqueness key cannot absorb the new execution.
@@ -335,7 +340,8 @@ export function buildStagePlan(planningState, stage, { disabled = false, disable
         now.getTime(),
         selectedSlotAt?.getTime() || 0
       ) + 1);
-      const revisionMismatch = stage === "ranking_reflect" && artifact?.revisionMismatch === true;
+      const revisionMismatch = stage === "ranking_reflect"
+        && (artifact?.revisionMismatch === true || artifact?.reprocessRequired === true);
       return {
         ...plan,
         selectedSlotAt: recoverySlot.toISOString(),
@@ -345,6 +351,7 @@ export function buildStagePlan(planningState, stage, { disabled = false, disable
         diagnostics: {
           ...plan.diagnostics,
           rankingRevisionMismatch: revisionMismatch,
+          rankingReprocessRequired: stage === "ranking_reflect" && artifact?.reprocessRequired === true,
           recoverySlotAt: recoverySlot.toISOString()
         }
       };

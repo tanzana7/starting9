@@ -347,6 +347,7 @@
         return `<section class="v35-derived-diagnostics v35-derived-diagnostics-unavailable" data-v35-derived-diagnostics><div class="v35-derived-header"><div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(readOnlyNote)}</p></div><span class="v35-derived-status">要確認</span></div><p class="v35-derived-message">${escapeHtml(message)}</p><code>${escapeHtml(reason)}</code></section>`;
       }
       const stages = diagnostics.stages && typeof diagnostics.stages === "object" ? diagnostics.stages : {};
+      const v4SemiAuto = diagnostics.automationMode?.isV4SemiAuto === true;
       const stageLabels = {
         schedule_registration: "日程登録",
         npb_game_identify: "NPB識別",
@@ -359,19 +360,56 @@
         ranking_reflect: "ランキング反映",
         publish: "結果公開"
       };
+      const v4StageCopy = {
+        roster_fetch: { status: "手動運用", reason: "V4では自動取得を使用しません", action: "no_action" },
+        lineup_fetch: { status: "手動運用", reason: "V4では手動ラインナップを使用します", action: "no_action" },
+        lineup_finalize: { status: "完了", reason: "手動canonical lineup revision確認済み", action: "no_action" }
+      };
+      const healthLabels = {
+        COMPLETED_ARTIFACT_READY: "完了",
+        COMPLETED_ARTIFACT_MISSING: "要対応",
+        MISSING_JOB: "要対応",
+        RETRY_WAIT_DUE: "要対応",
+        TERMINAL_FAILED: "要対応",
+        BLOCKED_BY_PREREQUISITE: "待機中",
+        MANUAL_MODE: "手動運用",
+        NOT_DUE: "未到来",
+        DUE: "処理待ち"
+      };
       const stageRows = Object.entries(stageLabels).map(([stage, label]) => {
         const item = stages[stage] || {};
-        const attentionClass = item.attentionLevel === "ATTENTION" ? " v35-stage-attention" : "";
-        const reason = item.blockingReason || item.recoveryReason || (item.healthStatus === "NOT_DUE" ? "まだdue前" : "-");
-        const action = item.nextSafeAction || "-";
-        return `<div class="v35-stage-row${attentionClass}"><strong>${escapeHtml(label)}</strong><span>状態: ${escapeHtml(item.healthStatus || "UNKNOWN")}</span><span>理由: ${escapeHtml(reason)}</span><span>対応: ${escapeHtml(action)}</span></div>`;
+        const manualCopy = v4SemiAuto ? v4StageCopy[stage] : null;
+        const manualFinalReady = stage === "lineup_finalize" && item.manualArtifactReady === true;
+        const attentionClass = item.attentionLevel === "ATTENTION" && !manualFinalReady ? " v35-stage-attention" : "";
+        const status = manualCopy?.status || healthLabels[item.healthStatus] || item.healthStatus || "UNKNOWN";
+        const reason = manualCopy?.reason || item.blockingReason || item.recoveryReason || (item.healthStatus === "NOT_DUE" ? "まだdue前" : "-");
+        const action = manualCopy?.action || item.nextSafeAction || "-";
+        return `<div class="v35-stage-row${attentionClass}"><strong>${escapeHtml(label)}</strong><span>状態: ${escapeHtml(manualFinalReady ? "完了" : status)}</span><span>理由: ${escapeHtml(manualFinalReady ? "manual lineup revision確認済み" : reason)}</span><span>対応: ${escapeHtml(manualFinalReady ? "no_action" : action)}</span><small class="v35-stage-code">healthStatus: ${escapeHtml(item.healthStatus || "UNKNOWN")}</small></div>`;
       }).join("");
       const warnings = Array.isArray(diagnostics.warnings) ? diagnostics.warnings.filter(Boolean) : [];
+      const informationalNotices = Array.isArray(diagnostics.informationalNotices) ? diagnostics.informationalNotices.filter(Boolean) : [];
       const warningMarkup = warnings.length
         ? `<ul class="v35-derived-warnings">${warnings.map((warning) => `<li>${escapeHtml(`${warning.code || "WARNING"}: ${warning.message || ""}`)}</li>`).join("")}</ul>`
         : "<p class=muted>派生診断上の警告はありません。</p>";
+      const informationalMarkup = informationalNotices.length
+        ? `<ul class="v35-derived-info">${informationalNotices.map((notice) => `<li>${escapeHtml(`${notice.code || "INFO"}: ${notice.message || ""}`)}</li>`).join("")}</ul>`
+        : "";
       const stateLabel = (value) => value === "schedule_registered" ? "scheduled（日程登録済み）" : (value || "-");
-      return `<section class="v35-derived-diagnostics" data-v35-derived-diagnostics><div class="v35-derived-header"><div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(readOnlyNote)}</p></div><span class="v35-derived-status">表示専用</span></div><div class="v35-derived-state-grid"><div><span>effectiveState</span><strong>${escapeHtml(stateLabel(diagnostics.effectiveState))}</strong></div><div><span>persistedState</span><strong>${escapeHtml(stateLabel(diagnostics.persistedState))}</strong></div><div><span>stateMismatch</span><strong>${diagnostics.stateMismatch ? "あり" : "なし"}</strong></div></div><h4>stageHealth</h4><div class="v35-stage-list">${stageRows}</div><h4>warnings</h4>${warningMarkup}</section>`;
+      const hasAttention = Object.values(stages).some((item) => item?.attentionLevel === "ATTENTION");
+      const currentState = diagnostics.publishedHealthy
+        ? "正常（published・成果物確認済み）"
+        : diagnostics.stateMismatch || hasAttention
+          ? "要対応"
+          : "進行中";
+      const currentStateClass = diagnostics.publishedHealthy
+        ? ""
+        : diagnostics.stateMismatch || hasAttention
+          ? " v35-current-state-attention"
+          : " v35-current-state-running";
+      const modeNotice = v4SemiAuto
+        ? "V4半自動運営: 予告先発は自動、ロースター・スタメン取得は手動。正式処理はcanonical lineup確定後にCronが継続します。"
+        : "V3自動運営モードのread-only診断です。";
+      return `<section class="v35-derived-diagnostics" data-v35-derived-diagnostics><div class="v35-derived-header"><div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(readOnlyNote)}</p><p class="v35-mode-notice">${escapeHtml(modeNotice)}</p></div><span class="v35-derived-status">表示専用</span></div><div class="v35-current-state${currentStateClass}"><span>現在状態</span><strong>${escapeHtml(currentState)}</strong></div><div class="v35-derived-state-grid"><div><span>effectiveState</span><strong>${escapeHtml(stateLabel(diagnostics.effectiveState))}</strong></div><div><span>persistedState</span><strong>${escapeHtml(stateLabel(diagnostics.persistedState))}</strong></div><div><span>stateMismatch</span><strong>${diagnostics.stateMismatch ? "あり" : "なし"}</strong></div></div><h4>stageHealth</h4><div class="v35-stage-list">${stageRows}</div>${informationalMarkup ? `<h4>V4補助情報</h4>${informationalMarkup}` : ""}<h4>warnings</h4>${warningMarkup}</section>`;
     }
 
     function renderV35ShadowRecoveryPlan(game) {
@@ -392,8 +430,13 @@
       const blockedMarkup = blockedRecommendations.length
         ? blockedRecommendations.map(itemMarkup).join("")
         : "<p class=muted>保留中の提案はありません。</p>";
+      const noActionLabels = {
+        "roster_fetch:manual_mode": "ロースター取得: V4手動運用のため自動jobは作成しません",
+        "lineup_fetch:manual_mode": "スタメン取得: V4手動運用のため自動jobは作成しません",
+        "lineup_finalize:manual_mode": "ラインナップ確定: 手動canonical lineupを確認します"
+      };
       const noActionMarkup = noActionReasons.length
-        ? `<ul class="v35-shadow-plan-reasons">${noActionReasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>`
+        ? `<ul class="v35-shadow-plan-reasons">${noActionReasons.map((reason) => `<li>${escapeHtml(noActionLabels[reason] || reason)}</li>`).join("")}</ul>`
         : "<p class=muted>実行なし理由はありません。</p>";
       return `<section class="v35-shadow-recovery-plan" data-v35-shadow-recovery-plan><div class="v35-derived-header"><div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(readOnlyNote)}</p></div><span class="v35-derived-status">表示専用</span></div><div class="v35-shadow-plan-state"><div><span>mode</span><strong>${escapeHtml(plan.mode || "shadow_read_only")}</strong></div><div><span>canExecute</span><strong>false</strong></div><div><span>hasRecommendedActions</span><strong>${plan.hasRecommendedActions ? "true" : "false"}</strong></div></div><h4>推奨</h4><div class="v35-shadow-plan-list">${recommendationsMarkup}</div><h4>保留</h4><div class="v35-shadow-plan-list">${blockedMarkup}</div><h4>実行なし理由</h4>${noActionMarkup}</section>`;
     }

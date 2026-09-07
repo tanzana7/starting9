@@ -64,6 +64,13 @@ function currentJstDate() {
   return parts.filter((part) => part.type !== "literal").map((part) => part.value).join("-");
 }
 
+function jstDateOffset(days) {
+  const date = new Date(`${currentJstDate()}T12:00:00+09:00`);
+  date.setUTCDate(date.getUTCDate() + days);
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(date);
+  return parts.filter((part) => part.type !== "literal").map((part) => part.value).join("-");
+}
+
 async function createManualLineupIntegrationDb({ role = "admin", state = "scheduled", gameDate = currentJstDate(), startTime = `${gameDate}T09:00:00+09:00` } = {}) {
   const database = new DatabaseSync(":memory:");
   const tokenHash = await sha256Base64Url(SESSION_TOKEN);
@@ -350,7 +357,8 @@ test("manual lineupのsave/finalize APIは実handler経由で保存し、score j
 });
 
 test("manual lineupは入力理由なしで保存でき、未来scheduledのmanual revisionだけを安全に取消できる", async () => {
-  const integration = await createManualLineupIntegrationDb({ gameDate: "2026-09-08", startTime: "2026-09-08T09:00:00.000Z" });
+  const futureGameDate = jstDateOffset(1);
+  const integration = await createManualLineupIntegrationDb({ gameDate: futureGameDate, startTime: `${futureGameDate}T09:00:00+09:00` });
   try {
     const path = `/api/admin/v3/games/${INTEGRATION_GAME_ID}`;
     const save = await adminRequest(integration.env, `${path}/lineup-revisions`, { lineup: validManualLineup(), confirmed: true });
@@ -377,7 +385,8 @@ test("manual lineupは入力理由なしで保存でき、未来scheduledのmanu
 });
 
 test("manual lineup finalizeは別日のfuture gameをDB変更なしで拒否する", async () => {
-  const integration = await createManualLineupIntegrationDb({ gameDate: "2026-09-08", startTime: "2026-09-08T09:00:00.000Z" });
+  const futureGameDate = jstDateOffset(1);
+  const integration = await createManualLineupIntegrationDb({ gameDate: futureGameDate, startTime: `${futureGameDate}T09:00:00+09:00` });
   try {
     const path = `/api/admin/v3/games/${INTEGRATION_GAME_ID}`;
     const save = await adminRequest(integration.env, `${path}/lineup-revisions`, {

@@ -4818,15 +4818,29 @@ async function handleAdminMe(request, env, cors) {
   }, 200, cors);
 }
 
-function buildV35AdminDerivedDiagnostics({ env, game, resolvedState, jobRows, probableStarter, rosterDiagnostics, lineupDataHealth, workflowArtifactHealth, phaseStatuses, overviewNow }) {
+function buildV35AdminDerivedDiagnostics({ env, game, resolvedState, jobRows, probableStarter, rosterDiagnostics, lineupDataHealth, workflowArtifactHealth, phaseStatuses, progressStatus = null, overviewNow }) {
   const enabled = String(env?.V35_DERIVED_DIAGNOSTICS_ENABLED ?? "true").toLowerCase() !== "false";
   if (!enabled) return { enabled: false, mode: "read_only", reason: "feature_flag_disabled" };
   try {
+    const automationMode = getV3OperationalMode(env);
     const persistedWorkflowState = resolvedState?.state || "scheduled";
     const rankingExcluded = game?.rankingEligible === false
       || game?.ranking_eligible === 0
       || game?.rankingExcluded === true
       || game?.ranking_excluded === true;
+    const currentScoringRevisionId = progressStatus?.currentScoringRevisionId || workflowArtifactHealth?.scoring?.scoringRevisionId || null;
+    const reflectedScoringRevisionId = progressStatus?.reflectedScoringRevisionId || null;
+    const revisionMatches = progressStatus?.revisionMatches === true;
+    const rankingArtifact = {
+      ...(workflowArtifactHealth?.ranking || {}),
+      ...(currentScoringRevisionId ? { scoringRevisionId: currentScoringRevisionId } : {}),
+      ...(reflectedScoringRevisionId ? { reflectedScoringRevisionId } : {}),
+      ...(progressStatus ? { revisionMatches, revisionMismatch: !revisionMatches } : {})
+    };
+    const publicationArtifact = {
+      ...(workflowArtifactHealth?.publication || {}),
+      ...(progressStatus ? { revisionMatches, revisionMismatch: !revisionMatches } : {})
+    };
     const artifacts = {
       roster_fetch: rosterDiagnostics,
       prediction_close: ["prediction_closed", "lineup_ready", "scored", "ranked", "published", "excluded"].includes(persistedWorkflowState)
@@ -4839,8 +4853,8 @@ function buildV35AdminDerivedDiagnostics({ env, game, resolvedState, jobRows, pr
       lineup_fetch: lineupDataHealth,
       lineup_finalize: workflowArtifactHealth?.lineup || lineupDataHealth,
       scoring: workflowArtifactHealth?.scoring,
-      ranking_reflect: workflowArtifactHealth?.ranking,
-      publish: workflowArtifactHealth?.publication
+      ranking_reflect: rankingArtifact,
+      publish: publicationArtifact
     };
     const diagnostics = {
       ...phaseStatuses,
@@ -4868,18 +4882,21 @@ function buildV35AdminDerivedDiagnostics({ env, game, resolvedState, jobRows, pr
       now: overviewNow,
       externalFlags: {
         NPB_FETCH_DISABLED: String(env?.NPB_FETCH_DISABLED || "").toLowerCase() === "true"
-      }
+      },
+      automationMode
     });
     const evaluated = evaluateV35Automation(adapted.evaluatorInput);
     return {
       enabled: true,
       mode: "read_only",
+      automationMode,
       evaluatorVersion: "v3.5-phase2-pre",
       effectiveState: evaluated.effectiveState,
       persistedState: evaluated.persistedState,
       stateMismatch: evaluated.stateMismatch,
       stages: evaluated.stages,
       warnings: adapted.warnings,
+      informationalNotices: adapted.informationalNotices,
       sourceSummary: adapted.sourceSummary
     };
   } catch (error) {
@@ -4930,7 +4947,8 @@ function buildV35AdminShadowRecoveryPlan({ env, game, resolvedState, derivedDiag
       now: overviewNow,
       flags: {
         externalFetchDisabled: String(env?.NPB_FETCH_DISABLED || "").toLowerCase() === "true",
-        manualAttention: persistedState === "manual_action_required" || game?.manualAttention === true
+        manualAttention: persistedState === "manual_action_required" || game?.manualAttention === true,
+        v4SemiAuto: derivedDiagnostics?.automationMode?.isV4SemiAuto === true
       }
     });
     return { enabled: true, ...plan, error: null };
@@ -5429,6 +5447,14 @@ async function handleAdminV3Overview(request, env, cors) {
       ranking: deriveV3PhaseStatus({ phase: "ranking", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, noOpReason: rankingSummary.noOpReason, workflowArtifactHealth }),
       publish: deriveV3PhaseStatus({ phase: "publish", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, workflowArtifactHealth })
     };
+    const displayStatus = await getV3AdminProgressDisplayStatus(env.AUTH_DB, {
+      game,
+      resolvedState,
+      jobRows,
+      lineupDataHealth,
+      workflowArtifactHealth,
+      now: overviewNow
+    });
     const v35DerivedDiagnostics = buildV35AdminDerivedDiagnostics({
       env,
       game,
@@ -5439,6 +5465,7 @@ async function handleAdminV3Overview(request, env, cors) {
       lineupDataHealth,
       workflowArtifactHealth,
       phaseStatuses,
+      progressStatus: displayStatus,
       overviewNow
     });
     const v35ShadowRecoveryPlan = buildV35AdminShadowRecoveryPlan({
@@ -5447,14 +5474,6 @@ async function handleAdminV3Overview(request, env, cors) {
       resolvedState,
       derivedDiagnostics: v35DerivedDiagnostics,
       overviewNow
-    });
-    const displayStatus = await getV3AdminProgressDisplayStatus(env.AUTH_DB, {
-      game,
-      resolvedState,
-      jobRows,
-      lineupDataHealth,
-      workflowArtifactHealth,
-      now: overviewNow
     });
     rows.push({
       ...game,

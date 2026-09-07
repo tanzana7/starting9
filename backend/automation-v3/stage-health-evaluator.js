@@ -17,6 +17,7 @@ export const V35_STAGE_HEALTH = Object.freeze({
   BLOCKED_BY_CANCELLED: "BLOCKED_BY_CANCELLED",
   BLOCKED_BY_EXTERNAL_FETCH_DISABLED: "BLOCKED_BY_EXTERNAL_FETCH_DISABLED",
   BLOCKED_BY_MANUAL_ATTENTION: "BLOCKED_BY_MANUAL_ATTENTION",
+  MANUAL_MODE: "MANUAL_MODE",
   RECOVERY_RECOMMENDED: "RECOVERY_RECOMMENDED",
   READY_TO_CLAIM: "READY_TO_CLAIM"
 });
@@ -220,6 +221,7 @@ function normalizeDefinition(stageName, definition = {}) {
     prerequisiteSpecified,
     prerequisiteReason: valueOr(prerequisite, "reason", "reasonCode") || valueOr(source, "prerequisiteReason", "blockingReason"),
     externalFetchDisabled: Boolean(source.externalFetchDisabled || source.external_fetch_disabled),
+    manualMode: Boolean(source.manualMode || source.manual_mode),
     manualAttention: Boolean(source.manualAttention || source.manual_attention),
     readyToClaim: Boolean(source.readyToClaim || source.ready_to_claim),
     rankingExcluded: Boolean(source.rankingExcluded || source.ranking_excluded),
@@ -251,6 +253,15 @@ function recoveryResult(healthStatus, recoveryReason, attentionLevel = "ATTENTIO
   };
 }
 
+function isManualArtifactReady(stageName, artifactHealth, artifacts) {
+  if (stageName === "roster_fetch") return false;
+  if (stageName === "lineup_fetch") {
+    const final = normalizeV35ArtifactHealth(artifactFor("lineup_finalize", artifacts));
+    return final.available && final.valid;
+  }
+  return artifactHealth.available && artifactHealth.valid;
+}
+
 export function evaluateV35Stage({
   stageName,
   definition = {},
@@ -260,7 +271,8 @@ export function evaluateV35Stage({
   internalGameId = null,
   cancelled = false,
   rankingExcluded = false,
-  scheduleRegistered = false
+  scheduleRegistered = false,
+  operationalMode = null
 } = {}) {
   const normalizedDefinition = normalizeDefinition(normalizeStageName(stageName), definition);
   const now = asDate(currentTime) || new Date();
@@ -282,7 +294,8 @@ export function evaluateV35Stage({
     recoveryRecommended: false,
     recoveryReason: null,
     attentionLevel: "INFO",
-    formalPlan: normalizedDefinition.planningPlan || null
+    formalPlan: normalizedDefinition.planningPlan || null,
+    manualMode: normalizedDefinition.manualMode === true
   };
 
   if (cancelled) return {
@@ -308,6 +321,34 @@ export function evaluateV35Stage({
     nextSafeAction: "no_op",
     attentionLevel: "INFO"
   };
+  if (normalizedDefinition.manualMode) {
+    const manualArtifactReady = isManualArtifactReady(normalizedDefinition.stageName, artifactHealth, artifacts);
+    if (normalizedDefinition.stageName === "lineup_finalize" && manualArtifactReady) return {
+      ...base,
+      healthStatus: V35_STAGE_HEALTH.COMPLETED_ARTIFACT_READY,
+      nextSafeAction: "no_action",
+      recoveryRecommended: false,
+      recoveryReason: null,
+      attentionLevel: "INFO",
+      reasonCode: "V4_MANUAL_LINEUP",
+      completionSource: "manual_lineup",
+      manualArtifactReady: true
+    };
+    const reason = normalizedDefinition.stageName === "roster_fetch"
+      ? "V4_MANUAL_ROSTER"
+      : manualArtifactReady ? "V4_MANUAL_LINEUP" : "MANUAL_LINEUP_REQUIRED";
+    return {
+      ...base,
+      healthStatus: V35_STAGE_HEALTH.MANUAL_MODE,
+      blockingReason: manualArtifactReady || normalizedDefinition.stageName === "roster_fetch" ? null : "MANUAL_LINEUP_REQUIRED",
+      nextSafeAction: manualArtifactReady || normalizedDefinition.stageName === "roster_fetch" ? "no_action" : "manual_lineup",
+      recoveryRecommended: false,
+      recoveryReason: null,
+      attentionLevel: manualArtifactReady || normalizedDefinition.stageName === "roster_fetch" ? "INFO" : "ATTENTION",
+      reasonCode: reason,
+      manualArtifactReady
+    };
+  }
   // A future stage is expected to wait, even when its eventual prerequisite
   // artifact does not exist yet. Only evaluate blockers once the stage is due.
   if (!due) return base;
@@ -332,7 +373,7 @@ export function evaluateV35Stage({
     nextSafeAction: "wait_for_prerequisite",
     attentionLevel: "INFO"
   };
-  if (normalizedDefinition.stageName === "lineup_fetch" && artifactHealth.valid && artifactHealth.available) return {
+  if (normalizedDefinition.stageName !== "roster_fetch" && artifactHealth.valid && artifactHealth.available) return {
     ...base,
     healthStatus: V35_STAGE_HEALTH.COMPLETED_ARTIFACT_READY,
     nextSafeAction: "no_op",
@@ -466,6 +507,16 @@ function statesEquivalent(left, right) {
   return normalize(left) === normalize(right);
 }
 
+function publishedArtifactsHealthy(stages, persistedState, effectiveState) {
+  if (![persistedState, effectiveState].some((value) => normalizeStatus(value) === V35_EFFECTIVE_STATE.PUBLISHED)) return false;
+  return ["lineup_finalize", "scoring", "ranking_reflect", "publish"].every((stageName) => {
+    const stage = stages[stageName];
+    return stage?.healthStatus === V35_STAGE_HEALTH.COMPLETED_ARTIFACT_READY
+      && stage?.artifactHealth?.available === true
+      && stage?.artifactHealth?.valid === true;
+  });
+}
+
 export function evaluateV35Automation({
   internalGameId = null,
   gameStatus = "scheduled",
@@ -477,7 +528,8 @@ export function evaluateV35Automation({
   cancellationInfo = null,
   excluded = false,
   rankingExcluded = false,
-  scheduleRegistered = false
+  scheduleRegistered = false,
+  operationalMode = null
   } = {}) {
   const cancellationState = cancellationEffectiveState(gameStatus, cancellationInfo, excluded);
   const persistedState = String(persistedWorkflowState || V3_STATE.SCHEDULED);
@@ -491,7 +543,8 @@ export function evaluateV35Automation({
     internalGameId,
     cancelled: Boolean(cancellationState),
     rankingExcluded,
-    scheduleRegistered
+    scheduleRegistered,
+    operationalMode
   })]));
   const evidenceState = effectiveStateFromEvidence({ stages, artifacts, scheduleRegistered });
   const effectiveState = cancellationState || monotonicEffectiveState(evidenceState, persistedState);
@@ -499,6 +552,7 @@ export function evaluateV35Automation({
     effectiveState,
     persistedState,
     stateMismatch: !statesEquivalent(effectiveState, persistedState),
+    publishedHealthy: publishedArtifactsHealthy(stages, persistedState, effectiveState),
     stages
   };
 }

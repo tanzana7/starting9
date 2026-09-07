@@ -478,8 +478,16 @@ button:disabled { cursor: wait; opacity: .65; }
 .v35-stage-list { display: grid; gap: 4px; }
 .v35-stage-row { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(170px, 1fr) minmax(150px, 1fr) minmax(150px, 1fr); gap: 8px; align-items: baseline; padding: 6px 8px; border: 1px solid #e2eaf0; border-radius: 4px; background: #fff; font-size: 12px; overflow-wrap: anywhere; }
 .v35-stage-row span:nth-child(2) { color: #1d527c; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.v35-stage-code { grid-column: 1 / -1; color: #718197; font-size: 10px; }
 .v35-stage-attention { border-color: #e3c477; background: #fffaf0; }
 .v35-derived-warnings { margin: 6px 0 0; padding-left: 20px; color: #705326; font-size: 12px; }
+.v35-derived-info { margin: 6px 0 0; padding-left: 20px; color: #526477; font-size: 12px; }
+.v35-mode-notice { padding: 6px 8px; border-left: 3px solid #6b9fbd; background: #eef7fb; }
+.v35-current-state { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 10px 0; padding: 8px 10px; border-radius: 4px; background: #eaf6ee; color: #245c37; }
+.v35-current-state-attention { background: #fff2e6; color: #884415; }
+.v35-current-state-running { background: #eef4fb; color: #315d83; }
+.v35-current-state span { font-size: 11px; }
+.v35-current-state strong { font-size: 13px; }
 .v35-shadow-recovery-plan { margin: 12px 0; padding: 10px 12px; border: 1px solid #d7c6e5; border-radius: 6px; background: #fbf8fd; color: #3e3150; }
 .v35-shadow-recovery-plan h3 { margin: 0; color: #67458a; font-size: 15px; }
 .v35-shadow-recovery-plan h4 { margin: 12px 0 6px; color: #5c4870; font-size: 12px; }

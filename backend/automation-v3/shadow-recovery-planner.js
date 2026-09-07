@@ -33,6 +33,8 @@ const FETCH_STAGES = new Set([
   "lineup_fetch"
 ]);
 
+const V4_MANUAL_STAGES = new Set(["roster_fetch", "lineup_fetch", "lineup_finalize"]);
+
 const RECOVERABLE_HEALTH = new Set([
   "MISSING_JOB",
   "TERMINAL_FAILED",
@@ -77,6 +79,8 @@ function gameStatusOf(game, diagnostics) {
 }
 
 function isPublished(game, diagnostics, stages) {
+  if (diagnostics.publishedHealthy === true) return true;
+  if (diagnostics.publishedHealthy === false) return false;
   const effectiveState = normalize(diagnostics.effectiveState || game.persistedWorkflowState);
   const persistedState = normalize(diagnostics.persistedState || game.persistedWorkflowState);
   return effectiveState === "published"
@@ -132,6 +136,14 @@ function stagePlan({ game, stage, item, flags, now, noActionReasons }) {
   if (!healthStatus) return null;
   if (["NOT_DUE", "RETRY_WAIT_NOT_DUE"].includes(healthStatus)) {
     addNoAction(noActionReasons, `${stage}:wait`);
+    return null;
+  }
+  if (flags.v4SemiAuto && V4_MANUAL_STAGES.has(stage)) {
+    addNoAction(noActionReasons, `${stage}:manual_mode`);
+    return null;
+  }
+  if (healthStatus === "MANUAL_MODE") {
+    addNoAction(noActionReasons, `${stage}:manual_mode`);
     return null;
   }
   if (["COMPLETED_ARTIFACT_READY", "OPEN_JOB_EXISTS", "READY_TO_CLAIM", "DUE", "TERMINAL_CANCELLED"].includes(healthStatus)) {
@@ -241,7 +253,8 @@ export function planShadowRecovery({
   const stages = diagnostics.stages && typeof diagnostics.stages === "object" ? diagnostics.stages : {};
   const normalizedFlags = {
     externalFetchDisabled: Boolean(flags.externalFetchDisabled),
-    manualAttention: Boolean(flags.manualAttention)
+    manualAttention: Boolean(flags.manualAttention),
+    v4SemiAuto: Boolean(flags.v4SemiAuto || diagnostics.automationMode?.isV4SemiAuto === true || normalize(diagnostics.automationMode?.mode) === "v4_semi_auto")
   };
   const recommendations = [];
   const blockedRecommendations = [];

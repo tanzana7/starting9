@@ -609,6 +609,9 @@ export default {
       if (path === "/api/admin/v3/overview" && request.method === "GET") {
         return await handleAdminV3Overview(request, env, cors);
       }
+      if (path === "/api/admin/v3/lineup-corrections" && request.method === "GET") {
+        return await handleAdminV3LineupCorrectionsGet(request, env, cors);
+      }
       if (path === "/api/admin/v3/manual-roster" && ["GET", "PUT"].includes(request.method)) {
         return await handleAdminV3ManualRoster(request, env, cors);
       }
@@ -649,6 +652,10 @@ export default {
       const adminV3LineupRevisionCancelRoute = parseAdminV3LineupRevisionCancelRoute(path);
       if (adminV3LineupRevisionCancelRoute && request.method === "POST") {
         return await handleAdminV3LineupRevisionCancel(request, env, cors, adminV3LineupRevisionCancelRoute);
+      }
+      const adminV3LineupCorrectionRoute = parseAdminV3LineupCorrectionRoute(path);
+      if (adminV3LineupCorrectionRoute) {
+        return await handleAdminV3LineupCorrection(request, env, cors, adminV3LineupCorrectionRoute);
       }
       const adminV3Phase1Route = parseAdminV3Phase1Route(path);
       if (adminV3Phase1Route) {
@@ -6511,6 +6518,7 @@ function parseAdminV3JobControlRoute(path) {
 const ADMIN_EXACT_ROUTE_METHODS = Object.freeze({
   "/api/admin/me": ["GET"],
   "/api/admin/v3/overview": ["GET"],
+  "/api/admin/v3/lineup-corrections": ["GET"],
   "/api/admin/v3/manual-roster": ["GET", "PUT"],
   "/api/admin/v3/automation-logs": ["GET"],
   "/api/admin/v3/ranking-resets": ["GET"],
@@ -6529,6 +6537,7 @@ function getKnownAdminRouteMethods(path) {
   if (parseAdminV3JobRoute(path)) return ["POST"];
   if (parseAdminV3JobControlRoute(path)) return parseAdminV3JobControlRoute(path).action === "diagnose" ? ["GET"] : ["POST"];
   if (parseAdminV3LineupRevisionCancelRoute(path)) return ["POST"];
+  if (parseAdminV3LineupCorrectionRoute(path)) return ["GET", "POST"];
   // Phase routes authenticate before checking their action-specific method.
   if (parseAdminV3Phase1Route(path)) return null;
   return null;
@@ -6558,6 +6567,16 @@ function parseAdminV3LineupRevisionCancelRoute(path) {
     return { internalGameId: decodeURIComponent(match[1]), revisionId: decodeURIComponent(match[2]) };
   } catch {
     return { internalGameId: "", revisionId: "" };
+  }
+}
+
+function parseAdminV3LineupCorrectionRoute(path) {
+  const match = /^\/api\/admin\/v3\/games\/([^/]+)\/lineup-correction$/.exec(path);
+  if (!match) return null;
+  try {
+    return { internalGameId: decodeURIComponent(match[1]) };
+  } catch {
+    return { internalGameId: "" };
   }
 }
 
@@ -6591,6 +6610,16 @@ function v3AdminErrorResponse(cors, error, fallback = "V3管理操作に失敗�
     V3_MANUAL_LINEUP_REVISION_NOT_FOUND: 404,
     V3_MANUAL_LINEUP_REVISION_NOT_ACTIVE: 409,
     V3_MANUAL_LINEUP_REVISION_LINK_MISMATCH: 409,
+    V3_LINEUP_CORRECTION_CONFIRMATION_REQUIRED: 409,
+    V3_LINEUP_CORRECTION_REASON_REQUIRED: 400,
+    V3_LINEUP_CORRECTION_FUTURE_GAME: 409,
+    V3_LINEUP_CORRECTION_GAME_UNAVAILABLE: 409,
+    V3_LINEUP_CORRECTION_NO_OP: 409,
+    V3_LINEUP_CORRECTION_FINAL_LINEUP_REQUIRED: 409,
+    V3_LINEUP_CORRECTION_FINAL_LINEUP_INVALID: 409,
+    V3_LINEUP_CORRECTION_LINEUP_INVALID: 400,
+    V3_LINEUP_CORRECTION_STATE_REQUIRED: 503,
+    V3_LINEUP_CORRECTION_SCHEMA_UNAVAILABLE: 503,
     V3_SCHEDULE_UPDATE_FAILED: 409,
     V3_SCHEMA_UNAVAILABLE: 503,
     MANUAL_ROSTER_SCHEMA_UNAVAILABLE: 503,
@@ -7052,6 +7081,226 @@ async function getV3LineupRevisionRows(db, gameId, internalGameId) {
   const bindings = [columns.has("internal_game_id") && internalGameId ? internalGameId : gameId];
   const rows = await db.prepare(`SELECT * FROM game_lineup_revisions WHERE ${where} ORDER BY version DESC`).bind(...bindings).all();
   return rows.results || [];
+}
+
+async function getV3CanonicalFinalRevision(db, internalGameId, revisions = null) {
+  const id = normalizeV3InternalGameId(internalGameId);
+  const columns = await getTableColumnSet(db, "game_lineups");
+  if (!columns.has("internal_game_id") || !columns.has("final_lineup_revision_id")) {
+    throw createV3Error("V3_LINEUP_CORRECTION_SCHEMA_UNAVAILABLE", "過去スタメン修正に必要なcanonical schemaが準備されていません。", { httpStatus: 503, retryable: false });
+  }
+  const canonical = await db.prepare(
+    `SELECT game_id, internal_game_id, actual_lineup_json, lineup_fingerprint,
+            scoring_status, publication_status, published_at, final_lineup_revision_id,
+            finalized_at, finalized_by, scored_at, updated_at
+       FROM game_lineups
+      WHERE internal_game_id = ?1
+      LIMIT 1`
+  ).bind(id).first();
+  const marker = String(canonical?.final_lineup_revision_id || "").trim();
+  if (!canonical || !marker) {
+    throw createV3Error("V3_LINEUP_CORRECTION_FINAL_LINEUP_REQUIRED", "canonical final_lineup_revision_idが確認できないため、過去スタメンを修正できません。", { httpStatus: 409 });
+  }
+  const rows = Array.isArray(revisions) ? revisions : await getV3LineupRevisionRows(db, canonical.game_id || id, id);
+  const revision = rows.find((row) => v3LineupRevisionIdentity(row) === marker);
+  if (!revision) {
+    throw createV3Error("V3_LINEUP_CORRECTION_FINAL_LINEUP_REQUIRED", "canonical final_lineup_revision_idに対応するrevisionが見つかりません。", { httpStatus: 409 });
+  }
+  const artifact = assessV3LineupArtifact(parseStoredActualLineup(revision.actual_lineup_json));
+  const actual = sanitizeActualLineupForScoring(parseStoredActualLineup(revision.actual_lineup_json));
+  if (!artifact.ok || !actual.ok) {
+    throw createV3Error("V3_LINEUP_CORRECTION_FINAL_LINEUP_INVALID", "canonical final revisionの検証に失敗したため、過去スタメンを修正できません。", { httpStatus: 409, diagnostics: artifact.diagnostics || null });
+  }
+  return { canonical, revision, lineup: actual.lineup, validation: artifact };
+}
+
+function serializeV3LineupCorrectionTarget(target, stateRow, canonicalResult, ranking = null) {
+  const lineup = canonicalResult?.canonical || {};
+  return {
+    internalGameId: target.internalGameId,
+    gameDate: target.game_date || "",
+    startAt: target.start_time || null,
+    homeTeam: target.home_team || "",
+    awayTeam: target.away_team || "",
+    gameStatus: target.game_status || "",
+    workflowState: stateRow?.state || null,
+    scoringStatus: lineup.scoring_status || null,
+    publicationStatus: lineup.publication_status || ranking?.publication_status || null,
+    publishedAt: lineup.published_at || ranking?.published_at || null,
+    rankingStatus: ranking?.game_status || null,
+    canonicalRevision: canonicalResult?.revision ? serializeV3LineupRevision(canonicalResult.revision) : null
+  };
+}
+
+async function getV3LineupCorrectionStatus(env, context, revisions = null) {
+  const canonical = await getV3CanonicalFinalRevision(env.AUTH_DB, context.id, revisions);
+  const stateRow = await env.AUTH_DB.prepare(
+    "SELECT state, version, updated_at FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
+  ).bind(context.id).first();
+  const ranking = await getRankingGameState(env.AUTH_DB, context.metadata.gameId, context.id);
+  return { canonical, stateRow, ranking };
+}
+
+async function handleAdminV3LineupCorrectionsGet(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  const today = getJstDateString(new Date());
+  try {
+    const rows = await env.AUTH_DB.prepare(
+      `SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status
+         FROM games
+        WHERE internal_game_id IS NOT NULL AND internal_game_id <> ''
+          AND is_active = 1 AND deleted_at IS NULL
+          AND LOWER(COALESCE(game_status, '')) NOT IN ('cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded')
+          AND game_date <= ?1
+          AND (LOWER(COALESCE(home_team, '')) IN ('f', 'fighters') OR LOWER(COALESCE(away_team, '')) IN ('f', 'fighters'))
+        ORDER BY game_date DESC, start_time DESC, internal_game_id DESC
+        LIMIT 100`
+    ).bind(today).all();
+    const games = [];
+    for (const row of rows.results || []) {
+      const context = await loadV3AdminContext(env.AUTH_DB, row.internal_game_id);
+      try {
+        const status = await getV3LineupCorrectionStatus(env, context);
+        games.push(serializeV3LineupCorrectionTarget(context.target, status.stateRow, status.canonical, status.ranking));
+      } catch (error) {
+        if (!["V3_LINEUP_CORRECTION_FINAL_LINEUP_REQUIRED", "V3_LINEUP_CORRECTION_FINAL_LINEUP_INVALID"].includes(String(error?.code || ""))) throw error;
+      }
+    }
+    return jsonResponse({ ok: true, asOfDateJst: today, games }, 200, cors);
+  } catch (error) {
+    return v3AdminErrorResponse(cors, error, "過去スタメン修正対象を取得できませんでした。");
+  }
+}
+
+async function handleAdminV3LineupCorrection(request, env, cors, route) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  if (!route.internalGameId) return jsonResponse({ ok: false, code: "V3_INTERNAL_GAME_ID_REQUIRED", error: "internalGameIdが不正です。" }, 400, cors);
+  let context;
+  try {
+    context = await loadV3AdminContext(env.AUTH_DB, route.internalGameId);
+    assertManagedManualLineupGame(context);
+    const revisions = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
+    const status = await getV3LineupCorrectionStatus(env, context, revisions);
+    if (request.method === "GET") {
+      const manualRoster = await getManualRoster(env.AUTH_DB, { teamCode: MANUAL_ROSTER_TEAM.teamCode }).catch(() => ({
+        schemaAvailable: false,
+        team: MANUAL_ROSTER_TEAM,
+        source: "static-fallback",
+        isManualSaved: false,
+        entries: [],
+        errorCode: "MANUAL_ROSTER_SCHEMA_UNAVAILABLE"
+      }));
+      return jsonResponse({
+        ok: true,
+        targetGame: serializeV3LineupCorrectionTarget(context.target, status.stateRow, status.canonical, status.ranking),
+        currentScoring: serializeGameLineup(status.canonical.canonical),
+        currentRanking: status.ranking ? {
+          gameStatus: status.ranking.game_status,
+          publicationStatus: status.ranking.publication_status,
+          rankingEligible: Number(status.ranking.is_ranking_eligible || 0) === 1,
+          publishedAt: status.ranking.published_at || null
+        } : null,
+        canonicalRevision: serializeV3LineupRevision(status.canonical.revision),
+        manualRoster,
+        playerCatalog: getManualLineupPlayerCatalog({ manualRoster }),
+        readOnlyStatuses: {
+          workflowState: status.stateRow?.state || null,
+          scoringStatus: status.canonical.canonical.scoring_status || null,
+          publicationStatus: status.canonical.canonical.publication_status || null,
+          rankingStatus: status.ranking?.game_status || null
+        }
+      }, 200, cors);
+    }
+    if (request.method !== "POST") return jsonResponse({ ok: false, code: "V3_ADMIN_METHOD_NOT_ALLOWED", error: "過去スタメン修正APIのHTTPメソッドが不正です。" }, 405, cors);
+
+    const input = await readJson(request, { maxBytes: ADMIN_PREVIEW_JSON_BODY_MAX_BYTES });
+    if (input?.confirmed !== true) throw createV3Error("V3_LINEUP_CORRECTION_CONFIRMATION_REQUIRED", "過去スタメン修正には確認済みフラグが必要です。", { httpStatus: 409 });
+    const reason = String(input?.reason || "").trim();
+    if (!reason || reason.length > 240) throw createV3Error("V3_LINEUP_CORRECTION_REASON_REQUIRED", "スタメン修正理由を1〜240文字で入力してください。", { httpStatus: 400 });
+    const targetDate = String(context.target?.game_date || "").slice(0, 10);
+    const today = getJstDateString(new Date());
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate) || targetDate > today) {
+      throw createV3Error("V3_LINEUP_CORRECTION_FUTURE_GAME", "未来試合のスタメン修正は実行できません。", { httpStatus: 409 });
+    }
+    const gameStatus = String(context.target?.game_status || "").trim().toLowerCase();
+    if (["cancelled", "canceled", "postponed", "no_game", "service_unavailable", "excluded"].includes(gameStatus)) {
+      throw createV3Error("V3_LINEUP_CORRECTION_GAME_UNAVAILABLE", "中止または対象外の試合はスタメン修正の対象外です。", { httpStatus: 409 });
+    }
+    const actual = normalizeManualLineupInput(input?.lineup || input?.actualLineup);
+    if (!actual.ok) throw createV3Error("V3_LINEUP_CORRECTION_LINEUP_INVALID", actual.error, { httpStatus: 400 });
+    const fingerprint = await sha256Base64Url(JSON.stringify(actual.lineup));
+    const currentFingerprint = String(status.canonical.revision.lineup_fingerprint || "")
+      || await sha256Base64Url(JSON.stringify(status.canonical.lineup));
+    if (fingerprint === currentFingerprint) {
+      throw createV3Error("V3_LINEUP_CORRECTION_NO_OP", "現在のcanonical final lineupから変更がありません。", { httpStatus: 409 });
+    }
+    const currentState = String(status.stateRow?.state || "").trim().toLowerCase();
+    if (!currentState) throw createV3Error("V3_LINEUP_CORRECTION_STATE_REQUIRED", "V3 workflow stateを確認できないため、スタメン修正を実行できません。", { httpStatus: 503 });
+
+    const revision = await saveLineupCandidateRevision(env.AUTH_DB, {
+      gameId: context.metadata.gameId,
+      internalGameId: context.id,
+      lineup: actual.lineup,
+      source: "admin",
+      capturedAt: new Date(),
+      reason,
+      createdBy: access.user.id,
+      validation: { source: "manual_correction", inputAt: new Date().toISOString(), inputBy: access.user.id, playerCount: actual.lineup.length, unresolvedPlayerCount: 0 },
+      allowUnresolvedPlayer: false
+    });
+    const latestCanonical = await getV3CanonicalFinalRevision(env.AUTH_DB, context.id);
+    if (v3LineupRevisionIdentity(latestCanonical.revision) === v3LineupRevisionIdentity(revision)) {
+      throw createV3Error("V3_LINEUP_CORRECTION_NO_OP", "同じ修正が別の操作ですでに確定されています。", { httpStatus: 409 });
+    }
+    const now = new Date();
+    const record = await approveActualLineupForAutoScoring(env, context.metadata.gameId, actual.lineup, now, {
+      scoringDueAt: now,
+      now,
+      source: "manual",
+      allowAfterStart: true,
+      internalGameId: context.id
+    });
+    await activateLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, version: revision.version, internalGameId: context.id, finalizedAt: now, finalizedBy: `admin:${String(access.user.id)}` });
+    await linkFinalLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, version: revision.version, finalizedAt: now, finalizedBy: `admin:${String(access.user.id)}` });
+    if (currentState !== "manual_action_required") {
+      await transitionV3State(env.AUTH_DB, { internalGameId: context.id, from: currentState, to: "manual_action_required", now });
+    }
+    const scoreJob = await createV3AdminActionJob(env.AUTH_DB, context.id, "score", now, "admin-lineup-correction", {
+      allowAfterCompleted: true,
+      scheduledSlotAt: revision.created_at || now
+    });
+    await recordV3AdminAudit(env.AUTH_DB, {
+      internalGameId: context.id,
+      jobId: scoreJob.job?.id || null,
+      jobType: "admin:lineup_correction",
+      stateBefore: currentState,
+      stateAfter: "manual_action_required",
+      failureMessage: `[v3_details=${JSON.stringify({ reason, revisionId: v3LineupRevisionIdentity(revision), scoreJobId: scoreJob.job?.id || null })}]`
+    });
+    await recordWorkflowLog(env.AUTH_DB, {
+      eventType: "v3_admin_lineup_correction",
+      status: "success",
+      gameId: context.metadata.gameId,
+      occurredAt: now,
+      message: "管理者が過去スタメンを修正し、正式V3 score jobへ引き継ぎました。",
+      metadata: { internalGameId: context.id, revisionId: v3LineupRevisionIdentity(revision), reason, scoreJobId: scoreJob.job?.id || null },
+      source: "admin"
+    });
+    return jsonResponse({
+      ok: true,
+      internalGameId: context.id,
+      stateBefore: currentState,
+      stateAfter: "manual_action_required",
+      correctionRevision: serializeV3LineupRevision(revision),
+      autoScoring: serializeGameLineup(record),
+      scoreJob,
+      nextAction: "formal_v3_cron_score_ranking_reflect_publish"
+    }, 202, cors);
+  } catch (error) {
+    return v3AdminErrorResponse(cors, error, "過去スタメンを修正できませんでした。");
+  }
 }
 
 async function getV3LineupDataHealth(db, internalGameId, workflowState = "scheduled") {
@@ -15671,10 +15920,12 @@ async function activateLineupRevision(db, { gameId, version, internalGameId = ""
   bindings.push(hasCanonicalIdentity ? internalGameId : gameId);
   const versionPlaceholder = `?${bindings.length + 1}`;
   bindings.push(Number(version));
+  const deactivateFields = ["is_current = 0", "superseded_at = ?1"];
+  if (columns.has("is_final")) deactivateFields.splice(1, 0, "is_final = 0");
   await db.batch([
     hasCanonicalIdentity
-      ? db.prepare("UPDATE game_lineup_revisions SET is_current = 0, superseded_at = ?1 WHERE internal_game_id = ?2 AND is_current = 1").bind(finalizedAtIso, internalGameId)
-      : db.prepare("UPDATE game_lineup_revisions SET is_current = 0, superseded_at = ?1 WHERE game_id = ?2 AND is_current = 1").bind(finalizedAtIso, gameId),
+      ? db.prepare(`UPDATE game_lineup_revisions SET ${deactivateFields.join(", ")} WHERE internal_game_id = ?2 AND is_current = 1`).bind(finalizedAtIso, internalGameId)
+      : db.prepare(`UPDATE game_lineup_revisions SET ${deactivateFields.join(", ")} WHERE game_id = ?2 AND is_current = 1`).bind(finalizedAtIso, gameId),
     db.prepare(`UPDATE game_lineup_revisions SET ${updateFields.join(", ")} WHERE ${hasCanonicalIdentity ? "internal_game_id" : "game_id"} = ${gameIdPlaceholder} AND version = ${versionPlaceholder}`).bind(...bindings)
   ]);
   return hasCanonicalIdentity

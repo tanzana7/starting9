@@ -26,6 +26,7 @@ function loadModules() {
     "dom",
     "selection-safety",
     "render-manual-lineup",
+    "render-lineup-correction",
     "render-manual-roster",
     "render-game-progress",
     "render-job-details",
@@ -50,6 +51,7 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
     "frontend/admin-v3/dom.js?v=manual-lineup-finalize-safety-1",
     "frontend/admin-v3/selection-safety.js?v=admin-game-selection-safety-1",
     "frontend/admin-v3/render-manual-lineup.js?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1-game-selection-safety-1-lineup-order-mobile-zoom-1",
+    "frontend/admin-v3/render-lineup-correction.js?v=admin-v3-lineup-correction-1",
     "frontend/admin-v3/render-manual-roster.js?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1",
     "frontend/admin-v3/render-game-progress.js?v=manual-lineup-finalize-safety-1",
     "frontend/admin-v3/render-job-details.js?v=admin-v3-v35-diagnostics-readability-1",
@@ -59,7 +61,7 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
     "frontend/admin-v3/render-perfect-score-preview.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-manual-game-preview.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/app-coordinator.js?v=independent-roster-lineup-safety-1-preserve-picker-scroll-1",
-    "admin-v3.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-lineup-order-mobile-zoom-1"
+    "admin-v3.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-lineup-order-mobile-zoom-1-lineup-correction-1"
   ]);
   const modules = loadModules();
   assert.equal(typeof modules.createAdminV3State, "function");
@@ -67,6 +69,7 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
   assert.equal(typeof modules.createAdminV3Dom, "function");
   assert.equal(typeof modules.createAdminV3SelectionSafety, "function");
   assert.equal(typeof modules.createAdminV3ManualLineupRenderer, "function");
+  assert.equal(typeof modules.createAdminV3LineupCorrectionRenderer, "function");
   assert.equal(typeof modules.createAdminV3ManualRosterRenderer, "function");
   assert.equal(typeof modules.createAdminV3GameProgressRenderer, "function");
   assert.equal(typeof modules.createAdminV3JobDetailsRenderer, "function");
@@ -86,6 +89,29 @@ test("admin-v3 entry pointは画面描画moduleへ委譲し、旧描画実装を
   assert.doesNotMatch(entry, /function renderInlineJobDetail\(/);
   assert.doesNotMatch(entry, /function renderDiagnosticsView\(/);
   assert.doesNotMatch(entry, /function renderRosterSummary\(/);
+});
+
+test("スタメン修正rendererは変更前後の差分と正式再採点ボタンを表示する", () => {
+  const modules = loadModules();
+  const renderer = modules.createAdminV3LineupCorrectionRenderer({
+    escapeHtml: (value) => String(value ?? ""),
+    formatJst: (value) => String(value || ""),
+    renderCandidates: () => "<button data-v3-manual-lineup-player=\"0\" data-v3-manual-lineup-player-id=\"p2\">候補</button>"
+  });
+  const before = Array.from({ length: 9 }, (_, index) => ({ battingOrder: index + 1, position: index === 0 ? "捕" : "内野", playerId: `p${index + 1}`, playerName: `選手${index + 1}` }));
+  const after = before.map((row, index) => index === 0 ? { ...row, playerId: "p10", playerName: "訂正選手" } : row);
+  assert.match(renderer.diffLineup(before, after).join("\n"), /1番の選手/);
+  const html = renderer.render({
+    games: [{ internalGameId: "game-1", gameDate: "2026-09-05", homeTeam: "fighters", awayTeam: "hawks", workflowState: "published", publicationStatus: "published" }],
+    selectedGameId: "game-1",
+    details: { targetGame: { internalGameId: "game-1", gameDate: "2026-09-05", startAt: "09:00", homeTeam: "fighters", awayTeam: "hawks", scoringStatus: "scored", publicationStatus: "published", rankingStatus: "scored" }, canonicalRevision: { lineup: before }, playerCatalog: after, manualRoster: null, readOnlyStatuses: { scoringStatus: "scored", rankingStatus: "scored", publicationStatus: "published" } },
+    rows: after,
+    reason: "公式訂正",
+    confirmed: true
+  });
+  assert.match(html, /data-v3-lineup-correction-submit/);
+  assert.match(html, /修正を確定して再採点/);
+  assert.match(html, /data-v3-lineup-correction-player/);
 });
 
 test("admin API clientは認証付きGET/POSTとendpoint境界を集約する", async () => {

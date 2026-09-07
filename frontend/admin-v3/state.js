@@ -82,6 +82,18 @@
         updatedBy: null,
         error: "",
         message: ""
+      },
+      lineupCorrection: {
+        games: [],
+        selectedGameId: "",
+        details: null,
+        rows: [],
+        reason: "",
+        confirmed: false,
+        loading: false,
+        gamesLoaded: false,
+        error: "",
+        message: ""
       }
     };
   }

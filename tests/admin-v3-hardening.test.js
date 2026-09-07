@@ -39,7 +39,9 @@ test("既知admin routeの未認証メソッド不一致は先に401で拒否す
     ["/api/admin/v3/schedule/add-game/preview", "GET"],
     ["/api/admin/v3/ranking-resets/execute", "GET"],
     ["/api/admin/v3/games/00000000-0000-4000-8000-000000000000/jobs", "GET"],
-    ["/api/admin/v3/overview", "POST"]
+    ["/api/admin/v3/overview", "POST"],
+    ["/api/admin/v3/lineup-corrections", "GET"],
+    ["/api/admin/v3/games/00000000-0000-4000-8000-000000000000/lineup-correction", "POST"]
   ];
 
   for (const [pathname, method] of cases) {

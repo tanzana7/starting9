@@ -15,7 +15,8 @@ if (!adminV3Modules?.createAdminV3State
   || !adminV3Modules?.createAdminV3ManualGamePreviewRenderer
   || !adminV3Modules?.createAdminV3SelectionSafety
   || !adminV3Modules?.createAdminV3ManualLineupRenderer
-  || !adminV3Modules?.createAdminV3ManualRosterRenderer) {
+  || !adminV3Modules?.createAdminV3ManualRosterRenderer
+  || !adminV3Modules?.createAdminV3LineupCorrectionRenderer) {
   throw new Error("ADMIN_V3_MODULES_NOT_LOADED");
 }
 const v3Dom = adminV3Modules.createAdminV3Dom();
@@ -42,12 +43,13 @@ const V3_JOB_TYPES = Object.freeze([
   V3_JOB_TYPE.PROBABLE_STARTER_FETCH,
   V3_JOB_TYPE.ROSTER_FETCH
 ]);
-const V3_VIEWS = ["dashboard", "games", "workflow", "lineup", "roster", "scoring", "ranking-reset", "schedule", "add-game-preview", "diagnostics"];
+const V3_VIEWS = ["dashboard", "games", "workflow", "lineup", "lineup-correction", "roster", "scoring", "ranking-reset", "schedule", "add-game-preview", "diagnostics"];
 const V3_VIEW_LABELS = {
   dashboard: "ダッシュボード",
   games: "試合一覧",
   workflow: "試合進行",
-  lineup: "スタメン",
+  lineup: "スタメン登録",
+  "lineup-correction": "スタメン修正",
   roster: "ロースター管理",
   scoring: "採点・ランキング",
   "ranking-reset": "ランキング対象外",
@@ -858,6 +860,11 @@ const v3RankingResetRenderer = adminV3Modules.createAdminV3RankingResetRenderer(
 const v3ManualGamePreviewRenderer = adminV3Modules.createAdminV3ManualGamePreviewRenderer({ escapeHtml: escapeV3 });
 const v3ManualLineupRenderer = adminV3Modules.createAdminV3ManualLineupRenderer({ escapeHtml: escapeV3, formatJst: formatV3Jst, getFinalizeSafety: manualLineupFinalizeSafety, getGameDayStatus: v3SelectionSafety.gameDayStatus });
 const v3ManualRosterRenderer = adminV3Modules.createAdminV3ManualRosterRenderer({ escapeHtml: escapeV3 });
+const v3LineupCorrectionRenderer = adminV3Modules.createAdminV3LineupCorrectionRenderer({
+  escapeHtml: escapeV3,
+  formatJst: formatV3Jst,
+  renderCandidates: (...args) => v3ManualLineupRenderer.renderCandidates(...args)
+});
 const v3DiagnosticsRenderer = adminV3Modules.createAdminV3DiagnosticsRenderer({
   state: v3State,
   escapeHtml: escapeV3,
@@ -1158,9 +1165,162 @@ async function saveManualRoster() {
   }
 }
 
+async function loadV3LineupCorrectionDetails(internalGameId, force = false) {
+  const correction = v3State.lineupCorrection;
+  const id = String(internalGameId || correction.selectedGameId || "");
+  if (!id || (correction.loading && !force)) return;
+  correction.selectedGameId = id;
+  correction.loading = true;
+  correction.error = "";
+  renderCurrentV3View();
+  try {
+    const result = await v3Api.getLineupCorrection(id);
+    correction.details = result;
+    correction.rows = v3LineupCorrectionRenderer.correctionRows(result, { rows: [] });
+    correction.reason = "";
+    correction.confirmed = false;
+    correction.message = "";
+  } catch (error) {
+    correction.details = null;
+    correction.rows = [];
+    correction.error = formatV3AdminError(error, "LINEUP_CORRECTION_DETAIL_FAILED");
+  } finally {
+    correction.loading = false;
+    renderCurrentV3View();
+  }
+}
+
+async function loadV3LineupCorrections(force = false) {
+  const correction = v3State.lineupCorrection;
+  if (correction.loading || (correction.gamesLoaded && !force)) return;
+  correction.loading = true;
+  correction.error = "";
+  renderCurrentV3View();
+  try {
+    const result = await v3Api.listLineupCorrections();
+    correction.games = Array.isArray(result.games) ? result.games : [];
+    correction.gamesLoaded = true;
+    const selected = correction.games.some((game) => String(game.internalGameId) === correction.selectedGameId)
+      ? correction.selectedGameId
+      : String(correction.games[0]?.internalGameId || "");
+    correction.selectedGameId = selected;
+    if (selected) await loadV3LineupCorrectionDetails(selected, true);
+  } catch (error) {
+    correction.games = [];
+    correction.error = formatV3AdminError(error, "LINEUP_CORRECTION_LIST_FAILED");
+  } finally {
+    correction.loading = false;
+    renderCurrentV3View();
+  }
+}
+
+function selectV3LineupCorrection(internalGameId) {
+  const id = String(internalGameId || "");
+  if (!id || id === v3State.lineupCorrection.selectedGameId) return loadV3LineupCorrectionDetails(id);
+  v3State.lineupCorrection.selectedGameId = id;
+  v3State.lineupCorrection.details = null;
+  v3State.lineupCorrection.rows = [];
+  v3State.lineupCorrection.reason = "";
+  v3State.lineupCorrection.confirmed = false;
+  return loadV3LineupCorrectionDetails(id, true);
+}
+
+function updateV3LineupCorrectionSearch(index, value) {
+  const rowIndex = Number(index);
+  const row = v3State.lineupCorrection.rows[rowIndex];
+  if (!row) return;
+  row.search = String(value ?? "");
+  const correction = v3State.lineupCorrection;
+  const details = correction.details;
+  const candidates = document.querySelector(`[data-v3-lineup-correction-candidates="${rowIndex}"]`);
+  if (details && candidates) {
+    candidates.innerHTML = v3LineupCorrectionRenderer.renderCandidates(details.playerCatalog || [], row, rowIndex, details.manualRoster || []);
+    return;
+  }
+  renderCurrentV3View();
+}
+
+function updateV3LineupCorrectionRow(index, patch) {
+  const row = v3State.lineupCorrection.rows[Number(index)];
+  if (!row) return;
+  Object.assign(row, patch);
+  v3State.lineupCorrection.error = "";
+  v3State.lineupCorrection.message = "";
+  renderCurrentV3View();
+}
+
+function selectV3LineupCorrectionPlayer(index, playerId) {
+  const details = v3State.lineupCorrection.details;
+  const row = v3State.lineupCorrection.rows[Number(index)];
+  const player = details?.playerCatalog?.find((candidate) => candidate.playerId === playerId);
+  if (!row || !player) return;
+  updateV3LineupCorrectionRow(index, {
+    playerId: player.playerId,
+    playerName: player.playerName,
+    uniformNumber: String(player.uniformNumber ?? ""),
+    search: ""
+  });
+}
+
+async function submitV3LineupCorrection() {
+  const correction = v3State.lineupCorrection;
+  const target = correction.details?.targetGame;
+  if (correction.loading || !target || !correction.rows.length) return;
+  const changes = v3LineupCorrectionRenderer.diffLineup(correction.details.canonicalRevision?.lineup || [], correction.rows);
+  const reason = String(correction.reason || "").trim();
+  if (!changes.length) { correction.error = "変更がないため確定できません。"; renderCurrentV3View(); return; }
+  if (!reason) { correction.error = "修正理由を入力してください。"; renderCurrentV3View(); return; }
+  if (!correction.confirmed) { correction.error = "内容を確認してから確定してください。"; renderCurrentV3View(); return; }
+  const confirmation = [
+    "過去スタメン修正を確定して再採点します。",
+    `試合: ${target.gameDate || "-"} / ${target.homeTeam || "-"} vs ${target.awayTeam || "-"}`,
+    `開始: ${formatV3Jst(target.startAt) || "-"} JST`,
+    `internalGameId: ${target.internalGameId || "-"}`,
+    `変更: ${changes.join(" / ")}`,
+    `現在の状態: scoring=${target.scoringStatus || "-"}, publish=${target.publicationStatus || "-"}`,
+    "現在の採点・ランキング・公開は再処理待ちに戻ります。予想入力は変更しません。続行しますか？"
+  ].join("\n");
+  if (!window.confirm(confirmation)) return;
+  correction.loading = true;
+  correction.error = "";
+  correction.message = "過去スタメン修正を確定し、score jobへ引き継ぎ中…";
+  renderCurrentV3View();
+  try {
+    const result = await v3Api.submitLineupCorrection(target.internalGameId, {
+      lineup: correction.rows.map(({ search, ...row }) => row),
+      reason,
+      confirmed: true
+    });
+    correction.message = `修正revision ${result.correctionRevision?.revisionId || "-"} を確定しました。正式V3 Cronが再採点から続行します。`;
+    correction.details = null;
+    correction.rows = [];
+    correction.reason = "";
+    correction.confirmed = false;
+    correction.gamesLoaded = false;
+    await loadV3LineupCorrections(true);
+  } catch (error) {
+    correction.error = formatV3AdminError(error, "LINEUP_CORRECTION_SUBMIT_FAILED");
+  } finally {
+    correction.loading = false;
+    renderCurrentV3View();
+  }
+}
+
 function renderCurrentV3View() {
   const payload = v3State.payload;
   if (!payload) return;
+  if (v3State.view === "lineup-correction") {
+    const view = document.getElementById("v3View");
+    if (!view) return;
+    view.innerHTML = v3LineupCorrectionRenderer.render(v3State.lineupCorrection);
+    document.querySelectorAll("[data-v3-view]").forEach((button) => {
+      const active = button.dataset.v3View === v3State.view;
+      button.setAttribute("aria-current", active ? "page" : "false");
+    });
+    document.querySelector("[data-v3-game-selection-controls]")?.classList.add("is-hidden");
+    document.getElementById("v3Schema")?.replaceChildren();
+    return;
+  }
   const allGames = v3ListItems(payload.games, "games");
   const games = filteredV3Games(allGames, v3State.filter);
   let game = selectedV3Game(allGames);
@@ -1201,6 +1361,7 @@ function renderCurrentV3View() {
     games: () => v3GameProgressRenderer.renderGamesView(games),
     workflow: () => v3GameProgressRenderer.renderWorkflowView(filteredGame || game),
     lineup: () => v3GameProgressRenderer.renderLineupView(filteredGame || game),
+    "lineup-correction": () => v3LineupCorrectionRenderer.render(v3State.lineupCorrection),
     roster: () => v3ManualRosterRenderer.render(v3State.manualRoster),
     scoring: () => v3GameProgressRenderer.renderScoringView(filteredGame || game),
     "ranking-reset": () => v3RankingResetRenderer.render(),
@@ -1410,7 +1571,8 @@ async function loadV3() {
     payload.automationLogs = await v3Api.getAutomationLogs().catch((error) => ({ error: formatV3AdminError(error, "V3_AUTOMATION_LOG_FAILED") }));
     v3State.automationLogs = payload.automationLogs;
     renderV3(payload);
-    if (v3State.view !== "roster") await loadV3OperationDetails();
+    if (v3State.view === "lineup-correction") await loadV3LineupCorrections(true);
+    else if (v3State.view !== "roster") await loadV3OperationDetails();
     if (v3State.view === "roster") await loadManualRoster();
     setV3Status(`${v3State.payload.games.length}試合を表示しました。`);
   } catch (error) {
@@ -1427,6 +1589,7 @@ function chooseV3View(view) {
     loadRankingResetMarkers();
     loadRankingExclusionGames();
   }
+  if (view === "lineup-correction") loadV3LineupCorrections();
   if (view === "roster") loadManualRoster();
   document.getElementById("v3Navigation")?.classList.remove("open");
   document.getElementById("mobileNavToggle")?.setAttribute("aria-expanded", "false");
@@ -1491,7 +1654,8 @@ function handleV3HashChange() {
   v3State.selectionValidated = false;
   v3State.selectionSafetyNotice = "";
   renderCurrentV3View();
-  if (v3State.view !== "roster") loadV3OperationDetails();
+  if (v3State.view === "lineup-correction") loadV3LineupCorrections();
+  else if (v3State.view !== "roster") loadV3OperationDetails();
   if (v3State.view === "roster") loadManualRoster();
 }
 
@@ -1529,6 +1693,12 @@ adminV3Modules.createAdminV3Coordinator({
     updateManualRosterEntry,
     addManualRosterPlayer,
     saveManualRoster,
+    updateLineupCorrectionSearch: updateV3LineupCorrectionSearch,
+    updateLineupCorrectionRow: updateV3LineupCorrectionRow,
+    selectLineupCorrectionPlayer: selectV3LineupCorrectionPlayer,
+    selectLineupCorrection: selectV3LineupCorrection,
+    submitLineupCorrection: submitV3LineupCorrection,
+    renderCurrentView: renderCurrentV3View,
     refreshAutomationLogs,
     selectGame: (internalGameId) => selectV3Game(internalGameId),
     diagnoseJob: diagnoseV3Job,

@@ -11,7 +11,8 @@
     rankingResetExecute: "/api/admin/v3/ranking-resets/execute",
     perfectScorePreview: "/api/admin/v3/perfect-score-test/preview",
     manualGamePreview: "/api/admin/v3/schedule/add-game/preview",
-    manualRoster: "/api/admin/v3/manual-roster"
+    manualRoster: "/api/admin/v3/manual-roster",
+    lineupCorrections: "/api/admin/v3/lineup-corrections"
   });
 
   function createAdminV3ApiClient({ fetchImpl, location, productionBase }) {
@@ -130,7 +131,10 @@
       previewRankingReset: (body) => post(ADMIN_V3_ENDPOINTS.rankingResetPreview, body),
       executeRankingReset: (body) => post(ADMIN_V3_ENDPOINTS.rankingResetExecute, body),
       previewPerfectScore: (body) => post(ADMIN_V3_ENDPOINTS.perfectScorePreview, body),
-      previewManualGame: (body) => post(ADMIN_V3_ENDPOINTS.manualGamePreview, body)
+      previewManualGame: (body) => post(ADMIN_V3_ENDPOINTS.manualGamePreview, body),
+      listLineupCorrections: () => request(ADMIN_V3_ENDPOINTS.lineupCorrections),
+      getLineupCorrection: (internalGameId) => request(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/lineup-correction`),
+      submitLineupCorrection: (internalGameId, body) => post(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/lineup-correction`, body)
     });
   }
 

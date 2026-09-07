@@ -78,6 +78,10 @@
           if (isManualSearchComposing(event, manualSearch)) return;
           actions.updateManualLineupSearch(manualSearchIndex(manualSearch), manualSearch.value);
         }
+        const correctionSearch = closestFromEvent(event, "[data-v3-lineup-correction-search]");
+        if (correctionSearch) actions.updateLineupCorrectionSearch(Number(correctionSearch.dataset.v3LineupCorrectionSearch), correctionSearch.value);
+        const correctionReason = closestFromEvent(event, "[data-v3-lineup-correction-reason]");
+        if (correctionReason) { state.lineupCorrection.reason = correctionReason.value; state.lineupCorrection.error = ""; return; }
         const rosterSearch = closestFromEvent(event, "[data-v3-manual-roster-search]");
         if (rosterSearch) {
           if (event.isComposing || manualRosterSearchComposing) return;
@@ -101,6 +105,10 @@
           preservePickerScroll(`[data-v3-manual-lineup-candidates="${Number(position.dataset.v3ManualLineupPosition)}"]`, () => actions.updateManualLineupRow(Number(position.dataset.v3ManualLineupPosition), { position: position.value }));
           return;
         }
+        const correctionOrder = closestFromEvent(event, "[data-v3-lineup-correction-order]");
+        if (correctionOrder) { preservePickerScroll(`[data-v3-lineup-correction-candidates="${Number(correctionOrder.dataset.v3LineupCorrectionOrder)}"]`, () => actions.updateLineupCorrectionRow(Number(correctionOrder.dataset.v3LineupCorrectionOrder), { battingOrder: Number(correctionOrder.value) })); return; }
+        const correctionPosition = closestFromEvent(event, "[data-v3-lineup-correction-position]");
+        if (correctionPosition) { preservePickerScroll(`[data-v3-lineup-correction-candidates="${Number(correctionPosition.dataset.v3LineupCorrectionPosition)}"]`, () => actions.updateLineupCorrectionRow(Number(correctionPosition.dataset.v3LineupCorrectionPosition), { position: correctionPosition.value })); return; }
         const confirm = closestFromEvent(event, "[data-v3-manual-lineup-confirm]");
         if (confirm) {
           state.manualLineup.confirmed = confirm.checked === true;
@@ -129,6 +137,16 @@
           preservePickerScroll(`[data-v3-manual-lineup-candidates="${Number(manualPlayer.dataset.v3ManualLineupPlayer)}"]`, () => actions.selectManualLineupPlayer(Number(manualPlayer.dataset.v3ManualLineupPlayer), manualPlayer.dataset.v3ManualLineupPlayerId));
           return;
         }
+        const correctionPlayer = closestFromEvent(event, "[data-v3-lineup-correction-player]");
+        if (correctionPlayer) {
+          preservePickerScroll(`[data-v3-lineup-correction-candidates="${Number(correctionPlayer.dataset.v3LineupCorrectionPlayer)}"]`, () => actions.selectLineupCorrectionPlayer(Number(correctionPlayer.dataset.v3LineupCorrectionPlayer), correctionPlayer.dataset.v3LineupCorrectionPlayerId));
+          return;
+        }
+        const correctionGame = closestFromEvent(event, "[data-v3-lineup-correction-game]");
+        if (correctionGame) { await actions.selectLineupCorrection(correctionGame.dataset.v3LineupCorrectionGame); return; }
+        const correctionConfirm = closestFromEvent(event, "[data-v3-lineup-correction-confirm]");
+        if (correctionConfirm) { state.lineupCorrection.confirmed = correctionConfirm.checked === true; return; }
+        if (closestFromEvent(event, "[data-v3-lineup-correction-submit]")) { await actions.submitLineupCorrection(); return; }
         if (closestFromEvent(event, "[data-v3-manual-lineup-save]")) { await actions.saveManualLineup(); return; }
         if (closestFromEvent(event, "[data-v3-manual-lineup-finalize]")) { await actions.finalizeManualLineup(); return; }
         const lineupCancel = closestFromEvent(event, "[data-v3-manual-lineup-revision-cancel]");

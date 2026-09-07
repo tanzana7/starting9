@@ -246,9 +246,14 @@
       const status = statusOverride || (job ? String(job.status) : fallbackStatus);
       const klass = status === "complete" ? "complete" : status === "action" ? "action" : status === "wait" ? "wait" : statusClass(status);
       const label = labelOverride || (job ? statusLabel(status) : ({ complete: "完了", scheduled: "予定", wait: "待機中", action: "要対応" }[fallbackStatus] || "待機中"));
-      const time = scheduledAt || (job ? (status === "retry_wait" ? job.next_retry_at : job.scheduled_at) : "");
+      const completedAt = job && (status === "completed" || status === "complete" || klass === "complete")
+        ? (job.completed_at || job.updated_at || job.claimed_at || "")
+        : "";
+      const time = completedAt || scheduledAt || (job ? (status === "retry_wait" ? job.next_retry_at : job.scheduled_at) : "");
+      const timeLabel = completedAt ? "完了日時" : "";
       const failure = job?.failure_code ? ` / ${job.failure_code}` : "";
-      return `<article class="timeline-step ${klass}"><span class="status-badge ${klass === "complete" ? "ok" : klass === "retry" ? "retry" : klass === "failed" || klass === "action" ? "action" : klass === "excluded" ? "excluded" : "wait"}">${escapeHtml(label)}</span><h4>${escapeHtml(name)}</h4><p class="step-time">${escapeHtml(formatTimelineTime(time) || (detail && !failure ? detail : "予定未定"))}</p><p>${escapeHtml(detail || failure || (job ? `試行 ${job.attempt_count || 0}/${job.max_attempts || 0}` : ""))}</p></article>`;
+      const timeMarkup = formatTimelineTime(time) || (detail && !failure ? detail : "予定未定");
+      return `<article class="timeline-step ${klass}"><span class="status-badge ${klass === "complete" ? "ok" : klass === "retry" ? "retry" : klass === "failed" || klass === "action" ? "action" : klass === "excluded" ? "excluded" : "wait"}">${escapeHtml(label)}</span><h4>${escapeHtml(name)}</h4><p class="step-time">${escapeHtml(timeLabel ? `${timeLabel}: ${timeMarkup}` : timeMarkup)}</p><p>${escapeHtml(detail || failure || (job ? `試行 ${job.attempt_count || 0}/${job.max_attempts || 0}` : ""))}</p></article>`;
     }
 
     function timelinePhaseStep(name, game, phase, job, fallbackStatus, detail = "", scheduledAt = "") {

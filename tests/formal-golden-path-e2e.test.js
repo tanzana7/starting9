@@ -9,8 +9,9 @@ import worker, {
   getManualLineupPlayerCatalog,
   normalizeManualLineupInput
 } from "../auth-worker.js";
-import { createV3Job, runGameAutomationV3, planMainWorkflowJobs, transitionV3State } from "../game-automation-v3.js";
+import { claimV3Job, completeV3Job, createV3Job, retryV3Job, runGameAutomationV3, planMainWorkflowJobs, transitionV3State } from "../game-automation-v3.js";
 import { evaluateCanonicalArtifactsFromDb } from "../backend/automation-v3/canonical-artifact-evaluator.js";
+import { getRankingForPeriod } from "../backend/repositories/ranking-repository.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const GAME_ID = "9f7e2f4c-9b16-4c70-9cb8-9d7d2a2a0001";
@@ -37,6 +38,47 @@ function d1(database) {
       const results = [];
       for (const statement of statements) results.push(await statement.run());
       return results;
+    }
+  };
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((next) => { resolve = next; });
+  return { promise, resolve };
+}
+
+function gatedD1(database, predicate, gate) {
+  const base = d1(database);
+  let paused = false;
+  return {
+    prepare(sql) {
+      const statement = base.prepare(sql);
+      if (!predicate(sql)) return statement;
+      return {
+        all: statement.all,
+        first: statement.first,
+        run: statement.run,
+        bind(...params) {
+          const bound = statement.bind(...params);
+          return {
+            all: bound.all,
+            run: bound.run,
+            async first() {
+              const row = await bound.first();
+              if (!paused) {
+                paused = true;
+                gate.hit.resolve(row);
+                await gate.release.promise;
+              }
+              return row;
+            }
+          };
+        }
+      };
+    },
+    async batch(statements) {
+      return base.batch(statements);
     }
   };
 }
@@ -199,18 +241,35 @@ async function createDueJob(fixture, jobType, at, suffix) {
   });
 }
 
-async function completeGoldenPathA(fixture) {
+async function prepareManualLineup(fixture) {
   const save = await adminRequest(fixture.env, `/api/admin/v3/games/${GAME_ID}/lineup-revisions`, {
-      lineup: normalLineup(), reason: "Golden Path A fixture", confirmed: true
+    lineup: normalLineup(), reason: "Golden Path fixture", confirmed: true
   });
   const saveBody = await save.json();
   assert.equal(save.status, 201, JSON.stringify(saveBody));
-
   const finalize = await adminRequest(fixture.env, `/api/admin/v3/games/${GAME_ID}/lineup-finalize`, {
-      lineupRevisionId: saveBody.revision.revisionId, confirmed: true
+    lineupRevisionId: saveBody.revision.revisionId, confirmed: true
   });
   const finalizeBody = await finalize.json();
   assert.equal(finalize.status, 200, JSON.stringify(finalizeBody));
+  return { saveBody, finalizeBody };
+}
+
+async function rankingSnapshot(fixture, { publishedOnly = true } = {}) {
+  const nextDate = new Date(`${fixture.gameDate}T00:00:00+09:00`);
+  nextDate.setUTCDate(nextDate.getUTCDate() + 1);
+  return getRankingForPeriod(fixture.env.AUTH_DB, {
+    limit: 10,
+    offset: 0,
+    qualifiedOnly: false,
+    startAt: fixture.gameDate,
+    endAt: currentJstDate(nextDate),
+    publishedOnly
+  });
+}
+
+async function completeGoldenPathA(fixture) {
+  const { saveBody, finalizeBody } = await prepareManualLineup(fixture);
   assert.equal(finalizeBody.finalizedRevision.isFinal, true);
 
   const executed = [];
@@ -512,6 +571,300 @@ test("Negative paths: published-only artifact不備とfuture・wrong-date・canc
       assert.equal(response.status, 409);
       assert.equal((await response.json()).code, "V3_LINEUP_CORRECTION_GAME_UNAVAILABLE");
     }
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test("Duplicate Cron: 同一slotの並列plannerとclaimは一つのjob・一つの最終効果に収束する", async () => {
+  const fixture = await createGoldenDb();
+  try {
+    await prepareManualLineup(fixture);
+    const at = new Date(fixture.startAt.getTime() + 12 * 60 * 1000);
+    const plannerOptions = { disabledStages: ["roster_fetch", "lineup_fetch"] };
+    const [firstPlan, secondPlan] = await Promise.all([
+      planMainWorkflowJobs(fixture.env.AUTH_DB, [planningGame(fixture, "scheduled")], at, plannerOptions),
+      planMainWorkflowJobs(fixture.env.AUTH_DB, [planningGame(fixture, "scheduled")], at, plannerOptions)
+    ]);
+    const jobs = fixture.database.prepare(
+      "SELECT job_type, scheduled_slot_at FROM game_jobs_v3 WHERE internal_game_id = ? ORDER BY id"
+    ).all(GAME_ID);
+    assert.equal(new Set(jobs.map((row) => `${row.job_type}:${row.scheduled_slot_at}`)).size, jobs.length);
+    assert.equal(firstPlan.created + secondPlan.created, jobs.length);
+
+    const claimed = await Promise.all([
+      runFormalCron(fixture.env, at, []),
+      runFormalCron(fixture.env, at, [])
+    ]);
+    assert.equal(claimed.some((run) => run.processed > 0), true);
+    const executed = [];
+    for (let pass = 0; pass < 5; pass += 1) {
+      await runFormalCron(fixture.env, new Date(at.getTime() + (pass + 1) * 1000), executed);
+    }
+    const canonical = await evaluateCanonicalArtifactsFromDb(fixture.env.AUTH_DB, GAME_ID);
+    assert.equal(canonical.aggregate.fullyPublished, true);
+    assert.equal(canonical.aggregate.artifactMismatch, false);
+    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM game_scoring_revisions WHERE internal_game_id = ?").get(GAME_ID).count, 1);
+    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM ranking_reflection_revisions WHERE internal_game_id = ?").get(GAME_ID).count, 1);
+    const ranking = await rankingSnapshot(fixture);
+    assert.equal(ranking.rows.length, 1);
+    assert.equal(ranking.rows[0].totalScore, 99);
+    assert.equal(ranking.rows[0].gamesPlayed, 1);
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test("Claim / lease: valid lease中の重複claimを拒否し、stale leaseはtokenを更新し、old completionを無効化する", async () => {
+  const fixture = await createGoldenDb();
+  try {
+    const at = new Date(fixture.startAt.getTime() + 12 * 60 * 1000);
+    const created = await createDueJob(fixture, "score", at, 11);
+    const [first, duplicate] = await Promise.all([
+      claimV3Job(fixture.env.AUTH_DB, { jobId: created.job.id, now: at }),
+      claimV3Job(fixture.env.AUTH_DB, { jobId: created.job.id, now: at })
+    ]);
+    assert.equal(Boolean(first) !== Boolean(duplicate), true);
+    const claimA = first || duplicate;
+    assert.equal(claimA.status, "claimed");
+    fixture.database.prepare(
+      "UPDATE game_jobs_v3 SET lease_expires_at = ?, updated_at = ? WHERE id = ?"
+    ).run(new Date(at.getTime() - 1000).toISOString(), at.toISOString(), created.job.id);
+    const reclaimed = await claimV3Job(fixture.env.AUTH_DB, { jobId: created.job.id, now: new Date(at.getTime() + 2000) });
+    assert.equal(reclaimed.status, "claimed");
+    assert.notEqual(reclaimed.claim_token, claimA.claim_token);
+    assert.equal(await completeV3Job(fixture.env.AUTH_DB, { jobId: created.job.id, claimToken: claimA.claim_token, now: at }), false);
+    assert.equal(await completeV3Job(fixture.env.AUTH_DB, { jobId: created.job.id, claimToken: reclaimed.claim_token, now: new Date(at.getTime() + 3000) }), true);
+    assert.equal(fixture.database.prepare("SELECT status FROM game_jobs_v3 WHERE id = ?").get(created.job.id).status, "completed");
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test("Stale score executor: Aを読み込んだ後のB correctionでAをcurrentへ再採用しない", async () => {
+  const fixture = await createGoldenDb();
+  try {
+    const first = await prepareManualLineup(fixture);
+    fixture.database.prepare("UPDATE game_automation_v3_state SET state = 'lineup_ready' WHERE internal_game_id = ?").run(GAME_ID);
+    const at = new Date(fixture.startAt.getTime() + 20 * 60 * 1000);
+    const created = await createDueJob(fixture, "score", at, 21);
+    const claimed = await claimV3Job(fixture.env.AUTH_DB, { jobId: created.job.id, now: at });
+    const gate = { hit: deferred(), release: deferred() };
+    const gatedEnv = {
+      ...fixture.env,
+      AUTH_DB: gatedD1(
+        fixture.database,
+        (sql) => sql.includes("SELECT version, revision_id FROM game_lineup_revisions") && sql.includes("is_current DESC"),
+        gate
+      )
+    };
+    const oldExecutor = executeGameAutomationV3Job({
+      env: gatedEnv,
+      job: claimed,
+      internalGameId: GAME_ID,
+      now: at
+    });
+    await gate.hit.promise;
+
+    const correction = await adminRequest(fixture.env, `/api/admin/v3/games/${GAME_ID}/lineup-correction`, {
+      lineup: changedLineup(), reason: "stale score race correction", confirmed: true
+    });
+    const correctionBody = await correction.json();
+    assert.equal(correction.status, 202, JSON.stringify(correctionBody));
+    const correctionRevision = correctionBody.correctionRevision.revisionId;
+    gate.release.resolve();
+
+    const oldResult = await oldExecutor;
+    assert.equal(oldResult.status, "stale_no_op");
+    assert.equal(oldResult.noOpReason, "V3_STALE_LINEUP_REVISION");
+    assert.equal(await completeV3Job(fixture.env.AUTH_DB, { jobId: claimed.id, claimToken: claimed.claim_token, now: at }), true);
+
+    const canonical = await evaluateCanonicalArtifactsFromDb(fixture.env.AUTH_DB, GAME_ID);
+    assert.equal(canonical.lineup.canonicalFinalRevisionId, correctionRevision);
+    assert.equal(canonical.aggregate.lineupReady, true);
+    assert.equal(canonical.aggregate.scoringReady, false);
+    assert.equal(canonical.aggregate.rankingReady, false);
+    assert.equal(canonical.aggregate.publicationReady, false);
+    assert.equal(canonical.aggregate.fullyPublished, false);
+    assert.equal(canonical.aggregate.needsAttention, false);
+    assert.equal(canonical.aggregate.reprocessingRequired, false);
+    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM game_scoring_revisions WHERE internal_game_id = ?").get(GAME_ID).count, 0);
+    assert.equal(fixture.database.prepare("SELECT prediction_json, actual_lineup_json FROM predictions WHERE id = 'prediction-1'").get().actual_lineup_json, null);
+    assert.notEqual(first.saveBody.revision.revisionId, correctionRevision);
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test("Stale ranking / publish executor: Aの遅延完了はBのreadinessとpublicationを汚染しない", async () => {
+  const fixture = await createGoldenDb();
+  try {
+    const first = await completeGoldenPathA(fixture);
+    const staleRanking = await createDueJob(fixture, "ranking_rebuild", new Date(first.at.getTime() + 1000), 31);
+    const stalePublish = await createDueJob(fixture, "publish", new Date(first.at.getTime() + 2000), 32);
+    const rankingClaim = await claimV3Job(fixture.env.AUTH_DB, { jobId: staleRanking.job.id, now: new Date(first.at.getTime() + 3000) });
+    const publishClaim = await claimV3Job(fixture.env.AUTH_DB, { jobId: stalePublish.job.id, now: new Date(first.at.getTime() + 3000) });
+
+    const correction = await adminRequest(fixture.env, `/api/admin/v3/games/${GAME_ID}/lineup-correction`, {
+      lineup: changedLineup(), reason: "stale ranking and publish race correction", confirmed: true
+    });
+    const correctionBody = await correction.json();
+    assert.equal(correction.status, 202, JSON.stringify(correctionBody));
+    const correctionRevision = correctionBody.correctionRevision.revisionId;
+
+    await assert.rejects(
+      () => executeGameAutomationV3Job({ env: fixture.env, job: rankingClaim, internalGameId: GAME_ID, now: new Date(first.at.getTime() + 4000) }),
+      (error) => error?.code === "V3_SCORING_ARTIFACT_NOT_READY"
+    );
+    await assert.rejects(
+      () => executeGameAutomationV3Job({ env: fixture.env, job: publishClaim, internalGameId: GAME_ID, now: new Date(first.at.getTime() + 5000) }),
+      (error) => error?.code === "V3_RANKING_ARTIFACT_NOT_READY"
+    );
+    await retryV3Job(fixture.env.AUTH_DB, {
+      jobId: rankingClaim.id, claimToken: rankingClaim.claim_token, attemptCount: rankingClaim.attempt_count,
+      maxAttempts: rankingClaim.max_attempts, now: new Date(first.at.getTime() + 4000), errorCode: "STALE_RANKING", errorMessage: "stale fixture",
+      retryAt: new Date(first.at.getTime() + 10 * 1000)
+    });
+    await retryV3Job(fixture.env.AUTH_DB, {
+      jobId: publishClaim.id, claimToken: publishClaim.claim_token, attemptCount: publishClaim.attempt_count,
+      maxAttempts: publishClaim.max_attempts, now: new Date(first.at.getTime() + 5000), errorCode: "STALE_PUBLISH", errorMessage: "stale fixture",
+      retryAt: new Date(first.at.getTime() + 12 * 1000)
+    });
+
+    const during = await evaluateCanonicalArtifactsFromDb(fixture.env.AUTH_DB, GAME_ID);
+    assert.equal(during.lineup.canonicalFinalRevisionId, correctionRevision);
+    assert.equal(during.aggregate.scoringReady, false);
+    assert.equal(during.aggregate.rankingReady, false);
+    assert.equal(during.aggregate.publicationReady, false);
+    assert.equal(during.aggregate.fullyPublished, false);
+    assert.equal(fixture.database.prepare("SELECT publication_status FROM game_lineups WHERE internal_game_id = ?").get(GAME_ID).publication_status, "pending");
+
+    const executed = [];
+    for (let pass = 0; pass < 5; pass += 1) {
+      await runFormalCron(fixture.env, new Date(first.at.getTime() + 10 * 1000 + pass * 1000), executed);
+    }
+    const final = await evaluateCanonicalArtifactsFromDb(fixture.env.AUTH_DB, GAME_ID);
+    assert.equal(final.lineup.canonicalFinalRevisionId, correctionRevision);
+    assert.equal(final.aggregate.fullyPublished, true);
+    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM ranking_reflection_revisions WHERE internal_game_id = ?").get(GAME_ID).count, 2);
+    const ranking = await rankingSnapshot(fixture);
+    assert.equal(ranking.rows[0].totalScore, 88);
+    assert.equal(ranking.rows[0].gamesPlayed, 1);
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test("Correction B→C: 遅延B jobがC canonicalを上書きせず、Cだけが最終lineageになる", async () => {
+  const fixture = await createGoldenDb();
+  try {
+    const first = await completeGoldenPathA(fixture);
+    const correctionB = await adminRequest(fixture.env, `/api/admin/v3/games/${GAME_ID}/lineup-correction`, {
+      lineup: changedLineup(), reason: "correction B", confirmed: true
+    });
+    const bodyB = await correctionB.json();
+    assert.equal(correctionB.status, 202, JSON.stringify(bodyB));
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    const correctionCLineup = normalLineup().map((row, index) => index === 1
+      ? { ...row, playerId: getManualLineupPlayerCatalog()[10].playerId, playerName: getManualLineupPlayerCatalog()[10].playerName, uniformNumber: String(getManualLineupPlayerCatalog()[10].uniformNumber) }
+      : row);
+    const correctionC = await adminRequest(fixture.env, `/api/admin/v3/games/${GAME_ID}/lineup-correction`, {
+      lineup: correctionCLineup, reason: "correction C", confirmed: true
+    });
+    const bodyC = await correctionC.json();
+    assert.equal(correctionC.status, 202, JSON.stringify(bodyC));
+    assert.notEqual(bodyB.correctionRevision.revisionId, bodyC.correctionRevision.revisionId);
+
+    const executed = [];
+    for (let pass = 0; pass < 8; pass += 1) {
+      await runFormalCron(fixture.env, new Date(first.at.getTime() + 2 * 1000 + pass * 1000), executed);
+    }
+    const canonical = await evaluateCanonicalArtifactsFromDb(fixture.env.AUTH_DB, GAME_ID);
+    assert.equal(canonical.lineup.canonicalFinalRevisionId, bodyC.correctionRevision.revisionId);
+    assert.equal(canonical.aggregate.fullyPublished, true);
+    assert.equal(canonical.scoring.lineupRevisionMatch, true);
+    assert.equal(canonical.ranking.scoringRevisionMatch, true);
+    assert.equal(canonical.publication.rankingRevisionMatch, true);
+    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM game_scoring_revisions WHERE internal_game_id = ?").get(GAME_ID).count, 2);
+    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM ranking_reflection_revisions WHERE internal_game_id = ?").get(GAME_ID).count, 2);
+    const ranking = await rankingSnapshot(fixture);
+    assert.equal(ranking.rows[0].totalScore, 88);
+    assert.equal(ranking.rows[0].gamesPlayed, 1);
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test("Partial artifact/job failure: artifact作成後のscore・ranking・publish失敗をretryしても二重効果を作らない", async () => {
+  const fixture = await createGoldenDb();
+  try {
+    await prepareManualLineup(fixture);
+    const baseAt = new Date(fixture.startAt.getTime() + 1000);
+    fixture.database.prepare(
+      "UPDATE game_automation_v3_state SET state = 'lineup_ready', version = version + 1, updated_at = ? WHERE internal_game_id = ?"
+    ).run(baseAt.toISOString(), GAME_ID);
+
+    const runWithPostArtifactFailure = async (jobType, firstAt, slotSuffix, artifactCheck) => {
+      await createDueJob(fixture, jobType, firstAt, slotSuffix);
+      let failAfterArtifact = true;
+      const executeJob = async (context) => {
+        const result = await executeGameAutomationV3Job(context);
+        if (failAfterArtifact) {
+          failAfterArtifact = false;
+          throw new Error(`test failure after ${jobType} artifact`);
+        }
+        return result;
+      };
+      const firstRun = await runGameAutomationV3(fixture.env, firstAt, {
+        formalPlanner: (db, games, at) => planMainWorkflowJobs(db, games, at, {
+          disabledStages: ["roster_fetch", "lineup_fetch"]
+        }),
+        auxiliaryPlanner: async () => ({ created: 0, planned: [], diagnostics: [], errors: [] }),
+        executeJob
+      });
+      assert.equal(firstRun.execution.failed, 1);
+      assert.equal(firstRun.execution.retryWait, 1);
+      assert.equal((await artifactCheck()).ready, true);
+      const retryAt = new Date(firstAt.getTime() + 10 * 60 * 1000 + 1000);
+      const secondRun = await runGameAutomationV3(fixture.env, retryAt, {
+        formalPlanner: (db, games, at) => planMainWorkflowJobs(db, games, at, {
+          disabledStages: ["roster_fetch", "lineup_fetch"]
+        }),
+        auxiliaryPlanner: async () => ({ created: 0, planned: [], diagnostics: [], errors: [] }),
+        executeJob: async (context) => executeGameAutomationV3Job(context)
+      });
+      assert.equal(secondRun.execution.failed, 0);
+      assert.equal(fixture.database.prepare("SELECT status FROM game_jobs_v3 WHERE job_type = ? ORDER BY id DESC LIMIT 1").get(jobType).status, "completed");
+    };
+
+    await runWithPostArtifactFailure("score", baseAt, 1, async () => {
+      const canonical = await evaluateCanonicalArtifactsFromDb(fixture.env.AUTH_DB, GAME_ID);
+      return { ready: canonical.aggregate.scoringReady };
+    });
+    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM game_scoring_revisions WHERE internal_game_id = ?").get(GAME_ID).count, 1);
+    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM predictions WHERE internal_game_id = ? AND scoring_status = 'scored'").get(GAME_ID).count, 1);
+
+    const rankingAt = new Date(baseAt.getTime() + 20 * 60 * 1000);
+    await runWithPostArtifactFailure("ranking_rebuild", rankingAt, 2, async () => {
+      const canonical = await evaluateCanonicalArtifactsFromDb(fixture.env.AUTH_DB, GAME_ID);
+      return { ready: canonical.aggregate.rankingReady };
+    });
+    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM ranking_reflection_revisions WHERE internal_game_id = ?").get(GAME_ID).count, 1);
+    const rankingBeforePublish = await rankingSnapshot(fixture, { publishedOnly: false });
+    assert.equal(rankingBeforePublish.rows[0].totalScore, 99);
+    assert.equal(rankingBeforePublish.rows[0].gamesPlayed, 1);
+
+    const publishAt = new Date(rankingAt.getTime() + 20 * 60 * 1000);
+    await runWithPostArtifactFailure("publish", publishAt, 3, async () => {
+      const canonical = await evaluateCanonicalArtifactsFromDb(fixture.env.AUTH_DB, GAME_ID);
+      return { ready: canonical.aggregate.publicationReady };
+    });
+    const final = await evaluateCanonicalArtifactsFromDb(fixture.env.AUTH_DB, GAME_ID);
+    assert.equal(final.aggregate.fullyPublished, true);
+    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM ranking_reflection_revisions WHERE internal_game_id = ?").get(GAME_ID).count, 1);
+    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM game_scoring_revisions WHERE internal_game_id = ?").get(GAME_ID).count, 1);
+    const rankingAfterPublish = await rankingSnapshot(fixture, { publishedOnly: false });
+    assert.deepEqual(rankingAfterPublish.rows, rankingBeforePublish.rows);
   } finally {
     fixture.database.close();
   }

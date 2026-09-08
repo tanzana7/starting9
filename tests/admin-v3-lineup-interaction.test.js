@@ -30,14 +30,15 @@ function createRenderer() {
   });
 }
 
-function makeGame(id, workflowState = "scheduled") {
+function makeGame(id, workflowState = "scheduled", overrides = {}) {
   return {
     internalGameId: id,
     gameDate: "2026-09-08",
     startAt: "2026-09-08T18:00:00+09:00",
     homeTeam: "fighters",
     awayTeam: "hawks",
-    workflowState
+    workflowState,
+    ...overrides
   };
 }
 
@@ -123,20 +124,40 @@ function assertLockedMarkup(markup, expectedReason) {
   ]) assert.equal(control.disabled, true);
 }
 
-test("manual lineupのeditable fixtureは検索・守備位置変更を許可する", () => {
+test("manual lineupは開始前・開始後・過去・prediction_closedでもcanonicalなしなら編集可能にする", () => {
   const renderer = createRenderer();
-  const details = makeDetails("today-game", { lineup: null });
-  const interaction = renderer.manualLineupInteractionState(makeGame("today-game"), details, { loading: false });
-  assert.equal(interaction.locked, false);
-  assert.equal(interaction.loading, false);
-  assert.equal(interaction.reason, "");
-  const markup = renderer.render(makeGame("today-game"), details, {
+  const fixtures = [
+    makeGame("before-start", "scheduled", { startAt: "2026-09-08T18:00:00+09:00", gameStatus: "scheduled" }),
+    makeGame("after-start", "prediction_closed", { startAt: "2026-09-08T09:00:00+09:00", gameStatus: "scheduled" }),
+    makeGame("hours-after-start", "prediction_closed", { startAt: "2026-09-08T09:00:00+09:00", gameStatus: "completed" }),
+    makeGame("past-unregistered", "prediction_closed", { gameDate: "2026-09-07", startAt: "2026-09-07T18:00:00+09:00", gameStatus: "completed" })
+  ];
+  for (const game of fixtures) {
+    const details = makeDetails(game.internalGameId, { lineup: null });
+    const interaction = renderer.manualLineupInteractionState(game, details, { loading: false });
+    assert.equal(interaction.locked, false, game.internalGameId);
+    assert.equal(interaction.loading, false, game.internalGameId);
+    assert.equal(interaction.reason, "", game.internalGameId);
+    assertEditableMarkup(renderer.render(game, details, {
+      rows: renderer.createBlankRows(),
+      confirmed: false,
+      latestRevision: null,
+      loading: false
+    }));
+  }
+});
+
+test("開始後の未登録manual lineupはfinalize可能なcontrolsを描画する", () => {
+  const renderer = createRenderer();
+  const game = makeGame("after-start", "prediction_closed", { startAt: "2026-09-08T09:00:00+09:00" });
+  const markup = renderer.render(game, makeDetails("after-start", { lineup: null }), {
     rows: renderer.createBlankRows(),
-    confirmed: false,
-    latestRevision: null,
+    confirmed: true,
+    latestRevision: { revisionId: "revision-1", version: 1 },
     loading: false
   });
   assertEditableMarkup(markup);
+  assert.match(markup, /data-v3-manual-lineup-finalize(?![^>]*disabled)/);
 });
 
 test("manual lineupはloading中に編集を止め、成功後にロック理由を消す", () => {
@@ -161,16 +182,36 @@ test("manual lineupの保存中も編集を止め、保存完了後に再び編�
   assertEditableMarkup(renderer.render(game, details, { rows: renderer.createBlankRows(), loading: false }));
 });
 
-test("finalized・scoring・publishedのmanual lineupはロック理由を表示する", () => {
+test("finalized・scoring・publishedのcanonical lineupはロック理由を表示する", () => {
   const renderer = createRenderer();
   const game = makeGame("game-1");
   const fixtures = [
-    [makeDetails("game-1", { finalRevision: { isFinal: true } }), "スタメン確定済み"],
-    [makeDetails("game-1", { lineupStatus: "processing" }), "採点処理が開始済み"],
-    [makeDetails("game-1", { lineupStatus: "scored" }), "採点済み"],
-    [makeDetails("game-1", { publication: { publication: { status: "published", publishedAt: "2026-09-08T20:00:00Z" } } }), "公開済み"]
+    [makeDetails("game-1", { canonicalFinalLineupExists: true, finalRevision: { isFinal: true } }), "スタメン確定済み"],
+    [makeDetails("game-1", { canonicalFinalLineupExists: true, lineupStatus: "processing" }), "スタメン確定済み"],
+    [makeDetails("game-1", { canonicalFinalLineupExists: true, lineupStatus: "scored" }), "スタメン確定済み"],
+    [makeDetails("game-1", { canonicalFinalLineupExists: true, publication: { publication: { status: "published", publishedAt: "2026-09-08T20:00:00Z" } } }), "スタメン確定済み"]
   ];
   for (const [details, reason] of fixtures) assertLockedMarkup(renderer.render(game, details, { rows: renderer.createBlankRows(), loading: false }), reason);
+});
+
+test("scored・publishedなどのpersisted stateだけではcanonicalなしの登録をロックしない", () => {
+  const renderer = createRenderer();
+  for (const workflowState of ["lineup_ready", "scored", "ranked", "published"]) {
+    const game = makeGame(`stale-${workflowState}`, workflowState, { gameStatus: "completed" });
+    const details = makeDetails(game.internalGameId, { lineup: null, lineupStatus: "scored" });
+    assertEditableMarkup(renderer.render(game, details, { rows: renderer.createBlankRows(), loading: false }));
+  }
+});
+
+test("final revisionだけが残るstale状態でもcanonicalなしなら登録可能にする", () => {
+  const renderer = createRenderer();
+  const game = makeGame("stale-final-revision", "published", { gameStatus: "completed" });
+  const details = makeDetails(game.internalGameId, {
+    canonicalFinalLineupExists: false,
+    finalRevision: { isFinal: true },
+    lineupStatus: "scored"
+  });
+  assertEditableMarkup(renderer.render(game, details, { rows: renderer.createBlankRows(), loading: false }));
 });
 
 test("manual lineupはlineup以外の必須詳細取得失敗も編集停止として表示する", () => {
@@ -183,13 +224,21 @@ test("manual lineupはlineup以外の必須詳細取得失敗も編集停止と�
 test("manual lineupは試合切替時にロック状態と詳細試合IDを混ぜない", () => {
   const renderer = createRenderer();
   const rows = renderer.createBlankRows();
-  const lockedGame = renderer.render(makeGame("game-a"), makeDetails("game-a", { lineupStatus: "scored" }), { rows, loading: false });
+  const lockedGame = renderer.render(makeGame("game-a", "scored"), makeDetails("game-a", { canonicalFinalLineupExists: true, finalRevision: { isFinal: true }, lineupStatus: "scored" }), { rows, loading: false });
   const editableGame = renderer.render(makeGame("game-b"), makeDetails("game-b", { lineup: null }), { rows, loading: false });
-  const lockedAgain = renderer.render(makeGame("game-a"), makeDetails("game-a", { finalRevision: { isFinal: true } }), { rows, loading: false });
-  assertLockedMarkup(lockedGame, "採点済み");
+  const lockedAgain = renderer.render(makeGame("game-a"), makeDetails("game-a", { canonicalFinalLineupExists: true, finalRevision: { isFinal: true } }), { rows, loading: false });
+  assertLockedMarkup(lockedGame, "スタメン確定済み");
   assertEditableMarkup(editableGame);
   assertLockedMarkup(lockedAgain, "スタメン確定済み");
   assertLockedMarkup(renderer.render(makeGame("game-b"), makeDetails("game-a", { lineup: null }), { rows, loading: false }), "詳細が一致しない");
+});
+
+test("cancelled・postponed・excludedのmanual lineupは登録不可理由を表示する", () => {
+  const renderer = createRenderer();
+  for (const gameStatus of ["cancelled", "postponed", "excluded"]) {
+    const game = makeGame(`unavailable-${gameStatus}`, "scheduled", { gameStatus });
+    assertLockedMarkup(renderer.render(game, makeDetails(game.internalGameId, { lineup: null }), { rows: renderer.createBlankRows(), loading: false }), "中止・延期または対象外");
+  }
 });
 
 test("manual lineupのロックはCSSやcoordinatorの親イベントで追加されていない", () => {

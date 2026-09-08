@@ -19,7 +19,7 @@ import {
 import { planV3ProbableStarterJobs } from "./probable-starter-planner.js";
 import { isV3GameEligible } from "./domain.js";
 import { assessV3LineupArtifact } from "./lineup-artifacts.js";
-import { evaluateCanonicalArtifactsFromDb } from "./canonical-artifact-evaluator.js";
+import { evaluateCanonicalArtifactsFromDb, hasCanonicalArtifactEvidence } from "./canonical-artifact-evaluator.js";
 import { getV3CanonicalRosterSnapshot } from "./roster-repository.js";
 import { buildStagePlans, buildV3PlanningState, isV3JobForStage } from "./planning-engine.js";
 
@@ -251,6 +251,12 @@ async function deriveV3PlanningState(db, gameOrId, persistedState = "scheduled",
   const rosterSnapshot = await getV3CanonicalRosterSnapshot(db, internalGameId, {
     gameDate: game.gameDate || game.game_date
   });
+  let canonicalArtifacts = null;
+  try {
+    canonicalArtifacts = await evaluateCanonicalArtifactsFromDb(db, internalGameId);
+  } catch {
+    // Keep the formal planner compatible with databases where optional canonical reads are unavailable.
+  }
   const artifacts = {
     roster_fetch: {
       available: Boolean(rosterSnapshot?.exists),
@@ -279,16 +285,10 @@ async function deriveV3PlanningState(db, gameOrId, persistedState = "scheduled",
     persistedState,
     jobs,
     artifacts,
+    canonicalArtifacts,
     now
   });
-  let canonicalArtifacts = null;
-  try {
-    canonicalArtifacts = await evaluateCanonicalArtifactsFromDb(db, internalGameId);
-  } catch {
-    // The canonical evaluator is parity telemetry here. Existing formal
-    // planning must remain unchanged when an optional read is unavailable.
-  }
-  return { ...planningState, artifacts, workflowArtifacts, rosterSnapshot, canonicalArtifacts };
+  return { ...planningState, workflowArtifacts, rosterSnapshot };
 }
 
 function createV3PlanningDiagnostic(game, plan, state) {
@@ -530,7 +530,34 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
       const derivedPlanningState = await deriveV3PlanningState(db, game, persistedState, now);
       const state = derivedPlanningState.effectiveState;
       const workflowArtifacts = derivedPlanningState.workflowArtifacts || await readV3WorkflowArtifactHealth(db, game.internalGameId, state);
-      if (state === "published" || workflowArtifacts.publicationReady) continue;
+      const canonicalAvailable = hasCanonicalArtifactEvidence(derivedPlanningState.canonicalArtifacts);
+      const canonicalFullyPublished = derivedPlanningState.canonicalArtifacts?.aggregate?.fullyPublished === true;
+      if (state === "published") {
+        if (canonicalAvailable && !canonicalFullyPublished) {
+          diagnostics.push({
+            internalGameId: game.internalGameId || null,
+            stage: "publish",
+            jobType: V3_JOB_TYPE.PUBLISH,
+            effectiveState: state,
+            persistedState,
+            stateMismatch: derivedPlanningState.stateMismatch,
+            due: false,
+            selectedSlotAt: null,
+            shouldCreateJob: false,
+            insertAllowed: false,
+            blocked: true,
+            blockedReason: "PUBLISHED_CANONICAL_ARTIFACT_MISMATCH",
+            reasonCode: "PUBLISHED_CANONICAL_ARTIFACT_MISMATCH_NEEDS_ATTENTION",
+            existingJobId: null,
+            existingStatus: null,
+            canonicalArtifacts: derivedPlanningState.canonicalArtifacts.aggregate,
+            insertAttempted: false,
+            insertedRowCount: 0
+          });
+        }
+        continue;
+      }
+      if (workflowArtifacts.publicationReady && (!canonicalAvailable || canonicalFullyPublished)) continue;
       const existingJobs = await readV3JobsForPlanning(db, game.internalGameId);
       const sharedPlanningState = buildV3PlanningState({
         ...derivedPlanningState,

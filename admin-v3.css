@@ -393,6 +393,8 @@ button:disabled { cursor: wait; opacity: .65; }
   white-space: nowrap;
 }
 .manual-lineup-card-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.manual-lineup-fixed-order { display: grid; gap: 4px; align-content: start; color: #526477; font-size: 11px; font-weight: 700; }
+.manual-lineup-fixed-order strong { display: block; box-sizing: border-box; width: 100%; padding: 7px 8px; border: 1px solid #dbe5ee; border-radius: 5px; color: #1d527c; background: #f7fbff; font-size: 13px; }
 .manual-lineup-confirm { display: flex; align-items: center; gap: 7px; color: #334a62; font-size: 12px; }
 .manual-lineup-confirm input { width: auto; }
 .manual-lineup-actions { display: flex; flex-wrap: wrap; gap: 8px; }

@@ -12,6 +12,7 @@
       selectionSafetyNotice: "",
       lastUpdatedAt: null,
       operationDetails: new Map(),
+      operationDetailsRequestToken: 0,
       jobDetails: new Map(),
       jobDetailsOpen: new Set(),
       jobDetailsLoading: new Set(),

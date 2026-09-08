@@ -29,6 +29,7 @@ function createHarness() {
     copyJobDetail: async (...args) => calls.push(["copyJobDetail", ...args]),
     refreshJobDetail: async (...args) => calls.push(["refreshJobDetail", ...args]),
     toggleJobDetail: async (...args) => calls.push(["toggleJobDetail", ...args]),
+    updateManualLineupRow: (...args) => calls.push(["updateManualLineupRow", ...args]),
     load: async () => calls.push(["load"]),
     changeFilter: (...args) => calls.push(["changeFilter", ...args]),
     selectGameFromToolbar: (...args) => calls.push(["selectGameFromToolbar", ...args]),
@@ -37,6 +38,7 @@ function createHarness() {
   };
   const document = {
     addEventListener(type, listener) { listeners[type] = listener; },
+    querySelector() { return null; },
     getElementById() { return null; }
   };
   const window = { addEventListener() {} };
@@ -67,6 +69,19 @@ test("admin-v3の明示的な中止ボタンは既存のcancel操作へ委譲す
   const { listeners, calls } = createHarness();
   await listeners.click({ target: targetFor("[data-v3-schedule-cancel]", { v3ScheduleCancel: "game-1" }) });
   assert.deepEqual(calls.at(-1), ["cancelGame", "game-1"]);
+});
+
+test("admin-v3のmanual lineup守備位置変更は選択行へ委譲する", async () => {
+  const { listeners, calls } = createHarness();
+  const target = {
+    value: "遊",
+    dataset: { v3ManualLineupPosition: "2" },
+    closest(selector) { return selector === "[data-v3-manual-lineup-position]" ? this : null; }
+  };
+  await listeners.change({ target });
+  assert.equal(calls.at(-1)[0], "updateManualLineupRow");
+  assert.equal(calls.at(-1)[1], 2);
+  assert.equal(calls.at(-1)[2].position, "遊");
 });
 
 test("admin-v3の各操作data属性とcache busterがentrypointで一致する", () => {

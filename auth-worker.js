@@ -7737,7 +7737,9 @@ async function handleAdminV3Phase1Route(request, env, cors, route) {
   }
   try {
     const { id, target, metadata } = context;
-    if (request.method !== "GET") await assertV3GameNotPublished(env.AUTH_DB, id);
+    const manualLineupMutation = request.method !== "GET"
+      && ["lineup-revisions", "lineup-finalize"].includes(route.action);
+    if (request.method !== "GET" && !manualLineupMutation) await assertV3GameNotPublished(env.AUTH_DB, id);
     if (route.action === "lineup" && request.method === "GET") return await handleAdminV3LineupGet(env, cors, context);
     if (route.action === "lineup-revisions" && request.method === "GET") return await handleAdminV3LineupRevisionsGet(env, cors, context);
     if (route.action === "lineup-revisions" && request.method === "POST") return await handleAdminV3LineupRevisionCreate(request, env, cors, context, access.user);

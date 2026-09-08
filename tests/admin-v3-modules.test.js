@@ -50,7 +50,7 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
     "frontend/admin-v3/api-client.js?v=independent-roster-lineup-safety-1",
     "frontend/admin-v3/dom.js?v=manual-lineup-finalize-safety-1",
     "frontend/admin-v3/selection-safety.js?v=admin-game-selection-safety-1",
-    "frontend/admin-v3/render-manual-lineup.js?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1-game-selection-safety-1-lineup-order-mobile-zoom-1-admin-lineup-registration-emergency-fix-1",
+    "frontend/admin-v3/render-manual-lineup.js?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1-game-selection-safety-1-lineup-order-mobile-zoom-1-admin-lineup-registration-emergency-fix-1-admin-lineup-lock-reason-1",
     "frontend/admin-v3/render-lineup-correction.js?v=admin-v3-lineup-correction-1",
     "frontend/admin-v3/render-manual-roster.js?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1",
     "frontend/admin-v3/render-game-progress.js?v=manual-lineup-finalize-safety-1-v35-v4-semi-auto-diagnostics-1",
@@ -145,6 +145,7 @@ test("試合切替はmanual stateと詳細レスポンスの試合境界を守�
   assert.match(detailLoader, /responseGameId/);
   assert.match(detailLoader, /requestToken !== Number\(v3State\.operationDetailsRequestToken/);
   assert.match(detailLoader, /id !== v3State\.selectedGameId/);
+  assert.match(detailLoader, /operationDetails\.delete\(id\)/);
   assert.match(selection, /ensureV3ManualLineupState\(v3State\.selectedGameId\)/);
   assert.doesNotMatch(coordinator, /data-v3-manual-lineup-order/);
   assert.match(coordinator, /data-v3-lineup-correction-order/);

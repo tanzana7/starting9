@@ -1557,6 +1557,8 @@ async function loadV3OperationDetails() {
   if (!id) return;
   const requestToken = Number(v3State.operationDetailsRequestToken || 0) + 1;
   v3State.operationDetailsRequestToken = requestToken;
+  v3State.operationDetails.delete(id);
+  renderCurrentV3View();
   const paths = {
     lineup: v3DetailPath("/lineup"),
     revisions: v3DetailPath("/lineup-revisions"),

@@ -95,11 +95,6 @@
           actions.renderRankingExclusionGames();
           return;
         }
-        const order = closestFromEvent(event, "[data-v3-manual-lineup-order]");
-        if (order) {
-          preservePickerScroll(`[data-v3-manual-lineup-candidates="${Number(order.dataset.v3ManualLineupOrder)}"]`, () => actions.updateManualLineupRow(Number(order.dataset.v3ManualLineupOrder), { battingOrder: Number(order.value) }));
-          return;
-        }
         const position = closestFromEvent(event, "[data-v3-manual-lineup-position]");
         if (position) {
           preservePickerScroll(`[data-v3-manual-lineup-candidates="${Number(position.dataset.v3ManualLineupPosition)}"]`, () => actions.updateManualLineupRow(Number(position.dataset.v3ManualLineupPosition), { position: position.value }));

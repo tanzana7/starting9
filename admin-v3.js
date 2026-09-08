@@ -451,7 +451,7 @@ function manualLineupRowsFromRevision(revision) {
     const expectedOrder = index + 1;
     const entry = lineup.find((row) => Number(row?.battingOrder ?? row?.order) === expectedOrder) || lineup[index] || {};
     return {
-      battingOrder: Number(entry.battingOrder ?? entry.order) || expectedOrder,
+      battingOrder: expectedOrder,
       position: String(entry.position || ""),
       playerId: String(entry.playerId || ""),
       playerName: String(entry.playerName || entry.displayName || ""),
@@ -967,8 +967,8 @@ function selectV3ManualLineupPlayer(index, playerId) {
 function manualLineupPayload(state) {
   return {
     confirmed: state.confirmed === true,
-    lineup: state.rows.map((row) => ({
-      battingOrder: Number(row.battingOrder),
+    lineup: state.rows.map((row, index) => ({
+      battingOrder: index + 1,
       position: row.position,
       playerName: row.playerName,
       uniformNumber: row.uniformNumber,
@@ -1348,7 +1348,7 @@ function renderCurrentV3View() {
     }
     v3State.selectionValidated = true;
   }
-  const filteredGame = selectedV3Game(games);
+  const filteredGame = games.find((candidate) => candidate.internalGameId === v3State.selectedGameId) || null;
   if (game && v3State.selectedGameId !== game.internalGameId) {
     v3State.selectedGameId = game.internalGameId;
     v3StorageSet("starting9.admin-v3.selected-game", game.internalGameId);
@@ -1555,6 +1555,8 @@ function renderV3(payload) {
 async function loadV3OperationDetails() {
   const id = v3State.selectedGameId;
   if (!id) return;
+  const requestToken = Number(v3State.operationDetailsRequestToken || 0) + 1;
+  v3State.operationDetailsRequestToken = requestToken;
   const paths = {
     lineup: v3DetailPath("/lineup"),
     revisions: v3DetailPath("/lineup-revisions"),
@@ -1564,9 +1566,18 @@ async function loadV3OperationDetails() {
     schedule: v3DetailPath("/schedule")
   };
   const entries = await Promise.all(Object.entries(paths).map(async ([key, path]) => {
-    try { return [key, await v3Api.getGameOperationDetail(id, path.replace(`/api/admin/v3/games/${encodeURIComponent(id)}`, ""))]; }
-    catch (error) { return [key, { ok: false, errorCode: error.code, error: formatV3AdminError(error, "V3_OPERATION_DETAIL_FAILED") }]; }
+    try {
+      const detail = await v3Api.getGameOperationDetail(id, path.replace(`/api/admin/v3/games/${encodeURIComponent(id)}`, ""));
+      const responseGameId = String(detail?.internalGameId || "");
+      if (responseGameId !== String(id)) {
+        return [key, { ok: false, errorCode: responseGameId ? "V3_OPERATION_DETAIL_GAME_MISMATCH" : "V3_OPERATION_DETAIL_GAME_ID_MISSING", error: responseGameId ? "取得した試合詳細のinternalGameIdが選択中の試合と一致しません。" : "取得した試合詳細にinternalGameIdがありません。" }];
+      }
+      return [key, detail];
+    } catch (error) {
+      return [key, { ok: false, errorCode: error.code, error: formatV3AdminError(error, "V3_OPERATION_DETAIL_FAILED") }];
+    }
   }));
+  if (requestToken !== Number(v3State.operationDetailsRequestToken || 0) || id !== v3State.selectedGameId) return;
   v3State.operationDetails.set(id, Object.fromEntries(entries));
   renderCurrentV3View();
 }
@@ -1616,7 +1627,12 @@ async function refreshAutomationLogs() {
 }
 
 async function selectV3Game(internalGameId, view = "workflow") {
+  const previousGameId = v3State.selectedGameId;
   v3State.selectedGameId = internalGameId || "";
+  if (previousGameId !== v3State.selectedGameId) {
+    v3State.operationDetailsRequestToken = Number(v3State.operationDetailsRequestToken || 0) + 1;
+    ensureV3ManualLineupState(v3State.selectedGameId);
+  }
   v3State.selectionSource = "user";
   v3State.selectionValidated = true;
   const selected = v3ListItems(v3State.payload?.games, "games").find((game) => game.internalGameId === v3State.selectedGameId);
@@ -1658,7 +1674,11 @@ async function toggleV3JobDetail(internalGameId, jobId) {
 function handleV3HashChange() {
   const hash = readV3Hash();
   v3State.view = hash.view;
-  if (hash.gameId) v3State.selectedGameId = hash.gameId;
+  if (hash.gameId && hash.gameId !== v3State.selectedGameId) {
+    v3State.selectedGameId = hash.gameId;
+    v3State.operationDetailsRequestToken = Number(v3State.operationDetailsRequestToken || 0) + 1;
+    ensureV3ManualLineupState(v3State.selectedGameId);
+  }
   v3State.selectionSource = hash.selectionSource;
   v3State.selectionValidated = false;
   v3State.selectionSafetyNotice = "";

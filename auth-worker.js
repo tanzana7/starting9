@@ -1838,28 +1838,9 @@ function v3LineupRevisionIdentity(row) {
   return gameId && Number.isInteger(version) ? `${gameId}:${version}` : "";
 }
 
-async function hasV3CanonicalFinalLineup(db, internalGameId, revisions) {
-  try {
-    const canonical = await db.prepare(
-      `SELECT final_lineup_revision_id
-         FROM game_lineups
-        WHERE internal_game_id = ?1
-        LIMIT 1`
-    ).bind(internalGameId).first();
-    const marker = String(canonical?.final_lineup_revision_id || "").trim();
-    return Boolean(marker && (Array.isArray(revisions) ? revisions : []).some((row) =>
-      v3LineupRevisionIdentity(row) === marker
-      && assessV3LineupArtifact(parseStoredActualLineup(row.actual_lineup_json)).ok));
-  } catch {
-    return false;
-  }
-}
-
 async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore }) {
-  const revisions = await getV3LineupRevisionRows(env.AUTH_DB, internalGameId, internalGameId);
-  const hasFinalizedRevision = revisions.some((row) => Number(row.is_final) === 1)
-    || await hasV3CanonicalFinalLineup(env.AUTH_DB, internalGameId, revisions);
-  if (!hasFinalizedRevision) {
+  const canonical = await evaluateCanonicalArtifactsFromDb(env.AUTH_DB, internalGameId);
+  if (canonical?.aggregate?.lineupReady !== true) {
     throw createV3Error("V3_FINAL_LINEUP_REQUIRED", "正式スタメン確定済みの採点対象がありません。", { retryable: false });
   }
   // A terminal score job can leave the canonical lineup in processing. The
@@ -1913,6 +1894,10 @@ async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore })
 }
 
 async function executeV3RankingExecutor({ env, internalGameId, now, stateBefore }) {
+  const canonical = await evaluateCanonicalArtifactsFromDb(env.AUTH_DB, internalGameId);
+  if (canonical?.aggregate?.scoringReady !== true) {
+    throw createV3Error("V3_SCORING_ARTIFACT_NOT_READY", "現在のcanonical lineupに紐づく採点revisionが完了していません。", { retryable: false });
+  }
   const eligibility = await getRankingEligibilityState(env.AUTH_DB, internalGameId);
   if (eligibility && eligibility.rankingEligibilityStatus !== RANKING_ELIGIBILITY_STATUS.ELIGIBLE) {
     await recordRankingReflectionRevision(env.AUTH_DB, {
@@ -1994,6 +1979,10 @@ async function executeV3RankingExecutor({ env, internalGameId, now, stateBefore 
 }
 
 async function executeV3PublishExecutor({ env, internalGameId, now, target, stateBefore }) {
+  const canonical = await evaluateCanonicalArtifactsFromDb(env.AUTH_DB, internalGameId);
+  if (canonical?.aggregate?.rankingReady !== true) {
+    throw createV3Error("V3_RANKING_ARTIFACT_NOT_READY", "現在の採点revisionがランキングへ反映されていません。", { retryable: false });
+  }
   const activeRevision = await getActiveScoringRevision(env.AUTH_DB, internalGameId);
   const reflectedRevision = await env.AUTH_DB.prepare(
     `SELECT scoring_revision_id FROM ranking_reflection_revisions
@@ -2050,6 +2039,48 @@ export const V3_JOB_EXECUTORS = Object.freeze({
   [V3_JOB_TYPE.PUBLISH]: executeV3PublishExecutor
 });
 
+async function resolveV3ExecutorState({ env, jobType, internalGameId, persistedState }) {
+  const state = String(persistedState || "scheduled").trim().toLowerCase() || "scheduled";
+  // A manual finalize intentionally leaves the persisted state unchanged until
+  // the next formal Cron.  Likewise, a prior executor may have persisted the
+  // canonical artifact before its state transition was interrupted.  Use the
+  // shared canonical evaluator only for the downstream stage that is about to
+  // transition; prediction-close and terminal/manual states retain the stored
+  // state so no transition is skipped or reopened implicitly.
+  if (state === "scheduled" || state === "manual_action_required" || ["failed", "excluded", "published"].includes(state)) return state;
+  const requiredStage = {
+    score: "lineupReady",
+    ranking_rebuild: "scoringReady",
+    publish: "rankingReady"
+  }[String(jobType || "")];
+  if (!requiredStage) return state;
+  const canonical = await evaluateCanonicalArtifactsFromDb(env.AUTH_DB, internalGameId);
+  if (canonical?.aggregate?.[requiredStage] !== true) return state;
+  if (jobType === "score" && ["scheduled", "prediction_closed"].includes(state)) return "lineup_ready";
+  if (jobType === "ranking_rebuild" && ["scheduled", "prediction_closed", "lineup_ready"].includes(state)) return "scored";
+  if (jobType === "publish" && ["scheduled", "prediction_closed", "lineup_ready", "scored"].includes(state)) return "ranked";
+  return state;
+}
+
+async function reconcileV3ExecutorState({ env, internalGameId, persistedState, effectiveState, now }) {
+  let current = String(persistedState || "scheduled").trim().toLowerCase() || "scheduled";
+  const target = String(effectiveState || current).trim().toLowerCase() || current;
+  const nextState = {
+    prediction_closed: "lineup_ready",
+    lineup_ready: "scored",
+    scored: "ranked"
+  };
+  // Manual finalize and prior artifact-first executions can leave the state
+  // behind a verified canonical artifact. Promote only the finite, forward
+  // path and never bypass the initial prediction-close gate or terminal states.
+  while (current !== target && current !== "scheduled" && nextState[current]) {
+    const next = nextState[current];
+    await transitionV3State(env.AUTH_DB, { internalGameId, from: current, to: next, now });
+    current = next;
+  }
+  return current;
+}
+
 export async function executeGameAutomationV3Job({ env, job, internalGameId, now }) {
   const jobType = String(job?.job_type || "");
   // The registered handlers retain the canonical contracts for each branch:
@@ -2069,13 +2100,27 @@ export async function executeGameAutomationV3Job({ env, job, internalGameId, now
   const state = await env.AUTH_DB.prepare(
     "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
   ).bind(internalGameId).first();
+  const persistedState = String(state?.state || "scheduled");
+  const effectiveState = await resolveV3ExecutorState({
+    env,
+    jobType,
+    internalGameId,
+    persistedState
+  });
+  const stateBefore = await reconcileV3ExecutorState({
+    env,
+    internalGameId,
+    persistedState,
+    effectiveState,
+    now
+  });
   return executor({
     env,
     job,
     internalGameId,
     now,
     target,
-    stateBefore: String(state?.state || "scheduled")
+    stateBefore
   });
 }
 

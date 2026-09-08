@@ -83,6 +83,22 @@ function gatedD1(database, predicate, gate) {
   };
 }
 
+function gatedBatchD1(database, gate) {
+  const base = d1(database);
+  let paused = false;
+  return {
+    prepare: base.prepare,
+    async batch(statements) {
+      if (!paused) {
+        paused = true;
+        gate.hit.resolve(statements.length);
+        await gate.release.promise;
+      }
+      return base.batch(statements);
+    }
+  };
+}
+
 async function sha256Base64Url(value) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   let binary = "";
@@ -865,6 +881,115 @@ test("Partial artifact/job failure: artifact作成後のscore・ranking・publis
     assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM game_scoring_revisions WHERE internal_game_id = ?").get(GAME_ID).count, 1);
     const rankingAfterPublish = await rankingSnapshot(fixture, { publishedOnly: false });
     assert.deepEqual(rankingAfterPublish.rows, rankingBeforePublish.rows);
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test("Stale publish executor: Bのpublication batch直前のC correctionでBを公開しない", async () => {
+  const fixture = await createGoldenDb();
+  try {
+    const first = await completeGoldenPathA(fixture);
+    const correctionB = await adminRequest(fixture.env, `/api/admin/v3/games/${GAME_ID}/lineup-correction`, {
+      lineup: changedLineup(), reason: "publish race correction B", confirmed: true
+    });
+    const bodyB = await correctionB.json();
+    assert.equal(correctionB.status, 202, JSON.stringify(bodyB));
+
+    const scoreAt = new Date(first.at.getTime() + 1000);
+    await runFormalCron(fixture.env, scoreAt, []);
+    const rankingJob = await createDueJob(fixture, "ranking_rebuild", new Date(scoreAt.getTime() + 1000), 40);
+    const rankingClaim = await claimV3Job(fixture.env.AUTH_DB, { jobId: rankingJob.job.id, now: new Date(scoreAt.getTime() + 2000) });
+    const rankingResult = await executeGameAutomationV3Job({
+      env: fixture.env,
+      job: rankingClaim,
+      internalGameId: GAME_ID,
+      now: new Date(scoreAt.getTime() + 3000)
+    });
+    assert.equal(rankingResult.stateAfter, "ranked");
+    assert.equal(await completeV3Job(fixture.env.AUTH_DB, { jobId: rankingClaim.id, claimToken: rankingClaim.claim_token, now: new Date(scoreAt.getTime() + 3000) }), true);
+    await transitionV3State(fixture.env.AUTH_DB, { internalGameId: GAME_ID, from: "scored", to: "ranked", now: new Date(scoreAt.getTime() + 3000) });
+    const beforePublish = await evaluateCanonicalArtifactsFromDb(fixture.env.AUTH_DB, GAME_ID);
+    assert.equal(beforePublish.aggregate.rankingReady, true);
+    assert.equal(beforePublish.aggregate.publicationReady, false);
+    assert.equal(fixture.database.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?").get(GAME_ID).state, "ranked");
+
+    const publishJob = await createDueJob(fixture, "publish", new Date(scoreAt.getTime() + 2000), 41);
+    const publishClaim = await claimV3Job(fixture.env.AUTH_DB, { jobId: publishJob.job.id, now: new Date(scoreAt.getTime() + 3000) });
+    const gate = { hit: deferred(), release: deferred() };
+    const gatedEnv = { ...fixture.env, AUTH_DB: gatedBatchD1(fixture.database, gate) };
+    const oldPublish = executeGameAutomationV3Job({
+      env: gatedEnv,
+      job: publishClaim,
+      internalGameId: GAME_ID,
+      now: new Date(scoreAt.getTime() + 4000)
+    });
+    await gate.hit.promise;
+
+    const correctionCLineup = normalLineup().map((row, index) => index === 1
+      ? { ...row, playerId: getManualLineupPlayerCatalog()[10].playerId, playerName: getManualLineupPlayerCatalog()[10].playerName, uniformNumber: String(getManualLineupPlayerCatalog()[10].uniformNumber) }
+      : row);
+    const correctionC = await adminRequest(fixture.env, `/api/admin/v3/games/${GAME_ID}/lineup-correction`, {
+      lineup: correctionCLineup, reason: "publish race correction C", confirmed: true
+    });
+    const bodyC = await correctionC.json();
+    assert.equal(correctionC.status, 202, JSON.stringify(bodyC));
+    assert.notEqual(bodyB.correctionRevision.revisionId, bodyC.correctionRevision.revisionId);
+    gate.release.resolve();
+
+    const oldResult = await oldPublish;
+    assert.equal(oldResult.status, "stale_no_op");
+    assert.equal(oldResult.noOpReason, "V3_STALE_LINEUP_REVISION");
+    assert.equal(fixture.database.prepare("SELECT publication_status FROM game_lineups WHERE internal_game_id = ?").get(GAME_ID).publication_status, "pending");
+    assert.equal(fixture.database.prepare("SELECT publication_status FROM ranking_games WHERE internal_game_id = ?").get(GAME_ID).publication_status, "pending");
+    assert.equal(await completeV3Job(fixture.env.AUTH_DB, { jobId: publishClaim.id, claimToken: publishClaim.claim_token, now: new Date(scoreAt.getTime() + 5000) }), true);
+    const canonical = await evaluateCanonicalArtifactsFromDb(fixture.env.AUTH_DB, GAME_ID);
+    assert.equal(canonical.lineup.canonicalFinalRevisionId, bodyC.correctionRevision.revisionId);
+    assert.equal(canonical.aggregate.publicationReady, false);
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test("Concurrent manual finalize: 競合するfinalizeでもcanonical pointerとactual lineupを同じrevisionへ収束させる", async () => {
+  const fixture = await createGoldenDb();
+  try {
+    const [saveA, saveB] = await Promise.all([
+      adminRequest(fixture.env, `/api/admin/v3/games/${GAME_ID}/lineup-revisions`, {
+        lineup: normalLineup(), reason: "concurrent finalize A", confirmed: true
+      }),
+      adminRequest(fixture.env, `/api/admin/v3/games/${GAME_ID}/lineup-revisions`, {
+        lineup: changedLineup(), reason: "concurrent finalize B", confirmed: true
+      })
+    ]);
+    const bodyA = await saveA.json();
+    const bodyB = await saveB.json();
+    assert.equal(saveA.status, 201, JSON.stringify(bodyA));
+    assert.equal(saveB.status, 201, JSON.stringify(bodyB));
+
+    const [finalizeA, finalizeB] = await Promise.all([
+      adminRequest(fixture.env, `/api/admin/v3/games/${GAME_ID}/lineup-finalize`, {
+        lineupRevisionId: bodyA.revision.revisionId, confirmed: true
+      }),
+      adminRequest(fixture.env, `/api/admin/v3/games/${GAME_ID}/lineup-finalize`, {
+        lineupRevisionId: bodyB.revision.revisionId, confirmed: true
+      })
+    ]);
+    const finalizeBodyA = await finalizeA.json();
+    const finalizeBodyB = await finalizeB.json();
+    assert.equal([200, 409].includes(finalizeA.status), true, JSON.stringify(finalizeBodyA));
+    assert.equal([200, 409].includes(finalizeB.status), true, JSON.stringify(finalizeBodyB));
+    assert.equal([finalizeA.status, finalizeB.status].some((status) => status === 200), true);
+
+    const currentFinals = fixture.database.prepare(
+      "SELECT revision_id, actual_lineup_json FROM game_lineup_revisions WHERE internal_game_id = ? AND is_current = 1 AND is_final = 1"
+    ).all(GAME_ID);
+    const canonical = fixture.database.prepare(
+      "SELECT final_lineup_revision_id, actual_lineup_json FROM game_lineups WHERE internal_game_id = ?"
+    ).get(GAME_ID);
+    assert.equal(currentFinals.length, 1);
+    assert.equal(canonical.final_lineup_revision_id, currentFinals[0].revision_id);
+    assert.equal(canonical.actual_lineup_json, currentFinals[0].actual_lineup_json);
   } finally {
     fixture.database.close();
   }

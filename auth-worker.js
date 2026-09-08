@@ -1997,6 +1997,7 @@ async function executeV3PublishExecutor({ env, internalGameId, now, target, stat
   if (canonical?.aggregate?.rankingReady !== true) {
     throw createV3Error("V3_RANKING_ARTIFACT_NOT_READY", "現在の採点revisionがランキングへ反映されていません。", { retryable: false });
   }
+  const expectedLineupRevisionId = canonical.lineup?.canonicalFinalRevisionId || "";
   const activeRevision = await getActiveScoringRevision(env.AUTH_DB, internalGameId);
   const reflectedRevision = await env.AUTH_DB.prepare(
     `SELECT scoring_revision_id FROM ranking_reflection_revisions
@@ -2005,7 +2006,26 @@ async function executeV3PublishExecutor({ env, internalGameId, now, target, stat
   if (!activeRevision?.id || reflectedRevision?.scoring_revision_id !== activeRevision.id) {
     throw createV3Error("V3_RANKING_REVISION_NOT_REFLECTED", "現在の採点revisionがランキングへ反映されていません。", { retryable: false });
   }
-  const result = await publishScoredGameResults(env, internalGameId, now, { internalGameId, target, source: "v3" });
+  let result;
+  try {
+    result = await publishScoredGameResults(env, internalGameId, now, {
+      internalGameId,
+      target,
+      source: "v3",
+      expectedLineupRevisionId
+    });
+  } catch (error) {
+    if (error?.code === "V3_STALE_LINEUP_REVISION") {
+      return {
+        status: "stale_no_op",
+        stateBefore,
+        stateAfter: stateBefore,
+        noOpReason: "V3_STALE_LINEUP_REVISION",
+        staleLineupRevision: expectedLineupRevisionId || null
+      };
+    }
+    throw error;
+  }
   if (!result.published && result.status !== "already_published") throw createV3Error("V3_PUBLICATION_NOT_READY", "V3公開条件を満たしていません。");
   const publishedLineup = await withV3ReadOnlyTimeout(
     () => getGameLineup(env.AUTH_DB, { gameId: internalGameId, internalGameId }),
@@ -16099,10 +16119,36 @@ async function activateLineupRevision(db, { gameId, version, internalGameId = ""
 
 async function linkFinalLineupRevision(db, { gameId, internalGameId = "", version, finalizedAt = new Date(), finalizedBy = "system" } = {}) {
   const columns = await getTableColumnSet(db, "game_lineups");
+  const revisionColumns = await getTableColumnSet(db, "game_lineup_revisions");
   const fields = [];
   const values = [];
+  const hasCanonicalGuard = Boolean(
+    internalGameId
+      && INTERNAL_GAME_ID_PATTERN.test(String(internalGameId))
+      && columns.has("internal_game_id")
+      && columns.has("final_lineup_revision_id")
+      && revisionColumns.has("internal_game_id")
+      && revisionColumns.has("is_current")
+      && revisionColumns.has("is_final")
+  );
+  if (internalGameId && !hasCanonicalGuard && columns.has("final_lineup_revision_id")) {
+    throw createV3Error("V3_LINEUP_SCHEMA_UNAVAILABLE", "canonicalスタメンの競合検証に必要なschemaが準備されていません。", {
+      httpStatus: 503,
+      retryable: false
+    });
+  }
+  const revisionScope = hasCanonicalGuard ? "internal_game_id" : "game_id";
+  const revisionScopeValue = hasCanonicalGuard ? internalGameId : gameId;
+  if (columns.has("actual_lineup_json") && revisionColumns.has("actual_lineup_json")) {
+    fields.push(`actual_lineup_json = (SELECT actual_lineup_json FROM game_lineup_revisions WHERE ${revisionScope} = ?${values.length + 1} AND version = ?${values.length + 2} LIMIT 1)`);
+    values.push(revisionScopeValue, Number(version));
+  }
+  if (columns.has("lineup_fingerprint") && revisionColumns.has("lineup_fingerprint")) {
+    fields.push(`lineup_fingerprint = (SELECT lineup_fingerprint FROM game_lineup_revisions WHERE ${revisionScope} = ?${values.length + 1} AND version = ?${values.length + 2} LIMIT 1)`);
+    values.push(revisionScopeValue, Number(version));
+  }
   if (columns.has("final_lineup_revision_id")) {
-    fields.push("final_lineup_revision_id = ?1");
+    fields.push(`final_lineup_revision_id = ?${values.length + 1}`);
     values.push(`${gameId}:${Number(version)}`);
   }
   if (columns.has("finalized_at")) {
@@ -16120,13 +16166,22 @@ async function linkFinalLineupRevision(db, { gameId, internalGameId = "", versio
       retryable: false
     });
   }
-  if (columns.has("internal_game_id") && INTERNAL_GAME_ID_PATTERN.test(String(internalGameId || ""))) {
-    values.push(internalGameId);
-    await db.prepare(`UPDATE game_lineups SET ${fields.join(", ")} WHERE internal_game_id = ?${values.length}`).bind(...values).run();
-    return;
+  const gameScope = hasCanonicalGuard ? "internal_game_id" : "game_id";
+  values.push(hasCanonicalGuard ? internalGameId : gameId);
+  let where = `${gameScope} = ?${values.length}`;
+  if (hasCanonicalGuard) {
+    values.push(internalGameId, Number(version));
+    where += ` AND EXISTS (SELECT 1 FROM game_lineup_revisions WHERE internal_game_id = ?${values.length - 1} AND version = ?${values.length} AND is_current = 1 AND is_final = 1)`;
   }
-  values.push(gameId);
-  await db.prepare(`UPDATE game_lineups SET ${fields.join(", ")} WHERE game_id = ?${values.length}`).bind(...values).run();
+  const result = await db.prepare(`UPDATE game_lineups SET ${fields.join(", ")} WHERE ${where}`).bind(...values).run();
+  if (hasCanonicalGuard && Number(result?.meta?.changes || 0) !== 1) {
+    throw createV3Error("V3_LINEUP_FINALIZE_CONFLICT", "別の操作で正式スタメンrevisionが更新されたため、古いfinalizeを反映しません。", {
+      httpStatus: 409,
+      retryable: false,
+      diagnostics: { internalGameId, version: Number(version) }
+    });
+  }
+  return result;
 }
 
 async function saveProvisionalOfficialLineup(db, gameId, lineup, detectedAt, now, options = {}) {
@@ -20109,7 +20164,7 @@ async function publishScoredGameResults(env, gameId, now, options = {}) {
   }
 }
 
-async function publishGameResults(env, gameId, now, { isTestGame = false, internalGameId = "", target = null } = {}) {
+async function publishGameResults(env, gameId, now, { isTestGame = false, internalGameId = "", target = null, expectedLineupRevisionId = "" } = {}) {
   const testGame = isTestGame ? await getAutoScoringTest(env.AUTH_DB, gameId) : null;
   if (!isTestGame && await isServiceUnavailableGame(env.AUTH_DB, gameId)) {
     return { published: false, status: SERVICE_UNAVAILABLE_GAME_STATUS, publishedAt: null };
@@ -20140,6 +20195,15 @@ async function publishGameResults(env, gameId, now, { isTestGame = false, intern
   if (lineup.publication_status === "published") {
     return { published: false, status: "already_published", publishedAt: lineup.published_at || null };
   }
+  const lineupColumns = await getTableColumnSet(env.AUTH_DB, "game_lineups");
+  const hasExpectedLineupGuard = Boolean(!isTestGame && internalGameId && expectedLineupRevisionId
+    && lineupColumns.has("internal_game_id") && lineupColumns.has("final_lineup_revision_id"));
+  if (!hasExpectedLineupGuard && !isTestGame && internalGameId && expectedLineupRevisionId) {
+    throw createV3Error("V3_LINEAGE_GUARD_UNAVAILABLE", "公開直前のcanonical lineageを検証できません。", { retryable: true });
+  }
+  if (hasExpectedLineupGuard) {
+    await assertCurrentV3LineupRevision(env.AUTH_DB, internalGameId, expectedLineupRevisionId, "publish_revision_capture");
+  }
 
   const scoringCompletion = await getScoringCompletionState(env.AUTH_DB, { gameId, internalGameId });
   if (!scoringCompletion.complete) {
@@ -20160,6 +20224,9 @@ async function publishGameResults(env, gameId, now, { isTestGame = false, intern
   const perfectRows = await env.AUTH_DB.prepare(perfectQuery
   ).bind(gameId).all();
   const publishedAt = now.toISOString();
+  const rankingLineageGuard = hasExpectedLineupGuard
+    ? " AND EXISTS (SELECT 1 FROM game_lineups WHERE internal_game_id = ?3 AND final_lineup_revision_id = ?4)"
+    : "";
   const rankingSql = isTestGame
     ? `UPDATE ranking_games
         SET is_ranking_eligible = 0, ranking_eligible_at = NULL, game_status = 'scored',
@@ -20168,23 +20235,29 @@ async function publishGameResults(env, gameId, now, { isTestGame = false, intern
     : `UPDATE ranking_games
         SET is_ranking_eligible = 1, ranking_eligible_at = ?1, game_status = 'scored',
             publication_status = 'published', published_at = ?1, updated_at = ?1
-      WHERE game_id = ?2 AND publication_status = 'scored_private'`;
+      WHERE game_id = ?2 AND publication_status = 'scored_private'${rankingLineageGuard}`;
   const statements = [env.AUTH_DB.prepare(rankingSql
-  ).bind(publishedAt, gameId)];
+  ).bind(publishedAt, gameId, ...(hasExpectedLineupGuard ? [internalGameId, expectedLineupRevisionId] : []))];
   for (const row of perfectRows.results || []) {
     statements.push(env.AUTH_DB.prepare(
-      `INSERT OR IGNORE INTO perfect_achievers
+      hasExpectedLineupGuard
+        ? `INSERT OR IGNORE INTO perfect_achievers
+           (id, user_id, game_id, score, max_score, achieved_at, created_at)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?6
+          WHERE EXISTS (SELECT 1 FROM game_lineups WHERE internal_game_id = ?7 AND final_lineup_revision_id = ?8)`
+        : `INSERT OR IGNORE INTO perfect_achievers
          (id, user_id, game_id, score, max_score, achieved_at, created_at)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)`
-    ).bind(randomToken(16), row.user_id, gameId, Number(row.score), Number(row.max_score), publishedAt));
+    ).bind(randomToken(16), row.user_id, gameId, Number(row.score), Number(row.max_score), publishedAt, ...(hasExpectedLineupGuard ? [internalGameId, expectedLineupRevisionId] : [])));
   }
+  const lineupLineageGuard = hasExpectedLineupGuard ? " AND final_lineup_revision_id = ?5" : "";
   statements.push(env.AUTH_DB.prepare(
       `UPDATE game_lineups
         SET publication_status = 'published', published_at = ?1,
             new_perfect_achievers = ?2, updated_at = ?1
       WHERE game_id = ?3 AND (?4 = '' OR internal_game_id = ?4)
-        AND scoring_status = 'scored' AND publication_status <> 'published'`
-  ).bind(publishedAt, (perfectRows.results || []).length, gameId, isTestGame ? "" : String(internalGameId || "")));
+        AND scoring_status = 'scored' AND publication_status <> 'published'${lineupLineageGuard}`
+  ).bind(publishedAt, (perfectRows.results || []).length, gameId, isTestGame ? "" : String(internalGameId || ""), ...(hasExpectedLineupGuard ? [expectedLineupRevisionId] : [])));
   let results;
   try {
     results = await env.AUTH_DB.batch(statements);
@@ -20196,6 +20269,9 @@ async function publishGameResults(env, gameId, now, { isTestGame = false, intern
   }
   const rankResult = results[0];
   const lineupResult = results[results.length - 1];
+  if (hasExpectedLineupGuard && (Number(rankResult?.meta?.changes || 0) !== 1 || Number(lineupResult?.meta?.changes || 0) !== 1)) {
+    throw createV3StaleLineupRevisionError(internalGameId, expectedLineupRevisionId, "publish_lineage_write");
+  }
   if (Number(rankResult?.meta?.changes || 0) === 0 && Number(lineupResult?.meta?.changes || 0) === 0) {
     return { published: false, status: "already_published", publishedAt };
   }

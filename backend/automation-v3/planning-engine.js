@@ -1,6 +1,7 @@
 // Shared, side-effect-free V3 planning decisions.
 // Consumers may persist the returned plans, but this module never writes state.
 import { deriveV3DisplaySchedule, deriveV3Schedule, isV3GameEligible } from "./domain.js";
+import { hasCanonicalArtifactEvidence, toCanonicalArtifactStageArtifacts } from "./canonical-artifact-evaluator.js";
 
 const JOB_TYPE_BY_STAGE = Object.freeze({
   roster_fetch: "roster_fetch",
@@ -224,7 +225,7 @@ function stateAllows(state, stage) {
   return false;
 }
 
-export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], effectiveState = null, persistedState = null, now = new Date() } = {}) {
+export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], effectiveState = null, persistedState = null, now = new Date(), canonicalArtifacts = null } = {}) {
   let baseSchedule = null;
   let displaySchedule = null;
   try {
@@ -247,12 +248,21 @@ export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], eff
     }
   };
   const planningJobs = Array.isArray(jobs) ? jobs : [];
-  const state = effectiveStateOf({ game, effectiveState, persistedState: persistedState || game.workflowState || game.workflow_state, jobs: planningJobs, artifacts });
+  const canonicalStageArtifacts = toCanonicalArtifactStageArtifacts(canonicalArtifacts);
+  const canonicalPlanningArtifacts = hasCanonicalArtifactEvidence(canonicalArtifacts)
+    ? canonicalArtifacts
+    : null;
+  const planningArtifacts = Object.keys(canonicalStageArtifacts).length
+    ? { ...(artifacts || {}), ...canonicalStageArtifacts }
+    : (artifacts || {});
+  const state = effectiveStateOf({ game, effectiveState, persistedState: persistedState || game.workflowState || game.workflow_state, jobs: planningJobs, artifacts: planningArtifacts });
   const gameId = first(game, "internalGameId", "internal_game_id");
   return {
     game,
     gameId,
-    artifacts: artifacts || {},
+    artifacts: planningArtifacts,
+    canonicalArtifacts: canonicalArtifacts || null,
+    canonicalPlanningArtifacts,
     jobs: planningJobs,
     effectiveState: state,
     persistedState: normalize(persistedState || game.workflowState || game.workflow_state || "scheduled") || "scheduled",
@@ -262,6 +272,40 @@ export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], eff
     identityResolved: Boolean(first(game, "npbGameCode", "npb_game_code")
       && ["resolved", "manually_overridden"].includes(normalize(first(game, "npbIdentityStatus", "npb_identity_status"))))
   };
+}
+
+function canonicalStateGate(state, stage) {
+  const canonical = state?.canonicalPlanningArtifacts;
+  if (canonical?.available !== true) return null;
+  const aggregate = canonical.aggregate || {};
+  const persistedRank = stateRank(state.persistedState);
+  const effectiveRank = stateRank(state.effectiveState);
+  const currentRank = Math.max(persistedRank, effectiveRank);
+  if (stage === "scoring"
+    && currentRank >= stateRank("lineup_ready")
+    && aggregate.lineupReady !== true) {
+    return {
+      blockedReason: "SCORING_CANONICAL_LINEUP_INVALID",
+      reasonCode: "SCORING_CANONICAL_LINEUP_INVALID"
+    };
+  }
+  if (stage === "ranking_reflect"
+    && currentRank >= stateRank("scored")
+    && aggregate.scoringReady !== true) {
+    return {
+      blockedReason: "RANKING_CANONICAL_SCORING_INVALID",
+      reasonCode: "RANKING_CANONICAL_SCORING_INVALID"
+    };
+  }
+  if (stage === "publish"
+    && currentRank >= stateRank("ranked")
+    && aggregate.rankingReady !== true) {
+    return {
+      blockedReason: "PUBLISH_CANONICAL_RANKING_INVALID",
+      reasonCode: "PUBLISH_CANONICAL_RANKING_INVALID"
+    };
+  }
+  return null;
 }
 
 export function buildStagePlan(planningState, stage, { disabled = false, disabledReason = "AUTO_FETCH_DISABLED" } = {}) {
@@ -290,7 +334,12 @@ export function buildStagePlan(planningState, stage, { disabled = false, disable
     disabled: false,
     blockedReason: null,
     reasonCode: null,
-    diagnostics: { effectiveState, persistedState: state.persistedState, stateMismatch: state.stateMismatch }
+    diagnostics: {
+      effectiveState,
+      persistedState: state.persistedState,
+      stateMismatch: state.stateMismatch,
+      canonicalArtifacts: state.canonicalArtifacts?.aggregate || null
+    }
   };
   if (disabled) {
     return {
@@ -301,11 +350,24 @@ export function buildStagePlan(planningState, stage, { disabled = false, disable
     };
   }
   if (!isV3GameEligible(game)) return { ...plan, blocked: true, blockedReason: "GAME_NOT_ELIGIBLE", reasonCode: "GAME_NOT_ELIGIBLE" };
-  if (effectiveState === "published" || state.persistedState === "published") return { ...plan, reasonCode: "ALREADY_PUBLISHED" };
+  if (effectiveState === "published" || state.persistedState === "published") {
+    if (state.canonicalArtifacts?.available === true
+      && state.canonicalArtifacts.aggregate?.fullyPublished !== true) {
+      return {
+        ...plan,
+        blocked: true,
+        blockedReason: "PUBLISHED_CANONICAL_ARTIFACT_MISMATCH",
+        reasonCode: "PUBLISHED_CANONICAL_ARTIFACT_MISMATCH_NEEDS_ATTENTION"
+      };
+    }
+    return { ...plan, reasonCode: "ALREADY_PUBLISHED" };
+  }
   if (["ranking_reflect", "publish"].includes(stage) && (game.rankingExcluded || game.ranking_excluded)) {
     return { ...plan, blocked: true, blockedReason: "RANKING_EXCLUDED", reasonCode: "RANKING_EXCLUDED" };
   }
   if (!due) return { ...plan, reasonCode: "NOT_DUE" };
+  const canonicalGate = canonicalStateGate(state, stage);
+  if (canonicalGate) return { ...plan, blocked: true, ...canonicalGate };
   const rankingReprocessingAllowed = stage === "ranking_reflect"
     && effectiveState === "ranked"
     && artifact?.reprocessRequired === true;

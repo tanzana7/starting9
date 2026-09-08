@@ -39,6 +39,7 @@ function validationResult(row, lineupCheck) {
 function emptyLineup(reason = "CANONICAL_FINAL_REVISION_MISSING") {
   return {
     canonicalFinalRevisionId: null,
+    canonicalRecordExists: false,
     revisionExists: false,
     revisionValidated: false,
     lineupValid: false,
@@ -49,15 +50,20 @@ function emptyLineup(reason = "CANONICAL_FINAL_REVISION_MISSING") {
 
 function evaluateLineup({ canonicalLineup = null, lineupRevisions = [] } = {}) {
   const marker = text(canonicalLineup?.final_lineup_revision_id || canonicalLineup?.finalLineupRevisionId);
-  if (!marker) return emptyLineup();
+  if (!marker) return { ...emptyLineup(), canonicalRecordExists: Boolean(canonicalLineup) };
   const revision = (Array.isArray(lineupRevisions) ? lineupRevisions : [])
     .find((row) => revisionIdentity(row) === marker);
-  if (!revision) return { ...emptyLineup("CANONICAL_FINAL_REVISION_NOT_FOUND"), canonicalFinalRevisionId: marker };
+  if (!revision) return {
+    ...emptyLineup("CANONICAL_FINAL_REVISION_NOT_FOUND"),
+    canonicalFinalRevisionId: marker,
+    canonicalRecordExists: true
+  };
   const lineupCheck = assessV3LineupArtifact(parseLineup(revision.actual_lineup_json ?? revision.actualLineup));
   const revisionValidated = validationResult(revision, lineupCheck);
   if (!revisionValidated) {
     return {
       canonicalFinalRevisionId: marker,
+      canonicalRecordExists: true,
       revisionExists: true,
       revisionValidated: false,
       lineupValid: false,
@@ -68,6 +74,7 @@ function evaluateLineup({ canonicalLineup = null, lineupRevisions = [] } = {}) {
   if (!lineupCheck.ok) {
     return {
       canonicalFinalRevisionId: marker,
+      canonicalRecordExists: true,
       revisionExists: true,
       revisionValidated: true,
       lineupValid: false,
@@ -77,6 +84,7 @@ function evaluateLineup({ canonicalLineup = null, lineupRevisions = [] } = {}) {
   }
   return {
     canonicalFinalRevisionId: marker,
+    canonicalRecordExists: true,
     revisionExists: true,
     revisionValidated: true,
     lineupValid: true,
@@ -203,8 +211,15 @@ export function evaluateCanonicalArtifacts({
   };
 }
 
+export function hasCanonicalArtifactEvidence(canonicalArtifacts) {
+  if (canonicalArtifacts?.available !== true) return false;
+  return canonicalArtifacts.lineup?.canonicalRecordExists === true
+    || Boolean(canonicalArtifacts.scoring?.activeScoringRevisionId)
+    || Boolean(canonicalArtifacts.publication?.publicationStatus || canonicalArtifacts.publication?.publishedAt);
+}
+
 export function toCanonicalArtifactStageArtifacts(canonicalArtifacts) {
-  if (canonicalArtifacts?.available !== true) return {};
+  if (!hasCanonicalArtifactEvidence(canonicalArtifacts)) return {};
   const canonical = canonicalArtifacts;
   return {
     lineup_finalize: {
@@ -231,6 +246,9 @@ export function toCanonicalArtifactStageArtifacts(canonicalArtifacts) {
       scoringRevisionId: canonical.scoring.activeScoringRevisionId,
       reflectedScoringRevisionId: canonical.ranking.reflectedRevisionId,
       revisionMatches: canonical.ranking.scoringRevisionMatch,
+      revisionMismatch: canonical.aggregate.artifactMismatch === true
+        && canonical.ranking.scoringRevisionMatch !== true,
+      reprocessRequired: canonical.aggregate.reprocessingRequired === true,
       reason: canonical.ranking.reason
     },
     publish: {

@@ -427,8 +427,8 @@ function manualLineupFinalizeSafety(game, now = new Date()) {
   const gameDate = gameDateForFilter(game);
   const startAt = game?.startAt || game?.start_at || game?.startTime || game?.start_time || "";
   const today = v3JstDate(now);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(gameDate) || gameDate !== today) {
-    return { allowed: false, code: "V3_MANUAL_LINEUP_FINALIZE_NOT_TODAY", message: `本日(${today})以外の試合には正式スタメンを確定できません。対象試合日: ${gameDate || "不明"}` };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(gameDate) || gameDate > today) {
+    return { allowed: false, code: "V3_MANUAL_LINEUP_FINALIZE_NOT_TODAY", message: `未来試合には正式スタメンを確定できません。対象試合日: ${gameDate || "不明"}` };
   }
   const parsedStartAt = new Date(startAt);
   if (Number.isNaN(parsedStartAt.getTime())) {

@@ -205,20 +205,18 @@
       if (gameId && detailGameId && gameId !== detailGameId) {
         return { locked: true, loading: false, reason: "対象試合の詳細が一致しないため編集を停止しています。画面を更新してください。" };
       }
+      const gameStatus = String(game?.gameStatus || game?.game_status || "").toLowerCase();
       const workflowState = String(game?.state?.state || game?.workflowState || "").toLowerCase();
       const lineupDetails = details.lineup || {};
-      const scoringStatus = String(lineupDetails.status || details.lineupStatus || "").toLowerCase();
-      const publication = details.publication?.publication || {};
-      if (workflowState === "published" || publication.publishedAt || publication.status === "published") {
-        return { locked: true, loading: false, reason: "この試合は公開済みのため編集できません。訂正は「スタメン修正」から行ってください。" };
+      if (["cancelled", "canceled", "postponed", "no_game", "service_unavailable", "excluded"].includes(gameStatus)
+        || workflowState === "excluded") {
+        return { locked: true, loading: false, reason: "中止・延期または対象外の試合は通常登録できません。" };
       }
-      if (["scored", "ranked"].includes(workflowState) || scoringStatus === "scored") {
-        return { locked: true, loading: false, reason: "採点済みのため編集できません。訂正は「スタメン修正」から行ってください。" };
-      }
-      if (scoringStatus === "processing") {
-        return { locked: true, loading: false, reason: "採点処理が開始済みのため編集できません。訂正は「スタメン修正」から行ってください。" };
-      }
-      if (lineupDetails.finalRevision?.isFinal === true || details.finalRevision?.isFinal === true) {
+      const canonicalFinalLineupExists = details.canonicalFinalLineupExists === true
+        || Boolean(details.canonicalFinalRevisionId)
+        || (details.canonicalFinalLineupExists !== false
+          && (lineupDetails.finalRevision?.isFinal === true || details.finalRevision?.isFinal === true));
+      if (canonicalFinalLineupExists) {
         return { locked: true, loading: false, reason: "この試合はスタメン確定済みのため編集できません。訂正は「スタメン修正」から行ってください。" };
       }
       return { locked: false, loading: false, reason: "" };

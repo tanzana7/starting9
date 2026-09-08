@@ -7785,6 +7785,8 @@ async function handleAdminV3LineupGet(env, cors, context) {
     ok: true,
     internalGameId: context.id,
     lineup: serializeGameLineup(lineup),
+    canonicalFinalLineupExists: Boolean(String(lineup?.final_lineup_revision_id || "").trim()),
+    canonicalFinalRevisionId: String(lineup?.final_lineup_revision_id || "").trim() || null,
     currentRevision: current ? serializeV3LineupRevision(current, rows[rows.indexOf(current) + 1] || null) : null,
     finalRevision: final ? serializeV3LineupRevision(final) : null,
     lineupStatus: lineup?.scoring_status || (final ? "finalized" : "pending"),
@@ -7843,7 +7845,13 @@ async function handleAdminV3LineupRevisionCreate(request, env, cors, context, us
   const reason = String(input?.reason || "").trim().slice(0, 240) || "V4半自動運営: 管理者入力";
   const currentLineup = await getGameLineup(env.AUTH_DB, context.metadata);
   const stateRow = await env.AUTH_DB.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(context.id).first();
-  if (!isManualLineupEditAllowed({ workflowState: stateRow?.state, scoringStatus: currentLineup?.scoring_status, publicationStatus: currentLineup?.publication_status })) {
+  if (!isManualLineupEditAllowed({
+    workflowState: stateRow?.state,
+    scoringStatus: currentLineup?.scoring_status,
+    publicationStatus: currentLineup?.publication_status,
+    gameStatus: context.target?.game_status,
+    canonicalFinalLineupExists: Boolean(String(currentLineup?.final_lineup_revision_id || "").trim())
+  })) {
     throw createV3Error("V3_LINEUP_EDIT_LOCKED", "採点開始後または公開済みの試合はスタメンを変更できません。", { httpStatus: 409 });
   }
   const actual = normalizeManualLineupInput(input?.lineup || input?.actualLineup);
@@ -8005,7 +8013,13 @@ async function handleAdminV3LineupFinalize(request, env, cors, context, user) {
   if (input?.confirmed !== true) throw createV3Error("V3_CONFIRMATION_REQUIRED", "正式スタメンの入力確認が必要です。", { httpStatus: 409 });
   const currentLineup = await getGameLineup(env.AUTH_DB, context.metadata);
   const stateRow = await env.AUTH_DB.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(context.id).first();
-  if (!isManualLineupEditAllowed({ workflowState: stateRow?.state, scoringStatus: currentLineup?.scoring_status, publicationStatus: currentLineup?.publication_status })) {
+  if (!isManualLineupEditAllowed({
+    workflowState: stateRow?.state,
+    scoringStatus: currentLineup?.scoring_status,
+    publicationStatus: currentLineup?.publication_status,
+    gameStatus: context.target?.game_status,
+    canonicalFinalLineupExists: Boolean(String(currentLineup?.final_lineup_revision_id || "").trim())
+  })) {
     throw createV3Error("V3_LINEUP_EDIT_LOCKED", "採点開始後または公開済みの試合はスタメンを確定できません。", { httpStatus: 409 });
   }
   const rows = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
@@ -8023,7 +8037,7 @@ async function handleAdminV3LineupFinalize(request, env, cors, context, user) {
   if (currentLineup?.scoring_status === "processing") {
     throw createV3Error("V3_LINEUP_FINALIZE_IN_PROGRESS", "採点中は別のスタメンrevisionへ差し替えできません。", { httpStatus: 409 });
   }
-  if (!currentLineup || currentLineup.scoring_status !== "scored") {
+  if (!currentLineup || !String(currentLineup.final_lineup_revision_id || "").trim() || currentLineup.scoring_status !== "scored") {
     await saveActualLineupForAutoScoring(env.AUTH_DB, context.metadata.gameId, actual.lineup, now, { allowAfterStart: true, now, source: "manual", internalGameId: context.id, scoringDueAt: now });
   }
   await activateLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, version: Number(revision.version), finalizedAt: now, finalizedBy: "admin" });
@@ -19767,13 +19781,16 @@ async function getGameLineup(db, gameReference) {
   const gameId = String(metadata?.gameId || gameReference || "");
   const internalGameId = String(metadata?.internalGameId || "");
   const storage = await getInternalGameIdStorageAvailability(db, ["game_lineups"]);
+  const columns = storage.game_lineups ? await getTableColumnSet(db, "game_lineups") : new Set();
+  const finalRevisionColumn = columns.has("final_lineup_revision_id") ? ", final_lineup_revision_id" : "";
   if (internalGameId) {
     if (!storage.game_lineups) return null;
     return db.prepare(
       `SELECT id, game_id, internal_game_id, actual_lineup_json, lineup_fingerprint, lineup_detected_at,
               scoring_due_at, scoring_started_at, scored_at, scoring_status,
               scoring_attempts, last_error, processed_predictions, perfect_count,
-              new_perfect_achievers, lineup_source, publication_status, published_at, updated_at
+              new_perfect_achievers, lineup_source, publication_status, published_at,
+              updated_at${finalRevisionColumn}
          FROM game_lineups
         WHERE internal_game_id = ?1
         LIMIT 1`
@@ -19783,7 +19800,8 @@ async function getGameLineup(db, gameReference) {
     `SELECT id, game_id, actual_lineup_json, lineup_fingerprint, lineup_detected_at,
             scoring_due_at, scoring_started_at, scored_at, scoring_status,
             scoring_attempts, last_error, processed_predictions, perfect_count,
-            new_perfect_achievers, lineup_source, publication_status, published_at, updated_at
+            new_perfect_achievers, lineup_source, publication_status, published_at,
+            updated_at${finalRevisionColumn}
        FROM game_lineups WHERE game_id = ?1 LIMIT 1`
   ).bind(gameId).first();
 }
@@ -20539,10 +20557,14 @@ export function normalizeManualLineupInput(value) {
   return sanitized;
 }
 
-export function isManualLineupEditAllowed({ workflowState = "scheduled", scoringStatus = "", publicationStatus = "" } = {}) {
+export function isManualLineupEditAllowed({ workflowState = "scheduled", scoringStatus = "", publicationStatus = "", gameStatus = "", canonicalFinalLineupExists = null } = {}) {
   const state = String(workflowState || "").trim().toLowerCase();
   const scoring = String(scoringStatus || "").trim().toLowerCase();
   const publication = String(publicationStatus || "").trim().toLowerCase();
+  const game = String(gameStatus || "").trim().toLowerCase();
+  if (state === "excluded" || ["cancelled", "canceled", "postponed", "no_game", "service_unavailable", "excluded"].includes(game)) return false;
+  if (canonicalFinalLineupExists === true) return false;
+  if (canonicalFinalLineupExists === false) return true;
   return !MANUAL_LINEUP_EDIT_LOCKED_STATES.has(state)
     && !["processing", "scored"].includes(scoring)
     && publication !== "published";
@@ -20559,11 +20581,11 @@ export function getManualLineupFinalizeDecision({ gameDate = "", startAt = "", n
     };
   }
   const today = getJstDateString(current);
-  if (normalizedGameDate !== today) {
+  if (normalizedGameDate > today) {
     return {
       allowed: false,
       code: "V3_MANUAL_LINEUP_FINALIZE_NOT_TODAY",
-      message: `本日(${today})以外の試合には正式スタメンを確定できません。対象試合日: ${normalizedGameDate}`,
+      message: `未来試合には正式スタメンを確定できません。対象試合日: ${normalizedGameDate}`,
       gameDate: normalizedGameDate,
       today
     };

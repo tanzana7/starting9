@@ -10999,9 +10999,12 @@ function buildPublicRosterFallbackResponse(response, {
   });
 }
 
-async function fetchLatestPublicRoster(env, game) {
+export async function fetchLatestPublicRoster(env, game, { force = false } = {}) {
   try {
-    const payload = await fetchNpbWorkerJson(env, { mode: "roster", force: "1" });
+    const payload = await fetchNpbWorkerJson(env, {
+      mode: "roster",
+      ...(force ? { force: "1" } : {})
+    });
     if (payload?.stale === true) return null;
     const players = normalizeRosterForSnapshot(payload?.players);
     if (!players) return null;
@@ -11013,7 +11016,7 @@ async function fetchLatestPublicRoster(env, game) {
       displayRosterSource: "latest_official_live",
       capturedAt: payload?.fetchedAt || null,
       sourceUrl: payload?.sourceUrl || null,
-      cacheStatus: payload?.cacheStatus || "bypass",
+      cacheStatus: payload?.cacheStatus || (force ? "bypass" : "hit"),
       fingerprint: rosterFingerprint(players),
       verifiedAt: payload?.fetchedAt || null,
       playerCount: players.length,

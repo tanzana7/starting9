@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const { pathToFileURL } = require("node:url");
 const vm = require("node:vm");
 
 const root = path.join(__dirname, "..");
@@ -137,4 +138,55 @@ test("正式roster refreshは取得Workerの30分Cacheを強制回避し、sourc
   assert.match(authWorker, /mode: "roster",[\s\S]*force: force \|\| isV3 \? "1" : undefined/);
   assert.match(authWorker, /rosterSourceCacheStatus/);
   assert.match(authWorker, /rosterSourceFetchedAt/);
+});
+
+test("表示用rosterはNPB Workerの30分cacheへ収束し、TTL切れと明示forceだけ外部fetchを増やす", async () => {
+  const { default: npbWorker } = await import(pathToFileURL(path.join(root, "cloudflare-worker.js")).href);
+  const { fetchLatestPublicRoster } = await import(pathToFileURL(path.join(root, "auth-worker.js")).href);
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  const cacheEntries = new Map();
+  let externalFetchCount = 0;
+  const cache = {
+    async match(request) {
+      return cacheEntries.get(String(request.url))?.clone() || undefined;
+    },
+    async put(request, response) {
+      cacheEntries.set(String(request.url), response.clone());
+    }
+  };
+  const rosterHtml = `<h5>北海道日本ハムファイターズ</h5><table>
+    ${Array.from({ length: 20 }, (_, index) => `<tr><td>${index === 0 ? "投手" : "内野手"}</td><td>${String(index + 1)}</td><td>${index === 0 ? "柴田 獅子" : index === 1 ? "矢澤 宏太" : `選手${index + 1}`}</td></tr>`).join("")}
+  </table>`;
+  globalThis.caches = { default: cache };
+  globalThis.fetch = async () => {
+    externalFetchCount += 1;
+    return new Response(rosterHtml, { status: 200, headers: { "content-type": "text/html" } });
+  };
+  const env = {
+    NPB_FETCH_WORKER: {
+      fetch: (request, options) => npbWorker.fetch(request, { NPB_ALLOWED_ORIGINS: "https://starting9.pages.dev" }, options)
+    }
+  };
+  const game = { internal_game_id: "2f4d9ce8-f3fb-44d6-bc9e-05a3c0dff2e4", game_date: "2026-09-08" };
+  const originalNow = Date.now;
+  try {
+    const first = await fetchLatestPublicRoster(env, game);
+    const second = await fetchLatestPublicRoster(env, game);
+    assert.equal(first.cacheStatus, "miss");
+    assert.equal(second.cacheStatus, "hit");
+    assert.equal(externalFetchCount, 1);
+    assert.deepEqual(second.players.slice(0, 2).map((player) => player.name), ["柴田獅子", "矢澤宏太"]);
+    const initialNow = originalNow();
+    Date.now = () => initialNow + (30 * 60 * 1000) + 1;
+    const expired = await fetchLatestPublicRoster(env, game);
+    const forced = await fetchLatestPublicRoster(env, game, { force: true });
+    assert.equal(expired.cacheStatus, "miss");
+    assert.equal(forced.cacheStatus, "bypass");
+    assert.equal(externalFetchCount, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.caches = originalCaches;
+    Date.now = originalNow;
+  }
 });

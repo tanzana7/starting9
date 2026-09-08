@@ -8,6 +8,7 @@ import {
   buildPublicBaselineRosterResponse,
   buildPublicGameDayRosterResponse,
   buildPublicStaleRosterResponse,
+  fetchLatestPublicRoster,
   getPublicRosterQualityFromAuditDetails,
   getPublicRosterBaselineUsableUntil,
   isPublicRosterBaselineCandidate
@@ -206,13 +207,54 @@ test("通常画面は選択試合のUUIDでV3 snapshotを再取得し、旧game_
   assert.doesNotMatch(worker.slice(worker.indexOf("async function handleGetGameDayRoster"), worker.indexOf("function getGameTeamCodes")), /WHERE game_id = \?1/);
 });
 
-test("新鮮なsnapshotがない公開rosterはNPB公式をread-only refreshし、最新登録を隠さない", () => {
-  const handler = worker.slice(worker.indexOf("async function handleGetGameDayRoster"), worker.indexOf("export function getPublicRosterQualityFromAuditDetails"));
+test("新鮮なsnapshotがない公開rosterはNPB公式をcache利用でread-only確認し、最新登録を隠さない", () => {
+  const handler = worker.slice(worker.indexOf("async function handleGetGameDayRoster"), worker.indexOf("async function fetchLatestPublicRoster"));
+  const overview = worker.slice(worker.indexOf("async function handleAdminV3Overview"), worker.indexOf("async function handleAdminV3IdentityResolve"));
   assert.match(handler, /fetchLatestPublicRoster\(env, game\)/);
-  assert.match(handler, /fetchNpbWorkerJson\(env, \{ mode: "roster", force: "1" \}\)/);
-  assert.match(handler, /displayRosterSource: "latest_official_live"/);
+  assert.doesNotMatch(handler, /force:\s*["']1["']/);
+  assert.match(overview, /fetchLatestPublicRoster\(env, \{/);
+  assert.doesNotMatch(overview, /fetchLatestPublicRoster\(env, \{[\s\S]{0,240}force:/);
+  assert.match(worker, /export async function fetchLatestPublicRoster\(env, game, \{ force = false \} = \{\}\)/);
+  assert.match(worker, /displayRosterSource: "latest_official_live"/);
   assert.match(handler, /正式roster_fetchで更新します/);
   assert.match(publicRoster, /\["latest_official_snapshot", "latest_official_live"\]\.includes/);
+});
+
+test("game-day-statusも表示用live rosterをcache利用で読み、force bypassを行わない", () => {
+  const statusHandler = worker.slice(worker.indexOf("async function handleGetGameDayStatus"), worker.indexOf("async function handleGetGameDayRoster"));
+  const statusReader = worker.slice(worker.indexOf("async function getGameDayStatus"), worker.indexOf("export function resolveGameDayResultStatus"));
+  assert.match(statusHandler, /getGameDayStatus\(env\.AUTH_DB, identity, env\)/);
+  assert.match(statusReader, /fetchLatestPublicRoster\(env, \{/);
+  assert.doesNotMatch(statusReader, /fetchLatestPublicRoster\(env, \{[\s\S]{0,240}force:/);
+});
+
+test("display用live roster helperはforceなしを既定にし、明示forceだけbypassする", async () => {
+  const requestedUrls = [];
+  const env = {
+    NPB_FETCH_WORKER: {
+      fetch: async (request) => {
+        requestedUrls.push(new URL(request.url));
+        return new Response(JSON.stringify({
+          ok: true,
+          fetchedAt: "2026-09-08T00:00:00.000Z",
+          cacheStatus: requestedUrls.at(-1).searchParams.has("force") ? "bypass" : "hit",
+          players: Array.from({ length: 20 }, (_, index) => ({
+            name: index === 0 ? "柴田獅子" : `選手${index + 1}`,
+            number: String(index + 1),
+            position: index === 0 ? "投手" : "内野手"
+          }))
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+    }
+  };
+  const game = { internal_game_id: internalGameId, game_date: gameDate };
+  const normal = await fetchLatestPublicRoster(env, game);
+  const forced = await fetchLatestPublicRoster(env, game, { force: true });
+  assert.equal(normal.cacheStatus, "hit");
+  assert.equal(forced.cacheStatus, "bypass");
+  assert.equal(requestedUrls[0].searchParams.has("force"), false);
+  assert.equal(requestedUrls[1].searchParams.get("force"), "1");
+  assert.equal(normal.players[0].name, "柴田獅子");
 });
 
 test("同日snapshotが古い場合も公式liveとfingerprint比較して候補を返す", () => {

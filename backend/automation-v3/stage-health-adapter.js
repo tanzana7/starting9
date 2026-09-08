@@ -4,6 +4,7 @@
 import { deriveV35StageDueSchedule } from "./stage-due-schedule.js";
 import { buildStagePlans, buildV3PlanningState, getLateLineupFetchDecision } from "./planning-engine.js";
 import { getV3OperationalMode } from "./constants.js";
+import { toCanonicalArtifactStageArtifacts } from "./canonical-artifact-evaluator.js";
 
 const STAGES = Object.freeze([
   "schedule_registration",
@@ -479,7 +480,7 @@ function derivePublishedLineupFetchArtifact(game, diagnostics, artifacts) {
   };
 }
 
-export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostics = {}, now = new Date(), externalFlags = {}, automationMode = null, operationalMode = null, env = {} } = {}) {
+export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostics = {}, now = new Date(), externalFlags = {}, automationMode = null, operationalMode = null, env = {}, canonicalArtifacts = null } = {}) {
   const normalizedGame = objectOrEmpty(game);
   const normalizedDiagnostics = objectOrEmpty(diagnostics);
   const derivedStageSchedule = deriveV35StageDueSchedule({ game: normalizedGame });
@@ -521,6 +522,7 @@ export function adaptV35Input({ game = {}, jobs = [], artifacts = {}, diagnostic
       reason: derivedLineupFetchArtifact.reason
     };
   }
+  Object.assign(evaluatorArtifacts, toCanonicalArtifactStageArtifacts(canonicalArtifacts));
   const externalDisabled = externalFetchDisabled({ externalFlags }, normalizedDiagnostics, normalizedGame);
   const cancellation = cancellationInfo(normalizedGame, { cancellationInfo: first(normalizedGame, "cancellationInfo", "cancellation_info") });
   const excluded = cancellation.excluded;

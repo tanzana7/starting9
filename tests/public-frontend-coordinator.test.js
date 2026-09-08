@@ -24,7 +24,7 @@ function loadPublicModule(name, extra = {}) {
 
 test("公開画面のentry pointは分割moduleを読み込んでCoordinatorを一経路で起動する", () => {
   const moduleScripts = ["state", "request-guard", "storage", "api-client", "app-coordinator", "render-results", "render-ranking", "roster", "prediction-form"];
-  const scriptOffset = html.indexOf("script.js?v=public-position-menu-pc-narrow-clamp-1");
+  const scriptOffset = html.indexOf("script.js?v=public-game-hub-1");
   assert.ok(scriptOffset > 0);
   moduleScripts.forEach((name) => {
     const cacheBuster = name === "render-results"
@@ -125,8 +125,8 @@ test("予想保存・リセット・アカウント同期は最新結果表示�
 });
 
 test("公開画面のキャッシュバスターはmodule分割版へ更新される", () => {
-  assert.match(html, /script\.js\?v=public-position-menu-pc-narrow-clamp-1/);
-  assert.match(html, /style\.css\?v=public-position-menu-left-clamp-1/);
+  assert.match(html, /script\.js\?v=public-game-hub-1/);
+  assert.match(html, /style\.css\?v=public-game-hub-1/);
   assert.match(html, /frontend\/public\/render-results\.js\?v=public-cancelled-result-date-display-1/);
 });
 

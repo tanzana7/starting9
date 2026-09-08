@@ -11,7 +11,7 @@
   <meta name="twitter:card" content="summary">
   <link rel="icon" type="image/png" href="./assets/icons/icon-512.png">
   <link rel="apple-touch-icon" href="./assets/icons/icon-512.png">
-  <link rel="stylesheet" href="style.css?v=public-position-menu-left-clamp-1-bat-line-1-player-number-1-player-details-1-bat-line-row-accent-1-public-selected-highlight-1">
+  <link rel="stylesheet" href="style.css?v=public-game-hub-1-public-position-menu-left-clamp-1-bat-line-1-player-number-1-player-details-1-bat-line-row-accent-1-public-selected-highlight-1">
 </head>
 <body>
   <header class="app-header">
@@ -113,6 +113,18 @@
         <li><span>3</span><strong>自動採点</strong><small>99点満点でチェック</small></li>
         <li><span>4</span><strong>ランキング</strong><small>みんなの成績と比較</small></li>
       </ol>
+    </section>
+    <section id="publicGameHub" class="card public-game-hub" aria-labelledby="publicGameHubTitle">
+      <div class="section-heading">
+        <div>
+          <p class="area-label">GAME HUB</p>
+          <h2 id="publicGameHubTitle">試合を選ぶ</h2>
+          <p>今日・次の試合から、予想したい試合を選択できます。</p>
+        </div>
+      </div>
+      <div id="publicGameHubContent" class="public-game-hub-content" aria-live="polite">
+        <p class="public-game-hub-message" role="status">試合情報を確認しています。</p>
+      </div>
     </section>
     <section class="card lineup-card" aria-labelledby="prediction-title">
       <div class="section-heading">
@@ -258,6 +270,6 @@
   <script defer src="frontend/public/render-ranking.js?v=public-compliance-disclaimer-and-fetch-safety-1"></script>
   <script defer src="frontend/public/roster.js?v=public-compliance-disclaimer-and-fetch-safety-1"></script>
   <script defer src="frontend/public/prediction-form.js?v=public-compliance-disclaimer-and-fetch-safety-1&user-save-auth-unavailable-fix-20260903"></script>
-  <script defer src="script.js?v=public-position-menu-pc-narrow-clamp-1&user-save-auth-unavailable-fix-20260903&same-origin-auth-session-1&player-bat-line-1&player-details-1"></script>
+  <script defer src="script.js?v=public-game-hub-1&user-save-auth-unavailable-fix-20260903&same-origin-auth-session-1&player-bat-line-1&player-details-1"></script>
 </body>
 </html>

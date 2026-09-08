@@ -4715,6 +4715,150 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
   font-weight: 700;
 }
 
+.public-game-hub {
+  grid-column: 1 / -1;
+}
+
+.public-game-hub .section-heading {
+  margin-bottom: 14px;
+}
+
+.public-game-hub-content {
+  min-width: 0;
+}
+
+.public-game-hub-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.public-game-hub-card {
+  min-width: 0;
+  border: 1px solid #d7e1eb;
+  border-radius: 8px;
+  background: #f8fbfe;
+}
+
+.public-game-hub-card.is-selected {
+  border-color: var(--fighters-blue);
+  background: #eef7ff;
+  box-shadow: 0 4px 12px rgba(0, 91, 172, 0.12);
+}
+
+.public-game-hub-card.is-unavailable {
+  border-color: #d8d8d8;
+  background: #f7f7f7;
+}
+
+.public-game-hub-select {
+  display: grid;
+  width: 100%;
+  min-height: 150px;
+  gap: 6px;
+  padding: 13px;
+  border: 0;
+  border-radius: inherit;
+  color: var(--text);
+  background: transparent;
+  text-align: start;
+  cursor: pointer;
+}
+
+.public-game-hub-select:focus-visible {
+  outline: 3px solid rgba(0, 91, 172, 0.35);
+  outline-offset: -3px;
+}
+
+.public-game-hub-select:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.public-game-hub-card-top,
+.public-game-hub-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.public-game-hub-date,
+.public-game-hub-time,
+.public-game-hub-deadline {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.public-game-hub-matchup {
+  align-self: center;
+  color: var(--fighters-deep-blue);
+  font-size: 1rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.public-game-hub-status {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: #e5edf5;
+  color: var(--fighters-deep-blue);
+  font-size: 0.68rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.public-game-hub-status.is-attention {
+  background: #fff1cf;
+  color: #815800;
+}
+
+.public-game-hub-status.is-unavailable {
+  background: #e7e7e7;
+  color: #666;
+}
+
+.public-game-hub-action {
+  justify-content: flex-start;
+  color: var(--fighters-blue);
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.public-game-hub-saved {
+  color: #2d7a4c;
+}
+
+.public-game-hub-message {
+  margin: 0;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.public-game-hub-message.is-error {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  color: #9a3e3e;
+}
+
+.public-game-hub-message p {
+  margin: 0;
+}
+
+.public-game-hub-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.public-game-hub-links a {
+  color: var(--fighters-blue);
+  font-weight: 900;
+}
+
 .score-insights {
   display: grid;
   gap: 10px;
@@ -7283,6 +7427,23 @@ body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip:focus-visi
 
 /* Keep the narrow mobile roster header compact so the first card aligns closer to order one. */
 @media (max-width: 767px) {
+  .public-game-hub {
+    padding: 16px;
+  }
+
+  .public-game-hub-list {
+    grid-template-columns: 1fr;
+  }
+
+  .public-game-hub-select {
+    min-height: 132px;
+    padding: 12px;
+  }
+
+  .public-game-hub-status {
+    font-size: 0.66rem;
+  }
+
   body:not(:has(.app-layout.is-admin-screen)) .player-panel {
     padding: 2px 6px 6px;
   }

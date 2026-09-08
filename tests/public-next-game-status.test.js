@@ -11,19 +11,21 @@ const script = read("script.js");
 const css = read("style.css");
 const worker = read("auth-worker.js");
 
-test("通常画面は大型カードも試合選択UIも持たず、canonical対象の補助表示だけを表示する", () => {
+test("通常画面はcanonical対象の試合ハブと選択中試合の補助表示を持つ", () => {
   for (const id of ["publicGameStatusCard", "publicGameStatusBadge", "publicGameStatusGrid"]) {
     assert.doesNotMatch(html, new RegExp(`id="${id}"`));
   }
   assert.doesNotMatch(html, /public-game-status-card|public-game-status-badge|public-game-status-grid/);
   const predictionForm = html.slice(html.indexOf('<form id="predictionForm"'), html.indexOf("</form>", html.indexOf('<form id="predictionForm"')));
   assert.match(html, /id="publicGameSelectionMeta"/);
-  assert.doesNotMatch(predictionForm, /id="publicGameSelect"|試合を選択/);
-  assert.doesNotMatch(css, /public-game-picker/);
+  assert.match(html, /id="publicGameHub"/);
+  assert.match(html, /id="publicGameHubContent"/);
+  assert.doesNotMatch(predictionForm, /id="publicGameSelect"/);
+  assert.match(css, /public-game-hub/);
   assert.match(css, /@media \(min-width: 1000px\)[\s\S]*#predictionForm > \.public-game-selection-meta[\s\S]*grid-column: 1 \/ -1/);
   assert.match(script, /function renderPublicGameSelectionMeta\(\)/);
-  assert.doesNotMatch(script, /renderPublicGameSelector|handlePublicGameSelectionChange|manualSelection/);
-  assert.doesNotMatch(script, /function renderPublicGameStatusCard\(\)/);
+  assert.match(script, /function renderPublicGameHub\(\)/);
+  assert.match(script, /function handlePublicGameHubClick\(event\)/);
 });
 
 test("未来試合はcanonical catalogに保持し、通常画面は受付可能な1試合だけを使う", () => {
@@ -130,8 +132,9 @@ test("保存済み予想の表示は対象試合単位で、保存処理と既�
   assert.match(script, /function renderPredictionDeadline\(\)/);
 });
 
-test("スマホでも選択UIを追加せず、補助表示と既存導線を維持する", () => {
-  assert.doesNotMatch(css, /public-game-picker/);
+test("スマホでは試合ハブを1列で表示し、補助表示と既存導線を維持する", () => {
+  assert.match(css, /\.public-game-hub-list[\s\S]*grid-template-columns: 1fr/);
+  assert.match(css, /\.public-game-hub-select[\s\S]*min-height: 132px/);
   assert.match(css, /\.public-game-selection-meta \{[\s\S]*font-size: 0\.82rem/);
   assert.match(script, /function getPublicPredictionGameMetaLines\(game\)/);
   assert.match(script, /public-game-meta-date/);
@@ -141,8 +144,8 @@ test("スマホでも選択UIを追加せず、補助表示と既存導線を維
 });
 
 test("公開画面のJS/CSS cache busterを更新する", () => {
-  assert.match(html, /style\.css\?v=public-position-menu-left-clamp-1/);
-  assert.match(html, /script\.js\?v=public-position-menu-pc-narrow-clamp-1/);
+  assert.match(html, /style\.css\?v=public-game-hub-1/);
+  assert.match(html, /script\.js\?v=public-game-hub-1/);
 });
 
 test("受付可能なcanonical対象がない場合は入力面を隠し、自然な案内を表示する", () => {

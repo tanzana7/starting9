@@ -247,7 +247,8 @@ test("使用済みポジションはグレー表示でもdisabledにせず、入
   assert.match(menuState, /選択するとポジションを入れ替えます/);
   assert.doesNotMatch(menuState, /disabled|aria-disabled/);
   assert.match(css, /\.position-menu-option\.is-used/);
-  assert.doesNotMatch(css, /\.position-menu-option\.is-used[\s\S]*?cursor:\s*not-allowed/);
+  const usedOptionCss = css.slice(css.indexOf(".position-menu-option.is-used"), css.indexOf(".position-menu-option.is-used:hover"));
+  assert.doesNotMatch(usedOptionCss, /cursor:\s*not-allowed/);
 });
 
 test("使用済みポジションを選ぶと、2行のポジションを入れ替える", () => {

@@ -43,7 +43,8 @@ export function deriveAdminV3GameProgressStatus({
   ranking = {},
   publication = {},
   currentScoringRevisionId = null,
-  reflectedScoringRevisionId = null
+  reflectedScoringRevisionId = null,
+  canonicalArtifacts = null
 } = {}) {
   const state = normalized(workflowState || game?.state?.state || game?.workflowState || "scheduled");
   const gameStatus = normalized(game?.gameStatus || game?.game_status || "scheduled");
@@ -52,14 +53,17 @@ export function deriveAdminV3GameProgressStatus({
   const relevantJobs = latestRelevantJobs(jobs);
   const terminalFailure = relevantJobs.find((job) => hasTerminalFailure(job));
   const openJob = relevantJobs.find((job) => OPEN_JOB_STATUSES.has(normalized(job?.status)));
-  const scoringRevisionId = String(currentScoringRevisionId || scoring?.scoringRevisionId || "").trim();
-  const reflectedRevisionId = String(reflectedScoringRevisionId || "").trim();
+  const canonical = canonicalArtifacts?.available === true ? canonicalArtifacts : null;
+  const scoringRevisionId = String(canonical?.scoring?.activeScoringRevisionId || currentScoringRevisionId || scoring?.scoringRevisionId || "").trim();
+  const reflectedRevisionId = String(canonical?.ranking?.reflectedRevisionId || reflectedScoringRevisionId || "").trim();
   const hasCurrentRevision = Boolean(scoringRevisionId && scoringRevisionId !== "legacy");
   const revisionMatches = hasCurrentRevision && reflectedRevisionId === scoringRevisionId;
   const lineupRequired = hasCurrentRevision
     || ["lineup_ready", "scored", "ranked", "published", "manual_action_required"].includes(state)
     || relevantJobs.length > 0;
-  const canonicalFinalRevisionValid = lineup?.canonicalFinalRevisionValid === true;
+  const canonicalFinalRevisionValid = canonical
+    ? canonical.lineup.lineupValid === true
+    : lineup?.canonicalFinalRevisionValid === true;
   const canonicalInvalid = lineupRequired && (
     lineup?.canonicalFinalRevisionValid === false
     || lineup?.canonicalValid === false
@@ -67,10 +71,21 @@ export function deriveAdminV3GameProgressStatus({
     || (!canonicalFinalRevisionValid && lineup?.finalizedValid === false
       && ["lineup_ready", "scored", "ranked", "published", "manual_action_required"].includes(state))
   );
-  const rankingReady = scoring?.ready === true && ranking?.reflected === true && revisionMatches;
-  const publicationReady = rankingReady && publication?.published === true;
-  const completionReady = hasCurrentRevision && scoring?.ready === true && !canonicalInvalid && publicationReady;
-  const publishedState = state === "published" || publication?.published === true;
+  const rankingReady = canonical
+    ? canonical.aggregate.rankingReady === true
+    : scoring?.ready === true && ranking?.reflected === true && revisionMatches;
+  const publicationReady = canonical
+    ? canonical.aggregate.publicationReady === true
+    : rankingReady && publication?.published === true;
+  const scoringReady = canonical
+    ? canonical.aggregate.scoringReady === true
+    : scoring?.ready === true;
+  const completionReady = canonical
+    ? canonical.aggregate.fullyPublished === true
+    : hasCurrentRevision && scoring?.ready === true && !canonicalInvalid && publicationReady;
+  const publishedState = state === "published" || (canonical
+    ? canonical.publication.publicationStatus === "published"
+    : publication?.published === true);
 
   // A completed current artifact is stronger evidence than an old terminal
   // job kept for history.  Correction creates a new revision, so an active
@@ -78,7 +93,7 @@ export function deriveAdminV3GameProgressStatus({
   if (completionReady) {
     return statusResult("completed", "完了", "現在の採点revisionがランキング反映・公開成果物まで一致しています。", "publish", {
       currentScoringRevisionId: scoringRevisionId,
-      reflectedScoringRevisionId: reflectedScoringRevisionId,
+      reflectedScoringRevisionId: reflectedRevisionId,
       revisionMatches: true,
       readOnly: true
     });
@@ -91,7 +106,7 @@ export function deriveAdminV3GameProgressStatus({
       readOnly: true
     });
   }
-  if (canonicalInvalid) {
+  if (canonicalInvalid || canonical?.aggregate?.needsAttention === true) {
     return statusResult("needs_attention", "要対応", "canonical正式スタメンまたは検証済みrevisionを確認できません。", "lineup", {
       currentScoringRevisionId: scoringRevisionId || null,
       reflectedScoringRevisionId: reflectedRevisionId || null,
@@ -99,16 +114,16 @@ export function deriveAdminV3GameProgressStatus({
       readOnly: true
     });
   }
-  if (openJob || (hasCurrentRevision && (scoring?.ready !== true || !rankingReady || publication?.published !== true))) {
+  if (openJob || (hasCurrentRevision && (!scoringReady || !rankingReady || (canonical ? !publicationReady : publication?.published !== true)))) {
     if (!openJob && publishedState) {
-      return statusResult("needs_attention", "要対応", "公開済み試合の現在の採点・ランキング・公開成果物が一致していません。", !scoring?.ready ? "score" : !rankingReady ? "ranking_reflect" : "publish", {
+      return statusResult("needs_attention", "要対応", "公開済み試合の現在の採点・ランキング・公開成果物が一致していません。", !scoringReady ? "score" : !rankingReady ? "ranking_reflect" : "publish", {
         currentScoringRevisionId: scoringRevisionId || null,
-        reflectedScoringRevisionId: reflectedScoringRevisionId || null,
+        reflectedScoringRevisionId: reflectedRevisionId || null,
         revisionMatches,
         readOnly: true
       });
     }
-    const stage = openJob?.job_type || (!scoring?.ready ? "score" : !rankingReady ? "ranking_reflect" : "publish");
+    const stage = openJob?.job_type || (!scoringReady ? "score" : !rankingReady ? "ranking_reflect" : "publish");
     const reason = stage === "score"
       ? "現在のスタメンrevisionの採点を処理中です。"
       : stage === "ranking_reflect"

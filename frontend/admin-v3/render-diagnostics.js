@@ -61,12 +61,17 @@
     function stepStatus(game, step, now = new Date(), options = {}) {
       const phaseByStep = { probable: "probable_starter", roster: "roster", lineup: "lineup_fetch", scoring: "score", ranking: "ranking", publication: "publish" };
       const gameState = String(game?.state?.state || "scheduled");
+      const canonical = game?.canonicalArtifacts?.aggregate || null;
       if (options.semiAuto && step === "roster") {
         return game?.rosterDiagnostics?.rosterSnapshotExists ? "ok" : "waiting";
       }
       if (options.semiAuto && step === "lineup") {
+        if (canonical) return canonical.lineupReady ? "ok" : canonical.needsAttention ? "attention" : "waiting";
         return ["lineup_ready", "scored", "ranked", "published"].includes(gameState) ? "ok" : "waiting";
       }
+      if (canonical && step === "scoring") return canonical.scoringReady ? "ok" : canonical.needsAttention ? "attention" : "waiting";
+      if (canonical && step === "ranking") return canonical.rankingReady ? "ok" : canonical.needsAttention ? "attention" : "waiting";
+      if (canonical && step === "publication") return canonical.publicationReady ? "ok" : canonical.needsAttention ? "attention" : "waiting";
       const normalized = normalizedPhaseState(game, phaseByStep[step]);
       if (normalized) return normalized.status;
       const schedule = game?.schedule || {};
@@ -125,15 +130,16 @@
       const futureShortage = futureGames < futureGamesMinimum;
       const gameModels = todayGames.map((game) => {
         const gameState = String(game?.state?.state || "scheduled");
+        const canonical = game?.canonicalArtifacts?.aggregate || null;
         const publicationAt = new Date(game?.schedule?.publicationAt || "").getTime();
         const published = gameState === "published" || game?.publicationStatus === "published";
         const failedJob = currentFailedJobs(game)[0] || null;
         const manualAction = gameState === "manual_action_required";
         const lineupOverdue = !v4SemiAuto && !["lineup_ready", "scored", "ranked", "published"].includes(gameState) && Number.isFinite(new Date(game?.startAt || "").getTime()) && new Date(game.startAt).getTime() <= now.getTime();
         const publicationOverdue = !published && Number.isFinite(publicationAt) && publicationAt <= now.getTime();
-        const attention = Boolean(failedJob || manualAction || lineupOverdue || publicationOverdue);
+        const attention = Boolean(failedJob || manualAction || lineupOverdue || publicationOverdue || canonical?.needsAttention === true);
         const lineupStatus = v4SemiAuto
-          ? { status: ["lineup_ready", "scored", "ranked", "published"].includes(gameState) ? "ok" : "waiting", detail: ["lineup_ready", "scored", "ranked", "published"].includes(gameState) ? "正式スタメン確定済み" : "V4: 管理者が手動入力・正式確定" }
+          ? { status: canonical ? (canonical.lineupReady ? "ok" : canonical.needsAttention ? "attention" : "waiting") : (["lineup_ready", "scored", "ranked", "published"].includes(gameState) ? "ok" : "waiting"), detail: canonical?.lineupReady ? "正式スタメン確定済み" : "V4: 管理者が手動入力・正式確定" }
           : lineupDisplayState(game, now);
         const rosterStatus = v4SemiAuto && !game?.rosterDiagnostics?.rosterSnapshotExists
           ? { status: "waiting", detail: "V4: ロースター自動取得OFF（手動管理はP1）" }

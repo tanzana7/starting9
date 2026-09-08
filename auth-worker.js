@@ -90,6 +90,10 @@ import {
 } from "./backend/automation-v3/audit.js";
 import { buildV3CronSummary } from "./backend/automation-v3/diagnostics.js";
 import { assessV3LineupArtifact } from "./backend/automation-v3/lineup-artifacts.js";
+import {
+  evaluateCanonicalArtifactsFromDb,
+  toCanonicalArtifactStageArtifacts
+} from "./backend/automation-v3/canonical-artifact-evaluator.js";
 import { adaptV35Input } from "./backend/automation-v3/stage-health-adapter.js";
 import { evaluateV35Automation } from "./backend/automation-v3/stage-health-evaluator.js";
 import { planShadowRecovery } from "./backend/automation-v3/shadow-recovery-planner.js";
@@ -4818,7 +4822,7 @@ async function handleAdminMe(request, env, cors) {
   }, 200, cors);
 }
 
-function buildV35AdminDerivedDiagnostics({ env, game, resolvedState, jobRows, probableStarter, rosterDiagnostics, lineupDataHealth, workflowArtifactHealth, phaseStatuses, progressStatus = null, overviewNow }) {
+function buildV35AdminDerivedDiagnostics({ env, game, resolvedState, jobRows, probableStarter, rosterDiagnostics, lineupDataHealth, workflowArtifactHealth, phaseStatuses, progressStatus = null, canonicalArtifacts = null, overviewNow }) {
   const enabled = String(env?.V35_DERIVED_DIAGNOSTICS_ENABLED ?? "true").toLowerCase() !== "false";
   if (!enabled) return { enabled: false, mode: "read_only", reason: "feature_flag_disabled" };
   try {
@@ -4856,6 +4860,7 @@ function buildV35AdminDerivedDiagnostics({ env, game, resolvedState, jobRows, pr
       ranking_reflect: rankingArtifact,
       publish: publicationArtifact
     };
+    Object.assign(artifacts, toCanonicalArtifactStageArtifacts(canonicalArtifacts));
     const diagnostics = {
       ...phaseStatuses,
       predictionClose: phaseStatuses?.prediction_close,
@@ -4883,7 +4888,8 @@ function buildV35AdminDerivedDiagnostics({ env, game, resolvedState, jobRows, pr
       externalFlags: {
         NPB_FETCH_DISABLED: String(env?.NPB_FETCH_DISABLED || "").toLowerCase() === "true"
       },
-      automationMode
+      automationMode,
+      canonicalArtifacts
     });
     const evaluated = evaluateV35Automation(adapted.evaluatorInput);
     return {
@@ -4894,6 +4900,7 @@ function buildV35AdminDerivedDiagnostics({ env, game, resolvedState, jobRows, pr
       effectiveState: evaluated.effectiveState,
       persistedState: evaluated.persistedState,
       stateMismatch: evaluated.stateMismatch,
+      canonicalArtifacts,
       stages: evaluated.stages,
       warnings: adapted.warnings,
       informationalNotices: adapted.informationalNotices,
@@ -5447,12 +5454,14 @@ async function handleAdminV3Overview(request, env, cors) {
       ranking: deriveV3PhaseStatus({ phase: "ranking", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, noOpReason: rankingSummary.noOpReason, workflowArtifactHealth }),
       publish: deriveV3PhaseStatus({ phase: "publish", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, workflowArtifactHealth })
     };
+    const canonicalArtifacts = await evaluateCanonicalArtifactsFromDb(env.AUTH_DB, game.internalGameId);
     const displayStatus = await getV3AdminProgressDisplayStatus(env.AUTH_DB, {
       game,
       resolvedState,
       jobRows,
       lineupDataHealth,
       workflowArtifactHealth,
+      canonicalArtifacts,
       now: overviewNow
     });
     const v35DerivedDiagnostics = buildV35AdminDerivedDiagnostics({
@@ -5466,6 +5475,7 @@ async function handleAdminV3Overview(request, env, cors) {
       workflowArtifactHealth,
       phaseStatuses,
       progressStatus: displayStatus,
+      canonicalArtifacts,
       overviewNow
     });
     const v35ShadowRecoveryPlan = buildV35AdminShadowRecoveryPlan({
@@ -5481,6 +5491,7 @@ async function handleAdminV3Overview(request, env, cors) {
       jobs: jobRows,
       lineupDataHealth,
       workflowArtifactHealth,
+      canonicalArtifacts,
       lineupSummary,
       scoringSummary,
       rankingSummary,
@@ -5527,7 +5538,7 @@ async function handleAdminV3Overview(request, env, cors) {
   }, 200, cors);
 }
 
-async function getV3AdminProgressDisplayStatus(db, { game, resolvedState, jobRows, lineupDataHealth, workflowArtifactHealth, now }) {
+async function getV3AdminProgressDisplayStatus(db, { game, resolvedState, jobRows, lineupDataHealth, workflowArtifactHealth, canonicalArtifacts = null, now }) {
   let latestReflection = null;
   try {
     latestReflection = await db.prepare(
@@ -5555,12 +5566,14 @@ async function getV3AdminProgressDisplayStatus(db, { game, resolvedState, jobRow
     ranking: workflowArtifactHealth?.ranking,
     publication: workflowArtifactHealth?.publication,
     currentScoringRevisionId: workflowArtifactHealth?.scoring?.scoringRevisionId,
-    reflectedScoringRevisionId
+    reflectedScoringRevisionId,
+    canonicalArtifacts
   });
   return {
     ...displayStatus,
     latestReflectionStatus: latestReflection?.status || null,
-    latestReflectionRevision: latestReflection?.ranking_update_revision ?? null
+    latestReflectionRevision: latestReflection?.ranking_update_revision ?? null,
+    canonicalArtifacts
   };
 }
 

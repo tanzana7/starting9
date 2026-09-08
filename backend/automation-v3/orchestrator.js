@@ -19,6 +19,7 @@ import {
 import { planV3ProbableStarterJobs } from "./probable-starter-planner.js";
 import { isV3GameEligible } from "./domain.js";
 import { assessV3LineupArtifact } from "./lineup-artifacts.js";
+import { evaluateCanonicalArtifactsFromDb } from "./canonical-artifact-evaluator.js";
 import { getV3CanonicalRosterSnapshot } from "./roster-repository.js";
 import { buildStagePlans, buildV3PlanningState, isV3JobForStage } from "./planning-engine.js";
 
@@ -280,7 +281,14 @@ async function deriveV3PlanningState(db, gameOrId, persistedState = "scheduled",
     artifacts,
     now
   });
-  return { ...planningState, artifacts, workflowArtifacts, rosterSnapshot };
+  let canonicalArtifacts = null;
+  try {
+    canonicalArtifacts = await evaluateCanonicalArtifactsFromDb(db, internalGameId);
+  } catch {
+    // The canonical evaluator is parity telemetry here. Existing formal
+    // planning must remain unchanged when an optional read is unavailable.
+  }
+  return { ...planningState, artifacts, workflowArtifacts, rosterSnapshot, canonicalArtifacts };
 }
 
 function createV3PlanningDiagnostic(game, plan, state) {
@@ -553,6 +561,7 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
           reasonCode: stagePlan.reasonCode,
           existingJobId: stagePlan.existingJob?.id || null,
           existingStatus: stagePlan.existingJob?.status || null,
+          canonicalArtifacts: derivedPlanningState.canonicalArtifacts?.aggregate || null,
           insertAttempted: false,
           insertedRowCount: 0
         });

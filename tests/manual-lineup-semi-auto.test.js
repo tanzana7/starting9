@@ -413,6 +413,18 @@ test("manual lineup finalizeは過去の正常試合でもcanonical未登録な�
   }
 });
 
+test("published stale stateでもcanonical final未登録ならmanual lineup登録を許可する", async () => {
+  const integration = await createManualLineupIntegrationDb({ state: "published", gameStatus: "completed" });
+  try {
+    const response = await adminRequest(integration.env, `/api/admin/v3/games/${INTEGRATION_GAME_ID}/lineup-revisions`, { lineup: validManualLineup(), confirmed: true });
+    const body = await response.json();
+    assert.equal(response.status, 201, JSON.stringify(body));
+    assert.equal(body.ok, true);
+  } finally {
+    integration.database.close();
+  }
+});
+
 test("manual lineupはcancelled・postponed・excluded試合への登録を拒否する", async () => {
   for (const gameStatus of ["cancelled", "postponed"]) {
     const integration = await createManualLineupIntegrationDb({ gameStatus, state: "prediction_closed" });

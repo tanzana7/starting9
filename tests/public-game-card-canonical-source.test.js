@@ -50,14 +50,14 @@ test("公開カタログとcanonical対象表示はAPI displayLabelを優先し�
   assert.match(script, /const matchup = game\?\.displayLabel \|\| game\?\.matchupLabel/);
   assert.match(script, /function formatPublicPredictionGameLabel\(game\)/);
   assert.match(script, /catalog\.games = mergePublicGameSchedules\(\[\], apiGames\)/);
-  assert.match(script, /catalog\.games = \[\];\s*catalog\.message = "試合情報を取得できませんでした。"/);
+  assert.match(script, /catalog\.games = previousGames;\s*catalog\.message = "試合情報を取得できませんでした。"/);
 });
 
 test("公開画面はcanonical catalogの未来試合を締切判定に使い、旧日程fallbackで上書きしない", () => {
   assert.match(script, /const nextGame = catalogGame \|\| await resolvePredictionTargetGame/);
   assert.doesNotMatch(script, /state\.isAdminMode/);
   assert.match(script, /state\.publicGameCatalog\.games\.find\(\(item\) => item\?\.gameId === gameId/);
-  assert.match(script, /state\.predictionTargetGameId = state\.probableStarter\.nextGame\?\.internalGameId/);
+  assert.match(script, /const catalogGame = state\.publicGameCatalog\.games\.length[\s\S]*?getPreferredPublicGameSelection\(\)/);
   assert.doesNotMatch(script, /applyPublicPredictionTarget|selectNextPredictionGame/);
 });
 
@@ -67,7 +67,7 @@ test("通常画面はlocalStorageに残る旧管理試合カードを描画せ�
   const targetResolver = script.slice(noticeStart, noticeEnd);
   assert.match(targetResolver, /state\.predictionTargetGame\?\.internalGameId \|\| state\.probableStarter\.nextGame\?\.internalGameId/);
   assert.match(targetResolver, /internalGameId:/);
-  assert.match(index, /script\.js\?v=public-position-menu-pc-narrow-clamp-1/);
+  assert.match(index, /script\.js\?v=public-game-hub-1/);
 });
 
 test("公開ゲームAPIはFightersのcanonical games行と表示用チーム名を返す", () => {

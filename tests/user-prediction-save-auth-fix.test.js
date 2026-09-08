@@ -150,7 +150,7 @@ test("保存APIの401は認証状態を無効化し、credentials includeを維�
 test("変更した公開assetのcache busterを更新する", () => {
   assert.match(htmlSource, /auth\.js\?v=d1-read-limit-resilience-20260902&user-prediction-save-auth-fix-20260903/);
   assert.match(htmlSource, /frontend\/public\/prediction-form\.js\?v=public-compliance-disclaimer-and-fetch-safety-1&user-save-auth-unavailable-fix-20260903/);
-  assert.match(htmlSource, /script\.js\?v=public-position-menu-pc-narrow-clamp-1&user-save-auth-unavailable-fix-20260903/);
+  assert.match(htmlSource, /script\.js\?v=public-game-hub-1&user-save-auth-unavailable-fix-20260903/);
 });
 
 test("認証初期化失敗時も保存APIの成功をアカウント保存へ反映する", async () => {

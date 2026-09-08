@@ -91,7 +91,7 @@ test("通常画面はcanonical public gameのinternalGameIdを予想保存と締
   assert.match(script, /state\.predictionTargetGame = preservedGame/);
   assert.match(script, /async function refreshPredictionTarget\(\{ retryUnannounced = true, useServer = true \} = \{\}\)/);
   assert.doesNotMatch(script, /state\.isAdminMode/);
-  assert.match(script, /state\.predictionTargetGameId = state\.probableStarter\.nextGame\?\.internalGameId/);
+  assert.match(script, /state\.predictionTargetGameId = nextGameId/);
   assert.match(script, /state\.predictionTargetGame\?\.gameId === gameId \|\| state\.predictionTargetGame\?\.internalGameId === gameId \? state\.predictionTargetGame : null/);
   assert.match(predictionForm, /deps\.state\.prediction = \{\s*gameId: deps\.getCurrentGameId\(\)/);
 });

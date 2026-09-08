@@ -66,7 +66,7 @@ test("表示整形は保存値・照合用のcanonical nameを変更しない", 
 
 test("公開entryは選手表示フォーマッタをcache buster付きで先に読み込む", () => {
   const moduleCacheBuster = "public-player-display-1-batting-hand-player-number-1-player-details-1";
-  const scriptCacheBuster = "public-position-menu-pc-narrow-clamp-1";
+  const scriptCacheBuster = "public-game-hub-1";
   assert.match(html, new RegExp(`frontend/public/player-display\\.js\\?v=${moduleCacheBuster}`));
   assert.match(html, new RegExp(`script\\.js\\?v=${scriptCacheBuster}`));
   assert.ok(html.indexOf("frontend/public/player-display.js") < html.indexOf("script.js"));

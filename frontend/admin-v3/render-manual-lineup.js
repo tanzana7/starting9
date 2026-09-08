@@ -186,6 +186,44 @@
         : `<span class="muted">候補がありません</span>`;
     }
 
+    function manualLineupInteractionState(game, details, state = {}) {
+      if (state.loading === true) {
+        return { locked: true, loading: true, reason: "スタメン情報を保存中です。完了するまで編集できません。" };
+      }
+      if (!details || !Object.prototype.hasOwnProperty.call(details, "lineup")) {
+        return { locked: true, loading: true, reason: "スタメン情報を読み込み中です。" };
+      }
+      if (details.lineup?.ok === false) {
+        return { locked: true, loading: false, reason: "対象試合のスタメン情報を取得できませんでした。画面を更新してください。" };
+      }
+      const failedDetail = ["revisions", "publication", "schedule"].find((key) => details[key]?.ok === false);
+      if (failedDetail) {
+        return { locked: true, loading: false, reason: "試合詳細の取得に失敗したため編集を停止しています。画面を更新してください。" };
+      }
+      const gameId = String(game?.internalGameId || "");
+      const detailGameId = String(details.internalGameId || "");
+      if (gameId && detailGameId && gameId !== detailGameId) {
+        return { locked: true, loading: false, reason: "対象試合の詳細が一致しないため編集を停止しています。画面を更新してください。" };
+      }
+      const workflowState = String(game?.state?.state || game?.workflowState || "").toLowerCase();
+      const lineupDetails = details.lineup || {};
+      const scoringStatus = String(lineupDetails.status || details.lineupStatus || "").toLowerCase();
+      const publication = details.publication?.publication || {};
+      if (workflowState === "published" || publication.publishedAt || publication.status === "published") {
+        return { locked: true, loading: false, reason: "この試合は公開済みのため編集できません。訂正は「スタメン修正」から行ってください。" };
+      }
+      if (["scored", "ranked"].includes(workflowState) || scoringStatus === "scored") {
+        return { locked: true, loading: false, reason: "採点済みのため編集できません。訂正は「スタメン修正」から行ってください。" };
+      }
+      if (scoringStatus === "processing") {
+        return { locked: true, loading: false, reason: "採点処理が開始済みのため編集できません。訂正は「スタメン修正」から行ってください。" };
+      }
+      if (lineupDetails.finalRevision?.isFinal === true || details.finalRevision?.isFinal === true) {
+        return { locked: true, loading: false, reason: "この試合はスタメン確定済みのため編集できません。訂正は「スタメン修正」から行ってください。" };
+      }
+      return { locked: false, loading: false, reason: "" };
+    }
+
     function render(game, details, state = {}) {
       const lineupDetails = details?.lineup || {};
       const catalog = Array.isArray(lineupDetails.playerCatalog) ? lineupDetails.playerCatalog : [];
@@ -204,27 +242,28 @@
       const targetMarkup = `<div class="manual-lineup-target${dayStatus.tone === "future" ? " is-future" : dayStatus.tone === "past" ? " is-past" : ""}" data-v3-manual-lineup-target><strong>正式スタメン確定対象</strong><span class="manual-lineup-target-status">${escapeHtml(dayStatus.label || "日付不明")}</span><span>${escapeHtml(gameDate)} / ${escapeHtml(game?.homeTeam || "-")} vs ${escapeHtml(game?.awayTeam || "-")}</span><span>開始 ${escapeHtml(startAt)} JST</span><span>workflow: persisted ${escapeHtml(persistedState)} / effective ${escapeHtml(effectiveState)}</span><code>internalGameId: ${escapeHtml(game?.internalGameId || "-")}</code>${targetWarning ? `<p class="manual-lineup-target-warning">${escapeHtml(targetWarning)}</p>` : ""}${mismatchWarning ? `<p class="manual-lineup-target-mismatch">${escapeHtml(mismatchWarning)}</p>` : ""}</div>`;
       const lineupSummary = renderLineupConfirmation(rows, catalog);
       const safetyMarkup = finalizeSafety.allowed ? "" : `<p class="manual-lineup-safety-warning" data-v3-manual-lineup-safety-warning>${escapeHtml(finalizeSafety.message)}</p>`;
-      const locked = ["scored", "ranked", "published"].includes(String(game?.state?.state || game?.workflowState || "").toLowerCase())
-        || ["processing", "scored"].includes(String(lineupDetails.lineupStatus || "").toLowerCase())
-        || Boolean(lineupDetails.finalRevision?.isFinal)
-        || Boolean(details?.publication?.publication?.publishedAt);
+      const interaction = manualLineupInteractionState(game, details, state);
+      const locked = interaction.locked;
+      const disabled = locked || state.loading === true;
+      const interactionNotice = interaction.reason
+        ? `<p class="manual-lineup-lock-notice${interaction.loading ? " loading" : ""}" role="status" data-v3-manual-lineup-lock-reason>${escapeHtml(interaction.reason)}</p>`
+        : "";
       const cards = rows.map((row, index) => {
         const selected = catalog.find((player) => player.playerId === row.playerId);
         const positionOptions = POSITIONS.map((position) => `<option value="${escapeHtml(position)}" ${row.position === position ? "selected" : ""}>${escapeHtml(position || "守備位置を選択")}</option>`).join("");
         return `<article class="manual-lineup-card"><div class="manual-lineup-card-heading"><strong>${index + 1}人目</strong><span>${selected ? playerName(selected) : "未選択"}</span>${selected ? playerDetailMarkup(selected) : ""}</div><label>選手を検索<input type="search" value="${escapeHtml(row.search || "")}" placeholder="名前または背番号" data-v3-manual-lineup-search="${index}" ${locked ? "disabled" : ""}></label><div class="manual-lineup-candidates" aria-label="選手候補" data-v3-manual-lineup-candidates="${index}">${renderCandidates(catalog, row, index, lineupDetails.manualRoster)}</div><div class="manual-lineup-card-fields"><div class="manual-lineup-fixed-order" aria-label="打順 ${index + 1}番"><span>打順</span><strong>${index + 1}番</strong></div><label>守備位置<select data-v3-manual-lineup-position="${index}" ${locked ? "disabled" : ""}>${positionOptions}</select></label></div></article>`;
       }).join("");
       const message = state.error ? `<p class="manual-lineup-message error">${escapeHtml(state.error)}</p>` : state.message ? `<p class="manual-lineup-message success">${escapeHtml(state.message)}</p>` : "";
-      const disabled = locked || state.loading;
        const revision = state.latestRevision;
        const cancelableSource = ["manual", "manual-revision"].includes(String(revision?.source || ""));
        const futureScheduled = dayStatus.isFuture;
        const cancelMarkup = revision && cancelableSource && futureScheduled && !details?.publication?.publication?.publishedAt
          ? `<button type="button" class="secondary manual-lineup-cancel" data-v3-manual-lineup-revision-cancel="${escapeHtml(String(revision.revisionId || revision.version || ""))}">このmanual revisionを取消</button><small class="muted">未来のscheduled試合のみ。取消後は正式スタメン未確定に戻ります。</small>`
          : "";
-       return `<section class="manual-lineup-editor" data-v3-manual-lineup-editor>${targetMarkup}<div class="manual-lineup-header"><div><h3>Fighters 手動スタメン</h3><p>対象チーム1チーム・9人を選択します。選手名はマスター照合され、未登録名や重複は保存できません。ロースター外は警告のみで、スタメン確定の必須条件ではありません。</p></div><span class="manual-lineup-team">${escapeHtml(lineupDetails.managedTeam?.name || "Fighters")}</span></div><div class="manual-lineup-grid">${cards}</div><div class="manual-lineup-confirmation-preview" data-v3-manual-lineup-confirmation-preview><strong>スタメン確認（入力中）</strong>${lineupSummary}</div><label class="manual-lineup-confirm"><input type="checkbox" data-v3-manual-lineup-confirm ${state.confirmed ? "checked" : ""} ${disabled ? "disabled" : ""}> 入力内容を確認しました</label>${safetyMarkup}<div class="manual-lineup-actions"><button type="button" data-v3-manual-lineup-save ${disabled ? "disabled" : ""}>下書きを保存</button><button type="button" class="primary-button" data-v3-manual-lineup-finalize ${disabled || !state.latestRevision || !finalizeSafety.allowed ? "disabled" : ""}>正式スタメンを確定</button>${cancelMarkup}</div>${locked ? `<p class="muted">採点開始後・公開後はスタメンを変更できません。</p>` : `<p class="muted">確定後はスコアjobを手動投入せず、次回の正式V3 Cronが採点へ進めます。</p>`}${message}</section>`;
+       return `<section class="manual-lineup-editor${locked ? " is-locked" : ""}" data-v3-manual-lineup-editor data-v3-manual-lineup-interaction="${locked ? "locked" : "editable"}" data-v3-manual-lineup-loading="${interaction.loading ? "true" : "false"}">${targetMarkup}<div class="manual-lineup-header"><div><h3>Fighters 手動スタメン</h3><p>対象チーム1チーム・9人を選択します。選手名はマスター照合され、未登録名や重複は保存できません。ロースター外は警告のみで、スタメン確定の必須条件ではありません。</p></div><span class="manual-lineup-team">${escapeHtml(lineupDetails.managedTeam?.name || "Fighters")}</span></div>${interactionNotice}<div class="manual-lineup-grid">${cards}</div><div class="manual-lineup-confirmation-preview" data-v3-manual-lineup-confirmation-preview><strong>スタメン確認（入力中）</strong>${lineupSummary}</div><label class="manual-lineup-confirm"><input type="checkbox" data-v3-manual-lineup-confirm ${state.confirmed ? "checked" : ""} ${disabled ? "disabled" : ""}> 入力内容を確認しました</label>${safetyMarkup}<div class="manual-lineup-actions"><button type="button" data-v3-manual-lineup-save ${disabled ? "disabled" : ""}>下書きを保存</button><button type="button" class="primary-button" data-v3-manual-lineup-finalize ${disabled || !state.latestRevision || !finalizeSafety.allowed ? "disabled" : ""}>正式スタメンを確定</button>${cancelMarkup}</div>${locked ? `<p class="muted">採点開始後・公開後はスタメンを変更できません。</p>` : `<p class="muted">確定後はスコアjobを手動投入せず、次回の正式V3 Cronが採点へ進めます。</p>`}${message}</section>`;
     }
 
-    return Object.freeze({ createBlankRows, renderCandidates, render, sortPlayersByRosterAndUniformNumber });
+    return Object.freeze({ createBlankRows, manualLineupInteractionState, renderCandidates, render, sortPlayersByRosterAndUniformNumber });
   }
 
   global.Starting9AdminV3 = global.Starting9AdminV3 || {};

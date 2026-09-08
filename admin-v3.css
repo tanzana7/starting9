@@ -285,6 +285,8 @@ button:disabled { cursor: wait; opacity: .65; }
 .manual-lineup-target.is-past { border-color: #a9823f; background: #fffaf0; }
 .manual-lineup-target strong { font-size: 13px; }
 .manual-lineup-target code { color: #60758c; font-size: 10px; overflow-wrap: anywhere; }
+.manual-lineup-lock-notice { margin: 0; padding: 9px 10px; border-left: 3px solid #bd5a5a; background: #fff5f5; color: #8b2525; font-size: 12px; line-height: 1.5; }
+.manual-lineup-lock-notice.loading { border-color: #6b9fbd; background: #eef7fb; color: #315d83; }
 .manual-lineup-target-status { display: inline-flex; width: fit-content; padding: 2px 6px; border-radius: 999px; background: #dcecf7; color: #1d527c; font-size: 11px; font-weight: 700; }
 .manual-lineup-target.is-future .manual-lineup-target-status { background: #f3d1d1; color: #8b2525; }
 .manual-lineup-target.is-past .manual-lineup-target-status { background: #f0dfbd; color: #705326; }

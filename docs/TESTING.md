@@ -34,7 +34,7 @@ The tests cover the following contracts:
 - lineup, probable starter, roster, scoring, ranking, and publication progression
 - canonical UUID and NPB identity resolution
 - ranking eligibility and non-destructive reset markers
-- admin-only perfect-score preview and release fixture isolation
+- admin-only perfect-score preview and release fixture removal
 - migration application and schema compatibility using local test databases
 - V1/V2 retirement and no-legacy-fallback guarantees
 

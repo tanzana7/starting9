@@ -49,11 +49,7 @@ import {
   SCORING_LINEUP_SIZE,
   SCORING_MAX_SCORE,
   scorePredictionLineup,
-  buildPerfectScorePreview,
-  buildReleaseDebugPerfectScoreFixtureLineup,
-  buildReleaseDebugPerfectScoreFixturePreview,
-  RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY,
-  RELEASE_DEBUG_PERFECT_SCORE_FIXTURE
+  buildPerfectScorePreview
 } from "./backend/domain/scoring.js";
 import {
   calculateRankingGamesNeeded,
@@ -111,10 +107,6 @@ import {
 export {
   scorePredictionLineup,
   buildPerfectScorePreview,
-  buildReleaseDebugPerfectScoreFixtureLineup,
-  buildReleaseDebugPerfectScoreFixturePreview,
-  RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY,
-  RELEASE_DEBUG_PERFECT_SCORE_FIXTURE,
   calculateRankingGamesNeeded,
   getRankingResetConfirmation,
   getRankingResetDateBoundary,
@@ -6793,13 +6785,9 @@ async function handleAdminV3PerfectScorePreview(request, env, cors) {
 
   const input = await readJson(request, { maxBytes: ADMIN_PREVIEW_JSON_BODY_MAX_BYTES });
   const mode = String(input?.mode || "").trim().toLowerCase();
-  const fixtureKey = String(input?.fixtureKey || "").trim();
   const reason = String(input?.reason || "").trim();
-  if (!["perfect", "fixture"].includes(mode)) return jsonResponse({ ok: false, code: "PERFECT_SCORE_PREVIEW_MODE_INVALID", error: "modeはperfectまたはfixtureを指定してください。" }, 400, cors);
+  if (mode !== "perfect") return jsonResponse({ ok: false, code: "PERFECT_SCORE_PREVIEW_MODE_INVALID", error: "modeはperfectを指定してください。" }, 400, cors);
   if (!reason || reason.length > 240) return jsonResponse({ ok: false, code: "V3_REASON_REQUIRED", error: "満点preview理由を1〜240文字で入力してください。" }, 400, cors);
-  if (mode === "fixture" && fixtureKey !== RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY) {
-    return jsonResponse({ ok: false, code: "RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY_INVALID", error: "リリース確認用fixtureKeyが不正です。" }, 400, cors);
-  }
 
   let context;
   try {
@@ -6812,27 +6800,21 @@ async function handleAdminV3PerfectScorePreview(request, env, cors) {
   let actualResult = null;
   let officialLineup;
   let preview;
-  if (mode === "fixture") {
-    // RELEASE_DEBUG_PERFECT_SCORE_FIXTURE is preview-only and never enters a runtime job.
-    preview = buildReleaseDebugPerfectScoreFixturePreview();
-    officialLineup = preview.officialLineup;
-  } else {
-    const revisions = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
-    finalRevision = revisions.find((row) => Number(row.is_final) === 1) || null;
-    if (!finalRevision) {
-      return jsonResponse({ ok: false, code: "PERFECT_SCORE_LINEUP_REQUIRED", error: "満点previewには正式スタメンの確定が必要です。" }, 409, cors);
-    }
-    actualResult = sanitizeActualLineupForScoring(parseStoredActualLineup(finalRevision.actual_lineup_json));
-    if (!actualResult.ok) {
-      return jsonResponse({ ok: false, code: "PERFECT_SCORE_LINEUP_INVALID", error: "正式スタメンを採点用形式として確認できません。" }, 409, cors);
-    }
-    officialLineup = actualResult.lineup;
-    preview = buildPerfectScorePreview(officialLineup);
+  const revisions = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
+  finalRevision = revisions.find((row) => Number(row.is_final) === 1) || null;
+  if (!finalRevision) {
+    return jsonResponse({ ok: false, code: "PERFECT_SCORE_LINEUP_REQUIRED", error: "満点previewには正式スタメンの確定が必要です。" }, 409, cors);
   }
+  actualResult = sanitizeActualLineupForScoring(parseStoredActualLineup(finalRevision.actual_lineup_json));
+  if (!actualResult.ok) {
+    return jsonResponse({ ok: false, code: "PERFECT_SCORE_LINEUP_INVALID", error: "正式スタメンを採点用形式として確認できません。" }, 409, cors);
+  }
+  officialLineup = actualResult.lineup;
+  preview = buildPerfectScorePreview(officialLineup);
 
   return jsonResponse({
     ok: true,
-    ...buildAdminReadOnlyPreviewMetadata({ fixtureMode: mode === "fixture", fixtureKey }),
+    ...buildAdminReadOnlyPreviewMetadata(),
     targetGame: {
       internalGameId: context.id,
       gameDate: context.target.game_date || "",
@@ -6845,7 +6827,7 @@ async function handleAdminV3PerfectScorePreview(request, env, cors) {
       version: Number(finalRevision.version),
       finalizedAt: finalRevision.finalized_at || null
     } : null,
-    officialLineup: mode === "fixture" ? officialLineup : actualResult.lineup,
+    officialLineup: actualResult.lineup,
     virtualPerfectPrediction: preview.prediction,
     scoringBreakdown: preview.breakdown,
     expectedScore: preview.score.total,
@@ -20632,7 +20614,7 @@ function assertManagedManualLineupGame(context) {
   const teamCodes = [context?.metadata?.homeCode, context?.metadata?.awayCode]
     .map((value) => String(value || "").trim().toLowerCase());
   if (!teamCodes.some((value) => value === "f" || value === FIGHTERS_TEAM_CODE)) {
-    throw createV3Error("V3_MANAGED_TEAM_NOT_IN_GAME", "現在のβ版はFightersを含む試合だけ手動スタメン入力に対応しています。", { httpStatus: 409 });
+    throw createV3Error("V3_MANAGED_TEAM_NOT_IN_GAME", "Fightersを含む試合だけ手動スタメン入力に対応しています。", { httpStatus: 409 });
   }
 }
 

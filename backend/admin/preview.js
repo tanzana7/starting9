@@ -5,11 +5,9 @@
  * makes the non-persistence guarantee explicit and reusable for preview routes.
  */
 
-export function buildAdminReadOnlyPreviewMetadata({ fixtureMode = false, fixtureKey = null } = {}) {
+export function buildAdminReadOnlyPreviewMetadata() {
   return {
     previewOnly: true,
-    fixtureMode: Boolean(fixtureMode),
-    fixtureKey: fixtureMode ? fixtureKey : null,
     productionWrite: false,
     writes: {
       database: false,

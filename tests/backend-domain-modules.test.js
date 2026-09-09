@@ -2,8 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildPerfectScorePreview,
-  buildReleaseDebugPerfectScoreFixturePreview,
-  RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY,
   SCORING_MAX_SCORE,
   SCORING_RULES,
   scorePredictionLineup
@@ -59,27 +57,6 @@ test("perfect bonus is awarded per slot and whole-category bonuses are not appli
   assert.equal(result.total, 96);
 });
 
-test("release debug fixture stays preview-only and scores itself perfectly", () => {
-  const preview = buildReleaseDebugPerfectScoreFixturePreview();
-  assert.equal(preview.fixtureKey, RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY);
-  assert.equal(preview.fixtureMode, true);
-  assert.equal(preview.productionWrite, false);
-  assert.equal(preview.score.total, 99);
-  assert.deepEqual(preview.score.counts, { player: 9, order: 9, position: 9, perfect: 9 });
-  assert.equal(preview.officialLineup.length, 9);
-  assert.deepEqual(preview.officialLineup.map(({ battingOrder, position, name }) => ({ battingOrder, position, name })), [
-    { battingOrder: 1, position: "2B", name: "西川" },
-    { battingOrder: 2, position: "C", name: "中島" },
-    { battingOrder: 3, position: "SS", name: "エドポロ" },
-    { battingOrder: 4, position: "RF", name: "リン" },
-    { battingOrder: 5, position: "1B", name: "山縣" },
-    { battingOrder: 6, position: "3B", name: "レイエス" },
-    { battingOrder: 7, position: "LF", name: "藤森" },
-    { battingOrder: 8, position: "DH", name: "宮崎" },
-    { battingOrder: 9, position: "CF", name: "マルティネス" }
-  ]);
-});
-
 test("ranking domain keeps unqualified rows visible by default and supports a future filter", () => {
   assert.equal(calculateRankingGamesNeeded(4, 8), 4);
   const rows = [{ isQualified: true }, { isQualified: false }];
@@ -95,10 +72,8 @@ test("public results domain owns user-facing team and matchup labels", () => {
 });
 
 test("admin preview contract is explicitly read-only", () => {
-  assert.deepEqual(buildAdminReadOnlyPreviewMetadata({ fixtureMode: true, fixtureKey: "fixture" }), {
+  assert.deepEqual(buildAdminReadOnlyPreviewMetadata(), {
     previewOnly: true,
-    fixtureMode: true,
-    fixtureKey: "fixture",
     productionWrite: false,
     writes: { database: false, predictions: false, ranking: false, publication: false }
   });

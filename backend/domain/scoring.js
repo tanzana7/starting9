@@ -46,7 +46,6 @@ export function scorePredictionLineup(predictionLineup, actualLineup) {
     counts: { player: playerHits, order: orderHits, position: positionHits, perfect: perfectHits }
   };
 }
-
 export function buildPerfectScorePreview(actualLineup) {
   const predictionLineup = actualLineup.map((player) => ({ ...player }));
   const score = scorePredictionLineup(predictionLineup, actualLineup);
@@ -82,44 +81,5 @@ export function buildPerfectScorePreview(actualLineup) {
     prediction: { schemaVersion: PREDICTION_SCHEMA_VERSION, lineup: predictionLineup },
     score,
     breakdown
-  };
-}
-
-// This fixture is intentionally available only to the admin preview caller.
-// It is not a source for normal predictions, jobs, scoring, or publication.
-export const RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY = "release_full_score_debug_1";
-export const RELEASE_DEBUG_PERFECT_SCORE_FIXTURE = Object.freeze([
-  Object.freeze({ battingOrder: 1, position: "2B", name: "西川", fixtureId: "debug_fixture_nishikawa" }),
-  Object.freeze({ battingOrder: 2, position: "C", name: "中島", fixtureId: "debug_fixture_nakajima" }),
-  Object.freeze({ battingOrder: 3, position: "SS", name: "エドポロ", fixtureId: "debug_fixture_edopolo" }),
-  Object.freeze({ battingOrder: 4, position: "RF", name: "リン", fixtureId: "debug_fixture_lin" }),
-  Object.freeze({ battingOrder: 5, position: "1B", name: "山縣", fixtureId: "debug_fixture_yamagata" }),
-  Object.freeze({ battingOrder: 6, position: "3B", name: "レイエス", fixtureId: "debug_fixture_reyes" }),
-  Object.freeze({ battingOrder: 7, position: "LF", name: "藤森", fixtureId: "debug_fixture_fujimori" }),
-  Object.freeze({ battingOrder: 8, position: "DH", name: "宮崎", fixtureId: "debug_fixture_miyazaki" }),
-  Object.freeze({ battingOrder: 9, position: "CF", name: "マルティネス", fixtureId: "debug_fixture_martinez" })
-]);
-
-export function buildReleaseDebugPerfectScoreFixtureLineup() {
-  return RELEASE_DEBUG_PERFECT_SCORE_FIXTURE.map((player) => ({
-    battingOrder: player.battingOrder,
-    position: player.position,
-    name: player.name,
-    playerId: player.fixtureId,
-    playerName: player.name,
-    displayName: player.name,
-    teamCode: "fighters",
-    teamId: "F"
-  }));
-}
-
-export function buildReleaseDebugPerfectScoreFixturePreview() {
-  const officialLineup = buildReleaseDebugPerfectScoreFixtureLineup();
-  return {
-    fixtureKey: RELEASE_DEBUG_PERFECT_SCORE_FIXTURE_KEY,
-    fixtureMode: true,
-    productionWrite: false,
-    officialLineup,
-    ...buildPerfectScorePreview(officialLineup)
   };
 }

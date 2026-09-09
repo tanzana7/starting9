@@ -254,7 +254,7 @@ GitHub Actionsの `CI` workflowも同じテスト・構文・競合マーカー�
 
 `admin-v3.html` はbuild stepなしで、state/API/DOM共通処理、画面描画module群、coordinator、最後に互換entryの`admin-v3.js`を読み込みます。API clientは管理者セッション付き通信だけを担当し、stateは画面状態、DOM moduleは安全な表示整形、render moduleはtimeline/game progress/job詳細/roster/diagnostics/ranking reset/perfect-score previewの描画、coordinatorはイベントと初期化順序を担当します。`admin-v3.js`はAPI操作・状態遷移・イベント配線・module委譲を担う互換entryで、描画markupを重複保持しません。
 
-ランキングresetのpreviewは読み取り専用で、executeだけが明示的なconfirmation textとreasonを要求します。perfect-score previewとrelease debug fixtureは管理者限定・previewOnlyで、通常採点、ランキング、公開、V3 job、通常画面へ流れません。
+ランキングresetのpreviewは読み取り専用で、executeだけが明示的なconfirmation textとreasonを要求します。perfect-score previewは管理者限定・previewOnlyで、確定済み正式スタメンから読み取り専用で満点判定を確認します。通常採点、ランキング、公開、V3 job、通常画面へ流れません。
 
 チーム開発では、以下の流れを基本にします。
 
@@ -319,7 +319,6 @@ Closes #12
 
 ## 今後の改善候補
 
-- 公式リリース前のdebug fixture撤去
 - 公開APIの診断レスポンス境界の整理
 - X共有画像
 - 公示Bot

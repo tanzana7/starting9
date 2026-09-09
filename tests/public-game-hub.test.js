@@ -10,7 +10,7 @@ const html = read("index.html");
 const script = read("script.js");
 const css = read("style.css");
 
-function loadInitialGameSelector() {
+function loadInitialGameSelector(deadlineStatus = "open") {
   const start = script.indexOf("function getPublicSelectableGames");
   const end = script.indexOf("function getPreferredPublicGameSelection", start);
   const context = {
@@ -21,7 +21,7 @@ function loadInitialGameSelector() {
     isScheduleGameUnavailable: (game) => game.unavailable === true,
     isPublicGamePublished: (game) => game.published === true,
     parseJstScheduleDateTime: (game) => new Date(`${game.date}T${game.startTime}:00+09:00`),
-    resolvePredictionDeadline: () => ({ status: "open" }),
+    resolvePredictionDeadline: () => ({ status: deadlineStatus }),
     Date
   };
   vm.createContext(context);
@@ -52,6 +52,15 @@ test("今日の試合を優先し、今日がなければ次の受付可能な�
     { internalGameId: "today", canonical: true, date: "2026-09-08", startTime: "18:00" }
   ];
   assert.equal(selectInitialPublicGame(games, new Date("2026-09-08T00:00:00Z")).internalGameId, "today");
+});
+
+test("締切後・試合中も今日の未公開試合を維持し、次の受付中試合へ勝手に切り替えない", () => {
+  const selectInitialPublicGame = loadInitialGameSelector("closed");
+  const games = [
+    { internalGameId: "today-closed", canonical: true, date: "2026-09-08", startTime: "18:00" },
+    { internalGameId: "next-open", canonical: true, date: "2026-09-09", startTime: "18:00" }
+  ];
+  assert.equal(selectInitialPublicGame(games, new Date("2026-09-08T12:00:00Z")).internalGameId, "today-closed");
 });
 
 test("今日の試合がない場合は未来の試合を自動選択する", () => {

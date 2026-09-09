@@ -2004,10 +2004,13 @@ function selectInitialPublicGame(games = [], now = new Date()) {
   });
   const todayOpen = todayGames.find((game) => !isPublicGamePublished(game)
     && resolvePredictionDeadline(game.internalGameId || game.gameId, now).status === "open");
+  // 締切後・試合中の今日の試合も現在対象として維持します。
+  // 締切を理由に次の受付中試合へ切り替えると、保存済み予想の表示対象まで変わります。
+  const todayCurrent = todayGames.find((game) => !isPublicGamePublished(game));
   const nextOpen = selectable.find((game) => getScheduleDate(game) > today
     && !isPublicGamePublished(game)
     && resolvePredictionDeadline(game.internalGameId || game.gameId, now).status === "open");
-  return todayUpcoming || todayOpen || nextOpen || unavailableToday[0] || null;
+  return todayCurrent || todayUpcoming || todayOpen || nextOpen || unavailableToday[0] || null;
 }
 
 function getPreferredPublicGameSelection(now = new Date()) {
@@ -3582,7 +3585,24 @@ async function syncPredictionFromAccount({ force = false } = {}) {
     remoteState.scoredAt = payload.scoredAt || "";
     remoteState.resultsPublished = Boolean(payload.resultsPublished);
     remoteState.conflict = Boolean(remoteState.prediction && state.prediction && !predictionsMatch(remoteState.prediction, state.prediction));
-    if (remoteState.prediction && !state.prediction) {
+    const currentDeadline = getEffectivePredictionDeadline();
+    const isPredictionClosed = remoteState.locked || currentDeadline.status === "closed";
+    if (isPredictionClosed) {
+      // 締切後はアカウント保存値を正本として表示し、端末側の古い下書きを採用しません。
+      state.prediction = remoteState.prediction
+        ? { ...remoteState.prediction, lineup: normalizeLineup(remoteState.prediction.lineup) }
+        : null;
+      if (state.prediction) {
+        saveToStorage(STORAGE_KEYS.prediction, state.prediction);
+      } else {
+        removeFromStorage(STORAGE_KEYS.prediction);
+      }
+      preserveDisplayedPublicResult();
+      renderSavedPrediction();
+      renderPredictionCta();
+      renderPublicGameSelectionMeta();
+      renderPicker("prediction");
+    } else if (remoteState.prediction && !state.prediction) {
       state.prediction = { ...remoteState.prediction, lineup: normalizeLineup(remoteState.prediction.lineup) };
       saveToStorage(STORAGE_KEYS.prediction, state.prediction);
       preserveDisplayedPublicResult();
@@ -4301,7 +4321,10 @@ function renderPublicPredictionSurface(selectedGame) {
     if (editor) editor.classList.toggle("hidden", !state.publicGameCatalog.isLoading);
     return;
   }
-  if (editor) editor.classList.toggle("hidden", isScheduleGameUnavailable(selectedGame));
+  const hasSavedPrediction = isSavedPredictionComplete(state.prediction)
+    || isSavedPredictionComplete(state.predictionRemote?.prediction);
+  const isClosedWithoutSavedPrediction = getEffectivePredictionDeadline().status === "closed" && !hasSavedPrediction;
+  if (editor) editor.classList.toggle("hidden", isScheduleGameUnavailable(selectedGame) || isClosedWithoutSavedPrediction);
 }
 
 function renderPublicGameSelectionMeta() {
@@ -4573,6 +4596,9 @@ function renderPicker(pickerName) {
       dragHandle.draggable = Boolean(player) && !isLocked;
       dragHandle.classList.toggle("is-disabled", !player || isLocked);
     }
+    slot.querySelectorAll(".position-menu-option").forEach((optionButton) => {
+      optionButton.disabled = isLocked;
+    });
   });
 
   document.querySelectorAll(`.player-chip[data-picker="${pickerName}"]`).forEach((chip) => {
@@ -4584,6 +4610,9 @@ function renderPicker(pickerName) {
 
   if (pickerName === "prediction") {
     renderPredictionRosterFilter();
+    document.querySelectorAll('[data-roster-filter]').forEach((button) => {
+      button.disabled = isLocked;
+    });
   }
 }
 
@@ -4644,6 +4673,7 @@ function renderSavedPrediction() {
   if (!isSavedPredictionComplete(state.prediction)) {
     setLineupValues("prediction", []);
     container.className = "empty-state";
+    container.setAttribute("aria-readonly", "true");
     container.textContent = "まだ予想が保存されていません。";
     editButton?.classList.add("hidden");
     shareButton.classList.add("hidden");
@@ -4652,10 +4682,12 @@ function renderSavedPrediction() {
   }
 
   setLineupValues("prediction", state.prediction.lineup);
-  container.className = "summary-box";
+  const isReadOnly = isPredictionEditingLocked();
+  container.className = `summary-box${isReadOnly ? " is-read-only" : ""}`;
+  container.setAttribute("aria-readonly", isReadOnly ? "true" : "false");
   container.innerHTML = "";
   container.appendChild(createSavedPredictionPreview(state.prediction));
-  editButton?.classList.remove("hidden");
+  editButton?.classList.toggle("hidden", isReadOnly);
   shareButton.classList.remove("hidden");
   imageButton?.classList.remove("hidden");
 }
@@ -4666,7 +4698,7 @@ function renderPredictionCta() {
   const isLoggedIn = Boolean(getPredictionAccountUser());
   const hasPrediction = Boolean(state.prediction || state.predictionRemote?.prediction);
   const selectedGame = state.predictionTargetGame || null;
-  button.classList.toggle("hidden", !isLoggedIn || !selectedGame);
+  button.classList.toggle("hidden", !isLoggedIn || !selectedGame || isPredictionEditingLocked());
   button.textContent = hasPrediction ? "予想を編集する" : "この試合を予想する";
 }
 

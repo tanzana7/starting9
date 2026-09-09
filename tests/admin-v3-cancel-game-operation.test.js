@@ -55,7 +55,7 @@ test("公開UIは中止・サービス対象外を選択対象から除外しつ
   assert.match(script, /service_unavailable/);
   assert.match(script, /この試合は中止になりました/);
   assert.match(script, /この試合はサービス対象外です/);
-  assert.match(script, /editor\.classList\.toggle\("hidden", isScheduleGameUnavailable\(selectedGame\)\)/);
+  assert.match(script, /editor\.classList\.toggle\("hidden", isScheduleGameUnavailable\(selectedGame\) \|\| isClosedWithoutSavedPrediction\)/);
 });
 
 test("admin-v3のcache busterは中止操作版へ更新されている", () => {

@@ -16,20 +16,20 @@ test("公開済み試合の結果導線は結果セクションに残し、メ�
   assert.match(html, /id="predictionEditor"/);
   assert.match(script, /function renderPublicPredictionSurface\(selectedGame\)/);
   assert.match(script, /if \(!selectedGame\) \{/);
-  assert.match(script, /editor\.classList\.toggle\("hidden", isScheduleGameUnavailable\(selectedGame\)\)/);
+  assert.match(script, /editor\.classList\.toggle\("hidden", isScheduleGameUnavailable\(selectedGame\) \|\| isClosedWithoutSavedPrediction\)/);
   assert.doesNotMatch(script, /findResultHistoryGameForPublicGame|selectNextPredictionGame/);
 });
 
-test("メイン予想対象は公開済み・締切済み試合を避け、canonicalな受付可能試合だけを選ぶ", () => {
+test("メイン予想対象は公開済み試合を避け、今日の未公開試合を締切後も維持する", () => {
   assert.match(script, /function selectInitialPublicGame\(games = \[\], now = new Date\(\)\)/);
   assert.match(script, /!isPublicGamePublished\(game\)/);
   assert.match(script, /resolvePredictionDeadline\(game\.internalGameId \|\| game\.gameId, now\)\.status === "open"/);
-  assert.match(script, /return todayUpcoming \|\| todayOpen \|\| nextOpen \|\| unavailableToday\[0\] \|\| null/);
+  assert.match(script, /return todayCurrent \|\| todayUpcoming \|\| todayOpen \|\| nextOpen \|\| unavailableToday\[0\] \|\| null/);
   assert.doesNotMatch(script, /selectNextPredictionGame|applyPublicPredictionTarget/);
 });
 
 test("通常の予想CTAは現在のcanonical予想対象だけへスクロールする", () => {
-  assert.match(script, /button\.classList\.toggle\("hidden", !isLoggedIn \|\| !selectedGame\)/);
+  assert.match(script, /button\.classList\.toggle\("hidden", !isLoggedIn \|\| !selectedGame \|\| isPredictionEditingLocked\(\)\)/);
   assert.match(script, /button\.textContent = hasPrediction \? "予想を編集する" : "この試合を予想する"/);
   assert.match(script, /function handlePredictionCtaClick\(\)/);
   assert.match(script, /scrollToPredictionForm\(\);/);

@@ -53,7 +53,7 @@ test("スマホでは現在試合メタを短く表示し、Game Hub専用レイ
 test("受付可能な試合がない場合は予想入力を隠す", () => {
   assert.match(script, /renderPublicPredictionSurface\(null\)/);
   assert.match(script, /editor\.classList\.toggle\("hidden", !state\.publicGameCatalog\.isLoading\)/);
-  assert.match(script, /editor\.classList\.toggle\("hidden", isScheduleGameUnavailable\(selectedGame\)\)/);
+  assert.match(script, /editor\.classList\.toggle\("hidden", isScheduleGameUnavailable\(selectedGame\) \|\| isClosedWithoutSavedPrediction\)/);
 });
 
 test("公開画面のcache busterは単一試合UI版へ更新される", () => {

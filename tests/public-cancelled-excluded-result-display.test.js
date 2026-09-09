@@ -55,7 +55,7 @@ test("public UI renders a status card and suppresses normal result/canvas output
 });
 
 test("cancelled/excluded games stop prediction input and are labeled in history", () => {
-  assert.match(script, /if \(editor\) editor\.classList\.toggle\("hidden", isScheduleGameUnavailable\(selectedGame\)\)/);
+  assert.match(script, /if \(editor\) editor\.classList\.toggle\("hidden", isScheduleGameUnavailable\(selectedGame\) \|\| isClosedWithoutSavedPrediction\)/);
   assert.match(script, /const statusLabel = availability \? `［\$\{availability\.shortLabel\}］` : ""/);
   assert.match(script, /rankingExcluded === true/);
   assert.match(html, /public-compliance-disclaimer-and-fetch-safety-1/);

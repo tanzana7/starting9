@@ -302,7 +302,8 @@ test("手動スタメンはjob投入なしで保存・確定し、自動取得�
   assert.match(uiSource, /data-v3-manual-lineup-finalize/);
   assert.doesNotMatch(uiSource, /<input[^>]+playerId/i);
   assert.match(adminSource, /saveManualLineup: saveV3ManualLineup/);
-  assert.match(adminSource, /confirmed: state\.confirmed === true/);
+  assert.match(adminSource, /confirmationFingerprint/);
+  assert.match(adminSource, /resetManualLineupConfirmation/);
   assert.match(adminSource, /finalizeManualLineup: finalizeV3ManualLineup/);
   assert.match(htmlSource, /render-manual-lineup\.js/);
   assert.match(workerSource, /V3_MANUAL_LINEUP_FINALIZE_NOT_TODAY/);
@@ -313,6 +314,9 @@ test("手動スタメンはjob投入なしで保存・確定し、自動取得�
   assert.match(uiSource, /manual-lineup-confirmation-list/);
   assert.match(uiSource, /manual-lineup-confirmation-row/);
   assert.match(uiSource, /manual-lineup-duplicate-warning/);
+  assert.match(uiSource, /data-v3-manual-lineup-preview/);
+  assert.match(uiSource, /試合日・対戦相手・スタメン内容を確認しました/);
+  assert.match(uiSource, /この内容でスタメンを確定/);
 });
 
 test("manual lineupのsave/finalize APIは実handler経由で保存し、score jobを直接投入しない", async () => {
@@ -519,16 +523,55 @@ test("manual lineupの実handlerは認証・確認・入力検証をサーバー
   const invalid = await createManualLineupIntegrationDb();
   try {
     const pathname = `/api/admin/v3/games/${INTEGRATION_GAME_ID}/lineup-revisions`;
-    const noConfirm = await adminRequest(invalid.env, pathname, { lineup: validManualLineup(), reason: "確認", confirmed: false });
-    assert.equal(noConfirm.status, 409);
+    const draft = await adminRequest(invalid.env, pathname, { lineup: validManualLineup(), reason: "下書き", confirmed: false });
+    assert.equal(draft.status, 201);
+    assert.equal(invalid.database.prepare("SELECT COUNT(*) AS count FROM game_lineups").get().count, 0);
     const unknown = validManualLineup().map((row, index) => index === 8 ? { ...row, playerName: "未知選手" } : row);
     const invalidPlayer = await adminRequest(invalid.env, pathname, { lineup: unknown, reason: "確認", confirmed: true });
     assert.equal(invalidPlayer.status, 400);
     const invalidCount = await adminRequest(invalid.env, pathname, { lineup: validManualLineup().slice(0, 8), reason: "確認", confirmed: true });
     assert.equal(invalidCount.status, 400);
-    assert.equal(invalid.database.prepare("SELECT COUNT(*) AS count FROM game_lineup_revisions").get().count, 0);
+    assert.equal(invalid.database.prepare("SELECT COUNT(*) AS count FROM game_lineup_revisions").get().count, 1);
   } finally {
     invalid.database.close();
+  }
+
+  const noConfirmation = await createManualLineupIntegrationDb({ startTime: `${currentJstDate()}T00:00:00+09:00` });
+  try {
+    const pathname = `/api/admin/v3/games/${INTEGRATION_GAME_ID}`;
+    const draft = await adminRequest(noConfirmation.env, `${pathname}/lineup-revisions`, { lineup: validManualLineup(), reason: "下書き" });
+    assert.equal(draft.status, 201);
+    const draftBody = await draft.json();
+    const finalize = await adminRequest(noConfirmation.env, `${pathname}/lineup-finalize`, { lineupRevisionId: draftBody.revision.revisionId });
+    const finalizeBody = await finalize.json();
+    assert.equal(finalize.status, 409, JSON.stringify(finalizeBody));
+    assert.equal(finalizeBody.code, "V3_CONFIRMATION_REQUIRED");
+    assert.equal(noConfirmation.database.prepare("SELECT COUNT(*) AS count FROM game_lineups").get().count, 0);
+    assert.equal(noConfirmation.database.prepare("SELECT COUNT(*) AS count FROM game_lineup_revisions WHERE is_final = 1").get().count, 0);
+    const mismatch = await adminRequest(noConfirmation.env, `${pathname}/lineup-finalize`, {
+      lineupRevisionId: draftBody.revision.revisionId,
+      confirmed: true,
+      confirmationInternalGameId: INTEGRATION_GAME_ID,
+      confirmationRevisionId: draftBody.revision.revisionId,
+      confirmationFingerprint: "stale-confirmation"
+    });
+    const mismatchBody = await mismatch.json();
+    assert.equal(mismatch.status, 409, JSON.stringify(mismatchBody));
+    assert.equal(mismatchBody.code, "V3_CONFIRMATION_CONTENT_MISMATCH");
+    assert.equal(noConfirmation.database.prepare("SELECT COUNT(*) AS count FROM game_lineups").get().count, 0);
+    const wrongGame = await adminRequest(noConfirmation.env, `${pathname}/lineup-finalize`, {
+      lineupRevisionId: draftBody.revision.revisionId,
+      confirmed: true,
+      confirmationInternalGameId: "another-internal-game",
+      confirmationRevisionId: draftBody.revision.revisionId,
+      confirmationFingerprint: draftBody.revision.lineupFingerprint
+    });
+    const wrongGameBody = await wrongGame.json();
+    assert.equal(wrongGame.status, 409, JSON.stringify(wrongGameBody));
+    assert.equal(wrongGameBody.code, "V3_CONFIRMATION_GAME_MISMATCH");
+    assert.equal(noConfirmation.database.prepare("SELECT COUNT(*) AS count FROM game_lineups").get().count, 0);
+  } finally {
+    noConfirmation.database.close();
   }
 
   const noDraft = await createManualLineupIntegrationDb();

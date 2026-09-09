@@ -7825,7 +7825,6 @@ async function handleAdminV3LineupRevisionsGet(env, cors, context) {
 async function handleAdminV3LineupRevisionCreate(request, env, cors, context, user) {
   assertManagedManualLineupGame(context);
   const input = await readJson(request);
-  if (input?.confirmed !== true) throw createV3Error("V3_CONFIRMATION_REQUIRED", "手動スタメンの入力確認が必要です。", { httpStatus: 409 });
   const reason = String(input?.reason || "").trim().slice(0, 240) || "V4半自動運営: 管理者入力";
   const currentLineup = await getGameLineup(env.AUTH_DB, context.metadata);
   const stateRow = await env.AUTH_DB.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(context.id).first();
@@ -8015,6 +8014,18 @@ async function handleAdminV3LineupFinalize(request, env, cors, context, user) {
   if (!actual.ok) throw createV3Error("V3_LINEUP_INVALID", actual.error, { httpStatus: 409 });
   const currentFinalRevisionId = String(currentLineup?.final_lineup_revision_id || "");
   const requestedRevisionId = String(revision.revision_id || `${revision.game_id}:${Number(revision.version)}`);
+  const confirmationInternalGameId = String(input?.confirmationInternalGameId || "").trim();
+  const confirmationRevisionId = String(input?.confirmationRevisionId || "").trim();
+  const confirmationFingerprint = String(input?.confirmationFingerprint || "").trim();
+  if (confirmationInternalGameId && confirmationInternalGameId !== context.id) {
+    throw createV3Error("V3_CONFIRMATION_GAME_MISMATCH", "確認済みの対象試合と確定対象が一致しません。", { httpStatus: 409 });
+  }
+  if (confirmationRevisionId && confirmationRevisionId !== requestedRevisionId) {
+    throw createV3Error("V3_CONFIRMATION_REVISION_MISMATCH", "確認済みのスタメンrevisionと確定対象が一致しません。", { httpStatus: 409 });
+  }
+  if (confirmationRevisionId && confirmationFingerprint !== String(revision.lineup_fingerprint || "")) {
+    throw createV3Error("V3_CONFIRMATION_CONTENT_MISMATCH", "確認後にスタメン内容が変更されています。再確認してください。", { httpStatus: 409 });
+  }
   if (currentFinalRevisionId === requestedRevisionId && Number(revision.is_final || 0) === 1) {
     return jsonResponse({ ok: true, internalGameId: context.id, noOp: true, finalizedRevision: serializeV3LineupRevision(revision) }, 200, cors);
   }
@@ -19046,6 +19057,7 @@ function serializeLineupRevision(row) {
     finalizedAt: row.finalized_at || null,
     finalizedBy: row.finalized_by || null,
     unresolvedPlayerCount: Number(row.unresolved_player_count || 0),
+    lineupFingerprint: row.lineup_fingerprint || null,
     isFinal: Number(row.is_final || 0) === 1,
     validation: row.validation_json ? parseJsonObject(row.validation_json) : null
   };

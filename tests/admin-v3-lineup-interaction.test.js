@@ -153,6 +153,7 @@ test("開始後の未登録manual lineupはfinalize可能なcontrolsを描画す
   const markup = renderer.render(game, makeDetails("after-start", { lineup: null }), {
     rows: renderer.createBlankRows(),
     confirmed: true,
+    confirmation: { internalGameId: "after-start", revisionId: "revision-1", lineupFingerprint: "", previewed: true, checked: true },
     latestRevision: { revisionId: "revision-1", version: 1 },
     loading: false
   });

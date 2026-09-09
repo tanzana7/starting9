@@ -106,7 +106,11 @@
         if (correctionPosition) { preservePickerScroll(`[data-v3-lineup-correction-candidates="${Number(correctionPosition.dataset.v3LineupCorrectionPosition)}"]`, () => actions.updateLineupCorrectionRow(Number(correctionPosition.dataset.v3LineupCorrectionPosition), { position: correctionPosition.value })); return; }
         const confirm = closestFromEvent(event, "[data-v3-manual-lineup-confirm]");
         if (confirm) {
-          state.manualLineup.confirmed = confirm.checked === true;
+          const confirmation = state.manualLineup.confirmation || {};
+          state.manualLineup.confirmed = confirmation.previewed === true && confirm.checked === true;
+          confirmation.checked = state.manualLineup.confirmed;
+          state.manualLineup.confirmation = confirmation;
+          return;
         }
         const rosterStatus = closestFromEvent(event, "[data-v3-manual-roster-status]");
         if (rosterStatus) { preservePickerScroll("[data-v3-manual-roster-candidates]", () => actions.updateManualRosterEntry(rosterStatus.dataset.v3ManualRosterStatus, { status: rosterStatus.value })); return; }
@@ -142,7 +146,7 @@
         const correctionConfirm = closestFromEvent(event, "[data-v3-lineup-correction-confirm]");
         if (correctionConfirm) { state.lineupCorrection.confirmed = correctionConfirm.checked === true; return; }
         if (closestFromEvent(event, "[data-v3-lineup-correction-submit]")) { await actions.submitLineupCorrection(); return; }
-        if (closestFromEvent(event, "[data-v3-manual-lineup-save]")) { await actions.saveManualLineup(); return; }
+        if (closestFromEvent(event, "[data-v3-manual-lineup-preview]")) { await actions.saveManualLineup(); return; }
         if (closestFromEvent(event, "[data-v3-manual-lineup-finalize]")) { await actions.finalizeManualLineup(); return; }
         const lineupCancel = closestFromEvent(event, "[data-v3-manual-lineup-revision-cancel]");
         if (lineupCancel) { await actions.cancelManualLineup(lineupCancel.dataset.v3ManualLineupRevisionCancel); return; }

@@ -2,15 +2,14 @@
 
 ## Required Before Formal Public Release
 
-- [ ] Remove `RELEASE_DEBUG_PERFECT_SCORE_FIXTURE` and its fixture-local player IDs.
-- [ ] Remove the perfect-score fixture UI/API branch, or disable it with an explicit release-only environment flag.
+- [x] Remove the release debug perfect-score fixture, its fixture-local player IDs, and its API branch.
 - [ ] Confirm the ranking reset marker boundary and execute it only at the approved formal release time.
 - [ ] Confirm the policy and cleanup plan for test accounts and test predictions.
 - [ ] Verify that internal IDs, UUIDs, reason codes, raw API diagnostics, and job details do not appear on the normal public page.
 - [ ] Remove or hide any admin-v3 debug display that is not required for production operations.
 - [ ] Re-run a production-shaped end-to-end Cron completion check, including schedule, roster, lineup, scoring, ranking, and publication.
 
-The fixture and reset marker are intentionally review-only release preparation tools until this checklist is completed. Fixture preview must remain admin-only, `previewOnly: true`, and write-free. The reset marker is a non-destructive aggregation boundary and is executed only with the approved confirmation and reason; it is never a substitute for direct D1 cleanup.
+The reset marker is a non-destructive aggregation boundary and is executed only with the approved confirmation and reason; it is never a substitute for direct D1 cleanup.
 
 ## Before Each Deployment
 

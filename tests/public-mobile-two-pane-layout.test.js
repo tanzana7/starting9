@@ -99,7 +99,7 @@ test("mobile public header content can shrink and wrap instead of being clipped"
   );
   assert.match(
     css,
-    /\.lead,[\s\S]*?\.beta-panel \{[\s\S]*?overflow-wrap: anywhere;/
+    /\.lead \{[\s\S]*?overflow-wrap: anywhere;/
   );
 });
 

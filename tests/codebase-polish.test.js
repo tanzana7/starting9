@@ -16,7 +16,7 @@ test("portfolio documentation describes the current V3 architecture and release 
   assert.match(architecture, /Game Automation V3/);
   assert.match(architecture, /games\.internal_game_id/);
   assert.match(architecture, /PublicAppCoordinator/);
-  assert.match(checklist, /RELEASE_DEBUG_PERFECT_SCORE_FIXTURE/);
+  assert.doesNotMatch(checklist, /RELEASE_DEBUG_PERFECT_SCORE_FIXTURE/);
   assert.match(checklist, /ranking reset marker/);
   assert.match(checklist, /test accounts/);
 });

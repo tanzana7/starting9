@@ -8,11 +8,12 @@ const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
 const normalScreenCss = css.slice(css.lastIndexOf("/* 通常画面:"));
 
-test("TOPは試合情報、予告先発、CTA、説明、β版の順で視覚配置する", () => {
-  assert.match(normalScreenCss, /grid-template-areas:[\s\S]*"game game"[\s\S]*"starter starter"[\s\S]*"hero hero"[\s\S]*"lead lead"[\s\S]*"beta beta"/);
+test("TOPは試合情報、予告先発、CTA、説明の順で視覚配置する", () => {
+  assert.match(normalScreenCss, /grid-template-areas:[\s\S]*"game game"[\s\S]*"starter starter"[\s\S]*"hero hero"[\s\S]*"lead lead"/);
   assert.match(html, /id="probableStarterDisplay"/);
   assert.match(html, /id="predictionCtaButton"/);
-  assert.match(html, /class="beta-panel"/);
+  assert.doesNotMatch(html, /beta-panel|β版/);
+  assert.doesNotMatch(normalScreenCss, /beta-panel|beta beta/);
 });
 
 test("ロゴとアカウント操作はコンパクトなTOP領域として維持する", () => {

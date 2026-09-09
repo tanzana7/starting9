@@ -4509,24 +4509,6 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
 }
 
 /* 通常画面の案内と操作導線 */
-.beta-panel {
-  display: grid;
-  gap: 2px;
-  width: min(100%, 620px);
-  margin: 0 0 12px;
-  padding: 9px 12px;
-  border: 1px solid rgba(255, 224, 135, 0.56);
-  border-radius: 8px;
-  color: #fff8dc;
-  background: rgba(91, 72, 10, 0.32);
-  font-size: 0.84rem;
-}
-
-.beta-panel strong {
-  color: #ffe18c;
-  font-size: 0.86rem;
-}
-
 .hero-panel {
   display: flex;
   align-items: center;
@@ -5324,8 +5306,7 @@ body:not(:has(.app-layout.is-admin-screen)) .header-inner {
     "game game"
     "starter starter"
     "hero hero"
-    "lead lead"
-    "beta beta";
+    "lead lead";
   gap: 10px 24px;
   padding-top: 22px;
   padding-bottom: 26px;
@@ -5391,23 +5372,6 @@ body:not(:has(.app-layout.is-admin-screen)) .lead {
   border-left: 2px solid rgba(168, 216, 255, 0.5);
   color: #c5d6e8;
   font-size: 0.84rem;
-}
-
-body:not(:has(.app-layout.is-admin-screen)) .beta-panel {
-  grid-area: beta;
-  width: 100%;
-}
-
-body:not(:has(.app-layout.is-admin-screen)) .beta-panel {
-  margin-bottom: 12px;
-  margin-top: 2px;
-  border-color: rgba(195, 211, 228, 0.3);
-  border-width: 1px 0 0;
-  border-radius: 0;
-  color: #aebed0;
-  background: transparent;
-  box-shadow: none;
-  font-size: 0.76rem;
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .game-info-display {
@@ -5778,7 +5742,6 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
       "starter"
       "hero"
       "lead"
-      "beta"
       "auth";
     gap: 8px;
     padding-top: 16px;
@@ -5790,8 +5753,7 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
     max-width: 100%;
   }
 
-  body:not(:has(.app-layout.is-admin-screen)) .lead,
-  body:not(:has(.app-layout.is-admin-screen)) .beta-panel {
+  body:not(:has(.app-layout.is-admin-screen)) .lead {
     overflow-wrap: anywhere;
   }
 
@@ -6454,11 +6416,6 @@ body:not(:has(.app-layout.is-admin-screen)) .probable-starter-message {
 body:not(:has(.app-layout.is-admin-screen)) .lead {
   border-left-color: #b28704;
   color: #c8d3df;
-}
-
-body:not(:has(.app-layout.is-admin-screen)) .beta-panel {
-  border-color: #465b73;
-  color: #b9c7d6;
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .game-info-display {
@@ -7486,7 +7443,6 @@ body:not(:has(.app-layout.is-admin-screen)) .probable-starter-fetched {
 
   body:not(:has(.app-layout.is-admin-screen)) .header-inner > *,
   body:not(:has(.app-layout.is-admin-screen)) .lead,
-  body:not(:has(.app-layout.is-admin-screen)) .beta-panel,
   body:not(:has(.app-layout.is-admin-screen)) .hero-panel,
   body:not(:has(.app-layout.is-admin-screen)) .hero-copy,
   body:not(:has(.app-layout.is-admin-screen)) .hero-cta,
@@ -7537,8 +7493,7 @@ body:not(:has(.app-layout.is-admin-screen)) .probable-starter-fetched {
   body:not(:has(.app-layout.is-admin-screen)) .probable-starter-team strong,
   body:not(:has(.app-layout.is-admin-screen)) .hero-panel h1,
   body:not(:has(.app-layout.is-admin-screen)) .hero-panel p,
-  body:not(:has(.app-layout.is-admin-screen)) .lead,
-  body:not(:has(.app-layout.is-admin-screen)) .beta-panel {
+  body:not(:has(.app-layout.is-admin-screen)) .lead {
     overflow-wrap: anywhere;
   }
 

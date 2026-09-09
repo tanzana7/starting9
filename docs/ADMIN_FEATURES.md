@@ -20,11 +20,11 @@ The static frontend is split into namespaced supporting modules before the compa
 
 Operational changes require the canonical `internalGameId`, validate ownership and current revision, and write an audit entry with the operator and reason. Retry and cancel actions operate on the job row and preserve attempt history. Preview endpoints do not change production data.
 
-Ranking reset preview and execute are separate paths. Preview does not write D1; execute remains protected by the existing required reason and exact confirmation text. No execute endpoint is added for the perfect-score or fixture preview surface.
+Ranking reset preview and execute are separate paths. Preview does not write D1; execute remains protected by the existing required reason and exact confirmation text. No execute endpoint is added for the perfect-score preview surface.
 
 ## Special Preview
 
-The perfect-score preview is admin-only, preview-only, and read-only. The release fixture key `release_full_score_debug_1` is intentionally isolated from normal scoring, ranking, publication, users, and V3 jobs. It exists only for release verification and is scheduled for removal before formal public release.
+The perfect-score preview is admin-only, preview-only, and read-only. It simulates a perfect prediction from the selected game's finalized lineup without creating predictions, rankings, publications, users, or V3 jobs.
 
 ## Retired Surface
 

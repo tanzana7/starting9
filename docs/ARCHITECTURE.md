@@ -59,7 +59,7 @@ admin-v3.html
 | `frontend/admin-v3/render-roster.js` | Roster timeline detail and status summary markup | roster fetching or persistence |
 | `frontend/admin-v3/render-diagnostics.js` | Today Ops, game diagnostics, and structured automation log markup | audit writes or authentication |
 | `frontend/admin-v3/render-ranking-reset.js` | Ranking reset preview/execute form and marker display | confirmation validation or API authorization |
-| `frontend/admin-v3/render-perfect-score-preview.js` | Admin-only perfect-score and fixture preview markup | normal scoring, ranking, publication, or V3 jobs |
+| `frontend/admin-v3/render-perfect-score-preview.js` | Admin-only perfect-score preview markup | normal scoring, ranking, publication, or V3 jobs |
 | `admin-v3.js` | Compatibility entrypoint, API operations, state transitions, event wiring, and renderer composition | public UI and V3 runtime execution |
 
 These are classic namespaced browser modules so Pages can serve them without a bundler while the existing entrypoint remains compatible with focused tests and incremental extraction.
@@ -68,7 +68,7 @@ These are classic namespaced browser modules so Pages can serve them without a b
 
 `auth-worker.js` is the composition root: it owns request authentication, route dispatch, response headers, and orchestration of the existing V3 workflow. Domain rules and D1 query groups are kept in focused modules so a route can be read as authorization -> domain/repository call -> response.
 
-- `backend/domain/scoring.js` contains the MAX99 per-player lineup scoring rules, breakdown, perfect-score preview, and the release-only debug fixture input. It has no Worker, D1, job, or request dependency.
+- `backend/domain/scoring.js` contains the MAX99 per-player lineup scoring rules, breakdown, and perfect-score preview. It has no Worker, D1, job, or request dependency.
 - `backend/domain/ranking.js` contains participation-threshold math, public row shaping, the future `hideIneligibleRankings` switch, and reset request validation/confirmation text.
 - `backend/domain/public-results.js` contains public team labels, matchup labels, and the five-result history limit. It does not resolve games or read private state.
 - `backend/admin/preview.js` defines the admin preview response contract (`previewOnly` and write flags); it is deliberately not an authorization or execution module.
@@ -158,8 +158,6 @@ The ranking reset marker is a non-destructive boundary for future aggregation. I
 
 ## Security Boundaries
 
-Admin endpoints call `requireAdminUser` before returning or mutating operational data. Preview endpoints, including the perfect-score preview, are read-only simulations and do not create predictions, rankings, publications, users, or V3 jobs. The release fixture is intentionally isolated to the admin preview path and is not a source for normal scoring.
-
-`RELEASE_DEBUG_PERFECT_SCORE_FIXTURE` uses fixture-local player IDs and must be removed or disabled before formal release. It is never loaded by public results, normal predictions, ranking aggregation, publication, or V3 job planning.
+Admin endpoints call `requireAdminUser` before returning or mutating operational data. Preview endpoints, including the perfect-score preview, are read-only simulations and do not create predictions, rankings, publications, users, or V3 jobs. The perfect-score preview uses only the selected game's finalized lineup and is not a source for normal scoring.
 
 Public responses should contain user-facing labels and result data only. Internal UUIDs, reason codes, cookies, tokens, and raw diagnostic payloads must not be rendered on the normal public page.

@@ -9,127 +9,88 @@ const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 const html = read("index.html");
 const script = read("script.js");
 const css = read("style.css");
-const roster = read("frontend/public/roster.js");
 
-function loadHubSelector() {
-  const start = script.indexOf("function getPublicGameHubGames");
-  const end = script.indexOf("function formatPublicGameHubDate", start);
+function loadInitialGameSelector() {
+  const start = script.indexOf("function getPublicSelectableGames");
+  const end = script.indexOf("function getPreferredPublicGameSelection", start);
   const context = {
     getJapanDateString: () => "2026-09-08",
     getScheduleDate: (game) => game.date,
-    getScheduleStartTime: (game) => game.startTime,
     getScheduleSortValue: (game) => `${game.date}T${game.startTime}`,
     isNormalManagedSchedule: (game) => game.isTestGame !== true,
+    isScheduleGameUnavailable: (game) => game.unavailable === true,
+    isPublicGamePublished: (game) => game.published === true,
+    parseJstScheduleDateTime: (game) => new Date(`${game.date}T${game.startTime}:00+09:00`),
+    resolvePredictionDeadline: () => ({ status: "open" }),
     Date
   };
   vm.createContext(context);
   vm.runInContext(script.slice(start, end), context);
-  return context.getPublicGameHubGames;
+  return context.selectInitialPublicGame;
 }
 
-test("試合ハブはcanonical games APIの今日と直近未来だけを表示する", () => {
-  assert.match(html, /id="publicGameHub"/);
-  assert.match(html, /id="publicGameHubContent"/);
-  assert.match(script, /buildPublicGamesApiUrl\(\)/);
-  assert.match(script, /function getPublicGameHubGames\(games = \[\], now = new Date\(\)\)/);
-  assert.match(script, /futureGames = sorted\.filter\(\(game\) => getScheduleDate\(game\) > today\)\.slice\(0, 5\)/);
-  assert.doesNotMatch(script, /\/api\/public\/games[^\n]*selectPublicGame/);
+test("公開トップからGame Hubのカード・切替UI・専用CSSを撤去する", () => {
+  assert.doesNotMatch(html, /publicGameHub|GAME HUB|試合を選ぶ/);
+  assert.doesNotMatch(script, /publicGameHub|public-game-hub|selectPublicGame|handlePublicGameHubClick|publicGameSelection:\s*\{/);
+  assert.doesNotMatch(css, /public-game-hub/);
+  assert.match(html, /id="publicGameSelectionMeta"/);
 });
 
-test("試合ハブの初期選択は既存の自動選択ロジックを使い、初回の強制選択を行わない", () => {
+test("公開試合一覧はcanonical APIを読み、既存の自動選択で現在試合を決める", () => {
+  assert.match(script, /buildPublicGamesApiUrl\(\)/);
+  assert.match(script, /catalog\.games = mergePublicGameSchedules\(\[\], apiGames\)/);
   assert.match(script, /const initialGame = getPreferredPublicGameSelection\(\)/);
   assert.match(script, /setPublicCurrentGame\(initialGame\)/);
-  assert.match(script, /function getPreferredPublicGameSelection\(now = new Date\(\)\)/);
-  assert.match(script, /manualGameId/);
-  assert.match(script, /getPreferredPublicGameSelection\(\)/);
-  assert.match(script, /if \(normalizedGameId === getCurrentGameId\(\)\) \{/);
   assert.match(script, /function selectInitialPublicGame\(games = \[\], now = new Date\(\)\)/);
+  assert.doesNotMatch(script, /manualGameId/);
 });
 
-test("試合ハブのA/B切替は選択対象をcurrent gameとして再ロードする", () => {
-  assert.match(script, /function selectPublicGame\(internalGameId\)/);
-  assert.match(script, /const game = state\.publicGameCatalog\.games\.find/);
-  assert.match(script, /setPublicCurrentGame\(game\)/);
-  assert.match(script, /initializeRosterCandidateSync\(\)/);
-  assert.match(script, /fetchStoredProbableStarter\(\)/);
-  assert.match(script, /syncPredictionFromAccount\(\{ force: true \}\)/);
-  assert.match(script, /setLineupValues\("prediction", state\.prediction\?\.lineup \|\| \[\]\)/);
+test("今日の試合を優先し、今日がなければ次の受付可能な試合を自動選択する", () => {
+  const selectInitialPublicGame = loadInitialGameSelector();
+  const games = [
+    { internalGameId: "next", canonical: true, date: "2026-09-09", startTime: "18:00" },
+    { internalGameId: "today", canonical: true, date: "2026-09-08", startTime: "18:00" }
+  ];
+  assert.equal(selectInitialPublicGame(games, new Date("2026-09-08T00:00:00Z")).internalGameId, "today");
 });
 
-test("試合単位localStorageはA/Bを分離し、旧キーは一致する試合だけ移行する", () => {
+test("今日の試合がない場合は未来の試合を自動選択する", () => {
+  const selectInitialPublicGame = loadInitialGameSelector();
+  assert.equal(selectInitialPublicGame([
+    { internalGameId: "next", canonical: true, date: "2026-09-09", startTime: "18:00" }
+  ], new Date("2026-09-08T00:00:00Z")).internalGameId, "next");
+});
+
+test("複数のcanonical試合は既存の日時順で自動選択し、手動切替状態を持たない", () => {
+  const selectInitialPublicGame = loadInitialGameSelector();
+  const games = [
+    { internalGameId: "late", canonical: true, date: "2026-09-09", startTime: "18:00" },
+    { internalGameId: "early", canonical: true, date: "2026-09-09", startTime: "13:00" },
+    { internalGameId: "test", canonical: true, date: "2026-09-09", startTime: "12:00", isTestGame: true }
+  ];
+  assert.equal(selectInitialPublicGame(games, new Date("2026-09-08T00:00:00Z")).internalGameId, "early");
+  assert.match(script, /\.sort\(\(left, right\) => getScheduleSortValue\(left\)\.localeCompare\(getScheduleSortValue\(right\)\)\)/);
+});
+
+test("試合単位のlocalStorage分離とstale response guardは維持する", () => {
   assert.match(script, /function getGameScopedStorageKey\(key, gameId\)/);
-  assert.match(script, /:game:\$\{encodeURIComponent\(normalizedGameId\)\}/);
-  assert.match(script, /function loadGameScopedStorage\(key\)/);
   assert.match(script, /legacyGameId === gameId/);
   assert.match(script, /function hydrateGameScopedState\(gameId\)/);
-  assert.match(script, /state\.prediction = prediction\?\.gameId === normalizedGameId \? prediction : null/);
-  assert.match(script, /persistCurrentGameScopedState\(\)/);
-});
-
-test("試合単位の切替で旧roster・予告先発・結果を画面に残さない", () => {
-  const setterStart = script.indexOf("function setPublicCurrentGame");
-  const setterEnd = script.indexOf("async function initializePublicGameCatalog", setterStart);
-  const setter = script.slice(setterStart, setterEnd);
-  assert.match(setter, /beginPublicRequest\("account", \{ abort: true \}\)/);
-  assert.match(setter, /beginPublicRequest\("probable", \{ abort: true \}\)/);
-  assert.match(setter, /state\.predictionRemote = createEmptyPredictionRemoteState\(\)/);
-  assert.match(setter, /state\.prediction = null/);
-  assert.match(setter, /state\.actual = null/);
-  assert.match(setter, /state\.result = null/);
-  assert.match(script, /state\.publicRoster = \{[\s\S]*status: "pending"/);
-});
-
-test("roster・probable・predictionのstale responseはrequest guardとgame IDで拒否する", () => {
-  assert.match(roster, /deps\.requestGuard\.isCurrent\("roster", requestId\)/);
-  assert.match(roster, /internalGameId !== deps\.getTargetInternalGameId\(\)/);
-  assert.match(script, /isCurrentPublicRequest\("probable", request\.id\) \|\| getCurrentGameId\(\) !== game\.internalGameId/);
-  assert.match(script, /isCurrentPublicRequest\("account", request\.id\) \|\| getCurrentGameId\(\) !== gameId/);
   assert.match(script, /beginPublicRequest\("account", \{ abort: true \}\)/);
   assert.match(script, /beginPublicRequest\("probable", \{ abort: true \}\)/);
+  assert.match(script, /getCurrentGameId\(\) !== game\.internalGameId/);
 });
 
-test("締切・公開済み・中止の状態表示は既存判定を再利用する", () => {
-  assert.match(script, /getPublicGameStatusView\(game, deadline, state\.predictionRemote, now\)/);
-  assert.match(script, /const disabled = isScheduleGameUnavailable\(game\)/);
-  assert.match(script, /if \(isScheduleGameUnavailable\(game\)\) return/);
-  assert.match(script, /label: lineupWaiting \? "スタメン待ち" : "締切済み"/);
-  assert.match(script, /label: "結果公開済み"/);
-});
-
-test("API errorにはエラー表示と再試行があり、既存ゲーム一覧がある場合は画面を破棄しない", () => {
+test("予想カード内の現在試合メタはloading・error・empty stateを持つ", () => {
+  assert.match(script, /function renderPublicGameSelectionMeta\(\)/);
+  assert.match(script, /試合情報を確認しています。/);
+  assert.match(script, /現在、予想受付中の試合はありません。/);
   assert.match(script, /data-public-games-retry/);
   assert.match(script, /initializePublicGameCatalog\(\{ force: true \}\)/);
-  assert.match(script, /catalog\.message = "試合情報を取得できませんでした。"/);
-  assert.match(script, /if \(catalog\.message && !catalog\.games\.length\)/);
-  assert.match(script, /catalog\.games = mergePublicGameSchedules\(\[\], apiGames\)/);
+  assert.match(script, /renderPublicPredictionSurface\(selectedGame\)/);
 });
 
-test("試合なし表示は架空の試合を作らず既存導線へ案内する", () => {
-  assert.match(script, /現在、予想受付中の試合はありません。/);
-  assert.match(script, /href="#result-title"/);
-  assert.match(script, /href="\.\/how-to-play\.html"/);
-});
-
-test("ハブカードはキーボード操作可能なbuttonで選択状態を表現する", () => {
-  assert.match(script, /<button type="button" class="public-game-hub-select"/);
-  assert.match(script, /aria-pressed=/);
-  assert.match(css, /\.public-game-hub-select:focus-visible/);
-});
-
-test("ハブの未来試合選択ロジックは今日と未来を分離する", () => {
-  const getGames = loadHubSelector();
-  const games = getGames([
-    { internalGameId: "future-late", canonical: true, date: "2026-09-11", startTime: "18:00" },
-    { internalGameId: "today", canonical: true, date: "2026-09-08", startTime: "18:00" },
-    { internalGameId: "future-near", canonical: true, date: "2026-09-09", startTime: "18:00" },
-    { internalGameId: "old", canonical: true, date: "2026-09-07", startTime: "18:00" },
-    { internalGameId: "test", canonical: true, date: "2026-09-10", startTime: "18:00", isTestGame: true }
-  ]);
-  assert.equal(JSON.stringify(games.map((game) => game.internalGameId)), JSON.stringify(["today", "future-near", "future-late"]));
-});
-
-test("公開ハブはフロントエンドのみで、Auth Workerとschemaを変更しない", () => {
-  assert.match(html, /public-game-hub-1/);
-  assert.doesNotMatch(script, /CREATE TABLE/);
-  assert.doesNotMatch(script, /\/api\/public\/games.*PUT|\/api\/public\/games.*POST/);
+test("公開トップは新しいcache busterで単一試合表示を配信する", () => {
+  assert.match(html, /style\.css\?v=public-single-game-1/);
+  assert.match(html, /script\.js\?v=public-single-game-1/);
 });

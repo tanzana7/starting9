@@ -106,6 +106,6 @@ test("詳細パネルはPC modal、スマホ bottom sheet、閉じる操作を�
 
 test("公開assetのcache busterは追加NPBaseリンク版へ更新される", () => {
   assert.match(html, /players\.js\?v=public-compliance-disclaimer-and-fetch-safety-1/);
-  assert.match(html, /script\.js\?v=public-game-hub-1/);
-  assert.match(html, /style\.css\?v=public-game-hub-1/);
+  assert.match(html, /script\.js\?v=public-single-game-1/);
+  assert.match(html, /style\.css\?v=public-single-game-1/);
 });

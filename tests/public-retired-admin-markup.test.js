@@ -7,11 +7,11 @@ const root = path.join(__dirname, "..");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const adminHtml = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
-const scriptCacheBuster = "public-game-hub-1";
+const scriptCacheBuster = "public-single-game-1";
 const moduleCacheBuster = "public-compliance-disclaimer-and-fetch-safety-1";
 const playerDisplayCacheBuster = "public-player-display-1-batting-hand-player-number-1-player-details-1";
 const fightersPlayerDetailsCacheBuster = "fighters-player-details-20260903-1";
-const styleCacheBuster = "public-game-hub-1-public-position-menu-left-clamp-1-bat-line-1-player-number-1-player-details-1-bat-line-row-accent-1-public-selected-highlight-1";
+const styleCacheBuster = "public-single-game-1-public-position-menu-left-clamp-1-bat-line-1-player-number-1-player-details-1-bat-line-row-accent-1-public-selected-highlight-1";
 
 test("通常公開HTMLに旧admin・緊急復旧・test markupを含めない", () => {
   for (const marker of [

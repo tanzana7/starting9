@@ -183,9 +183,6 @@ const state = {
     games: [],
     message: ""
   },
-  publicGameSelection: {
-    manualGameId: ""
-  },
   previousResultGame: {
     isLoading: false,
     isReady: false,
@@ -549,7 +546,7 @@ function bindEvents() {
   document.getElementById("showMonthlyRankingButton")?.addEventListener("click", () => selectRankingView("monthly"));
   document.getElementById("showWeeklyRankingButton")?.addEventListener("click", () => selectRankingView("weekly"));
   document.getElementById("rankingContent")?.addEventListener("click", handleRankingPeriodContentClick);
-  document.getElementById("publicGameHubContent")?.addEventListener("click", handlePublicGameHubClick);
+  document.getElementById("publicGameSelectionMeta")?.addEventListener("click", handlePublicGameSelectionMetaClick);
   document.getElementById("resultHistoryList")?.addEventListener("click", handleResultHistoryClick);
   document.getElementById("resultHistoryList")?.addEventListener("change", handleResultHistoryChange);
   document.addEventListener("pointermove", handlePointerInteractionMove, { passive: false });
@@ -2015,94 +2012,7 @@ function selectInitialPublicGame(games = [], now = new Date()) {
 
 function getPreferredPublicGameSelection(now = new Date()) {
   const games = Array.isArray(state.publicGameCatalog.games) ? state.publicGameCatalog.games : [];
-  const manualGameId = String(state.publicGameSelection?.manualGameId || "").trim();
-  if (manualGameId) {
-    const manualGame = games.find((game) => String(game?.internalGameId || "").trim() === manualGameId);
-    if (manualGame && manualGame.canonical === true && isNormalManagedSchedule(manualGame)) return manualGame;
-    state.publicGameSelection.manualGameId = "";
-  }
   return selectInitialPublicGame(games, now);
-}
-
-function getPublicGameHubGames(games = [], now = new Date()) {
-  const today = getJapanDateString(now);
-  const sorted = (Array.isArray(games) ? games : [])
-    .filter((game) => game?.canonical === true && Boolean(game?.internalGameId) && isNormalManagedSchedule(game))
-    .filter((game) => getScheduleDate(game) >= today)
-    .sort((left, right) => getScheduleSortValue(left).localeCompare(getScheduleSortValue(right)));
-  const todayGames = sorted.filter((game) => getScheduleDate(game) === today);
-  const futureGames = sorted.filter((game) => getScheduleDate(game) > today).slice(0, 5);
-  return [...todayGames, ...futureGames];
-}
-
-function formatPublicGameHubDate(game) {
-  const date = String(getScheduleDate(game) || "").trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return "日付未定";
-  const parsed = new Date(`${date}T12:00:00+09:00`);
-  if (Number.isNaN(parsed.getTime())) return "日付未定";
-  return new Intl.DateTimeFormat("ja-JP", {
-    timeZone: "Asia/Tokyo",
-    month: "numeric",
-    day: "numeric",
-    weekday: "short"
-  }).format(parsed);
-}
-
-function getPublicGameHubStatus(game, now = new Date()) {
-  const gameId = String(game?.internalGameId || "").trim();
-  const deadline = resolvePredictionDeadline(gameId, now);
-  return {
-    deadline,
-    view: getPublicGameStatusView(game, deadline, state.predictionRemote, now),
-    selected: gameId === String(state.predictionTargetGameId || "").trim()
-  };
-}
-
-function getPublicGameHubScheduleLabel(game, deadline) {
-  if (isScheduleGameUnavailable(game)) return `試合開始: ${escapeHtml(getScheduleStartTime(game) || "未定")}`;
-  if (deadline?.deadlineAt) return `予想締切: ${escapeHtml(formatPredictionDeadlineDateTime(deadline.deadlineAt))}`;
-  return `試合開始: ${escapeHtml(getScheduleStartTime(game) || "未定")}`;
-}
-
-function renderPublicGameHub() {
-  const container = document.getElementById("publicGameHubContent");
-  if (!container) return;
-  const catalog = state.publicGameCatalog;
-  if (catalog.isLoading && !catalog.games.length) {
-    container.innerHTML = '<p class="public-game-hub-message" role="status">試合情報を確認しています。</p>';
-    return;
-  }
-  if (catalog.message && !catalog.games.length) {
-    container.innerHTML = `<div class="public-game-hub-message is-error" role="alert"><p>${escapeHtml(catalog.message)}</p><button type="button" class="secondary-button" data-public-games-retry>再試行</button></div>`;
-    return;
-  }
-
-  const games = getPublicGameHubGames(catalog.games);
-  if (!games.length) {
-    container.innerHTML = `<div class="public-game-hub-message"><p>現在、予想受付中の試合はありません。</p><div class="public-game-hub-links"><a href="#result-title">前回結果を見る</a><a href="./how-to-play.html">遊び方を見る</a></div></div>`;
-    return;
-  }
-
-  const now = new Date();
-  const errorMarkup = catalog.message
-    ? `<div class="public-game-hub-message is-error" role="alert"><p>${escapeHtml(catalog.message)}</p><button type="button" class="secondary-button" data-public-games-retry>再試行</button></div>`
-    : "";
-  container.innerHTML = `${errorMarkup}<div class="public-game-hub-list" role="list">${games.map((game) => {
-    const model = getPublicGameHubStatus(game, now);
-    const disabled = isScheduleGameUnavailable(game);
-    const selected = model.selected;
-    const saved = selected && model.view.saved ? '<span class="public-game-hub-saved">予想済み</span>' : "";
-    const actionLabel = disabled ? "選択不可" : selected ? "選択中" : "この試合を選ぶ";
-    return `<article class="public-game-hub-card${selected ? " is-selected" : ""}${disabled ? " is-unavailable" : ""}" role="listitem">
-      <button type="button" class="public-game-hub-select" data-public-game-id="${escapeHtml(game.internalGameId)}"${selected ? ' aria-pressed="true"' : ' aria-pressed="false"'}${disabled ? " disabled" : ""}>
-        <span class="public-game-hub-card-top"><span class="public-game-hub-date">${escapeHtml(formatPublicGameHubDate(game))}</span><span class="public-game-hub-status is-${escapeHtml(model.view.key)}">${escapeHtml(model.view.label)}</span></span>
-        <strong class="public-game-hub-matchup">${escapeHtml(game.displayLabel || game.matchupLabel || "対戦カード未定")}</strong>
-        <span class="public-game-hub-time">${escapeHtml(getScheduleStartTime(game) || "開始時刻未定")}</span>
-        <span class="public-game-hub-deadline">${getPublicGameHubScheduleLabel(game, model.deadline)}</span>
-        <span class="public-game-hub-action">${escapeHtml(actionLabel)}${saved}</span>
-      </button>
-    </article>`;
-  }).join("")}</div>`;
 }
 
 function persistCurrentGameScopedState() {
@@ -2122,62 +2032,11 @@ function hydrateGameScopedState(gameId) {
   state.result = result?.gameId === normalizedGameId ? result : null;
 }
 
-async function selectPublicGame(internalGameId) {
-  const normalizedGameId = String(internalGameId || "").trim();
-  const game = state.publicGameCatalog.games.find((item) => String(item?.internalGameId || "").trim() === normalizedGameId);
-  if (!game || isScheduleGameUnavailable(game)) return;
-  state.publicGameSelection.manualGameId = normalizedGameId;
-  if (normalizedGameId === getCurrentGameId()) {
-    renderPublicGameHub();
-    return;
-  }
-
-  persistCurrentGameScopedState();
-  const changed = setPublicCurrentGame(game);
-  if (!changed) return;
-
-  state.probableStarter.matchedGame = null;
-  state.probableStarter.games = [];
-  state.probableStarter.fetchedGameId = "";
-  state.probableStarter.status = "idle";
-  state.probableStarter.message = "選択した試合の予告先発を確認しています。";
-  state.probableStarter.nextCheckAt = "";
-  state.probableStarter.errorCode = "";
-  state.probableStarter.referenceDiagnostics = null;
-  state.publicRoster = {
-    internalGameId: normalizedGameId,
-    gameDate: String(game.date || "").slice(0, 10),
-    status: "pending",
-    players: [],
-    isLoading: true,
-    usableUntil: ""
-  };
-  state.activeOrder.prediction = 0;
-  document.getElementById("predictionForm")?.reset();
-  setLineupValues("prediction", state.prediction?.lineup || []);
-  refreshPredictionDeadlineState();
-  syncPublicAppState();
-  renderAll();
-
-  await Promise.allSettled([
-    initializeRosterCandidateSync(),
-    fetchStoredProbableStarter(),
-    syncPredictionFromAccount({ force: true })
-  ]);
-  if (getCurrentGameId() === normalizedGameId) {
-    renderAll();
-  }
-}
-
-function handlePublicGameHubClick(event) {
+function handlePublicGameSelectionMetaClick(event) {
   const retry = event.target instanceof Element ? event.target.closest("[data-public-games-retry]") : null;
   if (retry) {
     void initializePublicGameCatalog({ force: true });
-    return;
   }
-  const button = event.target instanceof Element ? event.target.closest("[data-public-game-id]") : null;
-  if (!button || button.disabled) return;
-  void selectPublicGame(button.dataset.publicGameId);
 }
 
 function formatPublicPredictionGameLabel(game) {
@@ -2231,7 +2090,6 @@ async function initializePublicGameCatalog({ force = false } = {}) {
   const request = beginPublicRequest("catalog", { abort: true });
   catalog.isLoading = true;
   catalog.message = "";
-  renderPublicGameHub();
   try {
     let apiGames = [];
     const url = buildPublicGamesApiUrl();
@@ -2264,7 +2122,6 @@ async function initializePublicGameCatalog({ force = false } = {}) {
     if (isCurrentPublicRequest("catalog", request.id)) {
       catalog.isLoading = false;
       syncPublicAppState();
-      renderPublicGameHub();
       renderPublicGameSelectionMeta();
     }
   }
@@ -4352,7 +4209,6 @@ function clearStoredPublicResult() {
 }
 
 function renderAll() {
-  renderPublicGameHub();
   renderPublicGameSelectionMeta();
   renderProbableStarter();
   renderSavedPrediction();
@@ -4454,6 +4310,11 @@ function renderPublicGameSelectionMeta() {
   const game = state.predictionTargetGame || state.publicGameCatalog.games.find((item) => item.internalGameId === getCurrentGameId()) || null;
   const deadline = getEffectivePredictionDeadline();
   if (!game && !deadline.game) {
+    if (state.publicGameCatalog.message) {
+      meta.innerHTML = `<span role="alert">${escapeHtml(state.publicGameCatalog.message)}</span> <button type="button" class="secondary-button" data-public-games-retry>再試行</button>`;
+      renderPublicPredictionSurface(null);
+      return;
+    }
     meta.textContent = state.publicGameCatalog.isLoading
       ? "試合情報を確認しています。"
       : "現在、予想受付中の試合はありません。";

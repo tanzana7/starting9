@@ -44,13 +44,13 @@ function loadModules() {
 test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む", () => {
   const scripts = [...page.matchAll(/<script src="([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(scripts, [
-    "frontend/admin-v3/state.js?v=independent-roster-lineup-safety-1-game-selection-safety-1",
+    "frontend/admin-v3/state.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-manual-lineup-explicit-confirmation-1",
     "frontend/public/fighters-player-details.js?v=fighters-player-details-20260903-1",
     "frontend/public/player-display.js?v=public-player-display-1-batting-hand-player-number-1-player-details-1",
     "frontend/admin-v3/api-client.js?v=independent-roster-lineup-safety-1",
     "frontend/admin-v3/dom.js?v=manual-lineup-finalize-safety-1",
     "frontend/admin-v3/selection-safety.js?v=admin-game-selection-safety-1",
-    "frontend/admin-v3/render-manual-lineup.js?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1-game-selection-safety-1-lineup-order-mobile-zoom-1-admin-lineup-registration-emergency-fix-1-admin-lineup-lock-reason-1-manual-lineup-late-registration-1",
+    "frontend/admin-v3/render-manual-lineup.js?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1-game-selection-safety-1-lineup-order-mobile-zoom-1-admin-lineup-registration-emergency-fix-1-admin-lineup-lock-reason-1-manual-lineup-late-registration-1-manual-lineup-explicit-confirmation-1",
     "frontend/admin-v3/render-lineup-correction.js?v=admin-v3-lineup-correction-1",
     "frontend/admin-v3/render-manual-roster.js?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1",
     "frontend/admin-v3/render-game-progress.js?v=manual-lineup-finalize-safety-1-v35-v4-semi-auto-diagnostics-1",
@@ -60,8 +60,8 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
     "frontend/admin-v3/render-ranking-reset.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-perfect-score-preview.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-manual-game-preview.js?v=admin-v3-v35-diagnostics-readability-1",
-    "frontend/admin-v3/app-coordinator.js?v=independent-roster-lineup-safety-1-preserve-picker-scroll-1-admin-lineup-registration-emergency-fix-1",
-    "admin-v3.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-lineup-order-mobile-zoom-1-lineup-correction-1-admin-v3-game-progress-history-1-admin-lineup-registration-emergency-fix-1-admin-lineup-lock-reason-1-manual-lineup-late-registration-1"
+    "frontend/admin-v3/app-coordinator.js?v=independent-roster-lineup-safety-1-preserve-picker-scroll-1-admin-lineup-registration-emergency-fix-1-manual-lineup-explicit-confirmation-1",
+    "admin-v3.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-lineup-order-mobile-zoom-1-lineup-correction-1-admin-v3-game-progress-history-1-admin-lineup-registration-emergency-fix-1-admin-lineup-lock-reason-1-manual-lineup-late-registration-1-manual-lineup-explicit-confirmation-1"
   ]);
   const modules = loadModules();
   assert.equal(typeof modules.createAdminV3State, "function");

@@ -62,6 +62,13 @@
         })),
         reason: "",
         confirmed: false,
+        confirmation: {
+          internalGameId: "",
+          revisionId: "",
+          lineupFingerprint: "",
+          previewed: false,
+          checked: false
+        },
         latestRevision: null,
         detailsHydrated: false,
         loading: false,

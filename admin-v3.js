@@ -465,6 +465,16 @@ function manualLineupHasInput(state) {
   return (state?.rows || []).some((row) => row?.playerId || row?.playerName || row?.position || row?.search);
 }
 
+function emptyManualLineupConfirmation() {
+  return { internalGameId: "", revisionId: "", lineupFingerprint: "", previewed: false, checked: false };
+}
+
+function resetManualLineupConfirmation(state, { clearRevision = false } = {}) {
+  state.confirmed = false;
+  state.confirmation = emptyManualLineupConfirmation();
+  if (clearRevision) state.latestRevision = null;
+}
+
 function ensureV3ManualLineupState(internalGameId, details = null) {
   const id = String(internalGameId || "");
   const sameGame = v3State.manualLineup.gameId === id && v3State.manualLineup.rows.length === 9;
@@ -475,6 +485,8 @@ function ensureV3ManualLineupState(internalGameId, details = null) {
       rows: revision ? manualLineupRowsFromRevision(revision) : v3State.manualLineup.rows,
       reason: revision?.reason || v3State.manualLineup.reason,
       latestRevision: revision || v3State.manualLineup.latestRevision,
+      confirmation: emptyManualLineupConfirmation(),
+      confirmed: false,
       detailsHydrated: true
     };
   }
@@ -485,6 +497,7 @@ function ensureV3ManualLineupState(internalGameId, details = null) {
     rows: v3ManualLineupRenderer.createBlankRows(),
     reason: "",
     confirmed: false,
+    confirmation: emptyManualLineupConfirmation(),
     latestRevision: null,
     detailsHydrated: Boolean(details?.lineup),
     loading: false,
@@ -925,6 +938,9 @@ const v3GameProgressRenderer = adminV3Modules.createAdminV3GameProgressRenderer(
 function updateV3ManualLineupRow(index, patch) {
   const state = ensureV3ManualLineupState(v3State.selectedGameId);
   if (!state.rows[index]) return;
+  if (["battingOrder", "position", "playerId", "playerName", "uniformNumber"].some((key) => Object.prototype.hasOwnProperty.call(patch, key))) {
+    resetManualLineupConfirmation(state, { clearRevision: true });
+  }
   state.rows[index] = { ...state.rows[index], ...patch };
   state.error = "";
   state.message = "";
@@ -966,7 +982,7 @@ function selectV3ManualLineupPlayer(index, playerId) {
 
 function manualLineupPayload(state) {
   return {
-    confirmed: state.confirmed === true,
+    confirmed: false,
     lineup: state.rows.map((row, index) => ({
       battingOrder: index + 1,
       position: row.position,
@@ -977,10 +993,23 @@ function manualLineupPayload(state) {
   };
 }
 
+function validateManualLineupDraft(state) {
+  const rows = Array.isArray(state?.rows) ? state.rows : [];
+  if (rows.length !== 9) return "スタメンは9人分入力してください。";
+  if (rows.some((row) => !String(row?.playerId || "").trim() || !String(row?.position || "").trim())) {
+    return "9人すべての選手と守備位置を入力してください。";
+  }
+  const playerIds = rows.map((row) => String(row.playerId).trim());
+  if (new Set(playerIds).size !== playerIds.length) return "同じ選手が複数の打順に入力されています。";
+  return "";
+}
+
 async function saveV3ManualLineup() {
   const state = ensureV3ManualLineupState(v3State.selectedGameId);
-  if (!state.confirmed) {
-    state.error = "入力内容を確認してから保存してください。";
+  const validationError = validateManualLineupDraft(state);
+  if (validationError) {
+    resetManualLineupConfirmation(state, { clearRevision: true });
+    state.error = validationError;
     renderCurrentV3View();
     return;
   }
@@ -991,8 +1020,17 @@ async function saveV3ManualLineup() {
   try {
     const result = await v3Api.saveManualLineup(v3State.selectedGameId, manualLineupPayload(state));
     state.latestRevision = result.revision || null;
-    state.message = state.latestRevision ? `revision ${state.latestRevision.revisionId || state.latestRevision.version || "-"} を保存しました。` : "手動スタメンを保存しました。";
+    state.confirmed = false;
+    state.confirmation = {
+      internalGameId: v3State.selectedGameId,
+      revisionId: String(state.latestRevision?.revisionId || state.latestRevision?.version || ""),
+      lineupFingerprint: String(state.latestRevision?.lineupFingerprint || ""),
+      previewed: true,
+      checked: false
+    };
+    state.message = state.latestRevision ? `revision ${state.latestRevision.revisionId || state.latestRevision.version || "-"} の登録内容を確認してください。` : "登録内容を確認してください。";
   } catch (error) {
+    resetManualLineupConfirmation(state, { clearRevision: true });
     state.error = formatV3AdminError(error, "V3_MANUAL_LINEUP_SAVE_FAILED");
   } finally {
     state.loading = false;
@@ -1002,8 +1040,12 @@ async function saveV3ManualLineup() {
 
 async function finalizeV3ManualLineup() {
   const state = ensureV3ManualLineupState(v3State.selectedGameId);
-  if (!state.latestRevision || !state.confirmed) {
-    state.error = "先に下書きを保存し、入力内容を確認してください。";
+  const confirmation = state.confirmation || emptyManualLineupConfirmation();
+  const currentRevisionId = String(state.latestRevision?.revisionId || state.latestRevision?.version || "");
+  if (!state.latestRevision || !state.confirmed || confirmation.internalGameId !== v3State.selectedGameId
+    || confirmation.previewed !== true || confirmation.checked !== true
+    || confirmation.revisionId !== currentRevisionId) {
+    state.error = "先に「登録内容を確認」を実行し、確認チェックを入れてください。";
     renderCurrentV3View();
     return;
   }
@@ -1014,30 +1056,24 @@ async function finalizeV3ManualLineup() {
     renderCurrentV3View();
     return;
   }
-  const lineupSummary = state.rows.map((row, index) => `${index + 1}番 ${row.playerName || "未選択"} / ${row.position || "守備位置未選択"}`).join("\n");
-  const confirmation = [
-    "この試合に正式スタメンを確定します。",
-    `試合日: ${gameDateForFilter(game)}`,
-    `対戦: ${game?.homeTeam || "-"} vs ${game?.awayTeam || "-"}`,
-    `開始: ${formatV3Jst(game?.startAt || game?.start_time)} JST`,
-    `internalGameId: ${game?.internalGameId || "-"}`,
-    lineupSummary,
-    "内容を確認して続行しますか？"
-  ].join("\n");
-  if (!window.confirm(confirmation)) return;
+  const requestGameId = v3State.selectedGameId;
   state.loading = true;
   state.error = "";
   state.message = "正式スタメンを確定中…";
   renderCurrentV3View();
   try {
-    await v3Api.finalizeManualLineup(v3State.selectedGameId, {
+    await v3Api.finalizeManualLineup(requestGameId, {
       lineupRevisionId: state.latestRevision.revisionId,
       version: state.latestRevision.version,
-      confirmed: true
+      confirmed: true,
+      confirmationInternalGameId: confirmation.internalGameId,
+      confirmationRevisionId: confirmation.revisionId,
+      confirmationFingerprint: confirmation.lineupFingerprint
     });
     state.message = "正式スタメンを確定しました。採点は正式V3 Cronへ引き継ぎます。";
     await loadV3OperationDetails();
   } catch (error) {
+    resetManualLineupConfirmation(state);
     state.error = formatV3AdminError(error, "V3_MANUAL_LINEUP_FINALIZE_FAILED");
   } finally {
     state.loading = false;
@@ -1555,6 +1591,7 @@ function renderV3(payload) {
 async function loadV3OperationDetails() {
   const id = v3State.selectedGameId;
   if (!id) return;
+  resetManualLineupConfirmation(ensureV3ManualLineupState(id), { clearRevision: true });
   const requestToken = Number(v3State.operationDetailsRequestToken || 0) + 1;
   v3State.operationDetailsRequestToken = requestToken;
   v3State.operationDetails.delete(id);

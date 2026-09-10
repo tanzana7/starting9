@@ -106,14 +106,6 @@
         if (correctionOrder) { preservePickerScroll(`[data-v3-lineup-correction-candidates="${Number(correctionOrder.dataset.v3LineupCorrectionOrder)}"]`, () => actions.updateLineupCorrectionRow(Number(correctionOrder.dataset.v3LineupCorrectionOrder), { battingOrder: Number(correctionOrder.value) })); return; }
         const correctionPosition = closestFromEvent(event, "[data-v3-lineup-correction-position]");
         if (correctionPosition) { preservePickerScroll(`[data-v3-lineup-correction-candidates="${Number(correctionPosition.dataset.v3LineupCorrectionPosition)}"]`, () => actions.updateLineupCorrectionRow(Number(correctionPosition.dataset.v3LineupCorrectionPosition), { position: correctionPosition.value })); return; }
-        const confirm = closestFromEvent(event, "[data-v3-manual-lineup-confirm]");
-        if (confirm) {
-          const confirmation = state.manualLineup.confirmation || {};
-          state.manualLineup.confirmed = confirmation.previewed === true && confirm.checked === true;
-          confirmation.checked = state.manualLineup.confirmed;
-          state.manualLineup.confirmation = confirmation;
-          return;
-        }
         const rosterStatus = closestFromEvent(event, "[data-v3-manual-roster-status]");
         if (rosterStatus) { preservePickerScroll("[data-v3-manual-roster-candidates]", () => actions.updateManualRosterEntry(rosterStatus.dataset.v3ManualRosterStatus, { status: rosterStatus.value })); return; }
         const rosterNote = closestFromEvent(event, "[data-v3-manual-roster-note]");

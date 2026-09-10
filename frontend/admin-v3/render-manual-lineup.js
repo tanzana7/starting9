@@ -245,7 +245,12 @@
       const disabled = locked || state.loading === true;
       const confirmation = state.confirmation || {};
       const confirmationForGame = confirmation.internalGameId === String(game?.internalGameId || "") && confirmation.previewed === true;
-      const confirmationChecked = confirmationForGame && confirmation.checked === true && state.confirmed === true;
+      const confirmationReady = confirmationForGame
+        && state.confirmed === true
+        && Boolean(confirmation.revisionId)
+        && Boolean(confirmation.lineupFingerprint)
+        && String(confirmation.revisionId) === String(state.latestRevision?.revisionId || state.latestRevision?.version || "")
+        && String(confirmation.lineupFingerprint) === String(state.latestRevision?.lineupFingerprint || "");
       const interactionNotice = interaction.reason
         ? `<p class="manual-lineup-lock-notice${interaction.loading ? " loading" : ""}" role="status" data-v3-manual-lineup-lock-reason>${escapeHtml(interaction.reason)}</p>`
         : "";
@@ -264,8 +269,7 @@
        const previewMarkup = confirmationForGame
          ? `<div class="manual-lineup-confirmation-preview" data-v3-manual-lineup-confirmation-preview><strong>登録内容を確認</strong><span>対象: ${escapeHtml(gameDate)} ${escapeHtml(game?.homeTeam || "-")} vs ${escapeHtml(game?.awayTeam || "-")}</span>${lineupSummary}</div>`
          : `<div class="manual-lineup-confirmation-preview is-draft" data-v3-manual-lineup-confirmation-preview><strong>入力中の下書き</strong><span>「登録内容を確認」を押すまで、正式確定の確認対象にはなりません。</span>${lineupSummary}</div>`;
-       const confirmLabel = confirmationForGame ? "試合日・対戦相手・スタメン内容を確認しました" : "登録内容を確認後にチェックできます";
-       return `<section class="manual-lineup-editor${locked ? " is-locked" : ""}" data-v3-manual-lineup-editor data-v3-manual-lineup-interaction="${locked ? "locked" : "editable"}" data-v3-manual-lineup-loading="${interaction.loading ? "true" : "false"}">${targetMarkup}<div class="manual-lineup-header"><div><h3>Fighters 手動スタメン</h3><p>入力後に登録内容を確認し、試合日・対戦相手・9人の内容を確認してから正式確定します。下書きはcanonicalスタメン・採点・ランキング・公開には反映されません。</p></div><span class="manual-lineup-team">${escapeHtml(lineupDetails.managedTeam?.name || "Fighters")}</span></div>${interactionNotice}<div class="manual-lineup-grid">${cards}</div>${previewMarkup}<label class="manual-lineup-confirm"><input type="checkbox" data-v3-manual-lineup-confirm ${confirmationChecked ? "checked" : ""} ${disabled || !confirmationForGame ? "disabled" : ""}> ${escapeHtml(confirmLabel)}</label>${safetyMarkup}<div class="manual-lineup-actions"><button type="button" data-v3-manual-lineup-save data-v3-manual-lineup-preview ${disabled ? "disabled" : ""}>登録内容を確認</button><button type="button" class="primary-button" data-v3-manual-lineup-finalize ${disabled || !state.latestRevision || !confirmationChecked || !finalizeSafety.allowed ? "disabled" : ""}>この内容でスタメンを確定</button>${cancelMarkup}</div>${locked ? `<p class="muted">採点開始後・公開後はスタメンを変更できません。</p>` : `<p class="muted">正式確定後はスコアjobを手動投入せず、次回の正式V3 Cronが採点へ進めます。</p>`}${message}</section>`;
+      return `<section class="manual-lineup-editor${locked ? " is-locked" : ""}" data-v3-manual-lineup-editor data-v3-manual-lineup-interaction="${locked ? "locked" : "editable"}" data-v3-manual-lineup-loading="${interaction.loading ? "true" : "false"}">${targetMarkup}<div class="manual-lineup-header"><div><h3>Fighters 手動スタメン</h3><p>入力後に登録内容を確認し、確認成功後に正式確定します。下書きはcanonicalスタメン・採点・ランキング・公開には反映されません。</p></div><span class="manual-lineup-team">${escapeHtml(lineupDetails.managedTeam?.name || "Fighters")}</span></div>${interactionNotice}<div class="manual-lineup-grid">${cards}</div>${previewMarkup}${safetyMarkup}<div class="manual-lineup-actions"><button type="button" data-v3-manual-lineup-save data-v3-manual-lineup-preview ${disabled ? "disabled" : ""}>登録内容を確認</button><button type="button" class="primary-button" data-v3-manual-lineup-finalize ${disabled || !confirmationReady || !finalizeSafety.allowed ? "disabled" : ""}>この内容でスタメンを確定</button>${cancelMarkup}</div>${locked ? `<p class="muted">採点開始後・公開後はスタメンを変更できません。</p>` : `<p class="muted">正式確定後はスコアjobを手動投入せず、次回の正式V3 Cronが採点へ進めます。</p>`}${message}</section>`;
     }
 
     return Object.freeze({ createBlankRows, manualLineupInteractionState, renderCandidates, render, sortPlayersByRosterAndUniformNumber });

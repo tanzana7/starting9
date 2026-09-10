@@ -468,7 +468,7 @@ function manualLineupHasInput(state) {
 }
 
 function emptyManualLineupConfirmation() {
-  return { internalGameId: "", revisionId: "", lineupFingerprint: "", previewed: false, checked: false };
+  return { internalGameId: "", revisionId: "", lineupFingerprint: "", previewed: false };
 }
 
 function resetManualLineupConfirmation(state, { clearRevision = false } = {}) {
@@ -1023,13 +1023,12 @@ async function saveV3ManualLineup() {
   try {
     const result = await v3Api.saveManualLineup(v3State.selectedGameId, manualLineupPayload(state));
     state.latestRevision = result.revision || null;
-    state.confirmed = false;
+    state.confirmed = true;
     state.confirmation = {
       internalGameId: v3State.selectedGameId,
       revisionId: String(state.latestRevision?.revisionId || state.latestRevision?.version || ""),
       lineupFingerprint: String(state.latestRevision?.lineupFingerprint || ""),
-      previewed: true,
-      checked: false
+      previewed: true
     };
     state.message = state.latestRevision ? `revision ${state.latestRevision.revisionId || state.latestRevision.version || "-"} の登録内容を確認してください。` : "登録内容を確認してください。";
   } catch (error) {
@@ -1045,10 +1044,14 @@ async function finalizeV3ManualLineup() {
   const state = ensureV3ManualLineupState(v3State.selectedGameId);
   const confirmation = state.confirmation || emptyManualLineupConfirmation();
   const currentRevisionId = String(state.latestRevision?.revisionId || state.latestRevision?.version || "");
-  if (!state.latestRevision || !state.confirmed || confirmation.internalGameId !== v3State.selectedGameId
-    || confirmation.previewed !== true || confirmation.checked !== true
-    || confirmation.revisionId !== currentRevisionId) {
-    state.error = "先に「登録内容を確認」を実行し、確認チェックを入れてください。";
+  const confirmationReady = state.confirmed === true
+    && confirmation.internalGameId === v3State.selectedGameId
+    && confirmation.previewed === true
+    && confirmation.revisionId === currentRevisionId
+    && Boolean(confirmation.lineupFingerprint)
+    && confirmation.lineupFingerprint === String(state.latestRevision?.lineupFingerprint || "");
+  if (!state.latestRevision || !confirmationReady) {
+    state.error = "先に「登録内容を確認」を実行してください。";
     renderCurrentV3View();
     return;
   }

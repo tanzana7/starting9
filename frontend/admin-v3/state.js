@@ -66,8 +66,7 @@
           internalGameId: "",
           revisionId: "",
           lineupFingerprint: "",
-          previewed: false,
-          checked: false
+          previewed: false
         },
         latestRevision: null,
         detailsHydrated: false,

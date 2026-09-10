@@ -25,6 +25,34 @@ export const RANKING_TEST_POSITION_CANONICAL = Object.freeze({
   9: "右"
 });
 
+export const RANKING_TEST_DISPLAY_NAME_MIN_LENGTH = 3;
+export const RANKING_TEST_DISPLAY_NAME_MAX_LENGTH = 16;
+
+export function defaultRankingTestDisplayName(slot) {
+  const normalizedSlot = normalizeRankingTestSlot(slot);
+  return normalizedSlot ? rankingTestUsername(normalizedSlot) : "";
+}
+
+export function normalizeRankingTestDisplayName(value) {
+  const name = String(value ?? "").normalize("NFKC").trim();
+  if (!name) return { ok: true, value: "" };
+  const length = Array.from(name).length;
+  if (length < RANKING_TEST_DISPLAY_NAME_MIN_LENGTH || length > RANKING_TEST_DISPLAY_NAME_MAX_LENGTH) {
+    return { ok: false, code: "RANKING_TEST_DISPLAY_NAME_LENGTH", error: `表示名は${RANKING_TEST_DISPLAY_NAME_MIN_LENGTH}〜${RANKING_TEST_DISPLAY_NAME_MAX_LENGTH}文字で入力してください。` };
+  }
+  if (/[\u0000-\u001f\u007f\u2028\u2029]/u.test(name)) {
+    return { ok: false, code: "RANKING_TEST_DISPLAY_NAME_CONTROL", error: "表示名に制御文字は使用できません。" };
+  }
+  if (!/^[\p{L}\p{N}_-]+$/u.test(name)) {
+    return { ok: false, code: "RANKING_TEST_DISPLAY_NAME_CHARACTERS", error: "表示名は英数字、日本語、_、-のみ使用できます。" };
+  }
+  return { ok: true, value: name };
+}
+
+export function rankingTestDisplayNameKey(value) {
+  return String(value || "").normalize("NFKC").trim().toLocaleLowerCase("en-US");
+}
+
 export function rankingTestUsername(slot) {
   return `S9_TEST_${Number(slot)}`;
 }

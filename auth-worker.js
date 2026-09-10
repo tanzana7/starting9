@@ -73,15 +73,22 @@ import {
 } from "./backend/repositories/ranking-repository.js";
 import {
   getRankingTestState,
+  getRankingTestGlobalSettings,
   upsertRankingTestPrediction,
   deleteRankingTestPrediction,
-  updateRankingTestToggle
+  updateRankingTestToggle,
+  updateRankingTestGlobalSettings,
+  updateRankingTestDisplayName
 } from "./backend/repositories/ranking-test-repository.js";
 import {
+  RANKING_TEST_SLOT_MAX,
   normalizeRankingTestSlot,
   normalizeRankingTestPosition,
   RANKING_TEST_POSITION_LABELS,
-  rankingTestUsername
+  rankingTestUsername,
+  defaultRankingTestDisplayName,
+  normalizeRankingTestDisplayName,
+  rankingTestDisplayNameKey
 } from "./backend/domain/ranking-test-users.js";
 import {
   PUBLIC_RESULT_HISTORY_LIMIT,
@@ -645,6 +652,12 @@ export default {
       if (path === "/api/admin/v3/perfect-score-test/preview") {
         if (request.method !== "POST") return jsonResponse({ ok: false, code: "V3_ADMIN_METHOD_NOT_ALLOWED", error: "満点previewはPOSTのみ対応しています。" }, 405, cors);
         return await handleAdminV3PerfectScorePreview(request, env, cors);
+      }
+      if (path === "/api/admin/v3/ranking-test-users/global") {
+        return await handleAdminV3RankingTestGlobalSettings(request, env, cors);
+      }
+      if (path === "/api/admin/v3/ranking-test-users/name") {
+        return await handleAdminV3RankingTestDisplayName(request, env, cors);
       }
       const adminV3RankingTestRoute = parseAdminV3RankingTestRoute(path);
       if (adminV3RankingTestRoute) {
@@ -6700,7 +6713,9 @@ const ADMIN_EXACT_ROUTE_METHODS = Object.freeze({
   "/api/admin/v3/ranking-resets/preview": ["POST"],
   "/api/admin/v3/schedule/add-game/preview": ["POST"],
   "/api/admin/v3/ranking-resets/execute": ["POST"],
-  "/api/admin/v3/perfect-score-test/preview": ["POST"]
+  "/api/admin/v3/perfect-score-test/preview": ["POST"],
+  "/api/admin/v3/ranking-test-users/global": ["PUT", "PATCH"],
+  "/api/admin/v3/ranking-test-users/name": ["PUT", "PATCH"]
 });
 
 function getKnownAdminRouteMethods(path) {
@@ -6956,6 +6971,81 @@ async function scoreRankingTestPredictionsForGame(db, internalGameId, now = new 
   return { status: "scored", scored, invalid, lineupRevisionId: finalRevision.revision_id, scoringRevisionId: activeRevision.id };
 }
 
+function rankingTestGlobalSettingsResponse(settings) {
+  return {
+    globalEnabled: settings.globalEnabled === true,
+    slotNames: settings.slotNames || {},
+    displayNames: settings.displayNames || {},
+    updatedBy: settings.updatedBy || null,
+    createdAt: settings.createdAt || null,
+    updatedAt: settings.updatedAt || null
+  };
+}
+
+async function assertRankingTestDisplayNameAvailable(db, { slot, displayName, settings }) {
+  if (!displayName) return;
+  const key = rankingTestDisplayNameKey(displayName);
+  for (let candidateSlot = 1; candidateSlot <= RANKING_TEST_SLOT_MAX; candidateSlot += 1) {
+    if (candidateSlot === slot) continue;
+    const candidateName = settings.displayNames?.[String(candidateSlot)] || defaultRankingTestDisplayName(candidateSlot);
+    if (rankingTestDisplayNameKey(candidateName) === key) {
+      throw createV3Error("RANKING_TEST_DISPLAY_NAME_DUPLICATE", "TEST 1〜9の表示名は重複できません。", { httpStatus: 400 });
+    }
+  }
+  const existingUser = await db.prepare(
+    "SELECT id FROM users WHERE username_normalized = ?1 LIMIT 1"
+  ).bind(key).first();
+  if (existingUser) {
+    throw createV3Error("RANKING_TEST_DISPLAY_NAME_REAL_USER", "実ユーザーと同じ表示名は使用できません。", { httpStatus: 400 });
+  }
+}
+
+async function handleAdminV3RankingTestGlobalSettings(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  if (!["PUT", "PATCH"].includes(request.method)) return jsonResponse({ ok: false, code: "RANKING_TEST_METHOD_NOT_ALLOWED", error: "global設定はPUT/PATCHのみ対応しています。" }, 405, cors);
+  try {
+    const input = await readJson(request, { maxBytes: 4096 });
+    if (typeof input?.globalEnabled !== "boolean") {
+      throw createV3Error("RANKING_TEST_GLOBAL_VALUE_INVALID", "globalEnabledはbooleanで指定してください。", { httpStatus: 400 });
+    }
+    if (input.globalEnabled && input.confirmation !== "GLOBAL TEST USERS ON") {
+      throw createV3Error("RANKING_TEST_GLOBAL_CONFIRMATION_REQUIRED", "global TESTユーザー表示の確認が必要です。", { httpStatus: 409 });
+    }
+    const current = await getRankingTestGlobalSettings(env.AUTH_DB);
+    if (!current.schemaAvailable) throw createV3Error("RANKING_TEST_GLOBAL_SCHEMA_UNAVAILABLE", "ランキングテストglobal設定schemaが未適用です。", { httpStatus: 503 });
+    await updateRankingTestGlobalSettings(env.AUTH_DB, {
+      globalEnabled: input.globalEnabled,
+      slotNames: current.slotNames,
+      updatedBy: access.user.id,
+      now: new Date()
+    });
+    return jsonResponse({ ok: true, globalSettings: rankingTestGlobalSettingsResponse(await getRankingTestGlobalSettings(env.AUTH_DB)) }, 200, cors);
+  } catch (error) {
+    return v3AdminErrorResponse(cors, error, "ランキングテストglobal設定を更新できませんでした。");
+  }
+}
+
+async function handleAdminV3RankingTestDisplayName(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  if (!["PUT", "PATCH"].includes(request.method)) return jsonResponse({ ok: false, code: "RANKING_TEST_METHOD_NOT_ALLOWED", error: "表示名はPUT/PATCHのみ対応しています。" }, 405, cors);
+  try {
+    const input = await readJson(request, { maxBytes: 4096 });
+    const slot = normalizeRankingTestSlot(input?.slot);
+    if (!slot) throw createV3Error("RANKING_TEST_SLOT_INVALID", "slotは1〜9で指定してください。", { httpStatus: 400 });
+    const validation = normalizeRankingTestDisplayName(input?.displayName);
+    if (!validation.ok) throw createV3Error(validation.code, validation.error, { httpStatus: 400 });
+    const current = await getRankingTestGlobalSettings(env.AUTH_DB);
+    if (!current.schemaAvailable) throw createV3Error("RANKING_TEST_GLOBAL_SCHEMA_UNAVAILABLE", "ランキングテストglobal設定schemaが未適用です。", { httpStatus: 503 });
+    await assertRankingTestDisplayNameAvailable(env.AUTH_DB, { slot, displayName: validation.value, settings: current });
+    await updateRankingTestDisplayName(env.AUTH_DB, { slot, displayName: validation.value, updatedBy: access.user.id, now: new Date() });
+    return jsonResponse({ ok: true, slot, globalSettings: rankingTestGlobalSettingsResponse(await getRankingTestGlobalSettings(env.AUTH_DB)) }, 200, cors);
+  } catch (error) {
+    return v3AdminErrorResponse(cors, error, "ランキングテスト表示名を更新できませんでした。");
+  }
+}
+
 async function handleAdminV3RankingTestUsers(request, env, cors, route) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) return access.response;
@@ -6985,7 +7075,7 @@ async function handleAdminV3RankingTestUsers(request, env, cors, route) {
     if (request.method === "GET") {
       const state = await getRankingTestState(env.AUTH_DB, id);
       if (!state.schemaAvailable) throw createV3Error("RANKING_TEST_SCHEMA_UNAVAILABLE", "ランキングテスト用schemaが未適用です。", { httpStatus: 503 });
-      return jsonResponse({ ok: true, internalGameId: id, positionLabels: RANKING_TEST_POSITION_LABELS, usernames: Array.from({ length: 9 }, (_, index) => rankingTestUsername(index + 1)), state }, 200, cors);
+      return jsonResponse({ ok: true, internalGameId: id, positionLabels: RANKING_TEST_POSITION_LABELS, usernames: Array.from({ length: 9 }, (_, index) => rankingTestUsername(index + 1)), globalSettings: rankingTestGlobalSettingsResponse(state.globalSettings || {}), state }, 200, cors);
     }
     const input = await readJson(request, { maxBytes: 20000 });
     const slot = normalizeRankingTestSlot(input?.slot);

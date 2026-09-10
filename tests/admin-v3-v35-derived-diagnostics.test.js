@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
+import vm from "node:vm";
 import { buildAdminV4Status } from "../backend/automation-v3/admin-v4-status.js";
 
 const root = new URL("../", import.meta.url);
@@ -62,12 +63,110 @@ test("invalid canonical lineup blocks V4 status without a second evaluator", () 
   assert.equal(status.stages.score.label, "要対応");
 });
 
+test("future games keep missing downstream artifacts in waiting state", () => {
+  const schedule = {
+    startAt: "2026-09-12T09:00:00.000Z",
+    probableStarterNextAt: "2026-09-11T09:00:00.000Z",
+    predictionDeadline: "2026-09-12T08:00:00.000Z",
+    finalLineupAt: "2026-09-12T09:02:00.000Z",
+    scoringEarliestAt: "2026-09-12T09:02:00.000Z",
+    publicationAt: "2026-09-12T09:10:00.000Z"
+  };
+  const status = buildAdminV4Status({
+    game: { gameDate: "2026-09-12", startAt: schedule.startAt },
+    persistedState: "scheduled",
+    now: "2026-09-11T00:00:00.000Z",
+    schedule,
+    phaseStatuses: {
+      lineup_finalize: { severity: "ATTENTION", reasonCode: "CANONICAL_FINAL_REVISION_MISSING" },
+      score: { severity: "ATTENTION", reasonCode: "ACTIVE_SCORING_REVISION_MISSING" },
+      ranking: { severity: "ATTENTION", reasonCode: "RANKING_REFLECTION_MISSING" },
+      publish: { severity: "ATTENTION", reasonCode: "PUBLICATION_NOT_COMPLETED" }
+    },
+    canonicalArtifacts: {
+      available: true,
+      lineup: { reason: "CANONICAL_FINAL_REVISION_MISSING" },
+      scoring: { reason: "ACTIVE_SCORING_REVISION_MISSING" },
+      ranking: { reason: "RANKING_REFLECTION_MISSING" },
+      publication: { reason: "PUBLICATION_NOT_COMPLETED" },
+      aggregate: { lineupReady: false, scoringReady: false, rankingReady: false, publicationReady: false }
+    }
+  });
+  assert.equal(status.stages.lineup_finalize.key, "wait");
+  assert.equal(status.stages.lineup_finalize.reason, "手動確定待ち / 試合当日の確認前");
+  assert.equal(status.stages.score.reason, "正式スタメン確定待ち");
+  assert.equal(status.stages.ranking.reason, "採点完了待ち");
+  assert.equal(status.stages.publish.reason, "ランキング反映待ち");
+  assert.equal(status.stages.probable_starter.scheduledAt, schedule.probableStarterNextAt);
+  assert.equal(status.stages.prediction_close.scheduledAt, schedule.predictionDeadline);
+});
+
+test("due missing artifact can still be reported as attention", () => {
+  const status = buildAdminV4Status({
+    game: { gameDate: "2026-09-12", startAt: "2026-09-12T09:00:00.000Z" },
+    persistedState: "prediction_closed",
+    now: "2026-09-12T09:20:00.000Z",
+    schedule: {
+      startAt: "2026-09-12T09:00:00.000Z",
+      finalLineupAt: "2026-09-12T09:02:00.000Z",
+      scoringEarliestAt: "2026-09-12T09:02:00.000Z",
+      publicationAt: "2026-09-12T09:10:00.000Z"
+    },
+    canonicalArtifacts: {
+      available: true,
+      scoring: { reason: "ACTIVE_SCORING_REVISION_MISSING" },
+      aggregate: { lineupReady: true, scoringReady: false, rankingReady: false, publicationReady: false }
+    },
+    phaseStatuses: { score: { severity: "ATTENTION", reasonCode: "ACTIVE_SCORING_REVISION_MISSING" } }
+  });
+  assert.equal(status.stages.score.key, "attention");
+  assert.equal(status.stages.score.reasonCode, "ACTIVE_SCORING_REVISION_MISSING");
+});
+
 test("admin-v3 workflow view uses V4 status markup and removes shadow/manual recovery controls", () => {
   const renderer = read("frontend/admin-v3/render-game-progress.js");
+  const workflow = renderer.slice(renderer.indexOf("function renderWorkflowView"), renderer.indexOf("function renderLineupView"));
   assert.match(renderer, /renderV4CanonicalStatus/);
   assert.match(renderer, /data-v4-canonical-status/);
   assert.match(renderer, /formal job/);
   assert.doesNotMatch(renderer, /V3\.5|V35|shadow|renderManualControls|data-v3-job-run|data-v3-state-reconcile/);
+  assert.doesNotMatch(workflow, /renderWorkflowDiagnostics\(game\)/);
+  assert.doesNotMatch(workflow, /renderTimeline\(game\)/);
+  assert.doesNotMatch(workflow, /次の処理: <strong>/);
+});
+
+test("V4 workflow view does not render legacy roster or auto-lineup scheduling copy", () => {
+  const context = { window: {}, Intl, Date };
+  vm.createContext(context);
+  vm.runInContext(read("frontend/admin-v3/render-game-progress.js"), context);
+  const renderer = context.window.Starting9AdminV3.createAdminV3GameProgressRenderer({
+    escapeHtml: (value) => String(value ?? ""),
+    formatJst: (value) => String(value || "-"),
+    renderSelectedGameHeader: (_game, title) => `<header>${title}</header>`,
+    npbIdentityDisplay: () => ({ jobStatus: "resolved", code: "2026091201" }),
+    renderJobRows: (_game, types) => `<div data-job-types="${types.join(",")}"></div>`,
+    jobTypes: ["npb_identity_resolve", "probable_starter_fetch", "prediction_close", "roster_fetch", "lineup_fetch", "lineup_finalize", "score", "ranking_rebuild", "publish"]
+  });
+  const html = renderer.renderWorkflowView({
+    state: { state: "scheduled" },
+    v4Status: {
+      persistedState: "scheduled",
+      currentStatus: { key: "scheduled", label: "予定", reason: "未来試合です。" },
+      stages: {
+        roster: { key: "manual", label: "手動運用", reason: "V4ではロースターを手動確認します。" },
+        lineup_finalize: { key: "wait", label: "手動確定待ち", reason: "手動確定待ち / 試合当日の確認前" },
+        score: { key: "wait", label: "正式スタメン確定待ち", reason: "正式スタメン確定待ち" },
+        ranking: { key: "wait", label: "待機", reason: "採点完了待ち" },
+        publish: { key: "wait", label: "待機", reason: "ランキング反映待ち" }
+      }
+    }
+  });
+  assert.match(html, /手動確定待ち \/ 試合当日の確認前/);
+  assert.doesNotMatch(html, /ロースター取得/);
+  assert.doesNotMatch(html, /スタメン取得/);
+  assert.doesNotMatch(html, /最新候補を開始2分後に確定/);
+  assert.doesNotMatch(html, /次の処理:/);
+  assert.doesNotMatch(html, /roster_fetch|lineup_fetch/);
 });
 
 test("admin-v3 page identifies the official V4 operations surface", () => {

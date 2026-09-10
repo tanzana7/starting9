@@ -153,12 +153,36 @@ test("開始後の未登録manual lineupはfinalize可能なcontrolsを描画す
   const markup = renderer.render(game, makeDetails("after-start", { lineup: null }), {
     rows: renderer.createBlankRows(),
     confirmed: true,
-    confirmation: { internalGameId: "after-start", revisionId: "revision-1", lineupFingerprint: "", previewed: true, checked: true },
-    latestRevision: { revisionId: "revision-1", version: 1 },
+    confirmation: { internalGameId: "after-start", revisionId: "revision-1", lineupFingerprint: "fingerprint-1", previewed: true },
+    latestRevision: { revisionId: "revision-1", version: 1, lineupFingerprint: "fingerprint-1" },
     loading: false
   });
   assertEditableMarkup(markup);
+  assert.doesNotMatch(markup, /data-v3-manual-lineup-confirm(?:["=\s])/);
   assert.match(markup, /data-v3-manual-lineup-finalize(?![^>]*disabled)/);
+});
+
+test("manual lineupは確認成功後のrevision/fingerprint一致時だけfinalizeを有効にする", () => {
+  const renderer = createRenderer();
+  const game = makeGame("today-game");
+  const details = makeDetails("today-game", { lineup: null });
+  const confirmed = renderer.render(game, details, {
+    rows: renderer.createBlankRows(),
+    confirmed: true,
+    confirmation: { internalGameId: "today-game", revisionId: "revision-1", lineupFingerprint: "fingerprint-1", previewed: true },
+    latestRevision: { revisionId: "revision-1", version: 1, lineupFingerprint: "fingerprint-1" },
+    loading: false
+  });
+  assert.match(confirmed, /data-v3-manual-lineup-finalize(?![^>]*disabled)/);
+
+  const edited = renderer.render(game, details, {
+    rows: renderer.createBlankRows(),
+    confirmed: false,
+    confirmation: { internalGameId: "today-game", revisionId: "revision-1", lineupFingerprint: "fingerprint-1", previewed: true },
+    latestRevision: null,
+    loading: false
+  });
+  assert.match(edited, /data-v3-manual-lineup-finalize[^>]*disabled/);
 });
 
 test("manual lineupはloading中に編集を止め、成功後にロック理由を消す", () => {
@@ -181,6 +205,11 @@ test("manual lineupの保存中も編集を止め、保存完了後に再び編�
   assert.match(savingMarkup, /スタメン情報を保存中です/);
   for (const control of controlsFor(savingMarkup, "data-v3-manual-lineup-position")) assert.equal(control.disabled, true);
   assertEditableMarkup(renderer.render(game, details, { rows: renderer.createBlankRows(), loading: false }));
+});
+
+test("manual lineup coordinatorとCSSはcheckboxおよび永久busy cursorを持たない", () => {
+  assert.doesNotMatch(coordinatorSource, /data-v3-manual-lineup-confirm(?:["=\s])/);
+  assert.doesNotMatch(cssSource, /cursor:\s*(wait|progress)/);
 });
 
 test("finalized・scoring・publishedのcanonical lineupはロック理由を表示する", () => {

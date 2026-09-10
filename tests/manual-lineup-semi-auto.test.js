@@ -315,7 +315,7 @@ test("手動スタメンはjob投入なしで保存・確定し、自動取得�
   assert.match(uiSource, /manual-lineup-confirmation-row/);
   assert.match(uiSource, /manual-lineup-duplicate-warning/);
   assert.match(uiSource, /data-v3-manual-lineup-preview/);
-  assert.match(uiSource, /試合日・対戦相手・スタメン内容を確認しました/);
+  assert.doesNotMatch(uiSource, /試合日・対戦相手・スタメン内容を確認しました/);
   assert.match(uiSource, /この内容でスタメンを確定/);
 });
 

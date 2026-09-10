@@ -1,12 +1,33 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import { evaluateCanonicalArtifacts } from "../backend/automation-v3/canonical-artifact-evaluator.js";
 import { buildStagePlan, buildStagePlans, buildV3PlanningState } from "../backend/automation-v3/planning-engine.js";
+import { planV3MainJobs } from "../backend/automation-v3/orchestrator.js";
 
 const GAME_ID = "formal-canonical-gate-game";
 const START_AT = "2026-09-08T05:00:00.000Z";
 const NOW = new Date("2026-09-09T00:00:00.000Z");
 const FINAL_REVISION_ID = `${GAME_ID}:2`;
+
+function d1(database) {
+  return {
+    prepare(sql) {
+      const statement = database.prepare(sql);
+      const bound = (...params) => ({
+        all: async () => ({ results: statement.all(...params) }),
+        first: async () => statement.get(...params),
+        run: async () => ({ meta: { changes: Number(statement.run(...params).changes || 0) } })
+      });
+      return {
+        all: async () => ({ results: statement.all() }),
+        first: async () => statement.get(),
+        run: async () => ({ meta: { changes: Number(statement.run().changes || 0) } }),
+        bind(...params) { return bound(...params); }
+      };
+    }
+  };
+}
 
 function lineupJson() {
   return JSON.stringify(Array.from({ length: 9 }, (_, index) => ({
@@ -75,6 +96,69 @@ test("stale prediction_closed stateはcanonical lineup成立後にscoringを計�
   assert.equal(plan.shouldCreateJob, true);
   assert.equal(plan.reasonCode, "DUE_JOB_MISSING");
   assert.equal(plan.blocked, false);
+});
+
+test("legacy candidate revisionをmanual finalizeしたcanonical pointerでもscore jobを計画する", async () => {
+  const database = new DatabaseSync(":memory:");
+  const internalGameId = "13710e97-2475-45c7-90eb-c08dbf961a7f";
+  const legacyGameId = "h-f-25";
+  const lineup = lineupJson();
+  try {
+    database.exec(`
+      CREATE TABLE games (
+        internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+        home_team TEXT, away_team TEXT, npb_game_code TEXT, npb_identity_status TEXT,
+        game_status TEXT, is_active INTEGER, deleted_at TEXT
+      );
+      CREATE TABLE game_automation_v3_state (internal_game_id TEXT PRIMARY KEY, state TEXT);
+      CREATE TABLE game_jobs_v3 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT, job_type TEXT,
+        scheduled_at TEXT, scheduled_slot_at TEXT, status TEXT, attempt_count INTEGER,
+        max_attempts INTEGER, next_retry_at TEXT, claimed_at TEXT, claim_token TEXT,
+        lease_expires_at TEXT, completed_at TEXT, failure_code TEXT, failure_message TEXT,
+        created_at TEXT, updated_at TEXT,
+        UNIQUE(internal_game_id, job_type, scheduled_slot_at)
+      );
+      CREATE TABLE game_lineups (
+        internal_game_id TEXT PRIMARY KEY, game_id TEXT, actual_lineup_json TEXT,
+        final_lineup_revision_id TEXT, scoring_status TEXT, scored_at TEXT,
+        publication_status TEXT, published_at TEXT
+      );
+      CREATE TABLE game_lineup_revisions (
+        internal_game_id TEXT, game_id TEXT, version INTEGER, revision_id TEXT,
+        is_final INTEGER, actual_lineup_json TEXT, validation_json TEXT
+      );
+      CREATE TABLE game_scoring_revisions (
+        id TEXT PRIMARY KEY, internal_game_id TEXT, lineup_revision_id TEXT,
+        status TEXT, is_active INTEGER, revision_number INTEGER, completed_at TEXT
+      );
+      CREATE TABLE ranking_reflection_revisions (
+        id INTEGER PRIMARY KEY, internal_game_id TEXT, scoring_revision_id TEXT,
+        ranking_update_revision INTEGER, status TEXT, reflected_at TEXT
+      );
+      INSERT INTO games VALUES ('${internalGameId}', '2026-09-10', '2026-09-10T09:00:00.000Z', 'fighters', 'hawks', 'h-f-25', 'resolved', 'scheduled', 1, NULL);
+      INSERT INTO game_automation_v3_state VALUES ('${internalGameId}', 'prediction_closed');
+      INSERT INTO game_lineups VALUES ('${internalGameId}', '${legacyGameId}', '${lineup}', '${internalGameId}:1', 'pending', NULL, 'private', NULL);
+      INSERT INTO game_lineup_revisions VALUES ('${internalGameId}', '${legacyGameId}', 1, '${legacyGameId}:1', 1, '${lineup}', '{"ok":true}');
+    `);
+
+    const result = await planV3MainJobs(d1(database), [{
+      internalGameId,
+      gameDate: "2026-09-10",
+      startAt: "2026-09-10T09:00:00.000Z",
+      homeTeam: "fighters",
+      awayTeam: "hawks",
+      gameStatus: "scheduled",
+      isActive: 1,
+      npbGameCode: "h-f-25",
+      npbIdentityStatus: "resolved"
+    }], new Date("2026-09-10T09:03:00.000Z"));
+
+    const score = result.planned.find((entry) => entry.plan?.jobType === "score");
+    assert.equal(score?.created, true, JSON.stringify(result.diagnostics));
+  } finally {
+    database.close();
+  }
 });
 
 test("stale lineup_ready stateはcanonical score成立後にrankingを計画できる", () => {

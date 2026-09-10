@@ -47,6 +47,15 @@
       ["ranking_rebuild", "ランキング反映", true],
       ["publish", "結果公開", true]
     ]);
+    const V4_WORKFLOW_JOB_TYPES = Object.freeze([
+      "npb_identity_resolve",
+      "probable_starter_fetch",
+      "prediction_close",
+      "lineup_finalize",
+      "score",
+      "ranking_rebuild",
+      "publish"
+    ]);
 
     function diagnosticValue(value) {
       if (value === null || value === undefined || value === "") return "-";
@@ -338,7 +347,8 @@
       const statusClass = (key) => ({ complete: "ok", attention: "action", manual: "manual", wait: "wait" }[String(key || "")] || "wait");
       const rows = Object.entries(labels).map(([key, label]) => {
         const item = stages[key] || {};
-        return `<div class="v4-stage-row ${statusClass(item.key)}"><strong>${escapeHtml(label)}</strong><span>状態: ${escapeHtml(item.label || "待機")}</span><span>理由: ${escapeHtml(item.reason || "-")}</span>${item.reasonCode ? `<small>code: ${escapeHtml(item.reasonCode)}</small>` : ""}</div>`;
+        const scheduled = item.scheduledAt ? `<small>予定: ${escapeHtml(formatJst(item.scheduledAt))}</small>` : "";
+        return `<div class="v4-stage-row ${statusClass(item.key)}"><strong>${escapeHtml(label)}</strong><span>状態: ${escapeHtml(item.label || "待機")}</span><span>理由: ${escapeHtml(item.reason || "-")}</span>${scheduled}${item.reasonCode ? `<small>code: ${escapeHtml(item.reasonCode)}</small>` : ""}</div>`;
       }).join("");
       const aggregate = status.canonicalArtifacts?.aggregate || {};
       const canonicalRevision = source.canonicalRevision || status.canonicalArtifacts?.lineup?.canonicalFinalRevisionId || "-";
@@ -410,7 +420,8 @@
     function renderWorkflowView(game) {
       if (!game) return renderSelectedGameHeader(null, "試合進行");
       const identity = npbIdentityDisplay(game);
-      return `${renderSelectedGameHeader(game, "試合進行", "V4正式運用の状態をcanonical artifact evaluatorとformal job/artifactから確認します。自動処理はCronが実行します。")}<section class="v3-panel">${renderV4CanonicalStatus(game)}<div class="compact-meta"><span>現在: <strong>${escapeHtml(game.v4Status?.persistedState || game.state?.state || "scheduled")}</strong></span><span>次の処理: <strong>${escapeHtml(nextActionText(game))}</strong></span><span>NPB識別job: <strong>${escapeHtml(identity.jobStatus)}</strong></span><span>NPB game code: <strong>${escapeHtml(identity.code)}</strong></span></div>${renderWorkflowDiagnostics(game)}${renderTimeline(game)}<details class="roster-details"><summary>ロースター取得の詳細</summary>${renderRosterSummary(game)}</details><h3>job履歴</h3>${renderJobRows(game, jobTypes)}</section>`;
+      const v4JobHistory = jobTypes.filter((type) => V4_WORKFLOW_JOB_TYPES.includes(type));
+      return `${renderSelectedGameHeader(game, "試合進行", "V4正式運用の状態をcanonical artifact evaluator・formal job・formal artifactから確認します。ロースターと正式スタメンは手動運用です。")}<section class="v3-panel">${renderV4CanonicalStatus(game)}<div class="compact-meta"><span>現在: <strong>${escapeHtml(game.v4Status?.persistedState || game.state?.state || "scheduled")}</strong></span><span>ロースター: <strong>手動確認</strong></span><span>正式スタメン: <strong>管理者確認</strong></span><span>NPB識別job: <strong>${escapeHtml(identity.jobStatus)}</strong></span><span>NPB game code: <strong>${escapeHtml(identity.code)}</strong></span></div><h3>正式job履歴</h3>${renderJobRows(game, v4JobHistory)}</section>`;
     }
 
     function renderLineupView(game) {

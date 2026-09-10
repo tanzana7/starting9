@@ -5430,7 +5430,8 @@ async function handleAdminV3Overview(request, env, cors) {
       canonicalArtifacts,
       displayStatus,
       automationMode: getV3OperationalMode(env),
-      schedule
+      schedule,
+      now: overviewNow
     });
     rows.push({
       ...game,

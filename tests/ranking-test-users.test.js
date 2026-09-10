@@ -19,7 +19,13 @@ import {
   normalizeRankingTestPosition,
   rankingTestUsername
 } from "../backend/domain/ranking-test-users.js";
+import {
+  getRankingTestPresetDefinition,
+  getRankingTestPresetSummaries,
+  resolveRankingTestPreset
+} from "../backend/domain/ranking-test-presets.js";
 import { getRankingForPeriod } from "../backend/repositories/ranking-repository.js";
+import { scoreRankingTestPredictionsForGame } from "../auth-worker.js";
 
 const root = path.join(import.meta.dirname, "..");
 const migration = fs.readFileSync(path.join(root, "migrations", "0037_ranking_test_users.sql"), "utf8");
@@ -123,6 +129,29 @@ test("TEST position mapping and fixed names are explicit", () => {
   assert.equal(normalizeRankingTestDisplayName("安全<3").ok, false);
 });
 
+test("T1〜T9固定プリセットはFighters masterへ解決され、指定順と守備を保持する", () => {
+  const expected = {
+    1: [["水谷瞬", 7], ["水野達稀", 6], ["レイエス", 0], ["野村佑希", 9], ["清宮幸太郎", 3], ["有薗直輝", 5], ["奈良間大己", 4], ["田宮裕涼", 2], ["五十幡亮汰", 8]],
+    2: [["水野達稀", 6], ["水谷瞬", 7], ["レイエス", 0], ["清宮幸太郎", 3], ["吉田賢吾", 9], ["大塚瑠晏", 4], ["カストロ", 8], ["田宮裕涼", 2], ["奈良間大己", 5]],
+    3: [["郡司裕也", 3], ["水野達稀", 6], ["レイエス", 0], ["有薗直輝", 5], ["野村佑希", 7], ["万波中正", 9], ["カストロ", 8], ["山縣秀", 4], ["進藤勇也", 2]],
+    4: [["五十幡亮汰", 8], ["水野達稀", 6], ["レイエス", 0], ["野村佑希", 9], ["吉田賢吾", 7], ["清宮幸太郎", 3], ["大塚瑠晏", 4], ["郡司裕也", 2], ["山縣秀", 5]],
+    5: [["万波中正", 9], ["水野達稀", 6], ["レイエス", 0], ["野村佑希", 8], ["清宮幸太郎", 3], ["吉田賢吾", 7], ["郡司裕也", 2], ["有薗直輝", 5], ["カストロ", 4]],
+    6: [["水野達稀", 6], ["万波中正", 9], ["レイエス", 0], ["カストロ", 8], ["清宮幸太郎", 3], ["野村佑希", 5], ["奈良間大己", 4], ["田宮裕涼", 2], ["水谷瞬", 7]],
+    7: [["今川優馬", 7], ["山縣秀", 6], ["レイエス", 0], ["野村佑希", 9], ["カストロ", 8], ["吉田賢吾", 3], ["有薗直輝", 5], ["奈良間大己", 4], ["進藤勇也", 2]],
+    8: [["郡司裕也", 5], ["水野達稀", 6], ["レイエス", 0], ["万波中正", 9], ["大塚瑠晏", 4], ["野村佑希", 7], ["清宮幸太郎", 3], ["細川凌平", 8], ["田宮裕涼", 2]],
+    9: [["水野達稀", 6], ["郡司裕也", 2], ["レイエス", 0], ["万波中正", 9], ["野村佑希", 5], ["清宮幸太郎", 3], ["吉田賢吾", 7], ["細川凌平", 8], ["山縣秀", 4]]
+  };
+  for (const [slot, rows] of Object.entries(expected)) {
+    const preset = resolveRankingTestPreset(Number(slot));
+    assert.equal(preset.ok, true, `TEST ${slot} should resolve`);
+    assert.equal(preset.lineup.length, 9);
+    assert.deepEqual(preset.definition.map((row) => [row.playerName, row.position]), rows);
+    assert.equal(new Set(preset.lineup.map((row) => row.playerId)).size, 9);
+  }
+  assert.equal(getRankingTestPresetDefinition(8)[0].positionLabel, "3B");
+  assert.equal(getRankingTestPresetSummaries()["9"].ok, true);
+});
+
 test("admin TEST rows support save/reload/clear and per-game toggle state", async () => {
   const db = createMinimalMigrationDb();
   const d1 = adapter(db);
@@ -184,6 +213,30 @@ test("global ON includes game-OFF TEST rows, OFF restores game-only behavior, an
   assert.equal(ranking.rows[0].totalScore, 99);
 });
 
+test("global/game toggle ONはmanual saveなしで固定presetを専用tableへmaterializeし、OFFはwriteしない", async () => {
+  const db = createMinimalMigrationDb();
+  const d1 = adapter(db);
+  db.prepare("INSERT INTO games VALUES ('ig1')").run();
+  await updateRankingTestGlobalSettings(d1, { globalEnabled: true, slotNames: {}, updatedBy: "admin", now: new Date("2026-09-10T00:00:00Z") });
+  let result = await scoreRankingTestPredictionsForGame(d1, "ig1", new Date("2026-09-10T00:00:00Z"));
+  assert.equal(result.materialized, 9);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM ranking_test_predictions").get().count, 9);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'users'").get().count, 0);
+  const before = db.prepare("SELECT COUNT(*) AS count FROM ranking_test_predictions").get().count;
+  await updateRankingTestGlobalSettings(d1, { globalEnabled: false, slotNames: {}, updatedBy: "admin", now: new Date("2026-09-10T00:00:01Z") });
+  result = await scoreRankingTestPredictionsForGame(d1, "ig1", new Date("2026-09-10T00:00:01Z"));
+  assert.equal(result.materialized, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM ranking_test_predictions").get().count, before);
+
+  const gameOnlyDb = createMinimalMigrationDb();
+  const gameOnly = adapter(gameOnlyDb);
+  gameOnlyDb.prepare("INSERT INTO games VALUES ('ig2')").run();
+  await updateRankingTestToggle(gameOnly, { internalGameId: "ig2", includeInPublicRanking: true, updatedBy: "admin", now: new Date("2026-09-10T00:00:00Z") });
+  result = await scoreRankingTestPredictionsForGame(gameOnly, "ig2", new Date("2026-09-10T00:00:00Z"));
+  assert.equal(result.materialized, 9);
+  assert.equal(gameOnlyDb.prepare("SELECT COUNT(*) AS count FROM ranking_test_predictions").get().count, 9);
+});
+
 test("TEST feature is admin-only and isolated from real-user endpoints/data", () => {
   assert.match(worker, /ranking-test-users/);
   assert.match(worker, /requireAdminUser\(request, env, cors\)/);
@@ -191,9 +244,12 @@ test("TEST feature is admin-only and isolated from real-user endpoints/data", ()
   assert.match(worker, /RANKING_TEST_TOGGLE_CONFIRMATION_REQUIRED/);
   assert.match(worker, /supplemental_score_failed/);
   assert.match(worker, /includeTestUsers: true/);
+  assert.match(worker, /RANKING_TEST_FIXED_PRESET_ONLY/);
+  assert.match(worker, /materializeRankingTestPresetsForGame/);
   assert.match(renderer, /TEST 1/);
-  assert.match(renderer, /0=DH/);
-  assert.match(renderer, /ranking-test-clear/);
+  assert.match(renderer, /0: "DH"/);
+  assert.match(renderer, /固定プリセット/);
+  assert.doesNotMatch(renderer, /data-v3-ranking-test-field|data-v3-ranking-test-save|data-v3-ranking-test-clear/);
   assert.match(renderer, /ranking-test-toggle/);
   assert.match(worker, /GLOBAL TEST USERS ON/);
   assert.match(worker, /RANKING_TEST_DISPLAY_NAME_DUPLICATE/);

@@ -1611,6 +1611,7 @@ async function loadRankingTestUsers(force = false) {
     if (String(result.internalGameId || "") !== id) throw new Error("RANKING_TEST_GAME_ID_MISMATCH");
     const remote = result.state || {};
     state.slots = Array.isArray(remote.slots) ? remote.slots : [];
+    state.presets = result.presets || {};
     state.setting = remote.setting || { includeInPublicRanking: false };
     state.globalSettings = result.globalSettings || remote.globalSettings || { globalEnabled: false, slotNames: {}, displayNames: {} };
     state.positionLabels = result.positionLabels || {};
@@ -1624,13 +1625,6 @@ async function loadRankingTestUsers(force = false) {
     state.loading = false;
     renderCurrentV3View();
   }
-}
-
-function updateRankingTestField(rowIndex, field, value) {
-  const state = v3State.rankingTestUsers;
-  if (!state.rows?.[rowIndex]) return;
-  state.rows[rowIndex][field] = value;
-  state.rows[rowIndex].playerName = "";
 }
 
 function selectRankingTestSlot(slot) {
@@ -1682,48 +1676,6 @@ async function toggleRankingTestGlobal() {
     state.message = enabled ? "TESTランキングのグローバル表示をONにしました。" : "TESTランキングのグローバル表示をOFFにしました。";
   } catch (error) {
     state.error = formatV3AdminError(error, "RANKING_TEST_GLOBAL_FAILED");
-  } finally {
-    state.loading = false;
-    renderCurrentV3View();
-  }
-}
-
-async function saveRankingTestPrediction() {
-  const state = v3State.rankingTestUsers;
-  if (!v3State.selectedGameId || state.loading) return;
-  state.loading = true;
-  state.error = "";
-  state.message = "";
-  renderCurrentV3View();
-  try {
-    const result = await v3Api.saveRankingTestPrediction(v3State.selectedGameId, { slot: state.selectedSlot, prediction: state.rows });
-    state.slots = result.state?.slots || [];
-    state.setting = result.state?.setting || state.setting;
-    state.rows = v3RankingTestRenderer.rowsForSlot(state);
-    state.message = `TEST ${state.selectedSlot}を保存しました。`;
-  } catch (error) {
-    state.error = formatV3AdminError(error, "RANKING_TEST_SAVE_FAILED");
-  } finally {
-    state.loading = false;
-    renderCurrentV3View();
-  }
-}
-
-async function clearRankingTestPrediction() {
-  const state = v3State.rankingTestUsers;
-  if (!v3State.selectedGameId || state.loading || !window.confirm(`TEST ${state.selectedSlot}の予想をクリアしますか？`)) return;
-  state.loading = true;
-  state.error = "";
-  state.message = "";
-  renderCurrentV3View();
-  try {
-    const result = await v3Api.clearRankingTestPrediction(v3State.selectedGameId, state.selectedSlot);
-    state.slots = result.state?.slots || [];
-    state.setting = result.state?.setting || state.setting;
-    state.rows = v3RankingTestRenderer.rowsForSlot(state);
-    state.message = `TEST ${state.selectedSlot}をクリアしました。`;
-  } catch (error) {
-    state.error = formatV3AdminError(error, "RANKING_TEST_CLEAR_FAILED");
   } finally {
     state.loading = false;
     renderCurrentV3View();
@@ -1935,10 +1887,7 @@ adminV3Modules.createAdminV3Coordinator({
     selectLineupCorrection: selectV3LineupCorrection,
     submitLineupCorrection: submitV3LineupCorrection,
     selectRankingTestSlot,
-    updateRankingTestField,
     updateRankingTestDisplayName,
-    saveRankingTestPrediction,
-    clearRankingTestPrediction,
     toggleRankingTestPublic,
     saveRankingTestDisplayName,
     toggleRankingTestGlobal,

@@ -74,16 +74,18 @@ import {
 import {
   getRankingTestState,
   getRankingTestGlobalSettings,
-  upsertRankingTestPrediction,
-  deleteRankingTestPrediction,
+  materializeRankingTestPresetPredictions,
   updateRankingTestToggle,
   updateRankingTestGlobalSettings,
   updateRankingTestDisplayName
 } from "./backend/repositories/ranking-test-repository.js";
 import {
+  getRankingTestPresetSummaries,
+  resolveRankingTestPreset
+} from "./backend/domain/ranking-test-presets.js";
+import {
   RANKING_TEST_SLOT_MAX,
   normalizeRankingTestSlot,
-  normalizeRankingTestPosition,
   RANKING_TEST_POSITION_LABELS,
   rankingTestUsername,
   defaultRankingTestDisplayName,
@@ -6728,7 +6730,7 @@ function getKnownAdminRouteMethods(path) {
   if (parseAdminV3LineupRevisionCancelRoute(path)) return ["POST"];
   if (parseAdminV3LineupCorrectionRoute(path)) return ["GET", "POST"];
   if (parseAdminV3RankingTestRoute(path)) {
-    return parseAdminV3RankingTestRoute(path).action === "toggle" ? ["PUT"] : ["GET", "PUT", "DELETE"];
+    return parseAdminV3RankingTestRoute(path).action === "toggle" ? ["PUT"] : ["GET"];
   }
   // Phase routes authenticate before checking their action-specific method.
   if (parseAdminV3Phase1Route(path)) return null;
@@ -6887,55 +6889,51 @@ async function handleAdminV3PerfectScorePreview(request, env, cors) {
   }, 200, cors);
 }
 
-function resolveRankingTestPrediction(input) {
-  const rows = Array.isArray(input?.prediction) ? input.prediction : input?.prediction?.lineup;
-  if (!Array.isArray(rows) || rows.length !== SCORING_LINEUP_SIZE) {
-    throw createV3Error("RANKING_TEST_PREDICTION_INVALID", "TEST予想は9人分入力してください。", { httpStatus: 400 });
-  }
-  const catalog = getManualLineupPlayerCatalog();
-  const byUniformNumber = new Map(catalog.map((player) => [String(player.uniformNumber), player]));
-  const lineup = rows.map((row, index) => {
-    const order = Number(row?.battingOrder ?? index + 1);
-    const uniformNumber = String(row?.uniformNumber ?? row?.number ?? "").normalize("NFKC").trim();
-    if (!/^\d{1,3}$/.test(uniformNumber)) {
-      throw createV3Error("RANKING_TEST_JERSEY_INVALID", `${index + 1}番の背番号が不正です。`, { httpStatus: 400 });
-    }
-    const player = byUniformNumber.get(uniformNumber);
-    if (!player?.playerId) {
-      throw createV3Error("RANKING_TEST_JERSEY_UNKNOWN", `背番号${uniformNumber}を安全に選手へ解決できません。`, { httpStatus: 400 });
-    }
-    const numericPosition = String(row?.position ?? "").normalize("NFKC").trim();
-    const position = normalizeRankingTestPosition(numericPosition);
-    if (!position) {
-      throw createV3Error("RANKING_TEST_POSITION_INVALID", `${index + 1}番の守備位置は0〜9で指定してください。`, { httpStatus: 400 });
-    }
-    return {
-      battingOrder: order,
-      playerId: player.playerId,
-      teamId: FIGHTERS_TEAM_ID,
-      teamCode: FIGHTERS_TEAM_CODE,
-      uniformNumber: player.uniformNumber,
-      playerName: player.playerName,
-      displayName: player.displayName || player.playerName,
-      position
-    };
-  });
-  const sanitized = sanitizeActualLineupForScoring(lineup);
-  if (!sanitized.ok) throw createV3Error("RANKING_TEST_PREDICTION_INVALID", sanitized.error, { httpStatus: 400 });
-  return sanitized.lineup;
+function rankingTestEnabled(state) {
+  return state?.globalSettings?.globalEnabled === true || state?.setting?.includeInPublicRanking === true;
 }
 
-async function scoreRankingTestPredictionsForGame(db, internalGameId, now = new Date()) {
+export async function materializeRankingTestPresetsForGame(db, internalGameId, state, now) {
+  if (!rankingTestEnabled(state)) return { enabled: false, materialized: 0, invalid: 0, warnings: [] };
+  const predictions = [];
+  const invalidSlots = [];
+  const warnings = [];
+  for (let slot = 1; slot <= RANKING_TEST_SLOT_MAX; slot += 1) {
+    const preset = resolveRankingTestPreset(slot);
+    if (!preset.ok) {
+      invalidSlots.push(slot);
+      warnings.push({ slot, code: preset.code, error: preset.error, unresolvedPlayers: preset.unresolvedPlayers });
+      continue;
+    }
+    predictions.push({
+      slot,
+      predictionJson: JSON.stringify({
+        schemaVersion: 2,
+        source: "fixed_preset",
+        presetVersion: preset.presetVersion,
+        slot,
+        lineup: preset.lineup
+      })
+    });
+  }
+  const result = await materializeRankingTestPresetPredictions(db, { internalGameId, predictions, invalidSlots, now });
+  return { enabled: true, ...result, warnings };
+}
+
+export async function scoreRankingTestPredictionsForGame(db, internalGameId, now = new Date()) {
   const state = await getRankingTestState(db, internalGameId);
   if (!state.schemaAvailable) throw createV3Error("RANKING_TEST_SCHEMA_UNAVAILABLE", "ランキングテスト用schemaが未適用です。", { httpStatus: 503 });
-  const rows = state.slots.filter((slot) => slot.prediction);
-  if (!rows.length) return { status: "no_predictions", scored: 0, invalid: 0 };
+  if (!rankingTestEnabled(state)) return { status: "disabled", scored: 0, invalid: 0, materialized: 0, warnings: [] };
+  const materialized = await materializeRankingTestPresetsForGame(db, internalGameId, state, now);
+  const current = await getRankingTestState(db, internalGameId);
+  const rows = current.slots.filter((slot) => slot.prediction && slot.status !== "invalid");
+  if (!rows.length) return { status: "no_valid_presets", scored: 0, invalid: materialized.invalid, ...materialized };
   const lineup = await getGameLineup(db, { gameId: internalGameId, internalGameId });
   const revisions = await getV3LineupRevisionRows(db, internalGameId, internalGameId);
   const finalRevision = revisions.find((row) => Number(row.is_final || 0) === 1) || null;
   const activeRevision = await getActiveScoringRevision(db, internalGameId);
   if (!lineup || lineup.scoring_status !== "scored" || !finalRevision || !activeRevision?.id) {
-    return { status: "waiting_for_real_scoring", scored: 0, invalid: 0 };
+    return { status: "waiting_for_real_scoring", scored: 0, invalid: materialized.invalid, ...materialized };
   }
   const actual = sanitizeActualLineupForScoring(parseStoredActualLineup(finalRevision.actual_lineup_json), { allowUnresolvedPlayer: true });
   if (!actual.ok || String(activeRevision.lineup_revision_id || "") !== String(finalRevision.revision_id || "")) {
@@ -6968,7 +6966,7 @@ async function scoreRankingTestPredictionsForGame(db, internalGameId, now = new 
     ).bind(score.total, SCORING_MAX_SCORE, finalRevision.revision_id, activeRevision.id, timestamp, internalGameId, slot.slot));
   }
   if (statements.length) await db.batch(statements);
-  return { status: "scored", scored, invalid, lineupRevisionId: finalRevision.revision_id, scoringRevisionId: activeRevision.id };
+  return { status: "scored", scored, invalid: invalid + materialized.invalid, ...materialized, lineupRevisionId: finalRevision.revision_id, scoringRevisionId: activeRevision.id };
 }
 
 function rankingTestGlobalSettingsResponse(settings) {
@@ -7075,24 +7073,9 @@ async function handleAdminV3RankingTestUsers(request, env, cors, route) {
     if (request.method === "GET") {
       const state = await getRankingTestState(env.AUTH_DB, id);
       if (!state.schemaAvailable) throw createV3Error("RANKING_TEST_SCHEMA_UNAVAILABLE", "ランキングテスト用schemaが未適用です。", { httpStatus: 503 });
-      return jsonResponse({ ok: true, internalGameId: id, positionLabels: RANKING_TEST_POSITION_LABELS, usernames: Array.from({ length: 9 }, (_, index) => rankingTestUsername(index + 1)), globalSettings: rankingTestGlobalSettingsResponse(state.globalSettings || {}), state }, 200, cors);
+      return jsonResponse({ ok: true, internalGameId: id, positionLabels: RANKING_TEST_POSITION_LABELS, usernames: Array.from({ length: 9 }, (_, index) => rankingTestUsername(index + 1)), presets: getRankingTestPresetSummaries(), globalSettings: rankingTestGlobalSettingsResponse(state.globalSettings || {}), state }, 200, cors);
     }
-    const input = await readJson(request, { maxBytes: 20000 });
-    const slot = normalizeRankingTestSlot(input?.slot);
-    if (!slot) throw createV3Error("RANKING_TEST_SLOT_INVALID", "slotは1〜9で指定してください。", { httpStatus: 400 });
-    if (request.method === "DELETE") {
-      await deleteRankingTestPrediction(env.AUTH_DB, { internalGameId: id, slot });
-      return jsonResponse({ ok: true, internalGameId: id, slot, state: await getRankingTestState(env.AUTH_DB, id) }, 200, cors);
-    }
-    if (request.method !== "PUT") return jsonResponse({ ok: false, code: "RANKING_TEST_METHOD_NOT_ALLOWED", error: "予想はGET/PUT/DELETEに対応しています。" }, 405, cors);
-    const lineup = resolveRankingTestPrediction(input);
-    const playerIds = new Set(lineup.map((row) => row.playerId));
-    if (playerIds.size !== SCORING_LINEUP_SIZE) throw createV3Error("RANKING_TEST_DUPLICATE_PLAYER", "同じ選手を複数の打順へ登録できません。", { httpStatus: 400 });
-    await upsertRankingTestPrediction(env.AUTH_DB, { internalGameId: id, slot, predictionJson: JSON.stringify({ schemaVersion: 1, lineup }), now: new Date() });
-    let supplemental = null;
-    try { supplemental = await scoreRankingTestPredictionsForGame(env.AUTH_DB, id, new Date()); }
-    catch (error) { console.warn(`[RANKING_TEST] supplemental_score_failed internalGameId=${id} code=${error?.code || "RANKING_TEST_SCORE_FAILED"}`); }
-    return jsonResponse({ ok: true, internalGameId: id, slot, supplemental, state: await getRankingTestState(env.AUTH_DB, id) }, 200, cors);
+    return jsonResponse({ ok: false, code: "RANKING_TEST_FIXED_PRESET_ONLY", error: "TEST予想は固定プリセットで自動生成されます。管理者による試合ごとの入力・保存・削除には対応していません。" }, 410, cors);
   } catch (error) {
     return v3AdminErrorResponse(cors, error, "ランキングテストユーザーを更新できませんでした。");
   }

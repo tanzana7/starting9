@@ -140,8 +140,6 @@
       getLineupCorrection: (internalGameId) => request(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/lineup-correction`),
       submitLineupCorrection: (internalGameId, body) => post(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/lineup-correction`, body),
       getRankingTestUsers: (internalGameId) => request(ADMIN_V3_ENDPOINTS.rankingTestUsers(internalGameId)),
-      saveRankingTestPrediction: (internalGameId, body) => request(ADMIN_V3_ENDPOINTS.rankingTestUsers(internalGameId), { method: "PUT", body: JSON.stringify(body) }),
-      clearRankingTestPrediction: (internalGameId, slot) => request(`${ADMIN_V3_ENDPOINTS.rankingTestUsers(internalGameId)}?slot=${encodeURIComponent(slot)}`, { method: "DELETE", body: JSON.stringify({ slot }) }),
       updateRankingTestToggle: (internalGameId, body) => request(ADMIN_V3_ENDPOINTS.rankingTestToggle(internalGameId), { method: "PUT", body: JSON.stringify(body) }),
       updateRankingTestGlobal: (body) => request(ADMIN_V3_ENDPOINTS.rankingTestGlobal, { method: "PUT", body: JSON.stringify(body) }),
       updateRankingTestName: (body) => request(ADMIN_V3_ENDPOINTS.rankingTestName, { method: "PUT", body: JSON.stringify(body) })

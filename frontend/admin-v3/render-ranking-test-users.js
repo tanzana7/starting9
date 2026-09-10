@@ -1,18 +1,22 @@
 (function registerAdminV3RankingTestRenderer(global) {
   "use strict";
 
-  const POSITION_TO_NUMBER = Object.freeze({ "指": "0", "投": "1", "捕": "2", "一": "3", "二": "4", "三": "5", "遊": "6", "左": "7", "中": "8", "右": "9" });
+  const POSITION_LABELS = Object.freeze({
+    0: "DH", 1: "P", 2: "C", 3: "1B", 4: "2B", 5: "3B", 6: "SS", 7: "LF", 8: "CF", 9: "RF"
+  });
 
   function rowsForSlot(state) {
-    const selected = (state.slots || []).find((slot) => Number(slot.slot) === Number(state.selectedSlot));
-    const lineup = selected?.prediction?.lineup;
+    const preset = state.presets?.[String(state.selectedSlot)];
+    const lineup = preset?.lineup;
     return Array.from({ length: 9 }, (_, index) => {
       const item = Array.isArray(lineup) ? lineup[index] : null;
+      const definition = preset?.definition?.[index];
       return {
         battingOrder: index + 1,
         uniformNumber: item?.uniformNumber || "",
-        position: item ? (POSITION_TO_NUMBER[item.position] || "") : "",
-        playerName: item?.playerName || ""
+        position: definition?.positionLabel || POSITION_LABELS[definition?.position] || "",
+        playerName: item?.playerName || definition?.playerName || "",
+        resolved: Boolean(item?.playerId)
       };
     });
   }
@@ -26,16 +30,22 @@
       const globalOn = current.globalSettings?.globalEnabled === true;
       const customName = current.displayNameDraft || "";
       const effectiveName = current.globalSettings?.displayNames?.[String(current.selectedSlot)] || `S9_TEST_${current.selectedSlot}`;
+      const preset = current.presets?.[String(current.selectedSlot)] || {};
       const slotButtons = slots.map((slot) => {
         const saved = current.slots?.find((item) => Number(item.slot) === slot);
-        const active = Number(current.selectedSlot) === slot;
+        const candidate = current.presets?.[String(slot)] || {};
         const score = saved?.score === null || saved?.score === undefined ? "未採点" : `${saved.score}/${saved.maxScore}`;
-        return `<button type="button" class="secondary ranking-test-slot${active ? " is-active" : ""}" data-v3-ranking-test-slot="${slot}" aria-pressed="${active ? "true" : "false"}">TEST ${slot}<small>${saved?.prediction ? escapeHtml(score) : "未登録"}</small></button>`;
+        const status = candidate.ok ? (saved?.status === "scored" ? score : "固定・未採点") : "要確認";
+        const active = Number(current.selectedSlot) === slot;
+        return `<button type="button" class="secondary ranking-test-slot${active ? " is-active" : ""}" data-v3-ranking-test-slot="${slot}" aria-pressed="${active ? "true" : "false"}">TEST ${slot}<small>${escapeHtml(status)}</small></button>`;
       }).join("");
-      const rowMarkup = rows.map((row, index) => `<tr><th scope="row">${index + 1}</th><td><input inputmode="numeric" pattern="[0-9]{1,3}" maxlength="3" value="${escapeHtml(row.uniformNumber || "")}" data-v3-ranking-test-field="uniformNumber" data-v3-ranking-test-row="${index}" aria-label="TEST ${current.selectedSlot} ${index + 1}番 背番号"></td><td><select data-v3-ranking-test-field="position" data-v3-ranking-test-row="${index}" aria-label="TEST ${current.selectedSlot} ${index + 1}番 守備位置"><option value="">選択</option>${Object.entries(current.positionLabels || { 0: "DH", 1: "投", 2: "捕", 3: "一", 4: "二", 5: "三", 6: "遊", 7: "左", 8: "中", 9: "右" }).map(([value, label]) => `<option value="${value}"${String(row.position) === String(value) ? " selected" : ""}>${value}=${escapeHtml(label)}</option>`).join("")}</select></td><td class="ranking-test-resolved">${row.playerName ? `#${escapeHtml(row.uniformNumber)} ${escapeHtml(row.playerName)}` : "未解決"}</td></tr>`).join("");
+      const rowMarkup = rows.map((row, index) => `<tr><th scope="row">${index + 1}</th><td>${escapeHtml(row.uniformNumber || "未解決")}</td><td>${escapeHtml(row.position || "未解決")}</td><td class="ranking-test-resolved">${row.resolved ? escapeHtml(row.playerName) : `未解決: ${escapeHtml(row.playerName || "選手マスター未登録")}`}</td></tr>`).join("");
       const gameLabel = game ? `${game.gameDate || ""} / ${game.homeTeam || "-"} vs ${game.awayTeam || "-"}` : current.internalGameId;
       const status = current.error ? `<p class="ranking-test-message error">${escapeHtml(current.error)}</p>` : current.message ? `<p class="ranking-test-message success">${escapeHtml(current.message)}</p>` : "";
-      return `<section class="v3-panel ranking-test-users-panel"><div class="view-heading"><div><h2>ランキング テストユーザー</h2><p>対象試合ごとにTEST 1〜9を保存し、必要な試合だけ公開期間ランキングへ表示します。</p></div><code>internalGameId: ${escapeHtml(current.internalGameId || "-")}</code></div><div class="ranking-test-global"><strong>TESTランキング グローバル設定: ${globalOn ? "ON" : "OFF"}</strong><span>ONにすると、TEST予想を保存している試合では試合単位設定に関係なく本番ランキングへ表示します。</span><button type="button" class="${globalOn ? "secondary" : "primary-button"}" data-v3-ranking-test-global ${current.loading ? "disabled" : ""}>${globalOn ? "グローバル表示をOFF" : "グローバル表示をON"}</button></div><div class="ranking-test-warning"><strong>正式データから隔離</strong><span>TESTはusers・通常予想・個人統計・実績・結果履歴・Daily Best Nineには入りません。採点失敗も正式フローを停止しません。</span></div><div class="ranking-test-slots" role="tablist" aria-label="ランキングテストユーザー">${slotButtons}</div><div class="ranking-test-target"><strong>対象試合</strong><span>${escapeHtml(gameLabel)}</span><span>TEST ${current.selectedSlot} / ${escapeHtml(effectiveName)}</span></div><div class="ranking-test-name"><label for="rankingTestDisplayName">表示名</label><input id="rankingTestDisplayName" value="${escapeHtml(customName)}" maxlength="16" autocomplete="off" data-v3-ranking-test-name aria-describedby="rankingTestDisplayNameHint"><span id="rankingTestDisplayNameHint">未設定時は ${escapeHtml(`S9_TEST_${current.selectedSlot}`)} に戻ります。現在の公開名: ${escapeHtml(effectiveName)}</span><button type="button" class="secondary" data-v3-ranking-test-name-save ${current.loading ? "disabled" : ""}>表示名を保存</button></div><p class="muted">守備位置: 0=DH / 1=投 / 2=捕 / 3=一 / 4=二 / 5=三 / 6=遊 / 7=左 / 8=中 / 9=右</p><div class="ranking-test-table-wrap"><table class="ranking-test-table"><thead><tr><th>打順</th><th>背番号</th><th>守備</th><th>解決結果</th></tr></thead><tbody>${rowMarkup}</tbody></table></div><div class="ranking-test-actions"><button type="button" class="primary-button" data-v3-ranking-test-save ${current.loading ? "disabled" : ""}>TEST ${current.selectedSlot}を保存</button><button type="button" class="secondary" data-v3-ranking-test-clear ${current.loading || !current.slots?.find((item) => Number(item.slot) === Number(current.selectedSlot)) ? "disabled" : ""}>このTEST予想をクリア</button></div><div class="ranking-test-toggle"><strong>公開ランキング表示: ${settingOn ? "ON" : "OFF"}</strong><span>ONにすると、この試合の保存済み・現行revision採点済みTEST行だけがweekly/monthly/yearlyへ表示されます。</span><button type="button" class="${settingOn ? "secondary" : "primary-button"}" data-v3-ranking-test-toggle="${settingOn ? "off" : "on"}" ${current.loading ? "disabled" : ""}>${settingOn ? "公開ランキングから外す" : "TESTユーザーを公開ランキングへ表示"}</button></div>${status}</section>`;
+      const presetStatus = preset.ok
+        ? "Fighters選手マスターから解決済み。active roster外でも固定予想として採点します。"
+        : `要確認: ${preset.error || "固定プリセットを解決できません。"}`;
+      return `<section class="v3-panel ranking-test-users-panel"><div class="view-heading"><div><h2>ランキング テストユーザー</h2><p>TEST 1〜9は固定プリセットを使い、正式採点時に自動生成・採点されます。試合ごとの予想入力は不要です。</p></div><code>internalGameId: ${escapeHtml(current.internalGameId || "-")}</code></div><div class="ranking-test-global"><strong>TESTランキング グローバル設定: ${globalOn ? "ON" : "OFF"}</strong><span>ONにすると、固定プリセットを使用する全対象試合を本番ランキングへ表示します。TEST予想やユーザーは作成しません。</span><button type="button" class="${globalOn ? "secondary" : "primary-button"}" data-v3-ranking-test-global ${current.loading ? "disabled" : ""}>${globalOn ? "グローバル表示をOFF" : "グローバル表示をON"}</button></div><div class="ranking-test-warning"><strong>正式データから隔離</strong><span>TESTはusers・通常予想・個人統計・実績・結果履歴・Daily Best Nineには入りません。TESTの解決失敗も正式フローを停止しません。</span></div><div class="ranking-test-slots" role="tablist" aria-label="ランキングテストユーザー">${slotButtons}</div><div class="ranking-test-target"><strong>対象試合</strong><span>${escapeHtml(gameLabel)}</span><span>TEST ${current.selectedSlot} / ${escapeHtml(effectiveName)}</span></div><div class="ranking-test-name"><label for="rankingTestDisplayName">表示名</label><input id="rankingTestDisplayName" value="${escapeHtml(customName)}" maxlength="16" autocomplete="off" data-v3-ranking-test-name aria-describedby="rankingTestDisplayNameHint"><span id="rankingTestDisplayNameHint">未設定時は ${escapeHtml(`S9_TEST_${current.selectedSlot}`)} に戻ります。現在の公開名: ${escapeHtml(effectiveName)}</span><button type="button" class="secondary" data-v3-ranking-test-name-save ${current.loading ? "disabled" : ""}>表示名を保存</button></div><div class="ranking-test-fixed"><strong>TEST ${current.selectedSlot} 固定予想</strong><span>${escapeHtml(presetStatus)}</span><span>固定値はコード管理され、表示名変更では内容・score・lineageを変更しません。</span></div><div class="ranking-test-table-wrap"><table class="ranking-test-table"><thead><tr><th>打順</th><th>背番号</th><th>守備</th><th>選手</th></tr></thead><tbody>${rowMarkup}</tbody></table></div><div class="ranking-test-toggle"><strong>この試合の公開ランキング表示: ${settingOn ? "ON" : "OFF"}</strong><span>globalがOFFでも、この試合だけONにすると、固定プリセットの現行revision採点済みTEST行をweekly/monthly/yearlyへ表示します。</span><button type="button" class="${settingOn ? "secondary" : "primary-button"}" data-v3-ranking-test-toggle="${settingOn ? "off" : "on"}" ${current.loading ? "disabled" : ""}>${settingOn ? "公開ランキングから外す" : "この試合のTESTを表示"}</button></div>${status}</section>`;
     }
     return Object.freeze({ render, rowsForSlot });
   }

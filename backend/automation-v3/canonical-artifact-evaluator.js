@@ -29,6 +29,19 @@ function revisionIdentity(row) {
   return gameId && Number.isInteger(version) ? `${gameId}:${version}` : null;
 }
 
+function revisionIdentities(row) {
+  const identities = new Set();
+  const primaryIdentity = revisionIdentity(row);
+  if (primaryIdentity) identities.add(primaryIdentity);
+  const version = Number(row?.version);
+  if (!Number.isInteger(version)) return identities;
+  for (const key of ["game_id", "gameId", "internal_game_id", "internalGameId"]) {
+    const value = text(row?.[key]);
+    if (value) identities.add(`${value}:${version}`);
+  }
+  return identities;
+}
+
 function validationResult(row, lineupCheck) {
   const raw = row?.validation_json ?? row?.validationJson;
   if (raw === null || raw === undefined || raw === "") return lineupCheck.ok;
@@ -52,7 +65,7 @@ function evaluateLineup({ canonicalLineup = null, lineupRevisions = [] } = {}) {
   const marker = text(canonicalLineup?.final_lineup_revision_id || canonicalLineup?.finalLineupRevisionId);
   if (!marker) return { ...emptyLineup(), canonicalRecordExists: Boolean(canonicalLineup) };
   const revision = (Array.isArray(lineupRevisions) ? lineupRevisions : [])
-    .find((row) => revisionIdentity(row) === marker);
+    .find((row) => revisionIdentities(row).has(marker));
   if (!revision) return {
     ...emptyLineup("CANONICAL_FINAL_REVISION_NOT_FOUND"),
     canonicalFinalRevisionId: marker,

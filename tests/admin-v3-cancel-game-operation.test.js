@@ -27,7 +27,8 @@ test("公開済み試合はread-onlyで、後続V3 jobは対象外試合へ投�
   assert.match(worker, /V3_PUBLISHED_READ_ONLY/);
   assert.match(worker, /V3_GAME_UNAVAILABLE/);
   assert.match(worker, /cancelled.*service_unavailable/);
-  assert.match(renderer, /中止・対象外 \/ 停止/);
+  assert.match(renderer, /V4正式運用ステータス/);
+  assert.doesNotMatch(renderer, /data-v3-job-run|data-v3-state-reconcile/);
 });
 
 test("正式処理済み試合の中止は強い確認を要求する", () => {
@@ -59,7 +60,7 @@ test("公開UIは中止・サービス対象外を選択対象から除外しつ
 });
 
 test("admin-v3のcache busterは中止操作版へ更新されている", () => {
-  assert.match(page, /admin-v3-v35-diagnostics-readability-1/);
+  assert.match(page, /v4-canonical-status-1/);
   assert.doesNotMatch(page, /admin-v3-add-game-preview-1/);
 });
 

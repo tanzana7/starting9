@@ -45,16 +45,14 @@ test("診断レスポンスはstate・最新job・実行可否・関連データ
   assert.match(workerSource, /schedule_register手動runnerはありません/);
 });
 
-test("admin-v3は各工程の診断・再実行ボタンを持ち、公開UIには含めない", () => {
-  for (const jobType of ["probable_starter_fetch", "roster_fetch", "prediction_close", "npb_identity_resolve", "lineup_fetch", "lineup_finalize", "score", "ranking_rebuild", "publish"]) {
-    assert.match(progressSource, new RegExp(jobType));
-  }
-  assert.match(progressSource, /data-v3-job-diagnose/);
-  assert.match(progressSource, /data-v3-job-run/);
-  assert.match(coordinatorSource, /actions\.diagnoseJob/);
-  assert.match(coordinatorSource, /actions\.runJob/);
+test("admin-v3はV4状態を表示し、手動diagnose/run UIを含めない", () => {
+  assert.match(progressSource, /V4正式運用ステータス/);
+  assert.match(progressSource, /canonical artifact evaluator/);
+  assert.doesNotMatch(progressSource, /data-v3-job-diagnose|data-v3-job-run|data-v3-state-reconcile/);
   assert.match(apiClientSource, /diagnoseJob/);
   assert.match(apiClientSource, /runJob/);
+  assert.match(coordinatorSource, /actions\.diagnoseJob/);
+  assert.match(coordinatorSource, /actions\.runJob/);
   assert.match(clientSource, /window\.confirm/);
   assert.match(clientSource, /window\.prompt/);
 });

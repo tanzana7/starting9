@@ -50,20 +50,18 @@ test("旧job操作APIは安全条件を維持し、admin-v3の通常画面は読
   assert.doesNotMatch(client, /data-v3-job-cancel/);
 });
 
-test("管理画面は旧直接編集操作を表示せず、正式V3 jobの診断・再実行導線を表示する", () => {
+test("管理画面は旧直接編集操作とV3.5/manual recovery導線を表示せず、V4状態を表示する", () => {
   for (const selector of ["data-v3-save-lineup", "data-v3-finalize-lineup", "data-v3-scoring-preview", "data-v3-scoring-confirm", "data-v3-ranking-rebuild", "data-v3-publish", "data-v3-republish", "data-v3-schedule-save", "data-v3-eligibility-save"]) {
     assert.doesNotMatch(client, new RegExp(selector));
   }
-  assert.match(gameProgress, /V3が取得・確定したスタメンrevisionを確認します/);
-  assert.match(gameProgress, /V3が進めた採点・ランキング・公開の状態を確認します/);
-  assert.match(gameProgress, /data-v3-job-diagnose/);
-  assert.match(gameProgress, /data-v3-job-run/);
-  assert.match(gameProgress, /正式V3 jobを投入/);
+  assert.match(gameProgress, /renderV4CanonicalStatus/);
+  assert.match(gameProgress, /V4正式運用ステータス/);
+  assert.doesNotMatch(gameProgress, /V3\.5|data-v3-job-diagnose|data-v3-job-run|正式V3 jobを投入|data-v3-state-reconcile/);
   assert.match(page, /admin-v3\.js\?v=independent-roster-lineup-safety-1/);
   assert.match(page, /admin-v3\.css\?v=independent-roster-lineup-safety-1/);
 });
 
-test("V3 completed jobは成果物確認なしにstateを自動前進させず、admin状態再同期を使う", () => {
+test("V3 completed jobは成果物確認なしにstateを自動前進させず、通常画面からstate syncを除外する", () => {
   assert.match(worker, /handleAdminV3StateReconcile/);
   assert.match(worker, /V3_STATE_RECONCILE_ARTIFACT_MISSING/);
   assert.match(worker, /V3_PUBLISHED_READ_ONLY/);
@@ -72,8 +70,7 @@ test("V3 completed jobは成果物確認なしにstateを自動前進させず�
   assert.match(v3Domain, /SCORING_COMPLETED_WITHOUT_SCORE/);
   assert.match(v3Domain, /PUBLISH_COMPLETED_WITHOUT_PUBLICATION/);
   assert.match(worker, /assertV3GameNotPublished/);
-  assert.match(gameProgress, /成果物を確認して状態再同期/);
-  assert.match(client, /reconcileV3State/);
+  assert.doesNotMatch(gameProgress, /成果物を確認して状態再同期|data-v3-state-reconcile/);
 });
 
 test("管理画面のjob詳細は失敗内容を確認でき、ユーザー情報を描画しない", () => {

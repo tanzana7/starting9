@@ -111,10 +111,8 @@ import {
   evaluateCanonicalArtifactsFromDb,
   toCanonicalArtifactStageArtifacts
 } from "./backend/automation-v3/canonical-artifact-evaluator.js";
-import { adaptV35Input } from "./backend/automation-v3/stage-health-adapter.js";
-import { evaluateV35Automation } from "./backend/automation-v3/stage-health-evaluator.js";
-import { planShadowRecovery } from "./backend/automation-v3/shadow-recovery-planner.js";
 import { deriveAdminV3GameProgressStatus } from "./backend/automation-v3/admin-progress-status.js";
+import { buildAdminV4Status } from "./backend/automation-v3/admin-v4-status.js";
 import {
   MANUAL_ROSTER_TEAM,
   STATIC_FIGHTERS_BATTER_CATALOG,
@@ -4931,154 +4929,6 @@ async function handleAdminMe(request, env, cors) {
   }, 200, cors);
 }
 
-function buildV35AdminDerivedDiagnostics({ env, game, resolvedState, jobRows, probableStarter, rosterDiagnostics, lineupDataHealth, workflowArtifactHealth, phaseStatuses, progressStatus = null, canonicalArtifacts = null, overviewNow }) {
-  const enabled = String(env?.V35_DERIVED_DIAGNOSTICS_ENABLED ?? "true").toLowerCase() !== "false";
-  if (!enabled) return { enabled: false, mode: "read_only", reason: "feature_flag_disabled" };
-  try {
-    const automationMode = getV3OperationalMode(env);
-    const persistedWorkflowState = resolvedState?.state || "scheduled";
-    const rankingExcluded = game?.rankingEligible === false
-      || game?.ranking_eligible === 0
-      || game?.rankingExcluded === true
-      || game?.ranking_excluded === true;
-    const currentScoringRevisionId = progressStatus?.currentScoringRevisionId || workflowArtifactHealth?.scoring?.scoringRevisionId || null;
-    const reflectedScoringRevisionId = progressStatus?.reflectedScoringRevisionId || null;
-    const revisionMatches = progressStatus?.revisionMatches === true;
-    const rankingArtifact = {
-      ...(workflowArtifactHealth?.ranking || {}),
-      ...(currentScoringRevisionId ? { scoringRevisionId: currentScoringRevisionId } : {}),
-      ...(reflectedScoringRevisionId ? { reflectedScoringRevisionId } : {}),
-      ...(progressStatus ? { revisionMatches, revisionMismatch: !revisionMatches } : {})
-    };
-    const publicationArtifact = {
-      ...(workflowArtifactHealth?.publication || {}),
-      ...(progressStatus ? { revisionMatches, revisionMismatch: !revisionMatches } : {})
-    };
-    const artifacts = {
-      roster_fetch: rosterDiagnostics,
-      prediction_close: ["prediction_closed", "lineup_ready", "scored", "ranked", "published", "excluded"].includes(persistedWorkflowState)
-        ? { available: true, valid: true, verificationStatus: "state_verified", reason: null }
-        : null,
-      npb_game_identify: game?.npbGameCode || game?.npb_game_code
-        ? { available: true, valid: true, verificationStatus: "identity_verified", reason: null }
-        : null,
-      probable_starter: probableStarter,
-      lineup_fetch: lineupDataHealth,
-      lineup_finalize: workflowArtifactHealth?.lineup || lineupDataHealth,
-      scoring: workflowArtifactHealth?.scoring,
-      ranking_reflect: rankingArtifact,
-      publish: publicationArtifact
-    };
-    Object.assign(artifacts, toCanonicalArtifactStageArtifacts(canonicalArtifacts));
-    const diagnostics = {
-      ...phaseStatuses,
-      predictionClose: phaseStatuses?.prediction_close,
-      lineupFetch: { ...(phaseStatuses?.lineup_fetch || {}), artifactStatus: lineupDataHealth },
-      lineupFinalize: phaseStatuses?.lineup_finalize,
-      scoring: phaseStatuses?.score,
-      ranking: phaseStatuses?.ranking,
-      publish: phaseStatuses?.publish,
-      roster: rosterDiagnostics,
-      artifactHealth: workflowArtifactHealth,
-      workflowArtifactHealth
-    };
-    const adapted = adaptV35Input({
-      game: {
-        ...game,
-        workflowState: persistedWorkflowState,
-        rankingExcluded,
-        excluded: persistedWorkflowState === "excluded",
-        scheduleRegistered: Boolean(game?.gameDate || game?.game_date)
-      },
-      jobs: jobRows,
-      artifacts,
-      diagnostics,
-      now: overviewNow,
-      externalFlags: {
-        NPB_FETCH_DISABLED: String(env?.NPB_FETCH_DISABLED || "").toLowerCase() === "true"
-      },
-      automationMode,
-      canonicalArtifacts
-    });
-    const evaluated = evaluateV35Automation(adapted.evaluatorInput);
-    return {
-      enabled: true,
-      mode: "read_only",
-      automationMode,
-      evaluatorVersion: "v3.5-phase2-pre",
-      effectiveState: evaluated.effectiveState,
-      persistedState: evaluated.persistedState,
-      stateMismatch: evaluated.stateMismatch,
-      canonicalArtifacts,
-      stages: evaluated.stages,
-      warnings: adapted.warnings,
-      informationalNotices: adapted.informationalNotices,
-      sourceSummary: adapted.sourceSummary
-    };
-  } catch (error) {
-    console.warn(`[ADMIN_V3_OVERVIEW] internalGameId=${game?.internalGameId || "unknown"} stage=v35_derived_diagnostics failureCode=${error?.code || "V35_DERIVED_DIAGNOSTICS_FAILED"}`);
-    return {
-      enabled: true,
-      mode: "read_only",
-      evaluatorVersion: "v3.5-phase2-pre",
-      status: "unavailable",
-      errorCode: String(error?.code || "V35_DERIVED_DIAGNOSTICS_FAILED"),
-      warning: "V3.5派生診断を取得できませんでした。既存V3診断を確認してください。"
-    };
-  }
-}
-
-function buildV35AdminShadowRecoveryPlan({ env, game, resolvedState, derivedDiagnostics, overviewNow }) {
-  const enabled = String(env?.V35_SHADOW_RECOVERY_PLAN_ENABLED ?? "true").toLowerCase() !== "false";
-  if (!enabled) {
-    return {
-      enabled: false,
-      mode: "shadow_read_only",
-      canExecute: false,
-      error: "feature_flag_disabled"
-    };
-  }
-  if (!derivedDiagnostics || derivedDiagnostics.enabled === false || derivedDiagnostics.status === "unavailable") {
-    return {
-      enabled: false,
-      mode: "shadow_read_only",
-      canExecute: false,
-      error: derivedDiagnostics?.errorCode || "V35_DERIVED_DIAGNOSTICS_UNAVAILABLE"
-    };
-  }
-  try {
-    const persistedState = resolvedState?.state || "scheduled";
-    const rankingExcluded = game?.rankingEligible === false
-      || game?.ranking_eligible === 0
-      || game?.rankingExcluded === true
-      || game?.ranking_excluded === true;
-    const plan = planShadowRecovery({
-      game: {
-        ...game,
-        gameStatus: game?.gameStatus || game?.game_status || "scheduled",
-        persistedWorkflowState: persistedState,
-        rankingExcluded
-      },
-      derivedDiagnostics,
-      now: overviewNow,
-      flags: {
-        externalFetchDisabled: String(env?.NPB_FETCH_DISABLED || "").toLowerCase() === "true",
-        manualAttention: persistedState === "manual_action_required" || game?.manualAttention === true,
-        v4SemiAuto: derivedDiagnostics?.automationMode?.isV4SemiAuto === true
-      }
-    });
-    return { enabled: true, ...plan, error: null };
-  } catch (error) {
-    console.warn(`[ADMIN_V3_OVERVIEW] internalGameId=${game?.internalGameId || "unknown"} stage=shadow_recovery_plan failureCode=${error?.code || "V35_SHADOW_RECOVERY_PLAN_FAILED"}`);
-    return {
-      enabled: false,
-      mode: "shadow_read_only",
-      canExecute: false,
-      error: String(error?.code || "V35_SHADOW_RECOVERY_PLAN_FAILED")
-    };
-  }
-}
-
 async function handleAdminV3Overview(request, env, cors) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) return access.response;
@@ -5573,26 +5423,14 @@ async function handleAdminV3Overview(request, env, cors) {
       canonicalArtifacts,
       now: overviewNow
     });
-    const v35DerivedDiagnostics = buildV35AdminDerivedDiagnostics({
-      env,
+    const v4Status = buildAdminV4Status({
       game,
-      resolvedState,
-      jobRows,
-      probableStarter: serializedProbableStarter,
-      rosterDiagnostics,
-      lineupDataHealth,
-      workflowArtifactHealth,
+      persistedState: resolvedState.state,
       phaseStatuses,
-      progressStatus: displayStatus,
       canonicalArtifacts,
-      overviewNow
-    });
-    const v35ShadowRecoveryPlan = buildV35AdminShadowRecoveryPlan({
-      env,
-      game,
-      resolvedState,
-      derivedDiagnostics: v35DerivedDiagnostics,
-      overviewNow
+      displayStatus,
+      automationMode: getV3OperationalMode(env),
+      schedule
     });
     rows.push({
       ...game,
@@ -5610,7 +5448,7 @@ async function handleAdminV3Overview(request, env, cors) {
       rosterDiagnostics,
       phaseStatuses,
       displayStatus,
-      v35DerivedDiagnostics,
+      v4Status,
       probableStarterNextCheckAt,
       probableStarterJob: schedule.probableStarterJob,
       workflowDiagnostics,
@@ -5619,8 +5457,7 @@ async function handleAdminV3Overview(request, env, cors) {
         ...(jobs.errorCode ? [{ field: "jobs", errorCode: jobs.errorCode }] : []),
         ...(probableStarterError ? [{ field: "probableStarter", errorCode: probableStarterError }] : [])
       ],
-      schedule: { ...schedule, ...nextAction },
-      v35ShadowRecoveryPlan
+      schedule: { ...schedule, ...nextAction }
     });
   }
   return jsonResponse({

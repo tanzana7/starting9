@@ -150,24 +150,6 @@
       return `<details class="v3-job-diagnostic ${attention ? "attention" : ""}" data-v3-job-diagnostic ${attention ? "open" : ""}><summary>詳細診断${attention ? " / ATTENTION" : ""}</summary><section><h4>job lifecycle</h4>${jobMarkup}</section><section><h4>recovery / retry</h4>${recoveryMarkup}<h5>同種job履歴</h5>${timeline}</section><section><h4>workflow state transition</h4>${transitions}</section><section><h4>artifact health</h4>${artifactMarkup}</section><section><h4>NPB response / blocking reason</h4>${npbMarkup}<p class="v3-job-diagnostic-note">${escapeHtml(safeAction)}</p></section><section><h4>cancelled / excluded</h4>${cancellationMarkup}</section></details>`;
     }
 
-    function renderManualControls(game) {
-      if (!game?.internalGameId) return "";
-      const gameUnavailable = ["cancelled", "canceled", "postponed", "service_unavailable"].includes(String(game?.gameStatus || "").toLowerCase());
-      const rows = MANUAL_STAGE_TYPES.map(([jobType, label, canRun]) => {
-        const operation = typeof manualOperation === "function" ? manualOperation(game.internalGameId, jobType) || {} : {};
-        const loading = operation.status === "loading";
-        const publishedReadOnly = String(game?.state?.state || "") === "published" || game?.workflowArtifactHealth?.publication?.published === true;
-        const result = operation.message ? `<small class="manual-job-result ${operation.error ? "error" : "success"}">${escapeHtml(operation.message)}</small>` : "";
-        const runButton = canRun && !publishedReadOnly && !gameUnavailable
-          ? `<button type="button" data-v3-job-run="${escapeHtml(game.internalGameId)}" data-v3-job-type="${escapeHtml(jobType)}" ${loading ? "disabled" : ""}>再実行</button>`
-          : `<span class="manual-job-unavailable">${publishedReadOnly ? "公開済み / 読み取り専用" : gameUnavailable ? "中止・対象外 / 停止" : "正式runnerなし"}</span>`;
-        return `<div class="manual-job-row"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(operation.diagnosis?.currentWorkflowState || game.state?.state || "scheduled")}</span><div class="manual-job-actions"><button type="button" data-v3-job-diagnose="${escapeHtml(game.internalGameId)}" data-v3-job-type="${escapeHtml(jobType)}" ${loading ? "disabled" : ""}>診断</button>${runButton}</div>${result}${renderJobDiagnosis(operation.diagnosis)}</div>`;
-      }).join("");
-      const reconcileOperation = typeof manualOperation === "function" ? manualOperation(game.internalGameId, "state_reconcile") || {} : {};
-      const reconcileResult = reconcileOperation.message ? `<small class="manual-job-result ${reconcileOperation.error ? "error" : "success"}">${escapeHtml(reconcileOperation.message)}</small>` : "";
-      const reconcileLoading = reconcileOperation.status === "loading";
-      return `<section class="v3-panel manual-job-controls" aria-labelledby="manualJobControlsHeading"><div class="view-heading"><div><h3 id="manualJobControlsHeading">V3工程の診断・手動再実行</h3><p>再実行は正式V3 jobを投入し、Cronのexecutorへ渡します。状態再同期は成果物確認済みの場合だけ実行できます。</p></div></div><div class="manual-job-list">${rows}</div><div class="manual-job-row manual-state-reconcile"><strong>workflow state</strong><span>${escapeHtml(game.state?.state || "scheduled")}</span><div class="manual-job-actions"><button type="button" data-v3-state-reconcile="${escapeHtml(game.internalGameId)}" ${reconcileLoading || gameUnavailable ? "disabled" : ""}>成果物を確認して状態再同期</button></div>${reconcileResult}</div></section>`;
-    }
     function renderGameSummary(game, buttonLabel = "試合進行を見る") {
       const identity = identityStatusLabel(game.npbIdentityStatus, game.npbIdentityState);
       const probable = game.probableStarter;
@@ -338,114 +320,32 @@
       return `${history}<div class="v3-operation-result" data-v3-workflow-diagnostics><strong>現在の状態診断</strong><ul>${uniqueMessages.map((message) => `<li>${escapeHtml(message)}</li>`).join("")}</ul></div>`;
     }
 
-    function renderV35DerivedDiagnostics(game) {
-      const diagnostics = game?.v35DerivedDiagnostics;
-      const title = "V3.5診断（試験中・read-only）";
-      const readOnlyNote = "この診断はjob作成・state変更・DB書き込みを行いません。現行V3の状態を読み取り、V3.5視点で派生判定しています。";
-      if (!diagnostics || diagnostics.enabled === false || diagnostics.status === "unavailable") {
-        const reason = diagnostics?.reason || diagnostics?.errorCode || "V35_DERIVED_DIAGNOSTICS_UNAVAILABLE";
-        const message = diagnostics?.status === "unavailable"
-          ? (diagnostics.warning || "V3.5診断を取得できませんでした。現行V3の動作には影響ありません。")
-          : diagnostics?.enabled === false
-            ? `V3.5診断は無効です。理由: ${reason}`
-            : "V3.5診断を取得できませんでした。現行V3の動作には影響ありません。";
-        return `<section class="v35-derived-diagnostics v35-derived-diagnostics-unavailable" data-v35-derived-diagnostics><div class="v35-derived-header"><div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(readOnlyNote)}</p></div><span class="v35-derived-status">要確認</span></div><p class="v35-derived-message">${escapeHtml(message)}</p><code>${escapeHtml(reason)}</code></section>`;
-      }
-      const stages = diagnostics.stages && typeof diagnostics.stages === "object" ? diagnostics.stages : {};
-      const v4SemiAuto = diagnostics.automationMode?.isV4SemiAuto === true;
-      const stageLabels = {
-        schedule_registration: "日程登録",
-        npb_game_identify: "NPB識別",
+    function renderV4CanonicalStatus(game) {
+      const status = game?.v4Status || {};
+      const current = status.currentStatus || game?.displayStatus || {};
+      const source = status.source || {};
+      const stages = status.stages && typeof status.stages === "object" ? status.stages : {};
+      const labels = {
+        schedule: "日程",
         probable_starter: "予告先発",
-        roster_fetch: "ロースター取得",
         prediction_close: "予想締切",
-        lineup_fetch: "スタメン取得",
-        lineup_finalize: "正式スタメン確定",
-        scoring: "採点",
-        ranking_reflect: "ランキング反映",
-        publish: "結果公開"
+        roster: "ロースター",
+        lineup_finalize: "正式スタメン",
+        score: "採点",
+        ranking: "ランキング",
+        publish: "公開"
       };
-      const v4StageCopy = {
-        roster_fetch: { status: "手動運用", reason: "V4では自動取得を使用しません", action: "no_action" },
-        lineup_fetch: { status: "手動運用", reason: "V4では手動ラインナップを使用します", action: "no_action" },
-        lineup_finalize: { status: "完了", reason: "手動canonical lineup revision確認済み", action: "no_action" }
-      };
-      const healthLabels = {
-        COMPLETED_ARTIFACT_READY: "完了",
-        COMPLETED_ARTIFACT_MISSING: "要対応",
-        MISSING_JOB: "要対応",
-        RETRY_WAIT_DUE: "要対応",
-        TERMINAL_FAILED: "要対応",
-        BLOCKED_BY_PREREQUISITE: "待機中",
-        MANUAL_MODE: "手動運用",
-        NOT_DUE: "未到来",
-        DUE: "処理待ち"
-      };
-      const stageRows = Object.entries(stageLabels).map(([stage, label]) => {
-        const item = stages[stage] || {};
-        const manualCopy = v4SemiAuto ? v4StageCopy[stage] : null;
-        const manualFinalReady = stage === "lineup_finalize" && item.manualArtifactReady === true;
-        const attentionClass = item.attentionLevel === "ATTENTION" && !manualFinalReady ? " v35-stage-attention" : "";
-        const status = manualCopy?.status || healthLabels[item.healthStatus] || item.healthStatus || "UNKNOWN";
-        const reason = manualCopy?.reason || item.blockingReason || item.recoveryReason || (item.healthStatus === "NOT_DUE" ? "まだdue前" : "-");
-        const action = manualCopy?.action || item.nextSafeAction || "-";
-        return `<div class="v35-stage-row${attentionClass}"><strong>${escapeHtml(label)}</strong><span>状態: ${escapeHtml(manualFinalReady ? "完了" : status)}</span><span>理由: ${escapeHtml(manualFinalReady ? "manual lineup revision確認済み" : reason)}</span><span>対応: ${escapeHtml(manualFinalReady ? "no_action" : action)}</span><small class="v35-stage-code">healthStatus: ${escapeHtml(item.healthStatus || "UNKNOWN")}</small></div>`;
+      const statusClass = (key) => ({ complete: "ok", attention: "action", manual: "manual", wait: "wait" }[String(key || "")] || "wait");
+      const rows = Object.entries(labels).map(([key, label]) => {
+        const item = stages[key] || {};
+        return `<div class="v4-stage-row ${statusClass(item.key)}"><strong>${escapeHtml(label)}</strong><span>状態: ${escapeHtml(item.label || "待機")}</span><span>理由: ${escapeHtml(item.reason || "-")}</span>${item.reasonCode ? `<small>code: ${escapeHtml(item.reasonCode)}</small>` : ""}</div>`;
       }).join("");
-      const warnings = Array.isArray(diagnostics.warnings) ? diagnostics.warnings.filter(Boolean) : [];
-      const informationalNotices = Array.isArray(diagnostics.informationalNotices) ? diagnostics.informationalNotices.filter(Boolean) : [];
-      const warningMarkup = warnings.length
-        ? `<ul class="v35-derived-warnings">${warnings.map((warning) => `<li>${escapeHtml(`${warning.code || "WARNING"}: ${warning.message || ""}`)}</li>`).join("")}</ul>`
-        : "<p class=muted>派生診断上の警告はありません。</p>";
-      const informationalMarkup = informationalNotices.length
-        ? `<ul class="v35-derived-info">${informationalNotices.map((notice) => `<li>${escapeHtml(`${notice.code || "INFO"}: ${notice.message || ""}`)}</li>`).join("")}</ul>`
-        : "";
-      const stateLabel = (value) => value === "schedule_registered" ? "scheduled（日程登録済み）" : (value || "-");
-      const hasAttention = Object.values(stages).some((item) => item?.attentionLevel === "ATTENTION");
-      const currentState = diagnostics.publishedHealthy
-        ? "正常（published・成果物確認済み）"
-        : diagnostics.stateMismatch || hasAttention
-          ? "要対応"
-          : "進行中";
-      const currentStateClass = diagnostics.publishedHealthy
-        ? ""
-        : diagnostics.stateMismatch || hasAttention
-          ? " v35-current-state-attention"
-          : " v35-current-state-running";
-      const modeNotice = v4SemiAuto
-        ? "V4半自動運営: 予告先発は自動、ロースター・スタメン取得は手動。正式処理はcanonical lineup確定後にCronが継続します。"
-        : "V3自動運営モードのread-only診断です。";
-      return `<section class="v35-derived-diagnostics" data-v35-derived-diagnostics><div class="v35-derived-header"><div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(readOnlyNote)}</p><p class="v35-mode-notice">${escapeHtml(modeNotice)}</p></div><span class="v35-derived-status">表示専用</span></div><div class="v35-current-state${currentStateClass}"><span>現在状態</span><strong>${escapeHtml(currentState)}</strong></div><div class="v35-derived-state-grid"><div><span>effectiveState</span><strong>${escapeHtml(stateLabel(diagnostics.effectiveState))}</strong></div><div><span>persistedState</span><strong>${escapeHtml(stateLabel(diagnostics.persistedState))}</strong></div><div><span>stateMismatch</span><strong>${diagnostics.stateMismatch ? "あり" : "なし"}</strong></div></div><h4>stageHealth</h4><div class="v35-stage-list">${stageRows}</div>${informationalMarkup ? `<h4>V4補助情報</h4>${informationalMarkup}` : ""}<h4>warnings</h4>${warningMarkup}</section>`;
+      const aggregate = status.canonicalArtifacts?.aggregate || {};
+      const canonicalRevision = source.canonicalRevision || status.canonicalArtifacts?.lineup?.canonicalFinalRevisionId || "-";
+      const persistedState = status.persistedState || game?.state?.state || "scheduled";
+      const currentStatusClass = statusClass(current.key === "completed" ? "complete" : current.key === "needs_attention" ? "attention" : "wait");
+      return `<section class="v4-canonical-status" data-v4-canonical-status><div class="v4-status-header"><div><h3>V4正式運用ステータス</h3><p>canonical artifact evaluator・formal job・formal artifact・current canonical revisionを共通の正本として表示します。</p></div><span class="status-badge ${currentStatusClass}">${escapeHtml(current.label || "待機")}</span></div><div class="v4-current-status"><span>現在状態</span><strong>${escapeHtml(current.reason || current.label || "待機")}</strong></div><div class="v4-state-grid"><div><span>persistedState</span><strong>${escapeHtml(persistedState)}</strong></div><div><span>canonical revision</span><strong>${escapeHtml(canonicalRevision)}</strong></div><div><span>lineup</span><strong>${aggregate.lineupReady ? "ready" : "未確定"}</strong></div><div><span>scoring</span><strong>${aggregate.scoringReady ? "ready" : "未完了"}</strong></div><div><span>ranking</span><strong>${aggregate.rankingReady ? "ready" : "未反映"}</strong></div><div><span>publication</span><strong>${aggregate.publicationReady ? "ready" : "未公開"}</strong></div></div><h4>正式工程</h4><div class="v4-stage-list">${rows}</div></section>`;
     }
-
-    function renderV35ShadowRecoveryPlan(game) {
-      const plan = game?.v35ShadowRecoveryPlan;
-      const title = "V3.5復旧提案（試験中・read-only）";
-      const readOnlyNote = "この提案は実行されません。job作成・state変更・DB書き込みは行いません。";
-      if (!plan || plan.enabled === false || plan.error) {
-        const reason = plan?.error || "V35_SHADOW_RECOVERY_PLAN_UNAVAILABLE";
-        return `<section class="v35-shadow-recovery-plan v35-shadow-recovery-plan-unavailable" data-v35-shadow-recovery-plan><div class="v35-derived-header"><div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(readOnlyNote)}</p></div><span class="v35-derived-status">要確認</span></div><p class="v35-derived-message">V3.5復旧提案を生成できませんでした。現行V3の動作には影響ありません。</p><code>${escapeHtml(reason)}</code></section>`;
-      }
-      const itemMarkup = (item) => `<article class="v35-shadow-plan-item"><strong>${escapeHtml(item.stage || "-")}</strong><span>action: ${escapeHtml(item.actionType || "-")}</span><span>reason: ${escapeHtml(item.reason || "-")}</span><span>priority: ${escapeHtml(item.priority || "-")}</span><span>blocked: ${item.blocked ? "true" : "false"}</span><span>blockedReason: ${escapeHtml(item.blockedReason || "-")}</span><code>${escapeHtml(item.idempotencyKey || "-")}</code></article>`;
-      const recommendations = Array.isArray(plan.recommendations) ? plan.recommendations : [];
-      const blockedRecommendations = Array.isArray(plan.blockedRecommendations) ? plan.blockedRecommendations : [];
-      const noActionReasons = Array.isArray(plan.noActionReasons) ? plan.noActionReasons.filter(Boolean) : [];
-      const recommendationsMarkup = recommendations.length
-        ? recommendations.map(itemMarkup).join("")
-        : "<p class=muted>推奨アクションはありません。</p>";
-      const blockedMarkup = blockedRecommendations.length
-        ? blockedRecommendations.map(itemMarkup).join("")
-        : "<p class=muted>保留中の提案はありません。</p>";
-      const noActionLabels = {
-        "roster_fetch:manual_mode": "ロースター取得: V4手動運用のため自動jobは作成しません",
-        "lineup_fetch:manual_mode": "スタメン取得: V4手動運用のため自動jobは作成しません",
-        "lineup_finalize:manual_mode": "ラインナップ確定: 手動canonical lineupを確認します"
-      };
-      const noActionMarkup = noActionReasons.length
-        ? `<ul class="v35-shadow-plan-reasons">${noActionReasons.map((reason) => `<li>${escapeHtml(noActionLabels[reason] || reason)}</li>`).join("")}</ul>`
-        : "<p class=muted>実行なし理由はありません。</p>";
-      return `<section class="v35-shadow-recovery-plan" data-v35-shadow-recovery-plan><div class="v35-derived-header"><div><h3>${escapeHtml(title)}</h3><p>${escapeHtml(readOnlyNote)}</p></div><span class="v35-derived-status">表示専用</span></div><div class="v35-shadow-plan-state"><div><span>mode</span><strong>${escapeHtml(plan.mode || "shadow_read_only")}</strong></div><div><span>canExecute</span><strong>false</strong></div><div><span>hasRecommendedActions</span><strong>${plan.hasRecommendedActions ? "true" : "false"}</strong></div></div><h4>推奨</h4><div class="v35-shadow-plan-list">${recommendationsMarkup}</div><h4>保留</h4><div class="v35-shadow-plan-list">${blockedMarkup}</div><h4>実行なし理由</h4>${noActionMarkup}</section>`;
-    }
-
     function renderDashboard(payload, games) {
       const allGames = listItems(payload?.games, "games");
       const todayGames = filterGames(allGames, "today");
@@ -510,7 +410,7 @@
     function renderWorkflowView(game) {
       if (!game) return renderSelectedGameHeader(null, "試合進行");
       const identity = npbIdentityDisplay(game);
-      return `${renderSelectedGameHeader(game, "試合進行", "V3 jobの状態と監査結果を試合単位で確認します。自動処理はCronが実行します。")}<section class="v3-panel">${renderV35DerivedDiagnostics(game)}${renderV35ShadowRecoveryPlan(game)}<div class="compact-meta"><span>現在: <strong>${escapeHtml(game.state?.state || "scheduled")}</strong></span><span>次の処理: <strong>${escapeHtml(nextActionText(game))}</strong></span><span>NPB識別job: <strong>${escapeHtml(identity.jobStatus)}</strong></span><span>NPB game code: <strong>${escapeHtml(identity.code)}</strong></span></div>${renderWorkflowDiagnostics(game)}${renderTimeline(game)}<details class="roster-details"><summary>ロースター取得の詳細</summary>${renderRosterSummary(game)}</details><h3>job履歴</h3>${renderJobRows(game, jobTypes)}</section>${renderManualControls(game)}`;
+      return `${renderSelectedGameHeader(game, "試合進行", "V4正式運用の状態をcanonical artifact evaluatorとformal job/artifactから確認します。自動処理はCronが実行します。")}<section class="v3-panel">${renderV4CanonicalStatus(game)}<div class="compact-meta"><span>現在: <strong>${escapeHtml(game.v4Status?.persistedState || game.state?.state || "scheduled")}</strong></span><span>次の処理: <strong>${escapeHtml(nextActionText(game))}</strong></span><span>NPB識別job: <strong>${escapeHtml(identity.jobStatus)}</strong></span><span>NPB game code: <strong>${escapeHtml(identity.code)}</strong></span></div>${renderWorkflowDiagnostics(game)}${renderTimeline(game)}<details class="roster-details"><summary>ロースター取得の詳細</summary>${renderRosterSummary(game)}</details><h3>job履歴</h3>${renderJobRows(game, jobTypes)}</section>`;
     }
 
     function renderLineupView(game) {
@@ -576,7 +476,7 @@
       return `${renderSelectedGameHeader(game, "日程管理", "日程とV3が算出した処理時刻を確認します。状態変更は理由・確認・監査付きです。")}<section class="v3-panel">${operationMeta}<div class="detail-grid"><div><dt>試合開始</dt><dd>${escapeHtml(formatJst(schedule?.startAt || game.startAt))}</dd></div><div><dt>予想締切</dt><dd>${escapeHtml(formatJst(schedule?.predictionDeadline))}</dd></div><div><dt>lineupPollingStart</dt><dd>${escapeHtml(formatJst(schedule?.lineupPollingStart))}</dd></div><div><dt>ランキング対象状態</dt><dd>${escapeHtml(eligibility.rankingEligibilityStatus || "未取得")}</dd></div></div>${controls}<h3>ランキング対象外化</h3>${rankingControls}<p class="muted">中止・対象外試合は未実行jobを停止し、保存済み予想と監査履歴は保持します。公開済み試合は変更できません。</p></section>`;
     }
 
-    return Object.freeze({ renderGameSummary, renderTimeline, renderDashboard, renderGamesView, renderWorkflowView, renderLineupView, renderScoringView, renderScheduleView, renderManualControls });
+    return Object.freeze({ renderGameSummary, renderTimeline, renderDashboard, renderGamesView, renderWorkflowView, renderLineupView, renderScoringView, renderScheduleView });
   }
 
   global.Starting9AdminV3 = global.Starting9AdminV3 || {};

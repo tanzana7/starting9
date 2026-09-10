@@ -20,7 +20,7 @@ test("admin-v3はロースターを公示ベースで読み取り表示し、未
   assert.match(worker, /getV3RosterPlanningDiagnostics/);
 });
 
-test("admin-v3は旧直接編集操作を外し、V3正式jobの安全な再実行だけを表示する", () => {
+test("admin-v3は旧直接編集操作と手動job操作を外し、V4状態を表示する", () => {
   assert.doesNotMatch(page, /data-v3-view="emergency"/);
   for (const selector of [
     "data-v3-identity-resolve", "data-v3-orientation-save", "data-v3-code-save",
@@ -30,11 +30,11 @@ test("admin-v3は旧直接編集操作を外し、V3正式jobの安全な再実�
     "data-v3-job-retry", "data-v3-job-cancel"
   ]) assert.doesNotMatch(client, new RegExp(selector));
   assert.match(gameProgress, /job履歴/);
-  assert.match(gameProgress, /V3工程の診断・手動再実行/);
-  assert.match(gameProgress, /data-v3-job-run/);
+  assert.match(gameProgress, /V4正式運用ステータス/);
+  assert.doesNotMatch(gameProgress, /data-v3-job-diagnose|data-v3-job-run|data-v3-state-reconcile/);
 });
 
-test("admin-v3のJavaScriptキャッシュバスターは公示整理版へ更新される", () => {
-  assert.match(page, /admin-v3\.js\?v=independent-roster-lineup-safety-1/);
-  assert.match(page, /admin-v3\.css\?v=independent-roster-lineup-safety-1/);
+test("admin-v3のJavaScriptキャッシュバスターはV4 canonical status版へ更新される", () => {
+  assert.match(page, /admin-v3\.js\?v=[^"']*v4-canonical-status-1/);
+  assert.match(page, /admin-v3\.css\?v=[^"']*v4-canonical-status-1/);
 });

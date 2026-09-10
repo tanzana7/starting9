@@ -53,10 +53,9 @@ test("診断表示はATTENTIONを強調し、詳細を折りたためる", () =>
   assert.match(cssSource, /\.v3-job-diagnostic-grid/);
 });
 
-test("admin-v3のmanual lineup safety変更assetが専用cache busterを使う", () => {
-  assert.match(pageSource, /admin-v3\.css\?v=independent-roster-lineup-safety-1/);
-  assert.match(pageSource, /admin-v3\.js\?v=independent-roster-lineup-safety-1/);
-  assert.match(pageSource, /render-manual-lineup\.js\?v=independent-roster-lineup-safety-1/);
-  assert.match(pageSource, /render-game-progress\.js\?v=manual-lineup-finalize-safety-1/);
+test("admin-v3のV4 canonical status assetが専用cache busterを使う", () => {
+  assert.match(pageSource, /admin-v3\.css\?v=[^"']*v4-canonical-status-1/);
+  assert.match(pageSource, /admin-v3\.js\?v=[^"']*v4-canonical-status-1/);
+  assert.match(pageSource, /render-game-progress\.js\?v=v4-canonical-status-1/);
   assert.doesNotMatch(pageSource, /admin-v3-fetch-safety-status-1/);
 });

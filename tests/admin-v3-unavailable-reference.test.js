@@ -18,22 +18,17 @@ function createRenderer() {
   });
 }
 
-test("admin-v3のmanual controlsは通常試合と対象外試合の両方で描画時例外を投げない", () => {
+test("admin-v3は旧manual controlsを通常UIへ公開しない", () => {
   const renderer = createRenderer();
-  const baseGame = { internalGameId: "game-1", state: { state: "scheduled" }, gameStatus: "scheduled" };
-
-  assert.doesNotThrow(() => renderer.renderManualControls(baseGame));
-  assert.doesNotThrow(() => renderer.renderManualControls({ ...baseGame, gameStatus: "service_unavailable" }));
-  assert.match(renderer.renderManualControls({ ...baseGame, gameStatus: "service_unavailable" }), /中止・対象外 \/ 停止/);
+  assert.equal(typeof renderer.renderManualControls, "undefined");
+  assert.doesNotMatch(rendererSource, /data-v3-job-diagnose|data-v3-job-run|data-v3-state-reconcile/);
 });
 
-test("admin-v3の対象外判定は行ループ外の再同期ボタンでも同じ値を使う", () => {
-  assert.match(rendererSource, /const gameUnavailable = \["cancelled", "canceled", "postponed", "service_unavailable"\]/);
-  assert.match(rendererSource, /reconcileLoading \|\| gameUnavailable/);
-  assert.doesNotMatch(rendererSource, /reconcileLoading \|\| unavailable/);
+test("admin-v3の通常UIは状態再同期導線を持たない", () => {
+  assert.doesNotMatch(rendererSource, /成果物を確認して状態を再同期|data-v3-state-reconcile/);
 });
 
 test("admin-v3の静的asset cache busterはReferenceError修正版を指す", () => {
-  assert.match(pageSource, /admin-v3-v35-diagnostics-readability-1/);
+  assert.match(pageSource, /v4-canonical-status-1/);
   assert.doesNotMatch(pageSource, /admin-v3-add-game-preview-1/);
 });

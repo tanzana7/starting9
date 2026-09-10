@@ -52,6 +52,6 @@ test("ランキング状態は処理前・中止・手動除外・反映済み�
 test("8/22中止試合を履歴表示でき、public側へ管理操作を露出しない", () => {
   assert.match(renderer, /ランキング対象外済み/);
   assert.match(renderer, /gameStatus/);
-  assert.match(page, /admin-v3-v35-diagnostics-readability-1/);
+  assert.match(page, /v4-canonical-status-1/);
   assert.doesNotMatch(read("script.js"), /ranking-exclusion\/games/);
 });

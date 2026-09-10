@@ -14,7 +14,9 @@
       manualRoster: "/api/admin/v3/manual-roster",
       lineupCorrections: "/api/admin/v3/lineup-corrections",
       rankingTestUsers: (internalGameId) => `/api/admin/v3/games/${encodeURIComponent(internalGameId)}/ranking-test-users`,
-      rankingTestToggle: (internalGameId) => `/api/admin/v3/games/${encodeURIComponent(internalGameId)}/ranking-test-users/toggle`
+      rankingTestToggle: (internalGameId) => `/api/admin/v3/games/${encodeURIComponent(internalGameId)}/ranking-test-users/toggle`,
+      rankingTestGlobal: "/api/admin/v3/ranking-test-users/global",
+      rankingTestName: "/api/admin/v3/ranking-test-users/name"
   });
 
   function createAdminV3ApiClient({ fetchImpl, location, productionBase }) {
@@ -140,7 +142,9 @@
       getRankingTestUsers: (internalGameId) => request(ADMIN_V3_ENDPOINTS.rankingTestUsers(internalGameId)),
       saveRankingTestPrediction: (internalGameId, body) => request(ADMIN_V3_ENDPOINTS.rankingTestUsers(internalGameId), { method: "PUT", body: JSON.stringify(body) }),
       clearRankingTestPrediction: (internalGameId, slot) => request(`${ADMIN_V3_ENDPOINTS.rankingTestUsers(internalGameId)}?slot=${encodeURIComponent(slot)}`, { method: "DELETE", body: JSON.stringify({ slot }) }),
-      updateRankingTestToggle: (internalGameId, body) => request(ADMIN_V3_ENDPOINTS.rankingTestToggle(internalGameId), { method: "PUT", body: JSON.stringify(body) })
+      updateRankingTestToggle: (internalGameId, body) => request(ADMIN_V3_ENDPOINTS.rankingTestToggle(internalGameId), { method: "PUT", body: JSON.stringify(body) }),
+      updateRankingTestGlobal: (body) => request(ADMIN_V3_ENDPOINTS.rankingTestGlobal, { method: "PUT", body: JSON.stringify(body) }),
+      updateRankingTestName: (body) => request(ADMIN_V3_ENDPOINTS.rankingTestName, { method: "PUT", body: JSON.stringify(body) })
     });
   }
 

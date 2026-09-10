@@ -292,7 +292,10 @@ function createRankingCteWithTestUsers() {
   const testTotals = `
   test_user_totals AS (
     SELECT 'ranking-test:' || CAST(test_predictions.slot AS TEXT) AS user_id,
-           'S9_TEST_' || CAST(test_predictions.slot AS TEXT) AS username,
+           COALESCE(
+             NULLIF(json_extract(global_settings.slot_names_json, '$.' || CAST(test_predictions.slot AS TEXT)), ''),
+             'S9_TEST_' || CAST(test_predictions.slot AS TEXT)
+           ) AS username,
            COUNT(DISTINCT test_predictions.internal_game_id) AS games_played,
            SUM(test_predictions.score) AS total_score,
            SUM(CASE WHEN test_predictions.score = test_predictions.max_score THEN 1 ELSE 0 END) AS perfect_count,
@@ -300,9 +303,10 @@ function createRankingCteWithTestUsers() {
            MAX(test_predictions.scored_at) AS last_scored_at
       FROM ranking_test_predictions AS test_predictions
       JOIN eligible_games ON eligible_games.internal_game_id = test_predictions.internal_game_id
-      JOIN ranking_test_game_settings AS test_settings
+      LEFT JOIN ranking_test_game_settings AS test_settings
         ON test_settings.internal_game_id = test_predictions.internal_game_id
-       AND test_settings.include_in_public_ranking = 1
+      LEFT JOIN ranking_test_global_settings AS global_settings
+        ON global_settings.id = 1
       JOIN game_lineups AS test_lineups
         ON test_lineups.internal_game_id = test_predictions.internal_game_id
        AND test_lineups.final_lineup_revision_id = test_predictions.lineup_revision_id
@@ -312,6 +316,8 @@ function createRankingCteWithTestUsers() {
        AND test_revisions.lineup_revision_id = test_predictions.lineup_revision_id
        AND test_revisions.is_active = 1
        AND test_revisions.status = 'completed'
+       AND (COALESCE(test_settings.include_in_public_ranking, 0) = 1
+            OR COALESCE(global_settings.global_enabled, 0) = 1)
      WHERE test_predictions.status = 'scored'
        AND test_predictions.score IS NOT NULL
        AND test_predictions.max_score IS NOT NULL
@@ -354,9 +360,9 @@ async function hasRankingTestSchema(db) {
   try {
     const row = await db.prepare(
       `SELECT COUNT(*) AS table_count FROM sqlite_master
-        WHERE type = 'table' AND name IN ('ranking_test_game_settings', 'ranking_test_predictions')`
+        WHERE type = 'table' AND name IN ('ranking_test_game_settings', 'ranking_test_predictions', 'ranking_test_global_settings')`
     ).bind().first();
-    return Number(row?.table_count || 0) === 2;
+    return Number(row?.table_count || 0) === 3;
   } catch {
     return false;
   }

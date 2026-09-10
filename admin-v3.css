@@ -586,8 +586,12 @@ button:disabled { cursor: wait; opacity: .65; }
 }
 /* Ranking test users are deliberately isolated from the formal workflow. */
 .ranking-test-users-panel { display: grid; gap: 1rem; }
-.ranking-test-warning, .ranking-test-toggle, .ranking-test-target { display: grid; gap: .35rem; padding: .8rem; border: 1px solid var(--border-color, #d7dee8); border-radius: .5rem; }
+.ranking-test-warning, .ranking-test-global, .ranking-test-name, .ranking-test-toggle, .ranking-test-target { display: grid; gap: .35rem; padding: .8rem; border: 1px solid var(--border-color, #d7dee8); border-radius: .5rem; }
 .ranking-test-warning { background: #fff8e6; }
+.ranking-test-global { background: #eef6ff; }
+.ranking-test-name { grid-template-columns: minmax(7rem, .3fr) minmax(10rem, 1fr) auto; align-items: center; }
+.ranking-test-name span { grid-column: 2 / -1; color: #526173; font-size: .85rem; }
+.ranking-test-name input { min-width: 0; }
 .ranking-test-slots { display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); gap: .35rem; }
 .ranking-test-slot { display: grid; gap: .15rem; min-height: 3rem; }
 .ranking-test-slot.is-active { outline: 2px solid #2563eb; }
@@ -599,5 +603,8 @@ button:disabled { cursor: wait; opacity: .65; }
 .ranking-test-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
 @media (max-width: 680px) {
   .ranking-test-slots { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .ranking-test-name { grid-template-columns: 1fr; }
+  .ranking-test-name span { grid-column: auto; }
+  .ranking-test-name button { width: 100%; }
   .ranking-test-table th, .ranking-test-table td { padding: .3rem; font-size: .9rem; }
 }

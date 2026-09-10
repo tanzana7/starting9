@@ -91,6 +91,8 @@
         if (rankingTestField) {
           actions.updateRankingTestField(Number(rankingTestField.dataset.v3RankingTestRow), rankingTestField.dataset.v3RankingTestField, rankingTestField.value);
         }
+        const rankingTestName = closestFromEvent(event, "[data-v3-ranking-test-name]");
+        if (rankingTestName) actions.updateRankingTestDisplayName(rankingTestName.value);
       });
       document.addEventListener("change", (event) => {
         const rankingFilter = closestFromEvent(event, "[data-v3-ranking-exclusion-filter]");
@@ -126,6 +128,8 @@
         if (rankingTestField) {
           actions.updateRankingTestField(Number(rankingTestField.dataset.v3RankingTestRow), rankingTestField.dataset.v3RankingTestField, rankingTestField.value);
         }
+        const rankingTestName = closestFromEvent(event, "[data-v3-ranking-test-name]");
+        if (rankingTestName) actions.updateRankingTestDisplayName(rankingTestName.value);
       });
     }
 
@@ -168,6 +172,8 @@
         if (closestFromEvent(event, "[data-v3-ranking-test-save]")) { await actions.saveRankingTestPrediction(); return; }
         if (closestFromEvent(event, "[data-v3-ranking-test-clear]")) { await actions.clearRankingTestPrediction(); return; }
         if (closestFromEvent(event, "[data-v3-ranking-test-toggle]")) { await actions.toggleRankingTestPublic(); return; }
+        if (closestFromEvent(event, "[data-v3-ranking-test-name-save]")) { await actions.saveRankingTestDisplayName(); return; }
+        if (closestFromEvent(event, "[data-v3-ranking-test-global]")) { await actions.toggleRankingTestGlobal(); return; }
 
         const diagnoseButton = closestFromEvent(event, "[data-v3-job-diagnose]");
         if (diagnoseButton) {

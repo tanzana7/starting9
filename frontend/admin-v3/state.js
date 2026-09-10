@@ -107,6 +107,8 @@
         internalGameId: "",
         selectedSlot: 1,
         slots: [],
+        globalSettings: { globalEnabled: false, slotNames: {}, displayNames: {} },
+        displayNameDraft: "",
         setting: { includeInPublicRanking: false },
         positionLabels: {},
         rows: [],

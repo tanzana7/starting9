@@ -1612,7 +1612,9 @@ async function loadRankingTestUsers(force = false) {
     const remote = result.state || {};
     state.slots = Array.isArray(remote.slots) ? remote.slots : [];
     state.setting = remote.setting || { includeInPublicRanking: false };
+    state.globalSettings = result.globalSettings || remote.globalSettings || { globalEnabled: false, slotNames: {}, displayNames: {} };
     state.positionLabels = result.positionLabels || {};
+    state.displayNameDraft = state.globalSettings.slotNames?.[String(state.selectedSlot)] || "";
     state.rows = v3RankingTestRenderer.rowsForSlot(state);
   } catch (error) {
     state.error = formatV3AdminError(error, "RANKING_TEST_READ_FAILED");
@@ -1635,9 +1637,55 @@ function selectRankingTestSlot(slot) {
   const state = v3State.rankingTestUsers;
   state.selectedSlot = Math.min(9, Math.max(1, Number(slot) || 1));
   state.rows = v3RankingTestRenderer.rowsForSlot(state);
+  state.displayNameDraft = state.globalSettings.slotNames?.[String(state.selectedSlot)] || "";
   state.error = "";
   state.message = "";
   renderCurrentV3View();
+}
+
+function updateRankingTestDisplayName(value) {
+  v3State.rankingTestUsers.displayNameDraft = value;
+}
+
+async function saveRankingTestDisplayName() {
+  const state = v3State.rankingTestUsers;
+  if (state.loading) return;
+  state.loading = true;
+  state.error = "";
+  state.message = "";
+  renderCurrentV3View();
+  try {
+    const result = await v3Api.updateRankingTestName({ slot: state.selectedSlot, displayName: state.displayNameDraft });
+    state.globalSettings = result.globalSettings || state.globalSettings;
+    state.displayNameDraft = state.globalSettings.slotNames?.[String(state.selectedSlot)] || "";
+    state.message = `TEST ${state.selectedSlot}の表示名を保存しました。`;
+  } catch (error) {
+    state.error = formatV3AdminError(error, "RANKING_TEST_NAME_SAVE_FAILED");
+  } finally {
+    state.loading = false;
+    renderCurrentV3View();
+  }
+}
+
+async function toggleRankingTestGlobal() {
+  const state = v3State.rankingTestUsers;
+  if (state.loading) return;
+  const enabled = state.globalSettings?.globalEnabled !== true;
+  if (enabled && !window.confirm("TEST予想を保存している試合では、試合単位設定に関係なく本番ランキングへ表示されます。続行しますか？")) return;
+  state.loading = true;
+  state.error = "";
+  state.message = "";
+  renderCurrentV3View();
+  try {
+    const result = await v3Api.updateRankingTestGlobal({ globalEnabled: enabled, confirmation: enabled ? "GLOBAL TEST USERS ON" : "" });
+    state.globalSettings = result.globalSettings || state.globalSettings;
+    state.message = enabled ? "TESTランキングのグローバル表示をONにしました。" : "TESTランキングのグローバル表示をOFFにしました。";
+  } catch (error) {
+    state.error = formatV3AdminError(error, "RANKING_TEST_GLOBAL_FAILED");
+  } finally {
+    state.loading = false;
+    renderCurrentV3View();
+  }
 }
 
 async function saveRankingTestPrediction() {
@@ -1888,9 +1936,12 @@ adminV3Modules.createAdminV3Coordinator({
     submitLineupCorrection: submitV3LineupCorrection,
     selectRankingTestSlot,
     updateRankingTestField,
+    updateRankingTestDisplayName,
     saveRankingTestPrediction,
     clearRankingTestPrediction,
     toggleRankingTestPublic,
+    saveRankingTestDisplayName,
+    toggleRankingTestGlobal,
     renderCurrentView: renderCurrentV3View,
     refreshAutomationLogs,
     selectGame: (internalGameId) => selectV3Game(internalGameId),

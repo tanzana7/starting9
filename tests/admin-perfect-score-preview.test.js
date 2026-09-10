@@ -25,7 +25,7 @@ test("満点previewは確定済み正式スタメンだけを使うread-only経�
   assert.match(worker, /finalRevision = revisions\.find/);
   assert.match(worker, /officialLineup: actualResult\.lineup/);
   assert.doesNotMatch(worker, /mode === "fixture"|fixtureKey|perfect-score-test\/execute/);
-  assert.doesNotMatch(worker.slice(worker.indexOf("async function handleAdminV3PerfectScorePreview"), worker.indexOf("async function handleAdminV3ManualGamePreview")), /INSERT|UPDATE|DELETE/);
+  assert.doesNotMatch(worker.slice(worker.indexOf("async function handleAdminV3PerfectScorePreview"), worker.indexOf("function resolveRankingTestPrediction")), /INSERT|UPDATE|DELETE/);
   assert.match(preview, /previewOnly: true/);
   assert.match(preview, /productionWrite: false/);
   assert.doesNotMatch(preview, /fixtureMode|fixtureKey/);

@@ -52,7 +52,7 @@ function insertPrediction(db, { id, userId, gameId, score, isTest = 0, scoredAt 
 }
 
 function getRankingCte() {
-  const match = /function createRankingCte\(\) \{[\s\S]*?return `([\s\S]*?)`;\r?\n\}/.exec(rankingRepository);
+  const match = /function createRankingCte\([^)]*\) \{[\s\S]*?return `([\s\S]*?)`;\r?\n\}/.exec(rankingRepository);
   assert.ok(match, "ランキングrepositoryの共通集計CTEを取得できること");
   return match[1];
 }
@@ -70,7 +70,7 @@ test("規定未到達の必要参加数は今後の分母増加を含めて計�
   for (const [[participated, total], needed] of expected) {
     assert.equal(calculateRankingGamesNeeded(participated, total), needed, `${participated}/${total}`);
   }
-  assert.match(rankingRepository, /MAX\(2 \* threshold\.eligible_games - 3 \* user_totals\.games_played, 0\) AS games_needed/);
+  assert.match(rankingRepository, /MAX\(2 \* threshold\.eligible_games - 3 \* all_user_totals\.games_played, 0\) AS games_needed/);
   assert.match(fs.readFileSync(path.join(root, "backend", "domain", "ranking.js"), "utf8"), /gamesNeeded: calculateRankingGamesNeeded\(gamesPlayed, eligibleGames\)/);
 });
 

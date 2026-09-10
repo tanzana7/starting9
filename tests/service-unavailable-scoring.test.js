@@ -61,7 +61,7 @@ test("SCORING_RETRY_EXPIRED時に対象外状態を作成し、管理者が解�
 });
 
 test("通常のランキング集計条件はis_ranking_eligibleとscoredを維持する", () => {
-  const cte = rankingRepository.match(/function createRankingCte\(\) \{[\s\S]*?return `([\s\S]*?)`;\r?\n\}/)?.[1] || "";
+  const cte = rankingRepository.match(/function createRankingCte\([^)]*\) \{[\s\S]*?return `([\s\S]*?)`;\r?\n\}/)?.[1] || "";
   assert.match(cte, /is_ranking_eligible = 1/);
   assert.match(cte, /game_status = 'scored'/);
   assert.doesNotMatch(cte, /service_unavailable.*is_ranking_eligible = 1/);

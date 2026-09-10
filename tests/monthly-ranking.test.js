@@ -46,7 +46,7 @@ function insertPrediction(db, { id, userId, gameId, score, isTest = 0, status = 
 }
 
 function getRankingCte() {
-  const match = /function createRankingCte\(\) \{[\s\S]*?return `([\s\S]*?)`;\r?\n\}/.exec(rankingRepository);
+  const match = /function createRankingCte\([^)]*\) \{[\s\S]*?return `([\s\S]*?)`;\r?\n\}/.exec(rankingRepository);
   assert.ok(match, "ランキングrepositoryの共通集計CTEを取得できること");
   return match[1];
 }

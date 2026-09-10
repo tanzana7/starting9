@@ -223,7 +223,8 @@ export async function getDailyBestNineForGame(db, { internalGameId = "", legacyG
   };
 }
 
-function createRankingCte() {
+function createRankingCte(includeTestUsers = false) {
+  if (includeTestUsers) return createRankingCteWithTestUsers();
   return `WITH eligible_games AS (
     SELECT game_id
      FROM ranking_games
@@ -255,8 +256,10 @@ function createRankingCte() {
        AND predictions.is_test_prediction = 0
        AND users.status = 'active'
      GROUP BY predictions.user_id, users.username
+  ), all_user_totals AS (
+    SELECT * FROM user_totals
   ), qualified_rows AS (
-    SELECT user_totals.*,
+    SELECT all_user_totals.*,
            threshold.eligible_games,
            threshold.required_games,
            1 AS is_qualified,
@@ -267,16 +270,16 @@ function createRankingCte() {
                       total_score DESC,
                       games_played DESC
            ) AS ranking_rank
-      FROM user_totals CROSS JOIN threshold
+      FROM all_user_totals CROSS JOIN threshold
      WHERE games_played >= required_games
   ), unqualified_rows AS (
-    SELECT user_totals.*,
+    SELECT all_user_totals.*,
            threshold.eligible_games,
            threshold.required_games,
            0 AS is_qualified,
-           MAX(2 * threshold.eligible_games - 3 * user_totals.games_played, 0) AS games_needed,
+           MAX(2 * threshold.eligible_games - 3 * all_user_totals.games_played, 0) AS games_needed,
            NULL AS ranking_rank
-      FROM user_totals CROSS JOIN threshold
+      FROM all_user_totals CROSS JOIN threshold
      WHERE games_played < required_games
   ), combined AS (
     SELECT * FROM qualified_rows
@@ -285,8 +288,47 @@ function createRankingCte() {
   )`;
 }
 
-function createRankingCteForReset(resetBoundary = "") {
-  const cte = createRankingCte();
+function createRankingCteWithTestUsers() {
+  const testTotals = `
+  test_user_totals AS (
+    SELECT 'ranking-test:' || CAST(test_predictions.slot AS TEXT) AS user_id,
+           'S9_TEST_' || CAST(test_predictions.slot AS TEXT) AS username,
+           COUNT(DISTINCT test_predictions.internal_game_id) AS games_played,
+           SUM(test_predictions.score) AS total_score,
+           SUM(CASE WHEN test_predictions.score = test_predictions.max_score THEN 1 ELSE 0 END) AS perfect_count,
+           MAX(test_predictions.score) AS best_score,
+           MAX(test_predictions.scored_at) AS last_scored_at
+      FROM ranking_test_predictions AS test_predictions
+      JOIN eligible_games ON eligible_games.internal_game_id = test_predictions.internal_game_id
+      JOIN ranking_test_game_settings AS test_settings
+        ON test_settings.internal_game_id = test_predictions.internal_game_id
+       AND test_settings.include_in_public_ranking = 1
+      JOIN game_lineups AS test_lineups
+        ON test_lineups.internal_game_id = test_predictions.internal_game_id
+       AND test_lineups.final_lineup_revision_id = test_predictions.lineup_revision_id
+      JOIN game_scoring_revisions AS test_revisions
+        ON test_revisions.internal_game_id = test_predictions.internal_game_id
+       AND test_revisions.id = test_predictions.scoring_revision_id
+       AND test_revisions.lineup_revision_id = test_predictions.lineup_revision_id
+       AND test_revisions.is_active = 1
+       AND test_revisions.status = 'completed'
+     WHERE test_predictions.status = 'scored'
+       AND test_predictions.score IS NOT NULL
+       AND test_predictions.max_score IS NOT NULL
+       AND test_predictions.slot BETWEEN 1 AND 9
+     GROUP BY test_predictions.slot
+  )`;
+  const base = createRankingCte();
+  return base
+    .replace("    SELECT game_id\n     FROM ranking_games", "    SELECT game_id, internal_game_id\n     FROM ranking_games")
+    .replace(
+      "  ), all_user_totals AS (\n    SELECT * FROM user_totals\n  ), qualified_rows AS (",
+      `  ), ${testTotals}, all_user_totals AS (\n    SELECT * FROM user_totals\n    UNION ALL\n    SELECT * FROM test_user_totals\n  ), qualified_rows AS (`
+    );
+}
+
+function createRankingCteForReset(resetBoundary = "", includeTestUsers = false) {
+  const cte = createRankingCte(includeTestUsers);
   if (!resetBoundary) return cte;
   return cte.replace(
     "       AND (?1 IS NULL OR game_date >= ?1)",
@@ -294,8 +336,8 @@ function createRankingCteForReset(resetBoundary = "") {
   );
 }
 
-function createRankingCteForPublishedPeriod(resetBoundary = "") {
-  return createRankingCteForReset(resetBoundary).replace(
+function createRankingCteForPublishedPeriod(resetBoundary = "", includeTestUsers = false) {
+  return createRankingCteForReset(resetBoundary, includeTestUsers).replace(
     "       AND game_status = 'scored'\n       AND is_test_game = 0",
     "       AND game_status = 'scored'\n       AND publication_status = 'published'\n       AND is_test_game = 0"
   );
@@ -308,10 +350,23 @@ function resolveRankingCutoffBoundary(marker, releaseCutoffAt = "") {
   });
 }
 
-export async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt = null, endAt = null, periodType = null, periodKey = null, publishedOnly = false, releaseCutoffAt = "" }) {
+async function hasRankingTestSchema(db) {
+  try {
+    const row = await db.prepare(
+      `SELECT COUNT(*) AS table_count FROM sqlite_master
+        WHERE type = 'table' AND name IN ('ranking_test_game_settings', 'ranking_test_predictions')`
+    ).bind().first();
+    return Number(row?.table_count || 0) === 2;
+  } catch {
+    return false;
+  }
+}
+
+export async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt = null, endAt = null, periodType = null, periodKey = null, publishedOnly = false, releaseCutoffAt = "", includeTestUsers = false }) {
   const marker = periodType && periodKey ? await getActiveRankingResetMarker(db, { periodType, periodKey }) : null;
   const cutoffBoundary = resolveRankingCutoffBoundary(marker, releaseCutoffAt);
-  const cte = publishedOnly ? createRankingCteForPublishedPeriod(cutoffBoundary) : createRankingCteForReset(cutoffBoundary);
+  const includeTestRows = includeTestUsers && await hasRankingTestSchema(db);
+  const cte = publishedOnly ? createRankingCteForPublishedPeriod(cutoffBoundary, includeTestRows) : createRankingCteForReset(cutoffBoundary, includeTestRows);
   const qualifiedParam = cutoffBoundary ? 4 : 3;
   const limitParam = qualifiedParam + 1;
   const offsetParam = qualifiedParam + 2;

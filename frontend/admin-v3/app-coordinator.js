@@ -87,6 +87,10 @@
           if (event.isComposing || manualRosterSearchComposing) return;
           actions.updateManualRosterSearch(rosterSearch.value);
         }
+        const rankingTestField = closestFromEvent(event, "[data-v3-ranking-test-field]");
+        if (rankingTestField) {
+          actions.updateRankingTestField(Number(rankingTestField.dataset.v3RankingTestRow), rankingTestField.dataset.v3RankingTestField, rankingTestField.value);
+        }
       });
       document.addEventListener("change", (event) => {
         const rankingFilter = closestFromEvent(event, "[data-v3-ranking-exclusion-filter]");
@@ -118,6 +122,10 @@
         if (rosterNote) { preservePickerScroll("[data-v3-manual-roster-candidates]", () => actions.updateManualRosterEntry(rosterNote.dataset.v3ManualRosterNote, { note: rosterNote.value })); return; }
         const rosterConfirm = closestFromEvent(event, "[data-v3-manual-roster-confirm]");
         if (rosterConfirm) { state.manualRoster.confirmed = rosterConfirm.checked === true; }
+        const rankingTestField = closestFromEvent(event, "[data-v3-ranking-test-field]");
+        if (rankingTestField) {
+          actions.updateRankingTestField(Number(rankingTestField.dataset.v3RankingTestRow), rankingTestField.dataset.v3RankingTestField, rankingTestField.value);
+        }
       });
     }
 
@@ -155,6 +163,11 @@
         const rosterRemove = closestFromEvent(event, "[data-v3-manual-roster-remove]");
         if (rosterRemove) { preservePickerScroll("[data-v3-manual-roster-candidates]", () => actions.updateManualRosterEntry(rosterRemove.dataset.v3ManualRosterRemove, { status: "inactive" })); return; }
         if (closestFromEvent(event, "[data-v3-manual-roster-save]")) { await actions.saveManualRoster(); return; }
+        const rankingTestSlot = closestFromEvent(event, "[data-v3-ranking-test-slot]");
+        if (rankingTestSlot) { actions.selectRankingTestSlot(Number(rankingTestSlot.dataset.v3RankingTestSlot)); return; }
+        if (closestFromEvent(event, "[data-v3-ranking-test-save]")) { await actions.saveRankingTestPrediction(); return; }
+        if (closestFromEvent(event, "[data-v3-ranking-test-clear]")) { await actions.clearRankingTestPrediction(); return; }
+        if (closestFromEvent(event, "[data-v3-ranking-test-toggle]")) { await actions.toggleRankingTestPublic(); return; }
 
         const diagnoseButton = closestFromEvent(event, "[data-v3-job-diagnose]");
         if (diagnoseButton) {

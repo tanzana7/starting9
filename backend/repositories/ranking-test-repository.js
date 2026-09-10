@@ -155,6 +155,30 @@ export async function upsertRankingTestPrediction(db, { internalGameId, slot, pr
   ).bind(internalGameId, slot, predictionJson, timestamp).run();
 }
 
+export async function materializeRankingTestPresetPredictions(db, { internalGameId, predictions = [], invalidSlots = [], now }) {
+  const timestamp = now instanceof Date ? now.toISOString() : String(now);
+  const statements = predictions.map(({ slot, predictionJson }) => db.prepare(
+    `INSERT INTO ranking_test_predictions
+       (internal_game_id, slot, prediction_json, status, score, max_score,
+        lineup_revision_id, scoring_revision_id, scored_at, created_at, updated_at)
+     VALUES (?1, ?2, ?3, 'submitted', NULL, NULL, NULL, NULL, NULL, ?4, ?4)
+     ON CONFLICT(internal_game_id, slot) DO UPDATE SET
+       prediction_json = excluded.prediction_json,
+       status = 'submitted', score = NULL, max_score = NULL,
+       lineup_revision_id = NULL, scoring_revision_id = NULL,
+       scored_at = NULL, updated_at = excluded.updated_at`
+  ).bind(internalGameId, slot, predictionJson, timestamp));
+  statements.push(...invalidSlots.map((slot) => db.prepare(
+    `UPDATE ranking_test_predictions
+        SET status = 'invalid', score = NULL, max_score = NULL,
+            lineup_revision_id = NULL, scoring_revision_id = NULL,
+            scored_at = NULL, updated_at = ?1
+      WHERE internal_game_id = ?2 AND slot = ?3`
+  ).bind(timestamp, internalGameId, slot)));
+  if (statements.length) await db.batch(statements);
+  return { materialized: predictions.length, invalid: invalidSlots.length };
+}
+
 export async function deleteRankingTestPrediction(db, { internalGameId, slot }) {
   return db.prepare(
     "DELETE FROM ranking_test_predictions WHERE internal_game_id = ?1 AND slot = ?2"

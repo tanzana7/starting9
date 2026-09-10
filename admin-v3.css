@@ -592,15 +592,15 @@ button:disabled { cursor: wait; opacity: .65; }
 .ranking-test-name { grid-template-columns: minmax(7rem, .3fr) minmax(10rem, 1fr) auto; align-items: center; }
 .ranking-test-name span { grid-column: 2 / -1; color: #526173; font-size: .85rem; }
 .ranking-test-name input { min-width: 0; }
+.ranking-test-fixed { display: grid; gap: .35rem; padding: .8rem; border: 1px solid var(--border-color, #d7dee8); border-radius: .5rem; background: #f7fafc; }
+.ranking-test-fixed span { color: #526173; font-size: .9rem; }
 .ranking-test-slots { display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); gap: .35rem; }
 .ranking-test-slot { display: grid; gap: .15rem; min-height: 3rem; }
 .ranking-test-slot.is-active { outline: 2px solid #2563eb; }
 .ranking-test-table-wrap { overflow-x: auto; }
 .ranking-test-table { width: 100%; border-collapse: collapse; }
 .ranking-test-table th, .ranking-test-table td { padding: .45rem; border-bottom: 1px solid var(--border-color, #d7dee8); text-align: left; }
-.ranking-test-table input, .ranking-test-table select { width: 100%; min-width: 5rem; }
 .ranking-test-resolved { min-width: 10rem; }
-.ranking-test-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
 @media (max-width: 680px) {
   .ranking-test-slots { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .ranking-test-name { grid-template-columns: 1fr; }

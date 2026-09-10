@@ -87,10 +87,6 @@
           if (event.isComposing || manualRosterSearchComposing) return;
           actions.updateManualRosterSearch(rosterSearch.value);
         }
-        const rankingTestField = closestFromEvent(event, "[data-v3-ranking-test-field]");
-        if (rankingTestField) {
-          actions.updateRankingTestField(Number(rankingTestField.dataset.v3RankingTestRow), rankingTestField.dataset.v3RankingTestField, rankingTestField.value);
-        }
         const rankingTestName = closestFromEvent(event, "[data-v3-ranking-test-name]");
         if (rankingTestName) actions.updateRankingTestDisplayName(rankingTestName.value);
       });
@@ -124,10 +120,6 @@
         if (rosterNote) { preservePickerScroll("[data-v3-manual-roster-candidates]", () => actions.updateManualRosterEntry(rosterNote.dataset.v3ManualRosterNote, { note: rosterNote.value })); return; }
         const rosterConfirm = closestFromEvent(event, "[data-v3-manual-roster-confirm]");
         if (rosterConfirm) { state.manualRoster.confirmed = rosterConfirm.checked === true; }
-        const rankingTestField = closestFromEvent(event, "[data-v3-ranking-test-field]");
-        if (rankingTestField) {
-          actions.updateRankingTestField(Number(rankingTestField.dataset.v3RankingTestRow), rankingTestField.dataset.v3RankingTestField, rankingTestField.value);
-        }
         const rankingTestName = closestFromEvent(event, "[data-v3-ranking-test-name]");
         if (rankingTestName) actions.updateRankingTestDisplayName(rankingTestName.value);
       });
@@ -169,8 +161,6 @@
         if (closestFromEvent(event, "[data-v3-manual-roster-save]")) { await actions.saveManualRoster(); return; }
         const rankingTestSlot = closestFromEvent(event, "[data-v3-ranking-test-slot]");
         if (rankingTestSlot) { actions.selectRankingTestSlot(Number(rankingTestSlot.dataset.v3RankingTestSlot)); return; }
-        if (closestFromEvent(event, "[data-v3-ranking-test-save]")) { await actions.saveRankingTestPrediction(); return; }
-        if (closestFromEvent(event, "[data-v3-ranking-test-clear]")) { await actions.clearRankingTestPrediction(); return; }
         if (closestFromEvent(event, "[data-v3-ranking-test-toggle]")) { await actions.toggleRankingTestPublic(); return; }
         if (closestFromEvent(event, "[data-v3-ranking-test-name-save]")) { await actions.saveRankingTestDisplayName(); return; }
         if (closestFromEvent(event, "[data-v3-ranking-test-global]")) { await actions.toggleRankingTestGlobal(); return; }

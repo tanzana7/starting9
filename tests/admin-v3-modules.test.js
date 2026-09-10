@@ -34,6 +34,7 @@ function loadModules() {
     "render-diagnostics",
     "render-ranking-reset",
     "render-perfect-score-preview",
+    "render-ranking-test-users",
     "app-coordinator"
   ]) {
     vm.runInContext(fs.readFileSync(path.join(moduleDir, `${name}.js`), "utf8"), context);
@@ -59,6 +60,7 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
     "frontend/admin-v3/render-diagnostics.js?v=admin-v3-v35-diagnostics-readability-1-v4-ops",
     "frontend/admin-v3/render-ranking-reset.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/render-perfect-score-preview.js?v=admin-v3-v35-diagnostics-readability-1",
+    "frontend/admin-v3/render-ranking-test-users.js?v=ranking-test-users-1",
     "frontend/admin-v3/render-manual-game-preview.js?v=admin-v3-v35-diagnostics-readability-1",
     "frontend/admin-v3/app-coordinator.js?v=independent-roster-lineup-safety-1-preserve-picker-scroll-1-admin-lineup-registration-emergency-fix-1-manual-lineup-explicit-confirmation-1",
     "admin-v3.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-lineup-order-mobile-zoom-1-lineup-correction-1-admin-v3-game-progress-history-1-admin-lineup-registration-emergency-fix-1-admin-lineup-lock-reason-1-manual-lineup-late-registration-1-manual-lineup-explicit-confirmation-1"
@@ -77,6 +79,7 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
   assert.equal(typeof modules.createAdminV3DiagnosticsRenderer, "function");
   assert.equal(typeof modules.createAdminV3RankingResetRenderer, "function");
   assert.equal(typeof modules.createAdminV3PerfectScoreRenderer, "function");
+  assert.equal(typeof modules.createAdminV3RankingTestRenderer, "function");
   assert.equal(typeof modules.createAdminV3Coordinator, "function");
 });
 

@@ -102,6 +102,17 @@
         gamesLoaded: false,
         error: "",
         message: ""
+      },
+      rankingTestUsers: {
+        internalGameId: "",
+        selectedSlot: 1,
+        slots: [],
+        setting: { includeInPublicRanking: false },
+        positionLabels: {},
+        rows: [],
+        loading: false,
+        error: "",
+        message: ""
       }
     };
   }

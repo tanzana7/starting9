@@ -55,7 +55,7 @@ test("満点preview APIはadmin認証、正式スタメン、読み取り専用�
   assert.match(adminPreview, /database: false[\s\S]*predictions: false[\s\S]*ranking: false[\s\S]*publication: false/);
   assert.match(worker, /officialLineup: actualResult\.lineup/);
   assert.match(worker, /virtualPerfectPrediction: preview\.prediction/);
-  const previewHandler = worker.slice(worker.indexOf("async function handleAdminV3PerfectScorePreview"), worker.indexOf("async function recordV3AdminAudit"));
+  const previewHandler = worker.slice(worker.indexOf("async function handleAdminV3PerfectScorePreview"), worker.indexOf("function resolveRankingTestPrediction"));
   assert.doesNotMatch(previewHandler, /INSERT|UPDATE|DELETE/);
   assert.doesNotMatch(admin, /perfect-score-test\/execute/);
   assert.match(perfectScoreRenderer, /data-v3-perfect-score-preview/);

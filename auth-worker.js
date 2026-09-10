@@ -72,6 +72,18 @@ import {
   listRankingResetMarkers
 } from "./backend/repositories/ranking-repository.js";
 import {
+  getRankingTestState,
+  upsertRankingTestPrediction,
+  deleteRankingTestPrediction,
+  updateRankingTestToggle
+} from "./backend/repositories/ranking-test-repository.js";
+import {
+  normalizeRankingTestSlot,
+  normalizeRankingTestPosition,
+  RANKING_TEST_POSITION_LABELS,
+  rankingTestUsername
+} from "./backend/domain/ranking-test-users.js";
+import {
   PUBLIC_RESULT_HISTORY_LIMIT,
   DAILY_BEST_NINE_LIMIT,
   formatPublicResultTeamName,
@@ -633,6 +645,10 @@ export default {
       if (path === "/api/admin/v3/perfect-score-test/preview") {
         if (request.method !== "POST") return jsonResponse({ ok: false, code: "V3_ADMIN_METHOD_NOT_ALLOWED", error: "満点previewはPOSTのみ対応しています。" }, 405, cors);
         return await handleAdminV3PerfectScorePreview(request, env, cors);
+      }
+      const adminV3RankingTestRoute = parseAdminV3RankingTestRoute(path);
+      if (adminV3RankingTestRoute) {
+        return await handleAdminV3RankingTestUsers(request, env, cors, adminV3RankingTestRoute);
       }
       const adminV3IdentityResolveRoute = parseAdminV3IdentityResolveRoute(path);
       if (adminV3IdentityResolveRoute && request.method === "POST") {
@@ -1884,6 +1900,13 @@ async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore })
     } catch (error) {
       if (!isPregameSchemaError(error)) throw error;
     }
+  }
+  try {
+    await scoreRankingTestPredictionsForGame(env.AUTH_DB, internalGameId, now);
+  } catch (error) {
+    // Ranking TEST users are supplemental diagnostics. Their failure must not
+    // change the formal score job outcome or block later ranking/publication.
+    console.warn(`[RANKING_TEST] supplemental_score_failed internalGameId=${internalGameId} code=${error?.code || "RANKING_TEST_SCORE_FAILED"}`);
   }
   return {
     status: result?.status || "scored",
@@ -6689,6 +6712,9 @@ function getKnownAdminRouteMethods(path) {
   if (parseAdminV3JobControlRoute(path)) return parseAdminV3JobControlRoute(path).action === "diagnose" ? ["GET"] : ["POST"];
   if (parseAdminV3LineupRevisionCancelRoute(path)) return ["POST"];
   if (parseAdminV3LineupCorrectionRoute(path)) return ["GET", "POST"];
+  if (parseAdminV3RankingTestRoute(path)) {
+    return parseAdminV3RankingTestRoute(path).action === "toggle" ? ["PUT"] : ["GET", "PUT", "DELETE"];
+  }
   // Phase routes authenticate before checking their action-specific method.
   if (parseAdminV3Phase1Route(path)) return null;
   return null;
@@ -6728,6 +6754,16 @@ function parseAdminV3LineupCorrectionRoute(path) {
     return { internalGameId: decodeURIComponent(match[1]) };
   } catch {
     return { internalGameId: "" };
+  }
+}
+
+function parseAdminV3RankingTestRoute(path) {
+  const match = /^\/api\/admin\/v3\/games\/([^/]+)\/ranking-test-users(?:\/(toggle))?$/.exec(path);
+  if (!match) return null;
+  try {
+    return { internalGameId: decodeURIComponent(match[1]), action: match[2] || "predictions" };
+  } catch {
+    return { internalGameId: "", action: "invalid" };
   }
 }
 
@@ -6834,6 +6870,142 @@ async function handleAdminV3PerfectScorePreview(request, env, cors) {
     maxScore: SCORING_MAX_SCORE,
     isMaxScore: preview.score.total === SCORING_MAX_SCORE
   }, 200, cors);
+}
+
+function resolveRankingTestPrediction(input) {
+  const rows = Array.isArray(input?.prediction) ? input.prediction : input?.prediction?.lineup;
+  if (!Array.isArray(rows) || rows.length !== SCORING_LINEUP_SIZE) {
+    throw createV3Error("RANKING_TEST_PREDICTION_INVALID", "TEST予想は9人分入力してください。", { httpStatus: 400 });
+  }
+  const catalog = getManualLineupPlayerCatalog();
+  const byUniformNumber = new Map(catalog.map((player) => [String(player.uniformNumber), player]));
+  const lineup = rows.map((row, index) => {
+    const order = Number(row?.battingOrder ?? index + 1);
+    const uniformNumber = String(row?.uniformNumber ?? row?.number ?? "").normalize("NFKC").trim();
+    if (!/^\d{1,3}$/.test(uniformNumber)) {
+      throw createV3Error("RANKING_TEST_JERSEY_INVALID", `${index + 1}番の背番号が不正です。`, { httpStatus: 400 });
+    }
+    const player = byUniformNumber.get(uniformNumber);
+    if (!player?.playerId) {
+      throw createV3Error("RANKING_TEST_JERSEY_UNKNOWN", `背番号${uniformNumber}を安全に選手へ解決できません。`, { httpStatus: 400 });
+    }
+    const numericPosition = String(row?.position ?? "").normalize("NFKC").trim();
+    const position = normalizeRankingTestPosition(numericPosition);
+    if (!position) {
+      throw createV3Error("RANKING_TEST_POSITION_INVALID", `${index + 1}番の守備位置は0〜9で指定してください。`, { httpStatus: 400 });
+    }
+    return {
+      battingOrder: order,
+      playerId: player.playerId,
+      teamId: FIGHTERS_TEAM_ID,
+      teamCode: FIGHTERS_TEAM_CODE,
+      uniformNumber: player.uniformNumber,
+      playerName: player.playerName,
+      displayName: player.displayName || player.playerName,
+      position
+    };
+  });
+  const sanitized = sanitizeActualLineupForScoring(lineup);
+  if (!sanitized.ok) throw createV3Error("RANKING_TEST_PREDICTION_INVALID", sanitized.error, { httpStatus: 400 });
+  return sanitized.lineup;
+}
+
+async function scoreRankingTestPredictionsForGame(db, internalGameId, now = new Date()) {
+  const state = await getRankingTestState(db, internalGameId);
+  if (!state.schemaAvailable) throw createV3Error("RANKING_TEST_SCHEMA_UNAVAILABLE", "ランキングテスト用schemaが未適用です。", { httpStatus: 503 });
+  const rows = state.slots.filter((slot) => slot.prediction);
+  if (!rows.length) return { status: "no_predictions", scored: 0, invalid: 0 };
+  const lineup = await getGameLineup(db, { gameId: internalGameId, internalGameId });
+  const revisions = await getV3LineupRevisionRows(db, internalGameId, internalGameId);
+  const finalRevision = revisions.find((row) => Number(row.is_final || 0) === 1) || null;
+  const activeRevision = await getActiveScoringRevision(db, internalGameId);
+  if (!lineup || lineup.scoring_status !== "scored" || !finalRevision || !activeRevision?.id) {
+    return { status: "waiting_for_real_scoring", scored: 0, invalid: 0 };
+  }
+  const actual = sanitizeActualLineupForScoring(parseStoredActualLineup(finalRevision.actual_lineup_json), { allowUnresolvedPlayer: true });
+  if (!actual.ok || String(activeRevision.lineup_revision_id || "") !== String(finalRevision.revision_id || "")) {
+    return { status: "stale_canonical_lineup", scored: 0, invalid: 0 };
+  }
+  const timestamp = now.toISOString();
+  const statements = [];
+  let scored = 0;
+  let invalid = 0;
+  for (const slot of rows) {
+    let prediction;
+    try { prediction = slot.prediction?.lineup; } catch { prediction = null; }
+    const validation = sanitizeActualLineupForScoring(prediction);
+    if (!validation.ok) {
+      invalid += 1;
+      statements.push(db.prepare(
+        `UPDATE ranking_test_predictions SET status = 'invalid', score = NULL, max_score = NULL,
+          lineup_revision_id = NULL, scoring_revision_id = NULL, scored_at = NULL, updated_at = ?1
+         WHERE internal_game_id = ?2 AND slot = ?3`
+      ).bind(timestamp, internalGameId, slot.slot));
+      continue;
+    }
+    const score = scorePredictionLineup(validation.lineup, actual.lineup);
+    scored += 1;
+    statements.push(db.prepare(
+      `UPDATE ranking_test_predictions
+          SET status = 'scored', score = ?1, max_score = ?2, lineup_revision_id = ?3,
+              scoring_revision_id = ?4, scored_at = ?5, updated_at = ?5
+        WHERE internal_game_id = ?6 AND slot = ?7`
+    ).bind(score.total, SCORING_MAX_SCORE, finalRevision.revision_id, activeRevision.id, timestamp, internalGameId, slot.slot));
+  }
+  if (statements.length) await db.batch(statements);
+  return { status: "scored", scored, invalid, lineupRevisionId: finalRevision.revision_id, scoringRevisionId: activeRevision.id };
+}
+
+async function handleAdminV3RankingTestUsers(request, env, cors, route) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  if (route.action === "invalid") return jsonResponse({ ok: false, code: "RANKING_TEST_GAME_ID_INVALID", error: "internalGameIdが不正です。" }, 400, cors);
+  let context;
+  try {
+    context = await loadV3AdminContext(env.AUTH_DB, route.internalGameId);
+  } catch (error) {
+    return v3AdminErrorResponse(cors, error, "対象試合を取得できませんでした。");
+  }
+  const id = context.id;
+  try {
+    const isFightersGame = [context.target.home_team, context.target.away_team]
+      .map((value) => String(value || "").trim().toLowerCase())
+      .some((value) => value === "f" || value === FIGHTERS_TEAM_CODE);
+    if (!isFightersGame) throw createV3Error("RANKING_TEST_TEAM_UNSUPPORTED", "Fightersを含む試合だけランキングテストに対応しています。", { httpStatus: 409 });
+    if (route.action === "toggle") {
+      if (request.method !== "PUT") return jsonResponse({ ok: false, code: "RANKING_TEST_METHOD_NOT_ALLOWED", error: "toggleはPUTのみ対応しています。" }, 405, cors);
+      const input = await readJson(request, { maxBytes: 4096 });
+      const include = Boolean(input?.includeInPublicRanking);
+      if (include && input?.confirmation !== "SHOW TEST USERS") {
+        throw createV3Error("RANKING_TEST_TOGGLE_CONFIRMATION_REQUIRED", "公開ランキングへTESTユーザーを表示する確認が必要です。", { httpStatus: 409 });
+      }
+      await updateRankingTestToggle(env.AUTH_DB, { internalGameId: id, includeInPublicRanking: include, updatedBy: access.user.id, now: new Date() });
+      return jsonResponse({ ok: true, internalGameId: id, state: await getRankingTestState(env.AUTH_DB, id) }, 200, cors);
+    }
+    if (request.method === "GET") {
+      const state = await getRankingTestState(env.AUTH_DB, id);
+      if (!state.schemaAvailable) throw createV3Error("RANKING_TEST_SCHEMA_UNAVAILABLE", "ランキングテスト用schemaが未適用です。", { httpStatus: 503 });
+      return jsonResponse({ ok: true, internalGameId: id, positionLabels: RANKING_TEST_POSITION_LABELS, usernames: Array.from({ length: 9 }, (_, index) => rankingTestUsername(index + 1)), state }, 200, cors);
+    }
+    const input = await readJson(request, { maxBytes: 20000 });
+    const slot = normalizeRankingTestSlot(input?.slot);
+    if (!slot) throw createV3Error("RANKING_TEST_SLOT_INVALID", "slotは1〜9で指定してください。", { httpStatus: 400 });
+    if (request.method === "DELETE") {
+      await deleteRankingTestPrediction(env.AUTH_DB, { internalGameId: id, slot });
+      return jsonResponse({ ok: true, internalGameId: id, slot, state: await getRankingTestState(env.AUTH_DB, id) }, 200, cors);
+    }
+    if (request.method !== "PUT") return jsonResponse({ ok: false, code: "RANKING_TEST_METHOD_NOT_ALLOWED", error: "予想はGET/PUT/DELETEに対応しています。" }, 405, cors);
+    const lineup = resolveRankingTestPrediction(input);
+    const playerIds = new Set(lineup.map((row) => row.playerId));
+    if (playerIds.size !== SCORING_LINEUP_SIZE) throw createV3Error("RANKING_TEST_DUPLICATE_PLAYER", "同じ選手を複数の打順へ登録できません。", { httpStatus: 400 });
+    await upsertRankingTestPrediction(env.AUTH_DB, { internalGameId: id, slot, predictionJson: JSON.stringify({ schemaVersion: 1, lineup }), now: new Date() });
+    let supplemental = null;
+    try { supplemental = await scoreRankingTestPredictionsForGame(env.AUTH_DB, id, new Date()); }
+    catch (error) { console.warn(`[RANKING_TEST] supplemental_score_failed internalGameId=${id} code=${error?.code || "RANKING_TEST_SCORE_FAILED"}`); }
+    return jsonResponse({ ok: true, internalGameId: id, slot, supplemental, state: await getRankingTestState(env.AUTH_DB, id) }, 200, cors);
+  } catch (error) {
+    return v3AdminErrorResponse(cors, error, "ランキングテストユーザーを更新できませんでした。");
+  }
 }
 
 async function handleAdminV3ManualGamePreview(request, env, cors) {
@@ -9479,7 +9651,7 @@ async function handleGetYearlyRanking(request, env, cors) {
   if (!options.ok) {
     return jsonResponse({ ok: false, error: options.error }, 400, cors);
   }
-  const ranking = await getRankingForPeriod(env.AUTH_DB, { ...options, releaseCutoffAt: env.PUBLIC_RANKING_RELEASED_AT });
+  const ranking = await getRankingForPeriod(env.AUTH_DB, { ...options, includeTestUsers: true, releaseCutoffAt: env.PUBLIC_RANKING_RELEASED_AT });
   const response = jsonResponse({
     year: options.year,
     ranking: ranking.rows,
@@ -9509,7 +9681,7 @@ async function handleGetMonthlyRanking(request, env, cors) {
     return jsonResponse({ ok: false, error: options.error }, 400, cors);
   }
 
-  const ranking = await getRankingForPeriod(env.AUTH_DB, { ...options, releaseCutoffAt: env.PUBLIC_RANKING_RELEASED_AT });
+  const ranking = await getRankingForPeriod(env.AUTH_DB, { ...options, includeTestUsers: true, releaseCutoffAt: env.PUBLIC_RANKING_RELEASED_AT });
   const response = jsonResponse({
     year: options.year,
     month: options.month,
@@ -9546,7 +9718,7 @@ async function handleGetWeeklyRanking(request, env, cors) {
     return jsonResponse({ ok: false, error: options.error }, 400, cors);
   }
 
-  const ranking = await getRankingForPeriod(env.AUTH_DB, { ...options, publishedOnly: true, releaseCutoffAt: env.PUBLIC_RANKING_RELEASED_AT });
+  const ranking = await getRankingForPeriod(env.AUTH_DB, { ...options, publishedOnly: true, includeTestUsers: true, releaseCutoffAt: env.PUBLIC_RANKING_RELEASED_AT });
   const response = jsonResponse({
     weekStart: options.weekStart,
     weekEnd: options.endAt,
@@ -19428,6 +19600,11 @@ async function handleAdminRescoreConfirm(request, env, cors, metadata, user, { d
       throw createPregameError("RESCORE_PREVIEW_INVALID", "再採点プレビューを確認してください。", { httpStatus: 409 });
     }
     const result = await applyManualRescore(env.AUTH_DB, metadata, current, preview, user.id, reason, now, 0, { deferPublication });
+    try {
+      await scoreRankingTestPredictionsForGame(env.AUTH_DB, metadata.internalGameId || metadata.gameId, now);
+    } catch (error) {
+      console.warn(`[RANKING_TEST] supplemental_rescore_failed internalGameId=${metadata.internalGameId || metadata.gameId} code=${error?.code || "RANKING_TEST_RESCORE_FAILED"}`);
+    }
     await markManualRescoreCompleted(env.AUTH_DB, metadata.internalGameId || "", result.publicationStatus, now, { deferPublication });
     await recordWorkflowLog(env.AUTH_DB, {
       eventType: "admin_rescore_confirmed",

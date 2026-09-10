@@ -10,9 +10,11 @@
     rankingResetPreview: "/api/admin/v3/ranking-resets/preview",
     rankingResetExecute: "/api/admin/v3/ranking-resets/execute",
     perfectScorePreview: "/api/admin/v3/perfect-score-test/preview",
-    manualGamePreview: "/api/admin/v3/schedule/add-game/preview",
-    manualRoster: "/api/admin/v3/manual-roster",
-    lineupCorrections: "/api/admin/v3/lineup-corrections"
+      manualGamePreview: "/api/admin/v3/schedule/add-game/preview",
+      manualRoster: "/api/admin/v3/manual-roster",
+      lineupCorrections: "/api/admin/v3/lineup-corrections",
+      rankingTestUsers: (internalGameId) => `/api/admin/v3/games/${encodeURIComponent(internalGameId)}/ranking-test-users`,
+      rankingTestToggle: (internalGameId) => `/api/admin/v3/games/${encodeURIComponent(internalGameId)}/ranking-test-users/toggle`
   });
 
   function createAdminV3ApiClient({ fetchImpl, location, productionBase }) {
@@ -134,7 +136,11 @@
       previewManualGame: (body) => post(ADMIN_V3_ENDPOINTS.manualGamePreview, body),
       listLineupCorrections: () => request(ADMIN_V3_ENDPOINTS.lineupCorrections),
       getLineupCorrection: (internalGameId) => request(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/lineup-correction`),
-      submitLineupCorrection: (internalGameId, body) => post(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/lineup-correction`, body)
+      submitLineupCorrection: (internalGameId, body) => post(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/lineup-correction`, body),
+      getRankingTestUsers: (internalGameId) => request(ADMIN_V3_ENDPOINTS.rankingTestUsers(internalGameId)),
+      saveRankingTestPrediction: (internalGameId, body) => request(ADMIN_V3_ENDPOINTS.rankingTestUsers(internalGameId), { method: "PUT", body: JSON.stringify(body) }),
+      clearRankingTestPrediction: (internalGameId, slot) => request(`${ADMIN_V3_ENDPOINTS.rankingTestUsers(internalGameId)}?slot=${encodeURIComponent(slot)}`, { method: "DELETE", body: JSON.stringify({ slot }) }),
+      updateRankingTestToggle: (internalGameId, body) => request(ADMIN_V3_ENDPOINTS.rankingTestToggle(internalGameId), { method: "PUT", body: JSON.stringify(body) })
     });
   }
 

@@ -12,6 +12,7 @@ if (!adminV3Modules?.createAdminV3State
   || !adminV3Modules?.createAdminV3DiagnosticsRenderer
   || !adminV3Modules?.createAdminV3RankingResetRenderer
   || !adminV3Modules?.createAdminV3PerfectScoreRenderer
+  || !adminV3Modules?.createAdminV3RankingTestRenderer
   || !adminV3Modules?.createAdminV3ManualGamePreviewRenderer
   || !adminV3Modules?.createAdminV3SelectionSafety
   || !adminV3Modules?.createAdminV3ManualLineupRenderer
@@ -43,7 +44,7 @@ const V3_JOB_TYPES = Object.freeze([
   V3_JOB_TYPE.PROBABLE_STARTER_FETCH,
   V3_JOB_TYPE.ROSTER_FETCH
 ]);
-const V3_VIEWS = ["dashboard", "games", "workflow", "lineup", "lineup-correction", "roster", "scoring", "ranking-reset", "schedule", "add-game-preview", "diagnostics"];
+const V3_VIEWS = ["dashboard", "games", "workflow", "lineup", "lineup-correction", "roster", "scoring", "ranking-test-users", "ranking-reset", "schedule", "add-game-preview", "diagnostics"];
 const V3_VIEW_LABELS = {
   dashboard: "ダッシュボード",
   games: "試合一覧",
@@ -52,6 +53,7 @@ const V3_VIEW_LABELS = {
   "lineup-correction": "スタメン修正",
   roster: "ロースター管理",
   scoring: "採点・ランキング",
+  "ranking-test-users": "ランキング テストユーザー",
   "ranking-reset": "ランキング対象外",
   schedule: "日程管理",
   diagnostics: "診断・監査",
@@ -874,6 +876,7 @@ const v3RankingResetRenderer = adminV3Modules.createAdminV3RankingResetRenderer(
 const v3ManualGamePreviewRenderer = adminV3Modules.createAdminV3ManualGamePreviewRenderer({ escapeHtml: escapeV3 });
 const v3ManualLineupRenderer = adminV3Modules.createAdminV3ManualLineupRenderer({ escapeHtml: escapeV3, formatJst: formatV3Jst, getFinalizeSafety: manualLineupFinalizeSafety, getGameDayStatus: v3SelectionSafety.gameDayStatus });
 const v3ManualRosterRenderer = adminV3Modules.createAdminV3ManualRosterRenderer({ escapeHtml: escapeV3 });
+const v3RankingTestRenderer = adminV3Modules.createAdminV3RankingTestRenderer({ state: v3State, escapeHtml: escapeV3 });
 const v3LineupCorrectionRenderer = adminV3Modules.createAdminV3LineupCorrectionRenderer({
   escapeHtml: escapeV3,
   formatJst: formatV3Jst,
@@ -1409,6 +1412,7 @@ function renderCurrentV3View() {
     "lineup-correction": () => v3LineupCorrectionRenderer.render(v3State.lineupCorrection),
     roster: () => v3ManualRosterRenderer.render(v3State.manualRoster),
     scoring: () => v3GameProgressRenderer.renderScoringView(filteredGame || game),
+    "ranking-test-users": () => v3RankingTestRenderer.render(filteredGame || game),
     "ranking-reset": () => v3RankingResetRenderer.render(),
     schedule: () => v3GameProgressRenderer.renderScheduleView(games),
     "add-game-preview": () => v3ManualGamePreviewRenderer.render(v3State.manualGamePreview),
@@ -1588,6 +1592,118 @@ function renderV3(payload) {
   }
 }
 
+async function loadRankingTestUsers(force = false) {
+  const id = String(v3State.selectedGameId || "");
+  const state = v3State.rankingTestUsers;
+  if (!id) return;
+  if (state.loading || (!force && state.internalGameId === id && state.slots.length === 9)) {
+    state.rows = v3RankingTestRenderer.rowsForSlot(state);
+    renderCurrentV3View();
+    return;
+  }
+  state.loading = true;
+  state.error = "";
+  state.message = "";
+  state.internalGameId = id;
+  renderCurrentV3View();
+  try {
+    const result = await v3Api.getRankingTestUsers(id);
+    if (String(result.internalGameId || "") !== id) throw new Error("RANKING_TEST_GAME_ID_MISMATCH");
+    const remote = result.state || {};
+    state.slots = Array.isArray(remote.slots) ? remote.slots : [];
+    state.setting = remote.setting || { includeInPublicRanking: false };
+    state.positionLabels = result.positionLabels || {};
+    state.rows = v3RankingTestRenderer.rowsForSlot(state);
+  } catch (error) {
+    state.error = formatV3AdminError(error, "RANKING_TEST_READ_FAILED");
+    state.slots = [];
+    state.rows = v3RankingTestRenderer.rowsForSlot(state);
+  } finally {
+    state.loading = false;
+    renderCurrentV3View();
+  }
+}
+
+function updateRankingTestField(rowIndex, field, value) {
+  const state = v3State.rankingTestUsers;
+  if (!state.rows?.[rowIndex]) return;
+  state.rows[rowIndex][field] = value;
+  state.rows[rowIndex].playerName = "";
+}
+
+function selectRankingTestSlot(slot) {
+  const state = v3State.rankingTestUsers;
+  state.selectedSlot = Math.min(9, Math.max(1, Number(slot) || 1));
+  state.rows = v3RankingTestRenderer.rowsForSlot(state);
+  state.error = "";
+  state.message = "";
+  renderCurrentV3View();
+}
+
+async function saveRankingTestPrediction() {
+  const state = v3State.rankingTestUsers;
+  if (!v3State.selectedGameId || state.loading) return;
+  state.loading = true;
+  state.error = "";
+  state.message = "";
+  renderCurrentV3View();
+  try {
+    const result = await v3Api.saveRankingTestPrediction(v3State.selectedGameId, { slot: state.selectedSlot, prediction: state.rows });
+    state.slots = result.state?.slots || [];
+    state.setting = result.state?.setting || state.setting;
+    state.rows = v3RankingTestRenderer.rowsForSlot(state);
+    state.message = `TEST ${state.selectedSlot}を保存しました。`;
+  } catch (error) {
+    state.error = formatV3AdminError(error, "RANKING_TEST_SAVE_FAILED");
+  } finally {
+    state.loading = false;
+    renderCurrentV3View();
+  }
+}
+
+async function clearRankingTestPrediction() {
+  const state = v3State.rankingTestUsers;
+  if (!v3State.selectedGameId || state.loading || !window.confirm(`TEST ${state.selectedSlot}の予想をクリアしますか？`)) return;
+  state.loading = true;
+  state.error = "";
+  state.message = "";
+  renderCurrentV3View();
+  try {
+    const result = await v3Api.clearRankingTestPrediction(v3State.selectedGameId, state.selectedSlot);
+    state.slots = result.state?.slots || [];
+    state.setting = result.state?.setting || state.setting;
+    state.rows = v3RankingTestRenderer.rowsForSlot(state);
+    state.message = `TEST ${state.selectedSlot}をクリアしました。`;
+  } catch (error) {
+    state.error = formatV3AdminError(error, "RANKING_TEST_CLEAR_FAILED");
+  } finally {
+    state.loading = false;
+    renderCurrentV3View();
+  }
+}
+
+async function toggleRankingTestPublic() {
+  const state = v3State.rankingTestUsers;
+  if (!v3State.selectedGameId || state.loading) return;
+  const include = state.setting?.includeInPublicRanking !== true;
+  if (include && !window.confirm("この試合のTESTユーザーが公開ランキングへ表示されます。続行しますか？")) return;
+  state.loading = true;
+  state.error = "";
+  state.message = "";
+  renderCurrentV3View();
+  try {
+    const result = await v3Api.updateRankingTestToggle(v3State.selectedGameId, { includeInPublicRanking: include, confirmation: include ? "SHOW TEST USERS" : "" });
+    state.setting = result.state?.setting || { includeInPublicRanking: include };
+    state.slots = result.state?.slots || state.slots;
+    state.message = include ? "TESTユーザーを公開ランキングへ表示する設定にしました。" : "TESTユーザーを公開ランキングから外しました。";
+  } catch (error) {
+    state.error = formatV3AdminError(error, "RANKING_TEST_TOGGLE_FAILED");
+  } finally {
+    state.loading = false;
+    renderCurrentV3View();
+  }
+}
+
 async function loadV3OperationDetails() {
   const id = v3State.selectedGameId;
   if (!id) return;
@@ -1631,6 +1747,7 @@ async function loadV3() {
     v3State.automationLogs = payload.automationLogs;
     renderV3(payload);
     if (v3State.view === "lineup-correction") await loadV3LineupCorrections(true);
+    else if (v3State.view === "ranking-test-users") await loadRankingTestUsers(true);
     else if (v3State.view !== "roster") await loadV3OperationDetails();
     if (v3State.view === "roster") await loadManualRoster();
     setV3Status(`${v3State.payload.games.length}試合を表示しました。`);
@@ -1649,6 +1766,7 @@ function chooseV3View(view) {
     loadRankingExclusionGames();
   }
   if (view === "lineup-correction") loadV3LineupCorrections();
+  if (view === "ranking-test-users") loadRankingTestUsers();
   if (view === "roster") loadManualRoster();
   document.getElementById("v3Navigation")?.classList.remove("open");
   document.getElementById("mobileNavToggle")?.setAttribute("aria-expanded", "false");
@@ -1678,7 +1796,8 @@ async function selectV3Game(internalGameId, view = "workflow") {
   v3State.selectionSafetyNotice = v3SelectionSafety.selectionWarning(selected, new Date());
   v3StorageSet("starting9.admin-v3.selected-game", v3State.selectedGameId);
   chooseV3View(view);
-  await loadV3OperationDetails();
+  if (view === "ranking-test-users") await loadRankingTestUsers(true);
+  else await loadV3OperationDetails();
 }
 
 async function copyV3JobDetail(jobCopyButton) {
@@ -1723,6 +1842,7 @@ function handleV3HashChange() {
   v3State.selectionSafetyNotice = "";
   renderCurrentV3View();
   if (v3State.view === "lineup-correction") loadV3LineupCorrections();
+  else if (v3State.view === "ranking-test-users") loadRankingTestUsers(true);
   else if (v3State.view !== "roster") loadV3OperationDetails();
   if (v3State.view === "roster") loadManualRoster();
 }
@@ -1766,6 +1886,11 @@ adminV3Modules.createAdminV3Coordinator({
     selectLineupCorrectionPlayer: selectV3LineupCorrectionPlayer,
     selectLineupCorrection: selectV3LineupCorrection,
     submitLineupCorrection: submitV3LineupCorrection,
+    selectRankingTestSlot,
+    updateRankingTestField,
+    saveRankingTestPrediction,
+    clearRankingTestPrediction,
+    toggleRankingTestPublic,
     renderCurrentView: renderCurrentV3View,
     refreshAutomationLogs,
     selectGame: (internalGameId) => selectV3Game(internalGameId),

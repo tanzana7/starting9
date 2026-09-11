@@ -44,7 +44,9 @@ function serializeSlotNames(slotNames = {}) {
 function globalSettingsFromRow(row) {
   const slotNames = parseSlotNames(row?.slot_names_json);
   return {
-    globalEnabled: Number(row?.global_enabled || 0) === 1,
+    // A missing singleton means the feature has never been configured. Treat
+    // that state as the product default, while preserving an explicit row.
+    globalEnabled: row ? Number(row.global_enabled) === 1 : true,
     slotNames,
     displayNames: Object.fromEntries(Array.from({ length: RANKING_TEST_SLOT_MAX }, (_, index) => {
       const slot = index + 1;

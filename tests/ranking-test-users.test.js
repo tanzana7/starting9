@@ -30,6 +30,7 @@ import { scoreRankingTestPredictionsForGame } from "../auth-worker.js";
 const root = path.join(import.meta.dirname, "..");
 const migration = fs.readFileSync(path.join(root, "migrations", "0037_ranking_test_users.sql"), "utf8");
 const globalMigration = fs.readFileSync(path.join(root, "migrations", "0038_ranking_test_global_settings.sql"), "utf8");
+const defaultOnMigration = fs.readFileSync(path.join(root, "migrations", "0039_ranking_test_global_default_on.sql"), "utf8");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const renderer = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-ranking-test-users.js"), "utf8");
 
@@ -56,6 +57,13 @@ function createMinimalMigrationDb() {
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE games (internal_game_id TEXT PRIMARY KEY NOT NULL)");
   db.exec(migration);
+  db.exec(globalMigration);
+  db.exec(defaultOnMigration);
+  return db;
+}
+
+function createGlobalSettingsDbWithoutDefaultMigration() {
+  const db = new DatabaseSync(":memory:");
   db.exec(globalMigration);
   return db;
 }
@@ -105,16 +113,34 @@ function createRankingDb() {
   return db;
 }
 
-test("0037/0038は必要なテーブルだけを追加し、clean/existing DBへ冪等適用できる", () => {
+test("0037〜0039は必要なschema/defaultだけを追加し、clean/existing DBへ冪等適用できる", () => {
   const db = createMinimalMigrationDb();
   db.exec(migration);
   db.exec(globalMigration);
+  db.exec(defaultOnMigration);
   assert.doesNotThrow(() => db.exec(migration));
   assert.doesNotThrow(() => db.exec(globalMigration));
+  assert.doesNotThrow(() => db.exec(defaultOnMigration));
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'ranking_test_%' ORDER BY name").all().map((row) => row.name);
   assert.deepEqual(tables, ["ranking_test_game_settings", "ranking_test_global_settings", "ranking_test_predictions"]);
   assert.equal(db.prepare("SELECT sql FROM sqlite_master WHERE name = 'ranking_test_predictions'").get().sql.includes("slot BETWEEN 1 AND 9"), true);
   assert.equal(db.prepare("SELECT sql FROM sqlite_master WHERE name = 'ranking_test_global_settings'").get().sql.includes("id = 1"), true);
+  assert.equal(db.prepare("SELECT global_enabled FROM ranking_test_global_settings WHERE id = 1").get().global_enabled, 1);
+});
+
+test("global setting is ON when unset, while explicit OFF survives the default migration", async () => {
+  const unsetDb = createGlobalSettingsDbWithoutDefaultMigration();
+  const unset = await getRankingTestGlobalSettings(adapter(unsetDb));
+  assert.equal(unset.schemaAvailable, true);
+  assert.equal(unset.globalEnabled, true);
+
+  const explicitOffDb = createGlobalSettingsDbWithoutDefaultMigration();
+  explicitOffDb.prepare(
+    "INSERT INTO ranking_test_global_settings (id, global_enabled, slot_names_json, updated_by, created_at, updated_at) VALUES (1, 0, '{}', 'admin', '2026-09-10', '2026-09-10')"
+  ).run();
+  explicitOffDb.exec(defaultOnMigration);
+  assert.equal(explicitOffDb.prepare("SELECT global_enabled FROM ranking_test_global_settings WHERE id = 1").get().global_enabled, 0);
+  assert.equal((await getRankingTestGlobalSettings(adapter(explicitOffDb))).globalEnabled, false);
 });
 
 test("TEST position mapping and fixed names are explicit", () => {
@@ -174,11 +200,11 @@ test("admin TEST rows support save/reload/clear and per-game toggle state", asyn
   assert.equal(state.setting.includeInPublicRanking, true);
 });
 
-test("global settings and display names persist without changing slot identity", async () => {
+test("global settings default ON and display names persist without changing slot identity", async () => {
   const db = createMinimalMigrationDb();
   const d1 = adapter(db);
   const before = await getRankingTestGlobalSettings(d1);
-  assert.equal(before.globalEnabled, false);
+  assert.equal(before.globalEnabled, true);
   assert.equal(before.displayNames["1"], "S9_TEST_1");
   await updateRankingTestGlobalSettings(d1, { globalEnabled: true, slotNames: {}, updatedBy: "admin-1", now: new Date("2026-09-10T00:00:00Z") });
   await updateRankingTestDisplayName(d1, { slot: 3, displayName: "まりすA", updatedBy: "admin-1", now: new Date("2026-09-10T00:00:01Z") });
@@ -187,6 +213,43 @@ test("global settings and display names persist without changing slot identity",
   assert.equal(after.slotNames["3"], "まりすA");
   assert.equal(after.displayNames["1"], "S9_TEST_1");
   assert.equal(after.displayNames["3"], "まりすA");
+});
+
+test("ranking treats an absent global singleton as ON and keeps count/pagination consistent", async () => {
+  const db = createRankingDb();
+  const d1 = adapter(db);
+  db.prepare("DELETE FROM ranking_test_global_settings").run();
+  db.prepare("UPDATE ranking_test_game_settings SET include_in_public_ranking = 0").run();
+  const firstPage = await getRankingForPeriod(d1, { limit: 1, offset: 0, qualifiedOnly: false, startAt: "2026-09-01", endAt: "2026-10-01", includeTestUsers: true });
+  const secondPage = await getRankingForPeriod(d1, { limit: 1, offset: 1, qualifiedOnly: false, startAt: "2026-09-01", endAt: "2026-10-01", includeTestUsers: true });
+  assert.equal(firstPage.pagination.totalUsers, 2);
+  assert.equal(secondPage.pagination.totalUsers, 2);
+  assert.equal(firstPage.rows.length, 1);
+  assert.equal(secondPage.rows.length, 1);
+  assert.notEqual(firstPage.rows[0].username, secondPage.rows[0].username);
+});
+
+test("repeated TEST materialization is idempotent and does not duplicate doubleheader game rows", async () => {
+  const db = createMinimalMigrationDb();
+  const d1 = adapter(db);
+  db.prepare("INSERT INTO games VALUES ('ig1')").run();
+  const first = await scoreRankingTestPredictionsForGame(d1, "ig1", new Date("2026-09-10T00:00:00Z"));
+  const second = await scoreRankingTestPredictionsForGame(d1, "ig1", new Date("2026-09-10T00:00:01Z"));
+  assert.equal(first.materialized, 9);
+  assert.equal(second.materialized, 9);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM ranking_test_predictions WHERE internal_game_id = 'ig1'").get().count, 9);
+
+  const rankingDb = createRankingDb();
+  rankingDb.prepare("INSERT INTO ranking_games VALUES ('g2', 'ig2', '2026-09-10', 1, 'scored', 0, 'published')").run();
+  rankingDb.prepare("INSERT INTO game_lineups VALUES ('ig2', 'lineup-2')").run();
+  rankingDb.prepare("INSERT INTO game_scoring_revisions VALUES ('score-2', 'ig2', 'lineup-2', 1, 'completed')").run();
+  rankingDb.prepare("INSERT INTO ranking_test_game_settings VALUES ('ig2', 1, 'admin', '2026-09-10', '2026-09-10')").run();
+  rankingDb.prepare("INSERT INTO ranking_test_predictions VALUES ('ig2', 1, '{}', 'scored', 90, 99, 'lineup-2', 'score-2', '2026-09-10', '2026-09-10', '2026-09-10')").run();
+  const combined = await getRankingForPeriod(adapter(rankingDb), { limit: 50, offset: 0, qualifiedOnly: false, startAt: "2026-09-01", endAt: "2026-10-01", includeTestUsers: true });
+  const t1 = combined.rows.find((row) => row.username === "S9_TEST_1");
+  assert.equal(t1.gamesPlayed, 2);
+  assert.equal(t1.totalScore, 189);
+  assert.equal(combined.pagination.totalUsers, 2);
 });
 
 test("public period ranking merges current TEST rows only when toggle and lineage are valid", async () => {

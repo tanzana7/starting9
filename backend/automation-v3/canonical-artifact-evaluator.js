@@ -24,7 +24,7 @@ function parseLineup(value) {
 function revisionIdentity(row) {
   const revisionId = text(row?.revision_id || row?.revisionId);
   if (revisionId) return revisionId;
-  const gameId = text(row?.game_id || row?.gameId);
+  const gameId = text(row?.game_id || row?.gameId || row?.game_code || row?.gameCode);
   const version = Number(row?.version);
   return gameId && Number.isInteger(version) ? `${gameId}:${version}` : null;
 }
@@ -35,11 +35,22 @@ function revisionIdentities(row) {
   if (primaryIdentity) identities.add(primaryIdentity);
   const version = Number(row?.version);
   if (!Number.isInteger(version)) return identities;
-  for (const key of ["game_id", "gameId", "internal_game_id", "internalGameId"]) {
+  for (const key of ["game_id", "gameId", "game_code", "gameCode", "internal_game_id", "internalGameId"]) {
     const value = text(row?.[key]);
     if (value) identities.add(`${value}:${version}`);
   }
   return identities;
+}
+
+export function revisionMatchesIdentity(row, marker) {
+  const identity = text(marker);
+  return Boolean(identity && revisionIdentities(row).has(identity));
+}
+
+export function revisionsMatch(left, right) {
+  const leftIdentities = revisionIdentities(left);
+  const rightIdentities = revisionIdentities(right);
+  return Array.from(leftIdentities).some((identity) => rightIdentities.has(identity));
 }
 
 function validationResult(row, lineupCheck) {
@@ -65,7 +76,7 @@ function evaluateLineup({ canonicalLineup = null, lineupRevisions = [] } = {}) {
   const marker = text(canonicalLineup?.final_lineup_revision_id || canonicalLineup?.finalLineupRevisionId);
   if (!marker) return { ...emptyLineup(), canonicalRecordExists: Boolean(canonicalLineup) };
   const revision = (Array.isArray(lineupRevisions) ? lineupRevisions : [])
-    .find((row) => revisionIdentities(row).has(marker));
+    .find((row) => revisionMatchesIdentity(row, marker));
   if (!revision) return {
     ...emptyLineup("CANONICAL_FINAL_REVISION_NOT_FOUND"),
     canonicalFinalRevisionId: marker,
@@ -81,7 +92,8 @@ function evaluateLineup({ canonicalLineup = null, lineupRevisions = [] } = {}) {
       revisionValidated: false,
       lineupValid: false,
       lineupReady: false,
-      reason: "CANONICAL_FINAL_REVISION_VALIDATION_INVALID"
+      reason: "CANONICAL_FINAL_REVISION_VALIDATION_INVALID",
+      revisionAliases: Array.from(revisionIdentities(revision))
     };
   }
   if (!lineupCheck.ok) {
@@ -92,7 +104,8 @@ function evaluateLineup({ canonicalLineup = null, lineupRevisions = [] } = {}) {
       revisionValidated: true,
       lineupValid: false,
       lineupReady: false,
-      reason: "CANONICAL_FINAL_LINEUP_INVALID"
+      reason: "CANONICAL_FINAL_LINEUP_INVALID",
+      revisionAliases: Array.from(revisionIdentities(revision))
     };
   }
   return {
@@ -102,7 +115,8 @@ function evaluateLineup({ canonicalLineup = null, lineupRevisions = [] } = {}) {
     revisionValidated: true,
     lineupValid: true,
     lineupReady: true,
-    reason: READY_REASON
+    reason: READY_REASON,
+    revisionAliases: Array.from(revisionIdentities(revision))
   };
 }
 
@@ -110,7 +124,8 @@ function evaluateScoring({ canonicalLineup = null, lineup = {}, activeScoringRev
   const activeId = text(activeScoringRevision?.id);
   const lineupRevisionId = text(activeScoringRevision?.lineup_revision_id || activeScoringRevision?.lineupRevisionId);
   const canonicalRevisionId = text(lineup.canonicalFinalRevisionId);
-  const lineupRevisionMatch = Boolean(activeId && lineupRevisionId && canonicalRevisionId && lineupRevisionId === canonicalRevisionId);
+  const lineupRevisionMatch = Boolean(activeId && lineupRevisionId && canonicalRevisionId
+    && (lineupRevisionId === canonicalRevisionId || lineup.revisionAliases?.includes(lineupRevisionId)));
   const scoringStatusAvailable = canonicalLineup && Object.prototype.hasOwnProperty.call(canonicalLineup, "scoring_status");
   const completed = Boolean(activeScoringRevision
     && String(activeScoringRevision.status || "").toLowerCase() === "completed"

@@ -31,6 +31,7 @@ const root = path.join(import.meta.dirname, "..");
 const migration = fs.readFileSync(path.join(root, "migrations", "0037_ranking_test_users.sql"), "utf8");
 const globalMigration = fs.readFileSync(path.join(root, "migrations", "0038_ranking_test_global_settings.sql"), "utf8");
 const defaultOnMigration = fs.readFileSync(path.join(root, "migrations", "0039_ranking_test_global_default_on.sql"), "utf8");
+const enableExistingDefaultMigration = fs.readFileSync(path.join(root, "migrations", "0040_ranking_test_global_enable_existing_default.sql"), "utf8");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const renderer = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-ranking-test-users.js"), "utf8");
 
@@ -59,6 +60,7 @@ function createMinimalMigrationDb() {
   db.exec(migration);
   db.exec(globalMigration);
   db.exec(defaultOnMigration);
+  db.exec(enableExistingDefaultMigration);
   return db;
 }
 
@@ -113,19 +115,38 @@ function createRankingDb() {
   return db;
 }
 
-test("0037〜0039は必要なschema/defaultだけを追加し、clean/existing DBへ冪等適用できる", () => {
+test("0037〜0040は必要なschema/defaultだけを追加し、clean/existing DBへ冪等適用できる", () => {
   const db = createMinimalMigrationDb();
   db.exec(migration);
   db.exec(globalMigration);
   db.exec(defaultOnMigration);
+  db.exec(enableExistingDefaultMigration);
   assert.doesNotThrow(() => db.exec(migration));
   assert.doesNotThrow(() => db.exec(globalMigration));
   assert.doesNotThrow(() => db.exec(defaultOnMigration));
+  assert.doesNotThrow(() => db.exec(enableExistingDefaultMigration));
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'ranking_test_%' ORDER BY name").all().map((row) => row.name);
   assert.deepEqual(tables, ["ranking_test_game_settings", "ranking_test_global_settings", "ranking_test_predictions"]);
   assert.equal(db.prepare("SELECT sql FROM sqlite_master WHERE name = 'ranking_test_predictions'").get().sql.includes("slot BETWEEN 1 AND 9"), true);
   assert.equal(db.prepare("SELECT sql FROM sqlite_master WHERE name = 'ranking_test_global_settings'").get().sql.includes("id = 1"), true);
   assert.equal(db.prepare("SELECT global_enabled FROM ranking_test_global_settings WHERE id = 1").get().global_enabled, 1);
+});
+
+test("0040は0038由来の既存OFFだけを一度ONへ移行し、その後の明示OFFを尊重する", async () => {
+  const db = createGlobalSettingsDbWithoutDefaultMigration();
+  db.prepare(
+    "INSERT INTO ranking_test_global_settings (id, global_enabled, slot_names_json, updated_by, created_at, updated_at) VALUES (1, 0, '{}', 'migration:0038_default', '2026-09-10', '2026-09-10')"
+  ).run();
+  db.exec(defaultOnMigration);
+  assert.equal(db.prepare("SELECT global_enabled FROM ranking_test_global_settings WHERE id = 1").get().global_enabled, 0);
+  db.exec(enableExistingDefaultMigration);
+  assert.equal(db.prepare("SELECT global_enabled FROM ranking_test_global_settings WHERE id = 1").get().global_enabled, 1);
+
+  const d1 = adapter(db);
+  await updateRankingTestGlobalSettings(d1, { globalEnabled: false, slotNames: {}, updatedBy: "admin", now: new Date("2026-09-10T00:00:01Z") });
+  assert.equal((await getRankingTestGlobalSettings(d1)).globalEnabled, false);
+  // A new repository instance represents a Worker restart/deploy read.
+  assert.equal((await getRankingTestGlobalSettings(adapter(db))).globalEnabled, false);
 });
 
 test("global setting is ON when unset, while explicit OFF survives the default migration", async () => {

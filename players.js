@@ -26,7 +26,7 @@ const players = [
     category: "catcher",
     mainCategory: "catcher",
     subCategory: "infielder",
-    positions: ["三", "一", "捕", "外"],
+    positions: ["外", "捕", "一", "三"],
     defaultPosition: null
   },
   {
@@ -101,7 +101,7 @@ const players = [
     category: "catcher",
     mainCategory: "catcher",
     subCategory: "outfielder",
-    positions: ["外", "捕", "二"],
+    positions: ["外", "捕", "一", "二"],
     defaultPosition: null
   },
   {
@@ -116,7 +116,7 @@ const players = [
     category: "catcher",
     mainCategory: "catcher",
     subCategory: null,
-    positions: ["捕"],
+    positions: ["捕", "外"],
     defaultPosition: "捕"
   },
   {
@@ -206,7 +206,7 @@ const players = [
     category: "infielder",
     mainCategory: "infielder",
     subCategory: "outfielder",
-    positions: ["一", "三", "外"],
+    positions: ["一", "外", "三"],
     defaultPosition: null
   },
   {
@@ -296,7 +296,7 @@ const players = [
     category: "infielder",
     mainCategory: "infielder",
     subCategory: null,
-    positions: ["遊", "二", "三"],
+    positions: ["二", "遊", "三"],
     defaultPosition: null
   },
   {
@@ -311,7 +311,7 @@ const players = [
     category: "infielder",
     mainCategory: "infielder",
     subCategory: "outfielder",
-    positions: ["外", "一", "二", "三"],
+    positions: ["外", "二", "一", "三"],
     defaultPosition: null
   },
   {

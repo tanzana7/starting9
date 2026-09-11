@@ -12,6 +12,33 @@ import {
 const root = path.join(import.meta.dirname, "..");
 const publicPlayers = fs.readFileSync(path.join(root, "players.js"), "utf8");
 
+test("対象6選手のおすすめ守備位置はcanonical選手順と指定優先順位を保持する", () => {
+  const expected = [
+    { name: "郡司裕也", uniformNumber: "3", positions: ["外", "捕", "一", "三"] },
+    { name: "吉田賢吾", uniformNumber: "60", positions: ["外", "捕", "一", "二"] },
+    { name: "田宮裕涼", uniformNumber: "64", positions: ["捕", "外"] },
+    { name: "清宮幸太郎", uniformNumber: "21", positions: ["一", "外", "三"] },
+    { name: "山縣秀", uniformNumber: "54", positions: ["二", "遊", "三"] },
+    { name: "細川凌平", uniformNumber: "56", positions: ["外", "二", "一", "三"] }
+  ];
+
+  for (const player of expected) {
+    const masterPlayer = findFightersPlayerByName(player.name);
+    assert.equal(masterPlayer?.uniformNumber, player.uniformNumber, player.name);
+    assert.equal(createFightersPlayerId(masterPlayer?.uniformNumber), `F-${player.uniformNumber}`);
+
+    const record = publicPlayers.match(
+      new RegExp(`name:\\s*"${player.name}"[\\s\\S]*?uniformNumber:\\s*"${player.uniformNumber}"[\\s\\S]*?positions:\\s*\\[([^\\]]*)\\]`)
+    );
+    assert.ok(record, `${player.name} public player record`);
+    assert.deepEqual(
+      [...record[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]),
+      player.positions,
+      player.name
+    );
+  }
+});
+
 test("常谷拓輝は公開players masterに公式登録区分とアプリ補完ポジションを持つ", () => {
   assert.match(publicPlayers, /name:\s*"常谷拓輝"[\s\S]*?uniformNumber:\s*"95"/);
   assert.match(publicPlayers, /name:\s*"常谷拓輝"[\s\S]*?registeredPosition:\s*"内野手"/);

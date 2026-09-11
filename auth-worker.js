@@ -109,6 +109,8 @@ import { buildV3CronSummary } from "./backend/automation-v3/diagnostics.js";
 import { assessV3LineupArtifact } from "./backend/automation-v3/lineup-artifacts.js";
 import {
   evaluateCanonicalArtifactsFromDb,
+  revisionMatchesIdentity,
+  revisionsMatch,
   toCanonicalArtifactStageArtifacts
 } from "./backend/automation-v3/canonical-artifact-evaluator.js";
 import { deriveAdminV3GameProgressStatus } from "./backend/automation-v3/admin-progress-status.js";
@@ -1854,7 +1856,7 @@ async function executeV3LineupExecutor({ env, internalGameId, now, target, state
 function v3LineupRevisionIdentity(row) {
   const revisionId = String(row?.revision_id || "").trim();
   if (revisionId) return revisionId;
-  const gameId = String(row?.game_id || "").trim();
+  const gameId = String(row?.game_id || row?.gameId || row?.game_code || row?.gameCode || "").trim();
   const version = Number(row?.version);
   return gameId && Number.isInteger(version) ? `${gameId}:${version}` : "";
 }
@@ -6774,9 +6776,13 @@ export async function scoreRankingTestPredictionsForGame(db, internalGameId, now
     return { status: "waiting_for_real_scoring", scored: 0, invalid: materialized.invalid, ...materialized };
   }
   const actual = sanitizeActualLineupForScoring(parseStoredActualLineup(finalRevision.actual_lineup_json), { allowUnresolvedPlayer: true });
-  if (!actual.ok || String(activeRevision.lineup_revision_id || "") !== String(finalRevision.revision_id || "")) {
+  if (!actual.ok || !revisionMatchesIdentity(finalRevision, activeRevision.lineup_revision_id)) {
     return { status: "stale_canonical_lineup", scored: 0, invalid: 0 };
   }
+  // ranking_test_predictions is joined by the canonical marker. Keep the
+  // stored TEST lineage aligned even when the revision row retains a legacy
+  // game-code identifier.
+  const testLineupRevisionId = String(lineup.final_lineup_revision_id || finalRevision.revision_id || "");
   const timestamp = now.toISOString();
   const statements = [];
   let scored = 0;
@@ -6801,7 +6807,7 @@ export async function scoreRankingTestPredictionsForGame(db, internalGameId, now
           SET status = 'scored', score = ?1, max_score = ?2, lineup_revision_id = ?3,
               scoring_revision_id = ?4, scored_at = ?5, updated_at = ?5
         WHERE internal_game_id = ?6 AND slot = ?7`
-    ).bind(score.total, SCORING_MAX_SCORE, finalRevision.revision_id, activeRevision.id, timestamp, internalGameId, slot.slot));
+    ).bind(score.total, SCORING_MAX_SCORE, testLineupRevisionId, activeRevision.id, timestamp, internalGameId, slot.slot));
   }
   if (statements.length) await db.batch(statements);
   return { status: "scored", scored, invalid: invalid + materialized.invalid, ...materialized, lineupRevisionId: finalRevision.revision_id, scoringRevisionId: activeRevision.id };
@@ -7326,7 +7332,7 @@ async function getV3CanonicalFinalRevision(db, internalGameId, revisions = null)
     throw createV3Error("V3_LINEUP_CORRECTION_FINAL_LINEUP_REQUIRED", "canonical final_lineup_revision_idが確認できないため、過去スタメンを修正できません。", { httpStatus: 409 });
   }
   const rows = Array.isArray(revisions) ? revisions : await getV3LineupRevisionRows(db, canonical.game_id || id, id);
-  const revision = rows.find((row) => v3LineupRevisionIdentity(row) === marker);
+  const revision = rows.find((row) => revisionMatchesIdentity(row, marker));
   if (!revision) {
     throw createV3Error("V3_LINEUP_CORRECTION_FINAL_LINEUP_REQUIRED", "canonical final_lineup_revision_idに対応するrevisionが見つかりません。", { httpStatus: 409 });
   }
@@ -7494,7 +7500,7 @@ async function handleAdminV3LineupCorrection(request, env, cors, route) {
       allowUnresolvedPlayer: false
     });
     const latestCanonical = await getV3CanonicalFinalRevision(env.AUTH_DB, context.id);
-    if (v3LineupRevisionIdentity(latestCanonical.revision) === v3LineupRevisionIdentity(revision)) {
+    if (revisionsMatch(latestCanonical.revision, revision)) {
       throw createV3Error("V3_LINEUP_CORRECTION_NO_OP", "同じ修正が別の操作ですでに確定されています。", { httpStatus: 409 });
     }
     const now = new Date();
@@ -7614,7 +7620,7 @@ async function getV3LineupDataHealth(db, internalGameId, workflowState = "schedu
     const canonicalFinalRevisionId = String(canonical?.final_lineup_revision_id || "").trim();
     health.canonicalFinalRevisionId = canonicalFinalRevisionId || null;
     health.canonicalFinalRevisionValid = Boolean(canonicalFinalRevisionId && finalizedChecks.some(({ row, check }) =>
-      v3LineupRevisionIdentity(row) === canonicalFinalRevisionId && check.ok));
+      revisionMatchesIdentity(row, canonicalFinalRevisionId) && check.ok));
     health.finalizedId = validFinalized?.row?.revision_id || validFinalized?.row?.id || null;
     health.finalizedInternalGameId = validFinalized?.row?.internal_game_id || validFinalized?.row?.game_id || null;
     health.finalizedRowCount = validFinalized ? validFinalized.check.diagnostics.playerCount : null;
@@ -7973,7 +7979,7 @@ export function getManualLineupRevisionCancelDecision({ gameDate = "", workflowS
   if (!canonical) return { allowed: true, canonicalLinked: false, revisionId };
   const canonicalRevisionId = String(canonical.final_lineup_revision_id || "");
   if (canonicalRevisionId) {
-    if (canonicalRevisionId !== revisionId) {
+    if (!revisionMatchesIdentity(revision, canonicalRevisionId)) {
       return { allowed: false, code: "V3_MANUAL_LINEUP_REVISION_LINK_MISMATCH", message: "canonicalスタメンと取消対象revisionの紐付けが一致しません。" };
     }
     return { allowed: true, canonicalLinked: true, canonicalLinkType: "revision_id", revisionId };
@@ -8010,7 +8016,7 @@ async function handleAdminV3LineupRevisionCancel(request, env, cors, route) {
     }
     const stateRow = await env.AUTH_DB.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(context.id).first();
     const revisions = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
-    const revision = revisions.find((row) => String(row.revision_id || `${row.game_id}:${Number(row.version)}`) === String(route.revisionId));
+    const revision = revisions.find((row) => revisionMatchesIdentity(row, route.revisionId));
     const canonical = await getCanonicalLineupForManualRevisionCancel(env.AUTH_DB, context.id);
     const decision = getManualLineupRevisionCancelDecision({ gameDate: context.target?.game_date, workflowState: stateRow?.state, revision, canonical, now: new Date() });
     if (!decision.allowed) throw createV3Error(decision.code, decision.message, { httpStatus: decision.code === "V3_MANUAL_LINEUP_REVISION_NOT_FOUND" ? 404 : 409 });
@@ -18805,6 +18811,14 @@ async function scoreClaimedGameLineup(db, record, now, isTestPrediction = 0) {
     revisionId,
     "score_revision_capture"
   );
+  // SQL lineage guards compare the canonical pointer literally. Resolve the
+  // current pointer once after the alias-safe capture check so legacy and
+  // internal game identifiers retain TOCTOU protection.
+  const lineageGuardRevisionId = await getCurrentV3LineupRevisionGuard(
+    db,
+    record.internal_game_id || "",
+    revisionId
+  );
   const revision = await beginGameScoringRevision(db, {
     gameId: record.game_id,
     internalGameId: record.internal_game_id || "",
@@ -18821,7 +18835,7 @@ async function scoreClaimedGameLineup(db, record, now, isTestPrediction = 0) {
         revisionNumber: revision.number,
         reason: "existing_completed_scoring",
         now,
-        expectedLineupRevisionId: revisionId
+        expectedLineupRevisionId: lineageGuardRevisionId
       })
       : revision;
     await db.prepare(
@@ -18867,12 +18881,12 @@ async function scoreClaimedGameLineup(db, record, now, isTestPrediction = 0) {
       isTestPrediction,
       record.internal_game_id || "",
       revision.number,
-      revisionId
+      lineageGuardRevisionId
     );
     await assertCurrentV3LineupRevision(
       db,
       record.internal_game_id || "",
-      revisionId,
+      lineageGuardRevisionId,
       "score_after_persist"
     );
     const noOpReason = scoring.processed === 0
@@ -18888,14 +18902,14 @@ async function scoreClaimedGameLineup(db, record, now, isTestPrediction = 0) {
         revisionNumber: revision.number,
         reason: noOpReason || "initial_scoring",
         now,
-        expectedLineupRevisionId: revisionId
+        expectedLineupRevisionId: lineageGuardRevisionId
       })
       : revision;
     await completeGameScoringRevision(db, {
       internalGameId: record.internal_game_id || "",
       scoringRevisionId: persistedRevision?.id || revision.id,
       now,
-      expectedLineupRevisionId: revisionId
+      expectedLineupRevisionId: lineageGuardRevisionId
     });
     return { ...result, scoringRevisionId: persistedRevision?.id || revision.id, status: noOpReason ? "no_op_success" : "scored", noOpReason };
   } catch (error) {
@@ -19968,7 +19982,41 @@ async function isCurrentV3LineupRevision(db, internalGameId, expectedRevisionId)
   const canonical = await db.prepare(
     "SELECT final_lineup_revision_id FROM game_lineups WHERE internal_game_id = ?1 LIMIT 1"
   ).bind(internalId).first();
-  return String(canonical?.final_lineup_revision_id || "").trim() === expected;
+  const canonicalMarker = String(canonical?.final_lineup_revision_id || "").trim();
+  if (!canonicalMarker) return false;
+  if (canonicalMarker === expected) return true;
+  const revisionColumns = await getTableColumnSet(db, "game_lineup_revisions");
+  if (!revisionColumns.has("internal_game_id")) return false;
+  const revisions = await db.prepare(
+    "SELECT game_id, internal_game_id, version, revision_id FROM game_lineup_revisions WHERE internal_game_id = ?1"
+  ).bind(internalId).all();
+  return (revisions.results || []).some((row) =>
+    revisionMatchesIdentity(row, expected) && revisionMatchesIdentity(row, canonicalMarker));
+}
+
+async function getCurrentV3LineupRevisionGuard(db, internalGameId, expectedRevisionId) {
+  const internalId = String(internalGameId || "").trim();
+  const expected = String(expectedRevisionId || "").trim();
+  if (!internalId || !expected) return expected;
+  const columns = await getTableColumnSet(db, "game_lineups");
+  if (!columns.has("internal_game_id") || !columns.has("final_lineup_revision_id")) return expected;
+  const canonical = await db.prepare(
+    "SELECT final_lineup_revision_id FROM game_lineups WHERE internal_game_id = ?1 LIMIT 1"
+  ).bind(internalId).first();
+  const canonicalMarker = String(canonical?.final_lineup_revision_id || "").trim();
+  if (!canonicalMarker) throw createV3StaleLineupRevisionError(internalId, expected, "score_revision_guard_capture");
+  if (canonicalMarker === expected) return canonicalMarker;
+  const revisionColumns = await getTableColumnSet(db, "game_lineup_revisions");
+  if (!revisionColumns.has("internal_game_id")) {
+    throw createV3StaleLineupRevisionError(internalId, expected, "score_revision_guard_capture");
+  }
+  const revisions = await db.prepare(
+    "SELECT game_id, internal_game_id, version, revision_id FROM game_lineup_revisions WHERE internal_game_id = ?1"
+  ).bind(internalId).all();
+  const sameRevision = (revisions.results || []).some((row) =>
+    revisionMatchesIdentity(row, expected) && revisionMatchesIdentity(row, canonicalMarker));
+  if (!sameRevision) throw createV3StaleLineupRevisionError(internalId, expected, "score_revision_guard_capture");
+  return canonicalMarker;
 }
 
 function createV3StaleLineupRevisionError(internalGameId, expectedRevisionId, stage) {

@@ -344,6 +344,37 @@ test("Golden Path A rerun: 公開済みの同一Cronはjob・採点・ランキ�
   }
 });
 
+test("legacy game-code revisionでもformal scoreはcanonical lineageを保って完了する", async () => {
+  const fixture = await createGoldenDb();
+  try {
+    const prepared = await prepareManualLineup(fixture);
+    const legacyGameId = "f-h-legacy-1";
+    fixture.database.prepare(
+      "UPDATE game_lineup_revisions SET game_id = ?, revision_id = ? WHERE internal_game_id = ? AND version = 1"
+    ).run(legacyGameId, `${legacyGameId}:1`, GAME_ID);
+    fixture.database.prepare(
+      "UPDATE game_lineups SET game_id = ?, final_lineup_revision_id = ? WHERE internal_game_id = ?"
+    ).run(legacyGameId, `${GAME_ID}:1`, GAME_ID);
+
+    const scoreJob = await createDueJob(fixture, "score", new Date(fixture.startAt.getTime() + 12 * 60 * 1000), 101);
+    const claim = await claimV3Job(fixture.env.AUTH_DB, { jobId: scoreJob.job.id, now: new Date(fixture.startAt.getTime() + 12 * 60 * 1000) });
+    const result = await executeGameAutomationV3Job({
+      env: fixture.env,
+      job: claim,
+      internalGameId: GAME_ID,
+      now: new Date(fixture.startAt.getTime() + 12 * 60 * 1000)
+    });
+    assert.equal(result.stateAfter, "scored");
+    assert.equal(fixture.database.prepare("SELECT scoring_status FROM game_lineups WHERE internal_game_id = ?").get(GAME_ID).scoring_status, "scored");
+    assert.equal(fixture.database.prepare("SELECT lineup_revision_id FROM game_scoring_revisions WHERE internal_game_id = ? AND is_active = 1").get(GAME_ID).lineup_revision_id, `${legacyGameId}:1`);
+    const canonical = await evaluateCanonicalArtifactsFromDb(fixture.env.AUTH_DB, GAME_ID);
+    assert.equal(canonical.aggregate.scoringReady, true);
+    assert.equal(canonical.lineup.canonicalFinalRevisionId, prepared.saveBody.revision.revisionId);
+  } finally {
+    fixture.database.close();
+  }
+});
+
 test("Golden Path B: 公開後のA→B correctionは旧revisionを保持してBだけを再採点・再反映・再公開する", async () => {
   const fixture = await createGoldenDb();
   try {

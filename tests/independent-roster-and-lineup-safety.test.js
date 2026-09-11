@@ -71,6 +71,30 @@ test("revision取消はmanualの未来scheduledだけを許可し、自動・採
   assert.equal(getManualLineupRevisionCancelDecision({ ...base, canonical: { scoring_status: "pending" } }).allowed, false);
 });
 
+test("revision取消はlegacy game-codeとinternal game-idのcanonical aliasを同一revisionとして扱う", () => {
+  const decision = getManualLineupRevisionCancelDecision({
+    gameDate: "2026-09-08",
+    workflowState: "scheduled",
+    revision: {
+      revision_id: "game-code:2",
+      game_id: "game-code",
+      internal_game_id: "11111111-1111-4111-8111-111111111111",
+      version: 2,
+      source: "manual-revision",
+      is_current: 1,
+      is_final: 1,
+      lineup_fingerprint: "fp"
+    },
+    canonical: {
+      scoring_status: "pending",
+      final_lineup_revision_id: "11111111-1111-4111-8111-111111111111:2"
+    },
+    now: new Date("2026-09-04T00:00:00.000Z")
+  });
+  assert.equal(decision.allowed, true);
+  assert.equal(decision.canonicalLinked, true);
+});
+
 test("manual lineup payloadはreasonなしで構成し、cancel API endpointが定義されている", () => {
   const admin = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
   const api = fs.readFileSync(path.join(root, "frontend", "admin-v3", "api-client.js"), "utf8");

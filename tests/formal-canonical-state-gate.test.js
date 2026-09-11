@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { evaluateCanonicalArtifacts } from "../backend/automation-v3/canonical-artifact-evaluator.js";
+import {
+  evaluateCanonicalArtifacts,
+  revisionMatchesIdentity,
+  revisionsMatch
+} from "../backend/automation-v3/canonical-artifact-evaluator.js";
 import { buildStagePlan, buildStagePlans, buildV3PlanningState } from "../backend/automation-v3/planning-engine.js";
 import { planV3MainJobs } from "../backend/automation-v3/orchestrator.js";
 
@@ -159,6 +163,51 @@ test("legacy candidate revisionをmanual finalizeしたcanonical pointerでもsc
   } finally {
     database.close();
   }
+});
+
+test("canonical revision aliasは同一game/versionだけを一致させる", () => {
+  const revision = {
+    revision_id: "game-code:2",
+    game_id: "game-code",
+    internal_game_id: GAME_ID,
+    version: 2
+  };
+  assert.equal(revisionMatchesIdentity(revision, "game-code:2"), true);
+  assert.equal(revisionMatchesIdentity(revision, `${GAME_ID}:2`), true);
+  assert.equal(revisionMatchesIdentity({ ...revision, gameId: "game-code", internalGameId: GAME_ID }, `${GAME_ID}:2`), true);
+  assert.equal(revisionMatchesIdentity({ gameCode: "game-code", version: 2 }, "game-code:2"), true);
+  assert.equal(revisionMatchesIdentity(revision, "other-game:2"), false);
+  assert.equal(revisionMatchesIdentity(revision, `${GAME_ID}:3`), false);
+  assert.equal(revisionsMatch(revision, { revisionId: `${GAME_ID}:2`, gameId: GAME_ID, version: 2 }), true);
+  assert.equal(revisionsMatch(revision, { revisionId: `${GAME_ID}:3`, gameId: GAME_ID, version: 3 }), false);
+});
+
+test("active scoring revisionはlegacy revision idでもcanonical artifactと一致する", () => {
+  const artifacts = evaluateCanonicalArtifacts({
+    canonicalLineup: {
+      internal_game_id: GAME_ID,
+      final_lineup_revision_id: `${GAME_ID}:2`,
+      scoring_status: "scored",
+      scored_at: "2026-09-08T06:00:00.000Z"
+    },
+    lineupRevisions: [{
+      internal_game_id: GAME_ID,
+      game_id: "game-code",
+      revision_id: "game-code:2",
+      version: 2,
+      actual_lineup_json: lineupJson(),
+      validation_json: JSON.stringify({ ok: true })
+    }],
+    activeScoringRevision: {
+      id: "score-b",
+      lineup_revision_id: "game-code:2",
+      status: "completed"
+    },
+    rankingReflection: null
+  });
+  assert.equal(artifacts.lineup.lineupReady, true);
+  assert.equal(artifacts.scoring.lineupRevisionMatch, true);
+  assert.equal(artifacts.scoring.valid, true);
 });
 
 test("stale lineup_ready stateはcanonical score成立後にrankingを計画できる", () => {

@@ -19,7 +19,7 @@ import {
 import { planV3ProbableStarterJobs } from "./probable-starter-planner.js";
 import { isV3GameEligible } from "./domain.js";
 import { assessV3LineupArtifact } from "./lineup-artifacts.js";
-import { evaluateCanonicalArtifactsFromDb, hasCanonicalArtifactEvidence } from "./canonical-artifact-evaluator.js";
+import { evaluateCanonicalArtifactsFromDb, hasCanonicalArtifactEvidence, revisionMatchesIdentity } from "./canonical-artifact-evaluator.js";
 import { getV3CanonicalRosterSnapshot } from "./roster-repository.js";
 import { buildStagePlans, buildV3PlanningState, isV3JobForStage } from "./planning-engine.js";
 
@@ -60,15 +60,7 @@ function parseStoredLineupPayload(value) {
   }
 }
 
-function lineupRevisionIdentity(row) {
-  const revisionId = String(row?.revision_id || "").trim();
-  if (revisionId) return revisionId;
-  const gameId = String(row?.game_id || "").trim();
-  const version = Number(row?.version);
-  return gameId && Number.isInteger(version) ? `${gameId}:${version}` : "";
-}
-
-async function readV3LineupDataHealth(db, internalGameId, workflowState = "scheduled") {
+export async function readV3LineupDataHealth(db, internalGameId, workflowState = "scheduled") {
   const health = {
     available: false,
     verificationStatus: "unavailable",
@@ -90,7 +82,7 @@ async function readV3LineupDataHealth(db, internalGameId, workflowState = "sched
   };
   try {
     const revisions = await db.prepare(
-      `SELECT is_final, actual_lineup_json
+      `SELECT *
          FROM game_lineup_revisions
         WHERE internal_game_id = ?1
         ORDER BY version DESC`
@@ -131,7 +123,7 @@ async function readV3LineupDataHealth(db, internalGameId, workflowState = "sched
     health.canonicalFinalLineupRevisionId = canonicalFinalLineupRevisionId;
     health.canonicalFinalized = Boolean(canonicalFinalLineupRevisionId
       && canonicalCheck.ok
-      && revisionChecks.some(({ row, check }) => check.ok && lineupRevisionIdentity(row) === canonicalFinalLineupRevisionId));
+      && revisionChecks.some(({ row, check }) => check.ok && revisionMatchesIdentity(row, canonicalFinalLineupRevisionId)));
     health.finalizedLineupExists = finalizedChecks.some((check) => check.ok) || health.canonicalFinalized;
     health.finalizedValid = health.finalizedLineupExists;
     health.candidateCount = candidates.length;

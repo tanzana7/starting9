@@ -317,7 +317,7 @@ function createRankingCteWithTestUsers() {
        AND test_revisions.is_active = 1
        AND test_revisions.status = 'completed'
        AND (COALESCE(test_settings.include_in_public_ranking, 0) = 1
-            OR COALESCE(global_settings.global_enabled, 0) = 1)
+            OR COALESCE(global_settings.global_enabled, 1) = 1)
      WHERE test_predictions.status = 'scored'
        AND test_predictions.score IS NOT NULL
        AND test_predictions.max_score IS NOT NULL

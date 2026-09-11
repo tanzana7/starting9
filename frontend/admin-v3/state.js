@@ -107,7 +107,7 @@
         selectedSlot: 1,
         slots: [],
         presets: {},
-        globalSettings: { globalEnabled: false, slotNames: {}, displayNames: {} },
+        globalSettings: { globalEnabled: true, slotNames: {}, displayNames: {} },
         displayNameDraft: "",
         setting: { includeInPublicRanking: false },
         positionLabels: {},

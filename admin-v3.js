@@ -1644,18 +1644,20 @@ function updateRankingTestDisplayName(value) {
   v3State.rankingTestUsers.displayNameDraft = value;
 }
 
-async function saveRankingTestDisplayName() {
+async function saveRankingTestDisplayName(slot = v3State.rankingTestUsers.selectedSlot) {
   const state = v3State.rankingTestUsers;
+  const targetSlot = Number(slot);
+  if (!Number.isInteger(targetSlot) || targetSlot < 1 || targetSlot > 9 || targetSlot !== Number(state.selectedSlot)) return;
   if (state.loading) return;
   state.loading = true;
   state.error = "";
   state.message = "";
   renderCurrentV3View();
   try {
-    const result = await v3Api.updateRankingTestName({ slot: state.selectedSlot, displayName: state.displayNameDraft });
+    const result = await v3Api.updateRankingTestName({ slot: targetSlot, displayName: state.displayNameDraft });
     state.globalSettings = result.globalSettings || state.globalSettings;
-    state.displayNameDraft = state.globalSettings.slotNames?.[String(state.selectedSlot)] || "";
-    state.message = `TEST ${state.selectedSlot}の表示名を保存しました。`;
+    state.displayNameDraft = state.globalSettings.slotNames?.[String(targetSlot)] || "";
+    state.message = `TEST ${targetSlot}の表示名を保存しました。`;
   } catch (error) {
     state.error = formatV3AdminError(error, "RANKING_TEST_NAME_SAVE_FAILED");
   } finally {

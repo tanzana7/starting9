@@ -60,10 +60,10 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
     "frontend/admin-v3/render-diagnostics.js?v=v4-canonical-status-1",
     "frontend/admin-v3/render-ranking-reset.js?v=v4-canonical-status-1",
     "frontend/admin-v3/render-perfect-score-preview.js?v=v4-canonical-status-1",
-    "frontend/admin-v3/render-ranking-test-users.js?v=ranking-test-users-1-global-settings-1-ranking-test-fixed-presets-1",
+    "frontend/admin-v3/render-ranking-test-users.js?v=ranking-test-users-1-global-settings-1-ranking-test-fixed-presets-1-display-name-slot-binding-1",
     "frontend/admin-v3/render-manual-game-preview.js?v=v4-canonical-status-1",
-    "frontend/admin-v3/app-coordinator.js?v=independent-roster-lineup-safety-1-preserve-picker-scroll-1-admin-lineup-registration-emergency-fix-1-manual-lineup-two-step-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1",
-    "admin-v3.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-lineup-order-mobile-zoom-1-lineup-correction-1-admin-v3-game-progress-history-1-admin-lineup-registration-emergency-fix-1-admin-lineup-lock-reason-1-manual-lineup-late-registration-1-manual-lineup-two-step-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-v4-canonical-status-1"
+    "frontend/admin-v3/app-coordinator.js?v=independent-roster-lineup-safety-1-preserve-picker-scroll-1-admin-lineup-registration-emergency-fix-1-manual-lineup-two-step-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-display-name-slot-binding-1",
+    "admin-v3.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-lineup-order-mobile-zoom-1-lineup-correction-1-admin-v3-game-progress-history-1-admin-lineup-registration-emergency-fix-1-admin-lineup-lock-reason-1-manual-lineup-late-registration-1-manual-lineup-two-step-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-v4-canonical-status-1-display-name-slot-binding-1"
   ]);
   const modules = loadModules();
   assert.equal(typeof modules.createAdminV3State, "function");

@@ -138,12 +138,20 @@ test("T1〜T9固定プリセットはFighters masterへ解決され、指定順�
     5: [["万波中正", 9], ["水野達稀", 6], ["レイエス", 0], ["野村佑希", 8], ["清宮幸太郎", 3], ["吉田賢吾", 7], ["郡司裕也", 2], ["有薗直輝", 5], ["カストロ", 4]],
     6: [["水野達稀", 6], ["万波中正", 9], ["レイエス", 0], ["カストロ", 8], ["清宮幸太郎", 3], ["野村佑希", 5], ["奈良間大己", 4], ["田宮裕涼", 2], ["水谷瞬", 7]],
     7: [["今川優馬", 7], ["山縣秀", 6], ["レイエス", 0], ["野村佑希", 9], ["カストロ", 8], ["吉田賢吾", 3], ["有薗直輝", 5], ["奈良間大己", 4], ["進藤勇也", 2]],
-    8: [["郡司裕也", 5], ["水野達稀", 6], ["レイエス", 0], ["万波中正", 9], ["大塚瑠晏", 4], ["野村佑希", 7], ["清宮幸太郎", 3], ["細川凌平", 8], ["田宮裕涼", 2]],
+    8: [["郡司裕也", 5], ["水野達稀", 6], ["レイエス", 0], ["万波中正", 9], ["大塚瑠晏", 4], ["野村佑希", 7], ["清宮幸太郎", 3], ["山縣秀", 4], ["田宮裕涼", 2]],
     9: [["水野達稀", 6], ["郡司裕也", 2], ["レイエス", 0], ["万波中正", 9], ["野村佑希", 5], ["清宮幸太郎", 3], ["吉田賢吾", 7], ["細川凌平", 8], ["山縣秀", 4]]
   };
   for (const [slot, rows] of Object.entries(expected)) {
     const preset = resolveRankingTestPreset(Number(slot));
-    assert.equal(preset.ok, true, `TEST ${slot} should resolve`);
+    if (Number(slot) === 8) {
+      assert.equal(preset.ok, false);
+      assert.equal(preset.code, "RANKING_TEST_PRESET_INVALID");
+      assert.equal(preset.lineup[7].playerName, "山縣秀");
+      assert.equal(preset.lineup[7].position, "二");
+      assert.doesNotMatch(JSON.stringify(preset.definition), /細川/);
+    } else {
+      assert.equal(preset.ok, true, `TEST ${slot} should resolve`);
+    }
     assert.equal(preset.lineup.length, 9);
     assert.deepEqual(preset.definition.map((row) => [row.playerName, row.position]), rows);
     assert.equal(new Set(preset.lineup.map((row) => row.playerId)).size, 9);
@@ -219,8 +227,10 @@ test("global/game toggle ONはmanual saveなしで固定presetを専用tableへm
   db.prepare("INSERT INTO games VALUES ('ig1')").run();
   await updateRankingTestGlobalSettings(d1, { globalEnabled: true, slotNames: {}, updatedBy: "admin", now: new Date("2026-09-10T00:00:00Z") });
   let result = await scoreRankingTestPredictionsForGame(d1, "ig1", new Date("2026-09-10T00:00:00Z"));
-  assert.equal(result.materialized, 9);
-  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM ranking_test_predictions").get().count, 9);
+  assert.equal(result.materialized, 8);
+  assert.equal(result.invalid, 1);
+  assert.deepEqual(result.warnings.map((warning) => warning.slot), [8]);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM ranking_test_predictions").get().count, 8);
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'users'").get().count, 0);
   const before = db.prepare("SELECT COUNT(*) AS count FROM ranking_test_predictions").get().count;
   await updateRankingTestGlobalSettings(d1, { globalEnabled: false, slotNames: {}, updatedBy: "admin", now: new Date("2026-09-10T00:00:01Z") });
@@ -233,8 +243,9 @@ test("global/game toggle ONはmanual saveなしで固定presetを専用tableへm
   gameOnlyDb.prepare("INSERT INTO games VALUES ('ig2')").run();
   await updateRankingTestToggle(gameOnly, { internalGameId: "ig2", includeInPublicRanking: true, updatedBy: "admin", now: new Date("2026-09-10T00:00:00Z") });
   result = await scoreRankingTestPredictionsForGame(gameOnly, "ig2", new Date("2026-09-10T00:00:00Z"));
-  assert.equal(result.materialized, 9);
-  assert.equal(gameOnlyDb.prepare("SELECT COUNT(*) AS count FROM ranking_test_predictions").get().count, 9);
+  assert.equal(result.materialized, 8);
+  assert.equal(result.invalid, 1);
+  assert.equal(gameOnlyDb.prepare("SELECT COUNT(*) AS count FROM ranking_test_predictions").get().count, 8);
 });
 
 test("TEST feature is admin-only and isolated from real-user endpoints/data", () => {

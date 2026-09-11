@@ -1,7 +1,7 @@
 // 本番のPages配下では同一オリジンのPages Functionを使い、Cookieを再読込でも維持します。
 // file://で直接開く場合は認証APIを使わず、誤ったCookie境界を作りません。
 const AUTH_API_BASE_URL = resolveAuthApiBaseUrl();
-const AUTH_USERNAME_MIN_LENGTH = 3;
+const AUTH_USERNAME_MIN_LENGTH = 1;
 const AUTH_USERNAME_MAX_LENGTH = 16;
 const AUTH_PASSWORD_MIN_LENGTH = 8;
 const AUTH_PASSWORD_MAX_LENGTH = 72;

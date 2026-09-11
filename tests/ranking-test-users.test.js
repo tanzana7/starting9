@@ -174,7 +174,9 @@ test("TEST position mapping and fixed names are explicit", () => {
   assert.equal(rankingTestUsername(9), "S9_TEST_9");
   assert.equal(defaultRankingTestDisplayName(3), "S9_TEST_3");
   assert.deepEqual(normalizeRankingTestDisplayName("  まりすA  "), { ok: true, value: "まりすA" });
-  assert.equal(normalizeRankingTestDisplayName("a").ok, false);
+  assert.deepEqual(normalizeRankingTestDisplayName("a"), { ok: true, value: "a" });
+  assert.deepEqual(normalizeRankingTestDisplayName("  "), { ok: true, value: "" });
+  assert.equal(normalizeRankingTestDisplayName("a".repeat(17)).ok, false);
   assert.equal(normalizeRankingTestDisplayName("安全<3").ok, false);
 });
 

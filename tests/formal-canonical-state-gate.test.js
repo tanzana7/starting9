@@ -7,7 +7,7 @@ import {
   revisionsMatch
 } from "../backend/automation-v3/canonical-artifact-evaluator.js";
 import { buildStagePlan, buildStagePlans, buildV3PlanningState } from "../backend/automation-v3/planning-engine.js";
-import { planV3MainJobs } from "../backend/automation-v3/orchestrator.js";
+import { planV3MainJobs, readV3LineupDataHealth } from "../backend/automation-v3/orchestrator.js";
 
 const GAME_ID = "formal-canonical-gate-game";
 const START_AT = "2026-09-08T05:00:00.000Z";
@@ -180,6 +180,35 @@ test("canonical revision aliasは同一game/versionだけを一致させる", ()
   assert.equal(revisionMatchesIdentity(revision, `${GAME_ID}:3`), false);
   assert.equal(revisionsMatch(revision, { revisionId: `${GAME_ID}:2`, gameId: GAME_ID, version: 2 }), true);
   assert.equal(revisionsMatch(revision, { revisionId: `${GAME_ID}:3`, gameId: GAME_ID, version: 3 }), false);
+});
+
+test("orchestratorのlineup healthはcanonical markerとinternal game revision aliasを認識する", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE game_lineup_revisions (
+        internal_game_id TEXT, game_id TEXT, version INTEGER, revision_id TEXT,
+        is_final INTEGER, actual_lineup_json TEXT
+      );
+      CREATE TABLE game_lineups (
+        internal_game_id TEXT PRIMARY KEY, actual_lineup_json TEXT,
+        final_lineup_revision_id TEXT
+      );
+      INSERT INTO game_lineup_revisions VALUES (
+        '${GAME_ID}', 'game-code', 2, 'game-code:2', 1, '${lineupJson()}'
+      );
+      INSERT INTO game_lineups VALUES (
+        '${GAME_ID}', '${lineupJson()}', '${GAME_ID}:2'
+      );
+    `);
+
+    const health = await readV3LineupDataHealth(d1(database), GAME_ID);
+    assert.equal(health.canonicalFinalized, true);
+    assert.equal(health.finalizedValid, true);
+    assert.equal(health.canonicalFinalLineupRevisionId, `${GAME_ID}:2`);
+  } finally {
+    database.close();
+  }
 });
 
 test("active scoring revisionはlegacy revision idでもcanonical artifactと一致する", () => {

@@ -42,8 +42,45 @@ test("V4 status source is canonical artifacts plus formal jobs and keeps manual 
   assert.equal(status.source.jobs, "formal_job_repository");
   assert.equal(status.source.artifacts, "formal_artifact_repository");
   assert.equal(status.stages.lineup_finalize.label, "完了");
-  assert.equal(status.stages.score.label, "要対応");
+  assert.equal(status.stages.score.label, "正式スタメン確定待ち");
+  assert.equal(status.stages.score.key, "wait");
+  assert.equal(status.stages.ranking.label, "採点完了待ち");
+  assert.equal(status.stages.ranking.key, "wait");
+  assert.equal(status.stages.publish.label, "ランキング反映待ち");
+  assert.equal(status.stages.publish.key, "wait");
   assert.equal(status.stages.roster.label, "手動運用");
+});
+
+test("V4 canonical transitional stages do not promote waiting artifacts to attention", () => {
+  const status = buildAdminV4Status({
+    game: { gameDate: "2026-09-12", startAt: "2026-09-12T09:00:00.000Z" },
+    persistedState: "prediction_closed",
+    now: "2026-09-12T09:20:00.000Z",
+    schedule: {
+      startAt: "2026-09-12T09:00:00.000Z",
+      finalLineupAt: "2026-09-12T09:02:00.000Z",
+      scoringEarliestAt: "2026-09-12T09:02:00.000Z",
+      publicationAt: "2026-09-12T09:10:00.000Z"
+    },
+    phaseStatuses: {
+      score: { severity: "WAITING", reasonCode: "SCORE_PENDING" },
+      ranking: { severity: "WAITING", reasonCode: "RANKING_PENDING" },
+      publish: { severity: "WAITING", reasonCode: "PUBLISH_PENDING" }
+    },
+    canonicalArtifacts: {
+      available: true,
+      lineup: { reason: "ARTIFACT_READY" },
+      scoring: { reason: "ACTIVE_SCORING_REVISION_MISSING" },
+      ranking: { reason: "RANKING_REFLECTION_MISSING" },
+      publication: { reason: "PUBLICATION_NOT_COMPLETED" },
+      aggregate: { lineupReady: true, scoringReady: false, rankingReady: false, publicationReady: false }
+    }
+  });
+
+  for (const phase of ["score", "ranking", "publish"]) {
+    assert.equal(status.stages[phase].key, "wait");
+    assert.notEqual(status.stages[phase].label, "要対応");
+  }
 });
 
 test("invalid canonical lineup blocks V4 status without a second evaluator", () => {

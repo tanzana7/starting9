@@ -109,6 +109,16 @@ function canonicalStageStatus(phase, canonicalArtifacts, phaseStatuses, { game =
     if (phase === "ranking") return waitingStageStatus(phase, phaseStatuses, schedule, "採点完了待ち");
     if (phase === "publish") return waitingStageStatus(phase, phaseStatuses, schedule, "ランキング反映待ち");
   }
+  if (["score", "ranking", "publish"].includes(phase)
+    && ["waiting", "pending"].includes(normalized(phaseStatus.severity))
+    && artifact?.reason
+    && /MISSING|NOT_FOUND|NOT_COMPLETED/.test(String(artifact.reason))) {
+    return waitingStageStatus(phase, phaseStatuses, schedule, phase === "score"
+      ? "正式スタメン確定待ち"
+      : phase === "ranking"
+        ? "採点完了待ち"
+        : "ランキング反映待ち");
+  }
   if (artifact?.reason && /MISSING|NOT_FOUND|NOT_COMPLETED/.test(String(artifact.reason))) {
     return stageStatus("attention", "要対応", artifact.reason, { reasonCode: artifact.reason, ...phaseScheduleDetails(phase, schedule) });
   }

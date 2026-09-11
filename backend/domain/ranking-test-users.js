@@ -25,7 +25,7 @@ export const RANKING_TEST_POSITION_CANONICAL = Object.freeze({
   9: "右"
 });
 
-export const RANKING_TEST_DISPLAY_NAME_MIN_LENGTH = 3;
+export const RANKING_TEST_DISPLAY_NAME_MIN_LENGTH = 1;
 export const RANKING_TEST_DISPLAY_NAME_MAX_LENGTH = 16;
 
 export function defaultRankingTestDisplayName(slot) {

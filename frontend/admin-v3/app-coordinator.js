@@ -154,7 +154,8 @@
         const rankingTestSlot = closestFromEvent(event, "[data-v3-ranking-test-slot]");
         if (rankingTestSlot) { actions.selectRankingTestSlot(Number(rankingTestSlot.dataset.v3RankingTestSlot)); return; }
         if (closestFromEvent(event, "[data-v3-ranking-test-toggle]")) { await actions.toggleRankingTestPublic(); return; }
-        if (closestFromEvent(event, "[data-v3-ranking-test-name-save]")) { await actions.saveRankingTestDisplayName(); return; }
+        const rankingTestNameSave = closestFromEvent(event, "[data-v3-ranking-test-name-save]");
+        if (rankingTestNameSave) { await actions.saveRankingTestDisplayName(Number(rankingTestNameSave.dataset.v3RankingTestNameSave)); return; }
         if (closestFromEvent(event, "[data-v3-ranking-test-global]")) { await actions.toggleRankingTestGlobal(); return; }
 
         const diagnoseButton = closestFromEvent(event, "[data-v3-job-diagnose]");

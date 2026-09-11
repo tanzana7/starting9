@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import vm from "node:vm";
 import {
   getRankingTestState,
   getRankingTestGlobalSettings,
@@ -34,6 +35,7 @@ const defaultOnMigration = fs.readFileSync(path.join(root, "migrations", "0039_r
 const enableExistingDefaultMigration = fs.readFileSync(path.join(root, "migrations", "0040_ranking_test_global_enable_existing_default.sql"), "utf8");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const renderer = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-ranking-test-users.js"), "utf8");
+const coordinator = fs.readFileSync(path.join(root, "frontend", "admin-v3", "app-coordinator.js"), "utf8");
 
 function adapter(db) {
   return {
@@ -234,6 +236,46 @@ test("global settings default ON and display names persist without changing slot
   assert.equal(after.slotNames["3"], "まりすA");
   assert.equal(after.displayNames["1"], "S9_TEST_1");
   assert.equal(after.displayNames["3"], "まりすA");
+});
+
+test("TEST 1〜9の表示名は各slotで保存・reload後も維持される", async () => {
+  const db = createGlobalSettingsDbWithoutDefaultMigration();
+  const d1 = adapter(db);
+  const names = Object.fromEntries(Array.from({ length: 9 }, (_, index) => [String(index + 1), `テスト名${index + 1}`]));
+
+  for (const [slot, displayName] of Object.entries(names)) {
+    await updateRankingTestDisplayName(d1, { slot: Number(slot), displayName, updatedBy: "admin-1", now: new Date(`2026-09-10T00:00:0${slot}Z`) });
+  }
+
+  const saved = await getRankingTestGlobalSettings(d1);
+  assert.deepEqual(saved.slotNames, names);
+  assert.deepEqual(Object.fromEntries(Object.entries(names).map(([slot, name]) => [slot, saved.displayNames[slot]])), names);
+
+  const reloaded = await getRankingTestGlobalSettings(adapter(db));
+  assert.deepEqual(reloaded.slotNames, names);
+  assert.deepEqual(Object.fromEntries(Object.entries(names).map(([slot, name]) => [slot, reloaded.displayNames[slot]])), names);
+});
+
+test("admin TEST表示名の保存操作は表示中のslotをDOMから明示的に引き継ぐ", () => {
+  assert.match(renderer, /data-v3-ranking-test-name-slot="\$\{selectedSlot\}"/);
+  assert.match(renderer, /data-v3-ranking-test-name-save="\$\{selectedSlot\}"/);
+  assert.match(coordinator, /saveRankingTestDisplayName\(Number\(rankingTestNameSave\.dataset\.v3RankingTestNameSave\)\)/);
+});
+
+test("admin TEST表示名UIは4→5→9のslot切替でも同じslotを保存対象に表示する", () => {
+  const context = { window: {} };
+  vm.runInNewContext(renderer, context);
+  const state = { rankingTestUsers: { selectedSlot: 1, slots: [], presets: {}, globalSettings: {}, rows: [], setting: {} } };
+  const rankingTestRenderer = context.window.Starting9AdminV3.createAdminV3RankingTestRenderer({
+    state,
+    escapeHtml: (value) => String(value)
+  });
+  for (const slot of [4, 5, 9]) {
+    state.rankingTestUsers.selectedSlot = slot;
+    const html = rankingTestRenderer.render(null);
+    assert.match(html, new RegExp(`data-v3-ranking-test-name-slot="${slot}"`));
+    assert.match(html, new RegExp(`data-v3-ranking-test-name-save="${slot}"`));
+  }
 });
 
 test("ranking treats an absent global singleton as ON and keeps count/pagination consistent", async () => {

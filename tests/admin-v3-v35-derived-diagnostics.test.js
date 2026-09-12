@@ -315,6 +315,89 @@ test("未完了工程に完了時刻を推測して付与しない", () => {
   assert.equal(Object.hasOwn(status.stages.publish, "completedAt"), false);
 });
 
+test("publication readyはゲーム一覧の実在publishedAtを完了時刻fallbackとして表示する", () => {
+  const publishedAt = "2026-09-12T09:06:00.000Z";
+  const status = buildAdminV4Status({
+    game: { gameDate: "2026-09-12", publishedAt },
+    persistedState: "published",
+    automationMode: { mode: "v4_semi_auto", isV4SemiAuto: true },
+    canonicalArtifacts: {
+      available: true,
+      lineup: { lineupReady: true },
+      scoring: { valid: true },
+      ranking: { valid: true },
+      publication: { publicationStatus: "published", valid: true, publishedAt: null },
+      aggregate: { lineupReady: true, scoringReady: true, rankingReady: true, publicationReady: true }
+    },
+    jobs: []
+  });
+  assert.equal(status.stages.publish.key, "complete");
+  assert.equal(status.stages.publish.completedAt, publishedAt);
+});
+
+test("publication pendingまたはtimestamp nullでは完了時刻を表示しない", () => {
+  const status = buildAdminV4Status({
+    game: { gameDate: "2026-09-12", publishedAt: null },
+    persistedState: "published",
+    automationMode: { mode: "v4_semi_auto", isV4SemiAuto: true },
+    canonicalArtifacts: {
+      available: true,
+      publication: { publicationStatus: "ready", valid: false, publishedAt: null },
+      aggregate: { lineupReady: true, scoringReady: true, rankingReady: true, publicationReady: false }
+    },
+    jobs: []
+  });
+  assert.equal(Object.hasOwn(status.stages.publish, "completedAt"), false);
+});
+
+test("V4新規statusは固定start+10分のranking/publication予定を生成しない", () => {
+  const status = buildAdminV4Status({
+    game: { gameDate: "2026-09-12", startAt: "2026-09-12T09:00:00.000Z" },
+    persistedState: "scored",
+    automationMode: { mode: "v4_semi_auto", isV4SemiAuto: true },
+    schedule: {
+      startAt: "2026-09-12T09:00:00.000Z",
+      scoringEarliestAt: "2026-09-12T09:02:00.000Z",
+      rankingEarliestAt: "2026-09-12T09:10:00.000Z",
+      publicationAt: "2026-09-12T09:10:00.000Z"
+    },
+    canonicalArtifacts: {
+      available: true,
+      lineup: { lineupReady: true },
+      scoring: { valid: true },
+      ranking: { valid: false, reason: "RANKING_REFLECTION_MISSING" },
+      publication: { valid: false, reason: "PUBLICATION_NOT_COMPLETED" },
+      aggregate: { lineupReady: true, scoringReady: true, rankingReady: false, publicationReady: false }
+    },
+    jobs: []
+  });
+  assert.equal(status.schedule.rankingEarliestAt, null);
+  assert.equal(status.schedule.publicationAt, null);
+  assert.equal(Object.hasOwn(status.stages.ranking, "scheduledAt"), false);
+  assert.equal(Object.hasOwn(status.stages.publish, "scheduledAt"), false);
+});
+
+test("V4の旧job由来の予定時刻は履歴としてのみ残る", () => {
+  const historicalDueAt = "2026-09-12T09:10:00.000Z";
+  const status = buildAdminV4Status({
+    game: { gameDate: "2026-09-12" },
+    persistedState: "scored",
+    automationMode: { mode: "v4_semi_auto", isV4SemiAuto: true },
+    canonicalArtifacts: {
+      available: true,
+      lineup: { lineupReady: true },
+      scoring: { valid: true },
+      ranking: { valid: false, reason: "RANKING_REFLECTION_MISSING" },
+      publication: { valid: false, reason: "PUBLICATION_NOT_COMPLETED" },
+      aggregate: { lineupReady: true, scoringReady: true, rankingReady: false, publicationReady: false }
+    },
+    jobs: [{ job_type: "ranking_rebuild", status: "pending", scheduled_at: historicalDueAt }]
+  });
+  assert.equal(status.stages.ranking.scheduledAt, historicalDueAt);
+  assert.equal(status.schedule.rankingEarliestAt, null);
+  assert.equal(status.schedule.publicationAt, null);
+});
+
 test("admin-v3 workflow view uses V4 status markup and removes shadow/manual recovery controls", () => {
   const renderer = read("frontend/admin-v3/render-game-progress.js");
   const workflow = renderer.slice(renderer.indexOf("function renderWorkflowView"), renderer.indexOf("function renderLineupView"));

@@ -72,7 +72,16 @@ function stageCompletedAt(phase, { game = {}, canonical = null, jobs = [] } = {}
   if (phase === "lineup_finalize") return canonical?.lineup?.finalizedAt || latestCompletedJob(jobs, phase)?.completed_at || null;
   if (phase === "score") return canonical?.scoring?.completedAt || latestCompletedJob(jobs, phase)?.completed_at || null;
   if (phase === "ranking") return canonical?.ranking?.reflectedAt || latestCompletedJob(jobs, phase)?.completed_at || null;
-  if (phase === "publish") return canonical?.publication?.publishedAt || latestCompletedJob(jobs, phase)?.completed_at || null;
+  // The game list exposes the persisted publication timestamp from the formal
+  // artifact tables. Keep this as a read-only fallback for legacy/partial
+  // canonical payloads; never synthesize a time from the schedule or state.
+  if (phase === "publish") {
+    return canonical?.publication?.publishedAt
+      || game?.publishedAt
+      || game?.published_at
+      || latestCompletedJob(jobs, phase)?.completed_at
+      || null;
+  }
   return latestCompletedJob(jobs, phase)?.completed_at || null;
 }
 

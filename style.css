@@ -4181,13 +4181,15 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
 }
 
 .hit-badge.is-hit {
-  color: #ffffff;
-  background: var(--fighters-blue);
+  color: #4a3500;
+  background: #f0c766;
+  border: 1px solid #d4aa52;
 }
 
 .hit-badge.is-miss {
-  color: #ffffff;
-  background: #8a99aa;
+  color: #55687b;
+  background: #f1f4f7;
+  border: 1px solid #d9e2e9;
 }
 
 .hidden {

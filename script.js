@@ -4911,8 +4911,10 @@ function createResultCanvas(viewModel) {
     grid: "#d3dfeb",
     row: "#ffffff",
     order: "#1168a8",
-    hit: "#2f5d83",
-    miss: "#9aaaba",
+    hit: "#f0c766",
+    hitText: "#4a3500",
+    miss: "#f1f4f7",
+    missText: "#55687b",
     perfect: "#f0c766",
     perfectBorder: "#d4aa52",
     position: {
@@ -4981,8 +4983,9 @@ function createResultCanvas(viewModel) {
   };
   const drawJudgement = (isHit, label, x, y, width, height) => {
     drawRoundedRect(x, y, width, height, 5, isHit ? colors.hit : colors.miss, null);
-    drawText(isHit ? "○" : "×", x + 2, y + height / 2, Math.max(10, width * 0.34), `950 ${displayWidth < 480 ? 10 : 14}px Arial, sans-serif`, "#ffffff");
-    drawText(label, x + width * 0.34, y + height / 2, width * 0.62, `900 ${displayWidth < 480 ? 8 : 9}px Arial, sans-serif`, "#ffffff");
+    const textColor = isHit ? colors.hitText : colors.missText;
+    drawText(isHit ? "○" : "×", x + 2, y + height / 2, Math.max(10, width * 0.34), `950 ${displayWidth < 480 ? 10 : 14}px Arial, sans-serif`, textColor);
+    drawText(label, x + width * 0.34, y + height / 2, width * 0.62, `900 ${displayWidth < 480 ? 8 : 9}px Arial, sans-serif`, textColor);
   };
 
   context.fillStyle = colors.background;
@@ -5068,17 +5071,16 @@ function createResultCanvas(viewModel) {
     const pointValue = Number(detail.point);
     const isPerfectRow = Boolean(detail.isPerfect ?? (pointValue >= 11));
     const isZeroRow = pointValue === 0;
-    const rowFill = isPerfectRow ? "#fffaf0" : isZeroRow ? "#fbfcfd" : colors.row;
-    const rowBorder = isPerfectRow ? "#e6c978" : isZeroRow ? "#e2e8ed" : colors.grid;
+    const rowFill = isPerfectRow ? "#fffaf0" : colors.row;
+    const rowBorder = isPerfectRow ? "#e6c978" : colors.grid;
     context.lineWidth = 1;
     drawRoundedRect(tableX, rowY, contentWidth, rowHeight, 6, rowFill, rowBorder);
-    const isFullMatch = detail.isPlayerHit && detail.isOrderHit && detail.isPositionHit;
-    context.fillStyle = isPerfectRow ? "#fff8e8" : isFullMatch ? "#f5fbff" : "#f1f4f7";
+    context.fillStyle = isPerfectRow ? "#fff8e8" : colors.row;
     context.fillRect(actualColumnX + 1, rowY + 1, playerWidth - 2, rowHeight - 2);
     drawRoundedRect(tableX + 5, rowY + 6, orderWidth - 10, rowHeight - 12, 5, colors.order, null);
     drawText(detail.order, tableX + 5, rowY + rowHeight / 2, orderWidth - 10, `900 ${displayWidth < 480 ? 14 : 16}px Arial, sans-serif`, "#ffffff");
-    const actualCardFill = isPerfectRow ? "#fff6dc" : isFullMatch ? "#f8fcff" : "#f1f4f7";
-    const actualCardBorder = isPerfectRow ? colors.perfectBorder : isFullMatch ? colors.border : "#c8d3dd";
+    const actualCardFill = isPerfectRow ? "#fff6dc" : colors.row;
+    const actualCardBorder = isPerfectRow ? colors.perfectBorder : colors.border;
     drawPlayerCard(detail.player || "未予想", detail.position, predictedX, rowY + 6, playerWidth - 8, rowHeight - 12, colors.row, colors.border);
     drawPlayerCard(detail.actualPlayer || "-", detail.actualPosition, actualX, rowY + 6, playerWidth - 8, rowHeight - 12, actualCardFill, actualCardBorder);
     const chipGap = 4;
@@ -5093,8 +5095,8 @@ function createResultCanvas(viewModel) {
     context.moveTo(pointX, rowY + 8);
     context.lineTo(pointX, rowY + rowHeight - 8);
     context.stroke();
-    const pointFill = isPerfectRow ? "#fff1c7" : isZeroRow ? "#f8fafb" : "#eef2f5";
-    const pointBorder = isPerfectRow ? colors.perfectBorder : isZeroRow ? "#d9e2e9" : "#c2ceda";
+    const pointFill = isPerfectRow ? "#fff1c7" : "#ffffff";
+    const pointBorder = isPerfectRow ? colors.perfectBorder : "#c2ceda";
     const pointBadgeInset = displayWidth < 480 ? 6 : 9;
     drawRoundedRect(pointX + pointBadgeInset, rowY + 12, pointWidth - pointBadgeInset * 2, 28, 6, pointFill, pointBorder);
     drawText(detail.point, pointX + pointBadgeInset, rowY + rowHeight / 2, pointWidth - pointBadgeInset * 2, `950 ${displayWidth < 480 ? 13 : 15}px Arial, sans-serif`, isPerfectRow ? colors.perfectBorder : colors.text);

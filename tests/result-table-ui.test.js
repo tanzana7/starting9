@@ -296,7 +296,9 @@ test("採点結果テーブルは罫線主体のExcel風表組みでスマホに
   assert.match(css, /\.result-table th,[\s\S]*\.result-table td\s*\{[\s\S]*border: 1px solid #d3dfeb/);
   assert.match(css, /\.result-player-card\s*\{[\s\S]*border-radius: 0/);
   assert.match(css, /\.result-judgement-stack\s*\{[\s\S]*display: flex[\s\S]*flex-wrap: nowrap/);
-  assert.match(css, /\.result-judgement-stack \.hit-badge\s*\{[\s\S]*min-width: 0[\s\S]*border-radius: 0[\s\S]*font-size: 0\.62rem/);
+  assert.match(css, /\.result-judgement-stack\s*\{[\s\S]*gap: 2px/);
+  assert.match(css, /\.result-judgement-stack \.hit-badge\s*\{[\s\S]*min-width: 0[\s\S]*border-radius: 7px[\s\S]*font-size: 0\.62rem/);
+  assert.match(css, /\.result-table \.result-point-cell strong\s*\{[\s\S]*border-radius: 8px[\s\S]*background: #ffffff/);
   assert.match(css, /\.result-player-name\s*\{[\s\S]*overflow-wrap: anywhere/);
 });
 
@@ -334,8 +336,11 @@ test("結果Canvasは判定列・行高・点数バッジを微調整する", ()
   assert.match(canvas, /const rowGap = 0/);
   assert.match(canvas, /const pointFill = isPerfectRow/);
   assert.match(canvas, /context\.fillStyle = isPerfectRow \? "#fff8e8" : colors\.row/);
-  assert.match(canvas, /const pointBadgeInset = 0/);
-  assert.match(canvas, /drawRoundedRect\(pointX \+ pointBadgeInset/);
+  assert.match(canvas, /const pointBadgeInset = displayWidth < 480 \? 4 : 6/);
+  assert.match(canvas, /const pointBadgeHeight = 32/);
+  assert.match(canvas, /drawRoundedRect\(pointX \+ pointBadgeInset, pointBadgeY,[\s\S]*8, pointFill/);
+  assert.match(canvas, /const badgeInset = 3/);
+  assert.match(canvas, /drawRoundedRect\(badgeX, badgeY, badgeWidth, badgeHeight, 7/);
   assert.match(canvas, /const scoreStartX = padding \+ \(contentWidth - totalTextWidth - scoreGap - maxTextWidth\) \/ 2/);
   assert.match(canvas, /Starting9 結果発表/);
   assert.match(canvas, /const scoreGroupWidth = totalTextWidth \+ scoreGap \+ maxTextWidth/);

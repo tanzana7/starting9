@@ -3995,17 +3995,17 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
   min-width: max-content;
   justify-content: center;
   width: 100%;
-  gap: 0;
+  gap: 2px;
 }
 
 .result-judgement-stack .hit-badge {
   flex: 1 1 0;
   width: 100%;
   min-width: 0;
-  min-height: 36px;
-  padding: 3px 2px;
-  gap: 2px;
-  border-radius: 0;
+  min-height: 30px;
+  padding: 3px 5px;
+  gap: 3px;
+  border-radius: 7px;
   font-size: 0.62rem;
 }
 
@@ -4017,7 +4017,10 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
 
 .result-table .result-point-cell strong {
   display: block;
-  padding: 8px 3px;
+  padding: 5px 3px;
+  border: 1px solid #c2ceda;
+  border-radius: 8px;
+  background: #ffffff;
   font-size: 1rem;
 }
 

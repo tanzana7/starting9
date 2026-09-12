@@ -4982,10 +4982,15 @@ function createResultCanvas(viewModel) {
     drawName(displayName, x + tileWidth + 2, y, width - tileWidth - 2, height);
   };
   const drawJudgement = (isHit, label, x, y, width, height) => {
-    drawRoundedRect(x, y, width, height, 0, isHit ? colors.hit : colors.miss, colors.border);
+    const badgeInset = 3;
+    const badgeHeight = Math.min(30, height - badgeInset * 2);
+    const badgeX = x + badgeInset;
+    const badgeY = y + (height - badgeHeight) / 2;
+    const badgeWidth = width - badgeInset * 2;
+    drawRoundedRect(badgeX, badgeY, badgeWidth, badgeHeight, 7, isHit ? colors.hit : colors.miss, colors.border);
     const textColor = isHit ? colors.hitText : colors.missText;
-    drawText(isHit ? "○" : "×", x + 2, y + height / 2, Math.max(10, width * 0.34), `950 ${displayWidth < 480 ? 10 : 14}px Arial, sans-serif`, textColor);
-    drawText(label, x + width * 0.34, y + height / 2, width * 0.62, `900 ${displayWidth < 480 ? 8 : 9}px Arial, sans-serif`, textColor);
+    drawText(isHit ? "○" : "×", badgeX + 2, badgeY + badgeHeight / 2, Math.max(10, badgeWidth * 0.34), `950 ${displayWidth < 480 ? 10 : 14}px Arial, sans-serif`, textColor);
+    drawText(label, badgeX + badgeWidth * 0.34, badgeY + badgeHeight / 2, badgeWidth * 0.62, `900 ${displayWidth < 480 ? 8 : 9}px Arial, sans-serif`, textColor);
   };
 
   context.fillStyle = colors.background;
@@ -5104,9 +5109,11 @@ function createResultCanvas(viewModel) {
     context.stroke();
     const pointFill = isPerfectRow ? "#fff1c7" : "#ffffff";
     const pointBorder = isPerfectRow ? colors.perfectBorder : "#c2ceda";
-    const pointBadgeInset = 0;
-    drawRoundedRect(pointX + pointBadgeInset, rowY, pointWidth - pointBadgeInset * 2, rowHeight, 0, pointFill, pointBorder);
-    drawText(detail.point, pointX + pointBadgeInset, rowY + rowHeight / 2, pointWidth - pointBadgeInset * 2, `950 ${displayWidth < 480 ? 13 : 15}px Arial, sans-serif`, isPerfectRow ? colors.perfectBorder : colors.text);
+    const pointBadgeInset = displayWidth < 480 ? 4 : 6;
+    const pointBadgeHeight = 32;
+    const pointBadgeY = rowY + (rowHeight - pointBadgeHeight) / 2;
+    drawRoundedRect(pointX + pointBadgeInset, pointBadgeY, pointWidth - pointBadgeInset * 2, pointBadgeHeight, 8, pointFill, pointBorder);
+    drawText(detail.point, pointX + pointBadgeInset, pointBadgeY + pointBadgeHeight / 2, pointWidth - pointBadgeInset * 2, `950 ${displayWidth < 480 ? 13 : 15}px Arial, sans-serif`, isPerfectRow ? colors.perfectBorder : colors.text);
   });
 
   return canvas;

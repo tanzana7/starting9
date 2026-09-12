@@ -5064,6 +5064,13 @@ function createResultCanvas(viewModel) {
     drawText(headings[index], columnX, y + headerHeight / 2, width, `900 ${displayWidth < 480 ? 9 : 11}px \"Yu Gothic\", \"Noto Sans JP\", sans-serif`, "#ffffff");
     columnX += width;
   });
+  const actualJudgementBoundary = tableX + orderWidth + playerWidth * 2;
+  context.strokeStyle = colors.grid;
+  context.lineWidth = 1;
+  context.beginPath();
+  context.moveTo(actualJudgementBoundary, y);
+  context.lineTo(actualJudgementBoundary, y + headerHeight);
+  context.stroke();
   y += headerHeight;
 
   viewModel.details.forEach((detail, index) => {
@@ -5114,6 +5121,12 @@ function createResultCanvas(viewModel) {
     const pointBadgeY = rowY + (rowHeight - pointBadgeHeight) / 2;
     drawRoundedRect(pointX + pointBadgeInset, pointBadgeY, pointWidth - pointBadgeInset * 2, pointBadgeHeight, 8, pointFill, pointBorder);
     drawText(detail.point, pointX + pointBadgeInset, pointBadgeY + pointBadgeHeight / 2, pointWidth - pointBadgeInset * 2, `950 ${displayWidth < 480 ? 13 : 15}px Arial, sans-serif`, isPerfectRow ? colors.perfectBorder : colors.text);
+    context.strokeStyle = colors.grid;
+    context.lineWidth = 1;
+    context.beginPath();
+    context.moveTo(judgementX, rowY);
+    context.lineTo(judgementX, rowY + rowHeight);
+    context.stroke();
   });
 
   return canvas;
@@ -5138,7 +5151,7 @@ function createResultTable(details) {
         <th class="result-order-heading">打順</th>
         <th class="result-group-heading">あなたの予想</th>
         <th class="result-group-heading result-actual-group-heading">実際のスタメン</th>
-        <th class="result-group-heading">判定</th>
+        <th class="result-group-heading result-judgement-heading">判定</th>
         <th class="result-point-heading">点数</th>
       </tr>
     </thead>

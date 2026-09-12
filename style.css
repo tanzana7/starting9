@@ -3909,6 +3909,13 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
 .result-table .result-actual-group-heading,
 .result-table .result-actual-group-cell {
   border-left: 1px solid #b9cfe2;
+  border-right: 1px solid #d3dfeb;
+}
+
+/* 実スタメンと判定の境界は、badgeの余白に埋もれない表の罫線として常時示す。 */
+.result-table .result-judgement-heading,
+.result-table .result-judgements-cell {
+  border-left: 1px solid #d3dfeb;
 }
 
 .result-table tbody td {

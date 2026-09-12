@@ -57,7 +57,7 @@ function formalStageStatus(phase, phaseStatuses = {}, schedule = null) {
   return stageStatus("wait", "待機", status.message || status.reasonCode || "正式jobの処理を待っています。", details);
 }
 
-function waitingStageStatus(phase, phaseStatuses, schedule, reason) {
+function waitingStageStatus(phase, phaseStatuses, schedule, reason, reasonCode = null, labelOverride = null) {
   const status = phaseStatuses?.[phase] || {};
   const labels = {
     lineup_finalize: "手動確定待ち",
@@ -65,13 +65,13 @@ function waitingStageStatus(phase, phaseStatuses, schedule, reason) {
     ranking: "採点完了待ち",
     publish: "ランキング反映待ち"
   };
-  return stageStatus("wait", labels[phase] || "待機", reason, {
-    reasonCode: status.reasonCode || `${phase.toUpperCase()}_PREREQUISITE_PENDING`,
+  return stageStatus("wait", labelOverride || labels[phase] || "待機", reason, {
+    reasonCode: reasonCode || status.reasonCode || `${phase.toUpperCase()}_PREREQUISITE_PENDING`,
     ...phaseScheduleDetails(phase, schedule)
   });
 }
 
-function canonicalStageStatus(phase, canonicalArtifacts, phaseStatuses, { game = {}, schedule = null, now = new Date() } = {}) {
+function canonicalStageStatus(phase, canonicalArtifacts, phaseStatuses, { game = {}, schedule = null, now = new Date(), workflowState = "scheduled" } = {}) {
   const canonical = canonicalArtifacts?.available === true ? canonicalArtifacts : null;
   const phaseStatus = phaseStatuses?.[phase] || {};
   const beforeDue = isBeforePhaseDue(phase, schedule, now);
@@ -98,26 +98,41 @@ function canonicalStageStatus(phase, canonicalArtifacts, phaseStatuses, { game =
       ? aggregate.scoringReady
       : phase === "ranking"
         ? aggregate.rankingReady
-        : aggregate.publicationReady;
+      : aggregate.publicationReady;
+  const normalizedWorkflowState = normalized(workflowState);
+  const predictionCloseReady = ["prediction_closed", "lineup_ready", "scored", "ranked", "published"].includes(normalizedWorkflowState)
+    || normalized(phaseStatuses?.prediction_close?.severity) === "ok";
   if (ready === true) return stageStatus("complete", "完了", "canonical artifact evaluatorで確認済みです。", {
     reasonCode: artifact?.reason || "ARTIFACT_READY",
     ...phaseScheduleDetails(phase, schedule)
   });
-  if (futureGame || beforeDue) {
+  if (beforeDue || (futureGame && (phase !== "score" || aggregate.lineupReady !== true))) {
     if (phase === "lineup_finalize") return waitingStageStatus(phase, phaseStatuses, schedule, "手動確定待ち / 試合当日の確認前");
-    if (phase === "score") return waitingStageStatus(phase, phaseStatuses, schedule, "正式スタメン確定待ち");
+    if (phase === "score") return waitingStageStatus(
+      phase,
+      phaseStatuses,
+      schedule,
+      aggregate.lineupReady === true ? "採点時刻待ち" : "正式スタメン確定待ち",
+      aggregate.lineupReady === true ? "SCORING_NOT_DUE" : null,
+      aggregate.lineupReady === true ? "採点時刻待ち" : null
+    );
     if (phase === "ranking") return waitingStageStatus(phase, phaseStatuses, schedule, "採点完了待ち");
     if (phase === "publish") return waitingStageStatus(phase, phaseStatuses, schedule, "ランキング反映待ち");
+  }
+  if (phase === "score" && aggregate.lineupReady === true && !predictionCloseReady) {
+    return waitingStageStatus(phase, phaseStatuses, schedule, "予想締切処理待ち", "PREDICTION_CLOSE_PENDING", "採点待ち");
   }
   if (["score", "ranking", "publish"].includes(phase)
     && ["waiting", "pending"].includes(normalized(phaseStatus.severity))
     && artifact?.reason
     && /MISSING|NOT_FOUND|NOT_COMPLETED/.test(String(artifact.reason))) {
-    return waitingStageStatus(phase, phaseStatuses, schedule, phase === "score"
-      ? "正式スタメン確定待ち"
+    const waitingReason = phase === "score"
+      ? aggregate.lineupReady === true ? "採点job待ち" : "正式スタメン確定待ち"
       : phase === "ranking"
         ? "採点完了待ち"
-        : "ランキング反映待ち");
+        : "ランキング反映待ち";
+    const waitingLabel = phase === "score" && aggregate.lineupReady === true ? "採点待ち" : null;
+    return waitingStageStatus(phase, phaseStatuses, schedule, waitingReason, null, waitingLabel);
   }
   if (artifact?.reason && /MISSING|NOT_FOUND|NOT_COMPLETED/.test(String(artifact.reason))) {
     return stageStatus("attention", "要対応", artifact.reason, { reasonCode: artifact.reason, ...phaseScheduleDetails(phase, schedule) });
@@ -143,10 +158,13 @@ export function buildAdminV4Status({
   stages.probable_starter = formalStageStatus("probable_starter", phaseStatuses, schedule);
   stages.prediction_close = formalStageStatus("prediction_close", phaseStatuses, schedule);
   stages.roster = stageStatus("manual", "手動運用", "V4ではロースターを手動確認します。自動取得jobは使用しません。", { reasonCode: "V4_MANUAL_ROSTER" });
-  stages.lineup_finalize = canonicalStageStatus("lineup_finalize", canonical, phaseStatuses, { game, schedule, now });
-  stages.score = canonicalStageStatus("score", canonical, phaseStatuses, { game, schedule, now });
-  stages.ranking = canonicalStageStatus("ranking", canonical, phaseStatuses, { game, schedule, now });
-  stages.publish = canonicalStageStatus("publish", canonical, phaseStatuses, { game, schedule, now });
+  const v4Schedule = automationMode?.isV4SemiAuto === true || automationMode?.mode === "v4_semi_auto"
+    ? { ...(schedule || {}), scoringEarliestAt: schedule?.predictionDeadline || schedule?.scoringEarliestAt }
+    : schedule;
+  stages.lineup_finalize = canonicalStageStatus("lineup_finalize", canonical, phaseStatuses, { game, schedule: v4Schedule, now, workflowState: persistedState });
+  stages.score = canonicalStageStatus("score", canonical, phaseStatuses, { game, schedule: v4Schedule, now, workflowState: persistedState });
+  stages.ranking = canonicalStageStatus("ranking", canonical, phaseStatuses, { game, schedule: v4Schedule, now, workflowState: persistedState });
+  stages.publish = canonicalStageStatus("publish", canonical, phaseStatuses, { game, schedule: v4Schedule, now, workflowState: persistedState });
 
   const status = displayStatus || stageStatus("wait", "待機", "正式状態を取得できません。", { stage: "workflow" });
   return {
@@ -162,7 +180,7 @@ export function buildAdminV4Status({
     persistedState: persistedState || "scheduled",
     stages,
     canonicalArtifacts: canonical,
-    schedule: schedule || null
+    schedule: v4Schedule || null
   };
 }
 

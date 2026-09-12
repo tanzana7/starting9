@@ -1063,7 +1063,8 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
       }
       : executeGameAutomationV3Job(context),
     formalPlanner: (db, games, plannerNow) => planMainWorkflowJobs(db, games, plannerNow, {
-      disabledStages: operationalMode.disabledJobTypes
+      disabledStages: operationalMode.disabledJobTypes,
+      v4SemiAuto: operationalMode.isV4SemiAuto
     }),
     auxiliaryPlanner: (db, games, plannerNow) => planAuxiliaryJobs(db, games, plannerNow, {
       autoProbableStarter: operationalMode.autoProbableStarter,

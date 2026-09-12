@@ -225,7 +225,7 @@ function stateAllows(state, stage) {
   return false;
 }
 
-export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], effectiveState = null, persistedState = null, now = new Date(), canonicalArtifacts = null } = {}) {
+export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], effectiveState = null, persistedState = null, now = new Date(), canonicalArtifacts = null, v4SemiAuto = false } = {}) {
   let baseSchedule = null;
   let displaySchedule = null;
   try {
@@ -242,7 +242,12 @@ export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], eff
       prediction_close: { dueAt: displaySchedule.predictionDeadline },
       lineup_fetch: { dueAt: displaySchedule.lineupPollingStart, slots: displaySchedule.lineupPollingSlots },
       lineup_finalize: { dueAt: displaySchedule.finalLineupAt },
-      scoring: { dueAt: displaySchedule.scoringEarliestAt },
+      // V4 manual canonical lineup is authoritative as soon as prediction
+      // close has completed. The old start+2 slot existed to wait for the
+      // retired automatic lineup-finalization window; keeping it in V4 would
+      // leave a confirmed pregame lineup unnecessarily ineligible until after
+      // first pitch. V3 automatic mode retains the original timing contract.
+      scoring: { dueAt: v4SemiAuto ? displaySchedule.predictionDeadline : displaySchedule.scoringEarliestAt },
       ranking_reflect: { dueAt: displaySchedule.publicationAt },
       publish: { dueAt: displaySchedule.publicationAt }
     }

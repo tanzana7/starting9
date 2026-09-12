@@ -48,7 +48,7 @@ test("採点結果テーブルは予想欄を先に、実際のスタメン順�
   assert.match(source, /<th class="result-group-heading">あなたの予想/);
   assert.match(source, /<th class="result-group-heading result-actual-group-heading">実際のスタメン/);
   assert.ok(source.indexOf("あなたの予想") < source.indexOf("実際のスタメン"));
-  assert.match(source, /<th class="result-group-heading">判定/);
+  assert.match(source, /<th class="result-group-heading result-judgement-heading">判定/);
   assert.match(source, /<th class="result-point-heading">点数/);
   assert.match(source, /<th class="result-order-heading">打順/);
   assert.doesNotMatch(source, /実際の打順<\/th>/);
@@ -300,6 +300,19 @@ test("採点結果テーブルは罫線主体のExcel風表組みでスマホに
   assert.match(css, /\.result-judgement-stack \.hit-badge\s*\{[\s\S]*min-width: 0[\s\S]*border-radius: 7px[\s\S]*font-size: 0\.62rem/);
   assert.match(css, /\.result-table \.result-point-cell strong\s*\{[\s\S]*border-radius: 8px[\s\S]*background: #ffffff/);
   assert.match(css, /\.result-player-name\s*\{[\s\S]*overflow-wrap: anywhere/);
+});
+
+test("実スタメンと判定の境界線をヘッダーと全行で明示する", () => {
+  const table = sourceForFunction("createResultTable");
+  const canvas = sourceForFunction("createResultCanvas");
+  assert.match(table, /result-actual-group-heading">実際のスタメン/);
+  assert.match(table, /result-judgement-heading">判定/);
+  assert.match(css, /\.result-table \.result-actual-group-heading,[\s\S]*border-right: 1px solid #d3dfeb/);
+  assert.match(css, /\.result-table \.result-judgement-heading,[\s\S]*border-left: 1px solid #d3dfeb/);
+  assert.match(canvas, /const actualJudgementBoundary = tableX \+ orderWidth \+ playerWidth \* 2/);
+  assert.match(canvas, /context\.moveTo\(actualJudgementBoundary, y\)/);
+  assert.match(canvas, /context\.moveTo\(judgementX, rowY\)/);
+  assert.match(canvas, /context\.strokeStyle = colors\.grid/);
 });
 
 test("公開結果エリアは保存済み予想に近い青白い配色を使う", () => {

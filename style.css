@@ -3761,7 +3761,7 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
   width: 100%;
   height: auto;
   border: 1px solid #b9cfe2;
-  border-radius: 7px;
+  border-radius: 0;
   background: #eef5fb;
 }
 
@@ -3863,23 +3863,22 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
 .result-table-wrap {
   overflow-x: auto;
   border: 1px solid #b9cfe2;
-  border-radius: 7px;
-  background: #f3f6fa;
+  border-radius: 0;
+  background: #ffffff;
 }
 
 .result-table {
   width: 100%;
   min-width: 520px;
-  border-collapse: separate;
-  border-spacing: 0 5px;
+  border-collapse: collapse;
+  border-spacing: 0;
   table-layout: fixed;
 }
 
 .result-table th,
 .result-table td {
-  padding: 7px 6px;
-  border-right: 1px solid #d3dfeb;
-  border-bottom: 1px solid #d3dfeb;
+  padding: 4px 5px;
+  border: 1px solid #d3dfeb;
   text-align: center;
   vertical-align: middle;
   white-space: nowrap;
@@ -3890,19 +3889,6 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
   background: var(--fighters-blue);
   font-size: 0.78rem;
   font-weight: 900;
-}
-
-.result-table thead th:first-child {
-  border-top-left-radius: 7px;
-}
-
-.result-table thead th:last-child {
-  border-top-right-radius: 7px;
-}
-
-.result-table th:last-child,
-.result-table td:last-child {
-  border-right: 0;
 }
 
 .result-table .result-order-heading,
@@ -3926,21 +3912,8 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
 }
 
 .result-table tbody td {
-  background: #f8fbff;
-  border-top: 1px solid #d3dfeb;
-  border-bottom: 1px solid #d3dfeb;
-}
-
-.result-table tbody tr td:first-child {
-  border-left: 1px solid #d3dfeb;
-  border-top-left-radius: 7px;
-  border-bottom-left-radius: 7px;
-}
-
-.result-table tbody tr td:last-child {
-  border-right: 1px solid #d3dfeb;
-  border-top-right-radius: 7px;
-  border-bottom-right-radius: 7px;
+  padding: 0;
+  background: #ffffff;
 }
 
 .result-table .result-player-cell {
@@ -3974,9 +3947,9 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
-  border: 1px solid #b9cfe2;
-  border-radius: 7px;
-  background: #ffffff;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   vertical-align: middle;
 }
 
@@ -3999,12 +3972,12 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
 }
 
 .result-table .result-order-cell strong {
-  display: inline-flex;
-  min-width: 30px;
-  min-height: 28px;
+  display: flex;
+  width: 100%;
+  min-height: 36px;
   align-items: center;
   justify-content: center;
-  border-radius: 4px;
+  border-radius: 0;
   color: #ffffff;
   background: var(--fighters-blue);
   font-size: 1rem;
@@ -4012,6 +3985,7 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
 }
 
 .result-table .result-judgements-cell {
+  padding: 0;
   white-space: normal;
 }
 
@@ -4020,24 +3994,30 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
   flex-wrap: nowrap;
   min-width: max-content;
   justify-content: center;
-  gap: 2px;
+  width: 100%;
+  gap: 0;
 }
 
 .result-judgement-stack .hit-badge {
-  flex: 0 0 auto;
+  flex: 1 1 0;
+  width: 100%;
   min-width: 0;
-  min-height: 26px;
-  padding: 3px 3px;
+  min-height: 36px;
+  padding: 3px 2px;
   gap: 2px;
+  border-radius: 0;
   font-size: 0.62rem;
 }
 
 .result-table .result-point-cell {
+  padding: 0;
   color: var(--fighters-deep-blue);
   text-align: center;
 }
 
 .result-table .result-point-cell strong {
+  display: block;
+  padding: 8px 3px;
   font-size: 1rem;
 }
 

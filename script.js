@@ -4890,7 +4890,7 @@ function createResultCanvas(viewModel) {
   const breakdownHeight = 70;
   const headerHeight = 38;
   const rowHeight = 50;
-  const rowGap = 4;
+  const rowGap = 0;
   const sectionGap = 10;
   const tableHeight = headerHeight + viewModel.details.length * rowHeight + Math.max(0, viewModel.details.length - 1) * rowGap;
   const canvasHeight = padding + heroHeight + sectionGap + breakdownHeight + sectionGap + tableHeight + padding;
@@ -4964,7 +4964,7 @@ function createResultCanvas(viewModel) {
     const normalizedPosition = normalizePosition(position);
     const category = normalizedPosition ? getPositionCategory(normalizedPosition) : "empty";
     context.lineWidth = 1.5;
-    drawRoundedRect(x, y, width, height, 6, cardFill, cardBorder);
+    drawRoundedRect(x, y, width, height, 0, cardFill, cardBorder);
     if (player === "未予想") {
       drawText(player, x, y + height / 2, width, `700 ${displayWidth < 480 ? 11 : 13}px "Yu Gothic", "Noto Sans JP", sans-serif`, colors.muted);
       return;
@@ -4982,7 +4982,7 @@ function createResultCanvas(viewModel) {
     drawName(displayName, x + tileWidth + 2, y, width - tileWidth - 2, height);
   };
   const drawJudgement = (isHit, label, x, y, width, height) => {
-    drawRoundedRect(x, y, width, height, 5, isHit ? colors.hit : colors.miss, null);
+    drawRoundedRect(x, y, width, height, 0, isHit ? colors.hit : colors.miss, colors.border);
     const textColor = isHit ? colors.hitText : colors.missText;
     drawText(isHit ? "○" : "×", x + 2, y + height / 2, Math.max(10, width * 0.34), `950 ${displayWidth < 480 ? 10 : 14}px Arial, sans-serif`, textColor);
     drawText(label, x + width * 0.34, y + height / 2, width * 0.62, `900 ${displayWidth < 480 ? 8 : 9}px Arial, sans-serif`, textColor);
@@ -5009,12 +5009,12 @@ function createResultCanvas(viewModel) {
   drawText(viewModel.total, scoreStartX, y + 54, totalTextWidth, totalFont, "#ffffff", "left");
   drawText(maxLabel, scoreStartX + totalTextWidth + scoreGap, y + 57, maxTextWidth, maxFont, "#eaf4ff", "left");
   if (viewModel.perfectLabel) {
-    drawRoundedRect(displayWidth - 96, y + 13, 74, 26, 5, "#ffffff", null);
+    drawRoundedRect(displayWidth - 96, y + 13, 74, 26, 0, "#ffffff", null);
     drawText(viewModel.perfectLabel, displayWidth - 96, y + 26, 74, "900 10px \"Yu Gothic\", \"Noto Sans JP\", sans-serif", colors.hero);
   }
   y += heroHeight + sectionGap;
 
-  drawRoundedRect(padding, y, contentWidth, breakdownHeight, 6, "#f8fbff", colors.border);
+  drawRoundedRect(padding, y, contentWidth, breakdownHeight, 0, "#f8fbff", colors.border);
   const perfectBreakdown = viewModel.breakdown.perfect || { total: 0, max: LINEUP_SIZE };
   const perfectCount = Number.isFinite(Number(viewModel.counts.perfect)) ? Number(viewModel.counts.perfect) : 0;
   const breakdowns = [
@@ -5046,14 +5046,14 @@ function createResultCanvas(viewModel) {
   const playerWidth = (contentWidth - orderWidth - pointWidth - judgementWidth) / 2;
   const columns = [orderWidth, playerWidth, playerWidth, judgementWidth, pointWidth];
   const headings = ["打順", "あなたの予想", "実際のスタメン", "判定", "点数"];
-  drawRoundedRect(tableX, y, contentWidth, headerHeight, 6, colors.header, null);
+  drawRoundedRect(tableX, y, contentWidth, headerHeight, 0, colors.header, null);
   let columnX = tableX;
   columns.forEach((width, index) => {
     if (index > 0) {
       context.strokeStyle = "rgba(255, 255, 255, 0.22)";
       context.beginPath();
-      context.moveTo(columnX, y + 5);
-      context.lineTo(columnX, y + headerHeight - 5);
+      context.moveTo(columnX, y);
+      context.lineTo(columnX, y + headerHeight);
       context.stroke();
     }
     drawText(headings[index], columnX, y + headerHeight / 2, width, `900 ${displayWidth < 480 ? 9 : 11}px \"Yu Gothic\", \"Noto Sans JP\", sans-serif`, "#ffffff");
@@ -5065,40 +5065,47 @@ function createResultCanvas(viewModel) {
     const rowY = y + index * (rowHeight + rowGap);
     const predictedColumnX = tableX + orderWidth;
     const actualColumnX = predictedColumnX + playerWidth;
-    const predictedX = predictedColumnX + 4;
-    const actualX = actualColumnX + 4;
-    const judgementX = tableX + orderWidth + playerWidth * 2;
+    const predictedX = predictedColumnX;
+    const actualX = actualColumnX;
     const pointValue = Number(detail.point);
     const isPerfectRow = Boolean(detail.isPerfect ?? (pointValue >= 11));
     const isZeroRow = pointValue === 0;
     const rowFill = isPerfectRow ? "#fffaf0" : colors.row;
     const rowBorder = isPerfectRow ? "#e6c978" : colors.grid;
     context.lineWidth = 1;
-    drawRoundedRect(tableX, rowY, contentWidth, rowHeight, 6, rowFill, rowBorder);
+    drawRoundedRect(tableX, rowY, contentWidth, rowHeight, 0, rowFill, rowBorder);
     context.fillStyle = isPerfectRow ? "#fff8e8" : colors.row;
-    context.fillRect(actualColumnX + 1, rowY + 1, playerWidth - 2, rowHeight - 2);
-    drawRoundedRect(tableX + 5, rowY + 6, orderWidth - 10, rowHeight - 12, 5, colors.order, null);
-    drawText(detail.order, tableX + 5, rowY + rowHeight / 2, orderWidth - 10, `900 ${displayWidth < 480 ? 14 : 16}px Arial, sans-serif`, "#ffffff");
+    context.fillRect(actualColumnX, rowY, playerWidth, rowHeight);
+    drawRoundedRect(tableX, rowY, orderWidth, rowHeight, 0, colors.order, null);
+    drawText(detail.order, tableX, rowY + rowHeight / 2, orderWidth, `900 ${displayWidth < 480 ? 14 : 16}px Arial, sans-serif`, "#ffffff");
+    const judgementX = tableX + orderWidth + playerWidth * 2;
+    for (const boundary of [predictedColumnX, actualColumnX, judgementX, judgementX + judgementWidth]) {
+      context.strokeStyle = colors.grid;
+      context.beginPath();
+      context.moveTo(boundary, rowY);
+      context.lineTo(boundary, rowY + rowHeight);
+      context.stroke();
+    }
     const actualCardFill = isPerfectRow ? "#fff6dc" : colors.row;
     const actualCardBorder = isPerfectRow ? colors.perfectBorder : colors.border;
-    drawPlayerCard(detail.player || "未予想", detail.position, predictedX, rowY + 6, playerWidth - 8, rowHeight - 12, colors.row, colors.border);
-    drawPlayerCard(detail.actualPlayer || "-", detail.actualPosition, actualX, rowY + 6, playerWidth - 8, rowHeight - 12, actualCardFill, actualCardBorder);
-    const chipGap = 4;
-    const chipWidth = (judgementWidth - 10 - chipGap * 2) / 3;
-    drawJudgement(detail.isPlayerHit, "出場", judgementX + 4, rowY + 13, chipWidth, 26);
-    drawJudgement(detail.isOrderHit, "打順", judgementX + 4 + chipWidth + chipGap, rowY + 13, chipWidth, 26);
-    drawJudgement(detail.isPositionHit, "守備", judgementX + 4 + (chipWidth + chipGap) * 2, rowY + 13, chipWidth, 26);
+    drawPlayerCard(detail.player || "未予想", detail.position, predictedX, rowY, playerWidth, rowHeight, colors.row, colors.border);
+    drawPlayerCard(detail.actualPlayer || "-", detail.actualPosition, actualX, rowY, playerWidth, rowHeight, actualCardFill, actualCardBorder);
+    const chipGap = 0;
+    const chipWidth = judgementWidth / 3;
+    drawJudgement(detail.isPlayerHit, "出場", judgementX, rowY, chipWidth, rowHeight);
+    drawJudgement(detail.isOrderHit, "打順", judgementX + chipWidth + chipGap, rowY, chipWidth, rowHeight);
+    drawJudgement(detail.isPositionHit, "守備", judgementX + (chipWidth + chipGap) * 2, rowY, chipWidth, rowHeight);
     const pointX = judgementX + judgementWidth;
     context.strokeStyle = "#c2d7e9";
     context.lineWidth = 1;
     context.beginPath();
-    context.moveTo(pointX, rowY + 8);
-    context.lineTo(pointX, rowY + rowHeight - 8);
+    context.moveTo(pointX, rowY);
+    context.lineTo(pointX, rowY + rowHeight);
     context.stroke();
     const pointFill = isPerfectRow ? "#fff1c7" : "#ffffff";
     const pointBorder = isPerfectRow ? colors.perfectBorder : "#c2ceda";
-    const pointBadgeInset = displayWidth < 480 ? 6 : 9;
-    drawRoundedRect(pointX + pointBadgeInset, rowY + 12, pointWidth - pointBadgeInset * 2, 28, 6, pointFill, pointBorder);
+    const pointBadgeInset = 0;
+    drawRoundedRect(pointX + pointBadgeInset, rowY, pointWidth - pointBadgeInset * 2, rowHeight, 0, pointFill, pointBorder);
     drawText(detail.point, pointX + pointBadgeInset, rowY + rowHeight / 2, pointWidth - pointBadgeInset * 2, `950 ${displayWidth < 480 ? 13 : 15}px Arial, sans-serif`, isPerfectRow ? colors.perfectBorder : colors.text);
   });
 

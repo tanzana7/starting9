@@ -27,6 +27,7 @@ function phaseDueAt(phase, schedule = null) {
     probable_starter: schedule?.probableStarterNextAt,
     prediction_close: schedule?.predictionDeadline,
     score: schedule?.scoringEarliestAt,
+    ranking: schedule?.rankingEarliestAt,
     publish: schedule?.publicationAt
   }[phase] || null;
 }
@@ -46,6 +47,41 @@ function isBeforePhaseDue(phase, schedule, now) {
 function phaseScheduleDetails(phase, schedule) {
   const scheduledAt = phaseDueAt(phase, schedule);
   return scheduledAt ? { scheduledAt } : {};
+}
+
+const PHASE_JOB_TYPES = Object.freeze({
+  probable_starter: ["probable_starter_fetch"],
+  prediction_close: ["prediction_close"],
+  lineup_finalize: ["lineup_finalize"],
+  score: ["score", "scoring"],
+  ranking: ["ranking_rebuild", "ranking_update"],
+  publish: ["publish", "publication"]
+});
+
+function latestCompletedJob(jobs, phase) {
+  const types = PHASE_JOB_TYPES[phase] || [];
+  return (Array.isArray(jobs) ? jobs : [])
+    .filter((job) => types.includes(String(job?.job_type || job?.jobType || ""))
+      && normalized(job?.status) === "completed")
+    .sort((left, right) => String(right?.completed_at || right?.updated_at || "")
+      .localeCompare(String(left?.completed_at || left?.updated_at || "")))[0] || null;
+}
+
+function stageCompletedAt(phase, { game = {}, canonical = null, jobs = [] } = {}) {
+  if (phase === "schedule") return game?.createdAt || game?.created_at || null;
+  if (phase === "lineup_finalize") return canonical?.lineup?.finalizedAt || latestCompletedJob(jobs, phase)?.completed_at || null;
+  if (phase === "score") return canonical?.scoring?.completedAt || latestCompletedJob(jobs, phase)?.completed_at || null;
+  if (phase === "ranking") return canonical?.ranking?.reflectedAt || latestCompletedJob(jobs, phase)?.completed_at || null;
+  if (phase === "publish") return canonical?.publication?.publishedAt || latestCompletedJob(jobs, phase)?.completed_at || null;
+  return latestCompletedJob(jobs, phase)?.completed_at || null;
+}
+
+function stageJobScheduledAt(phase, jobs) {
+  const types = PHASE_JOB_TYPES[phase] || [];
+  return (Array.isArray(jobs) ? jobs : [])
+    .filter((job) => types.includes(String(job?.job_type || job?.jobType || "")))
+    .sort((left, right) => String(right?.updated_at || right?.scheduled_at || "")
+      .localeCompare(String(left?.updated_at || left?.scheduled_at || "")))[0]?.scheduled_at || null;
 }
 
 function formalStageStatus(phase, phaseStatuses = {}, schedule = null) {
@@ -148,6 +184,7 @@ export function buildAdminV4Status({
   displayStatus = null,
   automationMode = null,
   schedule = null,
+  jobs = [],
   now = new Date()
 } = {}) {
   const canonical = canonicalArtifacts?.available === true ? canonicalArtifacts : null;
@@ -159,12 +196,29 @@ export function buildAdminV4Status({
   stages.prediction_close = formalStageStatus("prediction_close", phaseStatuses, schedule);
   stages.roster = stageStatus("manual", "手動運用", "V4ではロースターを手動確認します。自動取得jobは使用しません。", { reasonCode: "V4_MANUAL_ROSTER" });
   const v4Schedule = automationMode?.isV4SemiAuto === true || automationMode?.mode === "v4_semi_auto"
-    ? { ...(schedule || {}), scoringEarliestAt: schedule?.predictionDeadline || schedule?.scoringEarliestAt }
+    ? {
+      ...(schedule || {}),
+      scoringEarliestAt: schedule?.predictionDeadline || schedule?.scoringEarliestAt,
+      rankingEarliestAt: null,
+      publicationAt: null
+    }
     : schedule;
   stages.lineup_finalize = canonicalStageStatus("lineup_finalize", canonical, phaseStatuses, { game, schedule: v4Schedule, now, workflowState: persistedState });
   stages.score = canonicalStageStatus("score", canonical, phaseStatuses, { game, schedule: v4Schedule, now, workflowState: persistedState });
   stages.ranking = canonicalStageStatus("ranking", canonical, phaseStatuses, { game, schedule: v4Schedule, now, workflowState: persistedState });
   stages.publish = canonicalStageStatus("publish", canonical, phaseStatuses, { game, schedule: v4Schedule, now, workflowState: persistedState });
+
+  for (const [phase] of STAGE_DEFINITIONS) {
+    const completedAt = stageCompletedAt(phase, { game, canonical, jobs });
+    const scheduledAt = stageJobScheduledAt(phase, jobs);
+    if (completedAt || scheduledAt) {
+      stages[phase] = {
+        ...stages[phase],
+        ...(completedAt ? { completedAt } : {}),
+        ...(stages[phase]?.scheduledAt || !scheduledAt ? {} : { scheduledAt })
+      };
+    }
+  }
 
   const status = displayStatus || stageStatus("wait", "待機", "正式状態を取得できません。", { stage: "workflow" });
   return {

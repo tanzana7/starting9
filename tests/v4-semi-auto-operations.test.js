@@ -48,6 +48,17 @@ function planningState(persistedState, artifacts = {}, now = new Date("2026-09-0
   });
 }
 
+function v4PlanningState(persistedState, artifacts = {}, now = new Date("2026-09-02T10:05:00.000Z")) {
+  return v3.buildV3PlanningState({
+    game: game(),
+    persistedState,
+    effectiveState: persistedState,
+    artifacts,
+    now,
+    v4SemiAuto: true
+  });
+}
+
 function d1(database) {
   return {
     prepare(sql) {
@@ -382,6 +393,42 @@ test("V4 formal plannerはscore完了後にranking_reflect、publishまで連鎖
   assert.equal(third.created, 1);
   assert.equal(state.jobs.filter((job) => job.job_type === "publish").length, 1);
   assert.equal(third.planned.find((entry) => entry.plan?.jobType === "publish")?.plan?.sharedPlan?.blocked, false);
+});
+
+test("V4はscore完了後の次回Cronでstart+10前でもrankingを計画する", () => {
+  const now = new Date("2026-09-02T09:07:00.000Z");
+  const plans = v3.buildStagePlans(v4PlanningState("scored", {
+    lineup_finalize: { available: true, ready: true, valid: true },
+    scoring: { available: true, ready: true, valid: true }
+  }, now));
+  const ranking = plans.find((entry) => entry.stage === "ranking_reflect");
+  assert.equal(ranking.shouldCreateJob, true);
+  assert.equal(ranking.reasonCode, "DUE_JOB_MISSING");
+  assert.notEqual(ranking.reasonCode, "PUBLICATION_NOT_DUE");
+});
+
+test("V4はranking反映後の次回Cronでstart+10前でもpublishを計画する", () => {
+  const now = new Date("2026-09-02T09:07:00.000Z");
+  const plans = v3.buildStagePlans(v4PlanningState("ranked", {
+    lineup_finalize: { available: true, ready: true, valid: true },
+    scoring: { available: true, ready: true, valid: true },
+    ranking_reflect: { available: true, ready: true, valid: true }
+  }, now));
+  const publish = plans.find((entry) => entry.stage === "publish");
+  assert.equal(publish.shouldCreateJob, true);
+  assert.equal(publish.reasonCode, "DUE_JOB_MISSING");
+});
+
+test("V3は従来どおりstart+10前のrankingをdueにしない", () => {
+  const now = new Date("2026-09-02T09:07:00.000Z");
+  const plans = v3.buildStagePlans(planningState("scored", {
+    lineup_finalize: { available: true, ready: true, valid: true },
+    scoring: { available: true, ready: true, valid: true }
+  }, now));
+  const ranking = plans.find((entry) => entry.stage === "ranking_reflect");
+  assert.equal(ranking.shouldCreateJob, false);
+  assert.equal(ranking.reasonCode, "NOT_DUE");
+  assert.equal(ranking.due, false);
 });
 
 test("published済みcorrectionの二周目は旧reflection/jobを保持したままranking Bとpublish Bへ進む", async () => {

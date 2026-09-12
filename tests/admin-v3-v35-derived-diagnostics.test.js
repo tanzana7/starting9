@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import { deriveAdminV3GameProgressStatus } from "../backend/automation-v3/admin-progress-status.js";
 import { buildAdminV4Status } from "../backend/automation-v3/admin-v4-status.js";
 
 const root = new URL("../", import.meta.url);
@@ -220,6 +221,100 @@ test("due missing artifact can still be reported as attention", () => {
   assert.equal(status.stages.score.reasonCode, "ACTIVE_SCORING_REVISION_MISSING");
 });
 
+test("canonical evaluatorが有効なら古いlineup healthとdownstream待ちでcanonical欠損を誤表示しない", () => {
+  const status = deriveAdminV3GameProgressStatus({
+    game: { gameDate: "2026-09-12" },
+    now: "2026-09-12T09:07:00.000Z",
+    workflowState: "scored",
+    lineup: { available: false, canonicalFinalRevisionValid: false, finalizedValid: false },
+    scoring: { ready: true, scoringRevisionId: "score-a" },
+    ranking: { reflected: false },
+    canonicalArtifacts: {
+      available: true,
+      lineup: { canonicalFinalRevisionId: "game-1:1", lineupValid: true, lineupReady: true },
+      scoring: { activeScoringRevisionId: "score-a", valid: true },
+      ranking: { reflected: false, valid: false },
+      publication: { valid: false },
+      aggregate: {
+        lineupReady: true,
+        scoringReady: true,
+        rankingReady: false,
+        publicationReady: false,
+        artifactMismatch: false,
+        needsAttention: true,
+        reprocessingRequired: true
+      }
+    }
+  });
+  assert.notEqual(status.reason, "canonical正式スタメンまたは検証済みrevisionを確認できません。");
+  assert.equal(status.key, "reprocessing");
+  assert.equal(status.stage, "ranking_reflect");
+});
+
+test("canonical evaluatorが利用可能でも進行済み試合のrevision欠損は要対応にする", () => {
+  const status = deriveAdminV3GameProgressStatus({
+    game: { gameDate: "2026-09-12" },
+    workflowState: "scored",
+    canonicalArtifacts: {
+      available: true,
+      lineup: { canonicalFinalRevisionId: null, lineupValid: false },
+      scoring: { activeScoringRevisionId: "score-a", valid: true },
+      ranking: { reflected: false, valid: false },
+      publication: { valid: false },
+      aggregate: { lineupReady: false, scoringReady: true, rankingReady: false, publicationReady: false }
+    }
+  });
+  assert.equal(status.key, "needs_attention");
+  assert.equal(status.stage, "lineup");
+});
+
+test("V4正式工程は既存の完了時刻だけを表示データへ引き継ぐ", () => {
+  const status = buildAdminV4Status({
+    game: { gameDate: "2026-09-12", createdAt: "2026-09-01T00:00:00.000Z" },
+    persistedState: "published",
+    automationMode: { mode: "v4_semi_auto", isV4SemiAuto: true },
+    canonicalArtifacts: {
+      available: true,
+      lineup: { canonicalFinalRevisionId: "game-1:1", lineupValid: true, lineupReady: true, finalizedAt: "2026-09-12T09:03:00.000Z" },
+      scoring: { activeScoringRevisionId: "score-a", valid: true, completed: true, completedAt: "2026-09-12T09:04:00.000Z" },
+      ranking: { reflectedRevisionId: "score-a", reflected: true, valid: true, reflectedAt: "2026-09-12T09:05:00.000Z" },
+      publication: { publicationStatus: "published", valid: true, publishedAt: "2026-09-12T09:06:00.000Z" },
+      aggregate: { lineupReady: true, scoringReady: true, rankingReady: true, publicationReady: true, fullyPublished: true }
+    },
+    jobs: [
+      { job_type: "probable_starter_fetch", status: "completed", completed_at: "2026-09-12T08:00:00.000Z" },
+      { job_type: "prediction_close", status: "completed", completed_at: "2026-09-12T08:01:00.000Z" }
+    ]
+  });
+  assert.equal(status.stages.schedule.completedAt, "2026-09-01T00:00:00.000Z");
+  assert.equal(status.stages.probable_starter.completedAt, "2026-09-12T08:00:00.000Z");
+  assert.equal(status.stages.prediction_close.completedAt, "2026-09-12T08:01:00.000Z");
+  assert.equal(status.stages.lineup_finalize.completedAt, "2026-09-12T09:03:00.000Z");
+  assert.equal(status.stages.score.completedAt, "2026-09-12T09:04:00.000Z");
+  assert.equal(status.stages.ranking.completedAt, "2026-09-12T09:05:00.000Z");
+  assert.equal(status.stages.publish.completedAt, "2026-09-12T09:06:00.000Z");
+});
+
+test("未完了工程に完了時刻を推測して付与しない", () => {
+  const status = buildAdminV4Status({
+    game: { gameDate: "2026-09-12" },
+    persistedState: "scored",
+    automationMode: { mode: "v4_semi_auto", isV4SemiAuto: true },
+    canonicalArtifacts: {
+      available: true,
+      lineup: { canonicalFinalRevisionId: "game-1:1", lineupValid: true, lineupReady: true },
+      scoring: { activeScoringRevisionId: null, valid: false, reason: "ACTIVE_SCORING_REVISION_MISSING" },
+      ranking: { valid: false, reason: "RANKING_REFLECTION_MISSING" },
+      publication: { valid: false, reason: "PUBLICATION_NOT_COMPLETED" },
+      aggregate: { lineupReady: true, scoringReady: false, rankingReady: false, publicationReady: false }
+    },
+    jobs: []
+  });
+  assert.equal(Object.hasOwn(status.stages.score, "completedAt"), false);
+  assert.equal(Object.hasOwn(status.stages.ranking, "completedAt"), false);
+  assert.equal(Object.hasOwn(status.stages.publish, "completedAt"), false);
+});
+
 test("admin-v3 workflow view uses V4 status markup and removes shadow/manual recovery controls", () => {
   const renderer = read("frontend/admin-v3/render-game-progress.js");
   const workflow = renderer.slice(renderer.indexOf("function renderWorkflowView"), renderer.indexOf("function renderLineupView"));
@@ -264,6 +359,32 @@ test("V4 workflow view does not render legacy roster or auto-lineup scheduling c
   assert.doesNotMatch(html, /最新候補を開始2分後に確定/);
   assert.doesNotMatch(html, /次の処理:/);
   assert.doesNotMatch(html, /roster_fetch|lineup_fetch/);
+});
+
+test("V4 workflow view renders actual completion time when supplied", () => {
+  const context = { window: {}, Intl, Date };
+  vm.createContext(context);
+  vm.runInContext(read("frontend/admin-v3/render-game-progress.js"), context);
+  const renderer = context.window.Starting9AdminV3.createAdminV3GameProgressRenderer({
+    escapeHtml: (value) => String(value ?? ""),
+    formatJst: (value) => String(value || "-"),
+    renderSelectedGameHeader: () => "",
+    npbIdentityDisplay: () => ({}),
+    renderJobRows: () => "",
+    jobTypes: []
+  });
+  const html = renderer.renderWorkflowView({
+    state: { state: "published" },
+    v4Status: {
+      persistedState: "published",
+      currentStatus: { key: "completed", label: "完了", reason: "公開済みです。" },
+      stages: {
+        schedule: { key: "complete", label: "完了", completedAt: "2026-09-12T00:00:00.000Z" },
+        publish: { key: "complete", label: "完了", completedAt: "2026-09-12T09:06:00.000Z" }
+      }
+    }
+  });
+  assert.match(html, /完了: 2026-09-12T09:06:00.000Z/);
 });
 
 test("admin-v3 page identifies the official V4 operations surface", () => {

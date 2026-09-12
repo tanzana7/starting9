@@ -5434,6 +5434,7 @@ async function handleAdminV3Overview(request, env, cors) {
       displayStatus,
       automationMode: getV3OperationalMode(env),
       schedule,
+      jobs: jobRows,
       now: overviewNow
     });
     rows.push({

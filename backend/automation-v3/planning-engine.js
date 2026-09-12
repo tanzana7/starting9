@@ -248,8 +248,11 @@ export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], eff
       // leave a confirmed pregame lineup unnecessarily ineligible until after
       // first pitch. V3 automatic mode retains the original timing contract.
       scoring: { dueAt: v4SemiAuto ? displaySchedule.predictionDeadline : displaySchedule.scoringEarliestAt },
-      ranking_reflect: { dueAt: displaySchedule.publicationAt },
-      publish: { dueAt: displaySchedule.publicationAt }
+      // V4 has no start+10 publication clock.  Once the prerequisite
+      // artifact is complete, the next formal Cron may advance the stage;
+      // the prediction deadline is only a lower-bound slot for the planner.
+      ranking_reflect: { dueAt: v4SemiAuto ? displaySchedule.predictionDeadline : displaySchedule.publicationAt },
+      publish: { dueAt: v4SemiAuto ? displaySchedule.predictionDeadline : displaySchedule.publicationAt }
     }
   };
   const planningJobs = Array.isArray(jobs) ? jobs : [];
@@ -274,6 +277,7 @@ export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], eff
     stateMismatch: state !== normalize(persistedState || game.workflowState || game.workflow_state || "scheduled"),
     schedule,
     now: asDate(now) || new Date(),
+    v4SemiAuto: Boolean(v4SemiAuto),
     identityResolved: Boolean(first(game, "npbGameCode", "npb_game_code")
       && ["resolved", "manually_overridden"].includes(normalize(first(game, "npbIdentityStatus", "npb_identity_status"))))
   };
@@ -315,7 +319,7 @@ function canonicalStateGate(state, stage) {
 
 export function buildStagePlan(planningState, stage, { disabled = false, disabledReason = "AUTO_FETCH_DISABLED" } = {}) {
   const state = planningState || buildV3PlanningState();
-  const { game, gameId, artifacts, jobs, effectiveState, schedule, now, identityResolved } = state;
+  const { game, gameId, artifacts, jobs, effectiveState, schedule, now, identityResolved, v4SemiAuto } = state;
   const dueAt = dueAtFor(schedule, stage);
   const dueSlots = dueSlotsFor(schedule, stage);
   const selectedSlotAt = ["roster_fetch", "lineup_fetch"].includes(stage)
@@ -465,7 +469,7 @@ export function buildStagePlan(planningState, stage, { disabled = false, disable
   if (stage === "lineup_finalize" && !lineupFetchHasCandidate) {
     return { ...plan, blocked: true, blockedReason: "LINEUP_FETCH_ARTIFACT_MISSING", reasonCode: "LINEUP_FETCH_ARTIFACT_MISSING" };
   }
-  if (stage === "ranking_reflect" && now < (asDate(schedule.publicationAt) || new Date(0))) return { ...plan, reasonCode: "PUBLICATION_NOT_DUE" };
+  if (stage === "ranking_reflect" && !v4SemiAuto && now < (asDate(schedule.publicationAt) || new Date(0))) return { ...plan, reasonCode: "PUBLICATION_NOT_DUE" };
   if (lateLineupFetch?.allowed) {
     return {
       ...plan,

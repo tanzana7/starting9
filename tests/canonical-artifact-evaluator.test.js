@@ -25,8 +25,10 @@ function facts({
   scoringLineupRevisionId = canonicalRevisionId,
   scoringStatus = null,
   scoredAt = null,
+  scoringCompletedAt = null,
   rankingRevisionId = null,
   rankingStatus = null,
+  rankingReflectedAt = null,
   publicationStatus = null,
   publishedAt = null
 } = {}) {
@@ -45,6 +47,7 @@ function facts({
     internal_game_id: GAME_ID,
     revision_id: revisionId,
     version: Number(String(revisionId).split(":").at(-1)) || 2,
+    finalized_at: "2026-09-08T00:00:00.000Z",
     actual_lineup_json: lineupJson(lineupValid ? "valid" : "duplicate"),
     validation_json: JSON.stringify(validation)
   }];
@@ -56,12 +59,14 @@ function facts({
       id: scoringRevisionId,
       internal_game_id: GAME_ID,
       lineup_revision_id: scoringLineupRevisionId,
-      status: scoringStatus === "scored" ? "completed" : "pending"
+      status: scoringStatus === "scored" ? "completed" : "pending",
+      completed_at: scoringCompletedAt
     },
     rankingReflection: rankingRevisionId === null ? null : {
       internal_game_id: GAME_ID,
       scoring_revision_id: rankingRevisionId,
       status: rankingStatus || "reflected",
+      reflected_at: rankingReflectedAt,
       ranking_update_revision: 2
     }
   };
@@ -111,6 +116,20 @@ test("ranking completedはcurrent scoring revisionに一致するreflectionだ�
   assert.equal(result.ranking.reflected, true);
   assert.equal(result.ranking.scoringRevisionMatch, true);
   assert.equal(result.aggregate.rankingReady, true);
+});
+
+test("canonical evaluatorはlineup/scoring/rankingの既存完了時刻を保持する", () => {
+  const result = evaluate({
+    scoringRevisionId: "score-b",
+    scoringStatus: "scored",
+    scoredAt: "2026-09-08T01:00:00.000Z",
+    scoringCompletedAt: "2026-09-08T01:01:00.000Z",
+    rankingRevisionId: "score-b",
+    rankingReflectedAt: "2026-09-08T01:02:00.000Z"
+  });
+  assert.equal(result.lineup.finalizedAt, "2026-09-08T00:00:00.000Z");
+  assert.equal(result.scoring.completedAt, "2026-09-08T01:01:00.000Z");
+  assert.equal(result.ranking.reflectedAt, "2026-09-08T01:02:00.000Z");
 });
 
 test("published completedはlineup/scoring/ranking/publication全てがcurrentならfullyPublished", () => {

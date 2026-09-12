@@ -115,6 +115,7 @@ function evaluateLineup({ canonicalLineup = null, lineupRevisions = [] } = {}) {
     revisionValidated: true,
     lineupValid: true,
     lineupReady: true,
+    finalizedAt: text(revision.finalized_at || revision.finalizedAt),
     reason: READY_REASON,
     revisionAliases: Array.from(revisionIdentities(revision))
   };
@@ -139,6 +140,7 @@ function evaluateScoring({ canonicalLineup = null, lineup = {}, activeScoringRev
   return {
     activeScoringRevisionId: activeId,
     completed,
+    completedAt: text(activeScoringRevision?.completed_at || activeScoringRevision?.completedAt),
     lineupRevisionMatch,
     valid: completed && lineupRevisionMatch && lineup.lineupReady === true,
     reason
@@ -157,6 +159,7 @@ function evaluateRanking({ activeScoringRevision = null, rankingReflection = nul
   else if (!scoring.valid) reason = "SCORING_ARTIFACT_NOT_READY";
   return {
     reflectedRevisionId,
+    reflectedAt: text(rankingReflection?.reflected_at || rankingReflection?.reflectedAt),
     scoringRevisionMatch,
     reflected,
     valid: reflected && scoringRevisionMatch && scoring.valid === true,
@@ -256,6 +259,7 @@ export function toCanonicalArtifactStageArtifacts(canonicalArtifacts) {
       ready: canonical.aggregate.lineupReady,
       canonicalFinalRevisionId: canonical.lineup.canonicalFinalRevisionId,
       canonicalFinalRevisionValid: canonical.lineup.lineupValid,
+      finalizedAt: canonical.lineup.finalizedAt,
       reason: canonical.lineup.reason
     },
     scoring: {
@@ -264,6 +268,7 @@ export function toCanonicalArtifactStageArtifacts(canonicalArtifacts) {
       ready: canonical.aggregate.scoringReady,
       scoringRevisionId: canonical.scoring.activeScoringRevisionId,
       lineupRevisionMatch: canonical.scoring.lineupRevisionMatch,
+      completedAt: canonical.scoring.completedAt,
       reason: canonical.scoring.reason
     },
     ranking_reflect: {
@@ -273,6 +278,7 @@ export function toCanonicalArtifactStageArtifacts(canonicalArtifacts) {
       reflected: canonical.ranking.reflected,
       scoringRevisionId: canonical.scoring.activeScoringRevisionId,
       reflectedScoringRevisionId: canonical.ranking.reflectedRevisionId,
+      reflectedAt: canonical.ranking.reflectedAt,
       revisionMatches: canonical.ranking.scoringRevisionMatch,
       revisionMismatch: canonical.aggregate.artifactMismatch === true
         && canonical.ranking.scoringRevisionMatch !== true,

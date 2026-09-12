@@ -30,7 +30,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
   } catch {
     // Older adapters do not expose PRAGMA; the base V3 projection remains valid.
   }
-  const optionalColumns = ["npb_game_url", "source_schedule_key", "npb_identity_status", "npb_identity_resolved_at", "npb_identity_source"]
+  const optionalColumns = ["created_at", "npb_game_url", "source_schedule_key", "npb_identity_status", "npb_identity_resolved_at", "npb_identity_source"]
     .filter((column) => columns.has(column));
 
   const gameColumns = `games.internal_game_id, games.game_date, games.start_time, games.home_team, games.away_team,
@@ -161,6 +161,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
       npbIdentityStatus: row.npb_identity_status || (row.npb_game_code ? "resolved" : "unresolved"),
       startAt: row.start_time
     }, current),
+    createdAt: row.created_at || null,
     workflowState: row.workflow_state || null,
     publicationStatus: row.publication_status || "",
     publishedAt: row.published_at || null,

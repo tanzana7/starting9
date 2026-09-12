@@ -62,15 +62,20 @@ export function deriveAdminV3GameProgressStatus({
     || ["lineup_ready", "scored", "ranked", "published", "manual_action_required"].includes(state)
     || relevantJobs.length > 0;
   const canonicalFinalRevisionValid = canonical
-    ? canonical.lineup.lineupValid === true
+    ? canonical.lineup?.lineupValid === true
     : lineup?.canonicalFinalRevisionValid === true;
-  const canonicalInvalid = lineupRequired && (
-    lineup?.canonicalFinalRevisionValid === false
-    || lineup?.canonicalValid === false
-    || (!canonicalFinalRevisionValid && lineup?.available === false)
-    || (!canonicalFinalRevisionValid && lineup?.finalizedValid === false
-      && ["lineup_ready", "scored", "ranked", "published", "manual_action_required"].includes(state))
-  );
+  // Once the canonical evaluator is available, its current revision result is
+  // authoritative. Legacy lineup health can lag behind the same revision and
+  // must not turn a valid lineup into a false canonical-missing alert.
+  const canonicalInvalid = canonical
+    ? lineupRequired && canonical.lineup?.lineupValid !== true
+    : lineupRequired && (
+      lineup?.canonicalFinalRevisionValid === false
+      || lineup?.canonicalValid === false
+      || (!canonicalFinalRevisionValid && lineup?.available === false)
+      || (!canonicalFinalRevisionValid && lineup?.finalizedValid === false
+        && ["lineup_ready", "scored", "ranked", "published", "manual_action_required"].includes(state))
+    );
   const rankingReady = canonical
     ? canonical.aggregate.rankingReady === true
     : scoring?.ready === true && ranking?.reflected === true && revisionMatches;
@@ -106,7 +111,7 @@ export function deriveAdminV3GameProgressStatus({
       readOnly: true
     });
   }
-  if (canonicalInvalid || canonical?.aggregate?.needsAttention === true) {
+  if (canonicalInvalid) {
     return statusResult("needs_attention", "要対応", "canonical正式スタメンまたは検証済みrevisionを確認できません。", "lineup", {
       currentScoringRevisionId: scoringRevisionId || null,
       reflectedScoringRevisionId: reflectedRevisionId || null,

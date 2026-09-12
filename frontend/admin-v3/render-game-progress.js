@@ -348,7 +348,8 @@
       const rows = Object.entries(labels).map(([key, label]) => {
         const item = stages[key] || {};
         const scheduled = item.scheduledAt ? `<small>予定: ${escapeHtml(formatJst(item.scheduledAt))}</small>` : "";
-        return `<div class="v4-stage-row ${statusClass(item.key)}"><strong>${escapeHtml(label)}</strong><span>状態: ${escapeHtml(item.label || "待機")}</span><span>理由: ${escapeHtml(item.reason || "-")}</span>${scheduled}${item.reasonCode ? `<small>code: ${escapeHtml(item.reasonCode)}</small>` : ""}</div>`;
+        const completed = item.completedAt ? `<small>完了: ${escapeHtml(formatJst(item.completedAt))}</small>` : "";
+        return `<div class="v4-stage-row ${statusClass(item.key)}"><strong>${escapeHtml(label)}</strong><span>状態: ${escapeHtml(item.label || "待機")}</span><span>理由: ${escapeHtml(item.reason || "-")}</span>${scheduled}${completed}${item.reasonCode ? `<small>code: ${escapeHtml(item.reasonCode)}</small>` : ""}</div>`;
       }).join("");
       const aggregate = status.canonicalArtifacts?.aggregate || {};
       const canonicalRevision = source.canonicalRevision || status.canonicalArtifacts?.lineup?.canonicalFinalRevisionId || "-";

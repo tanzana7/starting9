@@ -271,6 +271,57 @@ test("V4実試合相当: manual lineup確定からformal Cronのclose/score/rank
   assert.doesNotMatch(finalizeSourceForTest(), /createV3AdminActionJob/);
 });
 
+test("V4は締切済みかつcanonical manual lineup確定なら開始前でも次回Cronでscoreを計画する", async () => {
+  const now = new Date("2026-09-02T08:05:00.000Z");
+  const state = {
+    persistedState: "prediction_closed",
+    jobs: [{
+      id: 150,
+      internal_game_id: GAME_ID,
+      job_type: "prediction_close",
+      status: "completed",
+      scheduled_at: "2026-09-02T08:00:00.000Z",
+      scheduled_slot_at: "2026-09-02T08:00:00.000Z"
+    }],
+    nextId: 150,
+    scoreReady: false,
+    rankingReflected: false,
+    canonicalFinalRevisionId: `${GAME_ID}:1`
+  };
+  const result = await v3.planMainWorkflowJobs(
+    planningDb(state),
+    [game()],
+    now,
+    { disabledStages: ["roster_fetch", "lineup_fetch"], v4SemiAuto: true }
+  );
+  const score = result.planned.find((entry) => entry.plan?.jobType === "score");
+  assert.ok(score, JSON.stringify(result, (_key, value) => value instanceof Date ? value.toISOString() : value));
+  assert.equal(score.created, true);
+  assert.equal(score?.plan?.scheduledSlotAt.toISOString(), "2026-09-02T08:00:00.000Z");
+  assert.equal(state.jobs.filter((job) => job.job_type === "score").length, 1);
+});
+
+test("V4はcanonical lineupが先に確定していてもprediction_closeを次回Cronで作成する", async () => {
+  const now = new Date("2026-09-02T08:05:00.000Z");
+  const state = {
+    persistedState: "scheduled",
+    jobs: [],
+    nextId: 160,
+    scoreReady: false,
+    rankingReflected: false,
+    canonicalFinalRevisionId: `${GAME_ID}:1`
+  };
+  const result = await v3.planMainWorkflowJobs(
+    planningDb(state),
+    [game()],
+    now,
+    { disabledStages: ["roster_fetch", "lineup_fetch"], v4SemiAuto: true }
+  );
+  assert.equal(state.jobs.filter((job) => job.job_type === "prediction_close").length, 1);
+  assert.equal(state.jobs.filter((job) => job.job_type === "score").length, 0);
+  assert.equal(result.planned.find((entry) => entry.plan?.jobType === "prediction_close")?.created, true);
+});
+
 test("V4 formal plannerはcanonicalのmanual finalリンクをlineup_ready証跡としてscoringへ進める", async () => {
   const now = new Date("2026-09-02T10:05:00.000Z");
   const state = {

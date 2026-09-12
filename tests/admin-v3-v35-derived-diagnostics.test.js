@@ -42,7 +42,7 @@ test("V4 status source is canonical artifacts plus formal jobs and keeps manual 
   assert.equal(status.source.jobs, "formal_job_repository");
   assert.equal(status.source.artifacts, "formal_artifact_repository");
   assert.equal(status.stages.lineup_finalize.label, "完了");
-  assert.equal(status.stages.score.label, "正式スタメン確定待ち");
+  assert.equal(status.stages.score.label, "採点待ち");
   assert.equal(status.stages.score.key, "wait");
   assert.equal(status.stages.ranking.label, "採点完了待ち");
   assert.equal(status.stages.ranking.key, "wait");
@@ -81,6 +81,66 @@ test("V4 canonical transitional stages do not promote waiting artifacts to atten
     assert.equal(status.stages[phase].key, "wait");
     assert.notEqual(status.stages[phase].label, "要対応");
   }
+});
+
+test("V4 score status distinguishes a ready canonical lineup from a future score slot", () => {
+  const status = buildAdminV4Status({
+    game: { gameDate: "2026-09-12", startAt: "2026-09-12T09:00:00.000Z" },
+    persistedState: "prediction_closed",
+    automationMode: { mode: "v4_semi_auto", isV4SemiAuto: true },
+    now: "2026-09-12T07:30:00.000Z",
+    schedule: {
+      startAt: "2026-09-12T09:00:00.000Z",
+      predictionDeadline: "2026-09-12T08:00:00.000Z",
+      finalLineupAt: "2026-09-12T09:02:00.000Z",
+      scoringEarliestAt: "2026-09-12T09:02:00.000Z",
+      publicationAt: "2026-09-12T09:10:00.000Z"
+    },
+    phaseStatuses: {
+      prediction_close: { severity: "OK", reasonCode: "PREDICTION_CLOSE_COMPLETED" },
+      score: { severity: "WAITING", reasonCode: "SCORE_PENDING" }
+    },
+    canonicalArtifacts: {
+      available: true,
+      lineup: { reason: "ARTIFACT_READY" },
+      scoring: { reason: "ACTIVE_SCORING_REVISION_MISSING" },
+      aggregate: { lineupReady: true, scoringReady: false, rankingReady: false, publicationReady: false }
+    }
+  });
+  assert.equal(status.schedule.scoringEarliestAt, "2026-09-12T08:00:00.000Z");
+  assert.equal(status.stages.score.key, "wait");
+  assert.equal(status.stages.score.label, "採点時刻待ち");
+  assert.equal(status.stages.score.reason, "採点時刻待ち");
+  assert.equal(status.stages.score.reasonCode, "SCORING_NOT_DUE");
+});
+
+test("V4 score status reports the close prerequisite when canonical lineup is ready but close is missing", () => {
+  const status = buildAdminV4Status({
+    game: { gameDate: "2026-09-12", startAt: "2026-09-12T09:00:00.000Z" },
+    persistedState: "scheduled",
+    automationMode: { mode: "v4_semi_auto", isV4SemiAuto: true },
+    now: "2026-09-12T08:18:00.000Z",
+    schedule: {
+      startAt: "2026-09-12T09:00:00.000Z",
+      predictionDeadline: "2026-09-12T08:00:00.000Z",
+      finalLineupAt: "2026-09-12T09:02:00.000Z",
+      scoringEarliestAt: "2026-09-12T09:02:00.000Z",
+      publicationAt: "2026-09-12T09:10:00.000Z"
+    },
+    phaseStatuses: {
+      prediction_close: { severity: "WAITING", reasonCode: "PREDICTION_CLOSE_PENDING" },
+      score: { severity: "WAITING", reasonCode: "SCORE_PENDING" }
+    },
+    canonicalArtifacts: {
+      available: true,
+      lineup: { reason: "ARTIFACT_READY" },
+      scoring: { reason: "ACTIVE_SCORING_REVISION_MISSING" },
+      aggregate: { lineupReady: true, scoringReady: false, rankingReady: false, publicationReady: false }
+    }
+  });
+  assert.equal(status.stages.score.key, "wait");
+  assert.equal(status.stages.score.reason, "予想締切処理待ち");
+  assert.equal(status.stages.score.reasonCode, "PREDICTION_CLOSE_PENDING");
 });
 
 test("invalid canonical lineup blocks V4 status without a second evaluator", () => {

@@ -225,7 +225,7 @@ async function readV3StateForPlanning(db, internalGameId) {
   }
 }
 
-async function deriveV3PlanningState(db, gameOrId, persistedState = "scheduled", now = new Date()) {
+async function deriveV3PlanningState(db, gameOrId, persistedState = "scheduled", now = new Date(), { v4SemiAuto = false } = {}) {
   const game = typeof gameOrId === "string"
     ? { internalGameId: gameOrId }
     : (gameOrId || {});
@@ -278,7 +278,8 @@ async function deriveV3PlanningState(db, gameOrId, persistedState = "scheduled",
     jobs,
     artifacts,
     canonicalArtifacts,
-    now
+    now,
+    v4SemiAuto
   });
   return { ...planningState, workflowArtifacts, rosterSnapshot };
 }
@@ -510,7 +511,7 @@ export async function claimDueJobs(db, now = new Date(), plannedEntries = [], { 
   return { due, claimed, skipped };
 }
 
-export async function planV3MainJobs(db, games = [], now = new Date(), { disabledStages = [] } = {}) {
+export async function planV3MainJobs(db, games = [], now = new Date(), { disabledStages = [], v4SemiAuto = false } = {}) {
   const planned = [];
   const errors = [];
   const diagnostics = [];
@@ -519,7 +520,7 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
     try {
       const stateRow = await readV3StateForPlanning(db, game.internalGameId);
       const persistedState = String(stateRow?.state || game.workflowState || "scheduled").trim().toLowerCase() || "scheduled";
-      const derivedPlanningState = await deriveV3PlanningState(db, game, persistedState, now);
+      const derivedPlanningState = await deriveV3PlanningState(db, game, persistedState, now, { v4SemiAuto });
       const state = derivedPlanningState.effectiveState;
       const workflowArtifacts = derivedPlanningState.workflowArtifacts || await readV3WorkflowArtifactHealth(db, game.internalGameId, state);
       const canonicalAvailable = hasCanonicalArtifactEvidence(derivedPlanningState.canonicalArtifacts);
@@ -557,7 +558,8 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
         persistedState,
         effectiveState: state,
         jobs: existingJobs,
-        now
+        now,
+        v4SemiAuto
       });
       const stagePlans = buildStagePlans(sharedPlanningState, undefined, {
         disabledStages,

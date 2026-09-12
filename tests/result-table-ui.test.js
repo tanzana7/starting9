@@ -315,6 +315,16 @@ test("実スタメンと判定の境界線をヘッダーと全行で明示す�
   assert.match(canvas, /context\.strokeStyle = colors\.grid/);
 });
 
+test("結果表の横罫線を判定・点数列まで連続させる", () => {
+  const canvas = sourceForFunction("createResultCanvas");
+  assert.match(css, /\.result-table tbody tr > td\s*\{[\s\S]*border-top: 1px solid #d3dfeb/);
+  assert.match(css, /\.result-table tbody tr:last-child > td\s*\{[\s\S]*border-bottom: 1px solid #d3dfeb/);
+  assert.match(canvas, /const bodyTop = y/);
+  assert.match(canvas, /boundaryIndex <= viewModel\.details\.length/);
+  assert.match(canvas, /context\.moveTo\(tableX, boundaryY\)/);
+  assert.match(canvas, /context\.lineTo\(tableX \+ contentWidth, boundaryY\)/);
+});
+
 test("公開結果エリアは保存済み予想に近い青白い配色を使う", () => {
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.app-layout:not\(\.is-admin-screen\) > \.result-card\s*\{[\s\S]*background: #eef5fb/);
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.result-table th,[\s\S]*background: #1168a8/);

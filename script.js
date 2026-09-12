@@ -5129,6 +5129,17 @@ function createResultCanvas(viewModel) {
     context.stroke();
   });
 
+  const bodyTop = y;
+  for (let boundaryIndex = 0; boundaryIndex <= viewModel.details.length; boundaryIndex += 1) {
+    const boundaryY = bodyTop + boundaryIndex * rowHeight;
+    context.strokeStyle = colors.grid;
+    context.lineWidth = 1;
+    context.beginPath();
+    context.moveTo(tableX, boundaryY);
+    context.lineTo(tableX + contentWidth, boundaryY);
+    context.stroke();
+  }
+
   return canvas;
 }
 

@@ -1,5 +1,6 @@
 import { V3_JOB_TYPES, createV3Error, normalizeV3InternalGameId } from "./constants.js";
 import { assertV3Transition, getV3NpbIdentityState } from "./domain.js";
+import { evaluateCanonicalArtifactsFromDb } from "./canonical-artifact-evaluator.js";
 
 // D1 persistence boundary for V3 games, states, identity hydration, and jobs.
 export async function getV3SchemaState(db) {
@@ -59,6 +60,24 @@ export async function listV3Games(db, now = new Date(), options = {}) {
            AND correction_job.status IN ('pending', 'claimed', 'retry_wait')
       )`
     : "0";
+  let hasCanonicalLineups = false;
+  if (hasGameJobsTable) {
+    try {
+      const row = await db.prepare("PRAGMA table_info(game_lineups)").all();
+      hasCanonicalLineups = (row.results || []).some((column) => column.name === "final_lineup_revision_id");
+    } catch { /* Legacy adapters retain open-job discovery. */ }
+  }
+  // A finalized historical correction can outlive a failed/missing score job.
+  // This is only a candidate signal; canonical validity and current scoring
+  // lineage are checked by the shared evaluator before returning the game.
+  const correctionRecoverySql = hasCanonicalLineups
+    ? `EXISTS (SELECT 1 FROM game_lineups AS corrected
+                 WHERE corrected.internal_game_id = games.internal_game_id
+                   AND corrected.final_lineup_revision_id IS NOT NULL)
+       AND EXISTS (SELECT 1 FROM game_jobs_v3 AS previous_score
+                    WHERE previous_score.internal_game_id = games.internal_game_id
+                      AND previous_score.job_type = 'score' AND previous_score.status = 'completed')`
+    : "0";
   const enrichedParams = includeRecentHistory ? [] : [date];
   const scopedConditions = [];
   if (scopedInternalGameId) {
@@ -86,7 +105,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
              OR LOWER(COALESCE(workflow.state, '')) IN (${unfinishedWorkflowStateSql})
              OR (
                LOWER(COALESCE(workflow.state, '')) = 'manual_action_required'
-               AND ${correctionPendingSql}
+               AND (${correctionPendingSql} OR (${correctionRecoverySql}))
              )
            )
            AND LOWER(COALESCE(workflow.state, '')) NOT IN (${excludedWorkflowStateSql})`;
@@ -97,6 +116,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
     // delayed run until it is actually published.
     result = await db.prepare(
       `SELECT ${gameColumns}, workflow.state AS workflow_state,
+              ${correctionPendingSql} AS correction_job_open,
               ${publicationStatus} AS publication_status, ${publishedAt} AS published_at
          FROM games
          LEFT JOIN game_automation_v3_state AS workflow
@@ -137,7 +157,8 @@ export async function listV3Games(db, now = new Date(), options = {}) {
       : "";
     try {
       result = await db.prepare(
-        `SELECT ${gameColumns}, workflow.state AS workflow_state
+        `SELECT ${gameColumns}, workflow.state AS workflow_state,
+                ${correctionPendingSql} AS correction_job_open
            FROM games
            LEFT JOIN game_automation_v3_state AS workflow
              ON workflow.internal_game_id = games.internal_game_id
@@ -171,7 +192,20 @@ export async function listV3Games(db, now = new Date(), options = {}) {
       ).bind(...legacyFallbackParams).all();
     }
   }
-  const baseGames = (result.results || []).map((row) => ({
+  const eligibleRows = [];
+  for (const row of result.results || []) {
+    const historicalManual = !includeRecentHistory && row.game_date < date
+      && String(row.workflow_state || "").toLowerCase() === "manual_action_required";
+    if (historicalManual) {
+      const canonical = await evaluateCanonicalArtifactsFromDb(db, row.internal_game_id);
+      if (canonical.available === true && (canonical.aggregate.lineupReady !== true
+        || canonical.aggregate.fullyPublished === true)) continue;
+      if (!row.correction_job_open && (canonical.available !== true
+        || canonical.aggregate.scoringReady === true)) continue;
+    }
+    eligibleRows.push(row);
+  }
+  const baseGames = eligibleRows.map((row) => ({
     internalGameId: row.internal_game_id,
     gameDate: row.game_date,
     startAt: row.start_time,

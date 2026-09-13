@@ -810,7 +810,7 @@ test("correction由来のpending score jobがあるmanual_action_required過去�
   }
 });
 
-test("published済みcorrectionをformal runnerのscore B→ranking B→publish Bで完走させる", async () => {
+for (const terminal of ["missing", "failed"]) test(`過去日の訂正Bでscore job ${terminal}からscore→ranking→publishへ復旧する`, async () => {
   const database = new DatabaseSync(":memory:");
   const internalGameId = "9f7e3bb2-55d2-4d6c-9a32-2f5d8d8b1c20";
   const lineupJson = JSON.stringify(Array.from({ length: 9 }, (_, index) => ({
@@ -850,7 +850,11 @@ test("published済みcorrectionをformal runnerのscore B→ranking B→publish 
       );
       CREATE TABLE ranking_reflection_revisions (
         id INTEGER PRIMARY KEY, internal_game_id TEXT, scoring_revision_id TEXT,
-        ranking_update_revision INTEGER, status TEXT
+        ranking_update_revision INTEGER, status TEXT, reflected_at TEXT
+      );
+      CREATE TABLE game_scoring_revisions (
+        id TEXT PRIMARY KEY, internal_game_id TEXT, lineup_revision_id TEXT,
+        status TEXT, revision_number INTEGER, completed_at TEXT, is_active INTEGER
       );
       CREATE TABLE predictions (
         id TEXT PRIMARY KEY, user_id TEXT, game_id TEXT, score INTEGER,
@@ -869,15 +873,19 @@ test("published済みcorrectionをformal runnerのscore B→ranking B→publish 
       INSERT INTO game_lineups VALUES ('${internalGameId}', '${internalGameId}', '${lineupJson}', '${internalGameId}:2', 'pending', NULL, 'pending', NULL);
       INSERT INTO game_lineup_revisions VALUES ('${internalGameId}', '${internalGameId}', 2, '${internalGameId}:2', 1, '${lineupJson}');
       INSERT INTO ranking_games VALUES ('${internalGameId}', 'pending', NULL, 'pending');
-      INSERT INTO ranking_reflection_revisions VALUES (1, '${internalGameId}', 'score-revision-a', 1, 'reflected');
+      INSERT INTO ranking_reflection_revisions VALUES (1, '${internalGameId}', 'score-revision-a', 1, 'reflected', NULL);
+      INSERT INTO game_scoring_revisions VALUES ('score-revision-a', '${internalGameId}', '${internalGameId}:1', 'completed', 1, '2026-08-31T02:00:00.000Z', 1);
       INSERT INTO predictions VALUES ('prediction-1', 'user-1', '${internalGameId}', 80, 100, 'scored', '2026-08-31T09:20:00.000Z', 0);
       INSERT INTO game_jobs_v3 (internal_game_id, job_type, scheduled_at, scheduled_slot_at, status, attempt_count, max_attempts, created_at, updated_at)
         VALUES
           ('${internalGameId}', 'score', '2026-08-31T09:10:00.000Z', '2026-08-31T09:10:00.000Z', 'completed', 1, 12, '2026-08-31T09:10:00.000Z', '2026-08-31T09:10:00.000Z'),
           ('${internalGameId}', 'ranking_rebuild', '2026-08-31T09:10:00.000Z', '2026-08-31T09:10:00.000Z', 'completed', 1, 12, '2026-08-31T09:10:00.000Z', '2026-08-31T09:10:00.000Z'),
-          ('${internalGameId}', 'publish', '2026-08-31T09:10:00.000Z', '2026-08-31T09:10:00.000Z', 'completed', 1, 12, '2026-08-31T09:10:00.000Z', '2026-08-31T09:10:00.000Z'),
-          ('${internalGameId}', 'score', '${correctionSlot}', '${correctionSlot}', 'pending', 0, 12, '${correctionSlot}', '${correctionSlot}');
+          ('${internalGameId}', 'publish', '2026-08-31T09:10:00.000Z', '2026-08-31T09:10:00.000Z', 'completed', 1, 12, '2026-08-31T09:10:00.000Z', '2026-08-31T09:10:00.000Z');
     `);
+    if (terminal === "failed") database.prepare(
+      `INSERT INTO game_jobs_v3 (internal_game_id, job_type, scheduled_at, scheduled_slot_at, status, attempt_count, max_attempts, created_at, updated_at)
+       VALUES (?1, 'score', ?2, ?2, 'failed', 12, 12, ?2, ?2)`
+    ).run(internalGameId, correctionSlot);
     const executionTypes = [];
     const errors = [];
     let optionalPromise = null;
@@ -898,11 +906,14 @@ test("published済みcorrectionをformal runnerのscore B→ranking B→publish 
           if (job.job_type === "score") {
             database.prepare("UPDATE game_lineups SET scoring_status = 'scored', scored_at = ?1 WHERE internal_game_id = ?2").run(now.toISOString(), internalGameId);
             database.prepare("UPDATE game_automation_v3_state SET scoring_revision_id = 'score-revision-b' WHERE internal_game_id = ?1").run(internalGameId);
+            database.prepare("UPDATE game_scoring_revisions SET is_active = 0 WHERE internal_game_id = ?1").run(internalGameId);
+            database.prepare("INSERT INTO game_scoring_revisions VALUES ('score-revision-b', ?1, ?2, 'completed', 2, ?3, 1)")
+              .run(internalGameId, `${internalGameId}:2`, now.toISOString());
             database.prepare("UPDATE predictions SET score = 90, scored_at = ?1 WHERE id = 'prediction-1'").run(now.toISOString());
             return { status: "scored", stateBefore: "manual_action_required", stateAfter: "scored" };
           }
           if (job.job_type === "ranking_rebuild") {
-            database.prepare("INSERT INTO ranking_reflection_revisions VALUES (2, ?1, 'score-revision-b', 2, 'reflected')").run(internalGameId);
+            database.prepare("INSERT INTO ranking_reflection_revisions VALUES (2, ?1, 'score-revision-b', 2, 'reflected', NULL)").run(internalGameId);
             database.prepare("UPDATE ranking_games SET publication_status = 'scored_private', game_status = 'scored' WHERE internal_game_id = ?1").run(internalGameId);
             return { status: "ranked", stateBefore: "scored", stateAfter: "ranked" };
           }
@@ -916,29 +927,32 @@ test("published済みcorrectionをformal runnerのscore B→ranking B→publish 
       return result;
     };
 
-    const first = await run(firstRunAt);
+    const bootstrap = await run(firstRunAt);
+    assert.equal(bootstrap.mainPlan.created, 1);
+    assert.deepEqual(executionTypes, []);
+    const first = await run(new Date(firstRunAt.getTime() + 2000));
     assert.equal(first.execution.failed, 0, JSON.stringify(errors));
-    assert.deepEqual(executionTypes, ["score"]);
+    assert.deepEqual(executionTypes, ["score"], JSON.stringify({ mainPlan: first.mainPlan, errors }));
     assert.equal(database.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1").get(internalGameId).state, "scored");
 
-    const second = await run(new Date(firstRunAt.getTime() + 2000));
+    const second = await run(new Date(firstRunAt.getTime() + 4000));
     assert.equal(second.execution.failed, 0);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id = ?1 AND job_type = 'ranking_rebuild'").get(internalGameId).count, 2, JSON.stringify(second.mainPlan?.diagnostics || []));
     assert.deepEqual(executionTypes, ["score"]);
 
-    const third = await run(new Date(firstRunAt.getTime() + 4000));
+    const third = await run(new Date(firstRunAt.getTime() + 6000));
     assert.equal(third.execution.failed, 0);
     assert.deepEqual(executionTypes, ["score", "ranking_rebuild"]);
     assert.equal(database.prepare("SELECT scoring_revision_id FROM ranking_reflection_revisions WHERE id = 2").get().scoring_revision_id, "score-revision-b");
     assert.equal(database.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1").get(internalGameId).state, "ranked");
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id = ?1 AND job_type = 'ranking_rebuild'").get(internalGameId).count, 2, JSON.stringify(database.prepare("SELECT id, job_type, status, scheduled_slot_at FROM game_jobs_v3 WHERE internal_game_id = ?1 ORDER BY id").all(internalGameId)));
 
-    const fourth = await run(new Date(firstRunAt.getTime() + 6000));
+    const fourth = await run(new Date(firstRunAt.getTime() + 8000));
     assert.equal(fourth.execution.failed, 0, JSON.stringify(errors));
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id = ?1 AND job_type = 'publish'").get(internalGameId).count, 2);
     assert.deepEqual(executionTypes, ["score", "ranking_rebuild"]);
 
-    const fifth = await run(new Date(firstRunAt.getTime() + 8000));
+    const fifth = await run(new Date(firstRunAt.getTime() + 10000));
     assert.equal(fifth.execution.failed, 0);
     assert.deepEqual(executionTypes, ["score", "ranking_rebuild", "publish"]);
     assert.equal(database.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1").get(internalGameId).state, "published");
@@ -946,7 +960,7 @@ test("published済みcorrectionをformal runnerのscore B→ranking B→publish 
     assert.equal(database.prepare("SELECT COUNT(*) AS count, SUM(score) AS total FROM predictions WHERE game_id = ?1 AND is_test_prediction = 0").get(internalGameId).count, 1);
     assert.equal(database.prepare("SELECT COUNT(*) AS count, SUM(score) AS total FROM predictions WHERE game_id = ?1 AND is_test_prediction = 0").get(internalGameId).total, 90);
 
-    const sixth = await run(new Date(firstRunAt.getTime() + 10000));
+    const sixth = await run(new Date(firstRunAt.getTime() + 12000));
     assert.equal(sixth.execution.failed, 0);
     assert.deepEqual(executionTypes, ["score", "ranking_rebuild", "publish"]);
   } finally {

@@ -708,6 +708,37 @@ test("Claim / lease: valid lease中の重複claimを拒否し、stale leaseはto
   }
 });
 
+test("same score job reclaim後のA late successはB completed artifactに触れない", async () => {
+  const fixture = await createGoldenDb();
+  try {
+    await prepareManualLineup(fixture);
+    fixture.database.prepare("UPDATE game_automation_v3_state SET state='lineup_ready' WHERE internal_game_id=?").run(GAME_ID);
+    const at = new Date(fixture.startAt.getTime() + 20 * 60 * 1000);
+    const created = await createDueJob(fixture, "score", at, 41);
+    const old = await claimV3Job(fixture.env.AUTH_DB, { jobId: created.job.id, now: at });
+    const gate = { hit: deferred(), release: deferred() };
+    const oldExecutor = executeGameAutomationV3Job({
+      env: { ...fixture.env, AUTH_DB: gatedD1(fixture.database,
+        (sql) => sql.includes("SELECT * FROM game_lineups WHERE internal_game_id"), gate) },
+      job: old, internalGameId: GAME_ID, now: at
+    });
+    await gate.hit.promise;
+    fixture.database.prepare("UPDATE game_jobs_v3 SET lease_expires_at = ? WHERE id = ?")
+      .run(new Date(at.getTime() - 1000).toISOString(), old.id);
+    const freshAt = new Date(at.getTime() + 2000);
+    const fresh = await claimV3Job(fixture.env.AUTH_DB, { jobId: old.id, now: freshAt });
+    assert.notEqual(old.claim_token, fresh.claim_token);
+    const current = await executeGameAutomationV3Job({ env: fixture.env, job: fresh, internalGameId: GAME_ID, now: freshAt });
+    const before = artifactCounts(fixture.database);
+    gate.release.resolve();
+    const stale = await oldExecutor;
+    assert.equal(stale.status, "stale_no_op");
+    assert.equal(stale.noOpReason, "V3_STALE_SCORE_EXECUTOR");
+    assert.equal(current.status, "scored");
+    assert.deepEqual(artifactCounts(fixture.database), before);
+  } finally { fixture.database.close(); }
+});
+
 test("Stale score executor: Aを読み込んだ後のB correctionでAをcurrentへ再採用しない", async () => {
   const fixture = await createGoldenDb();
   try {

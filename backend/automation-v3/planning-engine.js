@@ -380,13 +380,24 @@ export function buildStagePlan(planningState, stage, { disabled = false, disable
   const rankingReprocessingAllowed = stage === "ranking_reflect"
     && effectiveState === "ranked"
     && artifact?.reprocessRequired === true;
-  if (!stateAllows(effectiveState, stage) && !rankingReprocessingAllowed) {
+  const historicalCorrectionScore = stage === "scoring"
+    && effectiveState === "manual_action_required"
+    && state.canonicalPlanningArtifacts?.aggregate?.lineupReady === true
+    && state.canonicalPlanningArtifacts?.aggregate?.scoringReady !== true
+    && jobs.some((candidate) => candidate.job_type === "score" && candidate.status === "completed");
+  if (!stateAllows(effectiveState, stage) && !rankingReprocessingAllowed && !historicalCorrectionScore) {
     const blockedReason = ["lineup_fetch", "lineup_finalize"].includes(stage) && effectiveState !== "prediction_closed"
       ? "PREDICTION_CLOSE_STATE_GATE"
       : `${stage.toUpperCase()}_STATE_GATE`;
     return { ...plan, blocked: true, blockedReason, reasonCode: blockedReason };
   }
   if (plan.artifactReady) return { ...plan, reasonCode: "ARTIFACT_READY" };
+  // The correction API can already have queued B even when latestJob chooses
+  // A's due slot. Never schedule another recovery while that B job is open.
+  if (historicalCorrectionScore && jobs.some((candidate) => candidate.job_type === "score"
+    && OPEN_STATUSES.has(normalize(candidate.status)))) {
+    return { ...plan, reasonCode: "OPEN_JOB_EXISTS" };
+  }
   const lateLineupFetch = stage === "lineup_fetch"
     ? getLateLineupFetchDecision({ game, effectiveState, now, finalLineupAt: schedule.finalLineupAt })
     : null;
@@ -400,10 +411,10 @@ export function buildStagePlan(planningState, stage, { disabled = false, disable
       diagnostics: { ...plan.diagnostics, lateWindowDeadline: lateLineupFetch.deadline }
     };
   }
-  if (status === "completed") {
+  if (status === "completed" || (historicalCorrectionScore && ["failed", "cancelled"].includes(status))) {
     if ((stage === "ranking_reflect"
       && (artifact?.revisionMismatch === true || artifact?.reprocessRequired === true))
-      || stage === "publish") {
+      || stage === "publish" || historicalCorrectionScore) {
       // A completed job whose current artifact is stale or missing is
       // historical evidence only. Keep it immutable and allocate a fresh due
       // slot so the uniqueness key cannot absorb the new execution.

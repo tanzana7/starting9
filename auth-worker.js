@@ -19909,6 +19909,12 @@ async function saveActualLineupForAutoScoring(db, gameId, actualLineup, detected
     return existing;
   }
 
+  // Existing rows may retain the historical game_id while V3 resolves the
+  // same row by internal_game_id. Reuse that stored key for the game_id
+  // conflict target so a late manual finalize updates the canonical row
+  // instead of inserting a second row for the same internal game.
+  const persistedGameId = String(existing?.game_id || gameId);
+
   const detectedAtIso = detectedAt.toISOString();
   const delaySeconds = Number.isInteger(options.delaySeconds) ? options.delaySeconds : AUTO_SCORING_DEFAULT_DELAY_SECONDS;
   const requestedDueAt = options.scoringDueAt instanceof Date ? options.scoringDueAt : null;
@@ -19941,7 +19947,7 @@ async function saveActualLineupForAutoScoring(db, gameId, actualLineup, detected
        publication_status = 'pending',
        published_at = NULL,
        updated_at = excluded.updated_at`
-  ).bind(id, gameId, ...(storage.game_lineups ? [internalGameId || null] : []), actualLineupJson, fingerprint, PREDICTION_SCHEMA_VERSION, detectedAtIso, scoringDueAt, lineupSource).run();
+  ).bind(id, persistedGameId, ...(storage.game_lineups ? [internalGameId || null] : []), actualLineupJson, fingerprint, PREDICTION_SCHEMA_VERSION, detectedAtIso, scoringDueAt, lineupSource).run();
   return await getGameLineup(db, { gameId, internalGameId });
 }
 

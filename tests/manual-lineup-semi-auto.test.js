@@ -365,6 +365,53 @@ test("manual lineupのsave/finalize APIは実handler経由で保存し、score j
   }
 });
 
+test("manual lineup finalizeは既存canonical行のlegacy game_idとinternal_game_idを混在させない", async () => {
+  const integration = await createManualLineupIntegrationDb();
+  try {
+    integration.database.prepare(
+      "INSERT INTO game_lineups (id, game_id, internal_game_id, actual_lineup_json, lineup_fingerprint, scoring_status, lineup_source, publication_status) VALUES ('legacy-lineup', 'legacy-game-22', ?1, '[]', '', 'pending', 'manual', 'pending')"
+    ).run(INTEGRATION_GAME_ID);
+    const path = `/api/admin/v3/games/${INTEGRATION_GAME_ID}`;
+    const save = await adminRequest(integration.env, `${path}/lineup-revisions`, {
+      lineup: validManualLineup(), confirmed: true
+    });
+    const savedBody = await save.json();
+    assert.equal(save.status, 201, JSON.stringify(savedBody));
+    const finalize = await adminRequest(integration.env, `${path}/lineup-finalize`, {
+      lineupRevisionId: savedBody.revision.revisionId,
+      version: savedBody.revision.version,
+      confirmed: true,
+      confirmationInternalGameId: INTEGRATION_GAME_ID,
+      confirmationRevisionId: savedBody.revision.revisionId,
+      confirmationFingerprint: savedBody.revision.lineupFingerprint
+    });
+    const body = await finalize.json();
+    assert.equal(finalize.status, 200, JSON.stringify(body));
+    assert.equal(body.ok, true);
+    assert.equal(integration.database.prepare("SELECT COUNT(*) AS count FROM game_lineups WHERE internal_game_id = ?1").get(INTEGRATION_GAME_ID).count, 1);
+    const canonical = integration.database.prepare(
+      "SELECT game_id, actual_lineup_json, final_lineup_revision_id FROM game_lineups WHERE internal_game_id = ?1"
+    ).get(INTEGRATION_GAME_ID);
+    assert.equal(canonical.game_id, "legacy-game-22");
+    assert.equal(canonical.final_lineup_revision_id, savedBody.revision.revisionId);
+    assert.equal(JSON.parse(canonical.actual_lineup_json).length, 9);
+
+    const duplicate = await adminRequest(integration.env, `${path}/lineup-finalize`, {
+      lineupRevisionId: savedBody.revision.revisionId,
+      version: savedBody.revision.version,
+      confirmed: true,
+      confirmationInternalGameId: INTEGRATION_GAME_ID,
+      confirmationRevisionId: savedBody.revision.revisionId,
+      confirmationFingerprint: savedBody.revision.lineupFingerprint
+    });
+    assert.equal(duplicate.status, 409);
+    assert.equal(integration.database.prepare("SELECT COUNT(*) AS count FROM game_lineups WHERE internal_game_id = ?1").get(INTEGRATION_GAME_ID).count, 1);
+    assert.equal(integration.database.prepare("SELECT COUNT(*) AS count FROM game_lineup_revisions WHERE internal_game_id = ?1").get(INTEGRATION_GAME_ID).count, 1);
+  } finally {
+    integration.database.close();
+  }
+});
+
 test("manual lineup finalizeは開始後でもcanonical未登録なら許可する", async () => {
   const gameDate = currentJstDate();
   const integration = await createManualLineupIntegrationDb({

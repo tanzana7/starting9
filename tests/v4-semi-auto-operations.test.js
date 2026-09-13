@@ -10,6 +10,7 @@ const v3 = await import(pathToFileURL(path.join(root, "game-automation-v3.js")))
 const orchestratorSource = fs.readFileSync(path.join(root, "backend", "automation-v3", "orchestrator.js"), "utf8");
 const adminSource = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
 const workerSource = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+const executorSource = fs.readFileSync(path.join(root, "backend", "automation-v3", "executor.js"), "utf8");
 const wranglerSource = fs.readFileSync(path.join(root, "wrangler.auth.production.jsonc"), "utf8");
 
 const GAME_ID = "f8015d4d-dc96-4e53-8b5a-b6ce71b2fcb5";
@@ -310,6 +311,19 @@ test("V4は締切済みかつcanonical manual lineup確定なら開始前でも�
   assert.equal(score.created, true);
   assert.equal(score?.plan?.scheduledSlotAt.toISOString(), "2026-09-02T08:00:00.000Z");
   assert.equal(state.jobs.filter((job) => job.job_type === "score").length, 1);
+});
+
+test("V4 identity follow-upはdisabled lineup_fetchを作らず、V3は既存計画を維持する", () => {
+  const target = { ...game(), npbIdentityStatus: "resolved" };
+  assert.equal(
+    v3.getV3DuePlan(target, "prediction_closed", new Date("2026-09-02T10:05:00.000Z"), { v4SemiAuto: true }),
+    null
+  );
+  assert.equal(
+    v3.getV3DuePlan(target, "prediction_closed", new Date("2026-09-02T10:05:00.000Z"), { v4SemiAuto: false })?.jobType,
+    "lineup_fetch"
+  );
+  assert.match(executorSource, /v4SemiAuto: Boolean\(v4SemiAuto\)/);
 });
 
 test("V4はcanonical lineupが先に確定していてもprediction_closeを次回Cronで作成する", async () => {

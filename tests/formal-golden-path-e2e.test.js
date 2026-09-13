@@ -217,12 +217,14 @@ async function createGoldenDb() {
   };
 }
 
-async function runFormalCron(env, now, executed = [], { formalPlanner = null } = {}) {
+async function runFormalCron(env, now, executed = [], { formalPlanner = null, v4SemiAuto = false } = {}) {
   return runGameAutomationV3(env, now, {
     formalPlanner: formalPlanner || ((db, games, at) => planMainWorkflowJobs(db, games, at, {
-      disabledStages: ["roster_fetch", "lineup_fetch"]
+      disabledStages: ["roster_fetch", "lineup_fetch"],
+      v4SemiAuto
     })),
     auxiliaryPlanner: async () => ({ created: 0, planned: [], diagnostics: [], errors: [] }),
+    v4SemiAuto,
     executeJob: async (context) => {
       executed.push(context.job.job_type);
       return executeGameAutomationV3Job(context);
@@ -325,6 +327,24 @@ test("Golden Path A: prediction closeからmanual lineup、score、ranking、pub
     assert.equal(fixture.database.prepare("SELECT lineup_source FROM game_lineups WHERE internal_game_id = ?").get(GAME_ID).lineup_source, "manual");
     assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE job_type IN ('roster_fetch', 'lineup_fetch', 'probable_starter_fetch')").get().count, 0);
     assert.equal(fixture.database.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?").get(GAME_ID).state, "published");
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test("V4はranking artifactが開始後にreadyならstart+10を待たずpublishする", async () => {
+  const fixture = await createGoldenDb();
+  try {
+    await prepareManualLineup(fixture);
+    const at = new Date(fixture.startAt.getTime() + 5 * 60 * 1000);
+    const executed = [];
+    for (let pass = 0; pass < 4; pass += 1) {
+      await runFormalCron(fixture.env, at, executed, { v4SemiAuto: true });
+    }
+    const canonical = await evaluateCanonicalArtifactsFromDb(fixture.env.AUTH_DB, GAME_ID);
+    assert.equal(canonical.aggregate.fullyPublished, true);
+    assert.equal(executed.includes("publish"), true);
+    assert.equal(fixture.database.prepare("SELECT publication_status FROM game_lineups WHERE internal_game_id = ?").get(GAME_ID).publication_status, "published");
   } finally {
     fixture.database.close();
   }

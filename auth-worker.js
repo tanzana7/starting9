@@ -1061,7 +1061,7 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
         stateBefore: null,
         stateAfter: null
       }
-      : executeGameAutomationV3Job(context),
+      : executeGameAutomationV3Job({ ...context, v4SemiAuto: operationalMode.isV4SemiAuto }),
     formalPlanner: (db, games, plannerNow) => planMainWorkflowJobs(db, games, plannerNow, {
       disabledStages: operationalMode.disabledJobTypes,
       v4SemiAuto: operationalMode.isV4SemiAuto
@@ -1071,6 +1071,7 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
       autoRosterFetch: operationalMode.autoRosterFetch
     }),
     disabledJobTypes: operationalMode.disabledJobTypes,
+    v4SemiAuto: operationalMode.isV4SemiAuto,
     scheduleOptional,
     observerScheduler,
     onPhase: async (phase) => {
@@ -1862,26 +1863,44 @@ function v3LineupRevisionIdentity(row) {
   return gameId && Number.isInteger(version) ? `${gameId}:${version}` : "";
 }
 
-async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore }) {
+async function releaseStaleGameLineupScoringMarker(db, { internalGameId = "", now = new Date(), job = null } = {}) {
+  const jobId = Number(job?.id || 0);
+  if (!internalGameId || !jobId) return false;
+  try {
+    const columns = await getTableColumnSet(db, "game_lineups");
+    if (!columns.has("scoring_status") || !columns.has("scoring_started_at")) return false;
+    const scopeColumn = columns.has("internal_game_id") ? "internal_game_id" : "game_id";
+    const result = await db.prepare(
+      `UPDATE game_lineups
+          SET scoring_status = 'pending', scoring_started_at = NULL,
+              last_error = NULL, updated_at = ?1
+        WHERE ${scopeColumn} = ?2
+          AND scoring_status = 'processing'
+          AND NOT EXISTS (
+            SELECT 1 FROM game_jobs_v3 AS other_score_job
+             WHERE other_score_job.internal_game_id = ?2
+               AND other_score_job.job_type = 'score'
+               AND other_score_job.status = 'claimed'
+               AND other_score_job.id <> ?3
+               AND other_score_job.lease_expires_at > ?1
+          )`
+    ).bind(now.toISOString(), internalGameId, jobId).run();
+    return Number(result?.meta?.changes || 0) === 1;
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+    return false;
+  }
+}
+
+async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore, job = null }) {
   const canonical = await evaluateCanonicalArtifactsFromDb(env.AUTH_DB, internalGameId);
   if (canonical?.aggregate?.lineupReady !== true) {
     throw createV3Error("V3_FINAL_LINEUP_REQUIRED", "正式スタメン確定済みの採点対象がありません。", { retryable: false });
   }
-  // A terminal score job can leave the canonical lineup in processing. The
-  // recovery job owns the next attempt, so release that stale marker before
-  // claiming the lineup again; no prediction or revision history is changed.
-  try {
-    const columns = await getTableColumnSet(env.AUTH_DB, "game_lineups");
-    const scopeColumn = columns.has("internal_game_id") ? "internal_game_id" : "game_id";
-    await env.AUTH_DB.prepare(
-      `UPDATE game_lineups
-          SET scoring_status = 'pending', scoring_started_at = NULL,
-              last_error = NULL, updated_at = ?1
-        WHERE ${scopeColumn} = ?2 AND scoring_status = 'processing'`
-    ).bind(now.toISOString(), internalGameId).run();
-  } catch (error) {
-    if (!isPregameSchemaError(error)) throw error;
-  }
+  // Only the currently claimed score job may release a processing marker.
+  // A different live score job must retain ownership, while an expired job
+  // may be recovered without allowing its late failure to affect the result.
+  await releaseStaleGameLineupScoringMarker(env.AUTH_DB, { internalGameId, now, job });
   const canonicalLineup = await getGameLineup(env.AUTH_DB, { gameId: internalGameId, internalGameId });
   // game_lineups.game_id may retain a historical compatibility identifier,
   // while V3 ownership is always internal_game_id. Claim the canonical row
@@ -1891,14 +1910,14 @@ async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore })
     : null;
   let result = null;
   try {
-    result = claimed ? await scoreClaimedGameLineup(env.AUTH_DB, claimed, now) : null;
+    result = claimed ? await scoreClaimedGameLineup(env.AUTH_DB, claimed, now, 0, { job }) : null;
   } catch (error) {
-    if (error?.code === "V3_STALE_LINEUP_REVISION") {
+    if (["V3_STALE_LINEUP_REVISION", "V3_STALE_SCORE_EXECUTOR"].includes(error?.code)) {
       return {
         status: "stale_no_op",
         stateBefore,
         stateAfter: stateBefore,
-        noOpReason: "V3_STALE_LINEUP_REVISION",
+        noOpReason: error.code,
         staleLineupRevision: error?.diagnostics?.expectedLineupRevisionId || null
       };
     }
@@ -2023,7 +2042,7 @@ async function executeV3RankingExecutor({ env, internalGameId, now, stateBefore 
   };
 }
 
-async function executeV3PublishExecutor({ env, internalGameId, now, target, stateBefore }) {
+async function executeV3PublishExecutor({ env, internalGameId, now, target, stateBefore, v4SemiAuto = false }) {
   const canonical = await evaluateCanonicalArtifactsFromDb(env.AUTH_DB, internalGameId);
   if (canonical?.aggregate?.rankingReady !== true) {
     throw createV3Error("V3_RANKING_ARTIFACT_NOT_READY", "現在の採点revisionがランキングへ反映されていません。", { retryable: false });
@@ -2043,7 +2062,8 @@ async function executeV3PublishExecutor({ env, internalGameId, now, target, stat
       internalGameId,
       target,
       source: "v3",
-      expectedLineupRevisionId
+      expectedLineupRevisionId,
+      v4SemiAuto
     });
   } catch (error) {
     if (error?.code === "V3_STALE_LINEUP_REVISION") {
@@ -2146,7 +2166,7 @@ async function reconcileV3ExecutorState({ env, internalGameId, persistedState, e
   return current;
 }
 
-export async function executeGameAutomationV3Job({ env, job, internalGameId, now }) {
+export async function executeGameAutomationV3Job({ env, job, internalGameId, now, v4SemiAuto = null }) {
   const jobType = String(job?.job_type || "");
   // The registered handlers retain the canonical contracts for each branch:
   // jobType === "probable_starter_fetch" is UUID scoped, and lineup targets
@@ -2185,7 +2205,10 @@ export async function executeGameAutomationV3Job({ env, job, internalGameId, now
     internalGameId,
     now,
     target,
-    stateBefore
+    stateBefore,
+    v4SemiAuto: v4SemiAuto === null
+      ? getV3OperationalMode(env).isV4SemiAuto
+      : Boolean(v4SemiAuto)
   });
 }
 
@@ -15702,7 +15725,9 @@ async function handleGetPreviousResultGame(request, env, cors) {
       || rankingExcluded;
     const directPublished = row.publication_status === "published" && Number(row.is_test_game || 0) !== 1;
     const resultsPublished = !unavailable && (directPublished
-      || (row.publication_status === undefined && await isGameResultsPublished(env.AUTH_DB, internalGameId, now)));
+      || (row.publication_status === undefined && await isGameResultsPublished(env.AUTH_DB, internalGameId, now, {
+        v4SemiAuto: getV3OperationalMode(env).isV4SemiAuto
+      })));
     if (!resultsPublished && !unavailable) continue;
     let resultPublishedAt = row.published_at || null;
     if (resultsPublished && !resultPublishedAt) {
@@ -15925,7 +15950,9 @@ async function handleGetResultGames(request, env, cors) {
     const resultId = String(row.internal_game_id || row.game_id || "");
     const [metadata, resultsPublished] = await Promise.all([
       getResultGameMetadata(env.AUTH_DB, resultId),
-      isGameResultsPublished(env.AUTH_DB, resultId, now)
+      isGameResultsPublished(env.AUTH_DB, resultId, now, {
+        v4SemiAuto: getV3OperationalMode(env).isV4SemiAuto
+      })
     ]);
     const serviceUnavailable = isServiceUnavailableGameStatus(row.game_status);
     const statusExcluded = ["cancelled", "canceled", "postponed"].includes(String(row.game_status || "").toLowerCase());
@@ -16059,7 +16086,9 @@ async function handleGetResultGame(request, env, cors, gameId) {
   if (row.status !== "scored") {
     return jsonResponse({ ok: false, error: "採点済みの結果が見つかりません。" }, 404, cors);
   }
-  const resultsPublished = await isGameResultsPublished(env.AUTH_DB, resultId, new Date());
+  const resultsPublished = await isGameResultsPublished(env.AUTH_DB, resultId, new Date(), {
+    v4SemiAuto: getV3OperationalMode(env).isV4SemiAuto
+  });
   return jsonResponse({
     ok: true,
     game,
@@ -18796,7 +18825,7 @@ async function prepareGamePredictionScoring(db, gameReference, actualLineup, isT
   };
 }
 
-async function scoreClaimedGameLineup(db, record, now, isTestPrediction = 0) {
+async function scoreClaimedGameLineup(db, record, now, isTestPrediction = 0, ownership = {}) {
   const storedLineup = parseStoredActualLineup(record.actual_lineup_json);
   const actualResult = sanitizeActualLineupForScoring(storedLineup, { allowUnresolvedPlayer: true });
   if (!actualResult.ok) {
@@ -18915,7 +18944,25 @@ async function scoreClaimedGameLineup(db, record, now, isTestPrediction = 0) {
     });
     return { ...result, scoringRevisionId: persistedRevision?.id || revision.id, status: noOpReason ? "no_op_success" : "scored", noOpReason };
   } catch (error) {
-    await failGameScoringRevision(db, { scoringRevisionId: revision.id, error, now });
+    const failure = await failGameScoringRevision(db, {
+      scoringRevisionId: revision.id,
+      error,
+      now,
+      internalGameId: record.internal_game_id || "",
+      expectedLineupRevisionId: lineageGuardRevisionId,
+      jobId: ownership?.job?.id || 0,
+      claimToken: ownership?.job?.claim_token || ""
+    });
+    if (failure?.stale) {
+      throw createV3Error("V3_STALE_SCORE_EXECUTOR", "stale executorの遅延失敗を無視しました。", {
+        retryable: false,
+        diagnostics: {
+          internalGameId: record.internal_game_id || "",
+          expectedLineupRevisionId: lineageGuardRevisionId,
+          scoringRevisionId: revision.id
+        }
+      });
+    }
     throw error;
   }
 }
@@ -20319,7 +20366,7 @@ async function publishScoredGameResults(env, gameId, now, options = {}) {
   }
 }
 
-async function publishGameResults(env, gameId, now, { isTestGame = false, internalGameId = "", target = null, expectedLineupRevisionId = "" } = {}) {
+async function publishGameResults(env, gameId, now, { isTestGame = false, internalGameId = "", target = null, expectedLineupRevisionId = "", v4SemiAuto = false } = {}) {
   const testGame = isTestGame ? await getAutoScoringTest(env.AUTH_DB, gameId) : null;
   if (!isTestGame && await isServiceUnavailableGame(env.AUTH_DB, gameId)) {
     return { published: false, status: SERVICE_UNAVAILABLE_GAME_STATUS, publishedAt: null };
@@ -20333,7 +20380,7 @@ async function publishGameResults(env, gameId, now, { isTestGame = false, intern
       throw createPregameError("PUBLICATION_TARGET_INVALID", "公開対象の開始時刻が不正です。", { retryable: false, targetResolution: publicationTarget.targetResolution });
     }
     const resultReleaseAt = new Date(startAt.getTime() + RESULT_RELEASE_MINUTES_AFTER_START * 60 * 1000);
-    if (now < resultReleaseAt) return { published: false, status: "not_due", publishedAt: null };
+    if (!v4SemiAuto && now < resultReleaseAt) return { published: false, status: "not_due", publishedAt: null };
   } else if (!testGame) {
     throw createPregameError("TEST_GAME_NOT_FOUND", "自動採点テストが見つかりません。");
   }
@@ -20593,14 +20640,38 @@ async function completeGameScoringRevision(db, { internalGameId = "", scoringRev
   }
 }
 
-async function failGameScoringRevision(db, { scoringRevisionId = "", error, now = new Date() } = {}) {
-  if (!scoringRevisionId) return;
+export async function failGameScoringRevision(db, {
+  scoringRevisionId = "",
+  error,
+  now = new Date(),
+  internalGameId = "",
+  expectedLineupRevisionId = "",
+  jobId = 0,
+  claimToken = ""
+} = {}) {
+  if (!scoringRevisionId) return { updated: false, stale: false };
+  const ownedByCurrentJob = Number(jobId) > 0 && String(claimToken || "").trim();
   try {
-    await db.prepare(
-      "UPDATE game_scoring_revisions SET status = 'failed', is_active = 0, completed_at = NULL WHERE id = ?1"
+    if (ownedByCurrentJob) {
+      const job = await db.prepare(
+        "SELECT status, claim_token FROM game_jobs_v3 WHERE id = ?1 LIMIT 1"
+      ).bind(Number(jobId)).first();
+      if (job?.status !== "claimed" || String(job.claim_token || "") !== String(claimToken)) {
+        return { updated: false, stale: true };
+      }
+    }
+    const revisionColumns = await getTableColumnSet(db, "game_scoring_revisions");
+    const hasStatus = revisionColumns.has("status");
+    const hasActive = revisionColumns.has("is_active");
+    if (!hasStatus || !hasActive) return { updated: false, stale: false };
+    const result = await db.prepare(
+      "UPDATE game_scoring_revisions SET status = 'failed', is_active = 0, completed_at = NULL WHERE id = ?1 AND status = 'in_progress' AND is_active = 0"
     ).bind(scoringRevisionId).run();
+    return { updated: Number(result?.meta?.changes || 0) === 1, stale: Number(result?.meta?.changes || 0) !== 1 };
   } catch (recordError) {
+    if (ownedByCurrentJob && isPregameSchemaError(recordError)) return { updated: false, stale: true };
     if (!isPregameSchemaError(recordError)) throw recordError;
+    return { updated: false, stale: false };
   }
   void error;
   void now;
@@ -20840,7 +20911,9 @@ async function handleGetPerfectAchievers(request, env, cors) {
   }
 
   const session = await getSessionUser(request, env);
-  if (!await isGameResultsPublished(env.AUTH_DB, gameId, new Date())) {
+  if (!await isGameResultsPublished(env.AUTH_DB, gameId, new Date(), {
+    v4SemiAuto: getV3OperationalMode(env).isV4SemiAuto
+  })) {
     return jsonResponse({
       ...createPerfectAchieverResponse(gameId, {
         totalCount: 0,
@@ -20992,7 +21065,9 @@ async function handleGetCurrentPrediction(request, env, cors) {
   const metadata = reference.metadata;
 
   const testGame = await isTestRankingGame(env.AUTH_DB, metadata.gameId);
-  const published = testGame ? false : await isGameResultsPublished(env.AUTH_DB, metadata.gameId, new Date());
+  const published = testGame ? false : await isGameResultsPublished(env.AUTH_DB, metadata.gameId, new Date(), {
+    v4SemiAuto: getV3OperationalMode(env).isV4SemiAuto
+  });
   const row = testGame ? null : await getPredictionRow(env.AUTH_DB, session.id, metadata);
   if (!row) {
     return jsonResponse({
@@ -21036,7 +21111,7 @@ async function handleGetCurrentPrediction(request, env, cors) {
   }, 200, cors);
 }
 
-async function isGameResultsPublished(db, gameId, now) {
+async function isGameResultsPublished(db, gameId, now, { v4SemiAuto = false } = {}) {
   const identity = getGameIdentityForPregame(gameId);
   let releaseAt = identity?.resultReleaseAt || null;
   try {
@@ -21049,7 +21124,7 @@ async function isGameResultsPublished(db, gameId, now) {
   } catch (error) {
     if (!isPregameSchemaError(error)) throw error;
   }
-  if (!releaseAt || now < releaseAt) return false;
+  if (!v4SemiAuto && (!releaseAt || now < releaseAt)) return false;
   const row = await db.prepare(
     `SELECT is_ranking_eligible, publication_status, is_test_game
        FROM ranking_games WHERE game_id = ?1 LIMIT 1`

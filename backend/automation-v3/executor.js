@@ -342,7 +342,7 @@ async function runV3OptionalPhases(env, games, now, {
 }
 
 // Claim execution lifecycle. Job-type business executors remain injected by auth-worker.
-export async function executeClaimedJobs(env, claims = [], games = [], now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null } = {}) {
+export async function executeClaimedJobs(env, claims = [], games = [], now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, v4SemiAuto = false } = {}) {
   let processed = 0;
   let failed = 0;
   let retryWait = 0;
@@ -377,7 +377,13 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
     const executionNow = new Date(monotonicV3JobTimestamp(now, claimed.created_at, claimed.claimed_at));
     try {
       if (typeof executeJob !== "function") throw createV3Error("MISSING_EXECUTOR", "V3ジョブexecutorが注入されていません。");
-      const result = await executeJob({ env, job: claimed, internalGameId: claimed.internal_game_id, now: executionNow });
+      const result = await executeJob({
+        env,
+        job: claimed,
+        internalGameId: claimed.internal_game_id,
+        now: executionNow,
+        v4SemiAuto: Boolean(v4SemiAuto)
+      });
       assertV3AuxiliaryJobResult(claimed, result, executionNow);
       const completed = await completeV3Job(env.AUTH_DB, {
         jobId: claimed.id,
@@ -431,7 +437,15 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
           const followupState = await env.AUTH_DB.prepare(
             "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
           ).bind(claimed.internal_game_id).first();
-          const followupPlan = getV3DuePlan(followupGame, followupState?.state || V3_STATE.SCHEDULED, now);
+          const followupPlan = getV3DuePlan(
+            followupGame,
+            followupState?.state || V3_STATE.SCHEDULED,
+            now,
+            {
+              v4SemiAuto: Boolean(v4SemiAuto),
+              disabledStages: v4SemiAuto ? ["roster_fetch", "lineup_fetch"] : []
+            }
+          );
           if (followupPlan && [V3_JOB_TYPE.LINEUP_FETCH, V3_JOB_TYPE.LINEUP_FINALIZE].includes(followupPlan.jobType)) {
             await createV3Job(env.AUTH_DB, { internalGameId: claimed.internal_game_id, ...followupPlan });
           }
@@ -478,7 +492,7 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
   return { processed, failed, retryWait, terminalFailed, failedJobIds, retryErrors };
 }
 
-export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, onPhase = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, formalPlanner = planMainWorkflowJobs, auxiliaryPlanner = planAuxiliaryJobs, scheduleOptional = null, disabledJobTypes = [] } = {}) {
+export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, onPhase = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, formalPlanner = planMainWorkflowJobs, auxiliaryPlanner = planAuxiliaryJobs, scheduleOptional = null, disabledJobTypes = [], v4SemiAuto = false } = {}) {
   if (!isGameAutomationV3Enabled(env)) return { enabled: false, processed: 0, created: 0 };
   const schema = await getV3SchemaState(env.AUTH_DB);
   if (!schema.ready) return { enabled: true, schemaReady: false, errorCode: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", processed: 0, created: 0 };
@@ -616,7 +630,15 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
       errors: [{ code: error?.code || "V3_CLAIM_PHASE_FAILED", message: String(error?.message || "V3ジョブclaim phaseに失敗しました。") }]
     };
   });
-  const execution = await executeClaimedJobs(env, claimReport.claimed, games, now, { executeJob, onError, onSuccess, onPlan, observerTimeoutMs, observerScheduler }).catch(async (error) => {
+  const execution = await executeClaimedJobs(env, claimReport.claimed, games, now, {
+    executeJob,
+    onError,
+    onSuccess,
+    onPlan,
+    observerTimeoutMs,
+    observerScheduler,
+    v4SemiAuto
+  }).catch(async (error) => {
     failed += 1;
     await invokeV3Observer(onError, [error, { stage: "execute" }], observerTimeoutMs, observerScheduler);
     return {

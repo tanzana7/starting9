@@ -115,12 +115,14 @@ export async function listV3Games(db, now = new Date(), options = {}) {
          ORDER BY ${orderSql}${enrichedLimitSql}`
     ).bind(...enrichedParams).all();
   } catch (error) {
-    // Older adapters/databases may not expose the publication joins. Keep the
-    // established current-day discovery contract in that environment.
+    // Older adapters/databases may not expose the publication joins. Keep
+    // unfinished workflow states discoverable in the fallback as well; a
+    // delayed score/ranking/publication must not disappear just because the
+    // richer artifact query is temporarily unavailable.
     console.warn(`[V3_DISCOVERY_FALLBACK] ${JSON.stringify({
-      mode: "legacy_current_day_fallback",
+      mode: "workflow_state_fallback",
       asOfDateJst: date,
-      historicalUnpublishedRetention: false,
+      historicalUnpublishedRetention: true,
       reason: String(error?.message || "enriched_query_failed").slice(0, 200)
     })}`);
     const fallbackParams = includeRecentHistory ? [] : [date];
@@ -133,17 +135,41 @@ export async function listV3Games(db, now = new Date(), options = {}) {
     const fallbackLimitSql = limit
       ? ` LIMIT ?${fallbackParams.push(limit)}`
       : "";
-    result = await db.prepare(
-      `SELECT ${gameColumns}
-         FROM games
-        WHERE games.internal_game_id IS NOT NULL AND games.internal_game_id <> ''
-           AND games.is_active = 1
-           AND games.deleted_at IS NULL
-           AND LOWER(COALESCE(games.game_status, '')) NOT IN (${excludedGameStatusSql})
-           ${includeRecentHistory ? `AND ${fightersGameSql.replaceAll("games.", "")}` : "AND games.game_date >= date(?1)"}
-           ${fallbackFilterSql}
-         ORDER BY ${orderSql}${fallbackLimitSql}`
-    ).bind(...fallbackParams).all();
+    try {
+      result = await db.prepare(
+        `SELECT ${gameColumns}, workflow.state AS workflow_state
+           FROM games
+           LEFT JOIN game_automation_v3_state AS workflow
+             ON workflow.internal_game_id = games.internal_game_id
+          WHERE games.internal_game_id IS NOT NULL AND games.internal_game_id <> ''
+             AND games.is_active = 1
+             AND games.deleted_at IS NULL
+             AND LOWER(COALESCE(games.game_status, '')) NOT IN (${excludedGameStatusSql})
+             ${discoveryFilterSql}
+             ${fallbackFilterSql}
+          ORDER BY ${orderSql}${fallbackLimitSql}`
+      ).bind(...fallbackParams).all();
+    } catch (fallbackError) {
+      // Very old adapters may not have the V3 state table at all. Preserve
+      // their legacy current-day contract rather than failing discovery; the
+      // state-aware fallback above is used whenever the table exists.
+      if (!/no such table.*game_automation_v3_state/i.test(String(fallbackError?.message || ""))) throw fallbackError;
+      const legacyFallbackParams = includeRecentHistory ? [] : [date];
+      const legacyFallbackFilter = includeRecentHistory
+        ? `AND ${fightersGameSql.replaceAll("games.", "")}`
+        : "AND games.game_date >= date(?1)";
+      result = await db.prepare(
+        `SELECT ${gameColumns}
+           FROM games
+          WHERE games.internal_game_id IS NOT NULL AND games.internal_game_id <> ''
+             AND games.is_active = 1
+             AND games.deleted_at IS NULL
+             AND LOWER(COALESCE(games.game_status, '')) NOT IN (${excludedGameStatusSql})
+             ${legacyFallbackFilter}
+             ${scopedFilterSql}
+          ORDER BY ${orderSql}${limit ? ` LIMIT ?${legacyFallbackParams.push(limit)}` : ""}`
+      ).bind(...legacyFallbackParams).all();
+    }
   }
   const baseGames = (result.results || []).map((row) => ({
     internalGameId: row.internal_game_id,

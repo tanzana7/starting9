@@ -299,14 +299,17 @@ function normalizePlanningState(state, fallback = V3_STATE.SCHEDULED) {
 
 // The formal planner uses the same due schedule as the V3.5 diagnostic, but
 // remains the only layer allowed to create runtime jobs.
-export function getV3FormalDuePlans(game, state, now = new Date()) {
-  return getV3DuePlans(game, normalizePlanningState(state), now);
+export function getV3FormalDuePlans(game, state, now = new Date(), options = {}) {
+  return getV3DuePlans(game, normalizePlanningState(state), now, options);
 }
 
-export function getV3DuePlans(game, state, now = new Date()) {
-  const sharedPlans = buildStagePlans(buildV3PlanningState({ game, persistedState: state, now }), [
+export function getV3DuePlans(game, state, now = new Date(), { v4SemiAuto = false, disabledStages = [] } = {}) {
+  const effectiveDisabledStages = disabledStages.length
+    ? disabledStages
+    : (v4SemiAuto ? ["roster_fetch", "lineup_fetch"] : []);
+  const sharedPlans = buildStagePlans(buildV3PlanningState({ game, persistedState: state, now, v4SemiAuto }), [
     "prediction_close", "lineup_fetch", "lineup_finalize", "scoring", "ranking_reflect", "publish"
-  ]);
+  ], { disabledStages: effectiveDisabledStages, disabledReason: "V4_AUTO_FETCH_DISABLED" });
   return sharedPlans.filter((plan) => plan.shouldCreateJob).map((plan) => ({
     jobType: plan.jobType,
     scheduledSlotAt: new Date(plan.selectedSlotAt),
@@ -314,8 +317,8 @@ export function getV3DuePlans(game, state, now = new Date()) {
   }));
 }
 
-export function getV3DuePlan(game, state, now = new Date()) {
-  const plans = getV3DuePlans(game, state, now);
+export function getV3DuePlan(game, state, now = new Date(), options = {}) {
+  const plans = getV3DuePlans(game, state, now, options);
   return Array.isArray(plans) ? plans[0] || null : null;
 }
 

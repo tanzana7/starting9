@@ -704,7 +704,7 @@ test("実repository discoveryは開始後の未公開gameを保持し、publishe
   }
 });
 
-test("enriched discovery queryが失敗した場合はcurrent-day fallbackを診断ログに残す", async () => {
+test("enriched discovery queryが失敗した場合はworkflow-aware fallbackを診断ログに残す", async () => {
   const database = new DatabaseSync(":memory:");
   const originalWarn = console.warn;
   const warnings = [];
@@ -716,15 +716,22 @@ test("enriched discovery queryが失敗した場合はcurrent-day fallbackを診
         home_team TEXT, away_team TEXT, npb_game_code TEXT, npb_identity_status TEXT,
         game_status TEXT, is_active INTEGER, deleted_at TEXT
       );
+      CREATE TABLE game_automation_v3_state (
+        internal_game_id TEXT PRIMARY KEY, state TEXT
+      );
       INSERT INTO games VALUES ('fallback-game', '2026-09-01', '2026-09-01T09:00:00.000Z',
         'fighters', 'hawks', 'f-h-21', 'resolved', 'scheduled', 1, NULL);
+      INSERT INTO games VALUES ('historical-fallback-game', '2026-08-31', '2026-08-31T09:00:00.000Z',
+        'fighters', 'hawks', 'f-h-20', 'resolved', 'scheduled', 1, NULL);
+      INSERT INTO game_automation_v3_state VALUES ('historical-fallback-game', 'scored');
     `);
     const games = await v3.listV3Games(d1(database), new Date("2026-09-01T12:40:00.000Z"));
-    assert.equal(games.length, 1);
+    assert.equal(games.length, 2);
+    assert.ok(games.some((game) => game.internalGameId === "historical-fallback-game"));
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /V3_DISCOVERY_FALLBACK/);
-    assert.match(warnings[0], /legacy_current_day_fallback/);
-    assert.match(warnings[0], /historicalUnpublishedRetention":false/);
+    assert.match(warnings[0], /workflow_state_fallback/);
+    assert.match(warnings[0], /historicalUnpublishedRetention":true/);
   } finally {
     console.warn = originalWarn;
     database.close();

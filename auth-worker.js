@@ -1863,9 +1863,10 @@ function v3LineupRevisionIdentity(row) {
   return gameId && Number.isInteger(version) ? `${gameId}:${version}` : "";
 }
 
-async function releaseStaleGameLineupScoringMarker(db, { internalGameId = "", now = new Date(), job = null } = {}) {
+export async function releaseStaleGameLineupScoringMarker(db, { internalGameId = "", now = new Date(), job = null } = {}) {
   const jobId = Number(job?.id || 0);
-  if (!internalGameId || !jobId) return false;
+  const claimToken = String(job?.claim_token || "").trim();
+  if (!internalGameId || !jobId || !claimToken) return false;
   try {
     const columns = await getTableColumnSet(db, "game_lineups");
     if (!columns.has("scoring_status") || !columns.has("scoring_started_at")) return false;
@@ -1876,15 +1877,21 @@ async function releaseStaleGameLineupScoringMarker(db, { internalGameId = "", no
               last_error = NULL, updated_at = ?1
         WHERE ${scopeColumn} = ?2
           AND scoring_status = 'processing'
+          AND EXISTS (
+            SELECT 1 FROM game_jobs_v3 AS owner
+             WHERE owner.id = ?3 AND owner.internal_game_id = ?2
+               AND owner.job_type = 'score' AND owner.status = 'claimed'
+               AND owner.claim_token = ?4 AND owner.lease_expires_at > ?5
+          )
           AND NOT EXISTS (
             SELECT 1 FROM game_jobs_v3 AS other_score_job
              WHERE other_score_job.internal_game_id = ?2
                AND other_score_job.job_type = 'score'
                AND other_score_job.status = 'claimed'
                AND other_score_job.id <> ?3
-               AND other_score_job.lease_expires_at > ?1
+               AND other_score_job.lease_expires_at > ?5
           )`
-    ).bind(now.toISOString(), internalGameId, jobId).run();
+    ).bind(now.toISOString(), internalGameId, jobId, claimToken, new Date().toISOString()).run();
     return Number(result?.meta?.changes || 0) === 1;
   } catch (error) {
     if (!isPregameSchemaError(error)) throw error;
@@ -1892,14 +1899,25 @@ async function releaseStaleGameLineupScoringMarker(db, { internalGameId = "", no
   }
 }
 
+async function hasCurrentV3ScoreJobLease(db, internalGameId, job, now = new Date()) {
+  if (!job?.id || !job?.claim_token) return false;
+  const owner = await db.prepare(
+    `SELECT 1 AS owned FROM game_jobs_v3 WHERE id = ?1 AND internal_game_id = ?2
+       AND job_type = 'score' AND status = 'claimed'
+       AND claim_token = ?3 AND lease_expires_at > ?4 LIMIT 1`
+  ).bind(job.id, internalGameId, job.claim_token, now.toISOString()).first();
+  return Boolean(owner?.owned);
+}
+
 async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore, job = null }) {
+  const staleResult = { status: "stale_no_op", stateBefore, stateAfter: stateBefore, noOpReason: "V3_STALE_SCORE_EXECUTOR" };
+  if (!await hasCurrentV3ScoreJobLease(env.AUTH_DB, internalGameId, job, now)) return staleResult;
   const canonical = await evaluateCanonicalArtifactsFromDb(env.AUTH_DB, internalGameId);
   if (canonical?.aggregate?.lineupReady !== true) {
     throw createV3Error("V3_FINAL_LINEUP_REQUIRED", "正式スタメン確定済みの採点対象がありません。", { retryable: false });
   }
-  // Only the currently claimed score job may release a processing marker.
-  // A different live score job must retain ownership, while an expired job
-  // may be recovered without allowing its late failure to affect the result.
+  // Reclaiming the same job ID creates a new generation. Only its current
+  // token and live lease may clear a stale marker, even when no other job exists.
   await releaseStaleGameLineupScoringMarker(env.AUTH_DB, { internalGameId, now, job });
   const canonicalLineup = await getGameLineup(env.AUTH_DB, { gameId: internalGameId, internalGameId });
   // game_lineups.game_id may retain a historical compatibility identifier,
@@ -1908,6 +1926,7 @@ async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore, j
   const claimed = canonicalLineup?.game_id
     ? await claimGameLineupForScoring(env.AUTH_DB, canonicalLineup.game_id, now, { internalGameId })
     : null;
+  if (!await hasCurrentV3ScoreJobLease(env.AUTH_DB, internalGameId, job, now)) return staleResult;
   let result = null;
   try {
     result = claimed ? await scoreClaimedGameLineup(env.AUTH_DB, claimed, now, 0, { job }) : null;
@@ -20652,21 +20671,24 @@ export async function failGameScoringRevision(db, {
   if (!scoringRevisionId) return { updated: false, stale: false };
   const ownedByCurrentJob = Number(jobId) > 0 && String(claimToken || "").trim();
   try {
-    if (ownedByCurrentJob) {
-      const job = await db.prepare(
-        "SELECT status, claim_token FROM game_jobs_v3 WHERE id = ?1 LIMIT 1"
-      ).bind(Number(jobId)).first();
-      if (job?.status !== "claimed" || String(job.claim_token || "") !== String(claimToken)) {
-        return { updated: false, stale: true };
-      }
-    }
     const revisionColumns = await getTableColumnSet(db, "game_scoring_revisions");
     const hasStatus = revisionColumns.has("status");
     const hasActive = revisionColumns.has("is_active");
     if (!hasStatus || !hasActive) return { updated: false, stale: false };
+    // The ownership predicate must be in the mutation, not a preceding SELECT:
+    // another executor can reclaim this very job between those statements.
+    const ownerGuard = ownedByCurrentJob
+      ? ` AND EXISTS (SELECT 1 FROM game_jobs_v3 AS owner
+                     WHERE owner.id = ?2 AND owner.claim_token = ?3
+                       AND owner.status = 'claimed' AND owner.lease_expires_at > ?4
+                       AND owner.job_type = 'score'${internalGameId ? " AND owner.internal_game_id = ?5" : ""})`
+      : "";
     const result = await db.prepare(
-      "UPDATE game_scoring_revisions SET status = 'failed', is_active = 0, completed_at = NULL WHERE id = ?1 AND status = 'in_progress' AND is_active = 0"
-    ).bind(scoringRevisionId).run();
+      `UPDATE game_scoring_revisions SET status = 'failed', is_active = 0, completed_at = NULL
+        WHERE id = ?1 AND status = 'in_progress' AND is_active = 0${ownerGuard}`
+    ).bind(scoringRevisionId, ...(ownedByCurrentJob
+      ? [Number(jobId), String(claimToken), new Date().toISOString(), ...(internalGameId ? [internalGameId] : [])]
+      : [])).run();
     return { updated: Number(result?.meta?.changes || 0) === 1, stale: Number(result?.meta?.changes || 0) !== 1 };
   } catch (recordError) {
     if (ownedByCurrentJob && isPregameSchemaError(recordError)) return { updated: false, stale: true };

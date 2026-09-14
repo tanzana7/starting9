@@ -22,6 +22,7 @@ function loadModules() {
   for (const name of [
     "state",
     "../public/player-display",
+    "../shared/lineup-builder",
     "api-client",
     "dom",
     "selection-safety",
@@ -47,6 +48,7 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
   assert.deepEqual(scripts, [
     "frontend/admin-v3/state.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-manual-lineup-explicit-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-manual-lineup-two-step-confirmation-1",
     "frontend/public/fighters-player-details.js?v=fighters-player-details-20260903-1",
+    "frontend/shared/lineup-builder.js?v=shared-lineup-builder-1",
     "frontend/public/player-display.js?v=public-player-display-1-batting-hand-player-number-1-player-details-1",
     "frontend/admin-v3/api-client.js?v=independent-roster-lineup-safety-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1",
     "frontend/admin-v3/dom.js?v=manual-lineup-finalize-safety-1",

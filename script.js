@@ -5655,6 +5655,9 @@ function createPlayerDetailTriggerHtml(playerName) {
 
 function createPlayerNameHtml(playerName, baseClass = "player-name") {
   const player = getPlayerData(playerName);
+  if (window.Starting9LineupBuilder?.renderPlayerName) {
+    return window.Starting9LineupBuilder.renderPlayerName(player || playerName, escapeHtml, baseClass);
+  }
   const battingClass = window.Starting9Public?.getPlayerBattingClass?.(player) || "";
   const uniformNumber = window.Starting9Public?.getPlayerUniformNumber?.(player) || "";
   const classes = [baseClass, battingClass].filter(Boolean).join(" ");

@@ -4,6 +4,7 @@
   function createAdminV3ManualRosterRenderer({ escapeHtml }) {
     const escape = escapeHtml || ((value) => String(value ?? ""));
     function battingClass(player) {
+      if (global.Starting9LineupBuilder?.battingClass) return global.Starting9LineupBuilder.battingClass(player);
       if (global.Starting9Public?.getPlayerBattingClass) return global.Starting9Public.getPlayerBattingClass(player);
       const source = player && typeof player === "object" ? player : {};
       const value = source.bats ?? source.battingSide ?? source.batSide
@@ -15,6 +16,7 @@
       return "";
     }
     function uniformNumber(player) {
+      if (global.Starting9LineupBuilder?.uniformNumber) return global.Starting9LineupBuilder.uniformNumber(player);
       if (global.Starting9Public?.getPlayerUniformNumber) return global.Starting9Public.getPlayerUniformNumber(player);
       const source = player && typeof player === "object" ? player : {};
       const fields = ["uniformNumber", "jerseyNumber", "number", "playerNumber", "backNumber", "uniform_no", "jersey_no"];
@@ -29,6 +31,9 @@
       return "";
     }
     function playerName(player) {
+      if (global.Starting9LineupBuilder?.renderPlayerName) {
+        return global.Starting9LineupBuilder.renderPlayerName(player, escape);
+      }
       const className = battingClass(player);
       const number = uniformNumber(player);
       const numberMarkup = number ? `<span class="player-number" aria-hidden="true">[${escape(number)}]</span> ` : "";
@@ -53,6 +58,7 @@
       return String(player?.category || (player?.manualRosterEligible === false ? "投手" : "未分類")).trim();
     }
     function sortPlayersByUniformNumber(players) {
+      if (global.Starting9LineupBuilder?.sortPlayers) return global.Starting9LineupBuilder.sortPlayers(players);
       return [...players].sort((left, right) => {
         const leftNumber = Number.parseInt(String(left?.uniformNumber || ""), 10);
         const rightNumber = Number.parseInt(String(right?.uniformNumber || ""), 10);

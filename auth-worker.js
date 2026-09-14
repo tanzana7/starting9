@@ -393,6 +393,32 @@ const WORKFLOW_LOG_DEFAULT_LIMIT = 50;
 const WORKFLOW_LOG_MAX_LIMIT = 200;
 const WORKFLOW_LOG_DEDUPE_WINDOW_MS = 30 * 60 * 1000;
 const WORKFLOW_LOG_CLEANUP_KEY = "workflow_logs_48h";
+const V3_AUDIT_CLEANUP_KEY = "v3_audit_retention";
+const RESCORE_PREVIEW_CLEANUP_KEY = "rescore_preview_retention";
+const V3_AUDIT_ROUTINE_RETENTION_DAYS = 7;
+const V3_AUDIT_FAILURE_RETENTION_DAYS = 30;
+const V3_AUDIT_CLEANUP_BATCH_SIZE = 500;
+const V3_STORAGE_MAINTENANCE_MINUTE_JST = 0;
+const ROUTINE_V3_AUDIT_EVENT_TYPES = new Set([
+  "CRON_HANDLER_STARTED", "CRON_HANDLER_FLAGS", "V3_RUN_STARTED", "V3_ELIGIBLE_GAMES",
+  "V3_POST_ELIGIBLE_PHASE_STARTED", "V3_FORMAL_PLAN_INPUT_STARTED", "V3_FORMAL_PLAN_INPUT_FINISHED",
+  "V3_STATE_PREPARATION_STARTED", "V3_STATE_PREPARATION_FINISHED", "V3_RECONCILIATION_STARTED",
+  "V3_RECONCILIATION_FINISHED", "V3_FORMAL_PLAN_STARTED", "V3_FORMAL_PLAN_FINISHED",
+  "V3_FORMAL_DUE_PLAN_SUMMARY", "V3_AUXILIARY_PLAN_STARTED", "V3_AUXILIARY_PLAN_FINISHED",
+  "V3_AUXILIARY_PLAN_SUMMARY", "V3_CLAIM_PHASE_STARTED", "V3_EXECUTION_SUMMARY",
+  "V3_RUN_FINISHED", "CRON_CRITICAL_PATH_FINISHED", "CRON_HANDLER_FINISHED",
+  "cron_run_summary", "v3_job_plan_observed", "schedule_sync"
+]);
+
+export function shouldPersistV3Audit({ eventType = "", job = null, execution = null, failure = null } = {}) {
+  const executionStatus = String(execution?.status || "").toLowerCase();
+  const executionHasFailure = Number(execution?.failedJobCount || 0) > 0
+    || Number(execution?.terminalFailedJobCount || 0) > 0
+    || (Array.isArray(execution?.retryErrors) && execution.retryErrors.length > 0)
+    || (Array.isArray(execution?.errors) && execution.errors.length > 0);
+  if (failure || String(job?.status || "").toLowerCase() === "failed" || ["failed", "error"].includes(executionStatus) || executionHasFailure) return true;
+  return !ROUTINE_V3_AUDIT_EVENT_TYPES.has(String(eventType || ""));
+}
 const GAME_IDENTITY_AUDIT_DEFAULT_RANGE_DAYS = 30;
 const GAME_IDENTITY_AUDIT_DEFAULT_LIMIT = 50;
 const GAME_IDENTITY_AUDIT_MAX_LIMIT = 100;
@@ -859,6 +885,7 @@ export default {
 
 async function writeV3RuntimeAudit(env, { eventType, runId, correlationId = runId, now = new Date(), internalGameId = null, execution = null, failure = null } = {}) {
   try {
+    if (!shouldPersistV3Audit({ eventType, execution, failure })) return false;
     if (!env?.AUTH_DB) {
       console.warn(`[GAME_AUTOMATION_V3] runtime_audit_skipped code=AUTH_DB_UNAVAILABLE event=${eventType || "unknown"}`);
       return false;
@@ -904,6 +931,7 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     execution: { stage: "v3_run_started", now: now.toISOString() }
   });
   const writeAudit = async ({ eventType = "job", job, internalGameId = null, claimToken = null, stateBefore = null, execution = null, failure = null, occurredAt = now } = {}) => {
+    if (!shouldPersistV3Audit({ eventType, job, execution, failure })) return false;
     const auditColumns = await getTableColumnSet(env.AUTH_DB, "game_automation_v3_audit");
     const { columns, values } = buildV3CronJobAuditInsert({
       auditColumns,
@@ -954,6 +982,7 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
   };
 
   const writeScheduleSyncAudit = async (diagnostics) => {
+    if (!shouldPersistV3Audit({ eventType: "schedule_sync", execution: diagnostics })) return;
     const anchor = await env.AUTH_DB.prepare(
       `SELECT internal_game_id
          FROM games
@@ -1299,6 +1328,14 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     scheduleSync = { status: "scheduled", pending: true };
   } else {
     scheduleSync = await runScheduleSync();
+  }
+  // Keep cleanup out of the critical path and run it only at the hourly JST
+  // boundary. The persisted maintenance keys make the work once per day even
+  // when more than one scheduler invocation reaches that boundary.
+  if (env.AUTH_DB && isV3StorageMaintenanceWindow(now)) {
+    const maintenancePromise = runV3StorageMaintenance(env.AUTH_DB, now);
+    if (typeof scheduleOptional === "function") scheduleOptional(maintenancePromise);
+    else await maintenancePromise;
   }
   if (!result?.optionalScheduled) {
     await writeV3RuntimeAudit(env, {
@@ -2396,12 +2433,34 @@ export function normalizeV3LineupFetchError(error, now = new Date()) {
 
 async function cleanupExpiredManualRescorePreviews(db, now) {
   try {
+    const current = now instanceof Date ? now : new Date(now);
+    const maintenance = await db.prepare(
+      "SELECT last_cleanup_at FROM game_workflow_log_maintenance WHERE maintenance_key = ?1 LIMIT 1"
+    ).bind(RESCORE_PREVIEW_CLEANUP_KEY).first();
+    if (maintenance?.last_cleanup_at && getJstDateString(new Date(maintenance.last_cleanup_at)) === getJstDateString(current)) return;
+    const cutoff = new Date(current.getTime() - MANUAL_RESCORE_PREVIEW_TTL_MS).toISOString();
     await db.batch([
       db.prepare(
         `UPDATE game_rescore_jobs SET status = 'failed', error_code = 'RESCORE_PREVIEW_EXPIRED', updated_at = ?1
-          WHERE status = 'previewed' AND updated_at <= ?2`
-      ).bind(now.toISOString(), new Date(now.getTime() - MANUAL_RESCORE_PREVIEW_TTL_MS).toISOString()),
-      db.prepare("DELETE FROM game_rescore_previews WHERE expires_at <= ?1").bind(now.toISOString())
+          WHERE id IN (
+            SELECT id FROM game_rescore_jobs
+             WHERE status = 'previewed' AND updated_at <= ?2
+             ORDER BY updated_at ASC, id ASC LIMIT ?3
+          )`
+      ).bind(current.toISOString(), cutoff, V3_AUDIT_CLEANUP_BATCH_SIZE),
+      db.prepare(
+        `DELETE FROM game_rescore_previews
+          WHERE id IN (
+            SELECT id FROM game_rescore_previews
+             WHERE expires_at <= ?1
+             ORDER BY expires_at ASC, id ASC LIMIT ?2
+          )`
+      ).bind(current.toISOString(), V3_AUDIT_CLEANUP_BATCH_SIZE),
+      db.prepare(
+        `INSERT INTO game_workflow_log_maintenance (maintenance_key, last_cleanup_at, updated_at)
+         VALUES (?1, ?2, ?2)
+         ON CONFLICT(maintenance_key) DO UPDATE SET last_cleanup_at = excluded.last_cleanup_at, updated_at = excluded.updated_at`
+      ).bind(RESCORE_PREVIEW_CLEANUP_KEY, current.toISOString())
     ]);
   } catch (error) {
     if (!isPregameSchemaError(error)) {
@@ -13360,7 +13419,14 @@ async function cleanupWorkflowLogs(db, now) {
     const cutoff = getWorkflowLogCutoff(current);
     if (!cutoff) return;
     await db.batch([
-      db.prepare("DELETE FROM game_workflow_logs WHERE occurred_at < ?1").bind(cutoff),
+      db.prepare(
+        `DELETE FROM game_workflow_logs
+          WHERE id IN (
+            SELECT id FROM game_workflow_logs
+             WHERE source IN ('cron', 'system') AND occurred_at < ?1
+             ORDER BY occurred_at ASC, id ASC LIMIT ?2
+          )`
+      ).bind(cutoff, V3_AUDIT_CLEANUP_BATCH_SIZE),
       db.prepare(
         `INSERT INTO game_workflow_log_maintenance (maintenance_key, last_cleanup_at, updated_at)
          VALUES (?1, ?2, ?2)
@@ -13378,6 +13444,77 @@ async function cleanupWorkflowLogs(db, now) {
       metadata: { processName: "workflow_log_cleanup" },
       source: "system"
     });
+  }
+}
+
+function isV3StorageMaintenanceWindow(now) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(current.getTime())) return false;
+  const jst = new Date(current.getTime() + 9 * 60 * 60 * 1000);
+  return jst.getUTCMinutes() === V3_STORAGE_MAINTENANCE_MINUTE_JST;
+}
+
+async function cleanupExpiredV3Audits(db, now) {
+  const current = now instanceof Date ? now : new Date(now);
+  const routineCutoff = new Date(current.getTime() - V3_AUDIT_ROUTINE_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const failureCutoff = new Date(current.getTime() - V3_AUDIT_FAILURE_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const maintenance = await db.prepare(
+    "SELECT last_cleanup_at FROM game_workflow_log_maintenance WHERE maintenance_key = ?1 LIMIT 1"
+  ).bind(V3_AUDIT_CLEANUP_KEY).first();
+  if (maintenance?.last_cleanup_at && getJstDateString(new Date(maintenance.last_cleanup_at)) === getJstDateString(current)) {
+    return { skipped: true, deleted: 0 };
+  }
+  const result = await db.batch([
+    db.prepare(
+      `DELETE FROM game_automation_v3_audit
+        WHERE id IN (
+          SELECT id FROM game_automation_v3_audit
+           WHERE source IN ('cron', 'system')
+             AND occurred_at < ?1
+             AND (failure_code IS NULL OR TRIM(failure_code) = '')
+             AND (failure_message IS NULL OR TRIM(failure_message) = '')
+             AND lower(event_type) NOT LIKE '%fail%'
+             AND lower(event_type) NOT LIKE '%error%'
+             AND lower(event_type) NOT LIKE '%retry%'
+             AND lower(event_type) NOT LIKE '%anomal%'
+           ORDER BY occurred_at ASC, id ASC LIMIT ?2
+        )`
+    ).bind(routineCutoff, V3_AUDIT_CLEANUP_BATCH_SIZE),
+    db.prepare(
+      `DELETE FROM game_automation_v3_audit
+        WHERE id IN (
+          SELECT id FROM game_automation_v3_audit
+           WHERE source IN ('cron', 'system')
+             AND occurred_at < ?1
+             AND (failure_code IS NOT NULL OR TRIM(COALESCE(failure_message, '')) <> ''
+               OR lower(event_type) LIKE '%fail%' OR lower(event_type) LIKE '%error%'
+               OR lower(event_type) LIKE '%retry%' OR lower(event_type) LIKE '%anomal%')
+           ORDER BY occurred_at ASC, id ASC LIMIT ?2
+        )`
+    ).bind(failureCutoff, V3_AUDIT_CLEANUP_BATCH_SIZE),
+    db.prepare(
+      `INSERT INTO game_workflow_log_maintenance (maintenance_key, last_cleanup_at, updated_at)
+       VALUES (?1, ?2, ?2)
+       ON CONFLICT(maintenance_key) DO UPDATE SET last_cleanup_at = excluded.last_cleanup_at, updated_at = excluded.updated_at`
+    ).bind(V3_AUDIT_CLEANUP_KEY, current.toISOString())
+  ]);
+  const routine = Number(result?.[0]?.meta?.changes || 0);
+  const failures = Number(result?.[1]?.meta?.changes || 0);
+  return { skipped: false, deleted: routine + failures, routine, failures };
+}
+
+async function runV3StorageMaintenance(db, now) {
+  try {
+    await cleanupWorkflowLogs(db, now);
+    await cleanupExpiredManualRescorePreviews(db, now);
+    const audit = await cleanupExpiredV3Audits(db, now);
+    console.info(`[GAME_AUTOMATION_V3] storage_maintenance status=completed auditDeleted=${audit.deleted || 0}`);
+    return audit;
+  } catch (error) {
+    // Retention is deliberately best-effort: cleanup failure must never stop
+    // prediction close, scoring, ranking, or publication.
+    console.warn(`[GAME_AUTOMATION_V3] storage_maintenance status=failed code=${error?.code || "V3_STORAGE_MAINTENANCE_FAILED"}`);
+    return { skipped: false, deleted: 0, errorCode: error?.code || "V3_STORAGE_MAINTENANCE_FAILED" };
   }
 }
 

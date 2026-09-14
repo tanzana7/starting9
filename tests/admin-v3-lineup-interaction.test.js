@@ -100,7 +100,8 @@ function assertEditableMarkup(markup) {
   assert.doesNotMatch(markup, /data-v3-manual-lineup-lock-reason/);
   const searches = controlsFor(markup, "data-v3-manual-lineup-search");
   const positions = controlsFor(markup, "data-v3-manual-lineup-position");
-  assert.equal(searches.length, 9);
+  assert.equal((markup.match(/data-v3-manual-lineup-slot=/g) || []).length, 9);
+  assert.equal(searches.length, 1);
   assert.equal(positions.length, 9);
   for (const control of [...searches, ...positions]) {
     assert.equal(control.disabled, false);

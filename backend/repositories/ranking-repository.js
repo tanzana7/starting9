@@ -105,8 +105,9 @@ export async function getPerfectAchieversForDate(db, { date, limit, offset, rele
     return { rows: [], totalCount: 0 };
   }
 
+  const scoreAttemptSchema = await hasScoreAttemptSchema(db);
   const latestPredictions = `WITH latest_predictions AS (
-    SELECT predictions.id, predictions.user_id, predictions.game_id, predictions.score, predictions.max_score,
+    SELECT predictions.id, predictions.user_id, predictions.game_id, ${scoreAttemptSchema ? "predictions.internal_game_id, predictions.scored_attempt_id," : ""} predictions.score, predictions.max_score,
            predictions.opponent_code, predictions.submitted_at, predictions.status, predictions.is_test_prediction,
            ROW_NUMBER() OVER (
              PARTITION BY predictions.user_id, predictions.game_id
@@ -118,6 +119,7 @@ export async function getPerfectAchieversForDate(db, { date, limit, offset, rele
        AND latest_predictions.status = 'scored'
        AND latest_predictions.score IS NOT NULL
        AND latest_predictions.is_test_prediction = 0
+       ${scoreAttemptSchema ? `AND ${committedAttemptPredicate("latest_predictions")}` : ""}
        AND ranking_games.game_date = ?1
        AND ranking_games.is_ranking_eligible = 1
        AND ranking_games.game_status = 'scored'
@@ -173,8 +175,9 @@ export async function getDailyBestNineForGame(db, { internalGameId = "", legacyG
   const gameValue = useCanonicalId ? canonicalId : compatibilityId;
   if (!gameValue) return { rows: [], totalCount: 0 };
 
+  const scoreAttemptSchema = await hasScoreAttemptSchema(db);
   const latestPredictions = `WITH latest_predictions AS (
-    SELECT predictions.id, predictions.user_id, predictions.game_id, predictions.score, predictions.max_score,
+    SELECT predictions.id, predictions.user_id, predictions.game_id, ${scoreAttemptSchema ? "predictions.internal_game_id, predictions.scored_attempt_id," : ""} predictions.score, predictions.max_score,
            predictions.submitted_at, predictions.status, predictions.is_test_prediction, predictions.updated_at,
            ROW_NUMBER() OVER (
              PARTITION BY predictions.user_id, predictions.game_id
@@ -190,6 +193,7 @@ export async function getDailyBestNineForGame(db, { internalGameId = "", legacyG
        AND latest_predictions.score IS NOT NULL
        AND latest_predictions.max_score IS NOT NULL
        AND latest_predictions.is_test_prediction = 0
+       ${scoreAttemptSchema ? `AND ${committedAttemptPredicate("latest_predictions")}` : ""}
        AND ${gameCondition}
        AND ranking_games.is_ranking_eligible = 1
        AND ranking_games.game_status = 'scored'
@@ -223,8 +227,29 @@ export async function getDailyBestNineForGame(db, { internalGameId = "", legacyG
   };
 }
 
-function createRankingCte(includeTestUsers = false) {
-  if (includeTestUsers) return createRankingCteWithTestUsers();
+function committedAttemptPredicate(alias = "predictions") {
+  return `(${alias}.scored_attempt_id IS NULL OR EXISTS (
+    SELECT 1
+      FROM game_scoring_revisions AS committed_score
+      JOIN game_lineups AS committed_lineup
+        ON committed_lineup.internal_game_id = ${alias}.internal_game_id
+       AND committed_lineup.final_lineup_revision_id IS NOT NULL
+      JOIN game_lineup_revisions AS current_lineup_revision
+        ON current_lineup_revision.internal_game_id = ${alias}.internal_game_id
+       AND current_lineup_revision.is_current = 1
+       AND current_lineup_revision.is_final = 1
+       AND (current_lineup_revision.revision_id = committed_score.lineup_revision_id
+         OR committed_score.lineup_revision_id = current_lineup_revision.internal_game_id || ':' || current_lineup_revision.version
+         OR committed_score.lineup_revision_id = current_lineup_revision.game_id || ':' || current_lineup_revision.version)
+     WHERE committed_score.internal_game_id = ${alias}.internal_game_id
+       AND committed_score.is_active = 1
+       AND committed_score.status = 'completed'
+       AND committed_score.committed_attempt_id = ${alias}.scored_attempt_id
+  ))`;
+}
+
+function createRankingCte(includeTestUsers = false, scoreAttemptSchema = false) {
+  if (includeTestUsers) return createRankingCteWithTestUsers(scoreAttemptSchema);
   return `WITH eligible_games AS (
     SELECT game_id
      FROM ranking_games
@@ -288,7 +313,7 @@ function createRankingCte(includeTestUsers = false) {
   )`;
 }
 
-function createRankingCteWithTestUsers() {
+function createRankingCteWithTestUsers(scoreAttemptSchema = false) {
   const testTotals = `
   test_user_totals AS (
     SELECT 'ranking-test:' || CAST(test_predictions.slot AS TEXT) AS user_id,
@@ -307,15 +332,20 @@ function createRankingCteWithTestUsers() {
         ON test_settings.internal_game_id = test_predictions.internal_game_id
       LEFT JOIN ranking_test_global_settings AS global_settings
         ON global_settings.id = 1
-      JOIN game_lineups AS test_lineups
-        ON test_lineups.internal_game_id = test_predictions.internal_game_id
-       AND test_lineups.final_lineup_revision_id = test_predictions.lineup_revision_id
-      JOIN game_scoring_revisions AS test_revisions
-        ON test_revisions.internal_game_id = test_predictions.internal_game_id
-       AND test_revisions.id = test_predictions.scoring_revision_id
-       AND test_revisions.lineup_revision_id = test_predictions.lineup_revision_id
-       AND test_revisions.is_active = 1
-       AND test_revisions.status = 'completed'
+       JOIN game_lineups AS test_lineups
+         ON test_lineups.internal_game_id = test_predictions.internal_game_id
+        AND test_lineups.final_lineup_revision_id = test_predictions.lineup_revision_id
+       ${scoreAttemptSchema ? `JOIN game_lineup_revisions AS test_final_revision
+         ON test_final_revision.internal_game_id = test_predictions.internal_game_id
+        AND test_final_revision.is_final = 1 AND test_final_revision.is_current = 1` : ""}
+       JOIN game_scoring_revisions AS test_revisions
+         ON test_revisions.internal_game_id = test_predictions.internal_game_id
+        AND test_revisions.id = test_predictions.scoring_revision_id
+        AND test_revisions.lineup_revision_id = ${scoreAttemptSchema ? "test_final_revision.revision_id" : "test_predictions.lineup_revision_id"}
+        AND test_revisions.is_active = 1
+        AND test_revisions.status = 'completed'
+        ${scoreAttemptSchema ? `AND (test_revisions.committed_attempt_id IS NULL
+             OR test_revisions.committed_attempt_id = test_predictions.scored_attempt_id)` : ""}
        AND (COALESCE(test_settings.include_in_public_ranking, 0) = 1
             OR COALESCE(global_settings.global_enabled, 1) = 1)
      WHERE test_predictions.status = 'scored'
@@ -324,7 +354,7 @@ function createRankingCteWithTestUsers() {
        AND test_predictions.slot BETWEEN 1 AND 9
      GROUP BY test_predictions.slot
   )`;
-  const base = createRankingCte();
+  const base = applyScoreAttemptFilter(createRankingCte(), scoreAttemptSchema);
   return base
     .replace("    SELECT game_id\n     FROM ranking_games", "    SELECT game_id, internal_game_id\n     FROM ranking_games")
     .replace(
@@ -333,8 +363,18 @@ function createRankingCteWithTestUsers() {
     );
 }
 
-function createRankingCteForReset(resetBoundary = "", includeTestUsers = false) {
-  const cte = createRankingCte(includeTestUsers);
+function applyScoreAttemptFilter(cte, enabled) {
+  if (!enabled) return cte;
+  return cte.replace(
+    "       AND predictions.is_test_prediction = 0\n",
+    `       AND predictions.is_test_prediction = 0\n       AND ${committedAttemptPredicate("predictions")}\n`
+  );
+}
+
+function createRankingCteForReset(resetBoundary = "", includeTestUsers = false, scoreAttemptSchema = false) {
+  const cte = includeTestUsers
+    ? createRankingCteWithTestUsers(scoreAttemptSchema)
+    : applyScoreAttemptFilter(createRankingCte(), scoreAttemptSchema);
   if (!resetBoundary) return cte;
   return cte.replace(
     "       AND (?1 IS NULL OR game_date >= ?1)",
@@ -342,8 +382,8 @@ function createRankingCteForReset(resetBoundary = "", includeTestUsers = false) 
   );
 }
 
-function createRankingCteForPublishedPeriod(resetBoundary = "", includeTestUsers = false) {
-  return createRankingCteForReset(resetBoundary, includeTestUsers).replace(
+function createRankingCteForPublishedPeriod(resetBoundary = "", includeTestUsers = false, scoreAttemptSchema = false) {
+  return createRankingCteForReset(resetBoundary, includeTestUsers, scoreAttemptSchema).replace(
     "       AND game_status = 'scored'\n       AND is_test_game = 0",
     "       AND game_status = 'scored'\n       AND publication_status = 'published'\n       AND is_test_game = 0"
   );
@@ -368,11 +408,23 @@ async function hasRankingTestSchema(db) {
   }
 }
 
+async function hasScoreAttemptSchema(db) {
+  try {
+    const columns = await db.prepare("PRAGMA table_info(game_scoring_revisions)").all();
+    return (columns.results || []).some((column) => column.name === "committed_attempt_id");
+  } catch {
+    return false;
+  }
+}
+
 export async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt = null, endAt = null, periodType = null, periodKey = null, publishedOnly = false, releaseCutoffAt = "", includeTestUsers = false }) {
   const marker = periodType && periodKey ? await getActiveRankingResetMarker(db, { periodType, periodKey }) : null;
   const cutoffBoundary = resolveRankingCutoffBoundary(marker, releaseCutoffAt);
   const includeTestRows = includeTestUsers && await hasRankingTestSchema(db);
-  const cte = publishedOnly ? createRankingCteForPublishedPeriod(cutoffBoundary, includeTestRows) : createRankingCteForReset(cutoffBoundary, includeTestRows);
+  const scoreAttemptSchema = await hasScoreAttemptSchema(db);
+  const cte = publishedOnly
+    ? createRankingCteForPublishedPeriod(cutoffBoundary, includeTestRows, scoreAttemptSchema)
+    : createRankingCteForReset(cutoffBoundary, includeTestRows, scoreAttemptSchema);
   const qualifiedParam = cutoffBoundary ? 4 : 3;
   const limitParam = qualifiedParam + 1;
   const offsetParam = qualifiedParam + 2;
@@ -421,7 +473,10 @@ export async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, st
 export async function getRankingEntryForUser(db, userId, { startAt = null, endAt = null, periodType = null, periodKey = null, publishedOnly = false, releaseCutoffAt = "" } = {}) {
   const marker = periodType && periodKey ? await getActiveRankingResetMarker(db, { periodType, periodKey }) : null;
   const cutoffBoundary = resolveRankingCutoffBoundary(marker, releaseCutoffAt);
-  const cte = publishedOnly ? createRankingCteForPublishedPeriod(cutoffBoundary) : createRankingCteForReset(cutoffBoundary);
+  const scoreAttemptSchema = await hasScoreAttemptSchema(db);
+  const cte = publishedOnly
+    ? createRankingCteForPublishedPeriod(cutoffBoundary, false, scoreAttemptSchema)
+    : createRankingCteForReset(cutoffBoundary, false, scoreAttemptSchema);
   const userParam = cutoffBoundary ? 4 : 3;
   const bindings = cutoffBoundary ? [startAt, endAt, cutoffBoundary, userId] : [startAt, endAt, userId];
   const row = await db.prepare(`${cte}

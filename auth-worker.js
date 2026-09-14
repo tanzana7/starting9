@@ -1918,73 +1918,79 @@ async function hasCurrentV3ScoreJobLease(db, internalGameId, job, now = new Date
 
 async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore, job = null }) {
   const staleResult = { status: "stale_no_op", stateBefore, stateAfter: stateBefore, noOpReason: "V3_STALE_SCORE_EXECUTOR" };
-  if (!await hasCurrentV3ScoreJobLease(env.AUTH_DB, internalGameId, job, now)) {
-    return staleResult;
-  }
+  // Read the lease at each boundary. In particular, the activation contract
+  // performs its own DB-time lease check; the executor-start timestamp must
+  // never be the authority for a late success.
+  if (!await hasCurrentV3ScoreJobLease(env.AUTH_DB, internalGameId, job, new Date())) return staleResult;
   const canonical = await evaluateCanonicalArtifactsFromDb(env.AUTH_DB, internalGameId);
   if (canonical?.aggregate?.lineupReady !== true) {
     throw createV3Error("V3_FINAL_LINEUP_REQUIRED", "正式スタメン確定済みの採点対象がありません。", { retryable: false });
   }
+  const db = env.AUTH_DB;
+  let attemptSchema = false;
+  try {
+    const columns = await getTableColumnSet(db, "score_attempts");
+    attemptSchema = ["attempt_id", "job_id", "claim_token", "status"].every((column) => columns.has(column));
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+  }
+  // The fallback preserves pre-migration compatibility. Production V3 jobs
+  // use the attempt contract once migration 0041 is present.
+  if (!attemptSchema) {
+    await releaseStaleGameLineupScoringMarker(db, { internalGameId, now, job });
+    const canonicalLineup = await getGameLineup(env.AUTH_DB, { gameId: internalGameId, internalGameId });
+    const claimed = canonicalLineup?.game_id
+      ? await claimGameLineupForScoring(env.AUTH_DB, canonicalLineup.game_id, now, { internalGameId })
+      : null;
+    if (!await hasCurrentV3ScoreJobLease(db, internalGameId, job, new Date())) return staleResult;
+    const result = claimed ? await scoreClaimedGameLineup(db, claimed, now, 0, { job }) : null;
+    if (!result) return staleResult;
+    return { ...result, stateBefore, stateAfter: "scored" };
+  }
+
   if (canonical.aggregate.scoringReady === true) {
     return { status: "already_scored", stateBefore, stateAfter: "scored", noOpReason: "V3_SCORING_ALREADY_READY" };
   }
-  const db = env.AUTH_DB;
+  await releaseStaleGameLineupScoringMarker(db, { internalGameId, now, job });
   const canonicalLineup = await getGameLineup(env.AUTH_DB, { gameId: internalGameId, internalGameId });
   if (!canonicalLineup?.game_id || !canonicalLineup.final_lineup_revision_id) {
-    throw createV3Error("V3_FINAL_LINEUP_REQUIRED", "採点対象のcanonical lineupがありません。", { retryable: false });
+    throw createV3Error("V3_FINAL_LINEUP_REQUIRED", "採点対象の正式スタメンがありません。", { retryable: false });
   }
-  // Keep the row-level marker as an execution hint. The attempt fence below
-  // remains the commit authority and preserves stale-marker recovery.
-  await releaseStaleGameLineupScoringMarker(db, { internalGameId, now, job });
   const claimed = await claimGameLineupForScoring(env.AUTH_DB, canonicalLineup.game_id, now, { internalGameId });
   if (!claimed) {
     const current = await getGameLineup(db, { gameId: internalGameId, internalGameId });
-    if (current?.final_lineup_revision_id
-      && current.final_lineup_revision_id !== canonicalLineup.final_lineup_revision_id) {
-      return {
-        ...staleResult,
-        noOpReason: "V3_STALE_LINEUP_REVISION",
-        staleLineupRevision: canonicalLineup.final_lineup_revision_id
-      };
-    }
-    if (!await hasCurrentV3ScoreJobLease(db, internalGameId, job, now)) {
-      return staleResult;
-    }
     if (current?.scoring_status === "scored") {
       return { status: "already_scored", stateBefore, stateAfter: "scored", noOpReason: "V3_SCORING_ALREADY_READY" };
     }
-    throw createV3Error("V3_SCORING_IN_PROGRESS", "採点処理を開始できません。", { retryable: true });
+    return { ...staleResult, noOpReason: "V3_SCORING_IN_PROGRESS" };
   }
-  if (!await hasCurrentV3ScoreJobLease(db, internalGameId, job, now)) {
-    const current = await getGameLineup(db, { gameId: internalGameId, internalGameId });
-    if (current?.final_lineup_revision_id
-      && current.final_lineup_revision_id !== canonicalLineup.final_lineup_revision_id) {
-      return {
-        ...staleResult,
-        noOpReason: "V3_STALE_LINEUP_REVISION",
-        staleLineupRevision: canonicalLineup.final_lineup_revision_id
-      };
-    }
-    return staleResult;
-  }
-  const lineup = claimed;
-  const actual = sanitizeActualLineupForScoring(parseStoredActualLineup(lineup.actual_lineup_json), { allowUnresolvedPlayer: true });
+  if (!await hasCurrentV3ScoreJobLease(db, internalGameId, job, new Date())) return staleResult;
+
+  const actual = sanitizeActualLineupForScoring(
+    parseStoredActualLineup(claimed.actual_lineup_json),
+    { allowUnresolvedPlayer: true }
+  );
   if (!actual.ok) throw createV3Error("V3_FINAL_LINEUP_INVALID", "採点対象の正式スタメンが不正です。", { retryable: false });
-  const lineageGuardRevisionId = await getCurrentV3LineupRevisionGuard(db, internalGameId, lineup.final_lineup_revision_id);
-  const scoringLineupRevision = await getCurrentLineupRevisionForScoring(db, lineup.game_id);
-  const scoringLineupRevisionId = scoringLineupRevision?.revisionId || lineageGuardRevisionId;
+  const canonicalRevisionId = String(claimed.final_lineup_revision_id || "").trim();
+  const scoringLineupRevision = await getCurrentLineupRevisionForScoring(db, claimed.game_id);
+  const scoringLineupRevisionId = scoringLineupRevision?.revisionId || canonicalRevisionId;
   const scoring = await prepareGamePredictionScoring(db, {
-    gameId: lineup.game_id, internalGameId
+    gameId: claimed.game_id,
+    internalGameId
   }, actual.lineup, 0);
-  if (scoring.failed > 0) throw createV3Error("V3_PREDICTION_VALIDATION_FAILED", "予想の採点準備に失敗しました。", { retryable: true });
+  if (scoring.failed > 0) {
+    throw createV3Error("V3_PREDICTION_VALIDATION_FAILED", "予想の採点準備に失敗しました。", { retryable: true });
+  }
   const priorRevision = await db.prepare(
-    "SELECT id, revision_number FROM game_scoring_revisions WHERE internal_game_id = ?1 AND lineup_revision_id = ?2 LIMIT 1"
+    `SELECT id, revision_number FROM game_scoring_revisions
+      WHERE internal_game_id = ?1 AND lineup_revision_id = ?2 LIMIT 1`
   ).bind(internalGameId, scoringLineupRevisionId).first();
   const latestRevision = priorRevision ? null : await db.prepare(
     "SELECT COALESCE(MAX(revision_number), 0) AS revision FROM game_scoring_revisions WHERE internal_game_id = ?1"
   ).bind(internalGameId).first();
-  const revisionNumber = Number(priorRevision?.revision_number || Number(latestRevision?.revision || 0) + 1);
-  const scoringRevisionId = priorRevision?.id || `${internalGameId}:scoring:${revisionNumber}`;
+  const scoringRevisionNumber = Number(priorRevision?.revision_number || Number(latestRevision?.revision || 0) + 1);
+  const scoringRevisionId = priorRevision?.id || `${internalGameId}:scoring:${scoringRevisionNumber}`;
+
   let testRows = [];
   try {
     const testState = await getRankingTestState(db, internalGameId);
@@ -1992,14 +1998,12 @@ async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore, j
       testRows = Array.from({ length: RANKING_TEST_SLOT_MAX }, (_, index) => {
         const slot = index + 1;
         const preset = resolveRankingTestPreset(slot);
-        if (!preset.ok) return { slot, status: "invalid", warningCode: preset.code || "PRESET_INVALID",
-          predictionJson: JSON.stringify({ schemaVersion: 2, source: "fixed_preset", slot, lineup: [] }) };
-        const valid = sanitizeActualLineupForScoring(preset.lineup);
-        if (!valid.ok) return { slot, status: "invalid", warningCode: "PRESET_INVALID",
-          predictionJson: JSON.stringify({ schemaVersion: 2, source: "fixed_preset", slot, lineup: preset.lineup }) };
-        const score = scorePredictionLineup(valid.lineup, actual.lineup);
+        if (!preset.ok) return { slot, status: "invalid", warningCode: preset.code || "PRESET_INVALID", predictionJson: JSON.stringify({ source: "fixed_preset", slot, lineup: [] }) };
+        const testScore = scorePredictionLineup(preset.lineup, actual.lineup);
         return {
-          slot, status: "scored", score: score.total, maxScore: SCORING_MAX_SCORE,
+          slot,
+          status: "scored",
+          score: testScore.total,
           predictionJson: JSON.stringify({ schemaVersion: 2, source: "fixed_preset", presetVersion: preset.presetVersion, slot, lineup: preset.lineup })
         };
       });
@@ -2007,69 +2011,66 @@ async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore, j
   } catch (error) {
     console.warn(`[RANKING_TEST] supplemental_stage_failed internalGameId=${internalGameId} code=${error?.code || "RANKING_TEST_STAGE_FAILED"}`);
   }
-  const attemptId = crypto.randomUUID();
-  await createScoreAttempt(db, {
-    attemptId, internalGameId, gameId: lineup.game_id,
-    lineupRevisionId: lineageGuardRevisionId,
+
+  const requestedAttemptId = crypto.randomUUID();
+  const attemptId = await createScoreAttempt(db, {
+    attemptId: requestedAttemptId,
+    internalGameId,
+    gameId: claimed.game_id,
+    canonicalLineupRevisionId: canonicalRevisionId,
     scoringLineupRevisionId,
-    lineupFingerprint: lineup.lineup_fingerprint,
-    jobId: Number(job.id), claimToken: String(job.claim_token),
+    lineupFingerprint: claimed.lineup_fingerprint || "",
+    jobId: Number(job.id),
+    claimToken: String(job.claim_token),
     expectedPredictionCount: scoring.processed,
     expectedTestCount: testRows.length,
-    scoringRevisionId, scoringRevisionNumber: revisionNumber,
-    actualLineupJson: JSON.stringify(actual.lineup), createdAt: now.toISOString()
+    scoringRevisionId,
+    scoringRevisionNumber,
+    actualLineupJson: JSON.stringify(actual.lineup),
+    createdAt: now.toISOString()
   });
   for (const outcome of scoring.outcomes) {
-    await stageScorePrediction(db, attemptId, {
-      id: outcome.id, outcome: "scored", score: outcome.score.total,
-      maxScore: SCORING_MAX_SCORE, counts: outcome.score.counts
-    });
+    await stageScorePrediction(db, attemptId, { id: outcome.id, outcome: "scored", score: outcome.score.total, counts: outcome.score.counts });
   }
   for (const exclusion of scoring.exclusions || []) {
-    await stageScorePrediction(db, attemptId, {
-      id: exclusion.id, outcome: "excluded", exclusionReason: exclusion.reason
-    });
+    await stageScorePrediction(db, attemptId, { id: exclusion.id, outcome: "excluded", exclusionReason: exclusion.reason });
   }
   for (const testRow of testRows) {
     try {
       await stageScoreTest(db, attemptId, testRow);
     } catch (error) {
-      // TEST rows are supplemental and must not abort formal scoring.
-      console.warn(`[RANKING_TEST] supplemental_score_failed supplemental_stage_slot_failed internalGameId=${internalGameId} slot=${testRow.slot} code=${error?.code || "RANKING_TEST_STAGE_FAILED"}`);
+      // TEST users are supplemental and must not block real-user scoring.
+      console.warn(`[RANKING_TEST] supplemental_score_failed internalGameId=${internalGameId} slot=${testRow.slot} code=${error?.code || "RANKING_TEST_STAGE_FAILED"}`);
     }
   }
-  const stagedTestCount = await db.prepare(
+  const stagedTests = await db.prepare(
     "SELECT COUNT(*) AS count FROM score_attempt_test_rows WHERE attempt_id = ?1"
   ).bind(attemptId).first();
-  if (Number(stagedTestCount?.count || 0) !== testRows.length) {
+  if (Number(stagedTests?.count || 0) !== testRows.length) {
     await db.prepare(
       "UPDATE score_attempts SET expected_test_count = ?1 WHERE attempt_id = ?2 AND status = 'staging'"
-    ).bind(Number(stagedTestCount?.count || 0), attemptId).run();
+    ).bind(Number(stagedTests?.count || 0), attemptId).run();
   }
-  if (!await markScoreAttemptReady(db, attemptId)) {
-    throw createV3Error("V3_SCORE_ATTEMPT_INCOMPLETE", "採点attemptのstaging件数が一致しません。", { retryable: true });
+  if (!await markScoreAttemptReady(db, attemptId, new Date())) {
+    throw createV3Error("V3_SCORE_ATTEMPT_INCOMPLETE", "採点attemptのstagingが完了していません。", { retryable: true });
   }
   const committed = await commitScoreAttempt(db, {
-    attemptId, jobId: Number(job.id), claimToken: String(job.claim_token),
-    now: new Date(), internalGameId, gameId: lineup.game_id,
-    lineupRevisionId: lineageGuardRevisionId,
-    scoringLineupRevisionId, scoringRevisionId,
-    scoringRevisionNumber: revisionNumber,
-    processed: scoring.processed, perfectCount: scoring.perfectCount
+    attemptId,
+    jobId: Number(job.id),
+    claimToken: String(job.claim_token),
+    now: new Date(),
+    internalGameId,
+    gameId: claimed.game_id,
+    canonicalLineupRevisionId: canonicalRevisionId,
+    scoringLineupRevisionId,
+    scoringRevisionId,
+    scoringRevisionNumber,
+    processed: scoring.processed,
+    perfectCount: scoring.perfectCount
   });
-  if (!committed.committed) {
-    const current = await getGameLineup(db, { gameId: internalGameId, internalGameId });
-    if (current?.final_lineup_revision_id
-      && current.final_lineup_revision_id !== canonicalLineup.final_lineup_revision_id) {
-      return {
-        ...staleResult,
-        noOpReason: "V3_STALE_LINEUP_REVISION",
-        staleLineupRevision: canonicalLineup.final_lineup_revision_id
-      };
-    }
-    return staleResult;
-  }
-  const noOpReason = scoring.processed === 0 ? "V3_SCORING_NO_PREDICTIONS"
+  if (!committed.committed) return staleResult;
+  const noOpReason = scoring.processed === 0
+    ? "V3_SCORING_NO_PREDICTIONS"
     : scoring.scored === 0 && scoring.excluded === scoring.processed
       ? "V3_SCORING_NO_ELIGIBLE_PREDICTIONS" : null;
   return {

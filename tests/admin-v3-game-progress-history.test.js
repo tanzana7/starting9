@@ -102,8 +102,8 @@ test("現在revisionの途中jobがある場合は進行中より再処理中を
     publication: { published: false },
     jobs: [{ job_type: "publish", status: "retry_wait", attempt_count: 1, max_attempts: 5 }]
   });
-  assert.equal(result.key, "reprocessing");
-  assert.equal(result.label, "再処理中");
+  assert.equal(result.key, "waiting");
+  assert.equal(result.label, "待機");
   assert.equal(result.stage, "publish");
 });
 

@@ -290,7 +290,6 @@ function createV3PlanningDiagnostic(game, plan, state) {
     jobType: plan?.jobType || null,
     state: state || "scheduled",
     scheduledSlotAt: plan?.scheduledSlotAt?.toISOString?.() || null,
-    recoveryKey: plan?.recoveryKey || null,
     plannerReached: true,
     insertAttempted: false,
     insertedRowCount: 0,
@@ -392,26 +391,6 @@ function isPredictionCloseRecoveryJob(job) {
     && Number(job?.attempt_count ?? job?.attemptCount ?? 0) >= Number(job?.max_attempts ?? job?.maxAttempts ?? 0);
 }
 
-const V3_JOB_PREREQUISITES = Object.freeze({
-  ranking_rebuild: "score",
-  publish: "ranking_rebuild"
-});
-
-async function hasOpenV3PrerequisiteJob(db, job) {
-  const prerequisiteType = V3_JOB_PREREQUISITES[String(job?.job_type || "")];
-  if (!prerequisiteType || !job?.internal_game_id) return null;
-  return db.prepare(
-    `SELECT id, job_type, status
-       FROM game_jobs_v3
-      WHERE internal_game_id = ?1
-        AND job_type = ?2
-        AND id <> ?3
-        AND status IN ('pending', 'claimed', 'retry_wait')
-      ORDER BY id
-      LIMIT 1`
-  ).bind(job.internal_game_id, prerequisiteType, Number(job.id)).first();
-}
-
 export const V3_JOB_PLANNERS = Object.freeze({
   [V3_JOB_TYPE.PROBABLE_STARTER_FETCH]: planV3ProbableStarterJobs,
   [V3_JOB_TYPE.ROSTER_FETCH]: planV3RosterJobs,
@@ -469,13 +448,6 @@ export async function claimDueJobs(db, now = new Date(), plannedEntries = [], { 
   const due = [];
   const claimed = [];
   const plannedById = new Map(plannedEntries.map((entry) => [String(entry?.job?.id || ""), entry]));
-  // A deterministic recovery job is intentionally left for the next tick.
-  // Normal due jobs retain the existing same-invocation planner/executor
-  // behavior; only a newly inserted recovery must not execute against the
-  // partially observed snapshot that caused it to be planned.
-  const insertedThisRun = new Set(plannedEntries
-    .filter((entry) => entry?.created === true && entry?.job?.id && entry?.diagnostic?.recoveryKey)
-    .map((entry) => String(entry.job.id)));
   const disabled = new Set(disabledJobTypes);
   const skipped = [];
   const batchSize = 100;
@@ -488,23 +460,12 @@ export async function claimDueJobs(db, now = new Date(), plannedEntries = [], { 
       const key = String(job?.id || "");
       if (!key || seen.has(key)) return false;
       seen.add(key);
-      if (insertedThisRun.has(key)) return false;
       return true;
     });
     due.push(...fresh);
     for (const job of fresh) {
       if ([...disabled].some((stage) => isV3JobForStage(job, stage))) {
         skipped.push({ job, reasonCode: "V4_AUTO_FETCH_DISABLED" });
-        continue;
-      }
-      const prerequisite = await hasOpenV3PrerequisiteJob(db, job).catch(() => null);
-      if (prerequisite) {
-        skipped.push({
-          job,
-          reasonCode: "V3_PREREQUISITE_JOB_OPEN",
-          prerequisiteJobId: Number(prerequisite.id),
-          prerequisiteJobType: prerequisite.job_type
-        });
         continue;
       }
       let claimedJob = null;
@@ -564,10 +525,9 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
       const workflowArtifacts = derivedPlanningState.workflowArtifacts || await readV3WorkflowArtifactHealth(db, game.internalGameId, state);
       const canonicalAvailable = hasCanonicalArtifactEvidence(derivedPlanningState.canonicalArtifacts);
       const canonicalFullyPublished = derivedPlanningState.canonicalArtifacts?.aggregate?.fullyPublished === true;
-      // A correction can commit the new canonical pointer before the state
-      // transition is persisted. Only the repository's narrow candidate flag
-      // may reopen that published game for the score stage; ordinary published
-      // artifact mismatches remain a visible diagnostic and are not guessed at.
+      // A correction may advance the canonical pointer before its workflow
+      // state is persisted. Reopen only the narrow candidate identified by
+      // listV3Games; ordinary published artifact mismatches remain diagnostic.
       const correctionRecovery = state === "published"
         && game.correctionRecoveryCandidate === true
         && canonicalAvailable
@@ -600,12 +560,11 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
       }
       if (workflowArtifacts.publicationReady && (!canonicalAvailable || canonicalFullyPublished)) continue;
       const existingJobs = await readV3JobsForPlanning(db, game.internalGameId);
-      const planningState = correctionRecovery ? "manual_action_required" : state;
       const sharedPlanningState = buildV3PlanningState({
         ...derivedPlanningState,
         game,
         persistedState,
-        effectiveState: planningState,
+        effectiveState: correctionRecovery ? "manual_action_required" : state,
         correctionRecovery,
         jobs: existingJobs,
         now,
@@ -640,8 +599,12 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
       const plans = stagePlans.filter((entry) => entry.shouldCreateJob).map((entry) => ({
         jobType: entry.jobType,
         scheduledSlotAt: new Date(entry.selectedSlotAt),
-        scheduledAt: new Date(entry.selectedSlotAt),
-        recoveryKey: entry.diagnostics?.recoveryKey || null,
+        // The deterministic recovery slot is an idempotency key, not a user
+        // visible due time. Leave one Cron tick for the planner to finish and
+        // execute the newly allocated recovery job on the following pass.
+        scheduledAt: entry.diagnostics?.recoverySlotAt
+          ? new Date(new Date(now).getTime() + 1000)
+          : new Date(entry.selectedSlotAt),
         sharedPlan: entry
       }));
       for (const stagePlan of stagePlans.filter((entry) => entry.reasonCode === "RECOVERY_JOB_ALREADY_EXISTS")) {

@@ -38,25 +38,30 @@ function asDate(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+function deterministicRecoverySlot(planningState, stage, selectedSlotAt) {
+  const gameId = String(planningState?.gameId || "");
+  const revision = String(
+    planningState?.canonicalArtifacts?.lineup?.canonicalFinalRevisionId
+      || planningState?.canonicalPlanningArtifacts?.lineup?.canonicalFinalRevisionId
+      || "legacy"
+  );
+  const seed = `${gameId}|${revision}|${stage}`;
+  let hash = 2166136261;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  const anchor = asDate(selectedSlotAt) || new Date("2000-01-01T00:00:00.000Z");
+  // Recovery slots are identity keys, not user-facing timestamps. Keeping
+  // them on a fixed historical day makes concurrent Cron calls derive exactly
+  // the same key while still remaining due immediately.
+  const fixedDay = new Date(anchor.getTime() - 365 * 24 * 60 * 60 * 1000);
+  return new Date(fixedDay.getTime() + (Math.abs(hash) % (24 * 60 * 60 * 1000)));
+}
+
 function stateRank(value) {
   const index = STATE_ORDER.indexOf(normalize(value));
   return index < 0 ? 0 : index;
-}
-
-// Recovery slots are part of the job idempotency key. They must not be based
-// on wall-clock time: repeated Crons for the same canonical revision would
-// otherwise create a new job every time. The synthetic date is intentionally
-// in the past so a recovered job is immediately due; game scope and job type
-// still keep the uniqueness key isolated.
-export function getDeterministicV3RecoverySlotAt(canonicalRevisionId, stage) {
-  const key = `${String(canonicalRevisionId || "").trim()}:${String(stage || "").trim()}`;
-  let hash = 2166136261;
-  for (let index = 0; index < key.length; index += 1) {
-    hash ^= key.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  const offset = (hash >>> 0) % (24 * 60 * 60 * 1000);
-  return new Date(Date.UTC(2000, 0, 1) + offset);
 }
 
 function isPublishedGame(game = {}) {
@@ -241,7 +246,7 @@ function stateAllows(state, stage) {
   return false;
 }
 
-export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], effectiveState = null, persistedState = null, now = new Date(), canonicalArtifacts = null, correctionRecovery = false, v4SemiAuto = false } = {}) {
+export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], effectiveState = null, persistedState = null, now = new Date(), canonicalArtifacts = null, v4SemiAuto = false } = {}) {
   let baseSchedule = null;
   let displaySchedule = null;
   try {
@@ -287,7 +292,6 @@ export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], eff
     artifacts: planningArtifacts,
     canonicalArtifacts: canonicalArtifacts || null,
     canonicalPlanningArtifacts,
-    correctionRecovery: Boolean(correctionRecovery),
     jobs: planningJobs,
     effectiveState: state,
     persistedState: normalize(persistedState || game.workflowState || game.workflow_state || "scheduled") || "scheduled",
@@ -376,7 +380,7 @@ export function buildStagePlan(planningState, stage, { disabled = false, disable
     };
   }
   if (!isV3GameEligible(game)) return { ...plan, blocked: true, blockedReason: "GAME_NOT_ELIGIBLE", reasonCode: "GAME_NOT_ELIGIBLE" };
-  if (!state.correctionRecovery && (effectiveState === "published" || state.persistedState === "published")) {
+  if (effectiveState === "published" || state.persistedState === "published") {
     if (state.canonicalArtifacts?.available === true
       && state.canonicalArtifacts.aggregate?.fullyPublished !== true) {
       return {
@@ -435,10 +439,7 @@ export function buildStagePlan(planningState, stage, { disabled = false, disable
       // A completed job whose current artifact is stale or missing is
       // historical evidence only. Keep it immutable and allocate a fresh due
       // slot so the uniqueness key cannot absorb the new execution.
-      const canonicalRevisionId = state.canonicalPlanningArtifacts?.lineup?.canonicalFinalRevisionId
-        || first(game, "finalLineupRevisionId", "final_lineup_revision_id")
-        || `${gameId || "game"}:current`;
-      const recoverySlot = getDeterministicV3RecoverySlotAt(canonicalRevisionId, stage);
+      const recoverySlot = deterministicRecoverySlot(planningState, stage, selectedSlotAt);
       const revisionMismatch = stage === "ranking_reflect"
         && (artifact?.revisionMismatch === true || artifact?.reprocessRequired === true);
       return {
@@ -452,7 +453,7 @@ export function buildStagePlan(planningState, stage, { disabled = false, disable
           rankingRevisionMismatch: revisionMismatch,
           rankingReprocessRequired: stage === "ranking_reflect" && artifact?.reprocessRequired === true,
           recoverySlotAt: recoverySlot.toISOString(),
-          recoveryKey: `${canonicalRevisionId}:${stage}`
+          recoveryIdentity: `${planningState.gameId || ""}:${first(planningState.canonicalArtifacts?.lineup, "canonicalFinalRevisionId") || "legacy"}:${stage}`
         }
       };
     }

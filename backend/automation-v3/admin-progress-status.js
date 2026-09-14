@@ -129,6 +129,14 @@ export function deriveAdminV3GameProgressStatus({
       });
     }
     const stage = openJob?.job_type || (!scoringReady ? "score" : !rankingReady ? "ranking_reflect" : "publish");
+    if (normalized(openJob?.status) === "retry_wait") {
+      return statusResult("waiting", "待機", "自動再処理を待っています。", stage, {
+        currentScoringRevisionId: scoringRevisionId || null,
+        reflectedScoringRevisionId: reflectedRevisionId || null,
+        revisionMatches,
+        readOnly: true
+      });
+    }
     const reason = stage === "score"
       ? "現在のスタメンrevisionの採点を処理中です。"
       : stage === "ranking_reflect"

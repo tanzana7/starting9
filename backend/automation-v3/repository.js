@@ -76,48 +76,24 @@ export async function listV3Games(db, now = new Date(), options = {}) {
       hasScoringRevisions = Boolean(row?.name);
     } catch { /* Legacy adapters retain open-job discovery. */ }
   }
-  let hasCurrentLineupRevisionColumns = false;
-  let hasCurrentLineupRevisionIsCurrent = false;
-  if (hasCanonicalLineups && hasScoringRevisions) {
-    try {
-      const row = await db.prepare("PRAGMA table_info(game_lineup_revisions)").all();
-      const columns = new Set((row.results || []).map((column) => column.name));
-      hasCurrentLineupRevisionColumns = columns.has("internal_game_id")
-        && columns.has("game_id") && columns.has("version")
-        && columns.has("revision_id") && columns.has("is_final");
-      hasCurrentLineupRevisionIsCurrent = columns.has("is_current");
-    } catch { /* Legacy adapters retain open-job discovery. */ }
-  }
   // A finalized historical correction can outlive a failed/missing score job.
   // This is only a candidate signal; canonical validity and current scoring
   // lineage are checked by the shared evaluator before returning the game.
-  const currentRevisionIsCurrentSql = hasCurrentLineupRevisionIsCurrent
-    ? "AND current_revision.is_current = 1"
-    : "";
-  const correctionRecoverySql = hasCurrentLineupRevisionColumns
+  const correctionRecoverySql = hasCanonicalLineups && hasScoringRevisions
     ? `EXISTS (SELECT 1 FROM game_lineups AS corrected
                  WHERE corrected.internal_game_id = games.internal_game_id
                    AND corrected.final_lineup_revision_id IS NOT NULL)
        AND EXISTS (SELECT 1 FROM game_jobs_v3 AS previous_score
                     WHERE previous_score.internal_game_id = games.internal_game_id
                       AND previous_score.job_type = 'score' AND previous_score.status = 'completed')
-       AND NOT EXISTS (SELECT 1
-                        FROM game_scoring_revisions AS active_score
-                        JOIN game_lineup_revisions AS current_revision
-                          ON current_revision.internal_game_id = games.internal_game_id
-                         AND current_revision.is_final = 1
-                         ${currentRevisionIsCurrentSql}
-                         AND (current_revision.revision_id = active_score.lineup_revision_id
-                           OR active_score.lineup_revision_id = current_revision.internal_game_id || ':' || current_revision.version
-                           OR active_score.lineup_revision_id = current_revision.game_id || ':' || current_revision.version)
-                        JOIN game_lineups AS corrected_lineup
-                          ON corrected_lineup.internal_game_id = games.internal_game_id
-                         AND (current_revision.revision_id = corrected_lineup.final_lineup_revision_id
-                           OR corrected_lineup.final_lineup_revision_id = current_revision.internal_game_id || ':' || current_revision.version
-                           OR corrected_lineup.final_lineup_revision_id = current_revision.game_id || ':' || current_revision.version)
-                       WHERE active_score.internal_game_id = games.internal_game_id
-                         AND active_score.is_active = 1
-                         AND active_score.status = 'completed')`
+       AND NOT EXISTS (
+         SELECT 1 FROM game_scoring_revisions AS active_score
+          JOIN game_lineups AS current_lineup
+            ON current_lineup.internal_game_id = games.internal_game_id
+           AND current_lineup.final_lineup_revision_id = active_score.lineup_revision_id
+         WHERE active_score.internal_game_id = games.internal_game_id
+           AND active_score.is_active = 1
+           AND active_score.status = 'completed')`
     : "0";
   const enrichedParams = includeRecentHistory ? [] : [date];
   const scopedConditions = [];
@@ -136,7 +112,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
     : "";
   const publicationFilterSql = includeRecentHistory
     ? ""
-    : `AND (COALESCE(lineup.published_at, ranking.published_at) IS NULL
+    : `AND (${publishedAt} IS NULL
              AND LOWER(COALESCE(${publicationStatus}, '')) <> 'published'
            OR (${correctionRecoverySql}))`;
   const discoveryFilterSql = includeRecentHistory

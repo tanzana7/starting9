@@ -479,6 +479,7 @@ function ensureV3ManualLineupState(internalGameId, details = null) {
   v3State.manualLineup = {
     ...v3State.manualLineup,
     gameId: id,
+    activeIndex: 0,
     rows: v3ManualLineupRenderer.createBlankRows(),
     reason: "",
     confirmed: false,
@@ -928,6 +929,16 @@ function updateV3ManualLineupRow(index, patch) {
       field.setSelectionRange(field.value.length, field.value.length);
     }
   }
+}
+
+function selectV3ManualLineupSlot(index) {
+  const state = ensureV3ManualLineupState(v3State.selectedGameId);
+  const nextIndex = Number(index);
+  if (!Number.isInteger(nextIndex) || nextIndex < 0 || nextIndex >= state.rows.length) return;
+  state.activeIndex = nextIndex;
+  state.error = "";
+  state.message = "";
+  renderCurrentV3View();
 }
 
 function updateV3ManualLineupSearch(index, value) {
@@ -1519,6 +1530,7 @@ adminV3Modules.createAdminV3Coordinator({
     previewPerfectScore,
     previewManualGame,
     updateManualLineupRow: updateV3ManualLineupRow,
+    selectManualLineupSlot: selectV3ManualLineupSlot,
     updateManualLineupSearch: updateV3ManualLineupSearch,
     selectManualLineupPlayer: selectV3ManualLineupPlayer,
     saveManualLineup: saveV3ManualLineup,

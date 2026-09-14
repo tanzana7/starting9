@@ -51,6 +51,7 @@
       },
       manualLineup: {
         gameId: "",
+        activeIndex: 0,
         rows: Array.from({ length: 9 }, (_, index) => ({
           battingOrder: index + 1,
           position: "",

@@ -16,6 +16,7 @@
 
   function createAdminV3ManualLineupRenderer({ escapeHtml, formatJst, getFinalizeSafety, getGameDayStatus }) {
     function battingClass(player) {
+      if (global.Starting9LineupBuilder?.battingClass) return global.Starting9LineupBuilder.battingClass(player);
       if (global.Starting9Public?.getPlayerBattingClass) return global.Starting9Public.getPlayerBattingClass(player);
       const source = player && typeof player === "object" ? player : {};
       const value = source.bats ?? source.battingSide ?? source.batSide
@@ -28,6 +29,7 @@
     }
 
     function uniformNumber(player) {
+      if (global.Starting9LineupBuilder?.uniformNumber) return global.Starting9LineupBuilder.uniformNumber(player);
       if (global.Starting9Public?.getPlayerUniformNumber) return global.Starting9Public.getPlayerUniformNumber(player);
       const source = player && typeof player === "object" ? player : {};
       const fields = ["uniformNumber", "jerseyNumber", "number", "playerNumber", "backNumber", "uniform_no", "jersey_no"];
@@ -43,6 +45,9 @@
     }
 
     function playerName(player) {
+      if (global.Starting9LineupBuilder?.renderPlayerName) {
+        return global.Starting9LineupBuilder.renderPlayerName(player, escapeHtml);
+      }
       const className = battingClass(player);
       const number = uniformNumber(player);
       const numberMarkup = number ? `<span class="player-number" aria-hidden="true">[${escapeHtml(number)}]</span> ` : "";
@@ -70,6 +75,7 @@
     }
 
     function sortPlayersByUniformNumber(players) {
+      if (global.Starting9LineupBuilder?.sortPlayers) return global.Starting9LineupBuilder.sortPlayers(players);
       return [...players].sort((left, right) => {
         const leftNumber = Number.parseInt(String(left?.uniformNumber || ""), 10);
         const rightNumber = Number.parseInt(String(right?.uniformNumber || ""), 10);
@@ -124,7 +130,7 @@
         ? candidates.map((player) => {
           const selectedPlayer = selected?.playerId === player.playerId;
           const rosterLabel = player.manualRosterActive === false ? "ロースター外（確認要）" : "ロースター内";
-          return `<div class="manual-player-candidate-row"><button type="button" class="manual-lineup-candidate${selectedPlayer ? " selected" : ""}" aria-pressed="${selectedPlayer ? "true" : "false"}" data-v3-manual-lineup-player="${escapeHtml(String(index))}" data-v3-manual-lineup-player-id="${escapeHtml(player.playerId)}">${playerName(player)}<small class="manual-player-candidate-meta">${escapeHtml(playerCategory(player))} / ${escapeHtml(rosterLabel)}</small></button>${playerDetailMarkup(player)}</div>`;
+          return `<div class="manual-player-candidate-row"><button type="button" class="player-chip manual-lineup-candidate${selectedPlayer ? " selected" : ""}" aria-pressed="${selectedPlayer ? "true" : "false"}" data-v3-manual-lineup-player="${escapeHtml(String(index))}" data-v3-manual-lineup-player-id="${escapeHtml(player.playerId)}">${playerName(player)}<small class="manual-player-candidate-meta">${escapeHtml(playerCategory(player))} / ${escapeHtml(rosterLabel)}</small></button>${playerDetailMarkup(player)}</div>`;
         }).join("")
         : `<span class="muted">候補がありません</span>`;
     }
@@ -151,12 +157,25 @@
         || ["processing", "scored"].includes(String(lineupDetails.lineupStatus || "").toLowerCase())
         || Boolean(lineupDetails.finalRevision?.isFinal)
         || Boolean(details?.publication?.publication?.publishedAt);
-      const cards = rows.map((row, index) => {
+      const activeIndex = Math.max(0, Math.min(rows.length - 1, Number(state.activeIndex) || 0));
+      const activeRow = rows[activeIndex] || rows[0];
+      const slots = rows.map((row, index) => {
         const selected = catalog.find((player) => player.playerId === row.playerId);
         const positionOptions = POSITIONS.map((position) => `<option value="${escapeHtml(position)}" ${row.position === position ? "selected" : ""}>${escapeHtml(position || "守備位置を選択")}</option>`).join("");
         const orderOptions = Array.from({ length: 9 }, (_, order) => order + 1).map((order) => `<option value="${order}" ${Number(row.battingOrder) === order ? "selected" : ""}>${order}番</option>`).join("");
-        return `<article class="manual-lineup-card"><div class="manual-lineup-card-heading"><strong>${index + 1}人目</strong><span>${selected ? playerName(selected) : "未選択"}</span>${selected ? playerDetailMarkup(selected) : ""}</div><label>選手を検索<input type="search" value="${escapeHtml(row.search || "")}" placeholder="名前または背番号" data-v3-manual-lineup-search="${index}" ${locked ? "disabled" : ""}></label><div class="manual-lineup-candidates" aria-label="選手候補" data-v3-manual-lineup-candidates="${index}">${renderCandidates(catalog, row, index)}</div><div class="manual-lineup-card-fields"><label>打順<select data-v3-manual-lineup-order="${index}" ${locked ? "disabled" : ""}>${orderOptions}</select></label><label>守備位置<select data-v3-manual-lineup-position="${index}" ${locked ? "disabled" : ""}>${positionOptions}</select></label></div></article>`;
+        const slotClass = [
+          "lineup-slot",
+          "manual-lineup-slot",
+          index === activeIndex ? "is-active" : "",
+          selected ? "has-player" : ""
+        ].filter(Boolean).join(" ");
+        const playerMarkup = selected
+          ? `${playerName(selected)}${playerDetailMarkup(selected)}`
+          : '<span class="slot-player slot-empty">未選択</span>';
+        return `<article class="${slotClass}" data-v3-manual-lineup-slot="${index}" aria-current="${index === activeIndex ? "true" : "false"}"><span class="slot-order">${index + 1}番</span><div class="manual-lineup-slot-player">${playerMarkup}</div><label class="manual-lineup-slot-order">打順<select data-v3-manual-lineup-order="${index}" ${locked ? "disabled" : ""}>${orderOptions}</select></label><label class="manual-lineup-slot-position">守備位置<select data-v3-manual-lineup-position="${index}" ${locked ? "disabled" : ""}>${positionOptions}</select></label></article>`;
       }).join("");
+      const playerPanel = `<section class="player-panel manual-lineup-player-panel"><div class="player-list-heading"><div><h3>選手を選択</h3><p class="manual-lineup-player-target">${activeIndex + 1}番に追加</p></div><span class="manual-lineup-team">${catalog.length}人</span></div><label class="manual-lineup-search">選手を検索<input type="search" value="${escapeHtml(activeRow?.search || "")}" placeholder="選手名または背番号" data-v3-manual-lineup-search="${activeIndex}" ${locked ? "disabled" : ""}></label><div class="player-list manual-lineup-candidates" aria-label="選手候補" data-v3-manual-lineup-candidates="${activeIndex}">${renderCandidates(catalog, activeRow, activeIndex)}</div></section>`;
+      const builder = `<div class="lineup-builder manual-lineup-builder manual-lineup-grid"><section class="lineup-panel manual-lineup-slots-panel"><div class="player-list-heading"><div><h3>正式スタメン</h3><p>行を選んでから、右の候補をタップします。</p></div><span class="manual-lineup-team">9人</span></div><div class="slot-list manual-lineup-slot-list">${slots}</div></section>${playerPanel}</div>`;
       const message = state.error ? `<p class="manual-lineup-message error">${escapeHtml(state.error)}</p>` : state.message ? `<p class="manual-lineup-message success">${escapeHtml(state.message)}</p>` : "";
       const disabled = locked || state.loading;
        const revision = state.latestRevision;
@@ -165,7 +184,7 @@
        const cancelMarkup = revision && cancelableSource && futureScheduled && !details?.publication?.publication?.publishedAt
          ? `<button type="button" class="secondary manual-lineup-cancel" data-v3-manual-lineup-revision-cancel="${escapeHtml(String(revision.revisionId || revision.version || ""))}">このmanual revisionを取消</button><small class="muted">未来のscheduled試合のみ。取消後は正式スタメン未確定に戻ります。</small>`
          : "";
-       return `<section class="manual-lineup-editor" data-v3-manual-lineup-editor>${targetMarkup}<div class="manual-lineup-header"><div><h3>Fighters 手動スタメン</h3><p>対象チーム1チーム・9人を選択します。選手名はマスター照合され、未登録名や重複は保存できません。ロースター外は警告のみで、スタメン確定の必須条件ではありません。</p></div><span class="manual-lineup-team">${escapeHtml(lineupDetails.managedTeam?.name || "Fighters")}</span></div><div class="manual-lineup-grid">${cards}</div><div class="manual-lineup-confirmation-preview" data-v3-manual-lineup-confirmation-preview><strong>スタメン確認（入力中）</strong>${lineupSummary}</div><label class="manual-lineup-confirm"><input type="checkbox" data-v3-manual-lineup-confirm ${state.confirmed ? "checked" : ""} ${disabled ? "disabled" : ""}> 入力内容を確認しました</label>${safetyMarkup}<div class="manual-lineup-actions"><button type="button" data-v3-manual-lineup-save ${disabled ? "disabled" : ""}>下書きを保存</button><button type="button" class="primary-button" data-v3-manual-lineup-finalize ${disabled || !state.latestRevision || !finalizeSafety.allowed ? "disabled" : ""}>正式スタメンを確定</button>${cancelMarkup}</div>${locked ? `<p class="muted">採点開始後・公開後はスタメンを変更できません。</p>` : `<p class="muted">確定後はスコアjobを手動投入せず、次回の正式V3 Cronが採点へ進めます。</p>`}${message}</section>`;
+       return `<section class="manual-lineup-editor" data-v3-manual-lineup-editor>${targetMarkup}<div class="manual-lineup-header"><div><h3>Fighters 手動スタメン</h3><p>ユーザー予想と同じ操作感で、9人の正式スタメンを組みます。ロースター外は警告のみで、スタメン確定の必須条件ではありません。</p></div><span class="manual-lineup-team">${escapeHtml(lineupDetails.managedTeam?.name || "Fighters")}</span></div>${builder}<div class="manual-lineup-confirmation-preview" data-v3-manual-lineup-confirmation-preview><strong>スタメン確認（入力中）</strong>${lineupSummary}</div><label class="manual-lineup-confirm"><input type="checkbox" data-v3-manual-lineup-confirm ${state.confirmed ? "checked" : ""} ${disabled ? "disabled" : ""}> 入力内容を確認しました</label>${safetyMarkup}<div class="manual-lineup-actions"><button type="button" data-v3-manual-lineup-save ${disabled ? "disabled" : ""}>下書きを保存</button><button type="button" class="primary-button" data-v3-manual-lineup-finalize ${disabled || !state.latestRevision || !finalizeSafety.allowed ? "disabled" : ""}>正式スタメンを確定</button>${cancelMarkup}</div>${locked ? `<p class="muted">採点開始後・公開後はスタメンを変更できません。</p>` : `<p class="muted">確定後はスコアjobを手動投入せず、次回の正式V3 Cronが採点へ進めます。</p>`}${message}</section>`;
     }
 
     return Object.freeze({ createBlankRows, renderCandidates, render });

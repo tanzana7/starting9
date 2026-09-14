@@ -350,7 +350,7 @@ test("manual lineupのsave/finalize APIは実handler経由で保存し、score j
 });
 
 test("manual lineupは入力理由なしで保存でき、未来scheduledのmanual revisionだけを安全に取消できる", async () => {
-  const integration = await createManualLineupIntegrationDb({ gameDate: "2026-09-08", startTime: "2026-09-08T09:00:00.000Z" });
+  const integration = await createManualLineupIntegrationDb({ gameDate: "2099-09-08", startTime: "2099-09-08T09:00:00.000Z" });
   try {
     const path = `/api/admin/v3/games/${INTEGRATION_GAME_ID}`;
     const save = await adminRequest(integration.env, `${path}/lineup-revisions`, { lineup: validManualLineup(), confirmed: true });

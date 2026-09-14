@@ -385,13 +385,20 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
         v4SemiAuto: Boolean(v4SemiAuto)
       });
       assertV3AuxiliaryJobResult(claimed, result, executionNow);
-      const completed = await completeV3Job(env.AUTH_DB, {
-        jobId: claimed.id,
-        claimToken: claimed.claim_token,
-        now: executionNow,
-        failureCode: result?.failureCode || null,
-        failureMessage: result?.failureMessage || null
-      });
+      // Formal scoring commits its job, score read model, revision and workflow
+      // state in one D1 transaction. Completing it again would report a false
+      // ownership conflict after an otherwise successful atomic commit.
+      const completed = result?.jobCompletedAtomically === true
+        ? Boolean((await env.AUTH_DB.prepare(
+          "SELECT 1 AS done FROM game_jobs_v3 WHERE id = ?1 AND status = 'completed' LIMIT 1"
+        ).bind(claimed.id).first())?.done)
+        : await completeV3Job(env.AUTH_DB, {
+          jobId: claimed.id,
+          claimToken: claimed.claim_token,
+          now: executionNow,
+          failureCode: result?.failureCode || null,
+          failureMessage: result?.failureMessage || null
+        });
       if (!completed) {
         throw createV3Error("V3_JOB_COMPLETION_CONFLICT", "V3ジョブの完了状態を確定できませんでした。状態遷移は行いません。", { retryable: true });
       }

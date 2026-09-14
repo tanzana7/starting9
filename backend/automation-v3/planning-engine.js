@@ -43,6 +43,22 @@ function stateRank(value) {
   return index < 0 ? 0 : index;
 }
 
+// Recovery slots are part of the job idempotency key. They must not be based
+// on wall-clock time: repeated Crons for the same canonical revision would
+// otherwise create a new job every time. The synthetic date is intentionally
+// in the past so a recovered job is immediately due; game scope and job type
+// still keep the uniqueness key isolated.
+export function getDeterministicV3RecoverySlotAt(canonicalRevisionId, stage) {
+  const key = `${String(canonicalRevisionId || "").trim()}:${String(stage || "").trim()}`;
+  let hash = 2166136261;
+  for (let index = 0; index < key.length; index += 1) {
+    hash ^= key.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  const offset = (hash >>> 0) % (24 * 60 * 60 * 1000);
+  return new Date(Date.UTC(2000, 0, 1) + offset);
+}
+
 function isPublishedGame(game = {}) {
   return normalize(first(game, "workflowState", "workflow_state", "state")) === "published"
     || normalize(first(game, "publicationStatus", "publication_status")) === "published"
@@ -225,7 +241,7 @@ function stateAllows(state, stage) {
   return false;
 }
 
-export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], effectiveState = null, persistedState = null, now = new Date(), canonicalArtifacts = null, v4SemiAuto = false } = {}) {
+export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], effectiveState = null, persistedState = null, now = new Date(), canonicalArtifacts = null, correctionRecovery = false, v4SemiAuto = false } = {}) {
   let baseSchedule = null;
   let displaySchedule = null;
   try {
@@ -271,6 +287,7 @@ export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], eff
     artifacts: planningArtifacts,
     canonicalArtifacts: canonicalArtifacts || null,
     canonicalPlanningArtifacts,
+    correctionRecovery: Boolean(correctionRecovery),
     jobs: planningJobs,
     effectiveState: state,
     persistedState: normalize(persistedState || game.workflowState || game.workflow_state || "scheduled") || "scheduled",
@@ -359,7 +376,7 @@ export function buildStagePlan(planningState, stage, { disabled = false, disable
     };
   }
   if (!isV3GameEligible(game)) return { ...plan, blocked: true, blockedReason: "GAME_NOT_ELIGIBLE", reasonCode: "GAME_NOT_ELIGIBLE" };
-  if (effectiveState === "published" || state.persistedState === "published") {
+  if (!state.correctionRecovery && (effectiveState === "published" || state.persistedState === "published")) {
     if (state.canonicalArtifacts?.available === true
       && state.canonicalArtifacts.aggregate?.fullyPublished !== true) {
       return {
@@ -418,10 +435,10 @@ export function buildStagePlan(planningState, stage, { disabled = false, disable
       // A completed job whose current artifact is stale or missing is
       // historical evidence only. Keep it immutable and allocate a fresh due
       // slot so the uniqueness key cannot absorb the new execution.
-      const recoverySlot = new Date(Math.max(
-        now.getTime(),
-        selectedSlotAt?.getTime() || 0
-      ) + 1);
+      const canonicalRevisionId = state.canonicalPlanningArtifacts?.lineup?.canonicalFinalRevisionId
+        || first(game, "finalLineupRevisionId", "final_lineup_revision_id")
+        || `${gameId || "game"}:current`;
+      const recoverySlot = getDeterministicV3RecoverySlotAt(canonicalRevisionId, stage);
       const revisionMismatch = stage === "ranking_reflect"
         && (artifact?.revisionMismatch === true || artifact?.reprocessRequired === true);
       return {
@@ -434,7 +451,8 @@ export function buildStagePlan(planningState, stage, { disabled = false, disable
           ...plan.diagnostics,
           rankingRevisionMismatch: revisionMismatch,
           rankingReprocessRequired: stage === "ranking_reflect" && artifact?.reprocessRequired === true,
-          recoverySlotAt: recoverySlot.toISOString()
+          recoverySlotAt: recoverySlot.toISOString(),
+          recoveryKey: `${canonicalRevisionId}:${stage}`
         }
       };
     }

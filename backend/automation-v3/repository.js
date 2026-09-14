@@ -39,7 +39,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
             games.game_status, games.is_active, games.deleted_at`;
   const excludedGameStatusSql = "'cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded'";
   const unfinishedWorkflowStateSql = "'scheduled', 'probable_starter_ready', 'roster_ready', 'prediction_closed', 'lineup_ready', 'scored', 'ranked'";
-  const excludedWorkflowStateSql = "'published', 'cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded'";
+  const excludedWorkflowStateSql = "'cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded'";
   const adminHistoryExcludedWorkflowStateSql = "'cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded'";
   const fightersGameSql = `(LOWER(COALESCE(games.home_team, '')) IN ('f', 'fighters')
              OR LOWER(COALESCE(games.away_team, '')) IN ('f', 'fighters'))`;
@@ -67,16 +67,57 @@ export async function listV3Games(db, now = new Date(), options = {}) {
       hasCanonicalLineups = (row.results || []).some((column) => column.name === "final_lineup_revision_id");
     } catch { /* Legacy adapters retain open-job discovery. */ }
   }
+  let hasScoringRevisions = false;
+  if (hasGameJobsTable) {
+    try {
+      const row = await db.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'game_scoring_revisions' LIMIT 1"
+      ).first();
+      hasScoringRevisions = Boolean(row?.name);
+    } catch { /* Legacy adapters retain open-job discovery. */ }
+  }
+  let hasCurrentLineupRevisionColumns = false;
+  let hasCurrentLineupRevisionIsCurrent = false;
+  if (hasCanonicalLineups && hasScoringRevisions) {
+    try {
+      const row = await db.prepare("PRAGMA table_info(game_lineup_revisions)").all();
+      const columns = new Set((row.results || []).map((column) => column.name));
+      hasCurrentLineupRevisionColumns = columns.has("internal_game_id")
+        && columns.has("game_id") && columns.has("version")
+        && columns.has("revision_id") && columns.has("is_final");
+      hasCurrentLineupRevisionIsCurrent = columns.has("is_current");
+    } catch { /* Legacy adapters retain open-job discovery. */ }
+  }
   // A finalized historical correction can outlive a failed/missing score job.
   // This is only a candidate signal; canonical validity and current scoring
   // lineage are checked by the shared evaluator before returning the game.
-  const correctionRecoverySql = hasCanonicalLineups
+  const currentRevisionIsCurrentSql = hasCurrentLineupRevisionIsCurrent
+    ? "AND current_revision.is_current = 1"
+    : "";
+  const correctionRecoverySql = hasCurrentLineupRevisionColumns
     ? `EXISTS (SELECT 1 FROM game_lineups AS corrected
                  WHERE corrected.internal_game_id = games.internal_game_id
                    AND corrected.final_lineup_revision_id IS NOT NULL)
        AND EXISTS (SELECT 1 FROM game_jobs_v3 AS previous_score
                     WHERE previous_score.internal_game_id = games.internal_game_id
-                      AND previous_score.job_type = 'score' AND previous_score.status = 'completed')`
+                      AND previous_score.job_type = 'score' AND previous_score.status = 'completed')
+       AND NOT EXISTS (SELECT 1
+                        FROM game_scoring_revisions AS active_score
+                        JOIN game_lineup_revisions AS current_revision
+                          ON current_revision.internal_game_id = games.internal_game_id
+                         AND current_revision.is_final = 1
+                         ${currentRevisionIsCurrentSql}
+                         AND (current_revision.revision_id = active_score.lineup_revision_id
+                           OR active_score.lineup_revision_id = current_revision.internal_game_id || ':' || current_revision.version
+                           OR active_score.lineup_revision_id = current_revision.game_id || ':' || current_revision.version)
+                        JOIN game_lineups AS corrected_lineup
+                          ON corrected_lineup.internal_game_id = games.internal_game_id
+                         AND (current_revision.revision_id = corrected_lineup.final_lineup_revision_id
+                           OR corrected_lineup.final_lineup_revision_id = current_revision.internal_game_id || ':' || current_revision.version
+                           OR corrected_lineup.final_lineup_revision_id = current_revision.game_id || ':' || current_revision.version)
+                       WHERE active_score.internal_game_id = games.internal_game_id
+                         AND active_score.is_active = 1
+                         AND active_score.status = 'completed')`
     : "0";
   const enrichedParams = includeRecentHistory ? [] : [date];
   const scopedConditions = [];
@@ -95,8 +136,9 @@ export async function listV3Games(db, now = new Date(), options = {}) {
     : "";
   const publicationFilterSql = includeRecentHistory
     ? ""
-    : `AND (${publishedAt} IS NULL)
-           AND LOWER(COALESCE(${publicationStatus}, '')) <> 'published'`;
+    : `AND (COALESCE(lineup.published_at, ranking.published_at) IS NULL
+             AND LOWER(COALESCE(${publicationStatus}, '')) <> 'published'
+           OR (${correctionRecoverySql}))`;
   const discoveryFilterSql = includeRecentHistory
     ? `AND ${fightersGameSql}
            AND LOWER(COALESCE(workflow.state, '')) NOT IN (${adminHistoryExcludedWorkflowStateSql})`
@@ -107,6 +149,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
                LOWER(COALESCE(workflow.state, '')) = 'manual_action_required'
                AND (${correctionPendingSql} OR (${correctionRecoverySql}))
              )
+             OR (${correctionRecoverySql})
            )
            AND LOWER(COALESCE(workflow.state, '')) NOT IN (${excludedWorkflowStateSql})`;
   let result;
@@ -117,6 +160,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
     result = await db.prepare(
       `SELECT ${gameColumns}, workflow.state AS workflow_state,
               ${correctionPendingSql} AS correction_job_open,
+              (${correctionRecoverySql}) AS correction_recovery_candidate,
               ${publicationStatus} AS publication_status, ${publishedAt} AS published_at
          FROM games
          LEFT JOIN game_automation_v3_state AS workflow
@@ -158,7 +202,8 @@ export async function listV3Games(db, now = new Date(), options = {}) {
     try {
       result = await db.prepare(
         `SELECT ${gameColumns}, workflow.state AS workflow_state,
-                ${correctionPendingSql} AS correction_job_open
+                ${correctionPendingSql} AS correction_job_open,
+                (${correctionRecoverySql}) AS correction_recovery_candidate
            FROM games
            LEFT JOIN game_automation_v3_state AS workflow
              ON workflow.internal_game_id = games.internal_game_id
@@ -223,6 +268,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
     }, current),
     createdAt: row.created_at || null,
     workflowState: row.workflow_state || null,
+    correctionRecoveryCandidate: Number(row.correction_recovery_candidate || 0) === 1,
     publicationStatus: row.publication_status || "",
     publishedAt: row.published_at || null,
     isPublished: row.publication_status === "published" || Boolean(row.published_at),

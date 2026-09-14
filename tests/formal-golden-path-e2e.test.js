@@ -302,6 +302,7 @@ function artifactCounts(database) {
     scoring: database.prepare("SELECT COUNT(*) AS count FROM game_scoring_revisions").get().count,
     reflections: database.prepare("SELECT COUNT(*) AS count FROM ranking_reflection_revisions").get().count,
     scoreHistory: database.prepare("SELECT COUNT(*) AS count FROM prediction_score_revisions").get().count,
+    scoreAttempts: database.prepare("SELECT COUNT(*) AS count FROM score_attempts").get().count,
     score: database.prepare("SELECT score FROM predictions WHERE id = 'prediction-1'").get().score
   };
 }
@@ -327,6 +328,13 @@ test("Golden Path A: prediction closeからmanual lineup、score、ranking、pub
     assert.equal(fixture.database.prepare("SELECT lineup_source FROM game_lineups WHERE internal_game_id = ?").get(GAME_ID).lineup_source, "manual");
     assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE job_type IN ('roster_fetch', 'lineup_fetch', 'probable_starter_fetch')").get().count, 0);
     assert.equal(fixture.database.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?").get(GAME_ID).state, "published");
+    const attempt = fixture.database.prepare("SELECT attempt_id, status, expected_prediction_count, expected_test_count FROM score_attempts WHERE internal_game_id = ?").get(GAME_ID);
+    assert.equal(attempt.status, "committed");
+    assert.equal(attempt.expected_prediction_count, 1);
+    assert.equal(attempt.expected_test_count, 9);
+    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM ranking_test_predictions WHERE internal_game_id = ? AND scored_attempt_id = ?").get(GAME_ID, attempt.attempt_id).count, 9);
+    assert.equal(fixture.database.prepare("SELECT scored_attempt_id FROM predictions WHERE id = 'prediction-1'").get().scored_attempt_id, attempt.attempt_id);
+    assert.equal(fixture.database.prepare("SELECT committed_attempt_id FROM game_scoring_revisions WHERE internal_game_id = ? AND is_active = 1").get(GAME_ID).committed_attempt_id, attempt.attempt_id);
   } finally {
     fixture.database.close();
   }
@@ -907,6 +915,7 @@ test("Partial artifact/job failure: artifact作成後のscore・ranking・publis
       let failAfterArtifact = true;
       const executeJob = async (context) => {
         const result = await executeGameAutomationV3Job(context);
+        if (jobType === "score") return result;
         if (failAfterArtifact) {
           failAfterArtifact = false;
           throw new Error(`test failure after ${jobType} artifact`);
@@ -920,9 +929,10 @@ test("Partial artifact/job failure: artifact作成後のscore・ranking・publis
         auxiliaryPlanner: async () => ({ created: 0, planned: [], diagnostics: [], errors: [] }),
         executeJob
       });
-      assert.equal(firstRun.execution.failed, 1);
-      assert.equal(firstRun.execution.retryWait, 1);
+      assert.equal(firstRun.execution.failed, jobType === "score" ? 0 : 1);
+      assert.equal(firstRun.execution.retryWait, jobType === "score" ? 0 : 1);
       assert.equal((await artifactCheck()).ready, true);
+      if (jobType === "score") return;
       const retryAt = new Date(firstAt.getTime() + 10 * 60 * 1000 + 1000);
       const secondRun = await runGameAutomationV3(fixture.env, retryAt, {
         formalPlanner: (db, games, at) => planMainWorkflowJobs(db, games, at, {

@@ -525,7 +525,15 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
       const workflowArtifacts = derivedPlanningState.workflowArtifacts || await readV3WorkflowArtifactHealth(db, game.internalGameId, state);
       const canonicalAvailable = hasCanonicalArtifactEvidence(derivedPlanningState.canonicalArtifacts);
       const canonicalFullyPublished = derivedPlanningState.canonicalArtifacts?.aggregate?.fullyPublished === true;
-      if (state === "published") {
+      // A correction may advance the canonical pointer before its workflow
+      // state is persisted. Reopen only the narrow candidate identified by
+      // listV3Games; ordinary published artifact mismatches remain diagnostic.
+      const correctionRecovery = state === "published"
+        && game.correctionRecoveryCandidate === true
+        && canonicalAvailable
+        && derivedPlanningState.canonicalArtifacts?.aggregate?.lineupReady === true
+        && derivedPlanningState.canonicalArtifacts?.aggregate?.scoringReady !== true;
+      if (state === "published" && !correctionRecovery) {
         if (canonicalAvailable && !canonicalFullyPublished) {
           diagnostics.push({
             internalGameId: game.internalGameId || null,
@@ -556,7 +564,8 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
         ...derivedPlanningState,
         game,
         persistedState,
-        effectiveState: state,
+        effectiveState: correctionRecovery ? "manual_action_required" : state,
+        correctionRecovery,
         jobs: existingJobs,
         now,
         v4SemiAuto
@@ -590,7 +599,12 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
       const plans = stagePlans.filter((entry) => entry.shouldCreateJob).map((entry) => ({
         jobType: entry.jobType,
         scheduledSlotAt: new Date(entry.selectedSlotAt),
-        scheduledAt: new Date(entry.selectedSlotAt),
+        // The deterministic recovery slot is an idempotency key, not a user
+        // visible due time. Leave one Cron tick for the planner to finish and
+        // execute the newly allocated recovery job on the following pass.
+        scheduledAt: entry.diagnostics?.recoverySlotAt
+          ? new Date(new Date(now).getTime() + 1000)
+          : new Date(entry.selectedSlotAt),
         sharedPlan: entry
       }));
       for (const stagePlan of stagePlans.filter((entry) => entry.reasonCode === "RECOVERY_JOB_ALREADY_EXISTS")) {

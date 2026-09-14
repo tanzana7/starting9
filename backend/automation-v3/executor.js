@@ -89,6 +89,23 @@ function hasVerifiedLineupPayload(value) {
   }
 }
 
+const V3_STATE_ORDER = Object.freeze([
+  "scheduled",
+  "probable_starter_ready",
+  "roster_ready",
+  "prediction_closed",
+  "lineup_ready",
+  "scored",
+  "ranked",
+  "published"
+]);
+
+function isLaterV3State(currentState, expectedState) {
+  const currentIndex = V3_STATE_ORDER.indexOf(String(currentState || "").trim().toLowerCase());
+  const expectedIndex = V3_STATE_ORDER.indexOf(String(expectedState || "").trim().toLowerCase());
+  return currentIndex >= 0 && expectedIndex >= 0 && currentIndex > expectedIndex;
+}
+
 async function canReconcileCompletedV3StateTransition(db, internalGameId, transition) {
   try {
     switch (transition.jobType) {
@@ -385,13 +402,20 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
         v4SemiAuto: Boolean(v4SemiAuto)
       });
       assertV3AuxiliaryJobResult(claimed, result, executionNow);
-      const completed = await completeV3Job(env.AUTH_DB, {
-        jobId: claimed.id,
-        claimToken: claimed.claim_token,
-        now: executionNow,
-        failureCode: result?.failureCode || null,
-        failureMessage: result?.failureMessage || null
-      });
+      // Formal score activation completes the job in the same D1 batch as
+      // the current score, revision, TEST rows, and workflow pointer. Do not
+      // perform a second lifecycle mutation after that atomic boundary.
+      const completed = result?.jobCompletedAtomically === true
+        ? Boolean((await env.AUTH_DB.prepare(
+          "SELECT 1 AS done FROM game_jobs_v3 WHERE id = ?1 AND status = 'completed' LIMIT 1"
+        ).bind(claimed.id).first())?.done)
+        : await completeV3Job(env.AUTH_DB, {
+          jobId: claimed.id,
+          claimToken: claimed.claim_token,
+          now: executionNow,
+          failureCode: result?.failureCode || null,
+          failureMessage: result?.failureMessage || null
+        });
       if (!completed) {
         throw createV3Error("V3_JOB_COMPLETION_CONFLICT", "V3ジョブの完了状態を確定できませんでした。状態遷移は行いません。", { retryable: true });
       }
@@ -412,6 +436,11 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
         const currentState = String(currentStateRow?.state || "");
         if (currentState === result.stateAfter) {
           // The reconciliation already applied this transition.
+        } else if (isLaterV3State(currentState, result.stateAfter)) {
+          // A downstream job may have advanced the state after this job's
+          // artifact was written but before its transition was observed. The
+          // lifecycle must never regress a valid later state to this job's
+          // earlier boundary.
         } else if (currentState === result.stateBefore) {
           await transitionV3State(env.AUTH_DB, {
             internalGameId: claimed.internal_game_id,

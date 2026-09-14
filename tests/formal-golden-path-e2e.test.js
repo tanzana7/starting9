@@ -35,9 +35,16 @@ function d1(database) {
       };
     },
     async batch(statements) {
-      const results = [];
-      for (const statement of statements) results.push(await statement.run());
-      return results;
+      database.exec("BEGIN");
+      try {
+        const results = [];
+        for (const statement of statements) results.push(await statement.run());
+        database.exec("COMMIT");
+        return results;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
     }
   };
 }
@@ -62,7 +69,15 @@ function gatedD1(database, predicate, gate) {
         bind(...params) {
           const bound = statement.bind(...params);
           return {
-            all: bound.all,
+            async all() {
+              const rows = await bound.all();
+              if (!paused) {
+                paused = true;
+                gate.hit.resolve(rows);
+                await gate.release.promise;
+              }
+              return rows;
+            },
             run: bound.run,
             async first() {
               const row = await bound.first();
@@ -752,7 +767,8 @@ test("Stale score executor: Aを読み込んだ後のB correctionでAをcurrent�
       ...fixture.env,
       AUTH_DB: gatedD1(
         fixture.database,
-        (sql) => sql.includes("SELECT version, revision_id FROM game_lineup_revisions") && sql.includes("is_current DESC"),
+        (sql) => sql.includes("SELECT id, user_id, prediction_json FROM predictions")
+          && sql.includes("is_test_prediction = 0"),
         gate
       )
     };
@@ -774,7 +790,7 @@ test("Stale score executor: Aを読み込んだ後のB correctionでAをcurrent�
 
     const oldResult = await oldExecutor;
     assert.equal(oldResult.status, "stale_no_op");
-    assert.equal(oldResult.noOpReason, "V3_STALE_LINEUP_REVISION");
+    assert.equal(oldResult.noOpReason, "V3_STALE_SCORE_EXECUTOR");
     assert.equal(await completeV3Job(fixture.env.AUTH_DB, { jobId: claimed.id, claimToken: claimed.claim_token, now: at }), true);
 
     const canonical = await evaluateCanonicalArtifactsFromDb(fixture.env.AUTH_DB, GAME_ID);
@@ -907,6 +923,7 @@ test("Partial artifact/job failure: artifact作成後のscore・ranking・publis
       let failAfterArtifact = true;
       const executeJob = async (context) => {
         const result = await executeGameAutomationV3Job(context);
+        if (jobType === "score") return result;
         if (failAfterArtifact) {
           failAfterArtifact = false;
           throw new Error(`test failure after ${jobType} artifact`);
@@ -920,18 +937,21 @@ test("Partial artifact/job failure: artifact作成後のscore・ranking・publis
         auxiliaryPlanner: async () => ({ created: 0, planned: [], diagnostics: [], errors: [] }),
         executeJob
       });
-      assert.equal(firstRun.execution.failed, 1);
-      assert.equal(firstRun.execution.retryWait, 1);
+      assert.equal(firstRun.execution.failed, jobType === "score" ? 0 : 1);
+      assert.equal(firstRun.execution.retryWait, jobType === "score" ? 0 : 1);
       assert.equal((await artifactCheck()).ready, true);
+      if (jobType === "score") return;
       const retryAt = new Date(firstAt.getTime() + 10 * 60 * 1000 + 1000);
+      const retryErrors = [];
       const secondRun = await runGameAutomationV3(fixture.env, retryAt, {
         formalPlanner: (db, games, at) => planMainWorkflowJobs(db, games, at, {
           disabledStages: ["roster_fetch", "lineup_fetch"]
         }),
         auxiliaryPlanner: async () => ({ created: 0, planned: [], diagnostics: [], errors: [] }),
+        onError: (error, context) => retryErrors.push({ code: error?.code || null, message: String(error?.message || ""), stage: context?.stage || null, jobId: context?.job?.id || null }),
         executeJob: async (context) => executeGameAutomationV3Job(context)
       });
-      assert.equal(secondRun.execution.failed, 0);
+      assert.equal(secondRun.execution.failed, 0, `retry failed for ${jobType}: ${JSON.stringify(secondRun.execution)} errors=${JSON.stringify(retryErrors)} jobs=${JSON.stringify(fixture.database.prepare("SELECT id, job_type, status, attempt_count, failure_code, failure_message FROM game_jobs_v3 ORDER BY id").all())}`);
       assert.equal(fixture.database.prepare("SELECT status FROM game_jobs_v3 WHERE job_type = ? ORDER BY id DESC LIMIT 1").get(jobType).status, "completed");
     };
 

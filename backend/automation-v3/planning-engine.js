@@ -38,6 +38,27 @@ function asDate(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+function deterministicRecoverySlot(planningState, stage, selectedSlotAt) {
+  const gameId = String(planningState?.gameId || "");
+  const revision = String(
+    planningState?.canonicalArtifacts?.lineup?.canonicalFinalRevisionId
+      || planningState?.canonicalPlanningArtifacts?.lineup?.canonicalFinalRevisionId
+      || "legacy"
+  );
+  const seed = `${gameId}|${revision}|${stage}`;
+  let hash = 2166136261;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  const anchor = asDate(selectedSlotAt) || new Date("2000-01-01T00:00:00.000Z");
+  // Recovery slots are identity keys, not user-facing timestamps. Keeping
+  // them on a fixed historical day makes concurrent Cron calls derive exactly
+  // the same key while still remaining due immediately.
+  const fixedDay = new Date(anchor.getTime() - 365 * 24 * 60 * 60 * 1000);
+  return new Date(fixedDay.getTime() + (Math.abs(hash) % (24 * 60 * 60 * 1000)));
+}
+
 function stateRank(value) {
   const index = STATE_ORDER.indexOf(normalize(value));
   return index < 0 ? 0 : index;
@@ -418,10 +439,7 @@ export function buildStagePlan(planningState, stage, { disabled = false, disable
       // A completed job whose current artifact is stale or missing is
       // historical evidence only. Keep it immutable and allocate a fresh due
       // slot so the uniqueness key cannot absorb the new execution.
-      const recoverySlot = new Date(Math.max(
-        now.getTime(),
-        selectedSlotAt?.getTime() || 0
-      ) + 1);
+      const recoverySlot = deterministicRecoverySlot(planningState, stage, selectedSlotAt);
       const revisionMismatch = stage === "ranking_reflect"
         && (artifact?.revisionMismatch === true || artifact?.reprocessRequired === true);
       return {
@@ -434,7 +452,8 @@ export function buildStagePlan(planningState, stage, { disabled = false, disable
           ...plan.diagnostics,
           rankingRevisionMismatch: revisionMismatch,
           rankingReprocessRequired: stage === "ranking_reflect" && artifact?.reprocessRequired === true,
-          recoverySlotAt: recoverySlot.toISOString()
+          recoverySlotAt: recoverySlot.toISOString(),
+          recoveryIdentity: `${planningState.gameId || ""}:${first(planningState.canonicalArtifacts?.lineup, "canonicalFinalRevisionId") || "legacy"}:${stage}`
         }
       };
     }

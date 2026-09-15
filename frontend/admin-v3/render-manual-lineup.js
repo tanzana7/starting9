@@ -151,7 +151,8 @@
     function renderCandidates(catalog, row, index, manualRoster = null) {
       const players = Array.isArray(catalog) ? catalog : [];
       const search = String(row?.search || "").trim().toLocaleLowerCase();
-      const candidates = sortPlayersByRosterAndUniformNumber(players.filter((player) => !search || `${player.playerName} ${player.uniformNumber} ${playerCategory(player)}`.toLocaleLowerCase().includes(search)), manualRoster);
+      const candidates = sortPlayersByRosterAndUniformNumber(players.filter((player) => player?.candidateVisibility !== "hide")
+        .filter((player) => !search || `${player.playerName} ${player.uniformNumber} ${playerCategory(player)}`.toLocaleLowerCase().includes(search)), manualRoster);
       const selected = players.find((player) => player.playerId === row?.playerId);
       return candidates.length ? candidates.map((player) => {
         const selectedPlayer = selected?.playerId === player.playerId;

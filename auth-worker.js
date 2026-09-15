@@ -21013,6 +21013,11 @@ function manualRosterCategory(uniformNumber) {
 
 export function getManualLineupPlayerCatalog({ manualRoster = null } = {}) {
   const masterCatalog = FIGHTERS_PLAYER_MASTER.map((player) => ({
+    // Candidate visibility is an explicit player-master policy. The pitcher
+    // set is only the safe default for future normal pitchers; special
+    // batter/two-way entries opt back in through the master metadata.
+    candidateVisibility: player.candidateVisibility
+      || (FIGHTERS_PITCHER_UNIFORM_NUMBERS.has(String(player.uniformNumber || "")) ? "hide" : "auto"),
     playerName: player.name,
     displayName: player.name,
     uniformNumber: player.uniformNumber,

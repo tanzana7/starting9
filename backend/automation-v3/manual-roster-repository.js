@@ -129,6 +129,65 @@ export function prioritizeManualRosterCatalog(catalog, rosterRows = []) {
     .map(({ _manualRosterRank, _catalogIndex, ...player }) => player);
 }
 
+function rosterPlayerNumber(player) {
+  return String(player?.number ?? player?.uniformNumber ?? player?.jerseyNumber ?? "").trim();
+}
+
+function rosterPlayerName(player) {
+  return player?.name || player?.playerName || player?.displayName || "";
+}
+
+function matchesRosterPlayer(entry, player) {
+  const entryNumber = rosterPlayerNumber(entry);
+  const playerNumber = String(player?.uniformNumber || "").trim();
+  if (entryNumber && playerNumber) return entryNumber === playerNumber;
+  const entryName = normalizeManualRosterPlayerName(rosterPlayerName(entry));
+  if (!entryName) return false;
+  return [player?.playerName, player?.name, player?.displayName, ...(Array.isArray(player?.aliases) ? player.aliases : [])]
+    .some((name) => normalizeManualRosterPlayerName(name) === entryName);
+}
+
+function findRosterEntry(entries, player) {
+  const playerId = String(player?.playerId || "").trim();
+  if (playerId) {
+    const byId = entries.find((entry) => String(entry?.playerId || entry?.player_id || "").trim() === playerId);
+    if (byId) return byId;
+  }
+  const playerNumber = String(player?.uniformNumber || "").trim();
+  if (playerNumber) {
+    const byNumber = entries.find((entry) => rosterPlayerNumber(entry) === playerNumber);
+    if (byNumber) return byNumber;
+  }
+  return entries.find((entry) => matchesRosterPlayer(entry, player)) || null;
+}
+
+// The public game-day roster is the current display source. A saved manual
+// roster remains an explicit override layer: active/inactive rows are kept as
+// operator intent, while players without an override follow the same live or
+// snapshot roster used by the public page. This is display/selection state
+// only; it never writes the live result into the manual roster table.
+export function applyLiveRosterToManualLineupCatalog(catalog, liveRoster, manualRoster = null) {
+  const liveEntries = Array.isArray(liveRoster) ? liveRoster : liveRoster?.players;
+  if (!Array.isArray(liveEntries) || liveEntries.length === 0) return null;
+  const manualEntries = Array.isArray(manualRoster) ? manualRoster : manualRoster?.entries || [];
+  const source = String(liveRoster?.sourceOfTruth || liveRoster?.rosterUse || liveRoster?.displayRosterSource || "official_live");
+  return (Array.isArray(catalog) ? catalog : []).map((player) => {
+    const manualEntry = findRosterEntry(manualEntries, player);
+    const liveEntry = findRosterEntry(liveEntries, player);
+    const manualStatus = String(manualEntry?.status || "").trim().toLowerCase();
+    const hasManualOverride = manualStatus === "active" || manualStatus === "inactive";
+    const effectiveActive = hasManualOverride ? manualStatus === "active" : Boolean(liveEntry);
+    return {
+      ...player,
+      effectiveRosterStatus: effectiveActive ? "active" : "inactive",
+      effectiveRosterActive: effectiveActive,
+      effectiveRosterSource: hasManualOverride ? "manual-override" : liveEntry ? source : "live-roster-out",
+      effectiveRosterMatched: Boolean(liveEntry),
+      effectiveRosterUpdatedAt: liveRoster?.capturedAt || liveRoster?.verifiedAt || null
+    };
+  });
+}
+
 export async function getManualRoster(db, { teamCode = MANUAL_ROSTER_TEAM.teamCode } = {}) {
   const team = normalizeManualRosterTeam(teamCode);
   try {

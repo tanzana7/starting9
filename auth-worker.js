@@ -128,7 +128,8 @@ import {
   STATIC_FIGHTERS_BATTER_CATALOG,
   getManualRoster,
   saveManualRoster,
-  prioritizeManualRosterCatalog
+  prioritizeManualRosterCatalog,
+  applyLiveRosterToManualLineupCatalog
 } from "./backend/automation-v3/manual-roster-repository.js";
 
 // Compatibility exports keep existing tests and internal callers stable while
@@ -8202,6 +8203,43 @@ async function handleAdminV3Phase1Route(request, env, cors, route) {
   }
 }
 
+async function getAdminPublicRosterForLineup(env, context) {
+  const gameId = String(context?.id || "").trim();
+  if (!gameId) return { roster: null, status: "unavailable", source: null, warning: "対象試合がありません。" };
+  const teamCodes = [context?.target?.home_team, context?.target?.away_team]
+    .map((team) => String(team || "").trim().toLowerCase());
+  if (!teamCodes.includes(FIGHTERS_TEAM_CODE)) {
+    return { roster: null, status: "unavailable", source: null, warning: "Fightersの対象試合ではありません。" };
+  }
+  try {
+    // Reuse the public resolver, including its live/cache/snapshot fallback
+    // order. The internal call is read-only and avoids giving admin a second
+    // roster-fetch implementation with different freshness rules.
+    const response = await handleGetGameDayRoster(
+      new Request(`https://starting9.internal/api/game-day-roster?internalGameId=${encodeURIComponent(gameId)}`),
+      env,
+      undefined
+    );
+    const payload = await response.json().catch(() => null);
+    const responseGameId = String(payload?.internalGameId || "");
+    const gameDate = String(context?.target?.game_date || "").slice(0, 10);
+    const responseDate = String(payload?.gameDate || "").slice(0, 10);
+    const players = Array.isArray(payload?.players) ? payload.players : [];
+    if (!response.ok || payload?.ok !== true || responseGameId !== gameId || responseDate !== gameDate || !players.length) {
+      return { roster: null, status: payload?.rosterStatus || "unavailable", source: payload?.displayRosterSource || null, warning: payload?.warning || "公開rosterを候補へ適用できません。" };
+    }
+    return {
+      roster: payload,
+      status: payload.rosterStatus || payload.status || "fresh",
+      source: payload.sourceOfTruth || payload.displayRosterSource || null,
+      warning: payload.warning || null
+    };
+  } catch (error) {
+    console.warn(`[ADMIN_V3_LINEUP] public roster unavailable internalGameId=${gameId} code=${error?.code || "UNKNOWN"}`);
+    return { roster: null, status: "unavailable", source: null, warning: "公開rosterを取得できないため、既存の候補表示を維持します。" };
+  }
+}
+
 async function handleAdminV3LineupGet(env, cors, context) {
   const lineup = await getGameLineup(env.AUTH_DB, context.metadata);
   const rows = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
@@ -8215,6 +8253,11 @@ async function handleAdminV3LineupGet(env, cors, context) {
     entries: [],
     errorCode: "MANUAL_ROSTER_SCHEMA_UNAVAILABLE"
   }));
+  const publicRosterResolution = await getAdminPublicRosterForLineup(env, context);
+  const baseCatalog = getManualLineupPlayerCatalog({ manualRoster });
+  const playerCatalog = publicRosterResolution.roster
+    ? applyLiveRosterToManualLineupCatalog(baseCatalog, publicRosterResolution.roster, manualRoster) || baseCatalog
+    : baseCatalog;
   return jsonResponse({
     ok: true,
     internalGameId: context.id,
@@ -8228,7 +8271,14 @@ async function handleAdminV3LineupGet(env, cors, context) {
     finalizedBy: lineup?.finalized_by || final?.finalized_by || null,
     managedTeam: { teamCode: FIGHTERS_TEAM_CODE, teamId: FIGHTERS_TEAM_ID, name: "北海道日本ハムファイターズ" },
     manualRoster,
-    playerCatalog: getManualLineupPlayerCatalog({ manualRoster })
+    rosterSync: {
+      status: publicRosterResolution.status,
+      source: publicRosterResolution.source,
+      warning: publicRosterResolution.warning,
+      playerCount: publicRosterResolution.roster?.players?.length || 0,
+      capturedAt: publicRosterResolution.roster?.capturedAt || null
+    },
+    playerCatalog
   }, 200, cors);
 }
 

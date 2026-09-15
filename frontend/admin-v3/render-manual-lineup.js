@@ -94,6 +94,13 @@
     }
 
     function playerRosterState(player, manualRoster) {
+      if (player?.effectiveRosterStatus === "active" || player?.effectiveRosterStatus === "inactive") {
+        return {
+          inRoster: true,
+          active: player.effectiveRosterActive === true,
+          status: player.effectiveRosterStatus
+        };
+      }
       const entries = manualRosterEntries(manualRoster);
       const byId = new Map(entries.map((entry) => [String(entry?.playerId || entry?.player_id || "").trim(), entry]).filter(([playerId]) => playerId));
       const playerId = String(player?.playerId || "").trim();
@@ -154,7 +161,8 @@
         const duplicated = Boolean(key && duplicateCounts.get(key) > 1);
         if (duplicated) duplicateNames.add(String(row?.playerName || "選手未入力").trim());
         const playerMarkup = hasPlayer ? `${playerName(displayPlayer)}${selected ? playerDetailMarkup(selected) : ""}` : `<span class="manual-lineup-confirmation-empty">未入力</span>`;
-        const rosterWarning = selected?.manualRosterActive === false ? `<small class="manual-lineup-confirmation-warning">ロースター外（確認要）</small>` : "";
+        const rosterWarning = selected && (selected.effectiveRosterStatus === "inactive" || (selected.effectiveRosterStatus === undefined && selected.manualRosterActive === false))
+          ? `<small class="manual-lineup-confirmation-warning">ロースター外（確認要）</small>` : "";
         const duplicateWarning = duplicated ? `<small class="manual-lineup-confirmation-warning">重複</small>` : "";
         return `<li class="manual-lineup-confirmation-row${duplicated ? " is-duplicate" : ""}" data-v3-manual-lineup-confirmation-row><span class="manual-lineup-confirmation-order">${index + 1}番</span><span class="manual-lineup-confirmation-position">${escapeHtml(row?.position || "守備未設定")}</span><div class="manual-lineup-confirmation-player">${playerMarkup}${rosterWarning}${duplicateWarning}</div></li>`;
       }).join("");

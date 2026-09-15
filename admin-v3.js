@@ -1841,6 +1841,34 @@ async function loadV3OperationDetails() {
   renderCurrentV3View();
 }
 
+const ADMIN_V3_ROSTER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+let adminV3RosterRefreshInFlight = false;
+
+async function refreshV3LineupRoster() {
+  const id = v3State.selectedGameId;
+  if (!id || v3State.view !== "lineup" || document.visibilityState === "hidden" || adminV3RosterRefreshInFlight) return;
+  const currentDetails = v3State.operationDetails.get(id);
+  if (!currentDetails?.lineup) return;
+  adminV3RosterRefreshInFlight = true;
+  try {
+    const detail = await v3Api.getGameOperationDetail(id, "/lineup");
+    if (id !== v3State.selectedGameId || v3State.view !== "lineup" || String(detail?.internalGameId || "") !== String(id)) return;
+    v3State.operationDetails.set(id, { ...currentDetails, lineup: detail });
+    renderCurrentV3View();
+  } catch (error) {
+    console.warn(`[ADMIN_V3_LINEUP] roster refresh unavailable code=${error?.code || "UNKNOWN"}`);
+  } finally {
+    adminV3RosterRefreshInFlight = false;
+  }
+}
+
+function startV3RosterRefresh() {
+  window.setInterval(() => { void refreshV3LineupRoster(); }, ADMIN_V3_ROSTER_REFRESH_INTERVAL_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") void refreshV3LineupRoster();
+  });
+}
+
 async function loadV3() {
   setV3Status("読み込み中…");
   try {
@@ -1872,6 +1900,9 @@ function chooseV3View(view) {
   if (view === "lineup-correction") loadV3LineupCorrections();
   if (view === "ranking-test-users") loadRankingTestUsers();
   if (view === "roster") loadManualRoster();
+  if (view === "lineup" && v3State.selectedGameId && v3State.operationDetails.get(v3State.selectedGameId)?.lineup) {
+    void refreshV3LineupRoster();
+  }
   document.getElementById("v3Navigation")?.classList.remove("open");
   document.getElementById("mobileNavToggle")?.setAttribute("aria-expanded", "false");
 }
@@ -2019,3 +2050,4 @@ adminV3Modules.createAdminV3Coordinator({
     restoreInitialRoute: restoreInitialV3Route
   }
 }).start();
+startV3RosterRefresh();

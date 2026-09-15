@@ -176,6 +176,6 @@ test("色ラインは固定幅でスマホ表示を圧迫せず、未知・空�
   }
   assert.match(css, /\.lineup-slot:has\(\.player-name--bat-right\)::before/);
   assert.match(css, /\.saved-lineup-row:has\(\.player-name--bat-left\)::before/);
-  assert.match(adminCss, /\.manual-player-candidate-row:has\(\.player-name--bat-right\)::before/);
+  assert.match(adminCss, /\.manual-lineup-slot-player:has\(\.player-name--bat-right\)::before/);
   assert.match(adminCss, /\.manual-roster-row:has\(\.player-name--bat-left\)::before/);
 });

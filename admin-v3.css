@@ -592,6 +592,131 @@ button:disabled { cursor: not-allowed; opacity: .65; }
   .automation-log-summary pre, .automation-log-row pre { grid-column: auto; }
   .automation-log-row { grid-template-columns: 1fr; }
 }
+
+/* Keep the official-lineup picker on the same visual vocabulary as public prediction. */
+.manual-lineup-builder.lineup-builder {
+  grid-template-columns: minmax(280px, .85fr) minmax(280px, 1.15fr);
+  gap: 16px;
+}
+.manual-lineup-builder .lineup-panel,
+.manual-lineup-builder .player-panel {
+  padding: 14px;
+  border-radius: 8px;
+}
+.manual-lineup-builder .slot-list,
+.manual-lineup-builder .player-list {
+  gap: 8px;
+}
+.manual-lineup-builder .manual-lineup-slot {
+  position: relative;
+  grid-template-columns: 46px minmax(0, 1fr) minmax(92px, .58fr) 34px;
+  min-height: 48px;
+  padding: 7px;
+  border-radius: 8px;
+  touch-action: pan-y;
+  user-select: none;
+}
+.manual-lineup-builder .manual-lineup-slot.is-active {
+  border-color: #d5a52e;
+  background: #fff8d6;
+  box-shadow: 0 2px 6px rgba(150, 112, 0, .12);
+}
+.manual-lineup-builder .manual-lineup-slot.is-active::before,
+.manual-lineup-builder .manual-lineup-slot.is-active::after {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 3px;
+  border-radius: 999px;
+  background: #d5a52e;
+  content: "";
+}
+.manual-lineup-builder .manual-lineup-slot.is-active::before { left: 0; }
+.manual-lineup-builder .manual-lineup-slot.is-active::after { right: 0; }
+.manual-lineup-builder .manual-lineup-slot.is-drop-target {
+  border-color: #d5a52e;
+  background: #fff9e8;
+  box-shadow: 0 0 0 3px rgba(213, 161, 30, .22);
+  transform: translateY(-1px);
+}
+.manual-lineup-builder .manual-lineup-slot.is-dragging,
+.manual-lineup-builder .manual-lineup-candidate.is-dragging {
+  opacity: .68;
+  cursor: grabbing;
+}
+.manual-lineup-builder .manual-lineup-slot-player {
+  position: relative;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.manual-lineup-builder .manual-lineup-slot-player:has(.player-name--bat-right)::before,
+.manual-lineup-builder .manual-lineup-slot-player:has(.player-name--bat-left)::before,
+.manual-lineup-builder .manual-lineup-slot-player:has(.player-name--bat-switch)::before {
+  position: absolute;
+  inset: 4px auto 4px 0;
+  width: 4px;
+  border-radius: 999px;
+  content: "";
+}
+.manual-lineup-builder .manual-lineup-slot-player:has(.player-name--bat-right)::before { background: #d64545; }
+.manual-lineup-builder .manual-lineup-slot-player:has(.player-name--bat-left)::before { background: #2878c8; }
+.manual-lineup-builder .manual-lineup-slot-player:has(.player-name--bat-switch)::before { background: #2f9a62; }
+.manual-lineup-builder .manual-lineup-slot-player .slot-player {
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+}
+.manual-lineup-builder .slot-clear {
+  width: 30px;
+  min-height: 30px;
+  padding: 0;
+  border: 1px solid #c7d7e8;
+  border-radius: 6px;
+  background: #fff;
+  color: #6a7b8c;
+  font-size: 18px;
+  line-height: 1;
+}
+.manual-lineup-builder .slot-clear:hover,
+.manual-lineup-builder .slot-clear:focus-visible {
+  border-color: #bd7777;
+  background: #fff5f5;
+  color: #8b3030;
+}
+.manual-lineup-builder .manual-lineup-roster-filter {
+  margin: 10px 0;
+}
+.manual-lineup-builder .manual-lineup-candidates {
+  max-height: 560px;
+  padding: 2px;
+  border: 0;
+  background: transparent;
+}
+.manual-lineup-builder .manual-lineup-candidate {
+  min-height: 44px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  color: #334a62;
+  touch-action: pan-y;
+}
+.manual-lineup-builder .manual-lineup-candidate:hover,
+.manual-lineup-builder .manual-lineup-candidate:focus-visible {
+  border-color: #6fa3c4;
+  background: #eaf3fb;
+}
+.manual-lineup-builder .manual-lineup-candidate.selected {
+  border-color: #d5a52e;
+  background: #fff8d6;
+  color: #654b0c;
+}
+
+@media (max-width: 720px) {
+  .manual-lineup-builder.lineup-builder { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 10px; }
+}
+@media (max-width: 540px) {
+  .manual-lineup-builder.lineup-builder { grid-template-columns: 1fr; }
+  .manual-lineup-builder .manual-lineup-slot { grid-template-columns: 42px minmax(0, 1fr) minmax(84px, .7fr) 30px; gap: 5px; padding: 6px; }
+}
 /* Ranking test users are deliberately isolated from the formal workflow. */
 .ranking-test-users-panel { display: grid; gap: 1rem; }
 .ranking-test-warning, .ranking-test-global, .ranking-test-name, .ranking-test-toggle, .ranking-test-target { display: grid; gap: .35rem; padding: .8rem; border: 1px solid var(--border-color, #d7dee8); border-radius: .5rem; }

@@ -663,7 +663,7 @@ function buildLineupPicker(pickerName, lineupId, playersId) {
 
 function getPredictionCandidateNames() {
   return players
-    .filter((player) => player.isBatterCandidate === true)
+    .filter((player) => window.Starting9LineupBuilder?.isLineupCandidate?.(player) ?? player.isBatterCandidate === true)
     .map((player) => player.name);
 }
 

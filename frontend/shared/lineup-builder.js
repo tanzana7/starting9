@@ -35,6 +35,35 @@
     return "";
   }
 
+  // Candidate visibility is shared so the public prediction picker and the
+  // admin official-lineup picker cannot silently drift apart. The server
+  // remains the authority for validation; this helper only filters display.
+  function isLineupCandidate(player) {
+    if (!player || typeof player !== "object") return false;
+    if (player.candidateVisibility === "hide") return false;
+    if (typeof player.isBatterCandidate === "boolean") return player.isBatterCandidate;
+    return true;
+  }
+
+  function reorderLineupRows(rows, sourceIndex, targetIndex) {
+    const source = Array.isArray(rows) ? rows : [];
+    const from = Number(sourceIndex);
+    const to = Number(targetIndex);
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < 0 || from >= source.length || to >= source.length || from === to) {
+      return source.slice();
+    }
+    const next = source.slice();
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    return next.map((row, index) => {
+      if (!row || typeof row !== "object") return row;
+      const updated = { ...row };
+      if (Object.prototype.hasOwnProperty.call(updated, "order")) updated.order = index + 1;
+      if (Object.prototype.hasOwnProperty.call(updated, "battingOrder")) updated.battingOrder = index + 1;
+      return updated;
+    });
+  }
+
   function sortPlayers(players) {
     return [...(Array.isArray(players) ? players : [])].sort((left, right) => {
       const leftActive = left?.manualRosterActive === true || left?.rosterStatus === "active";
@@ -68,6 +97,8 @@
     playerId,
     uniformNumber,
     battingClass,
+    isLineupCandidate,
+    reorderLineupRows,
     sortPlayers,
     renderPlayerName
   });

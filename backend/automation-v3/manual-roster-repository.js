@@ -1,5 +1,9 @@
+import { normalizeFightersPlayerName } from "../../fighters-player-master.js";
+
 const MAX_MANUAL_ROSTER_ENTRIES = 100;
 const MAX_NOTE_LENGTH = 240;
+const OFFICIAL_NPB_PLAYER_ID_PATTERN = /^npb:\d{8}$/;
+const LIVE_FIELDER_CATEGORIES = new Set(["捕手", "内野手", "外野手"]);
 
 // These are display/selection fallbacks only. They are never persisted until
 // an operator explicitly saves a manual roster. Pitchers remain outside the
@@ -161,6 +165,58 @@ function findRosterEntry(entries, player) {
   return entries.find((entry) => matchesRosterPlayer(entry, player)) || null;
 }
 
+export function normalizeOfficialNpbPlayerId(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return OFFICIAL_NPB_PLAYER_ID_PATTERN.test(normalized) ? normalized : "";
+}
+
+function normalizedLiveName(value) {
+  return normalizeFightersPlayerName(String(value ?? "").trim());
+}
+
+function matchesKnownCatalogPlayer(liveEntry, player) {
+  const liveNumber = rosterPlayerNumber(liveEntry);
+  const playerNumber = String(player?.uniformNumber || "").trim();
+  const liveName = normalizedLiveName(rosterPlayerName(liveEntry));
+  const knownNames = [player?.playerName, player?.name, player?.displayName, ...(Array.isArray(player?.aliases) ? player.aliases : [])]
+    .map(normalizedLiveName)
+    .filter(Boolean);
+  // A live row is considered a known master row only when both independently
+  // supplied fields agree. This deliberately prevents a new player's number
+  // from being mistaken for an existing master identity.
+  return Boolean(liveNumber && playerNumber && liveNumber === playerNumber && liveName && knownNames.includes(liveName));
+}
+
+function createTemporaryNpbPlayer(liveEntry) {
+  const playerId = normalizeOfficialNpbPlayerId(liveEntry?.playerId);
+  const name = String(rosterPlayerName(liveEntry) || "").trim();
+  const uniformNumber = rosterPlayerNumber(liveEntry);
+  const category = String(liveEntry?.position || "").trim();
+  if (!playerId || !name || !/^\d{1,3}$/.test(uniformNumber) || !category) return null;
+  const isFielder = LIVE_FIELDER_CATEGORIES.has(category);
+  const officialPlayerUrl = typeof liveEntry?.officialPlayerUrl === "string"
+    && /^https:\/\/npb\.jp\/bis\/players\/\d{8}\.html$/i.test(liveEntry.officialPlayerUrl)
+    ? liveEntry.officialPlayerUrl
+    : null;
+  return {
+    playerId,
+    playerName: name,
+    displayName: name,
+    uniformNumber,
+    teamCode: MANUAL_ROSTER_TEAM.teamCode,
+    teamId: MANUAL_ROSTER_TEAM.teamId,
+    category,
+    registeredPosition: category,
+    candidateVisibility: isFielder ? "auto" : "hide",
+    isBatterCandidate: isFielder,
+    predictionCandidateRole: isFielder ? "fielder" : "pitcher",
+    manualRosterEligible: isFielder,
+    isTemporaryCandidate: true,
+    identitySource: "npb-live",
+    ...(officialPlayerUrl ? { officialPlayerUrl } : {})
+  };
+}
+
 // The public game-day roster is the current display source. A saved manual
 // roster remains an explicit override layer: active/inactive rows are kept as
 // operator intent, while players without an override follow the same live or
@@ -171,9 +227,12 @@ export function applyLiveRosterToManualLineupCatalog(catalog, liveRoster, manual
   if (!Array.isArray(liveEntries) || liveEntries.length === 0) return null;
   const manualEntries = Array.isArray(manualRoster) ? manualRoster : manualRoster?.entries || [];
   const source = String(liveRoster?.sourceOfTruth || liveRoster?.rosterUse || liveRoster?.displayRosterSource || "official_live");
-  return (Array.isArray(catalog) ? catalog : []).map((player) => {
+  const baseCatalog = Array.isArray(catalog) ? catalog : [];
+  const knownLiveEntries = new Set();
+  const resolved = baseCatalog.map((player) => {
     const manualEntry = findRosterEntry(manualEntries, player);
-    const liveEntry = findRosterEntry(liveEntries, player);
+    const liveEntry = liveEntries.find((entry) => matchesKnownCatalogPlayer(entry, player)) || null;
+    if (liveEntry) knownLiveEntries.add(liveEntry);
     const manualStatus = String(manualEntry?.status || "").trim().toLowerCase();
     const hasManualOverride = manualStatus === "active" || manualStatus === "inactive";
     const effectiveActive = hasManualOverride ? manualStatus === "active" : Boolean(liveEntry);
@@ -186,6 +245,33 @@ export function applyLiveRosterToManualLineupCatalog(catalog, liveRoster, manual
       effectiveRosterUpdatedAt: liveRoster?.capturedAt || liveRoster?.verifiedAt || null
     };
   });
+
+  const existingIds = new Set(baseCatalog.map((player) => String(player?.playerId || "").trim()).filter(Boolean));
+  const temporaryPlayers = liveEntries
+    .filter((entry) => !knownLiveEntries.has(entry))
+    .map(createTemporaryNpbPlayer)
+    .filter((player) => player && !existingIds.has(player.playerId));
+  const uniqueTemporaryPlayers = [];
+  const temporaryIds = new Set();
+  temporaryPlayers.forEach((player) => {
+    if (!temporaryIds.has(player.playerId)) {
+      temporaryIds.add(player.playerId);
+      uniqueTemporaryPlayers.push({
+        ...player,
+        effectiveRosterStatus: "active",
+        effectiveRosterActive: true,
+        effectiveRosterSource: source,
+        effectiveRosterMatched: true,
+        effectiveRosterUpdatedAt: liveRoster?.capturedAt || liveRoster?.verifiedAt || null
+      });
+    }
+  });
+  const result = resolved.concat(uniqueTemporaryPlayers);
+  Object.defineProperty(result, "unknownOfficialPlayers", {
+    value: Object.freeze(uniqueTemporaryPlayers),
+    enumerable: false
+  });
+  return result;
 }
 
 export async function getManualRoster(db, { teamCode = MANUAL_ROSTER_TEAM.teamCode } = {}) {

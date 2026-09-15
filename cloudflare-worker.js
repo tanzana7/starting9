@@ -1446,10 +1446,12 @@ function parseRosterTableEntries(tableHtml) {
 
   while ((rowMatch = rowPattern.exec(tableHtml)) !== null) {
     const cells = [];
+    const rawCells = [];
     const cellPattern = /<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi;
     let cellMatch;
 
     while ((cellMatch = cellPattern.exec(rowMatch[1])) !== null) {
+      rawCells.push(cellMatch[1]);
       cells.push(stripTags(cellMatch[1]));
     }
 
@@ -1460,13 +1462,40 @@ function parseRosterTableEntries(tableHtml) {
     const position = cells[0].replace(/\s+/g, "");
     const number = cells[1].replace(/\s+/g, "");
     const name = normalizeRosterPlayerName(cells[2]);
+    const identity = extractOfficialNpbPlayerIdentity(rawCells[2]);
 
     if (position && number && name) {
-      entries.push({ position, number, name });
+      entries.push({
+        position,
+        number,
+        name,
+        ...(identity ? { playerId: identity.playerId, officialPlayerUrl: identity.officialPlayerUrl } : {})
+      });
     }
   }
 
   return entries;
+}
+
+function extractOfficialNpbPlayerIdentity(cellHtml) {
+  const source = String(cellHtml || "");
+  const anchorPattern = /<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>/gi;
+  let anchor;
+  while ((anchor = anchorPattern.exec(source)) !== null) {
+    try {
+      const url = new URL(anchor[1], "https://npb.jp");
+      if (!/^https?:$/i.test(url.protocol) || !["npb.jp", "www.npb.jp"].includes(url.hostname.toLowerCase())) continue;
+      const match = url.pathname.match(/^\/bis\/players\/(\d{8})\.html$/i);
+      if (!match) continue;
+      return {
+        playerId: `npb:${match[1]}`,
+        officialPlayerUrl: `https://npb.jp/bis/players/${match[1]}.html`
+      };
+    } catch {
+      // One malformed link must not invalidate the roster row or response.
+    }
+  }
+  return null;
 }
 
 function uniqueRosterEntries(entries) {
@@ -1474,7 +1503,8 @@ function uniqueRosterEntries(entries) {
   const players = [];
 
   entries.forEach((entry) => {
-    const key = normalizeRosterPlayerKey(entry.name);
+    const playerId = String(entry?.playerId || "").trim();
+    const key = playerId || `${entry.number}:${normalizeRosterPlayerKey(entry.name)}`;
     if (!key || seen.has(key)) {
       return;
     }
@@ -1901,5 +1931,7 @@ export {
   extractOfficialScorePageIdentity,
   extractScheduleGames,
   extractNpbOrderText,
+  extractFightersRoster,
+  parseRosterTableEntries,
   validateTargetUrl
 };

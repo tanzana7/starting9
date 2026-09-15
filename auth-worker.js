@@ -20,6 +20,7 @@ import {
 import {
   createFightersPlayerId,
   findFightersPlayerByName,
+  normalizeFightersPlayerName,
   FIGHTERS_PLAYER_MASTER,
   inspectFightersRosterMaster,
   FIGHTERS_TEAM_CODE,
@@ -129,7 +130,8 @@ import {
   getManualRoster,
   saveManualRoster,
   prioritizeManualRosterCatalog,
-  applyLiveRosterToManualLineupCatalog
+  applyLiveRosterToManualLineupCatalog,
+  normalizeOfficialNpbPlayerId
 } from "./backend/automation-v3/manual-roster-repository.js";
 
 // Compatibility exports keep existing tests and internal callers stable while
@@ -7839,7 +7841,11 @@ async function handleAdminV3LineupCorrection(request, env, cors, route) {
     if (["cancelled", "canceled", "postponed", "no_game", "service_unavailable", "excluded"].includes(gameStatus)) {
       throw createV3Error("V3_LINEUP_CORRECTION_GAME_UNAVAILABLE", "中止または対象外の試合はスタメン修正の対象外です。", { httpStatus: 409 });
     }
-    const actual = normalizeManualLineupInput(input?.lineup || input?.actualLineup);
+    const requestedLineup = input?.lineup || input?.actualLineup;
+    const trustedTemporaryPlayers = await getTrustedTemporaryPlayersForLineup(env, context, requestedLineup);
+    const actual = trustedTemporaryPlayers.length
+      ? normalizeManualLineupInput(requestedLineup, { trustedTemporaryPlayers })
+      : normalizeManualLineupInput(input?.lineup || input?.actualLineup);
     if (!actual.ok) throw createV3Error("V3_LINEUP_CORRECTION_LINEUP_INVALID", actual.error, { httpStatus: 400 });
     const fingerprint = await sha256Base64Url(JSON.stringify(actual.lineup));
     const currentFingerprint = String(status.canonical.revision.lineup_fingerprint || "")
@@ -8240,6 +8246,17 @@ async function getAdminPublicRosterForLineup(env, context) {
   }
 }
 
+function hasTemporaryNpbPlayerId(value) {
+  const lineup = Array.isArray(value) ? value : [];
+  return lineup.some((entry) => Boolean(normalizeOfficialNpbPlayerId(entry?.playerId)));
+}
+
+async function getTrustedTemporaryPlayersForLineup(env, context, value) {
+  if (!hasTemporaryNpbPlayerId(value)) return [];
+  const resolution = await getAdminPublicRosterForLineup(env, context);
+  return Array.isArray(resolution?.roster?.players) ? resolution.roster.players : [];
+}
+
 async function handleAdminV3LineupGet(env, cors, context) {
   const lineup = await getGameLineup(env.AUTH_DB, context.metadata);
   const rows = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
@@ -8276,6 +8293,14 @@ async function handleAdminV3LineupGet(env, cors, context) {
       source: publicRosterResolution.source,
       warning: publicRosterResolution.warning,
       playerCount: publicRosterResolution.roster?.players?.length || 0,
+      masterUnregisteredCount: playerCatalog.unknownOfficialPlayers?.length || 0,
+      masterUnregisteredPlayers: playerCatalog.unknownOfficialPlayers?.map((player) => ({
+        playerId: player.playerId,
+        name: player.playerName,
+        number: player.uniformNumber,
+        position: player.registeredPosition,
+        identitySource: player.identitySource
+      })) || [],
       capturedAt: publicRosterResolution.roster?.capturedAt || null
     },
     playerCatalog
@@ -8337,7 +8362,11 @@ async function handleAdminV3LineupRevisionCreate(request, env, cors, context, us
   })) {
     throw createV3Error("V3_LINEUP_EDIT_LOCKED", "採点開始後または公開済みの試合はスタメンを変更できません。", { httpStatus: 409 });
   }
-  const actual = normalizeManualLineupInput(input?.lineup || input?.actualLineup);
+  const requestedLineup = input?.lineup || input?.actualLineup;
+  const trustedTemporaryPlayers = await getTrustedTemporaryPlayersForLineup(env, context, requestedLineup);
+  const actual = trustedTemporaryPlayers.length
+    ? normalizeManualLineupInput(requestedLineup, { trustedTemporaryPlayers })
+    : normalizeManualLineupInput(input?.lineup || input?.actualLineup);
   if (!actual.ok) throw createV3Error("V3_LINEUP_INVALID", actual.error, { httpStatus: 400 });
   const rows = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
   const latest = rows[0] || null;
@@ -11502,6 +11531,19 @@ export async function fetchLatestPublicRoster(env, game, { force = false } = {})
     if (payload?.stale === true) return null;
     const players = normalizeRosterForSnapshot(payload?.players);
     if (!players) return null;
+    const masterUnregisteredPlayers = players
+      .filter((entry) => {
+        const masterPlayer = findFightersPlayerByName(entry.name);
+        return !(masterPlayer && String(masterPlayer.uniformNumber || "") === String(entry.number || ""));
+      })
+      .map((entry) => ({
+        playerId: entry.playerId || null,
+        name: entry.name,
+        number: entry.number,
+        position: entry.position
+      }))
+      .filter((entry) => entry.playerId)
+      .slice(0, 20);
     return withPublicRosterContract({
       ok: true,
       internalGameId: String(game?.internal_game_id || ""),
@@ -11515,7 +11557,9 @@ export async function fetchLatestPublicRoster(env, game, { force = false } = {})
       verifiedAt: payload?.fetchedAt || null,
       playerCount: players.length,
       officialPlayerCount: players.length,
-      players
+      players,
+      masterUnregisteredCount: masterUnregisteredPlayers.length,
+      masterUnregisteredPlayers
     }, { sourceOfTruth: "official_live", verified: true });
   } catch (error) {
     console.warn(`[PUBLIC_ROSTER] live refresh unavailable code=${error?.code || "UNKNOWN"}`);
@@ -12667,11 +12711,15 @@ function sanitizeNpbLineupDiagnostics(details) {
 
 function normalizeRosterForSnapshot(players) {
   if (!Array.isArray(players) || players.length < ROSTER_MINIMUM_PLAYER_COUNT) return null;
-  const normalized = players.map((player) => ({
-    position: String(player?.position || "").trim(),
-    number: typeof player?.number === "string" ? player.number : String(player?.number || "").trim(),
-    name: String(player?.name || "").replace(/[\s\u3000]/g, "")
-  }));
+  const normalized = players.map((player) => {
+    const playerId = normalizeOfficialNpbPlayerId(player?.playerId);
+    return {
+      position: String(player?.position || "").trim(),
+      number: typeof player?.number === "string" ? player.number : String(player?.number || "").trim(),
+      name: String(player?.name || "").replace(/[\s\u3000]/g, ""),
+      ...(playerId ? { playerId } : {})
+    };
+  });
   if (normalized.some((player) => !player.position || !player.number || !player.name)) return null;
   return normalized;
 }
@@ -19283,7 +19331,9 @@ async function prepareGamePredictionScoring(db, gameReference, actualLineup, isT
 
   for (const row of rows?.results || []) {
     const prediction = parseStoredPrediction(row.prediction_json);
-    const sanitized = prediction ? sanitizePredictionPayload(prediction) : { ok: false, error: "保存済み予想の形式が不正です。" };
+    const sanitized = prediction
+      ? sanitizePredictionPayload(prediction, { allowTemporaryPlayerIds: true })
+      : { ok: false, error: "保存済み予想の形式が不正です。" };
     if (!sanitized.ok) {
       const message = String(sanitized.error || "");
       const reason = message.includes("9人") ? "INCOMPLETE_LINEUP"
@@ -21231,15 +21281,29 @@ export function getManualLineupPlayerCatalog({ manualRoster = null } = {}) {
   return prioritizeManualRosterCatalog(catalog, manualRoster);
 }
 
-export function normalizeManualLineupInput(value) {
+export function normalizeManualLineupInput(value, { trustedTemporaryPlayers = [] } = {}) {
   if (!Array.isArray(value) || value.length !== SCORING_LINEUP_SIZE) {
     return { ok: false, error: "手動スタメンはFightersの9人分を入力してください。" };
   }
+  const trustedTemporaryById = new Map(
+    (Array.isArray(trustedTemporaryPlayers) ? trustedTemporaryPlayers : [])
+      .map((entry) => [normalizeOfficialNpbPlayerId(entry?.playerId), entry])
+      .filter(([playerId]) => playerId)
+  );
   const lineup = value.map((entry) => {
     const playerName = String(entry?.playerName || entry?.name || "").trim();
     const player = findFightersPlayerByName(playerName);
     const uniformNumber = String(entry?.uniformNumber ?? entry?.number ?? "").trim();
     const playerId = String(entry?.playerId || "").trim();
+    const temporaryPlayerId = normalizeOfficialNpbPlayerId(playerId);
+    const trustedTemporary = temporaryPlayerId ? trustedTemporaryById.get(temporaryPlayerId) : null;
+    const trustedName = String(trustedTemporary?.name || trustedTemporary?.playerName || "").trim();
+    const trustedNumber = String(trustedTemporary?.number ?? trustedTemporary?.uniformNumber ?? "").trim();
+    const temporaryMatches = Boolean(
+      trustedTemporary
+      && normalizeFightersPlayerName(trustedName) === normalizeFightersPlayerName(playerName)
+      && trustedNumber === uniformNumber
+    );
     const canonicalId = player ? createFightersPlayerId(player.uniformNumber) : "";
     return {
       battingOrder: Number(entry?.battingOrder ?? entry?.order),
@@ -21247,17 +21311,18 @@ export function normalizeManualLineupInput(value) {
       playerName: player?.name || playerName,
       displayName: player?.name || playerName,
       uniformNumber: player?.uniformNumber || uniformNumber,
-      playerId: canonicalId || playerId || null,
+      playerId: canonicalId || (temporaryMatches ? temporaryPlayerId : playerId) || null,
       teamCode: FIGHTERS_TEAM_CODE,
       teamId: FIGHTERS_TEAM_ID,
-      resolutionStatus: player ? "resolved" : "unresolved",
+      resolutionStatus: player ? "resolved" : temporaryMatches ? "temporary_npb" : "unresolved",
       rawPlayerName: playerName || "不明",
       _matchedPlayer: player,
+      _temporaryPlayer: temporaryMatches,
       _inputUniformNumber: uniformNumber,
       _inputPlayerId: playerId
     };
   });
-  if (lineup.some((entry) => !entry._matchedPlayer)) {
+  if (lineup.some((entry) => !entry._matchedPlayer && !entry._temporaryPlayer)) {
     return { ok: false, error: "Fighters選手マスターにない選手は登録できません。" };
   }
   if (lineup.some((entry) => entry._inputUniformNumber && entry._inputUniformNumber !== entry.uniformNumber)) {
@@ -21266,7 +21331,7 @@ export function normalizeManualLineupInput(value) {
   if (lineup.some((entry) => entry._inputPlayerId && entry._inputPlayerId !== entry.playerId)) {
     return { ok: false, error: "選手IDがFightersマスターと一致しません。" };
   }
-  const sanitized = sanitizeActualLineupForScoring(lineup.map(({ _matchedPlayer, _inputUniformNumber, _inputPlayerId, ...entry }) => entry));
+  const sanitized = sanitizeActualLineupForScoring(lineup.map(({ _matchedPlayer, _temporaryPlayer, _inputUniformNumber, _inputPlayerId, ...entry }) => entry));
   if (!sanitized.ok) return sanitized;
   return sanitized;
 }
@@ -21388,7 +21453,10 @@ function sanitizeScoringLineup(value, label, { allowUnresolvedPlayer = false } =
     if (typeof item.uniformNumber !== "string" || !/^\d{1,3}$/.test(item.uniformNumber)) {
       return { ok: false, error: `${label}の背番号が不正です。` };
     }
-    if (item.playerId !== createPlayerId(item.teamCode, item.uniformNumber)) {
+    const isTrustedOfficialNpbId = normalizeOfficialNpbPlayerId(item.playerId)
+      && item.teamCode === FIGHTERS_TEAM_CODE
+      && item.teamId === FIGHTERS_TEAM_ID;
+    if (!isTrustedOfficialNpbId && item.playerId !== createPlayerId(item.teamCode, item.uniformNumber)) {
       return { ok: false, error: `${label}の選手IDが不正です。` };
     }
   }
@@ -21696,7 +21764,9 @@ async function handlePutCurrentPrediction(request, env, cors) {
     return deadlineResponse;
   }
 
-  const predictionResult = sanitizePredictionPayload(input?.prediction);
+  const requestedPrediction = input?.prediction;
+  const trustedTemporaryPlayers = await getTrustedTemporaryPlayersForPrediction(env, metadata, requestedPrediction);
+  const predictionResult = sanitizePredictionPayload(requestedPrediction, { trustedTemporaryPlayers });
   if (!predictionResult.ok) {
     return jsonResponse({ ok: false, error: predictionResult.error }, 400, cors);
   }
@@ -21866,7 +21936,39 @@ function parseStoredActualLineup(value) {
   }
 }
 
-function sanitizePredictionPayload(value) {
+function trustedTemporaryPredictionPlayer(item, trustedTemporaryPlayers) {
+  const playerId = normalizeOfficialNpbPlayerId(item?.playerId);
+  if (!playerId) return null;
+  return (Array.isArray(trustedTemporaryPlayers) ? trustedTemporaryPlayers : []).find((candidate) => {
+    const candidateId = normalizeOfficialNpbPlayerId(candidate?.playerId);
+    const candidateName = String(candidate?.name || candidate?.playerName || "").trim();
+    const candidateNumber = String(candidate?.number ?? candidate?.uniformNumber ?? "").trim();
+    return candidateId === playerId
+      && candidateName === String(item?.playerName || "").trim()
+      && candidateNumber === String(item?.uniformNumber ?? "").trim();
+  }) || null;
+}
+
+function hasTemporaryPredictionPlayer(value) {
+  return Array.isArray(value?.lineup) && value.lineup.some((item) => Boolean(normalizeOfficialNpbPlayerId(item?.playerId)));
+}
+
+async function getTrustedTemporaryPlayersForPrediction(env, metadata, value) {
+  if (!hasTemporaryPredictionPlayer(value)) return [];
+  try {
+    const response = await handleGetGameDayRoster(
+      new Request(`https://starting9.internal/api/game-day-roster?internalGameId=${encodeURIComponent(metadata.internalGameId)}`),
+      env,
+      undefined
+    );
+    const payload = await response.json().catch(() => null);
+    return response.ok && payload?.ok === true && Array.isArray(payload.players) ? payload.players : [];
+  } catch {
+    return [];
+  }
+}
+
+function sanitizePredictionPayload(value, { trustedTemporaryPlayers = [], allowTemporaryPlayerIds = false } = {}) {
   if (!value || typeof value !== "object" || !Array.isArray(value.lineup)) {
     return { ok: false, error: "予想データが不正です。" };
   }
@@ -21902,6 +22004,15 @@ function sanitizePredictionPayload(value) {
     }
     if (typeof item.uniformNumber !== "string" || !/^\d{1,3}$/.test(item.uniformNumber)) {
       return { ok: false, error: "選手の背番号が不正です。選手を選び直してください。" };
+    }
+    const temporaryPlayerId = normalizeOfficialNpbPlayerId(item.playerId);
+    const isTrustedTemporary = temporaryPlayerId
+      && (allowTemporaryPlayerIds || trustedTemporaryPredictionPlayer(item, trustedTemporaryPlayers));
+    if (temporaryPlayerId && isTrustedTemporary) {
+      if (item.teamCode !== FIGHTERS_TEAM_CODE || item.teamId !== FIGHTERS_TEAM_ID) {
+        return { ok: false, error: "選手の球団情報が不正です。選手を選び直してください。" };
+      }
+      continue;
     }
     if (item.playerId !== createPlayerId(item.teamCode, item.uniformNumber)) {
       return { ok: false, error: "選手IDが不正です。選手を選び直してください。" };

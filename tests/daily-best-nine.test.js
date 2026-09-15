@@ -75,9 +75,9 @@ function insertUser(db, id, username) {
   db.prepare("INSERT INTO users VALUES (?, ?, 'active')").run(id, username);
 }
 
-function insertPrediction(db, { id, userId, gameId, score, submittedAt, updatedAt = submittedAt, isTest = 0 }) {
-    db.prepare("INSERT INTO predictions VALUES (?, ?, ?, ?, 99, ?, ?, 'scored', ?)").run(
-    id, userId, gameId, score, submittedAt, updatedAt, isTest
+function insertPrediction(db, { id, userId, gameId, score, submittedAt, updatedAt = submittedAt, isTest = 0, status = "scored" }) {
+  db.prepare("INSERT INTO predictions VALUES (?, ?, ?, ?, 99, ?, ?, ?, ?)").run(
+    id, userId, gameId, score, submittedAt, updatedAt, status, isTest
   );
 }
 
@@ -103,6 +103,23 @@ test("今日のベストナインは公開済み採点結果をscore desc、提�
   assert.deepEqual(result.rows.slice(0, 3).map((row) => row.username), ["alpha", "early", "zeta"]);
   assert.deepEqual(result.rows.map((row) => row.rank), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
   assert.equal(result.rows.every((row) => !Object.hasOwn(row, "userId")), true);
+});
+
+test("canonical TEST accountは通常のBest Nine選考に参加し、非canonicalなTEST予想は除外する", async () => {
+  const { getDailyBestNineForGame } = await import(workerUrl);
+  const { db, internalGameId, gameId } = createDatabase();
+  insertUser(db, "u1", "normal-user");
+  insertUser(db, "test-8", "S9_TEST_8");
+  insertUser(db, "test-9", "S9_TEST_9");
+  insertUser(db, "other-test", "fixture-test-user");
+  insertPrediction(db, { id: "normal", userId: "u1", gameId, score: 90, submittedAt: "2026-08-12T08:00:00.000Z" });
+  insertPrediction(db, { id: "canonical-test", userId: "test-8", gameId, score: 99, submittedAt: "2026-08-12T08:01:00.000Z", isTest: 1 });
+  insertPrediction(db, { id: "ineligible-test", userId: "test-9", gameId, score: 100, submittedAt: "2026-08-12T08:02:00.000Z", isTest: 1, status: "submitted" });
+  insertPrediction(db, { id: "arbitrary-test", userId: "other-test", gameId, score: 98, submittedAt: "2026-08-12T08:03:00.000Z", isTest: 1 });
+
+  const result = await getDailyBestNineForGame(createD1Adapter(db), { internalGameId, legacyGameId: gameId });
+  assert.equal(result.totalCount, 2);
+  assert.deepEqual(result.rows.map((row) => row.username), ["S9_TEST_8", "normal-user"]);
 });
 
 test("同時刻の同点はnickname昇順で安定し、満点情報はserver scoreから判定する", async () => {

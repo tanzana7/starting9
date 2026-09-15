@@ -959,6 +959,30 @@ function updateV3ManualLineupRow(index, patch) {
   }
 }
 
+function updateV3ManualLineupPosition(index, position) {
+  const state = ensureV3ManualLineupState(v3State.selectedGameId);
+  const rowIndex = Number(index);
+  const row = state.rows[rowIndex];
+  if (!Number.isInteger(rowIndex) || !row) return;
+
+  const values = window.Starting9LineupBuilder?.positionValues || ["", "捕", "一", "二", "三", "遊", "左", "中", "右", "指"];
+  const nextPosition = values.includes(position) ? position : "";
+  const previousPosition = row.position || "";
+  if (nextPosition === previousPosition) return;
+
+  const occupiedIndex = nextPosition
+    ? state.rows.findIndex((candidate, candidateIndex) => candidateIndex !== rowIndex && candidate.position === nextPosition)
+    : -1;
+  state.rows[rowIndex] = { ...row, position: nextPosition };
+  if (occupiedIndex !== -1) {
+    state.rows[occupiedIndex] = { ...state.rows[occupiedIndex], position: previousPosition };
+  }
+  resetManualLineupConfirmation(state, { clearRevision: true });
+  state.error = "";
+  state.message = "";
+  renderCurrentV3View();
+}
+
 function selectV3ManualLineupSlot(index) {
   const state = ensureV3ManualLineupState(v3State.selectedGameId);
   const nextIndex = Number(index);
@@ -1952,6 +1976,7 @@ adminV3Modules.createAdminV3Coordinator({
     previewPerfectScore,
     previewManualGame,
     updateManualLineupRow: updateV3ManualLineupRow,
+    updateManualLineupPosition: updateV3ManualLineupPosition,
     selectManualLineupSlot: selectV3ManualLineupSlot,
     updateManualLineupSearch: updateV3ManualLineupSearch,
     selectManualLineupPlayer: selectV3ManualLineupPlayer,

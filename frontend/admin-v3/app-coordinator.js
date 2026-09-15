@@ -42,6 +42,28 @@
       });
     }
 
+    function closeManualPositionMenus() {
+      document.querySelectorAll(".manual-lineup-position-menu").forEach((menu) => menu.classList.add("hidden"));
+      document.querySelectorAll("[data-v3-manual-lineup-position-button]").forEach((button) => button.setAttribute("aria-expanded", "false"));
+    }
+
+    function updateManualPositionMenuState(menu) {
+      const slot = menu?.closest?.("[data-v3-manual-lineup-slot]");
+      const current = slot?.querySelector?.("[data-v3-manual-lineup-position-button]")?.textContent?.trim() || "?";
+      const usedPositions = new Set(Array.from(document.querySelectorAll("[data-v3-manual-lineup-position-button]"))
+        .map((button) => button.textContent.trim())
+        .filter((value) => value && value !== "?"));
+      menu?.querySelectorAll?.("[data-v3-manual-lineup-position-option]").forEach((option) => {
+        const position = option.dataset.position || "";
+        const isCurrent = (position || "?") === current;
+        const isUsed = Boolean(position) && !isCurrent && usedPositions.has(position);
+        option.classList.toggle("is-current", isCurrent);
+        option.classList.toggle("is-used", isUsed);
+        option.title = isUsed ? "選択するとポジションを入れ替えます" : "";
+        option.setAttribute("aria-label", position ? `${position}を選択${isUsed ? "（他の打順で使用中。選択すると入れ替えます）" : ""}` : "守備位置を未選択にする");
+      });
+    }
+
     function manualPointerTarget(event) {
       const candidate = closestFromEvent(event, "[data-v3-manual-lineup-player]");
       if (candidate) return { kind: "candidate", element: candidate, index: Number(candidate.dataset.v3ManualLineupPlayer), playerId: candidate.dataset.v3ManualLineupPlayerId || "" };
@@ -54,7 +76,7 @@
       if (event?.button !== undefined && event.button !== 0) return;
       const target = manualPointerTarget(event);
       if (!target || (target.kind === "slot" && !target.playerId)) return;
-      if (target.kind === "slot" && closestFromEvent(event, "select, input, textarea, summary, [data-v3-manual-lineup-clear]")) return;
+      if (target.kind === "slot" && closestFromEvent(event, "select, input, textarea, summary, [data-v3-manual-lineup-clear], [data-v3-manual-lineup-position-button], [data-v3-manual-lineup-position-option]")) return;
       manualPointer = {
         pointerId: event.pointerId,
         kind: target.kind,
@@ -182,11 +204,6 @@
           actions.renderRankingExclusionGames();
           return;
         }
-        const position = closestFromEvent(event, "[data-v3-manual-lineup-position]");
-        if (position) {
-          preservePickerScroll(`[data-v3-manual-lineup-candidates="${Number(position.dataset.v3ManualLineupPosition)}"]`, () => actions.updateManualLineupRow(Number(position.dataset.v3ManualLineupPosition), { position: position.value }));
-          return;
-        }
         const correctionOrder = closestFromEvent(event, "[data-v3-lineup-correction-order]");
         if (correctionOrder) { preservePickerScroll(`[data-v3-lineup-correction-candidates="${Number(correctionOrder.dataset.v3LineupCorrectionOrder)}"]`, () => actions.updateLineupCorrectionRow(Number(correctionOrder.dataset.v3LineupCorrectionOrder), { battingOrder: Number(correctionOrder.value) })); return; }
         const correctionPosition = closestFromEvent(event, "[data-v3-lineup-correction-position]");
@@ -219,6 +236,25 @@
         const manualSlot = closestFromEvent(event, "[data-v3-manual-lineup-slot]");
         if (manualSlot && !closestFromEvent(event, "button, input, select, option, summary, textarea")) {
           actions.selectManualLineupSlot(Number(manualSlot.dataset.v3ManualLineupSlot));
+          return;
+        }
+        const manualPositionOption = closestFromEvent(event, "[data-v3-manual-lineup-position-option]");
+        if (manualPositionOption) {
+          const index = Number(manualPositionOption.dataset.v3ManualLineupPositionOption);
+          preservePickerScroll(`[data-v3-manual-lineup-candidates="${index}"]`, () => actions.updateManualLineupPosition(index, manualPositionOption.dataset.position || ""));
+          closeManualPositionMenus();
+          return;
+        }
+        const manualPositionButton = closestFromEvent(event, "[data-v3-manual-lineup-position-button]");
+        if (manualPositionButton) {
+          const menu = document.getElementById(manualPositionButton.getAttribute("aria-controls"));
+          const shouldOpen = Boolean(menu?.classList.contains("hidden"));
+          closeManualPositionMenus();
+          if (menu && shouldOpen) {
+            updateManualPositionMenuState(menu);
+            menu.classList.remove("hidden");
+            manualPositionButton.setAttribute("aria-expanded", "true");
+          }
           return;
         }
         const manualPlayer = closestFromEvent(event, "[data-v3-manual-lineup-player]");

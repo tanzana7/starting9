@@ -63,7 +63,7 @@ function parseAttributes(tag) {
 }
 
 function controlsFor(markup, attribute) {
-  return [...markup.matchAll(/<(input|select)\b[^>]*>/g)]
+  return [...markup.matchAll(/<(input|select|button)\b[^>]*>/g)]
     .map((match) => ({ tagName: match[1], attributes: parseAttributes(match[0]) }))
     .filter(({ attributes }) => Object.hasOwn(attributes, attribute))
     .map(({ tagName, attributes }) => new DomControl(tagName, attributes));
@@ -99,7 +99,7 @@ function assertEditableMarkup(markup) {
   assert.match(markup, /data-v3-manual-lineup-loading="false"/);
   assert.doesNotMatch(markup, /data-v3-manual-lineup-lock-reason/);
   const searches = controlsFor(markup, "data-v3-manual-lineup-search");
-  const positions = controlsFor(markup, "data-v3-manual-lineup-position");
+  const positions = controlsFor(markup, "data-v3-manual-lineup-position-button");
   assert.equal((markup.match(/data-v3-manual-lineup-slot=/g) || []).length, 9);
   assert.equal(searches.length, 1);
   assert.equal(positions.length, 9);
@@ -121,7 +121,7 @@ function assertLockedMarkup(markup, expectedReason) {
   assert.match(markup, new RegExp(expectedReason));
   for (const control of [
     ...controlsFor(markup, "data-v3-manual-lineup-search"),
-    ...controlsFor(markup, "data-v3-manual-lineup-position")
+    ...controlsFor(markup, "data-v3-manual-lineup-position-button")
   ]) assert.equal(control.disabled, true);
 }
 
@@ -204,7 +204,7 @@ test("manual lineupの保存中も編集を止め、保存完了後に再び編�
   const details = makeDetails("today-game", { lineup: null });
   const savingMarkup = renderer.render(game, details, { rows: renderer.createBlankRows(), loading: true });
   assert.match(savingMarkup, /スタメン情報を保存中です/);
-  for (const control of controlsFor(savingMarkup, "data-v3-manual-lineup-position")) assert.equal(control.disabled, true);
+  for (const control of controlsFor(savingMarkup, "data-v3-manual-lineup-position-button")) assert.equal(control.disabled, true);
   assertEditableMarkup(renderer.render(game, details, { rows: renderer.createBlankRows(), loading: false }));
 });
 

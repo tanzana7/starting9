@@ -327,7 +327,18 @@ button:disabled { cursor: not-allowed; opacity: .65; }
 .manual-lineup-slot-player .player-name { display: inline-block; min-width: 0; max-width: 100%; }
 .manual-lineup-slot-player .player-inline-details { margin-top: 4px; }
 .manual-lineup-slot-order, .manual-lineup-slot-position { display: grid; gap: 3px; color: #718197; font-size: 10px; font-weight: 700; }
-.manual-lineup-slot-order select, .manual-lineup-slot-position select { width: 100%; min-width: 0; box-sizing: border-box; padding: 6px 5px; border: 1px solid #b9c8d8; border-radius: 5px; background: #fff; color: #172033; }
+.manual-lineup-position-control { position: relative; width: 40px; height: 40px; }
+.manual-lineup-position-control .position-button { display: inline-grid; width: 40px; height: 40px; padding: 0; place-items: center; border: 1.5px solid currentColor; border-radius: 7px; background: #f5f7f9; color: #6f7f8f; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9), 0 2px 4px rgba(25, 54, 82, .2); font-size: 1rem; font-weight: 900; line-height: 1; }
+.manual-lineup-position-control .position-button.is-catcher { color: #155f9c; background: #f3f8fc; }
+.manual-lineup-position-control .position-button.is-infielder { color: #775500; background: #fdf9e9; }
+.manual-lineup-position-control .position-button.is-outfielder { color: #27723d; background: #f3f9f4; }
+.manual-lineup-position-control .position-button.is-dh { color: #8a295f; background: #fcf6fa; }
+.manual-lineup-position-control .position-button:hover, .manual-lineup-position-control .position-button:focus-visible { border-color: #1269b0; box-shadow: 0 0 0 3px rgba(0, 91, 172, .14); }
+.manual-lineup-position-control .position-menu { position: absolute; z-index: 20; top: calc(100% + 6px); right: 0; display: grid; grid-template-columns: repeat(5, 36px); gap: 5px; width: max-content; padding: 8px; border: 1px solid #9fb8cf; border-radius: 8px; background: #fff; box-shadow: 0 10px 24px rgba(20, 46, 72, .2); }
+.manual-lineup-position-control .position-menu-option { display: inline-grid; width: 36px; height: 36px; padding: 0; place-items: center; border: 1px solid #cfd9e5; border-radius: 6px; color: #334a62; background: #f7fbff; font-weight: 900; }
+.manual-lineup-position-control .position-menu-option:hover, .manual-lineup-position-control .position-menu-option:focus-visible { border-color: #1269b0; background: #eaf3fb; }
+.manual-lineup-position-control .position-menu-option.is-used { border-color: #c3cad1; color: #788592; background: #edf1f4; }
+.manual-lineup-position-control .position-menu-option.is-current { border-color: #d5a52e; color: #654b0c; background: #fff8d6; box-shadow: inset 0 0 0 1px rgba(213, 165, 46, .18); }
 .manual-lineup-player-panel .player-list-heading { margin-bottom: 8px; }
 .manual-lineup-player-target { margin: 3px 0 0; color: #705326; font-size: 12px; font-weight: 800; }
 .manual-lineup-search { display: grid; gap: 4px; margin-bottom: 8px; color: #526477; font-size: 11px; font-weight: 700; }

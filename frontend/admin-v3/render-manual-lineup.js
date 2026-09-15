@@ -59,6 +59,26 @@
       return String(player?.category || (player?.manualRosterEligible === false ? "投手" : "未分類")).trim();
     }
 
+    function positionCategory(position) {
+      if (position === "捕") return "catcher";
+      if (["一", "二", "三", "遊"].includes(position)) return "infielder";
+      if (["左", "中", "右"].includes(position)) return "outfielder";
+      if (position === "指") return "dh";
+      return "empty";
+    }
+
+    function positionPicker(position, index, disabled) {
+      const values = global.Starting9LineupBuilder?.positionValues || POSITIONS;
+      const current = String(position || "");
+      const menuId = `actual-position-menu-${index}`;
+      const options = values.map((value) => {
+        const label = value || "?";
+        const ariaLabel = value ? `${value}を選択` : "守備位置を未選択にする";
+        return `<button type="button" class="position-menu-option${value === current ? " is-current" : ""}" data-v3-manual-lineup-position-option="${index}" data-position="${escapeHtml(value)}" role="menuitem" aria-label="${escapeHtml(ariaLabel)}"${disabled ? " disabled" : ""}>${escapeHtml(label)}</button>`;
+      }).join("");
+      return `<div class="position-control manual-lineup-position-control"><button type="button" class="position-button is-${positionCategory(current)}" data-v3-manual-lineup-position-button="${index}" aria-label="${index + 1}番の守備位置を選択" aria-haspopup="menu" aria-expanded="false" aria-controls="${menuId}"${disabled ? " disabled" : ""}>${escapeHtml(current || "?")}</button><div id="${menuId}" class="position-menu manual-lineup-position-menu hidden" role="menu">${options}</div></div>`;
+    }
+
     function normalizePlayerName(value) {
       return String(value ?? "").normalize("NFKC").replace(/^\[\d{1,3}\]\s*/, "").replace(/[\s\u3000]/g, "").replace(/[．。]/g, ".").toLowerCase();
     }
@@ -205,10 +225,9 @@
       const activeRow = rows[activeIndex] || rows[0];
       const slots = rows.map((row, index) => {
         const selected = catalog.find((player) => player.playerId === row.playerId);
-        const positionOptions = POSITIONS.map((position) => `<option value="${escapeHtml(position)}" ${row.position === position ? "selected" : ""}>${escapeHtml(position || "守備位置を選択")}</option>`).join("");
         const slotClass = ["lineup-slot", "manual-lineup-slot", index === activeIndex ? "is-active" : "", selected ? "has-player" : ""].filter(Boolean).join(" ");
         const playerMarkup = selected ? `${playerName(selected)}${playerDetailMarkup(selected)}` : "未選択";
-        return `<article class="${slotClass}" data-picker="actual" data-v3-manual-lineup-slot="${index}" data-v3-manual-lineup-player-id="${escapeHtml(row.playerId || "")}" aria-current="${index === activeIndex ? "true" : "false"}" draggable="false"><div class="manual-lineup-fixed-order" aria-label="打順 ${index + 1}番"><span class="slot-order">打順</span><strong>${index + 1}番</strong></div><div class="manual-lineup-slot-player"><span class="slot-player${selected ? "" : " slot-empty"}">${playerMarkup}</span></div><label class="manual-lineup-slot-position position-control">守備位置<select data-v3-manual-lineup-position="${index}" ${disabled ? "disabled" : ""}>${positionOptions}</select></label><button type="button" class="slot-clear" data-v3-manual-lineup-clear="${index}" aria-label="${index + 1}番を空にする"${disabled || !row.playerId ? " disabled" : ""}>×</button></article>`;
+        return `<article class="${slotClass}" data-picker="actual" data-v3-manual-lineup-slot="${index}" data-v3-manual-lineup-player-id="${escapeHtml(row.playerId || "")}" aria-current="${index === activeIndex ? "true" : "false"}" draggable="false"><div class="manual-lineup-fixed-order" aria-label="打順 ${index + 1}番"><span class="slot-order">打順</span><strong>${index + 1}番</strong></div><div class="manual-lineup-slot-player"><span class="slot-player${selected ? "" : " slot-empty"}">${playerMarkup}</span></div><div class="manual-lineup-slot-position"><span class="manual-lineup-position-label">守備位置</span>${positionPicker(row.position, index, disabled)}</div><button type="button" class="slot-clear" data-v3-manual-lineup-clear="${index}" aria-label="${index + 1}番を空にする"${disabled || !row.playerId ? " disabled" : ""}>×</button></article>`;
       }).join("");
       const rosterFilter = state.candidateRosterFilter === "inactive" ? "inactive" : state.candidateRosterFilter === "active" ? "active" : "all";
       const filterButtons = `<div class="roster-filter manual-lineup-roster-filter" role="group" aria-label="ロースター表示"><button type="button" class="roster-filter-button${rosterFilter === "active" ? " is-selected" : ""}" data-v3-manual-lineup-roster-filter="active" aria-pressed="${rosterFilter === "active" ? "true" : "false"}"${disabled ? " disabled" : ""}>出場候補</button><button type="button" class="roster-filter-button${rosterFilter === "inactive" ? " is-selected" : ""}" data-v3-manual-lineup-roster-filter="inactive" aria-pressed="${rosterFilter === "inactive" ? "true" : "false"}"${disabled ? " disabled" : ""}>その他</button></div>`;

@@ -497,6 +497,7 @@ function ensureV3ManualLineupState(internalGameId, details = null) {
     ...v3State.manualLineup,
     gameId: id,
     activeIndex: 0,
+    candidateRosterFilter: "active",
     rows: v3ManualLineupRenderer.createBlankRows(),
     reason: "",
     confirmed: false,
@@ -979,18 +980,81 @@ function updateV3ManualLineupSearch(index, value) {
   const catalog = details.lineup?.playerCatalog || [];
   const candidates = document.querySelector(`[data-v3-manual-lineup-candidates="${Number(index)}"]`);
   const manualRoster = details.lineup?.manualRoster || null;
-  if (candidates) candidates.innerHTML = v3ManualLineupRenderer.renderCandidates(catalog, row, Number(index), manualRoster);
+  if (candidates) candidates.innerHTML = v3ManualLineupRenderer.renderCandidates(catalog, row, Number(index), manualRoster, state.candidateRosterFilter);
 }
 
 function selectV3ManualLineupPlayer(index, playerId) {
+  assignV3ManualLineupPlayer(index, playerId);
+}
+
+function assignV3ManualLineupPlayer(index, playerId) {
+  const state = ensureV3ManualLineupState(v3State.selectedGameId);
   const catalog = v3State.operationDetails.get(v3State.selectedGameId)?.lineup?.playerCatalog || [];
   const player = catalog.find((candidate) => candidate.playerId === playerId);
   if (!player) return;
-  updateV3ManualLineupRow(index, {
+  const targetIndex = Number(index);
+  if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= state.rows.length) return;
+  const currentIndex = state.rows.findIndex((row) => row.playerId === player.playerId);
+  if (currentIndex !== -1 && currentIndex !== targetIndex) {
+    state.rows[currentIndex] = { ...state.rows[currentIndex], playerId: "", playerName: "", uniformNumber: "" };
+  }
+  const target = state.rows[targetIndex];
+  resetManualLineupConfirmation(state, { clearRevision: true });
+  state.rows[targetIndex] = {
+    ...target,
     playerId: player.playerId,
     playerName: player.playerName,
     uniformNumber: player.uniformNumber,
     search: ""
+  };
+  state.activeIndex = state.rows.findIndex((row, rowIndex) => rowIndex > targetIndex && !row.playerId);
+  if (state.activeIndex === -1) state.activeIndex = targetIndex;
+  state.error = "";
+  state.message = "";
+  renderCurrentV3View();
+}
+
+function reorderV3ManualLineup(sourceIndex, targetIndex) {
+  const state = ensureV3ManualLineupState(v3State.selectedGameId);
+  const from = Number(sourceIndex);
+  const to = Number(targetIndex);
+  if (!Number.isInteger(from) || !Number.isInteger(to) || !state.rows[from]?.playerId || from === to) return;
+  const reorder = window.Starting9LineupBuilder?.reorderLineupRows;
+  const reordered = typeof reorder === "function"
+    ? reorder(state.rows, from, to)
+    : state.rows.slice();
+  state.rows = reordered.map((row, index) => ({ ...row, battingOrder: index + 1, search: "" }));
+  state.activeIndex = to;
+  resetManualLineupConfirmation(state, { clearRevision: true });
+  state.error = "";
+  state.message = "";
+  renderCurrentV3View();
+}
+
+function clearV3ManualLineupSlot(index) {
+  const state = ensureV3ManualLineupState(v3State.selectedGameId);
+  const rowIndex = Number(index);
+  if (!Number.isInteger(rowIndex) || !state.rows[rowIndex]) return;
+  state.rows[rowIndex] = { ...state.rows[rowIndex], playerId: "", playerName: "", uniformNumber: "", search: "" };
+  state.activeIndex = rowIndex;
+  resetManualLineupConfirmation(state, { clearRevision: true });
+  state.error = "";
+  state.message = "";
+  renderCurrentV3View();
+}
+
+function setV3ManualLineupRosterFilter(filter) {
+  const state = ensureV3ManualLineupState(v3State.selectedGameId);
+  state.candidateRosterFilter = filter === "inactive" ? "inactive" : "active";
+  const details = v3State.operationDetails.get(v3State.selectedGameId) || {};
+  const catalog = details.lineup?.playerCatalog || [];
+  const row = state.rows[state.activeIndex] || state.rows[0];
+  const candidates = document.querySelector(`[data-v3-manual-lineup-candidates="${Number(state.activeIndex)}"]`);
+  if (candidates) candidates.innerHTML = v3ManualLineupRenderer.renderCandidates(catalog, row, Number(state.activeIndex), details.lineup?.manualRoster || null, state.candidateRosterFilter);
+  document.querySelectorAll("[data-v3-manual-lineup-roster-filter]").forEach((button) => {
+    const selected = button.dataset.v3ManualLineupRosterFilter === state.candidateRosterFilter;
+    button.classList.toggle("is-selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
   });
 }
 
@@ -1891,6 +1955,10 @@ adminV3Modules.createAdminV3Coordinator({
     selectManualLineupSlot: selectV3ManualLineupSlot,
     updateManualLineupSearch: updateV3ManualLineupSearch,
     selectManualLineupPlayer: selectV3ManualLineupPlayer,
+    assignManualLineupPlayerToSlot: assignV3ManualLineupPlayer,
+    reorderManualLineup: reorderV3ManualLineup,
+    clearManualLineupSlot: clearV3ManualLineupSlot,
+    setManualLineupRosterFilter: setV3ManualLineupRosterFilter,
     saveManualLineup: saveV3ManualLineup,
     finalizeManualLineup: finalizeV3ManualLineup,
     cancelManualLineup: cancelV3ManualLineupRevision,

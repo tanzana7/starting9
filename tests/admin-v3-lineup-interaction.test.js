@@ -272,9 +272,12 @@ test("cancelled・postponed・excludedのmanual lineupは登録不可理由を�
   }
 });
 
-test("manual lineupのロックはCSSやcoordinatorの親イベントで追加されていない", () => {
+test("manual lineupのロックはCSSやcoordinatorの親イベントで追加され、tapをdragと区別する", () => {
   assert.doesNotMatch(cssSource, /pointer-events\s*:\s*none/i);
   assert.doesNotMatch(cssSource, /fieldset|\binert\b/i);
-  assert.doesNotMatch(coordinatorSource, /addEventListener\((?:"|')?(?:mousedown|pointerdown|touchstart)/);
+  assert.match(coordinatorSource, /addEventListener\("pointerdown"/);
+  assert.match(coordinatorSource, /manualDragThreshold/);
+  assert.match(coordinatorSource, /setPointerCapture/);
+  assert.match(coordinatorSource, /event\.preventDefault\?\./);
   assert.match(coordinatorSource, /isManualSearchComposing\(event, field\).*event\.preventDefault\(\)/);
 });

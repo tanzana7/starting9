@@ -148,16 +148,22 @@
       return `${duplicateNotice}<ol class="manual-lineup-confirmation-list" data-v3-manual-lineup-confirmation>${markup}</ol>`;
     }
 
-    function renderCandidates(catalog, row, index, manualRoster = null) {
+    function renderCandidates(catalog, row, index, manualRoster = null, rosterFilter = "all") {
       const players = Array.isArray(catalog) ? catalog : [];
       const search = String(row?.search || "").trim().toLocaleLowerCase();
+      const filter = rosterFilter === "inactive" ? "inactive" : rosterFilter === "active" ? "active" : "all";
       const candidates = sortPlayersByRosterAndUniformNumber(players.filter((player) => player?.candidateVisibility !== "hide")
+        .filter((player) => global.Starting9LineupBuilder?.isLineupCandidate?.(player) !== false)
+        .filter((player) => {
+          if (filter === "all") return true;
+          return filter === "active" ? playerRosterState(player, manualRoster).active : !playerRosterState(player, manualRoster).active;
+        })
         .filter((player) => !search || `${player.playerName} ${player.uniformNumber} ${playerCategory(player)}`.toLocaleLowerCase().includes(search)), manualRoster);
       const selected = players.find((player) => player.playerId === row?.playerId);
       return candidates.length ? candidates.map((player) => {
         const selectedPlayer = selected?.playerId === player.playerId;
         const rosterLabel = playerRosterLabel(playerRosterState(player, manualRoster));
-        return `<div class="manual-player-candidate-row"><button type="button" class="player-chip manual-lineup-candidate${selectedPlayer ? " selected" : ""}" aria-pressed="${selectedPlayer ? "true" : "false"}" data-v3-manual-lineup-player="${escapeHtml(String(index))}" data-v3-manual-lineup-player-id="${escapeHtml(player.playerId)}">${playerName(player)}<small class="manual-player-candidate-meta">${escapeHtml(playerCategory(player))} / ${escapeHtml(rosterLabel)}</small></button>${playerDetailMarkup(player)}</div>`;
+        return `<div class="manual-player-candidate-row"><button type="button" class="player-chip manual-lineup-candidate${selectedPlayer ? " selected" : ""}" aria-pressed="${selectedPlayer ? "true" : "false"}" data-picker="actual" data-v3-manual-lineup-player="${escapeHtml(String(index))}" data-v3-manual-lineup-player-id="${escapeHtml(player.playerId)}" draggable="false">${playerName(player)}<small class="manual-player-candidate-meta">${escapeHtml(playerCategory(player))} / ${escapeHtml(rosterLabel)}</small></button>${playerDetailMarkup(player)}</div>`;
       }).join("") : `<span class="muted">候補がありません</span>`;
     }
 
@@ -201,10 +207,12 @@
         const selected = catalog.find((player) => player.playerId === row.playerId);
         const positionOptions = POSITIONS.map((position) => `<option value="${escapeHtml(position)}" ${row.position === position ? "selected" : ""}>${escapeHtml(position || "守備位置を選択")}</option>`).join("");
         const slotClass = ["lineup-slot", "manual-lineup-slot", index === activeIndex ? "is-active" : "", selected ? "has-player" : ""].filter(Boolean).join(" ");
-        const playerMarkup = selected ? `${playerName(selected)}${playerDetailMarkup(selected)}` : '<span class="slot-player slot-empty">未選択</span>';
-        return `<article class="${slotClass}" data-v3-manual-lineup-slot="${index}" aria-current="${index === activeIndex ? "true" : "false"}"><div class="manual-lineup-fixed-order" aria-label="打順 ${index + 1}番"><span>打順</span><strong>${index + 1}番</strong></div><div class="manual-lineup-slot-player">${playerMarkup}</div><label class="manual-lineup-slot-position">守備位置<select data-v3-manual-lineup-position="${index}" ${disabled ? "disabled" : ""}>${positionOptions}</select></label></article>`;
+        const playerMarkup = selected ? `${playerName(selected)}${playerDetailMarkup(selected)}` : "未選択";
+        return `<article class="${slotClass}" data-picker="actual" data-v3-manual-lineup-slot="${index}" data-v3-manual-lineup-player-id="${escapeHtml(row.playerId || "")}" aria-current="${index === activeIndex ? "true" : "false"}" draggable="false"><div class="manual-lineup-fixed-order" aria-label="打順 ${index + 1}番"><span class="slot-order">打順</span><strong>${index + 1}番</strong></div><div class="manual-lineup-slot-player"><span class="slot-player${selected ? "" : " slot-empty"}">${playerMarkup}</span></div><label class="manual-lineup-slot-position position-control">守備位置<select data-v3-manual-lineup-position="${index}" ${disabled ? "disabled" : ""}>${positionOptions}</select></label><button type="button" class="slot-clear" data-v3-manual-lineup-clear="${index}" aria-label="${index + 1}番を空にする"${disabled || !row.playerId ? " disabled" : ""}>×</button></article>`;
       }).join("");
-      const playerPanel = `<section class="player-panel manual-lineup-player-panel"><div class="player-list-heading"><div><h3>選手を選択</h3><p class="manual-lineup-player-target">${activeIndex + 1}番に追加</p></div><span class="manual-lineup-team">${catalog.length}人</span></div><label class="manual-lineup-search">選手を検索<input type="search" value="${escapeHtml(activeRow?.search || "")}" placeholder="選手名または背番号" data-v3-manual-lineup-search="${activeIndex}" ${disabled ? "disabled" : ""}></label><div class="player-list manual-lineup-candidates" aria-label="選手候補" data-v3-manual-lineup-candidates="${activeIndex}">${renderCandidates(catalog, activeRow, activeIndex, lineupDetails.manualRoster)}</div></section>`;
+      const rosterFilter = state.candidateRosterFilter === "inactive" ? "inactive" : state.candidateRosterFilter === "active" ? "active" : "all";
+      const filterButtons = `<div class="roster-filter manual-lineup-roster-filter" role="group" aria-label="ロースター表示"><button type="button" class="roster-filter-button${rosterFilter === "active" ? " is-selected" : ""}" data-v3-manual-lineup-roster-filter="active" aria-pressed="${rosterFilter === "active" ? "true" : "false"}"${disabled ? " disabled" : ""}>出場候補</button><button type="button" class="roster-filter-button${rosterFilter === "inactive" ? " is-selected" : ""}" data-v3-manual-lineup-roster-filter="inactive" aria-pressed="${rosterFilter === "inactive" ? "true" : "false"}"${disabled ? " disabled" : ""}>その他</button></div>`;
+      const playerPanel = `<section class="player-panel manual-lineup-player-panel"><div class="player-list-heading"><div><h3>選手を選択</h3><p class="manual-lineup-player-target">${activeIndex + 1}番に追加</p></div><span class="manual-lineup-team">${catalog.length}人</span></div>${filterButtons}<label class="manual-lineup-search">選手を検索<input type="search" value="${escapeHtml(activeRow?.search || "")}" placeholder="選手名または背番号" data-v3-manual-lineup-search="${activeIndex}" ${disabled ? "disabled" : ""}></label><div class="player-list manual-lineup-candidates" aria-label="選手候補" data-v3-manual-lineup-candidates="${activeIndex}">${renderCandidates(catalog, activeRow, activeIndex, lineupDetails.manualRoster, rosterFilter)}</div></section>`;
       const builder = `<div class="lineup-builder manual-lineup-builder manual-lineup-grid"><section class="lineup-panel manual-lineup-slots-panel"><div class="player-list-heading"><div><h3>正式スタメン</h3><p>行を選んでから、右の候補をタップします。</p></div><span class="manual-lineup-team">9人</span></div><div class="slot-list manual-lineup-slot-list">${slots}</div></section>${playerPanel}</div>`;
       const confirmation = state.confirmation || {};
       const confirmationForGame = confirmation.internalGameId === String(game?.internalGameId || "") && confirmation.previewed === true;

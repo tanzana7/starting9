@@ -4,6 +4,9 @@
   function createAdminV3Coordinator({ document, window, state, actions }) {
     const composingManualSearches = new Set();
     let manualRosterSearchComposing = false;
+    const manualDragThreshold = 10;
+    let manualPointer = null;
+    let suppressManualClickUntil = 0;
 
     function closestFromEvent(event, selector) {
       const target = event?.target;
@@ -31,6 +34,88 @@
           if (after) after.scrollTop = scrollTop;
         }
       }
+    }
+
+    function clearManualPointerClasses() {
+      document.querySelectorAll("[data-v3-manual-lineup-slot].is-dragging, [data-v3-manual-lineup-slot].is-drop-target, [data-v3-manual-lineup-player].is-dragging, [data-v3-manual-lineup-player].is-drop-target").forEach((element) => {
+        element.classList.remove("is-dragging", "is-drop-target");
+      });
+    }
+
+    function manualPointerTarget(event) {
+      const candidate = closestFromEvent(event, "[data-v3-manual-lineup-player]");
+      if (candidate) return { kind: "candidate", element: candidate, index: Number(candidate.dataset.v3ManualLineupPlayer), playerId: candidate.dataset.v3ManualLineupPlayerId || "" };
+      const slot = closestFromEvent(event, "[data-v3-manual-lineup-slot]");
+      if (slot) return { kind: "slot", element: slot, index: Number(slot.dataset.v3ManualLineupSlot), playerId: slot.dataset.v3ManualLineupPlayerId || "" };
+      return null;
+    }
+
+    function beginManualPointer(event) {
+      if (event?.button !== undefined && event.button !== 0) return;
+      const target = manualPointerTarget(event);
+      if (!target || (target.kind === "slot" && !target.playerId)) return;
+      if (target.kind === "slot" && closestFromEvent(event, "select, input, textarea, summary, [data-v3-manual-lineup-clear]")) return;
+      manualPointer = {
+        pointerId: event.pointerId,
+        kind: target.kind,
+        element: target.element,
+        sourceIndex: target.index,
+        playerId: target.playerId,
+        startX: Number(event.clientX) || 0,
+        startY: Number(event.clientY) || 0,
+        dragging: false,
+        targetIndex: null
+      };
+    }
+
+    function updateManualPointer(event) {
+      if (!manualPointer || (manualPointer.pointerId !== undefined && event.pointerId !== undefined && manualPointer.pointerId !== event.pointerId)) return;
+      const dx = (Number(event.clientX) || 0) - manualPointer.startX;
+      const dy = (Number(event.clientY) || 0) - manualPointer.startY;
+      if (!manualPointer.dragging && Math.hypot(dx, dy) < manualDragThreshold) return;
+      if (!manualPointer.dragging) {
+        manualPointer.dragging = true;
+        manualPointer.element.classList.add("is-dragging");
+        try { manualPointer.element.setPointerCapture?.(event.pointerId); } catch { /* capture is best effort on older mobile browsers */ }
+      }
+      event.preventDefault?.();
+      const point = document.elementFromPoint?.(Number(event.clientX) || 0, Number(event.clientY) || 0);
+      const slot = point?.closest?.("[data-v3-manual-lineup-slot]");
+      clearManualPointerClasses();
+      manualPointer.element.classList.add("is-dragging");
+      if (slot) {
+        const index = Number(slot.dataset.v3ManualLineupSlot);
+        if (Number.isInteger(index)) {
+          manualPointer.targetIndex = index;
+          slot.classList.add("is-drop-target");
+        }
+      }
+    }
+
+    function finishManualPointer(event, cancelled = false) {
+      if (!manualPointer || (manualPointer.pointerId !== undefined && event?.pointerId !== undefined && manualPointer.pointerId !== event.pointerId)) return;
+      const current = manualPointer;
+      manualPointer = null;
+      if (!current.dragging || cancelled) {
+        clearManualPointerClasses();
+        return;
+      }
+      event?.preventDefault?.();
+      suppressManualClickUntil = Date.now() + 400;
+      clearManualPointerClasses();
+      if (!Number.isInteger(current.targetIndex) || current.targetIndex < 0) return;
+      if (current.kind === "candidate") {
+        preservePickerScroll(`[data-v3-manual-lineup-candidates="${current.sourceIndex}"]`, () => actions.assignManualLineupPlayerToSlot(current.targetIndex, current.playerId));
+      } else if (current.sourceIndex !== current.targetIndex) {
+        actions.reorderManualLineup(current.sourceIndex, current.targetIndex);
+      }
+    }
+
+    function bindManualPointerEvents() {
+      document.addEventListener("pointerdown", beginManualPointer, { passive: true });
+      document.addEventListener("pointermove", updateManualPointer, { passive: false });
+      document.addEventListener("pointerup", (event) => finishManualPointer(event), { passive: false });
+      document.addEventListener("pointercancel", (event) => finishManualPointer(event, true), { passive: true });
     }
 
     function bindManualSearchCompositionEvents() {
@@ -119,6 +204,10 @@
 
     function bindClickEvents() {
       document.addEventListener("click", async (event) => {
+        if (Date.now() < suppressManualClickUntil) {
+          suppressManualClickUntil = 0;
+          return;
+        }
         const navButton = closestFromEvent(event, "[data-v3-view]");
         if (navButton) { actions.chooseView(navButton.dataset.v3View); return; }
         if (closestFromEvent(event, "[data-v3-ranking-reset-preview]")) { await actions.previewRankingReset(); return; }
@@ -135,6 +224,16 @@
         const manualPlayer = closestFromEvent(event, "[data-v3-manual-lineup-player]");
         if (manualPlayer) {
           preservePickerScroll(`[data-v3-manual-lineup-candidates="${Number(manualPlayer.dataset.v3ManualLineupPlayer)}"]`, () => actions.selectManualLineupPlayer(Number(manualPlayer.dataset.v3ManualLineupPlayer), manualPlayer.dataset.v3ManualLineupPlayerId));
+          return;
+        }
+        const manualFilter = closestFromEvent(event, "[data-v3-manual-lineup-roster-filter]");
+        if (manualFilter) {
+          preservePickerScroll(`[data-v3-manual-lineup-candidates="${Number(state.manualLineup?.activeIndex || 0)}"]`, () => actions.setManualLineupRosterFilter(manualFilter.dataset.v3ManualLineupRosterFilter));
+          return;
+        }
+        const manualClear = closestFromEvent(event, "[data-v3-manual-lineup-clear]");
+        if (manualClear) {
+          actions.clearManualLineupSlot(Number(manualClear.dataset.v3ManualLineupClear));
           return;
         }
         const correctionPlayer = closestFromEvent(event, "[data-v3-lineup-correction-player]");
@@ -231,6 +330,7 @@
         bindManualSearchCompositionEvents();
         bindInputEvents();
         bindClickEvents();
+        bindManualPointerEvents();
         bindToolbarEvents();
         actions.restoreInitialRoute();
         actions.load();

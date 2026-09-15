@@ -95,6 +95,8 @@ test("正式lineupは同一公式rosterで三点一致した一時野手だけ�
 test("public/adminはlive temporary fielderを同じ候補IDで扱い、pitcherは非表示にする", () => {
   assert.match(authSource, /masterUnregisteredCount/);
   assert.match(authSource, /normalizeOfficialNpbPlayerId/);
+  assert.match(authSource, /ROSTER_MASTER_UNREGISTERED/);
+  assert.match(authSource, /ROSTER_MASTER_WARNING_DEDUPE_WINDOW_MS/);
   assert.match(publicSource, /getPredictionCandidatePlayers/);
   assert.match(publicSource, /isTemporaryCandidate: true/);
   assert.match(publicSource, /temporaryPublicPlayerCategory/);

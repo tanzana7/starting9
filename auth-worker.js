@@ -992,6 +992,49 @@ async function writeV3RuntimeAudit(env, { eventType, runId, correlationId = runI
   }
 }
 
+const ROSTER_MASTER_WARNING_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
+
+async function writeRosterMasterUnregisteredAudit(env, game, unknownPlayers, now = new Date()) {
+  const internalGameId = String(game?.internal_game_id || game?.internalGameId || "").trim();
+  const players = Array.isArray(unknownPlayers) ? unknownPlayers : [];
+  if (!internalGameId || players.length === 0) return false;
+  try {
+    const auditDb = getV3AuditDb(env);
+    if (!auditDb) return false;
+    const auditColumns = await getTableColumnSet(auditDb, "game_automation_v3_audit");
+    if (!auditColumns.has("event_type")) return false;
+    const cutoff = new Date(now.getTime() - ROSTER_MASTER_WARNING_DEDUPE_WINDOW_MS).toISOString();
+    const recent = await auditDb.prepare(
+      `SELECT id FROM game_automation_v3_audit
+         WHERE internal_game_id = ?1 AND event_type = ?2 AND occurred_at > ?3
+         ORDER BY occurred_at DESC LIMIT 1`
+    ).bind(internalGameId, "ROSTER_MASTER_UNREGISTERED", cutoff).first();
+    if (recent) return false;
+    return await writeV3RuntimeAudit(env, {
+      eventType: "ROSTER_MASTER_UNREGISTERED",
+      runId: `roster-master-${internalGameId}-${now.getTime()}`,
+      correlationId: internalGameId,
+      internalGameId,
+      now,
+      execution: {
+        stage: "roster_master_check",
+        status: "warning",
+        reasonCode: "MASTER_UNREGISTERED",
+        unknownCount: players.length,
+        unknownPlayers: players.slice(0, 20).map((player) => ({
+          playerId: player.playerId || null,
+          name: player.name || null,
+          number: player.number || null,
+          position: player.position || null
+        }))
+      }
+    });
+  } catch (error) {
+    console.warn(`[PUBLIC_ROSTER] master_warning_audit_skipped code=${error?.code || "ROSTER_MASTER_AUDIT_FAILED"}`);
+    return false;
+  }
+}
+
 async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = null, scheduleOptional = null, observerScheduler = null } = {}) {
   const runId = providedRunId || globalThis.crypto?.randomUUID?.() || `v3-run-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const correlationId = runId;
@@ -11544,6 +11587,7 @@ export async function fetchLatestPublicRoster(env, game, { force = false } = {})
       }))
       .filter((entry) => entry.playerId)
       .slice(0, 20);
+    await writeRosterMasterUnregisteredAudit(env, game, masterUnregisteredPlayers, new Date());
     return withPublicRosterContract({
       ok: true,
       internalGameId: String(game?.internal_game_id || ""),

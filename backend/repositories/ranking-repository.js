@@ -5,6 +5,7 @@ import {
   toPublicRankingRow
 } from "../domain/ranking.js";
 import { DAILY_BEST_NINE_LIMIT, toPublicDailyBestNineRow } from "../domain/public-results.js";
+import { RANKING_TEST_SLOT_MAX, rankingTestUsername } from "../domain/ranking-test-users.js";
 import { createV3Error } from "../../game-automation-v3.js";
 
 const RANKING_ACHIEVEMENT_DISPLAY_LIMIT = 3;
@@ -177,6 +178,15 @@ export async function getDailyBestNineForGame(db, { internalGameId = "", legacyG
   const gameValue = useCanonicalId ? canonicalId : compatibilityId;
   if (!gameValue) return { rows: [], totalCount: 0 };
 
+  // Best Nine admits only the canonical S9_TEST accounts as TEST rows. This
+  // keeps arbitrary test predictions out while making the product rule
+  // independent of any particular slot winning by default.
+  const rankingTestUsernames = Array.from(
+    { length: RANKING_TEST_SLOT_MAX },
+    (_, index) => rankingTestUsername(index + 1)
+  );
+  const rankingTestPlaceholders = rankingTestUsernames.map((_, index) => `?${index + 2}`).join(", ");
+  const bindValues = [gameValue, ...rankingTestUsernames];
   const scoreAttemptSchema = await hasScoreAttemptSchema(db);
   const latestPredictions = `WITH latest_predictions AS (
     SELECT predictions.id, predictions.user_id, predictions.game_id,
@@ -196,7 +206,9 @@ export async function getDailyBestNineForGame(db, { internalGameId = "", legacyG
        AND latest_predictions.status = 'scored'
        AND latest_predictions.score IS NOT NULL
        AND latest_predictions.max_score IS NOT NULL
-       AND latest_predictions.is_test_prediction = 0
+       AND (latest_predictions.is_test_prediction = 0
+         OR (latest_predictions.is_test_prediction = 1
+           AND users.username IN (${rankingTestPlaceholders})))
        AND ${gameCondition}
        AND ranking_games.is_ranking_eligible = 1
        AND ranking_games.game_status = 'scored'
@@ -210,7 +222,7 @@ export async function getDailyBestNineForGame(db, { internalGameId = "", legacyG
         FROM latest_predictions
         JOIN ranking_games ON ranking_games.game_id = latest_predictions.game_id
         JOIN users ON users.id = latest_predictions.user_id
-       WHERE ${conditions}`).bind(gameValue).first(),
+       WHERE ${conditions}`).bind(...bindValues).first(),
     db.prepare(`${latestPredictions}
       SELECT users.username, latest_predictions.score, latest_predictions.max_score,
              latest_predictions.submitted_at, latest_predictions.user_id
@@ -222,7 +234,10 @@ export async function getDailyBestNineForGame(db, { internalGameId = "", legacyG
                 latest_predictions.submitted_at ASC,
                 users.username ASC,
                 latest_predictions.user_id ASC
-       LIMIT ?2`).bind(gameValue, Math.min(DAILY_BEST_NINE_LIMIT, Math.max(1, Number(limit) || DAILY_BEST_NINE_LIMIT))).all()
+       LIMIT ?${rankingTestUsernames.length + 2}`).bind(
+      ...bindValues,
+      Math.min(DAILY_BEST_NINE_LIMIT, Math.max(1, Number(limit) || DAILY_BEST_NINE_LIMIT))
+    ).all()
   ]);
 
   return {

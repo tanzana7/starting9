@@ -43,12 +43,40 @@
     }
 
     function closeManualPositionMenus() {
-      document.querySelectorAll(".manual-lineup-position-menu").forEach((menu) => menu.classList.add("hidden"));
+      document.querySelectorAll(".manual-lineup-position-menu").forEach((menu) => {
+        menu.classList.add("hidden");
+        menu.classList.remove("is-viewport-positioned", "is-portal-position-menu");
+        ["left", "top", "right", "max-width", "box-sizing"].forEach((property) => menu.style?.removeProperty?.(property));
+        const host = menu._manualPositionMenuHost;
+        if (host && menu.parentElement !== host) host.appendChild(menu);
+        delete menu._manualPositionMenuHost;
+      });
       document.querySelectorAll("[data-v3-manual-lineup-position-button]").forEach((button) => button.setAttribute("aria-expanded", "false"));
     }
 
+    function positionManualPositionMenu(menu, button) {
+      if (!menu || !button || !document.body || typeof button.getBoundingClientRect !== "function") return;
+      if (!menu._manualPositionMenuHost) menu._manualPositionMenuHost = menu.parentElement;
+      if (menu.parentElement !== document.body) document.body.appendChild(menu);
+      menu.classList.add("is-portal-position-menu", "is-viewport-positioned");
+      const viewportWidth = Number(window.visualViewport?.width) || Number(window.innerWidth) || document.documentElement?.clientWidth || 0;
+      const viewportHeight = Number(window.visualViewport?.height) || Number(window.innerHeight) || document.documentElement?.clientHeight || 0;
+      const padding = 8;
+      menu.style.right = "auto";
+      menu.style.maxWidth = `${Math.max(0, viewportWidth - padding * 2)}px`;
+      menu.style.boxSizing = "border-box";
+      const buttonRect = button.getBoundingClientRect();
+      const menuRect = menu.getBoundingClientRect();
+      const menuWidth = Math.min(menuRect.width, Math.max(0, viewportWidth - padding * 2));
+      const left = Math.min(Math.max(padding, buttonRect.left), Math.max(padding, viewportWidth - menuWidth - padding));
+      const maxTop = viewportHeight - menuRect.height - padding;
+      const top = maxTop >= padding ? Math.min(buttonRect.bottom + 6, maxTop) : padding;
+      menu.style.left = `${Math.round(left)}px`;
+      menu.style.top = `${Math.round(Math.max(padding, top))}px`;
+    }
+
     function updateManualPositionMenuState(menu) {
-      const slot = menu?.closest?.("[data-v3-manual-lineup-slot]");
+      const slot = menu?.closest?.("[data-v3-manual-lineup-slot]") || menu?._manualPositionMenuHost?.closest?.("[data-v3-manual-lineup-slot]");
       const current = slot?.querySelector?.("[data-v3-manual-lineup-position-button]")?.textContent?.trim() || "?";
       const usedPositions = new Set(Array.from(document.querySelectorAll("[data-v3-manual-lineup-position-button]"))
         .map((button) => button.textContent.trim())
@@ -241,8 +269,8 @@
         const manualPositionOption = closestFromEvent(event, "[data-v3-manual-lineup-position-option]");
         if (manualPositionOption) {
           const index = Number(manualPositionOption.dataset.v3ManualLineupPositionOption);
-          preservePickerScroll(`[data-v3-manual-lineup-candidates="${index}"]`, () => actions.updateManualLineupPosition(index, manualPositionOption.dataset.position || ""));
           closeManualPositionMenus();
+          preservePickerScroll(`[data-v3-manual-lineup-candidates="${index}"]`, () => actions.updateManualLineupPosition(index, manualPositionOption.dataset.position || ""));
           return;
         }
         const manualPositionButton = closestFromEvent(event, "[data-v3-manual-lineup-position-button]");
@@ -253,6 +281,7 @@
           if (menu && shouldOpen) {
             updateManualPositionMenuState(menu);
             menu.classList.remove("hidden");
+            positionManualPositionMenu(menu, manualPositionButton);
             manualPositionButton.setAttribute("aria-expanded", "true");
           }
           return;
@@ -368,6 +397,8 @@
         bindClickEvents();
         bindManualPointerEvents();
         bindToolbarEvents();
+        window.addEventListener("resize", closeManualPositionMenus);
+        document.addEventListener("scroll", closeManualPositionMenus, true);
         actions.restoreInitialRoute();
         actions.load();
       }

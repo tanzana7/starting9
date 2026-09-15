@@ -66,6 +66,18 @@ test("admin候補はpublicと同じactive/inactive切替とcandidateVisibility�
   assert.doesNotMatch(inactive, /投手/);
 });
 
+test("admin候補はpublicと同じ2列の名前中心カードで、詳細・補助metadataを表示しない", () => {
+  const renderer = createRenderer();
+  const markup = renderer.renderCandidates([
+    { playerId: "p1", playerName: "先頭", uniformNumber: "1", category: "内野手", manualRosterActive: true },
+    { playerId: "p2", playerName: "控え", uniformNumber: "2", category: "外野手", manualRosterActive: false }
+  ], { search: "" }, 0, null, "all");
+  assert.match(markup, /<button[^>]*class="player-chip manual-lineup-candidate/);
+  assert.match(markup, /\[1\]<\/span> 先頭/);
+  assert.doesNotMatch(markup, /manual-player-candidate-meta|player-inline-details|詳細|内野手|外野手|ロースター/);
+  assert.match(adminCss, /\.manual-lineup-builder \.manual-lineup-candidates\s*\{[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)/);
+});
+
 test("admin lineupはpublicと同じbuilder構造・roster toggle・drag対象を描画する", () => {
   const renderer = createRenderer();
   const markup = renderer.render({ internalGameId: "game-1", gameDate: "2026-09-14", homeTeam: "fighters", awayTeam: "hawks" }, { lineup: { playerCatalog: catalog, manualRoster } }, {
@@ -97,4 +109,7 @@ test("admin pointer操作はthreshold・pointer capture・tap fallbackを持ち�
   assert.doesNotMatch(adminSource, /manualLineupPayload\(state\)[\s\S]*candidateRosterFilter/);
   assert.match(adminHtml, /lineup-builder\.js\?v=shared-lineup-builder-3-position-picker-parity-1/);
   assert.match(adminCss, /manual-lineup-builder\s+\.manual-lineup-slot\.is-drop-target/);
+  assert.match(coordinatorSource, /positionManualPositionMenu/);
+  assert.match(coordinatorSource, /document\.body\.appendChild\(menu\)/);
+  assert.match(adminCss, /\.manual-lineup-position-menu\.is-portal-position-menu/);
 });

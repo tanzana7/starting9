@@ -53,7 +53,7 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
     "frontend/admin-v3/api-client.js?v=independent-roster-lineup-safety-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1",
     "frontend/admin-v3/dom.js?v=manual-lineup-finalize-safety-1",
     "frontend/admin-v3/selection-safety.js?v=admin-game-selection-safety-1",
-    "frontend/admin-v3/render-manual-lineup.js?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1-game-selection-safety-1-lineup-order-mobile-zoom-1-admin-lineup-registration-emergency-fix-1-admin-lineup-lock-reason-1-manual-lineup-late-registration-1-manual-lineup-two-step-confirmation-1-roster-candidate-policy-1-admin-public-parity-1-position-picker-parity-1",
+    "frontend/admin-v3/render-manual-lineup.js?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1-game-selection-safety-1-lineup-order-mobile-zoom-1-admin-lineup-registration-emergency-fix-1-admin-lineup-lock-reason-1-manual-lineup-late-registration-1-manual-lineup-two-step-confirmation-1-roster-candidate-policy-1-admin-public-parity-1-position-picker-parity-1-compact-parity-1",
     "frontend/admin-v3/render-lineup-correction.js?v=admin-v3-lineup-correction-1",
     "frontend/admin-v3/render-manual-roster.js?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1",
     "frontend/admin-v3/render-game-progress.js?v=v4-canonical-status-1",
@@ -64,7 +64,7 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
     "frontend/admin-v3/render-perfect-score-preview.js?v=v4-canonical-status-1",
     "frontend/admin-v3/render-ranking-test-users.js?v=ranking-test-users-1-global-settings-1-ranking-test-fixed-presets-1-display-name-slot-binding-1",
     "frontend/admin-v3/render-manual-game-preview.js?v=v4-canonical-status-1",
-    "frontend/admin-v3/app-coordinator.js?v=independent-roster-lineup-safety-1-preserve-picker-scroll-1-admin-lineup-registration-emergency-fix-1-manual-lineup-two-step-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-display-name-slot-binding-1-admin-public-parity-1-position-picker-parity-1",
+    "frontend/admin-v3/app-coordinator.js?v=independent-roster-lineup-safety-1-preserve-picker-scroll-1-admin-lineup-registration-emergency-fix-1-manual-lineup-two-step-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-display-name-slot-binding-1-admin-public-parity-1-position-picker-parity-1-compact-parity-1",
     "admin-v3.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-lineup-order-mobile-zoom-1-lineup-correction-1-admin-v3-game-progress-history-1-admin-lineup-registration-emergency-fix-1-admin-lineup-lock-reason-1-manual-lineup-late-registration-1-manual-lineup-two-step-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-v4-canonical-status-1-display-name-slot-binding-1-position-picker-parity-1"
   ]);
   const modules = loadModules();
@@ -137,8 +137,9 @@ test("手動スタメンは打順を行順に固定し、守備位置だけを�
   assert.equal((html.match(/data-v3-manual-lineup-position-option=/g) || []).length, 90);
   assert.doesNotMatch(html, /<select[^>]*data-v3-manual-lineup-position/);
   assert.equal((html.match(/data-v3-manual-lineup-order=/g) || []).length, 0);
-  assert.match(html, /class="manual-lineup-fixed-order" aria-label="打順 1番"/);
-  assert.match(html, /class="manual-lineup-fixed-order" aria-label="打順 9番"/);
+  assert.match(html, /class="slot-order" aria-label="打順 1番">1番<\/span>/);
+  assert.match(html, /class="slot-order" aria-label="打順 9番">9番<\/span>/);
+  assert.doesNotMatch(html, /manual-lineup-fixed-order|manual-lineup-position-label/);
   assert.match(html, /data-v3-manual-lineup-position-button="0"[^>]*>捕<\/button>/);
 });
 

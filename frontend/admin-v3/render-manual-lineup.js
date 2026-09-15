@@ -135,12 +135,6 @@
         || String(left?.playerName || "").localeCompare(String(right?.playerName || ""), "ja"));
     }
 
-    function playerRosterLabel(roster) {
-      if (roster.active) return "ロースター内 / active";
-      if (roster.inRoster) return "ロースター内 / inactive（確認要）";
-      return "ロースター外（確認要） / 未登録";
-    }
-
     function confirmationKey(row) {
       const playerId = String(row?.playerId || "").trim();
       if (playerId) return `id:${playerId}`;
@@ -182,8 +176,7 @@
       const selected = players.find((player) => player.playerId === row?.playerId);
       return candidates.length ? candidates.map((player) => {
         const selectedPlayer = selected?.playerId === player.playerId;
-        const rosterLabel = playerRosterLabel(playerRosterState(player, manualRoster));
-        return `<div class="manual-player-candidate-row"><button type="button" class="player-chip manual-lineup-candidate${selectedPlayer ? " selected" : ""}" aria-pressed="${selectedPlayer ? "true" : "false"}" data-picker="actual" data-v3-manual-lineup-player="${escapeHtml(String(index))}" data-v3-manual-lineup-player-id="${escapeHtml(player.playerId)}" draggable="false">${playerName(player)}<small class="manual-player-candidate-meta">${escapeHtml(playerCategory(player))} / ${escapeHtml(rosterLabel)}</small></button>${playerDetailMarkup(player)}</div>`;
+        return `<button type="button" class="player-chip manual-lineup-candidate${selectedPlayer ? " selected" : ""}" aria-pressed="${selectedPlayer ? "true" : "false"}" data-picker="actual" data-v3-manual-lineup-player="${escapeHtml(String(index))}" data-v3-manual-lineup-player-id="${escapeHtml(player.playerId)}" draggable="false">${playerName(player)}</button>`;
       }).join("") : `<span class="muted">候補がありません</span>`;
     }
 
@@ -226,8 +219,8 @@
       const slots = rows.map((row, index) => {
         const selected = catalog.find((player) => player.playerId === row.playerId);
         const slotClass = ["lineup-slot", "manual-lineup-slot", index === activeIndex ? "is-active" : "", selected ? "has-player" : ""].filter(Boolean).join(" ");
-        const playerMarkup = selected ? `${playerName(selected)}${playerDetailMarkup(selected)}` : "未選択";
-        return `<article class="${slotClass}" data-picker="actual" data-v3-manual-lineup-slot="${index}" data-v3-manual-lineup-player-id="${escapeHtml(row.playerId || "")}" aria-current="${index === activeIndex ? "true" : "false"}" draggable="false"><div class="manual-lineup-fixed-order" aria-label="打順 ${index + 1}番"><span class="slot-order">打順</span><strong>${index + 1}番</strong></div><div class="manual-lineup-slot-player"><span class="slot-player${selected ? "" : " slot-empty"}">${playerMarkup}</span></div><div class="manual-lineup-slot-position"><span class="manual-lineup-position-label">守備位置</span>${positionPicker(row.position, index, disabled)}</div><button type="button" class="slot-clear" data-v3-manual-lineup-clear="${index}" aria-label="${index + 1}番を空にする"${disabled || !row.playerId ? " disabled" : ""}>×</button></article>`;
+        const playerMarkup = selected ? playerName(selected) : "未選択";
+        return `<article class="${slotClass}" data-picker="actual" data-v3-manual-lineup-slot="${index}" data-v3-manual-lineup-player-id="${escapeHtml(row.playerId || "")}" aria-current="${index === activeIndex ? "true" : "false"}" draggable="false"><span class="slot-order" aria-label="打順 ${index + 1}番">${index + 1}番</span><div class="manual-lineup-slot-player"><span class="slot-player${selected ? "" : " slot-empty"}">${playerMarkup}</span></div>${positionPicker(row.position, index, disabled)}<button type="button" class="slot-clear" data-v3-manual-lineup-clear="${index}" aria-label="${index + 1}番を空にする"${disabled || !row.playerId ? " disabled" : ""}>×</button></article>`;
       }).join("");
       const rosterFilter = state.candidateRosterFilter === "inactive" ? "inactive" : state.candidateRosterFilter === "active" ? "active" : "all";
       const filterButtons = `<div class="roster-filter manual-lineup-roster-filter" role="group" aria-label="ロースター表示"><button type="button" class="roster-filter-button${rosterFilter === "active" ? " is-selected" : ""}" data-v3-manual-lineup-roster-filter="active" aria-pressed="${rosterFilter === "active" ? "true" : "false"}"${disabled ? " disabled" : ""}>出場候補</button><button type="button" class="roster-filter-button${rosterFilter === "inactive" ? " is-selected" : ""}" data-v3-manual-lineup-roster-filter="inactive" aria-pressed="${rosterFilter === "inactive" ? "true" : "false"}"${disabled ? " disabled" : ""}>その他</button></div>`;

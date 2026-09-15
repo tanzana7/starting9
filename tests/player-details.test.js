@@ -60,7 +60,7 @@ test("公開詳細と既存の背番号・打席左右ラインを共存させ�
   assert.ok(indexHtml.indexOf("fighters-player-details.js") < indexHtml.indexOf("player-display.js"));
 });
 
-test("admin-v3のlineup/roster候補と選択済み表示に詳細を開く導線を追加する", () => {
+test("admin-v3のroster候補は詳細を維持し、lineup候補はcompact表示にする", () => {
   const context = { window: { Starting9Public: loadPublicHelpers().helpers } };
   vm.runInNewContext(`${lineupSource}\n${rosterSource}`, context);
   const lineup = context.window.Starting9AdminV3.createAdminV3ManualLineupRenderer({ escapeHtml });
@@ -68,8 +68,7 @@ test("admin-v3のlineup/roster候補と選択済み表示に詳細を開く導�
   const catalog = [{ playerId: "F-53", playerName: "水谷 瞬", uniformNumber: "53", bats: "R" }];
   const lineupHtml = lineup.renderCandidates(catalog, { search: "" }, 0);
   const rosterHtml = roster.render({ catalog, entries: [] });
-  assert.match(lineupHtml, /player-inline-details/);
-  assert.match(lineupHtml, /生年月日/);
+  assert.doesNotMatch(lineupHtml, /player-inline-details|生年月日|詳細/);
   assert.match(rosterHtml, /player-inline-details/);
   assert.match(adminHtml, /fighters-player-details\.js\?v=fighters-player-details-20260903-1/);
 });

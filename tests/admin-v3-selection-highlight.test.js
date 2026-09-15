@@ -16,10 +16,10 @@ test("manual lineupの選択中候補は黄色で左右端を示し、打席左�
   assert.match(css, /\.manual-lineup-candidate\.selected::before[\s\S]*\.manual-lineup-candidate\.selected::after/);
   assert.match(css, /\.manual-lineup-candidate\.selected \{[\s\S]*color: #654b0c/);
   assert.match(css, /\.manual-lineup-candidate:hover\s*\{[\s\S]*#eaf3fb/);
-  assert.match(css, /\.manual-player-candidate-row:has\(\.player-name--bat-right\)::before[\s\S]*background: #d64545/);
-  assert.match(css, /\.manual-player-candidate-row:has\(\.player-name--bat-left\)::before[\s\S]*background: #2878c8/);
-  assert.match(css, /\.manual-player-candidate-row:has\(\.player-name--bat-switch\)::before[\s\S]*background: #2f9a62/);
-  assert.match(page, /admin-v3\.css\?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1-selection-highlight-1/);
+  assert.match(css, /\.manual-lineup-slot-player:has\(\.player-name--bat-right\)::before[\s\S]*background: #d64545/);
+  assert.match(css, /\.manual-lineup-slot-player:has\(\.player-name--bat-left\)::before[\s\S]*background: #2878c8/);
+  assert.match(css, /\.manual-lineup-slot-player:has\(\.player-name--bat-switch\)::before[\s\S]*background: #2f9a62/);
+  assert.match(page, /admin-v3\.css\?v=.*-compact-parity-1/);
 });
 
 test("manual lineupはスマホ幅の1列レイアウトを維持する", () => {

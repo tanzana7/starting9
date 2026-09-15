@@ -72,7 +72,7 @@ test("admin manual lineupはpublic同様の2ペイン・9スロット・候補�
   assert.doesNotMatch(markup, /prediction.*save/i);
 });
 
-test("選択スロットを変えると候補の追加先だけが変わり、確認・詳細・roster外警告を維持する", () => {
+test("選択スロットを変えると候補の追加先だけが変わり、候補カードはcompact表示になる", () => {
   const window = loadRenderers();
   const renderer = window.Starting9AdminV3.createAdminV3ManualLineupRenderer({ escapeHtml });
   const row = renderer.createBlankRows()[0];
@@ -80,11 +80,12 @@ test("選択スロットを変えると候補の追加先だけが変わり、�
   const candidates = renderer.renderCandidates(catalog, row, 5);
   assert.match(candidates, /class="player-chip manual-lineup-candidate/);
   assert.match(candidates, /data-v3-manual-lineup-player="5"/);
-  assert.match(candidates, /詳細/);
+  assert.doesNotMatch(candidates, /詳細|manual-player-candidate-meta|ロースター外/);
   const markup = renderer.render({}, { lineup: { playerCatalog: catalog } }, { rows: renderer.createBlankRows(), activeIndex: 5 });
   assert.match(markup, /manual-lineup-confirmation-list/);
   assert.match(markup, /data-v3-manual-lineup-search="5"/);
-  assert.match(markup, /ロースター外/);
+  assert.match(markup, /class="slot-order" aria-label="打順 1番">1番<\/span>/);
+  assert.doesNotMatch(markup, /manual-lineup-fixed-order|manual-lineup-position-label/);
   assert.match(rosterSource, /Starting9LineupBuilder/);
 });
 

@@ -261,6 +261,7 @@
         if (closestFromEvent(event, "[data-v3-manual-game-preview]")) { await actions.previewManualGame(); return; }
         if (closestFromEvent(event, "[data-v3-automation-log-refresh]")) { await actions.refreshAutomationLogs(); return; }
         if (closestFromEvent(event, "[data-v3-ranking-exclusion-refresh]")) { await actions.refreshRankingExclusionGames(true); return; }
+        if (closestFromEvent(event, "[data-v3-lineup-roster-refresh]")) { await actions.refreshLineupRoster?.(); return; }
         const manualSlot = closestFromEvent(event, "[data-v3-manual-lineup-slot]");
         if (manualSlot && !closestFromEvent(event, "button, input, select, option, summary, textarea")) {
           actions.selectManualLineupSlot(Number(manualSlot.dataset.v3ManualLineupSlot));
@@ -390,6 +391,18 @@
       window.addEventListener("hashchange", actions.handleHashChange);
     }
 
+    function bindRosterActivityEvents() {
+      const refreshWhenActive = () => {
+        if (document.visibilityState === "hidden") return;
+        void Promise.resolve(actions.refreshLineupRoster?.()).catch((error) => {
+          console.warn("選択中試合のロースター再確認に失敗しました", error);
+        });
+      };
+      document.addEventListener("visibilitychange", refreshWhenActive);
+      window.addEventListener("focus", refreshWhenActive);
+      window.addEventListener("pageshow", refreshWhenActive);
+    }
+
     return Object.freeze({
       start() {
         bindManualSearchCompositionEvents();
@@ -397,6 +410,7 @@
         bindClickEvents();
         bindManualPointerEvents();
         bindToolbarEvents();
+        bindRosterActivityEvents();
         window.addEventListener("resize", closeManualPositionMenus);
         document.addEventListener("scroll", closeManualPositionMenus, true);
         actions.restoreInitialRoute();

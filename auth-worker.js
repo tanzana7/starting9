@@ -318,6 +318,10 @@ const PUBLIC_GAME_LIST_LIMIT = 20;
 const PUBLIC_PREVIOUS_RESULT_CANDIDATE_LIMIT = 10;
 const PUBLIC_GAMES_CACHE_FRESH_TTL_SECONDS = 60;
 const PUBLIC_PREVIOUS_RESULT_CACHE_FRESH_TTL_SECONDS = 300;
+// Public and admin roster reads share one bounded cache.  The resolver remains
+// the source of truth; this only prevents two callers from observing different
+// freshness windows while the upstream NPB cache is being refreshed.
+const PUBLIC_ROSTER_CACHE_FRESH_TTL_SECONDS = 60;
 const PUBLIC_CACHE_STALE_TTL_SECONDS = 24 * 60 * 60;
 const PUBLIC_CACHE_KEY_VERSION = "v1";
 const ADMIN_V3_DEFAULT_GAME_LIMIT = 10;
@@ -638,7 +642,7 @@ export default {
         return await handleGetGameDayStatus(request, env, cors);
       }
       if (path === "/api/game-day-roster" && request.method === "GET") {
-        return await handleGetGameDayRoster(request, env, cors);
+        return await handleGetGameDayRosterWithCache(request, env, ctx, cors);
       }
       if (path === "/api/prediction-target" && request.method === "GET") {
         return await handleGetPredictionTarget(request, env, cors);
@@ -5581,15 +5585,19 @@ async function handleAdminV3Overview(request, env, cors) {
     }
     let publicRosterContract = null;
     try {
-      publicRosterContract = await fetchLatestPublicRoster(env, {
-        ...game,
-        internal_game_id: game.internalGameId,
-        game_date: game.gameDate
+      const sharedRosterResponse = await readSharedGameDayRoster(env, {
+        internalGameId: game.internalGameId,
+        gameDate: game.gameDate,
+        homeTeam: game.homeTeam,
+        awayTeam: game.awayTeam
       });
+      if (sharedRosterResponse?.ok === true && Array.isArray(sharedRosterResponse.players) && sharedRosterResponse.players.length > 0) {
+        publicRosterContract = sharedRosterResponse;
+      }
     } catch (error) {
       console.warn(`[ADMIN_V3_OVERVIEW] internalGameId=${game.internalGameId} stage=public_roster_read failureCode=${error?.code || "PUBLIC_ROSTER_READ_FAILED"}`);
     }
-    const publicSourceSnapshotComparison = publicRosterContract && canonicalRosterSnapshot.roster_json
+    const publicSourceSnapshotComparison = publicRosterContract?.sourceOfTruth === "official_live" && canonicalRosterSnapshot.roster_json
       ? compareV3RosterSourceSnapshot({
         sourceRoster: publicRosterContract.players,
         snapshotRoster: parseJsonArray(canonicalRosterSnapshot.roster_json),
@@ -8259,6 +8267,14 @@ async function handleAdminV3Phase1Route(request, env, cors, route) {
   }
 }
 
+export async function readSharedGameDayRoster(env, game, ctx = undefined) {
+  const internalGameId = String(game?.internalGameId || game?.internal_game_id || "").trim();
+  if (!internalGameId) return null;
+  const request = new Request(`https://starting9.internal/api/game-day-roster?internalGameId=${encodeURIComponent(internalGameId)}`);
+  const response = await handleGetGameDayRosterWithCache(request, env, ctx, undefined);
+  return await response.json().catch(() => null);
+}
+
 async function getAdminPublicRosterForLineup(env, context) {
   const gameId = String(context?.id || "").trim();
   if (!gameId) return { roster: null, status: "unavailable", source: null, warning: "対象試合がありません。" };
@@ -8271,17 +8287,17 @@ async function getAdminPublicRosterForLineup(env, context) {
     // Reuse the public resolver, including its live/cache/snapshot fallback
     // order. The internal call is read-only and avoids giving admin a second
     // roster-fetch implementation with different freshness rules.
-    const response = await handleGetGameDayRoster(
-      new Request(`https://starting9.internal/api/game-day-roster?internalGameId=${encodeURIComponent(gameId)}`),
-      env,
-      undefined
-    );
-    const payload = await response.json().catch(() => null);
+    const payload = await readSharedGameDayRoster(env, {
+      internalGameId: gameId,
+      gameDate: context?.target?.game_date,
+      homeTeam: context?.target?.home_team,
+      awayTeam: context?.target?.away_team
+    });
     const responseGameId = String(payload?.internalGameId || "");
     const gameDate = String(context?.target?.game_date || "").slice(0, 10);
     const responseDate = String(payload?.gameDate || "").slice(0, 10);
     const players = Array.isArray(payload?.players) ? payload.players : [];
-    if (!response.ok || payload?.ok !== true || responseGameId !== gameId || responseDate !== gameDate || !players.length) {
+    if (payload?.ok !== true || responseGameId !== gameId || responseDate !== gameDate || !players.length) {
       return { roster: null, status: payload?.rosterStatus || "unavailable", source: payload?.displayRosterSource || null, warning: payload?.warning || "公開rosterを候補へ適用できません。" };
     }
     return {
@@ -11608,6 +11624,18 @@ async function handleGetGameDayRoster(request, env, cors) {
     buildPublicStaleRosterResponse({ internalGameId, gameDate: game.game_date, snapshot: row }),
     { warning: "公式liveを取得できないため、前回snapshotを警告付きで表示しています。" }
   ), 200, cors);
+}
+
+async function handleGetGameDayRosterWithCache(request, env, ctx, cors) {
+  return await handlePublicReadWithCache({
+    request,
+    env,
+    ctx,
+    cors,
+    kind: "game-day-roster",
+    freshTtlSeconds: PUBLIC_ROSTER_CACHE_FRESH_TTL_SECONDS,
+    originHandler: () => handleGetGameDayRoster(request, env, cors)
+  });
 }
 
 function buildPublicRosterFallbackResponse(response, {
@@ -22127,13 +22155,8 @@ function hasTemporaryPredictionPlayer(value) {
 async function getTrustedTemporaryPlayersForPrediction(env, metadata, value) {
   if (!hasTemporaryPredictionPlayer(value)) return [];
   try {
-    const response = await handleGetGameDayRoster(
-      new Request(`https://starting9.internal/api/game-day-roster?internalGameId=${encodeURIComponent(metadata.internalGameId)}`),
-      env,
-      undefined
-    );
-    const payload = await response.json().catch(() => null);
-    return response.ok && payload?.ok === true && Array.isArray(payload.players) ? payload.players : [];
+    const payload = await readSharedGameDayRoster(env, { internalGameId: metadata.internalGameId });
+    return payload?.ok === true && Array.isArray(payload.players) ? payload.players : [];
   } catch {
     return [];
   }

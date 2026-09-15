@@ -208,12 +208,12 @@ test("通常画面は選択試合のUUIDでV3 snapshotを再取得し、旧game_
 });
 
 test("新鮮なsnapshotがない公開rosterはNPB公式をcache利用でread-only確認し、最新登録を隠さない", () => {
-  const handler = worker.slice(worker.indexOf("async function handleGetGameDayRoster"), worker.indexOf("async function fetchLatestPublicRoster"));
+  const handler = worker.slice(worker.indexOf("async function handleGetGameDayRoster(request"), worker.indexOf("async function fetchLatestPublicRoster"));
   const overview = worker.slice(worker.indexOf("async function handleAdminV3Overview"), worker.indexOf("async function handleAdminV3IdentityResolve"));
   assert.match(handler, /fetchLatestPublicRoster\(env, game\)/);
   assert.doesNotMatch(handler, /force:\s*["']1["']/);
-  assert.match(overview, /fetchLatestPublicRoster\(env, \{/);
-  assert.doesNotMatch(overview, /fetchLatestPublicRoster\(env, \{[\s\S]{0,240}force:/);
+  assert.match(overview, /readSharedGameDayRoster\(env, \{/);
+  assert.doesNotMatch(overview, /fetchLatestPublicRoster\(env, \{/);
   assert.match(worker, /export async function fetchLatestPublicRoster\(env, game, \{ force = false \} = \{\}\)/);
   assert.match(worker, /displayRosterSource: "latest_official_live"/);
   assert.match(handler, /正式roster_fetchで更新します/);
@@ -258,7 +258,7 @@ test("display用live roster helperはforceなしを既定にし、明示forceだ
 });
 
 test("同日snapshotが古い場合も公式liveとfingerprint比較して候補を返す", () => {
-  const handler = worker.slice(worker.indexOf("async function handleGetGameDayRoster"), worker.indexOf("export function getPublicRosterQualityFromAuditDetails"));
+  const handler = worker.slice(worker.indexOf("async function handleGetGameDayRoster(request"), worker.indexOf("export function getPublicRosterQualityFromAuditDetails"));
   assert.match(handler, /fetchLatestPublicRoster\(env, game\)/);
   assert.match(handler, /compareV3RosterSourceSnapshot/);
   assert.match(handler, /sourceSnapshotComparison/);

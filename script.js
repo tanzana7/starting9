@@ -662,9 +662,60 @@ function buildLineupPicker(pickerName, lineupId, playersId) {
 }
 
 function getPredictionCandidateNames() {
-  return players
-    .filter((player) => window.Starting9LineupBuilder?.isLineupCandidate?.(player) ?? player.isBatterCandidate === true)
-    .map((player) => player.name);
+  return getPredictionCandidatePlayers()
+    .filter((player) => window.Starting9LineupBuilder?.isLineupCandidate?.(player) ?? player.isBatterCandidate === true);
+}
+
+function isOfficialNpbPlayerId(value) {
+  return /^npb:\d{8}$/i.test(String(value ?? "").trim());
+}
+
+function temporaryPublicPlayerCategory(position) {
+  const normalized = String(position || "").normalize("NFKC").trim();
+  if (normalized === "捕手") return "catcher";
+  if (normalized === "内野手") return "infielder";
+  if (normalized === "外野手") return "outfielder";
+  return "";
+}
+
+function createTemporaryPublicPlayer(entry) {
+  const category = temporaryPublicPlayerCategory(entry?.position);
+  const playerId = String(entry?.playerId || "").trim().toLowerCase();
+  const number = String(entry?.number || "").trim();
+  const name = String(entry?.name || "").trim();
+  if (!isOfficialNpbPlayerId(playerId) || !category || !/^\d{1,3}$/.test(number) || !name) return null;
+  return {
+    name,
+    displayName: name,
+    uniformNumber: number,
+    playerId,
+    teamCode: "fighters",
+    teamId: "F",
+    category,
+    registeredPosition: entry.position,
+    isBatterCandidate: true,
+    predictionCandidateRole: "fielder",
+    isTemporaryCandidate: true,
+    identitySource: "npb-live"
+  };
+}
+
+function getPredictionCandidatePlayers() {
+  const candidatePlayers = [...players];
+  const existingIds = new Set(candidatePlayers.map((player) => String(player?.playerId || "").trim()).filter(Boolean));
+  const existingMasterKeys = new Set(candidatePlayers.map((player) => `${normalizePlayerKey(player?.name)}:${String(player?.uniformNumber || "").trim()}`));
+  normalizeRosterEntries(state.publicRoster?.players).forEach((entry) => {
+    const temporaryPlayer = createTemporaryPublicPlayer(entry);
+    const masterKey = temporaryPlayer
+      ? `${normalizePlayerKey(temporaryPlayer.name)}:${temporaryPlayer.uniformNumber}`
+      : "";
+    if (temporaryPlayer && !existingIds.has(temporaryPlayer.playerId) && !existingMasterKeys.has(masterKey)) {
+      existingIds.add(temporaryPlayer.playerId);
+      existingMasterKeys.add(masterKey);
+      candidatePlayers.push(temporaryPlayer);
+    }
+  });
+  return candidatePlayers;
 }
 
 function hasUsablePublicRosterForCurrentGame() {
@@ -1016,10 +1067,14 @@ function closeAllPositionMenus() {
 
 function createPlayerChip(pickerName, player) {
   const button = document.createElement("button");
+  const playerName = typeof player === "object" && player !== null
+    ? String(player.name || player.playerName || player.displayName || "")
+    : String(player || "");
   button.className = "player-chip";
   button.type = "button";
   button.dataset.picker = pickerName;
-  button.dataset.player = player;
+  button.dataset.player = playerName;
+  if (player && typeof player === "object" && player.playerId) button.dataset.playerId = String(player.playerId);
   button.title = formatPlayerNameForDisplay(player);
   button.draggable = shouldUseNativeDrag(pickerName);
   button.innerHTML = createPlayerLabelHtml(player);
@@ -1054,7 +1109,7 @@ function createPlayerChip(pickerName, player) {
     }
 
     if (pickerName === "prediction" && !ensurePredictionEditingAllowed()) return;
-    assignPlayerToActiveSlot(pickerName, player);
+    assignPlayerToActiveSlot(pickerName, playerName);
   });
   button.addEventListener("pointerdown", (event) => handlePlayerPointerDown(event, button));
   if (pickerName === "prediction") {
@@ -1698,7 +1753,8 @@ function normalizeRosterEntries(players) {
   players.forEach((player) => {
     const source = typeof player === "object" && player !== null ? player : { name: player };
     const displayName = String(source.name || "").replace(/\u3000/g, " ").replace(/\s+/g, " ").trim().replace(/[\s\u3000]/g, "");
-    const key = createRosterEntryKey({ number: source.number, name: displayName });
+    const sourcePlayerId = String(source.playerId || "").trim().toLowerCase();
+    const key = createRosterEntryKey({ playerId: sourcePlayerId, number: source.number, name: displayName });
     if (!displayName || !key || seen.has(key)) {
       return;
     }
@@ -1707,8 +1763,18 @@ function normalizeRosterEntries(players) {
     const normalizedEntry = {
       position: String(source.position || "").trim(),
       number: String(source.number || "").trim(),
-      name: displayName
+      name: displayName,
+      ...(/^npb:\d{8}$/i.test(sourcePlayerId) ? { playerId: sourcePlayerId } : {})
     };
+    const category = {
+      "捕手": "catcher",
+      "内野手": "infielder",
+      "外野手": "outfielder"
+    }[normalizedEntry.position] || "";
+    if (category) {
+      normalizedEntry.isBatterCandidate = true;
+      normalizedEntry.predictionCandidateRole = "fielder";
+    }
     const handSources = [source, source.handedness, source.metadata, source.meta, source.rawMetadata, source.raw];
     for (const handSource of handSources) {
       if (!handSource || typeof handSource !== "object") continue;
@@ -1757,6 +1823,8 @@ function createRosterPlayerMap(players) {
 }
 
 function createRosterEntryKey(player) {
+  const playerId = String(player?.playerId || "").trim().toLowerCase();
+  if (/^npb:\d{8}$/i.test(playerId)) return `id:${playerId}`;
   const number = String(player?.number || "").trim();
   return number ? `number:${number}` : `name:${normalizePlayerKey(player?.name)}`;
 }
@@ -3664,7 +3732,7 @@ function createPlayerId(teamCode, uniformNumber) {
 
 function getUniquePlayerData(playerName) {
   const playerKey = normalizePlayerKey(playerName);
-  const matchedPlayers = players.filter((player) => normalizePlayerKey(player.name) === playerKey);
+  const matchedPlayers = getPredictionCandidatePlayers().filter((player) => normalizePlayerKey(player.name) === playerKey);
   return matchedPlayers.length === 1 ? matchedPlayers[0] : null;
 }
 
@@ -3674,13 +3742,14 @@ function createPredictionPayload(prediction) {
 
   for (const item of lineup) {
     const player = getUniquePlayerData(item.player);
+    const isTemporary = Boolean(player?.isTemporaryCandidate && isOfficialNpbPlayerId(player?.playerId));
     const teamCode = player?.teamCode || DEFAULT_PLAYER_TEAM_CODE;
     const uniformNumber = player?.uniformNumber;
     const teamId = TEAM_PLAYER_ID_PREFIXES[teamCode];
-    const playerId = createPlayerId(teamCode, uniformNumber);
+    const playerId = isTemporary ? String(player.playerId).trim().toLowerCase() : createPlayerId(teamCode, uniformNumber);
 
     // 古いlocalStorageの予想も、マスタ上で一意に一致する場合だけ補完します。
-    if (!player || !teamId || !playerId) {
+    if (!player || !teamId || !playerId || (isTemporary && teamCode !== "fighters")) {
       return {
         ok: false,
         error: `「${item.player || "未選択"}」の選手IDを確認できません。選手を選び直してから保存してください。`

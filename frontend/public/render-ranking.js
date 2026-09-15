@@ -1,5 +1,6 @@
 (() => {
   const publicFrontend = window.Starting9Public = window.Starting9Public || {};
+  const PUBLIC_RANKING_DISPLAY_LIMIT = 10;
 
   function createPublicRankingRenderer(deps) {
     function renderHeading(view) {
@@ -23,7 +24,14 @@
 
     function filterRows(rows, { hideIneligibleRankings = false } = {}) {
       const normalizedRows = Array.isArray(rows) ? rows : [];
-      return hideIneligibleRankings ? normalizedRows.filter((row) => row?.isQualified) : normalizedRows;
+      const eligibleRows = hideIneligibleRankings ? normalizedRows.filter((row) => row?.isQualified) : normalizedRows;
+      return eligibleRows.filter((row) => {
+        if (row?.rank === null || row?.rank === undefined || row?.rank === "") return true;
+        const rank = Number(row?.rank);
+        // Unqualified users have no competition rank; keep their existing
+        // reference section while limiting ranked public entries to Top 10.
+        return Number.isInteger(rank) && rank >= 1 && rank <= PUBLIC_RANKING_DISPLAY_LIMIT;
+      });
     }
 
     function formatQualification(row, { reference = false } = {}) {

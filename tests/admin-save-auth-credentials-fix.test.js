@@ -67,6 +67,28 @@ test("認証失敗の表示は401/403/503/通信失敗を区別し、内部詳�
   assert.doesNotMatch(adminSource, /MANUAL_ROSTER_SAVE_FAILED\"\}: \$\{error\.message\}/);
   assert.match(apiSource, /error\.code = "NETWORK_ERROR"/);
   assert.match(apiSource, /管理APIへ接続できません/);
+  assert.match(adminSource, /function formatLineupValidationError\(validation\)/);
+  assert.match(adminSource, /LINEUP_NUMBER_MISMATCH: "背番号が一致しません。"/);
+  assert.match(adminSource, /error\?\.validation/);
+  assert.match(apiSource, /error\.validation = body\.validation/);
+});
+
+test("lineup validationの安全な詳細をAPI clientから管理画面へ伝播する", async () => {
+  const api = loadApiClient(async () => ({
+    ok: false,
+    status: 400,
+    json: async () => ({
+      ok: false,
+      code: "V3_LINEUP_INVALID",
+      error: "入力が不正です。",
+      validation: { reasonCode: "LINEUP_NUMBER_MISMATCH", slot: 3, field: "uniformNumber" }
+    })
+  }));
+  await assert.rejects(api.saveManualLineup("game-1", { lineup: [] }), (error) => {
+    assert.equal(error.code, "V3_LINEUP_INVALID");
+    assert.deepEqual(error.validation, { reasonCode: "LINEUP_NUMBER_MISMATCH", slot: 3, field: "uniformNumber" });
+    return true;
+  });
 });
 
 test("通信例外はNETWORK_ERRORへ正規化し、元の内部例外をUIへ渡さない", async () => {

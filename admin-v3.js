@@ -115,9 +115,35 @@ function adminAuthErrorMessage(error) {
   return "認証APIへ接続できません。通信状況を確認して再試行してください。";
 }
 
+function formatLineupValidationError(validation) {
+  if (!validation || typeof validation !== "object") return "";
+  const slot = Number.isInteger(validation.slot) ? `${validation.slot}番` : "入力";
+  const messages = {
+    LINEUP_COUNT_INVALID: "9人分の選手を入力してください。",
+    LINEUP_PLAYER_UNKNOWN: "選手情報を確認してください。",
+    LINEUP_PLAYER_REQUIRED: "選手情報を入力してください。",
+    LINEUP_NUMBER_MISMATCH: "背番号が一致しません。",
+    LINEUP_NUMBER_INVALID: "背番号を確認してください。",
+    LINEUP_PLAYER_ID_MISMATCH: "選手情報を確認してください。",
+    LINEUP_PLAYER_ID_INVALID: "選手情報を確認してください。",
+    LINEUP_PLAYER_DUPLICATE: "同じ選手が重複しています。",
+    LINEUP_ORDER_INVALID: "打順を確認してください。",
+    LINEUP_ORDER_DUPLICATE: "打順が重複しています。",
+    LINEUP_POSITION_INVALID: "守備位置を確認してください。",
+    LINEUP_POSITION_DUPLICATE: "守備位置が重複しています。",
+    LINEUP_TEAM_INVALID: "球団情報を確認してください。"
+  };
+  const message = messages[String(validation.reasonCode || "").trim()];
+  return message ? `${slot}: ${message}` : "入力内容を確認してください。";
+}
+
 function formatV3AdminError(error, fallbackCode) {
   const code = error?.code || fallbackCode;
   const status = Number(error?.status);
+  if (["V3_LINEUP_INVALID", "V3_LINEUP_CORRECTION_LINEUP_INVALID"].includes(code)) {
+    const validationMessage = formatLineupValidationError(error?.validation);
+    if (validationMessage) return `${code}: ${validationMessage}`;
+  }
   if ([401, 403, 503].includes(status)
     || ["AUTH_REQUIRED", "ADMIN_ROLE_REQUIRED", "D1_READ_LIMIT_EXCEEDED", "DB_UNAVAILABLE"].includes(error?.code)
     || !status) {

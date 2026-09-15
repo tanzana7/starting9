@@ -56,6 +56,7 @@
         error.code = body.code || "V3_ADMIN_REQUEST_FAILED";
         error.status = response.status;
         error.details = body.resolutionDiagnostics || body.diagnostics || null;
+        error.validation = body.validation && typeof body.validation === "object" ? body.validation : null;
         error.identityState = body.identityState || null;
         throw error;
       }

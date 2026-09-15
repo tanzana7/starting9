@@ -139,7 +139,8 @@ export async function getOrCreateInternalGame(db, {
   identifiers = [],
   allowCreate = false,
   createId = () => crypto.randomUUID(),
-  now = new Date()
+  now = new Date(),
+  auditDb = null
 } = {}) {
   const identity = normalizeGameIdentity(game);
   const normalizedIdentifiers = identifiers.map(normalizeGameIdentifier);
@@ -155,7 +156,7 @@ export async function getOrCreateInternalGame(db, {
     if (!allowCreate) return { status: "not_found", code: "INTERNAL_GAME_NOT_FOUND", internalGameId: null };
     internalGameId = await createInternalGame(db, identity, createId, now);
   }
-  await updateGameScheduleMetadata(db, internalGameId, identity, game, now);
+  await updateGameScheduleMetadata(db, internalGameId, identity, game, now, auditDb);
   for (const identifier of normalizedIdentifiers) {
     await registerGameIdentifier(db, internalGameId, identifier, now);
   }
@@ -164,7 +165,7 @@ export async function getOrCreateInternalGame(db, {
 
 // Keep the schedule row's derived timestamps beside the canonical start time.
 // Older environments simply skip columns introduced after the registry.
-export async function updateGameScheduleMetadata(db, internalGameId, identity, source = {}, now = new Date()) {
+export async function updateGameScheduleMetadata(db, internalGameId, identity, source = {}, now = new Date(), auditDb = null) {
   let columnsResult;
   try {
     columnsResult = await db.prepare("PRAGMA table_info(games)").bind().all();
@@ -232,11 +233,12 @@ export async function updateGameScheduleMetadata(db, internalGameId, identity, s
   if (!fields.length) return false;
   values.push(internalGameId);
   const updateStatement = db.prepare(`UPDATE games SET ${fields.join(", ")} WHERE internal_game_id = ?${values.length}`).bind(...values);
-  const auditColumnsResult = identityColumns.length
-    ? await db.prepare("PRAGMA table_info(game_automation_v3_audit)").bind().all().catch(() => ({ results: [] }))
+  const auditColumnsResult = auditDb && identityColumns.length
+    ? await auditDb.prepare("PRAGMA table_info(game_automation_v3_audit)").bind().all().catch(() => ({ results: [] }))
     : { results: [] };
   const auditColumns = new Set((auditColumnsResult.results || []).map((row) => String(row.name || "")));
-  const canAuditIdentityChange = !isManualOverride
+  const canAuditIdentityChange = Boolean(auditDb)
+    && !isManualOverride
     && auditColumns.has("event_type")
     && auditColumns.has("previous_npb_game_code")
     && auditColumns.has("next_npb_game_code")
@@ -255,7 +257,7 @@ export async function updateGameScheduleMetadata(db, internalGameId, identity, s
       || String(currentGame?.npb_identity_status || "unresolved") !== nextStatus
       || String(currentGame?.npb_identity_source || "") !== nextSource;
     if (changed) {
-      const auditStatement = db.prepare(
+      const auditStatement = auditDb.prepare(
         `INSERT INTO game_automation_v3_audit
            (internal_game_id, job_type, event_type, previous_npb_game_code, next_npb_game_code,
             previous_npb_game_url, next_npb_game_url, previous_npb_identity_status,
@@ -274,7 +276,13 @@ export async function updateGameScheduleMetadata(db, internalGameId, identity, s
         nextSource,
         timestamp
       );
-      await db.batch([updateStatement, auditStatement]);
+      await updateStatement.run();
+      try {
+        await auditStatement.run();
+      } catch {
+        // Audit is diagnostic-only; a core schedule update must remain durable
+        // even when the separate audit database is unavailable.
+      }
       return true;
     }
   }

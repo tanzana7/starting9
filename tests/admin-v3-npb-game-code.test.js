@@ -56,7 +56,8 @@ test("更新は旧値・新値・管理者・時刻を既存V3監査へ記録す
   assert.match(handler, /npb_identity_status/);
   assert.match(handler, /manually_overridden/);
   assert.match(handler, /buildNpbGameUrl/);
-  assert.match(handler, /env\.AUTH_DB\.batch\(\[/);
+  assert.match(handler, /const auditDb = getV3AuditDb\(env\)/);
+  assert.match(handler, /auditDb\.prepare/);
 });
 
 test("V3管理画面はNPB識別情報を読み取り表示し、手動上書き導線を置かない", () => {

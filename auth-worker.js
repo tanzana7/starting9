@@ -407,16 +407,32 @@ const ROUTINE_V3_AUDIT_EVENT_TYPES = new Set([
   "V3_FORMAL_DUE_PLAN_SUMMARY", "V3_AUXILIARY_PLAN_STARTED", "V3_AUXILIARY_PLAN_FINISHED",
   "V3_AUXILIARY_PLAN_SUMMARY", "V3_CLAIM_PHASE_STARTED", "V3_EXECUTION_SUMMARY",
   "V3_RUN_FINISHED", "CRON_CRITICAL_PATH_FINISHED", "CRON_HANDLER_FINISHED",
-  "cron_run_summary", "v3_job_plan_observed", "schedule_sync"
+  "cron_run_summary", "v3_job_plan_observed", "schedule_sync", "V3_PHASE",
+  "V3_CLAIM_EXECUTION_SUMMARY", "job", "roster_job_plan_observed",
+  "probable_starter_job_plan_observed", "v3_job_claimed", "roster_job_claimed",
+  "probable_starter_job_claimed"
 ]);
 
 export function shouldPersistV3Audit({ eventType = "", job = null, execution = null, failure = null } = {}) {
   const executionStatus = String(execution?.status || "").toLowerCase();
+  const diagnosticContext = [
+    eventType,
+    execution?.stage,
+    execution?.reasonCode,
+    execution?.errorCode,
+    execution?.failureCode,
+    execution?.reason,
+    execution?.failureMessage
+  ].filter(Boolean).join(" ").toLowerCase();
   const executionHasFailure = Number(execution?.failedJobCount || 0) > 0
     || Number(execution?.terminalFailedJobCount || 0) > 0
     || (Array.isArray(execution?.retryErrors) && execution.retryErrors.length > 0)
     || (Array.isArray(execution?.errors) && execution.errors.length > 0);
-  if (failure || String(job?.status || "").toLowerCase() === "failed" || ["failed", "error"].includes(executionStatus) || executionHasFailure) return true;
+  const jobStatus = String(job?.status || "").toLowerCase();
+  const exceptionalContext = /retry|reclaim|stale|mismatch|anomal|recovery/.test(diagnosticContext)
+    || ["retry_wait", "retry", "reclaimed", "stale", "mismatch"].includes(executionStatus)
+    || ["retry_wait", "retry", "reclaimed", "stale", "mismatch"].includes(jobStatus);
+  if (failure || ["failed", "error", "terminal_failed"].includes(jobStatus) || ["failed", "error", "terminal_failed"].includes(executionStatus) || executionHasFailure || exceptionalContext) return true;
   return !ROUTINE_V3_AUDIT_EVENT_TYPES.has(String(eventType || ""));
 }
 const GAME_IDENTITY_AUDIT_DEFAULT_RANGE_DAYS = 30;
@@ -883,11 +899,16 @@ export default {
   }
 };
 
+function getV3AuditDb(env) {
+  return env?.AUDIT_DB || null;
+}
+
 async function writeV3RuntimeAudit(env, { eventType, runId, correlationId = runId, now = new Date(), internalGameId = null, execution = null, failure = null } = {}) {
   try {
     if (!shouldPersistV3Audit({ eventType, execution, failure })) return false;
-    if (!env?.AUTH_DB) {
-      console.warn(`[GAME_AUTOMATION_V3] runtime_audit_skipped code=AUTH_DB_UNAVAILABLE event=${eventType || "unknown"}`);
+    const auditDb = getV3AuditDb(env);
+    if (!env?.AUTH_DB || !auditDb) {
+      console.warn(`[GAME_AUTOMATION_V3] runtime_audit_skipped code=AUDIT_DB_UNAVAILABLE event=${eventType || "unknown"}`);
       return false;
     }
     const anchor = internalGameId || (await env.AUTH_DB.prepare(
@@ -897,7 +918,7 @@ async function writeV3RuntimeAudit(env, { eventType, runId, correlationId = runI
       console.warn(`[GAME_AUTOMATION_V3] runtime_audit_skipped code=NO_GAME_AUDIT_ANCHOR event=${eventType || "unknown"}`);
       return false;
     }
-    const auditColumns = await getTableColumnSet(env.AUTH_DB, "game_automation_v3_audit");
+    const auditColumns = await getTableColumnSet(auditDb, "game_automation_v3_audit");
     const { columns, values } = buildV3CronJobAuditInsert({
       auditColumns,
       runId,
@@ -910,7 +931,7 @@ async function writeV3RuntimeAudit(env, { eventType, runId, correlationId = runI
       occurredAt: now,
       now
     });
-    await env.AUTH_DB.prepare(
+    await auditDb.prepare(
       `INSERT INTO game_automation_v3_audit (${columns.join(", ")}) VALUES (${columns.map((_, index) => `?${index + 1}`).join(", ")})`
     ).bind(...values).run();
     return true;
@@ -932,25 +953,33 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
   });
   const writeAudit = async ({ eventType = "job", job, internalGameId = null, claimToken = null, stateBefore = null, execution = null, failure = null, occurredAt = now } = {}) => {
     if (!shouldPersistV3Audit({ eventType, job, execution, failure })) return false;
-    const auditColumns = await getTableColumnSet(env.AUTH_DB, "game_automation_v3_audit");
-    const { columns, values } = buildV3CronJobAuditInsert({
-      auditColumns,
-      runId,
-      correlationId,
-      eventType,
-      job,
-      internalGameId,
-      claimToken,
-      stateBefore,
-      execution,
-      failure,
-      occurredAt,
-      now
-    });
-    await env.AUTH_DB.prepare(
-      `INSERT INTO game_automation_v3_audit (${columns.join(", ")})
-       VALUES (${columns.map((_, index) => `?${index + 1}`).join(", ")})`
-    ).bind(...values).run();
+    const auditDb = getV3AuditDb(env);
+    if (!auditDb) return false;
+    try {
+      const auditColumns = await getTableColumnSet(auditDb, "game_automation_v3_audit");
+      const { columns, values } = buildV3CronJobAuditInsert({
+        auditColumns,
+        runId,
+        correlationId,
+        eventType,
+        job,
+        internalGameId,
+        claimToken,
+        stateBefore,
+        execution,
+        failure,
+        occurredAt,
+        now
+      });
+      await auditDb.prepare(
+        `INSERT INTO game_automation_v3_audit (${columns.join(", ")})
+         VALUES (${columns.map((_, index) => `?${index + 1}`).join(", ")})`
+      ).bind(...values).run();
+      return true;
+    } catch (error) {
+      console.warn(`[GAME_AUTOMATION_V3] audit_write_skipped code=${error?.code || "V3_AUDIT_WRITE_FAILED"}`);
+      return false;
+    }
   };
   const cronCriticalPathAuditState = { recorded: false };
   const writeCronCriticalPathFinished = async (status, details = {}) => {
@@ -983,27 +1012,33 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
 
   const writeScheduleSyncAudit = async (diagnostics) => {
     if (!shouldPersistV3Audit({ eventType: "schedule_sync", execution: diagnostics })) return;
-    const anchor = await env.AUTH_DB.prepare(
-      `SELECT internal_game_id
-         FROM games
-        WHERE internal_game_id IS NOT NULL AND internal_game_id <> ''
-        ORDER BY game_date, start_time, internal_game_id
-        LIMIT 1`
-    ).first();
-    if (!anchor?.internal_game_id) return;
-    const auditColumns = await getTableColumnSet(env.AUTH_DB, "game_automation_v3_audit");
-    const { columns, values } = buildV3ScheduleSyncAuditInsert({
-      auditColumns,
-      internalGameId: anchor.internal_game_id,
-      diagnostics,
-      runId,
-      correlationId,
-      now
-    });
-    await env.AUTH_DB.prepare(
-      `INSERT INTO game_automation_v3_audit (${columns.join(", ")})
-       VALUES (${columns.map((_, index) => `?${index + 1}`).join(", ")})`
-    ).bind(...values).run();
+    const auditDb = getV3AuditDb(env);
+    if (!auditDb) return;
+    try {
+      const anchor = await env.AUTH_DB.prepare(
+        `SELECT internal_game_id
+           FROM games
+          WHERE internal_game_id IS NOT NULL AND internal_game_id <> ''
+          ORDER BY game_date, start_time, internal_game_id
+          LIMIT 1`
+      ).first();
+      if (!anchor?.internal_game_id) return;
+      const auditColumns = await getTableColumnSet(auditDb, "game_automation_v3_audit");
+      const { columns, values } = buildV3ScheduleSyncAuditInsert({
+        auditColumns,
+        internalGameId: anchor.internal_game_id,
+        diagnostics,
+        runId,
+        correlationId,
+        now
+      });
+      await auditDb.prepare(
+        `INSERT INTO game_automation_v3_audit (${columns.join(", ")})
+         VALUES (${columns.map((_, index) => `?${index + 1}`).join(", ")})`
+      ).bind(...values).run();
+    } catch (error) {
+      console.warn(`[GAME_AUTOMATION_V3] stage=schedule_sync_audit status=skipped code=${error?.code || "V3_SCHEDULE_SYNC_AUDIT_FAILED"}`);
+    }
   };
 
   // Schedule synchronization can fan out across the lookahead window and
@@ -1333,7 +1368,7 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
   // boundary. The persisted maintenance keys make the work once per day even
   // when more than one scheduler invocation reaches that boundary.
   if (env.AUTH_DB && isV3StorageMaintenanceWindow(now)) {
-    const maintenancePromise = runV3StorageMaintenance(env.AUTH_DB, now);
+    const maintenancePromise = runV3StorageMaintenance(env.AUTH_DB, getV3AuditDb(env), now);
     if (typeof scheduleOptional === "function") scheduleOptional(maintenancePromise);
     else await maintenancePromise;
   }
@@ -1494,7 +1529,7 @@ async function applyOfficialGameCancellation(env, game, stateBefore, now) {
   }
   const cancelledJobs = await cancelOpenV3Jobs(env.AUTH_DB, internalGameId, reason);
   const transitioned = await transitionV3State(env.AUTH_DB, { internalGameId, from: stateBefore, to: "excluded", now });
-  await recordV3AdminAudit(env.AUTH_DB, {
+  await recordV3AdminAudit(getV3AuditDb(env), {
     internalGameId,
     jobType: "system:official_cancellation",
     stateBefore,
@@ -4213,6 +4248,7 @@ async function syncFightersScheduleForDate(env, date, now, { intervalMs = AUTOMA
   const intervalDue = Number.isNaN(lastCheckedAt.getTime())
     || now.getTime() - lastCheckedAt.getTime() >= Math.max(60 * 1000, Number(intervalMs) || AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS);
   if (!state?.next_check_at || new Date(state.next_check_at) <= now || intervalDue) {
+    const auditDb = getV3AuditDb(env);
     const payload = await fetchNpbWorkerJson(env, { mode: "schedule", date });
     if (!Array.isArray(payload.games)) throw createPregameError("SCHEDULE_RESPONSE_INVALID", "NPB日程レスポンスが不正です。");
     const registry = await getGameIdentityRegistryAvailability(env.AUTH_DB);
@@ -4276,7 +4312,8 @@ async function syncFightersScheduleForDate(env, date, now, { intervalMs = AUTOMA
         gameStatus,
         existingRow,
         existingCandidates,
-        now
+        now,
+        auditDb
       });
       if (existingRow) {
         // 公式gameCodeが後から得られても、予想・採点に紐づく既存game_idは維持します。
@@ -4305,7 +4342,7 @@ async function syncFightersScheduleForDate(env, date, now, { intervalMs = AUTOMA
        ON CONFLICT(schedule_date) DO UPDATE SET next_check_at=excluded.next_check_at, last_checked_at=excluded.last_checked_at, last_error_code=NULL, updated_at=excluded.updated_at`
     ).bind(date, nextCheck, now.toISOString()));
     if (statements.length) await env.AUTH_DB.batch(statements);
-    await backfillUniqueDetectedScheduleInternalGames(env.AUTH_DB, date, registry, now);
+    await backfillUniqueDetectedScheduleInternalGames(env.AUTH_DB, date, registry, now, auditDb);
     console.log(`[GAME_DETECTION] date=${date} team=fighters gamesFound=${payload.games.length} status=success`);
     return {
       status: changed ? "success_changed" : "success_no_change",
@@ -4466,7 +4503,7 @@ async function linkLegacyGameRowsToInternalGameId(db, internalGameId, legacyGame
   if (statements.length) await db.batch(statements);
 }
 
-async function resolveScheduleInternalGameId(db, registry, { date, startAt, game, sourceGameKey, npbGameCode = "", npbGameUrl = "", gameStatus, existingRow, existingCandidates, now }) {
+async function resolveScheduleInternalGameId(db, registry, { date, startAt, game, sourceGameKey, npbGameCode = "", npbGameUrl = "", gameStatus, existingRow, existingCandidates, now, auditDb = null }) {
   if (!registry.available) {
     throw createPregameError("INTERNAL_GAME_REGISTRY_NOT_READY", "内部試合IDレジストリが利用できないため、日程を登録できません。", { httpStatus: 503 });
   }
@@ -4495,7 +4532,8 @@ async function resolveScheduleInternalGameId(db, registry, { date, startAt, game
       },
       identifiers,
       allowCreate: true,
-      now
+      now,
+      auditDb
     });
     if (result.status !== "resolved" || !INTERNAL_GAME_ID_PATTERN.test(String(result.internalGameId || ""))) {
       const error = createPregameError(
@@ -4514,7 +4552,7 @@ async function resolveScheduleInternalGameId(db, registry, { date, startAt, game
   }
 }
 
-async function backfillUniqueDetectedScheduleInternalGames(db, date, registry, now) {
+async function backfillUniqueDetectedScheduleInternalGames(db, date, registry, now, auditDb = null) {
   if (!registry.available || !registry.scheduleColumnAvailable) return;
   const result = await db.prepare(
     `SELECT game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, game_status, internal_game_id
@@ -4550,7 +4588,8 @@ async function backfillUniqueDetectedScheduleInternalGames(db, date, registry, n
           sourceGameKey: row.source_game_key
         }),
         allowCreate: true,
-        now
+        now,
+        auditDb
       });
       if (registration.status === "resolved") {
         await db.prepare(
@@ -5169,9 +5208,10 @@ async function handleAdminV3Overview(request, env, cors) {
   const overviewNow = new Date();
   let cronLastRunAt = null;
   try {
-    const cronAudit = await env.AUTH_DB.prepare(
+    const auditDb = getV3AuditDb(env);
+    const cronAudit = auditDb ? await auditDb.prepare(
       "SELECT occurred_at FROM game_automation_v3_audit WHERE source = 'cron' ORDER BY occurred_at DESC LIMIT 1"
-    ).first();
+    ).first() : null;
     cronLastRunAt = cronAudit?.occurred_at || null;
   } catch (error) {
     console.warn(`[ADMIN_V3_OVERVIEW] stage=cron_audit_read failureCode=${error?.code || "V3_CRON_AUDIT_READ_FAILED"}`);
@@ -5184,13 +5224,14 @@ async function handleAdminV3Overview(request, env, cors) {
   }
   let futureScheduleSync = null;
   try {
-    const syncAudit = await env.AUTH_DB.prepare(
+    const auditDb = getV3AuditDb(env);
+    const syncAudit = auditDb ? await auditDb.prepare(
       `SELECT failure_code, failure_message, occurred_at
          FROM game_automation_v3_audit
         WHERE event_type = 'schedule_sync'
         ORDER BY occurred_at DESC, id DESC
         LIMIT 1`
-    ).first();
+    ).first() : null;
     if (syncAudit) {
       let parsed = {};
       try {
@@ -5399,12 +5440,13 @@ async function handleAdminV3Overview(request, env, cors) {
     let scoringNoOpAudit = null;
     let rankingNoOpAudit = null;
     try {
-      const noOpAudits = await env.AUTH_DB.prepare(
+      const auditDb = getV3AuditDb(env);
+      const noOpAudits = auditDb ? await auditDb.prepare(
         `SELECT event_type, failure_message, occurred_at
            FROM game_automation_v3_audit
           WHERE internal_game_id = ?1 AND (event_type = 'scoring_no_op' OR event_type = 'ranking_no_op')
           ORDER BY occurred_at DESC, id DESC LIMIT 10`
-      ).bind(game.internalGameId).all();
+      ).bind(game.internalGameId).all() : { results: [] };
       scoringNoOpAudit = (noOpAudits.results || []).find((row) => row.event_type === "scoring_no_op") || null;
       rankingNoOpAudit = (noOpAudits.results || []).find((row) => row.event_type === "ranking_no_op") || null;
     } catch (error) {
@@ -5433,12 +5475,13 @@ async function handleAdminV3Overview(request, env, cors) {
     const canonicalRosterSnapshot = await getV3CanonicalRosterSnapshot(env.AUTH_DB, game.internalGameId, { gameDate: game.gameDate });
     let latestRosterAuditDetails = {};
     try {
-      const rosterAudit = await env.AUTH_DB.prepare(
+      const auditDb = getV3AuditDb(env);
+      const rosterAudit = auditDb ? await auditDb.prepare(
         `SELECT failure_message
            FROM game_automation_v3_audit
           WHERE internal_game_id = ?1 AND job_type = 'roster_fetch' AND event_type = 'job'
           ORDER BY occurred_at DESC, id DESC LIMIT 1`
-      ).bind(game.internalGameId).first();
+      ).bind(game.internalGameId).first() : null;
       latestRosterAuditDetails = parseV3AuditDetails(rosterAudit?.failure_message);
     } catch (error) {
       console.warn(`[ADMIN_V3_OVERVIEW] internalGameId=${game.internalGameId} stage=roster_audit_read failureCode=${error?.code || "V3_ROSTER_AUDIT_READ_FAILED"}`);
@@ -5684,7 +5727,7 @@ async function handleAdminV3Overview(request, env, cors) {
     schema,
     todayOps: {
       cronLastRunAt,
-      cronLastRunSource: "game_automation_v3_audit",
+      cronLastRunSource: "audit_db",
       cronSchedule: V3_CRON_SCHEDULE,
       cronIntervalMinutes: V3_CRON_INTERVAL_MINUTES,
       cronGraceMinutes: V3_CRON_GRACE_MINUTES,
@@ -5925,7 +5968,7 @@ async function handleAdminV3IdentityResolve(request, env, cors, internalGameId, 
       npbIdentityResolvedAt: now.toISOString(),
       npbIdentitySource: resolved.diagnostics?.resolvedBy || resolved.source || "npb_schedule_resolve",
       updatedBy: access.user?.id ? `admin:${String(access.user.id)}` : operationSource === "cron" ? "system" : "admin"
-    }, now);
+    }, now, getV3AuditDb(env));
     for (const identifier of identifiers) await registerGameIdentifier(env.AUTH_DB, id, identifier, now);
     const updated = await env.AUTH_DB.prepare(
       `SELECT internal_game_id, game_date, start_time, home_team, away_team,
@@ -5997,12 +6040,6 @@ async function handleAdminV3NpbGameCodeUpdate(request, env, cors, internalGameId
     if (!identityColumns.every((column) => gameColumns.has(column))) {
       return jsonResponse({ ok: false, code: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", error: "NPB識別情報スキーマが準備されていません。" }, 503, cors);
     }
-    const auditColumns = await getTableColumnSet(env.AUTH_DB, "game_automation_v3_audit");
-    const requiredAuditColumns = ["event_type", "previous_npb_game_code", "next_npb_game_code", "updated_by", "previous_npb_game_url", "next_npb_game_url", "previous_npb_identity_status", "next_npb_identity_status", "previous_npb_identity_source", "next_npb_identity_source"];
-    if (!requiredAuditColumns.every((column) => auditColumns.has(column))) {
-      return jsonResponse({ ok: false, code: "GAME_AUTOMATION_V3_AUDIT_SCHEMA_UNAVAILABLE", error: "V3監査スキーマが準備されていません。" }, 503, cors);
-    }
-
     const current = await env.AUTH_DB.prepare(
       `SELECT internal_game_id, game_date, start_time, home_team, away_team,
               npb_game_code, npb_game_url, source_schedule_key, npb_identity_status,
@@ -6045,9 +6082,13 @@ async function handleAdminV3NpbGameCodeUpdate(request, env, cors, internalGameId
     }
     updateValues.push(id);
 
-    await env.AUTH_DB.batch([
-      env.AUTH_DB.prepare(`UPDATE games SET ${updateFields.join(", ")} WHERE internal_game_id = ?${updateValues.length}`).bind(...updateValues),
-      env.AUTH_DB.prepare(
+    await env.AUTH_DB.prepare(`UPDATE games SET ${updateFields.join(", ")} WHERE internal_game_id = ?${updateValues.length}`).bind(...updateValues).run();
+    const auditDb = getV3AuditDb(env);
+    if (auditDb) try {
+      const auditColumns = await getTableColumnSet(auditDb, "game_automation_v3_audit");
+      const requiredAuditColumns = ["event_type", "previous_npb_game_code", "next_npb_game_code", "updated_by", "previous_npb_game_url", "next_npb_game_url", "previous_npb_identity_status", "next_npb_identity_status", "previous_npb_identity_source", "next_npb_identity_source"];
+      if (!requiredAuditColumns.every((column) => auditColumns.has(column))) throw new Error("audit schema unavailable");
+      await auditDb.prepare(
         `INSERT INTO game_automation_v3_audit
            (internal_game_id, job_type, event_type, previous_npb_game_code,
             next_npb_game_code, previous_npb_game_url, next_npb_game_url,
@@ -6055,8 +6096,10 @@ async function handleAdminV3NpbGameCodeUpdate(request, env, cors, internalGameId
             previous_npb_identity_source, next_npb_identity_source,
             updated_by, occurred_at, source)
          VALUES (?1, 'npb_game_code_update', 'admin_npb_game_code_update', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'admin')`
-      ).bind(id, previousCode, nextCode || null, previousUrl, nextUrl, previousStatus, nextStatus, previousSource, nextSource, updatedBy, updatedAt)
-    ]);
+      ).bind(id, previousCode, nextCode || null, previousUrl, nextUrl, previousStatus, nextStatus, previousSource, nextSource, updatedBy, updatedAt).run();
+    } catch (error) {
+      console.warn(`[GAME_AUTOMATION_V3] stage=npb_game_code_audit status=skipped code=${error?.code || "V3_AUDIT_WRITE_FAILED"}`);
+    }
 
     const updated = await env.AUTH_DB.prepare(
       `SELECT internal_game_id, game_date, start_time, home_team, away_team,
@@ -6260,7 +6303,7 @@ function v3DiagnosticReasonCode(value) {
   return text.match(/[A-Z][A-Z0-9_]{5,}/)?.[0] || null;
 }
 
-async function getV3AdminJobDiagnosticContext(db, internalGameId, jobType, latestJob, workflowArtifactHealth, target, currentState) {
+async function getV3AdminJobDiagnosticContext(db, auditDb, internalGameId, jobType, latestJob, workflowArtifactHealth, target, currentState) {
   const context = {
     latestJob: latestJob ? {
       id: Number(latestJob.id || 0) || null,
@@ -6369,14 +6412,14 @@ async function getV3AdminJobDiagnosticContext(db, internalGameId, jobType, lates
   }
 
   try {
-    const audits = await db.prepare(
+    const audits = auditDb ? await auditDb.prepare(
       `SELECT id, job_id, job_type, scheduled_slot_at, state_before, state_after,
               attempt_count, failure_code, failure_message, occurred_at, source, event_type
          FROM game_automation_v3_audit
         WHERE internal_game_id = ?1
           AND (job_type = ?2 OR job_type LIKE ?3)
         ORDER BY occurred_at DESC, id DESC LIMIT 100`
-    ).bind(internalGameId, jobType, `%${jobType}%`).all();
+  ).bind(internalGameId, jobType, `%${jobType}%`).all() : { results: [] };
     const auditRows = audits.results || [];
     context.workflowTransitions = auditRows
       .filter((row) => row.state_before || row.state_after)
@@ -6477,7 +6520,7 @@ async function getV3AdminJobDiagnosticContext(db, internalGameId, jobType, lates
   return context;
 }
 
-async function getV3ManualJobDiagnosis(db, internalGameId, jobType, target = null) {
+async function getV3ManualJobDiagnosis(db, internalGameId, jobType, target = null, auditDb = null) {
   const id = normalizeV3InternalGameId(internalGameId);
   const stateRow = await db.prepare(
     "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
@@ -6523,6 +6566,7 @@ async function getV3ManualJobDiagnosis(db, internalGameId, jobType, target = nul
   const gate = getV3ManualJobGate(jobType, currentState, { workflowArtifactHealth });
   const diagnosticContext = await getV3AdminJobDiagnosticContext(
     db,
+    auditDb,
     id,
     jobType,
     latest,
@@ -6675,7 +6719,7 @@ async function handleAdminV3JobDiagnose(request, env, cors, internalGameId) {
   try {
     const id = normalizeV3InternalGameId(internalGameId);
     const target = await loadV3GameTarget(env.AUTH_DB, id);
-    return jsonResponse(await getV3ManualJobDiagnosis(env.AUTH_DB, id, jobType, target), 200, cors);
+    return jsonResponse(await getV3ManualJobDiagnosis(env.AUTH_DB, id, jobType, target, getV3AuditDb(env)), 200, cors);
   } catch (error) {
     return v3AdminErrorResponse(cors, error, "V3ジョブ診断に失敗しました。");
   }
@@ -6699,7 +6743,7 @@ async function handleAdminV3JobCreate(request, env, cors, internalGameId) {
     if (["cancelled", "canceled", "postponed", "service_unavailable"].includes(String(target.gameStatus || "").toLowerCase())) {
       throw createV3Error("V3_GAME_UNAVAILABLE", "中止または対象外の試合では後続V3 jobを再実行できません。", { httpStatus: 409 });
     }
-    const diagnosis = await getV3ManualJobDiagnosis(env.AUTH_DB, id, jobType, target);
+    const diagnosis = await getV3ManualJobDiagnosis(env.AUTH_DB, id, jobType, target, getV3AuditDb(env));
     if (!diagnosis.canRun) throw createV3Error("V3_MANUAL_JOB_PREREQUISITE", diagnosis.cannotRunReason || "現在の状態では実行できません。", { httpStatus: 409 });
     const now = new Date();
     const created = await createV3Job(env.AUTH_DB, {
@@ -6710,7 +6754,7 @@ async function handleAdminV3JobCreate(request, env, cors, internalGameId) {
       source: "admin"
     });
     const detail = `[v3_details=${JSON.stringify({ reason, actorId: access.user?.id || null, action: "manual_job_run", jobType })}]`;
-    await recordV3AdminAudit(env.AUTH_DB, {
+    await recordV3AdminAudit(getV3AuditDb(env), {
       internalGameId: id,
       jobId: created.job?.id || null,
       jobType: `admin:${jobType}`,
@@ -7152,6 +7196,7 @@ async function handleAdminV3ManualGamePreview(request, env, cors) {
 }
 
 async function recordV3AdminAudit(db, { internalGameId, jobId = null, jobType = "admin_operation", stateBefore = null, stateAfter = null, failureCode = null, failureMessage = null, occurredAt = new Date() } = {}) {
+  if (!db) return false;
   try {
     await db.prepare(
       `INSERT INTO game_automation_v3_audit
@@ -7159,9 +7204,11 @@ async function recordV3AdminAudit(db, { internalGameId, jobId = null, jobType = 
           failure_code, failure_message, occurred_at, source)
        VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8, 'admin')`
     ).bind(internalGameId, jobId, jobType, stateBefore, stateAfter, failureCode, failureMessage, occurredAt.toISOString()).run();
+    return true;
   } catch (error) {
-    console.error(`[GAME_AUTOMATION_V3] stage=admin_audit code=${error?.code || "V3_ADMIN_AUDIT_FAILED"}`);
+    console.warn(`[GAME_AUTOMATION_V3] stage=admin_audit status=skipped code=${error?.code || "V3_ADMIN_AUDIT_FAILED"}`);
   }
+  return false;
 }
 
 function parseV3AuditDetails(failureMessage) {
@@ -7195,6 +7242,8 @@ async function handleAdminV3AutomationLogs(request, env, cors) {
   const requestedLookbackMinutes = Number(url.searchParams.get("lookbackMinutes") || ADMIN_V3_LOG_LOOKBACK_MINUTES);
   const lookbackMinutes = Math.min(24 * 60, Math.max(5, Number.isFinite(requestedLookbackMinutes) ? requestedLookbackMinutes : ADMIN_V3_LOG_LOOKBACK_MINUTES));
   const since = new Date(Date.now() - lookbackMinutes * 60 * 1000).toISOString();
+  const auditDb = getV3AuditDb(env);
+  if (!auditDb) return jsonResponse({ ok: true, filters, limit, lookbackMinutes, since, rows: [], latestCronSummary: null, gameRuns: [], jobTimeline: [], auditUnavailable: true }, 200, cors);
   const auditParams = [since];
   const auditConditions = ["occurred_at >= ?1"];
   if (filters.internalGameId) {
@@ -7211,7 +7260,7 @@ async function handleAdminV3AutomationLogs(request, env, cors) {
   }
   auditParams.push(limit);
   try {
-    const result = await env.AUTH_DB.prepare(
+    const result = await auditDb.prepare(
       `SELECT id, internal_game_id, job_id, job_type, scheduled_slot_at,
               state_before, state_after, attempt_count, failure_code,
               failure_message, occurred_at, source, event_type
@@ -7731,7 +7780,7 @@ async function handleAdminV3LineupCorrection(request, env, cors, route) {
       allowAfterCompleted: true,
       scheduledSlotAt: revision.created_at || now
     });
-    await recordV3AdminAudit(env.AUTH_DB, {
+    await recordV3AdminAudit(getV3AuditDb(env), {
       internalGameId: context.id,
       jobId: scoreJob.job?.id || null,
       jobType: "admin:lineup_correction",
@@ -7886,7 +7935,7 @@ async function handleAdminV3StateReconcile(request, env, cors, context, user) {
   const now = new Date();
   await transitionV3State(env.AUTH_DB, { internalGameId: context.id, from: transition.from, to: transition.to, now });
   const detail = `[v3_details=${JSON.stringify({ action: "state_reconcile", reason, actorId: user?.id || null, jobType: transition.jobType, artifactHealth })}]`;
-  await recordV3AdminAudit(env.AUTH_DB, {
+  await recordV3AdminAudit(getV3AuditDb(env), {
     internalGameId: context.id,
     jobType: "admin:state_reconcile",
     stateBefore,
@@ -8042,7 +8091,7 @@ async function handleAdminV3Phase1Route(request, env, cors, route) {
     if (route.action.startsWith("jobs/") && request.method === "POST" && route.jobOperation === "cancel") return await handleAdminV3JobCancel(request, env, cors, context, route.jobId, access.user);
     return jsonResponse({ ok: false, code: "V3_ADMIN_METHOD_NOT_ALLOWED", error: "V3管理APIのHTTPメソッドが不正です。" }, 405, cors);
   } catch (error) {
-    await recordV3AdminAudit(env.AUTH_DB, {
+    await recordV3AdminAudit(getV3AuditDb(env), {
       internalGameId: context.id,
       jobType: `admin:${route.action}`,
       failureCode: String(error?.code || "V3_ADMIN_OPERATION_FAILED"),
@@ -8157,7 +8206,7 @@ async function handleAdminV3LineupRevisionCreate(request, env, cors, context, us
     allowUnresolvedPlayer: false
   });
   await recordWorkflowLog(env.AUTH_DB, { eventType: "v3_admin_lineup_revision", status: "success", gameId: context.metadata.gameId, occurredAt: new Date(), message: "V3管理者がスタメンrevisionを作成しました。", metadata: { internalGameId: context.id, revisionId: revision.revision_id || `${context.metadata.gameId}:${revision.version}` }, source: "admin" });
-  await recordV3AdminAudit(env.AUTH_DB, { internalGameId: context.id, jobType: "admin:lineup_revision" });
+  await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobType: "admin:lineup_revision" });
   return jsonResponse({ ok: true, internalGameId: context.id, noOp: false, revision: serializeV3LineupRevision(revision) }, 201, cors);
 }
 
@@ -8273,7 +8322,7 @@ async function handleAdminV3LineupRevisionCancel(request, env, cors, route) {
     }
     await env.AUTH_DB.batch(statements);
     try {
-      await recordV3AdminAudit(env.AUTH_DB, { internalGameId: context.id, jobType: "admin:lineup_revision_cancel", stateBefore: stateRow?.state || null, stateAfter: stateRow?.state || null, failureMessage: `revisionId=${decision.revisionId}` });
+      await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobType: "admin:lineup_revision_cancel", stateBefore: stateRow?.state || null, stateAfter: stateRow?.state || null, failureMessage: `revisionId=${decision.revisionId}` });
     } catch { /* audit failure must not undo the safe invalidation */ }
     return jsonResponse({ ok: true, internalGameId: context.id, canceledRevisionId: decision.revisionId, canonicalInvalidated: Boolean(decision.canonicalLinked), nextAction: "manual_lineup_required" }, 200, cors);
   } catch (error) {
@@ -8338,7 +8387,7 @@ async function handleAdminV3LineupFinalize(request, env, cors, context, user) {
   await activateLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, version: Number(revision.version), finalizedAt: now, finalizedBy: "admin" });
   await linkFinalLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, version: Number(revision.version), finalizedAt: now, finalizedBy: "admin" });
   const state = await env.AUTH_DB.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(context.id).first();
-  await recordV3AdminAudit(env.AUTH_DB, { internalGameId: context.id, jobType: "admin:lineup_finalize", stateBefore: state?.state || null, stateAfter: "lineup_ready" });
+  await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobType: "admin:lineup_finalize", stateBefore: state?.state || null, stateAfter: "lineup_ready" });
   return jsonResponse({ ok: true, internalGameId: context.id, finalizedRevision: serializeV3LineupRevision({ ...revision, is_final: 1, is_current: 1, finalized_by: "admin", finalized_at: new Date().toISOString() }), scoreJob: null, nextAction: "formal_cron_score", rescoreRequired: false }, 200, cors);
 }
 
@@ -8376,7 +8425,7 @@ async function handleAdminV3ScoringPreview(request, env, cors, context, user) {
   await env.AUTH_DB.prepare(
     "UPDATE game_rescore_previews SET summary_json = ?1 WHERE id = ?2 AND game_id = ?3"
   ).bind(JSON.stringify(previewSummary), result.payload.previewId, context.metadata.gameId).run();
-  await recordV3AdminAudit(env.AUTH_DB, { internalGameId: context.id, jobType: "admin:scoring_preview" });
+  await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobType: "admin:scoring_preview" });
   return jsonResponse({ ...result.payload, internalGameId: context.id, scoringRevisionId: activeScoringRevision?.id || "legacy" }, result.response.status, cors);
 }
 
@@ -8387,7 +8436,7 @@ async function handleAdminV3ScoringConfirm(request, env, cors, context, user) {
   await assertV3RescoreLineage(env.AUTH_DB, context, body);
   const result = await invokeV3RescoreCore(body, env, cors, context.metadata, user, "confirm", { deferPublication: true });
   if (!result.payload?.ok) return jsonResponse({ ...result.payload, internalGameId: context.id }, result.response.status, cors);
-  await recordV3AdminAudit(env.AUTH_DB, { internalGameId: context.id, jobType: "admin:scoring_confirm", stateAfter: "scored" });
+  await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobType: "admin:scoring_confirm", stateAfter: "scored" });
   return jsonResponse({ ...result.payload, internalGameId: context.id }, result.response.status, cors);
 }
 
@@ -8421,11 +8470,12 @@ async function handleAdminV3RankingGet(env, cors, context) {
   let noOpReason = null;
   let rankingNoOpReason = null;
   try {
-    const noOpAudit = await env.AUTH_DB.prepare(
+    const auditDb = getV3AuditDb(env);
+    const noOpAudit = auditDb ? await auditDb.prepare(
       `SELECT event_type, failure_message FROM game_automation_v3_audit
          WHERE internal_game_id = ?1 AND (event_type = 'scoring_no_op' OR event_type = 'ranking_no_op')
          ORDER BY occurred_at DESC LIMIT 1`
-    ).bind(context.id).first();
+    ).bind(context.id).first() : null;
     if (noOpAudit?.event_type === "ranking_no_op") rankingNoOpReason = noOpAudit.failure_message || null;
     else noOpReason = noOpAudit?.failure_message || null;
   } catch (error) {
@@ -8480,7 +8530,7 @@ async function handleAdminV3RankingRebuild(request, env, cors, context, user) {
     scheduledSlotAt: activeRevision?.created_at || deriveV3Schedule(context.target).publicationAt
   });
   await recordWorkflowLog(env.AUTH_DB, { eventType: "v3_admin_ranking_rebuild", status: "info", gameId: context.metadata.gameId, occurredAt: new Date(), message: "V3管理者がランキング再構築jobを投入しました。", metadata: { internalGameId: context.id, reason }, source: "admin" });
-  await recordV3AdminAudit(env.AUTH_DB, { internalGameId: context.id, jobId: job.job?.id || null, jobType: "admin:ranking_rebuild" });
+  await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobId: job.job?.id || null, jobType: "admin:ranking_rebuild" });
   return jsonResponse({ ok: true, internalGameId: context.id, job, reason }, 202, cors);
 }
 
@@ -8558,7 +8608,7 @@ async function handleAdminV3PublicationQueue(request, env, cors, context, user, 
     scheduledSlotAt: activeRevision.created_at || deriveV3Schedule(context.target).publicationAt
   });
   await recordWorkflowLog(env.AUTH_DB, { eventType: republish ? "v3_admin_republish" : "v3_admin_publish", status: "info", gameId: context.metadata.gameId, occurredAt: new Date(), message: republish ? "V3管理者が結果再公開jobを投入しました。" : "V3管理者が結果公開jobを投入しました。", metadata: { internalGameId: context.id, reason }, source: "admin" });
-  await recordV3AdminAudit(env.AUTH_DB, { internalGameId: context.id, jobId: job.job?.id || null, jobType: republish ? "admin:republish" : "admin:publish" });
+  await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobId: job.job?.id || null, jobType: republish ? "admin:republish" : "admin:publish" });
   return jsonResponse({ ok: true, internalGameId: context.id, job, republish, reason }, 202, cors);
 }
 
@@ -8608,7 +8658,7 @@ async function handleAdminV3EligibilityUpdate(request, env, cors, context, user)
       allowAfterCompleted: true,
       scheduledSlotAt: eligibility?.rankingEligibilityUpdatedAt || new Date()
     });
-  await recordV3AdminAudit(env.AUTH_DB, { internalGameId: context.id, jobType: "admin:ranking_eligibility", stateAfter: status, failureMessage: `[v3_details=${JSON.stringify({ reason, rankingRevocation })}]` });
+  await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobType: "admin:ranking_eligibility", stateAfter: status, failureMessage: `[v3_details=${JSON.stringify({ reason, rankingRevocation })}]` });
   return jsonResponse({ ok: true, internalGameId: context.id, rankingEligibility: eligibility, rankingJob, rankingRevocation }, 200, cors);
 }
 
@@ -8767,7 +8817,7 @@ async function handleAdminV3ScheduleUpdate(request, env, cors, context, user) {
       const excluded = await transitionV3State(env.AUTH_DB, { internalGameId: context.id, from: currentState, to: "excluded", now: new Date() });
       stateAfter = excluded?.state || "excluded";
     } catch (error) {
-      await recordV3AdminAudit(env.AUTH_DB, { internalGameId: context.id, jobType: "admin:schedule", stateBefore: currentState, failureCode: String(error?.code || "V3_SCHEDULE_STATE_EXCLUDE_FAILED"), failureMessage: String(error?.message || "") });
+      await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobType: "admin:schedule", stateBefore: currentState, failureCode: String(error?.code || "V3_SCHEDULE_STATE_EXCLUDE_FAILED"), failureMessage: String(error?.message || "") });
       throw error;
     }
   }
@@ -8782,7 +8832,7 @@ async function handleAdminV3ScheduleUpdate(request, env, cors, context, user) {
     }
     : { required: false, wasReflected: false, status: null, affectedScopes: [], rebuildExecuted: false, sourceOfTruth: "ranking_games_eligibility_filter" };
   const detail = `[v3_details=${JSON.stringify({ reason, status: requestedStatus, confirmed: input?.confirmed === true, rankingConfirmationText: input?.rankingConfirmationText || null, rankingRevocation, pendingJobsRescheduled })}]`;
-  await recordV3AdminAudit(env.AUTH_DB, { internalGameId: context.id, jobType: "admin:cancel_game_with_ranking_revoke", stateBefore: currentState, stateAfter, failureMessage: detail });
+  await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobType: "admin:cancel_game_with_ranking_revoke", stateBefore: currentState, stateAfter, failureMessage: detail });
   if (rankingRevocation.required) {
     await recordWorkflowLog(env.AUTH_DB, {
       eventType: "ranking_reflection_revoked",
@@ -8843,10 +8893,10 @@ async function cancelOpenV3Jobs(db, internalGameId, reason = "") {
 async function handleAdminV3JobDetail(env, cors, context, jobId) {
   const job = await getV3Job(env.AUTH_DB, context.id, jobId);
   if (!job) throw createV3Error("V3_JOB_NOT_FOUND", "V3ジョブが見つかりません。", { httpStatus: 404 });
-  const audits = await env.AUTH_DB.prepare(
+  const audits = env.AUDIT_DB ? await env.AUDIT_DB.prepare(
     `SELECT id, job_id, job_type, state_before, state_after, attempt_count, failure_code, failure_message, occurred_at, source, event_type
        FROM game_automation_v3_audit WHERE internal_game_id = ?1 AND job_id = ?2 ORDER BY occurred_at DESC LIMIT 20`
-  ).bind(context.id, Number(jobId)).all();
+  ).bind(context.id, Number(jobId)).all() : { results: [] };
   let pipelineEvents = [];
   try {
     const events = await env.AUTH_DB.prepare(
@@ -8891,7 +8941,7 @@ async function handleAdminV3JobRetry(request, env, cors, context, jobId, user) {
   ).bind(new Date().toISOString(), Number(jobId), context.id).run();
   if (Number(result?.meta?.changes || 0) !== 1) throw createV3Error("V3_JOB_OPERATION_INVALID", "このjobは再試行できない状態です。", { httpStatus: 409 });
   const job = await getV3Job(env.AUTH_DB, context.id, jobId);
-  await recordV3AdminAudit(env.AUTH_DB, {
+  await recordV3AdminAudit(getV3AuditDb(env), {
     internalGameId: context.id,
     jobId: Number(jobId),
     jobType: "admin:job_retry",
@@ -8914,7 +8964,7 @@ async function handleAdminV3JobCancel(request, env, cors, context, jobId, user) 
   ).bind(new Date().toISOString(), Number(jobId), context.id).run();
   if (Number(result?.meta?.changes || 0) !== 1) throw createV3Error("V3_JOB_OPERATION_INVALID", "このjobは取消できない状態です。", { httpStatus: 409 });
   const job = await getV3Job(env.AUTH_DB, context.id, jobId);
-  await recordV3AdminAudit(env.AUTH_DB, {
+  await recordV3AdminAudit(getV3AuditDb(env), {
     internalGameId: context.id,
     jobId: Number(jobId),
     jobType: "admin:job_cancel",
@@ -11338,20 +11388,6 @@ export function getPublicRosterQualityFromAuditDetails(failureMessage) {
   };
 }
 
-async function readPublicRosterQuality(db, internalGameId) {
-  try {
-    const row = await db.prepare(
-      `SELECT failure_message
-         FROM game_automation_v3_audit
-        WHERE internal_game_id = ?1 AND job_type = 'roster_fetch' AND event_type = 'job'
-        ORDER BY occurred_at DESC, id DESC LIMIT 1`
-    ).bind(internalGameId).first();
-    return getPublicRosterQualityFromAuditDetails(row?.failure_message);
-  } catch {
-    return { attention: false, reasonCode: null };
-  }
-}
-
 function getPublicRosterPlayers(snapshot) {
   return parseJsonArray(snapshot?.roster_json)
     .filter((player) => player && player.name && player.number && player.position);
@@ -13454,18 +13490,19 @@ function isV3StorageMaintenanceWindow(now) {
   return jst.getUTCMinutes() === V3_STORAGE_MAINTENANCE_MINUTE_JST;
 }
 
-async function cleanupExpiredV3Audits(db, now) {
+async function cleanupExpiredV3Audits(coreDb, auditDb, now) {
+  if (!coreDb || !auditDb) return { skipped: true, deleted: 0, errorCode: "AUDIT_DB_UNAVAILABLE" };
   const current = now instanceof Date ? now : new Date(now);
   const routineCutoff = new Date(current.getTime() - V3_AUDIT_ROUTINE_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const failureCutoff = new Date(current.getTime() - V3_AUDIT_FAILURE_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
-  const maintenance = await db.prepare(
+  const maintenance = await coreDb.prepare(
     "SELECT last_cleanup_at FROM game_workflow_log_maintenance WHERE maintenance_key = ?1 LIMIT 1"
   ).bind(V3_AUDIT_CLEANUP_KEY).first();
   if (maintenance?.last_cleanup_at && getJstDateString(new Date(maintenance.last_cleanup_at)) === getJstDateString(current)) {
     return { skipped: true, deleted: 0 };
   }
-  const result = await db.batch([
-    db.prepare(
+  const result = await auditDb.batch([
+    auditDb.prepare(
       `DELETE FROM game_automation_v3_audit
         WHERE id IN (
           SELECT id FROM game_automation_v3_audit
@@ -13480,7 +13517,7 @@ async function cleanupExpiredV3Audits(db, now) {
            ORDER BY occurred_at ASC, id ASC LIMIT ?2
         )`
     ).bind(routineCutoff, V3_AUDIT_CLEANUP_BATCH_SIZE),
-    db.prepare(
+    auditDb.prepare(
       `DELETE FROM game_automation_v3_audit
         WHERE id IN (
           SELECT id FROM game_automation_v3_audit
@@ -13492,22 +13529,22 @@ async function cleanupExpiredV3Audits(db, now) {
            ORDER BY occurred_at ASC, id ASC LIMIT ?2
         )`
     ).bind(failureCutoff, V3_AUDIT_CLEANUP_BATCH_SIZE),
-    db.prepare(
-      `INSERT INTO game_workflow_log_maintenance (maintenance_key, last_cleanup_at, updated_at)
-       VALUES (?1, ?2, ?2)
-       ON CONFLICT(maintenance_key) DO UPDATE SET last_cleanup_at = excluded.last_cleanup_at, updated_at = excluded.updated_at`
-    ).bind(V3_AUDIT_CLEANUP_KEY, current.toISOString())
   ]);
+  await coreDb.prepare(
+    `INSERT INTO game_workflow_log_maintenance (maintenance_key, last_cleanup_at, updated_at)
+     VALUES (?1, ?2, ?2)
+     ON CONFLICT(maintenance_key) DO UPDATE SET last_cleanup_at = excluded.last_cleanup_at, updated_at = excluded.updated_at`
+  ).bind(V3_AUDIT_CLEANUP_KEY, current.toISOString()).run();
   const routine = Number(result?.[0]?.meta?.changes || 0);
   const failures = Number(result?.[1]?.meta?.changes || 0);
   return { skipped: false, deleted: routine + failures, routine, failures };
 }
 
-async function runV3StorageMaintenance(db, now) {
+async function runV3StorageMaintenance(coreDb, auditDb, now) {
   try {
-    await cleanupWorkflowLogs(db, now);
-    await cleanupExpiredManualRescorePreviews(db, now);
-    const audit = await cleanupExpiredV3Audits(db, now);
+    await cleanupWorkflowLogs(coreDb, now);
+    await cleanupExpiredManualRescorePreviews(coreDb, now);
+    const audit = await cleanupExpiredV3Audits(coreDb, auditDb, now);
     console.info(`[GAME_AUTOMATION_V3] storage_maintenance status=completed auditDeleted=${audit.deleted || 0}`);
     return audit;
   } catch (error) {

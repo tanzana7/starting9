@@ -31,7 +31,7 @@ test("手動再実行は既存V3 jobを投入し、Cron executorへ委譲する"
   assert.match(workerSource, /createV3Job\(env\.AUTH_DB/);
   assert.match(workerSource, /source: "admin"/);
   assert.match(workerSource, /v3_admin_manual_job_run/);
-  assert.match(workerSource, /recordV3AdminAudit\(env\.AUTH_DB/);
+  assert.match(workerSource, /recordV3AdminAudit\(getV3AuditDb\(env\)/);
   assert.match(workerSource, /V3_MANUAL_JOB_STATE_GATES/);
   assert.match(workerSource, /V3_MANUAL_JOB_PREREQUISITE/);
   assert.doesNotMatch(workerSource, /handleAdminV3JobCreate[\s\S]{0,500}runScheduledGameAutomation\(/);

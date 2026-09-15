@@ -19,41 +19,6 @@ import { getV3CanonicalRosterSnapshot } from "./roster-repository.js";
 import { createV3Job } from "./repository.js";
 import { buildStagePlans, buildV3PlanningState } from "./planning-engine.js";
 
-function parseV3AuditDetails(failureMessage) {
-  const text = String(failureMessage || "").trim();
-  const summaryMarker = text.indexOf("[v3_summary=");
-  if (summaryMarker >= 0) {
-    const summaryEnd = text.indexOf("]", summaryMarker + "[v3_summary=".length);
-    if (summaryEnd > summaryMarker) {
-      try { return JSON.parse(text.slice(summaryMarker + "[v3_summary=".length, summaryEnd)); } catch { /* fall through to the legacy marker */ }
-    }
-  }
-  const marker = text.indexOf("[v3_details=");
-  if (marker >= 0) {
-    try { return JSON.parse(text.slice(marker + "[v3_details=".length).replace(/\]\s*$/, "")); } catch { return {}; }
-  }
-  if (text.startsWith("{")) {
-    try { return JSON.parse(text); } catch { return {}; }
-  }
-  return {};
-}
-
-async function getLatestRosterSourceComparison(db, internalGameId) {
-  try {
-    const row = await db.prepare(
-      `SELECT failure_message
-         FROM game_automation_v3_audit
-        WHERE internal_game_id = ?1 AND job_type = 'roster_fetch' AND event_type = 'job'
-        ORDER BY occurred_at DESC, id DESC
-        LIMIT 1`
-    ).bind(internalGameId).first();
-    const details = parseV3AuditDetails(row?.failure_message);
-    return details.sourceSnapshotComparison || details.diagnostics?.sourceSnapshotComparison || null;
-  } catch {
-    return null;
-  }
-}
-
 // Main workflow and auxiliary planners retain the existing job-slot contract.
 export async function planV3RosterJobs(db, games = [], now = new Date()) {
   const planned = [];
@@ -121,14 +86,13 @@ export async function planV3RosterJobs(db, games = [], now = new Date()) {
           WHERE internal_game_id = ?1 AND job_type = ?2
           ORDER BY scheduled_slot_at DESC, id DESC`
       ).bind(game.internalGameId, "roster_fetch").all()).results || [];
-      const sourceSnapshotComparison = await getLatestRosterSourceComparison(db, game.internalGameId);
-      const rosterStatus = getV3RosterStatusDecision({ game, now: current, snapshot, jobs: rosterJobs, sourceSnapshotComparison });
+      // Audit rows are diagnostic-only and live in a separate D1. Planning must
+      // remain deterministic from formal roster snapshots and job state even
+      // when the audit binding is unavailable.
+      const rosterStatus = getV3RosterStatusDecision({ game, now: current, snapshot, jobs: rosterJobs });
       const rosterRevalidationRequired = Boolean(
         snapshot.exists
-        && (rosterStatus.snapshotVerificationRequired
-          || sourceSnapshotComparison?.mismatch === true
-          || sourceSnapshotComparison?.remainingMismatch === true
-          || sourceSnapshotComparison?.status === "ATTENTION")
+        && snapshot.isStale
       );
       Object.assign(diagnostic, {
         selectedDueSlot: rosterStatus.selectedDueSlot,
@@ -149,7 +113,7 @@ export async function planV3RosterJobs(db, games = [], now = new Date()) {
         isAfterDueSlot: rosterStatus.isAfterDueSlot,
         freshSnapshotExists: rosterStatus.freshSnapshotExists,
         snapshotVerificationRequired: rosterStatus.snapshotVerificationRequired,
-        sourceSnapshotComparison,
+        sourceSnapshotComparison: null,
         rosterRevalidationRequired,
         staleSnapshotExists: rosterStatus.staleSnapshotExists,
         openJobExists: rosterStatus.openRosterJobExists,

@@ -19,7 +19,7 @@
       jobDetailsCopyStatus: new Map(),
       manualOperations: new Map(),
       automationLogs: null,
-      automationLogFilters: { runId: "", internalGameId: "", jobType: "", status: "", reasonCode: "", failureCode: "" },
+      automationLogFilters: { runId: "", internalGameId: "", jobType: "", status: "", reasonCode: "", failureCode: "", category: "" },
       rankingReset: {
         periodType: "yearly",
         periodKey: String(new Date().getFullYear()),

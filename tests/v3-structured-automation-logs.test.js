@@ -83,7 +83,7 @@ test("admin-v3は構造化監査の読み取りAPIと6種類のフィルタを�
     assert.match(adminDiagnostics, /data-v3-automation-log-filter/);
   }
   assert.match(adminDiagnostics, /game run summaries/);
-  assert.match(adminDiagnostics, /job timeline/);
+  assert.match(adminDiagnostics, /event log/);
   assert.match(adminDiagnostics, /latestCronSummary/);
 });
 

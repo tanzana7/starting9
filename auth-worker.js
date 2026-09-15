@@ -103,7 +103,8 @@ import { buildAdminReadOnlyPreviewMetadata } from "./backend/admin/preview.js";
 import { buildManualGamePreview } from "./backend/admin/manual-game-preview.js";
 import {
   buildV3CronJobAuditInsert,
-  buildV3ScheduleSyncAuditInsert
+  buildV3ScheduleSyncAuditInsert,
+  classifyV3AuditEvent
 } from "./backend/automation-v3/audit.js";
 import { buildV3CronSummary } from "./backend/automation-v3/diagnostics.js";
 import { assessV3LineupArtifact } from "./backend/automation-v3/lineup-artifacts.js";
@@ -432,6 +433,10 @@ export function shouldPersistV3Audit({ eventType = "", job = null, execution = n
   const exceptionalContext = /retry|reclaim|stale|mismatch|anomal|recovery/.test(diagnosticContext)
     || ["retry_wait", "retry", "reclaimed", "stale", "mismatch"].includes(executionStatus)
     || ["retry_wait", "retry", "reclaimed", "stale", "mismatch"].includes(jobStatus);
+  const rosterNoChange = !failure && !executionHasFailure
+    && /roster/.test(String(eventType || "").toLowerCase())
+    && ["unchanged", "no_change", "no-op", "noop"].includes(executionStatus);
+  if (rosterNoChange) return false;
   if (failure || ["failed", "error", "terminal_failed"].includes(jobStatus) || ["failed", "error", "terminal_failed"].includes(executionStatus) || executionHasFailure || exceptionalContext) return true;
   return !ROUTINE_V3_AUDIT_EVENT_TYPES.has(String(eventType || ""));
 }
@@ -901,6 +906,49 @@ export default {
 
 function getV3AuditDb(env) {
   return env?.AUDIT_DB || null;
+}
+
+export function buildV3RosterMonitor(games = [], { teamCode = FIGHTERS_TEAM_CODE, manualRoster = null } = {}) {
+  const normalizedTeam = String(teamCode || FIGHTERS_TEAM_CODE).trim().toLowerCase();
+  const targets = (Array.isArray(games) ? games : []).filter((game) => {
+    const teams = [game?.homeTeam, game?.awayTeam, game?.home_team, game?.away_team]
+      .map((value) => String(value || "").trim().toLowerCase());
+    return teams.includes(normalizedTeam) || (normalizedTeam === "fighters" && teams.includes("f"));
+  });
+  const diagnostics = targets.map((game) => game?.rosterDiagnostics || {}).sort((left, right) => {
+    const leftAt = new Date(left.sourceFetchedAt || left.fetchedAt || left.rosterSnapshotCapturedAt || 0).getTime();
+    const rightAt = new Date(right.sourceFetchedAt || right.fetchedAt || right.rosterSnapshotCapturedAt || 0).getTime();
+    return rightAt - leftAt;
+  });
+  const latest = diagnostics[0] || {};
+  const manualEntries = Array.isArray(manualRoster?.entries) ? manualRoster.entries : [];
+  const activeCount = manualEntries.filter((entry) => String(entry?.status || "active").toLowerCase() === "active").length;
+  const inactiveCount = manualEntries.filter((entry) => String(entry?.status || "").toLowerCase() === "inactive").length;
+  const hasError = diagnostics.some((entry) => String(entry.severity || "").toUpperCase() === "ERROR" || Boolean(entry.publicCandidateWarning && entry.isSnapshotStale));
+  const hasWarning = diagnostics.some((entry) => Boolean(entry.isSnapshotStale || entry.publicCandidateWarning || entry.reasonCode));
+  const source = latest.publicCandidateSource || latest.rosterSnapshotSource || (latest.rosterSnapshotExists ? "snapshot" : "none");
+  const status = hasError ? "ERROR" : hasWarning ? "WARN" : source === "none" ? "WARN" : "OK";
+  const lastCheckedAt = latest.sourceFetchedAt || latest.fetchedAt || latest.rosterSnapshotCapturedAt || null;
+  const lastSuccessfulAt = diagnostics.find((entry) => entry.rosterSnapshotExists && !entry.isSnapshotStale)?.rosterSnapshotCapturedAt || null;
+  const lastChangedAt = diagnostics.find((entry) => entry.previousSnapshotComparison?.mismatch)?.sourceFetchedAt
+    || diagnostics.find((entry) => Number(entry.totalRosterChanges || 0) > 0)?.fetchedAt || null;
+  const playerCount = Number(latest.publicCandidateOfficialPlayerCount ?? latest.rosterSnapshotPlayerCount ?? 0) || 0;
+  return {
+    teamCode: normalizedTeam,
+    status,
+    source,
+    lastCheckedAt,
+    lastSuccessfulAt,
+    lastChangedAt,
+    playerCount,
+    candidateCount: manualRoster?.schemaAvailable === false ? null : activeCount,
+    rosterOutCandidateCount: manualRoster?.schemaAvailable === false ? null : inactiveCount,
+    fallback: /fallback|stale|baseline|static|none/i.test(String(source || "")),
+    manualRosterSource: manualRoster?.source || null,
+    manualRosterSaved: manualRoster?.isManualSaved === true,
+    gameCount: targets.length,
+    warning: latest.publicCandidateWarning || latest.staleReason || (source === "none" ? "公式ロースターをまだ確認できていません。" : null)
+  };
 }
 
 async function writeV3RuntimeAudit(env, { eventType, runId, correlationId = runId, now = new Date(), internalGameId = null, execution = null, failure = null } = {}) {
@@ -5172,7 +5220,6 @@ async function handleAdminMe(request, env, cors) {
   if (!access.ok) {
     return access.response;
   }
-
   return jsonResponse({
     ok: true,
     admin: true,
@@ -5717,6 +5764,13 @@ async function handleAdminV3Overview(request, env, cors) {
       schedule: { ...schedule, ...nextAction }
     });
   }
+  let monitorRoster = null;
+  try {
+    monitorRoster = await getManualRoster(env.AUTH_DB, { teamCode: MANUAL_ROSTER_TEAM.teamCode });
+  } catch (error) {
+    console.warn(`[ADMIN_V3_OVERVIEW] stage=manual_roster_monitor_read status=skipped code=${error?.code || "MANUAL_ROSTER_MONITOR_READ_FAILED"}`);
+  }
+  const rosterMonitor = buildV3RosterMonitor(rows, { teamCode: FIGHTERS_TEAM_CODE, manualRoster: monitorRoster });
   return jsonResponse({
     ok: true,
     featureFlag: V3_FEATURE_FLAG,
@@ -5737,7 +5791,8 @@ async function handleAdminV3Overview(request, env, cors) {
       futureGamesDefinition: "game_date > JST today",
       futureScheduleSync
     },
-    games: rows
+    games: rows,
+    rosterMonitor
   }, 200, cors);
 }
 
@@ -7195,15 +7250,35 @@ async function handleAdminV3ManualGamePreview(request, env, cors) {
   }
 }
 
-async function recordV3AdminAudit(db, { internalGameId, jobId = null, jobType = "admin_operation", stateBefore = null, stateAfter = null, failureCode = null, failureMessage = null, occurredAt = new Date() } = {}) {
+async function recordV3AdminAudit(db, { internalGameId, jobId = null, jobType = "admin_operation", stateBefore = null, stateAfter = null, failureCode = null, failureMessage = null, occurredAt = new Date(), teamId = null, revisionId = null, attemptId = null, reasonCode = failureCode, metadata = null } = {}) {
   if (!db) return false;
   try {
-    await db.prepare(
-      `INSERT INTO game_automation_v3_audit
-         (internal_game_id, job_id, job_type, state_before, state_after, attempt_count,
-          failure_code, failure_message, occurred_at, source)
-       VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8, 'admin')`
-    ).bind(internalGameId, jobId, jobType, stateBefore, stateAfter, failureCode, failureMessage, occurredAt.toISOString()).run();
+    const auditColumns = await getTableColumnSet(db, "game_automation_v3_audit");
+    const baseColumns = ["internal_game_id", "job_id", "job_type", "state_before", "state_after", "attempt_count", "failure_code", "failure_message", "occurred_at", "source"];
+    const optional = [
+      ...(auditColumns.has("event_type") ? ["event_type"] : []),
+      ...(auditColumns.has("severity") ? ["severity"] : []),
+      ...(auditColumns.has("category") ? ["category"] : []),
+      ...(auditColumns.has("team_id") ? ["team_id"] : []),
+      ...(auditColumns.has("revision_id") ? ["revision_id"] : []),
+      ...(auditColumns.has("attempt_id") ? ["attempt_id"] : []),
+      ...(auditColumns.has("reason_code") ? ["reason_code"] : []),
+      ...(auditColumns.has("metadata_json") ? ["metadata_json"] : [])
+    ];
+    const columns = [...baseColumns, ...optional];
+    const classification = classifyV3AuditEvent({ eventType: "admin_operation", jobType, failureCode, source: "admin" });
+    const values = [internalGameId, jobId, jobType, stateBefore, stateAfter, 0, failureCode, failureMessage, occurredAt.toISOString(), "admin"];
+    if (auditColumns.has("event_type")) values.push("admin_operation");
+    if (auditColumns.has("severity")) values.push(classification.severity);
+    if (auditColumns.has("category")) values.push(classification.category);
+    if (auditColumns.has("team_id")) values.push(teamId);
+    if (auditColumns.has("revision_id")) values.push(revisionId);
+    if (auditColumns.has("attempt_id")) values.push(attemptId);
+    if (auditColumns.has("reason_code")) values.push(reasonCode || null);
+    if (auditColumns.has("metadata_json")) {
+      try { values.push(metadata && typeof metadata === "object" ? JSON.stringify(metadata).slice(0, 4000) : null); } catch { values.push(null); }
+    }
+    await db.prepare(`INSERT INTO game_automation_v3_audit (${columns.join(", ")}) VALUES (${values.map((_, index) => `?${index + 1}`).join(", ")})`).bind(...values).run();
     return true;
   } catch (error) {
     console.warn(`[GAME_AUTOMATION_V3] stage=admin_audit status=skipped code=${error?.code || "V3_ADMIN_AUDIT_FAILED"}`);
@@ -7235,7 +7310,8 @@ async function handleAdminV3AutomationLogs(request, env, cors) {
     jobType: String(url.searchParams.get("jobType") || "").trim(),
     status: String(url.searchParams.get("status") || "").trim(),
     reasonCode: String(url.searchParams.get("reasonCode") || "").trim(),
-    failureCode: String(url.searchParams.get("failureCode") || "").trim()
+    failureCode: String(url.searchParams.get("failureCode") || "").trim(),
+    category: String(url.searchParams.get("category") || "").trim().toUpperCase()
   };
   const requestedLimit = Number(url.searchParams.get("limit") || ADMIN_V3_LOG_DEFAULT_LIMIT);
   const limit = Math.min(ADMIN_V3_LOG_MAX_LIMIT, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : ADMIN_V3_LOG_DEFAULT_LIMIT));
@@ -7258,12 +7334,26 @@ async function handleAdminV3AutomationLogs(request, env, cors) {
     auditParams.push(filters.failureCode);
     auditConditions.push(`failure_code = ?${auditParams.length}`);
   }
-  auditParams.push(limit);
   try {
+    const auditColumns = await getTableColumnSet(auditDb, "game_automation_v3_audit");
+    if (filters.category && auditColumns.has("category")) {
+      auditParams.push(filters.category);
+      auditConditions.push(`category = ?${auditParams.length}`);
+    }
+    const optionalSelect = [
+      ...(auditColumns.has("severity") ? ["severity"] : []),
+      ...(auditColumns.has("category") ? ["category"] : []),
+      ...(auditColumns.has("team_id") ? ["team_id"] : []),
+      ...(auditColumns.has("revision_id") ? ["revision_id"] : []),
+      ...(auditColumns.has("attempt_id") ? ["attempt_id"] : []),
+      ...(auditColumns.has("reason_code") ? ["reason_code"] : []),
+      ...(auditColumns.has("metadata_json") ? ["metadata_json"] : [])
+    ];
+    auditParams.push(limit);
     const result = await auditDb.prepare(
       `SELECT id, internal_game_id, job_id, job_type, scheduled_slot_at,
               state_before, state_after, attempt_count, failure_code,
-              failure_message, occurred_at, source, event_type
+              failure_message, occurred_at, source, event_type${optionalSelect.length ? `, ${optionalSelect.join(", ")}` : ""}
          FROM game_automation_v3_audit
         WHERE ${auditConditions.join(" AND ")}
         ORDER BY occurred_at DESC, id DESC
@@ -7271,6 +7361,9 @@ async function handleAdminV3AutomationLogs(request, env, cors) {
     ).bind(...auditParams).all();
     const allRows = (result.results || []).map((row) => {
       const details = parseV3AuditDetails(row.failure_message);
+      let metadata = {};
+      try { metadata = row.metadata_json ? JSON.parse(row.metadata_json) : {}; } catch { metadata = {}; }
+      const classification = classifyV3AuditEvent({ eventType: row.event_type, jobType: row.job_type, failureCode: row.failure_code || details.failureCode, source: row.source });
       return {
         id: row.id,
         internalGameId: row.internal_game_id,
@@ -7285,18 +7378,26 @@ async function handleAdminV3AutomationLogs(request, env, cors) {
         occurredAt: row.occurred_at,
         source: row.source,
         eventType: row.event_type || "job",
-        details
+        details,
+        severity: row.severity || classification.severity,
+        category: row.category || classification.category,
+        teamId: row.team_id || details.teamId || details.teamCode || null,
+        revisionId: row.revision_id || details.revisionId || details.lineupRevisionId || details.scoringRevisionId || null,
+        attemptId: row.attempt_id || details.attemptId || details.scoreAttemptId || null,
+        reasonCode: row.reason_code || details.reasonCode || null,
+        metadata: Object.keys(metadata).length ? metadata : (details.metadata && typeof details.metadata === "object" ? details.metadata : {})
       };
     });
     const matches = (row) => {
       const detailStatus = String(row.details?.status || row.stateAfter || "");
-      const detailReason = String(row.details?.reasonCode || row.details?.plannerDecision?.reasonCode || "");
+      const detailReason = String(row.reasonCode || row.details?.reasonCode || row.details?.plannerDecision?.reasonCode || "");
       return (!filters.runId || String(row.details?.runId || "") === filters.runId)
         && (!filters.internalGameId || String(row.internalGameId || "") === filters.internalGameId)
         && (!filters.jobType || String(row.jobType || "") === filters.jobType)
         && (!filters.status || detailStatus === filters.status)
         && (!filters.reasonCode || detailReason === filters.reasonCode)
-        && (!filters.failureCode || String(row.failureCode || "") === filters.failureCode);
+        && (!filters.failureCode || String(row.failureCode || "") === filters.failureCode)
+        && (!filters.category || String(row.category || "").toUpperCase() === filters.category);
     };
     const rows = allRows.filter(matches).slice(0, limit);
     const latestCronSummary = allRows.find((row) => row.eventType === "cron_run_summary") || null;
@@ -12959,6 +13060,30 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
       ).bind(capturedAt, gameId));
     }
     await env.AUTH_DB.batch(statements);
+    if (isV3 && !unchanged) {
+      await writeV3RuntimeAudit(env, {
+        eventType: "roster_changed",
+        runId: `roster-${storage.internalGameId}`,
+        correlationId: storage.internalGameId,
+        now,
+        internalGameId: storage.internalGameId,
+        execution: {
+          jobType: "roster_fetch",
+          stage: "capture_roster_snapshot",
+          status: "changed",
+          reasonCode: "ROSTER_CHANGED",
+          teamId: FIGHTERS_TEAM_CODE,
+          beforeCount: Number(parseJsonArray(existing?.roster_json).length || 0),
+          afterCount: roster.length,
+          sourceFingerprint: rosterFingerprint(roster),
+          snapshotFingerprint: rosterFingerprint(parseJsonArray(existing?.roster_json)),
+          metadata: {
+            addedPlayers: Array.isArray(previousSnapshotComparison?.expectedMissing) ? previousSnapshotComparison.expectedMissing.slice(0, 20) : [],
+            removedPlayers: Array.isArray(previousSnapshotComparison?.removedStillPresent) ? previousSnapshotComparison.removedStillPresent.slice(0, 20) : []
+          }
+        }
+      });
+    }
     // V3 writes stay on the canonical UUID row; historical legacy rows are read-only.
     if (!isV3) await updateRosterFetchState(env.AUTH_DB, gameId, now, { source, success: true, pregame, pregameMarker, fetchSlot });
     return {
@@ -13023,6 +13148,22 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
         sourceSnapshotComparison: previousSnapshotComparison,
         rosterResolution: error.rosterResolution
       };
+      await writeV3RuntimeAudit(env, {
+        eventType: "roster_fetch_failed",
+        runId: `roster-${storage.internalGameId}`,
+        correlationId: storage.internalGameId,
+        now,
+        internalGameId: storage.internalGameId,
+        failure: { code: String(error?.code || "ROSTER_FETCH_FAILED"), message: String(error?.message || "ロースター取得に失敗しました。") },
+        execution: {
+          jobType: "roster_fetch",
+          stage: error?.diagnostics?.executorStage || "capture_roster_snapshot",
+          status: "failed",
+          reasonCode: String(error?.code || "ROSTER_FETCH_FAILED"),
+          teamId: FIGHTERS_TEAM_CODE,
+          metadata: { parserResult: error?.diagnostics?.parserResult || "failed", sourceDate: error?.diagnostics?.sourceDate || null }
+        }
+      });
     }
     if (!isV3) {
       await updateRosterFetchState(env.AUTH_DB, gameId, now, { source, errorCode: String(error?.code || "ROSTER_FETCH_FAILED") });

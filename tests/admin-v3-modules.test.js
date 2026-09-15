@@ -46,7 +46,7 @@ function loadModules() {
 test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む", () => {
   const scripts = [...page.matchAll(/<script src="([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(scripts, [
-    "frontend/admin-v3/state.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-manual-lineup-explicit-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-manual-lineup-two-step-confirmation-1-admin-public-parity-1",
+    "frontend/admin-v3/state.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-manual-lineup-explicit-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-manual-lineup-two-step-confirmation-1-admin-public-parity-1-ops-summary-1",
     "frontend/public/fighters-player-details.js?v=fighters-player-details-20260903-1",
     "frontend/shared/lineup-builder.js?v=shared-lineup-builder-3-position-picker-parity-1",
     "frontend/public/player-display.js?v=public-player-display-1-batting-hand-player-number-1-player-details-1",
@@ -59,7 +59,7 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
     "frontend/admin-v3/render-game-progress.js?v=v4-canonical-status-1",
     "frontend/admin-v3/render-job-details.js?v=v4-canonical-status-1",
     "frontend/admin-v3/render-roster.js?v=v4-canonical-status-1",
-    "frontend/admin-v3/render-diagnostics.js?v=v4-canonical-status-1",
+    "frontend/admin-v3/render-diagnostics.js?v=v4-canonical-status-1-ops-summary-1",
     "frontend/admin-v3/render-ranking-reset.js?v=v4-canonical-status-1",
     "frontend/admin-v3/render-perfect-score-preview.js?v=v4-canonical-status-1",
     "frontend/admin-v3/render-ranking-test-users.js?v=ranking-test-users-1-global-settings-1-ranking-test-fixed-presets-1-display-name-slot-binding-1",

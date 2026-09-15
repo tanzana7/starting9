@@ -1,5 +1,33 @@
 import { normalizeV3DiagnosticJobType } from "./diagnostics.js";
 
+export function classifyV3AuditEvent({ eventType = "", jobType = "", failureCode = "", execution = null, source = "cron" } = {}) {
+  const event = String(eventType || "").toLowerCase();
+  const job = String(jobType || execution?.jobType || "").toLowerCase();
+  const reason = String(failureCode || execution?.reasonCode || execution?.errorCode || "").toLowerCase();
+  const isFailure = Boolean(failureCode || execution?.failureCode || execution?.errorCode)
+    || /failed|error|mismatch|stale|retry|reclaim|invalid|malformed|empty|timeout|recovery/.test(`${event} ${reason}`)
+    || ["failed", "error", "terminal_failed", "retry_wait", "reclaimed", "stale"].includes(String(execution?.status || "").toLowerCase());
+  if (isFailure) return { severity: "ERROR", category: "ERROR" };
+  if (String(source || "").toLowerCase() === "admin" || event.includes("admin") || job.startsWith("admin:")) return { severity: "INFO", category: "ADMIN" };
+  if (event.includes("roster") || job.includes("roster")) return { severity: "INFO", category: "ROSTER" };
+  if (event.includes("score") || job === "score" || job === "scoring") return { severity: "INFO", category: "SCORE" };
+  if (event.includes("rank") || job.includes("rank")) return { severity: "INFO", category: "RANKING" };
+  if (event.includes("publish") || job.includes("publish")) return { severity: "INFO", category: "PUBLISH" };
+  return { severity: "INFO", category: "SYSTEM" };
+}
+
+function compactAuditMetadata(value) {
+  if (!value || typeof value !== "object") return null;
+  const source = value.metadata && typeof value.metadata === "object" ? value.metadata : value;
+  const sanitized = {};
+  for (const [key, entry] of Object.entries(source)) {
+    if (/roster|response|payload|raw|html|body|lineup/i.test(key)) continue;
+    if (entry === null || ["string", "number", "boolean"].includes(typeof entry)) sanitized[key] = typeof entry === "string" ? entry.slice(0, 240) : entry;
+    else if (Array.isArray(entry)) sanitized[key] = entry.slice(0, 20).map((item) => typeof item === "string" ? item.slice(0, 120) : item);
+  }
+  try { return JSON.stringify(sanitized).slice(0, 4000) || null; } catch { return null; }
+}
+
 function buildV3RosterAuditSummary(details, jobType) {
   if (jobType !== "roster_fetch") return null;
   const comparison = details?.sourceSnapshotComparison || details?.diagnostics?.sourceSnapshotComparison || null;
@@ -39,7 +67,14 @@ export function buildV3CronJobAuditInsert({
     ...(auditColumns.has("event_type") ? ["event_type"] : []),
     "internal_game_id", "job_id", "job_type", "scheduled_slot_at", "claim_id",
     "state_before", "state_after", "attempt_count", "failure_code", "failure_message",
-    ...(auditColumns.has("data_status") ? ["data_status"] : []), "occurred_at", "source"
+    ...(auditColumns.has("data_status") ? ["data_status"] : []), "occurred_at", "source",
+    ...(auditColumns.has("severity") ? ["severity"] : []),
+    ...(auditColumns.has("category") ? ["category"] : []),
+    ...(auditColumns.has("team_id") ? ["team_id"] : []),
+    ...(auditColumns.has("revision_id") ? ["revision_id"] : []),
+    ...(auditColumns.has("attempt_id") ? ["attempt_id"] : []),
+    ...(auditColumns.has("reason_code") ? ["reason_code"] : []),
+    ...(auditColumns.has("metadata_json") ? ["metadata_json"] : [])
   ];
   const statusAfter = String(job?.status || (failure ? "retry_wait" : "completed"));
   const probableStarter = execution?.probableStarter || null;
@@ -81,6 +116,8 @@ export function buildV3CronJobAuditInsert({
     structuredDetails.diagnostics = failure.diagnostics;
   }
   const auditSummary = buildV3RosterAuditSummary(structuredDetails, auditJobType);
+  const classification = classifyV3AuditEvent({ eventType: resolvedEventType, jobType: auditJobType, failureCode, execution });
+  const metadataJson = compactAuditMetadata(execution);
   let failureMessage = failureBaseMessage;
   try {
     const summaryMarker = auditSummary ? `[v3_summary=${JSON.stringify(auditSummary)}]` : "";
@@ -104,9 +141,16 @@ export function buildV3CronJobAuditInsert({
     failureMessage ? String(failureMessage).slice(0, 8000) : null,
     ...(auditColumns.has("data_status") ? [dataStatus] : []),
     occurred,
-    "cron"
+    "cron",
+    ...(auditColumns.has("severity") ? [classification.severity] : []),
+    ...(auditColumns.has("category") ? [classification.category] : []),
+    ...(auditColumns.has("team_id") ? [execution?.teamId || execution?.teamCode || null] : []),
+    ...(auditColumns.has("revision_id") ? [execution?.revisionId || execution?.lineupRevisionId || execution?.scoringRevisionId || null] : []),
+    ...(auditColumns.has("attempt_id") ? [execution?.attemptId || execution?.scoreAttemptId || null] : []),
+    ...(auditColumns.has("reason_code") ? [execution?.reasonCode || execution?.plannerDecision?.reasonCode || failureCode || null] : []),
+    ...(auditColumns.has("metadata_json") ? [metadataJson] : [])
   ];
-  return { columns, values, eventType: resolvedEventType, structuredDetails };
+  return { columns, values, eventType: resolvedEventType, structuredDetails, severity: classification.severity, category: classification.category };
 }
 
 export function buildV3ScheduleSyncAuditInsert({

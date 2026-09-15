@@ -7,7 +7,11 @@ import {
   applyLiveRosterToManualLineupCatalog,
   normalizeOfficialNpbPlayerId
 } from "../backend/automation-v3/manual-roster-repository.js";
-import { getManualLineupPlayerCatalog, normalizeManualLineupInput } from "../auth-worker.js";
+import {
+  collectTrustedTemporaryPlayersFromRevisions,
+  getManualLineupPlayerCatalog,
+  normalizeManualLineupInput
+} from "../auth-worker.js";
 import { parseRosterTableEntries } from "../cloudflare-worker.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -86,10 +90,38 @@ test("正式lineupは同一公式rosterで三点一致した一時野手だけ�
   assert.equal(trusted.ok, true, trusted.error);
   assert.equal(trusted.lineup[8].playerId, "npb:63165155");
   assert.equal(trusted.lineup[8].resolutionStatus, "temporary_npb");
-  assert.equal(normalizeManualLineupInput([...base, temporary]).ok, false);
-  assert.equal(normalizeManualLineupInput([...base, { ...temporary, playerName: "別名" }], {
+  const untrusted = normalizeManualLineupInput([...base, temporary]);
+  assert.equal(untrusted.ok, false);
+  assert.equal(untrusted.code, "LINEUP_PLAYER_UNKNOWN");
+  assert.equal(untrusted.details.slot, 9);
+  const mismatched = normalizeManualLineupInput([...base, { ...temporary, playerName: "別名" }], {
     trustedTemporaryPlayers: [{ playerId: "npb:63165155", name: "新規野手", number: "201", position: "外野手" }]
-  }).ok, false);
+  });
+  assert.equal(mismatched.ok, false);
+  assert.equal(mismatched.code, "LINEUP_PLAYER_UNKNOWN");
+});
+
+test("過去に受理したtemporary identityはlive roster取得不能でも再利用できる", () => {
+  const base = getManualLineupPlayerCatalog().slice(0, 8).map((player, index) => ({
+    playerName: player.playerName,
+    uniformNumber: player.uniformNumber,
+    position: ["捕", "一", "二", "三", "遊", "左", "中", "右"][index],
+    battingOrder: index + 1
+  }));
+  const temporary = {
+    playerId: "npb:63165155",
+    playerName: "新規野手",
+    uniformNumber: "201",
+    position: "指",
+    battingOrder: 9
+  };
+  const persistedPlayers = collectTrustedTemporaryPlayersFromRevisions([{
+    actual_lineup_json: JSON.stringify([...base, temporary])
+  }]);
+  assert.deepEqual(persistedPlayers, [{ playerId: "npb:63165155", name: "新規野手", number: "201" }]);
+  const restored = normalizeManualLineupInput([...base, temporary], { trustedTemporaryPlayers: persistedPlayers });
+  assert.equal(restored.ok, true, restored.error);
+  assert.equal(restored.lineup[8].resolutionStatus, "temporary_npb");
 });
 
 test("public/adminはlive temporary fielderを同じ候補IDで扱い、pitcherは非表示にする", () => {
@@ -102,6 +134,8 @@ test("public/adminはlive temporary fielderを同じ候補IDで扱い、pitcher�
   assert.match(publicSource, /temporaryPublicPlayerCategory/);
   assert.match(publicSource, /teamId: "F"/);
   assert.match(publicSource, /isBatterCandidate: true/);
+  assert.match(authSource, /playerId \? \{ playerId \} : \{\}/);
+  assert.match(authSource, /collectTrustedTemporaryPlayersFromRevisions/);
 });
 
 test("保存済みtemporary predictionは採点時に再検証できるが、通常入力はtrusted rosterなしで受け入れない", () => {

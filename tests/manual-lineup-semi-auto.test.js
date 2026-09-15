@@ -576,6 +576,10 @@ test("manual lineupの実handlerは認証・確認・入力検証をサーバー
     const unknown = validManualLineup().map((row, index) => index === 8 ? { ...row, playerName: "未知選手" } : row);
     const invalidPlayer = await adminRequest(invalid.env, pathname, { lineup: unknown, reason: "確認", confirmed: true });
     assert.equal(invalidPlayer.status, 400);
+    const invalidPlayerBody = await invalidPlayer.json();
+    assert.equal(invalidPlayerBody.code, "V3_LINEUP_INVALID");
+    assert.equal(invalidPlayerBody.validation.reasonCode, "LINEUP_PLAYER_UNKNOWN");
+    assert.equal(invalidPlayerBody.validation.slot, 9);
     const invalidCount = await adminRequest(invalid.env, pathname, { lineup: validManualLineup().slice(0, 8), reason: "確認", confirmed: true });
     assert.equal(invalidCount.status, 400);
     assert.equal(invalid.database.prepare("SELECT COUNT(*) AS count FROM game_lineup_revisions").get().count, 1);

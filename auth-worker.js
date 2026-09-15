@@ -7025,7 +7025,14 @@ function v3AdminErrorResponse(cors, error, fallback = "V3管理操作に失敗�
     MANUAL_ROSTER_SCHEMA_UNAVAILABLE: 503,
     MANUAL_ROSTER_CONFIRMATION_REQUIRED: 409
   }[code] || 500);
-  return jsonResponse({ ok: false, code, error: String(error?.message || fallback) }, status, cors);
+  const validation = error?.validation && typeof error.validation === "object"
+    ? {
+      reasonCode: String(error.validation.reasonCode || "").slice(0, 80) || null,
+      slot: Number.isInteger(error.validation.slot) ? error.validation.slot : null,
+      field: String(error.validation.field || "").slice(0, 80) || null
+    }
+    : null;
+  return jsonResponse({ ok: false, code, error: String(error?.message || fallback), ...(validation ? { validation } : {}) }, status, cors);
 }
 
 async function handleAdminV3PerfectScorePreview(request, env, cors) {
@@ -7889,7 +7896,7 @@ async function handleAdminV3LineupCorrection(request, env, cors, route) {
     const actual = trustedTemporaryPlayers.length
       ? normalizeManualLineupInput(requestedLineup, { trustedTemporaryPlayers })
       : normalizeManualLineupInput(input?.lineup || input?.actualLineup);
-    if (!actual.ok) throw createV3Error("V3_LINEUP_CORRECTION_LINEUP_INVALID", actual.error, { httpStatus: 400 });
+    if (!actual.ok) throw createManualLineupInvalidError("V3_LINEUP_CORRECTION_LINEUP_INVALID", actual, 400);
     const fingerprint = await sha256Base64Url(JSON.stringify(actual.lineup));
     const currentFingerprint = String(status.canonical.revision.lineup_fingerprint || "")
       || await sha256Base64Url(JSON.stringify(status.canonical.lineup));
@@ -8294,10 +8301,74 @@ function hasTemporaryNpbPlayerId(value) {
   return lineup.some((entry) => Boolean(normalizeOfficialNpbPlayerId(entry?.playerId)));
 }
 
+function temporaryPlayerKey(player) {
+  const playerId = normalizeOfficialNpbPlayerId(player?.playerId);
+  const name = normalizeFightersPlayerName(player?.name || player?.playerName || player?.displayName || "");
+  const number = String(player?.number ?? player?.uniformNumber ?? "").trim();
+  return playerId && name && /^\d{1,3}$/.test(number) ? `${playerId}:${name}:${number}` : "";
+}
+
+function mergeTrustedTemporaryPlayers(...sources) {
+  const byKey = new Map();
+  for (const source of sources) {
+    for (const player of Array.isArray(source) ? source : []) {
+      const playerId = normalizeOfficialNpbPlayerId(player?.playerId);
+      const key = temporaryPlayerKey(player);
+      if (playerId && key && !byKey.has(key)) {
+        byKey.set(key, {
+          playerId,
+          name: String(player?.name || player?.playerName || player?.displayName || "").trim(),
+          number: String(player?.number ?? player?.uniformNumber ?? "").trim()
+        });
+      }
+    }
+  }
+  return [...byKey.values()];
+}
+
+export function collectTrustedTemporaryPlayersFromRevisions(rows = []) {
+  const players = [];
+  for (const row of Array.isArray(rows) ? rows : []) {
+    for (const player of parseStoredActualLineup(row?.actual_lineup_json) || []) {
+      if (normalizeOfficialNpbPlayerId(player?.playerId)) players.push({
+        playerId: player.playerId,
+        name: player.playerName || player.name,
+        number: player.uniformNumber ?? player.number
+      });
+    }
+  }
+  return mergeTrustedTemporaryPlayers(players);
+}
+
+async function getTrustedTemporaryPlayersFromRosterSnapshot(db, context) {
+  try {
+    const columns = await getTableColumnSet(db, "game_roster_snapshots");
+    const idColumn = columns.has("internal_game_id") ? "internal_game_id" : columns.has("game_id") ? "game_id" : "";
+    if (!idColumn || !columns.has("roster_json")) return [];
+    const id = idColumn === "internal_game_id" ? context?.id : context?.metadata?.gameId;
+    const row = await db.prepare(
+      `SELECT roster_json FROM game_roster_snapshots WHERE ${idColumn} = ?1 ORDER BY captured_at DESC LIMIT 1`
+    ).bind(id).first();
+    const parsed = parseJsonArray(row?.roster_json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 async function getTrustedTemporaryPlayersForLineup(env, context, value) {
   if (!hasTemporaryNpbPlayerId(value)) return [];
   const resolution = await getAdminPublicRosterForLineup(env, context);
-  return Array.isArray(resolution?.roster?.players) ? resolution.roster.players : [];
+  const livePlayers = Array.isArray(resolution?.roster?.players) ? resolution.roster.players : [];
+  const snapshotPlayers = await getTrustedTemporaryPlayersFromRosterSnapshot(env.AUTH_DB, context);
+  let revisionPlayers = [];
+  try {
+    const rows = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
+    revisionPlayers = collectTrustedTemporaryPlayersFromRevisions(rows);
+  } catch {
+    revisionPlayers = [];
+  }
+  return mergeTrustedTemporaryPlayers(livePlayers, snapshotPlayers, revisionPlayers);
 }
 
 async function handleAdminV3LineupGet(env, cors, context) {
@@ -8410,7 +8481,7 @@ async function handleAdminV3LineupRevisionCreate(request, env, cors, context, us
   const actual = trustedTemporaryPlayers.length
     ? normalizeManualLineupInput(requestedLineup, { trustedTemporaryPlayers })
     : normalizeManualLineupInput(input?.lineup || input?.actualLineup);
-  if (!actual.ok) throw createV3Error("V3_LINEUP_INVALID", actual.error, { httpStatus: 400 });
+  if (!actual.ok) throw createManualLineupInvalidError("V3_LINEUP_INVALID", actual, 400);
   const rows = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
   const latest = rows[0] || null;
   const fingerprint = await sha256Base64Url(JSON.stringify(actual.lineup));
@@ -8583,7 +8654,7 @@ async function handleAdminV3LineupFinalize(request, env, cors, context, user) {
   const revision = rows.find((row) => (requestedId && (row.revision_id === requestedId || `${row.game_id}:${Number(row.version)}` === requestedId)) || (Number.isInteger(requestedVersion) && Number(row.version) === requestedVersion));
   if (!revision) throw createV3Error("V3_LINEUP_REVISION_NOT_FOUND", "正式スタメンrevisionが見つかりません。", { httpStatus: 404 });
   const actual = sanitizeActualLineupForScoring(parseStoredActualLineup(revision.actual_lineup_json));
-  if (!actual.ok) throw createV3Error("V3_LINEUP_INVALID", actual.error, { httpStatus: 409 });
+  if (!actual.ok) throw createManualLineupInvalidError("V3_LINEUP_INVALID", actual, 409);
   const currentFinalRevisionId = String(currentLineup?.final_lineup_revision_id || "");
   const requestedRevisionId = String(revision.revision_id || `${revision.game_id}:${Number(revision.version)}`);
   const confirmationInternalGameId = String(input?.confirmationInternalGameId || "").trim();
@@ -12091,7 +12162,14 @@ async function saveRosterSnapshotFromNotice(db, identity, payload, capturedAt) {
       const name = String(player?.name || "").replace(/[\s\u3000]/g, "");
       const number = typeof player?.number === "string" ? player.number.trim() : String(player?.number || "").trim();
       const position = String(player?.position || "").trim();
-      if (name && number && position) players.push({ teamCode, position, number, name });
+      const playerId = normalizeOfficialNpbPlayerId(player?.playerId);
+      if (name && number && position) players.push({
+        teamCode,
+        position,
+        number,
+        name,
+        ...(playerId ? { playerId } : {})
+      });
     }
   }
   if (!players.length || players.length > 100) return false;
@@ -21325,16 +21403,60 @@ export function getManualLineupPlayerCatalog({ manualRoster = null } = {}) {
   return prioritizeManualRosterCatalog(catalog, manualRoster);
 }
 
+function manualLineupValidationFailure(reasonCode, error, slot = null, field = null) {
+  return {
+    ok: false,
+    error,
+    code: reasonCode,
+    details: {
+      reasonCode,
+      ...(Number.isInteger(slot) ? { slot } : {}),
+      ...(field ? { field } : {})
+    }
+  };
+}
+
+function annotateManualLineupValidation(result, lineup) {
+  if (result?.ok) return result;
+  if (result?.code) return result;
+  const error = String(result?.error || "");
+  const slot = Array.isArray(lineup)
+    ? lineup.find((entry) => !Number.isInteger(entry.battingOrder) || entry.battingOrder < 1 || entry.battingOrder > SCORING_LINEUP_SIZE)?.slot || null
+    : null;
+  if (/9人分/.test(error)) return manualLineupValidationFailure("LINEUP_COUNT_INVALID", error);
+  if (/打順が重複/.test(error)) return manualLineupValidationFailure("LINEUP_ORDER_DUPLICATE", error, slot, "battingOrder");
+  if (/打順は/.test(error)) return manualLineupValidationFailure("LINEUP_ORDER_INVALID", error, slot, "battingOrder");
+  if (/選手情報が不足/.test(error)) return manualLineupValidationFailure("LINEUP_PLAYER_REQUIRED", error, slot, "player");
+  if (/守備位置が不正/.test(error)) return manualLineupValidationFailure("LINEUP_POSITION_INVALID", error, slot, "position");
+  if (/同じ守備位置/.test(error)) return manualLineupValidationFailure("LINEUP_POSITION_DUPLICATE", error, slot, "position");
+  if (/球団情報が不正/.test(error)) return manualLineupValidationFailure("LINEUP_TEAM_INVALID", error, slot, "team");
+  if (/背番号が不正/.test(error)) return manualLineupValidationFailure("LINEUP_NUMBER_INVALID", error, slot, "uniformNumber");
+  if (/選手IDが不正/.test(error)) return manualLineupValidationFailure("LINEUP_PLAYER_ID_INVALID", error, slot, "playerId");
+  if (/同じ選手/.test(error)) return manualLineupValidationFailure("LINEUP_PLAYER_DUPLICATE", error, slot, "playerId");
+  return manualLineupValidationFailure("LINEUP_INVALID", error);
+}
+
+function createManualLineupInvalidError(errorCode, validation, httpStatus) {
+  return createV3Error(errorCode, validation?.error || "正式スタメンの入力が不正です。", {
+    httpStatus,
+    validation: {
+      reasonCode: validation?.code || "LINEUP_INVALID",
+      ...(Number.isInteger(validation?.details?.slot) ? { slot: validation.details.slot } : {}),
+      ...(validation?.details?.field ? { field: validation.details.field } : {})
+    }
+  });
+}
+
 export function normalizeManualLineupInput(value, { trustedTemporaryPlayers = [] } = {}) {
   if (!Array.isArray(value) || value.length !== SCORING_LINEUP_SIZE) {
-    return { ok: false, error: "手動スタメンはFightersの9人分を入力してください。" };
+    return manualLineupValidationFailure("LINEUP_COUNT_INVALID", "手動スタメンはFightersの9人分を入力してください。");
   }
   const trustedTemporaryById = new Map(
     (Array.isArray(trustedTemporaryPlayers) ? trustedTemporaryPlayers : [])
       .map((entry) => [normalizeOfficialNpbPlayerId(entry?.playerId), entry])
       .filter(([playerId]) => playerId)
   );
-  const lineup = value.map((entry) => {
+  const lineup = value.map((entry, index) => {
     const playerName = String(entry?.playerName || entry?.name || "").trim();
     const player = findFightersPlayerByName(playerName);
     const uniformNumber = String(entry?.uniformNumber ?? entry?.number ?? "").trim();
@@ -21363,20 +21485,24 @@ export function normalizeManualLineupInput(value, { trustedTemporaryPlayers = []
       _matchedPlayer: player,
       _temporaryPlayer: temporaryMatches,
       _inputUniformNumber: uniformNumber,
-      _inputPlayerId: playerId
+      _inputPlayerId: playerId,
+      slot: index + 1
     };
   });
-  if (lineup.some((entry) => !entry._matchedPlayer && !entry._temporaryPlayer)) {
-    return { ok: false, error: "Fighters選手マスターにない選手は登録できません。" };
+  const unknown = lineup.find((entry) => !entry._matchedPlayer && !entry._temporaryPlayer);
+  if (unknown) {
+    return manualLineupValidationFailure("LINEUP_PLAYER_UNKNOWN", `${unknown.slot}番の選手がFightersマスターまたは検証済みNPB rosterにありません。`, unknown.slot, "playerId");
   }
-  if (lineup.some((entry) => entry._inputUniformNumber && entry._inputUniformNumber !== entry.uniformNumber)) {
-    return { ok: false, error: "選手名と背番号が一致しません。" };
+  const numberMismatch = lineup.find((entry) => entry._inputUniformNumber && entry._inputUniformNumber !== entry.uniformNumber);
+  if (numberMismatch) {
+    return manualLineupValidationFailure("LINEUP_NUMBER_MISMATCH", `${numberMismatch.slot}番の選手名と背番号が一致しません。`, numberMismatch.slot, "uniformNumber");
   }
-  if (lineup.some((entry) => entry._inputPlayerId && entry._inputPlayerId !== entry.playerId)) {
-    return { ok: false, error: "選手IDがFightersマスターと一致しません。" };
+  const playerIdMismatch = lineup.find((entry) => entry._inputPlayerId && entry._inputPlayerId !== entry.playerId);
+  if (playerIdMismatch) {
+    return manualLineupValidationFailure("LINEUP_PLAYER_ID_MISMATCH", `${playerIdMismatch.slot}番の選手IDが選手情報と一致しません。`, playerIdMismatch.slot, "playerId");
   }
   const sanitized = sanitizeActualLineupForScoring(lineup.map(({ _matchedPlayer, _temporaryPlayer, _inputUniformNumber, _inputPlayerId, ...entry }) => entry));
-  if (!sanitized.ok) return sanitized;
+  if (!sanitized.ok) return annotateManualLineupValidation(sanitized, lineup);
   return sanitized;
 }
 

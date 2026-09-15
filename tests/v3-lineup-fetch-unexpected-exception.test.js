@@ -656,7 +656,7 @@ test("scheduled handlerのfatal V3経路でもterminal auditを試行する", as
   const ctx = { waitUntil(promise) { waiters.push(Promise.resolve(promise)); } };
   await worker.scheduled(
     { scheduledTime: Date.parse("2026-09-02T01:43:00.000Z") },
-    { AUTH_DB: db, ENABLE_GAME_AUTOMATION_V3: "true" },
+    { AUTH_DB: db, AUDIT_DB: db, ENABLE_GAME_AUTOMATION_V3: "true" },
     ctx
   );
   const settled = await Promise.allSettled(waiters);

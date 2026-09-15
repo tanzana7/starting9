@@ -1718,9 +1718,9 @@ test("V3ロースターsnapshotはslot処理済みの場合だけ同じjobを再
     assert.equal(fresh.exists, true);
     assert.equal(fresh.isFresh, true);
     const freshPlan = await v3.planV3RosterJobs(d1(database), [target], new Date("2026-08-07T07:50:00.000Z"));
-    assert.equal(freshPlan.created, 1);
-    assert.equal(freshPlan.planned[0].reasonCode, "ROSTER_REVALIDATION_JOB_CREATED");
-    assert.equal(freshPlan.planned[0].plan.scheduledSlotAt.toISOString(), "2026-08-07T07:50:00.000Z");
+    assert.equal(freshPlan.created, 0);
+    assert.equal(freshPlan.planned[0].reasonCode, "ROSTER_SLOT_ALREADY_PROCESSED");
+    assert.equal(freshPlan.diagnostics[0].sourceSnapshotComparison, null);
   } finally {
     database.close();
   }
@@ -1750,7 +1750,7 @@ test("fresh snapshotがあっても未処理の最新roster slotは公式再取�
   }
 });
 
-test("切断されたroster auditでもcompact summaryのOK判定で再検証jobを増殖させない", async () => {
+test("roster auditがなくてもformal snapshotだけで再検証jobを増殖させない", async () => {
   const database = new DatabaseSync(":memory:");
   try {
     database.exec(`
@@ -1761,25 +1761,11 @@ test("切断されたroster auditでもcompact summaryのOK判定で再検証job
         max_attempts INTEGER, next_retry_at TEXT, claimed_at TEXT, claim_token TEXT,
         lease_expires_at TEXT, completed_at TEXT, failure_code TEXT, failure_message TEXT,
         created_at TEXT, updated_at TEXT, UNIQUE(internal_game_id, job_type, scheduled_slot_at));
-      CREATE TABLE game_automation_v3_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, internal_game_id TEXT,
-        job_id INTEGER, job_type TEXT, event_type TEXT, failure_message TEXT, occurred_at TEXT);
       INSERT INTO game_roster_snapshots VALUES ('canonical', '${GAME_ID}', '2026-08-07', 'npb-roster', 'captured', 31,
         '2026-08-07T07:40:00.000Z', '2026-08-07T07:40:00.000Z', '[]');
       INSERT INTO game_jobs_v3 (internal_game_id, job_type, scheduled_at, scheduled_slot_at, status, attempt_count, completed_at)
         VALUES ('${GAME_ID}', 'roster_fetch', '2026-08-07T07:10:00.000Z', '2026-08-07T07:10:00.000Z', 'completed', 1, '2026-08-07T07:40:00.000Z');
     `);
-    const audit = v3.buildV3CronJobAuditInsert({
-      job: { id: 1, internal_game_id: GAME_ID, job_type: "roster_fetch", status: "completed", attempt_count: 1 },
-      execution: {
-        status: "captured",
-        reasonCode: "ROSTER_NO_CHANGES",
-        sourceSnapshotComparison: { status: "OK", mismatch: false, remainingMismatch: false, stale: false },
-        largeDetail: "x".repeat(12000)
-      }
-    });
-    database.prepare("INSERT INTO game_automation_v3_audit (internal_game_id, job_id, job_type, event_type, failure_message, occurred_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(GAME_ID, 1, "roster_fetch", "job", audit.values[audit.columns.indexOf("failure_message")], "2026-08-07T07:40:00.000Z");
-
     const result = await v3.planV3RosterJobs(
       d1(database),
       [{ ...game(), gameDate: "2026-08-07", startAt: "2026-08-07T09:00:00.000Z" }],
@@ -1788,7 +1774,7 @@ test("切断されたroster auditでもcompact summaryのOK判定で再検証job
 
     assert.equal(result.created, 0);
     assert.equal(result.planned[0].reasonCode, "ROSTER_SLOT_ALREADY_PROCESSED");
-    assert.equal(result.diagnostics[0].sourceSnapshotComparison.status, "OK");
+    assert.equal(result.diagnostics[0].sourceSnapshotComparison, null);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id = ?1").get(GAME_ID).count, 1);
   } finally {
     database.close();

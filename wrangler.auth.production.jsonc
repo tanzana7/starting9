@@ -33,6 +33,12 @@
       "database_name": "starting9-auth",
       "database_id": "0ad8ada3-f50a-4e83-be8a-15a0b24324c6",
       "migrations_dir": "migrations"
+    },
+    {
+      "binding": "AUDIT_DB",
+      "database_name": "starting9-audit",
+      "database_id": "8bf24658-d9d3-4ba9-870e-3b92d660543f",
+      "migrations_dir": "migrations-audit"
     }
   ]
 }

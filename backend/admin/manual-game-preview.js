@@ -10,8 +10,7 @@ const REQUIRED_CURRENT_TABLES = Object.freeze([
   "game_identifiers",
   "detected_game_schedule",
   "game_automation_v3_state",
-  "game_jobs_v3",
-  "game_automation_v3_audit"
+  "game_jobs_v3"
 ]);
 const REGISTRATION_SUPPORT_TABLES = Object.freeze([
   "manual_schedule_operations",

@@ -1867,18 +1867,28 @@ async function loadV3OperationDetails() {
   renderCurrentV3View();
 }
 
-const ADMIN_V3_ROSTER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 let adminV3RosterRefreshInFlight = false;
 
 async function refreshV3LineupRoster() {
   const id = v3State.selectedGameId;
   if (!id || v3State.view !== "lineup" || document.visibilityState === "hidden" || adminV3RosterRefreshInFlight) return;
   const currentDetails = v3State.operationDetails.get(id);
-  if (!currentDetails?.lineup) return;
+  if (!currentDetails?.lineup) {
+    // A deep link or a failed initial detail read can leave the lineup view
+    // without a detail payload. Re-enter the normal detail loader so the
+    // shared roster resolver is still reached instead of silently keeping an
+    // empty candidate list.
+    await loadV3OperationDetails();
+    return;
+  }
+  const requestToken = Number(v3State.operationDetailsRequestToken || 0);
   adminV3RosterRefreshInFlight = true;
   try {
     const detail = await v3Api.getGameOperationDetail(id, "/lineup");
-    if (id !== v3State.selectedGameId || v3State.view !== "lineup" || String(detail?.internalGameId || "") !== String(id)) return;
+    if (requestToken !== Number(v3State.operationDetailsRequestToken || 0)
+      || id !== v3State.selectedGameId
+      || v3State.view !== "lineup"
+      || String(detail?.internalGameId || "") !== String(id)) return;
     v3State.operationDetails.set(id, { ...currentDetails, lineup: detail });
     renderCurrentV3View();
   } catch (error) {
@@ -1886,13 +1896,6 @@ async function refreshV3LineupRoster() {
   } finally {
     adminV3RosterRefreshInFlight = false;
   }
-}
-
-function startV3RosterRefresh() {
-  window.setInterval(() => { void refreshV3LineupRoster(); }, ADMIN_V3_ROSTER_REFRESH_INTERVAL_MS);
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") void refreshV3LineupRoster();
-  });
 }
 
 async function loadV3() {
@@ -1914,7 +1917,7 @@ async function loadV3() {
   }
 }
 
-function chooseV3View(view) {
+function chooseV3View(view, { skipLineupLoad = false } = {}) {
   if (!V3_VIEWS.includes(view)) return;
   v3State.view = view;
   updateV3Hash(view, v3State.selectedGameId);
@@ -1926,8 +1929,12 @@ function chooseV3View(view) {
   if (view === "lineup-correction") loadV3LineupCorrections();
   if (view === "ranking-test-users") loadRankingTestUsers();
   if (view === "roster") loadManualRoster();
-  if (view === "lineup" && v3State.selectedGameId && v3State.operationDetails.get(v3State.selectedGameId)?.lineup) {
-    void refreshV3LineupRoster();
+  if (view === "lineup" && v3State.selectedGameId) {
+    if (v3State.operationDetails.get(v3State.selectedGameId)?.lineup) {
+      void refreshV3LineupRoster();
+    } else if (!skipLineupLoad) {
+      void loadV3OperationDetails();
+    }
   }
   document.getElementById("v3Navigation")?.classList.remove("open");
   document.getElementById("mobileNavToggle")?.setAttribute("aria-expanded", "false");
@@ -1956,7 +1963,7 @@ async function selectV3Game(internalGameId, view = "workflow") {
   const selected = v3ListItems(v3State.payload?.games, "games").find((game) => game.internalGameId === v3State.selectedGameId);
   v3State.selectionSafetyNotice = v3SelectionSafety.selectionWarning(selected, new Date());
   v3StorageSet("starting9.admin-v3.selected-game", v3State.selectedGameId);
-  chooseV3View(view);
+  chooseV3View(view, { skipLineupLoad: true });
   if (view === "ranking-test-users") await loadRankingTestUsers(true);
   else await loadV3OperationDetails();
 }
@@ -2060,6 +2067,7 @@ adminV3Modules.createAdminV3Coordinator({
     toggleRankingTestGlobal,
     renderCurrentView: renderCurrentV3View,
     refreshAutomationLogs,
+    refreshLineupRoster: refreshV3LineupRoster,
     selectGame: (internalGameId) => selectV3Game(internalGameId),
     diagnoseJob: diagnoseV3Job,
     runJob: runV3Job,
@@ -2076,4 +2084,3 @@ adminV3Modules.createAdminV3Coordinator({
     restoreInitialRoute: restoreInitialV3Route
   }
 }).start();
-startV3RosterRefresh();

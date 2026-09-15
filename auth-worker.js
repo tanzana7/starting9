@@ -21383,6 +21383,7 @@ export function getManualLineupPlayerCatalog({ manualRoster = null } = {}) {
       || (FIGHTERS_PITCHER_UNIFORM_NUMBERS.has(String(player.uniformNumber || "")) ? "hide" : "auto"),
     playerName: player.name,
     displayName: player.name,
+    aliases: player.aliases,
     uniformNumber: player.uniformNumber,
     playerId: createFightersPlayerId(player.uniformNumber),
     teamCode: FIGHTERS_TEAM_CODE,

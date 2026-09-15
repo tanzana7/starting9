@@ -167,7 +167,7 @@ const players = [
   {
     name: "カストロ",
     uniformNumber: "6",
-    aliases: ["カストロ", "R.カストロ", "Ｒ．カストロ"],
+    aliases: ["カストロ", "R.カストロ", "Ｒ．カストロ", "Rカストロ"],
     npbasePlayerUrl: "https://npbase.jp/players/f-1tx69x3",
     registeredPosition: "内野手",
     playerType: "batter",
@@ -499,7 +499,7 @@ const players = [
   {
     name: "レイエス",
     uniformNumber: "99",
-    aliases: ["レイエス", "F.レイエス", "Ｆ．レイエス"],
+    aliases: ["レイエス", "F.レイエス", "Ｆ．レイエス", "Fレイエス"],
     npbasePlayerUrl: "https://npbase.jp/players/f-1tybbot",
     registeredPosition: "外野手",
     playerType: "batter",

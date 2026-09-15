@@ -30,6 +30,7 @@ function createHarness() {
     refreshJobDetail: async (...args) => calls.push(["refreshJobDetail", ...args]),
     toggleJobDetail: async (...args) => calls.push(["toggleJobDetail", ...args]),
     updateManualLineupRow: (...args) => calls.push(["updateManualLineupRow", ...args]),
+    updateManualLineupPosition: (...args) => calls.push(["updateManualLineupPosition", ...args]),
     load: async () => calls.push(["load"]),
     changeFilter: (...args) => calls.push(["changeFilter", ...args]),
     selectGameFromToolbar: (...args) => calls.push(["selectGameFromToolbar", ...args]),
@@ -39,6 +40,7 @@ function createHarness() {
   const document = {
     addEventListener(type, listener) { listeners[type] = listener; },
     querySelector() { return null; },
+    querySelectorAll() { return []; },
     getElementById() { return null; }
   };
   const window = { addEventListener() {} };
@@ -71,17 +73,16 @@ test("admin-v3の明示的な中止ボタンは既存のcancel操作へ委譲す
   assert.deepEqual(calls.at(-1), ["cancelGame", "game-1"]);
 });
 
-test("admin-v3のmanual lineup守備位置変更は選択行へ委譲する", async () => {
+test("admin-v3のmanual lineup守備位置picker変更は選択行へ委譲する", async () => {
   const { listeners, calls } = createHarness();
   const target = {
-    value: "遊",
-    dataset: { v3ManualLineupPosition: "2" },
-    closest(selector) { return selector === "[data-v3-manual-lineup-position]" ? this : null; }
+    dataset: { v3ManualLineupPositionOption: "2", position: "遊" },
+    closest(selector) { return selector === "[data-v3-manual-lineup-position-option]" ? this : null; }
   };
-  await listeners.change({ target });
-  assert.equal(calls.at(-1)[0], "updateManualLineupRow");
+  await listeners.click({ target });
+  assert.equal(calls.at(-1)[0], "updateManualLineupPosition");
   assert.equal(calls.at(-1)[1], 2);
-  assert.equal(calls.at(-1)[2].position, "遊");
+  assert.equal(calls.at(-1)[2], "遊");
 });
 
 test("admin-v3の各操作data属性とcache busterがentrypointで一致する", () => {

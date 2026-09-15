@@ -48,7 +48,7 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
   assert.deepEqual(scripts, [
     "frontend/admin-v3/state.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-manual-lineup-explicit-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-manual-lineup-two-step-confirmation-1-admin-public-parity-1",
     "frontend/public/fighters-player-details.js?v=fighters-player-details-20260903-1",
-    "frontend/shared/lineup-builder.js?v=shared-lineup-builder-2-admin-public-parity-1",
+    "frontend/shared/lineup-builder.js?v=shared-lineup-builder-3-position-picker-parity-1",
     "frontend/public/player-display.js?v=public-player-display-1-batting-hand-player-number-1-player-details-1",
     "frontend/admin-v3/api-client.js?v=independent-roster-lineup-safety-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1",
     "frontend/admin-v3/dom.js?v=manual-lineup-finalize-safety-1",
@@ -133,11 +133,13 @@ test("手動スタメンは打順を行順に固定し、守備位置だけを�
     { lineup: { playerCatalog: [{ playerId: "p1", playerName: "選手1", uniformNumber: "1" }] } },
     { rows, confirmed: false, latestRevision: null, loading: false }
   );
-  assert.equal((html.match(/data-v3-manual-lineup-position=/g) || []).length, 9);
+  assert.equal((html.match(/data-v3-manual-lineup-position-button=/g) || []).length, 9);
+  assert.equal((html.match(/data-v3-manual-lineup-position-option=/g) || []).length, 90);
+  assert.doesNotMatch(html, /<select[^>]*data-v3-manual-lineup-position/);
   assert.equal((html.match(/data-v3-manual-lineup-order=/g) || []).length, 0);
   assert.match(html, /class="manual-lineup-fixed-order" aria-label="打順 1番"/);
   assert.match(html, /class="manual-lineup-fixed-order" aria-label="打順 9番"/);
-  assert.match(html, /value="捕" selected/);
+  assert.match(html, /data-v3-manual-lineup-position-button="0"[^>]*>捕<\/button>/);
 });
 
 test("試合切替はmanual stateと詳細レスポンスの試合境界を守り、訂正画面の打順編集は維持する", () => {

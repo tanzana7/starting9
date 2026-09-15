@@ -3,6 +3,7 @@
 
   const publicFrontend = global.Starting9Public || {};
   const NUMBER_FIELDS = Object.freeze(["uniformNumber", "jerseyNumber", "number", "playerNumber", "backNumber", "uniform_no", "jersey_no"]);
+  const POSITION_VALUES = Object.freeze(["", "捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
 
   function playerName(player) {
     if (player && typeof player === "object") return player.playerName || player.displayName || player.name || "";
@@ -97,6 +98,7 @@
     playerId,
     uniformNumber,
     battingClass,
+    positionValues: POSITION_VALUES,
     isLineupCandidate,
     reorderLineupRows,
     sortPlayers,

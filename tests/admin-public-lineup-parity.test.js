@@ -45,6 +45,7 @@ test("public/adminで共有candidate policyと行reorder helperを利用でき�
   assert.equal(builder.isLineupCandidate({ candidateVisibility: "show" }), true);
   assert.equal(builder.isLineupCandidate({ isBatterCandidate: false }), false);
   assert.equal(builder.isLineupCandidate({ isBatterCandidate: true }), true);
+  assert.deepEqual(Array.from(builder.positionValues), ["", "捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
   const rows = [{ battingOrder: 1, playerId: "a", position: "捕" }, { battingOrder: 2, playerId: "b", position: "一" }, { battingOrder: 3, playerId: "c", position: "二" }];
   const moved = builder.reorderLineupRows(rows, 0, 2);
   assert.deepEqual(Array.from(moved, (row) => row.playerId), ["b", "c", "a"]);
@@ -75,6 +76,9 @@ test("admin lineupはpublicと同じbuilder構造・roster toggle・drag対象�
   assert.match(markup, /data-v3-manual-lineup-roster-filter="active"/);
   assert.match(markup, /data-v3-manual-lineup-roster-filter="inactive"/);
   assert.equal((markup.match(/data-v3-manual-lineup-clear=/g) || []).length, 9);
+  assert.equal((markup.match(/data-v3-manual-lineup-position-button=/g) || []).length, 9);
+  assert.equal((markup.match(/data-v3-manual-lineup-position-option=/g) || []).length, 90);
+  assert.doesNotMatch(markup, /<select[^>]*data-v3-manual-lineup-position/);
   assert.match(markup, /data-picker="actual" data-v3-manual-lineup-slot/);
   assert.match(markup, /data-picker="actual" data-v3-manual-lineup-player/);
   assert.match(markup, /data-v3-manual-lineup-save/);
@@ -87,8 +91,10 @@ test("admin pointer操作はthreshold・pointer capture・tap fallbackを持ち�
   assert.match(coordinatorSource, /actions\.assignManualLineupPlayerToSlot/);
   assert.match(coordinatorSource, /actions\.reorderManualLineup/);
   assert.match(coordinatorSource, /actions\.selectManualLineupPlayer/);
+  assert.match(coordinatorSource, /data-v3-manual-lineup-position-option/);
+  assert.match(adminSource, /function updateV3ManualLineupPosition/);
   assert.match(coordinatorSource, /preventDefault\?\./);
   assert.doesNotMatch(adminSource, /manualLineupPayload\(state\)[\s\S]*candidateRosterFilter/);
-  assert.match(adminHtml, /lineup-builder\.js\?v=shared-lineup-builder-2-admin-public-parity-1/);
+  assert.match(adminHtml, /lineup-builder\.js\?v=shared-lineup-builder-3-position-picker-parity-1/);
   assert.match(adminCss, /manual-lineup-builder\s+\.manual-lineup-slot\.is-drop-target/);
 });

@@ -818,7 +818,7 @@ function createPositionControl(pickerName, index, slot) {
   menu.id = menuId;
   menu.className = "position-menu hidden";
   menu.setAttribute("role", "menu");
-  ["", ...positions].forEach((position) => {
+  (window.Starting9LineupBuilder?.positionValues || ["", ...positions]).forEach((position) => {
     const optionButton = document.createElement("button");
     optionButton.className = "position-menu-option";
     optionButton.type = "button";

@@ -703,7 +703,15 @@ function createTemporaryPublicPlayer(entry) {
 function getPredictionCandidatePlayers() {
   const candidatePlayers = [...players];
   const existingIds = new Set(candidatePlayers.map((player) => String(player?.playerId || "").trim()).filter(Boolean));
-  const existingMasterKeys = new Set(candidatePlayers.map((player) => `${normalizePlayerKey(player?.name)}:${String(player?.uniformNumber || "").trim()}`));
+  // A live NPB roster may use a legacy initial prefix (for example Fレイエス)
+  // while the canonical master keeps the short display name (レイエス). Only
+  // an explicit alias with the same uniform number suppresses the temporary
+  // candidate; name-only or number-only matching would risk merging players.
+  const existingMasterKeys = new Set(candidatePlayers.flatMap((player) => {
+    const number = String(player?.uniformNumber || "").trim();
+    return [player?.name, ...(Array.isArray(player?.aliases) ? player.aliases : [])]
+      .map((name) => `${normalizePlayerKey(name)}:${number}`);
+  }));
   normalizeRosterEntries(state.publicRoster?.players).forEach((entry) => {
     const temporaryPlayer = createTemporaryPublicPlayer(entry);
     const masterKey = temporaryPlayer

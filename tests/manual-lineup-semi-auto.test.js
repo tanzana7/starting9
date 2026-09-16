@@ -71,7 +71,7 @@ function jstDateOffset(days) {
   return parts.filter((part) => part.type !== "literal").map((part) => part.value).join("-");
 }
 
-async function createManualLineupIntegrationDb({ role = "admin", state = "scheduled", gameStatus = "scheduled", gameDate = currentJstDate(), startTime = `${gameDate}T09:00:00+09:00` } = {}) {
+async function createManualLineupIntegrationDb({ role = "admin", state = "scheduled", gameStatus = "scheduled", gameDate = currentJstDate(), startTime = `${gameDate}T00:00:00+09:00` } = {}) {
   const database = new DatabaseSync(":memory:");
   const tokenHash = await sha256Base64Url(SESSION_TOKEN);
   database.exec(`

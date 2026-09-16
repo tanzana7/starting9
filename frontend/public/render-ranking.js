@@ -1,6 +1,7 @@
 (() => {
   const publicFrontend = window.Starting9Public = window.Starting9Public || {};
   const PUBLIC_RANKING_DISPLAY_LIMIT = 10;
+  const PUBLIC_RANKING_MIN_AVERAGE_SCORE = 40;
 
   function createPublicRankingRenderer(deps) {
     function renderHeading(view) {
@@ -26,6 +27,11 @@
       const normalizedRows = Array.isArray(rows) ? rows : [];
       const eligibleRows = hideIneligibleRankings ? normalizedRows.filter((row) => row?.isQualified) : normalizedRows;
       return eligibleRows.filter((row) => {
+        const averageScore = Number(row?.averageScore);
+        // Use the server's unrounded averageScore so a formatted 40.0 cannot
+        // make a 39.999 row visible. Unqualified rows remain in their existing
+        // reference section, but receive the same public score floor.
+        if (!Number.isFinite(averageScore) || averageScore < PUBLIC_RANKING_MIN_AVERAGE_SCORE) return false;
         if (row?.rank === null || row?.rank === undefined || row?.rank === "") return true;
         const rank = Number(row?.rank);
         // Unqualified users have no competition rank; keep their existing
@@ -96,7 +102,9 @@
       const unqualified = displayRows.filter((row) => !row.isQualified);
       const qualifiedContent = qualified.length
         ? `<ol class="ranking-list">${qualified.map((row) => createCardHtml(row)).join("")}</ol>`
-        : '<p class="ranking-empty">まだ規定到達者はいません。</p>';
+        : unqualified.length
+          ? '<p class="ranking-empty">まだ規定到達者はいません。</p>'
+          : '<p class="ranking-empty">平均40点以上のユーザーはまだいません。</p>';
       const unqualifiedContent = unqualified.length
         ? `<details class="ranking-unqualified"><summary>規定未到達者を見る（${unqualified.length}人）</summary><ol class="ranking-list is-reference">${unqualified.map((row) => createCardHtml(row, { reference: true })).join("")}</ol></details>`
         : "";

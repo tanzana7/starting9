@@ -79,7 +79,7 @@ test("公開entry scriptのcache busterを更新し、既存moduleの読み込�
     assert.equal(match[1], isPredictionForm
       ? `${moduleCacheBuster}&user-save-auth-unavailable-fix-20260903`
       : isRankingRenderer
-        ? `${moduleCacheBuster}&public-ranking-top10-1`
+        ? `${moduleCacheBuster}&public-ranking-top10-1&public-ranking-average40-1`
       : expectedCacheBuster);
   }
 });

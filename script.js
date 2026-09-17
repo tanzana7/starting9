@@ -2658,10 +2658,10 @@ function renderPredictionDeadline() {
     container.className = `prediction-deadline-status is-${deadline.status}${isSoon ? " is-soon" : ""}`;
     if (deadline.status === "open") {
       container.innerHTML = `
-        <div class="deadline-heading"><strong>⏰ 予想締切</strong><span class="deadline-countdown-primary">締切まで <strong>${escapeHtml(formatPublicRemainingTime(deadline.deadlineAt))}</strong></span></div>
+        <div class="deadline-heading"><strong>⏰ 予想締切</strong><time>${escapeHtml(deadlineText)}</time></div>
         <div class="deadline-countdown">
-          <span class="deadline-time">締切日時 <time>${escapeHtml(deadlineText)}</time></span>
-          <span class="deadline-start">試合開始まで <strong>${escapeHtml(formatPublicRemainingTime(deadline.startAt))}</strong></span>
+          <span>試合開始まで <strong>${escapeHtml(formatPublicRemainingTime(deadline.startAt))}</strong></span>
+          <span>締切まで <strong>${escapeHtml(formatPublicRemainingTime(deadline.deadlineAt))}</strong></span>
         </div>
       `;
     } else {
@@ -4345,8 +4345,7 @@ function formatPublicRemainingTime(value, now = new Date()) {
 function getPublicGameStatusView(game, deadline, remoteState = state.predictionRemote, now = new Date()) {
   const workflowState = String(game?.workflowState || "").toLowerCase();
   const published = isPublicGamePublished(game, remoteState);
-  const savedPrediction = remoteState?.prediction || state.prediction;
-  const saved = isCurrentPredictionSaved(savedPrediction, game);
+  const saved = Boolean(remoteState?.prediction || (state.prediction && [game?.internalGameId, game?.gameId].includes(state.prediction.gameId)));
   const unavailableKind = getPublicGameUnavailableKind(game);
   if (unavailableKind) {
     return {
@@ -4384,19 +4383,6 @@ function getPublicGameStatusView(game, deadline, remoteState = state.predictionR
     };
   }
   return { key: "waiting", label: "確認中", status: "試合情報を確認しています", saved, nextAction: "試合情報を読み込み中です。" };
-}
-
-function isCurrentPredictionSaved(savedPrediction = state.predictionRemote?.prediction || state.prediction, game = state.predictionTargetGame) {
-  if (!isSavedPredictionComplete(savedPrediction)) return false;
-  const savedGameId = String(savedPrediction?.gameId || "");
-  const currentGameId = String(game?.internalGameId || game?.gameId || getCurrentGameId() || "");
-  if (savedGameId && currentGameId && savedGameId !== currentGameId) return false;
-
-  const slots = typeof document !== "undefined"
-    ? document.querySelectorAll('.lineup-slot[data-picker="prediction"]')
-    : [];
-  if (!slots.length) return true;
-  return predictionsMatch({ lineup: getLineupValues("prediction") }, savedPrediction);
 }
 
 function renderPublicPredictionSurface(selectedGame) {
@@ -4456,8 +4442,6 @@ function renderPredictionTargetNotice() {
   const message = String(state.predictionTargetNotice || "").trim();
   container.textContent = message;
   container.classList.toggle("hidden", !message);
-  // This is a one-time event acknowledgement, not persistent form state.
-  state.predictionTargetNotice = "";
 }
 
 function renderProbableStarter() {
@@ -4699,17 +4683,6 @@ function renderPicker(pickerName) {
     document.querySelectorAll('[data-roster-filter]').forEach((button) => {
       button.disabled = isLocked;
     });
-    renderPredictionAccountStatus();
-    clearPredictionSaveMessageIfDraftChanged();
-  }
-}
-
-function clearPredictionSaveMessageIfDraftChanged() {
-  const message = document.getElementById("predictionSaveMessage");
-  if (!message?.classList.contains("success-message")) return;
-  const savedPrediction = state.predictionRemote?.prediction || state.prediction;
-  if (!isCurrentPredictionSaved(savedPrediction)) {
-    clearMessage("predictionSaveMessage");
   }
 }
 
@@ -5651,7 +5624,6 @@ function showPredictionSaveMessage(message) {
   if (predictionSaveMessageTimerId) {
     clearTimeout(predictionSaveMessageTimerId);
   }
-  element.classList.remove("error-message");
   element.classList.add("success-message");
   element.textContent = message;
   predictionSaveMessageTimerId = setTimeout(() => {
@@ -5663,15 +5635,7 @@ function showPredictionSaveMessage(message) {
 
 function clearMessage(elementId) {
   const element = document.getElementById(elementId);
-  if (!element) return;
-  element.textContent = "";
-  if (elementId === "predictionSaveMessage") {
-    element.classList.remove("success-message", "error-message");
-    if (predictionSaveMessageTimerId) {
-      clearTimeout(predictionSaveMessageTimerId);
-      predictionSaveMessageTimerId = null;
-    }
-  }
+  if (element) element.textContent = "";
 }
 
 function escapeHtml(value) {

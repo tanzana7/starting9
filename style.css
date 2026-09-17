@@ -7536,6 +7536,23 @@ body:not(:has(.app-layout.is-admin-screen)) .probable-starter-fetched {
   }
 }
 
+/* 保存操作は入力内容から少し離して視認性を確保し、保存だけを主操作として広げる。 */
+body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #savePredictionButton {
+  width: min(100%, 400px);
+  margin-top: 40px;
+}
+
+body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #resetPredictionButton {
+  margin-top: 36px;
+}
+
+@media (min-width: 1000px) {
+  body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #savePredictionButton,
+  body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #resetPredictionButton {
+    margin-top: 24px;
+  }
+}
+
 /* Keep the public editing target distinct from batting-side colors. */
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .lineup-slot.is-active,
 body:not(:has(.app-layout.is-admin-screen)) .lineup-slot.is-active {

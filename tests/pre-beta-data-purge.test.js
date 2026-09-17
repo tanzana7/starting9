@@ -35,6 +35,21 @@ function d1(database) {
   };
 }
 
+function recordingD1(database, calls) {
+  const base = d1(database);
+  return {
+    prepare(sql) {
+      const statement = base.prepare(sql);
+      return {
+        bind(...bindings) {
+          calls.push({ sql, bindings });
+          return statement.bind(...bindings);
+        }
+      };
+    }
+  };
+}
+
 function createDatabase() {
   const database = new DatabaseSync(":memory:");
   for (const file of fs.readdirSync(path.join(ROOT, "migrations")).filter((name) => name.endsWith(".sql")).sort()) {
@@ -241,4 +256,25 @@ test("target row without both identifiers is rejected instead of widening the pu
     previewPreBetaPurge(invalidTargetDb),
     /PRE_BETA_PURGE_TARGET_IDS_UNAVAILABLE/
   );
+});
+
+test("dry-run bounds every query at 100 bindings for 99, 100, 101, and 200 targets", async () => {
+  for (const targetCount of [99, 100, 101, 200]) {
+    const database = createDatabase();
+    for (let index = 0; index < targetCount; index += 1) {
+      const gameId = `bulk-game-${targetCount}-${index}`;
+      database.prepare(`
+        INSERT INTO ranking_games (
+          game_id, internal_game_id, is_ranking_eligible, game_date, game_status,
+          is_test_game, publication_status, created_at, updated_at
+        ) VALUES (?, ?, 1, '2026-09-10', 'scored', 0, 'published', '2026-09-01', '2026-09-01')
+      `).run(gameId, gameId);
+    }
+    const calls = [];
+    const plan = await previewPreBetaPurge(recordingD1(database, calls));
+    assert.equal(plan.targetGames.length, targetCount);
+    assert.ok(calls.length > 0);
+    assert.ok(calls.every(({ bindings }) => bindings.length <= 100));
+    assert.ok(calls.every(({ sql }) => !/\?101|\?102|\?200/.test(sql)));
+  }
 });

@@ -2,6 +2,7 @@ const RELEASE_CUTOFF_ISO = "2026-09-18T09:00:00.000Z";
 const RELEASE_CUTOFF_DATE = "2026-09-18";
 const PLAN_VERSION = "pre-beta-2026-09-18-v1";
 const CONFIRMATION = "DELETE PRE-BETA DATA 2026-09-18";
+const MAX_D1_BINDINGS = 100;
 const IDENTIFIER_CHUNK_SIZE = 80;
 
 // This is deliberately a fixed allowlist.  Roster/player master, schedule,
@@ -141,11 +142,13 @@ async function resolveTargetGames(db) {
   const internalGameIds = uniqueStrings(rows.map((row) => row.internal_game_id));
 
   if (internalGameIds.length) {
-    const identifiers = await db.prepare(
-      `SELECT identifier_value FROM game_identifiers
-        WHERE internal_game_id IN (${placeholders(internalGameIds)})`
-    ).bind(...internalGameIds).all();
-    gameIds.push(...rowsOf(identifiers).map((row) => row.identifier_value));
+    for (const internalIds of chunk(internalGameIds)) {
+      const identifiers = await db.prepare(
+        `SELECT identifier_value FROM game_identifiers
+          WHERE internal_game_id IN (${placeholders(internalIds)})`
+      ).bind(...internalIds).all();
+      gameIds.push(...rowsOf(identifiers).map((row) => row.identifier_value));
+    }
   }
   return {
     rows,
@@ -156,20 +159,49 @@ async function resolveTargetGames(db) {
 
 async function getActiveJobCount(db, internalGameIds) {
   if (!internalGameIds.length) return { gameJobs: 0, gameJobRuns: 0 };
-  const ids = placeholders(internalGameIds);
-  const [gameJobs, gameJobRuns] = await Promise.all([
-    db.prepare(`SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id IN (${ids}) AND status IN ('pending', 'claimed', 'retry_wait')`).bind(...internalGameIds).first(),
-    db.prepare(`SELECT COUNT(*) AS count FROM game_job_runs WHERE internal_game_id IN (${ids}) AND status IN ('pending', 'claimed', 'running', 'retry_wait')`).bind(...internalGameIds).first()
-  ]);
-  return { gameJobs: integer(gameJobs?.count), gameJobRuns: integer(gameJobRuns?.count) };
+  let gameJobs = 0;
+  let gameJobRuns = 0;
+  for (const internalIds of chunk(internalGameIds)) {
+    const ids = placeholders(internalIds);
+    const [jobs, jobRuns] = await Promise.all([
+      db.prepare(`SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE internal_game_id IN (${ids}) AND status IN ('pending', 'claimed', 'retry_wait')`).bind(...internalIds).first(),
+      db.prepare(`SELECT COUNT(*) AS count FROM game_job_runs WHERE internal_game_id IN (${ids}) AND status IN ('pending', 'claimed', 'running', 'retry_wait')`).bind(...internalIds).first()
+    ]);
+    gameJobs += integer(jobs?.count);
+    gameJobRuns += integer(jobRuns?.count);
+  }
+  return { gameJobs, gameJobRuns };
+}
+
+async function countScopedTable(db, table, target) {
+  const scopes = [];
+  if (GAME_ID_SCOPED_TABLES.has(table) || LEGACY_GAME_ID_SCOPED_TABLES.has(table) || ATTEMPT_ROW_TABLES.has(table)) {
+    for (const gameIds of chunk(target.gameIds)) scopes.push(scopedPredicate(table, gameIds, []));
+  }
+  if (INTERNAL_GAME_ID_SCOPED_TABLES.has(table) || ATTEMPT_ROW_TABLES.has(table)) {
+    for (const internalGameIds of chunk(target.internalGameIds)) scopes.push(scopedPredicate(table, [], internalGameIds));
+  }
+  if (!scopes.length) scopes.push(scopedPredicate(table, [], []));
+
+  // Several allowlisted tables can match through both legacy and internal IDs.
+  // Read only rowids from each bounded query and deduplicate in memory so the
+  // dry-run COUNT remains equivalent to the single OR predicate without ever
+  // exceeding D1's 100-bind limit.
+  const rowIds = new Set();
+  for (const scope of scopes) {
+    if (scope.bindings.length > MAX_D1_BINDINGS) {
+      throw new Error(`PRE_BETA_PURGE_BINDINGS_LIMIT:${table}`);
+    }
+    const result = await db.prepare(`SELECT rowid AS __purge_rowid FROM ${table} WHERE ${scope.where}`).bind(...scope.bindings).all();
+    for (const row of rowsOf(result)) rowIds.add(String(row.__purge_rowid));
+  }
+  return rowIds.size;
 }
 
 async function getCounts(db, target) {
   const counts = {};
   for (const table of PRE_BETA_PURGE_TABLES) {
-    const scope = scopedPredicate(table, target.gameIds, target.internalGameIds);
-    const row = await db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${scope.where}`).bind(...scope.bindings).first();
-    counts[table] = integer(row?.count);
+    counts[table] = await countScopedTable(db, table, target);
   }
   return counts;
 }

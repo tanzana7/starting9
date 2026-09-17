@@ -14,6 +14,8 @@ import {
   getManualRoster,
   prioritizeManualRosterCatalog,
   saveManualRoster,
+  applyManualRosterToPublicRoster,
+  applyLiveRosterToManualLineupCatalog,
   validateManualRosterEntries
 } from "../backend/automation-v3/manual-roster-repository.js";
 
@@ -129,6 +131,29 @@ test("manual rosterのAUTOは対象行だけを削除し、他選手のoverride�
   const reread = await getManualRoster(env.AUTH_DB);
   assert.equal(reread.entries.some((entry) => entry.playerId === activeId), false);
   assert.equal(reread.entries.find((entry) => entry.playerId === inactiveId)?.status, "inactive");
+});
+
+test("manual rosterのactive/inactive投影はpublicとadminの候補状態を一致させる", () => {
+  const catalog = [
+    { playerId: "F-1", playerName: "現行選手", uniformNumber: "1", category: "外野手" },
+    { playerId: "F-2", playerName: "復帰選手", uniformNumber: "2", category: "内野手" }
+  ];
+  const manualRoster = {
+    source: "manual",
+    isManualSaved: true,
+    entries: [{ playerId: "F-1", status: "inactive" }, { playerId: "F-2", status: "active" }]
+  };
+  const publicRoster = applyManualRosterToPublicRoster({
+    sourceOfTruth: "official_live",
+    players: [{ playerId: "npb:20260001", name: "現行選手", number: "1", position: "外野手" }]
+  }, manualRoster, catalog);
+  const adminCatalog = applyLiveRosterToManualLineupCatalog(catalog, {
+    sourceOfTruth: "official_live",
+    players: [{ playerId: "npb:20260001", name: "現行選手", number: "1", position: "外野手" }]
+  }, manualRoster);
+  assert.deepEqual(publicRoster.players.map((player) => player.number), ["2"]);
+  assert.deepEqual(adminCatalog.filter((player) => player.effectiveRosterActive).map((player) => player.uniformNumber), ["2"]);
+  assert.equal(publicRoster.manualRosterApplied, true);
 });
 
 test("manual roster APIはadmin認証・確認・入力検証を要求する", async () => {

@@ -105,6 +105,30 @@ test("今日のベストナインは公開済み採点結果をscore desc、提�
   assert.equal(result.rows.every((row) => !Object.hasOwn(row, "userId")), true);
 });
 
+test("Best Nineは平均40点や規定到達に依存せず正式得点上位9人を返す", async () => {
+  const { getDailyBestNineForGame } = await import(workerUrl);
+  const { db, internalGameId, gameId } = createDatabase();
+  const scores = [75, 68, 61, 55, 51, 47, 44, 35, 12, 11];
+  scores.forEach((score, index) => {
+    const userId = `u${index + 1}`;
+    insertUser(db, userId, `user-${index + 1}`);
+    insertPrediction(db, {
+      id: `p${index + 1}`,
+      userId,
+      gameId,
+      score,
+      submittedAt: `2026-08-12T08:${String(index + 1).padStart(2, "0")}:00.000Z`
+    });
+  });
+
+  const result = await getDailyBestNineForGame(createD1Adapter(db), { internalGameId, legacyGameId: gameId });
+  assert.deepEqual(result.rows.map((row) => row.score), scores.slice(0, 9));
+  assert.equal(result.rows.length, 9);
+  assert.equal(result.rows.some((row) => row.score === 35), true);
+  assert.equal(result.rows.some((row) => row.score === 12), true);
+  assert.equal(result.rows.some((row) => row.score === 11), false);
+});
+
 test("canonical TEST accountは通常のBest Nine選考に参加し、非canonicalなTEST予想は除外する", async () => {
   const { getDailyBestNineForGame } = await import(workerUrl);
   const { db, internalGameId, gameId } = createDatabase();

@@ -7536,20 +7536,30 @@ body:not(:has(.app-layout.is-admin-screen)) .probable-starter-fetched {
   }
 }
 
-/* 保存操作は入力内容から少し離して視認性を確保し、保存だけを主操作として広げる。 */
+/* 保存操作は入力内容からさらに離すが、スマホでは余白を抑えて操作領域を保つ。 */
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #savePredictionButton {
   width: min(100%, 400px);
-  margin-top: 40px;
+  margin-top: 80px;
 }
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #resetPredictionButton {
-  margin-top: 36px;
+  margin-top: 76px;
 }
 
 @media (min-width: 1000px) {
   body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #savePredictionButton,
   body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #resetPredictionButton {
-    margin-top: 24px;
+    margin-top: 64px;
+  }
+}
+
+@media (max-width: 759px) {
+  body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #savePredictionButton {
+    margin-top: 60px;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #resetPredictionButton {
+    margin-top: 56px;
   }
 }
 

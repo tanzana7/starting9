@@ -7750,6 +7750,9 @@ async function handleAdminPreBetaPurge(request, env, cors) {
   if (request.method === "POST" && String(env?.PRE_BETA_PURGE_ALLOW_EXECUTE || "") !== "true") {
     return jsonResponse({ ok: false, code: "NOT_FOUND" }, 404, cors);
   }
+  if (request.method === "POST" && String(env?.ENABLE_GAME_AUTOMATION_V3 || "") === "true") {
+    return jsonResponse({ ok: false, code: "PRE_BETA_PURGE_CRON_MUST_BE_STOPPED", error: "削除前にCronを停止してください。" }, 409, cors);
+  }
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) return access.response;
   try {
@@ -7777,7 +7780,11 @@ async function handleAdminPreBetaPurge(request, env, cors) {
     return jsonResponse({ ok: true, mode: "execute", result }, 200, cors);
   } catch (error) {
     const code = String(error?.message || error?.code || "PRE_BETA_PURGE_FAILED");
-    const status = code === "PRE_BETA_PURGE_ACTIVE_JOBS" || code === "PRE_BETA_PURGE_PLAN_CHANGED" ? 409 : 400;
+    const status = [
+      "PRE_BETA_PURGE_ACTIVE_JOBS",
+      "PRE_BETA_PURGE_PLAN_CHANGED",
+      "PRE_BETA_PURGE_MAINTENANCE_WINDOW_REQUIRED"
+    ].includes(code) ? 409 : 400;
     console.error(`[PRE_BETA_PURGE] status=failed code=${code}`);
     return jsonResponse({ ok: false, code, error: "公開前データ削除を実行できませんでした。" }, status, cors);
   }

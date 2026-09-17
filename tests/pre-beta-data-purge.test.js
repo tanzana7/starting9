@@ -132,7 +132,7 @@ test("pre-beta purge deletes only completed pre-release lineage and is safely re
   const database = createDatabase();
   insertGame(database, OLD_GAME, "completed", "2026-09-10T10:00:00.000Z");
   insertGame(database, FUTURE_GAME, "scheduled", "2026-09-20T10:00:00.000Z");
-  insertGame(database, LIVE_GAME, "scheduled", "2026-09-17T10:00:00.000Z");
+  insertGame(database, LIVE_GAME, "scheduled", "2026-09-19T10:00:00.000Z");
   database.prepare("INSERT INTO users (id, username, username_normalized, password_hash, password_salt, password_iterations, created_at, updated_at) VALUES ('user-1', 'user', 'user', 'hash', 'salt', 1, '2026-09-01', '2026-09-01')").run();
   database.prepare("INSERT INTO sessions (id, user_id, token_hash, created_at, expires_at, last_used_at) VALUES ('session-1', 'user-1', 'token-hash', '2026-09-01', '2099-01-01', '2026-09-01')").run();
   insertRankingGame(database, OLD_GAME);
@@ -189,6 +189,68 @@ test("pre-beta purge refuses a target plan with active jobs", async () => {
   );
 });
 
+test("stale target jobs require an explicit maintenance window and are then removed", async () => {
+  const database = createDatabase();
+  insertGame(database, OLD_GAME, "scheduled", "2026-09-10T10:00:00.000Z");
+  database.prepare(`
+    INSERT INTO game_jobs_v3 (internal_game_id, job_type, scheduled_at, scheduled_slot_at,
+      status, lease_expires_at, created_at, updated_at)
+    VALUES (?, 'publish', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z',
+      'claimed', '2026-09-10T01:00:00.000Z', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z')
+  `).run(OLD_GAME);
+  database.prepare(`
+    INSERT INTO game_job_runs (internal_game_id, job_type, scheduled_slot_at,
+      status, created_at, updated_at)
+    VALUES (?, 'provisional_lineup_fetch', '2026-09-10T00:00:00.000Z',
+      'pending', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z')
+  `).run(OLD_GAME);
+
+  const adapter = d1(database);
+  const plan = await previewPreBetaPurge(adapter);
+  assert.equal(plan.activeJobs.staleGameJobs, 1);
+  assert.equal(plan.activeJobs.staleGameJobRuns, 1);
+  assert.equal(plan.activeJobs.blockingGameJobs, 0);
+  assert.equal(plan.activeJobs.blockingGameJobRuns, 0);
+  await assert.rejects(
+    executePreBetaPurge(adapter, { planHash: plan.planHash, confirmation: PRE_BETA_PURGE_CONFIRMATION }),
+    /PRE_BETA_PURGE_MAINTENANCE_WINDOW_REQUIRED/
+  );
+  const result = await executePreBetaPurge(adapter, {
+    planHash: plan.planHash,
+    confirmation: PRE_BETA_PURGE_CONFIRMATION,
+    maintenanceWindowConfirmed: true
+  });
+  assert.equal(result.deleted.game_jobs_v3, 1);
+  assert.equal(result.deleted.game_job_runs, 1);
+  assert.equal(count(database, "game_jobs_v3"), 0);
+  assert.equal(count(database, "game_job_runs"), 0);
+});
+
+test("non-target active jobs continue to block the purge", async () => {
+  const database = createDatabase();
+  const futureGame = "future-active-game";
+  insertGame(database, OLD_GAME, "scheduled", "2026-09-10T10:00:00.000Z");
+  insertGame(database, futureGame, "scheduled", "2026-09-20T10:00:00.000Z");
+  database.prepare(`
+    INSERT INTO game_jobs_v3 (internal_game_id, job_type, scheduled_at, scheduled_slot_at,
+      status, created_at, updated_at)
+    VALUES (?, 'publish', '2099-09-20T00:00:00.000Z', '2099-09-20T00:00:00.000Z',
+      'pending', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z')
+  `).run(futureGame);
+
+  const adapter = d1(database);
+  const plan = await previewPreBetaPurge(adapter);
+  assert.equal(plan.activeJobs.nonTargetGameJobs, 1);
+  await assert.rejects(
+    executePreBetaPurge(adapter, {
+      planHash: plan.planHash,
+      confirmation: PRE_BETA_PURGE_CONFIRMATION,
+      maintenanceWindowConfirmed: true
+    }),
+    /PRE_BETA_PURGE_ACTIVE_JOBS/
+  );
+});
+
 test("empty pre-beta target is a safe no-op instead of an empty-scope error", async () => {
   const database = createDatabase();
   const plan = await previewPreBetaPurge(d1(database));
@@ -207,6 +269,49 @@ test("completed game without score-attempt rows remains a valid zero-count targe
   assert.equal(plan.counts.score_attempt_prediction_rows, 0);
   assert.equal(plan.counts.score_attempt_test_rows, 0);
   assert.equal(plan.counts.score_attempts, 0);
+});
+
+test("all pre-beta prediction and ranking evidence is targeted while future records remain", async () => {
+  const database = createDatabase();
+  const oldScheduledGame = "old-scheduled-game";
+  const futureGame = "future-game-2";
+  insertGame(database, oldScheduledGame, "scheduled", "2026-09-10T10:00:00.000Z");
+  insertGame(database, futureGame, "scheduled", "2026-09-20T10:00:00.000Z");
+  database.prepare("INSERT INTO users (id, username, username_normalized, password_hash, password_salt, password_iterations, created_at, updated_at) VALUES ('user-1', 'user', 'user', 'hash', 'salt', 1, '2026-09-01', '2026-09-01')").run();
+  insertRankingGame(database, oldScheduledGame);
+  insertRankingGame(database, futureGame);
+  insertPrediction(database, oldScheduledGame);
+  insertPrediction(database, futureGame);
+
+  const plan = await previewPreBetaPurge(d1(database));
+  assert.equal(plan.internalGameIds.includes(oldScheduledGame), true);
+  assert.equal(plan.internalGameIds.includes(futureGame), false);
+  assert.equal(plan.counts.predictions, 1);
+  assert.equal(plan.counts.ranking_games, 1);
+});
+
+test("duplicate evidence for one internal game is one target but all physical ids stay scoped", async () => {
+  const database = createDatabase();
+  const internalGameId = "duplicate-internal-game";
+  insertGame(database, internalGameId, "scheduled", "2026-08-06T10:00:00.000Z");
+  database.prepare(`
+    INSERT INTO ranking_games (
+      game_id, internal_game_id, game_date, is_ranking_eligible, game_status,
+      is_test_game, publication_status, created_at, updated_at
+    ) VALUES (?, ?, '2026-08-06', 1, 'scored', 0, 'published', '2026-09-01', '2026-09-01')
+  `).run("legacy-duplicate-id", internalGameId);
+  database.prepare(`
+    INSERT INTO ranking_games (
+      game_id, internal_game_id, game_date, is_ranking_eligible, game_status,
+      is_test_game, publication_status, created_at, updated_at
+    ) VALUES (?, ?, '2026-08-06', 1, 'scored', 0, 'published', '2026-09-01', '2026-09-01')
+  `).run(internalGameId, internalGameId);
+
+  const plan = await previewPreBetaPurge(d1(database));
+  assert.equal(plan.targetGames.filter((row) => row.internal_game_id === internalGameId).length, 1);
+  assert.equal(plan.internalGameIds.filter((id) => id === internalGameId).length, 1);
+  assert.equal(plan.gameIds.includes("legacy-duplicate-id"), true);
+  assert.equal(plan.counts.ranking_games, 2);
 });
 
 test("scored ranking evidence is selected even when the schedule row is still scheduled", async () => {
@@ -232,6 +337,29 @@ test("legacy scored ranking evidence can safely target game-id tables without in
   assert.equal(plan.counts.predictions, 0);
   assert.equal(plan.counts.game_lineups, 0);
   assert.equal(plan.counts.game_jobs_v3, 0);
+});
+
+test("a repeated purge remains a safe no-op after orphan evidence is removed", async () => {
+  const database = createDatabase();
+  database.prepare(`
+    INSERT INTO ranking_games (
+      game_id, is_ranking_eligible, game_date, game_status, is_test_game,
+      publication_status, created_at, updated_at
+    ) VALUES ('orphan-game', 1, '2026-07-22', 'service_unavailable', 0, 'pending', '2026-09-01', '2026-09-01')
+  `).run();
+  const adapter = d1(database);
+  const plan = await previewPreBetaPurge(adapter);
+  const first = await executePreBetaPurge(adapter, {
+    planHash: plan.planHash,
+    confirmation: PRE_BETA_PURGE_CONFIRMATION
+  });
+  assert.equal(first.deleted.ranking_games, 1);
+  const repeated = await executePreBetaPurge(adapter, {
+    planHash: plan.planHash,
+    confirmation: PRE_BETA_PURGE_CONFIRMATION
+  });
+  assert.equal(repeated.deletedTotal, 0);
+  assert.equal(repeated.remainingTotal, 0);
 });
 
 test("target row without both identifiers is rejected instead of widening the purge", async () => {

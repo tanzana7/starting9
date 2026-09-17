@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
+import vm from "node:vm";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -13,6 +14,7 @@ function createD1Adapter(database) {
     prepare(sql) {
       const statement = database.prepare(sql);
       return {
+        async all() { return { results: statement.all() }; },
         bind(...values) {
           return {
             async first() { return statement.get(...values) || null; },
@@ -76,9 +78,59 @@ function insertUser(db, id, username) {
 }
 
 function insertPrediction(db, { id, userId, gameId, score, submittedAt, updatedAt = submittedAt, isTest = 0, status = "scored" }) {
-  db.prepare("INSERT INTO predictions VALUES (?, ?, ?, ?, 99, ?, ?, ?, ?)").run(
+  db.prepare("INSERT INTO predictions (id, user_id, game_id, score, max_score, submitted_at, updated_at, status, is_test_prediction) VALUES (?, ?, ?, ?, 99, ?, ?, ?, ?)").run(
     id, userId, gameId, score, submittedAt, updatedAt, status, isTest
   );
+}
+
+function addRankingTestPredictionSchema(db) {
+  db.exec(`
+    CREATE TABLE ranking_test_game_settings (
+      internal_game_id TEXT PRIMARY KEY, include_in_public_ranking INTEGER,
+      updated_by TEXT, created_at TEXT, updated_at TEXT
+    );
+    CREATE TABLE ranking_test_predictions (
+      internal_game_id TEXT, slot INTEGER, prediction_json TEXT, status TEXT,
+      score INTEGER, max_score INTEGER, lineup_revision_id TEXT,
+      scoring_revision_id TEXT, scored_at TEXT, created_at TEXT, updated_at TEXT,
+      scored_attempt_id TEXT,
+      PRIMARY KEY (internal_game_id, slot)
+    );
+    CREATE TABLE ranking_test_global_settings (
+      id INTEGER PRIMARY KEY, global_enabled INTEGER, slot_names_json TEXT,
+      updated_by TEXT, created_at TEXT, updated_at TEXT
+    );
+    CREATE TABLE game_lineups (internal_game_id TEXT, final_lineup_revision_id TEXT);
+    CREATE TABLE game_scoring_revisions (
+      id TEXT, internal_game_id TEXT, lineup_revision_id TEXT,
+      is_active INTEGER, status TEXT, committed_attempt_id TEXT
+    );
+    CREATE TABLE game_lineup_revisions (
+      revision_id TEXT, internal_game_id TEXT, game_id TEXT, version INTEGER,
+      is_current INTEGER, is_final INTEGER
+    );
+  `);
+  db.prepare("INSERT INTO game_lineups VALUES (?, ?)").run("022a8838-9e5c-4d64-88b7-7a8b43181aed", "lineup-1");
+  db.prepare("INSERT INTO game_scoring_revisions VALUES (?, ?, ?, 1, 'completed', NULL)").run(
+    "score-1", "022a8838-9e5c-4d64-88b7-7a8b43181aed", "lineup-1"
+  );
+  db.prepare("INSERT INTO game_lineup_revisions VALUES (?, ?, ?, 1, 1, 1)").run(
+    "lineup-1", "022a8838-9e5c-4d64-88b7-7a8b43181aed", "legacy-f-l-19-1800"
+  );
+  db.prepare("INSERT INTO ranking_test_game_settings VALUES (?, 0, 'admin', '2026-08-12', '2026-08-12')").run(
+    "022a8838-9e5c-4d64-88b7-7a8b43181aed"
+  );
+  db.prepare("INSERT INTO ranking_test_global_settings VALUES (1, 1, '{}', 'admin', '2026-08-12', '2026-08-12')").run();
+}
+
+function insertRankingTestPrediction(db, { internalGameId, slot, score, scoredAt = "2026-08-12T08:00:00.000Z" }) {
+  db.prepare("INSERT INTO ranking_test_predictions VALUES (?, ?, '{}', 'scored', ?, 99, 'lineup-1', 'score-1', ?, ?, ?, NULL)").run(
+    internalGameId, slot, score, scoredAt, scoredAt, scoredAt
+  );
+}
+
+function enableScoreAttemptSchema(db) {
+  db.exec("ALTER TABLE predictions ADD COLUMN scored_attempt_id TEXT");
 }
 
 test("今日のベストナインは公開済み採点結果をscore desc、提出時刻、nicknameで最大9人返す", async () => {
@@ -146,6 +198,50 @@ test("canonical TEST accountは通常のBest Nine選考に参加し、非canonic
   assert.deepEqual(result.rows.map((row) => row.username), ["S9_TEST_8", "normal-user"]);
 });
 
+test("公開APIは正式採点されたranking_test_predictionsのcanonical TESTをBest Nineへ含める", async () => {
+  const worker = await import(workerUrl);
+  const fixture = createDatabase();
+  addRankingTestPredictionSchema(fixture.db);
+  enableScoreAttemptSchema(fixture.db);
+  [
+    ["u1", "normal-75", 75],
+    ["u2", "normal-68", 68],
+    ["u3", "normal-55", 55],
+    ["u4", "normal-35", 35]
+  ].forEach(([id, username, score]) => {
+    insertUser(fixture.db, id, username);
+    insertPrediction(fixture.db, {
+      id: `prediction-${id}`,
+      userId: id,
+      gameId: fixture.gameId,
+      score,
+      submittedAt: "2026-08-12T08:00:00.000Z"
+    });
+  });
+  insertRankingTestPrediction(fixture.db, {
+    internalGameId: fixture.internalGameId,
+    slot: 8,
+    score: 47,
+    scoredAt: "2026-08-12T07:00:00.000Z"
+  });
+
+  const response = await worker.default.fetch(
+    new Request(`https://starting9.test/api/results/daily-best-nine?internalGameId=${fixture.internalGameId}`),
+    { AUTH_DB: createD1Adapter(fixture.db) },
+    {}
+  );
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.deepEqual(payload.bestNine.map((row) => [row.rank, row.username, row.score]), [
+    [1, "normal-75", 75],
+    [2, "normal-68", 68],
+    [3, "normal-55", 55],
+    [4, "S9_TEST_8", 47],
+    [5, "normal-35", 35]
+  ]);
+  assert.equal(payload.bestNine.some((row) => Object.hasOwn(row, "userId")), false);
+});
+
 test("同時刻の同点はnickname昇順で安定し、満点情報はserver scoreから判定する", async () => {
   const { getDailyBestNineForGame } = await import(workerUrl);
   const { db, internalGameId, gameId } = createDatabase();
@@ -189,4 +285,36 @@ test("公開APIはclient score/maxScoreを受け付けず、server-side結果だ
   assert.match(worker, /\/api\/results\/daily-best-nine/);
   assert.match(worker, /getDailyBestNineForGame\(env\.AUTH_DB/);
   assert.doesNotMatch(worker.slice(worker.indexOf("async function handleGetDailyBestNine"), worker.indexOf("async function handleGetYearlyRanking")), /request\.json|params\.get\("score"\)|params\.get\("maxScore"\)/);
+});
+
+test("公開結果rendererはAPIのcanonical TEST rowを絞り込まずBest Nineへ表示する", () => {
+  const rendererSource = fs.readFileSync(path.join(root, "frontend", "public", "render-results.js"), "utf8");
+  const elements = new Map([
+    ["dailyBestNineCard", { classList: { toggle() {} } }],
+    ["dailyBestNineContent", { innerHTML: "" }],
+    ["dailyBestNineCount", { textContent: "" }]
+  ]);
+  const context = vm.createContext({
+    document: { getElementById(id) { return elements.get(id) || null; } },
+    window: { Starting9Public: {} }
+  });
+  vm.runInContext(rendererSource, context, { filename: "render-results.js" });
+  const renderer = context.window.Starting9Public.createPublicResultsRenderer({
+    state: {
+      dailyBestNine: {
+        status: "published",
+        totalCount: 1,
+        isLoading: false,
+        message: "",
+        rows: [{ rank: 1, username: "S9_TEST_8", score: 47, maxScore: 99, isPerfect: false }]
+      },
+      resultHistory: { result: null },
+      result: null
+    },
+    getPublicResultAvailability: () => null,
+    escapeHtml: (value) => String(value)
+  });
+  renderer.renderDailyBestNine();
+  assert.match(elements.get("dailyBestNineContent").innerHTML, /S9_TEST_8/);
+  assert.match(elements.get("dailyBestNineContent").innerHTML, /47点/);
 });

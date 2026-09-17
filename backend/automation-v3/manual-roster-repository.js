@@ -38,8 +38,8 @@ export function normalizeManualRosterTeam(value) {
 
 function normalizeStatus(value) {
   const status = String(value ?? "active").trim().toLowerCase();
-  if (!["active", "inactive"].includes(status)) {
-    throw manualRosterError("MANUAL_ROSTER_STATUS_INVALID", "ロースター状態はactiveまたはinactiveです。", 400);
+  if (!["active", "inactive", "auto"].includes(status)) {
+    throw manualRosterError("MANUAL_ROSTER_STATUS_INVALID", "ロースター状態はactive、inactive、またはautoです。", 400);
   }
   return status;
 }
@@ -308,8 +308,9 @@ export async function saveManualRoster(db, { teamCode = MANUAL_ROSTER_TEAM.teamC
   // The existing per-player table has no roster header row, so materialize an
   // explicit empty save as inactive eligible players instead of losing the
   // distinction between "saved empty" and "never saved".
+  const autoPlayerIds = normalized.filter((entry) => entry.status === "auto").map((entry) => entry.playerId);
   const persistedEntries = normalized.length
-    ? normalized
+    ? normalized.filter((entry) => entry.status !== "auto")
     : (() => {
       const seen = new Set();
       return (Array.isArray(catalog) ? catalog : [])
@@ -323,7 +324,11 @@ export async function saveManualRoster(db, { teamCode = MANUAL_ROSTER_TEAM.teamC
   if (!actor) throw manualRosterError("MANUAL_ROSTER_UPDATED_BY_REQUIRED", "更新者を特定できません。", 400);
   const updatedAt = now instanceof Date ? now.toISOString() : new Date(now).toISOString();
   try {
-    const statements = persistedEntries.map((entry) => db.prepare(
+    const statements = autoPlayerIds.map((playerId) => db.prepare(
+      `DELETE FROM manual_team_rosters
+        WHERE team_code = ?1 AND player_id = ?2`
+    ).bind(team.teamCode, playerId));
+    statements.push(...persistedEntries.map((entry) => db.prepare(
       `INSERT INTO manual_team_rosters
          (team_code, team_id, player_id, status, roster_source, note, updated_at, updated_by)
        VALUES (?1, ?2, ?3, ?4, 'manual', ?5, ?6, ?7)
@@ -334,7 +339,7 @@ export async function saveManualRoster(db, { teamCode = MANUAL_ROSTER_TEAM.teamC
          note = excluded.note,
          updated_at = excluded.updated_at,
          updated_by = excluded.updated_by`
-    ).bind(team.teamCode, team.teamId, entry.playerId, entry.status, entry.note || null, updatedAt, actor));
+    ).bind(team.teamCode, team.teamId, entry.playerId, entry.status, entry.note || null, updatedAt, actor)));
     if (statements.length) await db.batch(statements);
     return getManualRoster(db, { teamCode: team.teamCode });
   } catch (error) {

@@ -96,6 +96,41 @@ test("manual rosterはcatalog優先順位を変えるがmanual lineupの9人制�
   assert.equal(normalizeManualLineupInput(catalog.slice(0, 8).map((player, index) => ({ playerName: player.playerName, battingOrder: index + 1, position: "捕" }))).ok, false);
 });
 
+test("manual rosterはACTIVE→INACTIVE→ACTIVEの保存往復で状態を維持する", async () => {
+  const { env } = await makeEnv();
+  const catalog = getManualLineupPlayerCatalog();
+  const playerId = catalog[0].playerId;
+  await saveManualRoster(env.AUTH_DB, { teamCode: "fighters", entries: [{ playerId, status: "active" }], updatedBy: "admin:roundtrip", catalog });
+  await saveManualRoster(env.AUTH_DB, { teamCode: "fighters", entries: [{ playerId, status: "inactive" }], updatedBy: "admin:roundtrip", catalog });
+  assert.equal((await getManualRoster(env.AUTH_DB)).entries.find((entry) => entry.playerId === playerId)?.status, "inactive");
+  await saveManualRoster(env.AUTH_DB, { teamCode: "fighters", entries: [{ playerId, status: "active" }], updatedBy: "admin:roundtrip", catalog });
+  const reread = await getManualRoster(env.AUTH_DB);
+  assert.equal(reread.entries.find((entry) => entry.playerId === playerId)?.status, "active");
+  assert.equal(reread.source, "manual");
+});
+
+test("manual rosterのAUTOは対象行だけを削除し、他選手のoverrideを保持する", async () => {
+  const { env } = await makeEnv();
+  const catalog = getManualLineupPlayerCatalog();
+  const activeId = catalog[0].playerId;
+  const inactiveId = catalog[1].playerId;
+  await saveManualRoster(env.AUTH_DB, {
+    teamCode: "fighters",
+    entries: [{ playerId: activeId, status: "active" }, { playerId: inactiveId, status: "inactive" }],
+    updatedBy: "admin:auto-release",
+    catalog
+  });
+  await saveManualRoster(env.AUTH_DB, {
+    teamCode: "fighters",
+    entries: [{ playerId: activeId, status: "auto" }, { playerId: inactiveId, status: "inactive" }],
+    updatedBy: "admin:auto-release",
+    catalog
+  });
+  const reread = await getManualRoster(env.AUTH_DB);
+  assert.equal(reread.entries.some((entry) => entry.playerId === activeId), false);
+  assert.equal(reread.entries.find((entry) => entry.playerId === inactiveId)?.status, "inactive");
+});
+
 test("manual roster APIはadmin認証・確認・入力検証を要求する", async () => {
   const { env } = await makeEnv();
   const catalog = getManualLineupPlayerCatalog();
@@ -178,6 +213,9 @@ test("manual roster UIはIME検索・確認保存・lineup分離を明示する"
   assert.match(coordinator, /compositionend/);
   assert.match(ui, /manual roster更新はmanual lineupを変更しません/);
   assert.match(ui, /data-v3-manual-roster-confirm/);
+  assert.match(ui, /data-v3-manual-roster-auto/);
+  assert.match(admin, /removeManualRosterOverride/);
+  assert.match(coordinator, /data-v3-manual-roster-auto/);
   assert.doesNotMatch(ui, /data-v3-manual-roster-player-id-input/);
   assert.match(css, /manual-roster-row/);
 });

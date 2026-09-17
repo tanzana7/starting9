@@ -836,8 +836,7 @@ button:disabled {
 }
 
 .ranking-qualified-section,
-.ranking-self,
-.ranking-unqualified {
+.ranking-self {
   display: grid;
   gap: 10px;
 }
@@ -881,11 +880,6 @@ button:disabled {
   border: 1px solid #d4e2ee;
   border-radius: 7px;
   background: #ffffff;
-}
-
-.ranking-entry.is-reference {
-  border-style: dashed;
-  background: #fbfdff;
 }
 
 .ranking-rank {
@@ -955,22 +949,6 @@ button:disabled {
   border-color: #d2ae54;
   color: #805a00;
   background: #fff8dd;
-}
-
-.ranking-unqualified {
-  padding-top: 2px;
-}
-
-.ranking-unqualified summary {
-  width: fit-content;
-  cursor: pointer;
-  color: var(--fighters-deep-blue);
-  font-size: 0.9rem;
-  font-weight: 850;
-}
-
-.ranking-unqualified[open] summary {
-  margin-bottom: 4px;
 }
 
 h2,

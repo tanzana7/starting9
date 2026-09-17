@@ -3188,18 +3188,11 @@ function renderRankingHeading(view) {
   return publicRankingRenderer.renderHeading(view);
 }
 
-const RANKING_DISPLAY_OPTIONS = Object.freeze({ hideIneligibleRankings: false });
-
-function filterRankingRowsForDisplay(rows, { hideIneligibleRankings = RANKING_DISPLAY_OPTIONS.hideIneligibleRankings } = {}) {
-  return publicRankingRenderer.filterRows(rows, { hideIneligibleRankings });
-}
-
 function renderRankingContent(ranking, { selfTitle, emptyMessage, prefixHtml = "" }) {
   return publicRankingRenderer.renderContent(ranking, {
     selfTitle,
     emptyMessage,
-    prefixHtml,
-    hideIneligibleRankings: RANKING_DISPLAY_OPTIONS.hideIneligibleRankings
+    prefixHtml
   });
 }
 
@@ -3207,12 +3200,12 @@ function renderMyRanking(ranking, row, title) {
   return publicRankingRenderer.renderMyRanking(ranking, row, title);
 }
 
-function createRankingCardHtml(row, { reference = false } = {}) {
-  return publicRankingRenderer.createCardHtml(row, { reference });
+function createRankingCardHtml(row) {
+  return publicRankingRenderer.createCardHtml(row);
 }
 
-function formatRankingQualification(row, { reference = false } = {}) {
-  return publicRankingRenderer.formatQualification(row, { reference });
+function formatRankingQualification(row) {
+  return publicRankingRenderer.formatQualification(row);
 }
 
 function createRankingAchievementBadgesHtml(row) {

@@ -48,8 +48,8 @@ test("通常画面の固定幅を避け、保存操作の既存IDを維持する
   assert.match(html, /id="savePredictionButton"/);
 });
 
-test("スマホの通常画面はオーダー表と選手一覧を縦積みにする", () => {
-  assert.match(css, /@media \(max-width: 1040px\)[\s\S]*\.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+test("スマホの通常画面はオーダー表と選手一覧を2ペインにする", () => {
+  assert.match(css, /@media \(max-width: 767px\)[\s\S]*\.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 60fr\) minmax\(0, 40fr\)/);
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.lineup-slot[\s\S]*min-width: 0/);
   assert.doesNotMatch(css, /body\s*\{[\s\S]*overflow-x:\s*hidden/);
 });
@@ -91,9 +91,9 @@ test("スマホの選手一覧はページ全体でスクロールし、1人1行
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.player-chip \.player-name[\s\S]*text-overflow: ellipsis/);
 });
 
-test("中幅の予想入力は縦積み、広い画面では2カラムを維持する", () => {
+test("中幅の予想入力は2カラムを維持し、十分な幅では広く使う", () => {
   assert.match(css, /\.app-layout:not\(\.is-admin-screen\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 1fr\)[\s\S]*width: 100%[\s\S]*max-width: 100%/);
-  assert.match(css, /@media \(max-width: 1040px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(css, /@media \(max-width: 767px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(0, 60fr\) minmax\(0, 40fr\)/);
   assert.match(css, /@media \(min-width: 1000px\)[\s\S]*body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.container[\s\S]*width: calc\(100% - 48px\)[\s\S]*max-width: 75rem/);
   assert.match(css, /@media \(min-width: 1000px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.lineup-builder[\s\S]*grid-template-columns: minmax\(380px, 480px\) minmax\(320px, 1fr\)[\s\S]*gap: 20px/);
   assert.match(css, /@media \(min-width: 78\.125rem\)[\s\S]*\.app-layout:not\(\.is-admin-screen\) \.player-list[\s\S]*grid-template-columns: repeat\(auto-fit, minmax\(120px, 1fr\)\)/);
@@ -109,8 +109,8 @@ test("公開画面は900px以上でも予想入力から結果までを縦積み
   assert.match(css, /@media \(min-width: 768px\) and \(max-width: 899px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\)[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
 });
 
-test("スマホの予想入力は縦積みで、守備位置メニューをviewport内に保つ", () => {
-  assert.match(css, /@media \(max-width: 1040px\)[\s\S]*?\.lineup-builder \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/);
+test("スマホの予想入力は2カラムを維持し、守備位置を打順の隣に置く", () => {
+  assert.match(css, /@media \(max-width: 767px\)[\s\S]*?\.lineup-builder \{[\s\S]*?grid-template-columns: minmax\(0, 60fr\) minmax\(0, 40fr\)/);
   assert.match(css, /#predictionLineup > \.lineup-slot\[data-picker="prediction"\][\s\S]*?grid-template-areas: "order position player clear"/);
   assert.match(css, /#predictionLineup > \.lineup-slot\[data-picker="prediction"\] > \.position-control[\s\S]*?grid-area: position/);
   assert.match(css, /\.position-menu\.is-viewport-positioned[\s\S]*?z-index: 1400/);
@@ -211,7 +211,7 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-single-game-1-public-position-menu-left-clamp-1-bat-line-1-player-number-1-player-details-1-bat-line-row-accent-1-public-selected-highlight-1-public-ranking-unqualified-cleanup-1-public-prediction-ux-polish-1-public-responsive-layout-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-single-game-1-public-position-menu-left-clamp-1-bat-line-1-player-number-1-player-details-1-bat-line-row-accent-1-public-selected-highlight-1-public-ranking-unqualified-cleanup-1-public-prediction-ux-polish-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

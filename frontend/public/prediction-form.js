@@ -53,7 +53,7 @@
             // API側の401/503/通信失敗をそのまま分類し、無限retryは行いません。
             const savedToAccount = await deps.savePredictionToAccount(deps.state.prediction, { allowAuthProbe: true });
             if (savedToAccount) {
-              deps.showPredictionSaveMessage("予想を保存しました。 ✓");
+              deps.showPredictionSaveMessage("予想を保存しました。");
             } else {
               deps.showMessage("predictionError", deps.state.predictionRemote.message || "端末には保存しましたが、アカウント保存の結果を確認できませんでした。");
             }
@@ -65,7 +65,7 @@
 
         const savedToAccount = await deps.savePredictionToAccount(deps.state.prediction);
         if (savedToAccount) {
-          deps.showPredictionSaveMessage("予想を保存しました。 ✓");
+          deps.showPredictionSaveMessage("予想を保存しました。");
           return;
         }
         deps.showMessage("predictionError", deps.state.predictionRemote.message || "端末には保存しましたが、アカウントへの保存に失敗しました。");

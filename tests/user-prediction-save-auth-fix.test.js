@@ -90,7 +90,7 @@ test("認証初期化完了前の保存でも、ログイン済みなら端末�
   resolveAuth();
   await pending;
   assert.equal(calls.accountSave, 1);
-  assert.deepEqual(calls.messages, ["予想を保存しました。 ✓"]);
+  assert.deepEqual(calls.messages, ["予想を保存しました。"]);
 });
 
 test("未ログイン保存は端末保存のみで、アカウント保存成功とは表示しない", async () => {
@@ -109,7 +109,7 @@ test("ログイン済み保存成功はアカウント保存として表示し�
   await submit(create(deps).handleSubmit, deps);
   assert.equal(calls.localSave, 1);
   assert.equal(calls.accountSave, 1);
-  assert.deepEqual(calls.messages, ["予想を保存しました。 ✓"]);
+  assert.deepEqual(calls.messages, ["予想を保存しました。"]);
 });
 
 function extractFunction(source, name) {
@@ -158,7 +158,7 @@ test("認証初期化失敗時も保存APIの成功をアカウント保存へ�
   const { deps, calls } = createDeps({ getPredictionAccountStatus: () => ({ errorCode: "DB_UNAVAILABLE", errorStatus: 503 }) });
   await submit(create(deps).handleSubmit, deps);
   assert.equal(calls.accountSave, 1);
-  assert.deepEqual(calls.messages, ["予想を保存しました。 ✓"]);
+  assert.deepEqual(calls.messages, ["予想を保存しました。"]);
   assert.doesNotMatch(calls.messages[0], /ログインするとアカウントにも保存できます/);
 });
 
@@ -175,7 +175,7 @@ test("認証確認不能時は保存APIを一度だけ試し、既存セッシ�
   await submit(create(deps).handleSubmit, deps);
   assert.equal(calls.accountSave, 1);
   assert.equal(probeOptions?.allowAuthProbe, true);
-  assert.deepEqual(calls.messages, ["予想を保存しました。 ✓"]);
+  assert.deepEqual(calls.messages, ["予想を保存しました。"]);
 });
 
 test("認証確認不能時の保存API失敗は端末保存成功とアカウント保存成功を混同しない", async () => {

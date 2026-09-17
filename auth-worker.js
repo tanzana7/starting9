@@ -131,6 +131,7 @@ import {
   saveManualRoster,
   prioritizeManualRosterCatalog,
   applyLiveRosterToManualLineupCatalog,
+  applyManualRosterToPublicRoster,
   normalizeOfficialNpbPlayerId
 } from "./backend/automation-v3/manual-roster-repository.js";
 
@@ -692,7 +693,7 @@ export default {
         return await handleAdminV3LineupCorrectionsGet(request, env, cors);
       }
       if (path === "/api/admin/v3/manual-roster" && ["GET", "PUT"].includes(request.method)) {
-        return await handleAdminV3ManualRoster(request, env, cors);
+        return await handleAdminV3ManualRoster(request, env, cors, ctx);
       }
       if (path === "/api/admin/v3/automation-logs" && request.method === "GET") {
         return await handleAdminV3AutomationLogs(request, env, cors);
@@ -8437,7 +8438,36 @@ async function handleAdminV3LineupGet(env, cors, context) {
   }, 200, cors);
 }
 
-async function handleAdminV3ManualRoster(request, env, cors) {
+async function invalidateManualRosterPublicCache(env, ctx) {
+  const cache = getPublicCache(env);
+  if (!cache || typeof cache.delete !== "function") return;
+  try {
+    const result = await env.AUTH_DB.prepare(
+      `SELECT internal_game_id FROM games
+        WHERE game_date >= ?1
+          AND (LOWER(home_team) IN ('f', 'fighters') OR LOWER(away_team) IN ('f', 'fighters'))
+        LIMIT 100`
+    ).bind(getJstDateString(new Date())).all();
+    const deletions = (result?.results || []).flatMap((row) => {
+      const internalGameId = String(row?.internal_game_id || "").trim();
+      if (!internalGameId) return [];
+      const rosterRequest = new Request(`https://starting9.internal/api/game-day-roster?internalGameId=${encodeURIComponent(internalGameId)}`);
+      return [
+        cache.delete(createPublicCacheKey(rosterRequest, "game-day-roster", "fresh")),
+        cache.delete(createPublicCacheKey(rosterRequest, "game-day-roster", "stale"))
+      ];
+    });
+    const work = Promise.all(deletions).catch((error) => {
+      console.warn("manual roster public cache invalidation failed", error instanceof Error ? error.message : "unknown error");
+    });
+    if (typeof ctx?.waitUntil === "function") ctx.waitUntil(work);
+    else await work;
+  } catch (error) {
+    console.warn("manual roster public cache invalidation skipped", error instanceof Error ? error.message : "unknown error");
+  }
+}
+
+async function handleAdminV3ManualRoster(request, env, cors, ctx) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) return access.response;
   try {
@@ -8458,6 +8488,7 @@ async function handleAdminV3ManualRoster(request, env, cors) {
       catalog: getManualLineupPlayerCatalog(),
       now: new Date()
     });
+    await invalidateManualRosterPublicCache(env, ctx);
     return jsonResponse({ ok: true, roster, playerCatalog: getManualLineupPlayerCatalog({ manualRoster: roster }) }, 200, cors);
   } catch (error) {
     if (!error?.code) {
@@ -11559,8 +11590,13 @@ async function handleGetGameDayRoster(request, env, cors) {
       ORDER BY updated_at DESC, captured_at DESC
       LIMIT 1`
   ).bind(internalGameId).first();
+  const manualRoster = await getManualRoster(env.AUTH_DB, { teamCode: MANUAL_ROSTER_TEAM.teamCode }).catch(() => null);
+  const catalog = manualRoster?.isManualSaved === true
+    ? getManualLineupPlayerCatalog({ manualRoster })
+    : [];
   const refreshed = await fetchLatestPublicRoster(env, game);
   if (refreshed) {
+    const resolved = applyManualRosterToPublicRoster(refreshed, manualRoster, catalog);
     const sourceSnapshotComparison = row
       ? compareV3RosterSourceSnapshot({
         sourceRoster: refreshed.players,
@@ -11573,7 +11609,7 @@ async function handleGetGameDayRoster(request, env, cors) {
       : null;
     const mismatch = sourceSnapshotComparison?.mismatch === true;
     return jsonResponse({
-      ...refreshed,
+      ...resolved,
       status: mismatch ? "attention" : "fresh",
       rosterStatus: mismatch ? "attention" : "fresh",
       warning: mismatch ? "公式liveを表示しています。canonical snapshotとの差分があるため正式roster_fetchで更新します。" : null,
@@ -11591,11 +11627,11 @@ async function handleGetGameDayRoster(request, env, cors) {
     }, 200, cors);
   }
 
-  const currentResponse = buildPublicGameDayRosterResponse({
+  const currentResponse = applyManualRosterToPublicRoster(buildPublicGameDayRosterResponse({
     internalGameId,
     gameDate: game.game_date,
     snapshot: row
-  });
+  }), manualRoster, catalog);
 
   let baseline = null;
   try {
@@ -11604,12 +11640,12 @@ async function handleGetGameDayRoster(request, env, cors) {
     if (baselineUsableUntil) {
       baseline = await findPublicRosterBaseline(env.AUTH_DB, game, now);
       if (baseline) {
-        return jsonResponse(buildPublicRosterFallbackResponse(buildPublicBaselineRosterResponse({
+        return jsonResponse(buildPublicRosterFallbackResponse(applyManualRosterToPublicRoster(buildPublicBaselineRosterResponse({
           internalGameId,
           gameDate: game.game_date,
           snapshot: baseline.snapshot,
           usableUntil: baselineUsableUntil
-        }), {
+        }), manualRoster, catalog), {
           fallbackSource: "baseline_snapshot",
           fallbackStatus: "baseline",
           displayRosterSource: "baseline_snapshot",
@@ -11621,7 +11657,7 @@ async function handleGetGameDayRoster(request, env, cors) {
     // A missing/invalid schedule must not make the public roster endpoint fail.
   }
   return jsonResponse(buildPublicRosterFallbackResponse(
-    buildPublicStaleRosterResponse({ internalGameId, gameDate: game.game_date, snapshot: row }),
+    applyManualRosterToPublicRoster(buildPublicStaleRosterResponse({ internalGameId, gameDate: game.game_date, snapshot: row }), manualRoster, catalog),
     { warning: "公式liveを取得できないため、前回snapshotを警告付きで表示しています。" }
   ), 200, cors);
 }

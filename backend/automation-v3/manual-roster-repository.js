@@ -274,6 +274,51 @@ export function applyLiveRosterToManualLineupCatalog(catalog, liveRoster, manual
   return result;
 }
 
+// Public candidate selection and admin lineup selection must see the same
+// operator override. Keep the official live/snapshot payload as the base and
+// only project manual active/inactive rows onto its display players; this does
+// not change the formal roster snapshot or any scoring input.
+export function applyManualRosterToPublicRoster(roster, manualRoster = null, catalog = []) {
+  if (!roster || manualRoster?.isManualSaved !== true || !Array.isArray(roster.players)) return roster;
+  const manualEntries = Array.isArray(manualRoster.entries) ? manualRoster.entries : [];
+  const baseCatalog = Array.isArray(catalog) ? catalog : [];
+  const projectedPlayers = [];
+  const seenNumbers = new Set();
+
+  roster.players.forEach((livePlayer) => {
+    const catalogPlayer = baseCatalog.find((player) => matchesKnownCatalogPlayer(livePlayer, player)) || null;
+    const manualEntry = catalogPlayer ? findRosterEntry(manualEntries, catalogPlayer) : null;
+    if (String(manualEntry?.status || "").trim().toLowerCase() === "inactive") return;
+    const number = rosterPlayerNumber(livePlayer);
+    if (number) seenNumbers.add(number);
+    projectedPlayers.push(livePlayer);
+  });
+
+  manualEntries
+    .filter((entry) => String(entry?.status || "").trim().toLowerCase() === "active")
+    .forEach((entry) => {
+      const catalogPlayer = baseCatalog.find((player) => String(player?.playerId || "").trim() === String(entry?.playerId || "").trim()) || null;
+      if (!catalogPlayer) return;
+      const number = String(catalogPlayer.uniformNumber || "").trim();
+      if (!number || seenNumbers.has(number)) return;
+      seenNumbers.add(number);
+      projectedPlayers.push({
+        playerId: catalogPlayer.playerId,
+        name: catalogPlayer.playerName,
+        number,
+        position: catalogPlayer.category || ""
+      });
+    });
+
+  return {
+    ...roster,
+    players: projectedPlayers,
+    playerCount: projectedPlayers.length,
+    manualRosterApplied: true,
+    manualRosterSource: "manual"
+  };
+}
+
 export async function getManualRoster(db, { teamCode = MANUAL_ROSTER_TEAM.teamCode } = {}) {
   const team = normalizeManualRosterTeam(teamCode);
   try {

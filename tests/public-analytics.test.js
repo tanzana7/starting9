@@ -63,6 +63,42 @@ test("同一ドキュメントではCloudflare beaconを二重読み込みせず
   assert.doesNotMatch(analyticsSource, /page_view|user_id|prediction|email|localStorage|cookie/i);
 });
 
+test("preview・admin・query/hash付きURLではBeaconを追加せず、既存Beaconとも重複しない", () => {
+  function createDocument(existingSelector) {
+    const appended = [];
+    return {
+      appended,
+      readyState: "complete",
+      querySelector(selector) {
+        return selector === existingSelector ? {} : null;
+      },
+      createElement() {
+        return { setAttribute(name, value) { this[name] = value; } };
+      },
+      head: { appendChild(script) { appended.push(script); } }
+    };
+  }
+
+  for (const location of [
+    { hostname: "preview.starting9.pages.dev", protocol: "https:", pathname: "/" },
+    { hostname: "starting9.pages.dev", protocol: "https:", pathname: "/admin-v3" },
+    { hostname: "starting9.pages.dev", protocol: "https:", pathname: "/index.html", search: "?token=hidden" },
+    { hostname: "starting9.pages.dev", protocol: "https:", pathname: "/index.html", hash: "#prediction=hidden" }
+  ]) {
+    const document = createDocument(null);
+    loadAnalytics({ location, document });
+    assert.equal(document.appended.length, 0);
+  }
+
+  const existingDocument = createDocument("script[data-cf-beacon]");
+  const analytics = loadAnalytics({
+    location: { hostname: "starting9.pages.dev", protocol: "https:", pathname: "/" },
+    document: existingDocument
+  });
+  assert.equal(existingDocument.appended.length, 0);
+  assert.equal(analytics.loadCloudflareBeacon(), false);
+});
+
 test("GA4と同意UIを公開サイトから撤去し、プライバシーポリシーをCloudflareへ更新する", () => {
   for (const file of ["index.html", "how-to-play.html", "terms.html", "privacy.html", "contact.html"]) {
     const html = fs.readFileSync(path.join(root, file), "utf8");

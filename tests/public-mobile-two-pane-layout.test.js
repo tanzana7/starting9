@@ -8,7 +8,7 @@ const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 
-test("public mobile prediction layout keeps order and roster in two panes", () => {
+test("public prediction layout stacks at narrow widths and keeps the builder usable", () => {
   assert.match(html, /style\.css\?v=public-single-game-1/);
   assert.doesNotMatch(html, /public-mobile-ui-blockers-1|public-roster-source-of-truth-1/);
   assert.match(html, /class="lineup-builder"/);
@@ -16,11 +16,10 @@ test("public mobile prediction layout keeps order and roster in two panes", () =
   assert.match(html, /id="predictionPlayers" class="player-list"/);
   assert.match(
     css,
-    /@media \(max-width: 767px\)[\s\S]*?\.lineup-builder \{[\s\S]*?grid-template-columns: minmax\(0, 56fr\) minmax\(0, 44fr\)/,
+    /@media \(max-width: 1040px\)[\s\S]*?\.lineup-builder \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/,
   );
-  assert.match(css, /max-height: min\(72vh, 620px\)/);
-  assert.match(css, /overflow-y: auto/);
-  assert.match(css, /\.player-list \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(css, /@media \(max-width: 1040px\)[\s\S]*?\.player-list \{[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)/);
+  assert.match(css, /@media \(max-width: 600px\)[\s\S]*?\.player-list \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(css, /min-height: 44px/);
   assert.match(css, /grid-template-columns: 28px 40px minmax\(0, 1fr\) auto/);
   assert.match(css, /grid-template-areas: "order position player clear"/);
@@ -103,9 +102,10 @@ test("mobile public header content can shrink and wrap instead of being clipped"
   );
 });
 
-test("390px/430pxの公開画面は横幅を制約し、2カラムの子要素を縮められる", () => {
+test("390px/430pxの公開画面は縦積みと1列候補で横幅を制約する", () => {
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \{[\s\S]*?width: 100%;[\s\S]*?max-width: 100%;[\s\S]*?overflow-x: clip;/);
-  assert.match(css, /@media \(max-width: 767px\)[\s\S]*?\.lineup-builder \{[\s\S]*?grid-template-columns: minmax\(0, 56fr\) minmax\(0, 44fr\)[\s\S]*?width: 100%;[\s\S]*?max-width: 100%;/);
+  assert.match(css, /@media \(max-width: 1040px\)[\s\S]*?\.lineup-builder \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\)[\s\S]*?width: 100%;[\s\S]*?max-width: 100%;/);
+  assert.match(css, /@media \(max-width: 600px\)[\s\S]*?\.player-list \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(css, /\.lineup-panel,[\s\S]*?\.player-panel,[\s\S]*?\.lineup-slot,[\s\S]*?\.player-chip \{[\s\S]*?min-width: 0;[\s\S]*?max-width: 100%;/);
   assert.match(css, /@media \(max-width: 430px\)[\s\S]*?\.container \{[\s\S]*?width: calc\(100% - 16px\);/);
   assert.match(css, /\.header-inner > \*,[\s\S]*?\.auth-button \{[\s\S]*?min-width: 0;[\s\S]*?max-width: 100%;/);

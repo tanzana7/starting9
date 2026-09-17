@@ -50,6 +50,15 @@
         result: null,
         error: ""
       },
+      preBetaPurge: {
+        plan: null,
+        requiredConfirmation: "",
+        cron: null,
+        loading: false,
+        loaded: false,
+        error: "",
+        message: ""
+      },
       manualLineup: {
         gameId: "",
         activeIndex: 0,

@@ -794,3 +794,29 @@ button:disabled { cursor: not-allowed; opacity: .65; }
   .ranking-test-name button { width: 100%; }
   .ranking-test-table th, .ranking-test-table td { padding: .3rem; font-size: .9rem; }
 }
+
+/* This read-only view is intentionally compact: it exposes the one-time purge
+   plan without adding a delete control to the durable admin surface. */
+.pre-beta-purge-panel { display: grid; gap: 1rem; }
+.pre-beta-purge-header,
+.pre-beta-purge-section { display: grid; gap: .55rem; padding: .9rem; border: 1px solid var(--border-color, #d7dee8); border-radius: .55rem; background: #f8fafc; }
+.pre-beta-purge-header { background: #fff8e6; border-color: #e4c56a; }
+.pre-beta-purge-meta,
+.pre-beta-purge-status { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem 1rem; }
+.pre-beta-purge-meta span,
+.pre-beta-purge-status span { min-width: 0; overflow-wrap: anywhere; }
+.pre-beta-purge-table { width: 100%; border-collapse: collapse; }
+.pre-beta-purge-table th,
+.pre-beta-purge-table td { padding: .45rem; border-bottom: 1px solid var(--border-color, #d7dee8); text-align: left; vertical-align: top; }
+.pre-beta-purge-table th:last-child,
+.pre-beta-purge-table td:last-child { text-align: right; white-space: nowrap; }
+.pre-beta-purge-games { display: grid; gap: .5rem; margin: 0; padding-left: 1.25rem; }
+.pre-beta-purge-games code { overflow-wrap: anywhere; }
+.pre-beta-purge-note { color: #526173; font-size: .9rem; }
+@media (max-width: 680px) {
+  .pre-beta-purge-meta,
+  .pre-beta-purge-status { grid-template-columns: 1fr; }
+  .pre-beta-purge-table { font-size: .9rem; }
+  .pre-beta-purge-table th,
+  .pre-beta-purge-table td { padding: .35rem .25rem; }
+}

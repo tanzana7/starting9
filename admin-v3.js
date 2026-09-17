@@ -14,6 +14,7 @@ if (!adminV3Modules?.createAdminV3State
   || !adminV3Modules?.createAdminV3PerfectScoreRenderer
   || !adminV3Modules?.createAdminV3RankingTestRenderer
   || !adminV3Modules?.createAdminV3ManualGamePreviewRenderer
+  || !adminV3Modules?.createAdminV3PreBetaPurgeRenderer
   || !adminV3Modules?.createAdminV3SelectionSafety
   || !adminV3Modules?.createAdminV3ManualLineupRenderer
   || !adminV3Modules?.createAdminV3ManualRosterRenderer
@@ -44,7 +45,7 @@ const V3_JOB_TYPES = Object.freeze([
   V3_JOB_TYPE.PROBABLE_STARTER_FETCH,
   V3_JOB_TYPE.ROSTER_FETCH
 ]);
-const V3_VIEWS = ["dashboard", "games", "workflow", "lineup", "lineup-correction", "roster", "scoring", "ranking-test-users", "ranking-reset", "schedule", "add-game-preview", "diagnostics"];
+const V3_VIEWS = ["dashboard", "games", "workflow", "lineup", "lineup-correction", "roster", "scoring", "ranking-test-users", "ranking-reset", "schedule", "add-game-preview", "diagnostics", "pre-beta-purge"];
 const V3_VIEW_LABELS = {
   dashboard: "ダッシュボード",
   games: "試合一覧",
@@ -57,7 +58,8 @@ const V3_VIEW_LABELS = {
   "ranking-reset": "ランキング対象外",
   schedule: "日程管理",
   diagnostics: "診断・監査",
-  "add-game-preview": "追加試合プレビュー"
+  "add-game-preview": "追加試合プレビュー",
+  "pre-beta-purge": "公開前データdry-run"
 };
 const V3_JOB_LABELS = {
   npb_identity_resolve: "NPB識別情報解決",
@@ -902,6 +904,7 @@ const v3RosterRenderer = adminV3Modules.createAdminV3RosterRenderer({
 const v3PerfectScoreRenderer = adminV3Modules.createAdminV3PerfectScoreRenderer({ state: v3State, escapeHtml: escapeV3 });
 const v3RankingResetRenderer = adminV3Modules.createAdminV3RankingResetRenderer({ state: v3State, escapeHtml: escapeV3, formatJst: formatV3Jst });
 const v3ManualGamePreviewRenderer = adminV3Modules.createAdminV3ManualGamePreviewRenderer({ escapeHtml: escapeV3 });
+const v3PreBetaPurgeRenderer = adminV3Modules.createAdminV3PreBetaPurgeRenderer({ escapeHtml: escapeV3, formatJst: formatV3Jst });
 const v3ManualLineupRenderer = adminV3Modules.createAdminV3ManualLineupRenderer({ escapeHtml: escapeV3, formatJst: formatV3Jst, getFinalizeSafety: manualLineupFinalizeSafety, getGameDayStatus: v3SelectionSafety.gameDayStatus });
 const v3ManualRosterRenderer = adminV3Modules.createAdminV3ManualRosterRenderer({ escapeHtml: escapeV3 });
 const v3RankingTestRenderer = adminV3Modules.createAdminV3RankingTestRenderer({ state: v3State, escapeHtml: escapeV3 });
@@ -1535,7 +1538,7 @@ function renderCurrentV3View() {
   const view = document.getElementById("v3View");
   if (!view) return;
   const gameSelectionControls = document.querySelector("[data-v3-game-selection-controls]");
-  if (gameSelectionControls) gameSelectionControls.classList.toggle("is-hidden", v3State.view === "roster");
+  if (gameSelectionControls) gameSelectionControls.classList.toggle("is-hidden", ["roster", "pre-beta-purge"].includes(v3State.view));
   const v4Notice = payload.automationMode?.isV4SemiAuto
     ? '<div class="v3-operation-result attention" data-v3-v4-mode><strong>V4半自動運営</strong><span>予告先発: 自動取得 / ロースター: Fightersロースターを手動管理 / スタメン: 自動取得OFF / 正式スタメン: 手動</span><span>ロースター更新はスタメンを変更しません。ロースター管理とスタメン確定をそれぞれ確認後、予想締切・採点・ランキング・公開を正式Cronへ引き継ぎます。</span></div>'
     : "";
@@ -1555,7 +1558,8 @@ function renderCurrentV3View() {
     "ranking-reset": () => v3RankingResetRenderer.render(),
     schedule: () => v3GameProgressRenderer.renderScheduleView(games),
     "add-game-preview": () => v3ManualGamePreviewRenderer.render(v3State.manualGamePreview),
-    diagnostics: () => v3DiagnosticsRenderer.renderView(filteredGame || game)
+    diagnostics: () => v3DiagnosticsRenderer.renderView(filteredGame || game),
+    "pre-beta-purge": () => v3PreBetaPurgeRenderer.render(v3State.preBetaPurge)
   }[v3State.view]();
   document.querySelectorAll("[data-v3-view]").forEach((button) => {
     const active = button.dataset.v3View === v3State.view;
@@ -1909,6 +1913,28 @@ async function refreshV3LineupRoster() {
   }
 }
 
+async function loadPreBetaPurge(force = false) {
+  const state = v3State.preBetaPurge;
+  if (state.loading || (state.loaded && !force)) return;
+  state.loading = true;
+  state.error = "";
+  state.message = "";
+  renderCurrentV3View();
+  try {
+    const result = await v3Api.getPreBetaPurgePlan();
+    state.plan = result.plan || null;
+    state.requiredConfirmation = result.requiredConfirmation || "";
+    state.cron = result.cron || null;
+    state.loaded = true;
+  } catch (error) {
+    state.plan = null;
+    state.error = formatV3AdminError(error, "PRE_BETA_PURGE_DRY_RUN_FAILED");
+  } finally {
+    state.loading = false;
+    renderCurrentV3View();
+  }
+}
+
 async function loadV3() {
   setV3Status("読み込み中…");
   try {
@@ -1920,8 +1946,9 @@ async function loadV3() {
     renderV3(payload);
     if (v3State.view === "lineup-correction") await loadV3LineupCorrections(true);
     else if (v3State.view === "ranking-test-users") await loadRankingTestUsers(true);
-    else if (v3State.view !== "roster") await loadV3OperationDetails();
+    else if (!["roster", "pre-beta-purge"].includes(v3State.view)) await loadV3OperationDetails();
     if (v3State.view === "roster") await loadManualRoster();
+    if (v3State.view === "pre-beta-purge") await loadPreBetaPurge(true);
     setV3Status(`${v3State.payload.games.length}試合を表示しました。`);
   } catch (error) {
     setV3Status(adminAuthErrorMessage(error), true);
@@ -1940,6 +1967,7 @@ function chooseV3View(view, { skipLineupLoad = false } = {}) {
   if (view === "lineup-correction") loadV3LineupCorrections();
   if (view === "ranking-test-users") loadRankingTestUsers();
   if (view === "roster") loadManualRoster();
+  if (view === "pre-beta-purge") loadPreBetaPurge();
   if (view === "lineup" && v3State.selectedGameId) {
     if (v3State.operationDetails.get(v3State.selectedGameId)?.lineup) {
       void refreshV3LineupRoster();
@@ -2022,6 +2050,7 @@ function handleV3HashChange() {
   renderCurrentV3View();
   if (v3State.view === "lineup-correction") loadV3LineupCorrections();
   else if (v3State.view === "ranking-test-users") loadRankingTestUsers(true);
+  else if (v3State.view === "pre-beta-purge") loadPreBetaPurge(true);
   else if (v3State.view !== "roster") loadV3OperationDetails();
   if (v3State.view === "roster") loadManualRoster();
 }
@@ -2047,6 +2076,7 @@ adminV3Modules.createAdminV3Coordinator({
     previewRankingReset,
     executeRankingReset,
     refreshRankingExclusionGames: loadRankingExclusionGames,
+    refreshPreBetaPurge: loadPreBetaPurge,
     renderRankingExclusionGames,
     previewPerfectScore,
     previewManualGame,

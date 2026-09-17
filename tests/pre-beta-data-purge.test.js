@@ -173,3 +173,47 @@ test("pre-beta purge refuses a target plan with active jobs", async () => {
     /PRE_BETA_PURGE_ACTIVE_JOBS/
   );
 });
+
+test("empty pre-beta target is a safe no-op instead of an empty-scope error", async () => {
+  const database = createDatabase();
+  const plan = await previewPreBetaPurge(d1(database));
+  assert.deepEqual(plan.targetGames, []);
+  assert.equal(plan.counts.score_attempt_prediction_rows, 0);
+  assert.equal(plan.counts.score_attempt_test_rows, 0);
+  assert.equal(plan.counts.score_attempts, 0);
+  assert.equal(plan.totalRows, 0);
+});
+
+test("completed game without score-attempt rows remains a valid zero-count target", async () => {
+  const database = createDatabase();
+  insertGame(database, OLD_GAME, "completed", "2026-09-10T10:00:00.000Z");
+  const plan = await previewPreBetaPurge(d1(database));
+  assert.deepEqual(plan.internalGameIds, [OLD_GAME]);
+  assert.equal(plan.counts.score_attempt_prediction_rows, 0);
+  assert.equal(plan.counts.score_attempt_test_rows, 0);
+  assert.equal(plan.counts.score_attempts, 0);
+});
+
+test("target row without both identifiers is rejected instead of widening the purge", async () => {
+  const invalidTargetDb = {
+    prepare(sql) {
+      return {
+        bind() {
+          return {
+            async all() {
+              if (sql.includes("FROM games")) {
+                return { results: [{ game_id: "game-without-internal-id", internal_game_id: null, game_date: "2026-09-10", start_time: "2026-09-10T10:00:00.000Z" }] };
+              }
+              return { results: [] };
+            },
+            async first() { return { count: 0 }; }
+          };
+        }
+      };
+    }
+  };
+  await assert.rejects(
+    previewPreBetaPurge(invalidTargetDb),
+    /PRE_BETA_PURGE_TARGET_IDS_UNAVAILABLE/
+  );
+});

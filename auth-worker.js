@@ -134,6 +134,12 @@ import {
   applyManualRosterToPublicRoster,
   normalizeOfficialNpbPlayerId
 } from "./backend/automation-v3/manual-roster-repository.js";
+import {
+  executePreBetaPurge,
+  previewPreBetaPurge,
+  PRE_BETA_PURGE_CONFIRMATION,
+  PRE_BETA_PURGE_PLAN_VERSION
+} from "./backend/maintenance/pre-beta-data-purge.js";
 
 // Compatibility exports keep existing tests and internal callers stable while
 // the implementation lives in the domain module.
@@ -712,6 +718,9 @@ export default {
       }
       if (path === "/api/admin/v3/ranking-resets/execute" && request.method === "POST") {
         return await handleAdminV3RankingResetExecute(request, env, cors);
+      }
+      if (path === "/api/admin/maintenance/pre-beta-purge" && ["GET", "POST"].includes(request.method)) {
+        return await handleAdminPreBetaPurge(request, env, cors);
       }
       if (path === "/api/admin/v3/perfect-score-test/preview") {
         if (request.method !== "POST") return jsonResponse({ ok: false, code: "V3_ADMIN_METHOD_NOT_ALLOWED", error: "満点previewはPOSTのみ対応しています。" }, 405, cors);
@@ -6920,6 +6929,7 @@ const ADMIN_EXACT_ROUTE_METHODS = Object.freeze({
   "/api/admin/v3/ranking-resets/preview": ["POST"],
   "/api/admin/v3/schedule/add-game/preview": ["POST"],
   "/api/admin/v3/ranking-resets/execute": ["POST"],
+  "/api/admin/maintenance/pre-beta-purge": ["GET", "POST"],
   "/api/admin/v3/perfect-score-test/preview": ["POST"],
   "/api/admin/v3/ranking-test-users/global": ["PUT", "PATCH"],
   "/api/admin/v3/ranking-test-users/name": ["PUT", "PATCH"]
@@ -7724,6 +7734,39 @@ async function handleAdminV3RankingResetExecute(request, env, cors) {
     return jsonResponse({ ok: true, marker, preview }, 201, cors);
   } catch (error) {
     return rankingResetAdminError(cors, error);
+  }
+}
+
+async function handleAdminPreBetaPurge(request, env, cors) {
+  // This route is deployed only for the one-time maintenance window and is
+  // disabled by default. It is intentionally absent from all admin UI.
+  if (String(env?.PRE_BETA_PURGE_ENABLED || "") !== "true") {
+    return jsonResponse({ ok: false, code: "NOT_FOUND" }, 404, cors);
+  }
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  try {
+    if (!env.AUTH_DB) return jsonResponse({ ok: false, code: "PRE_BETA_PURGE_DB_UNAVAILABLE", error: "削除用データベースが利用できません。" }, 503, cors);
+    if (request.method === "GET") {
+      const plan = await previewPreBetaPurge(env.AUTH_DB);
+      return jsonResponse({ ok: true, mode: "dry-run", requiredConfirmation: PRE_BETA_PURGE_CONFIRMATION, plan }, 200, cors);
+    }
+    const body = await readJson(request);
+    const backupReference = String(body?.backupReference || "").trim();
+    if (body?.backupVerified !== true || !backupReference || backupReference.length > 240) {
+      return jsonResponse({ ok: false, code: "PRE_BETA_PURGE_BACKUP_REQUIRED", error: "削除前バックアップの確認情報が必要です。" }, 400, cors);
+    }
+    if (String(body?.version || "") !== PRE_BETA_PURGE_PLAN_VERSION) {
+      return jsonResponse({ ok: false, code: "PRE_BETA_PURGE_VERSION_REQUIRED", error: "削除手順のversionが一致しません。" }, 400, cors);
+    }
+    const result = await executePreBetaPurge(env.AUTH_DB, body);
+    console.warn(`[PRE_BETA_PURGE] status=completed version=${PRE_BETA_PURGE_PLAN_VERSION} operator=${String(access.user.id)} backupReference=${backupReference} deletedTotal=${result.deletedTotal}`);
+    return jsonResponse({ ok: true, mode: "execute", result }, 200, cors);
+  } catch (error) {
+    const code = String(error?.message || error?.code || "PRE_BETA_PURGE_FAILED");
+    const status = code === "PRE_BETA_PURGE_ACTIVE_JOBS" || code === "PRE_BETA_PURGE_PLAN_CHANGED" ? 409 : 400;
+    console.error(`[PRE_BETA_PURGE] status=failed code=${code}`);
+    return jsonResponse({ ok: false, code, error: "公開前データ削除を実行できませんでした。" }, status, cors);
   }
 }
 

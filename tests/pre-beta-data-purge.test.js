@@ -194,6 +194,31 @@ test("completed game without score-attempt rows remains a valid zero-count targe
   assert.equal(plan.counts.score_attempts, 0);
 });
 
+test("scored ranking evidence is selected even when the schedule row is still scheduled", async () => {
+  const database = createDatabase();
+  insertGame(database, OLD_GAME, "scheduled", "2026-09-10T10:00:00.000Z");
+  insertRankingGame(database, OLD_GAME);
+  const plan = await previewPreBetaPurge(d1(database));
+  assert.deepEqual(plan.internalGameIds, [OLD_GAME]);
+  assert.equal(plan.targetGames.some((row) => row.source === "scored_ranking_game"), true);
+});
+
+test("legacy scored ranking evidence can safely target game-id tables without inferring an internal id", async () => {
+  const database = createDatabase();
+  database.prepare(`
+    INSERT INTO ranking_games (
+      game_id, is_ranking_eligible, game_date, game_status, is_test_game,
+      publication_status, created_at, updated_at
+    ) VALUES ('legacy-game', 1, '2026-07-22', 'scored', 0, 'published', '2026-09-01', '2026-09-01')
+  `).run();
+  const plan = await previewPreBetaPurge(d1(database));
+  assert.equal(plan.gameIds.includes("legacy-game"), true);
+  assert.deepEqual(plan.internalGameIds, []);
+  assert.equal(plan.counts.predictions, 0);
+  assert.equal(plan.counts.game_lineups, 0);
+  assert.equal(plan.counts.game_jobs_v3, 0);
+});
+
 test("target row without both identifiers is rejected instead of widening the purge", async () => {
   const invalidTargetDb = {
     prepare(sql) {
@@ -202,7 +227,7 @@ test("target row without both identifiers is rejected instead of widening the pu
           return {
             async all() {
               if (sql.includes("FROM games")) {
-                return { results: [{ game_id: "game-without-internal-id", internal_game_id: null, game_date: "2026-09-10", start_time: "2026-09-10T10:00:00.000Z" }] };
+                return { results: [{ game_id: null, internal_game_id: null, game_date: "2026-09-10", start_time: "2026-09-10T10:00:00.000Z" }] };
               }
               return { results: [] };
             },

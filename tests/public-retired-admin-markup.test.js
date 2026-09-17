@@ -77,7 +77,7 @@ test("公開entry scriptのcache busterを更新し、既存moduleの読み込�
     const isPredictionForm = match[0].startsWith("frontend/public/prediction-form.js?");
     const isRankingRenderer = match[0].startsWith("frontend/public/render-ranking.js?");
     assert.equal(match[1], isPredictionForm
-      ? `${moduleCacheBuster}&user-save-auth-unavailable-fix-20260903`
+      ? `${moduleCacheBuster}&user-save-auth-unavailable-fix-20260903&public-prediction-ux-polish-1`
       : isRankingRenderer
         ? `${moduleCacheBuster}&public-ranking-top10-1&public-ranking-average40-1&public-ranking-hide-unqualified-1`
       : expectedCacheBuster);

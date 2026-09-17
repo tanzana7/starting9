@@ -3033,13 +3033,15 @@ textarea:focus {
 
 .player-chip-detail-button {
   flex: 0 0 auto;
-  padding: 3px 7px;
-  border: 1px solid #c7d7e8;
+  min-width: 34px;
+  min-height: 28px;
+  padding: 2px 5px;
+  border: 1px solid #d7e1eb;
   border-radius: 999px;
-  color: var(--fighters-deep-blue);
-  background: #f7fbff;
-  font-size: 0.72rem;
-  font-weight: 900;
+  color: #5d7185;
+  background: transparent;
+  font-size: 0.68rem;
+  font-weight: 800;
   line-height: 1.2;
   cursor: pointer;
 }
@@ -3421,6 +3423,31 @@ body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #resetPredictio
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #resetPredictionButton:focus-visible {
   border-color: #1168a8;
   background: #eaf4ff;
+}
+
+/* Public cards keep the player name primary; detail remains a quiet, separate action. */
+body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .player-chip-detail-button {
+  opacity: 0.78;
+}
+
+body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .player-chip-detail-button:hover,
+body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .player-chip-detail-button:focus-visible {
+  opacity: 1;
+  border-color: #c7a33b;
+  color: #6b4c00;
+  background: #fff9e8;
+}
+
+body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm > .message:empty {
+  display: none;
+}
+
+body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .deadline-countdown {
+  justify-content: flex-start;
+}
+
+body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .deadline-time time {
+  font-weight: 900;
 }
 
 @media (max-width: 768px) {
@@ -4666,6 +4693,24 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
 .deadline-countdown {
   color: #536a82;
   font-size: 0.8rem;
+}
+
+.deadline-countdown-primary {
+  color: #7a4d00;
+  font-size: 1rem;
+  font-weight: 900;
+}
+
+.deadline-countdown-primary strong {
+  font-size: 1.15rem;
+}
+
+.deadline-time,
+.deadline-start {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: baseline;
 }
 
 .public-game-selection-meta {

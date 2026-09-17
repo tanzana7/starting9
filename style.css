@@ -7523,6 +7523,19 @@ body:not(:has(.app-layout.is-admin-screen)) .probable-starter-fetched {
   }
 }
 
+/* 公開予想の2ペイン構成は変えず、PCだけ操作対象の縦寸法を約15%広げる。 */
+@media (min-width: 900px) {
+  body:not(:has(.app-layout.is-admin-screen)) #predictionForm #predictionLineup > .lineup-slot[data-picker="prediction"] {
+    min-height: 55px;
+    padding-block: 8px;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) .player-list .player-chip {
+    min-height: 51px;
+    padding-block: 10px;
+  }
+}
+
 /* Keep the public editing target distinct from batting-side colors. */
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .lineup-slot.is-active,
 body:not(:has(.app-layout.is-admin-screen)) .lineup-slot.is-active {

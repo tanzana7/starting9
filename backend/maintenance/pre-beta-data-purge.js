@@ -32,6 +32,19 @@ export const PRE_BETA_PURGE_TABLES = Object.freeze([
 ]);
 
 const GAME_SCOPED_TABLES = new Set(PRE_BETA_PURGE_TABLES.filter((table) => table !== "user_achievements"));
+const GAME_ID_SCOPED_TABLES = new Set([
+  "prediction_score_revisions", "game_rescore_previews", "game_rescore_jobs",
+  "game_rescore_audits", "ranking_eligibility_history", "perfect_achievers",
+  "predictions", "game_lineup_revisions", "game_lineups", "ranking_games",
+  "score_attempts", "game_scoring_revisions"
+]);
+const INTERNAL_GAME_ID_SCOPED_TABLES = new Set([
+  "score_attempts", "game_scoring_revisions", "ranking_reflection_revisions",
+  "predictions", "ranking_test_predictions", "ranking_test_game_settings",
+  "game_jobs_v3", "game_job_runs", "game_automation_v3_state", "game_workflow_state"
+]);
+const LEGACY_GAME_ID_SCOPED_TABLES = new Set(["game_workflow_state"]);
+const ATTEMPT_ROW_TABLES = new Set(["score_attempt_prediction_rows", "score_attempt_test_rows"]);
 
 function rowsOf(result) {
   return Array.isArray(result?.results) ? result.results : [];
@@ -52,27 +65,33 @@ function placeholders(values, startAt = 1) {
 function scopedPredicate(table, gameIds, internalGameIds) {
   const clauses = [];
   const bindings = [];
-  if (gameIds.length && [
-    "prediction_score_revisions", "game_rescore_previews", "game_rescore_jobs",
-    "game_rescore_audits", "ranking_eligibility_history", "perfect_achievers",
-    "predictions", "game_lineup_revisions", "game_lineups", "ranking_games"
-  ].includes(table)) {
+  if (gameIds.length && GAME_ID_SCOPED_TABLES.has(table)) {
     clauses.push(`game_id IN (${placeholders(gameIds)})`);
     bindings.push(...gameIds);
   }
-  if (internalGameIds.length && [
-    "score_attempts", "game_scoring_revisions", "ranking_reflection_revisions",
-    "predictions", "ranking_test_predictions", "ranking_test_game_settings",
-    "game_jobs_v3", "game_job_runs", "game_automation_v3_state", "game_workflow_state"
-  ].includes(table)) {
+  if (gameIds.length && LEGACY_GAME_ID_SCOPED_TABLES.has(table)) {
+    const offset = bindings.length + 1;
+    clauses.push(`legacy_game_id IN (${placeholders(gameIds, offset)})`);
+    bindings.push(...gameIds);
+  }
+  if (internalGameIds.length && INTERNAL_GAME_ID_SCOPED_TABLES.has(table)) {
     const offset = bindings.length + 1;
     clauses.push(`internal_game_id IN (${placeholders(internalGameIds, offset)})`);
     bindings.push(...internalGameIds);
   }
-  if (["score_attempt_prediction_rows", "score_attempt_test_rows"].includes(table) && internalGameIds.length) {
-    const offset = bindings.length + 1;
-    clauses.push(`attempt_id IN (SELECT attempt_id FROM score_attempts WHERE internal_game_id IN (${placeholders(internalGameIds, offset)}))`);
-    bindings.push(...internalGameIds);
+  if (ATTEMPT_ROW_TABLES.has(table) && (gameIds.length || internalGameIds.length)) {
+    const attemptClauses = [];
+    if (internalGameIds.length) {
+      const offset = bindings.length + 1;
+      attemptClauses.push(`internal_game_id IN (${placeholders(internalGameIds, offset)})`);
+      bindings.push(...internalGameIds);
+    }
+    if (gameIds.length) {
+      const offset = bindings.length + 1;
+      attemptClauses.push(`game_id IN (${placeholders(gameIds, offset)})`);
+      bindings.push(...gameIds);
+    }
+    clauses.push(`attempt_id IN (SELECT attempt_id FROM score_attempts WHERE ${attemptClauses.join(" OR ")})`);
   }
   if (table === "user_achievements") {
     clauses.push("(created_at < ?1 OR earned_at < ?1)");
@@ -82,7 +101,7 @@ function scopedPredicate(table, gameIds, internalGameIds) {
     // An empty pre-beta target is a valid no-op after the release boundary has
     // already been cleared.  Keep every game-scoped count explicitly empty;
     // never turn a missing target into an unbounded predicate.
-    if (GAME_SCOPED_TABLES.has(table) && !gameIds.length && !internalGameIds.length) {
+    if (GAME_SCOPED_TABLES.has(table) && (!gameIds.length && !internalGameIds.length || INTERNAL_GAME_ID_SCOPED_TABLES.has(table) && !internalGameIds.length)) {
       return { where: "1 = 0", bindings: [] };
     }
     throw new Error(`PRE_BETA_PURGE_TARGET_IDS_UNAVAILABLE:${table}`);
@@ -102,19 +121,22 @@ async function resolveTargetGames(db) {
        FROM games
       WHERE game_status = 'completed' AND datetime(start_time) < datetime(?1)
       UNION
-     SELECT ranking_games.internal_game_id, ranking_games.game_id, ranking_games.game_date,
+      SELECT ranking_games.internal_game_id, ranking_games.game_id, ranking_games.game_date,
             games.start_time, 'scored_ranking_game' AS source
        FROM ranking_games
-       LEFT JOIN games ON games.internal_game_id = ranking_games.internal_game_id
+      LEFT JOIN games ON games.internal_game_id = ranking_games.internal_game_id
       WHERE ranking_games.game_status = 'scored'
-        AND (games.internal_game_id IS NULL OR games.game_status = 'completed')
         AND (
           (games.start_time IS NOT NULL AND datetime(games.start_time) < datetime(?1))
           OR (games.start_time IS NULL AND ranking_games.game_date < ?2)
         )
       ORDER BY game_date ASC, start_time ASC, game_id ASC`
   ).bind(RELEASE_CUTOFF_ISO, RELEASE_CUTOFF_DATE).all();
-  const rows = rowsOf(result).filter((row) => row?.game_id || row?.internal_game_id);
+  const rawRows = rowsOf(result);
+  if (rawRows.some((row) => !String(row?.game_id || row?.internal_game_id || "").trim())) {
+    throw new Error("PRE_BETA_PURGE_TARGET_IDS_UNAVAILABLE");
+  }
+  const rows = rawRows.filter((row) => row?.game_id || row?.internal_game_id);
   const gameIds = uniqueStrings(rows.map((row) => row.game_id));
   const internalGameIds = uniqueStrings(rows.map((row) => row.internal_game_id));
 
@@ -163,9 +185,6 @@ function planPayload(target) {
 
 async function buildPlan(db) {
   const target = await resolveTargetGames(db);
-  if (target.rows.some((row) => !String(row?.game_id || "").trim() || !String(row?.internal_game_id || "").trim())) {
-    throw new Error("PRE_BETA_PURGE_TARGET_IDS_UNAVAILABLE");
-  }
   const counts = await getCounts(db, target);
   const activeJobs = await getActiveJobCount(db, target.internalGameIds);
   return {
@@ -200,14 +219,16 @@ async function deleteScopedTable(db, table, target) {
     const result = await db.prepare(`DELETE FROM ${table} WHERE ${scope.where}`).bind(...scope.bindings).run();
     return integer(result?.meta?.changes);
   }
+  const scopes = [];
+  if (GAME_ID_SCOPED_TABLES.has(table) || LEGACY_GAME_ID_SCOPED_TABLES.has(table) || ATTEMPT_ROW_TABLES.has(table)) {
+    for (const gameIds of chunk(target.gameIds)) scopes.push([gameIds, []]);
+  }
+  if (INTERNAL_GAME_ID_SCOPED_TABLES.has(table) || ATTEMPT_ROW_TABLES.has(table)) {
+    for (const internalGameIds of chunk(target.internalGameIds)) scopes.push([[], internalGameIds]);
+  }
+  if (!scopes.length) scopes.push([[], []]);
   let deleted = 0;
-  const idChunks = target.gameIds.length ? chunk(target.gameIds) : [[]];
-  const internalChunks = target.internalGameIds.length ? chunk(target.internalGameIds) : [[]];
-  const chunkCount = Math.max(idChunks.length, internalChunks.length);
-  for (let index = 0; index < chunkCount; index += 1) {
-    const gameIds = idChunks[index] || [];
-    const internalGameIds = internalChunks[index] || [];
-    if (!gameIds.length && !internalGameIds.length) continue;
+  for (const [gameIds, internalGameIds] of scopes) {
     const scope = scopedPredicate(table, gameIds, internalGameIds);
     const result = await db.prepare(`DELETE FROM ${table} WHERE ${scope.where}`).bind(...scope.bindings).run();
     deleted += integer(result?.meta?.changes);

@@ -33,6 +33,7 @@
   }
 
   function hasBeaconScript() {
+    if (typeof document === "undefined") return false;
     return Boolean(
       document.querySelector("script[data-starting9-cf-analytics]")
       || document.querySelector(`script[src^="${BEACON_SOURCE}"]`)
@@ -41,7 +42,7 @@
   }
 
   function loadCloudflareBeacon() {
-    if (!isAllowedPublicLocation(window.location) || hasBeaconScript()) return false;
+    if (typeof document === "undefined" || !document.head || !isAllowedPublicLocation(window.location) || hasBeaconScript()) return false;
 
     const script = document.createElement("script");
     script.type = "module";

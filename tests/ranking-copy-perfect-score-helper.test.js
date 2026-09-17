@@ -30,13 +30,14 @@ function officialLineup() {
   }));
 }
 
-test("ランキング見出しは自然な文言で、未到達者表示は内部切替で制御できる", () => {
+test("ランキング見出しは自然な文言で、未到達者を公開一覧へ表示しない", () => {
   assert.doesNotMatch(script, /規定到達ランキング/);
   assert.match(publicRanking, /title\.textContent = "ランキング"/);
-  assert.match(script, /RANKING_DISPLAY_OPTIONS = Object\.freeze\(\{ hideIneligibleRankings: false \}\)/);
-  assert.match(publicRanking, /hideIneligibleRankings \? normalizedRows\.filter\(\(row\) => row\?\.isQualified\) : normalizedRows/);
+  assert.doesNotMatch(script, /RANKING_DISPLAY_OPTIONS/);
+  assert.match(publicRanking, /if \(!row\?\.isQualified\) return false/);
   assert.match(publicRanking, /公開済み試合の参加状況と成績をもとにランキングを表示しています/);
   assert.match(publicRanking, /規定未到達/);
+  assert.doesNotMatch(publicRanking, /規定未到達者を見る/);
 });
 
 test("満点previewは正式スタメンと既存採点コアから99点を算出する", () => {

@@ -165,7 +165,7 @@ test("通常画面にはカード型の年間ランキングがあり、手動�
   assert.match(script, /前年/);
   assert.match(script, /翌年/);
   assert.match(script, /data-yearly-ranking-move/);
-  assert.match(publicRanking, /規定未到達者を見る/);
+  assert.doesNotMatch(publicRanking, /規定未到達者を見る/);
   assert.match(publicRanking, /あと.*試合連続参加で規定到達/);
   assert.doesNotMatch(html, />通算</);
   assert.doesNotMatch(script, /rankings\/all-time/);

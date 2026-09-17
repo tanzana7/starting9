@@ -1,159 +1,62 @@
 (() => {
   "use strict";
 
-  const MEASUREMENT_ID = "G-169GEEXKQJ";
-  const CONSENT_STORAGE_KEY = "starting9.analytics-consent";
+  const BEACON_SOURCE = "https://static.cloudflareinsights.com/beacon.min.js";
+  const SITE_TOKEN = "c5dd7fb63b4b4f88a00de4bfa90ba267";
   const PUBLIC_HOST = "starting9.pages.dev";
-  const BLOCKED_PATH_PATTERN = /^\/(?:admin-v3(?:\.html)?(?:\/|$)|auth(?:\.html)?(?:\/|$)|login(?:\.html)?(?:\/|$)|register(?:\.html)?(?:\/|$)|tests?(?:\.html)?(?:\/|$))/i;
-
-  let pageViewSent = false;
-  let analyticsLoaded = false;
+  const PUBLIC_PATHS = new Set([
+    "/",
+    "/index.html",
+    "/how-to-play.html",
+    "/terms.html",
+    "/privacy.html",
+    "/contact.html"
+  ]);
 
   function normalizePath(pathname) {
     const value = String(pathname || "/");
-    if (!value || value === "/") return "/";
+    if (value === "/") return "/";
     return `/${value.replace(/^\/+|\/+$/g, "")}`;
   }
 
   function isAllowedPublicLocation(locationLike) {
     const hostname = String(locationLike?.hostname || "").toLowerCase();
     const pathname = normalizePath(locationLike?.pathname);
-    return hostname === PUBLIC_HOST && !BLOCKED_PATH_PATTERN.test(pathname);
+    const protocol = String(locationLike?.protocol || "").toLowerCase();
+    const search = String(locationLike?.search || "");
+    const hash = String(locationLike?.hash || "");
+    return hostname === PUBLIC_HOST
+      && (!protocol || protocol === "https:")
+      && PUBLIC_PATHS.has(pathname)
+      && !search
+      && !hash;
   }
 
-  function sanitizePageLocation(locationLike) {
-    if (!isAllowedPublicLocation(locationLike)) return "";
-    const origin = String(locationLike?.origin || `https://${PUBLIC_HOST}`).replace(/\/+$/, "");
-    return `${origin}${normalizePath(locationLike?.pathname)}`;
+  function hasBeaconScript() {
+    return Boolean(
+      document.querySelector("script[data-starting9-cf-analytics]")
+      || document.querySelector(`script[src^="${BEACON_SOURCE}"]`)
+      || document.querySelector("script[data-cf-beacon]")
+    );
   }
 
-  function sanitizeReferrer(referrer) {
-    try {
-      const value = new URL(String(referrer || ""));
-      return `${value.origin}${normalizePath(value.pathname)}`;
-    } catch {
-      return "";
-    }
-  }
+  function loadCloudflareBeacon() {
+    if (!isAllowedPublicLocation(window.location) || hasBeaconScript()) return false;
 
-  function getConsent() {
-    try {
-      return window.localStorage?.getItem(CONSENT_STORAGE_KEY) || "";
-    } catch {
-      return "";
-    }
-  }
-
-  function setConsent(value) {
-    try {
-      window.localStorage?.setItem(CONSENT_STORAGE_KEY, value);
-    } catch {
-      // Private browsing or blocked storage must not prevent page use.
-    }
-  }
-
-  function updateGoogleConsent(value) {
-    if (typeof window.gtag !== "function") return;
-    window.gtag("consent", "update", {
-      analytics_storage: value === "granted" ? "granted" : "denied",
-      ad_storage: "denied",
-      ad_user_data: "denied",
-      ad_personalization: "denied"
-    });
-  }
-
-  function sendPageView() {
-    if (pageViewSent || typeof window.gtag !== "function") return;
-    const pageLocation = sanitizePageLocation(window.location);
-    if (!pageLocation) return;
-    window.gtag("event", "page_view", {
-      page_location: pageLocation,
-      page_path: normalizePath(window.location.pathname),
-      page_referrer: sanitizeReferrer(document.referrer),
-      page_title: document.title
-    });
-    pageViewSent = true;
-  }
-
-  function loadGoogleTag() {
-    if (analyticsLoaded || getConsent() !== "granted" || !isAllowedPublicLocation(window.location)) return;
-    analyticsLoaded = true;
-    window.dataLayer = window.dataLayer || [];
-    window.gtag = window.gtag || function gtag() {
-      window.dataLayer.push(arguments);
-    };
-    window.gtag("js", new Date());
-    updateGoogleConsent("granted");
-    window.gtag("config", MEASUREMENT_ID, {
-      send_page_view: false,
-      page_location: sanitizePageLocation(window.location),
-      page_path: normalizePath(window.location.pathname),
-      page_referrer: sanitizeReferrer(document.referrer)
-    });
-
-    const existingScript = document.querySelector(`script[src^="https://www.googletagmanager.com/gtag/js?id=${MEASUREMENT_ID}"]`);
-    if (existingScript) {
-      sendPageView();
-      return;
-    }
     const script = document.createElement("script");
-    script.async = true;
-    script.src = `https://www.googletagmanager.com/gtag/js?id=${MEASUREMENT_ID}`;
-    script.onload = sendPageView;
+    script.type = "module";
+    script.src = BEACON_SOURCE;
+    script.setAttribute("data-cf-beacon", JSON.stringify({ token: SITE_TOKEN }));
+    script.setAttribute("data-starting9-cf-analytics", "true");
     document.head.appendChild(script);
-  }
-
-  function renderConsentBanner(forceOpen = false) {
-    let banner = document.getElementById("analyticsConsentBanner");
-    if (!banner) {
-      banner = document.createElement("aside");
-      banner.id = "analyticsConsentBanner";
-      banner.className = "analytics-consent-banner";
-      banner.setAttribute("aria-label", "アクセス解析の設定");
-      banner.innerHTML = `
-        <p>アクセス解析のためGoogle Analyticsを利用します。</p>
-        <a href="./privacy.html">プライバシーポリシー</a>
-        <div class="analytics-consent-actions">
-          <button type="button" class="secondary-button" data-analytics-consent="denied">拒否</button>
-          <button type="button" class="primary-button" data-analytics-consent="granted">同意する</button>
-        </div>`;
-      document.body.appendChild(banner);
-      banner.addEventListener("click", (event) => {
-        const button = event.target.closest("[data-analytics-consent]");
-        if (!button) return;
-        const value = button.getAttribute("data-analytics-consent");
-        if (value !== "granted" && value !== "denied") return;
-        setConsent(value);
-        updateGoogleConsent(value);
-        banner.hidden = true;
-        if (value === "granted") loadGoogleTag();
-      });
-    }
-    banner.hidden = !forceOpen;
-    return banner;
-  }
-
-  function addSettingsControl() {
-    const nav = document.querySelector(".site-footer nav");
-    if (!nav || nav.querySelector("[data-analytics-settings]")) return;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "analytics-settings-button";
-    button.dataset.analyticsSettings = "true";
-    button.textContent = "アクセス解析設定";
-    button.addEventListener("click", () => renderConsentBanner(true));
-    nav.appendChild(button);
+    return true;
   }
 
   function initialize() {
-    if (!isAllowedPublicLocation(window.location)) return;
-    addSettingsControl();
-    const consent = getConsent();
-    renderConsentBanner(false).hidden = consent !== "";
-    if (consent === "granted") loadGoogleTag();
+    loadCloudflareBeacon();
   }
 
-  const api = { isAllowedPublicLocation, sanitizePageLocation, sanitizeReferrer };
+  const api = { isAllowedPublicLocation, loadCloudflareBeacon };
   if (typeof window !== "undefined") {
     window.Starting9Analytics = api;
     if (typeof document !== "undefined") {

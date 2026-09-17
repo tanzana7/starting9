@@ -62,10 +62,9 @@
     </section>
 
     <section class="guide-section">
-      <h2>5. Google Analytics</h2>
-      <p>公開ページでは、アクセス人数、ページビュー、流入元などの利用状況を把握するため、Google Analytics 4（測定ID: G-169GEEXKQJ）を利用します。利用開始前に同意を確認し、拒否した場合はアクセス解析用タグを読み込みません。</p>
-      <p>Google Analyticsへ、ユーザー名、メールアドレス、アカウントID、予想内容、認証情報、トークンは送信しません。ページURLはクエリとハッシュを除いたパスだけを送信します。詳細は<a class="guide-link" href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer">Googleのプライバシーポリシー</a>をご確認ください。</p>
-      <p>同意後も、各ページ下部の「アクセス解析設定」から拒否へ変更できます。</p>
+      <h2>5. Cloudflare Web Analytics</h2>
+      <p>公開ページのアクセス数、ページビュー、流入元などの利用状況を把握するため、Cloudflare Web Analyticsを利用します。</p>
+      <p>Cloudflare Web AnalyticsのCookieを使用しない公式の計測方式を利用し、Starting9からユーザー名、メールアドレス、アカウントID、予想内容、認証情報、トークンを独自に送信しません。詳細は<a class="guide-link" href="https://developers.cloudflare.com/web-analytics/about/" target="_blank" rel="noopener noreferrer">Cloudflare Web Analyticsの説明</a>および<a class="guide-link" href="https://www.cloudflare.com/privacypolicy/" target="_blank" rel="noopener noreferrer">Cloudflareのプライバシーポリシー</a>をご確認ください。</p>
     </section>
 
     <section class="guide-section">
@@ -96,6 +95,6 @@
       </nav>
     </div>
   </footer>
-  <script defer src="frontend/public/analytics.js?v=ga4-public-consent-1"></script>
+  <script defer src="frontend/public/analytics.js?v=cf-web-analytics-1"></script>
 </body>
 </html>

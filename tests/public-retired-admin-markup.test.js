@@ -11,7 +11,7 @@ const scriptCacheBuster = "public-single-game-1";
 const moduleCacheBuster = "public-compliance-disclaimer-and-fetch-safety-1";
 const playerDisplayCacheBuster = "public-player-display-1-batting-hand-player-number-1-player-details-1";
 const fightersPlayerDetailsCacheBuster = "fighters-player-details-20260903-1";
-const styleCacheBuster = "public-single-game-1-public-position-menu-left-clamp-1-bat-line-1-player-number-1-player-details-1-bat-line-row-accent-1-public-selected-highlight-1-public-ranking-unqualified-cleanup-1-public-prediction-height-15-1-public-save-button-layout-1-public-save-button-lower-1-public-save-button-mobile-spacing-1-ga4-consent-1";
+const styleCacheBuster = "public-single-game-1-public-position-menu-left-clamp-1-bat-line-1-player-number-1-player-details-1-bat-line-row-accent-1-public-selected-highlight-1-public-ranking-unqualified-cleanup-1-public-prediction-height-15-1-public-save-button-layout-1-public-save-button-lower-1-public-save-button-mobile-spacing-1-cf-web-analytics-1";
 
 test("通常公開HTMLに旧admin・緊急復旧・test markupを含めない", () => {
   for (const marker of [
@@ -70,7 +70,7 @@ test("公開entry scriptのcache busterを更新し、既存moduleの読み込�
     const expectedCacheBuster = match[0].startsWith("frontend/public/render-results.js?")
       ? "public-cancelled-result-date-display-1"
       : match[0].startsWith("frontend/public/analytics.js?")
-        ? "ga4-public-consent-1"
+        ? "cf-web-analytics-1"
       : match[0].startsWith("frontend/public/fighters-player-details.js?")
         ? fightersPlayerDetailsCacheBuster
       : match[0].startsWith("frontend/public/player-display.js?")

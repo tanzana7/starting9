@@ -7578,3 +7578,73 @@ body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm
   border-color: #d5a11e;
   background: #fff8e5;
 }
+
+.analytics-consent-banner {
+  position: fixed;
+  z-index: 1200;
+  inset-inline: 12px;
+  bottom: 12px;
+  width: min(100% - 24px, 560px);
+  margin-inline: auto;
+  padding: 14px 16px;
+  border: 1px solid #c7d7e8;
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgba(27, 55, 84, 0.18);
+}
+
+.analytics-consent-banner p {
+  margin: 0;
+  color: #21354d;
+  font-size: 0.9rem;
+}
+
+.analytics-consent-banner a {
+  display: inline-block;
+  margin-top: 4px;
+  color: #1168a8;
+  font-size: 0.82rem;
+}
+
+.analytics-consent-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.analytics-consent-actions button,
+.analytics-settings-button {
+  cursor: pointer;
+}
+
+.analytics-consent-actions button {
+  min-height: 36px;
+  padding: 7px 14px;
+}
+
+.analytics-settings-button {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #1168a8;
+  font: inherit;
+  text-decoration: underline;
+}
+
+@media (max-width: 520px) {
+  .analytics-consent-banner {
+    inset-inline: 8px;
+    width: calc(100% - 16px);
+    padding: 12px;
+  }
+
+  .analytics-consent-actions {
+    justify-content: stretch;
+  }
+
+  .analytics-consent-actions button {
+    flex: 1 1 0;
+  }
+}

@@ -7,58 +7,71 @@ const vm = require("node:vm");
 const root = path.join(__dirname, "..");
 const analyticsSource = fs.readFileSync(path.join(root, "frontend", "public", "analytics.js"), "utf8");
 
-function loadAnalytics() {
-  const context = { URL, window: {}, document: undefined };
+function loadAnalytics({ location, document } = {}) {
+  const context = { URL, window: { location: location || {} }, document };
   vm.createContext(context);
   vm.runInContext(analyticsSource, context);
   return context.window.Starting9Analytics;
 }
 
-test("GA4は指定された公開測定IDを使い、公開HTMLだけがanalytics.jsを読み込む", () => {
-  assert.match(analyticsSource, /G-169GEEXKQJ/);
-  assert.match(analyticsSource, /googletagmanager\.com\/gtag\/js/);
-  assert.match(analyticsSource, /starting9\.analytics-consent/);
-  assert.match(analyticsSource, /send_page_view:\s*false/);
-  assert.match(analyticsSource, /page_location:\s*pageLocation/);
-
+test("Cloudflare Web Analyticsの公式手動スニペットを公開5ページだけが読み込む", () => {
+  assert.match(analyticsSource, /static\.cloudflareinsights\.com\/beacon\.min\.js/);
+  assert.match(analyticsSource, /data-cf-beacon/);
+  assert.match(analyticsSource, /c5dd7fb63b4b4f88a00de4bfa90ba267/);
+  assert.doesNotMatch(analyticsSource, /googletagmanager|gtag|G-169GEEXKQJ|analytics-consent|localStorage/);
   for (const file of ["index.html", "how-to-play.html", "terms.html", "privacy.html", "contact.html"]) {
-    assert.match(fs.readFileSync(path.join(root, file), "utf8"), /frontend\/public\/analytics\.js\?v=ga4-public-consent-1/);
+    assert.match(fs.readFileSync(path.join(root, file), "utf8"), /frontend\/public\/analytics\.js\?v=cf-web-analytics-1/);
   }
   assert.doesNotMatch(fs.readFileSync(path.join(root, "admin-v3.html"), "utf8"), /frontend\/public\/analytics\.js/);
 });
 
-test("GA4の許可対象は本番公開ホストだけで、preview・localhost・admin・auth系を除外する", () => {
+test("計測対象はHTTPSの本番公開ホストと公開パスだけで、preview・localhost・admin・query/hashを除外する", () => {
   const analytics = loadAnalytics();
-  assert.equal(analytics.isAllowedPublicLocation({ hostname: "starting9.pages.dev", pathname: "/", origin: "https://starting9.pages.dev" }), true);
-  assert.equal(analytics.isAllowedPublicLocation({ hostname: "starting9.pages.dev", pathname: "/how-to-play.html", origin: "https://starting9.pages.dev" }), true);
-  assert.equal(analytics.isAllowedPublicLocation({ hostname: "abc123.starting9.pages.dev", pathname: "/", origin: "https://abc123.starting9.pages.dev" }), false);
-  assert.equal(analytics.isAllowedPublicLocation({ hostname: "localhost", pathname: "/", origin: "http://localhost:8788" }), false);
-  assert.equal(analytics.isAllowedPublicLocation({ hostname: "starting9.pages.dev", pathname: "/admin-v3", origin: "https://starting9.pages.dev" }), false);
-  assert.equal(analytics.isAllowedPublicLocation({ hostname: "starting9.pages.dev", pathname: "/auth", origin: "https://starting9.pages.dev" }), false);
-  assert.equal(analytics.isAllowedPublicLocation({ hostname: "starting9.pages.dev", pathname: "/tests/fixture", origin: "https://starting9.pages.dev" }), false);
+  assert.equal(analytics.isAllowedPublicLocation({ hostname: "starting9.pages.dev", protocol: "https:", pathname: "/" }), true);
+  assert.equal(analytics.isAllowedPublicLocation({ hostname: "starting9.pages.dev", protocol: "https:", pathname: "/how-to-play.html" }), true);
+  assert.equal(analytics.isAllowedPublicLocation({ hostname: "abc123.starting9.pages.dev", protocol: "https:", pathname: "/" }), false);
+  assert.equal(analytics.isAllowedPublicLocation({ hostname: "localhost", protocol: "http:", pathname: "/" }), false);
+  assert.equal(analytics.isAllowedPublicLocation({ hostname: "starting9.pages.dev", protocol: "https:", pathname: "/admin-v3" }), false);
+  assert.equal(analytics.isAllowedPublicLocation({ hostname: "starting9.pages.dev", protocol: "https:", pathname: "/auth" }), false);
+  assert.equal(analytics.isAllowedPublicLocation({ hostname: "starting9.pages.dev", protocol: "https:", pathname: "/tests/fixture" }), false);
+  assert.equal(analytics.isAllowedPublicLocation({ hostname: "starting9.pages.dev", protocol: "https:", pathname: "/index.html", search: "?email=hidden" }), false);
+  assert.equal(analytics.isAllowedPublicLocation({ hostname: "starting9.pages.dev", protocol: "https:", pathname: "/index.html", hash: "#prediction=hidden" }), false);
 });
 
-test("ページ計測URLはquery/hashを除き、個人情報や予想内容を持ち込まない", () => {
-  const analytics = loadAnalytics();
-  assert.equal(
-    analytics.sanitizePageLocation({
-      hostname: "starting9.pages.dev",
-      pathname: "/index.html",
-      search: "?username=secret&prediction=hidden",
-      hash: "#email=hidden",
-      origin: "https://starting9.pages.dev"
-    }),
-  "https://starting9.pages.dev/index.html");
-  assert.equal(analytics.sanitizePageLocation({ hostname: "localhost", pathname: "/?token=secret", origin: "http://localhost:8788" }), "");
-  assert.equal(analytics.sanitizeReferrer("https://example.test/landing?email=hidden#prediction"), "https://example.test/landing");
+test("同一ドキュメントではCloudflare beaconを二重読み込みせず、明示的なイベントや識別子を送らない", () => {
+  const appended = [];
+  const document = {
+    readyState: "complete",
+    querySelector(selector) {
+      return selector === "script[data-starting9-cf-analytics]" ? appended[0] : null;
+    },
+    createElement() {
+      return { setAttribute(name, value) { this[name] = value; } };
+    },
+    head: { appendChild(script) { appended.push(script); } }
+  };
+  const analytics = loadAnalytics({
+    location: { hostname: "starting9.pages.dev", protocol: "https:", pathname: "/" },
+    document
+  });
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0].src, "https://static.cloudflareinsights.com/beacon.min.js");
+  assert.equal(appended[0].type, "module");
+  assert.match(appended[0]["data-cf-beacon"], /c5dd7fb63b4b4f88a00de4bfa90ba267/);
+  assert.equal(analytics.loadCloudflareBeacon(), false);
+  assert.equal(appended.length, 1);
+  assert.doesNotMatch(analyticsSource, /page_view|user_id|prediction|email|localStorage|cookie/i);
 });
 
-test("同意前は外部タグを読み込まず、同意後のページビュー設定は一度だけにする", () => {
-  assert.match(analyticsSource, /getConsent\(\) !== "granted"/);
-  assert.match(analyticsSource, /if \(pageViewSent \|\| typeof window\.gtag !== "function"\) return/);
-  assert.match(analyticsSource, /page_referrer:\s*sanitizeReferrer\(document\.referrer\)/);
-  assert.match(analyticsSource, /data-analytics-consent="denied"/);
-  assert.match(analyticsSource, /data-analytics-settings/);
-  assert.match(fs.readFileSync(path.join(root, "privacy.html"), "utf8"), /Google Analytics 4/);
-  assert.match(fs.readFileSync(path.join(root, "privacy.html"), "utf8"), /Googleのプライバシーポリシー/);
+test("GA4と同意UIを公開サイトから撤去し、プライバシーポリシーをCloudflareへ更新する", () => {
+  for (const file of ["index.html", "how-to-play.html", "terms.html", "privacy.html", "contact.html"]) {
+    const html = fs.readFileSync(path.join(root, file), "utf8");
+    assert.doesNotMatch(html, /G-169GEEXKQJ|googletagmanager|gtag|analytics-consent|アクセス解析設定/);
+  }
+  const privacy = fs.readFileSync(path.join(root, "privacy.html"), "utf8");
+  assert.match(privacy, /Cloudflare Web Analytics/);
+  assert.match(privacy, /Cookieを使用しない/);
+  assert.match(privacy, /cloudflare\.com\/privacypolicy/);
+  assert.doesNotMatch(privacy, /Google Analytics|Googleのプライバシーポリシー|G-169GEEXKQJ/);
+  assert.doesNotMatch(fs.readFileSync(path.join(root, "style.css"), "utf8"), /analytics-consent|analytics-settings/);
 });

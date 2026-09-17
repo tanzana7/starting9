@@ -188,7 +188,8 @@ export async function getDailyBestNineForGame(db, { internalGameId = "", legacyG
   const rankingTestPlaceholders = rankingTestUsernames.map((_, index) => `?${index + 2}`).join(", ");
   const bindValues = [gameValue, ...rankingTestUsernames];
   const scoreAttemptSchema = await hasScoreAttemptSchema(db);
-  const latestPredictions = `WITH latest_predictions AS (
+  const rankingTestSchema = await hasRankingTestSchema(db);
+  const latestPredictions = `latest_predictions AS (
     SELECT predictions.id, predictions.user_id, predictions.game_id,
            predictions.score, predictions.max_score,
            predictions.submitted_at, predictions.status, predictions.is_test_prediction, predictions.updated_at${scoreAttemptSchema ? ", predictions.scored_attempt_id" : ""},
@@ -216,24 +217,75 @@ export async function getDailyBestNineForGame(db, { internalGameId = "", legacyG
        AND ranking_games.is_test_game = 0
        AND users.status = 'active'
        ${committedPredicate}`;
+  const testCandidateRows = rankingTestSchema ? `
+    UNION ALL
+    SELECT COALESCE(
+             NULLIF(json_extract(global_settings.slot_names_json, '$.' || CAST(test_predictions.slot AS TEXT)), ''),
+             'S9_TEST_' || CAST(test_predictions.slot AS TEXT)
+           ) AS username,
+           test_predictions.score,
+           test_predictions.max_score,
+           COALESCE(test_predictions.scored_at, test_predictions.updated_at, test_predictions.created_at) AS submitted_at,
+           'ranking-test:' || CAST(test_predictions.slot AS TEXT) AS user_id
+      FROM ranking_test_predictions AS test_predictions
+      JOIN ranking_games
+        ON ${useCanonicalId
+    ? "ranking_games.internal_game_id = test_predictions.internal_game_id AND ranking_games.internal_game_id = ?1"
+    : "ranking_games.game_id = ?1"}
+      LEFT JOIN ranking_test_game_settings AS test_settings
+        ON test_settings.internal_game_id = test_predictions.internal_game_id
+      LEFT JOIN ranking_test_global_settings AS global_settings
+        ON global_settings.id = 1
+      JOIN game_lineups AS test_lineup
+        ON test_lineup.internal_game_id = test_predictions.internal_game_id
+       AND test_lineup.final_lineup_revision_id = test_predictions.lineup_revision_id
+      ${scoreAttemptSchema ? `JOIN game_lineup_revisions AS current_test_lineup
+        ON current_test_lineup.internal_game_id = test_predictions.internal_game_id
+       AND current_test_lineup.is_current = 1
+       AND current_test_lineup.is_final = 1
+       AND (test_lineup.final_lineup_revision_id = current_test_lineup.revision_id
+         OR test_lineup.final_lineup_revision_id = current_test_lineup.internal_game_id || ':' || current_test_lineup.version
+         OR test_lineup.final_lineup_revision_id = current_test_lineup.game_id || ':' || current_test_lineup.version)
+      ` : ""}
+      JOIN game_scoring_revisions AS test_revision
+        ON test_revision.internal_game_id = test_predictions.internal_game_id
+       AND test_revision.id = test_predictions.scoring_revision_id
+       AND (${scoreAttemptSchema
+    ? "test_revision.lineup_revision_id = current_test_lineup.revision_id OR test_revision.lineup_revision_id = current_test_lineup.internal_game_id || ':' || current_test_lineup.version OR test_revision.lineup_revision_id = current_test_lineup.game_id || ':' || current_test_lineup.version"
+    : "test_revision.lineup_revision_id = test_predictions.lineup_revision_id"})
+       AND test_revision.is_active = 1
+       AND test_revision.status = 'completed'
+       ${scoreAttemptSchema ? `AND (test_revision.committed_attempt_id IS NULL
+         OR test_revision.committed_attempt_id = test_predictions.scored_attempt_id)` : ""}
+     WHERE test_predictions.status = 'scored'
+       AND test_predictions.score IS NOT NULL
+       AND test_predictions.max_score IS NOT NULL
+       AND test_predictions.slot BETWEEN 1 AND 9
+       AND (COALESCE(test_settings.include_in_public_ranking, 0) = 1
+         OR COALESCE(global_settings.global_enabled, 1) = 1)` : "";
+  const candidateRows = `WITH ${latestPredictions}
+  , candidate_rows AS (
+    SELECT users.username,
+           latest_predictions.score,
+           latest_predictions.max_score,
+           latest_predictions.submitted_at,
+           latest_predictions.user_id
+      FROM latest_predictions
+      JOIN ranking_games ON ranking_games.game_id = latest_predictions.game_id
+      JOIN users ON users.id = latest_predictions.user_id
+     WHERE ${conditions}${testCandidateRows}
+  )`;
   const [countRow, rowsResult] = await Promise.all([
-    db.prepare(`${latestPredictions}
+    db.prepare(`${candidateRows}
       SELECT COUNT(*) AS total_count
-        FROM latest_predictions
-        JOIN ranking_games ON ranking_games.game_id = latest_predictions.game_id
-        JOIN users ON users.id = latest_predictions.user_id
-       WHERE ${conditions}`).bind(...bindValues).first(),
-    db.prepare(`${latestPredictions}
-      SELECT users.username, latest_predictions.score, latest_predictions.max_score,
-             latest_predictions.submitted_at, latest_predictions.user_id
-        FROM latest_predictions
-        JOIN ranking_games ON ranking_games.game_id = latest_predictions.game_id
-        JOIN users ON users.id = latest_predictions.user_id
-       WHERE ${conditions}
-       ORDER BY latest_predictions.score DESC,
-                latest_predictions.submitted_at ASC,
-                users.username ASC,
-                latest_predictions.user_id ASC
+        FROM candidate_rows`).bind(...bindValues).first(),
+    db.prepare(`${candidateRows}
+      SELECT username, score, max_score, submitted_at, user_id
+        FROM candidate_rows
+       ORDER BY score DESC,
+                submitted_at ASC,
+                username ASC,
+                user_id ASC
        LIMIT ?${rankingTestUsernames.length + 2}`).bind(
       ...bindValues,
       Math.min(DAILY_BEST_NINE_LIMIT, Math.max(1, Number(limit) || DAILY_BEST_NINE_LIMIT))

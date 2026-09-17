@@ -78,7 +78,15 @@ function scopedPredicate(table, gameIds, internalGameIds) {
     clauses.push("(created_at < ?1 OR earned_at < ?1)");
     bindings.push(RELEASE_CUTOFF_ISO);
   }
-  if (!clauses.length) throw new Error(`purge scope is empty for ${table}`);
+  if (!clauses.length) {
+    // An empty pre-beta target is a valid no-op after the release boundary has
+    // already been cleared.  Keep every game-scoped count explicitly empty;
+    // never turn a missing target into an unbounded predicate.
+    if (GAME_SCOPED_TABLES.has(table) && !gameIds.length && !internalGameIds.length) {
+      return { where: "1 = 0", bindings: [] };
+    }
+    throw new Error(`PRE_BETA_PURGE_TARGET_IDS_UNAVAILABLE:${table}`);
+  }
   return { where: clauses.join(" OR "), bindings };
 }
 
@@ -155,6 +163,9 @@ function planPayload(target) {
 
 async function buildPlan(db) {
   const target = await resolveTargetGames(db);
+  if (target.rows.some((row) => !String(row?.game_id || "").trim() || !String(row?.internal_game_id || "").trim())) {
+    throw new Error("PRE_BETA_PURGE_TARGET_IDS_UNAVAILABLE");
+  }
   const counts = await getCounts(db, target);
   const activeJobs = await getActiveJobCount(db, target.internalGameIds);
   return {

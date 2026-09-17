@@ -320,6 +320,8 @@
         if (rosterAdd) { preservePickerScroll("[data-v3-manual-roster-candidates]", () => actions.addManualRosterPlayer(rosterAdd.dataset.v3ManualRosterAdd)); return; }
         const rosterRemove = closestFromEvent(event, "[data-v3-manual-roster-remove]");
         if (rosterRemove) { preservePickerScroll("[data-v3-manual-roster-candidates]", () => actions.updateManualRosterEntry(rosterRemove.dataset.v3ManualRosterRemove, { status: "inactive" })); return; }
+        const rosterAuto = closestFromEvent(event, "[data-v3-manual-roster-auto]");
+        if (rosterAuto) { preservePickerScroll("[data-v3-manual-roster-candidates]", () => actions.removeManualRosterOverride(rosterAuto.dataset.v3ManualRosterAuto)); return; }
         if (closestFromEvent(event, "[data-v3-manual-roster-save]")) { await actions.saveManualRoster(); return; }
         const rankingTestSlot = closestFromEvent(event, "[data-v3-ranking-test-slot]");
         if (rankingTestSlot) { actions.selectRankingTestSlot(Number(rankingTestSlot.dataset.v3RankingTestSlot)); return; }

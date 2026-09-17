@@ -55,7 +55,7 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
     "frontend/admin-v3/selection-safety.js?v=admin-game-selection-safety-1",
     "frontend/admin-v3/render-manual-lineup.js?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1-game-selection-safety-1-lineup-order-mobile-zoom-1-admin-lineup-registration-emergency-fix-1-admin-lineup-lock-reason-1-manual-lineup-late-registration-1-manual-lineup-two-step-confirmation-1-roster-candidate-policy-1-admin-public-parity-1-position-picker-parity-1-compact-parity-1-public-roster-sync-1-shared-roster-sync-1",
     "frontend/admin-v3/render-lineup-correction.js?v=admin-v3-lineup-correction-1",
-    "frontend/admin-v3/render-manual-roster.js?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1",
+    "frontend/admin-v3/render-manual-roster.js?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1-manual-roster-auto-1",
     "frontend/admin-v3/render-game-progress.js?v=v4-canonical-status-1",
     "frontend/admin-v3/render-job-details.js?v=v4-canonical-status-1",
     "frontend/admin-v3/render-roster.js?v=v4-canonical-status-1",
@@ -64,8 +64,8 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
     "frontend/admin-v3/render-perfect-score-preview.js?v=v4-canonical-status-1",
     "frontend/admin-v3/render-ranking-test-users.js?v=ranking-test-users-1-global-settings-1-ranking-test-fixed-presets-1-display-name-slot-binding-1",
     "frontend/admin-v3/render-manual-game-preview.js?v=v4-canonical-status-1",
-    "frontend/admin-v3/app-coordinator.js?v=independent-roster-lineup-safety-1-preserve-picker-scroll-1-admin-lineup-registration-emergency-fix-1-manual-lineup-two-step-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-display-name-slot-binding-1-admin-public-parity-1-position-picker-parity-1-compact-parity-1-shared-roster-sync-1",
-    "admin-v3.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-lineup-order-mobile-zoom-1-lineup-correction-1-admin-v3-game-progress-history-1-admin-lineup-registration-emergency-fix-1-admin-lineup-lock-reason-1-manual-lineup-late-registration-1-manual-lineup-two-step-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-v4-canonical-status-1-display-name-slot-binding-1-position-picker-parity-1-public-roster-sync-1-lineup-error-details-1-shared-roster-sync-1"
+    "frontend/admin-v3/app-coordinator.js?v=independent-roster-lineup-safety-1-preserve-picker-scroll-1-admin-lineup-registration-emergency-fix-1-manual-lineup-two-step-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-display-name-slot-binding-1-admin-public-parity-1-position-picker-parity-1-compact-parity-1-shared-roster-sync-1-manual-roster-auto-1",
+    "admin-v3.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-lineup-order-mobile-zoom-1-lineup-correction-1-admin-v3-game-progress-history-1-admin-lineup-registration-emergency-fix-1-admin-lineup-lock-reason-1-manual-lineup-late-registration-1-manual-lineup-two-step-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-v4-canonical-status-1-display-name-slot-binding-1-position-picker-parity-1-public-roster-sync-1-lineup-error-details-1-shared-roster-sync-1-manual-roster-auto-1"
   ]);
   const modules = loadModules();
   assert.equal(typeof modules.createAdminV3State, "function");

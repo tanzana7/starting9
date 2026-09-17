@@ -1283,6 +1283,17 @@ function addManualRosterPlayer(playerId) {
   renderCurrentV3View();
 }
 
+function removeManualRosterOverride(playerId) {
+  const roster = v3State.manualRoster;
+  const entry = roster.entries.find((item) => item.playerId === playerId);
+  if (!entry) return;
+  entry.status = "auto";
+  entry.note = "";
+  roster.error = "";
+  roster.message = "";
+  renderCurrentV3View();
+}
+
 async function loadManualRoster(force = false) {
   const roster = v3State.manualRoster;
   if (roster.loading || (roster.loaded && !force)) return;
@@ -2054,6 +2065,7 @@ adminV3Modules.createAdminV3Coordinator({
     updateManualRosterSearch,
     updateManualRosterEntry,
     addManualRosterPlayer,
+    removeManualRosterOverride,
     saveManualRoster,
     updateLineupCorrectionSearch: updateV3LineupCorrectionSearch,
     updateLineupCorrectionRow: updateV3LineupCorrectionRow,

@@ -7559,7 +7559,8 @@ body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #resetPredictio
   }
 
   body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #resetPredictionButton {
-    margin-top: 56px;
+    /* Keep the existing stacked-button gap; only the action group's leading margin changes on mobile. */
+    margin-top: 36px;
   }
 }
 

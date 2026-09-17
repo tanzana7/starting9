@@ -13,7 +13,7 @@ test("公開予想の保存ボタンを広げ、PCではさらに40px下げる",
   assert.match(css, /#resetPredictionButton\s*\{[\s\S]*?margin-top: 76px;/);
   assert.match(css, /@media \(min-width: 1000px\)[\s\S]*?#savePredictionButton,[\s\S]*?#resetPredictionButton\s*\{[\s\S]*?margin-top: 64px;/);
   assert.match(css, /@media \(max-width: 759px\)[\s\S]*?#savePredictionButton\s*\{[\s\S]*?margin-top: 60px;/);
-  assert.match(css, /@media \(max-width: 759px\)[\s\S]*?#resetPredictionButton\s*\{[\s\S]*?margin-top: 56px;/);
+  assert.match(css, /@media \(max-width: 759px\)[\s\S]*?#resetPredictionButton\s*\{[\s\S]*?margin-top: 36px;/);
 });
 
 test("保存ボタン調整は既存の入力領域寸法・構成を変更しない", () => {

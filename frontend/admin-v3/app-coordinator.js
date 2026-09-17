@@ -261,6 +261,7 @@
         if (closestFromEvent(event, "[data-v3-manual-game-preview]")) { await actions.previewManualGame(); return; }
         if (closestFromEvent(event, "[data-v3-automation-log-refresh]")) { await actions.refreshAutomationLogs(); return; }
         if (closestFromEvent(event, "[data-v3-ranking-exclusion-refresh]")) { await actions.refreshRankingExclusionGames(true); return; }
+        if (closestFromEvent(event, "[data-v3-pre-beta-purge-refresh]")) { await actions.refreshPreBetaPurge(true); return; }
         if (closestFromEvent(event, "[data-v3-lineup-roster-refresh]")) { await actions.refreshLineupRoster?.(); return; }
         const manualSlot = closestFromEvent(event, "[data-v3-manual-lineup-slot]");
         if (manualSlot && !closestFromEvent(event, "button, input, select, option, summary, textarea")) {

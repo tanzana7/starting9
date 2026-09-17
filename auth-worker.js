@@ -7739,8 +7739,15 @@ async function handleAdminV3RankingResetExecute(request, env, cors) {
 
 async function handleAdminPreBetaPurge(request, env, cors) {
   // This route is deployed only for the one-time maintenance window and is
-  // disabled by default. It is intentionally absent from all admin UI.
+  // disabled by default. The UI can only read a plan when this maintenance
+  // window is explicitly enabled for the authenticated administrator.
   if (String(env?.PRE_BETA_PURGE_ENABLED || "") !== "true") {
+    return jsonResponse({ ok: false, code: "NOT_FOUND" }, 404, cors);
+  }
+  // The dry-run UI is deployed independently from the destructive execution
+  // window. Keeping POST behind a second explicit flag prevents an accidental
+  // browser action or copied request from deleting data during preparation.
+  if (request.method === "POST" && String(env?.PRE_BETA_PURGE_ALLOW_EXECUTE || "") !== "true") {
     return jsonResponse({ ok: false, code: "NOT_FOUND" }, 404, cors);
   }
   const access = await requireAdminUser(request, env, cors);
@@ -7749,7 +7756,13 @@ async function handleAdminPreBetaPurge(request, env, cors) {
     if (!env.AUTH_DB) return jsonResponse({ ok: false, code: "PRE_BETA_PURGE_DB_UNAVAILABLE", error: "削除用データベースが利用できません。" }, 503, cors);
     if (request.method === "GET") {
       const plan = await previewPreBetaPurge(env.AUTH_DB);
-      return jsonResponse({ ok: true, mode: "dry-run", requiredConfirmation: PRE_BETA_PURGE_CONFIRMATION, plan }, 200, cors);
+      return jsonResponse({
+        ok: true,
+        mode: "dry-run",
+        requiredConfirmation: PRE_BETA_PURGE_CONFIRMATION,
+        cron: { gameAutomationV3: String(env?.ENABLE_GAME_AUTOMATION_V3 || "") === "true" ? "enabled" : "disabled" },
+        plan
+      }, 200, cors);
     }
     const body = await readJson(request);
     const backupReference = String(body?.backupReference || "").trim();

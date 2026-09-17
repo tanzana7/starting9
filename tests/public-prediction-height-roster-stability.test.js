@@ -18,7 +18,7 @@ test("public予想の2ペイン幅を変えず、PC操作領域だけ縦方向�
     /@media \(min-width: 900px\)[\s\S]*?\.player-list \.player-chip\s*\{[\s\S]*?min-height: 51px;[\s\S]*?padding-block: 10px;/
   );
   const heightBlockStart = css.indexOf("/* 公開予想の2ペイン構成は変えず");
-  const heightBlockEnd = css.indexOf("/* Keep the public editing target distinct", heightBlockStart);
+  const heightBlockEnd = css.indexOf("/* 保存操作は入力内容から", heightBlockStart);
   const heightBlock = css.slice(heightBlockStart, heightBlockEnd === -1 ? undefined : heightBlockEnd);
   assert.doesNotMatch(heightBlock, /grid-template-columns|(?:^|\s)gap:|(?:^|\s)width:|max-width:/);
 });

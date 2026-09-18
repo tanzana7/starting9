@@ -17,10 +17,20 @@ test("公開HTMLには公開準備向けの基本メタ情報があり、noindex
   assert.match(html, /<meta property="og:description"/);
   assert.match(html, /<meta property="og:type" content="website">/);
   assert.match(html, /<meta property="og:url" content="https:\/\/starting9\.pages\.dev\/">/);
-  assert.match(html, /<meta property="og:image" content="https:\/\/starting9\.pages\.dev\/assets\/starting9-header\.png">/);
+  assert.match(html, /<meta property="og:image" content="https:\/\/starting9\.pages\.dev\/assets\/starting9-ogp-20260918\.png">/);
+  assert.match(html, /<meta property="og:image:width" content="1200">/);
+  assert.match(html, /<meta property="og:image:height" content="630">/);
   assert.match(html, /<meta name="twitter:card" content="summary_large_image">/);
-  assert.match(html, /<meta name="twitter:image" content="https:\/\/starting9\.pages\.dev\/assets\/starting9-header\.png">/);
+  assert.match(html, /<meta name="twitter:image" content="https:\/\/starting9\.pages\.dev\/assets\/starting9-ogp-20260918\.png">/);
   assert.doesNotMatch(html, /name="robots" content="noindex/i);
+});
+
+test("X/OGP画像は標準比率のPNGとしてリポジトリに存在する", () => {
+  const image = fs.readFileSync(path.join(root, "assets/starting9-ogp-20260918.png"));
+  assert.deepEqual([...image.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  assert.equal(image.readUInt32BE(16), 1200);
+  assert.equal(image.readUInt32BE(20), 630);
+  assert.ok(image.length < 2_000_000);
 });
 
 test("公開トップと遊び方から利用規約・プライバシー・問い合わせへ移動できる", () => {

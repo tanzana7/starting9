@@ -218,14 +218,22 @@ function summarizeActiveJobs(rows, targetInternalGameIds, now = Date.now()) {
   };
 }
 
-async function getActiveJobCount(db, internalGameIds) {
+async function getActiveJobRows(db) {
   const [gameJobResult, gameJobRunResult] = await Promise.all([
-    db.prepare("SELECT id, internal_game_id, status, scheduled_at, next_retry_at, lease_expires_at FROM game_jobs_v3 WHERE status IN ('pending', 'claimed', 'retry_wait')").bind().all(),
-    db.prepare("SELECT id, internal_game_id, status, scheduled_slot_at, next_attempt_at, lease_expires_at FROM game_job_runs WHERE status IN ('pending', 'claimed', 'running', 'retry_wait')").bind().all()
+    db.prepare("SELECT id, internal_game_id, job_type, status, scheduled_at, next_retry_at, lease_expires_at FROM game_jobs_v3 WHERE status IN ('pending', 'claimed', 'retry_wait')").bind().all(),
+    db.prepare("SELECT id, internal_game_id, job_type, status, scheduled_slot_at, next_attempt_at, lease_expires_at FROM game_job_runs WHERE status IN ('pending', 'claimed', 'running', 'retry_wait')").bind().all()
   ]);
+  return {
+    gameJobs: rowsOf(gameJobResult),
+    gameJobRuns: rowsOf(gameJobRunResult)
+  };
+}
+
+async function getActiveJobCount(db, internalGameIds) {
+  const { gameJobs: gameJobRows, gameJobRuns: gameJobRunRows } = await getActiveJobRows(db);
   const now = Date.now();
-  const gameJobs = summarizeActiveJobs(rowsOf(gameJobResult), internalGameIds, now);
-  const gameJobRuns = summarizeActiveJobs(rowsOf(gameJobRunResult), internalGameIds, now);
+  const gameJobs = summarizeActiveJobs(gameJobRows, internalGameIds, now);
+  const gameJobRuns = summarizeActiveJobs(gameJobRunRows, internalGameIds, now);
   return {
     gameJobs: gameJobs.total - gameJobs.nonTarget,
     gameJobRuns: gameJobRuns.total - gameJobRuns.nonTarget,
@@ -300,6 +308,82 @@ async function buildPlan(db) {
 
 export async function previewPreBetaPurge(db) {
   return buildPlan(db);
+}
+
+// The release purge can remove stale job rows, but doing that in the same
+// request as data deletion makes it impossible to verify the maintenance
+// window independently.  This bounded operation cancels only stale target
+// jobs; live executors and non-target jobs remain hard blockers.
+export async function resolvePreBetaPurgeStaleJobs(db, {
+  planHash,
+  confirmation,
+  maintenanceWindowConfirmed
+} = {}) {
+  if (String(confirmation || "") !== CONFIRMATION) {
+    throw new Error("PRE_BETA_PURGE_CONFIRMATION_REQUIRED");
+  }
+  if (maintenanceWindowConfirmed !== true) {
+    throw new Error("PRE_BETA_PURGE_MAINTENANCE_WINDOW_REQUIRED");
+  }
+  const plan = await buildPlan(db);
+  if (String(planHash || "") !== plan.planHash) {
+    throw new Error("PRE_BETA_PURGE_PLAN_CHANGED");
+  }
+  const { gameJobs, gameJobRuns } = await getActiveJobRows(db);
+  const targetIds = new Set(plan.internalGameIds);
+  const allRows = [
+    ...gameJobs.map((row) => ({ ...row, table: "game_jobs_v3" })),
+    ...gameJobRuns.map((row) => ({ ...row, table: "game_job_runs" }))
+  ];
+  const nonTarget = allRows.filter((row) => !targetIds.has(String(row.internal_game_id || "")));
+  if (nonTarget.length) throw new Error("PRE_BETA_PURGE_ACTIVE_JOBS");
+  const now = Date.now();
+  const blocking = allRows.filter((row) => !isStaleJob(row, now));
+  if (blocking.length) throw new Error("PRE_BETA_PURGE_EXECUTOR_ACTIVE");
+
+  const resolved = [];
+  for (const row of allRows) {
+    const updatedAt = new Date().toISOString();
+    const result = row.table === "game_jobs_v3"
+      ? await db.prepare(
+        `UPDATE game_jobs_v3
+            SET status = 'cancelled', next_retry_at = NULL, lease_expires_at = NULL,
+                claimed_at = NULL, claim_token = NULL, failure_code = 'PRE_BETA_PURGE_STALE_JOB',
+                failure_message = ?1, updated_at = ?2
+          WHERE id = ?3 AND internal_game_id = ?4
+            AND status IN ('pending', 'claimed', 'retry_wait')`
+      ).bind("stale job cancelled during the pre-beta maintenance window", updatedAt, Number(row.id), row.internal_game_id).run()
+      : await db.prepare(
+        `UPDATE game_job_runs
+            SET status = 'cancelled', lease_expires_at = NULL, next_attempt_at = NULL,
+                claimed_at = NULL, claim_token = NULL, error_code = 'PRE_BETA_PURGE_STALE_JOB',
+                error_detail = ?1, updated_at = ?2
+          WHERE id = ?3 AND internal_game_id = ?4
+            AND status IN ('pending', 'claimed', 'retry_wait')`
+      ).bind("stale job run cancelled during the pre-beta maintenance window", updatedAt, Number(row.id), row.internal_game_id).run();
+    resolved.push({
+      table: row.table,
+      id: Number(row.id),
+      internalGameId: String(row.internal_game_id || ""),
+      jobType: String(row.job_type || ""),
+      statusBefore: String(row.status || ""),
+      changed: Number(result?.meta?.changes || 0) === 1
+    });
+  }
+  const after = await buildPlan(db);
+  if (after.activeJobs.blockingGameJobs || after.activeJobs.blockingGameJobRuns
+    || after.activeJobs.nonTargetGameJobs || after.activeJobs.nonTargetGameJobRuns) {
+    throw new Error("PRE_BETA_PURGE_EXECUTOR_ACTIVE");
+  }
+  return {
+    version: after.version,
+    cutoff: after.cutoff,
+    planHash: after.planHash,
+    resolved,
+    activeJobs: after.activeJobs,
+    counts: after.counts,
+    totalRows: after.totalRows
+  };
 }
 
 function chunk(values) {

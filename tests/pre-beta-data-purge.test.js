@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   executePreBetaPurge,
   previewPreBetaPurge,
+  resolvePreBetaPurgeStaleJobs,
   PRE_BETA_PURGE_CONFIRMATION,
   PRE_BETA_PURGE_PLAN_VERSION
 } from "../backend/maintenance/pre-beta-data-purge.js";
@@ -224,6 +225,100 @@ test("stale target jobs require an explicit maintenance window and are then remo
   assert.equal(result.deleted.game_job_runs, 1);
   assert.equal(count(database, "game_jobs_v3"), 0);
   assert.equal(count(database, "game_job_runs"), 0);
+});
+
+test("stale target jobs can be cancelled without recovery and the operation is repeatable", async () => {
+  const database = createDatabase();
+  insertGame(database, OLD_GAME, "scheduled", "2026-09-10T10:00:00.000Z");
+  database.prepare(`
+    INSERT INTO game_jobs_v3 (internal_game_id, job_type, scheduled_at, scheduled_slot_at,
+      status, lease_expires_at, claimed_at, claim_token, created_at, updated_at)
+    VALUES (?, 'publish', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z',
+      'claimed', '2026-09-10T01:00:00.000Z', '2026-09-10T00:30:00.000Z', 'claim-1', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z')
+  `).run(OLD_GAME);
+  database.prepare(`
+    INSERT INTO game_job_runs (internal_game_id, job_type, scheduled_slot_at,
+      status, next_attempt_at, claim_token, created_at, updated_at)
+    VALUES (?, 'probable_starter_fetch', '2026-09-10T00:00:00.000Z',
+      'retry_wait', '2026-09-10T01:00:00.000Z', 'run-1', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z')
+  `).run(OLD_GAME);
+  const adapter = d1(database);
+  const plan = await previewPreBetaPurge(adapter);
+  const result = await resolvePreBetaPurgeStaleJobs(adapter, {
+    planHash: plan.planHash,
+    confirmation: PRE_BETA_PURGE_CONFIRMATION,
+    maintenanceWindowConfirmed: true
+  });
+  assert.deepEqual(result.resolved.map((row) => `${row.table}:${row.jobType}`), [
+    "game_jobs_v3:publish",
+    "game_job_runs:probable_starter_fetch"
+  ]);
+  assert.equal(result.resolved.every((row) => row.changed), true);
+  assert.equal(result.activeJobs.gameJobs, 0);
+  assert.equal(result.activeJobs.gameJobRuns, 0);
+  assert.equal(database.prepare("SELECT status, claim_token FROM game_jobs_v3 WHERE internal_game_id = ?").get(OLD_GAME).status, "cancelled");
+  assert.equal(database.prepare("SELECT status, claim_token FROM game_job_runs WHERE internal_game_id = ?").get(OLD_GAME).status, "cancelled");
+
+  const repeated = await resolvePreBetaPurgeStaleJobs(adapter, {
+    planHash: plan.planHash,
+    confirmation: PRE_BETA_PURGE_CONFIRMATION,
+    maintenanceWindowConfirmed: true
+  });
+  assert.deepEqual(repeated.resolved, []);
+  assert.equal(repeated.totalRows, plan.totalRows);
+});
+
+test("stale target job resolution refuses a live executor and non-target job", async () => {
+  const database = createDatabase();
+  const futureGame = "future-active-game";
+  insertGame(database, OLD_GAME, "scheduled", "2026-09-10T10:00:00.000Z");
+  insertGame(database, futureGame, "scheduled", "2026-09-20T10:00:00.000Z");
+  database.prepare(`
+    INSERT INTO game_job_runs (internal_game_id, job_type, scheduled_slot_at,
+      status, created_at, updated_at)
+    VALUES (?, 'provisional_lineup_fetch', '2026-09-10T00:00:00.000Z',
+      'running', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z')
+  `).run(OLD_GAME);
+  database.prepare(`
+    INSERT INTO game_jobs_v3 (internal_game_id, job_type, scheduled_at, scheduled_slot_at,
+      status, created_at, updated_at)
+    VALUES (?, 'publish', '2099-09-20T00:00:00.000Z', '2099-09-20T00:00:00.000Z',
+      'pending', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z')
+  `).run(futureGame);
+  const adapter = d1(database);
+  const plan = await previewPreBetaPurge(adapter);
+  await assert.rejects(
+    resolvePreBetaPurgeStaleJobs(adapter, {
+      planHash: plan.planHash,
+      confirmation: PRE_BETA_PURGE_CONFIRMATION,
+      maintenanceWindowConfirmed: true
+    }),
+    /PRE_BETA_PURGE_ACTIVE_JOBS/
+  );
+  assert.equal(database.prepare("SELECT status FROM game_job_runs WHERE internal_game_id = ?").get(OLD_GAME).status, "running");
+  assert.equal(database.prepare("SELECT status FROM game_jobs_v3 WHERE internal_game_id = ?").get(futureGame).status, "pending");
+});
+
+test("stale target job resolution refuses a running target executor", async () => {
+  const database = createDatabase();
+  insertGame(database, OLD_GAME, "scheduled", "2026-09-10T10:00:00.000Z");
+  database.prepare(`
+    INSERT INTO game_job_runs (internal_game_id, job_type, scheduled_slot_at,
+      status, created_at, updated_at)
+    VALUES (?, 'scoring', '2026-09-10T00:00:00.000Z',
+      'running', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z')
+  `).run(OLD_GAME);
+  const adapter = d1(database);
+  const plan = await previewPreBetaPurge(adapter);
+  await assert.rejects(
+    resolvePreBetaPurgeStaleJobs(adapter, {
+      planHash: plan.planHash,
+      confirmation: PRE_BETA_PURGE_CONFIRMATION,
+      maintenanceWindowConfirmed: true
+    }),
+    /PRE_BETA_PURGE_EXECUTOR_ACTIVE/
+  );
+  assert.equal(database.prepare("SELECT status FROM game_job_runs WHERE internal_game_id = ?").get(OLD_GAME).status, "running");
 });
 
 test("non-target active jobs continue to block the purge", async () => {

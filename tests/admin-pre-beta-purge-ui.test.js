@@ -46,6 +46,8 @@ test("dry-run view refreshは既存のevent delegationへ接続される", () =>
 
 test("削除POSTは別の明示的な実行フラグがない限りWorker側でも無効", () => {
   assert.match(worker, /PRE_BETA_PURGE_ALLOW_EXECUTE/);
+  assert.match(worker, /PRE_BETA_PURGE_ALLOW_JOB_CLEANUP/);
+  assert.match(worker, /pre-beta-purge\/jobs/);
   assert.match(worker, /PRE_BETA_PURGE_CRON_MUST_BE_STOPPED/);
   assert.match(worker, /requireAdminUser\(request, env, cors\)/);
   assert.match(worker, /request\.method === "GET"/);

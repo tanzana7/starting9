@@ -119,8 +119,7 @@ test("満点者がいない日も正常な空結果を返し、月間・年間�
   assert.doesNotMatch(worker, /\/api\/rankings\/daily/);
   assert.match(worker, /\/api\/results\/daily-best-nine/);
   assert.match(html, /id="dailyBestNineCard"/);
-  assert.match(html, /id="showMonthlyRankingButton"/);
-  assert.match(html, /id="showYearlyRankingButton"/);
+  assert.doesNotMatch(html, /id="showMonthlyRankingButton"|id="showYearlyRankingButton"/);
   assert.doesNotMatch(html, /showDailyRankingButton/);
   assert.match(script, /function fetchDailyBestNine/);
   assert.match(script, /daily-best-nine/);

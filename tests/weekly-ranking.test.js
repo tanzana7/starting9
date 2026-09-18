@@ -123,21 +123,20 @@ test("weekly APIはcurrent weekを既定にし、月曜以外と未来週を拒�
   assert.match(workerSource, /publishedOnly: true/);
 });
 
-test("公開画面は年間・月間・週間を切り替え、週間の空表示とモバイル用3分割タブを持つ", () => {
+test("公開画面は週間ランキングだけを表示し、開始前の案内と最小週境界を持つ", () => {
   assert.match(html, /id="showWeeklyRankingButton" class="ranking-tab is-active"[^>]*>週間<\/button>/);
-  assert.match(html, /id="showMonthlyRankingButton"/);
-  assert.match(html, /id="showYearlyRankingButton" class="ranking-tab"[^>]*>年間<\/button>/);
-  assert.ok(html.indexOf(">週間</button>") < html.indexOf(">月間</button>"));
-  assert.ok(html.indexOf(">月間</button>") < html.indexOf(">年間</button>"));
+  assert.doesNotMatch(html, /showMonthlyRankingButton|showYearlyRankingButton/);
   assert.match(html, /public-compliance-disclaimer-and-fetch-safety-1/);
   assert.match(script, /function refreshWeeklyRanking/);
   assert.match(script, /buildWeeklyRankingApiUrl/);
   assert.match(script, /selectRankingView\("weekly"\)/);
   assert.match(script, /rankingView: "weekly"/);
-  assert.match(script, /今週はまだ公開済み試合がありません/);
+  assert.match(script, /ランキング集計中/);
+  assert.match(script, /const firstServiceWeek = "2026-09-21"/);
+  assert.match(workerSource, /ランキングは9月21日（\月）の試合からスタート！/);
   assert.match(rankingRenderer, /showWeeklyRankingButton/);
   assert.match(publicState, /weekly: state\.weeklyRanking/);
-  assert.match(style, /grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
+  assert.doesNotMatch(html, /showMonthlyRankingButton|showYearlyRankingButton/);
 });
 
 test("週間ランキングの表示終了日は排他的な翌月曜ではなく日曜にする", () => {

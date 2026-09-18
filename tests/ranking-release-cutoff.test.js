@@ -210,9 +210,9 @@ test("perfect rankingはrelease cutoff前を除外し、daily-best-nineは過去
   assert.equal(dailyBestNine.rows[0].username, "alpha");
 });
 
-test("Workerの対象7経路へ同じ設定値を渡し、production設定は指定日時を使う", () => {
-  assert.equal(productionConfig.vars.PUBLIC_RANKING_RELEASED_AT, "2026-08-14T00:00:00+09:00");
-  assert.equal((workerSource.match(/releaseCutoffAt: env\.PUBLIC_RANKING_RELEASED_AT/g) || []).length, 7);
-  assert.match(workerSource, /getPerfectAchieversForDate\(env\.AUTH_DB, \{ \.\.\.options, releaseCutoffAt:/);
-  assert.match(workerSource, /publishedOnly: true, releaseCutoffAt: env\.PUBLIC_RANKING_RELEASED_AT/);
+test("Workerの公開ランキングcutoffはβ開始日時を使い、production設定と一致する", () => {
+  assert.equal(productionConfig.vars.PUBLIC_RANKING_RELEASED_AT, "2026-09-21T00:00:00+09:00");
+  assert.match(workerSource, /getPublicRankingStartDate\(env\)/);
+  assert.match(workerSource, /getPublicWeeklyRankingAvailability/);
+  assert.match(workerSource, /publishedOnly: true, includeTestUsers: true, releaseCutoffAt:/);
 });

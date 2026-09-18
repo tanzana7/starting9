@@ -135,7 +135,7 @@ test("認証後の補助データはcritical UIの完了後にアイドル開始
   assert.match(coordinator, /ops\.syncPredictionFromAccount\(\{ force: true \}\)/);
   assert.match(coordinator, /ops\.refreshResultHistory\(\{ force: true \}\)/);
   assert.match(coordinator, /requestIdleCallback/);
-  assert.match(coordinator, /ops\.refreshYearlyRanking\(\{ force: true \}\)/);
+  assert.doesNotMatch(coordinator, /ops\.refreshYearlyRanking\(\{ force: true \}\)/);
   assert.match(coordinator, /ops\.fetchUserAchievements\(\{ force: true \}\)/);
 });
 

@@ -19,13 +19,12 @@ test("通常画面は開発用エリア見出しと番号バッジを表示し�
   assert.match(html, /id="result-title">前回の採点結果/);
 });
 
-test("年間ランキングはサービス開始年より前と当年より後へ移動するボタンを描画しない", () => {
+test("公開ランキングは週間の開始週より前へ移動できず、月間・年間を表示しない", () => {
   const script = read("script.js");
 
-  assert.match(script, /const RANKING_SERVICE_START_YEAR = 2026/);
-  assert.match(script, /nextYear >= RANKING_SERVICE_START_YEAR && nextYear <= currentYear/);
-  assert.match(script, /canMoveToPreviousYear \? '<button[^']*data-yearly-ranking-move="-1"[^']*>前年<\/button>' : '<span aria-hidden="true"><\/span>'/);
-  assert.match(script, /canMoveToNextYear \? '<button[^']*data-yearly-ranking-move="1"[^']*>翌年<\/button>' : '<span aria-hidden="true"><\/span>'/);
-  assert.doesNotMatch(script, /data-yearly-ranking-move="-1"\$\{ranking\.year <= YEARLY_RANKING_MIN_YEAR \? " disabled"/);
+  assert.match(script, /const firstServiceWeek = "2026-09-21"/);
+  assert.match(script, /if \(nextWeek < firstServiceWeek \|\| nextWeek > currentWeek\.startAt\) return/);
+  assert.match(script, /if \(view !== "weekly"\) return/);
+  assert.doesNotMatch(read("index.html"), /showMonthlyRankingButton|showYearlyRankingButton/);
   assert.match(read("style.css"), /grid-template-columns: minmax\(0, 1fr\) minmax\(120px, auto\) minmax\(0, 1fr\)/);
 });

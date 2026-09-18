@@ -137,6 +137,7 @@ import {
 import {
   executePreBetaPurge,
   previewPreBetaPurge,
+  resolvePreBetaPurgeStaleJobs,
   PRE_BETA_PURGE_CONFIRMATION,
   PRE_BETA_PURGE_PLAN_VERSION
 } from "./backend/maintenance/pre-beta-data-purge.js";
@@ -721,6 +722,9 @@ export default {
       }
       if (path === "/api/admin/maintenance/pre-beta-purge" && ["GET", "POST"].includes(request.method)) {
         return await handleAdminPreBetaPurge(request, env, cors);
+      }
+      if (path === "/api/admin/maintenance/pre-beta-purge/jobs" && request.method === "POST") {
+        return await handleAdminPreBetaPurgeJobCleanup(request, env, cors);
       }
       if (path === "/api/admin/v3/perfect-score-test/preview") {
         if (request.method !== "POST") return jsonResponse({ ok: false, code: "V3_ADMIN_METHOD_NOT_ALLOWED", error: "満点previewはPOSTのみ対応しています。" }, 405, cors);
@@ -7787,6 +7791,42 @@ async function handleAdminPreBetaPurge(request, env, cors) {
     ].includes(code) ? 409 : 400;
     console.error(`[PRE_BETA_PURGE] status=failed code=${code}`);
     return jsonResponse({ ok: false, code, error: "公開前データ削除を実行できませんでした。" }, status, cors);
+  }
+}
+
+async function handleAdminPreBetaPurgeJobCleanup(request, env, cors) {
+  if (String(env?.PRE_BETA_PURGE_ENABLED || "") !== "true"
+    || String(env?.PRE_BETA_PURGE_ALLOW_JOB_CLEANUP || "") !== "true") {
+    return jsonResponse({ ok: false, code: "NOT_FOUND" }, 404, cors);
+  }
+  if (String(env?.ENABLE_GAME_AUTOMATION_V3 || "") === "true") {
+    return jsonResponse({ ok: false, code: "PRE_BETA_PURGE_CRON_MUST_BE_STOPPED", error: "削除前にCronを停止してください。" }, 409, cors);
+  }
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  try {
+    if (!env.AUTH_DB) return jsonResponse({ ok: false, code: "PRE_BETA_PURGE_DB_UNAVAILABLE", error: "削除用データベースが利用できません。" }, 503, cors);
+    const body = await readJson(request);
+    const backupReference = String(body?.backupReference || "").trim();
+    if (body?.backupVerified !== true || !backupReference || backupReference.length > 240) {
+      return jsonResponse({ ok: false, code: "PRE_BETA_PURGE_BACKUP_REQUIRED", error: "削除前バックアップの確認情報が必要です。" }, 400, cors);
+    }
+    if (String(body?.version || "") !== PRE_BETA_PURGE_PLAN_VERSION) {
+      return jsonResponse({ ok: false, code: "PRE_BETA_PURGE_VERSION_REQUIRED", error: "削除手順のversionが一致しません。" }, 400, cors);
+    }
+    const result = await resolvePreBetaPurgeStaleJobs(env.AUTH_DB, body);
+    console.warn(`[PRE_BETA_PURGE] status=stale_jobs_resolved version=${PRE_BETA_PURGE_PLAN_VERSION} operator=${String(access.user.id)} resolved=${result.resolved.length}`);
+    return jsonResponse({ ok: true, mode: "stale-job-resolution", result }, 200, cors);
+  } catch (error) {
+    const code = String(error?.message || error?.code || "PRE_BETA_PURGE_JOB_RESOLUTION_FAILED");
+    const status = [
+      "PRE_BETA_PURGE_ACTIVE_JOBS",
+      "PRE_BETA_PURGE_EXECUTOR_ACTIVE",
+      "PRE_BETA_PURGE_PLAN_CHANGED",
+      "PRE_BETA_PURGE_MAINTENANCE_WINDOW_REQUIRED"
+    ].includes(code) ? 409 : 400;
+    console.error(`[PRE_BETA_PURGE] status=stale_jobs_failed code=${code}`);
+    return jsonResponse({ ok: false, code, error: "古いjobを解消できませんでした。" }, status, cors);
   }
 }
 

@@ -542,8 +542,6 @@ function bindEvents() {
   document.getElementById("saveSavedPredictionImageButton")?.addEventListener("click", saveSavedPredictionImage);
   document.getElementById("predictionCtaButton")?.addEventListener("click", handlePredictionCtaClick);
   document.getElementById("editSavedPredictionButton")?.addEventListener("click", scrollToPredictionForm);
-  document.getElementById("showYearlyRankingButton")?.addEventListener("click", () => selectRankingView("yearly"));
-  document.getElementById("showMonthlyRankingButton")?.addEventListener("click", () => selectRankingView("monthly"));
   document.getElementById("showWeeklyRankingButton")?.addEventListener("click", () => selectRankingView("weekly"));
   document.getElementById("rankingContent")?.addEventListener("click", handleRankingPeriodContentClick);
   document.getElementById("publicGameSelectionMeta")?.addEventListener("click", handlePublicGameSelectionMetaClick);
@@ -3037,6 +3035,7 @@ async function refreshWeeklyRanking({ force = false } = {}) {
     ranking.summary = publicPayload.summary || null;
     ranking.pagination = publicPayload.pagination || null;
     ranking.self = self;
+    ranking.message = publicPayload.message || "";
   } catch (error) {
     if (requestId !== ranking.requestId) return;
     console.error("週間ランキングの取得に失敗しました", error.message);
@@ -3055,16 +3054,10 @@ async function refreshWeeklyRanking({ force = false } = {}) {
 }
 
 function selectRankingView(view) {
-  if (!["yearly", "monthly", "weekly"].includes(view)) return;
-  state.rankingView = view;
+  if (view !== "weekly") return;
+  state.rankingView = "weekly";
   renderRankingPanel();
-  if (view === "yearly") {
-    void refreshYearlyRanking({ force: true });
-  } else if (view === "monthly") {
-    void refreshMonthlyRanking({ force: true });
-  } else {
-    void refreshWeeklyRanking({ force: true });
-  }
+  void refreshWeeklyRanking({ force: true });
 }
 
 function handleRankingPeriodContentClick(event) {
@@ -3092,7 +3085,7 @@ function handleRankingPeriodContentClick(event) {
     candidateWeek.setUTCDate(candidateWeek.getUTCDate() + weeklyDirection * 7);
     const nextWeek = getJapanWeekRange(candidateWeek).startAt;
     const currentWeek = getJapanWeekRange();
-    const firstServiceWeek = getJapanWeekRange(new Date(`${RANKING_SERVICE_START_YEAR}-01-01T12:00:00+09:00`)).startAt;
+    const firstServiceWeek = "2026-09-21";
     if (nextWeek < firstServiceWeek || nextWeek > currentWeek.startAt) return;
     weekly.weekStart = nextWeek;
     weekly.self = null;
@@ -3121,30 +3114,8 @@ function renderRankingPanel() {
   const container = document.getElementById("rankingContent");
   if (!panel || !container) return;
 
-  if (state.rankingView === "monthly") {
-    renderMonthlyRanking();
-    return;
-  }
-  if (state.rankingView === "weekly") {
-    renderWeeklyRanking();
-    return;
-  }
-
-  renderRankingHeading("yearly");
-  const ranking = state.yearlyRanking;
-  const currentYear = getJapanYearMonth().year;
-  const canMoveToPreviousYear = ranking.year > RANKING_SERVICE_START_YEAR;
-  const canMoveToNextYear = ranking.year < currentYear;
-  const periodControls = `<div class="ranking-month-controls" aria-label="年間ランキングの対象年">
-    ${canMoveToPreviousYear ? '<button class="compact-button" type="button" data-yearly-ranking-move="-1">前年</button>' : '<span aria-hidden="true"></span>'}
-    <strong>${escapeHtml(ranking.year)}年</strong>
-    ${canMoveToNextYear ? '<button class="compact-button" type="button" data-yearly-ranking-move="1">翌年</button>' : '<span aria-hidden="true"></span>'}
-  </div>`;
-  renderRankingContent(ranking, {
-    selfTitle: "あなたの年間成績",
-    emptyMessage: "この年のランキング対象試合はありません。",
-    prefixHtml: periodControls
-  });
+  state.rankingView = "weekly";
+  renderWeeklyRanking();
 }
 
 function renderMonthlyRanking() {
@@ -3171,7 +3142,7 @@ function renderWeeklyRanking() {
   const isCurrentWeek = ranking.weekStart === current.startAt;
   const weekRange = getJapanWeekRange(new Date(`${ranking.weekStart}T12:00:00+09:00`));
   const weekEnd = formatWeeklyRankingDisplayEnd(weekRange.endAt);
-  const firstServiceWeek = getJapanWeekRange(new Date(`${RANKING_SERVICE_START_YEAR}-01-01T12:00:00+09:00`)).startAt;
+  const firstServiceWeek = "2026-09-21";
   const periodControls = `<div class="ranking-month-controls" aria-label="週間ランキングの対象週">
     ${ranking.weekStart > firstServiceWeek ? '<button class="compact-button" type="button" data-weekly-ranking-move="-1">前週</button>' : '<span aria-hidden="true"></span>'}
     <strong>${escapeHtml(ranking.weekStart)}〜${escapeHtml(weekEnd)}</strong>
@@ -3179,7 +3150,7 @@ function renderWeeklyRanking() {
   </div>`;
   renderRankingContent(ranking, {
     selfTitle: "あなたの週間成績",
-    emptyMessage: "今週はまだ公開済み試合がありません。",
+    emptyMessage: "ランキング集計中",
     prefixHtml: periodControls
   });
 }

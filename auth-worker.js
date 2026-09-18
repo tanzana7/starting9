@@ -55,6 +55,7 @@ import {
 import {
   calculateRankingGamesNeeded,
   getJstWeekRange,
+  getRankingCutoffBoundary,
   getRankingResetConfirmation,
   getRankingResetDateBoundary,
   normalizeRankingResetRequest,
@@ -10239,10 +10240,11 @@ async function handleGetDailyBestNine(request, env, cors) {
     return jsonResponse({ ok: false, error: "対象試合を確認できません。" }, 404, cors);
   }
   const game = await getResultGameMetadata(env.AUTH_DB, requestedGameId, metadata);
+  const publicStartDate = getPublicRankingStartDate(env);
   const internalGameId = String(metadata.internalGameId || game.internalGameId || "").trim();
   const legacyGameId = String(metadata.legacyGameId || game.legacyGameId || metadata.gameId || "").trim();
   const rankingState = await getRankingGameState(env.AUTH_DB, legacyGameId, internalGameId);
-  const published = Boolean(rankingState
+  const published = (!publicStartDate || String(game.gameDate || "") >= publicStartDate) && Boolean(rankingState
     && String(rankingState.game_status || "") === "scored"
     && String(rankingState.publication_status || "") === "published"
     && Number(rankingState.is_ranking_eligible || 0) === 1
@@ -10269,69 +10271,19 @@ async function handleGetDailyBestNine(request, env, cors) {
 }
 
 async function handleGetYearlyRanking(request, env, cors) {
-  const options = parseYearlyRankingQuery(new URL(request.url).searchParams);
-  if (!options.ok) {
-    return jsonResponse({ ok: false, error: options.error }, 400, cors);
-  }
-  const ranking = await getRankingForPeriod(env.AUTH_DB, { ...options, includeTestUsers: true, releaseCutoffAt: env.PUBLIC_RANKING_RELEASED_AT });
-  const response = jsonResponse({
-    year: options.year,
-    ranking: ranking.rows,
-    summary: ranking.summary,
-    pagination: ranking.pagination,
-    updatedAt: new Date().toISOString()
-  }, 200, cors);
-  response.headers.set("Cache-Control", "public, max-age=30");
-  return response;
+  return hiddenPublicRankingPeriodResponse(cors, "年間");
 }
 
 async function handleGetMyYearlyRanking(request, env, cors) {
-  const access = await requireAuthenticatedUser(request, env, cors);
-  if (!access.ok) return access.response;
-
-  const options = parseYearlyRankingQuery(new URL(request.url).searchParams);
-  if (!options.ok) {
-    return jsonResponse({ ok: false, error: options.error }, 400, cors);
-  }
-  const rankingData = await getRankingEntryForUser(env.AUTH_DB, access.user.id, { ...options, releaseCutoffAt: env.PUBLIC_RANKING_RELEASED_AT });
-  return jsonResponse({ ok: true, year: options.year, rankingData }, 200, cors);
+  return hiddenPublicRankingPeriodResponse(cors, "年間");
 }
 
 async function handleGetMonthlyRanking(request, env, cors) {
-  const options = parseMonthlyRankingQuery(new URL(request.url).searchParams);
-  if (!options.ok) {
-    return jsonResponse({ ok: false, error: options.error }, 400, cors);
-  }
-
-  const ranking = await getRankingForPeriod(env.AUTH_DB, { ...options, includeTestUsers: true, releaseCutoffAt: env.PUBLIC_RANKING_RELEASED_AT });
-  const response = jsonResponse({
-    year: options.year,
-    month: options.month,
-    ranking: ranking.rows,
-    summary: ranking.summary,
-    pagination: ranking.pagination,
-    updatedAt: new Date().toISOString()
-  }, 200, cors);
-  response.headers.set("Cache-Control", "public, max-age=30");
-  return response;
+  return hiddenPublicRankingPeriodResponse(cors, "月間");
 }
 
 async function handleGetMyMonthlyRanking(request, env, cors) {
-  const access = await requireAuthenticatedUser(request, env, cors);
-  if (!access.ok) return access.response;
-
-  const options = parseMonthlyRankingQuery(new URL(request.url).searchParams);
-  if (!options.ok) {
-    return jsonResponse({ ok: false, error: options.error }, 400, cors);
-  }
-
-  const rankingData = await getRankingEntryForUser(env.AUTH_DB, access.user.id, { ...options, releaseCutoffAt: env.PUBLIC_RANKING_RELEASED_AT });
-  return jsonResponse({
-    ok: true,
-    year: options.year,
-    month: options.month,
-    rankingData
-  }, 200, cors);
+  return hiddenPublicRankingPeriodResponse(cors, "月間");
 }
 
 async function handleGetWeeklyRanking(request, env, cors) {
@@ -10340,8 +10292,23 @@ async function handleGetWeeklyRanking(request, env, cors) {
     return jsonResponse({ ok: false, error: options.error }, 400, cors);
   }
 
-  const ranking = await getRankingForPeriod(env.AUTH_DB, { ...options, publishedOnly: true, includeTestUsers: true, releaseCutoffAt: env.PUBLIC_RANKING_RELEASED_AT });
+  const publicStartDate = getPublicRankingStartDate(env) || "2026-09-21";
+  const availability = getPublicWeeklyRankingAvailability({
+    now: new Date(),
+    weekStart: options.weekStart,
+    startDate: publicStartDate
+  });
+  if (availability.status !== "available") {
+    return publicWeeklyRankingStatusResponse(cors, options, {
+      status: availability.status,
+      message: availability.message
+    });
+  }
+
+  const ranking = await getRankingForPeriod(env.AUTH_DB, { ...options, publishedOnly: true, includeTestUsers: true, releaseCutoffAt: `${publicStartDate}T00:00:00+09:00` });
+  const hasPublishedGames = Number(ranking.summary?.eligibleGames || 0) > 0;
   const response = jsonResponse({
+    ok: true,
     weekStart: options.weekStart,
     weekEnd: options.endAt,
     weekStartUtc: options.startAtUtc,
@@ -10349,6 +10316,8 @@ async function handleGetWeeklyRanking(request, env, cors) {
     ranking: ranking.rows,
     summary: ranking.summary,
     pagination: ranking.pagination,
+    rankingStatus: hasPublishedGames ? "available" : "collecting",
+    message: hasPublishedGames ? "" : "ランキング集計中",
     updatedAt: new Date().toISOString()
   }, 200, cors);
   response.headers.set("Cache-Control", "public, max-age=30");
@@ -10363,8 +10332,60 @@ async function handleGetMyWeeklyRanking(request, env, cors) {
   if (!options.ok) {
     return jsonResponse({ ok: false, error: options.error }, 400, cors);
   }
-  const rankingData = await getRankingEntryForUser(env.AUTH_DB, access.user.id, { ...options, publishedOnly: true, releaseCutoffAt: env.PUBLIC_RANKING_RELEASED_AT });
-  return jsonResponse({ ok: true, weekStart: options.weekStart, weekEnd: options.endAt, rankingData }, 200, cors);
+  const publicStartDate = getPublicRankingStartDate(env);
+  const availability = getPublicWeeklyRankingAvailability({
+    now: new Date(),
+    weekStart: options.weekStart,
+    startDate: publicStartDate
+  });
+  const rankingData = availability.status !== "available"
+    ? null
+    : await getRankingEntryForUser(env.AUTH_DB, access.user.id, { ...options, publishedOnly: true, releaseCutoffAt: `${publicStartDate}T00:00:00+09:00` });
+  return jsonResponse({ ok: true, weekStart: options.weekStart, weekEnd: options.endAt, rankingData, rankingStatus: availability.status, message: availability.message || "" }, 200, cors);
+}
+
+export function getPublicRankingStartDate(env) {
+  return getRankingCutoffBoundary(env?.PUBLIC_RANKING_RELEASED_AT) || "";
+}
+
+export function getPublicWeeklyRankingAvailability({ now = new Date(), weekStart = "", startDate = "2026-09-21" } = {}) {
+  const normalizedStartDate = String(startDate || "2026-09-21").slice(0, 10);
+  if (getJstDateString(now) < normalizedStartDate) {
+    return { status: "not_started", message: "ランキングは9月21日（月）の試合からスタート！" };
+  }
+  if (String(weekStart || "") < normalizedStartDate) {
+    return { status: "unavailable", message: "この期間のランキングは公開していません。" };
+  }
+  return { status: "available", message: "" };
+}
+
+function hiddenPublicRankingPeriodResponse(cors, periodLabel) {
+  const response = jsonResponse({
+    ok: false,
+    code: "PUBLIC_RANKING_PERIOD_HIDDEN",
+    error: `${periodLabel}ランキングは現在公開していません。`
+  }, 404, cors);
+  response.headers.set("Cache-Control", "no-store");
+  return response;
+}
+
+function publicWeeklyRankingStatusResponse(cors, options, { status, message }) {
+  const response = jsonResponse({
+    ok: true,
+    weekStart: options.weekStart,
+    weekEnd: options.endAt,
+    weekStartUtc: options.startAtUtc,
+    weekEndUtc: options.endAtUtc,
+    ranking: [],
+    summary: { eligibleGames: 0, requiredGames: 0, qualifiedUsers: 0, totalUsers: 0 },
+    pagination: { limit: options.limit, offset: options.offset, totalUsers: 0 },
+    rankingStatus: status,
+    rankingAvailable: false,
+    message,
+    updatedAt: new Date().toISOString()
+  }, 200, cors);
+  response.headers.set("Cache-Control", "no-store");
+  return response;
 }
 
 function getJapanYearMonth(now = new Date()) {
@@ -16503,6 +16524,9 @@ async function handleGetPublicGames(request, env, cors) {
 async function handleGetPreviousResultGame(request, env, cors) {
   const now = new Date();
   const today = getJstDateString(now);
+  const publicStartDate = getPublicRankingStartDate(env);
+  const publicStartCondition = publicStartDate ? "AND games.game_date >= ?2" : "";
+  const publicStartBindings = publicStartDate ? [today, publicStartDate] : [today];
   let result;
   try {
     result = await env.AUTH_DB.prepare(
@@ -16512,6 +16536,7 @@ async function handleGetPreviousResultGame(request, env, cors) {
          FROM games
          LEFT JOIN ranking_games AS ranking ON ranking.internal_game_id = games.internal_game_id
         WHERE games.game_date <= ?1
+          ${publicStartCondition}
           AND games.is_active = 1
           AND games.deleted_at IS NULL
           AND (LOWER(games.home_team) = 'fighters' OR LOWER(games.away_team) = 'fighters')
@@ -16522,7 +16547,7 @@ async function handleGetPreviousResultGame(request, env, cors) {
           )
         ORDER BY games.game_date DESC, games.start_time DESC
          LIMIT ${PUBLIC_PREVIOUS_RESULT_CANDIDATE_LIMIT}`
-    ).bind(today).all();
+    ).bind(...publicStartBindings).all();
   } catch (error) {
     if (isD1ReadLimitError(error)) throw error;
     console.warn("previous result game optional game columns unavailable; using canonical games fallback", error instanceof Error ? error.message : "unknown error");
@@ -16532,10 +16557,11 @@ async function handleGetPreviousResultGame(request, env, cors) {
                 NULL AS ranking_eligibility_status
            FROM games
           WHERE game_date <= ?1
+            ${publicStartDate ? "AND game_date >= ?2" : ""}
             AND (LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')
           ORDER BY game_date DESC, start_time DESC
           LIMIT ${PUBLIC_PREVIOUS_RESULT_CANDIDATE_LIMIT}`
-      ).bind(today).all();
+      ).bind(...publicStartBindings).all();
     } catch (fallbackError) {
       if (isD1ReadLimitError(fallbackError)) throw fallbackError;
       throw fallbackError;
@@ -16736,6 +16762,8 @@ async function getResultGameMetadata(db, gameReference, resolvedMetadata = null)
 
 async function handleGetResultGames(request, env, cors) {
   const access = await requireAuthenticatedUser(request, env, cors);
+  const publicStartDate = getPublicRankingStartDate(env);
+  const publicStartCondition = publicStartDate ? "AND ranking_games.game_date >= ?2" : "";
   if (!access.ok) return access.response;
   const rankingColumns = await getTableColumnSet(env.AUTH_DB, "ranking_games");
   const eligibilitySelect = rankingColumns.has("ranking_eligibility_status")
@@ -16762,6 +16790,7 @@ async function handleGetResultGames(request, env, cors) {
        FROM latest_predictions
        JOIN ranking_games ON ranking_games.game_id = latest_predictions.game_id
       WHERE latest_predictions.submission_rank = 1
+        ${publicStartCondition}
         AND (
           (latest_predictions.status = 'scored'
            AND ranking_games.game_status = 'scored'
@@ -16772,7 +16801,7 @@ async function handleGetResultGames(request, env, cors) {
         AND ranking_games.is_test_game = 0
       ORDER BY ranking_games.game_date DESC, latest_predictions.updated_at DESC, latest_predictions.game_id DESC
       LIMIT ${PUBLIC_RESULT_HISTORY_LIMIT}`
-  ).bind(access.user.id).all();
+  ).bind(...(publicStartDate ? [access.user.id, publicStartDate] : [access.user.id])).all();
 
   const now = new Date();
   const games = await Promise.all((rows.results || []).map(async (row) => {
@@ -16827,6 +16856,9 @@ async function handleGetResultGame(request, env, cors, gameId) {
   const metadata = await resolvePredictionGameMetadata(env.AUTH_DB, gameId);
   if (!metadata) return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
   const game = await getResultGameMetadata(env.AUTH_DB, gameId, metadata);
+  if (getPublicRankingStartDate(env) && String(game.gameDate || "") < getPublicRankingStartDate(env)) {
+    return jsonResponse({ ok: false, code: "PUBLIC_RESULT_PERIOD_HIDDEN", error: "公開前の成績は現在表示していません。" }, 404, cors);
+  }
   const resultId = String(game.resultId || metadata.internalGameId || metadata.gameId || gameId);
   const internalGameId = String(game.internalGameId || metadata.internalGameId || "");
   if (await isTestRankingGame(env.AUTH_DB, resultId)) {

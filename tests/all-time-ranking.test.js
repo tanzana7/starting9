@@ -157,14 +157,11 @@ test("採点済み・正式結果公開前の試合もランキング集計へ�
   assert.deepEqual({ gamesPlayed: row.games_played, totalScore: row.total_score }, { gamesPlayed: 1, totalScore: 90 });
 });
 
-test("通常画面にはカード型の年間ランキングがあり、手動再読み込み導線を置かない", () => {
+test("通常画面から年間ランキングを非公開にし、手動再読み込み導線を置かない", () => {
   assert.match(html, /id="rankingPanel"/);
-  assert.match(html, /id="showYearlyRankingButton"/);
-  assert.match(script, /function refreshYearlyRanking/);
+  assert.doesNotMatch(html, /id="showYearlyRankingButton"/);
   assert.match(script, /function renderRankingPanel/);
-  assert.match(script, /前年/);
-  assert.match(script, /翌年/);
-  assert.match(script, /data-yearly-ranking-move/);
+  assert.match(worker, /PUBLIC_RANKING_PERIOD_HIDDEN/);
   assert.doesNotMatch(publicRanking, /規定未到達者を見る/);
   assert.match(publicRanking, /あと.*試合連続参加で規定到達/);
   assert.doesNotMatch(html, />通算</);

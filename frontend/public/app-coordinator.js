@@ -92,8 +92,6 @@
         const loadNonCritical = () => Promise.allSettled([
           ops.refreshResultHistory({ force: true }),
           ops.fetchUserAchievements({ force: true }),
-          ops.refreshYearlyRanking({ force: true }),
-          this.state.rankingView === "monthly" ? ops.refreshMonthlyRanking({ force: true }) : Promise.resolve(),
           this.state.rankingView === "weekly" ? ops.refreshWeeklyRanking({ force: true }) : Promise.resolve()
         ]).then((results) => {
           results.forEach((result) => {

@@ -115,15 +115,11 @@ test("月間APIは公開・本人取得を分け、未来月と不正値を拒�
   assert.match(worker, /Cache-Control", "public, max-age=30/);
 });
 
-test("通常画面は年間と月間を切り替え、月移動と自動取得を持つが手動再読み込みは置かない", () => {
-  assert.match(html, /id="showYearlyRankingButton"/);
-  assert.match(html, /id="showMonthlyRankingButton"/);
+test("通常画面から月間・年間ランキングを非公開にし、旧取得操作を持たない", () => {
+  assert.doesNotMatch(html, /id="showYearlyRankingButton"|id="showMonthlyRankingButton"/);
   assert.match(script, /function selectRankingView/);
-  assert.match(script, /function handleRankingPeriodContentClick/);
-  assert.match(script, /function refreshMonthlyRanking/);
-  assert.match(script, /前月/);
-  assert.match(script, /次月/);
-  assert.match(script, /refreshMonthlyRanking\(\{ force: true \}\)/);
+  assert.match(script, /if \(view !== "weekly"\) return/);
+  assert.doesNotMatch(script, /showYearlyRankingButton.*addEventListener|showMonthlyRankingButton.*addEventListener/);
   assert.doesNotMatch(html, /reloadMonthlyRankingButton/);
   assert.doesNotMatch(script, /reloadMonthlyRankingButton/);
 });

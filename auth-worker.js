@@ -8934,11 +8934,23 @@ async function handleAdminV3RankingGet(env, cors, context) {
     ).bind(context.id).first();
   } catch (error) { if (!isPregameSchemaError(error)) throw error; }
   const reflectionAudit = await getV3RankingReflectionAudit(env.AUTH_DB, context.id);
+  let bestNine = { rows: [], totalCount: 0 };
+  try {
+    // 管理画面だけで公開Best Nineの集計人数を確認できるようにする。
+    // 公開APIのレスポンスには追加せず、既存の選考・並び順をそのまま再利用する。
+    bestNine = await getDailyBestNineForGame(env.AUTH_DB, {
+      internalGameId: context.id,
+      legacyGameId: context.metadata.gameId
+    });
+  } catch (error) {
+    if (!isPregameSchemaError(error)) throw error;
+  }
   return jsonResponse({ ok: true, internalGameId: context.id, ranking: ranking ? {
     gameStatus: ranking.game_status, publicationStatus: ranking.publication_status,
     rankingEligible: Number(ranking.is_ranking_eligible || 0) === 1,
     scoredPrivateAt: ranking.scored_private_at, publishedAt: ranking.published_at
-  } : null, scoring: { ...completion, noOpReason }, rankingNoOpReason, activeScoringRevision: activeRevision, reflection, reflectionAudit }, 200, cors);
+  } : null, scoring: { ...completion, noOpReason }, rankingNoOpReason, activeScoringRevision: activeRevision, reflection, reflectionAudit,
+  bestNine: { targetCount: bestNine.totalCount, displayCount: bestNine.rows.length } }, 200, cors);
 }
 
 async function handleAdminV3RankingRebuild(request, env, cors, context, user) {

@@ -93,6 +93,19 @@ test("通常画面は公開結果の読込中・失敗・完了を内部情報�
   assert.match(script, /return home && away \? `\$\{home\} vs \$\{away\}`/);
 });
 
+test("Best Nineの人数は公開画面から外し、adminの採点・ランキング画面だけで確認できる", () => {
+  assert.doesNotMatch(index, /dailyBestNineCount|daily-best-nine-count|人中/);
+  assert.doesNotMatch(publicResultsRenderer, /dailyBestNineCount|人中/);
+  const rankingStart = worker.indexOf("async function handleAdminV3RankingGet");
+  const rankingEnd = worker.indexOf("async function handleAdminV3RankingRebuild", rankingStart);
+  const rankingHandler = worker.slice(rankingStart, rankingEnd);
+  assert.match(rankingHandler, /getDailyBestNineForGame\(env\.AUTH_DB/);
+  assert.match(rankingHandler, /bestNine: \{ targetCount: bestNine\.totalCount, displayCount: bestNine\.rows\.length \}/);
+  assert.match(gameProgress, /Best Nine対象人数/);
+  assert.match(gameProgress, /bestNineTargetCount/);
+  assert.match(gameProgress, /bestNineDisplayCount/);
+});
+
 test("post-E2E表示修正のcache busterを更新し、旧手動操作を復活させない", () => {
   assert.match(index, /script\.js\?v=public-single-game-1/);
   assert.match(adminPage, /admin-v3\.js\?v=independent-roster-lineup-safety-1/);

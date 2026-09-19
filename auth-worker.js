@@ -1243,6 +1243,10 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     // hydrating every historical unfinished game.  Current-day due games are
     // processed first; the next Cron tick drains the remaining window.
     gameListOptions: { limit: V3_CRON_GAME_BATCH_SIZE, prioritizeDue: true },
+    // Probable-starter and other auxiliary jobs must scan the full active
+    // window. Their completed jobs remain attached to each game, so applying
+    // the four-game critical-path limit here would starve later dates forever.
+    auxiliaryGameListOptions: { prioritizeDue: true },
     executeJob: (context) => operationalMode.disabledJobTypes.includes(String(context?.job?.job_type || ""))
       ? {
         status: "skipped",

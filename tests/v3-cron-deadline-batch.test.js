@@ -70,4 +70,12 @@ test("scheduled V3 runnerはbounded discoveryを使用する", async () => {
   const runner = worker.slice(runnerStart);
   assert.match(worker, /const V3_CRON_GAME_BATCH_SIZE = 4/);
   assert.match(runner, /gameListOptions:\s*\{\s*limit:\s*V3_CRON_GAME_BATCH_SIZE,\s*prioritizeDue:\s*true\s*\}/);
+  assert.match(runner, /auxiliaryGameListOptions:\s*\{\s*prioritizeDue:\s*true\s*\}/);
+});
+
+test("auxiliary discoveryはbounded critical pathとは別に全対象を走査する", async () => {
+  const executor = fs.readFileSync(new URL("../backend/automation-v3/executor.js", import.meta.url), "utf8");
+  assert.match(executor, /auxiliaryGameListOptions\s*=\s*null/);
+  assert.match(executor, /const auxiliaryGamesPromise = auxiliaryGameListOptions\s*\n\s*\? listV3Games\(env\.AUTH_DB, now, auxiliaryGameListOptions\)/);
+  assert.match(executor, /runV3OptionalPhases\(env, auxiliaryGames, now/);
 });

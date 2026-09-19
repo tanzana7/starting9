@@ -521,7 +521,7 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
   return { processed, failed, retryWait, terminalFailed, failedJobIds, retryErrors };
 }
 
-export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, onPhase = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, formalPlanner = planMainWorkflowJobs, auxiliaryPlanner = planAuxiliaryJobs, scheduleOptional = null, disabledJobTypes = [], v4SemiAuto = false, gameListOptions = {} } = {}) {
+export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, onPhase = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, formalPlanner = planMainWorkflowJobs, auxiliaryPlanner = planAuxiliaryJobs, scheduleOptional = null, disabledJobTypes = [], v4SemiAuto = false, gameListOptions = {}, auxiliaryGameListOptions = null } = {}) {
   if (!isGameAutomationV3Enabled(env)) return { enabled: false, processed: 0, created: 0 };
   const schema = await getV3SchemaState(env.AUTH_DB);
   if (!schema.ready) return { enabled: true, schemaReady: false, errorCode: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", processed: 0, created: 0 };
@@ -707,14 +707,23 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     mainPlan,
     claimReport
   };
-  const optionalPromise = runV3OptionalPhases(env, games, now, {
+  // The formal workflow uses bounded discovery to protect the Cron critical
+  // path. Auxiliary polling has a different contract: a completed probable-
+  // starter job remains in the top-level game list, so a bounded list would
+  // permanently starve later games. Load the unbounded auxiliary window only
+  // after the critical path has finished and keep the existing optional
+  // scheduling behavior.
+  const auxiliaryGamesPromise = auxiliaryGameListOptions
+    ? listV3Games(env.AUTH_DB, now, auxiliaryGameListOptions)
+    : Promise.resolve(games);
+  const optionalPromise = auxiliaryGamesPromise.then((auxiliaryGames) => runV3OptionalPhases(env, auxiliaryGames, now, {
     auxiliaryPlanner,
     onError,
     onPlan,
     onPhase,
     observerTimeoutMs,
     observerScheduler
-  }).catch(async (error) => {
+  })).catch(async (error) => {
     await invokeV3Observer(onError, [error, { stage: "optional" }], observerTimeoutMs, observerScheduler);
     return { stateReconciliation: emptyV3ReconciliationResult(), auxiliary: emptyV3PlannerPhaseResult(error, "auxiliary") };
   });

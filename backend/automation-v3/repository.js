@@ -24,6 +24,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
     : null;
   const recentFirst = options?.recentFirst === true;
   const includeRecentHistory = options?.includeRecentHistory === true;
+  const prioritizeDue = options?.prioritizeDue === true;
   let columns = new Set();
   try {
     const schema = await db.prepare("PRAGMA table_info(games)").all();
@@ -96,15 +97,31 @@ export async function listV3Games(db, now = new Date(), options = {}) {
            AND active_score.status = 'completed')`
     : "0";
   const enrichedParams = includeRecentHistory ? [] : [date];
+  // The scheduled runner uses a bounded, deadline-first window.  Keep the
+  // priority values as bound parameters so the general-purpose admin query
+  // remains safe and the current-day comparison uses JST rather than the
+  // worker's UTC clock.
+  const priorityDateParam = prioritizeDue ? enrichedParams.push(date) : null;
+  const priorityDeadlineParam = prioritizeDue
+    ? enrichedParams.push(new Date(current.getTime() + 60 * 60 * 1000).toISOString())
+    : null;
   const scopedConditions = [];
   if (scopedInternalGameId) {
     enrichedParams.push(scopedInternalGameId);
     scopedConditions.push(`games.internal_game_id = ?${enrichedParams.length}`);
   }
   const scopedFilterSql = scopedConditions.length ? ` AND ${scopedConditions.join(" AND ")}` : "";
-  const orderSql = recentFirst
-    ? "games.start_time DESC, games.internal_game_id DESC"
-    : "games.start_time, games.internal_game_id";
+  const orderSql = prioritizeDue
+    ? `CASE
+         WHEN games.game_date = ?${priorityDateParam} AND games.start_time <= ?${priorityDeadlineParam} THEN 0
+         WHEN games.game_date = ?${priorityDateParam} THEN 1
+         WHEN games.start_time <= ?${priorityDeadlineParam} THEN 2
+         ELSE 3
+       END,
+       ${recentFirst ? "games.start_time DESC, games.internal_game_id DESC" : "games.start_time, games.internal_game_id"}`
+    : recentFirst
+      ? "games.start_time DESC, games.internal_game_id DESC"
+      : "games.start_time, games.internal_game_id";
   const publicationStatus = "CASE WHEN lineup.publication_status = 'published' OR ranking.publication_status = 'published' THEN 'published' ELSE COALESCE(lineup.publication_status, ranking.publication_status, '') END";
   const publishedAt = "COALESCE(lineup.published_at, ranking.published_at)";
   const enrichedLimitSql = limit
@@ -166,6 +183,9 @@ export async function listV3Games(db, now = new Date(), options = {}) {
       reason: String(error?.message || "enriched_query_failed").slice(0, 200)
     })}`);
     const fallbackParams = includeRecentHistory ? [] : [date];
+    if (prioritizeDue) {
+      fallbackParams.push(date, new Date(current.getTime() + 60 * 60 * 1000).toISOString());
+    }
     const fallbackConditions = [];
     if (scopedInternalGameId) {
       fallbackParams.push(scopedInternalGameId);
@@ -197,6 +217,9 @@ export async function listV3Games(db, now = new Date(), options = {}) {
       // state-aware fallback above is used whenever the table exists.
       if (!/no such table.*game_automation_v3_state/i.test(String(fallbackError?.message || ""))) throw fallbackError;
       const legacyFallbackParams = includeRecentHistory ? [] : [date];
+      if (prioritizeDue) {
+        legacyFallbackParams.push(date, new Date(current.getTime() + 60 * 60 * 1000).toISOString());
+      }
       const legacyFallbackFilter = includeRecentHistory
         ? `AND ${fightersGameSql.replaceAll("games.", "")}`
         : "AND games.game_date >= date(?1)";

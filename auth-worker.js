@@ -10221,7 +10221,9 @@ async function handleGetPerfectAchieversRanking(request, env, cors) {
     return jsonResponse({ ok: false, error: options.error }, 400, cors);
   }
 
-  const achievers = await getPerfectAchieversForDate(env.AUTH_DB, { ...options, releaseCutoffAt: env.PUBLIC_RANKING_RELEASED_AT });
+  // The public release date gates weekly rankings only. Formally published
+  // game results remain visible before the weekly ranking program starts.
+  const achievers = await getPerfectAchieversForDate(env.AUTH_DB, options);
   const response = jsonResponse({
     ok: true,
     date: options.date,
@@ -10245,11 +10247,10 @@ async function handleGetDailyBestNine(request, env, cors) {
     return jsonResponse({ ok: false, error: "対象試合を確認できません。" }, 404, cors);
   }
   const game = await getResultGameMetadata(env.AUTH_DB, requestedGameId, metadata);
-  const publicStartDate = getPublicRankingStartDate(env);
   const internalGameId = String(metadata.internalGameId || game.internalGameId || "").trim();
   const legacyGameId = String(metadata.legacyGameId || game.legacyGameId || metadata.gameId || "").trim();
   const rankingState = await getRankingGameState(env.AUTH_DB, legacyGameId, internalGameId);
-  const published = (!publicStartDate || String(game.gameDate || "") >= publicStartDate) && Boolean(rankingState
+  const published = Boolean(rankingState
     && String(rankingState.game_status || "") === "scored"
     && String(rankingState.publication_status || "") === "published"
     && Number(rankingState.is_ranking_eligible || 0) === 1
@@ -16529,19 +16530,15 @@ async function handleGetPublicGames(request, env, cors) {
 async function handleGetPreviousResultGame(request, env, cors) {
   const now = new Date();
   const today = getJstDateString(now);
-  const publicStartDate = getPublicRankingStartDate(env);
-  const publicStartCondition = publicStartDate ? "AND games.game_date >= ?2" : "";
-  const publicStartBindings = publicStartDate ? [today, publicStartDate] : [today];
   let result;
   try {
     result = await env.AUTH_DB.prepare(
       `SELECT games.internal_game_id, games.game_date, games.start_time, games.home_team, games.away_team,
               games.game_status, ranking.ranking_eligibility_status,
               ranking.publication_status, ranking.published_at, ranking.is_test_game
-         FROM games
+        FROM games
          LEFT JOIN ranking_games AS ranking ON ranking.internal_game_id = games.internal_game_id
         WHERE games.game_date <= ?1
-          ${publicStartCondition}
           AND games.is_active = 1
           AND games.deleted_at IS NULL
           AND (LOWER(games.home_team) = 'fighters' OR LOWER(games.away_team) = 'fighters')
@@ -16552,7 +16549,7 @@ async function handleGetPreviousResultGame(request, env, cors) {
           )
         ORDER BY games.game_date DESC, games.start_time DESC
          LIMIT ${PUBLIC_PREVIOUS_RESULT_CANDIDATE_LIMIT}`
-    ).bind(...publicStartBindings).all();
+    ).bind(today).all();
   } catch (error) {
     if (isD1ReadLimitError(error)) throw error;
     console.warn("previous result game optional game columns unavailable; using canonical games fallback", error instanceof Error ? error.message : "unknown error");
@@ -16562,11 +16559,10 @@ async function handleGetPreviousResultGame(request, env, cors) {
                 NULL AS ranking_eligibility_status
            FROM games
           WHERE game_date <= ?1
-            ${publicStartDate ? "AND game_date >= ?2" : ""}
             AND (LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')
           ORDER BY game_date DESC, start_time DESC
           LIMIT ${PUBLIC_PREVIOUS_RESULT_CANDIDATE_LIMIT}`
-      ).bind(...publicStartBindings).all();
+      ).bind(today).all();
     } catch (fallbackError) {
       if (isD1ReadLimitError(fallbackError)) throw fallbackError;
       throw fallbackError;
@@ -16767,8 +16763,6 @@ async function getResultGameMetadata(db, gameReference, resolvedMetadata = null)
 
 async function handleGetResultGames(request, env, cors) {
   const access = await requireAuthenticatedUser(request, env, cors);
-  const publicStartDate = getPublicRankingStartDate(env);
-  const publicStartCondition = publicStartDate ? "AND ranking_games.game_date >= ?2" : "";
   if (!access.ok) return access.response;
   const rankingColumns = await getTableColumnSet(env.AUTH_DB, "ranking_games");
   const eligibilitySelect = rankingColumns.has("ranking_eligibility_status")
@@ -16795,7 +16789,6 @@ async function handleGetResultGames(request, env, cors) {
        FROM latest_predictions
        JOIN ranking_games ON ranking_games.game_id = latest_predictions.game_id
       WHERE latest_predictions.submission_rank = 1
-        ${publicStartCondition}
         AND (
           (latest_predictions.status = 'scored'
            AND ranking_games.game_status = 'scored'
@@ -16806,7 +16799,7 @@ async function handleGetResultGames(request, env, cors) {
         AND ranking_games.is_test_game = 0
       ORDER BY ranking_games.game_date DESC, latest_predictions.updated_at DESC, latest_predictions.game_id DESC
       LIMIT ${PUBLIC_RESULT_HISTORY_LIMIT}`
-  ).bind(...(publicStartDate ? [access.user.id, publicStartDate] : [access.user.id])).all();
+  ).bind(access.user.id).all();
 
   const now = new Date();
   const games = await Promise.all((rows.results || []).map(async (row) => {
@@ -16861,9 +16854,6 @@ async function handleGetResultGame(request, env, cors, gameId) {
   const metadata = await resolvePredictionGameMetadata(env.AUTH_DB, gameId);
   if (!metadata) return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
   const game = await getResultGameMetadata(env.AUTH_DB, gameId, metadata);
-  if (getPublicRankingStartDate(env) && String(game.gameDate || "") < getPublicRankingStartDate(env)) {
-    return jsonResponse({ ok: false, code: "PUBLIC_RESULT_PERIOD_HIDDEN", error: "公開前の成績は現在表示していません。" }, 404, cors);
-  }
   const resultId = String(game.resultId || metadata.internalGameId || metadata.gameId || gameId);
   const internalGameId = String(game.internalGameId || metadata.internalGameId || "");
   if (await isTestRankingGame(env.AUTH_DB, resultId)) {

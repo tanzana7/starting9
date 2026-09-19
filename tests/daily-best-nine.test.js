@@ -227,7 +227,12 @@ test("公開APIは正式採点されたranking_test_predictionsのcanonical TEST
 
   const response = await worker.default.fetch(
     new Request(`https://starting9.test/api/results/daily-best-nine?internalGameId=${fixture.internalGameId}`),
-    { AUTH_DB: createD1Adapter(fixture.db) },
+    {
+      AUTH_DB: createD1Adapter(fixture.db),
+      // The weekly ranking program starts later, but this formally published
+      // game's Best Nine must remain visible.
+      PUBLIC_RANKING_RELEASED_AT: "2026-09-21T00:00:00+09:00"
+    },
     {}
   );
   assert.equal(response.status, 200);

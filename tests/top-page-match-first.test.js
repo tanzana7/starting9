@@ -20,8 +20,11 @@ test("ロゴとアカウント操作はコンパクトなTOP領域として維�
   assert.match(normalScreenCss, /\.header-logo\s*\{[\s\S]*width: min\(100%, 276px\)/);
   assert.match(normalScreenCss, /#authPanel\s*\{[\s\S]*padding: 0/);
   assert.match(html, /id="openLoginButton"/);
+  assert.match(html, /id="openLoginButton"[^>]*>ログインして予想する<\/button>/);
   assert.match(html, /id="openRegisterButton"/);
   assert.match(html, /id="logoutButton"/);
+  assert.match(normalScreenCss, /#authPanel #openLoginButton\s*\{[\s\S]*min-height: 44px[\s\S]*background: #f2c45c/);
+  assert.match(normalScreenCss, /#authPanel #openLoginButton:focus-visible\s*\{[\s\S]*outline: 3px solid #ffffff/);
 });
 
 test("通常画面のCTAは既存IDを使い、スマホでは全幅になる", () => {
@@ -29,6 +32,10 @@ test("通常画面のCTAは既存IDを使い、スマホでは全幅になる", 
   assert.match(normalScreenCss, /@media \(max-width: 759px\)[\s\S]*\.hero-cta\s*\{[\s\S]*width: 100%/);
   assert.match(normalScreenCss, /@media \(max-width: 430px\)/);
   assert.match(html, /id="predictionCtaButton"/);
+});
+
+test("未ログインのログインCTAはスマホでも優先幅を持つ", () => {
+  assert.match(normalScreenCss, /@media \(max-width: 767px\)[\s\S]*#authPanel #openLoginButton\s*\{[\s\S]*flex: 1\.35 1 0/);
 });
 
 test("追加CSSは管理画面のセレクタへ直接適用しない", () => {

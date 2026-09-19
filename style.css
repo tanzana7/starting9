@@ -6461,6 +6461,32 @@ body:not(:has(.app-layout.is-admin-screen)) #authPanel .auth-button.is-primary {
   background: #d1ad4a;
 }
 
+body:not(:has(.app-layout.is-admin-screen)) #authPanel #openLoginButton {
+  min-height: 44px;
+  padding: 9px 15px;
+  border: 2px solid #f2c45c;
+  border-radius: 6px;
+  color: #172033;
+  background: #f2c45c;
+  font-size: 0.9rem;
+  line-height: 1.35;
+  box-shadow: 0 3px 0 rgba(23, 32, 51, 0.2);
+  transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+
+body:not(:has(.app-layout.is-admin-screen)) #authPanel #openLoginButton:hover {
+  border-color: #ffe7a0;
+  background: #ffd978;
+  box-shadow: 0 4px 0 rgba(23, 32, 51, 0.24);
+  transform: translateY(-1px);
+}
+
+body:not(:has(.app-layout.is-admin-screen)) #authPanel #openLoginButton:focus-visible {
+  outline: 3px solid #ffffff;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px rgba(209, 173, 74, 0.55);
+}
+
 body:not(:has(.app-layout.is-admin-screen)) .probable-starter-card {
   border-color: #526983;
   border-radius: 4px;
@@ -7477,6 +7503,10 @@ body:not(:has(.app-layout.is-admin-screen)) .probable-starter-fetched {
   body:not(:has(.app-layout.is-admin-screen)) .auth-button {
     flex: 1 1 0;
     white-space: normal;
+  }
+
+  body:not(:has(.app-layout.is-admin-screen)) #authPanel #openLoginButton {
+    flex: 1.35 1 0;
   }
 
   body:not(:has(.app-layout.is-admin-screen)) .probable-starter-heading {

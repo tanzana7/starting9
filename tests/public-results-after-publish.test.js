@@ -84,6 +84,18 @@ test("公開結果は予想入力状態から独立して保持し、履歴一�
   assert.match(publicResults, /PUBLIC_RESULT_HISTORY_LIMIT = 5/);
 });
 
+test("週次ランキング開始日を公開結果・前回結果へ誤適用しない", () => {
+  const resultGamesStart = worker.indexOf("async function handleGetResultGames");
+  const resultGamesEnd = worker.indexOf("async function handleGetResultGame", resultGamesStart);
+  const resultGameStart = resultGamesEnd;
+  const resultGameEnd = worker.indexOf("const tableColumnSetCache", resultGameStart);
+  const previousStart = worker.indexOf("async function handleGetPreviousResultGame");
+  const previousEnd = worker.indexOf("async function handleGetProbableStarter", previousStart);
+  assert.doesNotMatch(worker.slice(resultGamesStart, resultGamesEnd), /getPublicRankingStartDate|publicStartCondition/);
+  assert.doesNotMatch(worker.slice(resultGameStart, resultGameEnd), /getPublicRankingStartDate|PUBLIC_RESULT_PERIOD_HIDDEN/);
+  assert.doesNotMatch(worker.slice(previousStart, previousEnd), /getPublicRankingStartDate|publicStartCondition|publicStartBindings/);
+});
+
 test("通常画面の公開結果修正は新しいcache busterを使う", () => {
   assert.match(html, /style\.css\?v=public-single-game-1/);
   assert.match(html, /script\.js\?v=public-single-game-1/);

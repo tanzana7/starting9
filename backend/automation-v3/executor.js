@@ -521,11 +521,11 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
   return { processed, failed, retryWait, terminalFailed, failedJobIds, retryErrors };
 }
 
-export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, onPhase = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, formalPlanner = planMainWorkflowJobs, auxiliaryPlanner = planAuxiliaryJobs, scheduleOptional = null, disabledJobTypes = [], v4SemiAuto = false } = {}) {
+export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, onPhase = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, formalPlanner = planMainWorkflowJobs, auxiliaryPlanner = planAuxiliaryJobs, scheduleOptional = null, disabledJobTypes = [], v4SemiAuto = false, gameListOptions = {} } = {}) {
   if (!isGameAutomationV3Enabled(env)) return { enabled: false, processed: 0, created: 0 };
   const schema = await getV3SchemaState(env.AUTH_DB);
   if (!schema.ready) return { enabled: true, schemaReady: false, errorCode: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", processed: 0, created: 0 };
-  const games = await listV3Games(env.AUTH_DB, now);
+  const games = await listV3Games(env.AUTH_DB, now, gameListOptions);
   await invokeV3Observer(onPhase, [{
     stage: "eligible_games",
     now,

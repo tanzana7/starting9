@@ -125,6 +125,7 @@ export async function getPerfectAchieversForDate(db, { date, limit, offset, rele
        AND ranking_games.game_date = ?1
        AND ranking_games.is_ranking_eligible = 1
        AND ranking_games.game_status = 'scored'
+       AND ranking_games.publication_status = 'published'
        AND ranking_games.is_test_game = 0
        AND users.status = 'active'
        AND latest_predictions.score = latest_predictions.max_score

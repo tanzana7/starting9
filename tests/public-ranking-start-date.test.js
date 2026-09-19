@@ -34,13 +34,17 @@ test("週間ランキングはJSTの開始日までは順位を返さず、開�
   );
 });
 
-test("週間APIは開始日前の旧データを返さず、正式な試合日cutoffを使う", () => {
+test("週間APIだけが開始日前の旧データを返さず、結果APIには日付cutoffを適用しない", () => {
   assert.equal(config.vars.PUBLIC_RANKING_RELEASED_AT, "2026-09-21T00:00:00+09:00");
   assert.match(worker, /PUBLIC_RANKING_PERIOD_HIDDEN/);
   assert.match(worker, /rankingStatus: hasPublishedGames \? "available" : "collecting"/);
   assert.match(worker, /releaseCutoffAt: `\$\{publicStartDate\}T00:00:00\+09:00`/);
-  assert.match(worker, /ranking_games\.game_date >= \?2/);
-  assert.match(worker, /PUBLIC_RESULT_PERIOD_HIDDEN/);
+  const resultGames = worker.slice(worker.indexOf("async function handleGetResultGames"), worker.indexOf("async function handleGetResultGame", worker.indexOf("async function handleGetResultGames")));
+  const resultGame = worker.slice(worker.indexOf("async function handleGetResultGame"), worker.indexOf("const tableColumnSetCache", worker.indexOf("async function handleGetResultGame")));
+  const previousResult = worker.slice(worker.indexOf("async function handleGetPreviousResultGame"), worker.indexOf("async function handleGetProbableStarter", worker.indexOf("async function handleGetPreviousResultGame")));
+  assert.doesNotMatch(resultGames, /getPublicRankingStartDate|publicStartCondition|PUBLIC_RESULT_PERIOD_HIDDEN/);
+  assert.doesNotMatch(resultGame, /getPublicRankingStartDate|PUBLIC_RESULT_PERIOD_HIDDEN/);
+  assert.doesNotMatch(previousResult, /getPublicRankingStartDate|publicStartCondition|publicStartBindings/);
 });
 
 test("通常画面は週間だけを表示し、開始週より前の前週移動を許可しない", () => {

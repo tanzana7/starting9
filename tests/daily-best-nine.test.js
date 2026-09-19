@@ -289,10 +289,12 @@ test("公開APIはclient score/maxScoreを受け付けず、server-side結果だ
 
 test("公開結果rendererはAPIのcanonical TEST rowを絞り込まずBest Nineへ表示する", () => {
   const rendererSource = fs.readFileSync(path.join(root, "frontend", "public", "render-results.js"), "utf8");
+  const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
+  assert.doesNotMatch(html, /dailyBestNineCount|daily-best-nine-count/);
+  assert.doesNotMatch(rendererSource, /dailyBestNineCount|人中/);
   const elements = new Map([
     ["dailyBestNineCard", { classList: { toggle() {} } }],
-    ["dailyBestNineContent", { innerHTML: "" }],
-    ["dailyBestNineCount", { textContent: "" }]
+    ["dailyBestNineContent", { innerHTML: "" }]
   ]);
   const context = vm.createContext({
     document: { getElementById(id) { return elements.get(id) || null; } },
@@ -317,4 +319,5 @@ test("公開結果rendererはAPIのcanonical TEST rowを絞り込まずBest Nine
   renderer.renderDailyBestNine();
   assert.match(elements.get("dailyBestNineContent").innerHTML, /S9_TEST_8/);
   assert.match(elements.get("dailyBestNineContent").innerHTML, /47点/);
+  assert.doesNotMatch(elements.get("dailyBestNineContent").innerHTML, /人中/);
 });

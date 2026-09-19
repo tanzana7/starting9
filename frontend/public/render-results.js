@@ -151,15 +151,13 @@
     function renderDailyBestNine() {
       const card = document.getElementById("dailyBestNineCard");
       const container = document.getElementById("dailyBestNineContent");
-      const count = document.getElementById("dailyBestNineCount");
-      if (!card || !container || !count) return;
+      if (!card || !container) return;
 
       const bestNine = deps.state.dailyBestNine;
       const displayedResult = deps.state.resultHistory.result || deps.state.result || null;
       const unavailable = deps.getPublicResultAvailability?.(displayedResult) || null;
       const isPublished = bestNine.status === "published";
       card.classList.toggle("hidden", !isPublished || Boolean(unavailable));
-      count.textContent = bestNine.totalCount > 0 ? `${bestNine.totalCount}人中` : "";
       if (!isPublished || unavailable) {
         container.innerHTML = "";
         return;

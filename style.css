@@ -678,13 +678,6 @@ button:disabled {
   color: var(--fighters-deep-blue);
 }
 
-.daily-best-nine-count {
-  flex: 0 0 auto;
-  color: var(--fighters-deep-blue);
-  font-size: 0.86rem;
-  font-weight: 900;
-}
-
 .daily-best-nine-content {
   display: grid;
   gap: 10px;

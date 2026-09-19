@@ -1012,6 +1012,7 @@ async function writeV3RuntimeAudit(env, { eventType, runId, correlationId = runI
 }
 
 const ROSTER_MASTER_WARNING_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
+const V3_CRON_GAME_BATCH_SIZE = 4;
 
 async function writeRosterMasterUnregisteredAudit(env, game, unknownPlayers, now = new Date()) {
   const internalGameId = String(game?.internal_game_id || game?.internalGameId || "").trim();
@@ -1238,6 +1239,10 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
 
   const operationalMode = getV3OperationalMode(env);
   const result = await runGameAutomationV3(env, now, {
+    // A free/low-CPU Worker invocation must reach the deadline job before
+    // hydrating every historical unfinished game.  Current-day due games are
+    // processed first; the next Cron tick drains the remaining window.
+    gameListOptions: { limit: V3_CRON_GAME_BATCH_SIZE, prioritizeDue: true },
     executeJob: (context) => operationalMode.disabledJobTypes.includes(String(context?.job?.job_type || ""))
       ? {
         status: "skipped",

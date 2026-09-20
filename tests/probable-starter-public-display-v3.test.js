@@ -35,7 +35,7 @@ test("APIの取得状態とV3保存元を通常画面へ返し、キャッシュ
   assert.match(worker, /lastFailureCode: errorCode/);
   assert.match(worker, /isConfirmed: dataStatus === "announced"/);
   assert.match(worker, /response\.headers\.set\("Cache-Control", "no-store"\)/);
-  assert.match(script, /state\.predictionTargetGame = canonicalGame/);
+  assert.doesNotMatch(script, /state\.predictionTargetGame = canonicalGame/);
   assert.match(script, /applyStoredProbableStarter\(result\.probableStarter, result\)/);
   assert.match(script, /status === "empty" \|\| status === "unannounced"/);
   assert.match(script, /function getProbableStarterReferenceDiagnostics\(selectedGame, response, httpStatus = 200\)/);

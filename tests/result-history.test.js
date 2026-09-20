@@ -87,11 +87,11 @@ test("前回自動表示と過去結果の手動選択で採点結果見出し�
 });
 
 test("通常画面はcanonical public gameのinternalGameIdを予想保存と締切判定へ引き継ぐ", () => {
-  assert.match(script, /const nextGame = catalogGame \|\| await resolvePredictionTargetGame\(schedule, true\)/);
-  assert.match(script, /state\.predictionTargetGame = preservedGame/);
+  assert.match(script, /const nextGame = catalogGame \|\| await resolvePredictionTargetGame\(schedule, useServer\)/);
+  assert.match(script, /state\.predictionTargetGame = nextGame \|\| null/);
   assert.match(script, /async function refreshPredictionTarget\(\{ retryUnannounced = true, useServer = true \} = \{\}\)/);
   assert.doesNotMatch(script, /state\.isAdminMode/);
-  assert.match(script, /state\.predictionTargetGameId = nextGameId/);
+  assert.match(script, /state\.predictionTargetGameId = nextId/);
   assert.match(script, /state\.predictionTargetGame\?\.gameId === gameId \|\| state\.predictionTargetGame\?\.internalGameId === gameId \? state\.predictionTargetGame : null/);
   assert.match(predictionForm, /deps\.state\.prediction = \{\s*gameId: deps\.getCurrentGameId\(\)/);
 });

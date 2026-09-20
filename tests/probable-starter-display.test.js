@@ -13,7 +13,7 @@ test("予告先発は未発表と取得失敗を異なる案内として表示�
   assert.match(script, /document\.getElementById\("probableStarterDisplay"\)/);
   assert.match(script, /probableStarter\.status === "unannounced"/);
   assert.match(script, /renderProbableStarterNotice\(container, "unannounced", probableStarter\.nextGame\)/);
-  assert.match(script, /現在、次の試合の予告先発はまだ発表されていません。/);
+  assert.match(script, /予告先発 未発表/);
   assert.match(script, /発表され次第、自動で表示されます。/);
   assert.match(script, /probableStarter\.status === "error"/);
   assert.match(script, /予告先発を取得できませんでした。/);

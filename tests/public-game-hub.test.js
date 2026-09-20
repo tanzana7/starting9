@@ -87,7 +87,7 @@ test("試合単位のlocalStorage分離とstale response guardは維持する", 
   assert.match(script, /function hydrateGameScopedState\(gameId\)/);
   assert.match(script, /beginPublicRequest\("account", \{ abort: true \}\)/);
   assert.match(script, /beginPublicRequest\("probable", \{ abort: true \}\)/);
-  assert.match(script, /getCurrentGameId\(\) !== game\.internalGameId/);
+  assert.match(script, /state\.probableStarter\.nextGame\?\.internalGameId/);
 });
 
 test("予想カード内の現在試合メタはloading・error・empty stateを持つ", () => {

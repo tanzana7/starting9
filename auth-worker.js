@@ -1013,6 +1013,10 @@ async function writeV3RuntimeAudit(env, { eventType, runId, correlationId = runI
 
 const ROSTER_MASTER_WARNING_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
 const V3_CRON_GAME_BATCH_SIZE = 4;
+// 補助処理は当日最大6試合と翌日最大6試合を毎分確認すれば、
+// 予告先発の前日slotを取りこぼさず、過去の未完了試合を無制限に走査して
+// CronのCPU上限を消費することも防げます。正式処理のbatchとは分離します。
+const V3_AUXILIARY_GAME_BATCH_SIZE = 12;
 
 async function writeRosterMasterUnregisteredAudit(env, game, unknownPlayers, now = new Date()) {
   const internalGameId = String(game?.internal_game_id || game?.internalGameId || "").trim();
@@ -1243,10 +1247,10 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     // hydrating every historical unfinished game.  Current-day due games are
     // processed first; the next Cron tick drains the remaining window.
     gameListOptions: { limit: V3_CRON_GAME_BATCH_SIZE, prioritizeDue: true },
-    // Probable-starter and other auxiliary jobs must scan the full active
-    // window. Their completed jobs remain attached to each game, so applying
-    // the four-game critical-path limit here would starve later dates forever.
-    auxiliaryGameListOptions: { prioritizeDue: true },
+    // Auxiliary polling needs the current and next calendar day's games, while
+    // an unbounded historical scan can exceed the per-invocation CPU budget.
+    // Keep this batch independent from the four-game formal critical path.
+    auxiliaryGameListOptions: { limit: V3_AUXILIARY_GAME_BATCH_SIZE, prioritizeDue: true },
     executeJob: (context) => operationalMode.disabledJobTypes.includes(String(context?.job?.job_type || ""))
       ? {
         status: "skipped",

@@ -707,12 +707,10 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     mainPlan,
     claimReport
   };
-  // The formal workflow uses bounded discovery to protect the Cron critical
-  // path. Auxiliary polling has a different contract: a completed probable-
-  // starter job remains in the top-level game list, so a bounded list would
-  // permanently starve later games. Load the unbounded auxiliary window only
-  // after the critical path has finished and keep the existing optional
-  // scheduling behavior.
+  // The formal workflow and auxiliary polling both use bounded discovery, but
+  // with separate limits. This keeps the critical path small and lets the
+  // caller include the next day's probable-starter slots without scanning
+  // every historical unfinished game on every Cron tick.
   const auxiliaryGamesPromise = auxiliaryGameListOptions
     ? listV3Games(env.AUTH_DB, now, auxiliaryGameListOptions)
     : Promise.resolve(games);

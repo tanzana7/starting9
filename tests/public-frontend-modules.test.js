@@ -30,7 +30,7 @@ test("公開frontendの責務は実ファイルへ分離されている", () => 
   assert.match(script, /createPublicApiClient\(\)/);
   assert.match(script, /createPublicRequestGuard\(appState\.requests\)/);
   assert.match(script, /createPublicResultsRenderer/);
-  assert.match(script, /createPublicRankingRenderer/);
+  assert.doesNotMatch(script, /createPublicRankingRenderer/);
   assert.match(script, /createPublicRosterController/);
   assert.match(script, /createPublicPredictionFormController/);
 });

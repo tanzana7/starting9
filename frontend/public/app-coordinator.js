@@ -91,8 +91,7 @@
         });
         const loadNonCritical = () => Promise.allSettled([
           ops.refreshResultHistory({ force: true }),
-          ops.fetchUserAchievements({ force: true }),
-          this.state.rankingView === "weekly" ? ops.refreshWeeklyRanking({ force: true }) : Promise.resolve()
+          ops.fetchUserAchievements({ force: true })
         ]).then((results) => {
           results.forEach((result) => {
             if (result.status === "rejected") {

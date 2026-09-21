@@ -3,6 +3,7 @@
 
   const ADMIN_V3_ENDPOINTS = Object.freeze({
     session: "/api/admin/me",
+    rankings: (periodType) => `/api/admin/rankings/${encodeURIComponent(periodType)}`,
     overview: "/api/admin/v3/overview",
     automationLogs: "/api/admin/v3/automation-logs",
     rankingResets: "/api/admin/v3/ranking-resets",
@@ -71,6 +72,17 @@
     return Object.freeze({
       request,
       getSession: () => request(ADMIN_V3_ENDPOINTS.session),
+      getRanking(periodType, { periodKey = "", limit = 100, qualifiedOnly = false } = {}) {
+        const query = new URLSearchParams({ limit: String(limit), qualifiedOnly: qualifiedOnly ? "true" : "false" });
+        if (periodType === "weekly") query.set("weekStart", String(periodKey || ""));
+        if (periodType === "monthly") {
+          const [year, month] = String(periodKey || "").split("-");
+          if (year) query.set("year", year);
+          if (month) query.set("month", month);
+        }
+        if (periodType === "yearly" && periodKey) query.set("year", String(periodKey));
+        return request(`${ADMIN_V3_ENDPOINTS.rankings(periodType)}?${query.toString()}`);
+      },
       getOverview: () => request(ADMIN_V3_ENDPOINTS.overview),
       getAutomationLogs(filters = {}) {
         const query = new URLSearchParams({ ...filters, limit: String(filters.limit || 100) });

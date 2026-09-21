@@ -795,6 +795,21 @@ button:disabled { cursor: not-allowed; opacity: .65; }
   .ranking-test-table th, .ranking-test-table td { padding: .3rem; font-size: .9rem; }
 }
 
+.admin-ranking-panel { display: grid; gap: 1rem; }
+.admin-ranking-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.admin-ranking-controls input { width: 9rem; }
+.admin-ranking-summary { margin: 0; color: #526173; font-size: .9rem; }
+.admin-ranking-table-wrap { overflow-x: auto; }
+.admin-ranking-table { width: 100%; border-collapse: collapse; min-width: 34rem; }
+.admin-ranking-table th, .admin-ranking-table td { padding: .55rem; border-bottom: 1px solid var(--border-color, #d7dee8); text-align: left; vertical-align: middle; }
+.admin-ranking-table th { color: #526173; font-size: .85rem; background: #f8fafc; }
+@media (max-width: 680px) {
+  .admin-ranking-controls { align-items: stretch; }
+  .admin-ranking-controls input { width: 100%; }
+  .admin-ranking-controls label:not(:first-child) { flex-basis: 100%; }
+  .admin-ranking-table th, .admin-ranking-table td { padding: .35rem .25rem; font-size: .9rem; }
+}
+
 /* This read-only view is intentionally compact: it exposes the one-time purge
    plan without adding a delete control to the durable admin surface. */
 .pre-beta-purge-panel { display: grid; gap: 1rem; }

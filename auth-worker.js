@@ -623,6 +623,10 @@ export default {
       if (path === "/api/auth/me" && request.method === "GET") {
         return await handleMe(request, env, ctx, cors);
       }
+      const adminRankingRoute = /^\/api\/admin\/rankings\/(weekly|monthly|yearly)$/.exec(path);
+      if (adminRankingRoute && request.method === "GET") {
+        return await handleAdminRanking(request, env, cors, adminRankingRoute[1]);
+      }
       if (path === "/api/me/achievements" && request.method === "GET") {
         return await handleMyAchievements(request, env, cors);
       }
@@ -10235,6 +10239,35 @@ async function handleMyAchievements(request, env, cors) {
   return jsonResponse({ ok: true, achievements: achievements.map(toPublicAchievement) }, 200, cors);
 }
 
+async function handleAdminRanking(request, env, cors, periodType) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+
+  const options = periodType === "weekly"
+    ? parseWeeklyRankingQuery(new URL(request.url).searchParams)
+    : periodType === "monthly"
+      ? parseMonthlyRankingQuery(new URL(request.url).searchParams)
+      : parseYearlyRankingQuery(new URL(request.url).searchParams);
+  if (!options.ok) return jsonResponse({ ok: false, error: options.error }, 400, cors);
+
+  const ranking = await getRankingForPeriod(env.AUTH_DB, {
+    ...options,
+    publishedOnly: true,
+    includeTestUsers: true
+  });
+  const response = jsonResponse({
+    ok: true,
+    periodType: options.periodType,
+    periodKey: options.periodKey,
+    ranking: ranking.rows,
+    summary: ranking.summary,
+    pagination: ranking.pagination,
+    updatedAt: new Date().toISOString()
+  }, 200, cors);
+  response.headers.set("Cache-Control", "private, no-store");
+  return response;
+}
+
 async function handleGetPerfectAchieversRanking(request, env, cors) {
   const options = parsePerfectAchieversQuery(new URL(request.url).searchParams);
   if (!options.ok) {
@@ -10313,61 +10346,11 @@ async function handleGetMyMonthlyRanking(request, env, cors) {
 }
 
 async function handleGetWeeklyRanking(request, env, cors) {
-  const options = parseWeeklyRankingQuery(new URL(request.url).searchParams);
-  if (!options.ok) {
-    return jsonResponse({ ok: false, error: options.error }, 400, cors);
-  }
-
-  const publicStartDate = getPublicRankingStartDate(env) || "2026-09-21";
-  const availability = getPublicWeeklyRankingAvailability({
-    now: new Date(),
-    weekStart: options.weekStart,
-    startDate: publicStartDate
-  });
-  if (availability.status !== "available") {
-    return publicWeeklyRankingStatusResponse(cors, options, {
-      status: availability.status,
-      message: availability.message
-    });
-  }
-
-  const ranking = await getRankingForPeriod(env.AUTH_DB, { ...options, publishedOnly: true, includeTestUsers: true, releaseCutoffAt: `${publicStartDate}T00:00:00+09:00` });
-  const hasPublishedGames = Number(ranking.summary?.eligibleGames || 0) > 0;
-  const response = jsonResponse({
-    ok: true,
-    weekStart: options.weekStart,
-    weekEnd: options.endAt,
-    weekStartUtc: options.startAtUtc,
-    weekEndUtc: options.endAtUtc,
-    ranking: ranking.rows,
-    summary: ranking.summary,
-    pagination: ranking.pagination,
-    rankingStatus: hasPublishedGames ? "available" : "collecting",
-    message: hasPublishedGames ? "" : "ランキング集計中",
-    updatedAt: new Date().toISOString()
-  }, 200, cors);
-  response.headers.set("Cache-Control", "public, max-age=30");
-  return response;
+  return hiddenPublicRankingPeriodResponse(cors, "週間");
 }
 
 async function handleGetMyWeeklyRanking(request, env, cors) {
-  const access = await requireAuthenticatedUser(request, env, cors);
-  if (!access.ok) return access.response;
-
-  const options = parseWeeklyRankingQuery(new URL(request.url).searchParams);
-  if (!options.ok) {
-    return jsonResponse({ ok: false, error: options.error }, 400, cors);
-  }
-  const publicStartDate = getPublicRankingStartDate(env);
-  const availability = getPublicWeeklyRankingAvailability({
-    now: new Date(),
-    weekStart: options.weekStart,
-    startDate: publicStartDate
-  });
-  const rankingData = availability.status !== "available"
-    ? null
-    : await getRankingEntryForUser(env.AUTH_DB, access.user.id, { ...options, publishedOnly: true, releaseCutoffAt: `${publicStartDate}T00:00:00+09:00` });
-  return jsonResponse({ ok: true, weekStart: options.weekStart, weekEnd: options.endAt, rankingData, rankingStatus: availability.status, message: availability.message || "" }, 200, cors);
+  return hiddenPublicRankingPeriodResponse(cors, "週間");
 }
 
 export function getPublicRankingStartDate(env) {
@@ -10388,8 +10371,8 @@ export function getPublicWeeklyRankingAvailability({ now = new Date(), weekStart
 function hiddenPublicRankingPeriodResponse(cors, periodLabel) {
   const response = jsonResponse({
     ok: false,
-    code: "PUBLIC_RANKING_PERIOD_HIDDEN",
-    error: `${periodLabel}ランキングは現在公開していません。`
+    code: "PUBLIC_RANKING_ADMIN_ONLY",
+    error: `${periodLabel}ランキングは管理者専用です。`
   }, 404, cors);
   response.headers.set("Cache-Control", "no-store");
   return response;

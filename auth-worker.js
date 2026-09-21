@@ -176,6 +176,7 @@ import {
   normalizeV3InternalGameId,
   transitionV3State,
   listV3Games,
+  listOfficialCancellationCandidates,
   getV3SchemaState,
   runGameAutomationV3,
   createV3Job,
@@ -1169,7 +1170,9 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
   const runScheduleSync = async () => {
     let officialCancellation = null;
     try {
-      officialCancellation = await reconcileOfficialGameCancellations(env, now);
+      officialCancellation = await reconcileOfficialGameCancellations(env, now, {
+        includeHistorical: isV3StorageMaintenanceWindow(now)
+      });
     } catch (error) {
       officialCancellation = {
         checked: 0,
@@ -1307,6 +1310,7 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
           due: Array.isArray(claimReport.due) ? claimReport.due.length : 0,
           claimed: Array.isArray(claimReport.claimed) ? claimReport.claimed.length : 0,
           skipped: Array.isArray(claimReport.skipped) ? claimReport.skipped.length : 0,
+          hasMoreDue: claimReport.hasMoreDue === true,
           claimedJobIds: (Array.isArray(claimReport.claimed) ? claimReport.claimed : []).slice(0, 100).map((entry) => entry?.job?.id || null).filter(Boolean),
           skippedJobIds: (Array.isArray(claimReport.skipped) ? claimReport.skipped : []).slice(0, 100).map((entry) => entry?.job?.id || null).filter(Boolean),
           results: (Array.isArray(claimReport.claimed) ? claimReport.claimed : []).slice(0, 100).map((entry) => ({
@@ -1474,7 +1478,8 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     executedJobCount: Number(result?.processed || 0),
     failedJobCount: Number(result?.failed || 0),
     retryWaitJobCount: Number(result?.retryWait || 0),
-    terminalFailedJobCount: Number(result?.terminalFailed || 0)
+    terminalFailedJobCount: Number(result?.terminalFailed || 0),
+    hasMoreDue: result?.claimReport?.hasMoreDue === true
   });
   let scheduleSync = null;
   if (typeof scheduleOptional === "function") {
@@ -1544,6 +1549,7 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
       terminalFailedJobCount: Number(result?.terminalFailed || 0),
       failedJobIds: Array.isArray(result?.failedJobIds) ? result.failedJobIds.slice(0, 100) : [],
       retryErrors: Array.isArray(result?.retryErrors) ? result.retryErrors.slice(0, 20) : [],
+      hasMoreDue: result?.claimReport?.hasMoreDue === true,
       workflowStateUpdates: result?.stateReconciliation || null,
       workflowStates,
       publishedReached: workflowStates.some((row) => String(row?.state || "") === "published")
@@ -1588,22 +1594,25 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
   }
 }
 
-async function reconcileOfficialGameCancellations(env, now) {
+async function reconcileOfficialGameCancellations(env, now, { includeHistorical = false } = {}) {
   const summary = { checked: 0, applied: 0, skipped: 0, failed: 0, gameIds: [], errors: [] };
-  const games = await listV3Games(env.AUTH_DB, now);
+  const games = await listOfficialCancellationCandidates(env.AUTH_DB, now, {
+    includeHistorical,
+    lookbackDays: 2,
+    lookaheadDays: 2,
+    limit: 50
+  });
   for (const game of games) {
     const status = String(game?.gameStatus || "").trim().toLowerCase();
     if (!["cancelled", "canceled", "postponed", "service_unavailable"].includes(status)) continue;
     summary.checked += 1;
-    const stateRow = await env.AUTH_DB.prepare(
-      "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
-    ).bind(game.internalGameId).first();
-    if (!stateRow || String(stateRow.state || "") === "excluded") {
+    const state = String(game.workflowState || "");
+    if (!state || state === "excluded") {
       summary.skipped += 1;
       continue;
     }
     try {
-      const result = await applyOfficialGameCancellation(env, game, String(stateRow.state || "scheduled"), now);
+      const result = await applyOfficialGameCancellation(env, game, state, now);
       if (result?.status === "applied") {
         summary.applied += 1;
         summary.gameIds.push(game.internalGameId);

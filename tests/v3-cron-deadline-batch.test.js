@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import test from "node:test";
-import { listV3Games } from "../backend/automation-v3/repository.js";
+import { listOfficialCancellationCandidates, listV3Games } from "../backend/automation-v3/repository.js";
 
 function d1(database) {
   return {
@@ -104,6 +104,38 @@ test("auxiliaryの12試合batchは当日分に続く翌日試合を含む", asyn
       { limit: 12, prioritizeDue: true }
     );
     assert.ok(games.some((game) => game.internalGameId === "tomorrow"));
+  } finally {
+    database.close();
+  }
+});
+
+test("公式中止候補は通常Cronでは近日期間だけを取得し、保守時は過去訂正も取得する", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE games (
+        internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+        home_team TEXT, away_team TEXT, npb_game_code TEXT,
+        game_status TEXT, is_active INTEGER, deleted_at TEXT
+      );
+      CREATE TABLE game_automation_v3_state (
+        internal_game_id TEXT PRIMARY KEY, state TEXT
+      );
+      INSERT INTO games VALUES
+        ('recent-cancelled', '2026-09-20', '2026-09-20T05:00:00.000Z', 'f', 'b', 'f-b-recent', 'cancelled', 1, NULL),
+        ('old-cancelled', '2026-08-01', '2026-08-01T05:00:00.000Z', 'f', 'b', 'f-b-old', 'postponed', 1, NULL),
+        ('scheduled', '2026-09-20', '2026-09-20T08:00:00.000Z', 'f', 'b', 'f-b-open', 'scheduled', 1, NULL);
+      INSERT INTO game_automation_v3_state VALUES
+        ('recent-cancelled', 'scheduled'), ('old-cancelled', 'published'), ('scheduled', 'scheduled');
+    `);
+
+    const now = new Date("2026-09-20T06:30:00.000Z");
+    const recent = await listOfficialCancellationCandidates(d1(database), now, { limit: 50 });
+    assert.deepEqual(recent.map((game) => game.internalGameId), ["recent-cancelled"]);
+    assert.equal(recent[0].gameStatus, "cancelled");
+
+    const historical = await listOfficialCancellationCandidates(d1(database), now, { includeHistorical: true });
+    assert.deepEqual(historical.map((game) => game.internalGameId), ["recent-cancelled", "old-cancelled"]);
   } finally {
     database.close();
   }

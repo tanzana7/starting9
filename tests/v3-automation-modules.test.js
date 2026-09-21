@@ -100,6 +100,7 @@ test("V3 Cron diagnostics aggregate planner, claim, executor, and schedule-sync 
   assert.equal(summary.status, "completed");
   assert.equal(summary.counts.planned, 2);
   assert.equal(summary.counts.claimed, 1);
+  assert.equal(summary.counts.hasMoreDue, false);
   assert.equal(summary.stateReconciliation.recovered, 1);
   assert.deepEqual(summary.stateReconciliation.recoveredByJobType, { prediction_close: 1 });
   assert.deepEqual(summary.createdByJobType, { probable_starter_fetch: 1 });
@@ -112,15 +113,16 @@ test("due-job query includes pending and ready retry jobs but excludes future re
     database.exec(`
       CREATE TABLE game_jobs_v3 (
         id INTEGER PRIMARY KEY,
+        job_type TEXT NOT NULL,
         status TEXT NOT NULL,
         scheduled_at TEXT NOT NULL,
         next_retry_at TEXT,
         lease_expires_at TEXT
       );
       INSERT INTO game_jobs_v3 VALUES
-        (1, 'pending', '2026-08-25T07:56:00.000Z', NULL, NULL),
-        (2, 'retry_wait', '2026-08-25T07:55:00.000Z', '2026-08-25T07:57:00.000Z', NULL),
-        (3, 'retry_wait', '2026-08-25T07:55:00.000Z', '2026-08-25T08:01:00.000Z', NULL);
+        (1, 'score', 'pending', '2026-08-25T07:56:00.000Z', NULL, NULL),
+        (2, 'prediction_close', 'retry_wait', '2026-08-25T07:55:00.000Z', '2026-08-25T07:57:00.000Z', NULL),
+        (3, 'publish', 'retry_wait', '2026-08-25T07:55:00.000Z', '2026-08-25T08:01:00.000Z', NULL);
     `);
     const db = {
       prepare(sql) {
@@ -188,6 +190,37 @@ test("due-job claimは50/100件制限で後続gameをstarveさせず、複数bat
     assert.equal(report.due.length, 101);
     assert.equal(report.claimed.filter((entry) => entry.claimed).length, 101);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE status = 'claimed'").get().count, 101);
+  } finally {
+    database.close();
+  }
+});
+
+test("due-job claimは200件でbounded化し、残件を次回Cronへ継続する", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE game_jobs_v3 (
+        id INTEGER PRIMARY KEY, internal_game_id TEXT, job_type TEXT,
+        scheduled_at TEXT NOT NULL, scheduled_slot_at TEXT NOT NULL, status TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL, max_attempts INTEGER NOT NULL, next_retry_at TEXT,
+        claimed_at TEXT, claim_token TEXT, lease_expires_at TEXT, completed_at TEXT,
+        failure_code TEXT, failure_message TEXT, created_at TEXT, updated_at TEXT
+      );
+    `);
+    const insert = database.prepare(`
+      INSERT INTO game_jobs_v3
+        (id, internal_game_id, job_type, scheduled_at, scheduled_slot_at, status,
+         attempt_count, max_attempts, created_at, updated_at)
+      VALUES (?, ?, 'score', '2026-08-30T07:00:00.000Z', '2026-08-30T07:00:00.000Z', 'pending', 0, 12,
+              '2026-08-30T06:00:00.000Z', '2026-08-30T06:00:00.000Z')
+    `);
+    for (let id = 1; id <= 250; id += 1) insert.run(id, `game-${id}`);
+
+    const report = await v3.claimDueJobs(d1(database), new Date("2026-08-30T08:00:00.000Z"));
+    assert.equal(report.due.length, 200);
+    assert.equal(report.claimed.filter((entry) => entry.claimed).length, 200);
+    assert.equal(report.hasMoreDue, true);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE status = 'pending'").get().count, 50);
   } finally {
     database.close();
   }

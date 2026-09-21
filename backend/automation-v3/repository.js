@@ -282,6 +282,67 @@ export async function listV3Games(db, now = new Date(), options = {}) {
   }));
 }
 
+// Cancellation reconciliation must not reuse the normal automation discovery
+// query. That query intentionally excludes terminal game statuses and joins
+// publication/correction artifacts for formal planning, so using it here
+// both misses official cancellations and performs unnecessary work every
+// Cron tick. The frequent pass is limited to the nearby JST schedule window;
+// the caller can request the historical pass at a low-frequency maintenance
+// boundary to preserve detection of late official corrections.
+export async function listOfficialCancellationCandidates(db, now = new Date(), {
+  includeHistorical = false,
+  lookbackDays = 2,
+  lookaheadDays = 2,
+  limit = 50
+} = {}) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(current.getTime())) return [];
+  const date = new Date(current.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const boundedLimit = Math.max(1, Math.min(100, Number(limit) || 50));
+  const params = [];
+  const dateFilter = includeHistorical
+    ? ""
+    : "AND games.game_date BETWEEN date(?1, ?2) AND date(?1, ?3)";
+  if (!includeHistorical) {
+    params.push(
+      date,
+      `-${Math.max(0, Number(lookbackDays) || 0)} day`,
+      `+${Math.max(0, Number(lookaheadDays) || 0)} day`
+    );
+  }
+  const limitSql = includeHistorical ? "" : ` LIMIT ?${params.push(boundedLimit)}`;
+  const result = await db.prepare(
+    `SELECT games.internal_game_id, games.game_date, games.start_time,
+            games.home_team, games.away_team, games.npb_game_code,
+            games.game_status, games.is_active, games.deleted_at,
+            workflow.state AS workflow_state
+       FROM games
+       LEFT JOIN game_automation_v3_state AS workflow
+         ON workflow.internal_game_id = games.internal_game_id
+      WHERE games.internal_game_id IS NOT NULL
+        AND games.internal_game_id <> ''
+        AND games.is_active = 1
+        AND games.deleted_at IS NULL
+        AND LOWER(COALESCE(games.game_status, '')) IN
+          ('cancelled', 'canceled', 'postponed', 'service_unavailable')
+        ${dateFilter}
+      ORDER BY games.game_date DESC, games.start_time DESC, games.internal_game_id
+      ${limitSql}`
+  ).bind(...params).all();
+  return (result.results || []).map((row) => ({
+    internalGameId: row.internal_game_id,
+    gameDate: row.game_date,
+    startAt: row.start_time,
+    homeTeam: row.home_team,
+    awayTeam: row.away_team,
+    npbGameCode: row.npb_game_code || null,
+    gameStatus: row.game_status,
+    workflowState: row.workflow_state || null,
+    isActive: row.is_active,
+    deletedAt: row.deleted_at
+  }));
+}
+
 function normalizeV3NpbGameCode(value) {
   const code = String(value || "").trim().toLowerCase();
   return /^[a-z0-9]{1,2}-[a-z0-9]{1,2}-\d+$/.test(code) ? code : "";
@@ -469,7 +530,15 @@ export async function listDueV3Jobs(db, now = new Date(), limit = 50, cursor = n
         AND scheduled_at <= ?1
         AND (next_retry_at IS NULL OR next_retry_at <= ?1)
         ${cursorClause}
-      ORDER BY scheduled_at, id LIMIT ?2`
+      ORDER BY scheduled_at,
+        CASE job_type
+          WHEN 'prediction_close' THEN 0
+          WHEN 'score' THEN 1
+          WHEN 'ranking_rebuild' THEN 2
+          WHEN 'publish' THEN 3
+          ELSE 4
+        END,
+        id LIMIT ?2`
   ).bind(...params).all();
   return result.results || [];
 }

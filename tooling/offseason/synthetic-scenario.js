@@ -1,4 +1,5 @@
 import { scorePredictionLineup } from "../../backend/domain/scoring.js";
+import { V3_JOB_TYPE, V3_TIMING } from "../../backend/automation-v3/constants.js";
 
 export const OFFSEASON_ENVIRONMENT = Object.freeze({
   pagesProject: "starting9-offseason-test",
@@ -15,6 +16,10 @@ const TEAM_CODES = Object.freeze([
 
 function isoAt(baseAt, offsetMinutes) {
   return new Date(new Date(baseAt).getTime() + offsetMinutes * 60_000).toISOString();
+}
+
+function isoAtSeconds(baseAt, offsetSeconds) {
+  return new Date(new Date(baseAt).getTime() + offsetSeconds * 1_000).toISOString();
 }
 
 function createPlayers(teamCode, teamIndex) {
@@ -80,7 +85,7 @@ export function createSyntheticScenario({
       gameDate: startsAt.slice(0, 10),
       homeTeam: home.teamCode,
       awayTeam: away.teamCode,
-      predictionDeadlineAt: isoAt(startsAt, -30),
+      predictionDeadlineAt: isoAt(startsAt, -V3_TIMING.predictionDeadlineMinutes),
       startsAt,
       status: "scheduled"
     };
@@ -103,9 +108,20 @@ export function createSyntheticScenario({
   const jobs = Array.from({ length: jobCount }, (_, index) => ({
     jobId: `offseason-job-${index + 1}`,
     internalGameId: games[index % games.length].internalGameId,
-    jobType: index % 3 === 0 ? "score" : index % 3 === 1 ? "rank" : "publish",
+    jobType: [V3_JOB_TYPE.PREDICTION_CLOSE, V3_JOB_TYPE.SCORE, V3_JOB_TYPE.RANKING_REBUILD, V3_JOB_TYPE.PUBLISH][index % 4],
     status: index % 5 === 0 ? "claimed" : "pending",
-    runAfter: isoAt(baseAt, index)
+    // Keep stage due times distinct like the production schedule. All four
+    // stages are already due at the load-test clock, so pagination can be
+    // checked without creating an artificial same-timestamp cursor hazard.
+    scheduledAt: isoAt(baseAt, -4 + (index % 4)),
+    scheduledSlotAt: isoAtSeconds(baseAt, index + 1),
+    nextRetryAt: null,
+    claimedAt: index % 5 === 0 ? isoAt(baseAt, -5) : null,
+    claimToken: index % 5 === 0 ? `expired-claim-${index + 1}` : null,
+    leaseExpiresAt: index % 5 === 0 ? isoAt(baseAt, -1) : null,
+    attemptCount: index % 5 === 0 ? 1 : 0,
+    maxAttempts: 12,
+    runAfter: new Date(baseAt).toISOString()
   }));
 
   return { teams, players, games, predictions, jobs };

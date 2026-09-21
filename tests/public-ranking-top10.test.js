@@ -79,8 +79,8 @@ test("public ranking keeps fewer-than-ten ranked participants and omits unqualif
   assert.doesNotMatch(elements.rankingContent.innerHTML, /eleventh/);
 });
 
-test("weekly/monthly/yearly public ranking uses the Top10 renderer cache buster without changing API fetch depth", () => {
-  assert.match(indexSource, /frontend\/public\/render-ranking\.js\?v=public-compliance-disclaimer-and-fetch-safety-1&public-ranking-top10-1&public-ranking-average40-1&public-ranking-hide-unqualified-1/);
+test("public ranking renderer is no longer loaded while ranking aggregation remains server-side", () => {
+  assert.doesNotMatch(indexSource, /frontend\/public\/render-ranking\.js/);
   const scriptSource = fs.readFileSync(path.join(root, "script.js"), "utf8");
   assert.match(scriptSource, /url\.searchParams\.set\("limit", String\(RANKING_DISPLAY_LIMIT\)\)/);
   assert.match(scriptSource, /const RANKING_DISPLAY_LIMIT = 50/);

@@ -226,6 +226,17 @@
         if (rankingTestName) actions.updateRankingTestDisplayName(rankingTestName.value);
       });
       document.addEventListener("change", (event) => {
+        const rankingPeriod = closestFromEvent(event, "[data-v3-ranking-period]");
+        if (rankingPeriod) {
+          actions.changeRankingPeriod(rankingPeriod.value);
+          return;
+        }
+        const rankingPeriodKey = closestFromEvent(event, "[data-v3-ranking-period-key]");
+        if (rankingPeriodKey) {
+          state.ranking.periodKey = rankingPeriodKey.value;
+          state.ranking.loaded = false;
+          return;
+        }
         const rankingFilter = closestFromEvent(event, "[data-v3-ranking-exclusion-filter]");
         if (rankingFilter) {
           state.rankingReset.gameFilter = rankingFilter.value;
@@ -257,6 +268,7 @@
         if (navButton) { actions.chooseView(navButton.dataset.v3View); return; }
         if (closestFromEvent(event, "[data-v3-ranking-reset-preview]")) { await actions.previewRankingReset(); return; }
         if (closestFromEvent(event, "[data-v3-ranking-reset-execute]")) { await actions.executeRankingReset(); return; }
+        if (closestFromEvent(event, "[data-v3-ranking-refresh]")) { await actions.refreshRanking(true); return; }
         if (closestFromEvent(event, "[data-v3-perfect-score-preview]")) { await actions.previewPerfectScore("perfect"); return; }
         if (closestFromEvent(event, "[data-v3-manual-game-preview]")) { await actions.previewManualGame(); return; }
         if (closestFromEvent(event, "[data-v3-automation-log-refresh]")) { await actions.refreshAutomationLogs(); return; }

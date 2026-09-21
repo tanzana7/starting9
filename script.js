@@ -400,13 +400,6 @@ const publicResultsRenderer = publicFrontend.createPublicResultsRenderer({
   createResultView,
   createResultViewModel
 });
-const publicRankingRenderer = publicFrontend.createPublicRankingRenderer({
-  getPredictionAccountUser,
-  escapeHtml,
-  formatRankingScore,
-  formatParticipationRate,
-  createRankingAchievementBadgesHtml
-});
 const publicRosterController = publicFrontend.createPublicRosterController({
   state,
   storage: publicStorage,
@@ -521,12 +514,11 @@ async function initializeAuthDependentFeatures() {
     void Promise.allSettled([
       fetchPreviousResultGame({ force: false }),
       refreshResultHistory({ force: false }),
-      fetchUserAchievements({ force: false }),
-      refreshWeeklyRanking({ force: false })
+      fetchUserAchievements({ force: false })
     ]).then((results) => {
       results.forEach((result, index) => {
         if (result.status === "rejected") {
-          const labels = ["前回結果", "過去結果", "実績", "ランキング"];
+          const labels = ["前回結果", "過去結果", "実績"];
           console.error(`${labels[index]}の初期化に失敗しました`, result.reason?.message || "unknown error");
         }
       });
@@ -542,8 +534,6 @@ function bindEvents() {
   document.getElementById("saveSavedPredictionImageButton")?.addEventListener("click", saveSavedPredictionImage);
   document.getElementById("predictionCtaButton")?.addEventListener("click", handlePredictionCtaClick);
   document.getElementById("editSavedPredictionButton")?.addEventListener("click", scrollToPredictionForm);
-  document.getElementById("showWeeklyRankingButton")?.addEventListener("click", () => selectRankingView("weekly"));
-  document.getElementById("rankingContent")?.addEventListener("click", handleRankingPeriodContentClick);
   document.getElementById("publicGameSelectionMeta")?.addEventListener("click", handlePublicGameSelectionMetaClick);
   document.getElementById("resultHistoryList")?.addEventListener("click", handleResultHistoryClick);
   document.getElementById("resultHistoryList")?.addEventListener("change", handleResultHistoryChange);
@@ -4317,7 +4307,6 @@ function renderAll() {
   renderResultHistory();
   renderScoreResult();
   renderDailyBestNine();
-  renderRankingPanel();
   renderPicker("prediction");
 }
 

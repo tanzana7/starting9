@@ -11,6 +11,7 @@ if (!adminV3Modules?.createAdminV3State
   || !adminV3Modules?.createAdminV3RosterRenderer
   || !adminV3Modules?.createAdminV3DiagnosticsRenderer
   || !adminV3Modules?.createAdminV3RankingResetRenderer
+  || !adminV3Modules?.createAdminV3RankingRenderer
   || !adminV3Modules?.createAdminV3PerfectScoreRenderer
   || !adminV3Modules?.createAdminV3RankingTestRenderer
   || !adminV3Modules?.createAdminV3ManualGamePreviewRenderer
@@ -23,6 +24,7 @@ if (!adminV3Modules?.createAdminV3State
 }
 const v3Dom = adminV3Modules.createAdminV3Dom();
 const v3SelectionSafety = adminV3Modules.createAdminV3SelectionSafety();
+const v3RankingRenderer = adminV3Modules.createAdminV3RankingRenderer();
 const V3_JOB_TYPE = Object.freeze({
   NPB_IDENTITY_RESOLVE: "npb_identity_resolve",
   PREDICTION_CLOSE: "prediction_close",
@@ -45,7 +47,7 @@ const V3_JOB_TYPES = Object.freeze([
   V3_JOB_TYPE.PROBABLE_STARTER_FETCH,
   V3_JOB_TYPE.ROSTER_FETCH
 ]);
-const V3_VIEWS = ["dashboard", "games", "workflow", "lineup", "lineup-correction", "roster", "scoring", "ranking-test-users", "ranking-reset", "schedule", "add-game-preview", "diagnostics", "pre-beta-purge"];
+const V3_VIEWS = ["dashboard", "games", "workflow", "lineup", "lineup-correction", "roster", "scoring", "ranking", "ranking-test-users", "ranking-reset", "schedule", "add-game-preview", "diagnostics", "pre-beta-purge"];
 const V3_VIEW_LABELS = {
   dashboard: "ダッシュボード",
   games: "試合一覧",
@@ -54,6 +56,7 @@ const V3_VIEW_LABELS = {
   "lineup-correction": "スタメン修正",
   roster: "ロースター管理",
   scoring: "採点・ランキング",
+  ranking: "ランキング",
   "ranking-test-users": "ランキング テストユーザー",
   "ranking-reset": "ランキング対象外",
   schedule: "日程管理",
@@ -1538,7 +1541,7 @@ function renderCurrentV3View() {
   const view = document.getElementById("v3View");
   if (!view) return;
   const gameSelectionControls = document.querySelector("[data-v3-game-selection-controls]");
-  if (gameSelectionControls) gameSelectionControls.classList.toggle("is-hidden", ["roster", "pre-beta-purge"].includes(v3State.view));
+  if (gameSelectionControls) gameSelectionControls.classList.toggle("is-hidden", ["roster", "ranking", "pre-beta-purge"].includes(v3State.view));
   const v4Notice = payload.automationMode?.isV4SemiAuto
     ? '<div class="v3-operation-result attention" data-v3-v4-mode><strong>V4半自動運営</strong><span>予告先発: 自動取得 / ロースター: Fightersロースターを手動管理 / スタメン: 自動取得OFF / 正式スタメン: 手動</span><span>ロースター更新はスタメンを変更しません。ロースター管理とスタメン確定をそれぞれ確認後、予想締切・採点・ランキング・公開を正式Cronへ引き継ぎます。</span></div>'
     : "";
@@ -1554,6 +1557,7 @@ function renderCurrentV3View() {
     "lineup-correction": () => v3LineupCorrectionRenderer.render(v3State.lineupCorrection),
     roster: () => v3ManualRosterRenderer.render(v3State.manualRoster),
     scoring: () => v3GameProgressRenderer.renderScoringView(filteredGame || game),
+    ranking: () => v3RankingRenderer.render(v3State.ranking),
     "ranking-test-users": () => v3RankingTestRenderer.render(filteredGame || game),
     "ranking-reset": () => v3RankingResetRenderer.render(),
     schedule: () => v3GameProgressRenderer.renderScheduleView(games),
@@ -1935,6 +1939,45 @@ async function loadPreBetaPurge(force = false) {
   }
 }
 
+function ensureAdminRankingPeriodKey(state) {
+  if (String(state.periodKey || "").trim()) return;
+  state.periodKey = v3RankingRenderer.defaultPeriodKey(state.periodType);
+}
+
+async function loadAdminRanking(force = false) {
+  const state = v3State.ranking;
+  ensureAdminRankingPeriodKey(state);
+  if (state.loading || (state.loaded && !force)) return;
+  state.loading = true;
+  state.error = "";
+  renderCurrentV3View();
+  try {
+    const result = await v3Api.getRanking(state.periodType, { periodKey: state.periodKey, limit: 100, qualifiedOnly: false });
+    state.rows = Array.isArray(result.ranking) ? result.ranking : [];
+    state.summary = result.summary || null;
+    state.pagination = result.pagination || null;
+    state.loaded = true;
+  } catch (error) {
+    state.rows = [];
+    state.summary = null;
+    state.pagination = null;
+    state.error = formatV3AdminError(error, "ADMIN_RANKING_READ_FAILED");
+  } finally {
+    state.loading = false;
+    renderCurrentV3View();
+  }
+}
+
+function changeAdminRankingPeriod(periodType) {
+  const state = v3State.ranking;
+  if (!["weekly", "monthly", "yearly"].includes(periodType)) return;
+  state.periodType = periodType;
+  state.periodKey = v3RankingRenderer.defaultPeriodKey(periodType);
+  state.loaded = false;
+  state.error = "";
+  void loadAdminRanking(true);
+}
+
 async function loadV3() {
   setV3Status("読み込み中…");
   try {
@@ -1945,8 +1988,9 @@ async function loadV3() {
     v3State.automationLogs = payload.automationLogs;
     renderV3(payload);
     if (v3State.view === "lineup-correction") await loadV3LineupCorrections(true);
+    else if (v3State.view === "ranking") await loadAdminRanking(true);
     else if (v3State.view === "ranking-test-users") await loadRankingTestUsers(true);
-    else if (!["roster", "pre-beta-purge"].includes(v3State.view)) await loadV3OperationDetails();
+    else if (!["roster", "ranking", "pre-beta-purge"].includes(v3State.view)) await loadV3OperationDetails();
     if (v3State.view === "roster") await loadManualRoster();
     if (v3State.view === "pre-beta-purge") await loadPreBetaPurge(true);
     setV3Status(`${v3State.payload.games.length}試合を表示しました。`);
@@ -1960,6 +2004,7 @@ function chooseV3View(view, { skipLineupLoad = false } = {}) {
   v3State.view = view;
   updateV3Hash(view, v3State.selectedGameId);
   renderCurrentV3View();
+  if (view === "ranking") loadAdminRanking();
   if (view === "ranking-reset") {
     loadRankingResetMarkers();
     loadRankingExclusionGames();
@@ -2049,9 +2094,10 @@ function handleV3HashChange() {
   v3State.selectionSafetyNotice = "";
   renderCurrentV3View();
   if (v3State.view === "lineup-correction") loadV3LineupCorrections();
+  else if (v3State.view === "ranking") loadAdminRanking(true);
   else if (v3State.view === "ranking-test-users") loadRankingTestUsers(true);
   else if (v3State.view === "pre-beta-purge") loadPreBetaPurge(true);
-  else if (v3State.view !== "roster") loadV3OperationDetails();
+  else if (!["roster", "ranking"].includes(v3State.view)) loadV3OperationDetails();
   if (v3State.view === "roster") loadManualRoster();
 }
 
@@ -2076,6 +2122,8 @@ adminV3Modules.createAdminV3Coordinator({
     previewRankingReset,
     executeRankingReset,
     refreshRankingExclusionGames: loadRankingExclusionGames,
+    refreshRanking: loadAdminRanking,
+    changeRankingPeriod: changeAdminRankingPeriod,
     refreshPreBetaPurge: loadPreBetaPurge,
     renderRankingExclusionGames,
     previewPerfectScore,

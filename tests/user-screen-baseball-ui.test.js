@@ -105,7 +105,6 @@ test("公開画面は900px以上でも予想入力から結果までを縦積み
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\)[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*> \.lineup-card[\s\S]*grid-column: 1/);
   assert.match(css, /@media \(min-width: 900px\)[\s\S]*> \.result-card[\s\S]*grid-column: 1[\s\S]*grid-row: 4/);
-  assert.match(css, /@media \(min-width: 900px\)[\s\S]*> #rankingPanel[\s\S]*grid-column: 1[\s\S]*grid-row: 5/);
   assert.match(css, /@media \(min-width: 768px\) and \(max-width: 899px\)[\s\S]*\.app-layout:not\(\.is-admin-screen\)[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
 });
 

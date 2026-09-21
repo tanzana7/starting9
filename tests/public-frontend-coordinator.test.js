@@ -23,7 +23,7 @@ function loadPublicModule(name, extra = {}) {
 }
 
 test("公開画面のentry pointは分割moduleを読み込んでCoordinatorを一経路で起動する", () => {
-  const moduleScripts = ["state", "request-guard", "storage", "api-client", "app-coordinator", "render-results", "render-ranking", "roster", "prediction-form"];
+  const moduleScripts = ["state", "request-guard", "storage", "api-client", "app-coordinator", "render-results", "roster", "prediction-form"];
   const scriptOffset = html.indexOf("script.js?v=public-single-game-1");
   assert.ok(scriptOffset > 0);
   moduleScripts.forEach((name) => {

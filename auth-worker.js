@@ -176,6 +176,7 @@ import {
   normalizeV3InternalGameId,
   transitionV3State,
   listV3Games,
+  listOfficialCancellationCandidates,
   getV3SchemaState,
   runGameAutomationV3,
   createV3Job,
@@ -623,6 +624,10 @@ export default {
       if (path === "/api/auth/me" && request.method === "GET") {
         return await handleMe(request, env, ctx, cors);
       }
+      const adminRankingRoute = /^\/api\/admin\/rankings\/(weekly|monthly|yearly)$/.exec(path);
+      if (adminRankingRoute && request.method === "GET") {
+        return await handleAdminRanking(request, env, cors, adminRankingRoute[1]);
+      }
       if (path === "/api/me/achievements" && request.method === "GET") {
         return await handleMyAchievements(request, env, cors);
       }
@@ -1013,6 +1018,10 @@ async function writeV3RuntimeAudit(env, { eventType, runId, correlationId = runI
 
 const ROSTER_MASTER_WARNING_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
 const V3_CRON_GAME_BATCH_SIZE = 4;
+// 補助処理は当日最大6試合と翌日最大6試合を毎分確認すれば、
+// 予告先発の前日slotを取りこぼさず、過去の未完了試合を無制限に走査して
+// CronのCPU上限を消費することも防げます。正式処理のbatchとは分離します。
+const V3_AUXILIARY_GAME_BATCH_SIZE = 12;
 
 async function writeRosterMasterUnregisteredAudit(env, game, unknownPlayers, now = new Date()) {
   const internalGameId = String(game?.internal_game_id || game?.internalGameId || "").trim();
@@ -1161,7 +1170,9 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
   const runScheduleSync = async () => {
     let officialCancellation = null;
     try {
-      officialCancellation = await reconcileOfficialGameCancellations(env, now);
+      officialCancellation = await reconcileOfficialGameCancellations(env, now, {
+        includeHistorical: isV3StorageMaintenanceWindow(now)
+      });
     } catch (error) {
       officialCancellation = {
         checked: 0,
@@ -1243,6 +1254,10 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     // hydrating every historical unfinished game.  Current-day due games are
     // processed first; the next Cron tick drains the remaining window.
     gameListOptions: { limit: V3_CRON_GAME_BATCH_SIZE, prioritizeDue: true },
+    // Auxiliary polling needs the current and next calendar day's games, while
+    // an unbounded historical scan can exceed the per-invocation CPU budget.
+    // Keep this batch independent from the four-game formal critical path.
+    auxiliaryGameListOptions: { limit: V3_AUXILIARY_GAME_BATCH_SIZE, prioritizeDue: true },
     executeJob: (context) => operationalMode.disabledJobTypes.includes(String(context?.job?.job_type || ""))
       ? {
         status: "skipped",
@@ -1295,6 +1310,7 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
           due: Array.isArray(claimReport.due) ? claimReport.due.length : 0,
           claimed: Array.isArray(claimReport.claimed) ? claimReport.claimed.length : 0,
           skipped: Array.isArray(claimReport.skipped) ? claimReport.skipped.length : 0,
+          hasMoreDue: claimReport.hasMoreDue === true,
           claimedJobIds: (Array.isArray(claimReport.claimed) ? claimReport.claimed : []).slice(0, 100).map((entry) => entry?.job?.id || null).filter(Boolean),
           skippedJobIds: (Array.isArray(claimReport.skipped) ? claimReport.skipped : []).slice(0, 100).map((entry) => entry?.job?.id || null).filter(Boolean),
           results: (Array.isArray(claimReport.claimed) ? claimReport.claimed : []).slice(0, 100).map((entry) => ({
@@ -1462,7 +1478,8 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     executedJobCount: Number(result?.processed || 0),
     failedJobCount: Number(result?.failed || 0),
     retryWaitJobCount: Number(result?.retryWait || 0),
-    terminalFailedJobCount: Number(result?.terminalFailed || 0)
+    terminalFailedJobCount: Number(result?.terminalFailed || 0),
+    hasMoreDue: result?.claimReport?.hasMoreDue === true
   });
   let scheduleSync = null;
   if (typeof scheduleOptional === "function") {
@@ -1532,6 +1549,7 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
       terminalFailedJobCount: Number(result?.terminalFailed || 0),
       failedJobIds: Array.isArray(result?.failedJobIds) ? result.failedJobIds.slice(0, 100) : [],
       retryErrors: Array.isArray(result?.retryErrors) ? result.retryErrors.slice(0, 20) : [],
+      hasMoreDue: result?.claimReport?.hasMoreDue === true,
       workflowStateUpdates: result?.stateReconciliation || null,
       workflowStates,
       publishedReached: workflowStates.some((row) => String(row?.state || "") === "published")
@@ -1576,22 +1594,25 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
   }
 }
 
-async function reconcileOfficialGameCancellations(env, now) {
+async function reconcileOfficialGameCancellations(env, now, { includeHistorical = false } = {}) {
   const summary = { checked: 0, applied: 0, skipped: 0, failed: 0, gameIds: [], errors: [] };
-  const games = await listV3Games(env.AUTH_DB, now);
+  const games = await listOfficialCancellationCandidates(env.AUTH_DB, now, {
+    includeHistorical,
+    lookbackDays: 2,
+    lookaheadDays: 2,
+    limit: 50
+  });
   for (const game of games) {
     const status = String(game?.gameStatus || "").trim().toLowerCase();
     if (!["cancelled", "canceled", "postponed", "service_unavailable"].includes(status)) continue;
     summary.checked += 1;
-    const stateRow = await env.AUTH_DB.prepare(
-      "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
-    ).bind(game.internalGameId).first();
-    if (!stateRow || String(stateRow.state || "") === "excluded") {
+    const state = String(game.workflowState || "");
+    if (!state || state === "excluded") {
       summary.skipped += 1;
       continue;
     }
     try {
-      const result = await applyOfficialGameCancellation(env, game, String(stateRow.state || "scheduled"), now);
+      const result = await applyOfficialGameCancellation(env, game, state, now);
       if (result?.status === "applied") {
         summary.applied += 1;
         summary.gameIds.push(game.internalGameId);
@@ -10227,6 +10248,35 @@ async function handleMyAchievements(request, env, cors) {
   return jsonResponse({ ok: true, achievements: achievements.map(toPublicAchievement) }, 200, cors);
 }
 
+async function handleAdminRanking(request, env, cors, periodType) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+
+  const options = periodType === "weekly"
+    ? parseWeeklyRankingQuery(new URL(request.url).searchParams)
+    : periodType === "monthly"
+      ? parseMonthlyRankingQuery(new URL(request.url).searchParams)
+      : parseYearlyRankingQuery(new URL(request.url).searchParams);
+  if (!options.ok) return jsonResponse({ ok: false, error: options.error }, 400, cors);
+
+  const ranking = await getRankingForPeriod(env.AUTH_DB, {
+    ...options,
+    publishedOnly: true,
+    includeTestUsers: true
+  });
+  const response = jsonResponse({
+    ok: true,
+    periodType: options.periodType,
+    periodKey: options.periodKey,
+    ranking: ranking.rows,
+    summary: ranking.summary,
+    pagination: ranking.pagination,
+    updatedAt: new Date().toISOString()
+  }, 200, cors);
+  response.headers.set("Cache-Control", "private, no-store");
+  return response;
+}
+
 async function handleGetPerfectAchieversRanking(request, env, cors) {
   const options = parsePerfectAchieversQuery(new URL(request.url).searchParams);
   if (!options.ok) {
@@ -10305,61 +10355,11 @@ async function handleGetMyMonthlyRanking(request, env, cors) {
 }
 
 async function handleGetWeeklyRanking(request, env, cors) {
-  const options = parseWeeklyRankingQuery(new URL(request.url).searchParams);
-  if (!options.ok) {
-    return jsonResponse({ ok: false, error: options.error }, 400, cors);
-  }
-
-  const publicStartDate = getPublicRankingStartDate(env) || "2026-09-21";
-  const availability = getPublicWeeklyRankingAvailability({
-    now: new Date(),
-    weekStart: options.weekStart,
-    startDate: publicStartDate
-  });
-  if (availability.status !== "available") {
-    return publicWeeklyRankingStatusResponse(cors, options, {
-      status: availability.status,
-      message: availability.message
-    });
-  }
-
-  const ranking = await getRankingForPeriod(env.AUTH_DB, { ...options, publishedOnly: true, includeTestUsers: true, releaseCutoffAt: `${publicStartDate}T00:00:00+09:00` });
-  const hasPublishedGames = Number(ranking.summary?.eligibleGames || 0) > 0;
-  const response = jsonResponse({
-    ok: true,
-    weekStart: options.weekStart,
-    weekEnd: options.endAt,
-    weekStartUtc: options.startAtUtc,
-    weekEndUtc: options.endAtUtc,
-    ranking: ranking.rows,
-    summary: ranking.summary,
-    pagination: ranking.pagination,
-    rankingStatus: hasPublishedGames ? "available" : "collecting",
-    message: hasPublishedGames ? "" : "ランキング集計中",
-    updatedAt: new Date().toISOString()
-  }, 200, cors);
-  response.headers.set("Cache-Control", "public, max-age=30");
-  return response;
+  return hiddenPublicRankingPeriodResponse(cors, "週間");
 }
 
 async function handleGetMyWeeklyRanking(request, env, cors) {
-  const access = await requireAuthenticatedUser(request, env, cors);
-  if (!access.ok) return access.response;
-
-  const options = parseWeeklyRankingQuery(new URL(request.url).searchParams);
-  if (!options.ok) {
-    return jsonResponse({ ok: false, error: options.error }, 400, cors);
-  }
-  const publicStartDate = getPublicRankingStartDate(env);
-  const availability = getPublicWeeklyRankingAvailability({
-    now: new Date(),
-    weekStart: options.weekStart,
-    startDate: publicStartDate
-  });
-  const rankingData = availability.status !== "available"
-    ? null
-    : await getRankingEntryForUser(env.AUTH_DB, access.user.id, { ...options, publishedOnly: true, releaseCutoffAt: `${publicStartDate}T00:00:00+09:00` });
-  return jsonResponse({ ok: true, weekStart: options.weekStart, weekEnd: options.endAt, rankingData, rankingStatus: availability.status, message: availability.message || "" }, 200, cors);
+  return hiddenPublicRankingPeriodResponse(cors, "週間");
 }
 
 export function getPublicRankingStartDate(env) {
@@ -10380,8 +10380,8 @@ export function getPublicWeeklyRankingAvailability({ now = new Date(), weekStart
 function hiddenPublicRankingPeriodResponse(cors, periodLabel) {
   const response = jsonResponse({
     ok: false,
-    code: "PUBLIC_RANKING_PERIOD_HIDDEN",
-    error: `${periodLabel}ランキングは現在公開していません。`
+    code: "PUBLIC_RANKING_ADMIN_ONLY",
+    error: `${periodLabel}ランキングは管理者専用です。`
   }, 404, cors);
   response.headers.set("Cache-Control", "no-store");
   return response;

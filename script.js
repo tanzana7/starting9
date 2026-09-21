@@ -400,13 +400,6 @@ const publicResultsRenderer = publicFrontend.createPublicResultsRenderer({
   createResultView,
   createResultViewModel
 });
-const publicRankingRenderer = publicFrontend.createPublicRankingRenderer({
-  getPredictionAccountUser,
-  escapeHtml,
-  formatRankingScore,
-  formatParticipationRate,
-  createRankingAchievementBadgesHtml
-});
 const publicRosterController = publicFrontend.createPublicRosterController({
   state,
   storage: publicStorage,
@@ -521,12 +514,11 @@ async function initializeAuthDependentFeatures() {
     void Promise.allSettled([
       fetchPreviousResultGame({ force: false }),
       refreshResultHistory({ force: false }),
-      fetchUserAchievements({ force: false }),
-      refreshWeeklyRanking({ force: false })
+      fetchUserAchievements({ force: false })
     ]).then((results) => {
       results.forEach((result, index) => {
         if (result.status === "rejected") {
-          const labels = ["前回結果", "過去結果", "実績", "ランキング"];
+          const labels = ["前回結果", "過去結果", "実績"];
           console.error(`${labels[index]}の初期化に失敗しました`, result.reason?.message || "unknown error");
         }
       });
@@ -542,8 +534,6 @@ function bindEvents() {
   document.getElementById("saveSavedPredictionImageButton")?.addEventListener("click", saveSavedPredictionImage);
   document.getElementById("predictionCtaButton")?.addEventListener("click", handlePredictionCtaClick);
   document.getElementById("editSavedPredictionButton")?.addEventListener("click", scrollToPredictionForm);
-  document.getElementById("showWeeklyRankingButton")?.addEventListener("click", () => selectRankingView("weekly"));
-  document.getElementById("rankingContent")?.addEventListener("click", handleRankingPeriodContentClick);
   document.getElementById("publicGameSelectionMeta")?.addEventListener("click", handlePublicGameSelectionMetaClick);
   document.getElementById("resultHistoryList")?.addEventListener("click", handleResultHistoryClick);
   document.getElementById("resultHistoryList")?.addEventListener("change", handleResultHistoryChange);
@@ -1895,41 +1885,87 @@ async function initializeRosterCandidateSync() {
   return publicRosterController.syncCurrentGameRoster();
 }
 
+function getProbableStarterActualStartAt(game) {
+  const candidates = [
+    game?.actualStartAt,
+    game?.actual_start_at,
+    game?.startedAt,
+    game?.started_at,
+    game?.gameStartedAt,
+    game?.game_started_at,
+    game?.firstPitchAt,
+    game?.first_pitch_at
+  ];
+  for (const value of candidates) {
+    if (!value) continue;
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return null;
+}
+
+function getProbableStarterCutoffAt(game) {
+  return getProbableStarterActualStartAt(game)
+    || (game?.startAt ? new Date(game.startAt) : parseJstScheduleDateTime(game));
+}
+
+function selectProbableStarterGame(games = [], now = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(current.getTime())) return null;
+  return (Array.isArray(games) ? games : [])
+    .filter((game) => game?.canonical === true
+      && Boolean(game?.internalGameId)
+      && isNormalManagedSchedule(game)
+      && !isScheduleGameUnavailable(game))
+    .map((game) => ({ game, cutoffAt: getProbableStarterCutoffAt(game) }))
+    .filter(({ cutoffAt }) => cutoffAt && !Number.isNaN(cutoffAt.getTime()) && cutoffAt.getTime() > current.getTime())
+    .sort((left, right) => left.cutoffAt.getTime() - right.cutoffAt.getTime()
+      || getScheduleSortValue(left.game).localeCompare(getScheduleSortValue(right.game)))
+    [0]?.game || null;
+}
+
+function getPreferredProbableStarterGame(now = new Date()) {
+  return selectProbableStarterGame(state.publicGameCatalog.games, now);
+}
+
+function resetProbableStarterDisplay(nextGame, message = "") {
+  state.probableStarter.nextGame = nextGame || null;
+  state.probableStarter.matchedGame = null;
+  state.probableStarter.games = [];
+  state.probableStarter.fetchedGameId = "";
+  state.probableStarter.status = nextGame ? "idle" : "noGame";
+  state.probableStarter.message = message || (nextGame ? "次の試合の予告先発を確認しています。" : "次の試合は未定");
+  state.probableStarter.nextCheckAt = "";
+  state.probableStarter.errorCode = "";
+  state.probableStarter.referenceDiagnostics = null;
+}
+
 async function initializeProbableStarter() {
-  const schedule = await getLoadedGameSchedule();
-  const previousGame = state.predictionTargetGame || state.probableStarter.nextGame;
-  const previousGameId = previousGame?.internalGameId || state.predictionTargetGameId || "";
-  const catalogGame = state.publicGameCatalog.games.length
-    ? getPreferredPublicGameSelection()
-    : null;
-  const nextGame = catalogGame || await resolvePredictionTargetGame(schedule, true);
-  const preservedGame = catalogGame || nextGame || null;
-  const nextGameId = String(preservedGame?.internalGameId || "");
-  if (previousGameId !== nextGameId) {
-    setPublicCurrentGame(preservedGame);
-    state.probableStarter.matchedGame = null;
-    state.probableStarter.games = [];
-    state.probableStarter.fetchedGameId = "";
-    state.probableStarter.status = preservedGame ? "idle" : "noGame";
-    state.probableStarter.message = preservedGame ? "選択した試合の予告先発を確認しています。" : "次の試合を検出できませんでした。";
-    state.probableStarter.nextCheckAt = "";
-    state.probableStarter.errorCode = "";
-    state.probableStarter.referenceDiagnostics = null;
-  } else {
-    state.probableStarter.nextGame = preservedGame;
-    state.predictionTargetGame = preservedGame;
-    state.predictionTargetGameId = nextGameId;
+  const nextGame = getPreferredProbableStarterGame();
+  if (String(state.probableStarter.nextGame?.internalGameId || "") !== String(nextGame?.internalGameId || "")) {
+    beginPublicRequest("probable", { abort: true });
+    resetProbableStarterDisplay(nextGame);
   }
   renderProbableStarter();
-  renderPredictionTargetNotice();
 
   if (state.probableStarter.nextGame) {
     await fetchStoredProbableStarter();
   } else {
-    state.probableStarter.status = "noGame";
-    state.probableStarter.message = "次の試合を検出できませんでした。";
     renderProbableStarter();
   }
+}
+
+function refreshProbableStarterTarget(now = new Date()) {
+  const nextGame = getPreferredProbableStarterGame(now);
+  const currentId = String(state.probableStarter.nextGame?.internalGameId || "");
+  const nextId = String(nextGame?.internalGameId || "");
+  if (currentId === nextId) return false;
+
+  beginPublicRequest("probable", { abort: true });
+  resetProbableStarterDisplay(nextGame);
+  renderProbableStarter();
+  if (nextGame) void fetchStoredProbableStarter();
+  return true;
 }
 
 async function refreshPredictionTarget({ retryUnannounced = true, useServer = true } = {}) {
@@ -1940,7 +1976,7 @@ async function refreshPredictionTarget({ retryUnannounced = true, useServer = tr
     : null;
   const nextGame = catalogGame || await resolvePredictionTargetGame(schedule, useServer);
   if (!isCurrentPublicRequest("target", request.id)) return;
-  const previousGame = state.predictionTargetGame || state.probableStarter.nextGame;
+  const previousGame = state.predictionTargetGame;
   const previousGameId = state.predictionTargetGameId || previousGame?.internalGameId || "";
   if (!nextGame) {
     setPublicCurrentGame(null);
@@ -1950,19 +1986,10 @@ async function refreshPredictionTarget({ retryUnannounced = true, useServer = tr
   }
   if ((nextGame?.internalGameId || "") !== previousGameId) {
     setPublicCurrentGame(nextGame);
-    state.probableStarter.matchedGame = null;
-    state.probableStarter.games = [];
-    state.probableStarter.fetchedGameId = "";
-    state.probableStarter.status = nextGame ? "idle" : "noGame";
-    state.probableStarter.message = nextGame ? "次の試合を確認しています。" : "次の試合を検出できませんでした。";
-    state.probableStarter.nextCheckAt = "";
-    state.probableStarter.errorCode = "";
-    state.probableStarter.referenceDiagnostics = null;
     state.predictionTargetNotice = nextGame ? "予想対象試合が次の試合へ切り替わりました。" : "";
     renderAll();
     void refreshGameDayNoticeStatus({ force: true });
     void initializeRosterCandidateSync();
-    if (nextGame) await fetchStoredProbableStarter();
     return;
   }
   // 未発表の再取得はAuth Worker Cronがnext_check_atを基準に行います。
@@ -2141,7 +2168,6 @@ function setPublicCurrentGame(nextGame) {
   if (changed) {
     persistCurrentGameScopedState();
     beginPublicRequest("account", { abort: true });
-    beginPublicRequest("probable", { abort: true });
     state.predictionRemote = createEmptyPredictionRemoteState();
     state.prediction = null;
     state.actual = null;
@@ -2151,7 +2177,6 @@ function setPublicCurrentGame(nextGame) {
 
   state.predictionTargetGameId = nextId;
   state.predictionTargetGame = nextGame || null;
-  state.probableStarter.nextGame = nextGame || null;
   state.predictionTargetNotice = changed && nextGame ? "予想対象試合が次の試合へ切り替わりました。" : "";
   if (changed) hydrateGameScopedState(nextId);
   discardStoredStateForGame(nextId);
@@ -2286,7 +2311,6 @@ function applyStoredProbableStarter(probableStarter, gameMetadata = {}) {
     awayTeam: gameMetadata.awayTeam || nextGame?.awayTeam || ""
   };
   state.probableStarter.nextGame = canonicalGame;
-  state.predictionTargetGame = canonicalGame;
   const status = String(probableStarter?.status || "empty");
   state.probableStarter.fetchedGameId = canonicalGame.gameId || "";
   state.probableStarter.fetchedAt = probableStarter?.fetchedAt || "";
@@ -2391,7 +2415,8 @@ async function fetchStoredProbableStarter() {
 
   try {
     const { response, payload: result } = await publicApiClient.get(url, { credentials: "include", signal: request.signal });
-    if (!isCurrentPublicRequest("probable", request.id) || getCurrentGameId() !== game.internalGameId) return;
+    if (!isCurrentPublicRequest("probable", request.id)
+      || String(state.probableStarter.nextGame?.internalGameId || "") !== String(game.internalGameId || "")) return;
     if (!response.ok || !result?.ok) {
       if (result?.code === "EXTERNAL_FETCH_DISABLED" || result?.externalFetchDisabled === true) {
         state.probableStarter.status = "external_fetch_disabled";
@@ -2482,6 +2507,7 @@ function startPredictionDeadlineTicker() {
       renderPredictionDeadline();
     }
     void refreshPredictionTarget({ retryUnannounced: false });
+    refreshProbableStarterTarget();
   }, PREDICTION_DEADLINE_REFRESH_MS);
 }
 
@@ -4281,7 +4307,6 @@ function renderAll() {
   renderResultHistory();
   renderScoreResult();
   renderDailyBestNine();
-  renderRankingPanel();
   renderPicker("prediction");
 }
 
@@ -4426,7 +4451,7 @@ function renderProbableStarterDisplay() {
   }
 
   const probableStarter = state.probableStarter;
-  if (!probableStarter.nextGame || probableStarter.status === "idle" || probableStarter.status === "noGame") {
+  if ((!probableStarter.nextGame && probableStarter.status !== "noGame") || probableStarter.status === "idle") {
     container.classList.add("hidden");
     container.innerHTML = "";
     return;
@@ -4488,14 +4513,15 @@ function renderProbableStarterNotice(container, status, nextGame) {
   const isError = status === "error";
   const isExternalFetchDisabled = status === "external_fetch_disabled";
   const isReferenceMismatch = status === "game_reference_mismatch";
+  const isNoGame = status === "noGame";
   container.className = `probable-starter-card ${isError || isExternalFetchDisabled ? "is-error" : "is-pending"}`;
   if (isReferenceMismatch) container.classList.add("is-error");
   container.innerHTML = `
     ${createProbableStarterHeadingHtml()}
-    <p class="probable-starter-message">${isReferenceMismatch ? "予告先発の試合参照を確認できませんでした。" : isExternalFetchDisabled ? "公式情報の取得を一時停止しています。" : isError ? "予告先発を取得できませんでした。" : "現在、次の試合の予告先発はまだ発表されていません。"}</p>
-    <p class="probable-starter-meta">${isReferenceMismatch ? "試合情報を更新して再確認します。" : isExternalFetchDisabled ? "取得を再開した後に確認できます。" : isError ? "次回の自動更新で再試行します。" : "発表され次第、自動で表示されます。"}</p>
-    ${isError || isReferenceMismatch ? "" : `<p class="probable-starter-meta">${escapeHtml(formatScheduledGameForLog(nextGame))}</p>`}
-    ${!isError && !isReferenceMismatch && state.probableStarter.nextCheckAt ? `<p class="probable-starter-meta">次回自動確認：${escapeHtml(formatDateTime(state.probableStarter.nextCheckAt))}</p>` : ""}
+    <p class="probable-starter-message">${isNoGame ? "次の試合は未定" : isReferenceMismatch ? "予告先発の試合参照を確認できませんでした。" : isExternalFetchDisabled ? "公式情報の取得を一時停止しています。" : isError ? "予告先発を取得できませんでした。" : "予告先発 未発表"}</p>
+    ${isNoGame ? "" : `<p class="probable-starter-meta">${isReferenceMismatch ? "試合情報を更新して再確認します。" : isExternalFetchDisabled ? "取得を再開した後に確認できます。" : isError ? "次回の自動更新で再試行します。" : "発表され次第、自動で表示されます。"}</p>`}
+    ${isNoGame || isError || isReferenceMismatch ? "" : `<p class="probable-starter-meta">${escapeHtml(formatScheduledGameForLog(nextGame))}</p>`}
+    ${!isNoGame && !isError && !isReferenceMismatch && state.probableStarter.nextCheckAt ? `<p class="probable-starter-meta">次回自動確認：${escapeHtml(formatDateTime(state.probableStarter.nextCheckAt))}</p>` : ""}
   `;
 }
 

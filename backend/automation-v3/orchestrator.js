@@ -24,6 +24,9 @@ import { getV3CanonicalRosterSnapshot } from "./roster-repository.js";
 import { buildStagePlans, buildV3PlanningState, isV3JobForStage } from "./planning-engine.js";
 
 // Planner aggregation, planner diagnostics, and atomic claim coordination.
+const V3_DUE_JOB_BATCH_SIZE = 50;
+const V3_DUE_JOB_MAX_BATCHES = 4;
+
 export function assertV3AuxiliaryJobResult(job, result, now) {
   const jobType = String(job?.job_type || "");
   if (!["roster_fetch", "lineup_fetch"].includes(jobType)) return;
@@ -439,19 +442,19 @@ export async function planMainWorkflowJobs(db, games = [], now = new Date(), opt
 }
 
 export async function claimDueJobs(db, now = new Date(), plannedEntries = [], { disabledJobTypes = [] } = {}) {
-  // Drain the due set in bounded batches. The repository query remains
-  // bounded, while this prevents the oldest 50 rows from starving later
-  // games/stages during a busy Cron tick. Claim conditions stay atomic in
-  // claimV3Job and a concurrent runner naturally removes its rows from the
-  // next batch.
+  // Drain the due set in a deliberately small bounded window. The query is
+  // due-first and the next Cron tick continues from rows left pending or in
+  // retry_wait; claimV3Job keeps the lease/token race safe. A full backlog
+  // must remain visible as hasMoreDue rather than being reported as drained.
   const seen = new Set();
   const due = [];
   const claimed = [];
   const plannedById = new Map(plannedEntries.map((entry) => [String(entry?.job?.id || ""), entry]));
   const disabled = new Set(disabledJobTypes);
   const skipped = [];
-  const batchSize = 100;
-  const maxBatches = 20;
+  const batchSize = V3_DUE_JOB_BATCH_SIZE;
+  const maxBatches = V3_DUE_JOB_MAX_BATCHES;
+  let hasMoreDue = false;
   let cursor = null;
   for (let batch = 0; batch < maxBatches; batch += 1) {
     const rows = await listDueV3Jobs(db, now, batchSize, cursor);
@@ -507,8 +510,9 @@ export async function claimDueJobs(db, now = new Date(), plannedEntries = [], { 
     if (!nextCursor.scheduledAt || !Number.isFinite(nextCursor.id)) break;
     cursor = nextCursor;
     if (rows.length < batchSize) break;
+    if (batch === maxBatches - 1) hasMoreDue = true;
   }
-  return { due, claimed, skipped };
+  return { due, claimed, skipped, hasMoreDue };
 }
 
 export async function planV3MainJobs(db, games = [], now = new Date(), { disabledStages = [], v4SemiAuto = false } = {}) {

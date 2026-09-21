@@ -34,6 +34,7 @@ function loadModules() {
     "render-roster",
     "render-diagnostics",
     "render-ranking-reset",
+    "render-ranking",
     "render-perfect-score-preview",
     "render-ranking-test-users",
     "render-pre-beta-purge",
@@ -51,7 +52,7 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
     "frontend/public/fighters-player-details.js?v=fighters-player-details-20260903-1",
     "frontend/shared/lineup-builder.js?v=shared-lineup-builder-3-position-picker-parity-1",
     "frontend/public/player-display.js?v=public-player-display-1-batting-hand-player-number-1-player-details-1",
-    "frontend/admin-v3/api-client.js?v=independent-roster-lineup-safety-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-lineup-error-details-1-pre-beta-purge-1",
+    "frontend/admin-v3/api-client.js?v=independent-roster-lineup-safety-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-lineup-error-details-1-pre-beta-purge-1-admin-ranking-only-1",
     "frontend/admin-v3/dom.js?v=manual-lineup-finalize-safety-1",
     "frontend/admin-v3/selection-safety.js?v=admin-game-selection-safety-1",
     "frontend/admin-v3/render-manual-lineup.js?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1-game-selection-safety-1-lineup-order-mobile-zoom-1-admin-lineup-registration-emergency-fix-1-admin-lineup-lock-reason-1-manual-lineup-late-registration-1-manual-lineup-two-step-confirmation-1-roster-candidate-policy-1-admin-public-parity-1-position-picker-parity-1-compact-parity-1-public-roster-sync-1-shared-roster-sync-1",
@@ -62,12 +63,13 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
     "frontend/admin-v3/render-roster.js?v=v4-canonical-status-1",
     "frontend/admin-v3/render-diagnostics.js?v=v4-canonical-status-1-ops-summary-1",
     "frontend/admin-v3/render-ranking-reset.js?v=v4-canonical-status-1",
+    "frontend/admin-v3/render-ranking.js?v=admin-ranking-only-1",
     "frontend/admin-v3/render-perfect-score-preview.js?v=v4-canonical-status-1",
     "frontend/admin-v3/render-ranking-test-users.js?v=ranking-test-users-1-global-settings-1-ranking-test-fixed-presets-1-display-name-slot-binding-1",
     "frontend/admin-v3/render-manual-game-preview.js?v=v4-canonical-status-1",
     "frontend/admin-v3/render-pre-beta-purge.js?v=pre-beta-purge-1",
-    "frontend/admin-v3/app-coordinator.js?v=independent-roster-lineup-safety-1-preserve-picker-scroll-1-admin-lineup-registration-emergency-fix-1-manual-lineup-two-step-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-display-name-slot-binding-1-admin-public-parity-1-position-picker-parity-1-compact-parity-1-shared-roster-sync-1-manual-roster-auto-1-pre-beta-purge-1",
-    "admin-v3.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-lineup-order-mobile-zoom-1-lineup-correction-1-admin-v3-game-progress-history-1-admin-lineup-registration-emergency-fix-1-admin-lineup-lock-reason-1-manual-lineup-late-registration-1-manual-lineup-two-step-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-v4-canonical-status-1-display-name-slot-binding-1-position-picker-parity-1-public-roster-sync-1-lineup-error-details-1-shared-roster-sync-1-manual-roster-auto-1-pre-beta-purge-1"
+    "frontend/admin-v3/app-coordinator.js?v=independent-roster-lineup-safety-1-preserve-picker-scroll-1-admin-lineup-registration-emergency-fix-1-manual-lineup-two-step-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-display-name-slot-binding-1-admin-public-parity-1-position-picker-parity-1-compact-parity-1-shared-roster-sync-1-manual-roster-auto-1-pre-beta-purge-1-admin-ranking-only-1",
+    "admin-v3.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-lineup-order-mobile-zoom-1-lineup-correction-1-admin-v3-game-progress-history-1-admin-lineup-registration-emergency-fix-1-admin-lineup-lock-reason-1-manual-lineup-late-registration-1-manual-lineup-two-step-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-v4-canonical-status-1-display-name-slot-binding-1-position-picker-parity-1-public-roster-sync-1-lineup-error-details-1-shared-roster-sync-1-manual-roster-auto-1-pre-beta-purge-1-admin-ranking-only-1"
   ]);
   const modules = loadModules();
   assert.equal(typeof modules.createAdminV3State, "function");
@@ -82,6 +84,7 @@ test("admin-v3はstate/API/描画module/coordinator/entryの順で読み込む",
   assert.equal(typeof modules.createAdminV3RosterRenderer, "function");
   assert.equal(typeof modules.createAdminV3DiagnosticsRenderer, "function");
   assert.equal(typeof modules.createAdminV3RankingResetRenderer, "function");
+  assert.equal(typeof modules.createAdminV3RankingRenderer, "function");
   assert.equal(typeof modules.createAdminV3PerfectScoreRenderer, "function");
   assert.equal(typeof modules.createAdminV3RankingTestRenderer, "function");
   assert.equal(typeof modules.createAdminV3PreBetaPurgeRenderer, "function");

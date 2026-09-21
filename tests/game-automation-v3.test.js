@@ -1452,7 +1452,7 @@ test("先頭batchのclaim例外を越えて101件目以降のdue jobをclaimす�
     assert.equal(report.claimed.at(-1).claimed.id, 101);
     assert.equal(database.prepare("SELECT status FROM game_jobs_v3 WHERE id = 1").get().status, "pending");
     assert.equal(database.prepare("SELECT status FROM game_jobs_v3 WHERE id = 101").get().status, "claimed");
-    assert.equal(listCalls, 2);
+    assert.equal(listCalls, 3);
   } finally {
     database.close();
   }

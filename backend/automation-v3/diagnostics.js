@@ -71,7 +71,8 @@ export function buildV3CronSummary({ runId, correlationId, startedAt, completedA
       claimed: claimEntries.filter((entry) => entry?.claimResult === "claimed").length,
       claimConflicts: claimEntries.filter((entry) => entry?.claimResult === "claim_conflict").length,
       processed: Number(result?.processed || 0),
-      failed: Number(result?.failed || 0)
+      failed: Number(result?.failed || 0),
+      hasMoreDue: result?.claimReport?.hasMoreDue === true
     },
     plannedByJobType: countByJobType(plannedEntries),
     createdByJobType: countByJobType(plannedEntries, (entry) => entry?.created === true),

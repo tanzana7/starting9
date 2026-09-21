@@ -126,6 +126,16 @@
         loading: false,
         error: "",
         message: ""
+      },
+      ranking: {
+        periodType: "weekly",
+        periodKey: "",
+        rows: [],
+        summary: null,
+        pagination: null,
+        loading: false,
+        loaded: false,
+        error: ""
       }
     };
   }

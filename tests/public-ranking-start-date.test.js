@@ -34,11 +34,10 @@ test("週間ランキングはJSTの開始日までは順位を返さず、開�
   );
 });
 
-test("週間APIだけが開始日前の旧データを返さず、結果APIには日付cutoffを適用しない", () => {
+test("期間別ランキングAPIは一般ユーザーへデータを返さず、結果APIには日付cutoffを適用しない", () => {
   assert.equal(config.vars.PUBLIC_RANKING_RELEASED_AT, "2026-09-21T00:00:00+09:00");
-  assert.match(worker, /PUBLIC_RANKING_PERIOD_HIDDEN/);
-  assert.match(worker, /rankingStatus: hasPublishedGames \? "available" : "collecting"/);
-  assert.match(worker, /releaseCutoffAt: `\$\{publicStartDate\}T00:00:00\+09:00`/);
+  assert.match(worker, /PUBLIC_RANKING_ADMIN_ONLY/);
+  assert.match(worker, /adminRankingRoute/);
   const resultGames = worker.slice(worker.indexOf("async function handleGetResultGames"), worker.indexOf("async function handleGetResultGame", worker.indexOf("async function handleGetResultGames")));
   const resultGame = worker.slice(worker.indexOf("async function handleGetResultGame"), worker.indexOf("const tableColumnSetCache", worker.indexOf("async function handleGetResultGame")));
   const previousResult = worker.slice(worker.indexOf("async function handleGetPreviousResultGame"), worker.indexOf("async function handleGetProbableStarter", worker.indexOf("async function handleGetPreviousResultGame")));
@@ -47,10 +46,7 @@ test("週間APIだけが開始日前の旧データを返さず、結果APIに�
   assert.doesNotMatch(previousResult, /getPublicRankingStartDate|publicStartCondition|publicStartBindings/);
 });
 
-test("通常画面は週間だけを表示し、開始週より前の前週移動を許可しない", () => {
-  assert.match(html, /id="showWeeklyRankingButton"/);
-  assert.doesNotMatch(html, /showMonthlyRankingButton|showYearlyRankingButton/);
-  assert.match(script, /if \(view !== "weekly"\) return/);
-  assert.match(script, /const firstServiceWeek = "2026-09-21"/);
-  assert.match(script, /ランキング集計中/);
+test("通常画面から期間別ランキングの表示と導線を除去する", () => {
+  assert.doesNotMatch(html, /rankingPanel|showWeeklyRankingButton|showMonthlyRankingButton|showYearlyRankingButton/);
+  assert.doesNotMatch(script, /refreshWeeklyRanking\(\{ force: false \}\)/);
 });

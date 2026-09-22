@@ -396,7 +396,15 @@ async function upsertPlayers(request, env, db, gameId) {
   const now = nowIso();
   const statements = [];
   for (const value of players) {
-    const id = validId(value.id || value.playerId) || uuid();
+    const requestedId = validId(value.id || value.playerId);
+    let id = requestedId || uuid();
+    if (requestedId) {
+      const existing = await prepared(db, "SELECT game_id FROM players WHERE id = ?1 LIMIT 1", requestedId).first();
+      // Player rows are intentionally scoped to a game. Reusing a client-side
+      // player ID from another game must create a new row instead of letting
+      // SQLite's global primary key redirect an upsert into the old roster.
+      if (existing && existing.game_id !== gameId) id = uuid();
+    }
     const name = String(value.name || value.playerName || "").trim().slice(0, 80);
     if (!name) throw new RequestError(400, "PLAYER_NAME_REQUIRED", "選手名を入力してください。");
     statements.push(prepared(db, `INSERT INTO players (id, game_id, name, uniform_number, team, active, created_at, updated_at)

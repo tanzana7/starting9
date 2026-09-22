@@ -290,10 +290,12 @@ test("採点は状態遷移・batch rollback・並列実行を保護する", asy
   assert.equal((await request(worker, env, "/api/admin/games/retry-test/publish", { method: "POST", headers: { Cookie: adminCookie } })).response.status, 200);
   assert.equal((await request(worker, env, "/api/admin/games/retry-test/score", { method: "POST", headers: { Cookie: adminCookie } })).response.status, 409);
 
-  const parallelPlayers = players.map((player) => ({ ...player, id: `q${player.id}` }));
-  const parallelLineup = parallelPlayers.map((player, index) => ({ ...lineup[index], playerId: player.id, playerName: player.name }));
+  const parallelPlayers = players;
   await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "parallel-test", title: "Parallel", gameDate: "2026-09-22", startAt: "2026-09-22T00:00:00.000Z", predictionDeadlineAt: "2026-09-21T00:00:00.000Z" }) });
-  await request(worker, env, "/api/admin/games/parallel-test/players", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ players: parallelPlayers }) });
+  const parallelRoster = await request(worker, env, "/api/admin/games/parallel-test/players", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ players: parallelPlayers }) });
+  assert.equal(parallelRoster.payload.players.length, 9);
+  assert.notEqual(parallelRoster.payload.players.find((player) => player.name === "Player 1").id, "p1");
+  const parallelLineup = lineup.map((item) => ({ ...item, playerId: parallelRoster.payload.players.find((player) => player.name === item.playerName).id }));
   await request(worker, env, "/api/admin/games/parallel-test/lineup", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ lineup: parallelLineup }) });
   fixture.database.prepare("UPDATE games SET prediction_deadline_at = ? WHERE id = ?").run(new Date(Date.now() - 1000).toISOString(), "parallel-test");
   const parallelScores = await Promise.all([

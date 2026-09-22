@@ -9,8 +9,7 @@
     "head_sampling_rate": 1
   },
   "vars": {
-    "ALLOWED_ORIGIN": "http://localhost:8782",
-    "ADMIN_USERNAMES": ""
+    "ALLOWED_ORIGIN": "http://localhost:8782"
   },
   "d1_databases": [
     {

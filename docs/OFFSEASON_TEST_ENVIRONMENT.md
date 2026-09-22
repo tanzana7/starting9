@@ -67,13 +67,23 @@ explicit later task; no production configuration is changed here.
   test-only bindings, and synthetic accounts. Do not reuse production Auth
   Worker URLs or D1 IDs.
 
-## Not covered yet
+## Formal pipeline coverage
 
-The harness does not execute the complete prediction-close -> canonical
-lineup -> score -> ranking -> publish pipeline. It also does not reproduce
-JST calendar boundaries, correction/revision conflicts, CPU interruption,
-parallel claims, or lease recovery across separate Worker invocations. Those
-are the next phase and must not be inferred from the local query timings.
+The formal-pipeline fixture uses the actual migration schema, the production
+Auth Worker request handlers for canonical lineup finalization, the V3 planner
+and orchestrator, and `executeGameAutomationV3Job` for six simultaneous
+synthetic games. It verifies the deadline gate, canonical revision lineage,
+score attempt activation, ranking reflection, publication, and the resulting
+artifact evaluator state. A failure-injection test throws once from the real
+ranking stage, then resumes at a later controlled clock so the production retry
+path—not a test-only ranking or publication implementation—completes the run.
+
+This is still an in-memory Node SQLite test. It does not prove Cloudflare
+Workers CPU limits, D1 latency/locking, cross-invocation parallel claims, or
+lease recovery on separate Worker instances. It also does not cover JST
+calendar boundary cases, correction/revision conflicts, or production API
+read behavior. Those remain separate tests and must not be inferred from the
+local formal-pipeline result.
 
 ## Deferred items
 

@@ -348,6 +348,24 @@
           await actions.diagnoseJob(diagnoseButton.dataset.v3JobDiagnose, diagnoseButton.dataset.v3JobType);
           return;
         }
+        const runByIdButton = closestFromEvent(event, "[data-v3-job-run-id]");
+        if (runByIdButton) {
+          await actions.runJobById(
+            runByIdButton.dataset.v3JobRunId,
+            runByIdButton.dataset.v3JobRunJobId,
+            runByIdButton.dataset.v3JobRunType
+          );
+          return;
+        }
+        const retryButton = closestFromEvent(event, "[data-v3-job-retry]");
+        if (retryButton) {
+          await actions.retryJob(
+            retryButton.dataset.v3JobRetry,
+            retryButton.dataset.v3JobRetryId,
+            retryButton.dataset.v3JobRetryType
+          );
+          return;
+        }
         const runButton = closestFromEvent(event, "[data-v3-job-run]");
         if (runButton) {
           await actions.runJob(runButton.dataset.v3JobRun, runButton.dataset.v3JobType);

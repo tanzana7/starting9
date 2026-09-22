@@ -179,6 +179,8 @@ import {
   listOfficialCancellationCandidates,
   getV3SchemaState,
   runGameAutomationV3,
+  executeClaimedJobs,
+  claimV3Job,
   createV3Job,
   deriveV3Schedule,
   deriveV3DisplaySchedule,
@@ -6991,7 +6993,7 @@ async function requireAdminAuthForMethodMismatch(request, env, cors, path) {
 }
 
 function parseAdminV3Phase1Route(path) {
-  const match = /^\/api\/admin\/v3\/games\/([^/]+)\/(lineup|lineup-revisions|lineup-finalize|scoring\/preview|scoring\/confirm|ranking|ranking\/rebuild|publication|publication\/publish|publication\/republish|ranking-eligibility|schedule|reconcile-state|jobs\/(\d+)(?:\/(retry|cancel))?)$/.exec(path);
+  const match = /^\/api\/admin\/v3\/games\/([^/]+)\/(lineup|lineup-revisions|lineup-finalize|scoring\/preview|scoring\/confirm|ranking|ranking\/rebuild|publication|publication\/publish|publication\/republish|ranking-eligibility|schedule|reconcile-state|jobs\/(\d+)(?:\/(run|retry|cancel))?)$/.exec(path);
   if (!match) return null;
   try {
     return { internalGameId: decodeURIComponent(match[1]), action: match[2], jobId: match[3] || "", jobOperation: match[4] || "" };
@@ -7053,6 +7055,16 @@ function v3AdminErrorResponse(cors, error, fallback = "V3管理操作に失敗�
     V3_INTERNAL_GAME_ID_REQUIRED: 400,
     V3_JOB_NOT_FOUND: 404,
     V3_JOB_OPERATION_INVALID: 409,
+    V3_JOB_ALREADY_CLAIMED: 409,
+    V3_JOB_NOT_DUE: 409,
+    V3_JOB_RETRY_NOT_DUE: 409,
+    V3_JOB_RETRY_REQUIRED: 409,
+    V3_JOB_RUN_NOT_ALLOWED: 409,
+    V3_SCORING_BEFORE_DEADLINE: 409,
+    V3_FINALIZED_LINEUP_REQUIRED: 409,
+    V3_LINEUP_REVISION_CONFLICT: 409,
+    RESCORE_LINEUP_REVISION_CHANGED: 409,
+    RESCORE_PREVIEW_EXPIRED: 409,
     V3_GAME_UNAVAILABLE: 409,
     V3_STRONG_CONFIRMATION_REQUIRED: 409,
     V3_REASON_REQUIRED: 400,
@@ -8384,6 +8396,7 @@ async function handleAdminV3Phase1Route(request, env, cors, route) {
     if (route.action === "schedule" && request.method === "PUT") return await handleAdminV3ScheduleUpdate(request, env, cors, context, access.user);
     if (route.action === "reconcile-state" && request.method === "POST") return await handleAdminV3StateReconcile(request, env, cors, context, access.user);
     if (route.action.startsWith("jobs/") && request.method === "GET") return await handleAdminV3JobDetail(env, cors, context, route.jobId);
+    if (route.action.startsWith("jobs/") && request.method === "POST" && route.jobOperation === "run") return await handleAdminV3JobRun(request, env, cors, context, route.jobId, access.user);
     if (route.action.startsWith("jobs/") && request.method === "POST" && route.jobOperation === "retry") return await handleAdminV3JobRetry(request, env, cors, context, route.jobId, access.user);
     if (route.action.startsWith("jobs/") && request.method === "POST" && route.jobOperation === "cancel") return await handleAdminV3JobCancel(request, env, cors, context, route.jobId, access.user);
     return jsonResponse({ ok: false, code: "V3_ADMIN_METHOD_NOT_ALLOWED", error: "V3管理APIのHTTPメソッドが不正です。" }, 405, cors);
@@ -8904,21 +8917,120 @@ async function handleAdminV3ScoringConfirm(request, env, cors, context, user) {
   const input = await readJson(request);
   const body = v3RescoreBody(input, context);
   if (!body.reason) throw createV3Error("V3_REASON_REQUIRED", "再採点理由を入力してください。", { httpStatus: 400 });
-  await assertV3RescoreLineage(env.AUTH_DB, context, body);
-  const result = await invokeV3RescoreCore(body, env, cors, context.metadata, user, "confirm", { deferPublication: true });
-  if (!result.payload?.ok) return jsonResponse({ ...result.payload, internalGameId: context.id }, result.response.status, cors);
-  await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobType: "admin:scoring_confirm", stateAfter: "scored" });
-  return jsonResponse({ ...result.payload, internalGameId: context.id }, result.response.status, cors);
+  if (input?.confirmed !== true) throw createV3Error("V3_CONFIRMATION_REQUIRED", "採点job要求には確認済みフラグが必要です。", { httpStatus: 409 });
+  await assertV3RescoreLineage(env.AUTH_DB, context, body, user?.id);
+  const readiness = await assertV3AdminScoringReady(env, context, body);
+  if (readiness.artifactHealth?.scoring?.ready === true) {
+    const completed = await env.AUTH_DB.prepare(
+      "SELECT * FROM game_jobs_v3 WHERE internal_game_id = ?1 AND job_type = 'score' AND status = 'completed' ORDER BY id DESC LIMIT 1"
+    ).bind(context.id).first();
+    await recordV3AdminAudit(getV3AuditDb(env), {
+      internalGameId: context.id,
+      jobId: completed?.id || null,
+      jobType: "admin:scoring_confirm",
+      stateBefore: "scored",
+      stateAfter: "scored",
+      failureMessage: "[v3_details] scoring already committed for the current canonical revision"
+    });
+    return jsonResponse({
+      ok: true,
+      internalGameId: context.id,
+      noOp: true,
+      status: "completed",
+      job: completed || null,
+      nextAction: "ranking_rebuild"
+    }, 200, cors);
+  }
+  const job = await createV3AdminActionJob(env.AUTH_DB, context.id, "score", readiness.now, "admin", {
+    allowAfterCompleted: true,
+    scheduledSlotAt: readiness.finalRevision?.created_at || readiness.now
+  });
+  // Keep the preview lifecycle visible to existing diagnostics. The formal
+  // score job remains the only source of scoring writes and fencing.
+  await env.AUTH_DB.prepare(
+    `UPDATE game_rescore_jobs
+        SET status = 'running', error_code = NULL, updated_at = ?1
+      WHERE id = ?2 AND game_id = ?3 AND status = 'previewed'`
+  ).bind(readiness.now.toISOString(), String(body.previewId || ""), context.metadata.gameId).run();
+  await recordV3AdminAudit(getV3AuditDb(env), {
+    internalGameId: context.id,
+    jobId: job.job?.id || null,
+    jobType: "admin:scoring_confirm",
+    stateBefore: readiness.state,
+    stateAfter: readiness.state,
+    failureMessage: `[v3_details=${JSON.stringify({ previewId: body.previewId, lineupRevisionId: readiness.lineupRevisionId, reason: body.reason, source: "admin" })}]`
+  });
+  await recordWorkflowLog(env.AUTH_DB, {
+    eventType: "v3_admin_scoring_requested",
+    status: "info",
+    gameId: context.metadata.gameId,
+    occurredAt: readiness.now,
+    message: "管理者がV3採点jobを要求しました。",
+    metadata: { internalGameId: context.id, jobId: job.job?.id || null, previewId: body.previewId, lineupRevisionId: readiness.lineupRevisionId, reason: body.reason },
+    source: "admin"
+  });
+  return jsonResponse({
+    ok: true,
+    internalGameId: context.id,
+    accepted: true,
+    async: true,
+    status: job.job?.status || "pending",
+    job: job.job || null,
+    created: Boolean(job.created),
+    noOp: Boolean(job.noOp),
+    lineupRevisionId: readiness.lineupRevisionId,
+    nextAction: "run_score_job"
+  }, 202, cors);
 }
 
-async function assertV3RescoreLineage(db, context, body) {
+async function assertV3AdminScoringReady(env, context, body) {
+  const now = new Date();
+  const schedule = deriveV3Schedule(context.target);
+  if (schedule?.predictionDeadline && now < schedule.predictionDeadline) {
+    throw createV3Error("V3_SCORING_BEFORE_DEADLINE", "予想締切前のため採点jobを要求できません。", { httpStatus: 409 });
+  }
+  const artifactHealth = await getV3WorkflowArtifactHealth(env.AUTH_DB, context.id, "scheduled");
+  if (artifactHealth?.lineup?.finalizedLineupExists !== true) {
+    throw createV3Error("V3_FINALIZED_LINEUP_REQUIRED", "正式確定済みlineupがないため採点jobを要求できません。", { httpStatus: 409 });
+  }
+  const revisions = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
+  const finalRevision = revisions.find((row) => Number(row.is_final) === 1) || null;
+  if (!finalRevision || Number(finalRevision.version) !== Number(body.lineupVersion)) {
+    throw createV3Error("V3_LINEUP_REVISION_CONFLICT", "確認済みの正式スタメンrevisionが現在のcanonical revisionと一致しません。", { httpStatus: 409 });
+  }
+  const stateRow = await env.AUTH_DB.prepare(
+    "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
+  ).bind(context.id).first();
+  const state = String(stateRow?.state || "scheduled");
+  if (state === "published" || artifactHealth?.publication?.published === true) {
+    throw createV3Error("V3_PUBLISHED_READ_ONLY", "公開済み試合は採点jobを要求できません。", { httpStatus: 409 });
+  }
+  return {
+    now,
+    state,
+    artifactHealth,
+    finalRevision,
+    lineupRevisionId: String(finalRevision.revision_id || `${context.metadata.gameId}:${Number(finalRevision.version)}`)
+  };
+}
+
+async function assertV3RescoreLineage(db, context, body, userId = null) {
   const row = await db.prepare(
-    `SELECT previews.summary_json, jobs.internal_game_id
+    `SELECT previews.summary_json, previews.created_by, previews.reason, previews.expires_at, jobs.internal_game_id
        FROM game_rescore_previews previews
        LEFT JOIN game_rescore_jobs jobs ON jobs.id = previews.id
       WHERE previews.id = ?1 AND previews.game_id = ?2 LIMIT 1`
   ).bind(String(body.previewId || ""), context.metadata.gameId).first();
   if (!row) throw createV3Error("RESCORE_PREVIEW_INVALID", "再採点プレビューを確認してください。", { httpStatus: 409 });
+  if (userId !== null && row.created_by !== null && String(row.created_by) !== String(userId)) {
+    throw createV3Error("RESCORE_PREVIEW_INVALID", "この再採点プレビューを実行できる管理者ではありません。", { httpStatus: 409 });
+  }
+  if (row.reason !== null && String(row.reason) !== String(body.reason)) {
+    throw createV3Error("RESCORE_PREVIEW_INVALID", "再採点プレビューの理由が一致しません。", { httpStatus: 409 });
+  }
+  if (row.expires_at && new Date(row.expires_at) < new Date()) {
+    throw createV3Error("RESCORE_PREVIEW_EXPIRED", "再採点プレビューの有効期限が切れました。", { httpStatus: 409 });
+  }
   let lineage = null;
   try { lineage = JSON.parse(row.summary_json || "{}").v3Lineage || null; } catch { lineage = null; }
   if (lineage && String(lineage.internalGameId || "") !== context.id) {
@@ -8926,6 +9038,10 @@ async function assertV3RescoreLineage(db, context, body) {
   }
   if (row.internal_game_id && String(row.internal_game_id) !== context.id) {
     throw createV3Error("RESCORE_PREVIEW_INVALID", "再採点jobの試合が一致しません。", { httpStatus: 409 });
+  }
+  const expectedLineupRevisionId = `${context.metadata.gameId}:${Number(body.lineupVersion)}`;
+  if (lineage?.lineupRevisionId && String(lineage.lineupRevisionId) !== expectedLineupRevisionId) {
+    throw createV3Error("RESCORE_LINEUP_REVISION_CHANGED", "正式スタメンrevisionが変わりました。再プレビューしてください。", { httpStatus: 409 });
   }
   const active = await getActiveScoringRevision(db, context.id);
   const expectedScoringRevisionId = String(lineage?.scoringRevisionId || "legacy");
@@ -9405,6 +9521,106 @@ async function handleAdminV3JobDetail(env, cors, context, jobId) {
     details: parseV3AuditDetails(audit.failure_message)
   }));
   return jsonResponse({ ok: true, internalGameId: context.id, job, audits: auditRows, pipelineEvents, pipelineDiagnostics }, 200, cors);
+}
+
+async function handleAdminV3JobRun(request, env, cors, context, jobId, user) {
+  const input = await readJson(request);
+  const reason = String(input?.reason || "").trim();
+  if (!reason || reason.length > 240) throw createV3Error("V3_REASON_REQUIRED", "job実行理由を1〜240文字で入力してください。", { httpStatus: 400 });
+  if (input?.confirmed !== true) throw createV3Error("V3_CONFIRMATION_REQUIRED", "job実行には確認済みフラグが必要です。", { httpStatus: 409 });
+  const job = await getV3Job(env.AUTH_DB, context.id, jobId);
+  if (!job) throw createV3Error("V3_JOB_NOT_FOUND", "V3ジョブが見つかりません。", { httpStatus: 404 });
+  const jobType = String(job.job_type || "");
+  if (!(jobType === "score" || jobType === "ranking_rebuild" || jobType === "publish")) {
+    throw createV3Error("V3_JOB_RUN_NOT_ALLOWED", "手動復旧は採点・ランキング・公開jobのみ対応しています。", { httpStatus: 409 });
+  }
+  if (job.status === "completed") {
+    return jsonResponse({ ok: true, internalGameId: context.id, manualExecution: true, noOp: true, status: "completed", job }, 200, cors);
+  }
+  if (job.status === "failed") {
+    throw createV3Error("V3_JOB_RETRY_REQUIRED", "failed jobは先に再試行へ戻してください。", { httpStatus: 409 });
+  }
+  const now = new Date();
+  if (job.scheduled_at && new Date(job.scheduled_at) > now) {
+    throw createV3Error("V3_JOB_NOT_DUE", "このjobの実行時刻にまだ到達していません。", { httpStatus: 409 });
+  }
+  if (job.next_retry_at && new Date(job.next_retry_at) > now) {
+    throw createV3Error("V3_JOB_RETRY_NOT_DUE", "retry待機時間が終了していません。", { httpStatus: 409 });
+  }
+  if (jobType === "score") {
+    const schedule = deriveV3Schedule(context.target);
+    if (schedule?.predictionDeadline && now < schedule.predictionDeadline) {
+      throw createV3Error("V3_SCORING_BEFORE_DEADLINE", "予想締切前のため採点jobを実行できません。", { httpStatus: 409 });
+    }
+  }
+  const claimed = await claimV3Job(env.AUTH_DB, { jobId: Number(job.id), now });
+  if (!claimed) {
+    const latest = await getV3Job(env.AUTH_DB, context.id, jobId);
+    if (latest?.status === "completed") {
+      return jsonResponse({ ok: true, internalGameId: context.id, manualExecution: true, noOp: true, status: "completed", job: latest }, 200, cors);
+    }
+    throw createV3Error("V3_JOB_ALREADY_CLAIMED", "このjobは別のexecutorが処理中です。", { httpStatus: 409 });
+  }
+  const execution = await executeClaimedJobs(
+    env,
+    [{ job: claimed, claimed, entry: null, claimResult: { claimed: true, source: "admin" } }],
+    [],
+    now,
+    {
+      executeJob: (jobContext) => executeGameAutomationV3Job({
+        ...jobContext,
+        v4SemiAuto: getV3OperationalMode(env).isV4SemiAuto
+      }),
+      onError: async (error, details) => {
+        await recordV3AdminAudit(getV3AuditDb(env), {
+          internalGameId: context.id,
+          jobId: Number(job.id),
+          jobType: `admin:${jobType}`,
+          failureCode: String(error?.code || "V3_ADMIN_JOB_RUN_FAILED"),
+          failureMessage: String(details?.job?.failure_message || error?.message || "V3 jobの手動実行に失敗しました。").slice(0, 240)
+        });
+      }
+    }
+  );
+  const after = await getV3Job(env.AUTH_DB, context.id, jobId);
+  if (jobType === "score" && (after?.status === "completed" || after?.status === "failed")) {
+    // The legacy preview row is a diagnostic/audit projection. Keep it in
+    // sync with the authoritative V3 job without making it part of the
+    // scoring transaction or using it as a second write path.
+    await env.AUTH_DB.prepare(
+      `UPDATE game_rescore_jobs
+          SET status = ?1, error_code = ?2, updated_at = ?3
+        WHERE game_id = ?4 AND lineup_version = ?5 AND status = 'running'`
+    ).bind(
+      after.status,
+      after.failure_code || null,
+      now.toISOString(),
+      context.metadata.gameId,
+      Number((await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id))
+        .find((row) => Number(row.is_final) === 1)?.version || 0)
+    ).run();
+  }
+  await recordV3AdminAudit(getV3AuditDb(env), {
+    internalGameId: context.id,
+    jobId: Number(job.id),
+    jobType: `admin:${jobType}:run`,
+    stateBefore: job.status,
+    stateAfter: after?.status || null,
+    failureCode: after?.failure_code || null,
+    failureMessage: `[v3_details=${JSON.stringify({ reason, actorId: user?.id || null, attemptCount: after?.attempt_count || null })}]`
+  });
+  await recordWorkflowLog(env.AUTH_DB, {
+    eventType: "v3_admin_manual_job_executed",
+    status: after?.status === "completed" ? "success" : "error",
+    gameId: context.metadata.gameId,
+    occurredAt: now,
+    message: "管理者がV3 jobを手動実行しました。",
+    errorCode: after?.failure_code || null,
+    metadata: { internalGameId: context.id, jobId: Number(job.id), jobType, status: after?.status || null, reason, updatedBy: user?.id || null },
+    source: "admin"
+  });
+  const responseStatus = after?.status === "completed" ? 200 : after?.status === "retry_wait" ? 202 : 409;
+  return jsonResponse({ ok: after?.status === "completed", internalGameId: context.id, manualExecution: true, status: after?.status || null, job: after || null, execution }, responseStatus, cors);
 }
 
 async function requireV3JobReason(request) {

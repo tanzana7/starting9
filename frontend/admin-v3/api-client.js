@@ -119,6 +119,18 @@
           body: JSON.stringify(body)
         });
       },
+      runJobById(internalGameId, jobId, body) {
+        return request(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/jobs/${encodeURIComponent(jobId)}/run`, {
+          method: "POST",
+          body: JSON.stringify(body)
+        });
+      },
+      retryJob(internalGameId, jobId, body) {
+        return request(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/jobs/${encodeURIComponent(jobId)}/retry`, {
+          method: "POST",
+          body: JSON.stringify(body)
+        });
+      },
       reconcileState(internalGameId, body) {
         return request(`/api/admin/v3/games/${encodeURIComponent(internalGameId)}/reconcile-state`, {
           method: "POST",

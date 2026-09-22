@@ -35,9 +35,15 @@ test("スタメン操作はrevision作成・正式確定を既存コアへ接続
   assert.match(worker, /V3_REASON_REQUIRED/);
 });
 
-test("再採点は既存preview/confirmコアへ委譲し、ランキング・公開はjobを冪等投入する", () => {
+test("再採点previewは既存コアを使い、confirmはV3 score jobを冪等投入する", () => {
   assert.match(worker, /handleAdminRescorePreview\(request, env, cors, metadata, user\)/);
-  assert.match(worker, /handleAdminRescoreConfirm\(request, env, cors, metadata, user/);
+  assert.match(worker, /handleAdminV3JobRun\(request, env, cors, context, route\.jobId, access\.user\)/);
+  assert.match(apiClient, /runJobById\(internalGameId, jobId/);
+  assert.match(apiClient, /retryJob\(internalGameId, jobId/);
+  assert.match(jobDetails, /data-v3-job-run-id/);
+  assert.match(jobDetails, /data-v3-job-retry/);
+  assert.match(worker, /executeClaimedJobs\(/);
+  assert.match(worker, /claimV3Job\(/);
   assert.match(worker, /createV3AdminActionJob\(env\.AUTH_DB, context\.id, "ranking_rebuild"/);
   assert.match(worker, /createV3AdminActionJob\(env\.AUTH_DB, context\.id, "publish"/);
   assert.match(worker, /status IN \('pending', 'claimed', 'retry_wait'\)/);

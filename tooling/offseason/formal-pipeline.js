@@ -13,10 +13,16 @@ import {
 } from "../../game-automation-v3.js";
 import { evaluateCanonicalArtifactsFromDb } from "../../backend/automation-v3/canonical-artifact-evaluator.js";
 import { V3_TIMING } from "../../backend/automation-v3/constants.js";
+import { getRankingForPeriod } from "../../backend/repositories/ranking-repository.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const POSITIONS = ["捕", "一", "二", "三", "遊", "左", "中", "右", "指"];
 const SESSION_TOKEN = "offseason-formal-pipeline-session";
+export const FORMAL_RANKING_EXPECTATIONS = Object.freeze([
+  Object.freeze({ userId: "offseason-perfect", username: "offseason-perfect", perGameScore: 99 }),
+  Object.freeze({ userId: "offseason-rotate-a", username: "offseason-rotate-a", perGameScore: 45 }),
+  Object.freeze({ userId: "offseason-rotate-b", username: "offseason-rotate-b", perGameScore: 45 })
+]);
 
 function d1(database) {
   return {
@@ -74,6 +80,15 @@ function lineup() {
   }));
 }
 
+function predictionLineup(actualLineup, shift) {
+  if (shift === 0) return actualLineup.map((player) => ({ ...player }));
+  return actualLineup.map((player, index) => ({
+    ...actualLineup[(index + shift) % actualLineup.length],
+    position: player.position,
+    battingOrder: player.battingOrder
+  }));
+}
+
 function requestHeaders() {
   return {
     Cookie: `s9_session=${encodeURIComponent(SESSION_TOKEN)}`,
@@ -98,10 +113,14 @@ function loadSchema(database) {
 }
 
 function insertFixtureRows(database, games, timestamp, tokenHash) {
-  database.prepare(`
+  const insertUser = database.prepare(`
     INSERT INTO users (id, username, username_normalized, password_hash, password_salt, password_iterations, status, role, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'active', 'admin', ?, ?)
-  `).run("offseason-operator", "offseason-operator", "offseason-operator", "test", "test", 1, timestamp, timestamp);
+    VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
+  `);
+  insertUser.run("offseason-operator", "offseason-operator", "offseason-operator", "test", "test", 1, "admin", timestamp, timestamp);
+  for (const expected of FORMAL_RANKING_EXPECTATIONS) {
+    insertUser.run(expected.userId, expected.username, expected.username, "test", "test", 1, "user", timestamp, timestamp);
+  }
   database.prepare(`
     INSERT INTO sessions (id, user_id, token_hash, created_at, expires_at, last_used_at)
     VALUES (?, ?, ?, ?, ?, ?)
@@ -135,17 +154,20 @@ function insertFixtureRows(database, games, timestamp, tokenHash) {
         game_status, is_test_game, publication_status, created_at, updated_at
       ) VALUES (?, ?, ?, 1, ?, 'pending', 0, 'pending', ?, ?)
     `).run(game.internalGameId, game.internalGameId, game.gameDate, timestamp, timestamp, timestamp);
-    database.prepare(`
-      INSERT INTO predictions (
-        id, user_id, game_id, internal_game_id, prediction_json, schema_version,
-        game_date, home_team, away_team, opponent_code, is_home, submitted_at, updated_at,
-        status, is_test_prediction, scoring_status
-      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 1, ?, ?, 'submitted', 0, 'pending')
-    `).run(
-      `offseason-prediction-${index}`, "offseason-operator", game.internalGameId, game.internalGameId,
-      JSON.stringify({ schemaVersion: 1, lineup: actualLineup }), game.gameDate,
-      "fighters", "hawks", "hawks", game.predictionDeadlineAt, timestamp
-    );
+    for (const [userIndex, expected] of FORMAL_RANKING_EXPECTATIONS.entries()) {
+      database.prepare(`
+        INSERT INTO predictions (
+          id, user_id, game_id, internal_game_id, prediction_json, schema_version,
+          game_date, home_team, away_team, opponent_code, is_home, submitted_at, updated_at,
+          status, is_test_prediction, scoring_status
+        ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 1, ?, ?, 'submitted', 0, 'pending')
+      `).run(
+        `offseason-prediction-${index}-${userIndex}`, expected.userId,
+        game.internalGameId, game.internalGameId,
+        JSON.stringify({ schemaVersion: 1, lineup: predictionLineup(actualLineup, userIndex) }), game.gameDate,
+        "fighters", "hawks", "hawks", game.predictionDeadlineAt, timestamp
+      );
+    }
   }
 }
 
@@ -216,7 +238,12 @@ export async function runFormalPipeline(fixture, {
       auxiliaryPlanner: async () => ({ created: 0, planned: [], diagnostics: [], errors: [] }),
       executeJob: async (context) => {
         const type = String(context.job?.job_type || "");
-        executed.push({ gameId: context.internalGameId, jobType: type, pass });
+        executed.push({
+          gameId: context.internalGameId,
+          jobId: Number(context.job?.id),
+          jobType: type,
+          pass
+        });
         if (!injected && failOnceAt && type === failOnceAt) {
           injected = true;
           throw new Error(`off-season injected interruption at ${type}`);
@@ -243,9 +270,9 @@ export async function readFormalPipelineResults(fixture) {
   const results = [];
   for (const game of fixture.games) {
     const canonical = await evaluateCanonicalArtifactsFromDb(fixture.env.AUTH_DB, game.internalGameId);
-    const score = fixture.database.prepare(
-      "SELECT score, scored_attempt_id, scoring_status FROM predictions WHERE internal_game_id = ?"
-    ).get(game.internalGameId);
+    const scores = fixture.database.prepare(
+      "SELECT user_id, score, scored_attempt_id, scoring_status FROM predictions WHERE internal_game_id = ? ORDER BY user_id"
+    ).all(game.internalGameId);
     const lineupRow = fixture.database.prepare(
       "SELECT final_lineup_revision_id, scoring_status, publication_status, published_at FROM game_lineups WHERE internal_game_id = ?"
     ).get(game.internalGameId);
@@ -255,9 +282,23 @@ export async function readFormalPipelineResults(fixture) {
     const reflectionRow = fixture.database.prepare(
       "SELECT scoring_revision_id, status FROM ranking_reflection_revisions WHERE internal_game_id = ? ORDER BY ranking_update_revision DESC LIMIT 1"
     ).get(game.internalGameId);
-    results.push({ gameId: game.internalGameId, canonical, score, lineupRow, scoringRow, reflectionRow });
+    results.push({ gameId: game.internalGameId, canonical, scores, score: scores[0] || null, lineupRow, scoringRow, reflectionRow });
   }
   return results;
+}
+
+export async function readFormalRanking(fixture) {
+  const startAt = fixture.games[0]?.gameDate || null;
+  const endAt = startAt ? new Date(`${startAt}T00:00:00+09:00`) : null;
+  if (endAt) endAt.setUTCDate(endAt.getUTCDate() + 1);
+  return getRankingForPeriod(fixture.env.AUTH_DB, {
+    limit: FORMAL_RANKING_EXPECTATIONS.length,
+    offset: 0,
+    qualifiedOnly: false,
+    startAt,
+    endAt: endAt ? gameDateAt(endAt) : null,
+    publishedOnly: true
+  });
 }
 
 export function closeFormalPipelineFixture(fixture) {

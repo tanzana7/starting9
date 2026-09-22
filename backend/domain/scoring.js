@@ -46,7 +46,6 @@ export function scorePredictionLineup(predictionLineup, actualLineup) {
     counts: { player: playerHits, order: orderHits, position: positionHits, perfect: perfectHits }
   };
 }
-
 export function buildPerfectScorePreview(actualLineup) {
   const predictionLineup = actualLineup.map((player) => ({ ...player }));
   const score = scorePredictionLineup(predictionLineup, actualLineup);

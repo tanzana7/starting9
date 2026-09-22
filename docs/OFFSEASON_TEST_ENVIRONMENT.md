@@ -85,6 +85,31 @@ calendar boundary cases, correction/revision conflicts, or production API
 read behavior. Those remain separate tests and must not be inferred from the
 local formal-pipeline result.
 
+The formal-pipeline regression now uses three independent synthetic users for
+each of the six games. One prediction is a perfect lineup (99 points), while
+the other two keep the same nine players but rotate their order/position
+assignment (45 points each), so the expected totals and the tied rank are
+defined from the fixture input rather than copied from the ranking result.
+The test reads the production ranking repository output and checks total,
+average, games played, qualification, and rank for all three users.
+
+The retry test also reads the job row directly. It checks the original
+`ranking_rebuild` job ID, `UNEXPECTED_EXCEPTION`, `retry_wait`, attempt 1,
+reclaim of that same ID at attempt 2, and final `completed` state. For every
+game it independently checks one completed active scoring revision, one
+reflected ranking revision, three prediction-score history rows, one committed
+score attempt, and one published `game_lineups`/`ranking_games` artifact. The
+schema has no separate append-only publication-history table; those two
+published rows are the publication artifacts checked by this fixture.
+
+The fixture intentionally does not claim to reproduce JST boundary behavior or
+fully control every timestamp: Cron time is injected, but manual finalize
+handlers still use their production request-time clock. It also does not test
+simultaneous claims from multiple Worker instances, Cloudflare Workers CPU
+limits, Cloudflare D1 latency/locking, or the complete production API read
+surface. Those items remain unverified and require separate environment-level
+tests.
+
 ## Deferred items
 
 Anything that needs an Auth Worker change, a production binding, production

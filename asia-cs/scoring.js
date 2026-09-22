@@ -1,9 +1,13 @@
-// Asia CS uses the same 100-point scoring contract as Starting9's current
-// server scorer. Keeping this pure makes it usable by the isolated Worker and
-// by the integration tests without importing the production V3/V4 runtime.
+import {
+  SCORING_LINEUP_SIZE,
+  SCORING_MAX_SCORE,
+  scorePredictionLineup
+} from "../backend/domain/scoring.js";
 
-export const LINEUP_SIZE = 9;
-export const MAX_SCORE = 100;
+// Validation is Asia CS transport/domain glue; score calculation remains the
+// canonical Starting9 scorer so an isolated Worker cannot diverge in points.
+export const LINEUP_SIZE = SCORING_LINEUP_SIZE;
+export const MAX_SCORE = SCORING_MAX_SCORE;
 export const POSITIONS = Object.freeze(["捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
 
 const POSITION_ALIASES = Object.freeze({
@@ -67,22 +71,5 @@ export function validateLineup(value, { label = "ラインナップ", rosterIds 
 }
 
 export function scoreLineup(predictionLineup, actualLineup) {
-  const actualByPlayerId = new Map(actualLineup.map((item) => [item.playerId, item]));
-  let playerHits = 0;
-  let orderHits = 0;
-  let positionHits = 0;
-  for (const prediction of predictionLineup) {
-    const actual = actualByPlayerId.get(prediction.playerId);
-    if (!actual) continue;
-    playerHits += 1;
-    if (actual.battingOrder === prediction.battingOrder) orderHits += 1;
-    if (actual.position === prediction.position) positionHits += 1;
-  }
-  const playerScore = playerHits * 5 + (playerHits === LINEUP_SIZE ? 5 : 0);
-  const orderScore = orderHits * 3 + (orderHits === LINEUP_SIZE ? 3 : 0);
-  const positionScore = positionHits * 2 + (positionHits === LINEUP_SIZE ? 2 : 0);
-  return {
-    total: Math.min(MAX_SCORE, playerScore + orderScore + positionScore),
-    counts: { player: playerHits, order: orderHits, position: positionHits }
-  };
+  return scorePredictionLineup(predictionLineup, actualLineup);
 }

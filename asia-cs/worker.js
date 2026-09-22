@@ -143,11 +143,11 @@ function cookieValue(request, name) {
 }
 
 function sessionCookie(token) {
-  return `${SESSION_COOKIE}=${token}; Max-Age=${SESSION_MAX_AGE_SECONDS}; Path=/; HttpOnly; Secure; SameSite=Lax`;
+  return `${SESSION_COOKIE}=${token}; Max-Age=${SESSION_MAX_AGE_SECONDS}; Path=/; HttpOnly; Secure; SameSite=Strict`;
 }
 
 function expiredSessionCookie() {
-  return `${SESSION_COOKIE}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax`;
+  return `${SESSION_COOKIE}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Strict`;
 }
 
 function withSetCookie(response, cookie) {
@@ -160,8 +160,15 @@ function normalizedUsername(value) {
   return String(value || "").trim().normalize("NFKC").toLowerCase();
 }
 
-function adminUsernameSet(env) {
-  return new Set(String(env.ADMIN_USERNAMES || "").split(",").map(normalizedUsername).filter(Boolean));
+function mutationOriginError(request, env) {
+  const configuredOrigin = String(env.ALLOWED_ORIGIN || "").trim();
+  const requestedOrigin = String(request.headers.get("Origin") || "").trim();
+  const fetchSite = String(request.headers.get("Sec-Fetch-Site") || "").trim().toLowerCase();
+  if (fetchSite === "cross-site") return errorResponse(request, env, 403, "CROSS_SITE_MUTATION", "許可されていない操作です。");
+  if (requestedOrigin && (!configuredOrigin || requestedOrigin !== configuredOrigin)) {
+    return errorResponse(request, env, configuredOrigin ? 403 : 503, configuredOrigin ? "ORIGIN_NOT_ALLOWED" : "ORIGIN_NOT_CONFIGURED", configuredOrigin ? "許可されていない操作です。" : "許可Originが設定されていません。");
+  }
+  return null;
 }
 
 async function getSessionUser(request, db) {
@@ -184,6 +191,8 @@ async function requireUser(request, env, db) {
 }
 
 async function requireAdmin(request, env, db) {
+  const originError = mutationOriginError(request, env);
+  if (originError) return originError;
   const user = await getSessionUser(request, db);
   if (!user) return errorResponse(request, env, 401, "AUTH_REQUIRED", "ログインしてください。");
   if (user.role !== "admin") return errorResponse(request, env, 403, "ADMIN_REQUIRED", "管理者権限が必要です。");
@@ -204,7 +213,10 @@ async function register(request, env, db) {
   const now = nowIso();
   const salt = randomBase64(16);
   const token = randomBase64(32);
-  const role = adminUsernameSet(env).has(normalized) ? "admin" : "user";
+  // Public registration can only create regular users. Admin role assignment is
+  // deliberately isolated in bootstrapAdmin so a reserved username cannot
+  // become a privilege-escalation mechanism.
+  const role = "user";
   const userId = uuid();
   try {
     await db.batch([
@@ -219,6 +231,36 @@ async function register(request, env, db) {
     throw error;
   }
   return withSetCookie(json({ ok: true, user: { id: userId, username, role } }, 201, request, env), sessionCookie(token));
+}
+
+async function bootstrapAdmin(request, env, db) {
+  const originError = mutationOriginError(request, env);
+  if (originError) return originError;
+  const configuredToken = String(env.ADMIN_BOOTSTRAP_TOKEN || "");
+  if (!configuredToken) throw new RequestError(503, "ADMIN_BOOTSTRAP_UNAVAILABLE", "管理者初期化が設定されていません。");
+  if (!constantTimeEqual(request.headers.get("X-Admin-Bootstrap-Token") || "", configuredToken)) {
+    throw new RequestError(403, "ADMIN_BOOTSTRAP_INVALID", "管理者初期化トークンが不正です。");
+  }
+  const input = await readJson(request);
+  const username = String(input.username || "").trim().slice(0, 32);
+  const normalized = normalizedUsername(username);
+  const password = String(input.password || "");
+  if (!/^[^\s]{1,32}$/.test(username) || normalized.length < 1) {
+    throw new RequestError(400, "USERNAME_INVALID", "ユーザー名を入力してください。");
+  }
+  if (password.length < 8 || password.length > 72) {
+    throw new RequestError(400, "PASSWORD_INVALID", "パスワードは8〜72文字で入力してください。");
+  }
+
+  const userId = uuid();
+  const now = nowIso();
+  const salt = randomBase64(16);
+  const result = await prepared(db, `INSERT INTO users (id, username, username_normalized, password_hash, password_salt, password_iterations, role, created_at, updated_at)
+    SELECT ?1, ?2, ?3, ?4, ?5, ?6, 'admin', ?7, ?7
+      WHERE NOT EXISTS (SELECT 1 FROM users WHERE role = 'admin')`,
+    userId, username, normalized, await hashPassword(password, salt), salt, PASSWORD_ITERATIONS, now).run();
+  if (!Number(result?.meta?.changes || 0)) throw new RequestError(409, "ADMIN_ALREADY_INITIALIZED", "管理者は初期化済みです。");
+  return json({ ok: true, user: { id: userId, username, role: "admin" } }, 201, request, env);
 }
 
 async function login(request, env, db) {
@@ -291,6 +333,8 @@ async function currentPrediction(request, env, db, gameId) {
 async function savePrediction(request, env, db, gameId) {
   const user = await requireUser(request, env, db);
   if (user instanceof Response) return user;
+  const originError = mutationOriginError(request, env);
+  if (originError) return originError;
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
   const now = new Date();
@@ -316,6 +360,8 @@ async function savePrediction(request, env, db, gameId) {
 async function deletePrediction(request, env, db, gameId) {
   const user = await requireUser(request, env, db);
   if (user instanceof Response) return user;
+  const originError = mutationOriginError(request, env);
+  if (originError) return originError;
   const game = await getGame(db, gameId);
   const deadline = validDate(game?.prediction_deadline_at);
   if (!game || !deadline || new Date().getTime() >= deadline.getTime() || game.status !== "open") {
@@ -408,7 +454,31 @@ async function currentLineup(db, gameId) {
   return { revision: Number(row.revision_number), lineup: JSON.parse(row.lineup_json), fingerprint: row.fingerprint, confirmedAt: row.confirmed_at };
 }
 
-async function prepareScoring(db, gameId, game, lineup, revision, admin, kind) {
+function scoringLockInsert(db, { lockId, gameId, revision, kind, adminId, startedAt }) {
+  return prepared(db, `INSERT INTO scoring_runs (id, game_id, revision_number, kind, processed_count, score_changed_count, started_at, completed_at, created_by)
+    SELECT ?1, ?2, ?3, ?4, 0, 0, ?5, NULL, ?6
+      WHERE NOT EXISTS (
+        SELECT 1 FROM scoring_runs
+         WHERE game_id = ?2 AND revision_number = ?3 AND kind = ?4
+      )`, lockId, gameId, revision, kind, startedAt, adminId);
+}
+
+function scoringLockPredicate(startIndex) {
+  return `EXISTS (
+    SELECT 1 FROM scoring_runs
+     WHERE id = ?${startIndex}
+       AND game_id = ?${startIndex + 1}
+       AND revision_number = ?${startIndex + 2}
+       AND kind = ?${startIndex + 3}
+       AND completed_at IS NULL
+  )`;
+}
+
+async function completedScoringRun(db, lockId) {
+  return prepared(db, "SELECT id, game_id, revision_number, kind, processed_count, score_changed_count, completed_at FROM scoring_runs WHERE id = ?1 AND completed_at IS NOT NULL LIMIT 1", lockId).first();
+}
+
+async function prepareScoring(db, gameId, game, lineup, revision, admin, kind, lockId) {
   const rowsResult = await prepared(db, "SELECT * FROM predictions WHERE game_id = ?1 ORDER BY updated_at ASC, id ASC", gameId).all();
   const rows = rowsResult.results || [];
   const updates = [];
@@ -432,20 +502,26 @@ async function prepareScoring(db, gameId, game, lineup, revision, admin, kind) {
     }
     if (row.score !== score || row.status !== status || Number(row.scored_revision || 0) !== revision) changed += 1;
     outcomes.push({ id: row.id, score, status });
-    updates.push(prepared(db, `UPDATE predictions SET status = ?1, score = ?2, max_score = ?3, scored_revision = ?4, actual_lineup_json = ?5, scored_at = ?6 WHERE id = ?7`, status, score, score === null ? null : MAX_SCORE, revision, JSON.stringify(lineup), nowIso(), row.id));
+    const lockPredicate = scoringLockPredicate(8);
+    updates.push(prepared(db, `UPDATE predictions SET status = ?1, score = ?2, max_score = ?3, scored_revision = ?4, actual_lineup_json = ?5, scored_at = ?6 WHERE id = ?7 AND ${lockPredicate}`, status, score, score === null ? null : MAX_SCORE, revision, JSON.stringify(lineup), nowIso(), row.id, lockId, gameId, revision, kind));
   }
-  return { updates, rows, outcomes, scored, invalid, changed, revision, gameId, adminId: admin.id, kind };
+  return { updates, rows, outcomes, scored, invalid, changed, revision, gameId, adminId: admin.id, kind, lockId };
 }
 
 async function commitScoring(db, game, plan) {
   const now = nowIso();
-  const nextStatus = game.status === "published" ? "published" : "scored";
-  const statements = [...plan.updates,
-    prepared(db, "UPDATE games SET status = ?1, publication_status = ?2, updated_at = ?3 WHERE id = ?4", nextStatus, nextStatus === "published" ? "published" : "pending", now, plan.gameId),
-    prepared(db, `INSERT INTO scoring_runs (id, game_id, revision_number, kind, processed_count, score_changed_count, started_at, completed_at, created_by)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8)`, uuid(), plan.gameId, plan.revision, plan.kind, plan.rows.length, plan.changed, now, plan.adminId)
+  const lockPredicate = scoringLockPredicate(3);
+  const statements = [
+    scoringLockInsert(db, { ...plan, startedAt: now }),
+    ...plan.updates,
+    prepared(db, `UPDATE games SET status = 'scored', publication_status = 'pending', updated_at = ?1
+       WHERE id = ?2 AND status = 'lineup_confirmed' AND ${lockPredicate}`, now, plan.gameId, plan.lockId, plan.gameId, plan.revision, plan.kind),
+    prepared(db, `UPDATE scoring_runs SET processed_count = ?1, score_changed_count = ?2, completed_at = ?3
+       WHERE id = ?4 AND completed_at IS NULL`, plan.rows.length, plan.changed, now, plan.lockId)
   ];
   await db.batch(statements);
+  const completed = await completedScoringRun(db, plan.lockId);
+  if (!completed) throw new RequestError(409, "SCORING_CONFLICT", "別の採点処理が先に完了しました。");
   return { processed: plan.rows.length, scored: plan.scored, invalid: plan.invalid, scoreChangedCount: plan.changed, revision: plan.revision, completedAt: now };
 }
 
@@ -453,8 +529,9 @@ async function scoreGame(request, env, db, gameId, admin) {
   const game = await getGame(db, gameId);
   const lineup = await currentLineup(db, gameId);
   if (!game || !lineup) return errorResponse(request, env, 409, "LINEUP_REQUIRED", "正式スタメンを先に確定してください。");
+  if (game.status !== "lineup_confirmed") return errorResponse(request, env, 409, "INITIAL_SCORING_NOT_ALLOWED", "初回採点は正式スタメン確定後に一度だけ実行できます。");
   if (new Date().getTime() < new Date(game.prediction_deadline_at).getTime()) return errorResponse(request, env, 409, "PREDICTION_OPEN", "締切前は採点できません。");
-  const plan = await prepareScoring(db, gameId, game, lineup.lineup, lineup.revision, admin, "initial");
+  const plan = await prepareScoring(db, gameId, game, lineup.lineup, lineup.revision, admin, "initial", uuid());
   const result = await commitScoring(db, game, plan);
   return json({ ok: true, gameId, ...result }, 200, request, env);
 }
@@ -462,14 +539,18 @@ async function scoreGame(request, env, db, gameId, admin) {
 async function publishGame(request, env, db, gameId) {
   const game = await getGame(db, gameId);
   if (!game || game.status !== "scored") return errorResponse(request, env, 409, "SCORING_REQUIRED", "採点済みの試合だけ公開できます。");
+  const completed = await prepared(db, "SELECT 1 FROM scoring_runs WHERE game_id = ?1 AND revision_number = ?2 AND completed_at IS NOT NULL LIMIT 1", gameId, game.current_lineup_revision).first();
+  if (!completed) return errorResponse(request, env, 409, "SCORING_INCOMPLETE", "採点処理が完了していません。");
   const now = nowIso();
-  await prepared(db, "UPDATE games SET status = 'published', publication_status = 'published', updated_at = ?1 WHERE id = ?2 AND status = 'scored'", now, gameId).run();
+  const result = await prepared(db, "UPDATE games SET status = 'published', publication_status = 'published', updated_at = ?1 WHERE id = ?2 AND status = 'scored'", now, gameId).run();
+  if (!Number(result?.meta?.changes || 0)) return errorResponse(request, env, 409, "PUBLICATION_CONFLICT", "別の公開処理が先に完了しました。");
   return json({ ok: true, gameId, publishedAt: now }, 200, request, env);
 }
 
 async function rescoreGame(request, env, db, gameId, admin) {
   const game = await getGame(db, gameId);
   if (!game || !["scored", "published"].includes(game.status)) return errorResponse(request, env, 409, "RESCORE_NOT_READY", "採点済みの試合だけ正式スタメンを修正できます。");
+  if (game.current_lineup_revision === null || game.current_lineup_revision === undefined) return errorResponse(request, env, 409, "REVISION_REQUIRED", "現行revisionがありません。");
   const input = await readJson(request);
   const candidate = validateLineup(input.lineup, { label: "訂正版正式スタメン", rosterIds: await getRosterIds(db, gameId) });
   if (!candidate.ok) return errorResponse(request, env, 400, candidate.code, candidate.error);
@@ -477,17 +558,29 @@ async function rescoreGame(request, env, db, gameId, admin) {
   const revision = Number(previous?.revision || 0) + 1;
   const now = nowIso();
   const fingerprint = await sha256Hex(JSON.stringify(candidate.lineup));
-  const plan = await prepareScoring(db, gameId, game, candidate.lineup, revision, admin, "rescore");
+  const plan = await prepareScoring(db, gameId, game, candidate.lineup, revision, admin, "rescore", uuid());
+  const lineupLockPredicate = scoringLockPredicate(2);
+  const insertLockPredicate = scoringLockPredicate(8);
+  const gameLockPredicate = scoringLockPredicate(9);
   const statements = [
-    prepared(db, "UPDATE lineup_revisions SET is_current = 0 WHERE game_id = ?1 AND is_current = 1", gameId),
+    scoringLockInsert(db, { ...plan, startedAt: now }),
+    prepared(db, `UPDATE lineup_revisions SET is_current = 0 WHERE game_id = ?1 AND is_current = 1 AND ${lineupLockPredicate}`, gameId, plan.lockId, gameId, revision, plan.kind),
     prepared(db, `INSERT INTO lineup_revisions (id, game_id, revision_number, lineup_json, fingerprint, is_current, confirmed_at, confirmed_by, created_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?6)`, uuid(), gameId, revision, JSON.stringify(candidate.lineup), fingerprint, now, admin.id),
+      SELECT ?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?6
+       WHERE ${insertLockPredicate}`, uuid(), gameId, revision, JSON.stringify(candidate.lineup), fingerprint, now, admin.id, plan.lockId, gameId, revision, plan.kind),
     ...plan.updates,
-    prepared(db, "UPDATE games SET status = ?1, publication_status = ?2, current_lineup_revision = ?3, updated_at = ?4 WHERE id = ?5", game.status, game.publication_status, revision, now, gameId),
-    prepared(db, `INSERT INTO scoring_runs (id, game_id, revision_number, kind, processed_count, score_changed_count, started_at, completed_at, created_by)
-      VALUES (?1, ?2, ?3, 'rescore', ?4, ?5, ?6, ?6, ?7)`, uuid(), gameId, revision, plan.rows.length, plan.changed, now, admin.id)
+    prepared(db, `UPDATE games SET status = ?1, publication_status = ?2, current_lineup_revision = ?3, updated_at = ?4
+       WHERE id = ?5 AND status = ?6 AND publication_status = ?7 AND current_lineup_revision = ?8 AND ${gameLockPredicate}`, game.status, game.publication_status, revision, now, gameId, game.status, game.publication_status, game.current_lineup_revision, plan.lockId, gameId, revision, plan.kind),
+    prepared(db, `UPDATE scoring_runs SET processed_count = ?1, score_changed_count = ?2, completed_at = ?3
+       WHERE id = ?4 AND completed_at IS NULL`, plan.rows.length, plan.changed, now, plan.lockId)
   ];
-  await db.batch(statements);
+  try {
+    await db.batch(statements);
+  } catch (error) {
+    if (String(error?.message || "").toLowerCase().includes("unique")) throw new RequestError(409, "RESCORE_CONFLICT", "別の正式スタメン修正が先に完了しました。");
+    throw error;
+  }
+  if (!await completedScoringRun(db, plan.lockId)) throw new RequestError(409, "RESCORE_CONFLICT", "別の正式スタメン修正が先に完了しました。");
   return json({ ok: true, gameId, revision, scoreChangedCount: plan.changed, processed: plan.rows.length, scored: plan.scored, invalid: plan.invalid, published: game.publication_status === "published", reason: String(input.reason || "正式スタメン修正").trim().slice(0, 240) }, 200, request, env);
 }
 
@@ -496,6 +589,10 @@ async function bestNine(request, env, db, gameId) {
   if (!game || game.status !== "published" || game.publication_status !== "published") {
     return json({ ok: true, published: false, bestNine: [], totalCount: 0 }, 200, request, env);
   }
+  const currentRevision = Number(game.current_lineup_revision);
+  if (!Number.isInteger(currentRevision)) return json({ ok: true, published: false, bestNine: [], totalCount: 0 }, 200, request, env);
+  const completed = await prepared(db, "SELECT 1 FROM scoring_runs WHERE game_id = ?1 AND revision_number = ?2 AND completed_at IS NOT NULL LIMIT 1", gameId, currentRevision).first();
+  if (!completed) return json({ ok: true, published: false, bestNine: [], totalCount: 0 }, 200, request, env);
   const candidates = `WITH latest_predictions AS (
     SELECT predictions.*, ROW_NUMBER() OVER (PARTITION BY user_id, game_id ORDER BY updated_at DESC, submitted_at DESC, id DESC) AS submission_rank
       FROM predictions WHERE game_id = ?1
@@ -503,10 +600,11 @@ async function bestNine(request, env, db, gameId) {
     SELECT users.username, latest_predictions.user_id, latest_predictions.score, latest_predictions.max_score, latest_predictions.submitted_at
       FROM latest_predictions JOIN users ON users.id = latest_predictions.user_id
      WHERE latest_predictions.submission_rank = 1
-       AND latest_predictions.status = 'scored'
-       AND latest_predictions.score IS NOT NULL
-       AND latest_predictions.max_score IS NOT NULL
-       AND (latest_predictions.is_test_prediction = 0 OR users.username IN (${CANONICAL_TEST_USERS.map((_, index) => `?${index + 2}`).join(", ")}))
+        AND latest_predictions.status = 'scored'
+        AND latest_predictions.score IS NOT NULL
+        AND latest_predictions.max_score IS NOT NULL
+        AND latest_predictions.scored_revision = (SELECT current_lineup_revision FROM games WHERE id = ?1)
+        AND (latest_predictions.is_test_prediction = 0 OR users.username IN (${CANONICAL_TEST_USERS.map((_, index) => `?${index + 2}`).join(", ")}))
        AND users.status = 'active'
   )`;
   const binds = [gameId, ...CANONICAL_TEST_USERS];
@@ -531,6 +629,7 @@ async function route(request, env) {
   const path = url.pathname.replace(/\/$/, "") || "/";
   if (request.method === "OPTIONS") return json({ ok: true }, 200, request, env);
   if (path === "/api/auth/register" && request.method === "POST") return register(request, env, db);
+  if (path === "/api/auth/admin/bootstrap" && request.method === "POST") return bootstrapAdmin(request, env, db);
   if (path === "/api/auth/login" && request.method === "POST") return login(request, env, db);
   if (path === "/api/auth/logout" && request.method === "POST") return logout(request, env, db);
   if (path === "/api/auth/me" && request.method === "GET") return json({ ok: true, user: await getSessionUser(request, db) }, 200, request, env);

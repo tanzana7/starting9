@@ -17,7 +17,7 @@ npx wrangler d1 migrations apply starting9-asia-cs-db --local --config asia-cs/w
 npx wrangler dev --config asia-cs/wrangler.jsonc
 ```
 
-`ADMIN_USERNAMES=admin` を `.dev.vars` に設定すると、登録した `admin` ユーザーが管理者になります。`.dev.vars` と `.wrangler/` はコミットしません。
+管理者は公開登録では作成しません。ローカルでは `.dev.vars` に秘密の `ADMIN_BOOTSTRAP_TOKEN` を設定し、`X-Admin-Bootstrap-Token` ヘッダー付きで `/api/auth/admin/bootstrap` を一度だけ呼び出してDBへ初期化します。管理者が一人でも存在する場合、同じ経路は再利用できません。`.dev.vars` と `.wrangler/` はコミットしません。
 
 Pagesのローカル静的画面は、別ターミナルで次のように配信します。
 
@@ -26,6 +26,14 @@ python -m http.server 8782 --directory asia-cs/public --bind 127.0.0.1
 ```
 
 画面は `?game=<gameId>` で対象試合を選択します。API Workerを別ポートで起動する場合は、Pages側の同一オリジンルーティングをローカルプロキシで設定してください。
+
+## Pages / Worker接続契約
+
+- Pagesプロジェクトは `starting9-asia-cs`、API Workerは `starting9-asia-cs-api` とし、Pagesの同一ホスト `/api/*` をAsia CS API Workerだけへプロキシします。
+- `public/` は相対URL `/api/...` のみを呼ぶため、本家Workerや本家Pagesを転送先に設定してはいけません。
+- 本番の `ALLOWED_ORIGIN` はAsia CS Pagesの完全一致Originだけに設定します。`ADMIN_BOOTSTRAP_TOKEN` はWorker Secretとして登録し、Pagesへ渡しません。
+- D1 IDがプレースホルダーの間はCloudflareリソース未作成であり、deploy成功・本番疎通済みとは扱いません。
+- 本番確認では、Pagesの画面から `/api/auth/me`、予想保存、管理API、Best Nine取得の4経路をAsia CS Workerのログで確認してから公開します。
 
 ## APIの流れ
 

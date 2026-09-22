@@ -1,8 +1,8 @@
 # Scoring Phase 1 migration contract
 
-This document records the Phase 0 boundary before the admin scoring-confirm
-route is moved to the V3 score job path. It is a migration guard, not a
-runtime feature flag or a production operation procedure.
+This document records the Phase 1 boundary where the admin scoring-confirm
+route requests the same V3 score job used by Cron. It is a migration guard,
+not a runtime feature flag or a production operation procedure.
 
 ## Current paths
 
@@ -26,27 +26,36 @@ canonical lineage. They are not allowed to use an older scoring revision.
 
 ### Administrator scoring confirm
 
-The V3 route currently validates the rescore preview and lineage, then calls
-the legacy rescore preview/confirm core with `deferPublication: true`.
-Therefore it is not yet equivalent to the V3 score executor:
+The administrator still creates a preview through the existing preview core,
+because that preview is the confirmation record and lineage input. Confirm
+then validates the actor, preview lineage, deadline, canonical finalized
+lineup, and current revision before idempotently creating a `score` job. It
+returns `202` with the job identity; it does not write scores itself.
 
-| Contract | Automatic V3 | Admin confirm today |
+The exact job recovery route claims the stored job through the same repository
+claim/lease contract and invokes the registered V3 executor through
+`executeClaimedJobs`. A completed job is a no-op, a concurrently claimed job
+is rejected (or observed as completed), and retryable failures keep the normal
+V3 retry state. Therefore the old direct confirm implementation is no longer
+the normal admin path:
+
+| Contract | Automatic V3 | Admin confirm/recovery |
 |---|---|---|
-| Invocation | claimed `game_jobs_v3` score job | authenticated HTTP admin route |
-| Input identity | internal game ID + current job claim | game ID + preview ID + lineup version |
-| Preconditions | current lease, canonical final lineup, V3 state gate | preview lineage, admin confirmation, legacy rescore rules |
-| Write model | score attempt staging/commit | legacy rescore core and its history tables |
-| Duplicate guard | job identity + claim token + committed attempt | preview/lineage checks; not the same job contract |
-| Downstream | normal V3 ranking and publication jobs | publication deferred, then separate V3/admin continuation |
+| Invocation | claimed `game_jobs_v3` score job | confirm queues the same job; `/jobs/:id/run` claims and runs it |
+| Input identity | internal game ID + current job claim | internal game ID + preview ID + expected lineup revision |
+| Preconditions | current lease, canonical final lineup, V3 state gate | preview lineage, actor, deadline, canonical final lineup, revision guard |
+| Write model | score-attempt staging/commit | the same V3 score-attempt staging/commit |
+| Duplicate guard | job identity + claim token + committed attempt | open/completed job idempotency + the same claim/attempt fencing |
+| Downstream | normal V3 ranking and publication jobs | the same downstream ranking/publication jobs remain separate |
 
-This difference is intentional in Phase 0. The admin route must not be
-silently switched until the input conversion and historical-write behavior
-are tested against the V3 contract.
+The legacy rescore implementation remains available for compatibility and
+rollback analysis, but is not called by the normal V3 confirm route. Existing
+legacy history is retained for read/audit compatibility; no schema migration
+is required for this phase.
 
-## Phase 1 target
+## Phase 1 implemented contract
 
-The smallest safe change is to add an internal scoring command service that
-accepts the following normalized input:
+The normalized request boundary is:
 
 ```text
 internalGameId
@@ -57,12 +66,17 @@ idempotencyKey
 requestedAt
 ```
 
-The administrator controller should validate authentication, confirmation,
-preview lineage, and the expected revision, then enqueue or resume the same
-`game_jobs_v3` score job used by Cron. The heavy scoring write must remain in
-the V3 executor. The response should be asynchronous (`202`) with the job
-identity and current state, rather than performing a second scoring
-implementation in the HTTP handler.
+The administrator controller validates authentication, confirmation, preview
+lineage, deadline, and the expected canonical revision, then enqueues the
+same `game_jobs_v3` score job used by Cron. The heavy scoring write remains in
+the V3 executor. The response is asynchronous (`202`) with the job identity
+and current state. The admin job detail view exposes an exact-ID manual run
+and retry action; both use the existing authenticated admin/CSRF boundary.
+
+The manual run is intentionally a small recovery operation. It does not
+create a replacement job, bypass the lease, or call the legacy scorer. The
+same `score_attempts` fencing, canonical revision check, downstream job
+creation, and retry lifecycle are used as the Cron path.
 
 No schema change is required for the first phase. The existing job identity,
 lease, retry, score-attempt fencing, active scoring revision, and canonical
@@ -82,8 +96,8 @@ The conversion is safe only if all of the following remain true:
 - ranking and publication are not created from a failed or uncommitted attempt;
 - old legacy rows are preserved for read/audit compatibility until the
   migration window is complete;
-- rollback routes admin confirm back to the legacy path only while no V3
-  attempt has been committed for that request.
+- once a V3 score job exists for the request, recovery uses that job rather
+  than creating a second scorer path.
 
 Once a V3 attempt is committed, rollback must not re-run the legacy scorer for
 the same canonical revision. Recovery must use the V3 job/result already
@@ -113,11 +127,13 @@ due-window query. It must not bypass job creation.
 
 Rollback is a routing decision, not a database rewrite:
 
-- before a V3 attempt is committed, route a rejected admin request back to
-  the existing legacy preview/confirm flow;
+- before a V3 attempt is committed, a request can be rejected or safely
+  retried through the pending/retry job lifecycle; do not run both scorers;
 - after a V3 attempt is committed, continue through V3 ranking/publication;
 - never run both scorers for the same canonical revision;
-- retain the old route until contract tests and isolated correction/retry
-  tests pass.
+- retain the legacy implementation for read/audit compatibility, but keep it
+  out of the normal V3 confirm route. If a rollback is required, stop new V3
+  requests and use the job/attempt lineage to decide recovery; do not rewrite
+  committed rows.
 
-Production deployment is intentionally outside this Phase 0 change.
+Production deployment is intentionally outside this Phase 1 change.

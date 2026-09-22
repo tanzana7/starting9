@@ -100,7 +100,12 @@
       return jobs.length ? `<div class="job-list">${jobs.map((job) => {
         const detailKey = key(game.internalGameId, job.id);
         const open = state.jobDetailsOpen.has(detailKey);
-        return `<div class="job-entry"><div class="job"><code>${escapeHtml(jobLabels[job.job_type] || job.job_type)}</code><span class="job-status">${escapeHtml(statusLabel(job.status))}</span><span>${escapeHtml(job.failure_code || `試行 ${job.attempt_count || 0}/${job.max_attempts || 0}`)}<br><small>予定 ${escapeHtml(formatJst(job.scheduled_at))}</small></span><button type="button" aria-expanded="${open ? "true" : "false"}" aria-controls="${escapeHtml(domId(detailKey))}" data-v3-job-detail="${escapeHtml(game.internalGameId)}" data-v3-job-id="${escapeHtml(job.id)}">詳細</button></div>${renderInline(game, job)}</div>`;
+        const manualRunAllowed = ["score", "ranking_rebuild", "publish"].includes(String(job.job_type || ""))
+          && ["pending", "retry_wait"].includes(String(job.status || ""));
+        const retryAllowed = ["score", "ranking_rebuild", "publish"].includes(String(job.job_type || ""))
+          && ["failed", "retry_wait"].includes(String(job.status || ""));
+        const actionMarkup = `${manualRunAllowed ? `<button type="button" data-v3-job-run-id="${escapeHtml(game.internalGameId)}" data-v3-job-run-job-id="${escapeHtml(job.id)}" data-v3-job-run-type="${escapeHtml(job.job_type)}">手動実行</button>` : ""}${retryAllowed ? `<button type="button" data-v3-job-retry="${escapeHtml(game.internalGameId)}" data-v3-job-retry-id="${escapeHtml(job.id)}" data-v3-job-retry-type="${escapeHtml(job.job_type)}">再試行</button>` : ""}`;
+        return `<div class="job-entry"><div class="job"><code>${escapeHtml(jobLabels[job.job_type] || job.job_type)}</code><span class="job-status">${escapeHtml(statusLabel(job.status))}</span><span>${escapeHtml(job.failure_code || `試行 ${job.attempt_count || 0}/${job.max_attempts || 0}`)}<br><small>予定 ${escapeHtml(formatJst(job.scheduled_at))}</small></span><span class="job-actions">${actionMarkup}<button type="button" aria-expanded="${open ? "true" : "false"}" aria-controls="${escapeHtml(domId(detailKey))}" data-v3-job-detail="${escapeHtml(game.internalGameId)}" data-v3-job-id="${escapeHtml(job.id)}">詳細</button></span></div>${renderInline(game, job)}</div>`;
       }).join("")}</div>` : "<span class=muted>該当jobの履歴はありません。</span>";
     }
 

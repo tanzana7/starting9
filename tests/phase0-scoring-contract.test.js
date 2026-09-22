@@ -16,6 +16,7 @@ import {
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WORKER_SOURCE = fs.readFileSync(path.join(ROOT, "auth-worker.js"), "utf8");
 const EXECUTOR_SOURCE = fs.readFileSync(path.join(ROOT, "backend/automation-v3/executor.js"), "utf8");
+const SESSION_TOKEN = "offseason-formal-pipeline-session";
 
 function handlerSource(name, nextName) {
   const start = WORKER_SOURCE.indexOf(`async function ${name}`);
@@ -29,20 +30,32 @@ function countRows(database, sql, ...params) {
   return Number(database.prepare(sql).get(...params)?.count || 0);
 }
 
-test("Phase 0: admin scoring confirm and V3 score executor contract difference is explicit", () => {
+async function adminRequest(fixture, pathname, body) {
+  return worker.fetch(new Request(`https://starting9.offseason.test${pathname}`, {
+    method: "POST",
+    headers: {
+      Cookie: `s9_session=${encodeURIComponent(SESSION_TOKEN)}`,
+      Origin: "https://starting9.offseason.test",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  }), fixture.env, {});
+}
+
+test("Phase 1: admin scoring confirm queues the same V3 score executor contract", () => {
   const adminConfirm = handlerSource("handleAdminV3ScoringConfirm", "assertV3RescoreLineage");
   const scoreExecutor = WORKER_SOURCE.slice(
     WORKER_SOURCE.indexOf("async function executeV3ScoreExecutor"),
     WORKER_SOURCE.indexOf("async function executeV3RankingExecutor")
   );
 
-  // This is the migration guard: Phase 0 must not silently route admin
-  // confirmation through a different implementation. The current admin
-  // route still uses the legacy preview/confirm contract and defers the
-  // downstream publication, while the V3 executor owns score-attempt commit.
-  assert.match(adminConfirm, /invokeV3RescoreCore\(body, env, cors, context\.metadata, user, "confirm"/);
-  assert.match(adminConfirm, /deferPublication: true/);
-  assert.doesNotMatch(adminConfirm, /createV3AdminActionJob\([^\n]+, "score"/);
+  assert.doesNotMatch(adminConfirm, /invokeV3RescoreCore\(body, env, cors, context\.metadata, user, "confirm"/);
+  assert.match(adminConfirm, /assertV3RescoreLineage\(env\.AUTH_DB, context, body, user\?\.id\)/);
+  assert.match(adminConfirm, /assertV3AdminScoringReady\(env, context, body\)/);
+  assert.match(adminConfirm, /input\?\.confirmed !== true/);
+  assert.match(adminConfirm, /createV3AdminActionJob\(env\.AUTH_DB, context\.id, "score"/);
+  assert.match(adminConfirm, /accepted: true/);
+  assert.match(adminConfirm, /async: true/);
 
   assert.match(scoreExecutor, /hasCurrentV3ScoreJobLease/);
   assert.match(scoreExecutor, /V3_FINAL_LINEUP_REQUIRED/);
@@ -50,6 +63,66 @@ test("Phase 0: admin scoring confirm and V3 score executor contract difference i
   assert.match(scoreExecutor, /markScoreAttemptReady/);
   assert.match(scoreExecutor, /commitScoreAttempt/);
   assert.equal(typeof V3_JOB_EXECUTORS[V3_JOB_TYPE.SCORE], "function");
+});
+
+test("Phase 1: admin confirm and exact job run are idempotent on an isolated V3 fixture", async () => {
+  const fixture = await createFormalPipelineFixture();
+  try {
+    // Close predictions through the existing planner/executor first. This is
+    // intentionally not a direct state update: the scoring recovery test must
+    // retain the same deadline gate as Cron.
+    await runFormalPipeline(fixture, { maxPasses: 1 });
+    await finalizeSyntheticLineups(fixture);
+    const game = fixture.games[0];
+    const base = {
+      gameId: game.internalGameId,
+      gameDate: game.gameDate,
+      homeTeam: "fighters",
+      awayTeam: "hawks",
+      lineupVersion: 1,
+      reason: "Phase 1 isolated scoring recovery"
+    };
+    const previewResponse = await adminRequest(fixture, `/api/admin/v3/games/${game.internalGameId}/scoring/preview`, base);
+    const preview = await previewResponse.json();
+    assert.equal(previewResponse.status, 200, JSON.stringify(preview));
+    assert.ok(preview.previewId);
+
+    const confirmBody = { ...base, previewId: preview.previewId, confirmed: true };
+    const firstConfirmResponse = await adminRequest(fixture, `/api/admin/v3/games/${game.internalGameId}/scoring/confirm`, confirmBody);
+    const firstConfirm = await firstConfirmResponse.json();
+    assert.equal(firstConfirmResponse.status, 202, JSON.stringify(firstConfirm));
+    assert.equal(firstConfirm.accepted, true);
+    assert.equal(firstConfirm.async, true);
+    assert.equal(firstConfirm.job.job_type, "score");
+
+    const secondConfirmResponse = await adminRequest(fixture, `/api/admin/v3/games/${game.internalGameId}/scoring/confirm`, confirmBody);
+    const secondConfirm = await secondConfirmResponse.json();
+    assert.equal(secondConfirmResponse.status, 202, JSON.stringify(secondConfirm));
+    assert.equal(secondConfirm.job.id, firstConfirm.job.id);
+
+    const runPath = `/api/admin/v3/games/${game.internalGameId}/jobs/${firstConfirm.job.id}/run`;
+    const [firstRunResponse, concurrentRunResponse] = await Promise.all([
+      adminRequest(fixture, runPath, { reason: "Phase 1 manual executor recovery", confirmed: true }),
+      adminRequest(fixture, runPath, { reason: "Phase 1 concurrent retry guard", confirmed: true })
+    ]);
+    const firstRun = await firstRunResponse.json();
+    const concurrentRun = await concurrentRunResponse.json();
+    assert.ok([200, 409].includes(firstRunResponse.status), JSON.stringify(firstRun));
+    assert.ok([200, 409].includes(concurrentRunResponse.status), JSON.stringify(concurrentRun));
+    assert.ok([firstRun, concurrentRun].some((result) => result.status === "completed"), JSON.stringify({ firstRun, concurrentRun }));
+
+    const completed = fixture.database.prepare(
+      "SELECT id, status, attempt_count FROM game_jobs_v3 WHERE id = ?"
+    ).get(firstConfirm.job.id);
+    assert.equal(completed.status, "completed");
+    assert.equal(completed.attempt_count, 1);
+    assert.equal(countRows(fixture.database, "SELECT COUNT(*) AS count FROM game_rescore_jobs WHERE game_id = ? AND status = 'completed'", game.internalGameId), 1);
+    assert.equal(countRows(fixture.database, "SELECT COUNT(*) AS count FROM score_attempts WHERE internal_game_id = ? AND status = 'committed'", game.internalGameId), 1);
+    assert.equal(countRows(fixture.database, "SELECT COUNT(*) AS count FROM game_scoring_revisions WHERE internal_game_id = ?", game.internalGameId), 1);
+    assert.equal(countRows(fixture.database, "SELECT COUNT(*) AS count FROM prediction_score_revisions WHERE internal_game_id = ?", game.internalGameId), 3);
+  } finally {
+    closeFormalPipelineFixture(fixture);
+  }
 });
 
 test("Phase 0: V3 scoring requires the deadline and canonical lineup, then commits one fenced attempt", async () => {

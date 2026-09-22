@@ -196,6 +196,42 @@ async function runV3Job(internalGameId, jobType) {
   }
 }
 
+async function runV3JobById(internalGameId, jobId, jobType) {
+  const label = V3_JOB_LABELS[jobType] || jobType;
+  if (!window.confirm(`job #${jobId} の「${label}」を同じV3 executorで実行します。実行しますか？`)) return;
+  const reason = window.prompt("操作理由を入力してください（1〜240文字）", `admin-v3: job #${jobId} ${label} の手動実行`);
+  if (!String(reason || "").trim()) return;
+  const previous = manualOperation(internalGameId, jobType) || {};
+  setManualOperation(internalGameId, jobType, { ...previous, status: "loading", error: false, message: `job #${jobId} を手動実行中…` });
+  try {
+    const result = await v3Api.runJobById(internalGameId, jobId, { reason: String(reason).trim(), confirmed: true });
+    const message = result.status === "completed"
+      ? `job #${jobId} を完了しました。`
+      : `job #${jobId} は${result.status || "処理中"}です。状態を再取得しました。`;
+    setManualOperation(internalGameId, jobType, { status: "success", error: false, message });
+    await loadV3();
+  } catch (error) {
+    setManualOperation(internalGameId, jobType, { status: "error", error: true, message: formatV3AdminError(error, "V3_JOB_MANUAL_RUN_FAILED") });
+  }
+}
+
+async function retryV3Job(internalGameId, jobId, jobType) {
+  const label = V3_JOB_LABELS[jobType] || jobType;
+  if (!window.confirm(`failed/retry待ちのjob #${jobId}（${label}）を再試行可能な状態へ戻します。実行しますか？`)) return;
+  const reason = window.prompt("操作理由を入力してください（1〜240文字）", `admin-v3: job #${jobId} ${label} の再試行`);
+  if (!String(reason || "").trim()) return;
+  const previous = manualOperation(internalGameId, jobType) || {};
+  setManualOperation(internalGameId, jobType, { ...previous, status: "loading", error: false, message: `job #${jobId} を再試行待ちへ戻しています…` });
+  try {
+    const result = await v3Api.retryJob(internalGameId, jobId, { reason: String(reason).trim() });
+    setManualOperation(internalGameId, jobType, { status: "success", error: false, message: `job #${jobId} を再試行可能にしました。` });
+    await loadV3();
+    return result;
+  } catch (error) {
+    setManualOperation(internalGameId, jobType, { status: "error", error: true, message: formatV3AdminError(error, "V3_JOB_RETRY_FAILED") });
+  }
+}
+
 async function reconcileV3State(internalGameId) {
   if (!window.confirm("成果物を確認できた場合だけworkflow stateを1段階再同期します。公開済み試合は読み取り専用です。実行しますか？")) return;
   const reason = window.prompt("状態再同期の理由を入力してください（1〜240文字）", "admin-v3: completed jobと成果物の整合性確認");
@@ -2161,6 +2197,8 @@ adminV3Modules.createAdminV3Coordinator({
     selectGame: (internalGameId) => selectV3Game(internalGameId),
     diagnoseJob: diagnoseV3Job,
     runJob: runV3Job,
+    runJobById: runV3JobById,
+    retryJob: retryV3Job,
     reconcileState: reconcileV3State,
     saveSchedule: saveV3Schedule,
     cancelGame: requestV3GameCancellation,

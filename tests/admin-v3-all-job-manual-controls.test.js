@@ -20,8 +20,10 @@ test("全工程のdiagnose/run APIはadmin認証境界を持つ", async () => {
   const id = "00000000-0000-4000-8000-000000000000";
   const diagnose = await unauthenticated(`/api/admin/v3/games/${id}/jobs/diagnose?jobType=lineup_fetch`);
   const run = await unauthenticated(`/api/admin/v3/games/${id}/jobs/run`, "POST");
+  const exactRun = await unauthenticated(`/api/admin/v3/games/${id}/jobs/1/run`, "POST");
   assert.equal(diagnose.status, 401);
   assert.equal(run.status, 401);
+  assert.equal(exactRun.status, 401);
   assert.match(workerSource, /parseAdminV3JobControlRoute/);
   assert.match(workerSource, /async function handleAdminV3JobDiagnose/);
   assert.match(workerSource, /V3_CONFIRMATION_REQUIRED/);
@@ -51,8 +53,12 @@ test("admin-v3はV4状態を表示し、手動diagnose/run UIを含めない", (
   assert.doesNotMatch(progressSource, /data-v3-job-diagnose|data-v3-job-run|data-v3-state-reconcile/);
   assert.match(apiClientSource, /diagnoseJob/);
   assert.match(apiClientSource, /runJob/);
+  assert.match(apiClientSource, /runJobById/);
+  assert.match(apiClientSource, /retryJob/);
   assert.match(coordinatorSource, /actions\.diagnoseJob/);
   assert.match(coordinatorSource, /actions\.runJob/);
+  assert.match(coordinatorSource, /data-v3-job-run-id/);
+  assert.match(coordinatorSource, /data-v3-job-retry/);
   assert.match(clientSource, /window\.confirm/);
   assert.match(clientSource, /window\.prompt/);
 });

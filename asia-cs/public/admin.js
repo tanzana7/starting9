@@ -1,0 +1,20 @@
+const state = { user: null, game: null };
+const $ = (id) => document.getElementById(id);
+const message = (id, text, error = false) => { const node = $(id); node.textContent = text; node.classList.toggle("error", error); };
+async function api(path, options = {}) { const response = await fetch(path, { credentials: "include", cache: "no-store", ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } }); const payload = await response.json().catch(() => ({})); if (!response.ok || payload.ok === false) throw new Error(payload.error || "処理に失敗しました。"); return payload; }
+function gameId() { return String($("gameId").value || "").trim(); }
+function asIso(localValue) { const date = new Date(localValue); return Number.isNaN(date.getTime()) ? "" : date.toISOString(); }
+function showAdmin() { document.querySelectorAll(".admin-only").forEach((node) => node.classList.remove("hidden")); }
+function renderRoster(players) { $("rosterJson").value = JSON.stringify(players.map((player) => ({ id: player.id, name: player.name, uniformNumber: player.uniformNumber, team: player.team, active: player.active })), null, 2); }
+function renderDetail(payload) { state.game = payload.game; renderRoster(payload.game.players); $("gameDetail").textContent = JSON.stringify(payload, null, 2); if (payload.currentLineup) { $("lineupJson").value = JSON.stringify(payload.currentLineup.lineup, null, 2); $("rescoreJson").value = JSON.stringify(payload.currentLineup.lineup, null, 2); } }
+async function loadGame() { const id = gameId(); if (!id) return; try { renderDetail(await api(`/api/admin/games/${encodeURIComponent(id)}`)); message("gameStatus", "読み込みました。"); } catch (error) { message("gameStatus", error.message, true); } }
+
+$("adminLoginForm").addEventListener("submit", async (event) => { event.preventDefault(); try { const payload = await api("/api/auth/login", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); state.user = payload.user; if (state.user.role !== "admin") throw new Error("管理者権限が必要です。"); showAdmin(); message("adminAuthStatus", "ログインしました。"); } catch (error) { message("adminAuthStatus", error.message, true); } });
+$("gameForm").addEventListener("submit", async (event) => { event.preventDefault(); try { const data = Object.fromEntries(new FormData(event.currentTarget)); data.startAt = asIso(data.startAt); data.predictionDeadlineAt = asIso(data.predictionDeadlineAt); const payload = await api("/api/admin/games", { method: "POST", body: JSON.stringify(data) }); $("gameId").value = payload.game.id; message("gameStatus", "試合を登録しました。"); await loadGame(); } catch (error) { message("gameStatus", error.message, true); } });
+$("loadGame").addEventListener("click", () => void loadGame());
+$("rosterForm").addEventListener("submit", async (event) => { event.preventDefault(); try { const players = JSON.parse($("rosterJson").value); await api(`/api/admin/games/${encodeURIComponent(gameId())}/players`, { method: "POST", body: JSON.stringify({ players }) }); message("operationStatus", "出場選手を保存しました。"); await loadGame(); } catch (error) { message("operationStatus", error.message, true); } });
+async function operation(endpoint, body) { try { const payload = await api(`/api/admin/games/${encodeURIComponent(gameId())}/${endpoint}`, { method: "POST", body: body ? JSON.stringify(body) : undefined }); message("operationStatus", "完了しました。"); await loadGame(); return payload; } catch (error) { message("operationStatus", error.message, true); return null; } }
+$("confirmLineup").addEventListener("click", () => { try { void operation("lineup", { lineup: JSON.parse($("lineupJson").value) }); } catch (error) { message("operationStatus", "正式スタメンJSONを確認してください。", true); } });
+$("scoreGame").addEventListener("click", () => void operation("score"));
+$("publishGame").addEventListener("click", () => void operation("publish"));
+$("rescoreGame").addEventListener("click", () => { try { void operation("rescore", { lineup: JSON.parse($("rescoreJson").value), reason: $("rescoreReason").value }); } catch (error) { message("operationStatus", "訂正版正式スタメンJSONを確認してください。", true); } });

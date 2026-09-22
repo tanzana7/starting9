@@ -14,6 +14,7 @@ Thumbs.db
 .env.local
 .dev.vars
 .wrangler/
+asia-cs/*.cpuprofile
 wrangler.auth.jsonc
 
 # Dependencies and build output

@@ -39,6 +39,15 @@ test("手動再実行は既存V3 jobを投入し、Cron executorへ委譲する"
   assert.doesNotMatch(workerSource, /handleAdminV3JobCreate[\s\S]{0,500}runScheduledGameAutomation\(/);
 });
 
+test("ランキング・公開の管理操作は作成した同じjobを共通run/executorへ渡す", () => {
+  assert.match(workerSource, /const V3_ADMIN_IMMEDIATE_JOB_TYPES = new Set\(\["score", "ranking_rebuild", "publish"\]\)/);
+  assert.match(workerSource, /async function executeAdminV3CreatedJob[\s\S]*?handleAdminV3JobRun\(/);
+  assert.match(workerSource, /const immediate = created\.created[\s\S]*?executeAdminV3CreatedJob/);
+  assert.match(workerSource, /const immediate = job\.created[\s\S]*?executeAdminV3CreatedJob/);
+  assert.match(workerSource, /executeGameAutomationV3Job\(/);
+  assert.match(clientSource, /result\.manualExecution && result\.status === "completed"/);
+});
+
 test("診断レスポンスはstate・最新job・実行可否・関連データ要約を返す契約を持つ", () => {
   for (const field of ["currentWorkflowState", "latestJobStatus", "latestJobId", "latestJobScheduledAt", "latestJobClaimedAt", "latestJobCompletedAt", "latestJobError", "canRun", "cannotRunReason", "nextExpectedState", "relatedDataSummary"]) {
     assert.match(workerSource, new RegExp(field));

@@ -355,6 +355,42 @@ test("Golden Path A: prediction closeからmanual lineup、score、ranking、pub
   }
 });
 
+test("管理者のranking/publish手動実行は同じV3 job/executorで順番に完了する", async () => {
+  const fixture = await createGoldenDb();
+  try {
+    await prepareManualLineup(fixture);
+    const scoreAt = new Date(fixture.startAt.getTime() + 12 * 60 * 1000);
+    await createDueJob(fixture, "score", scoreAt, 201);
+    await runFormalCron(fixture.env, new Date(scoreAt.getTime() + 1000), [], { formalPlanner: noOpFormalPlanner });
+    assert.equal(fixture.database.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?").get(GAME_ID).state, "scored");
+
+    const rankingResponse = await adminRequest(fixture.env, `/api/admin/v3/games/${GAME_ID}/jobs/run`, {
+      jobType: "ranking_rebuild", reason: "ranking manual recovery", confirmed: true
+    });
+    const rankingBody = await rankingResponse.json();
+    assert.equal(rankingResponse.status, 200, JSON.stringify(rankingBody));
+    assert.equal(rankingBody.manualExecution, true);
+    assert.equal(rankingBody.status, "completed");
+    assert.equal(rankingBody.job.job_type, "ranking_rebuild");
+    assert.equal(fixture.database.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?").get(GAME_ID).state, "ranked");
+
+    const publishResponse = await adminRequest(fixture.env, `/api/admin/v3/games/${GAME_ID}/jobs/run`, {
+      jobType: "publish", reason: "publish manual recovery", confirmed: true
+    });
+    const publishBody = await publishResponse.json();
+    assert.equal(publishResponse.status, 200, JSON.stringify(publishBody));
+    assert.equal(publishBody.manualExecution, true);
+    assert.equal(publishBody.status, "completed");
+    assert.equal(publishBody.job.job_type, "publish");
+    const canonical = await evaluateCanonicalArtifactsFromDb(fixture.env.AUTH_DB, GAME_ID);
+    assert.equal(canonical.aggregate.fullyPublished, true);
+    assert.equal(canonical.ranking.scoringRevisionMatch, true);
+    assert.equal(canonical.publication.rankingRevisionMatch, true);
+  } finally {
+    fixture.database.close();
+  }
+});
+
 test("V4はranking artifactが開始後にreadyならstart+10を待たずpublishする", async () => {
   const fixture = await createGoldenDb();
   try {

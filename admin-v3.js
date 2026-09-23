@@ -189,7 +189,12 @@ async function runV3Job(internalGameId, jobType) {
   setManualOperation(internalGameId, jobType, { ...previous, status: "loading", error: false, message: "正式V3 jobを投入中…" });
   try {
     const result = await v3Api.runJob(internalGameId, { jobType, reason: String(reason).trim(), confirmed: true });
-    setManualOperation(internalGameId, jobType, { status: "success", error: false, diagnosis: result.diagnosis, message: result.created ? `job #${result.job?.id || "-"} を投入しました。状態を再取得しました。` : `同じslotのjobが既に存在します（#${result.job?.id || "-"}）。` });
+    const message = result.manualExecution && result.status === "completed"
+      ? `job #${result.job?.id || "-"} を共通V3 executorで完了しました。`
+      : result.created
+        ? `job #${result.job?.id || "-"} を投入しました。状態を再取得しました。`
+        : `同じslotのjobが既に存在します（#${result.job?.id || "-"}）。`;
+    setManualOperation(internalGameId, jobType, { status: "success", error: false, diagnosis: result.diagnosis, message });
     await loadV3();
   } catch (error) {
     setManualOperation(internalGameId, jobType, { status: "error", error: true, message: formatV3AdminError(error, "V3_JOB_RUN_FAILED") });

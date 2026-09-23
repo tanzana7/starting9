@@ -6877,6 +6877,24 @@ async function handleAdminV3JobDiagnose(request, env, cors, internalGameId) {
   }
 }
 
+const V3_ADMIN_IMMEDIATE_JOB_TYPES = new Set(["score", "ranking_rebuild", "publish"]);
+
+// 管理者の復旧操作も、別の直接更新経路を持たず、作成したV3 jobを
+// Cronと同じclaim・executor・revision guardへ渡す。これにより、画面からの
+// 手動実行でも古いcanonical成果物をランキングや公開へ進めない。
+async function executeAdminV3CreatedJob({ env, cors, context, user, job, reason }) {
+  if (!job?.id || !V3_ADMIN_IMMEDIATE_JOB_TYPES.has(String(job.job_type || ""))) return null;
+  if (!["pending", "retry_wait"].includes(String(job.status || ""))) return null;
+  const runRequest = new Request("https://starting9.internal/api/admin/v3/job-run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason, confirmed: true })
+  });
+  const response = await handleAdminV3JobRun(runRequest, env, cors, context, job.id, user);
+  const payload = await response.json().catch(() => ({}));
+  return { status: response.status, payload };
+}
+
 async function handleAdminV3JobCreate(request, env, cors, internalGameId) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) return access.response;
@@ -6923,6 +6941,12 @@ async function handleAdminV3JobCreate(request, env, cors, internalGameId) {
       metadata: { internalGameId: id, jobType, jobId: created.job?.id || null, reason, updatedBy: access.user?.id || null },
       source: "admin"
     });
+    const immediate = created.created
+      ? await executeAdminV3CreatedJob({ env, cors, context: await loadV3AdminContext(env.AUTH_DB, id), user: access.user, job: created.job, reason })
+      : null;
+    if (immediate) {
+      return jsonResponse({ ...immediate.payload, created: created.created, diagnosis }, immediate.status, cors);
+    }
     return jsonResponse({ ok: true, job: created.job, created: created.created, diagnosis }, 202, cors);
   } catch (error) {
     const code = String(error?.code || "V3_ADMIN_JOB_CREATE_FAILED");
@@ -9130,6 +9154,12 @@ async function handleAdminV3RankingRebuild(request, env, cors, context, user) {
   });
   await recordWorkflowLog(env.AUTH_DB, { eventType: "v3_admin_ranking_rebuild", status: "info", gameId: context.metadata.gameId, occurredAt: new Date(), message: "V3管理者がランキング再構築jobを投入しました。", metadata: { internalGameId: context.id, reason }, source: "admin" });
   await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobId: job.job?.id || null, jobType: "admin:ranking_rebuild" });
+  const immediate = job.created
+    ? await executeAdminV3CreatedJob({ env, cors, context, user, job: job.job, reason })
+    : null;
+  if (immediate) {
+    return jsonResponse({ ...immediate.payload, internalGameId: context.id, reason, rankingRebuild: true }, immediate.status, cors);
+  }
   return jsonResponse({ ok: true, internalGameId: context.id, job, reason }, 202, cors);
 }
 
@@ -9208,6 +9238,12 @@ async function handleAdminV3PublicationQueue(request, env, cors, context, user, 
   });
   await recordWorkflowLog(env.AUTH_DB, { eventType: republish ? "v3_admin_republish" : "v3_admin_publish", status: "info", gameId: context.metadata.gameId, occurredAt: new Date(), message: republish ? "V3管理者が結果再公開jobを投入しました。" : "V3管理者が結果公開jobを投入しました。", metadata: { internalGameId: context.id, reason }, source: "admin" });
   await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobId: job.job?.id || null, jobType: republish ? "admin:republish" : "admin:publish" });
+  const immediate = job.created
+    ? await executeAdminV3CreatedJob({ env, cors, context, user, job: job.job, reason })
+    : null;
+  if (immediate) {
+    return jsonResponse({ ...immediate.payload, internalGameId: context.id, republish, reason }, immediate.status, cors);
+  }
   return jsonResponse({ ok: true, internalGameId: context.id, job, republish, reason }, 202, cors);
 }
 

@@ -80,6 +80,14 @@ test("通常Cron discoveryは古いranked試合をstale publish recovery対象�
       );
       CREATE TABLE game_lineups (internal_game_id TEXT PRIMARY KEY, publication_status TEXT, published_at TEXT);
       CREATE TABLE ranking_games (internal_game_id TEXT PRIMARY KEY, publication_status TEXT, published_at TEXT);
+      CREATE TABLE game_lineup_revisions (
+        game_id TEXT, version INTEGER, revision_id TEXT, internal_game_id TEXT,
+        PRIMARY KEY (game_id, version)
+      );
+      CREATE TABLE game_scoring_revisions (
+        id TEXT PRIMARY KEY, internal_game_id TEXT, lineup_revision_id TEXT,
+        status TEXT, is_active INTEGER
+      );
       CREATE TABLE game_identifiers (
         id INTEGER PRIMARY KEY, internal_game_id TEXT, provider TEXT,
         identifier_type TEXT, identifier_value TEXT, updated_at TEXT
@@ -93,6 +101,12 @@ test("通常Cron discoveryは古いranked試合をstale publish recovery対象�
         ('stale-ranked', 'pending', NULL), ('recent-ranked', 'pending', NULL);
       INSERT INTO ranking_games VALUES
         ('stale-ranked', 'scored_private', NULL), ('recent-ranked', 'scored_private', NULL);
+      INSERT INTO game_lineup_revisions VALUES
+        ('2026-08-06-fighters-hawks-1800', 1, '2026-08-06-fighters-hawks-1800:1', 'stale-ranked');
+      INSERT INTO game_scoring_revisions VALUES
+        ('score-stale', 'stale-ranked', 'stale-ranked:1', 'completed', 1);
+      INSERT INTO game_jobs_v3 VALUES
+        (1, 'stale-ranked', 'score', 'completed');
     `);
 
     const games = await listV3Games(d1(database), new Date("2026-09-19T00:00:00.000Z"), { limit: 12 });

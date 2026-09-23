@@ -83,10 +83,19 @@ export async function listV3Games(db, now = new Date(), options = {}) {
       hasScoringRevisions = Boolean(row?.name);
     } catch { /* Legacy adapters retain open-job discovery. */ }
   }
+  let hasLineupRevisions = false;
+  if (hasGameJobsTable) {
+    try {
+      const row = await db.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'game_lineup_revisions' LIMIT 1"
+      ).first();
+      hasLineupRevisions = Boolean(row?.name);
+    } catch { /* Legacy adapters retain open-job discovery. */ }
+  }
   // A finalized historical correction can outlive a failed/missing score job.
   // This is only a candidate signal; canonical validity and current scoring
   // lineage are checked by the shared evaluator before returning the game.
-  const correctionRecoverySql = hasCanonicalLineups && hasScoringRevisions
+  const correctionRecoverySql = hasCanonicalLineups && hasScoringRevisions && hasLineupRevisions
     ? `EXISTS (SELECT 1 FROM game_lineups AS corrected
                  WHERE corrected.internal_game_id = games.internal_game_id
                    AND corrected.final_lineup_revision_id IS NOT NULL)
@@ -97,7 +106,14 @@ export async function listV3Games(db, now = new Date(), options = {}) {
          SELECT 1 FROM game_scoring_revisions AS active_score
           JOIN game_lineups AS current_lineup
             ON current_lineup.internal_game_id = games.internal_game_id
-           AND current_lineup.final_lineup_revision_id = active_score.lineup_revision_id
+           JOIN game_lineup_revisions AS current_revision
+             ON current_revision.internal_game_id = games.internal_game_id
+            AND (current_lineup.final_lineup_revision_id = current_revision.revision_id
+              OR current_lineup.final_lineup_revision_id = current_revision.game_id || ':' || current_revision.version
+              OR current_lineup.final_lineup_revision_id = current_revision.internal_game_id || ':' || current_revision.version)
+            AND (active_score.lineup_revision_id = current_revision.revision_id
+              OR active_score.lineup_revision_id = current_revision.game_id || ':' || current_revision.version
+              OR active_score.lineup_revision_id = current_revision.internal_game_id || ':' || current_revision.version)
          WHERE active_score.internal_game_id = games.internal_game_id
            AND active_score.is_active = 1
            AND active_score.status = 'completed')`

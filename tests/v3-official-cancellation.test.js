@@ -52,7 +52,8 @@ test("当日速報カードの中止状態を日程行へ引き継ぐ", () => {
 test("当日の日程を短い間隔で再確認し、公式中止を既存の正式除外経路へ接続する", () => {
   assert.match(authSource, /CURRENT_DAY_SCHEDULE_SYNC_INTERVAL_MS = 5 \* 60 \* 1000/);
   assert.match(authSource, /syncCurrentDayFightersSchedule\(env, now\)/);
-  assert.match(authSource, /handleAdminGameScheduleUpdate\(synthetic, env/);
+  assert.match(authSource, /applyScheduleChange\(env\.AUTH_DB/);
+  assert.match(authSource, /applyEligibilityChange\(\{/);
   assert.match(authSource, /cancelOpenV3Jobs\(env\.AUTH_DB, internalGameId/);
   assert.match(authSource, /transitionV3State\(env\.AUTH_DB, \{ internalGameId, from: stateBefore, to: "excluded"/);
   assert.match(authSource, /official_game_cancelled/);

@@ -9,7 +9,7 @@ import {
   isV3TerminalJobStatus,
   createV3Error
 } from "./constants.js";
-import { claimV3Job, createV3Job, listDueV3Jobs } from "./repository.js";
+import { claimV3Job, createV3Job, findV3ProbableStarterStartCheckGame, listDueV3Jobs } from "./repository.js";
 import {
   getV3DuePlan,
   getV3FormalDuePlans,
@@ -416,8 +416,30 @@ export async function planAuxiliaryJobs(db, games = [], now = new Date(), { auto
       return emptyV3PlanResult(error);
     }
   };
+  let probableGames = Array.isArray(games) ? games : [];
+  if (autoProbableStarter) {
+    try {
+      const startCheckGame = await findV3ProbableStarterStartCheckGame(db, now);
+      if (startCheckGame) {
+        const existing = probableGames.find((game) => String(game?.internalGameId || "") === String(startCheckGame.internalGameId || ""));
+        probableGames = existing
+          ? probableGames.map((game) => String(game?.internalGameId || "") === String(startCheckGame.internalGameId || "")
+            ? { ...game, probableStarterStartCheckAt: startCheckGame.probableStarterStartCheckAt }
+            : game)
+          : [...probableGames, startCheckGame];
+      }
+    } catch (error) {
+      // The normal bounded auxiliary list remains usable if the targeted
+      // start-check query is unavailable on an older adapter.
+      console.warn(`[V3_PROBABLE_START_CHECK] ${JSON.stringify({
+        reasonCode: "TARGETED_LOOKUP_FAILED",
+        message: String(error?.message || "lookup_failed").slice(0, 160)
+      })}`);
+    }
+  }
   const probablePlan = autoProbableStarter
-    ? await run(V3_JOB_TYPE.PROBABLE_STARTER_FETCH, V3_JOB_PLANNERS[V3_JOB_TYPE.PROBABLE_STARTER_FETCH])
+    ? await run(V3_JOB_TYPE.PROBABLE_STARTER_FETCH, (database, _ignoredGames, plannerNow) =>
+      V3_JOB_PLANNERS[V3_JOB_TYPE.PROBABLE_STARTER_FETCH](database, probableGames, plannerNow))
     : { created: 0, planned: [], diagnostics: [{ stage: "probable_starter_fetch", reasonCode: "AUTO_PROBABLE_STARTER_DISABLED" }], errors: [] };
   const rosterPlan = autoRosterFetch
     ? await run(V3_JOB_TYPE.ROSTER_FETCH, V3_JOB_PLANNERS[V3_JOB_TYPE.ROSTER_FETCH])

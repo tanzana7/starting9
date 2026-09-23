@@ -1,5 +1,5 @@
 import { V3_JOB_TYPES, createV3Error, normalizeV3InternalGameId } from "./constants.js";
-import { assertV3Transition, getV3NpbIdentityState } from "./domain.js";
+import { assertV3Transition, getV3GameEffectiveStartAt, getV3NpbIdentityState } from "./domain.js";
 import { evaluateCanonicalArtifactsFromDb } from "./canonical-artifact-evaluator.js";
 
 // D1 persistence boundary for V3 games, states, identity hydration, and jobs.
@@ -280,6 +280,75 @@ export async function listV3Games(db, now = new Date(), options = {}) {
     ...game,
     npbIdentityState: getV3NpbIdentityState(game, current)
   }));
+}
+
+// The auxiliary list is intentionally bounded for CPU safety. This targeted
+// lookup guarantees that the next Fighters game is considered even when
+// unrelated games fill that bounded list; it never calls an external source.
+export async function findV3ProbableStarterStartCheckGame(db, now = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(current.getTime())) return null;
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit"
+  }).format(current);
+  let columns = new Set();
+  try {
+    const schema = await db.prepare("PRAGMA table_info(games)").all();
+    columns = new Set((schema.results || []).map((row) => String(row.name || "")));
+  } catch {
+    // The scheduled timestamp remains authoritative on older adapters.
+  }
+  const actualColumn = ["actual_start_at", "started_at", "game_started_at", "first_pitch_at"]
+    .find((column) => columns.has(column));
+  const actualSelect = actualColumn ? `, games.${actualColumn} AS actual_start_at` : ", NULL AS actual_start_at";
+  const excluded = "'cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded'";
+  const result = await db.prepare(
+    `SELECT games.internal_game_id, games.game_date, games.start_time,
+            games.home_team, games.away_team, games.game_status,
+            games.is_active, games.deleted_at${actualSelect}
+       FROM games
+      WHERE games.internal_game_id IS NOT NULL
+        AND games.internal_game_id <> ''
+        AND games.game_date >= ?1
+        AND games.is_active = 1
+        AND games.deleted_at IS NULL
+        AND LOWER(COALESCE(games.game_status, '')) NOT IN (${excluded})
+        AND (LOWER(COALESCE(games.home_team, '')) IN ('f', 'fighters')
+          OR LOWER(COALESCE(games.away_team, '')) IN ('f', 'fighters'))
+      ORDER BY games.game_date, games.start_time, games.internal_game_id
+      LIMIT 24`
+  ).bind(today).all();
+  const candidates = (result.results || []).map((row) => ({
+    internalGameId: row.internal_game_id,
+    gameDate: row.game_date,
+    startAt: row.start_time,
+    actualStartAt: row.actual_start_at || null,
+    homeTeam: row.home_team,
+    awayTeam: row.away_team,
+    gameStatus: row.game_status,
+    isActive: row.is_active,
+    deletedAt: row.deleted_at
+  })).sort((left, right) => {
+    const leftAt = getV3GameEffectiveStartAt(left)?.getTime() || Number.MAX_SAFE_INTEGER;
+    const rightAt = getV3GameEffectiveStartAt(right)?.getTime() || Number.MAX_SAFE_INTEGER;
+    return leftAt - rightAt || String(left.internalGameId).localeCompare(String(right.internalGameId));
+  });
+  const todayStarted = candidates
+    .filter((game) => String(game.gameDate || "").slice(0, 10) === today)
+    .map((game) => ({ game, startAt: getV3GameEffectiveStartAt(game) }))
+    .filter(({ startAt }) => startAt && startAt.getTime() <= current.getTime())
+    .sort((left, right) => right.startAt.getTime() - left.startAt.getTime());
+  const currentGame = todayStarted[0];
+  if (!currentGame) return null;
+  const nextGame = candidates
+    .map((game) => ({ game, startAt: getV3GameEffectiveStartAt(game) }))
+    .filter(({ startAt }) => startAt && startAt.getTime() > currentGame.startAt.getTime())
+    .sort((left, right) => left.startAt.getTime() - right.startAt.getTime())[0];
+  if (!nextGame) return null;
+  return {
+    ...nextGame.game,
+    probableStarterStartCheckAt: currentGame.startAt.toISOString()
+  };
 }
 
 // Cancellation reconciliation must not reuse the normal automation discovery

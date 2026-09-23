@@ -44,6 +44,7 @@ const MONTHLY_RANKING_MIN_YEAR = 2020;
 const YEARLY_RANKING_MIN_YEAR = 2020;
 const RANKING_SERVICE_START_YEAR = 2026;
 const PREDICTION_DEADLINE_REFRESH_MS = 30 * 1000;
+const PROBABLE_STARTER_REFRESH_INTERVAL_MS = 60 * 1000;
 const ROSTER_SNAPSHOT_CACHE_TTL_MS = 60 * 60 * 1000;
 const PUBLIC_GAMES_SESSION_CACHE_TTL_MS = 30 * 1000;
 const PREVIOUS_RESULT_SESSION_CACHE_TTL_MS = 30 * 1000;
@@ -173,7 +174,8 @@ const state = {
     errorCode: "",
     referenceDiagnostics: null,
     logs: [],
-    fetchedGameId: ""
+    fetchedGameId: "",
+    lastRefreshAt: 0
   },
   predictionTargetGameId: "",
   predictionTargetGame: null,
@@ -1938,6 +1940,7 @@ function resetProbableStarterDisplay(nextGame, message = "") {
   state.probableStarter.nextCheckAt = "";
   state.probableStarter.errorCode = "";
   state.probableStarter.referenceDiagnostics = null;
+  state.probableStarter.lastRefreshAt = 0;
 }
 
 async function initializeProbableStarter() {
@@ -1959,12 +1962,23 @@ function refreshProbableStarterTarget(now = new Date()) {
   const nextGame = getPreferredProbableStarterGame(now);
   const currentId = String(state.probableStarter.nextGame?.internalGameId || "");
   const nextId = String(nextGame?.internalGameId || "");
-  if (currentId === nextId) return false;
+  if (currentId === nextId) {
+    const refreshable = ["unannounced", "error", "game_reference_mismatch"].includes(state.probableStarter.status);
+    const elapsed = Date.now() - Number(state.probableStarter.lastRefreshAt || 0);
+    if (nextGame && refreshable && elapsed >= PROBABLE_STARTER_REFRESH_INTERVAL_MS) {
+      state.probableStarter.lastRefreshAt = Date.now();
+      void fetchStoredProbableStarter();
+    }
+    return false;
+  }
 
   beginPublicRequest("probable", { abort: true });
   resetProbableStarterDisplay(nextGame);
   renderProbableStarter();
-  if (nextGame) void fetchStoredProbableStarter();
+  if (nextGame) {
+    state.probableStarter.lastRefreshAt = Date.now();
+    void fetchStoredProbableStarter();
+  }
   return true;
 }
 

@@ -72,6 +72,8 @@ test("予告先発の自動切替は予想対象・開始締切の処理と分�
   assert.doesNotMatch(initializer, /state\.predictionTargetGame =/);
   assert.match(script, /refreshProbableStarterTarget\(\);/);
   assert.match(script, /PREDICTION_DEADLINE_REFRESH_MS = 30 \* 1000/);
+  assert.match(script, /PROBABLE_STARTER_REFRESH_INTERVAL_MS = 60 \* 1000/);
+  assert.match(script, /state\.probableStarter\.status\);[\s\S]*?fetchStoredProbableStarter\(\)/);
   assert.match(script, /state\.probableStarter\.matchedGame = null/);
   assert.match(script, /予告先発 未発表/);
   assert.match(script, /次の試合は未定/);

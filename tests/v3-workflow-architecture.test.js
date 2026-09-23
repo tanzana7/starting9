@@ -283,7 +283,8 @@ test("formal plan summaryはclaim前に記録され、schedule syncはcritical p
   const claimStarted = executor.indexOf('stage: "claim_phase_started"');
   assert.ok(formalFinished >= 0 && formalSummary > formalFinished && claimStarted > formalSummary);
   const criticalFinished = worker.indexOf('eventType: "CRON_CRITICAL_PATH_FINISHED"');
-  const scheduleSync = worker.indexOf("const scheduleSyncPromise = runScheduleSync()");
+  const scheduleDeclaration = worker.indexOf("const scheduleSyncPromise =");
+  const scheduleSync = worker.indexOf("runScheduleSync()", scheduleDeclaration);
   assert.ok(criticalFinished >= 0 && scheduleSync > criticalFinished);
   assert.match(worker, /formal_plan_error: "V3_FORMAL_PLAN_ERROR"/);
   assert.match(worker, /scheduleOptional\(scheduleSyncPromise\)/);

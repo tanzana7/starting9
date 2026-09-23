@@ -294,9 +294,10 @@ test("V3 automationの実行開始は外部日程同期より先である", () =
   const runnerStart = source.indexOf("async function runScheduledGameAutomationV3");
   const runner = source.slice(runnerStart);
   const automationIndex = runner.indexOf("const result = await runGameAutomationV3(env, now");
-  const scheduleIndex = runner.indexOf("const scheduleSyncPromise = runScheduleSync()");
+  const scheduleDeclarationIndex = runner.indexOf("const scheduleSyncPromise =");
+  const scheduleIndex = runner.indexOf("runScheduleSync()", scheduleDeclarationIndex);
   assert.ok(automationIndex >= 0, "V3 automation invocation is missing");
-  assert.ok(scheduleIndex >= 0, "deferred schedule sync is missing");
+  assert.ok(scheduleDeclarationIndex >= 0 && scheduleIndex >= scheduleDeclarationIndex, "deferred schedule sync is missing");
   assert.ok(automationIndex < scheduleIndex, "schedule sync must not delay V3 automation");
   assert.match(runner, /const runScheduleSync = async \(\) =>/);
   assert.match(runner, /syncCurrentDayFightersSchedule\(env, now\)/);

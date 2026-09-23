@@ -64,6 +64,46 @@ test("Cronのbounded discoveryは締切到来した当日試合を先に返す",
   }
 });
 
+test("通常Cron discoveryは古いranked試合をstale publish recovery対象に戻さない", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE games (
+        internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+        home_team TEXT, away_team TEXT, npb_game_code TEXT,
+        npb_identity_status TEXT, game_status TEXT, is_active INTEGER,
+        deleted_at TEXT
+      );
+      CREATE TABLE game_automation_v3_state (internal_game_id TEXT PRIMARY KEY, state TEXT);
+      CREATE TABLE game_jobs_v3 (
+        id INTEGER PRIMARY KEY, internal_game_id TEXT, job_type TEXT, status TEXT
+      );
+      CREATE TABLE game_lineups (internal_game_id TEXT PRIMARY KEY, publication_status TEXT, published_at TEXT);
+      CREATE TABLE ranking_games (internal_game_id TEXT PRIMARY KEY, publication_status TEXT, published_at TEXT);
+      CREATE TABLE game_identifiers (
+        id INTEGER PRIMARY KEY, internal_game_id TEXT, provider TEXT,
+        identifier_type TEXT, identifier_value TEXT, updated_at TEXT
+      );
+      INSERT INTO games VALUES
+        ('stale-ranked', '2026-08-06', '2026-08-06T09:00:00.000Z', 'fighters', 'hawks', 'f-h-stale', 'resolved', 'scheduled', 1, NULL),
+        ('recent-ranked', '2026-09-18', '2026-09-18T09:00:00.000Z', 'fighters', 'hawks', 'f-h-recent', 'resolved', 'scheduled', 1, NULL);
+      INSERT INTO game_automation_v3_state VALUES
+        ('stale-ranked', 'ranked'), ('recent-ranked', 'ranked');
+      INSERT INTO game_lineups VALUES
+        ('stale-ranked', 'pending', NULL), ('recent-ranked', 'pending', NULL);
+      INSERT INTO ranking_games VALUES
+        ('stale-ranked', 'scored_private', NULL), ('recent-ranked', 'scored_private', NULL);
+    `);
+
+    const games = await listV3Games(d1(database), new Date("2026-09-19T00:00:00.000Z"), { limit: 12 });
+    const ids = games.map((game) => game.internalGameId);
+    assert.ok(ids.includes("recent-ranked"));
+    assert.ok(!ids.includes("stale-ranked"));
+  } finally {
+    database.close();
+  }
+});
+
 test("auxiliaryの12試合batchは当日分に続く翌日試合を含む", async () => {
   const database = new DatabaseSync(":memory:");
   try {

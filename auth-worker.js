@@ -142,6 +142,8 @@ import {
   PRE_BETA_PURGE_CONFIRMATION,
   PRE_BETA_PURGE_PLAN_VERSION
 } from "./backend/maintenance/pre-beta-data-purge.js";
+import { applyScheduleChange, deriveScheduleArtifacts, isScheduleUnavailable } from "./backend/automation-v3/schedule-service.js";
+import { applyEligibilityChange } from "./backend/automation-v3/eligibility-service.js";
 
 // Compatibility exports keep existing tests and internal callers stable while
 // the implementation lives in the domain module.
@@ -1648,26 +1650,47 @@ async function applyOfficialGameCancellation(env, game, stateBefore, now) {
   const reason = requestedStatus === "service_unavailable"
     ? "NPB公式情報でサービス対象外状態を確認したため自動反映"
     : "NPB公式情報で試合中止を確認したため自動反映";
-  const synthetic = new Request("https://starting9.internal/api/admin/v3/schedule", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+  const scheduleMutation = await applyScheduleChange(env.AUTH_DB, {
+    internalGameId,
+    proposedSchedule: {
       startAt: context.target.start_time,
       gameDate: context.target.game_date,
       homeTeam: context.target.home_team,
       awayTeam: context.target.away_team,
       status: requestedStatus,
       npbGameCode: context.target.gameCode || "",
-      stadium: context.target.stadium || "",
-      reason,
-      rankingReflectionStatus: reflection.hasReflectedRevision ? "revoked" : "excluded"
-    })
+      stadium: context.target.stadium || ""
+    },
+    derivedSchedule: deriveScheduleArtifacts(context.target.start_time),
+    actor: "npb-official",
+    source: "cron",
+    reason,
+    officialCorrection: true,
+    now
   });
-  const response = await handleAdminGameScheduleUpdate(synthetic, env, new Headers(), context.metadata, { id: "npb-official" });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || !payload?.ok) {
-    throw createV3Error(payload?.code || "OFFICIAL_CANCELLATION_FAILED", payload?.error || "NPB公式中止の反映に失敗しました。", { retryable: response.status >= 500 });
+  if (scheduleMutation.status === "skipped") {
+    throw createV3Error("OFFICIAL_CANCELLATION_REQUIRES_ADMIN_REVIEW", "公式中止を自動反映できない状態です。", { retryable: false });
   }
+  const rankingState = await getRankingGameState(env.AUTH_DB, context.metadata.gameId);
+  const eligibility = rankingState
+    ? await applyEligibilityChange({
+      db: env.AUTH_DB,
+      gameId: context.metadata.gameId,
+      internalGameId,
+      status: RANKING_ELIGIBILITY_STATUS.EXCLUDED,
+      gameStatus: requestedStatus,
+      reason: requestedStatus === "service_unavailable" ? "service_unavailable" : requestedStatus === "postponed" ? "postponed" : "cancelled_after_start",
+      note: reason,
+      actor: "npb-official",
+      source: "cron",
+      officialCorrection: true,
+      now,
+      persist: (change) => setRankingEligibility(env.AUTH_DB, {
+        ...change,
+        reflectionStatus: reflection.hasReflectedRevision ? "revoked" : "excluded"
+      })
+    })
+    : { status: "skipped", noOp: true, reason: "RANKING_GAME_NOT_FOUND" };
   const cancelledJobs = await cancelOpenV3Jobs(env.AUTH_DB, internalGameId, reason);
   const transitioned = await transitionV3State(env.AUTH_DB, { internalGameId, from: stateBefore, to: "excluded", now });
   await recordV3AdminAudit(getV3AuditDb(env), {
@@ -1687,7 +1710,7 @@ async function applyOfficialGameCancellation(env, game, stateBefore, now) {
     metadata: { internalGameId, status: requestedStatus, cancelledJobs, source: "npb_official" },
     source: "system"
   }).catch(() => {});
-  return { status: "applied", stateAfter: transitioned?.state || "excluded", cancelledJobs };
+  return { status: "applied", stateAfter: transitioned?.state || "excluded", cancelledJobs, scheduleMutation, eligibility };
 }
 
 async function loadV3GameTarget(db, internalGameId) {
@@ -1701,10 +1724,11 @@ async function loadV3GameTarget(db, internalGameId) {
   const optionalGameColumns = ["stadium", "npb_game_url", "source_schedule_key", "npb_identity_status", "npb_identity_resolved_at", "npb_identity_source"]
     .filter((column) => gameColumns.has(column));
   const identityColumns = optionalGameColumns;
+  const updatedAtColumn = gameColumns.has("updated_at") ? ", updated_at" : "";
   const row = await db.prepare(
     `SELECT internal_game_id, game_date, start_time, home_team, away_team,
             npb_game_code${identityColumns.length ? `, ${identityColumns.join(", ")}` : ""},
-            game_status, is_active, deleted_at
+            game_status, is_active, deleted_at${updatedAtColumn}
        FROM games WHERE internal_game_id = ?1 LIMIT 1`
   ).bind(id).first();
   if (!row) throw createV3Error("V3_GAME_NOT_REGISTERED", "V3対象試合が日程DBに登録されていません。");
@@ -1727,6 +1751,7 @@ async function loadV3GameTarget(db, internalGameId) {
     gameStatus: row.game_status,
     isActive: row.is_active,
     deletedAt: row.deleted_at,
+    updatedAt: row.updated_at || null,
     // V3 operations use the canonical UUID as their only game reference.
     // Historical identifiers remain readable through the retired readers.
     gameId: id,
@@ -4426,7 +4451,9 @@ async function syncFightersScheduleForDate(env, date, now, { intervalMs = AUTOMA
         sourceGameKey: `${date}:${game.homeTeam}:${game.awayTeam}:${game.startTime}`,
         npbGameCode: normalizeNpbGameCode(game.gameCode),
         npbGameUrl: String(game.npbGameUrl || "").trim() || buildNpbGameUrl(date, game.gameCode),
-        gameStatus: game.status === "cancelled" ? "cancelled" : "scheduled"
+        gameStatus: ["cancelled", "canceled", "postponed", "service_unavailable"].includes(String(game.status || "").toLowerCase())
+          ? (String(game.status).toLowerCase() === "canceled" ? "cancelled" : String(game.status).toLowerCase())
+          : "scheduled"
       };
     });
     const changed = await hasScheduleDataChanged(env.AUTH_DB, date, normalizedGames);
@@ -4454,7 +4481,29 @@ async function syncFightersScheduleForDate(env, date, now, { intervalMs = AUTOMA
         existingRow,
         existingCandidates,
         now,
-        auditDb
+        auditDb,
+        skipScheduleMutation: true
+      });
+      const scheduleMutation = await applyScheduleChange(env.AUTH_DB, {
+        internalGameId,
+        proposedSchedule: {
+          gameDate: date,
+          startAt,
+          homeTeam: game.homeTeam,
+          awayTeam: game.awayTeam,
+          status: gameStatus,
+          npbGameCode,
+          npbGameUrl,
+          sourceScheduleKey: sourceGameKey,
+          npbIdentityStatus: npbGameCode ? "resolved" : "unresolved",
+          npbIdentitySource: "npb_schedule_sync",
+          stadium: game.venue || ""
+        },
+        derivedSchedule: deriveScheduleArtifacts(startAt),
+        actor: "npb-schedule-sync",
+        source: "cron",
+        reason: "NPB公式日程同期",
+        officialCorrection: gameStatus !== "scheduled"
       });
       if (existingRow) {
         // 公式gameCodeが後から得られても、予想・採点に紐づく既存game_idは維持します。
@@ -4475,6 +4524,7 @@ async function syncFightersScheduleForDate(env, date, now, { intervalMs = AUTOMA
           ? [game.gameId, sourceGameKey, date, startAt.toISOString(), game.homeTeam, game.awayTeam, game.gameCode || null, game.venue || null, gameStatus, now.toISOString(), internalGameId]
           : [game.gameId, sourceGameKey, date, startAt.toISOString(), game.homeTeam, game.awayTeam, game.gameCode || null, game.venue || null, gameStatus, now.toISOString()])));
       }
+      item.scheduleMutation = scheduleMutation;
     }
     const nextCheck = new Date(now.getTime() + Math.max(60 * 1000, Number(intervalMs) || AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS)).toISOString();
     statements.push(env.AUTH_DB.prepare(
@@ -4490,7 +4540,9 @@ async function syncFightersScheduleForDate(env, date, now, { intervalMs = AUTOMA
       date,
       gameCount: payload.games.length,
       gamesInserted: normalizedGames.filter(({ existingRow }) => !existingRow).length,
-      gamesUpdated: changedItems.filter(({ existingRow }) => Boolean(existingRow)).length
+      gamesUpdated: changedItems.filter(({ existingRow }) => Boolean(existingRow)).length,
+      canonicalScheduleUpdated: normalizedGames.filter(({ scheduleMutation }) => scheduleMutation?.status === "updated").length,
+      canonicalScheduleSkipped: normalizedGames.filter(({ scheduleMutation }) => scheduleMutation?.reason === "MANUAL_OVERRIDE_ACTIVE").length
     };
   }
   return { status: "skipped", date };
@@ -4674,7 +4726,8 @@ async function resolveScheduleInternalGameId(db, registry, { date, startAt, game
       identifiers,
       allowCreate: true,
       now,
-      auditDb
+      auditDb,
+      skipScheduleMutation: true
     });
     if (result.status !== "resolved" || !INTERNAL_GAME_ID_PATTERN.test(String(result.internalGameId || ""))) {
       const error = createPregameError(
@@ -4730,9 +4783,31 @@ async function backfillUniqueDetectedScheduleInternalGames(db, date, registry, n
         }),
         allowCreate: true,
         now,
-        auditDb
+        auditDb,
+        skipScheduleMutation: true
       });
       if (registration.status === "resolved") {
+        await applyScheduleChange(db, {
+          internalGameId: registration.internalGameId,
+          proposedSchedule: {
+            gameDate: row.game_date,
+            startAt: row.start_at,
+            homeTeam: row.home_team,
+            awayTeam: row.away_team,
+            status: row.game_status,
+            npbGameCode: normalizeNpbGameCode(row.game_code),
+            sourceScheduleKey: row.source_game_key,
+            npbIdentityStatus: normalizeNpbGameCode(row.game_code) ? "resolved" : "unresolved",
+            npbIdentitySource: "npb_schedule_backfill",
+            stadium: row.venue || ""
+          },
+          derivedSchedule: deriveScheduleArtifacts(row.start_at),
+          actor: "npb-schedule-backfill",
+          source: "cron",
+          reason: "NPB公式日程同期の内部ID補完",
+          officialCorrection: ["cancelled", "canceled", "postponed", "service_unavailable"].includes(String(row.game_status || "").toLowerCase()),
+          now
+        });
         await db.prepare(
           "UPDATE detected_game_schedule SET internal_game_id = ?1, updated_at = ?2 WHERE game_id = ?3 AND (internal_game_id IS NULL OR internal_game_id = '')"
         ).bind(registration.internalGameId, now.toISOString(), row.game_id).run();
@@ -7107,6 +7182,8 @@ function v3AdminErrorResponse(cors, error, fallback = "V3管理操作に失敗�
     V3_LINEUP_CORRECTION_STATE_REQUIRED: 503,
     V3_LINEUP_CORRECTION_SCHEMA_UNAVAILABLE: 503,
     V3_SCHEDULE_UPDATE_FAILED: 409,
+    SCHEDULE_VERSION_CONFLICT: 409,
+    ELIGIBILITY_VERSION_CONFLICT: 409,
     V3_SCHEMA_UNAVAILABLE: 503,
     MANUAL_ROSTER_SCHEMA_UNAVAILABLE: 503,
     MANUAL_ROSTER_CONFIRMATION_REQUIRED: 409
@@ -9283,7 +9360,23 @@ async function handleAdminV3EligibilityUpdate(request, env, cors, context, user)
   if (previous && previous.rankingEligibilityStatus === status && String(previous.rankingEligibilityReason || "") === reason && String(previous.rankingEligibilityNote || "") === String(input?.note || "").trim()) {
     return jsonResponse({ ok: true, internalGameId: context.id, noOp: true, rankingEligibility: previous }, 200, cors);
   }
-  const eligibility = await setRankingEligibility(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, status, reason, note: String(input?.note || "").trim(), reflectionStatus: rankingRevocationRequired ? "revoked" : "excluded", updatedBy: `admin:${user.id}`, now: new Date() });
+  const eligibilityChange = await applyEligibilityChange({
+    db: env.AUTH_DB,
+    gameId: context.metadata.gameId,
+    internalGameId: context.id,
+    status,
+    reason,
+    note: String(input?.note || "").trim(),
+    actor: user.id,
+    source: "admin",
+    expectedEligibilityVersion: input?.expectedEligibilityVersion ?? null,
+    now: new Date(),
+    persist: (change) => setRankingEligibility(env.AUTH_DB, {
+      ...change,
+      reflectionStatus: rankingRevocationRequired ? "revoked" : "excluded"
+    })
+  });
+  const eligibility = eligibilityChange.eligibility || await getRankingEligibilityState(env.AUTH_DB, context.metadata.gameId, context.id);
   const rankingRevocation = rankingRevocationRequired
     ? { required: true, wasReflected: reflectionAudit.hasReflectedRevision, status: "revoked", affectedScopes: reflectionAudit.affectedScopes, rebuildExecuted: false, sourceOfTruth: "ranking_games_eligibility_filter" }
     : { required: false, wasReflected: false, status: null, affectedScopes: [], rebuildExecuted: false, sourceOfTruth: "ranking_games_eligibility_filter" };
@@ -9334,6 +9427,7 @@ async function handleAdminV3ScheduleGet(env, cors, context) {
   const unavailable = ["cancelled", "canceled", "postponed", "service_unavailable"].includes(gameStatus);
   return jsonResponse({ ok: true, internalGameId: context.id, schedule: {
     gameDate: context.target.game_date, startAt: schedule.startAt.toISOString(),
+    scheduleVersion: context.target.updatedAt || null,
     predictionDeadline: schedule.predictionDeadline.toISOString(),
     lineupPollingStart: schedule.lineupPollingStart.toISOString(),
     finalLineupAt: schedule.finalLineupAt.toISOString(), publicationAt: schedule.publicationAt.toISOString(),
@@ -9437,7 +9531,9 @@ async function handleAdminV3ScheduleUpdate(request, env, cors, context, user) {
     npbGameCode: context.target.gameCode || "",
     stadium: context.target.stadium || "",
     reason,
-    rankingReflectionStatus: rankingRevocationRequired ? "revoked" : "excluded"
+    rankingReflectionStatus: rankingRevocationRequired ? "revoked" : "excluded",
+    expectedScheduleVersion: input?.expectedScheduleVersion ?? null,
+    releaseManualOverride: input?.releaseManualOverride === true
   };
   const synthetic = new Request("https://starting9.internal/api/admin/v3/schedule", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const response = await handleAdminGameScheduleUpdate(synthetic, env, cors, context.metadata, user);
@@ -10957,30 +11053,30 @@ async function handleAdminGameScheduleUpdate(request, env, cors, metadata, user)
     const scheduleColumns = await getTableColumnSet(env.AUTH_DB, "game_schedule_change_history");
     if (!scheduleColumns.size) return jsonResponse({ ok: false, code: "V3_SCHEDULE_SCHEMA_NOT_READY", error: "日程変更履歴のスキーマが準備されていません。" }, 503, cors);
 
-    const fields = ["game_date = ?1", "start_time = ?2", "home_team = ?3", "away_team = ?4", "game_status = ?5", "updated_at = ?6"];
-    const values = [gameDate, canonical.startAt, homeTeam, awayTeam, status, now.toISOString()];
-    if (currentColumns.has("npb_game_code")) { fields.push(`npb_game_code = ?${values.length + 1}`); values.push(npbGameCode || null); }
-    if (currentColumns.has("season")) { fields.push(`season = ?${values.length + 1}`); values.push(Number.isInteger(season) ? season : null); }
-    if (currentColumns.has("stadium")) { fields.push(`stadium = ?${values.length + 1}`); values.push(stadium || null); }
-    if (currentColumns.has("is_active")) { fields.push(`is_active = ?${values.length + 1}`); values.push(isActive); }
-    if (currentColumns.has("deleted_at")) { fields.push(`deleted_at = ?${values.length + 1}`); values.push(isActive ? null : now.toISOString()); }
-    if (currentColumns.has("prediction_deadline_at")) { fields.push(`prediction_deadline_at = ?${values.length + 1}`); values.push(canonical.predictionDeadline); }
-    if (currentColumns.has("roster_fetch_at1")) { fields.push(`roster_fetch_at1 = ?${values.length + 1}`); values.push(canonical.rosterFetchAt1); }
-    if (currentColumns.has("roster_fetch_at2")) { fields.push(`roster_fetch_at2 = ?${values.length + 1}`); values.push(canonical.rosterFetchAt2); }
-    if (currentColumns.has("lineup_polling_start_at")) { fields.push(`lineup_polling_start_at = ?${values.length + 1}`); values.push(canonical.lineupPollingStart); }
-    if (currentColumns.has("final_lineup_at")) { fields.push(`final_lineup_at = ?${values.length + 1}`); values.push(canonical.finalLineupAt); }
-    if (currentColumns.has("publication_at")) { fields.push(`publication_at = ?${values.length + 1}`); values.push(canonical.publicationAt); }
-    if (currentColumns.has("updated_by")) { fields.push(`updated_by = ?${values.length + 1}`); values.push(user?.id ? `admin:${user.id}` : "admin"); }
-    const gameIdPlaceholder = `?${values.length + 1}`;
-    values.push(metadata.internalGameId);
-    await env.AUTH_DB.prepare(`UPDATE games SET ${fields.join(", ")} WHERE internal_game_id = ${gameIdPlaceholder}`).bind(...values).run();
-    await env.AUTH_DB.prepare(
-      `INSERT INTO game_schedule_change_history
-         (internal_game_id, previous_start_at, next_start_at, previous_status, next_status, reason, changed_by, changed_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`
-    ).bind(metadata.internalGameId, current.start_time || null, canonical.startAt, current.game_status || null, status, reason, user?.id ? String(user.id) : "admin", now.toISOString()).run();
+    const scheduleMutation = await applyScheduleChange(env.AUTH_DB, {
+      internalGameId: metadata.internalGameId,
+      proposedSchedule: {
+        startAt: canonical.startAt,
+        gameDate,
+        homeTeam,
+        awayTeam,
+        status,
+        npbGameCode,
+        stadium,
+        season,
+        isActive
+      },
+      derivedSchedule: canonical,
+      actor: user?.id ? String(user.id) : "admin",
+      source: "admin",
+      expectedScheduleVersion: input?.expectedScheduleVersion ?? null,
+      releaseManualOverride: input?.releaseManualOverride === true,
+      reason,
+      now
+    });
 
-    if (status === "cancelled" || status === "postponed" || status === "service_unavailable") {
+    let eligibility = null;
+    if (isScheduleUnavailable(status)) {
       const cancellationReason = status === "service_unavailable"
         ? "service_unavailable"
         : status === "postponed"
@@ -10988,19 +11084,23 @@ async function handleAdminGameScheduleUpdate(request, env, cors, metadata, user)
           : (now < startAt ? "cancelled_before_start" : "cancelled_after_start");
       const rankingState = await getRankingGameState(env.AUTH_DB, metadata.gameId);
       if (rankingState) {
-        await setRankingEligibility(env.AUTH_DB, {
+        eligibility = await applyEligibilityChange({
+          db: env.AUTH_DB,
           gameId: metadata.gameId,
           internalGameId: metadata.internalGameId,
           status: RANKING_ELIGIBILITY_STATUS.EXCLUDED,
+          gameStatus: status,
           reason: cancellationReason,
           note: reason,
-          reflectionStatus: input?.rankingReflectionStatus === "revoked" ? "revoked" : "excluded",
-          updatedBy: user?.id ? `admin:${user.id}` : "admin",
-          now
+          actor: user?.id ? String(user.id) : "admin",
+          source: "admin",
+          expectedEligibilityVersion: input?.expectedEligibilityVersion ?? null,
+          now,
+          persist: (change) => setRankingEligibility(env.AUTH_DB, {
+            ...change,
+            reflectionStatus: input?.rankingReflectionStatus === "revoked" ? "revoked" : "excluded"
+          })
         });
-        await env.AUTH_DB.prepare(
-          "UPDATE ranking_games SET game_status = ?1, updated_at = ?2 WHERE game_id = ?3"
-        ).bind(status, now.toISOString(), metadata.gameId).run();
       }
     }
 
@@ -11019,7 +11119,7 @@ async function handleAdminGameScheduleUpdate(request, env, cors, metadata, user)
       metadata: { internalGameId: metadata.internalGameId, predictionDeadline: canonical.predictionDeadline, lineupPollingStart: canonical.lineupPollingStart, finalLineupAt: canonical.finalLineupAt },
       source: "admin"
     });
-    return jsonResponse({ ok: true, schedule: canonical, predictionReopened: false }, 200, cors);
+    return jsonResponse({ ok: true, schedule: canonical, predictionReopened: false, scheduleMutation, eligibility }, 200, cors);
   } catch (error) {
     await recordWorkflowLog(env.AUTH_DB, {
       eventType: "admin_schedule_changed",

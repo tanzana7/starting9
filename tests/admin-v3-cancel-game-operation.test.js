@@ -17,10 +17,10 @@ test("中止・対象外化は物理削除なしで理由・確認・監査・jo
   assert.match(worker, /V3_CONFIRMATION_REQUIRED/);
   assert.match(worker, /cancelOpenV3Jobs/);
   assert.match(worker, /recordV3AdminAudit/);
-  assert.match(worker, /UPDATE games SET/);
+  assert.match(worker, /applyScheduleChange\(env\.AUTH_DB/);
   const scheduleUpdate = worker.slice(worker.indexOf("async function handleAdminGameScheduleUpdate"), worker.indexOf("function parseAdminScoringRoute"));
   assert.doesNotMatch(scheduleUpdate, /DELETE FROM games/);
-  assert.match(worker, /UPDATE ranking_games SET game_status = \?1/);
+  assert.match(worker, /applyEligibilityChange\(\{/);
 });
 
 test("公開済み試合はread-onlyで、後続V3 jobは対象外試合へ投入できない", () => {

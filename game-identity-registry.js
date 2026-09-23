@@ -140,7 +140,8 @@ export async function getOrCreateInternalGame(db, {
   allowCreate = false,
   createId = () => crypto.randomUUID(),
   now = new Date(),
-  auditDb = null
+  auditDb = null,
+  skipScheduleMutation = false
 } = {}) {
   const identity = normalizeGameIdentity(game);
   const normalizedIdentifiers = identifiers.map(normalizeGameIdentifier);
@@ -156,7 +157,9 @@ export async function getOrCreateInternalGame(db, {
     if (!allowCreate) return { status: "not_found", code: "INTERNAL_GAME_NOT_FOUND", internalGameId: null };
     internalGameId = await createInternalGame(db, identity, createId, now);
   }
-  await updateGameScheduleMetadata(db, internalGameId, identity, game, now, auditDb);
+  if (!skipScheduleMutation) {
+    await updateGameScheduleMetadata(db, internalGameId, identity, game, now, auditDb);
+  }
   for (const identifier of normalizedIdentifiers) {
     await registerGameIdentifier(db, internalGameId, identifier, now);
   }

@@ -421,6 +421,14 @@ const V3_AUDIT_ROUTINE_RETENTION_DAYS = 7;
 const V3_AUDIT_FAILURE_RETENTION_DAYS = 30;
 const V3_AUDIT_CLEANUP_BATCH_SIZE = 500;
 const V3_STORAGE_MAINTENANCE_MINUTE_JST = 0;
+const V3_SCHEDULE_SYNC_CADENCE_MINUTES = 5;
+const V3_PHASE_CHECKPOINT_STAGES = new Set([
+  "cron_started", "eligible_games", "formal_plan_started", "formal_plan_finished",
+  "claim_phase_started", "claim_execution_completed", "run_finished",
+  "auxiliary_plan_started", "auxiliary_plan_finished", "schedule_sync_started",
+  "schedule_sync_finished", "schedule_sync_skipped", "maintenance_started",
+  "maintenance_finished", "cron_finished"
+]);
 const ROUTINE_V3_AUDIT_EVENT_TYPES = new Set([
   "CRON_HANDLER_STARTED", "CRON_HANDLER_FLAGS", "V3_RUN_STARTED", "V3_ELIGIBLE_GAMES",
   "V3_POST_ELIGIBLE_PHASE_STARTED", "V3_FORMAL_PLAN_INPUT_STARTED", "V3_FORMAL_PLAN_INPUT_FINISHED",
@@ -460,6 +468,41 @@ export function shouldPersistV3Audit({ eventType = "", job = null, execution = n
   if (rosterNoChange) return false;
   if (failure || ["failed", "error", "terminal_failed"].includes(jobStatus) || ["failed", "error", "terminal_failed"].includes(executionStatus) || executionHasFailure || exceptionalContext) return true;
   return !ROUTINE_V3_AUDIT_EVENT_TYPES.has(String(eventType || ""));
+}
+
+// Schedule reconciliation is bounded independently from the one-minute due
+// job dispatcher. The current-day sync already has a five-minute state guard;
+// applying the same cadence at the caller also avoids paying the cancellation
+// and future-buffer query cost on every Cron tick. The maintenance boundary
+// remains eligible so historical corrections keep their existing path.
+export function shouldRunV3ScheduleSync(now) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(current.getTime())) return false;
+  const jst = new Date(current.getTime() + 9 * 60 * 60 * 1000);
+  return jst.getUTCMinutes() % V3_SCHEDULE_SYNC_CADENCE_MINUTES === 0
+    || isV3StorageMaintenanceWindow(current);
+}
+
+function logV3PhaseCheckpoint(runId, phase = {}, fallbackNow = new Date()) {
+  const stage = String(phase?.stage || "").trim();
+  if (!stage) return;
+  if (!V3_PHASE_CHECKPOINT_STAGES.has(stage)) return;
+  const claimReport = phase?.claimReport || {};
+  const phaseNow = phase?.now instanceof Date ? phase.now : new Date(phase?.now || fallbackNow);
+  console.log(JSON.stringify({
+    component: "game_automation_v3",
+    event: "phase_checkpoint",
+    runId: String(runId || ""),
+    stage,
+    status: phase?.status || phase?.execution?.status || "observed",
+    gameCount: Number.isFinite(Number(phase?.gameCount)) ? Number(phase.gameCount) : null,
+    createdJobCount: Number.isFinite(Number(phase?.createdJobCount)) ? Number(phase.createdJobCount) : null,
+    processedJobCount: Number.isFinite(Number(phase?.execution?.processed)) ? Number(phase.execution.processed) : null,
+    failedJobCount: Number.isFinite(Number(phase?.execution?.failed)) ? Number(phase.execution.failed) : null,
+    hasMoreDue: claimReport.hasMoreDue === true,
+    scheduledAt: Number.isNaN(phaseNow.getTime()) ? null : phaseNow.toISOString(),
+    observedAt: new Date().toISOString()
+  }));
 }
 const GAME_IDENTITY_AUDIT_DEFAULT_RANGE_DAYS = 30;
 const GAME_IDENTITY_AUDIT_DEFAULT_LIMIT = 50;
@@ -905,6 +948,7 @@ export default {
       now: scheduledAt,
       execution: { stage: "cron_handler_flags", ...flags }
     }));
+    logV3PhaseCheckpoint(runId, { stage: "cron_started", now: scheduledAt, status: "started" }, scheduledAt);
     if (!env.AUTH_DB) {
       console.error("auto scoring skipped: AUTH_DB binding is unavailable");
       ctx.waitUntil(writeV3RuntimeAudit(env, {
@@ -1124,6 +1168,7 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
   };
   const cronHandlerAuditState = { recorded: false };
   const writeCronHandlerFinished = async (status, details = {}) => {
+    logV3PhaseCheckpoint(runId, { stage: "cron_finished", now, status, ...details }, now);
     return writeV3TerminalAuditOnce(
       (payload) => writeV3RuntimeAudit(env, payload),
       cronHandlerAuditState,
@@ -1283,6 +1328,12 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     scheduleOptional,
     observerScheduler,
     onPhase: async (phase) => {
+      // Console checkpoints are intentionally separate from D1 audit writes:
+      // they keep routine observability available without adding one audit row
+      // per phase to every minute's Cron invocation. If the Worker is stopped
+      // by a CPU limit, the last emitted checkpoint identifies the boundary
+      // reached before termination.
+      logV3PhaseCheckpoint(runId, phase, now);
       const eventTypeByStage = {
         eligible_games: "V3_ELIGIBLE_GAMES",
         post_eligible_started: "V3_POST_ELIGIBLE_PHASE_STARTED",
@@ -1486,8 +1537,15 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     hasMoreDue: result?.claimReport?.hasMoreDue === true
   });
   let scheduleSync = null;
-  if (typeof scheduleOptional === "function") {
-    const scheduleSyncPromise = runScheduleSync().catch(async (error) => {
+  if (typeof scheduleOptional === "function" && shouldRunV3ScheduleSync(now)) {
+    const scheduleSyncPromise = Promise.resolve().then(() => {
+      logV3PhaseCheckpoint(runId, { stage: "schedule_sync_started", now, status: "started" }, now);
+      return runScheduleSync();
+    }).then((result) => {
+      logV3PhaseCheckpoint(runId, { stage: "schedule_sync_finished", now, status: result?.status || "completed" }, now);
+      return result;
+    }).catch(async (error) => {
+      logV3PhaseCheckpoint(runId, { stage: "schedule_sync_finished", now, status: "failed" }, now);
       await writeV3RuntimeAudit(env, {
         eventType: "V3_SCHEDULE_SYNC_ERROR",
         runId,
@@ -1500,6 +1558,9 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     });
     scheduleOptional(scheduleSyncPromise);
     scheduleSync = { status: "scheduled", pending: true };
+  } else if (typeof scheduleOptional === "function") {
+    scheduleSync = { status: "skipped", pending: false, skipReason: "SCHEDULE_SYNC_CADENCE" };
+    logV3PhaseCheckpoint(runId, { stage: "schedule_sync_skipped", now, status: "skipped", reasonCode: "SCHEDULE_SYNC_CADENCE" }, now);
   } else {
     scheduleSync = await runScheduleSync();
   }
@@ -1507,7 +1568,12 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
   // boundary. The persisted maintenance keys make the work once per day even
   // when more than one scheduler invocation reaches that boundary.
   if (env.AUTH_DB && isV3StorageMaintenanceWindow(now)) {
-    const maintenancePromise = runV3StorageMaintenance(env.AUTH_DB, getV3AuditDb(env), now);
+    logV3PhaseCheckpoint(runId, { stage: "maintenance_started", now, status: "started" }, now);
+    const maintenancePromise = runV3StorageMaintenance(env.AUTH_DB, getV3AuditDb(env), now)
+      .then((result) => {
+        logV3PhaseCheckpoint(runId, { stage: "maintenance_finished", now, status: result?.status || "completed" }, now);
+        return result;
+      });
     if (typeof scheduleOptional === "function") scheduleOptional(maintenancePromise);
     else await maintenancePromise;
   }

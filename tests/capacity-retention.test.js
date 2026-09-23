@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import worker, { shouldPersistV3Audit } from "../auth-worker.js";
+import worker, { shouldPersistV3Audit, shouldRunV3ScheduleSync } from "../auth-worker.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SOURCE = fs.readFileSync(path.join(ROOT, "auth-worker.js"), "utf8");
@@ -37,4 +37,15 @@ test("storage maintenance is scheduled outside the critical path at a JST hourly
   assert.match(SOURCE, /isV3StorageMaintenanceWindow\(now\)/);
   assert.match(SOURCE, /scheduleOptional\(maintenancePromise\)/);
   assert.match(SOURCE, /V3_STORAGE_MAINTENANCE_MINUTE_JST = 0/);
+});
+
+test("schedule sync is five-minute bounded while the due-job dispatcher remains independent", () => {
+  assert.equal(shouldRunV3ScheduleSync(new Date("2026-09-23T15:00:00.000Z")), true);
+  assert.equal(shouldRunV3ScheduleSync(new Date("2026-09-23T15:01:00.000Z")), false);
+  assert.equal(shouldRunV3ScheduleSync(new Date("2026-09-23T15:05:00.000Z")), true);
+  assert.match(SOURCE, /event: "phase_checkpoint"/);
+  assert.match(SOURCE, /stage: "cron_started"/);
+  assert.match(SOURCE, /stage: "schedule_sync_started"/);
+  assert.match(SOURCE, /stage: "cron_finished"/);
+  assert.match(SOURCE, /reasonCode: "SCHEDULE_SYNC_CADENCE"/);
 });

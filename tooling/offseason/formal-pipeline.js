@@ -232,6 +232,10 @@ export async function runFormalPipeline(fixture, {
   let injected = false;
   for (let pass = 0; pass < maxPasses; pass += 1) {
     const result = await runGameAutomationV3(fixture.env, now, {
+      // This fixture intentionally exercises an off-season historical game.
+      // Production Cron uses the bounded current/recent discovery window;
+      // the isolated pipeline must opt into historical discovery explicitly.
+      gameListOptions: { includeRecentHistory: true },
       formalPlanner: (db, games, at) => planMainWorkflowJobs(db, games, at, {
         disabledStages: ["roster_fetch", "lineup_fetch"]
       }),

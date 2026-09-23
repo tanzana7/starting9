@@ -3,6 +3,12 @@ import { assertV3Transition, getV3GameEffectiveStartAt, getV3NpbIdentityState } 
 import { evaluateCanonicalArtifactsFromDb } from "./canonical-artifact-evaluator.js";
 
 // D1 persistence boundary for V3 games, states, identity hydration, and jobs.
+// Normal Cron discovery intentionally retains only a short historical window.
+// Older corrections remain discoverable through the explicit manual-action or
+// canonical-recovery predicates below, but a stale ranked game must not keep
+// re-entering the hot path indefinitely when its publication artifact is bad.
+const V3_AUTOMATION_HISTORICAL_LOOKBACK_DAYS = 2;
+
 export async function getV3SchemaState(db) {
   const rows = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('games', 'game_jobs_v3', 'game_automation_v3_state')").all();
   const names = new Set((rows.results || []).map((row) => row.name));
@@ -39,7 +45,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
             games.npb_game_code${optionalColumns.length ? `, ${optionalColumns.map((column) => `games.${column}`).join(", ")}` : ""},
             games.game_status, games.is_active, games.deleted_at`;
   const excludedGameStatusSql = "'cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded'";
-  const unfinishedWorkflowStateSql = "'scheduled', 'probable_starter_ready', 'roster_ready', 'prediction_closed', 'lineup_ready', 'scored', 'ranked'";
+  const unfinishedWorkflowStateSql = "'scheduled', 'probable_starter_ready', 'roster_ready', 'prediction_closed', 'lineup_ready', 'scored'";
   const excludedWorkflowStateSql = "'cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded'";
   const adminHistoryExcludedWorkflowStateSql = "'cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded'";
   const fightersGameSql = `(LOWER(COALESCE(games.home_team, '')) IN ('f', 'fighters')
@@ -137,9 +143,12 @@ export async function listV3Games(db, now = new Date(), options = {}) {
            AND LOWER(COALESCE(workflow.state, '')) NOT IN (${adminHistoryExcludedWorkflowStateSql})`
     : `AND (
              games.game_date >= date(?1)
-             OR LOWER(COALESCE(workflow.state, '')) IN (${unfinishedWorkflowStateSql})
              OR (
-               LOWER(COALESCE(workflow.state, '')) = 'manual_action_required'
+               games.game_date >= date(?1, '-${V3_AUTOMATION_HISTORICAL_LOOKBACK_DAYS} day')
+               AND LOWER(COALESCE(workflow.state, '')) IN (${unfinishedWorkflowStateSql}, 'ranked')
+             )
+             OR (
+                LOWER(COALESCE(workflow.state, '')) = 'manual_action_required'
                AND (${correctionPendingSql} OR (${correctionRecoverySql}))
              )
              OR (${correctionRecoverySql})

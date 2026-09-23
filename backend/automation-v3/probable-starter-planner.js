@@ -1,6 +1,7 @@
 import { V3_JOB_TYPE, V3_OPEN_JOB_STATUS_SQL } from "./constants.js";
 import {
   getV3ProbableStarterPollingSlots,
+  getV3GameEffectiveStartAt,
   isV3GameEligible,
   normalizeProbableStarterDataStatus,
   resolveCanonicalProbableStarterRow,
@@ -15,11 +16,14 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
   const diagnostics = [];
   const current = now instanceof Date ? now : new Date(now);
   for (const game of Array.isArray(games) ? games : []) {
-    const startAt = new Date(game?.startAt || game?.start_at || game?.startTime || game?.start_time || "");
+    const startAt = getV3GameEffectiveStartAt(game) || new Date("");
+    const startCheckAt = new Date(game?.probableStarterStartCheckAt || game?.probable_starter_start_check_at || "");
+    const startCheckDue = !Number.isNaN(startCheckAt.getTime()) && startCheckAt.getTime() <= current.getTime();
     const diagnostic = {
       internalGameId: game?.internalGameId || null,
       now: Number.isNaN(current.getTime()) ? null : current.toISOString(),
       startAt: Number.isNaN(startAt.getTime()) ? null : startAt.toISOString(),
+      startCheckAt: Number.isNaN(startCheckAt.getTime()) ? null : startCheckAt.toISOString(),
       generatedSlots: [],
       dueSlots: [],
       selectedDueSlot: null,
@@ -53,14 +57,17 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
       recordDiagnostic();
       continue;
     }
-    if (Number.isNaN(startAt.getTime()) || startAt.getTime() <= current.getTime()) {
+    if (Number.isNaN(startAt.getTime()) || (startAt.getTime() <= current.getTime() && !startCheckDue)) {
       diagnostic.reasonCode = "PROBABLE_STARTER_NOT_DUE";
       recordDiagnostic();
       continue;
     }
     const generatedSlots = getV3ProbableStarterPollingSlots(game);
     diagnostic.generatedSlots = generatedSlots.map((slot) => slot.toISOString());
-    const slots = generatedSlots.filter((slot) => slot.getTime() <= current.getTime());
+    const candidateSlots = startCheckDue ? [...generatedSlots, startCheckAt] : generatedSlots;
+    const slots = candidateSlots
+      .filter((slot) => slot instanceof Date && !Number.isNaN(slot.getTime()) && slot.getTime() <= current.getTime())
+      .sort((left, right) => left.getTime() - right.getTime());
     diagnostic.dueSlots = slots.map((slot) => slot.toISOString());
     const latestDueSlot = slots[slots.length - 1] || null;
     if (!latestDueSlot) {
@@ -70,7 +77,8 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
     }
     diagnostic.selectedDueSlot = latestDueSlot.toISOString();
     diagnostic.scheduledSlotAt = latestDueSlot.toISOString();
-    const plan = { jobType: "probable_starter_fetch", scheduledSlotAt: latestDueSlot, scheduledAt: latestDueSlot };
+    let selectedDueSlot = latestDueSlot;
+    let plan = { jobType: "probable_starter_fetch", scheduledSlotAt: selectedDueSlot, scheduledAt: selectedDueSlot };
     try {
       let stateRow = null;
       try {
@@ -90,7 +98,7 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
         let probableRows = [];
         try {
           probableRows = (await db.prepare(
-            `SELECT game_id, internal_game_id, status, data_status, error_code, home_pitcher_name, away_pitcher_name
+            `SELECT game_id, internal_game_id, status, data_status, error_code, home_pitcher_name, away_pitcher_name, next_check_at
                FROM probable_starters
               WHERE internal_game_id = ?1
               ORDER BY COALESCE(fetched_at, updated_at) DESC
@@ -101,7 +109,7 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
           // canonical UUID scope remains unchanged; only the projection narrows.
           try {
             probableRows = (await db.prepare(
-              `SELECT game_id, internal_game_id, status, error_code, home_pitcher_name, away_pitcher_name
+              `SELECT game_id, internal_game_id, status, error_code, home_pitcher_name, away_pitcher_name, next_check_at
                  FROM probable_starters
                 WHERE internal_game_id = ?1
                 ORDER BY COALESCE(fetched_at, updated_at) DESC
@@ -141,6 +149,21 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
       }
       const hasHomePitcher = Boolean(String(probableRow?.home_pitcher_name || "").trim());
       const hasAwayPitcher = Boolean(String(probableRow?.away_pitcher_name || "").trim());
+      // A start-boundary fetch may return "unannounced". Reuse the persisted
+      // next_check_at rather than polling the NPB Worker every Cron tick.
+      if (startCheckDue) {
+        const nextCheckAt = new Date(probableRow?.next_check_at || "");
+        const retryWindowEnd = new Date(startCheckAt.getTime() + 24 * 60 * 60 * 1000);
+        if (!Number.isNaN(nextCheckAt.getTime())
+          && nextCheckAt.getTime() > startCheckAt.getTime()
+          && nextCheckAt.getTime() <= current.getTime()
+          && nextCheckAt.getTime() <= retryWindowEnd.getTime()) {
+          selectedDueSlot = nextCheckAt;
+          diagnostic.dueSlots = [...new Set([...diagnostic.dueSlots, nextCheckAt.toISOString()])].sort();
+          diagnostic.selectedDueSlot = nextCheckAt.toISOString();
+          plan = { jobType: "probable_starter_fetch", scheduledSlotAt: selectedDueSlot, scheduledAt: selectedDueSlot };
+        }
+      }
       const stopDecision = shouldStopProbableStarterScheduling({
         dataStatus: probableRow?.data_status,
         status: probableRow?.status,
@@ -150,7 +173,11 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
         awayPitcherName: probableRow?.away_pitcher_name,
         startAt,
         gameStatus: stateRow?.state === "excluded" ? "excluded" : game?.gameStatus,
-        now: current
+        // The explicit boundary check is allowed to inspect a delayed target
+        // after its scheduled start; announced rows still stop immediately.
+        now: startCheckDue && startAt.getTime() <= current.getTime()
+          ? new Date(startAt.getTime() - 1)
+          : current
       });
       diagnostic.currentDataStatus = stopDecision.normalizedDataStatus;
       diagnostic.homePitcherPresent = hasHomePitcher;
@@ -200,7 +227,7 @@ export async function planV3ProbableStarterJobs(db, games = [], now = new Date()
             AND job_type = ?2
             AND scheduled_slot_at = ?3
           LIMIT 1`
-      ).bind(game.internalGameId, plan.jobType, latestDueSlot.toISOString()).first();
+      ).bind(game.internalGameId, plan.jobType, selectedDueSlot.toISOString()).first();
       if (existingJob) {
         diagnostic.sameSlotJobExists = true;
         diagnostic.sameSlotJobId = existingJob.id;

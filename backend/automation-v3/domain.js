@@ -983,6 +983,32 @@ export function isV3GameEligible(game) {
   return !["cancelled", "postponed", "no_game", "service_unavailable"].includes(String(game.gameStatus || "").toLowerCase());
 }
 
+// A delayed game can expose its first-pitch timestamp independently from the
+// scheduled start. Use it when supplied, with the canonical schedule as the
+// fallback for schemas that do not persist an actual-start column.
+export function getV3GameEffectiveStartAt(game) {
+  const candidates = [
+    game?.actualStartAt,
+    game?.actual_start_at,
+    game?.startedAt,
+    game?.started_at,
+    game?.gameStartedAt,
+    game?.game_started_at,
+    game?.firstPitchAt,
+    game?.first_pitch_at,
+    game?.startAt,
+    game?.start_at,
+    game?.startTime,
+    game?.start_time
+  ];
+  for (const value of candidates) {
+    if (!value) continue;
+    const parsed = value instanceof Date ? new Date(value.getTime()) : new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return null;
+}
+
 export function resolveCanonicalProbableStarterRow(rows, internalGameId) {
   const expectedInternalGameId = String(internalGameId || "").trim();
   const allRows = Array.isArray(rows) ? rows : [];

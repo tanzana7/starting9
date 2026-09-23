@@ -48,6 +48,12 @@ function createJobsDb({ includeGames = false, includeState = false } = {}) {
       failure_message TEXT, created_at TEXT, updated_at TEXT,
       UNIQUE(internal_game_id, job_type, scheduled_slot_at)
     );
+    CREATE TABLE probable_starters (
+      game_id TEXT PRIMARY KEY, internal_game_id TEXT, status TEXT,
+      data_status TEXT, error_code TEXT, home_pitcher_name TEXT,
+      away_pitcher_name TEXT, next_check_at TEXT, fetched_at TEXT,
+      updated_at TEXT
+    );
   `);
   return database;
 }
@@ -127,6 +133,67 @@ test("excludedまたはpublishedのV3 stateは予告先発jobの対象外にな�
     const result = await v3.planV3ProbableStarterJobs(db, [futureGame()], new Date("2026-08-06T10:12:00.000Z"));
     assert.equal(result.created, 0);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3").get().count, 0);
+  } finally {
+    database.close();
+  }
+});
+
+test("今日の開始済みFighters戦から、補助12試合枠外の次戦を限定取得できる", async () => {
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE games (
+      internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+      home_team TEXT, away_team TEXT, game_status TEXT, is_active INTEGER,
+      deleted_at TEXT
+    );
+  `);
+  const insert = database.prepare("INSERT INTO games VALUES (?, ?, ?, ?, ?, 'scheduled', 1, NULL)");
+  insert.run("current", "2026-08-07", "2026-08-07T05:00:00.000Z", "fighters", "eagles");
+  for (let index = 0; index < 12; index += 1) {
+    insert.run(`other-${index}`, "2026-08-07", `2026-08-07T05:${String(10 + index).padStart(2, "0")}:00.000Z`, "hawks", "lions");
+  }
+  insert.run("next-fighters", "2026-08-08", "2026-08-08T09:00:00.000Z", "buffaloes", "fighters");
+  try {
+    assert.equal(await v3.findV3ProbableStarterStartCheckGame(
+      d1(database),
+      new Date("2026-08-07T04:59:59.000Z")
+    ), null);
+    const target = await v3.findV3ProbableStarterStartCheckGame(
+      d1(database),
+      new Date("2026-08-07T05:00:00.000Z")
+    );
+    assert.equal(target?.internalGameId, "next-fighters");
+    assert.equal(target?.probableStarterStartCheckAt, "2026-08-07T05:00:00.000Z");
+    database.prepare("UPDATE games SET game_status = 'postponed' WHERE internal_game_id = 'next-fighters'").run();
+    assert.equal(await v3.findV3ProbableStarterStartCheckGame(
+      d1(database),
+      new Date("2026-08-07T05:00:00.000Z")
+    ), null);
+  } finally {
+    database.close();
+  }
+});
+
+test("開始境界で1回取得し、未発表時は保存済みnext_check_atだけで再試行する", async () => {
+  const database = createJobsDb();
+  try {
+    const db = d1(database);
+    const game = {
+      ...futureGame("2026-08-08T09:00:00.000Z", "2026-08-08"),
+      probableStarterStartCheckAt: "2026-08-07T05:00:00.000Z"
+    };
+    const first = await v3.planV3ProbableStarterJobs(db, [game], new Date("2026-08-07T05:00:00.000Z"));
+    assert.equal(first.created, 1);
+    assert.equal(first.planned[0].job.scheduled_slot_at, "2026-08-07T05:00:00.000Z");
+    const duplicate = await v3.planV3ProbableStarterJobs(db, [game], new Date("2026-08-07T05:00:00.000Z"));
+    assert.equal(duplicate.created, 0);
+    database.prepare("UPDATE game_jobs_v3 SET status = 'completed' WHERE id = 1").run();
+    database.prepare("INSERT INTO probable_starters (game_id, internal_game_id, status, data_status, next_check_at, updated_at) VALUES (?, ?, 'unannounced', 'unannounced', ?, ?)")
+      .run(GAME_ID, GAME_ID, "2026-08-07T06:00:00.000Z", "2026-08-07T05:00:00.000Z");
+    const retry = await v3.planV3ProbableStarterJobs(db, [game], new Date("2026-08-07T06:00:00.000Z"));
+    assert.equal(retry.created, 1);
+    assert.equal(retry.planned[0].job.scheduled_slot_at, "2026-08-07T06:00:00.000Z");
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3").get().count, 2);
   } finally {
     database.close();
   }

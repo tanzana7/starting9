@@ -40,7 +40,7 @@ test("試合前自動処理はロースタースナップショット・取得�
   assert.match(pregameMigration, /CREATE TABLE IF NOT EXISTS game_pregame_automation/);
   assert.match(pregameMigration, /lineup_source/);
   assert.match(worker, /preventOverwrite/);
-  assert.match(worker, /source: "npb-auto"/);
+  assert.match(worker, /source === "cron" \? "npb-auto" : "manual"/);
   assert.match(worker, /source: "manual"/);
   assert.match(worker, /is_test_prediction = 0/);
 });

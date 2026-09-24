@@ -8224,45 +8224,39 @@ async function handleAdminV3LineupCorrection(request, env, cors, route) {
     const currentState = String(status.stateRow?.state || "").trim().toLowerCase();
     if (!currentState) throw createV3Error("V3_LINEUP_CORRECTION_STATE_REQUIRED", "V3 workflow stateを確認できないため、スタメン修正を実行できません。", { httpStatus: 503 });
 
-    const revision = await saveLineupCandidateRevision(env.AUTH_DB, {
+    const now = new Date();
+    const result = await applyLineupRevisionService({
+      env,
       gameId: context.metadata.gameId,
       internalGameId: context.id,
       lineup: actual.lineup,
+      operation: "correction",
       source: "admin",
-      capturedAt: new Date(),
-      reason,
-      createdBy: access.user.id,
-      validation: { source: "manual_correction", inputAt: new Date().toISOString(), inputBy: access.user.id, playerCount: actual.lineup.length, unresolvedPlayerCount: 0 },
-      allowUnresolvedPlayer: false
-    });
-    const latestCanonical = await getV3CanonicalFinalRevision(env.AUTH_DB, context.id);
-    if (revisionsMatch(latestCanonical.revision, revision)) {
-      throw createV3Error("V3_LINEUP_CORRECTION_NO_OP", "同じ修正が別の操作ですでに確定されています。", { httpStatus: 409 });
-    }
-    const now = new Date();
-    const record = await approveActualLineupForAutoScoring(env, context.metadata.gameId, actual.lineup, now, {
-      scoringDueAt: now,
+      actor: access.user.id,
+      expectedCurrentRevisionId: v3LineupRevisionIdentity(status.canonical.revision),
+      capturedAt: now,
       now,
-      source: "manual",
+      reason,
+      validation: { source: "manual_correction", inputAt: now.toISOString(), inputBy: access.user.id, playerCount: actual.lineup.length, unresolvedPlayerCount: 0 },
+      allowUnresolvedPlayer: false,
+      scoringDueAt: now,
       allowAfterStart: true,
-      internalGameId: context.id
+      queueScoreJob: true,
+      idempotencyKey: `admin-correction:${context.id}:${reason}`
     });
-    await activateLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, version: revision.version, internalGameId: context.id, finalizedAt: now, finalizedBy: `admin:${String(access.user.id)}` });
-    await linkFinalLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, version: revision.version, finalizedAt: now, finalizedBy: `admin:${String(access.user.id)}` });
+    const revision = result.revision;
+    const record = result.record;
     if (currentState !== "manual_action_required") {
       await transitionV3State(env.AUTH_DB, { internalGameId: context.id, from: currentState, to: "manual_action_required", now });
     }
-    const scoreJob = await createV3AdminActionJob(env.AUTH_DB, context.id, "score", now, "admin-lineup-correction", {
-      allowAfterCompleted: true,
-      scheduledSlotAt: revision.created_at || now
-    });
+    const scoreJob = result.scoreJob;
     await recordV3AdminAudit(getV3AuditDb(env), {
       internalGameId: context.id,
-      jobId: scoreJob.job?.id || null,
+      jobId: scoreJob?.job?.id || null,
       jobType: "admin:lineup_correction",
       stateBefore: currentState,
       stateAfter: "manual_action_required",
-      failureMessage: `[v3_details=${JSON.stringify({ reason, revisionId: v3LineupRevisionIdentity(revision), scoreJobId: scoreJob.job?.id || null })}]`
+      failureMessage: `[v3_details=${JSON.stringify({ reason, revisionId: v3LineupRevisionIdentity(revision), scoreJobId: scoreJob?.job?.id || null })}]`
     });
     await recordWorkflowLog(env.AUTH_DB, {
       eventType: "v3_admin_lineup_correction",
@@ -8270,7 +8264,7 @@ async function handleAdminV3LineupCorrection(request, env, cors, route) {
       gameId: context.metadata.gameId,
       occurredAt: now,
       message: "管理者が過去スタメンを修正し、正式V3 score jobへ引き継ぎました。",
-      metadata: { internalGameId: context.id, revisionId: v3LineupRevisionIdentity(revision), reason, scoreJobId: scoreJob.job?.id || null },
+      metadata: { internalGameId: context.id, revisionId: v3LineupRevisionIdentity(revision), reason, scoreJobId: scoreJob?.job?.id || null },
       source: "admin"
     });
     return jsonResponse({
@@ -8839,26 +8833,28 @@ async function handleAdminV3LineupRevisionCreate(request, env, cors, context, us
     ? normalizeManualLineupInput(requestedLineup, { trustedTemporaryPlayers })
     : normalizeManualLineupInput(input?.lineup || input?.actualLineup);
   if (!actual.ok) throw createManualLineupInvalidError("V3_LINEUP_INVALID", actual, 400);
-  const rows = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
-  const latest = rows[0] || null;
-  const fingerprint = await sha256Base64Url(JSON.stringify(actual.lineup));
-  if (latest && latest.lineup_fingerprint === fingerprint) {
-    return jsonResponse({ ok: true, internalGameId: context.id, noOp: true, revision: serializeV3LineupRevision(latest) }, 200, cors);
-  }
-  const revision = await saveLineupCandidateRevision(env.AUTH_DB, {
+  const result = await applyLineupRevisionService({
+    env,
     gameId: context.metadata.gameId,
     internalGameId: context.id,
     lineup: actual.lineup,
+    operation: "candidate",
     source: "admin",
+    actor: user.id,
+    expectedCurrentRevisionId: String(currentLineup?.final_lineup_revision_id || ""),
     capturedAt: new Date(),
     reason,
-    createdBy: user.id,
     validation: { source: "manual", inputAt: new Date().toISOString(), inputBy: user.id, playerCount: actual.lineup.length, unresolvedPlayerCount: 0 },
-    allowUnresolvedPlayer: false
+    allowUnresolvedPlayer: false,
+    idempotencyKey: `admin-candidate:${context.id}:${String(input?.idempotencyKey || "")}`
   });
-  await recordWorkflowLog(env.AUTH_DB, { eventType: "v3_admin_lineup_revision", status: "success", gameId: context.metadata.gameId, occurredAt: new Date(), message: "V3管理者がスタメンrevisionを作成しました。", metadata: { internalGameId: context.id, revisionId: revision.revision_id || `${context.metadata.gameId}:${revision.version}` }, source: "admin" });
+  const revision = result.revision;
+  if (result.noOp) {
+    return jsonResponse({ ok: true, internalGameId: context.id, noOp: true, revision: serializeV3LineupRevision(revision) }, 200, cors);
+  }
+  await recordWorkflowLog(env.AUTH_DB, { eventType: "v3_admin_lineup_revision", status: "success", gameId: context.metadata.gameId, occurredAt: new Date(), message: "V3管理者がスタメンrevisionを作成しました。", metadata: { internalGameId: context.id, revisionId: revision.revision_id || `${context.metadata.gameId}:${revision.version}`, noOp: result.noOp }, source: "admin" });
   await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobType: "admin:lineup_revision" });
-  return jsonResponse({ ok: true, internalGameId: context.id, noOp: false, revision: serializeV3LineupRevision(revision) }, 201, cors);
+  return jsonResponse({ ok: true, internalGameId: context.id, noOp: result.noOp, revision: serializeV3LineupRevision(revision) }, result.noOp ? 200 : 201, cors);
 }
 
 const MANUAL_LINEUP_REVISION_CANCEL_CONFIRMATION = "CANCEL_MANUAL_LINEUP_REVISION";
@@ -9032,14 +9028,29 @@ async function handleAdminV3LineupFinalize(request, env, cors, context, user) {
   if (currentLineup?.scoring_status === "processing") {
     throw createV3Error("V3_LINEUP_FINALIZE_IN_PROGRESS", "採点中は別のスタメンrevisionへ差し替えできません。", { httpStatus: 409 });
   }
-  if (!currentLineup || !String(currentLineup.final_lineup_revision_id || "").trim() || currentLineup.scoring_status !== "scored") {
-    await saveActualLineupForAutoScoring(env.AUTH_DB, context.metadata.gameId, actual.lineup, now, { allowAfterStart: true, now, source: "manual", internalGameId: context.id, scoringDueAt: now });
+  const result = await applyLineupRevisionService({
+    env,
+    gameId: context.metadata.gameId,
+    internalGameId: context.id,
+    revision,
+    lineup: actual.lineup,
+    operation: "finalize",
+    source: "admin",
+    actor: user.id,
+    expectedCurrentRevisionId: currentFinalRevisionId,
+    now,
+    capturedAt: revision.captured_at || revision.created_at || now,
+    allowAfterStart: true,
+    scoringDueAt: now,
+    queueScoreJob: false,
+    idempotencyKey: `admin-finalize:${context.id}:${requestedRevisionId}`
+  });
+  if (result.noOp) {
+    return jsonResponse({ ok: true, internalGameId: context.id, noOp: true, finalizedRevision: serializeV3LineupRevision(revision), scoreJob: null, nextAction: "formal_cron_score", rescoreRequired: false }, 200, cors);
   }
-  await activateLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, version: Number(revision.version), finalizedAt: now, finalizedBy: "admin" });
-  await linkFinalLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, version: Number(revision.version), finalizedAt: now, finalizedBy: "admin" });
   const state = await env.AUTH_DB.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(context.id).first();
   await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobType: "admin:lineup_finalize", stateBefore: state?.state || null, stateAfter: "lineup_ready" });
-  return jsonResponse({ ok: true, internalGameId: context.id, finalizedRevision: serializeV3LineupRevision({ ...revision, is_final: 1, is_current: 1, finalized_by: "admin", finalized_at: new Date().toISOString() }), scoreJob: null, nextAction: "formal_cron_score", rescoreRequired: false }, 200, cors);
+  return jsonResponse({ ok: true, internalGameId: context.id, finalizedRevision: serializeV3LineupRevision({ ...result.revision, is_final: 1, is_current: 1, finalized_by: `admin:${String(user.id)}`, finalized_at: now.toISOString() }), scoreJob: null, nextAction: "formal_cron_score", rescoreRequired: false }, 200, cors);
 }
 
 function v3RescoreBody(input, context) {
@@ -14107,21 +14118,29 @@ async function adoptPersistedLineupCandidate(env, gameId, now, { internalGameId 
     }
     const row = candidate.row;
     const detectedAt = parseLineupDetectedAt(row.captured_at || row.created_at) || now;
-    const record = await approveActualLineupForAutoScoring(env, gameId, candidate.lineup, detectedAt, {
-      source: "npb-auto",
-      scoringDueAt: finalAt,
+    const current = await getGameLineup(env.AUTH_DB, { gameId, internalGameId });
+    const result = await applyLineupRevisionService({
+      env,
+      gameId,
+      internalGameId,
+      revision: row,
+      lineup: candidate.lineup,
+      operation: "finalize",
+      source: "cron",
+      expectedCurrentRevisionId: String(current?.final_lineup_revision_id || ""),
+      capturedAt: detectedAt,
       now,
       allowAfterStart: true,
       preventOverwrite: true,
-      internalGameId
+      scoringDueAt: finalAt,
+      queueScoreJob: false,
+      idempotencyKey: `cron-adopt:${internalGameId}:${v3LineupRevisionIdentity(row)}`
     });
-    await activateLineupRevision(env.AUTH_DB, { gameId, version: row.version, internalGameId, finalizedAt: now, finalizedBy: "system" });
-    await linkFinalLineupRevision(env.AUTH_DB, { gameId, internalGameId, version: row.version, finalizedAt: now, finalizedBy: "system" });
     return {
       status: "captured",
       recoveryMode: "persisted_lineup_revision_adoption",
-      autoScoring: serializeGameLineup(record),
-      lineupRevision: row,
+      autoScoring: serializeGameLineup(result.record),
+      lineupRevision: result.revision,
       finalizationDiagnostics: candidate.diagnostics
     };
   }
@@ -14132,16 +14151,24 @@ async function adoptPersistedLineupCandidate(env, gameId, now, { internalGameId 
     const actual = sanitizeActualLineupForScoring(parseStoredActualLineup(row.actual_lineup_json), { allowUnresolvedPlayer: true });
     if (!actual.ok) continue;
     const detectedAt = parseLineupDetectedAt(row.captured_at || row.created_at) || now;
-    const record = await approveActualLineupForAutoScoring(env, gameId, actual.lineup, detectedAt, {
-      source: "npb-auto",
-      scoringDueAt: finalAt,
+    const current = await getGameLineup(env.AUTH_DB, { gameId, internalGameId });
+    const result = await applyLineupRevisionService({
+      env,
+      gameId,
+      internalGameId,
+      revision: row,
+      lineup: actual.lineup,
+      operation: "finalize",
+      source: "cron",
+      expectedCurrentRevisionId: String(current?.final_lineup_revision_id || ""),
+      capturedAt: detectedAt,
       now,
       allowAfterStart: true,
       preventOverwrite: true,
-      internalGameId
+      scoringDueAt: finalAt,
+      queueScoreJob: false,
+      idempotencyKey: `cron-adopt:${internalGameId}:${v3LineupRevisionIdentity(row)}`
     });
-    await activateLineupRevision(env.AUTH_DB, { gameId, version: row.version, internalGameId, finalizedAt: now, finalizedBy: "system" });
-    await linkFinalLineupRevision(env.AUTH_DB, { gameId, internalGameId, version: row.version, finalizedAt: now, finalizedBy: "system" });
     if (source !== "v3") {
       await env.AUTH_DB.prepare(
         `UPDATE game_pregame_automation
@@ -14150,7 +14177,7 @@ async function adoptPersistedLineupCandidate(env, gameId, now, { internalGameId 
           WHERE game_id = ?2`
       ).bind(now.toISOString(), gameId).run();
     }
-    return { status: "captured", recoveryMode: "persisted_lineup_revision_adoption", autoScoring: serializeGameLineup(record), lineupRevision: row };
+    return { status: "captured", recoveryMode: "persisted_lineup_revision_adoption", autoScoring: serializeGameLineup(result.record), lineupRevision: result.revision };
   }
   return null;
 }
@@ -14234,11 +14261,26 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
     }
     const detectedAt = new Date(payload.fetchedAt || now);
     if (!isFinalCapture) {
-      const revision = await saveProvisionalOfficialLineup(env.AUTH_DB, gameId, actual.lineup, detectedAt, now, {
-        internalGameId,
-        validation: actual.validation || null,
-        source
-      });
+      const current = isV3 ? await getGameLineup(env.AUTH_DB, { gameId, internalGameId }) : null;
+      const candidateResult = isV3
+        ? await applyLineupRevisionService({
+          env,
+          gameId,
+          internalGameId,
+          lineup: actual.lineup,
+          operation: "candidate",
+          source: "cron",
+          expectedCurrentRevisionId: String(current?.final_lineup_revision_id || ""),
+          capturedAt: detectedAt,
+          now,
+          validation: actual.validation || null,
+          reason: "NPB公式スタメン候補",
+          allowUnresolvedPlayer: true,
+          queueScoreJob: false,
+          idempotencyKey: `cron-candidate:${internalGameId}:${identity.gameCode || "unknown"}`
+        })
+        : { revision: await saveProvisionalOfficialLineup(env.AUTH_DB, gameId, actual.lineup, detectedAt, now, { internalGameId, validation: actual.validation || null, source }) };
+      const revision = candidateResult.revision;
       return {
         status: "provisional",
         sourceUrl: payload.sourceUrl,
@@ -14250,26 +14292,25 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
         npbDiagnostics: payload.diagnostics || null
       };
     }
-    const revision = await saveLineupCandidateRevision(env.AUTH_DB, {
+    const result = await applyLineupRevisionService({
+      env,
       gameId,
       internalGameId,
       lineup: actual.lineup,
-      source: "npb",
+      operation: "finalize",
+      source: "cron",
+      expectedCurrentRevisionId: String(existing?.final_lineup_revision_id || ""),
       capturedAt: detectedAt,
+      now,
       validation: actual.validation || null,
       reason: "NPB公式スタメン最終候補",
-      allowUnresolvedPlayer: true
-    });
-    const record = await approveActualLineupForAutoScoring(env, gameId, actual.lineup, detectedAt, {
-      source: "npb-auto",
+      allowUnresolvedPlayer: true,
       scoringDueAt: new Date(identity.startAt.getTime() + 2 * 60 * 1000),
-      now,
       allowAfterStart: true,
       preventOverwrite: true,
-      internalGameId
+      queueScoreJob: false,
+      idempotencyKey: `cron-capture:${internalGameId}:${identity.gameCode || "unknown"}`
     });
-    await activateLineupRevision(env.AUTH_DB, { gameId, version: revision.version, internalGameId, finalizedAt: now, finalizedBy: "system" });
-    await linkFinalLineupRevision(env.AUTH_DB, { gameId, internalGameId, version: revision.version, finalizedAt: now, finalizedBy: "system" });
     if (!isV3) {
       await env.AUTH_DB.prepare(
         `UPDATE game_pregame_automation
@@ -14283,8 +14324,8 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
     return {
       status: "captured",
       sourceUrl: payload.sourceUrl,
-      autoScoring: serializeGameLineup(record),
-      lineupRevision: revision,
+      autoScoring: serializeGameLineup(result.record),
+      lineupRevision: result.revision,
       lineupValidation: actual.validation || null,
       parserDiagnostics: actual.parserDiagnostics || null,
       npbDiagnostics: payload.diagnostics || null
@@ -17602,6 +17643,184 @@ async function linkFinalLineupRevision(db, { gameId, internalGameId = "", versio
   return result;
 }
 
+// Lineup revisionの書き込み境界。candidate保存、正式確定、過去修正を
+// ここへ集約し、管理者操作とNPB自動取得でrevision/canonicalの競合条件を
+// 分けない。通常の正式確定は既存のformal plannerがscore slotを作るため、
+// correctionだけが同じV3 score jobを即時に要求する。
+async function applyLineupRevisionService({
+  env,
+  gameId,
+  internalGameId = "",
+  revision = null,
+  lineup = null,
+  operation = "candidate",
+  source = "admin",
+  actor = "system",
+  expectedCurrentRevisionId = "",
+  reason = "",
+  now = new Date(),
+  capturedAt = now,
+  validation = null,
+  allowUnresolvedPlayer = false,
+  scoringDueAt = null,
+  allowAfterStart = false,
+  preventOverwrite = false,
+  updateCanonical = true,
+  linkCanonical = true,
+  revisionSource = null,
+  queueScoreJob = operation === "correction",
+  idempotencyKey = ""
+} = {}) {
+  const db = env?.AUTH_DB;
+  if (!db || !gameId) throw createV3Error("V3_LINEUP_SERVICE_INPUT_INVALID", "正式スタメンの対象試合が不正です。", { httpStatus: 400 });
+  if (!(operation === "candidate" || operation === "finalize" || operation === "correction")) {
+    throw createV3Error("V3_LINEUP_SERVICE_OPERATION_INVALID", "正式スタメン操作が不正です。", { httpStatus: 400 });
+  }
+  if (!(source === "admin" || source === "cron" || source === "recovery")) {
+    throw createV3Error("V3_LINEUP_SERVICE_SOURCE_INVALID", "正式スタメン操作元が不正です。", { httpStatus: 400 });
+  }
+  const internalId = String(internalGameId || "").trim();
+  const expected = String(expectedCurrentRevisionId || "").trim();
+  const current = await getGameLineup(db, internalId ? { gameId, internalGameId: internalId } : gameId);
+  const currentMarker = String(current?.final_lineup_revision_id || "").trim();
+  const assertExpected = async () => {
+    if (!internalId || expected === currentMarker) return;
+    if (!expected && !currentMarker) return;
+    const rows = await getV3LineupRevisionRows(db, gameId, internalId);
+    const sameRevision = rows.some((row) => revisionMatchesIdentity(row, expected) && revisionMatchesIdentity(row, currentMarker));
+    if (!sameRevision) {
+      throw createV3Error("V3_LINEUP_REVISION_CONFLICT", "別の操作で正式スタメンrevisionが更新されたため、古い変更を反映しません。", {
+        httpStatus: 409,
+        retryable: false,
+        diagnostics: { internalGameId: internalId, expectedCurrentRevisionId: expected || null, actualCurrentRevisionId: currentMarker || null, operation, source }
+      });
+    }
+  };
+  await assertExpected();
+
+  let targetRevision = revision;
+  let normalizedLineup = lineup;
+  let revisionNoOp = false;
+  if (!targetRevision) {
+    const actual = sanitizeActualLineupForScoring(lineup, { allowUnresolvedPlayer });
+    if (!actual.ok) {
+      const error = createV3Error("V3_LINEUP_REVISION_INVALID", actual.error, { httpStatus: 409 });
+      error.validation = validation || null;
+      throw error;
+    }
+    normalizedLineup = actual.lineup;
+    const latestRows = await getV3LineupRevisionRows(db, gameId, internalId);
+    const fingerprint = await sha256Base64Url(JSON.stringify(normalizedLineup));
+    const latest = latestRows[0] || null;
+    if (latest && String(latest.lineup_fingerprint || "") === fingerprint) {
+      targetRevision = latest;
+      revisionNoOp = true;
+    } else {
+      targetRevision = await saveLineupCandidateRevision(db, {
+        gameId,
+        internalGameId: internalId,
+        lineup: normalizedLineup,
+        source: revisionSource || (source === "cron" ? "npb" : source === "admin" ? "admin" : source),
+        capturedAt,
+        validation,
+        reason,
+        createdBy: source === "admin" ? actor : null,
+        allowUnresolvedPlayer
+      });
+    }
+  } else {
+    if (String(targetRevision.game_id || "") !== String(gameId)
+      || (internalId && targetRevision.internal_game_id && String(targetRevision.internal_game_id) !== internalId)) {
+      throw createV3Error("V3_LINEUP_REVISION_GAME_MISMATCH", "指定されたスタメンrevisionが対象試合と一致しません。", { httpStatus: 409 });
+    }
+    const actual = sanitizeActualLineupForScoring(
+      normalizedLineup || parseStoredActualLineup(targetRevision.actual_lineup_json),
+      { allowUnresolvedPlayer }
+    );
+    if (!actual.ok) {
+      const error = createV3Error("V3_LINEUP_REVISION_INVALID", actual.error, { httpStatus: 409 });
+      error.validation = validation || null;
+      throw error;
+    }
+    normalizedLineup = actual.lineup;
+  }
+
+  const targetRevisionId = v3LineupRevisionIdentity(targetRevision);
+  const targetFingerprint = await sha256Base64Url(JSON.stringify(normalizedLineup));
+  if (operation === "candidate") {
+    return { operation, source, revision: targetRevision, noOp: revisionNoOp || Boolean(targetRevisionId && revisionMatchesIdentity(targetRevision, currentMarker)), scoreJob: null };
+  }
+
+  if (currentMarker && String(current?.lineup_fingerprint || "") === targetFingerprint) {
+    const rows = await getV3LineupRevisionRows(db, gameId, internalId);
+    const currentRevision = rows.find((row) => revisionMatchesIdentity(row, currentMarker)) || targetRevision;
+    return { operation, source, revision: currentRevision, canonical: current, noOp: true, scoreJob: null };
+  }
+
+  if (targetRevisionId && currentMarker && revisionMatchesIdentity(targetRevision, currentMarker)
+    && Number(targetRevision.is_final || 0) === 1) {
+    return { operation, source, revision: targetRevision, canonical: current, noOp: true, scoreJob: null };
+  }
+
+  // Re-read the marker immediately before the canonical write. This rejects a
+  // delayed automatic fetch after an administrator finalized another revision.
+  const latestBeforeWrite = await getGameLineup(db, internalId ? { gameId, internalGameId: internalId } : gameId);
+  const latestMarker = String(latestBeforeWrite?.final_lineup_revision_id || "").trim();
+  if (internalId && latestMarker !== currentMarker) {
+    const rows = await getV3LineupRevisionRows(db, gameId, internalId);
+    const sameExpected = rows.some((row) => revisionMatchesIdentity(row, expected) && revisionMatchesIdentity(row, latestMarker));
+    if (!sameExpected) {
+      throw createV3Error("V3_LINEUP_REVISION_CONFLICT", "正式スタメンの最新revisionが変わったため、古い変更を反映しません。", {
+        httpStatus: 409,
+        retryable: false,
+        diagnostics: { internalGameId: internalId, expectedCurrentRevisionId: expected || null, actualCurrentRevisionId: latestMarker || null, operation, source }
+      });
+    }
+  }
+
+  const effectiveNow = now instanceof Date ? now : new Date(now);
+  const effectiveDetectedAt = capturedAt instanceof Date ? capturedAt : new Date(capturedAt || effectiveNow);
+  if (Number.isNaN(effectiveNow.getTime()) || Number.isNaN(effectiveDetectedAt.getTime())) {
+    throw createV3Error("V3_LINEUP_SERVICE_TIME_INVALID", "正式スタメン操作時刻が不正です。", { httpStatus: 400 });
+  }
+  const record = updateCanonical
+    ? await approveActualLineupForAutoScoring(env, gameId, normalizedLineup, effectiveDetectedAt, {
+      scoringDueAt: scoringDueAt || effectiveNow,
+      now: effectiveNow,
+      source: source === "cron" ? "npb-auto" : "manual",
+      allowAfterStart,
+      preventOverwrite,
+      internalGameId: internalId
+    })
+    : current;
+  await activateLineupRevision(db, {
+    gameId,
+    version: Number(targetRevision.version),
+    internalGameId: internalId,
+    finalizedAt: effectiveNow,
+    finalizedBy: source === "admin" ? `admin:${String(actor || "unknown")}` : "system"
+  });
+  if (linkCanonical) {
+    await linkFinalLineupRevision(db, {
+      gameId,
+      internalGameId: internalId,
+      version: Number(targetRevision.version),
+      finalizedAt: effectiveNow,
+      finalizedBy: source === "admin" ? `admin:${String(actor || "unknown")}` : "system"
+    });
+  }
+  const activatedRows = await getV3LineupRevisionRows(db, gameId, internalId);
+  const activatedRevision = activatedRows.find((row) => Number(row.version) === Number(targetRevision.version)) || targetRevision;
+  const scoreJob = queueScoreJob
+    ? await createV3AdminActionJob(db, internalId, "score", effectiveNow, source === "admin" ? "admin-lineup-revision" : source, {
+      allowAfterCompleted: operation === "correction",
+      scheduledSlotAt: targetRevision.created_at || effectiveNow
+    })
+    : null;
+  const canonical = await getGameLineup(db, internalId ? { gameId, internalGameId: internalId } : gameId);
+  return { operation, source, revision: activatedRevision, record, canonical, scoreJob, noOp: false, idempotencyKey: String(idempotencyKey || "") || null };
+}
+
 async function saveProvisionalOfficialLineup(db, gameId, lineup, detectedAt, now, options = {}) {
   const revision = await saveLineupCandidateRevision(db, {
     gameId,
@@ -17637,25 +17856,26 @@ async function useProvisionalLineupFallback(env, gameId, identity, now, finalErr
   if (!actualResult.ok) return { used: false };
 
   const detectedAt = parseLineupDetectedAt(job?.provisional_lineup_detected_at) || now;
-  const revision = await saveLineupCandidateRevision(env.AUTH_DB, {
+  const internalGameId = identity.internalGameId || "";
+  const current = await getGameLineup(env.AUTH_DB, { gameId, internalGameId });
+  const result = await applyLineupRevisionService({
+    env,
     gameId,
-    internalGameId: identity.internalGameId || "",
+    internalGameId,
     lineup: actualResult.lineup,
-    source: "npb",
+    operation: "finalize",
+    source: "cron",
+    expectedCurrentRevisionId: String(current?.final_lineup_revision_id || ""),
     capturedAt: detectedAt,
-    reason: "保存済み候補の最終確定",
-    allowUnresolvedPlayer: true
-  });
-  const record = await approveActualLineupForAutoScoring(env, gameId, actualResult.lineup, detectedAt, {
-    source: "npb-auto",
-    scoringDueAt: new Date(identity.startAt.getTime() + 2 * 60 * 1000),
     now,
+    reason: "保存済み候補の最終確定",
+    allowUnresolvedPlayer: true,
+    scoringDueAt: new Date(identity.startAt.getTime() + 2 * 60 * 1000),
     allowAfterStart: true,
     preventOverwrite: true,
-    internalGameId: identity.internalGameId || ""
+    queueScoreJob: false,
+    idempotencyKey: `cron-fallback:${internalGameId}`
   });
-  await activateLineupRevision(env.AUTH_DB, { gameId, version: revision.version, internalGameId: identity.internalGameId || "", finalizedAt: now, finalizedBy: "system" });
-  await linkFinalLineupRevision(env.AUTH_DB, { gameId, internalGameId: identity.internalGameId || "", version: revision.version, finalizedAt: now, finalizedBy: "system" });
   const errorCode = classifyLineupErrorCode(finalError);
   await env.AUTH_DB.prepare(
     `UPDATE game_pregame_automation
@@ -17665,7 +17885,7 @@ async function useProvisionalLineupFallback(env, gameId, identity, now, finalErr
             last_error_code = NULL, last_error_message = NULL, updated_at = ?1
       WHERE game_id = ?3`
   ).bind(now.toISOString(), errorCode, gameId).run();
-  return { used: true, record, revision, errorCode };
+  return { used: true, record: result.record, revision: result.revision, errorCode };
 }
 
 async function recordPregameError(db, gameId, area, error, now) {
@@ -20396,30 +20616,32 @@ async function handleAdminActualLineupSave(request, env, cors, gameId, metadata 
     }
 
     const detectedAt = parseLineupDetectedAt(input?.lineupDetectedAt) || now;
-    const revision = await saveLineupCandidateRevision(env.AUTH_DB, {
+    const result = await applyLineupRevisionService({
+      env,
       gameId,
       internalGameId: metadata?.internalGameId || "",
       lineup: actualResult.lineup,
+      operation: "finalize",
       source: "admin",
+      actor: "legacy",
+      expectedCurrentRevisionId: String(existing?.final_lineup_revision_id || ""),
       capturedAt: detectedAt,
-      validation: { source: "admin", playerCount: actualResult.lineup.length },
-      reason: String(input?.reason || "管理者による初回正式スタメン登録").slice(0, 240)
-    });
-    const record = await approveActualLineupForAutoScoring(env, gameId, actualResult.lineup, detectedAt, {
-      scoringDueAt: detectedAt,
       now,
-      source: "manual",
-      internalGameId: metadata?.internalGameId || ""
+      validation: { source: "admin", playerCount: actualResult.lineup.length },
+      reason: String(input?.reason || "管理者による初回正式スタメン登録").slice(0, 240),
+      scoringDueAt: detectedAt,
+      queueScoreJob: false,
+      idempotencyKey: `legacy-admin-finalize:${gameId}`
     });
-    await activateLineupRevision(env.AUTH_DB, { gameId, version: revision.version, internalGameId: metadata?.internalGameId || "", finalizedAt: now, finalizedBy: "admin" });
-    await linkFinalLineupRevision(env.AUTH_DB, { gameId, internalGameId: metadata?.internalGameId || "", version: revision.version, finalizedAt: now, finalizedBy: "admin" });
+    const revision = result.revision;
+    const record = result.record;
     await recordWorkflowLog(env.AUTH_DB, {
       eventType: "admin_lineup_approved",
       status: "success",
       gameId,
       occurredAt: now,
       message: "管理者が正式スタメンを登録しました。",
-      metadata: { source: "admin", playerCount: actualResult.lineup.length, revision: Number(revision.version) },
+      metadata: { source: "admin", playerCount: actualResult.lineup.length, revision: Number(revision.version), noOp: result.noOp },
       source: "admin"
     });
     console.log(`auto scoring scheduled: game=${gameId} due=${record.scoring_due_at}`);
@@ -20583,24 +20805,31 @@ async function createManualLineupRevision(db, metadata, actualLineup, userId, re
   if (current.lineup_fingerprint === fingerprint) {
     throw createPregameError("RESCORE_LINEUP_UNCHANGED", "現在の正式スタメンと同じ内容です。", { httpStatus: 409 });
   }
-  const revision = await saveLineupCandidateRevision(db, {
+  const now = new Date();
+  const canonical = await getGameLineup(db, metadata.internalGameId
+    ? { gameId: metadata.gameId, internalGameId: metadata.internalGameId }
+    : metadata.gameId);
+  const result = await applyLineupRevisionService({
+    env: { AUTH_DB: db },
     gameId: metadata.gameId,
     internalGameId: metadata.internalGameId || "",
     lineup: actualLineup,
-    source: source === "restore" ? "restore" : "admin",
-    capturedAt: new Date(),
+    operation: "correction",
+    source: "admin",
+    actor: userId,
+    expectedCurrentRevisionId: String(canonical?.final_lineup_revision_id || ""),
+    capturedAt: now,
+    now,
     reason,
-    createdBy: userId
+    allowAfterStart: true,
+    updateCanonical: false,
+    linkCanonical: false,
+    revisionSource: source === "restore" ? "restore" : "admin",
+    queueScoreJob: false,
+    idempotencyKey: `legacy-correction:${metadata.gameId}:${String(source || "manual-revision")}`
   });
-  const activated = await activateLineupRevision(db, {
-    gameId: metadata.gameId,
-    version: revision.version,
-    internalGameId: metadata.internalGameId || "",
-    finalizedAt: new Date(),
-    finalizedBy: "admin"
-  });
-  await markManualLineupCorrectionPending(db, metadata.internalGameId || "", new Date());
-  return activated;
+  await markManualLineupCorrectionPending(db, metadata.internalGameId || "", now);
+  return result.revision;
 }
 
 async function markManualLineupCorrectionPending(db, internalGameId, now) {

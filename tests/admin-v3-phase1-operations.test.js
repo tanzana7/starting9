@@ -28,9 +28,17 @@ test("V3 Phase 1 APIはinternalGameIdを入口にする専用ルートを持つ"
 });
 
 test("スタメン操作はrevision作成・正式確定を既存コアへ接続し、理由を要求する", () => {
-  assert.match(worker, /saveLineupCandidateRevision\(env\.AUTH_DB/);
-  assert.match(worker, /activateLineupRevision\(env\.AUTH_DB/);
-  assert.match(worker, /linkFinalLineupRevision\(env\.AUTH_DB/);
+  assert.match(worker, /async function applyLineupRevisionService/);
+  assert.match(worker, /saveLineupCandidateRevision\(db/);
+  assert.match(worker, /activateLineupRevision\(db/);
+  assert.match(worker, /linkFinalLineupRevision\(db/);
+  assert.match(worker, /expectedCurrentRevisionId/);
+  assert.match(worker, /queueScoreJob/);
+  assert.match(worker, /V3_LINEUP_REVISION_GAME_MISMATCH/);
+  assert.match(worker, /V3_LINEUP_SERVICE_TIME_INVALID/);
+  assert.match(worker, /operation: "correction"[\s\S]*queueScoreJob: true/);
+  assert.match(worker, /source: "cron"[\s\S]*operation: "finalize"/);
+  assert.match(worker, /source: "admin"[\s\S]*operation: "finalize"/);
   assert.match(worker, /V3_LINEUP_REVISION_NOT_FOUND/);
   assert.match(worker, /V3_REASON_REQUIRED/);
 });

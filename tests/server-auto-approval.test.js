@@ -50,13 +50,20 @@ test("Cronはブラウザに依存せず、最終スタメンだけ同じ承認�
   assert.match(worker, /ctx\.waitUntil\(runScheduledGameAutomationV3\(env, scheduledAt,[\s\S]*runId/);
   assert.match(worker, /captureOfficialLineup\(env, target\.gameId, now/);
   assert.match(worker, /scoringDueAt: new Date\(identity\.startAt\.getTime\(\) \+ 2 \* 60 \* 1000\)/);
-  assert.match(worker, /approveActualLineupForAutoScoring\(env, gameId, actual\.lineup, detectedAt/);
+  assert.match(worker, /applyLineupRevisionService\(\{/);
+  assert.match(worker, /operation: "finalize"/);
+  assert.match(worker, /source: "cron"/);
   assert.match(worker, /provisional_lineup_json/);
 });
 
 test("手動承認とCron自動承認は同じサーバー側の承認コアを使い、既存スタメンを再承認しない", () => {
+  assert.match(worker, /async function applyLineupRevisionService/);
+  assert.match(worker, /operation: "finalize"/);
+  assert.match(worker, /source: "cron"/);
+  assert.match(worker, /source: "admin"/);
+  assert.match(worker, /expectedCurrentRevisionId/);
   assert.match(worker, /async function approveActualLineupForAutoScoring/);
-  assert.match(worker, /const record = await approveActualLineupForAutoScoring\(env, gameId, actualResult\.lineup, detectedAt/);
+  assert.match(worker, /const record = updateCanonical\s+\? await approveActualLineupForAutoScoring\(env, gameId, normalizedLineup, effectiveDetectedAt/);
   assert.match(worker, /if \(existing && options\.preventOverwrite\) \{\s+return existing;/s);
   assert.match(worker, /const existing = await getGameLineup\(env\.AUTH_DB, \{ gameId, internalGameId \}\);\s+const existingLineup = parseStoredActualLineup\(existing\?\.actual_lineup_json\);\s+const existingArtifact = assessV3LineupArtifact\(existingLineup\);\s+if \(existing && existingArtifact\.ok\)/s);
 });

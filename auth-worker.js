@@ -1818,7 +1818,53 @@ async function executeV3LineupExecutor({ env, internalGameId, now, target, state
   };
 }
 
+// Manual V4 finalization intentionally does not enqueue a lineup_finalize job.
+// When the admin write completed while the persisted workflow row was still
+// prediction_closed, the canonical final revision is the safe evidence needed
+// to restore the missing boundary before the score job advances to scored.
+// Keep this narrow: only a manual final revision may repair this exact edge;
+// an official fetch result still requires its normal lineup_finalize job.
+export async function reconcileV3ManualFinalLineupState(db, internalGameId, stateBefore, now = new Date()) {
+  const current = await db.prepare(
+    "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
+  ).bind(internalGameId).first();
+  const currentState = String(current?.state || stateBefore || "scheduled");
+  if (currentState !== "prediction_closed") return { state: currentState, reconciled: false, revisionId: null };
+
+  const revisions = await getV3LineupRevisionRows(db, internalGameId, internalGameId);
+  const manualFinal = revisions.find((row) => Number(row.is_final || 0) === 1
+    && ["manual", "manual-revision"].includes(String(row.source || "").trim().toLowerCase()));
+  if (!manualFinal) return { state: currentState, reconciled: false, revisionId: null };
+  if (manualFinal.is_current !== undefined && Number(manualFinal.is_current) !== 1) {
+    throw createV3Error("V3_FINAL_LINEUP_REQUIRED", "現在有効な正式スタメンrevisionを確認できません。", {
+      retryable: true,
+      diagnostics: { internalGameId, state: currentState, revisionId: manualFinal.revision_id || null }
+    });
+  }
+
+  const health = await getV3LineupDataHealth(db, internalGameId, currentState);
+  if (health.finalizedValid !== true) {
+    throw createV3Error("V3_FINAL_LINEUP_REQUIRED", "正式スタメン確定済みの採点対象を検証できません。", {
+      retryable: true,
+      diagnostics: { internalGameId, state: currentState, finalizedLineupExists: health.finalizedLineupExists }
+    });
+  }
+  await transitionV3State(db, {
+    internalGameId,
+    from: currentState,
+    to: "lineup_ready",
+    now
+  });
+  return {
+    state: "lineup_ready",
+    reconciled: true,
+    revisionId: manualFinal.revision_id || `${manualFinal.game_id}:${Number(manualFinal.version)}`
+  };
+}
+
 async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore }) {
+  const stateSync = await reconcileV3ManualFinalLineupState(env.AUTH_DB, internalGameId, stateBefore, now);
+  const scoringStateBefore = stateSync.state;
   const revisions = await getV3LineupRevisionRows(env.AUTH_DB, internalGameId, internalGameId);
   if (!revisions.some((row) => Number(row.is_final) === 1)) {
     throw createV3Error("V3_FINAL_LINEUP_REQUIRED", "正式スタメン確定済みの採点対象がありません。", { retryable: false });
@@ -1861,8 +1907,9 @@ async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore })
   }
   return {
     status: result?.status || "scored",
-    stateBefore,
+    stateBefore: scoringStateBefore,
     stateAfter: "scored",
+    stateReconciledFromManualFinalLineup: stateSync.reconciled,
     noOpReason: result?.noOpReason || null,
     scoringRevisionId: result?.scoringRevisionId || null,
     scoring: result ? {

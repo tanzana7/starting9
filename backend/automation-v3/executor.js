@@ -287,6 +287,7 @@ async function runV3OptionalPhases(env, games, now, {
   onError,
   onPlan,
   onPhase,
+  phaseCheckpoint,
   observerTimeoutMs,
   observerScheduler
 } = {}) {
@@ -333,6 +334,7 @@ async function runV3OptionalPhases(env, games, now, {
   }
 
   await invokeV3Observer(onPhase, [{ stage: "auxiliary_plan_started", now, gameCount: games.length }], observerTimeoutMs, observerScheduler);
+  phaseCheckpoint?.("probable_starter", "start", { status: "started", gameCount: games.length, scope: "auxiliary_planner" });
   const auxiliary = await runV3PlannerPhase(auxiliaryPlanner, env.AUTH_DB, games, now, "auxiliary");
   for (const [plan, stage] of [
     [auxiliary.probablePlan, "probable_plan"],
@@ -355,6 +357,13 @@ async function runV3OptionalPhases(env, games, now, {
     now,
     plan: auxiliary
   }], observerTimeoutMs, observerScheduler);
+  phaseCheckpoint?.("probable_starter", "end", {
+    status: auxiliary.errors?.length ? "completed_with_errors" : "completed",
+    gameCount: games.length,
+    scope: "auxiliary_planner",
+    createdJobCount: auxiliary.created,
+    failedJobCount: auxiliary.errors?.length || 0
+  });
   return { statePreparation, stateReconciliation, auxiliary };
 }
 
@@ -521,7 +530,7 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
   return { processed, failed, retryWait, terminalFailed, failedJobIds, retryErrors };
 }
 
-export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, onPhase = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, formalPlanner = planMainWorkflowJobs, auxiliaryPlanner = planAuxiliaryJobs, scheduleOptional = null, disabledJobTypes = [], v4SemiAuto = false, gameListOptions = {}, auxiliaryGameListOptions = null } = {}) {
+export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, onPhase = null, phaseCheckpoint = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, formalPlanner = planMainWorkflowJobs, auxiliaryPlanner = planAuxiliaryJobs, scheduleOptional = null, disabledJobTypes = [], v4SemiAuto = false, gameListOptions = {}, auxiliaryGameListOptions = null } = {}) {
   if (!isGameAutomationV3Enabled(env)) return { enabled: false, processed: 0, created: 0 };
   const schema = await getV3SchemaState(env.AUTH_DB);
   if (!schema.ready) return { enabled: true, schemaReady: false, errorCode: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", processed: 0, created: 0 };
@@ -558,6 +567,7 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     processingGameIds: eligibleGameIds
   }], observerTimeoutMs, observerScheduler);
   const formalPlanInputStartedAt = Date.now();
+  phaseCheckpoint?.("planner", "start", { status: "started", gameCount: games.length, dueCount: 0 });
   await invokeV3Observer(onPhase, [{
     stage: "formal_plan_input_started",
     now,
@@ -577,6 +587,12 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     now,
     "formal"
   );
+  phaseCheckpoint?.("planner", "end", {
+    status: mainPlan.phaseStatus || "completed",
+    gameCount: games.length,
+    createdJobCount: mainPlan.created,
+    failedJobCount: mainPlan.errors.length
+  });
   await invokeV3Observer(onPhase, [{
     stage: "formal_plan_finished",
     now,
@@ -650,6 +666,7 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     gameCount: games.length,
     plannedCount: allPlanned.length
   }], observerTimeoutMs, observerScheduler);
+  phaseCheckpoint?.("due_claim", "start", { status: "started", gameCount: games.length, dueCount: allPlanned.length });
   const claimReport = await claimDueJobs(env.AUTH_DB, now, allPlanned, { disabledJobTypes }).catch(async (error) => {
     failed += 1;
     await invokeV3Observer(onError, [error, { stage: "claim" }], observerTimeoutMs, observerScheduler);
@@ -658,6 +675,16 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
       claimed: [],
       errors: [{ code: error?.code || "V3_CLAIM_PHASE_FAILED", message: String(error?.message || "V3ジョブclaim phaseに失敗しました。") }]
     };
+  });
+  phaseCheckpoint?.("due_claim", "end", {
+    status: claimReport.errors?.length ? "completed_with_errors" : "completed",
+    dueCount: Array.isArray(claimReport.due) ? claimReport.due.length : 0,
+    hasMoreDue: claimReport.hasMoreDue === true
+  });
+  phaseCheckpoint?.("executor", "start", {
+    status: "started",
+    dueCount: Array.isArray(claimReport.claimed) ? claimReport.claimed.length : 0,
+    hasMoreDue: claimReport.hasMoreDue === true
   });
   const execution = await executeClaimedJobs(env, claimReport.claimed, games, now, {
     executeJob,
@@ -678,6 +705,13 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
       failedJobIds: [],
       retryErrors: [{ code: error?.code || "V3_EXECUTION_PHASE_FAILED", message: String(error?.message || "V3ジョブexecution phaseに失敗しました。") }]
     };
+  });
+  phaseCheckpoint?.("executor", "end", {
+    status: execution.failed ? "completed_with_errors" : "completed",
+    execution,
+    processedJobCount: execution.processed,
+    failedJobCount: execution.failed,
+    hasMoreDue: claimReport.hasMoreDue === true
   });
   await invokeV3Observer(onPhase, [{
     stage: "claim_execution_completed",
@@ -719,6 +753,7 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     onError,
     onPlan,
     onPhase,
+    phaseCheckpoint,
     observerTimeoutMs,
     observerScheduler
   })).catch(async (error) => {

@@ -81,12 +81,25 @@
       });
       return { active, inactive, categories };
     }
+    function modeFor(player, selectedMode, hasEntry) {
+      if (hasEntry) return selectedMode;
+      if (player?.manualRosterMode) return player.manualRosterMode;
+      return player?.manualRosterSource === "manual" ? (player.manualRosterStatus || "auto") : "auto";
+    }
+    function effectiveLabel(player) {
+      const effective = player?.manualRosterEffectiveActive ?? player?.effectiveRosterActive;
+      return effective === true ? "現在 ACTIVE" : effective === false ? "現在 INACTIVE" : "現在 判定待ち";
+    }
+    function modeLabel(player, mode) {
+      if (mode === "auto") return `AUTO / 公式ロースター追従 / ${effectiveLabel(player)}`;
+      return mode === "active" ? "ACTIVE / 手動固定" : "INACTIVE / 手動固定";
+    }
     function playerFor(state, playerId) {
       return catalogFor(state).find((player) => player.playerId === playerId) || { playerId, playerName: "不明な選手", uniformNumber: "-" };
     }
     function renderCandidates(state) {
       const query = String(state?.search || "").trim().toLowerCase();
-      const selected = new Map(entriesFor(state).map((entry) => [entry.playerId, entry.status || "active"]));
+      const selected = new Map(entriesFor(state).map((entry) => [entry.playerId, entry.mode || entry.status || "active"]));
       const candidates = sortPlayersByUniformNumber(catalogFor(state).filter((player) => {
         if (player.manualRosterEligible === false) return false;
         const haystack = `${player.playerName} ${player.uniformNumber} ${player.displayName || ""} ${playerCategory(player)}`.toLowerCase();
@@ -96,21 +109,22 @@
       return candidates.map((player) => {
         const playerId = String(player.playerId || "");
         const hasEntry = selected.has(playerId);
-        const status = selected.get(playerId) || player.manualRosterStatus || "auto";
-        const isActive = status === "active";
-        const actionLabel = status === "auto" ? "AUTO / 公式判定" : isActive && hasEntry ? "登録済み" : isActive ? "activeに追加" : "inactive / active化";
-        return `<div class="manual-player-candidate-row"><button type="button" class="manual-roster-candidate${hasEntry ? " selected" : ""}${!isActive && status !== "auto" ? " inactive" : ""}" data-v3-manual-roster-add="${escape(playerId)}"${isActive && hasEntry ? " disabled" : ""}><strong>${playerName(player)}</strong><small class="manual-player-candidate-meta">${escape(playerCategory(player))} / ${escape(status)} / ${escape(actionLabel)}</small></button>${playerDetailMarkup(player)}</div>`;
+        const mode = modeFor(player, selected.get(playerId), hasEntry);
+        const isActive = mode === "active";
+        const actionLabel = mode === "auto" ? "AUTOに設定" : isActive && hasEntry ? "ACTIVE保存済み" : isActive ? "ACTIVEに追加" : "INACTIVE / ACTIVE化";
+        return `<div class="manual-player-candidate-row"><div class="manual-roster-candidate-actions"><button type="button" class="manual-roster-candidate${hasEntry ? " selected" : ""}${!isActive && mode !== "auto" ? " inactive" : ""}" data-v3-manual-roster-add="${escape(playerId)}"${isActive && hasEntry ? " disabled" : ""}><strong>${playerName(player)}</strong><small class="manual-player-candidate-meta">${escape(playerCategory(player))} / ${escape(modeLabel(player, mode))} / ${escape(actionLabel)}</small></button><button type="button" class="secondary" data-v3-manual-roster-auto="${escape(playerId)}"${mode === "auto" && hasEntry ? " disabled" : ""}>AUTO</button></div>${playerDetailMarkup(player)}</div>`;
       }).join("");
     }
     function render(state = {}) {
       const entries = entriesFor(state);
-      const persistedEntries = entries.filter((entry) => entry.status !== "auto");
+      const persistedEntries = entries;
       const stats = rosterStats(state);
       const sourceLabel = state.isManualSaved === true || state.source === "manual" ? "manual保存済み" : "静的初期候補（未保存）";
       const categorySummary = [...stats.categories.entries()].map(([category, count]) => `${category} ${count}人`).join(" / ") || "カテゴリ情報なし";
       const rows = persistedEntries.length ? persistedEntries.map((entry) => {
         const player = playerFor(state, entry.playerId);
-        return `<div class="manual-roster-row" data-v3-manual-roster-entry="${escape(entry.playerId)}"><div><strong>${playerName(player)}</strong>${playerDetailMarkup(player)}<small>ID: ${escape(player.playerId)}</small></div><label>状態<select data-v3-manual-roster-status="${escape(entry.playerId)}"><option value="active"${entry.status === "active" ? " selected" : ""}>active</option><option value="inactive"${entry.status === "inactive" ? " selected" : ""}>inactive</option></select></label><label>メモ<textarea maxlength="240" data-v3-manual-roster-note="${escape(entry.playerId)}">${escape(entry.note || "")}</textarea></label><button type="button" class="secondary" data-v3-manual-roster-remove="${escape(entry.playerId)}">inactiveにする</button><button type="button" class="secondary" data-v3-manual-roster-auto="${escape(entry.playerId)}">AUTOに戻す</button></div>`;
+        const mode = entry.mode || entry.status || "active";
+        return `<div class="manual-roster-row" data-v3-manual-roster-entry="${escape(entry.playerId)}"><div><strong>${playerName(player)}</strong><small class="manual-roster-mode-label">${escape(modeLabel(player, mode))}</small>${playerDetailMarkup(player)}<small>ID: ${escape(player.playerId)}</small></div><label>状態<select data-v3-manual-roster-status="${escape(entry.playerId)}"><option value="auto"${mode === "auto" ? " selected" : ""}>AUTO</option><option value="active"${mode === "active" ? " selected" : ""}>ACTIVE</option><option value="inactive"${mode === "inactive" ? " selected" : ""}>INACTIVE</option></select></label><label>メモ<textarea maxlength="240" data-v3-manual-roster-note="${escape(entry.playerId)}">${escape(entry.note || "")}</textarea></label><button type="button" class="secondary" data-v3-manual-roster-remove="${escape(entry.playerId)}">INACTIVE</button><button type="button" class="secondary" data-v3-manual-roster-auto="${escape(entry.playerId)}"${mode === "auto" ? " disabled" : ""}>AUTO</button></div>`;
       }).join("") : '<p class="muted">まだ登録されていません。候補から選手を追加してください。</p>';
       return `<section class="manual-roster-editor" data-v3-manual-roster data-v3-manual-roster-scope="fighters"><header class="manual-roster-header"><div><h2>Fighters ロースター管理</h2><p>Fighters-wideのロースターを管理します。試合日・対象試合の選択には依存しません。</p></div><span class="manual-roster-team">manual / Fighters-wide</span></header>${state.schemaAvailable === false ? '<p class="manual-roster-message error">manual roster schemaが未適用です。保存にはmigrationが必要です。</p>' : ""}<div class="manual-roster-notice"><strong>重要:</strong> 正式スタメンの入力・確定は「スタメン」画面で別に行います。ロースターから自動でスタメン確定はされません。manual roster更新はmanual lineupを変更しません。</div><div class="manual-roster-meta"><span>表示元: ${escape(sourceLabel)}</span><span>active: ${stats.active}人 / inactive: ${stats.inactive}人</span><span>${escape(categorySummary)}</span></div><p class="muted">最終更新: ${escape(state.updatedAt || "-")} / 更新者: ${escape(state.updatedBy || "-")}</p><label class="manual-roster-search">選手を検索<input type="search" data-v3-manual-roster-search value="${escape(state.search || "")}" placeholder="選手名または背番号"></label><div class="manual-roster-candidates" data-v3-manual-roster-candidates>${renderCandidates(state)}</div><div class="manual-roster-list"><h3>手動登録済み（${persistedEntries.length}人）</h3>${rows}</div><label class="manual-roster-confirm"><input type="checkbox" data-v3-manual-roster-confirm${state.confirmed ? " checked" : ""}> 内容を確認しました（保存で既存行を更新します）</label><div class="manual-roster-actions"><button type="button" data-v3-manual-roster-save${state.loading ? " disabled" : ""}>${state.loading ? "保存中…" : "ロースターを保存"}</button></div>${state.error ? `<p class="manual-roster-message error">${escape(state.error)}</p>` : ""}${state.message ? `<p class="manual-roster-message success">${escape(state.message)}</p>` : ""}<p class="muted">未登録の選手は公式判定（AUTO）に戻り、他の手動設定は保持されます。更新者・更新時刻・manual sourceを記録します。</p></section>`;
     }

@@ -98,7 +98,8 @@ test("manual roster候補はactive/inactiveを含む全選手をスクロール�
   assert.ok(html.indexOf("[3]") < html.indexOf("[43]"));
   assert.ok(html.indexOf("[43]") < html.indexOf("[53]"));
   assert.match(html, /manual-roster-candidate selected inactive/);
-  assert.match(html, /inactive \/ active化/);
+  assert.match(html, /INACTIVE \/ 手動固定 \/ INACTIVE \/ ACTIVE化/);
+  assert.match(html, /AUTO \/ 公式ロースター追従/);
   assert.doesNotMatch(html, /data-v3-manual-roster-add="F-3"[^>]*disabled/);
   assert.match(html, /data-v3-manual-roster-add="F-43"[^>]*disabled/);
   assert.match(html, /data-v3-manual-roster-add="F-53"/);
@@ -114,7 +115,7 @@ test("admin-v3候補領域は内部スクロールとcache busterを持つ", () 
   assert.match(css, /\.manual-lineup-builder \.manual-lineup-candidates\s*\{[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)/);
   assert.match(html, /admin-v3\.css\?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1-selection-highlight-1-lineup-order-mobile-zoom-1/);
   assert.match(html, /render-manual-lineup\.js\?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1-game-selection-safety-1-lineup-order-mobile-zoom-1/);
-  assert.match(html, /render-manual-roster\.js\?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1/);
+  assert.match(html, /render-manual-roster\.js\?v=independent-roster-lineup-safety-1-admin-player-scroll-picker-1-manual-roster-auto-1-manual-roster-persistent-mode-1/);
 });
 
 test("admin-v3のmobile候補タップは16px以上・touch-actionを使い、viewportでズームを無効化しない", () => {

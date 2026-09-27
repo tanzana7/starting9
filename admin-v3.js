@@ -1313,32 +1313,37 @@ function updateManualRosterSearch(value) {
 function updateManualRosterEntry(playerId, patch) {
   const entry = v3State.manualRoster.entries.find((item) => item.playerId === playerId);
   if (!entry) return;
-  Object.assign(entry, patch);
+  const next = { ...patch };
+  if (next.mode && !next.status) next.status = next.mode;
+  if (next.status && !next.mode) next.mode = next.status;
+  Object.assign(entry, next);
   v3State.manualRoster.error = "";
   v3State.manualRoster.message = "";
   renderCurrentV3View();
 }
 
 function addManualRosterPlayer(playerId) {
+  setManualRosterMode(playerId, "active");
+}
+
+function setManualRosterMode(playerId, mode) {
   const catalogPlayer = v3State.manualRoster.catalog.find((player) => player.playerId === playerId);
-  if (!catalogPlayer) return;
+  if (!catalogPlayer || !["auto", "active", "inactive"].includes(mode)) return;
   const existing = v3State.manualRoster.entries.find((entry) => entry.playerId === playerId);
-  if (existing) existing.status = "active";
-  else v3State.manualRoster.entries.push({ playerId, status: "active", note: "" });
+  if (existing) {
+    existing.mode = mode;
+    existing.status = mode;
+    if (mode === "auto") existing.note = "";
+  } else {
+    v3State.manualRoster.entries.push({ playerId, mode, status: mode, note: "" });
+  }
   v3State.manualRoster.error = "";
   v3State.manualRoster.message = "";
   renderCurrentV3View();
 }
 
 function removeManualRosterOverride(playerId) {
-  const roster = v3State.manualRoster;
-  const entry = roster.entries.find((item) => item.playerId === playerId);
-  if (!entry) return;
-  entry.status = "auto";
-  entry.note = "";
-  roster.error = "";
-  roster.message = "";
-  renderCurrentV3View();
+  setManualRosterMode(playerId, "auto");
 }
 
 async function loadManualRoster(force = false) {
@@ -1350,7 +1355,12 @@ async function loadManualRoster(force = false) {
   try {
     const result = await v3Api.getManualRoster(roster.teamCode);
     const serverRoster = result.roster || {};
-    roster.entries = Array.isArray(serverRoster.entries) ? serverRoster.entries.map((entry) => ({ playerId: entry.playerId, status: entry.status, note: entry.note || "" })) : [];
+    roster.entries = Array.isArray(serverRoster.entries) ? serverRoster.entries.map((entry) => ({
+      playerId: entry.playerId,
+      mode: entry.mode || entry.status || "active",
+      status: entry.mode || entry.status || "active",
+      note: entry.note || ""
+    })) : [];
     roster.catalog = Array.isArray(result.playerCatalog) ? result.playerCatalog : [];
     roster.schemaAvailable = serverRoster.schemaAvailable !== false;
     roster.source = serverRoster.source || null;
@@ -1377,7 +1387,12 @@ async function saveManualRoster() {
   try {
     const result = await v3Api.saveManualRoster({ teamCode: roster.teamCode, entries: roster.entries, confirmed: true });
     const saved = result.roster || {};
-    roster.entries = Array.isArray(saved.entries) ? saved.entries.map((entry) => ({ playerId: entry.playerId, status: entry.status, note: entry.note || "" })) : roster.entries;
+    roster.entries = Array.isArray(saved.entries) ? saved.entries.map((entry) => ({
+      playerId: entry.playerId,
+      mode: entry.mode || entry.status || "active",
+      status: entry.mode || entry.status || "active",
+      note: entry.note || ""
+    })) : roster.entries;
     roster.updatedAt = saved.updatedAt || roster.updatedAt;
     roster.updatedBy = saved.updatedBy || roster.updatedBy;
     roster.source = saved.source || "manual";

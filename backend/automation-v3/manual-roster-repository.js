@@ -4,6 +4,7 @@ const MAX_MANUAL_ROSTER_ENTRIES = 100;
 const MAX_NOTE_LENGTH = 240;
 const OFFICIAL_NPB_PLAYER_ID_PATTERN = /^npb:\d{8}$/;
 const LIVE_FIELDER_CATEGORIES = new Set(["捕手", "内野手", "外野手"]);
+const MANUAL_ROSTER_MODES = new Set(["auto", "active", "inactive"]);
 
 // These are display/selection fallbacks only. They are never persisted until
 // an operator explicitly saves a manual roster. Pitchers remain outside the
@@ -36,12 +37,19 @@ export function normalizeManualRosterTeam(value) {
   throw manualRosterError("MANUAL_ROSTER_TEAM_INVALID", "対応していないチームです。", 400);
 }
 
-function normalizeStatus(value) {
-  const status = String(value ?? "active").trim().toLowerCase();
-  if (!["active", "inactive", "auto"].includes(status)) {
+function normalizeMode(value) {
+  const mode = String(value ?? "active").trim().toLowerCase();
+  if (!MANUAL_ROSTER_MODES.has(mode)) {
     throw manualRosterError("MANUAL_ROSTER_STATUS_INVALID", "ロースター状態はactive、inactive、またはautoです。", 400);
   }
-  return status;
+  return mode;
+}
+
+function storedMode(row) {
+  const mode = String(row?.mode || "").trim().toLowerCase();
+  if (MANUAL_ROSTER_MODES.has(mode)) return mode;
+  const legacyStatus = String(row?.status || "").trim().toLowerCase();
+  return MANUAL_ROSTER_MODES.has(legacyStatus) ? legacyStatus : "active";
 }
 
 export function validateManualRosterEntries(entries, catalog = []) {
@@ -66,14 +74,18 @@ export function validateManualRosterEntries(entries, catalog = []) {
     if (note.length > MAX_NOTE_LENGTH) {
       throw manualRosterError("MANUAL_ROSTER_NOTE_TOO_LONG", "メモは240文字以内で入力してください。", 400);
     }
-    return { playerId, status: normalizeStatus(entry?.status), note };
+    const mode = normalizeMode(entry?.mode ?? entry?.status);
+    return { playerId, mode, status: mode, note };
   });
 }
 
 function rowToEntry(row) {
+  const mode = storedMode(row);
   return {
     playerId: String(row?.player_id || ""),
-    status: String(row?.status || "active"),
+    mode,
+    // status is retained as the legacy API alias. New callers must use mode.
+    status: mode,
     note: String(row?.note || ""),
     rosterSource: String(row?.roster_source || "manual"),
     updatedAt: row?.updated_at || null,
@@ -97,8 +109,13 @@ export function normalizeManualRosterPlayerName(value) {
 function staticFallbackCatalog(catalog) {
   return (Array.isArray(catalog) ? catalog : []).map((player) => ({
     ...player,
+    manualRosterMode: null,
     manualRosterStatus: player.manualRosterEligible === false ? null : "active",
     manualRosterActive: player.manualRosterEligible === false ? false : true,
+    // Static fallback is not an official roster observation, so AUTO must not
+    // be rendered as currently active merely because the fallback is usable.
+    manualRosterEffectiveActive: null,
+    manualRosterOfficialActive: null,
     manualRosterNote: "",
     manualRosterSource: player.manualRosterEligible === false ? null : "static-fallback",
     _manualRosterRank: player.manualRosterEligible === false ? 2 : 0,
@@ -108,25 +125,49 @@ function staticFallbackCatalog(catalog) {
 }
 
 export function prioritizeManualRosterCatalog(catalog, rosterRows = []) {
-  if (rosterRows == null) return Array.isArray(catalog) ? catalog.map((player) => ({ ...player, manualRosterStatus: null, manualRosterActive: null, manualRosterNote: "", manualRosterSource: null })) : [];
+  if (rosterRows == null) return Array.isArray(catalog) ? catalog.map((player) => ({ ...player, manualRosterMode: null, manualRosterStatus: null, manualRosterActive: null, manualRosterEffectiveActive: null, manualRosterOfficialActive: null, manualRosterNote: "", manualRosterSource: null })) : [];
   const rows = Array.isArray(rosterRows) ? rosterRows : rosterRows?.entries || [];
   const source = String(rosterRows?.source || "");
   const isManualSaved = rosterRows?.isManualSaved === true || source === "manual";
   if (rosterRows?.schemaAvailable === false || source === "static-fallback" || (!isManualSaved && rows.length === 0)) return staticFallbackCatalog(catalog);
+  if (isManualSaved && rows.length === 0) {
+    return (Array.isArray(catalog) ? catalog : []).map((player, index) => ({
+      ...player,
+      manualRosterMode: null,
+      manualRosterStatus: "inactive",
+      manualRosterActive: false,
+      manualRosterEffectiveActive: false,
+      manualRosterOfficialActive: null,
+      manualRosterNote: "",
+      manualRosterSource: null,
+      _manualRosterRank: 1,
+      _catalogIndex: index
+    })).map(({ _manualRosterRank, _catalogIndex, ...player }) => player);
+  }
   const byId = new Map(rows.map((row) => [String(row?.playerId || row?.player_id || "").trim(), row]));
   const byName = new Map(rows.map((row) => [normalizeManualRosterPlayerName(row?.playerName || row?.name), row]).filter(([name]) => name));
   return (Array.isArray(catalog) ? catalog : []).map((player, index) => {
     const row = byId.get(String(player?.playerId || ""))
       || byName.get(normalizeManualRosterPlayerName(player?.playerName || player?.name))
       || byName.get(normalizeManualRosterPlayerName(player?.displayName));
-    const status = row ? String(row.status || "active").toLowerCase() : null;
+    const mode = row ? storedMode(row) : null;
+    // A saved roster still excludes players without a persisted row, matching
+    // the legacy manual-roster contract. Explicit AUTO is the only persisted
+    // row that delegates the effective state to the live official roster.
+    const effectiveActive = mode === "active" ? true : mode === "inactive" ? false : null;
+    const manualRosterActive = row ? effectiveActive : false;
     return {
       ...player,
-      manualRosterStatus: status,
-      manualRosterActive: status === "active",
+      manualRosterMode: mode,
+      manualRosterStatus: mode,
+      manualRosterActive,
+      manualRosterEffectiveActive: effectiveActive,
+      manualRosterOfficialActive: null,
       manualRosterNote: row?.note || "",
-      manualRosterSource: row ? "manual" : null,
-      _manualRosterRank: row ? (status === "active" ? 0 : 1) : 2,
+      manualRosterSource: row ? (mode === "auto" ? "manual-auto" : "manual") : null,
+      _manualRosterRank: row
+        ? (mode === "active" ? 0 : mode === "auto" ? 1 : 2)
+        : 3,
       _catalogIndex: index
     };
   }).sort((a, b) => a._manualRosterRank - b._manualRosterRank || a._catalogIndex - b._catalogIndex)
@@ -233,11 +274,21 @@ export function applyLiveRosterToManualLineupCatalog(catalog, liveRoster, manual
     const manualEntry = findRosterEntry(manualEntries, player);
     const liveEntry = liveEntries.find((entry) => matchesKnownCatalogPlayer(entry, player)) || null;
     if (liveEntry) knownLiveEntries.add(liveEntry);
-    const manualStatus = String(manualEntry?.status || "").trim().toLowerCase();
-    const hasManualOverride = manualStatus === "active" || manualStatus === "inactive";
-    const effectiveActive = hasManualOverride ? manualStatus === "active" : Boolean(liveEntry);
+    const mode = manualEntry ? storedMode(manualEntry) : null;
+    const officialRosterActive = Boolean(liveEntry);
+    const hasManualOverride = mode === "active" || mode === "inactive";
+    const effectiveActive = mode === "active"
+      ? true
+      : mode === "inactive"
+        ? false
+        : officialRosterActive;
     return {
       ...player,
+      manualRosterMode: mode,
+      manualRosterStatus: mode,
+      manualRosterActive: effectiveActive,
+      manualRosterEffectiveActive: effectiveActive,
+      manualRosterOfficialActive: officialRosterActive,
       effectiveRosterStatus: effectiveActive ? "active" : "inactive",
       effectiveRosterActive: effectiveActive,
       effectiveRosterSource: hasManualOverride ? "manual-override" : liveEntry ? source : "live-roster-out",
@@ -258,6 +309,11 @@ export function applyLiveRosterToManualLineupCatalog(catalog, liveRoster, manual
       temporaryIds.add(player.playerId);
       uniqueTemporaryPlayers.push({
         ...player,
+        manualRosterMode: null,
+        manualRosterStatus: null,
+        manualRosterActive: true,
+        manualRosterEffectiveActive: true,
+        manualRosterOfficialActive: true,
         effectiveRosterStatus: "active",
         effectiveRosterActive: true,
         effectiveRosterSource: source,
@@ -288,14 +344,14 @@ export function applyManualRosterToPublicRoster(roster, manualRoster = null, cat
   roster.players.forEach((livePlayer) => {
     const catalogPlayer = baseCatalog.find((player) => matchesKnownCatalogPlayer(livePlayer, player)) || null;
     const manualEntry = catalogPlayer ? findRosterEntry(manualEntries, catalogPlayer) : null;
-    if (String(manualEntry?.status || "").trim().toLowerCase() === "inactive") return;
+    if (manualEntry && storedMode(manualEntry) === "inactive") return;
     const number = rosterPlayerNumber(livePlayer);
     if (number) seenNumbers.add(number);
     projectedPlayers.push(livePlayer);
   });
 
   manualEntries
-    .filter((entry) => String(entry?.status || "").trim().toLowerCase() === "active")
+    .filter((entry) => storedMode(entry) === "active")
     .forEach((entry) => {
       const catalogPlayer = baseCatalog.find((player) => String(player?.playerId || "").trim() === String(entry?.playerId || "").trim()) || null;
       if (!catalogPlayer) return;
@@ -323,10 +379,10 @@ export async function getManualRoster(db, { teamCode = MANUAL_ROSTER_TEAM.teamCo
   const team = normalizeManualRosterTeam(teamCode);
   try {
     const result = await db.prepare(
-      `SELECT team_code, team_id, player_id, status, roster_source, note, updated_at, updated_by
+       `SELECT team_code, team_id, player_id, status, mode, roster_source, note, updated_at, updated_by
          FROM manual_team_rosters
         WHERE team_code = ?1
-        ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, player_id
+         ORDER BY CASE mode WHEN 'active' THEN 0 WHEN 'auto' THEN 1 ELSE 2 END, player_id
         LIMIT ${MAX_MANUAL_ROSTER_ENTRIES}`
     ).bind(team.teamCode).all();
     const entries = serializeManualRosterRows(result?.results);
@@ -340,8 +396,11 @@ export async function getManualRoster(db, { teamCode = MANUAL_ROSTER_TEAM.teamCo
       updatedBy: entries[0]?.updatedBy || null
     };
   } catch (error) {
-    if (/no such table|manual_team_rosters/i.test(String(error?.message || error))) {
+    if (/no such table/i.test(String(error?.message || error))) {
       return { schemaAvailable: false, team, source: "static-fallback", isManualSaved: false, entries: [], errorCode: "MANUAL_ROSTER_SCHEMA_UNAVAILABLE" };
+    }
+    if (/no such column: mode|manual_team_rosters.*mode/i.test(String(error?.message || error))) {
+      return { schemaAvailable: false, team, source: "static-fallback", isManualSaved: false, entries: [], errorCode: "MANUAL_ROSTER_MODE_SCHEMA_UNAVAILABLE" };
     }
     throw error;
   }
@@ -353,9 +412,8 @@ export async function saveManualRoster(db, { teamCode = MANUAL_ROSTER_TEAM.teamC
   // The existing per-player table has no roster header row, so materialize an
   // explicit empty save as inactive eligible players instead of losing the
   // distinction between "saved empty" and "never saved".
-  const autoPlayerIds = normalized.filter((entry) => entry.status === "auto").map((entry) => entry.playerId);
   const persistedEntries = normalized.length
-    ? normalized.filter((entry) => entry.status !== "auto")
+    ? normalized
     : (() => {
       const seen = new Set();
       return (Array.isArray(catalog) ? catalog : [])
@@ -363,33 +421,45 @@ export async function saveManualRoster(db, { teamCode = MANUAL_ROSTER_TEAM.teamC
         .map((player) => String(player?.playerId || "").trim())
         .filter((playerId) => playerId && !seen.has(playerId) && seen.add(playerId))
         .slice(0, MAX_MANUAL_ROSTER_ENTRIES)
-        .map((playerId) => ({ playerId, status: "inactive", note: "" }));
+        .map((playerId) => ({ playerId, mode: "inactive", status: "inactive", note: "" }));
     })();
   const actor = String(updatedBy || "").trim().slice(0, 160);
   if (!actor) throw manualRosterError("MANUAL_ROSTER_UPDATED_BY_REQUIRED", "更新者を特定できません。", 400);
   const updatedAt = now instanceof Date ? now.toISOString() : new Date(now).toISOString();
   try {
-    const statements = autoPlayerIds.map((playerId) => db.prepare(
-      `DELETE FROM manual_team_rosters
-        WHERE team_code = ?1 AND player_id = ?2`
-    ).bind(team.teamCode, playerId));
-    statements.push(...persistedEntries.map((entry) => db.prepare(
+    const statements = persistedEntries.map((entry) => db.prepare(
       `INSERT INTO manual_team_rosters
-         (team_code, team_id, player_id, status, roster_source, note, updated_at, updated_by)
-       VALUES (?1, ?2, ?3, ?4, 'manual', ?5, ?6, ?7)
+         (team_code, team_id, player_id, status, mode, roster_source, note, updated_at, updated_by)
+       VALUES (?1, ?2, ?3, ?4, ?5, 'manual', ?6, ?7, ?8)
        ON CONFLICT(team_code, player_id) DO UPDATE SET
          team_id = excluded.team_id,
-         status = excluded.status,
+         status = CASE
+           WHEN excluded.mode = 'auto' THEN manual_team_rosters.status
+           ELSE excluded.status
+         END,
+         mode = excluded.mode,
          roster_source = excluded.roster_source,
          note = excluded.note,
          updated_at = excluded.updated_at,
          updated_by = excluded.updated_by`
-    ).bind(team.teamCode, team.teamId, entry.playerId, entry.status, entry.note || null, updatedAt, actor)));
+    ).bind(
+      team.teamCode,
+      team.teamId,
+      entry.playerId,
+      entry.mode === "auto" ? "inactive" : entry.mode,
+      entry.mode,
+      entry.note || null,
+      updatedAt,
+      actor
+    ));
     if (statements.length) await db.batch(statements);
     return getManualRoster(db, { teamCode: team.teamCode });
   } catch (error) {
-    if (/no such table|manual_team_rosters/i.test(String(error?.message || error))) {
+    if (/no such table/i.test(String(error?.message || error))) {
       throw manualRosterError("MANUAL_ROSTER_SCHEMA_UNAVAILABLE", "manual roster schemaが未適用です。", 503);
+    }
+    if (/no such column: mode|manual_team_rosters.*mode/i.test(String(error?.message || error))) {
+      throw manualRosterError("MANUAL_ROSTER_MODE_SCHEMA_UNAVAILABLE", "manual roster mode schemaが未適用です。", 503);
     }
     throw error;
   }

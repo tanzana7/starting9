@@ -63,6 +63,7 @@ async function makeEnv({ withRosterTable = true } = {}) {
     CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT, token_hash TEXT, created_at TEXT, expires_at TEXT, last_used_at TEXT);
     ${withRosterTable ? `CREATE TABLE manual_team_rosters (
       team_code TEXT NOT NULL, team_id TEXT NOT NULL, player_id TEXT NOT NULL, status TEXT NOT NULL,
+      mode TEXT CHECK (mode IN ('auto', 'active', 'inactive')),
       roster_source TEXT NOT NULL, note TEXT, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL,
       PRIMARY KEY (team_code, player_id), UNIQUE (team_id, player_id)
     );` : ""}
@@ -111,7 +112,7 @@ test("manual rosterはACTIVE→INACTIVE→ACTIVEの保存往復で状態を維�
   assert.equal(reread.source, "manual");
 });
 
-test("manual rosterのAUTOは対象行だけを削除し、他選手のoverrideを保持する", async () => {
+test("manual rosterのAUTOは対象行をmode=autoで保持し、他選手のoverrideを保持する", async () => {
   const { env } = await makeEnv();
   const catalog = getManualLineupPlayerCatalog();
   const activeId = catalog[0].playerId;
@@ -129,8 +130,69 @@ test("manual rosterのAUTOは対象行だけを削除し、他選手のoverride�
     catalog
   });
   const reread = await getManualRoster(env.AUTH_DB);
-  assert.equal(reread.entries.some((entry) => entry.playerId === activeId), false);
+  assert.equal(reread.entries.find((entry) => entry.playerId === activeId)?.mode, "auto");
+  assert.equal(reread.entries.find((entry) => entry.playerId === activeId)?.status, "auto");
   assert.equal(reread.entries.find((entry) => entry.playerId === inactiveId)?.status, "inactive");
+});
+
+test("0043 migrationはlegacy active/inactiveを同じmodeへbackfillし、AUTOへ変換しない", () => {
+  const database = new DatabaseSync(":memory:");
+  database.exec(`CREATE TABLE manual_team_rosters (
+    team_code TEXT NOT NULL, team_id TEXT NOT NULL, player_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active', 'inactive')),
+    roster_source TEXT NOT NULL, note TEXT, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL,
+    PRIMARY KEY (team_code, player_id), UNIQUE (team_id, player_id)
+  );
+  INSERT INTO manual_team_rosters VALUES
+    ('fighters', 'F', 'F-1', 'active', 'manual', NULL, '2026-09-01', 'admin:test'),
+    ('fighters', 'F', 'F-2', 'inactive', 'manual', NULL, '2026-09-01', 'admin:test');`);
+  const migration = fs.readFileSync(path.join(root, "migrations", "0043_manual_team_roster_modes.sql"), "utf8");
+  assert.doesNotMatch(migration, /mode\s+TEXT[^\n]*DEFAULT\s+'auto'/i);
+  database.exec(migration);
+  assert.deepEqual(database.prepare("SELECT player_id, mode FROM manual_team_rosters ORDER BY player_id").all().map((row) => ({ player_id: row.player_id, mode: row.mode })), [
+    { player_id: "F-1", mode: "active" },
+    { player_id: "F-2", mode: "inactive" }
+  ]);
+});
+
+test("AUTOはunsetと区別され、公式rosterの昇格・降格だけeffective状態を変える", () => {
+  const catalog = [{ playerId: "F-1", playerName: "有薗直輝", uniformNumber: "39", category: "内野手" }];
+  const explicitAuto = { source: "manual", isManualSaved: true, entries: [{ playerId: "F-1", mode: "auto", status: "auto" }] };
+  const unset = prioritizeManualRosterCatalog(catalog, { source: "manual", isManualSaved: true, entries: [] });
+  const autoCatalog = prioritizeManualRosterCatalog(catalog, explicitAuto);
+  assert.equal(unset[0].manualRosterMode, null);
+  assert.equal(autoCatalog[0].manualRosterMode, "auto");
+  assert.notEqual(unset[0].manualRosterSource, autoCatalog[0].manualRosterSource);
+
+  const outside = applyLiveRosterToManualLineupCatalog(catalog, { players: [] }, explicitAuto);
+  assert.equal(outside, null, "空live rosterは既存契約どおり置換しない");
+  const demoted = applyLiveRosterToManualLineupCatalog(catalog, { players: [{ name: "別選手", number: "1", position: "外野手" }] }, explicitAuto);
+  assert.equal(demoted[0].manualRosterMode, "auto");
+  assert.equal(demoted[0].manualRosterEffectiveActive, false);
+  const promoted = applyLiveRosterToManualLineupCatalog(catalog, { players: [{ name: "有薗 直輝", number: "39", position: "内野手" }] }, explicitAuto);
+  assert.equal(promoted[0].manualRosterMode, "auto");
+  assert.equal(promoted[0].manualRosterEffectiveActive, true);
+});
+
+test("ACTIVE/INACTIVEはofficial roster更新後もstickyで、AUTOへの変更だけが解除する", () => {
+  const catalog = [{ playerId: "F-1", playerName: "選手", uniformNumber: "1", category: "外野手" }];
+  const live = { players: [{ name: "選手", number: "1", position: "外野手" }] };
+  const active = applyLiveRosterToManualLineupCatalog(catalog, live, { entries: [{ playerId: "F-1", mode: "active" }] });
+  const inactive = applyLiveRosterToManualLineupCatalog(catalog, live, { entries: [{ playerId: "F-1", mode: "inactive" }] });
+  assert.equal(active[0].manualRosterMode, "active");
+  assert.equal(active[0].manualRosterEffectiveActive, true);
+  assert.equal(inactive[0].manualRosterMode, "inactive");
+  assert.equal(inactive[0].manualRosterEffectiveActive, false);
+});
+
+test("manual roster modeの全遷移とAUTO再保存はrowを削除しない", async () => {
+  const { env } = await makeEnv();
+  const catalog = getManualLineupPlayerCatalog();
+  const playerId = catalog.find((player) => player.playerName === "有薗直輝")?.playerId || catalog[0].playerId;
+  for (const mode of ["inactive", "auto", "active", "auto", "inactive", "auto", "active"]) {
+    await saveManualRoster(env.AUTH_DB, { teamCode: "fighters", entries: [{ playerId, mode }], updatedBy: "admin:transition", catalog });
+    assert.equal((await getManualRoster(env.AUTH_DB)).entries.find((entry) => entry.playerId === playerId)?.mode, mode);
+  }
 });
 
 test("manual rosterのactive/inactive投影はpublicとadminの候補状態を一致させる", () => {
@@ -171,11 +233,19 @@ test("manual roster APIはadmin認証・確認・入力検証を要求する", a
   assert.equal(valid.status, 200);
   const body = await valid.json();
   assert.equal(body.roster.entries.length, 2);
+  assert.equal(body.roster.entries[0].mode, "active");
   assert.equal(body.roster.entries[0].rosterSource, "manual");
   assert.match(body.roster.entries[0].updatedBy, /^admin:/);
   const read = await worker.fetch(request("/api/admin/v3/manual-roster?teamCode=fighters"), env, {});
   assert.equal(read.status, 200);
   assert.equal((await read.json()).roster.entries[0].playerId, catalog[0].playerId);
+  const auto = await worker.fetch(request("/api/admin/v3/manual-roster", "PUT", {
+    teamCode: "fighters",
+    entries: [{ playerId: catalog[0].playerId, mode: "auto" }],
+    confirmed: true
+  }), env, {});
+  assert.equal(auto.status, 200);
+  assert.equal((await auto.json()).roster.entries[0].mode, "auto");
 });
 
 test("manual roster APIはschema未適用時に明示的な503を返す", async () => {
@@ -241,6 +311,8 @@ test("manual roster UIはIME検索・確認保存・lineup分離を明示する"
   assert.match(ui, /data-v3-manual-roster-auto/);
   assert.match(admin, /removeManualRosterOverride/);
   assert.match(coordinator, /data-v3-manual-roster-auto/);
+  assert.match(ui, /AUTO \/ 公式ロースター追従/);
+  assert.match(ui, /option value="auto"/);
   assert.doesNotMatch(ui, /data-v3-manual-roster-player-id-input/);
   assert.match(css, /manual-roster-row/);
 });

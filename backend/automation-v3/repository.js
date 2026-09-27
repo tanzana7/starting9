@@ -68,10 +68,12 @@ export async function listV3Games(db, now = new Date(), options = {}) {
       )`
     : "0";
   let hasCanonicalLineups = false;
+  let gameLineupColumns = new Set();
   if (hasGameJobsTable) {
     try {
       const row = await db.prepare("PRAGMA table_info(game_lineups)").all();
-      hasCanonicalLineups = (row.results || []).some((column) => column.name === "final_lineup_revision_id");
+      gameLineupColumns = new Set((row.results || []).map((column) => String(column.name || "")));
+      hasCanonicalLineups = gameLineupColumns.has("final_lineup_revision_id");
     } catch { /* Legacy adapters retain open-job discovery. */ }
   }
   let hasScoringRevisions = false;
@@ -127,13 +129,29 @@ export async function listV3Games(db, now = new Date(), options = {}) {
   const priorityDeadlineParam = prioritizeDue
     ? enrichedParams.push(new Date(current.getTime() + 60 * 60 * 1000).toISOString())
     : null;
+  // Keep the formal discovery bounded, but do not let the same four older
+  // games permanently occupy the window.  In V4, prediction_closed plus a
+  // canonical final lineup is due for scoring one hour before first pitch;
+  // in V3, lineup_ready becomes due two minutes after first pitch.  These
+  // thresholds are only used by the existing bounded ORDER BY and do not
+  // create jobs or bypass the formal planner.
+  const canonicalPriorityAvailable = prioritizeDue
+    && hasGameJobsTable
+    && hasCanonicalLineups
+    && gameLineupColumns.has("scoring_status");
+  const priorityV4ScoreStartParam = canonicalPriorityAvailable
+    ? enrichedParams.push(new Date(current.getTime() + 60 * 60 * 1000).toISOString())
+    : null;
+  const priorityV3ScoreStartParam = canonicalPriorityAvailable
+    ? enrichedParams.push(new Date(current.getTime() - 2 * 60 * 1000).toISOString())
+    : null;
   const scopedConditions = [];
   if (scopedInternalGameId) {
     enrichedParams.push(scopedInternalGameId);
     scopedConditions.push(`games.internal_game_id = ?${enrichedParams.length}`);
   }
   const scopedFilterSql = scopedConditions.length ? ` AND ${scopedConditions.join(" AND ")}` : "";
-  const orderSql = prioritizeDue
+  const defaultPriorityOrderSql = prioritizeDue
     ? `CASE
          WHEN games.game_date = ?${priorityDateParam} AND games.start_time <= ?${priorityDeadlineParam} THEN 0
          WHEN games.game_date = ?${priorityDateParam} THEN 1
@@ -144,6 +162,28 @@ export async function listV3Games(db, now = new Date(), options = {}) {
     : recentFirst
       ? "games.start_time DESC, games.internal_game_id DESC"
       : "games.start_time, games.internal_game_id";
+  const orderSql = canonicalPriorityAvailable
+    ? `CASE
+         WHEN (
+           (
+             LOWER(COALESCE(workflow.state, '')) = 'prediction_closed'
+             AND games.start_time <= ?${priorityV4ScoreStartParam}
+           )
+           OR (
+             LOWER(COALESCE(workflow.state, '')) IN ('lineup_ready', 'manual_action_required')
+             AND games.start_time <= ?${priorityV3ScoreStartParam}
+           )
+         )
+         AND lineup.final_lineup_revision_id IS NOT NULL
+         AND LOWER(COALESCE(lineup.scoring_status, 'pending')) NOT IN ('processing', 'scored') THEN 0
+         WHEN LOWER(COALESCE(workflow.state, '')) = 'scored'
+           AND LOWER(COALESCE(lineup.scoring_status, '')) = 'scored' THEN 1
+         WHEN LOWER(COALESCE(workflow.state, '')) = 'ranked' THEN 2
+         ELSE 3
+       END,
+       ${defaultPriorityOrderSql}`
+    : defaultPriorityOrderSql;
+  const fallbackOrderSql = defaultPriorityOrderSql;
   const publicationStatus = "CASE WHEN lineup.publication_status = 'published' OR ranking.publication_status = 'published' THEN 'published' ELSE COALESCE(lineup.publication_status, ranking.publication_status, '') END";
   const publishedAt = "COALESCE(lineup.published_at, ranking.published_at)";
   const enrichedLimitSql = limit
@@ -234,7 +274,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
              AND LOWER(COALESCE(games.game_status, '')) NOT IN (${excludedGameStatusSql})
              ${discoveryFilterSql}
              ${fallbackFilterSql}
-          ORDER BY ${orderSql}${fallbackLimitSql}`
+          ORDER BY ${fallbackOrderSql}${fallbackLimitSql}`
       ).bind(...fallbackParams).all();
     } catch (fallbackError) {
       // Very old adapters may not have the V3 state table at all. Preserve
@@ -257,7 +297,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
              AND LOWER(COALESCE(games.game_status, '')) NOT IN (${excludedGameStatusSql})
              ${legacyFallbackFilter}
              ${scopedFilterSql}
-          ORDER BY ${orderSql}${limit ? ` LIMIT ?${legacyFallbackParams.push(limit)}` : ""}`
+           ORDER BY ${fallbackOrderSql}${limit ? ` LIMIT ?${legacyFallbackParams.push(limit)}` : ""}`
       ).bind(...legacyFallbackParams).all();
     }
   }

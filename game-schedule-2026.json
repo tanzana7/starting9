@@ -728,15 +728,15 @@
     "lineupAutoFetchIntervalMinutes": 10
   },
   {
-    "gameId": "2026-09-27-m-f-24",
+    "gameId": "2026-09-27-m-f-23",
     "date": "2026-09-27",
     "startTime": "18:00",
     "homeTeam": "marines",
     "awayTeam": "fighters",
     "matchupLabel": "ロッテ vs 日本ハム",
     "venue": "ZOZOマリンスタジアム",
-    "round": 24,
-    "npbScoreUrl": "https://npb.jp/scores/2026/0927/m-f-24/",
+    "round": 23,
+    "npbScoreUrl": "https://npb.jp/scores/2026/0927/m-f-23/",
     "rosterAutoFetchStartTime": "12:00",
     "lineupAutoFetchStartOffsetMinutes": -50,
     "lineupAutoFetchIntervalMinutes": 10

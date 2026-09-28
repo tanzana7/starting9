@@ -136,7 +136,7 @@ test("前回結果の読み込みはランキング・ベストナインの完�
   assert.doesNotMatch(coordinatorStart, /void ops\.fetchPreviousResultGame\(\{ force: false \}\)/);
   assert.match(coordinatorStart, /void ops\.initializePublicGameCatalog\(\)\s*\.then/);
   assert.match(coordinatorStart, /scheduleOptionalWork\(\(\) => Promise\.allSettled\([\s\S]*ops\.initializePredictionRemoteSync\(\)[\s\S]*\]\)/);
-  assert.doesNotMatch(coordinatorStart, /ops\.initializeDailyBestNine\(\)/);
+  assert.match(coordinatorStart, /ops\.initializeDailyBestNine\(\)/);
   assert.doesNotMatch(coordinatorStart, /await ops\.initializePublicGameCatalog\(\)/);
   assert.match(entryScript, /schedulePublicNonCritical\(\(\) =>/);
   assert.match(entryScript, /fetchPreviousResultGame\(\{ force: false \}\)/);

@@ -154,11 +154,9 @@
       if (!card || !container) return;
 
       const bestNine = deps.state.dailyBestNine;
-      const displayedResult = deps.state.resultHistory.result || deps.state.result || null;
-      const unavailable = deps.getPublicResultAvailability?.(displayedResult) || null;
       const isPublished = bestNine.status === "published";
-      card.classList.toggle("hidden", !isPublished || Boolean(unavailable));
-      if (!isPublished || unavailable) {
+      card.classList.toggle("hidden", !isPublished);
+      if (!isPublished) {
         container.innerHTML = "";
         return;
       }

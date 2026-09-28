@@ -66,6 +66,7 @@ import {
 import {
   getActiveRankingResetMarker,
   getPerfectAchieversForDate,
+  getLatestPublishedRankingGame,
   getDailyBestNineForGame,
   getRankingEntryForUser,
   getRankingForPeriod,
@@ -162,6 +163,7 @@ export {
   createPublicGameDisplayLabel,
   createPublicResultDisplayLabel,
   getPerfectAchieversForDate,
+  getLatestPublishedRankingGame,
   getDailyBestNineForGame,
   getRankingForPeriod,
   getRankingResetPreview
@@ -10760,11 +10762,29 @@ async function handleGetPerfectAchieversRanking(request, env, cors) {
 
 async function handleGetDailyBestNine(request, env, cors) {
   const params = new URL(request.url).searchParams;
-  const requestedGameId = String(params.get("internalGameId") || params.get("gameId") || "").trim();
-  if (!requestedGameId) {
-    return jsonResponse({ ok: false, error: "対象試合を指定してください。" }, 400, cors);
+  // Best Nine is a system-wide published result, not a per-user result. The
+  // optional query remains accepted for compatibility, but it is deliberately
+  // not used to select a different game so every visitor sees one target.
+  void params;
+  const latestPublished = await getLatestPublishedRankingGame(env.AUTH_DB, {
+    releaseCutoffAt: getPublicRankingStartDate(env)
+  });
+  if (!latestPublished) {
+    return jsonResponse({
+      ok: true,
+      gameDate: "",
+      displayLabel: "",
+      published: false,
+      gameStatus: "",
+      rankingExcluded: false,
+      resultAvailability: "unpublished",
+      bestNine: [],
+      totalCount: 0,
+      updatedAt: new Date().toISOString()
+    }, 200, cors);
   }
 
+  const requestedGameId = latestPublished.internalGameId || latestPublished.gameId;
   const metadata = await resolvePredictionGameMetadata(env.AUTH_DB, requestedGameId);
   if (!metadata) {
     return jsonResponse({ ok: false, error: "対象試合を確認できません。" }, 404, cors);
@@ -10783,6 +10803,8 @@ async function handleGetDailyBestNine(request, env, cors) {
     : { rows: [], totalCount: 0 };
   const response = jsonResponse({
     ok: true,
+    internalGameId,
+    gameId: legacyGameId,
     gameDate: game.gameDate || metadata.date || "",
     displayLabel: game.displayLabel || createPublicResultDisplayLabel({ gameDate: game.gameDate || metadata.date, homeTeam: game.homeTeam, awayTeam: game.awayTeam }),
     published,
@@ -10793,6 +10815,7 @@ async function handleGetDailyBestNine(request, env, cors) {
       : (rankingState && Number(rankingState.is_ranking_eligible || 0) !== 1 ? "excluded" : "unpublished"),
     bestNine: bestNine.rows,
     totalCount: bestNine.totalCount,
+    publishedAt: rankingState?.published_at || latestPublished.publishedAt || null,
     updatedAt: new Date().toISOString()
   }, 200, cors);
   response.headers.set("Cache-Control", "public, max-age=30");

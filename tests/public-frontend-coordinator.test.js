@@ -151,7 +151,7 @@ test("前回試合と結果一覧は初期表示をブロックせず、同じid
   assert.doesNotMatch(previousFetcher, /refreshResultHistory\(\{ force: true \}\)/);
 });
 
-test("初期catalog後のcritical pathでdaily-best-nineを取得しない", () => {
+test("初期catalog後のoptional pathでglobal daily-best-nineを取得する", () => {
   const coordinator = read(modulePath("app-coordinator"));
   const catalogFollowup = coordinator.slice(
     coordinator.indexOf("void ops.initializePublicGameCatalog()"),
@@ -160,6 +160,6 @@ test("初期catalog後のcritical pathでdaily-best-nineを取得しない", () 
   assert.match(catalogFollowup, /scheduleOptionalWork\(\(\) => Promise\.allSettled/);
   assert.match(catalogFollowup, /initializeProbableStarter\(\)/);
   assert.match(catalogFollowup, /initializeRosterCandidateSync\(\)/);
-  assert.doesNotMatch(catalogFollowup, /initializeDailyBestNine\(\)/);
+  assert.match(catalogFollowup, /initializeDailyBestNine\(\)/);
   assert.doesNotMatch(catalogFollowup, /fetchPreviousResultGame\(\{ force: false \}\)/);
 });

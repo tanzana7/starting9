@@ -94,24 +94,33 @@
     }
 
     function playerRosterState(player, manualRoster) {
-      if (player?.effectiveRosterStatus === "active" || player?.effectiveRosterStatus === "inactive") {
-        return {
-          inRoster: true,
-          active: player.effectiveRosterActive === true,
-          status: player.effectiveRosterStatus
-        };
-      }
       const entries = manualRosterEntries(manualRoster);
       const byId = new Map(entries.map((entry) => [String(entry?.playerId || entry?.player_id || "").trim(), entry]).filter(([playerId]) => playerId));
       const playerId = String(player?.playerId || "").trim();
       let entry = playerId ? byId.get(playerId) : null;
-      if (!entry && (!playerId || byId.size === 0)) {
+      if (!entry) {
         const playerNameKey = normalizePlayerName(player?.playerName || player?.name || player?.displayName);
         if (playerNameKey) entry = entries.find((candidate) => normalizePlayerName(candidate?.playerName || candidate?.name || candidate?.displayName) === playerNameKey) || null;
       }
       if (entry) {
-        const status = String(entry.status || "active").trim().toLowerCase();
-        return { inRoster: true, active: status === "active", status: status || "inactive" };
+        const mode = String(entry.mode || entry.status || "active").trim().toLowerCase();
+        if (mode === "active") return { inRoster: true, active: true, status: "active" };
+        if (mode === "inactive") return { inRoster: false, active: false, status: "inactive" };
+        const effectiveActive = [
+          entry.effectiveActive,
+          entry.effectiveRosterActive,
+          player?.effectiveRosterActive,
+          player?.manualRosterEffectiveActive,
+          player?.manualRosterOfficialActive
+        ].find((value) => typeof value === "boolean");
+        return { inRoster: effectiveActive === true, active: effectiveActive === true, status: "auto" };
+      }
+      if (player?.effectiveRosterStatus === "active" || player?.effectiveRosterStatus === "inactive") {
+        return {
+          inRoster: player.effectiveRosterStatus === "active",
+          active: player.effectiveRosterActive === true,
+          status: player.effectiveRosterStatus
+        };
       }
       if (hasManualRosterData(manualRoster)) return { inRoster: false, active: false, status: "outside" };
       const catalogStatus = String(player?.manualRosterStatus || "").trim().toLowerCase();

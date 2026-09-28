@@ -1618,7 +1618,7 @@ function renderCurrentV3View() {
     "ranking-reset": () => v3RankingResetRenderer.render(),
     schedule: () => v3GameProgressRenderer.renderScheduleView(games),
     "add-game-preview": () => v3ManualGamePreviewRenderer.render(v3State.manualGamePreview),
-    diagnostics: () => v3DiagnosticsRenderer.renderView(filteredGame || game),
+    diagnostics: () => v3DiagnosticsRenderer.renderView({ ...(filteredGame || game || {}), automationMode: payload.automationMode }),
     "pre-beta-purge": () => v3PreBetaPurgeRenderer.render(v3State.preBetaPurge)
   }[v3State.view]();
   document.querySelectorAll("[data-v3-view]").forEach((button) => {

@@ -172,6 +172,31 @@ async function hasRankingInternalGameId(db) {
   }
 }
 
+export async function getLatestPublishedRankingGame(db, { releaseCutoffAt = "" } = {}) {
+  const useCanonicalId = await hasRankingInternalGameId(db);
+  const cutoffBoundary = getRankingCutoffBoundary(releaseCutoffAt);
+  const internalSelect = useCanonicalId ? ", internal_game_id" : "";
+  const row = await db.prepare(
+    `SELECT game_id${internalSelect}, game_date, published_at
+       FROM ranking_games
+      WHERE is_ranking_eligible = 1
+        AND game_status = 'scored'
+        AND publication_status = 'published'
+        AND is_test_game = 0
+        AND published_at IS NOT NULL
+        AND (?1 = '' OR game_date >= ?1)
+      ORDER BY published_at DESC, game_date DESC, game_id DESC
+      LIMIT 1`
+  ).bind(cutoffBoundary).first();
+  if (!row) return null;
+  return {
+    gameId: String(row.game_id || "").trim(),
+    internalGameId: useCanonicalId ? String(row.internal_game_id || "").trim() : "",
+    gameDate: String(row.game_date || "").trim(),
+    publishedAt: row.published_at || null
+  };
+}
+
 export async function getDailyBestNineForGame(db, { internalGameId = "", legacyGameId = "", limit = DAILY_BEST_NINE_LIMIT } = {}) {
   const canonicalId = String(internalGameId || "").trim();
   const compatibilityId = String(legacyGameId || "").trim();

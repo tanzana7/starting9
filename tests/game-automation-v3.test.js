@@ -1425,7 +1425,7 @@ test("先頭batchのclaim例外を越えて101件目以降のdue jobをclaimす�
     const base = d1(database);
     const db = {
       prepare(sql) {
-        if (sql.includes("ORDER BY scheduled_at")) listCalls += 1;
+        if (sql.includes("ORDER BY CASE")) listCalls += 1;
         const prepared = base.prepare(sql);
         return {
           ...prepared,

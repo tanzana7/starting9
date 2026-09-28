@@ -3,6 +3,7 @@ import {
   V3_JOB_TYPE,
   V3_JOB_TYPES,
   V3_OPEN_JOB_STATUS_SQL,
+  getV3JobPriority,
   isV3OpenJobStatus,
   isV3RankingRecoveryTerminalJob,
   isV3ScoreRecoveryTerminalJob,
@@ -526,6 +527,7 @@ export async function claimDueJobs(db, now = new Date(), plannedEntries = [], { 
     }
     const lastRow = rows[rows.length - 1];
     const nextCursor = {
+      priority: getV3JobPriority(lastRow?.job_type),
       scheduledAt: lastRow?.scheduled_at || null,
       id: Number(lastRow?.id)
     };

@@ -1,4 +1,4 @@
-import { V3_JOB_TYPES, createV3Error, normalizeV3InternalGameId } from "./constants.js";
+import { V3_JOB_TYPE, V3_JOB_TYPES, createV3Error, normalizeV3InternalGameId } from "./constants.js";
 import { assertV3Transition, getV3GameEffectiveStartAt, getV3NpbIdentityState } from "./domain.js";
 import { evaluateCanonicalArtifactsFromDb } from "./canonical-artifact-evaluator.js";
 
@@ -65,6 +65,15 @@ export async function listV3Games(db, now = new Date(), options = {}) {
          WHERE correction_job.internal_game_id = games.internal_game_id
            AND correction_job.job_type = 'score'
            AND correction_job.status IN ('pending', 'claimed', 'retry_wait')
+      )`
+    : "0";
+  const predictionCloseCompletedSql = hasGameJobsTable
+    ? `EXISTS (
+        SELECT 1 FROM game_jobs_v3 AS prediction_close_job
+         WHERE prediction_close_job.internal_game_id = games.internal_game_id
+           AND (prediction_close_job.job_type = '${V3_JOB_TYPE.PREDICTION_CLOSE}'
+             OR prediction_close_job.job_type LIKE '${V3_JOB_TYPE.PREDICTION_CLOSE}:%')
+           AND prediction_close_job.status = 'completed'
       )`
     : "0";
   let hasCanonicalLineups = false;
@@ -164,6 +173,9 @@ export async function listV3Games(db, now = new Date(), options = {}) {
       : "games.start_time, games.internal_game_id";
   const orderSql = canonicalPriorityAvailable
     ? `CASE
+         WHEN COALESCE(LOWER(workflow.state), 'scheduled') IN ('scheduled', 'probable_starter_ready', 'roster_ready')
+           AND games.start_time <= ?${priorityDeadlineParam}
+           AND NOT (${predictionCloseCompletedSql}) THEN 0
          WHEN (
            (
              LOWER(COALESCE(workflow.state, '')) = 'prediction_closed'
@@ -175,15 +187,31 @@ export async function listV3Games(db, now = new Date(), options = {}) {
            )
          )
          AND lineup.final_lineup_revision_id IS NOT NULL
-         AND LOWER(COALESCE(lineup.scoring_status, 'pending')) NOT IN ('processing', 'scored') THEN 0
+           AND LOWER(COALESCE(lineup.scoring_status, 'pending')) NOT IN ('processing', 'scored') THEN 1
          WHEN LOWER(COALESCE(workflow.state, '')) = 'scored'
-           AND LOWER(COALESCE(lineup.scoring_status, '')) = 'scored' THEN 1
-         WHEN LOWER(COALESCE(workflow.state, '')) = 'ranked' THEN 2
-         ELSE 3
+           AND LOWER(COALESCE(lineup.scoring_status, '')) = 'scored' THEN 2
+         WHEN LOWER(COALESCE(workflow.state, '')) = 'ranked' THEN 3
+         ELSE 4
+         END,
+        ${defaultPriorityOrderSql}`
+    : prioritizeDue
+      ? `CASE
+           WHEN COALESCE(LOWER(workflow.state), 'scheduled') IN ('scheduled', 'probable_starter_ready', 'roster_ready')
+             AND games.start_time <= ?${priorityDeadlineParam}
+             AND NOT (${predictionCloseCompletedSql}) THEN 0
+           ELSE 1
+         END,
+         ${defaultPriorityOrderSql}`
+      : defaultPriorityOrderSql;
+  const fallbackOrderSql = prioritizeDue
+    ? `CASE
+         WHEN COALESCE(LOWER(workflow.state), 'scheduled') IN ('scheduled', 'probable_starter_ready', 'roster_ready')
+           AND games.start_time <= ?${priorityDeadlineParam}
+           AND NOT (${predictionCloseCompletedSql}) THEN 0
+         ELSE 1
        END,
        ${defaultPriorityOrderSql}`
     : defaultPriorityOrderSql;
-  const fallbackOrderSql = defaultPriorityOrderSql;
   const publicationStatus = "CASE WHEN lineup.publication_status = 'published' OR ranking.publication_status = 'published' THEN 'published' ELSE COALESCE(lineup.publication_status, ranking.publication_status, '') END";
   const publishedAt = "COALESCE(lineup.published_at, ranking.published_at)";
   const enrichedLimitSql = limit
@@ -648,14 +676,29 @@ export async function retryV3Job(db, { jobId, claimToken, attemptCount, maxAttem
 export async function listDueV3Jobs(db, now = new Date(), limit = 50, cursor = null) {
   const timestamp = (now instanceof Date ? now : new Date(now)).toISOString();
   const boundedLimit = Math.max(1, Math.min(100, Number(limit) || 50));
+  const cursorPriority = Number(cursor?.priority);
   const cursorScheduledAt = String(cursor?.scheduledAt || cursor?.scheduled_at || "");
   const cursorId = Number(cursor?.id);
-  const hasCursor = Boolean(cursorScheduledAt) && Number.isFinite(cursorId);
-  const cursorClause = hasCursor
-    ? "AND (scheduled_at > ?3 OR (scheduled_at = ?3 AND id > ?4))"
-    : "";
-  const params = hasCursor
-    ? [timestamp, boundedLimit, cursorScheduledAt, cursorId]
+  const hasPriorityCursor = Number.isFinite(cursorPriority) && Boolean(cursorScheduledAt) && Number.isFinite(cursorId);
+  const hasLegacyCursor = !hasPriorityCursor && Boolean(cursorScheduledAt) && Number.isFinite(cursorId);
+  const prioritySql = `CASE
+          WHEN job_type = '${V3_JOB_TYPE.PREDICTION_CLOSE}' OR job_type LIKE '${V3_JOB_TYPE.PREDICTION_CLOSE}:%' THEN 0
+          WHEN job_type = '${V3_JOB_TYPE.SCORE}' OR job_type LIKE '${V3_JOB_TYPE.SCORE}:%' THEN 1
+          WHEN job_type = '${V3_JOB_TYPE.RANKING_REBUILD}' OR job_type LIKE '${V3_JOB_TYPE.RANKING_REBUILD}:%' THEN 2
+          WHEN job_type = '${V3_JOB_TYPE.PUBLISH}' OR job_type LIKE '${V3_JOB_TYPE.PUBLISH}:%' THEN 3
+          ELSE 4
+        END`;
+  const cursorClause = hasPriorityCursor
+    ? `AND (${prioritySql} > ?3
+       OR (${prioritySql} = ?3 AND (scheduled_at > ?4
+           OR (scheduled_at = ?4 AND id > ?5))))`
+    : hasLegacyCursor
+      ? "AND (scheduled_at > ?3 OR (scheduled_at = ?3 AND id > ?4))"
+      : "";
+  const params = hasPriorityCursor
+    ? [timestamp, boundedLimit, cursorPriority, cursorScheduledAt, cursorId]
+    : hasLegacyCursor
+      ? [timestamp, boundedLimit, cursorScheduledAt, cursorId]
     : [timestamp, boundedLimit];
   const result = await db.prepare(
     `SELECT * FROM game_jobs_v3
@@ -664,14 +707,7 @@ export async function listDueV3Jobs(db, now = new Date(), limit = 50, cursor = n
         AND scheduled_at <= ?1
         AND (next_retry_at IS NULL OR next_retry_at <= ?1)
         ${cursorClause}
-      ORDER BY scheduled_at,
-        CASE job_type
-          WHEN 'prediction_close' THEN 0
-          WHEN 'score' THEN 1
-          WHEN 'ranking_rebuild' THEN 2
-          WHEN 'publish' THEN 3
-          ELSE 4
-        END,
+      ORDER BY ${prioritySql}, scheduled_at,
         id LIMIT ?2`
   ).bind(...params).all();
   return result.results || [];

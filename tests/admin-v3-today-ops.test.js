@@ -160,9 +160,21 @@ test("V4 Today Opsは今日の運営判定と過去試合の残留jobを分離�
   );
   assert.equal(model.todayFailedJobs, 0);
   assert.equal(model.historicalFailedJobs, 1);
-  assert.equal(model.gameModels[0].steps.roster, "waiting");
+  assert.equal(model.gameModels[0].steps.roster, "ok");
   assert.equal(model.gameModels[0].steps.lineup, "waiting");
+  assert.match(model.gameModels[0].steps.rosterDetail, /手動運用/);
   assert.equal(model.overallStatus, "ok");
+});
+
+test("V4 Today Opsはcanonical lineup確定後を手動運用の完了として表示する", () => {
+  const model = context.buildTodayOpsModel(
+    { automationMode: { isV4SemiAuto: true }, todayOps: { ...payload.todayOps, futureGamesCount: 3 } },
+    [game({ canonicalArtifacts: { aggregate: { lineupReady: true, needsAttention: true } } }), game({ internalGameId: "future-1", gameDate: "2026-08-09" }), game({ internalGameId: "future-2", gameDate: "2026-08-10" }), game({ internalGameId: "future-3", gameDate: "2026-08-11" })],
+    now
+  );
+  assert.equal(model.gameModels[0].steps.roster, "ok");
+  assert.equal(model.gameModels[0].steps.lineup, "ok");
+  assert.equal(model.gameModels[0].status, "ok");
 });
 
 test("overviewはCron監査時刻をToday Opsへ返し、管理画面は専用セクションを描画する", () => {

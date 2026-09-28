@@ -57,6 +57,7 @@
           void ops.maybeLoadFastPreviousResult();
           ops.startPredictionDeadlineTicker();
           this.scheduleOptionalWork(() => Promise.allSettled([
+            ops.initializeDailyBestNine(),
             ops.initializeProbableStarter(),
             ops.initializeRosterCandidateSync(),
             ops.initializePredictionRemoteSync()

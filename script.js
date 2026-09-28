@@ -2821,11 +2821,11 @@ function buildMyWeeklyRankingApiUrl({ weekStart } = {}) {
 function buildDailyBestNineApiUrl(gameId = "") {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
   const reference = String(gameId || "").trim();
-  if (!baseUrl || !reference) return "";
+  if (!baseUrl) return "";
   const url = new URL(`${baseUrl}/api/results/daily-best-nine`, window.location.href);
-  if (state.resultHistory.result?.internalGameId) {
+  if (reference && state.resultHistory.result?.internalGameId) {
     url.searchParams.set("internalGameId", reference);
-  } else {
+  } else if (reference) {
     url.searchParams.set("gameId", reference);
   }
   return url.href;
@@ -2854,13 +2854,9 @@ async function initializeDailyBestNine() {
 
 async function fetchDailyBestNine({ gameId = "", force = false } = {}) {
   const dailyState = state.dailyBestNine;
-  const reference = String(gameId || getDailyBestNineGameId()).trim();
-  if (!reference) {
-    resetDailyBestNine();
-    renderDailyBestNine();
-    return;
-  }
-  if (dailyState.isLoading && !force && dailyState.gameId === reference) return;
+  const reference = String(gameId || "").trim();
+  const requestKey = reference || "latest-published";
+  if (dailyState.isLoading && !force && dailyState.gameId === requestKey) return;
 
   const url = buildDailyBestNineApiUrl(reference);
   if (!url) {
@@ -2872,7 +2868,7 @@ async function fetchDailyBestNine({ gameId = "", force = false } = {}) {
 
   const requestId = dailyState.requestId + 1;
   dailyState.requestId = requestId;
-  dailyState.gameId = reference;
+  dailyState.gameId = requestKey;
   dailyState.isLoading = true;
   dailyState.status = "loading";
   dailyState.rows = [];
@@ -2891,6 +2887,7 @@ async function fetchDailyBestNine({ gameId = "", force = false } = {}) {
     dailyState.status = payload.published ? "published" : "unpublished";
     dailyState.rows = payload.bestNine;
     dailyState.totalCount = Math.max(0, Number(payload.totalCount || payload.bestNine.length));
+    dailyState.gameId = payload.internalGameId || payload.gameId || requestKey;
   } catch (error) {
     if (requestId !== dailyState.requestId) return;
     console.error("今日のベストナインの取得に失敗しました", error.message);
@@ -3401,11 +3398,7 @@ async function loadResultHistoryGame(gameId, { manual = true, fastPrevious = fal
     state.resultHistory.isDetailLoading = false;
     state.resultHistory.detailError = "";
     state.resultHistory.message = "";
-    if (getPublicResultAvailability(cached)) {
-      resetDailyBestNine("unpublished");
-    } else {
-      void fetchDailyBestNine({ gameId: cached.internalGameId || gameId, force: false });
-    }
+    if (getPublicResultAvailability(cached)) resetDailyBestNine("unpublished");
     syncPublicAppState();
     renderScoreResult();
     renderResultHistory();
@@ -3480,14 +3473,12 @@ async function loadResultHistoryGame(gameId, { manual = true, fastPrevious = fal
       state.resultHistory.result = nextResult;
       state.result = nextResult;
       state.resultHistory.message = "";
-      void fetchDailyBestNine({ gameId: payload.internalGameId || payload.gameId || gameId, force: false });
       renderScoreResult();
       return nextResult;
     }
     state.resultHistory.result = nextResult;
     state.result = nextResult;
     state.resultHistory.message = "";
-    void fetchDailyBestNine({ gameId: payload.internalGameId || payload.gameId || gameId, force: true });
     renderScoreResult();
   } catch (error) {
     if (!isCurrentPublicRequest("resultDetail", request.id)) return;

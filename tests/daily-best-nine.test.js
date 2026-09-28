@@ -133,6 +133,20 @@ function enableScoreAttemptSchema(db) {
   db.exec("ALTER TABLE predictions ADD COLUMN scored_attempt_id TEXT");
 }
 
+function insertPublishedGame(db, { internalGameId, gameId, date, publishedAt, homeTeam = "fighters", awayTeam = "marines" }) {
+  const startTime = `${date}T09:00:00.000Z`;
+  db.prepare("INSERT INTO games VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
+    internalGameId, date, startTime, homeTeam, awayTeam, "scored", gameId.split("-").at(-2) || "", ""
+  );
+  db.prepare("INSERT INTO detected_game_schedule VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
+    gameId, `${date}:fighters:marines:1800`, date, startTime, homeTeam, awayTeam, "f-l-20", "scored", internalGameId, startTime
+  );
+  db.prepare("INSERT INTO ranking_games VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
+    gameId, internalGameId, date, 1, `${date}T09:00:00.000Z`, "scored", 0, "published", `${date}T09:05:00.000Z`, publishedAt,
+    `${date}T09:00:00.000Z`, publishedAt
+  );
+}
+
 test("今日のベストナインは公開済み採点結果をscore desc、提出時刻、nicknameで最大9人返す", async () => {
   const { getDailyBestNineForGame } = await import(workerUrl);
   const { db, internalGameId, gameId } = createDatabase();
@@ -231,7 +245,7 @@ test("公開APIは正式採点されたranking_test_predictionsのcanonical TEST
       AUTH_DB: createD1Adapter(fixture.db),
       // The weekly ranking program starts later, but this formally published
       // game's Best Nine must remain visible.
-      PUBLIC_RANKING_RELEASED_AT: "2026-09-21T00:00:00+09:00"
+      PUBLIC_RANKING_RELEASED_AT: "2026-08-01T00:00:00+09:00"
     },
     {}
   );
@@ -283,6 +297,35 @@ test("公開APIはcanonical internalGameIdで公開結果を解決する", async
   const payload = await response.json();
   assert.equal(payload.published, true);
   assert.deepEqual(payload.bestNine.map((row) => row.username), ["canonical-user"]);
+});
+
+test("公開APIのBest Nineは指定された個人結果ではなく最新公開試合を共通対象にする", async () => {
+  const worker = await import(workerUrl);
+  const fixture = createDatabase();
+  const latestInternalGameId = "122a8838-9e5c-4d64-88b7-7a8b43181aed";
+  const latestGameId = "legacy-f-l-20-1800";
+  insertPublishedGame(fixture.db, {
+    internalGameId: latestInternalGameId,
+    gameId: latestGameId,
+    date: "2026-08-13",
+    publishedAt: "2026-08-13T09:10:00.000Z"
+  });
+  insertUser(fixture.db, "old-user", "old-result-user");
+  insertPrediction(fixture.db, { id: "old-prediction", userId: "old-user", gameId: fixture.gameId, score: 99, submittedAt: "2026-08-12T08:00:00.000Z" });
+  insertUser(fixture.db, "latest-user", "latest-best-nine-user");
+  insertPrediction(fixture.db, { id: "latest-prediction", userId: "latest-user", gameId: latestGameId, score: 88, submittedAt: "2026-08-13T08:00:00.000Z" });
+
+  const response = await worker.default.fetch(
+    new Request(`https://starting9.test/api/results/daily-best-nine?internalGameId=${fixture.internalGameId}`),
+    { AUTH_DB: createD1Adapter(fixture.db), PUBLIC_RANKING_RELEASED_AT: "2026-08-01T00:00:00+09:00" },
+    {}
+  );
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.internalGameId, latestInternalGameId);
+  assert.equal(payload.gameId, latestGameId);
+  assert.equal(payload.gameDate, "2026-08-13");
+  assert.deepEqual(payload.bestNine.map((row) => row.username), ["latest-best-nine-user"]);
 });
 
 test("公開APIはclient score/maxScoreを受け付けず、server-side結果だけを返す", () => {

@@ -68,6 +68,37 @@ test("manual lineup候補はplayerIdを優先し、必要時だけ既存の名�
   assert.ok(html.indexOf("名前") < html.indexOf("[53]"));
 });
 
+test("manual rosterのAUTOはeffectiveActiveを使い、INACTIVEはroster外として扱う", () => {
+  const renderers = loadRenderers();
+  const renderer = renderers.createAdminV3ManualLineupRenderer({ escapeHtml });
+  const catalog = [
+    { playerId: "F-10", playerName: "Active ten", uniformNumber: "10" },
+    { playerId: "F-01", playerName: "Inactive one", uniformNumber: "1" },
+    { playerId: "F-21", playerName: "Active twenty one", uniformNumber: "21" },
+    { playerId: "F-05", playerName: "AUTO inactive five", uniformNumber: "5" },
+    { playerId: "F-02", playerName: "Active two", uniformNumber: "2" },
+    { playerId: "F-22", playerName: "AUTO active twenty two", uniformNumber: "22" },
+    { playerId: "F-99", playerName: "Unknown number", uniformNumber: "" }
+  ];
+  const html = renderer.renderCandidates(catalog, { search: "" }, 0, {
+    isManualSaved: true,
+    entries: [
+      { playerId: "F-10", mode: "active" },
+      { playerId: "F-01", mode: "inactive" },
+      { playerId: "F-21", mode: "active" },
+      { playerId: "F-05", mode: "auto", effectiveActive: false },
+      { playerId: "F-02", mode: "active" },
+      { playerId: "F-22", mode: "auto", effectiveActive: true }
+    ]
+  });
+  assert.ok(html.indexOf("[2]") < html.indexOf("[10]"));
+  assert.ok(html.indexOf("[10]") < html.indexOf("[21]"));
+  assert.ok(html.indexOf("[21]") < html.indexOf("[22]"));
+  assert.ok(html.indexOf("[22]") < html.indexOf("[1]"));
+  assert.ok(html.indexOf("[1]") < html.indexOf("[5]"));
+  assert.ok(html.indexOf("[5]") < html.indexOf("Unknown number"));
+});
+
 test("manual rosterのstatic fallbackではcatalogのactive表示と優先順を維持する", () => {
   const renderers = loadRenderers();
   const renderer = renderers.createAdminV3ManualLineupRenderer({ escapeHtml });

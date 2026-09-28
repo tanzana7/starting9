@@ -53,6 +53,12 @@
       return `<span class="today-ops-status ${normalized}">${statusLabels[normalized]}</span>`;
     }
 
+    function v4ManualLineupReady(game) {
+      const canonical = game?.canonicalArtifacts?.aggregate || null;
+      const gameState = String(game?.state?.state || "scheduled");
+      return canonical?.lineupReady === true || ["lineup_ready", "scored", "ranked", "published"].includes(gameState);
+    }
+
     function latestOpsJob(game, statuses = []) {
       const jobs = listItems(game?.jobs, "jobs").filter((job) => !statuses.length || statuses.includes(String(job.status || "")));
       return [...jobs].sort((left, right) => String(right.completed_at || right.updated_at || right.scheduled_at || "").localeCompare(String(left.completed_at || left.updated_at || left.scheduled_at || "")))[0] || null;
@@ -63,11 +69,10 @@
       const gameState = String(game?.state?.state || "scheduled");
       const canonical = game?.canonicalArtifacts?.aggregate || null;
       if (options.semiAuto && step === "roster") {
-        return game?.rosterDiagnostics?.rosterSnapshotExists ? "ok" : "waiting";
+        return "ok";
       }
       if (options.semiAuto && step === "lineup") {
-        if (canonical) return canonical.lineupReady ? "ok" : canonical.needsAttention ? "attention" : "waiting";
-        return ["lineup_ready", "scored", "ranked", "published"].includes(gameState) ? "ok" : "waiting";
+        return v4ManualLineupReady(game) ? "ok" : "waiting";
       }
       if (canonical && step === "scoring") return canonical.scoringReady ? "ok" : canonical.needsAttention ? "attention" : "waiting";
       if (canonical && step === "ranking") return canonical.rankingReady ? "ok" : canonical.needsAttention ? "attention" : "waiting";
@@ -137,12 +142,15 @@
         const manualAction = gameState === "manual_action_required";
         const lineupOverdue = !v4SemiAuto && !["lineup_ready", "scored", "ranked", "published"].includes(gameState) && Number.isFinite(new Date(game?.startAt || "").getTime()) && new Date(game.startAt).getTime() <= now.getTime();
         const publicationOverdue = !published && Number.isFinite(publicationAt) && publicationAt <= now.getTime();
-        const attention = Boolean(failedJob || manualAction || lineupOverdue || publicationOverdue || canonical?.needsAttention === true);
+        // V4では取得停止が仕様であり、古いV3のcanonical警告をToday Opsへ
+        // 持ち込まない。実処理の失敗はfailed jobと後段stateで別途表示する。
+        const canonicalNeedsAttention = !v4SemiAuto && canonical?.needsAttention === true;
+        const attention = Boolean(failedJob || manualAction || lineupOverdue || publicationOverdue || canonicalNeedsAttention);
         const lineupStatus = v4SemiAuto
-          ? { status: canonical ? (canonical.lineupReady ? "ok" : canonical.needsAttention ? "attention" : "waiting") : (["lineup_ready", "scored", "ranked", "published"].includes(gameState) ? "ok" : "waiting"), detail: canonical?.lineupReady ? "正式スタメン確定済み" : "V4: 管理者が手動入力・正式確定" }
+          ? { status: v4ManualLineupReady(game) ? "ok" : "waiting", detail: v4ManualLineupReady(game) ? "正式スタメン確定済み" : "自動取得OFF / 手動スタメン運用 / 手動確定待ち" }
           : lineupDisplayState(game, now);
-        const rosterStatus = v4SemiAuto && !game?.rosterDiagnostics?.rosterSnapshotExists
-          ? { status: "waiting", detail: "V4: ロースター自動取得OFF（手動管理はP1）" }
+        const rosterStatus = v4SemiAuto
+          ? { status: "ok", detail: "手動運用 / V4_MANUAL_ROSTER" }
           : rosterDisplayState(game);
         return {
           game,

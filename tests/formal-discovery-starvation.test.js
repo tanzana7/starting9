@@ -97,6 +97,13 @@ function fixture() {
       `INSERT INTO game_lineups VALUES (?, '[]', '', 'pending', NULL, 'pending', NULL, NULL, NULL, NULL)`
     ).run(id);
     database.prepare("INSERT INTO ranking_games VALUES (?, 'pending', NULL)").run(id);
+    const completedAt = new Date(NOW.getTime() - (index + 1) * 60_000).toISOString();
+    database.prepare(`
+      INSERT INTO game_jobs_v3 (
+        internal_game_id, job_type, scheduled_at, scheduled_slot_at, status,
+        attempt_count, max_attempts, completed_at, created_at, updated_at
+      ) VALUES (?, 'prediction_close', ?, ?, 'completed', 1, 12, ?, ?, ?)
+    `).run(id, completedAt, completedAt, completedAt, completedAt, completedAt);
   }
 
   database.prepare(
@@ -184,6 +191,18 @@ test("先頭4試合が残り続けてもdue試合を毎回boundedに再発見す
       assert.ok(games.length <= 4);
       assert.equal(games.some((game) => game.internalGameId === TARGET_ID), true);
     }
+  } finally {
+    database.close();
+  }
+});
+
+test("未処理のprediction_closeは同日bounded discoveryでscore候補より先に再発見する", async () => {
+  const { database, db } = fixture();
+  try {
+    database.prepare("UPDATE game_automation_v3_state SET state = 'scheduled' WHERE internal_game_id = ?")
+      .run(TARGET_ID);
+    const games = await listV3Games(db, NOW, { limit: 4, prioritizeDue: true });
+    assert.equal(games[0].internalGameId, TARGET_ID);
   } finally {
     database.close();
   }

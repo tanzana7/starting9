@@ -141,6 +141,45 @@ test("due-job query includes pending and ready retry jobs but excludes future re
   }
 });
 
+test("due-job queryの複合cursorは優先度変更後も後続jobを取りこぼさない", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE game_jobs_v3 (
+        id INTEGER PRIMARY KEY,
+        job_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        scheduled_at TEXT NOT NULL,
+        next_retry_at TEXT,
+        lease_expires_at TEXT
+      );
+      INSERT INTO game_jobs_v3 VALUES
+        (1, 'prediction_close:prediction_close', 'pending', '2026-08-25T08:10:00.000Z', NULL, NULL),
+        (2, 'score', 'pending', '2026-08-25T07:00:00.000Z', NULL, NULL);
+    `);
+    const db = {
+      prepare(sql) {
+        const statement = database.prepare(sql);
+        return {
+          bind(...params) {
+            return { all: async () => ({ results: statement.all(...params) }) };
+          }
+        };
+      }
+    };
+    const first = await v3.listDueV3Jobs(db, new Date("2026-08-25T09:00:00.000Z"), 1);
+    assert.equal(first[0].id, 1);
+    const second = await v3.listDueV3Jobs(db, new Date("2026-08-25T09:00:00.000Z"), 1, {
+      priority: v3.getV3JobPriority(first[0].job_type),
+      scheduledAt: first[0].scheduled_at,
+      id: first[0].id
+    });
+    assert.deepEqual(second.map((job) => job.id), [2]);
+  } finally {
+    database.close();
+  }
+});
+
 test("共有planning engineは別gameまたはIDなしjobを対象gameの既存jobとして扱わない", () => {
   const game = {
     internalGameId: "8cd8869c-6ae5-47a5-8792-5bc89d20ef18",
@@ -221,6 +260,77 @@ test("due-job claimは200件でbounded化し、残件を次回Cronへ継続す�
     assert.equal(report.claimed.filter((entry) => entry.claimed).length, 200);
     assert.equal(report.hasMoreDue, true);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM game_jobs_v3 WHERE status = 'pending'").get().count, 50);
+  } finally {
+    database.close();
+  }
+});
+
+test("prediction_closeは古いscore backlog 200件を越えてもbounded claimの先頭へ入る", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE game_jobs_v3 (
+        id INTEGER PRIMARY KEY, internal_game_id TEXT, job_type TEXT,
+        scheduled_at TEXT NOT NULL, scheduled_slot_at TEXT NOT NULL, status TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL, max_attempts INTEGER NOT NULL, next_retry_at TEXT,
+        claimed_at TEXT, claim_token TEXT, lease_expires_at TEXT, completed_at TEXT,
+        failure_code TEXT, failure_message TEXT, created_at TEXT, updated_at TEXT
+      );
+    `);
+    const insert = database.prepare(`
+      INSERT INTO game_jobs_v3
+        (id, internal_game_id, job_type, scheduled_at, scheduled_slot_at, status,
+         attempt_count, max_attempts, created_at, updated_at)
+      VALUES (?, ?, ?, '2026-08-30T07:00:00.000Z', '2026-08-30T07:00:00.000Z', 'pending', 0, 12,
+              '2026-08-30T06:00:00.000Z', '2026-08-30T06:00:00.000Z')
+    `);
+    for (let id = 1; id <= 200; id += 1) insert.run(id, `score-game-${id}`, "score");
+    insert.run(201, "prediction-close-target", "prediction_close");
+
+    const report = await v3.claimDueJobs(d1(database), new Date("2026-08-30T08:00:00.000Z"));
+    assert.equal(report.due[0].id, 201);
+    assert.equal(report.due.some((job) => job.id === 201), true);
+    assert.equal(report.claimed.some((entry) => entry.job.id === 201 && entry.claimed), true);
+    assert.equal(report.hasMoreDue, true);
+    assert.equal(database.prepare("SELECT status FROM game_jobs_v3 WHERE id = 201").get().status, "claimed");
+  } finally {
+    database.close();
+  }
+});
+
+test("複数prediction_closeのbounded claimは次回batchでscoreへ公平に進む", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE game_jobs_v3 (
+        id INTEGER PRIMARY KEY, internal_game_id TEXT, job_type TEXT,
+        scheduled_at TEXT NOT NULL, scheduled_slot_at TEXT NOT NULL, status TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL, max_attempts INTEGER NOT NULL, next_retry_at TEXT,
+        claimed_at TEXT, claim_token TEXT, lease_expires_at TEXT, completed_at TEXT,
+        failure_code TEXT, failure_message TEXT, created_at TEXT, updated_at TEXT
+      );
+    `);
+    const insert = database.prepare(`
+      INSERT INTO game_jobs_v3
+        (id, internal_game_id, job_type, scheduled_at, scheduled_slot_at, status,
+         attempt_count, max_attempts, created_at, updated_at)
+      VALUES (?, ?, ?, '2026-08-30T07:00:00.000Z', '2026-08-30T07:00:00.000Z', 'pending', 0, 12,
+              '2026-08-30T06:00:00.000Z', '2026-08-30T06:00:00.000Z')
+    `);
+    for (let id = 1; id <= 250; id += 1) insert.run(id, `close-game-${id}`, "prediction_close");
+    insert.run(251, "score-after-close-backlog", "score");
+
+    const now = new Date("2026-08-30T08:00:00.000Z");
+    const first = await v3.claimDueJobs(d1(database), now);
+    assert.equal(first.due.length, 200);
+    assert.equal(first.due.every((job) => job.job_type === "prediction_close"), true);
+    assert.equal(first.hasMoreDue, true);
+
+    const second = await v3.claimDueJobs(d1(database), now);
+    assert.equal(second.due.length, 51);
+    assert.equal(second.due.at(-1).id, 251);
+    assert.equal(second.claimed.some((entry) => entry.job.id === 251 && entry.claimed), true);
+    assert.equal(second.hasMoreDue, false);
   } finally {
     database.close();
   }

@@ -89,6 +89,23 @@ export const V3_JOB_TYPES = Object.freeze([
   V3_JOB_TYPE.PROBABLE_STARTER_FETCH,
   V3_JOB_TYPE.ROSTER_FETCH
 ]);
+
+// Deadline-sensitive main jobs must enter the bounded due window before
+// downstream work. The numeric order is shared by SQL ordering and the
+// keyset cursor; keep unknown/auxiliary work at the fairness tail.
+export const V3_DUE_JOB_PRIORITY = Object.freeze({
+  [V3_JOB_TYPE.PREDICTION_CLOSE]: 0,
+  [V3_JOB_TYPE.SCORE]: 1,
+  [V3_JOB_TYPE.RANKING_REBUILD]: 2,
+  [V3_JOB_TYPE.PUBLISH]: 3
+});
+
+export function getV3JobPriority(jobType) {
+  const canonical = String(jobType || "").trim().toLowerCase().split(/[:/]/, 1)[0];
+  return Object.prototype.hasOwnProperty.call(V3_DUE_JOB_PRIORITY, canonical)
+    ? V3_DUE_JOB_PRIORITY[canonical]
+    : 4;
+}
 export const V3_JOB_STATUS = Object.freeze({
   PENDING: "pending",
   CLAIMED: "claimed",

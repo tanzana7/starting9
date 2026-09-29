@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const page = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
+const publicPage = fs.readFileSync(path.join(root, "index.html"), "utf8");
+const progressRenderer = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-game-progress.js"), "utf8");
 const client = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
 const diagnostics = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-diagnostics.js"), "utf8");
 const apiClient = fs.readFileSync(path.join(root, "frontend", "admin-v3", "api-client.js"), "utf8");
@@ -17,6 +19,15 @@ test("V3管理画面は既存セッションと管理者APIを使い、サーバ
   assert.match(apiClient, /\/api\/admin\/me/);
   assert.match(worker, /\/api\/admin\/v3\/overview/);
   assert.match(worker, /requireAdminUser\(request, env, cors\)/);
+});
+
+test("shadow accuracy is carried only by the authenticated admin overview", () => {
+  const overview = worker.slice(worker.indexOf("async function handleAdminV3Overview"), worker.indexOf("async function getV3AdminProgressDisplayStatus"));
+  assert.match(overview, /requireAdminUser\(request, env, cors\)/);
+  assert.match(overview, /lineupShadowAccuracy/);
+  assert.match(page, /render-game-progress\.js/);
+  assert.match(progressRenderer, /data-v3-lineup-shadow-accuracy|Shadow実績/);
+  assert.doesNotMatch(publicPage, /lineupShadowAccuracy|Shadow実績/);
 });
 
 test("V3管理操作は巨大処理を直接実行せず、V3 jobを投入する", () => {

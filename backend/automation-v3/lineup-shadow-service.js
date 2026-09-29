@@ -2,6 +2,8 @@ const SHADOW_BEFORE_START_MS = 2 * 60 * 60 * 1000;
 const SHADOW_AFTER_START_MS = 24 * 60 * 60 * 1000;
 const SHADOW_RETRY_INTERVAL_MS = 5 * 60 * 1000;
 
+import { normalizeScoringPosition } from "../domain/scoring-position.js";
+
 function text(value) {
   return String(value ?? "").trim();
 }
@@ -60,9 +62,13 @@ function normalizedLineup(lineup) {
       battingOrder: Number(row?.battingOrder ?? row?.batting_order ?? row?.order),
       playerId: text(row?.playerId ?? row?.player_id),
       playerName: text(row?.playerName ?? row?.player_name ?? row?.name),
-      position: text(row?.position)
+      position: normalizeScoringPosition(row?.position)
     }))
     .sort((left, right) => left.battingOrder - right.battingOrder);
+}
+
+function playerIdentity(row) {
+  return text(row?.playerId);
 }
 
 export function compareShadowLineupToManual(shadowLineup, manualLineup) {
@@ -73,17 +79,40 @@ export function compareShadowLineupToManual(shadowLineup, manualLineup) {
   for (let index = 0; index < max; index += 1) {
     const left = shadow[index] || {};
     const right = manual[index] || {};
-    if (left.battingOrder !== right.battingOrder || left.playerId !== right.playerId || left.playerName !== right.playerName || left.position !== right.position) {
+    const samePlayer = Boolean(playerIdentity(left) && playerIdentity(right) && playerIdentity(left) === playerIdentity(right));
+    const samePosition = Boolean(left.position && right.position && left.position === right.position);
+    const sameOrder = left.battingOrder === right.battingOrder;
+    if (!samePlayer || !samePosition || !sameOrder) {
       differences.push({
         battingOrder: right.battingOrder || left.battingOrder || index + 1,
         shadow: left,
-        manual: right
+        manual: right,
+        playerMismatch: !samePlayer,
+        positionMismatch: !samePosition,
+        battingOrderMismatch: !sameOrder
       });
     }
   }
+  const shadowPlayers = shadow.map(playerIdentity).filter(Boolean);
+  const manualPlayers = manual.map(playerIdentity).filter(Boolean);
+  const playerMatch = shadow.length === manual.length
+    && shadowPlayers.length === shadow.length
+    && manualPlayers.length === manual.length
+    && new Set(shadowPlayers).size === shadowPlayers.length
+    && new Set(manualPlayers).size === manualPlayers.length
+    && shadowPlayers.every((playerId) => new Set(manualPlayers).has(playerId));
+  const battingOrderMatch = shadow.length === manual.length
+    && shadow.every((row, index) => playerIdentity(row) && playerIdentity(row) === playerIdentity(manual[index])
+      && row.battingOrder === manual[index]?.battingOrder);
+  const positionMatch = shadow.length === manual.length
+    && shadow.every((row, index) => row.position && row.position === manual[index]?.position);
   return {
-    exactMatch: differences.length === 0 && shadow.length === manual.length,
+    exactMatch: playerMatch && battingOrderMatch && positionMatch,
+    playerMatch,
+    battingOrderMatch,
+    positionMatch,
     differences,
+    differenceCount: differences.length,
     shadowCount: shadow.length,
     manualCount: manual.length
   };

@@ -145,6 +145,11 @@ import {
 } from "./backend/maintenance/pre-beta-data-purge.js";
 import { applyScheduleChange, deriveScheduleArtifacts, isScheduleUnavailable } from "./backend/automation-v3/schedule-service.js";
 import { applyEligibilityChange } from "./backend/automation-v3/eligibility-service.js";
+import {
+  fetchSimulatorSource,
+  parseSimulatorResponse,
+  resolveNpbSource
+} from "./backend/npb-source-adapter.js";
 
 // Compatibility exports keep existing tests and internal callers stable while
 // the implementation lives in the domain module.
@@ -13352,7 +13357,7 @@ export function buildNpbServiceBindingRequest(params = {}) {
   });
 }
 
-export async function fetchNpbWorkerJson(env, params) {
+async function fetchOfficialNpbWorkerJson(env, params) {
   const upstreamMode = String(params?.mode || "");
   const upstreamDetails = {
     upstreamPath: "/",
@@ -13446,6 +13451,64 @@ export async function fetchNpbWorkerJson(env, params) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function fetchSimulatorNpbJson(env, params, sourceSelection, { fetchImpl = globalThis.fetch } = {}) {
+  const upstreamMode = String(params?.mode || "");
+  const upstreamDetails = {
+    upstreamPath: "/",
+    upstreamMode,
+    upstreamTransport: "simulator-public-http"
+  };
+  if (String(env?.NPB_FETCH_DISABLED || "").toLowerCase() === "true") {
+    throw createPregameError("EXTERNAL_FETCH_DISABLED", EXTERNAL_FETCH_DISABLED_MESSAGE, {
+      httpStatus: 503,
+      retryable: true,
+      ...upstreamDetails
+    });
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), NPB_FETCH_TIMEOUT_MS);
+  try {
+    const resource = await fetchSimulatorSource(env, params, { fetchImpl, signal: controller.signal });
+    upstreamDetails.fetchEndpoint = `${new URL(resource.url).pathname}${new URL(resource.url).search}`;
+    const parsed = await parseSimulatorResponse(resource.response, params);
+    if (!parsed.ok) {
+      throw createPregameError(parsed.code || "NPB_RESPONSE_INVALID", parsed.error || "S9simu response could not be parsed.", {
+        httpStatus: resource.response.status,
+        upstreamStatus: resource.response.status,
+        contentType: resource.response.headers.get("content-type") || "",
+        parseStage: parsed.parseStage,
+        retryable: parsed.code === "NPB_HTTP_ERROR",
+        ...upstreamDetails
+      });
+    }
+    const payload = parsed.payload;
+    Object.defineProperty(payload, "__fetchMeta", {
+      value: {
+        httpStatus: resource.response.status,
+        contentType: resource.response.headers.get("content-type") || "",
+        endpoint: resource.url,
+        source: sourceSelection.kind
+      },
+      enumerable: false
+    });
+    return payload;
+  } catch (error) {
+    if (error?.code) {
+      Object.assign(error, upstreamDetails);
+      throw error;
+    }
+    throw createPregameError(error?.name === "AbortError" ? "NPB_WORKER_TIMEOUT" : "NPB_HTTP_ERROR", "S9simu data could not be fetched.", upstreamDetails);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function fetchNpbWorkerJson(env, params, options = {}) {
+  const sourceSelection = resolveNpbSource(env);
+  if (sourceSelection.kind === "simulator") return fetchSimulatorNpbJson(env, params, sourceSelection, options);
+  return fetchOfficialNpbWorkerJson(env, params);
 }
 
 function createPregameError(code, message, details = {}) {

@@ -173,7 +173,10 @@ function insertFixtureRows(database, games, timestamp, tokenHash) {
 
 export async function createFormalPipelineFixture({
   gameCount = 6,
-  startAt = "2026-09-21T10:00:00.000Z"
+  // The fixture is used by admin rescore tests. Keep the synthetic game
+  // inside the current rescore window so the suite remains valid after the
+  // calendar moves past the historical season date used by old snapshots.
+  startAt = new Date(Date.now() - 12 * 60_000).toISOString()
 } = {}) {
   if (gameCount !== 6) throw new Error("formal pipeline fixture must contain six simultaneous games");
   const database = new DatabaseSync(":memory:");

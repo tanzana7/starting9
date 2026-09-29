@@ -201,7 +201,13 @@ export async function registerDevelopmentScheduleCandidate(db, candidate, {
       startAt: candidate.startAt,
       homeTeam: candidate.homeTeam,
       awayTeam: candidate.awayTeam,
-      gameStatus: "scheduled"
+      gameStatus: "scheduled",
+      // Keep the verified code in the schedule metadata, but do not register
+      // it as a global identity: NPB may reuse the same series code on a
+      // different date (for example, a cancelled game and its replacement).
+      npbGameCode: candidate.npbGameCode,
+      sourceGameKey: candidate.sourceGameKey,
+      venue: candidate.venue
     },
     identifiers,
     allowCreate: true,

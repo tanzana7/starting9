@@ -49,8 +49,18 @@ test("shadow retry stops for terminal observations and is bounded for waiting", 
 });
 
 test("shadow/manual comparison reports exact, order, player, and position differences", () => {
-  assert.deepEqual(compareShadowLineupToManual(LINEUP, LINEUP), { exactMatch: true, differences: [], shadowCount: 9, manualCount: 9 });
+  assert.deepEqual(compareShadowLineupToManual(LINEUP, LINEUP), {
+    exactMatch: true,
+    playerMatch: true,
+    battingOrderMatch: true,
+    positionMatch: true,
+    differences: [],
+    differenceCount: 0,
+    shadowCount: 9,
+    manualCount: 9
+  });
   const changed = LINEUP.map((row) => ({ ...row }));
+  changed[0].playerId = "F-different";
   changed[0].playerName = "different";
   changed[1].position = "一";
   const comparison = compareShadowLineupToManual(changed, LINEUP);

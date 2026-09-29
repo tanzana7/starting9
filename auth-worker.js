@@ -157,6 +157,7 @@ import {
   disablePushSubscriptions,
   upsertPushSubscription
 } from "./backend/admin-alerts/storage.js";
+import { normalizeScoringPosition } from "./backend/domain/scoring-position.js";
 import { evaluateAndNotifyAdminAlerts } from "./backend/admin-alerts/runtime.js";
 import { sendAdminTestPush } from "./backend/admin-alerts/test-push.js";
 import { runLineupCandidatePipeline } from "./backend/automation-v3/lineup-candidate-service.js";
@@ -169,6 +170,13 @@ import {
   shouldRetryLineupShadow,
   isShadowLineupRevision
 } from "./backend/automation-v3/lineup-shadow-service.js";
+import {
+  LINEUP_SHADOW_ACCURACY_LIMIT,
+  LINEUP_SHADOW_ACCURACY_LOOKBACK_DAYS,
+  buildLineupShadowAccuracyRecord,
+  buildLineupShadowAccuracyReport,
+  selectShadowRevisionForComparison
+} from "./backend/automation-v3/lineup-shadow-observability.js";
 
 // Compatibility exports keep existing tests and internal callers stable while
 // the implementation lives in the domain module.
@@ -621,17 +629,6 @@ const PREGAME_TOOL_ERROR_MESSAGES = Object.freeze({
   NPB_SERVICE_BINDING_INVALID: "NPB取得WorkerのService Bindingが不正です。",
   NPB_WORKER_ROUTE_NOT_FOUND: "NPB取得WorkerのAPIルートが見つかりません。",
   NPB_WORKER_HTTP_ERROR: "NPB取得Workerへの接続に失敗しました。"
-});
-const POSITION_ALIASES = Object.freeze({
-  "捕": "捕", C: "捕", "キャッチャー": "捕", "2": "捕",
-  "一": "一", "1B": "一", "ファースト": "一", "3": "一",
-  "二": "二", "2B": "二", "セカンド": "二", "4": "二",
-  "三": "三", "3B": "三", "サード": "三", "5": "三",
-  "遊": "遊", SS: "遊", "ショート": "遊", "6": "遊",
-  "左": "左", LF: "左", "レフト": "左", "7": "左",
-  "中": "中", CF: "中", "センター": "中", "8": "中",
-  "右": "右", RF: "右", "ライト": "右", "9": "右",
-  "指": "指", DH: "指", D: "指", "指名打者": "指", "0": "指"
 });
 // 既存の日程用コードとは別に、選手IDだけへ固定の球団IDを割り当てます。
 const TEAM_PLAYER_ID_PREFIXES = Object.freeze({
@@ -1199,13 +1196,90 @@ async function readLineupShadowStatus(db, internalGameId, { enabled = false } = 
       result.playerCount = latestShadow.playerCount;
       result.validationStatus = latestShadow.validationStatus;
     }
-    if (manualFinal && latestShadow) {
-      result.comparison = compareShadowLineupToManual(latestShadow.lineup, parseStoredActualLineup(manualFinal.actual_lineup_json));
+    const comparisonShadow = manualFinal ? selectShadowRevisionForComparison(rows, manualFinal) : null;
+    if (manualFinal && comparisonShadow) {
+      result.comparison = compareShadowLineupToManual(comparisonShadow.lineup, parseStoredActualLineup(manualFinal.actual_lineup_json));
     }
     return result;
   } catch (error) {
     if (!isPregameSchemaError(error)) console.warn(`[LINEUP_SHADOW] stage=status_read code=${error?.code || "SHADOW_STATUS_READ_FAILED"}`);
     return { ...result, status: "unavailable", reasonCode: "SHADOW_STATUS_UNAVAILABLE" };
+  }
+}
+
+// Accuracy is an admin read model, not a new workflow artifact. Keep the
+// history bounded so an overview refresh cannot turn old shadow revisions into
+// the Cron hot path or require a migration. Manual/final and shadow rows are
+// compared from their existing revision lineage only.
+async function readLineupShadowAccuracy(db, now = new Date()) {
+  if (!db) return { available: false, code: "LINEUP_SHADOW_ACCURACY_DB_UNAVAILABLE", games: [], metrics: buildLineupShadowAccuracyReport([]).metrics };
+  const current = now instanceof Date ? now : new Date(now);
+  const today = getJstDateString(current);
+  if (!today) return { available: false, code: "LINEUP_SHADOW_ACCURACY_DATE_UNAVAILABLE", games: [], metrics: buildLineupShadowAccuracyReport([]).metrics };
+  try {
+    const gameRows = await db.prepare(
+      `SELECT internal_game_id, game_date, start_time, home_team, away_team,
+              npb_game_code, game_status, is_active, deleted_at
+         FROM games
+        WHERE internal_game_id IS NOT NULL AND internal_game_id <> ''
+          AND is_active = 1 AND deleted_at IS NULL
+          AND (LOWER(COALESCE(home_team, '')) IN ('f', 'fighters')
+            OR LOWER(COALESCE(away_team, '')) IN ('f', 'fighters'))
+          AND date(game_date) BETWEEN date(?1, ?2) AND date(?1, '+1 day')
+        ORDER BY date(game_date) DESC, start_time DESC, internal_game_id DESC
+        LIMIT ?3`
+    ).bind(today, `-${LINEUP_SHADOW_ACCURACY_LOOKBACK_DAYS} day`, LINEUP_SHADOW_ACCURACY_LIMIT).all();
+    const records = [];
+    for (const game of gameRows?.results || []) {
+      let revisions = [];
+      let logs = [];
+      try {
+        const result = await db.batch([
+          db.prepare(
+            `SELECT revision_id, version, actual_lineup_json, source, captured_at,
+                    created_at, finalized_at, is_final, validation_json, lineup_fingerprint
+               FROM game_lineup_revisions
+              WHERE internal_game_id = ?1
+              ORDER BY version DESC LIMIT 50`
+          ).bind(game.internal_game_id),
+          db.prepare(
+            `SELECT status, occurred_at, error_code, metadata
+               FROM game_workflow_logs
+              WHERE game_id = ?1 AND event_type = 'lineup_shadow'
+              ORDER BY occurred_at DESC LIMIT 30`
+          ).bind(game.internal_game_id)
+        ]);
+        revisions = result?.[0]?.results || [];
+        logs = result?.[1]?.results || [];
+      } catch (error) {
+        console.warn(`[LINEUP_SHADOW_ACCURACY] game=${game.internal_game_id} stage=history_read code=${error?.code || "LINEUP_SHADOW_HISTORY_READ_FAILED"}`);
+      }
+      records.push(buildLineupShadowAccuracyRecord({
+        game: {
+          internalGameId: game.internal_game_id,
+          gameDate: game.game_date,
+          startAt: game.start_time,
+          homeTeam: game.home_team,
+          awayTeam: game.away_team,
+          npbGameCode: game.npb_game_code,
+          gameStatus: game.game_status
+        },
+        revisions,
+        logs
+      }));
+    }
+    return buildLineupShadowAccuracyReport(records, {
+      limit: LINEUP_SHADOW_ACCURACY_LIMIT,
+      lookbackDays: LINEUP_SHADOW_ACCURACY_LOOKBACK_DAYS
+    });
+  } catch (error) {
+    console.warn(`[LINEUP_SHADOW_ACCURACY] stage=game_read code=${error?.code || "LINEUP_SHADOW_ACCURACY_READ_FAILED"}`);
+    return {
+      available: false,
+      code: error?.code || "LINEUP_SHADOW_ACCURACY_READ_FAILED",
+      games: [],
+      metrics: buildLineupShadowAccuracyReport([]).metrics
+    };
   }
 }
 
@@ -6514,6 +6588,13 @@ async function handleAdminV3Overview(request, env, cors) {
     console.warn(`[ADMIN_V3_OVERVIEW] stage=manual_roster_monitor_read status=skipped code=${error?.code || "MANUAL_ROSTER_MONITOR_READ_FAILED"}`);
   }
   const rosterMonitor = buildV3RosterMonitor(rows, { teamCode: FIGHTERS_TEAM_CODE, manualRoster: monitorRoster });
+  let lineupShadowAccuracy = null;
+  try {
+    lineupShadowAccuracy = await readLineupShadowAccuracy(env.AUTH_DB, overviewNow);
+  } catch (error) {
+    console.warn(`[ADMIN_V3_OVERVIEW] stage=lineup_shadow_accuracy_read code=${error?.code || "LINEUP_SHADOW_ACCURACY_READ_FAILED"}`);
+    lineupShadowAccuracy = { available: false, code: error?.code || "LINEUP_SHADOW_ACCURACY_READ_FAILED", games: [], metrics: buildLineupShadowAccuracyReport([]).metrics };
+  }
   return jsonResponse({
     ok: true,
     featureFlag: V3_FEATURE_FLAG,
@@ -6535,7 +6616,8 @@ async function handleAdminV3Overview(request, env, cors) {
       futureScheduleSync
     },
     games: rows,
-    rosterMonitor
+    rosterMonitor,
+    lineupShadowAccuracy
   }, 200, cors);
 }
 
@@ -22860,11 +22942,6 @@ function sanitizeScoringLineup(value, label, { allowUnresolvedPlayer = false } =
   }
 
   return { ok: true, lineup: lineup.sort((left, right) => left.battingOrder - right.battingOrder) };
-}
-
-function normalizeScoringPosition(value) {
-  const key = String(value || "").normalize("NFKC").replace(/\s+/g, "").toUpperCase();
-  return POSITION_ALIASES[key] || "";
 }
 
 function hasDuplicateNonDhPositions(lineup) {

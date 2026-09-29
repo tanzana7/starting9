@@ -84,15 +84,24 @@ export async function disablePushSubscriptions(db, adminUserId, { endpoint = "",
   return { ok: true };
 }
 
-export async function listActivePushSubscriptions(db, { limit = 50 } = {}) {
+export async function listActivePushSubscriptions(db, { limit = 50, adminUserId = "" } = {}) {
   const boundedLimit = Math.min(50, Math.max(1, Number(limit) || 50));
-  const result = await db.prepare(
-    `SELECT id, admin_user_id, endpoint, p256dh, auth
-       FROM admin_push_subscriptions
-      WHERE disabled_at IS NULL
-      ORDER BY updated_at DESC
-      LIMIT ?1`
-  ).bind(boundedLimit).all();
+  const adminId = clean(adminUserId, 160);
+  const result = adminId
+    ? await db.prepare(
+      `SELECT id, admin_user_id, endpoint, p256dh, auth
+         FROM admin_push_subscriptions
+        WHERE disabled_at IS NULL AND admin_user_id = ?1
+        ORDER BY updated_at DESC
+        LIMIT ?2`
+    ).bind(adminId, boundedLimit).all()
+    : await db.prepare(
+      `SELECT id, admin_user_id, endpoint, p256dh, auth
+         FROM admin_push_subscriptions
+        WHERE disabled_at IS NULL
+        ORDER BY updated_at DESC
+        LIMIT ?1`
+    ).bind(boundedLimit).all();
   return result.results || [];
 }
 

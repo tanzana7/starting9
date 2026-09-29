@@ -19,7 +19,16 @@
     const incidents = document.getElementById("adminPushIncidents");
     const subscribeButton = document.getElementById("adminPushSubscribe");
     const unsubscribeButton = document.getElementById("adminPushUnsubscribe");
+    const testButton = document.getElementById("adminPushTest");
     let pushStatus = null;
+
+    function isSupported() {
+      return Boolean(window.Notification && window.navigator?.serviceWorker && window.PushManager);
+    }
+
+    function canSendTest() {
+      return isSupported() && window.Notification.permission === "granted" && pushStatus?.subscribed === true;
+    }
 
     function setStatus(message, isError = false) {
       if (!status) return;
@@ -48,7 +57,7 @@
 
     function render() {
       if (!panel || !status || !subscribeButton || !unsubscribeButton) return;
-      const supported = Boolean(window.Notification && window.navigator?.serviceWorker && window.PushManager);
+      const supported = isSupported();
       if (!supported) {
         setStatus("このブラウザは通知に対応していません。", true);
       } else if (window.Notification.permission === "denied") {
@@ -62,6 +71,7 @@
       }
       subscribeButton.hidden = !supported || pushStatus?.subscribed === true;
       unsubscribeButton.hidden = !supported || pushStatus?.subscribed !== true;
+      if (testButton) testButton.disabled = !canSendTest();
       renderIncidents(pushStatus?.incidents || []);
     }
 
@@ -118,8 +128,29 @@
       }
     }
 
+    async function sendTest() {
+      if (!testButton || !canSendTest()) { render(); return; }
+      testButton.disabled = true;
+      setStatus("送信中…");
+      try {
+        await api.sendPushTest();
+        setStatus("テスト通知を送信しました");
+      } catch (error) {
+        if (error?.code === "NO_ACTIVE_PUSH_SUBSCRIPTION") {
+          setStatus("先にこの端末の通知をONにしてください。", true);
+        } else if (error?.code === "ADMIN_PUSH_TEST_COOLDOWN") {
+          setStatus("少し待ってから再試行してください。", true);
+        } else {
+          setStatus("テスト通知を送信できませんでした。", true);
+        }
+      } finally {
+        testButton.disabled = !canSendTest();
+      }
+    }
+
     subscribeButton?.addEventListener("click", () => { void subscribe(); });
     unsubscribeButton?.addEventListener("click", () => { void unsubscribe(); });
+    testButton?.addEventListener("click", () => { void sendTest(); });
     render();
     return Object.freeze({ refresh, render });
   }

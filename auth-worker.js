@@ -158,6 +158,7 @@ import {
   upsertPushSubscription
 } from "./backend/admin-alerts/storage.js";
 import { evaluateAndNotifyAdminAlerts } from "./backend/admin-alerts/runtime.js";
+import { sendAdminTestPush } from "./backend/admin-alerts/test-push.js";
 
 // Compatibility exports keep existing tests and internal callers stable while
 // the implementation lives in the domain module.
@@ -763,6 +764,9 @@ export default {
       }
       if (path === "/api/admin/push/status" && request.method === "GET") {
         return await handleAdminPushStatus(request, env, cors);
+      }
+      if (path === "/api/admin/push/test" && request.method === "POST") {
+        return await handleAdminPushTest(request, env, cors);
       }
       if (path === "/api/admin/push/subscribe" && request.method === "POST") {
         return await handleAdminPushSubscribe(request, env, cors);
@@ -5662,6 +5666,35 @@ async function handleAdminPushStatus(request, env, cors) {
   }
 }
 
+async function handleAdminPushTest(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  const input = await readJson(request);
+  const result = await sendAdminTestPush({
+    db: env.AUTH_DB,
+    env,
+    adminUserId: access.user.id,
+    body: input,
+    now: new Date()
+  });
+  if (result.ok) return jsonResponse({ ok: true, sent: result.sent, failed: result.failed }, 200, cors);
+  const errorByCode = {
+    NO_ACTIVE_PUSH_SUBSCRIPTION: "先にこの端末の通知をONにしてください。",
+    ADMIN_PUSH_TEST_COOLDOWN: "少し待ってから再試行してください。",
+    ADMIN_PUSH_NOT_CONFIGURED: "運営通知はまだ設定されていません。",
+    ADMIN_PUSH_TEST_BODY_INVALID: "テスト通知のリクエストが不正です。"
+  };
+  const headers = new Headers(cors);
+  if (result.retryAfter) headers.set("Retry-After", String(result.retryAfter));
+  return jsonResponse({
+    ok: false,
+    code: result.code || "ADMIN_PUSH_TEST_FAILED",
+    sent: Number(result.sent || 0),
+    failed: Number(result.failed || 0),
+    error: errorByCode[result.code] || "テスト通知を送信できませんでした。"
+  }, result.status || 502, headers);
+}
+
 async function handleAdminPushSubscribe(request, env, cors) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) return access.response;
@@ -7360,6 +7393,7 @@ function parseAdminV3JobControlRoute(path) {
 const ADMIN_EXACT_ROUTE_METHODS = Object.freeze({
   "/api/admin/me": ["GET"],
   "/api/admin/push/status": ["GET"],
+  "/api/admin/push/test": ["POST"],
   "/api/admin/push/subscribe": ["POST"],
   "/api/admin/push/unsubscribe": ["POST"],
   "/api/admin/push/alerts": ["GET"],

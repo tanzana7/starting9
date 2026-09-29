@@ -4,6 +4,7 @@
   const ADMIN_V3_ENDPOINTS = Object.freeze({
     session: "/api/admin/me",
     pushStatus: "/api/admin/push/status",
+    pushTest: "/api/admin/push/test",
     pushSubscribe: "/api/admin/push/subscribe",
     pushUnsubscribe: "/api/admin/push/unsubscribe",
     pushAlerts: "/api/admin/push/alerts",
@@ -77,6 +78,7 @@
       request,
       getSession: () => request(ADMIN_V3_ENDPOINTS.session),
       getPushStatus: () => request(ADMIN_V3_ENDPOINTS.pushStatus),
+      sendPushTest: () => post(ADMIN_V3_ENDPOINTS.pushTest, {}),
       subscribePush: (body) => post(ADMIN_V3_ENDPOINTS.pushSubscribe, body),
       unsubscribePush: (body = {}) => post(ADMIN_V3_ENDPOINTS.pushUnsubscribe, body),
       getPushAlerts: () => request(ADMIN_V3_ENDPOINTS.pushAlerts),

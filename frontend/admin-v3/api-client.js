@@ -3,6 +3,10 @@
 
   const ADMIN_V3_ENDPOINTS = Object.freeze({
     session: "/api/admin/me",
+    pushStatus: "/api/admin/push/status",
+    pushSubscribe: "/api/admin/push/subscribe",
+    pushUnsubscribe: "/api/admin/push/unsubscribe",
+    pushAlerts: "/api/admin/push/alerts",
     rankings: (periodType) => `/api/admin/rankings/${encodeURIComponent(periodType)}`,
     overview: "/api/admin/v3/overview",
     automationLogs: "/api/admin/v3/automation-logs",
@@ -72,6 +76,10 @@
     return Object.freeze({
       request,
       getSession: () => request(ADMIN_V3_ENDPOINTS.session),
+      getPushStatus: () => request(ADMIN_V3_ENDPOINTS.pushStatus),
+      subscribePush: (body) => post(ADMIN_V3_ENDPOINTS.pushSubscribe, body),
+      unsubscribePush: (body = {}) => post(ADMIN_V3_ENDPOINTS.pushUnsubscribe, body),
+      getPushAlerts: () => request(ADMIN_V3_ENDPOINTS.pushAlerts),
       getRanking(periodType, { periodKey = "", limit = 100, qualifiedOnly = false } = {}) {
         const query = new URLSearchParams({ limit: String(limit), qualifiedOnly: qualifiedOnly ? "true" : "false" });
         if (periodType === "weekly") query.set("weekStart", String(periodKey || ""));

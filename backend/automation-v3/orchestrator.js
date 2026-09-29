@@ -20,6 +20,7 @@ import {
 import { planV3ProbableStarterJobs } from "./probable-starter-planner.js";
 import { isV3GameEligible } from "./domain.js";
 import { assessV3LineupArtifact } from "./lineup-artifacts.js";
+import { isShadowLineupRevision } from "./lineup-shadow-service.js";
 import { evaluateCanonicalArtifactsFromDb, hasCanonicalArtifactEvidence, revisionMatchesIdentity } from "./canonical-artifact-evaluator.js";
 import { getV3CanonicalRosterSnapshot } from "./roster-repository.js";
 import { buildStagePlans, buildV3PlanningState, isV3JobForStage } from "./planning-engine.js";
@@ -92,9 +93,10 @@ export async function readV3LineupDataHealth(db, internalGameId, workflowState =
         ORDER BY version DESC`
     ).bind(internalGameId).all();
     const rows = revisions.results || [];
-    const candidates = rows.filter((row) => Number(row.is_final || 0) !== 1);
+    const formalRows = rows.filter((row) => !isShadowLineupRevision(row));
+    const candidates = formalRows.filter((row) => Number(row.is_final || 0) !== 1);
     const finalized = rows.filter((row) => Number(row.is_final || 0) === 1);
-    const revisionChecks = rows.map((row) => ({ row, check: assessV3LineupArtifact(parseStoredLineupPayload(row.actual_lineup_json)) }));
+    const revisionChecks = formalRows.map((row) => ({ row, check: assessV3LineupArtifact(parseStoredLineupPayload(row.actual_lineup_json)) }));
     const candidateChecks = candidates.map((row) => assessV3LineupArtifact(parseStoredLineupPayload(row.actual_lineup_json)));
     const finalizedChecks = finalized.map((row) => assessV3LineupArtifact(parseStoredLineupPayload(row.actual_lineup_json)));
     const canonical = await db.prepare(

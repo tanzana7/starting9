@@ -197,7 +197,7 @@ export function createLineupCandidate(raw, target = {}, {
   return { ok: true, status: "verified", code: "LINEUP_VERIFIED", candidate: canonicalCandidate, validation: canonicalCandidate.validation };
 }
 
-export function isAutoFinalEligible({ candidate, verification, environment = "test", autoFinalEnabled = false, manualFinalExists = false } = {}) {
+export function isAutoFinalEligible({ candidate, verification, environment = "test", autoFinalEnabled = false, manualFinalExists = false, shadowMode = false } = {}) {
   const source = normalizeSource(candidate?.source);
   const status = normalizeExternalGameStatus(candidate?.status);
   const allowed = isDevelopmentEnvironment(environment)
@@ -205,11 +205,13 @@ export function isAutoFinalEligible({ candidate, verification, environment = "te
     && verification?.status === "verified"
     && !manualFinalExists
     && !TERMINAL_GAME_STATUSES.has(status)
-    && TRUSTED_SOURCES.has(source);
+    && TRUSTED_SOURCES.has(source)
+    && !shadowMode;
   return {
     eligible: allowed,
     reason: allowed ? "VERIFIED_TRUSTED_CANDIDATE" : (
       manualFinalExists ? "MANUAL_FINAL_EXISTS"
+        : shadowMode ? "SHADOW_MODE_AUTO_FINAL_DISABLED"
         : !isDevelopmentEnvironment(environment) ? "PRODUCTION_AUTO_FINAL_DISABLED"
           : !autoFinalEnabled ? "AUTO_FINAL_DISABLED"
             : verification?.status !== "verified" ? "CANDIDATE_NOT_VERIFIED"
@@ -229,9 +231,10 @@ function revisionScope(columns, candidate) {
   return { column: "game_id", value: candidate.internalGameId };
 }
 
-function candidateRevisionPayload(candidate, validation, lifecycleStatus) {
+function candidateRevisionPayload(candidate, validation, lifecycleStatus, { shadowMode = false } = {}) {
   return JSON.stringify({
     phase: "v5-lineup-candidate",
+    shadowMode: Boolean(shadowMode),
     lifecycleStatus,
     source: candidate.source,
     sourceTrust: TRUSTED_SOURCES.has(candidate.source) ? "trusted_development_source" : "untrusted",
@@ -245,7 +248,7 @@ function candidateRevisionPayload(candidate, validation, lifecycleStatus) {
   });
 }
 
-export async function persistLineupCandidate(db, candidate, validation, { now = new Date() } = {}) {
+export async function persistLineupCandidate(db, candidate, validation, { now = new Date(), shadowMode = false } = {}) {
   if (!db || !candidate?.internalGameId) return { ok: false, status: "schema_unavailable", code: "LINEUP_CANDIDATE_DB_REQUIRED" };
   const columns = await tableColumns(db, "game_lineup_revisions");
   const required = ["game_id", "version", "actual_lineup_json", "lineup_fingerprint", "source", "created_at", "reason", "is_current"];
@@ -275,7 +278,7 @@ export async function persistLineupCandidate(db, candidate, validation, { now = 
     ["revision_id", `${candidate.internalGameId}:${version}`],
     ["internal_game_id", candidate.internalGameId],
     ["captured_at", candidate.fetchedAt || createdAt],
-    ["validation_json", candidateRevisionPayload(candidate, validation, validation?.ok ? "verified" : "rejected")],
+    ["validation_json", candidateRevisionPayload(candidate, validation, validation?.ok ? "verified" : "rejected", { shadowMode })],
     ["unresolved_player_count", Array.isArray(candidate.lineup) ? candidate.lineup.filter((row) => !row?.playerId).length : 0],
     ["is_final", 0],
     ["superseded_at", null]
@@ -430,7 +433,7 @@ export function buildLineupAlertSignal(result, { missingAfterGrace = false } = {
   return {};
 }
 
-export async function runLineupCandidatePipeline({ env = {}, target = {}, db = null, fetchOfficial, fetchImpl, signal, now = new Date(), autoFinalEnabled = false, trustedTemporaryPlayers = [] } = {}) {
+export async function runLineupCandidatePipeline({ env = {}, target = {}, db = null, fetchOfficial, fetchImpl, signal, now = new Date(), autoFinalEnabled = false, trustedTemporaryPlayers = [], shadowMode = false } = {}) {
   const fetched = await fetchLineupCandidateForGame(env, target, { fetchOfficial, fetchImpl, signal, now });
   if (!fetched.ok) return { ...fetched, alertSignal: buildLineupAlertSignal(fetched) };
   const normalized = createLineupCandidate(fetched.payload, target, {
@@ -439,17 +442,19 @@ export async function runLineupCandidatePipeline({ env = {}, target = {}, db = n
     trustedTemporaryPlayers
   });
   if (!normalized.ok) {
-    const persisted = db ? await persistLineupCandidate(db, normalized.candidate, normalized.validation, { now }) : null;
+    const persisted = db ? await persistLineupCandidate(db, normalized.candidate, normalized.validation, { now, shadowMode }) : null;
     return { ...normalized, persisted, alertSignal: buildLineupAlertSignal(normalized) };
   }
-  const persisted = db ? await persistLineupCandidate(db, normalized.candidate, normalized.validation, { now }) : null;
+  const persisted = db ? await persistLineupCandidate(db, normalized.candidate, normalized.validation, { now, shadowMode }) : null;
   if (persisted?.status === "manual_final_exists") {
     return { ...normalized, status: "manual_final_exists", code: "MANUAL_FINAL_EXISTS", persisted, eligibility: { eligible: false, reason: "MANUAL_FINAL_EXISTS" } };
   }
   const manualFinalExists = Boolean(persisted?.revision && Number(persisted.revision.is_final || 0) === 1
     && ["manual", "manual-revision", "restore"].includes(text(persisted.revision.source).toLowerCase()));
   const verification = { status: "verified", candidate: normalized.candidate, validation: normalized.validation };
-  const eligibility = isAutoFinalEligible({ candidate: normalized.candidate, verification, environment: env.ENVIRONMENT || env.APP_ENV || "test", autoFinalEnabled, manualFinalExists });
+  const environment = env.ENVIRONMENT || env.APP_ENV
+    || (String(env.ENABLE_DEVELOPMENT_MODE || "").trim().toLowerCase() === "false" ? "production" : "test");
+  const eligibility = isAutoFinalEligible({ candidate: normalized.candidate, verification, environment, autoFinalEnabled, manualFinalExists, shadowMode });
   if (!eligibility.eligible || !autoFinalEnabled || !persisted?.revision || !db) return { ...normalized, source: normalized.candidate.source, persisted, verification, eligibility, alertSignal: {} };
   const finalized = await finalizeVerifiedLineupCandidate(db, {
     candidate: normalized.candidate,

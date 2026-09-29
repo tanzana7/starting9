@@ -151,6 +151,13 @@ import {
   parseSimulatorResponse,
   resolveNpbSource
 } from "./backend/npb-source-adapter.js";
+import {
+  getPushStatus,
+  listRecentAlertIncidents,
+  disablePushSubscriptions,
+  upsertPushSubscription
+} from "./backend/admin-alerts/storage.js";
+import { evaluateAndNotifyAdminAlerts } from "./backend/admin-alerts/runtime.js";
 
 // Compatibility exports keep existing tests and internal callers stable while
 // the implementation lives in the domain module.
@@ -754,6 +761,18 @@ export default {
       if (path === "/api/admin/me" && request.method === "GET") {
         return await handleAdminMe(request, env, cors);
       }
+      if (path === "/api/admin/push/status" && request.method === "GET") {
+        return await handleAdminPushStatus(request, env, cors);
+      }
+      if (path === "/api/admin/push/subscribe" && request.method === "POST") {
+        return await handleAdminPushSubscribe(request, env, cors);
+      }
+      if (path === "/api/admin/push/unsubscribe" && request.method === "POST") {
+        return await handleAdminPushUnsubscribe(request, env, cors);
+      }
+      if (path === "/api/admin/push/alerts" && request.method === "GET") {
+        return await handleAdminPushAlerts(request, env, cors);
+      }
       if (path === "/api/admin/v3/overview" && request.method === "GET") {
         return await handleAdminV3Overview(request, env, cors);
       }
@@ -1118,6 +1137,105 @@ async function writeRosterMasterUnregisteredAudit(env, game, unknownPlayers, now
     console.warn(`[PUBLIC_ROSTER] master_warning_audit_skipped code=${error?.code || "ROSTER_MASTER_AUDIT_FAILED"}`);
     return false;
   }
+}
+
+async function collectAdminAlertGames(db, internalGameIds) {
+  const ids = [...new Set((Array.isArray(internalGameIds) ? internalGameIds : []).map((id) => String(id || "").trim()).filter(Boolean))].slice(0, 8);
+  if (!ids.length) return [];
+  const placeholders = ids.map((_, index) => `?${index + 1}`).join(", ");
+  const result = await db.prepare(
+    `SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status, npb_game_code
+       FROM games WHERE internal_game_id IN (${placeholders})`
+  ).bind(...ids).all();
+  return (result.results || []).map((row) => ({
+    internalGameId: row.internal_game_id,
+    gameDate: row.game_date,
+    startAt: row.start_time,
+    homeTeam: row.home_team,
+    awayTeam: row.away_team,
+    gameStatus: row.game_status,
+    npbGameCode: row.npb_game_code || null
+  }));
+}
+
+async function buildAdminAlertSignals(db, env, game, now) {
+  const [stateRow, jobsResult] = await Promise.all([
+    db.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(game.internalGameId).first(),
+    db.prepare(
+      `SELECT job_type, status, scheduled_at, scheduled_slot_at, attempt_count, max_attempts,
+              next_retry_at, failure_code, updated_at
+         FROM game_jobs_v3 WHERE internal_game_id = ?1
+        ORDER BY COALESCE(updated_at, scheduled_at) DESC, id DESC LIMIT 40`
+    ).bind(game.internalGameId).all()
+  ]);
+  const workflowState = String(stateRow?.state || "scheduled");
+  const workflowArtifactHealth = await getV3WorkflowArtifactHealth(db, game.internalGameId, workflowState).catch(() => null);
+  const jobs = jobsResult.results || [];
+  const schedule = deriveV3DisplaySchedule(game);
+  const notTerminal = !["published", "cancelled", "canceled", "postponed", "no_game", "service_unavailable", "excluded"].includes(workflowState);
+  const latest = (types) => jobs.find((job) => types.includes(String(job.job_type || ""))) || null;
+  const closeJob = latest(["prediction_close"]);
+  const closeDeadline = new Date(schedule.predictionDeadline).getTime();
+  const graceElapsed = Number.isFinite(closeDeadline) && closeDeadline + 5 * 60 * 1000 <= now.getTime();
+  const closeCompleted = closeJob?.status === "completed";
+  const phases = {
+    score: deriveV3PhaseStatus({ phase: "score", game, now, workflowState, jobs, workflowArtifactHealth }),
+    ranking: deriveV3PhaseStatus({ phase: "ranking", game, now, workflowState, jobs, workflowArtifactHealth }),
+    publish: deriveV3PhaseStatus({ phase: "publish", game, now, workflowState, jobs, workflowArtifactHealth })
+  };
+  const attentionFailure = (phase) => phase?.severity === "ATTENTION"
+    && (phase.failedJobExists === true || /FAILED|INVALID|MISMATCH|INTEGRITY|UNEXPECTED|EXHAUSTED/.test(String(phase.reasonCode || "")));
+  const lineupRequired = ["prediction_closed", "lineup_ready", "scored", "ranked", "published", "manual_action_required"].includes(workflowState);
+  const finalLineupAt = new Date(schedule.finalLineupAt).getTime();
+  const manualLineupOverdue = String(env.ENABLE_SEMI_AUTO_LINEUP || "").toLowerCase() === "true"
+    && ["prediction_closed", "manual_action_required"].includes(workflowState)
+    && lineupRequired
+    && (workflowArtifactHealth?.lineup?.available !== true || workflowArtifactHealth.lineup.ready !== true)
+    && Number.isFinite(finalLineupAt)
+    && finalLineupAt + 30 * 60 * 1000 <= now.getTime();
+  const canonicalLineupInvalid = lineupRequired
+    && workflowState !== "prediction_closed"
+    && workflowArtifactHealth?.lineup?.available === true
+    && workflowArtifactHealth.lineup.ready !== true
+    && (phases.score?.severity === "ATTENTION" || phases.ranking?.severity === "ATTENTION" || phases.publish?.severity === "ATTENTION");
+  const scoringArtifactInvalid = ["scored", "ranked", "published"].includes(workflowState)
+    && workflowArtifactHealth?.scoring?.available === true
+    && workflowArtifactHealth.scoring.ready !== true
+    && phases.score?.severity === "ATTENTION";
+  return {
+    manualLineupOverdue,
+    predictionCloseOverdue: notTerminal && graceElapsed && !closeCompleted && Boolean(closeJob),
+    missingDueJob: notTerminal && graceElapsed && !closeCompleted && !closeJob && workflowState === "scheduled",
+    scoreFailure: attentionFailure(phases.score),
+    rankingFailure: attentionFailure(phases.ranking),
+    publishFailure: attentionFailure(phases.publish),
+    canonicalLineupInvalid,
+    scoringArtifactInvalid,
+    rankingRevisionMismatch: phases.ranking?.severity === "ATTENTION" && /MISMATCH/.test(String(phases.ranking.reasonCode || "")),
+    publicationInvalid: workflowState === "published" && phases.publish?.severity === "ATTENTION",
+    // Phase 5/5.5 production flags remain disabled; the future signals are
+    // intentionally not synthesized here and therefore cannot page operators.
+    gameCodeAmbiguous: false,
+    gameCodeTemporaryFailure: false,
+    additionalScheduleReview: false
+  };
+}
+
+function scheduleAdminAlertEvaluation(env, now, result, observerScheduler) {
+  if (!env?.AUTH_DB || !Array.isArray(result?.gameIds) || !result.gameIds.length) return Promise.resolve();
+  const task = Promise.resolve().then(async () => evaluateAndNotifyAdminAlerts({
+    db: env.AUTH_DB,
+    env,
+    now,
+    games: await collectAdminAlertGames(env.AUTH_DB, result.gameIds),
+    getSignals: (game) => buildAdminAlertSignals(env.AUTH_DB, env, game, now),
+    log: (message) => console.warn(message)
+  })).catch((error) => {
+    console.warn(`[ADMIN_ALERT] stage=cron_evaluation code=${error?.code || "ADMIN_ALERT_EVALUATION_FAILED"}`);
+    return { ok: false, skipped: "ADMIN_ALERT_EVALUATION_FAILED" };
+  });
+  if (typeof observerScheduler === "function") observerScheduler(task);
+  return task;
 }
 
 async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = null, scheduleOptional = null, observerScheduler = null } = {}) {
@@ -1658,6 +1776,11 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
   if (result?.schemaReady === false) {
     console.error(`[GAME_AUTOMATION_V3] enabled=true code=${result.errorCode}`);
   }
+  // Alert delivery is an isolated, bounded side effect.  It is scheduled
+  // after the formal summary so Web Push configuration or delivery failures
+  // cannot delay or change the game workflow.
+  const adminAlertTask = scheduleAdminAlertEvaluation(env, now, result, observerScheduler);
+  if (typeof observerScheduler !== "function") await adminAlertTask;
   await writeCronHandlerFinished("completed", { publishedReached: workflowStates.some((row) => String(row?.state || "") === "published") });
   return { ...result, scheduleSync, runId, correlationId, summary };
   } catch (error) {
@@ -5526,6 +5649,59 @@ async function handleAdminMe(request, env, cors) {
   }, 200, cors);
 }
 
+async function handleAdminPushStatus(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  try {
+    const status = await getPushStatus(env.AUTH_DB, access.user.id, { vapidPublicKey: env.VAPID_PUBLIC_KEY });
+    const incidents = await listRecentAlertIncidents(env.AUTH_DB, { limit: 20 });
+    return jsonResponse({ ok: true, ...status, incidents }, 200, cors);
+  } catch (error) {
+    console.warn(`[ADMIN_PUSH] stage=status code=${error?.code || "ADMIN_PUSH_STATUS_FAILED"}`);
+    return jsonResponse({ ok: false, code: "ADMIN_PUSH_STATUS_FAILED", error: "運営通知の状態を取得できませんでした。" }, 503, cors);
+  }
+}
+
+async function handleAdminPushSubscribe(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  if (!String(env.VAPID_PUBLIC_KEY || "").trim() || !String(env.VAPID_PRIVATE_KEY || "").trim() || !String(env.VAPID_SUBJECT || "").trim()) {
+    return jsonResponse({ ok: false, code: "ADMIN_PUSH_NOT_CONFIGURED", error: "運営通知はまだ設定されていません。" }, 503, cors);
+  }
+  const input = await readJson(request);
+  const result = await upsertPushSubscription(env.AUTH_DB, {
+    adminUserId: access.user.id,
+    subscription: input,
+    now: new Date()
+  });
+  if (!result.ok) return jsonResponse({ ok: false, code: result.code, error: "通知登録の内容を確認してください。" }, 400, cors);
+  return jsonResponse({ ok: true, subscribed: true }, 200, cors);
+}
+
+async function handleAdminPushUnsubscribe(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  const input = await readJson(request);
+  const result = await disablePushSubscriptions(env.AUTH_DB, access.user.id, {
+    endpoint: typeof input?.endpoint === "string" ? input.endpoint : "",
+    now: new Date()
+  });
+  if (!result.ok) return jsonResponse({ ok: false, code: result.code, error: "通知解除の内容を確認してください。" }, 400, cors);
+  return jsonResponse({ ok: true, subscribed: false }, 200, cors);
+}
+
+async function handleAdminPushAlerts(request, env, cors) {
+  const access = await requireAdminUser(request, env, cors);
+  if (!access.ok) return access.response;
+  try {
+    const incidents = await listRecentAlertIncidents(env.AUTH_DB, { limit: 30 });
+    return jsonResponse({ ok: true, incidents }, 200, cors);
+  } catch (error) {
+    console.warn(`[ADMIN_PUSH] stage=alerts code=${error?.code || "ADMIN_PUSH_ALERTS_FAILED"}`);
+    return jsonResponse({ ok: false, code: "ADMIN_PUSH_ALERTS_FAILED", error: "運営通知を取得できませんでした。" }, 503, cors);
+  }
+}
+
 async function handleAdminV3Overview(request, env, cors) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) return access.response;
@@ -7183,6 +7359,10 @@ function parseAdminV3JobControlRoute(path) {
 
 const ADMIN_EXACT_ROUTE_METHODS = Object.freeze({
   "/api/admin/me": ["GET"],
+  "/api/admin/push/status": ["GET"],
+  "/api/admin/push/subscribe": ["POST"],
+  "/api/admin/push/unsubscribe": ["POST"],
+  "/api/admin/push/alerts": ["GET"],
   "/api/admin/v3/overview": ["GET"],
   "/api/admin/v3/lineup-corrections": ["GET"],
   "/api/admin/v3/manual-roster": ["GET", "PUT"],

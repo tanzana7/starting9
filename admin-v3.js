@@ -19,7 +19,8 @@ if (!adminV3Modules?.createAdminV3State
   || !adminV3Modules?.createAdminV3SelectionSafety
   || !adminV3Modules?.createAdminV3ManualLineupRenderer
   || !adminV3Modules?.createAdminV3ManualRosterRenderer
-  || !adminV3Modules?.createAdminV3LineupCorrectionRenderer) {
+  || !adminV3Modules?.createAdminV3LineupCorrectionRenderer
+  || !adminV3Modules?.createAdminV3PushControls) {
   throw new Error("ADMIN_V3_MODULES_NOT_LOADED");
 }
 const v3Dom = adminV3Modules.createAdminV3Dom();
@@ -83,6 +84,11 @@ const v3Api = adminV3Modules.createAdminV3ApiClient({
   fetchImpl: window.fetch.bind(window),
   location: window.location,
   productionBase: V3_AUTH_PRODUCTION_BASE
+});
+const adminPushControls = adminV3Modules.createAdminV3PushControls({
+  document,
+  api: v3Api,
+  window
 });
 
 function manualOperationKey(internalGameId, jobType) {
@@ -2039,6 +2045,7 @@ async function loadV3() {
   try {
     const session = await v3Api.getSession();
     if (!session.admin) throw new Error("管理者権限がありません。");
+    await adminPushControls.refresh();
     const payload = await v3Api.getOverview();
     payload.automationLogs = await v3Api.getAutomationLogs().catch((error) => ({ error: formatV3AdminError(error, "V3_AUTOMATION_LOG_FAILED") }));
     v3State.automationLogs = payload.automationLogs;

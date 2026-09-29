@@ -80,7 +80,7 @@ export function buildSimulatorSourceUrl(baseUrl, params = {}) {
   const mode = String(params.mode || "").trim().toLowerCase();
   if (mode === "starter") return `${origin}/announcement/starter/`;
   if (mode === "schedule") return `${origin}/api/public/games`;
-  if (mode === "lineup") {
+  if (mode === "lineup" || mode === "score") {
     const date = String(params.date || params.gameDate || "").trim();
     const gameCode = normalizedGameCode(params.gameCode || params.npbGameCode);
     if (!DATE_PATTERN.test(date) || !gameCode) throw adapterError("SIMULATOR_GAME_ID_INVALID", "S9simu game identity is invalid.");
@@ -156,14 +156,44 @@ function parseLineupTable(table) {
 
 function parseLineupHtml(html) {
   const root = String(html || "").match(/<div\b[^>]*data-game-code=["'][^"']+["'][^>]*>/i)?.[0] || "";
+  const seriesNumber = Number(attribute(String(html || "").match(/data-series-number=["'][^"']+["']/i)?.[0] || "", "series-number"));
+  const metadata = {
+    gameCode: attribute(root, "game-code"),
+    date: attribute(root, "game-date"),
+    homeTeam: attribute(root, "home-team"),
+    awayTeam: attribute(root, "away-team"),
+    seriesNumber: Number.isInteger(seriesNumber) && seriesNumber > 0 ? seriesNumber : null,
+    startAt: attribute(root, "start-at") || attribute(root, "start-time") || ""
+  };
   const gameStatus = normalizeExternalGameStatus(attribute(root, "game-status"));
   const table = String(html || "").match(/<table\b[^>]*data-lineup-team=["']fighters["'][^>]*>[\s\S]*?<\/table>/i)?.[0] || "";
   const lineup = parseLineupTable(table);
   if (!lineup.length && ["cancelled", "no_game"].includes(gameStatus)) {
-    return { ok: true, payload: { ok: true, lineup: [], status: gameStatus, fetchedAt: new Date().toISOString(), sourceUrl: "simulator" } };
+    return { ok: true, payload: { ok: true, ...metadata, lineup: [], status: gameStatus, fetchedAt: new Date().toISOString(), sourceUrl: "simulator" } };
   }
   if (!lineup.length) return { ok: false, code: "LINEUP_NOT_PUBLISHED", parseStage: "simulator_lineup_html", gameStatus };
-  return { ok: true, payload: { ok: true, lineup, status: gameStatus, fetchedAt: new Date().toISOString(), sourceUrl: "simulator" } };
+  return { ok: true, payload: { ok: true, ...metadata, lineup, status: gameStatus, fetchedAt: new Date().toISOString(), sourceUrl: "simulator" } };
+}
+
+function parseScoreHtml(html) {
+  const root = String(html || "").match(/<div\b[^>]*data-game-code=["'][^"']+["'][^>]*>/i)?.[0] || "";
+  if (!root) return { ok: false, code: "NPB_RESPONSE_INVALID", parseStage: "simulator_score_html" };
+  const seriesTag = String(html || "").match(/data-series-number=["'][^"']+["']/i)?.[0] || "";
+  const seriesNumber = Number(attribute(seriesTag, "series-number"));
+  return {
+    ok: true,
+    payload: {
+      ok: true,
+      gameCode: attribute(root, "game-code"),
+      date: attribute(root, "game-date"),
+      homeTeam: attribute(root, "home-team"),
+      awayTeam: attribute(root, "away-team"),
+      seriesNumber: Number.isInteger(seriesNumber) && seriesNumber > 0 ? seriesNumber : null,
+      status: normalizeExternalGameStatus(attribute(root, "game-status")),
+      sourceUrl: "simulator",
+      fetchedAt: new Date().toISOString()
+    }
+  };
 }
 
 function parseScheduleJson(text) {
@@ -199,6 +229,7 @@ export async function parseSimulatorResponse(response, params = {}) {
   if (!response.ok) return { ok: false, code: "NPB_HTTP_ERROR", error: "S9simu returned an HTTP error.", httpStatus: response.status };
   if (mode === "schedule") return parseScheduleJson(text);
   if (mode === "starter") return parseStarterHtml(text);
+  if (mode === "score") return parseScoreHtml(text);
   if (mode === "lineup") return parseLineupHtml(text);
   return { ok: false, code: "SIMULATOR_MODE_UNSUPPORTED", parseStage: "simulator_response" };
 }

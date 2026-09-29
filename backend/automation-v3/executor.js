@@ -263,7 +263,7 @@ async function prepareV3GameStates(env, games = [], now = new Date(), { onError 
       const stateRow = await ensureV3State(env.AUTH_DB, game.internalGameId, now);
       prepared += 1;
       if (isV3GameEligible(game) || stateRow.state === V3_STATE.EXCLUDED) continue;
-      const unavailable = ["cancelled", "canceled", "postponed", "service_unavailable"].includes(String(game?.gameStatus || "").toLowerCase());
+      const unavailable = ["cancelled", "canceled", "postponed", "no_game", "service_unavailable"].includes(String(game?.gameStatus || "").toLowerCase());
       if (unavailable) {
         skipped += 1;
         await invokeV3Observer(onError, [createV3Error(

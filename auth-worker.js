@@ -147,6 +147,7 @@ import { applyScheduleChange, deriveScheduleArtifacts, isScheduleUnavailable } f
 import { applyEligibilityChange } from "./backend/automation-v3/eligibility-service.js";
 import {
   fetchSimulatorSource,
+  normalizeExternalGameStatus,
   parseSimulatorResponse,
   resolveNpbSource
 } from "./backend/npb-source-adapter.js";
@@ -1221,24 +1222,11 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
   };
 
   // Schedule synchronization can fan out across the lookahead window and
-  // wait on the external NPB service. Run the existing V3 pipeline first so a
-  // due job for an already-registered game is never held behind that buffer.
+  // wait on the external NPB service. Keep the normal bounded sync first, then
+  // reconcile the statuses it just observed in the same run. This makes a
+  // simulator no-game/cancellation response reach the existing eligibility
+  // gate without adding an extra scan or a second external fetch.
   const runScheduleSync = async () => {
-    let officialCancellation = null;
-    try {
-      officialCancellation = await reconcileOfficialGameCancellations(env, now, {
-        includeHistorical: isV3StorageMaintenanceWindow(now)
-      });
-    } catch (error) {
-      officialCancellation = {
-        checked: 0,
-        applied: 0,
-        skipped: 0,
-        failed: 1,
-        errorCode: error?.code || "OFFICIAL_CANCELLATION_RECONCILE_FAILED"
-      };
-      console.warn(`[GAME_OFFICIAL_CANCELLATION] status=failed code=${officialCancellation.errorCode}`);
-    }
     let currentDayScheduleSync = null;
     try {
       currentDayScheduleSync = await syncCurrentDayFightersSchedule(env, now);
@@ -1275,6 +1263,21 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
         lastScheduleSyncAt: now.toISOString()
       };
       console.warn(`[GAME_SCHEDULE_BUFFER] status=failed code=${scheduleSync.skipReason}`);
+    }
+    let officialCancellation = null;
+    try {
+      officialCancellation = await reconcileOfficialGameCancellations(env, now, {
+        includeHistorical: isV3StorageMaintenanceWindow(now)
+      });
+    } catch (error) {
+      officialCancellation = {
+        checked: 0,
+        applied: 0,
+        skipped: 0,
+        failed: 1,
+        errorCode: error?.code || "OFFICIAL_CANCELLATION_RECONCILE_FAILED"
+      };
+      console.warn(`[GAME_OFFICIAL_CANCELLATION] status=failed code=${officialCancellation.errorCode}`);
     }
     try {
       await writeScheduleSyncAudit(scheduleSync);
@@ -1681,7 +1684,7 @@ async function reconcileOfficialGameCancellations(env, now, { includeHistorical 
   });
   for (const game of games) {
     const status = String(game?.gameStatus || "").trim().toLowerCase();
-    if (!["cancelled", "canceled", "postponed", "service_unavailable"].includes(status)) continue;
+    if (!["cancelled", "postponed", "no_game", "service_unavailable"].includes(status)) continue;
     summary.checked += 1;
     const state = String(game.workflowState || "");
     if (!state || state === "excluded") {
@@ -1705,7 +1708,7 @@ async function reconcileOfficialGameCancellations(env, now, { includeHistorical 
   return summary;
 }
 
-async function applyOfficialGameCancellation(env, game, stateBefore, now) {
+async function applyOfficialGameCancellation(env, game, stateBefore, now, { statusOverride = null } = {}) {
   const internalGameId = String(game?.internalGameId || "").trim();
   if (!internalGameId) return { status: "skipped", reason: "missing_internal_game_id" };
   const currentLineup = await getGameLineup(env.AUTH_DB, { gameId: internalGameId, internalGameId });
@@ -1717,12 +1720,17 @@ async function applyOfficialGameCancellation(env, game, stateBefore, now) {
     throw createV3Error("OFFICIAL_CANCELLATION_REQUIRES_ADMIN_REVIEW", "ランキング反映履歴を確認できないため、公式中止を自動反映できません。", { retryable: true });
   }
   const context = await loadV3AdminContext(env.AUTH_DB, internalGameId);
-  const requestedStatus = String(game.gameStatus || "cancelled").toLowerCase() === "service_unavailable"
-    ? "service_unavailable"
+  const normalizedStatus = normalizeExternalGameStatus(statusOverride || game.gameStatus || "cancelled");
+  const requestedStatus = ["cancelled", "postponed", "no_game", "service_unavailable"].includes(normalizedStatus)
+    ? normalizedStatus
     : "cancelled";
   const reason = requestedStatus === "service_unavailable"
     ? "NPB公式情報でサービス対象外状態を確認したため自動反映"
-    : "NPB公式情報で試合中止を確認したため自動反映";
+    : requestedStatus === "postponed"
+      ? "NPB公式情報で試合延期を確認したため自動反映"
+      : requestedStatus === "no_game"
+        ? "NPB公式情報でノーゲームを確認したため自動反映"
+        : "NPB公式情報で試合中止を確認したため自動反映";
   const scheduleMutation = await applyScheduleChange(env.AUTH_DB, {
     internalGameId,
     proposedSchedule: {
@@ -1752,7 +1760,7 @@ async function applyOfficialGameCancellation(env, game, stateBefore, now) {
       internalGameId,
       status: RANKING_ELIGIBILITY_STATUS.EXCLUDED,
       gameStatus: requestedStatus,
-      reason: requestedStatus === "service_unavailable" ? "service_unavailable" : requestedStatus === "postponed" ? "postponed" : "cancelled_after_start",
+      reason: requestedStatus === "service_unavailable" ? "service_unavailable" : requestedStatus === "postponed" ? "postponed" : requestedStatus === "no_game" ? "no_game_after_start" : "cancelled_after_start",
       note: reason,
       actor: "npb-official",
       source: "cron",
@@ -1783,7 +1791,7 @@ async function applyOfficialGameCancellation(env, game, stateBefore, now) {
     metadata: { internalGameId, status: requestedStatus, cancelledJobs, source: "npb_official" },
     source: "system"
   }).catch(() => {});
-  return { status: "applied", stateAfter: transitioned?.state || "excluded", cancelledJobs, scheduleMutation, eligibility };
+  return { status: "applied", stateAfter: transitioned?.state || "excluded", gameStatus: requestedStatus, cancelledJobs, scheduleMutation, eligibility };
 }
 
 async function loadV3GameTarget(db, internalGameId) {
@@ -2074,10 +2082,13 @@ async function executeV3LineupExecutor({ env, internalGameId, now, target, state
     });
   } catch (error) {
     if (jobType === V3_JOB_TYPE.LINEUP_FETCH) {
-      if (String(error?.code || "").toUpperCase() === "GAME_CANCELLED") {
-        const cancellation = await applyOfficialGameCancellation(env, target, stateBefore, now);
+      const externalStatusCode = String(error?.code || "").toUpperCase();
+      if (["GAME_CANCELLED", "GAME_NO_GAME"].includes(externalStatusCode)) {
+        const statusOverride = externalStatusCode === "GAME_NO_GAME" ? "no_game" : "cancelled";
+        const cancellation = await applyOfficialGameCancellation(env, target, stateBefore, now, { statusOverride });
         return {
           status: "official_cancelled",
+          ...(statusOverride === "no_game" ? { status: "official_no_game" } : {}),
           stateBefore,
           stateAfter: stateBefore,
           cancellation
@@ -3891,7 +3902,7 @@ export function validateWorkflowJobTarget({
     || (gameRow.start_time && schedule.start_at && new Date(gameRow.start_time).getTime() !== new Date(schedule.start_at).getTime())
   ));
   const cancelled = [gameRow?.game_status, schedule?.game_status, schedule?.status]
-    .some((value) => ["cancelled", "canceled", "postponed"].includes(String(value || "").toLowerCase()));
+    .some((value) => ["cancelled", "canceled", "postponed", "no_game"].includes(String(value || "").toLowerCase()));
   const sameTeams = Boolean(homeTeam && awayTeam && homeTeam !== awayTeam);
   const conflicts = Array.isArray(identifierConflicts) ? identifierConflicts.filter((row) => String(row?.internal_game_id || "") !== normalizedInternalGameId) : [];
   let code = "";
@@ -4246,7 +4257,7 @@ export async function resolvePublicationTarget(db, internalGameId, requestedLega
     throw createPregameError("PUBLICATION_TARGET_INVALID", "公開対象の既存試合情報が不足しています。", { retryable: false, targetResolution });
   }
   const status = String(state?.game_status || game?.game_status || schedule?.game_status || "scheduled").toLowerCase();
-  if (["cancelled", "canceled", "postponed", "service_unavailable"].includes(status)) {
+  if (["cancelled", "canceled", "postponed", "no_game", "service_unavailable"].includes(status)) {
     throw createPregameError("PUBLICATION_TARGET_INVALID", "公開対象の試合状態が不正です。", { retryable: false, targetResolution });
   }
   return {
@@ -4571,8 +4582,8 @@ async function syncFightersScheduleForDate(env, date, now, { intervalMs = AUTOMA
         sourceGameKey: `${date}:${game.homeTeam}:${game.awayTeam}:${game.startTime}`,
         npbGameCode: normalizeNpbGameCode(game.gameCode),
         npbGameUrl: String(game.npbGameUrl || "").trim() || buildNpbGameUrl(date, game.gameCode),
-        gameStatus: ["cancelled", "canceled", "postponed", "service_unavailable"].includes(String(game.status || "").toLowerCase())
-          ? (String(game.status).toLowerCase() === "canceled" ? "cancelled" : String(game.status).toLowerCase())
+        gameStatus: ["cancelled", "postponed", "no_game", "service_unavailable"].includes(normalizeExternalGameStatus(game.status || game.gameStatus || game.game_status))
+          ? normalizeExternalGameStatus(game.status || game.gameStatus || game.game_status)
           : "scheduled"
       };
     });
@@ -4679,7 +4690,7 @@ async function countFutureFightersGames(db, now) {
         AND game_date > ?1
         AND (is_active IS NULL OR is_active = 1)
         AND (deleted_at IS NULL OR deleted_at = '')
-        AND (game_status IS NULL OR game_status NOT IN ('cancelled', 'canceled', 'postponed', 'service_unavailable'))
+        AND (game_status IS NULL OR game_status NOT IN ('cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable'))
         AND (LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')`
   ).bind(todayJst).first();
   return Number(result?.count || 0);
@@ -4925,7 +4936,7 @@ async function backfillUniqueDetectedScheduleInternalGames(db, date, registry, n
           actor: "npb-schedule-backfill",
           source: "cron",
           reason: "NPB公式日程同期の内部ID補完",
-          officialCorrection: ["cancelled", "canceled", "postponed", "service_unavailable"].includes(String(row.game_status || "").toLowerCase()),
+          officialCorrection: ["cancelled", "canceled", "postponed", "no_game", "service_unavailable"].includes(String(row.game_status || "").toLowerCase()),
           now
         });
         await db.prepare(
@@ -6688,7 +6699,7 @@ async function getV3AdminJobDiagnosticContext(db, auditDb, internalGameId, jobTy
       message: null
     },
     cancellation: {
-      isUnavailable: ["cancelled", "canceled", "postponed", "service_unavailable"].includes(String(target?.game_status || target?.gameStatus || "").toLowerCase()),
+      isUnavailable: ["cancelled", "canceled", "postponed", "no_game", "service_unavailable"].includes(String(target?.game_status || target?.gameStatus || "").toLowerCase()),
       gameStatus: target?.game_status || target?.gameStatus || "scheduled",
       cancellationStatus: null,
       source: null,
@@ -7105,7 +7116,7 @@ async function handleAdminV3JobCreate(request, env, cors, internalGameId) {
       throw createV3Error("V3_CONFIRMATION_REQUIRED", "危険な工程は確認済みフラグが必要です。", { httpStatus: 409 });
     }
     const target = await loadV3GameTarget(env.AUTH_DB, id);
-    if (["cancelled", "canceled", "postponed", "service_unavailable"].includes(String(target.gameStatus || "").toLowerCase())) {
+    if (["cancelled", "canceled", "postponed", "no_game", "service_unavailable"].includes(String(target.gameStatus || "").toLowerCase())) {
       throw createV3Error("V3_GAME_UNAVAILABLE", "中止または対象外の試合では後続V3 jobを再実行できません。", { httpStatus: 409 });
     }
     const diagnosis = await getV3ManualJobDiagnosis(env.AUTH_DB, id, jobType, target, getV3AuditDb(env));
@@ -9544,7 +9555,7 @@ async function handleAdminV3ScheduleGet(env, cors, context) {
     if (!isPregameSchemaError(error)) throw error;
   }
   const gameStatus = String(context.target.gameStatus || "scheduled").toLowerCase();
-  const unavailable = ["cancelled", "canceled", "postponed", "service_unavailable"].includes(gameStatus);
+  const unavailable = ["cancelled", "canceled", "postponed", "no_game", "service_unavailable"].includes(gameStatus);
   return jsonResponse({ ok: true, internalGameId: context.id, schedule: {
     gameDate: context.target.game_date, startAt: schedule.startAt.toISOString(),
     scheduleVersion: context.target.updatedAt || null,
@@ -9590,9 +9601,9 @@ async function handleAdminV3ScheduleUpdate(request, env, cors, context, user) {
   const reason = String(input?.reason || "").trim();
   if (!reason || reason.length > 240) throw createV3Error("V3_REASON_REQUIRED", "日程変更理由を入力してください。", { httpStatus: 400 });
   const requestedStatus = String(input?.status || context.target.gameStatus || "scheduled").trim().toLowerCase();
-  const allowedStatuses = new Set(["scheduled", "cancelled", "postponed", "service_unavailable"]);
+  const allowedStatuses = new Set(["scheduled", "cancelled", "postponed", "no_game", "service_unavailable"]);
   if (!allowedStatuses.has(requestedStatus)) {
-    throw createV3Error("V3_SCHEDULE_STATUS_INVALID", "日程状態はscheduled/cancelled/postponed/service_unavailableのいずれかです。", { httpStatus: 400 });
+    throw createV3Error("V3_SCHEDULE_STATUS_INVALID", "日程状態はscheduled/cancelled/postponed/no_game/service_unavailableのいずれかです。", { httpStatus: 400 });
   }
   const currentStartAt = new Date(context.target.start_time || "");
   const requestedStartAt = new Date(input?.startAt || context.target.start_time || "");
@@ -14349,6 +14360,15 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
     const payload = identityOverride?.sourceUrl
       ? await fetchNpbWorkerJson(env, lineupFetchParams)
       : await fetchNpbWorkerJson(env, { mode: "lineup", date: identity.game.date, gameCode: identity.gameCode, debug: isV3 ? "1" : undefined });
+    const externalStatus = normalizeExternalGameStatus(payload.status || payload.gameStatus || payload.game_status);
+    if (["cancelled", "postponed", "no_game", "service_unavailable"].includes(externalStatus)) {
+      const statusLabel = externalStatus === "no_game" ? "ノーゲーム" : externalStatus === "postponed" ? "延期" : externalStatus === "service_unavailable" ? "対象外" : "中止";
+      throw createPregameError(externalStatus === "no_game" ? "GAME_NO_GAME" : "GAME_CANCELLED", `NPB公式で${statusLabel}を確認しました。`, {
+        retryable: false,
+        externalStatus,
+        parseStage: "official_game_status"
+      });
+    }
     const actual = createOfficialLineupFromNpb(payload.lineup);
     if (!actual.ok) {
       throw createPregameError(actual.code || "LINEUP_PARSE_FAILED", actual.error, {
@@ -17081,7 +17101,7 @@ async function handleGetPublicGames(request, env, cors) {
       publishedAt: row.published_at || null,
       isPublished: publicationStatus === "published" || Boolean(row.published_at),
       rankingEligibilityStatus: row.ranking_eligibility_status || (gameStatus === "scheduled" ? "eligible" : null),
-      rankingExcluded: rankingExcluded || ["cancelled", "canceled", "postponed", "service_unavailable"].includes(gameStatus)
+      rankingExcluded: rankingExcluded || ["cancelled", "canceled", "postponed", "no_game", "service_unavailable"].includes(gameStatus)
     };
   });
 
@@ -17106,7 +17126,7 @@ async function handleGetPreviousResultGame(request, env, cors) {
           AND games.deleted_at IS NULL
           AND (LOWER(games.home_team) = 'fighters' OR LOWER(games.away_team) = 'fighters')
           AND (
-            LOWER(COALESCE(games.game_status, '')) IN ('cancelled', 'canceled', 'postponed', 'service_unavailable')
+            LOWER(COALESCE(games.game_status, '')) IN ('cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable')
             OR (ranking.ranking_eligibility_status IS NOT NULL AND ranking.ranking_eligibility_status <> 'eligible')
             OR (ranking.publication_status = 'published' AND COALESCE(ranking.is_test_game, 0) <> 1)
           )
@@ -17140,7 +17160,7 @@ async function handleGetPreviousResultGame(request, env, cors) {
     const rankingExcluded = row.ranking_eligibility_status !== null
       && row.ranking_eligibility_status !== undefined
       && row.ranking_eligibility_status !== "eligible";
-    const unavailable = ["cancelled", "canceled", "postponed", "service_unavailable"].includes(gameStatus)
+    const unavailable = ["cancelled", "canceled", "postponed", "no_game", "service_unavailable"].includes(gameStatus)
       || rankingExcluded;
     const directPublished = row.publication_status === "published" && Number(row.is_test_game || 0) !== 1;
     const resultsPublished = !unavailable && (directPublished
@@ -17356,7 +17376,7 @@ async function handleGetResultGames(request, env, cors) {
           (latest_predictions.status = 'scored'
            AND ranking_games.game_status = 'scored'
            AND ranking_games.is_ranking_eligible = 1)
-          OR ranking_games.game_status IN ('cancelled', 'canceled', 'postponed', 'service_unavailable')
+             OR ranking_games.game_status IN ('cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable')
           ${eligibilityCondition}
         )
         AND ranking_games.is_test_game = 0
@@ -17374,7 +17394,7 @@ async function handleGetResultGames(request, env, cors) {
       })
     ]);
     const serviceUnavailable = isServiceUnavailableGameStatus(row.game_status);
-    const statusExcluded = ["cancelled", "canceled", "postponed"].includes(String(row.game_status || "").toLowerCase());
+    const statusExcluded = ["cancelled", "canceled", "postponed", "no_game"].includes(String(row.game_status || "").toLowerCase());
     const eligibilityExcluded = row.ranking_eligibility_status !== null
       && row.ranking_eligibility_status !== undefined
       && row.ranking_eligibility_status !== "eligible";
@@ -17426,7 +17446,7 @@ async function handleGetResultGame(request, env, cors, gameId) {
   const rankingState = await getRankingGameState(env.AUTH_DB, resultId, internalGameId);
   const gameStatus = String(rankingState?.game_status || game?.gameStatus || "").toLowerCase();
   const serviceUnavailable = isServiceUnavailableGameStatus(gameStatus);
-  const cancelled = ["cancelled", "canceled", "postponed"].includes(gameStatus);
+  const cancelled = ["cancelled", "canceled", "postponed", "no_game"].includes(gameStatus);
   const rankingEligibility = await getRankingEligibilityState(env.AUTH_DB, resultId, internalGameId);
   const row = await getPredictionRow(env.AUTH_DB, access.user.id, { gameId: resultId, internalGameId });
   if (!row) {

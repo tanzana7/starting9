@@ -44,7 +44,7 @@ test("service_unavailable試合はランキング共通抽出と自動採点・�
 test("期限切れ試合の結果APIは予想を保持したまま対象外理由を返し、通常の採点結果とは分離する", () => {
   assert.match(worker, /const SERVICE_UNAVAILABLE_GAME_STATUS = "service_unavailable"/);
   assert.match(worker, /const SERVICE_UNAVAILABLE_MESSAGE = "この試合はサービス未稼働のため集計対象外です。"/);
-  assert.match(worker, /ranking_games\.game_status IN \('cancelled', 'canceled', 'postponed', 'service_unavailable'\)/);
+  assert.match(worker, /ranking_games\.game_status IN \('cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable'\)/);
   assert.match(worker, /serviceUnavailableReason: serviceUnavailable \? SCORING_RETRY_EXPIRED_CODE : null/);
   assert.match(worker, /if \(serviceUnavailable \|\| cancelled\) \{[\s\S]*?score: null,[\s\S]*?actualLineup: null/);
   assert.match(script, /予想・採点・ランキングの対象外/);

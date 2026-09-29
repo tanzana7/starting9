@@ -2549,6 +2549,7 @@ function getPublicGameUnavailableKind(game) {
   const status = String(game?.status || "").toLowerCase();
   const availability = String(game?.resultAvailability || "").toLowerCase();
   if (gameStatus === "service_unavailable" || status === "service_unavailable" || availability === "service_unavailable") return "service_unavailable";
+  if (gameStatus === "no_game" || status === "no_game" || availability === "no_game") return "no_game";
   if (["cancelled", "canceled"].includes(gameStatus) || ["cancelled", "canceled"].includes(status)) return "cancelled";
   if (gameStatus === "postponed" || status === "postponed") return "postponed";
   if (game?.rankingExcluded === true || game?.rankingEligibilityStatus === "excluded" || status === "excluded" || availability === "excluded") return "excluded";
@@ -2575,6 +2576,14 @@ function getPublicResultAvailability(result) {
       key: kind,
       shortLabel: "中止",
       title: "この試合は中止になりました",
+      message: "この試合は予想・採点・ランキングの対象外です。"
+    };
+  }
+  if (kind === "no_game") {
+    return {
+      key: kind,
+      shortLabel: "ノーゲーム",
+      title: "この試合はノーゲームになりました",
       message: "この試合は予想・採点・ランキングの対象外です。"
     };
   }
@@ -2607,6 +2616,8 @@ function resolvePredictionDeadline(gameId, now = new Date()) {
       status: "unavailable",
       message: String(game?.status || game?.gameStatus || "").toLowerCase() === "service_unavailable"
         ? "この試合はサービス対象外です。予想・採点・ランキングの対象外です。"
+        : String(game?.status || game?.gameStatus || "").toLowerCase() === "no_game"
+          ? "この試合はノーゲームになりました。予想・採点・ランキングの対象外です。"
         : "この試合は中止になりました。予想・採点・ランキングの対象外です。",
       startAt: "",
       deadlineAt: "",

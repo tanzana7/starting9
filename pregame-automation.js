@@ -131,7 +131,7 @@ export function parseJstScheduleStart(game) {
 }
 
 export function isScheduleGameUnavailable(game) {
-  return ["cancelled", "canceled", "postponed"].includes(String(game?.status || "").toLowerCase());
+  return ["cancelled", "canceled", "postponed", "no_game"].includes(String(game?.status || "").toLowerCase());
 }
 
 export function getPregameTimeline(gameId) {

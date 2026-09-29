@@ -156,6 +156,9 @@ function parseLineupTable(table) {
 
 function parseLineupHtml(html) {
   const root = String(html || "").match(/<div\b[^>]*data-game-code=["'][^"']+["'][^>]*>/i)?.[0] || "";
+  if (!root && String(html || "").trim()) {
+    return { ok: false, code: "NPB_RESPONSE_INVALID", parseStage: "simulator_lineup_html" };
+  }
   const seriesNumber = Number(attribute(String(html || "").match(/data-series-number=["'][^"']+["']/i)?.[0] || "", "series-number"));
   const metadata = {
     gameCode: attribute(root, "game-code"),

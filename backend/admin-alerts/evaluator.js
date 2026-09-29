@@ -11,7 +11,11 @@ const ALERT_TYPES = Object.freeze({
   PUBLICATION_INVALID: "publication_invalid",
   GAME_CODE_AMBIGUOUS: "game_code_ambiguous",
   GAME_CODE_TEMPORARY_FAILURE: "game_code_temporary_failure",
-  ADDITIONAL_SCHEDULE_REVIEW: "additional_schedule_review"
+  ADDITIONAL_SCHEDULE_REVIEW: "additional_schedule_review",
+  LINEUP_AUTO_FAILED: "lineup_auto_failed",
+  LINEUP_INVALID: "lineup_invalid",
+  LINEUP_PLAYER_AMBIGUOUS: "lineup_player_ambiguous",
+  LINEUP_IDENTITY_MISMATCH: "lineup_identity_mismatch"
 });
 
 const ALERT_SEVERITIES = Object.freeze({ WARNING: "warning", CRITICAL: "critical" });
@@ -147,6 +151,30 @@ export function evaluateAdminAlertCandidates({ game = {}, signals = {} } = {}) {
     ALERT_SEVERITIES.WARNING,
     "追加日程候補を確認してください",
     "追加試合候補が管理者確認待ちです。"
+  );
+  if (signals.lineupAutoFailed === true) add(
+    ALERT_TYPES.LINEUP_AUTO_FAILED,
+    ALERT_SEVERITIES.CRITICAL,
+    "スタメン自動取得を確認してください",
+    "スタメン自動取得を確認できません。管理画面で確認してください。"
+  );
+  if (signals.lineupInvalid === true) add(
+    ALERT_TYPES.LINEUP_INVALID,
+    ALERT_SEVERITIES.CRITICAL,
+    "取得スタメンを確認してください",
+    "取得したスタメンの形式または選手情報が不正です。"
+  );
+  if (signals.lineupPlayerAmbiguous === true) add(
+    ALERT_TYPES.LINEUP_PLAYER_AMBIGUOUS,
+    ALERT_SEVERITIES.WARNING,
+    "スタメン選手の確認が必要です",
+    "スタメン選手を一意に特定できません。"
+  );
+  if (signals.lineupIdentityMismatch === true) add(
+    ALERT_TYPES.LINEUP_IDENTITY_MISMATCH,
+    ALERT_SEVERITIES.CRITICAL,
+    "スタメン対象試合を確認してください",
+    "取得ページの日付・対戦カード・試合コードが一致しません。"
   );
 
   return alerts;

@@ -486,7 +486,7 @@ export async function listOfficialCancellationCandidates(db, now = new Date(), {
         AND games.is_active = 1
         AND games.deleted_at IS NULL
         AND LOWER(COALESCE(games.game_status, '')) IN
-          ('cancelled', 'canceled', 'postponed', 'service_unavailable')
+          ('cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable')
         ${dateFilter}
       ORDER BY games.game_date DESC, games.start_time DESC, games.internal_game_id
       ${limitSql}`

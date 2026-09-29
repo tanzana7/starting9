@@ -2,8 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildSimulatorSourceUrl,
+  classifyExternalGameStatus,
   fetchSimulatorSource,
   normalizeSimulatorBaseUrl,
+  normalizeExternalGameStatus,
   parseSimulatorResponse,
   resolveNpbSource
 } from "../backend/npb-source-adapter.js";
@@ -80,6 +82,17 @@ test("simulator schedule JSONもexisting schedule candidate shapeへ変換され
   assert.equal(result.payload.games[0].startTime, "2026-09-28T18:00:00+09:00");
 });
 
+test("S9simuの試合前中止とno-gameをcanonical statusへ正規化する", async () => {
+  const result = await parseSimulatorResponse(response(JSON.stringify({ games: [
+    { gameId: "cancelled", gameDate: "2026-09-28", startAt: "2026-09-28T18:00:00+09:00", homeTeam: "marines", awayTeam: "fighters", npbGameCode: "m-f-25", status: "canceled" },
+    { gameId: "no-game", gameDate: "2026-09-29", startAt: "2026-09-29T18:00:00+09:00", homeTeam: "marines", awayTeam: "fighters", npbGameCode: "m-f-26", status: "no-game" }
+  ] }), 200, "application/json"), { mode: "schedule" });
+  assert.deepEqual(result.payload.games.map((game) => game.status), ["cancelled", "no_game"]);
+  assert.equal(classifyExternalGameStatus("no-game"), "no_game");
+  assert.equal(normalizeExternalGameStatus("unknown-future-state"), "unknown_future_state");
+  assert.equal(classifyExternalGameStatus("unknown-future-state"), "unknown");
+});
+
 test("probable starterはofficial/simulatorで同じmatch関数へ渡せる", async () => {
   const result = await parseSimulatorResponse(response(starterHtml), { mode: "starter" });
   const matched = findProbableStarterGame({ date: "2026-09-28", homeTeam: "marines", awayTeam: "fighters" }, result.payload.games);
@@ -88,10 +101,10 @@ test("probable starterはofficial/simulatorで同じmatch関数へ渡せる", as
 });
 
 test("simulator cancellation/no-game statusは上位へ渡せる", async () => {
-  for (const status of ["cancelled", "no_game"]) {
-    const result = await parseSimulatorResponse(response(`<div class="card" data-game-code="m-f-25" data-game-status="${status}"></div>`), { mode: "lineup" });
+  for (const [sourceStatus, canonicalStatus] of [["cancelled", "cancelled"], ["no-game", "no_game"]]) {
+    const result = await parseSimulatorResponse(response(`<div class="card" data-game-code="m-f-25" data-game-status="${sourceStatus}"></div>`), { mode: "lineup" });
     assert.equal(result.ok, true);
-    assert.equal(result.payload.status, status);
+    assert.equal(result.payload.status, canonicalStatus);
     assert.deepEqual(result.payload.lineup, []);
   }
 });

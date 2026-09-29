@@ -1,6 +1,6 @@
 import { deriveV3Schedule } from "./domain.js";
 
-const UNAVAILABLE_STATUSES = new Set(["cancelled", "canceled", "postponed", "service_unavailable"]);
+const UNAVAILABLE_STATUSES = new Set(["cancelled", "canceled", "postponed", "no_game", "service_unavailable"]);
 
 function scheduleError(code, message, details = {}) {
   const error = new Error(message);

@@ -1,6 +1,27 @@
 const GAME_CODE_PATTERN = /^[a-z0-9]{1,2}-[a-z0-9]{1,2}-\d+$/i;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
+// External sources use slightly different spellings for terminal game
+// outcomes. Keep the source-specific vocabulary at this boundary so the V3
+// planner only ever receives the canonical values used by the existing
+// eligibility and publication gates.
+export function normalizeExternalGameStatus(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  const normalized = raw.replace(/[\s-]+/g, "_");
+  if (["canceled", "cancelled"].includes(normalized)) return "cancelled";
+  if (["no_game", "nogame", "no_game_confirmed"].includes(normalized)) return "no_game";
+  return normalized;
+}
+
+export function classifyExternalGameStatus(value) {
+  const normalized = normalizeExternalGameStatus(value);
+  if (normalized === "cancelled") return "cancelled";
+  if (normalized === "no_game") return "no_game";
+  if (["scheduled", "live", "final", "completed", "postponed", "service_unavailable"].includes(normalized)) return "normal";
+  return "unknown";
+}
+
 function adapterError(code, message) {
   const error = new Error(message);
   error.code = code;
@@ -111,7 +132,7 @@ function parseStarterHtml(html) {
       npbGameCode: attribute(article, "game-code"),
       homeTeam: attribute(article, "home-team"),
       awayTeam: attribute(article, "away-team"),
-      gameStatus: attribute(article, "game-status"),
+      gameStatus: normalizeExternalGameStatus(attribute(article, "game-status")),
       homeStarter: { name: homeStarter === "未発表" ? "" : homeStarter },
       awayStarter: { name: awayStarter === "未発表" ? "" : awayStarter }
     });
@@ -135,7 +156,7 @@ function parseLineupTable(table) {
 
 function parseLineupHtml(html) {
   const root = String(html || "").match(/<div\b[^>]*data-game-code=["'][^"']+["'][^>]*>/i)?.[0] || "";
-  const gameStatus = attribute(root, "game-status");
+  const gameStatus = normalizeExternalGameStatus(attribute(root, "game-status"));
   const table = String(html || "").match(/<table\b[^>]*data-lineup-team=["']fighters["'][^>]*>[\s\S]*?<\/table>/i)?.[0] || "";
   const lineup = parseLineupTable(table);
   if (!lineup.length && ["cancelled", "no_game"].includes(gameStatus)) {
@@ -159,7 +180,7 @@ function parseScheduleJson(text) {
         gameCode: game.npbGameCode,
         npbGameUrl: game.npbGameCode ? `simulator:${game.npbGameCode}` : "",
         startTime: game.startAt,
-        status: game.status
+        status: normalizeExternalGameStatus(game.status || game.gameStatus || game.game_status)
       })),
       fetchedAt: new Date().toISOString(),
       sourceUrl: "simulator"

@@ -159,6 +159,16 @@ import {
 } from "./backend/admin-alerts/storage.js";
 import { evaluateAndNotifyAdminAlerts } from "./backend/admin-alerts/runtime.js";
 import { sendAdminTestPush } from "./backend/admin-alerts/test-push.js";
+import { runLineupCandidatePipeline } from "./backend/automation-v3/lineup-candidate-service.js";
+import {
+  buildLineupShadowObservation,
+  compareShadowLineupToManual,
+  isLineupShadowDue,
+  isLineupShadowEnabled,
+  nextLineupShadowRetryAt,
+  shouldRetryLineupShadow,
+  isShadowLineupRevision
+} from "./backend/automation-v3/lineup-shadow-service.js";
 
 // Compatibility exports keep existing tests and internal callers stable while
 // the implementation lives in the domain module.
@@ -219,7 +229,8 @@ import {
   hydrateV3GameIdentityFromIdentifiers,
   normalizeProbableStarterDataStatus,
   resolveCanonicalProbableStarterRow,
-  shouldStopProbableStarterScheduling
+  shouldStopProbableStarterScheduling,
+  listV3LineupShadowCandidates
 } from "./game-automation-v3.js";
 
 // This timeout boundary is intentionally limited to read-only verification.
@@ -1102,6 +1113,207 @@ const V3_CRON_GAME_BATCH_SIZE = 4;
 // CronのCPU上限を消費することも防げます。正式処理のbatchとは分離します。
 const V3_AUXILIARY_GAME_BATCH_SIZE = 12;
 
+function isProductionRuntime(env = {}) {
+  return [env?.ENVIRONMENT, env?.APP_ENV, env?.NODE_ENV].some((value) => ["production", "prod"].includes(String(value || "").trim().toLowerCase()))
+    || String(env?.ENABLE_DEVELOPMENT_MODE || "").trim().toLowerCase() === "false";
+}
+
+function parseLineupShadowMetadata(value) {
+  if (!value || typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function shadowRevisionStatus(row) {
+  const payload = parseLineupShadowMetadata(row?.validation_json);
+  const validation = payload.validation && typeof payload.validation === "object" ? payload.validation : {};
+  return {
+    status: String(payload.lifecycleStatus || (validation.ok ? "verified" : "invalid_lineup")),
+    source: String(payload.source || row?.source || "official"),
+    fetchedAt: row?.captured_at || row?.created_at || null,
+    playerCount: Number(validation.playerCount || validation.parsedCount || 0),
+    validationStatus: validation.status || (validation.ok ? "verified" : null),
+    lineup: parseStoredActualLineup(row?.actual_lineup_json)
+  };
+}
+
+async function readLineupShadowStatus(db, internalGameId, { enabled = false } = {}) {
+  const result = {
+    enabled,
+    status: enabled ? "waiting" : "disabled",
+    source: "official",
+    fetchedAt: null,
+    playerCount: 0,
+    validationStatus: null,
+    nextRetryAt: null,
+    finalLineupExists: false,
+    manualFinalExists: false,
+    comparison: null,
+    reasonCode: null
+  };
+  if (!db || !internalGameId) return result;
+  try {
+    const [revisions, logs] = await db.batch([
+      db.prepare(
+        `SELECT revision_id, version, actual_lineup_json, source, captured_at, created_at,
+                is_final, validation_json
+           FROM game_lineup_revisions
+          WHERE internal_game_id = ?1
+          ORDER BY version DESC LIMIT 50`
+      ).bind(internalGameId),
+      db.prepare(
+        `SELECT status, occurred_at, error_code, metadata
+           FROM game_workflow_logs
+          WHERE game_id = ?1 AND event_type = 'lineup_shadow'
+          ORDER BY occurred_at DESC LIMIT 5`
+      ).bind(internalGameId)
+    ]);
+    const rows = revisions?.results || [];
+    const manualFinal = rows.find((row) => Number(row.is_final || 0) === 1
+      && ["manual", "manual-revision", "restore"].includes(String(row.source || "").trim().toLowerCase()));
+    const final = rows.find((row) => Number(row.is_final || 0) === 1);
+    const shadowRows = rows.filter((row) => Number(row.is_final || 0) !== 1 && isShadowLineupRevision(row));
+    const latestShadow = shadowRows[0] ? shadowRevisionStatus(shadowRows[0]) : null;
+    const latestLog = (logs?.results || [])[0] || null;
+    const logMetadata = parseLineupShadowMetadata(latestLog?.metadata);
+    result.finalLineupExists = Boolean(final);
+    result.manualFinalExists = Boolean(manualFinal);
+    if (manualFinal) {
+      result.status = "manual_final_exists";
+      result.fetchedAt = latestShadow?.fetchedAt || logMetadata.fetchedAt || null;
+    } else if (latestLog) {
+      result.status = String(logMetadata.status || latestLog.status || "waiting");
+      result.fetchedAt = logMetadata.fetchedAt || latestLog.occurred_at || latestShadow?.fetchedAt || null;
+      result.nextRetryAt = logMetadata.nextRetryAt || null;
+      result.reasonCode = logMetadata.reasonCode || latestLog.error_code || null;
+    } else if (latestShadow) {
+      result.status = latestShadow.status;
+      result.fetchedAt = latestShadow.fetchedAt;
+    }
+    if (latestShadow) {
+      result.source = latestShadow.source;
+      result.playerCount = latestShadow.playerCount;
+      result.validationStatus = latestShadow.validationStatus;
+    }
+    if (manualFinal && latestShadow) {
+      result.comparison = compareShadowLineupToManual(latestShadow.lineup, parseStoredActualLineup(manualFinal.actual_lineup_json));
+    }
+    return result;
+  } catch (error) {
+    if (!isPregameSchemaError(error)) console.warn(`[LINEUP_SHADOW] stage=status_read code=${error?.code || "SHADOW_STATUS_READ_FAILED"}`);
+    return { ...result, status: "unavailable", reasonCode: "SHADOW_STATUS_UNAVAILABLE" };
+  }
+}
+
+function shadowObservationStatus(result) {
+  if (result?.status === "verified") return "verified";
+  if (["invalid_lineup", "unknown_player", "ambiguous_player", "identity_mismatch"].includes(result?.status)) return result.status;
+  if (["cancelled", "no_game", "manual_final_exists"].includes(result?.status)) return result.status;
+  if (result?.status === "not_published") return "waiting";
+  return "temporary_failure";
+}
+
+async function runLineupShadowForGames(env, now, { runId = "" } = {}) {
+  const summary = { status: "disabled", considered: 0, fetched: 0, verified: 0, waiting: 0, invalid: 0, skipped: 0, errors: 0, gameIds: [] };
+  if (!isLineupShadowEnabled(env)) return summary;
+  if (isProductionRuntime(env) && resolveNpbSource(env).kind !== "official") {
+    return { ...summary, status: "blocked", reasonCode: "PRODUCTION_OFFICIAL_SOURCE_REQUIRED" };
+  }
+  const games = await listV3LineupShadowCandidates(env.AUTH_DB, now, { limit: 4 });
+  summary.status = "completed";
+  summary.considered = games.length;
+  for (const game of games) {
+    const target = {
+      internalGameId: game.internalGameId,
+      gameDate: game.gameDate,
+      startAt: game.startAt,
+      homeTeam: game.homeTeam,
+      awayTeam: game.awayTeam,
+      npbGameCode: game.npbGameCode,
+      npbGameUrl: game.npbGameUrl,
+      status: game.gameStatus
+    };
+    if (!isLineupShadowDue(target, now).due) {
+      summary.skipped += 1;
+      continue;
+    }
+    const current = await readLineupShadowStatus(env.AUTH_DB, game.internalGameId, { enabled: true });
+    if (current.manualFinalExists || current.finalLineupExists || !shouldRetryLineupShadow(current, now)) {
+      summary.skipped += 1;
+      continue;
+    }
+    summary.gameIds.push(game.internalGameId);
+    try {
+      const result = await runLineupCandidatePipeline({
+        env,
+        target,
+        db: env.AUTH_DB,
+        autoFinalEnabled: false,
+        shadowMode: true,
+        now,
+        fetchOfficial: async ({ target: fetchTarget, signal }) => {
+          const payload = await fetchNpbWorkerJson(env, {
+            mode: "lineup",
+            url: fetchTarget.npbGameUrl || undefined,
+            date: fetchTarget.gameDate,
+            gameCode: fetchTarget.npbGameCode,
+            homeTeam: fetchTarget.homeTeam,
+            awayTeam: fetchTarget.awayTeam,
+            startAt: fetchTarget.startAt
+          }, { signal });
+          return {
+            ok: true,
+            payload,
+            httpStatus: payload?.__fetchMeta?.httpStatus || null,
+            sourceUrl: payload?.sourceUrl || fetchTarget.npbGameUrl || null
+          };
+        }
+      });
+      const status = shadowObservationStatus(result);
+      const nextRetryAt = nextLineupShadowRetryAt({ status }, now);
+      const observation = buildLineupShadowObservation({
+        status,
+        source: result.source || "official",
+        fetchedAt: result.candidate?.fetchedAt || result.fetchedAt || now.toISOString(),
+        playerCount: result.validation?.playerCount || result.candidate?.lineup?.length || 0,
+        validationStatus: result.validation?.status || result.code || null,
+        reasonCode: result.code || null,
+        nextRetryAt
+      });
+      await recordWorkflowLog(env.AUTH_DB, {
+        eventType: "lineup_shadow",
+        status: status === "verified" || status === "manual_final_exists" ? "success" : status === "waiting" || status === "temporary_failure" ? "info" : "warning",
+        gameId: game.internalGameId,
+        occurredAt: now,
+        message: `lineup shadow: ${status}`,
+        errorCode: result.code || "",
+        metadata: { ...observation, runId, internalGameId: game.internalGameId, gameDate: game.gameDate },
+        source: "cron"
+      });
+      if (status === "verified") summary.verified += 1;
+      else if (status === "waiting" || status === "temporary_failure") summary.waiting += 1;
+      else summary.invalid += 1;
+    } catch (error) {
+      summary.errors += 1;
+      await recordWorkflowLog(env.AUTH_DB, {
+        eventType: "lineup_shadow",
+        status: "warning",
+        gameId: game.internalGameId,
+        occurredAt: now,
+        message: "lineup shadow failed",
+        errorCode: error?.code || "LINEUP_SHADOW_FAILED",
+        metadata: { status: "temporary_failure", source: "official", reasonCode: error?.code || "LINEUP_SHADOW_FAILED", nextRetryAt: nextLineupShadowRetryAt({ status: "temporary_failure" }, now), runId, internalGameId: game.internalGameId, gameDate: game.gameDate },
+        source: "cron"
+      });
+    }
+  }
+  return summary;
+}
+
 async function writeRosterMasterUnregisteredAudit(env, game, unknownPlayers, now = new Date()) {
   const internalGameId = String(game?.internal_game_id || game?.internalGameId || "").trim();
   const players = Array.isArray(unknownPlayers) ? unknownPlayers : [];
@@ -1708,6 +1920,21 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
       });
     if (typeof scheduleOptional === "function") scheduleOptional(maintenancePromise);
     else await maintenancePromise;
+  }
+  let lineupShadow = { status: "disabled" };
+  if (isLineupShadowEnabled(env)) {
+    const lineupShadowPromise = Promise.resolve()
+      .then(() => runLineupShadowForGames(env, now, { runId }))
+      .catch((error) => {
+        console.warn(`[LINEUP_SHADOW] status=failed code=${error?.code || "LINEUP_SHADOW_FAILED"}`);
+        return { status: "failed", errors: 1, reasonCode: error?.code || "LINEUP_SHADOW_FAILED" };
+      });
+    if (typeof scheduleOptional === "function") {
+      scheduleOptional(lineupShadowPromise);
+      lineupShadow = { status: "scheduled", pending: true };
+    } else {
+      lineupShadow = await lineupShadowPromise;
+    }
   }
   if (!result?.optionalScheduled) {
     await writeV3RuntimeAudit(env, {
@@ -6228,6 +6455,9 @@ async function handleAdminV3Overview(request, env, cors) {
       publish: deriveV3PhaseStatus({ phase: "publish", game, now: overviewNow, workflowState: resolvedState.state, jobs: jobRows, workflowArtifactHealth })
     };
     const canonicalArtifacts = await evaluateCanonicalArtifactsFromDb(env.AUTH_DB, game.internalGameId);
+    const lineupShadow = await readLineupShadowStatus(env.AUTH_DB, game.internalGameId, {
+      enabled: isLineupShadowEnabled(env)
+    });
     const displayStatus = await getV3AdminProgressDisplayStatus(env.AUTH_DB, {
       game,
       resolvedState,
@@ -6255,6 +6485,7 @@ async function handleAdminV3Overview(request, env, cors) {
       lineupDataHealth,
       workflowArtifactHealth,
       canonicalArtifacts,
+      lineupShadow,
       lineupSummary,
       scoringSummary,
       rankingSummary,
@@ -8603,7 +8834,7 @@ async function getV3LineupDataHealth(db, internalGameId, workflowState = "schedu
   };
   try {
     const revisions = await getV3LineupRevisionRows(db, internalGameId, internalGameId);
-    const candidates = revisions.filter((row) => Number(row.is_final || 0) !== 1);
+    const candidates = revisions.filter((row) => Number(row.is_final || 0) !== 1 && !isShadowLineupRevision(row));
     const finalized = revisions.filter((row) => Number(row.is_final || 0) === 1);
     const candidateChecks = candidates.map((row) => ({ row, check: assessV3LineupArtifact(parseStoredActualLineup(row.actual_lineup_json)) }));
     const finalizedChecks = finalized.map((row) => ({ row, check: assessV3LineupArtifact(parseStoredActualLineup(row.actual_lineup_json)) }));
@@ -14406,7 +14637,7 @@ export async function selectV3LineupFinalizeCandidate(db, { internalGameId = "" 
   const rows = await db.prepare(
     "SELECT * FROM game_lineup_revisions WHERE internal_game_id = ?1 ORDER BY version DESC LIMIT 20"
   ).bind(id).all();
-  const candidates = (rows.results || []).filter((row) => Number(row.is_final || 0) !== 1);
+  const candidates = (rows.results || []).filter((row) => Number(row.is_final || 0) !== 1 && !isShadowLineupRevision(row));
   diagnostics.candidateCount = candidates.length;
   for (const row of candidates) {
     const permissive = sanitizeActualLineupForScoring(parseStoredActualLineup(row.actual_lineup_json), { allowUnresolvedPlayer: true });
@@ -14487,6 +14718,7 @@ async function adoptPersistedLineupCandidate(env, gameId, now, { internalGameId 
     "SELECT * FROM game_lineup_revisions WHERE game_id = ?1 ORDER BY version DESC LIMIT 20"
   ).bind(gameId).all();
   for (const row of rows.results || []) {
+    if (isShadowLineupRevision(row)) continue;
     const actual = sanitizeActualLineupForScoring(parseStoredActualLineup(row.actual_lineup_json), { allowUnresolvedPlayer: true });
     if (!actual.ok) continue;
     const detectedAt = parseLineupDetectedAt(row.captured_at || row.created_at) || now;

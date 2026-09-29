@@ -165,6 +165,21 @@ test("normal S9simu lineupはcandidateへ変換され、strict validation後にv
   fixture.database.close();
 });
 
+test("shadow candidateはrevisionへ明示記録されるがfinalへ進まない", async () => {
+  const fixture = createDb();
+  const result = await runLineupCandidatePipeline({
+    env: simulatorEnv(), target: TARGET, db: fixture.db,
+    fetchImpl: simulatorFetch(simulatorHtml()), shadowMode: true, autoFinalEnabled: true,
+    now: new Date("2026-09-28T09:01:00.000Z")
+  });
+  const stored = fixture.database.prepare("SELECT validation_json, is_final FROM game_lineup_revisions WHERE internal_game_id = ?").get(TARGET.internalGameId);
+  assert.equal(result.persisted.status, "created");
+  assert.equal(JSON.parse(stored.validation_json).shadowMode, true);
+  assert.equal(stored.is_final, 0);
+  assert.equal(fixture.database.prepare("SELECT final_lineup_revision_id FROM game_lineups WHERE internal_game_id = ?").get(TARGET.internalGameId).final_lineup_revision_id, null);
+  fixture.database.close();
+});
+
 test("lineup delayedは未発表のまま待機し、後刻の取得でverifiedになる", async () => {
   const first = await fetchLineupCandidateForGame(simulatorEnv(), TARGET, { fetchImpl: simulatorFetch(`<div data-game-code="${TARGET.npbGameCode}" data-game-date="${TARGET.gameDate}" data-home-team="${TARGET.homeTeam}" data-away-team="${TARGET.awayTeam}" data-game-status="scheduled"><table data-lineup-team="fighters"></table></div>`) });
   assert.equal(first.status, "not_published");

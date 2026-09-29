@@ -398,13 +398,14 @@ test("V4の旧job由来の予定時刻は履歴としてのみ残る", () => {
   assert.equal(status.schedule.publicationAt, null);
 });
 
-test("admin-v3 workflow view uses V4 status markup and removes shadow/manual recovery controls", () => {
+test("admin-v3 workflow view uses V4 status markup and keeps shadow status read-only", () => {
   const renderer = read("frontend/admin-v3/render-game-progress.js");
   const workflow = renderer.slice(renderer.indexOf("function renderWorkflowView"), renderer.indexOf("function renderLineupView"));
   assert.match(renderer, /renderV4CanonicalStatus/);
   assert.match(renderer, /data-v4-canonical-status/);
   assert.match(renderer, /formal job/);
-  assert.doesNotMatch(renderer, /V3\.5|V35|shadow|renderManualControls|data-v3-job-run|data-v3-state-reconcile/);
+  assert.match(renderer, /自動取得（Shadow）|data-v4-lineup-shadow/);
+  assert.doesNotMatch(renderer, /renderManualControls|data-v3-job-run|data-v3-state-reconcile/);
   assert.doesNotMatch(workflow, /renderWorkflowDiagnostics\(game\)/);
   assert.doesNotMatch(workflow, /renderTimeline\(game\)/);
   assert.doesNotMatch(workflow, /次の処理: <strong>/);

@@ -375,6 +375,52 @@ export async function listV3Games(db, now = new Date(), options = {}) {
   }));
 }
 
+// Shadow lineup polling is deliberately separate from formal discovery. It
+// only considers near-term Fighters games and never joins the formal job
+// planner, so an observation failure cannot starve prediction_close/score.
+export async function listV3LineupShadowCandidates(db, now = new Date(), { limit = 6 } = {}) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(current.getTime())) return [];
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit"
+  }).format(current);
+  const boundedLimit = Math.max(1, Math.min(12, Number(limit) || 6));
+  const rows = await db.prepare(
+    `SELECT games.internal_game_id, games.game_date, games.start_time,
+            games.home_team, games.away_team, games.npb_game_code,
+            games.npb_game_url, games.game_status, games.is_active, games.deleted_at
+       FROM games
+      WHERE games.internal_game_id IS NOT NULL
+        AND games.internal_game_id <> ''
+        AND games.game_date BETWEEN date(?1) AND date(?1, '+1 day')
+        AND games.is_active = 1
+        AND games.deleted_at IS NULL
+        AND LOWER(COALESCE(games.game_status, '')) NOT IN
+          ('cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded')
+        AND (LOWER(COALESCE(games.home_team, '')) IN ('f', 'fighters')
+          OR LOWER(COALESCE(games.away_team, '')) IN ('f', 'fighters'))
+        AND NOT EXISTS (
+          SELECT 1 FROM game_lineup_revisions AS final_revision
+           WHERE final_revision.internal_game_id = games.internal_game_id
+             AND final_revision.is_final = 1
+        )
+      ORDER BY games.game_date, games.start_time, games.internal_game_id
+      LIMIT ?2`
+  ).bind(today, boundedLimit).all();
+  return (rows.results || []).map((row) => ({
+    internalGameId: row.internal_game_id,
+    gameDate: row.game_date,
+    startAt: row.start_time,
+    homeTeam: row.home_team,
+    awayTeam: row.away_team,
+    npbGameCode: row.npb_game_code || null,
+    npbGameUrl: row.npb_game_url || null,
+    gameStatus: row.game_status,
+    isActive: row.is_active,
+    deletedAt: row.deleted_at
+  }));
+}
+
 // The auxiliary list is intentionally bounded for CPU safety. This targeted
 // lookup guarantees that the next Fighters game is considered even when
 // unrelated games fill that bounded list; it never calls an external source.

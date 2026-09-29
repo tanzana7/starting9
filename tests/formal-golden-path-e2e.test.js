@@ -12,6 +12,7 @@ import worker, {
 import { claimV3Job, completeV3Job, createV3Job, retryV3Job, runGameAutomationV3, planMainWorkflowJobs, transitionV3State } from "../game-automation-v3.js";
 import { evaluateCanonicalArtifactsFromDb } from "../backend/automation-v3/canonical-artifact-evaluator.js";
 import { getRankingForPeriod } from "../backend/repositories/ranking-repository.js";
+import { buildLineupAlertSignal, runLineupCandidatePipeline } from "../backend/automation-v3/lineup-candidate-service.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const GAME_ID = "9f7e2f4c-9b16-4c70-9cb8-9d7d2a2a0001";
@@ -147,6 +148,11 @@ function changedLineup() {
     : row);
 }
 
+function simulatorLineupHtml(fixture, lineup = normalLineup(), status = "lineup_announced") {
+  const rows = lineup.map((row) => `<tr data-batting-order="${row.battingOrder}" data-player-id="${row.playerId}" data-player-name="${row.playerName}" data-position="${row.position}" data-jersey-number="${row.uniformNumber}"></tr>`).join("");
+  return `<div data-game-code="${fixture.npbGameCode}" data-game-date="${fixture.gameDate}" data-home-team="fighters" data-away-team="hawks" data-game-status="${status}"><table data-lineup-team="fighters">${rows}</table></div>`;
+}
+
 function requestHeaders() {
   return {
     Cookie: `s9_session=${encodeURIComponent(SESSION_TOKEN)}`,
@@ -163,7 +169,7 @@ async function adminRequest(env, pathname, body) {
   }), env, {});
 }
 
-async function createGoldenDb() {
+async function createGoldenDb({ npbGameCode = "f-h-golden-1" } = {}) {
   const database = new DatabaseSync(":memory:");
   for (const file of fs.readdirSync(path.join(ROOT, "migrations")).filter((name) => name.endsWith(".sql")).sort()) {
     database.exec(fs.readFileSync(path.join(ROOT, "migrations", file), "utf8"));
@@ -190,9 +196,9 @@ async function createGoldenDb() {
       internal_game_id, game_date, start_time, home_team, away_team, npb_game_code,
       game_status, is_active, deleted_at, npb_identity_status, npb_identity_resolved_at,
       npb_identity_source, npb_game_url, created_at, updated_at
-    ) VALUES (?, ?, ?, 'fighters', 'hawks', 'f-h-golden-1', 'scheduled', 1, NULL,
+    ) VALUES (?, ?, ?, 'fighters', 'hawks', ?, 'scheduled', 1, NULL,
       'resolved', ?, 'test-fixture', 'https://npb.example/golden-1', ?, ?)
-  `).run(GAME_ID, gameDate, startAt.toISOString(), timestamp, timestamp, timestamp);
+  `).run(GAME_ID, gameDate, startAt.toISOString(), npbGameCode, timestamp, timestamp, timestamp);
   database.prepare(`
     INSERT INTO game_automation_v3_state (internal_game_id, state, version, created_at, updated_at)
     VALUES (?, 'scheduled', 0, ?, ?)
@@ -228,6 +234,7 @@ async function createGoldenDb() {
     },
     gameDate,
     startAt,
+    npbGameCode,
     lineup
   };
 }
@@ -1136,6 +1143,160 @@ test("Concurrent manual finalize: 競合するfinalizeでもcanonical pointerと
     assert.equal(currentFinals.length, 1);
     assert.equal(canonical.final_lineup_revision_id, currentFinals[0].revision_id);
     assert.equal(canonical.actual_lineup_json, currentFinals[0].actual_lineup_json);
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test("Phase 7.5: S9simu candidateからauto-final、prediction_close、score、ranking、publishまで正式executorで完走する", async () => {
+  const fixture = await createGoldenDb({ npbGameCode: "f-h-1" });
+  try {
+    const autoEnv = {
+      ...fixture.env,
+      ENVIRONMENT: "test",
+      ENABLE_DEVELOPMENT_MODE: "true",
+      NPB_SOURCE: "simulator",
+      S9SIMU_BASE_URL: "https://s9simu.example.test"
+    };
+    const target = {
+      internalGameId: GAME_ID,
+      gameDate: fixture.gameDate,
+      homeTeam: "fighters",
+      awayTeam: "hawks",
+      npbGameCode: fixture.npbGameCode,
+      status: "scheduled"
+    };
+    const candidate = await runLineupCandidatePipeline({
+      env: autoEnv,
+      target,
+      db: fixture.env.AUTH_DB,
+      fetchImpl: async () => new Response(simulatorLineupHtml(fixture), { status: 200 }),
+      now: new Date(fixture.startAt.getTime() - 5 * 60 * 1000),
+      autoFinalEnabled: true
+    });
+    assert.equal(candidate.status, "verified");
+    assert.equal(candidate.persisted.status, "created");
+    assert.equal(candidate.finalized.status, "finalized");
+    assert.deepEqual(buildLineupAlertSignal(candidate), {});
+
+    const finalRow = fixture.database.prepare(
+      "SELECT final_lineup_revision_id, lineup_source, actual_lineup_json FROM game_lineups WHERE internal_game_id = ?"
+    ).get(GAME_ID);
+    const finalRevision = fixture.database.prepare(
+      "SELECT revision_id, is_current, is_final, validation_json, actual_lineup_json FROM game_lineup_revisions WHERE internal_game_id = ? AND version = ?"
+    ).get(GAME_ID, candidate.finalized.revision.version);
+    assert.equal(finalRow.final_lineup_revision_id, finalRevision.revision_id);
+    assert.equal(finalRow.lineup_source, "npb-auto");
+    assert.equal(finalRevision.is_current, 1);
+    assert.equal(finalRevision.is_final, 1);
+    assert.equal(JSON.parse(finalRevision.validation_json).lifecycleStatus, "verified");
+    assert.equal(JSON.parse(finalRevision.actual_lineup_json).length, 9);
+    assert.equal(finalRow.actual_lineup_json, finalRevision.actual_lineup_json);
+
+    const executed = [];
+    const at = new Date(fixture.startAt.getTime() + 12 * 60 * 1000);
+    for (let pass = 0; pass < 5; pass += 1) await runFormalCron(fixture.env, at, executed);
+
+    assert.deepEqual(executed.slice(0, 4), ["prediction_close", "score", "ranking_rebuild", "publish"]);
+    const canonical = await evaluateCanonicalArtifactsFromDb(fixture.env.AUTH_DB, GAME_ID);
+    assert.equal(canonical.aggregate.fullyPublished, true);
+    assert.equal(canonical.aggregate.lineupReady, true);
+    assert.equal(canonical.aggregate.scoringReady, true);
+    assert.equal(canonical.aggregate.rankingReady, true);
+    assert.equal(canonical.aggregate.publicationReady, true);
+    assert.equal(canonical.aggregate.artifactMismatch, false);
+    assert.equal(canonical.lineup.canonicalFinalRevisionId, finalRevision.revision_id);
+    assert.equal(canonical.scoring.lineupRevisionMatch, true);
+    assert.equal(canonical.ranking.scoringRevisionMatch, true);
+    assert.equal(canonical.publication.rankingRevisionMatch, true);
+    assert.equal(fixture.database.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?").get(GAME_ID).state, "published");
+
+    // The downstream consumer must see the same canonical contract as a
+    // manual final. Only source metadata and revision identity are expected
+    // to differ between the two development fixtures.
+    const manualFixture = await createGoldenDb({ npbGameCode: "f-h-3" });
+    try {
+      await completeGoldenPathA(manualFixture);
+      const manualCanonical = await evaluateCanonicalArtifactsFromDb(manualFixture.env.AUTH_DB, GAME_ID);
+      assert.equal(canonical.aggregate.fullyPublished, manualCanonical.aggregate.fullyPublished);
+      assert.equal(canonical.lineup.lineupValid, manualCanonical.lineup.lineupValid);
+      assert.equal(canonical.scoring.valid, manualCanonical.scoring.valid);
+      assert.equal(canonical.ranking.valid, manualCanonical.ranking.valid);
+      assert.equal(canonical.publication.valid, manualCanonical.publication.valid);
+      assert.equal(canonical.scoring.lineupRevisionMatch, manualCanonical.scoring.lineupRevisionMatch);
+      assert.equal(canonical.ranking.scoringRevisionMatch, manualCanonical.ranking.scoringRevisionMatch);
+      assert.equal(canonical.publication.rankingRevisionMatch, manualCanonical.publication.rankingRevisionMatch);
+    } finally {
+      manualFixture.database.close();
+    }
+
+    const before = artifactCounts(fixture.database);
+    const refetched = await runLineupCandidatePipeline({
+      env: autoEnv,
+      target,
+      db: fixture.env.AUTH_DB,
+      fetchImpl: async () => new Response(simulatorLineupHtml(fixture), { status: 200 }),
+      now: new Date(fixture.startAt.getTime() + 13 * 60 * 1000),
+      autoFinalEnabled: true
+    });
+    assert.equal(refetched.persisted.status, "no_op");
+    const rerun = [];
+    await runFormalCron(fixture.env, at, rerun);
+    assert.deepEqual(rerun, []);
+    assert.deepEqual(artifactCounts(fixture.database), before);
+  } finally {
+    fixture.database.close();
+  }
+});
+
+test("Phase 7.5 delayed lineup: 未発表ではfinal/alertを作らず、発表後は同じformal pathで完走する", async () => {
+  const fixture = await createGoldenDb({ npbGameCode: "f-h-2" });
+  try {
+    const autoEnv = {
+      ...fixture.env,
+      ENVIRONMENT: "test",
+      ENABLE_DEVELOPMENT_MODE: "true",
+      NPB_SOURCE: "simulator",
+      S9SIMU_BASE_URL: "https://s9simu.example.test"
+    };
+    const target = {
+      internalGameId: GAME_ID,
+      gameDate: fixture.gameDate,
+      homeTeam: "fighters",
+      awayTeam: "hawks",
+      npbGameCode: fixture.npbGameCode,
+      status: "scheduled"
+    };
+    const delayed = await runLineupCandidatePipeline({
+      env: autoEnv,
+      target,
+      db: fixture.env.AUTH_DB,
+      fetchImpl: async () => new Response(simulatorLineupHtml(fixture, [], "scheduled"), { status: 200 }),
+      now: new Date(fixture.startAt.getTime() - 5 * 60 * 1000),
+      autoFinalEnabled: true
+    });
+    assert.equal(delayed.status, "not_published");
+    assert.deepEqual(delayed.alertSignal, {});
+    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM game_lineup_revisions WHERE is_final = 1").get().count, 0);
+
+    const recovered = await runLineupCandidatePipeline({
+      env: autoEnv,
+      target,
+      db: fixture.env.AUTH_DB,
+      fetchImpl: async () => new Response(simulatorLineupHtml(fixture), { status: 200 }),
+      now: new Date(fixture.startAt.getTime() - 2 * 60 * 1000),
+      autoFinalEnabled: true
+    });
+    assert.equal(recovered.status, "verified");
+    assert.equal(recovered.finalized.status, "finalized");
+
+    const executed = [];
+    const at = new Date(fixture.startAt.getTime() + 12 * 60 * 1000);
+    for (let pass = 0; pass < 5; pass += 1) await runFormalCron(fixture.env, at, executed);
+    assert.deepEqual(executed.slice(0, 4), ["prediction_close", "score", "ranking_rebuild", "publish"]);
+    const canonical = await evaluateCanonicalArtifactsFromDb(fixture.env.AUTH_DB, GAME_ID);
+    assert.equal(canonical.aggregate.fullyPublished, true);
+    assert.equal(canonical.aggregate.artifactMismatch, false);
   } finally {
     fixture.database.close();
   }

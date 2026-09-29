@@ -21525,7 +21525,7 @@ async function approveActualLineupForAutoScoring(env, gameId, actualLineup, dete
   return record;
 }
 
-async function saveActualLineupForAutoScoring(db, gameId, actualLineup, detectedAt, options = {}) {
+export async function saveActualLineupForAutoScoring(db, gameId, actualLineup, detectedAt, options = {}) {
   if (!options.allowTestGame && !options.allowAfterStart) assertOfficialLineupSaveAllowed(gameId, options.now || new Date());
   const actualLineupJson = JSON.stringify(actualLineup);
   if (new TextEncoder().encode(actualLineupJson).byteLength > PREDICTION_MAX_JSON_BYTES) {

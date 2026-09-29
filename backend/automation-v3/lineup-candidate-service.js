@@ -1,4 +1,4 @@
-import { normalizeManualLineupInput } from "../../auth-worker.js";
+import { normalizeManualLineupInput, saveActualLineupForAutoScoring } from "../../auth-worker.js";
 import {
   FIGHTERS_TEAM_CODE,
   FIGHTERS_TEAM_ID,
@@ -296,7 +296,7 @@ export async function persistLineupCandidate(db, candidate, validation, { now = 
   return { ok: true, status: "created", noOp: false, revision };
 }
 
-export async function finalizeVerifiedLineupCandidate(db, { candidate, revision, now = new Date() } = {}) {
+export async function finalizeVerifiedLineupCandidate(db, { candidate, revision, now = new Date(), allowTestGame = false } = {}) {
   if (!db || !candidate?.internalGameId || !revision) return { ok: false, status: "invalid_data", code: "LINEUP_FINALIZE_INPUT_INVALID" };
   const columns = await tableColumns(db, "game_lineup_revisions");
   if (!(columns.has("internal_game_id") && columns.has("is_final") && columns.has("is_current"))) {
@@ -344,6 +344,25 @@ export async function finalizeVerifiedLineupCandidate(db, { candidate, revision,
   }
 
   try {
+    // Manual finalization first creates the canonical game_lineups row through
+    // the shared scoring-compatible writer. Reuse that boundary so an
+    // automatic candidate has the same downstream artifact shape and scoring
+    // metadata as a manual final, including when the row does not exist yet.
+    await saveActualLineupForAutoScoring(
+      db,
+      candidate.internalGameId,
+      candidate.lineup,
+      new Date(timestamp),
+      {
+        allowTestGame,
+        isTestGame: allowTestGame,
+        allowAfterStart: allowTestGame,
+        internalGameId: candidate.internalGameId,
+        source: SOURCE_COLUMN_VALUE,
+        scoringDueAt: new Date(timestamp),
+        now: new Date(timestamp)
+      }
+    );
     const lineupColumns = await tableColumns(db, "game_lineups");
     if (lineupColumns.has("internal_game_id") && lineupColumns.has("final_lineup_revision_id")) {
       const fields = ["actual_lineup_json", "lineup_fingerprint", "final_lineup_revision_id"];
@@ -432,7 +451,12 @@ export async function runLineupCandidatePipeline({ env = {}, target = {}, db = n
   const verification = { status: "verified", candidate: normalized.candidate, validation: normalized.validation };
   const eligibility = isAutoFinalEligible({ candidate: normalized.candidate, verification, environment: env.ENVIRONMENT || env.APP_ENV || "test", autoFinalEnabled, manualFinalExists });
   if (!eligibility.eligible || !autoFinalEnabled || !persisted?.revision || !db) return { ...normalized, source: normalized.candidate.source, persisted, verification, eligibility, alertSignal: {} };
-  const finalized = await finalizeVerifiedLineupCandidate(db, { candidate: normalized.candidate, revision: persisted.revision, now });
+  const finalized = await finalizeVerifiedLineupCandidate(db, {
+    candidate: normalized.candidate,
+    revision: persisted.revision,
+    now,
+    allowTestGame: true
+  });
   return { ...normalized, source: normalized.candidate.source, persisted, verification, eligibility, finalized, alertSignal: {} };
 }
 

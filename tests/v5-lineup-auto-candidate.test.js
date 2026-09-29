@@ -94,11 +94,26 @@ function createDb() {
       internal_game_id TEXT NOT NULL UNIQUE,
       actual_lineup_json TEXT,
       lineup_fingerprint TEXT,
+      schema_version INTEGER NOT NULL DEFAULT 1,
+      lineup_detected_at TEXT,
+      scoring_due_at TEXT,
+      scoring_started_at TEXT,
+      scored_at TEXT,
+      scoring_status TEXT NOT NULL DEFAULT 'pending',
+      scoring_attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      processed_predictions INTEGER,
+      perfect_count INTEGER,
+      new_perfect_achievers TEXT,
       lineup_source TEXT,
+      publication_status TEXT NOT NULL DEFAULT 'pending',
+      published_at TEXT,
+      created_at TEXT,
+      updated_at TEXT,
       final_lineup_revision_id TEXT,
       finalized_at TEXT,
       finalized_by TEXT,
-      updated_at TEXT
+      UNIQUE(game_id)
     );
   `);
   database.prepare("INSERT INTO game_lineups (id, game_id, internal_game_id) VALUES (?, ?, ?)").run("lineup-1", TARGET.internalGameId, TARGET.internalGameId);

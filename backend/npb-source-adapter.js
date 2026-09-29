@@ -174,14 +174,19 @@ function parseScheduleJson(text) {
     ok: true,
     payload: {
       ok: true,
-      games: body.games.map((game) => ({
-        ...game,
-        date: game.gameDate,
-        gameCode: game.npbGameCode,
-        npbGameUrl: game.npbGameCode ? `simulator:${game.npbGameCode}` : "",
-        startTime: game.startAt,
-        status: normalizeExternalGameStatus(game.status || game.gameStatus || game.game_status)
-      })),
+      games: body.games.map((game) => {
+        const { replacementGame: _replacementGame, replacement_game_id: _replacementGameId, ...sourceGame } = game || {};
+        const replacementGameId = String(_replacementGame?.gameId || _replacementGameId || game?.replacementGameId || "").trim();
+        return {
+          ...sourceGame,
+          date: game.gameDate,
+          gameCode: game.npbGameCode,
+          npbGameUrl: game.npbGameCode ? `simulator:${game.npbGameCode}` : "",
+          startTime: game.startAt,
+          status: normalizeExternalGameStatus(game.status || game.gameStatus || game.game_status),
+          replacementGameId: replacementGameId || null
+        };
+      }),
       fetchedAt: new Date().toISOString(),
       sourceUrl: "simulator"
     }

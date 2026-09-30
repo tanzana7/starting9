@@ -711,8 +711,18 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
   // with separate limits. This keeps the critical path small and lets the
   // caller include the next day's probable-starter slots without scanning
   // every historical unfinished game on every Cron tick.
+  const formalLimit = Number(gameListOptions?.limit);
+  const formalDiscoveryCoveredAllRows = Number.isInteger(formalLimit)
+    && formalLimit > 0
+    && games.length < formalLimit;
   const auxiliaryGamesPromise = auxiliaryGameListOptions
-    ? listV3Games(env.AUTH_DB, now, auxiliaryGameListOptions)
+    ? formalDiscoveryCoveredAllRows
+      // The formal query and auxiliary query have the same bounded discovery
+      // predicate. When it returned fewer rows than its LIMIT, reusing that
+      // complete result avoids a second schema/query/hydration pass without
+      // hiding any additional auxiliary candidate.
+      ? Promise.resolve(games)
+      : listV3Games(env.AUTH_DB, now, auxiliaryGameListOptions)
     : Promise.resolve(games);
   const optionalPromise = auxiliaryGamesPromise.then((auxiliaryGames) => runV3OptionalPhases(env, auxiliaryGames, now, {
     auxiliaryPlanner,

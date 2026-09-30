@@ -208,7 +208,8 @@ test("scheduled V3 runnerはbounded discoveryを使用する", async () => {
 test("auxiliary discoveryはbounded critical pathとは別に翌日分を含むbounded batchを走査する", async () => {
   const executor = fs.readFileSync(new URL("../backend/automation-v3/executor.js", import.meta.url), "utf8");
   assert.match(executor, /auxiliaryGameListOptions\s*=\s*null/);
-  assert.match(executor, /const auxiliaryGamesPromise = auxiliaryGameListOptions\s*\n\s*\? listV3Games\(env\.AUTH_DB, now, auxiliaryGameListOptions\)/);
+  assert.match(executor, /const formalDiscoveryCoveredAllRows =/);
+  assert.match(executor, /formalDiscoveryCoveredAllRows[\s\S]*?Promise\.resolve\(games\)[\s\S]*?listV3Games\(env\.AUTH_DB, now, auxiliaryGameListOptions\)/);
   assert.match(executor, /runV3OptionalPhases\(env, auxiliaryGames, now/);
   assert.match(executor, /caller include the next day's probable-starter slots/);
 });

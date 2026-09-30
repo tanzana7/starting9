@@ -415,7 +415,11 @@ export const V3_JOB_PLANNERS = Object.freeze({
   [V3_JOB_TYPE.PUBLISH]: planV3MainJobs
 });
 
-export async function planAuxiliaryJobs(db, games = [], now = new Date(), { autoProbableStarter = true, autoRosterFetch = true } = {}) {
+export async function planAuxiliaryJobs(db, games = [], now = new Date(), {
+  autoProbableStarter = true,
+  autoRosterFetch = true,
+  includeStartBoundaryLookup = true
+} = {}) {
   const run = async (name, planner) => {
     try {
       return normalizeV3PlanEntries(await planner(db, games, now), now);
@@ -426,7 +430,7 @@ export async function planAuxiliaryJobs(db, games = [], now = new Date(), { auto
     }
   };
   let probableGames = Array.isArray(games) ? games : [];
-  if (autoProbableStarter) {
+  if (autoProbableStarter && includeStartBoundaryLookup) {
     try {
       // Before the first pitch there cannot be a start-boundary target. Avoid
       // the schema inspection and bounded future-game hydration in that

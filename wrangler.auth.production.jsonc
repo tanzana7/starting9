@@ -5,7 +5,13 @@
   "compatibility_date": "2026-07-17",
   "workers_dev": true,
   "triggers": {
-    "crons": ["* * * * *", "*/5 * * * *", "1,16,31,46 * * * *"]
+    "crons": [
+      "* * * * *",
+      "*/5 * * * *",
+      "1,16,31,46 * * * *",
+      "2,7,12,17,22,27,32,37,42,47,52,57 * * * *",
+      "0,15,30,45 * * * *"
+    ]
   },
   "vars": {
     "AUTH_ALLOWED_ORIGINS": "https://starting9.pages.dev",

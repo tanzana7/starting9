@@ -283,7 +283,7 @@ async function prepareV3GameStates(env, games = [], now = new Date(), { onError 
   return { prepared, skipped, failed };
 }
 
-async function runV3OptionalPhases(env, games, now, {
+export async function runV3OptionalPhases(env, games, now, {
   auxiliaryPlanner,
   onError,
   onPlan,

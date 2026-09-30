@@ -222,9 +222,12 @@ import {
   listOfficialCancellationCandidates,
   getV3SchemaState,
   runGameAutomationV3,
+  runV3OptionalPhases,
   executeClaimedJobs,
+  claimDueJobs,
   claimV3Job,
   createV3Job,
+  findV3ProbableStarterStartCheckGame,
   deriveV3Schedule,
   deriveV3DisplaySchedule,
   getV3RosterPlanningDiagnostics,
@@ -237,6 +240,8 @@ import {
   getV3OperationalMode,
   planMainWorkflowJobs,
   planAuxiliaryJobs,
+  hasV3ProbableStarterCandidate,
+  listV3ProbableStarterCandidates,
   getV3ProbableStarterPollingSlots,
   getV3ProbableStarterSourceDate,
   getV3CanonicalRosterSnapshot,
@@ -466,15 +471,20 @@ const V3_AUDIT_CLEANUP_BATCH_SIZE = 500;
 const V3_STORAGE_MAINTENANCE_MINUTE_JST = 0;
 const V3_SCHEDULE_SYNC_CADENCE_MINUTES = 5;
 const V3_CRITICAL_CRON_SCHEDULE = "* * * * *";
-const V3_AUXILIARY_CRON_SCHEDULE = "*/5 * * * *";
-// Schedule reconciliation is isolated from the five-minute auxiliary path so
+const V3_SHADOW_CRON_SCHEDULE = "*/5 * * * *";
+const V3_PROBABLE_STARTER_CRON_SCHEDULE = "2,7,12,17,22,27,32,37,42,47,52,57 * * * *";
+const V3_OBSERVER_CRON_SCHEDULE = "0,15,30,45 * * * *";
+// Kept as an alias for older tests and callers. Production dispatch resolves
+// the five-minute trigger to the shadow-only mode below.
+const V3_AUXILIARY_CRON_SCHEDULE = V3_SHADOW_CRON_SCHEDULE;
+// Schedule reconciliation is isolated from the five-minute shadow path so
 // official-page parsing cannot consume the CPU budget needed by probable
 // starter polling and shadow observations. This is UTC by Cloudflare contract;
-// the offset keeps the fetch away from the auxiliary trigger boundaries.
+// the offset keeps the fetch away from the split trigger boundaries.
 const V3_SCHEDULE_CRON_SCHEDULE = "1,16,31,46 * * * *";
 // The first schedule tick of each UTC hour is the low-frequency correction
 // window. The schedule trigger is intentionally offset from minute 0 so it
-// does not line up with the auxiliary trigger, but historical cancellation
+// does not line up with the shadow trigger, but historical cancellation
 // checks still run once per hour instead of disappearing with the split.
 const V3_SCHEDULE_HISTORICAL_RECONCILE_UTC_MINUTE = 1;
 const V3_PHASE_CHECKPOINT_STAGES = new Set([
@@ -483,7 +493,9 @@ const V3_PHASE_CHECKPOINT_STAGES = new Set([
   "claim_phase_started", "claim_execution_completed", "run_finished",
   "auxiliary_plan_started", "auxiliary_plan_finished", "schedule_sync_started",
   "schedule_sync_finished", "schedule_sync_skipped", "maintenance_started",
-  "maintenance_finished", "cron_finished"
+  "maintenance_finished", "shadow_started", "shadow_finished",
+  "probable_starter_started", "probable_starter_finished",
+  "observer_started", "observer_finished", "cron_finished"
 ]);
 const ROUTINE_V3_AUDIT_EVENT_TYPES = new Set([
   "CRON_HANDLER_STARTED", "CRON_HANDLER_FLAGS", "V3_RUN_STARTED", "V3_ELIGIBLE_GAMES",
@@ -541,13 +553,15 @@ export function shouldRunV3ScheduleSync(now) {
 
 // Cloudflare passes the matching cron expression on scheduled events. Unknown
 // or omitted values fail closed to the critical path so a formal minute is
-// never silently treated as auxiliary work. The auxiliary trigger is kept
+// never silently treated as optional work. Optional triggers are kept
 // separate to prevent shadow/schedule work from extending the formal CPU
 // budget, including at five-minute boundary collisions.
 export function resolveV3CronMode(cron) {
   const normalized = String(cron || "").trim();
   if (normalized === V3_SCHEDULE_CRON_SCHEDULE) return "schedule";
-  if (normalized === V3_AUXILIARY_CRON_SCHEDULE) return "auxiliary";
+  if (normalized === V3_SHADOW_CRON_SCHEDULE) return "shadow";
+  if (normalized === V3_PROBABLE_STARTER_CRON_SCHEDULE) return "probable";
+  if (normalized === V3_OBSERVER_CRON_SCHEDULE) return "observer";
   if (!normalized || normalized === V3_CRITICAL_CRON_SCHEDULE) return "critical";
   return "critical";
 }
@@ -1611,8 +1625,200 @@ function scheduleAdminAlertEvaluation(env, now, result, observerScheduler) {
   return task;
 }
 
+async function runScheduledLineupShadow(env, now, { runId = "" } = {}) {
+  const currentRunId = String(runId || globalThis.crypto?.randomUUID?.() || `v3-shadow-${Date.now()}`);
+  logV3PhaseCheckpoint(currentRunId, { stage: "shadow_started", now, status: "started" }, now);
+  try {
+    const result = await runLineupShadowForGames(env, now, { runId: currentRunId });
+    logV3PhaseCheckpoint(currentRunId, {
+      stage: "shadow_finished",
+      now,
+      status: result?.status || "completed",
+      gameCount: Number(result?.considered || 0)
+    }, now);
+    logV3PhaseCheckpoint(currentRunId, { stage: "cron_finished", now, status: "completed" }, now);
+    return { ok: true, cronMode: "shadow", runId: currentRunId, shadow: result };
+  } catch (error) {
+    logV3PhaseCheckpoint(currentRunId, {
+      stage: "shadow_finished",
+      now,
+      status: "failed",
+      errorCode: error?.code || "LINEUP_SHADOW_FAILED"
+    }, now);
+    logV3PhaseCheckpoint(currentRunId, { stage: "cron_finished", now, status: "failed" }, now);
+    throw error;
+  }
+}
+
+async function runScheduledProbableStarter(env, now, { runId = "" } = {}) {
+  const currentRunId = String(runId || globalThis.crypto?.randomUUID?.() || `v3-probable-${Date.now()}`);
+  logV3PhaseCheckpoint(currentRunId, { stage: "probable_starter_started", now, status: "started" }, now);
+  try {
+    if (!isGameAutomationV3Enabled(env)) {
+      const skipped = { status: "skipped", reasonCode: "V3_FEATURE_DISABLED" };
+      logV3PhaseCheckpoint(currentRunId, { stage: "probable_starter_finished", now, status: "skipped" }, now);
+      logV3PhaseCheckpoint(currentRunId, { stage: "cron_finished", now, status: "completed" }, now);
+      return { ok: true, cronMode: "probable", runId: currentRunId, probable: skipped };
+    }
+    const schema = await getV3SchemaState(env.AUTH_DB);
+    if (!schema.ready) {
+      const skipped = { status: "skipped", reasonCode: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE" };
+      logV3PhaseCheckpoint(currentRunId, { stage: "probable_starter_finished", now, status: "skipped" }, now);
+      logV3PhaseCheckpoint(currentRunId, { stage: "cron_finished", now, status: "completed" }, now);
+      return { ok: true, cronMode: "probable", runId: currentRunId, probable: skipped };
+    }
+    let hasCandidate = true;
+    try {
+      hasCandidate = await hasV3ProbableStarterCandidate(env.AUTH_DB, now);
+    } catch (error) {
+      // A failed scalar preflight must not suppress a due starter fetch.
+      console.warn(`[V3_PROBABLE_STARTER] stage=preflight code=${error?.code || "PROBABLE_STARTER_PREFLIGHT_FAILED"}`);
+    }
+    if (!hasCandidate) {
+      const skipped = { status: "skipped", reasonCode: "PROBABLE_STARTER_NO_TARGET" };
+      logV3PhaseCheckpoint(currentRunId, { stage: "probable_starter_finished", now, status: "skipped", gameCount: 0 }, now);
+      logV3PhaseCheckpoint(currentRunId, { stage: "cron_finished", now, status: "completed" }, now);
+      return { ok: true, cronMode: "probable", runId: currentRunId, probable: skipped };
+    }
+    let games = await listV3ProbableStarterCandidates(env.AUTH_DB, now, { limit: V3_AUXILIARY_GAME_BATCH_SIZE });
+    try {
+      const boundaryStarted = await hasV3StartedFightersGameForProbableStarterBoundary(env.AUTH_DB, now);
+      if (boundaryStarted) {
+        const startCheckGame = await findV3ProbableStarterStartCheckGame(env.AUTH_DB, now);
+        if (startCheckGame && !games.some((game) => String(game?.internalGameId || "") === String(startCheckGame.internalGameId || ""))) {
+          // The boundary target is a correctness requirement, not merely a
+          // ranking candidate. If the bounded projection is already full,
+          // reserve one slot for it instead of dropping it at the tail.
+          games = [
+            ...games.slice(0, Math.max(0, V3_AUXILIARY_GAME_BATCH_SIZE - 1)),
+            startCheckGame
+          ];
+        }
+      }
+    } catch (error) {
+      console.warn(`[V3_PROBABLE_STARTER] stage=boundary_check code=${error?.code || "PROBABLE_STARTER_BOUNDARY_CHECK_FAILED"}`);
+    }
+    const operationalMode = getV3OperationalMode(env);
+    // Reuse the existing optional lifecycle so state preparation and completed
+    // state reconciliation remain identical to the former auxiliary path.
+    // Only the bounded candidate projection and explicit boundary lookup above
+    // are new; planner/normalization/error isolation stay centralized.
+    const optional = await runV3OptionalPhases(env, games, now, {
+      auxiliaryPlanner: (db, plannerGames, plannerNow) => planAuxiliaryJobs(db, plannerGames, plannerNow, {
+        autoProbableStarter: operationalMode.autoProbableStarter,
+        autoRosterFetch: operationalMode.autoRosterFetch,
+        includeStartBoundaryLookup: false
+      })
+    });
+    const auxiliary = optional?.auxiliary || {};
+    const plannedEntries = [auxiliary.probablePlan, auxiliary.identityPlan, auxiliary.rosterPlan]
+      .flatMap((plan) => plan?.planned || []);
+    const plan = {
+      planned: plannedEntries,
+      created: Number(probablePlan.created || 0) + Number(identityPlan.created || 0) + Number(rosterPlan.created || 0)
+    };
+    const claimReport = await claimV3JobsForStandaloneMode(env.AUTH_DB, now, plannedEntries, {
+      // The one-minute critical trigger owns deadline-sensitive formal jobs.
+      // Optional triggers must not steal score/publish work while still
+      // draining their own bounded auxiliary due set.
+      disabledJobTypes: V3_MAIN_JOB_TYPES
+    });
+    const execution = await executeClaimedJobs(env, claimReport.claimed, games, now, {
+      executeJob: (context) => executeGameAutomationV3Job({ ...context, v4SemiAuto: operationalMode.isV4SemiAuto })
+    });
+    const result = {
+      status: execution.failed ? "completed_with_errors" : "completed",
+      gameCount: games.length,
+      planned: plannedEntries.length,
+      created: Number(auxiliary.created || 0),
+      processed: execution.processed,
+      failed: execution.failed,
+      retryWait: execution.retryWait,
+      hasMoreDue: claimReport.hasMoreDue === true,
+      statePreparation: optional.statePreparation,
+      stateReconciliation: optional.stateReconciliation,
+      auxiliaryPlan: auxiliary
+    };
+    logV3PhaseCheckpoint(currentRunId, {
+      stage: "probable_starter_finished",
+      now,
+      status: result.status,
+      gameCount: result.gameCount,
+      createdJobCount: result.created,
+      execution: { processed: result.processed, failed: result.failed },
+      claimReport
+    }, now);
+    logV3PhaseCheckpoint(currentRunId, { stage: "cron_finished", now, status: "completed" }, now);
+    return { ok: true, cronMode: "probable", runId: currentRunId, probable: result };
+  } catch (error) {
+    logV3PhaseCheckpoint(currentRunId, {
+      stage: "probable_starter_finished",
+      now,
+      status: "failed",
+      errorCode: error?.code || "PROBABLE_STARTER_CRON_FAILED"
+    }, now);
+    logV3PhaseCheckpoint(currentRunId, { stage: "cron_finished", now, status: "failed" }, now);
+    throw error;
+  }
+}
+
+async function claimV3JobsForStandaloneMode(db, now, plannedEntries, options = {}) {
+  return claimV3JobBatch(db, now, plannedEntries, options);
+}
+
+async function claimV3JobBatch(db, now, plannedEntries, options = {}) {
+  // Keep the shared claim implementation as the only lifecycle boundary. The
+  // wrapper exists solely to make the standalone probable-trigger intent
+  // explicit at the dispatch layer.
+  return claimDueJobs(db, now, plannedEntries, options);
+}
+
+async function listAdminAlertCandidateIds(db, now) {
+  const date = getJstDateString(now);
+  const result = await db.prepare(
+    `SELECT internal_game_id
+       FROM games
+      WHERE internal_game_id IS NOT NULL
+        AND internal_game_id <> ''
+        AND game_date BETWEEN date(?1, '-2 day') AND date(?1, '+2 day')
+        AND is_active = 1
+        AND deleted_at IS NULL
+      ORDER BY game_date, start_time, internal_game_id
+      LIMIT 8`
+  ).bind(date).all();
+  return (result.results || []).map((row) => row.internal_game_id).filter(Boolean);
+}
+
+async function runScheduledObserverTasks(env, now, { runId = "" } = {}) {
+  const currentRunId = String(runId || globalThis.crypto?.randomUUID?.() || `v3-observer-${Date.now()}`);
+  logV3PhaseCheckpoint(currentRunId, { stage: "observer_started", now, status: "started" }, now);
+  try {
+    let alerts = { status: "skipped", reasonCode: "NO_ALERT_CANDIDATES" };
+    try {
+      const gameIds = await listAdminAlertCandidateIds(env.AUTH_DB, now);
+      alerts = await scheduleAdminAlertEvaluation(env, now, { gameIds }, null);
+    } catch (error) {
+      alerts = { status: "failed", errorCode: error?.code || "ADMIN_ALERT_EVALUATION_FAILED" };
+      console.warn(`[ADMIN_ALERT] stage=observer_evaluation code=${alerts.errorCode}`);
+    }
+    let maintenance = { skipped: true, reasonCode: "MAINTENANCE_WINDOW_CLOSED" };
+    if (env.AUTH_DB && isV3StorageMaintenanceWindow(now)) {
+      logV3PhaseCheckpoint(currentRunId, { stage: "maintenance_started", now, status: "started" }, now);
+      maintenance = await runV3StorageMaintenance(env.AUTH_DB, getV3AuditDb(env), now);
+      logV3PhaseCheckpoint(currentRunId, { stage: "maintenance_finished", now, status: "completed" }, now);
+    }
+    logV3PhaseCheckpoint(currentRunId, { stage: "observer_finished", now, status: "completed" }, now);
+    logV3PhaseCheckpoint(currentRunId, { stage: "cron_finished", now, status: "completed" }, now);
+    return { ok: true, cronMode: "observer", runId: currentRunId, alerts, maintenance };
+  } catch (error) {
+    logV3PhaseCheckpoint(currentRunId, { stage: "observer_finished", now, status: "failed" }, now);
+    logV3PhaseCheckpoint(currentRunId, { stage: "cron_finished", now, status: "failed" }, now);
+    throw error;
+  }
+}
+
 // Schedule reconciliation is a separate Cron mode because official schedule
-// pages can require substantially more CPU than the five-minute auxiliary
+// pages can require substantially more CPU than the five-minute optional
 // planner. Keeping this path independent prevents a heavy parser from delaying
 // probable-starter and lineup-shadow work, while preserving the same bounded
 // current-day/future-buffer/cancellation service calls used by the existing
@@ -1745,6 +1951,9 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
   const runId = providedRunId || globalThis.crypto?.randomUUID?.() || `v3-run-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const correlationId = runId;
   if (mode === "schedule") return runScheduledScheduleSync(env, now, { runId });
+  if (mode === "shadow") return runScheduledLineupShadow(env, now, { runId });
+  if (mode === "probable") return runScheduledProbableStarter(env, now, { runId });
+  if (mode === "observer") return runScheduledObserverTasks(env, now, { runId });
   await writeV3RuntimeAudit(env, {
     eventType: "V3_RUN_STARTED",
     runId,
@@ -5271,7 +5480,6 @@ async function syncFightersScheduleForDate(env, date, now, { intervalMs = AUTOMA
           : "scheduled"
       };
     });
-    const changed = await hasScheduleDataChanged(env.AUTH_DB, date, normalizedGames);
     const changedItems = normalizedGames.filter(({ game, startAt, identityKey, gameStatus, existingRow }) => {
       const current = existingByIdentity.get(identityKey);
       return !current
@@ -5282,6 +5490,11 @@ async function syncFightersScheduleForDate(env, date, now, { intervalMs = AUTOMA
         || String(current.venue || "") !== String(game.venue || "")
         || String(current.game_status || "") !== gameStatus;
     });
+    // The existing-row projection above is already the comparison boundary.
+    // Do not issue a second full-date SELECT just to calculate this boolean;
+    // the duplicate scan was paid on every due schedule fetch, including
+    // no-change syncs.
+    const changed = changedItems.length > 0;
     const statements = [];
     for (const item of normalizedGames) {
       const { game, startAt, sourceGameKey, npbGameCode, npbGameUrl, gameStatus, existingRow, existingCandidates } = item;
@@ -6022,28 +6235,6 @@ function createScheduleIdentityKey({ date = "", startAt = "", homeTeam = "", awa
 
 function shouldPreferDetectedScheduleRow(candidate, current) {
   return Boolean(normalizeNpbGameCode(candidate?.game_code) && !normalizeNpbGameCode(current?.game_code));
-}
-
-async function hasScheduleDataChanged(db, date, games) {
-  const result = await db.prepare(
-    `SELECT source_game_key, game_id, start_at, home_team, away_team, game_code, venue, game_status
-       FROM detected_game_schedule WHERE game_date = ?1`
-  ).bind(date).all();
-  const existing = new Map();
-  for (const row of result.results || []) {
-    const key = createScheduleIdentityKey({ date: row.game_date || date, startAt: row.start_at, homeTeam: row.home_team, awayTeam: row.away_team });
-    if (key && (!existing.has(key) || shouldPreferDetectedScheduleRow(row, existing.get(key)))) existing.set(key, row);
-  }
-  return (Array.isArray(games) ? games : []).some(({ game, startAt, identityKey, gameStatus }) => {
-    const row = existing.get(identityKey);
-    return !row
-      || String(row.start_at || "") !== startAt.toISOString()
-      || String(row.home_team || "") !== String(game.homeTeam || "")
-      || String(row.away_team || "") !== String(game.awayTeam || "")
-      || String(row.game_code || "") !== String(game.gameCode || "")
-      || String(row.venue || "") !== String(game.venue || "")
-      || String(row.game_status || "") !== gameStatus;
-  });
 }
 
 async function recordScheduleSyncOutcome(db, result, now) {

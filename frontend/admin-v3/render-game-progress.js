@@ -368,6 +368,20 @@
     }
     function renderShadowAccuracy(report) {
       if (!report?.available) return `<section class="v3-panel" data-v3-lineup-shadow-accuracy><div class="view-heading"><div><h3>Shadow実績</h3><p class="muted">観測データを取得できません。</p></div></div></section>`;
+      const current = report.current || {};
+      const currentHealthLabel = { normal: "正常", waiting: "待機", attention: "要確認" }[current.health] || "待機";
+      const currentHealthClass = { normal: "ok", waiting: "wait", attention: "action" }[current.health] || "wait";
+      const currentGame = current.game || {};
+      const currentGameLabel = currentGame.internalGameId
+        ? `${currentGame.gameDate || "-"} ${currentGame.homeTeam || "-"} vs ${currentGame.awayTeam || "-"}`
+        : "-";
+      const currentTime = (value) => value ? formatJst(value) : "-";
+      const recentCurrent = (Array.isArray(current.recent) ? current.recent : []).slice(0, 4).map((item) => {
+        const game = item.game || {};
+        const label = `${game.gameDate || "-"} ${game.homeTeam || "-"} vs ${game.awayTeam || "-"}`;
+        return `<li><span>${escapeHtml(label)}</span><strong>${escapeHtml(item.label || item.code || "待機")}</strong></li>`;
+      }).join("");
+      const currentMarkup = `<section class="v3-panel v3-shadow-current" data-v3-lineup-shadow-current><div class="view-heading"><div><h3>Shadow運用状況</h3><p>取得・比較の現在状態です。正式スタメンを自動確定する機能ではありません。</p></div><span class="status-badge ${currentHealthClass}">${escapeHtml(currentHealthLabel)}</span></div><div class="v4-state-grid"><div><span>対象試合</span><strong>${escapeHtml(currentGameLabel)}</strong></div><div><span>状態</span><strong>${escapeHtml(current.label || "対象試合なし")}</strong></div><div><span>理由</span><strong>${escapeHtml(current.reason || "-")}</strong></div><div><span>最終試行</span><strong>${escapeHtml(currentTime(current.lastAttemptAt))}</strong></div><div><span>最終取得</span><strong>${escapeHtml(currentTime(current.lastFetchedAt))}</strong></div><div><span>最終Verified</span><strong>${escapeHtml(currentTime(current.lastVerifiedAt))}</strong></div><div><span>Shadow</span><strong>${report.shadowEnabled === true ? "ON" : "OFF"}</strong></div><div><span>Auto Final</span><strong>${report.autoFinalEnabled === true ? "ON" : "OFF"}</strong></div></div>${recentCurrent ? `<h4>本日・明日の状態</h4><ul class="v3-job-diagnostic-list">${recentCurrent}</ul>` : ""}</section>`;
       const metrics = report.metrics || {};
       const rates = metrics.rates || {};
       const percent = (value) => typeof value === "number" ? `${Math.round(value * 1000) / 10}%` : "-";
@@ -377,7 +391,7 @@
         const status = game.status === "matched" ? "✓ 完全一致" : game.status === "mismatched" ? `⚠ 差分 ${game.differenceCount || 0}件` : game.status === "excluded" ? `除外（${game.exclusionReason || "対象外"}）` : game.status === "pending" ? "保留" : game.status === "invalid" ? "要確認" : "未取得";
         return `<li><span>${escapeHtml(label)}</span><strong>${escapeHtml(status)}</strong></li>`;
       }).join("") || "<li><span>まだ観測データなし</span></li>";
-      return `<section class="v3-panel" data-v3-lineup-shadow-accuracy><div class="view-heading"><div><h3>Shadow実績</h3><p>直近${escapeHtml(report.historyLimit ?? 0)}試合・${escapeHtml(report.lookbackDays ?? 30)}日以内の読み取り比較です。</p></div></div><div class="v4-state-grid"><div><span>対象</span><strong>${metrics.eligibleGames ?? 0}試合</strong></div><div><span>取得試行</span><strong>${metrics.attempted ?? 0}</strong></div><div><span>Verified</span><strong>${metrics.verified ?? 0}/${metrics.attempted ?? 0}（${percent(rates.verified)}）</strong></div><div><span>Manual比較</span><strong>${metrics.comparable ?? 0}試合</strong></div><div><span>完全一致</span><strong>${metrics.exactMatches ?? 0}/${metrics.comparable ?? 0}（${percent(rates.exactMatch)}）</strong></div><div><span>選手 / 打順 / 守備</span><strong>${metrics.playerMatches ?? 0} / ${metrics.battingOrderMatches ?? 0} / ${metrics.positionMatches ?? 0}</strong></div></div><p class="compact-meta"><span>不一致 ${metrics.mismatched ?? 0}</span><span>未取得 ${metrics.missing ?? 0}</span><span>検証不備 ${metrics.invalid ?? 0}</span><span>未観測 ${metrics.unobserved ?? 0}</span><span>除外 ${metrics.excluded ?? 0}</span></p>${noObservation ? "<p class=muted>まだ観測データなし</p>" : `<ul class="v3-job-diagnostic-list">${recent}</ul>`}</section>`;
+      return `${currentMarkup}<section class="v3-panel" data-v3-lineup-shadow-accuracy><div class="view-heading"><div><h3>Shadow実績</h3><p>直近${escapeHtml(report.historyLimit ?? 0)}試合・${escapeHtml(report.lookbackDays ?? 30)}日以内の読み取り比較です。</p></div></div><div class="v4-state-grid"><div><span>対象</span><strong>${metrics.eligibleGames ?? 0}試合</strong></div><div><span>取得試行</span><strong>${metrics.attempted ?? 0}</strong></div><div><span>Verified</span><strong>${metrics.verified ?? 0}/${metrics.attempted ?? 0}（${percent(rates.verified)}）</strong></div><div><span>Manual比較</span><strong>${metrics.comparable ?? 0}試合</strong></div><div><span>完全一致</span><strong>${metrics.exactMatches ?? 0}/${metrics.comparable ?? 0}（${percent(rates.exactMatch)}）</strong></div><div><span>選手 / 打順 / 守備</span><strong>${metrics.playerMatches ?? 0} / ${metrics.battingOrderMatches ?? 0} / ${metrics.positionMatches ?? 0}</strong></div></div><p class="compact-meta"><span>不一致 ${metrics.mismatched ?? 0}</span><span>未取得 ${metrics.missing ?? 0}</span><span>検証不備 ${metrics.invalid ?? 0}</span><span>未観測 ${metrics.unobserved ?? 0}</span><span>除外 ${metrics.excluded ?? 0}</span></p>${noObservation ? "<p class=muted>まだ観測データなし</p>" : `<ul class="v3-job-diagnostic-list">${recent}</ul>`}</section>`;
     }
     function renderDashboard(payload, games) {
       const allGames = listItems(payload?.games, "games");

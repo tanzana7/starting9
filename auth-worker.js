@@ -1211,7 +1211,7 @@ async function readLineupShadowStatus(db, internalGameId, { enabled = false } = 
 // history bounded so an overview refresh cannot turn old shadow revisions into
 // the Cron hot path or require a migration. Manual/final and shadow rows are
 // compared from their existing revision lineage only.
-async function readLineupShadowAccuracy(db, now = new Date()) {
+async function readLineupShadowAccuracy(db, now = new Date(), { enabled = true } = {}) {
   if (!db) return { available: false, code: "LINEUP_SHADOW_ACCURACY_DB_UNAVAILABLE", games: [], metrics: buildLineupShadowAccuracyReport([]).metrics };
   const current = now instanceof Date ? now : new Date(now);
   const today = getJstDateString(current);
@@ -1229,8 +1229,9 @@ async function readLineupShadowAccuracy(db, now = new Date()) {
         ORDER BY date(game_date) DESC, start_time DESC, internal_game_id DESC
         LIMIT ?3`
     ).bind(today, `-${LINEUP_SHADOW_ACCURACY_LOOKBACK_DAYS} day`, LINEUP_SHADOW_ACCURACY_LIMIT).all();
+    const games = gameRows?.results || [];
     const records = [];
-    for (const game of gameRows?.results || []) {
+    for (const game of games) {
       let revisions = [];
       let logs = [];
       try {
@@ -1270,7 +1271,10 @@ async function readLineupShadowAccuracy(db, now = new Date()) {
     }
     return buildLineupShadowAccuracyReport(records, {
       limit: LINEUP_SHADOW_ACCURACY_LIMIT,
-      lookbackDays: LINEUP_SHADOW_ACCURACY_LOOKBACK_DAYS
+      lookbackDays: LINEUP_SHADOW_ACCURACY_LOOKBACK_DAYS,
+      games,
+      now,
+      enabled
     });
   } catch (error) {
     console.warn(`[LINEUP_SHADOW_ACCURACY] stage=game_read code=${error?.code || "LINEUP_SHADOW_ACCURACY_READ_FAILED"}`);
@@ -6590,10 +6594,19 @@ async function handleAdminV3Overview(request, env, cors) {
   const rosterMonitor = buildV3RosterMonitor(rows, { teamCode: FIGHTERS_TEAM_CODE, manualRoster: monitorRoster });
   let lineupShadowAccuracy = null;
   try {
-    lineupShadowAccuracy = await readLineupShadowAccuracy(env.AUTH_DB, overviewNow);
+    lineupShadowAccuracy = await readLineupShadowAccuracy(env.AUTH_DB, overviewNow, {
+      enabled: isLineupShadowEnabled(env)
+    });
   } catch (error) {
     console.warn(`[ADMIN_V3_OVERVIEW] stage=lineup_shadow_accuracy_read code=${error?.code || "LINEUP_SHADOW_ACCURACY_READ_FAILED"}`);
-    lineupShadowAccuracy = { available: false, code: error?.code || "LINEUP_SHADOW_ACCURACY_READ_FAILED", games: [], metrics: buildLineupShadowAccuracyReport([]).metrics };
+    lineupShadowAccuracy = {
+      available: false,
+      code: error?.code || "LINEUP_SHADOW_ACCURACY_READ_FAILED",
+      games: [],
+      metrics: buildLineupShadowAccuracyReport([]).metrics,
+      shadowEnabled: isLineupShadowEnabled(env),
+      autoFinalEnabled: false
+    };
   }
   return jsonResponse({
     ok: true,

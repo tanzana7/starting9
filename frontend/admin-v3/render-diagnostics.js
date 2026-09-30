@@ -123,15 +123,23 @@
       const historicalJobs = gameItems.filter((game) => !todayGames.includes(game)).flatMap((game) => listItems(game?.jobs, "jobs"));
       const latestCompleted = latestOpsJob({ jobs: todayJobs }, ["completed"]);
       const latestFailed = latestOpsJob({ jobs: currentFailedJobs({ jobs: todayJobs }) }, ["failed"]);
-      const cronLastRunAt = payload?.todayOps?.cronLastRunAt || null;
-      const cronIntervalMinutes = Number(payload?.todayOps?.cronIntervalMinutes) || 1;
-      const cronGraceMinutes = Number.isFinite(Number(payload?.todayOps?.cronGraceMinutes)) ? Number(payload.todayOps.cronGraceMinutes) : 2;
+      const cronHeartbeat = payload?.todayOps?.cronHeartbeat || {};
+      const cronLastInvocationAt = cronHeartbeat.lastInvocationAt || null;
+      const cronLastCompletedAt = cronHeartbeat.lastCompletedAt || null;
+      const cronLastAuditAt = payload?.todayOps?.cronLastAuditAt || null;
+      const cronIntervalMinutes = Number(cronHeartbeat.intervalMinutes || payload?.todayOps?.cronIntervalMinutes) || 1;
+      const cronGraceMinutes = Number.isFinite(Number(cronHeartbeat.graceMinutes ?? payload?.todayOps?.cronGraceMinutes))
+        ? Number(cronHeartbeat.graceMinutes ?? payload?.todayOps?.cronGraceMinutes)
+        : 5;
       const cronIntervalMs = Number.isFinite(cronIntervalMinutes) && cronIntervalMinutes > 0 ? cronIntervalMinutes * 60 * 1000 : 0;
       const cronGraceMs = Number.isFinite(cronGraceMinutes) && cronGraceMinutes >= 0 ? cronGraceMinutes * 60 * 1000 : 0;
-      const cronLastRunMs = cronLastRunAt ? new Date(cronLastRunAt).getTime() : Number.NaN;
-      const nextCronEstimateMs = Number.isFinite(cronLastRunMs) && cronIntervalMs ? cronLastRunMs + cronIntervalMs : Number.NaN;
-      const nextCronEstimate = Number.isFinite(nextCronEstimateMs) ? new Date(nextCronEstimateMs).toISOString() : null;
-      const cronStale = !Number.isFinite(cronLastRunMs) || !Number.isFinite(nextCronEstimateMs) || now.getTime() > nextCronEstimateMs + cronGraceMs;
+      const cronLastInvocationMs = cronLastInvocationAt ? new Date(cronLastInvocationAt).getTime() : Number.NaN;
+      const nextCronEstimateMs = Number.isFinite(cronLastInvocationMs) && cronIntervalMs ? cronLastInvocationMs + cronIntervalMs : Number.NaN;
+      const nextCronEstimate = cronHeartbeat.nextInvocationAt || (Number.isFinite(nextCronEstimateMs) ? new Date(nextCronEstimateMs).toISOString() : null);
+      const heartbeatStatus = String(cronHeartbeat.status || "never_seen");
+      const cronStale = heartbeatStatus === "stale" || (!cronHeartbeat.status && Number.isFinite(cronLastInvocationMs) && now.getTime() > nextCronEstimateMs + cronGraceMs);
+      const cronAttention = heartbeatStatus === "stale" || heartbeatStatus === "failed_recently" || cronStale;
+      const cronStatus = heartbeatStatus === "healthy" ? "ok" : heartbeatStatus === "never_seen" ? "waiting" : cronAttention ? "attention" : "waiting";
       const futureShortage = futureGames < futureGamesMinimum;
       const gameModels = todayGames.map((game) => {
         const gameState = String(game?.state?.state || "scheduled");
@@ -170,7 +178,7 @@
           }
         };
       });
-      const attention = gameModels.some((model) => model.attention) || futureShortage || cronStale || futureScheduleSyncAttention;
+      const attention = gameModels.some((model) => model.attention) || futureShortage || cronAttention || futureScheduleSyncAttention;
       return {
         todayGames,
         gameModels,
@@ -180,12 +188,16 @@
         futureScheduleSync,
         futureScheduleSyncAttention,
         futureScheduleSyncStatus: futureScheduleSyncAttention ? "attention" : futureScheduleSync ? "ok" : "waiting",
-        cronLastRunAt,
+        cronLastInvocationAt,
+        cronLastCompletedAt,
+        cronLastAuditAt,
+        cronHealthStatus: heartbeatStatus,
         cronStale,
+        cronAttention,
         cronSchedule: payload?.todayOps?.cronSchedule || "* * * * *",
         cronDescription: payload?.todayOps?.cronDescription || "毎分",
         nextCronEstimate,
-        cronStatus: cronStale ? "attention" : "ok",
+        cronStatus,
         overallStatus: attention ? "attention" : gameModels.some((model) => model.status === "waiting") ? "waiting" : "ok",
         openJobs: todayJobs.filter((job) => ["pending", "claimed", "retry_wait"].includes(job.status)).length,
         retryWaitJobs: todayJobs.filter((job) => job.status === "retry_wait").length,
@@ -220,8 +232,11 @@
 
     function renderTodayOps(payload, games) {
       const model = buildTodayOpsModel(payload, games);
-      const cronLastDetail = model.cronLastRunAt ? formatJst(model.cronLastRunAt) : "記録なし";
+      const cronLastInvocationDetail = model.cronLastInvocationAt ? formatJst(model.cronLastInvocationAt) : "未記録";
+      const cronLastCompletedDetail = model.cronLastCompletedAt ? formatJst(model.cronLastCompletedAt) : "未記録";
+      const cronLastAuditDetail = model.cronLastAuditAt ? formatJst(model.cronLastAuditAt) : "未記録";
       const nextCronDetail = model.nextCronEstimate ? formatJst(model.nextCronEstimate) : "不明";
+      const cronStatusDetail = { healthy: "正常", stale: "実行確認できず", failed_recently: "直近実行で失敗", never_seen: "未記録" }[model.cronHealthStatus] || "未記録";
       const gameCards = model.gameModels.length
         ? model.gameModels.map(({ game, state, status, nextAction, steps }) => `<article class="today-ops-game"><div class="today-ops-game-heading"><strong>${escapeHtml(gameDateForFilter(game))} ${escapeHtml(game.homeTeam)} vs ${escapeHtml(game.awayTeam)}</strong>${statusBadge(status)}</div><div class="today-ops-game-meta"><span>state: ${escapeHtml(state)}</span><span>次: ${escapeHtml(nextAction)}</span></div><div class="today-ops-steps">${renderStep("予告先発", steps.probable)}${renderStep("ロースター", steps.roster, steps.rosterDetail)}${renderStep("スタメン", steps.lineup, steps.lineupDetail)}${renderStep("採点", steps.scoring)}${renderStep("ランキング", steps.ranking)}${renderStep("公開", steps.publication)}</div></article>`).join("")
         : "<p class=muted>本日の対象試合はありません。</p>";
@@ -231,7 +246,7 @@
       const modeNotice = payload?.automationMode?.isV4SemiAuto
         ? "V4: 予告先発は自動、ロースター・スタメン取得は停止中。スタメン9人を管理者が確定後、締切・採点・ランキング・公開をCronが継続します。"
         : "本日のV3自動処理を試合単位で確認します。";
-      return `<section class="today-ops-panel" aria-labelledby="todayOpsHeading"><div class="today-ops-heading"><div><h3 id="todayOpsHeading">Today Ops / Automation Health</h3><p>${escapeHtml(modeNotice)}</p></div>${statusBadge(model.overallStatus)}</div><div class="today-ops-metrics"><div><strong>${escapeHtml(model.todayGames.length)}</strong><span>今日の試合</span></div><div><strong>${escapeHtml(model.openJobs)}</strong><span>今日のopen job</span></div><div><strong>${escapeHtml(model.retryWaitJobs)}</strong><span>今日のretry_wait</span></div><div><strong>${escapeHtml(model.todayFailedJobs)}</strong><span>今日のfailed</span></div><div><strong>${escapeHtml(model.historicalFailedJobs)}</strong><span>過去のfailed（参考）</span></div><div><strong>${escapeHtml(model.futureGames)}</strong><span>未来試合登録数</span></div><div><strong>${escapeHtml(model.cronSchedule)}</strong><span>Cron設定${model.cronDescription ? `（${escapeHtml(model.cronDescription)}）` : ""}</span></div><div><strong>${escapeHtml(cronLastDetail)}</strong><span>Cron最終監査</span></div><div><strong>${escapeHtml(nextCronDetail)}</strong><span>次Cron目安</span></div><div><strong>${escapeHtml(model.cronStatus === "attention" ? "ATTENTION" : "直近")}</strong><span>Cron状態</span></div></div><div class="today-ops-notices"><span>最後に完了: ${renderOpsJob(model.latestCompleted)}</span><span>最後に失敗: ${renderOpsJob(model.latestFailed)}</span><span>${escapeHtml(historyNotice)}</span><span>${model.futureShortage ? "未来試合が3試合未満" : "未来試合数は充足"}</span><span>${model.cronStale ? "Cron監査が古い、または未記録" : "Cron監査は直近"}</span></div>${renderScheduleSync(model)}<div class="today-ops-games">${gameCards}</div></section>`;
+      return `<section class="today-ops-panel" aria-labelledby="todayOpsHeading"><div class="today-ops-heading"><div><h3 id="todayOpsHeading">Today Ops / Automation Health</h3><p>${escapeHtml(modeNotice)}</p></div>${statusBadge(model.overallStatus)}</div><div class="today-ops-metrics"><div><strong>${escapeHtml(model.todayGames.length)}</strong><span>今日の試合</span></div><div><strong>${escapeHtml(model.openJobs)}</strong><span>今日のopen job</span></div><div><strong>${escapeHtml(model.retryWaitJobs)}</strong><span>今日のretry_wait</span></div><div><strong>${escapeHtml(model.todayFailedJobs)}</strong><span>今日のfailed</span></div><div><strong>${escapeHtml(model.historicalFailedJobs)}</strong><span>過去のfailed（参考）</span></div><div><strong>${escapeHtml(model.futureGames)}</strong><span>未来試合登録数</span></div><div><strong>${escapeHtml(model.cronSchedule)}</strong><span>Cron設定${model.cronDescription ? `（${escapeHtml(model.cronDescription)}）` : ""}</span></div><div><strong>${escapeHtml(cronLastInvocationDetail)}</strong><span>Cron最終実行</span></div><div><strong>${escapeHtml(cronLastCompletedDetail)}</strong><span>Cron最終完了</span></div><div><strong>${escapeHtml(nextCronDetail)}</strong><span>次Cron目安</span></div><div><strong>${escapeHtml(cronStatusDetail)}</strong><span>Cron状態</span></div></div><div class="today-ops-notices"><span>最後に完了: ${renderOpsJob(model.latestCompleted)}</span><span>最後に失敗: ${renderOpsJob(model.latestFailed)}</span><span>${escapeHtml(historyNotice)}</span><span>${model.futureShortage ? "未来試合が3試合未満" : "未来試合数は充足"}</span><span>最終監査イベント: ${escapeHtml(cronLastAuditDetail)}</span></div>${renderScheduleSync(model)}<div class="today-ops-games">${gameCards}</div></section>`;
     }
 
     function renderGameDiagnostics(game) {

@@ -1707,7 +1707,14 @@ async function runScheduledProbableStarter(env, now, { runId = "" } = {}) {
       auxiliaryPlanner: (db, plannerGames, plannerNow) => planAuxiliaryJobs(db, plannerGames, plannerNow, {
         autoProbableStarter: operationalMode.autoProbableStarter,
         autoRosterFetch: operationalMode.autoRosterFetch,
-        includeStartBoundaryLookup: false
+        includeStartBoundaryLookup: false,
+        // This trigger is deliberately isolated from identity/roster work.
+        // The candidate query already carries the canonical internal game ID,
+        // and the probable planner performs its own target checks. V4 keeps
+        // automatic roster and lineup acquisition disabled.
+        // Replanning those auxiliary stages here only adds D1 work and can
+        // claim an unrelated auxiliary job without improving starter data.
+        probableStarterOnly: true
       })
     });
     const auxiliary = optional?.auxiliary || {};

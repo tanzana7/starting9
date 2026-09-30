@@ -418,7 +418,8 @@ export const V3_JOB_PLANNERS = Object.freeze({
 export async function planAuxiliaryJobs(db, games = [], now = new Date(), {
   autoProbableStarter = true,
   autoRosterFetch = true,
-  includeStartBoundaryLookup = true
+  includeStartBoundaryLookup = true,
+  probableStarterOnly = false
 } = {}) {
   const run = async (name, planner) => {
     try {
@@ -471,10 +472,12 @@ export async function planAuxiliaryJobs(db, games = [], now = new Date(), {
     ? await run(V3_JOB_TYPE.PROBABLE_STARTER_FETCH, (database, _ignoredGames, plannerNow) =>
       V3_JOB_PLANNERS[V3_JOB_TYPE.PROBABLE_STARTER_FETCH](database, probableGames, plannerNow))
     : { created: 0, planned: [], diagnostics: [{ stage: "probable_starter_fetch", reasonCode: "AUTO_PROBABLE_STARTER_DISABLED" }], errors: [] };
-  const rosterPlan = autoRosterFetch
+  const rosterPlan = !probableStarterOnly && autoRosterFetch
     ? await run(V3_JOB_TYPE.ROSTER_FETCH, V3_JOB_PLANNERS[V3_JOB_TYPE.ROSTER_FETCH])
     : { created: 0, planned: [], diagnostics: [{ stage: "roster_fetch", reasonCode: "V4_AUTO_ROSTER_FETCH_DISABLED" }], errors: [] };
-  const identityPlan = await run(V3_JOB_TYPE.NPB_IDENTITY_RESOLVE, V3_JOB_PLANNERS[V3_JOB_TYPE.NPB_IDENTITY_RESOLVE]);
+  const identityPlan = probableStarterOnly
+    ? { created: 0, planned: [], diagnostics: [{ stage: "npb_identity_resolve", reasonCode: "PROBABLE_STARTER_ONLY" }], errors: [] }
+    : await run(V3_JOB_TYPE.NPB_IDENTITY_RESOLVE, V3_JOB_PLANNERS[V3_JOB_TYPE.NPB_IDENTITY_RESOLVE]);
   return {
     probablePlan,
     rosterPlan,

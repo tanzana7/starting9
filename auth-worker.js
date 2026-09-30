@@ -1713,10 +1713,6 @@ async function runScheduledProbableStarter(env, now, { runId = "" } = {}) {
     const auxiliary = optional?.auxiliary || {};
     const plannedEntries = [auxiliary.probablePlan, auxiliary.identityPlan, auxiliary.rosterPlan]
       .flatMap((plan) => plan?.planned || []);
-    const plan = {
-      planned: plannedEntries,
-      created: Number(probablePlan.created || 0) + Number(identityPlan.created || 0) + Number(rosterPlan.created || 0)
-    };
     const claimReport = await claimV3JobsForStandaloneMode(env.AUTH_DB, now, plannedEntries, {
       // The one-minute critical trigger owns deadline-sensitive formal jobs.
       // Optional triggers must not steal score/publish work while still

@@ -77,4 +77,7 @@ test("分離Cronは各modeで単一責務へreturnし、probableは既存optiona
   assert.match(dispatch, /if \(mode === "observer"\) return runScheduledObserverTasks/);
   assert.match(worker, /runV3OptionalPhases\(env, games, now/);
   assert.match(worker, /disabledJobTypes: V3_MAIN_JOB_TYPES/);
+  assert.doesNotMatch(worker, /Number\(probablePlan\.created/);
+  assert.doesNotMatch(worker, /Number\(identityPlan\.created/);
+  assert.doesNotMatch(worker, /Number\(rosterPlan\.created/);
 });

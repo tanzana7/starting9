@@ -466,6 +466,16 @@ const V3_STORAGE_MAINTENANCE_MINUTE_JST = 0;
 const V3_SCHEDULE_SYNC_CADENCE_MINUTES = 5;
 const V3_CRITICAL_CRON_SCHEDULE = "* * * * *";
 const V3_AUXILIARY_CRON_SCHEDULE = "*/5 * * * *";
+// Schedule reconciliation is isolated from the five-minute auxiliary path so
+// official-page parsing cannot consume the CPU budget needed by probable
+// starter polling and shadow observations. This is UTC by Cloudflare contract;
+// the offset keeps the fetch away from the auxiliary trigger boundaries.
+const V3_SCHEDULE_CRON_SCHEDULE = "1,16,31,46 * * * *";
+// The first schedule tick of each UTC hour is the low-frequency correction
+// window. The schedule trigger is intentionally offset from minute 0 so it
+// does not line up with the auxiliary trigger, but historical cancellation
+// checks still run once per hour instead of disappearing with the split.
+const V3_SCHEDULE_HISTORICAL_RECONCILE_UTC_MINUTE = 1;
 const V3_PHASE_CHECKPOINT_STAGES = new Set([
   "cron_started", "eligible_games", "formal_plan_started", "formal_plan_finished",
   "formal_idle_fast_path",
@@ -535,9 +545,16 @@ export function shouldRunV3ScheduleSync(now) {
 // budget, including at five-minute boundary collisions.
 export function resolveV3CronMode(cron) {
   const normalized = String(cron || "").trim();
+  if (normalized === V3_SCHEDULE_CRON_SCHEDULE) return "schedule";
   if (normalized === V3_AUXILIARY_CRON_SCHEDULE) return "auxiliary";
   if (!normalized || normalized === V3_CRITICAL_CRON_SCHEDULE) return "critical";
   return "critical";
+}
+
+export function isV3ScheduleHistoricalReconcileWindow(now) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(current.getTime())) return false;
+  return current.getUTCMinutes() === V3_SCHEDULE_HISTORICAL_RECONCILE_UTC_MINUTE;
 }
 
 function logV3PhaseCheckpoint(runId, phase = {}, fallbackNow = new Date()) {
@@ -1584,11 +1601,140 @@ function scheduleAdminAlertEvaluation(env, now, result, observerScheduler) {
   return task;
 }
 
+// Schedule reconciliation is a separate Cron mode because official schedule
+// pages can require substantially more CPU than the five-minute auxiliary
+// planner. Keeping this path independent prevents a heavy parser from delaying
+// probable-starter and lineup-shadow work, while preserving the same bounded
+// current-day/future-buffer/cancellation service calls used by the existing
+// automation path.
+async function runScheduledScheduleSync(env, now, { runId = "" } = {}) {
+  const currentRunId = String(runId || globalThis.crypto?.randomUUID?.() || `v3-schedule-${Date.now()}`);
+  logV3PhaseCheckpoint(currentRunId, { stage: "schedule_sync_started", now, status: "started" }, now);
+  try {
+    let currentDay = null;
+    try {
+      currentDay = await syncCurrentDayFightersSchedule(env, now);
+      console.log(`[GAME_SCHEDULE_CURRENT_DAY] status=${currentDay.status} date=${currentDay.date || ""} changed=${currentDay.status === "success_changed"}`);
+    } catch (error) {
+      currentDay = {
+        status: "failed",
+        date: getJstDateString(now),
+        errorCode: error?.code || "CURRENT_DAY_SCHEDULE_SYNC_FAILED",
+        lastScheduleSyncAt: now.toISOString()
+      };
+      console.warn(`[GAME_SCHEDULE_CURRENT_DAY] status=failed date=${currentDay.date || ""} code=${currentDay.errorCode}`);
+    }
+
+    let future = null;
+    try {
+      future = await ensureFutureFightersSchedule(env, now);
+      console.log(`[GAME_SCHEDULE_BUFFER] before=${future.futureGamesBefore} after=${future.futureGamesAfter} fetched=${future.gamesFetched} inserted=${future.gamesInserted} updated=${future.gamesUpdated} range=${future.fetchRangeStart || ""}..${future.fetchRangeEnd || ""} skip=${future.skipReason || ""}`);
+    } catch (error) {
+      future = {
+        status: "failed",
+        syncNeeded: true,
+        futureGamesBefore: null,
+        futureGamesAfter: null,
+        futureGamesTarget: AUTOMATION_MIN_FUTURE_GAMES,
+        gamesFetched: 0,
+        gamesInserted: 0,
+        gamesUpdated: 0,
+        fetchRangeStart: "",
+        fetchRangeEnd: "",
+        expandedTo30Days: false,
+        skipReason: error?.code || "SCHEDULE_SYNC_FAILED",
+        errorCode: error?.code || "SCHEDULE_FETCH_FAILED",
+        lastScheduleSyncAt: now.toISOString()
+      };
+      console.warn(`[GAME_SCHEDULE_BUFFER] status=failed code=${future.skipReason}`);
+    }
+
+    let cancellation = null;
+    try {
+      cancellation = await reconcileOfficialGameCancellations(env, now, {
+        includeHistorical: isV3StorageMaintenanceWindow(now) || isV3ScheduleHistoricalReconcileWindow(now)
+      });
+    } catch (error) {
+      cancellation = {
+        checked: 0,
+        applied: 0,
+        skipped: 0,
+        failed: 1,
+        errorCode: error?.code || "OFFICIAL_CANCELLATION_RECONCILE_FAILED"
+      };
+      console.warn(`[GAME_OFFICIAL_CANCELLATION] status=failed code=${cancellation.errorCode}`);
+    }
+
+    const result = { ...future, currentDay, officialCancellation: cancellation };
+    await writeScheduleSyncAuditRecord(env, {
+      runId: currentRunId,
+      correlationId: currentRunId,
+      now,
+      diagnostics: future
+    });
+    logV3PhaseCheckpoint(currentRunId, {
+      stage: "schedule_sync_finished",
+      now,
+      status: result.status || "completed",
+      runId: currentRunId
+    }, now);
+    logV3PhaseCheckpoint(currentRunId, {
+      stage: "cron_finished",
+      now,
+      status: "completed",
+      cronMode: "schedule"
+    }, now);
+    return { ok: true, cronMode: "schedule", runId: currentRunId, scheduleSync: result };
+  } catch (error) {
+    logV3PhaseCheckpoint(currentRunId, { stage: "schedule_sync_finished", now, status: "failed" }, now);
+    logV3PhaseCheckpoint(currentRunId, {
+      stage: "cron_finished",
+      now,
+      status: "failed",
+      cronMode: "schedule",
+      errorCode: error?.code || "SCHEDULE_SYNC_FAILED"
+    }, now);
+    throw error;
+  }
+}
+
+async function writeScheduleSyncAuditRecord(env, { runId, correlationId, now, diagnostics } = {}) {
+  if (!shouldPersistV3Audit({ eventType: "schedule_sync", execution: diagnostics })) return;
+  const auditDb = getV3AuditDb(env);
+  if (!auditDb) return;
+  try {
+    const anchor = await env.AUTH_DB.prepare(
+      `SELECT internal_game_id
+         FROM games
+        WHERE internal_game_id IS NOT NULL AND internal_game_id <> ''
+        ORDER BY game_date, start_time, internal_game_id
+        LIMIT 1`
+    ).first();
+    if (!anchor?.internal_game_id) return;
+    const auditColumns = await getTableColumnSet(auditDb, "game_automation_v3_audit");
+    const { columns, values } = buildV3ScheduleSyncAuditInsert({
+      auditColumns,
+      internalGameId: anchor.internal_game_id,
+      diagnostics,
+      runId,
+      correlationId,
+      now
+    });
+    await auditDb.prepare(
+      `INSERT INTO game_automation_v3_audit (${columns.join(", ")})
+       VALUES (${columns.map((_, index) => `?${index + 1}`).join(", ")})`
+    ).bind(...values).run();
+  } catch (error) {
+    console.warn(`[GAME_AUTOMATION_V3] stage=schedule_sync_audit status=skipped code=${error?.code || "V3_SCHEDULE_SYNC_AUDIT_FAILED"}`);
+  }
+}
+
 async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = null, scheduleOptional = null, observerScheduler = null, mode = "combined" } = {}) {
   const criticalOnly = mode === "critical";
   const auxiliaryOnly = mode === "auxiliary";
   const runId = providedRunId || globalThis.crypto?.randomUUID?.() || `v3-run-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const correlationId = runId;
+  if (mode === "schedule") return runScheduledScheduleSync(env, now, { runId });
   await writeV3RuntimeAudit(env, {
     eventType: "V3_RUN_STARTED",
     runId,
@@ -1659,36 +1805,12 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     );
   };
 
-  const writeScheduleSyncAudit = async (diagnostics) => {
-    if (!shouldPersistV3Audit({ eventType: "schedule_sync", execution: diagnostics })) return;
-    const auditDb = getV3AuditDb(env);
-    if (!auditDb) return;
-    try {
-      const anchor = await env.AUTH_DB.prepare(
-        `SELECT internal_game_id
-           FROM games
-          WHERE internal_game_id IS NOT NULL AND internal_game_id <> ''
-          ORDER BY game_date, start_time, internal_game_id
-          LIMIT 1`
-      ).first();
-      if (!anchor?.internal_game_id) return;
-      const auditColumns = await getTableColumnSet(auditDb, "game_automation_v3_audit");
-      const { columns, values } = buildV3ScheduleSyncAuditInsert({
-        auditColumns,
-        internalGameId: anchor.internal_game_id,
-        diagnostics,
-        runId,
-        correlationId,
-        now
-      });
-      await auditDb.prepare(
-        `INSERT INTO game_automation_v3_audit (${columns.join(", ")})
-         VALUES (${columns.map((_, index) => `?${index + 1}`).join(", ")})`
-      ).bind(...values).run();
-    } catch (error) {
-      console.warn(`[GAME_AUTOMATION_V3] stage=schedule_sync_audit status=skipped code=${error?.code || "V3_SCHEDULE_SYNC_AUDIT_FAILED"}`);
-    }
-  };
+  const writeScheduleSyncAudit = (diagnostics) => writeScheduleSyncAuditRecord(env, {
+    runId,
+    correlationId,
+    now,
+    diagnostics
+  });
 
   // Schedule synchronization can fan out across the lookahead window and
   // wait on the external NPB service. Keep the normal bounded sync first, then
@@ -2049,7 +2171,15 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     };
   }
   let scheduleSync = null;
-  if (typeof scheduleOptional === "function" && shouldRunV3ScheduleSync(now)) {
+  if (auxiliaryOnly) {
+    scheduleSync = { status: "skipped", pending: false, skipReason: "CRON_MODE_SCHEDULE_SEPARATED" };
+    logV3PhaseCheckpoint(runId, {
+      stage: "schedule_sync_skipped",
+      now,
+      status: "skipped",
+      reasonCode: "CRON_MODE_SCHEDULE_SEPARATED"
+    }, now);
+  } else if (typeof scheduleOptional === "function" && shouldRunV3ScheduleSync(now)) {
     const scheduleSyncPromise = Promise.resolve().then(() => {
       logV3PhaseCheckpoint(runId, { stage: "schedule_sync_started", now, status: "started" }, now);
       return runScheduleSync();

@@ -464,8 +464,11 @@ const V3_AUDIT_FAILURE_RETENTION_DAYS = 30;
 const V3_AUDIT_CLEANUP_BATCH_SIZE = 500;
 const V3_STORAGE_MAINTENANCE_MINUTE_JST = 0;
 const V3_SCHEDULE_SYNC_CADENCE_MINUTES = 5;
+const V3_CRITICAL_CRON_SCHEDULE = "* * * * *";
+const V3_AUXILIARY_CRON_SCHEDULE = "*/5 * * * *";
 const V3_PHASE_CHECKPOINT_STAGES = new Set([
   "cron_started", "eligible_games", "formal_plan_started", "formal_plan_finished",
+  "formal_idle_fast_path",
   "claim_phase_started", "claim_execution_completed", "run_finished",
   "auxiliary_plan_started", "auxiliary_plan_finished", "schedule_sync_started",
   "schedule_sync_finished", "schedule_sync_skipped", "maintenance_started",
@@ -523,6 +526,18 @@ export function shouldRunV3ScheduleSync(now) {
   const jst = new Date(current.getTime() + 9 * 60 * 60 * 1000);
   return jst.getUTCMinutes() % V3_SCHEDULE_SYNC_CADENCE_MINUTES === 0
     || isV3StorageMaintenanceWindow(current);
+}
+
+// Cloudflare passes the matching cron expression on scheduled events. Unknown
+// or omitted values fail closed to the critical path so a formal minute is
+// never silently treated as auxiliary work. The auxiliary trigger is kept
+// separate to prevent shadow/schedule work from extending the formal CPU
+// budget, including at five-minute boundary collisions.
+export function resolveV3CronMode(cron) {
+  const normalized = String(cron || "").trim();
+  if (normalized === V3_AUXILIARY_CRON_SCHEDULE) return "auxiliary";
+  if (!normalized || normalized === V3_CRITICAL_CRON_SCHEDULE) return "critical";
+  return "critical";
 }
 
 function logV3PhaseCheckpoint(runId, phase = {}, fallbackNow = new Date()) {
@@ -974,32 +989,37 @@ export default {
     const scheduledAt = new Date(Number(event?.scheduledTime) || Date.now());
     const invocationAt = new Date();
     const runId = globalThis.crypto?.randomUUID?.() || `v3-run-${Date.now()}`;
-    ctx.waitUntil(writeCronHeartbeatSafely(env, recordCronInvocation, invocationAt, "invocation"));
+    const cronMode = resolveV3CronMode(event?.cron);
+    const isCriticalCron = cronMode === "critical";
+    if (isCriticalCron) ctx.waitUntil(writeCronHeartbeatSafely(env, recordCronInvocation, invocationAt, "invocation"));
     const flags = {
+      cronMode,
       enabled: isGameAutomationV3Enabled(env),
       gameAutomationV3: String(env?.ENABLE_GAME_AUTOMATION_V3 || ""),
       workflowCompletionJobs: String(env?.ENABLE_WORKFLOW_COMPLETION_JOBS || ""),
       npbFetchDisabled: String(env?.NPB_FETCH_DISABLED || ""),
       now: scheduledAt.toISOString()
     };
-    ctx.waitUntil(writeV3RuntimeAudit(env, {
-      eventType: "CRON_HANDLER_STARTED",
-      runId,
-      correlationId: runId,
-      now: scheduledAt,
-      execution: { stage: "cron_handler_started", scheduledAt: scheduledAt.toISOString() }
-    }));
-    ctx.waitUntil(writeV3RuntimeAudit(env, {
-      eventType: "CRON_HANDLER_FLAGS",
-      runId,
-      correlationId: runId,
-      now: scheduledAt,
-      execution: { stage: "cron_handler_flags", ...flags }
-    }));
+    if (isCriticalCron) {
+      ctx.waitUntil(writeV3RuntimeAudit(env, {
+        eventType: "CRON_HANDLER_STARTED",
+        runId,
+        correlationId: runId,
+        now: scheduledAt,
+        execution: { stage: "cron_handler_started", scheduledAt: scheduledAt.toISOString() }
+      }));
+      ctx.waitUntil(writeV3RuntimeAudit(env, {
+        eventType: "CRON_HANDLER_FLAGS",
+        runId,
+        correlationId: runId,
+        now: scheduledAt,
+        execution: { stage: "cron_handler_flags", ...flags }
+      }));
+    }
     logV3PhaseCheckpoint(runId, { stage: "cron_started", now: scheduledAt, status: "started" }, scheduledAt);
     if (!env.AUTH_DB) {
       console.error("auto scoring skipped: AUTH_DB binding is unavailable");
-      ctx.waitUntil(writeV3RuntimeAudit(env, {
+      if (isCriticalCron) ctx.waitUntil(writeV3RuntimeAudit(env, {
         eventType: "CRON_HANDLER_FINISHED",
         runId,
         correlationId: runId,
@@ -1010,8 +1030,8 @@ export default {
     }
     if (!flags.enabled) {
       console.info(`[GAME_AUTOMATION_V3] enabled=false flag=${V3_FEATURE_FLAG} action=skip`);
-      ctx.waitUntil(writeCronHeartbeatSafely(env, recordCronCompleted, new Date(), "completed"));
-      ctx.waitUntil(writeV3RuntimeAudit(env, {
+      if (isCriticalCron) ctx.waitUntil(writeCronHeartbeatSafely(env, recordCronCompleted, new Date(), "completed"));
+      if (isCriticalCron) ctx.waitUntil(writeV3RuntimeAudit(env, {
         eventType: "CRON_HANDLER_FINISHED",
         runId,
         correlationId: runId,
@@ -1022,16 +1042,17 @@ export default {
     }
     const formalRun = runScheduledGameAutomationV3(env, scheduledAt, {
       runId,
+      mode: cronMode,
       scheduleOptional: (promise) => ctx.waitUntil(promise),
       observerScheduler: (promise) => ctx.waitUntil(promise)
     });
     ctx.waitUntil(formalRun.then(
       async (result) => {
-        await writeCronHeartbeatSafely(env, recordCronCompleted, new Date(), "completed");
+        if (isCriticalCron) await writeCronHeartbeatSafely(env, recordCronCompleted, new Date(), "completed");
         return result;
       },
       async (error) => {
-        await writeCronHeartbeatSafely(env, recordCronFailed, new Date(), "failed");
+        if (isCriticalCron) await writeCronHeartbeatSafely(env, recordCronFailed, new Date(), "failed");
         throw error;
       }
     ));
@@ -1563,7 +1584,9 @@ function scheduleAdminAlertEvaluation(env, now, result, observerScheduler) {
   return task;
 }
 
-async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = null, scheduleOptional = null, observerScheduler = null } = {}) {
+async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = null, scheduleOptional = null, observerScheduler = null, mode = "combined" } = {}) {
+  const criticalOnly = mode === "critical";
+  const auxiliaryOnly = mode === "auxiliary";
   const runId = providedRunId || globalThis.crypto?.randomUUID?.() || `v3-run-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const correlationId = runId;
   await writeV3RuntimeAudit(env, {
@@ -1617,6 +1640,9 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
       }
     );
   };
+  const writeCriticalPathFinished = auxiliaryOnly
+    ? async () => false
+    : writeCronCriticalPathFinished;
   const cronHandlerAuditState = { recorded: false };
   const writeCronHandlerFinished = async (status, details = {}) => {
     logV3PhaseCheckpoint(runId, { stage: "cron_finished", now, status, ...details }, now);
@@ -1755,11 +1781,15 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     // A free/low-CPU Worker invocation must reach the deadline job before
     // hydrating every historical unfinished game.  Current-day due games are
     // processed first; the next Cron tick drains the remaining window.
-    gameListOptions: { limit: V3_CRON_GAME_BATCH_SIZE, prioritizeDue: true },
+    gameListOptions: auxiliaryOnly
+      ? { limit: V3_AUXILIARY_GAME_BATCH_SIZE, prioritizeDue: true }
+      : { limit: V3_CRON_GAME_BATCH_SIZE, prioritizeDue: true },
     // Auxiliary polling needs the current and next calendar day's games, while
     // an unbounded historical scan can exceed the per-invocation CPU budget.
     // Keep this batch independent from the four-game formal critical path.
-    auxiliaryGameListOptions: { limit: V3_AUXILIARY_GAME_BATCH_SIZE, prioritizeDue: true },
+    auxiliaryGameListOptions: auxiliaryOnly
+      ? null
+      : { limit: V3_AUXILIARY_GAME_BATCH_SIZE, prioritizeDue: true },
     executeJob: (context) => operationalMode.disabledJobTypes.includes(String(context?.job?.job_type || ""))
       ? {
         status: "skipped",
@@ -1778,6 +1808,9 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     }),
     disabledJobTypes: operationalMode.disabledJobTypes,
     v4SemiAuto: operationalMode.isV4SemiAuto,
+    runAuxiliary: !criticalOnly,
+    auxiliaryOnly,
+    skipFormalDiscoveryIfIdle: criticalOnly,
     scheduleOptional,
     observerScheduler,
     onPhase: async (phase) => {
@@ -1962,10 +1995,10 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
         }
       }
      }
-    }).catch(async (error) => {
+  }).catch(async (error) => {
     await writeV3FatalRunAudits({
       writeRuntimeAudit: (payload) => writeV3RuntimeAudit(env, payload),
-      writeCriticalPathFinished: writeCronCriticalPathFinished,
+      writeCriticalPathFinished,
       writeHandlerFinished: writeCronHandlerFinished,
       runId,
       correlationId,
@@ -1988,14 +2021,33 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     throw error;
   });
   try {
-  await writeCronCriticalPathFinished("completed", {
-    createdJobCount: Number(result?.created || 0),
-    executedJobCount: Number(result?.processed || 0),
-    failedJobCount: Number(result?.failed || 0),
-    retryWaitJobCount: Number(result?.retryWait || 0),
-    terminalFailedJobCount: Number(result?.terminalFailed || 0),
-    hasMoreDue: result?.claimReport?.hasMoreDue === true
-  });
+  if (!auxiliaryOnly) await writeCriticalPathFinished("completed", {
+      createdJobCount: Number(result?.created || 0),
+      executedJobCount: Number(result?.processed || 0),
+      failedJobCount: Number(result?.failed || 0),
+      retryWaitJobCount: Number(result?.retryWait || 0),
+      terminalFailedJobCount: Number(result?.terminalFailed || 0),
+      hasMoreDue: result?.claimReport?.hasMoreDue === true
+    });
+  if (criticalOnly) {
+    logV3PhaseCheckpoint(runId, {
+      stage: "schedule_sync_skipped",
+      now,
+      status: "skipped",
+      reasonCode: "CRON_MODE_CRITICAL"
+    }, now);
+    await writeCronHandlerFinished("completed", {
+      cronMode: "critical",
+      idleFastPath: result?.idleFastPath === true,
+      processedJobCount: Number(result?.processed || 0)
+    });
+    return {
+      ...result,
+      scheduleSync: { status: "skipped", pending: false, skipReason: "CRON_MODE_CRITICAL" },
+      runId,
+      correlationId
+    };
+  }
   let scheduleSync = null;
   if (typeof scheduleOptional === "function" && shouldRunV3ScheduleSync(now)) {
     const scheduleSyncPromise = Promise.resolve().then(() => {
@@ -2133,7 +2185,7 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
   } catch (error) {
     await writeV3FatalRunAudits({
       writeRuntimeAudit: (payload) => writeV3RuntimeAudit(env, payload),
-      writeCriticalPathFinished: writeCronCriticalPathFinished,
+      writeCriticalPathFinished,
       writeHandlerFinished: writeCronHandlerFinished,
       runId,
       correlationId,

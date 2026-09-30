@@ -1,4 +1,4 @@
-import { V3_JOB_TYPE, V3_JOB_TYPES, createV3Error, normalizeV3InternalGameId } from "./constants.js";
+import { V3_JOB_TYPE, V3_JOB_TYPES, V3_TIMING, createV3Error, normalizeV3InternalGameId } from "./constants.js";
 import { assertV3Transition, getV3GameEffectiveStartAt, getV3NpbIdentityState } from "./domain.js";
 import { evaluateCanonicalArtifactsFromDb } from "./canonical-artifact-evaluator.js";
 
@@ -8,6 +8,100 @@ import { evaluateCanonicalArtifactsFromDb } from "./canonical-artifact-evaluator
 // canonical-recovery predicates below, but a stale ranked game must not keep
 // re-entering the hot path indefinitely when its publication artifact is bad.
 const V3_AUTOMATION_HISTORICAL_LOOKBACK_DAYS = 2;
+
+// This is deliberately a conservative preflight rather than a replacement
+// for listV3Games or the formal planner.  It only skips the expensive
+// hydrated discovery when neither an existing formal job nor a game close
+// enough to a formal slot can exist.  Any query/schema uncertainty fails open
+// so a planner pass is preferred over a missed prediction-close or recovery.
+export async function hasPotentialFormalWork(db, now = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(current.getTime())) return true;
+  const timestamp = current.toISOString();
+  const jstDate = new Date(current.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const formalJobPredicate = [
+    V3_JOB_TYPE.PREDICTION_CLOSE,
+    V3_JOB_TYPE.LINEUP_FETCH,
+    V3_JOB_TYPE.LINEUP_FINALIZE,
+    V3_JOB_TYPE.SCORE,
+    V3_JOB_TYPE.RANKING_REBUILD,
+    V3_JOB_TYPE.PUBLISH
+  ].map((jobType) => `(job_type = '${jobType}' OR job_type LIKE '${jobType}:%')`).join(" OR ");
+  const formalWindowEnd = new Date(current.getTime() + (V3_TIMING.predictionDeadlineMinutes + 1) * 60 * 1000).toISOString();
+  try {
+    const row = await db.prepare(
+      `SELECT
+         EXISTS (
+           SELECT 1 FROM game_jobs_v3
+            WHERE (${formalJobPredicate})
+              AND (
+                (status IN ('pending', 'retry_wait')
+                  AND scheduled_at <= ?1
+                  AND (next_retry_at IS NULL OR next_retry_at <= ?1))
+                OR (status = 'claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?1)
+              )
+         ) AS due_formal_job,
+         EXISTS (
+           SELECT 1
+             FROM games
+             LEFT JOIN game_automation_v3_state AS workflow
+               ON workflow.internal_game_id = games.internal_game_id
+            WHERE games.internal_game_id IS NOT NULL
+              AND games.internal_game_id <> ''
+              AND games.is_active = 1
+              AND games.deleted_at IS NULL
+              AND LOWER(COALESCE(games.game_status, '')) NOT IN ('cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded')
+              AND (
+                LOWER(COALESCE(workflow.state, 'scheduled')) = 'manual_action_required'
+                OR (
+                  games.game_date BETWEEN date(?2, '-${V3_AUTOMATION_HISTORICAL_LOOKBACK_DAYS} day') AND date(?2, '+1 day')
+                  AND (
+                    (LOWER(COALESCE(workflow.state, 'scheduled')) IN ('scheduled', 'probable_starter_ready', 'roster_ready', 'prediction_closed')
+                      AND games.start_time <= ?3)
+                    OR LOWER(COALESCE(workflow.state, 'scheduled')) IN ('lineup_ready', 'scored', 'ranked')
+                    OR (LOWER(COALESCE(workflow.state, 'scheduled')) = 'published'
+                      AND games.game_date >= date(?2, '-${V3_AUTOMATION_HISTORICAL_LOOKBACK_DAYS} day'))
+                  )
+                )
+                OR (
+                  LOWER(COALESCE(workflow.state, 'scheduled')) = 'published'
+                  AND EXISTS (
+                    SELECT 1 FROM game_lineups AS corrected
+                     WHERE corrected.internal_game_id = games.internal_game_id
+                       AND corrected.final_lineup_revision_id IS NOT NULL
+                  )
+                  AND EXISTS (
+                    SELECT 1 FROM game_jobs_v3 AS previous_score
+                     WHERE previous_score.internal_game_id = games.internal_game_id
+                       AND previous_score.job_type = '${V3_JOB_TYPE.SCORE}'
+                       AND previous_score.status = 'completed'
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                      FROM game_scoring_revisions AS active_score
+                      JOIN game_lineups AS current_lineup
+                        ON current_lineup.internal_game_id = games.internal_game_id
+                      JOIN game_lineup_revisions AS current_revision
+                        ON current_revision.internal_game_id = games.internal_game_id
+                       AND (current_lineup.final_lineup_revision_id = current_revision.revision_id
+                         OR current_lineup.final_lineup_revision_id = current_revision.game_id || ':' || current_revision.version
+                         OR current_lineup.final_lineup_revision_id = current_revision.internal_game_id || ':' || current_revision.version)
+                       AND (active_score.lineup_revision_id = current_revision.revision_id
+                         OR active_score.lineup_revision_id = current_revision.game_id || ':' || current_revision.version
+                         OR active_score.lineup_revision_id = current_revision.internal_game_id || ':' || current_revision.version)
+                     WHERE active_score.internal_game_id = games.internal_game_id
+                       AND active_score.is_active = 1
+                       AND active_score.status = 'completed'
+                  )
+                )
+              )
+         ) AS candidate_game`
+    ).bind(timestamp, jstDate, formalWindowEnd).first();
+    return Number(row?.due_formal_job || 0) === 1 || Number(row?.candidate_game || 0) === 1;
+  } catch {
+    return true;
+  }
+}
 
 export async function getV3SchemaState(db) {
   const rows = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('games', 'game_jobs_v3', 'game_automation_v3_state')").all();

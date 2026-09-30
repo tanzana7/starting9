@@ -554,7 +554,7 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
       auxiliaryGames: games
     };
   }
-  if (skipFormalDiscoveryIfIdle && !(await hasPotentialFormalWork(env.AUTH_DB, now))) {
+  if (skipFormalDiscoveryIfIdle && !(await hasPotentialFormalWork(env.AUTH_DB, now, { v4SemiAuto }))) {
     await invokeV3Observer(onPhase, [{
       stage: "formal_idle_fast_path",
       now,

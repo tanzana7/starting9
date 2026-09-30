@@ -14,7 +14,7 @@ const V3_AUTOMATION_HISTORICAL_LOOKBACK_DAYS = 2;
 // hydrated discovery when neither an existing formal job nor a game close
 // enough to a formal slot can exist.  Any query/schema uncertainty fails open
 // so a planner pass is preferred over a missed prediction-close or recovery.
-export async function hasPotentialFormalWork(db, now = new Date()) {
+export async function hasPotentialFormalWork(db, now = new Date(), { v4SemiAuto = false } = {}) {
   const current = now instanceof Date ? now : new Date(now);
   if (Number.isNaN(current.getTime())) return true;
   const timestamp = current.toISOString();
@@ -27,7 +27,18 @@ export async function hasPotentialFormalWork(db, now = new Date()) {
     V3_JOB_TYPE.RANKING_REBUILD,
     V3_JOB_TYPE.PUBLISH
   ].map((jobType) => `(job_type = '${jobType}' OR job_type LIKE '${jobType}:%')`).join(" OR ");
-  const formalWindowEnd = new Date(current.getTime() + (V3_TIMING.predictionDeadlineMinutes + 1) * 60 * 1000).toISOString();
+  // The formal planner must run on the first minute at or after each stage's
+  // existing due time.  V4 manual scoring/ranking/publish use the prediction
+  // deadline; automatic V3 scoring/publish retain their post-start slots.
+  // Keeping these cutoffs in the preflight avoids waking the full planner for
+  // a future game while preserving the one-minute Cron cadence.
+  const predictionDeadlineCutoff = new Date(current.getTime() + V3_TIMING.predictionDeadlineMinutes * 60 * 1000).toISOString();
+  const scoreCutoff = new Date(current.getTime() + (v4SemiAuto
+    ? V3_TIMING.predictionDeadlineMinutes
+    : -V3_TIMING.finalLineupMinutesAfterStart) * 60 * 1000).toISOString();
+  const rankingPublishCutoff = new Date(current.getTime() + (v4SemiAuto
+    ? V3_TIMING.predictionDeadlineMinutes
+    : -V3_TIMING.publicationMinutesAfterStart) * 60 * 1000).toISOString();
   try {
     const row = await db.prepare(
       `SELECT
@@ -46,6 +57,8 @@ export async function hasPotentialFormalWork(db, now = new Date()) {
              FROM games
              LEFT JOIN game_automation_v3_state AS workflow
                ON workflow.internal_game_id = games.internal_game_id
+             LEFT JOIN game_lineups AS lineup
+               ON lineup.internal_game_id = games.internal_game_id
             WHERE games.internal_game_id IS NOT NULL
               AND games.internal_game_id <> ''
               AND games.is_active = 1
@@ -56,11 +69,45 @@ export async function hasPotentialFormalWork(db, now = new Date()) {
                 OR (
                   games.game_date BETWEEN date(?2, '-${V3_AUTOMATION_HISTORICAL_LOOKBACK_DAYS} day') AND date(?2, '+1 day')
                   AND (
+                    -- Prediction close and the V4 pregame stages are due at
+                    -- start - 60m.  Do not use game presence alone as a
+                    -- reason to hydrate and plan it every minute.
                     (LOWER(COALESCE(workflow.state, 'scheduled')) IN ('scheduled', 'probable_starter_ready', 'roster_ready', 'prediction_closed')
                       AND games.start_time <= ?3)
-                    OR LOWER(COALESCE(workflow.state, 'scheduled')) IN ('lineup_ready', 'scored', 'ranked')
-                    OR (LOWER(COALESCE(workflow.state, 'scheduled')) = 'published'
-                      AND games.game_date >= date(?2, '-${V3_AUTOMATION_HISTORICAL_LOOKBACK_DAYS} day'))
+                    OR (
+                      LOWER(COALESCE(workflow.state, '')) = 'lineup_ready'
+                      AND games.start_time <= ?4
+                      AND (
+                        lineup.internal_game_id IS NULL
+                        OR lineup.final_lineup_revision_id IS NULL
+                        OR LOWER(COALESCE(lineup.scoring_status, 'pending')) <> 'scored'
+                        OR lineup.scored_at IS NULL
+                      )
+                    )
+                    OR (
+                      LOWER(COALESCE(workflow.state, '')) = 'scored'
+                      AND games.start_time <= ?5
+                      AND NOT EXISTS (
+                        SELECT 1
+                          FROM ranking_reflection_revisions AS reflection
+                         WHERE reflection.internal_game_id = games.internal_game_id
+                           AND LOWER(COALESCE(reflection.status, '')) = 'reflected'
+                           AND (
+                             workflow.scoring_revision_id IS NULL
+                             OR workflow.scoring_revision_id = ''
+                             OR reflection.scoring_revision_id = workflow.scoring_revision_id
+                           )
+                      )
+                    )
+                    OR (
+                      LOWER(COALESCE(workflow.state, '')) = 'ranked'
+                      AND games.start_time <= ?6
+                      AND (
+                        lineup.internal_game_id IS NULL
+                        OR LOWER(COALESCE(lineup.publication_status, '')) <> 'published'
+                        OR lineup.published_at IS NULL
+                      )
+                    )
                   )
                 )
                 OR (
@@ -95,8 +142,9 @@ export async function hasPotentialFormalWork(db, now = new Date()) {
                   )
                 )
               )
+            LIMIT 1
          ) AS candidate_game`
-    ).bind(timestamp, jstDate, formalWindowEnd).first();
+    ).bind(timestamp, jstDate, predictionDeadlineCutoff, scoreCutoff, rankingPublishCutoff, rankingPublishCutoff).first();
     return Number(row?.due_formal_job || 0) === 1 || Number(row?.candidate_game || 0) === 1;
   } catch {
     return true;

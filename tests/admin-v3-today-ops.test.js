@@ -64,7 +64,7 @@ function game(overrides = {}) {
 }
 
 const now = new Date("2026-08-08T07:00:00.000Z");
-const payload = { todayOps: { cronLastRunAt: "2026-08-08T06:59:00.000Z", cronSchedule: "* * * * *", cronIntervalMinutes: 1, cronGraceMinutes: 2 } };
+const payload = { todayOps: { cronHeartbeat: { lastInvocationAt: "2026-08-08T06:59:00.000Z", lastCompletedAt: "2026-08-08T06:59:00.100Z", status: "healthy", intervalMinutes: 1, graceMinutes: 5 }, cronSchedule: "* * * * *", cronIntervalMinutes: 1, cronGraceMinutes: 5 } };
 
 test("Today Opsは公開済み・未来試合充足・直近CronをOKと判定する", () => {
   const model = context.buildTodayOpsModel(payload, [
@@ -93,7 +93,7 @@ test("Today Opsは未完了の予定をWAITINGと判定する", () => {
 
 test("Today Opsはfailed job・未来試合不足・古いCronをATTENTIONと判定する", () => {
   const model = context.buildTodayOpsModel(
-    { todayOps: { cronLastRunAt: "2026-08-08T05:00:00.000Z" } },
+    { todayOps: { cronHeartbeat: { lastInvocationAt: "2026-08-08T05:00:00.000Z", status: "stale", intervalMinutes: 1, graceMinutes: 5 } } },
     [game({ jobs: [{ job_type: "score", status: "failed", failure_code: "V3_JOB_FAILED" }] }), game({ internalGameId: "future-1", gameDate: "2026-08-09" })],
     now
   );
@@ -105,7 +105,7 @@ test("Today Opsはfailed job・未来試合不足・古いCronをATTENTIONと判
 
 test("Today OpsはoverviewのJST基準futureGamesCountをschedule syncと同じ正として使う", () => {
   const model = context.buildTodayOpsModel(
-    { todayOps: { cronLastRunAt: "2026-08-08T06:55:00.000Z", futureGamesCount: 2, futureGamesMinimum: 3 } },
+    { todayOps: { cronHeartbeat: { lastInvocationAt: "2026-08-08T06:55:00.000Z", status: "healthy", intervalMinutes: 1, graceMinutes: 5 }, futureGamesCount: 2, futureGamesMinimum: 3 } },
     [game(), game({ internalGameId: "future-1", gameDate: "2026-08-09" }), game({ internalGameId: "future-2", gameDate: "2026-08-11" })],
     now
   );
@@ -118,21 +118,21 @@ test("Cron設定とWorker定数がproduction設定に一致し、次Cron目安�
   assert.deepEqual(wrangler.triggers.crons, ["* * * * *"]);
   assert.match(worker, /const V3_CRON_SCHEDULE = "\* \* \* \* \*"/);
   assert.match(worker, /const V3_CRON_INTERVAL_MINUTES = 1/);
-  assert.match(worker, /const V3_CRON_GRACE_MINUTES = 2/);
+  assert.match(worker, /const V3_CRON_GRACE_MINUTES = 5/);
   const model = context.buildTodayOpsModel({ todayOps: { ...payload.todayOps } }, [game(), game({ internalGameId: "future-1", gameDate: "2026-08-09" }), game({ internalGameId: "future-2", gameDate: "2026-08-10" }), game({ internalGameId: "future-3", gameDate: "2026-08-11" })], now);
   assert.equal(model.nextCronEstimate, "2026-08-08T07:00:00.000Z");
   assert.equal(model.cronStatus, "ok");
 });
 
-test("Cron監査なし・古い監査はATTENTIONになり、schedule sync診断の不足と失敗もATTENTIONになる", () => {
+test("heartbeat未記録は未記録として扱い、古いheartbeatとschedule sync失敗はATTENTIONになる", () => {
   const games = [game(), game({ internalGameId: "future-1", gameDate: "2026-08-09" }), game({ internalGameId: "future-2", gameDate: "2026-08-11" })];
   const missing = context.buildTodayOpsModel({ todayOps: { futureGamesCount: 2, futureGamesMinimum: 3 } }, games, now);
-  assert.equal(missing.cronStatus, "attention");
+  assert.equal(missing.cronStatus, "waiting");
   assert.equal(missing.overallStatus, "attention");
   const failed = context.buildTodayOpsModel({ todayOps: { ...payload.todayOps, futureGamesCount: 3, futureScheduleSync: { status: "failed", syncNeeded: true, futureGamesBefore: 2, futureGamesAfter: 2, futureGamesTarget: 3, gamesInserted: 0, gamesUpdated: 0, errorCode: "SCHEDULE_FETCH_FAILED" } } }, games, now);
   assert.equal(failed.futureScheduleSyncStatus, "attention");
   assert.equal(failed.overallStatus, "attention");
-  const stale = context.buildTodayOpsModel({ todayOps: { ...payload.todayOps, cronLastRunAt: "2026-08-08T06:50:00.000Z", futureGamesCount: 3, futureScheduleSync: { status: "skipped", syncNeeded: false, futureGamesBefore: 3, futureGamesAfter: 3, futureGamesTarget: 3 } } }, [game(), ...games.slice(1)], now);
+  const stale = context.buildTodayOpsModel({ todayOps: { ...payload.todayOps, cronHeartbeat: { ...payload.todayOps.cronHeartbeat, lastInvocationAt: "2026-08-08T06:50:00.000Z", status: "stale" }, futureGamesCount: 3, futureScheduleSync: { status: "skipped", syncNeeded: false, futureGamesBefore: 3, futureGamesAfter: 3, futureGamesTarget: 3 } } }, [game(), ...games.slice(1)], now);
   assert.equal(stale.cronStatus, "attention");
   assert.equal(stale.overallStatus, "attention");
 });
@@ -177,13 +177,18 @@ test("V4 Today Opsはcanonical lineup確定後を手動運用の完了として�
   assert.equal(model.gameModels[0].status, "ok");
 });
 
-test("overviewはCron監査時刻をToday Opsへ返し、管理画面は専用セクションを描画する", () => {
+test("overviewはheartbeatと監査時刻を分離してToday Opsへ返し、管理画面は専用セクションを描画する", () => {
   assert.match(worker, /futureGamesDefinition: "game_date > JST today"/);
   assert.match(worker, /WHERE source = 'cron' ORDER BY occurred_at DESC LIMIT 1/);
+  assert.match(worker, /cronHeartbeat/);
+  assert.match(worker, /cronLastAuditAt/);
   assert.match(diagnosticsSource, /Today Ops \/ Automation Health/);
+  assert.match(diagnosticsSource, /Cron最終実行/);
+  assert.match(diagnosticsSource, /Cron最終完了/);
+  assert.match(diagnosticsSource, /最終監査イベント/);
   assert.match(diagnosticsSource, /futureShortage/);
   assert.match(diagnosticsSource, /renderStep\("スタメン", steps\.lineup, steps\.lineupDetail\)/);
-  assert.match(page, /admin-v3\.js\?v=independent-roster-lineup-safety-1/);
+  assert.match(page, /render-diagnostics\.js\?v=.*cron-heartbeat-1/);
   assert.match(page, /admin-v3\.css\?v=independent-roster-lineup-safety-1/);
   assert.match(css, /today-ops-panel/);
   assert.match(css, /@media \(max-width: 720px\)[\s\S]*today-ops-metrics, \.today-ops-steps \{ grid-template-columns: 1fr; \}/);

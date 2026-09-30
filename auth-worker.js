@@ -177,6 +177,13 @@ import {
   buildLineupShadowAccuracyReport,
   selectShadowRevisionForComparison
 } from "./backend/automation-v3/lineup-shadow-observability.js";
+import {
+  buildCronHeartbeatReadModel,
+  getCronHeartbeat,
+  recordCronCompleted,
+  recordCronFailed,
+  recordCronInvocation
+} from "./backend/repositories/cron-heartbeat-repository.js";
 
 // Compatibility exports keep existing tests and internal callers stable while
 // the implementation lives in the domain module.
@@ -443,7 +450,7 @@ const AUTOMATION_MIN_FUTURE_GAMES = 3;
 const AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const V3_CRON_SCHEDULE = "* * * * *";
 const V3_CRON_INTERVAL_MINUTES = 1;
-const V3_CRON_GRACE_MINUTES = 2;
+const V3_CRON_GRACE_MINUTES = 5;
 const V3_CRON_DESCRIPTION = "毎分";
 const WORKFLOW_LOG_RETENTION_HOURS = 48;
 const WORKFLOW_LOG_DEFAULT_LIMIT = 50;
@@ -965,7 +972,9 @@ export default {
 
   async scheduled(event, env, ctx) {
     const scheduledAt = new Date(Number(event?.scheduledTime) || Date.now());
+    const invocationAt = new Date();
     const runId = globalThis.crypto?.randomUUID?.() || `v3-run-${Date.now()}`;
+    ctx.waitUntil(writeCronHeartbeatSafely(env, recordCronInvocation, invocationAt, "invocation"));
     const flags = {
       enabled: isGameAutomationV3Enabled(env),
       gameAutomationV3: String(env?.ENABLE_GAME_AUTOMATION_V3 || ""),
@@ -1001,6 +1010,7 @@ export default {
     }
     if (!flags.enabled) {
       console.info(`[GAME_AUTOMATION_V3] enabled=false flag=${V3_FEATURE_FLAG} action=skip`);
+      ctx.waitUntil(writeCronHeartbeatSafely(env, recordCronCompleted, new Date(), "completed"));
       ctx.waitUntil(writeV3RuntimeAudit(env, {
         eventType: "CRON_HANDLER_FINISHED",
         runId,
@@ -1010,16 +1020,37 @@ export default {
       }));
       return;
     }
-    ctx.waitUntil(runScheduledGameAutomationV3(env, scheduledAt, {
+    const formalRun = runScheduledGameAutomationV3(env, scheduledAt, {
       runId,
       scheduleOptional: (promise) => ctx.waitUntil(promise),
       observerScheduler: (promise) => ctx.waitUntil(promise)
-    }));
+    });
+    ctx.waitUntil(formalRun.then(
+      async (result) => {
+        await writeCronHeartbeatSafely(env, recordCronCompleted, new Date(), "completed");
+        return result;
+      },
+      async (error) => {
+        await writeCronHeartbeatSafely(env, recordCronFailed, new Date(), "failed");
+        throw error;
+      }
+    ));
   }
 };
 
 function getV3AuditDb(env) {
   return env?.AUDIT_DB || null;
+}
+
+async function writeCronHeartbeatSafely(env, operation, now, phase) {
+  try {
+    if (!env?.AUTH_DB) throw new Error("CRON_HEARTBEAT_DB_UNAVAILABLE");
+    await operation(env.AUTH_DB, now);
+  } catch (error) {
+    // Heartbeat is observability only. A schema rollout or transient D1
+    // failure must never change formal job execution semantics.
+    console.warn(`[GAME_AUTOMATION_V3] cron_heartbeat status=skipped phase=${phase} code=${error?.code || error?.message || "CRON_HEARTBEAT_WRITE_FAILED"}`);
+  }
 }
 
 export function buildV3RosterMonitor(games = [], { teamCode = FIGHTERS_TEAM_CODE, manualRoster = null } = {}) {
@@ -6066,15 +6097,30 @@ async function handleAdminV3Overview(request, env, cors) {
   }
   if (!schema.ready) return jsonResponse({ ok: false, code: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", schema }, 503, cors);
   const overviewNow = new Date();
-  let cronLastRunAt = null;
+  let cronLastAuditAt = null;
   try {
     const auditDb = getV3AuditDb(env);
     const cronAudit = auditDb ? await auditDb.prepare(
       "SELECT occurred_at FROM game_automation_v3_audit WHERE source = 'cron' ORDER BY occurred_at DESC LIMIT 1"
     ).first() : null;
-    cronLastRunAt = cronAudit?.occurred_at || null;
+    cronLastAuditAt = cronAudit?.occurred_at || null;
   } catch (error) {
     console.warn(`[ADMIN_V3_OVERVIEW] stage=cron_audit_read failureCode=${error?.code || "V3_CRON_AUDIT_READ_FAILED"}`);
+  }
+  let cronHeartbeat = buildCronHeartbeatReadModel(null, {
+    now: overviewNow,
+    intervalMinutes: V3_CRON_INTERVAL_MINUTES,
+    graceMinutes: V3_CRON_GRACE_MINUTES
+  });
+  try {
+    const storedHeartbeat = await getCronHeartbeat(env.AUTH_DB);
+    cronHeartbeat = buildCronHeartbeatReadModel(storedHeartbeat, {
+      now: overviewNow,
+      intervalMinutes: V3_CRON_INTERVAL_MINUTES,
+      graceMinutes: V3_CRON_GRACE_MINUTES
+    });
+  } catch (error) {
+    console.warn(`[ADMIN_V3_OVERVIEW] stage=cron_heartbeat_read failureCode=${error?.code || "V3_CRON_HEARTBEAT_READ_FAILED"}`);
   }
   let futureGamesCount = null;
   try {
@@ -6617,8 +6663,12 @@ async function handleAdminV3Overview(request, env, cors) {
     npbFetchStatus: String(env?.NPB_FETCH_DISABLED || "").toLowerCase() === "true" ? "external_fetch_disabled" : "enabled",
     schema,
     todayOps: {
-      cronLastRunAt,
-      cronLastRunSource: "audit_db",
+      // Keep the legacy field as an alias, but its meaning is now the
+      // invocation heartbeat. Audit history is exposed separately below.
+      cronLastRunAt: cronHeartbeat.lastInvocationAt,
+      cronLastRunSource: "heartbeat",
+      cronLastAuditAt,
+      cronHeartbeat,
       cronSchedule: V3_CRON_SCHEDULE,
       cronIntervalMinutes: V3_CRON_INTERVAL_MINUTES,
       cronGraceMinutes: V3_CRON_GRACE_MINUTES,

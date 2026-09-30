@@ -4,6 +4,7 @@ import {
   completeV3Job,
   createV3Job,
   ensureV3State,
+  hasPotentialFormalWork,
   listV3Games,
   getV3SchemaState,
   monotonicV3JobTimestamp,
@@ -521,10 +522,63 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
   return { processed, failed, retryWait, terminalFailed, failedJobIds, retryErrors };
 }
 
-export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, onPhase = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, formalPlanner = planMainWorkflowJobs, auxiliaryPlanner = planAuxiliaryJobs, scheduleOptional = null, disabledJobTypes = [], v4SemiAuto = false, gameListOptions = {}, auxiliaryGameListOptions = null } = {}) {
+export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, onPhase = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, formalPlanner = planMainWorkflowJobs, auxiliaryPlanner = planAuxiliaryJobs, scheduleOptional = null, disabledJobTypes = [], v4SemiAuto = false, gameListOptions = {}, auxiliaryGameListOptions = null, runAuxiliary = true, auxiliaryOnly = false, skipFormalDiscoveryIfIdle = false } = {}) {
   if (!isGameAutomationV3Enabled(env)) return { enabled: false, processed: 0, created: 0 };
   const schema = await getV3SchemaState(env.AUTH_DB);
   if (!schema.ready) return { enabled: true, schemaReady: false, errorCode: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", processed: 0, created: 0 };
+  if (auxiliaryOnly) {
+    const games = await listV3Games(env.AUTH_DB, now, gameListOptions);
+    const optional = await runV3OptionalPhases(env, games, now, {
+      auxiliaryPlanner,
+      onError,
+      onPlan,
+      onPhase,
+      observerTimeoutMs,
+      observerScheduler
+    });
+    return {
+      enabled: true,
+      schemaReady: true,
+      auxiliaryOnly: true,
+      gameCount: games.length,
+      gameIds: games.map((game) => game?.internalGameId).filter(Boolean),
+      processed: 0,
+      failed: Number(optional?.statePreparation?.failed || 0) + Number(optional?.auxiliary?.errors?.length || 0),
+      created: Number(optional?.auxiliary?.created || 0),
+      statePreparation: optional.statePreparation,
+      stateReconciliation: optional.stateReconciliation,
+      probablePlan: optional.auxiliary.probablePlan,
+      rosterPlan: optional.auxiliary.rosterPlan,
+      identityPlan: optional.auxiliary.identityPlan,
+      auxiliaryPlan: optional.auxiliary,
+      auxiliaryGames: games
+    };
+  }
+  if (skipFormalDiscoveryIfIdle && !(await hasPotentialFormalWork(env.AUTH_DB, now))) {
+    await invokeV3Observer(onPhase, [{
+      stage: "formal_idle_fast_path",
+      now,
+      status: "completed",
+      gameCount: 0,
+      processedJobCount: 0,
+      reasonCode: "NO_FORMAL_WORK_CANDIDATE"
+    }], observerTimeoutMs, observerScheduler);
+    return {
+      enabled: true,
+      schemaReady: true,
+      idleFastPath: true,
+      gameCount: 0,
+      gameIds: [],
+      created: 0,
+      processed: 0,
+      failed: 0,
+      retryWait: 0,
+      terminalFailed: 0,
+      execution: { processed: 0, failed: 0, retryWait: 0, terminalFailed: 0, failedJobIds: [], retryErrors: [] },
+      mainPlan: { created: 0, planned: [], errors: [], diagnostics: [] },
+      claimReport: { due: [], claimed: [], skipped: [], hasMoreDue: false }
+    };
+  }
   const games = await listV3Games(env.AUTH_DB, now, gameListOptions);
   await invokeV3Observer(onPhase, [{
     stage: "eligible_games",
@@ -707,6 +761,7 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     mainPlan,
     claimReport
   };
+  if (!runAuxiliary) return criticalResult;
   // The formal workflow and auxiliary polling both use bounded discovery, but
   // with separate limits. This keeps the critical path small and lets the
   // caller include the next day's probable-starter slots without scanning

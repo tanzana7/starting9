@@ -201,8 +201,8 @@ test("scheduled V3 runnerはbounded discoveryを使用する", async () => {
   const runner = worker.slice(runnerStart);
   assert.match(worker, /const V3_CRON_GAME_BATCH_SIZE = 4/);
   assert.match(worker, /const V3_AUXILIARY_GAME_BATCH_SIZE = 12/);
-  assert.match(runner, /gameListOptions:\s*\{\s*limit:\s*V3_CRON_GAME_BATCH_SIZE,\s*prioritizeDue:\s*true\s*\}/);
-  assert.match(runner, /auxiliaryGameListOptions:\s*\{\s*limit:\s*V3_AUXILIARY_GAME_BATCH_SIZE,\s*prioritizeDue:\s*true\s*\}/);
+  assert.match(runner, /gameListOptions:\s*auxiliaryOnly\s*\?[\s\S]*?V3_AUXILIARY_GAME_BATCH_SIZE[\s\S]*?V3_CRON_GAME_BATCH_SIZE/);
+  assert.match(runner, /auxiliaryGameListOptions:\s*auxiliaryOnly\s*\?[\s\S]*?null[\s\S]*?V3_AUXILIARY_GAME_BATCH_SIZE/);
 });
 
 test("auxiliary discoveryはbounded critical pathとは別に翌日分を含むbounded batchを走査する", async () => {

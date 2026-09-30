@@ -1,7 +1,22 @@
-import { compareShadowLineupToManual, isShadowLineupRevision } from "./lineup-shadow-service.js";
+import { compareShadowLineupToManual, isLineupShadowDue, isShadowLineupRevision } from "./lineup-shadow-service.js";
 
 export const LINEUP_SHADOW_ACCURACY_LIMIT = 20;
 export const LINEUP_SHADOW_ACCURACY_LOOKBACK_DAYS = 30;
+export const LINEUP_SHADOW_STATUS_CODES = Object.freeze({
+  NO_TARGET_GAME: "NO_TARGET_GAME",
+  SHADOW_DISABLED: "SHADOW_DISABLED",
+  WAITING_WINDOW: "WAITING_WINDOW",
+  WAITING_LINEUP: "WAITING_LINEUP",
+  FETCHED_UNVERIFIED: "FETCHED_UNVERIFIED",
+  VERIFIED_WAITING_MANUAL: "VERIFIED_WAITING_MANUAL",
+  MATCHED: "MATCHED",
+  MISMATCHED: "MISMATCHED",
+  INVALID: "INVALID",
+  TEMPORARY_FAILURE: "TEMPORARY_FAILURE",
+  EXCLUDED_CANCELLED: "EXCLUDED_CANCELLED",
+  EXCLUDED_NO_GAME: "EXCLUDED_NO_GAME",
+  MANUAL_FINAL_ONLY: "MANUAL_FINAL_ONLY"
+});
 
 const TERMINAL_EXCLUDED_STATUSES = new Set([
   "cancelled", "canceled", "postponed", "no_game", "service_unavailable", "excluded"
@@ -128,6 +143,14 @@ function latestLogStatus(logs) {
   return text(data.status || latest.status || "").toLowerCase() || null;
 }
 
+function latestLog(logs) {
+  return (Array.isArray(logs) ? logs : []).slice().sort((left, right) => {
+    const leftAt = dateValue(left?.occurred_at)?.getTime() || 0;
+    const rightAt = dateValue(right?.occurred_at)?.getTime() || 0;
+    return rightAt - leftAt;
+  })[0] || null;
+}
+
 function timeMetrics({ firstFetchAt, verifiedAt, manualFinalizedAt, gameStartAt }) {
   const first = dateValue(firstFetchAt);
   const verified = dateValue(verifiedAt);
@@ -150,6 +173,7 @@ export function buildLineupShadowAccuracyRecord({ game = {}, revisions = [], log
   const manualFinal = manualFinalRow(revisions);
   const manualFinalizedAt = manualFinalTimestamp(manualFinal);
   const verified = selectShadowRevisionForComparison(revisions, manualFinal);
+  const latestAttempt = latestLog(logs);
   const hasPostManualVerified = Boolean(manualFinal && shadows.some((candidate) => candidate.verified
     && dateValue(candidate.fetchedAt)?.getTime() > (dateValue(manualFinalizedAt)?.getTime() || Number.POSITIVE_INFINITY)));
   const attempted = shadows.length > 0 || logs.length > 0;
@@ -169,6 +193,10 @@ export function buildLineupShadowAccuracyRecord({ game = {}, revisions = [], log
     fetchedAt: verified?.fetchedAt || shadows[0]?.fetchedAt || null,
     firstFetchAt: firstShadowFetchAt(shadows, logs),
     verifiedAt: verified?.fetchedAt || null,
+    lastAttemptAt: isoValue(latestAttempt?.occurred_at || shadows[0]?.fetchedAt),
+    lastFetchedAt: shadows[0]?.fetchedAt || null,
+    lastVerifiedAt: verified?.fetchedAt || null,
+    latestAttemptStatus: latestLogStatus(logs),
     manualFinalRevisionId: manualFinal?.revision_id || manualFinal?.revisionId || null,
     manualFinalizedAt,
     playerCount: verified?.playerCount || shadows[0]?.playerCount || 0,
@@ -265,13 +293,185 @@ export function aggregateLineupShadowAccuracy(records = []) {
   };
 }
 
-export function buildLineupShadowAccuracyReport(records = [], { limit = LINEUP_SHADOW_ACCURACY_LIMIT, lookbackDays = LINEUP_SHADOW_ACCURACY_LOOKBACK_DAYS } = {}) {
+function jstDateString(value) {
+  const date = dateValue(value);
+  if (!date) return null;
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(date);
+}
+
+function gameDateString(game) {
+  const explicit = text(game?.gameDate || game?.game_date);
+  if (/^\d{4}-\d{2}-\d{2}/.test(explicit)) return explicit.slice(0, 10);
+  return jstDateString(game?.startAt || game?.start_time);
+}
+
+function excludedCode(gameStatus) {
+  return ["no_game", "postponed"].includes(gameStatus)
+    ? LINEUP_SHADOW_STATUS_CODES.EXCLUDED_NO_GAME
+    : LINEUP_SHADOW_STATUS_CODES.EXCLUDED_CANCELLED;
+}
+
+function currentGameView(game) {
+  return {
+    internalGameId: text(game?.internalGameId || game?.internal_game_id) || null,
+    gameDate: gameDateString(game),
+    startAt: isoValue(game?.startAt || game?.start_time),
+    homeTeam: text(game?.homeTeam || game?.home_team) || null,
+    awayTeam: text(game?.awayTeam || game?.away_team) || null,
+    npbGameCode: text(game?.npbGameCode || game?.npb_game_code) || null,
+    gameStatus: text(game?.gameStatus || game?.game_status).toLowerCase() || "scheduled"
+  };
+}
+
+function currentGameSort(left, right, now) {
+  const leftStart = dateValue(left?.startAt || left?.start_time)?.getTime() || Number.MAX_SAFE_INTEGER;
+  const rightStart = dateValue(right?.startAt || right?.start_time)?.getTime() || Number.MAX_SAFE_INTEGER;
+  const current = dateValue(now)?.getTime() || 0;
+  const leftDistance = Math.abs(leftStart - current);
+  const rightDistance = Math.abs(rightStart - current);
+  return leftDistance - rightDistance || leftStart - rightStart || text(left?.internalGameId).localeCompare(text(right?.internalGameId));
+}
+
+function currentStatusForRecord(record, game, now) {
+  const normalizedGameStatus = text(game?.gameStatus || game?.game_status || "scheduled").toLowerCase();
+  if (TERMINAL_EXCLUDED_STATUSES.has(normalizedGameStatus)) {
+    return {
+      code: excludedCode(normalizedGameStatus),
+      health: "waiting",
+      label: "評価対象外",
+      reason: normalizedGameStatus === "no_game" || normalizedGameStatus === "postponed" ? "試合なし・延期" : "中止",
+      stale: false
+    };
+  }
+  const due = isLineupShadowDue({ startAt: game?.startAt || game?.start_time }, now);
+  const start = dateValue(game?.startAt || game?.start_time);
+  const current = dateValue(now);
+  if (!record) {
+    return {
+      code: due.due ? LINEUP_SHADOW_STATUS_CODES.WAITING_LINEUP : LINEUP_SHADOW_STATUS_CODES.WAITING_WINDOW,
+      health: "waiting",
+      label: due.due ? "スタメン発表待ち" : "取得時間前",
+      reason: due.due ? "Shadow候補待ち" : "取得時間前",
+      stale: false
+    };
+  }
+  if (record.status === "matched") {
+    return { code: LINEUP_SHADOW_STATUS_CODES.MATCHED, health: "normal", label: "完全一致", reason: "player・打順・守備位置が一致", stale: false };
+  }
+  if (record.status === "mismatched") {
+    return { code: LINEUP_SHADOW_STATUS_CODES.MISMATCHED, health: "attention", label: "差分あり", reason: `${record.differenceCount || 0}件の差分`, stale: false };
+  }
+  if (record.status === "invalid") {
+    return { code: LINEUP_SHADOW_STATUS_CODES.INVALID, health: "attention", label: "要確認", reason: "候補の検証に失敗", stale: false };
+  }
+  if (record.status === "missing" && record.manualFinalRevisionId) {
+    return { code: LINEUP_SHADOW_STATUS_CODES.MANUAL_FINAL_ONLY, health: "waiting", label: "Manual確定済み", reason: "Shadow候補なし", stale: false };
+  }
+  if (record.status === "pending" && record.verified) {
+    return { code: LINEUP_SHADOW_STATUS_CODES.VERIFIED_WAITING_MANUAL, health: "waiting", label: "比較待ち", reason: "Verified済み・Manual確定待ち", stale: false };
+  }
+  if (["temporary_failure", "failed", "timeout"].includes(record.latestAttemptStatus)) {
+    return { code: LINEUP_SHADOW_STATUS_CODES.TEMPORARY_FAILURE, health: "attention", label: "再試行中", reason: record.latestAttemptStatus, stale: false };
+  }
+  if (record.fetched && !record.verified) {
+    return { code: LINEUP_SHADOW_STATUS_CODES.FETCHED_UNVERIFIED, health: "attention", label: "検証待ち", reason: "取得済み・検証未完了", stale: false };
+  }
+  const stale = Boolean(start && current && current.getTime() > start.getTime() + 10 * 60 * 1000 && !record.attempted);
+  return {
+    code: due.due ? LINEUP_SHADOW_STATUS_CODES.WAITING_LINEUP : LINEUP_SHADOW_STATUS_CODES.WAITING_WINDOW,
+    health: stale ? "attention" : "waiting",
+    label: stale ? "要確認" : due.due ? "スタメン発表待ち" : "取得時間前",
+    reason: stale ? "Shadowが動いていない可能性（attempt記録なし）" : due.due ? "Shadow候補待ち" : "取得時間前",
+    reasonCode: due.reasonCode,
+    stale
+  };
+}
+
+export function buildLineupShadowCurrentStatus({ games = [], records = [], now = new Date(), enabled = true } = {}) {
+  if (!enabled) {
+    return {
+      code: LINEUP_SHADOW_STATUS_CODES.SHADOW_DISABLED,
+      health: "waiting",
+      label: "Shadow無効",
+      reason: "ENABLE_LINEUP_SHADOW=false",
+      stale: false,
+      game: null,
+      recent: [],
+      lastAttemptAt: null,
+      lastFetchedAt: null,
+      lastVerifiedAt: null
+    };
+  }
+  const currentDate = dateValue(now);
+  if (!currentDate) {
+    return {
+      code: LINEUP_SHADOW_STATUS_CODES.NO_TARGET_GAME,
+      health: "attention",
+      label: "要確認",
+      reason: "現在時刻を判定できません",
+      stale: false,
+      game: null,
+      recent: [],
+      lastAttemptAt: null,
+      lastFetchedAt: null,
+      lastVerifiedAt: null
+    };
+  }
+  const today = jstDateString(now);
+  const tomorrow = jstDateString(new Date(currentDate.getTime() + 24 * 60 * 60 * 1000));
+  const bounded = (Array.isArray(games) ? games : [])
+    .filter((game) => [today, tomorrow].includes(gameDateString(game)))
+    .sort((left, right) => currentGameSort(left, right, now));
+  if (!bounded.length) {
+    return {
+      code: LINEUP_SHADOW_STATUS_CODES.NO_TARGET_GAME,
+      health: "waiting",
+      label: "対象試合なし",
+      reason: "本日・明日の対象試合なし",
+      stale: false,
+      game: null,
+      recent: [],
+      lastAttemptAt: null,
+      lastFetchedAt: null,
+      lastVerifiedAt: null
+    };
+  }
+  const byId = new Map((Array.isArray(records) ? records : []).map((record) => [record.internalGameId, record]));
+  const recent = bounded.map((game) => {
+    const record = byId.get(text(game?.internalGameId || game?.internal_game_id));
+    return { game: currentGameView(game), ...currentStatusForRecord(record, game, now), timing: {
+      lastAttemptAt: record?.lastAttemptAt || null,
+      lastFetchedAt: record?.lastFetchedAt || null,
+      lastVerifiedAt: record?.lastVerifiedAt || null
+    } };
+  });
+  const active = recent.filter((item) => ![LINEUP_SHADOW_STATUS_CODES.EXCLUDED_CANCELLED, LINEUP_SHADOW_STATUS_CODES.EXCLUDED_NO_GAME].includes(item.code));
+  const selected = active[0] || recent[0];
+  return {
+    ...selected,
+    game: selected.game,
+    recent: recent.slice(0, 4),
+    lastAttemptAt: selected.timing.lastAttemptAt,
+    lastFetchedAt: selected.timing.lastFetchedAt,
+    lastVerifiedAt: selected.timing.lastVerifiedAt
+  };
+}
+
+export function buildLineupShadowAccuracyReport(records = [], { limit = LINEUP_SHADOW_ACCURACY_LIMIT, lookbackDays = LINEUP_SHADOW_ACCURACY_LOOKBACK_DAYS, games = [], now = new Date(), enabled = true } = {}) {
   const bounded = (Array.isArray(records) ? records : []).slice(0, Math.min(LINEUP_SHADOW_ACCURACY_LIMIT, Math.max(1, Number(limit) || LINEUP_SHADOW_ACCURACY_LIMIT)));
   return {
     available: true,
     historyLimit: bounded.length,
     lookbackDays: Number(lookbackDays) || LINEUP_SHADOW_ACCURACY_LOOKBACK_DAYS,
     metrics: aggregateLineupShadowAccuracy(bounded),
-    games: bounded
+    games: bounded,
+    shadowEnabled: Boolean(enabled),
+    autoFinalEnabled: false,
+    current: buildLineupShadowCurrentStatus({ games, records: bounded, now, enabled })
   };
 }

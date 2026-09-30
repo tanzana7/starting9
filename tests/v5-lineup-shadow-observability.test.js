@@ -8,6 +8,8 @@ import {
   aggregateLineupShadowAccuracy,
   buildLineupShadowAccuracyRecord,
   buildLineupShadowAccuracyReport,
+  buildLineupShadowCurrentStatus,
+  LINEUP_SHADOW_STATUS_CODES,
   selectShadowRevisionForComparison
 } from "../backend/automation-v3/lineup-shadow-observability.js";
 import { compareShadowLineupToManual } from "../backend/automation-v3/lineup-shadow-service.js";
@@ -72,6 +74,17 @@ function record(revisions, { gameStatus = "scheduled", logs = [] } = {}) {
     revisions,
     logs
   });
+}
+
+function currentGame({ id = "game-1", gameDate = "2026-09-29", startAt = "2026-09-29T03:00:00.000Z", gameStatus = "scheduled" } = {}) {
+  return {
+    internalGameId: id,
+    gameDate,
+    startAt,
+    homeTeam: "F",
+    awayTeam: "B",
+    gameStatus
+  };
 }
 
 function createDashboardRenderer() {
@@ -211,6 +224,51 @@ test("report remains bounded even if a caller supplies a larger history", () => 
   assert.equal(report.metrics.totalGames, 20);
 });
 
+test("current shadow status explains no target, before-window, and waiting states", () => {
+  assert.equal(buildLineupShadowCurrentStatus({ now: "2026-09-28T00:00:00.000Z" }).code, LINEUP_SHADOW_STATUS_CODES.NO_TARGET_GAME);
+  const game = currentGame();
+  const before = buildLineupShadowCurrentStatus({
+    games: [game],
+    records: [record([])],
+    now: "2026-09-29T00:00:00.000Z"
+  });
+  assert.equal(before.code, LINEUP_SHADOW_STATUS_CODES.WAITING_WINDOW);
+  const waiting = buildLineupShadowCurrentStatus({
+    games: [game],
+    records: [record([])],
+    now: "2026-09-29T02:30:00.000Z"
+  });
+  assert.equal(waiting.code, LINEUP_SHADOW_STATUS_CODES.WAITING_LINEUP);
+  assert.equal(waiting.label, "スタメン発表待ち");
+});
+
+test("current status distinguishes verified, matched, mismatch, invalid, temporary failure, and manual-only", () => {
+  const game = currentGame();
+  const status = (revisions, logs = []) => buildLineupShadowCurrentStatus({
+    games: [game],
+    records: [record(revisions, { logs })],
+    now: "2026-09-29T04:00:00.000Z"
+  }).code;
+  assert.equal(status([shadowRow()]), LINEUP_SHADOW_STATUS_CODES.VERIFIED_WAITING_MANUAL);
+  assert.equal(status([shadowRow(), manualRow()]), LINEUP_SHADOW_STATUS_CODES.MATCHED);
+  const mismatchLineup = BASE_LINEUP.map((row) => ({ ...row, playerId: row.playerId === "F-1" ? "F-99" : row.playerId }));
+  assert.equal(status([shadowRow(mismatchLineup), manualRow()]), LINEUP_SHADOW_STATUS_CODES.MISMATCHED);
+  assert.equal(status([shadowRow([], { status: "invalid_lineup" })]), LINEUP_SHADOW_STATUS_CODES.INVALID);
+  assert.equal(status([], [{ occurred_at: "2026-09-29T03:30:00.000Z", metadata: JSON.stringify({ status: "temporary_failure" }) }]), LINEUP_SHADOW_STATUS_CODES.TEMPORARY_FAILURE);
+  assert.equal(status([manualRow()]), LINEUP_SHADOW_STATUS_CODES.MANUAL_FINAL_ONLY);
+});
+
+test("current status excludes cancelled/no-game and reports shadow disabled", () => {
+  const cancelled = buildLineupShadowCurrentStatus({
+    games: [currentGame({ gameStatus: "cancelled" })],
+    records: [record([], { gameStatus: "cancelled" })],
+    now: "2026-09-29T04:00:00.000Z"
+  });
+  assert.equal(cancelled.code, LINEUP_SHADOW_STATUS_CODES.EXCLUDED_CANCELLED);
+  const disabled = buildLineupShadowCurrentStatus({ games: [currentGame()], enabled: false });
+  assert.equal(disabled.code, LINEUP_SHADOW_STATUS_CODES.SHADOW_DISABLED);
+});
+
 test("admin dashboard renders no-data and each observation status without exposing it publicly", () => {
   const renderer = createDashboardRenderer();
   const noData = renderer.renderDashboard({ games: [], lineupShadowAccuracy: buildLineupShadowAccuracyReport([]) }, []);
@@ -227,4 +285,18 @@ test("admin dashboard renders no-data and each observation status without exposi
   assert.match(html, /⚠ 差分 1件/);
   assert.match(html, /保留/);
   assert.match(html, /除外（cancelled）/);
+});
+
+test("admin dashboard renders current operation status and safe flags", () => {
+  const renderer = createDashboardRenderer();
+  const report = buildLineupShadowAccuracyReport([], {
+    games: [currentGame()],
+    now: "2026-09-29T02:30:00.000Z",
+    enabled: true
+  });
+  const html = renderer.renderDashboard({ games: [], lineupShadowAccuracy: report }, []);
+  assert.match(html, /Shadow運用状況/);
+  assert.match(html, /スタメン発表待ち/);
+  assert.match(html, /Auto Final/);
+  assert.match(html, />OFF<\/strong>/);
 });

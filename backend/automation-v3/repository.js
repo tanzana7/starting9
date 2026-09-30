@@ -620,6 +620,79 @@ export async function hasV3LineupShadowWindowCandidate(db, now = new Date()) {
   return Boolean(row?.candidate);
 }
 
+// Probable-starter polling has its own Cron now. Keep the no-target path to a
+// single scalar query so a five-minute tick does not hydrate formal workflow
+// joins merely to discover that there is no near-term game to inspect.
+export async function hasV3ProbableStarterCandidate(db, now = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(current.getTime())) return false;
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit"
+  }).format(current);
+  const windowStart = new Date(current.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const windowEnd = new Date(current.getTime() + 36 * 60 * 60 * 1000).toISOString();
+  const row = await db.prepare(
+    `SELECT 1 AS candidate
+       FROM games
+      WHERE internal_game_id IS NOT NULL
+        AND internal_game_id <> ''
+        AND game_date BETWEEN date(?1) AND date(?1, '+1 day')
+        AND start_time >= ?2
+        AND start_time <= ?3
+        AND is_active = 1
+        AND deleted_at IS NULL
+        AND LOWER(COALESCE(game_status, '')) NOT IN
+          ('cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded')
+      LIMIT 1`
+  ).bind(today, windowStart, windowEnd).first();
+  return Boolean(row?.candidate);
+}
+
+// This projection intentionally omits workflow joins, JSON metadata, and
+// identity hydration. The probable-starter planner reads only the game fields
+// below and performs its own canonical row/job checks for each bounded target.
+export async function listV3ProbableStarterCandidates(db, now = new Date(), { limit = 12 } = {}) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(current.getTime())) return [];
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit"
+  }).format(current);
+  const windowStart = new Date(current.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const windowEnd = new Date(current.getTime() + 36 * 60 * 60 * 1000).toISOString();
+  const boundedLimit = Math.max(1, Math.min(24, Number(limit) || 12));
+  const actualColumn = await getV3GamesActualStartColumn(db);
+  const actualSelect = actualColumn ? `, ${actualColumn} AS actual_start_at` : ", NULL AS actual_start_at";
+  const result = await db.prepare(
+    `SELECT internal_game_id, game_date, start_time, home_team, away_team,
+            npb_game_code, npb_game_url, game_status, is_active, deleted_at${actualSelect}
+       FROM games
+      WHERE internal_game_id IS NOT NULL
+        AND internal_game_id <> ''
+        AND game_date BETWEEN date(?1) AND date(?1, '+1 day')
+        AND start_time >= ?2
+        AND start_time <= ?3
+        AND is_active = 1
+        AND deleted_at IS NULL
+        AND LOWER(COALESCE(game_status, '')) NOT IN
+          ('cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded')
+      ORDER BY start_time, internal_game_id
+      LIMIT ?4`
+  ).bind(today, windowStart, windowEnd, boundedLimit).all();
+  return (result.results || []).map((row) => ({
+    internalGameId: row.internal_game_id,
+    gameDate: row.game_date,
+    startAt: row.start_time,
+    actualStartAt: row.actual_start_at || null,
+    homeTeam: row.home_team,
+    awayTeam: row.away_team,
+    npbGameCode: row.npb_game_code || null,
+    npbGameUrl: row.npb_game_url || null,
+    gameStatus: row.game_status,
+    isActive: row.is_active,
+    deletedAt: row.deleted_at
+  }));
+}
+
 // The start-boundary lookup is only needed after a current-day Fighters game
 // has started. Keeping this scalar guard separate avoids future-game
 // hydration work on the common pregame auxiliary tick; the actual-start

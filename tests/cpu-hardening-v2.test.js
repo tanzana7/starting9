@@ -79,18 +79,29 @@ function createDatabase() {
   return { database, db: d1(database) };
 }
 
-test("Cron modeはcritical/auxiliary/scheduleを分離し、unknownはcriticalへfail-closedする", () => {
+test("Cron modeはcritical/shadow/probable/observer/scheduleを分離し、unknownはcriticalへfail-closedする", () => {
   assert.equal(resolveV3CronMode("* * * * *"), "critical");
-  assert.equal(resolveV3CronMode("*/5 * * * *"), "auxiliary");
+  assert.equal(resolveV3CronMode("*/5 * * * *"), "shadow");
+  assert.equal(resolveV3CronMode("2,7,12,17,22,27,32,37,42,47,52,57 * * * *"), "probable");
+  assert.equal(resolveV3CronMode("0,15,30,45 * * * *"), "observer");
   assert.equal(resolveV3CronMode("1,16,31,46 * * * *"), "schedule");
   assert.equal(resolveV3CronMode(""), "critical");
   const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
   const config = fs.readFileSync(path.join(root, "wrangler.auth.production.jsonc"), "utf8");
-  assert.ok(config.includes('"crons": ["* * * * *", "*/5 * * * *", "1,16,31,46 * * * *"]'));
+  for (const expression of [
+    "* * * * *",
+    "*/5 * * * *",
+    "1,16,31,46 * * * *",
+    "2,7,12,17,22,27,32,37,42,47,52,57 * * * *",
+    "0,15,30,45 * * * *"
+  ]) assert.ok(config.includes(`\"${expression}\"`));
   assert.match(worker, /const cronMode = resolveV3CronMode\(event\?\.cron\)/);
   assert.match(worker, /if \(isCriticalCron\) ctx\.waitUntil\(writeCronHeartbeatSafely\(env, recordCronInvocation/);
   assert.match(worker, /mode: cronMode/);
   assert.match(worker, /if \(mode === "schedule"\) return runScheduledScheduleSync\(env, now, \{ runId \}\)/);
+  assert.match(worker, /if \(mode === "shadow"\) return runScheduledLineupShadow/);
+  assert.match(worker, /if \(mode === "probable"\) return runScheduledProbableStarter/);
+  assert.match(worker, /if \(mode === "observer"\) return runScheduledObserverTasks/);
 });
 
 test("schedule triggerの毎時補正窓を維持し、15分tickでは歴史訂正を重複実行しない", () => {

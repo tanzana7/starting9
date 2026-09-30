@@ -79,7 +79,7 @@ test("audit writes and diagnostic reads are routed through AUDIT_DB", () => {
 
 test("audit failure is explicitly best effort and does not alter formal storage code paths", () => {
   const runtimeAudit = workerSource.slice(workerSource.indexOf("async function writeV3RuntimeAudit"), workerSource.indexOf("async function runScheduledGameAutomationV3"));
-  const scheduleAudit = workerSource.slice(workerSource.indexOf("const writeScheduleSyncAudit"), workerSource.indexOf("// Schedule synchronization"));
+  const scheduleAudit = workerSource.slice(workerSource.indexOf("async function writeScheduleSyncAuditRecord"), workerSource.indexOf("async function runScheduledGameAutomationV3"));
   const adminAudit = workerSource.slice(workerSource.indexOf("async function recordV3AdminAudit"), workerSource.indexOf("function parseV3AuditDetails"));
   assert.match(runtimeAudit, /catch \(error\)/);
   assert.match(runtimeAudit, /return false;/);

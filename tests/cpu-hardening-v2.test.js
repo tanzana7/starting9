@@ -5,7 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { hasPotentialFormalWork } from "../backend/automation-v3/repository.js";
-import { resolveV3CronMode } from "../auth-worker.js";
+import { isV3ScheduleHistoricalReconcileWindow, resolveV3CronMode } from "../auth-worker.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -79,27 +79,41 @@ function createDatabase() {
   return { database, db: d1(database) };
 }
 
-test("Cron modeはauxiliary triggerだけを補助経路へ振り分け、unknownはcriticalへfail-closedする", () => {
+test("Cron modeはcritical/auxiliary/scheduleを分離し、unknownはcriticalへfail-closedする", () => {
   assert.equal(resolveV3CronMode("* * * * *"), "critical");
   assert.equal(resolveV3CronMode("*/5 * * * *"), "auxiliary");
+  assert.equal(resolveV3CronMode("1,16,31,46 * * * *"), "schedule");
   assert.equal(resolveV3CronMode(""), "critical");
   const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
   const config = fs.readFileSync(path.join(root, "wrangler.auth.production.jsonc"), "utf8");
-  assert.ok(config.includes('"crons": ["* * * * *", "*/5 * * * *"]'));
+  assert.ok(config.includes('"crons": ["* * * * *", "*/5 * * * *", "1,16,31,46 * * * *"]'));
   assert.match(worker, /const cronMode = resolveV3CronMode\(event\?\.cron\)/);
   assert.match(worker, /if \(isCriticalCron\) ctx\.waitUntil\(writeCronHeartbeatSafely\(env, recordCronInvocation/);
   assert.match(worker, /mode: cronMode/);
+  assert.match(worker, /if \(mode === "schedule"\) return runScheduledScheduleSync\(env, now, \{ runId \}\)/);
+});
+
+test("schedule triggerの毎時補正窓を維持し、15分tickでは歴史訂正を重複実行しない", () => {
+  assert.equal(isV3ScheduleHistoricalReconcileWindow(new Date("2026-09-30T00:01:00.000Z")), true);
+  assert.equal(isV3ScheduleHistoricalReconcileWindow(new Date("2026-09-30T00:16:00.000Z")), false);
+  assert.equal(isV3ScheduleHistoricalReconcileWindow("invalid"), false);
 });
 
 test("criticalとauxiliaryは同じexecutor内でもformal claim経路を共有しない", () => {
   const executor = fs.readFileSync(path.join(root, "backend/automation-v3/executor.js"), "utf8");
   const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
+  const scheduleMode = worker.slice(worker.indexOf("async function runScheduledScheduleSync"), worker.indexOf("async function writeScheduleSyncAuditRecord"));
   assert.match(executor, /if \(auxiliaryOnly\)/);
   assert.match(executor, /if \(!runAuxiliary\) return criticalResult/);
   assert.match(executor, /hasPotentialFormalWork\(env\.AUTH_DB, now, \{ v4SemiAuto \}\)/);
   assert.match(worker, /runAuxiliary: !criticalOnly/);
   assert.match(worker, /skipFormalDiscoveryIfIdle: criticalOnly/);
   assert.match(worker, /reasonCode: "CRON_MODE_CRITICAL"/);
+  assert.match(worker, /reasonCode: "CRON_MODE_SCHEDULE_SEPARATED"/);
+  assert.match(worker, /async function runScheduledScheduleSync/);
+  assert.match(scheduleMode, /syncCurrentDayFightersSchedule/);
+  assert.match(scheduleMode, /ensureFutureFightersSchedule/);
+  assert.doesNotMatch(scheduleMode, /runGameAutomationV3|runLineupShadowForGames|evaluateAndNotifyAdminAlerts/);
 });
 
 test("formal idle fast-pathは安全な候補がないときだけplannerを省略し、due jobは必ず通す", async () => {

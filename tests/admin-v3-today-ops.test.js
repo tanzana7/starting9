@@ -115,7 +115,7 @@ test("Today OpsはoverviewのJST基準futureGamesCountをschedule syncと同じ�
 });
 
 test("Cron設定とWorker定数がproduction設定に一致し、次Cron目安を計算する", () => {
-  assert.deepEqual(wrangler.triggers.crons, ["* * * * *", "*/5 * * * *"]);
+  assert.deepEqual(wrangler.triggers.crons, ["* * * * *", "*/5 * * * *", "1,16,31,46 * * * *"]);
   assert.match(worker, /const V3_CRON_SCHEDULE = "\* \* \* \* \*"/);
   assert.match(worker, /const V3_CRON_INTERVAL_MINUTES = 1/);
   assert.match(worker, /const V3_CRON_GRACE_MINUTES = 5/);

@@ -1836,13 +1836,20 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
           retryErrors: Array.isArray(phase.execution?.retryErrors) ? phase.execution.retryErrors.slice(0, 20) : []
         };
       }
-      await writeV3RuntimeAudit(env, {
-        eventType: eventTypeByStage[phase.stage] || "V3_PHASE",
-        runId,
-        correlationId,
-        now,
-        execution
-      });
+      const eventType = eventTypeByStage[phase.stage] || "V3_PHASE";
+      // Routine phase details are already emitted as bounded console
+      // checkpoints and are intentionally excluded from persisted audit
+      // history. Avoid constructing/scheduling a no-op audit write on every
+      // minute when only observability is needed; error phases still persist.
+      if (shouldPersistV3Audit({ eventType, execution })) {
+        await writeV3RuntimeAudit(env, {
+          eventType,
+          runId,
+          correlationId,
+          now,
+          execution
+        });
+      }
     },
     onPlan: async ({ game, plan, job, created, reasonCode, insertedRowCount, existingJobId, existingScheduledSlotAt, existingStatus, diagnostic, plannerDecision = null, stage = "v3_plan", claimResult = null }) => {
       const jobTypeByPlanStage = {

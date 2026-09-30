@@ -8,6 +8,24 @@ import { evaluateCanonicalArtifactsFromDb } from "./canonical-artifact-evaluator
 // canonical-recovery predicates below, but a stale ranked game must not keep
 // re-entering the hot path indefinitely when its publication artifact is bad.
 const V3_AUTOMATION_HISTORICAL_LOOKBACK_DAYS = 2;
+const gamesActualStartColumnCache = new WeakMap();
+
+async function getV3GamesActualStartColumn(db) {
+  if (db && typeof db === "object" && gamesActualStartColumnCache.has(db)) {
+    return gamesActualStartColumnCache.get(db);
+  }
+  let column = null;
+  try {
+    const schema = await db.prepare("PRAGMA table_info(games)").all();
+    const columns = new Set((schema.results || []).map((row) => String(row.name || "")));
+    column = ["actual_start_at", "started_at", "game_started_at", "first_pitch_at"]
+      .find((candidate) => columns.has(candidate)) || null;
+  } catch {
+    // The scheduled timestamp remains authoritative on older adapters.
+  }
+  if (db && typeof db === "object") gamesActualStartColumnCache.set(db, column);
+  return column;
+}
 
 // This is deliberately a conservative preflight rather than a replacement
 // for listV3Games or the formal planner.  It only skips the expensive
@@ -527,6 +545,8 @@ export async function listV3LineupShadowCandidates(db, now = new Date(), { limit
     timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit"
   }).format(current);
   const boundedLimit = Math.max(1, Math.min(12, Number(limit) || 6));
+  const windowStart = new Date(current.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const windowEnd = new Date(current.getTime() + 2 * 60 * 60 * 1000).toISOString();
   const rows = await db.prepare(
     `SELECT games.internal_game_id, games.game_date, games.start_time,
             games.home_team, games.away_team, games.npb_game_code,
@@ -535,6 +555,8 @@ export async function listV3LineupShadowCandidates(db, now = new Date(), { limit
       WHERE games.internal_game_id IS NOT NULL
         AND games.internal_game_id <> ''
         AND games.game_date BETWEEN date(?1) AND date(?1, '+1 day')
+        AND games.start_time >= ?2
+        AND games.start_time <= ?3
         AND games.is_active = 1
         AND games.deleted_at IS NULL
         AND LOWER(COALESCE(games.game_status, '')) NOT IN
@@ -547,8 +569,8 @@ export async function listV3LineupShadowCandidates(db, now = new Date(), { limit
              AND final_revision.is_final = 1
         )
       ORDER BY games.game_date, games.start_time, games.internal_game_id
-      LIMIT ?2`
-  ).bind(today, boundedLimit).all();
+      LIMIT ?4`
+  ).bind(today, windowStart, windowEnd, boundedLimit).all();
   return (rows.results || []).map((row) => ({
     internalGameId: row.internal_game_id,
     gameDate: row.game_date,
@@ -563,6 +585,74 @@ export async function listV3LineupShadowCandidates(db, now = new Date(), { limit
   }));
 }
 
+// Avoid hydrating shadow candidates when the bounded scheduled-time window is
+// empty. The full candidate query remains the source of truth once a target
+// exists; this scalar preflight only proves that no eligible row can be due.
+export async function hasV3LineupShadowWindowCandidate(db, now = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(current.getTime())) return false;
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit"
+  }).format(current);
+  const windowStart = new Date(current.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const windowEnd = new Date(current.getTime() + 2 * 60 * 60 * 1000).toISOString();
+  const row = await db.prepare(
+    `SELECT 1 AS candidate
+       FROM games
+      WHERE games.internal_game_id IS NOT NULL
+        AND games.internal_game_id <> ''
+        AND games.game_date BETWEEN date(?1) AND date(?1, '+1 day')
+        AND games.start_time >= ?2
+        AND games.start_time <= ?3
+        AND games.is_active = 1
+        AND games.deleted_at IS NULL
+        AND LOWER(COALESCE(games.game_status, '')) NOT IN
+          ('cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded')
+        AND (LOWER(COALESCE(games.home_team, '')) IN ('f', 'fighters')
+          OR LOWER(COALESCE(games.away_team, '')) IN ('f', 'fighters'))
+        AND NOT EXISTS (
+          SELECT 1 FROM game_lineup_revisions AS final_revision
+           WHERE final_revision.internal_game_id = games.internal_game_id
+             AND final_revision.is_final = 1
+        )
+      LIMIT 1`
+  ).bind(today, windowStart, windowEnd).first();
+  return Boolean(row?.candidate);
+}
+
+// The start-boundary lookup is only needed after a current-day Fighters game
+// has started. Keeping this scalar guard separate avoids future-game
+// hydration work on the common pregame auxiliary tick; the actual-start
+// column probe is cached per database adapter and remains authoritative when
+// a provider supplies a real first-pitch timestamp.
+export async function hasV3StartedFightersGameForProbableStarterBoundary(db, now = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(current.getTime())) return false;
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit"
+  }).format(current);
+  const actualColumn = await getV3GamesActualStartColumn(db);
+  const startedAtSql = actualColumn
+    ? `(games.start_time <= ?2 OR games.${actualColumn} <= ?2)`
+    : "games.start_time <= ?2";
+  const row = await db.prepare(
+    `SELECT 1 AS started
+       FROM games
+      WHERE games.internal_game_id IS NOT NULL
+        AND games.internal_game_id <> ''
+        AND games.game_date = ?1
+        AND ${startedAtSql}
+        AND games.is_active = 1
+        AND games.deleted_at IS NULL
+        AND LOWER(COALESCE(games.game_status, '')) NOT IN
+          ('cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded')
+        AND (LOWER(COALESCE(games.home_team, '')) IN ('f', 'fighters')
+          OR LOWER(COALESCE(games.away_team, '')) IN ('f', 'fighters'))
+      LIMIT 1`
+  ).bind(today, current.toISOString()).first();
+  return Boolean(row?.started);
+}
+
 // The auxiliary list is intentionally bounded for CPU safety. This targeted
 // lookup guarantees that the next Fighters game is considered even when
 // unrelated games fill that bounded list; it never calls an external source.
@@ -572,15 +662,7 @@ export async function findV3ProbableStarterStartCheckGame(db, now = new Date()) 
   const today = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit"
   }).format(current);
-  let columns = new Set();
-  try {
-    const schema = await db.prepare("PRAGMA table_info(games)").all();
-    columns = new Set((schema.results || []).map((row) => String(row.name || "")));
-  } catch {
-    // The scheduled timestamp remains authoritative on older adapters.
-  }
-  const actualColumn = ["actual_start_at", "started_at", "game_started_at", "first_pitch_at"]
-    .find((column) => columns.has(column));
+  const actualColumn = await getV3GamesActualStartColumn(db);
   const actualSelect = actualColumn ? `, games.${actualColumn} AS actual_start_at` : ", NULL AS actual_start_at";
   const excluded = "'cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded'";
   const result = await db.prepare(

@@ -10,7 +10,13 @@ import {
   isV3TerminalJobStatus,
   createV3Error
 } from "./constants.js";
-import { claimV3Job, createV3Job, findV3ProbableStarterStartCheckGame, listDueV3Jobs } from "./repository.js";
+import {
+  claimV3Job,
+  createV3Job,
+  findV3ProbableStarterStartCheckGame,
+  hasV3StartedFightersGameForProbableStarterBoundary,
+  listDueV3Jobs
+} from "./repository.js";
 import {
   getV3DuePlan,
   getV3FormalDuePlans,
@@ -422,7 +428,24 @@ export async function planAuxiliaryJobs(db, games = [], now = new Date(), { auto
   let probableGames = Array.isArray(games) ? games : [];
   if (autoProbableStarter) {
     try {
-      const startCheckGame = await findV3ProbableStarterStartCheckGame(db, now);
+      // Before the first pitch there cannot be a start-boundary target. Avoid
+      // the schema inspection and bounded future-game hydration in that
+      // common five-minute path; the normal slot planner still evaluates the
+      // games already discovered for pregame polling.
+      let boundaryStarted = true;
+      try {
+        boundaryStarted = await hasV3StartedFightersGameForProbableStarterBoundary(db, now);
+      } catch (error) {
+        // Preserve the prior targeted lookup on legacy/partially migrated
+        // adapters; the optimization must never hide a next-game check.
+        console.warn(`[V3_PROBABLE_START_CHECK] ${JSON.stringify({
+          reasonCode: "BOUNDARY_PREFLIGHT_FAILED",
+          message: String(error?.message || "preflight_failed").slice(0, 160)
+        })}`);
+      }
+      const startCheckGame = boundaryStarted
+        ? await findV3ProbableStarterStartCheckGame(db, now)
+        : null;
       if (startCheckGame) {
         const existing = probableGames.find((game) => String(game?.internalGameId || "") === String(startCheckGame.internalGameId || ""));
         probableGames = existing

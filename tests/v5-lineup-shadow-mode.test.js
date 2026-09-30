@@ -12,6 +12,10 @@ import {
 } from "../backend/automation-v3/lineup-shadow-service.js";
 import { isAutoFinalEligible } from "../backend/automation-v3/lineup-candidate-service.js";
 import { readV3LineupDataHealth } from "../backend/automation-v3/orchestrator.js";
+import {
+  hasV3LineupShadowWindowCandidate,
+  listV3LineupShadowCandidates
+} from "../backend/automation-v3/repository.js";
 
 const NOW = new Date("2026-09-28T09:00:00.000Z");
 const LINEUP = Array.from({ length: 9 }, (_, index) => ({
@@ -21,6 +25,22 @@ const LINEUP = Array.from({ length: 9 }, (_, index) => ({
   position: index === 8 ? "指" : "遊"
 }));
 
+function d1(database) {
+  return {
+    prepare(sql) {
+      const statement = database.prepare(sql);
+      return {
+        bind(...params) {
+          return {
+            all: async () => ({ results: statement.all(...params) }),
+            first: async () => statement.get(...params)
+          };
+        }
+      };
+    }
+  };
+}
+
 test("production shadow flag is explicit and auto-final remains fail-closed", () => {
   assert.equal(isLineupShadowEnabled({ ENABLE_LINEUP_SHADOW: "true" }), true);
   assert.equal(isLineupShadowEnabled({ ENABLE_LINEUP_SHADOW: "false" }), false);
@@ -29,6 +49,34 @@ test("production shadow flag is explicit and auto-final remains fail-closed", ()
   assert.equal(isAutoFinalEligible({ candidate, verification, autoFinalEnabled: true }).eligible, true);
   assert.equal(isAutoFinalEligible({ candidate, verification, environment: "production", autoFinalEnabled: true }).eligible, false);
   assert.equal(isAutoFinalEligible({ candidate, verification, environment: "production", autoFinalEnabled: true }).reason, "PRODUCTION_AUTO_FINAL_DISABLED");
+});
+
+test("shadow候補は時間窓外で詳細行を返さず、窓内では次の対象を返す", async () => {
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE games (
+      internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+      home_team TEXT, away_team TEXT, npb_game_code TEXT, npb_game_url TEXT,
+      game_status TEXT, is_active INTEGER, deleted_at TEXT
+    );
+    CREATE TABLE game_lineup_revisions (
+      internal_game_id TEXT, is_final INTEGER
+    );
+  `);
+  database.prepare("INSERT INTO games VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', 1, NULL)")
+    .run("shadow-game", "2026-09-28", "2026-09-28T10:00:00.000Z", "fighters", "eagles", "f-e-1", null);
+  try {
+    const db = d1(database);
+    assert.equal(await hasV3LineupShadowWindowCandidate(db, new Date("2026-09-28T00:00:00.000Z")), false);
+    assert.deepEqual(await listV3LineupShadowCandidates(db, new Date("2026-09-28T00:00:00.000Z"), { limit: 4 }), []);
+    assert.equal(await hasV3LineupShadowWindowCandidate(db, new Date("2026-09-28T09:00:00.000Z")), true);
+    const candidates = await listV3LineupShadowCandidates(db, new Date("2026-09-28T09:00:00.000Z"), { limit: 4 });
+    assert.deepEqual(candidates.map((game) => game.internalGameId), ["shadow-game"]);
+    database.prepare("INSERT INTO game_lineup_revisions VALUES ('shadow-game', 1)").run();
+    assert.equal(await hasV3LineupShadowWindowCandidate(db, new Date("2026-09-28T09:00:00.000Z")), false);
+  } finally {
+    database.close();
+  }
 });
 
 test("shadow fetch is limited to the pregame and late recovery window", () => {

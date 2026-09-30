@@ -245,7 +245,8 @@ import {
   normalizeProbableStarterDataStatus,
   resolveCanonicalProbableStarterRow,
   shouldStopProbableStarterScheduling,
-  listV3LineupShadowCandidates
+  listV3LineupShadowCandidates,
+  hasV3LineupShadowWindowCandidate
 } from "./game-automation-v3.js";
 
 // This timeout boundary is intentionally limited to read-only verification.
@@ -1369,6 +1370,15 @@ async function runLineupShadowForGames(env, now, { runId = "" } = {}) {
   if (!isLineupShadowEnabled(env)) return summary;
   if (isProductionRuntime(env) && resolveNpbSource(env).kind !== "official") {
     return { ...summary, status: "blocked", reasonCode: "PRODUCTION_OFFICIAL_SOURCE_REQUIRED" };
+  }
+  try {
+    if (!(await hasV3LineupShadowWindowCandidate(env.AUTH_DB, now))) {
+      return { ...summary, status: "completed", reasonCode: "SHADOW_OUTSIDE_WINDOW" };
+    }
+  } catch (error) {
+    // The prior bounded candidate query remains the fail-open fallback for
+    // legacy adapters where the scalar preflight is unavailable.
+    console.warn(`[LINEUP_SHADOW] stage=window_preflight code=${error?.code || "SHADOW_WINDOW_PREFLIGHT_FAILED"}`);
   }
   const games = await listV3LineupShadowCandidates(env.AUTH_DB, now, { limit: 4 });
   summary.status = "completed";
@@ -5147,6 +5157,28 @@ export function getFutureScheduleSyncPlan(now = new Date(), futureGames = 0) {
   };
 }
 
+// Reuse the existing per-date schedule state before entering the 30-day
+// fallback loop. A missing or expired state row remains due, so a newly added
+// official game is still discoverable; only dates already checked within the
+// existing 24-hour schedule cadence are omitted from this invocation.
+export function selectDueFutureScheduleDates({ dates = [], rows = [], now = new Date(), intervalMs = AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS } = {}) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(current.getTime())) return Array.isArray(dates) ? dates : [];
+  const stateByDate = new Map((Array.isArray(rows) ? rows : [])
+    .map((row) => [String(row?.schedule_date || ""), row]));
+  const interval = Math.max(60 * 1000, Number(intervalMs) || AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS);
+  return (Array.isArray(dates) ? dates : []).filter((date) => {
+    const state = stateByDate.get(String(date));
+    if (!state) return true;
+    const nextCheckAt = new Date(state.next_check_at || "");
+    const lastCheckedAt = new Date(state.last_checked_at || "");
+    return Number.isNaN(nextCheckAt.getTime())
+      || nextCheckAt.getTime() <= current.getTime()
+      || Number.isNaN(lastCheckedAt.getTime())
+      || current.getTime() - lastCheckedAt.getTime() >= interval;
+  });
+}
+
 export function classifyScheduleSyncResults(results = []) {
   const statuses = (Array.isArray(results) ? results : []).map((result) => result?.status);
   if (statuses.includes("failed")) return "failed";
@@ -5371,11 +5403,48 @@ async function ensureFutureFightersSchedule(env, now) {
     };
   }
 
+  // Keep today in the bounded set: if the current-day sync failed before
+  // persisting its next check, the existing state gate must still be able to
+  // retry it. Future dates are the normal use of this loop, but current-day
+  // recovery is part of the pre-existing schedule contract.
   const dates = getAutomationScheduleDates(now, AUTOMATION_SCHEDULE_MAX_LOOKAHEAD_DAYS);
+  let dueDates = dates;
+  try {
+    const stateRows = await env.AUTH_DB.prepare(
+      `SELECT schedule_date, next_check_at, last_checked_at
+         FROM game_schedule_check_state
+        WHERE schedule_date >= ?1 AND schedule_date <= ?2
+        ORDER BY schedule_date`
+    ).bind(getJstDateString(now), dates[dates.length - 1] || getJstDateString(now)).all();
+    dueDates = selectDueFutureScheduleDates({ dates, rows: stateRows.results || [], now });
+    if (dueDates.length === 0) {
+      return {
+        status: "skipped",
+        syncNeeded: false,
+        futureGamesBefore,
+        futureGamesAfter: futureGamesBefore,
+        futureGamesTarget: AUTOMATION_MIN_FUTURE_GAMES,
+        gamesFetched: 0,
+        gamesInserted: 0,
+        gamesUpdated: 0,
+        fetchRangeStart: dates[0] || getJstDateString(now),
+        fetchRangeEnd: dates[dates.length - 1] || getJstDateString(now),
+        expandedTo30Days: false,
+        skipReason: "FUTURE_SCHEDULE_CHECK_NOT_DUE",
+        errorCode: null,
+        lastScheduleSyncAt: now.toISOString(),
+        results: []
+      };
+    }
+  } catch {
+    // Legacy/partially migrated adapters keep the original fail-open
+    // discovery loop; correctness is more important than this optimization.
+    dueDates = dates;
+  }
   const results = [];
   let futureGamesAfter = futureGamesBefore;
   let lastDate = "";
-  for (const date of dates) {
+  for (const date of dueDates) {
     lastDate = date;
     try {
       const result = await syncFightersScheduleForDate(env, date, now);
@@ -5402,8 +5471,8 @@ async function ensureFutureFightersSchedule(env, now) {
     gamesFetched,
     gamesInserted,
     gamesUpdated,
-    fetchRangeStart: dates[0] || "",
-    fetchRangeEnd: lastDate || dates[dates.length - 1] || "",
+    fetchRangeStart: dueDates[0] || "",
+    fetchRangeEnd: lastDate || dueDates[dueDates.length - 1] || "",
     expandedTo30Days: Boolean(lastDate && initialPlan.fetchRangeEnd && lastDate > initialPlan.fetchRangeEnd),
     skipReason: futureGamesAfter >= AUTOMATION_MIN_FUTURE_GAMES ? "FUTURE_GAMES_BUFFER_FILLED" : "FUTURE_GAMES_BUFFER_NOT_REACHED",
     errorCode: firstError?.errorCode || null,

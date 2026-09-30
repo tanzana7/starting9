@@ -174,6 +174,29 @@ test("今日の開始済みFighters戦から、補助12試合枠外の次戦を�
   }
 });
 
+test("予告先発の開始境界lookupは開始前に詳細照会を省略できる", async () => {
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE games (
+      internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+      home_team TEXT, away_team TEXT, game_status TEXT, is_active INTEGER,
+      deleted_at TEXT
+    );
+  `);
+  database.prepare("INSERT INTO games VALUES (?, ?, ?, ?, ?, 'scheduled', 1, NULL)")
+    .run("current", "2026-08-07", "2026-08-07T05:00:00.000Z", "fighters", "eagles");
+  try {
+    assert.equal(await v3.hasV3StartedFightersGameForProbableStarterBoundary(
+      d1(database), new Date("2026-08-07T04:59:59.000Z")
+    ), false);
+    assert.equal(await v3.hasV3StartedFightersGameForProbableStarterBoundary(
+      d1(database), new Date("2026-08-07T05:00:00.000Z")
+    ), true);
+  } finally {
+    database.close();
+  }
+});
+
 test("開始境界で1回取得し、未発表時は保存済みnext_check_atだけで再試行する", async () => {
   const database = createJobsDb();
   try {

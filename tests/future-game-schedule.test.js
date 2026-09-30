@@ -37,6 +37,34 @@ test("未来試合が3件以上なら不要な日程取得をスキップする"
   assert.deepEqual(plan.dates, []);
 });
 
+test("未来日程の既存チェック状態が有効な間は30日探索を再実行しない", async () => {
+  const { selectDueFutureScheduleDates } = await import(workerUrl);
+  const now = new Date("2026-09-30T06:00:00.000Z");
+  const dates = ["2026-10-01", "2026-10-02", "2026-10-03"];
+  assert.deepEqual(selectDueFutureScheduleDates({
+    dates,
+    now,
+    rows: dates.map((schedule_date) => ({
+      schedule_date,
+      next_check_at: "2026-10-01T06:00:00.000Z",
+      last_checked_at: "2026-09-30T06:00:00.000Z"
+    }))
+  }), []);
+  assert.deepEqual(selectDueFutureScheduleDates({
+    dates,
+    now,
+    rows: [{
+      schedule_date: "2026-10-01",
+      next_check_at: "2026-09-30T05:59:00.000Z",
+      last_checked_at: "2026-09-30T05:00:00.000Z"
+    }, {
+      schedule_date: "2026-10-02",
+      next_check_at: "2026-10-01T06:00:00.000Z",
+      last_checked_at: "2026-09-30T06:00:00.000Z"
+    }]
+  }), ["2026-10-01", "2026-10-03"]);
+});
+
 test("V3 Cronは日程補充をplannerより前に実行し、結果を診断へ返す", () => {
   const worker = fs.readFileSync(workerPath, "utf8");
   const start = worker.indexOf("async function runScheduledGameAutomationV3");

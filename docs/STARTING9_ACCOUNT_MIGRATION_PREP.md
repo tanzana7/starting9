@@ -2,9 +2,9 @@
 
 ## 目的と今回の範囲
 
-Starting9 のバックエンドを履修Hubと別のCloudflare accountへ移せるよう、現行構成、移行時の入力、検証、切替、ロールバック手順を固定する。
+Starting9 のCloudflare account migrationに関する実施履歴、現行構成、検証結果、運用baseline、ロールバック境界を固定する。
 
-> **Production baseline status (2026-10-01):** Account Isolation Phase 4のatomic cutoverとPhase 5の安定性確認が完了した。現在はPagesをSOURCE accountに残し、Auth Worker・NPB Worker・Cron・D1をTARGET accountで運用している。以下の準備・cutover手順のうち、過去のPhaseとして明記された部分は実施済み履歴であり、未実施の将来手順ではない。
+> **STATUS: COMPLETED (2026-10-01):** Account Isolation Phase 4のatomic cutover、Phase 5の安定性確認、Phase 6のbaseline lockを完了した。Production validationは`NORMAL`。現在はPagesをSOURCE accountに残し、Auth Worker・NPB Worker・Cron・D1をTARGET accountで運用している。以下のPhase 1〜5の準備・cutover手順はHISTORICALであり、未完了の将来手順ではない。
 
 Phase 2.5（履歴）では、SOURCEを変更せず、TARGETの空DB・Worker・secretをstaging用に準備した。この時点ではデータ移行とcutoverを実施していなかった。
 
@@ -18,15 +18,15 @@ Phase 2.5（履歴）では、SOURCEを変更せず、TARGETの空DB・Worker・
 
 この文書の将来手順は、専用accountと移行時間帯が承認された後に、対象と実行者を再確認してから使う。
 
-## 固定するGit基準
+## Phase 1〜3準備時のGit基準（HISTORICAL）
 
 | 項目 | 値 |
 | --- | --- |
 | 正規remote | `https://github.com/tanzana7/starting9.git` |
-| 移行準備の現行基準main | `812846324533aac265c0c13910e0f13d8bdd8458` |
+| 当時の移行準備基準main | `812846324533aac265c0c13910e0f13d8bdd8458` |
 | Phase 7 feature | `56054728518729061ec3734e1e07edcbd751921a`（mainへmergeしない。削除しない） |
-| 現行Auth Worker | `starting9-auth` |
-| 現行Auth Worker version | `8317b0c`（ユーザー提示値。今回の再取得・deployは未実施） |
+| 当時のAuth Worker | `starting9-auth` |
+| 当時のAuth Worker version | `8317b0c`（当時の記録。現行versionはProduction baseline lockを参照） |
 | Phase 3.5作業branch | `codex/starting9-account-isolation-phase3-5` |
 
 CPU hardeningは今回の移行準備の対象外とする。既存mainを移行基準にし、Phase 7の未merge変更や`probableStarterOnly`変更を混ぜない。
@@ -110,7 +110,7 @@ Auth DBにはユーザー、セッション、認証関連データが含まれ�
 
 固定API hostnameを用意できる場合は、Pages proxyの将来のaccount依存を減らせる。用意しない場合も、Pages側のorigin変更は一度のcutover作業として明示的に扱う。
 
-## 将来の実行手順（準備書。今は実行しない）
+## Phase 2 migration準備手順（HISTORICAL / 実行しない）
 
 以下は順序を固定するためのテンプレートである。`<TARGET_...>`を実値に置換し、実行前に承認する。ここにあるコマンドは今回実行していない。
 
@@ -203,7 +203,7 @@ Pagesの切替は今回行わない。作業前のproxy変更は、target origin
 
 TARGET WorkersのCronは設定ファイル上0本とし、Wranglerのtrigger mutatorは実行していない。TARGET Auth `/health` はHTTP 200、NPB Workerは正式な `mode=schedule` と `mode=starter` のread-only GETでHTTP 200を確認した。NPBの `/health` は正式endpointではなく、mode未指定のため400になる。
 
-## Phase 3 precutover readiness
+## Phase 3 precutover readiness（HISTORICAL / COMPLETED）
 
 - package.jsonは`1c3131048e2ac72dc2ea0328175ba7bf9c08794b`から`8ded93d72223114524dea2877e369581e046109d`まで変更なし。Phase 2.5の一時VAPID依存処理の残骸やscript削除はない。
 - SOURCE Authの正式Cronは、リポジトリのproduction configに記載された次の5本と確認した。
@@ -222,7 +222,7 @@ TARGET WorkersのCronは設定ファイル上0本とし、Wranglerのtrigger mut
 
 ## 検証チェックリスト
 
-### 準備段階（今回実施可能な範囲）
+### 準備段階（HISTORICAL）
 
 - [x] mainが`1c3131048e2ac72dc2ea0328175ba7bf9c08794b`と一致
 - [x] Phase 7 `56054728518729061ec3734e1e07edcbd751921a`をmainへ混ぜていない
@@ -233,7 +233,7 @@ TARGET WorkersのCronは設定ファイル上0本とし、Wranglerのtrigger mut
 - [x] TARGET VAPID secret 3名を登録（値は非表示・非保存）
 - [x] D1 export/import、Pages/API cutoverを実施していない
 
-### target作成後（将来）
+### target作成後（HISTORICAL）
 
 - [ ] target account、DB、Workerのresource IDと名前を二者確認
 - [ ] schema/migration状態がsourceと一致
@@ -249,7 +249,7 @@ TARGET WorkersのCronは設定ファイル上0本とし、Wranglerのtrigger mut
 - [ ] probable starterとNPB fetchのtarget経路を確認
 - [ ] rollback担当者・時刻・判定基準が確定
 
-## 中止条件
+## 中止条件（HISTORICAL / cutover時の判断基準）
 
 次のいずれかがあれば、targetを公開せず、sourceも変更せずに停止する。
 
@@ -263,7 +263,7 @@ TARGET WorkersのCronは設定ファイル上0本とし、Wranglerのtrigger mut
 - 未完了jobを手動移行・再実行・再採点する必要が出る
 - 新accountの権限や監査ログを確認できない
 
-## 未確認事項
+## 未確認事項（HISTORICAL / Phase 3時点）
 
 今回の準備では、以下はまだ確定していない。
 
@@ -373,7 +373,7 @@ npx wrangler d1 execute <CUTOVER_TARGET_AUDIT_DB_NAME> --remote --profile starti
 
 これはCloudflare D1の実export/importや本番データのコピーではない。実データの件数・checksumはPhase 4のread-only validationで初めて取得し、不一致ならcutoverを中止する。
 
-### Phase 4 atomic cutover runbook（準備済みテンプレート）
+### Phase 4 atomic cutover runbook（HISTORICAL / 実績はbaseline lockを参照）
 
 1. source/target account、profile、config、worker version、D1 ID、secret名、Pages envを二者確認する。試合処理中・未完了job・二重Cron ownerがあれば停止する。
 2. `starting9-auth`へSOURCE maintenance configを`starting9-source`でdry-runし、承認後にdeployする。health 200、mutation 503、scheduled no-opを確認する。
@@ -413,7 +413,7 @@ Phase 4のcutoverとPhase 5のpost-cutover確認を完了したため、以下�
 | NPB Worker | `starting9-npb-fetch` / TARGET account / version `73a0353a-e7fb-4e48-9197-a710151b0a38` | Authの`NPB_FETCH_WORKER` service binding先 |
 | Auth D1 | `starting9-auth-prod` / `326f97c3-768d-4df6-ada2-129fdb1865a1` | TARGET production database |
 | Audit D1 | `starting9-audit-prod` / `acfac47d-1963-433a-b16b-36cd3afe9db4` | TARGET production audit database |
-| Pages deployment | `495e4404-e64c-4ea2-bdc3-3602847cad12` | baseline時点の既知deployment |
+| Pages deployment | `3326ee05-b3db-4bee-90ab-42df1e9be61b` | 現行main `667becc` のproduction deployment |
 
 正式Cronは次の5本であり、SOURCE側はmaintenance configで0本を維持する。
 
@@ -447,7 +447,7 @@ SOURCEのrollback用Workerは `MIGRATION_MAINTENANCE=true`、Cron 0本のまま�
 
 ### Phase 6確認結果
 
-- main / origin/main: `8bcd5fcae1d93da20f30e401db9adb3925403fe8`
+- main / origin/main: `667beccf19a5d692c9aebbe099765f123c4d05be`
 - TARGET heartbeat: `completed`、`last_failed_at=null`
 - Pages root、Pages public API、TARGET Auth `/health`、TARGET NPB schedule: HTTP 200
 - TARGET主要データとjob履歴はcutover後のread-only spot-checkで確認済み
@@ -455,3 +455,47 @@ SOURCEのrollback用Workerは `MIGRATION_MAINTENANCE=true`、Cron 0本のまま�
 - SOURCE resource、TARGET staging resource、Phase 7 CPU experimentは保持
 
 このbaseline lock自体ではWorker、Pages、Cron、D1、secret、job/stateを変更しない。今後の機能変更はこのbaselineからfeature branchで行い、profile/config guard、dry-run、CIを通過させてから本番反映する。
+
+## Migration closeout（COMPLETED、2026-10-01）
+
+### Final status
+
+- **STATUS:** `COMPLETED`
+- **Production validation:** `NORMAL`
+- **Baseline:** `667beccf19a5d692c9aebbe099765f123c4d05be`
+- **Architecture:** PagesはSOURCE、Auth Worker・NPB Worker・Cron・production D1はTARGET
+- **Cleanup:** SOURCE Worker/D1/secretsとTARGET staging resourceは保持。ユーザーの明示承認なしに削除しない
+
+Account migrationの目的は達成済みであり、このmigrationを未完了作業として再実行しない。Phase 1〜5の準備・cutover手順はHISTORICAL、Phase 6のbaseline lockと本節が現行の運用基準である。
+
+### 現行production運用ルール
+
+| 対象 | account / profile | 正式なdeploy対象 |
+| --- | --- | --- |
+| Auth Worker | TARGET / `starting9-target` | `wrangler.auth.target.production.jsonc` |
+| NPB Worker | TARGET / `starting9-target` | `wrangler.npb.target.jsonc` |
+| Pages | SOURCE / `starting9-source` | Pages project `starting9` |
+
+通常運用で次を行わない。
+
+- SOURCE Auth production configへのdeploy
+- SOURCE Cronの再有効化
+- SOURCE D1のproduction利用
+- TARGET staging DBへの差し替え
+- profileを省略したdeploy
+
+### Rollback境界
+
+SOURCEはrollback/reference専用であり、TARGETでproduction writeが継続しているため、単純にSOURCEへ戻してはならない。障害時はまずTARGETをmaintenance modeへ移し、TARGET Cronを0本にしたうえで、データのdivergenceを確認する。SOURCEへの切り戻しは別途承認された手順でのみ行う。
+
+### CPU caveat
+
+account-level isolationは履修Hubとのresource消費分離を達成したが、Cloudflare Free Workersのper-invocation CPU制限そのものを解決するものではない。今後のCPU最適化はaccount migrationとは別issueとして扱う。
+
+### Phase 7 freeze
+
+`56054728518729061ec3734e1e07edcbd751921a`はmigrationに含めず、未merge・未deployのCPU experimentとして保持する。
+
+### Closeout safety
+
+このcloseoutではWorker/Pages deploy、Cron変更、D1操作、SQL、secret変更、resource作成・削除、job/state変更、repair、再採点、再公開、Push操作を実施しない。

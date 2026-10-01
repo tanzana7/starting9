@@ -24,6 +24,25 @@ function tableCount(database, table) {
   return Number(database.prepare(`SELECT COUNT(*) AS count FROM "${table}"`).get().count);
 }
 
+function quoteIdentifier(identifier) {
+  return `"${identifier.replaceAll('"', '""')}"`;
+}
+
+function copyFixtureRows(source, target, tableNamesToCopy) {
+  for (const table of tableNamesToCopy) {
+    const columns = source.prepare(`PRAGMA table_info(${quoteIdentifier(table)})`).all().map(({ name }) => name);
+    const quotedTable = quoteIdentifier(table);
+    const quotedColumns = columns.map(quoteIdentifier).join(", ");
+    const placeholders = columns.map(() => "?").join(", ");
+    const insert = target.prepare(
+      `INSERT INTO ${quotedTable} (${quotedColumns}) VALUES (${placeholders})`
+    );
+    for (const row of source.prepare(`SELECT ${quotedColumns} FROM ${quotedTable}`).all()) {
+      insert.run(...columns.map((column) => row[column]));
+    }
+  }
+}
+
 function seedSourceDatabases() {
   const auth = new DatabaseSync(":memory:");
   const audit = new DatabaseSync(":memory:");
@@ -54,14 +73,24 @@ test("full export into a new empty target preserves operational data, then clean
   applyMigrations(targetSchema.auth, "migrations");
   applyMigrations(targetSchema.audit, "migrations-audit");
 
-  // DatabaseSync serialization is a local stand-in for a full D1 export/import.
-  // The real Cloudflare export/import remains intentionally unexecuted here.
+  // Copy the seeded fixture rows through portable DatabaseSync APIs. This is a
+  // local stand-in for a full D1 export/import; the real Cloudflare
+  // export/import remains intentionally unexecuted here. DatabaseSync's
+  // serialize/deserialize methods are not available in the Node 22 runner
+  // used by CI, so the simulation must not depend on them.
   const imported = {
     auth: new DatabaseSync(":memory:"),
     audit: new DatabaseSync(":memory:")
   };
-  imported.auth.deserialize(source.auth.serialize());
-  imported.audit.deserialize(source.audit.serialize());
+  applyMigrations(imported.auth, "migrations");
+  applyMigrations(imported.audit, "migrations-audit");
+  copyFixtureRows(source.auth, imported.auth, [
+    "users",
+    "sessions",
+    "admin_push_subscriptions",
+    "admin_alert_incidents"
+  ]);
+  copyFixtureRows(source.audit, imported.audit, ["game_automation_v3_audit"]);
 
   assert.deepEqual(tableNames(imported.auth), tableNames(targetSchema.auth));
   assert.deepEqual(tableNames(imported.audit), tableNames(targetSchema.audit));

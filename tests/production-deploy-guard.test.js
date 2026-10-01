@@ -50,7 +50,7 @@ test("production Worker deploy injects the Git commit as BUILD_COMMIT", () => {
     "--var",
     `BUILD_COMMIT:${HEAD}`,
     "--message",
-    "production auth 667beccf19a5"
+    "production-auth-667beccf19a5"
   ]);
   assert.deepEqual(buildWranglerArgs(root, "npb", HEAD).slice(0, 8), [
     "wrangler",

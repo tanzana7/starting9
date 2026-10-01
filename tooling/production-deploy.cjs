@@ -129,7 +129,7 @@ function buildWranglerArgs(cwd, actionName, head) {
     "--var",
     `BUILD_COMMIT:${head}`,
     "--message",
-    `production ${actionName} ${head.slice(0, 12)}`
+    `production-${actionName}-${head.slice(0, 12)}`
   ];
 }
 

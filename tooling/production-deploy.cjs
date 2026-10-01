@@ -136,10 +136,14 @@ function buildWranglerArgs(cwd, actionName, head) {
 function deploy(cwd, actionName) {
   const head = validateProductionState(cwd, actionName);
   const args = buildWranglerArgs(cwd, actionName, head);
-  const command = process.platform === "win32" ? "npx.cmd" : "npx";
+  // Windows exposes npx as a .cmd shim that Node cannot spawn directly with
+  // inherited stdio (it returns EINVAL).  Shell execution is safe here because
+  // every argument is generated from fixed config values or a validated commit
+  // hash, and keeps the production guard usable on both platforms.
+  const command = "npx";
   console.log(`[production-deploy-guard] ${actionName} approved for ${head}`);
   console.log(`[production-deploy-guard] executing: npx ${args.slice(1).join(" ")}`);
-  const result = spawnSync(command, args, { cwd, stdio: "inherit" });
+  const result = spawnSync(command, args, { cwd, stdio: "inherit", shell: process.platform === "win32" });
   if (result.error) fail(`Wrangler execution failed: ${result.error.message}`);
   if (result.status !== 0) process.exit(result.status || 1);
 }

@@ -40,8 +40,8 @@ npm run deploy:prod:pages
 The scripts use these fixed commands internally:
 
 ```powershell
-npx wrangler deploy --config wrangler.npb.target.jsonc --profile starting9-target --strict --var BUILD_COMMIT:<git-commit>
-npx wrangler deploy --config wrangler.auth.target.production.jsonc --profile starting9-target --strict --var BUILD_COMMIT:<git-commit>
+npx wrangler deploy --config wrangler.npb.target.jsonc --profile starting9-target --strict --var BUILD_COMMIT:<git-commit> --message production-npb-<git-commit>
+npx wrangler deploy --config wrangler.auth.target.production.jsonc --profile starting9-target --strict --var BUILD_COMMIT:<git-commit> --message production-auth-<git-commit>
 npx wrangler pages deploy . --project-name starting9 --branch main --profile starting9-source
 ```
 

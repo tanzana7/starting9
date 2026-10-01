@@ -39,14 +39,14 @@
   "d1_databases": [
     {
       "binding": "AUTH_DB",
-      "database_name": "starting9-auth",
-      "database_id": "c5137bcc-0fcc-4822-95b8-996dffaf0818",
+      "database_name": "starting9-auth-prod",
+      "database_id": "326f97c3-768d-4df6-ada2-129fdb1865a1",
       "migrations_dir": "migrations"
     },
     {
       "binding": "AUDIT_DB",
-      "database_name": "starting9-audit",
-      "database_id": "9d97a0fb-9767-4ef2-9ba2-dcf0bd92774f",
+      "database_name": "starting9-audit-prod",
+      "database_id": "acfac47d-1963-433a-b16b-36cd3afe9db4",
       "migrations_dir": "migrations-audit"
     }
   ]

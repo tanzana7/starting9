@@ -221,6 +221,8 @@ https://<worker-url>/?url=https://npb.jp/scores/2026/0707/m-f-12/&debug=1
 - NPB Worker: `npx wrangler deploy --config wrangler.npb.target.jsonc --profile starting9-target`
 - Pages: `npx wrangler pages deploy . --project-name starting9 --profile starting9-source`
 
+通常は上記コマンドを直接実行せず、`npm run deploy:prod:npb` → `npm run deploy:prod:auth` → `npm run deploy:prod:pages`を使用してください。guardがcleanな`main`、`HEAD == origin/main`、TARGET config/profile、Worker/D1/service binding、5 Cronを固定し、Workerへ`BUILD_COMMIT`を注入します。Auth `/health`の`build`でdeploy元commitを確認できます。Pages proxyはTARGET originが明示された場合だけ動作し、未設定・SOURCE・不正値は503でfail closedします。
+
 旧SOURCE production configはrollback/reference用で、通常のbackend本番deployには使いません。SOURCE maintenance configは`MIGRATION_MAINTENANCE=true`・Cron 0本の保守用です。詳しいresource ID、rollback境界、staging保持方針は [`docs/STARTING9_ACCOUNT_MIGRATION_PREP.md`](docs/STARTING9_ACCOUNT_MIGRATION_PREP.md) のProduction baseline lockを参照してください。
 
 管理者向けの検証操作はadmin-v3の認証境界内に限定しています。preview APIは本番データを書き換えず、テスト予想は `is_test_prediction` により通常のランキング・実績集計から除外されます。

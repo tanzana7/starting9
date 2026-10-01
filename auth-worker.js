@@ -427,6 +427,11 @@ const PERFECT_ACHIEVER_MUTATION_RETIRED_MESSAGE = "満点者はサーバー側�
 const MIGRATION_MAINTENANCE_CODE = "MIGRATION_MAINTENANCE";
 const MIGRATION_MAINTENANCE_MESSAGE = "現在メンテナンス中です。しばらくお待ちください。";
 
+function getBuildIdentifier(env) {
+  const configured = String(env?.BUILD_COMMIT || "").trim();
+  return /^[0-9a-f]{7,64}$/i.test(configured) ? configured : "unknown";
+}
+
 function isMigrationMaintenanceEnabled(env) {
   return String(env?.MIGRATION_MAINTENANCE || "").trim().toLowerCase() === "true";
 }
@@ -747,6 +752,7 @@ export default {
         ok: true,
         service: "starting9-auth",
         database: "not_checked",
+        build: getBuildIdentifier(env),
         generatedAt: new Date().toISOString()
       }, 200, cors);
     }

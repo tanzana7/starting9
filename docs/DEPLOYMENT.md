@@ -3,7 +3,8 @@
 ## Configuration
 
 - `wrangler.auth.example.jsonc` is the safe configuration template.
-- `wrangler.auth.production.jsonc` is the production Worker configuration and must be handled as deployment configuration, not as an application secret store.
+- `wrangler.auth.target.production.jsonc` and `wrangler.npb.target.jsonc` are the only normal production Worker configurations. The required Wrangler profile is `starting9-target`.
+- `wrangler.auth.production.jsonc` is a legacy SOURCE rollback/reference configuration. It must not be used for normal production deployment.
 - Secrets and local credentials belong in Wrangler secrets or local ignored files such as `.dev.vars`; never commit them or place them in logs.
 - `AUTH_DB` is the D1 binding used by `auth-worker.js`.
 - `NPB_FETCH_WORKER` is the service binding to the NPB retrieval Worker.
@@ -17,30 +18,46 @@ node --test
 node --check script.js
 node --check auth-worker.js
 git diff --check
-npx wrangler deploy --dry-run --config wrangler.auth.production.jsonc
+npm run check
 ```
 
 Repository CI (`.github/workflows/ci.yml`) is intentionally limited to dependency installation, Node tests, syntax checks, `git diff --check`, and conflict-marker checks. It has no Cloudflare credentials and never deploys, writes D1, applies migrations, executes `scripts/`, or sends Discord notifications.
 
 Check for conflict markers and confirm that only intended files are changed. Do not execute scripts under `scripts/` as part of a normal release check.
 
-## Worker Deployment
+## Production preflight and deployment
 
-Use the explicit production configuration:
+Production deployment is guarded by `tooling/production-deploy.cjs`. It refuses to run unless the current checkout is `main`, clean, and exactly equal to `origin/main`. It also validates the TARGET account, Worker name, D1 bindings, service binding, and the approved five Cron expressions.
+
+Run only the fixed package scripts:
 
 ```powershell
-npx wrangler deploy --config wrangler.auth.production.jsonc
+npm run deploy:prod:npb
+npm run deploy:prod:auth
+npm run deploy:prod:pages
 ```
 
-A bare `npx wrangler deploy` is not an acceptable production command because it may select the wrong configuration.
+The scripts use these fixed commands internally:
+
+```powershell
+npx wrangler deploy --config wrangler.npb.target.jsonc --profile starting9-target --strict --var BUILD_COMMIT:<git-commit>
+npx wrangler deploy --config wrangler.auth.target.production.jsonc --profile starting9-target --strict --var BUILD_COMMIT:<git-commit>
+npx wrangler pages deploy . --project-name starting9 --branch main --profile starting9-source
+```
+
+Do not use a bare `npx wrangler deploy`, allow a user-supplied config path, or deploy from a feature branch/worktree.
+
+The Auth Worker's `/health` response exposes only the non-secret `BUILD_COMMIT` value injected by the guard. It never exposes account IDs, D1 IDs, secrets, or branch names.
 
 ## Pages Deployment
 
 When public or admin static assets change, deploy the main branch explicitly:
 
 ```powershell
-npx wrangler pages deploy . --project-name=starting9 --branch=main
+npm run deploy:prod:pages
 ```
+
+The Pages Function requires `STARTING9_AUTH_ORIGIN` to be exactly `https://starting9-auth.starting9.workers.dev`. Missing, SOURCE, or invalid values fail closed with HTTP 503; SOURCE is retained only for an explicitly approved rollback procedure.
 
 Verify both the deployment URL and the production alias. Confirm the expected `script.js` and `style.css` cache busters in the production HTML.
 

@@ -227,10 +227,18 @@ test("auth/admin系はpublic cacheへ保存せず、認証系のcache keyを作�
 });
 
 test("health endpointはD1なしで応答し、databaseを未確認として明示する", async () => {
-  const response = await invoke("/health", {});
+  const response = await invoke("/health", { BUILD_COMMIT: "667beccf19a5d692c9aebbe099765f123c4d05be" });
   const body = await response.json();
   assert.equal(response.status, 200);
   assert.equal(body.ok, true);
   assert.equal(body.database, "not_checked");
+  assert.equal(body.build, "667beccf19a5d692c9aebbe099765f123c4d05be");
   assert.equal(response.headers.get("Cache-Control"), "no-store");
+});
+
+test("health endpointは不正なbuild identifierを公開せずunknownへフォールバックする", async () => {
+  const response = await invoke("/health", { BUILD_COMMIT: "not-a-commit-or-secret" });
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.build, "unknown");
 });

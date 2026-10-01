@@ -211,7 +211,17 @@ https://<worker-url>/?url=https://npb.jp/scores/2026/0707/m-f-12/&debug=1
 
 初期migration群は `users`、`sessions`、ラインナップ、実績、日程、公示、監査などの履歴を定義しています。現行のV3 runtimeが必要とするschemaは、追加migrationを適用する前に必ず全chainとWorkerの参照を確認してください。新migrationは作成後にレビューし、対象D1へ適用してからWorkerを更新します。
 
-試合前自動処理は `game-automation-v3.js` と `auth-worker.js` のV3 planner / executorで時刻と状態を一元管理します。Cronは日本時間の予定slotに従って公示ベースのロースター、予告先発、NPB識別、スタメン、採点、ランキング、公開を独立したjobとして進めます。ブラウザは保存済みAPIデータを表示するだけで、自動化jobを実行しません。Auth Workerは `wrangler.auth.production.jsonc` の `NPB_FETCH_WORKER` Service Bindingを通じて `starting9-npb-fetch` を呼び出します。公開URLを設定する必要はありません。
+試合前自動処理は `game-automation-v3.js` と `auth-worker.js` のV3 planner / executorで時刻と状態を一元管理します。Cronは日本時間の予定slotに従って公示ベースのロースター、予告先発、NPB識別、スタメン、採点、ランキング、公開を独立したjobとして進めます。ブラウザは保存済みAPIデータを表示するだけで、自動化jobを実行しません。正式production Auth Workerは `wrangler.auth.target.production.jsonc` の `NPB_FETCH_WORKER` Service Bindingを通じて `starting9-npb-fetch` を呼び出します。公開URLを設定する必要はありません。
+
+### 本番account分離とdeploy profile
+
+本番はPagesとbackendでCloudflare accountが分かれています。Pages project `starting9`はSOURCE account（`c81eb6d12b9be16f800f0bd1fc8a1c8a`）に残り、Auth Worker、NPB Worker、Cron、Auth/Audit D1はTARGET account（`02580fab1c09e144db7da89478e252c8`）が正式ownerです。単一profileや省略profileで全体をdeployしないでください。
+
+- Auth Worker: `npx wrangler deploy --config wrangler.auth.target.production.jsonc --profile starting9-target`
+- NPB Worker: `npx wrangler deploy --config wrangler.npb.target.jsonc --profile starting9-target`
+- Pages: `npx wrangler pages deploy . --project-name starting9 --profile starting9-source`
+
+旧SOURCE production configはrollback/reference用で、通常のbackend本番deployには使いません。SOURCE maintenance configは`MIGRATION_MAINTENANCE=true`・Cron 0本の保守用です。詳しいresource ID、rollback境界、staging保持方針は [`docs/STARTING9_ACCOUNT_MIGRATION_PREP.md`](docs/STARTING9_ACCOUNT_MIGRATION_PREP.md) のProduction baseline lockを参照してください。
 
 管理者向けの検証操作はadmin-v3の認証境界内に限定しています。preview APIは本番データを書き換えず、テスト予想は `is_test_prediction` により通常のランキング・実績集計から除外されます。
 

@@ -26,7 +26,8 @@
     "ENABLE_LINEUP_SHADOW": "true",
     "ENABLE_SEMI_AUTO_LINEUP": "true",
     "PUBLIC_RANKING_RELEASED_AT": "2026-09-21T00:00:00+09:00",
-    "NPB_FETCH_DISABLED": "false"
+    "NPB_FETCH_DISABLED": "false",
+    "MIGRATION_MAINTENANCE": "false"
   },
   "services": [
     {

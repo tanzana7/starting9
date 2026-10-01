@@ -21,11 +21,11 @@ Phase 2.5では、SOURCEを変更せず、TARGETの空DB・Worker・secretをsta
 | 項目 | 値 |
 | --- | --- |
 | 正規remote | `https://github.com/tanzana7/starting9.git` |
-| 移行準備の基準main | `1c3131048e2ac72dc2ea0328175ba7bf9c08794b` |
+| 移行準備の現行基準main | `812846324533aac265c0c13910e0f13d8bdd8458` |
 | Phase 7 feature | `56054728518729061ec3734e1e07edcbd751921a`（mainへmergeしない。削除しない） |
 | 現行Auth Worker | `starting9-auth` |
 | 現行Auth Worker version | `8317b0c`（ユーザー提示値。今回の再取得・deployは未実施） |
-| 今回の作業branch | `codex/starting9-account-isolation-phase2-5` |
+| Phase 3.5作業branch | `codex/starting9-account-isolation-phase3-5` |
 
 CPU hardeningは今回の移行準備の対象外とする。既存mainを移行基準にし、Phase 7の未merge変更や`probableStarterOnly`変更を混ぜない。
 
@@ -72,6 +72,7 @@ Cronを移行時に増やしたり、別の毎分Cronを追加したりしない
 - `ENABLE_LINEUP_SHADOW=true`
 - `ENABLE_SEMI_AUTO_LINEUP=true`
 - `NPB_FETCH_DISABLED=false`
+- `MIGRATION_MAINTENANCE=false`（通常運用。切替時だけSOURCE保守設定で`true`）
 - `PUBLIC_RANKING_RELEASED_AT`は現行運用値を別途確認して設定
 
 ### secretとセッションの扱い
@@ -282,3 +283,117 @@ TARGET WorkersのCronは設定ファイル上0本とし、Wranglerのtrigger mut
 - [Cloudflare D1 Wrangler commands](https://developers.cloudflare.com/d1/wrangler-commands/)
 - [Cloudflare D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/)
 - [Cloudflare Workers service bindings](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/)
+
+## Phase 3.5 移行直前準備（2026-10-01）
+
+Phase 3.5では、SOURCEの本番データやCron所有権を変更せず、切替時間帯に実行する保守・移行・ロールバック手順をコードと文書へ固定した。今回のfeature branchではdry-run、実データexport/import、SOURCE/TARGETの本番deploy、Pages deploy、Cron切替を実施しない。
+
+### Gitとresourceの基準
+
+| 項目 | 値 |
+| --- | --- |
+| Phase 3.5基準main | `812846324533aac265c0c13910e0f13d8bdd8458` |
+| Phase 3.5 branch | `codex/starting9-account-isolation-phase3-5` |
+| Phase 7 CPU experiment | `56054728518729061ec3734e1e07edcbd751921a`（未merge・未deployのまま） |
+| SOURCE account | `c81eb6d12b9be16f800f0bd1fc8a1c8a` / profile `starting9-source` |
+| TARGET account | `02580fab1c09e144db7da89478e252c8` / profile `starting9-target` |
+
+Wrangler操作は必ずprofileを明示する。SOURCEの操作はread-only確認または、承認されたPhase 4の保守deployに限定し、TARGETのresource作成・schema適用・staging deployと混同しない。
+
+### SOURCE write freeze
+
+`wrangler.auth.source.maintenance.jsonc` をSOURCE専用の保守設定として追加した。SOURCE account、SOURCE D1 ID、SOURCE NPB service bindingを固定し、`triggers.crons`を明示的に空配列にして、保守deploy後にSOURCE Cronを所有者にしない設定である。Worker varsの`MIGRATION_MAINTENANCE=true`が次の処理を止める。
+
+- POST/PUT/PATCH/DELETEの認証、予想、admin、Push subscription等のmutation
+- `/api/auth/me`（GETだが`last_used_at`を更新するため）
+- scheduled handlerのheartbeat、audit、formal/auxiliary job、score、ranking、publish、maintenance
+
+`OPTIONS`、`GET /health`、その他の既存GET読み取りは保守中も利用できる。GET経路に副作用があることを確認したものは今後もwrite freezeの判定対象にする。scheduled handlerはD1 binding確認やheartbeatより前に`MIGRATION_MAINTENANCE`を検出して終了するため、Cronが誤って起動してもD1 writeを行わない。
+
+通常運用設定の`wrangler.auth.production.jsonc`、TARGET stagingの`wrangler.auth.target.jsonc`、TARGET切替設定の`wrangler.auth.target.production.jsonc`には、通常状態を明示する`MIGRATION_MAINTENANCE=false`を設定する。保守設定にfalseを設定して解除することはせず、保守設定のdeployと通常設定のdeployを別操作として扱う。
+
+保守開始の実行例（Phase 4で承認された時間帯のみ。今回は未実行）：
+
+```powershell
+npx wrangler deploy --dry-run --config wrangler.auth.source.maintenance.jsonc --profile starting9-source
+npx wrangler deploy --config wrangler.auth.source.maintenance.jsonc --profile starting9-source
+```
+
+実行後はSOURCE `/health`、代表的mutationの503、scheduled no-opを確認する。いずれかが確認できない場合はデータexportへ進まない。
+
+### D1移行戦略の決定
+
+正式採用する方式は「SOURCEをfull exportし、export成功後に作成した新しい空のTARGET D1へfull importする」である。既存TARGET staging DBへdata-only importする方式は、seed行、unique制約、migration metadata、既存staging行との衝突を避けにくいため採用しない。現TARGET D1はstaging確認用として保持し、Phase 4では別名・別IDのcutover用TARGET D1を、SOURCE exportの検証後に作成する。
+
+Full exportではschemaとdataを一体で扱う。cutover用TARGETへimportした後、`sqlite_master`、migration metadata、外部キー、主要tableの件数/checksumを照合し、schemaを二重適用しない。migration directoryはschemaの基準・検査用として残すが、full exportのimport前に無条件でremote migrationsを再適用しない。
+
+データの扱いは次のとおりとする。
+
+| 区分 | 扱い |
+| --- | --- |
+| COPY | `users`、`sessions`、`predictions`、`games`、identifiers、lineup/revision/artifact、workflow/job/state、scoring、ranking、audit/history |
+| COPY（履歴保持） | `admin_alert_incidents`とD1 audit data。通知履歴をPush key更新の都合で削除しない |
+| ROTATE/CLEANUP | `admin_push_subscriptions`。VAPIDがTARGETでローテーション済みのため、import直後にTARGET側だけをcleanupし、管理者がTARGETで再購読する |
+| REBUILD禁止 | job、state、score、ranking、publishをimport後に手動再生成・再実行しない |
+
+`sessions`はopaque token hashを保存しているため、full import後も有効期限内のsession継続を検証対象とする。セッション署名secretを別途読み出して移行する設計ではない。継続性検証に失敗した場合でも、手動でsessionを改変せず、切替を中止して再ログイン方針を判断する。VAPIDの変更はPush subscriptionにだけ影響し、SOURCE側のPushはcutover前に変更しない。
+
+実行例（Phase 4で保管先、承認、実値を再確認してから。すべて今回未実行）：
+
+```powershell
+# profileとSOURCE configを明示。--no-schemaは付けずfull exportを選ぶ。
+npx wrangler d1 export starting9-auth --remote --config wrangler.auth.source.maintenance.jsonc --profile starting9-source --output <PROTECTED_SOURCE_AUTH_DUMP>
+npx wrangler d1 export starting9-audit --remote --config wrangler.auth.source.maintenance.jsonc --profile starting9-source --output <PROTECTED_SOURCE_AUDIT_DUMP>
+
+# exportの存在、サイズ、checksumを機密内容を表示せず検証した後、
+# 新規TARGET D1を作成し、実値を一時cutover configへ反映する。
+npx wrangler d1 create <CUTOVER_TARGET_AUTH_DB_NAME> --profile starting9-target
+npx wrangler d1 create <CUTOVER_TARGET_AUDIT_DB_NAME> --profile starting9-target
+npx wrangler d1 execute <CUTOVER_TARGET_AUTH_DB_NAME> --remote --profile starting9-target --file <PROTECTED_SOURCE_AUTH_DUMP>
+npx wrangler d1 execute <CUTOVER_TARGET_AUDIT_DB_NAME> --remote --profile starting9-target --file <PROTECTED_SOURCE_AUDIT_DUMP>
+```
+
+`<...>`を未確認のまま実行しない。exportファイルはリポジトリ外の暗号化保管先に置き、照合・cutover後に定めた期限で削除する。SOURCE D1への`SELECT`、手動SQL、dual-write、job/state修正はPhase 4でも行わない。
+
+### Pages proxyの切替準備
+
+`functions/api/[[path]].js`は`STARTING9_AUTH_ORIGIN`を読み、許可済みの2 originだけを選ぶ。
+
+- 未設定・不正値：SOURCE `https://starting9-auth.tanzana7.workers.dev`
+- cutover時のPages env：TARGET `https://starting9-auth.starting9.workers.dev`
+- rollback時：Pages envをSOURCEへ戻す
+
+同一originの`/api/*` proxy、cookieのDomain除去、request header制限、upstream responseのstatus/header伝播は維持する。TARGET以外の任意URLは受け付けないため、環境変数の誤設定で外部originへproxyしない。Pagesのenv変更とdeployはPhase 4のCron所有権切替後に一度だけ行い、今回はPagesへ触れない。
+
+### Local migration simulation
+
+`tests/account-isolation-migration-strategy.test.js`は、現行`migrations/`と`migrations-audit/`をNode `DatabaseSync`で空DBへ適用し、代表的なusers/session、workflowに関係するPush登録、alert履歴、audit行をfixtureとしてfull database imageへ復元する。復元後にtable構成、session、alert history、auditの保持と、`admin_push_subscriptions`だけのcleanup、外部キー整合性を確認する。
+
+これはCloudflare D1の実export/importや本番データのコピーではない。実データの件数・checksumはPhase 4のread-only validationで初めて取得し、不一致ならcutoverを中止する。
+
+### Phase 4 atomic cutover runbook（準備済みテンプレート）
+
+1. source/target account、profile、config、worker version、D1 ID、secret名、Pages envを二者確認する。試合処理中・未完了job・二重Cron ownerがあれば停止する。
+2. `starting9-auth`へSOURCE maintenance configを`starting9-source`でdry-runし、承認後にdeployする。health 200、mutation 503、scheduled no-opを確認する。
+3. SOURCE Auth/Audit D1をfull exportし、暗号化保管・サイズ・checksum・機密情報の取り扱いを確認する。失敗時はTARGET作成へ進まない。
+4. export成功後に新しいcutover用TARGET Auth/Audit D1を`starting9-target`で作成し、一時TARGET production configへ新IDを設定する。既存staging DBは上書きしない。
+5. full importとread-only検証を行い、主要table、sessions、workflow/job/state、scoring/ranking/publication lineage、audit件数/checksumを確認する。
+6. TARGETの`admin_push_subscriptions`だけを、対象DB・profile・cutover IDを固定した承認済みcleanupで削除する。`admin_alert_incidents`は保持する。cleanup後の外部キーと件数を再確認する。
+7. SOURCE Cronが停止済みであることをCloudflare control-planeで確認してから、NPB → Authの順にTARGET production configをdeployする。TARGETは5 Cron ownerになるまで公開trafficへ接続しない。
+8. TARGET health/read-only API、service binding、VAPID secret名、Cron heartbeatを確認する。ここでD1 writeが必要になるsmokeは実施しない。
+9. Pages envをTARGET originへ変更してPagesを一度deployし、public/admin入口、匿名`/api/auth/me`、cookie、CORS、read-only結果を確認する。
+10. maintenance解除後に通常の次回運用でlogin、prediction、admin、Push再購読、formal pipelineを観測する。既存jobの手動run/rescore/republishはしない。
+
+各段階で不一致があれば直前のownerを維持し、次段階へ進まない。SOURCE maintenance deploy後に切替を中止する場合は、原因を記録したうえでSOURCE通常設定を再deployしてCron ownerをSOURCEへ戻し、TARGET CronとPagesは有効化しない。
+
+### Rollback判断
+
+- PagesだけをTARGETへ向ける前：SOURCE maintenanceのまま止め、TARGETを公開しない。
+- TARGET Worker検証後、Pages切替前：TARGET Cronを有効化せず、SOURCE通常設定を再deployしてSOURCEをownerに戻す。
+- Pages切替後にread-only smoke失敗：Pages envをSOURCEへ戻してdeployし、TARGET Cronを停止したままSOURCE ownerを確認する。
+- D1検証不一致：targetを手動修正・job再生成せず、cutoverを中止する。SOURCE D1は変更しない。
+- 切替後のjob不整合：dual-writeや手動コピーをせず、Cron ownerを一つに固定し、既存の監査情報だけで復旧判断する。
+
+### Phase 3.5完了判定
+
+本PhaseのGO条件は「コード・config・runbook・local simulation・dry-runが揃い、Phase 4を安全に開始できる」ことであり、本番cutover完了ではない。実D1 export/import、SOURCE maintenance deploy、TARGET cutover config deploy、Pages deploy、Cron切替、production data validationは未実施として記録する。

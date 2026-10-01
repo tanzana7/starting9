@@ -18,6 +18,7 @@ test("account isolation staging config has no Cron and target-only resources", (
 
   assert.equal(staging.account_id, TARGET_ACCOUNT);
   assert.equal(Object.hasOwn(staging, "triggers"), false);
+  assert.equal(staging.vars.MIGRATION_MAINTENANCE, "false");
   assert.deepEqual(staging.services, [{ binding: "NPB_FETCH_WORKER", service: "starting9-npb-fetch" }]);
   assert.deepEqual(
     staging.d1_databases.map(({ binding, database_id }) => ({ binding, database_id })),
@@ -33,7 +34,9 @@ test("account isolation cutover config carries the exact source Cron set without
   const source = readConfig("wrangler.auth.production.jsonc");
   const cutover = readConfig("wrangler.auth.target.production.jsonc");
 
+  assert.equal(source.vars.MIGRATION_MAINTENANCE, "false");
   assert.equal(cutover.account_id, TARGET_ACCOUNT);
+  assert.equal(cutover.vars.MIGRATION_MAINTENANCE, "false");
   assert.deepEqual(cutover.triggers, source.triggers);
   assert.deepEqual(cutover.services, [{ binding: "NPB_FETCH_WORKER", service: "starting9-npb-fetch" }]);
   assert.deepEqual(
@@ -44,4 +47,19 @@ test("account isolation cutover config carries the exact source Cron set without
     ]
   );
   assert.doesNotMatch(JSON.stringify(cutover), new RegExp(`${SOURCE_AUTH_DB}|${SOURCE_AUDIT_DB}`));
+});
+
+test("source maintenance config clears Cron and freezes writes", () => {
+  const source = readConfig("wrangler.auth.production.jsonc");
+  const maintenance = readConfig("wrangler.auth.source.maintenance.jsonc");
+
+  assert.equal(maintenance.account_id, "c81eb6d12b9be16f800f0bd1fc8a1c8a");
+  assert.deepEqual(maintenance.triggers, { crons: [] });
+  assert.equal(maintenance.vars.MIGRATION_MAINTENANCE, "true");
+  assert.deepEqual(maintenance.services, source.services);
+  assert.deepEqual(
+    maintenance.d1_databases.map(({ binding, database_id }) => ({ binding, database_id })),
+    source.d1_databases.map(({ binding, database_id }) => ({ binding, database_id }))
+  );
+  assert.doesNotMatch(JSON.stringify(maintenance), /02580fab1c09e144db7da89478e252c8|c5137bcc-0fcc-4822-95b8-996dffaf0818|9d97a0fb-9767-4ef2-9ba2-dcf0bd92774f/);
 });

@@ -22,7 +22,8 @@ test("本番の公開認証APIはPages同一オリジンへ解決する", () => 
 });
 
 test("Pages API Functionは固定Auth WorkerへCookie付きで中継する", () => {
-  assert.match(functionSource, /const AUTH_WORKER_ORIGIN = "https:\/\/starting9-auth\.tanzana7\.workers\.dev"/);
+  assert.match(functionSource, /const TARGET_AUTH_WORKER_ORIGIN = "https:\/\/starting9-auth\.starting9\.workers\.dev"/);
+  assert.doesNotMatch(functionSource, /SOURCE_AUTH_WORKER_ORIGIN/);
   assert.match(functionSource, /request\.headers/);
   assert.match(functionSource, /"origin"/i);
   assert.match(functionSource, /headers\.append\("Set-Cookie"/);
@@ -54,12 +55,13 @@ test("Pages API FunctionはログインCookieをPages向けに保持し、Domain
           "Content-Type": "application/json"
         },
         body: JSON.stringify({ username: "tester", password: "password" })
-      })
+      }),
+      env: { STARTING9_AUTH_ORIGIN: "https://starting9-auth.starting9.workers.dev" }
     });
 
     assert.equal(response.status, 200);
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, "https://starting9-auth.tanzana7.workers.dev/api/auth/login?next=home");
+    assert.equal(calls[0].url, "https://starting9-auth.starting9.workers.dev/api/auth/login?next=home");
     assert.equal(calls[0].headers.get("Cookie"), "s9_session=old-token");
     assert.equal(calls[0].headers.get("Origin"), null);
     const cookie = response.headers.get("Set-Cookie");
@@ -83,7 +85,10 @@ test("Pages API FunctionはAPI以外を中継せず、上流障害を503へ分�
     const notFound = await onRequest({ request: new Request("https://starting9.pages.dev/other") });
     assert.equal(notFound.status, 404);
 
-    const unavailable = await onRequest({ request: new Request("https://starting9.pages.dev/api/auth/me") });
+    const unavailable = await onRequest({
+      request: new Request("https://starting9.pages.dev/api/auth/me"),
+      env: { STARTING9_AUTH_ORIGIN: "https://starting9-auth.starting9.workers.dev" }
+    });
     assert.equal(unavailable.status, 503);
     assert.deepEqual(await unavailable.json(), {
       ok: false,
@@ -93,6 +98,20 @@ test("Pages API FunctionはAPI以外を中継せず、上流障害を503へ分�
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("Pages API FunctionはSOURCE fallbackを持たない", async () => {
+  const { onRequest } = await import(pathToFileURL(path.join(root, "functions", "api", "[[path]].js")).href);
+  const response = await onRequest({
+    request: new Request("https://starting9.pages.dev/api/auth/me"),
+    env: { STARTING9_AUTH_ORIGIN: "https://starting9-auth.tanzana7.workers.dev" }
+  });
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), {
+    ok: false,
+    code: "AUTH_PROXY_NOT_CONFIGURED",
+    error: "認証サービスの接続先が設定されていません。"
+  });
 });
 
 test("Pages APIのルート設定はAPIだけをFunctionへ送る", () => {

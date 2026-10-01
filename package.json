@@ -10,6 +10,9 @@
     "test": "node --test",
     "check:syntax": "node tooling/check-syntax.cjs",
     "check": "npm run test && npm run check:syntax && git diff --check",
-    "test:ci": "npm run check"
+    "test:ci": "npm run check",
+    "deploy:prod:auth": "node tooling/production-deploy.cjs auth",
+    "deploy:prod:npb": "node tooling/production-deploy.cjs npb",
+    "deploy:prod:pages": "node tooling/production-deploy.cjs pages"
   }
 }

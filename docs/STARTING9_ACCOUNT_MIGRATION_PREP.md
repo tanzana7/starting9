@@ -38,7 +38,7 @@ CPU hardeningは今回の移行準備の対象外とする。既存mainを移行
 | 区分 | 現行構成 | 移行時の扱い |
 | --- | --- | --- |
 | Pages | Starting9の静的サイトとPages Functions | 今回のbackend-only scopeでは既存accountに残す |
-| Pages API proxy | `functions/api/[[path]].js`が`https://starting9-auth.tanzana7.workers.dev`へ中継 | 切替時に新Auth originへ一度だけ変更してPages deploy |
+| Pages API proxy | `functions/api/[[path]].js`はTARGET originが明示された場合だけ中継 | 未設定・SOURCE・不正値は503でfail closed。SOURCEはrollback/referenceのみ |
 | Auth Worker | `starting9-auth`、entrypoint `auth-worker.js` | 専用accountへ同名で作成・deploy |
 | NPB Worker | `starting9-npb-fetch`、entrypoint `cloudflare-worker.js` | Authのservice binding先として専用accountへ先に作成 |
 | Auth DB | binding `AUTH_DB`、migration dir `migrations` | 新accountに空DBを作成し、承認済み手順で同じschema/dataを移行 |
@@ -359,13 +359,13 @@ npx wrangler d1 execute <CUTOVER_TARGET_AUDIT_DB_NAME> --remote --profile starti
 
 ### Pages proxyの切替準備
 
-`functions/api/[[path]].js`は`STARTING9_AUTH_ORIGIN`を読み、許可済みの2 originだけを選ぶ。
+`functions/api/[[path]].js`は`STARTING9_AUTH_ORIGIN`を読み、TARGET originだけを受け付ける。
 
-- 未設定・不正値：SOURCE `https://starting9-auth.tanzana7.workers.dev`
-- cutover時のPages env：TARGET `https://starting9-auth.starting9.workers.dev`
-- rollback時：Pages envをSOURCEへ戻す
+- 未設定・不正値・SOURCE：HTTP 503でfail closed
+- 通常production Pages env：TARGET `https://starting9-auth.starting9.workers.dev`
+- rollback時：別途承認したmaintenance/reference手順でのみSOURCEを扱う
 
-同一originの`/api/*` proxy、cookieのDomain除去、request header制限、upstream responseのstatus/header伝播は維持する。TARGET以外の任意URLは受け付けないため、環境変数の誤設定で外部originへproxyしない。Pagesのenv変更とdeployはPhase 4のCron所有権切替後に一度だけ行い、今回はPagesへ触れない。
+同一originの`/api/*` proxy、cookieのDomain除去、request header制限、upstream responseのstatus/header伝播は維持する。TARGET以外の値は受け付けず、環境変数の誤設定でSOURCEや外部originへproxyしない。Pagesの通常deployは`npm run deploy:prod:pages`で、cleanなmainとTARGET upstreamの設定を前提にする。
 
 ### Local migration simulation
 
@@ -442,6 +442,10 @@ npx wrangler pages deploy . --project-name starting9 --profile starting9-source
 ```
 
 上記のPages deployはSOURCE accountで実行するが、backend upstreamをSOURCEへ戻す操作ではない。Pages secret `STARTING9_AUTH_ORIGIN`はTARGET Auth originを指す。`wrangler.auth.production.jsonc`とSOURCE maintenance configはrollback/reference用であり、通常のTARGET本番deployには使用しない。
+
+通常のAuth/NPB deployは`npm run deploy:prod:auth`と`npm run deploy:prod:npb`だけを使用する。guardが`main`、clean worktree、`HEAD == origin/main`、TARGET account、Worker名、D1、service binding、5 Cronを検証し、Worker deployには`BUILD_COMMIT`を自動注入する。Auth `/health`の`build`はこのGit commit identifierを返す。
+
+旧環境で測定されたprobable starter 78ms / schedule 25msはWorker versionに帰属できない参考値であり、Phase 6の確定baselineではない。`5605472`は新環境baseline取得後に評価する未merge・未deployのPhase 7候補として保全する。
 
 SOURCEのrollback用Workerは `MIGRATION_MAINTENANCE=true`、Cron 0本のまま保持する。rollbackが必要な場合も、TARGET Cronを停止し、Pages proxyの向きとWorker ownerを一つずつ確認してから、別承認の手順で実施する。
 

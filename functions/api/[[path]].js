@@ -1,21 +1,11 @@
-// Keep the historical source constant declaration for source-level contract
-// checks; runtime selection goes through the allowlisted resolver below.
-const AUTH_WORKER_ORIGIN = "https://starting9-auth.tanzana7.workers.dev";
-const SOURCE_AUTH_WORKER_ORIGIN = AUTH_WORKER_ORIGIN;
 const TARGET_AUTH_WORKER_ORIGIN = "https://starting9-auth.starting9.workers.dev";
 const AUTH_WORKER_ORIGIN_ENV = "STARTING9_AUTH_ORIGIN";
-const ALLOWED_AUTH_WORKER_ORIGINS = new Set([
-  SOURCE_AUTH_WORKER_ORIGIN,
-  TARGET_AUTH_WORKER_ORIGIN
-]);
 
 export function resolveAuthWorkerOrigin(env = {}) {
   const configured = String(env?.[AUTH_WORKER_ORIGIN_ENV] || "")
     .trim()
     .replace(/\/+$/, "");
-  return ALLOWED_AUTH_WORKER_ORIGINS.has(configured)
-    ? configured
-    : AUTH_WORKER_ORIGIN;
+  return configured === TARGET_AUTH_WORKER_ORIGIN ? configured : null;
 }
 
 const BLOCKED_REQUEST_HEADERS = new Set([
@@ -89,10 +79,16 @@ export async function onRequest(context) {
     return new Response("Not Found", { status: 404 });
   }
 
-  const upstreamUrl = new URL(
-    requestUrl.pathname + requestUrl.search,
-    resolveAuthWorkerOrigin(context.env)
-  );
+  const authWorkerOrigin = resolveAuthWorkerOrigin(context.env);
+  if (!authWorkerOrigin) {
+    return jsonError(
+      "AUTH_PROXY_NOT_CONFIGURED",
+      "認証サービスの接続先が設定されていません。",
+      503
+    );
+  }
+
+  const upstreamUrl = new URL(requestUrl.pathname + requestUrl.search, authWorkerOrigin);
   try {
     const upstream = await fetch(createUpstreamRequest(context.request, upstreamUrl));
     return new Response(upstream.body, {

@@ -4,7 +4,9 @@
 
 Starting9 のバックエンドを履修Hubと別のCloudflare accountへ移せるよう、現行構成、移行時の入力、検証、切替、ロールバック手順を固定する。
 
-Phase 2.5では、SOURCEを変更せず、TARGETの空DB・Worker・secretをstaging用に準備した。データ移行とcutoverは引き続き実施しない。
+> **Production baseline status (2026-10-01):** Account Isolation Phase 4のatomic cutoverとPhase 5の安定性確認が完了した。現在はPagesをSOURCE accountに残し、Auth Worker・NPB Worker・Cron・D1をTARGET accountで運用している。以下の準備・cutover手順のうち、過去のPhaseとして明記された部分は実施済み履歴であり、未実施の将来手順ではない。
+
+Phase 2.5（履歴）では、SOURCEを変更せず、TARGETの空DB・Worker・secretをstaging用に準備した。この時点ではデータ移行とcutoverを実施していなかった。
 
 次の操作は実施しない。
 
@@ -185,7 +187,7 @@ Pagesの切替は今回行わない。作業前のproxy変更は、target origin
 4. source/targetのD1を同時に更新するdual-writeを行わない。
 5. rollback後にhealth、read-only API、Cron ownershipを記録する。
 
-## Phase 2.5 staging実績
+## Phase 2.5 staging実績（履歴）
 
 以下はTARGET専用account内で実施したstaging準備であり、SOURCEの本番経路には接続していない。
 
@@ -284,7 +286,7 @@ TARGET WorkersのCronは設定ファイル上0本とし、Wranglerのtrigger mut
 - [Cloudflare D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/)
 - [Cloudflare Workers service bindings](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/)
 
-## Phase 3.5 移行直前準備（2026-10-01）
+## Phase 3.5 移行直前準備（履歴、2026-10-01）
 
 Phase 3.5では、SOURCEの本番データやCron所有権を変更せず、切替時間帯に実行する保守・移行・ロールバック手順をコードと文書へ固定した。今回のfeature branchではdry-run、実データexport/import、SOURCE/TARGETの本番deploy、Pages deploy、Cron切替を実施しない。
 
@@ -396,4 +398,60 @@ npx wrangler d1 execute <CUTOVER_TARGET_AUDIT_DB_NAME> --remote --profile starti
 
 ### Phase 3.5完了判定
 
-本PhaseのGO条件は「コード・config・runbook・local simulation・dry-runが揃い、Phase 4を安全に開始できる」ことであり、本番cutover完了ではない。実D1 export/import、SOURCE maintenance deploy、TARGET cutover config deploy、Pages deploy、Cron切替、production data validationは未実施として記録する。
+当時のPhase 3.5完了判定は「コード・config・runbook・local simulation・dry-runが揃い、Phase 4を安全に開始できる」ことであり、本番cutover完了ではなかった。実D1 export/import、SOURCE maintenance deploy、TARGET cutover config deploy、Pages deploy、Cron切替、production data validationは、その時点では未実施として記録した。
+
+## Production baseline lock（Phase 6、2026-10-01）
+
+Phase 4のcutoverとPhase 5のpost-cutover確認を完了したため、以下をStarting9の正式production baselineとする。SOURCEおよびTARGET staging resourceは、rollback/referenceまたはstaging用途として保持し、別途明示承認がない限り削除しない。
+
+### 本番構成
+
+| 項目 | 正式値 | 運用上の意味 |
+| --- | --- | --- |
+| Pages | `starting9` / SOURCE account `c81eb6d12b9be16f800f0bd1fc8a1c8a` | `https://starting9.pages.dev`を維持し、Pages proxyからTARGET Authへ接続 |
+| Auth Worker | `starting9-auth` / TARGET account `02580fab1c09e144db7da89478e252c8` / version `5ab59e75-d9f4-4572-afcc-eba39c0b91f6` | 正式backend、5 Cronのowner |
+| NPB Worker | `starting9-npb-fetch` / TARGET account / version `73a0353a-e7fb-4e48-9197-a710151b0a38` | Authの`NPB_FETCH_WORKER` service binding先 |
+| Auth D1 | `starting9-auth-prod` / `326f97c3-768d-4df6-ada2-129fdb1865a1` | TARGET production database |
+| Audit D1 | `starting9-audit-prod` / `acfac47d-1963-433a-b16b-36cd3afe9db4` | TARGET production audit database |
+| Pages deployment | `495e4404-e64c-4ea2-bdc3-3602847cad12` | baseline時点の既知deployment |
+
+正式Cronは次の5本であり、SOURCE側はmaintenance configで0本を維持する。
+
+```text
+* * * * *
+*/5 * * * *
+1,16,31,46 * * * *
+2,7,12,17,22,27,32,37,42,47,52,57 * * * *
+0,15,30,45 * * * *
+```
+
+### Profileとdeploy guard
+
+アカウントをまたぐため、単一profileや省略profileで本番deployしてはならない。
+
+| 対象 | 必須profile | 正式config / project |
+| --- | --- | --- |
+| Auth Worker | `starting9-target` | `wrangler.auth.target.production.jsonc` |
+| NPB Worker | `starting9-target` | `wrangler.npb.target.jsonc` |
+| Pages | `starting9-source` | Pages project `starting9` |
+
+```powershell
+npx wrangler deploy --config wrangler.npb.target.jsonc --profile starting9-target
+npx wrangler deploy --config wrangler.auth.target.production.jsonc --profile starting9-target
+npx wrangler pages deploy . --project-name starting9 --profile starting9-source
+```
+
+上記のPages deployはSOURCE accountで実行するが、backend upstreamをSOURCEへ戻す操作ではない。Pages secret `STARTING9_AUTH_ORIGIN`はTARGET Auth originを指す。`wrangler.auth.production.jsonc`とSOURCE maintenance configはrollback/reference用であり、通常のTARGET本番deployには使用しない。
+
+SOURCEのrollback用Workerは `MIGRATION_MAINTENANCE=true`、Cron 0本のまま保持する。rollbackが必要な場合も、TARGET Cronを停止し、Pages proxyの向きとWorker ownerを一つずつ確認してから、別承認の手順で実施する。
+
+### Phase 6確認結果
+
+- main / origin/main: `8bcd5fcae1d93da20f30e401db9adb3925403fe8`
+- TARGET heartbeat: `completed`、`last_failed_at=null`
+- Pages root、Pages public API、TARGET Auth `/health`、TARGET NPB schedule: HTTP 200
+- TARGET主要データとjob履歴はcutover後のread-only spot-checkで確認済み
+- migration SQL dumpはAuth/Auditとも削除済み。本文は保存しない
+- SOURCE resource、TARGET staging resource、Phase 7 CPU experimentは保持
+
+このbaseline lock自体ではWorker、Pages、Cron、D1、secret、job/stateを変更しない。今後の機能変更はこのbaselineからfeature branchで行い、profile/config guard、dry-run、CIを通過させてから本番反映する。

@@ -198,7 +198,24 @@ Pagesの切替は今回行わない。作業前のproxy変更は、target origin
 - TARGET VAPID secret: 3名を登録済み。値の表示・保存・SOURCEからの読み出しなし
 - workers.dev subdomain: 新規登録なし。Pages/API cutoverなし
 
-TARGET WorkersのCronは設定ファイル上0本とし、Wranglerのtrigger mutatorは実行していない。workers.dev direct healthはsubdomain未登録のため未確認であり、公開到達性の成功とは扱わない。
+TARGET WorkersのCronは設定ファイル上0本とし、Wranglerのtrigger mutatorは実行していない。TARGET Auth `/health` はHTTP 200、NPB Workerは正式な `mode=schedule` と `mode=starter` のread-only GETでHTTP 200を確認した。NPBの `/health` は正式endpointではなく、mode未指定のため400になる。
+
+## Phase 3 precutover readiness
+
+- package.jsonは`1c3131048e2ac72dc2ea0328175ba7bf9c08794b`から`8ded93d72223114524dea2877e369581e046109d`まで変更なし。Phase 2.5の一時VAPID依存処理の残骸やscript削除はない。
+- SOURCE Authの正式Cronは、リポジトリのproduction configに記載された次の5本と確認した。
+  - `* * * * *`
+  - `*/5 * * * *`
+  - `1,16,31,46 * * * *`
+  - `2,7,12,17,22,27,32,37,42,47,52,57 * * * *`
+  - `0,15,30,45 * * * *`
+- TARGET staging config `wrangler.auth.target.jsonc` はCronなしのまま維持する。
+- TARGET cutover config `wrangler.auth.target.production.jsonc` を追加し、TARGET account/D1/service bindingと上記5本だけを定義した。今回このconfigでdeploy・trigger変更は行っていない。
+- SOURCE/TARGETのconfigでD1 UUIDを混在させず、Authの`NPB_FETCH_WORKER`はTARGET `starting9-npb-fetch`を参照する。
+- NPB Workerの正式read-only契約は、ルート直下GETの`mode=schedule&date=YYYY-MM-DD`、`mode=starter`、`mode=roster`、`mode=notice`、`mode=lineup`。外部NPB取得は行うが、D1書き込みを行う経路ではない。
+- AuthからNPBへのService Bindingは、dry-runのbinding表示、既存の`fetchNpbWorkerJson`契約テスト、target設定で確認した。空TARGET D1のため、本番相当のAuth read-only APIを使った追加smokeは実施していない。
+- 次Phaseのwrite freezeは、prediction/admin/Cron/score/ranking/publish/Push subscription/sessionの各mutationを対象に、既存のmaintenance・service unavailable・feature flagの再利用可否を確認してから実装する。今回新しいmaintenance toggleは追加していない。
+- D1 export/import、SOURCE write freeze、Cron停止、TARGET Cron有効化、Pages/API切替は未実施。
 
 ## 検証チェックリスト
 
@@ -221,9 +238,9 @@ TARGET WorkersのCronは設定ファイル上0本とし、Wranglerのtrigger mut
 - [x] TARGET secret名が確認でき、secret値はログに出ていない
 - [ ] data import後にTARGET Push subscriptionをcleanup
 - [ ] cutover後に管理者がTARGETへ再購読
-- [ ] NPB service bindingがtarget Workerを指す
-- [ ] 5 Cronが一致し、Cron ownerが一つだけ
-- [ ] target `/health`とread-only APIが200系
+- [x] NPB service bindingがtarget Workerを指す
+- [x] cutover configの5 CronがSOURCE configと一致する（Cron owner切替は未実施）
+- [x] target Auth `/health`とNPB read-only APIが200系（NPB `/health`自体は正式endpointではない）
 - [ ] Pages proxyのcookie/CORS/API応答を確認
 - [ ] prediction close、lineup、score、ranking、publishを本番job操作なしで観測できる計画がある
 - [ ] probable starterとNPB fetchのtarget経路を確認
@@ -238,7 +255,7 @@ TARGET WorkersのCronは設定ファイル上0本とし、Wranglerのtrigger mut
 - sourceとtargetのCron ownerが同時に有効になる
 - TARGET VAPID rotationまたはsecret登録手順が確認できない
 - Pages proxyがtargetを向いていない、またはcookie/CORSが壊れる
-- target healthまたはread-only APIが5xxになる
+- targetの正式healthまたはread-only APIが5xxになる
 - sourceの本番データを手動SQLで修正する必要が出る
 - 未完了jobを手動移行・再実行・再採点する必要が出る
 - 新accountの権限や監査ログを確認できない
@@ -256,6 +273,7 @@ TARGET WorkersのCronは設定ファイル上0本とし、Wranglerのtrigger mut
 - Pages projectの所属accountと、Pagesを同時移管するかどうか
 - Cronを停止/切替するCloudflare上の具体的操作と所要時間
 - targetでの本番相当read-only smoke結果
+- 次Phaseで使うmaintenance/write-freeze toggleの正式な実装方式
 - 実際のcutover/rollback結果
 
 ## 参考資料

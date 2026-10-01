@@ -424,6 +424,31 @@ const LEGACY_ADMIN_OPERATION_RETIRED_MESSAGE = "この操作はGame Automation V
 const LEGACY_AUTOMATION_RETIRED_CODE = "LEGACY_AUTOMATION_RETIRED";
 const PERFECT_ACHIEVER_MUTATION_RETIRED_CODE = "PERFECT_ACHIEVER_MUTATION_RETIRED";
 const PERFECT_ACHIEVER_MUTATION_RETIRED_MESSAGE = "満点者はサーバー側の正式採点結果から自動集計されます。";
+const MIGRATION_MAINTENANCE_CODE = "MIGRATION_MAINTENANCE";
+const MIGRATION_MAINTENANCE_MESSAGE = "現在メンテナンス中です。しばらくお待ちください。";
+
+function isMigrationMaintenanceEnabled(env) {
+  return String(env?.MIGRATION_MAINTENANCE || "").trim().toLowerCase() === "true";
+}
+
+function isMigrationMaintenanceReadRequest(path, method) {
+  if (path === "/health" && method === "GET") return true;
+  if (method !== "GET") return false;
+
+  // /api/auth/me updates sessions.last_used_at through ctx.waitUntil(). It is
+  // therefore intentionally blocked during the write freeze even though the
+  // HTTP method is GET. Other GET routes are existing read paths and remain
+  // available for cutover verification.
+  return path !== "/api/auth/me";
+}
+
+function migrationMaintenanceResponse(cors) {
+  return jsonResponse({
+    ok: false,
+    code: MIGRATION_MAINTENANCE_CODE,
+    error: MIGRATION_MAINTENANCE_MESSAGE
+  }, 503, cors);
+}
 
 // V1/V2 automation and update paths are retired. Production automation uses
 // V3 jobs only; old tables, jobs, logs, and audit rows remain historical
@@ -726,6 +751,10 @@ export default {
       }, 200, cors);
     }
 
+    if (isMigrationMaintenanceEnabled(env) && !isMigrationMaintenanceReadRequest(path, request.method)) {
+      return migrationMaintenanceResponse(cors);
+    }
+
     if (!env.AUTH_DB) {
       return jsonResponse({ ok: false, error: "認証サービスが現在利用できません。" }, 503, cors);
     }
@@ -1022,6 +1051,15 @@ export default {
     const invocationAt = new Date();
     const runId = globalThis.crypto?.randomUUID?.() || `v3-run-${Date.now()}`;
     const cronMode = resolveV3CronMode(event?.cron);
+    if (isMigrationMaintenanceEnabled(env)) {
+      console.info(`[GAME_AUTOMATION_V3] migration_maintenance=true cronMode=${cronMode} action=skip`);
+      return {
+        ok: true,
+        cronMode,
+        skipped: true,
+        reasonCode: MIGRATION_MAINTENANCE_CODE
+      };
+    }
     const isCriticalCron = cronMode === "critical";
     if (isCriticalCron) ctx.waitUntil(writeCronHeartbeatSafely(env, recordCronInvocation, invocationAt, "invocation"));
     const flags = {

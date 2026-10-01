@@ -4,13 +4,15 @@
 
 Starting9 のバックエンドを履修Hubと別のCloudflare accountへ移せるよう、現行構成、移行時の入力、検証、切替、ロールバック手順を固定する。
 
-今回は準備のみとし、次の操作は実施しない。
+Phase 2.5では、SOURCEを変更せず、TARGETの空DB・Worker・secretをstaging用に準備した。データ移行とcutoverは引き続き実施しない。
 
-- Cloudflare account、Worker、D1、Pagesの作成・変更
+次の操作は実施しない。
+
+- SOURCE側のCloudflare account、Worker、D1、Pagesの作成・変更
 - D1のexport/import、migration適用、SELECTを含む本番データ操作
-- Worker/Pagesのdeploy、Cronの有効化、DNS変更
+- SOURCE Worker/Pagesのdeploy、TARGET Cronの有効化、DNS変更
 - 本番cutover、job実行、再採点、再公開
-- secret値の取得・表示・リポジトリ保存
+- SOURCE secret値の取得・表示・リポジトリ保存
 
 この文書の将来手順は、専用accountと移行時間帯が承認された後に、対象と実行者を再確認してから使う。
 
@@ -19,11 +21,11 @@ Starting9 のバックエンドを履修Hubと別のCloudflare accountへ移せ�
 | 項目 | 値 |
 | --- | --- |
 | 正規remote | `https://github.com/tanzana7/starting9.git` |
-| 移行準備の基準main | `534bc1f35445fd1236318b5befcf23fee9843b5b` |
+| 移行準備の基準main | `1c3131048e2ac72dc2ea0328175ba7bf9c08794b` |
 | Phase 7 feature | `56054728518729061ec3734e1e07edcbd751921a`（mainへmergeしない。削除しない） |
 | 現行Auth Worker | `starting9-auth` |
 | 現行Auth Worker version | `8317b0c`（ユーザー提示値。今回の再取得・deployは未実施） |
-| 今回の作業branch | `codex/starting9-account-migration-prep` |
+| 今回の作業branch | `codex/starting9-account-isolation-phase2-5` |
 
 CPU hardeningは今回の移行準備の対象外とする。既存mainを移行基準にし、Phase 7の未merge変更や`probableStarterOnly`変更を混ぜない。
 
@@ -80,7 +82,13 @@ Cronを移行時に増やしたり、別の毎分Cronを追加したりしない
 - `VAPID_PUBLIC_KEY`
 - `VAPID_SUBJECT`
 
-実際のdeploy環境に追加のsecretがないかは、移行承認後にsecret名だけを一覧化して照合する。VAPID keyを変更すると既存のPush subscriptionへの影響があり得るため、同じ値を安全なsecret入力経路で再登録する。値をGit、ログ、作業メモへ書かない。
+実際のdeploy環境に追加のsecretがないかは、secret名だけを一覧化して照合する。secret値はCloudflareから読み戻さず、Git、ログ、作業メモへ書かない。
+
+### VAPID rotation policy
+
+SOURCEのVAPID private/public keyは読み戻さない。TARGETでは、Push subscriptionの継続性をSOURCEから引き継がない方針を採用し、信頼できる一時実行環境で新しいVAPID key pairを生成して、TARGET Auth Workerへsecret入力経路から登録する。private keyはファイル、コマンド引数、ログ、リポジトリに保存しない。
+
+この方針ではSOURCEで発行済みのPush subscriptionをTARGETへ移行できない。cutover後に管理者がTARGETへ再購読する手順を用意し、データimport後はTARGET側の旧・不要Push subscriptionをcleanupする。cutover完了まではSOURCEのPushを変更せず、TARGETのPush endpointは公開経路へ接続しない。
 
 Auth DBにはユーザー、セッション、認証関連データが含まれるため、D1移行では単なるschema再作成で終わらせない。データ移行の検証が完了するまでtargetを公開しない。
 
@@ -95,7 +103,7 @@ Auth DBにはユーザー、セッション、認証関連データが含まれ�
 5. Pages proxyの新Auth originと、必要なら固定API hostname/DNSの方針が決まっている。
 6. source Cronを停止してからtarget Cronを有効化する所有権引継ぎ時刻が決まっている。
 7. D1 data export/importの承認者、バックアップ保管先、件数・checksum照合方法、ロールバック責任者が決まっている。
-8. secret値を安全に再登録でき、VAPID keyをsourceと一致させられる。
+8. TARGET用VAPID key rotationの運用方針と、cutover後の管理者再購読手順が確定している。
 
 固定API hostnameを用意できる場合は、Pages proxyの将来のaccount依存を減らせる。用意しない場合も、Pages側のorigin変更は一度のcutover作業として明示的に扱う。
 
@@ -176,22 +184,43 @@ Pagesの切替は今回行わない。作業前のproxy変更は、target origin
 4. source/targetのD1を同時に更新するdual-writeを行わない。
 5. rollback後にhealth、read-only API、Cron ownershipを記録する。
 
+## Phase 2.5 staging実績
+
+以下はTARGET専用account内で実施したstaging準備であり、SOURCEの本番経路には接続していない。
+
+- TARGET account: `02580fab1c09e144db7da89478e252c8`
+- TARGET Auth D1: `starting9-auth` / `c5137bcc-0fcc-4822-95b8-996dffaf0818`
+- TARGET Audit D1: `starting9-audit` / `9d97a0fb-9767-4ef2-9ba2-dcf0bd92774f`
+- TARGET NPB Worker: `starting9-npb-fetch`（Cronなし）
+- TARGET Auth Worker: `starting9-auth`（Cronなし、最終staging version `0f5858d5-1b6b-4f6c-8733-555eee2353b2`）
+- TARGET Auth/NPB service binding: `NPB_FETCH_WORKER` → `starting9-npb-fetch`
+- TARGET D1: schema migrationのみ。production data importなし
+- TARGET VAPID secret: 3名を登録済み。値の表示・保存・SOURCEからの読み出しなし
+- workers.dev subdomain: 新規登録なし。Pages/API cutoverなし
+
+TARGET WorkersのCronは設定ファイル上0本とし、Wranglerのtrigger mutatorは実行していない。workers.dev direct healthはsubdomain未登録のため未確認であり、公開到達性の成功とは扱わない。
+
 ## 検証チェックリスト
 
 ### 準備段階（今回実施可能な範囲）
 
-- [x] mainが`534bc1f35445fd1236318b5befcf23fee9843b5b`と一致
+- [x] mainが`1c3131048e2ac72dc2ea0328175ba7bf9c08794b`と一致
 - [x] Phase 7 `56054728518729061ec3734e1e07edcbd751921a`をmainへ混ぜていない
 - [x] 現行Auth/NPB設定、5 Cron、D1 binding、Pages proxyをコードから確認
-- [x] target専用accountやtarget resourceを作成していない
-- [x] D1 export/import、deploy、cutoverを実施していない
+- [x] TARGET専用account、Auth/NPB Worker、Auth/Audit D1を作成
+- [x] TARGET D1へschema migrationのみ適用
+- [x] TARGET NPB/Auth WorkerをCronなしでstaging deploy
+- [x] TARGET VAPID secret 3名を登録（値は非表示・非保存）
+- [x] D1 export/import、Pages/API cutoverを実施していない
 
 ### target作成後（将来）
 
 - [ ] target account、DB、Workerのresource IDと名前を二者確認
 - [ ] schema/migration状態がsourceと一致
 - [ ] 認証・セッション・Push subscriptionに必要なデータの移行件数とchecksumが一致
-- [ ] secret名が一致し、secret値はログに出ていない
+- [x] TARGET secret名が確認でき、secret値はログに出ていない
+- [ ] data import後にTARGET Push subscriptionをcleanup
+- [ ] cutover後に管理者がTARGETへ再購読
 - [ ] NPB service bindingがtarget Workerを指す
 - [ ] 5 Cronが一致し、Cron ownerが一つだけ
 - [ ] target `/health`とread-only APIが200系
@@ -207,7 +236,7 @@ Pagesの切替は今回行わない。作業前のproxy変更は、target origin
 - source/target D1の件数・checksum・migration状態が一致しない
 - service bindingがtarget NPB Workerを指していない
 - sourceとtargetのCron ownerが同時に有効になる
-- VAPID keyまたはsession関連secretの扱いが確認できない
+- TARGET VAPID rotationまたはsecret登録手順が確認できない
 - Pages proxyがtargetを向いていない、またはcookie/CORSが壊れる
 - target healthまたはread-only APIが5xxになる
 - sourceの本番データを手動SQLで修正する必要が出る
@@ -218,10 +247,11 @@ Pagesの切替は今回行わない。作業前のproxy変更は、target origin
 
 今回の準備では、以下はまだ確定していない。
 
-- 新しいCloudflare account ID、権限profile、target resource ID
-- target D1の作成・migration・data import結果
+- target D1のdata import結果
 - source D1のexport/checksumおよび本番データ件数
-- production secretの完全なbinding名と値の一致
+- session関連secretをSOURCEから安全に継続する方法
+- data import後のTARGET Push subscription cleanup実績
+- cutover後の管理者TARGET再購読実績
 - 新Auth Workerのcustom hostnameを使うかworkers.devを使うか
 - Pages projectの所属accountと、Pagesを同時移管するかどうか
 - Cronを停止/切替するCloudflare上の具体的操作と所要時間

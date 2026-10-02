@@ -428,13 +428,22 @@ test("manualとbulkの選手metadataは保存・更新・CSV取込で同じ形�
   const countBeforeInvalidCsv = fixture.database.prepare("SELECT COUNT(*) AS count FROM players WHERE game_id = 'bulk-metadata-game'").get().count;
   for (const csv of [
     "id,name,position,teamId\ninvalid-inline,a\"b,中," + teamIds["metadata-home"],
-    "id,name,position,teamId\ninvalid-trailing,\"abc\"x,中," + teamIds["metadata-home"]
+    "id,name,position,teamId\ninvalid-trailing,\"abc\"x,中," + teamIds["metadata-home"],
+    "id,name,position,teamId\ninvalid-unclosed,\"abc,中," + teamIds["metadata-home"],
+    "id,name,position,teamId\ninvalid-triple,\"\"\"abc\"x,中," + teamIds["metadata-home"]
   ]) {
     const invalidCsv = await request(worker, env, "/api/admin/players/import", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ gameId: "bulk-metadata-game", csv }) });
     assert.equal(invalidCsv.response.status, 400);
     assert.equal(invalidCsv.payload.code, "CSV_INVALID");
     assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM players WHERE game_id = 'bulk-metadata-game'").get().count, countBeforeInvalidCsv);
   }
+
+  const emptyQuotedCsv = `id,name,uniformNumber,position,teamId,bat,throw\r\nempty-quoted-player,Empty Quoted,11,中,${teamIds["metadata-home"]},"",""\r\n`;
+  const emptyQuotedResult = await request(worker, env, "/api/admin/players/import", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ gameId: "bulk-metadata-game", csv: emptyQuotedCsv }) });
+  assert.equal(emptyQuotedResult.response.status, 200);
+  const emptyQuotedPlayer = emptyQuotedResult.payload.players.find((player) => player.id === "empty-quoted-player");
+  assert.equal(emptyQuotedPlayer.bat, null);
+  assert.equal(emptyQuotedPlayer.throw, null);
 
   const csv = `\uFEFFid,name,uniformNumber,position,teamId,bat,throw\r\ncsv-metadata-player,"Tanaka, Jr.\n""The Captain""",10,中,${teamIds["metadata-home"]},R,L\r\n\r\n`;
   const csvResult = await request(worker, env, "/api/admin/players/import", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ gameId: "bulk-metadata-game", csv }) });

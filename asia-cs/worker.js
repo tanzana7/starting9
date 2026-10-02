@@ -450,6 +450,10 @@ async function assertGameCompetitionMutable(db, game) {
 
 async function ensureCompetition(db, competitionId, now = nowIso()) {
   const id = validId(competitionId) || DEFAULT_COMPETITION_ID;
+  // Read first so an existing completed competition stays truly read-only;
+  // only the bootstrap path is allowed to create a missing competition row.
+  const existing = await getCompetition(db, id);
+  if (existing) return existing;
   await prepared(db, `INSERT OR IGNORE INTO competitions
     (id, competition_type, display_name, short_name, status, created_at, updated_at)
     VALUES (?1, ?2, ?3, ?3, 'draft', ?4, ?4)`, id, COMPETITION_TYPE, id, now).run();
@@ -880,8 +884,12 @@ function csvRows(value) {
   let row = [];
   let cell = "";
   let quoted = false;
+  let afterQuote = false;
+  let fieldStarted = false;
 
-  const pushCell = () => { row.push(cell.trim()); cell = ""; };
+  const invalidCsv = () => { throw new RequestError(400, "CSV_INVALID", "CSVの引用符が不正です。"); };
+
+  const pushCell = () => { row.push(cell.trim()); cell = ""; afterQuote = false; fieldStarted = false; };
   const pushRow = () => {
     pushCell();
     if (row.some((value) => value !== "")) records.push(row);
@@ -892,11 +900,19 @@ function csvRows(value) {
     const char = text[index];
     if (quoted) {
       if (char === '"' && text[index + 1] === '"') { cell += '"'; index += 1; continue; }
-      if (char === '"') { quoted = false; continue; }
+      if (char === '"') { quoted = false; afterQuote = true; continue; }
       cell += char;
       continue;
     }
-    if (char === '"') { quoted = true; continue; }
+    if (afterQuote) {
+      if (char !== "," && char !== "\r" && char !== "\n") invalidCsv();
+    }
+    if (char === '"') {
+      if (fieldStarted) invalidCsv();
+      quoted = true;
+      fieldStarted = true;
+      continue;
+    }
     if (char === ",") { pushCell(); continue; }
     if (char === "\r" || char === "\n") {
       if (char === "\r" && text[index + 1] === "\n") index += 1;
@@ -904,6 +920,7 @@ function csvRows(value) {
       continue;
     }
     cell += char;
+    fieldStarted = true;
   }
   if (quoted) throw new RequestError(400, "CSV_INVALID", "CSVの引用符が閉じていません。");
   if (cell !== "" || row.length) pushRow();

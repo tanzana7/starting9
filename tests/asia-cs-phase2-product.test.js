@@ -269,6 +269,67 @@ test("完了済み大会は全ての管理mutationをサーバー側で拒否す
   assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM players").get().count, 0);
 });
 
+test("公開済み試合を含む完了大会は再実行を拒否し、公開成果物を変更しない", async () => {
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const fixture = createFixture();
+  const env = { ...fixture, ADMIN_BOOTSTRAP_TOKEN: "phase2-token", ALLOWED_ORIGIN: "https://asia-cs.test" };
+  const adminCookie = await adminSession(worker, env);
+  const operatorId = fixture.database.prepare("SELECT id FROM users WHERE username = 'operator'").get().id;
+  const now = "2026-12-20T00:00:00.000Z";
+  fixture.database.prepare(`INSERT INTO games
+    (id, title, competition_type, competition_id, game_source, game_date, start_at, prediction_deadline_at, status, publication_status, current_lineup_revision, created_at, updated_at)
+    VALUES ('completed-published-game', 'Completed Published', 'ASIA_CS', 'asia-cs', 'manual', '2026-12-20', '2026-12-20T09:00:00.000Z', '2026-12-20T08:00:00.000Z', 'published', 'published', 1, ?, ?)`)
+    .run(now, now);
+  const lineup = [{ battingOrder: 1, playerId: "completed-published-player", playerName: "Published Player", position: "中" }];
+  fixture.database.prepare(`INSERT INTO lineup_revisions
+    (id, game_id, revision_number, lineup_json, fingerprint, is_current, confirmed_at, confirmed_by, created_at)
+    VALUES ('completed-published-revision', 'completed-published-game', 1, ?, 'completed-published-fingerprint', 1, ?, ?, ?)`)
+    .run(JSON.stringify(lineup), now, operatorId, now);
+  fixture.database.prepare(`INSERT INTO scoring_runs
+    (id, game_id, revision_number, kind, processed_count, score_changed_count, started_at, completed_at, created_by)
+    VALUES ('completed-published-score', 'completed-published-game', 1, 'initial', 0, 0, ?, ?, ?)`)
+    .run(now, now, operatorId);
+  fixture.database.prepare(`INSERT INTO competition_publication_state
+    (competition_id, publication_revision, updated_at, last_publication_generation)
+    VALUES ('asia-cs', 1, ?, '1')`).run(now);
+  fixture.database.prepare(`INSERT INTO competition_ranking_generations
+    (competition_id, generation, target_game_id, status, created_at, published_at, base_publication_revision)
+    VALUES ('asia-cs', 1, 'completed-published-game', 'published', ?, ?, 0)`).run(now, now);
+  fixture.database.prepare(`INSERT INTO competition_ranking_publications
+    (competition_id, generation, updated_at) VALUES ('asia-cs', 1, ?)`).run(now);
+
+  const beforeResult = await request(worker, env, "/api/games/completed-published-game/result");
+  assert.equal(beforeResult.response.status, 200);
+  const snapshot = () => ({
+    game: fixture.database.prepare("SELECT status, publication_status, current_lineup_revision, updated_at FROM games WHERE id = 'completed-published-game'").get(),
+    scoring: fixture.database.prepare("SELECT revision_number, completed_at FROM scoring_runs WHERE game_id = 'completed-published-game'").get(),
+    publication: fixture.database.prepare("SELECT publication_revision, last_publication_generation FROM competition_publication_state WHERE competition_id = 'asia-cs'").get(),
+    generation: fixture.database.prepare("SELECT status, published_at FROM competition_ranking_generations WHERE competition_id = 'asia-cs' AND generation = 1").get(),
+    rankingPublication: fixture.database.prepare("SELECT generation, updated_at FROM competition_ranking_publications WHERE competition_id = 'asia-cs'").get()
+  });
+  const before = snapshot();
+  const completed = await request(worker, env, "/api/admin/competition", {
+    method: "PUT",
+    headers: { Cookie: adminCookie },
+    body: JSON.stringify({ id: "asia-cs", displayName: "Asia CS", shortName: "ACS", status: "completed" })
+  });
+  assert.equal(completed.response.status, 200);
+
+  for (const pathName of [
+    "/api/admin/games/completed-published-game/score",
+    "/api/admin/games/completed-published-game/ranking",
+    "/api/admin/games/completed-published-game/publish",
+    "/api/admin/games/completed-published-game/rescore"
+  ]) {
+    const result = await request(worker, env, pathName, { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ lineup }) });
+    assert.equal(result.response.status, 409, pathName);
+    assert.equal(result.payload.code, "COMPETITION_COMPLETED", pathName);
+  }
+  assert.deepEqual(snapshot(), before);
+  const afterResult = await request(worker, env, "/api/games/completed-published-game/result");
+  assert.deepEqual(afterResult.payload, beforeResult.payload);
+});
+
 test("scoredで未公開の本人predictionは採点結果を返さず、公開後だけ返す", async () => {
   const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
   const fixture = createFixture();
@@ -363,6 +424,17 @@ test("manualとbulkの選手metadataは保存・更新・CSV取込で同じ形�
   const invalidManual = await request(worker, env, "/api/admin/games/manual-metadata-game/players", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ players: [{ id: "invalid-position-player", name: "Invalid Position", position: "監督", teamId: "metadata-home" }] }) });
   assert.equal(invalidManual.response.status, 400);
   assert.equal(invalidManual.payload.code, "PLAYER_METADATA_INVALID");
+
+  const countBeforeInvalidCsv = fixture.database.prepare("SELECT COUNT(*) AS count FROM players WHERE game_id = 'bulk-metadata-game'").get().count;
+  for (const csv of [
+    "id,name,position,teamId\ninvalid-inline,a\"b,中," + teamIds["metadata-home"],
+    "id,name,position,teamId\ninvalid-trailing,\"abc\"x,中," + teamIds["metadata-home"]
+  ]) {
+    const invalidCsv = await request(worker, env, "/api/admin/players/import", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ gameId: "bulk-metadata-game", csv }) });
+    assert.equal(invalidCsv.response.status, 400);
+    assert.equal(invalidCsv.payload.code, "CSV_INVALID");
+    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM players WHERE game_id = 'bulk-metadata-game'").get().count, countBeforeInvalidCsv);
+  }
 
   const csv = `\uFEFFid,name,uniformNumber,position,teamId,bat,throw\r\ncsv-metadata-player,"Tanaka, Jr.\n""The Captain""",10,中,${teamIds["metadata-home"]},R,L\r\n\r\n`;
   const csvResult = await request(worker, env, "/api/admin/players/import", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ gameId: "bulk-metadata-game", csv }) });

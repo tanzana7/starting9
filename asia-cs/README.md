@@ -1,6 +1,6 @@
 # Starting9 Asia CS MVP
 
-本家Starting9の予想入力・採点・Best Nineの現行契約から必要部分だけを切り出した大会特別版です。V3/V4 Cron、NPB自動取得、週次・月次・年次ランキングは含めません。
+本家Starting9の予想入力・採点・Best Nineの現行契約から必要部分だけを切り出した大会特別版です。`competition_type=ASIA_CS` と専用D1でNPB_REGULARと境界を分離し、V3/V4 Cron・NPB自動取得・週次/月次/年次ランキングは含めません。
 
 ## 分離方針
 
@@ -33,17 +33,20 @@ python -m http.server 8782 --directory asia-cs/public --bind 127.0.0.1
 - `public/` は相対URL `/api/...` のみを呼ぶため、本家Workerや本家Pagesを転送先に設定してはいけません。
 - 本番の `ALLOWED_ORIGIN` はAsia CS Pagesの完全一致Originだけに設定します。`ADMIN_BOOTSTRAP_TOKEN` はWorker Secretとして登録し、Pagesへ渡しません。
 - D1 IDがプレースホルダーの間はCloudflareリソース未作成であり、deploy成功・本番疎通済みとは扱いません。
+- 試合の正本は `internalGameId` で、外部試合コードは任意です。チームは `teams`、選手は試合単位の `players` に保存し、NPB選手IDを共有namespaceへ強制しません。
 - 本番確認では、Pagesの画面から `/api/auth/me`、予想保存、管理API、Best Nine取得の4経路をAsia CS Workerのログで確認してから公開します。
 
 ## APIの流れ
 
-1. 管理者が `POST /api/admin/games` で試合を登録
+1. 管理者が `POST /api/admin/teams` で大会チームを登録し、`POST /api/admin/games` で試合を登録
 2. `POST /api/admin/games/:id/players` または `PUT .../players/:playerId` で出場選手を登録・編集
 3. ユーザーがログインして `PUT /api/games/:id/prediction` で予想を保存・編集
 4. 保存APIは必ずD1に保存された締切とWorkerのサーバー時刻で判定
 5. 管理者が正式スタメンを `POST /api/admin/games/:id/lineup` で確定
 6. 締切後に `POST /api/admin/games/:id/score`、続けて `POST .../publish`
 7. 修正時は `POST /api/admin/games/:id/rescore` が新revisionで全予想を再採点し、公開中なら同じ公開状態のままBest Nineを更新
+
+登録時には `prediction_close`、`score`、`ranking_rebuild`、`publish` の4段階を `formal_jobs` に作成します。Phase 1では自動Cronを起動せず、管理操作が同じ段階の完了記録を進めます。NPB identity / probable / roster fetch / lineup fetch jobは作成しません。
 
 ## Best Nineの契約
 

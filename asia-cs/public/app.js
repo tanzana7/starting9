@@ -59,6 +59,9 @@ function updateControls() {
 function renderGame() {
   if (!state.game) return;
   $("gameTitle").textContent = state.game.title;
+  const home = state.game.homeTeam?.name || "チームA";
+  const away = state.game.awayTeam?.name || "チームB";
+  $("gameMeta").textContent = `${state.game.competitionType || "ASIA_CS"} ・ ${away} vs ${home}${state.game.venue ? ` ・ ${state.game.venue}` : ""}`;
   const deadline = new Date(state.game.predictionDeadlineAt);
   state.closed = Number.isNaN(deadline.getTime()) || Date.now() >= deadline.getTime() || state.game.status !== "open";
   $("deadlineStatus").textContent = state.closed ? `締切済み（${formatDate(deadline)}）` : `締切 ${formatDate(deadline)}`;

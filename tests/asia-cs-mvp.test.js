@@ -8,7 +8,9 @@ import { SCORING_MAX_SCORE, SCORING_RULES, scorePredictionLineup } from "../back
 import { scoreLineup } from "../asia-cs/scoring.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const migration = fs.readFileSync(path.join(root, "asia-cs/migrations/0001_asia_cs_mvp.sql"), "utf8");
+const migration = ["0001_asia_cs_mvp.sql", "0002_competition_and_formal_jobs.sql"]
+  .map((file) => fs.readFileSync(path.join(root, "asia-cs/migrations", file), "utf8"))
+  .join("\n");
 
 function createD1Adapter(database, failure = null) {
   const wrap = (statement, values = []) => ({
@@ -134,8 +136,15 @@ test("Asia CS MVP: 予想→締切→正式登録→採点→B9→正式修正�
   assert.equal(scored.response.status, 200);
   assert.equal(scored.payload.scored, 1);
   assert.equal(scored.payload.scoreChangedCount, 1);
+  assert.deepEqual(fixture.database.prepare("SELECT job_type, status FROM formal_jobs WHERE game_id = 'asia-cs-demo' ORDER BY job_type").all().map((row) => ({ job_type: row.job_type, status: row.status })), [
+    { job_type: "prediction_close", status: "completed" },
+    { job_type: "publish", status: "scheduled" },
+    { job_type: "ranking_rebuild", status: "scheduled" },
+    { job_type: "score", status: "completed" }
+  ]);
   const published = await request(worker, env, "/api/admin/games/asia-cs-demo/publish", { method: "POST", headers: { Cookie: adminCookie } });
   assert.equal(published.response.status, 200);
+  assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM formal_jobs WHERE game_id = 'asia-cs-demo' AND status <> 'completed'").get().count, 0);
 
   const bestNine = await request(worker, env, "/api/games/asia-cs-demo/best-nine");
   assert.equal(bestNine.payload.published, true);
@@ -161,6 +170,40 @@ test("Asia CS MVP: 予想→締切→正式登録→採点→B9→正式修正�
   assert.deepEqual(JSON.parse(predictionRow.actual_lineup_json), corrected);
   assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM lineup_revisions WHERE game_id = 'asia-cs-demo' AND is_current = 1").get().count, 1);
   assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM scoring_runs WHERE game_id = 'asia-cs-demo' AND revision_number = 2").get().count, 1);
+});
+
+test("Asia CSのcompetition/team metadataとformal job scopeはNPB前提から分離される", async () => {
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const fixture = createDatabase();
+  const env = { ...fixture, ADMIN_BOOTSTRAP_TOKEN: "local-bootstrap-token", ALLOWED_ORIGIN: "https://asia-cs.test" };
+  await request(worker, env, "/api/auth/admin/bootstrap", { method: "POST", headers: { "X-Admin-Bootstrap-Token": "local-bootstrap-token" }, body: JSON.stringify({ username: "admin", password: "admin-password" }) });
+  const login = await request(worker, env, "/api/auth/login", { method: "POST", body: JSON.stringify({ username: "admin", password: "admin-password" }) });
+  const adminCookie = authCookie(login);
+  const teamA = await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ teamKey: "team-jp", displayName: "Japan", shortName: "JPN", countryCode: "JPN" }) });
+  const teamB = await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ teamKey: "team-kr", displayName: "Korea", shortName: "KOR", countryCode: "KOR" }) });
+  assert.equal(teamA.response.status, 201);
+  assert.equal(teamB.response.status, 201);
+  const listed = await request(worker, env, "/api/admin/teams?competitionId=asia-cs", { headers: { Cookie: adminCookie } });
+  assert.deepEqual(listed.payload.teams.map((team) => team.team_key), ["team-jp", "team-kr"]);
+
+  const startAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  const created = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({
+    id: "asia-cs-metadata", title: "Asia CS Final", competitionId: "asia-cs-2026", gameDate: "2026-11-15", startAt,
+    homeTeamId: "team-jp", homeTeamName: "Japan", awayTeamId: "team-kr", awayTeamName: "Korea", venue: "Tokyo Dome", externalGameCode: "asia-2026-final"
+  }) });
+  assert.equal(created.response.status, 201);
+  assert.equal(created.payload.game.competitionType, "ASIA_CS");
+  assert.equal(created.payload.game.competitionId, "asia-cs-2026");
+  assert.equal(created.payload.game.gameSource, "manual");
+  assert.equal(created.payload.game.externalGameCode, "asia-2026-final");
+  assert.deepEqual(created.payload.game.homeTeam, { id: "team-jp", name: "Japan" });
+  assert.deepEqual(created.payload.game.awayTeam, { id: "team-kr", name: "Korea" });
+
+  const detail = await request(worker, env, "/api/admin/games/asia-cs-metadata", { headers: { Cookie: adminCookie } });
+  assert.equal(detail.response.status, 200);
+  assert.deepEqual(detail.payload.formalJobs.map((job) => job.job_type).sort(), ["prediction_close", "publish", "ranking_rebuild", "score"]);
+  assert.ok(detail.payload.formalJobs.every((job) => job.competition_type === "ASIA_CS" && job.competition_id === "asia-cs-2026"));
+  assert.equal(detail.payload.formalJobs.some((job) => /npb|probable|roster|lineup/i.test(job.job_type)), false);
 });
 
 test("Asia CS Best Nineは未公開では返さず、得点・提出時刻・username・user_id順を固定する", async () => {

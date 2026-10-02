@@ -8,7 +8,7 @@ import { SCORING_MAX_SCORE, SCORING_RULES, scorePredictionLineup } from "../back
 import { scoreLineup } from "../asia-cs/scoring.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const migrationFiles = ["0001_asia_cs_mvp.sql", "0002_competition_and_formal_jobs.sql", "0003_review_hardening.sql", "0004_ranking-generation-snapshots.sql", "0005_publication-revision.sql"];
+const migrationFiles = ["0001_asia_cs_mvp.sql", "0002_competition_and_formal_jobs.sql", "0003_review_hardening.sql", "0004_ranking-generation-snapshots.sql", "0005_publication-revision.sql", "0006_phase2-product.sql", "0007_phase2-roster-metadata.sql"];
 const migrationSql = migrationFiles.map((file) => fs.readFileSync(path.join(root, "asia-cs/migrations", file), "utf8"));
 const migration = migrationSql
   .join("\n");

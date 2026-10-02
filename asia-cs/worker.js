@@ -2,6 +2,7 @@ import { isPredictionEligible } from "../game-scoring-ranking-v2.js";
 import {
   LINEUP_SIZE,
   MAX_SCORE,
+  POSITIONS,
   scoreLineup,
   validateLineup
 } from "./scoring.js";
@@ -15,6 +16,8 @@ const BEST_NINE_LIMIT = 9;
 const COMPETITION_TYPE = "ASIA_CS";
 const DEFAULT_COMPETITION_ID = "asia-cs";
 const FORMAL_JOB_TYPES = Object.freeze(["prediction_close", "score", "ranking_rebuild", "publish"]);
+const COMPETITION_STATUSES = Object.freeze(["draft", "active", "completed"]);
+const PLAYER_POSITIONS = Object.freeze([...POSITIONS, "投"]);
 const STARTING9_AUTH_ORIGIN = "https://starting9-auth.starting9.workers.dev";
 const AUTH_UPSTREAM_TIMEOUT_MS = 4000;
 const CANONICAL_TEST_USERS = Object.freeze(
@@ -427,9 +430,81 @@ async function getGame(db, gameId) {
   return prepared(db, "SELECT * FROM games WHERE id = ?1 LIMIT 1", gameId).first();
 }
 
+async function getCompetition(db, competitionId) {
+  return prepared(db, `SELECT id, competition_type, display_name, short_name,
+      start_date, end_date, status, description, created_at, updated_at
+    FROM competitions WHERE id = ?1 LIMIT 1`, competitionId).first();
+}
+
+async function ensureCompetition(db, competitionId, now = nowIso()) {
+  const id = validId(competitionId) || DEFAULT_COMPETITION_ID;
+  await prepared(db, `INSERT OR IGNORE INTO competitions
+    (id, competition_type, display_name, short_name, status, created_at, updated_at)
+    VALUES (?1, ?2, ?3, ?3, 'draft', ?4, ?4)`, id, COMPETITION_TYPE, id, now).run();
+  return getCompetition(db, id);
+}
+
+function serializeCompetition(competition) {
+  if (!competition) return null;
+  return {
+    id: competition.id,
+    competitionType: competition.competition_type,
+    displayName: competition.display_name,
+    shortName: competition.short_name,
+    startDate: competition.start_date || null,
+    endDate: competition.end_date || null,
+    status: competition.status,
+    description: competition.description || null
+  };
+}
+
+function competitionAllowsPrediction(competition, game) {
+  if (competition?.status === "completed") return false;
+  const deadline = validDate(game?.prediction_deadline_at);
+  return Boolean(competition && deadline && Date.now() < deadline.getTime() && game?.status === "open");
+}
+
+async function listCompetitionGames(request, env, db, competitionId, { includePredictionState = true } = {}) {
+  const result = await prepared(db, `SELECT g.*, COUNT(DISTINCT p.id) AS prediction_count
+      FROM games g LEFT JOIN predictions p ON p.game_id = g.id
+     WHERE g.competition_type = ?1 AND g.competition_id = ?2
+     GROUP BY g.id
+     ORDER BY g.game_date ASC, g.start_at ASC, g.id ASC`, COMPETITION_TYPE, competitionId).all();
+  const games = result.results || [];
+  let userId = "";
+  const competition = await getCompetition(db, competitionId);
+  if (includePredictionState) {
+    const user = await resolveUser(request, env, db);
+    userId = user?.id || "";
+  }
+  let submitted = new Set();
+  if (userId && games.length) {
+    const rows = await prepared(db, `SELECT game_id FROM predictions
+      WHERE user_id = ?1 AND game_id IN (${games.map((_, index) => `?${index + 2}`).join(",")})`, userId, ...games.map((game) => game.id)).all();
+    submitted = new Set((rows.results || []).map((row) => row.game_id));
+  }
+  return games.map((game) => ({
+    id: game.id,
+    title: game.title,
+    gameDate: game.game_date,
+    startAt: game.start_at,
+    predictionDeadlineAt: game.prediction_deadline_at,
+    venue: game.venue || null,
+    externalGameCode: game.external_game_code || null,
+    homeTeam: game.home_team_id ? { id: game.home_team_id, name: game.home_team_name || game.home_team_id } : null,
+    awayTeam: game.away_team_id ? { id: game.away_team_id, name: game.away_team_name || game.away_team_id } : null,
+    status: game.status,
+    publicationStatus: game.publication_status,
+    predictionCount: Number(game.prediction_count || 0),
+    predictionSubmitted: submitted.has(game.id),
+    canPredict: competitionAllowsPrediction(competition, game),
+    archived: competition?.status === "completed"
+  }));
+}
+
 async function getPlayers(db, gameId, activeOnly = false) {
   const suffix = activeOnly ? " AND active = 1" : "";
-  const result = await prepared(db, `SELECT id, game_id, name, uniform_number, team, team_id, active, created_at, updated_at FROM players WHERE game_id = ?1${suffix} ORDER BY name ASC, id ASC`, gameId).all();
+  const result = await prepared(db, `SELECT id, game_id, name, uniform_number, team, team_id, position, bat, throw, active, created_at, updated_at FROM players WHERE game_id = ?1${suffix} ORDER BY name ASC, id ASC`, gameId).all();
   return result.results || [];
 }
 
@@ -495,6 +570,20 @@ async function validateLineupTeamOwnership(db, game, lineup, teamId) {
 
 function serializeGame(game, players = []) {
   if (!game) return null;
+  const serializePlayer = (player) => ({
+    id: player.id,
+    name: player.name,
+    uniformNumber: player.uniform_number,
+    team: player.team,
+    teamId: player.team_id || null,
+    position: player.position || null,
+    bat: player.bat || null,
+    throw: player.throw || null,
+    active: Boolean(player.active)
+  });
+  const serializedPlayers = players.map(serializePlayer);
+  const homeIds = new Set([game.home_team_id, game.home_team_name].filter(Boolean));
+  const awayIds = new Set([game.away_team_id, game.away_team_name].filter(Boolean));
   return {
     id: game.id,
     title: game.title,
@@ -511,14 +600,11 @@ function serializeGame(game, players = []) {
     status: game.status,
     publicationStatus: game.publication_status,
     currentLineupRevision: game.current_lineup_revision === null ? null : Number(game.current_lineup_revision),
-    players: players.map((player) => ({
-      id: player.id,
-      name: player.name,
-      uniformNumber: player.uniform_number,
-      team: player.team,
-      teamId: player.team_id || null,
-      active: Boolean(player.active)
-    }))
+    players: serializedPlayers,
+    playersByTeam: {
+      home: serializedPlayers.filter((player) => homeIds.has(player.teamId) || homeIds.has(player.team)),
+      away: serializedPlayers.filter((player) => awayIds.has(player.teamId) || awayIds.has(player.team))
+    }
   };
 }
 
@@ -526,6 +612,72 @@ async function publicGame(request, env, db, gameId) {
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
   return json({ ok: true, game: serializeGame(game, await getPlayers(db, gameId, true)) }, 200, request, env);
+}
+
+async function publicCompetition(request, env, db) {
+  const competitionId = validId(new URL(request.url).searchParams.get("competitionId")) || DEFAULT_COMPETITION_ID;
+  const competition = await getCompetition(db, competitionId);
+  if (!competition) return errorResponse(request, env, 404, "COMPETITION_NOT_FOUND", "対象大会がありません。");
+  const games = await listCompetitionGames(request, env, db, competitionId);
+  const now = Date.now();
+  const nextGame = games.find((game) => game.status === "open" && new Date(game.startAt).getTime() >= now) || null;
+  return json({
+    ok: true,
+    competition: serializeCompetition(competition),
+    games,
+    nextGame,
+    acceptingGames: games.filter((game) => game.canPredict)
+  }, 200, request, env);
+}
+
+async function publicGames(request, env, db) {
+  const competitionId = validId(new URL(request.url).searchParams.get("competitionId")) || DEFAULT_COMPETITION_ID;
+  if (!await getCompetition(db, competitionId)) return errorResponse(request, env, 404, "COMPETITION_NOT_FOUND", "対象大会がありません。");
+  return json({ ok: true, competitionId, games: await listCompetitionGames(request, env, db, competitionId) }, 200, request, env);
+}
+
+async function publicResult(request, env, db, gameId) {
+  const game = await getGame(db, gameId);
+  if (!game || game.status !== "published" || game.publication_status !== "published") {
+    return errorResponse(request, env, 404, "RESULT_NOT_PUBLISHED", "この試合の結果はまだ公開されていません。");
+  }
+  const lineup = await currentLineup(db, gameId);
+  const players = await getPlayers(db, gameId);
+  const playerById = new Map(players.map((player) => [player.id, player]));
+  const officialLineup = (lineup?.lineup || []).map((item) => ({
+    ...item,
+    playerName: playerById.get(item.playerId)?.name || item.playerName,
+    team: playerById.get(item.playerId)?.team || null
+  }));
+  const user = await resolveUser(request, env, db);
+  let prediction = null;
+  if (user) {
+    const row = await prepared(db, `SELECT prediction_json, score, max_score, scored_revision,
+        submitted_at, updated_at, scored_at, status
+      FROM predictions WHERE user_id = ?1 AND game_id = ?2 LIMIT 1`, user.id, gameId).first();
+    if (row) {
+      const predictedLineup = JSON.parse(row.prediction_json);
+      const score = scoreLineup(predictedLineup, officialLineup);
+      prediction = {
+        lineup: predictedLineup,
+        status: row.status,
+        score: row.score === null ? null : Number(row.score),
+        maxScore: row.max_score === null ? null : Number(row.max_score),
+        scoredRevision: row.scored_revision,
+        submittedAt: row.submitted_at,
+        updatedAt: row.updated_at,
+        scoredAt: row.scored_at,
+        breakdown: {
+          player: { hits: score.counts.player, points: score.counts.player * 5, max: 45 },
+          order: { hits: score.counts.order, points: score.counts.order * 3, max: 27 },
+          position: { hits: score.counts.position, points: score.counts.position * 2, max: 18 },
+          perfect: { hits: score.counts.perfect, points: score.counts.perfect, max: 9 },
+          total: score.total
+        }
+      };
+    }
+  }
+  return json({ ok: true, game: serializeGame(game, []), officialLineup, prediction }, 200, request, env);
 }
 
 async function currentPrediction(request, env, db, gameId) {
@@ -545,6 +697,8 @@ async function savePrediction(request, env, db, gameId) {
   if (originError) return originError;
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
+  const competition = await getCompetition(db, game.competition_id || DEFAULT_COMPETITION_ID);
+  if (competition?.status === "completed") return errorResponse(request, env, 409, "COMPETITION_COMPLETED", "完了した大会では予想できません。");
   const now = new Date();
   const deadline = validDate(game.prediction_deadline_at);
   if (!deadline || now.getTime() >= deadline.getTime() || game.status !== "open") {
@@ -621,6 +775,8 @@ async function listFormalJobs(db, gameId) {
 async function createTeam(request, env, db, admin) {
   const input = await readJson(request);
   const competitionId = validId(input.competitionId) || DEFAULT_COMPETITION_ID;
+  const competition = await ensureCompetition(db, competitionId);
+  if (competition?.status === "completed") throw new RequestError(409, "COMPETITION_COMPLETED", "完了した大会は変更できません。");
   const teamKey = validId(input.teamKey || input.id);
   const displayName = String(input.displayName || input.name || "").trim().slice(0, 80);
   const shortName = String(input.shortName || displayName).trim().slice(0, 40);
@@ -638,6 +794,163 @@ async function createTeam(request, env, db, admin) {
   }
   const team = await prepared(db, "SELECT id, competition_id, team_key, display_name, short_name, country_code FROM teams WHERE competition_id = ?1 AND team_key = ?2 LIMIT 1", competitionId, teamKey).first();
   return json({ ok: true, team }, 201, request, env);
+}
+
+async function updateCompetition(request, env, db) {
+  const input = await readJson(request);
+  const id = validId(input.id || input.competitionId) || DEFAULT_COMPETITION_ID;
+  const displayName = String(input.displayName || input.name || "").trim().slice(0, 120);
+  const shortName = String(input.shortName || displayName).trim().slice(0, 60);
+  const startDate = input.startDate ? String(input.startDate).trim() : null;
+  const endDate = input.endDate ? String(input.endDate).trim() : null;
+  const status = String(input.status || "draft").trim().toLowerCase();
+  const description = String(input.description || "").trim().slice(0, 500) || null;
+  if (!displayName || !shortName || !COMPETITION_STATUSES.includes(status)
+    || (startDate && !/^\d{4}-\d{2}-\d{2}$/.test(startDate))
+    || (endDate && !/^\d{4}-\d{2}-\d{2}$/.test(endDate))
+    || (startDate && endDate && startDate > endDate)) {
+    throw new RequestError(400, "COMPETITION_INPUT_INVALID", "大会名・期間・状態を確認してください。");
+  }
+  const existing = await getCompetition(db, id);
+  if (existing?.status === "completed") {
+    throw new RequestError(409, "COMPETITION_COMPLETED", "完了した大会は変更できません。");
+  }
+  const now = nowIso();
+  await prepared(db, `INSERT INTO competitions
+    (id, competition_type, display_name, short_name, start_date, end_date, status, description, created_at, updated_at)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+    ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name,
+      short_name = excluded.short_name, start_date = excluded.start_date,
+      end_date = excluded.end_date, status = excluded.status,
+      description = excluded.description, updated_at = excluded.updated_at`,
+    id, COMPETITION_TYPE, displayName, shortName, startDate, endDate, status, description, now).run();
+  return json({ ok: true, competition: serializeCompetition(await getCompetition(db, id)) }, 200, request, env);
+}
+
+async function adminCompetitionOverview(request, env, db) {
+  const competitionId = validId(new URL(request.url).searchParams.get("competitionId")) || DEFAULT_COMPETITION_ID;
+  const competition = await getCompetition(db, competitionId);
+  if (!competition) return errorResponse(request, env, 404, "COMPETITION_NOT_FOUND", "対象大会がありません。");
+  const games = await listCompetitionGames(request, env, db, competitionId, { includePredictionState: false });
+  const teamRows = await getTeams(db, competitionId);
+  const jobRows = await prepared(db, `SELECT fj.game_id, fj.job_type, fj.status, fj.revision_number,
+      fj.artifact_generation, fj.due_at, fj.attempts, fj.completed_at
+    FROM formal_jobs fj JOIN games g ON g.id = fj.game_id
+   WHERE fj.competition_type = ?1 AND fj.competition_id = ?2
+   ORDER BY g.game_date ASC, g.start_at ASC, fj.due_at ASC, fj.job_type ASC`, COMPETITION_TYPE, competitionId).all();
+  return json({ ok: true, competition: serializeCompetition(competition), teams: teamRows, games, formalJobs: jobRows.results || [] }, 200, request, env);
+}
+
+function csvRows(value) {
+  const lines = String(value || "").split(/\r?\n/).filter((line) => line.trim());
+  if (!lines.length) return [];
+  const parseLine = (line) => {
+    const cells = [];
+    let cell = "";
+    let quoted = false;
+    for (let index = 0; index < line.length; index += 1) {
+      const char = line[index];
+      if (char === '"' && line[index + 1] === '"' && quoted) { cell += '"'; index += 1; continue; }
+      if (char === '"') { quoted = !quoted; continue; }
+      if (char === "," && !quoted) { cells.push(cell.trim()); cell = ""; continue; }
+      cell += char;
+    }
+    cells.push(cell.trim());
+    return cells;
+  };
+  const headers = parseLine(lines[0]).map((header) => header.replace(/^\uFEFF/, "").trim());
+  return lines.slice(1).map((line) => Object.fromEntries(parseLine(line).map((value, index) => [headers[index], value])));
+}
+
+function importRows(input, key) {
+  if (Array.isArray(input)) return input;
+  if (Array.isArray(input?.[key])) return input[key];
+  if (typeof input?.csv === "string") return csvRows(input.csv);
+  return [];
+}
+
+function validUniformNumber(value) {
+  const text = String(value ?? "").trim();
+  return text === "" || /^(?:0|[1-9]\d{0,2})$/.test(text) ? text : null;
+}
+
+async function bulkImportPlayers(request, env, db) {
+  const input = await readJson(request);
+  const gameId = validId(input.gameId || input.id);
+  const game = await getGame(db, gameId);
+  if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
+  const competition = await getCompetition(db, game.competition_id);
+  if (competition?.status === "completed") throw new RequestError(409, "COMPETITION_COMPLETED", "完了した大会は変更できません。");
+  const rows = importRows(input, "players");
+  if (!rows.length || rows.length > 200) throw new RequestError(400, "PLAYERS_INVALID", "選手データを確認してください。");
+  const preparedRows = [];
+  const seenNames = new Set();
+  const seenIds = new Set();
+  for (const value of rows) {
+    const name = String(value.name || value.playerName || value.player_name || "").trim().slice(0, 80);
+    const requestedId = validId(value.id || value.playerId || value.player_id);
+    const team = await validatePlayerTeam(db, game, value.teamId || value.team_id || value.teamKey || value.team_key || value.team);
+    const uniformNumber = validUniformNumber(value.uniformNumber ?? value.uniform_number);
+    const position = String(value.position || value.primaryPosition || "").trim();
+    const bat = String(value.bat || value.battingHand || "").trim().slice(0, 12) || null;
+    const throwing = String(value.throw || value.throwingHand || "").trim().slice(0, 12) || null;
+    if (!name || !team || uniformNumber === null || !PLAYER_POSITIONS.includes(position) || seenNames.has(name) || (requestedId && seenIds.has(requestedId))) {
+      throw new RequestError(400, "PLAYERS_INVALID", "選手名・チーム・守備位置・背番号の重複または不正を確認してください。");
+    }
+    if (requestedId) {
+      const existing = await prepared(db, "SELECT game_id FROM players WHERE id = ?1 LIMIT 1", requestedId).first();
+      if (existing && existing.game_id !== gameId) throw new RequestError(409, "PLAYER_ID_CONFLICT", "別試合の選手IDは再利用できません。");
+      seenIds.add(requestedId);
+    }
+    seenNames.add(name);
+    preparedRows.push({ id: requestedId || uuid(), name, team, uniformNumber, position, bat, throwing, active: value.active === false || String(value.active).toLowerCase() === "false" ? 0 : 1 });
+  }
+  const now = nowIso();
+  await db.batch(preparedRows.map((row) => prepared(db, `INSERT INTO players
+    (id, game_id, name, uniform_number, team, team_id, position, bat, throw, active, created_at, updated_at)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+    ON CONFLICT(id) DO UPDATE SET name = excluded.name, uniform_number = excluded.uniform_number,
+      team = excluded.team, team_id = excluded.team_id, position = excluded.position, bat = excluded.bat,
+      throw = excluded.throw, active = excluded.active, updated_at = excluded.updated_at`,
+    row.id, gameId, row.name, row.uniformNumber, row.team.display_name, row.team.id, row.position, row.bat, row.throwing, row.active, now)));
+  return json({ ok: true, imported: preparedRows.length, players: await getPlayers(db, gameId) }, 200, request, env);
+}
+
+async function bulkImportGames(request, env, db) {
+  const input = await readJson(request);
+  const competitionId = validId(input.competitionId) || DEFAULT_COMPETITION_ID;
+  const competition = await ensureCompetition(db, competitionId);
+  if (competition?.status === "completed") throw new RequestError(409, "COMPETITION_COMPLETED", "完了した大会は変更できません。");
+  const rows = importRows(input, "games");
+  if (!rows.length || rows.length > 100) throw new RequestError(400, "GAMES_INVALID", "試合データを確認してください。");
+  const preparedRows = [];
+  const seenIds = new Set();
+  for (const value of rows) {
+    const id = validId(value.id || value.gameId) || uuid();
+    const title = String(value.title || value.name || "Asia CS").trim().slice(0, 120);
+    const gameDate = String(value.gameDate || value.game_date || "").trim();
+    const startAt = validIsoDateTime(value.startAt || value.start_at);
+    const deadline = validIsoDateTime(value.predictionDeadlineAt || value.prediction_deadline_at);
+    const homeTeamId = validId(value.homeTeamId || value.home_team_id || value.homeTeam || value.home_team);
+    const awayTeamId = validId(value.awayTeamId || value.away_team_id || value.awayTeam || value.away_team);
+    const teams = await validateGameTeams(db, competitionId, homeTeamId, awayTeamId);
+    const exists = await getGame(db, id);
+    if (exists || seenIds.has(id) || !title || !/^\d{4}-\d{2}-\d{2}$/.test(gameDate) || !startAt || !deadline || deadline.getTime() >= startAt.getTime() || tokyoCalendarDate(startAt) !== gameDate || !teams.home || !teams.away) {
+      throw new RequestError(400, "GAMES_INVALID", "試合日・開始日時・締切・対戦チームのいずれかが不正です。");
+    }
+    seenIds.add(id);
+    preparedRows.push({ id, title, gameDate, startAt, deadline, teams, venue: String(value.venue || "").trim().slice(0, 120) || null, externalGameCode: String(value.externalGameCode || value.external_game_code || "").trim().slice(0, 80) || null });
+  }
+  const now = nowIso();
+  const statements = [];
+  for (const row of preparedRows) {
+    statements.push(prepared(db, `INSERT INTO games
+      (id, title, competition_type, competition_id, game_source, external_game_code, game_date, start_at, prediction_deadline_at, venue, home_team_id, home_team_name, away_team_id, away_team_name, status, publication_status, current_lineup_revision, created_at, updated_at)
+      VALUES (?1, ?2, ?3, ?4, 'manual', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'open', 'pending', NULL, ?14, ?14)`, row.id, row.title, COMPETITION_TYPE, competitionId, row.externalGameCode, row.gameDate, row.startAt.toISOString(), row.deadline.toISOString(), row.venue, row.teams.home.team_key, row.teams.home.display_name, row.teams.away.team_key, row.teams.away.display_name, now));
+    statements.push(...buildFormalJobStatements(db, row.id, row.deadline.toISOString(), competitionId, now));
+  }
+  await db.batch(statements);
+  return json({ ok: true, imported: preparedRows.length, games: await listCompetitionGames(request, env, db, competitionId, { includePredictionState: false }) }, 200, request, env);
 }
 
 async function listTeams(request, env, db) {
@@ -658,6 +971,8 @@ async function createGame(request, env, db, admin) {
     throw new RequestError(400, "GAME_INPUT_INVALID", "試合名・試合日・開始日時・締切日時を確認してください。");
   }
   const competitionId = validId(input.competitionId) || DEFAULT_COMPETITION_ID;
+  const competition = await ensureCompetition(db, competitionId);
+  if (competition?.status === "completed") throw new RequestError(409, "COMPETITION_COMPLETED", "完了した大会は変更できません。");
   const homeTeamId = validId(input.homeTeamId || input.homeTeam?.id);
   const awayTeamId = validId(input.awayTeamId || input.awayTeam?.id);
   const homeTeamName = String(input.homeTeamName || input.homeTeam?.name || "").trim().slice(0, 80) || null;
@@ -935,6 +1250,42 @@ async function publicRanking(request, env, db) {
   return json({ ok: true, competitionType: COMPETITION_TYPE, competitionId, ranking: await listCompetitionRanking(db, competitionId, true) }, 200, request, env);
 }
 
+async function publicBestNine(request, env, db) {
+  const competitionId = validId(new URL(request.url).searchParams.get("competitionId")) || DEFAULT_COMPETITION_ID;
+  if (!await getCompetition(db, competitionId)) return errorResponse(request, env, 404, "COMPETITION_NOT_FOUND", "対象大会がありません。");
+  const result = await prepared(db, `SELECT id, current_lineup_revision
+      FROM games
+     WHERE competition_type = ?1 AND competition_id = ?2
+       AND status = 'published' AND publication_status = 'published'
+       AND current_lineup_revision IS NOT NULL
+    ORDER BY game_date ASC, start_at ASC, id ASC`, COMPETITION_TYPE, competitionId).all();
+  const playersByGame = new Map();
+  const selections = new Map();
+  for (const game of result.results || []) {
+    const lineup = await currentLineup(db, game.id);
+    const players = await getPlayers(db, game.id);
+    const playerById = new Map(players.map((player) => [player.id, player]));
+    for (const item of lineup?.lineup || []) {
+      const player = playerById.get(item.playerId);
+      if (!player) continue;
+      // Player records are scoped to a game in the Phase 1 schema. Include the
+      // team scope so same-name players from separate games cannot collapse
+      // into one tournament Best Nine entry.
+      const key = `${player.team_id || player.team}\u0000${player.name}\u0000${item.position}`;
+      const current = selections.get(key) || { playerId: player.id, player: player.name, team: player.team || player.team_id || "", position: item.position, selectionCount: 0, gamesCount: 0 };
+      current.selectionCount += 1;
+      current.gamesCount += 1;
+      selections.set(key, current);
+    }
+    playersByGame.set(game.id, true);
+  }
+  const bestNine = [...selections.values()]
+    .sort((left, right) => right.selectionCount - left.selectionCount || left.position.localeCompare(right.position, "ja") || left.player.localeCompare(right.player, "ja") || left.playerId.localeCompare(right.playerId))
+    .slice(0, BEST_NINE_LIMIT)
+    .map((row, index) => ({ rank: index + 1, ...row }));
+  return json({ ok: true, competitionType: COMPETITION_TYPE, competitionId, publishedGameCount: playersByGame.size, bestNine }, 200, request, env);
+}
+
 async function publishGame(request, env, db, gameId) {
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
@@ -1077,7 +1428,7 @@ async function adminGameDetail(request, env, db, gameId) {
   const predictions = await prepared(db, `SELECT users.username, predictions.status, predictions.score, predictions.max_score, predictions.scored_revision, predictions.updated_at FROM predictions JOIN users ON users.id = predictions.user_id WHERE predictions.game_id = ?1 ORDER BY predictions.updated_at DESC`, gameId).all();
   const revisions = await prepared(db, "SELECT revision_number, fingerprint, is_current, confirmed_at, confirmed_by FROM lineup_revisions WHERE game_id = ?1 ORDER BY revision_number DESC", gameId).all();
   await ensureFormalJobs(db, game);
-  return json({ ok: true, game: serializeGame(game, await getPlayers(db, gameId)), currentLineup: lineup, revisions: revisions.results || [], formalJobs: await listFormalJobs(db, gameId), ranking: await listCompetitionRanking(db, game.competition_id || DEFAULT_COMPETITION_ID, false, true), predictions: predictions.results || [] }, 200, request, env);
+  return json({ ok: true, competition: serializeCompetition(await getCompetition(db, game.competition_id || DEFAULT_COMPETITION_ID)), game: serializeGame(game, await getPlayers(db, gameId)), currentLineup: lineup, revisions: revisions.results || [], formalJobs: await listFormalJobs(db, gameId), ranking: await listCompetitionRanking(db, game.competition_id || DEFAULT_COMPETITION_ID, false, true), predictions: predictions.results || [] }, 200, request, env);
 }
 
 async function route(request, env) {
@@ -1094,7 +1445,31 @@ async function route(request, env) {
     const user = await resolveUser(request, env, db);
     return json({ ok: true, authenticated: Boolean(user), user: user ? { id: user.id, username: user.username, role: user.role } : null }, 200, request, env);
   }
+  if (path === "/api/competition" && request.method === "GET") return publicCompetition(request, env, db);
+  if (path === "/api/games" && request.method === "GET") return publicGames(request, env, db);
+  if (path === "/api/best-nine" && request.method === "GET") return publicBestNine(request, env, db);
   if (path === "/api/rankings" && request.method === "GET") return publicRanking(request, env, db);
+
+  if (path === "/api/admin/competition" && ["POST", "PUT"].includes(request.method)) {
+    const admin = await requireAdmin(request, env, db);
+    if (admin instanceof Response) return admin;
+    return updateCompetition(request, env, db);
+  }
+  if (path === "/api/admin/overview" && request.method === "GET") {
+    const admin = await requireAdmin(request, env, db);
+    if (admin instanceof Response) return admin;
+    return adminCompetitionOverview(request, env, db);
+  }
+  if (path === "/api/admin/players/import" && request.method === "POST") {
+    const admin = await requireAdmin(request, env, db);
+    if (admin instanceof Response) return admin;
+    return bulkImportPlayers(request, env, db);
+  }
+  if (path === "/api/admin/games/import" && request.method === "POST") {
+    const admin = await requireAdmin(request, env, db);
+    if (admin instanceof Response) return admin;
+    return bulkImportGames(request, env, db);
+  }
 
   if (path === "/api/admin/teams" && request.method === "GET") {
     const admin = await requireAdmin(request, env, db);
@@ -1109,6 +1484,8 @@ async function route(request, env) {
 
   let match = path.match(/^\/api\/games\/([^/]+)$/);
   if (match && request.method === "GET") return publicGame(request, env, db, validId(match[1]));
+  match = path.match(/^\/api\/games\/([^/]+)\/result$/);
+  if (match && request.method === "GET") return publicResult(request, env, db, validId(match[1]));
   match = path.match(/^\/api\/games\/([^/]+)\/prediction$/);
   if (match && request.method === "GET") return currentPrediction(request, env, db, validId(match[1]));
   if (match && request.method === "PUT") return savePrediction(request, env, db, validId(match[1]));

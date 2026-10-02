@@ -38,13 +38,13 @@ python -m http.server 8782 --directory asia-cs/public --bind 127.0.0.1
 
 ## APIの流れ
 
-1. 管理者が `POST /api/admin/teams` で大会チームを登録し、`POST /api/admin/games` で試合を登録
+1. 管理者が `POST /api/admin/teams` で大会チームを登録し、`POST /api/admin/games` で試合を登録（`gameDate`、`startAt`、`predictionDeadlineAt` はすべて必須。締切は開始より前、`gameDate` は東京時間の開始日と一致させる）
 2. `POST /api/admin/games/:id/players` または `PUT .../players/:playerId` で出場選手を登録・編集
 3. ユーザーがログインして `PUT /api/games/:id/prediction` で予想を保存・編集
 4. 保存APIは必ずD1に保存された締切とWorkerのサーバー時刻で判定
 5. 管理者が正式スタメンを `POST /api/admin/games/:id/lineup` で確定
 6. 締切後に `POST /api/admin/games/:id/score`、`POST .../ranking`、`POST .../publish` の順で実行
-7. `GET /api/rankings?competitionId=...` は公開済み世代だけを返し、ランキング更新前・公開前の得点を返しません
+7. `GET /api/rankings?competitionId=...` は `competitionId` を必須とし、公開済み世代だけを返します。ランキング更新前・公開前の得点や別大会の得点は返しません
 8. 修正時は `POST /api/admin/games/:id/rescore` が新revisionで全予想を再採点し、ランキング更新・公開を再度実行する。旧revisionを公開結果として再利用しない
 
 登録時には `prediction_close`、`score`、`ranking_rebuild`、`publish` の4段階を `formal_jobs` に作成します。Phase 1では自動Cronを起動せず、管理操作が同じ段階の完了記録を進めます。`ranking` は大会全試合の現行採点を再集計し、同じrevisionでの再実行はno-opです。`publish` は同じrevisionのranking job完了を必須にします。NPB identity / probable / roster fetch / lineup fetch jobは作成しません。

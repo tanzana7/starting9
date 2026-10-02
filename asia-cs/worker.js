@@ -414,25 +414,34 @@ async function validateGameTeams(db, competitionId, homeTeamId, awayTeamId) {
 
 async function validatePlayerTeam(db, game, teamId) {
   if (!game.home_team_id && !game.away_team_id) return null;
-  const normalized = validId(teamId);
-  if (!normalized || ![game.home_team_id, game.away_team_id].includes(normalized)) {
+  const team = await findTeam(db, game.competition_id, teamId);
+  if (!team) {
+    throw new RequestError(409, "TEAM_NOT_IN_COMPETITION", "大会に登録されたチームを指定してください。");
+  }
+  const gameTeamIds = [game.home_team_id, game.away_team_id].filter(Boolean);
+  // Older Asia CS rows stored team_key in games. New rows may use the
+  // canonical teams.id, so accept either only after resolving the identifier
+  // through the competition-scoped teams table. A client-provided string is
+  // never trusted as ownership proof by itself.
+  const belongsToGame = gameTeamIds.includes(team.id) || gameTeamIds.includes(team.team_key);
+  if (!belongsToGame) {
     throw new RequestError(409, "PLAYER_TEAM_MISMATCH", "選手の所属チームが試合の対戦チームと一致しません。");
   }
-  const team = await findTeam(db, game.competition_id, normalized);
-  if (!team) throw new RequestError(409, "TEAM_NOT_IN_COMPETITION", "大会に登録されたチームを指定してください。");
-  return normalized;
+  return team;
 }
 
 async function validateLineupTeamOwnership(db, game, lineup, teamId) {
   if (!game.home_team_id && !game.away_team_id) return;
-  const normalizedTeamId = await validatePlayerTeam(db, game, teamId);
-  const ids = [...new Set(lineup.map((item) => item.playerId))];
-  if (ids.length !== lineup.length) return;
-  const result = await prepared(db, `SELECT id, team_id FROM players WHERE game_id = ?1 AND id IN (${ids.map((_, index) => `?${index + 2}`).join(",")})`, game.id, ...ids).all();
+  const team = await validatePlayerTeam(db, game, teamId);
+  const ids = lineup.map((item) => item.playerId);
+  if (new Set(ids).size !== ids.length) {
+    throw new RequestError(400, "DUPLICATE_PLAYER", "正式スタメンに同じ選手が複数います。");
+  }
+  const result = await prepared(db, `SELECT id, team_id, active FROM players WHERE game_id = ?1 AND id IN (${ids.map((_, index) => `?${index + 2}`).join(",")})`, game.id, ...ids).all();
   const playersById = new Map((result.results || []).map((player) => [player.id, player]));
   for (const id of ids) {
     const player = playersById.get(id);
-    if (!player || player.team_id !== normalizedTeamId) {
+    if (!player || Number(player.active) !== 1 || (player.team_id !== team.id && player.team_id !== team.team_key)) {
       throw new RequestError(409, "LINEUP_TEAM_MISMATCH", "正式スタメンの所属チームが一致しません。");
     }
   }
@@ -588,7 +597,10 @@ async function createGame(request, env, db, admin) {
   const title = String(input.title || "Asia CS").trim().slice(0, 120);
   const startAt = validIsoDateTime(input.startAt);
   const gameDate = String(input.gameDate || "").trim();
-  const deadline = validIsoDateTime(input.predictionDeadlineAt || (startAt ? new Date(startAt.getTime() - 60 * 60 * 1000).toISOString() : ""));
+  // Keep all three scheduling fields explicit at the API boundary. Automatic
+  // deadline derivation made malformed admin payloads look valid and could
+  // silently move the prediction cutoff when a caller changed startAt.
+  const deadline = validIsoDateTime(input.predictionDeadlineAt);
   if (!title || !/^\d{4}-\d{2}-\d{2}$/.test(gameDate) || !startAt || !deadline || deadline.getTime() >= startAt.getTime() || tokyoCalendarDate(startAt) !== gameDate) {
     throw new RequestError(400, "GAME_INPUT_INVALID", "試合名・試合日・開始日時・締切日時を確認してください。");
   }
@@ -634,7 +646,8 @@ async function upsertPlayers(request, env, db, gameId) {
     }
     const name = String(value.name || value.playerName || "").trim().slice(0, 80);
     if (!name) throw new RequestError(400, "PLAYER_NAME_REQUIRED", "選手名を入力してください。");
-    const teamId = await validatePlayerTeam(db, game, value.teamId || value.team_id);
+    const team = await validatePlayerTeam(db, game, value.teamId || value.team_id);
+    const teamId = team?.id || null;
     statements.push(prepared(db, `INSERT INTO players (id, game_id, name, uniform_number, team, team_id, active, created_at, updated_at)
       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
       ON CONFLICT(id) DO UPDATE SET name = excluded.name, uniform_number = excluded.uniform_number, team = excluded.team, team_id = excluded.team_id, active = excluded.active, updated_at = excluded.updated_at`,
@@ -657,7 +670,8 @@ async function updatePlayer(request, env, db, gameId, playerId) {
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
   const name = String(input.name || input.playerName || "").trim().slice(0, 80);
   if (!name) throw new RequestError(400, "PLAYER_NAME_REQUIRED", "選手名を入力してください。");
-  const teamId = await validatePlayerTeam(db, game, input.teamId || input.team_id);
+  const team = await validatePlayerTeam(db, game, input.teamId || input.team_id);
+  const teamId = team?.id || null;
   const result = await prepared(db, `UPDATE players SET name = ?1, uniform_number = ?2, team = ?3, team_id = ?4, active = ?5, updated_at = ?6 WHERE id = ?7 AND game_id = ?8`, name, String(input.uniformNumber || input.uniform_number || "").trim().slice(0, 3), String(input.team || "").trim().slice(0, 40), teamId, input.active === false ? 0 : 1, nowIso(), id, gameId).run();
   if (!Number(result?.meta?.changes || 0)) return errorResponse(request, env, 404, "PLAYER_NOT_FOUND", "選手がありません。");
   return json({ ok: true, player: (await prepared(db, "SELECT id, game_id, name, uniform_number, team, team_id, active FROM players WHERE id = ?1", id).first()) }, 200, request, env);
@@ -838,7 +852,9 @@ async function listCompetitionRanking(db, competitionId, publicOnly = true, incl
 }
 
 async function publicRanking(request, env, db) {
-  const competitionId = validId(new URL(request.url).searchParams.get("competitionId")) || DEFAULT_COMPETITION_ID;
+  const rawCompetitionId = new URL(request.url).searchParams.get("competitionId");
+  const competitionId = validId(rawCompetitionId);
+  if (!competitionId) return errorResponse(request, env, 400, "COMPETITION_REQUIRED", "competitionIdを指定してください。");
   return json({ ok: true, competitionType: COMPETITION_TYPE, competitionId, ranking: await listCompetitionRanking(db, competitionId, true) }, 200, request, env);
 }
 

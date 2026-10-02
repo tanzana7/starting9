@@ -198,7 +198,7 @@ test("Asia CSのcompetition/team metadataとformal job scopeはNPB前提から�
 
   const startAt = "2026-11-15T09:00:00+09:00";
   const created = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({
-    id: "asia-cs-metadata", title: "Asia CS Final", competitionId: "asia-cs-2026", gameDate: "2026-11-15", startAt,
+    id: "asia-cs-metadata", title: "Asia CS Final", competitionId: "asia-cs-2026", gameDate: "2026-11-15", startAt, predictionDeadlineAt: "2026-11-15T08:00:00+09:00",
     homeTeamId: "team-jp", homeTeamName: "Japan", awayTeamId: "team-kr", awayTeamName: "Korea", venue: "Tokyo Dome", externalGameCode: "asia-2026-final"
   }) });
   assert.equal(created.response.status, 201);
@@ -225,10 +225,16 @@ test("大会のチーム所属と日時境界をサーバー側で検証する",
   const adminCookie = authCookie(admin);
   await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ competitionId: "asia-cs", teamKey: "home", displayName: "Home", shortName: "H" }) });
   await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ competitionId: "asia-cs", teamKey: "away", displayName: "Away", shortName: "A" }) });
+  const foreignTeam = await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ competitionId: "other-cup", teamKey: "foreign", displayName: "Foreign", shortName: "F" }) });
+  assert.equal(foreignTeam.response.status, 201);
   const missingTeam = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "bad-team-game", gameDate: "2026-11-15", startAt: "2026-11-15T09:00:00+09:00", predictionDeadlineAt: "2026-11-15T08:00:00+09:00", homeTeamId: "missing", homeTeamName: "Missing", awayTeamId: "away", awayTeamName: "Away" }) });
   assert.equal(missingTeam.response.status, 409);
   const afterStart = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "bad-time-game", gameDate: "2026-11-15", startAt: "2026-11-15T09:00:00+09:00", predictionDeadlineAt: "2026-11-15T10:00:00+09:00" }) });
   assert.equal(afterStart.response.status, 400);
+  const missingDeadline = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "missing-deadline-game", gameDate: "2026-11-15", startAt: "2026-11-15T09:00:00+09:00" }) });
+  assert.equal(missingDeadline.response.status, 400);
+  const equalDeadline = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "equal-deadline-game", gameDate: "2026-11-15", startAt: "2026-11-15T09:00:00+09:00", predictionDeadlineAt: "2026-11-15T09:00:00+09:00" }) });
+  assert.equal(equalDeadline.response.status, 400);
   const wrongDate = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "wrong-date-game", gameDate: "2026-11-14", startAt: "2026-11-15T00:00:00Z", predictionDeadlineAt: "2026-11-14T23:00:00Z" }) });
   assert.equal(wrongDate.response.status, 400);
   const ambiguousTime = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "ambiguous-time-game", gameDate: "2026-11-15", startAt: "2026-11-15T09:00:00", predictionDeadlineAt: "2026-11-15T08:00:00+09:00" }) });
@@ -241,6 +247,8 @@ test("大会のチーム所属と日時境界をサーバー側で検証する",
   assert.equal(validRoster.response.status, 200);
   const awayPlayer = await request(worker, env, "/api/admin/games/team-game/players", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ players: [{ id: "away-player", name: "Away Player", teamId: "away" }] }) });
   assert.equal(awayPlayer.response.status, 200);
+  const crossCompetitionPlayer = await request(worker, env, "/api/admin/games/team-game/players", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ players: [{ id: "foreign-player", name: "Foreign Player", teamId: "foreign" }] }) });
+  assert.equal(crossCompetitionPlayer.response.status, 409);
   const missingLineupTeam = await request(worker, env, "/api/admin/games/team-game/lineup", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ lineup }) });
   assert.equal(missingLineupTeam.response.status, 409);
   const mixedLineup = lineup.map((item, index) => index === 8 ? { ...item, playerId: "away-player", playerName: "Away Player" } : item);
@@ -275,6 +283,31 @@ test("Asia CSはStarting9の外部identityを使い、client user_idと独自log
   assert.equal(saved.response.status, 200);
   assert.equal(fixture.database.prepare("SELECT user_id FROM predictions WHERE game_id = 'external-game'").get().user_id, "starting9-user");
   assert.equal(fixture.database.prepare("SELECT auth_source FROM users WHERE id = 'starting9-user'").get().auth_source, "starting9");
+});
+
+test("Asia CSのHTTPS認証連携はs9_sessionだけをStarting9へ転送し、失敗時は匿名扱いにする", async () => {
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const fixture = createDatabase();
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    calls.push({ input, init });
+    const cookie = new Headers(init.headers || {}).get("Cookie");
+    if (cookie === "s9_session=remote-user") return new Response(JSON.stringify({ ok: true, authenticated: true, user: { id: "remote-user", username: "remote", role: "user" } }), { status: 200 });
+    return new Response(JSON.stringify({ ok: true, authenticated: false, user: null }), { status: 200 });
+  };
+  try {
+    const env = { ...fixture, STARTING9_AUTH_BASE_URL: "https://starting9-auth.example", ALLOWED_ORIGIN: "https://asia-cs.test" };
+    const authenticated = await request(worker, env, "/api/auth/me", { headers: { Cookie: "s9_session=remote-user" } });
+    assert.equal(authenticated.response.status, 200);
+    assert.deepEqual(authenticated.payload.user, { id: "remote-user", username: "remote", role: "user" });
+    assert.equal(calls[0].input, "https://starting9-auth.example/api/auth/me");
+    assert.equal(new Headers(calls[0].init.headers).get("Cookie"), "s9_session=remote-user");
+    const anonymous = await request(worker, env, "/api/auth/me");
+    assert.deepEqual(anonymous.payload, { ok: true, authenticated: false, user: null });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("ranking_rebuildは大会単位で再集計し、再実行しても不変で別大会を混ぜない", async () => {
@@ -319,6 +352,7 @@ test("ranking_rebuildは大会単位で再集計し、再実行しても不変�
   const publicRows = (await request(worker, env, "/api/rankings?competitionId=asia-cs")).payload.ranking;
   assert.deepEqual(publicRows.map((row) => [row.userId, row.score, row.games]), [[userA.payload.user.id, 150, 2], [userB.payload.user.id, 100, 1]]);
   assert.equal(Object.prototype.hasOwnProperty.call(publicRows[0], "generation"), false);
+  assert.equal((await request(worker, env, "/api/rankings")).response.status, 400);
 });
 
 test("Asia CS Best Nineは未公開では返さず、得点・提出時刻・username・user_id順を固定する", async () => {
@@ -426,7 +460,7 @@ test("採点は状態遷移・batch rollback・並列実行を保護する", asy
   const fan = await request(worker, env, "/api/auth/register", { method: "POST", body: JSON.stringify({ username: "fan", password: "fan-password" }) });
   const fanCookie = authCookie(fan);
   const future = "2026-11-15T09:00:00+09:00";
-  await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "retry-test", title: "Retry", gameDate: "2026-11-15", startAt: future }) });
+  await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "retry-test", title: "Retry", gameDate: "2026-11-15", startAt: future, predictionDeadlineAt: "2026-11-15T08:00:00+09:00" }) });
   await request(worker, env, "/api/admin/games/retry-test/players", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ players }) });
   await request(worker, env, "/api/games/retry-test/prediction", { method: "PUT", headers: { Cookie: fanCookie }, body: JSON.stringify({ lineup }) });
   fixture.database.prepare("UPDATE games SET prediction_deadline_at = ?, status = 'open' WHERE id = ?").run(new Date(Date.now() - 1000).toISOString(), "retry-test");

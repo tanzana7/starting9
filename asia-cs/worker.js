@@ -436,6 +436,18 @@ async function getCompetition(db, competitionId) {
     FROM competitions WHERE id = ?1 LIMIT 1`, competitionId).first();
 }
 
+async function assertCompetitionMutable(db, competitionId) {
+  const competition = await getCompetition(db, competitionId || DEFAULT_COMPETITION_ID);
+  if (!competition) throw new RequestError(404, "COMPETITION_NOT_FOUND", "対象大会がありません。");
+  if (competition.status === "completed") throw new RequestError(409, "COMPETITION_COMPLETED", "完了した大会は変更できません。");
+  return competition;
+}
+
+async function assertGameCompetitionMutable(db, game) {
+  if (!game) throw new RequestError(404, "GAME_NOT_FOUND", "対象試合がありません。");
+  return assertCompetitionMutable(db, game.competition_id || DEFAULT_COMPETITION_ID);
+}
+
 async function ensureCompetition(db, competitionId, now = nowIso()) {
   const id = validId(competitionId) || DEFAULT_COMPETITION_ID;
   await prepared(db, `INSERT OR IGNORE INTO competitions
@@ -568,10 +580,10 @@ async function validateLineupTeamOwnership(db, game, lineup, teamId) {
   }
 }
 
-function serializeGame(game, players = []) {
-  if (!game) return null;
-  const serializePlayer = (player) => ({
+function serializePlayer(player) {
+  return {
     id: player.id,
+    gameId: player.game_id,
     name: player.name,
     uniformNumber: player.uniform_number,
     team: player.team,
@@ -580,8 +592,16 @@ function serializeGame(game, players = []) {
     bat: player.bat || null,
     throw: player.throw || null,
     active: Boolean(player.active)
-  });
-  const serializedPlayers = players.map(serializePlayer);
+  };
+}
+
+function serializePlayers(players = []) {
+  return players.map(serializePlayer);
+}
+
+function serializeGame(game, players = []) {
+  if (!game) return null;
+  const serializedPlayers = serializePlayers(players);
   const homeIds = new Set([game.home_team_id, game.home_team_name].filter(Boolean));
   const awayIds = new Set([game.away_team_id, game.away_team_name].filter(Boolean));
   return {
@@ -683,11 +703,24 @@ async function publicResult(request, env, db, gameId) {
 async function currentPrediction(request, env, db, gameId) {
   const user = await requireUser(request, env, db);
   if (user instanceof Response) return user;
+  const game = await getGame(db, gameId);
+  if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
   const row = await prepared(db, "SELECT prediction_json, status, score, max_score, scored_revision, submitted_at, updated_at, scored_at, actual_lineup_json FROM predictions WHERE user_id = ?1 AND game_id = ?2 LIMIT 1", user.id, gameId).first();
-  return json({ ok: true, prediction: row ? {
-    lineup: JSON.parse(row.prediction_json), status: row.status, score: row.score === null ? null : Number(row.score), maxScore: row.max_score === null ? null : Number(row.max_score), scoredRevision: row.scored_revision, submittedAt: row.submitted_at, updatedAt: row.updated_at, scoredAt: row.scored_at,
-    actualLineup: row.actual_lineup_json ? JSON.parse(row.actual_lineup_json) : null
-  } : null }, 200, request, env);
+  const published = game.status === "published" && game.publication_status === "published";
+  const prediction = row ? {
+    lineup: JSON.parse(row.prediction_json),
+    status: row.status,
+    submittedAt: row.submitted_at,
+    updatedAt: row.updated_at,
+    ...(published ? {
+      score: row.score === null ? null : Number(row.score),
+      maxScore: row.max_score === null ? null : Number(row.max_score),
+      scoredRevision: row.scored_revision,
+      scoredAt: row.scored_at,
+      actualLineup: row.actual_lineup_json ? JSON.parse(row.actual_lineup_json) : null
+    } : {})
+  } : null;
+  return json({ ok: true, prediction }, 200, request, env);
 }
 
 async function savePrediction(request, env, db, gameId) {
@@ -697,8 +730,7 @@ async function savePrediction(request, env, db, gameId) {
   if (originError) return originError;
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
-  const competition = await getCompetition(db, game.competition_id || DEFAULT_COMPETITION_ID);
-  if (competition?.status === "completed") return errorResponse(request, env, 409, "COMPETITION_COMPLETED", "完了した大会では予想できません。");
+  await assertGameCompetitionMutable(db, game);
   const now = new Date();
   const deadline = validDate(game.prediction_deadline_at);
   if (!deadline || now.getTime() >= deadline.getTime() || game.status !== "open") {
@@ -726,6 +758,7 @@ async function deletePrediction(request, env, db, gameId) {
   const originError = mutationOriginError(request, env);
   if (originError) return originError;
   const game = await getGame(db, gameId);
+  if (game) await assertGameCompetitionMutable(db, game);
   const deadline = validDate(game?.prediction_deadline_at);
   if (!game || !deadline || new Date().getTime() >= deadline.getTime() || game.status !== "open") {
     return errorResponse(request, env, 409, "PREDICTION_DEADLINE_PASSED", "予想受付を終了しています。");
@@ -776,7 +809,7 @@ async function createTeam(request, env, db, admin) {
   const input = await readJson(request);
   const competitionId = validId(input.competitionId) || DEFAULT_COMPETITION_ID;
   const competition = await ensureCompetition(db, competitionId);
-  if (competition?.status === "completed") throw new RequestError(409, "COMPETITION_COMPLETED", "完了した大会は変更できません。");
+  await assertCompetitionMutable(db, competition.id);
   const teamKey = validId(input.teamKey || input.id);
   const displayName = String(input.displayName || input.name || "").trim().slice(0, 80);
   const shortName = String(input.shortName || displayName).trim().slice(0, 40);
@@ -842,24 +875,41 @@ async function adminCompetitionOverview(request, env, db) {
 }
 
 function csvRows(value) {
-  const lines = String(value || "").split(/\r?\n/).filter((line) => line.trim());
-  if (!lines.length) return [];
-  const parseLine = (line) => {
-    const cells = [];
-    let cell = "";
-    let quoted = false;
-    for (let index = 0; index < line.length; index += 1) {
-      const char = line[index];
-      if (char === '"' && line[index + 1] === '"' && quoted) { cell += '"'; index += 1; continue; }
-      if (char === '"') { quoted = !quoted; continue; }
-      if (char === "," && !quoted) { cells.push(cell.trim()); cell = ""; continue; }
-      cell += char;
-    }
-    cells.push(cell.trim());
-    return cells;
+  const text = String(value || "").replace(/^\uFEFF/, "");
+  const records = [];
+  let row = [];
+  let cell = "";
+  let quoted = false;
+
+  const pushCell = () => { row.push(cell.trim()); cell = ""; };
+  const pushRow = () => {
+    pushCell();
+    if (row.some((value) => value !== "")) records.push(row);
+    row = [];
   };
-  const headers = parseLine(lines[0]).map((header) => header.replace(/^\uFEFF/, "").trim());
-  return lines.slice(1).map((line) => Object.fromEntries(parseLine(line).map((value, index) => [headers[index], value])));
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quoted) {
+      if (char === '"' && text[index + 1] === '"') { cell += '"'; index += 1; continue; }
+      if (char === '"') { quoted = false; continue; }
+      cell += char;
+      continue;
+    }
+    if (char === '"') { quoted = true; continue; }
+    if (char === ",") { pushCell(); continue; }
+    if (char === "\r" || char === "\n") {
+      if (char === "\r" && text[index + 1] === "\n") index += 1;
+      pushRow();
+      continue;
+    }
+    cell += char;
+  }
+  if (quoted) throw new RequestError(400, "CSV_INVALID", "CSVの引用符が閉じていません。");
+  if (cell !== "" || row.length) pushRow();
+  if (!records.length) return [];
+  const headers = records[0].map((header) => header.trim());
+  return records.slice(1).map((record) => Object.fromEntries(headers.map((header, index) => [header, record[index] ?? ""])));
 }
 
 function importRows(input, key) {
@@ -874,13 +924,27 @@ function validUniformNumber(value) {
   return text === "" || /^(?:0|[1-9]\d{0,2})$/.test(text) ? text : null;
 }
 
+function normalizePlayerMetadata(value = {}, existing = null) {
+  const has = (key, alias) => Object.prototype.hasOwnProperty.call(value, key) || (alias && Object.prototype.hasOwnProperty.call(value, alias));
+  const rawPosition = value.position ?? value.primaryPosition;
+  const position = has("position", "primaryPosition") ? String(rawPosition || "").trim() : String(existing?.position || "").trim();
+  const uniformValue = has("uniformNumber", "uniform_number") ? (value.uniformNumber ?? value.uniform_number) : existing?.uniform_number;
+  const uniformNumber = validUniformNumber(uniformValue);
+  const bat = has("bat", "battingHand") ? String(value.bat ?? value.battingHand ?? "").trim().slice(0, 12) || null : (existing?.bat || null);
+  const throwing = has("throw", "throwingHand") ? String(value.throw ?? value.throwingHand ?? "").trim().slice(0, 12) || null : (existing?.throw || null);
+  const active = has("active") ? (value.active === false || String(value.active).toLowerCase() === "false" ? 0 : 1) : Number(existing?.active ?? 1) ? 1 : 0;
+  if (uniformNumber === null || (position && !PLAYER_POSITIONS.includes(position))) {
+    throw new RequestError(400, "PLAYER_METADATA_INVALID", "守備位置・背番号・選手metadataを確認してください。");
+  }
+  return { position, uniformNumber: uniformNumber ?? "", bat, throwing, active };
+}
+
 async function bulkImportPlayers(request, env, db) {
   const input = await readJson(request);
   const gameId = validId(input.gameId || input.id);
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
-  const competition = await getCompetition(db, game.competition_id);
-  if (competition?.status === "completed") throw new RequestError(409, "COMPETITION_COMPLETED", "完了した大会は変更できません。");
+  await assertGameCompetitionMutable(db, game);
   const rows = importRows(input, "players");
   if (!rows.length || rows.length > 200) throw new RequestError(400, "PLAYERS_INVALID", "選手データを確認してください。");
   const preparedRows = [];
@@ -890,11 +954,8 @@ async function bulkImportPlayers(request, env, db) {
     const name = String(value.name || value.playerName || value.player_name || "").trim().slice(0, 80);
     const requestedId = validId(value.id || value.playerId || value.player_id);
     const team = await validatePlayerTeam(db, game, value.teamId || value.team_id || value.teamKey || value.team_key || value.team);
-    const uniformNumber = validUniformNumber(value.uniformNumber ?? value.uniform_number);
-    const position = String(value.position || value.primaryPosition || "").trim();
-    const bat = String(value.bat || value.battingHand || "").trim().slice(0, 12) || null;
-    const throwing = String(value.throw || value.throwingHand || "").trim().slice(0, 12) || null;
-    if (!name || !team || uniformNumber === null || !PLAYER_POSITIONS.includes(position) || seenNames.has(name) || (requestedId && seenIds.has(requestedId))) {
+    const metadata = normalizePlayerMetadata(value);
+    if (!name || !team || !metadata.position || seenNames.has(name) || (requestedId && seenIds.has(requestedId))) {
       throw new RequestError(400, "PLAYERS_INVALID", "選手名・チーム・守備位置・背番号の重複または不正を確認してください。");
     }
     if (requestedId) {
@@ -903,7 +964,7 @@ async function bulkImportPlayers(request, env, db) {
       seenIds.add(requestedId);
     }
     seenNames.add(name);
-    preparedRows.push({ id: requestedId || uuid(), name, team, uniformNumber, position, bat, throwing, active: value.active === false || String(value.active).toLowerCase() === "false" ? 0 : 1 });
+    preparedRows.push({ id: requestedId || uuid(), name, team, ...metadata });
   }
   const now = nowIso();
   await db.batch(preparedRows.map((row) => prepared(db, `INSERT INTO players
@@ -913,14 +974,14 @@ async function bulkImportPlayers(request, env, db) {
       team = excluded.team, team_id = excluded.team_id, position = excluded.position, bat = excluded.bat,
       throw = excluded.throw, active = excluded.active, updated_at = excluded.updated_at`,
     row.id, gameId, row.name, row.uniformNumber, row.team.display_name, row.team.id, row.position, row.bat, row.throwing, row.active, now)));
-  return json({ ok: true, imported: preparedRows.length, players: await getPlayers(db, gameId) }, 200, request, env);
+  return json({ ok: true, imported: preparedRows.length, players: serializePlayers(await getPlayers(db, gameId)) }, 200, request, env);
 }
 
 async function bulkImportGames(request, env, db) {
   const input = await readJson(request);
   const competitionId = validId(input.competitionId) || DEFAULT_COMPETITION_ID;
   const competition = await ensureCompetition(db, competitionId);
-  if (competition?.status === "completed") throw new RequestError(409, "COMPETITION_COMPLETED", "完了した大会は変更できません。");
+  await assertCompetitionMutable(db, competition.id);
   const rows = importRows(input, "games");
   if (!rows.length || rows.length > 100) throw new RequestError(400, "GAMES_INVALID", "試合データを確認してください。");
   const preparedRows = [];
@@ -972,7 +1033,7 @@ async function createGame(request, env, db, admin) {
   }
   const competitionId = validId(input.competitionId) || DEFAULT_COMPETITION_ID;
   const competition = await ensureCompetition(db, competitionId);
-  if (competition?.status === "completed") throw new RequestError(409, "COMPETITION_COMPLETED", "完了した大会は変更できません。");
+  await assertCompetitionMutable(db, competition.id);
   const homeTeamId = validId(input.homeTeamId || input.homeTeam?.id);
   const awayTeamId = validId(input.awayTeamId || input.awayTeam?.id);
   const homeTeamName = String(input.homeTeamName || input.homeTeam?.name || "").trim().slice(0, 80) || null;
@@ -997,6 +1058,7 @@ async function createGame(request, env, db, admin) {
 async function upsertPlayers(request, env, db, gameId) {
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
+  await assertGameCompetitionMutable(db, game);
   const input = await readJson(request);
   const players = Array.isArray(input.players) ? input.players : [input];
   if (!players.length || players.length > 200) throw new RequestError(400, "PLAYERS_INVALID", "出場選手を確認してください。");
@@ -1005,8 +1067,9 @@ async function upsertPlayers(request, env, db, gameId) {
   for (const value of players) {
     const requestedId = validId(value.id || value.playerId);
     let id = requestedId || uuid();
+    let existing = null;
     if (requestedId) {
-      const existing = await prepared(db, "SELECT game_id FROM players WHERE id = ?1 LIMIT 1", requestedId).first();
+      existing = await prepared(db, "SELECT * FROM players WHERE id = ?1 LIMIT 1", requestedId).first();
       // Player rows are intentionally scoped to a game. Reusing a client-side
       // player ID from another game must create a new row instead of letting
       // SQLite's global primary key redirect an upsert into the old roster.
@@ -1015,11 +1078,12 @@ async function upsertPlayers(request, env, db, gameId) {
     const name = String(value.name || value.playerName || "").trim().slice(0, 80);
     if (!name) throw new RequestError(400, "PLAYER_NAME_REQUIRED", "選手名を入力してください。");
     const team = await validatePlayerTeam(db, game, value.teamId || value.team_id);
+    const metadata = normalizePlayerMetadata(value, existing?.game_id === gameId ? existing : null);
     const teamId = team?.id || null;
-    statements.push(prepared(db, `INSERT INTO players (id, game_id, name, uniform_number, team, team_id, active, created_at, updated_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
-      ON CONFLICT(id) DO UPDATE SET name = excluded.name, uniform_number = excluded.uniform_number, team = excluded.team, team_id = excluded.team_id, active = excluded.active, updated_at = excluded.updated_at`,
-      id, gameId, name, String(value.uniformNumber || value.uniform_number || "").trim().slice(0, 3), String(value.team || "").trim().slice(0, 40), teamId, value.active === false ? 0 : 1, now));
+    statements.push(prepared(db, `INSERT INTO players (id, game_id, name, uniform_number, team, team_id, position, bat, throw, active, created_at, updated_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+      ON CONFLICT(id) DO UPDATE SET name = excluded.name, uniform_number = excluded.uniform_number, team = excluded.team, team_id = excluded.team_id, position = excluded.position, bat = excluded.bat, throw = excluded.throw, active = excluded.active, updated_at = excluded.updated_at`,
+      id, gameId, name, metadata.uniformNumber, team?.display_name || String(value.team || existing?.team || "").trim().slice(0, 40), teamId, metadata.position, metadata.bat, metadata.throwing, metadata.active, now));
   }
   try {
     await db.batch(statements);
@@ -1027,7 +1091,7 @@ async function upsertPlayers(request, env, db, gameId) {
     if (String(error?.message || "").toLowerCase().includes("unique")) throw new RequestError(409, "PLAYER_DUPLICATE", "同じ試合に同名の選手があります。");
     throw error;
   }
-  return json({ ok: true, players: await getPlayers(db, gameId) }, 200, request, env);
+  return json({ ok: true, players: serializePlayers(await getPlayers(db, gameId)) }, 200, request, env);
 }
 
 async function updatePlayer(request, env, db, gameId, playerId) {
@@ -1036,13 +1100,17 @@ async function updatePlayer(request, env, db, gameId, playerId) {
   const input = await readJson(request);
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
+  await assertGameCompetitionMutable(db, game);
   const name = String(input.name || input.playerName || "").trim().slice(0, 80);
   if (!name) throw new RequestError(400, "PLAYER_NAME_REQUIRED", "選手名を入力してください。");
+  const existing = await prepared(db, "SELECT * FROM players WHERE id = ?1 AND game_id = ?2 LIMIT 1", id, gameId).first();
+  if (!existing) return errorResponse(request, env, 404, "PLAYER_NOT_FOUND", "選手がありません。");
   const team = await validatePlayerTeam(db, game, input.teamId || input.team_id);
+  const metadata = normalizePlayerMetadata(input, existing);
   const teamId = team?.id || null;
-  const result = await prepared(db, `UPDATE players SET name = ?1, uniform_number = ?2, team = ?3, team_id = ?4, active = ?5, updated_at = ?6 WHERE id = ?7 AND game_id = ?8`, name, String(input.uniformNumber || input.uniform_number || "").trim().slice(0, 3), String(input.team || "").trim().slice(0, 40), teamId, input.active === false ? 0 : 1, nowIso(), id, gameId).run();
+  const result = await prepared(db, `UPDATE players SET name = ?1, uniform_number = ?2, team = ?3, team_id = ?4, position = ?5, bat = ?6, throw = ?7, active = ?8, updated_at = ?9 WHERE id = ?10 AND game_id = ?11`, name, metadata.uniformNumber, team?.display_name || String(input.team || existing.team || "").trim().slice(0, 40), teamId, metadata.position, metadata.bat, metadata.throwing, metadata.active, nowIso(), id, gameId).run();
   if (!Number(result?.meta?.changes || 0)) return errorResponse(request, env, 404, "PLAYER_NOT_FOUND", "選手がありません。");
-  return json({ ok: true, player: (await prepared(db, "SELECT id, game_id, name, uniform_number, team, team_id, active FROM players WHERE id = ?1", id).first()) }, 200, request, env);
+  return json({ ok: true, player: serializePlayer(await prepared(db, "SELECT id, game_id, name, uniform_number, team, team_id, position, bat, throw, active FROM players WHERE id = ?1", id).first()) }, 200, request, env);
 }
 
 async function getRosterIds(db, gameId) {
@@ -1052,6 +1120,7 @@ async function getRosterIds(db, gameId) {
 async function saveInitialLineup(request, env, db, gameId, admin) {
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
+  await assertGameCompetitionMutable(db, game);
   if (["scored", "published"].includes(game.status)) return errorResponse(request, env, 409, "LINEUP_REVISION_REQUIRED", "採点済みの正式スタメンは修正操作を使用してください。");
   const input = await readJson(request);
   const candidate = validateLineup(input.lineup, { label: "正式スタメン", rosterIds: await getRosterIds(db, gameId) });
@@ -1155,6 +1224,7 @@ async function commitScoring(db, game, plan) {
 
 async function scoreGame(request, env, db, gameId, admin) {
   const game = await getGame(db, gameId);
+  if (game) await assertGameCompetitionMutable(db, game);
   const lineup = await currentLineup(db, gameId);
   if (!game || !lineup) return errorResponse(request, env, 409, "LINEUP_REQUIRED", "正式スタメンを先に確定してください。");
   await ensureFormalJobs(db, game);
@@ -1204,7 +1274,9 @@ async function rebuildCompetitionRanking(db, game, revision, now) {
 
 async function rankingGame(request, env, db, gameId) {
   const game = await getGame(db, gameId);
-  if (!game || !["scored", "published"].includes(game.status)) return errorResponse(request, env, 409, "SCORING_REQUIRED", "採点済みの試合だけランキングを更新できます。");
+  if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
+  await assertGameCompetitionMutable(db, game);
+  if (!["scored", "published"].includes(game.status)) return errorResponse(request, env, 409, "SCORING_REQUIRED", "採点済みの試合だけランキングを更新できます。");
   await ensureFormalJobs(db, game);
   const revision = Number(game.current_lineup_revision);
   const completed = await prepared(db, "SELECT 1 FROM scoring_runs WHERE game_id = ?1 AND revision_number = ?2 AND completed_at IS NOT NULL LIMIT 1", gameId, revision).first();
@@ -1289,6 +1361,7 @@ async function publicBestNine(request, env, db) {
 async function publishGame(request, env, db, gameId) {
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
+  await assertGameCompetitionMutable(db, game);
   await ensureFormalJobs(db, game);
   if (game.status === "published" && game.publication_status === "published") {
     const completedPublish = await prepared(db, "SELECT 1 FROM formal_jobs WHERE game_id = ?1 AND job_type = 'publish' AND status = 'completed' AND revision_number = ?2 LIMIT 1", gameId, game.current_lineup_revision).first();
@@ -1347,7 +1420,9 @@ async function publishGame(request, env, db, gameId) {
 
 async function rescoreGame(request, env, db, gameId, admin) {
   const game = await getGame(db, gameId);
-  if (!game || !["scored", "published"].includes(game.status)) return errorResponse(request, env, 409, "RESCORE_NOT_READY", "採点済みの試合だけ正式スタメンを修正できます。");
+  if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
+  await assertGameCompetitionMutable(db, game);
+  if (!["scored", "published"].includes(game.status)) return errorResponse(request, env, 409, "RESCORE_NOT_READY", "採点済みの試合だけ正式スタメンを修正できます。");
   await ensureFormalJobs(db, game);
   if (game.current_lineup_revision === null || game.current_lineup_revision === undefined) return errorResponse(request, env, 409, "REVISION_REQUIRED", "現行revisionがありません。");
   const input = await readJson(request);
@@ -1427,7 +1502,8 @@ async function adminGameDetail(request, env, db, gameId) {
   const lineup = await currentLineup(db, gameId);
   const predictions = await prepared(db, `SELECT users.username, predictions.status, predictions.score, predictions.max_score, predictions.scored_revision, predictions.updated_at FROM predictions JOIN users ON users.id = predictions.user_id WHERE predictions.game_id = ?1 ORDER BY predictions.updated_at DESC`, gameId).all();
   const revisions = await prepared(db, "SELECT revision_number, fingerprint, is_current, confirmed_at, confirmed_by FROM lineup_revisions WHERE game_id = ?1 ORDER BY revision_number DESC", gameId).all();
-  await ensureFormalJobs(db, game);
+  const competition = await getCompetition(db, game.competition_id || DEFAULT_COMPETITION_ID);
+  if (competition?.status !== "completed") await ensureFormalJobs(db, game);
   return json({ ok: true, competition: serializeCompetition(await getCompetition(db, game.competition_id || DEFAULT_COMPETITION_ID)), game: serializeGame(game, await getPlayers(db, gameId)), currentLineup: lineup, revisions: revisions.results || [], formalJobs: await listFormalJobs(db, gameId), ranking: await listCompetitionRanking(db, game.competition_id || DEFAULT_COMPETITION_ID, false, true), predictions: predictions.results || [] }, 200, request, env);
 }
 

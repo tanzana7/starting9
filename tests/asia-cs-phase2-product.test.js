@@ -220,3 +220,196 @@ test("公開結果と大会Best Nineは公開済み現行ラインナップだ�
   assert.equal(bestNine.payload.bestNine.length, 9);
   assert.equal(bestNine.payload.bestNine[0].selectionCount, 1);
 });
+
+test("完了済み大会は全ての管理mutationをサーバー側で拒否する", async () => {
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const fixture = createFixture();
+  const env = { ...fixture, ADMIN_BOOTSTRAP_TOKEN: "phase2-token", ALLOWED_ORIGIN: "https://asia-cs.test" };
+  const adminCookie = await adminSession(worker, env);
+  const fan = await request(worker, env, "/api/auth/register", { method: "POST", body: JSON.stringify({ username: "completed-fan", password: "fan-password" }) });
+  const fanCookie = cookie(fan);
+  for (const team of [
+    { teamKey: "completed-home", displayName: "Completed Home", shortName: "CH" },
+    { teamKey: "completed-away", displayName: "Completed Away", shortName: "CA" }
+  ]) {
+    assert.equal((await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify(team) })).response.status, 201);
+  }
+  assert.equal((await request(worker, env, "/api/admin/games", {
+    method: "POST", headers: { Cookie: adminCookie },
+    body: JSON.stringify({ id: "completed-mutation-game", title: "Completed", gameDate: "2026-12-10", startAt: "2026-12-10T09:00:00+09:00", predictionDeadlineAt: "2026-12-10T08:00:00+09:00", homeTeamId: "completed-home", awayTeamId: "completed-away", homeTeamName: "Completed Home", awayTeamName: "Completed Away" })
+  })).response.status, 201);
+  assert.equal((await request(worker, env, "/api/admin/competition", { method: "PUT", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "asia-cs", displayName: "Asia CS", shortName: "ACS", status: "completed" }) })).response.status, 200);
+
+  const attempts = [
+    ["POST", "/api/admin/games/completed-mutation-game/players", { players: [{ id: "completed-player", name: "Player", teamId: "completed-home", position: "中", uniformNumber: "1" }] }],
+    ["PUT", "/api/admin/games/completed-mutation-game/players/completed-player", { name: "Changed" }],
+    ["POST", "/api/admin/games/completed-mutation-game/lineup", { lineup: [] }],
+    ["POST", "/api/admin/games/completed-mutation-game/score", {}],
+    ["POST", "/api/admin/games/completed-mutation-game/ranking", {}],
+    ["POST", "/api/admin/games/completed-mutation-game/publish", {}],
+    ["POST", "/api/admin/games/completed-mutation-game/rescore", { lineup: [] }]
+  ];
+  for (const [method, pathName, body] of attempts) {
+    const result = await request(worker, env, pathName, { method, headers: { Cookie: adminCookie }, body: JSON.stringify(body) });
+    assert.equal(result.response.status, 409, `${method} ${pathName}`);
+    assert.equal(result.payload.code, "COMPETITION_COMPLETED", `${method} ${pathName}`);
+  }
+
+  for (const [pathName, body] of [
+    ["/api/admin/players/import", { gameId: "completed-mutation-game", players: [{ id: "bulk-completed-player", name: "Bulk Player", position: "中", uniformNumber: "2", teamId: "completed-home" }] }],
+    ["/api/admin/games/import", { competitionId: "asia-cs", games: [{ id: "bulk-completed-game", title: "Bulk", gameDate: "2026-12-11", startAt: "2026-12-11T09:00:00+09:00", predictionDeadlineAt: "2026-12-11T08:00:00+09:00", homeTeamId: "completed-home", awayTeamId: "completed-away" }] }]
+  ]) {
+    const result = await request(worker, env, pathName, { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify(body) });
+    assert.equal(result.response.status, 409, pathName);
+    assert.equal(result.payload.code, "COMPETITION_COMPLETED", pathName);
+  }
+  const prediction = await request(worker, env, "/api/games/completed-mutation-game/prediction", { method: "PUT", headers: { Cookie: fanCookie }, body: JSON.stringify({ lineup: [] }) });
+  assert.equal(prediction.response.status, 409);
+  assert.equal(prediction.payload.code, "COMPETITION_COMPLETED");
+  assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM players").get().count, 0);
+});
+
+test("scoredで未公開の本人predictionは採点結果を返さず、公開後だけ返す", async () => {
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const fixture = createFixture();
+  const env = { ...fixture, ASIA_CS_LOCAL_AUTH: "true", ALLOWED_ORIGIN: "https://asia-cs.test" };
+  const fan = await request(worker, env, "/api/auth/register", { method: "POST", body: JSON.stringify({ username: "prediction-reader", password: "fan-password" }) });
+  const now = "2026-12-12T00:00:00.000Z";
+  fixture.database.prepare(`INSERT INTO games
+    (id, title, competition_type, competition_id, game_source, game_date, start_at, prediction_deadline_at, status, publication_status, current_lineup_revision, created_at, updated_at)
+    VALUES ('pending-result-game', 'Pending Result', 'ASIA_CS', 'asia-cs', 'manual', '2026-12-12', '2026-12-12T09:00:00.000Z', '2026-12-12T08:00:00.000Z', 'open', 'pending', 3, ?, ?)`)
+    .run(now, now);
+  fixture.database.prepare(`INSERT INTO predictions
+    (id, user_id, game_id, prediction_json, submitted_at, updated_at, status, score, max_score, scored_revision, actual_lineup_json, scored_at, is_test_prediction)
+    VALUES ('pending-prediction', ?, 'pending-result-game', '[]', ?, ?, 'submitted', NULL, NULL, NULL, NULL, NULL, 0)`)
+    .run(fan.payload.user.id, now, now);
+
+  const assertHidden = async () => {
+    const result = await request(worker, env, "/api/games/pending-result-game/prediction", { headers: { Cookie: cookie(fan) } });
+    assert.equal(result.response.status, 200);
+    assert.deepEqual(result.payload.prediction.lineup, []);
+    assert.equal(Object.hasOwn(result.payload.prediction, "score"), false);
+    assert.equal(Object.hasOwn(result.payload.prediction, "maxScore"), false);
+    assert.equal(Object.hasOwn(result.payload.prediction, "scoredRevision"), false);
+    assert.equal(Object.hasOwn(result.payload.prediction, "actualLineup"), false);
+  };
+  await assertHidden();
+
+  fixture.database.prepare("UPDATE games SET status = 'closed' WHERE id = 'pending-result-game'").run();
+  await assertHidden();
+
+  fixture.database.prepare(`UPDATE predictions
+    SET status = 'scored', score = 77, max_score = 99, scored_revision = 3,
+        actual_lineup_json = '[{"playerId":"official-player","position":"中"}]', scored_at = ?
+    WHERE id = 'pending-prediction'`).run(now);
+  fixture.database.prepare("UPDATE games SET status = 'scored' WHERE id = 'pending-result-game'").run();
+  await assertHidden();
+
+  fixture.database.prepare("UPDATE games SET status = 'published', publication_status = 'published' WHERE id = 'pending-result-game'").run();
+  const after = await request(worker, env, "/api/games/pending-result-game/prediction", { headers: { Cookie: cookie(fan) } });
+  assert.equal(after.response.status, 200);
+  assert.equal(after.payload.prediction.score, 77);
+  assert.equal(after.payload.prediction.maxScore, 99);
+  assert.equal(after.payload.prediction.scoredRevision, 3);
+  assert.deepEqual(after.payload.prediction.actualLineup, [{ playerId: "official-player", position: "中" }]);
+});
+
+test("manualとbulkの選手metadataは保存・更新・CSV取込で同じ形を保つ", async () => {
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const fixture = createFixture();
+  const env = { ...fixture, ADMIN_BOOTSTRAP_TOKEN: "phase2-token", ALLOWED_ORIGIN: "https://asia-cs.test" };
+  const adminCookie = await adminSession(worker, env);
+  const teamIds = {};
+  for (const team of [
+    { teamKey: "metadata-home", displayName: "Metadata Home", shortName: "MH" },
+    { teamKey: "metadata-away", displayName: "Metadata Away", shortName: "MA" }
+  ]) {
+    const result = await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify(team) });
+    teamIds[team.teamKey] = result.payload.team.id;
+  }
+  const createGame = async (id, date) => request(worker, env, "/api/admin/games", {
+    method: "POST", headers: { Cookie: adminCookie },
+    body: JSON.stringify({ id, title: id, gameDate: date, startAt: `${date}T09:00:00+09:00`, predictionDeadlineAt: `${date}T08:00:00+09:00`, homeTeamId: "metadata-home", awayTeamId: "metadata-away", homeTeamName: "Metadata Home", awayTeamName: "Metadata Away" })
+  });
+  assert.equal((await createGame("manual-metadata-game", "2026-12-13")).response.status, 201);
+  assert.equal((await createGame("bulk-metadata-game", "2026-12-14")).response.status, 201);
+
+  const metadata = { position: "中", uniformNumber: "7", bat: "R", throw: "L", active: true, teamId: teamIds["metadata-home"] };
+  const manual = await request(worker, env, "/api/admin/games/manual-metadata-game/players", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ players: [{ id: "manual-metadata-player", name: "Manual Player", ...metadata }] }) });
+  assert.equal(manual.response.status, 200);
+  assert.deepEqual(manual.payload.players.find((player) => player.id === "manual-metadata-player"), { id: "manual-metadata-player", gameId: "manual-metadata-game", name: "Manual Player", uniformNumber: "7", team: "Metadata Home", teamId: teamIds["metadata-home"], position: "中", bat: "R", throw: "L", active: true });
+
+  const updated = await request(worker, env, "/api/admin/games/manual-metadata-game/players/manual-metadata-player", { method: "PUT", headers: { Cookie: adminCookie }, body: JSON.stringify({ name: "Manual Updated", position: "右", uniformNumber: "8", bat: "L", throw: "R", active: false, teamId: teamIds["metadata-home"] }) });
+  assert.equal(updated.response.status, 200);
+  assert.equal(updated.payload.player.position, "右");
+  assert.equal(updated.payload.player.uniformNumber, "8");
+  assert.equal(updated.payload.player.bat, "L");
+  assert.equal(updated.payload.player.throw, "R");
+  assert.equal(updated.payload.player.active, false);
+
+  const bulk = await request(worker, env, "/api/admin/players/import", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ gameId: "bulk-metadata-game", players: [{ id: "bulk-metadata-player", name: "Bulk Player", ...metadata }] }) });
+  assert.equal(bulk.response.status, 200);
+  const bulkPlayer = bulk.payload.players.find((player) => player.id === "bulk-metadata-player");
+  assert.equal(bulkPlayer.position, "中");
+  assert.equal(bulkPlayer.uniformNumber, "7");
+  assert.equal(bulkPlayer.bat, "R");
+  assert.equal(bulkPlayer.throw, "L");
+  assert.equal(bulkPlayer.active, true);
+  assert.deepEqual(
+    [bulkPlayer.uniformNumber, bulkPlayer.position, bulkPlayer.bat, bulkPlayer.throw, bulkPlayer.active],
+    ["7", "中", "R", "L", true]
+  );
+
+  const invalidManual = await request(worker, env, "/api/admin/games/manual-metadata-game/players", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ players: [{ id: "invalid-position-player", name: "Invalid Position", position: "監督", teamId: "metadata-home" }] }) });
+  assert.equal(invalidManual.response.status, 400);
+  assert.equal(invalidManual.payload.code, "PLAYER_METADATA_INVALID");
+
+  const csv = `\uFEFFid,name,uniformNumber,position,teamId,bat,throw\r\ncsv-metadata-player,"Tanaka, Jr.\n""The Captain""",10,中,${teamIds["metadata-home"]},R,L\r\n\r\n`;
+  const csvResult = await request(worker, env, "/api/admin/players/import", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ gameId: "bulk-metadata-game", csv }) });
+  assert.equal(csvResult.response.status, 200);
+  const csvPlayer = csvResult.payload.players.find((player) => player.id === "csv-metadata-player");
+  assert.equal(csvPlayer.name, "Tanaka, Jr.\n\"The Captain\"");
+  assert.equal(csvPlayer.position, "中");
+});
+
+test("大会Best Nineは未公開試合と別competitionを混ぜず、公開後にだけ更新する", async () => {
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const fixture = createFixture();
+  const env = { ...fixture, ALLOWED_ORIGIN: "https://asia-cs.test" };
+  const now = "2026-12-15T00:00:00.000Z";
+  fixture.database.prepare(`INSERT INTO users
+    (id, username, username_normalized, password_hash, password_salt, password_iterations, role, status, created_at, updated_at)
+    VALUES ('phase2-reviewer', 'phase2-reviewer', 'phase2-reviewer', 'hash', 'salt', 1, 'admin', 'active', ?, ?)`)
+    .run(now, now);
+  fixture.database.prepare(`INSERT INTO competitions (id, competition_type, display_name, short_name, status, created_at, updated_at)
+    VALUES ('other-competition', 'ASIA_CS', 'Other', 'Other', 'active', ?, ?)`)
+    .run(now, now);
+  const insertGame = (id, competitionId, status, publicationStatus) => fixture.database.prepare(`INSERT INTO games
+    (id, title, competition_type, competition_id, game_source, game_date, start_at, prediction_deadline_at, status, publication_status, current_lineup_revision, created_at, updated_at)
+    VALUES (?, ?, 'ASIA_CS', ?, 'manual', '2026-12-15', '2026-12-15T09:00:00.000Z', '2026-12-15T08:00:00.000Z', ?, ?, 1, ?, ?)`)
+    .run(id, id, competitionId, status, publicationStatus, now, now);
+  const insertLineup = (gameId, playerId, playerName) => {
+    fixture.database.prepare(`INSERT INTO players (id, game_id, name, uniform_number, team, team_id, position, active, created_at, updated_at)
+      VALUES (?, ?, ?, '1', 'Home', NULL, '中', 1, ?, ?)`)
+      .run(playerId, gameId, playerName, now, now);
+    fixture.database.prepare(`INSERT INTO lineup_revisions (id, game_id, revision_number, lineup_json, fingerprint, is_current, confirmed_at, confirmed_by, created_at)
+      VALUES (?, ?, 1, ?, 'fingerprint', 1, ?, 'phase2-reviewer', ?)`)
+      .run(`${gameId}-revision`, gameId, JSON.stringify([{ battingOrder: 1, playerId, playerName, position: "中" }]), now, now);
+  };
+  insertGame("asia-published", "asia-cs", "published", "published");
+  insertGame("asia-pending", "asia-cs", "scored", "pending");
+  insertGame("other-published", "other-competition", "published", "published");
+  insertLineup("asia-published", "asia-published-player", "Published Player");
+  insertLineup("asia-pending", "asia-pending-player", "Pending Player");
+  insertLineup("other-published", "other-player", "Other Competition Player");
+
+  const before = await request(worker, env, "/api/best-nine?competitionId=asia-cs");
+  assert.deepEqual(before.payload.bestNine.map((row) => row.player), ["Published Player"]);
+  assert.equal(before.payload.publishedGameCount, 1);
+  fixture.database.prepare("UPDATE games SET status = 'published', publication_status = 'published' WHERE id = 'asia-pending'").run();
+  const after = await request(worker, env, "/api/best-nine?competitionId=asia-cs");
+  assert.deepEqual(after.payload.bestNine.map((row) => row.player).sort(), ["Pending Player", "Published Player"].sort());
+  assert.equal(after.payload.publishedGameCount, 2);
+  const other = await request(worker, env, "/api/best-nine?competitionId=other-competition");
+  assert.deepEqual(other.payload.bestNine.map((row) => row.player), ["Other Competition Player"]);
+});

@@ -1,11 +1,34 @@
 const TARGET_AUTH_WORKER_ORIGIN = "https://starting9-auth.starting9.workers.dev";
 const AUTH_WORKER_ORIGIN_ENV = "STARTING9_AUTH_ORIGIN";
+const ASIA_CS_API_ORIGIN_ENV = "ASIA_CS_API_ORIGIN";
 
 export function resolveAuthWorkerOrigin(env = {}) {
   const configured = String(env?.[AUTH_WORKER_ORIGIN_ENV] || "")
     .trim()
     .replace(/\/+$/, "");
   return configured === TARGET_AUTH_WORKER_ORIGIN ? configured : null;
+}
+
+export function resolveAsiaCsWorkerOrigin(env = {}) {
+  const configured = String(env?.[ASIA_CS_API_ORIGIN_ENV] || "")
+    .trim()
+    .replace(/\/+$/, "");
+  if (!configured) return null;
+  let parsed;
+  try {
+    parsed = new URL(configured);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol === "https:" && !parsed.username && !parsed.password && parsed.pathname === "/" && !parsed.search && !parsed.hash) return parsed.origin;
+  const runtime = String(env?.PAGES_RUNTIME || "").trim().toLowerCase();
+  if (["development", "test"].includes(runtime)
+    && ["http:", "https:"].includes(parsed.protocol)
+    && ["localhost", "127.0.0.1"].includes(parsed.hostname)
+    && !parsed.username && !parsed.password && parsed.pathname === "/" && !parsed.search && !parsed.hash) {
+    return parsed.origin;
+  }
+  return null;
 }
 
 const BLOCKED_REQUEST_HEADERS = new Set([
@@ -44,6 +67,19 @@ function createUpstreamRequest(request, upstreamUrl) {
   });
 }
 
+function createAsiaCsUpstreamRequest(request, upstreamUrl) {
+  const upstream = createUpstreamRequest(request, upstreamUrl);
+  const cookies = request.headers.get("Cookie") || "";
+  const forwarded = cookies.split(";").map((part) => part.trim()).filter((part) => {
+    const separator = part.indexOf("=");
+    const name = separator < 0 ? part : part.slice(0, separator).trim();
+    return name === "s9_session" || name === "s9_asia_cs_session";
+  }).join("; ");
+  if (forwarded) upstream.headers.set("Cookie", forwarded);
+  else upstream.headers.delete("Cookie");
+  return upstream;
+}
+
 function normalizeSetCookie(cookie) {
   return cookie
     .split(";")
@@ -79,24 +115,36 @@ export async function onRequest(context) {
     return new Response("Not Found", { status: 404 });
   }
 
-  const authWorkerOrigin = resolveAuthWorkerOrigin(context.env);
-  if (!authWorkerOrigin) {
+  const isAsiaCsRoute = requestUrl.pathname === "/api/asia-cs" || requestUrl.pathname.startsWith("/api/asia-cs/");
+  const upstreamOrigin = isAsiaCsRoute
+    ? resolveAsiaCsWorkerOrigin(context.env)
+    : resolveAuthWorkerOrigin(context.env);
+  if (!upstreamOrigin) {
     return jsonError(
-      "AUTH_PROXY_NOT_CONFIGURED",
-      "認証サービスの接続先が設定されていません。",
+      isAsiaCsRoute ? "ASIA_CS_PROXY_NOT_CONFIGURED" : "AUTH_PROXY_NOT_CONFIGURED",
+      isAsiaCsRoute ? "Asia CS APIの接続先が設定されていません。" : "認証サービスの接続先が設定されていません。",
       503
     );
   }
 
-  const upstreamUrl = new URL(requestUrl.pathname + requestUrl.search, authWorkerOrigin);
+  const upstreamPath = isAsiaCsRoute
+    ? `/api${requestUrl.pathname.slice("/api/asia-cs".length) || "/"}`
+    : requestUrl.pathname;
+  const upstreamUrl = new URL(upstreamPath + requestUrl.search, upstreamOrigin);
   try {
-    const upstream = await fetch(createUpstreamRequest(context.request, upstreamUrl));
+    const upstream = await fetch(isAsiaCsRoute
+      ? createAsiaCsUpstreamRequest(context.request, upstreamUrl)
+      : createUpstreamRequest(context.request, upstreamUrl));
     return new Response(upstream.body, {
       status: upstream.status,
       statusText: upstream.statusText,
       headers: copyResponseHeaders(upstream.headers)
     });
   } catch {
-    return jsonError("AUTH_PROXY_UNAVAILABLE", "認証サービスに接続できません。時間をおいて再試行してください。", 503);
+    return jsonError(
+      isAsiaCsRoute ? "ASIA_CS_PROXY_UNAVAILABLE" : "AUTH_PROXY_UNAVAILABLE",
+      isAsiaCsRoute ? "Asia CS APIに接続できません。時間をおいて再試行してください。" : "認証サービスに接続できません。時間をおいて再試行してください。",
+      503
+    );
   }
 }

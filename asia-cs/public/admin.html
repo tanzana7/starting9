@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Starting9 Asia CS 管理</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main class="page">
+    <header class="hero"><p class="eyebrow">Starting9 Asia CS</p><h1>管理</h1><a href="./index.html">予想画面へ</a></header>
+    <section class="panel"><h2>管理者</h2><p id="adminAuthStatus" class="message" role="status">Starting9のログイン状態を確認中</p></section>
+    <section class="panel admin-only hidden" aria-labelledby="gameCreateTitle"><h2 id="gameCreateTitle">アジアCS 試合</h2><form id="gameForm" class="form-grid"><label>試合ID（任意）<input name="id" placeholder="asia-cs-final"></label><label>試合名<input name="title" value="Asia CS Final" required></label><label>大会ID<input name="competitionId" value="asia-cs" required></label><label>試合日<input name="gameDate" type="date" required></label><label>開始日時<input name="startAt" type="datetime-local" required></label><label>予想締切<input name="predictionDeadlineAt" type="datetime-local" required></label><label>チームA ID<input name="homeTeamId" placeholder="team-jp" required></label><label>チームA 表示名<input name="homeTeamName" placeholder="Japan" required></label><label>チームB ID<input name="awayTeamId" placeholder="team-kr" required></label><label>チームB 表示名<input name="awayTeamName" placeholder="Korea" required></label><label>球場（任意）<input name="venue"></label><label>外部試合コード（任意）<input name="externalGameCode"></label><button>試合を登録</button></form><div class="toolbar"><label>対象試合ID<input id="gameId" placeholder="asia-cs-final"></label><button id="loadGame" type="button" class="secondary">読み込み</button></div><p id="gameStatus" class="message" role="status"></p></section>
+    <section class="panel admin-only hidden" aria-labelledby="teamTitle"><h2 id="teamTitle">チーム登録</h2><form id="teamForm" class="form-grid"><label>大会ID<input name="competitionId" value="asia-cs" required></label><label>チームID<input name="teamKey" placeholder="team-jp" required></label><label>表示名<input name="displayName" placeholder="Japan" required></label><label>短縮名<input name="shortName" placeholder="JPN" required></label><label>国コード（任意）<input name="countryCode" maxlength="3"></label><button>チームを保存</button></form><p id="teamStatus" class="message" role="status"></p></section>
+    <section class="panel admin-only hidden" aria-labelledby="rosterTitle"><h2 id="rosterTitle">出場選手</h2><p class="muted">1行1選手。保存後、名前・背番号・チームを編集できます。</p><form id="rosterForm"><textarea id="rosterJson" rows="8" placeholder='[{"id":"p1","name":"選手名","uniformNumber":"1","team":"Team"}]'></textarea><button>登録・更新</button></form><div id="rosterEditor"></div></section>
+    <section class="panel admin-only hidden" aria-labelledby="lineupTitle"><h2 id="lineupTitle">正式スタメン</h2><label>対象チームID<input id="lineupTeamId" placeholder="team-jp"></label><textarea id="lineupJson" rows="10" placeholder='[{"battingOrder":1,"playerId":"p1","playerName":"選手名","position":"中"}]'></textarea><div class="actions"><button id="confirmLineup" type="button">正式スタメンを確定</button><button id="scoreGame" type="button">採点</button><button id="rankingGame" type="button">ランキング更新</button><button id="publishGame" type="button">公開</button></div><div class="correction"><h3>正式スタメン修正・再採点</h3><input id="rescoreReason" value="管理者による正式スタメン修正" aria-label="修正理由"><textarea id="rescoreJson" rows="10" placeholder="訂正版の正式スタメンJSON"></textarea><button id="rescoreGame" type="button" class="danger">再採点・B9更新</button></div><p id="operationStatus" class="message" role="status"></p><pre id="gameDetail" class="detail"></pre></section>
+  </main>
+  <script type="module" src="./admin.js"></script>
+</body>
+</html>

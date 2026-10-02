@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Starting9 Asia CS</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main class="page">
+    <header class="hero"><p class="eyebrow">Starting9</p><h1>Asia CS スタメン予想</h1><p id="gameTitle">試合を読み込み中</p><p id="gameMeta" class="muted"></p></header>
+    <section class="panel auth-panel" aria-labelledby="authTitle">
+      <h2 id="authTitle">ログイン</h2>
+      <p id="authStatus" role="status">Starting9のログイン状態を確認中</p>
+    </section>
+    <section class="panel" aria-labelledby="predictionTitle">
+      <div class="section-heading"><div><h2 id="predictionTitle">予想</h2><p id="deadlineStatus">締切を確認中</p></div><span id="userStatus"></span></div>
+      <form id="predictionForm"><label id="predictionTeamLabel" class="hidden">チーム<select id="predictionTeamId"></select></label><div id="predictionLineup" class="lineup-grid"></div><div class="actions"><button id="saveButton" type="submit" disabled>保存</button><button id="deleteButton" class="secondary" type="button" disabled>削除</button></div></form>
+      <p id="predictionMessage" class="message" role="status"></p>
+    </section>
+    <section id="bestNinePanel" class="panel hidden" aria-labelledby="bestNineTitle"><div class="section-heading"><h2 id="bestNineTitle">Best Nine</h2><span id="bestNineStatus"></span></div><ol id="bestNineList" class="ranking-list"></ol></section>
+    <p class="admin-link"><a href="./admin.html">管理画面</a></p>
+  </main>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-# Starting9 Asia CS MVP
+# Starting9 Asia CS Phase 2
 
 本家Starting9の予想入力・採点・Best Nineの現行契約から必要部分だけを切り出した大会特別版です。`competition_type=ASIA_CS` と専用D1でNPB_REGULARと境界を分離し、V3/V4 Cron・NPB自動取得・週次/月次/年次ランキングは含めません。
 
@@ -49,6 +49,18 @@ python -m http.server 8782 --directory asia-cs/public --bind 127.0.0.1
 6. 締切後に `POST /api/admin/games/:id/score`、`POST .../ranking`、`POST .../publish` の順で実行
 7. `GET /api/rankings?competitionId=...` は `competitionId` を必須とし、公開済み世代だけを返します。ランキング更新前・公開前の得点や別大会の得点は返しません
 8. 修正時は `POST /api/admin/games/:id/rescore` が新revisionで全予想を再採点し、ランキング更新・公開を再度実行する。旧revisionを公開結果として再利用しない
+
+## Phase 2の大会モード
+
+- `GET /api/competition?competitionId=...` が大会メタデータ、次戦、受付中試合、過去試合を返します。
+- `GET /api/games?competitionId=...` が同大会のscheduleを日付順で返し、ログイン中だけ自分の提出状態を付加します。
+- `GET /api/best-nine?competitionId=...` は公開済み試合の正式ラインナップだけから大会Best Nineを集計します。未公開・採点中の試合は対象外です。
+- `GET /api/games/:id/result` は公開済み試合の正式ラインナップと、ログイン中ユーザー自身の予想・得点・内訳だけを返します。
+- `POST /api/admin/competition` で大会名・期間・状態（`draft` / `active` / `completed`）を管理します。`completed` は新規予想を拒否し、既存結果は読み取り専用で表示します。
+- `POST /api/admin/players/import` と `POST /api/admin/games/import` は全行を検証してから一括保存します。CSVはヘッダー付き文字列、JSONは配列を受け付け、選手取込では守備位置・背番号も検証します。
+- 公開・管理UIともにStarting9 Pagesの `/asia-cs/` と `/api/asia-cs/*` だけを使用し、ブラウザからWorkerのworkers.dev URLへ接続しません。
+
+Best Nineの同点順は `selectionCount DESC`、守備位置の日本語昇順、選手名昇順、内部選手ID昇順です。公開対象は大会の公開済みgameに限ります。
 
 登録時には `prediction_close`、`score`、`ranking_rebuild`、`publish` の4段階を `formal_jobs` に作成します。Phase 1では自動Cronを起動せず、管理操作が同じ段階の完了記録を進めます。`ranking` は大会全試合の現行採点を再集計し、同じrevisionでの再実行はno-opです。`publish` は同じrevisionのranking job完了を必須にします。NPB identity / probable / roster fetch / lineup fetch jobは作成しません。
 

@@ -33,4 +33,14 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .roster-row { display: grid; grid-template-columns: 1fr 80px 1fr auto; gap: 8px; margin-top: 8px; align-items: end; }
 .detail { overflow: auto; white-space: pre-wrap; background: #f4f7fb; padding: 12px; border-radius: 7px; }
 .correction { margin-top: 22px; padding-top: 16px; border-top: 1px solid #d7e1ed; }
+.game-highlight { display: grid; gap: 8px; padding: 14px; background: #eef7fb; border: 1px solid #c8e2ef; border-radius: 8px; }
+.game-highlight span, .schedule-row span { color: #64788c; font-size: .9rem; }
+.schedule-list { display: grid; gap: 8px; }
+.schedule-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 12px; border: 1px solid #d7e1ed; border-radius: 8px; }
+.schedule-row > div:first-child { display: grid; gap: 4px; min-width: 0; }
+.schedule-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.status-chip { padding: 3px 7px; background: #eef2f6; border-radius: 999px; white-space: nowrap; }
+.import-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.wide-field { grid-column: 1 / -1; }
 @media (max-width: 600px) { .inline-form > label, .inline-form button { width: 100%; } .lineup-row { grid-template-columns: 30px minmax(0, 1fr) 82px; } .roster-row { grid-template-columns: 1fr 70px; } .roster-row label:nth-child(3) { grid-column: span 2; } }
+@media (max-width: 680px) { .schedule-row { align-items: flex-start; flex-direction: column; } .schedule-actions { justify-content: flex-start; } .import-grid { grid-template-columns: 1fr; } }

@@ -7,7 +7,7 @@
 - Pages: `starting9-asia-cs`（このディレクトリの `public/`）
 - Worker: `starting9-asia-cs-api`（`worker.js`）
 - D1: `starting9-asia-cs-db`（`migrations/`）
-- 本番Starting9のPages・Worker・D1・Auth Worker v337のService BindingやSecretは参照しません。
+- 本番Starting9のPages・Worker・D1を直接参照しません。認証だけは既存Starting9 Auth Workerの `/api/auth/me` と `s9_session` を正本として利用します。
 - `wrangler.jsonc` のD1 IDはAsia CS専用IDだけを設定します。現在はプレースホルダーのため、deployは行わないでください。
 
 ## ローカル確認
@@ -17,7 +17,7 @@ npx wrangler d1 migrations apply starting9-asia-cs-db --local --config asia-cs/w
 npx wrangler dev --config asia-cs/wrangler.jsonc
 ```
 
-管理者は公開登録では作成しません。ローカルでは `.dev.vars` に秘密の `ADMIN_BOOTSTRAP_TOKEN` を設定し、`X-Admin-Bootstrap-Token` ヘッダー付きで `/api/auth/admin/bootstrap` を一度だけ呼び出してDBへ初期化します。管理者が一人でも存在する場合、同じ経路は再利用できません。`.dev.vars` と `.wrangler/` はコミットしません。
+本番では独自のユーザー名・パスワード・セッションを使用しません。`STARTING9_AUTH_BASE_URL` を設定し、既存Auth Workerの `/api/auth/me`（一般ユーザー）または `/api/admin/me`（管理者）が検証した `s9_session` のユーザーID・権限だけを利用します。ローカルfixture専用の `ASIA_CS_LOCAL_AUTH=true` とbootstrap/login経路は本番設定に含めません。`.dev.vars` と `.wrangler/` はコミットしません。
 
 Pagesのローカル静的画面は、別ターミナルで次のように配信します。
 
@@ -34,7 +34,7 @@ python -m http.server 8782 --directory asia-cs/public --bind 127.0.0.1
 - 本番の `ALLOWED_ORIGIN` はAsia CS Pagesの完全一致Originだけに設定します。`ADMIN_BOOTSTRAP_TOKEN` はWorker Secretとして登録し、Pagesへ渡しません。
 - D1 IDがプレースホルダーの間はCloudflareリソース未作成であり、deploy成功・本番疎通済みとは扱いません。
 - 試合の正本は `internalGameId` で、外部試合コードは任意です。チームは `teams`、選手は試合単位の `players` に保存し、NPB選手IDを共有namespaceへ強制しません。
-- 本番確認では、Pagesの画面から `/api/auth/me`、予想保存、管理API、Best Nine取得の4経路をAsia CS Workerのログで確認してから公開します。
+- 本番確認では、Pagesの画面から既存Authの `/api/auth/me`、予想保存、管理API、ランキング、Best Nine取得を確認します。Asia CS側へクライアントの `user_id` を渡しても採用しません。
 
 ## APIの流れ
 
@@ -43,10 +43,11 @@ python -m http.server 8782 --directory asia-cs/public --bind 127.0.0.1
 3. ユーザーがログインして `PUT /api/games/:id/prediction` で予想を保存・編集
 4. 保存APIは必ずD1に保存された締切とWorkerのサーバー時刻で判定
 5. 管理者が正式スタメンを `POST /api/admin/games/:id/lineup` で確定
-6. 締切後に `POST /api/admin/games/:id/score`、続けて `POST .../publish`
-7. 修正時は `POST /api/admin/games/:id/rescore` が新revisionで全予想を再採点し、公開中なら同じ公開状態のままBest Nineを更新
+6. 締切後に `POST /api/admin/games/:id/score`、`POST .../ranking`、`POST .../publish` の順で実行
+7. `GET /api/rankings?competitionId=...` は公開済み世代だけを返し、ランキング更新前・公開前の得点を返しません
+8. 修正時は `POST /api/admin/games/:id/rescore` が新revisionで全予想を再採点し、ランキング更新・公開を再度実行する。旧revisionを公開結果として再利用しない
 
-登録時には `prediction_close`、`score`、`ranking_rebuild`、`publish` の4段階を `formal_jobs` に作成します。Phase 1では自動Cronを起動せず、管理操作が同じ段階の完了記録を進めます。NPB identity / probable / roster fetch / lineup fetch jobは作成しません。
+登録時には `prediction_close`、`score`、`ranking_rebuild`、`publish` の4段階を `formal_jobs` に作成します。Phase 1では自動Cronを起動せず、管理操作が同じ段階の完了記録を進めます。`ranking` は大会全試合の現行採点を再集計し、同じrevisionでの再実行はno-opです。`publish` は同じrevisionのranking job完了を必須にします。NPB identity / probable / roster fetch / lineup fetch jobは作成しません。
 
 ## Best Nineの契約
 

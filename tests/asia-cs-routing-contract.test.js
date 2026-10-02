@@ -30,5 +30,5 @@ test("Pagesの相対/apiはAsia CS Workerだけへ転送する接続契約を満
 
   const response = await pagesProxy(new Request("https://asia-cs.example/api/auth/me", { headers: { Origin: "https://asia-cs.example" } }));
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { ok: true, user: null });
+  assert.deepEqual(await response.json(), { ok: true, authenticated: false, user: null });
 });

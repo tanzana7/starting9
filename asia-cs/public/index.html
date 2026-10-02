@@ -11,13 +11,11 @@
     <header class="hero"><p class="eyebrow">Starting9</p><h1>Asia CS スタメン予想</h1><p id="gameTitle">試合を読み込み中</p><p id="gameMeta" class="muted"></p></header>
     <section class="panel auth-panel" aria-labelledby="authTitle">
       <h2 id="authTitle">ログイン</h2>
-      <form id="loginForm" class="inline-form"><label>ユーザー名<input name="username" autocomplete="username" required></label><label>パスワード<input name="password" type="password" autocomplete="current-password" required></label><button>ログイン</button></form>
-      <form id="registerForm" class="inline-form hidden"><label>ユーザー名<input name="username" autocomplete="username" required></label><label>パスワード<input name="password" type="password" autocomplete="new-password" minlength="8" required></label><button>登録</button></form>
-      <button id="toggleAuth" class="link-button" type="button">新規登録</button><button id="logoutButton" class="link-button hidden" type="button">ログアウト</button><span id="authStatus" role="status"></span>
+      <p id="authStatus" role="status">Starting9のログイン状態を確認中</p>
     </section>
     <section class="panel" aria-labelledby="predictionTitle">
       <div class="section-heading"><div><h2 id="predictionTitle">予想</h2><p id="deadlineStatus">締切を確認中</p></div><span id="userStatus"></span></div>
-      <form id="predictionForm"><div id="predictionLineup" class="lineup-grid"></div><div class="actions"><button id="saveButton" type="submit" disabled>保存</button><button id="deleteButton" class="secondary" type="button" disabled>削除</button></div></form>
+      <form id="predictionForm"><label id="predictionTeamLabel" class="hidden">チーム<select id="predictionTeamId"></select></label><div id="predictionLineup" class="lineup-grid"></div><div class="actions"><button id="saveButton" type="submit" disabled>保存</button><button id="deleteButton" class="secondary" type="button" disabled>削除</button></div></form>
       <p id="predictionMessage" class="message" role="status"></p>
     </section>
     <section id="bestNinePanel" class="panel hidden" aria-labelledby="bestNineTitle"><div class="section-heading"><h2 id="bestNineTitle">Best Nine</h2><span id="bestNineStatus"></span></div><ol id="bestNineList" class="ranking-list"></ol></section>

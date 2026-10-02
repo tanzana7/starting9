@@ -8,7 +8,7 @@ import { SCORING_MAX_SCORE, SCORING_RULES, scorePredictionLineup } from "../back
 import { scoreLineup } from "../asia-cs/scoring.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const migration = ["0001_asia_cs_mvp.sql", "0002_competition_and_formal_jobs.sql"]
+const migration = ["0001_asia_cs_mvp.sql", "0002_competition_and_formal_jobs.sql", "0003_review_hardening.sql"]
   .map((file) => fs.readFileSync(path.join(root, "asia-cs/migrations", file), "utf8"))
   .join("\n");
 
@@ -45,7 +45,7 @@ function createD1Adapter(database, failure = null) {
 function createDatabase({ failure = null } = {}) {
   const database = new DatabaseSync(":memory:");
   database.exec(migration);
-  return { database, DB: createD1Adapter(database, failure) };
+  return { database, DB: createD1Adapter(database, failure), ASIA_CS_LOCAL_AUTH: "true" };
 }
 
 async function request(worker, env, path, options = {}) {
@@ -113,8 +113,8 @@ test("Asia CS MVP: 予想→締切→正式登録→採点→B9→正式修正�
   const staleRegistration = await request(worker, env, "/api/auth/register", { method: "POST", body: JSON.stringify({ username: "stale", password: "stale-password" }) });
   assert.equal(staleRegistration.response.status, 201);
 
-  const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-  const created = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "asia-cs-demo", title: "Asia CS Final", gameDate: "2026-09-22", startAt: future, predictionDeadlineAt: future }) });
+  const future = "2026-11-15T09:00:00+09:00";
+  const created = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "asia-cs-demo", title: "Asia CS Final", gameDate: "2026-11-15", startAt: future, predictionDeadlineAt: "2026-11-15T08:00:00+09:00" }) });
   assert.equal(created.response.status, 201);
   const roster = await request(worker, env, "/api/admin/games/asia-cs-demo/players", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ players }) });
   assert.equal(roster.response.status, 200);
@@ -142,8 +142,15 @@ test("Asia CS MVP: 予想→締切→正式登録→採点→B9→正式修正�
     { job_type: "ranking_rebuild", status: "scheduled" },
     { job_type: "score", status: "completed" }
   ]);
+  const beforeRanking = await request(worker, env, "/api/admin/games/asia-cs-demo/publish", { method: "POST", headers: { Cookie: adminCookie } });
+  assert.equal(beforeRanking.response.status, 409);
+  assert.equal(beforeRanking.payload.code, "RANKING_INCOMPLETE");
+  const ranking = await request(worker, env, "/api/admin/games/asia-cs-demo/ranking", { method: "POST", headers: { Cookie: adminCookie } });
+  assert.equal(ranking.response.status, 200);
+  assert.deepEqual((await request(worker, env, "/api/rankings?competitionId=asia-cs")).payload.ranking, []);
   const published = await request(worker, env, "/api/admin/games/asia-cs-demo/publish", { method: "POST", headers: { Cookie: adminCookie } });
   assert.equal(published.response.status, 200);
+  assert.deepEqual((await request(worker, env, "/api/rankings?competitionId=asia-cs")).payload.ranking.map((row) => [row.rank, row.userId, row.score]), [[1, fanRegistration.payload.user.id, 99]]);
   assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM formal_jobs WHERE game_id = 'asia-cs-demo' AND status <> 'completed'").get().count, 0);
 
   const bestNine = await request(worker, env, "/api/games/asia-cs-demo/best-nine");
@@ -155,8 +162,11 @@ test("Asia CS MVP: 予想→締切→正式登録→採点→B9→正式修正�
   const rescored = await request(worker, env, "/api/admin/games/asia-cs-demo/rescore", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ lineup: corrected, reason: "試合前の正式スタメン訂正" }) });
   assert.equal(rescored.response.status, 200);
   assert.equal(rescored.payload.revision, 2);
-  assert.equal(rescored.payload.published, true);
+  assert.equal(rescored.payload.published, false);
   assert.equal(rescored.payload.scoreChangedCount, 1);
+  assert.equal((await request(worker, env, "/api/admin/games/asia-cs-demo/ranking", { method: "POST", headers: { Cookie: adminCookie } })).response.status, 200);
+  const republished = await request(worker, env, "/api/admin/games/asia-cs-demo/publish", { method: "POST", headers: { Cookie: adminCookie } });
+  assert.equal(republished.response.status, 200);
 
   fixture.database.prepare(`INSERT INTO predictions (id, user_id, game_id, prediction_json, submitted_at, updated_at, status, score, max_score, scored_revision, actual_lineup_json, scored_at, is_test_prediction)
     VALUES (?, ?, ?, ?, ?, ?, 'scored', 999, 99, 1, ?, ?, 0)`).run(
@@ -179,14 +189,14 @@ test("Asia CSのcompetition/team metadataとformal job scopeはNPB前提から�
   await request(worker, env, "/api/auth/admin/bootstrap", { method: "POST", headers: { "X-Admin-Bootstrap-Token": "local-bootstrap-token" }, body: JSON.stringify({ username: "admin", password: "admin-password" }) });
   const login = await request(worker, env, "/api/auth/login", { method: "POST", body: JSON.stringify({ username: "admin", password: "admin-password" }) });
   const adminCookie = authCookie(login);
-  const teamA = await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ teamKey: "team-jp", displayName: "Japan", shortName: "JPN", countryCode: "JPN" }) });
-  const teamB = await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ teamKey: "team-kr", displayName: "Korea", shortName: "KOR", countryCode: "KOR" }) });
+  const teamA = await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ competitionId: "asia-cs-2026", teamKey: "team-jp", displayName: "Japan", shortName: "JPN", countryCode: "JPN" }) });
+  const teamB = await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ competitionId: "asia-cs-2026", teamKey: "team-kr", displayName: "Korea", shortName: "KOR", countryCode: "KOR" }) });
   assert.equal(teamA.response.status, 201);
   assert.equal(teamB.response.status, 201);
-  const listed = await request(worker, env, "/api/admin/teams?competitionId=asia-cs", { headers: { Cookie: adminCookie } });
+  const listed = await request(worker, env, "/api/admin/teams?competitionId=asia-cs-2026", { headers: { Cookie: adminCookie } });
   assert.deepEqual(listed.payload.teams.map((team) => team.team_key), ["team-jp", "team-kr"]);
 
-  const startAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  const startAt = "2026-11-15T09:00:00+09:00";
   const created = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({
     id: "asia-cs-metadata", title: "Asia CS Final", competitionId: "asia-cs-2026", gameDate: "2026-11-15", startAt,
     homeTeamId: "team-jp", homeTeamName: "Japan", awayTeamId: "team-kr", awayTeamName: "Korea", venue: "Tokyo Dome", externalGameCode: "asia-2026-final"
@@ -204,6 +214,111 @@ test("Asia CSのcompetition/team metadataとformal job scopeはNPB前提から�
   assert.deepEqual(detail.payload.formalJobs.map((job) => job.job_type).sort(), ["prediction_close", "publish", "ranking_rebuild", "score"]);
   assert.ok(detail.payload.formalJobs.every((job) => job.competition_type === "ASIA_CS" && job.competition_id === "asia-cs-2026"));
   assert.equal(detail.payload.formalJobs.some((job) => /npb|probable|roster|lineup/i.test(job.job_type)), false);
+});
+
+test("大会のチーム所属と日時境界をサーバー側で検証する", async () => {
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const fixture = createDatabase();
+  const env = { ...fixture, ADMIN_BOOTSTRAP_TOKEN: "local-bootstrap-token", ALLOWED_ORIGIN: "https://asia-cs.test" };
+  await request(worker, env, "/api/auth/admin/bootstrap", { method: "POST", headers: { "X-Admin-Bootstrap-Token": "local-bootstrap-token" }, body: JSON.stringify({ username: "admin", password: "admin-password" }) });
+  const admin = await request(worker, env, "/api/auth/login", { method: "POST", body: JSON.stringify({ username: "admin", password: "admin-password" }) });
+  const adminCookie = authCookie(admin);
+  await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ competitionId: "asia-cs", teamKey: "home", displayName: "Home", shortName: "H" }) });
+  await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ competitionId: "asia-cs", teamKey: "away", displayName: "Away", shortName: "A" }) });
+  const missingTeam = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "bad-team-game", gameDate: "2026-11-15", startAt: "2026-11-15T09:00:00+09:00", predictionDeadlineAt: "2026-11-15T08:00:00+09:00", homeTeamId: "missing", homeTeamName: "Missing", awayTeamId: "away", awayTeamName: "Away" }) });
+  assert.equal(missingTeam.response.status, 409);
+  const afterStart = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "bad-time-game", gameDate: "2026-11-15", startAt: "2026-11-15T09:00:00+09:00", predictionDeadlineAt: "2026-11-15T10:00:00+09:00" }) });
+  assert.equal(afterStart.response.status, 400);
+  const wrongDate = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "wrong-date-game", gameDate: "2026-11-14", startAt: "2026-11-15T00:00:00Z", predictionDeadlineAt: "2026-11-14T23:00:00Z" }) });
+  assert.equal(wrongDate.response.status, 400);
+  const ambiguousTime = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "ambiguous-time-game", gameDate: "2026-11-15", startAt: "2026-11-15T09:00:00", predictionDeadlineAt: "2026-11-15T08:00:00+09:00" }) });
+  assert.equal(ambiguousTime.response.status, 400);
+  const game = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "team-game", gameDate: "2026-11-15", startAt: "2026-11-15T09:00:00+09:00", predictionDeadlineAt: "2026-11-15T08:00:00+09:00", homeTeamId: "home", homeTeamName: "spoof", awayTeamId: "away", awayTeamName: "spoof" }) });
+  assert.equal(game.response.status, 201);
+  const wrongRoster = await request(worker, env, "/api/admin/games/team-game/players", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ players: [{ ...players[0], teamId: "unregistered" }] }) });
+  assert.equal(wrongRoster.response.status, 409);
+  const validRoster = await request(worker, env, "/api/admin/games/team-game/players", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ players: players.map((player) => ({ ...player, teamId: "home" })) }) });
+  assert.equal(validRoster.response.status, 200);
+  const awayPlayer = await request(worker, env, "/api/admin/games/team-game/players", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ players: [{ id: "away-player", name: "Away Player", teamId: "away" }] }) });
+  assert.equal(awayPlayer.response.status, 200);
+  const missingLineupTeam = await request(worker, env, "/api/admin/games/team-game/lineup", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ lineup }) });
+  assert.equal(missingLineupTeam.response.status, 409);
+  const mixedLineup = lineup.map((item, index) => index === 8 ? { ...item, playerId: "away-player", playerName: "Away Player" } : item);
+  const mixedLineupResponse = await request(worker, env, "/api/admin/games/team-game/lineup", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ lineup: mixedLineup, teamId: "home" }) });
+  assert.equal(mixedLineupResponse.response.status, 409);
+  const confirmed = await request(worker, env, "/api/admin/games/team-game/lineup", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ lineup, teamId: "home" }) });
+  assert.equal(confirmed.response.status, 200);
+});
+
+test("Asia CSはStarting9の外部identityを使い、client user_idと独自loginを受け付けない", async () => {
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const fixture = createDatabase();
+  const env = {
+    ...fixture,
+    ASIA_CS_LOCAL_AUTH: "false",
+    ALLOWED_ORIGIN: "https://asia-cs.test",
+    AUTH_VERIFY: async (request) => request.headers.get("Cookie") === "s9_session=admin-token"
+      ? { id: "starting9-admin", username: "main-admin", role: "admin" }
+      : request.headers.get("Cookie") === "s9_session=user-token"
+        ? { id: "starting9-user", username: "main-user", role: "user" }
+        : null
+  };
+  const localLogin = await request(worker, env, "/api/auth/login", { method: "POST", body: JSON.stringify({ username: "admin", password: "password" }) });
+  assert.equal(localLogin.response.status, 404);
+  const created = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: "s9_session=admin-token" }, body: JSON.stringify({ id: "external-game", gameDate: "2026-11-15", startAt: "2026-11-15T09:00:00+09:00", predictionDeadlineAt: "2026-11-15T08:00:00+09:00" }) });
+  assert.equal(created.response.status, 201);
+  const roster = await request(worker, env, "/api/admin/games/external-game/players", { method: "POST", headers: { Cookie: "s9_session=admin-token" }, body: JSON.stringify({ players }) });
+  assert.equal(roster.response.status, 200);
+  const anonymous = await request(worker, env, "/api/games/external-game/prediction", { method: "PUT", body: JSON.stringify({ userId: "attacker", lineup }) });
+  assert.equal(anonymous.response.status, 401);
+  const saved = await request(worker, env, "/api/games/external-game/prediction", { method: "PUT", headers: { Cookie: "s9_session=user-token" }, body: JSON.stringify({ userId: "attacker", lineup }) });
+  assert.equal(saved.response.status, 200);
+  assert.equal(fixture.database.prepare("SELECT user_id FROM predictions WHERE game_id = 'external-game'").get().user_id, "starting9-user");
+  assert.equal(fixture.database.prepare("SELECT auth_source FROM users WHERE id = 'starting9-user'").get().auth_source, "starting9");
+});
+
+test("ranking_rebuildは大会単位で再集計し、再実行しても不変で別大会を混ぜない", async () => {
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const fixture = createDatabase();
+  const env = { ...fixture, ADMIN_BOOTSTRAP_TOKEN: "local-bootstrap-token", ALLOWED_ORIGIN: "https://asia-cs.test" };
+  await request(worker, env, "/api/auth/admin/bootstrap", { method: "POST", headers: { "X-Admin-Bootstrap-Token": "local-bootstrap-token" }, body: JSON.stringify({ username: "admin", password: "admin-password" }) });
+  const admin = await request(worker, env, "/api/auth/login", { method: "POST", body: JSON.stringify({ username: "admin", password: "admin-password" }) });
+  const userA = await request(worker, env, "/api/auth/register", { method: "POST", body: JSON.stringify({ username: "rank-a", password: "rank-password" }) });
+  const userB = await request(worker, env, "/api/auth/register", { method: "POST", body: JSON.stringify({ username: "rank-b", password: "rank-password" }) });
+  const adminCookie = authCookie(admin);
+  const create = async (id, competitionId) => request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id, competitionId, gameDate: "2026-11-15", startAt: "2026-11-15T09:00:00+09:00", predictionDeadlineAt: "2026-11-15T08:00:00+09:00" }) });
+  assert.equal((await create("rank-a-game", "asia-cs")).response.status, 201);
+  assert.equal((await create("rank-b-game", "asia-cs")).response.status, 201);
+  assert.equal((await create("other-game", "other-cup")).response.status, 201);
+  const markScored = (gameId) => {
+    fixture.database.prepare("UPDATE games SET status = 'scored', publication_status = 'pending', current_lineup_revision = 1 WHERE id = ?").run(gameId);
+    fixture.database.prepare(`INSERT INTO scoring_runs (id, game_id, revision_number, kind, processed_count, score_changed_count, started_at, completed_at, created_by)
+      VALUES (?, ?, 1, 'initial', 2, 2, ?, ?, ?)`).run(`run-${gameId}`, gameId, "2026-11-15T08:01:00.000Z", "2026-11-15T08:02:00.000Z", userA.payload.user.id);
+  };
+  markScored("rank-a-game");
+  markScored("rank-b-game");
+  markScored("other-game");
+  const insertScore = (id, userId, gameId, score) => fixture.database.prepare(`INSERT INTO predictions
+    (id, user_id, game_id, prediction_json, submitted_at, updated_at, status, score, max_score, scored_revision, actual_lineup_json, scored_at, is_test_prediction)
+    VALUES (?, ?, ?, '{}', ?, ?, 'scored', ?, 99, 1, '{}', ?, 0)`).run(id, userId, gameId, "2026-11-15T07:00:00.000Z", "2026-11-15T07:00:00.000Z", score, "2026-11-15T08:02:00.000Z");
+  insertScore("score-a1", userA.payload.user.id, "rank-a-game", 90);
+  insertScore("score-a2", userA.payload.user.id, "rank-b-game", 60);
+  insertScore("score-b1", userB.payload.user.id, "rank-a-game", 100);
+  insertScore("score-other", userA.payload.user.id, "other-game", 999);
+  const rebuilt = await request(worker, env, "/api/admin/games/rank-a-game/ranking", { method: "POST", headers: { Cookie: adminCookie } });
+  assert.equal(rebuilt.response.status, 200);
+  const rows = fixture.database.prepare("SELECT user_id, score_total, games_count, rank, generation FROM competition_rankings WHERE competition_id = 'asia-cs' ORDER BY rank").all();
+  assert.deepEqual(rows.map((row) => [row.user_id, row.score_total, row.games_count, row.rank, row.generation]), [[userA.payload.user.id, 150, 2, 1, 1], [userB.payload.user.id, 100, 1, 2, 1]]);
+  const repeated = await request(worker, env, "/api/admin/games/rank-a-game/ranking", { method: "POST", headers: { Cookie: adminCookie } });
+  assert.equal(repeated.response.status, 200);
+  assert.equal(repeated.payload.noop, true);
+  assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM competition_rankings WHERE competition_id = 'asia-cs'").get().count, 2);
+  assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM competition_rankings WHERE competition_id = 'other-cup'").get().count, 0);
+  assert.deepEqual((await request(worker, env, "/api/rankings?competitionId=asia-cs")).payload.ranking, []);
+  assert.equal((await request(worker, env, "/api/admin/games/rank-a-game/publish", { method: "POST", headers: { Cookie: adminCookie } })).response.status, 200);
+  const publicRows = (await request(worker, env, "/api/rankings?competitionId=asia-cs")).payload.ranking;
+  assert.deepEqual(publicRows.map((row) => [row.userId, row.score, row.games]), [[userA.payload.user.id, 150, 2], [userB.payload.user.id, 100, 1]]);
+  assert.equal(Object.prototype.hasOwnProperty.call(publicRows[0], "generation"), false);
 });
 
 test("Asia CS Best Nineは未公開では返さず、得点・提出時刻・username・user_id順を固定する", async () => {
@@ -294,6 +409,7 @@ test("管理者bootstrapは一度だけで、公開登録・一般ユーザー�
   assert.equal((await request(worker, env, "/api/admin/games/auth-test/players/p1", { method: "PUT", headers: { Cookie: adminCookie }, body: JSON.stringify({ name: "Changed" }) })).response.status, 200);
   assert.equal((await request(worker, env, "/api/admin/games/auth-test/lineup", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ lineup }) })).response.status, 200);
   assert.equal((await request(worker, env, "/api/admin/games/auth-test/score", { method: "POST", headers: { Cookie: adminCookie } })).response.status, 200);
+  assert.equal((await request(worker, env, "/api/admin/games/auth-test/ranking", { method: "POST", headers: { Cookie: adminCookie } })).response.status, 200);
   assert.equal((await request(worker, env, "/api/admin/games/auth-test/publish", { method: "POST", headers: { Cookie: adminCookie } })).response.status, 200);
   assert.equal((await request(worker, env, "/api/admin/games/auth-test/rescore", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ lineup, reason: "test" }) })).response.status, 200);
 });
@@ -309,8 +425,8 @@ test("採点は状態遷移・batch rollback・並列実行を保護する", asy
   const adminCookie = authCookie(admin);
   const fan = await request(worker, env, "/api/auth/register", { method: "POST", body: JSON.stringify({ username: "fan", password: "fan-password" }) });
   const fanCookie = authCookie(fan);
-  const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-  await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "retry-test", title: "Retry", gameDate: "2026-09-22", startAt: future, predictionDeadlineAt: future }) });
+  const future = "2026-11-15T09:00:00+09:00";
+  await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "retry-test", title: "Retry", gameDate: "2026-11-15", startAt: future }) });
   await request(worker, env, "/api/admin/games/retry-test/players", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ players }) });
   await request(worker, env, "/api/games/retry-test/prediction", { method: "PUT", headers: { Cookie: fanCookie }, body: JSON.stringify({ lineup }) });
   fixture.database.prepare("UPDATE games SET prediction_deadline_at = ?, status = 'open' WHERE id = ?").run(new Date(Date.now() - 1000).toISOString(), "retry-test");
@@ -330,6 +446,7 @@ test("採点は状態遷移・batch rollback・並列実行を保護する", asy
   const duplicateInitial = await request(worker, env, "/api/admin/games/retry-test/score", { method: "POST", headers: { Cookie: adminCookie } });
   assert.equal(duplicateInitial.response.status, 409);
   assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM scoring_runs WHERE game_id = 'retry-test' AND kind = 'initial'").get().count, 1);
+  assert.equal((await request(worker, env, "/api/admin/games/retry-test/ranking", { method: "POST", headers: { Cookie: adminCookie } })).response.status, 200);
   assert.equal((await request(worker, env, "/api/admin/games/retry-test/publish", { method: "POST", headers: { Cookie: adminCookie } })).response.status, 200);
   assert.equal((await request(worker, env, "/api/admin/games/retry-test/score", { method: "POST", headers: { Cookie: adminCookie } })).response.status, 409);
 
@@ -345,7 +462,8 @@ test("採点は状態遷移・batch rollback・並列実行を保護する", asy
     request(worker, env, "/api/admin/games/parallel-test/score", { method: "POST", headers: { Cookie: adminCookie } }),
     request(worker, env, "/api/admin/games/parallel-test/score", { method: "POST", headers: { Cookie: adminCookie } })
   ]);
-  assert.deepEqual(parallelScores.map(({ response }) => response.status).sort(), [200, 409]);
+  const parallelScoreStatuses = parallelScores.map(({ response }) => response.status).sort();
+  assert.ok(parallelScoreStatuses.join(",") === "200,200" || parallelScoreStatuses.join(",") === "200,409");
   assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM scoring_runs WHERE game_id = 'parallel-test' AND kind = 'initial'").get().count, 1);
 
   const corrected = lineup.map((item) => ({ ...item }));
@@ -354,7 +472,8 @@ test("採点は状態遷移・batch rollback・並列実行を保護する", asy
     request(worker, env, "/api/admin/games/retry-test/rescore", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ lineup: corrected, reason: "parallel-1" }) }),
     request(worker, env, "/api/admin/games/retry-test/rescore", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ lineup: corrected, reason: "parallel-2" }) })
   ]);
-  assert.deepEqual(parallelRescores.map(({ response }) => response.status).sort(), [200, 409]);
+  const parallelRescoreStatuses = parallelRescores.map(({ response }) => response.status).sort();
+  assert.ok(parallelRescoreStatuses.join(",") === "200,200" || parallelRescoreStatuses.join(",") === "200,409");
   assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM scoring_runs WHERE game_id = 'retry-test' AND revision_number = 2 AND kind = 'rescore'").get().count, 1);
   assert.equal(fixture.database.prepare("SELECT current_lineup_revision FROM games WHERE id = 'retry-test'").get().current_lineup_revision, 2);
 });

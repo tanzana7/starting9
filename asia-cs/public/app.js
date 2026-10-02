@@ -65,6 +65,11 @@ function renderGame() {
   const deadline = new Date(state.game.predictionDeadlineAt);
   state.closed = Number.isNaN(deadline.getTime()) || Date.now() >= deadline.getTime() || state.game.status !== "open";
   $("deadlineStatus").textContent = state.closed ? `締切済み（${formatDate(deadline)}）` : `締切 ${formatDate(deadline)}`;
+  const teams = [state.game.homeTeam, state.game.awayTeam].filter(Boolean);
+  const teamLabel = $("predictionTeamLabel");
+  const teamSelect = $("predictionTeamId");
+  teamSelect.replaceChildren(...teams.map((team) => { const option = document.createElement("option"); option.value = team.id; option.textContent = team.name; return option; }));
+  teamLabel.classList.toggle("hidden", teams.length === 0);
   buildLineupRows(state.prediction?.lineup || []);
   updateControls();
 }
@@ -74,10 +79,7 @@ function formatDate(date) { return Number.isNaN(date?.getTime?.()) ? "-" : date.
 async function refreshSession() {
   const payload = await api("/api/auth/me");
   state.user = payload.user;
-  $("loginForm").classList.toggle("hidden", Boolean(state.user));
-  $("registerForm").classList.add("hidden");
-  $("logoutButton").classList.toggle("hidden", !state.user);
-  $("toggleAuth").classList.toggle("hidden", Boolean(state.user));
+  $("authStatus").textContent = state.user ? `${state.user.username}でログイン中` : "Starting9でログインしてください";
   if (state.user) {
     const prediction = await api(`/api/games/${encodeURIComponent(gameId)}/prediction`);
     state.prediction = prediction.prediction;
@@ -104,21 +106,9 @@ async function load() {
   }
 }
 
-$("loginForm").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  try { await api("/api/auth/login", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); message("authStatus", "ログインしました。"); await refreshSession(); }
-  catch (error) { message("authStatus", error.message, true); }
-});
-$("registerForm").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  try { await api("/api/auth/register", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) }); message("authStatus", "登録しました。"); await refreshSession(); }
-  catch (error) { message("authStatus", error.message, true); }
-});
-$("toggleAuth").addEventListener("click", () => { $("loginForm").classList.toggle("hidden"); $("registerForm").classList.toggle("hidden"); $("toggleAuth").textContent = $("registerForm").classList.contains("hidden") ? "新規登録" : "ログインへ"; });
-$("logoutButton").addEventListener("click", async () => { await api("/api/auth/logout", { method: "POST" }); state.user = null; state.prediction = null; message("authStatus", "ログアウトしました。"); renderGame(); });
 $("predictionForm").addEventListener("submit", async (event) => {
   event.preventDefault();
-  try { const payload = await api(`/api/games/${encodeURIComponent(gameId)}/prediction`, { method: "PUT", body: JSON.stringify({ lineup: getFormLineup() }) }); state.prediction = payload.prediction; message("predictionMessage", "予想を保存しました。"); updateControls(); }
+  try { const payload = await api(`/api/games/${encodeURIComponent(gameId)}/prediction`, { method: "PUT", body: JSON.stringify({ lineup: getFormLineup(), teamId: $("predictionTeamId").value }) }); state.prediction = payload.prediction; message("predictionMessage", "予想を保存しました。"); updateControls(); }
   catch (error) { message("predictionMessage", error.message, true); }
 });
 $("deleteButton").addEventListener("click", async () => { try { await api(`/api/games/${encodeURIComponent(gameId)}/prediction`, { method: "DELETE" }); state.prediction = null; buildLineupRows(); message("predictionMessage", "予想を削除しました。"); } catch (error) { message("predictionMessage", error.message, true); } });

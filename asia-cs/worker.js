@@ -15,6 +15,8 @@ const BEST_NINE_LIMIT = 9;
 const COMPETITION_TYPE = "ASIA_CS";
 const DEFAULT_COMPETITION_ID = "asia-cs";
 const FORMAL_JOB_TYPES = Object.freeze(["prediction_close", "score", "ranking_rebuild", "publish"]);
+const STARTING9_AUTH_ORIGIN = "https://starting9-auth.starting9.workers.dev";
+const AUTH_UPSTREAM_TIMEOUT_MS = 4000;
 const CANONICAL_TEST_USERS = Object.freeze(
   Array.from({ length: 9 }, (_, index) => `S9_TEST_${index + 1}`)
 );
@@ -217,6 +219,25 @@ function externalAuthConfigured(env) {
   return typeof env?.AUTH_VERIFY === "function" || Boolean(String(env?.STARTING9_AUTH_BASE_URL || "").trim());
 }
 
+function localAuthRuntime(env) {
+  const runtime = String(env?.ASIA_CS_ENV || "").trim().toLowerCase();
+  return runtime === "development" || runtime === "test";
+}
+
+function allowedAuthOrigin(value, env) {
+  let parsed;
+  try {
+    parsed = new URL(String(value || "").trim());
+  } catch {
+    return "";
+  }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash || (parsed.pathname && parsed.pathname !== "/")) return "";
+  const origin = parsed.origin;
+  if (origin === STARTING9_AUTH_ORIGIN && parsed.protocol === "https:") return origin;
+  if (localAuthRuntime(env) && (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") && ["http:", "https:"].includes(parsed.protocol)) return origin;
+  return "";
+}
+
 function normalizeExternalUser(value, roleOverride = "") {
   const source = value?.user || value;
   const id = String(source?.id || "").trim();
@@ -236,7 +257,7 @@ async function getExternalAuthUser(request, env, { requireAdmin = false } = {}) 
       return null;
     }
   }
-  const baseUrl = String(env?.STARTING9_AUTH_BASE_URL || "").trim();
+  const baseUrl = allowedAuthOrigin(env?.STARTING9_AUTH_BASE_URL, env);
   const token = cookieValue(request, STARTING9_SESSION_COOKIE);
   if (!baseUrl || !token) return null;
   let endpoint;
@@ -245,10 +266,18 @@ async function getExternalAuthUser(request, env, { requireAdmin = false } = {}) 
   } catch {
     return null;
   }
+  const controller = new AbortController();
+  const configuredTimeout = Number(env?.AUTH_UPSTREAM_TIMEOUT_MS);
+  const timeoutMs = localAuthRuntime(env) && Number.isFinite(configuredTimeout) && configuredTimeout > 0
+    ? Math.min(configuredTimeout, AUTH_UPSTREAM_TIMEOUT_MS)
+    : AUTH_UPSTREAM_TIMEOUT_MS;
+  const timeout = setTimeout(() => controller.abort("auth upstream timeout"), timeoutMs);
   try {
     const response = await fetch(endpoint, {
       method: "GET",
-      headers: { Cookie: `${STARTING9_SESSION_COOKIE}=${encodeURIComponent(token)}` }
+      headers: { Cookie: `${STARTING9_SESSION_COOKIE}=${encodeURIComponent(token)}` },
+      redirect: "error",
+      signal: controller.signal
     });
     if (!response.ok) return null;
     const payload = await response.json();
@@ -257,6 +286,8 @@ async function getExternalAuthUser(request, env, { requireAdmin = false } = {}) 
   } catch (error) {
     console.warn(JSON.stringify({ scope: "asia-cs-auth", code: "AUTH_ENDPOINT_UNAVAILABLE", message: String(error?.message || error) }));
     return null;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -550,18 +581,24 @@ async function ensureFormalJobs(db, game) {
 
 function completeFormalJobStatement(db, gameId, jobType, revision, now) {
   return prepared(db, `UPDATE formal_jobs
-     SET status = 'completed', revision_number = ?1, completed_at = ?2, updated_at = ?2, attempts = attempts + 1
-   WHERE game_id = ?3 AND job_type = ?4 AND status <> 'completed'`, revision, now, gameId, jobType);
+     SET status = 'completed', revision_number = ?1, artifact_generation = COALESCE(?2, artifact_generation), completed_at = ?3, updated_at = ?3, attempts = attempts + 1
+   WHERE game_id = ?4 AND job_type = ?5 AND status <> 'completed'`, revision, null, now, gameId, jobType);
+}
+
+function completeRankingJobStatement(db, gameId, revision, generation, now) {
+  return prepared(db, `UPDATE formal_jobs
+     SET status = 'completed', revision_number = ?1, artifact_generation = ?2, completed_at = ?3, updated_at = ?3, attempts = attempts + 1
+   WHERE game_id = ?4 AND job_type = 'ranking_rebuild' AND status <> 'completed'`, revision, generation, now, gameId);
 }
 
 function resetFormalJobStatement(db, gameId, jobType, revision, dueAt, now) {
   return prepared(db, `UPDATE formal_jobs
-     SET status = 'scheduled', revision_number = ?1, completed_at = NULL, due_at = ?2, updated_at = ?3
+     SET status = 'scheduled', revision_number = ?1, artifact_generation = NULL, completed_at = NULL, due_at = ?2, updated_at = ?3
    WHERE game_id = ?4 AND job_type = ?5`, revision, dueAt, now, gameId, jobType);
 }
 
 async function listFormalJobs(db, gameId) {
-  const result = await prepared(db, "SELECT id, competition_type, competition_id, job_type, status, revision_number, due_at, attempts, completed_at, created_at, updated_at FROM formal_jobs WHERE game_id = ?1 ORDER BY due_at ASC, job_type ASC", gameId).all();
+  const result = await prepared(db, "SELECT id, competition_type, competition_id, job_type, status, revision_number, artifact_generation, due_at, attempts, completed_at, created_at, updated_at FROM formal_jobs WHERE game_id = ?1 ORDER BY due_at ASC, job_type ASC", gameId).all();
   return result.results || [];
 }
 
@@ -805,19 +842,25 @@ async function rebuildCompetitionRanking(db, game, revision, now) {
     JOIN users u ON u.id = p.user_id
    WHERE g.competition_type = ?1 AND g.competition_id = ?2
      AND g.status IN ('scored', 'published')
-     AND g.publication_status IN ('pending', 'published')
-     AND p.status = 'scored' AND p.score IS NOT NULL
-     AND p.scored_revision = g.current_lineup_revision
-     AND u.status = 'active'
-   GROUP BY p.user_id, u.username
-   ORDER BY score_total DESC, games_count DESC, p.user_id ASC`, COMPETITION_TYPE, game.competition_id).all();
+      AND (g.id = ?3 OR g.publication_status = 'published')
+      AND p.status = 'scored' AND p.score IS NOT NULL
+      AND p.scored_revision = g.current_lineup_revision
+      AND u.status = 'active'
+    GROUP BY p.user_id, u.username
+    ORDER BY score_total DESC, games_count DESC, p.user_id ASC`, COMPETITION_TYPE, game.competition_id, game.id).all();
   const rows = rowsResult.results || [];
-  const generationRow = await prepared(db, "SELECT COALESCE(MAX(generation), 0) AS generation FROM competition_rankings WHERE competition_id = ?1", game.competition_id).first();
+  const generationRow = await prepared(db, "SELECT COALESCE(MAX(generation), 0) AS generation FROM competition_ranking_generations WHERE competition_id = ?1", game.competition_id).first();
   const generation = Number(generationRow?.generation || 0) + 1;
-  const statements = [prepared(db, "DELETE FROM competition_rankings WHERE competition_id = ?1", game.competition_id)];
-  rows.forEach((row, index) => statements.push(prepared(db, `INSERT INTO competition_rankings
-    (competition_id, user_id, score_total, games_count, rank, generation, is_public, updated_at)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)`, game.competition_id, row.user_id, Number(row.score_total || 0), Number(row.games_count || 0), index + 1, generation, now)));
+  const statements = [prepared(db, `INSERT INTO competition_ranking_generations
+    (competition_id, generation, target_game_id, status, created_at, published_at)
+    VALUES (?1, ?2, ?3, 'built', ?4, NULL)`, game.competition_id, generation, game.id, now)];
+  rows.forEach((row, index) => statements.push(prepared(db, `INSERT INTO competition_ranking_entries
+    (competition_id, generation, user_id, score_total, games_count, rank, updated_at)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`, game.competition_id, generation, row.user_id, Number(row.score_total || 0), Number(row.games_count || 0), index + 1, now)));
+  // Bind the generation to the exact ranking job in the same D1 batch. A
+  // failed rebuild therefore cannot leave a completed job pointing at a
+  // partial or unrelated artifact.
+  statements.push(completeRankingJobStatement(db, game.id, revision, generation, now));
   await db.batch(statements);
   return { generation, rows };
 }
@@ -829,24 +872,30 @@ async function rankingGame(request, env, db, gameId) {
   const revision = Number(game.current_lineup_revision);
   const completed = await prepared(db, "SELECT 1 FROM scoring_runs WHERE game_id = ?1 AND revision_number = ?2 AND completed_at IS NOT NULL LIMIT 1", gameId, revision).first();
   if (!completed) return errorResponse(request, env, 409, "SCORING_INCOMPLETE", "採点処理が完了していません。");
-  const job = await prepared(db, "SELECT status, revision_number FROM formal_jobs WHERE game_id = ?1 AND job_type = 'ranking_rebuild' LIMIT 1", gameId).first();
+  const job = await prepared(db, "SELECT status, revision_number, artifact_generation FROM formal_jobs WHERE game_id = ?1 AND job_type = 'ranking_rebuild' LIMIT 1", gameId).first();
   if (job?.status === "completed" && Number(job.revision_number) === revision) {
-    return json({ ok: true, gameId, revision, noop: true, ranking: await listCompetitionRanking(db, game.competition_id, false, true) }, 200, request, env);
+    return json({ ok: true, gameId, revision, noop: true, generation: Number(job.artifact_generation), ranking: await listCompetitionRanking(db, game.competition_id, false, true, Number(job.artifact_generation)) }, 200, request, env);
   }
   const now = nowIso();
   const rebuilt = await rebuildCompetitionRanking(db, game, revision, now);
-  await db.batch([completeFormalJobStatement(db, gameId, "ranking_rebuild", revision, now)]);
   return json({ ok: true, gameId, revision, generation: rebuilt.generation, rows: rebuilt.rows.length }, 200, request, env);
 }
 
-async function listCompetitionRanking(db, competitionId, publicOnly = true, includeGeneration = false) {
+async function listCompetitionRanking(db, competitionId, publicOnly = true, includeGeneration = false, generation = null) {
+  const generationFilter = publicOnly
+    ? "JOIN competition_ranking_publications rp ON rp.competition_id = r.competition_id AND rp.generation = r.generation"
+    : Number.isInteger(generation)
+      ? "JOIN competition_ranking_generations selected ON selected.competition_id = r.competition_id AND selected.generation = r.generation AND selected.generation = ?2"
+      : "JOIN (SELECT competition_id, generation FROM competition_ranking_generations WHERE competition_id = ?1 ORDER BY generation DESC LIMIT 1) latest ON latest.competition_id = r.competition_id AND latest.generation = r.generation";
   const result = await prepared(db, `SELECT r.rank, r.user_id, u.username, r.score_total, r.games_count, r.generation
-    FROM competition_rankings r JOIN users u ON u.id = r.user_id
-   WHERE r.competition_id = ?1${publicOnly ? " AND r.is_public = 1" : ""}
-   ORDER BY r.rank ASC, r.user_id ASC`, competitionId).all();
+    FROM competition_ranking_entries r JOIN users u ON u.id = r.user_id
+    ${generationFilter}
+   WHERE r.competition_id = ?1
+   ORDER BY r.rank ASC, r.user_id ASC`, ...(Number.isInteger(generation) && !publicOnly ? [competitionId, generation] : [competitionId])).all();
   return (result.results || []).map((row) => ({
-    rank: Number(row.rank), userId: row.user_id, username: row.username,
-    score: Number(row.score_total), games: Number(row.games_count),
+    rank: Number(row.rank), username: row.username,
+    score: Number(row.score_total), gamesCount: Number(row.games_count),
+    ...(publicOnly ? {} : { userId: row.user_id }),
     ...(includeGeneration ? { generation: Number(row.generation) } : {})
   }));
 }
@@ -869,14 +918,25 @@ async function publishGame(request, env, db, gameId) {
   if (game.status !== "scored") return errorResponse(request, env, 409, "SCORING_REQUIRED", "採点済みの試合だけ公開できます。");
   const completed = await prepared(db, "SELECT 1 FROM scoring_runs WHERE game_id = ?1 AND revision_number = ?2 AND completed_at IS NOT NULL LIMIT 1", gameId, game.current_lineup_revision).first();
   if (!completed) return errorResponse(request, env, 409, "SCORING_INCOMPLETE", "採点処理が完了していません。");
-  const rankingJob = await prepared(db, "SELECT status, revision_number FROM formal_jobs WHERE game_id = ?1 AND job_type = 'ranking_rebuild' LIMIT 1", gameId).first();
-  if (!rankingJob || rankingJob.status !== "completed" || Number(rankingJob.revision_number) !== Number(game.current_lineup_revision)) {
+  const rankingJob = await prepared(db, "SELECT status, revision_number, artifact_generation FROM formal_jobs WHERE game_id = ?1 AND job_type = 'ranking_rebuild' LIMIT 1", gameId).first();
+  if (!rankingJob || rankingJob.status !== "completed" || Number(rankingJob.revision_number) !== Number(game.current_lineup_revision) || !Number.isInteger(Number(rankingJob.artifact_generation))) {
     return errorResponse(request, env, 409, "RANKING_INCOMPLETE", "ランキング更新が完了していません。");
   }
+  const generation = await prepared(db, `SELECT competition_id, generation, target_game_id, status
+    FROM competition_ranking_generations
+   WHERE competition_id = ?1 AND generation = ?2 AND target_game_id = ?3 AND status = 'built'`, game.competition_id, Number(rankingJob.artifact_generation), gameId).first();
+  if (!generation) return errorResponse(request, env, 409, "RANKING_INCOMPLETE", "ランキング更新が完了していません。");
   const now = nowIso();
   await db.batch([
     prepared(db, "UPDATE games SET status = 'published', publication_status = 'published', updated_at = ?1 WHERE id = ?2 AND status = 'scored'", now, gameId),
-    prepared(db, "UPDATE competition_rankings SET is_public = 1, updated_at = ?1 WHERE competition_id = ?2 AND generation = (SELECT MAX(generation) FROM competition_rankings WHERE competition_id = ?2)", now, game.competition_id),
+    prepared(db, `UPDATE competition_ranking_generations SET status = 'published', published_at = ?1
+      WHERE competition_id = ?2 AND generation = ?3 AND target_game_id = ?4
+        AND status = 'built'
+        AND EXISTS (SELECT 1 FROM games WHERE id = ?4 AND status = 'published' AND publication_status = 'published')`, now, game.competition_id, generation.generation, gameId),
+    prepared(db, `INSERT INTO competition_ranking_publications (competition_id, generation, updated_at)
+      VALUES (?1, ?2, ?3)
+      ON CONFLICT(competition_id) DO UPDATE SET generation = excluded.generation, updated_at = excluded.updated_at
+     WHERE EXISTS (SELECT 1 FROM competition_ranking_generations WHERE competition_id = ?1 AND generation = ?2 AND status = 'published')`, game.competition_id, generation.generation, now),
     completeFormalJobStatement(db, gameId, "publish", game.current_lineup_revision, now)
   ]);
   const published = await getGame(db, gameId);

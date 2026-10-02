@@ -8,8 +8,9 @@ import { SCORING_MAX_SCORE, SCORING_RULES, scorePredictionLineup } from "../back
 import { scoreLineup } from "../asia-cs/scoring.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const migration = ["0001_asia_cs_mvp.sql", "0002_competition_and_formal_jobs.sql", "0003_review_hardening.sql"]
-  .map((file) => fs.readFileSync(path.join(root, "asia-cs/migrations", file), "utf8"))
+const migrationFiles = ["0001_asia_cs_mvp.sql", "0002_competition_and_formal_jobs.sql", "0003_review_hardening.sql", "0004_ranking-generation-snapshots.sql"];
+const migrationSql = migrationFiles.map((file) => fs.readFileSync(path.join(root, "asia-cs/migrations", file), "utf8"));
+const migration = migrationSql
   .join("\n");
 
 function createD1Adapter(database, failure = null) {
@@ -150,7 +151,8 @@ test("Asia CS MVP: 予想→締切→正式登録→採点→B9→正式修正�
   assert.deepEqual((await request(worker, env, "/api/rankings?competitionId=asia-cs")).payload.ranking, []);
   const published = await request(worker, env, "/api/admin/games/asia-cs-demo/publish", { method: "POST", headers: { Cookie: adminCookie } });
   assert.equal(published.response.status, 200);
-  assert.deepEqual((await request(worker, env, "/api/rankings?competitionId=asia-cs")).payload.ranking.map((row) => [row.rank, row.userId, row.score]), [[1, fanRegistration.payload.user.id, 99]]);
+  assert.deepEqual((await request(worker, env, "/api/rankings?competitionId=asia-cs")).payload.ranking.map((row) => [row.rank, row.username, row.score, row.gamesCount]), [[1, "fan", 99, 1]]);
+  assert.equal(Object.prototype.hasOwnProperty.call((await request(worker, env, "/api/rankings?competitionId=asia-cs")).payload.ranking[0], "userId"), false);
   assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM formal_jobs WHERE game_id = 'asia-cs-demo' AND status <> 'completed'").get().count, 0);
 
   const bestNine = await request(worker, env, "/api/games/asia-cs-demo/best-nine");
@@ -297,12 +299,14 @@ test("Asia CSのHTTPS認証連携はs9_sessionだけをStarting9へ転送し、�
     return new Response(JSON.stringify({ ok: true, authenticated: false, user: null }), { status: 200 });
   };
   try {
-    const env = { ...fixture, STARTING9_AUTH_BASE_URL: "https://starting9-auth.example", ALLOWED_ORIGIN: "https://asia-cs.test" };
+    const env = { ...fixture, STARTING9_AUTH_BASE_URL: "https://starting9-auth.starting9.workers.dev", ALLOWED_ORIGIN: "https://asia-cs.test" };
     const authenticated = await request(worker, env, "/api/auth/me", { headers: { Cookie: "s9_session=remote-user" } });
     assert.equal(authenticated.response.status, 200);
     assert.deepEqual(authenticated.payload.user, { id: "remote-user", username: "remote", role: "user" });
-    assert.equal(calls[0].input, "https://starting9-auth.example/api/auth/me");
+    assert.equal(calls[0].input, "https://starting9-auth.starting9.workers.dev/api/auth/me");
     assert.equal(new Headers(calls[0].init.headers).get("Cookie"), "s9_session=remote-user");
+    assert.equal(calls[0].init.redirect, "error");
+    assert.ok(calls[0].init.signal instanceof AbortSignal);
     const anonymous = await request(worker, env, "/api/auth/me");
     assert.deepEqual(anonymous.payload, { ok: true, authenticated: false, user: null });
   } finally {
@@ -310,7 +314,52 @@ test("Asia CSのHTTPS認証連携はs9_sessionだけをStarting9へ転送し、�
   }
 });
 
-test("ranking_rebuildは大会単位で再集計し、再実行しても不変で別大会を混ぜない", async () => {
+test("Starting9 Authのorigin allowlist・timeout・redirect失敗はfail closedする", async () => {
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const fixture = createDatabase();
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_input, init = {}) => {
+    calls += 1;
+    assert.equal(init.redirect, "error");
+    await new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(new Error("upstream timeout")), { once: true }));
+  };
+  try {
+    const blocked = await request(worker, { ...fixture, STARTING9_AUTH_BASE_URL: "https://starting9-auth.attacker.example" }, "/api/auth/me", { headers: { Cookie: "s9_session=blocked" } });
+    assert.deepEqual(blocked.payload, { ok: true, authenticated: false, user: null });
+    assert.equal(calls, 0);
+    const timedOut = await request(worker, { ...fixture, ASIA_CS_ENV: "test", AUTH_UPSTREAM_TIMEOUT_MS: "5", STARTING9_AUTH_BASE_URL: "https://starting9-auth.starting9.workers.dev" }, "/api/auth/me", { headers: { Cookie: "s9_session=timeout" } });
+    assert.deepEqual(timedOut.payload, { ok: true, authenticated: false, user: null });
+    assert.equal(calls, 1);
+    globalThis.fetch = async () => new Response("upstream failure", { status: 503 });
+    const serverError = await request(worker, { ...fixture, STARTING9_AUTH_BASE_URL: "https://starting9-auth.starting9.workers.dev" }, "/api/auth/me", { headers: { Cookie: "s9_session=server-error" } });
+    assert.deepEqual(serverError.payload, { ok: true, authenticated: false, user: null });
+    globalThis.fetch = async () => new Response("{", { status: 200 });
+    const invalidJson = await request(worker, { ...fixture, STARTING9_AUTH_BASE_URL: "https://starting9-auth.starting9.workers.dev" }, "/api/auth/me", { headers: { Cookie: "s9_session=invalid-json" } });
+    assert.deepEqual(invalidJson.payload, { ok: true, authenticated: false, user: null });
+    globalThis.fetch = async () => { throw new TypeError("redirect rejected"); };
+    const redirect = await request(worker, { ...fixture, STARTING9_AUTH_BASE_URL: "https://starting9-auth.starting9.workers.dev" }, "/api/auth/me", { headers: { Cookie: "s9_session=redirect" } });
+    assert.deepEqual(redirect.payload, { ok: true, authenticated: false, user: null });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("ranking snapshot migrationはfresh適用と0001〜0003からのupgrade適用を通過する", () => {
+  const fresh = new DatabaseSync(":memory:");
+  fresh.exec(migration);
+  const upgraded = new DatabaseSync(":memory:");
+  upgraded.exec(migrationSql.slice(0, 3).join("\n"));
+  upgraded.exec(migrationSql[3]);
+  for (const database of [fresh, upgraded]) {
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'competition_ranking_generations'").get().count, 1);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'competition_ranking_entries'").get().count, 1);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'competition_ranking_publications'").get().count, 1);
+    assert.ok(database.prepare("PRAGMA table_info(formal_jobs)").all().some((column) => column.name === "artifact_generation"));
+  }
+});
+
+test("ranking_rebuildは対象試合までの大会単位世代を作り、再実行・公開順序・別大会分離を保証する", async () => {
   const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
   const fixture = createDatabase();
   const env = { ...fixture, ADMIN_BOOTSTRAP_TOKEN: "local-bootstrap-token", ALLOWED_ORIGIN: "https://asia-cs.test" };
@@ -340,18 +389,31 @@ test("ranking_rebuildは大会単位で再集計し、再実行しても不変�
   insertScore("score-other", userA.payload.user.id, "other-game", 999);
   const rebuilt = await request(worker, env, "/api/admin/games/rank-a-game/ranking", { method: "POST", headers: { Cookie: adminCookie } });
   assert.equal(rebuilt.response.status, 200);
-  const rows = fixture.database.prepare("SELECT user_id, score_total, games_count, rank, generation FROM competition_rankings WHERE competition_id = 'asia-cs' ORDER BY rank").all();
-  assert.deepEqual(rows.map((row) => [row.user_id, row.score_total, row.games_count, row.rank, row.generation]), [[userA.payload.user.id, 150, 2, 1, 1], [userB.payload.user.id, 100, 1, 2, 1]]);
+  const rows = fixture.database.prepare("SELECT user_id, score_total, games_count, rank, generation FROM competition_ranking_entries WHERE competition_id = 'asia-cs' ORDER BY rank").all();
+  assert.deepEqual(rows.map((row) => [row.user_id, row.score_total, row.games_count, row.rank, row.generation]), [[userB.payload.user.id, 100, 1, 1, 1], [userA.payload.user.id, 90, 1, 2, 1]]);
+  assert.equal(fixture.database.prepare("SELECT target_game_id FROM competition_ranking_generations WHERE competition_id = 'asia-cs' AND generation = 1").get().target_game_id, "rank-a-game");
   const repeated = await request(worker, env, "/api/admin/games/rank-a-game/ranking", { method: "POST", headers: { Cookie: adminCookie } });
   assert.equal(repeated.response.status, 200);
   assert.equal(repeated.payload.noop, true);
-  assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM competition_rankings WHERE competition_id = 'asia-cs'").get().count, 2);
-  assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM competition_rankings WHERE competition_id = 'other-cup'").get().count, 0);
+  assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM competition_ranking_entries WHERE competition_id = 'asia-cs'").get().count, 2);
+  assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM competition_ranking_entries WHERE competition_id = 'other-cup'").get().count, 0);
   assert.deepEqual((await request(worker, env, "/api/rankings?competitionId=asia-cs")).payload.ranking, []);
   assert.equal((await request(worker, env, "/api/admin/games/rank-a-game/publish", { method: "POST", headers: { Cookie: adminCookie } })).response.status, 200);
   const publicRows = (await request(worker, env, "/api/rankings?competitionId=asia-cs")).payload.ranking;
-  assert.deepEqual(publicRows.map((row) => [row.userId, row.score, row.games]), [[userA.payload.user.id, 150, 2], [userB.payload.user.id, 100, 1]]);
+  assert.deepEqual(publicRows.map((row) => [row.username, row.score, row.gamesCount]), [["rank-b", 100, 1], ["rank-a", 90, 1]]);
+  assert.equal(Object.prototype.hasOwnProperty.call(publicRows[0], "userId"), false);
   assert.equal(Object.prototype.hasOwnProperty.call(publicRows[0], "generation"), false);
+  const rankB = await request(worker, env, "/api/admin/games/rank-b-game/ranking", { method: "POST", headers: { Cookie: adminCookie } });
+  assert.equal(rankB.response.status, 200);
+  assert.notEqual(rankB.payload.generation, rebuilt.payload.generation);
+  const rankANoop = await request(worker, env, "/api/admin/games/rank-a-game/ranking", { method: "POST", headers: { Cookie: adminCookie } });
+  assert.equal(rankANoop.payload.noop, true);
+  assert.equal(rankANoop.payload.generation, rebuilt.payload.generation);
+  assert.deepEqual((await request(worker, env, "/api/admin/games/rank-b-game/publish", { method: "POST", headers: { Cookie: adminCookie } })).response.status, 200);
+  const publishedBoth = (await request(worker, env, "/api/rankings?competitionId=asia-cs")).payload.ranking;
+  assert.deepEqual(publishedBoth.map((row) => [row.username, row.score, row.gamesCount]), [["rank-a", 150, 2], ["rank-b", 100, 1]]);
+  assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM competition_ranking_entries WHERE competition_id = 'asia-cs' AND generation = 2").get().count, 2);
+  assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM competition_ranking_publications WHERE competition_id = 'asia-cs'").get().count, 1);
   assert.equal((await request(worker, env, "/api/rankings")).response.status, 400);
 });
 

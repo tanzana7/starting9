@@ -17,7 +17,7 @@ npx wrangler d1 migrations apply starting9-asia-cs-db --local --config asia-cs/w
 npx wrangler dev --config asia-cs/wrangler.jsonc
 ```
 
-本番では独自のユーザー名・パスワード・セッションを使用しません。`STARTING9_AUTH_BASE_URL` を設定し、既存Auth Workerの `/api/auth/me`（一般ユーザー）または `/api/admin/me`（管理者）が検証した `s9_session` のユーザーID・権限だけを利用します。ローカルfixture専用の `ASIA_CS_LOCAL_AUTH=true` とbootstrap/login経路は本番設定に含めません。`.dev.vars` と `.wrangler/` はコミットしません。
+本番では独自のユーザー名・パスワード・セッションを使用しません。`STARTING9_AUTH_BASE_URL` は `https://starting9-auth.starting9.workers.dev` の完全一致Originだけを受け付け、既存Auth Workerの `/api/auth/me`（一般ユーザー）または `/api/admin/me`（管理者）が検証した `s9_session` のユーザーID・権限だけを利用します。upstreamは4秒でタイムアウトし、5xx・不正JSON・redirect・未許可Originは匿名扱いにします。ローカルfixture専用の `ASIA_CS_LOCAL_AUTH=true` とbootstrap/login経路は本番設定に含めません。`.dev.vars` と `.wrangler/` はコミットしません。
 
 Pagesのローカル静的画面は、別ターミナルで次のように配信します。
 

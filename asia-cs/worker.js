@@ -159,13 +159,25 @@ function constantTimeEqual(left, right) {
   return difference === 0;
 }
 
-function cookieValue(request, name) {
+function rawCookieValue(request, name) {
   const cookies = request.headers.get("Cookie") || "";
   for (const part of cookies.split(";")) {
-    const [key, ...rest] = part.trim().split("=");
-    if (key === name) return rest.join("=");
+    const separator = part.indexOf("=");
+    if (separator < 0) continue;
+    const key = part.slice(0, separator).trim();
+    if (key === name) return part.slice(separator + 1).trim();
   }
   return "";
+}
+
+function cookieValue(request, name) {
+  const raw = rawCookieValue(request, name);
+  if (!raw) return "";
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return "";
+  }
 }
 
 function sessionCookie(token) {
@@ -258,7 +270,10 @@ async function getExternalAuthUser(request, env, { requireAdmin = false } = {}) 
     }
   }
   const baseUrl = allowedAuthOrigin(env?.STARTING9_AUTH_BASE_URL, env);
-  const token = cookieValue(request, STARTING9_SESSION_COOKIE);
+  // Auth Worker owns the cookie serializer and decodes the value once. Keep
+  // the browser's encoded value byte-for-byte so this boundary never turns
+  // `%3D` into `%253D` or otherwise changes the session token.
+  const token = rawCookieValue(request, STARTING9_SESSION_COOKIE);
   if (!baseUrl || !token) return null;
   let endpoint;
   try {
@@ -275,7 +290,7 @@ async function getExternalAuthUser(request, env, { requireAdmin = false } = {}) 
   try {
     const response = await fetch(endpoint, {
       method: "GET",
-      headers: { Cookie: `${STARTING9_SESSION_COOKIE}=${encodeURIComponent(token)}` },
+      headers: { Cookie: `${STARTING9_SESSION_COOKIE}=${token}` },
       redirect: "error",
       signal: controller.signal
     });
@@ -588,7 +603,8 @@ function completeFormalJobStatement(db, gameId, jobType, revision, now) {
 function completeRankingJobStatement(db, gameId, revision, generation, now) {
   return prepared(db, `UPDATE formal_jobs
      SET status = 'completed', revision_number = ?1, artifact_generation = ?2, completed_at = ?3, updated_at = ?3, attempts = attempts + 1
-   WHERE game_id = ?4 AND job_type = 'ranking_rebuild' AND status <> 'completed'`, revision, generation, now, gameId);
+   WHERE game_id = ?4 AND job_type = 'ranking_rebuild'
+     AND (status <> 'completed' OR artifact_generation IS NULL OR artifact_generation <> ?2)`, revision, generation, now, gameId);
 }
 
 function resetFormalJobStatement(db, gameId, jobType, revision, dueAt, now) {
@@ -849,11 +865,17 @@ async function rebuildCompetitionRanking(db, game, revision, now) {
     GROUP BY p.user_id, u.username
     ORDER BY score_total DESC, games_count DESC, p.user_id ASC`, COMPETITION_TYPE, game.competition_id, game.id).all();
   const rows = rowsResult.results || [];
-  const generationRow = await prepared(db, "SELECT COALESCE(MAX(generation), 0) AS generation FROM competition_ranking_generations WHERE competition_id = ?1", game.competition_id).first();
-  const generation = Number(generationRow?.generation || 0) + 1;
-  const statements = [prepared(db, `INSERT INTO competition_ranking_generations
-    (competition_id, generation, target_game_id, status, created_at, published_at)
-    VALUES (?1, ?2, ?3, 'built', ?4, NULL)`, game.competition_id, generation, game.id, now)];
+  const publicationState = await prepared(db, "SELECT publication_revision FROM competition_publication_state WHERE competition_id = ?1 LIMIT 1", game.competition_id).first();
+  const basePublicationRevision = Number(publicationState?.publication_revision || 0);
+  const generation = uuid();
+  const statements = [
+    prepared(db, `INSERT INTO competition_publication_state (competition_id, publication_revision, updated_at)
+      VALUES (?1, 0, ?2)
+      ON CONFLICT(competition_id) DO NOTHING`, game.competition_id, now),
+    prepared(db, `INSERT INTO competition_ranking_generations
+      (competition_id, generation, target_game_id, base_publication_revision, status, created_at, published_at)
+      VALUES (?1, ?2, ?3, ?4, 'built', ?5, NULL)`, game.competition_id, generation, game.id, basePublicationRevision, now)
+  ];
   rows.forEach((row, index) => statements.push(prepared(db, `INSERT INTO competition_ranking_entries
     (competition_id, generation, user_id, score_total, games_count, rank, updated_at)
     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`, game.competition_id, generation, row.user_id, Number(row.score_total || 0), Number(row.games_count || 0), index + 1, now)));
@@ -873,8 +895,15 @@ async function rankingGame(request, env, db, gameId) {
   const completed = await prepared(db, "SELECT 1 FROM scoring_runs WHERE game_id = ?1 AND revision_number = ?2 AND completed_at IS NOT NULL LIMIT 1", gameId, revision).first();
   if (!completed) return errorResponse(request, env, 409, "SCORING_INCOMPLETE", "採点処理が完了していません。");
   const job = await prepared(db, "SELECT status, revision_number, artifact_generation FROM formal_jobs WHERE game_id = ?1 AND job_type = 'ranking_rebuild' LIMIT 1", gameId).first();
-  if (job?.status === "completed" && Number(job.revision_number) === revision) {
-    return json({ ok: true, gameId, revision, noop: true, generation: Number(job.artifact_generation), ranking: await listCompetitionRanking(db, game.competition_id, false, true, Number(job.artifact_generation)) }, 200, request, env);
+  const artifactGeneration = String(job?.artifact_generation || "").trim();
+  if (job?.status === "completed" && Number(job.revision_number) === revision && artifactGeneration) {
+    const state = await prepared(db, "SELECT publication_revision FROM competition_publication_state WHERE competition_id = ?1 LIMIT 1", game.competition_id).first();
+    const artifact = await prepared(db, `SELECT base_publication_revision
+      FROM competition_ranking_generations
+     WHERE competition_id = ?1 AND generation = ?2 AND target_game_id = ?3`, game.competition_id, artifactGeneration, gameId).first();
+    if (state && artifact && Number(artifact.base_publication_revision || 0) === Number(state.publication_revision || 0)) {
+      return json({ ok: true, gameId, revision, noop: true, generation: artifactGeneration, ranking: await listCompetitionRanking(db, game.competition_id, false, true, artifactGeneration) }, 200, request, env);
+    }
   }
   const now = nowIso();
   const rebuilt = await rebuildCompetitionRanking(db, game, revision, now);
@@ -882,21 +911,20 @@ async function rankingGame(request, env, db, gameId) {
 }
 
 async function listCompetitionRanking(db, competitionId, publicOnly = true, includeGeneration = false, generation = null) {
-  const generationFilter = publicOnly
-    ? "JOIN competition_ranking_publications rp ON rp.competition_id = r.competition_id AND rp.generation = r.generation"
-    : Number.isInteger(generation)
-      ? "JOIN competition_ranking_generations selected ON selected.competition_id = r.competition_id AND selected.generation = r.generation AND selected.generation = ?2"
-      : "JOIN (SELECT competition_id, generation FROM competition_ranking_generations WHERE competition_id = ?1 ORDER BY generation DESC LIMIT 1) latest ON latest.competition_id = r.competition_id AND latest.generation = r.generation";
+  const selectedGeneration = generation === null || generation === undefined ? "" : String(generation).trim();
+  const generationFilter = selectedGeneration
+    ? "JOIN competition_ranking_generations selected ON selected.competition_id = r.competition_id AND selected.generation = r.generation AND selected.generation = ?2"
+    : "JOIN competition_ranking_publications rp ON rp.competition_id = r.competition_id AND rp.generation = r.generation";
   const result = await prepared(db, `SELECT r.rank, r.user_id, u.username, r.score_total, r.games_count, r.generation
     FROM competition_ranking_entries r JOIN users u ON u.id = r.user_id
     ${generationFilter}
    WHERE r.competition_id = ?1
-   ORDER BY r.rank ASC, r.user_id ASC`, ...(Number.isInteger(generation) && !publicOnly ? [competitionId, generation] : [competitionId])).all();
+   ORDER BY r.rank ASC, r.user_id ASC`, ...(selectedGeneration ? [competitionId, selectedGeneration] : [competitionId])).all();
   return (result.results || []).map((row) => ({
     rank: Number(row.rank), username: row.username,
     score: Number(row.score_total), gamesCount: Number(row.games_count),
     ...(publicOnly ? {} : { userId: row.user_id }),
-    ...(includeGeneration ? { generation: Number(row.generation) } : {})
+    ...(includeGeneration ? { generation: String(row.generation) } : {})
   }));
 }
 
@@ -919,26 +947,48 @@ async function publishGame(request, env, db, gameId) {
   const completed = await prepared(db, "SELECT 1 FROM scoring_runs WHERE game_id = ?1 AND revision_number = ?2 AND completed_at IS NOT NULL LIMIT 1", gameId, game.current_lineup_revision).first();
   if (!completed) return errorResponse(request, env, 409, "SCORING_INCOMPLETE", "採点処理が完了していません。");
   const rankingJob = await prepared(db, "SELECT status, revision_number, artifact_generation FROM formal_jobs WHERE game_id = ?1 AND job_type = 'ranking_rebuild' LIMIT 1", gameId).first();
-  if (!rankingJob || rankingJob.status !== "completed" || Number(rankingJob.revision_number) !== Number(game.current_lineup_revision) || !Number.isInteger(Number(rankingJob.artifact_generation))) {
+  const generationId = String(rankingJob?.artifact_generation || "").trim();
+  if (!rankingJob || rankingJob.status !== "completed" || Number(rankingJob.revision_number) !== Number(game.current_lineup_revision) || !generationId) {
     return errorResponse(request, env, 409, "RANKING_INCOMPLETE", "ランキング更新が完了していません。");
   }
-  const generation = await prepared(db, `SELECT competition_id, generation, target_game_id, status
+  const generation = await prepared(db, `SELECT competition_id, generation, target_game_id, base_publication_revision, status
     FROM competition_ranking_generations
-   WHERE competition_id = ?1 AND generation = ?2 AND target_game_id = ?3 AND status = 'built'`, game.competition_id, Number(rankingJob.artifact_generation), gameId).first();
+   WHERE competition_id = ?1 AND generation = ?2 AND target_game_id = ?3 AND status = 'built'`, game.competition_id, generationId, gameId).first();
   if (!generation) return errorResponse(request, env, 409, "RANKING_INCOMPLETE", "ランキング更新が完了していません。");
+  const state = await prepared(db, "SELECT publication_revision FROM competition_publication_state WHERE competition_id = ?1 LIMIT 1", game.competition_id).first();
+  const expectedPublicationRevision = Number(state?.publication_revision || 0);
+  if (Number(generation.base_publication_revision || 0) !== expectedPublicationRevision) {
+    return errorResponse(request, env, 409, "RANKING_GENERATION_STALE", "公開ランキングが更新されたため、ランキングを再集計してください。");
+  }
   const now = nowIso();
-  await db.batch([
-    prepared(db, "UPDATE games SET status = 'published', publication_status = 'published', updated_at = ?1 WHERE id = ?2 AND status = 'scored'", now, gameId),
+  const nextPublicationRevision = expectedPublicationRevision + 1;
+  const results = await db.batch([
+    prepared(db, `UPDATE competition_publication_state
+       SET publication_revision = ?1, updated_at = ?2, last_publication_generation = ?3
+     WHERE competition_id = ?4 AND publication_revision = ?5
+       AND EXISTS (SELECT 1 FROM games WHERE id = ?6 AND status = 'scored' AND publication_status = 'pending')
+       AND EXISTS (SELECT 1 FROM competition_ranking_generations
+                    WHERE competition_id = ?4 AND generation = ?7 AND target_game_id = ?6
+                      AND status = 'built' AND base_publication_revision = ?5)`, nextPublicationRevision, now, generation.generation, game.competition_id, expectedPublicationRevision, gameId, generation.generation),
+    prepared(db, `UPDATE games SET status = 'published', publication_status = 'published', updated_at = ?1
+     WHERE id = ?2 AND status = 'scored'
+       AND EXISTS (SELECT 1 FROM competition_publication_state WHERE competition_id = ?3 AND publication_revision = ?4 AND last_publication_generation = ?5)`, now, gameId, game.competition_id, nextPublicationRevision, generation.generation),
     prepared(db, `UPDATE competition_ranking_generations SET status = 'published', published_at = ?1
-      WHERE competition_id = ?2 AND generation = ?3 AND target_game_id = ?4
-        AND status = 'built'
-        AND EXISTS (SELECT 1 FROM games WHERE id = ?4 AND status = 'published' AND publication_status = 'published')`, now, game.competition_id, generation.generation, gameId),
+     WHERE competition_id = ?2 AND generation = ?3 AND target_game_id = ?4
+       AND status = 'built' AND base_publication_revision = ?5
+       AND EXISTS (SELECT 1 FROM competition_publication_state WHERE competition_id = ?2 AND publication_revision = ?6 AND last_publication_generation = ?3)`, now, game.competition_id, generation.generation, gameId, expectedPublicationRevision, nextPublicationRevision),
     prepared(db, `INSERT INTO competition_ranking_publications (competition_id, generation, updated_at)
       VALUES (?1, ?2, ?3)
       ON CONFLICT(competition_id) DO UPDATE SET generation = excluded.generation, updated_at = excluded.updated_at
-     WHERE EXISTS (SELECT 1 FROM competition_ranking_generations WHERE competition_id = ?1 AND generation = ?2 AND status = 'published')`, game.competition_id, generation.generation, now),
-    completeFormalJobStatement(db, gameId, "publish", game.current_lineup_revision, now)
+     WHERE EXISTS (SELECT 1 FROM competition_publication_state WHERE competition_id = ?1 AND publication_revision = ?4 AND last_publication_generation = ?2)
+       AND EXISTS (SELECT 1 FROM competition_ranking_generations WHERE competition_id = ?1 AND generation = ?2 AND status = 'published')`, game.competition_id, generation.generation, now, nextPublicationRevision),
+    prepared(db, `UPDATE formal_jobs SET status = 'completed', revision_number = ?1, completed_at = ?2, updated_at = ?2, attempts = attempts + 1
+     WHERE game_id = ?3 AND job_type = 'publish' AND status <> 'completed'
+       AND EXISTS (SELECT 1 FROM competition_publication_state WHERE competition_id = ?4 AND publication_revision = ?5 AND last_publication_generation = ?6)`, game.current_lineup_revision, now, gameId, game.competition_id, nextPublicationRevision, generation.generation)
   ]);
+  if (!Number(results?.[0]?.meta?.changes || 0)) {
+    return errorResponse(request, env, 409, "RANKING_GENERATION_STALE", "公開ランキングが更新されたため、ランキングを再集計してください。");
+  }
   const published = await getGame(db, gameId);
   if (!published || published.status !== "published") return errorResponse(request, env, 409, "PUBLICATION_CONFLICT", "別の公開処理が先に完了しました。");
   return json({ ok: true, gameId, publishedAt: now }, 200, request, env);

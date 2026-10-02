@@ -1,12 +1,14 @@
 const POSITIONS = ["捕", "一", "二", "三", "遊", "左", "中", "右", "指"];
 const gameId = new URLSearchParams(location.search).get("game") || "asia-cs-demo";
+const API_PREFIX = "/api/asia-cs";
 const state = { game: null, user: null, prediction: null, closed: false };
 
 const $ = (id) => document.getElementById(id);
 const message = (id, text, error = false) => { const node = $(id); node.textContent = text; node.classList.toggle("error", error); };
 
 async function api(path, options = {}) {
-  const response = await fetch(path, { credentials: "include", cache: "no-store", ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
+  const apiPath = String(path).replace(/^\/api/, API_PREFIX);
+  const response = await fetch(apiPath, { credentials: "include", cache: "no-store", ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.ok === false) throw new Error(payload.error || "処理に失敗しました。");
   return payload;

@@ -8,7 +8,7 @@ import { SCORING_MAX_SCORE, SCORING_RULES, scorePredictionLineup } from "../back
 import { scoreLineup } from "../asia-cs/scoring.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const migrationFiles = ["0001_asia_cs_mvp.sql", "0002_competition_and_formal_jobs.sql", "0003_review_hardening.sql", "0004_ranking-generation-snapshots.sql"];
+const migrationFiles = ["0001_asia_cs_mvp.sql", "0002_competition_and_formal_jobs.sql", "0003_review_hardening.sql", "0004_ranking-generation-snapshots.sql", "0005_publication-revision.sql"];
 const migrationSql = migrationFiles.map((file) => fs.readFileSync(path.join(root, "asia-cs/migrations", file), "utf8"));
 const migration = migrationSql
   .join("\n");
@@ -314,6 +314,28 @@ test("Asia CSのHTTPS認証連携はs9_sessionだけをStarting9へ転送し、�
   }
 });
 
+test("Asia CSはAuth Workerのs9_session encoded値を再encodeせず一度だけ転送する", async () => {
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const fixture = createDatabase();
+  const originalFetch = globalThis.fetch;
+  const forwarded = [];
+  globalThis.fetch = async (_input, init = {}) => {
+    forwarded.push(new Headers(init.headers || {}).get("Cookie"));
+    return new Response(JSON.stringify({ ok: true, authenticated: true, user: { id: "encoded-user", username: "encoded", role: "user" } }), { status: 200 });
+  };
+  try {
+    const values = ["abc=", "abc%value", "a+b", "a/b==", "abc%3D", "YWJjZA", "YWJj-ZA_="];
+    for (const value of values) {
+      const response = await request(worker, { ...fixture, STARTING9_AUTH_BASE_URL: "https://starting9-auth.starting9.workers.dev" }, "/api/auth/me", { headers: { Cookie: `s9_session=${value}` } });
+      assert.equal(response.response.status, 200);
+    }
+    assert.deepEqual(forwarded, values.map((value) => `s9_session=${value}`));
+    assert.equal(forwarded.some((value) => value.includes("%25")), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("Starting9 Authのorigin allowlist・timeout・redirect失敗はfail closedする", async () => {
   const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
   const fixture = createDatabase();
@@ -345,21 +367,23 @@ test("Starting9 Authのorigin allowlist・timeout・redirect失敗はfail closed
   }
 });
 
-test("ranking snapshot migrationはfresh適用と0001〜0003からのupgrade適用を通過する", () => {
+test("ranking snapshot migrationはfresh適用と0001〜0004からのupgrade適用を通過する", () => {
   const fresh = new DatabaseSync(":memory:");
   fresh.exec(migration);
   const upgraded = new DatabaseSync(":memory:");
   upgraded.exec(migrationSql.slice(0, 3).join("\n"));
-  upgraded.exec(migrationSql[3]);
+  upgraded.exec(migrationSql.slice(3).join("\n"));
   for (const database of [fresh, upgraded]) {
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'competition_ranking_generations'").get().count, 1);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'competition_ranking_entries'").get().count, 1);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'competition_ranking_publications'").get().count, 1);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'competition_publication_state'").get().count, 1);
     assert.ok(database.prepare("PRAGMA table_info(formal_jobs)").all().some((column) => column.name === "artifact_generation"));
+    assert.ok(database.prepare("PRAGMA table_info(competition_ranking_generations)").all().some((column) => column.name === "base_publication_revision"));
   }
 });
 
-test("ranking_rebuildは対象試合までの大会単位世代を作り、再実行・公開順序・別大会分離を保証する", async () => {
+test("ranking公開はpublication revisionのCASでstale snapshotを拒否し、再集計後に復旧する", async () => {
   const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
   const fixture = createDatabase();
   const env = { ...fixture, ADMIN_BOOTSTRAP_TOKEN: "local-bootstrap-token", ALLOWED_ORIGIN: "https://asia-cs.test" };
@@ -387,33 +411,71 @@ test("ranking_rebuildは対象試合までの大会単位世代を作り、再�
   insertScore("score-a2", userA.payload.user.id, "rank-b-game", 60);
   insertScore("score-b1", userB.payload.user.id, "rank-a-game", 100);
   insertScore("score-other", userA.payload.user.id, "other-game", 999);
-  const rebuilt = await request(worker, env, "/api/admin/games/rank-a-game/ranking", { method: "POST", headers: { Cookie: adminCookie } });
-  assert.equal(rebuilt.response.status, 200);
-  const rows = fixture.database.prepare("SELECT user_id, score_total, games_count, rank, generation FROM competition_ranking_entries WHERE competition_id = 'asia-cs' ORDER BY rank").all();
-  assert.deepEqual(rows.map((row) => [row.user_id, row.score_total, row.games_count, row.rank, row.generation]), [[userB.payload.user.id, 100, 1, 1, 1], [userA.payload.user.id, 90, 1, 2, 1]]);
-  assert.equal(fixture.database.prepare("SELECT target_game_id FROM competition_ranking_generations WHERE competition_id = 'asia-cs' AND generation = 1").get().target_game_id, "rank-a-game");
-  const repeated = await request(worker, env, "/api/admin/games/rank-a-game/ranking", { method: "POST", headers: { Cookie: adminCookie } });
-  assert.equal(repeated.response.status, 200);
-  assert.equal(repeated.payload.noop, true);
-  assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM competition_ranking_entries WHERE competition_id = 'asia-cs'").get().count, 2);
+  const rankB = await request(worker, env, "/api/admin/games/rank-b-game/ranking", { method: "POST", headers: { Cookie: adminCookie } });
+  const rankA = await request(worker, env, "/api/admin/games/rank-a-game/ranking", { method: "POST", headers: { Cookie: adminCookie } });
+  assert.equal(rankB.response.status, 200);
+  assert.equal(rankA.response.status, 200);
+  assert.notEqual(rankA.payload.generation, rankB.payload.generation);
+  assert.match(rankA.payload.generation, /^[0-9a-f-]{36}$/);
+  assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM competition_ranking_entries WHERE competition_id = 'asia-cs'").get().count, 3);
   assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM competition_ranking_entries WHERE competition_id = 'other-cup'").get().count, 0);
   assert.deepEqual((await request(worker, env, "/api/rankings?competitionId=asia-cs")).payload.ranking, []);
-  assert.equal((await request(worker, env, "/api/admin/games/rank-a-game/publish", { method: "POST", headers: { Cookie: adminCookie } })).response.status, 200);
-  const publicRows = (await request(worker, env, "/api/rankings?competitionId=asia-cs")).payload.ranking;
-  assert.deepEqual(publicRows.map((row) => [row.username, row.score, row.gamesCount]), [["rank-b", 100, 1], ["rank-a", 90, 1]]);
-  assert.equal(Object.prototype.hasOwnProperty.call(publicRows[0], "userId"), false);
-  assert.equal(Object.prototype.hasOwnProperty.call(publicRows[0], "generation"), false);
-  const rankB = await request(worker, env, "/api/admin/games/rank-b-game/ranking", { method: "POST", headers: { Cookie: adminCookie } });
-  assert.equal(rankB.response.status, 200);
-  assert.notEqual(rankB.payload.generation, rebuilt.payload.generation);
-  const rankANoop = await request(worker, env, "/api/admin/games/rank-a-game/ranking", { method: "POST", headers: { Cookie: adminCookie } });
-  assert.equal(rankANoop.payload.noop, true);
-  assert.equal(rankANoop.payload.generation, rebuilt.payload.generation);
-  assert.deepEqual((await request(worker, env, "/api/admin/games/rank-b-game/publish", { method: "POST", headers: { Cookie: adminCookie } })).response.status, 200);
+
+  const publishedA = await request(worker, env, "/api/admin/games/rank-a-game/publish", { method: "POST", headers: { Cookie: adminCookie } });
+  assert.equal(publishedA.response.status, 200);
+  const staleB = await request(worker, env, "/api/admin/games/rank-b-game/publish", { method: "POST", headers: { Cookie: adminCookie } });
+  assert.equal(staleB.response.status, 409);
+  assert.equal(staleB.payload.code, "RANKING_GENERATION_STALE");
+  assert.equal(fixture.database.prepare("SELECT status FROM games WHERE id = 'rank-b-game'").get().status, "scored");
+  const publicA = (await request(worker, env, "/api/rankings?competitionId=asia-cs")).payload.ranking;
+  assert.deepEqual(publicA.map((row) => [row.username, row.score, row.gamesCount]), [["rank-b", 100, 1], ["rank-a", 90, 1]]);
+  assert.equal(Object.prototype.hasOwnProperty.call(publicA[0], "userId"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(publicA[0], "generation"), false);
+
+  const rebuiltB = await request(worker, env, "/api/admin/games/rank-b-game/ranking", { method: "POST", headers: { Cookie: adminCookie } });
+  assert.equal(rebuiltB.response.status, 200);
+  assert.notEqual(rebuiltB.payload.generation, rankB.payload.generation);
+  assert.equal((await request(worker, env, "/api/admin/games/rank-b-game/publish", { method: "POST", headers: { Cookie: adminCookie } })).response.status, 200);
   const publishedBoth = (await request(worker, env, "/api/rankings?competitionId=asia-cs")).payload.ranking;
   assert.deepEqual(publishedBoth.map((row) => [row.username, row.score, row.gamesCount]), [["rank-a", 150, 2], ["rank-b", 100, 1]]);
-  assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM competition_ranking_entries WHERE competition_id = 'asia-cs' AND generation = 2").get().count, 2);
+
+  const generations = fixture.database.prepare("SELECT generation, base_publication_revision FROM competition_ranking_generations WHERE competition_id = 'asia-cs'").all();
+  assert.equal(new Set(generations.map((row) => row.generation)).size, generations.length);
+  assert.deepEqual(new Set(generations.map((row) => row.base_publication_revision)), new Set([0, 1]));
+  assert.equal(fixture.database.prepare("SELECT publication_revision FROM competition_publication_state WHERE competition_id = 'asia-cs'").get().publication_revision, 2);
   assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM competition_ranking_publications WHERE competition_id = 'asia-cs'").get().count, 1);
+
+  await create("rank-c-game", "asia-cs");
+  await create("rank-d-game", "asia-cs");
+  markScored("rank-c-game");
+  markScored("rank-d-game");
+  insertScore("score-c1", userA.payload.user.id, "rank-c-game", 80);
+  insertScore("score-d1", userB.payload.user.id, "rank-d-game", 70);
+  assert.equal((await request(worker, env, "/api/admin/games/rank-c-game/ranking", { method: "POST", headers: { Cookie: adminCookie } })).response.status, 200);
+  assert.equal((await request(worker, env, "/api/admin/games/rank-d-game/ranking", { method: "POST", headers: { Cookie: adminCookie } })).response.status, 200);
+  assert.equal((await request(worker, env, "/api/admin/games/rank-d-game/publish", { method: "POST", headers: { Cookie: adminCookie } })).response.status, 200);
+  const staleC = await request(worker, env, "/api/admin/games/rank-c-game/publish", { method: "POST", headers: { Cookie: adminCookie } });
+  assert.equal(staleC.response.status, 409);
+  assert.equal(staleC.payload.code, "RANKING_GENERATION_STALE");
+  assert.equal(fixture.database.prepare("SELECT target_game_id FROM competition_ranking_generations g JOIN competition_ranking_publications p ON p.competition_id = g.competition_id AND p.generation = g.generation WHERE g.competition_id = 'asia-cs'").get().target_game_id, "rank-d-game");
+
+  await create("rank-e-game", "asia-cs");
+  await create("rank-f-game", "asia-cs");
+  markScored("rank-e-game");
+  markScored("rank-f-game");
+  insertScore("score-e1", userA.payload.user.id, "rank-e-game", 50);
+  insertScore("score-f1", userB.payload.user.id, "rank-f-game", 40);
+  await Promise.all([
+    request(worker, env, "/api/admin/games/rank-e-game/ranking", { method: "POST", headers: { Cookie: adminCookie } }),
+    request(worker, env, "/api/admin/games/rank-f-game/ranking", { method: "POST", headers: { Cookie: adminCookie } })
+  ]);
+  const concurrentPublish = await Promise.all([
+    request(worker, env, "/api/admin/games/rank-e-game/publish", { method: "POST", headers: { Cookie: adminCookie } }),
+    request(worker, env, "/api/admin/games/rank-f-game/publish", { method: "POST", headers: { Cookie: adminCookie } })
+  ]);
+  assert.deepEqual(concurrentPublish.map(({ response }) => response.status).sort(), [200, 409]);
+  assert.equal(concurrentPublish.filter(({ payload }) => payload.code === "RANKING_GENERATION_STALE").length, 1);
+  assert.equal(fixture.database.prepare("SELECT publication_revision FROM competition_publication_state WHERE competition_id = 'asia-cs'").get().publication_revision, 4);
   assert.equal((await request(worker, env, "/api/rankings")).response.status, 400);
 });
 

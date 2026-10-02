@@ -1,5 +1,6 @@
 const state = { user: null, game: null, operationPending: false };
 const $ = (id) => document.getElementById(id);
+const API_PREFIX = "/api/asia-cs";
 const message = (id, text, error = false) => { const node = $(id); node.textContent = text; node.classList.toggle("error", error); };
 const operationButtons = ["confirmLineup", "scoreGame", "rankingGame", "publishGame", "rescoreGame"];
 function setOperationPending(pending) {
@@ -8,7 +9,7 @@ function setOperationPending(pending) {
   const status = $("operationStatus");
   if (status) status.setAttribute("aria-busy", String(pending));
 }
-async function api(path, options = {}) { const response = await fetch(path, { credentials: "include", cache: "no-store", ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } }); const payload = await response.json().catch(() => ({})); if (!response.ok || payload.ok === false) throw new Error(payload.error || "処理に失敗しました。"); return payload; }
+async function api(path, options = {}) { const apiPath = String(path).replace(/^\/api/, API_PREFIX); const response = await fetch(apiPath, { credentials: "include", cache: "no-store", ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } }); const payload = await response.json().catch(() => ({})); if (!response.ok || payload.ok === false) throw new Error(payload.error || "処理に失敗しました。"); return payload; }
 function gameId() { return String($("gameId").value || "").trim(); }
 function asIso(localValue) { const date = new Date(localValue); return Number.isNaN(date.getTime()) ? "" : date.toISOString(); }
 function showAdmin() { document.querySelectorAll(".admin-only").forEach((node) => node.classList.remove("hidden")); }

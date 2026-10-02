@@ -4,10 +4,12 @@
 
 ## 分離方針
 
-- Pages: `starting9-asia-cs`（このディレクトリの `public/`）
-- Worker: `starting9-asia-cs-api`（`worker.js`）
+- 本番UI: `https://starting9.pages.dev/asia-cs/`
+- 本番API: `https://starting9.pages.dev/api/asia-cs/*`（既存Starting9 Pages Function proxyからAsia CS Workerへ転送）
+- Backend Worker: `starting9-asia-cs-api`（`worker.js`）
 - D1: `starting9-asia-cs-db`（`migrations/`）
-- 本番Starting9のPages・Worker・D1を直接参照しません。認証だけは既存Starting9 Auth Workerの `/api/auth/me` と `s9_session` を正本として利用します。
+- standalone PagesはDEV ONLY/local preview用で、本番の認証経路・公開UIには使用しません。
+- 本番Starting9のD1を直接参照しません。認証だけは既存Starting9 Auth Workerの `/api/auth/me` と host-only `s9_session` を正本として利用します。
 - `wrangler.jsonc` のD1 IDはAsia CS専用IDだけを設定します。現在はプレースホルダーのため、deployは行わないでください。
 
 ## ローカル確認
@@ -25,12 +27,13 @@ Pagesのローカル静的画面は、別ターミナルで次のように配信
 python -m http.server 8782 --directory asia-cs/public --bind 127.0.0.1
 ```
 
-画面は `?game=<gameId>` で対象試合を選択します。API Workerを別ポートで起動する場合は、Pages側の同一オリジンルーティングをローカルプロキシで設定してください。
+画面は `?game=<gameId>` で対象試合を選択します。ブラウザのAPI呼び出しは `/api/asia-cs/*` の相対URLだけを使用し、workers.devへ直接接続しません。API Workerを別ポートで起動する場合は、Pages側の同一オリジンルーティングをローカルプロキシで設定してください。
 
 ## Pages / Worker接続契約
 
-- Pagesプロジェクトは `starting9-asia-cs`、API Workerは `starting9-asia-cs-api` とし、Pagesの同一ホスト `/api/*` をAsia CS API Workerだけへプロキシします。
-- `public/` は相対URL `/api/...` のみを呼ぶため、本家Workerや本家Pagesを転送先に設定してはいけません。
+- 本番のStarting9 Pagesは `/asia-cs/` をUIとして提供し、`/api/asia-cs/*` だけをAsia CS API Workerへプロキシします。既存の `/api/*`（Auth・NPB・予想等）は従来のStarting9 upstreamへ転送し、Asia CS prefix以外は変更しません。
+- proxyの接続先はPages環境変数 `ASIA_CS_API_ORIGIN` の明示的なHTTPS originだけです。未設定・不正値ではfail closedし、ブラウザからworkers.devへ直接fallbackしません。
+- `public/` は `/api/asia-cs/...` の相対URLのみを呼ぶため、本家Workerや本家Pagesを直接転送先に設定してはいけません。
 - 本番の `ALLOWED_ORIGIN` はAsia CS Pagesの完全一致Originだけに設定します。`ADMIN_BOOTSTRAP_TOKEN` はWorker Secretとして登録し、Pagesへ渡しません。
 - D1 IDがプレースホルダーの間はCloudflareリソース未作成であり、deploy成功・本番疎通済みとは扱いません。
 - 試合の正本は `internalGameId` で、外部試合コードは任意です。チームは `teams`、選手は試合単位の `players` に保存し、NPB選手IDを共有namespaceへ強制しません。

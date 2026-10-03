@@ -267,6 +267,10 @@ test("Asia CS Japan synthetic local E2E: roster → prediction → score → ran
     ["synthetic-fan-b", 91, 99, "scored"],
     ["synthetic-fan-c", 85, 99, "scored"]
   ]);
+  // The canonical Starting9 contract is 99 points: player 45 + order 27 +
+  // position 18 + exact-match bonus 9. Asia CS deliberately reuses it.
+  assert.ok(scoreRows.every((row) => Number(row.score) >= 0 && Number(row.score) <= 99));
+  assert.ok(scoreRows.every((row) => Number(row.max_score) === 99));
   assert.equal(local.database.prepare("SELECT status FROM games WHERE id = ?").get(gameId).status, "scored");
   assert.equal((await request(worker, env, `/api/games/${gameId}/result`)).response.status, 404);
 
@@ -296,6 +300,25 @@ test("Asia CS Japan synthetic local E2E: roster → prediction → score → ran
   assert.deepEqual(result.payload.officialLineup.map((item) => item.playerId), officialIds);
   assert.equal(result.payload.prediction.score, 99);
   assert.equal(result.payload.prediction.maxScore, 99);
+  assert.deepEqual(result.payload.prediction.breakdown, {
+    player: { hits: 9, points: 45, max: 45 },
+    order: { hits: 9, points: 27, max: 27 },
+    position: { hits: 9, points: 18, max: 18 },
+    perfect: { hits: 9, points: 9, max: 9 },
+    total: 99
+  });
+  for (const [index, expected] of [[1, { score: 91, playerHits: 9, orderHits: 7, positionHits: 9, perfectHits: 7 }], [2, { score: 85, playerHits: 8, orderHits: 8, positionHits: 7, perfectHits: 7 }]]) {
+    const otherResult = await request(worker, env, `/api/games/${gameId}/result`, { headers: { Cookie: users[index].cookie } });
+    const prediction = otherResult.payload.prediction;
+    assert.equal(prediction.maxScore, 99);
+    assert.ok(prediction.score >= 0 && prediction.score <= prediction.maxScore);
+    assert.equal(prediction.breakdown.player.hits, expected.playerHits);
+    assert.equal(prediction.breakdown.order.hits, expected.orderHits);
+    assert.equal(prediction.breakdown.position.hits, expected.positionHits);
+    assert.equal(prediction.breakdown.perfect.hits, expected.perfectHits);
+    assert.equal(prediction.score, expected.score);
+    assert.equal(prediction.breakdown.total, prediction.breakdown.player.points + prediction.breakdown.order.points + prediction.breakdown.position.points + prediction.breakdown.perfect.points);
+  }
   const publishedPrediction = await request(worker, env, `/api/games/${gameId}/prediction`, { headers: { Cookie: users[0].cookie } });
   assert.equal(publishedPrediction.response.status, 200);
   assert.equal(publishedPrediction.payload.prediction.score, 99);

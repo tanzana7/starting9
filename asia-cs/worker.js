@@ -836,11 +836,14 @@ async function createTeam(request, env, db, admin) {
 async function updateCompetition(request, env, db) {
   const input = await readJson(request);
   const id = validId(input.id || input.competitionId) || DEFAULT_COMPETITION_ID;
+  const existing = await getCompetition(db, id);
   const displayName = String(input.displayName || input.name || "").trim().slice(0, 120);
   const shortName = String(input.shortName || displayName).trim().slice(0, 60);
   const startDate = input.startDate ? String(input.startDate).trim() : null;
   const endDate = input.endDate ? String(input.endDate).trim() : null;
-  const status = String(input.status || "draft").trim().toLowerCase();
+  const status = Object.prototype.hasOwnProperty.call(input, "status")
+    ? String(input.status ?? "").trim().toLowerCase()
+    : (existing?.status || "draft");
   const description = String(input.description || "").trim().slice(0, 500) || null;
   if (!displayName || !shortName || !COMPETITION_STATUSES.includes(status)
     || (startDate && !/^\d{4}-\d{2}-\d{2}$/.test(startDate))
@@ -848,7 +851,6 @@ async function updateCompetition(request, env, db) {
     || (startDate && endDate && startDate > endDate)) {
     throw new RequestError(400, "COMPETITION_INPUT_INVALID", "大会名・期間・状態を確認してください。");
   }
-  const existing = await getCompetition(db, id);
   if (existing?.status === "completed") {
     throw new RequestError(409, "COMPETITION_COMPLETED", "完了した大会は変更できません。");
   }
@@ -1000,9 +1002,10 @@ async function bulkImportGames(request, env, db) {
   const rows = importRows(input, "games");
   if (!rows.length || rows.length > 100) throw new RequestError(400, "GAMES_INVALID", "試合データを確認してください。");
   // Bulk import is a commit boundary: an invalid payload must not bootstrap a
-  // competition as a side effect. Competition existence/status is therefore
-  // checked read-only before any row can be prepared for the write batch.
-  const competition = await assertCompetitionMutable(db, competitionId);
+  // competition as a side effect. Existing competitions are checked read-only;
+  // a missing competition is bootstrapped only after every row is validated.
+  const competition = await getCompetition(db, competitionId);
+  if (competition?.status === "completed") throw new RequestError(409, "COMPETITION_COMPLETED", "完了した大会は変更できません。");
   const preparedRows = [];
   const seenIds = new Set();
   for (const value of rows) {
@@ -1013,9 +1016,17 @@ async function bulkImportGames(request, env, db) {
     const deadline = validIsoDateTime(value.predictionDeadlineAt || value.prediction_deadline_at);
     const homeTeamId = validId(value.homeTeamId || value.home_team_id || value.homeTeam || value.home_team);
     const awayTeamId = validId(value.awayTeamId || value.away_team_id || value.awayTeam || value.away_team);
-    const teams = await validateGameTeams(db, competitionId, homeTeamId, awayTeamId);
     const exists = await getGame(db, id);
-    if (exists || seenIds.has(id) || !title || !/^\d{4}-\d{2}-\d{2}$/.test(gameDate) || !startAt || !deadline || deadline.getTime() >= startAt.getTime() || tokyoCalendarDate(startAt) !== gameDate || !teams.home || !teams.away) {
+    const invalidShape = !title || !/^\d{4}-\d{2}-\d{2}$/.test(gameDate) || !startAt || !deadline
+      || deadline.getTime() >= startAt.getTime() || tokyoCalendarDate(startAt) !== gameDate;
+    if (invalidShape) {
+      // Preserve the established missing-competition error precedence without
+      // creating the competition before the payload has passed validation.
+      if (!competition) throw new RequestError(404, "COMPETITION_NOT_FOUND", "対象大会がありません。");
+      throw new RequestError(400, "GAMES_INVALID", "試合日・開始日時・締切・対戦チームのいずれかが不正です。");
+    }
+    const teams = await validateGameTeams(db, competitionId, homeTeamId, awayTeamId);
+    if (exists || seenIds.has(id) || !teams.home || !teams.away) {
       throw new RequestError(400, "GAMES_INVALID", "試合日・開始日時・締切・対戦チームのいずれかが不正です。");
     }
     seenIds.add(id);
@@ -1023,6 +1034,11 @@ async function bulkImportGames(request, env, db) {
   }
   const now = nowIso();
   const statements = [];
+  if (!competition) {
+    statements.push(prepared(db, `INSERT OR IGNORE INTO competitions
+      (id, competition_type, display_name, short_name, status, created_at, updated_at)
+      VALUES (?1, ?2, ?1, ?1, 'draft', ?3, ?3)`, competitionId, COMPETITION_TYPE, now));
+  }
   for (const row of preparedRows) {
     statements.push(prepared(db, `INSERT INTO games
       (id, title, competition_type, competition_id, game_source, external_game_code, game_date, start_at, prediction_deadline_at, venue, home_team_id, home_team_name, away_team_id, away_team_name, status, publication_status, current_lineup_revision, created_at, updated_at)

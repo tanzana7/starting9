@@ -155,6 +155,51 @@ test("competition creation defaults to draft and requires explicit active status
   assert.doesNotMatch(html, /<option value="active" selected>active<\/option>/);
 });
 
+test("competition status omission preserves existing status while explicit values still apply", async () => {
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const env = { ...fixture(), ADMIN_BOOTSTRAP_TOKEN: "phase4b-status-preserve-token", ALLOWED_ORIGIN: "https://asia-cs.test" };
+  const adminCookie = await adminSession(worker, env);
+  const create = async (id, status) => request(worker, env, "/api/admin/competition", jsonOptions("POST", adminCookie, {
+    id, displayName: id, shortName: id.slice(0, 8), ...(status ? { status } : {})
+  }));
+  assert.equal((await create("existing-active", "active")).payload.competition.status, "active");
+  assert.equal((await create("existing-draft", "draft")).payload.competition.status, "draft");
+  const updateWithoutStatus = async (id) => request(worker, env, "/api/admin/competition", jsonOptions("PUT", adminCookie, {
+    id, displayName: `${id}-updated`, shortName: "updated"
+  }));
+  assert.equal((await updateWithoutStatus("existing-active")).payload.competition.status, "active");
+  assert.equal((await updateWithoutStatus("existing-draft")).payload.competition.status, "draft");
+  assert.equal((await create("existing-active", "draft")).payload.competition.status, "draft");
+  assert.equal((await create("existing-draft", "active")).payload.competition.status, "active");
+});
+
+test("valid bulk import bootstraps a missing competition only after validation", async () => {
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const env = { ...fixture(), ADMIN_BOOTSTRAP_TOKEN: "phase4b-bootstrap-token", ALLOWED_ORIGIN: "https://asia-cs.test" };
+  const adminCookie = await adminSession(worker, env);
+  const competitionId = "legacy-bootstrap";
+  for (const [teamKey, displayName] of [["home", "Home"], ["away", "Away"]]) {
+    env.database.prepare(`INSERT INTO teams
+      (id, competition_id, team_key, display_name, short_name, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(`${competitionId}-${teamKey}`, competitionId, teamKey, displayName, teamKey.slice(0, 1).toUpperCase(), "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
+  }
+  const invalid = await request(worker, env, "/api/admin/games/import", jsonOptions("POST", adminCookie, {
+    competitionId,
+    games: [game("bootstrap-invalid", { predictionDeadlineAt: "2026-11-12T19:00:00+09:00" })]
+  }));
+  assert.equal(invalid.response.status, 404);
+  assert.equal(env.database.prepare("SELECT COUNT(*) AS count FROM competitions WHERE id = ?").get(competitionId).count, 0);
+  const valid = await request(worker, env, "/api/admin/games/import", jsonOptions("POST", adminCookie, {
+    competitionId,
+    games: [game("bootstrap-one"), game("bootstrap-two", { gameDate: "2026-11-13", startAt: "2026-11-13T19:00:00+09:00", predictionDeadlineAt: "2026-11-13T18:00:00+09:00" })]
+  }));
+  assert.equal(valid.response.status, 200);
+  assert.equal(env.database.prepare("SELECT status FROM competitions WHERE id = ?").get(competitionId).status, "draft");
+  assert.equal(env.database.prepare("SELECT COUNT(*) AS count FROM games WHERE competition_id = ?").get(competitionId).count, 2);
+  assert.equal(env.database.prepare("SELECT COUNT(*) AS count FROM formal_jobs WHERE competition_id = ?").get(competitionId).count, 8);
+});
+
 test("player JSON template is empty, API-shaped, and not production-ready", () => {
   const template = JSON.parse(fs.readFileSync(path.join(root, "asia-cs/staging/phase4/players.template.json"), "utf8"));
   assert.equal(template.readyForProduction, false);

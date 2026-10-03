@@ -1525,10 +1525,15 @@ async function adminGameDetail(request, env, db, gameId) {
 }
 
 async function route(request, env) {
-  const db = databaseOrError(env, request);
-  if (db instanceof Response) return db;
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/$/, "") || "/";
+  // Keep health independent from D1 so deployment and routing can be checked
+  // before the target account has received production data.
+  if (["/health", "/api/health"].includes(path) && request.method === "GET") {
+    return json({ ok: true, service: "starting9-asia-cs-api" }, 200, request, env);
+  }
+  const db = databaseOrError(env, request);
+  if (db instanceof Response) return db;
   if (request.method === "OPTIONS") return json({ ok: true }, 200, request, env);
   if (path === "/api/auth/register" && request.method === "POST") return localAuthEnabled(env) ? register(request, env, db) : errorResponse(request, env, 404, "EXTERNAL_AUTH_REQUIRED", "Starting9の認証を使用してください。");
   if (path === "/api/auth/admin/bootstrap" && request.method === "POST") return localAuthEnabled(env) ? bootstrapAdmin(request, env, db) : errorResponse(request, env, 404, "EXTERNAL_AUTH_REQUIRED", "Starting9の認証を使用してください。");

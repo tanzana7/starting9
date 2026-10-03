@@ -1,1 +1,7 @@
 # API requests are handled by functions/api/[[path]].js so session cookies stay on the Pages origin.
+
+# Keep the Asia CS UI under the canonical Starting9 Pages origin without
+# exposing the Worker URL or replacing the existing NPB application root.
+/asia-cs /asia-cs/public/index.html 200
+/asia-cs/ /asia-cs/public/index.html 200
+/asia-cs/* /asia-cs/public/:splat 200

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json.schemastore.org/wrangler.json",
+  "name": "starting9-asia-cs-api",
+  "main": "./worker.js",
+  "account_id": "02580fab1c09e144db7da89478e252c8",
+  "compatibility_date": "2026-09-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "vars": {
+    "ALLOWED_ORIGIN": "https://starting9.pages.dev",
+    "STARTING9_AUTH_BASE_URL": "https://starting9-auth.starting9.workers.dev",
+    "ASIA_CS_ENV": "production",
+    "AUTH_UPSTREAM_TIMEOUT_MS": "4000"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "starting9-asia-cs-db",
+      "database_id": "ff47500c-34aa-4dbb-b497-a3f8b93e9b5c",
+      "migrations_dir": "./migrations"
+    }
+  ]
+}

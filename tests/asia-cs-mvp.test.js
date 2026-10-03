@@ -267,6 +267,7 @@ test("Asia CSはStarting9の外部identityを使い、client user_idと独自log
     ...fixture,
     ASIA_CS_LOCAL_AUTH: "false",
     ALLOWED_ORIGIN: "https://asia-cs.test",
+    ASIA_CS_ADMIN_USER_IDS: "starting9-admin",
     AUTH_VERIFY: async (request) => request.headers.get("Cookie") === "s9_session=admin-token"
       ? { id: "starting9-admin", username: "main-admin", role: "admin" }
       : request.headers.get("Cookie") === "s9_session=user-token"
@@ -308,7 +309,7 @@ test("Asia CSのHTTPS認証連携はs9_sessionだけをStarting9へ転送し、�
     assert.equal(calls[0].init.redirect, "error");
     assert.ok(calls[0].init.signal instanceof AbortSignal);
     const anonymous = await request(worker, env, "/api/auth/me");
-    assert.deepEqual(anonymous.payload, { ok: true, authenticated: false, user: null });
+    assert.deepEqual(anonymous.payload, { ok: true, authenticated: false, isAdmin: false, user: null });
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -348,20 +349,20 @@ test("Starting9 Authのorigin allowlist・timeout・redirect失敗はfail closed
   };
   try {
     const blocked = await request(worker, { ...fixture, STARTING9_AUTH_BASE_URL: "https://starting9-auth.attacker.example" }, "/api/auth/me", { headers: { Cookie: "s9_session=blocked" } });
-    assert.deepEqual(blocked.payload, { ok: true, authenticated: false, user: null });
+    assert.deepEqual(blocked.payload, { ok: true, authenticated: false, isAdmin: false, user: null });
     assert.equal(calls, 0);
     const timedOut = await request(worker, { ...fixture, ASIA_CS_ENV: "test", AUTH_UPSTREAM_TIMEOUT_MS: "5", STARTING9_AUTH_BASE_URL: "https://starting9-auth.starting9.workers.dev" }, "/api/auth/me", { headers: { Cookie: "s9_session=timeout" } });
-    assert.deepEqual(timedOut.payload, { ok: true, authenticated: false, user: null });
+    assert.deepEqual(timedOut.payload, { ok: true, authenticated: false, isAdmin: false, user: null });
     assert.equal(calls, 1);
     globalThis.fetch = async () => new Response("upstream failure", { status: 503 });
     const serverError = await request(worker, { ...fixture, STARTING9_AUTH_BASE_URL: "https://starting9-auth.starting9.workers.dev" }, "/api/auth/me", { headers: { Cookie: "s9_session=server-error" } });
-    assert.deepEqual(serverError.payload, { ok: true, authenticated: false, user: null });
+    assert.deepEqual(serverError.payload, { ok: true, authenticated: false, isAdmin: false, user: null });
     globalThis.fetch = async () => new Response("{", { status: 200 });
     const invalidJson = await request(worker, { ...fixture, STARTING9_AUTH_BASE_URL: "https://starting9-auth.starting9.workers.dev" }, "/api/auth/me", { headers: { Cookie: "s9_session=invalid-json" } });
-    assert.deepEqual(invalidJson.payload, { ok: true, authenticated: false, user: null });
+    assert.deepEqual(invalidJson.payload, { ok: true, authenticated: false, isAdmin: false, user: null });
     globalThis.fetch = async () => { throw new TypeError("redirect rejected"); };
     const redirect = await request(worker, { ...fixture, STARTING9_AUTH_BASE_URL: "https://starting9-auth.starting9.workers.dev" }, "/api/auth/me", { headers: { Cookie: "s9_session=redirect" } });
-    assert.deepEqual(redirect.payload, { ok: true, authenticated: false, user: null });
+    assert.deepEqual(redirect.payload, { ok: true, authenticated: false, isAdmin: false, user: null });
   } finally {
     globalThis.fetch = originalFetch;
   }

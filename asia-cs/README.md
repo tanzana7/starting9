@@ -27,7 +27,7 @@ npx wrangler deploy --dry-run --config asia-cs/wrangler.production.jsonc --profi
 npx wrangler deploy --config asia-cs/wrangler.production.jsonc --profile starting9-target
 ```
 
-本番では独自のユーザー名・パスワード・セッションを使用しません。`STARTING9_AUTH_BASE_URL` は `https://starting9-auth.starting9.workers.dev` の完全一致Originだけを受け付け、既存Auth Workerの `/api/auth/me`（一般ユーザー）または `/api/admin/me`（管理者）が検証した `s9_session` のユーザーID・権限だけを利用します。upstreamは4秒でタイムアウトし、5xx・不正JSON・redirect・未許可Originは匿名扱いにします。ローカルfixture専用の `ASIA_CS_LOCAL_AUTH=true` とbootstrap/login経路は本番設定に含めません。`.dev.vars` と `.wrangler/` はコミットしません。
+本番では独自のユーザー名・パスワード・セッションを使用しません。`STARTING9_AUTH_BASE_URL` は `https://starting9-auth.starting9.workers.dev` の完全一致Originだけを受け付け、既存Auth Workerの `/api/auth/me` が検証した `s9_session` のユーザーIDを利用します。Asia CS管理者はWorker Secret `ASIA_CS_ADMIN_USER_IDS`（カンマ区切りまたはJSON配列）でuser IDを明示し、usernameやクライアント入力は認可に使いません。upstreamは4秒でタイムアウトし、5xx・不正JSON・redirect・未許可Originは匿名扱いにします。ローカルfixture専用の `ASIA_CS_LOCAL_AUTH=true` とbootstrap/login経路は本番設定に含めません。`.dev.vars` と`.wrangler/` はコミットしません。
 
 Pagesのローカル静的画面は、別ターミナルで次のように配信します。
 

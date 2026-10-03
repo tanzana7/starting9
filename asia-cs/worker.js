@@ -263,10 +263,41 @@ function normalizeExternalUser(value, roleOverride = "") {
   return { id, username, role: role === "admin" ? "admin" : "user", status: "active" };
 }
 
-async function getExternalAuthUser(request, env, { requireAdmin = false } = {}) {
+function parseAsiaCsAdminUserIds(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return new Set();
+
+  let values;
+  if (raw.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(raw);
+      values = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      values = [];
+    }
+  } else {
+    values = raw.split(",");
+  }
+
+  return new Set(values
+    .map((value) => String(value || "").trim())
+    .filter((value) => /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value)));
+}
+
+function isAsiaCsAdmin(user, env) {
+  if (!user?.id) return false;
+  const configuredIds = parseAsiaCsAdminUserIds(env?.ASIA_CS_ADMIN_USER_IDS);
+  if (configuredIds.size > 0) return configuredIds.has(String(user.id));
+  // Local password auth is only a development/test fixture. Production uses
+  // the external Starting9 identity and therefore fails closed without the
+  // explicit environment allowlist.
+  return localAuthEnabled(env) && user.role === "admin";
+}
+
+async function getExternalAuthUser(request, env) {
   if (typeof env?.AUTH_VERIFY === "function") {
     try {
-      return normalizeExternalUser(await env.AUTH_VERIFY(request), requireAdmin ? "admin" : "");
+      return normalizeExternalUser(await env.AUTH_VERIFY(request));
     } catch (error) {
       console.warn(JSON.stringify({ scope: "asia-cs-auth", code: "AUTH_VERIFY_FAILED", message: String(error?.message || error) }));
       return null;
@@ -280,7 +311,7 @@ async function getExternalAuthUser(request, env, { requireAdmin = false } = {}) 
   if (!baseUrl || !token) return null;
   let endpoint;
   try {
-    endpoint = new URL(requireAdmin ? "/api/admin/me" : "/api/auth/me", baseUrl).toString();
+    endpoint = new URL("/api/auth/me", baseUrl).toString();
   } catch {
     return null;
   }
@@ -299,8 +330,8 @@ async function getExternalAuthUser(request, env, { requireAdmin = false } = {}) 
     });
     if (!response.ok) return null;
     const payload = await response.json();
-    if (!payload?.ok || !payload.user || (requireAdmin ? payload.admin !== true : payload.authenticated !== true)) return null;
-    return normalizeExternalUser(payload.user, requireAdmin ? "admin" : "user");
+    if (!payload?.ok || !payload.user || payload.authenticated !== true) return null;
+    return normalizeExternalUser(payload.user, "user");
   } catch (error) {
     console.warn(JSON.stringify({ scope: "asia-cs-auth", code: "AUTH_ENDPOINT_UNAVAILABLE", message: String(error?.message || error) }));
     return null;
@@ -322,7 +353,7 @@ async function ensureExternalIdentity(db, user) {
 
 async function resolveUser(request, env, db, options = {}) {
   if (externalAuthConfigured(env)) {
-    const external = await getExternalAuthUser(request, env, options);
+    const external = await getExternalAuthUser(request, env);
     return external ? ensureExternalIdentity(db, external) : null;
   }
   return localAuthEnabled(env) ? getSessionUser(request, db) : null;
@@ -336,10 +367,10 @@ async function requireUser(request, env, db) {
 async function requireAdmin(request, env, db) {
   const originError = mutationOriginError(request, env);
   if (originError) return originError;
-  const user = await resolveUser(request, env, db, { requireAdmin: true });
+  const user = await resolveUser(request, env, db);
   if (!user) return errorResponse(request, env, 401, "AUTH_REQUIRED", "ログインしてください。");
-  if (user.role !== "admin") return errorResponse(request, env, 403, "ADMIN_REQUIRED", "管理者権限が必要です。");
-  return user;
+  if (!isAsiaCsAdmin(user, env)) return errorResponse(request, env, 403, "ADMIN_REQUIRED", "管理者権限が必要です。");
+  return { ...user, role: "admin" };
 }
 
 async function register(request, env, db) {
@@ -1559,7 +1590,12 @@ async function route(request, env) {
   if (path === "/api/auth/logout" && request.method === "POST") return localAuthEnabled(env) ? logout(request, env, db) : errorResponse(request, env, 404, "EXTERNAL_AUTH_REQUIRED", "Starting9の認証を使用してください。");
   if (path === "/api/auth/me" && request.method === "GET") {
     const user = await resolveUser(request, env, db);
-    return json({ ok: true, authenticated: Boolean(user), user: user ? { id: user.id, username: user.username, role: user.role } : null }, 200, request, env);
+    return json({
+      ok: true,
+      authenticated: Boolean(user),
+      isAdmin: isAsiaCsAdmin(user, env),
+      user: user ? { id: user.id, username: user.username, role: user.role } : null
+    }, 200, request, env);
   }
   if (path === "/api/competition" && request.method === "GET") return publicCompetition(request, env, db);
   if (path === "/api/games" && request.method === "GET") return publicGames(request, env, db);
@@ -1680,6 +1716,8 @@ export default {
 export {
   BEST_NINE_LIMIT,
   getSessionUser,
+  isAsiaCsAdmin,
+  parseAsiaCsAdminUserIds,
   prepareScoring,
   scoreLineup,
   serializeGame,

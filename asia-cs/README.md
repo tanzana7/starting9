@@ -10,13 +10,21 @@
 - D1: `starting9-asia-cs-db`（`migrations/`）
 - standalone PagesはDEV ONLY/local preview用で、本番の認証経路・公開UIには使用しません。
 - 本番Starting9のD1を直接参照しません。認証だけは既存Starting9 Auth Workerの `/api/auth/me` と host-only `s9_session` を正本として利用します。
-- `wrangler.jsonc` のD1 IDはAsia CS専用IDだけを設定します。現在はプレースホルダーのため、deployは行わないでください。
+- ローカル開発は `wrangler.jsonc`、本番Workerは `wrangler.production.jsonc` を使用します。本番configはTARGET accountとAsia CS専用D1だけを固定し、Cronを持ちません。
 
 ## ローカル確認
 
 ```powershell
 npx wrangler d1 migrations apply starting9-asia-cs-db --local --config asia-cs/wrangler.jsonc
 npx wrangler dev --config asia-cs/wrangler.jsonc
+```
+
+本番のmigrationとdeployは、TARGET profileを明示して次のconfigを使用します。実大会データの投入は別Phaseで行います。
+
+```powershell
+npx wrangler d1 migrations apply starting9-asia-cs-db --remote --config asia-cs/wrangler.production.jsonc --profile starting9-target
+npx wrangler deploy --dry-run --config asia-cs/wrangler.production.jsonc --profile starting9-target
+npx wrangler deploy --config asia-cs/wrangler.production.jsonc --profile starting9-target
 ```
 
 本番では独自のユーザー名・パスワード・セッションを使用しません。`STARTING9_AUTH_BASE_URL` は `https://starting9-auth.starting9.workers.dev` の完全一致Originだけを受け付け、既存Auth Workerの `/api/auth/me`（一般ユーザー）または `/api/admin/me`（管理者）が検証した `s9_session` のユーザーID・権限だけを利用します。upstreamは4秒でタイムアウトし、5xx・不正JSON・redirect・未許可Originは匿名扱いにします。ローカルfixture専用の `ASIA_CS_LOCAL_AUTH=true` とbootstrap/login経路は本番設定に含めません。`.dev.vars` と `.wrangler/` はコミットしません。

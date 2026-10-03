@@ -1,0 +1,28 @@
+[
+  {
+    "id": "apbc-2026-g7",
+    "title": "APBC 2026 3位決定戦",
+    "gameDate": "2026-11-15",
+    "startAt": "2026-11-15T11:00:00+09:00",
+    "predictionDeadlineAt": null,
+    "venue": "東京ドーム",
+    "homeTeamId": null,
+    "awayTeamId": null,
+    "bracket": "third-place",
+    "readyForProduction": false,
+    "note": "対戦チーム確定後に登録する。"
+  },
+  {
+    "id": "apbc-2026-g8",
+    "title": "APBC 2026 決勝戦",
+    "gameDate": "2026-11-15",
+    "startAt": "2026-11-15T19:00:00+09:00",
+    "predictionDeadlineAt": null,
+    "venue": "東京ドーム",
+    "homeTeamId": null,
+    "awayTeamId": null,
+    "bracket": "final",
+    "readyForProduction": false,
+    "note": "対戦チーム確定後に登録する。"
+  }
+]

@@ -1,0 +1,26 @@
+[
+  {
+    "teamKey": "jpn",
+    "displayName": "日本",
+    "shortName": "日本",
+    "countryCode": "JPN"
+  },
+  {
+    "teamKey": "aus",
+    "displayName": "オーストラリア",
+    "shortName": "豪州",
+    "countryCode": "AUS"
+  },
+  {
+    "teamKey": "tpe",
+    "displayName": "チャイニーズ・タイペイ",
+    "shortName": "台湾",
+    "countryCode": "TPE"
+  },
+  {
+    "teamKey": "kor",
+    "displayName": "韓国",
+    "shortName": "韓国",
+    "countryCode": "KOR"
+  }
+]

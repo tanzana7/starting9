@@ -1,0 +1,74 @@
+[
+  {
+    "id": "apbc-2026-g1",
+    "title": "APBC 2026 Game 1",
+    "gameDate": "2026-11-12",
+    "startAt": "2026-11-12T12:00:00+09:00",
+    "predictionDeadlineAt": null,
+    "venue": "東京ドーム",
+    "homeTeamId": "kor",
+    "awayTeamId": "aus",
+    "externalGameCode": null,
+    "readyForProduction": false
+  },
+  {
+    "id": "apbc-2026-g2",
+    "title": "APBC 2026 Game 2",
+    "gameDate": "2026-11-12",
+    "startAt": "2026-11-12T19:00:00+09:00",
+    "predictionDeadlineAt": null,
+    "venue": "東京ドーム",
+    "homeTeamId": "tpe",
+    "awayTeamId": "jpn",
+    "externalGameCode": null,
+    "readyForProduction": false
+  },
+  {
+    "id": "apbc-2026-g3",
+    "title": "APBC 2026 Game 3",
+    "gameDate": "2026-11-13",
+    "startAt": "2026-11-13T12:00:00+09:00",
+    "predictionDeadlineAt": null,
+    "venue": "東京ドーム",
+    "homeTeamId": "aus",
+    "awayTeamId": "tpe",
+    "externalGameCode": null,
+    "readyForProduction": false
+  },
+  {
+    "id": "apbc-2026-g4",
+    "title": "APBC 2026 Game 4",
+    "gameDate": "2026-11-13",
+    "startAt": "2026-11-13T19:00:00+09:00",
+    "predictionDeadlineAt": null,
+    "venue": "東京ドーム",
+    "homeTeamId": "jpn",
+    "awayTeamId": "kor",
+    "externalGameCode": null,
+    "readyForProduction": false
+  },
+  {
+    "id": "apbc-2026-g5",
+    "title": "APBC 2026 Game 5",
+    "gameDate": "2026-11-14",
+    "startAt": "2026-11-14T12:00:00+09:00",
+    "predictionDeadlineAt": null,
+    "venue": "東京ドーム",
+    "homeTeamId": "aus",
+    "awayTeamId": "jpn",
+    "externalGameCode": null,
+    "readyForProduction": false
+  },
+  {
+    "id": "apbc-2026-g6",
+    "title": "APBC 2026 Game 6",
+    "gameDate": "2026-11-14",
+    "startAt": "2026-11-14T19:00:00+09:00",
+    "predictionDeadlineAt": null,
+    "venue": "東京ドーム",
+    "homeTeamId": "kor",
+    "awayTeamId": "tpe",
+    "externalGameCode": null,
+    "readyForProduction": false
+  }
+]

@@ -1,0 +1,13 @@
+{
+  "readyForProduction": false,
+  "id": "apbc-2026",
+  "displayName": "ラグザス アジアプロ野球チャンピオンシップ2026",
+  "shortName": "APBC 2026",
+  "displayNameEn": "Asia Professional Baseball Championship 2026 presented by RAXUS",
+  "startDate": "2026-11-12",
+  "endDate": "2026-11-15",
+  "status": "draft",
+  "venue": "東京ドーム",
+  "timezone": "Asia/Tokyo",
+  "source": "https://npb.jp/apbc/2026/"
+}

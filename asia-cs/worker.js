@@ -997,10 +997,12 @@ async function bulkImportPlayers(request, env, db) {
 async function bulkImportGames(request, env, db) {
   const input = await readJson(request);
   const competitionId = validId(input.competitionId) || DEFAULT_COMPETITION_ID;
-  const competition = await ensureCompetition(db, competitionId);
-  await assertCompetitionMutable(db, competition.id);
   const rows = importRows(input, "games");
   if (!rows.length || rows.length > 100) throw new RequestError(400, "GAMES_INVALID", "試合データを確認してください。");
+  // Bulk import is a commit boundary: an invalid payload must not bootstrap a
+  // competition as a side effect. Competition existence/status is therefore
+  // checked read-only before any row can be prepared for the write batch.
+  const competition = await assertCompetitionMutable(db, competitionId);
   const preparedRows = [];
   const seenIds = new Set();
   for (const value of rows) {

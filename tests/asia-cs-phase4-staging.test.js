@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { V3_TIMING } from "../backend/automation-v3/constants.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const stagingRoot = path.join(root, "asia-cs/staging/phase4");
@@ -81,7 +82,10 @@ test("Phase 4A staging data has only official, production-safe facts", () => {
   assert.equal(stagingGames.length, 6);
   for (const game of stagingGames) {
     assert.equal(game.readyForProduction, false);
-    assert.equal(game.predictionDeadlineAt, null);
+    assert.match(game.startAt, /\+09:00$/);
+    assert.match(game.predictionDeadlineAt, /\+09:00$/);
+    assert.equal(new Date(game.startAt).getTime() - new Date(game.predictionDeadlineAt).getTime(), V3_TIMING.predictionDeadlineMinutes * 60_000);
+    assert.ok(new Date(game.predictionDeadlineAt).getTime() < new Date(game.startAt).getTime());
     assert.ok(stagingTeams.some((team) => team.teamKey === game.homeTeamId));
     assert.ok(stagingTeams.some((team) => team.teamKey === game.awayTeamId));
     assert.notEqual(game.homeTeamId, game.awayTeamId);
@@ -142,9 +146,8 @@ test("Phase 4A local rehearsal runs three synthetic games and protects ordering/
     title: `${game.title} TEST_ONLY`,
     gameDate: game.gameDate,
     startAt: game.startAt,
-    // TEST_ONLY: production deadline policy is intentionally still pending;
-    // local rehearsal uses the explicit one-hour-before-start rule.
-    predictionDeadlineAt: new Date(new Date(game.startAt).getTime() - 60 * 60 * 1000).toISOString(),
+    // Keep the local rehearsal aligned with the shared Starting9 deadline contract.
+    predictionDeadlineAt: new Date(new Date(game.startAt).getTime() - V3_TIMING.predictionDeadlineMinutes * 60_000).toISOString(),
     venue: game.venue,
     homeTeamId: game.homeTeamId,
     homeTeamName: stagingTeams.find((team) => team.teamKey === game.homeTeamId).displayName,

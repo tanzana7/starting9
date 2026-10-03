@@ -18,7 +18,7 @@ Source: https://npb.jp/apbc/2026/
 
 `games.json` の `predictionDeadlineAt: null` と `readyForProduction: false` は、未確定値を誤って本番へ送らないための明示的なゲートである。Asia CS Workerのゲーム登録APIは締切を必須とするため、このファイルは現時点では本番import不可。
 
-`players.template.csv` は公式名簿発表後に埋めるためのテンプレートであり、架空選手を含まない。
+`players.template.csv` と `players.template.json` は公式名簿発表後に埋めるためのテンプレートであり、架空選手を含まない。JSONの正式payloadは `players` 配列内に、APIが受け付ける `id`、`name`、`teamId`、`position`、`uniformNumber`、`bat`、`throw`、`active` を設定する。`readyForProduction: false` はファイルを直接投入しないためのメタデータであり、管理APIへ送る際は検証済みの `players` 配列だけを使用する。
 
 ## 本番投入順
 
@@ -27,5 +27,15 @@ Source: https://npb.jp/apbc/2026/
 3. `readyForProduction` を別途レビューしたうえで、competitionを `draft` のまま登録。
 4. teams、GAME1〜GAME6、選手を正式admin APIで登録。
 5. GAME7/GAME8は対戦チーム確定後に登録。
+
+## 公式選手名簿発表後の手順
+
+1. 公式発表とチーム所属を照合する。
+2. `players.template.json` の `players` 配列を正式選手だけで作成し、CSVと件数・項目を照合する。
+3. 重複ID・重複名・所属チーム・守備位置・背番号をローカル検証する。
+4. 管理画面の一括登録で入力内容を確認し、`readyForProduction` を別担当が確認する。
+5. 認証済みadmin smoke後に、正式な選手payloadだけを本番へ投入する。
+
+大会は管理画面を保存しただけでは `draft` のまま保持し、`active` への変更は明示的に行う。未確定の締切・対戦チーム・選手を推測して補完しない。
 
 予想受付、正式ラインナップ、採点、ランキング、公開はPhase 5まで開始しない。

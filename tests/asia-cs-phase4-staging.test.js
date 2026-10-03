@@ -93,7 +93,7 @@ test("Phase 4A staging data has only official, production-safe facts", () => {
     assert.equal(game.awayTeamId, null);
     assert.equal(game.predictionDeadlineAt, null);
   }
-  const template = fs.readFileSync(path.join(stagingRoot, "players.template.csv"), "utf8").trim().split("\n");
+  const template = fs.readFileSync(path.join(stagingRoot, "players.template.csv"), "utf8").trim().split(/\r?\n/);
   assert.equal(template[0], "team_key,player_name,position,uniform_number,bat,throw,active");
   assert.equal(template.length, 5);
 });

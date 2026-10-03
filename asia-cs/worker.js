@@ -1529,7 +1529,7 @@ async function route(request, env) {
   const path = url.pathname.replace(/\/$/, "") || "/";
   // Keep health independent from D1 so deployment and routing can be checked
   // before the target account has received production data.
-  if (path === "/health" && request.method === "GET") {
+  if (["/health", "/api/health"].includes(path) && request.method === "GET") {
     return json({ ok: true, service: "starting9-asia-cs-api" }, 200, request, env);
   }
   const db = databaseOrError(env, request);

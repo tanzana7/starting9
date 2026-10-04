@@ -1,6 +1,20 @@
 const TARGET_AUTH_WORKER_ORIGIN = "https://starting9-auth.starting9.workers.dev";
 const AUTH_WORKER_ORIGIN_ENV = "STARTING9_AUTH_ORIGIN";
 const ASIA_CS_API_ORIGIN_ENV = "ASIA_CS_API_ORIGIN";
+const SESSION_COOKIE_NAME = "s9_session";
+const AUTH_DIAGNOSTIC_HEADER = "X-S9-Auth-Diagnostic-Id";
+
+function countCookieOccurrences(header, name) {
+  return String(header || "").split(";").reduce((count, part) => {
+    const separator = part.indexOf("=");
+    const cookieName = separator < 0 ? part.trim() : part.slice(0, separator).trim();
+    return count + (cookieName === name ? 1 : 0);
+  }, 0);
+}
+
+function createAuthDiagnosticId(request) {
+  return String(request.headers.get("cf-ray") || "").trim() || crypto.randomUUID();
+}
 
 export function resolveAuthWorkerOrigin(env = {}) {
   const configured = String(env?.[AUTH_WORKER_ORIGIN_ENV] || "")
@@ -67,7 +81,7 @@ function createUpstreamRequest(request, upstreamUrl) {
   });
 }
 
-function createAsiaCsUpstreamRequest(request, upstreamUrl) {
+function createAsiaCsUpstreamRequest(request, upstreamUrl, diagnosticId = "") {
   const upstream = createUpstreamRequest(request, upstreamUrl);
   const cookies = request.headers.get("Cookie") || "";
   const forwarded = cookies.split(";").map((part) => part.trim()).filter((part) => {
@@ -77,6 +91,7 @@ function createAsiaCsUpstreamRequest(request, upstreamUrl) {
   }).join("; ");
   if (forwarded) upstream.headers.set("Cookie", forwarded);
   else upstream.headers.delete("Cookie");
+  if (diagnosticId) upstream.headers.set(AUTH_DIAGNOSTIC_HEADER, diagnosticId);
   return upstream;
 }
 
@@ -116,6 +131,19 @@ export async function onRequest(context) {
   }
 
   const isAsiaCsRoute = requestUrl.pathname === "/api/asia-cs" || requestUrl.pathname.startsWith("/api/asia-cs/");
+  const isAsiaCsAuthRoute = isAsiaCsRoute && context.request.method === "GET" && requestUrl.pathname === "/api/asia-cs/auth/me";
+  const diagnosticId = isAsiaCsAuthRoute ? createAuthDiagnosticId(context.request) : "";
+  if (isAsiaCsAuthRoute) {
+    const sessionCookieCount = countCookieOccurrences(context.request.headers.get("Cookie"), SESSION_COOKIE_NAME);
+    console.info(JSON.stringify({
+      scope: "asia-cs-auth-diagnostic",
+      phase: "pages",
+      diagnosticId,
+      requestPath: requestUrl.pathname,
+      hasSessionCookie: sessionCookieCount > 0,
+      sessionCookieCount
+    }));
+  }
   const upstreamOrigin = isAsiaCsRoute
     ? resolveAsiaCsWorkerOrigin(context.env)
     : resolveAuthWorkerOrigin(context.env);
@@ -133,7 +161,7 @@ export async function onRequest(context) {
   const upstreamUrl = new URL(upstreamPath + requestUrl.search, upstreamOrigin);
   try {
     const upstream = await fetch(isAsiaCsRoute
-      ? createAsiaCsUpstreamRequest(context.request, upstreamUrl)
+      ? createAsiaCsUpstreamRequest(context.request, upstreamUrl, diagnosticId)
       : createUpstreamRequest(context.request, upstreamUrl));
     return new Response(upstream.body, {
       status: upstream.status,

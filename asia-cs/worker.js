@@ -255,7 +255,7 @@ function allowedAuthOrigin(value, env) {
 
 function normalizeExternalUser(value, roleOverride = "") {
   const source = value?.user || value;
-  const id = String(source?.id || "").trim();
+  const id = typeof source?.id === "string" ? source.id.trim() : "";
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id)) return null;
   const username = String(source?.username || source?.name || id).trim().slice(0, 80);
   if (!username) return null;
@@ -280,18 +280,19 @@ function parseAsiaCsAdminUserIds(value) {
   }
 
   return new Set(values
-    .map((value) => String(value || "").trim())
+    .filter((value) => typeof value === "string")
+    .map((value) => value.trim())
     .filter((value) => /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value)));
 }
 
 function isAsiaCsAdmin(user, env) {
-  if (!user?.id) return false;
+  if (!user || typeof user.id !== "string" || !user.id) return false;
   const configuredIds = parseAsiaCsAdminUserIds(env?.ASIA_CS_ADMIN_USER_IDS);
-  if (configuredIds.size > 0) return configuredIds.has(String(user.id));
+  if (configuredIds.size > 0) return configuredIds.has(user.id);
   // Local password auth is only a development/test fixture. Production uses
   // the external Starting9 identity and therefore fails closed without the
   // explicit environment allowlist.
-  return localAuthEnabled(env) && user.role === "admin";
+  return localAuthRuntime(env) && localAuthEnabled(env) && user.role === "admin";
 }
 
 async function getExternalAuthUser(request, env) {

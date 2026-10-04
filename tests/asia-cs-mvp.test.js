@@ -46,7 +46,7 @@ function createD1Adapter(database, failure = null) {
 function createDatabase({ failure = null } = {}) {
   const database = new DatabaseSync(":memory:");
   database.exec(migration);
-  return { database, DB: createD1Adapter(database, failure), ASIA_CS_LOCAL_AUTH: "true" };
+  return { database, DB: createD1Adapter(database, failure), ASIA_CS_LOCAL_AUTH: "true", ASIA_CS_ENV: "test" };
 }
 
 async function request(worker, env, path, options = {}) {

@@ -62,6 +62,9 @@ test("unauthenticated, missing allowlist, and malformed allowlist values fail cl
   const missing = await request(worker, authEnv(users), "/api/admin/teams", { headers: { Cookie: "s9_session=admin" } });
   assert.equal(missing.status, 403);
 
+  const empty = await request(worker, authEnv(users, ""), "/api/admin/teams", { headers: { Cookie: "s9_session=admin" } });
+  assert.equal(empty.status, 403);
+
   const malformed = await request(worker, authEnv(users, "[not-json"), "/api/admin/teams", { headers: { Cookie: "s9_session=admin" } });
   assert.equal(malformed.status, 403);
 });
@@ -84,7 +87,37 @@ test("auth/me exposes only the server-derived admin flag", async () => {
 
 test("allowlist parser supports JSON arrays and rejects empty or invalid IDs", async () => {
   const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  assert.deepEqual([...worker.parseAsiaCsAdminUserIds('["admin-a", 123, null, {}, ["admin-b"], "admin-c"]')], ["admin-a", "admin-c"]);
   assert.deepEqual([...worker.parseAsiaCsAdminUserIds('["test-admin-user", "", "test-admin-user", "bad id"]')], ["test-admin-user"]);
   assert.deepEqual([...worker.parseAsiaCsAdminUserIds(" , ")], []);
   assert.equal(worker.isAsiaCsAdmin({ id: "test-admin-user", role: "admin" }, { ASIA_CS_ENV: "production" }), false);
+  assert.equal(worker.isAsiaCsAdmin({ id: "test-admin-user", role: "admin" }, { ASIA_CS_ENV: "test", ASIA_CS_LOCAL_AUTH: "true" }), true);
+  assert.equal(worker.isAsiaCsAdmin({ id: "test-admin-user", role: "admin" }, { ASIA_CS_ENV: "production", ASIA_CS_LOCAL_AUTH: "true" }), false);
+  assert.equal(worker.isAsiaCsAdmin({ id: "test-admin-user", role: "admin" }, { ASIA_CS_LOCAL_AUTH: "true" }), false);
+});
+
+test("only primitive string identities can pass the management API allowlist", async () => {
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const invalidIds = [
+    ["test-admin-user"],
+    { 0: "test-admin-user" },
+    { id: "test-admin-user" },
+    123,
+    true,
+    null,
+    undefined,
+    new String("test-admin-user")
+  ];
+
+  for (const id of invalidIds) {
+    const env = authEnv({ "s9_session=spoof": { id, username: "admin", role: "admin" } }, "test-admin-user");
+    const response = await request(worker, env, "/api/admin/teams", { headers: { Cookie: "s9_session=spoof" } });
+    assert.ok([401, 403].includes(response.status), `non-string id must be denied: ${Object.prototype.toString.call(id)}`);
+  }
+
+  const valid = await request(worker, authEnv({ "s9_session=valid": { id: "test-admin-user", username: "renamed", role: "user" } }, "test-admin-user"), "/api/admin/teams", { headers: { Cookie: "s9_session=valid" } });
+  assert.equal(valid.status, 200);
+
+  const nonAdmin = await request(worker, authEnv({ "s9_session=user": { id: "test-normal-user", username: "admin", role: "admin" } }, "test-admin-user"), "/api/admin/teams", { headers: { Cookie: "s9_session=user" } });
+  assert.equal(nonAdmin.status, 403);
 });

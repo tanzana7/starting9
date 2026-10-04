@@ -20,6 +20,7 @@ const COMPETITION_STATUSES = Object.freeze(["draft", "active", "completed"]);
 const PLAYER_POSITIONS = Object.freeze([...POSITIONS, "投"]);
 const STARTING9_AUTH_ORIGIN = "https://starting9-auth.starting9.workers.dev";
 const AUTH_UPSTREAM_TIMEOUT_MS = 4000;
+const AUTH_DIAGNOSTIC_HEADER = "X-S9-Auth-Diagnostic-Id";
 const CANONICAL_TEST_USERS = Object.freeze(
   Array.from({ length: 9 }, (_, index) => `S9_TEST_${index + 1}`)
 );
@@ -173,6 +174,15 @@ function rawCookieValue(request, name) {
   return "";
 }
 
+function countCookieOccurrences(request, name) {
+  const cookies = request.headers.get("Cookie") || "";
+  return cookies.split(";").reduce((count, part) => {
+    const separator = part.indexOf("=");
+    const cookieName = separator < 0 ? part.trim() : part.slice(0, separator).trim();
+    return count + (cookieName === name ? 1 : 0);
+  }, 0);
+}
+
 function cookieValue(request, name) {
   const raw = rawCookieValue(request, name);
   if (!raw) return "";
@@ -239,6 +249,10 @@ function localAuthRuntime(env) {
   return runtime === "development" || runtime === "test";
 }
 
+function isValidExternalUserId(value) {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.trim());
+}
+
 function allowedAuthOrigin(value, env) {
   let parsed;
   try {
@@ -255,8 +269,8 @@ function allowedAuthOrigin(value, env) {
 
 function normalizeExternalUser(value, roleOverride = "") {
   const source = value?.user || value;
-  const id = typeof source?.id === "string" ? source.id.trim() : "";
-  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id)) return null;
+  const id = isValidExternalUserId(source?.id) ? source.id.trim() : "";
+  if (!id) return null;
   const username = String(source?.username || source?.name || id).trim().slice(0, 80);
   if (!username) return null;
   const role = String(roleOverride || source?.role || "user").trim().toLowerCase();
@@ -295,10 +309,41 @@ function isAsiaCsAdmin(user, env) {
   return localAuthRuntime(env) && localAuthEnabled(env) && user.role === "admin";
 }
 
-async function getExternalAuthUser(request, env) {
+function createAuthDiagnostic(request) {
+  const sessionCookieCount = countCookieOccurrences(request, STARTING9_SESSION_COOKIE);
+  return {
+    diagnosticId: String(request.headers.get(AUTH_DIAGNOSTIC_HEADER) || "").trim(),
+    requestPath: new URL(request.url).pathname,
+    hasSessionCookie: sessionCookieCount > 0,
+    sessionCookieCount,
+    authUpstreamReached: false,
+    authUpstreamStatus: null,
+    authUpstreamAuthenticated: null,
+    authUpstreamUserPresent: false,
+    authUpstreamUserIdTypeValid: false,
+    finalAuthenticated: false,
+    finalIsAdmin: false
+  };
+}
+
+function emitAuthDiagnostic(diagnostic) {
+  if (!diagnostic) return;
+  console.info(JSON.stringify({ scope: "asia-cs-auth-diagnostic", phase: "asia_cs_worker", ...diagnostic }));
+}
+
+async function getExternalAuthUser(request, env, diagnostic = null) {
   if (typeof env?.AUTH_VERIFY === "function") {
+    if (diagnostic) diagnostic.authUpstreamReached = true;
     try {
-      return normalizeExternalUser(await env.AUTH_VERIFY(request));
+      const value = await env.AUTH_VERIFY(request);
+      const user = normalizeExternalUser(value);
+      if (diagnostic) {
+        diagnostic.authUpstreamStatus = 200;
+        diagnostic.authUpstreamAuthenticated = Boolean(user);
+        diagnostic.authUpstreamUserPresent = Boolean(value?.user || value);
+        diagnostic.authUpstreamUserIdTypeValid = isValidExternalUserId(value?.user?.id || value?.id);
+      }
+      return user;
     } catch (error) {
       console.warn(JSON.stringify({ scope: "asia-cs-auth", code: "AUTH_VERIFY_FAILED", message: String(error?.message || error) }));
       return null;
@@ -329,8 +374,17 @@ async function getExternalAuthUser(request, env) {
       redirect: "error",
       signal: controller.signal
     });
+    if (diagnostic) {
+      diagnostic.authUpstreamReached = true;
+      diagnostic.authUpstreamStatus = response.status;
+    }
     if (!response.ok) return null;
     const payload = await response.json();
+    if (diagnostic) {
+      diagnostic.authUpstreamAuthenticated = payload?.authenticated === true;
+      diagnostic.authUpstreamUserPresent = Boolean(payload?.user);
+      diagnostic.authUpstreamUserIdTypeValid = isValidExternalUserId(payload?.user?.id);
+    }
     if (!payload?.ok || !payload.user || payload.authenticated !== true) return null;
     return normalizeExternalUser(payload.user, "user");
   } catch (error) {
@@ -354,7 +408,7 @@ async function ensureExternalIdentity(db, user) {
 
 async function resolveUser(request, env, db, options = {}) {
   if (externalAuthConfigured(env)) {
-    const external = await getExternalAuthUser(request, env);
+    const external = await getExternalAuthUser(request, env, options.diagnostic || null);
     return external ? ensureExternalIdentity(db, external) : null;
   }
   return localAuthEnabled(env) ? getSessionUser(request, db) : null;
@@ -1590,11 +1644,16 @@ async function route(request, env) {
   if (path === "/api/auth/login" && request.method === "POST") return localAuthEnabled(env) ? login(request, env, db) : errorResponse(request, env, 404, "EXTERNAL_AUTH_REQUIRED", "Starting9の認証を使用してください。");
   if (path === "/api/auth/logout" && request.method === "POST") return localAuthEnabled(env) ? logout(request, env, db) : errorResponse(request, env, 404, "EXTERNAL_AUTH_REQUIRED", "Starting9の認証を使用してください。");
   if (path === "/api/auth/me" && request.method === "GET") {
-    const user = await resolveUser(request, env, db);
+    const diagnostic = createAuthDiagnostic(request);
+    const user = await resolveUser(request, env, db, { diagnostic });
+    const isAdmin = isAsiaCsAdmin(user, env);
+    diagnostic.finalAuthenticated = Boolean(user);
+    diagnostic.finalIsAdmin = isAdmin;
+    emitAuthDiagnostic(diagnostic);
     return json({
       ok: true,
       authenticated: Boolean(user),
-      isAdmin: isAsiaCsAdmin(user, env),
+      isAdmin,
       user: user ? { id: user.id, username: user.username, role: user.role } : null
     }, 200, request, env);
   }

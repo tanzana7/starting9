@@ -40,7 +40,7 @@ function createD1Adapter(database) {
 function createFixture() {
   const database = new DatabaseSync(":memory:");
   database.exec(migration);
-  return { database, DB: createD1Adapter(database), ASIA_CS_LOCAL_AUTH: "true" };
+  return { database, DB: createD1Adapter(database), ASIA_CS_LOCAL_AUTH: "true", ASIA_CS_ENV: "test" };
 }
 
 async function request(worker, env, endpoint, options = {}) {

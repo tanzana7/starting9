@@ -73,7 +73,7 @@ test("Pages proxy fails closed when TARGET upstream is not explicitly configured
   }
 });
 
-test("Pagesは/api/asia-cs/*だけを明示設定されたAsia CS originへ同一origin転送する", async () => {
+test("Pagesは/api/asia-cs/*を既存Auth gatewayへ同一origin転送する", async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (request) => {
@@ -81,8 +81,8 @@ test("Pagesは/api/asia-cs/*だけを明示設定されたAsia CS originへ同�
     return new Response(JSON.stringify({ ok: true, authenticated: false, user: null }), { status: 200 });
   };
   try {
-    const env = { ASIA_CS_API_ORIGIN: "https://asia-cs-api.example" };
-    assert.equal(resolveAsiaCsWorkerOrigin(env), "https://asia-cs-api.example");
+    const env = { STARTING9_AUTH_ORIGIN: TARGET_ORIGIN };
+    assert.equal(resolveAsiaCsWorkerOrigin({ ASIA_CS_API_ORIGIN: "https://asia-cs-api.example" }), "https://asia-cs-api.example");
     assert.equal(resolveAsiaCsWorkerOrigin({}), null);
     assert.equal(resolveAsiaCsWorkerOrigin({ ASIA_CS_API_ORIGIN: "http://asia-cs-api.example" }), null);
     assert.equal(resolveAsiaCsWorkerOrigin({ ASIA_CS_API_ORIGIN: "https://asia-cs-api.example/path" }), null);
@@ -93,7 +93,7 @@ test("Pagesは/api/asia-cs/*だけを明示設定されたAsia CS originへ同�
       env
     });
     assert.equal(response.status, 200);
-    assert.equal(calls[0].url, "https://asia-cs-api.example/api/auth/me?source=pages");
+    assert.equal(calls[0].url, `${TARGET_ORIGIN}/api/asia-cs/auth/me?source=pages`);
     assert.equal(calls[0].headers.get("Cookie"), "s9_session=abc%3D");
   } finally {
     globalThis.fetch = originalFetch;
@@ -108,8 +108,8 @@ test("PagesはAsia CS origin未設定時にfail closedし、既存Auth proxyを�
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), {
     ok: false,
-    code: "ASIA_CS_PROXY_NOT_CONFIGURED",
-    error: "Asia CS APIの接続先が設定されていません。"
+    code: "ASIA_CS_GATEWAY_NOT_CONFIGURED",
+    error: "Asia Edition APIの認証連携が設定されていません。"
   });
   assert.equal(resolveAuthWorkerOrigin({ STARTING9_AUTH_ORIGIN: TARGET_ORIGIN }), TARGET_ORIGIN);
 });

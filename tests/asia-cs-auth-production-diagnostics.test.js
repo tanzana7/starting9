@@ -47,7 +47,7 @@ test("production diagnosticsはPagesでCookie値を記録せず、0/1/複数を�
     for (const cookie of ["", "s9_session=probe-one", "s9_session=probe-one; s9_session=probe-two"]) {
       await onRequest({
         request: new Request("https://starting9.pages.dev/api/asia-cs/auth/me", { headers: cookie ? { Cookie: cookie } : {} }),
-        env: { ASIA_CS_API_ORIGIN: "https://starting9-asia-cs-api.starting9.workers.dev" }
+        env: { STARTING9_AUTH_ORIGIN: "https://starting9-auth.starting9.workers.dev" }
       });
     }
   } finally {
@@ -77,7 +77,8 @@ test("production diagnosticsはAsia CSでupstream到達・応答・最終認証�
   globalThis.fetch = async () => responses.shift();
   const env = {
     DB: fakeDatabase(),
-    ASIA_CS_ENV: "production",
+    ASIA_CS_ENV: "test",
+    ASIA_CS_ALLOW_LEGACY_AUTH: "true",
     ASIA_CS_LOCAL_AUTH: "false",
     STARTING9_AUTH_BASE_URL: "https://starting9-auth.starting9.workers.dev",
     ASIA_CS_ADMIN_USER_IDS: "external-user"

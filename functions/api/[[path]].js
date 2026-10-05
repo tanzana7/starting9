@@ -95,6 +95,22 @@ function createAsiaCsUpstreamRequest(request, upstreamUrl, diagnosticId = "") {
   return upstream;
 }
 
+function createAsiaCsGatewayRequest(request, upstreamUrl) {
+  const upstream = createUpstreamRequest(request, upstreamUrl);
+  // The Auth Worker is the CSRF boundary for Asia mutations. Preserve only
+  // browser-origin metadata needed for that decision; cookies and identity
+  // headers remain filtered before the request leaves Pages.
+  for (const name of ["origin", "referer", "sec-fetch-site"]) {
+    const value = request.headers.get(name);
+    if (value) upstream.headers.set(name, value);
+  }
+  const cookies = request.headers.get("Cookie") || "";
+  const sessionCookie = cookies.split(";").map((part) => part.trim()).find((part) => part.split("=", 1)[0].trim() === SESSION_COOKIE_NAME);
+  if (sessionCookie) upstream.headers.set("Cookie", sessionCookie);
+  else upstream.headers.delete("Cookie");
+  return upstream;
+}
+
 function normalizeSetCookie(cookie) {
   return cookie
     .split(";")
@@ -144,24 +160,23 @@ export async function onRequest(context) {
       sessionCookieCount
     }));
   }
-  const upstreamOrigin = isAsiaCsRoute
-    ? resolveAsiaCsWorkerOrigin(context.env)
-    : resolveAuthWorkerOrigin(context.env);
+  // All same-origin Asia requests pass through the existing Auth Worker. It
+  // verifies s9_session once and creates the trusted internal assertion for
+  // the Asia Worker, so the browser never depends on Worker-to-Worker auth.
+  const upstreamOrigin = resolveAuthWorkerOrigin(context.env);
   if (!upstreamOrigin) {
     return jsonError(
-      isAsiaCsRoute ? "ASIA_CS_PROXY_NOT_CONFIGURED" : "AUTH_PROXY_NOT_CONFIGURED",
-      isAsiaCsRoute ? "Asia CS APIの接続先が設定されていません。" : "認証サービスの接続先が設定されていません。",
+      isAsiaCsRoute ? "ASIA_CS_GATEWAY_NOT_CONFIGURED" : "AUTH_PROXY_NOT_CONFIGURED",
+      isAsiaCsRoute ? "Asia Edition APIの認証連携が設定されていません。" : "認証サービスの接続先が設定されていません。",
       503
     );
   }
 
-  const upstreamPath = isAsiaCsRoute
-    ? `/api${requestUrl.pathname.slice("/api/asia-cs".length) || "/"}`
-    : requestUrl.pathname;
+  const upstreamPath = requestUrl.pathname;
   const upstreamUrl = new URL(upstreamPath + requestUrl.search, upstreamOrigin);
   try {
     const upstream = await fetch(isAsiaCsRoute
-      ? createAsiaCsUpstreamRequest(context.request, upstreamUrl, diagnosticId)
+      ? createAsiaCsGatewayRequest(context.request, upstreamUrl)
       : createUpstreamRequest(context.request, upstreamUrl));
     return new Response(upstream.body, {
       status: upstream.status,
@@ -170,8 +185,8 @@ export async function onRequest(context) {
     });
   } catch {
     return jsonError(
-      isAsiaCsRoute ? "ASIA_CS_PROXY_UNAVAILABLE" : "AUTH_PROXY_UNAVAILABLE",
-      isAsiaCsRoute ? "Asia CS APIに接続できません。時間をおいて再試行してください。" : "認証サービスに接続できません。時間をおいて再試行してください。",
+      isAsiaCsRoute ? "ASIA_CS_GATEWAY_UNAVAILABLE" : "AUTH_PROXY_UNAVAILABLE",
+      isAsiaCsRoute ? "Asia Edition APIに接続できません。時間をおいて再試行してください。" : "認証サービスに接続できません。時間をおいて再試行してください。",
       503
     );
   }

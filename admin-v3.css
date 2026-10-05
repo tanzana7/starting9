@@ -15,6 +15,18 @@ button:hover:not(:disabled), select:hover { background: #edf4fa; }
 button:disabled { cursor: not-allowed; opacity: .65; }
 /* Application shell and navigation */
 .admin-v3-shell { min-height: 100vh; padding: 24px clamp(14px, 3vw, 36px) 48px; }
+.admin-edition-switcher { max-width: 1400px; margin: 0 auto 14px; }
+.asia-admin-edition { max-width: 1400px; margin: 0 auto; }
+.asia-admin-panel { margin: 0 0 14px; padding: 15px; background: #fff; border: 1px solid #dce3eb; border-radius: 8px; box-shadow: 0 2px 8px rgba(31, 54, 77, .06); }
+.asia-admin-panel .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; align-items: end; }
+.asia-admin-panel label { display: grid; gap: 5px; color: #526477; font-size: 13px; font-weight: 650; }
+.asia-admin-panel input, .asia-admin-panel select, .asia-admin-panel textarea { width: 100%; min-width: 0; border: 1px solid #b9c8d8; border-radius: 6px; padding: 8px 9px; background: #fff; color: #172033; font: inherit; }
+.asia-admin-panel textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, monospace; }
+.asia-admin-panel .wide-field { grid-column: 1 / -1; }
+.asia-admin-panel .import-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.asia-admin-panel .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.asia-admin-panel .detail { overflow: auto; white-space: pre-wrap; background: #f4f7fa; padding: 12px; border-radius: 6px; }
+@media (max-width: 680px) { .asia-admin-panel .import-grid { grid-template-columns: 1fr; } }
 .admin-v3-header { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; max-width: 1400px; margin: 0 auto 18px; padding-bottom: 18px; border-bottom: 1px solid #dce3eb; }
 .admin-v3-brand h1 { margin: 0; font-size: 28px; }
 .eyebrow { margin: 0 0 6px; color: #466a92; font-size: 12px; font-weight: 700; letter-spacing: .08em; }

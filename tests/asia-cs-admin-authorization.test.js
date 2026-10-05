@@ -29,6 +29,8 @@ function authEnv(users, adminIds) {
   return {
     DB: createDb(),
     ASIA_CS_LOCAL_AUTH: "false",
+    ASIA_CS_ENV: "test",
+    ASIA_CS_ALLOW_LEGACY_AUTH: "true",
     ALLOWED_ORIGIN: "https://asia-cs.test",
     ...(adminIds === undefined ? {} : { ASIA_CS_ADMIN_USER_IDS: adminIds }),
     AUTH_VERIFY: async (request) => users[request.headers.get("Cookie")] || null

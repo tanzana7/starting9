@@ -3,12 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="0; url=/admin-v3.html?edition=asia">
   <title>Starting9 Asia CS 管理</title>
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
   <main class="page">
-    <header class="hero"><p class="eyebrow">Starting9 Asia CS</p><h1>大会管理</h1><a href="./index.html">公開画面へ</a></header>
+    <header class="hero"><p class="eyebrow">Starting9 Asia CS</p><h1>大会管理</h1><p>管理画面はStarting9 Adminへ統合されました。</p><a href="/admin-v3.html?edition=asia">Starting9 Adminを開く</a></header>
     <section class="panel"><h2>管理者</h2><p id="adminAuthStatus" class="message" role="status">Starting9のログイン状態を確認中</p></section>
     <section class="panel admin-only hidden" aria-labelledby="competitionTitle"><div class="section-heading"><h2 id="competitionTitle">大会設定</h2><button id="refreshOverview" type="button" class="secondary">更新</button></div><form id="competitionForm" class="form-grid"><label>大会ID<input name="id" value="asia-cs" required></label><label>大会名<input name="displayName" value="Asia CS" required></label><label>短縮名<input name="shortName" value="Asia CS" required></label><label>開始日<input name="startDate" type="date"></label><label>終了日<input name="endDate" type="date"></label><label>状態<select name="status"><option value="draft" selected>draft</option><option value="active">active</option><option value="completed">completed</option></select></label><label class="wide-field">説明<textarea name="description" rows="2"></textarea></label><button>大会設定を保存</button></form><p id="competitionStatus" class="message" role="status"></p><pre id="overview" class="detail"></pre></section>
     <section class="panel admin-only hidden" aria-labelledby="gameCreateTitle"><h2 id="gameCreateTitle">試合登録</h2><form id="gameForm" class="form-grid"><label>試合ID（任意）<input name="id" placeholder="asia-cs-final"></label><label>試合名<input name="title" value="Asia CS Final" required></label><label>大会ID<input name="competitionId" value="asia-cs" required></label><label>試合日<input name="gameDate" type="date" required></label><label>開始日時<input name="startAt" type="datetime-local" required></label><label>予想締切<input name="predictionDeadlineAt" type="datetime-local" required></label><label>ホームチームID<input name="homeTeamId" placeholder="team-jp" required></label><label>ホーム表示名<input name="homeTeamName" placeholder="Japan" required></label><label>ビジターチームID<input name="awayTeamId" placeholder="team-kr" required></label><label>ビジター表示名<input name="awayTeamName" placeholder="Korea" required></label><label>球場（任意）<input name="venue"></label><label>外部試合コード（任意）<input name="externalGameCode"></label><button>試合を登録</button></form><div class="toolbar"><label>対象試合ID<input id="gameId" placeholder="asia-cs-final"></label><button id="loadGame" type="button" class="secondary">読み込み</button></div><p id="gameStatus" class="message" role="status"></p></section>

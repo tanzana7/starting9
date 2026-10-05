@@ -77,7 +77,8 @@ test("production diagnosticsはAsia CSでupstream到達・応答・最終認証�
   globalThis.fetch = async () => responses.shift();
   const env = {
     DB: fakeDatabase(),
-    ASIA_CS_ENV: "production",
+    ASIA_CS_ENV: "test",
+    ASIA_CS_ALLOW_LEGACY_AUTH: "true",
     ASIA_CS_LOCAL_AUTH: "false",
     STARTING9_AUTH_BASE_URL: "https://starting9-auth.starting9.workers.dev",
     ASIA_CS_ADMIN_USER_IDS: "external-user"

@@ -53,7 +53,8 @@ test("auth diagnosticsはsession tokenなしをfetch前に分類する", async (
   let fetchCalls = 0;
   const result = await runAuth(worker, {
     DB: fakeDatabase(),
-    ASIA_CS_ENV: "production",
+    ASIA_CS_ENV: "test",
+    ASIA_CS_ALLOW_LEGACY_AUTH: "true",
     STARTING9_AUTH_BASE_URL: "https://starting9-auth.starting9.workers.dev"
   }, "", async () => {
     fetchCalls += 1;
@@ -73,7 +74,8 @@ test("auth diagnosticsは許可外originをfetch前に分類する", async () =>
   let fetchCalls = 0;
   const result = await runAuth(worker, {
     DB: fakeDatabase(),
-    ASIA_CS_ENV: "production",
+    ASIA_CS_ENV: "test",
+    ASIA_CS_ALLOW_LEGACY_AUTH: "true",
     STARTING9_AUTH_BASE_URL: "https://auth.attacker.example"
   }, "s9_session=opaque-token", async () => {
     fetchCalls += 1;
@@ -92,6 +94,7 @@ test("auth diagnosticsはfetch失敗とtimeoutを区別し、Response未取得�
   const env = {
     DB: fakeDatabase(),
     ASIA_CS_ENV: "test",
+    ASIA_CS_ALLOW_LEGACY_AUTH: "true",
     AUTH_UPSTREAM_TIMEOUT_MS: "5",
     STARTING9_AUTH_BASE_URL: "https://starting9-auth.starting9.workers.dev"
   };
@@ -114,7 +117,8 @@ test("auth diagnosticsはanonymous responseとvalid identity responseを区別�
   const worker = await import(pathToFileURL(path.join(root, "asia-cs", "worker.js")).href);
   const env = {
     DB: fakeDatabase(),
-    ASIA_CS_ENV: "production",
+    ASIA_CS_ENV: "test",
+    ASIA_CS_ALLOW_LEGACY_AUTH: "true",
     STARTING9_AUTH_BASE_URL: "https://starting9-auth.starting9.workers.dev",
     ASIA_CS_ADMIN_USER_IDS: "external-user"
   };
@@ -160,7 +164,8 @@ test("auth diagnosticsのreason logにはtoken・identity・response bodyを含�
       headers: { Cookie: "s9_session=secret-cookie-token", "X-S9-Auth-Diagnostic-Id": "safe-reason" }
     }), {
       DB: fakeDatabase(),
-      ASIA_CS_ENV: "production",
+      ASIA_CS_ENV: "test",
+      ASIA_CS_ALLOW_LEGACY_AUTH: "true",
       STARTING9_AUTH_BASE_URL: "https://starting9-auth.starting9.workers.dev"
     }, {});
   } finally {

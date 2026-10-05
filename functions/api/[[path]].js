@@ -97,6 +97,13 @@ function createAsiaCsUpstreamRequest(request, upstreamUrl, diagnosticId = "") {
 
 function createAsiaCsGatewayRequest(request, upstreamUrl) {
   const upstream = createUpstreamRequest(request, upstreamUrl);
+  // The Auth Worker is the CSRF boundary for Asia mutations. Preserve only
+  // browser-origin metadata needed for that decision; cookies and identity
+  // headers remain filtered before the request leaves Pages.
+  for (const name of ["origin", "referer", "sec-fetch-site"]) {
+    const value = request.headers.get(name);
+    if (value) upstream.headers.set(name, value);
+  }
   const cookies = request.headers.get("Cookie") || "";
   const sessionCookie = cookies.split(";").map((part) => part.trim()).find((part) => part.split("=", 1)[0].trim() === SESSION_COOKIE_NAME);
   if (sessionCookie) upstream.headers.set("Cookie", sessionCookie);

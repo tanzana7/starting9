@@ -1,5 +1,5 @@
 import { isPredictionEligible } from "../game-scoring-ranking-v2.js";
-import { verifyAuthBridgeAssertion } from "../backend/auth-bridge.js";
+import { AUTH_BRIDGE_AUDIENCE, sha256Base64Url, verifyAuthBridgeAssertion } from "../backend/auth-bridge.js";
 import {
   LINEUP_SIZE,
   MAX_SCORE,
@@ -224,7 +224,12 @@ function normalizedUsername(value) {
   return String(value || "").trim().normalize("NFKC").toLowerCase();
 }
 
-function mutationOriginError(request, env) {
+function mutationOriginError(request, env, user = null) {
+  if (user?.authSource === "starting9") {
+    return user.csrfValidated === true
+      ? null
+      : errorResponse(request, env, 403, "CSRF_CONTEXT_REQUIRED", "操作元を確認できません。");
+  }
   const configuredOrigin = String(env.ALLOWED_ORIGIN || "").trim();
   const requestedOrigin = String(request.headers.get("Origin") || "").trim();
   const fetchSite = String(request.headers.get("Sec-Fetch-Site") || "").trim().toLowerCase();
@@ -233,6 +238,16 @@ function mutationOriginError(request, env) {
     return errorResponse(request, env, configuredOrigin ? 403 : 503, configuredOrigin ? "ORIGIN_NOT_ALLOWED" : "ORIGIN_NOT_CONFIGURED", configuredOrigin ? "許可されていない操作です。" : "許可Originが設定されていません。");
   }
   return null;
+}
+
+function legacyAuthFallbackEnabled(env) {
+  const runtime = String(env?.ASIA_CS_ENV || "").trim().toLowerCase();
+  return ["development", "test"].includes(runtime)
+    && String(env?.ASIA_CS_ALLOW_LEGACY_AUTH || "").trim().toLowerCase() === "true";
+}
+
+function bridgeRequired(env) {
+  return !legacyAuthFallbackEnabled(env);
 }
 
 async function getSessionUser(request, db) {
@@ -287,7 +302,14 @@ function normalizeExternalUser(value, roleOverride = "") {
   const username = String(source?.username || source?.name || id).trim().slice(0, 80);
   if (!username) return null;
   const role = String(roleOverride || source?.role || "user").trim().toLowerCase();
-  return { id, username, role: role === "admin" ? "admin" : "user", status: "active", authSource: source?.authSource || "external" };
+  return {
+    id,
+    username,
+    role: role === "admin" ? "admin" : "user",
+    status: "active",
+    authSource: source?.authSource || "external",
+    csrfValidated: source?.csrfValidated === true
+  };
 }
 
 function parseAsiaCsAdminUserIds(value) {
@@ -354,11 +376,26 @@ function emitAuthDiagnostic(diagnostic) {
 async function getExternalAuthUser(request, env, diagnostic = null) {
   const bridgeSecret = String(env?.ASIA_CS_AUTH_BRIDGE_SECRET || "").trim();
   const bridgeAssertion = request.headers.get("X-S9-Auth-Bridge") || "";
-  if (bridgeAssertion && bridgeSecret) {
+  if (bridgeAssertion) {
+    if (!bridgeSecret) {
+      setAuthFailureReason(diagnostic, AUTH_FAILURE_REASONS.AUTH_IDENTITY_INVALID);
+      return null;
+    }
+    let bodyDigest;
+    try {
+      bodyDigest = await sha256Base64Url(["GET", "HEAD"].includes(request.method) ? new Uint8Array() : await request.clone().arrayBuffer());
+    } catch {
+      setAuthFailureReason(diagnostic, AUTH_FAILURE_REASONS.AUTH_IDENTITY_INVALID);
+      return null;
+    }
     const trusted = await verifyAuthBridgeAssertion(bridgeAssertion, {
       secret: bridgeSecret,
       method: request.method,
-      path: new URL(request.url).pathname
+      path: new URL(request.url).pathname,
+      query: new URL(request.url).search,
+      bodyDigest,
+      audience: AUTH_BRIDGE_AUDIENCE,
+      requireCsrf: ["POST", "PUT", "PATCH", "DELETE"].includes(request.method)
     });
     if (trusted) {
       setAuthFailureReason(diagnostic, AUTH_FAILURE_REASONS.NONE);
@@ -370,6 +407,10 @@ async function getExternalAuthUser(request, env, diagnostic = null) {
       }
       return normalizeExternalUser(trusted, trusted.role);
     }
+    setAuthFailureReason(diagnostic, AUTH_FAILURE_REASONS.AUTH_IDENTITY_INVALID);
+    return null;
+  }
+  if (bridgeRequired(env)) {
     setAuthFailureReason(diagnostic, AUTH_FAILURE_REASONS.AUTH_IDENTITY_INVALID);
     return null;
   }
@@ -498,10 +539,10 @@ async function requireUser(request, env, db) {
 }
 
 async function requireAdmin(request, env, db) {
-  const originError = mutationOriginError(request, env);
-  if (originError) return originError;
   const user = await resolveUser(request, env, db);
   if (!user) return errorResponse(request, env, 401, "AUTH_REQUIRED", "ログインしてください。");
+  const originError = mutationOriginError(request, env, user);
+  if (originError) return originError;
   if (!isAsiaCsAdmin(user, env)) return errorResponse(request, env, 403, "ADMIN_REQUIRED", "管理者権限が必要です。");
   return { ...user, role: "admin" };
 }
@@ -894,7 +935,7 @@ async function currentPrediction(request, env, db, gameId) {
 async function savePrediction(request, env, db, gameId) {
   const user = await requireUser(request, env, db);
   if (user instanceof Response) return user;
-  const originError = mutationOriginError(request, env);
+  const originError = mutationOriginError(request, env, user);
   if (originError) return originError;
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
@@ -923,7 +964,7 @@ async function savePrediction(request, env, db, gameId) {
 async function deletePrediction(request, env, db, gameId) {
   const user = await requireUser(request, env, db);
   if (user instanceof Response) return user;
-  const originError = mutationOriginError(request, env);
+  const originError = mutationOriginError(request, env, user);
   if (originError) return originError;
   const game = await getGame(db, gameId);
   if (game) await assertGameCompetitionMutable(db, game);

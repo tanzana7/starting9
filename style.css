@@ -7601,3 +7601,21 @@ body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm
   border-color: #d5a11e;
   background: #fff8e5;
 }
+/* Edition switching keeps both editions in the Starting9 shell; the Asia
+   panel is scoped so its compact cards do not alter the established NPB UI. */
+.edition-switcher { display: flex; gap: 8px; margin: 14px 0 0; flex-wrap: wrap; }
+.edition-switcher button { border: 1px solid rgba(31, 83, 116, .25); border-radius: 999px; padding: 7px 14px; color: #1f5374; background: #fff; font: inherit; cursor: pointer; }
+.edition-switcher button.is-selected { color: #fff; background: #1f5374; }
+.asia-edition-panel { max-width: 920px; margin: 0 auto; padding: 28px 16px 56px; }
+.asia-edition-heading { padding: 12px 0 18px; }
+.asia-edition-heading h2 { margin: 4px 0 8px; font-size: clamp(1.35rem, 4vw, 2.2rem); }
+.asia-edition-card { margin: 14px 0; padding: 18px; background: #fff; border: 1px solid #d7e1ed; border-radius: 12px; box-shadow: 0 2px 12px #1c3c5a0b; }
+.asia-edition-card h3 { margin: 0 0 12px; }
+.asia-edition-next-game { display: grid; gap: 6px; }
+.asia-edition-list { display: grid; gap: 8px; }
+.asia-edition-list .schedule-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 12px; border: 1px solid #d7e1ed; border-radius: 8px; }
+.asia-edition-lineup { display: grid; gap: 8px; margin: 12px 0; }
+.asia-edition-lineup .lineup-row { display: grid; grid-template-columns: 42px minmax(0, 1fr) 110px; gap: 8px; align-items: center; }
+.asia-edition-ranking { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.asia-edition-ranking li { display: grid; grid-template-columns: 44px 1fr auto; gap: 8px; padding: 9px 11px; background: #f4f8fc; border-radius: 7px; }
+@media (max-width: 600px) { .asia-edition-list .schedule-row { align-items: flex-start; flex-direction: column; } .asia-edition-lineup .lineup-row { grid-template-columns: 30px minmax(0, 1fr) 82px; } }

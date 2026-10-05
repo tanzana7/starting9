@@ -1,4 +1,5 @@
 import { isPredictionEligible } from "../game-scoring-ranking-v2.js";
+import { verifyAuthBridgeAssertion } from "../backend/auth-bridge.js";
 import {
   LINEUP_SIZE,
   MAX_SCORE,
@@ -286,7 +287,7 @@ function normalizeExternalUser(value, roleOverride = "") {
   const username = String(source?.username || source?.name || id).trim().slice(0, 80);
   if (!username) return null;
   const role = String(roleOverride || source?.role || "user").trim().toLowerCase();
-  return { id, username, role: role === "admin" ? "admin" : "user", status: "active" };
+  return { id, username, role: role === "admin" ? "admin" : "user", status: "active", authSource: source?.authSource || "external" };
 }
 
 function parseAsiaCsAdminUserIds(value) {
@@ -313,6 +314,7 @@ function parseAsiaCsAdminUserIds(value) {
 
 function isAsiaCsAdmin(user, env) {
   if (!user || typeof user.id !== "string" || !user.id) return false;
+  if (user.authSource === "starting9" && user.role === "admin") return true;
   const configuredIds = parseAsiaCsAdminUserIds(env?.ASIA_CS_ADMIN_USER_IDS);
   if (configuredIds.size > 0) return configuredIds.has(user.id);
   // Local password auth is only a development/test fixture. Production uses
@@ -350,6 +352,27 @@ function emitAuthDiagnostic(diagnostic) {
 }
 
 async function getExternalAuthUser(request, env, diagnostic = null) {
+  const bridgeSecret = String(env?.ASIA_CS_AUTH_BRIDGE_SECRET || "").trim();
+  const bridgeAssertion = request.headers.get("X-S9-Auth-Bridge") || "";
+  if (bridgeAssertion && bridgeSecret) {
+    const trusted = await verifyAuthBridgeAssertion(bridgeAssertion, {
+      secret: bridgeSecret,
+      method: request.method,
+      path: new URL(request.url).pathname
+    });
+    if (trusted) {
+      setAuthFailureReason(diagnostic, AUTH_FAILURE_REASONS.NONE);
+      if (diagnostic) {
+        diagnostic.authUpstreamReached = false;
+        diagnostic.authUpstreamAuthenticated = true;
+        diagnostic.authUpstreamUserPresent = true;
+        diagnostic.authUpstreamUserIdTypeValid = true;
+      }
+      return normalizeExternalUser(trusted, trusted.role);
+    }
+    setAuthFailureReason(diagnostic, AUTH_FAILURE_REASONS.AUTH_IDENTITY_INVALID);
+    return null;
+  }
   if (typeof env?.AUTH_VERIFY === "function") {
     if (diagnostic) diagnostic.authFetchAttempted = true;
     if (diagnostic) diagnostic.authUpstreamReached = true;

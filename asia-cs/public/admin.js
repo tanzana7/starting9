@@ -28,4 +28,5 @@ $("publishGame").addEventListener("click", () => void operation("publish"));
 $("rescoreGame").addEventListener("click", () => { try { void operation("rescore", { lineup: JSON.parse($("rescoreJson").value), teamId: $("lineupTeamId").value, reason: $("rescoreReason").value }); } catch { message("operationStatus", "訂正版正式スタメンJSONを確認してください。", true); } });
 
 async function refreshSession() { try { const payload = await api("/api/auth/me"); state.user = payload.user; if (payload.isAdmin !== true) throw new Error("管理者権限が必要です。"); showAdmin(); message("adminAuthStatus", "管理画面を利用できます。"); await refreshOverview(); } catch (error) { message("adminAuthStatus", error.message, true); } }
+window.Starting9AsiaCsAdmin = Object.freeze({ refreshSession });
 void refreshSession();

@@ -22,6 +22,10 @@
         <button id="mobileNavToggle" class="mobile-nav-toggle" type="button" aria-controls="v3Navigation" aria-expanded="false">メニュー</button>
       </div>
     </header>
+    <nav class="edition-switcher admin-edition-switcher" aria-label="管理対象エディション" role="tablist">
+      <button type="button" data-admin-edition-select="NPB" role="tab" aria-selected="true">NPB</button>
+      <button type="button" data-admin-edition-select="ASIA_CS" role="tab" aria-selected="false">Asia CS</button>
+    </nav>
     <section id="adminPushPanel" class="admin-push-panel" aria-live="polite">
       <div>
         <h2>運営通知</h2>
@@ -34,7 +38,7 @@
       </div>
       <ul id="adminPushIncidents" class="admin-push-incidents"></ul>
     </section>
-    <div class="admin-v3-layout">
+    <div id="npbAdminEditionContent" class="admin-v3-layout">
       <aside id="v3Navigation" class="v3-sidebar" aria-label="V4管理メニュー">
         <nav class="v3-nav">
           <button type="button" data-v3-view="dashboard">ダッシュボード</button>
@@ -74,7 +78,18 @@
         <section id="v3View" class="v3-view" aria-live="polite"></section>
       </section>
     </div>
+    <section id="asiaAdminEditionContent" class="asia-admin-edition hidden" aria-labelledby="asiaAdminEditionTitle">
+      <div class="view-heading"><div><h2 id="asiaAdminEditionTitle">Asia Edition</h2><p>Starting9の管理者認証で大会運用を行います。</p></div></div>
+      <section class="asia-admin-panel"><p id="adminAuthStatus" class="message" role="status">管理者権限を確認中です。</p></section>
+      <section class="asia-admin-panel admin-only hidden" aria-labelledby="competitionTitle"><div class="section-heading"><h3 id="competitionTitle">大会設定</h3><button id="refreshOverview" type="button" class="secondary">更新</button></div><form id="competitionForm" class="form-grid"><label>大会ID<input name="id" value="asia-cs" required></label><label>大会名<input name="displayName" value="Asia CS" required></label><label>短縮名<input name="shortName" value="Asia CS" required></label><label>開始日<input name="startDate" type="date"></label><label>終了日<input name="endDate" type="date"></label><label>状態<select name="status"><option value="draft">draft</option><option value="active">active</option><option value="completed">completed</option></select></label><label class="wide-field">説明<textarea name="description" rows="2"></textarea></label><button>大会設定を保存</button></form><p id="competitionStatus" class="message" role="status"></p><pre id="overview" class="detail"></pre></section>
+      <section class="asia-admin-panel admin-only hidden" aria-labelledby="gameCreateTitle"><h3 id="gameCreateTitle">試合・チーム登録</h3><form id="gameForm" class="form-grid"><label>試合ID<input name="id"></label><label>試合名<input name="title" required></label><label>大会ID<input name="competitionId" value="asia-cs" required></label><label>試合日<input name="gameDate" type="date" required></label><label>開始日時<input name="startAt" type="datetime-local" required></label><label>予想締切<input name="predictionDeadlineAt" type="datetime-local" required></label><label>ホームチームID<input name="homeTeamId" required></label><label>ホーム表示名<input name="homeTeamName" required></label><label>ビジターチームID<input name="awayTeamId" required></label><label>ビジター表示名<input name="awayTeamName" required></label><label>球場<input name="venue"></label><label>外部試合コード<input name="externalGameCode"></label><button>試合を登録</button></form><form id="teamForm" class="form-grid"><label>大会ID<input name="competitionId" value="asia-cs" required></label><label>チームID<input name="teamKey" required></label><label>表示名<input name="displayName" required></label><label>短縮名<input name="shortName" required></label><label>国コード<input name="countryCode" maxlength="3"></label><button>チームを保存</button></form><p id="gameStatus" class="message" role="status"></p><p id="teamStatus" class="message" role="status"></p></section>
+      <section class="asia-admin-panel admin-only hidden" aria-labelledby="bulkTitle"><h3 id="bulkTitle">選手・ロースター・正式処理</h3><div class="import-grid"><form id="playerImportForm"><label>対象試合ID<input id="playerImportGameId" required></label><label>選手JSON / CSV<textarea id="playerImportData" rows="7" required></textarea></label><button>選手を一括登録</button></form><form id="rosterForm"><label>対象試合ID<input id="gameId" required></label><label>出場選手JSON<textarea id="rosterJson" rows="7"></textarea></label><button>ロースターを保存</button></form></div><form id="gameImportForm"><label>試合JSON / CSV<textarea id="gameImportData" rows="5"></textarea></label><button>試合を一括登録</button></form><p id="importStatus" class="message" role="status"></p></section>
+      <section class="asia-admin-panel admin-only hidden" aria-labelledby="lineupTitle"><h3 id="lineupTitle">正式スタメン・採点・公開</h3><label>対象チームID<input id="lineupTeamId"></label><textarea id="lineupJson" rows="8"></textarea><div class="actions"><button id="confirmLineup" type="button">正式スタメンを確定</button><button id="scoreGame" type="button">採点</button><button id="rankingGame" type="button">ランキング更新</button><button id="publishGame" type="button">公開</button></div><div class="correction"><h4>修正・再採点</h4><input id="rescoreReason" value="管理者による正式スタメン修正"><textarea id="rescoreJson" rows="8"></textarea><button id="rescoreGame" type="button" class="danger">再採点・Best Nine更新</button></div><p id="operationStatus" class="message" role="status"></p><pre id="gameDetail" class="detail"></pre></section>
+    </section>
   </main>
+  <script defer src="frontend/shared/edition-config.js?v=asia-edition-window-1"></script>
+  <script defer src="frontend/shared/edition.js?v=asia-edition-resolver-1"></script>
+  <script defer src="frontend/admin-v3/edition-shell.js?v=asia-edition-admin-shell-1"></script>
   <script src="frontend/admin-v3/state.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-manual-lineup-explicit-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-manual-lineup-two-step-confirmation-1-admin-public-parity-1-ops-summary-1-pre-beta-purge-1"></script>
   <script src="frontend/public/fighters-player-details.js?v=fighters-player-details-20260903-1"></script>
   <script src="frontend/shared/lineup-builder.js?v=shared-lineup-builder-3-position-picker-parity-1"></script>
@@ -98,5 +113,6 @@
   <script src="frontend/admin-v3/push-controls.js?v=v5-phase6-2"></script>
   <script src="frontend/admin-v3/app-coordinator.js?v=independent-roster-lineup-safety-1-preserve-picker-scroll-1-admin-lineup-registration-emergency-fix-1-manual-lineup-two-step-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-display-name-slot-binding-1-admin-public-parity-1-position-picker-parity-1-compact-parity-1-shared-roster-sync-1-manual-roster-auto-1-pre-beta-purge-1-admin-ranking-only-1-phase1-scoring-recovery-1"></script>
   <script src="admin-v3.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-lineup-order-mobile-zoom-1-lineup-correction-1-admin-v3-game-progress-history-1-admin-lineup-registration-emergency-fix-1-admin-lineup-lock-reason-1-manual-lineup-late-registration-1-manual-lineup-two-step-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-v4-canonical-status-1-display-name-slot-binding-1-position-picker-parity-1-public-roster-sync-1-lineup-error-details-1-shared-roster-sync-1-manual-roster-auto-1-pre-beta-purge-1-admin-ranking-only-1-phase1-scoring-recovery-1-phase2-ranking-publish-common-path-1-manual-roster-persistent-mode-1-v4-final-cleanup-1"></script>
+  <script type="module" src="asia-cs/public/admin.js?v=asia-edition-admin-inline-1"></script>
 </body>
 </html>

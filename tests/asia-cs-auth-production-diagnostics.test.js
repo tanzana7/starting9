@@ -47,7 +47,7 @@ test("production diagnosticsはPagesでCookie値を記録せず、0/1/複数を�
     for (const cookie of ["", "s9_session=probe-one", "s9_session=probe-one; s9_session=probe-two"]) {
       await onRequest({
         request: new Request("https://starting9.pages.dev/api/asia-cs/auth/me", { headers: cookie ? { Cookie: cookie } : {} }),
-        env: { ASIA_CS_API_ORIGIN: "https://starting9-asia-cs-api.starting9.workers.dev" }
+        env: { STARTING9_AUTH_ORIGIN: "https://starting9-auth.starting9.workers.dev" }
       });
     }
   } finally {

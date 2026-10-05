@@ -1,4 +1,5 @@
 import { getPredictionDeadlineStatus } from "./prediction-deadline.js";
+import { createAuthBridgeAssertion } from "./backend/auth-bridge.js";
 import { PREDICTION_DEADLINE_MILLISECONDS } from "./prediction-deadline.js";
 import {
   getDueFinalLineupAttemptAt,
@@ -347,6 +348,8 @@ export async function writeV3FatalRunAudits({
 }
 
 const SESSION_COOKIE_NAME = "s9_session";
+const ASIA_CS_API_ORIGIN = "https://starting9-asia-cs-api.starting9.workers.dev";
+const ASIA_CS_BRIDGE_HEADER = "X-S9-Auth-Bridge";
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const PBKDF2_ITERATIONS = 100_000;
 const PBKDF2_MAX_ITERATIONS = 100_000;
@@ -426,6 +429,65 @@ const PERFECT_ACHIEVER_MUTATION_RETIRED_CODE = "PERFECT_ACHIEVER_MUTATION_RETIRE
 const PERFECT_ACHIEVER_MUTATION_RETIRED_MESSAGE = "満点者はサーバー側の正式採点結果から自動集計されます。";
 const MIGRATION_MAINTENANCE_CODE = "MIGRATION_MAINTENANCE";
 const MIGRATION_MAINTENANCE_MESSAGE = "現在メンテナンス中です。しばらくお待ちください。";
+
+function isAsiaCsGatewayPath(path) {
+  return path === "/api/asia-cs" || path.startsWith("/api/asia-cs/");
+}
+
+function resolveAsiaCsApiOrigin(env) {
+  const configured = String(env?.ASIA_CS_API_ORIGIN || ASIA_CS_API_ORIGIN).trim().replace(/\/+$/, "");
+  try {
+    const parsed = new URL(configured);
+    if (parsed.protocol !== "https:" || parsed.pathname !== "/" || parsed.search || parsed.hash || parsed.username || parsed.password) return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+function createAsiaCsGatewayRequest(request, upstreamUrl, assertion) {
+  const headers = new Headers(request.headers);
+  for (const name of ["connection", "content-length", "cookie", "host", "origin", "referer", "transfer-encoding", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", ASIA_CS_BRIDGE_HEADER.toLowerCase()]) headers.delete(name);
+  if (assertion) headers.set(ASIA_CS_BRIDGE_HEADER, assertion);
+  return new Request(upstreamUrl, {
+    method: request.method,
+    headers,
+    body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body,
+    redirect: "manual",
+    duplex: "half"
+  });
+}
+
+async function handleAsiaCsGateway(request, env, cors, path) {
+  const user = await getSessionUser(request, env);
+  if (path === "/api/asia-cs/auth/me" && request.method === "GET") {
+    return jsonResponse({
+      ok: true,
+      authenticated: Boolean(user),
+      isAdmin: String(user?.role || "").toLowerCase() === "admin",
+      user: user ? publicUser(user) : null
+    }, 200, cors);
+  }
+
+  const origin = resolveAsiaCsApiOrigin(env);
+  if (!origin) return jsonResponse({ ok: false, code: "ASIA_CS_GATEWAY_NOT_CONFIGURED", error: "Asia Edition APIが設定されていません。" }, 503, cors);
+  const secret = String(env?.ASIA_CS_AUTH_BRIDGE_SECRET || "").trim();
+  if (user && !secret) return jsonResponse({ ok: false, code: "ASIA_CS_AUTH_BRIDGE_NOT_CONFIGURED", error: "Asia Edition認証連携が設定されていません。" }, 503, cors);
+  const upstreamPath = `/api${path.slice("/api/asia-cs".length) || "/"}`;
+  const upstreamUrl = new URL(upstreamPath + new URL(request.url).search, origin);
+  const assertion = user
+    ? await createAuthBridgeAssertion({ secret, user, method: request.method, path: upstreamPath })
+    : "";
+  try {
+    const upstream = await fetch(createAsiaCsGatewayRequest(request, upstreamUrl, assertion));
+    const headers = new Headers(upstream.headers);
+    headers.set("Cache-Control", "no-store");
+    return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers });
+  } catch (error) {
+    console.warn(`[ASIA_CS_GATEWAY] code=UPSTREAM_UNAVAILABLE message=${String(error?.message || error)}`);
+    return jsonResponse({ ok: false, code: "ASIA_CS_GATEWAY_UNAVAILABLE", error: "Asia Edition APIに接続できません。時間をおいて再試行してください。" }, 503, cors);
+  }
+}
 
 function getBuildIdentifier(env) {
   const configured = String(env?.BUILD_COMMIT || "").trim();
@@ -768,6 +830,10 @@ export default {
     try {
       const authRateLimitResponse = enforceAuthRateLimit(request, path, cors);
       if (authRateLimitResponse) return authRateLimitResponse;
+
+      if (isAsiaCsGatewayPath(path)) {
+        return await handleAsiaCsGateway(request, env, cors, path);
+      }
 
       const adminMethodAuthResponse = await requireAdminAuthForMethodMismatch(request, env, cors, path);
       if (adminMethodAuthResponse) return adminMethodAuthResponse;

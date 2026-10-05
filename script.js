@@ -492,9 +492,13 @@ const publicAppCoordinator = new publicFrontend.PublicAppCoordinator({
 if (typeof window !== "undefined") {
   window.PublicAppCoordinator = publicFrontend.PublicAppCoordinator;
   window.publicAppState = appState;
+  window.publicAppCoordinator = publicAppCoordinator;
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  // The Asia Edition owns the public panel while it is selected. Do not let
+  // the NPB coordinator hydrate hidden controls or overwrite shared auth UI.
+  if (window.Starting9Edition?.active === window.Starting9Edition?.ASIA_CS) return;
   void publicAppCoordinator.start();
 });
 

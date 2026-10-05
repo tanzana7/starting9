@@ -94,7 +94,7 @@ test("Asia Workerはtrusted bridgeを使い、admin判定を既存Starting9 role
   const worker = read("asia-cs/worker.js");
   const auth = read("auth-worker.js");
   assert.match(worker, /verifyAuthBridgeAssertion/);
-  assert.match(worker, /user\.authSource === "starting9" && user\.role === "admin"/);
+  assert.match(worker, /user\.authSource === "starting9"\) return user\.role === "admin"/);
   assert.match(auth, /createAuthBridgeAssertion/);
   assert.match(auth, /ASIA_CS_AUTH_BRIDGE_NOT_CONFIGURED/);
 });
@@ -132,7 +132,7 @@ test("Asia Workerはmissing secretとsigned non-adminをfail closedする", asyn
   const db = { prepare() { return { bind() { return { async first() { return null; }, async run() { return { meta: { changes: 1 } }; } }; } }; } };
   const missingSecret = await worker.fetch(new Request("https://asia-cs.test/api/admin/teams", baseRequest), { DB: db, ASIA_CS_ENV: "production", AUTH_VERIFY: async () => ({ id: "legacy-admin", username: "legacy", role: "admin" }) }, {});
   assert.equal(missingSecret.status, 401);
-  const nonAdmin = await worker.fetch(new Request("https://asia-cs.test/api/admin/teams", baseRequest), { DB: db, ASIA_CS_ENV: "production", ASIA_CS_AUTH_BRIDGE_SECRET: "bridge-secret", AUTH_VERIFY: async () => ({ id: "legacy-admin", username: "legacy", role: "admin" }) }, {});
+  const nonAdmin = await worker.fetch(new Request("https://asia-cs.test/api/admin/teams", baseRequest), { DB: db, ASIA_CS_ENV: "production", ASIA_CS_AUTH_BRIDGE_SECRET: "bridge-secret", ASIA_CS_ADMIN_USER_IDS: "user-1", AUTH_VERIFY: async () => ({ id: "legacy-admin", username: "legacy", role: "admin" }) }, {});
   assert.equal(nonAdmin.status, 403);
 });
 

@@ -336,7 +336,10 @@ function parseAsiaCsAdminUserIds(value) {
 
 function isAsiaCsAdmin(user, env) {
   if (!user || typeof user.id !== "string" || !user.id) return false;
-  if (user.authSource === "starting9" && user.role === "admin") return true;
+  // The formal gateway assertion is the sole privilege source for the
+  // integrated path. Do not let a legacy allowlist turn a signed normal user
+  // into an admin when the Auth Worker explicitly asserted role=user.
+  if (user.authSource === "starting9") return user.role === "admin";
   const configuredIds = parseAsiaCsAdminUserIds(env?.ASIA_CS_ADMIN_USER_IDS);
   if (configuredIds.size > 0) return configuredIds.has(user.id);
   // Local password auth is only a development/test fixture. Production uses

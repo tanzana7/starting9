@@ -7,8 +7,21 @@ const SAFE_FIELDS = Object.freeze([
   "requestPath",
   "hasSessionCookie",
   "sessionCookieCount",
+  "authFetchAttempted",
   "authUpstreamReached",
   "authUpstreamStatus",
+  "authUpstreamAuthenticated",
+  "authUpstreamUserPresent",
+  "authUpstreamUserIdTypeValid",
+  "authFailureReason",
+  "finalAuthenticated",
+  "finalIsAdmin"
+]);
+
+const BOOLEAN_FIELDS = new Set([
+  "hasSessionCookie",
+  "authFetchAttempted",
+  "authUpstreamReached",
   "authUpstreamAuthenticated",
   "authUpstreamUserPresent",
   "authUpstreamUserIdTypeValid",
@@ -16,14 +29,17 @@ const SAFE_FIELDS = Object.freeze([
   "finalIsAdmin"
 ]);
 
-const BOOLEAN_FIELDS = new Set([
-  "hasSessionCookie",
-  "authUpstreamReached",
-  "authUpstreamAuthenticated",
-  "authUpstreamUserPresent",
-  "authUpstreamUserIdTypeValid",
-  "finalAuthenticated",
-  "finalIsAdmin"
+const AUTH_FAILURE_REASONS = new Set([
+  "NONE",
+  "EMPTY_SESSION_TOKEN",
+  "AUTH_ORIGIN_REJECTED",
+  "AUTH_URL_INVALID",
+  "AUTH_FETCH_FAILED",
+  "AUTH_UPSTREAM_TIMEOUT",
+  "AUTH_UPSTREAM_NON_2XX",
+  "AUTH_UPSTREAM_INVALID_JSON",
+  "AUTH_UPSTREAM_ANONYMOUS",
+  "AUTH_IDENTITY_INVALID"
 ]);
 
 const WRAPPER_FIELDS = new Set(["data", "event", "message", "payload", "logs"]);
@@ -86,6 +102,10 @@ function copySafeField(result, source, field) {
   }
   if (field === "authUpstreamStatus") {
     if (Number.isInteger(value) && value >= 100 && value <= 599) result[field] = value;
+    return;
+  }
+  if (field === "authFailureReason") {
+    if (AUTH_FAILURE_REASONS.has(value)) result[field] = value;
     return;
   }
   if (typeof value === "string" && value.length <= 256) result[field] = value;

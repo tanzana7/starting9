@@ -42,6 +42,8 @@ test("ignores unrelated, malformed, and unsafe field values", () => {
   assert.equal(parseTailRecord("not-json"), null);
   const event = parseTailRecord(JSON.stringify({
     ...pagesEvent,
+    authFetchAttempted: true,
+    authFailureReason: "AUTH_FETCH_FAILED",
     hasSessionCookie: "true",
     sessionCookieCount: 100,
     authUpstreamStatus: "200",
@@ -53,9 +55,29 @@ test("ignores unrelated, malformed, and unsafe field values", () => {
     scope: "asia-cs-auth-diagnostic",
     phase: "pages",
     diagnosticId: "ray-1",
-    requestPath: "/api/asia-cs/auth/me"
+    requestPath: "/api/asia-cs/auth/me",
+    authFetchAttempted: true,
+    authFailureReason: "AUTH_FETCH_FAILED"
   });
   assert.equal(JSON.stringify(event).includes("secret"), false);
+});
+
+test("projects only known auth reason codes and safe attempt state", () => {
+  const event = parseTailRecord(JSON.stringify({
+    ...pagesEvent,
+    authFetchAttempted: true,
+    authFailureReason: "AUTH_UPSTREAM_TIMEOUT"
+  }));
+  assert.equal(event.authFetchAttempted, true);
+  assert.equal(event.authFailureReason, "AUTH_UPSTREAM_TIMEOUT");
+
+  const invalid = parseTailRecord(JSON.stringify({
+    ...pagesEvent,
+    authFetchAttempted: "true",
+    authFailureReason: "secret-token"
+  }));
+  assert.equal(Object.prototype.hasOwnProperty.call(invalid, "authFetchAttempted"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(invalid, "authFailureReason"), false);
 });
 
 test("merges Pages and Asia CS events by correlation id without mixing requests", () => {

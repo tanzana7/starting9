@@ -21,6 +21,18 @@ const PLAYER_POSITIONS = Object.freeze([...POSITIONS, "投"]);
 const STARTING9_AUTH_ORIGIN = "https://starting9-auth.starting9.workers.dev";
 const AUTH_UPSTREAM_TIMEOUT_MS = 4000;
 const AUTH_DIAGNOSTIC_HEADER = "X-S9-Auth-Diagnostic-Id";
+const AUTH_FAILURE_REASONS = Object.freeze({
+  NONE: "NONE",
+  EMPTY_SESSION_TOKEN: "EMPTY_SESSION_TOKEN",
+  AUTH_ORIGIN_REJECTED: "AUTH_ORIGIN_REJECTED",
+  AUTH_URL_INVALID: "AUTH_URL_INVALID",
+  AUTH_FETCH_FAILED: "AUTH_FETCH_FAILED",
+  AUTH_UPSTREAM_TIMEOUT: "AUTH_UPSTREAM_TIMEOUT",
+  AUTH_UPSTREAM_NON_2XX: "AUTH_UPSTREAM_NON_2XX",
+  AUTH_UPSTREAM_INVALID_JSON: "AUTH_UPSTREAM_INVALID_JSON",
+  AUTH_UPSTREAM_ANONYMOUS: "AUTH_UPSTREAM_ANONYMOUS",
+  AUTH_IDENTITY_INVALID: "AUTH_IDENTITY_INVALID"
+});
 const CANONICAL_TEST_USERS = Object.freeze(
   Array.from({ length: 9 }, (_, index) => `S9_TEST_${index + 1}`)
 );
@@ -316,14 +328,20 @@ function createAuthDiagnostic(request) {
     requestPath: new URL(request.url).pathname,
     hasSessionCookie: sessionCookieCount > 0,
     sessionCookieCount,
+    authFetchAttempted: false,
     authUpstreamReached: false,
     authUpstreamStatus: null,
     authUpstreamAuthenticated: null,
     authUpstreamUserPresent: false,
     authUpstreamUserIdTypeValid: false,
+    authFailureReason: AUTH_FAILURE_REASONS.NONE,
     finalAuthenticated: false,
     finalIsAdmin: false
   };
+}
+
+function setAuthFailureReason(diagnostic, reason) {
+  if (diagnostic) diagnostic.authFailureReason = reason;
 }
 
 function emitAuthDiagnostic(diagnostic) {
@@ -333,6 +351,7 @@ function emitAuthDiagnostic(diagnostic) {
 
 async function getExternalAuthUser(request, env, diagnostic = null) {
   if (typeof env?.AUTH_VERIFY === "function") {
+    if (diagnostic) diagnostic.authFetchAttempted = true;
     if (diagnostic) diagnostic.authUpstreamReached = true;
     try {
       const value = await env.AUTH_VERIFY(request);
@@ -343,22 +362,32 @@ async function getExternalAuthUser(request, env, diagnostic = null) {
         diagnostic.authUpstreamUserPresent = Boolean(value?.user || value);
         diagnostic.authUpstreamUserIdTypeValid = isValidExternalUserId(value?.user?.id || value?.id);
       }
+      setAuthFailureReason(diagnostic, user ? AUTH_FAILURE_REASONS.NONE : AUTH_FAILURE_REASONS.AUTH_IDENTITY_INVALID);
       return user;
     } catch (error) {
+      setAuthFailureReason(diagnostic, error?.name === "AbortError" ? AUTH_FAILURE_REASONS.AUTH_UPSTREAM_TIMEOUT : AUTH_FAILURE_REASONS.AUTH_FETCH_FAILED);
       console.warn(JSON.stringify({ scope: "asia-cs-auth", code: "AUTH_VERIFY_FAILED", message: String(error?.message || error) }));
       return null;
     }
   }
-  const baseUrl = allowedAuthOrigin(env?.STARTING9_AUTH_BASE_URL, env);
   // Auth Worker owns the cookie serializer and decodes the value once. Keep
   // the browser's encoded value byte-for-byte so this boundary never turns
   // `%3D` into `%253D` or otherwise changes the session token.
   const token = rawCookieValue(request, STARTING9_SESSION_COOKIE);
-  if (!baseUrl || !token) return null;
+  if (!token) {
+    setAuthFailureReason(diagnostic, AUTH_FAILURE_REASONS.EMPTY_SESSION_TOKEN);
+    return null;
+  }
+  const baseUrl = allowedAuthOrigin(env?.STARTING9_AUTH_BASE_URL, env);
+  if (!baseUrl) {
+    setAuthFailureReason(diagnostic, AUTH_FAILURE_REASONS.AUTH_ORIGIN_REJECTED);
+    return null;
+  }
   let endpoint;
   try {
     endpoint = new URL("/api/auth/me", baseUrl).toString();
   } catch {
+    setAuthFailureReason(diagnostic, AUTH_FAILURE_REASONS.AUTH_URL_INVALID);
     return null;
   }
   const controller = new AbortController();
@@ -366,8 +395,13 @@ async function getExternalAuthUser(request, env, diagnostic = null) {
   const timeoutMs = localAuthRuntime(env) && Number.isFinite(configuredTimeout) && configuredTimeout > 0
     ? Math.min(configuredTimeout, AUTH_UPSTREAM_TIMEOUT_MS)
     : AUTH_UPSTREAM_TIMEOUT_MS;
-  const timeout = setTimeout(() => controller.abort("auth upstream timeout"), timeoutMs);
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort("auth upstream timeout");
+  }, timeoutMs);
   try {
+    if (diagnostic) diagnostic.authFetchAttempted = true;
     const response = await fetch(endpoint, {
       method: "GET",
       headers: { Cookie: `${STARTING9_SESSION_COOKIE}=${token}` },
@@ -378,16 +412,37 @@ async function getExternalAuthUser(request, env, diagnostic = null) {
       diagnostic.authUpstreamReached = true;
       diagnostic.authUpstreamStatus = response.status;
     }
-    if (!response.ok) return null;
-    const payload = await response.json();
+    if (!response.ok) {
+      setAuthFailureReason(diagnostic, AUTH_FAILURE_REASONS.AUTH_UPSTREAM_NON_2XX);
+      return null;
+    }
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      setAuthFailureReason(diagnostic, AUTH_FAILURE_REASONS.AUTH_UPSTREAM_INVALID_JSON);
+      return null;
+    }
     if (diagnostic) {
       diagnostic.authUpstreamAuthenticated = payload?.authenticated === true;
       diagnostic.authUpstreamUserPresent = Boolean(payload?.user);
       diagnostic.authUpstreamUserIdTypeValid = isValidExternalUserId(payload?.user?.id);
     }
-    if (!payload?.ok || !payload.user || payload.authenticated !== true) return null;
-    return normalizeExternalUser(payload.user, "user");
+    if (!payload?.ok || !payload.user || payload.authenticated !== true) {
+      setAuthFailureReason(diagnostic, AUTH_FAILURE_REASONS.AUTH_UPSTREAM_ANONYMOUS);
+      return null;
+    }
+    const user = normalizeExternalUser(payload.user, "user");
+    if (!user) {
+      setAuthFailureReason(diagnostic, AUTH_FAILURE_REASONS.AUTH_IDENTITY_INVALID);
+      return null;
+    }
+    setAuthFailureReason(diagnostic, AUTH_FAILURE_REASONS.NONE);
+    return user;
   } catch (error) {
+    setAuthFailureReason(diagnostic, timedOut || error?.name === "AbortError"
+      ? AUTH_FAILURE_REASONS.AUTH_UPSTREAM_TIMEOUT
+      : AUTH_FAILURE_REASONS.AUTH_FETCH_FAILED);
     console.warn(JSON.stringify({ scope: "asia-cs-auth", code: "AUTH_ENDPOINT_UNAVAILABLE", message: String(error?.message || error) }));
     return null;
   } finally {

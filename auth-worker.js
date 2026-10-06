@@ -566,6 +566,20 @@ async function handleAsiaCsGateway(request, env, cors, path) {
   }
 }
 
+async function handleAsiaCsHealth(request, env, cors) {
+  const origin = resolveAsiaCsApiOrigin(env);
+  if (!origin) return jsonResponse({ ok: false, code: "ASIA_CS_GATEWAY_NOT_CONFIGURED", error: "Asia Edition APIが設定されていません。" }, 503, cors);
+  try {
+    const upstream = await fetch(createAsiaCsGatewayRequest(request, new URL("/api/health", origin), "", new Uint8Array()));
+    const headers = new Headers(upstream.headers);
+    headers.set("Cache-Control", "no-store");
+    return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers });
+  } catch (error) {
+    console.warn(`[ASIA_CS_GATEWAY] code=HEALTH_UPSTREAM_UNAVAILABLE message=${String(error?.message || error)}`);
+    return jsonResponse({ ok: false, code: "ASIA_CS_GATEWAY_UNAVAILABLE", error: "Asia Edition APIに接続できません。時間をおいて再試行してください。" }, 503, cors);
+  }
+}
+
 function getBuildIdentifier(env) {
   const configured = String(env?.BUILD_COMMIT || "").trim();
   return /^[0-9a-f]{7,64}$/i.test(configured) ? configured : "unknown";
@@ -898,6 +912,10 @@ export default {
 
     if (isMigrationMaintenanceEnabled(env) && !isMigrationMaintenanceReadRequest(path, request.method)) {
       return migrationMaintenanceResponse(cors);
+    }
+
+    if (path === "/api/asia-cs/health" && ["GET", "HEAD"].includes(request.method)) {
+      return await handleAsiaCsHealth(request, env, cors);
     }
 
     if (!env.AUTH_DB) {

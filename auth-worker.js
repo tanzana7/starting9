@@ -568,15 +568,26 @@ async function handleAsiaCsGateway(request, env, cors, path) {
 
 async function handleAsiaCsHealth(request, env, cors) {
   const origin = resolveAsiaCsApiOrigin(env);
-  if (!origin) return jsonResponse({ ok: false, code: "ASIA_CS_GATEWAY_NOT_CONFIGURED", error: "Asia Edition APIが設定されていません。" }, 503, cors);
+  if (!origin) {
+    const response = jsonResponse({ ok: false, code: "ASIA_CS_GATEWAY_NOT_CONFIGURED", error: "Asia Edition APIが設定されていません。" }, 503, cors);
+    response.headers.set("X-Starting9-Health-Diagnostic", "ASIA_HEALTH_ORIGIN_INVALID");
+    return response;
+  }
   try {
     const upstream = await fetch(createAsiaCsGatewayRequest(request, new URL("/api/health", origin), "", new Uint8Array()));
     const headers = new Headers(upstream.headers);
     headers.set("Cache-Control", "no-store");
+    // Temporary fixed-value markers distinguish a matched gateway route from
+    // a platform/router 404 without exposing target or request data.
+    headers.set("X-Starting9-Health-Diagnostic", "ASIA_HEALTH_UPSTREAM_RESPONSE");
+    headers.set("X-Starting9-Health-Diagnostic-Target-Path", "/api/health");
+    headers.set("X-Starting9-Health-Diagnostic-Upstream-Status", String(upstream.status));
     return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers });
   } catch (error) {
     console.warn(`[ASIA_CS_GATEWAY] code=HEALTH_UPSTREAM_UNAVAILABLE message=${String(error?.message || error)}`);
-    return jsonResponse({ ok: false, code: "ASIA_CS_GATEWAY_UNAVAILABLE", error: "Asia Edition APIに接続できません。時間をおいて再試行してください。" }, 503, cors);
+    const response = jsonResponse({ ok: false, code: "ASIA_CS_GATEWAY_UNAVAILABLE", error: "Asia Edition APIに接続できません。時間をおいて再試行してください。" }, 503, cors);
+    response.headers.set("X-Starting9-Health-Diagnostic", "ASIA_HEALTH_UPSTREAM_EXCEPTION");
+    return response;
   }
 }
 

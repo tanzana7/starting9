@@ -201,7 +201,6 @@ test("Auth gatewayの公開healthはCookieなしGETをAsiaの/api/healthへ転�
   };
   try {
     const response = await worker.fetch(new Request("https://starting9.test/api/asia-cs/health"), {
-      AUTH_DB: { prepare() { return { bind() { return { async first() { return null; } }; } }; } },
       ASIA_CS_API_ORIGIN: "https://starting9-asia-cs-api.starting9.workers.dev",
       AUTH_ALLOWED_ORIGINS: "https://starting9.pages.dev"
     }, {});
@@ -209,6 +208,26 @@ test("Auth gatewayの公開healthはCookieなしGETをAsiaの/api/healthへ転�
     assert.equal(new URL(forwarded.url).pathname, "/api/health");
     assert.equal(forwarded.headers.get("Cookie"), null);
     assert.equal(forwarded.headers.get("X-S9-Auth-Bridge"), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Auth gatewayのhealthはD1/sessionがなくてもpublic probeとして動作する", async () => {
+  const { default: worker } = await import(pathToFileURL(path.join(ROOT, "auth-worker.js")).href);
+  const originalFetch = globalThis.fetch;
+  let forwarded;
+  globalThis.fetch = async (request) => {
+    forwarded = request;
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  try {
+    const response = await worker.fetch(new Request("https://starting9.test/api/asia-cs/health"), {
+      ASIA_CS_API_ORIGIN: "https://starting9-asia-cs-api.starting9.workers.dev"
+    }, {});
+    assert.equal(response.status, 200);
+    assert.equal(new URL(forwarded.url).pathname, "/api/health");
+    assert.equal(forwarded.headers.get("Cookie"), null);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -455,6 +455,14 @@ function asiaCsRouteSuffix(path) {
   return path === "/api/asia-cs" ? "/" : path.slice("/api/asia-cs".length) || "/";
 }
 
+function asiaCsUpstreamPath(path) {
+  const suffix = asiaCsRouteSuffix(path);
+  // Keep the same-origin health contract explicit. The Asia Worker exposes
+  // its public health probe at /api/health; other gateway routes retain the
+  // existing /api + suffix mapping and their authentication decisions.
+  return suffix === "/health" ? "/api/health" : `/api${suffix}`;
+}
+
 function isAsiaCsPublicRead(requestPath, method) {
   if (!(["GET", "HEAD"].includes(String(method || "").toUpperCase()))) return false;
   const path = asiaCsRouteSuffix(requestPath);
@@ -528,7 +536,7 @@ async function handleAsiaCsGateway(request, env, cors, path) {
   const secret = String(env?.ASIA_CS_AUTH_BRIDGE_SECRET || "").trim();
   if (!publicRead && !user) return jsonResponse({ ok: false, code: "AUTH_REQUIRED", error: "ログインが必要です。" }, 401, cors);
   if (!publicRead && !secret) return jsonResponse({ ok: false, code: "ASIA_CS_AUTH_BRIDGE_NOT_CONFIGURED", error: "Asia Edition認証連携が設定されていません。" }, 503, cors);
-  const upstreamPath = `/api${path.slice("/api/asia-cs".length) || "/"}`;
+  const upstreamPath = asiaCsUpstreamPath(path);
   const requestUrl = new URL(request.url);
   const query = requestUrl.search;
   const bodyBytes = await readAsiaBridgeBody(request);

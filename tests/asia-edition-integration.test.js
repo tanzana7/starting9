@@ -206,6 +206,9 @@ test("Auth gatewayの公開healthはCookieなしGETをAsiaの/api/healthへ転�
     }, {});
     assert.equal(response.status, 200);
     assert.equal(new URL(forwarded.url).pathname, "/api/health");
+    assert.equal(response.headers.get("X-Starting9-Health-Diagnostic"), "ASIA_HEALTH_UPSTREAM_RESPONSE");
+    assert.equal(response.headers.get("X-Starting9-Health-Diagnostic-Target-Path"), "/api/health");
+    assert.equal(response.headers.get("X-Starting9-Health-Diagnostic-Upstream-Status"), "200");
     assert.equal(forwarded.headers.get("Cookie"), null);
     assert.equal(forwarded.headers.get("X-S9-Auth-Bridge"), null);
   } finally {
@@ -227,6 +230,9 @@ test("Auth gatewayのhealthはD1/sessionがなくてもpublic probeとして動�
     }, {});
     assert.equal(response.status, 200);
     assert.equal(new URL(forwarded.url).pathname, "/api/health");
+    assert.equal(response.headers.get("X-Starting9-Health-Diagnostic"), "ASIA_HEALTH_UPSTREAM_RESPONSE");
+    assert.equal(response.headers.get("X-Starting9-Health-Diagnostic-Target-Path"), "/api/health");
+    assert.equal(response.headers.get("X-Starting9-Health-Diagnostic-Upstream-Status"), "200");
     assert.equal(forwarded.headers.get("Cookie"), null);
   } finally {
     globalThis.fetch = originalFetch;

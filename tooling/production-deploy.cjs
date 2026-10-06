@@ -89,6 +89,7 @@ function validateWorkerConfig(cwd, actionName) {
     assertEqual(databases.get("AUTH_DB")?.database_id, TARGET_AUTH_D1, "Auth D1 id");
     assertEqual(databases.get("AUDIT_DB")?.database_name, "starting9-audit-prod", "Audit D1 name");
     assertEqual(databases.get("AUDIT_DB")?.database_id, TARGET_AUDIT_D1, "Audit D1 id");
+    assertEqual(config.services?.find((service) => service.binding === "ASIA_CS_SERVICE")?.service, "starting9-asia-cs-api", "Asia CS service binding");
     assertEqual(config.services?.find((service) => service.binding === "NPB_FETCH_WORKER")?.service, "starting9-npb-fetch", "NPB service binding");
   }
 }

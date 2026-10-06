@@ -348,7 +348,6 @@ export async function writeV3FatalRunAudits({
 }
 
 const SESSION_COOKIE_NAME = "s9_session";
-const ASIA_CS_API_ORIGIN = "https://starting9-asia-cs-api.starting9.workers.dev";
 const ASIA_CS_BRIDGE_HEADER = "X-S9-Auth-Bridge";
 const ASIA_CS_MUTATION_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const ASIA_CS_MAX_BRIDGE_BODY_BYTES = 256 * 1024;
@@ -436,17 +435,6 @@ function isAsiaCsGatewayPath(path) {
   return path === "/api/asia-cs" || path.startsWith("/api/asia-cs/");
 }
 
-function resolveAsiaCsApiOrigin(env) {
-  const configured = String(env?.ASIA_CS_API_ORIGIN || ASIA_CS_API_ORIGIN).trim().replace(/\/+$/, "");
-  try {
-    const parsed = new URL(configured);
-    if (parsed.protocol !== "https:" || parsed.pathname !== "/" || parsed.search || parsed.hash || parsed.username || parsed.password) return null;
-    return parsed.origin;
-  } catch {
-    return null;
-  }
-}
-
 function isAsiaCsMutationMethod(method) {
   return ASIA_CS_MUTATION_METHODS.has(String(method || "").toUpperCase());
 }
@@ -516,6 +504,18 @@ function createAsiaCsGatewayRequest(request, upstreamUrl, assertion, bodyBytes) 
   });
 }
 
+function createAsiaCsServiceRequest(request, upstreamPath, assertion, bodyBytes) {
+  const query = new URL(request.url).search;
+  // The service binding routes by binding, so this internal origin is only a
+  // request URL carrier and never a public fallback destination.
+  return createAsiaCsGatewayRequest(request, new URL(upstreamPath + query, "https://asia-cs-service.internal"), assertion, bodyBytes);
+}
+
+function getAsiaCsService(env) {
+  const service = env?.ASIA_CS_SERVICE;
+  return service && typeof service.fetch === "function" ? service : null;
+}
+
 async function handleAsiaCsGateway(request, env, cors, path) {
   const publicRead = isAsiaCsPublicRead(path, request.method);
   const mutation = isAsiaCsMutationMethod(request.method);
@@ -531,17 +531,15 @@ async function handleAsiaCsGateway(request, env, cors, path) {
     }, 200, cors);
   }
 
-  const origin = resolveAsiaCsApiOrigin(env);
-  if (!origin) return jsonResponse({ ok: false, code: "ASIA_CS_GATEWAY_NOT_CONFIGURED", error: "Asia Edition APIが設定されていません。" }, 503, cors);
   const secret = String(env?.ASIA_CS_AUTH_BRIDGE_SECRET || "").trim();
   if (!publicRead && !user) return jsonResponse({ ok: false, code: "AUTH_REQUIRED", error: "ログインが必要です。" }, 401, cors);
   if (!publicRead && !secret) return jsonResponse({ ok: false, code: "ASIA_CS_AUTH_BRIDGE_NOT_CONFIGURED", error: "Asia Edition認証連携が設定されていません。" }, 503, cors);
+  const service = getAsiaCsService(env);
+  if (!service) return jsonResponse({ ok: false, code: "ASIA_CS_GATEWAY_NOT_CONFIGURED", error: "Asia Edition APIが設定されていません。" }, 503, cors);
   const upstreamPath = asiaCsUpstreamPath(path);
-  const requestUrl = new URL(request.url);
-  const query = requestUrl.search;
   const bodyBytes = await readAsiaBridgeBody(request);
   const bodyDigest = await sha256BridgeBody(bodyBytes);
-  const upstreamUrl = new URL(upstreamPath + query, origin);
+  const query = new URL(request.url).search;
   const assertion = user && secret
     ? await createAuthBridgeAssertion({
       secret,
@@ -556,7 +554,7 @@ async function handleAsiaCsGateway(request, env, cors, path) {
     : "";
   if (!publicRead && !assertion) return jsonResponse({ ok: false, code: "AUTH_BRIDGE_FAILED", error: "認証連携に失敗しました。" }, 503, cors);
   try {
-    const upstream = await fetch(createAsiaCsGatewayRequest(request, upstreamUrl, assertion, bodyBytes));
+    const upstream = await service.fetch(createAsiaCsServiceRequest(request, upstreamPath, assertion, bodyBytes));
     const headers = new Headers(upstream.headers);
     headers.set("Cache-Control", "no-store");
     return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers });
@@ -567,14 +565,14 @@ async function handleAsiaCsGateway(request, env, cors, path) {
 }
 
 async function handleAsiaCsHealth(request, env, cors) {
-  const origin = resolveAsiaCsApiOrigin(env);
-  if (!origin) {
+  const service = getAsiaCsService(env);
+  if (!service) {
     const response = jsonResponse({ ok: false, code: "ASIA_CS_GATEWAY_NOT_CONFIGURED", error: "Asia Edition APIが設定されていません。" }, 503, cors);
-    response.headers.set("X-Starting9-Health-Diagnostic", "ASIA_HEALTH_ORIGIN_INVALID");
+    response.headers.set("X-Starting9-Health-Diagnostic", "ASIA_HEALTH_SERVICE_BINDING_MISSING");
     return response;
   }
   try {
-    const upstream = await fetch(createAsiaCsGatewayRequest(request, new URL("/api/health", origin), "", new Uint8Array()));
+    const upstream = await service.fetch(createAsiaCsServiceRequest(request, "/api/health", "", new Uint8Array()));
     const headers = new Headers(upstream.headers);
     headers.set("Cache-Control", "no-store");
     // Temporary fixed-value markers distinguish a matched gateway route from

@@ -188,6 +188,47 @@ test("Auth gatewayは既存sessionを検証してからだけAsiaへassertionを
   }
 });
 
+test("Auth gatewayの公開healthはCookieなしGETをAsiaの/api/healthへ転送する", async () => {
+  const { default: worker } = await import(pathToFileURL(path.join(ROOT, "auth-worker.js")).href);
+  const originalFetch = globalThis.fetch;
+  let forwarded;
+  globalThis.fetch = async (request) => {
+    forwarded = request;
+    return new Response(JSON.stringify({ ok: true, service: "starting9-asia-cs-api" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  };
+  try {
+    const response = await worker.fetch(new Request("https://starting9.test/api/asia-cs/health"), {
+      AUTH_DB: { prepare() { return { bind() { return { async first() { return null; } }; } }; } },
+      ASIA_CS_API_ORIGIN: "https://starting9-asia-cs-api.starting9.workers.dev",
+      AUTH_ALLOWED_ORIGINS: "https://starting9.pages.dev"
+    }, {});
+    assert.equal(response.status, 200);
+    assert.equal(new URL(forwarded.url).pathname, "/api/health");
+    assert.equal(forwarded.headers.get("Cookie"), null);
+    assert.equal(forwarded.headers.get("X-S9-Auth-Bridge"), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Auth gatewayのhealthはGET以外をpublic healthとして扱わない", async () => {
+  const { default: worker } = await import(pathToFileURL(path.join(ROOT, "auth-worker.js")).href);
+  const response = await worker.fetch(new Request("https://starting9.test/api/asia-cs/health", {
+    method: "POST",
+    headers: { Origin: "https://starting9.pages.dev", "Sec-Fetch-Site": "same-origin" },
+    body: "{}"
+  }), {
+    AUTH_DB: { prepare() { return { bind() { return { async first() { return null; } }; } }; } },
+    ASIA_CS_API_ORIGIN: "https://starting9-asia-cs-api.starting9.workers.dev",
+    ASIA_CS_AUTH_BRIDGE_SECRET: "test-secret",
+    AUTH_ALLOWED_ORIGINS: "https://starting9.pages.dev"
+  }, {});
+  assert.equal(response.status, 401);
+});
+
 test("Auth gatewayはmutationのCSRF context欠落・cross-site・secret欠落をfail closedする", async () => {
   const { default: worker } = await import(pathToFileURL(path.join(ROOT, "auth-worker.js")).href);
   const originalFetch = globalThis.fetch;

@@ -38,11 +38,18 @@ const CANONICAL_TEST_USERS = Object.freeze(
   Array.from({ length: 9 }, (_, index) => `S9_TEST_${index + 1}`)
 );
 
+function allowedOrigins(env) {
+  return String(env?.ALLOWED_ORIGIN || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+}
+
 function json(data, status = 200, request = null, env = {}) {
   const requestedOrigin = request?.headers.get("Origin") || "";
-  const configuredOrigin = String(env.ALLOWED_ORIGIN || "").trim();
-  const origin = configuredOrigin
-    ? (requestedOrigin === configuredOrigin ? requestedOrigin : configuredOrigin)
+  const configuredOrigins = allowedOrigins(env);
+  const origin = configuredOrigins.length
+    ? (requestedOrigin ? (configuredOrigins.includes(requestedOrigin) ? requestedOrigin : "") : configuredOrigins[0])
     : (requestedOrigin || "*");
   const headers = new Headers({
     "Content-Type": "application/json; charset=utf-8",
@@ -50,8 +57,10 @@ function json(data, status = 200, request = null, env = {}) {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Credentials": "true",
     "Access-Control-Allow-Headers": "Content-Type, X-Admin-Bootstrap-Token",
-    "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS"
+    "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+    "Vary": "Origin"
   });
+  if (!origin) headers.delete("Access-Control-Allow-Origin");
   return new Response(JSON.stringify(data), { status, headers });
 }
 
@@ -230,12 +239,12 @@ function mutationOriginError(request, env, user = null) {
       ? null
       : errorResponse(request, env, 403, "CSRF_CONTEXT_REQUIRED", "操作元を確認できません。");
   }
-  const configuredOrigin = String(env.ALLOWED_ORIGIN || "").trim();
+  const configuredOrigins = allowedOrigins(env);
   const requestedOrigin = String(request.headers.get("Origin") || "").trim();
   const fetchSite = String(request.headers.get("Sec-Fetch-Site") || "").trim().toLowerCase();
   if (fetchSite === "cross-site") return errorResponse(request, env, 403, "CROSS_SITE_MUTATION", "許可されていない操作です。");
-  if (requestedOrigin && (!configuredOrigin || requestedOrigin !== configuredOrigin)) {
-    return errorResponse(request, env, configuredOrigin ? 403 : 503, configuredOrigin ? "ORIGIN_NOT_ALLOWED" : "ORIGIN_NOT_CONFIGURED", configuredOrigin ? "許可されていない操作です。" : "許可Originが設定されていません。");
+  if (requestedOrigin && (!configuredOrigins.length || !configuredOrigins.includes(requestedOrigin))) {
+    return errorResponse(request, env, configuredOrigins.length ? 403 : 503, configuredOrigins.length ? "ORIGIN_NOT_ALLOWED" : "ORIGIN_NOT_CONFIGURED", configuredOrigins.length ? "許可されていない操作です。" : "許可Originが設定されていません。");
   }
   return null;
 }

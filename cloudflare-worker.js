@@ -4,11 +4,12 @@ const LINEUP_SIZE = 9;
 const LINEUP_CACHE_TTL_SECONDS = 5 * 60;
 const ROSTER_CACHE_TTL_SECONDS = 30 * 60;
 const NPB_FETCH_TIMEOUT_MS = 12_000;
-const NPB_USER_AGENT = "Starting9/1.0 (+https://starting9.pages.dev/contact.html; non-commercial fan-made lineup prediction service)";
+const NPB_USER_AGENT = "Starting9/1.0 (+https://starting9-app.pages.dev/contact.html; non-commercial fan-made lineup prediction service)";
 const EXTERNAL_FETCH_DISABLED_MESSAGE = "公式情報の取得を一時停止しています。";
 const NOTICE_SOURCE_URL = "https://npb.jp/announcement/roster/";
 const DEFAULT_ALLOWED_ORIGINS = [
   "https://starting9.pages.dev",
+  "https://starting9-app.pages.dev",
   "http://localhost:4173",
   "http://127.0.0.1:4173"
 ];

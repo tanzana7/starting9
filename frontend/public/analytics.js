@@ -3,7 +3,7 @@
 
   const BEACON_SOURCE = "https://static.cloudflareinsights.com/beacon.min.js";
   const SITE_TOKEN = "c5dd7fb63b4b4f88a00de4bfa90ba267";
-  const PUBLIC_HOST = "starting9.pages.dev";
+  const PUBLIC_HOSTS = new Set(["starting9.pages.dev", "starting9-app.pages.dev"]);
   const PUBLIC_PATHS = new Set([
     "/",
     "/index.html",
@@ -25,7 +25,7 @@
     const protocol = String(locationLike?.protocol || "").toLowerCase();
     const search = String(locationLike?.search || "");
     const hash = String(locationLike?.hash || "");
-    return hostname === PUBLIC_HOST
+    return PUBLIC_HOSTS.has(hostname)
       && (!protocol || protocol === "https:")
       && PUBLIC_PATHS.has(pathname)
       && !search

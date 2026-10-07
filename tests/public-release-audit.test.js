@@ -16,12 +16,13 @@ test("公開HTMLには公開準備向けの基本メタ情報があり、noindex
   assert.match(html, /<meta property="og:title"/);
   assert.match(html, /<meta property="og:description"/);
   assert.match(html, /<meta property="og:type" content="website">/);
-  assert.match(html, /<meta property="og:url" content="https:\/\/starting9\.pages\.dev\/">/);
-  assert.match(html, /<meta property="og:image" content="https:\/\/starting9\.pages\.dev\/assets\/starting9-ogp-20260918\.png">/);
+  assert.match(html, /<meta property="og:url" content="https:\/\/starting9-app\.pages\.dev\/">/);
+  assert.match(html, /<meta property="og:image" content="https:\/\/starting9-app\.pages\.dev\/assets\/starting9-ogp-20260918\.png">/);
   assert.match(html, /<meta property="og:image:width" content="1200">/);
   assert.match(html, /<meta property="og:image:height" content="630">/);
   assert.match(html, /<meta name="twitter:card" content="summary_large_image">/);
-  assert.match(html, /<meta name="twitter:image" content="https:\/\/starting9\.pages\.dev\/assets\/starting9-ogp-20260918\.png">/);
+  assert.match(html, /<meta name="twitter:image" content="https:\/\/starting9-app\.pages\.dev\/assets\/starting9-ogp-20260918\.png">/);
+  assert.doesNotMatch(html, /https:\/\/starting9\.pages\.dev\//);
   assert.doesNotMatch(html, /name="robots" content="noindex/i);
 });
 

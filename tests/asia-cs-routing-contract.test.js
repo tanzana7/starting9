@@ -18,7 +18,7 @@ test("Pagesの相対/apiはAsia CS Workerだけへ転送する接続契約を満
   assert.match(app, /API_PREFIX/);
   assert.match(app, /replace\(\/\^\\\/api/);
   assert.match(app, /\/api\/auth\/me/);
-  assert.match(readme, /starting9\.pages\.dev\/api\/asia-cs/);
+  assert.match(readme, /starting9-app\.pages\.dev\/api\/asia-cs/);
   assert.match(readme, /standalone Pages.*DEV ONLY/);
   assert.match(pagesProxySource, /ASIA_CS_API_ORIGIN/);
   assert.match(pagesProxySource, /\/api\/asia-cs/);

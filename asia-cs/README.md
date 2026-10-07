@@ -4,8 +4,9 @@
 
 ## 分離方針
 
-- 本番UI: `https://starting9.pages.dev/asia-cs/`
-- 本番API: `https://starting9.pages.dev/api/asia-cs/*`（既存Starting9 Pages Function proxyからAsia CS Workerへ転送）
+- 本番UI: `https://starting9-app.pages.dev/asia-cs/`
+- 本番API: `https://starting9-app.pages.dev/api/asia-cs/*`（既存Starting9 Pages Function proxyからAsia CS Workerへ転送）
+- 旧 `https://starting9.pages.dev/` はロールバック用に保持し、今回の切替で削除・リダイレクトしません。
 - Backend Worker: `starting9-asia-cs-api`（`worker.js`）
 - D1: `starting9-asia-cs-db`（`migrations/`）
 - standalone PagesはDEV ONLY/local preview用で、本番の認証経路・公開UIには使用しません。
@@ -42,7 +43,7 @@ python -m http.server 8782 --directory asia-cs/public --bind 127.0.0.1
 - 本番のStarting9 Pagesは `/asia-cs/` をUIとして提供し、`/api/asia-cs/*` だけをAsia CS API Workerへプロキシします。既存の `/api/*`（Auth・NPB・予想等）は従来のStarting9 upstreamへ転送し、Asia CS prefix以外は変更しません。
 - proxyの接続先はPages環境変数 `ASIA_CS_API_ORIGIN` の明示的なHTTPS originだけです。未設定・不正値ではfail closedし、ブラウザからworkers.devへ直接fallbackしません。
 - `public/` は `/api/asia-cs/...` の相対URLのみを呼ぶため、本家Workerや本家Pagesを直接転送先に設定してはいけません。
-- 本番の `ALLOWED_ORIGIN` はAsia CS Pagesの完全一致Originだけに設定します。`ADMIN_BOOTSTRAP_TOKEN` はWorker Secretとして登録し、Pagesへ渡しません。
+- 本番の `ALLOWED_ORIGIN` は恒久Pagesと旧Pagesの完全一致Originだけに設定します。`ADMIN_BOOTSTRAP_TOKEN` はWorker Secretとして登録し、Pagesへ渡しません。
 - D1 IDがプレースホルダーの間はCloudflareリソース未作成であり、deploy成功・本番疎通済みとは扱いません。
 - 試合の正本は `internalGameId` で、外部試合コードは任意です。チームは `teams`、選手は試合単位の `players` に保存し、NPB選手IDを共有namespaceへ強制しません。
 - 本番確認では、Pagesの画面から既存Authの `/api/auth/me`、予想保存、管理API、ランキング、Best Nine取得を確認します。Asia CS側へクライアントの `user_id` を渡しても採用しません。

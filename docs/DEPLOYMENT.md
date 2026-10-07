@@ -4,6 +4,8 @@
 
 - `wrangler.auth.example.jsonc` is the safe configuration template.
 - `wrangler.auth.target.production.jsonc` and `wrangler.npb.target.jsonc` are the only normal production Worker configurations. The required Wrangler profile is `starting9-target`.
+- The permanent production Pages project is `starting9-app` in the TARGET account. Its canonical origin is `https://starting9-app.pages.dev/`.
+- The legacy `https://starting9.pages.dev/` project and the validated migration project are retained for rollback/reference and are not deleted or redirected by this release.
 - `wrangler.auth.production.jsonc` is a legacy SOURCE rollback/reference configuration. It must not be used for normal production deployment.
 - Secrets and local credentials belong in Wrangler secrets or local ignored files such as `.dev.vars`; never commit them or place them in logs.
 - `AUTH_DB` is the D1 binding used by `auth-worker.js`.
@@ -42,7 +44,7 @@ The scripts use these fixed commands internally:
 ```powershell
 npx wrangler deploy --config wrangler.npb.target.jsonc --profile starting9-target --strict --var BUILD_COMMIT:<git-commit> --message production-npb-<git-commit>
 npx wrangler deploy --config wrangler.auth.target.production.jsonc --profile starting9-target --strict --var BUILD_COMMIT:<git-commit> --message production-auth-<git-commit>
-npx wrangler pages deploy . --project-name starting9 --branch main --profile starting9-source
+npx wrangler pages deploy . --project-name starting9-app --branch main --profile starting9-target --commit-hash <git-commit> --commit-message production-pages-<git-commit>
 ```
 
 Do not use a bare `npx wrangler deploy`, allow a user-supplied config path, or deploy from a feature branch/worktree.
@@ -57,7 +59,7 @@ When public or admin static assets change, deploy the main branch explicitly:
 npm run deploy:prod:pages
 ```
 
-The Pages Function requires `STARTING9_AUTH_ORIGIN` to be exactly `https://starting9-auth.starting9.workers.dev`. Missing, SOURCE, or invalid values fail closed with HTTP 503; SOURCE is retained only for an explicitly approved rollback procedure.
+The Pages Function requires `STARTING9_AUTH_ORIGIN` to be exactly `https://starting9-auth.starting9.workers.dev`. The permanent TARGET Pages project is configured with this non-secret variable and the TARGET Asia CS API origin. Missing, SOURCE, or invalid values fail closed with HTTP 503; SOURCE is retained only for an explicitly approved rollback procedure.
 
 Verify both the deployment URL and the production alias. Confirm the expected `script.js` and `style.css` cache busters in the production HTML.
 

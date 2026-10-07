@@ -15,7 +15,7 @@
     ]
   },
   "vars": {
-    "AUTH_ALLOWED_ORIGINS": "https://starting9.pages.dev",
+    "AUTH_ALLOWED_ORIGINS": "https://starting9.pages.dev,https://starting9-app.pages.dev",
     "SESSION_SAMESITE": "None",
     "AUTO_SCORING_DELAY_SECONDS": "300",
     "ENABLE_DEVELOPMENT_MODE": "false",

@@ -1,4 +1,23 @@
 {
   "readyForProduction": false,
-  "players": []
+  "official": false,
+  "status": "provisional",
+  "teamKey": "jpn",
+  "players": [
+    { "id": "apbc-2026-jpn-pp-01", "name": "松尾汐恩", "club": "DeNA", "registeredPosition": "捕手", "active": true },
+    { "id": "apbc-2026-jpn-pp-02", "name": "小島大河", "club": "西武", "registeredPosition": "捕手", "active": true },
+    { "id": "apbc-2026-jpn-pp-03", "name": "進藤勇也", "club": "日本ハム", "registeredPosition": "捕手", "active": true },
+    { "id": "apbc-2026-jpn-pp-04", "name": "宗山塁", "club": "楽天", "registeredPosition": "内野手", "active": true },
+    { "id": "apbc-2026-jpn-pp-05", "name": "渡部聖弥", "club": "西武", "registeredPosition": "内野手", "active": true },
+    { "id": "apbc-2026-jpn-pp-06", "name": "佐々木泰", "club": "広島", "registeredPosition": "内野手", "active": true },
+    { "id": "apbc-2026-jpn-pp-07", "name": "庄子雄大", "club": "ソフトバンク", "registeredPosition": "内野手", "active": true },
+    { "id": "apbc-2026-jpn-pp-08", "name": "正木智也", "club": "ソフトバンク", "registeredPosition": "内野手", "active": true },
+    { "id": "apbc-2026-jpn-pp-09", "name": "山口航輝", "club": "ロッテ", "registeredPosition": "内野手", "active": true },
+    { "id": "apbc-2026-jpn-pp-10", "name": "山県秀", "club": "日本ハム", "registeredPosition": "内野手", "active": true },
+    { "id": "apbc-2026-jpn-pp-11", "name": "度会隆輝", "club": "DeNA", "registeredPosition": "外野手", "active": true },
+    { "id": "apbc-2026-jpn-pp-12", "name": "西川史礁", "club": "ロッテ", "registeredPosition": "外野手", "active": true },
+    { "id": "apbc-2026-jpn-pp-13", "name": "佐々木俊輔", "club": "巨人", "registeredPosition": "外野手", "active": true },
+    { "id": "apbc-2026-jpn-pp-14", "name": "長谷川信哉", "club": "西武", "registeredPosition": "外野手", "active": true },
+    { "id": "apbc-2026-jpn-pp-15", "name": "辰見鴻之介", "club": "広島", "registeredPosition": "外野手", "active": true }
+  ]
 }

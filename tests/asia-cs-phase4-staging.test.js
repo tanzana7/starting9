@@ -71,6 +71,7 @@ const stagingCompetition = JSON.parse(fs.readFileSync(path.join(stagingRoot, "co
 const stagingTeams = JSON.parse(fs.readFileSync(path.join(stagingRoot, "teams.json"), "utf8"));
 const stagingGames = JSON.parse(fs.readFileSync(path.join(stagingRoot, "games.json"), "utf8"));
 const bracketGames = JSON.parse(fs.readFileSync(path.join(stagingRoot, "bracket-games.template.json"), "utf8"));
+const stagingPlayers = JSON.parse(fs.readFileSync(path.join(stagingRoot, "players.template.json"), "utf8"));
 
 test("Phase 4A staging data has only official, production-safe facts", () => {
   assert.equal(stagingCompetition.status, "draft");
@@ -98,8 +99,27 @@ test("Phase 4A staging data has only official, production-safe facts", () => {
     assert.equal(game.predictionDeadlineAt, null);
   }
   const template = fs.readFileSync(path.join(stagingRoot, "players.template.csv"), "utf8").trim().split(/\r?\n/);
-  assert.equal(template[0], "team_key,player_name,position,uniform_number,bat,throw,active");
-  assert.equal(template.length, 5);
+  assert.equal(template[0], "team_key,player_id,player_name,club,registered_position,active");
+  assert.equal(template.length, 16);
+  assert.equal(stagingPlayers.readyForProduction, false);
+  assert.equal(stagingPlayers.official, false);
+  assert.equal(stagingPlayers.status, "provisional");
+  assert.equal(stagingPlayers.teamKey, "jpn");
+  assert.equal(stagingPlayers.players.length, 15);
+  assert.equal(new Set(stagingPlayers.players.map((player) => player.id)).size, 15);
+  assert.deepEqual(
+    ["捕手", "内野手", "外野手"].map((position) => stagingPlayers.players.filter((player) => player.registeredPosition === position).length),
+    [3, 7, 5]
+  );
+  for (const player of stagingPlayers.players) {
+    assert.equal(player.active, true);
+    assert.equal(player.teamKey, undefined);
+    assert.ok(player.name);
+    assert.ok(player.club);
+    assert.equal(Object.hasOwn(player, "uniformNumber"), false);
+    assert.equal(Object.hasOwn(player, "bat"), false);
+    assert.equal(Object.hasOwn(player, "throw"), false);
+  }
 });
 
 test("Phase 4A local rehearsal runs three synthetic games and protects ordering/completion", async () => {

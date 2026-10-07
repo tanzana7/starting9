@@ -28,10 +28,12 @@ test("Cloudflare Web Analyticsの公式手動スニペットを公開5ページ�
 test("計測対象はHTTPSの本番公開ホストと公開パスだけで、preview・localhost・admin・query/hashを除外する", () => {
   const analytics = loadAnalytics();
   assert.equal(analytics.isAllowedPublicLocation({ hostname: "starting9.pages.dev", protocol: "https:", pathname: "/" }), true);
+  assert.equal(analytics.isAllowedPublicLocation({ hostname: "starting9-app.pages.dev", protocol: "https:", pathname: "/" }), true);
   assert.equal(analytics.isAllowedPublicLocation({ hostname: "starting9.pages.dev", protocol: "https:", pathname: "/how-to-play.html" }), true);
   assert.equal(analytics.isAllowedPublicLocation({ hostname: "abc123.starting9.pages.dev", protocol: "https:", pathname: "/" }), false);
   assert.equal(analytics.isAllowedPublicLocation({ hostname: "localhost", protocol: "http:", pathname: "/" }), false);
   assert.equal(analytics.isAllowedPublicLocation({ hostname: "starting9.pages.dev", protocol: "https:", pathname: "/admin-v3" }), false);
+  assert.equal(analytics.isAllowedPublicLocation({ hostname: "evil-starting9-app.pages.dev", protocol: "https:", pathname: "/" }), false);
   assert.equal(analytics.isAllowedPublicLocation({ hostname: "starting9.pages.dev", protocol: "https:", pathname: "/auth" }), false);
   assert.equal(analytics.isAllowedPublicLocation({ hostname: "starting9.pages.dev", protocol: "https:", pathname: "/tests/fixture" }), false);
   assert.equal(analytics.isAllowedPublicLocation({ hostname: "starting9.pages.dev", protocol: "https:", pathname: "/index.html", search: "?email=hidden" }), false);

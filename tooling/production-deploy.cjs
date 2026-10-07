@@ -6,7 +6,7 @@ const TARGET_ACCOUNT_ID = "02580fab1c09e144db7da89478e252c8";
 const TARGET_AUTH_D1 = "326f97c3-768d-4df6-ada2-129fdb1865a1";
 const TARGET_AUDIT_D1 = "acfac47d-1963-433a-b16b-36cd3afe9db4";
 const TARGET_PROFILE = "starting9-target";
-const SOURCE_PROFILE = "starting9-source";
+const TARGET_PAGES_PROJECT = "starting9-app";
 const AUTH_CRONS = [
   "* * * * *",
   "*/5 * * * *",
@@ -30,8 +30,8 @@ const ACTIONS = Object.freeze({
   },
   pages: {
     config: null,
-    profile: SOURCE_PROFILE,
-    project: "starting9"
+    profile: TARGET_PROFILE,
+    project: TARGET_PAGES_PROJECT
   }
 });
 
@@ -117,7 +117,7 @@ function buildWranglerArgs(cwd, actionName, head) {
   const action = ACTIONS[actionName];
   if (!action) fail(`unknown deployment target: ${actionName}`);
   if (actionName === "pages") {
-    return ["wrangler", "pages", "deploy", ".", "--project-name", action.project, "--branch", "main", "--profile", action.profile];
+    return ["wrangler", "pages", "deploy", ".", "--project-name", action.project, "--branch", "main", "--profile", action.profile, "--commit-hash", head, "--commit-message", `production-pages-${head.slice(0, 12)}`];
   }
   return [
     "wrangler",

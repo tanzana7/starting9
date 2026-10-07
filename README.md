@@ -215,15 +215,15 @@ https://<worker-url>/?url=https://npb.jp/scores/2026/0707/m-f-12/&debug=1
 
 ### 本番account分離とdeploy profile
 
-本番はPagesとbackendでCloudflare accountが分かれています。Pages project `starting9`はSOURCE account（`c81eb6d12b9be16f800f0bd1fc8a1c8a`）に残り、Auth Worker、NPB Worker、Cron、Auth/Audit D1はTARGET account（`02580fab1c09e144db7da89478e252c8`）が正式ownerです。単一profileや省略profileで全体をdeployしないでください。
+本番はPagesとbackendでCloudflare accountが分かれています。恒久運用のPages project `starting9-app`はTARGET account（`02580fab1c09e144db7da89478e252c8`）にあり、Auth Worker、NPB Worker、Cron、Auth/Audit D1も同じTARGET accountが正式ownerです。旧SOURCEのPages project `starting9`はロールバック用に保持し、通常の公開先には使いません。単一profileや省略profileで全体をdeployしないでください。
 
 - Auth Worker: `npx wrangler deploy --config wrangler.auth.target.production.jsonc --profile starting9-target`
 - NPB Worker: `npx wrangler deploy --config wrangler.npb.target.jsonc --profile starting9-target`
-- Pages: `npx wrangler pages deploy . --project-name starting9 --profile starting9-source`
+- Pages: `npx wrangler pages deploy . --project-name starting9-app --profile starting9-target`
 
-通常は上記コマンドを直接実行せず、`npm run deploy:prod:npb` → `npm run deploy:prod:auth` → `npm run deploy:prod:pages`を使用してください。guardがcleanな`main`、`HEAD == origin/main`、TARGET config/profile、Worker/D1/service binding、5 Cronを固定し、Workerへ`BUILD_COMMIT`を注入します。Auth `/health`の`build`でdeploy元commitを確認できます。Pages proxyはTARGET originが明示された場合だけ動作し、未設定・SOURCE・不正値は503でfail closedします。
+通常は上記コマンドを直接実行せず、`npm run deploy:prod:npb` → `npm run deploy:prod:auth` → `npm run deploy:prod:pages`を使用してください。guardがcleanな`main`、`HEAD == origin/main`、TARGET config/profile、Worker/D1/service binding、5 Cron、恒久Pages projectを固定し、WorkerとPagesへcommitを記録します。Auth `/health`の`build`でWorkerのdeploy元commitを確認できます。Pages proxyはTARGET originが明示された場合だけ動作し、未設定・SOURCE・不正値は503でfail closedします。
 
-旧SOURCE production configはrollback/reference用で、通常のbackend本番deployには使いません。SOURCE maintenance configは`MIGRATION_MAINTENANCE=true`・Cron 0本の保守用です。詳しいresource ID、rollback境界、staging保持方針は [`docs/STARTING9_ACCOUNT_MIGRATION_PREP.md`](docs/STARTING9_ACCOUNT_MIGRATION_PREP.md) のProduction baseline lockを参照してください。
+旧SOURCE production configはrollback/reference用で、通常のbackend本番deployには使いません。旧SOURCE Pages `https://starting9.pages.dev`も削除・リダイレクトせず、障害時の切り戻し用に保持します。SOURCE maintenance configは`MIGRATION_MAINTENANCE=true`・Cron 0本の保守用です。詳しいresource ID、rollback境界、staging保持方針は [`docs/STARTING9_ACCOUNT_MIGRATION_PREP.md`](docs/STARTING9_ACCOUNT_MIGRATION_PREP.md) のProduction baseline lockを参照してください。
 
 管理者向けの検証操作はadmin-v3の認証境界内に限定しています。preview APIは本番データを書き換えず、テスト予想は `is_test_prediction` により通常のランキング・実績集計から除外されます。
 

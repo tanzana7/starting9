@@ -48,7 +48,7 @@ test("NPB fetchはStarting9の連絡先付きUser-Agentを付ける", async () =
   try {
     await worker.fetch(new Request("https://npb-fetch.internal/?mode=starter"), {});
     assert.match(userAgent, /^Starting9\/1\.0 /);
-    assert.match(userAgent, /https:\/\/starting9\.pages\.dev\/contact\.html/);
+    assert.match(userAgent, /https:\/\/starting9-app\.pages\.dev\/contact\.html/);
     assert.match(userAgent, /non-commercial fan-made lineup prediction service/);
   } finally {
     globalThis.fetch = originalFetch;

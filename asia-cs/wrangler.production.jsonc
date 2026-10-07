@@ -11,7 +11,7 @@
     "head_sampling_rate": 1
   },
   "vars": {
-    "ALLOWED_ORIGIN": "https://starting9.pages.dev",
+    "ALLOWED_ORIGIN": "https://starting9.pages.dev,https://starting9-app.pages.dev",
     "STARTING9_AUTH_BASE_URL": "https://starting9-auth.starting9.workers.dev",
     "ASIA_CS_ENV": "production",
     "AUTH_UPSTREAM_TIMEOUT_MS": "4000"

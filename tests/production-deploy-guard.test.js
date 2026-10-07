@@ -72,10 +72,14 @@ test("Pages deploy guard permits only the TARGET fail-closed proxy", () => {
     "deploy",
     ".",
     "--project-name",
-    "starting9",
+    "starting9-app",
     "--branch",
     "main",
     "--profile",
-    "starting9-source"
+    "starting9-target",
+    "--commit-hash",
+    HEAD,
+    "--commit-message",
+    "production-pages-667beccf19a5"
   ]);
 });

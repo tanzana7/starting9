@@ -6,7 +6,7 @@
   "compatibility_date": "2026-07-18",
   "workers_dev": true,
   "vars": {
-    "NPB_ALLOWED_ORIGINS": "https://starting9.pages.dev,http://localhost:4173,http://127.0.0.1:4173",
+    "NPB_ALLOWED_ORIGINS": "https://starting9.pages.dev,https://starting9-app.pages.dev,http://localhost:4173,http://127.0.0.1:4173",
     "NPB_FETCH_DISABLED": "false"
   }
 }

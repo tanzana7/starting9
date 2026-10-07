@@ -555,7 +555,7 @@ async function handleAsiaCsGateway(request, env, cors, path) {
   if (!publicRead && !assertion) return jsonResponse({ ok: false, code: "AUTH_BRIDGE_FAILED", error: "認証連携に失敗しました。" }, 503, cors);
   try {
     const upstream = await service.fetch(createAsiaCsServiceRequest(request, upstreamPath, assertion, bodyBytes));
-    const headers = new Headers(upstream.headers);
+    const headers = applyGatewayCors(upstream.headers, cors);
     headers.set("Cache-Control", "no-store");
     return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers });
   } catch (error) {
@@ -573,7 +573,7 @@ async function handleAsiaCsHealth(request, env, cors) {
   }
   try {
     const upstream = await service.fetch(createAsiaCsServiceRequest(request, "/api/health", "", new Uint8Array()));
-    const headers = new Headers(upstream.headers);
+    const headers = applyGatewayCors(upstream.headers, cors);
     headers.set("Cache-Control", "no-store");
     // Temporary fixed-value markers distinguish a matched gateway route from
     // a platform/router 404 without exposing target or request data.
@@ -25105,6 +25105,15 @@ function jsonResponse(payload, status, headers) {
   const responseHeaders = new Headers(headers);
   responseHeaders.set("Content-Type", "application/json; charset=utf-8");
   return new Response(JSON.stringify(payload), { status, headers: responseHeaders });
+}
+
+function applyGatewayCors(headers, cors) {
+  const responseHeaders = new Headers(headers);
+  const allowedOrigin = cors.get("Access-Control-Allow-Origin");
+  if (allowedOrigin) responseHeaders.set("Access-Control-Allow-Origin", allowedOrigin);
+  else responseHeaders.delete("Access-Control-Allow-Origin");
+  responseHeaders.set("Vary", "Origin");
+  return responseHeaders;
 }
 
 function createD1ReadFailureResponse(cors, failure) {

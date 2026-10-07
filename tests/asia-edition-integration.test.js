@@ -219,6 +219,27 @@ test("Auth gatewayの公開healthはCookieなしGETをAsiaの/api/healthへ転�
   }
 });
 
+test("Auth gatewayはService Binding上流の古いCORS Originを現在の許可Originへ置き換える", async () => {
+  const { default: worker } = await import(pathToFileURL(path.join(ROOT, "auth-worker.js")).href);
+  const service = {
+    async fetch() {
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Access-Control-Allow-Origin": "https://starting9.pages.dev", Vary: "Origin" }
+      });
+    }
+  };
+  for (const origin of ["https://starting9.pages.dev", "https://starting9-app.pages.dev"]) {
+    const response = await worker.fetch(new Request("https://starting9.test/api/asia-cs/health", { headers: { Origin: origin } }), {
+      ASIA_CS_SERVICE: service,
+      AUTH_ALLOWED_ORIGINS: "https://starting9.pages.dev,https://starting9-app.pages.dev"
+    }, {});
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), origin);
+    assert.equal(response.headers.get("Vary"), "Origin");
+  }
+});
+
 test("Auth gatewayのhealthはD1/sessionがなくてもpublic probeとして動作する", async () => {
   const { default: worker } = await import(pathToFileURL(path.join(ROOT, "auth-worker.js")).href);
   let forwarded;

@@ -19,6 +19,7 @@ const DEFAULT_COMPETITION_ID = "asia-cs";
 const FORMAL_JOB_TYPES = Object.freeze(["prediction_close", "score", "ranking_rebuild", "publish"]);
 const COMPETITION_STATUSES = Object.freeze(["draft", "active", "completed"]);
 const PLAYER_POSITIONS = Object.freeze([...POSITIONS, "投"]);
+const REGISTERED_POSITIONS = Object.freeze(["捕手", "内野手", "外野手"]);
 const STARTING9_AUTH_ORIGIN = "https://starting9-auth.starting9.workers.dev";
 const AUTH_UPSTREAM_TIMEOUT_MS = 4000;
 const AUTH_DIAGNOSTIC_HEADER = "X-S9-Auth-Diagnostic-Id";
@@ -808,7 +809,14 @@ function serializePlayer(player) {
     name: player.name,
     uniformNumber: player.uniform_number,
     team: player.team,
+    club: player.team || null,
     teamId: player.team_id || null,
+    // The roster registration category is metadata only. Prediction and
+    // official lineup positions remain in the lineup payload and are never
+    // inferred from this field.
+    registeredPosition: player.position || null,
+    // Keep the legacy field for existing admin/staging consumers. New UI code
+    // must use registeredPosition so the two position contracts stay distinct.
     position: player.position || null,
     bat: player.bat || null,
     throw: player.throw || null,
@@ -1162,17 +1170,24 @@ function validUniformNumber(value) {
 
 function normalizePlayerMetadata(value = {}, existing = null) {
   const has = (key, alias) => Object.prototype.hasOwnProperty.call(value, key) || (alias && Object.prototype.hasOwnProperty.call(value, alias));
-  const rawPosition = value.position ?? value.primaryPosition;
-  const position = has("position", "primaryPosition") ? String(rawPosition || "").trim() : String(existing?.position || "").trim();
+  const rawRegisteredPosition = value.registeredPosition
+    ?? value.registered_position
+    ?? value.position
+    ?? value.primaryPosition;
+  const hasRegisteredPosition = ["registeredPosition", "registered_position", "position", "primaryPosition"]
+    .some((key) => Object.prototype.hasOwnProperty.call(value, key));
+  const registeredPosition = hasRegisteredPosition ? String(rawRegisteredPosition || "").trim() : String(existing?.position || "").trim();
   const uniformValue = has("uniformNumber", "uniform_number") ? (value.uniformNumber ?? value.uniform_number) : existing?.uniform_number;
   const uniformNumber = validUniformNumber(uniformValue);
   const bat = has("bat", "battingHand") ? String(value.bat ?? value.battingHand ?? "").trim().slice(0, 12) || null : (existing?.bat || null);
   const throwing = has("throw", "throwingHand") ? String(value.throw ?? value.throwingHand ?? "").trim().slice(0, 12) || null : (existing?.throw || null);
   const active = has("active") ? (value.active === false || String(value.active).toLowerCase() === "false" ? 0 : 1) : Number(existing?.active ?? 1) ? 1 : 0;
-  if (uniformNumber === null || (position && !PLAYER_POSITIONS.includes(position))) {
-    throw new RequestError(400, "PLAYER_METADATA_INVALID", "守備位置・背番号・選手metadataを確認してください。");
+  const rawClub = value.club ?? value.affiliation ?? value.teamName ?? (Object.prototype.hasOwnProperty.call(value, "team") ? value.team : existing?.team);
+  const club = String(rawClub || "").trim().slice(0, 40) || null;
+  if (uniformNumber === null || (registeredPosition && !PLAYER_POSITIONS.includes(registeredPosition) && !REGISTERED_POSITIONS.includes(registeredPosition))) {
+    throw new RequestError(400, "PLAYER_METADATA_INVALID", "登録区分・背番号・選手metadataを確認してください。");
   }
-  return { position, uniformNumber: uniformNumber ?? "", bat, throwing, active };
+  return { position: registeredPosition, registeredPosition, club, uniformNumber: uniformNumber ?? "", bat, throwing, active };
 }
 
 async function bulkImportPlayers(request, env, db) {
@@ -1209,7 +1224,7 @@ async function bulkImportPlayers(request, env, db) {
     ON CONFLICT(id) DO UPDATE SET name = excluded.name, uniform_number = excluded.uniform_number,
       team = excluded.team, team_id = excluded.team_id, position = excluded.position, bat = excluded.bat,
       throw = excluded.throw, active = excluded.active, updated_at = excluded.updated_at`,
-    row.id, gameId, row.name, row.uniformNumber, row.team.display_name, row.team.id, row.position, row.bat, row.throwing, row.active, now)));
+    row.id, gameId, row.name, row.uniformNumber, row.club || row.team.display_name, row.team.id, row.position, row.bat, row.throwing, row.active, now)));
   return json({ ok: true, imported: preparedRows.length, players: serializePlayers(await getPlayers(db, gameId)) }, 200, request, env);
 }
 
@@ -1335,7 +1350,7 @@ async function upsertPlayers(request, env, db, gameId) {
     statements.push(prepared(db, `INSERT INTO players (id, game_id, name, uniform_number, team, team_id, position, bat, throw, active, created_at, updated_at)
       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
       ON CONFLICT(id) DO UPDATE SET name = excluded.name, uniform_number = excluded.uniform_number, team = excluded.team, team_id = excluded.team_id, position = excluded.position, bat = excluded.bat, throw = excluded.throw, active = excluded.active, updated_at = excluded.updated_at`,
-      id, gameId, name, metadata.uniformNumber, team?.display_name || String(value.team || existing?.team || "").trim().slice(0, 40), teamId, metadata.position, metadata.bat, metadata.throwing, metadata.active, now));
+      id, gameId, name, metadata.uniformNumber, metadata.club || team?.display_name || String(value.team || existing?.team || "").trim().slice(0, 40), teamId, metadata.position, metadata.bat, metadata.throwing, metadata.active, now));
   }
   try {
     await db.batch(statements);
@@ -1360,7 +1375,7 @@ async function updatePlayer(request, env, db, gameId, playerId) {
   const team = await validatePlayerTeam(db, game, input.teamId || input.team_id);
   const metadata = normalizePlayerMetadata(input, existing);
   const teamId = team?.id || null;
-  const result = await prepared(db, `UPDATE players SET name = ?1, uniform_number = ?2, team = ?3, team_id = ?4, position = ?5, bat = ?6, throw = ?7, active = ?8, updated_at = ?9 WHERE id = ?10 AND game_id = ?11`, name, metadata.uniformNumber, team?.display_name || String(input.team || existing.team || "").trim().slice(0, 40), teamId, metadata.position, metadata.bat, metadata.throwing, metadata.active, nowIso(), id, gameId).run();
+  const result = await prepared(db, `UPDATE players SET name = ?1, uniform_number = ?2, team = ?3, team_id = ?4, position = ?5, bat = ?6, throw = ?7, active = ?8, updated_at = ?9 WHERE id = ?10 AND game_id = ?11`, name, metadata.uniformNumber, metadata.club || team?.display_name || String(input.team || existing.team || "").trim().slice(0, 40), teamId, metadata.position, metadata.bat, metadata.throwing, metadata.active, nowIso(), id, gameId).run();
   if (!Number(result?.meta?.changes || 0)) return errorResponse(request, env, 404, "PLAYER_NOT_FOUND", "選手がありません。");
   return json({ ok: true, player: serializePlayer(await prepared(db, "SELECT id, game_id, name, uniform_number, team, team_id, position, bat, throw, active FROM players WHERE id = ?1", id).first()) }, 200, request, env);
 }

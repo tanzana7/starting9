@@ -14,12 +14,18 @@ Source: https://npb.jp/apbc/2026/
 
 ## 未確定のまま保持するもの
 
-- 公式選手名簿（選手発表待ち）
+- 公式選手名簿の最終確定
 - 外部試合コード
 
 予想締切ルールは確定済みだが、`readyForProduction: false` は維持する。公式選手名簿、外部試合コード、認証済みadmin運用が未確定のため、このファイルは現時点では本番投入不可である。Asia CS Workerのゲーム登録APIへ送る場合も、検証済みの締切を含むゲームpayloadだけを使用し、staging JSONをそのまま投入しない。
 
-`players.template.csv` と `players.template.json` は公式名簿発表後に埋めるためのテンプレートであり、架空選手を含まない。JSONの正式payloadは `players` 配列内に、APIが受け付ける `id`、`name`、`teamId`、`position`、`uniformNumber`、`bat`、`throw`、`active` を設定する。`readyForProduction: false` はファイルを直接投入しないためのメタデータであり、管理APIへ送る際は検証済みの `players` 配列だけを使用する。
+`players.template.csv` と `players.template.json` は、ユーザーから受け取ったAPBC 2026日本代表野手候補15名を確認するための暫定資料である。`id` はイベント内で安定して扱うための内部IDで、NPBの公式選手IDや背番号を推測したものではない。`club` は所属球団表示、`registeredPosition` は捕手・内野手・外野手という登録上の分類で、予想の守備位置を表さない。
+
+暫定JSONの各行は `id`、`name`、`club`、`registeredPosition`、`active` を持つ。背番号・打席・投球・公式選手IDは未提示のため追加しない。
+
+予想入力の守備位置は従来どおり `捕`、`一`、`二`、`三`、`遊`、`左`、`中`、`右`、`指` の9枠をユーザーが手動で選択する。登録上の分類から予想位置を自動入力しない。これにより、同じ選手を複数打順へ登録する既存の重複防止、9枠の完成判定、99点満点の採点契約を変更しない。
+
+`readyForProduction: false` と `official: false` は正式投入前の状態を明示するメタデータである。選手の公式発表、所属、表示名を運用担当が確認するまで、本番APIへ送信しない。管理APIへ送る際は確認済みの `players` 配列だけを使用し、未確認の対戦相手や試合をこの資料から補完しない。
 
 ## 本番投入順
 

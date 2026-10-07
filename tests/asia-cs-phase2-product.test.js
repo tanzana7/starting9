@@ -398,7 +398,7 @@ test("manualとbulkの選手metadataは保存・更新・CSV取込で同じ形�
   const metadata = { position: "中", uniformNumber: "7", bat: "R", throw: "L", active: true, teamId: teamIds["metadata-home"] };
   const manual = await request(worker, env, "/api/admin/games/manual-metadata-game/players", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ players: [{ id: "manual-metadata-player", name: "Manual Player", ...metadata }] }) });
   assert.equal(manual.response.status, 200);
-  assert.deepEqual(manual.payload.players.find((player) => player.id === "manual-metadata-player"), { id: "manual-metadata-player", gameId: "manual-metadata-game", name: "Manual Player", uniformNumber: "7", team: "Metadata Home", teamId: teamIds["metadata-home"], position: "中", bat: "R", throw: "L", active: true });
+  assert.deepEqual(manual.payload.players.find((player) => player.id === "manual-metadata-player"), { id: "manual-metadata-player", gameId: "manual-metadata-game", name: "Manual Player", uniformNumber: "7", team: "Metadata Home", club: "Metadata Home", teamId: teamIds["metadata-home"], registeredPosition: "中", position: "中", bat: "R", throw: "L", active: true });
 
   const updated = await request(worker, env, "/api/admin/games/manual-metadata-game/players/manual-metadata-player", { method: "PUT", headers: { Cookie: adminCookie }, body: JSON.stringify({ name: "Manual Updated", position: "右", uniformNumber: "8", bat: "L", throw: "R", active: false, teamId: teamIds["metadata-home"] }) });
   assert.equal(updated.response.status, 200);
@@ -412,6 +412,8 @@ test("manualとbulkの選手metadataは保存・更新・CSV取込で同じ形�
   assert.equal(bulk.response.status, 200);
   const bulkPlayer = bulk.payload.players.find((player) => player.id === "bulk-metadata-player");
   assert.equal(bulkPlayer.position, "中");
+  assert.equal(bulkPlayer.registeredPosition, "中");
+  assert.equal(bulkPlayer.club, "Metadata Home");
   assert.equal(bulkPlayer.uniformNumber, "7");
   assert.equal(bulkPlayer.bat, "R");
   assert.equal(bulkPlayer.throw, "L");
@@ -451,6 +453,19 @@ test("manualとbulkの選手metadataは保存・更新・CSV取込で同じ形�
   const csvPlayer = csvResult.payload.players.find((player) => player.id === "csv-metadata-player");
   assert.equal(csvPlayer.name, "Tanaka, Jr.\n\"The Captain\"");
   assert.equal(csvPlayer.position, "中");
+
+  const registeredPositionCsv = `team_key,player_id,player_name,club,registered_position,active\nmetadata-home,apbc-roster-player,APBC Roster Player,DeNA,外野手,1\n`;
+  const registeredPositionResult = await request(worker, env, "/api/admin/players/import", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ gameId: "bulk-metadata-game", csv: registeredPositionCsv }) });
+  assert.equal(registeredPositionResult.response.status, 200);
+  const registeredPositionPlayer = registeredPositionResult.payload.players.find((player) => player.id === "apbc-roster-player");
+  assert.deepEqual(
+    {
+      club: registeredPositionPlayer.club,
+      registeredPosition: registeredPositionPlayer.registeredPosition,
+      position: registeredPositionPlayer.position
+    },
+    { club: "DeNA", registeredPosition: "外野手", position: "外野手" }
+  );
 });
 
 test("大会Best Nineは未公開試合と別competitionを混ぜず、公開後にだけ更新する", async () => {

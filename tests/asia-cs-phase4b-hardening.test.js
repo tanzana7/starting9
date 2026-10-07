@@ -200,11 +200,19 @@ test("valid bulk import bootstraps a missing competition only after validation",
   assert.equal(env.database.prepare("SELECT COUNT(*) AS count FROM formal_jobs WHERE competition_id = ?").get(competitionId).count, 8);
 });
 
-test("player JSON template is empty, API-shaped, and not production-ready", () => {
+test("player JSON template is provisional, API-shaped, and not production-ready", () => {
   const template = JSON.parse(fs.readFileSync(path.join(root, "asia-cs/staging/phase4/players.template.json"), "utf8"));
   assert.equal(template.readyForProduction, false);
-  assert.deepEqual(template.players, []);
+  assert.equal(template.official, false);
+  assert.equal(template.status, "provisional");
+  assert.equal(template.teamKey, "jpn");
+  assert.equal(template.players.length, 15);
+  assert.equal(new Set(template.players.map((player) => player.id)).size, 15);
+  assert.deepEqual(
+    ["捕手", "内野手", "外野手"].map((position) => template.players.filter((player) => player.registeredPosition === position).length),
+    [3, 7, 5]
+  );
   const readme = fs.readFileSync(path.join(root, "asia-cs/staging/phase4/README.md"), "utf8");
-  for (const field of ["id", "name", "teamId", "position", "uniformNumber", "bat", "throw", "active"]) assert.match(readme, new RegExp(`\\b${field}\\b`));
+  for (const field of ["id", "name", "club", "registeredPosition", "active"]) assert.match(readme, new RegExp(`\\b${field}\\b`));
   assert.doesNotMatch(JSON.stringify(template), /TEST_ONLY|Japan Test Player/);
 });

@@ -77,7 +77,7 @@ function buildLineupRows(lineup = []) {
     const player = document.createElement("select");
     player.dataset.field = "playerId";
     player.setAttribute("aria-label", `${index}番の選手`);
-    player.innerHTML = `<option value="">選手</option>${players.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}${item.uniformNumber ? ` #${escapeHtml(item.uniformNumber)}` : ""}</option>`).join("")}`;
+    player.innerHTML = `<option value="">選手</option>${players.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}${item.club ? ` / ${escapeHtml(item.club)}` : item.team ? ` / ${escapeHtml(item.team)}` : ""}${item.registeredPosition ? ` / 登録: ${escapeHtml(item.registeredPosition)}` : ""}${item.uniformNumber ? ` #${escapeHtml(item.uniformNumber)}` : ""}</option>`).join("")}`;
     player.value = value.playerId || "";
     const position = document.createElement("select");
     position.dataset.field = "position";

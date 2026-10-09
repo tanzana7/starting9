@@ -554,8 +554,14 @@ async function requireUser(request, env, db) {
 async function requireAdmin(request, env, db) {
   const user = await resolveUser(request, env, db);
   if (!user) return errorResponse(request, env, 401, "AUTH_REQUIRED", "ログインしてください。");
-  const originError = mutationOriginError(request, env, user);
-  if (originError) return originError;
+  // Admin reads are authenticated and read-only. The Auth Worker marks
+  // mutation CSRF validation only for state-changing methods, so requiring
+  // that marker here would reject a valid same-origin overview GET before the
+  // role check. Keep the existing origin/CSRF gate for every mutation.
+  if (!["GET", "HEAD"].includes(String(request.method || "").toUpperCase())) {
+    const originError = mutationOriginError(request, env, user);
+    if (originError) return originError;
+  }
   if (!isAsiaCsAdmin(user, env)) return errorResponse(request, env, 403, "ADMIN_REQUIRED", "管理者権限が必要です。");
   return { ...user, role: "admin" };
 }

@@ -3,7 +3,7 @@
 
   function sync(edition) {
     const current = global.Starting9Edition.normalizeEdition(edition)
-      || global.Starting9Edition.resolveSelectedEdition();
+      || global.Starting9Edition.resolveSelectedEdition(global.location, new Date(), "admin");
     document.getElementById("npbAdminEditionContent")?.classList.toggle("hidden", current !== global.Starting9Edition.NPB);
     document.getElementById("asiaAdminEditionContent")?.classList.toggle("hidden", current !== global.Starting9Edition.ASIA_CS);
     document.querySelectorAll("[data-admin-edition-select]").forEach((button) => {
@@ -28,7 +28,7 @@
       global.history.replaceState(null, "", url);
       sync(button.dataset.adminEditionSelect);
     });
-    sync(global.Starting9Edition.resolveSelectedEdition());
+    sync(global.Starting9Edition.resolveSelectedEdition(global.location, new Date(), "admin"));
   }
 
   global.Starting9AdminEditionShell = Object.freeze({ sync, start });

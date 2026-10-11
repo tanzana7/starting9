@@ -25,6 +25,16 @@
     return instant >= activeFrom && instant < activeUntil ? ASIA_CS : NPB;
   }
 
+  function resolveEditionPolicy(now = new Date(), windowConfig = {}) {
+    const defaultEdition = resolveDefaultEdition(now, windowConfig);
+    const asiaExclusive = defaultEdition === ASIA_CS;
+    return {
+      defaultEdition,
+      userExclusive: asiaExclusive,
+      adminExclusive: false
+    };
+  }
+
   function readWindow() {
     const configured = global.STARTING9_EDITION_WINDOW;
     if (!configured || typeof configured !== "object") {
@@ -43,8 +53,11 @@
     return normalizeEdition(value);
   }
 
-  function resolveSelectedEdition(location = global.location, now = new Date()) {
-    return explicitEdition(location) || resolveDefaultEdition(now, readWindow());
+  function resolveSelectedEdition(location = global.location, now = new Date(), audience = "user") {
+    const windowConfig = readWindow();
+    const policy = resolveEditionPolicy(now, windowConfig);
+    if (audience !== "admin" && policy.userExclusive) return ASIA_CS;
+    return explicitEdition(location) || policy.defaultEdition;
   }
 
   global.Starting9Edition = Object.freeze({
@@ -53,6 +66,7 @@
     TOKYO_TIME_ZONE,
     normalizeEdition,
     resolveDefaultEdition,
+    resolveEditionPolicy,
     readWindow,
     explicitEdition,
     resolveSelectedEdition

@@ -1,6 +1,5 @@
 const POSITIONS = ["捕", "一", "二", "三", "遊", "左", "中", "右", "指"];
 const API_PREFIX = "/api/asia-cs";
-const competitionId = new URLSearchParams(location.search).get("competition") || "asia-cs";
 const state = { competition: null, games: [], game: null, user: null, prediction: null, selectedTeamId: "" };
 
 // The same Asia UI is mounted in the standalone compatibility route and in
@@ -9,6 +8,8 @@ const state = { competition: null, games: [], game: null, user: null, prediction
 // Asia domain flow.
 const asiaScript = Array.from(document.scripts).find((script) => script.dataset.asiaPrefix);
 const ID_PREFIX = String(asiaScript?.dataset.asiaPrefix || "");
+const configuredCompetitionId = String(asiaScript?.dataset.competitionId || "").trim();
+const competitionId = new URLSearchParams(location.search).get("competition") || configuredCompetitionId || "asia-cs";
 const $ = (id) => document.getElementById(`${ID_PREFIX}${id}`);
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
 const message = (id, text, error = false) => { const node = $(id); node.textContent = text; node.classList.toggle("error", error); };

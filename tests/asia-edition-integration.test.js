@@ -67,6 +67,15 @@ test("Asia APIは同一originのAuth gatewayへ通し、旧admin URLは統合先
   assert.match(adminShell, /resolveSelectedEdition\(global\.location, new Date\(\), "admin"\)/);
 });
 
+test("本体のAsia EditionはAPBCを既定大会にし、旧互換画面のasia-cs既定値を維持する", () => {
+  const index = read("index.html");
+  const app = read("asia-cs/public/app.js");
+  assert.match(index, /data-competition-id="apbc-2026"/);
+  assert.match(index, /app\.js\?v=apbc-user-ui-competition-1/);
+  assert.match(app, /asiaScript\?\.dataset\.competitionId/);
+  assert.match(app, /configuredCompetitionId \|\| "asia-cs"/);
+});
+
 test("Auth bridgeは改ざんされたclient identityを受け付けず、method/pathも束縛する", async () => {
   const secret = "test-only-asia-bridge-secret";
   const bodyDigest = await sha256Base64Url("payload");

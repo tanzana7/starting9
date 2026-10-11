@@ -5,17 +5,21 @@
     return {
       npb: document.getElementById("npbEditionContent"),
       asia: document.getElementById("asiaEditionContent"),
-      buttons: Array.from(document.querySelectorAll("[data-edition-select]") || [])
+      buttons: Array.from(document.querySelectorAll("[data-edition-select]") || []),
+      switcher: document.querySelector("[data-user-edition-switcher]")
     };
   }
 
   function sync(edition) {
-    const current = global.Starting9Edition.normalizeEdition(edition)
-      || global.Starting9Edition.resolveSelectedEdition();
+    const policy = global.Starting9Edition.resolveEditionPolicy(new Date(), global.Starting9Edition.readWindow());
+    const requested = global.Starting9Edition.normalizeEdition(edition)
+      || global.Starting9Edition.resolveSelectedEdition(global.location, new Date(), "user");
+    const current = policy.userExclusive ? global.Starting9Edition.ASIA_CS : requested;
     const nodes = elements();
     nodes.npb?.classList.toggle("hidden", current !== global.Starting9Edition.NPB);
     nodes.asia?.classList.toggle("hidden", current !== global.Starting9Edition.ASIA_CS);
     document.querySelectorAll("[data-npb-only]").forEach((node) => node.classList.toggle("hidden", current === global.Starting9Edition.ASIA_CS));
+    if (nodes.switcher) nodes.switcher.hidden = policy.userExclusive;
     nodes.buttons.forEach((button) => {
       const selected = button.dataset.editionSelect === current;
       button.classList.toggle("is-selected", selected);
@@ -42,7 +46,7 @@
       global.history.replaceState(null, "", url);
       sync(button.dataset.editionSelect);
     });
-    sync(global.Starting9Edition.resolveSelectedEdition());
+    sync(global.Starting9Edition.resolveSelectedEdition(global.location, new Date(), "user"));
   }
 
   global.Starting9EditionShell = Object.freeze({ sync, start });

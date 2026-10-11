@@ -10,39 +10,61 @@ import { createAuthBridgeAssertion, sha256Base64Url, verifyAuthBridgeAssertion }
 const ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const read = (file) => fs.readFileSync(path.join(ROOT, file), "utf8");
 
-function loadEdition() {
-  const window = { location: { href: "https://starting9.test/" } };
+function loadEdition(config = {}) {
+  const window = { location: { href: "https://starting9.test/" }, STARTING9_EDITION_WINDOW: config };
   vm.runInNewContext(read("frontend/shared/edition.js"), { window, URL, Date });
   return window.Starting9Edition;
 }
 
 test("Asia Edition resolverは東京時刻の明示windowだけでdefaultを切り替える", () => {
-  const edition = loadEdition();
-  const window = { activeFrom: "2026-11-10T00:00:00+09:00", activeUntil: "2026-11-16T00:00:00+09:00" };
+  const window = { activeFrom: "2026-11-10T00:00:00+09:00", activeUntil: "2026-12-01T00:00:00+09:00" };
+  const edition = loadEdition(window);
   assert.equal(edition.resolveDefaultEdition("2026-11-09T23:59:59+09:00", window), "NPB");
   assert.equal(edition.resolveDefaultEdition("2026-11-10T00:00:00+09:00", window), "ASIA_CS");
-  assert.equal(edition.resolveDefaultEdition("2026-11-15T23:59:59+09:00", window), "ASIA_CS");
-  assert.equal(edition.resolveDefaultEdition("2026-11-16T00:00:00+09:00", window), "NPB");
+  assert.equal(edition.resolveDefaultEdition("2026-11-30T23:59:59+09:00", window), "ASIA_CS");
+  assert.equal(edition.resolveDefaultEdition("2026-12-01T00:00:00+09:00", window), "NPB");
   assert.equal(edition.resolveDefaultEdition(new Date("2026-11-10T00:00:00Z"), { activeFrom: "", activeUntil: "" }), "NPB");
 });
 
-test("明示selectionは期間外でも利用でき、windowはlocal timezoneへ依存しない", () => {
-  const edition = loadEdition();
-  const location = { href: "https://starting9.test/?edition=asia" };
-  assert.equal(edition.explicitEdition(location), "ASIA_CS");
-  assert.equal(edition.resolveSelectedEdition(location, new Date("2026-01-01T00:00:00Z")), "ASIA_CS");
+test("ユーザーはAsia期間中にNPB queryを上書きできず、期間外は明示selectionを使える", () => {
+  const window = { activeFrom: "2026-11-10T00:00:00+09:00", activeUntil: "2026-12-01T00:00:00+09:00" };
+  const edition = loadEdition(window);
+  const asiaLocation = { href: "https://starting9.test/?edition=asia" };
+  const npbLocation = { href: "https://starting9.test/?edition=npb" };
+  assert.equal(edition.explicitEdition(asiaLocation), "ASIA_CS");
+  assert.equal(edition.resolveSelectedEdition(asiaLocation, new Date("2026-11-20T00:00:00+09:00"), "user"), "ASIA_CS");
+  assert.equal(edition.resolveSelectedEdition(npbLocation, new Date("2026-11-20T00:00:00+09:00"), "user"), "ASIA_CS");
+  assert.equal(edition.resolveSelectedEdition(npbLocation, new Date("2026-11-09T23:59:59+09:00"), "user"), "NPB");
+  assert.equal(edition.resolveSelectedEdition(asiaLocation, new Date("2026-12-01T00:00:00+09:00"), "user"), "ASIA_CS");
   assert.equal(edition.TOKYO_TIME_ZONE, "Asia/Tokyo");
+});
+
+test("管理者はAsia期間中も明示したNPB/Asiaを切り替えられる", () => {
+  const window = { activeFrom: "2026-11-10T00:00:00+09:00", activeUntil: "2026-12-01T00:00:00+09:00" };
+  const edition = loadEdition(window);
+  const npbLocation = { href: "https://starting9.test/admin-v3?edition=npb" };
+  const asiaLocation = { href: "https://starting9.test/admin-v3?edition=asia" };
+  const during = new Date("2026-11-20T00:00:00+09:00");
+  assert.equal(JSON.stringify(edition.resolveEditionPolicy(during, window)), JSON.stringify({ defaultEdition: "ASIA_CS", userExclusive: true, adminExclusive: false }));
+  assert.equal(edition.resolveSelectedEdition({ href: "https://starting9.test/admin-v3" }, during, "admin"), "ASIA_CS");
+  assert.equal(edition.resolveSelectedEdition(npbLocation, during, "admin"), "NPB");
+  assert.equal(edition.resolveSelectedEdition(asiaLocation, during, "admin"), "ASIA_CS");
 });
 
 test("Asia APIは同一originのAuth gatewayへ通し、旧admin URLは統合先へ案内する", () => {
   const proxy = read("functions/api/[[path]].js");
   const admin = read("admin-v3.html");
   const legacy = read("asia-cs/public/admin.html");
+  const userShell = read("frontend/shared/edition-shell.js");
+  const adminShell = read("frontend/admin-v3/edition-shell.js");
   assert.match(proxy, /All same-origin Asia requests pass through the existing Auth Worker/);
   assert.match(proxy, /const upstreamOrigin = resolveAuthWorkerOrigin\(context\.env\)/);
   assert.match(admin, /data-admin-edition-select="ASIA_CS"/);
   assert.match(admin, /id="asiaAdminEditionContent"/);
   assert.match(legacy, /admin-v3\.html\?edition=asia/);
+  assert.match(userShell, /data-user-edition-switcher/);
+  assert.match(userShell, /nodes\.switcher\.hidden = policy\.userExclusive/);
+  assert.match(adminShell, /resolveSelectedEdition\(global\.location, new Date\(\), "admin"\)/);
 });
 
 test("Auth bridgeは改ざんされたclient identityを受け付けず、method/pathも束縛する", async () => {

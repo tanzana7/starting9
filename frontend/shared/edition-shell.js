@@ -19,7 +19,11 @@
     nodes.npb?.classList.toggle("hidden", current !== global.Starting9Edition.NPB);
     nodes.asia?.classList.toggle("hidden", current !== global.Starting9Edition.ASIA_CS);
     document.querySelectorAll("[data-npb-only]").forEach((node) => node.classList.toggle("hidden", current === global.Starting9Edition.ASIA_CS));
-    if (nodes.switcher) nodes.switcher.hidden = current === global.Starting9Edition.ASIA_CS;
+    if (nodes.switcher) {
+      const hideSwitcher = current === global.Starting9Edition.ASIA_CS;
+      nodes.switcher.hidden = hideSwitcher;
+      nodes.switcher.classList.toggle("hidden", hideSwitcher);
+    }
     nodes.buttons.forEach((button) => {
       const selected = button.dataset.editionSelect === current;
       button.classList.toggle("is-selected", selected);

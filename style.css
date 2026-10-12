@@ -7604,6 +7604,11 @@ body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm
 /* Edition switching keeps both editions in the Starting9 shell; the Asia
    panel is scoped so its compact cards do not alter the established NPB UI. */
 .edition-switcher { display: flex; gap: 8px; margin: 14px 0 0; flex-wrap: wrap; }
+.edition-switcher[hidden],
+[data-user-edition-switcher].hidden,
+html[data-starting9-edition="ASIA_CS"] [data-npb-only] {
+  display: none !important;
+}
 .edition-switcher button { border: 1px solid rgba(31, 83, 116, .25); border-radius: 999px; padding: 7px 14px; color: #1f5374; background: #fff; font: inherit; cursor: pointer; }
 .edition-switcher button.is-selected { color: #fff; background: #1f5374; }
 .asia-edition-panel { max-width: 920px; margin: 0 auto; padding: 28px 16px 56px; }

@@ -59,9 +59,45 @@ test("Asia user shell hides every NPB-only node without throwing on frozen editi
   assert.equal(state.npb.classList.contains("hidden"), true);
   assert.equal(state.asia.classList.contains("hidden"), false);
   assert.equal(state.switcher.hidden, true);
+  assert.equal(state.switcher.classList.contains("hidden"), true);
   assert.equal(state.npbOnly.every((node) => node.classList.contains("hidden")), true);
   assert.equal(state.window.Starting9Edition.active, "ASIA_CS");
   assert.equal(state.document.documentElement.dataset.starting9Edition, "ASIA_CS");
+});
+
+test("Asia selection is protected from author display rules and NPB probable rendering", () => {
+  const css = read("style.css");
+  const shell = read("frontend/shared/edition-shell.js");
+  const script = read("script.js");
+  assert.match(css, /\.edition-switcher\[hidden\][\s\S]*?display:\s*none\s*!important/);
+  assert.match(css, /html\[data-starting9-edition="ASIA_CS"\]\s+\[data-npb-only\][\s\S]*?display:\s*none\s*!important/);
+  assert.match(shell, /nodes\.switcher\.classList\.toggle\("hidden", hideSwitcher\)/);
+  assert.match(script, /async function initializeProbableStarter\(\)\s*\{\s*if \(!isNpbUserEditionActive\(\)\) return;/);
+  assert.match(script, /async function fetchStoredProbableStarter\(\)\s*\{\s*if \(!isNpbUserEditionActive\(\)\) return;/);
+  assert.match(script, /if \(!isNpbUserEditionActive\(\)\)\s*\{\s*container\.hidden = true;[\s\S]*?container\.replaceChildren\(\)/);
+});
+
+test("Asia-selected public coordinator refuses initialization from any caller", async () => {
+  let initialized = false;
+  const edition = {
+    ASIA_CS: "ASIA_CS",
+    active: "ASIA_CS",
+    resolveSelectedEdition() { return "ASIA_CS"; }
+  };
+  const context = {
+    window: { Starting9Edition: edition, location: { href: "https://starting9.test/?edition=asia" } },
+    document: { documentElement: { dataset: { starting9Edition: "ASIA_CS" } } },
+    Date,
+    setTimeout
+  };
+  vm.runInNewContext(read("frontend/public/app-coordinator.js"), context);
+  const coordinator = new context.window.Starting9Public.PublicAppCoordinator({
+    appState: {},
+    state: {},
+    operations: { buildLineupPicker() { initialized = true; } }
+  });
+  assert.equal(await coordinator.start(), null);
+  assert.equal(initialized, false);
 });
 
 test("NPB user shell remains selectable outside the Asia exclusive window", () => {
@@ -107,4 +143,7 @@ test("Asia UI has a finite loading failure state and a non-Japan empty roster st
   assert.match(app, /選手情報は準備中です/);
   assert.match(app, /大会情報を読み込めませんでした/);
   assert.match(app, /次の試合は確認できません/);
+  const html = read("index.html");
+  assert.match(html, /asia-user-shell-lock-1/);
+  assert.match(html, /script\.js\?v=[^\"]*asia-user-shell-lock-1/);
 });

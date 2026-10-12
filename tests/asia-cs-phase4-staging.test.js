@@ -122,7 +122,7 @@ test("Phase 4A staging data has only official, production-safe facts", () => {
   }
 });
 
-test("Phase 4A local rehearsal runs three synthetic games and protects ordering/completion", async () => {
+test("Phase 4A local rehearsal runs the three Japan games and protects ordering/completion", async () => {
   const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
   const fixture = createFixture();
   const env = { ...fixture, ADMIN_BOOTSTRAP_TOKEN: "phase4-local-bootstrap", ALLOWED_ORIGIN: "https://asia-cs.test" };
@@ -161,7 +161,7 @@ test("Phase 4A local rehearsal runs three synthetic games and protects ordering/
   const activated = await request(worker, env, "/api/admin/competition", jsonOptions("PUT", adminCookie, { ...competitionBody, status: "active" }));
   assert.equal(activated.response.status, 200);
 
-  const rehearsalGames = stagingGames.slice(0, 3).map((game, index) => ({
+  const rehearsalGames = stagingGames.filter((game) => [game.homeTeamId, game.awayTeamId].includes("jpn")).map((game, index) => ({
     id: `phase4-local-g${index + 1}`,
     title: `${game.title} TEST_ONLY`,
     gameDate: game.gameDate,
@@ -179,18 +179,18 @@ test("Phase 4A local rehearsal runs three synthetic games and protects ordering/
   assert.equal(imported.payload.imported, 3);
   assert.deepEqual(fixture.database.prepare("SELECT competition_id, team_key FROM teams ORDER BY team_key").all().map((row) => [row.competition_id, row.team_key]), [["apbc-phase4-local", "aus"], ["apbc-phase4-local", "jpn"], ["apbc-phase4-local", "kor"], ["apbc-phase4-local", "tpe"]]);
   assert.deepEqual(fixture.database.prepare("SELECT id, competition_id, home_team_id, away_team_id FROM games ORDER BY id").all().map((row) => ({ ...row })), [
-    { id: "phase4-local-g1", competition_id: "apbc-phase4-local", home_team_id: "kor", away_team_id: "aus" },
-    { id: "phase4-local-g2", competition_id: "apbc-phase4-local", home_team_id: "tpe", away_team_id: "jpn" },
-    { id: "phase4-local-g3", competition_id: "apbc-phase4-local", home_team_id: "aus", away_team_id: "tpe" }
+    { id: "phase4-local-g1", competition_id: "apbc-phase4-local", home_team_id: "tpe", away_team_id: "jpn" },
+    { id: "phase4-local-g2", competition_id: "apbc-phase4-local", home_team_id: "jpn", away_team_id: "kor" },
+    { id: "phase4-local-g3", competition_id: "apbc-phase4-local", home_team_id: "aus", away_team_id: "jpn" }
   ]);
 
   for (const [index, game] of rehearsalGames.entries()) {
-    const homeTeam = fixture.database.prepare("SELECT id FROM teams WHERE competition_id = ? AND team_key = ?").get(competitionBody.id, game.homeTeamId);
+    const japanTeam = fixture.database.prepare("SELECT id FROM teams WHERE competition_id = ? AND team_key = 'jpn'").get(competitionBody.id);
     const players = Array.from({ length: 9 }, (_, playerIndex) => ({
       id: `${game.id}-p${playerIndex + 1}`,
       name: `TEST_ONLY ${game.id} Player ${playerIndex + 1}`,
       uniformNumber: String(playerIndex + 1),
-      teamId: homeTeam.id,
+      teamId: japanTeam.id,
       position: ["捕", "一", "二", "三", "遊", "左", "中", "右", "指"][playerIndex],
       active: true
     }));
@@ -202,7 +202,7 @@ test("Phase 4A local rehearsal runs three synthetic games and protects ordering/
     }));
     const roster = await request(worker, env, `/api/admin/games/${game.id}/players`, jsonOptions("POST", adminCookie, { players }));
     assert.equal(roster.response.status, 200, JSON.stringify(roster.payload));
-    const saved = await request(worker, env, `/api/games/${game.id}/prediction`, jsonOptions("PUT", fanCookie, { lineup, teamId: homeTeam.id }));
+    const saved = await request(worker, env, `/api/games/${game.id}/prediction`, jsonOptions("PUT", fanCookie, { lineup, teamId: japanTeam.id }));
     assert.equal(saved.response.status, 200, JSON.stringify(saved.payload));
 
     const beforeClose = await request(worker, env, `/api/admin/games/${game.id}/score`, jsonOptions("POST", adminCookie, {}));
@@ -212,7 +212,7 @@ test("Phase 4A local rehearsal runs three synthetic games and protects ordering/
     fixture.database.prepare("UPDATE games SET prediction_deadline_at = ? WHERE id = ?").run(syntheticDeadline, game.id);
     fixture.database.prepare("UPDATE predictions SET submitted_at = ? WHERE game_id = ?").run(new Date(Date.now() - 2_000).toISOString(), game.id);
 
-    assert.equal((await request(worker, env, `/api/admin/games/${game.id}/lineup`, jsonOptions("POST", adminCookie, { lineup, teamId: homeTeam.id }))).response.status, 200);
+    assert.equal((await request(worker, env, `/api/admin/games/${game.id}/lineup`, jsonOptions("POST", adminCookie, { lineup, teamId: japanTeam.id }))).response.status, 200);
     const scored = await request(worker, env, `/api/admin/games/${game.id}/score`, jsonOptions("POST", adminCookie, {}));
     assert.equal(scored.response.status, 200, JSON.stringify(scored.payload));
     const beforeRanking = await request(worker, env, `/api/admin/games/${game.id}/publish`, jsonOptions("POST", adminCookie, {}));

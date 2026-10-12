@@ -144,7 +144,7 @@ test("Asia UI has a finite loading failure state and a non-Japan empty roster st
   assert.match(app, /大会情報を読み込めませんでした/);
   assert.match(app, /次の試合は確認できません/);
   const html = read("index.html");
-  assert.match(html, /asia-cs\/app\.js\?v=apbc-japan-games-only-1/);
+  assert.match(html, /asia-cs\/app\.js\?v=apbc-prediction-ux-1/);
   assert.match(html, /asia-user-shell-lock-1/);
   assert.match(html, /script\.js\?v=[^\"]*asia-user-shell-lock-1/);
 });
@@ -252,8 +252,8 @@ test("embedded APBC client resolves camel-cased IDs and renders anonymous public
     }
     assert.equal(elements.get("asiaEditionPredictionTeamId").value, "jpn");
     assert.equal(elements.get("asiaEditionPredictionLineup").children.length, 9);
-    assert.match(elements.get("asiaEditionPredictionLineup").children[0].children[1].innerHTML, /選手1.*球団.*登録: 内野手/);
-    assert.equal(elements.get("asiaEditionPredictionLineup").children[0].children[1].value, "");
+    assert.match(elements.get("asiaEditionPredictionLineup").children[0].children[1].children[0].innerHTML, /選手1.*球団.*登録: 内野手/);
+    assert.equal(elements.get("asiaEditionPredictionLineup").children[0].children[1].children[0].value, "");
     elements.get("asiaEditionPredictionLineup").children = [];
   }
 });

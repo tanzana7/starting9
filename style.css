@@ -7621,6 +7621,8 @@ html[data-starting9-edition="ASIA_CS"] [data-npb-only] {
 .asia-edition-list .schedule-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 12px; border: 1px solid #d7e1ed; border-radius: 8px; }
 .asia-edition-lineup { display: grid; gap: 8px; margin: 12px 0; }
 .asia-edition-lineup .lineup-row { display: grid; grid-template-columns: 42px minmax(0, 1fr) 110px; gap: 8px; align-items: center; }
+.asia-edition-lineup .lineup-player-field { display: grid; gap: 2px; min-width: 0; }
+.asia-edition-lineup .lineup-player-meta { color: #64788c; font-size: .78rem; min-height: 1.1em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .asia-edition-ranking { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
 .asia-edition-ranking li { display: grid; grid-template-columns: 44px 1fr auto; gap: 8px; padding: 9px 11px; background: #f4f8fc; border-radius: 7px; }
 @media (max-width: 600px) { .asia-edition-list .schedule-row { align-items: flex-start; flex-direction: column; } .asia-edition-lineup .lineup-row { grid-template-columns: 30px minmax(0, 1fr) 82px; } }

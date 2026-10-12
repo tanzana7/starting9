@@ -26,7 +26,7 @@ async function api(path, options = {}) {
 
 function formatDate(value) {
   const date = new Date(value || "");
-  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString("ja-JP", { dateStyle: "short", timeStyle: "short" });
+  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString("ja-JP", { dateStyle: "short", timeStyle: "short", timeZone: "Asia/Tokyo" });
 }
 
 function gameLabel(game) {
@@ -78,9 +78,38 @@ function renderBestNine(payload) {
 
 function updateControls() {
   const closed = !state.game || !state.game.canPredict;
-  $("saveButton").disabled = !state.user || closed;
+  const validation = validateLineup(readLineup());
+  $("saveButton").disabled = !state.user || closed || !validation.valid;
   $("deleteButton").disabled = !state.user || closed || !state.prediction;
   $("userStatus").textContent = state.user ? `${state.user.username}でログイン中` : "ログインが必要です";
+  const validationNode = $("predictionValidation");
+  if (validationNode) {
+    validationNode.textContent = validation.message;
+    validationNode.classList.toggle("error", Boolean(validation.message));
+  }
+}
+
+function readLineup() {
+  return Array.from($("predictionLineup")?.querySelectorAll(".lineup-row") || []).map((row, index) => ({
+    battingOrder: index + 1,
+    playerId: row.querySelector('[data-field="playerId"]')?.value || "",
+    position: row.querySelector('[data-field="position"]')?.value || ""
+  }));
+}
+
+function validateLineup(lineup) {
+  const selectedPlayers = lineup.filter((item) => item.playerId);
+  const duplicatePlayers = new Set(selectedPlayers.map((item) => item.playerId)).size !== selectedPlayers.length;
+  if (duplicatePlayers) return { valid: false, message: "同じ選手は複数登録できません。" };
+  if (selectedPlayers.length < 9) return { valid: false, message: "選手を9人選択してください。" };
+  if (lineup.some((item) => !item.position)) return { valid: false, message: "守備位置を選択してください。" };
+  return { valid: true, message: "" };
+}
+
+function playerMeta(player) {
+  return [player.club || player.team, player.registeredPosition ? `登録: ${player.registeredPosition}` : ""]
+    .filter(Boolean)
+    .join(" / ");
 }
 
 function buildLineupRows(lineup = []) {
@@ -94,6 +123,9 @@ function buildLineupRows(lineup = []) {
   }
   for (let index = 1; index <= 9; index += 1) {
     const value = lineup.find((item) => Number(item.battingOrder) === index) || {};
+    const usedByOtherRows = new Set(lineup
+      .filter((item) => Number(item.battingOrder) !== index && item.playerId)
+      .map((item) => String(item.playerId)));
     const row = document.createElement("div");
     row.className = "lineup-row";
     const order = document.createElement("strong");
@@ -101,14 +133,20 @@ function buildLineupRows(lineup = []) {
     const player = document.createElement("select");
     player.dataset.field = "playerId";
     player.setAttribute("aria-label", `${index}番の選手`);
-    player.innerHTML = `<option value="">選手</option>${players.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}${item.club ? ` / ${escapeHtml(item.club)}` : item.team ? ` / ${escapeHtml(item.team)}` : ""}${item.registeredPosition ? ` / 登録: ${escapeHtml(item.registeredPosition)}` : ""}${item.uniformNumber ? ` #${escapeHtml(item.uniformNumber)}` : ""}</option>`).join("")}`;
+    player.innerHTML = `<option value="">選手を選択</option>${players.map((item) => `<option value="${escapeHtml(item.id)}"${usedByOtherRows.has(String(item.id)) ? " disabled" : ""}>${escapeHtml(item.name)}${item.club ? ` / ${escapeHtml(item.club)}` : item.team ? ` / ${escapeHtml(item.team)}` : ""}${item.registeredPosition ? ` / 登録: ${escapeHtml(item.registeredPosition)}` : ""}${item.uniformNumber ? ` #${escapeHtml(item.uniformNumber)}` : ""}</option>`).join("")}`;
     player.value = value.playerId || "";
+    const playerMetaNode = document.createElement("span");
+    playerMetaNode.className = "lineup-player-meta";
+    playerMetaNode.textContent = value.playerId ? playerMeta(players.find((item) => item.id === value.playerId) || {}) : "選手を選択";
+    const playerField = document.createElement("div");
+    playerField.className = "lineup-player-field";
+    playerField.append(player, playerMetaNode);
     const position = document.createElement("select");
     position.dataset.field = "position";
     position.setAttribute("aria-label", `${index}番の守備位置`);
-    position.innerHTML = `<option value="">守備</option>${POSITIONS.map((item) => `<option value="${item}">${item}</option>`).join("")}`;
+    position.innerHTML = `<option value="">守備位置を選択</option>${POSITIONS.map((item) => `<option value="${item}">${item}</option>`).join("")}`;
     position.value = value.position || "";
-    row.append(order, player, position);
+    row.append(order, playerField, position);
     container.appendChild(row);
   }
   updateControls();
@@ -118,13 +156,13 @@ function renderGame() {
   if (!state.game) return;
   $("predictionPanel").classList.remove("hidden");
   $("gameMeta").textContent = `${gameLabel(state.game)} ・ ${formatDate(state.game.startAt)}`;
-  $("deadlineStatus").textContent = state.game.canPredict ? `締切 ${formatDate(state.game.predictionDeadlineAt)}` : state.game.status === "published" ? "結果公開済み" : "予想受付終了";
+  $("deadlineStatus").textContent = state.game.canPredict ? `予想締切 ${formatDate(state.game.predictionDeadlineAt)} JST` : state.game.status === "published" ? "結果公開済み" : "予想受付終了";
   const teams = [state.game.homeTeam, state.game.awayTeam].filter(Boolean);
   const predictionTeams = teams.filter(isJapanTeam);
   const selectableTeams = predictionTeams.length ? predictionTeams : teams;
   const select = $("predictionTeamId");
   select.replaceChildren(...selectableTeams.map((team) => { const option = document.createElement("option"); option.value = team.id; option.textContent = team.name; return option; }));
-  state.selectedTeamId = state.selectedTeamId || predictionTeams[0]?.id || teams[0]?.id || "";
+  state.selectedTeamId = predictionTeams[0]?.id || teams[0]?.id || "";
   select.value = state.selectedTeamId;
   buildLineupRows(state.prediction?.lineup || []);
 }
@@ -167,12 +205,22 @@ async function refreshSession() {
 }
 
 $("predictionTeamId").addEventListener("change", (event) => { state.selectedTeamId = event.target.value; buildLineupRows(state.prediction?.lineup || []); });
+$("predictionLineup").addEventListener("change", () => { buildLineupRows(readLineup()); });
 $("scheduleList").addEventListener("click", (event) => { const gameId = event.target.closest("[data-game]")?.dataset.game; const resultId = event.target.closest("[data-result]")?.dataset.result; if (gameId) void loadGame(gameId); if (resultId) void loadResult(resultId); });
 $("nextGame").addEventListener("click", (event) => { const gameId = event.target.closest("[data-game]")?.dataset.game; if (gameId) void loadGame(gameId); });
 $("predictionForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    const lineup = Array.from($("predictionLineup").querySelectorAll(".lineup-row")).map((row, index) => ({ battingOrder: index + 1, playerId: row.querySelector('[data-field="playerId"]').value, position: row.querySelector('[data-field="position"]').value }));
+    const lineup = readLineup();
+    const validation = validateLineup(lineup);
+    if (!validation.valid) {
+      message("predictionValidation", validation.message, true);
+      return;
+    }
+    if (!state.user) {
+      message("predictionMessage", "ログインして予想してください。", true);
+      return;
+    }
     const payload = await api(`/api/games/${encodeURIComponent(state.game.id)}/prediction`, { method: "PUT", body: JSON.stringify({ lineup, teamId: state.selectedTeamId }) });
     state.prediction = payload.prediction;
     message("predictionMessage", "予想を保存しました。");

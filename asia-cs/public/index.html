@@ -29,6 +29,7 @@
       <form id="predictionForm">
         <label id="predictionTeamLabel">チーム<select id="predictionTeamId"></select></label>
         <div id="predictionLineup" class="lineup-grid"></div>
+        <p id="predictionValidation" class="message" role="status" aria-live="polite"></p>
         <div class="actions"><button id="saveButton" type="submit" disabled>保存</button><button id="deleteButton" class="secondary" type="button" disabled>削除</button></div>
       </form>
       <p id="predictionMessage" class="message" role="status"></p>
@@ -47,6 +48,6 @@
     </section>
     <p class="admin-link"><a href="./admin.html">管理画面</a></p>
   </main>
-  <script type="module" src="./app.js"></script>
+  <script type="module" src="./app.js?v=apbc-prediction-ux-1"></script>
 </body>
 </html>

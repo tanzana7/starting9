@@ -704,6 +704,50 @@ function competitionAllowsPrediction(competition, game) {
   return Boolean(competition && deadline && Date.now() < deadline.getTime() && game?.status === "open");
 }
 
+const JAPAN_TEAM_ALIASES = new Set([
+  "jpn",
+  "jp",
+  "japan",
+  "日本",
+  "日本代表",
+  "japan national team",
+  "team jpn"
+]);
+
+function normalizeTeamIdentity(value) {
+  return String(value || "").trim().toLowerCase().replace(/[\s_-]+/g, " ");
+}
+
+function isJapanTeam(team = {}) {
+  return [team.id, team.team_key, team.display_name, team.short_name, team.country_code]
+    .some((value) => JAPAN_TEAM_ALIASES.has(normalizeTeamIdentity(value)) || normalizeTeamIdentity(value) === "jpn");
+}
+
+function teamMatchesGameReference(team, rawId, rawName) {
+  return [team.id, team.team_key, team.display_name, team.short_name]
+    .filter(Boolean)
+    .some((value) => String(value) === String(rawId) || String(value) === String(rawName));
+}
+
+function gameHasJapanTeam(game, teams = []) {
+  return [
+    [game?.home_team_id, game?.home_team_name],
+    [game?.away_team_id, game?.away_team_name]
+  ].some(([rawId, rawName]) => {
+    const team = teams.find((candidate) => teamMatchesGameReference(candidate, rawId, rawName));
+    return isJapanTeam(team || { id: rawId, display_name: rawName });
+  });
+}
+
+function isGamePredictionEligible(game, teams = []) {
+  // Generic/local Asia fixtures created before Japan-only APBC support do not
+  // carry country identity. Keep those fixtures backward-compatible; once a
+  // competition has a resolvable Japan team, every prediction target must
+  // explicitly include it.
+  const japanOnlyCompetition = teams.some(isJapanTeam);
+  return !japanOnlyCompetition || gameHasJapanTeam(game, teams);
+}
+
 async function listCompetitionGames(request, env, db, competitionId, { includePredictionState = true } = {}) {
   const result = await prepared(db, `SELECT g.*, COUNT(DISTINCT p.id) AS prediction_count
       FROM games g LEFT JOIN predictions p ON p.game_id = g.id
@@ -711,6 +755,7 @@ async function listCompetitionGames(request, env, db, competitionId, { includePr
      GROUP BY g.id
      ORDER BY g.game_date ASC, g.start_at ASC, g.id ASC`, COMPETITION_TYPE, competitionId).all();
   const games = result.results || [];
+  const teams = await getTeams(db, competitionId);
   let userId = "";
   const competition = await getCompetition(db, competitionId);
   if (includePredictionState) {
@@ -723,7 +768,9 @@ async function listCompetitionGames(request, env, db, competitionId, { includePr
       WHERE user_id = ?1 AND game_id IN (${games.map((_, index) => `?${index + 2}`).join(",")})`, userId, ...games.map((game) => game.id)).all();
     submitted = new Set((rows.results || []).map((row) => row.game_id));
   }
-  return games.map((game) => ({
+  return games.map((game) => {
+    const predictionEligible = isGamePredictionEligible(game, teams);
+    return {
     id: game.id,
     title: game.title,
     gameDate: game.game_date,
@@ -737,9 +784,11 @@ async function listCompetitionGames(request, env, db, competitionId, { includePr
     publicationStatus: game.publication_status,
     predictionCount: Number(game.prediction_count || 0),
     predictionSubmitted: submitted.has(game.id),
-    canPredict: competitionAllowsPrediction(competition, game),
+    predictionEligible,
+    canPredict: predictionEligible && competitionAllowsPrediction(competition, game),
     archived: competition?.status === "completed"
-  }));
+    };
+  });
 }
 
 async function getPlayers(db, gameId, activeOnly = false) {
@@ -872,7 +921,14 @@ function serializeGame(game, players = [], teams = []) {
 async function publicGame(request, env, db, gameId) {
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
-  return json({ ok: true, game: serializeGame(game, await getPlayers(db, gameId, true), await getTeams(db, game.competition_id)) }, 200, request, env);
+  const teams = await getTeams(db, game.competition_id);
+  const competition = await getCompetition(db, game.competition_id);
+  const predictionEligible = isGamePredictionEligible(game, teams);
+  return json({ ok: true, game: {
+    ...serializeGame(game, await getPlayers(db, gameId, true), teams),
+    predictionEligible,
+    canPredict: predictionEligible && competitionAllowsPrediction(competition, game)
+  } }, 200, request, env);
 }
 
 async function publicCompetition(request, env, db) {
@@ -881,7 +937,7 @@ async function publicCompetition(request, env, db) {
   if (!competition) return errorResponse(request, env, 404, "COMPETITION_NOT_FOUND", "対象大会がありません。");
   const games = await listCompetitionGames(request, env, db, competitionId);
   const now = Date.now();
-  const nextGame = games.find((game) => game.status === "open" && new Date(game.startAt).getTime() >= now) || null;
+  const nextGame = games.find((game) => game.predictionEligible && game.canPredict && game.status === "open" && new Date(game.startAt).getTime() >= now) || null;
   return json({
     ok: true,
     competition: serializeCompetition(competition),
@@ -972,6 +1028,9 @@ async function savePrediction(request, env, db, gameId) {
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
   await assertGameCompetitionMutable(db, game);
+  if (!isGamePredictionEligible(game, await getTeams(db, game.competition_id))) {
+    return errorResponse(request, env, 409, "PREDICTION_NOT_ELIGIBLE", "日本代表が出場しない試合は予想できません。");
+  }
   const now = new Date();
   const deadline = validDate(game.prediction_deadline_at);
   if (!deadline || now.getTime() >= deadline.getTime() || game.status !== "open") {
@@ -1938,6 +1997,8 @@ export {
   parseAsiaCsAdminUserIds,
   prepareScoring,
   scoreLineup,
+  isGamePredictionEligible,
+  isJapanTeam,
   serializeGame,
   validateLineup
 };

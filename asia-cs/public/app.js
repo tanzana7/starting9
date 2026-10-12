@@ -33,6 +33,18 @@ function gameLabel(game) {
   return `${game.gameDate} ${game.homeTeam?.name || "未定"} vs ${game.awayTeam?.name || "未定"}`;
 }
 
+function isJapanTeam(team = {}) {
+  return [team.id, team.teamKey, team.name, team.displayName, team.shortName, team.countryCode]
+    .map((value) => String(value || "").trim().toLowerCase().replace(/[\s_-]+/g, " "))
+    .some((value) => ["jpn", "jp", "japan", "日本", "日本代表", "japan national team", "team jpn"].includes(value));
+}
+
+function isJapanPredictionGame(game) {
+  if (game?.predictionEligible === false) return false;
+  if (game?.predictionEligible === true) return true;
+  return isJapanTeam(game?.homeTeam) || isJapanTeam(game?.awayTeam);
+}
+
 function renderCompetition(payload) {
   state.competition = payload.competition;
   state.games = payload.games || [];
@@ -47,7 +59,11 @@ function renderCompetition(payload) {
     ? `<strong>${escapeHtml(gameLabel(next))}</strong><span>${escapeHtml(formatDate(next.startAt))}</span><button type="button" class="link-button" data-game="${escapeHtml(next.id)}">この試合を予想</button>`
     : "次の試合は未定です。";
   $("scheduleStatus").textContent = `${state.games.length}試合`;
-  $("scheduleList").innerHTML = state.games.length ? state.games.map((game) => `<article class="schedule-row"><div><strong>${escapeHtml(gameLabel(game))}</strong><span>${escapeHtml(formatDate(game.startAt))}${game.venue ? ` ・ ${escapeHtml(game.venue)}` : ""}</span></div><div class="schedule-actions"><span class="status-chip">${escapeHtml(game.status === "published" ? "結果公開" : game.canPredict ? "受付中" : game.archived ? "アーカイブ" : "受付終了")}</span>${game.canPredict ? `<button type="button" class="link-button" data-game="${escapeHtml(game.id)}">予想</button>` : ""}${game.status === "published" ? `<button type="button" class="link-button" data-result="${escapeHtml(game.id)}">結果</button>` : ""}</div></article>`).join("") : "日程はまだ登録されていません。";
+  $("scheduleList").innerHTML = state.games.length ? state.games.map((game) => {
+    const predictionEligible = isJapanPredictionGame(game);
+    const status = game.status === "published" ? "結果公開" : !predictionEligible ? "日程のみ" : game.canPredict ? "受付中" : game.archived ? "アーカイブ" : "受付終了";
+    return `<article class="schedule-row"><div><strong>${escapeHtml(gameLabel(game))}</strong><span>${escapeHtml(formatDate(game.startAt))}${game.venue ? ` ・ ${escapeHtml(game.venue)}` : ""}</span></div><div class="schedule-actions"><span class="status-chip">${escapeHtml(status)}</span>${predictionEligible && game.canPredict ? `<button type="button" class="link-button" data-game="${escapeHtml(game.id)}">予想</button>` : ""}${game.status === "published" ? `<button type="button" class="link-button" data-result="${escapeHtml(game.id)}">結果</button>` : ""}</div></article>`;
+  }).join("") : "日程はまだ登録されていません。";
 }
 
 function renderRanking(ranking) {
@@ -104,9 +120,11 @@ function renderGame() {
   $("gameMeta").textContent = `${gameLabel(state.game)} ・ ${formatDate(state.game.startAt)}`;
   $("deadlineStatus").textContent = state.game.canPredict ? `締切 ${formatDate(state.game.predictionDeadlineAt)}` : state.game.status === "published" ? "結果公開済み" : "予想受付終了";
   const teams = [state.game.homeTeam, state.game.awayTeam].filter(Boolean);
+  const predictionTeams = teams.filter(isJapanTeam);
+  const selectableTeams = predictionTeams.length ? predictionTeams : teams;
   const select = $("predictionTeamId");
-  select.replaceChildren(...teams.map((team) => { const option = document.createElement("option"); option.value = team.id; option.textContent = team.name; return option; }));
-  state.selectedTeamId = state.selectedTeamId || teams.find((team) => team.id === "jpn")?.id || teams[0]?.id || "";
+  select.replaceChildren(...selectableTeams.map((team) => { const option = document.createElement("option"); option.value = team.id; option.textContent = team.name; return option; }));
+  state.selectedTeamId = state.selectedTeamId || predictionTeams[0]?.id || teams[0]?.id || "";
   select.value = state.selectedTeamId;
   buildLineupRows(state.prediction?.lineup || []);
 }
@@ -115,7 +133,13 @@ async function loadGame(gameId) {
   try {
     const payload = await api(`/api/games/${encodeURIComponent(gameId)}`);
     state.game = { ...payload.game, ...(state.games.find((game) => game.id === gameId) || {}) };
-    state.selectedTeamId = [state.game.homeTeam, state.game.awayTeam].find((team) => team?.id === "jpn")?.id || state.game.homeTeam?.id || "";
+    if (!isJapanPredictionGame(state.game)) {
+      state.game = null;
+      state.prediction = null;
+      $("predictionPanel").classList.add("hidden");
+      return;
+    }
+    state.selectedTeamId = [state.game.homeTeam, state.game.awayTeam].find(isJapanTeam)?.id || state.game.homeTeam?.id || "";
     state.prediction = null;
     if (state.user) state.prediction = (await api(`/api/games/${encodeURIComponent(gameId)}/prediction`)).prediction;
     renderGame();

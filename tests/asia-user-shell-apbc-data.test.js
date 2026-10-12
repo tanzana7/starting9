@@ -144,7 +144,7 @@ test("Asia UI has a finite loading failure state and a non-Japan empty roster st
   assert.match(app, /大会情報を読み込めませんでした/);
   assert.match(app, /次の試合は確認できません/);
   const html = read("index.html");
-  assert.match(html, /asia-cs\/app\.js\?v=apbc-user-data-rendering-1/);
+  assert.match(html, /asia-cs\/app\.js\?v=apbc-japan-games-only-1/);
   assert.match(html, /asia-user-shell-lock-1/);
   assert.match(html, /script\.js\?v=[^\"]*asia-user-shell-lock-1/);
 });

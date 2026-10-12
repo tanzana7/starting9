@@ -1935,6 +1935,14 @@ function getPreferredProbableStarterGame(now = new Date()) {
   return selectProbableStarterGame(state.publicGameCatalog.games, now);
 }
 
+function isNpbUserEditionActive() {
+  const edition = window.Starting9Edition;
+  if (!edition) return true;
+  const selected = edition.resolveSelectedEdition(window.location, new Date(), "user");
+  const active = edition.active || document.documentElement.dataset.starting9Edition;
+  return selected !== edition.ASIA_CS && active !== edition.ASIA_CS;
+}
+
 function resetProbableStarterDisplay(nextGame, message = "") {
   state.probableStarter.nextGame = nextGame || null;
   state.probableStarter.matchedGame = null;
@@ -1949,6 +1957,7 @@ function resetProbableStarterDisplay(nextGame, message = "") {
 }
 
 async function initializeProbableStarter() {
+  if (!isNpbUserEditionActive()) return;
   const nextGame = getPreferredProbableStarterGame();
   if (String(state.probableStarter.nextGame?.internalGameId || "") !== String(nextGame?.internalGameId || "")) {
     beginPublicRequest("probable", { abort: true });
@@ -1964,6 +1973,7 @@ async function initializeProbableStarter() {
 }
 
 function refreshProbableStarterTarget(now = new Date()) {
+  if (!isNpbUserEditionActive()) return false;
   const nextGame = getPreferredProbableStarterGame(now);
   const currentId = String(state.probableStarter.nextGame?.internalGameId || "");
   const nextId = String(nextGame?.internalGameId || "");
@@ -2405,6 +2415,7 @@ function getProbableStarterReferenceDiagnostics(selectedGame, response, httpStat
 }
 
 async function fetchStoredProbableStarter() {
+  if (!isNpbUserEditionActive()) return;
   const activeRequest = appState.requests.probable;
   if (state.probableStarter.isLoading && !activeRequest?.controller?.signal?.aborted) {
     return;
@@ -4468,6 +4479,13 @@ function renderProbableStarter() {
 function renderProbableStarterDisplay() {
   const container = document.getElementById("probableStarterDisplay");
   if (!container) {
+    return;
+  }
+
+  if (!isNpbUserEditionActive()) {
+    container.hidden = true;
+    container.classList.add("hidden");
+    container.replaceChildren();
     return;
   }
 

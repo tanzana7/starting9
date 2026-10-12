@@ -21,7 +21,7 @@
   <meta name="twitter:image:alt" content="Starting9 スタメン予想">
   <link rel="icon" type="image/png" href="./assets/icons/icon-512.png">
   <link rel="apple-touch-icon" href="./assets/icons/icon-512.png">
-  <link rel="stylesheet" href="style.css?v=public-single-game-1-public-position-menu-left-clamp-1-bat-line-1-player-number-1-player-details-1-bat-line-row-accent-1-public-selected-highlight-1-public-ranking-unqualified-cleanup-1-public-prediction-height-15-1-public-save-button-layout-1-public-save-button-lower-1-public-save-button-mobile-spacing-1-cf-web-analytics-1-public-login-cta-1-public-best-nine-count-hidden-1-asia-user-shell-lock-1">
+  <link rel="stylesheet" href="style.css?v=public-single-game-1-public-position-menu-left-clamp-1-bat-line-1-player-number-1-player-details-1-bat-line-row-accent-1-public-selected-highlight-1-public-ranking-unqualified-cleanup-1-public-prediction-height-15-1-public-save-button-layout-1-public-save-button-lower-1-public-save-button-mobile-spacing-1-cf-web-analytics-1-public-login-cta-1-public-best-nine-count-hidden-1-asia-user-shell-lock-1-apbc-prediction-ux-1">
 </head>
 <body>
   <header class="app-header">
@@ -250,6 +250,7 @@
         <label for="asiaEditionPredictionTeamId">チーム</label>
         <select id="asiaEditionPredictionTeamId"></select>
         <div id="asiaEditionPredictionLineup" class="asia-edition-lineup"></div>
+        <p id="asiaEditionPredictionValidation" class="message" role="status" aria-live="polite"></p>
         <button id="asiaEditionSaveButton" class="primary-button" type="submit">予想を保存する</button>
         <button id="asiaEditionDeleteButton" class="secondary-button" type="button">予想を削除する</button>
       </form>
@@ -286,7 +287,7 @@
 
   <script defer src="frontend/shared/edition-config.js?v=asia-exclusive-window-1"></script>
   <script defer src="frontend/shared/edition.js?v=asia-exclusive-policy-1"></script>
-  <script type="module" src="asia-cs/app.js?v=apbc-japan-games-only-1" data-asia-prefix="asiaEdition" data-competition-id="apbc-2026"></script>
+  <script type="module" src="asia-cs/app.js?v=apbc-prediction-ux-1" data-asia-prefix="asiaEdition" data-competition-id="apbc-2026"></script>
   <script defer src="frontend/shared/edition-shell.js?v=asia-user-shell-lock-1"></script>
   <script defer src="players.js?v=public-compliance-disclaimer-and-fetch-safety-1-player-identity-aliases-1"></script>
   <script defer src="game-schedule.js?v=20260718-probable-starter"></script>

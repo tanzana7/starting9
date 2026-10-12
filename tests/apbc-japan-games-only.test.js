@@ -128,3 +128,18 @@ test("APBC UI keeps non-Japan games as schedule-only and opens Japan games", () 
   assert.match(app, /if \(!isJapanPredictionGame\(state\.game\)\)/);
   assert.match(html, /id="asiaEditionNextTitle">次の日本戦</);
 });
+
+test("APBC prediction form prevents duplicates and makes completion requirements visible", () => {
+  const app = fs.readFileSync(path.join(root, "asia-cs/public/app.js"), "utf8");
+  const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
+  assert.match(app, /function validateLineup/);
+  assert.match(app, /同じ選手は複数登録できません/);
+  assert.match(app, /選手を9人選択してください/);
+  assert.match(app, /守備位置を選択してください/);
+  assert.match(app, /usedByOtherRows\.has\(String\(item\.id\)\)/);
+  assert.match(app, /value\.position \|\| ""/);
+  assert.match(app, /予想締切 .*JST/);
+  assert.match(app, /playerMeta/);
+  assert.match(html, /id="asiaEditionPredictionValidation"/);
+  assert.match(html, /id="asiaEditionSaveButton"[^>]+type="submit"/);
+});

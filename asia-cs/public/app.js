@@ -10,7 +10,9 @@ const asiaScript = Array.from(document.scripts).find((script) => script.dataset.
 const ID_PREFIX = String(asiaScript?.dataset.asiaPrefix || "");
 const configuredCompetitionId = String(asiaScript?.dataset.competitionId || "").trim();
 const competitionId = new URLSearchParams(location.search).get("competition") || configuredCompetitionId || "asia-cs";
-const $ = (id) => document.getElementById(`${ID_PREFIX}${id}`);
+// Embedded Asia markup uses a camel-cased namespace prefix, while the
+// standalone compatibility page keeps the original unprefixed IDs.
+const $ = (id) => document.getElementById(ID_PREFIX ? `${ID_PREFIX}${id.charAt(0).toUpperCase()}${id.slice(1)}` : id);
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
 const message = (id, text, error = false) => { const node = $(id); node.textContent = text; node.classList.toggle("error", error); };
 
@@ -28,7 +30,7 @@ function formatDate(value) {
 }
 
 function gameLabel(game) {
-  return `${game.gameDate} ${game.awayTeam?.name || "未定"} vs ${game.homeTeam?.name || "未定"}`;
+  return `${game.gameDate} ${game.homeTeam?.name || "未定"} vs ${game.awayTeam?.name || "未定"}`;
 }
 
 function renderCompetition(payload) {
@@ -49,13 +51,13 @@ function renderCompetition(payload) {
 }
 
 function renderRanking(ranking) {
-  $("rankingStatus").textContent = ranking.length ? `${ranking.length}人` : "公開済み試合なし";
-  $("rankingList").innerHTML = ranking.length ? ranking.map((row) => `<li><span>${row.rank}位</span><strong>${escapeHtml(row.username)}</strong><span>${row.score}点 ・ ${row.gamesCount}試合</span></li>`).join("") : "<li>公開済みのランキングはありません。</li>";
+  $("rankingStatus").textContent = ranking.length ? `${ranking.length}人` : "大会開始前";
+  $("rankingList").innerHTML = ranking.length ? ranking.map((row) => `<li><span>${row.rank}位</span><strong>${escapeHtml(row.username)}</strong><span>${row.score}点 ・ ${row.gamesCount}試合</span></li>`).join("") : "<li>大会開始後に表示されます。</li>";
 }
 
 function renderBestNine(payload) {
-  $("bestNineStatus").textContent = payload.publishedGameCount ? `${payload.publishedGameCount}試合から` : "公開済み試合なし";
-  $("bestNineList").innerHTML = payload.bestNine?.length ? payload.bestNine.map((row) => `<li><span>${row.rank}位</span><strong>${escapeHtml(row.position)} ${escapeHtml(row.player)}</strong><span>${escapeHtml(row.team)} ・ ${row.selectionCount}回</span></li>`).join("") : "<li>公開済みの正式スタメンはありません。</li>";
+  $("bestNineStatus").textContent = payload.publishedGameCount ? `${payload.publishedGameCount}試合から` : "大会開始前";
+  $("bestNineList").innerHTML = payload.bestNine?.length ? payload.bestNine.map((row) => `<li><span>${row.rank}位</span><strong>${escapeHtml(row.position)} ${escapeHtml(row.player)}</strong><span>${escapeHtml(row.team)} ・ ${row.selectionCount}回</span></li>`).join("") : "<li>大会終了後に公開予定です。</li>";
 }
 
 function updateControls() {
@@ -104,7 +106,7 @@ function renderGame() {
   const teams = [state.game.homeTeam, state.game.awayTeam].filter(Boolean);
   const select = $("predictionTeamId");
   select.replaceChildren(...teams.map((team) => { const option = document.createElement("option"); option.value = team.id; option.textContent = team.name; return option; }));
-  state.selectedTeamId = state.selectedTeamId || teams[0]?.id || "";
+  state.selectedTeamId = state.selectedTeamId || teams.find((team) => team.id === "jpn")?.id || teams[0]?.id || "";
   select.value = state.selectedTeamId;
   buildLineupRows(state.prediction?.lineup || []);
 }
@@ -113,7 +115,7 @@ async function loadGame(gameId) {
   try {
     const payload = await api(`/api/games/${encodeURIComponent(gameId)}`);
     state.game = { ...payload.game, ...(state.games.find((game) => game.id === gameId) || {}) };
-    state.selectedTeamId = state.game.homeTeam?.id || "";
+    state.selectedTeamId = [state.game.homeTeam, state.game.awayTeam].find((team) => team?.id === "jpn")?.id || state.game.homeTeam?.id || "";
     state.prediction = null;
     if (state.user) state.prediction = (await api(`/api/games/${encodeURIComponent(gameId)}/prediction`)).prediction;
     renderGame();

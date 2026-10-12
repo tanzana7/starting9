@@ -19,14 +19,14 @@
     nodes.npb?.classList.toggle("hidden", current !== global.Starting9Edition.NPB);
     nodes.asia?.classList.toggle("hidden", current !== global.Starting9Edition.ASIA_CS);
     document.querySelectorAll("[data-npb-only]").forEach((node) => node.classList.toggle("hidden", current === global.Starting9Edition.ASIA_CS));
-    if (nodes.switcher) nodes.switcher.hidden = policy.userExclusive;
+    if (nodes.switcher) nodes.switcher.hidden = current === global.Starting9Edition.ASIA_CS;
     nodes.buttons.forEach((button) => {
       const selected = button.dataset.editionSelect === current;
       button.classList.toggle("is-selected", selected);
       button.setAttribute("aria-selected", selected ? "true" : "false");
     });
     document.documentElement.dataset.starting9Edition = current;
-    global.Starting9Edition.active = current;
+    global.Starting9Edition.setActive(current);
     if (current === global.Starting9Edition.NPB && global.publicAppCoordinator?.start) {
       void global.publicAppCoordinator.start();
     }

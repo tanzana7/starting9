@@ -69,6 +69,11 @@ function buildLineupRows(lineup = []) {
   const players = state.game?.playersByTeam?.[state.selectedTeamId === state.game?.homeTeam?.id ? "home" : "away"] || [];
   const container = $("predictionLineup");
   container.replaceChildren();
+  if (!players.length) {
+    container.innerHTML = '<p class="muted">選手情報は準備中です。</p>';
+    updateControls();
+    return;
+  }
   for (let index = 1; index <= 9; index += 1) {
     const value = lineup.find((item) => Number(item.battingOrder) === index) || {};
     const row = document.createElement("div");
@@ -158,7 +163,16 @@ async function load() {
     renderRanking(ranking.ranking || []);
     renderBestNine(bestNine);
     if (competition.nextGame) await loadGame(competition.nextGame.id);
-  } catch (error) { message("authStatus", error.message, true); }
+  } catch (error) {
+    message("authStatus", "大会情報を読み込めませんでした。", true);
+    message("nextGame", "次の試合は確認できません。", true);
+    message("scheduleStatus", "日程を読み込めませんでした。", true);
+    $("scheduleList").innerHTML = '<p class="muted">日程を読み込めませんでした。</p>';
+    message("rankingStatus", "ランキングを確認できません。", true);
+    $("rankingList").innerHTML = '<li>ランキングを読み込めませんでした。</li>';
+    message("bestNineStatus", "ベストナインを確認できません。", true);
+    $("bestNineList").innerHTML = '<li>ベストナインを読み込めません。</li>';
+  }
 }
 
 window.Starting9AsiaCsApp = Object.freeze({ load });

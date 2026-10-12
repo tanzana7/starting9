@@ -834,11 +834,17 @@ function serializePlayers(players = []) {
   return players.map(serializePlayer);
 }
 
-function serializeGame(game, players = []) {
+function serializeGame(game, players = [], teams = []) {
   if (!game) return null;
   const serializedPlayers = serializePlayers(players);
-  const homeIds = new Set([game.home_team_id, game.home_team_name].filter(Boolean));
-  const awayIds = new Set([game.away_team_id, game.away_team_name].filter(Boolean));
+  const teamScope = (rawId, rawName) => {
+    const team = teams.find((candidate) => [candidate.id, candidate.team_key, candidate.display_name, candidate.short_name]
+      .filter(Boolean)
+      .some((value) => String(value) === String(rawId) || String(value) === String(rawName)));
+    return new Set([rawId, rawName, team?.id, team?.team_key, team?.display_name, team?.short_name].filter(Boolean));
+  };
+  const homeIds = teamScope(game.home_team_id, game.home_team_name);
+  const awayIds = teamScope(game.away_team_id, game.away_team_name);
   return {
     id: game.id,
     title: game.title,
@@ -866,7 +872,7 @@ function serializeGame(game, players = []) {
 async function publicGame(request, env, db, gameId) {
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
-  return json({ ok: true, game: serializeGame(game, await getPlayers(db, gameId, true)) }, 200, request, env);
+  return json({ ok: true, game: serializeGame(game, await getPlayers(db, gameId, true), await getTeams(db, game.competition_id)) }, 200, request, env);
 }
 
 async function publicCompetition(request, env, db) {

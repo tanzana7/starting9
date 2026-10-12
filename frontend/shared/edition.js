@@ -4,6 +4,7 @@
   const TOKYO_TIME_ZONE = "Asia/Tokyo";
   const NPB = "NPB";
   const ASIA_CS = "ASIA_CS";
+  let activeEdition = "";
 
   function normalizeEdition(value) {
     const normalized = String(value || "").trim().toUpperCase().replace(/[-\s]/g, "_");
@@ -61,6 +62,8 @@
   }
 
   global.Starting9Edition = Object.freeze({
+    get active() { return activeEdition; },
+    setActive(value) { activeEdition = normalizeEdition(value); },
     NPB,
     ASIA_CS,
     TOKYO_TIME_ZONE,

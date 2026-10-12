@@ -63,7 +63,7 @@ test("Asia APIは同一originのAuth gatewayへ通し、旧admin URLは統合先
   assert.match(admin, /id="asiaAdminEditionContent"/);
   assert.match(legacy, /admin-v3\.html\?edition=asia/);
   assert.match(userShell, /data-user-edition-switcher/);
-  assert.match(userShell, /nodes\.switcher\.hidden = policy\.userExclusive/);
+  assert.match(userShell, /nodes\.switcher\.hidden = current === global\.Starting9Edition\.ASIA_CS/);
   assert.match(adminShell, /resolveSelectedEdition\(global\.location, new Date\(\), "admin"\)/);
 });
 

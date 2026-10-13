@@ -751,6 +751,14 @@ function isGamePredictionEligible(game, teams = []) {
   return !japanOnlyCompetition || gameHasJapanTeam(game, teams);
 }
 
+async function persistedGamePredictionEligible(db, game) {
+  return isGamePredictionEligible(game, await getTeams(db, game?.competition_id || DEFAULT_COMPETITION_ID));
+}
+
+function predictionNotEligibleResponse(request, env) {
+  return errorResponse(request, env, 409, "PREDICTION_NOT_ELIGIBLE", "日本代表が出場しない試合は予想処理の対象外です。");
+}
+
 async function listCompetitionGames(request, env, db, competitionId, { includePredictionState = true } = {}) {
   const result = await prepared(db, `SELECT g.*, COUNT(DISTINCT p.id) AS prediction_count
       FROM games g LEFT JOIN predictions p ON p.game_id = g.id
@@ -1034,9 +1042,7 @@ async function savePrediction(request, env, db, gameId) {
   if (competition.status !== "active") {
     return errorResponse(request, env, 409, "PREDICTION_NOT_OPEN", "予想受付開始前です。");
   }
-  if (!isGamePredictionEligible(game, await getTeams(db, game.competition_id))) {
-    return errorResponse(request, env, 409, "PREDICTION_NOT_ELIGIBLE", "日本代表が出場しない試合は予想できません。");
-  }
+  if (!await persistedGamePredictionEligible(db, game)) return predictionNotEligibleResponse(request, env);
   const now = new Date();
   const deadline = validDate(game.prediction_deadline_at);
   if (!deadline || now.getTime() >= deadline.getTime() || game.status !== "open") {
@@ -1076,8 +1082,12 @@ async function deletePrediction(request, env, db, gameId) {
   return json({ ok: true }, 200, request, env);
 }
 
-function buildFormalJobStatements(db, gameId, predictionDeadlineAt, competitionId, now) {
-  return FORMAL_JOB_TYPES.map((jobType) => prepared(db, `INSERT OR IGNORE INTO formal_jobs
+function formalJobTypesForGame(game, teams = []) {
+  return isGamePredictionEligible(game, teams) ? FORMAL_JOB_TYPES : [];
+}
+
+function buildFormalJobStatements(db, gameId, predictionDeadlineAt, competitionId, now, jobTypes = FORMAL_JOB_TYPES) {
+  return jobTypes.map((jobType) => prepared(db, `INSERT OR IGNORE INTO formal_jobs
     (id, game_id, competition_type, competition_id, job_type, status, revision_number, due_at, attempts, completed_at, created_at, updated_at)
     VALUES (?1, ?2, ?3, ?4, ?5, 'scheduled', NULL, ?6, 0, NULL, ?7, ?7)`,
     uuid(), gameId, COMPETITION_TYPE, competitionId, jobType, predictionDeadlineAt, now));
@@ -1085,9 +1095,15 @@ function buildFormalJobStatements(db, gameId, predictionDeadlineAt, competitionI
 
 async function ensureFormalJobs(db, game) {
   if (!game) return;
+  const teams = await getTeams(db, game.competition_id || DEFAULT_COMPETITION_ID);
+  const jobTypes = formalJobTypesForGame(game, teams);
+  // A non-Japan fixture is still a real tournament game, but it is outside
+  // Starting9's prediction pipeline. In particular, an admin GET must not
+  // recreate legacy prediction jobs after they have been reconciled away.
+  if (!jobTypes.length) return;
   const existing = await prepared(db, "SELECT COUNT(*) AS count FROM formal_jobs WHERE game_id = ?1", game.id).first();
-  if (Number(existing?.count || 0) >= FORMAL_JOB_TYPES.length) return;
-  await db.batch(buildFormalJobStatements(db, game.id, game.prediction_deadline_at, game.competition_id || DEFAULT_COMPETITION_ID, nowIso()));
+  if (Number(existing?.count || 0) >= jobTypes.length) return;
+  await db.batch(buildFormalJobStatements(db, game.id, game.prediction_deadline_at, game.competition_id || DEFAULT_COMPETITION_ID, nowIso(), jobTypes));
 }
 
 function completeFormalJobStatement(db, gameId, jobType, revision, now) {
@@ -1345,6 +1361,7 @@ async function bulkImportGames(request, env, db) {
     preparedRows.push({ id, title, gameDate, startAt, deadline, teams, venue: String(value.venue || "").trim().slice(0, 120) || null, externalGameCode: String(value.externalGameCode || value.external_game_code || "").trim().slice(0, 80) || null });
   }
   const now = nowIso();
+  const competitionTeams = await getTeams(db, competitionId);
   const statements = [];
   if (!competition) {
     statements.push(prepared(db, `INSERT OR IGNORE INTO competitions
@@ -1352,10 +1369,16 @@ async function bulkImportGames(request, env, db) {
       VALUES (?1, ?2, ?1, ?1, 'draft', ?3, ?3)`, competitionId, COMPETITION_TYPE, now));
   }
   for (const row of preparedRows) {
+    const jobTypes = formalJobTypesForGame({
+      home_team_id: row.teams.home.team_key,
+      home_team_name: row.teams.home.display_name,
+      away_team_id: row.teams.away.team_key,
+      away_team_name: row.teams.away.display_name
+    }, competitionTeams);
     statements.push(prepared(db, `INSERT INTO games
       (id, title, competition_type, competition_id, game_source, external_game_code, game_date, start_at, prediction_deadline_at, venue, home_team_id, home_team_name, away_team_id, away_team_name, status, publication_status, current_lineup_revision, created_at, updated_at)
       VALUES (?1, ?2, ?3, ?4, 'manual', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'open', 'pending', NULL, ?14, ?14)`, row.id, row.title, COMPETITION_TYPE, competitionId, row.externalGameCode, row.gameDate, row.startAt.toISOString(), row.deadline.toISOString(), row.venue, row.teams.home.team_key, row.teams.home.display_name, row.teams.away.team_key, row.teams.away.display_name, now));
-    statements.push(...buildFormalJobStatements(db, row.id, row.deadline.toISOString(), competitionId, now));
+    statements.push(...buildFormalJobStatements(db, row.id, row.deadline.toISOString(), competitionId, now, jobTypes));
   }
   await db.batch(statements);
   return json({ ok: true, imported: preparedRows.length, games: await listCompetitionGames(request, env, db, competitionId, { includePredictionState: false }) }, 200, request, env);
@@ -1387,6 +1410,7 @@ async function createGame(request, env, db, admin) {
   const awayTeamName = String(input.awayTeamName || input.awayTeam?.name || "").trim().slice(0, 80) || null;
   if ((homeTeamId && !homeTeamName) || (awayTeamId && !awayTeamName)) throw new RequestError(400, "TEAM_INPUT_INVALID", "対戦チーム名を確認してください。");
   const teams = await validateGameTeams(db, competitionId, homeTeamId, awayTeamId);
+  const competitionTeams = await getTeams(db, competitionId);
   const id = validId(input.id) || uuid();
   const now = nowIso();
   const game = {
@@ -1394,10 +1418,16 @@ async function createGame(request, env, db, admin) {
     competitionId,
     predictionDeadlineAt: deadline.toISOString()
   };
+  const jobTypes = formalJobTypesForGame({
+    home_team_id: teams.home?.team_key || null,
+    home_team_name: teams.home?.display_name || homeTeamName,
+    away_team_id: teams.away?.team_key || null,
+    away_team_name: teams.away?.display_name || awayTeamName
+  }, competitionTeams);
   await db.batch([
     prepared(db, `INSERT INTO games (id, title, competition_type, competition_id, game_source, external_game_code, game_date, start_at, prediction_deadline_at, venue, home_team_id, home_team_name, away_team_id, away_team_name, status, publication_status, current_lineup_revision, created_at, updated_at)
       VALUES (?1, ?2, ?3, ?4, 'manual', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'open', 'pending', NULL, ?14, ?14)`, id, title, COMPETITION_TYPE, competitionId, String(input.externalGameCode || "").trim().slice(0, 80) || null, gameDate, startAt.toISOString(), deadline.toISOString(), String(input.venue || "").trim().slice(0, 120) || null, teams.home ? teams.home.team_key : null, teams.home ? teams.home.display_name : null, teams.away ? teams.away.team_key : null, teams.away ? teams.away.display_name : null, now),
-    ...buildFormalJobStatements(db, id, deadline.toISOString(), competitionId, now)
+    ...buildFormalJobStatements(db, id, deadline.toISOString(), competitionId, now, jobTypes)
   ]);
   return json({ ok: true, game: serializeGame(await getGame(db, id), []) }, 201, request, env);
 }
@@ -1572,6 +1602,7 @@ async function commitScoring(db, game, plan) {
 async function scoreGame(request, env, db, gameId, admin) {
   const game = await getGame(db, gameId);
   if (game) await assertGameCompetitionMutable(db, game);
+  if (game && !await persistedGamePredictionEligible(db, game)) return predictionNotEligibleResponse(request, env);
   const lineup = await currentLineup(db, gameId);
   if (!game || !lineup) return errorResponse(request, env, 409, "LINEUP_REQUIRED", "正式スタメンを先に確定してください。");
   await ensureFormalJobs(db, game);
@@ -1623,6 +1654,7 @@ async function rankingGame(request, env, db, gameId) {
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
   await assertGameCompetitionMutable(db, game);
+  if (!await persistedGamePredictionEligible(db, game)) return predictionNotEligibleResponse(request, env);
   if (!["scored", "published"].includes(game.status)) return errorResponse(request, env, 409, "SCORING_REQUIRED", "採点済みの試合だけランキングを更新できます。");
   await ensureFormalJobs(db, game);
   const revision = Number(game.current_lineup_revision);
@@ -1709,6 +1741,7 @@ async function publishGame(request, env, db, gameId) {
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
   await assertGameCompetitionMutable(db, game);
+  if (!await persistedGamePredictionEligible(db, game)) return predictionNotEligibleResponse(request, env);
   await ensureFormalJobs(db, game);
   if (game.status === "published" && game.publication_status === "published") {
     const completedPublish = await prepared(db, "SELECT 1 FROM formal_jobs WHERE game_id = ?1 AND job_type = 'publish' AND status = 'completed' AND revision_number = ?2 LIMIT 1", gameId, game.current_lineup_revision).first();
@@ -1769,6 +1802,7 @@ async function rescoreGame(request, env, db, gameId, admin) {
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
   await assertGameCompetitionMutable(db, game);
+  if (!await persistedGamePredictionEligible(db, game)) return predictionNotEligibleResponse(request, env);
   if (!["scored", "published"].includes(game.status)) return errorResponse(request, env, 409, "RESCORE_NOT_READY", "採点済みの試合だけ正式スタメンを修正できます。");
   await ensureFormalJobs(db, game);
   if (game.current_lineup_revision === null || game.current_lineup_revision === undefined) return errorResponse(request, env, 409, "REVISION_REQUIRED", "現行revisionがありません。");
@@ -2007,6 +2041,7 @@ export {
   prepareScoring,
   scoreLineup,
   isGamePredictionEligible,
+  formalJobTypesForGame,
   isJapanTeam,
   serializeGame,
   validateLineup

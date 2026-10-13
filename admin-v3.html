@@ -86,6 +86,17 @@
       <section class="asia-admin-panel admin-only hidden" aria-labelledby="bulkTitle"><h3 id="bulkTitle">選手・ロースター・正式処理</h3><div class="import-grid"><form id="playerImportForm"><label>対象試合ID<input id="playerImportGameId" required></label><label>選手JSON / CSV<textarea id="playerImportData" rows="7" required></textarea></label><button>選手を一括登録</button></form><form id="rosterForm"><label>対象試合ID<input id="gameId" required></label><label>出場選手JSON<textarea id="rosterJson" rows="7"></textarea></label><button>ロースターを保存</button></form></div><form id="gameImportForm"><label>試合JSON / CSV<textarea id="gameImportData" rows="5"></textarea></label><button>試合を一括登録</button></form><p id="importStatus" class="message" role="status"></p></section>
       <section class="asia-admin-panel admin-only hidden" aria-labelledby="lineupTitle"><h3 id="lineupTitle">正式スタメン・採点・公開</h3><label>対象チームID<input id="lineupTeamId"></label><textarea id="lineupJson" rows="8"></textarea><div class="actions"><div><button id="confirmLineup" type="button">正式スタメンを確定</button></div><div><button id="scoreGame" type="button">採点</button><small id="scoreGameReason" class="asia-admin-action-reason"></small></div><div><button id="rankingGame" type="button">ランキング更新</button><small id="rankingGameReason" class="asia-admin-action-reason"></small></div><div><button id="publishGame" type="button">公開</button><small id="publishGameReason" class="asia-admin-action-reason"></small></div></div><div class="correction"><h4>修正・再採点</h4><input id="rescoreReason" value="管理者による正式スタメン修正"><textarea id="rescoreJson" rows="8"></textarea><div><button id="rescoreGame" type="button" class="danger">再採点・Best Nine更新</button><small id="rescoreGameReason" class="asia-admin-action-reason"></small></div></div><p id="operationStatus" class="message" role="status"></p><pre id="gameDetail" class="detail"></pre></section>
     </section>
+    <section class="asia-admin-panel admin-only hidden" aria-labelledby="placementTitle">
+      <h3 id="placementTitle">日本戦の順位決定戦</h3>
+      <form id="placementGameForm" class="form-grid">
+        <label>種類<select id="placementType" name="placementType"><option value="final" selected>決勝</option><option value="third_place">3位決定戦</option></select></label>
+        <label>対戦相手<select id="placementOpponentTeamId" name="opponentTeamId" required><option value="">対戦相手を選択</option></select></label>
+        <label>日本の位置<select id="placementJapanSide" name="japanSide" required><option value="">ホーム／ビジター</option><option value="home">ホーム</option><option value="away">ビジター</option></select></label>
+        <p id="placementSchedule" class="muted" role="status">2026-11-15 19:00 JST（締切 18:00）</p>
+        <button id="placementCreate" type="submit">順位決定戦を登録</button>
+      </form>
+      <p id="placementStatus" class="message" role="status"></p>
+    </section>
   </main>
   <script defer src="frontend/shared/edition-config.js?v=asia-exclusive-window-1"></script>
   <script defer src="frontend/shared/edition.js?v=asia-exclusive-policy-1"></script>
@@ -114,6 +125,6 @@
   <script src="frontend/admin-v3/app-coordinator.js?v=independent-roster-lineup-safety-1-preserve-picker-scroll-1-admin-lineup-registration-emergency-fix-1-manual-lineup-two-step-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-display-name-slot-binding-1-admin-public-parity-1-position-picker-parity-1-compact-parity-1-shared-roster-sync-1-manual-roster-auto-1-pre-beta-purge-1-admin-ranking-only-1-phase1-scoring-recovery-1"></script>
   <script src="admin-v3.js?v=independent-roster-lineup-safety-1-game-selection-safety-1-lineup-order-mobile-zoom-1-lineup-correction-1-admin-v3-game-progress-history-1-admin-lineup-registration-emergency-fix-1-admin-lineup-lock-reason-1-manual-lineup-late-registration-1-manual-lineup-two-step-confirmation-1-ranking-test-global-settings-1-ranking-test-fixed-presets-1-v4-canonical-status-1-display-name-slot-binding-1-position-picker-parity-1-public-roster-sync-1-lineup-error-details-1-shared-roster-sync-1-manual-roster-auto-1-pre-beta-purge-1-admin-ranking-only-1-phase1-scoring-recovery-1-phase2-ranking-publish-common-path-1-manual-roster-persistent-mode-1-v4-final-cleanup-1"></script>
   <script src="/asia-cs/admin-action-guardrails.js?v=apbc-admin-action-guardrails-1"></script>
-  <script type="module" src="/asia-cs/admin.js?v=apbc-admin-action-guardrails-1"></script>
+  <script type="module" src="/asia-cs/admin.js?v=apbc-japan-games-placement-only-1"></script>
 </body>
 </html>

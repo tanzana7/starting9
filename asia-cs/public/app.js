@@ -47,7 +47,10 @@ function isJapanPredictionGame(game) {
 
 function renderCompetition(payload) {
   state.competition = payload.competition;
-  state.games = payload.games || [];
+  // The API applies the authoritative Japan-only boundary. Keep the same
+  // identity check in the client so a stale proxy response cannot put a
+  // non-Japan fixture back into the user-facing schedule.
+  state.games = (payload.games || []).filter(isJapanPredictionGame);
   const competition = state.competition;
   $("competitionName").textContent = competition.displayName;
   const period = [competition.startDate, competition.endDate].filter(Boolean).join(" 〜 ");
@@ -61,7 +64,7 @@ function renderCompetition(payload) {
   $("scheduleStatus").textContent = `${state.games.length}試合`;
   $("scheduleList").innerHTML = state.games.length ? state.games.map((game) => {
     const predictionEligible = isJapanPredictionGame(game);
-    const status = game.status === "published" ? "結果公開" : !predictionEligible ? "日程のみ" : game.canPredict ? "受付中" : state.competition?.status === "draft" ? "予想受付開始前" : game.archived ? "アーカイブ" : "受付終了";
+    const status = game.status === "published" ? "結果公開" : game.canPredict ? "受付中" : state.competition?.status === "draft" ? "予想受付開始前" : game.archived ? "アーカイブ" : "受付終了";
     return `<article class="schedule-row"><div><strong>${escapeHtml(gameLabel(game))}</strong><span>${escapeHtml(formatDate(game.startAt))}${game.venue ? ` ・ ${escapeHtml(game.venue)}` : ""}</span></div><div class="schedule-actions"><span class="status-chip">${escapeHtml(status)}</span>${predictionEligible && game.canPredict ? `<button type="button" class="link-button" data-game="${escapeHtml(game.id)}">予想</button>` : ""}${game.status === "published" ? `<button type="button" class="link-button" data-result="${escapeHtml(game.id)}">結果</button>` : ""}</div></article>`;
   }).join("") : "日程はまだ登録されていません。";
 }

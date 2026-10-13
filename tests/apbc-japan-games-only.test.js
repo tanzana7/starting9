@@ -79,22 +79,20 @@ async function request(worker, env, url, options = {}) {
   return { response, payload, cookie: response.headers.get("set-cookie") || "" };
 }
 
-test("APBC prediction scope is Japan-only while schedule remains tournament-wide", async () => {
+test("APBC public schedule is limited to Japan games", async () => {
   const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
   const env = createFixture();
   const landing = await request(worker, env, "/api/competition?competitionId=apbc-2026");
   assert.equal(landing.response.status, 200);
-  assert.deepEqual(landing.payload.games.map((game) => game.id), [
-    "apbc-2026-g1", "apbc-2026-g2", "apbc-2026-g3", "apbc-2026-g4", "apbc-2026-g5", "apbc-2026-g6"
-  ]);
-  assert.deepEqual(landing.payload.games.map((game) => game.predictionEligible), [false, true, false, true, true, false]);
-  assert.deepEqual(landing.payload.games.map((game) => game.canPredict), [false, false, false, false, false, false]);
+  assert.deepEqual(landing.payload.games.map((game) => game.id), ["apbc-2026-g2", "apbc-2026-g4", "apbc-2026-g5"]);
+  assert.deepEqual(landing.payload.games.map((game) => game.predictionEligible), [true, true, true]);
+  assert.deepEqual(landing.payload.games.map((game) => game.canPredict), [false, false, false]);
   assert.equal(landing.payload.nextGame, null);
   assert.deepEqual(landing.payload.acceptingGames, []);
 
   const nonJapan = await request(worker, env, "/api/games/apbc-2026-g1");
-  assert.equal(nonJapan.payload.game.predictionEligible, false);
-  assert.equal(nonJapan.payload.game.canPredict, false);
+  assert.equal(nonJapan.response.status, 404);
+  assert.equal(nonJapan.payload.code, "GAME_NOT_AVAILABLE");
   const japan = await request(worker, env, "/api/games/apbc-2026-g2");
   assert.equal(japan.payload.game.predictionEligible, true);
   assert.equal(japan.payload.game.canPredict, false);
@@ -299,11 +297,11 @@ test("APBC ranking excludes legacy non-Japan prediction rows", async () => {
   assert.deepEqual({ score_total: entry.score_total, games_count: entry.games_count }, { score_total: 90, games_count: 1 });
 });
 
-test("APBC UI keeps non-Japan games as schedule-only and opens Japan games", () => {
+test("APBC UI renders only Japan games and opens Japan games", () => {
   const app = fs.readFileSync(path.join(root, "asia-cs/public/app.js"), "utf8");
   const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
   assert.match(app, /predictionEligible/);
-  assert.match(app, /日程のみ/);
+  assert.match(app, /filter\(isJapanPredictionGame\)/);
   assert.match(app, /function isJapanPredictionGame/);
   assert.match(app, /if \(!isJapanPredictionGame\(state\.game\)\)/);
   assert.match(html, /id="asiaEditionNextTitle">次の日本戦</);

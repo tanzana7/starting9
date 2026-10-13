@@ -26,6 +26,22 @@ APBC 2026 の運営期間に、Starting9 の管理画面と正式な管理APIだ
 - Asia Worker `/health` は200。Asia Workerのproduction configにCron triggerはない。
 - GAME7/GAME8は未作成。対戦カード確定前に作成しない。
 
+## Pre-activation readiness policy
+
+事前準備の判定では、侍ジャパンの出場決定選手の発表と、大会側の最終公式登録ロースターの公示を分けて扱います。侍ジャパン公式に掲載された出場決定選手とStarting9の対象選手が一致し、技術・日程・締切・予想対象の条件を満たしている場合、大会側の最終ロースターが未公示であることだけを理由に事前準備をNO-GOにはしません。
+
+- `APBC 2026 PRE-ACTIVATION GO WITH FINAL ROSTER RECHECK REQUIRED`: 事前運用の準備は成立。ただしactive化直前に大会側の最終ロースターを再確認する。
+- `READY TO ACTIVATE`: 最終ロースター、管理APIのread-back、production health、全active gateを確認済み。実際のactive化操作を許可できる状態。
+- `PRE-ACTIVATION NO-GO`: 既知の選手差分、辞退・追加招集の未反映、日程・締切不一致、Worker障害、予想受付gate不具合、またはP1/P2の技術問題がある状態。
+
+「GO WITH FINAL ROSTER RECHECK REQUIRED」は予想受付開始の許可ではありません。`apbc-2026` は引き続き `draft` のまま保持し、active化直前に次を再確認します。
+
+1. 大会側の最終公式ロースターの OUT / IN / 辞退 / 追加招集。
+2. GAME2/4/5のJapanロースター15名、選手ID、登録守備位置、表記差。
+3. 管理APIのformal job read-back、production health、公開APIの `status` / `acceptingGames` / `canPredict`。
+
+侍ジャパンの選手発表は[公式選手一覧](https://i.japan-baseball.jp/jp/team/topteam/2026/apbc/player.html)、大会側の最終ロースター公示は大会公式発表を正本とします。
+
 ## Before 11/10
 
 11/10 00:00に自動でactiveにはなりません。次の確認を完了してから、運営責任者が明示的にactiveへ変更します。
@@ -108,17 +124,15 @@ GAME5は2026-11-14 12:00 JST開始、締切は11:00 JST（UTCでは開始03:00�
 
 GAME1、GAME3、GAME6はJapanが出場しないため、予想対象ではありません。`predictionEligible=false`、formal jobsは0件です。これらの試合でロースター、正式スタメン、採点、ランキング、公開の予想パイプライン操作を行いません。大会の試合情報を確認するだけにします。
 
-## GAME7 / GAME8
+## 日本戦の順位決定戦（GAME7またはGAME8）
 
-GAME7/GAME8は対戦カードが公式に確定してから、Asia管理画面の試合登録または正式な一括登録だけで追加します。D1 Consoleや直接SQLは使いません。既存GAME2/4/5のロースターは自動継承されないため、Japanが出場する場合は新しい試合にJapanの15名を登録します。
+GAME7/GAME8を事前に両方作成せず、準決勝の結果が確定した後に、Asia管理画面の「日本戦の順位決定戦」から1試合だけ登録します。初期選択は決勝（GAME8）で、3位決定戦（GAME7）へ切り替えられます。対戦相手は登録済みチームから選び、日本のホーム／ビジターも管理者が明示します。自動ブラケット判定、Cron追加、D1 Consoleや直接SQLは使いません。
 
-### Japanが出場する場合
-
-- GAME7: 2026-11-15 11:00 JST、締切10:00 JST。
-- GAME8: 2026-11-15 19:00 JST、締切18:00 JST。
-- Japan参加をチームIDから確認する。
-- `predictionEligible=true`、formal jobsは4件であることを管理詳細で確認する。
-- その試合専用のJapanロースター15名を登録する。
+- 決勝（GAME8）: 2026-11-15 19:00 JST、締切18:00 JST。
+- 3位決定戦（GAME7）: 2026-11-15 11:00 JST、締切10:00 JST。
+- 登録時にサーバーが最新の日本代表15名ロースターを直近の日本戦からコピーする。
+- `predictionEligible=true`、formal jobsが4件であることを管理詳細で確認する。
+- 既存の順位決定戦がある場合、もう一方を追加せず、1試合のみを運用する。
 - active化後、締切前に予想受付を確認する。
 
 ### Japanが出場しない場合
@@ -157,7 +171,7 @@ Best Nineは別の手動作成・手動publish操作を持ちません。公開�
 - [ ] 大会rankingが最後の公開世代を返す。
 - [ ] Best Nineが最後の公開済み試合を対象に返す。
 - [ ] 未処理のprediction対象、lineup、score、ranking、publishがない。
-- [ ] GAME7/GAME8を追加した場合も、Japan参加試合の処理を確認済み。
+- [ ] 順位決定戦を追加した場合も、日本戦4試合だけが公開UIの予想対象であることを確認済み。
 
 completed後はpredictionの変更と管理mutationが拒否されます。既存の公開result、公開ranking、Best Nineは読み取り可能なまま維持されます。誤ってcompletedにしないよう、状態を保存する前に大会ID・状態・完了チェックを二人で確認します。
 

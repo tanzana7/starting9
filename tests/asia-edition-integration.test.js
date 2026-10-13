@@ -72,9 +72,9 @@ test("本体のAsia EditionはAPBCを既定大会にし、旧互換画面のasia
   const index = read("index.html");
   const app = read("asia-cs/public/app.js");
   assert.match(index, /data-competition-id="apbc-2026"/);
-  assert.match(index, /src="asia-cs\/app\.js\?v=apbc-prediction-ux-1"/);
+  assert.match(index, /src="asia-cs\/app\.js\?v=apbc-japan-games-placement-only-1"/);
   assert.doesNotMatch(index, /src="asia-cs\/public\/app\.js/);
-  assert.match(index, /app\.js\?v=apbc-prediction-ux-1/);
+  assert.match(index, /app\.js\?v=apbc-japan-games-placement-only-1/);
   assert.match(app, /asiaScript\?\.dataset\.competitionId/);
   assert.match(app, /configuredCompetitionId \|\| "asia-cs"/);
 });

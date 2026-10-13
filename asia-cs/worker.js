@@ -127,6 +127,27 @@ function validIsoDateTime(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+const PREDICTION_DEADLINE_OFFSET_MS = 60 * 60 * 1000;
+
+function derivePredictionDeadline(startAt) {
+  const start = startAt instanceof Date ? startAt : validIsoDateTime(startAt);
+  return start ? new Date(start.getTime() - PREDICTION_DEADLINE_OFFSET_MS) : null;
+}
+
+function normalizePredictionDeadline(startAt, suppliedDeadline) {
+  const derived = derivePredictionDeadline(startAt);
+  if (!derived) return null;
+  const supplied = suppliedDeadline === undefined || suppliedDeadline === null
+    ? ""
+    : String(suppliedDeadline).trim();
+  if (!supplied) return derived;
+  const explicit = validIsoDateTime(supplied);
+  if (!explicit || explicit.getTime() !== derived.getTime()) {
+    throw new RequestError(400, "INVALID_PREDICTION_DEADLINE", "予想締切は試合開始の60分前に設定してください。");
+  }
+  return derived;
+}
+
 function tokyoCalendarDate(value) {
   const date = value instanceof Date ? value : new Date(value || "");
   if (Number.isNaN(date.getTime())) return "";
@@ -1343,7 +1364,13 @@ async function bulkImportGames(request, env, db) {
     const title = String(value.title || value.name || "Asia CS").trim().slice(0, 120);
     const gameDate = String(value.gameDate || value.game_date || "").trim();
     const startAt = validIsoDateTime(value.startAt || value.start_at);
-    const deadline = validIsoDateTime(value.predictionDeadlineAt || value.prediction_deadline_at);
+    let deadline = null;
+    let deadlineError = null;
+    try {
+      deadline = normalizePredictionDeadline(startAt, value.predictionDeadlineAt ?? value.prediction_deadline_at);
+    } catch (error) {
+      deadlineError = error;
+    }
     const homeTeamId = validId(value.homeTeamId || value.home_team_id || value.homeTeam || value.home_team);
     const awayTeamId = validId(value.awayTeamId || value.away_team_id || value.awayTeam || value.away_team);
     const exists = await getGame(db, id);
@@ -1353,6 +1380,7 @@ async function bulkImportGames(request, env, db) {
       // Preserve the established missing-competition error precedence without
       // creating the competition before the payload has passed validation.
       if (!competition) throw new RequestError(404, "COMPETITION_NOT_FOUND", "対象大会がありません。");
+      if (deadlineError) throw deadlineError;
       throw new RequestError(400, "GAMES_INVALID", "試合日・開始日時・締切・対戦チームのいずれかが不正です。");
     }
     const teams = await validateGameTeams(db, competitionId, homeTeamId, awayTeamId);
@@ -1404,10 +1432,7 @@ async function createGame(request, env, db, admin) {
   const title = String(input.title || "Asia CS").trim().slice(0, 120);
   const startAt = validIsoDateTime(input.startAt);
   const gameDate = String(input.gameDate || "").trim();
-  // Keep all three scheduling fields explicit at the API boundary. Automatic
-  // deadline derivation made malformed admin payloads look valid and could
-  // silently move the prediction cutoff when a caller changed startAt.
-  const deadline = validIsoDateTime(input.predictionDeadlineAt);
+  const deadline = normalizePredictionDeadline(startAt, input.predictionDeadlineAt);
   if (!title || !/^\d{4}-\d{2}-\d{2}$/.test(gameDate) || !startAt || !deadline || deadline.getTime() >= startAt.getTime() || tokyoCalendarDate(startAt) !== gameDate) {
     throw new RequestError(400, "GAME_INPUT_INVALID", "試合名・試合日・開始日時・締切日時を確認してください。");
   }
@@ -1907,8 +1932,11 @@ async function adminGameDetail(request, env, db, gameId) {
   const predictions = await prepared(db, `SELECT users.username, predictions.status, predictions.score, predictions.max_score, predictions.scored_revision, predictions.updated_at FROM predictions JOIN users ON users.id = predictions.user_id WHERE predictions.game_id = ?1 ORDER BY predictions.updated_at DESC`, gameId).all();
   const revisions = await prepared(db, "SELECT revision_number, fingerprint, is_current, confirmed_at, confirmed_by FROM lineup_revisions WHERE game_id = ?1 ORDER BY revision_number DESC", gameId).all();
   const competition = await getCompetition(db, game.competition_id || DEFAULT_COMPETITION_ID);
-  if (competition?.status !== "completed") await ensureFormalJobs(db, game);
-  return json({ ok: true, competition: serializeCompetition(await getCompetition(db, game.competition_id || DEFAULT_COMPETITION_ID)), game: serializeGame(game, await getPlayers(db, gameId)), currentLineup: lineup, revisions: revisions.results || [], formalJobs: await listFormalJobs(db, gameId), ranking: await listCompetitionRanking(db, game.competition_id || DEFAULT_COMPETITION_ID, false, true), predictions: predictions.results || [] }, 200, request, env);
+  const formalJobs = await listFormalJobs(db, gameId);
+  const requiredFormalJobTypes = formalJobTypesForGame(game, await getTeams(db, game.competition_id || DEFAULT_COMPETITION_ID));
+  const existingFormalJobTypes = new Set(formalJobs.map((job) => job.job_type));
+  const missingFormalJobTypes = requiredFormalJobTypes.filter((jobType) => !existingFormalJobTypes.has(jobType));
+  return json({ ok: true, competition: serializeCompetition(competition), game: serializeGame(game, await getPlayers(db, gameId)), currentLineup: lineup, revisions: revisions.results || [], formalJobs, requiredFormalJobTypes, missingFormalJobTypes, ranking: await listCompetitionRanking(db, game.competition_id || DEFAULT_COMPETITION_ID, false, true), predictions: predictions.results || [] }, 200, request, env);
 }
 
 async function route(request, env) {

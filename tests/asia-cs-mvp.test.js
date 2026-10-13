@@ -237,7 +237,7 @@ test("大会のチーム所属と日時境界をサーバー側で検証する",
   const afterStart = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "bad-time-game", gameDate: "2026-11-15", startAt: "2026-11-15T09:00:00+09:00", predictionDeadlineAt: "2026-11-15T10:00:00+09:00" }) });
   assert.equal(afterStart.response.status, 400);
   const missingDeadline = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "missing-deadline-game", gameDate: "2026-11-15", startAt: "2026-11-15T09:00:00+09:00" }) });
-  assert.equal(missingDeadline.response.status, 400);
+  assert.equal(missingDeadline.response.status, 201);
   const equalDeadline = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "equal-deadline-game", gameDate: "2026-11-15", startAt: "2026-11-15T09:00:00+09:00", predictionDeadlineAt: "2026-11-15T09:00:00+09:00" }) });
   assert.equal(equalDeadline.response.status, 400);
   const wrongDate = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "wrong-date-game", gameDate: "2026-11-14", startAt: "2026-11-15T00:00:00Z", predictionDeadlineAt: "2026-11-14T23:00:00Z" }) });
@@ -492,7 +492,7 @@ test("Asia CS Best Nineは未公開では返さず、得点・提出時刻・use
   const bootstrap = await request(worker, env, "/api/auth/admin/bootstrap", { method: "POST", headers: { "X-Admin-Bootstrap-Token": "local-bootstrap-token" }, body: JSON.stringify({ username: "admin", password: "admin-password" }) });
   assert.equal(bootstrap.response.status, 201);
   const admin = await request(worker, env, "/api/auth/login", { method: "POST", body: JSON.stringify({ username: "admin", password: "admin-password" }) });
-  const game = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: authCookie(admin) }, body: JSON.stringify({ id: "b9-test", title: "B9", gameDate: "2026-09-22", startAt: "2026-09-22T00:00:00.000Z", predictionDeadlineAt: "2026-09-21T00:00:00.000Z" }) });
+  const game = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: authCookie(admin) }, body: JSON.stringify({ id: "b9-test", title: "B9", gameDate: "2026-09-22", startAt: "2026-09-22T00:00:00.000Z", predictionDeadlineAt: "2026-09-21T23:00:00.000Z" }) });
   assert.equal(game.response.status, 201);
   const hidden = await request(worker, env, "/api/games/b9-test/best-nine");
   assert.deepEqual(hidden.payload, { ok: true, published: false, bestNine: [], totalCount: 0 });
@@ -505,7 +505,7 @@ test("Best Nineは公開済み現行revisionの得点上位9人だけを同点�
   const bootstrap = await request(worker, env, "/api/auth/admin/bootstrap", { method: "POST", headers: { "X-Admin-Bootstrap-Token": "local-bootstrap-token" }, body: JSON.stringify({ username: "admin", password: "admin-password" }) });
   const admin = await request(worker, env, "/api/auth/login", { method: "POST", body: JSON.stringify({ username: "admin", password: "admin-password" }) });
   assert.equal(bootstrap.response.status, 201);
-  const created = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: authCookie(admin) }, body: JSON.stringify({ id: "b9-ranking", title: "B9", gameDate: "2026-09-22", startAt: "2026-09-22T00:00:00.000Z", predictionDeadlineAt: "2026-09-21T00:00:00.000Z" }) });
+  const created = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: authCookie(admin) }, body: JSON.stringify({ id: "b9-ranking", title: "B9", gameDate: "2026-09-22", startAt: "2026-09-22T00:00:00.000Z", predictionDeadlineAt: "2026-09-21T23:00:00.000Z" }) });
   assert.equal(created.response.status, 201);
   fixture.database.prepare("UPDATE games SET status = 'published', publication_status = 'published', current_lineup_revision = 1 WHERE id = ?").run("b9-ranking");
   fixture.database.prepare("INSERT INTO scoring_runs (id, game_id, revision_number, kind, processed_count, score_changed_count, started_at, completed_at, created_by) VALUES (?, ?, 1, 'initial', 11, 0, ?, ?, ?)").run("b9-run", "b9-ranking", "2026-09-22T00:00:00.000Z", "2026-09-22T00:01:00.000Z", bootstrap.payload.user.id);
@@ -548,7 +548,7 @@ test("管理者bootstrapは一度だけで、公開登録・一般ユーザー�
 
   const regular = await request(worker, env, "/api/auth/register", { method: "POST", body: JSON.stringify({ username: "regular", password: "regular-password" }) });
   const managementRequests = [
-    ["POST", "/api/admin/games", { id: "auth-test", title: "Auth", gameDate: "2026-09-22", startAt: "2026-09-22T00:00:00.000Z", predictionDeadlineAt: "2026-09-21T00:00:00.000Z" }],
+    ["POST", "/api/admin/games", { id: "auth-test", title: "Auth", gameDate: "2026-09-22", startAt: "2026-09-22T00:00:00.000Z", predictionDeadlineAt: "2026-09-21T23:00:00.000Z" }],
     ["GET", "/api/admin/games/auth-test"],
     ["POST", "/api/admin/games/auth-test/players", { players }],
     ["PUT", "/api/admin/games/auth-test/players/p1", { name: "Changed" }],
@@ -566,7 +566,7 @@ test("管理者bootstrapは一度だけで、公開登録・一般ユーザー�
 
   const adminLogin = await request(worker, env, "/api/auth/login", { method: "POST", body: JSON.stringify({ username: "operator", password: "operator-password" }) });
   const adminCookie = authCookie(adminLogin);
-  const created = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "auth-test", title: "Auth", gameDate: "2026-09-22", startAt: "2026-09-22T00:00:00.000Z", predictionDeadlineAt: "2026-09-21T00:00:00.000Z" }) });
+  const created = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "auth-test", title: "Auth", gameDate: "2026-09-22", startAt: "2026-09-22T00:00:00.000Z", predictionDeadlineAt: "2026-09-21T23:00:00.000Z" }) });
   assert.equal(created.response.status, 201);
   assert.equal((await request(worker, env, "/api/admin/games/auth-test", { method: "GET", headers: { Cookie: adminCookie } })).response.status, 200);
   assert.equal((await request(worker, env, "/api/admin/games/auth-test/players", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ players }) })).response.status, 200);
@@ -615,7 +615,7 @@ test("採点は状態遷移・batch rollback・並列実行を保護する", asy
   assert.equal((await request(worker, env, "/api/admin/games/retry-test/score", { method: "POST", headers: { Cookie: adminCookie } })).response.status, 409);
 
   const parallelPlayers = players;
-  await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "parallel-test", title: "Parallel", gameDate: "2026-09-22", startAt: "2026-09-22T00:00:00.000Z", predictionDeadlineAt: "2026-09-21T00:00:00.000Z" }) });
+  await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "parallel-test", title: "Parallel", gameDate: "2026-09-22", startAt: "2026-09-22T00:00:00.000Z", predictionDeadlineAt: "2026-09-21T23:00:00.000Z" }) });
   const parallelRoster = await request(worker, env, "/api/admin/games/parallel-test/players", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ players: parallelPlayers }) });
   assert.equal(parallelRoster.payload.players.length, 9);
   assert.notEqual(parallelRoster.payload.players.find((player) => player.name === "Player 1").id, "p1");

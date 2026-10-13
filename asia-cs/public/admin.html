@@ -17,6 +17,17 @@
     <section class="panel admin-only hidden" aria-labelledby="teamTitle"><h2 id="teamTitle">チーム登録</h2><form id="teamForm" class="form-grid"><label>大会ID<input name="competitionId" value="asia-cs" required></label><label>チームID<input name="teamKey" placeholder="team-jp" required></label><label>表示名<input name="displayName" placeholder="Japan" required></label><label>短縮名<input name="shortName" placeholder="JPN" required></label><label>国コード（任意）<input name="countryCode" maxlength="3"></label><button>チームを保存</button></form><p id="teamStatus" class="message" role="status"></p></section>
     <section class="panel admin-only hidden" aria-labelledby="rosterTitle"><h2 id="rosterTitle">出場選手</h2><form id="rosterForm"><textarea id="rosterJson" rows="8" placeholder='[{"id":"p1","name":"選手名","uniformNumber":"1","teamId":"team-jp"}]'></textarea><button>登録・更新</button></form></section>
     <section class="panel admin-only hidden" aria-labelledby="lineupTitle"><h2 id="lineupTitle">正式スタメンと正式処理</h2><label>対象チームID<input id="lineupTeamId" placeholder="team-jp"></label><textarea id="lineupJson" rows="10" placeholder='[{"battingOrder":1,"playerId":"p1","playerName":"選手名","position":"中"}]'></textarea><div class="actions"><div><button id="confirmLineup" type="button">正式スタメンを確定</button></div><div><button id="scoreGame" type="button">採点</button><small id="scoreGameReason" class="asia-admin-action-reason"></small></div><div><button id="rankingGame" type="button">ランキング更新</button><small id="rankingGameReason" class="asia-admin-action-reason"></small></div><div><button id="publishGame" type="button">公開</button><small id="publishGameReason" class="asia-admin-action-reason"></small></div></div><div class="correction"><h3>正式スタメン修正・再採点</h3><input id="rescoreReason" value="管理者による正式スタメン修正" aria-label="修正理由"><textarea id="rescoreJson" rows="10" placeholder="訂正版の正式スタメンJSON"></textarea><div><button id="rescoreGame" type="button" class="danger">再採点・Best Nine更新</button><small id="rescoreGameReason" class="asia-admin-action-reason"></small></div></div><p id="operationStatus" class="message" role="status"></p><pre id="gameDetail" class="detail"></pre></section>
+    <section class="panel admin-only hidden" aria-labelledby="placementTitle">
+      <h2 id="placementTitle">日本戦の順位決定戦</h2>
+      <form id="placementGameForm" class="form-grid">
+        <label>種類<select id="placementType" name="placementType"><option value="final" selected>決勝</option><option value="third_place">3位決定戦</option></select></label>
+        <label>対戦相手<select id="placementOpponentTeamId" name="opponentTeamId" required><option value="">対戦相手を選択</option></select></label>
+        <label>日本の位置<select id="placementJapanSide" name="japanSide" required><option value="">ホーム／ビジター</option><option value="home">ホーム</option><option value="away">ビジター</option></select></label>
+        <p id="placementSchedule" class="muted" role="status">2026-11-15 19:00 JST（締切 18:00）</p>
+        <button id="placementCreate" type="submit">順位決定戦を登録</button>
+      </form>
+      <p id="placementStatus" class="message" role="status"></p>
+    </section>
   </main>
   <script src="./admin-action-guardrails.js"></script>
   <script type="module" src="./admin.js"></script>

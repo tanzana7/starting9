@@ -38,6 +38,11 @@ const AUTH_FAILURE_REASONS = Object.freeze({
 const CANONICAL_TEST_USERS = Object.freeze(
   Array.from({ length: 9 }, (_, index) => `S9_TEST_${index + 1}`)
 );
+const APBC_PLACEMENT_GAME_DEFINITIONS = Object.freeze({
+  final: Object.freeze({ gameNumber: "8", title: "決勝", startAt: "2026-11-15T10:00:00.000Z" }),
+  third_place: Object.freeze({ gameNumber: "7", title: "3位決定戦", startAt: "2026-11-15T02:00:00.000Z" })
+});
+const APBC_PLACEMENT_DATE = "2026-11-15";
 
 function allowedOrigins(env) {
   return String(env?.ALLOWED_ORIGIN || "")
@@ -780,14 +785,17 @@ function predictionNotEligibleResponse(request, env) {
   return errorResponse(request, env, 409, "PREDICTION_NOT_ELIGIBLE", "日本代表が出場しない試合は予想処理の対象外です。");
 }
 
-async function listCompetitionGames(request, env, db, competitionId, { includePredictionState = true } = {}) {
+async function listCompetitionGames(request, env, db, competitionId, { includePredictionState = true, userVisibleOnly = false } = {}) {
   const result = await prepared(db, `SELECT g.*, COUNT(DISTINCT p.id) AS prediction_count
       FROM games g LEFT JOIN predictions p ON p.game_id = g.id
      WHERE g.competition_type = ?1 AND g.competition_id = ?2
      GROUP BY g.id
      ORDER BY g.game_date ASC, g.start_at ASC, g.id ASC`, COMPETITION_TYPE, competitionId).all();
-  const games = result.results || [];
+  const allGames = result.results || [];
   const teams = await getTeams(db, competitionId);
+  const games = userVisibleOnly
+    ? allGames.filter((game) => isGamePredictionEligible(game, teams))
+    : allGames;
   let userId = "";
   const competition = await getCompetition(db, competitionId);
   if (includePredictionState) {
@@ -956,6 +964,7 @@ async function publicGame(request, env, db, gameId) {
   const teams = await getTeams(db, game.competition_id);
   const competition = await getCompetition(db, game.competition_id);
   const predictionEligible = isGamePredictionEligible(game, teams);
+  if (!predictionEligible) return errorResponse(request, env, 404, "GAME_NOT_AVAILABLE", "日本代表が出場する試合ではありません。");
   return json({ ok: true, game: {
     ...serializeGame(game, await getPlayers(db, gameId, true), teams),
     predictionEligible,
@@ -967,7 +976,7 @@ async function publicCompetition(request, env, db) {
   const competitionId = validId(new URL(request.url).searchParams.get("competitionId")) || DEFAULT_COMPETITION_ID;
   const competition = await getCompetition(db, competitionId);
   if (!competition) return errorResponse(request, env, 404, "COMPETITION_NOT_FOUND", "対象大会がありません。");
-  const games = await listCompetitionGames(request, env, db, competitionId);
+  const games = await listCompetitionGames(request, env, db, competitionId, { userVisibleOnly: true });
   const now = Date.now();
   const nextGame = games.find((game) => game.predictionEligible && game.canPredict && game.status === "open" && new Date(game.startAt).getTime() >= now) || null;
   return json({
@@ -982,12 +991,15 @@ async function publicCompetition(request, env, db) {
 async function publicGames(request, env, db) {
   const competitionId = validId(new URL(request.url).searchParams.get("competitionId")) || DEFAULT_COMPETITION_ID;
   if (!await getCompetition(db, competitionId)) return errorResponse(request, env, 404, "COMPETITION_NOT_FOUND", "対象大会がありません。");
-  return json({ ok: true, competitionId, games: await listCompetitionGames(request, env, db, competitionId) }, 200, request, env);
+  return json({ ok: true, competitionId, games: await listCompetitionGames(request, env, db, competitionId, { userVisibleOnly: true }) }, 200, request, env);
 }
 
 async function publicResult(request, env, db, gameId) {
   const game = await getGame(db, gameId);
   if (!game || game.status !== "published" || game.publication_status !== "published") {
+    return errorResponse(request, env, 404, "RESULT_NOT_PUBLISHED", "この試合の結果はまだ公開されていません。");
+  }
+  if (!await persistedGamePredictionEligible(db, game)) {
     return errorResponse(request, env, 404, "RESULT_NOT_PUBLISHED", "この試合の結果はまだ公開されていません。");
   }
   const lineup = await currentLineup(db, gameId);
@@ -1034,6 +1046,7 @@ async function currentPrediction(request, env, db, gameId) {
   if (user instanceof Response) return user;
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
+  if (!await persistedGamePredictionEligible(db, game)) return predictionNotEligibleResponse(request, env);
   const row = await prepared(db, "SELECT prediction_json, status, score, max_score, scored_revision, submitted_at, updated_at, scored_at, actual_lineup_json FROM predictions WHERE user_id = ?1 AND game_id = ?2 LIMIT 1", user.id, gameId).first();
   const published = game.status === "published" && game.publication_status === "published";
   const prediction = row ? {
@@ -1467,6 +1480,83 @@ async function createGame(request, env, db, admin) {
   return json({ ok: true, game: serializeGame(await getGame(db, id), []) }, 201, request, env);
 }
 
+function placementGameDefinition(placementType) {
+  const definition = APBC_PLACEMENT_GAME_DEFINITIONS[String(placementType || "").trim()];
+  if (!definition) throw new RequestError(400, "PLACEMENT_TYPE_INVALID", "順位決定戦の種類を確認してください。");
+  return definition;
+}
+
+async function latestJapanRoster(db, games, teams) {
+  const japanTeam = teams.find(isJapanTeam);
+  if (!japanTeam) return null;
+  const japanGames = games
+    .filter((game) => gameHasJapanTeam(game, teams))
+    .sort((left, right) => `${right.game_date}|${right.start_at}|${right.id}`.localeCompare(`${left.game_date}|${left.start_at}|${left.id}`));
+  for (const game of japanGames) {
+    const roster = (await getPlayers(db, game.id, true)).filter((player) =>
+      teamMatchesGameReference(japanTeam, player.team_id, player.team)
+    );
+    if (roster.length === 15) return { game, roster, japanTeam };
+  }
+  return null;
+}
+
+async function createPlacementGame(request, env, db, admin) {
+  const input = await readJson(request);
+  const competitionId = validId(input.competitionId) || "apbc-2026";
+  if (competitionId !== "apbc-2026") throw new RequestError(400, "PLACEMENT_COMPETITION_INVALID", "APBC 2026を指定してください。");
+  const competition = await assertCompetitionMutable(db, competitionId);
+  const definition = placementGameDefinition(input.placementType || "final");
+  const teams = await getTeams(db, competitionId);
+  const japanTeam = teams.find(isJapanTeam);
+  const opponent = await findTeam(db, competitionId, input.opponentTeamId);
+  const japanSide = String(input.japanSide || "").trim().toLowerCase();
+  if (!japanTeam || !opponent || opponent.id === japanTeam.id || isJapanTeam(opponent) || !["home", "away"].includes(japanSide)) {
+    throw new RequestError(400, "PLACEMENT_TEAMS_INVALID", "日本代表・対戦相手・ホーム／ビジターを確認してください。");
+  }
+  const gamesResult = await prepared(db, "SELECT * FROM games WHERE competition_type = ?1 AND competition_id = ?2", COMPETITION_TYPE, competitionId).all();
+  const games = gamesResult.results || [];
+  if (games.some((game) => game.game_date === APBC_PLACEMENT_DATE && gameHasJapanTeam(game, teams))) {
+    throw new RequestError(409, "PLACEMENT_GAME_EXISTS", "順位決定戦はすでに登録されています。");
+  }
+  const id = `apbc-2026-g${definition.gameNumber}`;
+  if (games.some((game) => game.id === id)) {
+    throw new RequestError(409, "PLACEMENT_GAME_EXISTS", "順位決定戦はすでに登録されています。");
+  }
+  const source = await latestJapanRoster(db, games, teams);
+  if (!source) throw new RequestError(409, "JAPAN_ROSTER_REQUIRED", "最新の日本代表15名ロースターが必要です。");
+  const startAt = validIsoDateTime(definition.startAt);
+  const deadline = normalizePredictionDeadline(startAt);
+  const home = japanSide === "home" ? japanTeam : opponent;
+  const away = japanSide === "home" ? opponent : japanTeam;
+  const now = nowIso();
+  const title = `GAME${definition.gameNumber} ${definition.title}: ${home.display_name} vs ${away.display_name}`;
+  const jobStatements = buildFormalJobStatements(db, id, deadline.toISOString(), competition.id, now, FORMAL_JOB_TYPES);
+  const rosterStatements = source.roster.map((player) => prepared(db, `INSERT INTO players
+      (id, game_id, name, uniform_number, team, team_id, position, bat, throw, active, created_at, updated_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?10)`,
+    uuid(), id, player.name, player.uniform_number, player.team, japanTeam.id, player.position, player.bat, player.throw, now));
+  await db.batch([
+    prepared(db, `INSERT INTO games
+      (id, title, competition_type, competition_id, game_source, external_game_code, game_date, start_at, prediction_deadline_at,
+       home_team_id, home_team_name, away_team_id, away_team_name, status, publication_status, current_lineup_revision, created_at, updated_at)
+      VALUES (?1, ?2, ?3, ?4, 'manual', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'open', 'pending', NULL, ?13, ?13)`,
+    id, title, COMPETITION_TYPE, competition.id, `GAME${definition.gameNumber}`, APBC_PLACEMENT_DATE, startAt.toISOString(), deadline.toISOString(),
+    home.team_key, home.display_name, away.team_key, away.display_name, now),
+    ...rosterStatements,
+    ...jobStatements
+  ]);
+  const game = await getGame(db, id);
+  return json({
+    ok: true,
+    game: serializeGame(game, await getPlayers(db, id), teams),
+    placementType: input.placementType || "final",
+    rosterCopiedFromGameId: source.game.id,
+    rosterCount: source.roster.length,
+    formalJobTypes: FORMAL_JOB_TYPES
+  }, 201, request, env);
+}
+
 async function upsertPlayers(request, env, db, gameId) {
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
@@ -1752,6 +1842,7 @@ async function publicRanking(request, env, db) {
 async function publicBestNine(request, env, db) {
   const competitionId = validId(new URL(request.url).searchParams.get("competitionId")) || DEFAULT_COMPETITION_ID;
   if (!await getCompetition(db, competitionId)) return errorResponse(request, env, 404, "COMPETITION_NOT_FOUND", "対象大会がありません。");
+  const teams = await getTeams(db, competitionId);
   const result = await prepared(db, `SELECT id, current_lineup_revision
       FROM games
      WHERE competition_type = ?1 AND competition_id = ?2
@@ -1760,7 +1851,12 @@ async function publicBestNine(request, env, db) {
     ORDER BY game_date ASC, start_at ASC, id ASC`, COMPETITION_TYPE, competitionId).all();
   const playersByGame = new Map();
   const selections = new Map();
+  const eligibleGames = [];
   for (const game of result.results || []) {
+    const sourceGame = await getGame(db, game.id);
+    if (isGamePredictionEligible(sourceGame, teams)) eligibleGames.push(game);
+  }
+  for (const game of eligibleGames) {
     const lineup = await currentLineup(db, game.id);
     const players = await getPlayers(db, game.id);
     const playerById = new Map(players.map((player) => [player.id, player]));
@@ -2005,6 +2101,12 @@ async function route(request, env) {
     return createTeam(request, env, db, admin);
   }
 
+  if (path === "/api/admin/placement-games" && request.method === "POST") {
+    const admin = await requireAdmin(request, env, db);
+    if (admin instanceof Response) return admin;
+    return createPlacementGame(request, env, db, admin);
+  }
+
   let match = path.match(/^\/api\/games\/([^/]+)$/);
   if (match && request.method === "GET") return publicGame(request, env, db, validId(match[1]));
   match = path.match(/^\/api\/games\/([^/]+)\/result$/);
@@ -2094,6 +2196,7 @@ export {
   isGamePredictionEligible,
   formalJobTypesForGame,
   isJapanTeam,
+  placementGameDefinition,
   serializeGame,
   validateLineup
 };

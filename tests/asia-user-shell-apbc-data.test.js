@@ -144,7 +144,7 @@ test("Asia UI has a finite loading failure state and a non-Japan empty roster st
   assert.match(app, /大会情報を読み込めませんでした/);
   assert.match(app, /次の試合は確認できません/);
   const html = read("index.html");
-  assert.match(html, /asia-cs\/app\.js\?v=apbc-prediction-ux-1/);
+  assert.match(html, /asia-cs\/app\.js\?v=apbc-japan-games-placement-only-1/);
   assert.match(html, /asia-user-shell-lock-1/);
   assert.match(html, /script\.js\?v=[^\"]*asia-user-shell-lock-1/);
 });
@@ -210,7 +210,7 @@ test("embedded APBC client resolves camel-cased IDs and renders anonymous public
     requests.push(String(url));
     let payload;
     if (String(url).includes("/auth/me")) payload = { ok: true, authenticated: false, isAdmin: false, user: null };
-    else if (String(url).includes("/competition?")) payload = { ok: true, competition: { id: "apbc-2026", displayName: "APBC 2026", startDate: "2026-11-12", endDate: "2026-11-15", status: "draft" }, games, nextGame: games[0], acceptingGames: [] };
+    else if (String(url).includes("/competition?")) payload = { ok: true, competition: { id: "apbc-2026", displayName: "APBC 2026", startDate: "2026-11-12", endDate: "2026-11-15", status: "draft" }, games, nextGame: games[1], acceptingGames: [] };
     else if (String(url).includes("/rankings?")) payload = { ok: true, ranking: [] };
     else if (String(url).includes("/best-nine?")) payload = { ok: true, publishedGameCount: 0, bestNine: [] };
     else if (String(url).includes("/games/apbc-2026-g1")) payload = { ok: true, game: games[0] };
@@ -236,10 +236,10 @@ test("embedded APBC client resolves camel-cased IDs and renders anonymous public
   await context.window.Starting9AsiaCsApp.load();
 
   assert.ok(requests.includes("/api/asia-cs/competition?competitionId=apbc-2026"));
-  assert.ok(requests.includes("/api/asia-cs/games/apbc-2026-g1"));
-  assert.equal(elements.get("asiaEditionNextGame").innerHTML.includes("韓国 vs オーストラリア"), true);
-  assert.equal(elements.get("asiaEditionScheduleStatus").textContent, "6試合");
-  assert.equal((elements.get("asiaEditionScheduleList").innerHTML.match(/class=\"schedule-row\"/g) || []).length, 6);
+  assert.ok(requests.includes("/api/asia-cs/games/apbc-2026-g2"));
+  assert.equal(elements.get("asiaEditionNextGame").innerHTML.includes("チャイニーズ・タイペイ vs 日本"), true);
+  assert.equal(elements.get("asiaEditionScheduleStatus").textContent, "3試合");
+  assert.equal((elements.get("asiaEditionScheduleList").innerHTML.match(/class=\"schedule-row\"/g) || []).length, 3);
   assert.match(elements.get("asiaEditionRankingList").innerHTML, /大会開始後に表示されます/);
   assert.match(elements.get("asiaEditionBestNineList").innerHTML, /大会終了後に公開予定です/);
   assert.equal(elements.get("asiaEditionAuthStatus").textContent, "Starting9でログインしてください");

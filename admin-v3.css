@@ -25,6 +25,10 @@ button:disabled { cursor: not-allowed; opacity: .65; }
 .asia-admin-panel .wide-field { grid-column: 1 / -1; }
 .asia-admin-panel .import-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .asia-admin-panel .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.asia-admin-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+.asia-admin-actions > div, .asia-admin-panel .actions > div, .correction > div { display: grid; gap: 4px; min-width: 0; }
+.asia-admin-action-reason { min-height: 1.2em; color: #8a4d16; font-size: 12px; overflow-wrap: anywhere; }
+.asia-admin-panel button:disabled { border: 1px solid #c8d0d8; color: #687786; background: #edf1f4; opacity: 1; }
 .asia-admin-panel .detail { overflow: auto; white-space: pre-wrap; background: #f4f7fa; padding: 12px; border-radius: 6px; }
 @media (max-width: 680px) { .asia-admin-panel .import-grid { grid-template-columns: 1fr; } }
 .admin-v3-header { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; max-width: 1400px; margin: 0 auto 18px; padding-bottom: 18px; border-bottom: 1px solid #dce3eb; }

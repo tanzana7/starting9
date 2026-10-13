@@ -43,9 +43,12 @@ function createD1Adapter(database, failure = null) {
   };
 }
 
-function createDatabase({ failure = null } = {}) {
+function createDatabase({ failure = null, competitionStatus = "draft" } = {}) {
   const database = new DatabaseSync(":memory:");
   database.exec(migration);
+  if (competitionStatus !== "draft") {
+    database.prepare("UPDATE competitions SET status = ? WHERE id = 'asia-cs'").run(competitionStatus);
+  }
   return { database, DB: createD1Adapter(database, failure), ASIA_CS_LOCAL_AUTH: "true", ASIA_CS_ENV: "test" };
 }
 
@@ -101,7 +104,7 @@ test("採点契約は本家の99点方式を使い、主要ケースの期待値
 
 test("Asia CS MVP: 予想→締切→正式登録→採点→B9→正式修正→再採点→B9更新", async () => {
   const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
-  const fixture = createDatabase();
+  const fixture = createDatabase({ competitionStatus: "active" });
   const env = { ...fixture, ADMIN_BOOTSTRAP_TOKEN: "local-bootstrap-token", ALLOWED_ORIGIN: "https://asia-cs.test" };
   const adminBootstrap = await request(worker, env, "/api/auth/admin/bootstrap", { method: "POST", headers: { "X-Admin-Bootstrap-Token": "local-bootstrap-token" }, body: JSON.stringify({ username: "admin", password: "admin-password" }) });
   assert.equal(adminBootstrap.response.status, 201);
@@ -262,7 +265,7 @@ test("大会のチーム所属と日時境界をサーバー側で検証する",
 
 test("Asia CSはStarting9の外部identityを使い、client user_idと独自loginを受け付けない", async () => {
   const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
-  const fixture = createDatabase();
+  const fixture = createDatabase({ competitionStatus: "active" });
   const env = {
     ...fixture,
     ASIA_CS_LOCAL_AUTH: "false",
@@ -578,7 +581,7 @@ test("管理者bootstrapは一度だけで、公開登録・一般ユーザー�
 test("採点は状態遷移・batch rollback・並列実行を保護する", async () => {
   const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
   const failure = { enabled: false, used: false, statementIndex: 2 };
-  const fixture = createDatabase({ failure });
+  const fixture = createDatabase({ failure, competitionStatus: "active" });
   const env = { ...fixture, ADMIN_BOOTSTRAP_TOKEN: "one-time-token", ALLOWED_ORIGIN: "https://asia-cs.test" };
   const bootstrap = await request(worker, env, "/api/auth/admin/bootstrap", { method: "POST", headers: { "X-Admin-Bootstrap-Token": "one-time-token" }, body: JSON.stringify({ username: "operator", password: "operator-password" }) });
   const admin = await request(worker, env, "/api/auth/login", { method: "POST", body: JSON.stringify({ username: "operator", password: "operator-password" }) });

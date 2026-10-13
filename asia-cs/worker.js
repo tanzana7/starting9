@@ -699,7 +699,10 @@ function serializeCompetition(competition) {
 }
 
 function competitionAllowsPrediction(competition, game) {
-  if (competition?.status === "completed") return false;
+  // A competition must be explicitly activated before any prediction can be
+  // accepted. This keeps draft data publicly readable while failing closed
+  // for draft, completed, and future/unknown competition states.
+  if (competition?.status !== "active") return false;
   const deadline = validDate(game?.prediction_deadline_at);
   return Boolean(competition && deadline && Date.now() < deadline.getTime() && game?.status === "open");
 }
@@ -1027,7 +1030,10 @@ async function savePrediction(request, env, db, gameId) {
   if (originError) return originError;
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
-  await assertGameCompetitionMutable(db, game);
+  const competition = await assertGameCompetitionMutable(db, game);
+  if (competition.status !== "active") {
+    return errorResponse(request, env, 409, "PREDICTION_NOT_OPEN", "予想受付開始前です。");
+  }
   if (!isGamePredictionEligible(game, await getTeams(db, game.competition_id))) {
     return errorResponse(request, env, 409, "PREDICTION_NOT_ELIGIBLE", "日本代表が出場しない試合は予想できません。");
   }
@@ -1058,7 +1064,10 @@ async function deletePrediction(request, env, db, gameId) {
   const originError = mutationOriginError(request, env, user);
   if (originError) return originError;
   const game = await getGame(db, gameId);
-  if (game) await assertGameCompetitionMutable(db, game);
+  const competition = game ? await assertGameCompetitionMutable(db, game) : null;
+  if (competition && competition.status !== "active") {
+    return errorResponse(request, env, 409, "PREDICTION_NOT_OPEN", "予想受付開始前です。");
+  }
   const deadline = validDate(game?.prediction_deadline_at);
   if (!game || !deadline || new Date().getTime() >= deadline.getTime() || game.status !== "open") {
     return errorResponse(request, env, 409, "PREDICTION_DEADLINE_PASSED", "予想受付を終了しています。");

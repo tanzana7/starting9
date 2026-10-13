@@ -148,6 +148,13 @@ test("Asia CS Japan synthetic local E2E: roster → prediction → score → ran
   assert.equal(japan.response.status, 201);
   assert.equal(opponent.response.status, 201);
   const japanTeamId = japan.payload.team.id;
+  const activated = await request(worker, env, "/api/admin/competition", jsonOptions("PUT", adminCookie, {
+    id: competitionId,
+    displayName: "Asia CS Japan Synthetic E2E",
+    shortName: "JPN E2E",
+    status: "active"
+  }));
+  assert.equal(activated.response.status, 200);
 
   const start = new Date(Date.now() + 2 * 60 * 60 * 1000);
   const deadline = new Date(Date.now() + 60 * 60 * 1000);

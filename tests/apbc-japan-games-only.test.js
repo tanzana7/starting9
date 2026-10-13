@@ -88,20 +88,50 @@ test("APBC prediction scope is Japan-only while schedule remains tournament-wide
     "apbc-2026-g1", "apbc-2026-g2", "apbc-2026-g3", "apbc-2026-g4", "apbc-2026-g5", "apbc-2026-g6"
   ]);
   assert.deepEqual(landing.payload.games.map((game) => game.predictionEligible), [false, true, false, true, true, false]);
-  assert.deepEqual(landing.payload.games.map((game) => game.canPredict), [false, true, false, true, true, false]);
-  assert.equal(landing.payload.nextGame.id, "apbc-2026-g2");
-  assert.deepEqual(landing.payload.acceptingGames.map((game) => game.id), ["apbc-2026-g2", "apbc-2026-g4", "apbc-2026-g5"]);
+  assert.deepEqual(landing.payload.games.map((game) => game.canPredict), [false, false, false, false, false, false]);
+  assert.equal(landing.payload.nextGame, null);
+  assert.deepEqual(landing.payload.acceptingGames, []);
 
   const nonJapan = await request(worker, env, "/api/games/apbc-2026-g1");
   assert.equal(nonJapan.payload.game.predictionEligible, false);
   assert.equal(nonJapan.payload.game.canPredict, false);
   const japan = await request(worker, env, "/api/games/apbc-2026-g2");
   assert.equal(japan.payload.game.predictionEligible, true);
-  assert.equal(japan.payload.game.canPredict, true);
+  assert.equal(japan.payload.game.canPredict, false);
+});
+
+test("APBC draftは公開読み取りを維持し、予想の保存・削除をfail closedする", async () => {
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const env = createFixture();
+  const registration = await request(worker, env, "/api/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "apbc-draft-user", password: "apbc-draft-password" })
+  });
+  assert.equal(registration.response.status, 201);
+  const cookie = registration.cookie.split(";")[0];
+  const publicRead = await request(worker, env, "/api/games/apbc-2026-g2");
+  assert.equal(publicRead.response.status, 200);
+  assert.equal(publicRead.payload.game.canPredict, false);
+  const save = await request(worker, env, "/api/games/apbc-2026-g2/prediction", {
+    method: "PUT",
+    headers: { Cookie: cookie, Origin: "https://asia-cs.test", "Content-Type": "application/json" },
+    body: JSON.stringify({ lineup: [] })
+  });
+  assert.equal(save.response.status, 409);
+  assert.equal(save.payload.code, "PREDICTION_NOT_OPEN");
+  const deletion = await request(worker, env, "/api/games/apbc-2026-g2/prediction", {
+    method: "DELETE",
+    headers: { Cookie: cookie, Origin: "https://asia-cs.test" }
+  });
+  assert.equal(deletion.response.status, 409);
+  assert.equal(deletion.payload.code, "PREDICTION_NOT_OPEN");
+  assert.equal(env.database.prepare("SELECT COUNT(*) AS count FROM predictions").get().count, 0);
 });
 test("APBC non-Japan prediction save is rejected before lineup validation", async () => {
   const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
   const env = createFixture();
+  env.database.prepare("UPDATE competitions SET status = 'active' WHERE id = 'apbc-2026'").run();
   const registration = await request(worker, env, "/api/auth/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -139,6 +169,7 @@ test("APBC prediction form prevents duplicates and makes completion requirements
   assert.match(app, /usedByOtherRows\.has\(String\(item\.id\)\)/);
   assert.match(app, /value\.position \|\| ""/);
   assert.match(app, /予想締切 .*JST/);
+  assert.match(app, /予想受付開始前/);
   assert.match(app, /playerMeta/);
   assert.match(html, /id="asiaEditionPredictionValidation"/);
   assert.match(html, /id="asiaEditionSaveButton"[^>]+type="submit"/);

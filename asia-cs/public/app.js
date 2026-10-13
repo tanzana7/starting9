@@ -57,11 +57,11 @@ function renderCompetition(payload) {
   const next = payload.nextGame;
   $("nextGame").innerHTML = next
     ? `<strong>${escapeHtml(gameLabel(next))}</strong><span>${escapeHtml(formatDate(next.startAt))}</span><button type="button" class="link-button" data-game="${escapeHtml(next.id)}">この試合を予想</button>`
-    : "次の試合は未定です。";
+    : competition.status === "draft" ? "予想受付開始前" : "次の試合は未定です。";
   $("scheduleStatus").textContent = `${state.games.length}試合`;
   $("scheduleList").innerHTML = state.games.length ? state.games.map((game) => {
     const predictionEligible = isJapanPredictionGame(game);
-    const status = game.status === "published" ? "結果公開" : !predictionEligible ? "日程のみ" : game.canPredict ? "受付中" : game.archived ? "アーカイブ" : "受付終了";
+    const status = game.status === "published" ? "結果公開" : !predictionEligible ? "日程のみ" : game.canPredict ? "受付中" : state.competition?.status === "draft" ? "予想受付開始前" : game.archived ? "アーカイブ" : "受付終了";
     return `<article class="schedule-row"><div><strong>${escapeHtml(gameLabel(game))}</strong><span>${escapeHtml(formatDate(game.startAt))}${game.venue ? ` ・ ${escapeHtml(game.venue)}` : ""}</span></div><div class="schedule-actions"><span class="status-chip">${escapeHtml(status)}</span>${predictionEligible && game.canPredict ? `<button type="button" class="link-button" data-game="${escapeHtml(game.id)}">予想</button>` : ""}${game.status === "published" ? `<button type="button" class="link-button" data-result="${escapeHtml(game.id)}">結果</button>` : ""}</div></article>`;
   }).join("") : "日程はまだ登録されていません。";
 }
@@ -156,7 +156,7 @@ function renderGame() {
   if (!state.game) return;
   $("predictionPanel").classList.remove("hidden");
   $("gameMeta").textContent = `${gameLabel(state.game)} ・ ${formatDate(state.game.startAt)}`;
-  $("deadlineStatus").textContent = state.game.canPredict ? `予想締切 ${formatDate(state.game.predictionDeadlineAt)} JST` : state.game.status === "published" ? "結果公開済み" : "予想受付終了";
+  $("deadlineStatus").textContent = state.game.canPredict ? `予想締切 ${formatDate(state.game.predictionDeadlineAt)} JST` : state.game.status === "published" ? "結果公開済み" : state.competition?.status === "draft" ? "予想受付開始前" : "予想受付終了";
   const teams = [state.game.homeTeam, state.game.awayTeam].filter(Boolean);
   const predictionTeams = teams.filter(isJapanTeam);
   const selectableTeams = predictionTeams.length ? predictionTeams : teams;

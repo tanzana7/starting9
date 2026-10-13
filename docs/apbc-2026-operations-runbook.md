@@ -174,7 +174,7 @@ completed後はpredictionの変更と管理mutationが拒否されます。既�
 - requiredFormalJobTypes / missingFormalJobTypes
 - ranking generation
 
-現在のUIはscore、ranking、publish、rescoreのボタンを常時表示し、前提未達時はサーバーのerror codeで拒否します。API側の依存関係は安全ですが、ボタンの事前disabledや全操作の確認ダイアログはありません。これは今回の運用上のP3注意点です。対象試合、現在status、締切、lineup revisionを読み直してから押し、エラー後は同じ操作を連打しません。
+UIはoverview/detail GETで取得したcompetition status、Japan戦判定、締切、lineup revision、formalJobsを使い、score、rescore、ranking、publishの前提未達操作をdisabledにします。disabled理由は各ボタンの下に表示されます。draft→active、active→completed、score、rescore、ranking、publishには確認ダイアログがあり、送信中は二重操作を防止します。これは操作ミスを減らすためのUI補助であり、認証・CSRF・状態遷移・依存関係の判定は引き続きAsia Workerが行います。GETでreconcileやjob生成は行いません。非Japan試合はprediction pipeline操作の対象外として表示されます。
 
 ## Troubleshooting / Emergency Checks
 

@@ -26,6 +26,22 @@ APBC 2026 の運営期間に、Starting9 の管理画面と正式な管理APIだ
 - Asia Worker `/health` は200。Asia Workerのproduction configにCron triggerはない。
 - GAME7/GAME8は未作成。対戦カード確定前に作成しない。
 
+## Pre-activation readiness policy
+
+事前準備の判定では、侍ジャパンの出場決定選手の発表と、大会側の最終公式登録ロースターの公示を分けて扱います。侍ジャパン公式に掲載された出場決定選手とStarting9の対象選手が一致し、技術・日程・締切・予想対象の条件を満たしている場合、大会側の最終ロースターが未公示であることだけを理由に事前準備をNO-GOにはしません。
+
+- `APBC 2026 PRE-ACTIVATION GO WITH FINAL ROSTER RECHECK REQUIRED`: 事前運用の準備は成立。ただしactive化直前に大会側の最終ロースターを再確認する。
+- `READY TO ACTIVATE`: 最終ロースター、管理APIのread-back、production health、全active gateを確認済み。実際のactive化操作を許可できる状態。
+- `PRE-ACTIVATION NO-GO`: 既知の選手差分、辞退・追加招集の未反映、日程・締切不一致、Worker障害、予想受付gate不具合、またはP1/P2の技術問題がある状態。
+
+「GO WITH FINAL ROSTER RECHECK REQUIRED」は予想受付開始の許可ではありません。`apbc-2026` は引き続き `draft` のまま保持し、active化直前に次を再確認します。
+
+1. 大会側の最終公式ロースターの OUT / IN / 辞退 / 追加招集。
+2. GAME2/4/5のJapanロースター15名、選手ID、登録守備位置、表記差。
+3. 管理APIのformal job read-back、production health、公開APIの `status` / `acceptingGames` / `canPredict`。
+
+侍ジャパンの選手発表は[公式選手一覧](https://i.japan-baseball.jp/jp/team/topteam/2026/apbc/player.html)、大会側の最終ロースター公示は大会公式発表を正本とします。
+
 ## Before 11/10
 
 11/10 00:00に自動でactiveにはなりません。次の確認を完了してから、運営責任者が明示的にactiveへ変更します。

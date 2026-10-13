@@ -1074,6 +1074,7 @@ async function deletePrediction(request, env, db, gameId) {
   if (competition && competition.status !== "active") {
     return errorResponse(request, env, 409, "PREDICTION_NOT_OPEN", "予想受付開始前です。");
   }
+  if (game && !await persistedGamePredictionEligible(db, game)) return predictionNotEligibleResponse(request, env);
   const deadline = validDate(game?.prediction_deadline_at);
   if (!game || !deadline || new Date().getTime() >= deadline.getTime() || game.status !== "open") {
     return errorResponse(request, env, 409, "PREDICTION_DEADLINE_PASSED", "予想受付を終了しています。");
@@ -1336,6 +1337,7 @@ async function bulkImportGames(request, env, db) {
   if (competition?.status === "completed") throw new RequestError(409, "COMPETITION_COMPLETED", "完了した大会は変更できません。");
   const preparedRows = [];
   const seenIds = new Set();
+  const competitionTeams = await getTeams(db, competitionId);
   for (const value of rows) {
     const id = validId(value.id || value.gameId) || uuid();
     const title = String(value.title || value.name || "Asia CS").trim().slice(0, 120);
@@ -1358,10 +1360,18 @@ async function bulkImportGames(request, env, db) {
       throw new RequestError(400, "GAMES_INVALID", "試合日・開始日時・締切・対戦チームのいずれかが不正です。");
     }
     seenIds.add(id);
-    preparedRows.push({ id, title, gameDate, startAt, deadline, teams, venue: String(value.venue || "").trim().slice(0, 120) || null, externalGameCode: String(value.externalGameCode || value.external_game_code || "").trim().slice(0, 80) || null });
+    preparedRows.push({
+      id,
+      title,
+      gameDate,
+      startAt,
+      deadline,
+      teams,
+      venue: String(value.venue || "").trim().slice(0, 120) || null,
+      externalGameCode: String(value.externalGameCode || value.external_game_code || "").trim().slice(0, 80) || null
+    });
   }
   const now = nowIso();
-  const competitionTeams = await getTeams(db, competitionId);
   const statements = [];
   if (!competition) {
     statements.push(prepared(db, `INSERT OR IGNORE INTO competitions
@@ -1614,6 +1624,18 @@ async function scoreGame(request, env, db, gameId, admin) {
 }
 
 async function rebuildCompetitionRanking(db, game, revision, now) {
+  const competitionTeams = await getTeams(db, game.competition_id);
+  let eligibleGameIds = null;
+  if (competitionTeams.some(isJapanTeam)) {
+    const competitionGames = await prepared(db, `SELECT id, home_team_id, home_team_name, away_team_id, away_team_name
+      FROM games WHERE competition_type = ?1 AND competition_id = ?2`, COMPETITION_TYPE, game.competition_id).all();
+    eligibleGameIds = (competitionGames.results || [])
+      .filter((candidate) => isGamePredictionEligible(candidate, competitionTeams))
+      .map((candidate) => candidate.id);
+  }
+  const eligibleGameFilter = eligibleGameIds
+    ? `AND g.id IN (${eligibleGameIds.map((_, index) => `?${index + 4}`).join(",")})`
+    : "";
   const rowsResult = await prepared(db, `SELECT p.user_id, u.username,
       SUM(p.score) AS score_total, COUNT(DISTINCT p.game_id) AS games_count
     FROM predictions p
@@ -1625,8 +1647,9 @@ async function rebuildCompetitionRanking(db, game, revision, now) {
       AND p.status = 'scored' AND p.score IS NOT NULL
       AND p.scored_revision = g.current_lineup_revision
       AND u.status = 'active'
+      ${eligibleGameFilter}
     GROUP BY p.user_id, u.username
-    ORDER BY score_total DESC, games_count DESC, p.user_id ASC`, COMPETITION_TYPE, game.competition_id, game.id).all();
+     ORDER BY score_total DESC, games_count DESC, p.user_id ASC`, COMPETITION_TYPE, game.competition_id, game.id, ...(eligibleGameIds || [])).all();
   const rows = rowsResult.results || [];
   const publicationState = await prepared(db, "SELECT publication_revision FROM competition_publication_state WHERE competition_id = ?1 LIMIT 1", game.competition_id).first();
   const basePublicationRevision = Number(publicationState?.publication_revision || 0);

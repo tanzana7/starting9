@@ -118,6 +118,68 @@ test("通常Cron discoveryは古いranked試合をstale publish recovery対象�
   }
 });
 
+test("historical correction discoveryはmaintenance窓以外のformal batchへ混入しない", async () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE games (
+        internal_game_id TEXT PRIMARY KEY, game_date TEXT, start_time TEXT,
+        home_team TEXT, away_team TEXT, npb_game_code TEXT,
+        npb_identity_status TEXT, game_status TEXT, is_active INTEGER,
+        deleted_at TEXT
+      );
+      CREATE TABLE game_automation_v3_state (
+        internal_game_id TEXT PRIMARY KEY, state TEXT
+      );
+      CREATE TABLE game_jobs_v3 (
+        id INTEGER PRIMARY KEY, internal_game_id TEXT, job_type TEXT, status TEXT
+      );
+      CREATE TABLE game_lineups (
+        internal_game_id TEXT PRIMARY KEY, final_lineup_revision_id TEXT,
+        scoring_status TEXT, scored_at TEXT, publication_status TEXT, published_at TEXT
+      );
+      CREATE TABLE game_lineup_revisions (
+        internal_game_id TEXT, game_id TEXT, version INTEGER, revision_id TEXT
+      );
+      CREATE TABLE game_scoring_revisions (
+        id TEXT PRIMARY KEY, internal_game_id TEXT, lineup_revision_id TEXT,
+        status TEXT, is_active INTEGER
+      );
+      CREATE TABLE ranking_games (
+        internal_game_id TEXT PRIMARY KEY, publication_status TEXT, published_at TEXT
+      );
+      INSERT INTO games VALUES
+        ('historic-correction', '2026-08-06', '2026-08-06T09:00:00.000Z',
+         'fighters', 'hawks', 'f-h-old', 'resolved', 'scheduled', 1, NULL);
+      INSERT INTO game_automation_v3_state VALUES ('historic-correction', 'published');
+      INSERT INTO game_lineups VALUES
+        ('historic-correction', 'historic-correction:2', 'scored', '2026-08-06T10:00:00.000Z', 'published', '2026-08-06T10:10:00.000Z');
+      INSERT INTO game_lineup_revisions VALUES
+        ('historic-correction', 'historic-correction', 2, 'historic-correction:2');
+      INSERT INTO game_scoring_revisions VALUES
+        ('score-old', 'historic-correction', 'historic-correction:1', 'completed', 1);
+      INSERT INTO game_jobs_v3 VALUES
+        (1, 'historic-correction', 'score', 'completed');
+    `);
+
+    const now = new Date("2026-09-19T00:00:00.000Z");
+    const normal = await listV3Games(d1(database), now, {
+      limit: 12,
+      prioritizeDue: true,
+      includeHistoricalRecovery: false
+    });
+    const maintenance = await listV3Games(d1(database), now, {
+      limit: 12,
+      prioritizeDue: true,
+      includeHistoricalRecovery: true
+    });
+    assert.equal(normal.some((game) => game.internalGameId === "historic-correction"), false);
+    assert.equal(maintenance.some((game) => game.internalGameId === "historic-correction"), true);
+  } finally {
+    database.close();
+  }
+});
+
 test("auxiliaryの12試合batchは当日分に続く翌日試合を含む", async () => {
   const database = new DatabaseSync(":memory:");
   try {

@@ -4,9 +4,9 @@ import { evaluateCanonicalArtifactsFromDb } from "./canonical-artifact-evaluator
 
 // D1 persistence boundary for V3 games, states, identity hydration, and jobs.
 // Normal Cron discovery intentionally retains only a short historical window.
-// Older corrections remain discoverable through the explicit manual-action or
-// canonical-recovery predicates below, but a stale ranked game must not keep
-// re-entering the hot path indefinitely when its publication artifact is bad.
+// Older corrections are revisited from the existing maintenance window so a
+// stale published game cannot force the every-minute critical path to hydrate
+// historical artifacts indefinitely.
 const V3_AUTOMATION_HISTORICAL_LOOKBACK_DAYS = 2;
 const gamesActualStartColumnCache = new WeakMap();
 
@@ -32,7 +32,10 @@ async function getV3GamesActualStartColumn(db) {
 // hydrated discovery when neither an existing formal job nor a game close
 // enough to a formal slot can exist.  Any query/schema uncertainty fails open
 // so a planner pass is preferred over a missed prediction-close or recovery.
-export async function hasPotentialFormalWork(db, now = new Date(), { v4SemiAuto = false } = {}) {
+export async function hasPotentialFormalWork(db, now = new Date(), {
+  v4SemiAuto = false,
+  includeHistoricalRecovery = true
+} = {}) {
   const current = now instanceof Date ? now : new Date(now);
   if (Number.isNaN(current.getTime())) return true;
   const timestamp = current.toISOString();
@@ -84,6 +87,7 @@ export async function hasPotentialFormalWork(db, now = new Date(), { v4SemiAuto 
               AND LOWER(COALESCE(games.game_status, '')) NOT IN ('cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded')
               AND (
                 LOWER(COALESCE(workflow.state, 'scheduled')) = 'manual_action_required'
+                AND ${includeHistoricalRecovery ? "1 = 1" : `games.game_date BETWEEN date(?2, '-${V3_AUTOMATION_HISTORICAL_LOOKBACK_DAYS} day') AND date(?2, '+1 day')`}
                 OR (
                   games.game_date BETWEEN date(?2, '-${V3_AUTOMATION_HISTORICAL_LOOKBACK_DAYS} day') AND date(?2, '+1 day')
                   AND (
@@ -128,7 +132,7 @@ export async function hasPotentialFormalWork(db, now = new Date(), { v4SemiAuto 
                     )
                   )
                 )
-                OR (
+                ${includeHistoricalRecovery ? `OR (
                   LOWER(COALESCE(workflow.state, 'scheduled')) = 'published'
                   AND EXISTS (
                     SELECT 1 FROM game_lineups AS corrected
@@ -158,7 +162,7 @@ export async function hasPotentialFormalWork(db, now = new Date(), { v4SemiAuto 
                        AND active_score.is_active = 1
                        AND active_score.status = 'completed'
                   )
-                )
+                )` : ""}
               )
             LIMIT 1
          ) AS candidate_game`
@@ -190,6 +194,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
     : null;
   const recentFirst = options?.recentFirst === true;
   const includeRecentHistory = options?.includeRecentHistory === true;
+  const includeHistoricalRecovery = options?.includeHistoricalRecovery !== false;
   const prioritizeDue = options?.prioritizeDue === true;
   let columns = new Set();
   try {
@@ -289,6 +294,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
            AND active_score.is_active = 1
            AND active_score.status = 'completed')`
     : "0";
+  const activeCorrectionRecoverySql = includeHistoricalRecovery ? correctionRecoverySql : "0";
   const enrichedParams = includeRecentHistory ? [] : [date];
   // The scheduled runner uses a bounded, deadline-first window.  Keep the
   // priority values as bound parameters so the general-purpose admin query
@@ -381,7 +387,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
     ? ""
     : `AND (${publishedAt} IS NULL
              AND LOWER(COALESCE(${publicationStatus}, '')) <> 'published'
-           OR (${correctionRecoverySql}))`;
+           OR (${activeCorrectionRecoverySql}))`;
   const discoveryFilterSql = includeRecentHistory
     ? `AND ${fightersGameSql}
            AND LOWER(COALESCE(workflow.state, '')) NOT IN (${adminHistoryExcludedWorkflowStateSql})`
@@ -391,11 +397,11 @@ export async function listV3Games(db, now = new Date(), options = {}) {
                games.game_date >= date(?1, '-${V3_AUTOMATION_HISTORICAL_LOOKBACK_DAYS} day')
                AND LOWER(COALESCE(workflow.state, '')) IN (${unfinishedWorkflowStateSql}, 'ranked')
              )
-             OR (
+               OR (
                 LOWER(COALESCE(workflow.state, '')) = 'manual_action_required'
-               AND (${correctionPendingSql} OR (${correctionRecoverySql}))
+               AND (${correctionPendingSql} OR (${activeCorrectionRecoverySql}))
              )
-             OR (${correctionRecoverySql})
+               OR (${activeCorrectionRecoverySql})
            )
            AND LOWER(COALESCE(workflow.state, '')) NOT IN (${excludedWorkflowStateSql})`;
   let result;
@@ -406,7 +412,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
     result = await db.prepare(
       `SELECT ${gameColumns}, workflow.state AS workflow_state,
               ${correctionPendingSql} AS correction_job_open,
-              (${correctionRecoverySql}) AS correction_recovery_candidate,
+              (${activeCorrectionRecoverySql}) AS correction_recovery_candidate,
               ${publicationStatus} AS publication_status, ${publishedAt} AS published_at
          FROM games
          LEFT JOIN game_automation_v3_state AS workflow
@@ -452,7 +458,7 @@ export async function listV3Games(db, now = new Date(), options = {}) {
       result = await db.prepare(
         `SELECT ${gameColumns}, workflow.state AS workflow_state,
                 ${correctionPendingSql} AS correction_job_open,
-                (${correctionRecoverySql}) AS correction_recovery_candidate
+                (${activeCorrectionRecoverySql}) AS correction_recovery_candidate
            FROM games
            LEFT JOIN game_automation_v3_state AS workflow
              ON workflow.internal_game_id = games.internal_game_id

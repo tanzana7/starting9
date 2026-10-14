@@ -43,6 +43,27 @@ const APBC_PLACEMENT_GAME_DEFINITIONS = Object.freeze({
   third_place: Object.freeze({ gameNumber: "7", title: "3位決定戦", startAt: "2026-11-15T02:00:00.000Z" })
 });
 const APBC_PLACEMENT_DATE = "2026-11-15";
+const DRYRUN_FIXTURE_ID = "apbc-switch-test-2026-10-16";
+const DRYRUN_SOURCE_COMPETITION_ID = "apbc-2026";
+const DRYRUN_SOURCE_GAME_ID = "apbc-2026-g2";
+const DRYRUN_FIXTURE_TEAM_DEFINITIONS = Object.freeze([
+  Object.freeze({ teamKey: "jpn", displayName: "日本", shortName: "JPN", countryCode: "JPN" }),
+  Object.freeze({ teamKey: "kor", displayName: "韓国", shortName: "KOR", countryCode: "KOR" }),
+  Object.freeze({ teamKey: "aus", displayName: "オーストラリア", shortName: "AUS", countryCode: "AUS" }),
+  Object.freeze({ teamKey: "tpe", displayName: "チャイニーズ・タイペイ", shortName: "TPE", countryCode: "TPE" })
+]);
+const DRYRUN_FIXTURE_GAME_DEFINITIONS = Object.freeze([
+  Object.freeze({ id: "TEST1", title: "TEST1 日本 vs 韓国", gameDate: "2026-10-16", startAt: "2026-10-16T09:00:00.000Z", homeTeamId: "jpn", awayTeamId: "kor" }),
+  Object.freeze({ id: "TEST2", title: "TEST2 オーストラリア vs 日本", gameDate: "2026-10-16", startAt: "2026-10-16T13:00:00.000Z", homeTeamId: "aus", awayTeamId: "jpn" })
+]);
+const DRYRUN_FIXTURE_COMPETITION = Object.freeze({
+  id: DRYRUN_FIXTURE_ID,
+  displayName: "APBC予想切替テスト 2026-10-16",
+  shortName: "APBC Switch Test",
+  startDate: "2026-10-16",
+  endDate: "2026-10-16",
+  description: "APBC本大会とは独立した2026-10-16仮運用テスト（Asia/Tokyo）"
+});
 
 function allowedOrigins(env) {
   return String(env?.ALLOWED_ORIGIN || "")
@@ -104,10 +125,11 @@ async function readJson(request) {
 }
 
 class RequestError extends Error {
-  constructor(status, code, message) {
+  constructor(status, code, message, details = {}) {
     super(message);
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -1183,6 +1205,211 @@ async function ensureFormalJobs(db, game) {
   await db.batch(buildFormalJobStatements(db, game.id, game.prediction_deadline_at, game.competition_id || DEFAULT_COMPETITION_ID, nowIso(), jobTypes));
 }
 
+function dryRunPlayerCopyId(gameId, sourcePlayerId) {
+  // players.id is the existing per-game table's global primary key. A source
+  // player therefore cannot be inserted into both TEST1 and TEST2 under the
+  // same database id without moving or overwriting APBC data. Keep a stable,
+  // fixture-scoped alias so retries are idempotent and expose the original id
+  // in the read-back mapping instead of mutating the canonical APBC roster.
+  return `dryrun-${gameId.toLowerCase()}-${sourcePlayerId}`.slice(0, 64);
+}
+
+async function dryRunSourceRoster(db) {
+  const sourceGame = await getGame(db, DRYRUN_SOURCE_GAME_ID);
+  const sourceTeams = await getTeams(db, DRYRUN_SOURCE_COMPETITION_ID);
+  if (!sourceGame || sourceGame.competition_id !== DRYRUN_SOURCE_COMPETITION_ID) {
+    throw new RequestError(409, "DRYRUN_SOURCE_ROSTER_UNAVAILABLE", "APBC GAME2のロースターを確認できません。");
+  }
+  const japanTeam = sourceTeams.find(isJapanTeam);
+  if (!japanTeam) throw new RequestError(409, "DRYRUN_SOURCE_ROSTER_UNAVAILABLE", "APBC GAME2の日本代表チームを確認できません。");
+  const roster = (await getPlayers(db, sourceGame.id, true)).filter((player) =>
+    teamMatchesGameReference(japanTeam, player.team_id, player.team)
+  );
+  const ids = roster.map((player) => String(player.id || ""));
+  const duplicateIds = ids.length - new Set(ids).size;
+  const unknown = roster.filter((player) => !validId(player.id) || !String(player.name || "").trim()
+    || !String(player.team || "").trim() || !REGISTERED_POSITIONS.includes(String(player.position || "").trim())).length;
+  if (roster.length !== 15 || duplicateIds !== 0 || unknown !== 0) {
+    throw new RequestError(409, "DRYRUN_SOURCE_ROSTER_INVALID", "APBC GAME2の日本代表ロースターが15名として確定していません。", {
+      sourceRoster: { count: roster.length, duplicatePlayerIds: duplicateIds, unknown }
+    });
+  }
+  return { sourceGame, sourceTeam: japanTeam, roster };
+}
+
+async function dryRunFixtureReadback(db) {
+  const competition = await getCompetition(db, DRYRUN_FIXTURE_ID);
+  if (!competition) return { exists: false, ready: false, status: "missing", competition: null, teams: [], games: [], formalJobs: [] };
+  const teams = await getTeams(db, DRYRUN_FIXTURE_ID);
+  const games = [];
+  const formalJobs = [];
+  for (const definition of DRYRUN_FIXTURE_GAME_DEFINITIONS) {
+    const game = await getGame(db, definition.id);
+    if (!game || game.competition_id !== DRYRUN_FIXTURE_ID) continue;
+    const players = await getPlayers(db, game.id, true);
+    const jobs = await listFormalJobs(db, game.id);
+    games.push({
+      id: game.id,
+      title: game.title,
+      gameDate: game.game_date,
+      startAt: game.start_at,
+      predictionDeadlineAt: game.prediction_deadline_at,
+      homeTeamId: game.home_team_id,
+      awayTeamId: game.away_team_id,
+      status: game.status,
+      publicationStatus: game.publication_status,
+      rosterCount: players.length,
+      duplicatePlayerIds: players.length - new Set(players.map((player) => player.id)).size,
+      players: players.map((player) => ({
+        id: player.id,
+        sourcePlayerId: player.id.startsWith(`dryrun-${game.id.toLowerCase()}-`) ? player.id.slice(`dryrun-${game.id.toLowerCase()}-`.length) : null,
+        name: player.name,
+        club: player.team || null,
+        registeredPosition: player.position || null,
+        active: Boolean(player.active)
+      })),
+      formalJobs: jobs
+    });
+    formalJobs.push(...jobs.map((job) => ({ ...job, gameId: game.id })));
+  }
+  const gamesReady = games.length === DRYRUN_FIXTURE_GAME_DEFINITIONS.length
+    && games.every((game) => {
+      const definition = DRYRUN_FIXTURE_GAME_DEFINITIONS.find((item) => item.id === game.id);
+      const expectedDeadline = derivePredictionDeadline(definition.startAt)?.toISOString();
+      return game.title === definition.title
+        && game.gameDate === definition.gameDate
+        && game.startAt === new Date(definition.startAt).toISOString()
+        && game.predictionDeadlineAt === expectedDeadline
+        && game.homeTeamId === definition.homeTeamId
+        && game.awayTeamId === definition.awayTeamId
+        && game.rosterCount === 15
+        && game.duplicatePlayerIds === 0
+        && game.formalJobs.length === FORMAL_JOB_TYPES.length
+        && new Set(game.formalJobs.map((job) => job.job_type)).size === FORMAL_JOB_TYPES.length
+        && game.formalJobs.every((job) => job.status === "scheduled"
+          && job.due_at === expectedDeadline);
+    });
+  const ready = teams.length === DRYRUN_FIXTURE_TEAM_DEFINITIONS.length
+    && DRYRUN_FIXTURE_TEAM_DEFINITIONS.every((definition) => teams.some((team) => team.team_key === definition.teamKey
+      && team.display_name === definition.displayName && team.short_name === definition.shortName))
+    && gamesReady;
+  return {
+    exists: true,
+    ready,
+    status: competition.status,
+    competition: serializeCompetition(competition),
+    teams,
+    games,
+    formalJobs,
+    expected: { teams: 4, games: 2, rosterPerGame: 15, formalJobsPerGame: 4 },
+    source: { competitionId: DRYRUN_SOURCE_COMPETITION_ID, gameId: DRYRUN_SOURCE_GAME_ID }
+  };
+}
+
+async function prepareDryRunFixture(request, env, db) {
+  const existing = await getCompetition(db, DRYRUN_FIXTURE_ID);
+  if (existing?.status === "completed") throw new RequestError(409, "DRYRUN_COMPETITION_COMPLETED", "完了したテスト大会は準備し直せません。");
+  const source = await dryRunSourceRoster(db);
+  const now = nowIso();
+  const statements = [];
+  const targetTeams = new Map();
+  for (const team of DRYRUN_FIXTURE_TEAM_DEFINITIONS) {
+    const existingTeam = await findTeam(db, DRYRUN_FIXTURE_ID, team.teamKey);
+    targetTeams.set(team.teamKey, {
+      id: existingTeam?.id || uuid(),
+      competition_id: DRYRUN_FIXTURE_ID,
+      team_key: team.teamKey,
+      display_name: team.displayName,
+      short_name: team.shortName,
+      country_code: team.countryCode
+    });
+  }
+  statements.push(prepared(db, `INSERT INTO competitions
+    (id, competition_type, display_name, short_name, start_date, end_date, status, description, created_at, updated_at)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'draft', ?7, ?8, ?8)
+    ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name,
+      short_name = excluded.short_name, start_date = excluded.start_date,
+      end_date = excluded.end_date, description = excluded.description,
+      updated_at = excluded.updated_at
+    WHERE competitions.status <> 'completed'`,
+    DRYRUN_FIXTURE_ID, COMPETITION_TYPE, DRYRUN_FIXTURE_COMPETITION.displayName,
+    DRYRUN_FIXTURE_COMPETITION.shortName, DRYRUN_FIXTURE_COMPETITION.startDate,
+    DRYRUN_FIXTURE_COMPETITION.endDate, DRYRUN_FIXTURE_COMPETITION.description, now));
+  for (const team of DRYRUN_FIXTURE_TEAM_DEFINITIONS) {
+    statements.push(prepared(db, `INSERT INTO teams
+      (id, competition_id, team_key, display_name, short_name, country_code, created_at, updated_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+      ON CONFLICT(competition_id, team_key) DO UPDATE SET display_name = excluded.display_name,
+        short_name = excluded.short_name, country_code = excluded.country_code, updated_at = excluded.updated_at`,
+      targetTeams.get(team.teamKey).id, DRYRUN_FIXTURE_ID, team.teamKey, team.displayName, team.shortName, team.countryCode, now));
+  }
+  for (const definition of DRYRUN_FIXTURE_GAME_DEFINITIONS) {
+    const startAt = validIsoDateTime(definition.startAt);
+    const deadline = normalizePredictionDeadline(startAt);
+    const teams = {
+      home: targetTeams.get(definition.homeTeamId),
+      away: targetTeams.get(definition.awayTeamId)
+    };
+    const existingGame = await getGame(db, definition.id);
+    if (existingGame && (existingGame.competition_id !== DRYRUN_FIXTURE_ID
+      || existingGame.status !== "open" || existingGame.publication_status !== "pending")) {
+      throw new RequestError(409, "DRYRUN_GAME_STATE_CONFLICT", `${definition.id}はテスト準備可能な状態ではありません。`);
+    }
+    statements.push(prepared(db, `INSERT INTO games
+      (id, title, competition_type, competition_id, game_source, external_game_code, game_date, start_at,
+       prediction_deadline_at, venue, home_team_id, home_team_name, away_team_id, away_team_name,
+       status, publication_status, current_lineup_revision, created_at, updated_at)
+      VALUES (?1, ?2, ?3, ?4, 'manual', NULL, ?5, ?6, ?7, NULL, ?8, ?9, ?10, ?11, 'open', 'pending', NULL, ?12, ?12)
+      ON CONFLICT(id) DO UPDATE SET title = excluded.title, competition_id = excluded.competition_id,
+        game_date = excluded.game_date, start_at = excluded.start_at,
+        prediction_deadline_at = excluded.prediction_deadline_at, home_team_id = excluded.home_team_id,
+        home_team_name = excluded.home_team_name, away_team_id = excluded.away_team_id,
+        away_team_name = excluded.away_team_name, updated_at = excluded.updated_at`,
+      definition.id, definition.title, COMPETITION_TYPE, DRYRUN_FIXTURE_ID, definition.gameDate,
+      startAt.toISOString(), deadline.toISOString(), teams.home.team_key, teams.home.display_name,
+      teams.away.team_key, teams.away.display_name, now));
+    statements.push(...buildFormalJobStatements(db, definition.id, deadline.toISOString(), DRYRUN_FIXTURE_ID, now));
+  }
+  // Validate and prepare all copies before the first batch write. The target
+  // IDs are deterministic aliases because players.id is globally unique in
+  // the existing per-game schema; APBC source rows are never overwritten.
+  for (const definition of DRYRUN_FIXTURE_GAME_DEFINITIONS) {
+    const targetTeam = targetTeams.get("jpn");
+    for (const player of source.roster) {
+      const targetId = dryRunPlayerCopyId(definition.id, player.id);
+      const existingPlayer = await prepared(db, "SELECT game_id FROM players WHERE id = ?1 LIMIT 1", targetId).first();
+      if (existingPlayer && existingPlayer.game_id !== definition.id) {
+        throw new RequestError(409, "DRYRUN_PLAYER_ID_CONFLICT", "テスト選手IDが別試合で使用されています。");
+      }
+      statements.push(prepared(db, `INSERT INTO players
+        (id, game_id, name, uniform_number, team, team_id, position, bat, throw, active, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?10)
+        ON CONFLICT(id) DO UPDATE SET game_id = excluded.game_id, name = excluded.name,
+          uniform_number = excluded.uniform_number, team = excluded.team, team_id = excluded.team_id,
+          position = excluded.position, bat = excluded.bat, throw = excluded.throw,
+          active = excluded.active, updated_at = excluded.updated_at`,
+        targetId, definition.id, player.name, player.uniform_number || "", player.team,
+        targetTeam.id, player.position, player.bat || null, player.throw || null, now));
+    }
+  }
+  await db.batch(statements);
+  const fixture = await dryRunFixtureReadback(db);
+  if (!fixture.ready) throw new RequestError(409, "DRYRUN_READBACK_INCOMPLETE", "10/16テスト大会の準備結果を確認できません。", { fixture });
+  return json({ ok: true, ready: true, fixture }, 200, request, env);
+}
+
+async function activateDryRunFixture(request, env, db) {
+  const fixture = await dryRunFixtureReadback(db);
+  if (!fixture.exists || !fixture.ready) throw new RequestError(409, "DRYRUN_NOT_READY", "テスト大会の準備が完了していません。");
+  if (fixture.status === "completed") throw new RequestError(409, "DRYRUN_COMPETITION_COMPLETED", "完了したテスト大会は変更できません。");
+  if (fixture.status === "draft") {
+    await prepared(db, "UPDATE competitions SET status = 'active', updated_at = ?1 WHERE id = ?2 AND status = 'draft'", nowIso(), DRYRUN_FIXTURE_ID).run();
+  }
+  const readback = await dryRunFixtureReadback(db);
+  if (readback.status !== "active") throw new RequestError(409, "DRYRUN_ACTIVATION_READBACK_FAILED", "テスト大会の状態を確認できません。");
+  return json({ ok: true, fixture: readback }, 200, request, env);
+}
+
 function completeFormalJobStatement(db, gameId, jobType, revision, now) {
   return prepared(db, `UPDATE formal_jobs
      SET status = 'completed', revision_number = ?1, artifact_generation = COALESCE(?2, artifact_generation), completed_at = ?3, updated_at = ?3, attempts = attempts + 1
@@ -2121,6 +2348,18 @@ async function route(request, env) {
     if (admin instanceof Response) return admin;
     return adminCompetitionOverview(request, env, db);
   }
+  if (path === "/api/admin/dry-run/fixture" && ["GET", "POST"].includes(request.method)) {
+    const admin = await requireAdmin(request, env, db);
+    if (admin instanceof Response) return admin;
+    return request.method === "GET"
+      ? json({ ok: true, fixture: await dryRunFixtureReadback(db) }, 200, request, env)
+      : prepareDryRunFixture(request, env, db);
+  }
+  if (path === "/api/admin/dry-run/fixture/activate" && request.method === "POST") {
+    const admin = await requireAdmin(request, env, db);
+    if (admin instanceof Response) return admin;
+    return activateDryRunFixture(request, env, db);
+  }
   if (path === "/api/admin/players/import" && request.method === "POST") {
     const admin = await requireAdmin(request, env, db);
     if (admin instanceof Response) return admin;
@@ -2222,7 +2461,7 @@ export default {
       return await route(request, env);
     } catch (error) {
       console.error(JSON.stringify({ scope: "asia-cs-worker", code: error?.code || "UNHANDLED_ERROR", message: String(error?.message || error) }));
-      if (error instanceof RequestError) return errorResponse(request, env, error.status, error.code, error.message);
+      if (error instanceof RequestError) return errorResponse(request, env, error.status, error.code, error.message, error.details);
       return errorResponse(request, env, 500, "INTERNAL_ERROR", "処理に失敗しました。");
     }
   }

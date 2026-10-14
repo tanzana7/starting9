@@ -1,5 +1,6 @@
 const POSITIONS = ["捕", "一", "二", "三", "遊", "左", "中", "右", "指"];
 const API_PREFIX = "/api/asia-cs";
+const ALLOWED_COMPETITION_IDS = new Set(["apbc-2026", "apbc-switch-test-2026-10-16"]);
 const state = { competition: null, games: [], game: null, user: null, prediction: null, selectedTeamId: "" };
 
 // The same Asia UI is mounted in the standalone compatibility route and in
@@ -9,7 +10,11 @@ const state = { competition: null, games: [], game: null, user: null, prediction
 const asiaScript = Array.from(document.scripts).find((script) => script.dataset.asiaPrefix);
 const ID_PREFIX = String(asiaScript?.dataset.asiaPrefix || "");
 const configuredCompetitionId = String(asiaScript?.dataset.competitionId || "").trim();
-const competitionId = new URLSearchParams(location.search).get("competition") || configuredCompetitionId || "asia-cs";
+const requestedCompetitionId = new URLSearchParams(location.search).get("competition");
+const competitionId = ALLOWED_COMPETITION_IDS.has(requestedCompetitionId)
+  ? requestedCompetitionId
+  : ALLOWED_COMPETITION_IDS.has(configuredCompetitionId) ? configuredCompetitionId : "apbc-2026";
+const isTestCompetition = competitionId === "apbc-switch-test-2026-10-16";
 // Embedded Asia markup uses a camel-cased namespace prefix, while the
 // standalone compatibility page keeps the original unprefixed IDs.
 const $ = (id) => document.getElementById(ID_PREFIX ? `${ID_PREFIX}${id.charAt(0).toUpperCase()}${id.slice(1)}` : id);
@@ -52,6 +57,11 @@ function renderCompetition(payload) {
   // non-Japan fixture back into the user-facing schedule.
   state.games = (payload.games || []).filter(isJapanPredictionGame);
   const competition = state.competition;
+  const testBanner = $("testBanner");
+  if (testBanner) {
+    testBanner.textContent = isTestCompetition ? "仮運用テスト" : "";
+    testBanner.classList.toggle("hidden", !isTestCompetition);
+  }
   $("competitionName").textContent = competition.displayName;
   const period = [competition.startDate, competition.endDate].filter(Boolean).join(" 〜 ");
   $("competitionMeta").textContent = `${period || "開催期間未設定"} ・ ${competition.status}`;
@@ -64,7 +74,7 @@ function renderCompetition(payload) {
   $("scheduleStatus").textContent = `${state.games.length}試合`;
   $("scheduleList").innerHTML = state.games.length ? state.games.map((game) => {
     const predictionEligible = isJapanPredictionGame(game);
-    const status = game.status === "published" ? "結果公開" : game.canPredict ? "受付中" : state.competition?.status === "draft" ? "予想受付開始前" : game.archived ? "アーカイブ" : "受付終了";
+    const status = game.status === "published" ? "結果公開" : game.canPredict ? "受付中" : game.predictionState === "waiting_for_previous_publish" ? "前の日本戦の終了・集計後に受付" : state.competition?.status === "draft" ? "予想受付開始前" : game.archived ? "アーカイブ" : "受付終了";
     return `<article class="schedule-row"><div><strong>${escapeHtml(gameLabel(game))}</strong><span>${escapeHtml(formatDate(game.startAt))}${game.venue ? ` ・ ${escapeHtml(game.venue)}` : ""}</span></div><div class="schedule-actions"><span class="status-chip">${escapeHtml(status)}</span>${predictionEligible && game.canPredict ? `<button type="button" class="link-button" data-game="${escapeHtml(game.id)}">予想</button>` : ""}${game.status === "published" ? `<button type="button" class="link-button" data-result="${escapeHtml(game.id)}">結果</button>` : ""}</div></article>`;
   }).join("") : "日程はまだ登録されていません。";
 }
@@ -159,7 +169,7 @@ function renderGame() {
   if (!state.game) return;
   $("predictionPanel").classList.remove("hidden");
   $("gameMeta").textContent = `${gameLabel(state.game)} ・ ${formatDate(state.game.startAt)}`;
-  $("deadlineStatus").textContent = state.game.canPredict ? `予想締切 ${formatDate(state.game.predictionDeadlineAt)} JST` : state.game.status === "published" ? "結果公開済み" : state.competition?.status === "draft" ? "予想受付開始前" : "予想受付終了";
+  $("deadlineStatus").textContent = state.game.canPredict ? `予想締切 ${formatDate(state.game.predictionDeadlineAt)} JST` : state.game.status === "published" ? "結果公開済み" : state.game.predictionState === "waiting_for_previous_publish" ? "前の日本戦の終了・集計後に予想受付開始" : state.competition?.status === "draft" ? "予想受付開始前" : "予想受付終了";
   const teams = [state.game.homeTeam, state.game.awayTeam].filter(Boolean);
   const predictionTeams = teams.filter(isJapanTeam);
   const selectableTeams = predictionTeams.length ? predictionTeams : teams;

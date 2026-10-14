@@ -733,6 +733,20 @@ function competitionAllowsPrediction(competition, game) {
   return Boolean(competition && deadline && Date.now() < deadline.getTime() && game?.status === "open");
 }
 
+function isPublishedPredictionGame(game) {
+  return game?.status === "published" && game?.publication_status === "published";
+}
+
+async function firstUnpublishedPredictionGame(db, competitionId, teams = null, games = null) {
+  const competitionGames = games || (await prepared(db, `SELECT * FROM games
+      WHERE competition_type = ?1 AND competition_id = ?2
+     ORDER BY game_date ASC, start_at ASC, id ASC`, COMPETITION_TYPE, competitionId).all()).results || [];
+  const competitionTeams = teams || await getTeams(db, competitionId);
+  return competitionGames
+    .filter((game) => isGamePredictionEligible(game, competitionTeams))
+    .find((game) => !isPublishedPredictionGame(game)) || null;
+}
+
 const JAPAN_TEAM_ALIASES = new Set([
   "jpn",
   "jp",
@@ -808,8 +822,17 @@ async function listCompetitionGames(request, env, db, competitionId, { includePr
       WHERE user_id = ?1 AND game_id IN (${games.map((_, index) => `?${index + 2}`).join(",")})`, userId, ...games.map((game) => game.id)).all();
     submitted = new Set((rows.results || []).map((row) => row.game_id));
   }
+  const firstUnpublished = await firstUnpublishedPredictionGame(db, competitionId, teams, allGames);
+  const currentTargetId = firstUnpublished && competitionAllowsPrediction(competition, firstUnpublished) ? firstUnpublished.id : null;
   return games.map((game) => {
     const predictionEligible = isGamePredictionEligible(game, teams);
+    const predictionState = !predictionEligible
+      ? "ineligible"
+      : isPublishedPredictionGame(game)
+        ? "published"
+        : firstUnpublished && firstUnpublished.id !== game.id
+          ? "waiting_for_previous_publish"
+          : game.id === currentTargetId ? "open" : "closed";
     return {
     id: game.id,
     title: game.title,
@@ -825,7 +848,8 @@ async function listCompetitionGames(request, env, db, competitionId, { includePr
     predictionCount: Number(game.prediction_count || 0),
     predictionSubmitted: submitted.has(game.id),
     predictionEligible,
-    canPredict: predictionEligible && competitionAllowsPrediction(competition, game),
+    canPredict: predictionEligible && game.id === currentTargetId,
+    predictionState,
     archived: competition?.status === "completed"
     };
   });
@@ -965,10 +989,18 @@ async function publicGame(request, env, db, gameId) {
   const competition = await getCompetition(db, game.competition_id);
   const predictionEligible = isGamePredictionEligible(game, teams);
   if (!predictionEligible) return errorResponse(request, env, 404, "GAME_NOT_AVAILABLE", "日本代表が出場する試合ではありません。");
+  const firstUnpublished = await firstUnpublishedPredictionGame(db, game.competition_id, teams);
+  const currentTargetId = firstUnpublished && competitionAllowsPrediction(competition, firstUnpublished) ? firstUnpublished.id : null;
+  const predictionState = isPublishedPredictionGame(game)
+    ? "published"
+    : firstUnpublished && firstUnpublished.id !== game.id
+      ? "waiting_for_previous_publish"
+      : game.id === currentTargetId ? "open" : "closed";
   return json({ ok: true, game: {
     ...serializeGame(game, await getPlayers(db, gameId, true), teams),
     predictionEligible,
-    canPredict: predictionEligible && competitionAllowsPrediction(competition, game)
+    canPredict: predictionEligible && game.id === currentTargetId,
+    predictionState
   } }, 200, request, env);
 }
 
@@ -1077,6 +1109,10 @@ async function savePrediction(request, env, db, gameId) {
     return errorResponse(request, env, 409, "PREDICTION_NOT_OPEN", "予想受付開始前です。");
   }
   if (!await persistedGamePredictionEligible(db, game)) return predictionNotEligibleResponse(request, env);
+  const currentTarget = await firstUnpublishedPredictionGame(db, game.competition_id);
+  if (!currentTarget || currentTarget.id !== game.id) {
+    return errorResponse(request, env, 409, "PREDICTION_NOT_OPEN", "前の日本戦の公開完了後に予想受付を開始します。");
+  }
   const now = new Date();
   const deadline = validDate(game.prediction_deadline_at);
   if (!deadline || now.getTime() >= deadline.getTime() || game.status !== "open") {
@@ -1109,6 +1145,12 @@ async function deletePrediction(request, env, db, gameId) {
     return errorResponse(request, env, 409, "PREDICTION_NOT_OPEN", "予想受付開始前です。");
   }
   if (game && !await persistedGamePredictionEligible(db, game)) return predictionNotEligibleResponse(request, env);
+  if (game) {
+    const currentTarget = await firstUnpublishedPredictionGame(db, game.competition_id);
+    if (!currentTarget || currentTarget.id !== game.id) {
+      return errorResponse(request, env, 409, "PREDICTION_NOT_OPEN", "前の日本戦の公開完了後に予想受付を開始します。");
+    }
+  }
   const deadline = validDate(game?.prediction_deadline_at);
   if (!game || !deadline || new Date().getTime() >= deadline.getTime() || game.status !== "open") {
     return errorResponse(request, env, 409, "PREDICTION_DEADLINE_PASSED", "予想受付を終了しています。");

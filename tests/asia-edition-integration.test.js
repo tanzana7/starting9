@@ -68,7 +68,7 @@ test("Asia APIは同一originのAuth gatewayへ通し、旧admin URLは統合先
   assert.match(adminShell, /resolveSelectedEdition\(global\.location, new Date\(\), "admin"\)/);
 });
 
-test("本体のAsia Editionと統合adminはAPBCを既定大会にし、旧ユーザー互換fallbackは維持する", () => {
+test("本体のAsia Editionと統合adminはAPBCを既定大会にし、テスト大会は明示allowlistでのみ選べる", () => {
   const index = read("index.html");
   const app = read("asia-cs/public/app.js");
   const admin = read("admin-v3.html");
@@ -78,7 +78,8 @@ test("本体のAsia Editionと統合adminはAPBCを既定大会にし、旧ユ�
   assert.doesNotMatch(index, /src="asia-cs\/public\/app\.js/);
   assert.match(index, /app\.js\?v=apbc-japan-games-placement-only-1/);
   assert.match(app, /asiaScript\?\.dataset\.competitionId/);
-  assert.match(app, /configuredCompetitionId \|\| "asia-cs"/);
+  assert.match(app, /ALLOWED_COMPETITION_IDS = new Set\(\["apbc-2026", "apbc-switch-test-2026-10-16"\]\)/);
+  assert.match(app, /configuredCompetitionId.*apbc-2026/);
   assert.match(admin, /name="id" value="apbc-2026"/);
   assert.match(admin, /name="id" value="apbc-2026" readonly/);
   assert.match(admin, /name="displayName" value="ラグザス アジアプロ野球チャンピオンシップ2026"/);

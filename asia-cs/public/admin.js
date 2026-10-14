@@ -1,6 +1,6 @@
 const guardrails = window.Starting9AsiaAdminActionGuardrails;
 const CANONICAL_COMPETITION_ID = "apbc-2026";
-const state = { user: null, game: null, gameSummary: null, overview: null, operationPending: false, competitionPending: false, placementPending: false };
+const state = { user: null, game: null, gameSummary: null, overview: null, operationPending: false, competitionPending: false, placementPending: false, dryRunFixture: null, dryRunPending: false };
 const $ = (id) => document.getElementById(id);
 const API_PREFIX = "/api/asia-cs";
 const message = (id, text, error = false) => { const node = $(id); node.textContent = text; node.classList.toggle("error", error); };
@@ -45,6 +45,74 @@ function renderPlacementControls() {
 function renderDetail(payload) { state.game = payload; state.gameSummary = selectedGameSummary(); renderRoster(payload.game.players); $("gameDetail").textContent = JSON.stringify(payload, null, 2); if (payload.currentLineup) { $("lineupJson").value = JSON.stringify(payload.currentLineup.lineup, null, 2); $("rescoreJson").value = JSON.stringify(payload.currentLineup.lineup, null, 2); } updateGameActions(); }
 async function loadGame() { const id = String($("gameId").value || "").trim(); if (!id) { state.game = null; state.gameSummary = null; updateGameActions(); return; } try { renderDetail(await api(`/api/admin/games/${encodeURIComponent(id)}`)); message("gameStatus", "読み込みました。"); } catch (error) { state.game = null; state.gameSummary = null; updateGameActions(); message("gameStatus", guardrails.errorMessage(error), true); } }
 async function refreshOverview() { try { const form = $("competitionForm"); form.elements.id.value = CANONICAL_COMPETITION_ID; const payload = await api(`/api/admin/overview?competitionId=${encodeURIComponent(CANONICAL_COMPETITION_ID)}`); if (payload.competition?.id !== CANONICAL_COMPETITION_ID) throw Object.assign(new Error("対象大会が一致しません。"), { code: "COMPETITION_ID_MISMATCH" }); state.overview = payload; const competition = payload.competition; for (const [name, value] of [["displayName", competition.displayName], ["shortName", competition.shortName], ["startDate", competition.startDate || ""], ["endDate", competition.endDate || ""], ["status", competition.status], ["description", competition.description || ""]]) form.elements[name].value = value; $("overview").textContent = JSON.stringify({ competition, teams: payload.teams, games: payload.games, formalJobs: payload.formalJobs }, null, 2); updateCompetitionActions(); if (state.game) { state.gameSummary = selectedGameSummary(); updateGameActions(); } renderPlacementControls(); } catch (error) { message("competitionStatus", guardrails.errorMessage(error), true); } }
+
+function setDryRunPending(pending) { state.dryRunPending = pending; ["prepareDryRunFixture", "activateDryRunFixture", "refreshDryRunFixture"].forEach((id) => { const button = $(id); if (button) button.disabled = pending; }); }
+function renderDryRunFixture(payload = {}) {
+  const fixture = payload.fixture || null;
+  state.dryRunFixture = fixture;
+  const status = $("dryRunFixtureStatus");
+  const summary = $("dryRunFixtureSummary");
+  const prepare = $("prepareDryRunFixture");
+  const activate = $("activateDryRunFixture");
+  if (!status || !summary || !prepare || !activate) return;
+  if (!fixture?.exists) {
+    status.textContent = "未作成";
+    summary.textContent = "テスト大会はまだありません。";
+    prepare.hidden = false;
+    activate.hidden = true;
+    return;
+  }
+  const games = fixture.games || [];
+  const gameSummary = games.map((game) => `${game.id} ${game.startAt} / roster ${game.rosterCount}/15 / jobs ${game.formalJobs?.length || 0}/4`).join("\n");
+  status.textContent = fixture.ready ? fixture.status === "active" ? "active" : "準備済み" : "準備未完了";
+  status.classList.toggle("error", fixture.ready === false);
+  summary.textContent = `${fixture.competition?.displayName || "10/16テスト大会"}\n${gameSummary || "試合未作成"}`;
+  prepare.hidden = fixture.ready === true && fixture.status !== "completed";
+  prepare.disabled = state.dryRunPending;
+  activate.hidden = !(fixture.ready === true && fixture.status === "draft");
+  activate.disabled = state.dryRunPending;
+}
+async function refreshDryRunFixture() {
+  try {
+    const payload = await api("/api/admin/dry-run/fixture");
+    renderDryRunFixture(payload);
+  } catch (error) {
+    message("dryRunFixtureStatus", guardrails.errorMessage(error), true);
+    $("dryRunFixtureSummary").textContent = "状態を取得できません。";
+  }
+}
+async function prepareDryRunFixture() {
+  if (state.dryRunPending || !window.confirm("APBC本大会とは独立した10/16仮運用テスト大会を作成します。本大会の試合・予想・ランキングには影響しません。")) return;
+  setDryRunPending(true);
+  let succeeded = false;
+  try {
+    const payload = await api("/api/admin/dry-run/fixture", { method: "POST", body: "{}" });
+    const readback = await api("/api/admin/dry-run/fixture");
+    if (!payload.ready || !readback.fixture?.ready) throw Object.assign(new Error("準備結果を確認できません。"), { code: "DRYRUN_READBACK_INCOMPLETE" });
+    renderDryRunFixture(readback);
+    succeeded = true;
+  } catch (error) {
+    message("dryRunFixtureStatus", `準備失敗: ${guardrails.errorMessage(error)}`, true);
+  } finally {
+    setDryRunPending(false);
+    if (succeeded) renderDryRunFixture({ fixture: state.dryRunFixture });
+  }
+}
+async function activateDryRunFixture() {
+  if (state.dryRunPending || !window.confirm("10/16仮運用テストの予想受付を開始します。APBC本大会には影響しません。")) return;
+  setDryRunPending(true);
+  let succeeded = false;
+  try {
+    const payload = await api("/api/admin/dry-run/fixture/activate", { method: "POST", body: "{}" });
+    renderDryRunFixture(payload);
+    succeeded = true;
+  } catch (error) {
+    message("dryRunFixtureStatus", `開始失敗: ${guardrails.errorMessage(error)}`, true);
+  } finally {
+    setDryRunPending(false);
+    if (succeeded) renderDryRunFixture({ fixture: state.dryRunFixture });
+  }
+}
 
 async function saveCompetition(statusOverride = null, action = null) { if (state.competitionPending) return; const data = Object.fromEntries(new FormData($("competitionForm"))); data.id = CANONICAL_COMPETITION_ID; data.competitionId = CANONICAL_COMPETITION_ID; const currentStatus = state.overview?.competition?.status || data.status; const targetStatus = statusOverride || data.status; if (action && !guardrails.competitionState(state.overview?.competition, action).enabled) return; if (["active", "completed"].includes(targetStatus) && targetStatus !== currentStatus && !window.confirm(guardrails.confirmationText(targetStatus === "active" ? "activate" : "complete", { name: data.displayName || data.id }))) return; data.status = targetStatus; setCompetitionPending(true); try { const payload = await api("/api/admin/competition", { method: "POST", body: JSON.stringify(data) }); if (payload.competition?.id !== CANONICAL_COMPETITION_ID || payload.competition?.status !== targetStatus) throw Object.assign(new Error("大会状態を確認できません。"), { code: "COMPETITION_READBACK_MISMATCH" }); message("competitionStatus", targetStatus === "active" ? "大会をactiveにしました。" : targetStatus === "completed" ? "大会を完了しました。" : "大会設定を保存しました。"); await refreshOverview(); } catch (error) { message("competitionStatus", guardrails.errorMessage(error), true); } finally { setCompetitionPending(false); updateCompetitionActions(); } }
 $("competitionForm").addEventListener("submit", async (event) => { event.preventDefault(); await saveCompetition(); });
@@ -96,7 +164,10 @@ if ($("placementGameForm")) $("placementGameForm").addEventListener("submit", as
 });
 $("activateCompetition").addEventListener("click", () => void saveCompetition("active", "activate"));
 $("completeCompetition").addEventListener("click", () => void saveCompetition("completed", "complete"));
+$("refreshDryRunFixture").addEventListener("click", () => void refreshDryRunFixture());
+$("prepareDryRunFixture").addEventListener("click", () => void prepareDryRunFixture());
+$("activateDryRunFixture").addEventListener("click", () => void activateDryRunFixture());
 
-async function refreshSession() { try { const payload = await api("/api/auth/me"); state.user = payload.user; if (payload.isAdmin !== true) throw new Error("管理者権限が必要です。"); showAdmin(); message("adminAuthStatus", "管理画面を利用できます。"); await refreshOverview(); renderPlacementControls(); } catch (error) { message("adminAuthStatus", guardrails.errorMessage(error), true); } }
+async function refreshSession() { try { const payload = await api("/api/auth/me"); state.user = payload.user; if (payload.isAdmin !== true) throw new Error("管理者権限が必要です。"); showAdmin(); message("adminAuthStatus", "管理画面を利用できます。"); await refreshOverview(); await refreshDryRunFixture(); renderPlacementControls(); } catch (error) { message("adminAuthStatus", guardrails.errorMessage(error), true); } }
 window.Starting9AsiaCsAdmin = Object.freeze({ refreshSession });
 void refreshSession();

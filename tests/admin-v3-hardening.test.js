@@ -22,6 +22,8 @@ test("admin-v3は検索結果から除外する", () => {
   assert.match(page, /<meta name="robots" content="noindex, nofollow, noarchive">/);
   assert.match(headers, /\/admin-v3\.html[\s\S]*X-Robots-Tag: noindex, nofollow, noarchive/);
   assert.match(headers, /\/admin-v3\s[\s\S]*X-Robots-Tag: noindex, nofollow, noarchive/);
+  assert.match(headers, /\/admin-v3\.html[\s\S]*Cache-Control: no-cache/);
+  assert.match(headers, /\/admin-v3\s[\s\S]*Cache-Control: no-cache/);
 });
 
 test("admin-v3に運用向けの防御ヘッダーを付ける", () => {

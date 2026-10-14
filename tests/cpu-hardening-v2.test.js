@@ -116,7 +116,8 @@ test("criticalとauxiliaryは同じexecutor内でもformal claim経路を共有�
   const scheduleMode = worker.slice(worker.indexOf("async function runScheduledScheduleSync"), worker.indexOf("async function writeScheduleSyncAuditRecord"));
   assert.match(executor, /if \(auxiliaryOnly\)/);
   assert.match(executor, /if \(!runAuxiliary\) return criticalResult/);
-  assert.match(executor, /hasPotentialFormalWork\(env\.AUTH_DB, now, \{ v4SemiAuto \}\)/);
+  assert.match(executor, /hasPotentialFormalWork\(env\.AUTH_DB, now, \{ v4SemiAuto, includeHistoricalRecovery \}\)/);
+  assert.match(worker, /includeHistoricalRecovery: !auxiliaryOnly && isV3StorageMaintenanceWindow\(now\)/);
   assert.match(worker, /runAuxiliary: !criticalOnly/);
   assert.match(worker, /skipFormalDiscoveryIfIdle: criticalOnly/);
   assert.match(worker, /reasonCode: "CRON_MODE_CRITICAL"/);
@@ -160,7 +161,7 @@ test("formal preflightはD1/schema異常時にfail-openする", async () => {
   assert.equal(await hasPotentialFormalWork(db, new Date("2026-09-30T04:24:00.000Z")), true);
 });
 
-test("古いpublished correction候補は日付window外でもformal fast-pathから除外されない", async () => {
+test("古いpublished correction候補は毎分fast-pathから除外し、maintenance窓では回復対象に戻す", async () => {
   const { database, db } = createDatabase();
   try {
     database.prepare(
@@ -171,7 +172,9 @@ test("古いpublished correction候補は日付window外でもformal fast-path�
     database.prepare("INSERT INTO game_lineup_revisions VALUES ('old-game', 'old-game:2', 'old-game', 2)").run();
     database.prepare("INSERT INTO game_jobs_v3 VALUES (2, 'old-game', 'score', '2026-08-01T10:00:00.000Z', NULL, 'completed', NULL)").run();
     database.prepare("INSERT INTO game_scoring_revisions VALUES ('old-game', 'old-game:1', 1, 'completed')").run();
-    assert.equal(await hasPotentialFormalWork(db, new Date("2026-09-30T04:24:00.000Z")), true);
+    const now = new Date("2026-09-30T04:24:00.000Z");
+    assert.equal(await hasPotentialFormalWork(db, now, { includeHistoricalRecovery: false }), false);
+    assert.equal(await hasPotentialFormalWork(db, now, { includeHistoricalRecovery: true }), true);
   } finally {
     database.close();
   }

@@ -2334,7 +2334,14 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     // processed first; the next Cron tick drains the remaining window.
     gameListOptions: auxiliaryOnly
       ? { limit: V3_AUXILIARY_GAME_BATCH_SIZE, prioritizeDue: true }
-      : { limit: V3_CRON_GAME_BATCH_SIZE, prioritizeDue: true },
+      : {
+        limit: V3_CRON_GAME_BATCH_SIZE,
+        prioritizeDue: true,
+        // Published-lineup correction recovery is still preserved, but its
+        // historical scan belongs to the existing hourly maintenance window;
+        // it must not wake the every-minute critical planner indefinitely.
+        includeHistoricalRecovery: isV3StorageMaintenanceWindow(now)
+      },
     // Auxiliary polling needs the current and next calendar day's games, while
     // an unbounded historical scan can exceed the per-invocation CPU budget.
     // Keep this batch independent from the four-game formal critical path.
@@ -2359,6 +2366,7 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     }),
     disabledJobTypes: operationalMode.disabledJobTypes,
     v4SemiAuto: operationalMode.isV4SemiAuto,
+    includeHistoricalRecovery: !auxiliaryOnly && isV3StorageMaintenanceWindow(now),
     runAuxiliary: !criticalOnly,
     auxiliaryOnly,
     skipFormalDiscoveryIfIdle: criticalOnly,

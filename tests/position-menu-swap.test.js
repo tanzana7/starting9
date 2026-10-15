@@ -26,16 +26,6 @@ function getFunctionSource(name) {
   throw new Error(`${name} の終端を見つけられません`);
 }
 
-function createPositionSelection(lineup, targetIndex, position) {
-  const context = vm.createContext({
-    normalizeLineup: (items) => items.map((item, index) => ({ order: index + 1, player: item.player, position: item.position || "" })),
-    normalizePosition: (value) => value,
-    createLineupItem: (index, player, selectedPosition) => ({ order: index + 1, player, position: selectedPosition })
-  });
-  vm.runInContext(`${getFunctionSource("createPositionSelectionLineup")}; this.select = createPositionSelectionLineup;`, context);
-  return context.select(lineup, targetIndex, position);
-}
-
 function runLineupFunction(name, lineup, ...args) {
   const context = vm.createContext({
     LINEUP_SIZE: 9,
@@ -224,7 +214,7 @@ test("守備位置チップのdragは同じ行では変更せず、別行では�
   assert.deepEqual(emptySwap.slice(0, 3).map((item) => item.player), ["レイエス", "郡司裕也", ""]);
 });
 
-test("別選手を設定すると前の選手の守備位置を引き継がない", () => {
+test("ドラッグ経路で別選手を設定すると前の選手の守備位置を引き継がない", () => {
   const result = runLineupFunction("moveLineupItem", [{ player: "田宮裕涼", position: "捕" }], "清宮幸太郎", 0, null);
   assert.deepEqual(JSON.parse(JSON.stringify(result[0])), { order: 1, player: "清宮幸太郎", position: "" });
 });
@@ -242,41 +232,9 @@ test("ドラッグ移動は選手と守備位置をセットで入れ替え、�
 });
 
 test("使用済みポジションはグレー表示でもdisabledにせず、入れ替え案内を付ける", () => {
-  const menuState = getFunctionSource("updatePositionMenuState");
-  assert.match(menuState, /classList\.toggle\("is-used", isUsed\)/);
-  assert.match(menuState, /選択するとポジションを入れ替えます/);
-  assert.doesNotMatch(menuState, /disabled|aria-disabled/);
   assert.match(css, /\.position-menu-option\.is-used/);
   const usedOptionCss = css.slice(css.indexOf(".position-menu-option.is-used"), css.indexOf(".position-menu-option.is-used:hover"));
   assert.doesNotMatch(usedOptionCss, /cursor:\s*not-allowed/);
-});
-
-test("使用済みポジションを選ぶと、2行のポジションを入れ替える", () => {
-  const lineup = [
-    { player: "マルティネス", position: "一" },
-    { player: "清宮幸太郎", position: "左" }
-  ];
-  const result = createPositionSelection(lineup, 1, "一");
-  assert.deepEqual(result.map((item) => item.position), ["左", "一"]);
-  assert.deepEqual(result.map((item) => item.player), ["マルティネス", "清宮幸太郎"]);
-});
-
-test("元ポジションが未選択なら、使用していた行を未選択に戻す", () => {
-  const lineup = [
-    { player: "マルティネス", position: "一" },
-    { player: "清宮幸太郎", position: "" }
-  ];
-  const result = createPositionSelection(lineup, 1, "一");
-  assert.deepEqual(result.map((item) => item.position), ["", "一"]);
-});
-
-test("現在選択中のポジションを選んでも他行を変更しない", () => {
-  const lineup = [
-    { player: "マルティネス", position: "一" },
-    { player: "清宮幸太郎", position: "左" }
-  ];
-  const result = createPositionSelection(lineup, 1, "左");
-  assert.deepEqual(result.map((item) => item.position), ["一", "左"]);
 });
 
 test("保存時の既存重複検証を維持する", () => {

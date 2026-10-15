@@ -1480,15 +1480,13 @@ function assignPlayerToActiveSlot(pickerName, player) {
   const currentIndex = lineup.findIndex((item) => item.player === player);
   const targetIndex = getTargetOrder(pickerName, lineup);
   if (targetIndex < 0) return;
-  const targetPlayer = lineup[targetIndex]?.player || "";
-  const targetPosition = targetPlayer === player ? lineup[targetIndex]?.position || "" : "";
+  const targetPosition = lineup[targetIndex]?.position || "";
 
   if (currentIndex !== -1 && currentIndex !== targetIndex) {
     lineup[currentIndex] = createLineupItem(currentIndex, "", "");
   }
 
   lineup[targetIndex] = createLineupItem(targetIndex, player, targetPosition);
-  autoFillPredictionPosition(pickerName, lineup, targetIndex);
   setLineupValues(pickerName, lineup);
   state.activeOrder[pickerName] = findNextEmptyIndex(lineup, targetIndex);
   renderPicker(pickerName);

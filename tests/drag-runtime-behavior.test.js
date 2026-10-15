@@ -286,3 +286,55 @@ test("click selection keeps the Phase 11 no-autofill contract while drag remains
   assert.equal(slot.dataset.player, "レイエス");
   assert.equal(slot.dataset.position, "");
 });
+
+test("player child target still starts the real player drag", async (t) => {
+  const runtime = createDragRuntime();
+  t.after(() => runtime.dispose());
+  const source = getPlayer(runtime, "レイエス");
+  const child = source.querySelector(".player-name");
+  const [target] = getSlots(runtime);
+
+  await source.dispatchEvent(pointerEvent("pointerdown", child, { pointerId: 81 }));
+  await runtime.tickTimers();
+  runtime.setPointTarget(target);
+  await runtime.emitDocument("pointermove", pointerEvent("pointermove", child, { pointerId: 81, clientX: 120, clientY: 40 }));
+  await runtime.emitDocument("pointerup", pointerEvent("pointerup", child, { pointerId: 81, clientX: 120, clientY: 40 }));
+
+  assert.equal(target.dataset.player, "レイエス");
+});
+
+test("movement beyond the threshold before long press cancels as scroll", async (t) => {
+  const runtime = createDragRuntime();
+  t.after(() => runtime.dispose());
+  const source = getPlayer(runtime, "レイエス");
+
+  await source.dispatchEvent(pointerEvent("pointerdown", source, { pointerId: 82, clientX: 10, clientY: 10 }));
+  await runtime.emitDocument("pointermove", pointerEvent("pointermove", source, { pointerId: 82, clientX: 10, clientY: 19 }));
+
+  assert.equal(runtime.state.pointerInteraction, null);
+  assert.equal(getSlots(runtime)[0].dataset.player, "");
+});
+
+test("active pointer can hand off to touch without losing the shared drag state", async (t) => {
+  const runtime = createDragRuntime();
+  t.after(() => runtime.dispose());
+  const source = getPlayer(runtime, "レイエス");
+  const [target] = getSlots(runtime);
+  const touchStart = touch(91, 10, 10);
+
+  await source.dispatchEvent(pointerEvent("pointerdown", source, { pointerId: 83, pointerType: "touch" }));
+  await runtime.emitDocument("touchstart", { target: source, touches: [touchStart], changedTouches: [touchStart] });
+  assert.equal(runtime.state.pointerInteraction.inputSource, "touch");
+  assert.equal(runtime.state.pointerInteraction.activeTouchIdentifier, 91);
+
+  await runtime.emitDocument("pointercancel", pointerEvent("pointercancel", source, { pointerId: 83 }));
+  assert.ok(runtime.state.pointerInteraction, "the old pointer cancel must not clear the handoff");
+  await runtime.tickTimers();
+  runtime.setPointTarget(target);
+  const activeTouch = touch(91, 120, 40);
+  await runtime.emitDocument("touchmove", { target: source, touches: [activeTouch], changedTouches: [activeTouch] });
+  await runtime.emitDocument("touchend", { target: source, touches: [], changedTouches: [activeTouch] });
+
+  assert.equal(target.dataset.player, "レイエス");
+  assert.equal(runtime.state.pointerInteraction, null);
+});

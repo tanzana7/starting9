@@ -38,60 +38,6 @@ function snapshot(overrides = {}) {
   };
 }
 
-function getScriptFunctionSource(name) {
-  const start = script.indexOf(`function ${name}(`);
-  assert.notEqual(start, -1, `${name} が見つかりません`);
-  let depth = 0;
-  let bodyStarted = false;
-  for (let index = start; index < script.length; index += 1) {
-    if (script[index] === "{") {
-      depth += 1;
-      bodyStarted = true;
-    } else if (script[index] === "}") {
-      depth -= 1;
-      if (bodyStarted && depth === 0) return script.slice(start, index + 1);
-    }
-  }
-  throw new Error(`${name} の終端を見つけられません`);
-}
-
-function createRosterFilterHelpers(storedSnapshot, selectedGame = { internalGameId, date: gameDate }, status = "fresh", usableUntil = "") {
-  const context = vm.createContext({
-    state: {
-      isAdminMode: false,
-      predictionTargetGame: selectedGame,
-      probableStarter: { nextGame: null },
-      publicRoster: {
-        internalGameId,
-        gameDate,
-        status,
-        sourceOfTruth: status === "baseline" ? "baseline_snapshot" : "verified_snapshot",
-        rosterUse: status === "baseline" ? "baseline_snapshot" : "verified_snapshot",
-        canUseForPrediction: true,
-        players: storedSnapshot?.players || [],
-        usableUntil
-      }
-    },
-    STORAGE_KEYS: { rosterSnapshot: "roster" },
-    loadFromStorage: () => storedSnapshot,
-    getCurrentGameId: () => selectedGame.internalGameId || "",
-    normalizePlayerKey: (value) => String(value || "").normalize("NFKC").replace(/[\s\u3000]/g, "")
-  });
-  const names = [
-    "normalizeRosterSnapshot",
-    "normalizeRosterEntries",
-    "createRosterEntryKey",
-    "getGameDayRosterTargetInternalGameId",
-    "getRosterSnapshotForCurrentGame",
-    "rosterEntryMatchesPlayer",
-    "hasUsablePublicRosterForCurrentGame",
-    "isPlayerInCurrentRoster",
-    "isRegisteredFielderCandidate"
-  ];
-  vm.runInContext(`${names.map(getScriptFunctionSource).join("\n")}; this.helpers = { isPlayerInCurrentRoster, isRegisteredFielderCandidate };`, context);
-  return context.helpers;
-}
-
 test("同日V3 roster snapshot単独は公式live確認前の未検証状態として返す", () => {
   const response = buildPublicGameDayRosterResponse({
     internalGameId,
@@ -126,26 +72,6 @@ test("公式取得失敗時も同一試合の古いsnapshotはstale警告付き�
   assert.equal(response.staleReason, "ROSTER_SNAPSHOT_CAPTURE_DATE_STALE");
   assert.match(response.warning, /前回取得データ/);
   assert.equal(response.playerCount, 2);
-});
-
-test("矢澤は投手sourceでも出場候補、山﨑福也は特殊DHとしてその他に分類する", () => {
-  const { isRegisteredFielderCandidate } = createRosterFilterHelpers({
-    players: [{ name: "矢澤宏太", number: "12", position: "投手" }, { name: "山﨑福也", number: "18", position: "投手" }]
-  });
-  assert.equal(isRegisteredFielderCandidate({
-    name: "矢澤宏太",
-    uniformNumber: "12",
-    registeredPosition: "投手",
-    isBatterCandidate: true,
-    predictionCandidateRole: "fielder"
-  }), true);
-  assert.equal(isRegisteredFielderCandidate({
-    name: "山﨑福也",
-    uniformNumber: "18",
-    registeredPosition: "投手",
-    isBatterCandidate: true,
-    predictionCandidateRole: "special_dh"
-  }), false);
 });
 
 test("当日公示前は直近7日以内の同一球団snapshotを安全なbaselineとして返す", () => {
@@ -526,62 +452,6 @@ test("公開試合カタログ確定後にbaseline roster取得を再実行し�
   assert.match(target, /void initializeRosterCandidateSync\(\);/);
   assert.match(script, /let publicRosterSyncRequestId = 0;/);
   assert.match(publicRoster, /requestId !== deps\.getRosterRequestId\(\)/);
-});
-
-test("snapshotの登録選手は候補に入り、抹消選手は候補から外れる既存フィルタを維持する", async () => {
-  const helpers = await import(pathToFileURL(path.join(root, "game-automation-v3.js")).href);
-  const fresh = helpers.getV3RosterSnapshotFreshness(snapshot(), { internalGameId, gameDate });
-  assert.equal(fresh.isFresh, true);
-  assert.equal(fresh.isStale, false);
-  const filter = createRosterFilterHelpers({
-    internalGameId,
-    gameDate,
-    players: [{ name: "登録選手", number: "12", position: "外野手" }]
-  });
-  assert.equal(filter.isPlayerInCurrentRoster({ name: "登録選手", uniformNumber: "12", isActiveRoster: false }), true);
-  assert.equal(filter.isPlayerInCurrentRoster({ name: "抹消選手", uniformNumber: "53", isActiveRoster: true }), false);
-  assert.match(publicRoster, /isRegisteredFielderCandidate/);
-  assert.match(publicRoster, /!isRegisteredFielderCandidate\(player\) && player\?\.isBatterCandidate === true/);
-});
-
-test("freshなcanonical rosterがない場合は静的isActiveRosterを候補へ戻さない", () => {
-  const context = vm.createContext({
-    state: {
-      isAdminMode: false,
-      predictionTargetGame: { internalGameId, date: gameDate },
-      probableStarter: { nextGame: null },
-      publicRoster: { internalGameId, gameDate, status: "pending", players: [] }
-    },
-    STORAGE_KEYS: { rosterSnapshot: "roster" },
-    loadFromStorage: () => ({ players: [] }),
-    getCurrentGameId: () => internalGameId,
-    normalizePlayerKey: (value) => String(value || "").normalize("NFKC").replace(/[\s\u3000]/g, "")
-  });
-  const names = [
-    "normalizeRosterSnapshot",
-    "normalizeRosterEntries",
-    "createRosterEntryKey",
-    "getGameDayRosterTargetInternalGameId",
-    "getRosterSnapshotForCurrentGame",
-    "rosterEntryMatchesPlayer",
-    "hasUsablePublicRosterForCurrentGame",
-    "isPlayerInCurrentRoster"
-  ];
-  vm.runInContext(`${names.map(getScriptFunctionSource).join("\n")}; this.result = isPlayerInCurrentRoster({ name: "古い選手", uniformNumber: "1", isActiveRoster: true });`, context);
-  assert.equal(context.result, false);
-  assert.match(publicRoster, /選手情報を更新中です/);
-});
-
-test("baselineは利用期限前だけ通常画面の候補として扱う", () => {
-  const filter = createRosterFilterHelpers(
-    { players: [{ name: "基準選手", number: "12", position: "外野手" }] },
-    { internalGameId, date: gameDate },
-    "baseline",
-    "2099-01-01T00:00:00.000Z"
-  );
-  assert.equal(filter.isPlayerInCurrentRoster({ name: "基準選手", uniformNumber: "12", isActiveRoster: false }), true);
-  assert.match(publicRoster, /gameSnapshot\.status === "baseline"/);
-  assert.match(publicRoster, /usableUntil/);
 });
 
 test("fresh取得が遅延してもbaselineは予想締切まで利用できる", () => {

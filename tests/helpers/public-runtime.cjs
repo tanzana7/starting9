@@ -5,11 +5,12 @@ const { loadPublicFrontendModules } = require("./load-public-frontend-modules.cj
 
 // Load the shipped scripts intact. Exercise the coordinator's real operations,
 // not copied function bodies, so private helper names are free to change.
-function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateNames = [], now, ui = false, lineup = [], staticGames = [], positionMenuRuntime = false } = {}) {
+function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateNames = [], now, ui = false, lineup = [], staticGames = [], positionMenuRuntime = false, dragRuntime = false } = {}) {
   const root = path.join(__dirname, "..", "..");
   const stored = new Map();
   const timers = new Map();
   const documentListeners = new Map();
+  let pointTarget = null;
   let timerId = 0;
   let clock = now ? Date.parse(now) : Date.now();
   class ClockDate extends Date {
@@ -25,6 +26,7 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
     const node = Object.setPrototypeOf({
       dataset, children: [], disabled: false, tagName: "DIV", parentElement: null,
       style: { removeProperty: (key) => { delete node.style[key]; } },
+      offsetWidth: 0, offsetHeight: 0,
       get className() { return [...classes].join(" "); },
       set className(value) { classes.clear(); String(value).split(/\s+/).filter(Boolean).forEach((name) => classes.add(name)); },
       get textContent() { return markup.replace(/<[^>]*>/g, ""); },
@@ -56,6 +58,14 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
         const results = (listeners.get(type) || []).map((handler) => handler({ preventDefault() {}, stopPropagation() {}, ...event }));
         await Promise.all(results);
       },
+      async dispatchEvent(event) {
+        const dispatched = { ...event, target: event.target || this, defaultPrevented: false };
+        dispatched.preventDefault = () => { dispatched.defaultPrevented = true; };
+        dispatched.stopPropagation = () => { dispatched.propagationStopped = true; };
+        const results = (listeners.get(dispatched.type) || []).map((handler) => handler(dispatched));
+        await Promise.all(results);
+        return !dispatched.defaultPrevented;
+      },
       append(...children) { children.forEach((child) => this.appendChild(child)); },
       appendChild(child) {
         if (!child) return child;
@@ -68,9 +78,29 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
         }
         return child;
       },
+      remove() {
+        if (!this.parentElement) return;
+        this.parentElement.children = this.parentElement.children.filter((child) => child !== this);
+        this.parentElement = null;
+      },
+      setPointerCapture(pointerId) { this._capturedPointerId = pointerId; },
+      hasPointerCapture(pointerId) { return this._capturedPointerId === pointerId; },
+      releasePointerCapture(pointerId) {
+        if (this._capturedPointerId === pointerId) this._capturedPointerId = null;
+      },
+      getBoundingClientRect() {
+        return this._rect || { left: 0, top: 0, right: 100, bottom: 40, width: 100, height: 40 };
+      },
       closest(selector) {
-        const key = { "[data-result-history-select]": "resultHistorySelect", "[data-result-history-toggle]": "resultHistoryToggle" }[selector];
-        return key && Object.hasOwn(dataset, key) ? this : null;
+        const selectors = String(selector).split(",").map((value) => value.trim()).filter(Boolean);
+        let current = this;
+        while (current) {
+          if (selectors.some((candidate) => current.matches?.(candidate))) return current;
+          const key = { "[data-result-history-select]": "resultHistorySelect", "[data-result-history-toggle]": "resultHistoryToggle" }[selector];
+          if (key && Object.hasOwn(current.dataset, key)) return current;
+          current = current.parentElement;
+        }
+        return null;
       },
       matches(selector) {
         const classMatch = selector.match(/\.([\w-]+)/);
@@ -131,6 +161,11 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
     },
     starting9Auth: { getUser: () => user, getApiBaseUrl: () => "https://starting9.test" }
   };
+  if (dragRuntime) {
+    window.innerWidth = 1024;
+    window.innerHeight = 768;
+    window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} });
+  }
   window.addEventListener = () => {};
   const document = {
     body,
@@ -143,6 +178,15 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
       const results = (documentListeners.get(type) || []).map((handler) => handler({ preventDefault() {}, stopPropagation() {}, ...event }));
       await Promise.all(results);
     },
+    async dispatchEvent(event) {
+      const dispatched = { ...event, target: event.target || body, defaultPrevented: false };
+      dispatched.preventDefault = () => { dispatched.defaultPrevented = true; };
+      dispatched.stopPropagation = () => { dispatched.propagationStopped = true; };
+      const results = (documentListeners.get(dispatched.type) || []).map((handler) => handler(dispatched));
+      await Promise.all(results);
+      return !dispatched.defaultPrevented;
+    },
+    elementFromPoint: () => pointTarget,
     getElementById: (id) => elements.get(id) || null,
     createElement: () => element(),
     createDocumentFragment: () => Object.assign(element(), { nodeType: 11, tagName: "#document-fragment" }),
@@ -179,6 +223,16 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
       // their mocked fetch/JSON promise chains settle without real timers.
       await new Promise(setImmediate);
     },
+    async tickTimers() {
+      for (const [id, timer] of [...timers.entries()]) {
+        if (!timer.interval) {
+          timers.delete(id);
+          await timer.callback();
+        }
+      }
+      await new Promise(setImmediate);
+    },
+    setPointTarget: (target) => { pointTarget = target; },
     dispose: () => timers.clear()
   };
 }

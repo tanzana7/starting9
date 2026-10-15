@@ -45,7 +45,7 @@ test("Asia CS admin authorization uses a trimmed, duplicate-safe user ID allowli
   };
   const env = authEnv(users, " test-admin-user, test-admin-user ");
 
-  const admin = await request(worker, env, "/api/admin/teams", { headers: { Cookie: "s9_session=admin" } });
+  const admin = await request(worker, env, "/api/admin/teams?competitionId=asia-cs", { headers: { Cookie: "s9_session=admin" } });
   assert.equal(admin.status, 200);
 
   const normal = await request(worker, env, "/api/admin/teams?userId=test-admin-user", { headers: { Cookie: "s9_session=normal" } });
@@ -57,17 +57,17 @@ test("unauthenticated, missing allowlist, and malformed allowlist values fail cl
   const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
   const users = { "s9_session=admin": { id: "test-admin-user", username: "admin", role: "admin" } };
 
-  const unauthenticated = await request(worker, authEnv(users, "test-admin-user"), "/api/admin/teams");
+  const unauthenticated = await request(worker, authEnv(users, "test-admin-user"), "/api/admin/teams?competitionId=asia-cs");
   assert.equal(unauthenticated.status, 401);
   assert.equal((await unauthenticated.json()).code, "AUTH_REQUIRED");
 
-  const missing = await request(worker, authEnv(users), "/api/admin/teams", { headers: { Cookie: "s9_session=admin" } });
+  const missing = await request(worker, authEnv(users), "/api/admin/teams?competitionId=asia-cs", { headers: { Cookie: "s9_session=admin" } });
   assert.equal(missing.status, 403);
 
-  const empty = await request(worker, authEnv(users, ""), "/api/admin/teams", { headers: { Cookie: "s9_session=admin" } });
+  const empty = await request(worker, authEnv(users, ""), "/api/admin/teams?competitionId=asia-cs", { headers: { Cookie: "s9_session=admin" } });
   assert.equal(empty.status, 403);
 
-  const malformed = await request(worker, authEnv(users, "[not-json"), "/api/admin/teams", { headers: { Cookie: "s9_session=admin" } });
+  const malformed = await request(worker, authEnv(users, "[not-json"), "/api/admin/teams?competitionId=asia-cs", { headers: { Cookie: "s9_session=admin" } });
   assert.equal(malformed.status, 403);
 });
 
@@ -113,13 +113,13 @@ test("only primitive string identities can pass the management API allowlist", a
 
   for (const id of invalidIds) {
     const env = authEnv({ "s9_session=spoof": { id, username: "admin", role: "admin" } }, "test-admin-user");
-    const response = await request(worker, env, "/api/admin/teams", { headers: { Cookie: "s9_session=spoof" } });
+    const response = await request(worker, env, "/api/admin/teams?competitionId=asia-cs", { headers: { Cookie: "s9_session=spoof" } });
     assert.ok([401, 403].includes(response.status), `non-string id must be denied: ${Object.prototype.toString.call(id)}`);
   }
 
-  const valid = await request(worker, authEnv({ "s9_session=valid": { id: "test-admin-user", username: "renamed", role: "user" } }, "test-admin-user"), "/api/admin/teams", { headers: { Cookie: "s9_session=valid" } });
+  const valid = await request(worker, authEnv({ "s9_session=valid": { id: "test-admin-user", username: "renamed", role: "user" } }, "test-admin-user"), "/api/admin/teams?competitionId=asia-cs", { headers: { Cookie: "s9_session=valid" } });
   assert.equal(valid.status, 200);
 
-  const nonAdmin = await request(worker, authEnv({ "s9_session=user": { id: "test-normal-user", username: "admin", role: "admin" } }, "test-admin-user"), "/api/admin/teams", { headers: { Cookie: "s9_session=user" } });
+  const nonAdmin = await request(worker, authEnv({ "s9_session=user": { id: "test-normal-user", username: "admin", role: "admin" } }, "test-admin-user"), "/api/admin/teams?competitionId=asia-cs", { headers: { Cookie: "s9_session=user" } });
   assert.equal(nonAdmin.status, 403);
 });

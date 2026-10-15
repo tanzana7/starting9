@@ -90,14 +90,14 @@ test("Phase 2の大会ランディング・日程・一括取込は同一competi
     { teamKey: "home", displayName: "Home", shortName: "H" },
     { teamKey: "away", displayName: "Away", shortName: "A" }
   ]) {
-    const created = await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify(team) });
+    const created = await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ competitionId: "asia-cs", ...team }) });
     assert.equal(created.response.status, 201);
   }
 
   const importedGames = await request(worker, env, "/api/admin/games/import", {
     method: "POST",
     headers: { Cookie: adminCookie },
-    body: JSON.stringify({ games: [
+    body: JSON.stringify({ competitionId: "asia-cs", games: [
       { id: "phase2-game-1", title: "Opening", gameDate: "2026-11-15", startAt: "2026-11-15T09:00:00+09:00", predictionDeadlineAt: "2026-11-15T08:00:00+09:00", homeTeamId: "home", awayTeamId: "away", venue: "Tokyo" },
       { id: "phase2-game-2", title: "Final", gameDate: "2026-11-16", startAt: "2026-11-16T09:00:00+09:00", predictionDeadlineAt: "2026-11-16T08:00:00+09:00", homeTeamId: "away", awayTeamId: "home", venue: "Osaka" }
     ] })
@@ -109,7 +109,7 @@ test("Phase 2の大会ランディング・日程・一括取込は同一competi
   const invalidGames = await request(worker, env, "/api/admin/games/import", {
     method: "POST",
     headers: { Cookie: adminCookie },
-    body: JSON.stringify({ games: [
+    body: JSON.stringify({ competitionId: "asia-cs", games: [
       { id: "phase2-game-3", title: "Would be valid", gameDate: "2026-11-17", startAt: "2026-11-17T09:00:00+09:00", predictionDeadlineAt: "2026-11-17T08:00:00+09:00", homeTeamId: "home", awayTeamId: "away" },
       { id: "phase2-game-4", title: "Foreign", gameDate: "2026-11-18", startAt: "2026-11-18T09:00:00+09:00", predictionDeadlineAt: "2026-11-18T08:00:00+09:00", homeTeamId: "home", awayTeamId: "missing" }
     ] })
@@ -162,11 +162,11 @@ test("完了済み大会は予想を停止し、管理概要は大会境界内�
   const fan = await request(worker, env, "/api/auth/register", { method: "POST", body: JSON.stringify({ username: "fan", password: "fan-password" }) });
   const fanCookie = cookie(fan);
 
-  const teamA = await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ teamKey: "team-a", displayName: "Team A", shortName: "A" }) });
-  const teamB = await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ teamKey: "team-b", displayName: "Team B", shortName: "B" }) });
+  const teamA = await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ competitionId: "asia-cs", teamKey: "team-a", displayName: "Team A", shortName: "A" }) });
+  const teamB = await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ competitionId: "asia-cs", teamKey: "team-b", displayName: "Team B", shortName: "B" }) });
   assert.equal(teamA.response.status, 201);
   assert.equal(teamB.response.status, 201);
-  const game = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "completed-game", title: "Completed", gameDate: "2026-12-01", startAt: "2026-12-01T09:00:00+09:00", predictionDeadlineAt: "2026-12-01T08:00:00+09:00", homeTeamId: "team-a", homeTeamName: "Team A", awayTeamId: "team-b", awayTeamName: "Team B" }) });
+  const game = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ competitionId: "asia-cs", id: "completed-game", title: "Completed", gameDate: "2026-12-01", startAt: "2026-12-01T09:00:00+09:00", predictionDeadlineAt: "2026-12-01T08:00:00+09:00", homeTeamId: "team-a", homeTeamName: "Team A", awayTeamId: "team-b", awayTeamName: "Team B" }) });
   assert.equal(game.response.status, 201);
 
   const completed = await request(worker, env, "/api/admin/competition", { method: "PUT", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "asia-cs", displayName: "Asia CS", shortName: "ACS", status: "completed" }) });
@@ -177,7 +177,7 @@ test("完了済み大会は予想を停止し、管理概要は大会境界内�
   const blockedEdit = await request(worker, env, "/api/admin/competition", { method: "PUT", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "asia-cs", displayName: "Changed", shortName: "Changed", status: "active" }) });
   assert.equal(blockedEdit.response.status, 409);
 
-  const overview = await request(worker, env, "/api/admin/overview", { headers: { Cookie: adminCookie } });
+  const overview = await request(worker, env, "/api/admin/overview?competitionId=asia-cs", { headers: { Cookie: adminCookie } });
   assert.equal(overview.response.status, 200);
   assert.equal(overview.payload.competition.status, "completed");
   assert.deepEqual(overview.payload.games.map((item) => item.id), ["completed-game"]);
@@ -232,11 +232,11 @@ test("完了済み大会は全ての管理mutationをサーバー側で拒否す
     { teamKey: "completed-home", displayName: "Completed Home", shortName: "CH" },
     { teamKey: "completed-away", displayName: "Completed Away", shortName: "CA" }
   ]) {
-    assert.equal((await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify(team) })).response.status, 201);
+    assert.equal((await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ competitionId: "asia-cs", ...team }) })).response.status, 201);
   }
   assert.equal((await request(worker, env, "/api/admin/games", {
     method: "POST", headers: { Cookie: adminCookie },
-    body: JSON.stringify({ id: "completed-mutation-game", title: "Completed", gameDate: "2026-12-10", startAt: "2026-12-10T09:00:00+09:00", predictionDeadlineAt: "2026-12-10T08:00:00+09:00", homeTeamId: "completed-home", awayTeamId: "completed-away", homeTeamName: "Completed Home", awayTeamName: "Completed Away" })
+    body: JSON.stringify({ competitionId: "asia-cs", id: "completed-mutation-game", title: "Completed", gameDate: "2026-12-10", startAt: "2026-12-10T09:00:00+09:00", predictionDeadlineAt: "2026-12-10T08:00:00+09:00", homeTeamId: "completed-home", awayTeamId: "completed-away", homeTeamName: "Completed Home", awayTeamName: "Completed Away" })
   })).response.status, 201);
   assert.equal((await request(worker, env, "/api/admin/competition", { method: "PUT", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "asia-cs", displayName: "Asia CS", shortName: "ACS", status: "completed" }) })).response.status, 200);
 
@@ -385,12 +385,12 @@ test("manualとbulkの選手metadataは保存・更新・CSV取込で同じ形�
     { teamKey: "metadata-home", displayName: "Metadata Home", shortName: "MH" },
     { teamKey: "metadata-away", displayName: "Metadata Away", shortName: "MA" }
   ]) {
-    const result = await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify(team) });
+    const result = await request(worker, env, "/api/admin/teams", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ competitionId: "asia-cs", ...team }) });
     teamIds[team.teamKey] = result.payload.team.id;
   }
   const createGame = async (id, date) => request(worker, env, "/api/admin/games", {
     method: "POST", headers: { Cookie: adminCookie },
-    body: JSON.stringify({ id, title: id, gameDate: date, startAt: `${date}T09:00:00+09:00`, predictionDeadlineAt: `${date}T08:00:00+09:00`, homeTeamId: "metadata-home", awayTeamId: "metadata-away", homeTeamName: "Metadata Home", awayTeamName: "Metadata Away" })
+    body: JSON.stringify({ competitionId: "asia-cs", id, title: id, gameDate: date, startAt: `${date}T09:00:00+09:00`, predictionDeadlineAt: `${date}T08:00:00+09:00`, homeTeamId: "metadata-home", awayTeamId: "metadata-away", homeTeamName: "Metadata Home", awayTeamName: "Metadata Away" })
   });
   assert.equal((await createGame("manual-metadata-game", "2026-12-13")).response.status, 201);
   assert.equal((await createGame("bulk-metadata-game", "2026-12-14")).response.status, 201);
@@ -508,4 +508,113 @@ test("大会Best Nineは未公開試合と別competitionを混ぜず、公開後
   assert.equal(after.payload.publishedGameCount, 2);
   const other = await request(worker, env, "/api/best-nine?competitionId=other-competition");
   assert.deepEqual(other.payload.bestNine.map((row) => row.player), ["Other Competition Player"]);
+});
+
+function contextSnapshot(database, competitionId) {
+  return {
+    competition: database.prepare("SELECT * FROM competitions WHERE id = ?").get(competitionId),
+    teams: database.prepare("SELECT * FROM teams WHERE competition_id = ? ORDER BY id").all(competitionId),
+    games: database.prepare("SELECT * FROM games WHERE competition_id = ? ORDER BY id").all(competitionId),
+    jobs: database.prepare("SELECT * FROM formal_jobs WHERE competition_id = ? ORDER BY id").all(competitionId)
+  };
+}
+
+test("admin missing/malformed competition context rejects before any write, never selecting legacy", async (t) => {
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const env = { ...createFixture(), ADMIN_BOOTSTRAP_TOKEN: "phase2-token", ALLOWED_ORIGIN: "https://asia-cs.test" };
+  t.after(() => env.database.close());
+  const adminCookie = await adminSession(worker, env);
+  const headers = { Cookie: adminCookie };
+  const queries = [];
+  const prepare = env.DB.prepare.bind(env.DB);
+  env.DB.prepare = (sql) => { queries.push(sql); return prepare(sql); };
+  const legacyBefore = contextSnapshot(env.database, "asia-cs");
+  const before = env.database.prepare("SELECT total_changes() AS count").get().count;
+  for (const competitionId of [undefined, null, "", "bad id", 123, ["asia-cs"]]) {
+    for (const [url, input] of [
+      ["/api/admin/competition", { displayName: "Must not save", shortName: "No", status: "draft" }],
+      ["/api/admin/teams", { teamKey: "must-not-save", displayName: "No", shortName: "No" }],
+      ["/api/admin/games", { id: "must-not-save", title: "No", gameDate: "2026-11-12", startAt: "2026-11-12T10:00:00.000Z" }],
+      ["/api/admin/games/import", { games: [{ id: "must-not-import" }] }],
+      ["/api/admin/placement-games", { opponentTeamId: "kor", japanSide: "home" }]
+    ]) {
+      const result = await request(worker, env, url, { method: "POST", headers, body: JSON.stringify({ ...input, competitionId }) });
+      assert.equal(result.response.status, 400, url);
+      assert.equal(result.payload.code, "COMPETITION_REQUIRED", url);
+    }
+  }
+  for (const url of ["/api/admin/overview", "/api/admin/teams", "/api/admin/overview?competitionId=bad%20id"]) {
+    const result = await request(worker, env, url, { headers });
+    assert.equal(result.response.status, 400);
+    assert.equal(result.payload.code, "COMPETITION_REQUIRED");
+  }
+  assert.equal(env.database.prepare("SELECT total_changes() AS count").get().count, before);
+  assert.deepEqual(contextSnapshot(env.database, "asia-cs"), legacyBefore);
+  assert.equal(queries.filter((sql) => /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql)).length, 0);
+  assert.throws(() => worker.serializeGame({ id: "missing-scope" }), (error) => error.code === "COMPETITION_REQUIRED");
+});
+
+test("explicit competition mutations and formal jobs stay within A, leaving B and historical rows unchanged", async (t) => {
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const env = { ...createFixture(), ADMIN_BOOTSTRAP_TOKEN: "phase2-token", ALLOWED_ORIGIN: "https://asia-cs.test" };
+  t.after(() => env.database.close());
+  const adminCookie = await adminSession(worker, env);
+  const headers = { Cookie: adminCookie };
+  const post = (url, input) => request(worker, env, url, { method: "POST", headers, body: JSON.stringify(input) });
+  const legacyBefore = contextSnapshot(env.database, "asia-cs");
+  for (const competitionId of ["context-a", "context-b"]) {
+    const created = await post("/api/admin/competition", { competitionId, displayName: competitionId, shortName: competitionId, status: "draft" });
+    assert.equal(created.response.status, 200);
+    assert.equal(created.payload.competition.id, competitionId);
+    for (const teamKey of ["home", "away"]) {
+      assert.equal((await post("/api/admin/teams", { competitionId, teamKey, displayName: teamKey, shortName: teamKey })).response.status, 201);
+    }
+    const game = await post("/api/admin/games", { competitionId, id: `${competitionId}-game`, gameDate: "2026-11-12", startAt: "2026-11-12T10:00:00.000Z", homeTeamId: "home", homeTeamName: "Home", awayTeamId: "away", awayTeamName: "Away" });
+    assert.equal(game.response.status, 201);
+    assert.equal(game.payload.game.competitionId, competitionId);
+  }
+  const beforeB = contextSnapshot(env.database, "context-b");
+  assert.equal((await post("/api/admin/competition", { id: "context-a", displayName: "A edited", shortName: "A", status: "active" })).response.status, 200);
+  assert.equal((await post("/api/admin/games/context-a-game/players", { players: [{ id: "context-a-player", name: "A Player", teamId: "home", position: "一" }] })).response.status, 200);
+  assert.equal((await post("/api/admin/players/import", { gameId: "context-a-game", players: [{ id: "context-a-import-player", name: "A Imported", teamId: "home", position: "二" }] })).response.status, 200);
+  const imported = await post("/api/admin/games/import", { competitionId: "context-a", games: [{ id: "context-a-import", gameDate: "2026-11-13", startAt: "2026-11-13T10:00:00.000Z", homeTeamId: "home", awayTeamId: "away" }] });
+  assert.equal(imported.response.status, 200);
+  assert.equal(imported.payload.games.every((game) => game.id.startsWith("context-a-")), true);
+  const detail = await request(worker, env, "/api/admin/games/context-a-game", { headers });
+  assert.equal(detail.response.status, 200);
+  assert.equal(detail.payload.competition.id, "context-a");
+  assert.equal(detail.payload.game.competitionId, "context-a");
+  const jobs = env.database.prepare("SELECT game_id, competition_id FROM formal_jobs WHERE competition_id = 'context-a'").all();
+  assert.equal(jobs.length, 8);
+  assert.ok(jobs.every((job) => job.game_id.startsWith("context-a-") && job.competition_id === "context-a"));
+  assert.deepEqual(contextSnapshot(env.database, "context-b"), beforeB);
+  assert.deepEqual(contextSnapshot(env.database, "asia-cs"), legacyBefore);
+});
+
+test("historical public read compatibility is isolated; unknown explicit reads never fall back", async (t) => {
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const env = { ...createFixture(), ADMIN_BOOTSTRAP_TOKEN: "phase2-token", ALLOWED_ORIGIN: "https://asia-cs.test" };
+  t.after(() => env.database.close());
+  const adminCookie = await adminSession(worker, env);
+  const apbc = await request(worker, env, "/api/admin/competition", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ id: "apbc-2026", displayName: "APBC", shortName: "APBC", status: "active" }) });
+  assert.equal(apbc.response.status, 200);
+  const created = await request(worker, env, "/api/admin/games", { method: "POST", headers: { Cookie: adminCookie }, body: JSON.stringify({ competitionId: "asia-cs", id: "historical-context-game", gameDate: "2026-11-12", startAt: "2026-11-12T10:00:00.000Z" }) });
+  assert.equal(created.response.status, 201);
+  for (const url of ["/api/competition", "/api/games", "/api/best-nine"]) {
+    const explicit = await request(worker, env, `${url}?competitionId=asia-cs`);
+    const omitted = await request(worker, env, url);
+    const malformedLegacyRead = await request(worker, env, `${url}?competitionId=bad%20id`);
+    assert.equal(explicit.response.status, 200);
+    assert.deepEqual(omitted.payload, explicit.payload);
+    assert.deepEqual(malformedLegacyRead.payload, explicit.payload);
+    const unknown = await request(worker, env, `${url}?competitionId=unknown-competition`);
+    assert.equal(unknown.response.status, 404);
+    assert.equal(unknown.payload.code, "COMPETITION_NOT_FOUND");
+  }
+  const missingRanking = await request(worker, env, "/api/rankings");
+  assert.equal(missingRanking.response.status, 400);
+  assert.equal(missingRanking.payload.code, "COMPETITION_REQUIRED");
+  const unknownRanking = await request(worker, env, "/api/rankings?competitionId=unknown-competition");
+  assert.deepEqual(unknownRanking.payload.ranking, []);
+  assert.equal(env.database.prepare("SELECT COUNT(*) AS count FROM competitions WHERE id = 'unknown-competition'").get().count, 0);
 });

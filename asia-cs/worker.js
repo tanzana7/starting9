@@ -15,7 +15,8 @@ const PASSWORD_ITERATIONS = 100_000;
 const MAX_BODY_BYTES = 32 * 1024;
 const BEST_NINE_LIMIT = 9;
 const COMPETITION_TYPE = "ASIA_CS";
-const DEFAULT_COMPETITION_ID = "asia-cs";
+const APBC_COMPETITION_ID = "apbc-2026";
+const LEGACY_COMPETITION_ID = "asia-cs";
 const FORMAL_JOB_TYPES = Object.freeze(["prediction_close", "score", "ranking_rebuild", "publish"]);
 const COMPETITION_STATUSES = Object.freeze(["draft", "active", "completed"]);
 const PLAYER_POSITIONS = Object.freeze([...POSITIONS, "投"]);
@@ -44,7 +45,7 @@ const APBC_PLACEMENT_GAME_DEFINITIONS = Object.freeze({
 });
 const APBC_PLACEMENT_DATE = "2026-11-15";
 const DRYRUN_FIXTURE_ID = "apbc-switch-test-2026-10-16";
-const DRYRUN_SOURCE_COMPETITION_ID = "apbc-2026";
+const DRYRUN_SOURCE_COMPETITION_ID = APBC_COMPETITION_ID;
 const DRYRUN_SOURCE_GAME_ID = "apbc-2026-g2";
 const DRYRUN_FIXTURE_TEAM_DEFINITIONS = Object.freeze([
   Object.freeze({ teamKey: "jpn", displayName: "日本", shortName: "JPN", countryCode: "JPN" }),
@@ -140,6 +141,19 @@ function nowIso() {
 function validId(value) {
   const id = String(value || "").trim();
   return /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id) ? id : "";
+}
+
+function requireCompetitionId(value) {
+  const id = typeof value === "string" ? validId(value) : "";
+  if (!id) throw new RequestError(400, "COMPETITION_REQUIRED", "competitionIdを指定してください。");
+  return id;
+}
+
+function legacyReadCompetitionId(request) {
+  // Preserve the existing standalone read contract, including its handling of
+  // absent/invalid query IDs. Canonical APBC/test pages already send explicit
+  // IDs. This compatibility boundary must never be used by admin or mutations.
+  return validId(new URL(request.url).searchParams.get("competitionId")) || LEGACY_COMPETITION_ID;
 }
 
 function validDate(value) {
@@ -709,7 +723,7 @@ async function getCompetition(db, competitionId) {
 }
 
 async function assertCompetitionMutable(db, competitionId) {
-  const competition = await getCompetition(db, competitionId || DEFAULT_COMPETITION_ID);
+  const competition = await getCompetition(db, requireCompetitionId(competitionId));
   if (!competition) throw new RequestError(404, "COMPETITION_NOT_FOUND", "対象大会がありません。");
   if (competition.status === "completed") throw new RequestError(409, "COMPETITION_COMPLETED", "完了した大会は変更できません。");
   return competition;
@@ -717,11 +731,11 @@ async function assertCompetitionMutable(db, competitionId) {
 
 async function assertGameCompetitionMutable(db, game) {
   if (!game) throw new RequestError(404, "GAME_NOT_FOUND", "対象試合がありません。");
-  return assertCompetitionMutable(db, game.competition_id || DEFAULT_COMPETITION_ID);
+  return assertCompetitionMutable(db, game.competition_id);
 }
 
 async function ensureCompetition(db, competitionId, now = nowIso()) {
-  const id = validId(competitionId) || DEFAULT_COMPETITION_ID;
+  const id = requireCompetitionId(competitionId);
   // Read first so an existing completed competition stays truly read-only;
   // only the bootstrap path is allowed to create a missing competition row.
   const existing = await getCompetition(db, id);
@@ -760,6 +774,7 @@ function isPublishedPredictionGame(game) {
 }
 
 async function firstUnpublishedPredictionGame(db, competitionId, teams = null, games = null) {
+  competitionId = requireCompetitionId(competitionId);
   const competitionGames = games || (await prepared(db, `SELECT * FROM games
       WHERE competition_type = ?1 AND competition_id = ?2
      ORDER BY game_date ASC, start_at ASC, id ASC`, COMPETITION_TYPE, competitionId).all()).results || [];
@@ -832,7 +847,7 @@ function derivePublicPredictionState(competition, game, teams, firstUnpublished,
 }
 
 async function persistedGamePredictionEligible(db, game) {
-  return isGamePredictionEligible(game, await getTeams(db, game?.competition_id || DEFAULT_COMPETITION_ID));
+  return isGamePredictionEligible(game, await getTeams(db, game?.competition_id));
 }
 
 function predictionNotEligibleResponse(request, env) {
@@ -891,8 +906,8 @@ async function getPlayers(db, gameId, activeOnly = false) {
   return result.results || [];
 }
 
-async function getTeams(db, competitionId = DEFAULT_COMPETITION_ID) {
-  const result = await prepared(db, "SELECT id, competition_id, team_key, display_name, short_name, country_code FROM teams WHERE competition_id = ?1 ORDER BY display_name ASC, id ASC", competitionId).all();
+async function getTeams(db, competitionId) {
+  const result = await prepared(db, "SELECT id, competition_id, team_key, display_name, short_name, country_code FROM teams WHERE competition_id = ?1 ORDER BY display_name ASC, id ASC", requireCompetitionId(competitionId)).all();
   return result.results || [];
 }
 
@@ -992,7 +1007,7 @@ function serializeGame(game, players = [], teams = []) {
     id: game.id,
     title: game.title,
     competitionType: game.competition_type || COMPETITION_TYPE,
-    competitionId: game.competition_id || DEFAULT_COMPETITION_ID,
+    competitionId: requireCompetitionId(game.competition_id),
     gameSource: game.game_source || "manual",
     externalGameCode: game.external_game_code || null,
     gameDate: game.game_date,
@@ -1027,7 +1042,7 @@ async function publicGame(request, env, db, gameId) {
 }
 
 async function publicCompetition(request, env, db) {
-  const competitionId = validId(new URL(request.url).searchParams.get("competitionId")) || DEFAULT_COMPETITION_ID;
+  const competitionId = legacyReadCompetitionId(request);
   const competition = await getCompetition(db, competitionId);
   if (!competition) return errorResponse(request, env, 404, "COMPETITION_NOT_FOUND", "対象大会がありません。");
   const games = await listCompetitionGames(request, env, db, competitionId, { userVisibleOnly: true });
@@ -1043,7 +1058,7 @@ async function publicCompetition(request, env, db) {
 }
 
 async function publicGames(request, env, db) {
-  const competitionId = validId(new URL(request.url).searchParams.get("competitionId")) || DEFAULT_COMPETITION_ID;
+  const competitionId = legacyReadCompetitionId(request);
   if (!await getCompetition(db, competitionId)) return errorResponse(request, env, 404, "COMPETITION_NOT_FOUND", "対象大会がありません。");
   return json({ ok: true, competitionId, games: await listCompetitionGames(request, env, db, competitionId, { userVisibleOnly: true }) }, 200, request, env);
 }
@@ -1186,6 +1201,7 @@ function formalJobTypesForGame(game, teams = []) {
 }
 
 function buildFormalJobStatements(db, gameId, predictionDeadlineAt, competitionId, now, jobTypes = FORMAL_JOB_TYPES) {
+  competitionId = requireCompetitionId(competitionId);
   return jobTypes.map((jobType) => prepared(db, `INSERT OR IGNORE INTO formal_jobs
     (id, game_id, competition_type, competition_id, job_type, status, revision_number, due_at, attempts, completed_at, created_at, updated_at)
     VALUES (?1, ?2, ?3, ?4, ?5, 'scheduled', NULL, ?6, 0, NULL, ?7, ?7)`,
@@ -1194,7 +1210,8 @@ function buildFormalJobStatements(db, gameId, predictionDeadlineAt, competitionI
 
 async function ensureFormalJobs(db, game) {
   if (!game) return;
-  const teams = await getTeams(db, game.competition_id || DEFAULT_COMPETITION_ID);
+  const competitionId = requireCompetitionId(game.competition_id);
+  const teams = await getTeams(db, competitionId);
   const jobTypes = formalJobTypesForGame(game, teams);
   // A non-Japan fixture is still a real tournament game, but it is outside
   // Starting9's prediction pipeline. In particular, an admin GET must not
@@ -1202,7 +1219,7 @@ async function ensureFormalJobs(db, game) {
   if (!jobTypes.length) return;
   const existing = await prepared(db, "SELECT COUNT(*) AS count FROM formal_jobs WHERE game_id = ?1", game.id).first();
   if (Number(existing?.count || 0) >= jobTypes.length) return;
-  await db.batch(buildFormalJobStatements(db, game.id, game.prediction_deadline_at, game.competition_id || DEFAULT_COMPETITION_ID, nowIso(), jobTypes));
+  await db.batch(buildFormalJobStatements(db, game.id, game.prediction_deadline_at, competitionId, nowIso(), jobTypes));
 }
 
 function dryRunPlayerCopyId(gameId, sourcePlayerId) {
@@ -1436,7 +1453,7 @@ async function listFormalJobs(db, gameId) {
 
 async function createTeam(request, env, db, admin) {
   const input = await readJson(request);
-  const competitionId = validId(input.competitionId) || DEFAULT_COMPETITION_ID;
+  const competitionId = requireCompetitionId(input.competitionId);
   const competition = await ensureCompetition(db, competitionId);
   await assertCompetitionMutable(db, competition.id);
   const teamKey = validId(input.teamKey || input.id);
@@ -1460,7 +1477,7 @@ async function createTeam(request, env, db, admin) {
 
 async function updateCompetition(request, env, db) {
   const input = await readJson(request);
-  const id = validId(input.id || input.competitionId) || DEFAULT_COMPETITION_ID;
+  const id = requireCompetitionId(input.id || input.competitionId);
   const existing = await getCompetition(db, id);
   const displayName = String(input.displayName || input.name || "").trim().slice(0, 120);
   const shortName = String(input.shortName || displayName).trim().slice(0, 60);
@@ -1492,7 +1509,7 @@ async function updateCompetition(request, env, db) {
 }
 
 async function adminCompetitionOverview(request, env, db) {
-  const competitionId = validId(new URL(request.url).searchParams.get("competitionId")) || DEFAULT_COMPETITION_ID;
+  const competitionId = requireCompetitionId(new URL(request.url).searchParams.get("competitionId"));
   const competition = await getCompetition(db, competitionId);
   if (!competition) return errorResponse(request, env, 404, "COMPETITION_NOT_FOUND", "対象大会がありません。");
   const games = await listCompetitionGames(request, env, db, competitionId, { includePredictionState: false });
@@ -1630,7 +1647,7 @@ async function bulkImportPlayers(request, env, db) {
 
 async function bulkImportGames(request, env, db) {
   const input = await readJson(request);
-  const competitionId = validId(input.competitionId) || DEFAULT_COMPETITION_ID;
+  const competitionId = requireCompetitionId(input.competitionId);
   const rows = importRows(input, "games");
   if (!rows.length || rows.length > 100) throw new RequestError(400, "GAMES_INVALID", "試合データを確認してください。");
   // Bulk import is a commit boundary: an invalid payload must not bootstrap a
@@ -1705,7 +1722,7 @@ async function bulkImportGames(request, env, db) {
 }
 
 async function listTeams(request, env, db) {
-  const competitionId = validId(new URL(request.url).searchParams.get("competitionId")) || DEFAULT_COMPETITION_ID;
+  const competitionId = requireCompetitionId(new URL(request.url).searchParams.get("competitionId"));
   return json({ ok: true, competitionType: COMPETITION_TYPE, competitionId, teams: await getTeams(db, competitionId) }, 200, request, env);
 }
 
@@ -1718,7 +1735,7 @@ async function createGame(request, env, db, admin) {
   if (!title || !/^\d{4}-\d{2}-\d{2}$/.test(gameDate) || !startAt || !deadline || deadline.getTime() >= startAt.getTime() || tokyoCalendarDate(startAt) !== gameDate) {
     throw new RequestError(400, "GAME_INPUT_INVALID", "試合名・試合日・開始日時・締切日時を確認してください。");
   }
-  const competitionId = validId(input.competitionId) || DEFAULT_COMPETITION_ID;
+  const competitionId = requireCompetitionId(input.competitionId);
   const competition = await ensureCompetition(db, competitionId);
   await assertCompetitionMutable(db, competition.id);
   const homeTeamId = validId(input.homeTeamId || input.homeTeam?.id);
@@ -1772,8 +1789,8 @@ async function latestJapanRoster(db, games, teams) {
 
 async function createPlacementGame(request, env, db, admin) {
   const input = await readJson(request);
-  const competitionId = validId(input.competitionId) || "apbc-2026";
-  if (competitionId !== "apbc-2026") throw new RequestError(400, "PLACEMENT_COMPETITION_INVALID", "APBC 2026を指定してください。");
+  const competitionId = requireCompetitionId(input.competitionId);
+  if (competitionId !== APBC_COMPETITION_ID) throw new RequestError(400, "PLACEMENT_COMPETITION_INVALID", "APBC 2026を指定してください。");
   const competition = await assertCompetitionMutable(db, competitionId);
   const definition = placementGameDefinition(input.placementType || "final");
   const teams = await getTeams(db, competitionId);
@@ -2109,7 +2126,7 @@ async function publicRanking(request, env, db) {
 }
 
 async function publicBestNine(request, env, db) {
-  const competitionId = validId(new URL(request.url).searchParams.get("competitionId")) || DEFAULT_COMPETITION_ID;
+  const competitionId = legacyReadCompetitionId(request);
   if (!await getCompetition(db, competitionId)) return errorResponse(request, env, 404, "COMPETITION_NOT_FOUND", "対象大会がありません。");
   const teams = await getTeams(db, competitionId);
   const result = await prepared(db, `SELECT id, current_lineup_revision
@@ -2293,15 +2310,16 @@ async function bestNine(request, env, db, gameId) {
 async function adminGameDetail(request, env, db, gameId) {
   const game = await getGame(db, gameId);
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
+  const competitionId = requireCompetitionId(game.competition_id);
   const lineup = await currentLineup(db, gameId);
   const predictions = await prepared(db, `SELECT users.username, predictions.status, predictions.score, predictions.max_score, predictions.scored_revision, predictions.updated_at FROM predictions JOIN users ON users.id = predictions.user_id WHERE predictions.game_id = ?1 ORDER BY predictions.updated_at DESC`, gameId).all();
   const revisions = await prepared(db, "SELECT revision_number, fingerprint, is_current, confirmed_at, confirmed_by FROM lineup_revisions WHERE game_id = ?1 ORDER BY revision_number DESC", gameId).all();
-  const competition = await getCompetition(db, game.competition_id || DEFAULT_COMPETITION_ID);
+  const competition = await getCompetition(db, competitionId);
   const formalJobs = await listFormalJobs(db, gameId);
-  const requiredFormalJobTypes = formalJobTypesForGame(game, await getTeams(db, game.competition_id || DEFAULT_COMPETITION_ID));
+  const requiredFormalJobTypes = formalJobTypesForGame(game, await getTeams(db, competitionId));
   const existingFormalJobTypes = new Set(formalJobs.map((job) => job.job_type));
   const missingFormalJobTypes = requiredFormalJobTypes.filter((jobType) => !existingFormalJobTypes.has(jobType));
-  return json({ ok: true, competition: serializeCompetition(competition), game: serializeGame(game, await getPlayers(db, gameId)), currentLineup: lineup, revisions: revisions.results || [], formalJobs, requiredFormalJobTypes, missingFormalJobTypes, ranking: await listCompetitionRanking(db, game.competition_id || DEFAULT_COMPETITION_ID, false, true), predictions: predictions.results || [] }, 200, request, env);
+  return json({ ok: true, competition: serializeCompetition(competition), game: serializeGame(game, await getPlayers(db, gameId)), currentLineup: lineup, revisions: revisions.results || [], formalJobs, requiredFormalJobTypes, missingFormalJobTypes, ranking: await listCompetitionRanking(db, competitionId, false, true), predictions: predictions.results || [] }, 200, request, env);
 }
 
 async function route(request, env) {

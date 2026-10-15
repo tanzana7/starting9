@@ -38,7 +38,7 @@ The tests cover the following contracts:
 - migration application and schema compatibility using local test databases
 - V1/V2 retirement and no-legacy-fallback guarantees
 
-Admin V3 browser modules are covered by tests for script load order, credentialed endpoint routing, state isolation, and the coordinator boundary. The entrypoint retains a `v3Fetch` compatibility delegate while calls are routed through the named API client.
+Admin V3 browser modules are covered by tests for script load order, credentialed endpoint routing, state isolation, and the coordinator boundary. Requests are routed through the named API client.
 
 Backend domain modules are tested directly as well as through the Worker. Scoring, ranking, and public-results tests import the pure rules from `backend/domain`; ranking repository tests keep the D1-compatible CTE contract under `backend/repositories`. Compatibility tests still import the Worker exports to ensure existing callers keep their public symbols during the incremental split.
 
@@ -61,6 +61,6 @@ For changes to static assets, verify the production-shaped page in a browser:
 - the canonical game and prediction deadline are visible
 - roster loading settles to fresh, baseline, or a user-facing unavailable state
 - saving and resetting a prediction do not remove the latest result
-- public ranking and result copy contain no internal IDs or reason codes
+- public result copy contains no internal IDs or reason codes
 - admin V3 remains separately accessible and authenticated
 - mobile lineup input remains usable

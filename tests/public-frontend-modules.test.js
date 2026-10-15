@@ -6,7 +6,7 @@ const vm = require("node:vm");
 
 const root = path.join(__dirname, "..");
 const moduleDir = path.join(root, "frontend", "public");
-const moduleNames = ["state", "request-guard", "storage", "api-client", "app-coordinator", "render-results", "render-ranking", "roster", "prediction-form"];
+const moduleNames = ["state", "request-guard", "storage", "api-client", "app-coordinator", "render-results", "roster", "prediction-form"];
 
 function load(name, { fetchImpl, storage } = {}) {
   const context = {
@@ -65,12 +65,8 @@ test("API clientは公開APIのfetchとJSON解析を一箇所で扱う", async (
   assert.equal(calls[0].options.signal, "request-signal");
 });
 
-test("rankingとresults moduleは現在の公開文言と最大5件の表示契約を保持する", () => {
-  const ranking = fs.readFileSync(path.join(moduleDir, "render-ranking.js"), "utf8");
+test("results moduleは現在の公開文言と最大5件の表示契約を保持する", () => {
   const results = fs.readFileSync(path.join(moduleDir, "render-results.js"), "utf8");
-  assert.match(ranking, /ランキング/);
-  assert.doesNotMatch(ranking, /規定到達ランキング/);
-  assert.match(ranking, /あと\$\{Math\.max\(0, Number\(row\?\.gamesNeeded \|\| 0\)\)\}試合連続参加で規定到達/);
   assert.match(results, /games\.slice\(0, 5\)/);
   assert.match(results, /renderDailyBestNine/);
   assert.match(results, /今日のベストナイン/);

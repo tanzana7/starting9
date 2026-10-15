@@ -335,11 +335,6 @@ async function excludeV3GameFromRanking(internalGameId) {
   }
 }
 
-// Compatibility alias for focused tests and future incremental extraction.
-function v3Fetch(path, options = {}) {
-  return v3Api.request(path, options);
-}
-
 function setV3Status(message, isError = false) {
   const element = document.getElementById("v3Status");
   if (!element) return;
@@ -492,12 +487,6 @@ function isV3FightersGame(game) {
   return teamCodes.some((value) => value === "f" || value === "fighters" || value.includes("fighter"));
 }
 
-function isV3UncompletedGame(game) {
-  const workflowState = String(game?.state?.state || game?.workflowState || game?.workflow_status || "scheduled").trim().toLowerCase();
-  const gameStatus = String(game?.gameStatus || game?.game_status || "scheduled").trim().toLowerCase();
-  return !["published", "cancelled", "canceled", "service_unavailable", "excluded"].includes(workflowState)
-    && !["completed", "cancelled", "canceled", "service_unavailable"].includes(gameStatus);
-}
 
 function preferredV3OperationalGame(games, now = new Date()) {
   return v3SelectionSafety.preferredOperationalGame(v3ListItems(games, "games"), now);
@@ -643,16 +632,6 @@ function nextV3ActionText(game) {
   return next ? `${V3_JOB_LABELS[next.job_type] || next.job_type} ${formatV3Jst(next.scheduled_at)}` : "なし";
 }
 
-const TODAY_OPS_STATUS_LABELS = Object.freeze({ ok: "OK", waiting: "WAITING", attention: "ATTENTION" });
-
-function todayOpsStatusClass(status) {
-  return status === "attention" ? "attention" : status === "ok" ? "ok" : "waiting";
-}
-
-function todayOpsStatusBadge(status) {
-  const normalized = todayOpsStatusClass(status);
-  return `<span class="today-ops-status ${normalized}">${TODAY_OPS_STATUS_LABELS[normalized]}</span>`;
-}
 
 function rosterDisplaySlots(game, slots) {
   const values = Array.isArray(slots) ? slots : [];

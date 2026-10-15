@@ -39,10 +39,6 @@ const DRAG_DATA_TYPE = "application/x-ham-starting9-player";
 const NPB_STARTER_SOURCE_URL = "https://npb.jp/announcement/starter/";
 const NPBASE_MATCHUPS_URL = "https://npbase.jp/?view=labo&tool=matchups&day=today&sort=average&order=desc";
 const NPBASE_PLAYER_FALLBACK_URL = "https://npbase.jp/";
-const RANKING_DISPLAY_LIMIT = 50;
-const MONTHLY_RANKING_MIN_YEAR = 2020;
-const YEARLY_RANKING_MIN_YEAR = 2020;
-const RANKING_SERVICE_START_YEAR = 2026;
 const PREDICTION_DEADLINE_REFRESH_MS = 30 * 1000;
 const PROBABLE_STARTER_REFRESH_INTERVAL_MS = 60 * 1000;
 const ROSTER_SNAPSHOT_CACHE_TTL_MS = 60 * 60 * 1000;
@@ -212,17 +208,6 @@ const state = {
     message: "",
     detailError: ""
   },
-  yearlyRanking: {
-    isLoading: false,
-    isLoadingSelf: false,
-    requestId: 0,
-    rows: [],
-    summary: null,
-    pagination: null,
-    self: null,
-    message: "",
-    year: getJapanYearMonth().year
-  },
   dailyBestNine: {
     isLoading: false,
     requestId: 0,
@@ -231,29 +216,6 @@ const state = {
     rows: [],
     totalCount: 0,
     message: "",
-  },
-  rankingView: "weekly",
-  monthlyRanking: {
-    isLoading: false,
-    isLoadingSelf: false,
-    requestId: 0,
-    rows: [],
-    summary: null,
-    pagination: null,
-    self: null,
-    message: "",
-    ...getJapanYearMonth()
-  },
-  weeklyRanking: {
-    isLoading: false,
-    isLoadingSelf: false,
-    requestId: 0,
-    rows: [],
-    summary: null,
-    pagination: null,
-    self: null,
-    message: "",
-    weekStart: getJapanWeekRange().startAt
   },
   predictionRemote: {
     isLoading: false,
@@ -482,9 +444,6 @@ const publicAppCoordinator = new publicFrontend.PublicAppCoordinator({
     fetchDailyBestNine,
     syncPredictionFromAccount,
     fetchUserAchievements,
-    refreshYearlyRanking,
-    refreshMonthlyRanking,
-    refreshWeeklyRanking,
     refreshResultHistory,
     maybeLoadFastPreviousResult
   }
@@ -2036,13 +1995,6 @@ function buildPredictionTargetApiUrl() {
   return baseUrl ? `${baseUrl}/api/prediction-target` : "";
 }
 
-function normalizeServerPredictionTarget(target) {
-  return {
-    ...target,
-    startDateTime: target.startAt || `${target.date || ""}T${target.startTime || "00:00"}:00+09:00`,
-    matchupLabel: `${target.homeTeam || ""} vs ${target.awayTeam || ""}`
-  };
-}
 
 async function getLoadedGameSchedule() {
   if (typeof window === "undefined") {
@@ -2479,10 +2431,6 @@ async function fetchStoredProbableStarter() {
   }
 }
 
-async function fetchProbableStarter({ force = false } = {}) {
-  void force;
-  return fetchStoredProbableStarter();
-}
 
 function normalizeScheduleTeamCode(value) {
   const key = String(value || "").trim().toLowerCase();
@@ -2750,100 +2698,6 @@ function getAuthApiBaseUrl() {
   return "";
 }
 
-function buildYearlyRankingApiUrl({ year, qualifiedOnly = false } = {}) {
-  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
-  if (!baseUrl) return "";
-  const url = new URL(`${baseUrl}/api/rankings/yearly`, window.location.href);
-  url.searchParams.set("year", String(year));
-  url.searchParams.set("limit", String(RANKING_DISPLAY_LIMIT));
-  url.searchParams.set("qualifiedOnly", qualifiedOnly ? "true" : "false");
-  return url.href;
-}
-
-function buildMyYearlyRankingApiUrl({ year } = {}) {
-  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
-  if (!baseUrl) return "";
-  const url = new URL(`${baseUrl}/api/me/ranking/yearly`, window.location.href);
-  url.searchParams.set("year", String(year));
-  return url.href;
-}
-
-function getJapanYearMonth(date = new Date()) {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Tokyo",
-    year: "numeric",
-    month: "2-digit"
-  }).formatToParts(date);
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return { year: Number(values.year), month: Number(values.month) };
-}
-
-function getJapanWeekRange(date = new Date()) {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Tokyo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).formatToParts(date);
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  const calendarDate = new Date(Date.UTC(Number(values.year), Number(values.month) - 1, Number(values.day)));
-  const daysSinceMonday = (calendarDate.getUTCDay() + 6) % 7;
-  const startDate = new Date(calendarDate);
-  startDate.setUTCDate(startDate.getUTCDate() - daysSinceMonday);
-  const endDate = new Date(startDate);
-  endDate.setUTCDate(endDate.getUTCDate() + 7);
-  const format = (value) => [
-    value.getUTCFullYear(),
-    String(value.getUTCMonth() + 1).padStart(2, "0"),
-    String(value.getUTCDate()).padStart(2, "0")
-  ].join("-");
-  return { startAt: format(startDate), endAt: format(endDate) };
-}
-
-function formatWeeklyRankingDisplayEnd(endExclusive) {
-  const endDate = new Date(`${String(endExclusive || "")}T12:00:00Z`);
-  if (Number.isNaN(endDate.getTime())) return String(endExclusive || "");
-  endDate.setUTCDate(endDate.getUTCDate() - 1);
-  return endDate.toISOString().slice(0, 10);
-}
-
-function buildMonthlyRankingApiUrl({ year, month, qualifiedOnly = false } = {}) {
-  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
-  if (!baseUrl) return "";
-  const url = new URL(`${baseUrl}/api/rankings/monthly`, window.location.href);
-  url.searchParams.set("year", String(year));
-  url.searchParams.set("month", String(month));
-  url.searchParams.set("limit", String(RANKING_DISPLAY_LIMIT));
-  url.searchParams.set("qualifiedOnly", qualifiedOnly ? "true" : "false");
-  return url.href;
-}
-
-function buildMyMonthlyRankingApiUrl({ year, month } = {}) {
-  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
-  if (!baseUrl) return "";
-  const url = new URL(`${baseUrl}/api/me/ranking/monthly`, window.location.href);
-  url.searchParams.set("year", String(year));
-  url.searchParams.set("month", String(month));
-  return url.href;
-}
-
-function buildWeeklyRankingApiUrl({ weekStart, qualifiedOnly = false } = {}) {
-  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
-  if (!baseUrl) return "";
-  const url = new URL(`${baseUrl}/api/rankings/weekly`, window.location.href);
-  url.searchParams.set("weekStart", String(weekStart));
-  url.searchParams.set("limit", String(RANKING_DISPLAY_LIMIT));
-  url.searchParams.set("qualifiedOnly", qualifiedOnly ? "true" : "false");
-  return url.href;
-}
-
-function buildMyWeeklyRankingApiUrl({ weekStart } = {}) {
-  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
-  if (!baseUrl) return "";
-  const url = new URL(`${baseUrl}/api/me/ranking/weekly`, window.location.href);
-  url.searchParams.set("weekStart", String(weekStart));
-  return url.href;
-}
 
 function buildDailyBestNineApiUrl(gameId = "") {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
@@ -2858,10 +2712,6 @@ function buildDailyBestNineApiUrl(gameId = "") {
   return url.href;
 }
 
-function getDailyBestNineGameId() {
-  const result = state.resultHistory.result;
-  return String(result?.internalGameId || result?.gameId || state.resultHistory.selectedGameId || "").trim();
-}
 
 function resetDailyBestNine(status = "idle") {
   state.dailyBestNine = {
@@ -2930,340 +2780,6 @@ async function fetchDailyBestNine({ gameId = "", force = false } = {}) {
   }
 }
 
-async function refreshYearlyRanking({ force = false } = {}) {
-  const ranking = state.yearlyRanking;
-  if (ranking.isLoading && !force) return;
-  const period = { year: ranking.year };
-  const publicUrl = buildYearlyRankingApiUrl({ ...period, qualifiedOnly: false });
-  if (!publicUrl) {
-    ranking.message = "ランキングの接続先を確認できません。";
-    renderRankingPanel();
-    return;
-  }
-
-  const user = getPredictionAccountUser();
-  const requestId = ranking.requestId + 1;
-  ranking.requestId = requestId;
-  ranking.isLoading = true;
-  ranking.isLoadingSelf = Boolean(user);
-  ranking.message = "";
-  if (!user) ranking.self = null;
-  renderRankingPanel();
-
-  try {
-    const publicRequest = publicApiClient.request(publicUrl, { credentials: "include", cache: force ? "no-store" : "default" })
-      .then(({ response, payload }) => {
-        if (!response.ok || !Array.isArray(payload?.ranking)) {
-          throw new Error(payload?.error || `HTTP ${response.status}`);
-        }
-        return payload;
-      });
-    const selfRequest = user ? publicApiClient.get(buildMyYearlyRankingApiUrl(period), { credentials: "include" })
-      .then(({ response, payload }) => {
-        if (!response.ok || !payload?.ok) {
-          throw new Error(payload?.error || `HTTP ${response.status}`);
-        }
-        return payload.rankingData || null;
-      })
-      .catch((error) => {
-        console.error("自分の年間成績の取得に失敗しました", error.message);
-        return null;
-      }) : Promise.resolve(null);
-    const [publicPayload, self] = await Promise.all([publicRequest, selfRequest]);
-    if (requestId !== ranking.requestId || ranking.year !== period.year) return;
-    ranking.rows = publicPayload.ranking;
-    ranking.summary = publicPayload.summary || null;
-    ranking.pagination = publicPayload.pagination || null;
-    ranking.self = self;
-  } catch (error) {
-    if (requestId !== ranking.requestId) return;
-    console.error("年間ランキングの取得に失敗しました", error.message);
-    ranking.rows = [];
-    ranking.summary = null;
-    ranking.pagination = null;
-    ranking.self = null;
-    ranking.message = "ランキングの取得に失敗しました。";
-  } finally {
-    if (requestId === ranking.requestId) {
-      ranking.isLoading = false;
-      ranking.isLoadingSelf = false;
-      renderRankingPanel();
-    }
-  }
-}
-
-async function refreshMonthlyRanking({ force = false } = {}) {
-  const ranking = state.monthlyRanking;
-  if (ranking.isLoading && !force) return;
-  const period = { year: ranking.year, month: ranking.month };
-  const publicUrl = buildMonthlyRankingApiUrl({ ...period, qualifiedOnly: false });
-  if (!publicUrl) {
-    ranking.message = "ランキングの接続先を確認できません。";
-    renderRankingPanel();
-    return;
-  }
-
-  const user = getPredictionAccountUser();
-  const requestId = ranking.requestId + 1;
-  ranking.requestId = requestId;
-  ranking.isLoading = true;
-  ranking.isLoadingSelf = Boolean(user);
-  ranking.message = "";
-  if (!user) ranking.self = null;
-  renderRankingPanel();
-
-  try {
-    const publicRequest = publicApiClient.request(publicUrl, { credentials: "include", cache: force ? "no-store" : "default" })
-      .then(({ response, payload }) => {
-        if (!response.ok || !Array.isArray(payload?.ranking)) {
-          throw new Error(payload?.error || `HTTP ${response.status}`);
-        }
-        return payload;
-      });
-    const selfRequest = user ? publicApiClient.get(buildMyMonthlyRankingApiUrl(period), { credentials: "include" })
-      .then(({ response, payload }) => {
-        if (!response.ok || !payload?.ok) {
-          throw new Error(payload?.error || `HTTP ${response.status}`);
-        }
-        return payload.rankingData || null;
-      })
-      .catch((error) => {
-        console.error("自分の月間成績の取得に失敗しました", error.message);
-        return null;
-      }) : Promise.resolve(null);
-    const [publicPayload, self] = await Promise.all([publicRequest, selfRequest]);
-    if (requestId !== ranking.requestId || ranking.year !== period.year || ranking.month !== period.month) return;
-    ranking.rows = publicPayload.ranking;
-    ranking.summary = publicPayload.summary || null;
-    ranking.pagination = publicPayload.pagination || null;
-    ranking.self = self;
-  } catch (error) {
-    if (requestId !== ranking.requestId) return;
-    console.error("月間ランキングの取得に失敗しました", error.message);
-    ranking.rows = [];
-    ranking.summary = null;
-    ranking.pagination = null;
-    ranking.self = null;
-    ranking.message = "月間ランキングの取得に失敗しました。";
-  } finally {
-    if (requestId === ranking.requestId) {
-      ranking.isLoading = false;
-      ranking.isLoadingSelf = false;
-      renderRankingPanel();
-    }
-  }
-}
-
-async function refreshWeeklyRanking({ force = false } = {}) {
-  const ranking = state.weeklyRanking;
-  if (ranking.isLoading && !force) return;
-  const period = { weekStart: ranking.weekStart };
-  const publicUrl = buildWeeklyRankingApiUrl({ ...period, qualifiedOnly: false });
-  if (!publicUrl) {
-    ranking.message = "ランキングの接続先を確認できません。";
-    renderRankingPanel();
-    return;
-  }
-
-  const user = getPredictionAccountUser();
-  const requestId = ranking.requestId + 1;
-  ranking.requestId = requestId;
-  ranking.isLoading = true;
-  ranking.isLoadingSelf = Boolean(user);
-  ranking.message = "";
-  if (!user) ranking.self = null;
-  renderRankingPanel();
-
-  try {
-    const publicRequest = publicApiClient.request(publicUrl, { credentials: "include", cache: force ? "no-store" : "default" })
-      .then(({ response, payload }) => {
-        if (!response.ok || !Array.isArray(payload?.ranking)) {
-          throw new Error(payload?.error || `HTTP ${response.status}`);
-        }
-        return payload;
-      });
-    const selfRequest = user ? publicApiClient.get(buildMyWeeklyRankingApiUrl(period), { credentials: "include" })
-      .then(({ response, payload }) => {
-        if (!response.ok || !payload?.ok) {
-          throw new Error(payload?.error || `HTTP ${response.status}`);
-        }
-        return payload.rankingData || null;
-      })
-      .catch((error) => {
-        console.error("自分の週間成績の取得に失敗しました", error.message);
-        return null;
-      }) : Promise.resolve(null);
-    const [publicPayload, self] = await Promise.all([publicRequest, selfRequest]);
-    if (requestId !== ranking.requestId || ranking.weekStart !== period.weekStart) return;
-    ranking.rows = publicPayload.ranking;
-    ranking.summary = publicPayload.summary || null;
-    ranking.pagination = publicPayload.pagination || null;
-    ranking.self = self;
-    ranking.message = publicPayload.message || "";
-  } catch (error) {
-    if (requestId !== ranking.requestId) return;
-    console.error("週間ランキングの取得に失敗しました", error.message);
-    ranking.rows = [];
-    ranking.summary = null;
-    ranking.pagination = null;
-    ranking.self = null;
-    ranking.message = "週間ランキングの取得に失敗しました。";
-  } finally {
-    if (requestId === ranking.requestId) {
-      ranking.isLoading = false;
-      ranking.isLoadingSelf = false;
-      renderRankingPanel();
-    }
-  }
-}
-
-function selectRankingView(view) {
-  if (view !== "weekly") return;
-  state.rankingView = "weekly";
-  renderRankingPanel();
-  void refreshWeeklyRanking({ force: true });
-}
-
-function handleRankingPeriodContentClick(event) {
-  const yearlyButton = event.target.closest("[data-yearly-ranking-move]");
-  if (yearlyButton && !yearlyButton.disabled) {
-    const direction = Number(yearlyButton.dataset.yearlyRankingMove);
-    if (Number.isInteger(direction) && direction !== 0) {
-      const ranking = state.yearlyRanking;
-      const nextYear = ranking.year + direction;
-      const currentYear = getJapanYearMonth().year;
-      if (nextYear >= RANKING_SERVICE_START_YEAR && nextYear <= currentYear) {
-        ranking.year = nextYear;
-        ranking.self = null;
-        void refreshYearlyRanking({ force: true });
-      }
-    }
-    return;
-  }
-  const weeklyButton = event.target.closest("[data-weekly-ranking-move]");
-  if (weeklyButton && !weeklyButton.disabled) {
-    const weeklyDirection = Number(weeklyButton.dataset.weeklyRankingMove);
-    if (!Number.isInteger(weeklyDirection) || weeklyDirection === 0) return;
-    const weekly = state.weeklyRanking;
-    const candidateWeek = new Date(`${weekly.weekStart}T12:00:00+09:00`);
-    candidateWeek.setUTCDate(candidateWeek.getUTCDate() + weeklyDirection * 7);
-    const nextWeek = getJapanWeekRange(candidateWeek).startAt;
-    const currentWeek = getJapanWeekRange();
-    const firstServiceWeek = "2026-09-21";
-    if (nextWeek < firstServiceWeek || nextWeek > currentWeek.startAt) return;
-    weekly.weekStart = nextWeek;
-    weekly.self = null;
-    void refreshWeeklyRanking({ force: true });
-    return;
-  }
-  const button = event.target.closest("[data-monthly-ranking-move]");
-  if (!button || button.disabled) return;
-  const direction = Number(button.dataset.monthlyRankingMove);
-  if (!Number.isInteger(direction) || direction === 0) return;
-  const current = state.monthlyRanking;
-  const candidate = new Date(Date.UTC(current.year, current.month - 1 + direction, 1));
-  const next = { year: candidate.getUTCFullYear(), month: candidate.getUTCMonth() + 1 };
-  const present = getJapanYearMonth();
-  if (next.year < MONTHLY_RANKING_MIN_YEAR || next.year > present.year || (next.year === present.year && next.month > present.month)) {
-    return;
-  }
-  current.year = next.year;
-  current.month = next.month;
-  current.self = null;
-  void refreshMonthlyRanking({ force: true });
-}
-
-function renderRankingPanel() {
-  const panel = document.getElementById("rankingPanel");
-  const container = document.getElementById("rankingContent");
-  if (!panel || !container) return;
-
-  state.rankingView = "weekly";
-  renderWeeklyRanking();
-}
-
-function renderMonthlyRanking() {
-  renderRankingHeading("monthly");
-  const ranking = state.monthlyRanking;
-  const current = getJapanYearMonth();
-  const isCurrentMonth = ranking.year === current.year && ranking.month === current.month;
-  const periodControls = `<div class="ranking-month-controls" aria-label="月間ランキングの対象月">
-    <button class="compact-button" type="button" data-monthly-ranking-move="-1">前月</button>
-    <strong>${escapeHtml(ranking.year)}年${escapeHtml(ranking.month)}月</strong>
-    <button class="compact-button" type="button" data-monthly-ranking-move="1"${isCurrentMonth ? " disabled" : ""}>次月</button>
-  </div>`;
-  renderRankingContent(ranking, {
-    selfTitle: "あなたの月間成績",
-    emptyMessage: "この月のランキング対象試合はありません。",
-    prefixHtml: periodControls
-  });
-}
-
-function renderWeeklyRanking() {
-  renderRankingHeading("weekly");
-  const ranking = state.weeklyRanking;
-  const current = getJapanWeekRange();
-  const isCurrentWeek = ranking.weekStart === current.startAt;
-  const weekRange = getJapanWeekRange(new Date(`${ranking.weekStart}T12:00:00+09:00`));
-  const weekEnd = formatWeeklyRankingDisplayEnd(weekRange.endAt);
-  const firstServiceWeek = "2026-09-21";
-  const periodControls = `<div class="ranking-month-controls" aria-label="週間ランキングの対象週">
-    ${ranking.weekStart > firstServiceWeek ? '<button class="compact-button" type="button" data-weekly-ranking-move="-1">前週</button>' : '<span aria-hidden="true"></span>'}
-    <strong>${escapeHtml(ranking.weekStart)}〜${escapeHtml(weekEnd)}</strong>
-    ${isCurrentWeek ? '<span aria-hidden="true"></span>' : '<button class="compact-button" type="button" data-weekly-ranking-move="1">次週</button>'}
-  </div>`;
-  renderRankingContent(ranking, {
-    selfTitle: "あなたの週間成績",
-    emptyMessage: "ランキング集計中",
-    prefixHtml: periodControls
-  });
-}
-
-function renderRankingHeading(view) {
-  return publicRankingRenderer.renderHeading(view);
-}
-
-function renderRankingContent(ranking, { selfTitle, emptyMessage, prefixHtml = "" }) {
-  return publicRankingRenderer.renderContent(ranking, {
-    selfTitle,
-    emptyMessage,
-    prefixHtml
-  });
-}
-
-function renderMyRanking(ranking, row, title) {
-  return publicRankingRenderer.renderMyRanking(ranking, row, title);
-}
-
-function createRankingCardHtml(row) {
-  return publicRankingRenderer.createCardHtml(row);
-}
-
-function formatRankingQualification(row) {
-  return publicRankingRenderer.formatQualification(row);
-}
-
-function createRankingAchievementBadgesHtml(row) {
-  const achievements = Array.isArray(row.achievements) ? row.achievements : [];
-  if (!achievements.length) return "";
-  const badges = achievements.map((achievement) => {
-    const rarity = ACHIEVEMENT_RARITY_LABELS[achievement.rarity] || ACHIEVEMENT_RARITY_LABELS.common;
-    return `<span class="ranking-achievement-badge is-${escapeHtml(achievement.rarity || "common")}">${escapeHtml(rarity)} ${escapeHtml(achievement.name)}</span>`;
-  });
-  const hiddenCount = Math.max(0, Number(row.achievementCount || achievements.length) - achievements.length);
-  if (hiddenCount > 0) badges.push(`<span class="ranking-achievement-more">+${hiddenCount}</span>`);
-  return `<span class="ranking-achievements">${badges.join("")}</span>`;
-}
-
-function formatRankingScore(value) {
-  const numeric = Number(value || 0);
-  return Number.isFinite(numeric) ? numeric.toFixed(1) : "0.0";
-}
-
-function formatParticipationRate(value) {
-  const numeric = Number(value || 0) * 100;
-  return Number.isFinite(numeric) ? `${numeric.toFixed(1)}%` : "0.0%";
-}
 
 async function initializePredictionRemoteSync() {
   await syncPredictionFromAccount({ force: true });

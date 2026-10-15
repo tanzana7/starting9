@@ -117,8 +117,7 @@ test("月間APIは公開・本人取得を分け、未来月と不正値を拒�
 
 test("通常画面から月間・年間ランキングを非公開にし、旧取得操作を持たない", () => {
   assert.doesNotMatch(html, /id="showYearlyRankingButton"|id="showMonthlyRankingButton"/);
-  assert.match(script, /function selectRankingView/);
-  assert.match(script, /if \(view !== "weekly"\) return/);
+  assert.doesNotMatch(script, /\/api\/rankings\/(monthly|yearly)|\/api\/me\/ranking\/(monthly|yearly)/);
   assert.doesNotMatch(script, /showYearlyRankingButton.*addEventListener|showMonthlyRankingButton.*addEventListener/);
   assert.doesNotMatch(html, /reloadMonthlyRankingButton/);
   assert.doesNotMatch(script, /reloadMonthlyRankingButton/);

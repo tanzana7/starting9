@@ -45,7 +45,7 @@ test("APIの取得状態とV3保存元を通常画面へ返し、キャッシュ
 });
 
 test("通常画面はcanonical catalogのhome/away順を表示し、反転候補を生成しない", () => {
-  assert.match(script, /matchupLabel: `\$\{target\.homeTeam \|\| ""\} vs \$\{target\.awayTeam \|\| ""\}`/);
+  assert.match(script, /matchupLabel: game\.displayLabel \|\| `\$\{game\.homeTeamName \|\| game\.homeTeam \|\| ""\} vs \$\{game\.awayTeamName \|\| game\.awayTeam \|\| ""\}`/);
   assert.match(script, /game\.homeTeamName \|\| game\.homeTeam/);
   assert.match(script, /mergePublicGameSchedules\(\[\], apiGames\)/);
   assert.doesNotMatch(script, /const teams = new Set\(\[normalizeScheduleTeamCode\(game\.homeTeam\)/);

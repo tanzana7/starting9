@@ -9,7 +9,6 @@ const PUBLIC_MODULES = [
   "api-client.js",
   "app-coordinator.js",
   "render-results.js",
-  "render-ranking.js",
   "roster.js",
   "prediction-form.js"
 ];

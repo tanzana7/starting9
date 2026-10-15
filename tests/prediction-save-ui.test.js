@@ -2,21 +2,12 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const { createPublicRuntime } = require("./helpers/public-runtime.cjs");
 
 const root = path.join(__dirname, "..");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
-const predictionForm = fs.readFileSync(path.join(root, "frontend", "public", "prediction-form.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
-
-function sourceForFunction(source, name) {
-  const start = source.indexOf(`function ${name}(`) !== -1
-    ? source.indexOf(`function ${name}(`)
-    : source.indexOf(`async function ${name}(`);
-  assert.notEqual(start, -1, `${name} が見つかりません`);
-  const next = source.indexOf("\nfunction ", start + 1);
-  return source.slice(start, next === -1 ? source.length : next);
-}
 
 test("通常画面にアカウント保存専用パネルと専用ボタンを置かない", () => {
   assert.doesNotMatch(html, /predictionAccountPanel|(?:savePredictionTo|loadPredictionFrom)AccountButton/);
@@ -25,47 +16,99 @@ test("通常画面にアカウント保存専用パネルと専用ボタンを�
   assert.doesNotMatch(script, /アカウントにも保存済みです。最終更新/);
 });
 
-test("主保存ボタンはログイン時に端末保存後のアカウント保存へ統合する", () => {
-  const submit = sourceForFunction(predictionForm, "handleSubmit");
-  assert.match(submit, /deps\.storage\.save\(deps\.storageKeys\.prediction, deps\.state\.prediction\)/);
-  assert.match(submit, /if \(!deps\.getPredictionAccountUser\(\)\)/);
-  assert.match(submit, /await deps\.savePredictionToAccount\(deps\.state\.prediction\)/);
-  assert.match(submit, /この端末に予想を保存しました。/);
-  assert.match(submit, /予想を保存しました。/);
-  assert.match(submit, /state\.predictionRemote\.message/);
+const completeLineup = ["田宮裕涼", "清宮幸太郎", "上川畑大悟", "郡司裕也", "水野達稀", "水谷瞬", "五十幡亮汰", "万波中正", "レイエス"]
+  .map((player, index) => ({ player, position: ["捕", "一", "二", "三", "遊", "左", "中", "右", "指"][index] }));
+
+async function predictionApp(t, { lineup = completeLineup, user, save } = {}) {
+  const calls = [];
+  const app = createPublicRuntime({ ui: true, lineup, user, fetchImpl: async (url, options = {}) => {
+    calls.push({ url, options });
+    if (new URL(url).pathname === "/api/game-day-roster") return { ok: true, json: async () => ({
+      ok: true, internalGameId: "canonical-game", gameDate: "2099-07-21", status: "fresh",
+      rosterUse: "official_live", canUseForPrediction: true, players: completeLineup.map(({ player }) => ({ name: player }))
+    }) };
+    assert.equal(url, "https://starting9.test/api/predictions/current?internalGameId=canonical-game");
+    assert.equal(options.method, "PUT");
+    return save ? save() : { ok: true, json: async () => ({ ok: true }) };
+  } });
+  t.after(app.dispose);
+  app.operations.bindEvents();
+  app.operations.refreshPredictionDeadlineState();
+  await app.operations.initializeRosterCandidateSync();
+  // Model a submit button's default form activation as well as its click
+  // listeners: a second click save path must not introduce a duplicate PUT.
+  const submit = () => Promise.all([
+    app.elements.get("savePredictionButton").emit("click"),
+    app.elements.get("predictionForm").emit("submit")
+  ]);
+  return { app, calls, submit };
+}
+
+for (const [label, change, message] of [
+  ["missing player", (lineup) => { lineup[8].player = ""; }, /1番から9番まで全て/],
+  ["missing position", (lineup) => { lineup[8].position = ""; }, /守備位置を全て/],
+  ["duplicate player", (lineup) => { lineup[8].player = lineup[0].player; }, /同じ選手/]
+]) {
+  test(`submit rejects ${label} without saving a draft or making a PUT`, async (t) => {
+    const lineup = completeLineup.map((item) => ({ ...item }));
+    change(lineup);
+    const { app, calls, submit } = await predictionApp(t, { lineup });
+    await submit();
+    assert.match(app.elements.get("predictionError").textContent, message);
+    assert.equal(app.state.prediction, null);
+    assert.equal([...app.stored.keys()].some((key) => key.startsWith("hamStarting9Prediction")), false);
+    assert.equal(calls.filter((call) => call.options.method === "PUT").length, 0);
+  });
+}
+
+test("complete submit saves locally and remotely once; in-flight button is disabled and double submit is ignored", async (t) => {
+  let finish;
+  const { app, calls, submit } = await predictionApp(t, { save: () => new Promise((resolve) => { finish = resolve; }) });
+  assert.equal(app.elements.get("savePredictionButton").disabled, false);
+  const pending = submit();
+  await new Promise(setImmediate);
+  assert.equal(app.elements.get("savePredictionButton").disabled, true);
+  assert.match(app.elements.get("savePredictionButton").textContent, /保存中/);
+  await submit();
+  const put = calls.filter((call) => call.options.method === "PUT");
+  assert.equal(put.length, 1);
+  assert.equal(put[0].options.credentials, "include");
+  assert.equal(JSON.parse(put[0].options.body).internalGameId, "canonical-game");
+  assert.equal(JSON.parse(put[0].options.body).prediction.lineup.length, 9);
+  assert.ok([...app.stored.values()].some((value) => JSON.parse(value)?.lineup?.length === 9));
+  finish({ ok: true, json: async () => ({ ok: true }) });
+  await pending;
+  assert.equal(app.elements.get("savePredictionButton").disabled, false);
+  assert.equal(app.elements.get("predictionSaveMessage").textContent, "予想を保存しました。");
+  assert.equal(app.state.predictionRemote.isSubmitting, false);
+  assert.equal(calls.length, 2, "saving does not launch a separate account resync");
 });
 
-test("アカウント保存中は主保存ボタンを無効化して二重送信を防止する", () => {
-  const updateButton = sourceForFunction(script, "updatePredictionSaveButton");
-  const save = sourceForFunction(script, "savePredictionToAccount");
-  assert.match(updateButton, /button\.disabled = isSaving \|\| isSubmitting \|\| isPredictionEditingLocked\(\)/);
-  assert.match(updateButton, /保存中\.\.\./);
-  assert.match(save, /state\.predictionRemote\.isSaving = true/);
-  assert.match(save, /state\.predictionRemote\.isSaving = false/);
-  assert.match(save, /credentials: "include"/);
-  assert.match(save, /端末には保存しましたが、アカウント保存に失敗しました/);
+test("anonymous submit retains local prediction and gives login guidance without PUT", async (t) => {
+  const { app, calls, submit } = await predictionApp(t, { user: null });
+  await submit();
+  assert.equal(app.state.prediction.lineup.length, 9);
+  assert.match(app.elements.get("predictionSaveMessage").textContent, /ログインするとアカウントにも保存/);
+  assert.equal(calls.filter((call) => call.options.method === "PUT").length, 0);
 });
 
-test("1回の保存操作を送信中フラグで排他し、成功後に別同期の失敗を保存エラーへ変換しない", () => {
-  const submit = sourceForFunction(predictionForm, "handleSubmit");
-  const sync = sourceForFunction(script, "syncPredictionFromAccount");
+for (const status of [401, 503]) {
+  test(`save HTTP ${status} preserves local draft, releases button, and reports actionable error`, async (t) => {
+    const { app, submit } = await predictionApp(t, { save: () => ({ ok: false, status, json: async () => ({ ok: false, code: status === 401 ? "AUTH_REQUIRED" : "D1_READ_LIMIT_EXCEEDED" }) }) });
+    await submit();
+    assert.equal(app.state.prediction.lineup.length, 9);
+    assert.equal(app.elements.get("savePredictionButton").disabled, false);
+    assert.match(app.elements.get("predictionError").textContent, status === 401 ? /再ログイン/ : /時間をおいて/);
+  });
+}
 
-  assert.match(submit, /if \(deps\.state\.predictionRemote\.isSaving \|\| deps\.state\.predictionRemote\.isSubmitting\)/);
-  assert.match(submit, /deps\.state\.predictionRemote\.isSubmitting = true/);
-  assert.match(submit, /finally \{[\s\S]*?deps\.state\.predictionRemote\.isSubmitting = false/);
-  assert.equal((submit.match(/deps\.storage\.save\(deps\.storageKeys\.prediction, deps\.state\.prediction\)/g) || []).length, 1);
-  assert.equal((submit.match(/deps\.savePredictionToAccount\(deps\.state\.prediction\)/g) || []).length, 1);
-  assert.doesNotMatch(submit, /syncPredictionFromAccount/);
-  assert.match(sync, /remoteState\.isLoading \|\| remoteState\.isSaving \|\| remoteState\.isSubmitting/);
-});
-
-test("保存はフォームsubmitだけで発火し、保存ボタンのclick経路を二重登録しない", () => {
-  assert.equal((script.match(/getElementById\("predictionForm"\)\.addEventListener\("submit", handlePredictionSubmit\)/g) || []).length, 1);
-  assert.doesNotMatch(script, /savePredictionButton[^\n]*addEventListener/);
-});
-
-test("アカウントの予想は端末予想がない場合だけ自動復元する", () => {
-  const sync = sourceForFunction(script, "syncPredictionFromAccount");
-  assert.match(sync, /remoteState\.prediction && !state\.prediction/);
-  assert.match(sync, /saveToStorage\(STORAGE_KEYS\.prediction, state\.prediction\)/);
+test("account restore does not replace an existing local prediction", async (t) => {
+  const app = createPublicRuntime({ fetchImpl: async () => ({ ok: true, json: async () => ({ ok: true, prediction: { lineup: [{ playerName: "別の予想", battingOrder: 1, position: "指" }] } }) }) });
+  t.after(app.dispose);
+  const draft = { gameId: "canonical-game", lineup: completeLineup };
+  app.state.prediction = draft;
+  app.state.predictionDeadline = { status: "open", isClosed: false };
+  await app.operations.initializePredictionRemoteSync();
+  assert.equal(app.state.prediction, draft);
+  assert.equal(app.state.predictionRemote.conflict, true);
 });

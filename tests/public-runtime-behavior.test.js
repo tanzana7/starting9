@@ -113,3 +113,31 @@ for (const failure of ["network", "unauthorized"]) {
     assert.equal(app.state.predictionRemote.prediction, null);
   });
 }
+
+test("pending roster hides even static active candidates, while baseline expires at its usableUntil", async (t) => {
+  let payload = { ok: false, players: [] };
+  const app = createPublicRuntime({ ui: true, now: "2026-09-08T00:00:00Z", candidateNames: ["矢澤宏太"], fetchImpl: async () => ({ ok: true, json: async () => payload }) });
+  t.after(app.dispose);
+  await app.operations.initializeRosterCandidateSync();
+  assert.equal(app.chips[0].classList.contains("hidden"), true);
+  assert.match(app.elements.get("predictionRosterStatus").textContent, /選手情報を更新中/);
+  payload = roster([{ name: "矢澤宏太", number: "12", position: "投手" }], { status: "baseline", rosterUse: "baseline_snapshot", usableUntil: "2026-09-08T01:00:00Z" });
+  await app.operations.initializeRosterCandidateSync();
+  assert.equal(app.chips[0].classList.contains("hidden"), false);
+  app.operations.startPredictionDeadlineTicker();
+  app.setNow("2026-09-08T01:00:00Z");
+  await app.tickIntervals();
+  assert.equal(app.chips[0].classList.contains("hidden"), true);
+});
+
+test("pitcher-source batter is active while special DH stays in the other candidate filter", async (t) => {
+  const app = createPublicRuntime({ ui: true, candidateNames: ["矢澤宏太", "山﨑福也"], fetchImpl: async () => ({ ok: true, json: async () => roster([{ name: "矢澤宏太", number: "12", position: "投手" }, { name: "山﨑福也", number: "18", position: "投手" }]) }) });
+  t.after(app.dispose);
+  await app.operations.initializeRosterCandidateSync();
+  assert.equal(app.chips[0].classList.contains("hidden"), false);
+  assert.equal(app.chips[1].classList.contains("hidden"), true);
+  app.state.candidateRosterFilter = "inactive";
+  await app.operations.initializeRosterCandidateSync();
+  assert.equal(app.chips[0].classList.contains("hidden"), true);
+  assert.equal(app.chips[1].classList.contains("hidden"), false);
+});

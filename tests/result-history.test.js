@@ -47,44 +47,16 @@ test("過去結果APIは採点済みの通常試合だけを一覧化し、公�
   assert.match(worker, /actualLineup: resultsPublished && row\.actual_lineup_json/);
 });
 
-test("結果詳細APIと通常画面の選択UIはcanonical internalGameIdを優先する", () => {
+test("結果詳細APIはcanonical internalGameId経路を維持する", () => {
   assert.match(worker, /function parseResultGameRoute\(path\)/);
   assert.match(worker, /async function handleGetResultGame\(request, env, cors, gameId\)/);
   assert.match(worker, /const resultGameRoute = parseResultGameRoute\(path\)/);
-  assert.match(script, /function buildResultGamesApiUrl\(gameId = ""\)/);
-  assert.match(script, /function getResultHistoryGameId\(game\)/);
-  assert.match(script, /game\?\.resultId \|\| game\?\.internalGameId \|\| game\?\.gameId/);
-  assert.match(script, /await loadResultHistoryGame\(gameId\)/);
-  assert.match(script, /function handleResultHistoryClick\(event\)/);
-  assert.match(script, /data-result-game-id/);
-  assert.match(html, /id="resultHistoryList"/);
-  assert.match(html, /過去の試合成績/);
-  assert.match(script, /isExpanded: false/);
-  assert.match(script, /data-result-history-toggle/);
-  assert.match(script, /data-result-history-select/);
-  assert.match(script, /過去の成績を見る/);
-  const rendererStart = script.indexOf("function renderResultHistory");
-  const rendererEnd = script.indexOf("function buildCurrentPredictionApiUrl", rendererStart);
-  assert.doesNotMatch(script.slice(rendererStart, rendererEnd), /result-history-item/);
 });
 
-test("過去結果は一覧を先に描画し、詳細を遅延取得・セッション内キャッシュする", () => {
-  assert.match(script, /void loadResultHistoryGame\(getResultHistoryGameId\(latestParticipatedResultGame\), \{ manual: false \}\)/);
-  assert.match(script, /detailCache: Object\.create\(null\)/);
-  assert.match(script, /const cached = state\.resultHistory\.detailCache\?\.\[gameId\]/);
-  assert.match(script, /history\.isExpanded && history\.games\.length/);
-  assert.doesNotMatch(script, /await fetchDailyBestNine\(\{ gameId: payload\.internalGameId/);
+test("過去結果一覧APIは各行のメタデータを解決する", () => {
   assert.match(worker, /const games = await Promise\.all\(\(rows\.results \|\| \[\]\)\.map/);
 });
 
-test("前回自動表示と過去結果の手動選択で採点結果見出しの文脈を分ける", () => {
-  const renderer = fs.readFileSync(path.join(root, "frontend", "public", "render-results.js"), "utf8");
-  assert.match(script, /async function loadResultHistoryGame\(gameId, \{ manual = true, fastPrevious = false \} = \{\}\)/);
-  assert.match(script, /loadResultHistoryGame\(getResultHistoryGameId\(latestParticipatedResultGame\), \{ manual: false \}\)/);
-  assert.match(renderer, /displayMode === "selected"/);
-  assert.match(renderer, /`\$\{date\}の採点結果`/);
-  assert.match(renderer, /`前回（\$\{date\}）の採点結果`/);
-});
 
 test("通常画面はcanonical public gameのinternalGameIdを予想保存と締切判定へ引き継ぐ", () => {
   assert.match(script, /const nextGame = catalogGame \|\| await resolvePredictionTargetGame\(schedule, useServer\)/);

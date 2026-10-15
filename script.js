@@ -213,7 +213,6 @@ const state = {
     gameId: "",
     status: "idle",
     rows: [],
-    totalCount: 0,
     message: "",
   },
   predictionRemote: {
@@ -2650,18 +2649,6 @@ function getAuthApiBaseUrl() {
 }
 
 
-function buildDailyBestNineApiUrl(gameId = "") {
-  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
-  const reference = String(gameId || "").trim();
-  if (!baseUrl) return "";
-  const url = new URL(`${baseUrl}/api/results/daily-best-nine`, window.location.href);
-  if (reference && state.resultHistory.result?.internalGameId) {
-    url.searchParams.set("internalGameId", reference);
-  } else if (reference) {
-    url.searchParams.set("gameId", reference);
-  }
-  return url.href;
-}
 
 
 function resetDailyBestNine(status = "idle") {
@@ -2671,7 +2658,6 @@ function resetDailyBestNine(status = "idle") {
     gameId: "",
     status,
     rows: [],
-    totalCount: 0,
     message: ""
   };
 }
@@ -2680,14 +2666,14 @@ async function initializeDailyBestNine() {
   await fetchDailyBestNine({ force: true });
 }
 
-async function fetchDailyBestNine({ gameId = "", force = false } = {}) {
+async function fetchDailyBestNine({ force = false } = {}) {
   const dailyState = state.dailyBestNine;
-  const reference = String(gameId || "").trim();
-  const requestKey = reference || "latest-published";
+  // This public widget always follows the latest publication, not personal history.
+  const requestKey = "latest-published";
   if (dailyState.isLoading && !force && dailyState.gameId === requestKey) return;
 
-  const url = buildDailyBestNineApiUrl(reference);
-  if (!url) {
+  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
+  if (!baseUrl) {
     resetDailyBestNine("error");
     state.dailyBestNine.message = "今日のベストナインを取得できませんでした。";
     renderDailyBestNine();
@@ -2700,12 +2686,11 @@ async function fetchDailyBestNine({ gameId = "", force = false } = {}) {
   dailyState.isLoading = true;
   dailyState.status = "loading";
   dailyState.rows = [];
-  dailyState.totalCount = 0;
   dailyState.message = "";
   renderDailyBestNine();
 
   try {
-    const { response, payload } = await publicApiClient.get(url, {
+    const { response, payload } = await publicApiClient.get(`${baseUrl}/api/results/daily-best-nine`, {
       cache: force ? "no-store" : "default"
     });
     if (!response.ok || !payload?.ok || !Array.isArray(payload.bestNine)) {
@@ -2714,14 +2699,12 @@ async function fetchDailyBestNine({ gameId = "", force = false } = {}) {
     if (requestId !== dailyState.requestId) return;
     dailyState.status = payload.published ? "published" : "unpublished";
     dailyState.rows = payload.bestNine;
-    dailyState.totalCount = Math.max(0, Number(payload.totalCount || payload.bestNine.length));
-    dailyState.gameId = payload.internalGameId || payload.gameId || requestKey;
+    dailyState.gameId = getResultHistoryGameId(payload) || requestKey;
   } catch (error) {
     if (requestId !== dailyState.requestId) return;
     console.error("今日のベストナインの取得に失敗しました", error.message);
     dailyState.status = "error";
     dailyState.rows = [];
-    dailyState.totalCount = 0;
     dailyState.message = "今日のベストナインを取得できませんでした。";
   } finally {
     if (requestId === dailyState.requestId) {
@@ -2764,7 +2747,6 @@ function resolveResultHistorySelection() {
 
   history.result = null;
   clearStoredPublicResult();
-  resetDailyBestNine("unpublished");
   syncPublicAppState();
   renderScoreResult();
 }
@@ -2801,7 +2783,6 @@ async function refreshResultHistory({ force = false } = {}) {
     beginPublicRequest("resultDetail", { abort: true });
     clearStoredPublicResult();
     state.resultHistory = { isLoading: false, isDetailLoading: false, isReady: true, games: [], detailCache: Object.create(null), selectedGameId: "", displayMode: "previous", isExpanded: false, result: null, message: "ログインすると過去の試合結果を確認できます。", detailError: "" };
-    resetDailyBestNine();
     syncPublicAppState();
     renderScoreResult();
     renderResultHistory();
@@ -2866,11 +2847,6 @@ async function handleResultHistoryClick(event) {
     renderResultHistory();
     return;
   }
-  const target = event.target instanceof Element ? event.target.closest("[data-result-game-id]") : null;
-  if (!target) return;
-  const gameId = target.dataset.resultGameId;
-  if (!gameId) return;
-  await loadResultHistoryGame(gameId);
 }
 
 async function handleResultHistoryChange(event) {
@@ -2882,114 +2858,91 @@ async function handleResultHistoryChange(event) {
 }
 
 async function loadResultHistoryGame(gameId, { manual = true, fastPrevious = false } = {}) {
-  const cached = state.resultHistory.detailCache?.[gameId];
-  if (cached) {
-    if (fastPrevious) return cached;
-    state.resultHistory.selectedGameId = gameId;
-    state.resultHistory.displayMode = manual ? "selected" : "previous";
-    state.resultHistory.result = cached;
-    state.result = cached;
-    state.resultHistory.isDetailLoading = false;
-    state.resultHistory.detailError = "";
-    state.resultHistory.message = "";
-    if (getPublicResultAvailability(cached)) resetDailyBestNine("unpublished");
-    syncPublicAppState();
+  const history = state.resultHistory;
+  const cached = history.detailCache[gameId];
+  if (cached && fastPrevious) return cached;
+  // Cache hits also supersede an in-flight selection. Otherwise a slower
+  // response for B can overwrite a user's cached selection of A.
+  const request = beginPublicRequest("resultDetail", { abort: true });
+  history.selectedGameId = gameId;
+  history.displayMode = manual ? "selected" : "previous";
+  history.result = cached || null;
+  history.isDetailLoading = !cached;
+  history.detailError = "";
+  history.message = cached ? "" : "試合結果を読み込み中...";
+  if (!cached) {
     renderScoreResult();
     renderResultHistory();
-    return;
   }
-  const request = beginPublicRequest("resultDetail", { abort: true });
-  state.resultHistory.selectedGameId = gameId;
-  state.resultHistory.displayMode = manual ? "selected" : "previous";
-  state.resultHistory.result = null;
-  state.resultHistory.isDetailLoading = true;
-  state.resultHistory.detailError = "";
-  state.resultHistory.message = "試合結果を読み込み中...";
-  renderScoreResult();
-  renderResultHistory();
   try {
-    const { response, payload } = await publicApiClient.get(buildResultGamesApiUrl(gameId), { credentials: "include", signal: request.signal });
-    if (!response.ok || !payload?.ok) {
-      if (fastPrevious && response.status === 404) {
-        state.resultHistory.selectedGameId = "";
-        state.resultHistory.detailError = "";
-        state.resultHistory.message = "";
-        return;
+    let nextResult = cached;
+    if (!nextResult) {
+      const { response, payload } = await publicApiClient.get(buildResultGamesApiUrl(gameId), { credentials: "include", signal: request.signal });
+      if (!isCurrentPublicRequest("resultDetail", request.id)) return;
+      if (!response.ok || !payload?.ok) {
+        if (fastPrevious && response.status === 404) {
+          history.selectedGameId = "";
+          history.message = "";
+          return;
+        }
+        throw new Error(payload?.error || `HTTP ${response.status}`);
       }
-      throw new Error(payload?.error || `HTTP ${response.status}`);
+      const availability = getPublicResultAvailability(payload);
+      if (availability) {
+        nextResult = {
+          gameId: payload.gameId || gameId,
+          internalGameId: payload.internalGameId || "",
+          status: payload.status || (availability.key === "service_unavailable" ? "service_unavailable" : "excluded"),
+          gameStatus: payload.gameStatus || payload.game?.gameStatus || "",
+          resultAvailability: availability.key,
+          rankingExcluded: true,
+          rankingEligibilityStatus: payload.rankingEligibilityStatus || "excluded",
+          serviceUnavailable: availability.key === "service_unavailable",
+          serviceUnavailableMessage: availability.message,
+          prediction: payload.prediction || null,
+          savedAt: payload.updatedAt || payload.submittedAt || ""
+        };
+      } else {
+        if (!payload.resultsPublished) {
+          state.result = null;
+          history.message = "この試合の結果はまだ公開されていません。";
+          return;
+        }
+        if (!payload.prediction || !Array.isArray(payload.actualLineup)) throw new Error("結果データが不足しています。");
+        const prediction = remotePredictionToLocal({ lineup: payload.prediction.lineup }, payload.updatedAt || payload.submittedAt, gameId);
+        const actual = remotePredictionToLocal({ lineup: payload.actualLineup }, payload.scoredAt || "", gameId);
+        nextResult = {
+          ...scoreLineup(prediction.lineup, actual.lineup),
+          gameId: payload.internalGameId || payload.gameId || gameId,
+          internalGameId: payload.internalGameId || "",
+          publishedAt: payload.publishedAt || "",
+          totalScore: payload.totalScore ?? payload.score ?? null
+        };
+      }
+      history.detailCache[gameId] = nextResult;
     }
-    if (!isCurrentPublicRequest("resultDetail", request.id)) return;
-    const availability = getPublicResultAvailability(payload);
-    if (availability) {
-      state.resultHistory.result = {
-        gameId: payload.gameId || gameId,
-        internalGameId: payload.internalGameId || "",
-        status: payload.status || (availability.key === "service_unavailable" ? "service_unavailable" : "excluded"),
-        gameStatus: payload.gameStatus || payload.game?.gameStatus || "",
-        resultAvailability: availability.key,
-        rankingExcluded: true,
-        rankingEligibilityStatus: payload.rankingEligibilityStatus || "excluded",
-        serviceUnavailable: availability.key === "service_unavailable",
-        serviceUnavailableMessage: availability.message,
-        prediction: payload.prediction || null,
-        savedAt: payload.updatedAt || payload.submittedAt || ""
-      };
-      state.resultHistory.detailCache[gameId] = state.resultHistory.result;
-      state.result = state.resultHistory.result;
-      state.resultHistory.message = "";
-      resetDailyBestNine("unpublished");
-      renderScoreResult();
-      renderResultHistory();
-      return;
-    }
-    if (!payload.resultsPublished) {
-      state.result = null;
-      resetDailyBestNine("unpublished");
-      state.resultHistory.message = "この試合の結果はまだ公開されていません。";
-      renderResultHistory();
-      return;
-    }
-    if (!payload.prediction || !Array.isArray(payload.actualLineup)) {
-      throw new Error("結果データが不足しています。");
-    }
-    const prediction = remotePredictionToLocal({ lineup: payload.prediction.lineup }, payload.updatedAt || payload.submittedAt, gameId);
-    const actual = remotePredictionToLocal({ lineup: payload.actualLineup }, payload.scoredAt || "", gameId);
-    const nextResult = {
-      ...scoreLineup(prediction.lineup, actual.lineup),
-      gameId: payload.internalGameId || payload.gameId || gameId,
-      internalGameId: payload.internalGameId || "",
-      publishedAt: payload.publishedAt || "",
-      totalScore: payload.totalScore ?? payload.score ?? null
-    };
-    state.resultHistory.detailCache[gameId] = nextResult;
-    if (fastPrevious) {
-      state.resultHistory.isReady = true;
-      state.resultHistory.result = nextResult;
-      state.result = nextResult;
-      state.resultHistory.message = "";
-      renderScoreResult();
-      return nextResult;
-    }
-    state.resultHistory.result = nextResult;
+    // One commit path for cached, unavailable, normal and fast-previous details.
+    // state.result remains the persisted compatibility projection; history owns selection.
+    history.result = nextResult;
     state.result = nextResult;
-    state.resultHistory.message = "";
-    renderScoreResult();
+    history.message = "";
+    if (fastPrevious && !getPublicResultAvailability(nextResult)) history.isReady = true;
+    return nextResult;
   } catch (error) {
     if (!isCurrentPublicRequest("resultDetail", request.id)) return;
     state.result = null;
-    state.resultHistory.result = null;
-    resetDailyBestNine("error");
-    state.resultHistory.detailError = "結果を読み込めませんでした。時間をおいて再度お試しください。";
-    state.resultHistory.message = "この試合の結果を取得できませんでした。";
+    history.result = null;
+    history.detailError = "結果を読み込めませんでした。時間をおいて再度お試しください。";
+    history.message = "この試合の結果を取得できませんでした。";
     console.error("過去の試合結果の読み込みに失敗しました", error.message);
   } finally {
     if (isCurrentPublicRequest("resultDetail", request.id)) {
-      state.resultHistory.isDetailLoading = false;
+      history.isDetailLoading = false;
       syncPublicAppState();
+      renderScoreResult();
+      renderResultHistory();
     }
   }
-  renderScoreResult();
-  renderResultHistory();
 }
 
 function renderResultHistory() {

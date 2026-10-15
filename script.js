@@ -1871,7 +1871,9 @@ function resetProbableStarterDisplay(nextGame, message = "") {
 async function initializeProbableStarter() {
   if (!isNpbUserEditionActive()) return;
   const nextGame = getPreferredProbableStarterGame();
-  if (String(state.probableStarter.nextGame?.internalGameId || "") !== String(nextGame?.internalGameId || "")) {
+  const currentGameId = String(state.probableStarter.nextGame?.internalGameId || "");
+  const nextGameId = String(nextGame?.internalGameId || "");
+  if (currentGameId !== nextGameId || (state.probableStarter.status === "idle" && !nextGame)) {
     beginPublicRequest("probable", { abort: true });
     resetProbableStarterDisplay(nextGame);
   }
@@ -3872,6 +3874,25 @@ function renderProbableStarter() {
   renderProbableStarterDisplay();
 }
 
+function deriveProbableStarterViewState(probableStarter = {}) {
+  const nextGame = probableStarter.nextGame || null;
+  const status = String(probableStarter.status || "idle");
+
+  // Game existence is the outer boundary. A missing game must never fall
+  // through to the game's missing-starter copy, even if stale starter data
+  // remains in memory during a schedule transition.
+  if (!nextGame || status === "noGame") return { kind: "noGame", nextGame: null, matchedGame: null };
+  if (status === "idle") return { kind: "idle", nextGame, matchedGame: null };
+  if (status === "loading") return { kind: "loading", nextGame, matchedGame: null };
+  if (status === "error" || status === "external_fetch_disabled" || status === "game_reference_mismatch") {
+    return { kind: status, nextGame, matchedGame: null };
+  }
+  if (status === "success" && probableStarter.matchedGame) {
+    return { kind: "announced", nextGame, matchedGame: probableStarter.matchedGame };
+  }
+  return { kind: "unannounced", nextGame, matchedGame: null };
+}
+
 function renderProbableStarterDisplay() {
   const container = document.getElementById("probableStarterDisplay");
   if (!container) {
@@ -3886,7 +3907,13 @@ function renderProbableStarterDisplay() {
   }
 
   const probableStarter = state.probableStarter;
-  if ((!probableStarter.nextGame && probableStarter.status !== "noGame") || probableStarter.status === "idle") {
+  const viewState = deriveProbableStarterViewState(probableStarter);
+  if (viewState.kind === "noGame") {
+    container.classList.add("hidden");
+    container.innerHTML = "";
+    return;
+  }
+  if (viewState.kind === "idle") {
     container.classList.add("hidden");
     container.innerHTML = "";
     return;
@@ -3894,7 +3921,7 @@ function renderProbableStarterDisplay() {
 
   container.classList.remove("hidden");
 
-  if (probableStarter.status === "loading") {
+  if (viewState.kind === "loading") {
     container.className = "probable-starter-card is-loading";
     container.innerHTML = `
       ${createProbableStarterHeadingHtml()}
@@ -3903,30 +3930,30 @@ function renderProbableStarterDisplay() {
     return;
   }
 
-  if (probableStarter.status === "error") {
-    renderProbableStarterNotice(container, "error", probableStarter.nextGame);
+  if (viewState.kind === "error") {
+    renderProbableStarterNotice(container, viewState.kind, viewState.nextGame);
     return;
   }
 
-  if (probableStarter.status === "external_fetch_disabled") {
-    renderProbableStarterNotice(container, "external_fetch_disabled", probableStarter.nextGame);
+  if (viewState.kind === "external_fetch_disabled") {
+    renderProbableStarterNotice(container, viewState.kind, viewState.nextGame);
     return;
   }
 
-  if (probableStarter.status === "game_reference_mismatch") {
-    renderProbableStarterNotice(container, "game_reference_mismatch", probableStarter.nextGame);
+  if (viewState.kind === "game_reference_mismatch") {
+    renderProbableStarterNotice(container, viewState.kind, viewState.nextGame);
     return;
   }
 
-  if (probableStarter.status === "unannounced") {
-    renderProbableStarterNotice(container, "unannounced", probableStarter.nextGame);
+  if (viewState.kind === "unannounced") {
+    renderProbableStarterNotice(container, "unannounced", viewState.nextGame);
     return;
   }
 
-  const matchedGame = probableStarter.matchedGame;
+  const matchedGame = viewState.matchedGame;
   const fightersStarter = getFightersStarter(matchedGame);
   if (!matchedGame || !fightersStarter) {
-    renderProbableStarterNotice(container, "unannounced", probableStarter.nextGame);
+    renderProbableStarterNotice(container, "unannounced", viewState.nextGame);
     return;
   }
 

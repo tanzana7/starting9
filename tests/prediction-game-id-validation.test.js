@@ -215,7 +215,7 @@ test("対象試合APIはV3のinternalGameIdを保存処理へ送信する", () =
 });
 
 test("対象試合APIの一時障害時は、既存静的日程へ戻って保存対象を失わない", () => {
-  const resolver = script.slice(script.indexOf("async function resolvePredictionTargetGame"), script.indexOf("function buildPredictionTargetApiUrl"));
+  const resolver = script.slice(script.indexOf("async function resolvePredictionTargetGame"), script.indexOf("async function getLoadedGameSchedule"));
   assert.match(resolver, /return null;/);
   assert.match(script, /mergePublicGameSchedules\(\[\], apiGames\)/);
   assert.match(script, /公開試合一覧の取得に失敗しました/);

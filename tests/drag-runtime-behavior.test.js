@@ -125,6 +125,22 @@ test("pointer slot drag swaps players without duplication or loss", async (t) =>
   assert.equal(slots.filter((slot) => slot.dataset.player === "清宮幸太郎").length, 1);
 });
 
+test("pointer slot drag leaves the next selection on the first empty slot", async (t) => {
+  const runtime = createDragRuntime();
+  t.after(() => runtime.dispose());
+  const { slots } = await fillTwoSlots(runtime);
+
+  await beginPointerDrag(runtime, slots[0]);
+  await moveAndDropPointer(runtime, slots[1]);
+  runtime.setNow("2026-10-15T12:00:01.000+09:00");
+  await getPlayer(runtime, "レイエス").dispatchEvent({ type: "click" });
+
+  assert.equal(slots[2].dataset.player, "レイエス");
+  assert.equal(slots[0].dataset.player, "清宮幸太郎");
+  assert.equal(slots[1].dataset.player, "");
+  assert.equal(slots.filter((slot) => slot.dataset.player === "レイエス").length, 1);
+});
+
 test("pointer position drag swaps positions, closes the menu, and restores capture-owned state", async (t) => {
   const runtime = createDragRuntime();
   t.after(() => runtime.dispose());

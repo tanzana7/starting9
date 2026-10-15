@@ -150,8 +150,8 @@ test("competition creation defaults to draft and requires explicit active status
   const active = await request(worker, env, "/api/admin/competition", jsonOptions("POST", adminCookie, { id: "explicit-active", displayName: "Active", shortName: "A", status: "active" }));
   assert.equal(active.response.status, 200);
   assert.equal(active.payload.competition.status, "active");
-  const html = fs.readFileSync(path.join(root, "asia-cs/public/admin.html"), "utf8");
-  assert.match(html, /<option value="draft" selected>draft<\/option>/);
+  const html = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
+  assert.match(html, /<select name="status"><option value="draft">draft<\/option>/);
   assert.doesNotMatch(html, /<option value="active" selected>active<\/option>/);
 });
 

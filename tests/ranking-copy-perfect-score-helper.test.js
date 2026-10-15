@@ -6,7 +6,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
-const publicRanking = fs.readFileSync(path.join(root, "frontend", "public", "render-ranking.js"), "utf8");
 const admin = fs.readFileSync(path.join(root, "admin-v3.js"), "utf8");
 const perfectScoreRenderer = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-perfect-score-preview.js"), "utf8");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
@@ -30,14 +29,11 @@ function officialLineup() {
   }));
 }
 
-test("ランキング見出しは自然な文言で、未到達者を公開一覧へ表示しない", () => {
+test("公開ランキングの旧表示経路は存在せず、集計はadmin専用のまま", () => {
   assert.doesNotMatch(script, /規定到達ランキング/);
-  assert.match(publicRanking, /title\.textContent = "ランキング"/);
   assert.doesNotMatch(script, /RANKING_DISPLAY_OPTIONS/);
-  assert.match(publicRanking, /if \(!row\?\.isQualified\) return false/);
-  assert.match(publicRanking, /公開済み試合の参加状況と成績をもとにランキングを表示しています/);
-  assert.match(publicRanking, /規定未到達/);
-  assert.doesNotMatch(publicRanking, /規定未到達者を見る/);
+  assert.doesNotMatch(script, /createPublicRankingRenderer|publicRankingRenderer/);
+  assert.match(worker, /PUBLIC_RANKING_ADMIN_ONLY/);
 });
 
 test("満点previewは正式スタメンと既存採点コアから99点を算出する", () => {

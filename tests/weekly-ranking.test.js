@@ -8,8 +8,7 @@ const { pathToFileURL } = require("node:url");
 const root = path.join(__dirname, "..");
 const workerSource = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
-const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
-const rankingRenderer = fs.readFileSync(path.join(root, "frontend", "public", "render-ranking.js"), "utf8");
+const rankingRenderer = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-ranking.js"), "utf8");
 const publicState = fs.readFileSync(path.join(root, "frontend", "public", "state.js"), "utf8");
 const style = fs.readFileSync(path.join(root, "style.css"), "utf8");
 
@@ -128,12 +127,5 @@ test("公開画面は期間別ランキングを表示せず、集計データ�
   assert.doesNotMatch(html, /render-ranking\.js/);
   assert.match(workerSource, /adminRankingRoute/);
   assert.match(rankingRenderer, /ランキング/);
-  assert.match(publicState, /weekly: state\.weeklyRanking/);
-});
-
-test("週間ランキングの表示終了日は排他的な翌月曜ではなく日曜にする", () => {
-  assert.match(script, /function formatWeeklyRankingDisplayEnd\(endExclusive\)/);
-  assert.match(script, /endDate\.setUTCDate\(endDate\.getUTCDate\(\) - 1\)/);
-  assert.match(script, /const weekEnd = formatWeeklyRankingDisplayEnd\(weekRange\.endAt\)/);
-  assert.match(script, /const weekRange = getJapanWeekRange\(new Date\(`\$\{ranking\.weekStart\}T12:00:00\+09:00`\)\)/);
+  assert.doesNotMatch(publicState, /ranking:|appState\.ranking/);
 });

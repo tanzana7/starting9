@@ -19,12 +19,9 @@ test("通常画面は開発用エリア見出しと番号バッジを表示し�
   assert.match(html, /id="result-title">前回の採点結果/);
 });
 
-test("公開ランキングは週間の開始週より前へ移動できず、月間・年間を表示しない", () => {
+test("公開画面は期間別ランキングの取得と切替を持たない", () => {
   const script = read("script.js");
 
-  assert.match(script, /const firstServiceWeek = "2026-09-21"/);
-  assert.match(script, /if \(nextWeek < firstServiceWeek \|\| nextWeek > currentWeek\.startAt\) return/);
-  assert.match(script, /if \(view !== "weekly"\) return/);
-  assert.doesNotMatch(read("index.html"), /showMonthlyRankingButton|showYearlyRankingButton/);
-  assert.match(read("style.css"), /grid-template-columns: minmax\(0, 1fr\) minmax\(120px, auto\) minmax\(0, 1fr\)/);
+  assert.doesNotMatch(script, /\/api\/rankings\/(weekly|monthly|yearly)|data-(weekly|monthly)-ranking-move/);
+  assert.doesNotMatch(read("index.html"), /rankingPanel|showWeeklyRankingButton|showMonthlyRankingButton|showYearlyRankingButton/);
 });

@@ -92,7 +92,7 @@ The current Worker keeps the full route table in one file because it is the depl
 | `storage.js` | Safe localStorage read/write/remove handling |
 | `api-client.js` | Public API request and JSON response boundary |
 | `app-coordinator.js` | Ordered browser initialization and auth-dependent refreshes |
-| `render-results.js` / `render-ranking.js` | Result preservation/history limit and ranking rendering/copy |
+| `render-results.js` | Result preservation/history limit and Best Nine rendering/copy |
 | `roster.js` | Current-game roster synchronization and candidate-list presentation |
 | `prediction-form.js` | Public prediction save/reset interactions |
 
@@ -105,10 +105,10 @@ The compatibility entrypoint keeps only thin delegates for these public contract
 3. Select the current game from canonical API data.
 4. Initialize schedule-derived display state.
 5. Load probable starter and roster data for that game.
-6. Load authenticated account, ranking, and result history data.
+6. Load authenticated account and result history data.
 7. Render the stable public surface.
 
-The public state is split into `gameCatalog`, `currentGame`, `predictionForm`, `roster`, `results`, `ranking`, `account`, and `requests`. Request sequence checks and `AbortController` instances discard stale responses when the target game changes.
+The public state is split into `gameCatalog`, `currentGame`, `predictionForm`, `roster`, `results`, `account`, and `requests`. Request sequence checks and `AbortController` instances discard stale responses when the target game changes.
 
 ## V3 Workflow
 

@@ -39,14 +39,15 @@ test("公開画面のentry pointは分割moduleを読み込んでCoordinatorを�
   assert.match(script, /void publicAppCoordinator\.start\(\)/);
 });
 
-test("公開アプリ状態はゲーム、予想、ロースター、結果、ランキング、アカウント、リクエストを分離する", () => {
+test("公開アプリ状態はゲーム、予想、ロースター、結果、アカウント、リクエストを分離する", () => {
   const publicFrontend = loadPublicModule("state");
   const appState = publicFrontend.state.createPublicAppState({
-    publicGameCatalog: {}, publicRoster: {}, resultHistory: {}, yearlyRanking: {}, monthlyRanking: {}, predictionRemote: {}
+    publicGameCatalog: {}, publicRoster: {}, resultHistory: {}, predictionRemote: {}
   });
-  for (const domain of ["gameCatalog", "currentGame", "predictionForm", "roster", "results", "ranking", "account", "requests"]) {
+  for (const domain of ["gameCatalog", "currentGame", "predictionForm", "roster", "results", "account", "requests"]) {
     assert.ok(Object.hasOwn(appState, domain));
   }
+  assert.equal(Object.hasOwn(appState, "ranking"), false);
   for (const requestName of ["catalog", "roster", "target", "probable", "previousResultGame", "result", "resultDetail", "account"]) {
     assert.equal(appState.requests[requestName].sequence, 0);
     assert.equal(appState.requests[requestName].controller, null);

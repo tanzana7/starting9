@@ -5,10 +5,11 @@ const { loadPublicFrontendModules } = require("./load-public-frontend-modules.cj
 
 // Load the shipped scripts intact. Exercise the coordinator's real operations,
 // not copied function bodies, so private helper names are free to change.
-function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateNames = [], now, ui = false, lineup = [], staticGames = [] } = {}) {
+function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateNames = [], now, ui = false, lineup = [], staticGames = [], positionMenuRuntime = false } = {}) {
   const root = path.join(__dirname, "..", "..");
   const stored = new Map();
   const timers = new Map();
+  const documentListeners = new Map();
   let timerId = 0;
   let clock = now ? Date.parse(now) : Date.now();
   class ClockDate extends Date {
@@ -21,8 +22,9 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
     let markup = "";
     const attributes = new Map();
     const listeners = new Map();
-    return Object.setPrototypeOf({
-      dataset, children: [], disabled: false,
+    const node = Object.setPrototypeOf({
+      dataset, children: [], disabled: false, tagName: "DIV", parentElement: null,
+      style: { removeProperty: (key) => { delete node.style[key]; } },
       get className() { return [...classes].join(" "); },
       set className(value) { classes.clear(); String(value).split(/\s+/).filter(Boolean).forEach((name) => classes.add(name)); },
       get textContent() { return markup.replace(/<[^>]*>/g, ""); },
@@ -35,7 +37,7 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
         if (/<tbody><\/tbody>/.test(markup)) {
           const tbody = element();
           tbody.tagName = "TBODY";
-          this.children.push(tbody);
+          this.appendChild(tbody);
         }
       },
       classList: {
@@ -54,16 +56,45 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
         const results = (listeners.get(type) || []).map((handler) => handler({ preventDefault() {}, stopPropagation() {}, ...event }));
         await Promise.all(results);
       },
-      append(...children) { this.children.push(...children); },
-      appendChild(child) { this.children.push(child); return child; },
+      append(...children) { children.forEach((child) => this.appendChild(child)); },
+      appendChild(child) {
+        if (!child) return child;
+        if (child.nodeType === 11) {
+          child.children.slice().forEach((fragmentChild) => this.appendChild(fragmentChild));
+          child.children.length = 0;
+        } else {
+          child.parentElement = this;
+          this.children.push(child);
+        }
+        return child;
+      },
       closest(selector) {
         const key = { "[data-result-history-select]": "resultHistorySelect", "[data-result-history-toggle]": "resultHistoryToggle" }[selector];
         return key && Object.hasOwn(dataset, key) ? this : null;
       },
-      querySelector(selector) { return this.children.find((child) => child.tagName?.toLowerCase() === selector) || null; },
-      querySelectorAll: () => [],
+      matches(selector) {
+        const classMatch = selector.match(/\.([\w-]+)/);
+        if (classMatch && !classes.has(classMatch[1])) return false;
+        const pickerMatch = selector.match(/\[data-picker="([^"]+)"\]/);
+        if (pickerMatch && this.dataset.picker !== pickerMatch[1]) return false;
+        const attributeMatch = selector.match(/\[data-([\w-]+)\]/);
+        if (attributeMatch && !Object.hasOwn(this.dataset, attributeMatch[1])) return false;
+        const tagMatch = selector.match(/^([a-z][\w-]*)/i);
+        return !tagMatch || String(this.tagName).toLowerCase() === tagMatch[1].toLowerCase();
+      },
+      querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
+      querySelectorAll(selector) {
+        const matches = [];
+        const visit = (child) => {
+          if (child?.matches?.(selector)) matches.push(child);
+          child?.children?.forEach(visit);
+        };
+        this.children.forEach(visit);
+        return matches;
+      },
       getContext: () => null
     }, RuntimeElement.prototype);
+    return node;
   }
   const chips = candidateNames.map((player) => {
     const classes = new Set();
@@ -77,6 +108,7 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
   });
   const elementIds = ["savedPrediction", "sharePredictionButton"];
   if (ui) elementIds.push("predictionForm", "resetPredictionButton", "savePredictionButton", "predictionError", "predictionSaveMessage", "publicGameSelectionMeta", "predictionEditor", "predictionCtaButton", "probableStarterDisplay", "predictionRosterStatus", "resultHistoryList");
+  if (positionMenuRuntime) elementIds.push("predictionLineup", "predictionPlayers");
   const elements = new Map(elementIds.map((id) => [id, element()]));
   const slots = lineup.map((item, index) => {
     const slot = element({ picker: "prediction", order: String(index + 1), player: item.player || "", position: item.position || "" });
@@ -84,6 +116,11 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
     slot.querySelector = (selector) => controls.get(selector) || null;
     return slot;
   });
+  const body = element();
+  body.tagName = "BODY";
+  if (positionMenuRuntime) {
+    [elements.get("predictionLineup"), elements.get("predictionPlayers")].forEach((container) => body.appendChild(container));
+  }
   const window = {
     HAM_GAME_SCHEDULE: staticGames,
     location: { href: "https://starting9.test/", search: "", hostname: "starting9.test" },
@@ -96,9 +133,21 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
   };
   window.addEventListener = () => {};
   const document = {
-    addEventListener() {}, getElementById: (id) => elements.get(id) || null,
+    body,
+    documentElement: { clientWidth: 1024, clientHeight: 768 },
+    addEventListener(type, handler) {
+      if (!documentListeners.has(type)) documentListeners.set(type, []);
+      documentListeners.get(type).push(handler);
+    },
+    async emit(type, event = {}) {
+      const results = (documentListeners.get(type) || []).map((handler) => handler({ preventDefault() {}, stopPropagation() {}, ...event }));
+      await Promise.all(results);
+    },
+    getElementById: (id) => elements.get(id) || null,
     createElement: () => element(),
+    createDocumentFragment: () => Object.assign(element(), { nodeType: 11, tagName: "#document-fragment" }),
     querySelectorAll: (selector) => {
+      if (positionMenuRuntime) return body.querySelectorAll(selector);
       if (selector === '.player-chip[data-picker="prediction"]') return chips;
       if (selector === '.lineup-slot[data-picker="prediction"]') return slots;
       return [];
@@ -120,7 +169,8 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
   state.predictionTargetGameId = "canonical-game";
   state.predictionTargetGame = { internalGameId: "canonical-game", date: "2099-07-21", startAt: "2099-07-21T09:00:00Z" };
   return {
-    state, operations, appState: window.publicAppState, stored, chips, elements, slots, createElement: element,
+    state, operations, appState: window.publicAppState, stored, chips, elements, slots, body, createElement: element,
+    emitDocument: (type, event) => document.emit(type, event),
     setNow: (value) => { clock = Date.parse(value); },
     intervalDelays: () => [...timers.values()].filter((timer) => timer.interval).map((timer) => timer.delay),
     async tickIntervals() {

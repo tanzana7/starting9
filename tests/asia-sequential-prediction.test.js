@@ -80,6 +80,135 @@ async function publish(database, gameId) {
   database.prepare("UPDATE games SET status = 'published', publication_status = 'published' WHERE id = ?").run(gameId);
 }
 
+// Fixed time and literal expectations characterize the pre-refactor response,
+// rather than reproducing its derivation in the assertion helper.
+const CONTRACT_NOW = Date.parse("2026-10-15T00:00:00.000Z");
+const CONTRACT_IDS = ["apbc-2026-g2", "apbc-2026-g4", "apbc-2026-g5"];
+const CONTRACT_DEADLINES = ["2026-11-12T09:00:00.000Z", "2026-11-13T09:00:00.000Z", "2026-11-14T02:00:00.000Z"];
+
+function predictionContract(game) {
+  return {
+    id: game.id,
+    predictionEligible: game.predictionEligible,
+    canPredict: game.canPredict,
+    predictionState: game.predictionState,
+    predictionDeadlineAt: game.predictionDeadlineAt
+  };
+}
+
+async function assertPredictionContract(worker, env, expected, competitionId = "apbc-2026") {
+  const before = env.database.prepare("SELECT total_changes() AS count").get().count;
+  const competition = await request(worker, env, `/api/competition?competitionId=${competitionId}`);
+  const list = await request(worker, env, `/api/games?competitionId=${competitionId}`);
+  assert.equal(competition.response.status, 200);
+  assert.equal(list.response.status, 200);
+  assert.deepEqual(competition.payload.games.map(predictionContract), expected);
+  assert.deepEqual(list.payload.games.map(predictionContract), expected);
+  assert.deepEqual(competition.payload.acceptingGames.map((game) => game.id), expected.filter((game) => game.canPredict).map((game) => game.id));
+  for (const snapshot of expected) {
+    const detail = await request(worker, env, `/api/games/${snapshot.id}`);
+    assert.equal(detail.response.status, 200);
+    assert.deepEqual(predictionContract(detail.payload.game), snapshot);
+  }
+  assert.equal(env.database.prepare("SELECT total_changes() AS count").get().count, before, "public reads must not write");
+}
+
+for (const scenario of [
+  { name: "active initial", states: ["open", "waiting_for_previous_publish", "waiting_for_previous_publish"], open: 0 },
+  { name: "GAME2 published", published: 1, states: ["published", "open", "waiting_for_previous_publish"], open: 1 },
+  { name: "GAME4 published", published: 2, states: ["published", "published", "open"], open: 2 },
+  { name: "all published", published: 3, states: ["published", "published", "published"], open: -1 },
+  { name: "draft", status: "draft", states: ["closed", "waiting_for_previous_publish", "waiting_for_previous_publish"], open: -1 },
+  { name: "completed", status: "completed", states: ["closed", "waiting_for_previous_publish", "waiting_for_previous_publish"], open: -1 },
+  { name: "unknown status", status: "unknown", states: ["closed", "waiting_for_previous_publish", "waiting_for_previous_publish"], open: -1 },
+  { name: "deadline minus 1ms", now: Date.parse(CONTRACT_DEADLINES[0]) - 1, states: ["open", "waiting_for_previous_publish", "waiting_for_previous_publish"], open: 0 },
+  { name: "deadline exact", now: Date.parse(CONTRACT_DEADLINES[0]), states: ["closed", "waiting_for_previous_publish", "waiting_for_previous_publish"], open: -1 },
+  { name: "deadline plus 1ms", now: Date.parse(CONTRACT_DEADLINES[0]) + 1, states: ["closed", "waiting_for_previous_publish", "waiting_for_previous_publish"], open: -1 },
+  { name: "only game status published", gameStatus: "published", states: ["closed", "waiting_for_previous_publish", "waiting_for_previous_publish"], open: -1 },
+  { name: "only artifact published", publicationStatus: "published", states: ["open", "waiting_for_previous_publish", "waiting_for_previous_publish"], open: 0 }
+]) {
+  test(`public prediction list/detail contract: ${scenario.name}`, async (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: scenario.now ?? CONTRACT_NOW });
+    const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+    const env = createFixture();
+    t.after(() => env.database.close());
+    if (scenario.status) {
+      // Only this isolated DB admits a malformed legacy state for fail-closed coverage.
+      env.database.exec("PRAGMA ignore_check_constraints = ON");
+      env.database.prepare("UPDATE competitions SET status = ? WHERE id = 'apbc-2026'").run(scenario.status);
+    }
+    for (const id of CONTRACT_IDS.slice(0, scenario.published || 0)) await publish(env.database, id);
+    if (scenario.gameStatus) env.database.prepare("UPDATE games SET status = ? WHERE id = ?").run(scenario.gameStatus, CONTRACT_IDS[0]);
+    if (scenario.publicationStatus) env.database.prepare("UPDATE games SET publication_status = ? WHERE id = ?").run(scenario.publicationStatus, CONTRACT_IDS[0]);
+    await assertPredictionContract(worker, env, CONTRACT_IDS.map((id, index) => ({
+      id, predictionEligible: true, canPredict: index === scenario.open,
+      predictionState: scenario.states[index], predictionDeadlineAt: CONTRACT_DEADLINES[index]
+    })));
+  });
+}
+
+test("public prediction contract keeps Japan-only filtering and generic fixture compatibility", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: CONTRACT_NOW });
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const env = createFixture();
+  t.after(() => env.database.close());
+  env.database.prepare("UPDATE games SET home_team_id = 'team-kor', home_team_name = '韓国', away_team_id = 'team-aus', away_team_name = 'オーストラリア' WHERE id = ?").run(CONTRACT_IDS[0]);
+  await assertPredictionContract(worker, env, [
+    { id: CONTRACT_IDS[1], predictionEligible: true, canPredict: true, predictionState: "open", predictionDeadlineAt: CONTRACT_DEADLINES[1] },
+    { id: CONTRACT_IDS[2], predictionEligible: true, canPredict: false, predictionState: "waiting_for_previous_publish", predictionDeadlineAt: CONTRACT_DEADLINES[2] }
+  ]);
+  const hidden = await request(worker, env, `/api/games/${CONTRACT_IDS[0]}`);
+  assert.equal(hidden.response.status, 404);
+  assert.equal(hidden.payload.code, "GAME_NOT_AVAILABLE");
+  env.database.prepare("UPDATE teams SET team_key = 'generic', display_name = 'Generic', short_name = 'Generic', country_code = 'ZZ' WHERE id = 'team-japan'").run();
+  await assertPredictionContract(worker, env, CONTRACT_IDS.map((id, index) => ({
+    id, predictionEligible: true, canPredict: index === 0,
+    predictionState: index === 0 ? "open" : "waiting_for_previous_publish", predictionDeadlineAt: CONTRACT_DEADLINES[index]
+  })));
+});
+
+test("public prediction list/detail contract advances the isolated 10/16 fixture", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: CONTRACT_NOW });
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const env = createFixture();
+  t.after(() => env.database.close());
+  const id = "apbc-switch-test-2026-10-16";
+  env.database.prepare("INSERT INTO competitions (id, competition_type, display_name, short_name, status, created_at, updated_at) VALUES (?, 'ASIA_CS', 'Switch Test', 'Test', 'active', ?, ?)").run(id, new Date().toISOString(), new Date().toISOString());
+  env.database.prepare("UPDATE teams SET competition_id = ? WHERE competition_id = 'apbc-2026'").run(id);
+  env.database.prepare("DELETE FROM games WHERE id = ?").run(CONTRACT_IDS[2]);
+  for (const [index, gameId] of ["TEST1", "TEST2"].entries()) {
+    env.database.prepare("UPDATE games SET id = ?, competition_id = ?, game_date = '2026-10-16', start_at = ?, prediction_deadline_at = ? WHERE id = ?")
+      .run(gameId, id, `2026-10-16T${index === 0 ? "09" : "13"}:00:00.000Z`, `2026-10-16T${index === 0 ? "08" : "12"}:00:00.000Z`, CONTRACT_IDS[index]);
+  }
+  const snapshots = [
+    { id: "TEST1", predictionEligible: true, canPredict: true, predictionState: "open", predictionDeadlineAt: "2026-10-16T08:00:00.000Z" },
+    { id: "TEST2", predictionEligible: true, canPredict: false, predictionState: "waiting_for_previous_publish", predictionDeadlineAt: "2026-10-16T12:00:00.000Z" }
+  ];
+  await assertPredictionContract(worker, env, snapshots, id);
+  await publish(env.database, "TEST1");
+  await assertPredictionContract(worker, env, [
+    { ...snapshots[0], canPredict: false, predictionState: "published" },
+    { ...snapshots[1], canPredict: true, predictionState: "open" }
+  ], id);
+});
+
+test("public prediction target selection reuses the list and performs one discovery per detail", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: CONTRACT_NOW });
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const env = createFixture();
+  t.after(() => env.database.close());
+  const queries = [];
+  const prepare = env.DB.prepare.bind(env.DB);
+  env.DB.prepare = (sql) => { queries.push(sql); return prepare(sql); };
+  const list = await request(worker, env, "/api/games?competitionId=apbc-2026");
+  assert.equal(list.response.status, 200);
+  assert.equal(queries.filter((sql) => /\bFROM games\b/.test(sql)).length, 1, "list discovery must reuse loaded games");
+  queries.length = 0;
+  const detail = await request(worker, env, `/api/games/${CONTRACT_IDS[0]}`);
+  assert.equal(detail.response.status, 200);
+  assert.equal(queries.filter((sql) => /\bFROM games\b/.test(sql)).length, 2, "one game lookup and one current-target discovery");
+});
+
 test("Asia prediction target advances only after the prior Japan game is fully published", async () => {
   const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
   const env = createFixture();
@@ -110,9 +239,11 @@ test("Asia prediction target advances only after the prior Japan game is fully p
   assert.ok(payload.games.every((game) => game.canPredict === false));
 });
 
-test("a Japan placement game becomes the next target without game-number branching", async () => {
+test("a Japan placement game becomes the next target without game-number branching", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: CONTRACT_NOW });
   const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
   const env = createFixture();
+  t.after(() => env.database.close());
   await publish(env.database, "apbc-2026-g2");
   await publish(env.database, "apbc-2026-g4");
   await publish(env.database, "apbc-2026-g5");
@@ -124,6 +255,41 @@ test("a Japan placement game becomes the next target without game-number branchi
     .run(now, now);
   const payload = (await request(worker, env, "/api/competition?competitionId=apbc-2026")).payload;
   assert.deepEqual(payload.acceptingGames.map((game) => game.id), ["placement-final"]);
+  await assertPredictionContract(worker, env, [
+    ...CONTRACT_IDS.map((id, index) => ({
+      id, predictionEligible: true, canPredict: false,
+      predictionState: "published", predictionDeadlineAt: CONTRACT_DEADLINES[index]
+    })),
+    { id: "placement-final", predictionEligible: true, canPredict: true, predictionState: "open", predictionDeadlineAt: "2026-11-15T02:00:00.000Z" }
+  ]);
+});
+
+test("public derivation does not replace independent PUT/DELETE prediction guards", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: CONTRACT_NOW });
+  const worker = await import(pathToFileURL(path.join(root, "asia-cs/worker.js")).href);
+  const env = createFixture();
+  t.after(() => env.database.close());
+  const registration = await request(worker, env, "/api/auth/register", {
+    method: "POST", body: JSON.stringify({ username: "guard-contract-user", password: "local-contract-password" })
+  });
+  assert.equal(registration.response.status, 201);
+  const headers = { Cookie: registration.cookie.split(";")[0], Origin: "https://asia-cs.test", "Content-Type": "application/json" };
+  for (const scenario of [
+    { status: "draft", game: CONTRACT_IDS[0], code: "PREDICTION_NOT_OPEN" },
+    { status: "completed", game: CONTRACT_IDS[0], code: "COMPETITION_COMPLETED" },
+    { status: "active", game: CONTRACT_IDS[1], code: "PREDICTION_NOT_OPEN" },
+    { status: "active", game: CONTRACT_IDS[0], expired: true, code: "PREDICTION_DEADLINE_PASSED" }
+  ]) {
+    env.database.prepare("UPDATE competitions SET status = ? WHERE id = 'apbc-2026'").run(scenario.status);
+    if (scenario.expired) env.database.prepare("UPDATE games SET prediction_deadline_at = ? WHERE id = ?").run(new Date(CONTRACT_NOW).toISOString(), scenario.game);
+    const before = env.database.prepare("SELECT total_changes() AS count").get().count;
+    for (const method of ["PUT", "DELETE"]) {
+      const result = await request(worker, env, `/api/games/${scenario.game}/prediction`, { method, headers, ...(method === "PUT" ? { body: JSON.stringify({ lineup: [] }) } : {}) });
+      assert.equal(result.response.status, 409, `${method}: ${scenario.code}`);
+      assert.equal(result.payload.code, scenario.code);
+    }
+    assert.equal(env.database.prepare("SELECT total_changes() AS count").get().count, before);
+  }
 });
 
 test("an expired unpublished target blocks later games and rejects direct future-game POST", async () => {

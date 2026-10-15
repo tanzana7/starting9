@@ -746,13 +746,13 @@ function serializeCompetition(competition) {
   };
 }
 
-function competitionAllowsPrediction(competition, game) {
+function competitionAllowsPrediction(competition, game, now) {
   // A competition must be explicitly activated before any prediction can be
   // accepted. This keeps draft data publicly readable while failing closed
   // for draft, completed, and future/unknown competition states.
   if (competition?.status !== "active") return false;
   const deadline = validDate(game?.prediction_deadline_at);
-  return Boolean(competition && deadline && Date.now() < deadline.getTime() && game?.status === "open");
+  return Boolean(competition && deadline && now < deadline.getTime() && game?.status === "open");
 }
 
 function isPublishedPredictionGame(game) {
@@ -813,6 +813,24 @@ function isGamePredictionEligible(game, teams = []) {
   return !japanOnlyCompetition || gameHasJapanTeam(game, teams);
 }
 
+function derivePublicPredictionState(competition, game, teams, firstUnpublished, now) {
+  // Both read boundaries use the same eligibility, publication priority and
+  // waiting vocabulary. The caller selects the first unpublished eligible
+  // game once and supplies its clock; this derivation never queries or mutates.
+  // An expired current game still blocks the next game until fully published.
+  const predictionEligible = isGamePredictionEligible(game, teams);
+  const canPredict = Boolean(predictionEligible && firstUnpublished && game.id === firstUnpublished.id
+    && competitionAllowsPrediction(competition, firstUnpublished, now));
+  const predictionState = !predictionEligible
+    ? "ineligible"
+    : isPublishedPredictionGame(game)
+      ? "published"
+      : firstUnpublished && firstUnpublished.id !== game.id
+        ? "waiting_for_previous_publish"
+        : canPredict ? "open" : "closed";
+  return { predictionEligible, canPredict, predictionState };
+}
+
 async function persistedGamePredictionEligible(db, game) {
   return isGamePredictionEligible(game, await getTeams(db, game?.competition_id || DEFAULT_COMPETITION_ID));
 }
@@ -845,16 +863,8 @@ async function listCompetitionGames(request, env, db, competitionId, { includePr
     submitted = new Set((rows.results || []).map((row) => row.game_id));
   }
   const firstUnpublished = await firstUnpublishedPredictionGame(db, competitionId, teams, allGames);
-  const currentTargetId = firstUnpublished && competitionAllowsPrediction(competition, firstUnpublished) ? firstUnpublished.id : null;
+  const now = Date.now();
   return games.map((game) => {
-    const predictionEligible = isGamePredictionEligible(game, teams);
-    const predictionState = !predictionEligible
-      ? "ineligible"
-      : isPublishedPredictionGame(game)
-        ? "published"
-        : firstUnpublished && firstUnpublished.id !== game.id
-          ? "waiting_for_previous_publish"
-          : game.id === currentTargetId ? "open" : "closed";
     return {
     id: game.id,
     title: game.title,
@@ -869,9 +879,7 @@ async function listCompetitionGames(request, env, db, competitionId, { includePr
     publicationStatus: game.publication_status,
     predictionCount: Number(game.prediction_count || 0),
     predictionSubmitted: submitted.has(game.id),
-    predictionEligible,
-    canPredict: predictionEligible && game.id === currentTargetId,
-    predictionState,
+    ...derivePublicPredictionState(competition, game, teams, firstUnpublished, now),
     archived: competition?.status === "completed"
     };
   });
@@ -1009,20 +1017,12 @@ async function publicGame(request, env, db, gameId) {
   if (!game) return errorResponse(request, env, 404, "GAME_NOT_FOUND", "対象試合がありません。");
   const teams = await getTeams(db, game.competition_id);
   const competition = await getCompetition(db, game.competition_id);
-  const predictionEligible = isGamePredictionEligible(game, teams);
-  if (!predictionEligible) return errorResponse(request, env, 404, "GAME_NOT_AVAILABLE", "日本代表が出場する試合ではありません。");
+  if (!isGamePredictionEligible(game, teams)) return errorResponse(request, env, 404, "GAME_NOT_AVAILABLE", "日本代表が出場する試合ではありません。");
   const firstUnpublished = await firstUnpublishedPredictionGame(db, game.competition_id, teams);
-  const currentTargetId = firstUnpublished && competitionAllowsPrediction(competition, firstUnpublished) ? firstUnpublished.id : null;
-  const predictionState = isPublishedPredictionGame(game)
-    ? "published"
-    : firstUnpublished && firstUnpublished.id !== game.id
-      ? "waiting_for_previous_publish"
-      : game.id === currentTargetId ? "open" : "closed";
+  const predictionAvailability = derivePublicPredictionState(competition, game, teams, firstUnpublished, Date.now());
   return json({ ok: true, game: {
     ...serializeGame(game, await getPlayers(db, gameId, true), teams),
-    predictionEligible,
-    canPredict: predictionEligible && game.id === currentTargetId,
-    predictionState
+    ...predictionAvailability
   } }, 200, request, env);
 }
 

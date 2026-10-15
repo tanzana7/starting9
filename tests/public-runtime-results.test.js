@@ -2,6 +2,141 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const { createPublicRuntime } = require("./helpers/public-runtime.cjs");
 
+const positions = ["捕", "一", "二", "三", "遊", "左", "中", "右", "指"];
+const resultGames = ["a", "b"].map((id, index) => ({ resultId: id, internalGameId: id, gameId: `legacy-${id}`, gameDate: `2026-09-${20 - index}`, resultsPublished: true, homeTeam: "fighters", awayTeam: "eagles" }));
+function detail(id) {
+  const lineup = positions.map((position, index) => ({ battingOrder: index + 1, playerName: `選手${id}${index}`, position }));
+  return { ok: true, gameId: `legacy-${id}`, internalGameId: id, resultsPublished: true, prediction: { lineup }, actualLineup: lineup, totalScore: 99, publishedAt: "2026-09-20T10:00:00Z" };
+}
+const contents = (node) => node.innerHTML + node.children.map(contents).join("");
+async function resultsApp(t, { failure = "", pending } = {}) {
+  const calls = [];
+  const app = createPublicRuntime({ ui: true, fetchImpl: async (url) => {
+    calls.push(url);
+    const parsed = new URL(url);
+    let payload;
+    if (parsed.pathname === "/api/public/previous-result-game") payload = { ok: true, game: resultGames[0] };
+    else if (parsed.pathname === "/api/results/games") {
+      if (failure === "list") throw new Error("offline");
+      payload = { ok: true, games: failure === "empty" ? [] : resultGames };
+    } else if (parsed.pathname === "/api/results/daily-best-nine") {
+      if (failure === "best") throw new Error("offline");
+      payload = { ok: true, published: true, internalGameId: "latest", bestNine: [{ rank: 1, username: "latest-winner", score: 99 }] };
+    } else {
+      assert.match(parsed.pathname, /^\/api\/results\/games\/[ab]$/);
+      const id = parsed.pathname.split("/").at(-1);
+      if (failure === id) throw new Error("offline");
+      if (pending?.[id]) return pending[id];
+      payload = detail(id);
+      if (id === "b" && failure === "unpublished") payload.resultsPublished = false;
+      if (id === "b" && failure === "cancelled") payload = { ok: true, internalGameId: id, gameStatus: "cancelled", rankingExcluded: true };
+    }
+    return { ok: true, status: 200, json: async () => payload };
+  } });
+  t.after(app.dispose);
+  for (const id of ["scoreResult", "result-title", "result-legend", "dailyBestNineCard", "dailyBestNineContent"]) app.elements.set(id, app.createElement());
+  app.operations.bindEvents();
+  await app.operations.fetchPreviousResultGame();
+  await app.operations.refreshResultHistory();
+  await new Promise(setImmediate);
+  await app.operations.initializeDailyBestNine();
+  const select = async (id) => {
+    const target = app.createElement({ resultHistorySelect: "" });
+    target.value = id;
+    await app.elements.get("resultHistoryList").emit("change", { target });
+  };
+  const toggle = () => app.elements.get("resultHistoryList").emit("click", { target: app.createElement({ resultHistoryToggle: "" }) });
+  return { app, calls, select, toggle };
+}
+
+test("previous result, detail selection, collapse/reopen and cache preserve the displayed game independently of latest Best Nine", async (t) => {
+  const { app, calls, select, toggle } = await resultsApp(t);
+  assert.equal(app.state.resultHistory.selectedGameId, "a");
+  assert.equal(app.elements.get("result-title").textContent, "前回（9/20）の採点結果");
+  assert.match(contents(app.elements.get("scoreResult")), /選手a0/);
+  assert.match(contents(app.elements.get("scoreResult")), /score-total"><strong>99<\/strong>/);
+  const best = JSON.stringify(app.state.dailyBestNine);
+  await toggle();
+  assert.match(app.elements.get("resultHistoryList").innerHTML, /aria-expanded="true"/);
+  await select("b");
+  assert.equal(app.elements.get("result-title").textContent, "9/19の採点結果");
+  assert.match(contents(app.elements.get("scoreResult")), /選手b0/);
+  assert.doesNotMatch(contents(app.elements.get("scoreResult")), /選手a0/);
+  await toggle();
+  assert.equal(app.state.resultHistory.isExpanded, false);
+  assert.match(contents(app.elements.get("scoreResult")), /選手b0/);
+  await toggle();
+  await select("a");
+  assert.equal(calls.filter((url) => url.endsWith("/games/a")).length, 1);
+  assert.equal(calls.filter((url) => url.endsWith("/games/b")).length, 1);
+  assert.equal(app.state.resultHistory.result.internalGameId, "a");
+  assert.equal(JSON.stringify(app.state.dailyBestNine), best);
+  assert.match(app.elements.get("dailyBestNineContent").innerHTML, /latest-winner/);
+  assert.equal(calls.filter((url) => url.includes("daily-best-nine")).length, 1);
+});
+
+test("history list failure leaves its error visible without crashing the results shell", async (t) => {
+  const { app } = await resultsApp(t, { failure: "list" });
+  assert.match(app.elements.get("resultHistoryList").innerHTML, /過去の試合結果を取得できませんでした/);
+  assert.equal(app.state.resultHistory.games.length, 0);
+});
+
+test("Best Nine failure does not discard a successfully loaded personal result", async (t) => {
+  const { app } = await resultsApp(t, { failure: "best" });
+  assert.equal(app.state.resultHistory.result.internalGameId, "a");
+  assert.match(contents(app.elements.get("scoreResult")), /選手a0/);
+  assert.equal(app.elements.get("dailyBestNineCard").classList.contains("hidden"), true);
+});
+
+test("detail failure does not reset the independent latest Best Nine widget", async (t) => {
+  const { app, select } = await resultsApp(t, { failure: "b" });
+  const latest = JSON.stringify(app.state.dailyBestNine);
+  await select("b");
+  assert.equal(app.state.resultHistory.result, null);
+  assert.match(contents(app.elements.get("scoreResult")), /結果を読み込めませんでした/);
+  assert.equal(JSON.stringify(app.state.dailyBestNine), latest);
+  assert.match(app.elements.get("dailyBestNineContent").innerHTML, /latest-winner/);
+});
+
+test("cached A selection supersedes a slower B detail response", async (t) => {
+  let finish;
+  const { app, select } = await resultsApp(t, { pending: { b: new Promise((resolve) => { finish = resolve; }) } });
+  const loadingB = select("b");
+  await new Promise(setImmediate);
+  await select("a");
+  finish({ ok: true, status: 200, json: async () => detail("b") });
+  await loadingB;
+  assert.equal(app.state.resultHistory.selectedGameId, "a");
+  assert.equal(app.state.resultHistory.result.internalGameId, "a");
+  assert.match(contents(app.elements.get("scoreResult")), /選手a0/);
+  assert.doesNotMatch(contents(app.elements.get("scoreResult")), /選手b0/);
+  assert.equal(app.state.dailyBestNine.gameId, "latest");
+});
+
+test("empty personal history keeps its empty message and latest public Best Nine", async (t) => {
+  const { app } = await resultsApp(t, { failure: "empty" });
+  assert.equal(app.state.resultHistory.games.length, 0);
+  assert.match(app.elements.get("resultHistoryList").innerHTML, /採点済みの過去試合はありません/);
+  assert.match(contents(app.elements.get("scoreResult")), /前回は参加していません/);
+  assert.equal(app.state.dailyBestNine.gameId, "latest");
+});
+
+for (const status of ["unpublished", "cancelled"]) {
+  test(`${status} personal result never resets latest published Best Nine`, async (t) => {
+    const { app, select } = await resultsApp(t, { failure: status });
+    const latest = JSON.stringify(app.state.dailyBestNine);
+    await select("b");
+    if (status === "unpublished") assert.match(app.state.resultHistory.message, /まだ公開されていません/);
+    else {
+      assert.match(contents(app.elements.get("scoreResult")), /中止/);
+      await select("a");
+      await select("b");
+      assert.equal(app.state.resultHistory.result.internalGameId, "b");
+    }
+    assert.equal(JSON.stringify(app.state.dailyBestNine), latest);
+  });
+}
+
 test("history lists canonical result IDs, limits recent games to five, and starts collapsed", async (t) => {
   const calls = [];
   const app = createPublicRuntime({ ui: true, fetchImpl: async (url, options) => {

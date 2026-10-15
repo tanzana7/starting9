@@ -15,19 +15,29 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
     constructor(...args) { super(...(args.length ? args : [clock])); }
     static now() { return clock; }
   }
+  class RuntimeElement {}
   function element(dataset = {}) {
     const classes = new Set();
     let markup = "";
     const attributes = new Map();
     const listeners = new Map();
-    return {
+    return Object.setPrototypeOf({
       dataset, children: [], disabled: false,
       get className() { return [...classes].join(" "); },
       set className(value) { classes.clear(); String(value).split(/\s+/).filter(Boolean).forEach((name) => classes.add(name)); },
       get textContent() { return markup.replace(/<[^>]*>/g, ""); },
-      set textContent(value) { markup = String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;"); },
+      set textContent(value) { this.children.length = 0; markup = String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;"); },
       get innerHTML() { return markup; },
-      set innerHTML(value) { markup = String(value); },
+      set innerHTML(value) {
+        this.children.length = 0;
+        markup = String(value);
+        // The result fallback appends rows to the empty tbody it just renders.
+        if (/<tbody><\/tbody>/.test(markup)) {
+          const tbody = element();
+          tbody.tagName = "TBODY";
+          this.children.push(tbody);
+        }
+      },
       classList: {
         add: (...names) => names.forEach((name) => classes.add(name)),
         remove: (...names) => names.forEach((name) => classes.delete(name)),
@@ -46,9 +56,14 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
       },
       append(...children) { this.children.push(...children); },
       appendChild(child) { this.children.push(child); return child; },
-      querySelector: () => null, querySelectorAll: () => [],
+      closest(selector) {
+        const key = { "[data-result-history-select]": "resultHistorySelect", "[data-result-history-toggle]": "resultHistoryToggle" }[selector];
+        return key && Object.hasOwn(dataset, key) ? this : null;
+      },
+      querySelector(selector) { return this.children.find((child) => child.tagName?.toLowerCase() === selector) || null; },
+      querySelectorAll: () => [],
       getContext: () => null
-    };
+    }, RuntimeElement.prototype);
   }
   const chips = candidateNames.map((player) => {
     const classes = new Set();
@@ -91,7 +106,7 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
   };
   const context = vm.createContext({
     window, URL, URLSearchParams, AbortController,
-    console, document, Date: ClockDate,
+    console, document, Date: ClockDate, Element: RuntimeElement, HTMLSelectElement: RuntimeElement,
     setTimeout: (callback, delay) => { timers.set(++timerId, { callback, delay, interval: false }); return timerId; },
     setInterval: (callback, delay) => { timers.set(++timerId, { callback, delay, interval: true }); return timerId; },
     clearTimeout: (id) => timers.delete(id), clearInterval: (id) => timers.delete(id),
@@ -105,7 +120,7 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
   state.predictionTargetGameId = "canonical-game";
   state.predictionTargetGame = { internalGameId: "canonical-game", date: "2099-07-21", startAt: "2099-07-21T09:00:00Z" };
   return {
-    state, operations, appState: window.publicAppState, stored, chips, elements, slots,
+    state, operations, appState: window.publicAppState, stored, chips, elements, slots, createElement: element,
     setNow: (value) => { clock = Date.parse(value); },
     intervalDelays: () => [...timers.values()].filter((timer) => timer.interval).map((timer) => timer.delay),
     async tickIntervals() {

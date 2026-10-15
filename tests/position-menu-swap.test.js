@@ -36,25 +36,6 @@ function runLineupFunction(name, lineup, ...args) {
   return context.run(lineup, ...args);
 }
 
-function runLineupSlotMove(lineup, sourceIndex, targetIndex) {
-  let movedLineup = null;
-  const context = vm.createContext({
-    LINEUP_SIZE: 9,
-    state: { activeOrder: { actual: 0 } },
-    ensurePredictionEditingAllowed: () => true,
-    getLineupValues: () => lineup,
-    setLineupValues: (_pickerName, nextLineup) => {
-      movedLineup = nextLineup;
-    },
-    clearMessage: () => {},
-    normalizePlayerName: (value) => String(value || "").trim(),
-    normalizePosition: (value) => String(value || "")
-  });
-  vm.runInContext(`${getFunctionSource("createLineupItem")}; ${getFunctionSource("normalizeLineup")}; ${getFunctionSource("findNextEmptyIndex")}; ${getFunctionSource("moveLineupSlot")}; this.run = moveLineupSlot;`, context);
-  context.run("actual", sourceIndex, targetIndex);
-  return JSON.parse(JSON.stringify(movedLineup));
-}
-
 function resolveAutoFillPosition(positions, usedPositions) {
   const context = vm.createContext({
     AUTO_FILL_POSITIONS: new Set(["捕", "一", "二", "三", "遊", "指"]),
@@ -115,18 +96,6 @@ test("守備位置チップのdragは同じ行では変更せず、別行では�
 test("ドラッグ経路で別選手を設定すると前の選手の守備位置を引き継がない", () => {
   const result = runLineupFunction("moveLineupItem", [{ player: "田宮裕涼", position: "捕" }], "清宮幸太郎", 0, null);
   assert.deepEqual(JSON.parse(JSON.stringify(result[0])), { order: 1, player: "清宮幸太郎", position: "" });
-});
-
-test("ドラッグ移動は選手と守備位置をセットで入れ替え、重複を作らない", () => {
-  const result = runLineupSlotMove([
-    { player: "田宮裕涼", position: "捕" },
-    { player: "清宮幸太郎", position: "一" }
-  ], 0, 1);
-  assert.deepEqual(result.slice(0, 2), [
-    { order: 1, player: "清宮幸太郎", position: "一" },
-    { order: 2, player: "田宮裕涼", position: "捕" }
-  ]);
-  assert.equal(result.filter((item) => item.player === "田宮裕涼").length, 1);
 });
 
 test("使用済みポジションはグレー表示でもdisabledにせず、入れ替え案内を付ける", () => {

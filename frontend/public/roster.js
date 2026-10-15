@@ -38,7 +38,6 @@
       const gameDate = String(deps.state.predictionTargetGame?.date || "").slice(0, 10);
       const request = deps.requestGuard.begin("roster", { abort: true });
       const requestId = request.id;
-      deps.setRosterRequestId(requestId);
       const storedFallback = getStoredRosterFallback(internalGameId, gameDate);
       deps.state.publicRoster = {
         internalGameId,
@@ -55,14 +54,15 @@
 
       const gameSnapshot = await deps.fetchGameDayRosterSnapshot(internalGameId, { signal: request.signal });
       if (!deps.requestGuard.isCurrent("roster", requestId)
-        || requestId !== deps.getRosterRequestId()
         || internalGameId !== deps.getTargetInternalGameId()) {
         return;
       }
 
-      deps.state.publicRoster.isLoading = false;
+      // Keep the loading transition separate, but commit every accepted response
+      // through the same state/render boundary. A stale request never reaches it.
+      let nextRoster = { ...deps.state.publicRoster, isLoading: false };
       if (gameSnapshot.externalFetchDisabled === true) {
-        deps.state.publicRoster = {
+        nextRoster = {
           internalGameId,
           gameDate: gameSnapshot.gameDate || gameDate,
           status: "attention",
@@ -76,81 +76,76 @@
           isLoading: false,
           usableUntil: ""
         };
-        deps.syncPublicAppState();
-        deps.renderPicker("prediction");
-        deps.renderPredictionDeadline();
-        return;
-      }
-      const snapshotStatus = normalizeSnapshotStatus(gameSnapshot);
-      const acceptedSources = ["official_live", "verified_snapshot", "stale_snapshot", "baseline_snapshot"];
-      const apiSource = String(gameSnapshot.rosterUse || gameSnapshot.sourceOfTruth || "");
-      const legacyApiSource = gameSnapshot.displayRosterSource === "latest_official_live" && gameSnapshot.status === "fresh"
-        ? "official_live"
-        : gameSnapshot.displayRosterSource === "stale_snapshot" && gameSnapshot.status === "stale"
-          ? "stale_snapshot"
-          : gameSnapshot.displayRosterSource === "baseline_snapshot" && gameSnapshot.status === "baseline"
-            ? "baseline_snapshot"
-            : "";
-      const adoptedApiSource = acceptedSources.includes(apiSource) ? apiSource : legacyApiSource;
-      const canUseApiRoster = (gameSnapshot.canUseForPrediction === true && acceptedSources.includes(apiSource))
-        || Boolean(adoptedApiSource);
-      if (gameSnapshot.ok && gameSnapshot.internalGameId === internalGameId
-        && gameSnapshot.players.length && snapshotStatus !== "pending" && canUseApiRoster) {
-        const cached = typeof deps.getRosterSnapshotForCurrentGame === "function"
-          ? deps.getRosterSnapshotForCurrentGame()
-          : null;
-        if (cached?.fingerprint && gameSnapshot.fingerprint && cached.fingerprint !== gameSnapshot.fingerprint) {
-          deps.storage.remove(deps.storageKeys.rosterSnapshot);
+      } else {
+        const snapshotStatus = normalizeSnapshotStatus(gameSnapshot);
+        const acceptedSources = ["official_live", "verified_snapshot", "stale_snapshot", "baseline_snapshot"];
+        const apiSource = String(gameSnapshot.rosterUse || gameSnapshot.sourceOfTruth || "");
+        const legacyApiSource = gameSnapshot.displayRosterSource === "latest_official_live" && gameSnapshot.status === "fresh"
+          ? "official_live"
+          : gameSnapshot.displayRosterSource === "stale_snapshot" && gameSnapshot.status === "stale"
+            ? "stale_snapshot"
+            : gameSnapshot.displayRosterSource === "baseline_snapshot" && gameSnapshot.status === "baseline"
+              ? "baseline_snapshot"
+              : "";
+        const adoptedApiSource = acceptedSources.includes(apiSource) ? apiSource : legacyApiSource;
+        if (gameSnapshot.ok && gameSnapshot.internalGameId === internalGameId
+          && gameSnapshot.players.length && snapshotStatus !== "pending" && adoptedApiSource) {
+          const cached = typeof deps.getRosterSnapshotForCurrentGame === "function"
+            ? deps.getRosterSnapshotForCurrentGame()
+            : null;
+          if (cached?.fingerprint && gameSnapshot.fingerprint && cached.fingerprint !== gameSnapshot.fingerprint) {
+            deps.storage.remove(deps.storageKeys.rosterSnapshot);
+          }
+          nextRoster = {
+            internalGameId,
+            gameDate: gameSnapshot.gameDate || gameDate,
+            status: snapshotStatus,
+            displayRosterSource: typeof gameSnapshot.displayRosterSource === "string"
+              ? gameSnapshot.displayRosterSource
+              : snapshotStatus === "fresh" ? "fresh_snapshot" : "",
+            sourceOfTruth: adoptedApiSource,
+            rosterUse: adoptedApiSource,
+            canUseForPrediction: true,
+            verified: gameSnapshot.verified === true,
+            fingerprint: gameSnapshot.fingerprint || "",
+            verifiedAt: gameSnapshot.verifiedAt || "",
+            officialPlayerCount: gameSnapshot.officialPlayerCount ?? null,
+            snapshotPlayerCount: gameSnapshot.snapshotPlayerCount ?? null,
+            players: deps.normalizeRosterEntries(gameSnapshot.players),
+            isLoading: false,
+            usableUntil: gameSnapshot.usableUntil || ""
+          };
+          deps.storage.save(deps.storageKeys.rosterSnapshot, {
+            internalGameId,
+            gameDate: gameSnapshot.gameDate || deps.state.predictionTargetGame?.date || "",
+            fetchedAt: gameSnapshot.capturedAt || new Date().toISOString(),
+            sourceUrl: "auth-worker://game-day-roster",
+            method: "game-day-roster-snapshot",
+            warning: typeof gameSnapshot.warning === "string" ? gameSnapshot.warning : "",
+            httpStatus: 200,
+            cacheStatus: gameSnapshot.cacheStatus
+              || (gameSnapshot.status === "baseline" ? "game-snapshot-baseline" : "game-snapshot"),
+            stale: gameSnapshot.stale === true || ["baseline", "stale", "attention"].includes(snapshotStatus),
+            fingerprint: gameSnapshot.fingerprint || "",
+            verifiedAt: gameSnapshot.verifiedAt || "",
+            sourceOfTruth: adoptedApiSource,
+            rosterUse: adoptedApiSource,
+            verified: gameSnapshot.verified === true,
+            officialPlayerCount: gameSnapshot.officialPlayerCount ?? null,
+            snapshotPlayerCount: gameSnapshot.snapshotPlayerCount ?? null,
+            canUseForPrediction: true,
+            parsedCount: gameSnapshot.players.length,
+            announcedCount: gameSnapshot.players.length,
+            players: gameSnapshot.players
+          });
+        } else if (storedFallback) {
+          nextRoster = {
+            ...storedFallback,
+            isLoading: false
+          };
         }
-        deps.state.publicRoster = {
-          internalGameId,
-          gameDate: gameSnapshot.gameDate || gameDate,
-          status: snapshotStatus,
-          displayRosterSource: typeof gameSnapshot.displayRosterSource === "string"
-            ? gameSnapshot.displayRosterSource
-            : snapshotStatus === "fresh" ? "fresh_snapshot" : "",
-          sourceOfTruth: adoptedApiSource,
-          rosterUse: adoptedApiSource,
-          canUseForPrediction: true,
-          verified: gameSnapshot.verified === true,
-          fingerprint: gameSnapshot.fingerprint || "",
-          verifiedAt: gameSnapshot.verifiedAt || "",
-          officialPlayerCount: gameSnapshot.officialPlayerCount ?? null,
-          snapshotPlayerCount: gameSnapshot.snapshotPlayerCount ?? null,
-          players: deps.normalizeRosterEntries(gameSnapshot.players),
-          isLoading: false,
-          usableUntil: gameSnapshot.usableUntil || ""
-        };
-        deps.syncPublicAppState();
-        deps.storage.save(deps.storageKeys.rosterSnapshot, {
-          internalGameId,
-          gameDate: gameSnapshot.gameDate || deps.state.predictionTargetGame?.date || "",
-          fetchedAt: gameSnapshot.capturedAt || new Date().toISOString(),
-          sourceUrl: "auth-worker://game-day-roster",
-          method: "game-day-roster-snapshot",
-          warning: typeof gameSnapshot.warning === "string" ? gameSnapshot.warning : "",
-          httpStatus: 200,
-          cacheStatus: gameSnapshot.cacheStatus
-            || (gameSnapshot.status === "baseline" ? "game-snapshot-baseline" : "game-snapshot"),
-          stale: gameSnapshot.stale === true || ["baseline", "stale", "attention"].includes(snapshotStatus),
-          fingerprint: gameSnapshot.fingerprint || "",
-          verifiedAt: gameSnapshot.verifiedAt || "",
-          sourceOfTruth: adoptedApiSource,
-          rosterUse: adoptedApiSource,
-          verified: gameSnapshot.verified === true,
-          officialPlayerCount: gameSnapshot.officialPlayerCount ?? null,
-          snapshotPlayerCount: gameSnapshot.snapshotPlayerCount ?? null,
-          canUseForPrediction: true,
-          parsedCount: gameSnapshot.players.length,
-          announcedCount: gameSnapshot.players.length,
-          players: gameSnapshot.players
-        });
-      } else if (storedFallback) {
-        deps.state.publicRoster = {
-          ...storedFallback,
-          isLoading: false
-        };
       }
+      deps.state.publicRoster = nextRoster;
       deps.syncPublicAppState();
       deps.renderPicker("prediction");
       deps.renderPredictionDeadline();

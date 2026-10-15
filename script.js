@@ -64,7 +64,6 @@ const TEAM_PLAYER_ID_PREFIXES = Object.freeze({
 const DEFAULT_PLAYER_TEAM_CODE = "fighters";
 let predictionSaveMessageTimerId = null;
 let predictionDeadlineTimerId = null;
-let publicRosterSyncRequestId = 0;
 let openPositionMenuState = null;
 const FIGHTERS_TEAM_KEYWORDS = [
   "北海道日本ハムファイターズ",
@@ -368,8 +367,6 @@ const publicRosterController = publicFrontend.createPublicRosterController({
   storageKeys: STORAGE_KEYS,
   requestGuard: publicRequestGuard,
   getTargetInternalGameId: getGameDayRosterTargetInternalGameId,
-  getRosterRequestId: () => publicRosterSyncRequestId,
-  setRosterRequestId: (requestId) => { publicRosterSyncRequestId = requestId; },
   syncPublicAppState,
   renderPicker,
   renderPredictionDeadline,

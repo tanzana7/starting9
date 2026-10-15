@@ -213,8 +213,6 @@ test("同じcanonical UUIDのroster responseを受けると公開候補の再描
       isCurrent: (_name, id) => id === requestId
     },
     getTargetInternalGameId: () => internalGameId,
-    getRosterRequestId: () => requestId,
-    setRosterRequestId: () => {},
     syncPublicAppState: () => {},
     renderPicker: () => renderedNames.push(...state.publicRoster.players.map((player) => player.name)),
     renderPredictionDeadline: () => {},
@@ -370,8 +368,6 @@ test("更新待ちでも同一試合の保存済みrosterを暫定表示し、�
       isCurrent: (_name, id) => id === requestId
     },
     getTargetInternalGameId: () => internalGameId,
-    getRosterRequestId: () => requestId,
-    setRosterRequestId: () => {},
     getRosterSnapshotForCurrentGame: () => ({ internalGameId, gameDate, players: storedPlayers }),
     syncPublicAppState: () => {},
     renderPicker: () => renderedNames.push(...state.publicRoster.players.map((player) => player.name)),
@@ -450,8 +446,6 @@ test("公開試合カタログ確定後にbaseline roster取得を再実行し�
   assert.doesNotMatch(catalog, /void initializeRosterCandidateSync\(\);/);
   assert.match(publicCoordinator, /void ops\.initializePublicGameCatalog\(\)\s*\.then\([\s\S]*ops\.initializeRosterCandidateSync\(\)/);
   assert.match(target, /void initializeRosterCandidateSync\(\);/);
-  assert.match(script, /let publicRosterSyncRequestId = 0;/);
-  assert.match(publicRoster, /requestId !== deps\.getRosterRequestId\(\)/);
 });
 
 test("fresh取得が遅延してもbaselineは予想締切まで利用できる", () => {

@@ -94,7 +94,7 @@ test("ログイン済みユーザーはcanonical internalGameIdで予想を保�
 });
 
 test("予想保存はcookie credentialsとcanonical internalGameIdを使う", () => {
-  const save = clientSource.slice(clientSource.indexOf("async function savePredictionToAccount"), clientSource.indexOf("function loadPredictionFromAccount"));
+  const save = clientSource.slice(clientSource.indexOf("async function savePredictionToAccount"), clientSource.indexOf("async function deletePredictionFromAccount"));
   assert.match(save, /credentials: "include"/);
   assert.match(save, /body: JSON\.stringify\(\{ internalGameId: gameId, prediction:/);
   assert.match(save, /error\.code = payload\?\.code/);

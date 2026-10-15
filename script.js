@@ -41,7 +41,6 @@ const NPBASE_MATCHUPS_URL = "https://npbase.jp/?view=labo&tool=matchups&day=toda
 const NPBASE_PLAYER_FALLBACK_URL = "https://npbase.jp/";
 const PREDICTION_DEADLINE_REFRESH_MS = 30 * 1000;
 const PROBABLE_STARTER_REFRESH_INTERVAL_MS = 60 * 1000;
-const ROSTER_SNAPSHOT_CACHE_TTL_MS = 60 * 60 * 1000;
 const PUBLIC_GAMES_SESSION_CACHE_TTL_MS = 30 * 1000;
 const PREVIOUS_RESULT_SESSION_CACHE_TTL_MS = 30 * 1000;
 const RESULT_HISTORY_SESSION_CACHE_TTL_MS = 30 * 1000;
@@ -1753,53 +1752,11 @@ function normalizeRosterEntries(players) {
   return normalizedEntries;
 }
 
-function diffRosterPlayers(previousPlayers, currentPlayers) {
-  const previousMap = createRosterPlayerMap(previousPlayers);
-  const currentMap = createRosterPlayerMap(currentPlayers);
-  const added = [];
-  const removed = [];
-
-  currentMap.forEach((player, key) => {
-    if (!previousMap.has(key)) {
-      added.push(player);
-    }
-  });
-
-  previousMap.forEach((player, key) => {
-    if (!currentMap.has(key)) {
-      removed.push(player);
-    }
-  });
-
-  return { added, removed };
-}
-
-function createRosterPlayerMap(players) {
-  const playerMap = new Map();
-
-  normalizeRosterEntries(players).forEach((player) => {
-    playerMap.set(createRosterEntryKey(player), player.name);
-  });
-
-  return playerMap;
-}
-
 function createRosterEntryKey(player) {
   const playerId = String(player?.playerId || "").trim().toLowerCase();
   if (/^npb:\d{8}$/i.test(playerId)) return `id:${playerId}`;
   const number = String(player?.number || "").trim();
   return number ? `number:${number}` : `name:${normalizePlayerKey(player?.name)}`;
-}
-
-function isRosterSnapshotFresh(snapshot, now = Date.now()) {
-  const fetchedAtMs = Date.parse(snapshot?.fetchedAt || "");
-  return Number.isFinite(fetchedAtMs)
-    && now - fetchedAtMs >= 0
-    && now - fetchedAtMs < ROSTER_SNAPSHOT_CACHE_TTL_MS;
-}
-
-function canUseRosterSnapshot(snapshot) {
-  return Boolean(snapshot?.players?.length) && !snapshot.warning;
 }
 
 function getGameDayRosterTargetInternalGameId() {
@@ -1989,12 +1946,6 @@ async function resolvePredictionTargetGame(schedule, useServer) {
   void useServer;
   return null;
 }
-
-function buildPredictionTargetApiUrl() {
-  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
-  return baseUrl ? `${baseUrl}/api/prediction-target` : "";
-}
-
 
 async function getLoadedGameSchedule() {
   if (typeof window === "undefined") {
@@ -3421,27 +3372,6 @@ async function savePredictionToAccount(prediction = state.prediction, { allowAut
     state.predictionRemote.isSaving = false;
     updatePredictionSaveButton();
   }
-}
-
-function loadPredictionFromAccount() {
-  const remotePrediction = state.predictionRemote.prediction;
-  if (!remotePrediction) {
-    return;
-  }
-  if (state.prediction && !window.confirm("アカウントに保存された予想で、現在の予想を置き換えますか？")) {
-    return;
-  }
-
-  state.prediction = { ...remotePrediction, lineup: normalizeLineup(remotePrediction.lineup) };
-  saveToStorage(STORAGE_KEYS.prediction, state.prediction);
-  preserveDisplayedPublicResult();
-  state.predictionRemote.conflict = false;
-  state.predictionRemote.message = "アカウントの予想を読み込みました。";
-  renderSavedPrediction();
-  renderPredictionCta();
-  renderPredictionAccountStatus();
-  renderPicker("prediction");
-  renderScoreResult();
 }
 
 async function deletePredictionFromAccount(gameId) {

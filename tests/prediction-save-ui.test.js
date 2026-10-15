@@ -19,7 +19,7 @@ function sourceForFunction(source, name) {
 }
 
 test("通常画面にアカウント保存専用パネルと専用ボタンを置かない", () => {
-  assert.doesNotMatch(html, /predictionAccountPanel|savePredictionToAccountButton|loadPredictionFromAccountButton/);
+  assert.doesNotMatch(html, /predictionAccountPanel|(?:savePredictionTo|loadPredictionFrom)AccountButton/);
   assert.match(html, /id="savePredictionButton"/);
   assert.doesNotMatch(css, /\.prediction-account-panel|\.prediction-account-actions/);
   assert.doesNotMatch(script, /アカウントにも保存済みです。最終更新/);

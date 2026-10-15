@@ -8,42 +8,17 @@ const root = path.join(__dirname, "..");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const authWorker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
-const publicRoster = fs.readFileSync(path.join(root, "frontend", "public", "roster.js"), "utf8");
 const worker = fs.readFileSync(path.join(root, "cloudflare-worker.js"), "utf8");
 const players = fs.readFileSync(path.join(root, "players.js"), "utf8");
 
-function getFunctionSource(name) {
-  const start = script.indexOf(`function ${name}(`);
-  assert.notEqual(start, -1, `${name} が見つかりません`);
-  let depth = 0;
-  let bodyStarted = false;
-  for (let index = start; index < script.length; index += 1) {
-    if (script[index] === "{") {
-      depth += 1;
-      bodyStarted = true;
-    } else if (script[index] === "}") {
-      depth -= 1;
-      if (bodyStarted && depth === 0) {
-        return script.slice(start, index + 1);
-      }
-    }
-  }
-  throw new Error(`${name} の終端を見つけられません`);
-}
-
 test("現在状態テキストを出さず、最新スナップショットで出場候補・その他を絞り込む", () => {
-  const chip = getFunctionSource("createPlayerChip");
-  assert.match(publicRoster, /deps\.isPlayerInCurrentRoster\(player\)/);
-  assert.match(publicRoster, /isRegisteredFielderCandidate/);
-  assert.match(publicRoster, /player\?\.isBatterCandidate === true/);
-  assert.match(publicRoster, /candidateRosterFilter/);
-  assert.match(publicRoster, /data-roster-filter/);
+  // Candidate filtering is exercised through the shipped runtime. Keep only
+  // the retired-UI/asset contract here, without extracting private functions.
   assert.match(html, /data-roster-filter="active"[^>]*>出場候補/);
   assert.match(html, /data-roster-filter="inactive"[^>]*>その他/);
   assert.doesNotMatch(html, />登録済み</);
   assert.doesNotMatch(html, />未登録</);
   assert.doesNotMatch(html, /predictionRosterFilterCurrent|現在：出場登録/);
-  assert.doesNotMatch(chip, /roster-status-badge|出場登録外/);
   assert.doesNotMatch(script, /predictionRosterFilterCurrent|roster-status-badge/);
 });
 

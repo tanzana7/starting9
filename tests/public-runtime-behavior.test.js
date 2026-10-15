@@ -8,6 +8,95 @@ function roster(players, overrides = {}) {
     players, fingerprint: JSON.stringify(players), ...overrides };
 }
 
+test("late roster response cannot overwrite the new game's candidates or snapshot", async (t) => {
+  const pending = [];
+  const app = createPublicRuntime({ candidateNames: ["矢澤宏太", "水谷瞬"], fetchImpl: (url) => new Promise((resolve) => pending.push({ url, resolve })) });
+  t.after(app.dispose);
+  const first = app.operations.initializeRosterCandidateSync();
+  app.state.predictionTargetGameId = "game-b";
+  app.state.predictionTargetGame = { internalGameId: "game-b", date: "2099-07-22" };
+  const second = app.operations.initializeRosterCandidateSync();
+  pending[1].resolve({ ok: true, json: async () => roster([{ number: "53", name: "水谷瞬" }], { internalGameId: "game-b", gameDate: "2099-07-22" }) });
+  await second;
+  const adopted = JSON.stringify(app.state.publicRoster);
+  const cached = [...app.stored.entries()];
+  pending[0].resolve({ ok: true, json: async () => roster([{ number: "12", name: "矢澤宏太" }]) });
+  await first;
+  assert.equal(JSON.stringify(app.state.publicRoster), adopted);
+  assert.deepEqual([...app.stored.entries()], cached);
+  assert.equal(app.chips[0].classList.contains("hidden"), true);
+  assert.equal(app.chips[1].classList.contains("hidden"), false);
+  assert.equal(pending.length, 2);
+});
+
+test("roster refresh keeps selected prediction slots and uses the stored fallback on network failure", async (t) => {
+  let offline = false;
+  const app = createPublicRuntime({ ui: true, lineup: [{ player: "矢澤宏太", position: "右" }], candidateNames: ["矢澤宏太"], fetchImpl: async () => {
+    if (offline) throw new Error("offline");
+    return { ok: true, json: async () => roster([{ number: "12", name: "矢澤宏太" }]) };
+  } });
+  t.after(app.dispose);
+  const prediction = { gameId: "canonical-game", lineup: [{ player: "矢澤宏太", position: "右" }] };
+  app.state.prediction = prediction;
+  const selection = JSON.stringify(app.slots.map((slot) => slot.dataset));
+  await app.operations.initializeRosterCandidateSync();
+  offline = true;
+  await app.operations.initializeRosterCandidateSync();
+  assert.equal(app.state.publicRoster.status, "stale");
+  assert.equal(app.state.publicRoster.isLoading, false);
+  assert.equal(app.chips[0].classList.contains("hidden"), false);
+  assert.match(app.elements.get("predictionRosterStatus").textContent, /前回取得データ/);
+  assert.equal(app.state.prediction, prediction);
+  assert.equal(JSON.stringify(app.slots.map((slot) => slot.dataset)), selection);
+});
+
+test("latest roster refresh wins even when both requests belong to the same game", async (t) => {
+  const pending = [];
+  const app = createPublicRuntime({ fetchImpl: () => new Promise((resolve) => pending.push(resolve)) });
+  t.after(app.dispose);
+  const first = app.operations.initializeRosterCandidateSync();
+  const second = app.operations.initializeRosterCandidateSync();
+  pending[1]({ ok: true, json: async () => roster([{ number: "53", name: "水谷瞬" }]) });
+  await second;
+  const expected = JSON.stringify(app.state.publicRoster);
+  pending[0]({ ok: true, json: async () => roster([{ number: "12", name: "矢澤宏太" }]) });
+  await first;
+  assert.equal(JSON.stringify(app.state.publicRoster), expected);
+});
+
+test("roster request is discarded if the target changes without starting another request", async (t) => {
+  let resolve;
+  const app = createPublicRuntime({ fetchImpl: () => new Promise((done) => { resolve = done; }) });
+  t.after(app.dispose);
+  const request = app.operations.initializeRosterCandidateSync();
+  app.state.predictionTargetGame = { internalGameId: "game-b", date: "2099-07-22" };
+  resolve({ ok: true, json: async () => roster([{ number: "12", name: "矢澤宏太" }]) });
+  await request;
+  assert.equal(app.state.publicRoster.players.length, 0);
+  assert.equal(app.stored.size, 0);
+});
+
+test("roster source compatibility and explicit acquisition stop preserve the current fallback boundary", async (t) => {
+  let payload;
+  const app = createPublicRuntime({ candidateNames: ["矢澤宏太"], fetchImpl: async () => ({ ok: true, json: async () => payload }) });
+  t.after(app.dispose);
+  for (const source of [
+    { rosterUse: "verified_snapshot", canUseForPrediction: false },
+    { rosterUse: "", sourceOfTruth: "", status: "fresh", displayRosterSource: "latest_official_live" },
+    { rosterUse: "", sourceOfTruth: "", status: "stale", displayRosterSource: "stale_snapshot" }
+  ]) {
+    payload = roster([{ number: "12", name: "矢澤宏太" }], source);
+    await app.operations.initializeRosterCandidateSync();
+    assert.equal(app.chips[0].classList.contains("hidden"), false);
+    assert.equal(app.state.publicRoster.players.length, 1);
+  }
+  payload = roster([], { externalFetchDisabled: true });
+  await app.operations.initializeRosterCandidateSync();
+  assert.equal(app.state.publicRoster.externalFetchDisabled, true);
+  assert.equal(app.state.publicRoster.players.length, 0);
+  assert.equal(app.chips[0].classList.contains("hidden"), true);
+});
+
 test("roster refresh adopts normalized current players, deduplicates and reflects changes without append", async () => {
   let payload = roster([{ number: "01", name: "水谷　 瞬" }, { number: "01", name: "水谷 瞬" }, { number: "001", name: "同名 選手" }]);
   const calls = [];

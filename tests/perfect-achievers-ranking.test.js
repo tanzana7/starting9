@@ -113,6 +113,7 @@ test("満点者がいない日も正常な空結果を返し、月間・年間�
   const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
   const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
   const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+  const dailyBestNine = fs.readFileSync(path.join(root, "frontend", "public", "daily-best-nine.js"), "utf8");
   assert.match(worker, /\/api\/rankings\/perfect/);
   assert.match(worker, /\/api\/rankings\/monthly/);
   assert.match(worker, /\/api\/rankings\/yearly/);
@@ -121,8 +122,8 @@ test("満点者がいない日も正常な空結果を返し、月間・年間�
   assert.match(html, /id="dailyBestNineCard"/);
   assert.doesNotMatch(html, /id="showMonthlyRankingButton"|id="showYearlyRankingButton"/);
   assert.doesNotMatch(html, /showDailyRankingButton/);
-  assert.match(script, /function fetchDailyBestNine/);
-  assert.match(script, /daily-best-nine/);
+  assert.doesNotMatch(script, /function fetchDailyBestNine|function initializeDailyBestNine|function renderDailyBestNine/);
+  assert.match(dailyBestNine, /\/api\/results\/daily-best-nine/);
   assert.doesNotMatch(script, /本日の満点者はいません/);
   assert.doesNotMatch(script, /refreshDailyRanking|showDailyRankingButton|dailyRankingDate/);
 });
@@ -131,6 +132,6 @@ test("初期描画は定義済みの本日の満点者描画関数を呼び、�
   const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
   const renderAll = script.slice(script.indexOf("function renderAll()"), script.indexOf("function renderProbableStarter()"));
 
-  assert.match(renderAll, /renderDailyBestNine\(\)/);
+  assert.match(renderAll, /publicDailyBestNineController\.render\(\)/);
   assert.doesNotMatch(renderAll, /renderTodayPerfectAchievers\(\)/);
 });

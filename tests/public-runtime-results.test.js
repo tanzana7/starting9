@@ -72,7 +72,31 @@ test("previous result, detail selection, collapse/reopen and cache preserve the 
   assert.equal(app.state.resultHistory.result.internalGameId, "a");
   assert.equal(JSON.stringify(app.state.dailyBestNine), best);
   assert.match(app.elements.get("dailyBestNineContent").innerHTML, /latest-winner/);
+  const bestNineRequests = calls.filter((url) => url.includes("daily-best-nine"));
+  assert.equal(bestNineRequests.length, 1);
+  assert.equal(new URL(bestNineRequests[0]).search, "", "Best Nine uses the server-selected latest publication without a personal result ID");
+});
+
+test("Daily Best Nine initialization is idempotent and keeps one canonical state object", async (t) => {
+  let finish;
+  const calls = [];
+  const app = createPublicRuntime({ ui: true, fetchImpl: async (url) => {
+    calls.push(url);
+    return new Promise((resolve) => { finish = resolve; });
+  } });
+  t.after(app.dispose);
+  for (const id of ["dailyBestNineCard", "dailyBestNineContent"]) app.elements.set(id, app.createElement());
+  const state = app.state.dailyBestNine;
+  const firstInitialization = app.operations.initializeDailyBestNine();
+  const secondInitialization = app.operations.initializeDailyBestNine();
+  assert.equal(firstInitialization, secondInitialization);
   assert.equal(calls.filter((url) => url.includes("daily-best-nine")).length, 1);
+  assert.equal(app.state.dailyBestNine.status, "loading");
+  finish({ ok: true, status: 200, json: async () => ({ ok: true, published: true, internalGameId: "latest", bestNine: [{ rank: 1, username: "latest", score: 99 }] }) });
+  await Promise.all([firstInitialization, secondInitialization]);
+  assert.equal(app.state.dailyBestNine, state);
+  assert.equal(app.state.dailyBestNine.gameId, "latest");
+  assert.deepEqual(app.intervalDelays(), []);
 });
 
 test("result detail renders the actual lineup rows, score states and positions through the public runtime", async (t) => {

@@ -23,11 +23,11 @@ function loadPublicModule(name, extra = {}) {
 }
 
 test("公開画面のentry pointは分割moduleを読み込んでCoordinatorを一経路で起動する", () => {
-  const moduleScripts = ["state", "request-guard", "storage", "api-client", "app-coordinator", "render-results", "roster", "probable-starter", "results", "prediction-form"];
+  const moduleScripts = ["state", "request-guard", "storage", "api-client", "app-coordinator", "render-results", "roster", "probable-starter", "results", "daily-best-nine", "prediction-form"];
   const scriptOffset = html.indexOf("script.js?v=public-single-game-1");
   assert.ok(scriptOffset > 0);
   moduleScripts.forEach((name) => {
-    const cacheBuster = name === "results" ? "public-results-module-1" : name === "probable-starter" ? "probable-starter-module-1" : name === "render-results"
+    const cacheBuster = name === "results" ? "public-results-module-1" : name === "daily-best-nine" ? "daily-best-nine-module-1" : name === "probable-starter" ? "probable-starter-module-1" : name === "render-results"
       ? "public-cancelled-result-date-display-1"
       : "public-compliance-disclaimer-and-fetch-safety-1";
     const offset = html.indexOf(`${modulePath(name)}?v=${cacheBuster}`);
@@ -39,6 +39,8 @@ test("公開画面のentry pointは分割moduleを読み込んでCoordinatorを�
   assert.equal((script.match(/publicFrontend\.createPublicProbableStarterController\(/g) || []).length, 1);
   assert.equal((html.match(/src="frontend\/public\/results\.js\?/g) || []).length, 1);
   assert.equal((script.match(/publicFrontend\.createPublicResultsController\(/g) || []).length, 1);
+  assert.equal((html.match(/src="frontend\/public\/daily-best-nine\.js\?/g) || []).length, 1);
+  assert.equal((script.match(/publicFrontend\.createDailyBestNineController\(/g) || []).length, 1);
   assert.equal((script.match(/DOMContentLoaded/g) || []).length, 1);
   assert.match(script, /void publicAppCoordinator\.start\(\)/);
 });

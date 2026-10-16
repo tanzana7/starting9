@@ -336,7 +336,18 @@ function discardStoredStateForGame(gameId) {
   });
 }
 
-const publicResultsRenderer = publicFrontend.createPublicResultsRenderer({ state, escapeHtml });
+const publicResultsRenderer = publicFrontend.createPublicResultsRenderer({
+  state: { get dailyBestNine() { return state.dailyBestNine; } },
+  escapeHtml
+});
+const publicDailyBestNineController = publicFrontend.createDailyBestNineController({
+  state: {
+    get dailyBestNine() { return state.dailyBestNine; }
+  },
+  apiClient: publicApiClient,
+  getAuthApiBaseUrl,
+  render: publicResultsRenderer.renderDailyBestNine
+});
 const publicResultsController = publicFrontend.createPublicResultsController({
   state: {
     get resultHistory() { return state.resultHistory; },
@@ -461,12 +472,12 @@ const publicAppCoordinator = new publicFrontend.PublicAppCoordinator({
     initializeRosterCandidateSync,
     initializeAuthDependentFeatures,
     initializePredictionRemoteSync,
-    initializeDailyBestNine,
+    initializeDailyBestNine: publicDailyBestNineController.initialize,
     refreshPredictionDeadlineState,
     refreshGameDayNoticeStatus,
     renderPredictionCta,
-    renderDailyBestNine,
-    fetchDailyBestNine,
+    renderDailyBestNine: publicDailyBestNineController.render,
+    fetchDailyBestNine: publicDailyBestNineController.refresh,
     syncPredictionFromAccount,
     fetchUserAchievements,
     refreshResultHistory: publicResultsController.refresh,
@@ -2310,70 +2321,6 @@ function getAuthApiBaseUrl() {
 
 
 
-function resetDailyBestNine(status = "idle") {
-  state.dailyBestNine = {
-    isLoading: false,
-    requestId: state.dailyBestNine?.requestId || 0,
-    gameId: "",
-    status,
-    rows: [],
-    message: ""
-  };
-}
-
-async function initializeDailyBestNine() {
-  await fetchDailyBestNine({ force: true });
-}
-
-async function fetchDailyBestNine({ force = false } = {}) {
-  const dailyState = state.dailyBestNine;
-  // This public widget always follows the latest publication, not personal history.
-  const requestKey = "latest-published";
-  if (dailyState.isLoading && !force && dailyState.gameId === requestKey) return;
-
-  const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
-  if (!baseUrl) {
-    resetDailyBestNine("error");
-    state.dailyBestNine.message = "今日のベストナインを取得できませんでした。";
-    renderDailyBestNine();
-    return;
-  }
-
-  const requestId = dailyState.requestId + 1;
-  dailyState.requestId = requestId;
-  dailyState.gameId = requestKey;
-  dailyState.isLoading = true;
-  dailyState.status = "loading";
-  dailyState.rows = [];
-  dailyState.message = "";
-  renderDailyBestNine();
-
-  try {
-    const { response, payload } = await publicApiClient.get(`${baseUrl}/api/results/daily-best-nine`, {
-      cache: force ? "no-store" : "default"
-    });
-    if (!response.ok || !payload?.ok || !Array.isArray(payload.bestNine)) {
-      throw new Error(payload?.error || `HTTP ${response.status}`);
-    }
-    if (requestId !== dailyState.requestId) return;
-    dailyState.status = payload.published ? "published" : "unpublished";
-    dailyState.rows = payload.bestNine;
-    dailyState.gameId = getResultHistoryGameId(payload) || requestKey;
-  } catch (error) {
-    if (requestId !== dailyState.requestId) return;
-    console.error("今日のベストナインの取得に失敗しました", error.message);
-    dailyState.status = "error";
-    dailyState.rows = [];
-    dailyState.message = "今日のベストナインを取得できませんでした。";
-  } finally {
-    if (requestId === dailyState.requestId) {
-      dailyState.isLoading = false;
-      renderDailyBestNine();
-    }
-  }
-}
-
-
 async function initializePredictionRemoteSync() {
   await syncPredictionFromAccount({ force: true });
 }
@@ -3139,7 +3086,7 @@ function renderAll() {
   renderAchievements();
   publicResultsController.renderHistory();
   publicResultsController.render();
-  renderDailyBestNine();
+  publicDailyBestNineController.render();
   renderPicker("prediction");
 }
 
@@ -3501,10 +3448,6 @@ function scrollToPredictionForm() {
   const form = document.getElementById("predictionForm");
   form?.scrollIntoView({ behavior: "smooth", block: "start" });
   form?.querySelector("button, input, select")?.focus({ preventScroll: true });
-}
-
-function renderDailyBestNine() {
-  return publicResultsRenderer.renderDailyBestNine();
 }
 
 function createPredictionSummary(prediction) {

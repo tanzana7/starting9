@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const workerSource = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const publicScript = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const dailyBestNineSource = fs.readFileSync(path.join(root, "frontend", "public", "daily-best-nine.js"), "utf8");
 const rankingRepositorySource = fs.readFileSync(path.join(root, "backend", "repositories", "ranking-repository.js"), "utf8");
 const { default: worker } = await import(pathToFileURL(path.join(root, "auth-worker.js")).href);
 
@@ -96,7 +97,7 @@ test("public perfect ranking remains server-authoritative and the public UI does
   assert.match(rankingRepositorySource, /latest_predictions\.score = latest_predictions\.max_score/);
   assert.match(rankingRepositorySource, /ranking_games\.game_status = 'scored'/);
   assert.match(workerSource, /\/api\/rankings\/perfect/);
-  assert.match(publicScript, /\/api\/results\/daily-best-nine/);
+  assert.match(dailyBestNineSource, /\/api\/results\/daily-best-nine/);
   assert.doesNotMatch(publicScript, /fetch\([^\n]*\/api\/perfect-achievers[^\n]*method:\s*["']POST/);
   assert.doesNotMatch(workerSource.slice(
     workerSource.indexOf("async function handlePostPerfectAchiever"),

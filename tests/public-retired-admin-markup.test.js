@@ -70,6 +70,8 @@ test("公開entry scriptのcache busterを更新し、既存moduleの読み込�
   for (const match of html.matchAll(/frontend\/public\/[^\"']+\.js\?v=([^\"']+)/g)) {
     const expectedCacheBuster = match[0].startsWith("frontend/public/render-results.js?")
       ? "public-cancelled-result-date-display-1-public-best-nine-count-hidden-1-best-nine-global-target-1"
+      : match[0].startsWith("frontend/public/probable-starter.js?")
+        ? "probable-starter-module-1"
       : match[0].startsWith("frontend/public/analytics.js?")
         ? "cf-web-analytics-1"
       : match[0].startsWith("frontend/public/app-coordinator.js?")

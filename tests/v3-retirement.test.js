@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const client = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const probableClient = fs.readFileSync(path.join(root, "frontend/public/probable-starter.js"), "utf8");
 const index = fs.readFileSync(path.join(root, "index.html"), "utf8");
 
 test("V1/V2 runtime modules are physically absent and V3 has no legacy dependency", () => {
@@ -74,7 +75,7 @@ test("overview isolates probable-starter auxiliary failures", () => {
 });
 
 test("normal client uses internalGameId for prediction and probable-starter APIs", () => {
-  const probable = section(client, "function buildProbableStarterApiUrl", "function applyStoredProbableStarter");
+  const probable = section(probableClient, "function buildProbableStarterApiUrl", "function applyStoredProbableStarter");
   const current = section(client, "function buildCurrentPredictionApiUrl", "function getPredictionAccountUser");
   const deadline = section(client, "function getPredictionDeadlineGameId", "function parseJstScheduleDateTime");
   assert.match(probable, /internalGameId/);

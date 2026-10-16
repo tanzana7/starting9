@@ -57,11 +57,6 @@ test("選手一覧に主ポジションの凡例があり、既存カテゴリ�
   assert.match(css, /\.player-category-legend-item\.is-category-dh/);
 });
 
-test("選手を削除すると選手と守備位置を同時にクリアする", () => {
-  const result = runLineupFunction("clearLineupItem", [{ player: "田宮裕涼", position: "捕" }], 0);
-  assert.deepEqual(JSON.parse(JSON.stringify(result[0])), { order: 1, player: "", position: "" });
-});
-
 test("守備位置チップはPCでdrag可能で、未選択の?もswap対象になる", () => {
   const positionControl = getFunctionSource("createPositionControl");
   const dragStart = getFunctionSource("handlePositionDragStart");

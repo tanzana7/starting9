@@ -133,6 +133,20 @@ test("normal player selection does not autofill a position", async (t) => {
   assert.equal(getPositionButton(slot).textContent, "?");
 });
 
+test("clear control removes both the selected player and position", async (t) => {
+  const runtime = createPositionRuntime();
+  t.after(() => runtime.dispose());
+  const [slot] = getLineup(runtime);
+  const [player] = getPlayers(runtime);
+
+  await player.emit("click");
+  await choosePosition(slot, "捕");
+  await slot.querySelector(".slot-clear").emit("click");
+
+  assert.equal(slot.dataset.player, "");
+  assert.equal(slot.dataset.position, "");
+});
+
 test("changing a player keeps the explicitly selected position", async (t) => {
   const runtime = createPositionRuntime();
   t.after(() => runtime.dispose());

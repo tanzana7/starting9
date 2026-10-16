@@ -10,6 +10,7 @@ const PUBLIC_MODULES = [
   "app-coordinator.js",
   "render-results.js",
   "roster.js",
+  "probable-starter.js",
   "prediction-form.js"
 ];
 

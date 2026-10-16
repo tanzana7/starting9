@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const workerPath = path.join(root, "auth-worker.js");
-const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const script = fs.readFileSync(path.join(root, "frontend/public/probable-starter.js"), "utf8");
 const worker = fs.readFileSync(workerPath, "utf8");
 
 test("予告先発は両側未発表と部分取得を区別し、空値で既存投手を消さない", () => {

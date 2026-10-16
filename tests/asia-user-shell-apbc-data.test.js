@@ -68,7 +68,7 @@ test("Asia user shell hides every NPB-only node without throwing on frozen editi
 test("Asia selection is protected from author display rules and NPB probable rendering", () => {
   const css = read("style.css");
   const shell = read("frontend/shared/edition-shell.js");
-  const script = read("script.js");
+  const script = read("frontend/public/probable-starter.js");
   assert.match(css, /\.edition-switcher\[hidden\][\s\S]*?display:\s*none\s*!important/);
   assert.match(css, /html\[data-starting9-edition="ASIA_CS"\]\s+\[data-npb-only\][\s\S]*?display:\s*none\s*!important/);
   assert.match(shell, /nodes\.switcher\.classList\.toggle\("hidden", hideSwitcher\)/);

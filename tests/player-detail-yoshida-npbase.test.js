@@ -72,8 +72,7 @@ test("詳細パネルは吉田の個別URL、他選手の汎用URL、NPBaseリ�
   assert.match(script, /function getNpbasePlayerUrl\(player\)/);
   assert.match(script, /選手成績を見る（NPBase）/);
   assert.doesNotMatch(script, /対予告先発成績（NPBase）/);
-  assert.match(script, /function createProbableStarterHeadingHtml\(\)/);
-  assert.match(script, /対予告先発成績/);
+  assert.match(fs.readFileSync(path.join(root, "frontend/public/probable-starter.js"), "utf8"), /対予告先発成績/);
   assert.match(script, /target="_blank" rel="noopener noreferrer"/);
   assert.doesNotMatch(script, /成績表示は準備中です|現在はNPBaseへのリンクから確認できます/);
   assert.match(script, /この選手を選択/);

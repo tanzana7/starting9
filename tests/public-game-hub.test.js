@@ -21,7 +21,7 @@ test("試合単位のlocalStorage分離とstale response guardは維持する", 
   assert.match(script, /legacyGameId === gameId/);
   assert.match(script, /function hydrateGameScopedState\(gameId\)/);
   assert.match(script, /beginPublicRequest\("account", \{ abort: true \}\)/);
-  assert.match(script, /beginPublicRequest\("probable", \{ abort: true \}\)/);
+  assert.match(read("frontend/public/probable-starter.js"), /deps\.requestGuard\.begin\("probable", \{ abort: true \}\)/);
   assert.match(script, /state\.probableStarter\.nextGame\?\.internalGameId/);
 });
 

@@ -182,7 +182,10 @@ test("10/16 fixture rejects an incomplete source roster before creating target d
   assert.equal(env.database.prepare("SELECT COUNT(*) AS count FROM competitions WHERE id = 'apbc-switch-test-2026-10-16'").get().count, 0);
 });
 
-test("activation is a separate fixed-fixture transition and preserves APBC", async () => {
+test("activation is a separate fixed-fixture transition and preserves APBC", async (t) => {
+  // This checks pre-deadline acceptance of the fixed 10/16 fixture. Wall-clock
+  // time must not turn it into a post-deadline test after that date passes.
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-16T00:00:00Z") });
   const worker = await loadWorker();
   const env = createFixture();
   const admin = await adminCookie(worker, env);

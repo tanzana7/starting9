@@ -6,14 +6,13 @@ import test from "node:test";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
-const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const script = ["script.js", "frontend/public/probable-starter.js"]
+  .map((file) => fs.readFileSync(path.join(root, file), "utf8")).join("\n");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 
 test("通常画面はV3対象のinternalGameIdを優先して保存済み予告先発を取得する", () => {
   assert.match(script, /const internalGameId = String\(game\?\.internalGameId \|\| \"\"\)\.trim\(\)/);
   assert.match(script, /\/api\/probable-starter\?internalGameId=/);
-  assert.match(script, /const game = state\.probableStarter\.nextGame;/);
-  assert.match(script, /const url = buildProbableStarterApiUrl\(game\)/);
   assert.match(script, /\/api\/probable-starter\?gameId=/);
 });
 

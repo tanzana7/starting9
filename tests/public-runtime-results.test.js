@@ -9,7 +9,7 @@ function detail(id) {
   return { ok: true, gameId: `legacy-${id}`, internalGameId: id, resultsPublished: true, prediction: { lineup }, actualLineup: lineup, totalScore: 99, publishedAt: "2026-09-20T10:00:00Z" };
 }
 const contents = (node) => node.innerHTML + node.children.map(contents).join("");
-async function resultsApp(t, { failure = "", pending } = {}) {
+async function resultsApp(t, { failure = "", pending, detailPayloads = {} } = {}) {
   const calls = [];
   const app = createPublicRuntime({ ui: true, fetchImpl: async (url) => {
     calls.push(url);
@@ -27,7 +27,7 @@ async function resultsApp(t, { failure = "", pending } = {}) {
       const id = parsed.pathname.split("/").at(-1);
       if (failure === id) throw new Error("offline");
       if (pending?.[id]) return pending[id];
-      payload = detail(id);
+      payload = detailPayloads[id] || detail(id);
       if (id === "b" && failure === "unpublished") payload.resultsPublished = false;
       if (id === "b" && failure === "cancelled") payload = { ok: true, internalGameId: id, gameStatus: "cancelled", rankingExcluded: true };
     }
@@ -73,6 +73,34 @@ test("previous result, detail selection, collapse/reopen and cache preserve the 
   assert.equal(JSON.stringify(app.state.dailyBestNine), best);
   assert.match(app.elements.get("dailyBestNineContent").innerHTML, /latest-winner/);
   assert.equal(calls.filter((url) => url.includes("daily-best-nine")).length, 1);
+});
+
+test("result detail renders the actual lineup rows, score states and positions through the public runtime", async (t) => {
+  const actualLineup = positions.map((position, index) => ({ battingOrder: index + 1, playerName: `実際${index + 1}`, position }));
+  const predictionLineup = positions.map((position, index) => ({ battingOrder: index + 1, playerName: index === 0 ? "別選手" : `実際${index + 1}`, position: index === 1 ? "中" : position }));
+  const payload = {
+    ok: true,
+    gameId: "legacy-a",
+    internalGameId: "a",
+    resultsPublished: true,
+    prediction: { lineup: predictionLineup },
+    actualLineup,
+    publishedAt: "2026-09-20T10:00:00Z"
+  };
+  const { app, select } = await resultsApp(t, { detailPayloads: { a: payload } });
+  await select("a");
+
+  const markup = contents(app.elements.get("scoreResult"));
+  assert.equal((markup.match(/result-order-cell/g) || []).length, positions.length);
+  assert.match(markup, /別選手/);
+  assert.match(markup, /実際1/);
+  assert.match(markup, /守備位置 捕/);
+  assert.match(markup, /判定/);
+  assert.match(markup, /点数/);
+  assert.match(markup, /aria-label="出場：不一致"/);
+  assert.match(markup, /aria-label="打順：不一致"/);
+  assert.match(markup, /aria-label="守備：不一致"/);
+  assert.doesNotMatch(markup, /undefined/);
 });
 
 test("history list failure leaves its error visible without crashing the results shell", async (t) => {

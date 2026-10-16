@@ -13,10 +13,10 @@ const PUBLIC_MODULES = [
   "prediction-form.js"
 ];
 
-function loadPublicFrontendModules(context, root) {
+function loadPublicFrontendModules(context, root, transform = (file, source) => source) {
   for (const file of PUBLIC_MODULES) {
     const filename = path.join(root, "frontend", "public", file);
-    vm.runInContext(fs.readFileSync(filename, "utf8"), context, { filename });
+    vm.runInContext(transform(file, fs.readFileSync(filename, "utf8")), context, { filename });
   }
 }
 

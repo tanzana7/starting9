@@ -586,3 +586,57 @@ Each row: domain, direct caller references, direct named callees, syntactic stat
 | `handlePlayerDetailsOverlayClick` | shared formatting / player display | `showPlayerDetails` | `closePlayerDetails` | — / — | — |
 | `closePlayerDetails` | shared formatting / player display | `bindEvents`, `showPlayerDetails`, `handlePlayerDetailsOverlayClick` | — | — / — | `.player-detail-overlay` |
 | `getNpbasePlayerUrl` | shared formatting / player display | `showPlayerDetails` | — | — / — | — |
+
+## Residual re-audit (Phase 22)
+
+### Scope and decision
+
+This re-audit uses `69d3675dfa7eb8a373018c539f1429ce70ee92ac` as the clean feature-branch baseline. It is an audit-only outcome: no product code, API contract, production data, or deployment configuration is changed.
+
+**Decision: defer extracting Public Game Flow.** The catalog selection helpers form a recognizable subdomain, but the actual selected-game transition is an orchestration transaction spanning prediction state, result preservation, game-scoped persistence, roster refresh, deadline/status rendering, and the shared public coordinator. Moving the apparent cluster as-is would relocate coupling rather than reduce it.
+
+### Current inventory
+
+At this baseline, `script.js` contains 3,990 lines and 230 named function declarations. Reclassifying the existing declarations against the Phase 19 domain inventory gives 24 candidate Game Flow functions within the 33-function game-selection group; the other nine are shared schedule, eligibility, and status helpers and should not be moved merely to make the count look smaller. The result is a candidate boundary, not 24 independent functions.
+
+The candidate set is `refreshPredictionTarget`, `resolvePredictionTargetGame`, `getLoadedGameSchedule`, `buildPublicGamesApiUrl`, `getFastPreviousResultGame`, `mergePublicGameSchedules`, `getPublicSelectableGames`, `selectInitialPublicGame`, `getPreferredPublicGameSelection`, `persistCurrentGameScopedState`, `hydrateGameScopedState`, `handlePublicGameSelectionMetaClick`, `formatPublicPredictionGameLabel`, `getPublicPredictionGameMetaLines`, `setPublicCurrentGame`, `initializePublicGameCatalog`, `isPublicGamePublished`, `startPredictionDeadlineTicker`, `getPublicGameStatusView`, `renderPublicPredictionSurface`, `renderPublicGameSelectionMeta`, `renderPredictionTargetNotice`, `getGameDayNoticeTarget`, and `refreshGameDayNoticeStatus`. Listing these names records the audit boundary; it is not an instruction to move them together.
+
+The current state authority remains distributed by purpose:
+
+- `state.publicGameCatalog.games` is the canonical public game list.
+- `state.predictionTargetGameId` and `state.predictionTargetGame` represent the selected prediction target and its current projection.
+- `appState.currentGame` and `appState.predictionForm.gameId` mirror that target for existing application integrations.
+- Result selection/cache and the Daily Best Nine widget remain separate. Daily Best Nine continues to represent the latest published game, regardless of the selected personal result.
+
+Creating another controller-owned selected-game copy would introduce a competing authority. No new global cache or event bus is justified.
+
+### Why extraction is not safe yet
+
+`setPublicCurrentGame` is the key boundary crossing. It persists/hydrates game-scoped state, invalidates in-flight account work, resets selected-game prediction/result data, asks the results controller to preserve its displayed result, updates the prediction target and `appState` projections, and synchronizes stored state. `initializePublicGameCatalog` composes request freshness, the cached public API client, target selection, that transition, deadline refresh, application synchronization, and rendering.
+
+The surrounding callers are not a one-way catalog-to-view chain:
+
+- `refreshPredictionTarget` and the deadline ticker re-evaluate selection while also refreshing prediction/deadline state and invoking roster/probable-starter-related updates.
+- `renderPublicGameStatusView`, `renderPublicPredictionSurface`, and `renderPublicGameSelectionMeta` combine game metadata with prediction/account/deadline semantics and update prediction-facing DOM.
+- Previous-result preservation belongs to result history, while game-day notices read both the selected game and probable-starter state.
+- The coordinator owns lifecycle/event setup, while `script.js` supplies the existing operations and domain callbacks.
+
+Extracting the whole candidate cluster would therefore require a broad callback/dependency surface and leave either a wrapper forest or a cycle between selection, deadline/prediction rendering, roster, results, and coordinator lifecycle. Extracting only pure catalog helpers would be technically possible but would not achieve the requested reduction in result/game-flow state and ownership coupling. The current `script.js` orchestration boundary is safer until the selected-game transition can be given one explicit owner without duplicating prediction or result state.
+
+The Daily Best Nine boundary from Phase 21 is preserved: it fetches/renders its own latest-published-game widget, does not adopt the personal result selection, and its API contract and Auth Worker remain untouched.
+
+### Validation evidence
+
+- `tests/public-runtime-game-flow.test.js`: 12 passed on each of three consecutive runs.
+- Cross-domain focused regression command covering public runtime game flow/behavior, game hub and notices, next-game behavior, probable starter, coordinator, Asia integration, and Asia sequential prediction: 115 passed, 0 failed.
+- Results, Best Nine, prediction-save, result-history, roster, position-menu, drag, and Asia regression group: 134 passed, 0 failed.
+- Full `npm test`: 1,665 passed, 0 failed (17.56 s).
+- `npm run check`: passed; its test phase also reported 1,665 passed, 0 failed, and syntax validation checked 343 JavaScript files.
+- `git diff --check`: passed.
+- No before/after runtime comparison is claimed because no product implementation changed.
+
+The behavior fixtures exercise canonical public-game selection, chronological and deadline-based selection, empty/error catalogs, stale request handling, actual-start probable-starter transitions, personal result detail/cache isolation, latest-game Best Nine independence, roster response races, prediction save failures, pointer/touch interactions, and Asia edition/prediction boundaries. Existing tests continue to be the behavioral evidence; no new test hook or private-function extraction is introduced by this audit.
+
+### Remaining recommendation
+
+Do not start another Game Flow extraction from this shape. If this area is revisited, first define a single owner for the selected-game transition and an explicit one-way contract with prediction, results, roster, and coordinator lifecycle. Keep the current user-visible behavior and the independent latest-published Best Nine semantics as regression contracts. Phase 22 itself is documentation-only and has no deployment implication.

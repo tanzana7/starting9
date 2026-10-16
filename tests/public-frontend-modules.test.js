@@ -6,7 +6,7 @@ const vm = require("node:vm");
 
 const root = path.join(__dirname, "..");
 const moduleDir = path.join(root, "frontend", "public");
-const moduleNames = ["state", "request-guard", "storage", "api-client", "app-coordinator", "render-results", "roster", "prediction-form"];
+const moduleNames = ["state", "request-guard", "storage", "api-client", "app-coordinator", "render-results", "daily-best-nine", "roster", "prediction-form"];
 
 function load(name, { fetchImpl, storage } = {}) {
   const context = {
@@ -71,4 +71,14 @@ test("results moduleは現在の公開文言と最大5件の表示契約を保�
   assert.match(results, /games\.slice\(0, 5\)/);
   assert.match(results, /renderDailyBestNine/);
   assert.match(results, /今日のベストナイン/);
+});
+
+test("Daily Best Nine moduleは個人結果・予想選択から独立し、共有rendererと公開APIを使う", () => {
+  const module = fs.readFileSync(path.join(moduleDir, "daily-best-nine.js"), "utf8");
+  const entryScript = fs.readFileSync(path.join(root, "script.js"), "utf8");
+  assert.match(module, /\/api\/results\/daily-best-nine/);
+  assert.match(module, /payload\.internalGameId \|\| payload\.gameId/);
+  assert.doesNotMatch(module, /selectedGameId|resultHistory|detailCache|predictionTargetGameId/);
+  assert.match(entryScript, /render:\s*publicResultsRenderer\.renderDailyBestNine/);
+  assert.doesNotMatch(module, /setInterval|setTimeout|localStorage/);
 });

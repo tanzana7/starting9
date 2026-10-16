@@ -9,6 +9,7 @@ const PUBLIC_MODULES = [
   "api-client.js",
   "app-coordinator.js",
   "render-results.js",
+  "daily-best-nine.js",
   "roster.js",
   "probable-starter.js",
   "results.js",

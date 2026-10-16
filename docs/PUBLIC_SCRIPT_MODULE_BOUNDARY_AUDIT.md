@@ -50,7 +50,7 @@ State R lists direct `state.<key>` references (including references also written
 
 Probable starter is selected: a single dedicated DOM container, one GET endpoint, no storage, no domain listener/timer installation, and existing real-runtime coverage of no-game/unannounced/announced states, actual versus planned start, midnight, cancellation, announcement retry and error fallback. Its only cross-domain named callers are `renderAll` and `startPredictionDeadlineTicker`; the coordinator's operations map is the third, non-function-declaration bootstrap connection.
 
-Results have multiple caches, auth-sensitive personal history and canvas/detail dependencies. Prediction/game selection jointly manage persistence, deadlines and editing. Position/drag have geometry, portals, pointer capture and touch state. Roster already has its own controller and substantial candidate/shared-player dependencies. Daily Best Nine has fewer functions, but its rendering already resides in the results module and its latest-published independence should not be split further just to reduce LOC. These domains remain untouched.
+Results have multiple caches, auth-sensitive personal history and canvas/detail dependencies. Prediction/game selection jointly manage persistence, deadlines and editing. Position/drag have geometry, portals, pointer capture and touch state. Roster already has its own controller and substantial candidate/shared-player dependencies. At the Phase 19 audit point, Daily Best Nine stayed in bootstrap because its renderer already lived beside Results. Phase 21 later moved its fetch and state lifecycle into a dedicated controller while keeping the renderer separate.
 
 ## Extraction and ownership
 
@@ -261,7 +261,42 @@ Example: a personal-detail display-rule change previously crossed script.js view
 - Full check: 1663 passing (baseline 1660), syntax 342 JS files, diff check passed. Public game/prediction/roster/probable-starter/result/Best Nine/position/drag, Asia sequential and admin tests are included.
 - Self-review corrected an omitted coordinator method connection and a renderer call that still pointed to the old dependency slot. The unchanged behavior suite caught both before commit; snapshot comparison then passed.
 
-The Phase 19 probable-starter limitations remain unrelated and unchanged. No new existing Results bug was fixed during extraction. The next reasonable candidate is the independent Daily Best Nine lifecycle, but no further extraction is started in this phase.
+The Phase 19 probable-starter limitations remain unrelated and unchanged. No new existing Results bug was fixed during extraction. The independent Daily Best Nine lifecycle was subsequently selected for Phase 21; no other domain is included here.
+
+## Current Daily Best Nine boundary (Phase 21)
+
+Baseline for this section: `019bd97443061f7ee584f7bcb969e5649a06fe7a`. This section supersedes earlier Daily Best Nine ownership notes; those counts remain as historical Phase 19/20 inventory.
+
+### Contract and ownership
+
+Daily Best Nine is one independent latest-published widget. Its request remains `GET /api/results/daily-best-nine` with the existing public API client and no selected-game query. The server chooses the latest published game. The controller never reads result selection, result detail/cache, prediction selection, roster, or probable-starter state. It records the canonical `internalGameId` returned by the endpoint, with the existing `gameId` field as compatibility fallback; no Results identity helper is needed.
+
+`frontend/public/daily-best-nine.js` defines `Starting9Public.createDailyBestNineController`. It owns initialization, refresh, request sequencing in the existing canonical `state.dailyBestNine` object, loading/error/empty publication state, and the call to render. Its narrow dependencies are the live `dailyBestNine` state accessor, existing public API client, auth API base URL reader, and existing renderer callback (4). The module has no result-domain or DOM selector dependency and adds no cache, storage, event listener, or timer. Initialization retains its first request promise so duplicate initialization shares the same GET. Explicit refresh remains available through the controller's `refresh` method.
+
+The existing `frontend/public/render-results.js` is retained as a separately usable renderer. It owns only `dailyBestNineCard` and `dailyBestNineContent` selectors and preserves the existing published/empty/loading/error markup. It receives the same canonical state object. The existing factory name is kept for compatibility; no renderer consolidation was needed.
+
+`script.js` creates one controller and connects the existing coordinator initialization and render slots directly to its methods. `renderAll` calls the controller renderer. There are no forwarding functions. `frontend/public/results.js` remains independent in both directions. `frontend/public/state.js` continues to project the same state reference to app state.
+
+### Metrics and verification
+
+| Metric | Before Phase 21 | After extraction |
+| --- | ---: | ---: |
+| `script.js` logical lines | 4047 | 3990 |
+| `script.js` top-level named functions | 234 | 230 |
+| Best Nine functions in `script.js` | reset, initialize, fetch, render wrapper (4) | 0 |
+| Best Nine forwarding wrappers | 1 render wrapper | 0 |
+| Best Nine request sites in `script.js` | 1 | 0 |
+| Controller API | inline functions | `initialize`, `refresh`, `render` |
+| Controller dependencies | inline/shared | 4 explicit values |
+| Direct Best Nine DOM selectors in controller | 0 | 0 |
+| Renderer selectors | 2 | 2 (unchanged) |
+| Added storage/timer/listener/cache paths | 0 | 0 |
+
+The controller reads and writes only the canonical `state.dailyBestNine` object and the six existing fields (`isLoading`, `requestId`, `gameId`, `status`, `rows`, `message`); it keeps the same state object reference, including reset/error paths. The single renderer dependency keeps DOM ownership in the separately testable rendering file. The coordinator still starts the same optional initialization once after catalog load; duplicate controller initialization returns the same in-flight/completed promise and does not create a second GET.
+
+Baseline runtime fixtures covered available, empty, API error, loading, personal result A, personal result B, personal result error, and explicit refresh. Post-extraction snapshots cover the same public DOM, widget state, request URL/options/count, storage, and timers. Result A/B selection and result errors leave the latest-published widget state and HTML unchanged. The controller idempotence test verifies a pending initialization is shared and makes one request. Daily Best Nine API and renderer contract tests remain in place.
+
+The four requested failure injections are run against the runtime suite in memory: missing initialization, missing state commit, selected-result coupling, and non-idempotent duplicate initialization. Mutated source stays outside the repository. Daily Best Nine remains the only domain extracted in Phase 21; Prediction, game flow, position and drag are not part of this change.
 
 ## Function-level inventory (Phase 19 baseline)
 

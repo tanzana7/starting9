@@ -8,7 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const authWorkerPath = path.join(root, "auth-worker.js");
 const authWorkerUrl = pathToFileURL(authWorkerPath).href;
 const worker = fs.readFileSync(authWorkerPath, "utf8");
-const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const script = fs.readFileSync(path.join(root, "script.js"), "utf8") + "\n" + fs.readFileSync(path.join(root, "frontend/public/results.js"), "utf8");
 const predictionForm = fs.readFileSync(path.join(root, "frontend", "public", "prediction-form.js"), "utf8");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 

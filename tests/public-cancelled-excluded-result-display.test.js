@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 const worker = read("auth-worker.js");
-const script = read("script.js");
-const renderer = read("frontend/public/render-results.js");
+const script = read("script.js") + "\n" + fs.readFileSync(path.join(root, "frontend/public/results.js"), "utf8");
+const renderer = read("frontend/public/render-results.js") + "\n" + fs.readFileSync(path.join(root, "frontend/public/results.js"), "utf8");
 const html = read("index.html");
 
 test("public result APIs expose cancellation and exclusion without score data", () => {

@@ -11,8 +11,8 @@ const gameProgress = fs.readFileSync(path.join(root, "frontend", "admin-v3", "re
 const diagnostics = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-diagnostics.js"), "utf8");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const publicResults = fs.readFileSync(path.join(root, "backend", "domain", "public-results.js"), "utf8");
-const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
-const publicResultsRenderer = fs.readFileSync(path.join(root, "frontend", "public", "render-results.js"), "utf8");
+const script = fs.readFileSync(path.join(root, "script.js"), "utf8") + "\n" + fs.readFileSync(path.join(root, "frontend/public/results.js"), "utf8");
+const publicResultsRenderer = fs.readFileSync(path.join(root, "frontend", "public", "render-results.js"), "utf8") + "\n" + fs.readFileSync(path.join(root, "frontend/public/results.js"), "utf8");
 const index = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const adminPage = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 

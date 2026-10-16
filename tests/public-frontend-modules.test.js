@@ -26,7 +26,7 @@ test("公開frontendの責務は実ファイルへ分離されている", () => 
   moduleNames.forEach((name) => {
     assert.equal(fs.existsSync(path.join(moduleDir, `${name}.js`)), true, `${name} module exists`);
   });
-  const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+  const script = fs.readFileSync(path.join(root, "script.js"), "utf8") + "\n" + fs.readFileSync(path.join(root, "frontend/public/results.js"), "utf8");
   assert.match(script, /createPublicApiClient\(\)/);
   assert.match(script, /createPublicRequestGuard\(appState\.requests\)/);
   assert.match(script, /createPublicResultsRenderer/);
@@ -66,7 +66,8 @@ test("API clientは公開APIのfetchとJSON解析を一箇所で扱う", async (
 });
 
 test("results moduleは現在の公開文言と最大5件の表示契約を保持する", () => {
-  const results = fs.readFileSync(path.join(moduleDir, "render-results.js"), "utf8");
+  const results = fs.readFileSync(path.join(moduleDir, "results.js"), "utf8")
+    + fs.readFileSync(path.join(moduleDir, "render-results.js"), "utf8");
   assert.match(results, /games\.slice\(0, 5\)/);
   assert.match(results, /renderDailyBestNine/);
   assert.match(results, /今日のベストナイン/);

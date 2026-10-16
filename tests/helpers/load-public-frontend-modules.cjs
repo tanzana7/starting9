@@ -11,6 +11,7 @@ const PUBLIC_MODULES = [
   "render-results.js",
   "roster.js",
   "probable-starter.js",
+  "results.js",
   "prediction-form.js"
 ];
 

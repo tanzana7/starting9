@@ -202,3 +202,52 @@ test("anonymous history stays empty with login guidance and no authenticated req
   assert.equal(app.state.resultHistory.games.length, 0);
   assert.match(app.elements.get("resultHistoryList").innerHTML, /ログインすると過去の試合結果/);
 });
+
+test("result event binding is idempotent and a click toggles the history once", async (t) => {
+  let calls = 0;
+  const app = createPublicRuntime({ ui: true, fetchImpl: async () => { calls += 1; throw new Error("must not fetch"); } });
+  t.after(app.dispose);
+  const root = app.elements.get("resultHistoryList");
+  const registrations = [];
+  const add = root.addEventListener;
+  root.addEventListener = function(type, listener) { registrations.push(type); return add.call(this, type, listener); };
+  app.state.resultHistory.isReady = true;
+  app.operations.bindEvents();
+  app.operations.bindEvents();
+  await root.emit("click", { target: app.createElement({ resultHistoryToggle: "" }) });
+  assert.deepEqual(registrations, ["click", "change"]);
+  assert.equal(app.state.resultHistory.isExpanded, true);
+  assert.equal(calls, 0);
+  assert.deepEqual(app.intervalDelays(), []);
+});
+
+test("overlapping history refreshes share one in-flight list read", async (t) => {
+  let finish;
+  let calls = 0;
+  const app = createPublicRuntime({ ui: true, fetchImpl: () => {
+    calls += 1;
+    return new Promise((resolve) => { finish = resolve; });
+  } });
+  t.after(app.dispose);
+  app.state.previousResultGame = { isReady: true, isLoading: false, game: null };
+  const first = app.operations.refreshResultHistory();
+  await app.operations.refreshResultHistory();
+  assert.equal(calls, 1);
+  assert.equal(app.state.resultHistory.isLoading, true);
+  finish({ ok: true, status: 200, json: async () => ({ ok: true, games: [] }) });
+  await first;
+  assert.equal(app.state.resultHistory.isLoading, false);
+  assert.equal(calls, 1);
+});
+
+test("anonymous history replacement stays live and does not retain the old state object", async (t) => {
+  const app = createPublicRuntime({ ui: true, user: null });
+  t.after(app.dispose);
+  const old = app.state.resultHistory;
+  old.isExpanded = true;
+  await app.operations.refreshResultHistory();
+  assert.notEqual(app.state.resultHistory, old);
+  assert.equal(app.state.resultHistory.isExpanded, false);
+  assert.equal(app.appState.results.history, app.state.resultHistory);
+  assert.match(app.elements.get("resultHistoryList").innerHTML, /aria-expanded="false"/);
+});

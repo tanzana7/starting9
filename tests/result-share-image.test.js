@@ -6,8 +6,8 @@ const test = require("node:test");
 const root = path.join(__dirname, "..");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
-const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
-const resultsRenderer = fs.readFileSync(path.join(root, "frontend", "public", "render-results.js"), "utf8");
+const script = fs.readFileSync(path.join(root, "script.js"), "utf8") + "\n" + fs.readFileSync(path.join(root, "frontend/public/results.js"), "utf8");
+const resultsRenderer = fs.readFileSync(path.join(root, "frontend", "public", "render-results.js"), "utf8") + "\n" + fs.readFileSync(path.join(root, "frontend/public/results.js"), "utf8");
 
 test("予想共有のハッシュタグはlovefightersとstarting9だけに統一される", () => {
   assert.match(script, /const SHARE_HASHTAGS = "#lovefighters #starting9"/);
@@ -25,7 +25,7 @@ test("結果発表エリアから共有UIと共有ボタンを除去する", () 
 
 test("結果描画は共有UIから独立して通常結果を維持できる", () => {
   assert.doesNotMatch(resultsRenderer, /shareResultButton|resultShare/);
-  assert.match(resultsRenderer, /createResultView\(deps\.createResultViewModel\(displayedResult\)\)/);
+  assert.match(resultsRenderer, /createResultView\(createResultViewModel\(displayedResult\)\)/);
 });
 
 test("結果共有用Canvas処理は公開画面から呼び出されない", () => {

@@ -4,9 +4,12 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const moduleDir = path.join(root, "frontend", "admin-v3");
+const require = createRequire(import.meta.url);
+const { canonicalAdmin } = require("./helpers/admin-canonical-runtime.cjs");
 
 function loadModule(name, extra = {}) {
   const context = { window: {}, ...extra };
@@ -24,45 +27,37 @@ function manualSearchField(value = "") {
 }
 
 test("manual lineup検索はIME変換中に再描画せずcompositionend後だけ検索を反映する", () => {
-  const modules = loadModule("app-coordinator", { Set, Number });
-  const listeners = new Map();
   const calls = [];
-  const document = {
-    addEventListener(type, handler) { listeners.set(type, handler); },
-    getElementById() { return null; }
-  };
   const actions = new Proxy({
     updateManualLineupSearch(index, value) { calls.push({ index, value }); },
     restoreInitialRoute() {},
     load() {}
   }, { get(target, property) { return target[property] || (() => {}); } });
-  const coordinator = modules.createAdminV3Coordinator({ document, window: { addEventListener() {} }, state: {}, actions });
-  coordinator.start();
+  const app = canonicalAdmin({ withCoordinator: true, coordinatorActions: actions });
+  app.coordinator.start();
   const field = manualSearchField("");
-  listeners.get("compositionstart")({ target: field });
+  app.emitDocument("compositionstart", { target: field });
   field.value = "西";
-  listeners.get("input")({ target: field, isComposing: true });
+  app.emitDocument("input", { target: field, isComposing: true });
   assert.equal(calls.length, 0);
   let prevented = false;
-  listeners.get("keydown")({ target: field, key: "Enter", isComposing: true, preventDefault() { prevented = true; } });
+  app.emitDocument("keydown", { target: field, key: "Enter", isComposing: true, preventDefault() { prevented = true; } });
   assert.equal(prevented, true);
-  listeners.get("compositionend")({ target: field });
+  app.emitDocument("compositionend", { target: field });
   assert.deepEqual(calls, [{ index: 0, value: "西" }]);
 });
 
 test("manual lineup検索は通常のinputでは候補更新だけを依頼する", () => {
-  const modules = loadModule("app-coordinator", { Set, Number });
-  const listeners = new Map();
   const calls = [];
-  const document = { addEventListener(type, handler) { listeners.set(type, handler); }, getElementById() { return null; } };
   const actions = new Proxy({
     updateManualLineupSearch(index, value) { calls.push({ index, value }); },
     restoreInitialRoute() {},
     load() {}
   }, { get(target, property) { return target[property] || (() => {}); } });
-  modules.createAdminV3Coordinator({ document, window: { addEventListener() {} }, state: {} , actions }).start();
+  const app = canonicalAdmin({ withCoordinator: true, coordinatorActions: actions });
+  app.coordinator.start();
   const field = manualSearchField("tan");
-  listeners.get("input")({ target: field, isComposing: false });
+  app.emitDocument("input", { target: field, isComposing: false });
   assert.deepEqual(calls, [{ index: 0, value: "tan" }]);
 });
 

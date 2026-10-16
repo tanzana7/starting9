@@ -2,15 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import vm from "node:vm";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const require = createRequire(import.meta.url);
+const { canonicalAdmin } = require("./helpers/admin-canonical-runtime.cjs");
 const source = fs.readFileSync(path.join(root, "frontend", "admin-v3", "app-coordinator.js"), "utf8");
 const html = fs.readFileSync(path.join(root, "admin-v3.html"), "utf8");
 
 function createHarness() {
-  const listeners = {};
   const calls = [];
   const actions = {
     chooseView: (...args) => calls.push(["chooseView", ...args]),
@@ -37,18 +38,9 @@ function createHarness() {
     handleHashChange: () => calls.push(["handleHashChange"]),
     restoreInitialRoute: () => calls.push(["restoreInitialRoute"])
   };
-  const document = {
-    addEventListener(type, listener) { listeners[type] = listener; },
-    querySelector() { return null; },
-    querySelectorAll() { return []; },
-    getElementById() { return null; }
-  };
-  const window = { addEventListener() {} };
-  const context = vm.createContext({ window, document, state: { rankingReset: {}, perfectScorePreview: {} }, actions, calls });
-  vm.runInContext(source, context);
-  vm.runInContext(`this.coordinator = window.Starting9AdminV3.createAdminV3Coordinator({ document, window, state, actions });`, context);
-  context.coordinator.start();
-  return { listeners, calls };
+  const app = canonicalAdmin({ withCoordinator: true, coordinatorActions: actions });
+  app.coordinator.start();
+  return { app, calls };
 }
 
 function targetFor(selector, dataset = {}) {
@@ -56,10 +48,11 @@ function targetFor(selector, dataset = {}) {
 }
 
 test("admin-v3の動的click delegationはElement以外のtargetでも例外なく試合操作を拾う", async () => {
-  const { listeners, calls } = createHarness();
-  await listeners.click({ target: { parentElement: targetFor("[data-v3-select-game]", { v3SelectGame: "game-1" }) } });
-  await listeners.click({ target: targetFor("[data-v3-job-detail]", { v3JobDetail: "game-1", v3JobId: "12" }) });
-  await listeners.click({ target: targetFor("[data-v3-job-diagnose]", { v3JobDiagnose: "game-1", v3JobType: "lineup_fetch" }) });
+  const { app, calls } = createHarness();
+  const parent = targetFor("[data-v3-select-game]", { v3SelectGame: "game-1" });
+  await app.emitDocument("click", { target: { closest: (selector) => parent.closest(selector), parentElement: parent } });
+  await app.emitDocument("click", { target: targetFor("[data-v3-job-detail]", { v3JobDetail: "game-1", v3JobId: "12" }) });
+  await app.emitDocument("click", { target: targetFor("[data-v3-job-diagnose]", { v3JobDiagnose: "game-1", v3JobType: "lineup_fetch" }) });
   assert.deepEqual(calls.slice(-3).map((call) => call.slice(0, 3)), [
     ["selectGame", "game-1"],
     ["toggleJobDetail", "game-1", "12"],
@@ -68,18 +61,18 @@ test("admin-v3の動的click delegationはElement以外のtargetでも例外な�
 });
 
 test("admin-v3の明示的な中止ボタンは既存のcancel操作へ委譲する", async () => {
-  const { listeners, calls } = createHarness();
-  await listeners.click({ target: targetFor("[data-v3-schedule-cancel]", { v3ScheduleCancel: "game-1" }) });
+  const { app, calls } = createHarness();
+  await app.emitDocument("click", { target: targetFor("[data-v3-schedule-cancel]", { v3ScheduleCancel: "game-1" }) });
   assert.deepEqual(calls.at(-1), ["cancelGame", "game-1"]);
 });
 
 test("admin-v3のmanual lineup守備位置picker変更は選択行へ委譲する", async () => {
-  const { listeners, calls } = createHarness();
+  const { app, calls } = createHarness();
   const target = {
     dataset: { v3ManualLineupPositionOption: "2", position: "遊" },
     closest(selector) { return selector === "[data-v3-manual-lineup-position-option]" ? this : null; }
   };
-  await listeners.click({ target });
+  await app.emitDocument("click", { target });
   assert.equal(calls.at(-1)[0], "updateManualLineupPosition");
   assert.equal(calls.at(-1)[1], 2);
   assert.equal(calls.at(-1)[2], "遊");

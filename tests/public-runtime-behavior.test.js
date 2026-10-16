@@ -8,6 +8,18 @@ function roster(players, overrides = {}) {
     players, fingerprint: JSON.stringify(players), ...overrides };
 }
 
+async function mutationBreaksContract(options, assertion) {
+  const app = createPublicRuntime(options);
+  try {
+    await assertion(app);
+    return false;
+  } catch {
+    return true;
+  } finally {
+    app.dispose();
+  }
+}
+
 test("late roster response cannot overwrite the new game's candidates or snapshot", async (t) => {
   const pending = [];
   const app = createPublicRuntime({ candidateNames: ["矢澤宏太", "水谷瞬"], fetchImpl: (url) => new Promise((resolve) => pending.push({ url, resolve })) });
@@ -95,6 +107,72 @@ test("roster source compatibility and explicit acquisition stop preserve the cur
   assert.equal(app.state.publicRoster.externalFetchDisabled, true);
   assert.equal(app.state.publicRoster.players.length, 0);
   assert.equal(app.chips[0].classList.contains("hidden"), true);
+});
+
+test("captured roster runtime reflects the current game's candidates and clears the update notice", async (t) => {
+  const app = createPublicRuntime({
+    ui: true,
+    candidateNames: ["正式取得選手"],
+    fetchImpl: async () => ({ ok: true, json: async () => roster([
+      { name: "正式取得選手", number: "12", position: "外野手" }
+    ], { status: "captured", displayRosterSource: "fresh_snapshot" }) })
+  });
+  t.after(app.dispose);
+
+  await app.operations.initializeRosterCandidateSync();
+
+  assert.equal(app.state.publicRoster.internalGameId, "canonical-game");
+  assert.equal(app.state.publicRoster.players[0].name, "正式取得選手");
+  assert.equal(app.state.publicRoster.players[0].number, "12");
+  assert.equal(app.elements.get("predictionRosterStatus").textContent, "");
+  assert.equal(app.chips[0].classList.contains("hidden"), false);
+});
+
+test("pending roster runtime hides static candidates and keeps the update notice", async (t) => {
+  const app = createPublicRuntime({
+    ui: true,
+    candidateNames: ["静的候補"],
+    fetchImpl: async () => ({ ok: true, json: async () => ({
+      ok: true,
+      internalGameId: "canonical-game",
+      gameDate: "2099-07-21",
+      status: "pending",
+      players: []
+    }) })
+  });
+  t.after(app.dispose);
+
+  await app.operations.initializeRosterCandidateSync();
+
+  assert.equal(app.state.publicRoster.status, "pending");
+  assert.equal(app.state.publicRoster.players.length, 0);
+  assert.equal(app.chips[0].classList.contains("hidden"), true);
+  assert.match(app.elements.get("predictionRosterStatus").textContent, /選手情報を更新中/);
+});
+
+test("baseline roster runtime keeps usable candidates and shows the stale-data warning", async (t) => {
+  const app = createPublicRuntime({
+    ui: true,
+    now: "2026-09-08T00:00:00Z",
+    candidateNames: ["保存選手"],
+    fetchImpl: async () => ({ ok: true, json: async () => roster([
+      { name: "保存選手", number: "12", position: "外野手" }
+    ], {
+      status: "baseline",
+      displayRosterSource: "baseline_snapshot",
+      sourceOfTruth: "baseline_snapshot",
+      rosterUse: "baseline_snapshot",
+      usableUntil: "2099-07-22T00:00:00Z"
+    }) })
+  });
+  t.after(app.dispose);
+
+  await app.operations.initializeRosterCandidateSync();
+
+  assert.equal(app.state.publicRoster.status, "baseline");
+  assert.equal(app.state.publicRoster.players[0].name, "保存選手");
+  assert.equal(app.chips[0].classList.contains("hidden"), false);
+  assert.match(app.elements.get("predictionRosterStatus").textContent, /前回取得データの場合があります/);
 });
 
 test("roster refresh adopts normalized current players, deduplicates and reflects changes without append", async () => {
@@ -229,4 +307,77 @@ test("pitcher-source batter is active while special DH stays in the other candid
   await app.operations.initializeRosterCandidateSync();
   assert.equal(app.chips[0].classList.contains("hidden"), true);
   assert.equal(app.chips[1].classList.contains("hidden"), false);
+});
+
+test("roster runtime mutation probes catch the protected reflection boundaries", async () => {
+  const wrongGameCaught = await mutationBreaksContract({
+    scriptTransform: (file, source) => file === "roster.js"
+      ? source.replace("gameSnapshot.internalGameId === internalGameId", "true")
+      : source,
+    fetchImpl: async () => ({ ok: true, json: async () => roster([
+      { name: "別試合選手", number: "1", position: "外野手" }
+    ], { internalGameId: "wrong-game" }) })
+  }, async (app) => {
+    await app.operations.initializeRosterCandidateSync();
+    assert.equal(app.state.publicRoster.players.length, 0);
+  });
+
+  const duplicateCaught = await mutationBreaksContract({
+    scriptTransform: (file, source) => file === "script.js"
+      ? source.replace("if (!displayName || !key || seen.has(key))", "if (!displayName || !key)")
+      : source,
+    fetchImpl: async () => ({ ok: true, json: async () => roster([
+      { name: "水谷　 瞬", number: "01", position: "外野手" },
+      { name: "水谷 瞬", number: "01", position: "外野手" }
+    ]) })
+  }, async (app) => {
+    await app.operations.initializeRosterCandidateSync();
+    assert.equal(app.state.publicRoster.players.length, 1);
+  });
+
+  const jerseyCaught = await mutationBreaksContract({
+    scriptTransform: (file, source) => file === "script.js"
+      ? source.replace('number: String(source.number || "").trim(),', "number: Number(source.number || 0),")
+      : source,
+    fetchImpl: async () => ({ ok: true, json: async () => roster([
+      { name: "背番号01", number: "01", position: "外野手" }
+    ]) })
+  }, async (app) => {
+    await app.operations.initializeRosterCandidateSync();
+    assert.equal(typeof app.state.publicRoster.players[0].number, "string");
+    assert.equal(app.state.publicRoster.players[0].number, "01");
+  });
+
+  const selectionCaught = await mutationBreaksContract({
+    lineup: [{ player: "選択中選手", position: "右" }],
+    scriptTransform: (file, source) => file === "roster.js"
+      ? source.replace("deps.state.publicRoster = nextRoster;", "deps.state.publicRoster = nextRoster;\n      deps.state.prediction = null;")
+      : source,
+    fetchImpl: async () => ({ ok: true, json: async () => roster([
+      { name: "選択中選手", number: "12", position: "外野手" }
+    ]) })
+  }, async (app) => {
+    const prediction = { gameId: "canonical-game", lineup: [{ player: "選択中選手", position: "右" }] };
+    app.state.prediction = prediction;
+    await app.operations.initializeRosterCandidateSync();
+    assert.equal(app.state.prediction, prediction);
+  });
+
+  const pendingCaught = await mutationBreaksContract({
+    scriptTransform: (file, source) => file === "roster.js"
+      ? source.replace('if (status === "captured" || status === "fresh") return "fresh";', 'if (status === "captured" || status === "fresh" || status === "pending") return "fresh";')
+      : source,
+    fetchImpl: async () => ({ ok: true, json: async () => roster([
+      { name: "未発表扱い選手", number: "12", position: "外野手" }
+    ], { status: "pending" }) })
+  }, async (app) => {
+    await app.operations.initializeRosterCandidateSync();
+    assert.equal(app.state.publicRoster.players.length, 0);
+  });
+
+  assert.equal(wrongGameCaught, true);
+  assert.equal(duplicateCaught, true);
+  assert.equal(jerseyCaught, true);
+  assert.equal(selectionCaught, true);
+  assert.equal(pendingCaught, true);
 });

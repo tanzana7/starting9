@@ -5,7 +5,7 @@ const { loadPublicFrontendModules } = require("./load-public-frontend-modules.cj
 
 // Load the shipped scripts intact. Exercise the coordinator's real operations,
 // not copied function bodies, so private helper names are free to change.
-function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateNames = [], now, ui = false, lineup = [], staticGames = [], positionMenuRuntime = false, dragRuntime = false, scriptTransform = (file, source) => source } = {}) {
+function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateNames = [], now, ui = false, lineup = [], staticGames = [], positionMenuRuntime = false, dragRuntime = false, canvasFactory, scriptTransform = (file, source) => source } = {}) {
   const root = path.join(__dirname, "..", "..");
   const stored = new Map();
   const timers = new Map();
@@ -188,7 +188,7 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
     },
     elementFromPoint: () => pointTarget,
     getElementById: (id) => elements.get(id) || null,
-    createElement: () => element(),
+    createElement: (tagName) => tagName === "canvas" && canvasFactory ? canvasFactory() : element(),
     createDocumentFragment: () => Object.assign(element(), { nodeType: 11, tagName: "#document-fragment" }),
     querySelectorAll: (selector) => {
       if (positionMenuRuntime) return body.querySelectorAll(selector);

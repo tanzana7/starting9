@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
-const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const script = fs.readFileSync(path.join(root, "script.js"), "utf8") + "\n" + fs.readFileSync(path.join(root, "frontend/public/results.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
 
 test("公開済み試合の結果導線は結果セクションに残し、メイン予想欄には置かない", () => {

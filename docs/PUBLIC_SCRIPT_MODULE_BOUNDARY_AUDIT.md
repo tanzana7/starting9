@@ -1,4 +1,4 @@
-# Public script module boundary audit (Phase 19)
+# Public script module boundary audit (Phases 19–20)
 
 Baseline: `2aecf82aa6df5283fdc2d0f92ec6a1ef7c039aed`.
 Scope: one public frontend domain; no server, API, scoring, CSS, storage-key or UX changes.
@@ -166,7 +166,104 @@ An announced response with no valid `fetchedAt` can reach the existing shared da
 4. Compare actual runtime snapshots and request counts; inject missing wiring/commit faults in memory.
 5. Version/load the new asset before bootstrap; run shared public/Asia/admin regressions and GET-only deployment checks.
 
-## Function-level inventory (baseline)
+## Current Results boundary (Phase 20)
+
+Baseline for this section: `5afd48d1b6ecafd37abe1e42ff2130344edfd7fa`. This section supersedes the Phase 19 Results ownership notes; the original function inventory below remains a historical baseline.
+
+### Candidate reassessment
+
+| Candidate | Script functions at baseline | State / I/O | Coverage and complexity | Decision |
+| --- | ---: | --- | --- | --- |
+| Results/history/detail | 30, plus 7 result renderer functions | history, previous game, persisted result projection; 3 GET sites; auth and scoped storage | Real-runtime list/detail/cache/race/error coverage; Canvas and shared comparison helpers | Selected after keeping shared catalog/identity helpers outside |
+| Daily Best Nine | 4 plus existing renderer | independent latest-published state, 1 GET | Strong API and runtime coverage; lower coupling | Safe alternative, not needed; existing owner stays |
+| Prediction | 59 | central prediction, auth, persistence, editing state | Strong runtime coverage but many cross-domain writes | Keep |
+| Position menu | 13 | prediction state and menu/viewport ownership | Pointer/portal/browser concerns | Keep |
+| Drag / pointer / touch | 33 | pointer state, prediction, geometry | Browser interaction complexity | Keep |
+| Game flow | 33 | catalog, prediction deadlines, selection, persistence | Strong runtime coverage but shared orchestration | Keep |
+
+Counts follow the original domain grouping, with callback/alias limitations described above. No second domain is extracted.
+
+### Ownership and interface
+
+`frontend/public/results.js` follows the existing classic-script namespace/factory pattern: `Starting9Public.createPublicResultsController`. It moves 25 functions from script.js and 7 functions from the existing renderer. The `renderScoreResult` and `preserveDisplayedPublicResult` entry-file forwarding wrappers are removed. No compatibility wrappers replace them.
+
+The controller exposes only operational entry points used by real callers: `fetchPrevious`, `refresh`, `maybeLoadFastPrevious`, `render`, `renderHistory`, `preserveDisplayedResult`, `bindEvents`. Nothing is exported for private test access. The factory does not fetch or install listeners. Bootstrap calls the result event binder; its once flag prevents duplicate click/change registration.
+
+The live state view has only `resultHistory`, `previousResultGame` and `result` accessors. Each getter returns the original app field/object; setters forward to that same app field. There is no copied state. This is important because anonymous refresh replaces the history object. Cache ownership remains `state.resultHistory.detailCache`; selection, canonical cache keys and the compatibility result projection retain their existing semantics. Existing request promises move into the controller instance without duplication.
+
+Shared `getFastPreviousResultGame` remains the catalog selection boundary in script.js. `getResultHistoryGameId` remains shared with independent Best Nine metadata, and `getPublicResultAvailability` remains shared with prediction availability. These are real shared implementations, not module forwarding wrappers. Bootstrap/account integration may still update the existing persisted result projection; this refactor does not redesign that compatibility flow.
+
+26 explicit dependency properties (including constants and the narrow state view):
+
+- `state`
+- `apiClient`
+- `requestGuard`
+- `storage`
+- `resultStorageKey`
+- `getAuthApiBaseUrl`
+- `getFastPreviousResultGame`
+- `getPredictionAccountUser`
+- `syncPublicAppState`
+- `getPublicResultAvailability`
+- `getResultHistoryGameId`
+- `remotePredictionToLocal`
+- `scoreLineup`
+- `normalizePlayerKey`
+- `getHitCounts`
+- `createScoreBreakdown`
+- `normalizePosition`
+- `getPositionCategory`
+- `createPlayerNameHtml`
+- `formatPlayerNameForDisplay`
+- `createPredictionSummary`
+- `formatPublicJstDateTime`
+- `escapeHtml`
+- `LINEUP_SIZE`
+- `SCORE_MAX`
+- `afterRenderHistory`
+
+This is one property above the suggested 20–25 range, not an unbounded app context. Dependencies are the narrow result state view, existing API/request guard, scoped storage and its unchanged key, auth/API-base readers, catalog selection callback, shared identity/availability/formatting helpers, existing comparison helpers, display constants, and app-level synchronization callbacks. No window/document/all-functions bundle or cross-domain mutable state is supplied.
+
+The result renderer functions are now in results.js. `render-results.js` retains its existing factory name solely for the independent Daily Best Nine renderer. Its GET, latest-published targeting, state lifecycle and rendering body are unchanged. Selecting or failing result A/B never writes Best Nine state. The controller has no reference to `state.dailyBestNine`, prediction, roster, probable-starter or pointer state.
+
+The existing `scoreLineup`, `getHitCounts` and `createScoreBreakdown` implementations remain in script.js unchanged. Results calls these pre-existing comparison helpers where it already did before extraction; no server-scoring implementation, score write or new recomputation path is introduced. The existing API totalScore and legacy display-comparison behavior are preserved, not silently redesigned.
+
+The sole app-wide rendering callback is `afterRenderHistory`, retaining the existing prediction-surface refresh after history rendering. It cannot mutate controller state or start result initialization. Factory construction and shared helper callbacks create no initialization cycle.
+
+### Metrics and change surface
+
+| Metric | Before | After |
+| --- | ---: | ---: |
+| script.js logical lines | 4876 | 4047 |
+| script.js top-level named functions | 261 | 234 |
+| Moved result implementation functions in script.js | 25 | 0 |
+| Result forwarding wrappers in script.js | 2 | 0 |
+| Shared catalog/identity/availability helpers retained | 3 | 3 |
+| Moved implementation state assignment sites (including history/previous aliases) | 47 | 0 in script.js |
+| Literal result selectors in moved script functions | 6 | 0 in script.js |
+| Result API call sites in script.js | 3 | 0 |
+| results.js lines | 0 | 1046 |
+| results.js functions | 0 | 32 moved + event binder + factory |
+| render-results.js lines | 190 | 46 |
+| Additional caches / data-state copies / timers | 0 | 0 |
+| Result root click/change listeners per instance | 2 | 2, including repeated binding |
+
+Example: a personal-detail display-rule change previously crossed script.js view-model/Canvas/table helpers and render-results.js selection/header/empty-state logic (two files). Those private result helpers now share results.js (one file). Bootstrap, shared scoring/formatting, auth and Best Nine do not need editing. The new file remains one domain rather than creating extra abstraction layers.
+
+### Validation and review
+
+- Before extraction: 45 focused result/history/table/share/Best Nine cases passed.
+- Eleven fixtures were recorded against baseline before edits: anonymous, authenticated, A open, A→B switch, A cache reopen, stale B response, empty list, list error, detail error, Best Nine error and HTTP 401. Baseline and extracted runtimes have identical full DOM strings, result/previous/Best Nine and other app states, request URLs/options/counts, storage, interval sets and result-root listener registrations. Snapshot SHA-256: `22180a5108045d8f3f471989b2b0db60c72fa255cdb7149b8c8bcc69e64cdfdf`.
+- Existing 11 result-runtime behavior cases were not rewritten for the new implementation. Three added cases cover duplicate event binding, overlapping history reads and live history-object replacement. The Canvas execution check now follows actual public previous/list/detail operations in the existing runtime harness, with an optional Canvas factory; private renderer extraction/VM execution is removed from that case. Static geometry, CSS, retired-surface and asset checks are maintained against the shipped assets.
+- In-memory faults made the result-runtime suite fail: no controller initialization (14 failures), disabled selected-result commit (3), removed stale-response guard (1), leaked selected ID into Best Nine (5). Interceptors are outside the repository and no mutated product source is saved.
+- Repeated Results/Canvas suite: 28 cases passed three times, with no open handles. Pending race responses are explicitly completed. Ordinary history/detail request counts and scoped storage remain equal to baseline. Rebinding adds no result listener, action or request.
+- 32 moved function bodies were compared mechanically; only explicit dependency references, private-call connections, the existing cross-domain render callback and indentation changed. No user-visible text/layout/API/storage/score policy changed.
+- Full check: 1663 passing (baseline 1660), syntax 342 JS files, diff check passed. Public game/prediction/roster/probable-starter/result/Best Nine/position/drag, Asia sequential and admin tests are included.
+- Self-review corrected an omitted coordinator method connection and a renderer call that still pointed to the old dependency slot. The unchanged behavior suite caught both before commit; snapshot comparison then passed.
+
+The Phase 19 probable-starter limitations remain unrelated and unchanged. No new existing Results bug was fixed during extraction. The next reasonable candidate is the independent Daily Best Nine lifecycle, but no further extraction is started in this phase.
+
+## Function-level inventory (Phase 19 baseline)
 
 Each row: domain, direct caller references, direct named callees, syntactic state R/W and literal DOM selectors. “—” means no direct match, not proof of no indirect dependency. Event registrations and I/O counts are summarized above; browser/global interaction follows the domain boundary notes.
 

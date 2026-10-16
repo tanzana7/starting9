@@ -7,7 +7,8 @@ const vm = require("node:vm");
 const root = path.join(__dirname, "..");
 const publicDisplaySource = fs.readFileSync(path.join(root, "frontend", "public", "player-display.js"), "utf8");
 const fightersDetailsSource = fs.readFileSync(path.join(root, "frontend", "public", "fighters-player-details.js"), "utf8");
-const publicScriptSource = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const publicScriptSource = fs.readFileSync(path.join(root, "script.js"), "utf8")
+  + fs.readFileSync(path.join(root, "frontend/public/results.js"), "utf8");
 const lineupRendererSource = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-manual-lineup.js"), "utf8");
 const rosterRendererSource = fs.readFileSync(path.join(root, "frontend", "admin-v3", "render-manual-roster.js"), "utf8");
 

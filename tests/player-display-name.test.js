@@ -6,7 +6,8 @@ const vm = require("node:vm");
 
 const root = path.join(__dirname, "..");
 const displaySource = fs.readFileSync(path.join(root, "frontend", "public", "player-display.js"), "utf8");
-const scriptSource = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const scriptSource = fs.readFileSync(path.join(root, "script.js"), "utf8")
+  + fs.readFileSync(path.join(root, "frontend/public/results.js"), "utf8");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const playersSource = fs.readFileSync(path.join(root, "players.js"), "utf8");
 

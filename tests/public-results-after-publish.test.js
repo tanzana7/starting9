@@ -7,9 +7,9 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const publicResults = fs.readFileSync(path.join(root, "backend", "domain", "public-results.js"), "utf8");
-const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const script = fs.readFileSync(path.join(root, "script.js"), "utf8") + "\n" + fs.readFileSync(path.join(root, "frontend/public/results.js"), "utf8");
 const publicState = fs.readFileSync(path.join(root, "frontend", "public", "state.js"), "utf8");
-const publicResultsRenderer = fs.readFileSync(path.join(root, "frontend", "public", "render-results.js"), "utf8");
+const publicResultsRenderer = fs.readFileSync(path.join(root, "frontend", "public", "render-results.js"), "utf8") + "\n" + fs.readFileSync(path.join(root, "frontend/public/results.js"), "utf8");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 
 test("published済みV3結果はgamesのcanonical rowから一覧メタデータを作る", () => {
@@ -67,7 +67,7 @@ test("前回未参加時は最新結果カードを出さず、過去結果導�
   assert.match(publicResultsRenderer, /date \? `\$\{date\}の採点結果` : "選択した試合の採点結果"/);
   assert.match(publicResultsRenderer, /history\.displayMode/);
   assert.match(publicResultsRenderer, /legend\.classList\.toggle\("hidden", !hasResult\)/);
-  assert.match(script, /state\.resultHistory\.games = publicResultsRenderer\.limitHistory\(payload\.games\)/);
+  assert.match(script, /state\.resultHistory\.games = limitHistory\(payload\.games\)/);
   assert.match(script, /state\.resultHistory\.message = state\.resultHistory\.games\.length \? "" : "採点済みの過去試合はありません。"/);
   assert.match(script, /data-result-history-toggle/);
   assert.match(script, /data-result-history-select/);
@@ -139,8 +139,8 @@ test("前回結果の読み込みはランキング・ベストナインの完�
   assert.match(coordinatorStart, /ops\.initializeDailyBestNine\(\)/);
   assert.doesNotMatch(coordinatorStart, /await ops\.initializePublicGameCatalog\(\)/);
   assert.match(entryScript, /schedulePublicNonCritical\(\(\) =>/);
-  assert.match(entryScript, /fetchPreviousResultGame\(\{ force: false \}\)/);
-  assert.match(entryScript, /refreshResultHistory\(\{ force: false \}\)/);
+  assert.match(entryScript, /publicResultsController\.fetchPrevious\(\{ force: false \}\)/);
+  assert.match(entryScript, /publicResultsController\.refresh\(\{ force: false \}\)/);
   assert.doesNotMatch(entryScript, /await Promise\.allSettled/);
   assert.doesNotMatch(coordinatorStart, /await ops\.initializePredictionRemoteSync\(\)/);
   assert.match(publicResultsRenderer, /previousResultGame\?\.isLoading/);

@@ -6,7 +6,7 @@ const vm = require("node:vm");
 
 const root = path.join(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
-const script = read("script.js");
+const script = read("script.js") + "\n" + fs.readFileSync(path.join(root, "frontend/public/results.js"), "utf8");
 const html = read("index.html");
 const modulePath = (name) => `frontend/public/${name}.js`;
 
@@ -23,11 +23,11 @@ function loadPublicModule(name, extra = {}) {
 }
 
 test("公開画面のentry pointは分割moduleを読み込んでCoordinatorを一経路で起動する", () => {
-  const moduleScripts = ["state", "request-guard", "storage", "api-client", "app-coordinator", "render-results", "roster", "probable-starter", "prediction-form"];
+  const moduleScripts = ["state", "request-guard", "storage", "api-client", "app-coordinator", "render-results", "roster", "probable-starter", "results", "prediction-form"];
   const scriptOffset = html.indexOf("script.js?v=public-single-game-1");
   assert.ok(scriptOffset > 0);
   moduleScripts.forEach((name) => {
-    const cacheBuster = name === "probable-starter" ? "probable-starter-module-1" : name === "render-results"
+    const cacheBuster = name === "results" ? "public-results-module-1" : name === "probable-starter" ? "probable-starter-module-1" : name === "render-results"
       ? "public-cancelled-result-date-display-1"
       : "public-compliance-disclaimer-and-fetch-safety-1";
     const offset = html.indexOf(`${modulePath(name)}?v=${cacheBuster}`);
@@ -37,6 +37,8 @@ test("公開画面のentry pointは分割moduleを読み込んでCoordinatorを�
   assert.match(script, /new publicFrontend\.PublicAppCoordinator/);
   assert.equal((html.match(/src="frontend\/public\/probable-starter\.js\?/g) || []).length, 1);
   assert.equal((script.match(/publicFrontend\.createPublicProbableStarterController\(/g) || []).length, 1);
+  assert.equal((html.match(/src="frontend\/public\/results\.js\?/g) || []).length, 1);
+  assert.equal((script.match(/publicFrontend\.createPublicResultsController\(/g) || []).length, 1);
   assert.equal((script.match(/DOMContentLoaded/g) || []).length, 1);
   assert.match(script, /void publicAppCoordinator\.start\(\)/);
 });
@@ -121,10 +123,10 @@ test("canonicalゲーム設定はlegacy/localStorageの古い試合を予想対�
 
 test("予想保存・リセット・アカウント同期は最新結果表示を保持する", () => {
   const form = read(modulePath("prediction-form"));
-  const results = read(modulePath("render-results"));
+  const results = read(modulePath("results"));
   assert.match(form, /deps\.preserveDisplayedResult\(\)/);
   assert.match(results, /const latest = deps\.state\.resultHistory\.result \|\| deps\.state\.result \|\| null/);
-  assert.match(script, /preserveDisplayedPublicResult\(\)/);
+  assert.match(script, /publicResultsController\.preserveDisplayedResult\(\)/);
 });
 
 test("公開画面のキャッシュバスターはmodule分割版へ更新される", () => {
@@ -144,10 +146,10 @@ test("認証後の補助データはcritical UIの完了後にアイドル開始
 
 test("前回試合と結果一覧は初期表示をブロックせず、同じidle処理で重複取得しない", () => {
   const initializer = script.slice(script.indexOf("async function initializeAuthDependentFeatures"), script.indexOf("function bindEvents", script.indexOf("async function initializeAuthDependentFeatures")));
-  const previousFetcher = script.slice(script.indexOf("function fetchPreviousResultGame"), script.indexOf("function normalizeScheduleTeamCode", script.indexOf("function fetchPreviousResultGame")));
+  const previousFetcher = script.slice(script.indexOf("function fetchPreviousResultGame"), script.indexOf("function buildResultGamesApiUrl", script.indexOf("function fetchPreviousResultGame")));
   assert.match(initializer, /schedulePublicNonCritical\(\(\) =>/);
-  assert.match(initializer, /fetchPreviousResultGame\(\{ force: false \}\)/);
-  assert.match(initializer, /refreshResultHistory\(\{ force: false \}\)/);
+  assert.match(initializer, /publicResultsController\.fetchPrevious\(\{ force: false \}\)/);
+  assert.match(initializer, /publicResultsController\.refresh\(\{ force: false \}\)/);
   assert.doesNotMatch(initializer, /const resultStatus = await Promise\.allSettled/);
   assert.match(previousFetcher, /resolveResultHistorySelection\(\)/);
   assert.match(previousFetcher, /previous\.isLoading \|\| previous\.isReady/);

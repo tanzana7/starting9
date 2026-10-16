@@ -6,7 +6,7 @@ const test = require("node:test");
 const root = path.join(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 const html = read("index.html");
-const script = read("script.js");
+const script = read("script.js") + "\n" + fs.readFileSync(path.join(root, "frontend/public/results.js"), "utf8");
 const css = read("style.css");
 const worker = read("auth-worker.js");
 

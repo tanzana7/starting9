@@ -2,18 +2,18 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
-const vm = require("node:vm");
+const { createPublicRuntime } = require("./helpers/public-runtime.cjs");
 
 const root = path.join(__dirname, "..");
-const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const script = fs.readFileSync(path.join(root, "script.js"), "utf8") + "\n" + fs.readFileSync(path.join(root, "frontend/public/results.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
-const publicResultsRenderer = fs.readFileSync(path.join(root, "frontend/public/render-results.js"), "utf8");
+const publicResultsRenderer = fs.readFileSync(path.join(root, "frontend/public/render-results.js"), "utf8") + "\n" + fs.readFileSync(path.join(root, "frontend/public/results.js"), "utf8");
 
 function sourceForFunction(name) {
   const start = script.indexOf(`function ${name}(`);
   assert.notEqual(start, -1, `${name} が見つかりません`);
-  const next = script.indexOf("\nfunction ", start + 1);
+  const next = script.indexOf("\n    function ", start + 1);
   return script.slice(start, next === -1 ? script.length : next);
 }
 
@@ -169,68 +169,45 @@ test("結果Canvasは列座標を使用前に初期化する", () => {
   assert.ok(actualColumnDeclaration < actualColumnUse, "actualColumnXを宣言前に参照しない");
 });
 
-test("結果Canvasは代表的な採点結果を実行時に描画できる", () => {
+test("結果Canvasは代表的な採点結果を実行時に描画できる", async (t) => {
   const drawContext = {
-    scale() {},
-    beginPath() {},
-    moveTo() {},
-    arcTo() {},
-    closePath() {},
-    fill() {},
-    stroke() {},
-    fillRect() {},
-    lineTo() {},
-    fillText() {},
-    measureText(value) {
-      return { width: String(value).length * 8 };
-    }
+    scale() {}, beginPath() {}, moveTo() {}, arcTo() {}, closePath() {},
+    fill() {}, stroke() {}, fillRect() {}, lineTo() {}, fillText() {},
+    measureText(value) { return { width: String(value).length * 8 }; }
   };
-  const fakeCanvas = {
-    getContext() {
-      return drawContext;
-    }
-  };
-  const context = vm.createContext({
-    window: { innerWidth: 1200 },
-    document: {
-      createElement(tagName) {
-        assert.equal(tagName, "canvas");
-        return fakeCanvas;
-      }
-    },
-    normalizePosition: (value) => value,
-    getPositionCategory: () => "category-infielder",
-    formatPlayerNameForDisplay: (value) => String(value || ""),
-    LINEUP_SIZE: 9
-  });
-  vm.runInContext(`${sourceForFunction("createResultCanvas")}; this.render = createResultCanvas;`, context);
-
-  const details = Array.from({ length: 9 }, (_, index) => ({
-    order: index + 1,
-    player: `予想${index + 1}`,
-    position: "遊",
-    actualPlayer: `実際${index + 1}`,
-    actualPosition: "遊",
-    isPlayerHit: index % 2 === 0,
-    isOrderHit: index % 3 === 0,
-    isPositionHit: index % 4 === 0,
-    isPerfect: index === 0,
-    point: index === 0 ? 11 : index === 1 ? 0 : 7
+  let app;
+  let rendered;
+  const lineup = ["捕", "一", "二", "三", "遊", "左", "中", "右", "指"].map((position, index) => ({
+    battingOrder: index + 1, playerName: "選手" + index, position
   }));
-  const rendered = context.render({
-    total: 48,
-    max: 99,
-    perfectLabel: "",
-    counts: { player: 6, order: 3, position: 2, perfect: 1 },
-    breakdown: {
-      player: { total: 30, max: 45 },
-      order: { total: 9, max: 27 },
-      position: { total: 10, max: 18 },
-      perfect: { total: 1, max: 9 }
+  app = createPublicRuntime({
+    ui: true,
+    dragRuntime: true,
+    canvasFactory: () => {
+      rendered = app.createElement();
+      rendered.getContext = () => drawContext;
+      return rendered;
     },
-    details
+    fetchImpl: async (url) => {
+      const game = { internalGameId: "a", resultId: "a", resultsPublished: true };
+      const path = new URL(url).pathname;
+      const payload = path === "/api/public/previous-result-game"
+        ? { ok: true, game }
+        : path === "/api/results/games"
+          ? { ok: true, games: [game] }
+          : { ok: true, internalGameId: "a", resultsPublished: true, prediction: { lineup }, actualLineup: lineup };
+      return { ok: true, status: 200, json: async () => payload };
+    }
   });
+  t.after(app.dispose);
+  for (const id of ["scoreResult", "result-title", "result-legend"]) app.elements.set(id, app.createElement());
+  await app.operations.fetchPreviousResultGame();
+  await app.operations.refreshResultHistory();
+  await new Promise(setImmediate);
 
+  assert.ok(rendered, "the public result path must render a canvas");
   assert.equal(rendered.width, 1180);
   assert.equal(rendered.height, 2 * (12 + 78 + 10 + 70 + 10 + 38 + 9 * 50 + 12));
+  assert.equal(rendered.getAttribute("role"), "img");
+  assert.ok(app.elements.get("scoreResult").children.some((node) => node.children.includes(rendered)));
 });

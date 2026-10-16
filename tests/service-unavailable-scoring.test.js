@@ -7,7 +7,8 @@ const test = require("node:test");
 const root = path.join(__dirname, "..");
 const worker = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const rankingRepository = fs.readFileSync(path.join(root, "backend", "repositories", "ranking-repository.js"), "utf8");
-const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+const script = fs.readFileSync(path.join(root, "script.js"), "utf8")
+  + fs.readFileSync(path.join(root, "frontend/public/results.js"), "utf8");
 const migration = fs.readFileSync(path.join(root, "migrations", "0022_service_unavailable_scoring_games.sql"), "utf8");
 
 function createDatabase() {

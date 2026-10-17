@@ -554,7 +554,11 @@ function bindEvents() {
   document.querySelectorAll("[data-roster-filter]").forEach((button) => {
     button.addEventListener("click", () => setCandidateRosterFilter(button.dataset.rosterFilter));
   });
-  document.addEventListener("click", () => closeAllPositionMenus());
+  document.addEventListener("click", (event) => {
+    const trigger = event?.target?.closest?.("[data-player-detail-only]");
+    if (trigger) showPlayerDetails("prediction", trigger.dataset.playerDetailOnly, { allowSelect: false });
+    closeAllPositionMenus();
+  });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       closeAllPositionMenus();
@@ -3418,11 +3422,6 @@ function createPredictionSummary(prediction) {
       </span>
     `;
     list.appendChild(listItem);
-  });
-
-  list.addEventListener("click", (event) => {
-    const trigger = event.target.closest?.("[data-player-detail-only]");
-    if (trigger) showPlayerDetails("prediction", trigger.dataset.playerDetailOnly, { allowSelect: false });
   });
 
   wrapper.append(title, meta, tableHeader, list);

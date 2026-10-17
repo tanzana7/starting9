@@ -30,6 +30,14 @@ async function resultsApp(t, { failure = "", pending, detailPayloads = {} } = {}
       payload = detailPayloads[id] || detail(id);
       if (id === "b" && failure === "unpublished") payload.resultsPublished = false;
       if (id === "b" && failure === "cancelled") payload = { ok: true, internalGameId: id, gameStatus: "cancelled", rankingExcluded: true };
+      if (id === "b" && failure === "cancelled-prediction") payload = {
+        ok: true,
+        internalGameId: id,
+        gameStatus: "cancelled",
+        rankingExcluded: true,
+        updatedAt: "2026-09-19T10:00:00Z",
+        prediction: { lineup: [{ player: "水谷 瞬", position: "中" }] }
+      };
     }
     return { ok: true, status: 200, json: async () => payload };
   } });
@@ -148,6 +156,63 @@ test("detail failure does not reset the independent latest Best Nine widget", as
   assert.match(contents(app.elements.get("scoreResult")), /結果を読み込めませんでした/);
   assert.equal(JSON.stringify(app.state.dailyBestNine), latest);
   assert.match(app.elements.get("dailyBestNineContent").innerHTML, /latest-winner/);
+});
+
+test("prediction summary rendering owns no click listener and delegated player detail remains single after repeated renders", async (t) => {
+  const { app, calls, select } = await resultsApp(t, { failure: "cancelled-prediction" });
+  const detailsPanel = app.createElement();
+  app.elements.set("predictionPlayerDetails", detailsPanel);
+  let detailOpenCount = 0;
+  const setAttribute = detailsPanel.setAttribute;
+  detailsPanel.setAttribute = function(name, value) {
+    if (name === "aria-hidden" && value === "false") detailOpenCount += 1;
+    return setAttribute.call(this, name, value);
+  };
+  await select("b");
+
+  const result = app.elements.get("scoreResult");
+  const summary = result.querySelector(".saved-lineup-summary");
+  const list = result.querySelector(".lineup-list");
+  assert.ok(summary);
+  assert.ok(list);
+  assert.equal(list.listenerCount("click"), 0);
+  const summaryMarkup = contents(summary);
+  assert.match(summaryMarkup, /class="player-detail-inline-button"/);
+  assert.match(summaryMarkup, /data-player-detail-only="水谷瞬"/);
+  assert.equal(app.documentListenerCount("click"), 1);
+
+  for (let i = 0; i < 100; i += 1) app.operations.renderAll();
+  const rerenderedList = app.elements.get("scoreResult").querySelector(".lineup-list");
+  assert.ok(rerenderedList);
+  assert.equal(rerenderedList.listenerCount("click"), 0);
+  assert.equal(app.documentListenerCount("click"), 1);
+  assert.equal(contents(app.elements.get("scoreResult").querySelector(".saved-lineup-summary")), summaryMarkup);
+
+  const menu = app.createElement();
+  menu.className = "position-menu";
+  app.body.appendChild(menu);
+  const trigger = app.createElement();
+  trigger.dataset.playerDetailOnly = "水谷瞬";
+  const nestedChild = app.createElement();
+  trigger.appendChild(nestedChild);
+  list.children[0].appendChild(trigger);
+  let closestCalls = 0;
+  const closest = nestedChild.closest.bind(nestedChild);
+  nestedChild.closest = (selector) => {
+    closestCalls += 1;
+    assert.equal(selector, "[data-player-detail-only]");
+    return closest(selector);
+  };
+  await nestedChild.dispatchBubblingEvent({ type: "click" });
+
+  assert.equal(closestCalls, 1);
+  assert.equal(detailOpenCount, 1);
+  assert.equal(detailsPanel.getAttribute("aria-hidden"), "false");
+  assert.match(detailsPanel.innerHTML, /水谷 瞬/);
+  assert.doesNotMatch(detailsPanel.innerHTML, /player-detail-select/);
+  assert.equal(calls.filter((url) => url.includes("player-detail")).length, 0);
+  assert.equal(menu.classList.contains("hidden"), true, "the same click keeps the existing outside-click menu close");
+  assert.equal(list.listenerCount("click"), 0, "detached summary nodes do not own listeners");
 });
 
 test("cached A selection supersedes a slower B detail response", async (t) => {

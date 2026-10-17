@@ -731,3 +731,35 @@ The pre-change focused runtime/auth group passed 47 cases. After the extraction,
 Four temporary in-memory fault probes all failed their behavior assertion as intended: wrong save endpoint, treating a 409 as success, removing the old-game response guard, and omitting the serialized prediction field. The mutated sources were never written to the worktree.
 
 No Auth Worker, Asia Worker, NPB Worker, API contract, scoring, ranking, publication, D1, migration, Cron or production prediction data was changed. Production prediction POST/DELETE and other production mutations remain prohibited for this phase.
+
+## Prediction rendering boundary (Phase 26)
+
+### Inventory and decision
+
+Baseline: `e5c03a0a9a4e058d1e4afa001e0f0ce42ded9dbb` (`origin/main` at audit start). The worktree was clean and the audit was performed on `refactor/public-prediction-renderer-boundary`.
+
+Current `script.js` is 3,924 logical lines and has 224 top-level named function declarations. Thirteen rendering-focused declarations occupy approximately 372 LOC: `renderPredictionDeadline`, `updatePredictionSaveButton`, `renderPublicPredictionSurface`, `renderPublicGameSelectionMeta`, `renderPredictionTargetNotice`, `renderPicker`, `renderPositionButton`, `markDuplicateSlots`, `renderSavedPrediction`, `renderPredictionCta`, `createPredictionSummary`, `createSavedPredictionPreview`, and `createSavedPredictionCanvas`. `renderAll` and `renderPredictionAccountStatus` are orchestration entrypoints; `getPublicGameStatusView` is view-model/business-state derivation; `renderPredictionRosterFilter` delegates to the existing roster module. They are not counted as renderer implementations.
+
+The renderer candidates have no direct app-state assignments, but they are not one independent leaf:
+
+- `renderPicker` reads active-order state and edit-lock state, calls the validation module, and directly sets `draggable`, drag-handle, and position-menu disabled state. It calls Position and Drag helpers and refreshes the roster filter. Extracting it as a renderer would either move forbidden interaction/roster responsibility or require a broad callback/context surface.
+- `renderSavedPrediction` calls `setLineupValues`, which mutates lineup-slot DOM data and invokes `renderPicker`; it also calls the edit-lock policy and creates the preview. This is a cross-boundary orchestration path, not state-to-DOM reflection alone.
+- `createPredictionSummary` registers a player-detail click listener during rendering. Moving it would make the renderer own an event listener, contrary to the zero-listener goal, while separating the listener would require changing the existing interaction wiring.
+- `createSavedPredictionCanvas` is about 106 LOC and depends on canvas APIs, viewport sizing, shared player/position formatters, and the existing image-render behavior. Extracting it alone would move an implementation detail without separating the surrounding saved-result view contract.
+- `renderPredictionDeadline`, `renderPublicGameSelectionMeta`, and `renderPredictionCta` derive display state from deadline, selected-game, auth, saved-prediction and server-provided eligibility state. Copying those derivations into a leaf risks reimplementing Game Flow/server authority; passing every result through a new renderer API would add indirection without consolidating the rendering cluster.
+
+Direct renderer-to-domain dependencies therefore remain: Position (position categories/menu state), Drag (native draggable state), Validation (duplicate sets), Game Flow (deadline, selected game, edit lock), Roster (candidate filter), and app-owned persisted prediction state. No persistence endpoint is used by renderer code. Rendering uses existing DOM selectors and includes one event-listener registration in `createPredictionSummary`. Candidate state is read-only at the app-object level; DOM slot `dataset` changes remain part of the current picker orchestration.
+
+Decision: **DEFER extraction**. Moving only simple text/class setters would create a small module while leaving the meaningful renderer, state derivation, and interaction coupling in `script.js`; moving the meaningful group would violate the no-Position/no-Drag/no-listener boundary or require a callback-heavy façade. No product file, HTML load order, cache-buster, UI behavior, or production contract was changed in Phase 26.
+
+### Current rendering contract to preserve for a future reassessment
+
+- Empty, partially selected, and full lineups render their current player/position text, duplicate classes, active slot, and disabled state without changing app state.
+- Save availability and text reflect the existing lock, roster, saving/submitting state; deadline and Asia eligibility remain caller/server-authoritative.
+- Explicitly selected positions remain displayed as-is; rendering does not infer registered positions or perform autofill. Click-vs-drag behavior stays with the existing interaction handlers.
+- Saved prediction preview, player-detail interaction, and canvas/image output remain on the current path. The Daily Best Nine widget remains independent from selected personal-result state.
+- Position menu, pointer/touch/drag, roster candidate generation, Results, Best Nine, and probable-starter modules remain outside this boundary.
+
+### Suggested prerequisite before another extraction attempt
+
+First separate view-model derivation from DOM painting within the existing `script.js` ownership, and move player-detail listener registration to the existing interaction owner without changing the rendered DOM. Then add runtime fixtures that compare DOM attributes/text and relevant state for empty/partial/full lineups, missing/explicit positions, duplicate validation, saving/locked states, and saved prediction. Reassess whether `renderPicker` can then accept a small immutable view model without callbacks into Position, Drag, Roster, or Game Flow. Do not create a renderer module solely to satisfy a module-count target.

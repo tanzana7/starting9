@@ -213,7 +213,7 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
   state.predictionTargetGameId = "canonical-game";
   state.predictionTargetGame = { internalGameId: "canonical-game", date: "2099-07-21", startAt: "2099-07-21T09:00:00Z" };
   return {
-    state, operations, appState: window.publicAppState, stored, chips, elements, slots, body, createElement: element,
+    state, operations, appState: window.publicAppState, publicFrontend: window.Starting9Public, stored, chips, elements, slots, body, createElement: element,
     emitDocument: (type, event) => document.emit(type, event),
     setNow: (value) => { clock = Date.parse(value); },
     intervalDelays: () => [...timers.values()].filter((timer) => timer.interval).map((timer) => timer.delay),

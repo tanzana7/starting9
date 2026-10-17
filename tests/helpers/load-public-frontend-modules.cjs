@@ -14,6 +14,7 @@ const PUBLIC_MODULES = [
   "probable-starter.js",
   "results.js",
   "prediction-validation.js",
+  "prediction-persistence.js",
   "prediction-form.js"
 ];
 

@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const { createPublicRuntime } = require("./helpers/public-runtime.cjs");
 
 const root = path.join(__dirname, "..");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
@@ -30,11 +31,31 @@ test("締切後のフォーム操作はボタン・候補を無効化する", ()
   assert.match(roster, /button\.setAttribute\("aria-pressed"/);
 });
 
-test("締切後のアカウント同期はサーバー値を正本にし、未保存なら端末値を保存済み扱いしない", () => {
-  const sync = script.slice(script.indexOf("async function syncPredictionFromAccount"), script.indexOf("function createEmptyPredictionRemoteState"));
-  assert.match(sync, /const isPredictionClosed = remoteState\.locked \|\| currentDeadline\.status === "closed"/);
-  assert.match(sync, /state\.prediction = remoteState\.prediction/);
-  assert.match(sync, /removeFromStorage\(STORAGE_KEYS\.prediction\)/);
+test("締切後のアカウント同期はサーバー値を正本にし、未保存なら端末値を消す", async (t) => {
+  const app = createPublicRuntime({ fetchImpl: async () => ({ ok: true, json: async () => ({
+    ok: true,
+    prediction: { lineup: [{ battingOrder: 1, playerName: "サーバー予想", position: "右" }] }
+  }) }) });
+  t.after(app.dispose);
+  app.state.predictionDeadline = { status: "closed", isClosed: true };
+  app.state.prediction = { gameId: "canonical-game", lineup: [{ order: 1, player: "端末の古い予想", position: "左" }] };
+  app.stored.set("hamStarting9Prediction:game:canonical-game", JSON.stringify(app.state.prediction));
+
+  await app.operations.initializePredictionRemoteSync();
+
+  assert.equal(app.state.prediction.lineup[0].player, "サーバー予想");
+  assert.equal(app.state.predictionRemote.status, "success");
+  assert.equal(app.stored.has("hamStarting9Prediction:game:canonical-game"), true);
+  assert.equal(JSON.parse(app.stored.get("hamStarting9Prediction:game:canonical-game")).lineup[0].player, "サーバー予想");
+
+  const empty = createPublicRuntime({ fetchImpl: async () => ({ ok: true, json: async () => ({ ok: true, prediction: null }) }) });
+  t.after(empty.dispose);
+  empty.state.predictionDeadline = { status: "closed", isClosed: true };
+  empty.state.prediction = { gameId: "canonical-game", lineup: [{ order: 1, player: "端末のみ", position: "左" }] };
+  empty.stored.set("hamStarting9Prediction:game:canonical-game", JSON.stringify(empty.state.prediction));
+  await empty.operations.initializePredictionRemoteSync();
+  assert.equal(empty.state.prediction, null);
+  assert.equal(empty.stored.has("hamStarting9Prediction:game:canonical-game"), false);
   assert.match(script, /isClosedWithoutSavedPrediction = getEffectivePredictionDeadline\(\)\.status === "closed"/);
 });
 

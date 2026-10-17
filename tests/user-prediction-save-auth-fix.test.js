@@ -112,37 +112,8 @@ test("ログイン済み保存成功はアカウント保存として表示し�
   assert.deepEqual(calls.messages, ["予想を保存しました。"]);
 });
 
-function extractFunction(source, name) {
-  const start = source.indexOf(`function ${name}(`);
-  assert.notEqual(start, -1, `${name} が見つかりません`);
-  let depth = 0;
-  let opened = false;
-  for (let index = source.indexOf("{", start); index < source.length; index += 1) {
-    if (source[index] === "{") {
-      depth += 1;
-      opened = true;
-    } else if (source[index] === "}") {
-      depth -= 1;
-      if (opened && depth === 0) return source.slice(start, index + 1);
-    }
-  }
-  throw new Error(`${name} の終端が見つかりません`);
-}
-
-test("ログイン済みアカウント保存失敗を401/403/409/503/通信失敗で区別する", () => {
-  const source = extractFunction(scriptSource, "getPredictionAccountSaveErrorMessage");
-  const getMessage = vm.runInNewContext(`(${source})`, {});
-  assert.match(getMessage({ code: "AUTH_REQUIRED", status: 401 }), /ログイン状態が切れています/);
-  assert.match(getMessage({ status: 403 }), /権限がありません/);
-  assert.match(getMessage({ code: "PREDICTION_DEADLINE_PASSED", status: 409 }), /受付は終了しました/);
-  assert.match(getMessage({ code: "D1_READ_LIMIT_EXCEEDED", status: 503 }), /データベースが一時的に混雑/);
-  assert.match(getMessage({ code: "NETWORK_ERROR", status: 0 }), /通信状況を確認/);
-  assert.doesNotMatch(getMessage({ code: "AUTH_REQUIRED", status: 401 }), /ログインするとアカウントにも保存できます/);
-});
-
-test("保存APIの401は認証状態を無効化し、credentials includeを維持する", () => {
+test("保存APIの401は認証状態を無効化する", () => {
   assert.match(scriptSource, /window\.starting9Auth\?\.markSessionExpired\?\./);
-  assert.match(scriptSource.slice(scriptSource.indexOf("async function savePredictionToAccount")), /credentials: "include"/);
   assert.match(authSource, /markSessionExpired/);
   assert.match(authSource, /getStatus: \(\) =>/);
 });

@@ -265,6 +265,22 @@ test("signed-out prediction sync does not fetch or discard a local prediction", 
   assert.equal(app.state.predictionRemote.status, "idle");
 });
 
+test("late account prediction response for a previous game cannot replace the selected game's result", async (t) => {
+  const pending = [];
+  const app = createPublicRuntime({ fetchImpl: (url, options) => new Promise((resolve) => pending.push({ url, options, resolve })) });
+  t.after(app.dispose);
+  const first = app.operations.initializePredictionRemoteSync();
+  app.state.predictionTargetGameId = "game-b";
+  app.state.predictionTargetGame = { internalGameId: "game-b", date: "2099-07-22" };
+  app.state.predictionRemote = { isLoading: false, isSaving: false, isSubmitting: false, isDeleting: false, status: "idle", gameId: "game-b", prediction: null };
+  app.state.prediction = null;
+  pending[0].resolve({ ok: true, json: async () => ({ ok: true, prediction: { lineup: [{ battingOrder: 1, playerName: "A予想", position: "左" }] } }) });
+  await first;
+  assert.equal(app.state.prediction, null);
+  assert.equal(app.state.predictionRemote.gameId, "game-b");
+  assert.equal(app.state.predictionRemote.prediction, null);
+});
+
 for (const failure of ["network", "unauthorized"]) {
   test(`prediction ${failure} failure preserves local draft and releases loading state`, async () => {
     const app = createPublicRuntime({ fetchImpl: async () => {

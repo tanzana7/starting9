@@ -689,3 +689,45 @@ Verification at implementation checkpoint:
 - `node --check` passed for changed JavaScript/CJS files; `git diff --check` passed.
 
 No API/Worker, scoring, deadline policy, public behavior, production data or deployment setting changed. This phase extracts exactly one leaf; it does not begin a second Prediction module, Game Flow, Position or Drag extraction.
+
+## Prediction persistence API leaf (Phase 25)
+
+### Re-audit and decision
+
+The latest `origin/main` baseline for this phase is `30f4121e772645aeabad048a0fbfaa168aeadd4f`. The prior Phase 23 inventory correctly found that the whole persistence workflow is not a leaf: authentication readiness, selected-game identity, abort/request sequence, closed-deadline authority, local-vs-account conflict resolution, storage adoption, score result hydration and UI rendering remain coordinated by `script.js`. Moving that 10-function / roughly 311-LOC cluster would duplicate app state or introduce a callback-heavy controller. Phase 25 therefore extracts only the common API exchange boundary; it does not claim that the full persistence workflow moved.
+
+The selected leaf is `frontend/public/prediction-persistence.js`, with exactly three operations: `load`, `save`, and `remove`. It depends on the existing `apiClient` only. It owns no prediction, game, eligibility, deadline, auth, cache, storage, DOM, timer or request-sequence state. It returns the parsed successful response payload; rejected HTTP/API responses preserve the existing errors, including the save error's `code` and `status`. The application retains URL selection, auth checks, 401 session expiry handling, save-message mapping, request abort/stale guards, response-to-state conversion, and every state/UI commit.
+
+### Contract and wiring
+
+- GET remains `GET /api/predictions/current?internalGameId=<canonical id>`, with `credentials: include`, API-client `cache: no-store`, and the existing abort signal. The payload remains server-authoritative; the caller decides whether a saved prediction exists and performs current-game/stale-response checks before committing it.
+- PUT remains `PUT /api/predictions/current?internalGameId=<canonical id>`, with `credentials: include`, `Content-Type: application/json`, and `{ internalGameId, prediction }`. The module sends the already-normalized serialized prediction without understanding lineup slots or validation rules.
+- DELETE remains `DELETE` on the same canonical endpoint with `credentials: include` and no body.
+- The factory's single dependency is the existing API client. There are no server, API, validation, Game Flow or UI changes. `index.html` loads the module after `prediction-validation.js` and before `prediction-form.js` / `script.js`; the runtime loader matches that order.
+
+The frontend still owns the only `prediction` and `predictionRemote` objects. The module has no state reads/writes and no DOM selectors. Save/API transport is no longer embedded in the state/UI orchestration functions; the endpoint URL remains assembled by the existing app helper because it uses the app's established Auth API base URL. No API abstraction or new global cache was added.
+
+### Before / after measurements
+
+Measurements use the same simple textual counting method on the phase baseline and resulting files (logical lines as returned by `Get-Content`, top-level named function declarations, and direct prediction API-client call expressions):
+
+| Metric | Before | After |
+| --- | ---: | ---: |
+| `script.js` lines | 3,939 | 3,923 |
+| `script.js` top-level functions | 224 | 224 |
+| Raw account-prediction API call sites in `script.js` | 3 | 0 |
+| API call sites in persistence leaf | 0 | 3 |
+| Persistence leaf | absent | 42 lines / factory + 3 operations |
+| Leaf dependencies | — | 1 (`apiClient`) |
+| Leaf app-state reads/writes | — | 0 / 0 |
+| Leaf DOM selectors | — | 0 |
+
+This is an intentional transport-boundary extraction, not a claim of reducing the total app's function count. Changing the Prediction auth/state commit rules still belongs in `script.js` and the relevant existing state/runtime tests; changing the request method/body/credentials or payload success/error handling is now localized to the persistence leaf and its public-behavior tests.
+
+### Behavior coverage and constraints
+
+The pre-change focused runtime/auth group passed 47 cases. After the extraction, the expanded focused group passed 56 cases. Coverage includes anonymous load without fetch, no/saved prediction payloads, successful load adoption, stale old-game response rejection, PUT payload and credentials, save 401/403/409/500/network failures, DELETE success/failure, local draft retention, closed-deadline server authority, duplicate-player/position validation, repeated DH, and the existing position/drag/roster/game-flow/results/Best-Nine/probable-starter/Asia contracts. Daily Best Nine remains independent of personal result selection; no server-owned competition or prediction eligibility rule was copied into the frontend.
+
+Four temporary in-memory fault probes all failed their behavior assertion as intended: wrong save endpoint, treating a 409 as success, removing the old-game response guard, and omitting the serialized prediction field. The mutated sources were never written to the worktree.
+
+No Auth Worker, Asia Worker, NPB Worker, API contract, scoring, ranking, publication, D1, migration, Cron or production prediction data was changed. Production prediction POST/DELETE and other production mutations remain prohibited for this phase.

@@ -65,7 +65,7 @@ test("admin-v3の運用画面は公開bundleと分離して残る", () => {
 });
 
 test("公開entry scriptのcache busterを更新し、既存moduleの読み込みを維持する", () => {
-  assert.match(html, new RegExp(`script\\.js\\?v=${scriptCacheBuster}&user-save-auth-unavailable-fix-20260903.*public-ranking-admin-only-1`));
+  assert.match(html, new RegExp(`script\\.js\\?v=${scriptCacheBuster}&user-save-auth-unavailable-fix-20260903.*public-ranking-admin-only-1.*prediction-validation-leaf-1`));
   assert.match(html, new RegExp(`style\\.css\\?v=${styleCacheBuster}`));
   for (const match of html.matchAll(/frontend\/public\/[^\"']+\.js\?v=([^\"']+)/g)) {
     const expectedCacheBuster = match[0].startsWith("frontend/public/render-results.js?")
@@ -76,6 +76,8 @@ test("公開entry scriptのcache busterを更新し、既存moduleの読み込�
         ? "daily-best-nine-module-1"
       : match[0].startsWith("frontend/public/probable-starter.js?")
         ? "probable-starter-module-1"
+      : match[0].startsWith("frontend/public/prediction-validation.js?")
+        ? "prediction-validation-leaf-1"
       : match[0].startsWith("frontend/public/analytics.js?")
         ? "cf-web-analytics-1"
       : match[0].startsWith("frontend/public/app-coordinator.js?")

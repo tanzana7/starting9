@@ -47,7 +47,8 @@ async function predictionApp(t, { lineup = completeLineup, user, save } = {}) {
 for (const [label, change, message] of [
   ["missing player", (lineup) => { lineup[8].player = ""; }, /1番から9番まで全て/],
   ["missing position", (lineup) => { lineup[8].position = ""; }, /守備位置を全て/],
-  ["duplicate player", (lineup) => { lineup[8].player = lineup[0].player; }, /同じ選手/]
+  ["duplicate player", (lineup) => { lineup[8].player = lineup[0].player; }, /同じ選手/],
+  ["duplicate defensive position", (lineup) => { lineup[8].position = lineup[1].position; }, /同じ守備位置/]
 ]) {
   test(`submit rejects ${label} without saving a draft or making a PUT`, async (t) => {
     const lineup = completeLineup.map((item) => ({ ...item }));
@@ -60,6 +61,16 @@ for (const [label, change, message] of [
     assert.equal(calls.filter((call) => call.options.method === "PUT").length, 0);
   });
 }
+
+test("duplicate DH assignments remain allowed by the local lineup contract", async (t) => {
+  const lineup = completeLineup.map((item) => ({ ...item }));
+  lineup[7].position = "指";
+  lineup[8].position = "指";
+  const { app, calls, submit } = await predictionApp(t, { lineup });
+  await submit();
+  assert.equal(app.state.prediction.lineup.length, 9);
+  assert.equal(calls.filter((call) => call.options.method === "PUT").length, 1);
+});
 
 test("complete submit saves locally and remotely once; in-flight button is disabled and double submit is ignored", async (t) => {
   let finish;

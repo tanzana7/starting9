@@ -99,12 +99,6 @@ test("使用済みポジションはグレー表示でもdisabledにせず、入
   assert.doesNotMatch(usedOptionCss, /cursor:\s*not-allowed/);
 });
 
-test("保存時の既存重複検証を維持する", () => {
-  const validation = getFunctionSource("validateLineup");
-  assert.match(validation, /hasDuplicatePositions\(lineup\)/);
-  assert.match(validation, /同じ守備位置が複数回選ばれています/);
-});
-
 test("OFの空きが複数ある場合は後続の2Bへ自動入力しない", () => {
   const result = resolveAutoFillPosition(["1B", "3B", "OF", "2B"], ["一", "三"]);
   assert.deepEqual(result, { position: "", ambiguous: true });

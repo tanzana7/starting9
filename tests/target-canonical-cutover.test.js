@@ -9,14 +9,12 @@ const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 test("TARGET canonical cutover keeps an exact dual-origin allowlist", () => {
   const auth = JSON.parse(read("wrangler.auth.target.production.jsonc"));
   const npb = JSON.parse(read("wrangler.npb.target.jsonc"));
-  const asia = JSON.parse(read("asia-cs/wrangler.production.jsonc"));
-  for (const origins of [auth.vars.AUTH_ALLOWED_ORIGINS, npb.vars.NPB_ALLOWED_ORIGINS, asia.vars.ALLOWED_ORIGIN]) {
+  for (const origins of [auth.vars.AUTH_ALLOWED_ORIGINS, npb.vars.NPB_ALLOWED_ORIGINS]) {
     assert.match(origins, /https:\/\/starting9\.pages\.dev/);
     assert.match(origins, /https:\/\/starting9-app\.pages\.dev/);
     assert.doesNotMatch(origins, /\*/);
   }
 });
-
 test("Pages deployment guard targets only the permanent TARGET project", () => {
   const guard = require(path.join(root, "tooling/production-deploy.cjs"));
   assert.deepEqual(guard.ACTIONS.pages, {
@@ -46,18 +44,4 @@ test("NPB fallback and analytics recognize the new canonical host without wildca
   assert.match(npb, /https:\/\/starting9-app\.pages\.dev/);
   assert.match(analytics, /starting9-app\.pages\.dev/);
   assert.doesNotMatch(analytics, /hostname === "starting9-app\.pages\.dev"\s*\|\|\s*true/);
-});
-
-test("Asia CS health returns only the requested origin from the dual allowlist", async () => {
-  const { default: worker } = await import("../asia-cs/worker.js");
-  const env = { ALLOWED_ORIGIN: "https://starting9.pages.dev,https://starting9-app.pages.dev" };
-  for (const origin of ["https://starting9.pages.dev", "https://starting9-app.pages.dev"]) {
-    const response = await worker.fetch(new Request("https://starting9-asia-cs-api.starting9.workers.dev/api/health", { headers: { Origin: origin } }), env);
-    assert.equal(response.status, 200);
-    assert.equal(response.headers.get("Access-Control-Allow-Origin"), origin);
-    assert.equal(response.headers.get("Vary"), "Origin");
-  }
-  const unknown = await worker.fetch(new Request("https://starting9-asia-cs-api.starting9.workers.dev/api/health", { headers: { Origin: "https://evil.example" } }), env);
-  assert.equal(unknown.status, 200);
-  assert.equal(unknown.headers.get("Access-Control-Allow-Origin"), null);
 });

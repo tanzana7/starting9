@@ -59,7 +59,7 @@ When public or admin static assets change, deploy the main branch explicitly:
 npm run deploy:prod:pages
 ```
 
-The Pages Function requires `STARTING9_AUTH_ORIGIN` to be exactly `https://starting9-auth.starting9.workers.dev`. The permanent TARGET Pages project is configured with this non-secret variable and the TARGET Asia CS API origin. Missing, SOURCE, or invalid values fail closed with HTTP 503; SOURCE is retained only for an explicitly approved rollback procedure.
+The Pages Function requires `STARTING9_AUTH_ORIGIN` to be exactly `https://starting9-auth.starting9.workers.dev`. The permanent TARGET Pages project is configured with this non-secret variable. Missing, SOURCE, or invalid values fail closed with HTTP 503; SOURCE is retained only for an explicitly approved rollback procedure.
 
 Verify both the deployment URL and the production alias. Confirm the expected `script.js` and `style.css` cache busters in the production HTML.
 

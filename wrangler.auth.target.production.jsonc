@@ -32,10 +32,6 @@
   },
   "services": [
     {
-      "binding": "ASIA_CS_SERVICE",
-      "service": "starting9-asia-cs-api"
-    },
-    {
       "binding": "NPB_FETCH_WORKER",
       "service": "starting9-npb-fetch"
     }

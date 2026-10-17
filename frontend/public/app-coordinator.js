@@ -9,15 +9,6 @@
     }
 
     start() {
-      // The shell is also loaded by Asia Edition pages. Keep every NPB
-      // initialization path closed there, even if a caller starts us outside
-      // the normal DOMContentLoaded guard.
-      const edition = window.Starting9Edition;
-      if (edition) {
-        const selected = edition.resolveSelectedEdition(window.location, new Date(), "user");
-        const active = edition.active || document.documentElement.dataset.starting9Edition;
-        if (selected === edition.ASIA_CS || active === edition.ASIA_CS) return Promise.resolve(null);
-      }
       if (this.appState.requests.initialization.promise) {
         return this.appState.requests.initialization.promise;
       }

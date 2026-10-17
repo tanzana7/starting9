@@ -1,5 +1,4 @@
 import { getPredictionDeadlineStatus } from "./prediction-deadline.js";
-import { AUTH_BRIDGE_AUDIENCE, createAuthBridgeAssertion, sha256Base64Url as sha256BridgeBody } from "./backend/auth-bridge.js";
 import { PREDICTION_DEADLINE_MILLISECONDS } from "./prediction-deadline.js";
 import {
   getDueFinalLineupAttemptAt,
@@ -348,9 +347,6 @@ export async function writeV3FatalRunAudits({
 }
 
 const SESSION_COOKIE_NAME = "s9_session";
-const ASIA_CS_BRIDGE_HEADER = "X-S9-Auth-Bridge";
-const ASIA_CS_MUTATION_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
-const ASIA_CS_MAX_BRIDGE_BODY_BYTES = 256 * 1024;
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const PBKDF2_ITERATIONS = 100_000;
 const PBKDF2_MAX_ITERATIONS = 100_000;
@@ -430,164 +426,6 @@ const PERFECT_ACHIEVER_MUTATION_RETIRED_CODE = "PERFECT_ACHIEVER_MUTATION_RETIRE
 const PERFECT_ACHIEVER_MUTATION_RETIRED_MESSAGE = "満点者はサーバー側の正式採点結果から自動集計されます。";
 const MIGRATION_MAINTENANCE_CODE = "MIGRATION_MAINTENANCE";
 const MIGRATION_MAINTENANCE_MESSAGE = "現在メンテナンス中です。しばらくお待ちください。";
-
-function isAsiaCsGatewayPath(path) {
-  return path === "/api/asia-cs" || path.startsWith("/api/asia-cs/");
-}
-
-function isAsiaCsMutationMethod(method) {
-  return ASIA_CS_MUTATION_METHODS.has(String(method || "").toUpperCase());
-}
-
-function asiaCsRouteSuffix(path) {
-  return path === "/api/asia-cs" ? "/" : path.slice("/api/asia-cs".length) || "/";
-}
-
-function asiaCsUpstreamPath(path) {
-  const suffix = asiaCsRouteSuffix(path);
-  // Keep the same-origin health contract explicit. The Asia Worker exposes
-  // its public health probe at /api/health; other gateway routes retain the
-  // existing /api + suffix mapping and their authentication decisions.
-  return suffix === "/health" ? "/api/health" : `/api${suffix}`;
-}
-
-function isAsiaCsPublicRead(requestPath, method) {
-  if (!(["GET", "HEAD"].includes(String(method || "").toUpperCase()))) return false;
-  const path = asiaCsRouteSuffix(requestPath);
-  if (["/health", "/api/health", "/competition", "/games", "/rankings", "/best-nine"].includes(path)) return true;
-  return /^\/games\/[^/]+(?:\/result|\/best-nine)?$/.test(path);
-}
-
-function validateAsiaCsMutationRequest(request, env) {
-  if (!isAsiaCsMutationMethod(request.method)) return null;
-  const origin = String(request.headers.get("Origin") || "").trim();
-  const referer = String(request.headers.get("Referer") || "").trim();
-  const fetchSite = String(request.headers.get("Sec-Fetch-Site") || "").trim().toLowerCase();
-  if (fetchSite === "cross-site") return jsonResponse({ ok: false, code: "CROSS_SITE_MUTATION", error: "許可されていない操作です。" }, 403, createCorsHeaders(request, env));
-  if (origin) {
-    return isAllowedOrigin(origin, env)
-      ? null
-      : jsonResponse({ ok: false, code: "ORIGIN_NOT_ALLOWED", error: "許可されていない操作です。" }, 403, createCorsHeaders(request, env));
-  }
-  if (referer) {
-    try {
-      const refererOrigin = new URL(referer).origin;
-      if (isAllowedOrigin(refererOrigin, env)) return null;
-    } catch {
-      // Fall through to the fail-closed context check.
-    }
-  }
-  if (["same-origin", "same-site"].includes(fetchSite)) return null;
-  return jsonResponse({ ok: false, code: "CSRF_CONTEXT_REQUIRED", error: "操作元を確認できません。" }, 403, createCorsHeaders(request, env));
-}
-
-async function readAsiaBridgeBody(request) {
-  if (["GET", "HEAD"].includes(request.method)) return new Uint8Array();
-  const bytes = new Uint8Array(await request.clone().arrayBuffer());
-  if (bytes.byteLength > ASIA_CS_MAX_BRIDGE_BODY_BYTES) throw new RequestError(413, "REQUEST_BODY_TOO_LARGE", "入力が大きすぎます。");
-  return bytes;
-}
-
-function createAsiaCsGatewayRequest(request, upstreamUrl, assertion, bodyBytes) {
-  const headers = new Headers();
-  for (const name of ["accept", "content-type", "if-match", "if-none-match"]) {
-    const value = request.headers.get(name);
-    if (value) headers.set(name, value);
-  }
-  if (assertion) headers.set(ASIA_CS_BRIDGE_HEADER, assertion);
-  return new Request(upstreamUrl, {
-    method: request.method,
-    headers,
-    body: ["GET", "HEAD"].includes(request.method) ? undefined : bodyBytes,
-    redirect: "manual",
-    duplex: "half"
-  });
-}
-
-function createAsiaCsServiceRequest(request, upstreamPath, assertion, bodyBytes) {
-  const query = new URL(request.url).search;
-  // The service binding routes by binding, so this internal origin is only a
-  // request URL carrier and never a public fallback destination.
-  return createAsiaCsGatewayRequest(request, new URL(upstreamPath + query, "https://asia-cs-service.internal"), assertion, bodyBytes);
-}
-
-function getAsiaCsService(env) {
-  const service = env?.ASIA_CS_SERVICE;
-  return service && typeof service.fetch === "function" ? service : null;
-}
-
-async function handleAsiaCsGateway(request, env, cors, path) {
-  const publicRead = isAsiaCsPublicRead(path, request.method);
-  const mutation = isAsiaCsMutationMethod(request.method);
-  const csrfError = validateAsiaCsMutationRequest(request, env);
-  if (csrfError) return csrfError;
-  const user = await getSessionUser(request, env);
-  if (path === "/api/asia-cs/auth/me" && request.method === "GET") {
-    return jsonResponse({
-      ok: true,
-      authenticated: Boolean(user),
-      isAdmin: String(user?.role || "").toLowerCase() === "admin",
-      user: user ? publicUser(user) : null
-    }, 200, cors);
-  }
-
-  const secret = String(env?.ASIA_CS_AUTH_BRIDGE_SECRET || "").trim();
-  if (!publicRead && !user) return jsonResponse({ ok: false, code: "AUTH_REQUIRED", error: "ログインが必要です。" }, 401, cors);
-  if (!publicRead && !secret) return jsonResponse({ ok: false, code: "ASIA_CS_AUTH_BRIDGE_NOT_CONFIGURED", error: "Asia Edition認証連携が設定されていません。" }, 503, cors);
-  const service = getAsiaCsService(env);
-  if (!service) return jsonResponse({ ok: false, code: "ASIA_CS_GATEWAY_NOT_CONFIGURED", error: "Asia Edition APIが設定されていません。" }, 503, cors);
-  const upstreamPath = asiaCsUpstreamPath(path);
-  const bodyBytes = await readAsiaBridgeBody(request);
-  const bodyDigest = await sha256BridgeBody(bodyBytes);
-  const query = new URL(request.url).search;
-  const assertion = user && secret
-    ? await createAuthBridgeAssertion({
-      secret,
-      user,
-      method: request.method,
-      path: upstreamPath,
-      query,
-      bodyDigest,
-      audience: AUTH_BRIDGE_AUDIENCE,
-      csrfValidated: mutation
-    })
-    : "";
-  if (!publicRead && !assertion) return jsonResponse({ ok: false, code: "AUTH_BRIDGE_FAILED", error: "認証連携に失敗しました。" }, 503, cors);
-  try {
-    const upstream = await service.fetch(createAsiaCsServiceRequest(request, upstreamPath, assertion, bodyBytes));
-    const headers = applyGatewayCors(upstream.headers, cors);
-    headers.set("Cache-Control", "no-store");
-    return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers });
-  } catch (error) {
-    console.warn(`[ASIA_CS_GATEWAY] code=UPSTREAM_UNAVAILABLE message=${String(error?.message || error)}`);
-    return jsonResponse({ ok: false, code: "ASIA_CS_GATEWAY_UNAVAILABLE", error: "Asia Edition APIに接続できません。時間をおいて再試行してください。" }, 503, cors);
-  }
-}
-
-async function handleAsiaCsHealth(request, env, cors) {
-  const service = getAsiaCsService(env);
-  if (!service) {
-    const response = jsonResponse({ ok: false, code: "ASIA_CS_GATEWAY_NOT_CONFIGURED", error: "Asia Edition APIが設定されていません。" }, 503, cors);
-    response.headers.set("X-Starting9-Health-Diagnostic", "ASIA_HEALTH_SERVICE_BINDING_MISSING");
-    return response;
-  }
-  try {
-    const upstream = await service.fetch(createAsiaCsServiceRequest(request, "/api/health", "", new Uint8Array()));
-    const headers = applyGatewayCors(upstream.headers, cors);
-    headers.set("Cache-Control", "no-store");
-    // Temporary fixed-value markers distinguish a matched gateway route from
-    // a platform/router 404 without exposing target or request data.
-    headers.set("X-Starting9-Health-Diagnostic", "ASIA_HEALTH_UPSTREAM_RESPONSE");
-    headers.set("X-Starting9-Health-Diagnostic-Target-Path", "/api/health");
-    headers.set("X-Starting9-Health-Diagnostic-Upstream-Status", String(upstream.status));
-    return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers });
-  } catch (error) {
-    console.warn(`[ASIA_CS_GATEWAY] code=HEALTH_UPSTREAM_UNAVAILABLE message=${String(error?.message || error)}`);
-    const response = jsonResponse({ ok: false, code: "ASIA_CS_GATEWAY_UNAVAILABLE", error: "Asia Edition APIに接続できません。時間をおいて再試行してください。" }, 503, cors);
-    response.headers.set("X-Starting9-Health-Diagnostic", "ASIA_HEALTH_UPSTREAM_EXCEPTION");
-    return response;
-  }
-}
 
 function getBuildIdentifier(env) {
   const configured = String(env?.BUILD_COMMIT || "").trim();
@@ -923,10 +761,6 @@ export default {
       return migrationMaintenanceResponse(cors);
     }
 
-    if (path === "/api/asia-cs/health" && ["GET", "HEAD"].includes(request.method)) {
-      return await handleAsiaCsHealth(request, env, cors);
-    }
-
     if (!env.AUTH_DB) {
       return jsonResponse({ ok: false, error: "認証サービスが現在利用できません。" }, 503, cors);
     }
@@ -934,10 +768,6 @@ export default {
     try {
       const authRateLimitResponse = enforceAuthRateLimit(request, path, cors);
       if (authRateLimitResponse) return authRateLimitResponse;
-
-      if (isAsiaCsGatewayPath(path)) {
-        return await handleAsiaCsGateway(request, env, cors, path);
-      }
 
       const adminMethodAuthResponse = await requireAdminAuthForMethodMismatch(request, env, cors, path);
       if (adminMethodAuthResponse) return adminMethodAuthResponse;
@@ -25113,15 +24943,6 @@ function jsonResponse(payload, status, headers) {
   const responseHeaders = new Headers(headers);
   responseHeaders.set("Content-Type", "application/json; charset=utf-8");
   return new Response(JSON.stringify(payload), { status, headers: responseHeaders });
-}
-
-function applyGatewayCors(headers, cors) {
-  const responseHeaders = new Headers(headers);
-  const allowedOrigin = cors.get("Access-Control-Allow-Origin");
-  if (allowedOrigin) responseHeaders.set("Access-Control-Allow-Origin", allowedOrigin);
-  else responseHeaders.delete("Access-Control-Allow-Origin");
-  responseHeaders.set("Vary", "Origin");
-  return responseHeaders;
 }
 
 function createD1ReadFailureResponse(cors, failure) {

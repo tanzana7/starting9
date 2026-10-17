@@ -53,14 +53,6 @@
       return selectProbableStarterGame(deps.getGames(), now);
     }
 
-    function isNpbUserEditionActive() {
-      const edition = window.Starting9Edition;
-      if (!edition) return true;
-      const selected = edition.resolveSelectedEdition(window.location, new Date(), "user");
-      const active = edition.active || document.documentElement.dataset.starting9Edition;
-      return selected !== edition.ASIA_CS && active !== edition.ASIA_CS;
-    }
-
     function resetProbableStarterDisplay(nextGame, message = "") {
       probableStarterState.nextGame = nextGame || null;
       probableStarterState.matchedGame = null;
@@ -75,7 +67,6 @@
     }
 
     async function initializeProbableStarter() {
-      if (!isNpbUserEditionActive()) return;
       const nextGame = getPreferredProbableStarterGame();
       const currentGameId = String(probableStarterState.nextGame?.internalGameId || "");
       const nextGameId = String(nextGame?.internalGameId || "");
@@ -93,7 +84,6 @@
     }
 
     function refreshProbableStarterTarget(now = new Date()) {
-      if (!isNpbUserEditionActive()) return false;
       const nextGame = getPreferredProbableStarterGame(now);
       const currentId = String(probableStarterState.nextGame?.internalGameId || "");
       const nextId = String(nextGame?.internalGameId || "");
@@ -213,7 +203,6 @@
     }
 
     async function fetchStoredProbableStarter() {
-      if (!isNpbUserEditionActive()) return;
       const activeRequest = deps.requestState;
       if (probableStarterState.isLoading && !activeRequest?.controller?.signal?.aborted) {
         return;
@@ -323,13 +312,6 @@
     function renderProbableStarterDisplay() {
       const container = document.getElementById("probableStarterDisplay");
       if (!container) {
-        return;
-      }
-
-      if (!isNpbUserEditionActive()) {
-        container.hidden = true;
-        container.classList.add("hidden");
-        container.replaceChildren();
         return;
       }
 

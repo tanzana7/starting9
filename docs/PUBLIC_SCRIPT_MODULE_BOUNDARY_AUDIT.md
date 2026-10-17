@@ -640,3 +640,52 @@ The behavior fixtures exercise canonical public-game selection, chronological an
 ### Remaining recommendation
 
 Do not start another Game Flow extraction from this shape. If this area is revisited, first define a single owner for the selected-game transition and an explicit one-way contract with prediction, results, roster, and coordinator lifecycle. Keep the current user-visible behavior and the independent latest-published Best Nine semantics as regression contracts. Phase 22 itself is documentation-only and has no deployment implication.
+
+## Prediction leaf extraction (Phase 23)
+
+### Baseline and decomposition
+
+Baseline: `31525b97c4915a481393efadb18a6377952bb7da`, clean `main` fetched before the feature branch. The existing Phase 19 table's 59-function Prediction count was a historical inventory; this phase reclassified current declarations and did not treat that old count as a current metric.
+
+Prediction responsibilities still in the application are grouped as follows:
+
+| Responsibility | Current functions / state | Boundary assessment |
+| --- | --- | --- |
+| State and slot normalization | App-owned `state.prediction`, `state.predictionRemote`, `state.activeOrder`, `state.result`; `getLineupValues`, `setLineupValues`, `createLineupItem`, `normalizeLineup`, `normalizePickerName`, `isSavedPredictionComplete` | Keep state in app; the shared lineup normalizer also serves results, rendering, and slot interactions. |
+| Validation and duplicate projection | `validateLineup`, `hasDuplicatePlayers`, `hasDuplicatePositions`, `hasCompletePositions`, `getDuplicatedPlayers`, `getDuplicatedPositions` | Selected: deterministic lineup-local rules with no state/DOM/API/storage ownership. The two duplicate projections previously repeated the same counting rules used by save validation. |
+| Serialization and identity mapping | `createPredictionPayload`, `remotePredictionToLocal`, `predictionsMatch`, with `createPlayerId` / `getUniquePlayerData` support | Defer as a group: request serialization resolves against canonical roster/player identity, team ID prefixes, temporary-player constraints and shared normalizers. Moving the whole group would pull roster identity into the leaf; splitting out isolated conversions would be too small and would not own the payload contract. |
+| Persistence and API coordination | `initializePredictionRemoteSync`, `buildCurrentPredictionApiUrl`, `getPredictionAccountUser`, `getPredictionAccountStatus`, `waitForPredictionAuthInitialization`, `getPredictionAccountSaveErrorMessage`, `syncPredictionFromAccount`, `createEmptyPredictionRemoteState`, `savePredictionToAccount`, `deletePredictionFromAccount` | Defer: 10 functions, approximately 311 LOC, account/auth state, request guards, API calls and local/remote conflict handling. Not a leaf. |
+| Rendering | `renderPicker`, `renderPredictionRosterFilter`, `renderPredictionAccountStatus`, `updatePredictionSaveButton`, `renderSavedPrediction`, `renderPredictionCta`, `createPredictionSummary`, `createSavedPredictionPreview`, `createSavedPredictionCanvas`, `saveSavedPredictionImage` and related image helpers | Defer: DOM/canvas, app state, roster/player display and position controls are interleaved. The current slice is roughly 397 LOC across the listed core rendering/support declarations, before adjacent shared helpers. |
+| User interaction | `handlePredictionSubmit` / `resetPredictionInput` application adapters, slot assignment/clear, CTA, share, and save-image actions | Form submit/reset lifecycle is already in `prediction-form.js`; keep remaining interaction orchestration in the app. |
+| Position, drag and orchestration | Position-menu and pointer/touch/drag handlers; game switch, roster/deadline/status and result handoffs | Explicitly not extracted. Position/drag remain their own interaction concern; Game Flow remains the Phase 22 orchestration boundary. |
+
+Candidate comparison:
+
+| Candidate | Functions / approximate LOC | State / DOM / API / storage | Cross-domain dependency and risk |
+| --- | --- | --- | --- |
+| Validation + serialization | 9 declarations / about 115 LOC before extraction (six validation/duplicate functions, 51 LOC; three serialization functions, about 64 LOC) | Validation: no state, DOM, API, or storage. Serialization: no direct state/DOM/API/storage writes; it indirectly resolves the current roster/player identity. | Validation is low-risk. Whole serialization is not: roster identity and temporary-player policy are semantic dependencies. Extract only the validation leaf. |
+| Persistence / API | 10 declarations / about 311 LOC | Reads/writes prediction and prediction-remote state; API and auth/request lifecycle; local storage is mediated by existing app storage. | Multiple cross-domain callbacks and error/commit sequencing make it a controller, not a leaf. |
+| Rendering | Core group about 16 declarations / 397 LOC | Reads prediction/account/roster state; many DOM selectors and canvas; no direct API requirement for the selected core. | Calls shared player/position functions and changes prediction-facing DOM. A module would need broad callbacks or absorb position/render orchestration. |
+
+The selected six-function set is `validateLineup`, `hasDuplicatePlayers`, `hasDuplicatePositions`, `hasCompletePositions`, `getDuplicatedPlayers`, and `getDuplicatedPositions`. It was 51 LOC across the validation and picker-rendering regions. The new `frontend/public/prediction-validation.js` is also 51 LOC and has six declarations including its factory and private counting helper. Its only injected dependency is the existing `normalizeLineup` function. It has no state, DOM, network, storage, Game Flow, Position or Drag dependency; it creates no listeners, timers or cache. Its four-method public surface is `validateLineup`, `hasCompletePositions`, `getDuplicatedPlayers`, and `getDuplicatedPositions`. It owns no state. No forwarding wrappers remain in `script.js`.
+
+Duplicate marking and save validation now use one shared duplicate-set calculation. Existing rules are unchanged: every slot requires player and position; player names are unique; duplicate non-DH positions are rejected; repeated `指` remains allowed; registered roster position is not consulted. Server-owned competition status, eligibility, deadline, current target and sequential target rules are not copied into this module.
+
+### Wiring, behavior and change surface
+
+`index.html` loads the leaf before `prediction-form.js` and `script.js`; both shipped HTML and the runtime module loader preserve that order. The app passes its existing normalizer to the factory, the form controller receives the leaf's validator directly, and app render/load paths call the leaf's duplicate/complete-position methods. There is no app-owned duplicate validation implementation left and no second lineup/prediction state.
+
+The pre-change runtime focused group passed 64 cases. After extraction, the same runtime/interaction group passed 65 cases; the added assertions cover duplicate defensive positions being rejected before local save/API PUT and repeated DH being accepted. Existing tests also keep empty slots, missing positions, duplicate players, success payload shape, 401/503 behavior, position selection, click-vs-drag autofill, pointer/touch/cancel/handoff and roster reflection observable. The form tests exercise the public runtime and do not extract private validator source. The former source-string assertion for `validateLineup` was removed.
+
+Four memory-only fault probes were run and then removed from the repository: removing duplicate-player validation, required-position validation, or duplicate-position validation each allowed an invalid submit to become observable; removing the repeated-DH exception rejected a currently valid submit. All four probes detected the injected fault. No mutation fixture remains in the test tree.
+
+Before: `script.js` 3,990 lines / 230 top-level functions; local validation and duplicate projections occupied 51 lines in `script.js`. After: `script.js` 3,939 lines / 224 top-level functions; the leaf contains 51 lines / six declarations; no validation wrapper declarations remain. The module's four public methods replace six local declarations, and duplicate counting no longer has separate save/UI implementations. Validation-rule changes now have one implementation file (`frontend/public/prediction-validation.js`); wiring remains in `script.js`, and the behavior contract remains in runtime tests.
+
+Verification at implementation checkpoint:
+
+- Prediction/position/drag focused runtime group: 65 passed on the final of three consecutive runs; all three runs passed.
+- Broader regression group (modules, prediction save/auth/game ID/deadline, position, drag, game flow, results, Best Nine, roster, probable starter, coordinator, Asia sequential/integration, admin auth initialization): 207 passed, 0 failed.
+- Four temporary fault-injection probes passed; the temporary probe file was deleted after the run.
+- `node --check` passed for changed JavaScript/CJS files; `git diff --check` passed.
+
+No API/Worker, scoring, deadline policy, public behavior, production data or deployment setting changed. This phase extracts exactly one leaf; it does not begin a second Prediction module, Game Flow, Position or Drag extraction.

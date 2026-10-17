@@ -253,6 +253,7 @@ const state = {
 };
 
 const publicFrontend = window.Starting9Public;
+const publicPredictionValidation = publicFrontend.createPublicPredictionValidation({ normalizeLineup });
 const formatPlayerNameForDisplay = publicFrontend.formatPlayerNameForDisplay || ((player) => {
   if (typeof player === "object" && player !== null) return String(player.name || player.playerName || "");
   return String(player || "");
@@ -427,7 +428,7 @@ const publicPredictionFormController = publicFrontend.createPublicPredictionForm
   updatePredictionSaveButton,
   clearMessage,
   getLineupValues,
-  validateLineup,
+  validateLineup: publicPredictionValidation.validateLineup,
   showMessage,
   markDuplicateSlots,
   getCurrentGameId,
@@ -2823,40 +2824,6 @@ function normalizePickerName(pickerName) {
   return pickerName;
 }
 
-function validateLineup(lineup, label) {
-  if (lineup.some((item) => !item.player)) {
-    return `${label}は1番から9番まで全て選択してください。`;
-  }
-
-  if (lineup.some((item) => !item.position)) {
-    return `${label}は1番から9番まで守備位置を全て選択してください。`;
-  }
-
-  if (hasDuplicatePlayers(lineup)) {
-    return `${label}に同じ選手が複数回選ばれています。別の選手を選んでください。`;
-  }
-
-  if (hasDuplicatePositions(lineup)) {
-    return `${label}に同じ守備位置が複数回選ばれています。別の守備位置を選んでください。`;
-  }
-
-  return "";
-}
-
-function hasDuplicatePlayers(lineup) {
-  const playerNames = lineup.map((item) => item.player).filter(Boolean);
-  return new Set(playerNames).size !== playerNames.length;
-}
-
-function hasDuplicatePositions(lineup) {
-  const positionNames = lineup.map((item) => item.position).filter((position) => position && position !== "指");
-  return new Set(positionNames).size !== positionNames.length;
-}
-
-function hasCompletePositions(lineup) {
-  return normalizeLineup(lineup).every((item) => item.position);
-}
-
 function scoreLineup(predictionLineup, actualLineup) {
   const normalizedPrediction = normalizeScoringLineup(predictionLineup);
   const normalizedActual = normalizeScoringLineup(actualLineup);
@@ -2999,7 +2966,7 @@ function loadState() {
     state.actual.lineup = normalizeLineup(state.actual.lineup);
   }
 
-  if (state.prediction?.lineup && state.actual?.lineup && hasCompletePositions(state.prediction.lineup) && hasCompletePositions(state.actual.lineup)) {
+  if (state.prediction?.lineup && state.actual?.lineup && publicPredictionValidation.hasCompletePositions(state.prediction.lineup) && publicPredictionValidation.hasCompletePositions(state.actual.lineup)) {
     state.result = {
       ...scoreLineup(state.prediction.lineup, state.actual.lineup),
       gameId: state.result?.gameId || getCurrentGameId()
@@ -3302,8 +3269,8 @@ async function fetchGameDayRosterSnapshot(internalGameId = getGameDayRosterTarge
 function renderPicker(pickerName) {
   const lineup = getLineupValues(pickerName);
   const usedPlayers = new Set(lineup.map((item) => item.player).filter(Boolean));
-  const duplicatedPlayers = getDuplicatedPlayers(lineup);
-  const duplicatedPositions = getDuplicatedPositions(lineup);
+  const duplicatedPlayers = publicPredictionValidation.getDuplicatedPlayers(lineup);
+  const duplicatedPositions = publicPredictionValidation.getDuplicatedPositions(lineup);
   const isLocked = pickerName === "prediction" && isPredictionEditingLocked();
 
   document.querySelectorAll(`.lineup-slot[data-picker="${pickerName}"]`).forEach((slot, index) => {
@@ -3369,29 +3336,11 @@ function renderPositionButton(button, position, index) {
 }
 
 function markDuplicateSlots(pickerName, lineup) {
-  const duplicatedPlayers = getDuplicatedPlayers(lineup);
-  const duplicatedPositions = getDuplicatedPositions(lineup);
+  const duplicatedPlayers = publicPredictionValidation.getDuplicatedPlayers(lineup);
+  const duplicatedPositions = publicPredictionValidation.getDuplicatedPositions(lineup);
   document.querySelectorAll(`.lineup-slot[data-picker="${pickerName}"]`).forEach((slot) => {
     slot.classList.toggle("is-duplicate", duplicatedPlayers.has(slot.dataset.player) || duplicatedPositions.has(slot.dataset.position));
   });
-}
-
-function getDuplicatedPlayers(lineup) {
-  const counts = new Map();
-  lineup.map((item) => item.player).filter(Boolean).forEach((player) => {
-    counts.set(player, (counts.get(player) || 0) + 1);
-  });
-
-  return new Set(Array.from(counts.entries()).filter((entry) => entry[1] > 1).map((entry) => entry[0]));
-}
-
-function getDuplicatedPositions(lineup) {
-  const counts = new Map();
-  lineup.map((item) => item.position).filter((position) => position && position !== "指").forEach((position) => {
-    counts.set(position, (counts.get(position) || 0) + 1);
-  });
-
-  return new Set(Array.from(counts.entries()).filter((entry) => entry[1] > 1).map((entry) => entry[0]));
 }
 
 function isSavedPredictionComplete(prediction) {

@@ -6,7 +6,7 @@ const vm = require("node:vm");
 
 const root = path.join(__dirname, "..");
 const moduleDir = path.join(root, "frontend", "public");
-const moduleNames = ["state", "request-guard", "storage", "api-client", "app-coordinator", "render-results", "daily-best-nine", "roster", "prediction-form"];
+const moduleNames = ["state", "request-guard", "storage", "api-client", "app-coordinator", "render-results", "daily-best-nine", "roster", "prediction-validation", "prediction-form"];
 
 function load(name, { fetchImpl, storage } = {}) {
   const context = {
@@ -33,6 +33,8 @@ test("公開frontendの責務は実ファイルへ分離されている", () => 
   assert.doesNotMatch(script, /createPublicRankingRenderer/);
   assert.match(script, /createPublicRosterController/);
   assert.match(script, /createPublicPredictionFormController/);
+  assert.match(script, /createPublicPredictionValidation/);
+  assert.match(fs.readFileSync(path.join(root, "index.html"), "utf8"), /prediction-validation\.js[\s\S]*prediction-form\.js[\s\S]*script\.js/);
 });
 
 test("storageはJSON破損を安全に無視し、例外を公開状態へ伝播しない", () => {

@@ -48,7 +48,6 @@ test("account isolation cutover config carries the exact source Cron set without
   );
   assert.deepEqual(cutover.triggers, source.triggers);
   assert.deepEqual(cutover.services, [
-    { binding: "ASIA_CS_SERVICE", service: "starting9-asia-cs-api" },
     { binding: "NPB_FETCH_WORKER", service: "starting9-npb-fetch" }
   ]);
   assert.deepEqual(

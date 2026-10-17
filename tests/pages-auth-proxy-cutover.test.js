@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { onRequest, resolveAsiaCsWorkerOrigin, resolveAuthWorkerOrigin } from "../functions/api/[[path]].js";
+import { onRequest, resolveAuthWorkerOrigin } from "../functions/api/[[path]].js";
 
 const TARGET_ORIGIN = "https://starting9-auth.starting9.workers.dev";
 
@@ -11,7 +11,6 @@ test("Pages proxy requires the explicit TARGET origin and rejects SOURCE/invalid
   assert.equal(resolveAuthWorkerOrigin({ STARTING9_AUTH_ORIGIN: "https://untrusted.example" }), null);
   assert.equal(resolveAuthWorkerOrigin({ STARTING9_AUTH_ORIGIN: `${TARGET_ORIGIN}/` }), TARGET_ORIGIN);
 });
-
 test("Pages proxy preserves response and normalizes same-origin cookies for TARGET", async () => {
   const originalFetch = globalThis.fetch;
   let upstreamUrl = "";
@@ -41,7 +40,6 @@ test("Pages proxy preserves response and normalizes same-origin cookies for TARG
     globalThis.fetch = originalFetch;
   }
 });
-
 test("Pages proxy fails closed when TARGET upstream is not explicitly configured", async () => {
   const originalFetch = globalThis.fetch;
   let fetchCalled = false;
@@ -71,45 +69,4 @@ test("Pages proxy fails closed when TARGET upstream is not explicitly configured
   } finally {
     globalThis.fetch = originalFetch;
   }
-});
-
-test("Pagesは/api/asia-cs/*を既存Auth gatewayへ同一origin転送する", async () => {
-  const originalFetch = globalThis.fetch;
-  const calls = [];
-  globalThis.fetch = async (request) => {
-    calls.push(request);
-    return new Response(JSON.stringify({ ok: true, authenticated: false, user: null }), { status: 200 });
-  };
-  try {
-    const env = { STARTING9_AUTH_ORIGIN: TARGET_ORIGIN };
-    assert.equal(resolveAsiaCsWorkerOrigin({ ASIA_CS_API_ORIGIN: "https://asia-cs-api.example" }), "https://asia-cs-api.example");
-    assert.equal(resolveAsiaCsWorkerOrigin({}), null);
-    assert.equal(resolveAsiaCsWorkerOrigin({ ASIA_CS_API_ORIGIN: "http://asia-cs-api.example" }), null);
-    assert.equal(resolveAsiaCsWorkerOrigin({ ASIA_CS_API_ORIGIN: "https://asia-cs-api.example/path" }), null);
-    const response = await onRequest({
-      request: new Request("https://starting9.pages.dev/api/asia-cs/auth/me?source=pages", {
-        headers: { Cookie: "s9_session=abc%3D; unrelated=drop" }
-      }),
-      env
-    });
-    assert.equal(response.status, 200);
-    assert.equal(calls[0].url, `${TARGET_ORIGIN}/api/asia-cs/auth/me?source=pages`);
-    assert.equal(calls[0].headers.get("Cookie"), "s9_session=abc%3D");
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("PagesはAsia CS origin未設定時にfail closedし、既存Auth proxyを変えない", async () => {
-  const response = await onRequest({
-    request: new Request("https://starting9.pages.dev/api/asia-cs/auth/me"),
-    env: {}
-  });
-  assert.equal(response.status, 503);
-  assert.deepEqual(await response.json(), {
-    ok: false,
-    code: "ASIA_CS_GATEWAY_NOT_CONFIGURED",
-    error: "Asia Edition APIの認証連携が設定されていません。"
-  });
-  assert.equal(resolveAuthWorkerOrigin({ STARTING9_AUTH_ORIGIN: TARGET_ORIGIN }), TARGET_ORIGIN);
 });

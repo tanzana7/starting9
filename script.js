@@ -493,10 +493,6 @@ if (typeof window !== "undefined") {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  // The Asia Edition owns the public panel while it is selected. Do not let
-  // the NPB coordinator hydrate hidden controls or overwrite shared auth UI.
-  if (window.Starting9Edition?.active === window.Starting9Edition?.ASIA_CS
-    || document.documentElement.dataset.starting9Edition === window.Starting9Edition?.ASIA_CS) return;
   void publicAppCoordinator.start();
 });
 

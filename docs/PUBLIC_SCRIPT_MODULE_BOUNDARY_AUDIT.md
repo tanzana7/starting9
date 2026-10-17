@@ -1,5 +1,7 @@
 # Public script module boundary audit (Phases 19–20)
 
+Historical snapshot: references below describe the code and test suites at the time of each phase, not the current NPB-only product surface. Phase A-1 removed the Asia edition and its runtime; Asia-related test names/results are retained here only as historical evidence.
+
 Baseline: `2aecf82aa6df5283fdc2d0f92ec6a1ef7c039aed`.
 Scope: one public frontend domain; no server, API, scoring, CSS, storage-key or UX changes.
 
@@ -56,13 +58,12 @@ Results have multiple caches, auth-sensitive personal history and canvas/detail 
 
 Existing pattern: classic deferred script -> `window.Starting9Public` factory -> explicitly supplied dependencies -> one bootstrap-owned controller. No module-system/bundler change.
 
-`frontend/public/probable-starter.js` owns 20 moved functions:
+`frontend/public/probable-starter.js` owns 19 moved functions:
 
 - `getProbableStarterActualStartAt`
 - `getProbableStarterCutoffAt`
 - `selectProbableStarterGame`
 - `getPreferredProbableStarterGame`
-- `isNpbUserEditionActive`
 - `resetProbableStarterDisplay`
 - `initializeProbableStarter`
 - `refreshProbableStarterTarget`
@@ -93,9 +94,9 @@ The existing `state.probableStarter` object remains the sole state. `probableSta
 - Existing source URL constant: `starterSourceUrl`.
 - Shared helpers: `getAuthApiBaseUrl`, `parseJstScheduleDateTime`, `isNormalManagedSchedule`, `isScheduleGameUnavailable`, `getScheduleSortValue`, `normalizeScheduleTeamCode`, `escapeHtml`, `formatDateTime`, `formatPlayerNameForDisplay`.
 
-Browser globals are limited to the existing `window.Starting9Edition`/location boundary, `document` for the dedicated widget, `Date` and `console`. JS built-ins are unchanged. There are no hidden references to app functions or app state. Shared callbacks do not call the controller; no cycle is introduced.
+Browser globals are limited to `document` for the dedicated widget, `Date` and `console`. JS built-ins are unchanged. There are no hidden references to app functions or app state. Shared callbacks do not call the controller; no cycle is introduced.
 
-The sole selector `#probableStarterDisplay` moves to the module. Existing NPB/Asia visibility gates remain. Scheduling remains in the coordinator and the existing 30-second deadline ticker. The module creates no listeners/timers or requests during construction.
+The sole selector `#probableStarterDisplay` moves to the module. Scheduling remains in the coordinator and the existing 30-second deadline ticker. The module creates no listeners/timers or requests during construction.
 
 ## Before / after metrics
 
@@ -400,10 +401,9 @@ Each row: domain, direct caller references, direct named callees, syntactic stat
 | `getProbableStarterCutoffAt` | probable starter | `selectProbableStarterGame` | `getProbableStarterActualStartAt`, `parseJstScheduleDateTime` | — / — | — |
 | `selectProbableStarterGame` | probable starter | `getPreferredProbableStarterGame` | `getProbableStarterCutoffAt`, `isScheduleGameUnavailable`, `isNormalManagedSchedule`, `getScheduleSortValue` | — / — | — |
 | `getPreferredProbableStarterGame` | probable starter | `initializeProbableStarter`, `refreshProbableStarterTarget` | `selectProbableStarterGame` | `publicGameCatalog` / — | — |
-| `isNpbUserEditionActive` | probable starter | `initializeProbableStarter`, `refreshProbableStarterTarget`, `fetchStoredProbableStarter`, `renderProbableStarterDisplay` | — | — / — | — |
 | `resetProbableStarterDisplay` | probable starter | `initializeProbableStarter`, `refreshProbableStarterTarget` | — | `probableStarter` / `probableStarter` | — |
-| `initializeProbableStarter` | probable starter | — | `beginPublicRequest`, `getPreferredProbableStarterGame`, `isNpbUserEditionActive`, `resetProbableStarterDisplay`, `fetchStoredProbableStarter`, `renderProbableStarter` | `probableStarter` / — | — |
-| `refreshProbableStarterTarget` | probable starter | `startPredictionDeadlineTicker` | `beginPublicRequest`, `getPreferredProbableStarterGame`, `isNpbUserEditionActive`, `resetProbableStarterDisplay`, `fetchStoredProbableStarter`, `renderProbableStarter` | `probableStarter` / `probableStarter` | — |
+| `initializeProbableStarter` | probable starter | — | `beginPublicRequest`, `getPreferredProbableStarterGame`, `resetProbableStarterDisplay`, `fetchStoredProbableStarter`, `renderProbableStarter` | `probableStarter` / — | — |
+| `refreshProbableStarterTarget` | probable starter | `startPredictionDeadlineTicker` | `beginPublicRequest`, `getPreferredProbableStarterGame`, `resetProbableStarterDisplay`, `fetchStoredProbableStarter`, `renderProbableStarter` | `probableStarter` / `probableStarter` | — |
 | `refreshPredictionTarget` | game selection | `startPredictionDeadlineTicker` | `beginPublicRequest`, `isCurrentPublicRequest`, `initializeRosterCandidateSync`, `resolvePredictionTargetGame`, `getLoadedGameSchedule`, `getPreferredPublicGameSelection`, `setPublicCurrentGame`, `renderAll`, `refreshGameDayNoticeStatus` | `publicGameCatalog`, `predictionTargetGame`, `predictionTargetGameId`, `predictionTargetNotice` / `predictionTargetNotice` | — |
 | `resolvePredictionTargetGame` | game selection | `refreshPredictionTarget` | — | — / — | — |
 | `getLoadedGameSchedule` | game selection | `refreshPredictionTarget` | — | — / — | — |
@@ -427,7 +427,7 @@ Each row: domain, direct caller references, direct named callees, syntactic stat
 | `buildProbableStarterApiUrl` | probable starter | `fetchStoredProbableStarter` | `getAuthApiBaseUrl` | — / — | — |
 | `applyStoredProbableStarter` | probable starter | `fetchStoredProbableStarter` | — | `probableStarter` / `probableStarter` | — |
 | `getProbableStarterReferenceDiagnostics` | probable starter | `fetchStoredProbableStarter` | `normalizeScheduleTeamCode`, `parseJstScheduleDateTime` | — / — | — |
-| `fetchStoredProbableStarter` | probable starter | `initializeProbableStarter`, `refreshProbableStarterTarget` | `beginPublicRequest`, `isCurrentPublicRequest`, `isNpbUserEditionActive`, `buildProbableStarterApiUrl`, `applyStoredProbableStarter`, `getProbableStarterReferenceDiagnostics`, `renderProbableStarter` | `probableStarter` / `probableStarter` | — |
+| `fetchStoredProbableStarter` | probable starter | `initializeProbableStarter`, `refreshProbableStarterTarget` | `beginPublicRequest`, `isCurrentPublicRequest`, `buildProbableStarterApiUrl`, `applyStoredProbableStarter`, `getProbableStarterReferenceDiagnostics`, `renderProbableStarter` | `probableStarter` / `probableStarter` | — |
 | `normalizeScheduleTeamCode` | game selection | `getProbableStarterReferenceDiagnostics` | — | — / — | — |
 | `getFightersStarter` | probable starter | `renderProbableStarterDisplay` | — | — / — | — |
 | `formatScheduledGameForLog` | probable starter | `renderProbableStarterNotice` | — | — / — | — |
@@ -519,7 +519,7 @@ Each row: domain, direct caller references, direct named callees, syntactic stat
 | `renderPredictionTargetNotice` | game selection | `renderAll` | — | `predictionTargetNotice` / — | `predictionTargetNotice` |
 | `renderProbableStarter` | probable starter | `initializeProbableStarter`, `refreshProbableStarterTarget`, `fetchStoredProbableStarter`, `renderAll` | `renderProbableStarterDisplay` | — / — | — |
 | `deriveProbableStarterViewState` | probable starter | `renderProbableStarterDisplay` | — | — / — | — |
-| `renderProbableStarterDisplay` | probable starter | `renderProbableStarter` | `isNpbUserEditionActive`, `getFightersStarter`, `deriveProbableStarterViewState`, `renderProbableStarterNotice`, `createProbableStarterHeadingHtml`, `createProbableStarterTeamHtml`, `formatProbableStarterDate`, `formatDateTime`, `escapeHtml` | `probableStarter` / — | `probableStarterDisplay` |
+| `renderProbableStarterDisplay` | probable starter | `renderProbableStarter` | `getFightersStarter`, `deriveProbableStarterViewState`, `renderProbableStarterNotice`, `createProbableStarterHeadingHtml`, `createProbableStarterTeamHtml`, `formatProbableStarterDate`, `formatDateTime`, `escapeHtml` | `probableStarter` / — | `probableStarterDisplay` |
 | `renderProbableStarterNotice` | probable starter | `renderProbableStarterDisplay` | `formatScheduledGameForLog`, `createProbableStarterHeadingHtml`, `formatDateTime`, `escapeHtml` | `probableStarter` / — | — |
 | `createProbableStarterHeadingHtml` | probable starter | `renderProbableStarterDisplay`, `renderProbableStarterNotice` | — | — / — | — |
 | `createProbableStarterTeamHtml` | probable starter | `renderProbableStarterDisplay` | `escapeHtml` | — / — | — |
@@ -635,7 +635,7 @@ The Daily Best Nine boundary from Phase 21 is preserved: it fetches/renders its 
 - `git diff --check`: passed.
 - No before/after runtime comparison is claimed because no product implementation changed.
 
-The behavior fixtures exercise canonical public-game selection, chronological and deadline-based selection, empty/error catalogs, stale request handling, actual-start probable-starter transitions, personal result detail/cache isolation, latest-game Best Nine independence, roster response races, prediction save failures, pointer/touch interactions, and Asia edition/prediction boundaries. Existing tests continue to be the behavioral evidence; no new test hook or private-function extraction is introduced by this audit.
+The behavior fixtures exercise canonical public-game selection, chronological and deadline-based selection, empty/error catalogs, stale request handling, actual-start probable-starter transitions, personal result detail/cache isolation, latest-game Best Nine independence, roster response races, prediction save failures, and pointer/touch interactions. Existing tests continue to be the behavioral evidence; no new test hook or private-function extraction is introduced by this audit.
 
 ### Remaining recommendation
 

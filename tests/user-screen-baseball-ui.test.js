@@ -16,6 +16,13 @@ test("通常画面の野球UI調整は管理画面クラスの外側に限定さ
   assert.doesNotMatch(normalScreenCss, /\.admin-details\s*\{/);
 });
 
+test("公開shellはNPB単独でedition switchとAsia assetを読み込まない", () => {
+  assert.doesNotMatch(html, /Asia Edition|APBC|data-edition-select|edition-config|edition-shell|asia-cs/i);
+  assert.match(html, /<main class="container app-layout">/);
+  assert.match(html, /style\.css\?v=public-single-game-1[\s\S]*npb-only-phase-a1/);
+  assert.match(html, /script\.js\?v=public-single-game-1&user-save-auth-unavailable-fix-20260903[\s\S]*npb-only-phase-a1/);
+});
+
 test("予想入力に必要な既存のIDと動的要素の参照を維持する", () => {
   for (const id of [
     "predictionForm",
@@ -210,7 +217,7 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-single-game-1-public-position-menu-left-clamp-1-bat-line-1-player-number-1-player-details-1-bat-line-row-accent-1-public-selected-highlight-1-public-ranking-unqualified-cleanup-1-public-prediction-height-15-1-public-save-button-layout-1-public-save-button-lower-1-public-save-button-mobile-spacing-1-cf-web-analytics-1-public-login-cta-1-public-best-nine-count-hidden-1-asia-user-shell-lock-1-apbc-prediction-ux-1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-single-game-1[^"]*npb-only-phase-a1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],

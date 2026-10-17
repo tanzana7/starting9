@@ -8,7 +8,7 @@ const settle = async () => { await new Promise(setImmediate); await new Promise(
 
 // Use the shipped admin-v3 HTML as the only DOM fixture. This keeps runtime
 // coverage honest when IDs are retired or a renderer expects a real form.
-function canonicalAdmin({ authenticated = true, withCoordinator = false, coordinatorActions = {}, scriptTransform = (file, source) => source } = {}) {
+function canonicalAdmin({ withCoordinator = false, coordinatorActions = {} } = {}) {
   const html = read("admin-v3.html");
   function node(attributes = "") {
     const listeners = new Map();
@@ -27,7 +27,6 @@ function canonicalAdmin({ authenticated = true, withCoordinator = false, coordin
   for (const [form, body] of [...html.matchAll(/<form\b[^>]*id="([^"]+)"[^>]*>([\s\S]*?)<\/form>/g)].map((m) => [m[1], m[2]])) {
     for (const [tag, name] of [...body.matchAll(/<(?:input|select|textarea)\b[^>]*name="([^"]+)"[^>]*>/g)]) elements.get(form).elements[name] = node(tag);
   }
-  if (elements.get("competitionForm")) elements.get("competitionForm").elements.status.value = "draft";
   const documentEvents = node();
   const unknownIds = [];
   const document = {
@@ -36,33 +35,19 @@ function canonicalAdmin({ authenticated = true, withCoordinator = false, coordin
     querySelector() { return null; }, querySelectorAll(selector) { return selector === ".admin-only" ? panels : []; },
     elementFromPoint() { return null; }, addEventListener: (...args) => documentEvents.addEventListener(...args)
   };
-  const calls = [];
-  let fixtureReady = false;
-  const window = { location: { href: "https://starting9.test/admin-v3.html?edition=asia" }, history: { replaceState() {} }, confirm: () => true, addEventListener() {} };
+  const window = { location: { href: "https://starting9.test/admin-v3.html" }, history: { replaceState() {} }, confirm: () => true, addEventListener() {} };
   const context = vm.createContext({ window, globalThis: window, document, URL, Date, console, Map, Set, Number,
     Option: class { constructor(text, value) { this.text = text; this.value = value; } },
     FormData: class { constructor(form) { this.entries = Object.entries(form.elements).map(([key, value]) => [key, value.value]); } [Symbol.iterator]() { return this.entries[Symbol.iterator](); } },
-    fetch: async (url, options = {}) => {
-      calls.push({ url, options });
-      let payload;
-      if (url === "/api/asia-cs/auth/me") payload = { ok: true, isAdmin: authenticated, user: authenticated ? { id: "admin" } : null };
-      else if (url === "/api/asia-cs/admin/overview?competitionId=apbc-2026") payload = { competition: { id: "apbc-2026", displayName: "APBC", status: "draft" }, teams: [{ id: "jpn" }, { id: "kor" }], games: [{ id: "game-1", title: "GAME2", status: "scheduled" }, { id: "game-2", title: "GAME4", status: "scheduled" }] };
-      else if (url === "/api/asia-cs/admin/dry-run/fixture") { if (options.method === "POST") fixtureReady = true; payload = { ready: fixtureReady, fixture: { exists: fixtureReady, ready: fixtureReady, status: "draft", games: [] } }; }
-      else if (url === "/api/asia-cs/admin/dry-run/fixture/activate") payload = { fixture: { exists: true, ready: true, status: "active", games: [] } };
-      else if (url === "/api/asia-cs/admin/placement-games") payload = { game: { title: "決勝" } };
-      else throw new Error(`Unexpected API ${url}`);
-      return { ok: true, json: async () => payload };
-    }
   });
-  for (const file of ["frontend/shared/edition.js", "frontend/admin-v3/edition-shell.js", "asia-cs/public/admin-action-guardrails.js", "asia-cs/public/admin.js"]) vm.runInContext(scriptTransform(file, read(file)), context, { filename: file });
   let coordinator;
   if (withCoordinator) {
     const state = { rankingReset: {}, perfectScorePreview: {}, manualLineup: {}, manualRoster: {}, lineupCorrection: {}, rankingTestUsers: {} };
     const actions = new Proxy(coordinatorActions, { get(target, property) { return target[property] || (() => {}); } });
-    vm.runInContext(scriptTransform("frontend/admin-v3/app-coordinator.js", read("frontend/admin-v3/app-coordinator.js")), context, { filename: "frontend/admin-v3/app-coordinator.js" });
+    vm.runInContext(read("frontend/admin-v3/app-coordinator.js"), context, { filename: "frontend/admin-v3/app-coordinator.js" });
     coordinator = context.window.Starting9AdminV3.createAdminV3Coordinator({ document, window, state, actions });
   }
-  return { calls, elements, unknownIds, panels, window, context, coordinator, emitDocument: (type, event) => documentEvents.emit(type, event) };
+  return { elements, unknownIds, panels, window, context, coordinator, emitDocument: (type, event) => documentEvents.emit(type, event) };
 }
 
 module.exports = { canonicalAdmin, settle };

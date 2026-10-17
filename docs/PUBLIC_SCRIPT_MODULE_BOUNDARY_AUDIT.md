@@ -763,3 +763,19 @@ Decision: **DEFER extraction**. Moving only simple text/class setters would crea
 ### Suggested prerequisite before another extraction attempt
 
 First separate view-model derivation from DOM painting within the existing `script.js` ownership, and move player-detail listener registration to the existing interaction owner without changing the rendered DOM. Then add runtime fixtures that compare DOM attributes/text and relevant state for empty/partial/full lineups, missing/explicit positions, duplicate validation, saving/locked states, and saved prediction. Reassess whether `renderPicker` can then accept a small immutable view model without callbacks into Position, Drag, Roster, or Game Flow. Do not create a renderer module solely to satisfy a module-count target.
+
+## Prediction rendering interaction ownership (Phase 27)
+
+### Selected blocker and implementation
+
+Candidate A was selected: the saved-prediction summary's player-detail click listener was registered on its `<ul>` during `createPredictionSummary`. That function is called from the Results renderer, so repeated replacement of the summary repeatedly created short-lived listeners and made rendering own an interaction. Candidates B and C were not changed.
+
+The player-detail action now uses the existing document click interaction owner in `bindEvents`, alongside the existing outside-click close for position menus. It resolves the nearest `[data-player-detail-only]` from the event target, preserves the same `showPlayerDetails("prediction", playerName, { allowSelect: false })` call, and then performs the pre-existing position-menu close. The rendered summary markup, data attribute, click region, player identity, detail destination and non-selectable behavior are unchanged. No module, event bus, API, or app state was added.
+
+### Runtime evidence and metrics
+
+The public runtime harness now loads the player-detail/display assets used by the page and exposes listener counts for assertions. A runtime result fixture renders an unavailable game's saved prediction, verifies the existing detail-trigger markup, re-renders the result 100 times, and dispatches a nested-child click. It confirms zero click listeners on the generated summary list, one document click listener after all renders, the correct player detail opening with selection disabled, and identical summary markup across re-renders. Because the interaction listener no longer belongs to summary nodes, replacing those nodes cannot strand the action on stale nodes.
+
+At this phase baseline, `script.js` was 3,924 lines with 209 top-level function declarations; afterward it is 3,923 lines with 209 declarations. The rendering-focused group remains the 13 Phase 26 candidates. Its render-owned listener sites changed from one (`createPredictionSummary`) to zero; the existing document-level click registration remains one and is now also the owner of player-detail interaction. The selected renderer has no direct app-state writes. This change does not remove DOM construction or the other Position, Drag, Roster, Validation, Game Flow, and app-owned prediction state dependencies. The renderer is not extracted in this phase.
+
+The result-detail runtime test and `player-details.test.js` cover the delegated path. Candidate A is the only blocker addressed; renderer extraction remains deferred because the cross-domain dependencies and `renderSavedPrediction` DOM lifecycle described in Phase 26 remain.

@@ -54,6 +54,10 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
         if (!listeners.has(type)) listeners.set(type, []);
         listeners.get(type).push(handler);
       },
+      listenerCount(type) { return (listeners.get(type) || []).length; },
+      async dispatchLocalEvent(type, event) {
+        await Promise.all((listeners.get(type) || []).map((handler) => handler(event)));
+      },
       async emit(type, event = {}) {
         const results = (listeners.get(type) || []).map((handler) => handler({ preventDefault() {}, stopPropagation() {}, ...event }));
         await Promise.all(results);
@@ -64,6 +68,19 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
         dispatched.stopPropagation = () => { dispatched.propagationStopped = true; };
         const results = (listeners.get(dispatched.type) || []).map((handler) => handler(dispatched));
         await Promise.all(results);
+        return !dispatched.defaultPrevented;
+      },
+      async dispatchBubblingEvent(event) {
+        const dispatched = { ...event, target: event.target || this, defaultPrevented: false };
+        dispatched.preventDefault = () => { dispatched.defaultPrevented = true; };
+        dispatched.stopPropagation = () => { dispatched.propagationStopped = true; };
+        let current = this;
+        while (current) {
+          await current.dispatchLocalEvent(dispatched.type, dispatched);
+          if (dispatched.propagationStopped) break;
+          current = current.parentElement;
+        }
+        if (!dispatched.propagationStopped) await document.emit(dispatched.type, dispatched);
         return !dispatched.defaultPrevented;
       },
       append(...children) { children.forEach((child) => this.appendChild(child)); },
@@ -96,7 +113,7 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
         let current = this;
         while (current) {
           if (selectors.some((candidate) => current.matches?.(candidate))) return current;
-          const key = { "[data-result-history-select]": "resultHistorySelect", "[data-result-history-toggle]": "resultHistoryToggle" }[selector];
+          const key = { "[data-result-history-select]": "resultHistorySelect", "[data-result-history-toggle]": "resultHistoryToggle", "[data-player-detail-only]": "playerDetailOnly" }[selector];
           if (key && Object.hasOwn(current.dataset, key)) return current;
           current = current.parentElement;
         }
@@ -174,6 +191,7 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
       if (!documentListeners.has(type)) documentListeners.set(type, []);
       documentListeners.get(type).push(handler);
     },
+    listenerCount(type) { return (documentListeners.get(type) || []).length; },
     async emit(type, event = {}) {
       const results = (documentListeners.get(type) || []).map((handler) => handler({ preventDefault() {}, stopPropagation() {}, ...event }));
       await Promise.all(results);
@@ -188,10 +206,16 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
     },
     elementFromPoint: () => pointTarget,
     getElementById: (id) => elements.get(id) || null,
-    createElement: (tagName) => tagName === "canvas" && canvasFactory ? canvasFactory() : element(),
+    createElement: (tagName) => {
+      if (tagName === "canvas" && canvasFactory) return canvasFactory();
+      const created = element();
+      created.tagName = String(tagName || "div").toUpperCase();
+      return created;
+    },
     createDocumentFragment: () => Object.assign(element(), { nodeType: 11, tagName: "#document-fragment" }),
     querySelectorAll: (selector) => {
       if (positionMenuRuntime) return body.querySelectorAll(selector);
+      if ([".position-menu", ".position-button", ".player-detail-overlay"].includes(selector)) return body.querySelectorAll(selector);
       if (selector === '.player-chip[data-picker="prediction"]') return chips;
       if (selector === '.lineup-slot[data-picker="prediction"]') return slots;
       return [];
@@ -206,7 +230,7 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
     fetch: fetchImpl || (async () => { throw new Error("Unexpected request"); })
   });
   loadPublicFrontendModules(context, root, scriptTransform);
-  for (const file of ["players.js", "script.js"]) {
+  for (const file of ["players.js", "frontend/public/fighters-player-details.js", "frontend/public/player-display.js", "script.js"]) {
     vm.runInContext(scriptTransform(file, fs.readFileSync(path.join(root, file), "utf8")), context, { filename: file });
   }
   const { state, operations } = window.publicAppCoordinator;
@@ -215,6 +239,7 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
   return {
     state, operations, appState: window.publicAppState, publicFrontend: window.Starting9Public, stored, chips, elements, slots, body, createElement: element,
     emitDocument: (type, event) => document.emit(type, event),
+    documentListenerCount: (type) => document.listenerCount(type),
     setNow: (value) => { clock = Date.parse(value); },
     intervalDelays: () => [...timers.values()].filter((timer) => timer.interval).map((timer) => timer.delay),
     async tickIntervals() {

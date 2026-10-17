@@ -312,6 +312,7 @@ const publicStorage = {
 const appState = publicFrontend.state.createPublicAppState(state);
 const publicRequestGuard = publicFrontend.createPublicRequestGuard(appState.requests);
 const publicApiClient = publicFrontend.createPublicApiClient();
+const publicPredictionPersistence = publicFrontend.createPublicPredictionPersistence({ apiClient: publicApiClient });
 
 function syncPublicAppState() {
   publicFrontend.state.syncPublicAppState(appState, state);
@@ -2443,10 +2444,7 @@ async function syncPredictionFromAccount({ force = false } = {}) {
   renderPredictionAccountStatus();
 
   try {
-    const { response, payload } = await publicApiClient.get(url, { credentials: "include", signal: request.signal });
-    if (!response.ok || !payload?.ok) {
-      throw new Error(payload?.error || `HTTP ${response.status}`);
-    }
+    const payload = await publicPredictionPersistence.load(url, request.signal);
     if (!isCurrentPublicRequest("account", request.id) || getCurrentGameId() !== gameId) return;
 
     remoteState.status = "success";
@@ -2647,19 +2645,8 @@ async function savePredictionToAccount(prediction = state.prediction, { allowAut
   updatePredictionSaveButton();
 
   try {
-    const { response, payload } = await publicApiClient.request(url, {
-      method: "PUT",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      // Retired request shape: body: JSON.stringify({ gameId, prediction: predictionPayload.prediction })
-      body: JSON.stringify({ internalGameId: gameId, prediction: predictionPayload.prediction })
-    });
-    if (!response.ok || !payload?.ok) {
-      const error = new Error(payload?.error || `HTTP ${response.status}`);
-      error.code = payload?.code || "PREDICTION_SAVE_FAILED";
-      error.status = response.status;
-      throw error;
-    }
+    // Persistence owns only the API exchange; this function remains the sole app-state/UI coordinator.
+    const payload = await publicPredictionPersistence.save(url, gameId, predictionPayload.prediction);
 
     state.predictionRemote.status = "success";
     state.predictionRemote.gameId = gameId;
@@ -2698,10 +2685,7 @@ async function deletePredictionFromAccount(gameId) {
   state.predictionRemote.message = "アカウントの予想を削除中...";
   renderPredictionAccountStatus();
   try {
-    const { response, payload } = await publicApiClient.request(url, { method: "DELETE", credentials: "include" });
-    if (!response.ok || !payload?.ok) {
-      throw new Error(payload?.error || `HTTP ${response.status}`);
-    }
+    await publicPredictionPersistence.remove(url);
     state.predictionRemote = createEmptyPredictionRemoteState();
     state.predictionRemote.status = "success";
     state.predictionRemote.gameId = gameId;

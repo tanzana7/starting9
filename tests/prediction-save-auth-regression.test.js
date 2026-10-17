@@ -9,6 +9,7 @@ const workerSource = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 const clientSource = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const htmlSource = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const { default: worker } = await import(pathToFileURL(path.join(root, "auth-worker.js")).href);
+const { createPublicRuntime } = await import(pathToFileURL(path.join(root, "tests", "helpers", "public-runtime.cjs")).href);
 
 function createPredictionSaveDb() {
   const internalGameId = "c099db0c-da34-425c-bd38-69e29ddc1064";
@@ -93,12 +94,20 @@ test("ログイン済みユーザーはcanonical internalGameIdで予想を保�
   assert.equal(payload.internalGameId, "c099db0c-da34-425c-bd38-69e29ddc1064");
 });
 
-test("予想保存はcookie credentialsとcanonical internalGameIdを使う", () => {
-  const save = clientSource.slice(clientSource.indexOf("async function savePredictionToAccount"), clientSource.indexOf("async function deletePredictionFromAccount"));
-  assert.match(save, /credentials: "include"/);
-  assert.match(save, /body: JSON\.stringify\(\{ internalGameId: gameId, prediction:/);
-  assert.match(save, /error\.code = payload\?\.code/);
-  assert.match(save, /getPredictionAccountSaveErrorMessage/);
+test("予想Persistence runtimeはcookie credentialsとcanonical internalGameIdを維持する", async (t) => {
+  const app = createPublicRuntime();
+  t.after(app.dispose);
+  const calls = [];
+  const persistence = app.publicFrontend.createPublicPredictionPersistence({
+    apiClient: { request: async (...args) => {
+      calls.push(args);
+      return { response: { ok: true, status: 200 }, payload: { ok: true } };
+    } }
+  });
+  await persistence.save("https://starting9.test/api/predictions/current?internalGameId=game-1", "game-1", { lineup: [] });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][1].credentials, "include");
+  assert.deepEqual(JSON.parse(calls[0][1].body), { internalGameId: "game-1", prediction: { lineup: [] } });
 });
 
 test("認証・締切・対象試合エラーを画面側で分離し、local保存を保持する", () => {

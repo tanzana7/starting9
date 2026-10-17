@@ -113,6 +113,25 @@ for (const status of [401, 503]) {
   });
 }
 
+for (const scenario of [
+  { name: "forbidden", status: 403, code: "FORBIDDEN", expected: /権限がありません/ },
+  { name: "deadline conflict", status: 409, code: "PREDICTION_NOT_OPEN", expected: /アカウント保存に失敗しました/ },
+  { name: "network failure", network: true, expected: /通信状況を確認/ },
+  { name: "server failure", status: 500, code: "PREDICTION_SAVE_FAILED", expected: /時間をおいて再試行/ }
+]) {
+  test(`save ${scenario.name} retains the local prediction and actionable message`, async (t) => {
+    const { app, submit } = await predictionApp(t, {
+      save: () => scenario.network
+        ? Promise.reject(new TypeError("offline"))
+        : ({ ok: false, status: scenario.status, json: async () => ({ ok: false, code: scenario.code }) })
+    });
+    await submit();
+    assert.equal(app.state.prediction.lineup.length, 9);
+    assert.match(app.elements.get("predictionError").textContent, scenario.expected);
+    assert.equal(app.state.predictionRemote.isSaving, false);
+  });
+}
+
 test("account restore does not replace an existing local prediction", async (t) => {
   const app = createPublicRuntime({ fetchImpl: async () => ({ ok: true, json: async () => ({ ok: true, prediction: { lineup: [{ playerName: "別の予想", battingOrder: 1, position: "指" }] } }) }) });
   t.after(app.dispose);

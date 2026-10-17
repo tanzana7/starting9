@@ -9,6 +9,7 @@ const workerPath = path.join(root, "auth-worker.js");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const worker = fs.readFileSync(workerPath, "utf8");
 const { getResolvedPredictionDeadlineStatus, parsePredictionGameId, resolveApiGameReference, resolvePredictionGameMetadata } = await import(pathToFileURL(workerPath).href);
+const { createPublicRuntime } = await import(pathToFileURL(path.join(root, "tests", "helpers", "public-runtime.cjs")).href);
 
 function createScheduleDb({ directRow = null, candidateRows = [] } = {}) {
   return {
@@ -205,9 +206,17 @@ test("V2の日本語チーム名を含むgames行から8月4日の内部試合ID
   assert.equal(resolved.startAt, "2026-08-04T09:00:00.000Z");
 });
 
-test("対象試合APIはV3のinternalGameIdを保存処理へ送信する", () => {
-  assert.match(script, /function getCurrentGameId\(\)[\s\S]*state\.predictionTargetGame\?\.internalGameId/);
-  assert.match(script, /body: JSON\.stringify\(\{ internalGameId: gameId, prediction: predictionPayload\.prediction \}\)/);
+test("選択中の対象試合はcanonical internalGameIdで予想APIを読む", async (t) => {
+  const calls = [];
+  const app = createPublicRuntime({ fetchImpl: async (url, options) => {
+    calls.push({ url, options });
+    return { ok: true, json: async () => ({ ok: true, prediction: null }) };
+  } });
+  t.after(app.dispose);
+  await app.operations.initializePredictionRemoteSync();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://starting9.test/api/predictions/current?internalGameId=canonical-game");
+  assert.equal(calls[0].options.credentials, "include");
   assert.match(worker, /reference = await resolveV3PredictionReference\(env\.AUTH_DB, input\?\.internalGameId\)/);
   assert.match(worker, /internalGameId: metadata\.internalGameId \|\| ""/);
   assert.match(worker, /const storageGameId = metadata\.internalGameId && existing\?\.game_id/);

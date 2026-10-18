@@ -244,8 +244,10 @@ async function runPipeline(env, { target = "published", failAt = "" } = {}) {
     ? ["ranking_rebuild", "publish"]
     : target === "ranked"
       ? ["publish"]
-      : target === "closed" || target === "lineup-ready"
+      : target === "closed"
         ? ["lineup_finalize", "score", "ranking_rebuild", "publish"]
+        : target === "lineup-ready"
+          ? ["lineup_finalize", "ranking_rebuild", "publish"]
         : [];
   let injected = false;
   let latest;
@@ -255,6 +257,7 @@ async function runPipeline(env, { target = "published", failAt = "" } = {}) {
       gameListOptions: { includeRecentHistory: true },
       formalPlanner: (db, games, at) => planMainWorkflowJobs(db, games, at, { disabledStages }),
       auxiliaryPlanner: async () => ({ created: 0, planned: [], diagnostics: [], errors: [] }),
+      disabledJobTypes: target === "lineup-ready" ? ["score"] : [],
       executeJob: async (context) => {
         if (!injected && failAt && String(context.job?.job_type) === failAt) {
           injected = true;
@@ -324,7 +327,10 @@ async function applyScenario(request, env, ctx, scenario) {
       .bind(INTERNAL_GAME_ID).first();
     if (!existingLineup?.final_lineup_revision_id) await finalizeSyntheticLineup(request, env, ctx);
   }
-  if (scenario === "lineup-ready") await markManualLineupReadyScenario(env.AUTH_DB);
+  if (scenario === "lineup-ready") {
+    await markManualLineupReadyScenario(env.AUTH_DB);
+    await runPipeline(env, { target: "lineup-ready" });
+  }
   if (["scored", "ranked", "published"].includes(scenario)) {
     const target = scenario;
     await runPipeline(env, { target });

@@ -112,13 +112,6 @@ async function deleteScenarioRows(db) {
   if (statements.length) await db.batch(statements);
 }
 
-async function deleteScenarioAuditRows(db) {
-  // Test resets must not leave synthetic E2E audit entries carrying the
-  // temporary operator identity after the corresponding game is re-seeded.
-  await db.prepare("DELETE FROM game_automation_v3_audit WHERE internal_game_id = ?1")
-    .bind(INTERNAL_GAME_ID).run();
-}
-
 async function seedScenarioGame(db, offsetMinutes) {
   const { now, startAt, deadlineAt, gameDate } = currentTimes(offsetMinutes);
   const roster = JSON.stringify(TEST_PLAYERS);
@@ -534,7 +527,6 @@ async function handleTestControl(request, env, ctx) {
   if (url.pathname === "/api/test/reset" && request.method === "POST") {
     if (!await requireTestAdmin(request, env, ctx)) return jsonResponse({ ok: false, code: "ADMIN_REQUIRED" }, 401, origin);
     await deleteScenarioRows(env.AUTH_DB);
-    await deleteScenarioAuditRows(env.AUDIT_DB);
     const game = await seedScenarioGame(env.AUTH_DB, 180);
     return jsonResponse({ ok: true, scenario: "open", game }, 200, origin);
   }

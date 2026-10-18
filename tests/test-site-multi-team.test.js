@@ -109,8 +109,6 @@ test("isolated teams keep distinct games/rosters/predictions and use the formal 
       assert.equal(status.game.state, "scheduled");
       const history = await f.request(key, "/api/results/games");
       assert.equal(history.games.some((entry) => entry.internalGameId === testTeamFixture(key).internalGameId), false);
-      assert.equal(f.audit.prepare("SELECT COUNT(*) AS count FROM game_automation_v3_audit WHERE internal_game_id = ?")
-        .get(testTeamFixture(key).internalGameId).count, 0);
     }
   } finally { f.database.close(); f.audit.close(); }
 });

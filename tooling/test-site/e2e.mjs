@@ -95,12 +95,12 @@ async function exerciseTeam(teamKey, round) {
   assert.ok(ownPrediction.payload.prediction?.lineup?.length >= 9);
   assert.equal(ownPrediction.payload.score, 99);
 
-  const history = await call(`/api/results/games${teamQuery}`);
+  const history = await call(`/api/results/games${teamQuery}`, { admin: true });
   const historyRow = history.payload.games?.find((item) => item.internalGameId === fixture.internalGameId);
   assert.ok(historyRow, `${teamKey}: published result must appear in history`);
   assert.match(historyRow.displayLabel, new RegExp(team.shortName));
   assert.equal(historyRow.gameLabel, historyRow.displayLabel);
-  const detail = await call(`/api/results/games/${fixture.internalGameId}${teamQuery}`);
+  const detail = await call(`/api/results/games/${fixture.internalGameId}${teamQuery}`, { admin: true });
   assert.equal(detail.payload.internalGameId, fixture.internalGameId);
   assert.equal(detail.payload.totalScore, 99);
   assert.equal(detail.payload.actualLineup?.length, 9);
@@ -137,7 +137,7 @@ try {
         await call(`/api/test/reset?testTeam=${teamKey}`, { method: "POST", body: {}, admin: true });
         const status = await call(`/api/test/status?testTeam=${teamKey}`);
         if (status.payload.game?.state !== "scheduled") cleanupFailed = true;
-        const history = await call(`/api/results/games?testTeam=${teamKey}`);
+        const history = await call(`/api/results/games?testTeam=${teamKey}`, { admin: true });
         if (history.payload.games?.some((game) => game.internalGameId === testTeamFixture(teamKey).internalGameId)) {
           cleanupFailed = true;
         }

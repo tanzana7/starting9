@@ -325,8 +325,13 @@ async function cleanupE2EAdmin(request, env, ctx, input = {}) {
     }), env, ctx);
   }
   if (userId) await env.AUTH_DB.prepare("DELETE FROM sessions WHERE user_id = ?1").bind(userId).run();
-  if (!await removeE2EAdmin(env, userId, username)) {
-    return jsonResponse({ ok: false, code: "E2E_ADMIN_CLEANUP_FAILED" }, 500, origin);
+  const removed = await removeE2EAdmin(env, userId, username);
+  if (!removed) {
+    // D1's write response may be ambiguous after a successful cascade. A
+    // read-back makes cleanup safely idempotent without deleting any other user.
+    const remaining = await env.AUTH_DB.prepare("SELECT id FROM users WHERE id = ?1 AND username = ?2 LIMIT 1")
+      .bind(userId, username).first();
+    if (remaining) return jsonResponse({ ok: false, code: "E2E_ADMIN_CLEANUP_FAILED" }, 500, origin);
   }
   const response = jsonResponse({ ok: true, removed: true }, 200, origin);
   const clearedCookie = logout?.headers.get("Set-Cookie");

@@ -70,7 +70,7 @@ test("Pages deploy guard permits only the TARGET fail-closed proxy", () => {
     "wrangler",
     "pages",
     "deploy",
-    ".",
+    "dist/production-site",
     "--project-name",
     "starting9-app",
     "--branch",

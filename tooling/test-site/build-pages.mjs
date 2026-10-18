@@ -1,24 +1,27 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { SHARED_PAGE_DIRECTORIES, TEST_SITE_PAGE_FILES } from "../pages-assets.mjs";
 import { TEST_TEAMS } from "./teams.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const output = path.join(root, "dist", "test-site");
 const pagesProject = path.join(root, "dist", "test-site-project");
-const rootFiles = [
-  "_routes.json", "admin-push-sw.js", "admin-v3.css", "admin-v3.html", "admin-v3.js",
-  "auth.js", "how-to-play.html", "index.html", "players.js", "privacy.html", "script.js",
-  "style.css", "terms.html", "test-scenarios.html", "scenario-controls.js"
-];
+const testOnlyDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), "static");
+const testOnlyFiles = ["test-scenarios.html", "scenario-controls.js"];
 
 fs.mkdirSync(output, { recursive: true });
-for (const file of rootFiles) {
+for (const file of TEST_SITE_PAGE_FILES) {
   const source = path.join(root, file);
   if (!fs.existsSync(source)) throw new Error(`required Pages asset missing: ${file}`);
   fs.copyFileSync(source, path.join(output, file));
 }
-for (const directory of ["assets", "frontend"]) {
+for (const file of testOnlyFiles) {
+  const source = path.join(testOnlyDirectory, file);
+  if (!fs.existsSync(source)) throw new Error(`required Test Site asset missing: ${file}`);
+  fs.copyFileSync(source, path.join(output, file));
+}
+for (const directory of SHARED_PAGE_DIRECTORIES.filter((name) => name !== "functions")) {
   const source = path.join(root, directory);
   if (!fs.existsSync(source)) throw new Error(`required Pages directory missing: ${directory}`);
   fs.cpSync(source, path.join(output, directory), { recursive: true, force: true });

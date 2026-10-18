@@ -31,7 +31,8 @@ const ACTIONS = Object.freeze({
   pages: {
     config: null,
     profile: TARGET_PROFILE,
-    project: TARGET_PAGES_PROJECT
+    project: TARGET_PAGES_PROJECT,
+    artifact: "dist/production-site"
   }
 });
 
@@ -119,7 +120,7 @@ function buildWranglerArgs(cwd, actionName, head) {
   const action = ACTIONS[actionName];
   if (!action) fail(`unknown deployment target: ${actionName}`);
   if (actionName === "pages") {
-    return ["wrangler", "pages", "deploy", ".", "--project-name", action.project, "--branch", "main", "--profile", action.profile, "--commit-hash", head, "--commit-message", `production-pages-${head.slice(0, 12)}`];
+    return ["wrangler", "pages", "deploy", action.artifact, "--project-name", action.project, "--branch", "main", "--profile", action.profile, "--commit-hash", head, "--commit-message", `production-pages-${head.slice(0, 12)}`];
   }
   return [
     "wrangler",
@@ -138,6 +139,11 @@ function buildWranglerArgs(cwd, actionName, head) {
 
 function deploy(cwd, actionName) {
   const head = validateProductionState(cwd, actionName);
+  if (actionName === "pages") {
+    const build = spawnSync(process.execPath, [path.join(cwd, "tooling", "production-pages", "build.mjs")], { cwd, stdio: "inherit" });
+    if (build.error) fail(`Pages artifact build failed: ${build.error.message}`);
+    if (build.status !== 0) process.exit(build.status || 1);
+  }
   const args = buildWranglerArgs(cwd, actionName, head);
   // Windows exposes npx as a .cmd shim that Node cannot spawn directly with
   // inherited stdio (it returns EINVAL).  Shell execution is safe here because

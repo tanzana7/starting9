@@ -6,7 +6,7 @@
 
 ## Resource boundary
 
-- Pages project: `starting9-test` in TARGET account `02580fab1c09e144db7da89478e252c8`.
+- Pages project: `starting9-test`; all remote Pages commands must use the explicit `starting9-target` Wrangler profile (Pages config does not support an `account_id` field).
 - Auth Worker: `starting9-test-auth`, entrypoint `tooling/test-site/worker.js`.
 - Databases: `starting9-test-auth-db` and `starting9-test-audit-db`.
 - The test Worker has no Cron triggers and no service bindings. External NPB fetching is disabled.

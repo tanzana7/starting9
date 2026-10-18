@@ -61,7 +61,9 @@ export function assertTestPagesConfig(config) {
   if (config.name !== TEST_PAGES_PROJECT || config.name === PRODUCTION_RESOURCE_IDS.pagesProject) {
     throw new Error("test Pages project must be isolated");
   }
-  if (config.account_id !== "02580fab1c09e144db7da89478e252c8") throw new Error("test Pages account must be TARGET");
+  // Pages config does not support account_id. Every remote Pages command must
+  // therefore pass --profile starting9-target explicitly (documented below).
+  if (Object.hasOwn(config, "account_id")) throw new Error("Pages account selection must come from the explicit target profile");
   if (config.vars?.SITE_ENVIRONMENT !== "test") throw new Error("test Pages environment identity is required");
   if (config.vars?.STARTING9_AUTH_ORIGIN !== "https://starting9-test-auth.starting9.workers.dev") {
     throw new Error("test Pages must use only the test Auth Worker");

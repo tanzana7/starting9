@@ -18562,7 +18562,6 @@ async function handleGetResultGames(request, env, cors) {
       resultAvailability: excluded
         ? (serviceUnavailable ? "service_unavailable" : "excluded")
         : (resultsPublished ? "published" : "unpublished"),
-      gameLabel: metadata.displayLabel || "",
       publicationStatus: row.publication_status || "scored_private",
       serviceUnavailable,
       serviceUnavailableReason: serviceUnavailable ? SCORING_RETRY_EXPIRED_CODE : null,

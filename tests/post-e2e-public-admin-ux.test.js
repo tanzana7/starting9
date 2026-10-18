@@ -70,7 +70,7 @@ test("公開結果はhome/away順の日本語labelと安全なpublished表示fie
   const list = worker;
   assert.match(list, /ranking_games\.published_at/);
   assert.match(list, /resultStatus: resultsPublished \? "published"/);
-  assert.match(list, /gameLabel: metadata\.displayLabel/);
+  assert.match(list, /gameLabel: publicDisplayLabel/);
   const detailStart = worker.indexOf("async function handleGetResultGame");
   const detailEnd = worker.indexOf("async function getTableColumnSet", detailStart);
   const detail = worker.slice(detailStart, detailEnd);

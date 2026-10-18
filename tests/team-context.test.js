@@ -30,3 +30,20 @@ test("Fighters aliases and deployed branding remain exact; unknown context fails
   assert.equal(values.get("--fighters-blue"), foxes.branding.primary);
   assert.equal(Object.isFrozen(foxes.branding), true);
 });
+
+test("Marines has a distinct NPB provider/player identity and resolves home, away, and opponent", () => {
+  assert.equal(team.MARINES.key, "marines");
+  assert.equal(team.MARINES.providerTeamCode, "m");
+  assert.equal(team.MARINES.playerTeamId, "M");
+  for (const alias of ["M", "m", "千葉ロッテマリーンズ", "ロッテマリーンズ", "マリーンズ"]) {
+    assert.equal(team.matchesTeam(alias, team.MARINES), true);
+  }
+  for (const side of ["home", "away"]) {
+    const other = side === "home" ? "away" : "home";
+    const game = { [side + "Team"]: "m", [other + "Team"]: "fighters" };
+    assert.equal(team.gameSide(game, team.MARINES), side);
+    assert.equal(team.gameTeams(game, team.MARINES).opponent, "fighters");
+    assert.equal(team.gameSide(game, team.FIGHTERS), other);
+  }
+  assert.notDeepEqual(team.MARINES.branding, team.FIGHTERS.branding);
+});

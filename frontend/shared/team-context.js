@@ -27,6 +27,14 @@
     logo: null, icon: null
   });
 
+  const MARINES = defineTeamContext({
+    key: "marines", slug: "marines", displayName: "千葉ロッテマリーンズ", shortName: "ロッテ",
+    playerTeamId: "M", providerTeamCode: "m", shareHashtags: "#chibalotte #starting9",
+    aliases: ["M", "千葉ロッテマリーンズ", "ロッテマリーンズ", "ロッテ", "マリーンズ"],
+    branding: { primary: "#092c5c", secondary: "#c8102e", accent: "#ffffff", surface: "#eef3f8" },
+    logo: null, icon: null
+  });
+
   function requireTeamContext(team) {
     if (!team || typeof team !== "object") throw new Error("Target team context is required");
     return defineTeamContext(team);
@@ -68,5 +76,5 @@
     }
   }
 
-  return Object.freeze({ FIGHTERS, defineTeamContext, requireTeamContext, matchesTeam, gameSide, gameTeams, applyBranding });
+  return Object.freeze({ FIGHTERS, MARINES, defineTeamContext, requireTeamContext, matchesTeam, gameSide, gameTeams, applyBranding });
 });

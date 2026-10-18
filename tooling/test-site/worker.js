@@ -6,7 +6,7 @@ import { assertDistinctTestTeamIdentity, testTeamFixture } from "./teams.js";
 
 // Every request receives a separate fixture scope. No module-level mutable target can leak
 // from one team's asynchronous request into another team's game, roster, or pipeline.
-export function createTestTeamWorker(teamKey = "fighters") {
+export function createTestTeamWorker(teamKey = "fighters", { rosterPlayers = null } = {}) {
 assertDistinctTestTeamIdentity();
 const { team: targetTeam, internalGameId: INTERNAL_GAME_ID, playerPrefix } = testTeamFixture(teamKey);
 const LEGACY_GAME_ID = INTERNAL_GAME_ID;
@@ -31,6 +31,30 @@ const TEST_PLAYERS = Object.freeze(Array.from({ length: 15 }, (_, index) => Obje
   teamCode: targetTeam.key,
   teamId: targetTeam.playerTeamId
 })));
+const teamRoster = Array.isArray(rosterPlayers) ? Object.freeze(rosterPlayers.map((player) => {
+  const suppliedTeamCode = String(player?.teamCode || "").trim();
+  const suppliedTeamId = String(player?.teamId || "").trim();
+  if ((suppliedTeamCode && suppliedTeamCode !== targetTeam.key)
+      || (suppliedTeamId && suppliedTeamId !== targetTeam.playerTeamId)) {
+    throw new Error("Test Site roster identity does not match the selected team");
+  }
+  return Object.freeze({
+    playerId: String(player?.playerId || ""),
+    name: String(player?.name || player?.playerName || "").trim(),
+    number: String(player?.number ?? player?.uniformNumber ?? "").trim(),
+    uniformNumber: String(player?.number ?? player?.uniformNumber ?? "").trim(),
+    position: String(player?.position || "").trim(),
+    teamCode: targetTeam.key,
+    teamId: targetTeam.playerTeamId
+  });
+})) : TEST_PLAYERS;
+if (teamRoster.length < 15 || teamRoster.some((player) => !player.playerId || !player.name
+    || !/^\d{1,3}$/.test(player.uniformNumber) || !player.position
+    || player.teamCode !== targetTeam.key || player.teamId !== targetTeam.playerTeamId)
+    || new Set(teamRoster.map((player) => player.playerId)).size !== teamRoster.length
+    || new Set(teamRoster.map((player) => player.uniformNumber)).size !== teamRoster.length) {
+  throw new Error("Test Site roster must be complete, uniquely identified, and scoped to the selected team");
+}
 
 function jsonResponse(body, status = 200, origin = "") {
   const headers = new Headers({
@@ -79,7 +103,7 @@ function createProductEnvironment(env) {
         }
         return jsonResponse({
           ok: true,
-          players: TEST_PLAYERS,
+          players: teamRoster,
           fetchedAt: new Date().toISOString(),
           sourceUrl: "test-fixture://fighters-roster",
           cacheStatus: "fixture"
@@ -121,17 +145,18 @@ async function deleteScenarioAuditRows(db) {
 
 async function seedScenarioGame(db, offsetMinutes) {
   const { now, startAt, deadlineAt, gameDate } = currentTimes(offsetMinutes);
-  const roster = JSON.stringify(TEST_PLAYERS);
+  const opponent = targetTeam.key === "marines" ? "fighters" : "marines";
+  const roster = JSON.stringify(teamRoster);
   await db.batch([
     db.prepare(`INSERT INTO games
       (internal_game_id, game_date, start_time, home_team, away_team, game_status, created_at, updated_at)
-      VALUES (?1, ?2, ?3, ?5, 'marines', 'scheduled', ?4, ?4)`)
-      .bind(INTERNAL_GAME_ID, gameDate, startAt, now, targetTeam.key),
+      VALUES (?1, ?2, ?3, ?5, ?6, 'scheduled', ?4, ?4)`)
+      .bind(INTERNAL_GAME_ID, gameDate, startAt, now, targetTeam.key, opponent),
     db.prepare(`INSERT INTO detected_game_schedule
       (game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, venue,
        game_status, detected_at, schedule_checked_at, created_at, updated_at, internal_game_id)
-      VALUES (?1, ?2, ?3, ?4, ?7, 'marines', 'TEST-ONLY', 'TEST ONLY', 'scheduled', ?5, ?5, ?5, ?5, ?6)`)
-      .bind(LEGACY_GAME_ID, `test-only:${INTERNAL_GAME_ID}`, gameDate, startAt, now, INTERNAL_GAME_ID, targetTeam.key),
+      VALUES (?1, ?2, ?3, ?4, ?7, ?8, 'TEST-ONLY', 'TEST ONLY', 'scheduled', ?5, ?5, ?5, ?5, ?6)`)
+      .bind(LEGACY_GAME_ID, `test-only:${INTERNAL_GAME_ID}`, gameDate, startAt, now, INTERNAL_GAME_ID, targetTeam.key, opponent),
     db.prepare(`INSERT INTO game_automation_v3_state (internal_game_id, state, created_at, updated_at)
       VALUES (?1, 'scheduled', ?2, ?2)`)
       .bind(INTERNAL_GAME_ID, now),
@@ -358,7 +383,7 @@ async function callAdminApi(request, env, ctx, pathname, body) {
 }
 
 async function finalizeSyntheticLineup(request, env, ctx) {
-  const lineup = TEST_PLAYERS.slice(0, 9).map((player, index) => ({
+  const lineup = teamRoster.slice(0, 9).map((player, index) => ({
     playerId: player.playerId,
     playerName: player.name,
     uniformNumber: player.uniformNumber,
@@ -596,7 +621,7 @@ export default {
   async fetch(request, env, ctx) {
     if (!isIsolatedTestEnvironment(env)) return authWorker.fetch(request, env, ctx);
     const key = new URL(request.url).searchParams.get("testTeam") || "fighters";
-    if (!["fighters", "foxes"].includes(key)) return jsonResponseForUnknownTeam();
+    if (!["fighters", "foxes", "marines"].includes(key)) return jsonResponseForUnknownTeam();
     return createTestTeamWorker(key).fetch(request, env, ctx);
   }
 };

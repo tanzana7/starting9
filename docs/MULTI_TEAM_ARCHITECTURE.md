@@ -1,6 +1,6 @@
 # Multi-Team Core — C-1 boundary and handoff
 
-Status: C-1 implementation and isolated synthetic-team proof. Production remains Fighters-only.
+Status: C-1 core plus C-2 Marines pilot implementation and local live-roster pipeline proof. Production remains Fighters-only.
 
 ## Contract
 
@@ -30,32 +30,46 @@ The canonical production context is in `team-context.js`: key/slug `fighters`, p
 
 Fighters-related literals that remain in CSS selectors/tokens, player master data, official NPB parsing, legacy game identity, admin-facing Fighters-only copy, schedule/reconcile logic, ranking test fixtures, migrations, and documentation are not blindly rewritten. Some are domain/source contracts rather than presentation identity. Existing NPB formal automation remains Fighters-only; C-1 does not silently turn a generic test selector into a multi-club production planner.
 
-## Synthetic Test Site proof
+## Test Site proof
 
-The isolated Test Site defines two synthetic contexts in `tooling/test-site/teams.js`:
+The isolated Test Site defines two synthetic contexts and one real-team pilot in `tooling/test-site/teams.js`:
 
 * TEST Fighters: clearly synthetic key/player ID/provider identity, using isolated fixtures (not production identity).
 * TEST Foxes: separate key, player-team ID, provider code, aliases, colors, roster IDs, and canonical game ID.
+* Marines pilot: the official `marines` context (`m` provider code, `M` player-team ID); its Test Site game/player IDs remain isolated from production canonical data.
 
 The test-only Auth Worker creates a per-request Worker instance whose immutable closure owns that team's fixture identity. It does not keep mutable module-global team state. The Pages test build substitutes only its ignored `dist/test-site/frontend/shared/production-team.js` bootstrap; test Pages forwards an allowlisted `testTeam` from its test-only cookie/query to the exact isolated test Worker. Production Pages ignores that cookie and does not synthesize a team parameter. Unknown values do not become an arbitrary team; the Pages test surface uses the safe TEST Fighters default, while direct test-Worker requests reject unknown keys.
 
-`tests/test-site-multi-team.test.js` uses in-memory SQLite databases initialized from repository migrations. It resets both synthetic fixtures and runs prediction save, formal lineup revision/finalize, score, ranking reflection, publication, and result read-back for both teams three times. It verifies distinct canonical game/player identities and no cross-team fixture state. The test uses the existing formal planner and executors; it does not simulate these results with a replacement scoring pipeline. No production user/game data is copied.
+`tests/test-site-multi-team.test.js` uses in-memory SQLite databases initialized from repository migrations. It resets the three team fixtures and runs prediction save, formal lineup revision/finalize, score, ranking reflection, publication, and result read-back three times. `tooling/test-site/real-team-pilot.mjs` separately reads the public NPB provider's Marines roster, retains official `npb:########` player IDs, injects those rows into the same in-memory Test Site fixture, and repeats the complete pipeline three times before verifying the unpublished baseline. It does not save the source HTML or roster to the repository or call Cloudflare/D1 resources. The scenario uses the existing formal planner and executors, not a replacement scoring pipeline.
+
+The NPB provider's `mode=schedule` and `mode=roster` retain Fighters as the default and accept only the explicit `team=marines` pilot scope in addition. The schedule parser returned the official 2026-10-01 Marines–Fighters game as `m-f-25`; the team-agnostic schedule normalizer handles both home and away and keeps that provider game code as metadata. The roster route scopes extraction to the selected club heading and returns an explicit parse/unsupported error rather than substituting Fighters. The shared probable-starter parser recognizes the Marines official team name. A read-only live request on 2026-10-18 returned the NPB page for 2026-10-19 with zero games, so a live Marines announcement was not available to verify that day; no empty state is replaced with Fighters data.
+
+Production Pages still bootstraps Fighters directly, with no public selector or Marines route. The Test Site's explicit `testTeam=marines` selection is confined to Test Site assets and the guarded test Worker. The production Pages allowlist test continues to be the gate against scenario controls leaking into production artifacts.
 
 ## Identity and isolation limitations
 
 Team context does not itself establish every future real-team data contract. Team B proof uses fixture rosters and synthetic player IDs. Existing player-ID prefixes and official NPB identity resolution remain NPB-specific. Manual roster storage still has a Fighters-only schema constraint, and several admin monitor/manual-roster, schedule-source, reconciliation, and provider parsing paths intentionally remain Fighters-only. The test-only roster source is a controlled fixture boundary, not a production roster adapter. Thus C-1 proves the reusable core across the exercised path; it does not certify a second real team's complete operations.
 
-The following remain explicit C-2 blockers or design decisions:
+The following remain C-3 blockers or design decisions:
 
-1. **Provider mapping and source behavior:** verify each real club's official schedule, game identity, roster, lineup, probable-starter sources, aliases, and correction behavior; do not assume provider codes are uniform.
+1. **Provider mapping and source behavior:** verify each additional club's official schedule, game identity, roster, lineup, probable-starter sources, aliases, and correction behavior; do not assume provider codes are uniform. The Marines roster and schedule path is proven, but its official lineup and live announced-starter paths still need an in-season/live-source check.
 2. **Assets and colors:** obtain licensed/approved team logos/icons, exact accessible palette, metadata, and asset-cache/versioning strategy.
 3. **Roster source and persistence:** choose an authoritative roster source and design team-scoped manual roster schema, validation, admin APIs, and migration/backfill after a data audit.
 4. **Probable starter and lineup:** implement and test the club-specific source adapters while preserving canonical game/revision guards.
 5. **Routes and production selection:** decide host/path routing, SEO/meta, account preference (if any), and ensure authentication remains account-wide. No selector or route is introduced here.
-6. **Ranking semantics:** decide whether ranking is per game, per club, or shared; define historical inclusion and publication boundaries before changing queries/schema.
-7. **Admin scope:** define operator authorization and prevent selecting or mutating the wrong club's schedule, roster, lineup, jobs, or result.
-8. **Deployment topology:** decide whether clubs share Worker/D1/Cron resources or use separated environments, then prove resource/account boundaries and deployment rollback.
-9. **Persistence compatibility:** review existing game/player/job/artifact identifiers and legacy rows. Any required production migration is a separate gated phase.
+6. **Ranking semantics:** current weekly/monthly/yearly ranking queries aggregate eligible published `ranking_games` per user without a team predicate. Therefore, games from multiple clubs in the same D1 would contribute to the same user aggregate. This is technically non-crashing but the intended product meaning is unresolved; choose shared cross-club ranking or team-scoped ranking and define historical inclusion/publication boundaries before a multi-team release.
+7. **Admin scope:** Admin V3 monitor/manual-roster and formal schedule/reconcile paths still contain Fighters-specific assumptions. There is no real-team admin scope in C-2; define operator authorization and prevent selecting or mutating the wrong club's schedule, roster, lineup, jobs, or result.
+8. **Automation scope:** production planner and Cron continue to use the Fighters default. C-2 does not enable Marines discovery, roster, lineup, score, ranking, or publication automation in production. Per-team scheduling, fairness, bounded work, and failure isolation must be designed before activation.
+9. **Deployment topology:** decide whether clubs share Worker/D1/Cron resources or use separated environments, then prove resource/account boundaries and deployment rollback.
+10. **Persistence compatibility:** review existing game/player/job/artifact identifiers and legacy rows. Any required production migration is a separate gated phase.
+
+## C-2 implementation boundary
+
+* `frontend/shared/team-context.js` adds only the Marines real-team context: key/slug `marines`, provider code `m`, player-team ID `M`, official Japanese aliases, and a text/color identity without a copied logo.
+* `game-schedule-detection.js` keeps the Fighters wrapper contract and adds target-context filtering for schedule games; the NPB Worker schedule endpoint remains Fighters-default and limits explicit alternate selection to Marines for this pilot.
+* The NPB Worker roster endpoint requests a team-scoped official roster block. Auth public-roster retrieval passes its trusted environment target context and checks a returned team identity if supplied. Fighters-only manual-roster overlays/master audits are not applied to the Marines context. A missing or mismatched Marines source returns no roster rather than a Fighters fallback.
+* The isolated Test Site can inject validated real NPB player records while preserving its guarded environment, distinct game IDs, and no-Cron/no-service-binding setup. The prediction shape, deadlines, scoring rules, ranking executor, publication contract, and schema are unchanged; no migration was added.
+* Probable-starter parsing already models all NPB clubs at the official source boundary. Its live empty state remains empty. Admin roster, manual lineup, cancellation reconciliation, and formal production automation remain Fighters-scoped and are not represented as ready for Marines operations.
 
 ## C-1 residual classification
 

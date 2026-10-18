@@ -1,4 +1,5 @@
-import { normalizeFightersScheduleGames } from "./game-schedule-detection.js";
+import { normalizeFightersScheduleGames, normalizeTargetTeamScheduleGames } from "./game-schedule-detection.js";
+import teamContext from "./frontend/shared/team-context.js";
 
 const LINEUP_SIZE = 9;
 const LINEUP_CACHE_TTL_SECONDS = 5 * 60;
@@ -132,7 +133,7 @@ const STARTER_TEAM_ALIASES = [
   { key: "hawks", name: "福岡ソフトバンクホークス", aliases: ["福岡ソフトバンクホークス", "ソフトバンクホークス", "ソフトバンク"] },
   { key: "lions", name: "埼玉西武ライオンズ", aliases: ["埼玉西武ライオンズ", "西武ライオンズ", "西武"] },
   { key: "eagles", name: "東北楽天ゴールデンイーグルス", aliases: ["東北楽天ゴールデンイーグルス", "楽天ゴールデンイーグルス", "楽天"] },
-  { key: "marines", name: "千葉ロッテマリーンズ", aliases: ["千葉ロッテマリーンズ", "ロッテマリーンズ", "ロッテ"] },
+  { key: "marines", name: "千葉ロッテマリーンズ", aliases: ["千葉ロッテマリーンズ", "ロッテマリーンズ", "ロッテ", "マリーンズ"] },
   { key: "giants", name: "読売ジャイアンツ", aliases: ["読売ジャイアンツ", "巨人"] },
   { key: "tigers", name: "阪神タイガース", aliases: ["阪神タイガース", "阪神"] },
   { key: "baystars", name: "横浜DeNAベイスターズ", aliases: ["横浜DeNAベイスターズ", "横浜DeNA", "DeNA"] },
@@ -275,6 +276,10 @@ async function handleScheduleRequest(requestUrl) {
   if (!/^20\d{2}-\d{2}-\d{2}$/.test(date)) {
     return jsonResponse({ ok: false, code: "SCHEDULE_DATE_INVALID", error: "日程の日付が不正です。" }, 400);
   }
+  const requestedTeam = resolvePilotTeam(requestUrl.searchParams.get("team") || "fighters");
+  if (!requestedTeam) {
+    return jsonResponse({ ok: false, code: "SCHEDULE_TEAM_UNSUPPORTED", error: "指定された球団の日程には対応していません。" }, 400);
+  }
   const [year, month] = date.split("-");
   const sourceUrl = `https://npb.jp/games/${year}/schedule_${month}_detail.html`;
   const upstream = await fetchNpbScorePage(sourceUrl);
@@ -285,7 +290,9 @@ async function handleScheduleRequest(requestUrl) {
   if (games === null) {
     return jsonResponse({ ok: false, code: "SCHEDULE_PARSE_FAILED", error: "NPB公式日程を解析できませんでした。" }, 422);
   }
-  const normalizedGames = normalizeFightersScheduleGames(games, date).map((game) => ({
+  const normalizedGames = (requestedTeam.key === teamContext.FIGHTERS.key
+    ? normalizeFightersScheduleGames(games, date)
+    : normalizeTargetTeamScheduleGames(games, date, requestedTeam)).map((game) => ({
     ...game,
     npbGameUrl: buildNpbGameUrl(date, game.gameCode)
   }));
@@ -751,11 +758,15 @@ async function cacheLineupResponse(source, responseBody) {
 
 async function handleRosterRequest(requestUrl, isDebug) {
   const rosterUrlValue = requestUrl.searchParams.get("url") || "https://npb.jp/announcement/roster/";
+  const requestedTeam = resolvePilotTeam(requestUrl.searchParams.get("team") || "fighters");
   const validation = validateRosterUrl(rosterUrlValue);
   const forceRefresh = ["1", "true", "yes"].includes(String(requestUrl.searchParams.get("force") || "").toLowerCase());
 
   if (!validation.ok) {
     return jsonResponse({ ok: false, error: validation.error }, 400);
+  }
+  if (!requestedTeam) {
+    return jsonResponse({ ok: false, code: "ROSTER_TEAM_UNSUPPORTED", error: "指定された球団のロースターには対応していません。" }, 400);
   }
 
   try {
@@ -765,13 +776,13 @@ async function handleRosterRequest(requestUrl, isDebug) {
     }
 
     const html = source.html;
-    const extraction = extractFightersRoster(html);
+    const extraction = extractTeamRoster(html, requestedTeam.key);
 
     if (!extraction.players.length) {
       return jsonResponse({
         ok: false,
         code: "ROSTER_PARSE_FAILED",
-        error: "日本ハムの登録選手一覧を抽出できませんでした。",
+        error: `${requestedTeam.name}の登録選手一覧を抽出できませんでした。`,
         ...(isDebug ? { debug: extraction.debug } : {})
       }, 422);
     }
@@ -785,7 +796,7 @@ async function handleRosterRequest(requestUrl, isDebug) {
       cacheStatus: source.cacheStatus,
       stale: source.stale,
       method: extraction.method,
-      team: "fighters",
+      team: requestedTeam.key,
       players: extraction.players,
       count: extraction.players.length,
       parsedCount: extraction.players.length,
@@ -1410,10 +1421,23 @@ function extractNpbOrderText(html) {
   });
 }
 
-function extractFightersRoster(html) {
+function resolvePilotTeam(value) {
+  const normalized = normalizeWhitespace(value).replace(/[\s\u3000・.]/g, "").normalize("NFKC").toLowerCase();
+  // Keep the provider contract limited to the existing production default and
+  // the single C-2 pilot; this parameter must not become an accidental 12-team API.
+  return [teamContext.FIGHTERS, teamContext.MARINES].find((team) => team.key.toLowerCase() === normalized
+    || [team.playerTeamId, team.providerTeamCode, ...team.aliases]
+      .some((alias) => alias.replace(/[\s\u3000・.]/g, "").normalize("NFKC").toLowerCase() === normalized)) || null;
+}
+
+function extractTeamRoster(html, teamKey = "fighters") {
   const sourceHtml = String(html || "");
-  const teamTablePattern = /<h5[^>]*>\s*北海道日本ハムファイターズ\s*<\/h5>[\s\S]*?<table[^>]*>([\s\S]*?)<\/table>/i;
-  const tableMatch = sourceHtml.match(teamTablePattern);
+  const team = STARTER_TEAM_ALIASES.find((entry) => entry.key === teamKey);
+  const heading = team?.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const teamTablePattern = heading
+    ? new RegExp(`<h5[^>]*>\\s*${heading}\\s*<\\/h5>[\\s\\S]*?<table[^>]*>([\\s\\S]*?)<\\/table>`, "i")
+    : null;
+  const tableMatch = teamTablePattern ? sourceHtml.match(teamTablePattern) : null;
   const tableHtml = tableMatch ? tableMatch[1] : "";
   const entries = tableHtml ? parseRosterTableEntries(tableHtml) : [];
   const players = uniqueRosterEntries(entries);
@@ -1430,14 +1454,24 @@ function extractFightersRoster(html) {
     announcedCount,
     warning,
     debug: {
-      foundFightersHeading: Boolean(tableMatch),
+      team: teamKey,
+      foundTeamHeading: Boolean(tableMatch),
       foundPlayers: players.length,
       announcedCount,
       warning,
       textExcerpt: lines.join(" ").slice(0, 1800),
-      fightersExcerpt: createFightersRosterExcerpt(lines)
+      ...(teamKey === teamContext.FIGHTERS.key ? {
+        foundFightersHeading: Boolean(tableMatch),
+        fightersExcerpt: createFightersRosterExcerpt(lines)
+      } : {})
     }
   };
+}
+
+// Keep the existing Fighters extraction contract for callers that still use the
+// named helper; the provider route itself resolves the requested pilot context.
+function extractFightersRoster(html) {
+  return extractTeamRoster(html, teamContext.FIGHTERS.key);
 }
 
 function parseRosterTableEntries(tableHtml) {
@@ -1933,6 +1967,7 @@ export {
   extractScheduleGames,
   extractNpbOrderText,
   extractFightersRoster,
+  extractTeamRoster,
   parseRosterTableEntries,
   validateTargetUrl
 };

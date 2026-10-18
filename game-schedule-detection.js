@@ -2,13 +2,13 @@ import teamContext from "./frontend/shared/team-context.js";
 
 export const FIGHTERS_TEAM_CODE = teamContext.FIGHTERS.key;
 
-const TEAM_ALIASES = Object.freeze({
+export const TEAM_ALIASES = Object.freeze({
   fighters: teamContext.FIGHTERS.aliases,
   buffaloes: ["オリックス・バファローズ", "オリックスバファローズ", "オリックス"],
   hawks: ["福岡ソフトバンクホークス", "ソフトバンクホークス", "ソフトバンク", "H"],
   lions: ["埼玉西武ライオンズ", "西武ライオンズ", "西武"],
   eagles: ["東北楽天ゴールデンイーグルス", "楽天ゴールデンイーグルス", "楽天", "E"],
-  marines: ["千葉ロッテマリーンズ", "ロッテマリーンズ", "ロッテ"],
+  marines: ["m", "千葉ロッテマリーンズ", "ロッテマリーンズ", "ロッテ", "マリーンズ"],
   giants: ["読売ジャイアンツ", "巨人"],
   tigers: ["阪神タイガース", "阪神"],
   baystars: ["横浜DeNAベイスターズ", "横浜DeNA", "DeNA"],
@@ -51,6 +51,11 @@ export function createDetectedGameId(game) {
 }
 
 export function normalizeFightersScheduleGames(games, date) {
+  return normalizeTargetTeamScheduleGames(games, date, teamContext.FIGHTERS);
+}
+
+export function normalizeTargetTeamScheduleGames(games, date, targetTeam) {
+  const selectedTeam = teamContext.requireTeamContext(targetTeam);
   const normalizedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(date || "")) ? String(date) : "";
   const seen = new Set();
   return (Array.isArray(games) ? games : []).map((game) => {
@@ -59,5 +64,6 @@ export function normalizeFightersScheduleGames(games, date) {
     const startTime = /^\d{2}:\d{2}$/.test(String(game?.startTime || "")) ? String(game.startTime) : "";
     const gameId = createDetectedGameId({ ...game, date: normalizedDate, homeTeam, awayTeam, startTime });
     return { ...game, gameId, date: normalizedDate, homeTeam, awayTeam, startTime };
-  }).filter((game) => game.gameId && game.homeTeam && game.awayTeam && game.startTime && isFightersScheduleGame(game) && !seen.has(game.gameId) && Boolean(seen.add(game.gameId)));
+  }).filter((game) => game.gameId && game.homeTeam && game.awayTeam && game.startTime
+    && isTargetTeamScheduleGame(game, selectedTeam) && !seen.has(game.gameId) && Boolean(seen.add(game.gameId)));
 }

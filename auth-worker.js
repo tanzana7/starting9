@@ -13335,7 +13335,10 @@ async function handleGetGameDayRoster(request, env, cors) {
       ORDER BY updated_at DESC, captured_at DESC
       LIMIT 1`
   ).bind(internalGameId).first();
-  const manualRoster = await getManualRoster(env.AUTH_DB, { teamCode: MANUAL_ROSTER_TEAM.teamCode }).catch(() => null);
+  const targetTeam = targetTeamForEnvironment(env);
+  const manualRoster = targetTeam.key === PRODUCTION_TEAM.key
+    ? await getManualRoster(env.AUTH_DB, { teamCode: MANUAL_ROSTER_TEAM.teamCode }).catch(() => null)
+    : null;
   const catalog = manualRoster?.isManualSaved === true
     ? getManualLineupPlayerCatalog({ manualRoster })
     : [];
@@ -13447,14 +13450,17 @@ function buildPublicRosterFallbackResponse(response, {
 
 export async function fetchLatestPublicRoster(env, game, { force = false } = {}) {
   try {
+    const targetTeam = targetTeamForEnvironment(env);
     const payload = await fetchNpbWorkerJson(env, {
       mode: "roster",
+      team: targetTeam.key,
       ...(force ? { force: "1" } : {})
     });
     if (payload?.stale === true) return null;
-    const players = normalizeRosterForSnapshot(payload?.players);
+    if (payload?.team && String(payload.team).toLowerCase() !== targetTeam.key) return null;
+    const players = normalizeRosterForSnapshot(payload?.players, targetTeam);
     if (!players) return null;
-    const masterUnregisteredPlayers = players
+    const masterUnregisteredPlayers = targetTeam.key === PRODUCTION_TEAM.key ? players
       .filter((entry) => {
         const masterPlayer = findFightersPlayerByName(entry.name);
         return !(masterPlayer && String(masterPlayer.uniformNumber || "") === String(entry.number || ""));
@@ -13466,8 +13472,8 @@ export async function fetchLatestPublicRoster(env, game, { force = false } = {})
         position: entry.position
       }))
       .filter((entry) => entry.playerId)
-      .slice(0, 20);
-    await writeRosterMasterUnregisteredAudit(env, game, masterUnregisteredPlayers, new Date());
+      .slice(0, 20) : [];
+    if (masterUnregisteredPlayers.length) await writeRosterMasterUnregisteredAudit(env, game, masterUnregisteredPlayers, new Date());
     return withPublicRosterContract({
       ok: true,
       internalGameId: String(game?.internal_game_id || ""),
@@ -14698,7 +14704,8 @@ function sanitizeNpbLineupDiagnostics(details) {
   return Object.keys(result).length ? result : null;
 }
 
-function normalizeRosterForSnapshot(players) {
+function normalizeRosterForSnapshot(players, targetTeam = PRODUCTION_TEAM) {
+  targetTeam = teamContext.requireTeamContext(targetTeam);
   if (!Array.isArray(players) || players.length < ROSTER_MINIMUM_PLAYER_COUNT) return null;
   const normalized = players.map((player) => {
     const playerId = normalizeOfficialNpbPlayerId(player?.playerId);
@@ -14706,6 +14713,8 @@ function normalizeRosterForSnapshot(players) {
       position: String(player?.position || "").trim(),
       number: typeof player?.number === "string" ? player.number : String(player?.number || "").trim(),
       name: String(player?.name || "").replace(/[\s\u3000]/g, ""),
+      teamCode: targetTeam.key,
+      teamId: targetTeam.playerTeamId,
       ...(playerId ? { playerId } : {})
     };
   });

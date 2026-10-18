@@ -11,25 +11,31 @@ export const TEST_TEAMS = Object.freeze({
     playerTeamId: "TX", providerTeamCode: "tx", aliases: ["TEST Foxes"], shareHashtags: "#starting9test",
     branding: { primary: "#774411", secondary: "#442211", accent: "#eebbaa", surface: "#fff5ee" },
     logo: null, icon: null
-  })
+  }),
+  marines: teamContext.MARINES
 });
 
 export function assertDistinctTestTeamIdentity(teams = TEST_TEAMS) {
-  const fighters = teams.fighters;
-  const foxes = teams.foxes;
-  if (!fighters || !foxes || fighters.key === foxes.key
-      || fighters.providerTeamCode.toLowerCase() === foxes.providerTeamCode.toLowerCase()
-      || fighters.playerTeamId === foxes.playerTeamId) {
-    throw new Error("Synthetic teams must have distinct team identities");
+  const values = Object.values(teams);
+  if (!teams.fighters || !teams.foxes || !teams.marines || values.length !== 3) {
+    throw new Error("Test Site must contain the two synthetic teams and exactly one real-team pilot");
   }
-  const sameBranding = Object.keys(fighters.branding).every((key) => fighters.branding[key] === foxes.branding[key]);
-  if (sameBranding) throw new Error("Synthetic teams must have distinct branding");
+  const unique = (value) => new Set(values.map((team) => value(team).toLowerCase())).size === values.length;
+  if (!unique((team) => team.key) || !unique((team) => team.providerTeamCode) || !unique((team) => team.playerTeamId)) {
+    throw new Error("Test teams must have distinct team identities");
+  }
+  if (Object.keys(teams).filter((key) => !["fighters", "foxes", "marines"].includes(key)).length) {
+    throw new Error("Only the approved second-team pilot may be added to Test Site");
+  }
   return true;
 }
 
 export function testTeamFixture(key = "fighters") {
   if (!Object.hasOwn(TEST_TEAMS, key)) throw new Error("Unknown test target team");
-  return { team: TEST_TEAMS[key], internalGameId: key === "fighters"
-    ? "11111111-2027-4000-8000-000000000001" : "11111111-2027-4000-8000-000000000002",
-  playerPrefix: key === "fighters" ? "9999" : "9998" };
+  const fixtures = {
+    fighters: { internalGameId: "11111111-2027-4000-8000-000000000001", playerPrefix: "9999" },
+    foxes: { internalGameId: "11111111-2027-4000-8000-000000000002", playerPrefix: "9998" },
+    marines: { internalGameId: "11111111-2027-4000-8000-000000000003", playerPrefix: "9997" }
+  };
+  return { team: TEST_TEAMS[key], ...fixtures[key] };
 }

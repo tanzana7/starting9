@@ -301,7 +301,6 @@ async function applyScenario(request, env, ctx, scenario) {
     const existingLineup = await env.AUTH_DB.prepare("SELECT final_lineup_revision_id FROM game_lineups WHERE internal_game_id = ?1 LIMIT 1")
       .bind(INTERNAL_GAME_ID).first();
     if (!existingLineup?.final_lineup_revision_id) await finalizeSyntheticLineup(request, env, ctx);
-    if (scenario === "lineup-ready") await runPipeline(env, { target: "lineup-ready" });
   }
   if (["scored", "ranked", "published"].includes(scenario)) {
     const target = scenario;

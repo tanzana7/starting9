@@ -75,3 +75,8 @@ test("closed scenario advances through the formal planner to prediction_closed",
   const source = fs.readFileSync(path.join(ROOT, "tooling/test-site/worker.js"), "utf8");
   assert.match(source, /if \(\["closed", "lineup-ready", "scored", "ranked", "published", "retry"\]\.includes\(scenario\)\)\s*\{\s*await runPipeline\(env, \{ target: "closed" \}\)/);
 });
+
+test("lineup-ready scenario stops after formal finalize without draining the score job", () => {
+  const source = fs.readFileSync(path.join(ROOT, "tooling/test-site/worker.js"), "utf8");
+  assert.doesNotMatch(source, /scenario === "lineup-ready"\) await runPipeline/);
+});

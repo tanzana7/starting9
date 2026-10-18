@@ -31,9 +31,10 @@ test("production Pages artifact excludes Test Site controls and preserves produc
   assert.equal(files.includes("test-scenarios.html"), false);
   assert.equal(files.includes("scenario-controls.js"), false);
   for (const required of [
-    "index.html", "script.js", "style.css", "admin-v3.html", "admin-v3.js",
+    "404.html", "index.html", "script.js", "style.css", "admin-v3.html", "admin-v3.js",
     "functions/api/[[path]].js", "frontend/shared/team-context.js", "assets/icons/icon-512.png"
   ]) assert.ok(files.includes(required), `missing production asset ${required}`);
+  assert.match(readArtifact(productionOutput, "404.html"), /404/);
 
   const forbidden = [/test-scenarios\.html/i, /scenario-controls\.js/i, /\/api\/test\//i, /TEST ENVIRONMENT/i, /Starting9TestTeam/];
   for (const file of files) {

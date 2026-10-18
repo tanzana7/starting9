@@ -1,11 +1,18 @@
 const TARGET_AUTH_WORKER_ORIGIN = "https://starting9-auth.starting9.workers.dev";
+const TEST_AUTH_WORKER_ORIGIN = "https://starting9-test-auth.starting9.workers.dev";
 const AUTH_WORKER_ORIGIN_ENV = "STARTING9_AUTH_ORIGIN";
 
 export function resolveAuthWorkerOrigin(env = {}) {
   const configured = String(env?.[AUTH_WORKER_ORIGIN_ENV] || "")
     .trim()
     .replace(/\/+$/, "");
-  return configured === TARGET_AUTH_WORKER_ORIGIN ? configured : null;
+  const environment = String(env?.SITE_ENVIRONMENT || "production").trim().toLowerCase();
+  const expected = environment === "test"
+    ? TEST_AUTH_WORKER_ORIGIN
+    : environment === "production"
+      ? TARGET_AUTH_WORKER_ORIGIN
+      : "";
+  return expected && configured === expected ? configured : null;
 }
 
 const BLOCKED_REQUEST_HEADERS = new Set([

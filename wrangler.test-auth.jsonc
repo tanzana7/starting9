@@ -1,0 +1,42 @@
+{
+  "$schema": "https://developers.cloudflare.com/wrangler/config-schema.json",
+  "name": "starting9-test-auth",
+  "main": "tooling/test-site/worker.js",
+  "account_id": "02580fab1c09e144db7da89478e252c8",
+  "compatibility_date": "2026-07-17",
+  "workers_dev": true,
+  "vars": {
+    "ENVIRONMENT": "test",
+    "TEST_SITE_ID": "starting9-isolated-v1",
+    "TEST_WORKER_NAME": "starting9-test-auth",
+    "TEST_AUTH_DB_ID": "7ea1fa14-ffc0-4404-8a65-5dbb8218f368",
+    "TEST_AUDIT_DB_ID": "a18c6cf9-a238-4059-a5ef-784f248e225e",
+    "AUTH_ALLOWED_ORIGINS": "https://starting9-test.pages.dev",
+    "SESSION_SAMESITE": "None",
+    "AUTO_SCORING_DELAY_SECONDS": "0",
+    "ENABLE_DEVELOPMENT_MODE": "false",
+    "ENABLE_WORKFLOW_COMPLETION_JOBS": "true",
+    "ENABLE_GAME_AUTOMATION_V3": "true",
+    "ENABLE_AUTO_PROBABLE_STARTER": "false",
+    "ENABLE_AUTO_ROSTER_FETCH": "false",
+    "ENABLE_AUTO_LINEUP_FETCH": "false",
+    "ENABLE_LINEUP_SHADOW": "false",
+    "ENABLE_SEMI_AUTO_LINEUP": "true",
+    "NPB_FETCH_DISABLED": "true",
+    "MIGRATION_MAINTENANCE": "false"
+  },
+  "d1_databases": [
+    {
+      "binding": "AUTH_DB",
+      "database_name": "starting9-test-auth-db",
+      "database_id": "7ea1fa14-ffc0-4404-8a65-5dbb8218f368",
+      "migrations_dir": "migrations"
+    },
+    {
+      "binding": "AUDIT_DB",
+      "database_name": "starting9-test-audit-db",
+      "database_id": "a18c6cf9-a238-4059-a5ef-784f248e225e",
+      "migrations_dir": "migrations-audit"
+    }
+  ]
+}

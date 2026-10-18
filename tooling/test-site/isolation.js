@@ -3,6 +3,8 @@ export const TEST_AUTH_WORKER = "starting9-test-auth";
 export const TEST_PAGES_PROJECT = "starting9-test";
 export const TEST_AUTH_DB_NAME = "starting9-test-auth-db";
 export const TEST_AUDIT_DB_NAME = "starting9-test-audit-db";
+export const TEST_AUTH_DB_ID = "7ea1fa14-ffc0-4404-8a65-5dbb8218f368";
+export const TEST_AUDIT_DB_ID = "a18c6cf9-a238-4059-a5ef-784f248e225e";
 
 export const PRODUCTION_RESOURCE_IDS = Object.freeze({
   authDatabase: "326f97c3-768d-4df6-ada2-129fdb1865a1",
@@ -17,8 +19,8 @@ export function isIsolatedTestEnvironment(env = {}) {
   return env.ENVIRONMENT === "test"
     && env.TEST_SITE_ID === TEST_SITE_ID
     && env.TEST_WORKER_NAME === TEST_AUTH_WORKER
-    && authDbId.length > 0
-    && auditDbId.length > 0
+    && authDbId === TEST_AUTH_DB_ID
+    && auditDbId === TEST_AUDIT_DB_ID
     && authDbId !== PRODUCTION_RESOURCE_IDS.authDatabase
     && auditDbId !== PRODUCTION_RESOURCE_IDS.auditDatabase
     && env.NPB_FETCH_DISABLED === "true"

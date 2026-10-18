@@ -10,6 +10,7 @@ export function createTestTeamWorker(teamKey = "fighters") {
 assertDistinctTestTeamIdentity();
 const { team: targetTeam, internalGameId: INTERNAL_GAME_ID, playerPrefix } = testTeamFixture(teamKey);
 const LEGACY_GAME_ID = INTERNAL_GAME_ID;
+const E2E_ADMIN_USERNAME_PREFIX = "e2e-";
 const POSITIONS = Object.freeze(["捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
 const CLEANUP_ORDER = Object.freeze([
   "score_attempt_prediction_rows", "score_attempt_test_rows", "score_attempts",
@@ -193,22 +194,144 @@ async function requireTestAdmin(request, env, ctx) {
   return body?.ok === true && body?.admin === true;
 }
 
-async function bootstrapFirstAdmin(request, env, ctx) {
-  const expected = String(env.TEST_BOOTSTRAP_TOKEN || "");
-  const supplied = String(request.headers.get("x-test-bootstrap-token") || "");
-  if (!expected || supplied !== expected) return jsonResponse({ ok: false, code: "NOT_FOUND" }, 404);
-  const me = await authWorker.fetch(new Request("https://starting9-test-auth.internal/api/auth/me", {
-    headers: { Cookie: request.headers.get("Cookie") || "", Origin: request.headers.get("Origin") || "" }
-  }), env, ctx);
-  const identity = await me.json();
-  const userId = String(identity?.user?.id || "");
-  if (identity?.authenticated !== true || !userId) return jsonResponse({ ok: false, code: "AUTH_REQUIRED" }, 401);
-  const admin = await env.AUTH_DB.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").first();
-  if (admin) return jsonResponse({ ok: false, code: "BOOTSTRAP_CLOSED" }, 409);
-  const result = await env.AUTH_DB.prepare("UPDATE users SET role = 'admin', updated_at = ?1 WHERE id = ?2 AND role = 'user'")
-    .bind(new Date().toISOString(), userId).run();
-  if (Number(result?.meta?.changes || 0) !== 1) return jsonResponse({ ok: false, code: "BOOTSTRAP_FAILED" }, 409);
-  return jsonResponse({ ok: true, admin: true });
+function constantTimeSecretMatch(actual, expected) {
+  if (!actual || !expected || expected.length < 32 || actual.length !== expected.length) return false;
+  let difference = 0;
+  for (let index = 0; index < actual.length; index += 1) {
+    difference |= actual.charCodeAt(index) ^ expected.charCodeAt(index);
+  }
+  return difference === 0;
+}
+
+function secureRandomHex(byteCount) {
+  const bytes = crypto.getRandomValues(new Uint8Array(byteCount));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function readSessionCookie(response) {
+  const value = response.headers.get("Set-Cookie") || "";
+  const cookie = value.split(";", 1)[0];
+  return cookie.startsWith("s9_session=") ? cookie : "";
+}
+
+async function removeE2EAdmin(env, userId, username) {
+  if (!/^e2e-[a-f0-9]{12}$/.test(username)) return false;
+  const result = await env.AUTH_DB.prepare(
+    "DELETE FROM users WHERE id = ?1 AND username = ?2 AND role IN ('user', 'admin')"
+  ).bind(userId, username).run();
+  return Number(result?.meta?.changes || 0) === 1;
+}
+
+async function provisionE2EAdmin(request, env, ctx, input = {}) {
+  // The same-origin Pages proxy deliberately removes Origin before forwarding.
+  // Its fixed test-site routing plus the temporary server secret are the trust boundary.
+  const origin = request.headers.get("Origin") || "https://starting9-test.pages.dev";
+  const expected = String(env.TEST_E2E_SETUP_TOKEN || "");
+  const supplied = String(request.headers.get("x-test-e2e-token") || "");
+  if (!isIsolatedTestEnvironment(env) || !constantTimeSecretMatch(supplied, expected)
+      || origin !== "https://starting9-test.pages.dev") {
+    return jsonResponse({ ok: false, code: "NOT_FOUND" }, 404, origin);
+  }
+
+  let userId = "";
+  let username = "";
+  try {
+    const runId = String(input?.runId || "");
+    if (!/^[a-f0-9]{12}$/.test(runId)) {
+      return jsonResponse({ ok: false, code: "INVALID_E2E_RUN_ID" }, 400, origin);
+    }
+    username = `${E2E_ADMIN_USERNAME_PREFIX}${runId}`;
+    const password = secureRandomHex(32);
+    const register = await authWorker.fetch(new Request("https://starting9-test-auth.internal/api/auth/register", {
+      method: "POST",
+      headers: { Origin: origin, "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password, passwordConfirmation: password })
+    }), env, ctx);
+    const registered = await register.json();
+    if (register.status !== 201 || !registered?.user?.id) {
+      return jsonResponse({ ok: false, code: "E2E_ADMIN_PROVISION_FAILED" }, 409, origin);
+    }
+    userId = String(registered.user.id);
+    const promoted = await env.AUTH_DB.prepare(
+      "UPDATE users SET role = 'admin', updated_at = ?1 WHERE id = ?2 AND username = ?3 AND role = 'user'"
+    ).bind(new Date().toISOString(), userId, username).run();
+    if (Number(promoted?.meta?.changes || 0) !== 1) {
+      await removeE2EAdmin(env, userId, username);
+      return jsonResponse({ ok: false, code: "E2E_ADMIN_PROVISION_FAILED" }, 409, origin);
+    }
+
+    // Provisioning only grants the disposable identity. The returned cookie is
+    // issued by the ordinary login endpoint and is then checked by the same
+    // admin authorization boundary used by scenario mutations.
+    const login = await authWorker.fetch(new Request("https://starting9-test-auth.internal/api/auth/login", {
+      method: "POST",
+      headers: { Origin: origin, "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password })
+    }), env, ctx);
+    const cookie = readSessionCookie(login);
+    if (login.status !== 200 || !cookie) {
+      await removeE2EAdmin(env, userId, username);
+      return jsonResponse({ ok: false, code: "E2E_ADMIN_LOGIN_FAILED" }, 500, origin);
+    }
+    const response = jsonResponse({ ok: true, username }, 201, origin);
+    response.headers.set("Set-Cookie", login.headers.get("Set-Cookie"));
+    return response;
+  } catch {
+    if (userId && username) {
+      await removeE2EAdmin(env, userId, username).catch(() => false);
+    }
+    return jsonResponse({ ok: false, code: "E2E_ADMIN_PROVISION_FAILED" }, 500, origin);
+  }
+}
+
+async function cleanupE2EAdmin(request, env, ctx, input = {}) {
+  const origin = request.headers.get("Origin") || "https://starting9-test.pages.dev";
+  const expected = String(env.TEST_E2E_SETUP_TOKEN || "");
+  const supplied = String(request.headers.get("x-test-e2e-token") || "");
+  if (!isIsolatedTestEnvironment(env) || !constantTimeSecretMatch(supplied, expected)
+      || origin !== "https://starting9-test.pages.dev") {
+    return jsonResponse({ ok: false, code: "NOT_FOUND" }, 404, origin);
+  }
+  let userId = "";
+  let username = "";
+  const cookie = request.headers.get("Cookie") || "";
+  if (cookie) {
+    const me = await authWorker.fetch(new Request("https://starting9-test-auth.internal/api/auth/me", {
+      headers: { Cookie: cookie, Origin: origin }
+    }), env, ctx);
+    const identity = await me.json();
+    userId = String(identity?.user?.id || "");
+    username = String(identity?.user?.username || "");
+    if (identity?.authenticated !== true) return jsonResponse({ ok: false, code: "E2E_ADMIN_REQUIRED" }, 403, origin);
+  } else {
+    // This token-only fallback is for cleanup if the proxy fails to preserve
+    // Set-Cookie. It can target only the random reserved identity this route creates.
+    username = String(input?.username || "");
+  }
+  if (!/^e2e-[a-f0-9]{12}$/.test(username)) {
+    return jsonResponse({ ok: false, code: "E2E_ADMIN_REQUIRED" }, 403, origin);
+  }
+  const row = userId
+    ? await env.AUTH_DB.prepare("SELECT id, role FROM users WHERE id = ?1 AND username = ?2 LIMIT 1").bind(userId, username).first()
+    : await env.AUTH_DB.prepare("SELECT id, role FROM users WHERE username = ?1 LIMIT 1").bind(username).first();
+  if (!row) return jsonResponse({ ok: true, removed: false, alreadyAbsent: true }, 200, origin);
+  if (!userId && row?.role === "admin") userId = String(row.id || "");
+  if (row?.role !== "admin") return jsonResponse({ ok: false, code: "E2E_ADMIN_REQUIRED" }, 403, origin);
+
+  let logout = null;
+  if (cookie) {
+    logout = await authWorker.fetch(new Request("https://starting9-test-auth.internal/api/auth/logout", {
+      method: "POST", headers: { Cookie: cookie, Origin: origin }
+    }), env, ctx);
+  }
+  if (userId) await env.AUTH_DB.prepare("DELETE FROM sessions WHERE user_id = ?1").bind(userId).run();
+  if (!await removeE2EAdmin(env, userId, username)) {
+    return jsonResponse({ ok: false, code: "E2E_ADMIN_CLEANUP_FAILED" }, 500, origin);
+  }
+  const response = jsonResponse({ ok: true, removed: true }, 200, origin);
+  const clearedCookie = logout?.headers.get("Set-Cookie");
+  if (clearedCookie) response.headers.set("Set-Cookie", clearedCookie);
+  return response;
 }
 
 async function callAdminApi(request, env, ctx, pathname, body) {
@@ -378,11 +501,16 @@ async function handleTestControl(request, env, ctx) {
       "Access-Control-Allow-Origin": "https://starting9-test.pages.dev",
       "Access-Control-Allow-Credentials": "true",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, X-Test-Bootstrap-Token",
+      "Access-Control-Allow-Headers": "Content-Type, X-Test-E2E-Token",
       "Cache-Control": "no-store"
     } });
   }
-  if (url.pathname === "/api/test/bootstrap-admin" && request.method === "POST") return bootstrapFirstAdmin(request, env, ctx);
+  if (url.pathname === "/api/test/e2e-admin" && request.method === "POST") {
+    const input = await request.json().catch(() => null);
+    if (input?.action === "provision") return provisionE2EAdmin(request, env, ctx, input);
+    if (input?.action === "cleanup") return cleanupE2EAdmin(request, env, ctx, input);
+    return jsonResponse({ ok: false, code: "INVALID_ACTION" }, 400, origin);
+  }
   if (url.pathname === "/api/test/status" && request.method === "GET") {
     return jsonResponse({ ok: true, game: await currentScenarioGame(env.AUTH_DB) }, 200, origin);
   }
@@ -436,6 +564,12 @@ return {
       return jsonResponse({ ok: true, service: "starting9-test-auth", environment: "test", database: "not_checked" });
     }
     if (url.pathname.startsWith("/api/test/")) return handleTestControl(request, env, ctx);
+    if (url.pathname === "/api/auth/register" && request.method === "POST" && isIsolatedTestEnvironment(env)) {
+      const input = await request.clone().json().catch(() => null);
+      if (/^e2e-[a-f0-9]{12}$/i.test(String(input?.username || ""))) {
+        return jsonResponse({ ok: false, code: "TEST_USERNAME_RESERVED" }, 400, request.headers.get("Origin") || "");
+      }
+    }
     if (url.pathname === "/api/game-day-roster" && request.method === "GET" && isIsolatedTestEnvironment(env)) {
       const roster = await serveSyntheticRoster(request, env);
       if (roster) return roster;

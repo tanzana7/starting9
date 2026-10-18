@@ -83,6 +83,8 @@ test("isolated teams keep distinct games/rosters/predictions and use the formal 
           position: ["捕", "一", "二", "三", "遊", "左", "中", "右", "指"][index]
         }));
         await f.request(key, "/api/predictions/current", { internalGameId, prediction: { schemaVersion: 1, lineup } }, "PUT");
+        const closed = await f.request(key, "/api/test/scenario", { scenario: "closed" });
+        assert.equal(closed.game.state, "prediction_closed");
         const result = await f.request(key, "/api/test/scenario", { scenario: "published" });
         assert.equal(result.game.state, "published");
         assert.equal(result.game.publication_status, "published");
@@ -99,6 +101,14 @@ test("isolated teams keep distinct games/rosters/predictions and use the formal 
         assert.equal(predictions[0].score, 99);
         assert.ok(JSON.parse(predictions[0].prediction_json).lineup.every((player) => player.teamCode === team.key));
       }
+    }
+    for (const key of ["fighters", "foxes"]) {
+      const baseline = await f.request(key, "/api/test/reset", {});
+      assert.equal(baseline.game.internalGameId, testTeamFixture(key).internalGameId);
+      const status = await f.request(key, "/api/test/status");
+      assert.equal(status.game.state, "scheduled");
+      const history = await f.request(key, "/api/results/games");
+      assert.equal(history.games.some((entry) => entry.internalGameId === testTeamFixture(key).internalGameId), false);
     }
   } finally { f.database.close(); f.audit.close(); }
 });

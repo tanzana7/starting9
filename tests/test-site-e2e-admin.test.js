@@ -158,6 +158,17 @@ test("token-only cleanup is limited to the route's reserved random E2E identity"
   assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM users WHERE username = 'e2e-normal'").get().count, 1);
 });
 
+test("token-only cleanup is idempotent when a provision response was lost before account creation", async (t) => {
+  const f = await fixture();
+  t.after(() => { f.database.close(); f.audit.close(); });
+  const cleaned = await f.request("/api/test/e2e-admin", {
+    method: "POST", body: { action: "cleanup", username: "e2e-abcdef012345" }
+  });
+  assert.equal(cleaned.response.status, 200);
+  assert.equal(cleaned.payload.alreadyAbsent, true);
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM users").get().count, 0);
+});
+
 test("cleanup rejects a non-E2E admin before revoking or deleting its session", async (t) => {
   const f = await fixture();
   t.after(() => { f.database.close(); f.audit.close(); });

@@ -70,3 +70,8 @@ test("scenario worker uses real wall-clock-relative fixtures, not a global Date 
   assert.doesNotMatch(source, /Date\.now\s*=|globalThis\.Date\s*=|Date\s*=\s*class/);
   assert.equal(readJson("wrangler.test-auth.jsonc").triggers?.crons?.length || 0, 0);
 });
+
+test("closed scenario advances through the formal planner to prediction_closed", () => {
+  const source = fs.readFileSync(path.join(ROOT, "tooling/test-site/worker.js"), "utf8");
+  assert.match(source, /if \(\["closed", "lineup-ready", "scored", "ranked", "published", "retry"\]\.includes\(scenario\)\)\s*\{\s*await runPipeline\(env, \{ target: "closed" \}\)/);
+});

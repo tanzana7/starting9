@@ -47,7 +47,7 @@ npx wrangler deploy --config wrangler.auth.target.production.jsonc --profile sta
 npx wrangler pages deploy dist/production-site --project-name starting9-app --branch main --profile starting9-target --commit-hash <git-commit> --commit-message production-pages-<git-commit>
 ```
 
-The guarded Pages command first builds `dist/production-site` from the explicit production asset allowlist in `tooling/pages-assets.mjs`. Deploy only that generated artifact; never deploy the repository root, which also contains Test Site scenario assets.
+The guarded Pages command first builds `dist/production-site` from the explicit production asset allowlist in `tooling/pages-assets.mjs`. The production artifact includes a top-level `404.html` so removed Test Site paths return 404 instead of Pages' default SPA `index.html` fallback. Deploy only that generated artifact; never deploy the repository root, which also contains Test Site scenario assets.
 
 Do not use a bare `npx wrangler deploy`, allow a user-supplied config path, or deploy from a feature branch/worktree.
 

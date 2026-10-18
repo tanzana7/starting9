@@ -30,6 +30,11 @@ for (const file of SHARED_PAGE_FILES) {
   fs.copyFileSync(source, path.join(output, file));
 }
 
+// Pages treats an artifact without a top-level 404.html as an SPA and serves
+// index.html for unknown paths. Production must return an actual 404 for
+// removed test-only URLs rather than making them look like valid app routes.
+fs.copyFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "404.html"), path.join(output, "404.html"));
+
 for (const directory of SHARED_PAGE_DIRECTORIES) {
   const source = path.join(root, directory);
   if (!fs.existsSync(source) || !fs.statSync(source).isDirectory()) {
@@ -67,7 +72,7 @@ for (const file of files) {
   }
 }
 
-for (const required of ["index.html", "script.js", "style.css", "admin-v3.html", "functions/api/[[path]].js", "frontend/shared/team-context.js"]) {
+for (const required of ["404.html", "index.html", "script.js", "style.css", "admin-v3.html", "functions/api/[[path]].js", "frontend/shared/team-context.js"]) {
   if (!files.includes(required)) throw new Error(`Required production Pages artifact file missing: ${required}`);
 }
 

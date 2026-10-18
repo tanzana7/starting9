@@ -10,6 +10,7 @@ test("test Worker and Pages configs are pinned to isolated TARGET resources", as
   const isolation = await import("../tooling/test-site/isolation.js");
   assert.equal(isolation.assertTestAuthConfig(readJson("wrangler.test-auth.jsonc")), true);
   assert.equal(isolation.assertTestPagesConfig(readJson("tooling/test-site/pages-project/wrangler.jsonc")), true);
+  assert.equal(readJson("tooling/test-site/pages-project/wrangler.jsonc").account_id, undefined);
 });
 
 test("production D1 IDs are rejected even if placed in the opposite test binding", async () => {

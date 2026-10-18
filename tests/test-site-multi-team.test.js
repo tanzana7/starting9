@@ -87,7 +87,10 @@ test("isolated teams keep distinct games/rosters/predictions and use the formal 
         assert.equal(result.game.state, "published");
         assert.equal(result.game.publication_status, "published");
         const resultHistory = await f.request(key, "/api/results/games");
-        assert.ok(resultHistory.games.some((entry) => entry.internalGameId === internalGameId));
+        const historyEntry = resultHistory.games.find((entry) => entry.internalGameId === internalGameId);
+        assert.ok(historyEntry);
+        assert.match(historyEntry.displayLabel, new RegExp(team.shortName));
+        assert.equal(historyEntry.gameLabel, historyEntry.displayLabel);
         const resultDetail = await f.request(key, `/api/results/games/${internalGameId}`);
         assert.equal(resultDetail.internalGameId, internalGameId);
         assert.equal(resultDetail.totalScore, 99);

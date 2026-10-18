@@ -50,7 +50,9 @@ Production Pages still bootstraps Fighters directly, with no public selector or 
 
 Team context does not itself establish every future real-team data contract. Team B proof uses fixture rosters and synthetic player IDs. Existing player-ID prefixes and official NPB identity resolution remain NPB-specific. Manual roster storage still has a Fighters-only schema constraint, and several admin monitor/manual-roster, schedule-source, reconciliation, and provider parsing paths intentionally remain Fighters-only. The test-only roster source is a controlled fixture boundary, not a production roster adapter. Thus C-1 proves the reusable core across the exercised path; it does not certify a second real team's complete operations.
 
-The following remain C-3 blockers or design decisions:
+The C-3 product identity and routing/ranking/admin/automation decisions are recorded in [Multi-Team Product Model — C-3](MULTI_TEAM_PRODUCT_MODEL.md). Same-physical-game dual contests are blocked on an identity migration; no production schema or behavior is changed by that design.
+
+The following remain post-C-3 implementation blockers:
 
 1. **Provider mapping and source behavior:** verify each additional club's official schedule, game identity, roster, lineup, probable-starter sources, aliases, and correction behavior; do not assume provider codes are uniform. The Marines roster and schedule path is proven, but its official lineup and live announced-starter paths still need an in-season/live-source check.
 2. **Assets and colors:** obtain licensed/approved team logos/icons, exact accessible palette, metadata, and asset-cache/versioning strategy.

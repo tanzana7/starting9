@@ -1,7 +1,8 @@
 // WorkerがNPBの表示名を既存のF-背番号形式へ安全に変換するための最小マスタ。
 // players.js の背番号・aliasesを更新した場合は、このファイルも同時に更新する。
-export const FIGHTERS_TEAM_CODE = "fighters";
-export const FIGHTERS_TEAM_ID = "F";
+import { PRODUCTION_TEAM } from "./backend/target-team.js";
+export const FIGHTERS_TEAM_CODE = PRODUCTION_TEAM.key;
+export const FIGHTERS_TEAM_ID = PRODUCTION_TEAM.playerTeamId;
 export const FIGHTERS_PLAYER_MASTER = [
   ["マルティネス","2",["マルティネス"]], ["郡司裕也","3",["郡司","郡司裕也"]], ["清水優心","10",["清水","清水優心"]],
   ["進藤勇也","33",["進藤","進藤勇也"]], ["リン","38",["リン"]], ["藤森海斗","57",["藤森","藤森海斗"]],

@@ -18,7 +18,12 @@ const PUBLIC_MODULES = [
   "prediction-form.js"
 ];
 
-function loadPublicFrontendModules(context, root, transform = (file, source) => source) {
+function loadPublicFrontendModules(context, root, transform = (file, source) => source, targetTeam = null) {
+  const teamFile = path.join(root, "frontend", "shared", "team-context.js");
+  vm.runInContext(fs.readFileSync(teamFile, "utf8"), context, { filename: teamFile });
+  context.window.Starting9TargetTeam = targetTeam
+    ? context.window.Starting9TeamContext.defineTeamContext(targetTeam)
+    : context.window.Starting9TargetTeam || context.window.Starting9TeamContext.FIGHTERS;
   for (const file of PUBLIC_MODULES) {
     const filename = path.join(root, "frontend", "public", file);
     vm.runInContext(transform(file, fs.readFileSync(filename, "utf8")), context, { filename });

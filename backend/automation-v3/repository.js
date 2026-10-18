@@ -1,6 +1,7 @@
 import { V3_JOB_TYPE, V3_JOB_TYPES, V3_TIMING, createV3Error, normalizeV3InternalGameId } from "./constants.js";
 import { assertV3Transition, getV3GameEffectiveStartAt, getV3NpbIdentityState } from "./domain.js";
 import { evaluateCanonicalArtifactsFromDb } from "./canonical-artifact-evaluator.js";
+import { PRODUCTION_TEAM, teamContext } from "../target-team.js";
 
 // D1 persistence boundary for V3 games, states, identity hydration, and jobs.
 // Normal Cron discovery intentionally retains only a short historical window.
@@ -213,8 +214,13 @@ export async function listV3Games(db, now = new Date(), options = {}) {
   const unfinishedWorkflowStateSql = "'scheduled', 'probable_starter_ready', 'roster_ready', 'prediction_closed', 'lineup_ready', 'scored'";
   const excludedWorkflowStateSql = "'cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded'";
   const adminHistoryExcludedWorkflowStateSql = "'cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded'";
-  const fightersGameSql = `(LOWER(COALESCE(games.home_team, '')) IN ('f', 'fighters')
-             OR LOWER(COALESCE(games.away_team, '')) IN ('f', 'fighters'))`;
+  const targetTeam = teamContext.requireTeamContext(options.targetTeam || PRODUCTION_TEAM);
+  // Only the validated identity fields enter SQL; display names and aliases cannot enter a query.
+  const targetValues = [targetTeam.providerTeamCode.toLowerCase(), targetTeam.key];
+  if (!targetValues.every((value) => /^[a-z][a-z0-9-]*$/.test(value))) throw new Error("Invalid target team SQL identity");
+  const teamSqlValues = targetValues.map((value) => `'${value}'`).join(', ');
+  const fightersGameSql = `(LOWER(COALESCE(games.home_team, '')) IN (${teamSqlValues})
+             OR LOWER(COALESCE(games.away_team, '')) IN (${teamSqlValues}))`;
   let hasGameJobsTable = false;
   try {
     const jobTable = await db.prepare(

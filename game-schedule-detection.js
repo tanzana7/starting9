@@ -1,7 +1,9 @@
-export const FIGHTERS_TEAM_CODE = "fighters";
+import teamContext from "./frontend/shared/team-context.js";
+
+export const FIGHTERS_TEAM_CODE = teamContext.FIGHTERS.key;
 
 const TEAM_ALIASES = Object.freeze({
-  fighters: ["北海道日本ハムファイターズ", "北海道日本ハム", "日本ハムファイターズ", "日本ハム", "ファイターズ", "F"],
+  fighters: teamContext.FIGHTERS.aliases,
   buffaloes: ["オリックス・バファローズ", "オリックスバファローズ", "オリックス"],
   hawks: ["福岡ソフトバンクホークス", "ソフトバンクホークス", "ソフトバンク", "H"],
   lions: ["埼玉西武ライオンズ", "西武ライオンズ", "西武"],
@@ -29,8 +31,11 @@ export function normalizeScheduleTeamCode(value) {
 }
 
 export function isFightersScheduleGame(game) {
-  return normalizeScheduleTeamCode(game?.homeTeam || game?.homeTeamId) === FIGHTERS_TEAM_CODE
-    || normalizeScheduleTeamCode(game?.awayTeam || game?.awayTeamId) === FIGHTERS_TEAM_CODE;
+  return isTargetTeamScheduleGame(game, teamContext.FIGHTERS);
+}
+
+export function isTargetTeamScheduleGame(game, targetTeam) {
+  return teamContext.gameSide(game, targetTeam) !== null;
 }
 
 export function createDetectedGameId(game) {

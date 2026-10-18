@@ -8,9 +8,11 @@ const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
 const script = fs.readFileSync(path.join(root, "script.js"), "utf8") + "\n" + fs.readFileSync(path.join(root, "frontend/public/results.js"), "utf8");
 const resultsRenderer = fs.readFileSync(path.join(root, "frontend", "public", "render-results.js"), "utf8") + "\n" + fs.readFileSync(path.join(root, "frontend/public/results.js"), "utf8");
+const teamContext = require(path.join(root, "frontend/shared/team-context.js"));
 
 test("予想共有のハッシュタグはlovefightersとstarting9だけに統一される", () => {
-  assert.match(script, /const SHARE_HASHTAGS = "#lovefighters #starting9"/);
+  assert.equal(teamContext.FIGHTERS.shareHashtags, "#lovefighters #starting9");
+  assert.match(script, /const SHARE_HASHTAGS = targetTeam\.shareHashtags/);
   assert.match(script, /createPredictionShareText[\s\S]*SHARE_HASHTAGS/);
   assert.doesNotMatch(script, /#日ハム|#スタメン予想|#fighters|#npb|#Starting9/);
 });

@@ -1,3 +1,4 @@
+const targetTeam = window.Starting9TeamContext.requireTeamContext(window.Starting9TargetTeam);
 const STORAGE_KEYS = {
   prediction: "hamStarting9Prediction",
   actual: "hamStarting9Actual",
@@ -14,7 +15,7 @@ const GAME_SCOPED_STORAGE_KEYS = new Set([
 ]);
 const LINEUP_SIZE = 9;
 const SCORE_MAX = 99;
-const SHARE_HASHTAGS = "#lovefighters #starting9";
+const SHARE_HASHTAGS = targetTeam.shareHashtags;
 const SCORE_RULES = {
   player: {
     perHit: 5,
@@ -57,16 +58,10 @@ const TEAM_PLAYER_ID_PREFIXES = Object.freeze({
   dragons: "D",
   swallows: "S"
 });
-const DEFAULT_PLAYER_TEAM_CODE = "fighters";
+const DEFAULT_PLAYER_TEAM_CODE = targetTeam.key;
 let predictionSaveMessageTimerId = null;
 let predictionDeadlineTimerId = null;
 let openPositionMenuState = null;
-const FIGHTERS_TEAM_KEYWORDS = [
-  "北海道日本ハムファイターズ",
-  "北海道日本ハム",
-  "日本ハム",
-  "ファイターズ"
-];
 const positions = [
   "捕",
   "一",
@@ -405,6 +400,7 @@ const publicRosterController = publicFrontend.createPublicRosterController({
   isRegisteredFielderCandidate
 });
 const publicProbableStarterController = publicFrontend.createPublicProbableStarterController({
+  targetTeam,
   probableStarter: state.probableStarter,
   getGames: () => state.publicGameCatalog.games,
   requestState: appState.requests.probable,
@@ -680,8 +676,8 @@ function createTemporaryPublicPlayer(entry) {
     displayName: name,
     uniformNumber: number,
     playerId,
-    teamCode: "fighters",
-    teamId: "F",
+    teamCode: targetTeam.key,
+    teamId: targetTeam.playerTeamId,
     category,
     registeredPosition: entry.position,
     isBatterCandidate: true,
@@ -692,7 +688,7 @@ function createTemporaryPublicPlayer(entry) {
 }
 
 function getPredictionCandidatePlayers() {
-  const candidatePlayers = [...players];
+  const candidatePlayers = targetTeam.key === window.Starting9TeamContext.FIGHTERS.key ? [...players] : [];
   const existingIds = new Set(candidatePlayers.map((player) => String(player?.playerId || "").trim()).filter(Boolean));
   // A live NPB roster may use a legacy initial prefix (for example Fレイエス)
   // while the canonical master keeps the short display name (レイエス). Only
@@ -2079,6 +2075,7 @@ function isPublicGamePublished(game, remoteState = state.predictionRemote) {
 }
 
 function normalizeScheduleTeamCode(value) {
+  if (window.Starting9TeamContext.matchesTeam(value, targetTeam)) return targetTeam.key;
   const key = String(value || "").trim().toLowerCase();
   return ["fighters", "buffaloes", "hawks", "lions", "eagles", "marines", "giants", "tigers", "baystars", "carp", "dragons", "swallows"].includes(key)
     ? key
@@ -2527,7 +2524,7 @@ function createEmptyPredictionRemoteState() {
 }
 
 function createPlayerId(teamCode, uniformNumber) {
-  const teamId = TEAM_PLAYER_ID_PREFIXES[teamCode];
+  const teamId = teamCode === targetTeam.key ? targetTeam.playerTeamId : TEAM_PLAYER_ID_PREFIXES[teamCode];
   if (!teamId || typeof uniformNumber !== "string" || !/^\d{1,3}$/.test(uniformNumber)) {
     return "";
   }
@@ -2550,11 +2547,11 @@ function createPredictionPayload(prediction) {
     const isTemporary = Boolean(player?.isTemporaryCandidate && isOfficialNpbPlayerId(player?.playerId));
     const teamCode = player?.teamCode || DEFAULT_PLAYER_TEAM_CODE;
     const uniformNumber = player?.uniformNumber;
-    const teamId = TEAM_PLAYER_ID_PREFIXES[teamCode];
+    const teamId = teamCode === targetTeam.key ? targetTeam.playerTeamId : TEAM_PLAYER_ID_PREFIXES[teamCode];
     const playerId = isTemporary ? String(player.playerId).trim().toLowerCase() : createPlayerId(teamCode, uniformNumber);
 
     // 古いlocalStorageの予想も、マスタ上で一意に一致する場合だけ補完します。
-    if (!player || !teamId || !playerId || (isTemporary && teamCode !== "fighters")) {
+    if (!player || !teamId || !playerId || (isTemporary && teamCode !== targetTeam.key)) {
       return {
         ok: false,
         error: `「${item.player || "未選択"}」の選手IDを確認できません。選手を選び直してから保存してください。`

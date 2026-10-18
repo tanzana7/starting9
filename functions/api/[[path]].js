@@ -15,6 +15,16 @@ export function resolveAuthWorkerOrigin(env = {}) {
   return expected && configured === expected ? configured : null;
 }
 
+export function resolveTestTeam(request, env = {}) {
+  if (String(env?.SITE_ENVIRONMENT || "").trim().toLowerCase() !== "test") return "";
+  const requestUrl = new URL(request.url);
+  const queryTeam = requestUrl.searchParams.get("testTeam");
+  if (queryTeam === "fighters" || queryTeam === "foxes") return queryTeam;
+  const cookie = request.headers.get("Cookie") || "";
+  const match = cookie.match(/(?:^|;\s*)s9_test_team=(fighters|foxes)(?:;|$)/);
+  return match?.[1] || "fighters";
+}
+
 const BLOCKED_REQUEST_HEADERS = new Set([
   "connection",
   "content-length",
@@ -97,6 +107,8 @@ export async function onRequest(context) {
 
   const upstreamPath = requestUrl.pathname;
   const upstreamUrl = new URL(upstreamPath + requestUrl.search, upstreamOrigin);
+  const testTeam = resolveTestTeam(context.request, context.env);
+  if (testTeam) upstreamUrl.searchParams.set("testTeam", testTeam);
   try {
     const upstream = await fetch(createUpstreamRequest(context.request, upstreamUrl));
     return new Response(upstream.body, {

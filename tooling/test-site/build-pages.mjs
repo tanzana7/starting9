@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { TEST_TEAMS } from "./teams.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const output = path.join(root, "dist", "test-site");
@@ -22,6 +23,22 @@ for (const directory of ["assets", "frontend"]) {
   if (!fs.existsSync(source)) throw new Error(`required Pages directory missing: ${directory}`);
   fs.cpSync(source, path.join(output, directory), { recursive: true, force: true });
 }
+const testTeamPayload = JSON.stringify(Object.fromEntries(Object.entries(TEST_TEAMS)
+  .map(([key, team]) => [key, {
+    key: team.key, slug: team.slug, displayName: team.displayName, shortName: team.shortName,
+    playerTeamId: team.playerTeamId, providerTeamCode: team.providerTeamCode,
+    aliases: team.aliases, shareHashtags: team.shareHashtags, branding: team.branding,
+    logo: team.logo, icon: team.icon
+  }])));
+const testTeamBootstrap = `const teams = ${testTeamPayload};
+const requested = new URLSearchParams(window.location.search).get("testTeam");
+const key = Object.hasOwn(teams, requested) ? requested : "fighters";
+document.cookie = \`s9_test_team=\${key}; Path=/; SameSite=Lax; Secure\`;
+window.Starting9TestTeam = key;
+window.Starting9TargetTeam = window.Starting9TeamContext.defineTeamContext(teams[key]);
+window.Starting9TeamContext.applyBranding(document.documentElement, window.Starting9TargetTeam);
+`;
+fs.writeFileSync(path.join(output, "frontend", "shared", "production-team.js"), testTeamBootstrap);
 // A previous build version placed Functions under the static output. Remove
 // only that generated artifact so it cannot become a downloadable asset.
 fs.rmSync(path.join(output, "functions"), { recursive: true, force: true });

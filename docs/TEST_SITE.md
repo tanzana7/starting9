@@ -16,7 +16,9 @@
 
 ## Synthetic scenario controls
 
-Open `/test-scenarios.html` and sign in with a synthetic test account. The first test account can be promoted to test admin only through the one-time bootstrap route while a temporary bootstrap secret is configured. Remove that secret immediately after promotion. No production credential or account should be used.
+`node tooling/test-site/e2e.mjs` runs the deployed synthetic Team A/B flow without a human login. It requires the short-lived `TEST_E2E_SETUP_TOKEN` Worker secret to be supplied to the runner through `S9_TEST_E2E_SETUP_TOKEN`; the runner never prints it. The test-only provision route creates a random disposable identity through the ordinary registration handler, grants that identity the test admin role, and obtains its cookie through the ordinary login handler. Scenario operations still pass `/api/admin/me` authorization. The runner resets both game-scoped fixtures and deletes that exact disposable identity/session in `finally`; it does not reset existing users or sessions. Remove the setup secret immediately after the run. No production credential or account should be used.
+
+The provision/cleanup route exists only in `tooling/test-site/worker.js` and fails closed unless the Worker environment, exact test D1 IDs, origin, and temporary server-side secret match. It is not part of the production Auth Worker entrypoint. Existing test admins are not modified or required.
 
 Scenarios:
 
@@ -34,7 +36,7 @@ Scenarios:
 
 The scenario controller uses the formal planner, existing admin lineup APIs, and existing score/ranking/publication executors. Applying a scenario re-bases the synthetic game timestamps relative to the current real clock so the transitions can be tested immediately; it does not replace or monkeypatch the runtime clock. Reset removes only rows keyed to the single fixed synthetic game and reseeds the open baseline. Reset before moving backward from a later completed scenario.
 
-The fixture contains one clearly marked TEST game and 15 `TEST Player` entries. The synthetic roster route only answers for that fixture's canonical internal game ID. Predictions and users persist normally in the isolated test database until the test admin resets the scenario.
+The fixture contains one clearly marked TEST game per team and 15 `TEST Player` entries. The synthetic roster route only answers for that fixture's canonical internal game ID. Predictions and users persist normally in the isolated test database until the test admin resets the scenario. The CLI E2E runner performs three complete prediction→close→lineup→score→ranking→publish→result cycles for both isolated teams and returns both fixtures to the open, unpublished baseline.
 
 ## Build, validate, and deploy
 

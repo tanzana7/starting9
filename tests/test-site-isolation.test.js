@@ -76,7 +76,11 @@ test("closed scenario advances through the formal planner to prediction_closed",
   assert.match(source, /if \(\["closed", "lineup-ready", "scored", "ranked", "published", "retry"\]\.includes\(scenario\)\)\s*\{\s*await runPipeline\(env, \{ target: "closed" \}\)/);
 });
 
-test("lineup-ready scenario stops after formal finalize without draining the score job", () => {
+test("lineup-ready scenario verifies formal artifacts and uses the guarded transition without running score", () => {
   const source = fs.readFileSync(path.join(ROOT, "tooling/test-site/worker.js"), "utf8");
   assert.doesNotMatch(source, /scenario === "lineup-ready"\) await runPipeline/);
+  assert.match(source, /import \{ transitionV3State \} from "\.\.\/\.\.\/backend\/automation-v3\/repository\.js"/);
+  assert.match(source, /state\?\.state !== "prediction_closed" \|\| !String\(lineup\?\.final_lineup_revision_id \|\| ""\)\.trim\(\) \|\| !predictionClose\?\.id/);
+  assert.match(source, /from: "prediction_closed",\s*to: "lineup_ready"/);
+  assert.match(source, /if \(scenario === "lineup-ready"\) await markManualLineupReadyScenario\(env\.AUTH_DB\)/);
 });

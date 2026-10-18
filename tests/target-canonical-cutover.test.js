@@ -20,10 +20,11 @@ test("Pages deployment guard targets only the permanent TARGET project", () => {
   assert.deepEqual(guard.ACTIONS.pages, {
     config: null,
     profile: "starting9-target",
-    project: "starting9-app"
+    project: "starting9-app",
+    artifact: "dist/production-site"
   });
   assert.deepEqual(guard.buildWranglerArgs(root, "pages", "a".repeat(40)), [
-    "wrangler", "pages", "deploy", ".", "--project-name", "starting9-app", "--branch", "main",
+    "wrangler", "pages", "deploy", "dist/production-site", "--project-name", "starting9-app", "--branch", "main",
     "--profile", "starting9-target", "--commit-hash", "a".repeat(40), "--commit-message", "production-pages-aaaaaaaaaaaa"
   ]);
 });

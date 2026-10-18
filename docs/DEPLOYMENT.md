@@ -44,8 +44,10 @@ The scripts use these fixed commands internally:
 ```powershell
 npx wrangler deploy --config wrangler.npb.target.jsonc --profile starting9-target --strict --var BUILD_COMMIT:<git-commit> --message production-npb-<git-commit>
 npx wrangler deploy --config wrangler.auth.target.production.jsonc --profile starting9-target --strict --var BUILD_COMMIT:<git-commit> --message production-auth-<git-commit>
-npx wrangler pages deploy . --project-name starting9-app --branch main --profile starting9-target --commit-hash <git-commit> --commit-message production-pages-<git-commit>
+npx wrangler pages deploy dist/production-site --project-name starting9-app --branch main --profile starting9-target --commit-hash <git-commit> --commit-message production-pages-<git-commit>
 ```
+
+The guarded Pages command first builds `dist/production-site` from the explicit production asset allowlist in `tooling/pages-assets.mjs`. Deploy only that generated artifact; never deploy the repository root, which also contains Test Site scenario assets.
 
 Do not use a bare `npx wrangler deploy`, allow a user-supplied config path, or deploy from a feature branch/worktree.
 
@@ -58,6 +60,8 @@ When public or admin static assets change, deploy the main branch explicitly:
 ```powershell
 npm run deploy:prod:pages
 ```
+
+For a local packaging check without deployment, run `npm run build:prod:pages` and inspect only the generated allowlisted artifact.
 
 The Pages Function requires `STARTING9_AUTH_ORIGIN` to be exactly `https://starting9-auth.starting9.workers.dev`. The permanent TARGET Pages project is configured with this non-secret variable. Missing, SOURCE, or invalid values fail closed with HTTP 503; SOURCE is retained only for an explicitly approved rollback procedure.
 

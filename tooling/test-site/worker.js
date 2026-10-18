@@ -1,5 +1,6 @@
 import authWorker, { executeGameAutomationV3Job } from "../../auth-worker.js";
 import { planMainWorkflowJobs, runGameAutomationV3 } from "../../game-automation-v3.js";
+import { transitionV3State } from "../../backend/automation-v3/repository.js";
 import { isIsolatedTestEnvironment, validatePublishedScenario } from "./isolation.js";
 
 const INTERNAL_GAME_ID = "11111111-2027-4000-8000-000000000001";
@@ -144,6 +145,27 @@ async function currentScenarioGame(db) {
     LEFT JOIN game_lineups AS lineup ON lineup.internal_game_id = games.internal_game_id
     LEFT JOIN ranking_games AS ranking ON ranking.internal_game_id = games.internal_game_id
     WHERE games.internal_game_id = ?1 LIMIT 1`).bind(INTERNAL_GAME_ID).first();
+}
+
+async function markManualLineupReadyScenario(db) {
+  const [state, lineup, predictionClose] = await Promise.all([
+    db.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(INTERNAL_GAME_ID).first(),
+    db.prepare("SELECT final_lineup_revision_id FROM game_lineups WHERE internal_game_id = ?1 LIMIT 1").bind(INTERNAL_GAME_ID).first(),
+    db.prepare("SELECT id FROM game_jobs_v3 WHERE internal_game_id = ?1 AND job_type = 'prediction_close' AND status = 'completed' LIMIT 1").bind(INTERNAL_GAME_ID).first()
+  ]);
+  if (state?.state !== "prediction_closed" || !String(lineup?.final_lineup_revision_id || "").trim() || !predictionClose?.id) {
+    throw new Error("synthetic lineup-ready transition requires a closed prediction and canonical final lineup");
+  }
+  // Manual V4 finalize deliberately creates the canonical final artifact but
+  // no lineup_finalize job. The test scenario represents that verified
+  // boundary with the same optimistic state-transition helper used by V3;
+  // leaving the due score job untouched lets the UI inspect lineup_ready.
+  return transitionV3State(db, {
+    internalGameId: INTERNAL_GAME_ID,
+    from: "prediction_closed",
+    to: "lineup_ready",
+    now: new Date()
+  });
 }
 
 async function requireTestAdmin(request, env, ctx) {
@@ -302,6 +324,7 @@ async function applyScenario(request, env, ctx, scenario) {
       .bind(INTERNAL_GAME_ID).first();
     if (!existingLineup?.final_lineup_revision_id) await finalizeSyntheticLineup(request, env, ctx);
   }
+  if (scenario === "lineup-ready") await markManualLineupReadyScenario(env.AUTH_DB);
   if (["scored", "ranked", "published"].includes(scenario)) {
     const target = scenario;
     await runPipeline(env, { target });

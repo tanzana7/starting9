@@ -4,6 +4,7 @@
   const PROBABLE_STARTER_REFRESH_INTERVAL_MS = 60 * 1000;
 
   function createPublicProbableStarterController(deps) {
+    const targetTeam = window.Starting9TeamContext.requireTeamContext(deps.targetTeam || window.Starting9TargetTeam);
     // Keep the existing app-owned object as the only state. The controller owns
     // starter selection, accepted reads and rendering, but not prediction selection.
     // Bootstrap and the existing deadline ticker own scheduling; creating this
@@ -41,6 +42,7 @@
         .filter((game) => game?.canonical === true
           && Boolean(game?.internalGameId)
           && deps.isNormalManagedSchedule(game)
+          && window.Starting9TeamContext.gameSide(game, targetTeam) !== null
           && !deps.isScheduleGameUnavailable(game))
         .map((game) => ({ game, cutoffAt: getProbableStarterCutoffAt(game) }))
         .filter(({ cutoffAt }) => cutoffAt && !Number.isNaN(cutoffAt.getTime()) && cutoffAt.getTime() > current.getTime())
@@ -271,11 +273,12 @@
         return null;
       }
 
-      if (game.homeTeam === "fighters") {
+      const side = window.Starting9TeamContext.gameSide(game, targetTeam);
+      if (side === "home") {
         return { fighters: game.homeStarter, opponent: game.awayStarter, opponentName: game.awayTeamName };
       }
 
-      if (game.awayTeam === "fighters") {
+      if (side === "away") {
         return { fighters: game.awayStarter, opponent: game.homeStarter, opponentName: game.homeTeamName };
       }
 
@@ -372,7 +375,7 @@
       container.innerHTML = `
     ${createProbableStarterHeadingHtml()}
     <div class="probable-starter-grid">
-      ${createProbableStarterTeamHtml("日本ハム", fightersStarter.fighters?.name)}
+      ${createProbableStarterTeamHtml(targetTeam.shortName, fightersStarter.fighters?.name)}
       ${createProbableStarterTeamHtml(fightersStarter.opponentName || "相手チーム", fightersStarter.opponent?.name)}
     </div>
     <p class="probable-starter-meta">${deps.escapeHtml(gameInfo)}${matchedGame.venue ? ` ・ ${deps.escapeHtml(matchedGame.venue)}` : ""}</p>

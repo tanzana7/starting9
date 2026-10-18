@@ -2,8 +2,13 @@ import authWorker, { executeGameAutomationV3Job } from "../../auth-worker.js";
 import { planMainWorkflowJobs, runGameAutomationV3 } from "../../game-automation-v3.js";
 import { transitionV3State } from "../../backend/automation-v3/repository.js";
 import { isIsolatedTestEnvironment, validatePublishedScenario } from "./isolation.js";
+import { assertDistinctTestTeamIdentity, testTeamFixture } from "./teams.js";
 
-const INTERNAL_GAME_ID = "11111111-2027-4000-8000-000000000001";
+// Every request receives a separate fixture scope. No module-level mutable target can leak
+// from one team's asynchronous request into another team's game, roster, or pipeline.
+export function createTestTeamWorker(teamKey = "fighters") {
+assertDistinctTestTeamIdentity();
+const { team: targetTeam, internalGameId: INTERNAL_GAME_ID, playerPrefix } = testTeamFixture(teamKey);
 const LEGACY_GAME_ID = INTERNAL_GAME_ID;
 const POSITIONS = Object.freeze(["捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
 const CLEANUP_ORDER = Object.freeze([
@@ -17,13 +22,13 @@ const CLEANUP_ORDER = Object.freeze([
 ]);
 
 const TEST_PLAYERS = Object.freeze(Array.from({ length: 15 }, (_, index) => Object.freeze({
-  playerId: `npb:9999${String(index + 1).padStart(4, "0")}`,
-  name: `TEST Player ${String(index + 1).padStart(2, "0")}`,
+  playerId: `npb:${playerPrefix}${String(index + 1).padStart(4, "0")}`,
+  name: `TEST ${teamKey === "foxes" ? "Fox " : ""}Player ${String(index + 1).padStart(2, "0")}`,
   number: String(index + 1),
   uniformNumber: String(index + 1),
-  position: POSITIONS[index % POSITIONS.length],
-  teamCode: "fighters",
-  teamId: "F"
+  position: index % 3 === 0 ? "捕手" : index % 3 === 1 ? "内野手" : "外野手",
+  teamCode: targetTeam.key,
+  teamId: targetTeam.playerTeamId
 })));
 
 function jsonResponse(body, status = 200, origin = "") {
@@ -57,6 +62,12 @@ function createProductEnvironment(env) {
   // Worker from the test environment.
   return {
     ...env,
+    TARGET_TEAM_CONTEXT: targetTeam,
+    TARGET_ROSTER_SOURCE: async (game) => {
+      if ((game.internalGameId || game.internal_game_id) !== INTERNAL_GAME_ID) return null;
+      const response = await serveSyntheticRoster(new Request(`https://test.internal/api/game-day-roster?internalGameId=${INTERNAL_GAME_ID}`), env);
+      return response ? response.json() : null;
+    },
     NPB_FETCH_DISABLED: "false",
     NPB_FETCH_WORKER: {
       async fetch(request) {
@@ -106,13 +117,13 @@ async function seedScenarioGame(db, offsetMinutes) {
   await db.batch([
     db.prepare(`INSERT INTO games
       (internal_game_id, game_date, start_time, home_team, away_team, game_status, created_at, updated_at)
-      VALUES (?1, ?2, ?3, 'fighters', 'marines', 'scheduled', ?4, ?4)`)
-      .bind(INTERNAL_GAME_ID, gameDate, startAt, now),
+      VALUES (?1, ?2, ?3, ?5, 'marines', 'scheduled', ?4, ?4)`)
+      .bind(INTERNAL_GAME_ID, gameDate, startAt, now, targetTeam.key),
     db.prepare(`INSERT INTO detected_game_schedule
       (game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, venue,
        game_status, detected_at, schedule_checked_at, created_at, updated_at, internal_game_id)
-      VALUES (?1, ?2, ?3, ?4, 'fighters', 'marines', 'TEST-ONLY', 'TEST ONLY', 'scheduled', ?5, ?5, ?5, ?5, ?6)`)
-      .bind(LEGACY_GAME_ID, `test-only:${INTERNAL_GAME_ID}`, gameDate, startAt, now, INTERNAL_GAME_ID),
+      VALUES (?1, ?2, ?3, ?4, ?7, 'marines', 'TEST-ONLY', 'TEST ONLY', 'scheduled', ?5, ?5, ?5, ?5, ?6)`)
+      .bind(LEGACY_GAME_ID, `test-only:${INTERNAL_GAME_ID}`, gameDate, startAt, now, INTERNAL_GAME_ID, targetTeam.key),
     db.prepare(`INSERT INTO game_automation_v3_state (internal_game_id, state, created_at, updated_at)
       VALUES (?1, 'scheduled', ?2, ?2)`)
       .bind(INTERNAL_GAME_ID, now),
@@ -240,6 +251,7 @@ async function finalizeSyntheticLineup(request, env, ctx) {
 }
 
 async function runPipeline(env, { target = "published", failAt = "" } = {}) {
+  env = createProductEnvironment(env);
   const disabledStages = target === "scored"
     ? ["ranking_rebuild", "publish"]
     : target === "ranked"
@@ -254,7 +266,7 @@ async function runPipeline(env, { target = "published", failAt = "" } = {}) {
   for (let pass = 0; pass < 8; pass += 1) {
     const now = new Date();
     latest = await runGameAutomationV3(env, now, {
-      gameListOptions: { includeRecentHistory: true },
+      gameListOptions: { includeRecentHistory: true, internalGameId: INTERNAL_GAME_ID, targetTeam },
       formalPlanner: (db, games, at) => planMainWorkflowJobs(db, games, at, { disabledStages }),
       auxiliaryPlanner: async () => ({ created: 0, planned: [], diagnostics: [], errors: [] }),
       disabledJobTypes: target === "lineup-ready" ? ["score"] : [],
@@ -417,7 +429,7 @@ async function serveSyntheticRoster(request, env) {
   });
 }
 
-export default {
+return {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === "/health" && request.method === "GET" && isIsolatedTestEnvironment(env)) {
@@ -431,3 +443,17 @@ export default {
     return authWorker.fetch(request, createProductEnvironment(env), ctx);
   }
 };
+}
+
+export default {
+  async fetch(request, env, ctx) {
+    if (!isIsolatedTestEnvironment(env)) return authWorker.fetch(request, env, ctx);
+    const key = new URL(request.url).searchParams.get("testTeam") || "fighters";
+    if (!["fighters", "foxes"].includes(key)) return jsonResponseForUnknownTeam();
+    return createTestTeamWorker(key).fetch(request, env, ctx);
+  }
+};
+
+function jsonResponseForUnknownTeam() {
+  return Response.json({ ok: false, code: "INVALID_TEST_TEAM" }, { status: 400 });
+}

@@ -5,7 +5,7 @@ const { loadPublicFrontendModules } = require("./load-public-frontend-modules.cj
 
 // Load the shipped scripts intact. Exercise the coordinator's real operations,
 // not copied function bodies, so private helper names are free to change.
-function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateNames = [], now, ui = false, lineup = [], staticGames = [], positionMenuRuntime = false, dragRuntime = false, canvasFactory, scriptTransform = (file, source) => source } = {}) {
+function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateNames = [], now, ui = false, lineup = [], staticGames = [], positionMenuRuntime = false, dragRuntime = false, canvasFactory, targetTeam = null, scriptTransform = (file, source) => source } = {}) {
   const root = path.join(__dirname, "..", "..");
   const stored = new Map();
   const timers = new Map();
@@ -229,7 +229,7 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
     clearTimeout: (id) => timers.delete(id), clearInterval: (id) => timers.delete(id),
     fetch: fetchImpl || (async () => { throw new Error("Unexpected request"); })
   });
-  loadPublicFrontendModules(context, root, scriptTransform);
+  loadPublicFrontendModules(context, root, scriptTransform, targetTeam);
   for (const file of ["players.js", "frontend/public/fighters-player-details.js", "frontend/public/player-display.js", "script.js"]) {
     vm.runInContext(scriptTransform(file, fs.readFileSync(path.join(root, file), "utf8")), context, { filename: file });
   }

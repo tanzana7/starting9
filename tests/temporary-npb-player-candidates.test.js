@@ -132,7 +132,7 @@ test("public/adminはlive temporary fielderを同じ候補IDで扱い、pitcher�
   assert.match(publicSource, /getPredictionCandidatePlayers/);
   assert.match(publicSource, /isTemporaryCandidate: true/);
   assert.match(publicSource, /temporaryPublicPlayerCategory/);
-  assert.match(publicSource, /teamId: "F"/);
+  assert.match(publicSource, /teamId: targetTeam\.playerTeamId/);
   assert.match(publicSource, /isBatterCandidate: true/);
   assert.match(authSource, /playerId \? \{ playerId \} : \{\}/);
   assert.match(authSource, /collectTrustedTemporaryPlayersFromRevisions/);
@@ -141,5 +141,5 @@ test("public/adminはlive temporary fielderを同じ候補IDで扱い、pitcher�
 test("保存済みtemporary predictionは採点時に再検証できるが、通常入力はtrusted rosterなしで受け入れない", () => {
   assert.match(authSource, /allowTemporaryPlayerIds: true/);
   assert.match(authSource, /getTrustedTemporaryPlayersForPrediction/);
-  assert.match(authSource, /sanitizePredictionPayload\(requestedPrediction, \{ trustedTemporaryPlayers \}\)/);
+  assert.match(authSource, /sanitizePredictionPayload\(requestedPrediction, \{ trustedTemporaryPlayers(?:, targetTeam: targetTeamForEnvironment\(env\))? \}\)/);
 });

@@ -34,7 +34,8 @@ test("公開ゲームAPIはFightersのcanonical games行と表示用チーム名
   assert.doesNotMatch(handler, /detected_game_schedule|game_workflow_state/);
   assert.match(handler, /LOWER\(games\.home_team\) = 'fighters' OR LOWER\(games\.away_team\) = 'fighters'/);
   assert.match(handler, /gameId: row\.internal_game_id/);
-  assert.match(handler, /homeTeamName: formatPublicResultTeamName/);
-  assert.match(handler, /awayTeamName: formatPublicResultTeamName/);
-  assert.match(handler, /displayLabel: createPublicGameDisplayLabel/);
+  assert.match(handler, /homeTeamName: formatTargetTeamLabel\(row\.home_team, targetTeam\)/);
+  assert.match(handler, /awayTeamName: formatTargetTeamLabel\(row\.away_team, targetTeam\)/);
+  assert.match(handler, /targetTeam\.key === PRODUCTION_TEAM\.key\s*\? createPublicGameDisplayLabel/);
+  assert.match(handler, /:\s*`\$\{formatTargetTeamLabel/);
 });

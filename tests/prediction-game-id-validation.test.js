@@ -217,7 +217,7 @@ test("選択中の対象試合はcanonical internalGameIdで予想APIを読む",
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, "https://starting9.test/api/predictions/current?internalGameId=canonical-game");
   assert.equal(calls[0].options.credentials, "include");
-  assert.match(worker, /reference = await resolveV3PredictionReference\(env\.AUTH_DB, input\?\.internalGameId\)/);
+  assert.match(worker, /reference = await resolveV3PredictionReference\(env\.AUTH_DB, input\?\.internalGameId(?:, targetTeamForEnvironment\(env\))?\)/);
   assert.match(worker, /internalGameId: metadata\.internalGameId \|\| ""/);
   assert.match(worker, /const storageGameId = metadata\.internalGameId && existing\?\.game_id/);
   assert.match(worker, /storageGameId,\s*\.\.\.\(predictionStorage\.predictions/);
@@ -263,7 +263,7 @@ test("API共通resolverは空の識別子を形式不正として拒否する", 
 
 test("V3はmigration未適用時に安全停止し、旧game_idへfallbackしない", () => {
   assert.match(worker, /V3_PREDICTIONS_SCHEMA_UNAVAILABLE/);
-  assert.match(worker, /resolveV3PredictionReference\(env\.AUTH_DB, input\?\.internalGameId\)/);
+  assert.match(worker, /resolveV3PredictionReference\(env\.AUTH_DB, input\?\.internalGameId(?:, targetTeamForEnvironment\(env\))?\)/);
 });
 
 test("予告先発とロースターの保存後もcanonical IDへ関連行をリンクする", () => {

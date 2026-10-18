@@ -1,4 +1,5 @@
 import { getPredictionDeadlineStatus } from "./prediction-deadline.js";
+import { PRODUCTION_TEAM, targetTeamForEnvironment, teamContext } from "./backend/target-team.js";
 import { PREDICTION_DEADLINE_MILLISECONDS } from "./prediction-deadline.js";
 import {
   getDueFinalLineupAttemptAt,
@@ -733,6 +734,7 @@ const PREDICTION_TEAM_IDS = new Set(Object.values(TEAM_PLAYER_ID_PREFIXES));
 
 export default {
   async fetch(request, env, ctx) {
+    targetTeamForEnvironment(env);
     const cors = createCorsHeaders(request, env);
 
     if (request.method === "OPTIONS") {
@@ -3255,7 +3257,7 @@ async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore, j
 
   const actual = sanitizeActualLineupForScoring(
     parseStoredActualLineup(claimed.actual_lineup_json),
-    { allowUnresolvedPlayer: true }
+    { allowUnresolvedPlayer: true, targetTeam: targetTeamForEnvironment(env) }
   );
   if (!actual.ok) throw createV3Error("V3_FINAL_LINEUP_INVALID", "採点対象の正式スタメンが不正です。", { retryable: false });
   const canonicalRevisionId = String(claimed.final_lineup_revision_id || "").trim();
@@ -3264,7 +3266,7 @@ async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore, j
   const scoring = await prepareGamePredictionScoring(db, {
     gameId: claimed.game_id,
     internalGameId
-  }, actual.lineup, 0);
+  }, actual.lineup, 0, targetTeamForEnvironment(env));
   if (scoring.failed > 0) {
     throw createV3Error("V3_PREDICTION_VALIDATION_FAILED", "予想の採点準備に失敗しました。", { retryable: true });
   }
@@ -9731,6 +9733,10 @@ async function handleAdminV3Phase1Route(request, env, cors, route) {
 }
 
 export async function readSharedGameDayRoster(env, game, ctx = undefined) {
+  const targetTeam = targetTeamForEnvironment(env);
+  if (targetTeam.key !== PRODUCTION_TEAM.key && typeof env.TARGET_ROSTER_SOURCE === "function") {
+    return env.TARGET_ROSTER_SOURCE(game);
+  }
   const internalGameId = String(game?.internalGameId || game?.internal_game_id || "").trim();
   if (!internalGameId) return null;
   const request = new Request(`https://starting9.internal/api/game-day-roster?internalGameId=${encodeURIComponent(internalGameId)}`);
@@ -9739,12 +9745,16 @@ export async function readSharedGameDayRoster(env, game, ctx = undefined) {
 }
 
 async function getAdminPublicRosterForLineup(env, context) {
+  const targetTeam = targetTeamForEnvironment(env);
   const gameId = String(context?.id || "").trim();
   if (!gameId) return { roster: null, status: "unavailable", source: null, warning: "対象試合がありません。" };
   const teamCodes = [context?.target?.home_team, context?.target?.away_team]
     .map((team) => String(team || "").trim().toLowerCase());
-  if (!teamCodes.includes(FIGHTERS_TEAM_CODE)) {
-    return { roster: null, status: "unavailable", source: null, warning: "Fightersの対象試合ではありません。" };
+  const hasTargetTeam = targetTeam.key === PRODUCTION_TEAM.key
+    ? teamCodes.includes(PRODUCTION_TEAM.key)
+    : teamCodes.some((code) => teamContext.matchesTeam(code, targetTeam));
+  if (!hasTargetTeam) {
+    return { roster: null, status: "unavailable", source: null, warning: `${targetTeam.shortName}の対象試合ではありません。` };
   }
   try {
     // Reuse the public resolver, including its live/cache/snapshot fallback
@@ -9879,7 +9889,8 @@ async function handleAdminV3LineupGet(env, cors, context) {
     lineupStatus: lineup?.scoring_status || (final ? "finalized" : "pending"),
     finalizedAt: lineup?.finalized_at || final?.finalized_at || null,
     finalizedBy: lineup?.finalized_by || final?.finalized_by || null,
-    managedTeam: { teamCode: FIGHTERS_TEAM_CODE, teamId: FIGHTERS_TEAM_ID, name: "北海道日本ハムファイターズ" },
+    managedTeam: { teamCode: targetTeamForEnvironment(env).key, teamId: targetTeamForEnvironment(env).playerTeamId,
+      name: targetTeamForEnvironment(env).displayName },
     manualRoster,
     rosterSync: {
       status: publicRosterResolution.status,
@@ -9971,7 +9982,8 @@ async function handleAdminV3LineupRevisionsGet(env, cors, context) {
 }
 
 async function handleAdminV3LineupRevisionCreate(request, env, cors, context, user) {
-  assertManagedManualLineupGame(context);
+  const targetTeam = targetTeamForEnvironment(env);
+  assertManagedManualLineupGame(context, targetTeam);
   const input = await readJson(request);
   const reason = String(input?.reason || "").trim().slice(0, 240) || "V4半自動運営: 管理者入力";
   const currentLineup = await getGameLineup(env.AUTH_DB, context.metadata);
@@ -9987,9 +9999,7 @@ async function handleAdminV3LineupRevisionCreate(request, env, cors, context, us
   }
   const requestedLineup = input?.lineup || input?.actualLineup;
   const trustedTemporaryPlayers = await getTrustedTemporaryPlayersForLineup(env, context, requestedLineup);
-  const actual = trustedTemporaryPlayers.length
-    ? normalizeManualLineupInput(requestedLineup, { trustedTemporaryPlayers })
-    : normalizeManualLineupInput(input?.lineup || input?.actualLineup);
+  const actual = normalizeManualLineupInput(requestedLineup, { trustedTemporaryPlayers, targetTeam });
   if (!actual.ok) throw createManualLineupInvalidError("V3_LINEUP_INVALID", actual, 400);
   const rows = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
   const latest = rows[0] || null;
@@ -10005,6 +10015,7 @@ async function handleAdminV3LineupRevisionCreate(request, env, cors, context, us
     capturedAt: new Date(),
     reason,
     createdBy: user.id,
+    targetTeam,
     validation: { source: "manual", inputAt: new Date().toISOString(), inputBy: user.id, playerCount: actual.lineup.length, unresolvedPlayerCount: 0 },
     allowUnresolvedPlayer: false
   });
@@ -10134,7 +10145,8 @@ async function handleAdminV3LineupRevisionCancel(request, env, cors, route) {
 }
 
 async function handleAdminV3LineupFinalize(request, env, cors, context, user) {
-  assertManagedManualLineupGame(context);
+  const targetTeam = targetTeamForEnvironment(env);
+  assertManagedManualLineupGame(context, targetTeam);
   const now = new Date();
   const finalizeWindow = getManualLineupFinalizeDecision({
     gameDate: context.target?.game_date,
@@ -10162,7 +10174,7 @@ async function handleAdminV3LineupFinalize(request, env, cors, context, user) {
   const requestedVersion = Number(input?.version);
   const revision = rows.find((row) => (requestedId && (row.revision_id === requestedId || `${row.game_id}:${Number(row.version)}` === requestedId)) || (Number.isInteger(requestedVersion) && Number(row.version) === requestedVersion));
   if (!revision) throw createV3Error("V3_LINEUP_REVISION_NOT_FOUND", "正式スタメンrevisionが見つかりません。", { httpStatus: 404 });
-  const actual = sanitizeActualLineupForScoring(parseStoredActualLineup(revision.actual_lineup_json));
+  const actual = sanitizeActualLineupForScoring(parseStoredActualLineup(revision.actual_lineup_json), { targetTeam: targetTeamForEnvironment(env) });
   if (!actual.ok) throw createManualLineupInvalidError("V3_LINEUP_INVALID", actual, 409);
   const currentFinalRevisionId = String(currentLineup?.final_lineup_revision_id || "");
   const requestedRevisionId = String(revision.revision_id || `${revision.game_id}:${Number(revision.version)}`);
@@ -18110,6 +18122,13 @@ async function handlePublicReadWithCache({ request, env, ctx, cors, kind, freshT
 }
 
 async function handleGetPublicGames(request, env, cors) {
+  const targetTeam = targetTeamForEnvironment(env);
+  const targetGamePredicate = targetTeam.key === PRODUCTION_TEAM.key
+    ? "(LOWER(games.home_team) = 'fighters' OR LOWER(games.away_team) = 'fighters')"
+    : "(LOWER(games.home_team) IN (?2, ?3) OR LOWER(games.away_team) IN (?2, ?3))";
+  const fallbackTargetGamePredicate = targetTeam.key === PRODUCTION_TEAM.key
+    ? "(LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')"
+    : "(LOWER(home_team) IN (?2, ?3) OR LOWER(away_team) IN (?2, ?3))";
   const now = new Date();
   const today = getJstDateString(now);
   let rankingColumns = new Set();
@@ -18140,10 +18159,10 @@ async function handleGetPublicGames(request, env, cors) {
           AND games.game_status IS NOT NULL
           AND games.is_active = 1
           AND games.deleted_at IS NULL
-          AND (LOWER(games.home_team) = 'fighters' OR LOWER(games.away_team) = 'fighters')
+          AND ${targetGamePredicate}
         ORDER BY games.start_time ASC
         LIMIT ${PUBLIC_GAME_LIST_LIMIT}`
-    ).bind(today).all();
+    ).bind(...(targetTeam.key === PRODUCTION_TEAM.key ? [today] : [today, targetTeam.key, targetTeam.providerTeamCode.toLowerCase()])).all();
   } catch (error) {
     if (isD1ReadLimitError(error)) throw error;
     // Public selection must remain available when an older optional status column is absent.
@@ -18154,10 +18173,10 @@ async function handleGetPublicGames(request, env, cors) {
            FROM games
           WHERE game_date >= ?1
             AND game_status IS NOT NULL
-            AND (LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')
+            AND ${fallbackTargetGamePredicate}
           ORDER BY start_time ASC
           LIMIT ${PUBLIC_GAME_LIST_LIMIT}`
-      ).bind(today).all();
+      ).bind(...(targetTeam.key === PRODUCTION_TEAM.key ? [today] : [today, targetTeam.key, targetTeam.providerTeamCode.toLowerCase()])).all();
     } catch (fallbackError) {
       throw fallbackError;
     }
@@ -18180,9 +18199,11 @@ async function handleGetPublicGames(request, env, cors) {
       startAt: row.start_time || "",
       homeTeam: row.home_team || "",
       awayTeam: row.away_team || "",
-      homeTeamName: formatPublicResultTeamName(row.home_team),
-      awayTeamName: formatPublicResultTeamName(row.away_team),
-      displayLabel: createPublicGameDisplayLabel({ homeTeam: row.home_team, awayTeam: row.away_team }),
+      homeTeamName: formatTargetTeamLabel(row.home_team, targetTeam),
+      awayTeamName: formatTargetTeamLabel(row.away_team, targetTeam),
+      displayLabel: targetTeam.key === PRODUCTION_TEAM.key
+        ? createPublicGameDisplayLabel({ homeTeam: row.home_team, awayTeam: row.away_team })
+        : `${formatTargetTeamLabel(row.home_team, targetTeam)} vs ${formatTargetTeamLabel(row.away_team, targetTeam)}`,
       gameStatus: row.game_status || "scheduled",
       workflowState: row.workflow_status || "",
       publicationStatus,
@@ -18198,7 +18219,28 @@ async function handleGetPublicGames(request, env, cors) {
   return response;
 }
 
+function formatTargetTeamLabel(value, targetTeam) {
+  if (targetTeam.key === PRODUCTION_TEAM.key) return formatPublicResultTeamName(value);
+  return teamContext.matchesTeam(value, targetTeam)
+    ? targetTeam.shortName
+    : formatPublicResultTeamName(value);
+}
+
+function formatTargetPublicResultLabel(game, targetTeam) {
+  const home = formatTargetTeamLabel(game?.homeTeam, targetTeam);
+  const away = formatTargetTeamLabel(game?.awayTeam, targetTeam);
+  const matchup = home && away ? `${home} vs ${away}` : "対戦情報を確認中";
+  return [String(game?.gameDate || game?.date || "").trim(), matchup].filter(Boolean).join(" ");
+}
+
 async function handleGetPreviousResultGame(request, env, cors) {
+  const targetTeam = targetTeamForEnvironment(env);
+  const targetGamePredicate = targetTeam.key === PRODUCTION_TEAM.key
+    ? "(LOWER(games.home_team) = 'fighters' OR LOWER(games.away_team) = 'fighters')"
+    : "(LOWER(games.home_team) IN (?2, ?3) OR LOWER(games.away_team) IN (?2, ?3))";
+  const fallbackTargetGamePredicate = targetTeam.key === PRODUCTION_TEAM.key
+    ? "(LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')"
+    : "(LOWER(home_team) IN (?2, ?3) OR LOWER(away_team) IN (?2, ?3))";
   const now = new Date();
   const today = getJstDateString(now);
   let result;
@@ -18212,7 +18254,7 @@ async function handleGetPreviousResultGame(request, env, cors) {
         WHERE games.game_date <= ?1
           AND games.is_active = 1
           AND games.deleted_at IS NULL
-          AND (LOWER(games.home_team) = 'fighters' OR LOWER(games.away_team) = 'fighters')
+          AND ${targetGamePredicate}
           AND (
             LOWER(COALESCE(games.game_status, '')) IN ('cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable')
             OR (ranking.ranking_eligibility_status IS NOT NULL AND ranking.ranking_eligibility_status <> 'eligible')
@@ -18220,7 +18262,7 @@ async function handleGetPreviousResultGame(request, env, cors) {
           )
         ORDER BY games.game_date DESC, games.start_time DESC
          LIMIT ${PUBLIC_PREVIOUS_RESULT_CANDIDATE_LIMIT}`
-    ).bind(today).all();
+    ).bind(...(targetTeam.key === PRODUCTION_TEAM.key ? [today] : [today, targetTeam.key, targetTeam.providerTeamCode.toLowerCase()])).all();
   } catch (error) {
     if (isD1ReadLimitError(error)) throw error;
     console.warn("previous result game optional game columns unavailable; using canonical games fallback", error instanceof Error ? error.message : "unknown error");
@@ -18230,10 +18272,10 @@ async function handleGetPreviousResultGame(request, env, cors) {
                 NULL AS ranking_eligibility_status
            FROM games
           WHERE game_date <= ?1
-            AND (LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')
+            AND ${fallbackTargetGamePredicate}
           ORDER BY game_date DESC, start_time DESC
           LIMIT ${PUBLIC_PREVIOUS_RESULT_CANDIDATE_LIMIT}`
-      ).bind(today).all();
+      ).bind(...(targetTeam.key === PRODUCTION_TEAM.key ? [today] : [today, targetTeam.key, targetTeam.providerTeamCode.toLowerCase()])).all();
     } catch (fallbackError) {
       if (isD1ReadLimitError(fallbackError)) throw fallbackError;
       throw fallbackError;
@@ -18435,6 +18477,14 @@ async function getResultGameMetadata(db, gameReference, resolvedMetadata = null)
 async function handleGetResultGames(request, env, cors) {
   const access = await requireAuthenticatedUser(request, env, cors);
   if (!access.ok) return access.response;
+  const targetTeam = targetTeamForEnvironment(env);
+  const targetGameCondition = targetTeam.key === PRODUCTION_TEAM.key
+    ? ""
+    : `AND EXISTS (
+          SELECT 1 FROM games AS target_game
+           WHERE target_game.internal_game_id = latest_predictions.internal_game_id
+             AND (LOWER(target_game.home_team) IN (?2, ?3) OR LOWER(target_game.away_team) IN (?2, ?3))
+        )`;
   const rankingColumns = await getTableColumnSet(env.AUTH_DB, "ranking_games");
   const eligibilitySelect = rankingColumns.has("ranking_eligibility_status")
     ? "ranking_games.ranking_eligibility_status, ranking_games.ranking_eligibility_reason, ranking_games.ranking_eligibility_note"
@@ -18468,9 +18518,12 @@ async function handleGetResultGames(request, env, cors) {
           ${eligibilityCondition}
         )
         AND ranking_games.is_test_game = 0
+        ${targetGameCondition}
       ORDER BY ranking_games.game_date DESC, latest_predictions.updated_at DESC, latest_predictions.game_id DESC
       LIMIT ${PUBLIC_RESULT_HISTORY_LIMIT}`
-  ).bind(access.user.id).all();
+  ).bind(...(targetTeam.key === PRODUCTION_TEAM.key
+    ? [access.user.id]
+    : [access.user.id, targetTeam.key, targetTeam.providerTeamCode.toLowerCase()])).all();
 
   const now = new Date();
   const games = await Promise.all((rows.results || []).map(async (row) => {
@@ -18481,6 +18534,9 @@ async function handleGetResultGames(request, env, cors) {
         v4SemiAuto: getV3OperationalMode(env).isV4SemiAuto
       })
     ]);
+    const publicDisplayLabel = targetTeam.key === PRODUCTION_TEAM.key
+      ? metadata.displayLabel || ""
+      : formatTargetPublicResultLabel(metadata, targetTeam);
     const serviceUnavailable = isServiceUnavailableGameStatus(row.game_status);
     const statusExcluded = ["cancelled", "canceled", "postponed", "no_game"].includes(String(row.game_status || "").toLowerCase());
     const eligibilityExcluded = row.ranking_eligibility_status !== null
@@ -18489,6 +18545,8 @@ async function handleGetResultGames(request, env, cors) {
     const excluded = eligibilityExcluded || statusExcluded || serviceUnavailable;
     return {
       ...metadata,
+      displayLabel: publicDisplayLabel,
+      gameLabel: publicDisplayLabel,
       resultId: metadata.resultId || resultId,
       internalGameId: metadata.internalGameId || String(row.internal_game_id || ""),
       legacyGameId: metadata.legacyGameId || row.game_id,
@@ -18522,9 +18580,14 @@ async function handleGetResultGames(request, env, cors) {
 async function handleGetResultGame(request, env, cors, gameId) {
   const access = await requireAuthenticatedUser(request, env, cors);
   if (!access.ok) return access.response;
-  const metadata = await resolvePredictionGameMetadata(env.AUTH_DB, gameId);
+  const targetTeam = targetTeamForEnvironment(env);
+  const metadata = await resolvePredictionGameMetadata(env.AUTH_DB, gameId, targetTeam);
   if (!metadata) return jsonResponse({ ok: false, error: "対象試合のgameIdが不正です。" }, 400, cors);
   const game = await getResultGameMetadata(env.AUTH_DB, gameId, metadata);
+  if (targetTeam.key !== PRODUCTION_TEAM.key) {
+    game.displayLabel = formatTargetPublicResultLabel(game, targetTeam);
+    game.gameLabel = game.displayLabel;
+  }
   const resultId = String(game.resultId || metadata.internalGameId || metadata.gameId || gameId);
   const internalGameId = String(game.internalGameId || metadata.internalGameId || "");
   if (await isTestRankingGame(env.AUTH_DB, resultId)) {
@@ -18665,9 +18728,10 @@ async function saveLineupCandidateRevision(db, {
   validation = null,
   reason = "NPB公式スタメン候補",
   createdBy = null,
-  allowUnresolvedPlayer = false
+  allowUnresolvedPlayer = false,
+  targetTeam = PRODUCTION_TEAM
 } = {}) {
-  const actual = sanitizeActualLineupForScoring(lineup, { allowUnresolvedPlayer });
+  const actual = sanitizeActualLineupForScoring(lineup, { allowUnresolvedPlayer, targetTeam });
   if (!actual.ok) {
     const error = createPregameError("LINEUP_REVISION_INVALID", actual.error, { httpStatus: 409 });
     error.validation = validation || null;
@@ -21294,7 +21358,7 @@ async function handleAdminScorePredictions(request, env, cors, gameId) {
   }
 }
 
-async function prepareGamePredictionScoring(db, gameReference, actualLineup, isTestPrediction = 0) {
+async function prepareGamePredictionScoring(db, gameReference, actualLineup, isTestPrediction = 0, targetTeam = PRODUCTION_TEAM) {
   const metadata = typeof gameReference === "object" && gameReference ? gameReference : null;
   const gameId = String(metadata?.gameId || gameReference || "");
   const internalGameId = String(metadata?.internalGameId || "");
@@ -21319,7 +21383,7 @@ async function prepareGamePredictionScoring(db, gameReference, actualLineup, isT
   for (const row of rows?.results || []) {
     const prediction = parseStoredPrediction(row.prediction_json);
     const sanitized = prediction
-      ? sanitizePredictionPayload(prediction, { allowTemporaryPlayerIds: true })
+      ? sanitizePredictionPayload(prediction, { allowTemporaryPlayerIds: true, targetTeam })
       : { ok: false, error: "保存済み予想の形式が不正です。" };
     if (!sanitized.ok) {
       const message = String(sanitized.error || "");
@@ -23313,9 +23377,11 @@ function createManualLineupInvalidError(errorCode, validation, httpStatus) {
   });
 }
 
-export function normalizeManualLineupInput(value, { trustedTemporaryPlayers = [] } = {}) {
+export function normalizeManualLineupInput(value, { trustedTemporaryPlayers = [], targetTeam = PRODUCTION_TEAM } = {}) {
+  targetTeam = teamContext.requireTeamContext(targetTeam);
   if (!Array.isArray(value) || value.length !== SCORING_LINEUP_SIZE) {
-    return manualLineupValidationFailure("LINEUP_COUNT_INVALID", "手動スタメンはFightersの9人分を入力してください。");
+    const expectedTeamName = targetTeam.key === PRODUCTION_TEAM.key ? "Fighters" : targetTeam.shortName;
+    return manualLineupValidationFailure("LINEUP_COUNT_INVALID", `手動スタメンは${expectedTeamName}の9人分を入力してください。`);
   }
   const trustedTemporaryById = new Map(
     (Array.isArray(trustedTemporaryPlayers) ? trustedTemporaryPlayers : [])
@@ -23324,7 +23390,7 @@ export function normalizeManualLineupInput(value, { trustedTemporaryPlayers = []
   );
   const lineup = value.map((entry, index) => {
     const playerName = String(entry?.playerName || entry?.name || "").trim();
-    const player = findFightersPlayerByName(playerName);
+    const player = targetTeam.key === PRODUCTION_TEAM.key ? findFightersPlayerByName(playerName) : null;
     const uniformNumber = String(entry?.uniformNumber ?? entry?.number ?? "").trim();
     const playerId = String(entry?.playerId || "").trim();
     const temporaryPlayerId = normalizeOfficialNpbPlayerId(playerId);
@@ -23344,8 +23410,8 @@ export function normalizeManualLineupInput(value, { trustedTemporaryPlayers = []
       displayName: player?.name || playerName,
       uniformNumber: player?.uniformNumber || uniformNumber,
       playerId: canonicalId || (temporaryMatches ? temporaryPlayerId : playerId) || null,
-      teamCode: FIGHTERS_TEAM_CODE,
-      teamId: FIGHTERS_TEAM_ID,
+      teamCode: targetTeam.key,
+      teamId: targetTeam.playerTeamId,
       resolutionStatus: player ? "resolved" : temporaryMatches ? "temporary_npb" : "unresolved",
       rawPlayerName: playerName || "不明",
       _matchedPlayer: player,
@@ -23367,7 +23433,7 @@ export function normalizeManualLineupInput(value, { trustedTemporaryPlayers = []
   if (playerIdMismatch) {
     return manualLineupValidationFailure("LINEUP_PLAYER_ID_MISMATCH", `${playerIdMismatch.slot}番の選手IDが選手情報と一致しません。`, playerIdMismatch.slot, "playerId");
   }
-  const sanitized = sanitizeActualLineupForScoring(lineup.map(({ _matchedPlayer, _temporaryPlayer, _inputUniformNumber, _inputPlayerId, ...entry }) => entry));
+  const sanitized = sanitizeActualLineupForScoring(lineup.map(({ _matchedPlayer, _temporaryPlayer, _inputUniformNumber, _inputPlayerId, ...entry }) => entry), { targetTeam });
   if (!sanitized.ok) return annotateManualLineupValidation(sanitized, lineup);
   return sanitized;
 }
@@ -23438,15 +23504,16 @@ export function getManualLineupFinalizeDecision({ gameDate = "", startAt = "", n
   };
 }
 
-function assertManagedManualLineupGame(context) {
+function assertManagedManualLineupGame(context, targetTeam = PRODUCTION_TEAM) {
   const teamCodes = [context?.metadata?.homeCode, context?.metadata?.awayCode]
     .map((value) => String(value || "").trim().toLowerCase());
-  if (!teamCodes.some((value) => value === "f" || value === FIGHTERS_TEAM_CODE)) {
-    throw createV3Error("V3_MANAGED_TEAM_NOT_IN_GAME", "Fightersを含む試合だけ手動スタメン入力に対応しています。", { httpStatus: 409 });
+  if (!teamCodes.some((value) => teamContext.matchesTeam(value, targetTeam))) {
+    const teamName = targetTeam.key === PRODUCTION_TEAM.key ? "Fighters" : targetTeam.shortName;
+    throw createV3Error("V3_MANAGED_TEAM_NOT_IN_GAME", `${teamName}を含む試合だけ手動スタメン入力に対応しています。`, { httpStatus: 409 });
   }
 }
 
-function sanitizeScoringLineup(value, label, { allowUnresolvedPlayer = false } = {}) {
+function sanitizeScoringLineup(value, label, { allowUnresolvedPlayer = false, targetTeam = PRODUCTION_TEAM } = {}) {
   if (!Array.isArray(value) || value.length !== SCORING_LINEUP_SIZE) {
     return { ok: false, error: `${label}は9人分入力してください。` };
   }
@@ -23482,16 +23549,16 @@ function sanitizeScoringLineup(value, label, { allowUnresolvedPlayer = false } =
 
   for (const item of lineup) {
     if (allowUnresolvedPlayer && !item.playerId) continue;
-    const expectedTeamId = TEAM_PLAYER_ID_PREFIXES[item.teamCode];
-    if (!expectedTeamId || !PREDICTION_TEAM_IDS.has(item.teamId) || item.teamId !== expectedTeamId) {
+    const expectedTeamId = item.teamCode === targetTeam.key ? targetTeam.playerTeamId : TEAM_PLAYER_ID_PREFIXES[item.teamCode];
+    if (!expectedTeamId || item.teamId !== expectedTeamId) {
       return { ok: false, error: `${label}の球団情報が不正です。` };
     }
     if (typeof item.uniformNumber !== "string" || !/^\d{1,3}$/.test(item.uniformNumber)) {
       return { ok: false, error: `${label}の背番号が不正です。` };
     }
     const isTrustedOfficialNpbId = normalizeOfficialNpbPlayerId(item.playerId)
-      && item.teamCode === FIGHTERS_TEAM_CODE
-      && item.teamId === FIGHTERS_TEAM_ID;
+      && item.teamCode === targetTeam.key
+      && item.teamId === targetTeam.playerTeamId;
     if (!isTrustedOfficialNpbId && item.playerId !== createPlayerId(item.teamCode, item.uniformNumber)) {
       return { ok: false, error: `${label}の選手IDが不正です。` };
     }
@@ -23589,7 +23656,7 @@ function createPerfectAchieverResponse(gameId, snapshot) {
   };
 }
 
-async function resolveV3PredictionReference(db, internalGameId) {
+async function resolveV3PredictionReference(db, internalGameId, targetTeam = PRODUCTION_TEAM) {
   const id = String(internalGameId || "").trim();
   if (!INTERNAL_GAME_ID_PATTERN.test(id)) {
     return { ok: false, code: "INTERNAL_GAME_ID_REQUIRED", diagnostics: createPredictionResolutionDiagnostics({ requestedGameId: id }) };
@@ -23612,8 +23679,8 @@ async function resolveV3PredictionReference(db, internalGameId) {
   const parsed = {
     gameId: id,
     date: String(row.game_date || ""),
-    homeCode: predictionTeamCodeFromStoredName(row.home_team),
-    awayCode: predictionTeamCodeFromStoredName(row.away_team),
+    homeCode: teamContext.matchesTeam(row.home_team, targetTeam) ? targetTeam.providerTeamCode : predictionTeamCodeFromStoredName(row.home_team),
+    awayCode: teamContext.matchesTeam(row.away_team, targetTeam) ? targetTeam.providerTeamCode : predictionTeamCodeFromStoredName(row.away_team),
     gameCode: normalizeNpbGameCode(row.npb_game_code)
   };
   const metadata = createResolvedPredictionGameMetadata({
@@ -23622,7 +23689,8 @@ async function resolveV3PredictionReference(db, internalGameId) {
     internalGameId: id,
     homeCode: parsed.homeCode,
     awayCode: parsed.awayCode,
-    resolvedBy: "games.internal_game_id"
+    resolvedBy: "games.internal_game_id",
+    targetTeam
   });
   if (!metadata) {
     const missingFields = [
@@ -23665,7 +23733,7 @@ async function handleGetCurrentPrediction(request, env, cors) {
     return jsonResponse({ ok: false, code: "AUTH_REQUIRED", error: "予想を確認するにはログインしてください。" }, 401, cors);
   }
 
-  const reference = await resolveV3PredictionReference(env.AUTH_DB, new URL(request.url).searchParams.get("internalGameId"));
+  const reference = await resolveV3PredictionReference(env.AUTH_DB, new URL(request.url).searchParams.get("internalGameId"), targetTeamForEnvironment(env));
   if (!reference.ok) return jsonResponse({ ok: false, code: reference.code, error: "対象試合のinternalGameIdが不正です。", resolution: reference.diagnostics || null }, 400, cors);
   const metadata = reference.metadata;
 
@@ -23756,7 +23824,7 @@ async function handlePutCurrentPrediction(request, env, cors) {
   try {
     // Retired legacy form: resolveApiGameReference(env.AUTH_DB, input?.gameId).
     // V3 intentionally accepts only input.internalGameId now.
-    reference = await resolveV3PredictionReference(env.AUTH_DB, input?.internalGameId);
+    reference = await resolveV3PredictionReference(env.AUTH_DB, input?.internalGameId, targetTeamForEnvironment(env));
   } catch (error) {
     const diagnostics = createPredictionResolutionDiagnostics({ requestedGameId: input?.internalGameId });
     await recordPredictionResolutionFailure(env.AUTH_DB, {
@@ -23797,7 +23865,7 @@ async function handlePutCurrentPrediction(request, env, cors) {
 
   const requestedPrediction = input?.prediction;
   const trustedTemporaryPlayers = await getTrustedTemporaryPlayersForPrediction(env, metadata, requestedPrediction);
-  const predictionResult = sanitizePredictionPayload(requestedPrediction, { trustedTemporaryPlayers });
+  const predictionResult = sanitizePredictionPayload(requestedPrediction, { trustedTemporaryPlayers, targetTeam: targetTeamForEnvironment(env) });
   if (!predictionResult.ok) {
     return jsonResponse({ ok: false, error: predictionResult.error }, 400, cors);
   }
@@ -23900,7 +23968,7 @@ async function handleDeleteCurrentPrediction(request, env, cors) {
     return jsonResponse({ ok: false, code: "AUTH_REQUIRED", error: "予想を削除するにはログインしてください。" }, 401, cors);
   }
 
-  const reference = await resolveV3PredictionReference(env.AUTH_DB, new URL(request.url).searchParams.get("internalGameId"));
+  const reference = await resolveV3PredictionReference(env.AUTH_DB, new URL(request.url).searchParams.get("internalGameId"), targetTeamForEnvironment(env));
   if (!reference.ok) return jsonResponse({ ok: false, code: reference.code, error: "対象試合のinternalGameIdが不正です。", resolution: reference.diagnostics || null }, 400, cors);
   const metadata = reference.metadata;
 
@@ -23994,7 +24062,7 @@ async function getTrustedTemporaryPlayersForPrediction(env, metadata, value) {
   }
 }
 
-function sanitizePredictionPayload(value, { trustedTemporaryPlayers = [], allowTemporaryPlayerIds = false } = {}) {
+function sanitizePredictionPayload(value, { trustedTemporaryPlayers = [], allowTemporaryPlayerIds = false, targetTeam = PRODUCTION_TEAM } = {}) {
   if (!value || typeof value !== "object" || !Array.isArray(value.lineup)) {
     return { ok: false, error: "予想データが不正です。" };
   }
@@ -24024,8 +24092,8 @@ function sanitizePredictionPayload(value, { trustedTemporaryPlayers = [], allowT
     return { ok: false, error: "選手情報が不足しています。選手を選び直してください。" };
   }
   for (const item of lineup) {
-    const expectedTeamId = TEAM_PLAYER_ID_PREFIXES[item.teamCode];
-    if (!expectedTeamId || !PREDICTION_TEAM_IDS.has(item.teamId) || item.teamId !== expectedTeamId) {
+    const expectedTeamId = item.teamCode === targetTeam.key ? targetTeam.playerTeamId : TEAM_PLAYER_ID_PREFIXES[item.teamCode];
+    if (!expectedTeamId || item.teamId !== expectedTeamId) {
       return { ok: false, error: "選手の球団情報が不正です。選手を選び直してください。" };
     }
     if (typeof item.uniformNumber !== "string" || !/^\d{1,3}$/.test(item.uniformNumber)) {
@@ -24035,7 +24103,7 @@ function sanitizePredictionPayload(value, { trustedTemporaryPlayers = [], allowT
     const isTrustedTemporary = temporaryPlayerId
       && (allowTemporaryPlayerIds || trustedTemporaryPredictionPlayer(item, trustedTemporaryPlayers));
     if (temporaryPlayerId && isTrustedTemporary) {
-      if (item.teamCode !== FIGHTERS_TEAM_CODE || item.teamId !== FIGHTERS_TEAM_ID) {
+      if (item.teamCode !== targetTeam.key || item.teamId !== targetTeam.playerTeamId) {
         return { ok: false, error: "選手の球団情報が不正です。選手を選び直してください。" };
       }
       continue;
@@ -24209,7 +24277,7 @@ async function getPredictionGameStartColumn(db) {
   return "start_time";
 }
 
-async function resolvePredictionGameMetadataDetailed(db, value) {
+async function resolvePredictionGameMetadataDetailed(db, value, targetTeam = PRODUCTION_TEAM) {
   const requestedGameReference = String(value || "").trim();
   const registry = await getGameIdentityRegistryAvailability(db);
   const gamesStartColumn = await getPredictionGameStartColumn(db);
@@ -24286,8 +24354,10 @@ async function resolvePredictionGameMetadataDetailed(db, value) {
         } : {})
       };
       const resolvedParsed = parsePredictionGameId(scheduleRow?.game_id || requestedGameReference) || parsed;
-      const homeCode = predictionTeamCodeFromStoredName(row.home_team) || resolvedParsed?.homeCode || "";
-      const awayCode = predictionTeamCodeFromStoredName(row.away_team) || resolvedParsed?.awayCode || "";
+      const homeCode = (teamContext.matchesTeam(row.home_team, targetTeam) ? targetTeam.providerTeamCode : "")
+        || predictionTeamCodeFromStoredName(row.home_team) || resolvedParsed?.homeCode || "";
+      const awayCode = (teamContext.matchesTeam(row.away_team, targetTeam) ? targetTeam.providerTeamCode : "")
+        || predictionTeamCodeFromStoredName(row.away_team) || resolvedParsed?.awayCode || "";
       const directionMatches = !parsed || (homeCode === parsed.homeCode && awayCode === parsed.awayCode);
       if (gameRow && directionMatches && homeCode && awayCode) {
         const sourceGameKey = row.source_game_key || diagnostics.sourceGameKey;
@@ -24297,7 +24367,8 @@ async function resolvePredictionGameMetadataDetailed(db, value) {
           internalGameId,
           homeCode,
           awayCode,
-          resolvedBy: gameRow.start_time ? "games.start_time" : "detected_game_schedule.start_at"
+          resolvedBy: gameRow.start_time ? "games.start_time" : "detected_game_schedule.start_at",
+          targetTeam
         });
         if (resolved) {
           return {
@@ -24424,16 +24495,18 @@ async function resolvePredictionGameMetadataDetailed(db, value) {
   };
 }
 
-export async function resolvePredictionGameMetadata(db, value) {
-  const result = await resolvePredictionGameMetadataDetailed(db, value);
+export async function resolvePredictionGameMetadata(db, value, targetTeam = PRODUCTION_TEAM) {
+  const result = await resolvePredictionGameMetadataDetailed(db, value, targetTeam);
   return result.metadata;
 }
 
-function createResolvedPredictionGameMetadata({ parsed, row, internalGameId = "", homeCode = "", awayCode = "", resolvedBy = "" }) {
+function createResolvedPredictionGameMetadata({ parsed, row, internalGameId = "", homeCode = "", awayCode = "", resolvedBy = "", targetTeam = PRODUCTION_TEAM }) {
   const source = parsed || { gameId: String(row?.game_id || "") };
   const resolvedHomeCode = homeCode || predictionTeamCodeFromStoredName(row?.home_team) || source.homeCode;
   const resolvedAwayCode = awayCode || predictionTeamCodeFromStoredName(row?.away_team) || source.awayCode;
-  if (!PREDICTION_TEAM_CODES.has(resolvedHomeCode) || !PREDICTION_TEAM_CODES.has(resolvedAwayCode) || (resolvedHomeCode !== "f" && resolvedAwayCode !== "f")) {
+  const targetCode = targetTeam.providerTeamCode;
+  const known = (code) => PREDICTION_TEAM_CODES.has(code) || code === targetCode;
+  if (!known(resolvedHomeCode) || !known(resolvedAwayCode) || (resolvedHomeCode !== targetCode && resolvedAwayCode !== targetCode)) {
     return null;
   }
   return {
@@ -24443,8 +24516,8 @@ function createResolvedPredictionGameMetadata({ parsed, row, internalGameId = ""
     date: row.game_date || parsed.date,
     homeCode: resolvedHomeCode,
     awayCode: resolvedAwayCode,
-    opponentCode: resolvedHomeCode === "f" ? resolvedAwayCode : resolvedHomeCode,
-    isHome: resolvedHomeCode === "f",
+    opponentCode: resolvedHomeCode === targetCode ? resolvedAwayCode : resolvedHomeCode,
+    isHome: resolvedHomeCode === targetCode,
     startAt: row.start_at || "",
     gameCode: normalizeNpbGameCode(row.game_code) || parsePredictionGameId(row.game_id)?.gameCode || source.gameCode || "",
     internalGameId: String(internalGameId || row.internal_game_id || ""),

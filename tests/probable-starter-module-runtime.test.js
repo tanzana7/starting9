@@ -83,3 +83,21 @@ for (const [label, probable, extra, expected] of [
     assert.doesNotMatch(app.elements.get("probableStarterDisplay").textContent, /別試合投手/);
   });
 }
+
+test("synthetic target team on the away side owns starter resolution and display", async (t) => {
+  const foxes = {
+    key: "test-foxes", slug: "test-foxes", displayName: "TEST Foxes", shortName: "TEST Foxes",
+    playerTeamId: "TX", providerTeamCode: "tx", aliases: ["TEST Foxes"], shareHashtags: "#starting9test",
+    branding: { primary: "#774411", secondary: "#442211", accent: "#eebbaa", surface: "#fff5ee" }
+  };
+  const selected = game("foxes-away", { homeTeam: "marines", awayTeam: foxes.key });
+  const app = createPublicRuntime({ targetTeam: foxes, ui: true, now: "2026-10-16T00:00:00Z",
+    fetchImpl: async () => response(selected, { status: "announced", homePitcherName: "相手投手", awayPitcherName: "Foxes投手" }) });
+  t.after(app.dispose);
+  app.state.publicGameCatalog.games = [selected];
+  await app.operations.initializeProbableStarter();
+  assert.equal(app.state.probableStarter.status, "success");
+  assert.equal(app.state.probableStarter.matchedGame.awayStarter.name, "Foxes投手");
+  assert.match(app.elements.get("probableStarterDisplay").textContent, /TEST Foxes[\s\S]*Foxes投手/);
+  assert.doesNotMatch(app.elements.get("probableStarterDisplay").textContent, /日本ハム/);
+});

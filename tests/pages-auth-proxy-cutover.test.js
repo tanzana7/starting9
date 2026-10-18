@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { onRequest, resolveAuthWorkerOrigin } from "../functions/api/[[path]].js";
+import { onRequest, resolveAuthWorkerOrigin, resolveTestTeam } from "../functions/api/[[path]].js";
 
 const TARGET_ORIGIN = "https://starting9-auth.starting9.workers.dev";
 
@@ -10,6 +10,32 @@ test("Pages proxy requires the explicit TARGET origin and rejects SOURCE/invalid
   assert.equal(resolveAuthWorkerOrigin({ STARTING9_AUTH_ORIGIN: "https://starting9-auth.tanzana7.workers.dev" }), null);
   assert.equal(resolveAuthWorkerOrigin({ STARTING9_AUTH_ORIGIN: "https://untrusted.example" }), null);
   assert.equal(resolveAuthWorkerOrigin({ STARTING9_AUTH_ORIGIN: `${TARGET_ORIGIN}/` }), TARGET_ORIGIN);
+});
+
+test("test team selection is cookie/query scoped to the isolated Pages environment", () => {
+  assert.equal(resolveTestTeam(new Request("https://starting9-test.pages.dev/api/public/games?testTeam=foxes"), { SITE_ENVIRONMENT: "test" }), "foxes");
+  assert.equal(resolveTestTeam(new Request("https://starting9-test.pages.dev/api/public/games", { headers: { Cookie: "s9_test_team=foxes" } }), { SITE_ENVIRONMENT: "test" }), "foxes");
+  assert.equal(resolveTestTeam(new Request("https://starting9-test.pages.dev/api/public/games?testTeam=unknown"), { SITE_ENVIRONMENT: "test" }), "fighters");
+  assert.equal(resolveTestTeam(new Request("https://starting9-app.pages.dev/api/public/games?testTeam=foxes", { headers: { Cookie: "s9_test_team=foxes" } }), { SITE_ENVIRONMENT: "production" }), "");
+});
+
+test("Pages test proxy forwards only the allowlisted synthetic team and never alters production requests", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (request) => {
+    requests.push(request.url);
+    return new Response("ok", { status: 200 });
+  };
+  try {
+    await onRequest({ request: new Request("https://starting9-test.pages.dev/api/public/games", { headers: { Cookie: "s9_test_team=foxes" } }),
+      env: { SITE_ENVIRONMENT: "test", STARTING9_AUTH_ORIGIN: "https://starting9-test-auth.starting9.workers.dev" } });
+    await onRequest({ request: new Request("https://starting9-app.pages.dev/api/public/games", { headers: { Cookie: "s9_test_team=foxes" } }),
+      env: { SITE_ENVIRONMENT: "production", STARTING9_AUTH_ORIGIN: TARGET_ORIGIN } });
+    assert.equal(requests[0], "https://starting9-test-auth.starting9.workers.dev/api/public/games?testTeam=foxes");
+    assert.equal(requests[1], `${TARGET_ORIGIN}/api/public/games`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 test("Pages proxy preserves response and normalizes same-origin cookies for TARGET", async () => {
   const originalFetch = globalThis.fetch;

@@ -296,7 +296,7 @@ async function applyScenario(request, env, ctx, scenario) {
         status === "error" ? "TEST_FIXTURE_UNAVAILABLE" : null, INTERNAL_GAME_ID).run();
   }
 
-  if (["lineup-ready", "scored", "ranked", "published", "retry"].includes(scenario)) {
+  if (["closed", "lineup-ready", "scored", "ranked", "published", "retry"].includes(scenario)) {
     await runPipeline(env, { target: "closed" });
     const existingLineup = await env.AUTH_DB.prepare("SELECT final_lineup_revision_id FROM game_lineups WHERE internal_game_id = ?1 LIMIT 1")
       .bind(INTERNAL_GAME_ID).first();

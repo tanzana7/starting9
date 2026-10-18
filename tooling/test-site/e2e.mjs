@@ -29,6 +29,8 @@ let cookie = "";
 let temporaryAdminCreated = false;
 let temporaryAdminUsername = "";
 let cleanupFailed = false;
+let primaryError = null;
+const cleanupErrors = [];
 const counters = { teamA: 0, teamB: 0, passed: 0 };
 
 async function call(path, { method = "GET", body, admin = false, setup = false, expectedStatus = 200 } = {}) {
@@ -130,6 +132,8 @@ try {
     await exerciseTeam("fighters", round);
     await exerciseTeam("foxes", round);
   }
+} catch (error) {
+  primaryError = error;
 } finally {
   if (temporaryAdminCreated && temporaryAdminUsername) {
     for (const teamKey of ["fighters", "foxes"]) {
@@ -143,6 +147,7 @@ try {
         }
       } catch (error) {
         cleanupFailed = true;
+        cleanupErrors.push(error.message);
         console.error(`baseline reset failed for ${teamKey}: ${error.message}`);
       }
     }
@@ -154,11 +159,17 @@ try {
       temporaryAdminCreated = false;
     }).catch((error) => {
       cleanupFailed = true;
+      cleanupErrors.push(error.message);
       console.error(`temporary E2E admin cleanup failed: ${error.message}`);
     });
   }
 }
 
+if (primaryError && cleanupFailed) {
+  throw new AggregateError([primaryError, ...cleanupErrors.map((message) => new Error(message))],
+    `E2E failed (${primaryError.message}) and cleanup was incomplete`);
+}
+if (primaryError) throw primaryError;
 if (temporaryAdminCreated) throw new Error("Temporary E2E admin remains; do not consider the Test Site at baseline");
 if (cleanupFailed) throw new Error("Test Site cleanup did not verify the open unpublished baseline");
 console.log(`E2E complete: Team A ${counters.teamA}/3, Team B ${counters.teamB}/3, total ${counters.passed}/6`);

@@ -129,10 +129,16 @@ test("username uniqueness/normalizationは維持され、1文字usernameをlogin
   const login = await worker.fetch(authRequest("/api/auth/login", {
     username: "A",
     password: "password123"
-  }, "198.51.100.82"), { AUTH_DB: db }, {});
+  }, "198.51.100.82"), { AUTH_DB: db, SESSION_SAMESITE: "None" }, {});
   assert.equal(login.status, 200);
   assert.equal((await login.json()).user.username, "A");
-  const cookie = (login.headers.get("Set-Cookie") || "").split(";", 1)[0];
+  const setCookie = login.headers.get("Set-Cookie") || "";
+  assert.match(setCookie, /Path=\//);
+  assert.match(setCookie, /HttpOnly/);
+  assert.match(setCookie, /Secure/);
+  assert.match(setCookie, /SameSite=None/);
+  assert.doesNotMatch(setCookie, /Domain=/i);
+  const cookie = setCookie.split(";", 1)[0];
   assert.match(cookie, /^s9_session=/);
 
   const session = await worker.fetch(sessionRequest(cookie), { AUTH_DB: db }, { waitUntil() {} });

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://developers.cloudflare.com/wrangler/config-schema.json",
+  "name": "starting9-test",
+  "account_id": "02580fab1c09e144db7da89478e252c8",
+  "pages_build_output_dir": "../../../dist/test-site",
+  "compatibility_date": "2026-07-17",
+  "vars": {
+    "SITE_ENVIRONMENT": "test",
+    "STARTING9_AUTH_ORIGIN": "https://starting9-test-auth.starting9.workers.dev"
+  }
+}

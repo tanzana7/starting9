@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow, noarchive">
+  <title>Starting9 Test Scenarios</title>
+  <style>
+    body { margin: 0; padding: 2rem 1rem; background: #f4f7fb; color: #172033; font: 16px/1.5 system-ui, sans-serif; }
+    main { max-width: 42rem; margin: auto; padding: 1.5rem; background: white; border-radius: 1rem; box-shadow: 0 8px 30px #17203318; }
+    .test-banner { margin: -1.5rem -1.5rem 1.5rem; padding: .65rem 1.5rem; background: #9d1c1c; color: white; font-weight: 800; text-align: center; }
+    label { display: block; margin: 1rem 0 .4rem; font-weight: 700; }
+    select, button { min-height: 2.75rem; padding: .55rem .85rem; border: 1px solid #a9b4c4; border-radius: .55rem; font: inherit; }
+    select { width: 100%; background: white; }
+    .actions { display: flex; gap: .6rem; margin-top: 1rem; }
+    button { cursor: pointer; background: #173d73; color: white; font-weight: 700; }
+    button.secondary { background: white; color: #173d73; }
+    button:disabled { opacity: .55; cursor: wait; }
+    #scenarioStatus { min-height: 1.5rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="test-banner">TEST ENVIRONMENT · synthetic data only</div>
+    <h1>Test Scenario</h1>
+    <p><a href="./">公開画面</a> · <a href="./admin-v3.html">管理画面</a></p>
+    <label for="scenario">シナリオ</label>
+    <select id="scenario">
+      <option value="no-game">試合なし</option>
+      <option value="pre-open">受付開始前</option>
+      <option value="open" selected>予想受付中</option>
+      <option value="deadline-imminent">締切5分前</option>
+      <option value="closed">締切済み</option>
+      <option value="lineup-ready">正式スタメン確定</option>
+      <option value="scored">採点済み</option>
+      <option value="ranked">ランキング反映済み</option>
+      <option value="published">公開済み</option>
+      <option value="retry">自動処理エラー・再試行</option>
+      <option value="probable-unannounced">予告先発未発表</option>
+      <option value="probable-announced">予告先発発表済み</option>
+      <option value="probable-unavailable">予告先発取得不可</option>
+    </select>
+    <div class="actions">
+      <button id="applyScenario" type="button">適用</button>
+      <button id="resetScenario" class="secondary" type="button">リセット</button>
+    </div>
+    <p id="scenarioStatus" role="status" aria-live="polite"></p>
+  </main>
+  <script defer src="./scenario-controls.js"></script>
+</body>
+</html>

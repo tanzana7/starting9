@@ -1,6 +1,6 @@
 # Multi-Team Product Model — C-3
 
-Status: **design recorded; multi-team rollout blocked on identity migration**.
+Status: **C-3 design recorded; C-4A1 contest schema foundation is local on `refactor/contest-identity-migration`; runtime migration and all production rollout remain blocked**.
 
 This document records the product and persistence boundary needed to support more than one target NPB club without duplicating a physical NPB game. It does not enable another production team, change application behavior, add a selector, or authorize a production migration.
 
@@ -17,7 +17,7 @@ The authenticated account, user ID, and session remain shared across teams. Team
 
 ## Persistence decision
 
-**Recommended model: explicit contest entity.** Add a stable `game_contests` (final table name may follow migration conventions) relation with an opaque `contest_id`, a foreign key to the one physical `internal_game_id`, and a foreign key to the canonical target-team registry. Enforce uniqueness on `(internal_game_id, target_team_id)`. Store lifecycle/eligibility needed to determine whether that target contest is offered, independently from physical-game lifecycle.
+**Recommended model: explicit contest entity.** C-4A1 establishes `game_contests` with deterministic `contest_id`, a foreign key to the one physical `internal_game_id`, and a foreign key to the canonical target-team registry (`target_team_key`). It enforces uniqueness on `(internal_game_id, target_team_key)`. Contest lifecycle/eligibility remains a later runtime/schema decision and is independent from physical-game lifecycle.
 
 Prediction and contest-owned artifacts should refer to `contest_id`. At minimum, inventory and migrate predictions, lineup revisions/final artifacts, scoring revisions/attempt lineage, ranking reflection/eligibility, publication artifacts, contest workflow state, and contest formal jobs. Keep physical source records such as `games`, provider game IDs, schedule/cancellation facts, and probable starters physical-game scoped. Roster data is team scoped; a game-day roster snapshot is scoped to the contest when it represents the target club's eligible players.
 
@@ -89,17 +89,17 @@ Initial product policy: **rankings are team-scoped**. A user's ranking in one ta
 
 ## Migration, backfill, and compatibility plan
 
-This is a plan only. No migration file is created or applied in C-3.
+This was a plan-only section in C-3. C-4A1 has now added the first additive migration locally; it has not been applied to any remote database. The explicit C-4A migration-authoring exception allows this migration to be hand-authored for the phased feature branch and does not authorize any production/Test D1 apply.
 
 1. **Preflight inventory:** in a later explicitly approved migration phase, take the approved backup/export and enumerate physical games, predictions, roster snapshots, lineups/revisions, score attempts/revisions, ranking reflections, publications, jobs, leases, and audit rows by all legacy IDs. Do not infer team identity from display labels alone.
-2. **Expand schema:** add/confirm the canonical team registry and contest table with stable IDs, foreign keys, `(internal_game_id, target_team_id)` uniqueness, participant validation, and indexes. Rebuild SQLite tables where required to replace game-only uniqueness with contest identity. Keep the physical `games` identity unchanged.
+2. **Expand schema:** C-4A1 adds a canonical team registry and additive contest table with deterministic IDs, physical-game/team foreign keys, `(internal_game_id, target_team_key)` uniqueness, and an explicit issue table for ambiguous legacy participant identity. It backfills only provable Fighters games in local fixtures. Participant validation and rebuilding game-only artifact tables remain in C-4A2/A3/A4. Keep the physical `games` identity unchanged.
 3. **Deterministic legacy mapping:** map existing Fighters production records to a Fighters contest only when participant, stored home/away, roster, and related artifact evidence agree. Quarantine missing or contradictory records for explicit review; never guess, silently drop, or reassign them.
 4. **Preserve lineage:** map each legacy game-owned artifact to exactly one contest while preserving primary IDs where possible, timestamps, users, attempts, revision numbers, claim/lease state, idempotency keys, audit lineage, and publication contents. Record a reversible old-game-to-contest mapping for verification.
 5. **Compatibility rollout:** use an expand/backfill/verify/cutover sequence. During transition, legacy endpoints and stored IDs must resolve only to the Fighters contest; they must never select an arbitrary contest for a physical game. New APIs/actions require an explicit contest identity or trusted team route context. Do not run mixed-version Cron against partially migrated rows.
 6. **Verification gates:** compare row counts and key sets per table; verify no orphaned references, duplicate `(user_id, contest_id)` predictions, cross-team artifacts, missing revisions, changed score/publication hashes, stale jobs, or invalid participants. Run the same physical game with two contests and one shared user through independent predictions, lineup, scoring, ranking, publication, retry, and result reads in isolated local databases.
 7. **Rollback:** retain the source snapshot and old compatibility columns/tables through the observation window. Roll back by restoring the approved snapshot or switching reads/writes back before destructive cleanup. Do not combine irreversible cleanup with the initial cutover.
 
-Any concrete migration must be generated through the repository's approved migration tooling, not hand-authored. Production D1 access or migration application requires a separate approved phase and account/profile verification.
+The C-4A migration-authoring exception explicitly permits hand-authoring the A1–A4 migration files on the long-lived feature branch. This exception is limited to source files and local fixture tests; it does not permit applying a migration to Test or production D1. Any remote apply requires a separately approved phase and account/profile verification.
 
 ## API and routing compatibility plan
 

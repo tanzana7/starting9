@@ -3,6 +3,7 @@ import test from "node:test";
 import npbWorker from "../cloudflare-worker.js";
 import { fetchLatestPublicRoster } from "../auth-worker.js";
 import { normalizeTargetTeamScheduleGames } from "../game-schedule-detection.js";
+import teamContext from "../frontend/shared/team-context.js";
 import { TEST_TEAMS } from "../tooling/test-site/teams.js";
 
 const originalFetch = globalThis.fetch;
@@ -25,7 +26,7 @@ test("Marines schedule discovery accepts official name/code at home and away and
     { homeTeam: "marines", awayTeam: "hawks", startTime: "18:00", gameCode: "m-h-12" },
     { homeTeam: "hawks", awayTeam: "lions", startTime: "18:00", gameCode: "h-l-12" }
   ];
-  const bothSides = normalizeTargetTeamScheduleGames(games, "2026-10-01", TEST_TEAMS.marines);
+  const bothSides = normalizeTargetTeamScheduleGames(games, "2026-10-01", teamContext.MARINES);
   assert.deepEqual(bothSides.map((game) => [game.homeTeam, game.awayTeam, game.gameId]), [
     ["marines", "fighters", "2026-10-01-m-f-23"],
     ["fighters", "marines", "2026-10-01-f-m-24"],
@@ -33,7 +34,7 @@ test("Marines schedule discovery accepts official name/code at home and away and
   ]);
   assert.equal(normalizeTargetTeamScheduleGames([
     { homeTeam: "fighters", awayTeam: "千葉ロッテマリーンズ", startTime: "18:00", gameCode: "f-m-24" }
-  ], "2026-10-02", TEST_TEAMS.marines)[0].awayTeam, "marines");
+  ], "2026-10-02", teamContext.MARINES)[0].awayTeam, "marines");
 });
 
 test("NPB schedule endpoint remains Fighters-default and allows only the Marines pilot query", async () => {
@@ -127,7 +128,7 @@ test("Auth public roster requests Marines explicitly, applies M identity, and re
   const roster = await fetchLatestPublicRoster(env, { internal_game_id: "pilot-game", game_date: "2026-10-20" });
   assert.deepEqual(requestedTeams, ["marines"]);
   assert.equal(roster.playerCount, 20);
-  assert.ok(roster.players.every((player) => player.teamCode === "marines" && player.teamId === "M"));
+  assert.ok(roster.players.every((player) => player.teamCode === "test-marines" && player.teamId === "TM"));
   env.NPB_FETCH_WORKER.fetch = async () => Response.json({ ok: true, team: "fighters", players });
   assert.equal(await fetchLatestPublicRoster(env, { internal_game_id: "pilot-game" }), null);
 });

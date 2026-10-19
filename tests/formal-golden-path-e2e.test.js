@@ -13,6 +13,7 @@ import { claimV3Job, completeV3Job, createV3Job, retryV3Job, runGameAutomationV3
 import { evaluateCanonicalArtifactsFromDb } from "../backend/automation-v3/canonical-artifact-evaluator.js";
 import { getRankingForPeriod } from "../backend/repositories/ranking-repository.js";
 import { buildLineupAlertSignal, runLineupCandidatePipeline } from "../backend/automation-v3/lineup-candidate-service.js";
+import { createContestId } from "../backend/contest-identity.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const GAME_ID = "9f7e2f4c-9b16-4c70-9cb8-9d7d2a2a0001";
@@ -200,6 +201,10 @@ async function createGoldenDb({ npbGameCode = "f-h-golden-1" } = {}) {
       'resolved', ?, 'test-fixture', 'https://npb.example/golden-1', ?, ?)
   `).run(GAME_ID, gameDate, startAt.toISOString(), npbGameCode, timestamp, timestamp, timestamp);
   database.prepare(`
+    INSERT INTO game_contests (contest_id, internal_game_id, target_team_key)
+    VALUES (?, ?, 'fighters')
+  `).run(createContestId(GAME_ID, "fighters"), GAME_ID);
+  database.prepare(`
     INSERT INTO game_automation_v3_state (internal_game_id, state, version, created_at, updated_at)
     VALUES (?, 'scheduled', 0, ?, ?)
   `).run(GAME_ID, timestamp, timestamp);
@@ -217,11 +222,11 @@ async function createGoldenDb({ npbGameCode = "f-h-golden-1" } = {}) {
   `).run(GAME_ID, GAME_ID, gameDate, timestamp, timestamp, timestamp);
   database.prepare(`
     INSERT INTO predictions (
-      id, user_id, game_id, internal_game_id, prediction_json, schema_version,
+      id, user_id, game_id, internal_game_id, contest_id, prediction_json, schema_version,
       game_date, home_team, away_team, opponent_code, is_home, submitted_at, updated_at,
       status, is_test_prediction, scoring_status
-    ) VALUES (?, ?, ?, ?, ?, 1, ?, 'fighters', 'hawks', 'hawks', 1, ?, ?, 'submitted', 0, 'pending')
-  `).run("prediction-1", "operator-1", GAME_ID, GAME_ID, JSON.stringify({ schemaVersion: 1, lineup }), gameDate, timestamp, timestamp);
+    ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'fighters', 'hawks', 'hawks', 1, ?, ?, 'submitted', 0, 'pending')
+  `).run("prediction-1", "operator-1", GAME_ID, GAME_ID, createContestId(GAME_ID, "fighters"), JSON.stringify({ schemaVersion: 1, lineup }), gameDate, timestamp, timestamp);
 
   return {
     database,

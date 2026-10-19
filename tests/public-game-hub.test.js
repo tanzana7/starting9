@@ -17,7 +17,7 @@ test("公開トップからGame Hubのカード・切替UI・専用CSSを撤去�
 });
 
 test("試合単位のlocalStorage分離とstale response guardは維持する", () => {
-  assert.match(script, /function getGameScopedStorageKey\(key, gameId\)/);
+  assert.match(script, /function getGameScopedStorageKey\(key, gameId, teamKey = targetTeam\.key\)/);
   assert.match(script, /legacyGameId === gameId/);
   assert.match(script, /function hydrateGameScopedState\(gameId\)/);
   assert.match(script, /beginPublicRequest\("account", \{ abort: true \}\)/);

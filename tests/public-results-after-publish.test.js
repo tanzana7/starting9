@@ -30,7 +30,7 @@ test("結果詳細はUUIDでprediction・ranking・公開状態を読む", () =>
   const handler = worker.slice(start, end);
   assert.match(handler, /const resultId = String\(game\.resultId \|\| metadata\.internalGameId/);
   assert.match(handler, /getRankingGameState\(env\.AUTH_DB, resultId, internalGameId\)/);
-  assert.match(handler, /getPredictionRow\(env\.AUTH_DB, access\.user\.id, \{ gameId: resultId, internalGameId \}\)/);
+  assert.match(handler, /getPredictionRow\(env\.AUTH_DB, access\.user\.id, \{\s*gameId: resultId,\s*internalGameId,\s*\.\.\.\(resultContest\.ok \? \{ contestId: resultContest\.contestId \} : \{\}\)\s*\}\)/s);
   assert.match(handler, /isGameResultsPublished\(env\.AUTH_DB, resultId, new Date\(\),/);
   assert.match(handler, /internalGameId,/);
 });

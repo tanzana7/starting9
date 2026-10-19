@@ -159,6 +159,7 @@ import {
   upsertPushSubscription
 } from "./backend/admin-alerts/storage.js";
 import { normalizeScoringPosition } from "./backend/domain/scoring-position.js";
+import { ensureGameContest, getGameContest } from "./backend/contest-identity.js";
 import { evaluateAndNotifyAdminAlerts } from "./backend/admin-alerts/runtime.js";
 import { sendAdminTestPush } from "./backend/admin-alerts/test-push.js";
 import { runLineupCandidatePipeline } from "./backend/automation-v3/lineup-candidate-service.js";
@@ -8367,6 +8368,19 @@ async function loadV3AdminContext(db, internalGameId) {
   };
 }
 
+async function resolveContestLineupContext(env, context, createIfMissing = false) {
+  const columns = await getTableColumnSet(env.AUTH_DB, "game_lineups");
+  if (!columns.has("contest_id")) return context;
+  const team = targetTeamForEnvironment(env);
+  const resolved = createIfMissing
+    ? await ensureGameContest(env.AUTH_DB, context.id, team)
+    : await getGameContest(env.AUTH_DB, context.id, team);
+  if (!resolved.ok) {
+    throw createV3Error(resolved.code, "対象試合と参加チームを確認できません。", { httpStatus: 409, retryable: false });
+  }
+  return { ...context, metadata: { ...context.metadata, contestId: resolved.contestId, targetTeamKey: resolved.targetTeamKey } };
+}
+
 function v3AdminErrorResponse(cors, error, fallback = "V3管理操作に失敗しました。") {
   const code = String(error?.code || "V3_ADMIN_OPERATION_FAILED");
   const status = Number(error?.httpStatus) || ({
@@ -9190,7 +9204,13 @@ async function handleAdminPreBetaPurgeJobCleanup(request, env, cors) {
   }
 }
 
-async function getV3LineupRevisionRows(db, gameId, internalGameId) {
+async function getV3LineupRevisionRows(db, gameId, internalGameId, contestId = "") {
+  if (contestId) {
+    const scoped = await db.prepare(
+      "SELECT * FROM contest_lineup_revisions WHERE contest_id = ?1 ORDER BY version DESC"
+    ).bind(contestId).all();
+    return scoped.results || [];
+  }
   const columns = await getTableColumnSet(db, "game_lineup_revisions");
   if (internalGameId && !columns.has("internal_game_id")) return [];
   const where = columns.has("internal_game_id") && internalGameId ? "internal_game_id = ?1" : "game_id = ?1";
@@ -9199,25 +9219,28 @@ async function getV3LineupRevisionRows(db, gameId, internalGameId) {
   return rows.results || [];
 }
 
-async function getV3CanonicalFinalRevision(db, internalGameId, revisions = null) {
+async function getV3CanonicalFinalRevision(db, internalGameId, revisions = null, contestId = "") {
   const id = normalizeV3InternalGameId(internalGameId);
   const columns = await getTableColumnSet(db, "game_lineups");
   if (!columns.has("internal_game_id") || !columns.has("final_lineup_revision_id")) {
     throw createV3Error("V3_LINEUP_CORRECTION_SCHEMA_UNAVAILABLE", "過去スタメン修正に必要なcanonical schemaが準備されていません。", { httpStatus: 503, retryable: false });
+  }
+  if (columns.has("contest_id") && !String(contestId || "").trim()) {
+    throw createV3Error("CONTEST_IDENTITY_REQUIRED", "canonicalスタメンの読取にはcontest identityが必要です。", { httpStatus: 503, retryable: false });
   }
   const canonical = await db.prepare(
     `SELECT game_id, internal_game_id, actual_lineup_json, lineup_fingerprint,
             scoring_status, publication_status, published_at, final_lineup_revision_id,
             finalized_at, finalized_by, scored_at, updated_at
        FROM game_lineups
-      WHERE internal_game_id = ?1
+      WHERE internal_game_id = ?1${columns.has("contest_id") ? " AND contest_id = ?2" : ""}
       LIMIT 1`
-  ).bind(id).first();
+  ).bind(...(columns.has("contest_id") ? [id, contestId] : [id])).first();
   const marker = String(canonical?.final_lineup_revision_id || "").trim();
   if (!canonical || !marker) {
     throw createV3Error("V3_LINEUP_CORRECTION_FINAL_LINEUP_REQUIRED", "canonical final_lineup_revision_idが確認できないため、過去スタメンを修正できません。", { httpStatus: 409 });
   }
-  const rows = Array.isArray(revisions) ? revisions : await getV3LineupRevisionRows(db, canonical.game_id || id, id);
+  const rows = Array.isArray(revisions) ? revisions : await getV3LineupRevisionRows(db, canonical.game_id || id, id, contestId);
   const revision = rows.find((row) => revisionMatchesIdentity(row, marker));
   if (!revision) {
     throw createV3Error("V3_LINEUP_CORRECTION_FINAL_LINEUP_REQUIRED", "canonical final_lineup_revision_idに対応するrevisionが見つかりません。", { httpStatus: 409 });
@@ -9253,7 +9276,7 @@ function serializeV3LineupCorrectionTarget(target, stateRow, canonicalResult, ra
 }
 
 async function getV3LineupCorrectionStatus(env, context, revisions = null) {
-  const canonical = await getV3CanonicalFinalRevision(env.AUTH_DB, context.id, revisions);
+  const canonical = await getV3CanonicalFinalRevision(env.AUTH_DB, context.id, revisions, context.metadata.contestId || "");
   const stateRow = await env.AUTH_DB.prepare(
     "SELECT state, version, updated_at FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
   ).bind(context.id).first();
@@ -9266,20 +9289,41 @@ async function handleAdminV3LineupCorrectionsGet(request, env, cors) {
   if (!access.ok) return access.response;
   const today = getJstDateString(new Date());
   try {
-    const rows = await env.AUTH_DB.prepare(
-      `SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status
-         FROM games
-        WHERE internal_game_id IS NOT NULL AND internal_game_id <> ''
-          AND is_active = 1 AND deleted_at IS NULL
-          AND LOWER(COALESCE(game_status, '')) NOT IN ('cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded')
-          AND game_date <= ?1
-          AND (LOWER(COALESCE(home_team, '')) IN ('f', 'fighters') OR LOWER(COALESCE(away_team, '')) IN ('f', 'fighters'))
-        ORDER BY game_date DESC, start_time DESC, internal_game_id DESC
-        LIMIT 100`
-    ).bind(today).all();
+    const targetTeam = targetTeamForEnvironment(env);
+    const lineupColumns = await getTableColumnSet(env.AUTH_DB, "game_lineups");
+    // The correction workflow still creates physical-game-scoped rescore
+    // lineage. Until A3 moves that lineage, exposing non-Fighters targets
+    // here would invite an operation that cannot remain contest-isolated.
+    if (lineupColumns.has("contest_id") && targetTeam.key !== "fighters") {
+      return jsonResponse({ ok: true, asOfDateJst: today, games: [] }, 200, cors);
+    }
+    const contestScoped = lineupColumns.has("contest_id");
+    const rows = contestScoped
+      ? await env.AUTH_DB.prepare(
+        `SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status
+           FROM games AS g
+          WHERE internal_game_id IS NOT NULL AND internal_game_id <> ''
+            AND is_active = 1 AND deleted_at IS NULL
+            AND LOWER(COALESCE(game_status, '')) NOT IN ('cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded')
+            AND game_date <= ?1
+            AND EXISTS (SELECT 1 FROM game_contests AS c WHERE c.internal_game_id = g.internal_game_id AND c.target_team_key = ?2)
+          ORDER BY game_date DESC, start_time DESC, internal_game_id DESC
+          LIMIT 100`
+      ).bind(today, targetTeam.key).all()
+      : await env.AUTH_DB.prepare(
+        `SELECT internal_game_id, game_date, start_time, home_team, away_team, game_status
+           FROM games
+          WHERE internal_game_id IS NOT NULL AND internal_game_id <> ''
+            AND is_active = 1 AND deleted_at IS NULL
+            AND LOWER(COALESCE(game_status, '')) NOT IN ('cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable', 'excluded')
+            AND game_date <= ?1
+            AND (LOWER(COALESCE(home_team, '')) IN ('f', 'fighters') OR LOWER(COALESCE(away_team, '')) IN ('f', 'fighters'))
+          ORDER BY game_date DESC, start_time DESC, internal_game_id DESC
+          LIMIT 100`
+      ).bind(today).all();
     const games = [];
     for (const row of rows.results || []) {
-      const context = await loadV3AdminContext(env.AUTH_DB, row.internal_game_id);
+      const context = await resolveContestLineupContext(env, await loadV3AdminContext(env.AUTH_DB, row.internal_game_id));
       try {
         const status = await getV3LineupCorrectionStatus(env, context);
         games.push(serializeV3LineupCorrectionTarget(context.target, status.stateRow, status.canonical, status.ranking));
@@ -9314,9 +9358,15 @@ async function handleAdminV3LineupCorrection(request, env, cors, route) {
   if (!route.internalGameId) return jsonResponse({ ok: false, code: "V3_INTERNAL_GAME_ID_REQUIRED", error: "internalGameIdが不正です。" }, 400, cors);
   let context;
   try {
-    context = await loadV3AdminContext(env.AUTH_DB, route.internalGameId);
-    assertManagedManualLineupGame(context);
-    const revisions = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
+    const targetTeam = targetTeamForEnvironment(env);
+    // Do not return the legacy Fighters manual-roster catalog or expose a
+    // game-scoped correction path while this endpoint awaits A3.
+    if (targetTeam.key !== "fighters") {
+      throw createV3Error("V3_LINEUP_CORRECTION_CONTEST_UNSUPPORTED", "このcontestの過去スタメン修正は次段階の採点移行後に利用できます。", { httpStatus: 409 });
+    }
+    context = await resolveContestLineupContext(env, await loadV3AdminContext(env.AUTH_DB, route.internalGameId));
+    assertManagedManualLineupGame(context, targetTeam);
+    const revisions = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id, context.metadata.contestId);
     const status = await getV3LineupCorrectionStatus(env, context, revisions);
     if (request.method === "GET") {
       const manualRoster = await getManualRoster(env.AUTH_DB, { teamCode: MANUAL_ROSTER_TEAM.teamCode }).catch(() => ({
@@ -9349,7 +9399,6 @@ async function handleAdminV3LineupCorrection(request, env, cors, route) {
       }, 200, cors);
     }
     if (request.method !== "POST") return jsonResponse({ ok: false, code: "V3_ADMIN_METHOD_NOT_ALLOWED", error: "過去スタメン修正APIのHTTPメソッドが不正です。" }, 405, cors);
-
     const input = await readJson(request, { maxBytes: ADMIN_PREVIEW_JSON_BODY_MAX_BYTES });
     if (input?.confirmed !== true) throw createV3Error("V3_LINEUP_CORRECTION_CONFIRMATION_REQUIRED", "過去スタメン修正には確認済みフラグが必要です。", { httpStatus: 409 });
     const reason = String(input?.reason || "").trim();
@@ -9366,8 +9415,8 @@ async function handleAdminV3LineupCorrection(request, env, cors, route) {
     const requestedLineup = input?.lineup || input?.actualLineup;
     const trustedTemporaryPlayers = await getTrustedTemporaryPlayersForLineup(env, context, requestedLineup);
     const actual = trustedTemporaryPlayers.length
-      ? normalizeManualLineupInput(requestedLineup, { trustedTemporaryPlayers })
-      : normalizeManualLineupInput(input?.lineup || input?.actualLineup);
+      ? normalizeManualLineupInput(requestedLineup, { trustedTemporaryPlayers, targetTeam })
+      : normalizeManualLineupInput(input?.lineup || input?.actualLineup, { targetTeam });
     if (!actual.ok) throw createManualLineupInvalidError("V3_LINEUP_CORRECTION_LINEUP_INVALID", actual, 400);
     const fingerprint = await sha256Base64Url(JSON.stringify(actual.lineup));
     const currentFingerprint = String(status.canonical.revision.lineup_fingerprint || "")
@@ -9381,15 +9430,17 @@ async function handleAdminV3LineupCorrection(request, env, cors, route) {
     const revision = await saveLineupCandidateRevision(env.AUTH_DB, {
       gameId: context.metadata.gameId,
       internalGameId: context.id,
+      contestId: context.metadata.contestId || "",
       lineup: actual.lineup,
       source: "admin",
       capturedAt: new Date(),
       reason,
       createdBy: access.user.id,
+      targetTeam,
       validation: { source: "manual_correction", inputAt: new Date().toISOString(), inputBy: access.user.id, playerCount: actual.lineup.length, unresolvedPlayerCount: 0 },
       allowUnresolvedPlayer: false
     });
-    const latestCanonical = await getV3CanonicalFinalRevision(env.AUTH_DB, context.id);
+    const latestCanonical = await getV3CanonicalFinalRevision(env.AUTH_DB, context.id, null, context.metadata.contestId || "");
     if (revisionsMatch(latestCanonical.revision, revision)) {
       throw createV3Error("V3_LINEUP_CORRECTION_NO_OP", "同じ修正が別の操作ですでに確定されています。", { httpStatus: 409 });
     }
@@ -9399,10 +9450,12 @@ async function handleAdminV3LineupCorrection(request, env, cors, route) {
       now,
       source: "manual",
       allowAfterStart: true,
-      internalGameId: context.id
+      internalGameId: context.id,
+      contestId: context.metadata.contestId || "",
+      targetTeam
     });
-    await activateLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, version: revision.version, internalGameId: context.id, finalizedAt: now, finalizedBy: `admin:${String(access.user.id)}` });
-    await linkFinalLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, version: revision.version, finalizedAt: now, finalizedBy: `admin:${String(access.user.id)}` });
+    await activateLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, version: revision.version, internalGameId: context.id, contestId: context.metadata.contestId || "", targetTeam, finalizedAt: now, finalizedBy: `admin:${String(access.user.id)}` });
+    await linkFinalLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, contestId: context.metadata.contestId || "", targetTeam, version: revision.version, finalizedAt: now, finalizedBy: `admin:${String(access.user.id)}` });
     if (currentState !== "manual_action_required") {
       await transitionV3State(env.AUTH_DB, { internalGameId: context.id, from: currentState, to: "manual_action_required", now });
     }
@@ -9697,6 +9750,9 @@ async function handleAdminV3Phase1Route(request, env, cors, route) {
     return v3AdminErrorResponse(cors, error, "対象試合を取得できませんでした。");
   }
   try {
+    if (["lineup", "lineup-revisions", "lineup-finalize"].includes(route.action)) {
+      context = await resolveContestLineupContext(env, context, request.method !== "GET");
+    }
     const { id, target, metadata } = context;
     const manualLineupMutation = request.method !== "GET"
       && ["lineup-revisions", "lineup-finalize"].includes(route.action);
@@ -9862,7 +9918,7 @@ async function getTrustedTemporaryPlayersForLineup(env, context, value) {
 
 async function handleAdminV3LineupGet(env, cors, context) {
   const lineup = await getGameLineup(env.AUTH_DB, context.metadata);
-  const rows = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
+  const rows = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id, context.metadata.contestId);
   const current = rows.find((row) => Number(row.is_current) === 1) || rows[0] || null;
   const final = rows.find((row) => Number(row.is_final) === 1) || null;
   const manualRoster = await getManualRoster(env.AUTH_DB, { teamCode: MANUAL_ROSTER_TEAM.teamCode }).catch(() => ({
@@ -9881,6 +9937,7 @@ async function handleAdminV3LineupGet(env, cors, context) {
   return jsonResponse({
     ok: true,
     internalGameId: context.id,
+    ...(context.metadata.contestId ? { contestId: context.metadata.contestId } : {}),
     lineup: serializeGameLineup(lineup),
     canonicalFinalLineupExists: Boolean(String(lineup?.final_lineup_revision_id || "").trim()),
     canonicalFinalRevisionId: String(lineup?.final_lineup_revision_id || "").trim() || null,
@@ -9973,7 +10030,7 @@ async function handleAdminV3ManualRoster(request, env, cors, ctx) {
 }
 
 async function handleAdminV3LineupRevisionsGet(env, cors, context) {
-  const rows = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
+  const rows = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id, context.metadata.contestId);
   return jsonResponse({
     ok: true,
     internalGameId: context.id,
@@ -10001,7 +10058,7 @@ async function handleAdminV3LineupRevisionCreate(request, env, cors, context, us
   const trustedTemporaryPlayers = await getTrustedTemporaryPlayersForLineup(env, context, requestedLineup);
   const actual = normalizeManualLineupInput(requestedLineup, { trustedTemporaryPlayers, targetTeam });
   if (!actual.ok) throw createManualLineupInvalidError("V3_LINEUP_INVALID", actual, 400);
-  const rows = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
+  const rows = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id, context.metadata.contestId);
   const latest = rows[0] || null;
   const fingerprint = await sha256Base64Url(JSON.stringify(actual.lineup));
   if (latest && latest.lineup_fingerprint === fingerprint) {
@@ -10010,6 +10067,7 @@ async function handleAdminV3LineupRevisionCreate(request, env, cors, context, us
   const revision = await saveLineupCandidateRevision(env.AUTH_DB, {
     gameId: context.metadata.gameId,
     internalGameId: context.id,
+    contestId: context.metadata.contestId || "",
     lineup: actual.lineup,
     source: "admin",
     capturedAt: new Date(),
@@ -10019,9 +10077,9 @@ async function handleAdminV3LineupRevisionCreate(request, env, cors, context, us
     validation: { source: "manual", inputAt: new Date().toISOString(), inputBy: user.id, playerCount: actual.lineup.length, unresolvedPlayerCount: 0 },
     allowUnresolvedPlayer: false
   });
-  await recordWorkflowLog(env.AUTH_DB, { eventType: "v3_admin_lineup_revision", status: "success", gameId: context.metadata.gameId, occurredAt: new Date(), message: "V3管理者がスタメンrevisionを作成しました。", metadata: { internalGameId: context.id, revisionId: revision.revision_id || `${context.metadata.gameId}:${revision.version}` }, source: "admin" });
+  await recordWorkflowLog(env.AUTH_DB, { eventType: "v3_admin_lineup_revision", status: "success", gameId: context.metadata.gameId, occurredAt: new Date(), message: "V3管理者がスタメンrevisionを作成しました。", metadata: { internalGameId: context.id, contestId: context.metadata.contestId || null, revisionId: revision.revision_id || `${context.metadata.gameId}:${revision.version}` }, source: "admin" });
   await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobType: "admin:lineup_revision" });
-  return jsonResponse({ ok: true, internalGameId: context.id, noOp: false, revision: serializeV3LineupRevision(revision) }, 201, cors);
+  return jsonResponse({ ok: true, internalGameId: context.id, ...(context.metadata.contestId ? { contestId: context.metadata.contestId } : {}), noOp: false, revision: serializeV3LineupRevision(revision) }, 201, cors);
 }
 
 const MANUAL_LINEUP_REVISION_CANCEL_CONFIRMATION = "CANCEL_MANUAL_LINEUP_REVISION";
@@ -10064,7 +10122,7 @@ export function getManualLineupRevisionCancelDecision({ gameDate = "", workflowS
   return { allowed: false, code: "V3_MANUAL_LINEUP_REVISION_LINK_MISMATCH", message: "canonicalスタメンの紐付けを安全に確認できないため取消を拒否しました。" };
 }
 
-async function getCanonicalLineupForManualRevisionCancel(db, internalGameId) {
+async function getCanonicalLineupForManualRevisionCancel(db, internalGameId, contestId = "") {
   const columns = await getTableColumnSet(db, "game_lineups");
   if (!columns.has("internal_game_id")) {
     throw createV3Error("V3_LINEUP_SCHEMA_UNAVAILABLE", "canonicalスタメンのUUID保存先が準備されていません。", { httpStatus: 503 });
@@ -10073,7 +10131,9 @@ async function getCanonicalLineupForManualRevisionCancel(db, internalGameId) {
     "game_id", "internal_game_id", "actual_lineup_json", "lineup_fingerprint", "scoring_status", "publication_status", "published_at",
     "final_lineup_revision_id", "finalized_at", "finalized_by"
   ].filter((column) => columns.has(column));
-  return db.prepare(`SELECT ${selectable.join(", ")} FROM game_lineups WHERE internal_game_id = ?1 LIMIT 1`).bind(internalGameId).first();
+  return contestId
+    ? db.prepare(`SELECT ${selectable.join(", ")} FROM game_lineups WHERE internal_game_id = ?1 AND contest_id = ?2 LIMIT 1`).bind(internalGameId, contestId).first()
+    : db.prepare(`SELECT ${selectable.join(", ")} FROM game_lineups WHERE internal_game_id = ?1 LIMIT 1`).bind(internalGameId).first();
 }
 
 async function handleAdminV3LineupRevisionCancel(request, env, cors, route) {
@@ -10083,19 +10143,21 @@ async function handleAdminV3LineupRevisionCancel(request, env, cors, route) {
   let context;
   try {
     context = await loadV3AdminContext(env.AUTH_DB, route.internalGameId);
-    assertManagedManualLineupGame(context);
+    context = await resolveContestLineupContext(env, context, true);
+    assertManagedManualLineupGame(context, targetTeamForEnvironment(env));
     const input = await readJson(request, { maxBytes: ADMIN_PREVIEW_JSON_BODY_MAX_BYTES });
     if (input?.confirmed !== true || String(input?.confirmationText || "") !== MANUAL_LINEUP_REVISION_CANCEL_CONFIRMATION) {
       throw createV3Error("V3_STRONG_CONFIRMATION_REQUIRED", "manual revision取消には強い確認が必要です。", { httpStatus: 409 });
     }
     const stateRow = await env.AUTH_DB.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(context.id).first();
-    const revisions = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
+    const revisions = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id, context.metadata.contestId);
     const revision = revisions.find((row) => revisionMatchesIdentity(row, route.revisionId));
-    const canonical = await getCanonicalLineupForManualRevisionCancel(env.AUTH_DB, context.id);
+    const canonical = await getCanonicalLineupForManualRevisionCancel(env.AUTH_DB, context.id, context.metadata.contestId || "");
     const decision = getManualLineupRevisionCancelDecision({ gameDate: context.target?.game_date, workflowState: stateRow?.state, revision, canonical, now: new Date() });
     if (!decision.allowed) throw createV3Error(decision.code, decision.message, { httpStatus: decision.code === "V3_MANUAL_LINEUP_REVISION_NOT_FOUND" ? 404 : 409 });
 
-    const revisionColumns = await getTableColumnSet(env.AUTH_DB, "game_lineup_revisions");
+    const revisionTable = context.metadata.contestId ? "contest_lineup_revisions" : "game_lineup_revisions";
+    const revisionColumns = await getTableColumnSet(env.AUTH_DB, revisionTable);
     if (!(revisionColumns.has("internal_game_id") && revisionColumns.has("is_current") && revisionColumns.has("is_final") && revisionColumns.has("superseded_at"))) {
       throw createV3Error("V3_LINEUP_SCHEMA_UNAVAILABLE", "revision取消に必要なschemaが準備されていません。", { httpStatus: 503 });
     }
@@ -10104,9 +10166,11 @@ async function handleAdminV3LineupRevisionCancel(request, env, cors, route) {
     const revisionValues = [now];
     if (revisionColumns.has("finalized_at")) { revisionFields.push(`finalized_at = ?${revisionValues.length + 1}`); revisionValues.push(null); }
     if (revisionColumns.has("finalized_by")) { revisionFields.push(`finalized_by = ?${revisionValues.length + 1}`); revisionValues.push(null); }
-    revisionValues.push(context.id, Number(revision.version));
-    const revisionScope = `internal_game_id = ?${revisionValues.length - 1} AND version = ?${revisionValues.length}`;
-    const statements = [env.AUTH_DB.prepare(`UPDATE game_lineup_revisions SET ${revisionFields.join(", ")} WHERE ${revisionScope} AND source IN ('manual', 'manual-revision') AND (is_current = 1 OR is_final = 1)`).bind(...revisionValues)];
+    revisionValues.push(context.metadata.contestId || context.id, Number(revision.version));
+    const revisionScope = context.metadata.contestId
+      ? `contest_id = ?${revisionValues.length - 1} AND version = ?${revisionValues.length}`
+      : `internal_game_id = ?${revisionValues.length - 1} AND version = ?${revisionValues.length}`;
+    const statements = [env.AUTH_DB.prepare(`UPDATE ${revisionTable} SET ${revisionFields.join(", ")} WHERE ${revisionScope} AND source IN ('manual', 'manual-revision') AND (is_current = 1 OR is_final = 1)`).bind(...revisionValues)];
     if (decision.canonicalLinked && canonical) {
       const canonicalColumns = await getTableColumnSet(env.AUTH_DB, "game_lineups");
       const fields = [];
@@ -10129,8 +10193,9 @@ async function handleAdminV3LineupRevisionCancel(request, env, cors, route) {
       add("finalized_by", null);
       add("updated_at", now);
       if (!fields.length) throw createV3Error("V3_LINEUP_SCHEMA_UNAVAILABLE", "canonicalスタメンの取消先が準備されていません。", { httpStatus: 503 });
-      values.push(context.id);
-      const where = decision.canonicalLinkType === "fingerprint" ? "internal_game_id = ?" + values.length + " AND lineup_fingerprint = ?" + (values.length + 1) : "internal_game_id = ?" + values.length + " AND final_lineup_revision_id = ?" + (values.length + 1);
+      values.push(context.metadata.contestId || context.id);
+      const identityColumn = context.metadata.contestId ? "contest_id" : "internal_game_id";
+      const where = `${identityColumn} = ?${values.length} AND ${decision.canonicalLinkType === "fingerprint" ? "lineup_fingerprint" : "final_lineup_revision_id"} = ?${values.length + 1}`;
       values.push(decision.canonicalLinkType === "fingerprint" ? revision.lineup_fingerprint : decision.revisionId);
       statements.push(env.AUTH_DB.prepare(`UPDATE game_lineups SET ${fields.join(", ")} WHERE ${where}`).bind(...values));
     }
@@ -10169,7 +10234,7 @@ async function handleAdminV3LineupFinalize(request, env, cors, context, user) {
   })) {
     throw createV3Error("V3_LINEUP_EDIT_LOCKED", "採点開始後または公開済みの試合はスタメンを確定できません。", { httpStatus: 409 });
   }
-  const rows = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id);
+  const rows = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id, context.metadata.contestId);
   const requestedId = String(input?.lineupRevisionId || input?.revisionId || "");
   const requestedVersion = Number(input?.version);
   const revision = rows.find((row) => (requestedId && (row.revision_id === requestedId || `${row.game_id}:${Number(row.version)}` === requestedId)) || (Number.isInteger(requestedVersion) && Number(row.version) === requestedVersion));
@@ -10197,10 +10262,10 @@ async function handleAdminV3LineupFinalize(request, env, cors, context, user) {
     throw createV3Error("V3_LINEUP_FINALIZE_IN_PROGRESS", "採点中は別のスタメンrevisionへ差し替えできません。", { httpStatus: 409 });
   }
   if (!currentLineup || !String(currentLineup.final_lineup_revision_id || "").trim() || currentLineup.scoring_status !== "scored") {
-    await saveActualLineupForAutoScoring(env.AUTH_DB, context.metadata.gameId, actual.lineup, now, { allowAfterStart: true, now, source: "manual", internalGameId: context.id, scoringDueAt: now });
+    await saveActualLineupForAutoScoring(env.AUTH_DB, context.metadata.gameId, actual.lineup, now, { allowAfterStart: true, now, source: "manual", internalGameId: context.id, contestId: context.metadata.contestId || "", targetTeam, scoringDueAt: now });
   }
-  await activateLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, version: Number(revision.version), finalizedAt: now, finalizedBy: "admin" });
-  await linkFinalLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, version: Number(revision.version), finalizedAt: now, finalizedBy: "admin" });
+  await activateLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, contestId: context.metadata.contestId || "", targetTeam, version: Number(revision.version), finalizedAt: now, finalizedBy: "admin" });
+  await linkFinalLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, contestId: context.metadata.contestId || "", targetTeam, version: Number(revision.version), finalizedAt: now, finalizedBy: "admin" });
   const state = await env.AUTH_DB.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(context.id).first();
   await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobType: "admin:lineup_finalize", stateBefore: state?.state || null, stateAfter: "lineup_ready" });
   return jsonResponse({ ok: true, internalGameId: context.id, finalizedRevision: serializeV3LineupRevision({ ...revision, is_final: 1, is_current: 1, finalized_by: "admin", finalized_at: new Date().toISOString() }), scoreJob: null, nextAction: "formal_cron_score", rescoreRequired: false }, 200, cors);
@@ -11301,7 +11366,8 @@ async function saveAutoScoringTestPrediction(request, env, cors, test, user) {
        (id, user_id, game_id, prediction_json, schema_version, game_date, home_team, away_team, opponent_code, is_home,
         submitted_at, updated_at, locked_at, status, score, max_score, scored_at, actual_lineup_json, is_test_prediction)
      VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'f', ?7, ?7, 1, ?8, ?8, NULL, 'submitted', NULL, NULL, NULL, NULL, 1)
-     ON CONFLICT(user_id, game_id) DO UPDATE SET prediction_json = excluded.prediction_json, updated_at = excluded.updated_at,
+     ON CONFLICT(user_id, game_id) WHERE is_test_prediction = 1 AND contest_id IS NULL
+     DO UPDATE SET prediction_json = excluded.prediction_json, updated_at = excluded.updated_at,
        status = 'submitted', score = NULL, max_score = NULL, scored_at = NULL, actual_lineup_json = NULL, is_test_prediction = 1
      WHERE predictions.locked_at IS NULL AND predictions.status NOT IN ('locked', 'scored')`
   ).bind(existing?.id || randomToken(16), user.id, test.game_id, JSON.stringify(predictionResult.prediction), PREDICTION_SCHEMA_VERSION, test.game_date, test.away_team, now).run();
@@ -11701,7 +11767,7 @@ async function saveAdminTestPrediction(request, env, cors, game, user) {
        (id, user_id, game_id, prediction_json, schema_version, game_date, home_team, away_team, opponent_code, is_home,
         submitted_at, updated_at, locked_at, status, score, max_score, scored_at, actual_lineup_json, is_test_prediction)
      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'e', 1, ?9, ?9, NULL, 'submitted', NULL, NULL, NULL, NULL, 1)
-     ON CONFLICT(user_id, game_id) DO UPDATE SET
+     ON CONFLICT(user_id, game_id) WHERE is_test_prediction = 1 AND contest_id IS NULL DO UPDATE SET
        prediction_json = excluded.prediction_json, schema_version = excluded.schema_version,
        game_date = excluded.game_date, home_team = excluded.home_team, away_team = excluded.away_team,
        updated_at = excluded.updated_at, status = 'submitted', locked_at = NULL, score = NULL,
@@ -13451,13 +13517,14 @@ function buildPublicRosterFallbackResponse(response, {
 export async function fetchLatestPublicRoster(env, game, { force = false } = {}) {
   try {
     const targetTeam = targetTeamForEnvironment(env);
+    const providerTeamKey = String(targetTeam.npbProviderKey || targetTeam.key).trim().toLowerCase();
     const payload = await fetchNpbWorkerJson(env, {
       mode: "roster",
-      team: targetTeam.key,
+      team: providerTeamKey,
       ...(force ? { force: "1" } : {})
     });
     if (payload?.stale === true) return null;
-    if (payload?.team && String(payload.team).toLowerCase() !== targetTeam.key) return null;
+    if (payload?.team && String(payload.team).toLowerCase() !== providerTeamKey) return null;
     const players = normalizeRosterForSnapshot(payload?.players, targetTeam);
     if (!players) return null;
     const masterUnregisteredPlayers = targetTeam.key === PRODUCTION_TEAM.key ? players
@@ -15273,7 +15340,7 @@ async function captureGameRosterSnapshot(env, gameId, now, { force = false, sour
   }
 }
 
-export async function selectV3LineupFinalizeCandidate(db, { internalGameId = "" } = {}) {
+export async function selectV3LineupFinalizeCandidate(db, { internalGameId = "", contestId = "" } = {}) {
   const id = String(internalGameId || "");
   const diagnostics = {
     internalGameId: id,
@@ -15288,6 +15355,25 @@ export async function selectV3LineupFinalizeCandidate(db, { internalGameId = "" 
   };
   if (!INTERNAL_GAME_ID_PATTERN.test(id)) {
     return { ok: false, code: "V3_LINEUP_INTERNAL_ID_INVALID", diagnostics };
+  }
+  if (contestId) {
+    const rows = await db.prepare(
+      "SELECT * FROM contest_lineup_revisions WHERE contest_id = ?1 ORDER BY version DESC LIMIT 20"
+    ).bind(contestId).all();
+    const candidates = (rows.results || []).filter((row) => Number(row.is_final || 0) !== 1 && !isShadowLineupRevision(row));
+    diagnostics.candidateCount = candidates.length;
+    for (const row of candidates) {
+      const permissive = sanitizeActualLineupForScoring(parseStoredActualLineup(row.actual_lineup_json), { allowUnresolvedPlayer: true });
+      if (!permissive.ok) continue;
+      const strict = sanitizeActualLineupForScoring(permissive.lineup);
+      if (!strict.ok) continue;
+      diagnostics.provisionalLineupFound = true;
+      diagnostics.selectedRevisionId = row.revision_id;
+      diagnostics.playerCount = strict.lineup.length;
+      diagnostics.validation = row.validation_json || null;
+      return { ok: true, row, lineup: strict.lineup, diagnostics };
+    }
+    return { ok: false, code: "V3_LINEUP_CANDIDATE_NOT_FOUND", diagnostics };
   }
   const columns = await getTableColumnSet(db, "game_lineup_revisions");
   if (!columns.has("internal_game_id")) {
@@ -15341,13 +15427,13 @@ function normalizeV3LineupFinalizeError(error, diagnostics = {}) {
   });
 }
 
-async function adoptPersistedLineupCandidate(env, gameId, now, { internalGameId = "", target = null, source = "legacy" } = {}) {
+async function adoptPersistedLineupCandidate(env, gameId, now, { internalGameId = "", contestId = "", targetTeam = PRODUCTION_TEAM, target = null, source = "legacy" } = {}) {
   const startAt = new Date(target?.startAt || "");
   if (!INTERNAL_GAME_ID_PATTERN.test(String(internalGameId || "")) || Number.isNaN(startAt.getTime())) return null;
   const finalAt = new Date(startAt.getTime() + V3_TIMING.finalLineupMinutesAfterStart * 60000);
   if (now < finalAt) return null;
   if (source === "v3") {
-    const candidate = await selectV3LineupFinalizeCandidate(env.AUTH_DB, { internalGameId });
+    const candidate = await selectV3LineupFinalizeCandidate(env.AUTH_DB, { internalGameId, contestId });
     if (!candidate.ok) {
       if (candidate.code !== "V3_LINEUP_CANDIDATE_NOT_FOUND") {
         throw createV3Error(candidate.code, "V3の正式スタメン候補を確定できません。", {
@@ -15365,10 +15451,12 @@ async function adoptPersistedLineupCandidate(env, gameId, now, { internalGameId 
       now,
       allowAfterStart: true,
       preventOverwrite: true,
-      internalGameId
+      internalGameId,
+      contestId,
+      targetTeam
     });
-    await activateLineupRevision(env.AUTH_DB, { gameId, version: row.version, internalGameId, finalizedAt: now, finalizedBy: "system" });
-    await linkFinalLineupRevision(env.AUTH_DB, { gameId, internalGameId, version: row.version, finalizedAt: now, finalizedBy: "system" });
+    await activateLineupRevision(env.AUTH_DB, { gameId, version: row.version, internalGameId, contestId, targetTeam, finalizedAt: now, finalizedBy: "system" });
+    await linkFinalLineupRevision(env.AUTH_DB, { gameId, internalGameId, contestId, targetTeam, version: row.version, finalizedAt: now, finalizedBy: "system" });
     return {
       status: "captured",
       recoveryMode: "persisted_lineup_revision_adoption",
@@ -15411,8 +15499,15 @@ async function adoptPersistedLineupCandidate(env, gameId, now, { internalGameId 
 async function captureOfficialLineup(env, gameId, now, { force = false, phase = "provisional", autoApproveEnabled = true, internalGameId = "", target = null, identityOverride = null, source = "legacy" } = {}) {
   const isFinalCapture = phase === "final";
   const isV3 = source === "v3";
+  const targetTeam = targetTeamForEnvironment(env);
+  let contestId = "";
+  if (isV3 && internalGameId && (await getTableColumnSet(env.AUTH_DB, "game_lineups")).has("contest_id")) {
+    const contest = await ensureGameContest(env.AUTH_DB, internalGameId, targetTeam);
+    if (!contest.ok) throw createV3Error(contest.code, "対象試合と参加チームを確認できません。", { httpStatus: 409 });
+    contestId = contest.contestId;
+  }
   if (isV3) {
-    const manualRows = await getV3LineupRevisionRows(env.AUTH_DB, gameId, internalGameId);
+    const manualRows = await getV3LineupRevisionRows(env.AUTH_DB, gameId, internalGameId, contestId);
     const manualFinal = manualRows.find((row) => Number(row.is_final || 0) === 1
       && ["manual", "manual-revision"].includes(String(row.source || "").trim().toLowerCase()));
     if (manualFinal) {
@@ -15425,7 +15520,7 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
       };
     }
   }
-  const existing = await getGameLineup(env.AUTH_DB, { gameId, internalGameId });
+  const existing = await getGameLineup(env.AUTH_DB, { gameId, internalGameId, contestId });
   const existingLineup = parseStoredActualLineup(existing?.actual_lineup_json);
   const existingArtifact = assessV3LineupArtifact(existingLineup);
   if (existing && existingArtifact.ok) {
@@ -15436,7 +15531,7 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
     };
   }
   if (isFinalCapture) {
-    const adopted = await adoptPersistedLineupCandidate(env, gameId, now, { internalGameId, target, source });
+    const adopted = await adoptPersistedLineupCandidate(env, gameId, now, { internalGameId, contestId, targetTeam, target, source });
     if (adopted) return adopted;
   }
   if (!identityOverride) {
@@ -15498,6 +15593,8 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
     if (!isFinalCapture) {
       const revision = await saveProvisionalOfficialLineup(env.AUTH_DB, gameId, actual.lineup, detectedAt, now, {
         internalGameId,
+        contestId,
+        targetTeam,
         validation: actual.validation || null,
         source
       });
@@ -15515,6 +15612,7 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
     const revision = await saveLineupCandidateRevision(env.AUTH_DB, {
       gameId,
       internalGameId,
+      contestId,
       lineup: actual.lineup,
       source: "npb",
       capturedAt: detectedAt,
@@ -15528,10 +15626,12 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
       now,
       allowAfterStart: true,
       preventOverwrite: true,
-      internalGameId
+      internalGameId,
+      contestId,
+      targetTeam
     });
-    await activateLineupRevision(env.AUTH_DB, { gameId, version: revision.version, internalGameId, finalizedAt: now, finalizedBy: "system" });
-    await linkFinalLineupRevision(env.AUTH_DB, { gameId, internalGameId, version: revision.version, finalizedAt: now, finalizedBy: "system" });
+    await activateLineupRevision(env.AUTH_DB, { gameId, version: revision.version, internalGameId, contestId, targetTeam, finalizedAt: now, finalizedBy: "system" });
+    await linkFinalLineupRevision(env.AUTH_DB, { gameId, internalGameId, contestId, targetTeam, version: revision.version, finalizedAt: now, finalizedBy: "system" });
     if (!isV3) {
       await env.AUTH_DB.prepare(
         `UPDATE game_pregame_automation
@@ -18607,7 +18707,14 @@ async function handleGetResultGame(request, env, cors, gameId) {
   const serviceUnavailable = isServiceUnavailableGameStatus(gameStatus);
   const cancelled = ["cancelled", "canceled", "postponed", "no_game"].includes(gameStatus);
   const rankingEligibility = await getRankingEligibilityState(env.AUTH_DB, resultId, internalGameId);
-  const row = await getPredictionRow(env.AUTH_DB, access.user.id, { gameId: resultId, internalGameId });
+  const resultContest = internalGameId
+    ? await getGameContest(env.AUTH_DB, internalGameId, targetTeam)
+    : { ok: false };
+  const row = await getPredictionRow(env.AUTH_DB, access.user.id, {
+    gameId: resultId,
+    internalGameId,
+    ...(resultContest.ok ? { contestId: resultContest.contestId } : {})
+  });
   if (!row) {
     return jsonResponse({ ok: false, error: "採点済みの結果が見つかりません。" }, 404, cors);
   }
@@ -18730,6 +18837,7 @@ async function getTableColumnSet(db, table) {
 async function saveLineupCandidateRevision(db, {
   gameId,
   internalGameId = "",
+  contestId = "",
   lineup,
   source = "npb",
   capturedAt = new Date(),
@@ -18746,6 +18854,38 @@ async function saveLineupCandidateRevision(db, {
     throw error;
   }
   const fingerprint = await sha256Base64Url(JSON.stringify(actual.lineup));
+  if (contestId) {
+    const scopedLatest = await db.prepare(
+      "SELECT * FROM contest_lineup_revisions WHERE contest_id = ?1 ORDER BY version DESC LIMIT 1"
+    ).bind(contestId).first();
+    if (scopedLatest && String(scopedLatest.lineup_fingerprint || "") === fingerprint) return scopedLatest;
+    const createdAt = (capturedAt instanceof Date ? capturedAt : new Date(capturedAt)).toISOString();
+    const storedSource = source === "npb" ? "npb-auto" : source === "admin" ? "manual-revision" : source;
+    const version = Number(scopedLatest?.version || 0) + 1;
+    // Isolated Test Site fixtures still run the unchanged game-scoped scorer,
+    // so they share the legacy revision identifier just like the Fighters
+    // bridge. targetTeamForEnvironment rejects these keys outside its test
+    // bootstrap; real non-Fighters contests remain fully independent.
+    const useLegacyScoringBridge = targetTeam.key === "fighters" || targetTeam.key.startsWith("test-");
+    const revisionId = `${useLegacyScoringBridge ? gameId : contestId}:${version}`;
+    await db.prepare(
+      `INSERT INTO contest_lineup_revisions
+         (contest_id, internal_game_id, game_id, version, revision_id, actual_lineup_json,
+          lineup_fingerprint, source, created_at, created_by, reason, is_current, superseded_at,
+          captured_at, validation_json, unresolved_player_count)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, NULL, ?9, ?12, ?13)`
+    ).bind(contestId, internalGameId, gameId, version, revisionId, JSON.stringify(actual.lineup), fingerprint,
+      storedSource, createdAt, createdBy, reason, validation ? JSON.stringify(validation) : null,
+      actual.lineup.filter((row) => !row.playerId).length).run();
+    // The existing score executor still reads game_lineup_revisions in A2.
+    // Mirror Fighters only until A3 moves score lineage to contest identity.
+    if (useLegacyScoringBridge) {
+      await saveLineupCandidateRevision(db, { gameId, internalGameId, lineup: actual.lineup, source,
+        capturedAt, validation, reason, createdBy, allowUnresolvedPlayer, targetTeam });
+    }
+    return db.prepare("SELECT * FROM contest_lineup_revisions WHERE contest_id = ?1 AND version = ?2 LIMIT 1")
+      .bind(contestId, version).first();
+  }
   const columns = await getTableColumnSet(db, "game_lineup_revisions");
   const hasCanonicalIdentity = columns.has("internal_game_id") && INTERNAL_GAME_ID_PATTERN.test(String(internalGameId || ""));
   if (internalGameId && !hasCanonicalIdentity) {
@@ -18814,8 +18954,24 @@ async function saveLineupCandidateRevision(db, {
   throw createPregameError("V3_LINEUP_REVISION_CONFLICT", "スタメンrevisionの作成が競合しました。", { httpStatus: 409 });
 }
 
-async function activateLineupRevision(db, { gameId, version, internalGameId = "", finalizedAt = new Date(), finalizedBy = "system" } = {}) {
+async function activateLineupRevision(db, { gameId, version, internalGameId = "", contestId = "", targetTeam = PRODUCTION_TEAM, finalizedAt = new Date(), finalizedBy = "system" } = {}) {
   const finalizedAtIso = (finalizedAt instanceof Date ? finalizedAt : new Date(finalizedAt)).toISOString();
+  if (contestId) {
+    const current = await db.prepare("SELECT revision_id FROM contest_lineup_revisions WHERE contest_id = ?1 AND version = ?2 LIMIT 1")
+      .bind(contestId, Number(version)).first();
+    if (!current) throw createV3Error("V3_LINEUP_REVISION_NOT_FOUND", "正式スタメンrevisionが見つかりません。", { httpStatus: 404 });
+    await db.batch([
+      db.prepare("UPDATE contest_lineup_revisions SET is_current = 0, is_final = 0, superseded_at = ?1 WHERE contest_id = ?2 AND is_current = 1")
+        .bind(finalizedAtIso, contestId),
+      db.prepare("UPDATE contest_lineup_revisions SET is_current = 1, is_final = 1, finalized_at = ?1, finalized_by = ?2 WHERE contest_id = ?3 AND version = ?4")
+        .bind(finalizedAtIso, finalizedBy, contestId, Number(version))
+    ]);
+    if (targetTeam.key === "fighters" || targetTeam.key.startsWith("test-")) {
+      await activateLineupRevision(db, { gameId, version, internalGameId, finalizedAt, finalizedBy });
+    }
+    return db.prepare("SELECT * FROM contest_lineup_revisions WHERE contest_id = ?1 AND version = ?2 LIMIT 1")
+      .bind(contestId, Number(version)).first();
+  }
   const columns = await getTableColumnSet(db, "game_lineup_revisions");
   const hasCanonicalIdentity = columns.has("internal_game_id") && INTERNAL_GAME_ID_PATTERN.test(String(internalGameId || ""));
   if (internalGameId && !hasCanonicalIdentity) {
@@ -18848,7 +19004,27 @@ async function activateLineupRevision(db, { gameId, version, internalGameId = ""
     : getLineupRevision(db, gameId, version);
 }
 
-async function linkFinalLineupRevision(db, { gameId, internalGameId = "", version, finalizedAt = new Date(), finalizedBy = "system" } = {}) {
+async function linkFinalLineupRevision(db, { gameId, internalGameId = "", contestId = "", targetTeam = PRODUCTION_TEAM, version, finalizedAt = new Date(), finalizedBy = "system" } = {}) {
+  if (contestId) {
+    const revision = await db.prepare("SELECT * FROM contest_lineup_revisions WHERE contest_id = ?1 AND version = ?2 AND is_current = 1 AND is_final = 1 LIMIT 1")
+      .bind(contestId, Number(version)).first();
+    if (!revision) throw createV3Error("V3_LINEUP_FINALIZE_CONFLICT", "正式スタメンrevisionの状態が変わりました。", { httpStatus: 409 });
+    const updated = await db.prepare(
+      `UPDATE game_lineups
+          SET actual_lineup_json = ?1, lineup_fingerprint = ?2, final_lineup_revision_id = ?3,
+              finalized_at = ?4, finalized_by = ?5, updated_at = ?4
+        WHERE contest_id = ?6 AND internal_game_id = ?7`
+    ).bind(revision.actual_lineup_json, revision.lineup_fingerprint, revision.revision_id,
+      (finalizedAt instanceof Date ? finalizedAt : new Date(finalizedAt)).toISOString(), finalizedBy,
+      contestId, internalGameId).run();
+    if (Number(updated?.meta?.changes || 0) !== 1) {
+      throw createV3Error("V3_LINEUP_FINALIZE_CONFLICT", "contestのcanonicalスタメンを更新できませんでした。", { httpStatus: 409 });
+    }
+    if (targetTeam.key === "fighters" || targetTeam.key.startsWith("test-")) {
+      await linkFinalLineupRevision(db, { gameId, internalGameId, version, finalizedAt, finalizedBy });
+    }
+    return updated;
+  }
   const columns = await getTableColumnSet(db, "game_lineups");
   const revisionColumns = await getTableColumnSet(db, "game_lineup_revisions");
   const fields = [];
@@ -18919,11 +19095,13 @@ async function saveProvisionalOfficialLineup(db, gameId, lineup, detectedAt, now
   const revision = await saveLineupCandidateRevision(db, {
     gameId,
     internalGameId: options.internalGameId || "",
+    contestId: options.contestId || "",
     lineup,
     source: "npb",
     capturedAt: detectedAt,
     validation: options.validation || null,
-    allowUnresolvedPlayer: true
+    allowUnresolvedPlayer: true,
+    targetTeam: options.targetTeam || PRODUCTION_TEAM
   });
   if (options.source !== "v3") {
     await db.prepare(
@@ -22465,7 +22643,15 @@ async function approveActualLineupForAutoScoring(env, gameId, actualLineup, dete
   const writeIdentity = options.isTestGame
     ? { internalGameId: String(options.internalGameId || ""), schemaReady: false }
     : await requireInternalGameIdForWrite(env.AUTH_DB, { table: "game_lineups", gameId, internalGameId: options.internalGameId || "" });
-  const effectiveOptions = { ...options, internalGameId: writeIdentity.internalGameId };
+  let contestId = options.contestId || "";
+  const lineupColumns = await getTableColumnSet(env.AUTH_DB, "game_lineups");
+  const targetTeam = options.targetTeam || targetTeamForEnvironment(env);
+  if (lineupColumns.has("contest_id") && !options.isTestGame) {
+    const contest = await ensureGameContest(env.AUTH_DB, writeIdentity.internalGameId, targetTeam, contestId);
+    if (!contest.ok) throw createV3Error(contest.code, "対象試合と参加チームを確認できません。", { httpStatus: 409 });
+    contestId = contest.contestId;
+  }
+  const effectiveOptions = { ...options, contestId, targetTeam, internalGameId: writeIdentity.internalGameId };
   const record = await saveActualLineupForAutoScoring(env.AUTH_DB, gameId, actualLineup, detectedAt, effectiveOptions);
   await markGameRankingPending(env.AUTH_DB, gameId, detectedAt, env, options.isTestGame ? 1 : 0, writeIdentity.internalGameId);
   return record;
@@ -22483,7 +22669,12 @@ export async function saveActualLineupForAutoScoring(db, gameId, actualLineup, d
     ? { internalGameId: String(options.internalGameId || ""), schemaReady: storage.game_lineups }
     : await requireInternalGameIdForWrite(db, { table: "game_lineups", gameId, internalGameId: options.internalGameId || "" });
   const internalGameId = writeIdentity.internalGameId;
-  const existing = await getGameLineup(db, { gameId, internalGameId });
+  const columns = storage.game_lineups ? await getTableColumnSet(db, "game_lineups") : new Set();
+  const contestId = columns.has("contest_id") && !options.isTestGame ? String(options.contestId || "") : "";
+  if (columns.has("contest_id") && !options.isTestGame && !contestId) {
+    throw createV3Error("CONTEST_IDENTITY_REQUIRED", "lineup保存にはcontest identityが必要です。", { httpStatus: 409 });
+  }
+  const existing = await getGameLineup(db, { gameId, internalGameId, contestId });
   if (existing && options.preventOverwrite) {
     return existing;
   }
@@ -22491,46 +22682,30 @@ export async function saveActualLineupForAutoScoring(db, gameId, actualLineup, d
     return existing;
   }
 
-  // Existing rows may retain the historical game_id while V3 resolves the
-  // same row by internal_game_id. Reuse that stored key for the game_id
-  // conflict target so a late manual finalize updates the canonical row
-  // instead of inserting a second row for the same internal game.
-  const persistedGameId = String(existing?.game_id || gameId);
-
   const detectedAtIso = detectedAt.toISOString();
   const delaySeconds = Number.isInteger(options.delaySeconds) ? options.delaySeconds : AUTO_SCORING_DEFAULT_DELAY_SECONDS;
   const requestedDueAt = options.scoringDueAt instanceof Date ? options.scoringDueAt : null;
   const scoringDueAt = (requestedDueAt || new Date(detectedAt.getTime() + Math.max(0, delaySeconds) * 1000)).toISOString();
   const lineupSource = options.source === "npb-auto" ? "npb-auto" : "manual";
   const id = existing?.id || randomToken(16);
-  await db.prepare(
-    `INSERT INTO game_lineups
-       (id, game_id${storage.game_lineups ? ", internal_game_id" : ""}, actual_lineup_json, lineup_fingerprint, schema_version,
-        lineup_detected_at, scoring_due_at, scoring_started_at, scored_at,
-        scoring_status, scoring_attempts, last_error, processed_predictions,
-        perfect_count, new_perfect_achievers, lineup_source, publication_status, published_at, created_at, updated_at)
-     VALUES (?1, ?2${storage.game_lineups ? ", ?3" : ""}, ?${storage.game_lineups ? 4 : 3}, ?${storage.game_lineups ? 5 : 4}, ?${storage.game_lineups ? 6 : 5}, ?${storage.game_lineups ? 7 : 6}, ?${storage.game_lineups ? 8 : 7}, NULL, NULL, 'pending', 0, NULL, NULL, NULL, NULL, ?${storage.game_lineups ? 9 : 8}, 'pending', NULL, ?${storage.game_lineups ? 7 : 6}, ?${storage.game_lineups ? 7 : 6})
-     ON CONFLICT(game_id) DO UPDATE SET
-       ${storage.game_lineups ? "internal_game_id = CASE WHEN excluded.internal_game_id IS NULL OR excluded.internal_game_id = '' THEN game_lineups.internal_game_id ELSE excluded.internal_game_id END," : ""}
-       actual_lineup_json = excluded.actual_lineup_json,
-       lineup_fingerprint = excluded.lineup_fingerprint,
-       schema_version = excluded.schema_version,
-       lineup_detected_at = excluded.lineup_detected_at,
-       scoring_due_at = excluded.scoring_due_at,
-       scoring_started_at = NULL,
-       scored_at = NULL,
-       scoring_status = 'pending',
-       scoring_attempts = 0,
-       last_error = NULL,
-       processed_predictions = NULL,
-       perfect_count = NULL,
-       new_perfect_achievers = NULL,
-       lineup_source = excluded.lineup_source,
-       publication_status = 'pending',
-       published_at = NULL,
-       updated_at = excluded.updated_at`
-  ).bind(id, persistedGameId, ...(storage.game_lineups ? [internalGameId || null] : []), actualLineupJson, fingerprint, PREDICTION_SCHEMA_VERSION, detectedAtIso, scoringDueAt, lineupSource).run();
-  return await getGameLineup(db, { gameId, internalGameId });
+  const fields = ["id", "game_id"];
+  const values = [id, String(existing?.game_id || gameId)];
+  if (columns.has("contest_id")) { fields.push("contest_id"); values.push(contestId || null); }
+  if (storage.game_lineups) { fields.push("internal_game_id"); values.push(internalGameId || null); }
+  fields.push("actual_lineup_json", "lineup_fingerprint", "schema_version", "lineup_detected_at", "scoring_due_at",
+    "scoring_status", "scoring_attempts", "lineup_source", "publication_status", "created_at", "updated_at");
+  values.push(actualLineupJson, fingerprint, PREDICTION_SCHEMA_VERSION, detectedAtIso, scoringDueAt, "pending", 0, lineupSource, "pending", detectedAtIso, detectedAtIso);
+  const updates = ["actual_lineup_json = excluded.actual_lineup_json", "lineup_fingerprint = excluded.lineup_fingerprint",
+    "schema_version = excluded.schema_version", "lineup_detected_at = excluded.lineup_detected_at", "scoring_due_at = excluded.scoring_due_at",
+    "scoring_started_at = NULL", "scored_at = NULL", "scoring_status = 'pending'", "scoring_attempts = 0", "last_error = NULL",
+    "processed_predictions = NULL", "perfect_count = NULL", "new_perfect_achievers = NULL", "lineup_source = excluded.lineup_source",
+    "publication_status = 'pending'", "published_at = NULL", "updated_at = excluded.updated_at"];
+  const conflict = columns.has("contest_id")
+    ? (contestId ? "ON CONFLICT(contest_id)" : "ON CONFLICT(game_id) WHERE contest_id IS NULL")
+    : "ON CONFLICT(game_id)";
+  await db.prepare(`INSERT INTO game_lineups (${fields.join(", ")}) VALUES (${fields.map((_, i) => `?${i + 1}`).join(", ")}) ${conflict} DO UPDATE SET ${updates.join(", ")}`)
+    .bind(...values).run();
+  return await getGameLineup(db, { gameId, internalGameId, contestId });
 }
 
 async function getGameLineup(db, gameReference) {
@@ -22540,8 +22715,39 @@ async function getGameLineup(db, gameReference) {
   const storage = await getInternalGameIdStorageAvailability(db, ["game_lineups"]);
   const columns = storage.game_lineups ? await getTableColumnSet(db, "game_lineups") : new Set();
   const finalRevisionColumn = columns.has("final_lineup_revision_id") ? ", final_lineup_revision_id" : "";
+  const contestColumn = columns.has("contest_id") ? ", contest_id" : "";
   if (internalGameId) {
     if (!storage.game_lineups) return null;
+    if (metadata?.contestId && columns.has("contest_id")) {
+      return db.prepare(
+        `SELECT id, game_id${contestColumn}, internal_game_id, actual_lineup_json, lineup_fingerprint, lineup_detected_at,
+                scoring_due_at, scoring_started_at, scored_at, scoring_status,
+                scoring_attempts, last_error, processed_predictions, perfect_count,
+                new_perfect_achievers, lineup_source, publication_status, published_at,
+                updated_at${finalRevisionColumn}
+           FROM game_lineups WHERE internal_game_id = ?1 AND contest_id = ?2 LIMIT 1`
+      ).bind(internalGameId, metadata.contestId).first();
+    }
+    if (columns.has("contest_id")) {
+      // Legacy production scoring remains Fighters-only in A2. The isolated
+      // Test Site still exercises that unchanged scorer with synthetic team
+      // keys; allow its sole synthetic contest, but never select among real
+      // club contests or ambiguous synthetic rows.
+      return db.prepare(
+        `SELECT id, game_id${contestColumn}, internal_game_id, actual_lineup_json, lineup_fingerprint, lineup_detected_at,
+                scoring_due_at, scoring_started_at, scored_at, scoring_status,
+                scoring_attempts, last_error, processed_predictions, perfect_count,
+                new_perfect_achievers, lineup_source, publication_status, published_at,
+                updated_at${finalRevisionColumn}
+           FROM game_lineups WHERE internal_game_id = ?1 AND contest_id = COALESCE(
+             (SELECT contest_id FROM game_contests WHERE internal_game_id = ?1 AND target_team_key = 'fighters' LIMIT 1),
+             (SELECT MIN(contest_id) FROM game_contests
+               WHERE internal_game_id = ?1 AND target_team_key GLOB 'test-*'
+                 AND (SELECT COUNT(*) FROM game_contests AS synthetic
+                       WHERE synthetic.internal_game_id = ?1 AND synthetic.target_team_key GLOB 'test-*') = 1)
+           ) LIMIT 1`
+      ).bind(internalGameId).first();
+    }
     return db.prepare(
       `SELECT id, game_id, internal_game_id, actual_lineup_json, lineup_fingerprint, lineup_detected_at,
               scoring_due_at, scoring_started_at, scored_at, scoring_status,
@@ -23743,18 +23949,21 @@ async function handleGetCurrentPrediction(request, env, cors) {
 
   const reference = await resolveV3PredictionReference(env.AUTH_DB, new URL(request.url).searchParams.get("internalGameId"), targetTeamForEnvironment(env));
   if (!reference.ok) return jsonResponse({ ok: false, code: reference.code, error: "対象試合のinternalGameIdが不正です。", resolution: reference.diagnostics || null }, 400, cors);
-  const metadata = reference.metadata;
+  const contest = await getGameContest(env.AUTH_DB, reference.metadata.internalGameId, targetTeamForEnvironment(env), new URL(request.url).searchParams.get("contestId") || "");
+  if (!contest.ok) return jsonResponse({ ok: false, code: contest.code, error: "対象試合と参加チームを確認できません。" }, 400, cors);
+  const metadata = { ...reference.metadata, contestId: contest.contestId };
 
   const testGame = await isTestRankingGame(env.AUTH_DB, metadata.gameId);
   const published = testGame ? false : await isGameResultsPublished(env.AUTH_DB, metadata.gameId, new Date(), {
     v4SemiAuto: getV3OperationalMode(env).isV4SemiAuto
   });
-  const row = testGame ? null : await getPredictionRow(env.AUTH_DB, session.id, metadata);
+  const row = testGame || !contest.persisted ? null : await getPredictionRow(env.AUTH_DB, session.id, metadata);
   if (!row) {
     return jsonResponse({
       ok: true,
       gameId: metadata.gameId,
       internalGameId: metadata.internalGameId || "",
+      contestId: metadata.contestId,
       legacyGameId: metadata.legacyGameId || metadata.gameId,
       prediction: null,
       status: null,
@@ -23778,6 +23987,7 @@ async function handleGetCurrentPrediction(request, env, cors) {
     ok: true,
     gameId: metadata.gameId,
     internalGameId: metadata.internalGameId || "",
+    contestId: metadata.contestId,
     legacyGameId: metadata.legacyGameId || metadata.gameId,
     prediction,
     status: published ? row.status : row.status === "scored" ? "submitted" : row.status,
@@ -23854,7 +24064,9 @@ async function handlePutCurrentPrediction(request, env, cors) {
     const status = reference.code === "GAME_SCHEDULE_NOT_FOUND" ? 503 : 400;
     return jsonResponse({ ok: false, code: reference.code, error: "対象試合の日程を確認できないため、予想は保存できません。", resolution: reference.diagnostics || null }, status, cors);
   }
-  const metadata = reference.metadata;
+  const contest = await ensureGameContest(env.AUTH_DB, reference.metadata.internalGameId, targetTeamForEnvironment(env), input?.contestId || "");
+  if (!contest.ok) return jsonResponse({ ok: false, code: contest.code, error: "対象試合と参加チームを確認できません。" }, 400, cors);
+  const metadata = { ...reference.metadata, contestId: contest.contestId };
 
   const deadlineResponse = createPredictionDeadlineRejection(metadata, cors);
   if (deadlineResponse) {
@@ -23910,15 +24122,19 @@ async function handlePutCurrentPrediction(request, env, cors) {
     return jsonResponse({ ok: false, code: error?.code || "INTERNAL_GAME_ID_REQUIRED", error: "内部試合IDを解決できないため、予想を保存できません。" }, 409, cors);
   }
   const resolvedMetadata = { ...metadata, internalGameId };
+  const predictionColumns = await getTableColumnSet(env.AUTH_DB, "predictions");
+  if (!predictionColumns.has("contest_id")) {
+    return jsonResponse({ ok: false, code: "CONTEST_PREDICTION_SCHEMA_UNAVAILABLE", error: "contest予想schemaが準備されていません。" }, 503, cors);
+  }
   const result = await env.AUTH_DB.prepare(
     `INSERT INTO predictions
-       (id, user_id, game_id${predictionStorage.predictions ? ", internal_game_id" : ""}, prediction_json, schema_version,
-        game_date, home_team, away_team, opponent_code, is_home,
-        submitted_at, updated_at, locked_at, status,
-        score, max_score, scored_at, actual_lineup_json, is_test_prediction)
-     VALUES (?1, ?2, ?3${predictionStorage.predictions ? ", ?4" : ""}, ?${predictionStorage.predictions ? 5 : 4}, ?${predictionStorage.predictions ? 6 : 5}, ?${predictionStorage.predictions ? 7 : 6}, ?${predictionStorage.predictions ? 8 : 7}, ?${predictionStorage.predictions ? 9 : 8}, ?${predictionStorage.predictions ? 10 : 9}, ?${predictionStorage.predictions ? 11 : 10}, ?${predictionStorage.predictions ? 12 : 11}, ?${predictionStorage.predictions ? 12 : 11}, NULL, 'submitted', NULL, NULL, NULL, NULL, ?${predictionStorage.predictions ? 13 : 12})
-     ON CONFLICT(user_id, game_id) DO UPDATE SET
-       ${predictionStorage.predictions ? "internal_game_id = CASE WHEN excluded.internal_game_id IS NULL OR excluded.internal_game_id = '' THEN predictions.internal_game_id ELSE excluded.internal_game_id END," : ""}
+       (id, user_id, game_id, contest_id, internal_game_id, prediction_json, schema_version,
+        game_date, home_team, away_team, opponent_code, is_home, submitted_at, updated_at,
+        locked_at, status, score, max_score, scored_at, actual_lineup_json, is_test_prediction)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, NULL, 'submitted', NULL, NULL, NULL, NULL, 0)
+     ON CONFLICT(user_id, contest_id) DO UPDATE SET
+       internal_game_id = excluded.internal_game_id,
+       game_id = excluded.game_id,
        prediction_json = excluded.prediction_json,
        schema_version = excluded.schema_version,
        game_date = excluded.game_date,
@@ -23935,7 +24151,8 @@ async function handlePutCurrentPrediction(request, env, cors) {
     id,
     session.id,
     storageGameId,
-    ...(predictionStorage.predictions ? [internalGameId || null] : []),
+    metadata.contestId,
+    internalGameId,
     predictionJson,
     PREDICTION_SCHEMA_VERSION,
     metadata.date,
@@ -23943,8 +24160,7 @@ async function handlePutCurrentPrediction(request, env, cors) {
     metadata.awayCode,
     metadata.opponentCode,
     metadata.isHome ? 1 : 0,
-    now,
-    isTestPrediction
+    now
   ).run();
 
   if (Number(result?.meta?.changes || 0) !== 1) {
@@ -23960,6 +24176,7 @@ async function handlePutCurrentPrediction(request, env, cors) {
     ok: true,
     gameId: metadata.gameId,
     internalGameId,
+    contestId: metadata.contestId,
     legacyGameId: metadata.legacyGameId || metadata.gameId,
     created,
     updated: !created,
@@ -23978,7 +24195,9 @@ async function handleDeleteCurrentPrediction(request, env, cors) {
 
   const reference = await resolveV3PredictionReference(env.AUTH_DB, new URL(request.url).searchParams.get("internalGameId"), targetTeamForEnvironment(env));
   if (!reference.ok) return jsonResponse({ ok: false, code: reference.code, error: "対象試合のinternalGameIdが不正です。", resolution: reference.diagnostics || null }, 400, cors);
-  const metadata = reference.metadata;
+  const contest = await getGameContest(env.AUTH_DB, reference.metadata.internalGameId, targetTeamForEnvironment(env), new URL(request.url).searchParams.get("contestId") || "");
+  if (!contest.ok) return jsonResponse({ ok: false, code: contest.code, error: "対象試合と参加チームを確認できません。" }, 400, cors);
+  const metadata = { ...reference.metadata, contestId: contest.contestId };
 
   const deadlineResponse = createPredictionDeadlineRejection(metadata, cors);
   if (deadlineResponse) {
@@ -23994,9 +24213,10 @@ async function handleDeleteCurrentPrediction(request, env, cors) {
   if (!predictionStorage.predictions || !metadata.internalGameId) {
     return jsonResponse({ ok: false, code: "V3_PREDICTIONS_SCHEMA_UNAVAILABLE", error: "V3予想保存先が準備されていません。" }, 503, cors);
   }
+  if (!contest.persisted) return jsonResponse({ ok: true, gameId: metadata.gameId, internalGameId: metadata.internalGameId, deleted: false }, 200, cors);
   const deleted = await env.AUTH_DB.prepare(
-    "DELETE FROM predictions WHERE user_id = ?1 AND internal_game_id = ?2"
-  ).bind(session.id, metadata.internalGameId).run();
+    "DELETE FROM predictions WHERE user_id = ?1 AND contest_id = ?2 AND internal_game_id = ?3 AND is_test_prediction = 0"
+  ).bind(session.id, metadata.contestId, metadata.internalGameId).run();
   return jsonResponse({ ok: true, gameId: metadata.gameId, internalGameId: metadata.internalGameId || "", deleted: Number(deleted?.meta?.changes || 0) > 0 }, 200, cors);
 }
 
@@ -24004,8 +24224,19 @@ async function getPredictionRow(db, userId, gameReference) {
   const metadata = typeof gameReference === "object" && gameReference ? gameReference : null;
   const gameId = String(metadata?.gameId || gameReference || "");
   const internalGameId = String(metadata?.internalGameId || "");
+  const contestId = String(metadata?.contestId || "");
   const storage = await getInternalGameIdStorageAvailability(db, ["predictions"]);
+  if (contestId && storage.predictions) {
+    return db.prepare(
+      `SELECT id, user_id, game_id, contest_id, internal_game_id, prediction_json, status,
+              submitted_at, updated_at, locked_at, score, max_score, scored_at, actual_lineup_json
+         FROM predictions
+        WHERE user_id = ?1 AND contest_id = ?2 AND internal_game_id = ?3 AND is_test_prediction = 0
+        LIMIT 1`
+    ).bind(userId, contestId, internalGameId).first();
+  }
   if (internalGameId && storage.predictions) {
+    if ((await getTableColumnSet(db, "predictions")).has("contest_id")) return null;
     return db.prepare(
       `SELECT id, user_id, game_id, internal_game_id, prediction_json, status,
             submitted_at, updated_at, locked_at, score, max_score, scored_at, actual_lineup_json

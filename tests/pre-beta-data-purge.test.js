@@ -4,6 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { createContestId } from "../backend/contest-identity.js";
 import {
   executePreBetaPurge,
   previewPreBetaPurge,
@@ -64,6 +65,10 @@ function insertGame(database, gameId, gameStatus, startTime) {
     INSERT INTO games (internal_game_id, game_date, start_time, home_team, away_team, game_status, created_at, updated_at)
     VALUES (?, ?, ?, 'fighters', 'hawks', ?, ?, ?)
   `).run(gameId, startTime.slice(0, 10), startTime, gameStatus, startTime, startTime);
+  database.prepare(`
+    INSERT INTO game_contests (contest_id, internal_game_id, target_team_key)
+    VALUES (?, ?, 'fighters')
+  `).run(createContestId(gameId, "fighters"), gameId);
 }
 
 function insertRankingGame(database, gameId, status = "scored") {
@@ -78,13 +83,13 @@ function insertRankingGame(database, gameId, status = "scored") {
 function insertPrediction(database, gameId) {
   database.prepare(`
     INSERT INTO predictions (
-      id, user_id, game_id, internal_game_id, prediction_json, schema_version,
+      id, user_id, game_id, internal_game_id, contest_id, prediction_json, schema_version,
       game_date, home_team, away_team, opponent_code, is_home, submitted_at,
       updated_at, status, score, max_score, scored_at, is_test_prediction, scoring_status
-    ) VALUES (?, 'user-1', ?, ?, '{}', 1, ?, 'fighters', 'hawks', 'h', 1,
+    ) VALUES (?, 'user-1', ?, ?, ?, '{}', 1, ?, 'fighters', 'hawks', 'h', 1,
       '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z', 'scored', 80, 99,
       '2026-09-10T00:00:00.000Z', 0, 'scored')
-  `).run(`prediction-${gameId}`, gameId, gameId, gameId === OLD_GAME ? "2026-09-10" : "2026-09-20");
+  `).run(`prediction-${gameId}`, gameId, gameId, createContestId(gameId, "fighters"), gameId === OLD_GAME ? "2026-09-10" : "2026-09-20");
 }
 
 function insertDependentRows(database) {

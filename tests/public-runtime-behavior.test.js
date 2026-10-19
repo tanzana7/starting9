@@ -245,7 +245,10 @@ test("signed-in prediction sync calls current canonical endpoint and hydrates sa
   } });
   await app.operations.initializePredictionRemoteSync();
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, "https://starting9.test/api/predictions/current?internalGameId=canonical-game");
+  const syncUrl = new URL(calls[0].url);
+  assert.equal(syncUrl.pathname, "/api/predictions/current");
+  assert.equal(syncUrl.searchParams.get("internalGameId"), "canonical-game");
+  assert.equal(syncUrl.searchParams.get("contestId"), "contest_63616e6f6e6963616c2d67616d65_6669676874657273");
   assert.equal(calls[0].options.credentials, "include");
   assert.equal(calls[0].options.cache, "no-store");
   assert.equal(app.state.predictionRemote.status, "success");

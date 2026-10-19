@@ -1,30 +1,37 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const { createPublicRuntime } = require("./helpers/public-runtime.cjs");
+const teamContext = require("../frontend/shared/team-context.js");
 
 const url = "https://starting9.test/api/predictions/current?internalGameId=game-1";
 
 function createPersistence(apiClient) {
-  const app = createPublicRuntime();
-  return { app, persistence: app.publicFrontend.createPublicPredictionPersistence({ apiClient }) };
+  const app = createPublicRuntime({ targetTeam: teamContext.FIGHTERS });
+  return { app, persistence: app.publicFrontend.createPublicPredictionPersistence({ apiClient, targetTeam: teamContext.FIGHTERS }) };
+}
+
+function scopedUrl() {
+  const parsed = new URL(url);
+  parsed.searchParams.set("contestId", "contest_67616d652d31_6669676874657273");
+  return parsed.toString();
 }
 
 test("load preserves GET credentials, no-store, signal, and returns the parsed prediction", async (t) => {
   const calls = [];
   const controller = new AbortController();
-  const app = createPublicRuntime();
+  const app = createPublicRuntime({ targetTeam: teamContext.FIGHTERS });
   t.after(app.dispose);
   const apiClient = app.publicFrontend.createPublicApiClient(async (...args) => {
       calls.push(args);
       return { ok: true, status: 200, json: async () => ({ ok: true, prediction: { lineup: [] } }) };
   });
-  const persistence = app.publicFrontend.createPublicPredictionPersistence({ apiClient });
+  const persistence = app.publicFrontend.createPublicPredictionPersistence({ apiClient, targetTeam: teamContext.FIGHTERS });
 
   const result = await persistence.load(url, controller.signal);
 
   assert.deepEqual(result, { ok: true, prediction: { lineup: [] } });
   assert.equal(calls.length, 1);
-  assert.equal(calls[0][0], url);
+  assert.equal(calls[0][0], scopedUrl());
   assert.equal(calls[0][1].credentials, "include");
   assert.equal(calls[0][1].cache, "no-store");
   assert.equal(calls[0][1].signal, controller.signal);
@@ -56,11 +63,13 @@ test("save preserves canonical PUT body, JSON header, credentials, and response 
 
   assert.deepEqual(result, { ok: true, submittedAt: "submitted", updatedAt: "updated" });
   assert.equal(calls.length, 1);
-  assert.equal(calls[0][0], url);
+  assert.equal(calls[0][0], scopedUrl());
   assert.equal(calls[0][1].method, "PUT");
   assert.equal(calls[0][1].credentials, "include");
   assert.equal(calls[0][1].headers["Content-Type"], "application/json");
-  assert.deepEqual(JSON.parse(calls[0][1].body), { internalGameId: "game-1", prediction });
+  assert.deepEqual(JSON.parse(calls[0][1].body), {
+    internalGameId: "game-1", contestId: "contest_67616d652d31_6669676874657273", prediction
+  });
 });
 
 test("save 401, PREDICTION_NOT_OPEN 409, and network errors remain failures", async (t) => {
@@ -94,7 +103,7 @@ test("remove uses the canonical DELETE request and rejects API failures", async 
 
   assert.deepEqual(await persistence.remove(url), { ok: true });
   assert.equal(calls.length, 1);
-  assert.equal(calls[0][0], url);
+  assert.equal(calls[0][0], scopedUrl());
   assert.equal(calls[0][1].method, "DELETE");
   assert.equal(calls[0][1].credentials, "include");
 

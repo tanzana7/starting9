@@ -16,10 +16,11 @@ const CLEANUP_ORDER = Object.freeze([
   "score_attempt_prediction_rows", "score_attempt_test_rows", "score_attempts",
   "prediction_score_revisions", "ranking_reflection_revisions", "game_scoring_revisions",
   "ranking_eligibility_history", "game_rescore_audits", "game_rescore_previews", "game_rescore_jobs",
+  "contest_lineup_revisions",
   "game_lineup_revisions", "game_automation_v3_audit", "game_jobs_v3",
   "game_workflow_logs", "game_lineups", "predictions", "ranking_games",
   "game_automation_v3_state", "game_pregame_automation", "game_roster_snapshots",
-  "probable_starters", "game_identifiers", "detected_game_schedule", "games"
+  "probable_starters", "game_identifiers", "detected_game_schedule", "game_contests", "games"
 ]);
 
 const TEST_PLAYERS = Object.freeze(Array.from({ length: 15 }, (_, index) => Object.freeze({
@@ -145,9 +146,10 @@ async function deleteScenarioAuditRows(db) {
 
 async function seedScenarioGame(db, offsetMinutes) {
   const { now, startAt, deadlineAt, gameDate } = currentTimes(offsetMinutes);
-  const opponent = targetTeam.key === "marines" ? "fighters" : "marines";
+  const opponent = targetTeam.key === "test-marines" ? "fighters" : "marines";
   const roster = JSON.stringify(teamRoster);
   await db.batch([
+    db.prepare("INSERT OR IGNORE INTO contest_identity_teams (team_key) VALUES (?1)").bind(targetTeam.key),
     db.prepare(`INSERT INTO games
       (internal_game_id, game_date, start_time, home_team, away_team, game_status, created_at, updated_at)
       VALUES (?1, ?2, ?3, ?5, ?6, 'scheduled', ?4, ?4)`)

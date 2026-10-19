@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { createContestId } from "../../backend/contest-identity.js";
 import { fileURLToPath } from "node:url";
 import worker, {
   executeGameAutomationV3Job,
@@ -138,6 +139,11 @@ function insertFixtureRows(database, games, timestamp, tokenHash) {
       game.internalGameId, game.gameDate, game.startAt, "fighters", "hawks",
       `offseason-${index}`, timestamp, `https://offseason.invalid/${index}`, timestamp, timestamp
     );
+    const contestId = createContestId(game.internalGameId, "fighters");
+    database.prepare(`
+      INSERT INTO game_contests (contest_id, internal_game_id, target_team_key)
+      VALUES (?, ?, 'fighters')
+    `).run(contestId, game.internalGameId);
     database.prepare(`
       INSERT INTO game_automation_v3_state (internal_game_id, state, version, created_at, updated_at)
       VALUES (?, 'scheduled', 0, ?, ?)
@@ -157,13 +163,13 @@ function insertFixtureRows(database, games, timestamp, tokenHash) {
     for (const [userIndex, expected] of FORMAL_RANKING_EXPECTATIONS.entries()) {
       database.prepare(`
         INSERT INTO predictions (
-          id, user_id, game_id, internal_game_id, prediction_json, schema_version,
+          id, user_id, game_id, internal_game_id, contest_id, prediction_json, schema_version,
           game_date, home_team, away_team, opponent_code, is_home, submitted_at, updated_at,
           status, is_test_prediction, scoring_status
-        ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 1, ?, ?, 'submitted', 0, 'pending')
+        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 1, ?, ?, 'submitted', 0, 'pending')
       `).run(
         `offseason-prediction-${index}-${userIndex}`, expected.userId,
-        game.internalGameId, game.internalGameId,
+        game.internalGameId, game.internalGameId, contestId,
         JSON.stringify({ schemaVersion: 1, lineup: predictionLineup(actualLineup, userIndex) }), game.gameDate,
         "fighters", "hawks", "hawks", game.predictionDeadlineAt, timestamp
       );

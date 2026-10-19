@@ -59,6 +59,14 @@
     return null;
   }
 
+  function contestIdForGame(internalGameId, team) {
+    const id = String(internalGameId || "").trim();
+    const target = requireTeamContext(team);
+    if (!id) throw new Error("Canonical game identity is required");
+    const hex = (value) => Array.from(new TextEncoder().encode(value), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    return `contest_${hex(id)}_${hex(target.key)}`;
+  }
+
   function gameTeams(game, team) {
     const side = gameSide(game, team);
     if (!side) return null;
@@ -76,5 +84,5 @@
     }
   }
 
-  return Object.freeze({ FIGHTERS, MARINES, defineTeamContext, requireTeamContext, matchesTeam, gameSide, gameTeams, applyBranding });
+  return Object.freeze({ FIGHTERS, MARINES, defineTeamContext, requireTeamContext, matchesTeam, gameSide, gameTeams, contestIdForGame, applyBranding });
 });

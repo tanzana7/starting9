@@ -1,9 +1,17 @@
 (() => {
   const publicFrontend = window.Starting9Public = window.Starting9Public || {};
 
-  function createPublicPredictionPersistence({ apiClient }) {
+  function createPublicPredictionPersistence({ apiClient, targetTeam }) {
+    function scopedUrl(url, gameId = "") {
+      if (!targetTeam?.key || typeof window.Starting9TeamContext?.contestIdForGame !== "function") return url;
+      const parsed = new URL(url, window.location?.origin || "https://starting9.internal");
+      const id = String(gameId || parsed.searchParams.get("internalGameId") || "").trim();
+      if (id) parsed.searchParams.set("contestId", window.Starting9TeamContext.contestIdForGame(id, targetTeam));
+      return parsed.toString();
+    }
+
     async function load(url, signal) {
-      const { response, payload } = await apiClient.get(url, { credentials: "include", signal });
+      const { response, payload } = await apiClient.get(scopedUrl(url), { credentials: "include", signal });
       if (!response.ok || !payload?.ok) {
         throw new Error(payload?.error || `HTTP ${response.status}`);
       }
@@ -11,12 +19,13 @@
     }
 
     async function save(url, gameId, prediction) {
-      const { response, payload } = await apiClient.request(url, {
+      const { response, payload } = await apiClient.request(scopedUrl(url, gameId), {
         method: "PUT",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         // The canonical internalGameId and serialized lineup are the server contract.
-        body: JSON.stringify({ internalGameId: gameId, prediction })
+        body: JSON.stringify({ internalGameId: gameId, ...(targetTeam?.key && window.Starting9TeamContext?.contestIdForGame
+          ? { contestId: window.Starting9TeamContext.contestIdForGame(gameId, targetTeam) } : {}), prediction })
       });
       if (!response.ok || !payload?.ok) {
         const error = new Error(payload?.error || `HTTP ${response.status}`);
@@ -28,7 +37,7 @@
     }
 
     async function remove(url) {
-      const { response, payload } = await apiClient.request(url, { method: "DELETE", credentials: "include" });
+      const { response, payload } = await apiClient.request(scopedUrl(url), { method: "DELETE", credentials: "include" });
       if (!response.ok || !payload?.ok) {
         throw new Error(payload?.error || `HTTP ${response.status}`);
       }

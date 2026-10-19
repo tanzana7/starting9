@@ -1,6 +1,6 @@
-# Contest Identity Implementation Map — C-4A1
+# Contest Identity Implementation Map — C-4A2
 
-Status: **A1 additive schema foundation implemented locally; runtime remains game-scoped. No remote migration or deployment.**
+Status: **C-4A2 prediction and lineup ownership is contest-scoped locally. Scoring, ranking, publication, formal jobs, and remote environments remain unchanged. No remote migration or deployment.**
 
 ## Identity contract
 
@@ -20,11 +20,12 @@ The additive schema is `contest_identity_teams`, `game_contests`, and `contest_i
 | `game_identity_repair_plans` | Physical `internal_game_id` and repair plan | Physical game identity | PHYSICAL_GAME_ONLY | Keep unchanged | Identity repair tooling; plan can alter only physical registry identity and must not guess contest ownership. |
 | `admin_alert_incidents` | Physical `internal_game_id` + incident type/dedupe key | Physical operational incident; contest-specific alerts may additionally carry `contest_id` later | PHYSICAL_GAME_ONLY / C-4A4 follow-up | No A1 changes | `backend/admin-alerts/*`; do not duplicate schedule/source incidents per target team. |
 | `contest_identity_teams` | New canonical `team_key` registry | Canonical target key | C-4A1 | 0046 | New allowlist/FK boundary. Seeded only with `fighters`, `marines`. |
-| `game_contests` | New `contest_id`; unique physical game + team | `(internal_game_id, target_team_key)` | C-4A1 | 0046 | New mapping only; no existing runtime caller yet. |
+| `game_contests` | New `contest_id`; unique physical game + team | `(internal_game_id, target_team_key)` | C-4A1/A2 | 0046 | A2 resolves/creates a contest only after registry and physical participant validation; SQL insert/update triggers enforce the same participant boundary. |
 | `contest_identity_backfill_issues` | Physical `internal_game_id` | One explicit quarantine issue per ambiguous physical game | C-4A1 | 0046 | Records both-Fighters-side and blank participant cases; never silently backfill. |
-| `predictions` | Prediction PK plus unique `(user_id, game_id)`; optional `internal_game_id` | Unique `(user_id, contest_id)` | CONTEST_SCOPED | C-4A2 rebuild/backfill | `auth-worker.js`: `resolveV3PredictionReference`, `handleGetCurrentPrediction`, `handlePutCurrentPrediction`, `handleDeleteCurrentPrediction`, `getPredictionRow`; prediction validation/persistence. Frontend `frontend/prediction/*` persistence must preserve legacy Fighters IDs while route context becomes explicit. Test one shared user can save two contests for the same physical game and cannot duplicate within one contest. |
-| `game_lineups` | `game_id` is unique; current/final pointers are per physical game | One lineup artifact per `contest_id` | CONTEST_SCOPED | C-4A2 | `auth-worker.js`: `ensureCurrentLineupRevision`, `createManualLineupRevision`, `handleAdminV3LineupGet`, `handleAdminV3LineupRevisionCreate`, `handleAdminV3LineupFinalize`; `backend/automation-v3/lineup-artifacts.js`. Test dual independent lineups and no cross-team player leakage. |
-| `game_lineup_revisions` | `(game_id, version)` and current-row partial unique index by game | `(contest_id, version)` | CONTEST_SCOPED | C-4A2 | Admin correction and `backend/automation-v3/lineup-candidate-service.js`; preserve current/final pointer, old lineage, and revision guard. |
+| `predictions` | Prediction PK plus unique `(user_id, game_id)`; optional `internal_game_id` | Unique `(user_id, contest_id)`; physical game FK pair retained | CONTEST_SCOPED | C-4A2 migration 0047 | `auth-worker.js`: prediction GET/PUT/DELETE and row lookup use contest identity after participation proof. Frontend persistence sends active-team contest identity; legacy Fighters-only requests remain compatible. Score columns and game indexes stay for A3. |
+| `game_lineups` | `game_id` is unique; current/final pointers are per physical game | One canonical artifact per `contest_id` | CONTEST_SCOPED | C-4A2 migration 0047 | Auth Worker admin/automatic candidate, read, finalize and cancel paths use contest identity. The unchanged scorer bridge remains Fighters-only; scoring/job identity is not migrated in A2. |
+| `contest_lineup_revisions` | No contest revision table; revisions are `(game_id, version)` | `(contest_id, version)` with one current revision | CONTEST_SCOPED | C-4A2 migration 0047 | New authoritative candidate/final/correction lineage, backfilled from Fighters history. Fighters and isolated Test Site fixtures mirror writes to the legacy table while old consumers remain game-scoped. Non-Fighters past correction is blocked until A3. |
+| `game_lineup_revisions` | `(game_id, version)` and current-row partial unique index by game | Legacy scoring bridge only; not authoritative for non-Fighters contests | LEGACY_COMPAT | Keep unchanged in A2 | Existing score executor/ranking consumers still read this table. Contest-aware reads must not fall back to it when contest identity is available. |
 | `game_rescore_previews`, `game_rescore_jobs`, `game_rescore_audits` | Preview/job/audit keyed by `game_id` + lineup version | Contest-owned rescore lineage and execution identity | CONTEST_SCOPED | C-4A3, with A2 lineage mapping inputs | `auth-worker.js` manual rescore preview/confirm handlers; preserve authorization, expiry, claims, audit, and scoring revision links. |
 | `game_roster_snapshots`, `manual_team_rosters` | Game ID or team/player key (manual roster currently Fighters-only) | Team-scoped roster; contest snapshot where tied to one game's eligibility | CONTEST_SCOPED for snapshots / LEGACY_COMPAT for existing master | C-4A2 prerequisite/follow-up | `backend/automation-v3/roster-repository.js`, `manual-roster-repository.js`, roster admin APIs. Maintain one source capture per physical game where provider returns both teams; persist team-specific eligible roster distinctly. |
 | `game_scoring_revisions`, `score_attempts`, `score_attempt_prediction_rows`, `score_attempt_test_rows`, `prediction_score_revisions`, `game_rescore_*` scoring outcomes | Unique/revision keys contain `internal_game_id` or `game_id` | Contest + canonical lineup/scoring revision | CONTEST_SCOPED | C-4A3 | `auth-worker.js`: `executeV3ScoreExecutor`, score revision creation/commit; `backend/automation-v3/score-attempts.js`; `backend/domain/scoring.js`. Preserve claim/revision fencing and reject stale commits across contests. |
@@ -42,8 +43,9 @@ The additive schema is `contest_identity_teams`, `game_contests`, and `contest_i
 
 | Code boundary | Current game-only operations | Classification / next owner |
 |---|---|---|
-| `auth-worker.js` prediction handlers | Resolve/read/insert/update/delete prediction by `internal_game_id`/legacy `game_id` | CONTEST_SCOPED — C-4A2 |
-| `auth-worker.js` lineup/admin handlers and `backend/automation-v3/lineup-candidate-service.js` | Read/create/finalize/correct revisions and current pointers by game ID | CONTEST_SCOPED — C-4A2 |
+| `auth-worker.js` prediction handlers | Resolve physical game, then read/insert/update/delete by `(user_id, contest_id)`; retain physical game for composite consistency | CONTEST_SCOPED — C-4A2 DONE |
+| `auth-worker.js` lineup/admin handlers | Canonical row and revision reads/writes use `(contest_id, internal_game_id)` / `(contest_id, version)`; explicit Fighters/Test Site mirroring is compatibility-only | CONTEST_SCOPED — C-4A2 DONE |
+| `backend/automation-v3/lineup-candidate-service.js` | Legacy game-scoped scorer/automation consumer | LEGACY_COMPAT until A3/A4; no non-Fighters revision is copied to the legacy table |
 | `auth-worker.js` score/revision handlers and `backend/automation-v3/score-attempts.js` | Select current lineup, predictions, revision number, claim attempt, atomic score commit by game ID | CONTEST_SCOPED — C-4A3 |
 | `auth-worker.js` ranking and `backend/repositories/ranking-repository.js` | Eligibility, reflection revision, ranking generation and user aggregates by game ID | CONTEST_SCOPED — C-4A3 |
 | `auth-worker.js` publication/result handlers and `backend/domain/public-results.js` | Publication status and readback keyed by game ID | CONTEST_SCOPED — C-4A3 |
@@ -52,17 +54,19 @@ The additive schema is `contest_identity_teams`, `game_contests`, and `contest_i
 
 ## Migration and legacy contract
 
-- `0046_contest_identity_foundation.sql` is additive: no existing table, index, constraint, row, API, or runtime query is rewritten.
+- `0046_contest_identity_foundation.sql` remains the additive A1 foundation; `0047_contest_scoped_predictions_lineups.sql` rebuilds only `predictions` and `game_lineups`, then creates the separate contest revision history.
 - Fighters aliases used by the migration are aligned with `frontend/shared/team-context.js`: `fighters`, `f`, `北海道日本ハムファイターズ`, `北海道日本ハム`, `日本ハムファイターズ`, `日本ハム`, `ファイターズ`, after whitespace/middle-dot/period normalization.
 - Backfill creates exactly one Fighters contest only when exactly one side matches. Non-Fighters games get no Fighters row. Both sides matching or either blank are explicit issues; other unknown labels are not assumed to be Fighters.
 - A1 is not evidence that production historical rows are fully classifiable. Production evidence/export and any remote apply are outside scope.
-- Legacy game-only runtime remains the Fighters compatibility path for now. A2 must define the only safe resolution rule: old game-only requests resolve to Fighters contest, never an arbitrary contest. Unknown team never falls back to Fighters.
+- A2 preserves prediction score-related columns, timestamps, checks/defaults, and game-based indexes needed by A3; test predictions remain outside production contest identity.
+- Legacy normal rows are backfilled only through a unique, proven Fighters contest. Ambiguous/unmapped rows abort the migration transaction; no silent assignment is made.
+- Legacy game-only requests resolve only to the active target team's contest after physical participation is proven. They never select an arbitrary contest or default an unknown team to Fighters.
 
 ## C-4A handoff
 
-### C-4A2 — Predictions + Lineups
+### C-4A2 — Predictions + Lineups — IMPLEMENTED LOCALLY
 
-Migrate `predictions`, `game_lineups`, `game_lineup_revisions`, and explicitly scoped manual lineup artifacts to `contest_id`; decide where rescore previews/jobs/audits land before rebuilding them. Update `resolveV3PredictionReference` and all prediction CRUD paths, V3/admin lineup reads/writes, lineup candidate/finalize/correction services, and frontend persistence compatibility. Required proof: a single user saves independent Fighters/Marines predictions and lineups for one physical game; duplicate within a contest is rejected; legacy Fighters request maps only to Fighters; revision guards and team-scoped roster/player validation hold. Physical game/team participation must be validated before creating or mutating the contest.
+`predictions` and canonical `game_lineups` are rebuilt with contest identity; `contest_lineup_revisions` is authoritative for candidate/final/correction lineage. Prediction CRUD, active-team persistence, admin and automatic lineup paths validate the target contest before reads/writes. The old revision table remains a Fighters/Test Site scoring bridge. Score, ranking, publication, rescore jobs and formal job keys remain for A3/A4; non-Fighters historical corrections are blocked until that downstream identity is migrated.
 
 ### C-4A3 — Score, revisions, ranking, publication, result reads
 
@@ -72,6 +76,6 @@ Convert `game_scoring_revisions`, score-attempt lineage/rows, eligibility/reflec
 
 Convert contest-owned state/jobs/audits and planner/executor/claim/retry keys to contest identity while retaining physical schedule, cancellation, probable-starter source discovery at game scope. Update `listV3Games`, recovery candidate selection, `createV3Job`, claim/orchestrator/executor/audit and Test Site fixtures. Required proof: one physical game, two contest IDs, one shared account, interleaved prediction → close → lineup → score → ranking → publish, independent retry/recovery, no duplicate physical source work, fairness/bounded processing, and full regression.
 
-## A1 verification boundary
+## A2 verification boundary
 
-Local migration-chain and legacy fixture tests prove schema uniqueness, FKs, deterministic ID agreement, conservative Fighters backfill, quarantine, and no changes to pre-existing table definitions/row counts. They do not prove runtime contest operations, participant validation for newly inserted contests, production backfill correctness, or remote compatibility. Those remain explicit later-phase gates.
+Local SQLite migration-chain tests and the real Auth Worker prediction API prove same-user/same-physical-game prediction isolation, update/delete scope, canonical-lineup write isolation, composite game/contest integrity, participant rejection, legacy Fighters row/revision preservation, and migration rollback for ambiguous legacy rows. Existing Fighters admin lineup/correction and Test Site pipeline tests remain regression gates. These local fixtures do not prove production historical data is classifiable, a remote D1 migration is safe, or that multi-team scoring/ranking/publication/jobs are isolated; those remain explicit A3/A4 gates.

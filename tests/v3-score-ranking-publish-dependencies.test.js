@@ -49,13 +49,13 @@ test("main plannerはscore→ranking→publishのstate gateを越えてjobを作
 });
 
 test("V3 scoring uses canonical internal_game_id for predictions while claiming the stored lineup key", () => {
-  assert.match(worker, /const canonicalLineup = await getGameLineup\(env\.AUTH_DB, \{ gameId: internalGameId, internalGameId \}\)/);
-  assert.match(worker, /claimGameLineupForScoring\(env\.AUTH_DB, canonicalLineup\.game_id, now, \{ internalGameId \}\)/);
-  assert.match(worker, /const predictionScopeColumn = internalGameId \? "internal_game_id" : "game_id"/);
-  assert.match(worker, /const predictionScopeColumn = internalGameId && predictionsColumns\.has\("internal_game_id"\) \? "internal_game_id" : "game_id"/);
-  assert.match(worker, /scoringStatusSet = predictionColumns\.has\("scoring_status"\) \? ", scoring_status = 'scored'"/);
-  assert.match(worker, /scoring_status IN \('pending', 'failed', 'processing', 'scored'\)/);
-  assert.match(worker, /status: "score_recovery_scheduled"/);
+  assert.match(worker, /const canonicalLineup = await getGameLineup\(env\.AUTH_DB, \{ gameId: internalGameId, internalGameId, contestId \}\)/);
+  assert.match(worker, /claimGameLineupForScoring\(env\.AUTH_DB, canonicalLineup\.game_id, now, \{ internalGameId, contestId \}\)/);
+  assert.match(worker, /stageScorePrediction/);
+  assert.match(worker, /stageScoreTest/);
+  assert.match(worker, /commitScoreAttempt/);
+  assert.match(worker, /createScoreAttempt/);
+  assert.match(worker, /contest_id/);
 });
 
 test("admin timeline uses phase status instead of treating prerequisite retry_wait as a failure", () => {

@@ -1,8 +1,8 @@
-# Contest Identity Migration — C-4A2
+# Contest Identity Migration — C-4A3
 
 ## Scope and safety boundary
 
-C-4A2 makes prediction ownership and canonical lineup ownership specific to a registered team contest for one physical game. The physical game remains one `games.internal_game_id` row. Scoring, ranking, publication, rescore jobs, and formal automation identities remain game-scoped for the later C-4A3/A4 phases. Migration 0047 is local-only in this phase; it has not been applied remotely and no production database or Worker was changed.
+C-4A3 moves scoring/result lineage, ranking inputs, publication state and result reads onto the contest identity established in C-4A1/A2. The physical game remains one `games.internal_game_id` row. Formal job identity, planning, claims and retries remain game-scoped for C-4A4. Migration 0048 and runtime changes are feature-branch/local only; no remote D1, Worker or Pages resource was changed.
 
 ## Identity and keys
 
@@ -28,6 +28,17 @@ Fighters revision rows are copied into `contest_lineup_revisions` without rewrit
 - Candidate/final/cancel/current-lineup reads and writes are contest-scoped. A2 does not change login, sessions, CSRF, admin authorization, scoring rules, ranking, publication, or job identity.
 - Non-Fighters past lineup correction is rejected until A3 migrates the downstream score/revision path. This prevents a contest-specific correction from entering the old game-scoped rescore executor.
 
-## A3 handoff
+## A3 handoff (historical plan; superseded by completion note below)
 
 C-4A3 must migrate scoring revisions, score attempts and their prediction snapshots, correction/rescore lineage, ranking eligibility/reflection and aggregates, publication artifacts/readback, and Daily Best Nine selection to contest identity. It must prove stale score attempts cannot commit across contest revisions. Until then, do not run multi-contest scoring or expose a non-Fighters correction as a completed downstream workflow. Formal job planning/claim/retry identity remains C-4A4.
+
+## C-4A3 completion and C-4A4 handoff
+
+- Migration `0048_contest_scoped_results.sql` adds contest-owned scoring revisions, score attempts/staged rows, prediction score history, ranking inputs/eligibility/reflection, perfect-achiever records, rescore preview/job/audit lineage, and per-contest ranking-test data.
+- Legacy game-only rows are copied only when the physical game resolves to exactly one Fighters contest. Ambiguous or missing ownership aborts migration. Legacy tables remain because formal V3 job identity is deferred to A4.
+- Eligibility-reflection history that predates the first score keeps its contest/game and status with a null scoring-revision link; legacy `none`/`excluded` sentinels link to the active copied score revision when one exists. This avoids inventing a revision or dropping an admin exclusion event.
+- Score staging/commit fences contest + physical game, scoring revision, canonical/scoring lineup revision, claim token and lease. Correction appends revision lineage and reuses the score executor. Stale attempts cannot commit over a newer final; stale publication completion is a no-op.
+- Ranking inputs/aggregates are team scoped. Public result list/detail/previous/history reads use trusted target-team context without changing response contracts. Daily Best Nine selects the latest published contest for that team and remains independent from personal result selection.
+- Verification is local only. No remote migration, production backfill, Worker/Pages deployment, or production operation occurred.
+
+C-4A4 owns formal job schema/identity and uniqueness, planner/discovery/enqueue, claim/lease, executor dispatch, retry/recovery, fairness/boundedness, physical source-work deduplication, and full interleaved same-game multi-team automation E2E. A4 migrates this boundary rather than weakening A3 contest-scoped artifacts.

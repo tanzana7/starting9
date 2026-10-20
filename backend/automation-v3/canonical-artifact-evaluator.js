@@ -306,24 +306,30 @@ async function all(db, sql, ...bindings) {
   return result?.results || [];
 }
 
-export async function readCanonicalArtifactFacts(db, internalGameId) {
+export async function readCanonicalArtifactFacts(db, internalGameId, contestId = "") {
   const id = text(internalGameId);
   if (!id) return { available: false, reason: "INTERNAL_GAME_ID_MISSING", errorCode: "INTERNAL_GAME_ID_MISSING" };
   try {
-    const canonicalLineup = await first(db,
-      "SELECT * FROM game_lineups WHERE internal_game_id = ?1 LIMIT 1", id);
-    const lineupRevisions = await all(db,
-      "SELECT * FROM game_lineup_revisions WHERE internal_game_id = ?1 ORDER BY version DESC", id);
-    const activeScoringRevision = await first(db,
-      `SELECT id, internal_game_id, lineup_revision_id, status, revision_number, completed_at
-         FROM game_scoring_revisions
-        WHERE internal_game_id = ?1 AND is_active = 1
-        ORDER BY revision_number DESC LIMIT 1`, id);
-    const rankingReflection = await first(db,
-      `SELECT id, internal_game_id, scoring_revision_id, ranking_update_revision, status, reflected_at
-         FROM ranking_reflection_revisions
-        WHERE internal_game_id = ?1
-        ORDER BY ranking_update_revision DESC, id DESC LIMIT 1`, id);
+    const canonicalLineup = contestId
+      ? await first(db, "SELECT * FROM game_lineups WHERE internal_game_id = ?1 AND contest_id = ?2 LIMIT 1", id, contestId)
+      : await first(db, "SELECT * FROM game_lineups WHERE internal_game_id = ?1 LIMIT 1", id);
+    const lineupRevisions = contestId
+      ? await all(db, "SELECT * FROM contest_lineup_revisions WHERE internal_game_id = ?1 AND contest_id = ?2 ORDER BY version DESC", id, contestId)
+      : await all(db, "SELECT * FROM game_lineup_revisions WHERE internal_game_id = ?1 ORDER BY version DESC", id);
+    const activeScoringRevision = contestId
+      ? await first(db, `SELECT id, internal_game_id, lineup_revision_id, status, revision_number, completed_at
+          FROM contest_scoring_revisions WHERE internal_game_id = ?1 AND contest_id = ?2 AND is_active = 1
+          ORDER BY revision_number DESC LIMIT 1`, id, contestId)
+      : await first(db, `SELECT id, internal_game_id, lineup_revision_id, status, revision_number, completed_at
+          FROM game_scoring_revisions WHERE internal_game_id = ?1 AND is_active = 1
+          ORDER BY revision_number DESC LIMIT 1`, id);
+    const rankingReflection = contestId
+      ? await first(db, `SELECT id, internal_game_id, scoring_revision_id, ranking_update_revision, status, reflected_at
+          FROM contest_ranking_reflection_revisions WHERE internal_game_id = ?1 AND contest_id = ?2
+          ORDER BY ranking_update_revision DESC, id DESC LIMIT 1`, id, contestId)
+      : await first(db, `SELECT id, internal_game_id, scoring_revision_id, ranking_update_revision, status, reflected_at
+          FROM ranking_reflection_revisions WHERE internal_game_id = ?1
+          ORDER BY ranking_update_revision DESC, id DESC LIMIT 1`, id);
     return {
       available: true,
       canonicalLineup,
@@ -342,8 +348,8 @@ export async function readCanonicalArtifactFacts(db, internalGameId) {
   }
 }
 
-export async function evaluateCanonicalArtifactsFromDb(db, internalGameId) {
-  const facts = await readCanonicalArtifactFacts(db, internalGameId);
+export async function evaluateCanonicalArtifactsFromDb(db, internalGameId, contestId = "") {
+  const facts = await readCanonicalArtifactFacts(db, internalGameId, contestId);
   if (!facts.available) return { ...evaluateCanonicalArtifacts(), available: false, reason: facts.reason, errorCode: facts.errorCode };
   return { ...evaluateCanonicalArtifacts(facts), available: true, reason: null, errorCode: null };
 }

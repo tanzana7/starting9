@@ -246,7 +246,8 @@ export async function runFormalPipeline(fixture, {
       // the isolated pipeline must opt into historical discovery explicitly.
       gameListOptions: { includeRecentHistory: true },
       formalPlanner: (db, games, at) => planMainWorkflowJobs(db, games, at, {
-        disabledStages: ["roster_fetch", "lineup_fetch"]
+        disabledStages: ["roster_fetch", "lineup_fetch"],
+        targetTeamKey: "fighters"
       }),
       auxiliaryPlanner: async () => ({ created: 0, planned: [], diagnostics: [], errors: [] }),
       executeJob: async (context) => {
@@ -282,19 +283,20 @@ function databaseOpenFormalJobs(database) {
 export async function readFormalPipelineResults(fixture) {
   const results = [];
   for (const game of fixture.games) {
-    const canonical = await evaluateCanonicalArtifactsFromDb(fixture.env.AUTH_DB, game.internalGameId);
+    const contestId = createContestId(game.internalGameId, "fighters");
+    const canonical = await evaluateCanonicalArtifactsFromDb(fixture.env.AUTH_DB, game.internalGameId, contestId);
     const scores = fixture.database.prepare(
-      "SELECT user_id, score, scored_attempt_id, scoring_status FROM predictions WHERE internal_game_id = ? ORDER BY user_id"
-    ).all(game.internalGameId);
+      "SELECT user_id, score, scored_attempt_id, scoring_status FROM predictions WHERE contest_id = ? AND internal_game_id = ? ORDER BY user_id"
+    ).all(contestId, game.internalGameId);
     const lineupRow = fixture.database.prepare(
-      "SELECT final_lineup_revision_id, scoring_status, publication_status, published_at FROM game_lineups WHERE internal_game_id = ?"
-    ).get(game.internalGameId);
+      "SELECT final_lineup_revision_id, scoring_status, publication_status, published_at FROM game_lineups WHERE contest_id = ? AND internal_game_id = ?"
+    ).get(contestId, game.internalGameId);
     const scoringRow = fixture.database.prepare(
-      "SELECT lineup_revision_id, status, is_active FROM game_scoring_revisions WHERE internal_game_id = ? AND is_active = 1"
-    ).get(game.internalGameId);
+      "SELECT lineup_revision_id, status, is_active FROM contest_scoring_revisions WHERE contest_id = ? AND internal_game_id = ? AND is_active = 1"
+    ).get(contestId, game.internalGameId);
     const reflectionRow = fixture.database.prepare(
-      "SELECT scoring_revision_id, status FROM ranking_reflection_revisions WHERE internal_game_id = ? ORDER BY ranking_update_revision DESC LIMIT 1"
-    ).get(game.internalGameId);
+      "SELECT scoring_revision_id, status FROM contest_ranking_reflection_revisions WHERE contest_id = ? AND internal_game_id = ? ORDER BY ranking_update_revision DESC LIMIT 1"
+    ).get(contestId, game.internalGameId);
     results.push({ gameId: game.internalGameId, canonical, scores, score: scores[0] || null, lineupRow, scoringRow, reflectionRow });
   }
   return results;
@@ -310,7 +312,8 @@ export async function readFormalRanking(fixture) {
     qualifiedOnly: false,
     startAt,
     endAt: endAt ? gameDateAt(endAt) : null,
-    publishedOnly: true
+    publishedOnly: true,
+    targetTeamKey: "fighters"
   });
 }
 

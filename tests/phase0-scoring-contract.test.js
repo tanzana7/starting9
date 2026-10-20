@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import worker, { V3_JOB_EXECUTORS } from "../auth-worker.js";
 import { V3_JOB_TYPE } from "../backend/automation-v3/constants.js";
+import { createContestId } from "../backend/contest-identity.js";
 import {
   closeFormalPipelineFixture,
   createFormalPipelineFixture,
@@ -43,14 +44,14 @@ async function adminRequest(fixture, pathname, body) {
 }
 
 test("Phase 1: admin scoring confirm queues the same V3 score executor contract", () => {
-  const adminConfirm = handlerSource("handleAdminV3ScoringConfirm", "assertV3RescoreLineage");
+  const adminConfirm = handlerSource("handleAdminV3ScoringConfirm", "assertV3ContestRescoreLineage");
   const scoreExecutor = WORKER_SOURCE.slice(
     WORKER_SOURCE.indexOf("async function executeV3ScoreExecutor"),
     WORKER_SOURCE.indexOf("async function executeV3RankingExecutor")
   );
 
   assert.doesNotMatch(adminConfirm, /invokeV3RescoreCore\(body, env, cors, context\.metadata, user, "confirm"/);
-  assert.match(adminConfirm, /assertV3RescoreLineage\(env\.AUTH_DB, context, body, user\?\.id\)/);
+  assert.match(adminConfirm, /assertV3ContestRescoreLineage\(env\.AUTH_DB, context, body, user\?\.id\)/);
   assert.match(adminConfirm, /assertV3AdminScoringReady\(env, context, body\)/);
   assert.match(adminConfirm, /input\?\.confirmed !== true/);
   assert.match(adminConfirm, /createV3AdminActionJob\(env\.AUTH_DB, context\.id, "score"/);
@@ -116,10 +117,11 @@ test("Phase 1: admin confirm and exact job run are idempotent on an isolated V3 
     ).get(firstConfirm.job.id);
     assert.equal(completed.status, "completed");
     assert.equal(completed.attempt_count, 1);
-    assert.equal(countRows(fixture.database, "SELECT COUNT(*) AS count FROM game_rescore_jobs WHERE game_id = ? AND status = 'completed'", game.internalGameId), 1);
-    assert.equal(countRows(fixture.database, "SELECT COUNT(*) AS count FROM score_attempts WHERE internal_game_id = ? AND status = 'committed'", game.internalGameId), 1);
-    assert.equal(countRows(fixture.database, "SELECT COUNT(*) AS count FROM game_scoring_revisions WHERE internal_game_id = ?", game.internalGameId), 1);
-    assert.equal(countRows(fixture.database, "SELECT COUNT(*) AS count FROM prediction_score_revisions WHERE internal_game_id = ?", game.internalGameId), 3);
+    const contestId = createContestId(game.internalGameId, "fighters");
+    assert.equal(countRows(fixture.database, "SELECT COUNT(*) AS count FROM contest_game_rescore_jobs WHERE internal_game_id = ? AND status = 'completed'", game.internalGameId), 1);
+    assert.equal(countRows(fixture.database, "SELECT COUNT(*) AS count FROM contest_score_attempts WHERE contest_id = ? AND internal_game_id = ? AND status = 'committed'", contestId, game.internalGameId), 1);
+    assert.equal(countRows(fixture.database, "SELECT COUNT(*) AS count FROM contest_scoring_revisions WHERE contest_id = ? AND internal_game_id = ?", contestId, game.internalGameId), 1);
+    assert.equal(countRows(fixture.database, "SELECT COUNT(*) AS count FROM contest_prediction_score_revisions WHERE contest_id = ? AND internal_game_id = ?", contestId, game.internalGameId), 3);
   } finally {
     closeFormalPipelineFixture(fixture);
   }
@@ -133,7 +135,7 @@ test("Phase 0: V3 scoring requires the deadline and canonical lineup, then commi
       maxPasses: 2
     });
     assert.equal(before.executed.some((entry) => entry.jobType === "score"), false);
-    assert.equal(countRows(fixture.database, "SELECT COUNT(*) AS count FROM score_attempts"), 0);
+    assert.equal(countRows(fixture.database, "SELECT COUNT(*) AS count FROM contest_score_attempts"), 0);
 
     await finalizeSyntheticLineups(fixture);
     const run = await runFormalPipeline(fixture, { maxPasses: 8 });
@@ -143,12 +145,13 @@ test("Phase 0: V3 scoring requires the deadline and canonical lineup, then commi
       const lineup = fixture.database.prepare(
         "SELECT final_lineup_revision_id, scoring_status FROM game_lineups WHERE internal_game_id = ?"
       ).get(game.internalGameId);
+      const contestId = createContestId(game.internalGameId, "fighters");
       const attempt = fixture.database.prepare(
         `SELECT attempt_id, canonical_lineup_revision_id, scoring_lineup_revision_id,
                 job_id, status
-           FROM score_attempts
-          WHERE internal_game_id = ? AND status = 'committed'`
-      ).get(game.internalGameId);
+           FROM contest_score_attempts
+          WHERE contest_id = ? AND internal_game_id = ? AND status = 'committed'`
+      ).get(contestId, game.internalGameId);
       assert.equal(lineup.scoring_status, "scored", game.internalGameId);
       assert.equal(attempt.canonical_lineup_revision_id, lineup.final_lineup_revision_id, game.internalGameId);
       assert.equal(attempt.scoring_lineup_revision_id, lineup.final_lineup_revision_id, game.internalGameId);

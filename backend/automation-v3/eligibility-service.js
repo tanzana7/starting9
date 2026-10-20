@@ -17,6 +17,7 @@ export async function applyEligibilityChange({
   db,
   gameId,
   internalGameId = "",
+  contestId = "",
   status,
   reason = null,
   note = null,
@@ -31,7 +32,11 @@ export async function applyEligibilityChange({
   if (!db || typeof persist !== "function") throw eligibilityError("ELIGIBILITY_SERVICE_INVALID", "EligibilityServiceの依存関係が不正です。", { httpStatus: 500 });
   const normalizedStatus = text(status).toLowerCase();
   if (!normalizedStatus) throw eligibilityError("ELIGIBILITY_STATUS_REQUIRED", "対象状態が必要です。", { httpStatus: 400 });
-  const current = await db.prepare(
+  const current = contestId ? await db.prepare(
+    `SELECT game_id, internal_game_id, game_status, ranking_eligibility_status, ranking_eligibility_reason,
+            ranking_eligibility_note, ranking_eligibility_version, ranking_eligibility_updated_by
+       FROM contest_ranking_games WHERE contest_id = ?1 AND internal_game_id = ?2 LIMIT 1`
+  ).bind(contestId, internalGameId).first() : await db.prepare(
     `SELECT game_id, internal_game_id, game_status, ranking_eligibility_status, ranking_eligibility_reason,
             ranking_eligibility_note, ranking_eligibility_version, ranking_eligibility_updated_by
        FROM ranking_games WHERE game_id = ?1 LIMIT 1`
@@ -52,6 +57,7 @@ export async function applyEligibilityChange({
   const persisted = await persist({
     gameId,
     internalGameId: internalGameId || current.internal_game_id || "",
+    contestId,
     status: normalizedStatus,
     reason,
     note,
@@ -60,9 +66,13 @@ export async function applyEligibilityChange({
     officialCorrection
   });
   if (gameStatus) {
-    await db.prepare(
+    await db.prepare(contestId
+      ? "UPDATE contest_ranking_games SET game_status = ?1, updated_at = ?2 WHERE contest_id = ?3 AND internal_game_id = ?4"
+      :
       "UPDATE ranking_games SET game_status = ?1, updated_at = ?2 WHERE game_id = ?3"
-    ).bind(text(gameStatus).toLowerCase(), (now instanceof Date ? now : new Date(now)).toISOString(), gameId).run();
+    ).bind(...(contestId
+      ? [text(gameStatus).toLowerCase(), (now instanceof Date ? now : new Date(now)).toISOString(), contestId, internalGameId]
+      : [text(gameStatus).toLowerCase(), (now instanceof Date ? now : new Date(now)).toISOString(), gameId])).run();
   }
   return { status: "updated", noOp: false, current, currentVersion, eligibility: persisted };
 }

@@ -242,11 +242,12 @@ test("スタメン確定は同一revisionをno-opにし、採点中の差し替�
 });
 
 test("再採点previewは試合・lineup・scoring revisionを固定し、confirm前提を再検証する", () => {
-  assert.match(worker, /previewSummary\.v3Lineage/);
-  assert.match(worker, /assertV3RescoreLineage/);
+  assert.match(worker, /contest_game_rescore_previews/);
+  assert.match(worker, /assertV3ContestRescoreLineage/);
+  assert.match(worker, /summary\.scoringRevisionId/);
   assert.match(worker, /RESCORE_SCORING_REVISION_CHANGED/);
   assert.match(worker, /RESCORE_PREVIEW_EXPIRED/);
-  assert.match(worker, /status = 'previewed'/);
+  assert.match(worker, /status IN \('previewed','running'\)/);
   assert.match(worker, /deferPublication/);
 });
 
@@ -271,6 +272,8 @@ test("eligibility変更は履歴を維持し、同じ状態をno-opにしてrank
   assert.match(worker, /rankingEligibilityUpdatedAt/);
   assert.match(worker, /scheduledSlotAt: eligibility\?\.rankingEligibilityUpdatedAt/);
   assert.match(worker, /rankingJob/);
+  assert.match(worker, /\(!context\.metadata\.contestId && currentState === "published"\) \|\| Boolean\(lineup\?\.published_at\)/);
+  assert.match(worker, /getRankingEligibilityState\(env\.AUTH_DB, context\.metadata\.gameId, context\.id, context\.metadata\.contestId \|\| ""\)/);
 });
 
 test("job retry/cancelと日程変更は原子的条件・理由・pending限定再配置を持つ", () => {

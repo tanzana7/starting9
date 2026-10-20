@@ -13,6 +13,10 @@ const LEGACY_GAME_ID = INTERNAL_GAME_ID;
 const E2E_ADMIN_USERNAME_PREFIX = "e2e-";
 const POSITIONS = Object.freeze(["捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
 const CLEANUP_ORDER = Object.freeze([
+  "contest_score_attempts", "contest_prediction_score_revisions", "contest_ranking_reflection_revisions",
+  "contest_game_rescore_previews", "contest_game_rescore_jobs", "contest_game_rescore_audits",
+  "contest_perfect_achievers", "contest_ranking_eligibility_history", "contest_ranking_test_predictions",
+  "contest_ranking_test_game_settings", "contest_ranking_games", "contest_scoring_revisions",
   "score_attempt_prediction_rows", "score_attempt_test_rows", "score_attempts",
   "prediction_score_revisions", "ranking_reflection_revisions", "game_scoring_revisions",
   "ranking_eligibility_history", "game_rescore_audits", "game_rescore_previews", "game_rescore_jobs",
@@ -188,9 +192,13 @@ async function currentScenarioGame(db) {
       games.away_team, state.state, lineup.scoring_status, ranking.publication_status
     FROM games
     LEFT JOIN game_automation_v3_state AS state USING (internal_game_id)
+    LEFT JOIN game_contests AS contest ON contest.internal_game_id = games.internal_game_id
+      AND contest.target_team_key = ?2
     LEFT JOIN game_lineups AS lineup ON lineup.internal_game_id = games.internal_game_id
-    LEFT JOIN ranking_games AS ranking ON ranking.internal_game_id = games.internal_game_id
-    WHERE games.internal_game_id = ?1 LIMIT 1`).bind(INTERNAL_GAME_ID).first();
+      AND lineup.contest_id = contest.contest_id
+    LEFT JOIN contest_ranking_games AS ranking ON ranking.internal_game_id = games.internal_game_id
+      AND ranking.contest_id = contest.contest_id
+    WHERE games.internal_game_id = ?1 LIMIT 1`).bind(INTERNAL_GAME_ID, targetTeam.key).first();
 }
 
 async function markManualLineupReadyScenario(db) {
@@ -429,7 +437,10 @@ async function runPipeline(env, { target = "published", failAt = "" } = {}) {
     const now = new Date();
     latest = await runGameAutomationV3(env, now, {
       gameListOptions: { includeRecentHistory: true, internalGameId: INTERNAL_GAME_ID, targetTeam },
-      formalPlanner: (db, games, at) => planMainWorkflowJobs(db, games, at, { disabledStages }),
+      formalPlanner: (db, games, at) => planMainWorkflowJobs(db, games, at, {
+        disabledStages,
+        targetTeamKey: targetTeam.key
+      }),
       auxiliaryPlanner: async () => ({ created: 0, planned: [], diagnostics: [], errors: [] }),
       disabledJobTypes: target === "lineup-ready" ? ["score"] : [],
       executeJob: async (context) => {
@@ -497,8 +508,10 @@ async function applyScenario(request, env, ctx, scenario) {
 
   if (["closed", "lineup-ready", "scored", "ranked", "published", "retry"].includes(scenario)) {
     await runPipeline(env, { target: "closed" });
-    const existingLineup = await env.AUTH_DB.prepare("SELECT final_lineup_revision_id FROM game_lineups WHERE internal_game_id = ?1 LIMIT 1")
-      .bind(INTERNAL_GAME_ID).first();
+    const existingLineup = await env.AUTH_DB.prepare(`SELECT final_lineup_revision_id FROM game_lineups
+      WHERE internal_game_id = ?1 AND contest_id=(SELECT contest_id FROM game_contests
+        WHERE internal_game_id=?1 AND target_team_key=?2 LIMIT 1) LIMIT 1`)
+      .bind(INTERNAL_GAME_ID, targetTeam.key).first();
     if (!existingLineup?.final_lineup_revision_id) await finalizeSyntheticLineup(request, env, ctx);
   }
   if (scenario === "lineup-ready") {
@@ -512,11 +525,13 @@ async function applyScenario(request, env, ctx, scenario) {
   if (scenario === "retry") await runPipeline(env, { target: "ranked", failAt: "ranking_rebuild" });
   const current = await currentScenarioGame(env.AUTH_DB);
   if (scenario === "published") {
+    const contestId = (await env.AUTH_DB.prepare(`SELECT contest_id FROM game_contests
+      WHERE internal_game_id=?1 AND target_team_key=?2 LIMIT 1`).bind(INTERNAL_GAME_ID, targetTeam.key).first())?.contest_id;
     const [lineup, score, reflection, publication] = await Promise.all([
-      env.AUTH_DB.prepare("SELECT final_lineup_revision_id FROM game_lineups WHERE internal_game_id = ?1 LIMIT 1").bind(INTERNAL_GAME_ID).first(),
-      env.AUTH_DB.prepare("SELECT status FROM game_scoring_revisions WHERE internal_game_id = ?1 AND is_active = 1 ORDER BY created_at DESC LIMIT 1").bind(INTERNAL_GAME_ID).first(),
-      env.AUTH_DB.prepare("SELECT status FROM ranking_reflection_revisions WHERE internal_game_id = ?1 ORDER BY created_at DESC LIMIT 1").bind(INTERNAL_GAME_ID).first(),
-      env.AUTH_DB.prepare("SELECT publication_status FROM ranking_games WHERE internal_game_id = ?1 LIMIT 1").bind(INTERNAL_GAME_ID).first()
+      env.AUTH_DB.prepare("SELECT final_lineup_revision_id FROM game_lineups WHERE internal_game_id = ?1 AND contest_id = ?2 LIMIT 1").bind(INTERNAL_GAME_ID, contestId).first(),
+      env.AUTH_DB.prepare("SELECT status FROM contest_scoring_revisions WHERE internal_game_id = ?1 AND contest_id = ?2 AND is_active = 1 ORDER BY created_at DESC LIMIT 1").bind(INTERNAL_GAME_ID, contestId).first(),
+      env.AUTH_DB.prepare("SELECT status FROM contest_ranking_reflection_revisions WHERE internal_game_id = ?1 AND contest_id = ?2 ORDER BY created_at DESC LIMIT 1").bind(INTERNAL_GAME_ID, contestId).first(),
+      env.AUTH_DB.prepare("SELECT publication_status FROM contest_ranking_games WHERE internal_game_id = ?1 AND contest_id = ?2 LIMIT 1").bind(INTERNAL_GAME_ID, contestId).first()
     ]);
     const ready = validatePublishedScenario({
       state: current?.state,

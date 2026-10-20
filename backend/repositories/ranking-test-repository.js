@@ -95,8 +95,21 @@ export async function updateRankingTestDisplayName(db, { slot, displayName, upda
   return updateRankingTestGlobalSettings(db, { globalEnabled: current.globalEnabled, slotNames, updatedBy, now });
 }
 
-export async function getRankingTestState(db, internalGameId) {
+export async function getRankingTestState(db, internalGameId, contestId = "") {
   try {
+    if (contestId) {
+      const [setting, predictions, globalSettings] = await Promise.all([
+        db.prepare(`SELECT internal_game_id, include_in_public_ranking, updated_by, created_at, updated_at
+          FROM contest_ranking_test_game_settings WHERE contest_id=?1 AND internal_game_id=?2 LIMIT 1`)
+          .bind(contestId, internalGameId).first(),
+        db.prepare(`SELECT internal_game_id, slot, prediction_json, status, score, max_score,
+            lineup_revision_id, scoring_revision_id, scored_at, created_at, updated_at
+          FROM contest_ranking_test_predictions WHERE contest_id=?1 AND internal_game_id=?2 ORDER BY slot ASC`)
+          .bind(contestId, internalGameId).all(),
+        getRankingTestGlobalSettings(db)
+      ]);
+      return rankingTestStateResult(internalGameId, setting, predictions, globalSettings);
+    }
     const [setting, predictions, globalSettings] = await Promise.all([
       db.prepare(
         `SELECT internal_game_id, include_in_public_ranking, updated_by, created_at, updated_at
@@ -109,6 +122,14 @@ export async function getRankingTestState(db, internalGameId) {
       ).bind(internalGameId).all(),
       getRankingTestGlobalSettings(db)
     ]);
+    return rankingTestStateResult(internalGameId, setting, predictions, globalSettings);
+  } catch (error) {
+    if (schemaError(error)) return { schemaAvailable: false, internalGameId, setting: null, slots: [] };
+    throw error;
+  }
+}
+
+function rankingTestStateResult(internalGameId, setting, predictions, globalSettings) {
     const slots = Array.from({ length: RANKING_TEST_SLOT_MAX }, (_, index) => {
       const row = (predictions.results || []).find((candidate) => Number(candidate.slot) === index + 1) || null;
       return row ? {
@@ -136,10 +157,6 @@ export async function getRankingTestState(db, internalGameId) {
       } : { includeInPublicRanking: false, updatedBy: null, createdAt: null, updatedAt: null },
       slots
     };
-  } catch (error) {
-    if (schemaError(error)) return { schemaAvailable: false, internalGameId, setting: null, slots: [] };
-    throw error;
-  }
 }
 
 export async function upsertRankingTestPrediction(db, { internalGameId, slot, predictionJson, now }) {
@@ -157,8 +174,26 @@ export async function upsertRankingTestPrediction(db, { internalGameId, slot, pr
   ).bind(internalGameId, slot, predictionJson, timestamp).run();
 }
 
-export async function materializeRankingTestPresetPredictions(db, { internalGameId, predictions = [], invalidSlots = [], now }) {
+export async function materializeRankingTestPresetPredictions(db, { internalGameId, contestId = "", predictions = [], invalidSlots = [], now }) {
   const timestamp = now instanceof Date ? now.toISOString() : String(now);
+  if (contestId) {
+    const statements = predictions.map(({ slot, predictionJson }) => db.prepare(
+      `INSERT INTO contest_ranking_test_predictions
+         (contest_id, internal_game_id, slot, prediction_json, status, score, max_score,
+          lineup_revision_id, scoring_revision_id, scored_at, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, 'submitted', NULL, NULL, NULL, NULL, NULL, ?5, ?5)
+       ON CONFLICT(contest_id, slot) DO UPDATE SET prediction_json=excluded.prediction_json,
+         status='submitted',score=NULL,max_score=NULL,lineup_revision_id=NULL,scoring_revision_id=NULL,
+         scored_at=NULL,scored_attempt_id=NULL,updated_at=excluded.updated_at`
+    ).bind(contestId, internalGameId, slot, predictionJson, timestamp));
+    statements.push(...invalidSlots.map(slot => db.prepare(
+      `UPDATE contest_ranking_test_predictions SET status='invalid',score=NULL,max_score=NULL,
+          lineup_revision_id=NULL,scoring_revision_id=NULL,scored_at=NULL,scored_attempt_id=NULL,updated_at=?1
+        WHERE contest_id=?2 AND internal_game_id=?3 AND slot=?4`
+    ).bind(timestamp, contestId, internalGameId, slot)));
+    if (statements.length) await db.batch(statements);
+    return { materialized: predictions.length, invalid: invalidSlots.length };
+  }
   const statements = predictions.map(({ slot, predictionJson }) => db.prepare(
     `INSERT INTO ranking_test_predictions
        (internal_game_id, slot, prediction_json, status, score, max_score,

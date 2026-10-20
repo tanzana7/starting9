@@ -38,9 +38,10 @@ test("過去結果APIは採点済みの通常試合だけを一覧化し、公�
   assert.match(worker, /async function handleGetResultGames\(request, env, cors\)/);
   assert.match(worker, /latest_predictions\.status = 'scored'/);
   assert.match(worker, /ranking_games\.game_status = 'scored'/);
-  assert.match(worker, /ranking_games\.is_test_game = 0/);
-  assert.match(worker, /const resultsPublished = await isGameResultsPublished/);
-  assert.match(worker, /SELECT predictions\.game_id, predictions\.internal_game_id/);
+  assert.match(worker, /COALESCE\(ranking_games\.is_test_game, 0\) = 0/);
+  assert.match(worker, /row\.publication_status === "published"/);
+  assert.match(worker, /SELECT latest_predictions\.game_id, latest_predictions\.internal_game_id/);
+  assert.match(worker, /JOIN game_contests contest ON contest\.contest_id = latest_predictions\.contest_id/);
   assert.match(worker, /const resultId = String\(row\.internal_game_id \|\| row\.game_id \|\| ""\)/);
   assert.match(worker, /resultId: metadata\.resultId \|\| resultId/);
   assert.match(worker, /score: resultsPublished && row\.score !== null/);

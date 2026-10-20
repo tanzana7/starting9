@@ -100,10 +100,52 @@ export async function getRankingResetPreview(db, { periodType, periodKey, resetA
   };
 }
 
-export async function getPerfectAchieversForDate(db, { date, limit, offset, releaseCutoffAt = "" }) {
+export async function getPerfectAchieversForDate(db, { date, limit, offset, releaseCutoffAt = "", targetTeamKey = "" }) {
   const releaseCutoffBoundary = getRankingCutoffBoundary(releaseCutoffAt);
   if (releaseCutoffBoundary && String(date || "") < releaseCutoffBoundary) {
     return { rows: [], totalCount: 0 };
+  }
+
+  if (targetTeamKey) {
+    const [countRow, rowsResult] = await Promise.all([
+      db.prepare(`SELECT COUNT(*) AS total_count FROM predictions p
+        JOIN contest_ranking_games rg ON rg.contest_id = p.contest_id AND rg.internal_game_id = p.internal_game_id
+        JOIN game_contests c ON c.contest_id = p.contest_id
+        JOIN contest_scoring_revisions sr ON sr.contest_id = p.contest_id AND sr.is_active = 1
+          AND sr.status = 'completed' AND sr.committed_attempt_id = p.scored_attempt_id AND sr.revision_number = p.scoring_revision
+        JOIN users u ON u.id = p.user_id
+        WHERE c.target_team_key = ?1 AND rg.game_date = ?2 AND p.status = 'scored'
+          AND p.is_test_prediction = 0 AND p.score = p.max_score AND p.scored_attempt_id IS NOT NULL
+          AND rg.is_ranking_eligible = 1 AND rg.game_status = 'scored'
+          AND rg.publication_status = 'published' AND rg.is_test_game = 0 AND u.status = 'active'
+          AND EXISTS (SELECT 1 FROM game_lineups gl JOIN contest_lineup_revisions lr
+            ON lr.contest_id = gl.contest_id AND lr.revision_id = gl.final_lineup_revision_id
+              AND lr.is_current = 1 AND lr.is_final = 1
+            WHERE gl.contest_id = p.contest_id AND gl.internal_game_id = p.internal_game_id)
+          AND (?3 = '' OR rg.game_date >= ?3)`)
+        .bind(targetTeamKey, date, releaseCutoffBoundary).first(),
+      db.prepare(`SELECT u.username, p.score, rg.game_date, p.opponent_code, p.submitted_at
+        FROM predictions p
+        JOIN contest_ranking_games rg ON rg.contest_id = p.contest_id AND rg.internal_game_id = p.internal_game_id
+        JOIN game_contests c ON c.contest_id = p.contest_id
+        JOIN contest_scoring_revisions sr ON sr.contest_id = p.contest_id AND sr.is_active = 1
+          AND sr.status = 'completed' AND sr.committed_attempt_id = p.scored_attempt_id AND sr.revision_number = p.scoring_revision
+        JOIN users u ON u.id = p.user_id
+        WHERE c.target_team_key = ?1 AND rg.game_date = ?2 AND p.status = 'scored'
+          AND p.is_test_prediction = 0 AND p.score = p.max_score AND p.scored_attempt_id IS NOT NULL
+          AND rg.is_ranking_eligible = 1 AND rg.game_status = 'scored'
+          AND rg.publication_status = 'published' AND rg.is_test_game = 0 AND u.status = 'active'
+          AND EXISTS (SELECT 1 FROM game_lineups gl JOIN contest_lineup_revisions lr
+            ON lr.contest_id = gl.contest_id AND lr.revision_id = gl.final_lineup_revision_id
+              AND lr.is_current = 1 AND lr.is_final = 1
+            WHERE gl.contest_id = p.contest_id AND gl.internal_game_id = p.internal_game_id)
+          AND (?3 = '' OR rg.game_date >= ?3)
+        ORDER BY p.submitted_at ASC, p.id ASC LIMIT ?4 OFFSET ?5`)
+        .bind(targetTeamKey, date, releaseCutoffBoundary, limit, offset).all()
+    ]);
+    return { rows: (rowsResult.results || []).map(row => ({ username: row.username, score: Number(row.score),
+      gameDate: row.game_date, opponent: row.opponent_code || "", submittedAt: row.submitted_at || null })),
+      totalCount: Number(countRow?.total_count || 0) };
   }
 
   const scoreAttemptSchema = await hasScoreAttemptSchema(db);
@@ -172,7 +214,40 @@ async function hasRankingInternalGameId(db) {
   }
 }
 
-export async function getLatestPublishedRankingGame(db, { releaseCutoffAt = "" } = {}) {
+export async function getLatestPublishedRankingGame(db, { releaseCutoffAt = "", contestId = "", targetTeamKey = "" } = {}) {
+  let contestScopedSchemaAvailable = false;
+  if (contestId || targetTeamKey) {
+    // Keep the established read path usable for an older/partially migrated
+    // database. Production uses the contest-scoped query once its tables exist;
+    // the legacy table represented one game identity before contest support.
+    const [rankingColumns, contestColumns] = await Promise.all([
+      db.prepare("PRAGMA table_info(contest_ranking_games)").bind().all(),
+      db.prepare("PRAGMA table_info(game_contests)").bind().all()
+    ]);
+    contestScopedSchemaAvailable = (rankingColumns.results || []).some((column) => column.name === "contest_id")
+      && (contestColumns.results || []).some((column) => column.name === "target_team_key");
+    // A requested contest can never be inferred from a legacy game-only row.
+    // The sole pre-contest production dataset belonged to Fighters; for any
+    // other target, returning no result is safer than crossing team scope.
+    if (contestId && !contestScopedSchemaAvailable) return null;
+    if (!contestScopedSchemaAvailable && targetTeamKey && targetTeamKey !== "fighters") return null;
+  }
+  if ((contestId || targetTeamKey) && contestScopedSchemaAvailable) {
+    const cutoffBoundary = getRankingCutoffBoundary(releaseCutoffAt);
+    const row = await db.prepare(`SELECT ranking.contest_id, ranking.game_id, ranking.internal_game_id, ranking.game_date, ranking.published_at
+      FROM contest_ranking_games ranking
+      JOIN game_contests contest ON contest.contest_id = ranking.contest_id
+      WHERE (?1 = '' OR ranking.contest_id = ?1)
+        AND (?2 = '' OR contest.target_team_key = ?2)
+        AND ranking.is_ranking_eligible = 1 AND ranking.game_status = 'scored'
+        AND ranking.publication_status = 'published' AND ranking.is_test_game = 0
+        AND ranking.published_at IS NOT NULL AND (?3 = '' OR ranking.game_date >= ?3)
+      ORDER BY ranking.published_at DESC, ranking.game_date DESC, ranking.internal_game_id DESC LIMIT 1`)
+      .bind(contestId, targetTeamKey, cutoffBoundary).first();
+    if (!row) return null;
+    return { gameId: String(row.game_id || "").trim(), internalGameId: String(row.internal_game_id || "").trim(),
+      contestId: String(row.contest_id || contestId || "").trim(), gameDate: String(row.game_date || "").trim(), publishedAt: row.published_at || null };
+  }
   const useCanonicalId = await hasRankingInternalGameId(db);
   const cutoffBoundary = getRankingCutoffBoundary(releaseCutoffAt);
   const internalSelect = useCanonicalId ? ", internal_game_id" : "";
@@ -192,12 +267,14 @@ export async function getLatestPublishedRankingGame(db, { releaseCutoffAt = "" }
   return {
     gameId: String(row.game_id || "").trim(),
     internalGameId: useCanonicalId ? String(row.internal_game_id || "").trim() : "",
+    contestId: "",
     gameDate: String(row.game_date || "").trim(),
     publishedAt: row.published_at || null
   };
 }
 
-export async function getDailyBestNineForGame(db, { internalGameId = "", legacyGameId = "", limit = DAILY_BEST_NINE_LIMIT } = {}) {
+export async function getDailyBestNineForGame(db, { internalGameId = "", legacyGameId = "", contestId = "", limit = DAILY_BEST_NINE_LIMIT } = {}) {
+  if (contestId) return getContestDailyBestNine(db, { internalGameId, legacyGameId, contestId, limit });
   const canonicalId = String(internalGameId || "").trim();
   const compatibilityId = String(legacyGameId || "").trim();
   const useCanonicalId = Boolean(canonicalId) && await hasRankingInternalGameId(db);
@@ -322,6 +399,55 @@ export async function getDailyBestNineForGame(db, { internalGameId = "", legacyG
     rows: (rowsResult.results || []).map((row, index) => toPublicDailyBestNineRow(row, index + 1)),
     totalCount: Number(countRow?.total_count || 0)
   };
+}
+
+async function getContestDailyBestNine(db, { internalGameId = "", legacyGameId = "", contestId, limit }) {
+  const limitValue = Math.min(DAILY_BEST_NINE_LIMIT, Math.max(1, Number(limit) || DAILY_BEST_NINE_LIMIT));
+  const candidates = `WITH eligible_predictions AS (
+    SELECT p.id, p.user_id, p.score, p.max_score, p.submitted_at, p.updated_at,
+      ROW_NUMBER() OVER (PARTITION BY p.user_id, p.contest_id ORDER BY p.updated_at DESC, p.submitted_at DESC, p.id DESC) AS rank
+    FROM predictions p
+    JOIN contest_ranking_games rg ON rg.contest_id = p.contest_id AND rg.internal_game_id = p.internal_game_id
+    JOIN contest_scoring_revisions sr ON sr.contest_id = p.contest_id AND sr.internal_game_id = p.internal_game_id
+      AND sr.is_active = 1 AND sr.status = 'completed' AND sr.revision_number = p.scoring_revision
+      AND sr.committed_attempt_id = p.scored_attempt_id
+    WHERE p.contest_id = ?1 AND p.internal_game_id = ?2 AND p.is_test_prediction = 0
+      AND p.status = 'scored' AND p.scoring_status = 'scored' AND p.score IS NOT NULL AND p.max_score IS NOT NULL
+      AND rg.is_ranking_eligible = 1 AND rg.game_status = 'scored' AND rg.publication_status = 'published'
+      AND rg.is_test_game = 0
+      AND EXISTS (SELECT 1 FROM game_lineups gl JOIN contest_lineup_revisions lr
+        ON lr.contest_id = gl.contest_id AND lr.revision_id = gl.final_lineup_revision_id
+          AND lr.is_current = 1 AND lr.is_final = 1
+        WHERE gl.contest_id = p.contest_id AND gl.internal_game_id = p.internal_game_id)
+  ), real_rows AS (
+    SELECT u.username, p.score, p.max_score, p.submitted_at, p.user_id
+      FROM eligible_predictions p JOIN users u ON u.id = p.user_id
+     WHERE p.rank = 1 AND u.status = 'active'
+  ), test_rows AS (
+    SELECT COALESCE(NULLIF(json_extract(gs.slot_names_json, '$.' || CAST(tp.slot AS TEXT)), ''),
+             'S9_TEST_' || CAST(tp.slot AS TEXT)) AS username,
+           tp.score, tp.max_score, COALESCE(tp.scored_at,tp.updated_at,tp.created_at) AS submitted_at,
+           'ranking-test:' || CAST(tp.slot AS TEXT) AS user_id
+      FROM contest_ranking_test_predictions tp
+      JOIN contest_ranking_games rg ON rg.contest_id = tp.contest_id AND rg.internal_game_id = tp.internal_game_id
+      JOIN contest_scoring_revisions sr ON sr.contest_id = tp.contest_id AND sr.id = tp.scoring_revision_id
+        AND sr.is_active = 1 AND sr.status = 'completed'
+      LEFT JOIN contest_ranking_test_game_settings ts ON ts.contest_id = tp.contest_id
+        AND ts.internal_game_id = tp.internal_game_id
+      LEFT JOIN ranking_test_global_settings gs ON gs.id = 1
+     WHERE tp.contest_id = ?1 AND tp.internal_game_id = ?2 AND tp.status = 'scored'
+       AND tp.score IS NOT NULL AND tp.max_score IS NOT NULL AND tp.slot BETWEEN 1 AND 9
+       AND (COALESCE(ts.include_in_public_ranking,0)=1 OR COALESCE(gs.global_enabled,1)=1)
+       AND rg.is_ranking_eligible=1 AND rg.game_status='scored'
+       AND rg.publication_status='published' AND rg.is_test_game=0
+  ), all_rows AS (SELECT * FROM real_rows UNION ALL SELECT * FROM test_rows)`;
+  const [count, rows] = await Promise.all([
+    db.prepare(`${candidates} SELECT COUNT(*) AS count FROM all_rows`).bind(contestId, internalGameId).first(),
+    db.prepare(`${candidates} SELECT username, score, max_score, submitted_at, user_id FROM all_rows
+      ORDER BY score DESC, submitted_at ASC, username ASC, user_id ASC LIMIT ?3`)
+      .bind(contestId, internalGameId, limitValue).all()
+  ]);
+  return { rows: (rows.results || []).map((row, index) => toPublicDailyBestNineRow(row, index + 1)), totalCount: Number(count?.count || 0) };
 }
 
 function committedAttemptPredicate(alias = "predictions", internalGameExpression = `${alias}.internal_game_id`) {
@@ -539,7 +665,11 @@ async function hasScoreAttemptSchema(db) {
   }
 }
 
-export async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt = null, endAt = null, periodType = null, periodKey = null, publishedOnly = false, releaseCutoffAt = "", includeTestUsers = false }) {
+export async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt = null, endAt = null, periodType = null, periodKey = null, publishedOnly = false, releaseCutoffAt = "", includeTestUsers = false, targetTeamKey = "" }) {
+  if (targetTeamKey) {
+    return getContestRankingForPeriod(db, { limit, offset, qualifiedOnly, startAt, endAt, periodType, periodKey,
+      publishedOnly, releaseCutoffAt, includeTestUsers, targetTeamKey });
+  }
   const marker = periodType && periodKey ? await getActiveRankingResetMarker(db, { periodType, periodKey }) : null;
   const cutoffBoundary = resolveRankingCutoffBoundary(marker, releaseCutoffAt);
   const includeTestRows = includeTestUsers && await hasRankingTestSchema(db);
@@ -591,6 +721,87 @@ export async function getRankingForPeriod(db, { limit, offset, qualifiedOnly, st
     },
     pagination: { limit, offset, totalUsers: Number(countRow?.total_users || 0) }
   };
+}
+
+async function getContestRankingForPeriod(db, options) {
+  const marker = options.periodType && options.periodKey
+    ? await getActiveRankingResetMarker(db, { periodType: options.periodType, periodKey: options.periodKey }) : null;
+  const cutoffBoundary = resolveRankingCutoffBoundary(marker, options.releaseCutoffAt);
+  const publishedPredicate = options.publishedOnly ? "AND ranking.publication_status = 'published'" : "";
+  const testRows = options.includeTestUsers ? `UNION ALL
+    SELECT 'ranking-test:' || CAST(test.slot AS TEXT) AS user_id,
+           COALESCE(NULLIF(json_extract(global_settings.slot_names_json, '$.' || CAST(test.slot AS TEXT)), ''),
+             'S9_TEST_' || CAST(test.slot AS TEXT)) AS username,
+           1 AS games_played, test.score AS total_score,
+           CASE WHEN test.score = test.max_score THEN 1 ELSE 0 END AS perfect_count,
+           test.score AS best_score, COALESCE(test.scored_at,test.updated_at) AS last_scored_at
+      FROM contest_ranking_test_predictions test
+      JOIN eligible_games eligible ON eligible.contest_id = test.contest_id AND eligible.internal_game_id = test.internal_game_id
+      LEFT JOIN contest_ranking_test_game_settings settings ON settings.contest_id = test.contest_id
+        AND settings.internal_game_id = test.internal_game_id
+      LEFT JOIN ranking_test_global_settings global_settings ON global_settings.id = 1
+      JOIN contest_scoring_revisions revision ON revision.contest_id = test.contest_id
+        AND revision.id = test.scoring_revision_id AND revision.status = 'completed' AND revision.is_active = 1
+     WHERE test.status = 'scored' AND test.score IS NOT NULL AND test.max_score IS NOT NULL
+       AND test.slot BETWEEN 1 AND 9
+       AND (COALESCE(settings.include_in_public_ranking,0)=1 OR COALESCE(global_settings.global_enabled,1)=1)` : "";
+  const cte = `WITH eligible_games AS (
+      SELECT ranking.contest_id, ranking.internal_game_id, ranking.game_id
+        FROM contest_ranking_games ranking JOIN game_contests contest ON contest.contest_id=ranking.contest_id
+       WHERE contest.target_team_key=?3 AND ranking.is_ranking_eligible=1 AND ranking.game_status='scored'
+         AND ranking.is_test_game=0 ${publishedPredicate}
+         AND (?1 IS NULL OR ranking.game_date>=?1) AND (?2 IS NULL OR ranking.game_date<?2)
+         AND (?4='' OR ranking.game_date>=?4)
+    ), eligibility AS (SELECT COUNT(*) AS eligible_games FROM eligible_games),
+    threshold AS (SELECT eligible_games, CAST((eligible_games*2+2)/3 AS INTEGER) AS required_games FROM eligibility),
+    real_user_totals AS (
+      SELECT prediction.user_id, user.username, COUNT(DISTINCT prediction.contest_id || ':' || prediction.internal_game_id) AS games_played,
+        SUM(prediction.score) AS total_score,
+        SUM(CASE WHEN prediction.score=prediction.max_score THEN 1 ELSE 0 END) AS perfect_count,
+        MAX(prediction.score) AS best_score, MAX(prediction.scored_at) AS last_scored_at
+        FROM predictions prediction
+        JOIN eligible_games eligible ON eligible.contest_id=prediction.contest_id AND eligible.internal_game_id=prediction.internal_game_id
+        JOIN users user ON user.id=prediction.user_id
+        JOIN contest_scoring_revisions revision ON revision.contest_id=prediction.contest_id
+          AND revision.internal_game_id=prediction.internal_game_id AND revision.revision_number=prediction.scoring_revision
+          AND revision.status='completed' AND revision.is_active=1 AND revision.committed_attempt_id=prediction.scored_attempt_id
+        JOIN game_lineups lineup ON lineup.contest_id=prediction.contest_id AND lineup.internal_game_id=prediction.internal_game_id
+          AND lineup.scoring_status='scored'
+        JOIN contest_lineup_revisions final_revision ON final_revision.contest_id=lineup.contest_id
+          AND final_revision.revision_id=lineup.final_lineup_revision_id AND final_revision.is_current=1 AND final_revision.is_final=1
+       WHERE prediction.status='scored' AND prediction.scoring_status='scored' AND prediction.score IS NOT NULL
+         AND prediction.max_score IS NOT NULL AND prediction.is_test_prediction=0 AND user.status='active'
+       GROUP BY prediction.user_id,user.username
+    ), all_user_totals AS (
+      SELECT * FROM real_user_totals ${testRows}
+    ), qualified_rows AS (
+      SELECT totals.*, threshold.eligible_games,threshold.required_games,1 AS is_qualified,0 AS games_needed,
+        RANK() OVER (ORDER BY (total_score*1.0/games_played) DESC,perfect_count DESC,total_score DESC,games_played DESC) AS ranking_rank
+        FROM all_user_totals totals CROSS JOIN threshold WHERE games_played>=required_games
+    ), unqualified_rows AS (
+      SELECT totals.*,threshold.eligible_games,threshold.required_games,0 AS is_qualified,
+        MAX(2*threshold.eligible_games-3*totals.games_played,0) AS games_needed,NULL AS ranking_rank
+        FROM all_user_totals totals CROSS JOIN threshold WHERE games_played<required_games
+    ), combined AS (SELECT * FROM qualified_rows UNION ALL SELECT * FROM unqualified_rows)`;
+  const bindings = [options.startAt, options.endAt, options.targetTeamKey, cutoffBoundary];
+  const [summaryRow, countRow, rowsResult] = await Promise.all([
+    db.prepare(`${cte} SELECT COALESCE(MAX(eligible_games),0) AS eligible_games,COALESCE(MAX(required_games),0) AS required_games,
+      COALESCE(SUM(CASE WHEN is_qualified=1 THEN 1 ELSE 0 END),0) AS qualified_users,COUNT(*) AS total_users FROM combined`)
+      .bind(...bindings).first(),
+    db.prepare(`${cte} SELECT COUNT(*) AS total_users FROM combined WHERE (?5=0 OR is_qualified=1)`)
+      .bind(...bindings, options.qualifiedOnly ? 1 : 0).first(),
+    db.prepare(`${cte} SELECT user_id,username,games_played,eligible_games,required_games,is_qualified,games_needed,total_score,
+      (total_score*1.0/games_played) AS average_score,perfect_count,best_score,last_scored_at,ranking_rank FROM combined
+      WHERE (?5=0 OR is_qualified=1) ORDER BY is_qualified DESC,ranking_rank ASC,average_score DESC,perfect_count DESC,
+      total_score DESC,games_played DESC,user_id ASC LIMIT ?6 OFFSET ?7`)
+      .bind(...bindings, options.qualifiedOnly ? 1 : 0, options.limit, options.offset).all()
+  ]);
+  const internalRows = rowsResult.results || [];
+  const achievements = await getRankingAchievementsByUser(db, internalRows.map(row => row.user_id));
+  return { rows: internalRows.map(row => toPublicRankingRow(row, achievements.get(row.user_id))),
+    summary: { eligibleGames: Number(summaryRow?.eligible_games||0), requiredGames: Number(summaryRow?.required_games||0),
+      qualifiedUsers: Number(summaryRow?.qualified_users||0), totalUsers: Number(summaryRow?.total_users||0) },
+    pagination: { limit: options.limit, offset: options.offset, totalUsers: Number(countRow?.total_users||0) } };
 }
 
 export async function getRankingEntryForUser(db, userId, { startAt = null, endAt = null, periodType = null, periodKey = null, publishedOnly = false, releaseCutoffAt = "" } = {}) {

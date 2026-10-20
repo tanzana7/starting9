@@ -155,12 +155,13 @@ test("previous-result-gameの通常系は公開済み候補を従来のレスポ
   assert.equal(body.game.rankingEligibilityStatus, "eligible");
 });
 
-test("legacy schema fallbackもbounded取得と公開判定の互換経路を維持する", () => {
+test("previous resultはcontest-scopedのbounded取得と公開判定を維持する", () => {
   const start = workerSource.indexOf("async function handleGetPreviousResultGame");
   const end = workerSource.indexOf("async function handleGetProbableStarter", start);
   const handler = workerSource.slice(start, end);
 
-  assert.match(handler, /using canonical games fallback/);
+  assert.match(handler, /JOIN game_contests contest ON contest\.internal_game_id = games\.internal_game_id/);
+  assert.match(handler, /ranking\.publication_status = 'published'/);
   assert.match(handler, /LIMIT \$\{PUBLIC_PREVIOUS_RESULT_CANDIDATE_LIMIT\}/);
   assert.match(handler, /row\.publication_status === undefined && await isGameResultsPublished/);
   assert.match(handler, /if \(isD1ReadLimitError\(error\)\) throw error/);

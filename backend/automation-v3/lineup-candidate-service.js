@@ -269,7 +269,10 @@ export async function persistLineupCandidate(db, candidate, validation, { now = 
   const fingerprint = btoa(String.fromCharCode(...new Uint8Array(fingerprintBuffer)))
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
   const same = existingRows.find((row) => text(row.lineup_fingerprint) === fingerprint);
-  if (same) return { ok: true, status: "no_op", noOp: true, revision: same };
+  if (same) {
+    if (candidate.contestId) await mirrorContestLineupRevision(db, candidate, same);
+    return { ok: true, status: "no_op", noOp: true, revision: same };
+  }
 
   const version = Number(existingRows[0]?.version || 0) + 1;
   const createdAt = iso(now);
@@ -298,7 +301,30 @@ export async function persistLineupCandidate(db, candidate, validation, { now = 
     return { ok: false, status: "conflict", code: "LINEUP_CANDIDATE_REVISION_CONFLICT" };
   }
   const revision = await db.prepare(`SELECT * FROM game_lineup_revisions WHERE ${scope.column} = ?1 AND version = ?2 LIMIT 1`).bind(scope.value, version).first();
+  if (candidate.contestId) await mirrorContestLineupRevision(db, candidate, revision);
   return { ok: true, status: "created", noOp: false, revision };
+}
+
+async function mirrorContestLineupRevision(db, candidate, revision) {
+  const existing = await db.prepare(
+    "SELECT lineup_fingerprint FROM contest_lineup_revisions WHERE contest_id = ?1 AND version = ?2 LIMIT 1"
+  ).bind(candidate.contestId, Number(revision.version)).first();
+  if (existing) {
+    if (String(existing.lineup_fingerprint || "") !== String(revision.lineup_fingerprint || "")) {
+      throw Object.assign(new Error("Contest lineup revision conflicts with the legacy bridge revision"), { code: "CONTEST_LINEUP_REVISION_CONFLICT" });
+    }
+    return;
+  }
+  await db.prepare(`INSERT INTO contest_lineup_revisions
+    (contest_id,internal_game_id,game_id,version,revision_id,actual_lineup_json,lineup_fingerprint,
+     source,created_at,created_by,reason,is_current,superseded_at,captured_at,validation_json,
+     finalized_at,finalized_by,unresolved_player_count,is_final)
+    VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)`)
+    .bind(candidate.contestId,candidate.internalGameId,revision.game_id,Number(revision.version),revision.revision_id,
+      revision.actual_lineup_json,revision.lineup_fingerprint,revision.source,revision.created_at,
+      revision.created_by ?? null,revision.reason,Number(revision.is_current || 0),revision.superseded_at ?? null,
+      revision.captured_at ?? null,revision.validation_json ?? null,revision.finalized_at ?? null,
+      revision.finalized_by ?? null,Number(revision.unresolved_player_count || 0),Number(revision.is_final || 0)).run();
 }
 
 export async function finalizeVerifiedLineupCandidate(db, { candidate, revision, now = new Date(), allowTestGame = false, contestId = "", targetTeam = null } = {}) {
@@ -353,6 +379,22 @@ export async function finalizeVerifiedLineupCandidate(db, { candidate, revision,
     return manual
       ? { ok: false, status: "manual_final_exists", code: "MANUAL_FINAL_EXISTS", revision: manual }
       : { ok: false, status: "conflict", code: "LINEUP_FINALIZE_CONFLICT" };
+  }
+
+  if (contestId) {
+    const timestamp = iso(now);
+    await db.batch([
+      db.prepare(`UPDATE contest_lineup_revisions SET is_current=0,superseded_at=?1
+        WHERE contest_id=?2 AND is_current=1 AND is_final=0 AND version<>?3`).bind(timestamp,contestId,Number(revision.version)),
+      db.prepare(`UPDATE contest_lineup_revisions SET is_current=1,is_final=1,finalized_at=?1,finalized_by='phase7:auto'
+        WHERE contest_id=?2 AND version=?3 AND lineup_fingerprint=?4 AND actual_lineup_json=?5`)
+        .bind(timestamp,contestId,Number(revision.version),revision.lineup_fingerprint,revision.actual_lineup_json)
+    ]);
+    const scopedFinal = await db.prepare(`SELECT is_current,is_final FROM contest_lineup_revisions
+      WHERE contest_id=?1 AND version=?2 LIMIT 1`).bind(contestId,Number(revision.version)).first();
+    if (Number(scopedFinal?.is_current || 0) !== 1 || Number(scopedFinal?.is_final || 0) !== 1) {
+      return { ok: false, status: "conflict", code: "CONTEST_LINEUP_FINALIZE_CONFLICT" };
+    }
   }
 
   try {

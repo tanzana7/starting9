@@ -42,7 +42,11 @@ async function exerciseTeam(fixture, key, group) {
     states: fixture.database.prepare("SELECT contest_id,state FROM contest_automation_v3_state WHERE internal_game_id=?").all(internalGameId),
     jobs: fixture.database.prepare("SELECT contest_id,job_type,status,attempt_count,failure_code FROM game_jobs_v3 WHERE internal_game_id=? ORDER BY contest_id,job_type").all(internalGameId)
   })}`);
-  const published = await fixture.request(key, "/api/test/scenario", { scenario: "published" });
+  const scored = await fixture.request(key, "/api/test/scenario", { scenario: "scored", stageOnly: true });
+  assert.equal(scored.game.state, "scored");
+  const ranked = await fixture.request(key, "/api/test/scenario", { scenario: "ranked", stageOnly: true });
+  assert.equal(ranked.game.state, "ranked");
+  const published = await fixture.request(key, "/api/test/scenario", { scenario: "published", stageOnly: true });
   assert.equal(published.game.state, "published");
   assert.equal(published.game.publication_status, "published");
 
@@ -63,6 +67,10 @@ async function exerciseTeam(fixture, key, group) {
   assert.equal(detail.totalScore, 99);
   assert.equal(detail.actualLineup.length, 9);
   assert.ok(detail.actualLineup.every((player) => player.teamCode === team.key));
+  const jobs = await fixture.request(key, "/api/test/jobs");
+  assert.equal(jobs.internalGameId, internalGameId);
+  assert.equal(jobs.contestId, current.contestId);
+  assert.ok(jobs.jobs.length > 0 && jobs.jobs.every((job) => job.status === "completed"));
 }
 
 test("all twelve isolated teams complete contest E2E across six dual-contest physical games", async () => {
@@ -127,6 +135,46 @@ test("all twelve isolated teams complete contest E2E across six dual-contest phy
         .get(group.internalGameId).count, 0);
     }
     assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM games").get().count, 6);
+  } finally { f.close(); }
+});
+
+test("ranking failure enters retry_wait without blocking the same-game sibling contest", async () => {
+  const f = await createTestSiteMultiTeamFixture();
+  const group = TEST_TEAM_GROUPS[0];
+  const home = group.homeKey;
+  const away = group.awayKey;
+  try {
+    await f.request(home, "/api/test/reset", {});
+    await prepareTeamPrediction(f, home, group);
+    await prepareTeamPrediction(f, away, group);
+    await f.request(home, "/api/test/scenario", { scenario: "closed" });
+
+    const failed = await f.request(home, "/api/test/scenario", { scenario: "retry" });
+    assert.equal(failed.failureInjected, true, JSON.stringify(failed));
+    const homeContest = f.database.prepare("SELECT contest_id FROM game_contests WHERE internal_game_id=? AND target_team_key=?")
+      .get(group.internalGameId, TEST_TEAMS[home].key).contest_id;
+    const retryJob = f.database.prepare(`SELECT status,attempt_count,next_retry_at,failure_code,failure_message FROM game_jobs_v3
+      WHERE contest_id=? AND job_type='ranking_rebuild'`).get(homeContest);
+    assert.equal(retryJob.status, "retry_wait", JSON.stringify({ failed, retryJob,
+      jobs: f.database.prepare("SELECT contest_id,job_type,status,attempt_count,next_retry_at,failure_code FROM game_jobs_v3 WHERE internal_game_id=?")
+        .all(group.internalGameId) }));
+    assert.equal(failed.game.state, "scored");
+    assert.ok(retryJob.attempt_count >= 1);
+    assert.ok(Date.parse(retryJob.next_retry_at) > Date.now());
+    assert.equal(retryJob.failure_code, "UNEXPECTED_EXCEPTION");
+    assert.match(retryJob.failure_message, /TEST_SCENARIO_INJECTED_FAILURE/);
+
+    await exerciseTeam(f, away, group);
+    const homeStatus = await f.request(home, "/api/test/status");
+    assert.equal(homeStatus.game.state, "scored");
+    const homeRetry = f.database.prepare("SELECT status,next_retry_at FROM game_jobs_v3 WHERE contest_id=? AND job_type='ranking_rebuild'")
+      .get(homeContest);
+    assert.equal(homeRetry.status, "retry_wait");
+    assert.equal(homeRetry.next_retry_at, retryJob.next_retry_at);
+    assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM contest_ranking_games WHERE contest_id=? AND publication_status='published'")
+      .get(homeContest).count, 0);
+    assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM contest_ranking_games WHERE internal_game_id=? AND publication_status='published'")
+      .get(group.internalGameId).count, 1);
   } finally { f.close(); }
 });
 

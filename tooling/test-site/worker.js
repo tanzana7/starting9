@@ -434,7 +434,7 @@ async function finalizeSyntheticLineup(request, env, ctx) {
   return finalized;
 }
 
-async function runPipeline(env, { target = "published", failAt = "" } = {}) {
+async function runPipeline(env, { target = "published", failAt = "", stageOnly = false } = {}) {
   env = createProductEnvironment(env);
   const disabledStages = target === "scored"
     ? ["ranking_rebuild", "publish"]
@@ -447,16 +447,48 @@ async function runPipeline(env, { target = "published", failAt = "" } = {}) {
         : [];
   let injected = false;
   let latest;
-  for (let pass = 0; pass < 8; pass += 1) {
+  const stageOnlyJobTypes = stageOnly
+    ? target === "scored"
+      ? ["prediction_close", "lineup_finalize", "ranking_rebuild", "publish"]
+      : target === "ranked"
+        ? ["prediction_close", "lineup_finalize", "score", "publish"]
+        : target === "published"
+          ? ["prediction_close", "lineup_finalize", "score", "ranking_rebuild"]
+          : target === "closed"
+            ? ["lineup_finalize", "score", "ranking_rebuild", "publish"]
+          : []
+    : [];
+  const stageOnlyDisabledStages = stageOnly
+    ? target === "scored"
+      ? ["prediction_close", "lineup_finalize", "ranking_rebuild", "publish"]
+      : target === "ranked"
+        ? ["prediction_close", "lineup_finalize", "score", "publish"]
+        : target === "published"
+          ? ["prediction_close", "lineup_finalize", "score", "ranking_rebuild"]
+        : target === "closed"
+          ? ["lineup_finalize", "score", "ranking_rebuild", "publish"]
+          : []
+    : [];
+  const passLimit = stageOnly ? 1 : 8;
+  let currentGame = null;
+  for (let pass = 0; pass < passLimit; pass += 1) {
     const now = new Date();
     latest = await runGameAutomationV3(env, now, {
       gameListOptions: { includeRecentHistory: true, internalGameId: INTERNAL_GAME_ID, targetTeam },
       formalPlanner: (db, games, at) => planMainWorkflowJobs(db, games, at, {
-        disabledStages,
+        disabledStages: [...disabledStages, ...stageOnlyDisabledStages],
         targetTeamKey: targetTeam.key
       }),
       auxiliaryPlanner: async () => ({ created: 0, planned: [], diagnostics: [], errors: [] }),
-      disabledJobTypes: target === "lineup-ready" ? ["score"] : [],
+      disabledJobTypes: [
+        ...(target === "lineup-ready" ? ["score"] : []),
+        ...stageOnlyJobTypes
+      ],
+      // The Test Site disables automatic roster/probable-starter polling and
+      // this scenario exercises only the formal contest workflow. Skipping
+      // auxiliary discovery keeps each test invocation inside the Worker's
+      // Free CPU budget without bypassing the production planner/claim/executor.
+      runAuxiliary: false,
       executeJob: async (context) => {
         if (!injected && failAt && String(context.job?.job_type) === failAt) {
           injected = true;
@@ -465,20 +497,22 @@ async function runPipeline(env, { target = "published", failAt = "" } = {}) {
         return executeGameAutomationV3Job(context);
       }
     });
-    const game = await currentScenarioGame(env.AUTH_DB);
-    if (!game) break;
-    if (target === "closed" && game.state === "prediction_closed") break;
-    if (target === "lineup-ready" && game.state === "lineup_ready") break;
-    if (target === "scored" && game.state === "scored") break;
-    if (target === "ranked" && game.state === "ranked") break;
-    if (target === "published" && game.state === "published") break;
+    currentGame = await currentScenarioGame(env.AUTH_DB);
+    if (!currentGame) break;
+    if (target === "closed" && currentGame.state === "prediction_closed") break;
+    if (target === "lineup-ready" && currentGame.state === "lineup_ready") break;
+    if (target === "scored" && currentGame.state === "scored") break;
+    if (target === "ranked" && currentGame.state === "ranked") break;
+    if (target === "published" && currentGame.state === "published") break;
   }
-  return { result: latest || null, failureInjected: injected };
+  return { result: latest || null, failureInjected: injected, game: currentGame };
 }
 
-async function applyScenario(request, env, ctx, scenario) {
+async function applyScenario(request, env, ctx, scenario, { stageOnly = false } = {}) {
   const allowed = new Set(["no-game", "pre-open", "open", "deadline-imminent", "closed", "lineup-ready", "scored", "ranked", "published", "retry", "probable-unannounced", "probable-announced", "probable-unavailable"]);
   if (!allowed.has(scenario)) return jsonResponse({ ok: false, code: "INVALID_SCENARIO" }, 400);
+  let pipelineGame = null;
+  let failureInjected = false;
   if (scenario === "no-game") {
     await deleteScenarioRows(env.AUTH_DB);
     return jsonResponse({ ok: true, scenario, game: null });
@@ -521,12 +555,32 @@ async function applyScenario(request, env, ctx, scenario) {
   }
 
   if (["closed", "lineup-ready", "scored", "ranked", "published", "retry"].includes(scenario)) {
-    await runPipeline(env, { target: "closed" });
     const existingLineup = await env.AUTH_DB.prepare(`SELECT final_lineup_revision_id FROM game_lineups
       WHERE internal_game_id = ?1 AND contest_id=(SELECT contest_id FROM game_contests
         WHERE internal_game_id=?1 AND target_team_key=?2 LIMIT 1) LIMIT 1`)
       .bind(INTERNAL_GAME_ID, targetTeam.key).first();
-    if (!existingLineup?.final_lineup_revision_id) await finalizeSyntheticLineup(request, env, ctx);
+    if (stageOnly && ["scored", "ranked", "published"].includes(scenario)) {
+      const currentState = String((await env.AUTH_DB.prepare(
+        "SELECT state FROM contest_automation_v3_state WHERE contest_id = ?1 LIMIT 1"
+      ).bind(CONTEST_ID).first())?.state || "scheduled");
+      const readyStates = scenario === "scored"
+        ? new Set(["prediction_closed", "lineup_ready", "scored", "ranked", "published"])
+        : scenario === "ranked"
+          ? new Set(["scored", "ranked", "published"])
+          : new Set(["ranked", "published"]);
+      if (!readyStates.has(currentState) || !existingLineup?.final_lineup_revision_id) {
+        return jsonResponse({ ok: false, code: "SCENARIO_STAGE_PREREQUISITE", game: await currentScenarioGame(env.AUTH_DB) }, 409);
+      }
+    } else {
+      const pipeline = await runPipeline(env, { target: "closed",
+        stageOnly: scenario === "retry" || (stageOnly && scenario === "closed") });
+      pipelineGame = pipeline.game;
+      const afterClose = pipelineGame;
+      if (stageOnly && scenario === "closed" && afterClose?.state !== "prediction_closed") {
+        return jsonResponse({ ok: true, scenario, game: afterClose });
+      }
+      if (!existingLineup?.final_lineup_revision_id) await finalizeSyntheticLineup(request, env, ctx);
+    }
   }
   if (scenario === "lineup-ready") {
     await markManualLineupReadyScenario(env.AUTH_DB);
@@ -534,10 +588,15 @@ async function applyScenario(request, env, ctx, scenario) {
   }
   if (["scored", "ranked", "published"].includes(scenario)) {
     const target = scenario;
-    await runPipeline(env, { target });
+    const pipeline = await runPipeline(env, { target, stageOnly });
+    pipelineGame = pipeline.game;
   }
-  if (scenario === "retry") await runPipeline(env, { target: "ranked", failAt: "ranking_rebuild" });
-  const current = await currentScenarioGame(env.AUTH_DB);
+  if (scenario === "retry") {
+    const pipeline = await runPipeline(env, { target: "ranked", failAt: "ranking_rebuild" });
+    pipelineGame = pipeline.game;
+    failureInjected = pipeline.failureInjected;
+  }
+  const current = pipelineGame || await currentScenarioGame(env.AUTH_DB);
   if (scenario === "published") {
     const contestId = (await env.AUTH_DB.prepare(`SELECT contest_id FROM game_contests
       WHERE internal_game_id=?1 AND target_team_key=?2 LIMIT 1`).bind(INTERNAL_GAME_ID, targetTeam.key).first())?.contest_id;
@@ -556,7 +615,8 @@ async function applyScenario(request, env, ctx, scenario) {
     });
     if (!ready) return jsonResponse({ ok: false, code: "PUBLISHED_SCENARIO_INCOMPLETE", game: current }, 500);
   }
-  return jsonResponse({ ok: true, scenario, game: current });
+  return jsonResponse({ ok: true, scenario, game: current,
+    ...(scenario === "retry" ? { failureInjected } : {}) });
 }
 
 async function handleTestControl(request, env, ctx) {
@@ -582,10 +642,21 @@ async function handleTestControl(request, env, ctx) {
   if (url.pathname === "/api/test/status" && request.method === "GET") {
     return jsonResponse({ ok: true, game: await currentScenarioGame(env.AUTH_DB) }, 200, origin);
   }
+  if (url.pathname === "/api/test/jobs" && request.method === "GET") {
+    if (!await requireTestAdmin(request, env, ctx)) return jsonResponse({ ok: false, code: "ADMIN_REQUIRED" }, 401, origin);
+    const jobs = await env.AUTH_DB.prepare(`SELECT job_type, status, attempt_count, next_retry_at,
+        lease_expires_at, failure_code, failure_message
+      FROM game_jobs_v3
+      WHERE internal_game_id = ?1 AND contest_id = ?2
+      ORDER BY job_type`)
+      .bind(INTERNAL_GAME_ID, CONTEST_ID).all();
+    return jsonResponse({ ok: true, internalGameId: INTERNAL_GAME_ID, contestId: CONTEST_ID,
+      jobs: Array.isArray(jobs?.results) ? jobs.results : [] }, 200, origin);
+  }
   if (url.pathname === "/api/test/scenario" && request.method === "POST") {
     if (!await requireTestAdmin(request, env, ctx)) return jsonResponse({ ok: false, code: "ADMIN_REQUIRED" }, 401, origin);
     const input = await request.json().catch(() => null);
-    return applyScenario(request, env, ctx, String(input?.scenario || ""));
+    return applyScenario(request, env, ctx, String(input?.scenario || ""), { stageOnly: input?.stageOnly === true });
   }
   if (url.pathname === "/api/test/reset" && request.method === "POST") {
     if (!await requireTestAdmin(request, env, ctx)) return jsonResponse({ ok: false, code: "ADMIN_REQUIRED" }, 401, origin);

@@ -75,7 +75,7 @@ test("scenario worker uses real wall-clock-relative fixtures, not a global Date 
 
 test("closed scenario advances through the formal planner to prediction_closed", () => {
   const source = fs.readFileSync(path.join(ROOT, "tooling/test-site/worker.js"), "utf8");
-  assert.match(source, /if \(\["closed", "lineup-ready", "scored", "ranked", "published", "retry"\]\.includes\(scenario\)\)\s*\{\s*await runPipeline\(env, \{ target: "closed" \}\)/);
+  assert.match(source, /await runPipeline\(env, \{ target: "closed",\s*stageOnly: scenario === "retry" \|\| \(stageOnly && scenario === "closed"\) \}\);[\s\S]*if \(!existingLineup\?\.final_lineup_revision_id\)/);
 });
 
 test("lineup-ready scenario creates a due score job but leaves it unclaimed for inspection", () => {
@@ -84,6 +84,6 @@ test("lineup-ready scenario creates a due score job but leaves it unclaimed for 
   assert.match(source, /state\?\.state !== "prediction_closed" \|\| !String\(lineup\?\.final_lineup_revision_id \|\| ""\)\.trim\(\) \|\| !predictionClose\?\.id/);
   assert.match(source, /from: "prediction_closed",\s*to: "lineup_ready"/);
   assert.match(source, /target === "lineup-ready"\s*\? \["lineup_finalize", "ranking_rebuild", "publish"\]/);
-  assert.match(source, /disabledJobTypes: target === "lineup-ready" \? \["score"\] : \[\]/);
+  assert.match(source, /disabledJobTypes: \[\s*\.\.\.\(target === "lineup-ready" \? \["score"\] : \[\]\),\s*\.\.\.stageOnlyJobTypes\s*\]/);
   assert.match(source, /if \(scenario === "lineup-ready"\) \{\s*await markManualLineupReadyScenario\(env\.AUTH_DB\);\s*await runPipeline\(env, \{ target: "lineup-ready" \}\);/);
 });

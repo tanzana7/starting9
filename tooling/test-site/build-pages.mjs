@@ -35,6 +35,10 @@ for (const file of TEST_SITE_PAGE_FILES) {
   if (!fs.existsSync(source)) throw new Error(`required Pages asset missing: ${file}`);
   fs.copyFileSync(source, path.join(output, file));
 }
+const routeManifestPath = path.join(output, "_routes.json");
+const routeManifest = JSON.parse(fs.readFileSync(routeManifestPath, "utf8"));
+routeManifest.include = [...new Set([...(routeManifest.include || []), "/simu-npb/*"])];
+fs.writeFileSync(routeManifestPath, `${JSON.stringify(routeManifest, null, 2)}\n`);
 for (const file of testOnlyFiles) {
   const source = path.join(testOnlyDirectory, file);
   if (!fs.existsSync(source)) throw new Error(`required Test Site asset missing: ${file}`);

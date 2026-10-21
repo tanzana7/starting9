@@ -29,7 +29,8 @@
     "PUBLIC_RANKING_RELEASED_AT": "2026-09-21T00:00:00+09:00",
     "NPB_FETCH_DISABLED": "false",
     "MIGRATION_MAINTENANCE": "false",
-    "REQUIRE_CONTEST_SCHEMA": "true"
+    "REQUIRE_CONTEST_SCHEMA": "true",
+    "ENABLE_PRODUCTION_TEAM_ROUTING": "true"
   },
   "services": [
     {

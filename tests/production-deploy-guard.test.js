@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +17,7 @@ const HEAD = "667beccf19a5d692c9aebbe099765f123c4d05be";
 test("production deploy guard fixes Auth/NPB to TARGET config and profile", () => {
   validateWorkerConfig(root, "auth");
   validateWorkerConfig(root, "npb");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, "wrangler.auth.target.production.jsonc"), "utf8")).vars.ENABLE_PRODUCTION_TEAM_ROUTING, "true");
 
   assert.deepEqual(ACTIONS.auth, {
     config: "wrangler.auth.target.production.jsonc",

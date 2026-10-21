@@ -70,9 +70,19 @@ const REQUIRED_TRIGGERS = Object.freeze([
   "contest_score_attempt_prediction_scope_update"
 ]);
 
-const COLUMN_PROBE_SQL = REQUIRED_COLUMNS.map(([table, column]) =>
-  `SELECT '${table}' AS table_name, name AS column_name FROM pragma_table_info('${table}') WHERE name = '${column}'`
-).join(" UNION ALL ");
+// D1's SQLite build limits the number of compound SELECT terms more tightly
+// than the local SQLite test runtime. Keep each read-only metadata probe below
+// that platform limit so the production schema gate can resume after migration.
+const COLUMN_PROBE_BATCH_SIZE = 8;
+const COLUMN_PROBE_SQL = Array.from(
+  { length: Math.ceil(REQUIRED_COLUMNS.length / COLUMN_PROBE_BATCH_SIZE) },
+  (_, index) => REQUIRED_COLUMNS
+    .slice(index * COLUMN_PROBE_BATCH_SIZE, (index + 1) * COLUMN_PROBE_BATCH_SIZE)
+    .map(([table, column]) =>
+      `SELECT '${table}' AS table_name, name AS column_name FROM pragma_table_info('${table}') WHERE name = '${column}'`
+    )
+    .join(" UNION ALL ")
+);
 
 /**
  * A C-4 Worker can be deployed before the table rebuild only if it refuses all
@@ -108,8 +118,10 @@ export async function inspectContestSchemaReadiness(db) {
     const missingTables = REQUIRED_TABLES.filter((name) => !objects.has(`table:${name}`));
     const missingIndexes = REQUIRED_INDEXES.filter((name) => !objects.has(`index:${name}`));
     const missingTriggers = REQUIRED_TRIGGERS.filter((name) => !objects.has(`trigger:${name}`));
-    const columnsResult = await db.prepare(COLUMN_PROBE_SQL).all();
-    const foundColumns = new Set((columnsResult?.results || []).map((row) => `${row.table_name}:${row.column_name}`));
+    const columnProbeResults = await Promise.all(COLUMN_PROBE_SQL.map((sql) => db.prepare(sql).all()));
+    const foundColumns = new Set(columnProbeResults.flatMap((result) =>
+      (result?.results || []).map((row) => `${row.table_name}:${row.column_name}`)
+    ));
     const missingColumns = REQUIRED_COLUMNS
       .filter(([table, column]) => !foundColumns.has(`${table}:${column}`))
       .map(([table, column]) => `${table}.${column}`);

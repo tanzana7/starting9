@@ -1,5 +1,5 @@
 import { getPredictionDeadlineStatus } from "./prediction-deadline.js";
-import { PRODUCTION_TEAM, targetTeamForEnvironment, teamContext } from "./backend/target-team.js";
+import { PRODUCTION_TEAM, resolveRequestTeamContext, targetTeamForEnvironment, teamContext } from "./backend/target-team.js";
 import { PREDICTION_DEADLINE_MILLISECONDS } from "./prediction-deadline.js";
 import {
   getDueFinalLineupAttemptAt,
@@ -159,7 +159,7 @@ import {
   upsertPushSubscription
 } from "./backend/admin-alerts/storage.js";
 import { normalizeScoringPosition } from "./backend/domain/scoring-position.js";
-import { ensureGameContest, getGameContest } from "./backend/contest-identity.js";
+import { createContestId, ensureGameContest, getGameContest } from "./backend/contest-identity.js";
 import { inspectContestSchemaReadiness } from "./backend/contest-schema-readiness.js";
 import { evaluateAndNotifyAdminAlerts } from "./backend/admin-alerts/runtime.js";
 import { sendAdminTestPush } from "./backend/admin-alerts/test-push.js";
@@ -760,7 +760,11 @@ const PREDICTION_TEAM_IDS = new Set(Object.values(TEAM_PLAYER_ID_PREFIXES));
 
 export default {
   async fetch(request, env, ctx) {
-    targetTeamForEnvironment(env);
+    const teamResolution = resolveRequestTeamContext(request, env);
+    if (!teamResolution.ok) {
+      return jsonResponse({ ok: false, code: teamResolution.code, error: "対象球団を選び直してください。" }, 400);
+    }
+    env = teamResolution.env;
     const cors = createCorsHeaders(request, env);
 
     if (request.method === "OPTIONS") {
@@ -2208,12 +2212,16 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
   });
 
   const operationalMode = getV3OperationalMode(env);
+  const contestDriven = !auxiliaryOnly
+    && String(env.ENABLE_PRODUCTION_TEAM_ROUTING || "").toLowerCase() === "true";
   const result = await runGameAutomationV3(env, now, {
     // A free/low-CPU Worker invocation must reach the deadline job before
     // hydrating every historical unfinished game.  Current-day due games are
     // processed first; the next Cron tick drains the remaining window.
     gameListOptions: auxiliaryOnly
       ? { limit: V3_AUXILIARY_GAME_BATCH_SIZE, prioritizeDue: true }
+      : contestDriven
+        ? { limit: 50 }
       : {
         limit: V3_CRON_GAME_BATCH_SIZE,
         prioritizeDue: true,
@@ -2239,18 +2247,19 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
     formalPlanner: (db, games, plannerNow) => planMainWorkflowJobs(db, games, plannerNow, {
       disabledStages: operationalMode.disabledJobTypes,
       v4SemiAuto: operationalMode.isV4SemiAuto,
-      targetTeamKey: targetTeamForEnvironment(env).key
+      targetTeamKey: contestDriven ? "" : targetTeamForEnvironment(env).key
     }),
     auxiliaryPlanner: (db, games, plannerNow) => planAuxiliaryJobs(db, games, plannerNow, {
       autoProbableStarter: operationalMode.autoProbableStarter,
       autoRosterFetch: operationalMode.autoRosterFetch
     }),
     disabledJobTypes: operationalMode.disabledJobTypes,
-    targetTeamKey: targetTeamForEnvironment(env).key,
+    targetTeamKey: contestDriven ? "" : targetTeamForEnvironment(env).key,
     v4SemiAuto: operationalMode.isV4SemiAuto,
     includeHistoricalRecovery: !auxiliaryOnly && isV3StorageMaintenanceWindow(now),
     runAuxiliary: !criticalOnly,
     auxiliaryOnly,
+    contestDriven,
     skipFormalDiscoveryIfIdle: criticalOnly,
     scheduleOptional,
     observerScheduler,
@@ -5653,7 +5662,8 @@ async function syncFightersScheduleForDate(env, date, now, { intervalMs = AUTOMA
     || now.getTime() - lastCheckedAt.getTime() >= Math.max(60 * 1000, Number(intervalMs) || AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS);
   if (!state?.next_check_at || new Date(state.next_check_at) <= now || intervalDue) {
     const auditDb = getV3AuditDb(env);
-    const payload = await fetchNpbWorkerJson(env, { mode: "schedule", date });
+    const teamScope = String(env?.ENABLE_PRODUCTION_TEAM_ROUTING || "").toLowerCase() === "true" ? "all" : "fighters";
+    const payload = await fetchNpbWorkerJson(env, { mode: "schedule", date, team: teamScope });
     if (!Array.isArray(payload.games)) throw createPregameError("SCHEDULE_RESPONSE_INVALID", "NPB日程レスポンスが不正です。");
     const registry = await getGameIdentityRegistryAvailability(env.AUTH_DB);
     const existingResult = await env.AUTH_DB.prepare(
@@ -5747,6 +5757,7 @@ async function syncFightersScheduleForDate(env, date, now, { intervalMs = AUTOMA
         reason: "NPB公式日程同期",
         officialCorrection: gameStatus !== "scheduled"
       });
+      item.internalGameId = internalGameId;
       if (existingRow) {
         // 公式gameCodeが後から得られても、予想・採点に紐づく既存game_idは維持します。
         statements.push(env.AUTH_DB.prepare(
@@ -5768,6 +5779,29 @@ async function syncFightersScheduleForDate(env, date, now, { intervalMs = AUTOMA
       }
       item.scheduleMutation = scheduleMutation;
     }
+    if (String(env?.ENABLE_PRODUCTION_TEAM_ROUTING || "").toLowerCase() === "true") {
+      // Registry rows are canonical product metadata, not inferred from a
+      // client-supplied key. Seeding in the existing bounded official schedule
+      // sync avoids a new migration and makes every observed physical game
+      // eligible for its two participant contests without synthetic games.
+      for (const targetTeam of Object.values(teamContext.NPB_TEAMS)) {
+        statements.push(env.AUTH_DB.prepare(
+          "INSERT OR IGNORE INTO contest_identity_teams (team_key) VALUES (?1)"
+        ).bind(targetTeam.key));
+      }
+      for (const item of normalizedGames) {
+        const { game, internalGameId } = item;
+        if (!internalGameId) continue;
+        for (const targetTeam of Object.values(teamContext.NPB_TEAMS)) {
+          if (!teamContext.gameSide(game, targetTeam)) continue;
+          statements.push(env.AUTH_DB.prepare(
+            `INSERT INTO game_contests (contest_id, internal_game_id, target_team_key)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(internal_game_id, target_team_key) DO NOTHING`
+          ).bind(createContestId(internalGameId, targetTeam.key), internalGameId, targetTeam.key));
+        }
+      }
+    }
     const nextCheck = new Date(now.getTime() + Math.max(60 * 1000, Number(intervalMs) || AUTOMATION_SCHEDULE_SYNC_INTERVAL_MS)).toISOString();
     statements.push(env.AUTH_DB.prepare(
       `INSERT INTO game_schedule_check_state (schedule_date, next_check_at, last_checked_at, last_error_code, updated_at)
@@ -5776,7 +5810,7 @@ async function syncFightersScheduleForDate(env, date, now, { intervalMs = AUTOMA
     ).bind(date, nextCheck, now.toISOString()));
     if (statements.length) await env.AUTH_DB.batch(statements);
     await backfillUniqueDetectedScheduleInternalGames(env.AUTH_DB, date, registry, now, auditDb);
-    console.log(`[GAME_DETECTION] date=${date} team=fighters gamesFound=${payload.games.length} status=success`);
+    console.log(`[GAME_DETECTION] date=${date} team=${teamScope} gamesFound=${payload.games.length} status=success`);
     return {
       status: changed ? "success_changed" : "success_no_change",
       date,
@@ -5790,7 +5824,7 @@ async function syncFightersScheduleForDate(env, date, now, { intervalMs = AUTOMA
   return { status: "skipped", date };
 }
 
-async function countFutureFightersGames(db, now) {
+async function countFutureFightersGames(db, now, includeAllTeams = false) {
   const current = now instanceof Date ? now : new Date(now);
   const todayJst = getJstDateString(current);
   if (!todayJst) return 0;
@@ -5802,13 +5836,14 @@ async function countFutureFightersGames(db, now) {
         AND (is_active IS NULL OR is_active = 1)
         AND (deleted_at IS NULL OR deleted_at = '')
         AND (game_status IS NULL OR game_status NOT IN ('cancelled', 'canceled', 'postponed', 'no_game', 'service_unavailable'))
-        AND (LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')`
-  ).bind(todayJst).first();
+        AND (?2 = 1 OR LOWER(home_team) = 'fighters' OR LOWER(away_team) = 'fighters')`
+  ).bind(todayJst, includeAllTeams ? 1 : 0).first();
   return Number(result?.count || 0);
 }
 
 async function ensureFutureFightersSchedule(env, now) {
-  const futureGamesBefore = await countFutureFightersGames(env.AUTH_DB, now);
+  const allTeams = String(env?.ENABLE_PRODUCTION_TEAM_ROUTING || "").toLowerCase() === "true";
+  const futureGamesBefore = await countFutureFightersGames(env.AUTH_DB, now, allTeams);
   const initialPlan = getFutureScheduleSyncPlan(now, futureGamesBefore);
   if (!initialPlan.shouldFetch) {
     return {
@@ -5876,7 +5911,7 @@ async function ensureFutureFightersSchedule(env, now) {
     try {
       const result = await syncFightersScheduleForDate(env, date, now);
       results.push(result);
-      futureGamesAfter = await countFutureFightersGames(env.AUTH_DB, now);
+      futureGamesAfter = await countFutureFightersGames(env.AUTH_DB, now, allTeams);
       if (futureGamesAfter >= AUTOMATION_MIN_FUTURE_GAMES) break;
     } catch (error) {
       results.push({ status: "failed", date, errorCode: error?.code || "SCHEDULE_SYNC_FAILED" });
@@ -10067,7 +10102,9 @@ function mergeTrustedTemporaryPlayers(...sources) {
         byKey.set(key, {
           playerId,
           name: String(player?.name || player?.playerName || player?.displayName || "").trim(),
-          number: String(player?.number ?? player?.uniformNumber ?? "").trim()
+          number: String(player?.number ?? player?.uniformNumber ?? "").trim(),
+          ...(player?.teamCode || player?.team_code ? { teamCode: String(player.teamCode || player.team_code) } : {}),
+          ...(player?.teamId || player?.team_id ? { teamId: String(player.teamId || player.team_id) } : {})
         });
       }
     }
@@ -10082,7 +10119,9 @@ export function collectTrustedTemporaryPlayersFromRevisions(rows = []) {
       if (normalizeOfficialNpbPlayerId(player?.playerId)) players.push({
         playerId: player.playerId,
         name: player.playerName || player.name,
-        number: player.uniformNumber ?? player.number
+        number: player.uniformNumber ?? player.number,
+        ...(player.teamCode || player.team_code ? { teamCode: player.teamCode || player.team_code } : {}),
+        ...(player.teamId || player.team_id ? { teamId: player.teamId || player.team_id } : {})
       });
     }
   }
@@ -10121,22 +10160,27 @@ async function getTrustedTemporaryPlayersForLineup(env, context, value) {
 }
 
 async function handleAdminV3LineupGet(env, cors, context) {
+  const targetTeam = targetTeamForEnvironment(env);
   const lineup = await getGameLineup(env.AUTH_DB, context.metadata);
   const rows = await getV3LineupRevisionRows(env.AUTH_DB, context.metadata.gameId, context.id, context.metadata.contestId);
   const current = rows.find((row) => Number(row.is_current) === 1) || rows[0] || null;
   const final = rows.find((row) => Number(row.is_final) === 1) || null;
-  const manualRoster = await getManualRoster(env.AUTH_DB, { teamCode: MANUAL_ROSTER_TEAM.teamCode }).catch(() => ({
+  const manualRoster = await getManualRoster(env.AUTH_DB, { teamCode: targetTeam.key }).catch(() => ({
     schemaAvailable: false,
-    team: MANUAL_ROSTER_TEAM,
+    team: { teamCode: targetTeam.key, teamId: targetTeam.playerTeamId, teamName: targetTeam.displayName },
     source: "static-fallback",
     isManualSaved: false,
     entries: [],
     errorCode: "MANUAL_ROSTER_SCHEMA_UNAVAILABLE"
   }));
   const publicRosterResolution = await getAdminPublicRosterForLineup(env, context);
-  const baseCatalog = getManualLineupPlayerCatalog({ manualRoster });
+  const baseCatalog = getManualLineupPlayerCatalog({
+    manualRoster,
+    targetTeam,
+    rosterPlayers: publicRosterResolution.roster?.players || null
+  });
   const playerCatalog = publicRosterResolution.roster
-    ? applyLiveRosterToManualLineupCatalog(baseCatalog, publicRosterResolution.roster, manualRoster) || baseCatalog
+    ? applyLiveRosterToManualLineupCatalog(baseCatalog, publicRosterResolution.roster, manualRoster, { teamCode: targetTeam.key }) || baseCatalog
     : baseCatalog;
   return jsonResponse({
     ok: true,
@@ -10150,8 +10194,8 @@ async function handleAdminV3LineupGet(env, cors, context) {
     lineupStatus: lineup?.scoring_status || (final ? "finalized" : "pending"),
     finalizedAt: lineup?.finalized_at || final?.finalized_at || null,
     finalizedBy: lineup?.finalized_by || final?.finalized_by || null,
-    managedTeam: { teamCode: targetTeamForEnvironment(env).key, teamId: targetTeamForEnvironment(env).playerTeamId,
-      name: targetTeamForEnvironment(env).displayName },
+    managedTeam: { teamCode: targetTeam.key, teamId: targetTeam.playerTeamId,
+      name: targetTeam.displayName },
     manualRoster,
     rosterSync: {
       status: publicRosterResolution.status,
@@ -10172,24 +10216,31 @@ async function handleAdminV3LineupGet(env, cors, context) {
   }, 200, cors);
 }
 
-async function invalidateManualRosterPublicCache(env, ctx) {
+async function invalidateManualRosterPublicCache(env, ctx, targetTeam = PRODUCTION_TEAM) {
   const cache = getPublicCache(env);
   if (!cache || typeof cache.delete !== "function") return;
   try {
+    const team = teamContext.requireTeamContext(targetTeam);
+    const identities = [team.providerTeamCode.toLowerCase(), team.key];
+    if (!identities.every((value) => /^[a-z][a-z0-9-]*$/.test(value))) return;
+    const sqlValues = identities.map((_, index) => `?${index + 2}`).join(", ");
     const result = await env.AUTH_DB.prepare(
       `SELECT internal_game_id FROM games
         WHERE game_date >= ?1
-          AND (LOWER(home_team) IN ('f', 'fighters') OR LOWER(away_team) IN ('f', 'fighters'))
+          AND (LOWER(home_team) IN (${sqlValues}) OR LOWER(away_team) IN (${sqlValues}))
         LIMIT 100`
-    ).bind(getJstDateString(new Date())).all();
+    ).bind(getJstDateString(new Date()), ...identities).all();
     const deletions = (result?.results || []).flatMap((row) => {
       const internalGameId = String(row?.internal_game_id || "").trim();
       if (!internalGameId) return [];
-      const rosterRequest = new Request(`https://starting9.internal/api/game-day-roster?internalGameId=${encodeURIComponent(internalGameId)}`);
-      return [
+      const requests = [
+        new Request(`https://starting9.internal/api/game-day-roster?internalGameId=${encodeURIComponent(internalGameId)}`),
+        new Request(`https://starting9.internal/api/game-day-roster?internalGameId=${encodeURIComponent(internalGameId)}&team=${encodeURIComponent(team.key)}`)
+      ];
+      return requests.flatMap((rosterRequest) => [
         cache.delete(createPublicCacheKey(rosterRequest, "game-day-roster", "fresh")),
         cache.delete(createPublicCacheKey(rosterRequest, "game-day-roster", "stale"))
-      ];
+      ]);
     });
     const work = Promise.all(deletions).catch((error) => {
       console.warn("manual roster public cache invalidation failed", error instanceof Error ? error.message : "unknown error");
@@ -10205,25 +10256,35 @@ async function handleAdminV3ManualRoster(request, env, cors, ctx) {
   const access = await requireAdminUser(request, env, cors);
   if (!access.ok) return access.response;
   try {
-    const teamCode = new URL(request.url).searchParams.get("teamCode") || MANUAL_ROSTER_TEAM.teamCode;
-    if (request.method === "GET") {
-      const roster = await getManualRoster(env.AUTH_DB, { teamCode });
-      if (!roster.schemaAvailable) return jsonResponse({ ok: false, code: roster.errorCode, error: "manual roster schemaが未適用です。" }, 503, cors);
-      return jsonResponse({ ok: true, roster, playerCatalog: getManualLineupPlayerCatalog({ manualRoster: roster }) }, 200, cors);
-    }
-    const input = await readJson(request, { maxBytes: ADMIN_PREVIEW_JSON_BODY_MAX_BYTES });
-    if (input?.confirmed !== true) {
+    const input = request.method === "GET" ? null : await readJson(request, { maxBytes: ADMIN_PREVIEW_JSON_BODY_MAX_BYTES });
+    if (input && input.confirmed !== true) {
       return jsonResponse({ ok: false, code: "MANUAL_ROSTER_CONFIRMATION_REQUIRED", error: "ロースター更新の確認が必要です。" }, 409, cors);
     }
+    const requestedTeamCode = input?.teamCode || input?.team || new URL(request.url).searchParams.get("teamCode") || targetTeamForEnvironment(env).key;
+    const rosterTeam = teamContext.NPB_TEAMS[String(requestedTeamCode).trim().toLowerCase()];
+    if (!rosterTeam) throw createV3Error("MANUAL_ROSTER_TEAM_INVALID", "対応していないチームです。", { httpStatus: 400 });
+    if (rosterTeam.key !== PRODUCTION_TEAM.key
+        && String(env.ENABLE_PRODUCTION_TEAM_ROUTING || "").toLowerCase() !== "true"
+        && env.ENVIRONMENT !== "test") {
+      throw createV3Error("TEAM_ROUTING_DISABLED", "チーム別ロースター管理はまだ利用できません。", { httpStatus: 403 });
+    }
+    if (request.method === "GET") {
+      const roster = await getManualRoster(env.AUTH_DB, { teamCode: rosterTeam.key });
+      if (!roster.schemaAvailable) return jsonResponse({ ok: false, code: roster.errorCode, error: "manual roster schemaが未適用です。" }, 503, cors);
+      const playerCatalog = await getManualLineupPlayerCatalogForTeam(env, rosterTeam, roster);
+      return jsonResponse({ ok: true, roster, playerCatalog }, 200, cors);
+    }
+    const catalog = await getManualLineupPlayerCatalogForTeam(env, rosterTeam, null);
     const roster = await saveManualRoster(env.AUTH_DB, {
-      teamCode: input?.teamCode || input?.team,
+      teamCode: rosterTeam.key,
       entries: input?.entries,
       updatedBy: `admin:${String(access.user?.id || "unknown")}`,
-      catalog: getManualLineupPlayerCatalog(),
+      catalog,
       now: new Date()
     });
-    await invalidateManualRosterPublicCache(env, ctx);
-    return jsonResponse({ ok: true, roster, playerCatalog: getManualLineupPlayerCatalog({ manualRoster: roster }) }, 200, cors);
+    await invalidateManualRosterPublicCache(env, ctx, rosterTeam);
+    const playerCatalog = await getManualLineupPlayerCatalogForTeam(env, rosterTeam, roster);
+    return jsonResponse({ ok: true, roster, playerCatalog }, 200, cors);
   } catch (error) {
     if (!error?.code) {
       console.error("[MANUAL_ROSTER] operation failed", String(error?.message || "unknown error").slice(0, 240));
@@ -13737,14 +13798,12 @@ async function handleGetGameDayRoster(request, env, cors) {
       LIMIT 1`
   ).bind(internalGameId).first();
   const targetTeam = targetTeamForEnvironment(env);
-  const manualRoster = targetTeam.key === PRODUCTION_TEAM.key
-    ? await getManualRoster(env.AUTH_DB, { teamCode: MANUAL_ROSTER_TEAM.teamCode }).catch(() => null)
-    : null;
-  const catalog = manualRoster?.isManualSaved === true
-    ? getManualLineupPlayerCatalog({ manualRoster })
-    : [];
+  const manualRoster = await getManualRoster(env.AUTH_DB, { teamCode: targetTeam.key }).catch(() => null);
   const refreshed = await fetchLatestPublicRoster(env, game);
   if (refreshed) {
+    const catalog = manualRoster?.isManualSaved === true
+      ? getManualLineupPlayerCatalog({ manualRoster, targetTeam, rosterPlayers: refreshed.players })
+      : [];
     const resolved = applyManualRosterToPublicRoster(refreshed, manualRoster, catalog);
     const sourceSnapshotComparison = row
       ? compareV3RosterSourceSnapshot({
@@ -13774,6 +13833,17 @@ async function handleGetGameDayRoster(request, env, cors) {
       snapshotCapturedAt: row?.captured_at || null,
       sourceSnapshotComparison
     }, 200, cors);
+  }
+
+  // game_roster_snapshots and historical baseline rows are keyed by physical
+  // game, not contest/team. Until those source artifacts gain team identity,
+  // they are only safe for the legacy Fighters path; never return a Fighters
+  // roster as another team's fallback.
+  if (targetTeam.key !== PRODUCTION_TEAM.key) {
+    return jsonResponse(buildPublicRosterFallbackResponse(
+      buildPublicStaleRosterResponse({ internalGameId, gameDate: game.game_date, snapshot: null }),
+      { warning: "対象チームの公式rosterを取得できません。" }
+    ), 200, cors);
   }
 
   const currentResponse = applyManualRosterToPublicRoster(buildPublicGameDayRosterResponse({
@@ -24047,8 +24117,10 @@ function manualRosterCategory(uniformNumber) {
   return "";
 }
 
-export function getManualLineupPlayerCatalog({ manualRoster = null } = {}) {
-  const masterCatalog = FIGHTERS_PLAYER_MASTER.map((player) => ({
+export function getManualLineupPlayerCatalog({ manualRoster = null, targetTeam = PRODUCTION_TEAM, rosterPlayers = null } = {}) {
+  targetTeam = teamContext.requireTeamContext(targetTeam);
+  const masterCatalog = targetTeam.key === PRODUCTION_TEAM.key
+    ? FIGHTERS_PLAYER_MASTER.map((player) => ({
     // Candidate visibility is an explicit player-master policy. The pitcher
     // set is only the safe default for future normal pitchers; special
     // batter/two-way entries opt back in through the master metadata.
@@ -24063,9 +24135,31 @@ export function getManualLineupPlayerCatalog({ manualRoster = null } = {}) {
     teamId: FIGHTERS_TEAM_ID,
     category: manualRosterCategory(player.uniformNumber),
     manualRosterEligible: !FIGHTERS_PITCHER_UNIFORM_NUMBERS.has(String(player.uniformNumber || ""))
-  }));
+    }))
+    : (Array.isArray(rosterPlayers) ? rosterPlayers : []).map((player) => {
+      const uniformNumber = String(player?.number ?? player?.uniformNumber ?? "").trim();
+      const playerName = String(player?.name ?? player?.playerName ?? "").trim();
+      const category = String(player?.position ?? player?.category ?? "").trim();
+      const playerId = normalizeOfficialNpbPlayerId(player?.playerId);
+      if (!playerId || !playerName || !/^\d{1,3}$/.test(uniformNumber) || !category) return null;
+      const isFielder = ["捕手", "内野手", "外野手"].includes(category);
+      return {
+        // The lineup validator accepts official NPB IDs backed by the same
+        // team's trusted live roster; synthetic team-number IDs cannot be
+        // proven when the lineup is finalized.
+        playerId,
+        playerName,
+        displayName: playerName,
+        uniformNumber,
+        teamCode: targetTeam.key,
+        teamId: targetTeam.playerTeamId,
+        category,
+        candidateVisibility: isFielder ? "auto" : "hide",
+        manualRosterEligible: isFielder
+      };
+    }).filter(Boolean);
   const knownIds = new Set(masterCatalog.map((player) => player.playerId));
-  const catalog = masterCatalog.concat(STATIC_FIGHTERS_BATTER_CATALOG
+  const catalog = masterCatalog.concat(targetTeam.key === PRODUCTION_TEAM.key ? STATIC_FIGHTERS_BATTER_CATALOG
     .filter((player) => !knownIds.has(player.playerId))
     .map((player) => ({
       ...player,
@@ -24073,8 +24167,21 @@ export function getManualLineupPlayerCatalog({ manualRoster = null } = {}) {
       teamCode: FIGHTERS_TEAM_CODE,
       teamId: FIGHTERS_TEAM_ID,
       manualRosterEligible: true
-    })));
+    })) : []);
   return prioritizeManualRosterCatalog(catalog, manualRoster);
+}
+
+async function getManualLineupPlayerCatalogForTeam(env, targetTeam, manualRoster) {
+  const team = teamContext.requireTeamContext(targetTeam);
+  if (team.key === PRODUCTION_TEAM.key) {
+    return getManualLineupPlayerCatalog({ targetTeam: team, manualRoster });
+  }
+  const payload = await fetchNpbWorkerJson(env, { mode: "roster", team: team.key, force: "1" });
+  const roster = Array.isArray(payload?.players) ? payload.players : [];
+  if (!roster.length || String(payload?.team?.key || payload?.team || "").toLowerCase() !== team.key) {
+    throw createV3Error("MANUAL_ROSTER_CATALOG_UNAVAILABLE", "対象チームの公式選手カタログを取得できません。", { httpStatus: 503, retryable: true });
+  }
+  return getManualLineupPlayerCatalog({ targetTeam: team, manualRoster, rosterPlayers: roster });
 }
 
 function manualLineupValidationFailure(reasonCode, error, slot = null, field = null) {
@@ -24143,8 +24250,16 @@ export function normalizeManualLineupInput(value, { trustedTemporaryPlayers = []
     const trustedNumber = String(trustedTemporary?.number ?? trustedTemporary?.uniformNumber ?? "").trim();
     const temporaryMatches = Boolean(
       trustedTemporary
+      && (!trustedTemporary.teamId || String(trustedTemporary.teamId).toLowerCase() === targetTeam.playerTeamId.toLowerCase())
+      && (!trustedTemporary.teamCode || teamContext.matchesTeam(trustedTemporary.teamCode, targetTeam))
       && normalizeFightersPlayerName(trustedName) === normalizeFightersPlayerName(playerName)
       && trustedNumber === uniformNumber
+    );
+    const inputTeamCode = String(entry?.teamCode ?? entry?.team_code ?? "").trim();
+    const inputTeamId = String(entry?.teamId ?? entry?.team_id ?? "").trim();
+    const teamMismatch = Boolean(
+      (inputTeamCode && !teamContext.matchesTeam(inputTeamCode, targetTeam))
+      || (inputTeamId && inputTeamId.toLowerCase() !== targetTeam.playerTeamId.toLowerCase())
     );
     const canonicalId = player ? createFightersPlayerId(player.uniformNumber) : "";
     return {
@@ -24162,12 +24277,17 @@ export function normalizeManualLineupInput(value, { trustedTemporaryPlayers = []
       _temporaryPlayer: temporaryMatches,
       _inputUniformNumber: uniformNumber,
       _inputPlayerId: playerId,
+      _teamMismatch: teamMismatch,
       slot: index + 1
     };
   });
+  const mismatchedTeam = lineup.find((entry) => entry._teamMismatch);
+  if (mismatchedTeam) {
+    return manualLineupValidationFailure("LINEUP_TEAM_MISMATCH", `${mismatchedTeam.slot}番の選手は対象チームに所属していません。`, mismatchedTeam.slot, "team");
+  }
   const unknown = lineup.find((entry) => !entry._matchedPlayer && !entry._temporaryPlayer);
   if (unknown) {
-    return manualLineupValidationFailure("LINEUP_PLAYER_UNKNOWN", `${unknown.slot}番の選手がFightersマスターまたは検証済みNPB rosterにありません。`, unknown.slot, "playerId");
+    return manualLineupValidationFailure("LINEUP_PLAYER_UNKNOWN", `${unknown.slot}番の選手が対象チームの選手カタログまたは検証済みNPB rosterにありません。`, unknown.slot, "playerId");
   }
   const numberMismatch = lineup.find((entry) => entry._inputUniformNumber && entry._inputUniformNumber !== entry.uniformNumber);
   if (numberMismatch) {
@@ -24177,7 +24297,7 @@ export function normalizeManualLineupInput(value, { trustedTemporaryPlayers = []
   if (playerIdMismatch) {
     return manualLineupValidationFailure("LINEUP_PLAYER_ID_MISMATCH", `${playerIdMismatch.slot}番の選手IDが選手情報と一致しません。`, playerIdMismatch.slot, "playerId");
   }
-  const sanitized = sanitizeActualLineupForScoring(lineup.map(({ _matchedPlayer, _temporaryPlayer, _inputUniformNumber, _inputPlayerId, ...entry }) => entry), { targetTeam });
+  const sanitized = sanitizeActualLineupForScoring(lineup.map(({ _matchedPlayer, _temporaryPlayer, _inputUniformNumber, _inputPlayerId, _teamMismatch, ...entry }) => entry), { targetTeam });
   if (!sanitized.ok) return annotateManualLineupValidation(sanitized, lineup);
   return sanitized;
 }

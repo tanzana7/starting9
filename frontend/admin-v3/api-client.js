@@ -38,13 +38,16 @@
     }
 
     async function request(path, options = {}) {
+      const requestUrl = new URL(`${apiBase()}${path}`);
+      const selectedTeam = new URLSearchParams(location.search || "").get("team");
+      if (selectedTeam && !requestUrl.searchParams.has("team")) requestUrl.searchParams.set("team", selectedTeam);
       const headers = { ...(options.headers || {}) };
       if (options.body !== undefined && !Object.keys(headers).some((key) => key.toLowerCase() === "content-type")) {
         headers["Content-Type"] = "application/json";
       }
       let response;
       try {
-        response = await fetchImpl(`${apiBase()}${path}`, {
+        response = await fetchImpl(requestUrl.toString(), {
           ...options,
           method: options.method || "GET",
           credentials: "include",

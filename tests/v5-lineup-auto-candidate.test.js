@@ -12,6 +12,7 @@ import {
   runLineupCandidatePipeline
 } from "../backend/automation-v3/lineup-candidate-service.js";
 import { evaluateAdminAlertCandidates } from "../backend/admin-alerts/evaluator.js";
+import teamContext from "../frontend/shared/team-context.js";
 
 const TARGET = {
   internalGameId: "12d554bb-ad25-44be-8159-0134c046dcee",
@@ -235,6 +236,41 @@ test("同名のtemporary identityが複数ある場合はambiguous_playerとし�
     ]
   });
   assert.equal(result.status, "ambiguous_player");
+});
+
+test("非Fighters contest candidateは対象Team Contextのtrusted rosterだけで検証する", () => {
+  const targetTeam = teamContext.NPB_TEAMS.marines;
+  const target = { ...TARGET, homeTeam: "marines", awayTeam: "fighters" };
+  const positions = ["捕", "一", "二", "三", "遊", "左", "中", "右", "指"];
+  const trustedTemporaryPlayers = positions.map((position, index) => ({
+    playerId: `npb:${String(61000000 + index).padStart(8, "0")}`,
+    name: `Marines player ${index + 1}`,
+    number: String(index + 1),
+    teamCode: "marines",
+    teamId: targetTeam.playerTeamId
+  }));
+  const lineup = trustedTemporaryPlayers.map((player, index) => ({
+    ...player,
+    battingOrder: index + 1,
+    playerName: player.name,
+    uniformNumber: player.number,
+    position: positions[index]
+  }));
+  const valid = createLineupCandidate(makePayload(lineup), target, {
+    targetTeam,
+    trustedTemporaryPlayers
+  });
+  assert.equal(valid.status, "verified");
+  assert.ok(valid.candidate.lineup.every((player) => player.teamCode === "marines" && player.teamId === "M"));
+
+  const wrongTeam = createLineupCandidate(makePayload(lineup.map((player, index) => index === 0
+    ? { ...player, teamCode: "fighters", teamId: "F" }
+    : player)), target, { targetTeam, trustedTemporaryPlayers });
+  assert.equal(wrongTeam.status, "invalid_lineup");
+  assert.equal(wrongTeam.code, "LINEUP_TEAM_MISMATCH");
+
+  const noRoster = createLineupCandidate(makePayload(lineup), target, { targetTeam });
+  assert.equal(noRoster.status, "unknown_player", "non-Fighters must not resolve through the Fighters master");
 });
 
 test("cancelled/no_gameはcandidateやfinalを作らない", async () => {

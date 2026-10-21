@@ -14,6 +14,7 @@ function loadPublicModule(name, extra = {}) {
   const context = {
     AbortController,
     console,
+    URL,
     window: { fetch: async () => ({ ok: true, json: async () => ({ ok: true }) }) },
     ...extra
   };

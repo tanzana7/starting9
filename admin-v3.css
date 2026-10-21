@@ -20,6 +20,8 @@ button:disabled { cursor: not-allowed; opacity: .65; }
 .eyebrow { margin: 0 0 6px; color: #466a92; font-size: 12px; font-weight: 700; letter-spacing: .08em; }
 .muted { color: #5f6e80; margin: 8px 0 0; }
 .header-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.production-team-navigation { display: flex; gap: 8px; align-items: center; }
+.production-team-navigation select { max-width: min(100%, 20rem); min-width: 0; }
 .admin-v3-layout { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 22px; max-width: 1400px; margin: 0 auto; align-items: start; }
 .v3-sidebar { position: sticky; top: 18px; }
 .v3-nav { display: grid; gap: 5px; padding: 10px; background: #fff; border: 1px solid #dce3eb; border-radius: 8px; box-shadow: 0 2px 8px rgba(31, 54, 77, .06); }

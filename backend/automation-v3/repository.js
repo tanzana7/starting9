@@ -80,7 +80,8 @@ async function getV3GamesActualStartColumn(db) {
 // so a planner pass is preferred over a missed prediction-close or recovery.
 export async function hasPotentialFormalWork(db, now = new Date(), {
   v4SemiAuto = false,
-  includeHistoricalRecovery = true
+  includeHistoricalRecovery = true,
+  contestDriven = false
 } = {}) {
   const current = now instanceof Date ? now : new Date(now);
   if (Number.isNaN(current.getTime())) return true;
@@ -213,7 +214,33 @@ export async function hasPotentialFormalWork(db, now = new Date(), {
             LIMIT 1
          ) AS candidate_game`
     ).bind(timestamp, jstDate, predictionDeadlineCutoff, scoreCutoff, rankingPublishCutoff, rankingPublishCutoff).first();
-    return Number(row?.due_formal_job || 0) === 1 || Number(row?.candidate_game || 0) === 1;
+    let contestCandidate = false;
+    if (contestDriven && await hasContestAutomationState(db)) {
+      const contestRow = await db.prepare(
+        `SELECT EXISTS (
+           SELECT 1
+             FROM game_contests AS contests
+             JOIN games ON games.internal_game_id=contests.internal_game_id
+             LEFT JOIN contest_automation_v3_state AS workflow
+               ON workflow.contest_id=contests.contest_id
+              AND workflow.internal_game_id=contests.internal_game_id
+            WHERE games.is_active=1 AND games.deleted_at IS NULL
+              AND LOWER(COALESCE(games.game_status,'')) NOT IN ('cancelled','canceled','postponed','no_game','service_unavailable','excluded')
+              AND games.game_date BETWEEN date(?1, '-${V3_AUTOMATION_HISTORICAL_LOOKBACK_DAYS} day') AND date(?1, '+1 day')
+              AND (
+                (LOWER(COALESCE(workflow.state,'scheduled'))='scheduled' AND games.start_time<=?2)
+                OR (LOWER(COALESCE(workflow.state,'')) IN ('prediction_closed','lineup_ready') AND games.start_time<=?3)
+                OR (LOWER(COALESCE(workflow.state,'')) IN ('scored','ranked') AND games.start_time<=?4)
+                OR LOWER(COALESCE(workflow.state,''))='manual_action_required'
+              )
+            LIMIT 1
+         ) AS candidate_contest`
+      ).bind(jstDate, predictionDeadlineCutoff, scoreCutoff, rankingPublishCutoff).first();
+      contestCandidate = Number(contestRow?.candidate_contest || 0) === 1;
+    }
+    return Number(row?.due_formal_job || 0) === 1
+      || Number(row?.candidate_game || 0) === 1
+      || contestCandidate;
   } catch {
     return true;
   }
@@ -232,6 +259,82 @@ export async function getV3SchemaState(db) {
     contestState,
     ready: names.has("games") && names.has("game_jobs_v3") && names.has("game_automation_v3_state")
   };
+}
+
+// Formal progression belongs to a contest even when multiple clubs use the
+// same physical fixture. Keep this query bounded and discover only contests
+// already established by schedule/identity sync; it never synthesizes the
+// static twelve-team cross product.
+export async function listV3ContestGames(db, now = new Date(), options = {}) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(current.getTime())) throw createV3Error("V3_NOW_INVALID", "Cron時刻が不正です。");
+  const date = new Date(current.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const requestedLimit = Number(options?.limit);
+  const limit = Number.isInteger(requestedLimit) && requestedLimit > 0 ? Math.min(50, requestedLimit) : 4;
+  const minute = Math.floor(current.getTime() / 60_000);
+  const canonicalTeamKeys = Object.keys(teamContext.NPB_TEAMS).sort();
+  const rotationTeamKey = canonicalTeamKeys[((minute % canonicalTeamKeys.length) + canonicalTeamKeys.length) % canonicalTeamKeys.length] || "fighters";
+  const deadlineCutoff = new Date(current.getTime() + V3_TIMING.predictionDeadlineMinutes * 60 * 1000).toISOString();
+  const scoreCutoff = new Date(current.getTime() + V3_TIMING.predictionDeadlineMinutes * 60 * 1000).toISOString();
+  const rankCutoff = new Date(current.getTime() + V3_TIMING.predictionDeadlineMinutes * 60 * 1000).toISOString();
+  const result = await db.prepare(
+    `SELECT games.internal_game_id, games.game_date, games.start_time, games.home_team, games.away_team,
+            games.npb_game_code, games.game_status, games.is_active, games.deleted_at,
+            contests.contest_id, contests.target_team_key,
+            workflow.state AS workflow_state,
+            ranking.publication_status AS publication_status,
+            CASE
+              WHEN workflow.state = 'scheduled' AND games.start_time <= ?2 THEN 0
+              WHEN workflow.state = 'prediction_closed' AND games.start_time <= ?3 THEN 1
+              WHEN workflow.state = 'lineup_ready' AND games.start_time <= ?3 THEN 2
+              WHEN workflow.state = 'scored' AND games.start_time <= ?4 THEN 3
+              WHEN workflow.state = 'ranked' AND games.start_time <= ?4 THEN 4
+              WHEN workflow.state = 'manual_action_required' THEN 5
+              ELSE 6
+            END AS due_priority
+       FROM game_contests AS contests
+       JOIN games ON games.internal_game_id = contests.internal_game_id
+       LEFT JOIN contest_automation_v3_state AS workflow
+         ON workflow.contest_id = contests.contest_id
+        AND workflow.internal_game_id = contests.internal_game_id
+       LEFT JOIN contest_ranking_games AS ranking
+         ON ranking.contest_id = contests.contest_id
+        AND ranking.internal_game_id = contests.internal_game_id
+      WHERE games.internal_game_id IS NOT NULL AND games.internal_game_id <> ''
+        AND games.is_active = 1 AND games.deleted_at IS NULL
+        AND LOWER(COALESCE(games.game_status, '')) NOT IN ('cancelled','canceled','postponed','no_game','service_unavailable','excluded')
+        AND LOWER(COALESCE(workflow.state, 'scheduled')) NOT IN ('cancelled','canceled','postponed','no_game','service_unavailable','excluded')
+        AND (
+          games.game_date >= date(?1)
+          OR (games.game_date >= date(?1, '-${V3_AUTOMATION_HISTORICAL_LOOKBACK_DAYS} day')
+            AND LOWER(COALESCE(workflow.state, 'scheduled')) IN ('scheduled','prediction_closed','lineup_ready','scored','ranked','manual_action_required'))
+        )
+      ORDER BY due_priority,
+               CASE WHEN contests.target_team_key >= ?5 THEN 0 ELSE 1 END,
+               contests.target_team_key, games.game_date, games.start_time, contests.contest_id
+      LIMIT ?6`
+  ).bind(date, deadlineCutoff, scoreCutoff, rankCutoff, rotationTeamKey, limit).all();
+
+  return (result?.results || []).flatMap((row) => {
+    const targetTeam = teamContext.NPB_TEAMS[String(row.target_team_key || "").toLowerCase()];
+    if (!targetTeam) return [];
+    return [{
+      internalGameId: row.internal_game_id,
+      contestId: row.contest_id,
+      targetTeamKey: targetTeam.key,
+      gameDate: row.game_date,
+      startAt: row.start_time,
+      homeTeam: row.home_team,
+      awayTeam: row.away_team,
+      npbGameCode: row.npb_game_code || null,
+      gameStatus: row.game_status,
+      isActive: row.is_active,
+      deletedAt: row.deleted_at,
+      workflowState: row.workflow_state || "scheduled",
+      publicationStatus: row.publication_status || "pending",
+      duePriority: Number(row.due_priority)
+    }];
+  });
 }
 
 export async function listV3Games(db, now = new Date(), options = {}) {
@@ -1151,7 +1254,8 @@ export async function listDueV3Jobs(db, now = new Date(), limit = 50, cursor = n
     : hasLegacyCursor
       ? [timestamp, boundedLimit, cursorScheduledAt, cursorId]
     : [timestamp, boundedLimit];
-  const targetTeam = String(targetTeamKey || "").trim() && await hasContestJobIdentity(db)
+  const contestIdentityAvailable = await hasContestJobIdentity(db);
+  const targetTeam = String(targetTeamKey || "").trim() && contestIdentityAvailable
     ? String(targetTeamKey).trim()
     : "";
   const targetTeamPlaceholder = targetTeam ? `?${params.length + 1}` : "";
@@ -1159,17 +1263,19 @@ export async function listDueV3Jobs(db, now = new Date(), limit = 50, cursor = n
     params.push(String(targetTeamKey).trim());
   }
   const result = await db.prepare(
-    `SELECT * FROM game_jobs_v3
-      WHERE (status IN ('pending', 'retry_wait')
-         OR (status = 'claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?1))
-        AND scheduled_at <= ?1
-        AND (next_retry_at IS NULL OR next_retry_at <= ?1)
+    `SELECT jobs.*, ${contestIdentityAvailable ? "contests.target_team_key" : "NULL"} AS target_team_key
+       FROM game_jobs_v3 AS jobs
+       ${contestIdentityAvailable ? "LEFT JOIN game_contests AS contests ON contests.contest_id=jobs.contest_id AND contests.internal_game_id=jobs.internal_game_id" : ""}
+      WHERE (jobs.status IN ('pending', 'retry_wait')
+         OR (jobs.status = 'claimed' AND jobs.lease_expires_at IS NOT NULL AND jobs.lease_expires_at <= ?1))
+        AND jobs.scheduled_at <= ?1
+        AND (jobs.next_retry_at IS NULL OR jobs.next_retry_at <= ?1)
         ${targetTeam
-          ? `AND (contest_id IS NULL OR contest_id IN (SELECT contest_id FROM game_contests WHERE target_team_key = ${targetTeamPlaceholder}))`
+          ? `AND (jobs.contest_id IS NULL OR jobs.contest_id IN (SELECT contest_id FROM game_contests WHERE target_team_key = ${targetTeamPlaceholder}))`
           : ""}
         ${cursorClause}
-      ORDER BY ${prioritySql}, scheduled_at,
-        id LIMIT ?2`
+      ORDER BY ${prioritySql}, jobs.scheduled_at,
+        jobs.id LIMIT ?2`
   ).bind(...params).all();
   return result.results || [];
 }

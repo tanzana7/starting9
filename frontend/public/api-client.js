@@ -33,7 +33,10 @@
     }
 
     async function request(url, options = {}) {
-      const response = await fetchImpl(url, options);
+      const requestUrl = new URL(url, globalThis.location?.href || "https://starting9-app.pages.dev/");
+      const teamKey = String(globalThis.Starting9TargetTeam?.key || "").trim();
+      if (teamKey && !requestUrl.searchParams.has("team")) requestUrl.searchParams.set("team", teamKey);
+      const response = await fetchImpl(/^https?:/i.test(String(url)) ? requestUrl.toString() : `${requestUrl.pathname}${requestUrl.search}${requestUrl.hash}`, options);
       const payload = await response.json().catch(() => null);
       return { response, payload };
     }
@@ -43,7 +46,9 @@
     }
 
     async function getCached(url, { cacheKey = url, ttlMs = 0, ...options } = {}) {
-      const cached = options.cache === "no-store" ? null : readSessionCache(cacheKey, ttlMs);
+      const teamKey = String(globalThis.Starting9TargetTeam?.key || "").trim();
+      const scopedCacheKey = teamKey ? `${cacheKey}:team:${teamKey}` : cacheKey;
+      const cached = options.cache === "no-store" ? null : readSessionCache(scopedCacheKey, ttlMs);
       if (cached) {
         return {
           response: { ok: true, status: cached.status || 200 },
@@ -53,7 +58,7 @@
       }
 
       const result = await get(url, options);
-      writeSessionCache(cacheKey, result.payload, result.response, ttlMs);
+      writeSessionCache(scopedCacheKey, result.payload, result.response, ttlMs);
       return { ...result, fromCache: false };
     }
 

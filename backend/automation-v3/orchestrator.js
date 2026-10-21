@@ -242,14 +242,14 @@ async function readV3StateForPlanning(db, internalGameId, contestId = null) {
   }
 }
 
-async function deriveV3PlanningState(db, gameOrId, persistedState = "scheduled", now = new Date(), { v4SemiAuto = false, targetTeamKey = "" } = {}) {
+async function deriveV3PlanningState(db, gameOrId, persistedState = "scheduled", now = new Date(), { v4SemiAuto = false, targetTeamKey = "", contestId: requestedContestId = null } = {}) {
   const game = typeof gameOrId === "string"
     ? { internalGameId: gameOrId }
     : (gameOrId || {});
   const internalGameId = game.internalGameId || game.internal_game_id;
-  const contestId = targetTeamKey
+  const contestId = requestedContestId || (targetTeamKey
     ? await resolveV3ContestId(db, internalGameId, targetTeamKey).catch(() => null)
-    : null;
+    : null);
   let jobs = [];
   try {
     const result = contestId
@@ -582,7 +582,15 @@ export async function claimDueJobs(db, now = new Date(), plannedEntries = [], { 
           claimErrorCode: claimError?.code || null
         };
       }
-      claimed.push({ job, claimed: claimedJob, entry, claimResult, claimError });
+      claimed.push({
+        job,
+        claimed: claimedJob
+          ? { ...claimedJob, target_team_key: String(job.target_team_key || "") }
+          : null,
+        entry,
+        claimResult,
+        claimError
+      });
     }
     const lastRow = rows[rows.length - 1];
     const nextCursor = {
@@ -605,13 +613,18 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
   for (const game of Array.isArray(games) ? games : []) {
     if (!isV3GameEligible(game)) continue;
     try {
-      const contestId = targetTeamKey
-        ? await resolveV3ContestId(db, game.internalGameId, targetTeamKey).catch(() => null)
-        : null;
+      const gameTargetTeamKey = String(game.targetTeamKey || targetTeamKey || "").trim().toLowerCase();
+      const contestId = game.contestId || (gameTargetTeamKey
+        ? await resolveV3ContestId(db, game.internalGameId, gameTargetTeamKey).catch(() => null)
+        : null);
       if (contestId) await ensureV3State(db, game.internalGameId, now, contestId);
       const stateRow = await readV3StateForPlanning(db, game.internalGameId, contestId);
       const persistedState = String(stateRow?.state || game.workflowState || "scheduled").trim().toLowerCase() || "scheduled";
-      const derivedPlanningState = await deriveV3PlanningState(db, game, persistedState, now, { v4SemiAuto, targetTeamKey });
+      const derivedPlanningState = await deriveV3PlanningState(db, game, persistedState, now, {
+        v4SemiAuto,
+        targetTeamKey: gameTargetTeamKey,
+        contestId
+      });
       const state = derivedPlanningState.effectiveState;
       const workflowArtifacts = derivedPlanningState.workflowArtifacts || await readV3WorkflowArtifactHealth(db, game.internalGameId, state);
       const canonicalAvailable = hasCanonicalArtifactEvidence(derivedPlanningState.canonicalArtifacts);
@@ -654,7 +667,7 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
       // Contest-native reads are authoritative whenever a target contest was
       // resolved; legacy game-scoped publication remains the fallback only for
       // callers without a contest identity.
-      const targetContestPublished = targetTeamKey && contestId
+      const targetContestPublished = gameTargetTeamKey && contestId
         ? canonicalFullyPublished
         : workflowArtifacts.publicationReady;
       if (targetContestPublished && (!canonicalAvailable || canonicalFullyPublished)) continue;

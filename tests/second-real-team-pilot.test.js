@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import npbWorker from "../cloudflare-worker.js";
 import { fetchLatestPublicRoster } from "../auth-worker.js";
-import { normalizeTargetTeamScheduleGames } from "../game-schedule-detection.js";
+import { normalizeAllNpbScheduleGames, normalizeTargetTeamScheduleGames } from "../game-schedule-detection.js";
 import teamContext from "../frontend/shared/team-context.js";
 import { TEST_TEAMS } from "../tooling/test-site/teams.js";
 
@@ -37,7 +37,18 @@ test("Marines schedule discovery accepts official name/code at home and away and
   ], "2026-10-02", teamContext.MARINES)[0].awayTeam, "marines");
 });
 
-test("NPB schedule endpoint remains Fighters-default and allows only the Marines pilot query", async () => {
+test("league schedule normalization deduplicates each physical game across both participant teams", () => {
+  const games = [
+    { homeTeam: "giants", awayTeam: "tigers", startTime: "18:00", gameCode: "g-t-01" },
+    { homeTeam: "fighters", awayTeam: "marines", startTime: "18:00", gameCode: "f-m-01" }
+  ];
+  const normalized = normalizeAllNpbScheduleGames(games, "2027-04-01");
+  assert.equal(normalized.length, 2);
+  assert.deepEqual(normalized.map((game) => game.gameId), ["2027-04-01-f-m-01", "2027-04-01-g-t-01"]);
+  assert.deepEqual(normalized.map((game) => [game.homeTeam, game.awayTeam]), [["fighters", "marines"], ["giants", "tigers"]]);
+});
+
+test("NPB schedule endpoint remains Fighters-default and supports all registered NPB teams", async () => {
   globalThis.fetch = async () => new Response(`
     <html><title>試合日程</title><table>
       <tr><th>10/1</th></tr>
@@ -57,7 +68,18 @@ test("NPB schedule endpoint remains Fighters-default and allows only the Marines
     assert.deepEqual(pilotBody.games.map((game) => [game.homeTeam, game.awayTeam, game.gameCode]), [
       ["marines", "fighters", "m-f-23"], ["marines", "hawks", "m-h-12"]
     ]);
-    const unknown = await npbWorker.fetch(new Request("https://npb.internal/?mode=schedule&date=2026-10-01&team=hawks"), {});
+    const hawksResponse = await npbWorker.fetch(new Request("https://npb.internal/?mode=schedule&date=2026-10-01&team=hawks"), {});
+    assert.equal(hawksResponse.status, 200);
+    assert.ok((await hawksResponse.json()).games.some((game) => game.gameCode === "m-h-12"));
+    const giantsAlias = await npbWorker.fetch(new Request("https://npb.internal/?mode=schedule&date=2026-10-01&team=G"), {});
+    assert.equal(giantsAlias.status, 200);
+    assert.deepEqual((await giantsAlias.json()).games, []);
+    const allTeamsResponse = await npbWorker.fetch(new Request("https://npb.internal/?mode=schedule&date=2026-10-01&team=all"), {});
+    assert.equal(allTeamsResponse.status, 200);
+    const allTeamsBody = await allTeamsResponse.json();
+    assert.equal(allTeamsBody.games.length, 3);
+    assert.equal(new Set(allTeamsBody.games.map((game) => game.gameId)).size, 3);
+    const unknown = await npbWorker.fetch(new Request("https://npb.internal/?mode=schedule&date=2026-10-01&team=not-a-team"), {});
     assert.equal(unknown.status, 400);
     assert.equal((await unknown.json()).code, "SCHEDULE_TEAM_UNSUPPORTED");
   } finally {
@@ -65,7 +87,7 @@ test("NPB schedule endpoint remains Fighters-default and allows only the Marines
   }
 });
 
-test("NPB roster provider resolves only the selected team and fails closed instead of returning Fighters", async () => {
+test("NPB roster provider resolves each registered team and fails closed instead of returning Fighters", async () => {
   let html = `${officialRosterHtml("北海道日本ハムファイターズ", "1111")}${officialRosterHtml("千葉ロッテマリーンズ", "2222")}`;
   globalThis.caches = { default: { async match() { return undefined; }, async put() {} } };
   globalThis.fetch = async () => new Response(html, { status: 200, headers: { "Content-Type": "text/html" } });
@@ -77,11 +99,17 @@ test("NPB roster provider resolves only the selected team and fails closed inste
     assert.equal(body.players.length, 18);
     assert.ok(body.players.every((player) => player.playerId.startsWith("npb:2222")));
     assert.equal(body.players.some((player) => player.playerId.startsWith("npb:1111")), false);
+    html += officialRosterHtml("福岡ソフトバンクホークス", "3333");
+    const hawksResponse = await npbWorker.fetch(new Request("https://npb.internal/?mode=roster&team=hawks&force=1"), {});
+    const hawksBody = await hawksResponse.json();
+    assert.equal(hawksResponse.status, 200);
+    assert.equal(hawksBody.team, "hawks");
+    assert.ok(hawksBody.players.every((player) => player.playerId.startsWith("npb:3333")));
     html = officialRosterHtml("北海道日本ハムファイターズ", "1111");
     const missing = await npbWorker.fetch(new Request("https://npb.internal/?mode=roster&team=marines&force=1"), {});
     assert.equal(missing.status, 422);
     assert.equal((await missing.json()).code, "ROSTER_PARSE_FAILED");
-    const unsupported = await npbWorker.fetch(new Request("https://npb.internal/?mode=roster&team=hawks"), {});
+    const unsupported = await npbWorker.fetch(new Request("https://npb.internal/?mode=roster&team=not-a-team"), {});
     assert.equal(unsupported.status, 400);
     assert.equal((await unsupported.json()).code, "ROSTER_TEAM_UNSUPPORTED");
   } finally {

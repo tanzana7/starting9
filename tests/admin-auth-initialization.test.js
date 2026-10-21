@@ -106,7 +106,7 @@ test("初回認証イベントを取りこぼしてもPromise完了後に公開�
   assert.deepEqual(fetchUrls, [
     "https://starting9-auth.tanzana7.workers.dev/api/public/previous-result-game",
     "https://starting9-auth.tanzana7.workers.dev/api/results/games",
-    "https://starting9-auth.tanzana7.workers.dev/api/me/achievements"
+    "https://starting9-auth.tanzana7.workers.dev/api/me/achievements?team=fighters"
   ]);
   assert.equal(fetchUrls.some((url) => url.includes("/api/admin/")), false);
   assert.equal((listeners.get("starting9-auth-state-changed") || []).length, 1);

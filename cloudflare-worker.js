@@ -1,4 +1,4 @@
-import { normalizeFightersScheduleGames, normalizeTargetTeamScheduleGames } from "./game-schedule-detection.js";
+import { normalizeAllNpbScheduleGames, normalizeFightersScheduleGames, normalizeTargetTeamScheduleGames } from "./game-schedule-detection.js";
 import teamContext from "./frontend/shared/team-context.js";
 
 const LINEUP_SIZE = 9;
@@ -276,8 +276,10 @@ async function handleScheduleRequest(requestUrl) {
   if (!/^20\d{2}-\d{2}-\d{2}$/.test(date)) {
     return jsonResponse({ ok: false, code: "SCHEDULE_DATE_INVALID", error: "日程の日付が不正です。" }, 400);
   }
-  const requestedTeam = resolvePilotTeam(requestUrl.searchParams.get("team") || "fighters");
-  if (!requestedTeam) {
+  const requestedTeamKey = requestUrl.searchParams.get("team") || "fighters";
+  const allTeams = requestedTeamKey === "all";
+  const requestedTeam = allTeams ? null : resolvePilotTeam(requestedTeamKey);
+  if (!allTeams && !requestedTeam) {
     return jsonResponse({ ok: false, code: "SCHEDULE_TEAM_UNSUPPORTED", error: "指定された球団の日程には対応していません。" }, 400);
   }
   const [year, month] = date.split("-");
@@ -290,9 +292,11 @@ async function handleScheduleRequest(requestUrl) {
   if (games === null) {
     return jsonResponse({ ok: false, code: "SCHEDULE_PARSE_FAILED", error: "NPB公式日程を解析できませんでした。" }, 422);
   }
-  const normalizedGames = (requestedTeam.key === teamContext.FIGHTERS.key
-    ? normalizeFightersScheduleGames(games, date)
-    : normalizeTargetTeamScheduleGames(games, date, requestedTeam)).map((game) => ({
+  const normalizedGames = (allTeams
+    ? normalizeAllNpbScheduleGames(games, date)
+    : requestedTeam.key === teamContext.FIGHTERS.key
+      ? normalizeFightersScheduleGames(games, date)
+      : normalizeTargetTeamScheduleGames(games, date, requestedTeam)).map((game) => ({
     ...game,
     npbGameUrl: buildNpbGameUrl(date, game.gameCode)
   }));
@@ -1423,9 +1427,9 @@ function extractNpbOrderText(html) {
 
 function resolvePilotTeam(value) {
   const normalized = normalizeWhitespace(value).replace(/[\s\u3000・.]/g, "").normalize("NFKC").toLowerCase();
-  // Keep the provider contract limited to the existing production default and
-  // the single C-2 pilot; this parameter must not become an accidental 12-team API.
-  return [teamContext.FIGHTERS, teamContext.MARINES].find((team) => team.key.toLowerCase() === normalized
+  // The 12-team production rollout uses the same explicit team contexts as
+  // schedule normalization and roster parsing; unknown values still fail closed.
+  return Object.values(teamContext.NPB_TEAMS).find((team) => team.key.toLowerCase() === normalized
     || [team.playerTeamId, team.providerTeamCode, ...team.aliases]
       .some((alias) => alias.replace(/[\s\u3000・.]/g, "").normalize("NFKC").toLowerCase() === normalized)) || null;
 }

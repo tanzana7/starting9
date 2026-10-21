@@ -43,6 +43,20 @@ for (const directory of SHARED_PAGE_DIRECTORIES) {
   fs.cpSync(source, path.join(output, directory), { recursive: true });
 }
 
+// Each team URL serves the same application shell. The root-relative base
+// keeps every allowlisted asset and Pages Function URL on the canonical origin.
+const teamContextSource = fs.readFileSync(path.join(output, "frontend", "shared", "team-context.js"), "utf8");
+const teamKeys = [...teamContextSource.matchAll(/\{ key: "([a-z][a-z0-9-]*)", slug: "([a-z][a-z0-9-]*)"/g)];
+if (teamKeys.length !== 12 || new Set(teamKeys.map(([, , slug]) => slug)).size !== 12) {
+  throw new Error("Production team routes require exactly twelve unique canonical team slugs.");
+}
+const routeShell = fs.readFileSync(path.join(output, "index.html"), "utf8").replace("<head>", '<head><base href="/">');
+for (const [, , slug] of teamKeys) {
+  const routeDirectory = path.join(output, "teams", slug);
+  fs.mkdirSync(routeDirectory, { recursive: true });
+  fs.writeFileSync(path.join(routeDirectory, "index.html"), routeShell);
+}
+
 function listFiles(directory, relativeTo = directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const absolute = path.join(directory, entry.name);
@@ -72,7 +86,7 @@ for (const file of files) {
   }
 }
 
-for (const required of ["404.html", "index.html", "script.js", "style.css", "admin-v3.html", "functions/api/[[path]].js", "frontend/shared/team-context.js"]) {
+for (const required of ["404.html", "index.html", "script.js", "style.css", "admin-v3.html", "functions/api/[[path]].js", "frontend/shared/team-context.js", "teams/fighters/index.html", "teams/lions/index.html"]) {
   if (!files.includes(required)) throw new Error(`Required production Pages artifact file missing: ${required}`);
 }
 

@@ -116,7 +116,7 @@ test("criticalとauxiliaryは同じexecutor内でもformal claim経路を共有�
   const scheduleMode = worker.slice(worker.indexOf("async function runScheduledScheduleSync"), worker.indexOf("async function writeScheduleSyncAuditRecord"));
   assert.match(executor, /if \(auxiliaryOnly\)/);
   assert.match(executor, /if \(!runAuxiliary\) return criticalResult/);
-  assert.match(executor, /hasPotentialFormalWork\(env\.AUTH_DB, now, \{ v4SemiAuto, includeHistoricalRecovery \}\)/);
+  assert.match(executor, /hasPotentialFormalWork\(env\.AUTH_DB, now, \{ v4SemiAuto, includeHistoricalRecovery, contestDriven \}\)/);
   assert.match(worker, /includeHistoricalRecovery: !auxiliaryOnly && isV3StorageMaintenanceWindow\(now\)/);
   assert.match(worker, /runAuxiliary: !criticalOnly/);
   assert.match(worker, /skipFormalDiscoveryIfIdle: criticalOnly/);

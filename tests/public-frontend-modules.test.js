@@ -8,10 +8,14 @@ const root = path.join(__dirname, "..");
 const moduleDir = path.join(root, "frontend", "public");
 const moduleNames = ["state", "request-guard", "storage", "api-client", "app-coordinator", "render-results", "daily-best-nine", "roster", "prediction-validation", "prediction-form"];
 
-function load(name, { fetchImpl, storage } = {}) {
+function load(name, { fetchImpl, storage, targetTeam = null, sessionStorage = null } = {}) {
   const context = {
     AbortController,
     console,
+    URL,
+    location: { href: "https://starting9-app.pages.dev/" },
+    sessionStorage,
+    Starting9TargetTeam: targetTeam,
     window: {
       fetch: fetchImpl || (async () => ({ ok: true, json: async () => ({ ok: true }) })),
       localStorage: storage
@@ -65,6 +69,33 @@ test("API clientは公開APIのfetchとJSON解析を一箇所で扱う", async (
   assert.equal(calls[0].url, "/api/public/games");
   assert.equal(calls[0].options.cache, "no-store");
   assert.equal(calls[0].options.signal, "request-signal");
+});
+
+test("API client scopes requests and session cache by canonical team", async () => {
+  const storage = new Map();
+  const sessionStorage = {
+    getItem(key) { return storage.get(key) || null; },
+    setItem(key, value) { storage.set(key, value); },
+    removeItem(key) { storage.delete(key); }
+  };
+  const calls = [];
+  const clientFor = (key) => {
+    const fetchImpl = async (url) => {
+      calls.push(url);
+      return { ok: true, status: 200, json: async () => ({ team: key }) };
+    };
+    const publicFrontend = load("api-client", {
+      targetTeam: { key }, sessionStorage,
+      fetchImpl
+    });
+    return publicFrontend.createPublicApiClient(fetchImpl);
+  };
+  await clientFor("fighters").getCached("/api/public/games", { cacheKey: "games", ttlMs: 30000 });
+  await clientFor("marines").getCached("/api/public/games", { cacheKey: "games", ttlMs: 30000 });
+  assert.equal(calls.length, 2);
+  assert.match(calls[0], /team=fighters/);
+  assert.match(calls[1], /team=marines/);
+  assert.equal(storage.size, 2);
 });
 
 test("results moduleは現在の公開文言と最大5件の表示契約を保持する", () => {

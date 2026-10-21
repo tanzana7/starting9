@@ -87,7 +87,11 @@ VALUES
   ('2026-07-22-l-f-16', '8194933c-6116-5460-ba32-61bad1344a5d', '2026-07-22', '2026-07-22T09:00:00.000Z', 'lions', 'fighters', 'l-f-16', 'https://npb.jp/scores/2026/0722/l-f-16/'),
   ('2026-07-25-f-e-15', '0b4ac3b2-9387-59a3-a3f2-056d98ad73df', '2026-07-25', '2026-07-25T05:00:00.000Z', 'fighters', 'eagles', 'f-e-15', 'https://npb.jp/scores/2026/0725/f-e-15/'),
   ('2026-07-26-f-e-16', '6723a50c-e243-527f-a0eb-c0890303726f', '2026-07-26', '2026-07-26T04:00:00.000Z', 'fighters', 'eagles', 'f-e-16', 'https://npb.jp/scores/2026/0726/f-e-16/'),
-  ('2026-07-31-f-m-14', '331a0778-204e-5457-87bc-e5a36f0b8d21', '2026-07-31', '2026-07-31T09:00:00.000Z', 'fighters', 'marines', 'f-m-14', 'https://npb.jp/scores/2026/0731/f-m-14/');
+  ('2026-07-31-f-m-14', '331a0778-204e-5457-87bc-e5a36f0b8d21', '2026-07-31', '2026-07-31T09:00:00.000Z', 'fighters', 'marines', 'f-m-14', 'https://npb.jp/scores/2026/0731/f-m-14/'),
+  ('2026-07-18-b-f-16', '256163ea-7597-5c29-94f7-7f6ef8c336a1', '2026-07-18', '2026-07-18T04:00:00.000Z', 'buffaloes', 'fighters', 'b-f-16', 'https://npb.jp/scores/2026/0718/b-f-16/'),
+  ('2026-07-19-b-f-17', '7a486251-539c-5bed-9e6d-8cef2e2ee8a5', '2026-07-19', '2026-07-19T04:00:00.000Z', 'buffaloes', 'fighters', 'b-f-17', 'https://npb.jp/scores/2026/0719/b-f-17/'),
+  ('2026-07-20-b-f-18', '2b60f45d-1e8e-52b9-a5ef-6a0061da6be3', '2026-07-20', '2026-07-20T04:00:00.000Z', 'buffaloes', 'fighters', 'b-f-18', 'https://npb.jp/scores/2026/0720/b-f-18/'),
+  ('2026-07-23-l-f-17', 'd2fbd4fc-40ae-51e4-b895-dd86a48229ad', '2026-07-23', '2026-07-23T09:00:00.000Z', 'lions', 'fighters', 'l-f-17', 'https://npb.jp/scores/2026/0723/l-f-17/');
 
 -- Do not materialize historical games merely because they are listed in the
 -- reviewed map. Only map identities actually referenced by legacy artifacts.

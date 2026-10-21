@@ -12,8 +12,13 @@ const GAMES = [
   { legacyId: "2026-07-22-l-f-16", internalId: "8194933c-6116-5460-ba32-61bad1344a5d", date: "2026-07-22", start: "2026-07-22T09:00:00.000Z", home: "lions", away: "fighters", code: "l-f-16", url: "https://npb.jp/scores/2026/0722/l-f-16/" },
   { legacyId: "2026-07-25-f-e-15", internalId: "0b4ac3b2-9387-59a3-a3f2-056d98ad73df", date: "2026-07-25", start: "2026-07-25T05:00:00.000Z", home: "fighters", away: "eagles", code: "f-e-15", url: "https://npb.jp/scores/2026/0725/f-e-15/" },
   { legacyId: "2026-07-26-f-e-16", internalId: "6723a50c-e243-527f-a0eb-c0890303726f", date: "2026-07-26", start: "2026-07-26T04:00:00.000Z", home: "fighters", away: "eagles", code: "f-e-16", url: "https://npb.jp/scores/2026/0726/f-e-16/" },
-  { legacyId: "2026-07-31-f-m-14", internalId: "331a0778-204e-5457-87bc-e5a36f0b8d21", date: "2026-07-31", start: "2026-07-31T09:00:00.000Z", home: "fighters", away: "marines", code: "f-m-14", url: "https://npb.jp/scores/2026/0731/f-m-14/" }
+  { legacyId: "2026-07-31-f-m-14", internalId: "331a0778-204e-5457-87bc-e5a36f0b8d21", date: "2026-07-31", start: "2026-07-31T09:00:00.000Z", home: "fighters", away: "marines", code: "f-m-14", url: "https://npb.jp/scores/2026/0731/f-m-14/" },
+  { legacyId: "2026-07-18-b-f-16", internalId: "256163ea-7597-5c29-94f7-7f6ef8c336a1", date: "2026-07-18", start: "2026-07-18T04:00:00.000Z", home: "buffaloes", away: "fighters", code: "b-f-16", url: "https://npb.jp/scores/2026/0718/b-f-16/" },
+  { legacyId: "2026-07-19-b-f-17", internalId: "7a486251-539c-5bed-9e6d-8cef2e2ee8a5", date: "2026-07-19", start: "2026-07-19T04:00:00.000Z", home: "buffaloes", away: "fighters", code: "b-f-17", url: "https://npb.jp/scores/2026/0719/b-f-17/" },
+  { legacyId: "2026-07-20-b-f-18", internalId: "2b60f45d-1e8e-52b9-a5ef-6a0061da6be3", date: "2026-07-20", start: "2026-07-20T04:00:00.000Z", home: "buffaloes", away: "fighters", code: "b-f-18", url: "https://npb.jp/scores/2026/0720/b-f-18/" },
+  { legacyId: "2026-07-23-l-f-17", internalId: "d2fbd4fc-40ae-51e4-b895-dd86a48229ad", date: "2026-07-23", start: "2026-07-23T09:00:00.000Z", home: "lions", away: "fighters", code: "l-f-17", url: "https://npb.jp/scores/2026/0723/l-f-17/" }
 ];
+const PREDICTION_GAMES = GAMES.slice(0, 4);
 const NOW = "2026-10-21T00:00:00.000Z";
 const LINEUP_JSON = JSON.stringify([{ order: 1, player: "fixture hitter", position: "指" }]);
 
@@ -61,7 +66,7 @@ function seedPrediction(db, game, id = `prediction:${game.legacyId}`) {
 
 function seedFourLegacyGames(db) {
   seedUser(db);
-  for (const game of GAMES) seedPrediction(db, game);
+  for (const game of PREDICTION_GAMES) seedPrediction(db, game);
   const first = GAMES[0];
   db.prepare(`INSERT INTO prediction_score_revisions
     (id, prediction_id, game_id, is_test_prediction, scoring_revision, score, max_score, actual_lineup_json, scored_at, created_at)
@@ -82,6 +87,8 @@ function seedFourLegacyGames(db) {
        scored_private_at, published_at, publication_status)
       VALUES (?, 1, ?, 'scored', 0, ?, ?, ?, ?, ?, 'published')`)
       .run(game.legacyId, NOW, NOW, NOW, game.date, NOW, NOW);
+  }
+  for (const game of PREDICTION_GAMES) {
     db.prepare(`INSERT INTO game_pregame_automation (game_id, game_date, start_at, roster_status, lineup_status,
       scoring_status, created_at, updated_at) VALUES (?, ?, ?, 'captured', 'captured', 'scored', ?, ?)`)
       .run(game.legacyId, game.date, game.start, NOW, NOW);
@@ -114,7 +121,7 @@ function rollbackError(db, callback) {
   }
 }
 
-test("legacy four-game reconciliation migrates 0001-0045 fixtures through 0049 without losing data", () => {
+test("legacy game reconciliation migrates 0001-0045 fixtures through 0049 without losing data", () => {
   const db = new DatabaseSync(":memory:");
   try {
     applyThrough(db, "0045_cron_heartbeat.sql");
@@ -134,8 +141,8 @@ test("legacy four-game reconciliation migrates 0001-0045 fixtures through 0049 w
 
     applyAfter(db, "0045_cron_heartbeat.sql", "0049_contest_scoped_formal_jobs.sql");
 
-    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM games").get().n, 4);
-    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM game_contests").get().n, 4);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM games").get().n, 8);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM game_contests").get().n, 8);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM predictions").get().n, before.predictionRows.length);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM game_lineups").get().n, 1);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM ranking_games").get().n, before.rankingCount);
@@ -145,7 +152,7 @@ test("legacy four-game reconciliation migrates 0001-0045 fixtures through 0049 w
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM game_pregame_automation").get().n, before.pregameCount);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_game_rescore_audits").get().n, before.rescoreAuditCount);
 
-    for (const game of GAMES) {
+    for (const game of PREDICTION_GAMES) {
       const physical = db.prepare("SELECT internal_game_id, game_date, start_time, home_team, away_team, npb_game_code, npb_identity_status FROM games WHERE npb_game_code = ?").get(game.code);
       assert.deepEqual({ ...physical }, {
         internal_game_id: game.internalId, game_date: game.date, start_time: game.start,
@@ -165,6 +172,10 @@ test("legacy four-game reconciliation migrates 0001-0045 fixtures through 0049 w
       assert.equal(db.prepare("SELECT internal_game_id FROM ranking_games WHERE game_id = ?").get(game.legacyId).internal_game_id, game.internalId);
       assert.equal(db.prepare("SELECT internal_game_id FROM game_pregame_automation WHERE game_id = ?").get(game.legacyId).internal_game_id, game.internalId);
     }
+    for (const game of GAMES.slice(4)) {
+      assert.equal(db.prepare("SELECT internal_game_id FROM ranking_games WHERE game_id = ?").get(game.legacyId).internal_game_id, game.internalId);
+      assert.equal(db.prepare("SELECT contest_id FROM game_contests WHERE internal_game_id = ? AND target_team_key = 'fighters'").get(game.internalId).contest_id, createContestId(game.internalId, "fighters"));
+    }
     assert.deepEqual({ ...db.prepare("SELECT id, game_id, internal_game_id, contest_id, actual_lineup_json, lineup_fingerprint, created_at, updated_at FROM game_lineups").get() }, {
       id: before.lineup.id, game_id: before.lineup.game_id, internal_game_id: GAMES[0].internalId,
       contest_id: createContestId(GAMES[0].internalId, "fighters"), actual_lineup_json: before.lineup.actual_lineup_json,
@@ -179,8 +190,8 @@ test("legacy four-game reconciliation migrates 0001-0045 fixtures through 0049 w
       ...before.scoreHistoryRows[0], internal_game_id: GAMES[0].internalId
     });
     assert.equal(db.prepare("SELECT internal_game_id FROM contest_game_rescore_audits WHERE id = 'legacy-rescore-audit'").get().internal_game_id, GAMES[0].internalId);
-    assert.equal(db.prepare("SELECT COUNT(DISTINCT internal_game_id) AS n FROM games").get().n, 4);
-    assert.equal(db.prepare("SELECT COUNT(DISTINCT internal_game_id || ':' || target_team_key) AS n FROM game_contests").get().n, 4);
+    assert.equal(db.prepare("SELECT COUNT(DISTINCT internal_game_id) AS n FROM games").get().n, 8);
+    assert.equal(db.prepare("SELECT COUNT(DISTINCT internal_game_id || ':' || target_team_key) AS n FROM game_contests").get().n, 8);
     assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
     assert.equal(db.prepare("PRAGMA integrity_check").get().integrity_check, "ok");
   } finally {

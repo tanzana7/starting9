@@ -1,6 +1,6 @@
 export const TEST_SITE_ID = "starting9-isolated-v1";
 export const TEST_AUTH_WORKER = "starting9-test-auth";
-export const TEST_PAGES_PROJECT = "starting9-test";
+export const TEST_PAGES_PROJECT = "s9simu";
 export const TEST_AUTH_DB_NAME = "starting9-test-auth-db";
 export const TEST_AUDIT_DB_NAME = "starting9-test-audit-db";
 export const TEST_AUTH_DB_ID = "7ea1fa14-ffc0-4404-8a65-5dbb8218f368";
@@ -69,6 +69,9 @@ export function assertTestPagesConfig(config) {
   if (config.vars?.SITE_ENVIRONMENT !== "test") throw new Error("test Pages environment identity is required");
   if (config.vars?.STARTING9_AUTH_ORIGIN !== "https://starting9-test-auth.starting9.workers.dev") {
     throw new Error("test Pages must use only the test Auth Worker");
+  }
+  if ((config.kv_namespaces || []).find((binding) => binding.binding === "SIMU_NPB_STATE")?.id !== "436a24c73a8b4c238040eb4a697bb4d4") {
+    throw new Error("S9simu Pages must use only its isolated simulator-state KV namespace");
   }
   if (/starting9-auth\.starting9\.workers\.dev/i.test(config.vars.STARTING9_AUTH_ORIGIN)) {
     throw new Error("test Pages cannot point to the production Auth Worker");

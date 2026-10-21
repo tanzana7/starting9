@@ -2,12 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { SHARED_PAGE_DIRECTORIES, TEST_SITE_PAGE_FILES } from "../pages-assets.mjs";
-import { TEST_TEAMS } from "./teams.js";
+import { TEST_TEAMS, TEST_TEAM_GROUPS } from "./teams.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const output = path.join(root, "dist", "test-site");
 const pagesProject = path.join(root, "dist", "test-site-project");
 const testOnlyDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), "static");
+const simulatorSourceDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), "simu-npb");
+const simulatorFunctionsDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), "pages-project", "functions", "simu-npb");
 const testOnlyFiles = ["test-scenarios.html", "scenario-controls.js"];
 
 function resetGeneratedDirectory(directory, expectedName) {
@@ -58,6 +60,7 @@ const requested = new URLSearchParams(window.location.search).get("testTeam");
 const key = routeSlug ? routeKey : requested === null ? "fighters" : Object.hasOwn(teams, requested) ? requested : "";
 if (!key) throw new Error("Unknown Test Site team route");
 document.cookie = \`s9_test_team=\${key}; Path=/; SameSite=Lax; Secure\`;
+document.cookie = "s9_test_source=simu-npb; Path=/; SameSite=Lax; Secure";
 window.Starting9TestTeam = key;
 window.Starting9TargetTeam = window.Starting9TeamContext.defineTeamContext(teams[key]);
 window.Starting9TeamContext.applyBranding(document.documentElement, window.Starting9TargetTeam);
@@ -73,7 +76,7 @@ const banner = `<div role="status" aria-label="テスト環境" style="padding:.
 for (const file of fs.readdirSync(output).filter((name) => name.endsWith(".html"))) {
   const target = path.join(output, file);
   let html = fs.readFileSync(target, "utf8");
-  html = html.replaceAll("https://starting9-app.pages.dev", "https://starting9-test.pages.dev");
+  html = html.replaceAll("https://starting9-app.pages.dev", "https://s9simu.pages.dev");
   if (file !== "test-scenarios.html") {
     if (!html.includes("frontend/shared/team-context.js")) {
       html = html.replace("</head>", '<script defer src="frontend/shared/team-context.js?v=test-site-12-teams"></script><script defer src="frontend/shared/production-team.js?v=test-site-12-teams"></script></head>');
@@ -110,6 +113,12 @@ for (const team of Object.values(TEST_TEAMS)) {
 // confused with either the production source or Pages output.
 fs.mkdirSync(pagesProject, { recursive: true });
 fs.cpSync(path.join(root, "functions"), path.join(pagesProject, "functions"), { recursive: true, force: true });
+const simulatorFunctionOutput = path.join(pagesProject, "functions", "simu-npb");
+fs.mkdirSync(simulatorFunctionOutput, { recursive: true });
+fs.copyFileSync(path.join(simulatorSourceDirectory, "source.js"), path.join(simulatorFunctionOutput, "source.js"));
+fs.copyFileSync(path.join(simulatorFunctionsDirectory, "[[path]].js"), path.join(simulatorFunctionOutput, "[[path]].js"));
+const simulatorTeamModule = `export const TEST_TEAMS = ${JSON.stringify(TEST_TEAMS)};\nexport const TEST_TEAM_GROUPS = ${JSON.stringify(TEST_TEAM_GROUPS)};\n`;
+fs.writeFileSync(path.join(simulatorFunctionOutput, "teams.js"), simulatorTeamModule);
 const pagesConfigPath = path.join(root, "tooling", "test-site", "pages-project", "wrangler.jsonc");
 const pagesConfig = JSON.parse(fs.readFileSync(pagesConfigPath, "utf8"));
 pagesConfig.pages_build_output_dir = "../test-site";

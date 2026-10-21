@@ -458,8 +458,10 @@ export async function fetchLineupCandidateForGame(env, target, { fetchOfficial, 
   let result;
   try {
     if (source === "simulator") {
-      const fetched = await fetchSimulatorSource(env, { mode: "lineup", date: target?.gameDate, gameCode: target?.npbGameCode }, { fetchImpl, signal });
-      const parsed = await parseSimulatorResponse(fetched.response, { mode: "lineup" });
+      const team = targetTeamForEnvironment(env);
+      const fetchParams = { mode: "lineup", date: target?.gameDate, gameCode: target?.npbGameCode, team: team.key };
+      const fetched = await fetchSimulatorSource(env, fetchParams, { fetchImpl, signal });
+      const parsed = await parseSimulatorResponse(fetched.response, fetchParams);
       result = { ...parsed, httpStatus: fetched.response.status, sourceUrl: fetched.url };
     } else {
       if (typeof fetchOfficial !== "function") return { ok: false, status: "temporary_failure", code: "OFFICIAL_LINEUP_FETCHER_REQUIRED", source };

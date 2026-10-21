@@ -31,6 +31,11 @@ export function resolveTestTeam(request, env = {}) {
   return TEST_TEAM_KEYS.has(match[1]) ? match[1] : INVALID_TEST_TEAM;
 }
 
+export function resolveTestSimulatorMode(request, env = {}) {
+  if (String(env?.SITE_ENVIRONMENT || "").trim().toLowerCase() !== "test") return false;
+  return /(?:^|;\s*)s9_test_source=simu-npb(?:;|$)/.test(request.headers.get("Cookie") || "");
+}
+
 const BLOCKED_REQUEST_HEADERS = new Set([
   "connection",
   "content-length",
@@ -118,6 +123,7 @@ export async function onRequest(context) {
     return jsonError("INVALID_TEST_TEAM", "対象球団を選び直してください。", 400);
   }
   if (testTeam) upstreamUrl.searchParams.set("testTeam", testTeam);
+  if (resolveTestSimulatorMode(context.request, context.env)) upstreamUrl.searchParams.set("simuNpb", "1");
   try {
     const upstream = await fetch(createUpstreamRequest(context.request, upstreamUrl));
     return new Response(upstream.body, {

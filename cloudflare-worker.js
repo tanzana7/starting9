@@ -1372,22 +1372,44 @@ function validateRosterUrl(value) {
   return { ok: true, url: targetUrl.href };
 }
 
-function extractNpbOrderText(html) {
+function extractNpbOrderText(html, requestedTeamKey = teamContext.FIGHTERS.key) {
   const plainText = htmlToPlainText(html);
   const lines = normalizeNpbTextLines(plainText);
   const orderStartIndex = lines.findIndex((line) => line.includes("最新のオーダー"));
-  const fightersTable = findFightersOrderTable(html);
+  const requestedTeam = STARTER_TEAM_ALIASES.find((team) => team.key === String(requestedTeamKey || "").trim().toLowerCase());
+  if (!requestedTeam) {
+    return createFailedExtraction("requested-team-unknown", [], plainText, lines, orderStartIndex, {
+      foundFightersTeam: false,
+      validationError: "requested-team-unknown"
+    });
+  }
+  // Keep the production/default Fighters parser contract unchanged. The
+  // test simulator supplies the same team heading/table structure for any
+  // participant so the existing row parser can verify every contest without
+  // silently borrowing Fighters rows for another club.
+  const teamTable = requestedTeam.key === teamContext.FIGHTERS.key
+    ? findFightersOrderTable(html)
+    : findRequestedTeamOrderTable(html, requestedTeam);
 
-  if (fightersTable) {
-    const tableRows = parseTableRows(fightersTable);
+  if (teamTable) {
+    const tableRows = parseTableRows(teamTable);
     const validation = validateExtractedLineupRows(tableRows);
     if (validation.ok) {
       return createSuccessfulExtraction("table", tableRows, plainText, lines, orderStartIndex);
     }
 
     return createFailedExtraction("table-invalid", tableRows, plainText, lines, orderStartIndex, {
-      foundFightersTeam: true,
+      foundFightersTeam: requestedTeam.key === teamContext.FIGHTERS.key,
+      foundRequestedTeam: true,
       validationError: validation.reason
+    });
+  }
+
+  if (requestedTeam.key !== teamContext.FIGHTERS.key) {
+    return createFailedExtraction("requested-team-table-missing", [], plainText, lines, orderStartIndex, {
+      foundFightersTeam: false,
+      foundRequestedTeam: false,
+      validationError: "requested-team-table-missing"
     });
   }
 
@@ -1423,6 +1445,21 @@ function extractNpbOrderText(html) {
     foundFightersTeam: fightersIndex >= 0,
     validationError: fightersValidation.reason || compactValidation.reason || tokenValidation.reason || fallbackValidation.reason
   });
+}
+
+function findRequestedTeamOrderTable(html, requestedTeam) {
+  const sourceHtml = String(html || "");
+  const key = requestedTeam.key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const marked = sourceHtml.match(new RegExp(`<table\\b[^>]*data-lineup-team=["']${key}["'][^>]*>([\\s\\S]*?)<\\/table>`, "i"));
+  if (marked) return marked[1];
+  const headingPattern = new RegExp(String.raw`<h[1-6][^>]*>([\s\S]*?)</h[1-6]>\s*<table\b[^>]*>([\s\S]*?)</table>`, "gi");
+  let match;
+  const acceptedNames = [requestedTeam.name, ...requestedTeam.aliases].map((value) => normalizeWhitespace(value).normalize("NFKC").toLowerCase());
+  while ((match = headingPattern.exec(sourceHtml)) !== null) {
+    const heading = normalizeWhitespace(stripTags(match[1])).normalize("NFKC").toLowerCase();
+    if (acceptedNames.some((name) => name && (heading === name || heading.includes(name)))) return match[2];
+  }
+  return "";
 }
 
 function resolvePilotTeam(value) {
@@ -1972,6 +2009,7 @@ export {
   extractNpbOrderText,
   extractFightersRoster,
   extractTeamRoster,
+  parseStarterPage,
   parseRosterTableEntries,
   validateTargetUrl
 };

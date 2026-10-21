@@ -151,7 +151,7 @@ test("simulator fetcherはcandidateから安全なscore URLだけを構成する
   });
   const result = await fetcher({ gameCode: "t-c-19" }, target);
   assert.equal(result.httpStatus, 200);
-  assert.equal(new URL(requested).pathname, "/scores/2026/0909/t-c-19/");
+  assert.equal(new URL(requested).pathname, "/simu-npb/scores/2026/0909/t-c-19/");
   assert.equal(result.parsed.payload.gameCode, "t-c-19");
 });
 

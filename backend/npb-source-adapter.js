@@ -1,3 +1,6 @@
+import { extractNpbOrderText, extractScheduleGames, extractTeamRoster, parseStarterPage } from "../cloudflare-worker.js";
+import { normalizeAllNpbScheduleGames, normalizeScheduleTeamCode } from "../game-schedule-detection.js";
+
 const GAME_CODE_PATTERN = /^[a-z0-9]{1,2}-[a-z0-9]{1,2}-\d+$/i;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -78,14 +81,29 @@ function normalizedGameCode(value) {
 export function buildSimulatorSourceUrl(baseUrl, params = {}) {
   const origin = normalizeSimulatorBaseUrl(baseUrl);
   const mode = String(params.mode || "").trim().toLowerCase();
-  if (mode === "starter") return `${origin}/announcement/starter/`;
-  if (mode === "schedule") return `${origin}/api/public/games`;
+  if (mode === "starter") return `${origin}/simu-npb/announcement/starter/`;
+  if (mode === "schedule") {
+    const date = String(params.date || params.gameDate || "").trim();
+    if (!DATE_PATTERN.test(date)) throw adapterError("SIMULATOR_DATE_INVALID", "S9simu schedule date is invalid.");
+    const [, year, month] = date.match(/^(\d{4})-(\d{2})-\d{2}$/);
+    const url = new URL(`${origin}/simu-npb/games/${year}/schedule_${month}_detail.html`);
+    url.searchParams.set("date", date);
+    url.searchParams.set("team", String(params.team || "fighters"));
+    return url.href;
+  }
+  if (mode === "roster") {
+    const team = String(params.team || "").trim().toLowerCase();
+    if (!/^[a-z]+$/.test(team)) throw adapterError("SIMULATOR_TEAM_INVALID", "S9simu roster team is invalid.");
+    return `${origin}/simu-npb/announcement/roster/${encodeURIComponent(team)}/`;
+  }
   if (mode === "lineup" || mode === "score") {
     const date = String(params.date || params.gameDate || "").trim();
     const gameCode = normalizedGameCode(params.gameCode || params.npbGameCode);
     if (!DATE_PATTERN.test(date) || !gameCode) throw adapterError("SIMULATOR_GAME_ID_INVALID", "S9simu game identity is invalid.");
     const [, year, month, day] = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    return `${origin}/scores/${year}/${month}${day}/${encodeURIComponent(gameCode)}/`;
+    const url = new URL(`${origin}/simu-npb/scores/${year}/${month}${day}/${encodeURIComponent(gameCode)}/`);
+    if (mode === "lineup" && params.team) url.searchParams.set("team", String(params.team));
+    return url.href;
   }
   throw adapterError("SIMULATOR_MODE_UNSUPPORTED", `S9simu does not support mode: ${mode || "unknown"}.`);
 }
@@ -121,24 +139,28 @@ function attribute(tag, name) {
 }
 
 function parseStarterHtml(html) {
-  const games = [];
-  const articles = String(html || "").match(/<article\b[^>]*data-game-code=["'][^"']+["'][\s\S]*?<\/article>/gi) || [];
-  for (const article of articles) {
-    const homeStarter = textContent(article.match(/<dt>\s*Home\s*<\/dt>\s*<dd>([\s\S]*?)<\/dd>/i)?.[1] || "");
-    const awayStarter = textContent(article.match(/<dt>\s*Away\s*<\/dt>\s*<dd>([\s\S]*?)<\/dd>/i)?.[1] || "");
-    games.push({
-      date: attribute(article, "game-date"),
-      gameCode: attribute(article, "game-code"),
-      npbGameCode: attribute(article, "game-code"),
-      homeTeam: attribute(article, "home-team"),
-      awayTeam: attribute(article, "away-team"),
-      gameStatus: normalizeExternalGameStatus(attribute(article, "game-status")),
-      homeStarter: { name: homeStarter === "未発表" ? "" : homeStarter },
-      awayStarter: { name: awayStarter === "未発表" ? "" : awayStarter }
+  const parsed = parseStarterPage(html);
+  if (!parsed.date && !parsed.games.length) {
+    const legacyArticles = String(html || "").match(/<article\b[^>]*data-game-code=["'][^"']+["'][\s\S]*?<\/article>/gi) || [];
+    if (!legacyArticles.length && !String(html || "").includes("予告先発")) {
+      return { ok: false, code: "NPB_RESPONSE_INVALID", parseStage: "simulator_starter_html" };
+    }
+    parsed.games = legacyArticles.map((article) => {
+      const homeStarter = textContent(article.match(/<dt>\s*Home\s*<\/dt>\s*<dd>([\s\S]*?)<\/dd>/i)?.[1] || "");
+      const awayStarter = textContent(article.match(/<dt>\s*Away\s*<\/dt>\s*<dd>([\s\S]*?)<\/dd>/i)?.[1] || "");
+      return {
+        date: attribute(article, "game-date"),
+        gameCode: attribute(article, "game-code"),
+        npbGameCode: attribute(article, "game-code"),
+        homeTeam: attribute(article, "home-team"),
+        awayTeam: attribute(article, "away-team"),
+        gameStatus: normalizeExternalGameStatus(attribute(article, "game-status")),
+        homeStarter: { name: homeStarter === "未発表" ? "" : homeStarter },
+        awayStarter: { name: awayStarter === "未発表" ? "" : awayStarter }
+      };
     });
   }
-  if (!articles.length && !String(html || "").includes("予告先発")) return { ok: false, code: "NPB_RESPONSE_INVALID", parseStage: "simulator_starter_html" };
-  return { ok: true, payload: { ok: true, games, fetchedAt: new Date().toISOString(), sourceUrl: "simulator" } };
+  return { ok: true, payload: { ok: true, games: parsed.games, date: parsed.date, fetchedAt: new Date().toISOString(), sourceUrl: "simulator" } };
 }
 
 function parseLineupTable(table) {
@@ -154,7 +176,7 @@ function parseLineupTable(table) {
   })).filter((row) => Number.isInteger(row.order) && row.order > 0 && row.playerName);
 }
 
-function parseLineupHtml(html) {
+function parseLineupHtml(html, params = {}) {
   const root = String(html || "").match(/<div\b[^>]*data-game-code=["'][^"']+["'][^>]*>/i)?.[0] || "";
   if (!root && String(html || "").trim()) {
     return { ok: false, code: "NPB_RESPONSE_INVALID", parseStage: "simulator_lineup_html" };
@@ -169,8 +191,13 @@ function parseLineupHtml(html) {
     startAt: attribute(root, "start-at") || attribute(root, "start-time") || ""
   };
   const gameStatus = normalizeExternalGameStatus(attribute(root, "game-status"));
-  const table = String(html || "").match(/<table\b[^>]*data-lineup-team=["']fighters["'][^>]*>[\s\S]*?<\/table>/i)?.[0] || "";
-  const lineup = parseLineupTable(table);
+  const requestedTeam = String(params.team || "fighters").trim().toLowerCase();
+  const extracted = extractNpbOrderText(html, requestedTeam);
+  const lineup = extracted.lineupText ? extracted.rows.map((row) => ({
+    order: row.order,
+    playerName: row.player,
+    position: row.position
+  })) : parseLineupTable(String(html || "").match(new RegExp(`<table\\b[^>]*data-lineup-team=["']${requestedTeam}["'][^>]*>[\\s\\S]*?<\\/table>`, "i"))?.[0] || "");
   if (!lineup.length && ["cancelled", "no_game"].includes(gameStatus)) {
     return { ok: true, payload: { ok: true, ...metadata, lineup: [], status: gameStatus, fetchedAt: new Date().toISOString(), sourceUrl: "simulator" } };
   }
@@ -199,7 +226,7 @@ function parseScoreHtml(html) {
   };
 }
 
-function parseScheduleJson(text) {
+function parseScheduleJson(text, params = {}) {
   let body;
   try { body = JSON.parse(text); } catch { return { ok: false, code: "NPB_RESPONSE_INVALID", parseStage: "simulator_schedule_json" }; }
   if (!Array.isArray(body?.games)) return { ok: false, code: "NPB_RESPONSE_INVALID", parseStage: "simulator_schedule_json" };
@@ -226,13 +253,58 @@ function parseScheduleJson(text) {
   };
 }
 
+function parseScheduleHtml(html, params = {}) {
+  const date = String(params.date || params.gameDate || "").trim();
+  const extracted = extractScheduleGames(String(html || ""), date);
+  if (!Array.isArray(extracted)) return { ok: false, code: "NPB_RESPONSE_INVALID", parseStage: "simulator_schedule_html" };
+  const team = String(params.team || "fighters").trim().toLowerCase();
+  const normalizedAll = normalizeAllNpbScheduleGames(extracted, date);
+  const requestedTeam = normalizeScheduleTeamCode(team);
+  const normalized = team === "all" ? normalizedAll
+    : requestedTeam ? normalizedAll.filter((game) => game.homeTeam === requestedTeam || game.awayTeam === requestedTeam) : [];
+  return {
+    ok: true,
+    payload: {
+      ok: true,
+      games: normalized.map((game) => ({
+        ...game,
+        gameDate: date,
+        npbGameCode: game.gameCode,
+        npbGameUrl: game.gameCode ? `simulator:${game.gameCode}` : "",
+        startAt: `${date}T${game.startTime}:00+09:00`
+      })),
+      fetchedAt: new Date().toISOString(),
+      sourceUrl: "simulator"
+    }
+  };
+}
+
+function parseRosterHtml(html, params = {}) {
+  const team = String(params.team || "").trim().toLowerCase();
+  const parsed = extractTeamRoster(String(html || ""), team);
+  if (!parsed.players.length) return { ok: false, code: "NPB_RESPONSE_INVALID", parseStage: "simulator_roster_html" };
+  return {
+    ok: true,
+    payload: {
+      ok: true,
+      team,
+      players: parsed.players,
+      playerCount: parsed.players.length,
+      fetchedAt: new Date().toISOString(),
+      sourceUrl: "simulator",
+      cacheStatus: "miss"
+    }
+  };
+}
+
 export async function parseSimulatorResponse(response, params = {}) {
   const mode = String(params.mode || "").trim().toLowerCase();
   const text = await response.text();
   if (!response.ok) return { ok: false, code: "NPB_HTTP_ERROR", error: "S9simu returned an HTTP error.", httpStatus: response.status };
-  if (mode === "schedule") return parseScheduleJson(text);
+  if (mode === "schedule") return text.trimStart().startsWith("{") ? parseScheduleJson(text, params) : parseScheduleHtml(text, params);
+  if (mode === "roster") return parseRosterHtml(text, params);
   if (mode === "starter") return parseStarterHtml(text);
   if (mode === "score") return parseScoreHtml(text);
-  if (mode === "lineup") return parseLineupHtml(text);
+  if (mode === "lineup") return parseLineupHtml(text, params);
   return { ok: false, code: "SIMULATOR_MODE_UNSUPPORTED", parseStage: "simulator_response" };
 }

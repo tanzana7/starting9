@@ -11,10 +11,11 @@
     "TEST_WORKER_NAME": "starting9-test-auth",
     "TEST_AUTH_DB_ID": "7ea1fa14-ffc0-4404-8a65-5dbb8218f368",
     "TEST_AUDIT_DB_ID": "a18c6cf9-a238-4059-a5ef-784f248e225e",
-    "AUTH_ALLOWED_ORIGINS": "https://starting9-test.pages.dev",
+    "AUTH_ALLOWED_ORIGINS": "https://s9simu.pages.dev",
     "SESSION_SAMESITE": "None",
     "AUTO_SCORING_DELAY_SECONDS": "0",
-    "ENABLE_DEVELOPMENT_MODE": "false",
+    "ENABLE_DEVELOPMENT_MODE": "true",
+    "ENABLE_PRODUCTION_TEAM_ROUTING": "true",
     "ENABLE_WORKFLOW_COMPLETION_JOBS": "true",
     "ENABLE_GAME_AUTOMATION_V3": "true",
     "ENABLE_AUTO_PROBABLE_STARTER": "false",
@@ -23,6 +24,9 @@
     "ENABLE_LINEUP_SHADOW": "false",
     "ENABLE_SEMI_AUTO_LINEUP": "true",
     "NPB_FETCH_DISABLED": "true",
+    "NPB_SOURCE": "simulator",
+    "S9SIMU_BASE_URL": "https://s9simu.pages.dev",
+    "S9SIMU_ENABLED": "true",
     "MIGRATION_MAINTENANCE": "false"
   },
   "d1_databases": [

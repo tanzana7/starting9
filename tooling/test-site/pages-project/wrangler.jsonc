@@ -1,10 +1,16 @@
 {
   "$schema": "https://developers.cloudflare.com/wrangler/config-schema.json",
-  "name": "starting9-test",
+  "name": "s9simu",
   "pages_build_output_dir": "../../../dist/test-site",
   "compatibility_date": "2026-07-17",
   "vars": {
     "SITE_ENVIRONMENT": "test",
     "STARTING9_AUTH_ORIGIN": "https://starting9-test-auth.starting9.workers.dev"
-  }
+  },
+  "kv_namespaces": [
+    {
+      "binding": "SIMU_NPB_STATE",
+      "id": "436a24c73a8b4c238040eb4a697bb4d4"
+    }
+  ]
 }

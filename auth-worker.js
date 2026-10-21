@@ -15043,6 +15043,9 @@ async function fetchOfficialNpbWorkerJson(env, params) {
 
 async function fetchSimulatorNpbJson(env, params, sourceSelection, { fetchImpl = globalThis.fetch } = {}) {
   const upstreamMode = String(params?.mode || "");
+  const requestParams = ["lineup", "roster"].includes(upstreamMode)
+    ? { ...params, team: params?.team || targetTeamForEnvironment(env).key }
+    : params;
   const upstreamDetails = {
     upstreamPath: "/",
     upstreamMode,
@@ -15058,9 +15061,9 @@ async function fetchSimulatorNpbJson(env, params, sourceSelection, { fetchImpl =
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), NPB_FETCH_TIMEOUT_MS);
   try {
-    const resource = await fetchSimulatorSource(env, params, { fetchImpl, signal: controller.signal });
+    const resource = await fetchSimulatorSource(env, requestParams, { fetchImpl, signal: controller.signal });
     upstreamDetails.fetchEndpoint = `${new URL(resource.url).pathname}${new URL(resource.url).search}`;
-    const parsed = await parseSimulatorResponse(resource.response, params);
+    const parsed = await parseSimulatorResponse(resource.response, requestParams);
     if (!parsed.ok) {
       throw createPregameError(parsed.code || "NPB_RESPONSE_INVALID", parsed.error || "S9simu response could not be parsed.", {
         httpStatus: resource.response.status,

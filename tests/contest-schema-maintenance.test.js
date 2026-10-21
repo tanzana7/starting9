@@ -95,6 +95,20 @@ test("full contest schema resumes automatically and exposes readiness", async (t
   assert.notEqual(response.status, 503);
 });
 
+test("full contest schema readiness batches column probes for D1 compound-select limits", async (t) => {
+  const database = createDatabase("0049");
+  t.after(() => database.close());
+  const localD1 = d1(database);
+  const d1WithCompoundSelectLimit = {
+    prepare(sql) {
+      const terms = String(sql).split(/\bUNION\s+ALL\b/i).length;
+      if (terms > 10) throw new Error("too many terms in compound SELECT: SQLITE_ERROR");
+      return localD1.prepare(sql);
+    }
+  };
+  assert.equal((await inspectContestSchemaReadiness(d1WithCompoundSelectLimit)).ready, true);
+});
+
 test("migration ledger, when present, must contain all four C-4 migrations", async (t) => {
   const database = createDatabase("0049");
   t.after(() => database.close());

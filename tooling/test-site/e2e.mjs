@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { assertTestAuthConfig, assertTestPagesConfig, TEST_AUTH_DB_ID, TEST_AUDIT_DB_ID } from "./isolation.js";
-import { testTeamFixture, TEST_TEAMS } from "./teams.js";
+import { testTeamFixture, TEST_TEAMS, TEST_TEAM_GROUPS, TEST_TEAM_KEYS } from "./teams.js";
 
 const TARGET_ACCOUNT_ID = "02580fab1c09e144db7da89478e252c8";
 const SITE_ORIGIN = "https://starting9-test.pages.dev";
@@ -31,7 +31,7 @@ let temporaryAdminUsername = "";
 let cleanupFailed = false;
 let primaryError = null;
 const cleanupErrors = [];
-const counters = { teamA: 0, teamB: 0, passed: 0 };
+const counters = { passed: 0, physicalGames: 0 };
 
 async function call(path, { method = "GET", body, admin = false, setup = false, expectedStatus = 200 } = {}) {
   const headers = { Origin: SITE_ORIGIN, Accept: "application/json" };
@@ -48,23 +48,22 @@ async function call(path, { method = "GET", body, admin = false, setup = false, 
   return { response, payload };
 }
 
-async function exerciseTeam(teamKey, round) {
+async function exerciseTeam(teamKey, group) {
   const team = TEST_TEAMS[teamKey];
   const fixture = testTeamFixture(teamKey);
   const teamQuery = `?testTeam=${encodeURIComponent(teamKey)}`;
 
-  const reset = await call(`/api/test/reset${teamQuery}`, { method: "POST", body: {}, admin: true });
-  assert.equal(reset.payload.ok, true);
   const status = await call(`/api/test/status${teamQuery}`);
-  assert.equal(status.payload.game?.internal_game_id, fixture.internalGameId);
+  assert.equal(status.payload.game?.internal_game_id, group.internalGameId);
   assert.equal(status.payload.game?.state, "scheduled");
 
   const games = await call(`/api/public/games${teamQuery}`);
   const game = games.payload.games?.find((item) => item.internalGameId === fixture.internalGameId);
   assert.ok(game, `${teamKey}: canonical synthetic game must be visible`);
-  assert.equal(game.homeTeam, team.key);
-  assert.equal(game.homeTeamName, team.shortName);
-  assert.match(game.displayLabel, new RegExp(team.shortName));
+  assert.equal(game.homeTeam, fixture.homeTeam);
+  assert.equal(game.awayTeam, fixture.awayTeam);
+  assert.ok(game.displayLabel.includes(TEST_TEAMS[group.homeKey].shortName));
+  assert.ok(game.displayLabel.includes(TEST_TEAMS[group.awayKey].shortName));
 
   const roster = await call(`/api/game-day-roster?internalGameId=${fixture.internalGameId}&testTeam=${teamKey}`);
   assert.equal(roster.payload.players?.length, 15);
@@ -96,19 +95,19 @@ async function exerciseTeam(teamKey, round) {
   assert.equal(ownPrediction.payload.internalGameId, fixture.internalGameId);
   assert.ok(ownPrediction.payload.prediction?.lineup?.length >= 9);
   assert.equal(ownPrediction.payload.score, 99);
+  assert.ok(ownPrediction.payload.prediction.lineup.every((player) => player.teamCode === team.key));
 
   const history = await call(`/api/results/games${teamQuery}`, { admin: true });
   const historyRow = history.payload.games?.find((item) => item.internalGameId === fixture.internalGameId);
   assert.ok(historyRow, `${teamKey}: published result must appear in history`);
-  assert.match(historyRow.displayLabel, new RegExp(team.shortName));
-  assert.equal(historyRow.gameLabel, historyRow.displayLabel);
+  assert.ok(historyRow.displayLabel.includes(team.shortName));
   const detail = await call(`/api/results/games/${fixture.internalGameId}${teamQuery}`, { admin: true });
   assert.equal(detail.payload.internalGameId, fixture.internalGameId);
   assert.equal(detail.payload.totalScore, 99);
   assert.equal(detail.payload.actualLineup?.length, 9);
-  counters[teamKey === "fighters" ? "teamA" : "teamB"] += 1;
+  assert.ok(detail.payload.actualLineup.every((player) => player.teamCode === team.key));
   counters.passed += 1;
-  console.log(`${teamKey} round ${round}: prediction → close → lineup → score → ranking → publish → result OK`);
+  console.log(`${teamKey}: prediction → close → lineup → score → ranking → publish → result OK`);
 }
 
 try {
@@ -121,34 +120,41 @@ try {
   assert.equal(provisioned.payload.username, temporaryAdminUsername);
   cookie = provisioned.response.headers.get("Set-Cookie")?.split(";", 1)[0] || "";
   assert.match(cookie, /^s9_session=/);
-  assert.match(temporaryAdminUsername, /^e2e-[a-f0-9]{12}$/);
 
   const auth = await call("/api/auth/me", { admin: true });
   assert.equal(auth.payload.authenticated, true);
   const admin = await call("/api/admin/me", { admin: true });
   assert.equal(admin.payload.admin, true);
 
-  for (let round = 1; round <= 3; round += 1) {
-    await exerciseTeam("fighters", round);
-    await exerciseTeam("foxes", round);
+  for (const group of TEST_TEAM_GROUPS) {
+    const reset = await call(`/api/test/reset?testTeam=${group.homeKey}`, { method: "POST", body: {}, admin: true });
+    assert.equal(reset.payload.game?.internalGameId, group.internalGameId);
+    await exerciseTeam(group.homeKey, group);
+    await exerciseTeam(group.awayKey, group);
+
+    const homeHistory = await call(`/api/results/games?testTeam=${group.homeKey}`, { admin: true });
+    const awayHistory = await call(`/api/results/games?testTeam=${group.awayKey}`, { admin: true });
+    assert.ok(homeHistory.payload.games.some((item) => item.internalGameId === group.internalGameId));
+    assert.ok(awayHistory.payload.games.some((item) => item.internalGameId === group.internalGameId));
+    counters.physicalGames += 1;
   }
 } catch (error) {
   primaryError = error;
 } finally {
   if (temporaryAdminCreated && temporaryAdminUsername) {
-    for (const teamKey of ["fighters", "foxes"]) {
+    for (const group of TEST_TEAM_GROUPS) {
       try {
-        await call(`/api/test/reset?testTeam=${teamKey}`, { method: "POST", body: {}, admin: true });
-        const status = await call(`/api/test/status?testTeam=${teamKey}`);
-        if (status.payload.game?.state !== "scheduled") cleanupFailed = true;
-        const history = await call(`/api/results/games?testTeam=${teamKey}`, { admin: true });
-        if (history.payload.games?.some((game) => game.internalGameId === testTeamFixture(teamKey).internalGameId)) {
-          cleanupFailed = true;
+        await call(`/api/test/reset?testTeam=${group.homeKey}`, { method: "POST", body: {}, admin: true });
+        for (const teamKey of [group.homeKey, group.awayKey]) {
+          const status = await call(`/api/test/status?testTeam=${teamKey}`);
+          if (status.payload.game?.state !== "scheduled") cleanupFailed = true;
+          const history = await call(`/api/results/games?testTeam=${teamKey}`, { admin: true });
+          if (history.payload.games?.some((game) => game.internalGameId === group.internalGameId)) cleanupFailed = true;
         }
       } catch (error) {
         cleanupFailed = true;
         cleanupErrors.push(error.message);
-        console.error(`baseline reset failed for ${teamKey}: ${error.message}`);
+        console.error(`baseline reset failed for ${group.internalGameId}: ${error.message}`);
       }
     }
     await call("/api/test/e2e-admin", {
@@ -172,4 +178,6 @@ if (primaryError && cleanupFailed) {
 if (primaryError) throw primaryError;
 if (temporaryAdminCreated) throw new Error("Temporary E2E admin remains; do not consider the Test Site at baseline");
 if (cleanupFailed) throw new Error("Test Site cleanup did not verify the open unpublished baseline");
-console.log(`E2E complete: Team A ${counters.teamA}/3, Team B ${counters.teamB}/3, total ${counters.passed}/6`);
+assert.equal(counters.passed, TEST_TEAM_KEYS.length);
+assert.equal(counters.physicalGames, 6);
+console.log(`E2E complete: ${counters.passed}/12 team contests across ${counters.physicalGames} physical games; baseline restored.`);

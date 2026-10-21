@@ -3,13 +3,13 @@ import { planMainWorkflowJobs, runGameAutomationV3 } from "../../game-automation
 import { transitionV3State } from "../../backend/automation-v3/repository.js";
 import { createContestId } from "../../backend/contest-identity.js";
 import { isIsolatedTestEnvironment, validatePublishedScenario } from "./isolation.js";
-import { assertDistinctTestTeamIdentity, testTeamFixture } from "./teams.js";
+import { assertDistinctTestTeamIdentity, testTeamFixture, TEST_TEAMS, TEST_TEAM_KEYS } from "./teams.js";
 
 // Every request receives a separate fixture scope. No module-level mutable target can leak
 // from one team's asynchronous request into another team's game, roster, or pipeline.
 export function createTestTeamWorker(teamKey = "fighters", { rosterPlayers = null } = {}) {
 assertDistinctTestTeamIdentity();
-const { team: targetTeam, internalGameId: INTERNAL_GAME_ID, playerPrefix } = testTeamFixture(teamKey);
+const { team: targetTeam, internalGameId: INTERNAL_GAME_ID, playerPrefix, homeTeam, awayTeam } = testTeamFixture(teamKey);
 const LEGACY_GAME_ID = INTERNAL_GAME_ID;
 const CONTEST_ID = createContestId(INTERNAL_GAME_ID, targetTeam.key);
 const E2E_ADMIN_USERNAME_PREFIX = "e2e-";
@@ -31,7 +31,7 @@ const CLEANUP_ORDER = Object.freeze([
 
 const TEST_PLAYERS = Object.freeze(Array.from({ length: 15 }, (_, index) => Object.freeze({
   playerId: `npb:${playerPrefix}${String(index + 1).padStart(4, "0")}`,
-  name: `TEST ${teamKey === "foxes" ? "Fox " : ""}Player ${String(index + 1).padStart(2, "0")}`,
+  name: `TEST ${targetTeam.shortName} Player ${String(index + 1).padStart(2, "0")}`,
   number: String(index + 1),
   uniformNumber: String(index + 1),
   position: index % 3 === 0 ? "捕手" : index % 3 === 1 ? "内野手" : "外野手",
@@ -152,41 +152,44 @@ async function deleteScenarioAuditRows(db) {
 
 async function seedScenarioGame(db, offsetMinutes) {
   const { now, startAt, deadlineAt, gameDate } = currentTimes(offsetMinutes);
-  const opponent = targetTeam.key === "test-marines" ? "fighters" : "marines";
   const roster = JSON.stringify(teamRoster);
+  const participantTeams = [homeTeam, awayTeam].map((teamKey) => TEST_TEAMS[teamKey]);
+  const participantContests = participantTeams.map((team) => ({
+    teamKey: team.key,
+    contestId: createContestId(INTERNAL_GAME_ID, team.key)
+  }));
   await db.batch([
-    db.prepare("INSERT OR IGNORE INTO contest_identity_teams (team_key) VALUES (?1)").bind(targetTeam.key),
-    db.prepare(`INSERT INTO games
+    ...participantTeams.map((team) => db.prepare("INSERT OR IGNORE INTO contest_identity_teams (team_key) VALUES (?1)").bind(team.key)),
+    db.prepare(`INSERT OR IGNORE INTO games
       (internal_game_id, game_date, start_time, home_team, away_team, game_status, created_at, updated_at)
       VALUES (?1, ?2, ?3, ?5, ?6, 'scheduled', ?4, ?4)`)
-      .bind(INTERNAL_GAME_ID, gameDate, startAt, now, targetTeam.key, opponent),
-    db.prepare(`INSERT INTO game_contests (contest_id,internal_game_id,target_team_key,created_at)
-      VALUES (?1,?2,?3,?4)`)
-      .bind(CONTEST_ID, INTERNAL_GAME_ID, targetTeam.key, now),
-    db.prepare(`INSERT INTO contest_automation_v3_state
+      .bind(INTERNAL_GAME_ID, gameDate, startAt, now, homeTeam, awayTeam),
+    ...participantContests.map(({ contestId, teamKey }) => db.prepare(`INSERT OR IGNORE INTO game_contests (contest_id,internal_game_id,target_team_key,created_at)
+      VALUES (?1,?2,?3,?4)`).bind(contestId, INTERNAL_GAME_ID, teamKey, now)),
+    ...participantContests.map(({ contestId }) => db.prepare(`INSERT OR IGNORE INTO contest_automation_v3_state
       (contest_id,internal_game_id,state,created_at,updated_at) VALUES (?1,?2,'scheduled',?3,?3)`)
-      .bind(CONTEST_ID, INTERNAL_GAME_ID, now),
-    db.prepare(`INSERT INTO detected_game_schedule
+      .bind(contestId, INTERNAL_GAME_ID, now)),
+    db.prepare(`INSERT OR IGNORE INTO detected_game_schedule
       (game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, venue,
        game_status, detected_at, schedule_checked_at, created_at, updated_at, internal_game_id)
       VALUES (?1, ?2, ?3, ?4, ?7, ?8, 'TEST-ONLY', 'TEST ONLY', 'scheduled', ?5, ?5, ?5, ?5, ?6)`)
-      .bind(LEGACY_GAME_ID, `test-only:${INTERNAL_GAME_ID}`, gameDate, startAt, now, INTERNAL_GAME_ID, targetTeam.key, opponent),
-    db.prepare(`INSERT INTO game_automation_v3_state (internal_game_id, state, created_at, updated_at)
+      .bind(LEGACY_GAME_ID, `test-only:${INTERNAL_GAME_ID}`, gameDate, startAt, now, INTERNAL_GAME_ID, homeTeam, awayTeam),
+    db.prepare(`INSERT OR IGNORE INTO game_automation_v3_state (internal_game_id, state, created_at, updated_at)
       VALUES (?1, 'scheduled', ?2, ?2)`)
       .bind(INTERNAL_GAME_ID, now),
-    db.prepare(`INSERT INTO game_roster_snapshots
+    db.prepare(`INSERT OR IGNORE INTO game_roster_snapshots
       (game_id, game_date, captured_at, roster_json, source, player_count, status, created_at, updated_at, internal_game_id)
       VALUES (?1, ?2, ?3, ?4, 'npb-roster', 15, 'captured', ?3, ?3, ?5)`)
       .bind(LEGACY_GAME_ID, gameDate, now, roster, INTERNAL_GAME_ID),
-    db.prepare(`INSERT INTO game_pregame_automation
+    db.prepare(`INSERT OR IGNORE INTO game_pregame_automation
       (game_id, game_date, start_at, created_at, updated_at, internal_game_id)
       VALUES (?1, ?2, ?3, ?4, ?4, ?5)`)
       .bind(LEGACY_GAME_ID, gameDate, startAt, now, INTERNAL_GAME_ID),
-    db.prepare(`INSERT INTO probable_starters
+    db.prepare(`INSERT OR IGNORE INTO probable_starters
       (game_id, internal_game_id, status, fetched_at, next_check_at, updated_at)
       VALUES (?1, ?2, 'unannounced', ?3, ?4, ?3)`)
       .bind(LEGACY_GAME_ID, INTERNAL_GAME_ID, now, now),
-    db.prepare(`INSERT INTO ranking_games
+    db.prepare(`INSERT OR IGNORE INTO ranking_games
       (game_id, internal_game_id, game_date, is_ranking_eligible, ranking_eligible_at,
        game_status, is_test_game, publication_status, created_at, updated_at)
       VALUES (?1, ?2, ?3, 1, ?4, 'pending', 0, 'pending', ?4, ?4)`)
@@ -420,14 +423,14 @@ async function finalizeSyntheticLineup(request, env, ctx) {
   });
   const saved = await save.json();
   if (save.status !== 201 || !saved?.revision?.revisionId) {
-    throw new Error(`synthetic lineup save failed: ${saved?.code || save.status}`);
+    throw new Error(`synthetic lineup save failed: ${JSON.stringify(saved)}`);
   }
   const finalize = await callAdminApi(request, env, ctx, `/api/admin/v3/games/${INTERNAL_GAME_ID}/lineup-finalize`, {
     lineupRevisionId: saved.revision.revisionId,
     confirmed: true
   });
   const finalized = await finalize.json();
-  if (finalize.status !== 200) throw new Error(`synthetic lineup finalize failed: ${finalized?.code || finalize.status}`);
+  if (finalize.status !== 200) throw new Error(`synthetic ${targetTeam.key} lineup finalize failed: ${JSON.stringify(finalized)}`);
   return finalized;
 }
 
@@ -597,15 +600,15 @@ async function handleTestControl(request, env, ctx) {
 async function serveSyntheticRoster(request, env) {
   const internalGameId = String(new URL(request.url).searchParams.get("internalGameId") || "");
   if (internalGameId !== INTERNAL_GAME_ID) return null;
-  const snapshot = await env.AUTH_DB.prepare(
-    "SELECT game_date, roster_json, captured_at FROM game_roster_snapshots WHERE internal_game_id = ?1 LIMIT 1"
+  const game = await env.AUTH_DB.prepare(
+    "SELECT game_date FROM games WHERE internal_game_id = ?1 LIMIT 1"
   ).bind(INTERNAL_GAME_ID).first();
-  if (!snapshot) return jsonResponse({ ok: false, code: "ROSTER_NOT_FOUND" }, 404);
-  const players = JSON.parse(snapshot.roster_json);
+  if (!game) return jsonResponse({ ok: false, code: "ROSTER_NOT_FOUND" }, 404);
+  const capturedAt = new Date().toISOString();
   return jsonResponse({
     ok: true,
     internalGameId: INTERNAL_GAME_ID,
-    gameDate: snapshot.game_date,
+    gameDate: game.game_date,
     status: "captured",
     rosterStatus: "captured",
     displayRosterSource: "test_fixture",
@@ -615,9 +618,9 @@ async function serveSyntheticRoster(request, env) {
     canUseForPrediction: true,
     verified: true,
     stale: false,
-    capturedAt: snapshot.captured_at,
-    playerCount: players.length,
-    players,
+    capturedAt,
+    playerCount: teamRoster.length,
+    players: teamRoster,
     warning: null,
     nextSafeAction: null
   });
@@ -649,7 +652,7 @@ export default {
   async fetch(request, env, ctx) {
     if (!isIsolatedTestEnvironment(env)) return authWorker.fetch(request, env, ctx);
     const key = new URL(request.url).searchParams.get("testTeam") || "fighters";
-    if (!["fighters", "foxes", "marines"].includes(key)) return jsonResponseForUnknownTeam();
+    if (!TEST_TEAM_KEYS.includes(key)) return jsonResponseForUnknownTeam();
     return createTestTeamWorker(key).fetch(request, env, ctx);
   }
 };

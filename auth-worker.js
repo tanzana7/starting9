@@ -9988,7 +9988,13 @@ async function handleAdminV3Phase1Route(request, env, cors, route) {
 
 export async function readSharedGameDayRoster(env, game, ctx = undefined) {
   const targetTeam = targetTeamForEnvironment(env);
-  if (targetTeam.key !== PRODUCTION_TEAM.key && typeof env.TARGET_ROSTER_SOURCE === "function") {
+  const isolatedTestRosterSource = env.ENVIRONMENT === "test"
+    && env.TEST_SITE_ID === "starting9-isolated-v1"
+    && env.TEST_WORKER_NAME === "starting9-test-auth"
+    && env.TEST_AUTH_DB_ID === "7ea1fa14-ffc0-4404-8a65-5dbb8218f368"
+    && env.TEST_AUDIT_DB_ID === "a18c6cf9-a238-4059-a5ef-784f248e225e";
+  if ((targetTeam.key !== PRODUCTION_TEAM.key || isolatedTestRosterSource)
+      && typeof env.TARGET_ROSTER_SOURCE === "function") {
     return env.TARGET_ROSTER_SOURCE(game);
   }
   const internalGameId = String(game?.internalGameId || game?.internal_game_id || "").trim();
@@ -19319,7 +19325,9 @@ async function linkFinalLineupRevision(db, { gameId, internalGameId = "", contes
     if (Number(updated?.meta?.changes || 0) !== 1) {
       throw createV3Error("V3_LINEUP_FINALIZE_CONFLICT", "contestのcanonicalスタメンを更新できませんでした。", { httpStatus: 409 });
     }
-    if (targetTeam.key === "fighters" || targetTeam.key.startsWith("test-")) {
+    // Contest-native Fighters now use the same revision table as every other
+    // team. Only retired synthetic test keys still need the game-scoped bridge.
+    if (targetTeam.key.startsWith("test-")) {
       await linkFinalLineupRevision(db, { gameId, internalGameId, version, finalizedAt, finalizedBy });
     }
     return updated;
@@ -24477,7 +24485,8 @@ async function handleGetCurrentPrediction(request, env, cors) {
 
   const testGame = await isTestRankingGame(env.AUTH_DB, metadata.gameId);
   const published = testGame ? false : await isGameResultsPublished(env.AUTH_DB, metadata.gameId, new Date(), {
-    v4SemiAuto: getV3OperationalMode(env).isV4SemiAuto
+    v4SemiAuto: getV3OperationalMode(env).isV4SemiAuto,
+    contestId: contest.contestId
   });
   const row = testGame || !contest.persisted ? null : await getPredictionRow(env.AUTH_DB, session.id, metadata);
   if (!row) {

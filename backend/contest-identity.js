@@ -1,6 +1,10 @@
 import teamContext from "../frontend/shared/team-context.js";
 
-const CANONICAL_CONTEST_TEAMS = new Set(["fighters", "marines", "test-fighters", "test-foxes", "test-marines"]);
+const CANONICAL_CONTEST_TEAMS = new Set([
+  "fighters", "giants", "tigers", "baystars", "carp", "swallows", "dragons",
+  "hawks", "marines", "eagles", "buffaloes", "lions",
+  "test-fighters", "test-foxes", "test-marines"
+]);
 
 function utf8Hex(value) {
   return Array.from(new TextEncoder().encode(value), (byte) => byte.toString(16).padStart(2, "0")).join("");

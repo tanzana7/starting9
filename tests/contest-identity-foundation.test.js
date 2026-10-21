@@ -10,7 +10,9 @@ import teamContext from "../frontend/shared/team-context.js";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MIGRATIONS = path.join(ROOT, "migrations");
 const FOUNDATION_NAME = "0046_contest_identity_foundation.sql";
-const FOUNDATION_SQL = fs.readFileSync(path.join(MIGRATIONS, FOUNDATION_NAME), "utf8");
+// Fault-injection replacements below use LF anchors; normalize checkout line endings
+// so the migration contract tests behave identically on Windows and Unix.
+const FOUNDATION_SQL = fs.readFileSync(path.join(MIGRATIONS, FOUNDATION_NAME), "utf8").replace(/\r\n/g, "\n");
 const LEGACY_GAMES = [
   ["fighters-home", "北海道日本ハムファイターズ", "千葉ロッテマリーンズ"],
   ["fighters-away", "千葉ロッテマリーンズ", "日本ハム"],

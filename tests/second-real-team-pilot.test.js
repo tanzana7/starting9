@@ -128,7 +128,7 @@ test("Auth public roster requests Marines explicitly, applies M identity, and re
   const roster = await fetchLatestPublicRoster(env, { internal_game_id: "pilot-game", game_date: "2026-10-20" });
   assert.deepEqual(requestedTeams, ["marines"]);
   assert.equal(roster.playerCount, 20);
-  assert.ok(roster.players.every((player) => player.teamCode === "test-marines" && player.teamId === "TM"));
+  assert.ok(roster.players.every((player) => player.teamCode === "marines" && player.teamId === "M"));
   env.NPB_FETCH_WORKER.fetch = async () => Response.json({ ok: true, team: "fighters", players });
   assert.equal(await fetchLatestPublicRoster(env, { internal_game_id: "pilot-game" }), null);
 });

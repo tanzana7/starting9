@@ -2,20 +2,10 @@ import teamContext from "./frontend/shared/team-context.js";
 
 export const FIGHTERS_TEAM_CODE = teamContext.FIGHTERS.key;
 
-export const TEAM_ALIASES = Object.freeze({
-  fighters: teamContext.FIGHTERS.aliases,
-  buffaloes: ["オリックス・バファローズ", "オリックスバファローズ", "オリックス"],
-  hawks: ["福岡ソフトバンクホークス", "ソフトバンクホークス", "ソフトバンク", "H"],
-  lions: ["埼玉西武ライオンズ", "西武ライオンズ", "西武"],
-  eagles: ["東北楽天ゴールデンイーグルス", "楽天ゴールデンイーグルス", "楽天", "E"],
-  marines: ["m", "千葉ロッテマリーンズ", "ロッテマリーンズ", "ロッテ", "マリーンズ"],
-  giants: ["読売ジャイアンツ", "巨人"],
-  tigers: ["阪神タイガース", "阪神"],
-  baystars: ["横浜DeNAベイスターズ", "横浜DeNA", "DeNA"],
-  carp: ["広島東洋カープ", "広島カープ", "広島"],
-  dragons: ["中日ドラゴンズ", "中日"],
-  swallows: ["東京ヤクルトスワローズ", "ヤクルトスワローズ", "ヤクルト"]
-});
+export const TEAM_ALIASES = Object.freeze(Object.fromEntries(Object.values(teamContext.NPB_TEAMS).map((team) => [
+  team.key,
+  [...new Set([team.key, team.providerTeamCode, team.playerTeamId, team.displayName, ...team.aliases])]
+])));
 
 function normalizeText(value) {
   return String(value || "").replace(/[\s\u3000]/g, "").replace(/[・.]/g, "").toLowerCase();

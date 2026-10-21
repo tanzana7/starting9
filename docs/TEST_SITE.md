@@ -36,7 +36,7 @@ Scenarios:
 
 The scenario controller uses the formal planner, existing admin lineup APIs, and existing score/ranking/publication executors. Applying a scenario re-bases the synthetic game timestamps relative to the current real clock so the transitions can be tested immediately; it does not replace or monkeypatch the runtime clock. Reset removes only rows keyed to the single fixed synthetic game and reseeds the open baseline. Reset before moving backward from a later completed scenario.
 
-The fixture contains one clearly marked TEST game per team and 15 `TEST Player` entries. The synthetic roster route only answers for that fixture's canonical internal game ID. Predictions and users persist normally in the isolated test database until the test admin resets the scenario. The CLI E2E runner performs three complete prediction→close→lineup→score→ranking→publish→result cycles for both isolated teams and returns both fixtures to the open, unpublished baseline, including their synthetic audit rows.
+The fixture contains six deterministic physical games, pairing all twelve canonical NPB team contexts once, with one contest per participating team (twelve contests total). Each team receives its own 15-player `TEST Player` roster, and the synthetic roster route only answers for that team's canonical fixture game ID. The CLI E2E runner completes prediction→close→lineup→score→ranking→publish→result independently for every team contest, including both contests of each shared physical game, then returns all six games to the open, unpublished baseline and removes only scenario-scoped synthetic audit rows plus the disposable E2E identity/session.
 
 ## Build, validate, and deploy
 

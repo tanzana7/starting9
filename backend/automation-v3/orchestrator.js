@@ -649,7 +649,15 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
         }
         continue;
       }
-      if (workflowArtifacts.publicationReady && (!canonicalAvailable || canonicalFullyPublished)) continue;
+      // Once contests share one physical game, a sibling contest's published
+      // game-scoped artifact must not suppress this team's still-open workflow.
+      // Contest-native reads are authoritative whenever a target contest was
+      // resolved; legacy game-scoped publication remains the fallback only for
+      // callers without a contest identity.
+      const targetContestPublished = targetTeamKey && contestId
+        ? canonicalFullyPublished
+        : workflowArtifacts.publicationReady;
+      if (targetContestPublished && (!canonicalAvailable || canonicalFullyPublished)) continue;
       const existingJobs = await readV3JobsForPlanning(db, game.internalGameId, contestId);
       const sharedPlanningState = buildV3PlanningState({
         ...derivedPlanningState,

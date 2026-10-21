@@ -1,6 +1,11 @@
 const TARGET_AUTH_WORKER_ORIGIN = "https://starting9-auth.starting9.workers.dev";
 const TEST_AUTH_WORKER_ORIGIN = "https://starting9-test-auth.starting9.workers.dev";
 const AUTH_WORKER_ORIGIN_ENV = "STARTING9_AUTH_ORIGIN";
+const TEST_TEAM_KEYS = new Set([
+  "fighters", "giants", "tigers", "baystars", "carp", "swallows", "dragons",
+  "hawks", "marines", "eagles", "buffaloes", "lions"
+]);
+const INVALID_TEST_TEAM = "__invalid_test_team__";
 
 export function resolveAuthWorkerOrigin(env = {}) {
   const configured = String(env?.[AUTH_WORKER_ORIGIN_ENV] || "")
@@ -19,10 +24,11 @@ export function resolveTestTeam(request, env = {}) {
   if (String(env?.SITE_ENVIRONMENT || "").trim().toLowerCase() !== "test") return "";
   const requestUrl = new URL(request.url);
   const queryTeam = requestUrl.searchParams.get("testTeam");
-  if (queryTeam === "fighters" || queryTeam === "foxes") return queryTeam;
+  if (queryTeam !== null) return TEST_TEAM_KEYS.has(queryTeam) ? queryTeam : INVALID_TEST_TEAM;
   const cookie = request.headers.get("Cookie") || "";
-  const match = cookie.match(/(?:^|;\s*)s9_test_team=(fighters|foxes)(?:;|$)/);
-  return match?.[1] || "fighters";
+  const match = cookie.match(/(?:^|;\s*)s9_test_team=([^;]*)(?:;|$)/);
+  if (!match) return "fighters";
+  return TEST_TEAM_KEYS.has(match[1]) ? match[1] : INVALID_TEST_TEAM;
 }
 
 const BLOCKED_REQUEST_HEADERS = new Set([
@@ -108,6 +114,9 @@ export async function onRequest(context) {
   const upstreamPath = requestUrl.pathname;
   const upstreamUrl = new URL(upstreamPath + requestUrl.search, upstreamOrigin);
   const testTeam = resolveTestTeam(context.request, context.env);
+  if (testTeam === INVALID_TEST_TEAM) {
+    return jsonError("INVALID_TEST_TEAM", "対象球団を選び直してください。", 400);
+  }
   if (testTeam) upstreamUrl.searchParams.set("testTeam", testTeam);
   try {
     const upstream = await fetch(createUpstreamRequest(context.request, upstreamUrl));

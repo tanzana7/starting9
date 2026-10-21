@@ -55,7 +55,7 @@ export async function createTestSiteMultiTeamFixture({ rosterPlayersByTeam = {} 
         body: body === undefined ? undefined : JSON.stringify(body)
       }), env, { waitUntil() {} });
       const result = await response.json();
-      assertOk(response, result);
+      assertOk(response, result, `${team} ${method} ${path}`);
       return result;
     }
     return { database, audit, request, close() { database.close(); audit.close(); } };
@@ -66,6 +66,6 @@ export async function createTestSiteMultiTeamFixture({ rosterPlayersByTeam = {} 
   }
 }
 
-function assertOk(response, result) {
-  if (!response.ok) throw new Error(`Test Site request failed (${response.status}): ${JSON.stringify(result)}`);
+function assertOk(response, result, context = "request") {
+  if (!response.ok) throw new Error(`Test Site ${context} failed (${response.status}): ${JSON.stringify(result)}`);
 }

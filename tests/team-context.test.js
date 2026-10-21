@@ -25,9 +25,10 @@ test("Fighters aliases and deployed branding remain exact; unknown context fails
   assert.throws(() => team.defineTeamContext({ key: "unknown" }), /Invalid/);
   const values = new Map();
   team.applyBranding({ style: { setProperty: (key, value) => values.set(key, value) } }, team.FIGHTERS);
-  assert.equal(values.get("--fighters-blue"), "#005bac");
+  assert.equal(values.get("--team-primary"), "#005bac");
+  assert.equal(values.get("--team-on-primary"), "#ffffff");
   team.applyBranding({ style: { setProperty: (key, value) => values.set(key, value) } }, foxes);
-  assert.equal(values.get("--fighters-blue"), foxes.branding.primary);
+  assert.equal(values.get("--team-primary"), foxes.branding.primary);
   assert.equal(Object.isFrozen(foxes.branding), true);
 });
 

@@ -1,8 +1,21 @@
 :root {
-  --fighters-blue: #005bac;
-  --fighters-deep-blue: #003f7d;
-  --fighters-sky: #eaf4ff;
-  --fighters-gold: #d5a11e;
+  --team-primary: #005bac;
+  --team-secondary: #003f7d;
+  --team-accent: #d5a11e;
+  --team-surface: #eaf4ff;
+  --team-on-primary: #ffffff;
+  --team-on-accent: #111111;
+  --team-action: var(--team-primary);
+  --team-on-action: var(--team-on-primary);
+  --team-action-hover: var(--team-secondary);
+  --team-header: var(--team-secondary);
+  --team-strong-primary: var(--team-primary);
+  --team-highlight: var(--team-accent);
+  --team-info-overlay: color-mix(in srgb, var(--team-primary) 72%, transparent);
+  --fighters-blue: var(--team-primary);
+  --fighters-deep-blue: var(--team-secondary);
+  --fighters-sky: var(--team-surface);
+  --fighters-gold: var(--team-accent);
   --text: #152033;
   --muted: #65758b;
   --border: #d8e3ef;
@@ -644,7 +657,7 @@ button:disabled {
 }
 
 .ranking-tab.is-active {
-  color: #ffffff;
+  color: var(--team-on-primary);
   background: var(--fighters-blue);
 }
 
@@ -1056,7 +1069,7 @@ textarea:focus {
 }
 
 .primary-button {
-  color: #ffffff;
+  color: var(--team-on-primary);
   background: var(--fighters-blue);
   box-shadow: 0 8px 18px rgba(0, 91, 172, 0.25);
 }
@@ -3083,18 +3096,18 @@ textarea:focus {
   }
 }
 
-/* Public prediction input: keep Design F colors without changing interaction geometry. */
+/* Public prediction input uses the selected team's theme without changing interaction geometry. */
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) {
   background: #eef5fb;
 }
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) .app-header {
-  background: #164a79;
+  background: var(--team-header);
 }
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) .game-info-display {
   border-color: rgba(255, 255, 255, 0.58);
-  background: rgba(17, 104, 168, 0.72);
+  background: var(--team-info-overlay);
 }
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) .app-layout > .lineup-card:has(#predictionForm) {
@@ -3112,14 +3125,14 @@ body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .lineup-panel h3,
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .player-list-heading h3 {
-  color: #164a79;
+  color: var(--team-secondary);
   letter-spacing: 0.02em;
 }
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .lineup-panel h3,
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .player-list-heading h3 {
   padding-inline-start: 10px;
-  border-inline-start: 4px solid #d5a11e;
+  border-inline-start: 4px solid var(--team-accent);
 }
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .lineup-slot {
@@ -3133,20 +3146,20 @@ body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm
 }
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .lineup-slot.is-active {
-  border-color: #73a9d3;
-  background: #eef7ff;
-  box-shadow: inset 4px 0 0 #1168a8, 0 3px 8px rgba(22, 74, 121, 0.12);
+  border-color: var(--team-strong-primary);
+  background: color-mix(in srgb, var(--team-strong-primary) 8%, #ffffff);
+  box-shadow: inset 4px 0 0 var(--team-strong-primary), 0 3px 8px rgba(22, 74, 121, 0.12);
 }
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .lineup-slot.is-drop-target {
-  border-color: #d5a11e;
+  border-color: var(--team-highlight);
   background: #fff8e5;
   box-shadow: 0 0 0 3px rgba(213, 161, 30, 0.2), 0 4px 10px rgba(22, 74, 121, 0.12);
 }
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .slot-order {
-  color: #ffffff;
-  background: #1168a8;
+  color: var(--team-on-primary);
+  background: var(--team-strong-primary);
   box-shadow: 0 2px 4px rgba(17, 104, 168, 0.22);
 }
 
@@ -3158,9 +3171,9 @@ body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .slot-drag-handle:hover,
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .slot-drag-handle:focus-visible {
-  border-color: #73a9d3;
-  color: #164a79;
-  background: #eaf4ff;
+  border-color: var(--team-primary);
+  color: var(--team-secondary);
+  background: var(--team-surface);
 }
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .position-button {
@@ -3180,8 +3193,8 @@ body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .position-menu-option:hover,
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .position-menu-option:focus-visible,
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .position-menu-option.is-current {
-  border-color: #1168a8;
-  background: #eaf4ff;
+  border-color: var(--team-strong-primary);
+  background: var(--team-surface);
 }
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .roster-filter {
@@ -3195,16 +3208,16 @@ body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .roster-filter-button:hover,
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .roster-filter-button:focus-visible {
-  border-color: #73a9d3;
-  color: #164a79;
+  border-color: var(--team-primary);
+  color: var(--team-secondary);
   background: #ffffff;
 }
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .roster-filter-button.is-selected {
-  border-color: #1168a8;
-  color: #ffffff;
-  background: #1168a8;
-  box-shadow: inset 0 -3px 0 #d5a11e, 0 2px 5px rgba(22, 74, 121, 0.16);
+  border-color: var(--team-strong-primary);
+  color: var(--team-on-primary);
+  background: var(--team-strong-primary);
+  box-shadow: inset 0 -3px 0 var(--team-highlight), 0 2px 5px rgba(22, 74, 121, 0.16);
 }
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .player-chip {
@@ -3214,7 +3227,7 @@ body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .player-chip:hover,
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .player-chip:focus-visible {
-  border-color: #73a9d3;
+  border-color: var(--team-primary);
   background: #f1f8ff;
   box-shadow: 0 4px 9px rgba(22, 74, 121, 0.13);
 }
@@ -3231,7 +3244,7 @@ body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm
 }
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionDeadlineStatus {
-  border-color: #d5a11e;
+  border-color: var(--team-highlight);
   background: #fff9e8;
   color: #4c5f72;
 }
@@ -3242,27 +3255,28 @@ body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionDead
 }
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #savePredictionButton {
-  border-color: #1168a8;
-  background: #1168a8;
+  border-color: var(--team-strong-primary);
+  color: var(--team-on-primary);
+  background: var(--team-strong-primary);
   box-shadow: 0 4px 9px rgba(17, 104, 168, 0.2);
 }
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #savePredictionButton:hover,
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #savePredictionButton:focus-visible {
-  border-color: #164a79;
-  background: #164a79;
+  border-color: var(--team-secondary);
+  background: var(--team-secondary);
 }
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #resetPredictionButton {
   border-color: #9fc2df;
-  color: #164a79;
+  color: var(--team-secondary);
   background: #ffffff;
 }
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #resetPredictionButton:hover,
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #resetPredictionButton:focus-visible {
-  border-color: #1168a8;
-  background: #eaf4ff;
+  border-color: var(--team-primary);
+  background: var(--team-surface);
 }
 
 @media (max-width: 768px) {
@@ -3624,7 +3638,7 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
 }
 
 .score-total span {
-  color: #eaf4ff;
+  color: var(--team-surface);
   font-size: clamp(1.2rem, 4vw, 2rem);
   font-weight: 900;
 }
@@ -3705,7 +3719,7 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
 }
 
 .result-table th {
-  color: #ffffff;
+  color: var(--team-on-primary);
   background: var(--fighters-blue);
   font-size: 0.78rem;
   font-weight: 900;
@@ -3805,7 +3819,7 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
   align-items: center;
   justify-content: center;
   border-radius: 0;
-  color: #ffffff;
+  color: var(--team-on-primary);
   background: var(--fighters-blue);
   font-size: 1rem;
   font-weight: 900;
@@ -4379,15 +4393,15 @@ body:not(:has(.app-layout.is-admin-screen)) #savedPrediction.summary-box {
   padding: 9px 16px;
   border: 1px solid #8fc7ff;
   border-radius: 7px;
-  color: #ffffff;
-  background: var(--fighters-blue);
+  color: var(--team-on-action);
+  background: var(--team-action);
   font-weight: 900;
   box-shadow: 0 5px 14px rgba(0, 0, 0, 0.18);
 }
 
 .hero-cta:hover,
 .hero-cta:focus-visible {
-  background: #1476c7;
+  background: var(--team-action-hover);
 }
 
 .how-to-panel {
@@ -6204,10 +6218,24 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
 
 /* 公開画面: 野球の記録表・スコアボードを意識した落ち着いた配色 */
 body:not(:has(.app-layout.is-admin-screen)) {
-  --fighters-blue: #1f3b5b;
-  --fighters-deep-blue: #14213d;
-  --fighters-sky: #eef1f4;
-  --fighters-gold: #b28704;
+  /* Preserve the shipped public Fighters palette as the no-JS and root-route baseline. */
+  --team-primary: #1f3b5b;
+  --team-secondary: #14213d;
+  --team-accent: #b28704;
+  --team-surface: #eef1f4;
+  --team-on-primary: #ffffff;
+  --team-on-accent: #172033;
+  --team-action: #d1ad4a;
+  --team-on-action: #172033;
+  --team-action-hover: #e0c36f;
+  --team-header: #164a79;
+  --team-strong-primary: #1168a8;
+  --team-highlight: #d5a11e;
+  --team-info-overlay: rgba(17, 104, 168, 0.72);
+  --fighters-blue: var(--team-primary);
+  --fighters-deep-blue: var(--team-secondary);
+  --fighters-sky: var(--team-surface);
+  --fighters-gold: var(--team-accent);
   --text: #172033;
   --muted: #667085;
   --border: #d9dee7;
@@ -6218,7 +6246,7 @@ body:not(:has(.app-layout.is-admin-screen)) {
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .app-header {
-  background: var(--fighters-deep-blue);
+  background: var(--team-header);
   border-bottom: 4px solid var(--fighters-gold);
   box-shadow: none;
 }
@@ -6235,7 +6263,7 @@ body:not(:has(.app-layout.is-admin-screen)) .probable-starter-message {
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .lead {
-  border-left-color: #b28704;
+  border-left-color: var(--team-accent);
   color: #c8d3df;
 }
 
@@ -6340,16 +6368,16 @@ body:not(:has(.app-layout.is-admin-screen)) .hero-panel .hero-copy > p:last-chil
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .hero-cta {
-  border-color: #d1ad4a;
+  border-color: var(--team-action);
   border-radius: 4px;
-  color: #172033;
-  background: #d1ad4a;
+  color: var(--team-on-action);
+  background: var(--team-action);
   box-shadow: none;
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .hero-cta:hover,
 body:not(:has(.app-layout.is-admin-screen)) .hero-cta:focus-visible {
-  background: #e0c36f;
+  background: var(--team-action-hover);
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .area-label,
@@ -6408,7 +6436,7 @@ body:not(:has(.app-layout.is-admin-screen)) .ranking-tab {
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .ranking-tab.is-active {
-  color: #ffffff;
+  color: var(--team-on-primary);
   background: var(--fighters-deep-blue);
 }
 
@@ -6465,13 +6493,13 @@ body:not(:has(.app-layout.is-admin-screen)) .danger-button {
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .primary-button {
-  color: #ffffff;
+  color: var(--team-on-primary);
   background: var(--fighters-deep-blue);
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .primary-button:hover,
 body:not(:has(.app-layout.is-admin-screen)) .primary-button:focus-visible {
-  background: #1f3b5b;
+  background: var(--team-primary);
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .secondary-button {
@@ -6563,7 +6591,7 @@ body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .p
 
 body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .player-chip:hover,
 body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .player-chip:focus-visible {
-  border-color: #c5a84d;
+  border-color: var(--team-accent);
   background: #fbf7e8;
 }
 
@@ -6573,7 +6601,7 @@ body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .r
 
 body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) .result-hero {
   border-radius: 4px;
-  background: #164a79;
+  background: var(--team-header);
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .app-layout:not(.is-admin-screen) > .result-card {
@@ -6592,7 +6620,8 @@ body:not(:has(.app-layout.is-admin-screen)) .result-table-wrap {
 
 body:not(:has(.app-layout.is-admin-screen)) .result-table th,
 body:not(:has(.app-layout.is-admin-screen)) .result-table .result-order-cell strong {
-  background: #1168a8;
+  color: var(--team-on-primary);
+  background: var(--team-strong-primary);
 }
 
 body:not(:has(.app-layout.is-admin-screen)) .result-table tbody td {
@@ -7439,14 +7468,14 @@ body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #resetPredictio
 /* Keep the public editing target distinct from batting-side colors. */
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .lineup-slot.is-active,
 body:not(:has(.app-layout.is-admin-screen)) .lineup-slot.is-active {
-  border-color: #d5a11e;
-  background: #fff8e5;
+  border-color: var(--team-highlight);
+  background: color-mix(in srgb, var(--team-highlight) 10%, #ffffff);
   box-shadow: 0 3px 8px rgba(146, 102, 0, 0.14);
-  outline: 1px solid rgba(213, 161, 30, 0.45);
+  outline: 1px solid color-mix(in srgb, var(--team-highlight) 45%, transparent);
   outline-offset: -1px;
 }
 
 body:not(:has(.app-layout.is-admin-screen)):has(#predictionForm) #predictionForm .position-menu-option.is-current {
-  border-color: #d5a11e;
-  background: #fff8e5;
+  border-color: var(--team-highlight);
+  background: color-mix(in srgb, var(--team-highlight) 10%, #ffffff);
 }

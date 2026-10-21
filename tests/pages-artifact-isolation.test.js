@@ -36,6 +36,10 @@ test("production Pages artifact excludes Test Site controls and preserves produc
     ...["giants", "tigers", "baystars", "carp", "swallows", "dragons", "hawks", "fighters", "marines", "eagles", "buffaloes", "lions"]
       .map((slug) => `teams/${slug}/index.html`)
   ]) assert.ok(files.includes(required), `missing production asset ${required}`);
+  const sharedTeamShell = readArtifact(productionOutput, "teams/fighters/index.html");
+  for (const slug of ["giants", "tigers", "baystars", "carp", "swallows", "dragons", "hawks", "marines", "eagles", "buffaloes", "lions"]) {
+    assert.equal(readArtifact(productionOutput, `teams/${slug}/index.html`), sharedTeamShell, `${slug} must use the shared UI shell`);
+  }
   assert.match(readArtifact(productionOutput, "404.html"), /404/);
   const productionTeamBootstrap = readArtifact(productionOutput, "frontend/shared/production-team.js");
   assert.match(productionTeamBootstrap, /window\.Starting9TargetTeam = requestedTeam/);

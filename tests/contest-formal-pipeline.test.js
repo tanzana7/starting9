@@ -231,9 +231,17 @@ test("formal same-game pipeline is contest-isolated in serial, interleaved, and 
         assert.equal(injected.failed, true);
         assert.equal(firstMarines.execution.retryWait, 1);
         assert.equal(fixture.database.prepare("SELECT status FROM game_jobs_v3 WHERE contest_id=? AND job_type='score'").get(CONTESTS.marines).status, "retry_wait");
+        const retryJob = fixture.database.prepare("SELECT next_retry_at FROM game_jobs_v3 WHERE contest_id=? AND job_type='score'")
+          .get(CONTESTS.marines);
+        const retryAt = Date.parse(retryJob?.next_retry_at || "");
+        assert.ok(Number.isFinite(retryAt), "Marines score retry must persist a valid next_retry_at");
         await driveTeam(fixture, "fighters", new Date(NOW.getTime() + 1_000));
         assert.equal(fixture.database.prepare("SELECT attempt_count,status FROM game_jobs_v3 WHERE contest_id=? AND job_type='score'").get(CONTESTS.fighters).status, "completed");
-        await driveTeam(fixture, "marines", new Date(NOW.getTime() + 11 * 60_000), { failMarinesScoreOnce: injected });
+        // Retry timing is part of the persisted job contract. Starting at an assumed +11 minutes
+        // can leave the final retry inside the 8-tick window when the injected failure occurs
+        // later in the initial drive; resume from the actual due timestamp instead.
+        const marinesRetryStart = Math.max(NOW.getTime() + 11 * 60_000, retryAt + 1);
+        await driveTeam(fixture, "marines", new Date(marinesRetryStart), { failMarinesScoreOnce: injected });
       }
       const fighters = await assertPublishedContest(fixture, "fighters");
       const marines = await assertPublishedContest(fixture, "marines");

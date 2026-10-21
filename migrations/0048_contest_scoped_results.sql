@@ -317,115 +317,68 @@ CREATE TABLE contest_ranking_test_predictions (
   FOREIGN KEY (contest_id, scoring_revision_id) REFERENCES contest_scoring_revisions(contest_id, id) ON DELETE RESTRICT
 );
 
--- Backfill only when a physical game has exactly one contest. A game with two
--- registered contests has no trustworthy owner for game-only score/ranking/
--- publication state and therefore aborts the migration instead of guessing.
-CREATE TABLE contest_a3_migration_assert (valid INTEGER NOT NULL CHECK (valid = 1));
-WITH artifact_sources_a AS (
-  SELECT 'game_scoring_revisions' AS source, s.internal_game_id FROM game_scoring_revisions s
-  UNION ALL SELECT 'score_attempts', s.internal_game_id FROM score_attempts s
-  UNION ALL SELECT 'ranking_games', COALESCE(r.internal_game_id, g.internal_game_id)
-    FROM ranking_games r LEFT JOIN games g ON g.internal_game_id = r.game_id OR g.internal_game_id = r.internal_game_id
+-- C-4 starts with clean contest-owned result artifacts. The pre-C-4 game-only
+-- result history remains in its existing tables for operational retention,
+-- but is intentionally not imported: those rows can contain legacy IDs and
+-- conflicting publication state with no safe, user-visible canonical owner.
+-- Future contests write these destinations through the contest-scoped runtime.
+
+-- Publication is canonical only when the final lineup artifact itself is
+-- marked published and has a timestamp. ranking_games is a projection and can
+-- contain a stale/duplicate identity row; never promote from that projection.
+CREATE TABLE contest_a3_publication_assert (valid INTEGER NOT NULL CHECK (valid = 1));
+INSERT INTO contest_a3_publication_assert(valid)
+SELECT 0
+ WHERE EXISTS (
+   SELECT 1 FROM game_lineups lineup
+    WHERE (lineup.publication_status = 'published' AND lineup.published_at IS NULL)
+       OR (lineup.publication_status <> 'published' AND lineup.published_at IS NOT NULL)
+ );
+DROP TABLE contest_a3_publication_assert;
+
+WITH ranked_source AS (
+  SELECT c.contest_id, g.internal_game_id, r.is_ranking_eligible, r.ranking_eligible_at,
+         r.game_status, r.is_test_game, r.created_at, r.updated_at, r.game_date,
+         r.scored_private_at, r.ranking_eligibility_status, r.ranking_eligibility_reason,
+         r.ranking_eligibility_note, r.ranking_eligibility_version,
+         r.ranking_eligibility_updated_by, r.ranking_eligibility_updated_at,
+         lineup.scoring_status AS canonical_scoring_status,
+         lineup.publication_status AS canonical_publication_status,
+         lineup.published_at AS canonical_published_at,
+         lineup.scored_at AS canonical_scored_at,
+         ROW_NUMBER() OVER (
+           PARTITION BY c.contest_id, g.internal_game_id
+           ORDER BY CASE WHEN r.game_id = g.internal_game_id THEN 0 ELSE 1 END,
+                    r.updated_at DESC, r.game_id ASC
+         ) AS source_rank
+    FROM ranking_games r
+    JOIN games g ON g.internal_game_id = COALESCE(r.internal_game_id, r.game_id)
+    JOIN game_contests c ON c.internal_game_id = g.internal_game_id AND c.target_team_key = 'fighters'
+    LEFT JOIN game_lineups lineup ON lineup.contest_id = c.contest_id
+      AND lineup.internal_game_id = g.internal_game_id
    WHERE r.is_test_game = 0
-  UNION ALL SELECT 'ranking_eligibility_history', COALESCE(h.internal_game_id, g.internal_game_id)
-    FROM ranking_eligibility_history h LEFT JOIN games g ON g.internal_game_id = h.game_id OR g.internal_game_id = h.internal_game_id
-), artifact_sources_b AS (
-  SELECT 'ranking_reflection_revisions', r.internal_game_id FROM ranking_reflection_revisions r
-  UNION ALL SELECT 'prediction_score_revisions', COALESCE(s.internal_game_id, p.internal_game_id)
-    FROM prediction_score_revisions s JOIN predictions p ON p.id = s.prediction_id WHERE s.is_test_prediction = 0
-  UNION ALL SELECT 'game_rescore_previews', COALESCE(l.internal_game_id, g.internal_game_id)
-    FROM game_rescore_previews p LEFT JOIN game_lineup_revisions l ON l.game_id = p.game_id AND l.version = p.lineup_version
-    LEFT JOIN games g ON g.internal_game_id = p.game_id OR g.internal_game_id = l.internal_game_id
-  UNION ALL SELECT 'game_rescore_jobs', COALESCE(j.internal_game_id, g.internal_game_id)
-    FROM game_rescore_jobs j LEFT JOIN games g ON g.internal_game_id = j.game_id OR g.internal_game_id = j.internal_game_id
-  UNION ALL SELECT 'game_rescore_audits', g.internal_game_id
-    FROM game_rescore_audits a LEFT JOIN games g
-      ON g.internal_game_id = a.game_id
-      OR g.internal_game_id = (
-        SELECT MIN(gi.internal_game_id) FROM game_identifiers gi
-         WHERE gi.identifier_value = a.game_id
-         GROUP BY gi.identifier_value
-        HAVING COUNT(DISTINCT gi.internal_game_id) = 1
-      )
-), artifact_sources_c AS (
-  SELECT 'perfect_achievers', COALESCE(g.internal_game_id, p.internal_game_id)
-    FROM perfect_achievers a LEFT JOIN games g ON g.internal_game_id = a.game_id
-    LEFT JOIN predictions p ON p.game_id = a.game_id AND p.user_id = a.user_id
-  UNION ALL SELECT 'ranking_test_game_settings', s.internal_game_id FROM ranking_test_game_settings s
-  UNION ALL SELECT 'ranking_test_predictions', p.internal_game_id FROM ranking_test_predictions p
-), artifacts AS (
-  SELECT * FROM artifact_sources_a
-  UNION ALL SELECT * FROM artifact_sources_b
-  UNION ALL SELECT * FROM artifact_sources_c
-), ambiguous AS (
-  SELECT 1 FROM artifacts a
-   WHERE a.internal_game_id IS NULL
-      OR (SELECT COUNT(*) FROM game_contests c WHERE c.internal_game_id = a.internal_game_id) <> 1
-      OR (SELECT COUNT(*) FROM game_contests c WHERE c.internal_game_id = a.internal_game_id AND c.target_team_key = 'fighters') <> 1
+     AND (SELECT COUNT(*) FROM game_contests c2 WHERE c2.internal_game_id = g.internal_game_id) = 1
 )
-INSERT INTO contest_a3_migration_assert(valid)
-SELECT CASE WHEN EXISTS (SELECT 1 FROM ambiguous) THEN 0 ELSE 1 END;
-DROP TABLE contest_a3_migration_assert;
-
-INSERT INTO contest_scoring_revisions (
-  contest_id, internal_game_id, id, game_id, revision_number, lineup_revision_id, status,
-  reason, created_by, created_at, completed_at, is_active, committed_attempt_id
-)
-SELECT c.contest_id, s.internal_game_id, s.id, s.game_id, s.revision_number, s.lineup_revision_id,
-       s.status, s.reason, s.created_by, s.created_at, s.completed_at, s.is_active, s.committed_attempt_id
-  FROM game_scoring_revisions s JOIN game_contests c ON c.internal_game_id = s.internal_game_id AND c.target_team_key = 'fighters'
- WHERE (SELECT COUNT(*) FROM game_contests c2 WHERE c2.internal_game_id = s.internal_game_id) = 1;
-
-INSERT INTO contest_score_attempts (
-  attempt_id, contest_id, internal_game_id, game_id, canonical_lineup_revision_id,
-  scoring_lineup_revision_id, canonical_lineup_fingerprint, job_id, claim_token, status,
-  expected_prediction_count, expected_test_count, scoring_revision_id, scoring_revision_number,
-  actual_lineup_json, commit_nonce, created_at, ready_at, committed_at
-)
-SELECT a.attempt_id, c.contest_id, a.internal_game_id, a.game_id, a.canonical_lineup_revision_id,
-       a.scoring_lineup_revision_id, a.canonical_lineup_fingerprint, a.job_id, a.claim_token, a.status,
-       a.expected_prediction_count, a.expected_test_count, a.scoring_revision_id, a.scoring_revision_number,
-       a.actual_lineup_json, a.commit_nonce, a.created_at, a.ready_at, a.committed_at
-  FROM score_attempts a JOIN game_contests c ON c.internal_game_id = a.internal_game_id AND c.target_team_key = 'fighters'
- WHERE (SELECT COUNT(*) FROM game_contests c2 WHERE c2.internal_game_id = a.internal_game_id) = 1;
-INSERT INTO contest_score_attempt_prediction_rows (
-  attempt_id, contest_id, prediction_id, outcome, validity_status, total_score, max_score,
-  participation_score, batting_order_score, defense_score, perfect_bonus, player_hits, order_hits,
-  position_hits, perfect_hits, exclusion_reason, lineage_json
-)
-SELECT r.attempt_id, a.contest_id, r.prediction_id, r.outcome, r.validity_status, r.total_score, r.max_score,
-       r.participation_score, r.batting_order_score, r.defense_score, r.perfect_bonus, r.player_hits, r.order_hits,
-       r.position_hits, r.perfect_hits, r.exclusion_reason, r.lineage_json
-  FROM score_attempt_prediction_rows r JOIN contest_score_attempts a ON a.attempt_id = r.attempt_id;
-INSERT INTO contest_score_attempt_test_rows
-SELECT * FROM score_attempt_test_rows WHERE attempt_id IN (SELECT attempt_id FROM contest_score_attempts);
-
-INSERT INTO contest_prediction_score_revisions (
-  id, contest_id, prediction_id, game_id, internal_game_id, is_test_prediction, scoring_revision,
-  lineup_revision_id, score, max_score, actual_lineup_json, scored_at, scored_by, created_at
-)
-SELECT s.id, p.contest_id, s.prediction_id, s.game_id, p.internal_game_id, s.is_test_prediction,
-       s.scoring_revision, s.lineup_revision_id, s.score, s.max_score, s.actual_lineup_json,
-       s.scored_at, s.scored_by, s.created_at
-  FROM prediction_score_revisions s JOIN predictions p ON p.id = s.prediction_id
- WHERE p.contest_id IS NOT NULL AND s.is_test_prediction = 0;
-
 INSERT INTO contest_ranking_games (
   contest_id, internal_game_id, game_id, is_ranking_eligible, ranking_eligible_at, game_status,
   is_test_game, created_at, updated_at, game_date, scored_private_at, published_at, publication_status,
   ranking_eligibility_status, ranking_eligibility_reason, ranking_eligibility_note, ranking_eligibility_version,
   ranking_eligibility_updated_by, ranking_eligibility_updated_at
 )
-SELECT c.contest_id, COALESCE(r.internal_game_id, g.internal_game_id), r.game_id, r.is_ranking_eligible,
-       r.ranking_eligible_at, r.game_status, r.is_test_game, r.created_at, r.updated_at, r.game_date,
-       r.scored_private_at, r.published_at, r.publication_status, r.ranking_eligibility_status,
-       r.ranking_eligibility_reason, r.ranking_eligibility_note, r.ranking_eligibility_version,
-       r.ranking_eligibility_updated_by, r.ranking_eligibility_updated_at
-  FROM ranking_games r
-  JOIN games g ON g.internal_game_id = COALESCE(r.internal_game_id, r.game_id)
-  JOIN game_contests c ON c.internal_game_id = g.internal_game_id AND c.target_team_key = 'fighters'
- WHERE r.is_test_game = 0
-   AND (SELECT COUNT(*) FROM game_contests c2 WHERE c2.internal_game_id = g.internal_game_id) = 1;
+SELECT contest_id, internal_game_id, internal_game_id, is_ranking_eligible, ranking_eligible_at,
+       game_status, is_test_game, created_at, updated_at, game_date,
+       COALESCE(scored_private_at, canonical_scored_at),
+       CASE WHEN canonical_publication_status = 'published' AND canonical_published_at IS NOT NULL
+            THEN canonical_published_at ELSE NULL END,
+       CASE WHEN canonical_publication_status = 'published' AND canonical_published_at IS NOT NULL
+            THEN 'published'
+            WHEN canonical_scoring_status = 'scored' OR scored_private_at IS NOT NULL
+              OR canonical_publication_status IN ('scored_private', 'published') THEN 'scored_private'
+            ELSE 'pending' END,
+       ranking_eligibility_status, ranking_eligibility_reason, ranking_eligibility_note,
+       ranking_eligibility_version, ranking_eligibility_updated_by, ranking_eligibility_updated_at
+  FROM ranked_source
+ WHERE source_rank = 1;
 
 INSERT INTO contest_ranking_eligibility_history (
   id, contest_id, internal_game_id, game_id, previous_status, next_status, reason, note, version, updated_by, updated_at
@@ -435,7 +388,7 @@ SELECT h.id, c.contest_id, COALESCE(h.internal_game_id, g.internal_game_id), h.g
   FROM ranking_eligibility_history h
   JOIN games g ON g.internal_game_id = COALESCE(h.internal_game_id, h.game_id)
   JOIN game_contests c ON c.internal_game_id = g.internal_game_id AND c.target_team_key = 'fighters'
- WHERE (SELECT COUNT(*) FROM game_contests c2 WHERE c2.internal_game_id = g.internal_game_id) = 1;
+ WHERE 0;
 
 INSERT INTO contest_ranking_reflection_revisions (
   id, contest_id, internal_game_id, scoring_revision_id, ranking_eligibility_version,
@@ -446,11 +399,11 @@ SELECT c.contest_id || ':' || r.id, c.contest_id, r.internal_game_id,
        r.ranking_eligibility_version, r.ranking_update_revision, r.status, r.reflected_at, r.created_at
   FROM ranking_reflection_revisions r
   JOIN game_contests c ON c.internal_game_id = r.internal_game_id AND c.target_team_key = 'fighters'
-   AND (SELECT COUNT(*) FROM game_contests c2 WHERE c2.internal_game_id = r.internal_game_id) = 1
   LEFT JOIN contest_scoring_revisions scoring ON scoring.contest_id = c.contest_id
     AND scoring.internal_game_id = r.internal_game_id AND scoring.id = r.scoring_revision_id
   LEFT JOIN contest_scoring_revisions active ON active.contest_id = c.contest_id
-    AND active.internal_game_id = r.internal_game_id AND active.is_active = 1;
+    AND active.internal_game_id = r.internal_game_id AND active.is_active = 1
+ WHERE 0;
 
 INSERT INTO contest_perfect_achievers (id, contest_id, internal_game_id, user_id, game_id, score, max_score, achieved_at, created_at)
 SELECT a.id, c.contest_id, COALESCE(g.internal_game_id, p.internal_game_id), a.user_id, a.game_id,
@@ -460,7 +413,7 @@ SELECT a.id, c.contest_id, COALESCE(g.internal_game_id, p.internal_game_id), a.u
   LEFT JOIN predictions p ON p.game_id = a.game_id AND p.user_id = a.user_id
   JOIN game_contests c ON c.internal_game_id = COALESCE(g.internal_game_id, p.internal_game_id)
     AND c.target_team_key = 'fighters'
- WHERE (SELECT COUNT(*) FROM game_contests c2 WHERE c2.internal_game_id = COALESCE(g.internal_game_id, p.internal_game_id)) = 1;
+  WHERE 0;
 
 INSERT INTO contest_game_rescore_previews (
   id, contest_id, internal_game_id, game_id, lineup_version, created_by, reason, summary_json,
@@ -470,7 +423,7 @@ SELECT p.id, c.contest_id, c.internal_game_id, p.game_id, p.lineup_version, p.cr
        p.summary_json, p.expected_prediction_count, p.expires_at, p.created_at
   FROM game_rescore_previews p JOIN game_lineup_revisions l ON l.game_id = p.game_id AND l.version = p.lineup_version
   JOIN game_contests c ON c.internal_game_id = l.internal_game_id AND c.target_team_key = 'fighters'
- WHERE (SELECT COUNT(*) FROM game_contests c2 WHERE c2.internal_game_id = l.internal_game_id) = 1;
+ WHERE 0;
 INSERT INTO contest_game_rescore_jobs (
   id, contest_id, internal_game_id, game_id, lineup_version, status, error_code, created_at, updated_at,
   lineup_revision_id, scoring_revision, claimed_at, claim_token
@@ -482,8 +435,7 @@ SELECT j.id, c.contest_id, COALESCE(j.internal_game_id, c.internal_game_id), j.g
   LEFT JOIN games g ON g.internal_game_id = COALESCE(j.internal_game_id, l.internal_game_id, j.game_id)
   JOIN game_contests c ON c.internal_game_id = COALESCE(j.internal_game_id, l.internal_game_id, g.internal_game_id)
     AND c.target_team_key = 'fighters'
- WHERE (SELECT COUNT(*) FROM game_contests c2
-         WHERE c2.internal_game_id = COALESCE(j.internal_game_id, l.internal_game_id, g.internal_game_id)) = 1;
+ WHERE 0;
 INSERT INTO contest_game_rescore_audits (
   id, contest_id, internal_game_id, game_id, game_date, previous_version, lineup_version, reason,
   executed_by, executed_at, prediction_count, changed_score_count, perfect_count_delta, status,
@@ -501,13 +453,13 @@ SELECT a.id, c.contest_id, c.internal_game_id, a.game_id, a.game_date,
       HAVING COUNT(DISTINCT gi.internal_game_id) = 1
     )
   JOIN game_contests c ON c.internal_game_id = g.internal_game_id AND c.target_team_key = 'fighters'
- WHERE (SELECT COUNT(*) FROM game_contests c2 WHERE c2.internal_game_id = g.internal_game_id AND c2.target_team_key = 'fighters') = 1;
+ WHERE 0;
 
 INSERT INTO contest_ranking_test_game_settings
   (contest_id, internal_game_id, include_in_public_ranking, updated_by, created_at, updated_at)
 SELECT c.contest_id, s.internal_game_id, s.include_in_public_ranking, s.updated_by, s.created_at, s.updated_at
   FROM ranking_test_game_settings s JOIN game_contests c ON c.internal_game_id = s.internal_game_id AND c.target_team_key = 'fighters'
- WHERE (SELECT COUNT(*) FROM game_contests c2 WHERE c2.internal_game_id = s.internal_game_id) = 1;
+ WHERE 0;
 INSERT INTO contest_ranking_test_predictions
   (contest_id, internal_game_id, slot, prediction_json, status, score, max_score, lineup_revision_id,
    scoring_revision_id, scored_at, created_at, updated_at, scored_attempt_id)
@@ -516,6 +468,6 @@ SELECT c.contest_id, p.internal_game_id, p.slot, p.prediction_json, p.status, p.
   FROM ranking_test_predictions p JOIN game_contests c ON c.internal_game_id = p.internal_game_id AND c.target_team_key = 'fighters'
   LEFT JOIN contest_scoring_revisions s ON s.contest_id = c.contest_id AND s.internal_game_id = p.internal_game_id
     AND s.id = p.scoring_revision_id
- WHERE (SELECT COUNT(*) FROM game_contests c2 WHERE c2.internal_game_id = p.internal_game_id) = 1;
+ WHERE 0;
 
 PRAGMA defer_foreign_keys = OFF;

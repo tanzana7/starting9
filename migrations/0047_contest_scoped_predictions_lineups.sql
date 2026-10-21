@@ -91,7 +91,23 @@ VALUES
   ('2026-07-18-b-f-16', '256163ea-7597-5c29-94f7-7f6ef8c336a1', '2026-07-18', '2026-07-18T04:00:00.000Z', 'buffaloes', 'fighters', 'b-f-16', 'https://npb.jp/scores/2026/0718/b-f-16/'),
   ('2026-07-19-b-f-17', '7a486251-539c-5bed-9e6d-8cef2e2ee8a5', '2026-07-19', '2026-07-19T04:00:00.000Z', 'buffaloes', 'fighters', 'b-f-17', 'https://npb.jp/scores/2026/0719/b-f-17/'),
   ('2026-07-20-b-f-18', '2b60f45d-1e8e-52b9-a5ef-6a0061da6be3', '2026-07-20', '2026-07-20T04:00:00.000Z', 'buffaloes', 'fighters', 'b-f-18', 'https://npb.jp/scores/2026/0720/b-f-18/'),
-  ('2026-07-23-l-f-17', 'd2fbd4fc-40ae-51e4-b895-dd86a48229ad', '2026-07-23', '2026-07-23T09:00:00.000Z', 'lions', 'fighters', 'l-f-17', 'https://npb.jp/scores/2026/0723/l-f-17/');
+  ('2026-07-23-l-f-17', 'd2fbd4fc-40ae-51e4-b895-dd86a48229ad', '2026-07-23', '2026-07-23T09:00:00.000Z', 'lions', 'fighters', 'l-f-17', 'https://npb.jp/scores/2026/0723/l-f-17/'),
+  ('2026-08-01-f-m-15', 'f165423d-72c7-51e4-beaa-7bac7166f728', '2026-08-01', '2026-08-01T05:00:00.000Z', 'fighters', 'marines', 'f-m-15', 'https://npb.jp/scores/2026/0801/f-m-15/'),
+  ('2026-08-04-h-f-15', 'b13f89c2-fd70-506d-b937-c7a6f38521fe', '2026-08-04', '2026-08-04T09:00:00.000Z', 'hawks', 'fighters', 'h-f-15', 'https://npb.jp/scores/2026/0804/h-f-15/');
+
+-- Older pregame collectors persisted a date/team/time key instead of the
+-- compact NPB key. Keep aliases attached to one reviewed physical identity.
+CREATE TABLE contest_identity_a2_legacy_game_alias_map (
+  legacy_game_id TEXT PRIMARY KEY NOT NULL,
+  mapped_legacy_game_id TEXT NOT NULL,
+  FOREIGN KEY (mapped_legacy_game_id) REFERENCES contest_identity_a2_legacy_game_map(legacy_game_id) ON DELETE RESTRICT
+);
+
+INSERT INTO contest_identity_a2_legacy_game_alias_map (legacy_game_id, mapped_legacy_game_id) VALUES
+  ('2026-07-25-fighters-eagles-1400', '2026-07-25-f-e-15'),
+  ('2026-07-26-fighters-eagles-1300', '2026-07-26-f-e-16'),
+  ('2026-07-31-fighters-marines-1800', '2026-07-31-f-m-14'),
+  ('2026-08-01-fighters-marines-1400', '2026-08-01-f-m-15');
 
 -- Do not materialize historical games merely because they are listed in the
 -- reviewed map. Only map identities actually referenced by legacy artifacts.
@@ -110,12 +126,17 @@ SELECT m.* FROM contest_identity_a2_legacy_game_map m
     OR EXISTS (SELECT 1 FROM game_rescore_previews p WHERE p.game_id = m.legacy_game_id)
     OR EXISTS (SELECT 1 FROM game_rescore_audits a WHERE a.game_id = m.legacy_game_id)
     OR EXISTS (SELECT 1 FROM perfect_achievers a WHERE a.game_id = m.legacy_game_id)
-    OR EXISTS (SELECT 1 FROM prediction_score_revisions s WHERE s.game_id = m.legacy_game_id AND s.is_test_prediction = 0);
+    OR EXISTS (SELECT 1 FROM prediction_score_revisions s WHERE s.game_id = m.legacy_game_id AND s.is_test_prediction = 0)
+    OR EXISTS (SELECT 1 FROM detected_game_schedule d WHERE d.game_id = m.legacy_game_id)
+    OR EXISTS (SELECT 1 FROM probable_starters p JOIN contest_identity_a2_legacy_game_alias_map a ON a.legacy_game_id = p.game_id WHERE a.mapped_legacy_game_id = m.legacy_game_id)
+    OR EXISTS (SELECT 1 FROM game_roster_snapshots r JOIN contest_identity_a2_legacy_game_alias_map a ON a.legacy_game_id = r.game_id WHERE a.mapped_legacy_game_id = m.legacy_game_id)
+    OR EXISTS (SELECT 1 FROM game_pregame_automation p JOIN contest_identity_a2_legacy_game_alias_map a ON a.legacy_game_id = p.game_id WHERE a.mapped_legacy_game_id = m.legacy_game_id)
+    OR EXISTS (SELECT 1 FROM detected_game_schedule d JOIN contest_identity_a2_legacy_game_alias_map a ON a.legacy_game_id = d.game_id WHERE a.mapped_legacy_game_id = m.legacy_game_id);
 
 -- Fail before writing if a compact identifier is already claimed by another
 -- game, a same-card doubleheader is ambiguous, or a pre-existing UUID points
 -- to different physical facts. A missing physical row is created below only
--- for one of the four exact, source-verified mappings above.
+-- for a reviewed, source-verified mapping above.
 CREATE TABLE contest_identity_a2_legacy_map_assert (valid INTEGER NOT NULL CHECK (valid = 1));
 INSERT INTO contest_identity_a2_legacy_map_assert(valid)
 SELECT CASE WHEN EXISTS (
@@ -130,6 +151,18 @@ SELECT CASE WHEN EXISTS (
                    AND (g.game_date <> m.game_date OR g.home_team <> m.home_team OR g.away_team <> m.away_team))
       OR EXISTS (SELECT 1 FROM games g WHERE g.npb_game_code = m.npb_game_code
                    AND (g.game_date <> m.game_date OR g.home_team <> m.home_team OR g.away_team <> m.away_team))
+      OR EXISTS (SELECT 1 FROM contest_identity_a2_legacy_game_alias_map a JOIN game_identifiers gi
+                   ON gi.identifier_value = a.legacy_game_id
+                  WHERE a.mapped_legacy_game_id = m.legacy_game_id
+                    AND gi.internal_game_id <> m.internal_game_id
+                    AND NOT EXISTS (SELECT 1 FROM games g WHERE g.game_date = m.game_date
+                      AND g.home_team = m.home_team AND g.away_team = m.away_team
+                      AND (g.npb_game_code = m.npb_game_code OR g.npb_game_code IS NULL)
+                      AND g.internal_game_id = gi.internal_game_id))
+      OR EXISTS (SELECT 1 FROM contest_identity_a2_legacy_game_alias_map a JOIN games g
+                   ON g.internal_game_id = a.legacy_game_id
+                  WHERE a.mapped_legacy_game_id = m.legacy_game_id
+                    AND (g.game_date <> m.game_date OR g.home_team <> m.home_team OR g.away_team <> m.away_team))
       OR EXISTS (SELECT 1 FROM game_identifiers gi WHERE gi.identifier_value = m.legacy_game_id
                    AND gi.internal_game_id <> m.internal_game_id
                    AND NOT EXISTS (SELECT 1 FROM games g WHERE g.game_date = m.game_date
@@ -180,6 +213,19 @@ SELECT m.internal_game_id, 'npb', 'legacy_compact_game_id', m.legacy_game_id, 0,
       AND gi.identifier_value = m.legacy_game_id AND gi.internal_game_id = m.internal_game_id
  );
 
+INSERT INTO game_identifiers (
+  internal_game_id, provider, identifier_type, identifier_value, is_primary, created_at, updated_at
+)
+SELECT m.internal_game_id, 'npb', 'legacy_schedule_key', a.legacy_game_id, 0,
+       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+  FROM contest_identity_a2_legacy_game_alias_map a
+  JOIN contest_identity_a2_legacy_game_map_active m ON m.legacy_game_id = a.mapped_legacy_game_id
+ WHERE NOT EXISTS (
+   SELECT 1 FROM game_identifiers gi
+    WHERE gi.provider = 'npb' AND gi.identifier_type = 'legacy_schedule_key'
+      AND gi.identifier_value = a.legacy_game_id AND gi.internal_game_id = m.internal_game_id
+ );
+
 INSERT INTO game_contests (contest_id, internal_game_id, target_team_key)
 SELECT 'contest_' || lower(hex(m.internal_game_id)) || '_6669676874657273', m.internal_game_id, 'fighters'
   FROM contest_identity_a2_legacy_game_map_active m
@@ -219,6 +265,31 @@ UPDATE game_rescore_jobs SET internal_game_id = (
 UPDATE prediction_score_revisions SET internal_game_id = (
   SELECT m.internal_game_id FROM contest_identity_a2_legacy_game_map_active m WHERE m.legacy_game_id = prediction_score_revisions.game_id
 ) WHERE internal_game_id IS NULL AND game_id IN (SELECT legacy_game_id FROM contest_identity_a2_legacy_game_map_active);
+UPDATE detected_game_schedule SET internal_game_id = (
+  SELECT m.internal_game_id FROM contest_identity_a2_legacy_game_map_active m WHERE m.legacy_game_id = detected_game_schedule.game_id
+) WHERE internal_game_id IS NULL AND game_id IN (SELECT legacy_game_id FROM contest_identity_a2_legacy_game_map_active);
+
+CREATE TABLE contest_identity_a2_legacy_alias_reference_map (
+  legacy_game_id TEXT PRIMARY KEY NOT NULL,
+  internal_game_id TEXT NOT NULL
+);
+INSERT INTO contest_identity_a2_legacy_alias_reference_map (legacy_game_id, internal_game_id)
+SELECT a.legacy_game_id, m.internal_game_id
+  FROM contest_identity_a2_legacy_game_alias_map a
+  JOIN contest_identity_a2_legacy_game_map_active m ON m.legacy_game_id = a.mapped_legacy_game_id;
+UPDATE probable_starters SET internal_game_id = (
+  SELECT m.internal_game_id FROM contest_identity_a2_legacy_alias_reference_map m WHERE m.legacy_game_id = probable_starters.game_id
+) WHERE internal_game_id IS NULL AND game_id IN (SELECT legacy_game_id FROM contest_identity_a2_legacy_alias_reference_map);
+UPDATE game_roster_snapshots SET internal_game_id = (
+  SELECT m.internal_game_id FROM contest_identity_a2_legacy_alias_reference_map m WHERE m.legacy_game_id = game_roster_snapshots.game_id
+) WHERE internal_game_id IS NULL AND game_id IN (SELECT legacy_game_id FROM contest_identity_a2_legacy_alias_reference_map);
+UPDATE game_pregame_automation SET internal_game_id = (
+  SELECT m.internal_game_id FROM contest_identity_a2_legacy_alias_reference_map m WHERE m.legacy_game_id = game_pregame_automation.game_id
+) WHERE internal_game_id IS NULL AND game_id IN (SELECT legacy_game_id FROM contest_identity_a2_legacy_alias_reference_map);
+UPDATE detected_game_schedule SET internal_game_id = (
+  SELECT m.internal_game_id FROM contest_identity_a2_legacy_alias_reference_map m WHERE m.legacy_game_id = detected_game_schedule.game_id
+) WHERE internal_game_id IS NULL AND game_id IN (SELECT legacy_game_id FROM contest_identity_a2_legacy_alias_reference_map);
+DROP TABLE contest_identity_a2_legacy_alias_reference_map;
 
 -- Legacy production rows can be assigned only when their persisted physical
 -- identity (or a unique historical identifier) proves exactly one Fighters
@@ -529,6 +600,7 @@ SELECT contests.contest_id, contests.internal_game_id, revisions.game_id, revisi
     ON contests.internal_game_id = revisions.internal_game_id
    AND contests.target_team_key = 'fighters';
 
+DROP TABLE contest_identity_a2_legacy_game_alias_map;
 DROP TABLE contest_identity_a2_legacy_game_map;
 DROP TABLE contest_identity_a2_legacy_game_map_active;
 

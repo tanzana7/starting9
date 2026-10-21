@@ -21,6 +21,16 @@ const GAMES = [
   { legacyId: "2026-08-04-h-f-15", internalId: "b13f89c2-fd70-506d-b937-c7a6f38521fe", date: "2026-08-04", start: "2026-08-04T09:00:00.000Z", home: "hawks", away: "fighters", code: "h-f-15", url: "https://npb.jp/scores/2026/0804/h-f-15/" }
 ];
 const PREDICTION_GAMES = GAMES.slice(0, 4);
+const ATTEMPT_GAME = {
+  internalId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  legacyId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  date: "2026-06-01",
+  start: "2026-06-01T09:00:00.000Z",
+  home: "fighters",
+  away: "hawks",
+  code: "f-h-1",
+  url: "https://npb.jp/scores/2026/0601/f-h-1/"
+};
 const LEGACY_SCHEDULE_ALIASES = [
   { id: "2026-07-25-fighters-eagles-1400", game: GAMES[1] },
   { id: "2026-07-26-fighters-eagles-1300", game: GAMES[2] },
@@ -57,6 +67,25 @@ function applyMigrationTransactionally(db, name) {
   }
 }
 
+function applyMigrationWithStatementContext(db, name) {
+  const source = fs.readFileSync(path.join(MIGRATIONS, name), "utf8");
+  const statements = source.split(/;\r?\n/).map((part) => part.trim()).filter(Boolean);
+  db.exec("BEGIN");
+  try {
+    for (const [index, statement] of statements.entries()) {
+      try {
+        db.exec(`${statement};`);
+      } catch (error) {
+        throw new Error(`${name} statement ${index + 1}: ${statement.slice(0, 180)}: ${error.message}`, { cause: error });
+      }
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 function seedUser(db) {
   db.prepare(`INSERT INTO users
     (id, username, username_normalized, password_hash, password_salt, password_iterations, status, created_at, updated_at)
@@ -74,7 +103,34 @@ function seedPrediction(db, game, id = `prediction:${game.legacyId}`) {
 
 function seedFourLegacyGames(db) {
   seedUser(db);
+  const attemptedGame = ATTEMPT_GAME;
+  db.prepare(`INSERT INTO games
+    (internal_game_id, game_date, start_time, home_team, away_team, game_status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'completed', ?, ?)`)
+    .run(attemptedGame.internalId, attemptedGame.date, attemptedGame.start,
+      attemptedGame.home, attemptedGame.away, NOW, NOW);
+  const scoreJob = db.prepare(`INSERT INTO game_jobs_v3
+    (internal_game_id, job_type, scheduled_at, scheduled_slot_at, status, created_at, updated_at)
+    VALUES (?, 'score', ?, ?, 'completed', ?, ?)`)
+    .run(attemptedGame.internalId, NOW, NOW, NOW, NOW);
   for (const game of PREDICTION_GAMES) seedPrediction(db, game);
+  seedPrediction(db, attemptedGame, `prediction:${attemptedGame.legacyId}`);
+  db.prepare(`INSERT INTO score_attempts
+    (attempt_id, internal_game_id, game_id, canonical_lineup_revision_id,
+     scoring_lineup_revision_id, canonical_lineup_fingerprint, job_id, claim_token,
+     status, expected_prediction_count, scoring_revision_id, scoring_revision_number,
+     actual_lineup_json, created_at)
+    VALUES ('legacy-attempt', ?, ?, ?, ?, 'legacy-fingerprint', ?,
+      'legacy-claim', 'committed', 1, 'legacy-score', 1, ?, ?)`)
+    .run(attemptedGame.internalId, attemptedGame.legacyId,
+      `${attemptedGame.legacyId}:1`, `${attemptedGame.legacyId}:1`,
+      scoreJob.lastInsertRowid, LINEUP_JSON, NOW);
+  db.prepare(`INSERT INTO score_attempt_prediction_rows
+    (attempt_id, prediction_id, outcome, validity_status, total_score, max_score,
+     participation_score, batting_order_score, defense_score, perfect_bonus,
+     player_hits, order_hits, position_hits, perfect_hits, lineage_json)
+    VALUES ('legacy-attempt', ?, 'scored', 'valid', 42, 99, 10, 12, 20, 0, 9, 1, 3, 0, '{"source":"fixture"}')`)
+    .run(`prediction:${attemptedGame.legacyId}`);
   const first = GAMES[0];
   db.prepare(`INSERT INTO prediction_score_revisions
     (id, prediction_id, game_id, is_test_prediction, scoring_revision, score, max_score, actual_lineup_json, scored_at, created_at)
@@ -89,6 +145,16 @@ function seedFourLegacyGames(db) {
     (game_id, version, actual_lineup_json, lineup_fingerprint, source, created_at, created_by, reason, is_current, is_final)
     VALUES (?, 1, ?, 'fingerprint-legacy', 'manual', ?, NULL, 'fixture', 1, 1)`)
     .run(first.legacyId, LINEUP_JSON, NOW);
+  db.prepare(`INSERT INTO game_lineup_revisions
+    (game_id, version, actual_lineup_json, lineup_fingerprint, source, created_at,
+     created_by, reason, is_current, is_final, revision_id, internal_game_id)
+    VALUES (?, 1, ?, 'fingerprint-attempt', 'manual', ?, NULL, 'fixture', 1, 1, ?, ?)`)
+    .run(attemptedGame.legacyId, LINEUP_JSON, NOW, `${attemptedGame.legacyId}:1`, attemptedGame.internalId);
+  db.prepare(`INSERT INTO game_scoring_revisions
+    (id, internal_game_id, game_id, revision_number, lineup_revision_id, status,
+     reason, created_by, created_at, completed_at, is_active)
+    VALUES ('legacy-score', ?, ?, 1, ?, 'completed', 'fixture', 'test', ?, ?, 1)`)
+    .run(attemptedGame.internalId, attemptedGame.legacyId, `${attemptedGame.legacyId}:1`, NOW, NOW);
   for (const game of GAMES) {
     db.prepare(`INSERT INTO ranking_games
       (game_id, is_ranking_eligible, ranking_eligible_at, game_status, is_test_game, created_at, updated_at, game_date,
@@ -159,20 +225,38 @@ test("legacy game reconciliation migrates 0001-0045 fixtures through 0049 withou
       scoreHistoryRows: db.prepare(`SELECT id, prediction_id, game_id, internal_game_id, is_test_prediction,
         scoring_revision, lineup_revision_id, score, max_score, actual_lineup_json, scored_at, scored_by, created_at
         FROM prediction_score_revisions ORDER BY id`).all(),
+      scoreAttemptRows: db.prepare(`SELECT attempt_id, prediction_id, outcome, validity_status, total_score, max_score,
+        participation_score, batting_order_score, defense_score, perfect_bonus, player_hits, order_hits,
+        position_hits, perfect_hits, exclusion_reason, lineage_json
+        FROM score_attempt_prediction_rows ORDER BY attempt_id, prediction_id`).all(),
       probableCount: db.prepare("SELECT COUNT(*) AS n FROM probable_starters").get().n,
       rosterCount: db.prepare("SELECT COUNT(*) AS n FROM game_roster_snapshots").get().n,
       pregameCount: db.prepare("SELECT COUNT(*) AS n FROM game_pregame_automation").get().n,
       rescoreAuditCount: db.prepare("SELECT COUNT(*) AS n FROM game_rescore_audits").get().n
     };
 
-    applyAfter(db, "0045_cron_heartbeat.sql", "0049_contest_scoped_formal_jobs.sql");
+    applyAfter(db, "0045_cron_heartbeat.sql", "0047_contest_scoped_predictions_lineups.sql");
+    applyMigrationWithStatementContext(db, "0048_contest_scoped_results.sql");
+    assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM contest_score_attempts a
+      JOIN game_contests c ON c.contest_id = a.contest_id AND c.internal_game_id = a.internal_game_id
+      JOIN contest_lineup_revisions canonical ON canonical.contest_id = a.contest_id AND canonical.revision_id = a.canonical_lineup_revision_id
+      JOIN contest_lineup_revisions scoring ON scoring.contest_id = a.contest_id AND scoring.revision_id = a.scoring_lineup_revision_id
+      JOIN contest_scoring_revisions s ON s.contest_id = a.contest_id AND s.id = a.scoring_revision_id
+      JOIN game_jobs_v3 j ON j.id = a.job_id AND j.internal_game_id = a.internal_game_id
+      WHERE a.attempt_id = 'legacy-attempt'`).get().n, 1);
+    assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM contest_score_attempt_prediction_rows r
+      JOIN contest_score_attempts a ON a.attempt_id = r.attempt_id AND a.contest_id = r.contest_id
+      JOIN predictions p ON p.id = r.prediction_id AND p.contest_id = r.contest_id AND p.internal_game_id = a.internal_game_id
+      WHERE r.attempt_id = 'legacy-attempt'`).get().n, 1);
+    applyMigrationWithStatementContext(db, "0049_contest_scoped_formal_jobs.sql");
 
-    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM games").get().n, 10);
-    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM game_contests").get().n, 10);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM games").get().n, 11);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM game_contests").get().n, 11);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM predictions").get().n, before.predictionRows.length);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM game_lineups").get().n, 1);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM ranking_games").get().n, before.rankingCount);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_prediction_score_revisions").get().n, before.scoreHistoryRows.length);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_score_attempt_prediction_rows").get().n, before.scoreAttemptRows.length);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM probable_starters").get().n, before.probableCount);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM game_roster_snapshots").get().n, before.rosterCount);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM game_pregame_automation").get().n, before.pregameCount);
@@ -222,9 +306,15 @@ test("legacy game reconciliation migrates 0001-0045 fixtures through 0049 withou
       FROM contest_prediction_score_revisions WHERE id = 'legacy-score-revision'`).get() }, {
       ...before.scoreHistoryRows[0], internal_game_id: GAMES[0].internalId
     });
+    assert.deepEqual({ ...db.prepare(`SELECT attempt_id, contest_id, prediction_id, outcome, validity_status, total_score, max_score,
+      participation_score, batting_order_score, defense_score, perfect_bonus, player_hits, order_hits,
+      position_hits, perfect_hits, exclusion_reason, lineage_json
+      FROM contest_score_attempt_prediction_rows WHERE attempt_id = 'legacy-attempt'`).get() }, {
+      ...before.scoreAttemptRows[0], contest_id: createContestId(ATTEMPT_GAME.internalId, "fighters")
+    });
     assert.equal(db.prepare("SELECT internal_game_id FROM contest_game_rescore_audits WHERE id = 'legacy-rescore-audit'").get().internal_game_id, GAMES[0].internalId);
-    assert.equal(db.prepare("SELECT COUNT(DISTINCT internal_game_id) AS n FROM games").get().n, 10);
-    assert.equal(db.prepare("SELECT COUNT(DISTINCT internal_game_id || ':' || target_team_key) AS n FROM game_contests").get().n, 10);
+    assert.equal(db.prepare("SELECT COUNT(DISTINCT internal_game_id) AS n FROM games").get().n, 11);
+    assert.equal(db.prepare("SELECT COUNT(DISTINCT internal_game_id || ':' || target_team_key) AS n FROM game_contests").get().n, 11);
     assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
     assert.equal(db.prepare("PRAGMA integrity_check").get().integrity_check, "ok");
   } finally {

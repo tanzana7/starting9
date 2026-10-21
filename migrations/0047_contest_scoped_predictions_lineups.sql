@@ -411,6 +411,17 @@ SELECT id, prediction_id, game_id, internal_game_id, is_test_prediction, scoring
        lineup_revision_id, score, max_score, actual_lineup_json, scored_at, scored_by, created_at
   FROM prediction_score_revisions;
 
+-- Score-attempt rows intentionally RESTRICT prediction deletion so a score
+-- history cannot be detached from its source prediction. Preserve and
+-- temporarily remove this child table while the parent is rebuilt, then
+-- restore every row against the replacement prediction table below.
+CREATE TABLE _a2_score_attempt_prediction_rows_backup AS
+SELECT attempt_id, prediction_id, outcome, validity_status, total_score, max_score,
+       participation_score, batting_order_score, defense_score, perfect_bonus,
+       player_hits, order_hits, position_hits, perfect_hits, exclusion_reason, lineage_json
+  FROM score_attempt_prediction_rows;
+DROP TABLE score_attempt_prediction_rows;
+
 DROP TABLE predictions;
 ALTER TABLE predictions_a2 RENAME TO predictions;
 
@@ -422,6 +433,45 @@ SELECT id, prediction_id, game_id, internal_game_id, is_test_prediction, scoring
        lineup_revision_id, score, max_score, actual_lineup_json, scored_at, scored_by, created_at
   FROM _a2_prediction_score_revision_backup;
 DROP TABLE _a2_prediction_score_revision_backup;
+
+CREATE TABLE score_attempt_prediction_rows (
+  attempt_id TEXT NOT NULL,
+  prediction_id TEXT NOT NULL,
+  outcome TEXT NOT NULL CHECK (outcome IN ('scored', 'excluded')),
+  validity_status TEXT NOT NULL DEFAULT 'valid' CHECK (validity_status IN ('valid', 'excluded')),
+  total_score INTEGER NULL CHECK (total_score BETWEEN 0 AND 99),
+  max_score INTEGER NULL CHECK (max_score = 99),
+  participation_score INTEGER NULL CHECK (participation_score >= 0),
+  batting_order_score INTEGER NULL CHECK (batting_order_score >= 0),
+  defense_score INTEGER NULL CHECK (defense_score >= 0),
+  perfect_bonus INTEGER NULL CHECK (perfect_bonus >= 0),
+  player_hits INTEGER NULL,
+  order_hits INTEGER NULL,
+  position_hits INTEGER NULL,
+  perfect_hits INTEGER NULL,
+  exclusion_reason TEXT NULL,
+  lineage_json TEXT NULL CHECK (lineage_json IS NULL OR length(lineage_json) <= 4096),
+  PRIMARY KEY (attempt_id, prediction_id),
+  FOREIGN KEY (attempt_id) REFERENCES score_attempts(attempt_id) ON DELETE CASCADE,
+  FOREIGN KEY (prediction_id) REFERENCES predictions(id) ON DELETE RESTRICT,
+  CHECK (
+    (outcome = 'scored' AND validity_status = 'valid' AND total_score BETWEEN 0 AND 99
+      AND max_score = 99 AND exclusion_reason IS NULL)
+    OR
+    (outcome = 'excluded' AND validity_status = 'excluded' AND total_score IS NULL
+      AND max_score IS NULL AND exclusion_reason IS NOT NULL)
+  )
+);
+INSERT INTO score_attempt_prediction_rows (
+  attempt_id, prediction_id, outcome, validity_status, total_score, max_score,
+  participation_score, batting_order_score, defense_score, perfect_bonus,
+  player_hits, order_hits, position_hits, perfect_hits, exclusion_reason, lineage_json
+)
+SELECT attempt_id, prediction_id, outcome, validity_status, total_score, max_score,
+       participation_score, batting_order_score, defense_score, perfect_bonus,
+       player_hits, order_hits, position_hits, perfect_hits, exclusion_reason, lineage_json
+  FROM _a2_score_attempt_prediction_rows_backup;
+DROP TABLE _a2_score_attempt_prediction_rows_backup;
 
 CREATE INDEX idx_predictions_game_id ON predictions(game_id);
 CREATE INDEX idx_predictions_user_updated ON predictions(user_id, updated_at);

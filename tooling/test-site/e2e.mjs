@@ -48,7 +48,7 @@ async function call(path, { method = "GET", body, admin = false, setup = false, 
   return { response, payload };
 }
 
-async function exerciseTeam(teamKey, group) {
+async function prepareTeamPrediction(teamKey, group) {
   const team = TEST_TEAMS[teamKey];
   const fixture = testTeamFixture(teamKey);
   const teamQuery = `?testTeam=${encodeURIComponent(teamKey)}`;
@@ -80,7 +80,12 @@ async function exerciseTeam(teamKey, group) {
   });
   assert.equal(prediction.payload.ok, true);
   assert.equal(prediction.payload.status, "submitted");
+}
 
+async function completeTeamPipeline(teamKey, group) {
+  const team = TEST_TEAMS[teamKey];
+  const fixture = testTeamFixture(teamKey);
+  const teamQuery = `?testTeam=${encodeURIComponent(teamKey)}`;
   const closed = await call(`/api/test/scenario${teamQuery}`, {
     method: "POST", body: { scenario: "closed" }, admin: true
   });
@@ -129,8 +134,14 @@ try {
   for (const group of TEST_TEAM_GROUPS) {
     const reset = await call(`/api/test/reset?testTeam=${group.homeKey}`, { method: "POST", body: {}, admin: true });
     assert.equal(reset.payload.game?.internalGameId, group.internalGameId);
-    await exerciseTeam(group.homeKey, group);
-    await exerciseTeam(group.awayKey, group);
+    // A physical game has one shared prediction deadline across its two
+    // team-scoped contests. Submit both predictions before either scenario
+    // advances that shared game beyond its deadline; then verify each contest
+    // independently through the same final pipeline.
+    await prepareTeamPrediction(group.homeKey, group);
+    await prepareTeamPrediction(group.awayKey, group);
+    await completeTeamPipeline(group.homeKey, group);
+    await completeTeamPipeline(group.awayKey, group);
 
     const homeHistory = await call(`/api/results/games?testTeam=${group.homeKey}`, { admin: true });
     const awayHistory = await call(`/api/results/games?testTeam=${group.awayKey}`, { admin: true });

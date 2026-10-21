@@ -106,7 +106,10 @@ test("the generated Test Pages build includes the simulator routes but productio
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const builder = fs.readFileSync(path.join(root, "tooling/test-site/build-pages.mjs"), "utf8");
   const productionBuilder = fs.readFileSync(path.join(root, "tooling/production-pages/build.mjs"), "utf8");
+  const productionRoutes = JSON.parse(fs.readFileSync(path.join(root, "_routes.json"), "utf8"));
   assert.match(builder, /simu-npb/);
   assert.match(builder, /s9simu\.pages\.dev/);
+  assert.match(builder, /routeManifest\.include/);
+  assert.equal(productionRoutes.include.includes("/simu-npb/*"), false);
   assert.doesNotMatch(productionBuilder, /simu-npb|s9simu\.pages\.dev/);
 });

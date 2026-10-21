@@ -321,7 +321,7 @@ CREATE TABLE contest_ranking_test_predictions (
 -- registered contests has no trustworthy owner for game-only score/ranking/
 -- publication state and therefore aborts the migration instead of guessing.
 CREATE TABLE contest_a3_migration_assert (valid INTEGER NOT NULL CHECK (valid = 1));
-WITH artifacts AS (
+WITH artifact_sources_a AS (
   SELECT 'game_scoring_revisions' AS source, s.internal_game_id FROM game_scoring_revisions s
   UNION ALL SELECT 'score_attempts', s.internal_game_id FROM score_attempts s
   UNION ALL SELECT 'ranking_games', COALESCE(r.internal_game_id, g.internal_game_id)
@@ -329,7 +329,8 @@ WITH artifacts AS (
    WHERE r.is_test_game = 0
   UNION ALL SELECT 'ranking_eligibility_history', COALESCE(h.internal_game_id, g.internal_game_id)
     FROM ranking_eligibility_history h LEFT JOIN games g ON g.internal_game_id = h.game_id OR g.internal_game_id = h.internal_game_id
-  UNION ALL SELECT 'ranking_reflection_revisions', r.internal_game_id FROM ranking_reflection_revisions r
+), artifact_sources_b AS (
+  SELECT 'ranking_reflection_revisions', r.internal_game_id FROM ranking_reflection_revisions r
   UNION ALL SELECT 'prediction_score_revisions', COALESCE(s.internal_game_id, p.internal_game_id)
     FROM prediction_score_revisions s JOIN predictions p ON p.id = s.prediction_id WHERE s.is_test_prediction = 0
   UNION ALL SELECT 'game_rescore_previews', COALESCE(l.internal_game_id, g.internal_game_id)
@@ -346,11 +347,16 @@ WITH artifacts AS (
          GROUP BY gi.identifier_value
         HAVING COUNT(DISTINCT gi.internal_game_id) = 1
       )
-  UNION ALL SELECT 'perfect_achievers', COALESCE(g.internal_game_id, p.internal_game_id)
+), artifact_sources_c AS (
+  SELECT 'perfect_achievers', COALESCE(g.internal_game_id, p.internal_game_id)
     FROM perfect_achievers a LEFT JOIN games g ON g.internal_game_id = a.game_id
     LEFT JOIN predictions p ON p.game_id = a.game_id AND p.user_id = a.user_id
   UNION ALL SELECT 'ranking_test_game_settings', s.internal_game_id FROM ranking_test_game_settings s
   UNION ALL SELECT 'ranking_test_predictions', p.internal_game_id FROM ranking_test_predictions p
+), artifacts AS (
+  SELECT * FROM artifact_sources_a
+  UNION ALL SELECT * FROM artifact_sources_b
+  UNION ALL SELECT * FROM artifact_sources_c
 ), ambiguous AS (
   SELECT 1 FROM artifacts a
    WHERE a.internal_game_id IS NULL

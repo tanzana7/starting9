@@ -44,6 +44,17 @@ export function normalizeFightersScheduleGames(games, date) {
   return normalizeTargetTeamScheduleGames(games, date, teamContext.FIGHTERS);
 }
 
+export function normalizeAllNpbScheduleGames(games, date) {
+  const unique = new Map();
+  for (const targetTeam of Object.values(teamContext.NPB_TEAMS)) {
+    for (const game of normalizeTargetTeamScheduleGames(games, date, targetTeam)) {
+      if (!unique.has(game.gameId)) unique.set(game.gameId, game);
+    }
+  }
+  return [...unique.values()].sort((left, right) => left.startTime.localeCompare(right.startTime)
+    || left.gameId.localeCompare(right.gameId));
+}
+
 export function normalizeTargetTeamScheduleGames(games, date, targetTeam) {
   const selectedTeam = teamContext.requireTeamContext(targetTeam);
   const normalizedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(date || "")) ? String(date) : "";

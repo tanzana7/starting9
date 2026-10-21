@@ -5,6 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import worker from "../auth-worker.js";
+import teamContext from "../frontend/shared/team-context.js";
 import {
   getManualLineupPlayerCatalog,
   normalizeManualLineupInput
@@ -227,7 +228,7 @@ test("manual roster APIはadmin認証・確認・入力検証を要求する", a
   assert.equal(unconfirmed.status, 409);
   const unknown = await worker.fetch(request("/api/admin/v3/manual-roster", "PUT", { teamCode: "fighters", entries: [{ playerId: "X-1" }], confirmed: true }), env, {});
   assert.equal(unknown.status, 400);
-  const invalidTeam = await worker.fetch(request("/api/admin/v3/manual-roster", "PUT", { teamCode: "hawks", entries: [], confirmed: true }), env, {});
+  const invalidTeam = await worker.fetch(request("/api/admin/v3/manual-roster", "PUT", { teamCode: "unknown-team", entries: [], confirmed: true }), env, {});
   assert.equal(invalidTeam.status, 400);
   const valid = await worker.fetch(request("/api/admin/v3/manual-roster", "PUT", { teamCode: "fighters", entries: [{ playerId: catalog[0].playerId, status: "active", note: "開幕登録" }, { playerId: catalog[1].playerId, status: "inactive" }], confirmed: true }), env, {});
   assert.equal(valid.status, 200);
@@ -246,6 +247,78 @@ test("manual roster APIはadmin認証・確認・入力検証を要求する", a
   }), env, {});
   assert.equal(auto.status, 200);
   assert.equal((await auto.json()).roster.entries[0].mode, "auto");
+});
+
+test("manual roster APIは要求されたチームの公式候補だけを使い、保存をチーム間で分離する", async () => {
+  const { env, database } = await makeEnv();
+  env.ENVIRONMENT = "test";
+  env.NPB_FETCH_WORKER = {
+    async fetch(request) {
+      assert.match(new URL(request.url).searchParams.get("team"), /^(hawks|marines)$/);
+      const team = new URL(request.url).searchParams.get("team");
+      return Response.json({
+        ok: true,
+        team,
+        players: [{ playerId: "npb:12345678", name: `${team} player`, number: "8", position: "外野手" }]
+      });
+    }
+  };
+  const hawksRead = await worker.fetch(request("/api/admin/v3/manual-roster?teamCode=hawks"), env, {});
+  assert.equal(hawksRead.status, 200);
+  const hawksBody = await hawksRead.json();
+  assert.equal(hawksBody.roster.team.teamCode, "hawks");
+  assert.deepEqual(hawksBody.playerCatalog.map((player) => player.playerId), ["npb:12345678"]);
+  assert.equal(hawksBody.playerCatalog[0].teamCode, "hawks");
+
+  const hawksSave = await worker.fetch(request("/api/admin/v3/manual-roster", "PUT", {
+    teamCode: "hawks",
+    entries: [{ playerId: "npb:12345678", mode: "active" }],
+    confirmed: true
+  }), env, {});
+  assert.equal(hawksSave.status, 200);
+  assert.equal((await hawksSave.json()).roster.entries[0].playerId, "npb:12345678");
+  const marinesSave = await worker.fetch(request("/api/admin/v3/manual-roster", "PUT", {
+    teamCode: "marines",
+    entries: [{ playerId: "npb:12345678", mode: "inactive" }],
+    confirmed: true
+  }), env, {});
+  assert.equal(marinesSave.status, 200);
+  assert.deepEqual(database.prepare("SELECT team_code, team_id, player_id FROM manual_team_rosters ORDER BY team_code").all().map((row) => ({ ...row })), [
+    { team_code: "hawks", team_id: "H", player_id: "npb:12345678" },
+    { team_code: "marines", team_id: "M", player_id: "npb:12345678" }
+  ]);
+});
+
+test("non-Fighters lineup catalog uses only trusted official IDs from its Team Context", () => {
+  const teams = ["marines", "tigers", "hawks"];
+  const lineupPositions = ["捕", "一", "二", "三", "遊", "左", "中", "右", "指"];
+  for (const key of teams) {
+    const targetTeam = teamContext.NPB_TEAMS[key];
+    const official = Array.from({ length: 9 }, (_, index) => ({
+      playerId: `npb:${String(70000000 + index).padStart(8, "0")}`,
+      name: `${key} player ${index + 1}`,
+      number: String(index + 1),
+      position: index === 0 ? "捕手" : index === 8 ? "指名打者" : "内野手"
+    }));
+    const catalog = getManualLineupPlayerCatalog({ targetTeam, rosterPlayers: official });
+    assert.deepEqual(catalog.map((player) => player.playerId), official.map((player) => player.playerId));
+    assert.ok(catalog.every((player) => player.teamCode === key && player.teamId === targetTeam.playerTeamId));
+    assert.equal(catalog.some((player) => /fighters/i.test(player.teamCode)), false);
+    const lineup = catalog.map((player, index) => ({ ...player, battingOrder: index + 1, position: lineupPositions[index] }));
+    const trusted = official.map((player) => ({
+      playerId: player.playerId,
+      name: player.name,
+      number: player.number,
+      teamCode: key,
+      teamId: targetTeam.playerTeamId
+    }));
+    assert.equal(normalizeManualLineupInput(lineup, { targetTeam, trustedTemporaryPlayers: trusted }).ok, true);
+    assert.equal(normalizeManualLineupInput(lineup, { targetTeam, trustedTemporaryPlayers: [] }).ok, false,
+      "no Fighters or unverified fallback is allowed");
+    assert.equal(normalizeManualLineupInput(lineup.map((player, index) => index === 0
+      ? { ...player, teamCode: "fighters", teamId: "F" }
+      : player), { targetTeam, trustedTemporaryPlayers: trusted }).code, "LINEUP_TEAM_MISMATCH");
+  }
 });
 
 test("manual roster APIはschema未適用時に明示的な503を返す", async () => {

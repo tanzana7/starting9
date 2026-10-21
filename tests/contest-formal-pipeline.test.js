@@ -271,3 +271,36 @@ test("formal same-game pipeline is contest-isolated in serial, interleaved, and 
     }
   }
 });
+
+test("production contest-driven Cron discovers and executes both same-game contests without a team loop", async () => {
+  const fixture = await createFixture();
+  try {
+    for (let pass = 0; pass < 8; pass += 1) {
+      const now = new Date(NOW.getTime() + pass * 60_000);
+      const result = await runGameAutomationV3(fixture.envFor("fighters"), now, {
+        contestDriven: true,
+        targetTeamKey: "",
+        v4SemiAuto: true,
+        runAuxiliary: false,
+        gameListOptions: { limit: 50 },
+        formalPlanner: (db, contests, at) => planMainWorkflowJobs(db, contests, at, {
+          v4SemiAuto: true,
+          disabledStages: ["roster_fetch", "lineup_fetch"]
+        }),
+        executeJob: async (context) => {
+          assert.equal(context.job.target_team_key, context.env.TARGET_TEAM_CONTEXT.key,
+            "claimed contest identity selects the executor's canonical Team Context");
+          return executeGameAutomationV3Job({ ...context, v4SemiAuto: true });
+        }
+      });
+      assert.ok(result.gameCount <= 50, "contest discovery remains bounded");
+      if (fixture.database.prepare("SELECT COUNT(*) AS count FROM contest_automation_v3_state WHERE state='published'").get().count === 2) break;
+    }
+    for (const teamKey of ["fighters", "marines"]) {
+      await assertPublishedContest(fixture, teamKey);
+      assert.ok(fixture.database.prepare("SELECT 1 FROM game_jobs_v3 WHERE contest_id=? AND status='completed' AND job_type='publish'").get(CONTESTS[teamKey]));
+    }
+  } finally {
+    fixture.close();
+  }
+});

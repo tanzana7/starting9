@@ -5,6 +5,7 @@ import {
   createV3Job,
   ensureV3State,
   hasPotentialFormalWork,
+  listV3ContestGames,
   listV3Games,
   getV3SchemaState,
   getV3State,
@@ -22,6 +23,7 @@ import {
 } from "./orchestrator.js";
 import { isV3JobForStage } from "./planning-engine.js";
 import { assessV3LineupArtifact } from "./lineup-artifacts.js";
+import { teamContext } from "../target-team.js";
 
 // Audit observers must never hold the workflow planner or executor hostage.
 // D1 audit writes are operational telemetry; the V3 job lifecycle is the
@@ -440,8 +442,28 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
     const executionNow = new Date(monotonicV3JobTimestamp(now, claimed.created_at, claimed.claimed_at));
     try {
       if (typeof executeJob !== "function") throw createV3Error("MISSING_EXECUTOR", "V3ジョブexecutorが注入されていません。");
+      let executionEnv = env;
+      if (claimed.contest_id) {
+        // Scheduled Cron claims include this key through the bounded due-job
+        // join. Admin's exact-job recovery path claims directly, so resolve the
+        // same canonical identity from the contest row instead of falling back
+        // to the environment's default team (which could score the wrong club).
+        let contestTeamKey = String(claimed.target_team_key || "").trim().toLowerCase();
+        if (!contestTeamKey) {
+          const contest = await env.AUTH_DB.prepare(
+            `SELECT target_team_key FROM game_contests
+              WHERE contest_id=?1 AND internal_game_id=?2 LIMIT 1`
+          ).bind(String(claimed.contest_id), String(claimed.internal_game_id)).first();
+          contestTeamKey = String(contest?.target_team_key || "").trim().toLowerCase();
+        }
+        const contestTeam = teamContext.NPB_TEAMS[contestTeamKey];
+        if (!contestTeam) {
+          throw createV3Error("V3_JOB_CONTEST_TEAM_UNKNOWN", "contest jobの対象球団を解決できません。", { retryable: false });
+        }
+        executionEnv = { ...env, TARGET_TEAM_CONTEXT: contestTeam };
+      }
       const result = await executeJob({
-        env,
+        env: executionEnv,
         job: claimed,
         internalGameId: claimed.internal_game_id,
         now: executionNow,
@@ -569,7 +591,7 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
   return { processed, failed, retryWait, terminalFailed, failedJobIds, retryErrors };
 }
 
-export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, onPhase = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, formalPlanner = planMainWorkflowJobs, auxiliaryPlanner = planAuxiliaryJobs, scheduleOptional = null, disabledJobTypes = [], targetTeamKey = "", v4SemiAuto = false, includeHistoricalRecovery = true, gameListOptions = {}, auxiliaryGameListOptions = null, runAuxiliary = true, auxiliaryOnly = false, skipFormalDiscoveryIfIdle = false } = {}) {
+export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, onPhase = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, formalPlanner = planMainWorkflowJobs, auxiliaryPlanner = planAuxiliaryJobs, scheduleOptional = null, disabledJobTypes = [], targetTeamKey = "", v4SemiAuto = false, includeHistoricalRecovery = true, gameListOptions = {}, auxiliaryGameListOptions = null, runAuxiliary = true, auxiliaryOnly = false, skipFormalDiscoveryIfIdle = false, contestDriven = false } = {}) {
   if (!isGameAutomationV3Enabled(env)) return { enabled: false, processed: 0, created: 0 };
   const schema = await getV3SchemaState(env.AUTH_DB);
   if (!schema.ready) return { enabled: true, schemaReady: false, errorCode: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", processed: 0, created: 0 };
@@ -601,7 +623,7 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
       auxiliaryGames: games
     };
   }
-  if (skipFormalDiscoveryIfIdle && !(await hasPotentialFormalWork(env.AUTH_DB, now, { v4SemiAuto, includeHistoricalRecovery }))) {
+  if (skipFormalDiscoveryIfIdle && !(await hasPotentialFormalWork(env.AUTH_DB, now, { v4SemiAuto, includeHistoricalRecovery, contestDriven }))) {
     await invokeV3Observer(onPhase, [{
       stage: "formal_idle_fast_path",
       now,
@@ -626,7 +648,9 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
       claimReport: { due: [], claimed: [], skipped: [], hasMoreDue: false }
     };
   }
-  const games = await listV3Games(env.AUTH_DB, now, gameListOptions);
+  const games = contestDriven
+    ? await listV3ContestGames(env.AUTH_DB, now, gameListOptions)
+    : await listV3Games(env.AUTH_DB, now, gameListOptions);
   await invokeV3Observer(onPhase, [{
     stage: "eligible_games",
     now,
@@ -815,7 +839,7 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
   // caller include the next day's probable-starter slots without scanning
   // every historical unfinished game on every Cron tick.
   const formalLimit = Number(gameListOptions?.limit);
-  const formalDiscoveryCoveredAllRows = Number.isInteger(formalLimit)
+  const formalDiscoveryCoveredAllRows = !contestDriven && Number.isInteger(formalLimit)
     && formalLimit > 0
     && games.length < formalLimit;
   const auxiliaryGamesPromise = auxiliaryGameListOptions

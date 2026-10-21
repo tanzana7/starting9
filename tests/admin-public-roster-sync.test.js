@@ -91,7 +91,7 @@ test("admin lineupとpublicは同じgame-day-roster resolver/cacheを共有し�
   assert.match(workerSource, /handleGetGameDayRosterWithCache\(/);
   assert.match(workerSource, /kind: "game-day-roster"/);
   assert.match(workerSource, /PUBLIC_ROSTER_CACHE_FRESH_TTL_SECONDS = 60/);
-  assert.match(workerSource, /applyLiveRosterToManualLineupCatalog\(baseCatalog, publicRosterResolution\.roster, manualRoster\)/);
+  assert.match(workerSource, /applyLiveRosterToManualLineupCatalog\(baseCatalog, publicRosterResolution\.roster, manualRoster, \{ teamCode: targetTeam\.key \}\)/);
   assert.doesNotMatch(adminSource, /ADMIN_V3_ROSTER_REFRESH_INTERVAL_MS/);
   assert.doesNotMatch(adminSource, /setInterval\([^\n]*refreshV3LineupRoster/);
   assert.match(adminSource, /getGameOperationDetail\(id, "\/lineup"\)/);

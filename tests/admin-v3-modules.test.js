@@ -14,6 +14,7 @@ function loadModules() {
     window: {},
     Map,
     Set,
+    URL,
     URLSearchParams,
     Intl,
     Date

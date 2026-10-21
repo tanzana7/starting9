@@ -1,4 +1,5 @@
 import { normalizeFightersPlayerName } from "../../fighters-player-master.js";
+import teamContext from "../../frontend/shared/team-context.js";
 
 const MAX_MANUAL_ROSTER_ENTRIES = 100;
 const MAX_NOTE_LENGTH = 240;
@@ -32,8 +33,19 @@ export function manualRosterError(code, message, httpStatus = 400) {
 }
 
 export function normalizeManualRosterTeam(value) {
-  const raw = String(value ?? "").trim().toLowerCase();
-  if (["fighters", "f"].includes(raw)) return MANUAL_ROSTER_TEAM;
+  const raw = typeof value === "object" && value !== null
+    ? String(value.key || value.providerTeamCode || value.playerTeamId || "").trim().toLowerCase()
+    : String(value ?? "").trim().toLowerCase();
+  const match = Object.values(teamContext.NPB_TEAMS).find((team) =>
+    [team.key, team.providerTeamCode, team.playerTeamId, team.officialRosterCode]
+      .some((identity) => String(identity).toLowerCase() === raw)
+  );
+  if (match) return Object.freeze({
+    teamCode: match.key,
+    teamId: match.playerTeamId,
+    teamName: match.displayName,
+    source: "manual"
+  });
   throw manualRosterError("MANUAL_ROSTER_TEAM_INVALID", "対応していないチームです。", 400);
 }
 
@@ -228,7 +240,7 @@ function matchesKnownCatalogPlayer(liveEntry, player) {
   return Boolean(liveNumber && playerNumber && liveNumber === playerNumber && liveName && knownNames.includes(liveName));
 }
 
-function createTemporaryNpbPlayer(liveEntry) {
+function createTemporaryNpbPlayer(liveEntry, targetTeam = MANUAL_ROSTER_TEAM) {
   const playerId = normalizeOfficialNpbPlayerId(liveEntry?.playerId);
   const name = String(rosterPlayerName(liveEntry) || "").trim();
   const uniformNumber = rosterPlayerNumber(liveEntry);
@@ -244,8 +256,8 @@ function createTemporaryNpbPlayer(liveEntry) {
     playerName: name,
     displayName: name,
     uniformNumber,
-    teamCode: MANUAL_ROSTER_TEAM.teamCode,
-    teamId: MANUAL_ROSTER_TEAM.teamId,
+    teamCode: targetTeam.teamCode,
+    teamId: targetTeam.teamId,
     category,
     registeredPosition: category,
     candidateVisibility: isFielder ? "auto" : "hide",
@@ -263,7 +275,7 @@ function createTemporaryNpbPlayer(liveEntry) {
 // operator intent, while players without an override follow the same live or
 // snapshot roster used by the public page. This is display/selection state
 // only; it never writes the live result into the manual roster table.
-export function applyLiveRosterToManualLineupCatalog(catalog, liveRoster, manualRoster = null) {
+export function applyLiveRosterToManualLineupCatalog(catalog, liveRoster, manualRoster = null, { teamCode = MANUAL_ROSTER_TEAM.teamCode } = {}) {
   const liveEntries = Array.isArray(liveRoster) ? liveRoster : liveRoster?.players;
   if (!Array.isArray(liveEntries) || liveEntries.length === 0) return null;
   const manualEntries = Array.isArray(manualRoster) ? manualRoster : manualRoster?.entries || [];
@@ -300,7 +312,7 @@ export function applyLiveRosterToManualLineupCatalog(catalog, liveRoster, manual
   const existingIds = new Set(baseCatalog.map((player) => String(player?.playerId || "").trim()).filter(Boolean));
   const temporaryPlayers = liveEntries
     .filter((entry) => !knownLiveEntries.has(entry))
-    .map(createTemporaryNpbPlayer)
+    .map((entry) => createTemporaryNpbPlayer(entry, normalizeManualRosterTeam(teamCode)))
     .filter((player) => player && !existingIds.has(player.playerId));
   const uniqueTemporaryPlayers = [];
   const temporaryIds = new Set();

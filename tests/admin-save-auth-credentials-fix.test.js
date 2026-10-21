@@ -14,7 +14,7 @@ const workerSource = fs.readFileSync(path.join(root, "auth-worker.js"), "utf8");
 
 function loadApiClient(fetchImpl) {
   const window = {};
-  const context = { window, URLSearchParams, console };
+  const context = { window, URL, URLSearchParams, console };
   vm.createContext(context);
   vm.runInContext(apiSource, context);
   return window.Starting9AdminV3.createAdminV3ApiClient({

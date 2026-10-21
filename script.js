@@ -1,4 +1,9 @@
 const targetTeam = window.Starting9TeamContext.requireTeamContext(window.Starting9TargetTeam);
+function scopeApiUrlToTargetTeam(url) {
+  const scoped = new URL(url, window.location.href);
+  scoped.searchParams.set("team", targetTeam.key);
+  return scoped.href;
+}
 const STORAGE_KEYS = {
   prediction: "hamStarting9Prediction",
   actual: "hamStarting9Actual",
@@ -575,7 +580,7 @@ function bindEvents() {
 
 function buildAchievementsApiUrl() {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
-  return baseUrl ? `${baseUrl}/api/me/achievements` : "";
+  return baseUrl ? scopeApiUrlToTargetTeam(`${baseUrl}/api/me/achievements`) : "";
 }
 
 function renderAchievements() {
@@ -2349,6 +2354,7 @@ function buildCurrentPredictionApiUrl(gameId) {
   }
   const url = new URL(`${baseUrl}/api/predictions/current`, window.location.href);
   url.searchParams.set("internalGameId", gameId);
+  url.searchParams.set("team", targetTeam.key);
   return url.href;
 }
 
@@ -3192,8 +3198,8 @@ function getGameDayNoticeTarget() {
 function buildGameDayNoticeApiUrl({ internalGameId = "", gameId = "" } = {}) {
   const baseUrl = getAuthApiBaseUrl().replace(/\/+$/, "");
   if (!baseUrl) return "";
-  if (internalGameId) return `${baseUrl}/api/game-day-status?internalGameId=${encodeURIComponent(internalGameId)}`;
-  return gameId ? `${baseUrl}/api/game-day-status?gameId=${encodeURIComponent(gameId)}` : "";
+  if (internalGameId) return scopeApiUrlToTargetTeam(`${baseUrl}/api/game-day-status?internalGameId=${encodeURIComponent(internalGameId)}`);
+  return gameId ? scopeApiUrlToTargetTeam(`${baseUrl}/api/game-day-status?gameId=${encodeURIComponent(gameId)}`) : "";
 }
 
 function renderGameDayNoticeStatus() {

@@ -7,7 +7,7 @@ import {
 } from "../../fighters-player-master.js";
 import { normalizeScheduleTeamCode } from "../../game-schedule-detection.js";
 import { ensureGameContest } from "../contest-identity.js";
-import { targetTeamForEnvironment } from "../target-team.js";
+import { targetTeamForEnvironment, teamContext } from "../target-team.js";
 import {
   fetchSimulatorSource,
   normalizeExternalGameStatus,
@@ -59,7 +59,7 @@ function normalizeSource(value) {
   return source;
 }
 
-function normalizeRawLineup(lineup) {
+function normalizeRawLineup(lineup, targetTeam = teamContext.FIGHTERS) {
   return (Array.isArray(lineup) ? lineup : []).map((row) => ({
     battingOrder: row?.battingOrder ?? row?.batting_order ?? row?.order,
     playerId: row?.playerId ?? row?.player_id ?? "",
@@ -67,12 +67,12 @@ function normalizeRawLineup(lineup) {
     position: row?.position ?? "",
     uniformNumber: row?.uniformNumber ?? row?.uniform_number ?? row?.jerseyNumber ?? row?.jersey_number ?? row?.number ?? "",
     handedness: row?.handedness ?? row?.bats ?? row?.throws ?? null,
-    teamCode: normalizeScheduleTeamCode(row?.teamCode ?? row?.team_code) || FIGHTERS_TEAM_CODE,
-    teamId: row?.teamId ?? row?.team_id ?? FIGHTERS_TEAM_ID
+    teamCode: row?.teamCode ?? row?.team_code ?? targetTeam.key,
+    teamId: row?.teamId ?? row?.team_id ?? targetTeam.playerTeamId
   }));
 }
 
-function normalizeCandidateMetadata(raw = {}, target = {}, { source = "official", fetchedAt = new Date() } = {}) {
+function normalizeCandidateMetadata(raw = {}, target = {}, { source = "official", fetchedAt = new Date(), targetTeam = teamContext.FIGHTERS } = {}) {
   const payload = raw?.payload && typeof raw.payload === "object" ? raw.payload : raw;
   return {
     internalGameId: text(target.internalGameId || payload.internalGameId || payload.internal_game_id),
@@ -84,7 +84,7 @@ function normalizeCandidateMetadata(raw = {}, target = {}, { source = "official"
     fetchedAt: iso(payload.fetchedAt || payload.fetched_at || fetchedAt),
     status: normalizeExternalGameStatus(payload.status || payload.gameStatus || payload.game_status),
     sourceUrl: text(payload.sourceUrl || payload.source_url).slice(0, 240),
-    lineup: normalizeRawLineup(payload.lineup)
+    lineup: normalizeRawLineup(payload.lineup, targetTeam)
   };
 }
 
@@ -116,7 +116,8 @@ function unresolvedCandidateResult(candidate, validation) {
   };
 }
 
-function canonicalizeKnownPlayerIds(lineup) {
+function canonicalizeKnownPlayerIds(lineup, targetTeam = teamContext.FIGHTERS) {
+  if (targetTeam.key !== FIGHTERS_TEAM_CODE) return lineup;
   const byId = new Map(FIGHTERS_PLAYER_MASTER.map((player) => [`${FIGHTERS_TEAM_ID}-${player.uniformNumber}`, player]));
   return lineup.map((row) => {
     const player = byId.get(text(row.playerId));
@@ -125,11 +126,11 @@ function canonicalizeKnownPlayerIds(lineup) {
   });
 }
 
-function hasAmbiguousExternalIdentity(lineup, trustedTemporaryPlayers) {
-  const aliases = (Array.isArray(FIGHTERS_PLAYER_MASTER) ? FIGHTERS_PLAYER_MASTER : []).flatMap((player) =>
+function hasAmbiguousExternalIdentity(lineup, trustedTemporaryPlayers, targetTeam = teamContext.FIGHTERS) {
+  const aliases = targetTeam.key === FIGHTERS_TEAM_CODE ? (Array.isArray(FIGHTERS_PLAYER_MASTER) ? FIGHTERS_PLAYER_MASTER : []).flatMap((player) =>
     [player.name, ...(Array.isArray(player.aliases) ? player.aliases : [])]
       .map((name) => [normalizeFightersPlayerName(name), player.uniformNumber])
-  );
+  ) : [];
   for (const row of lineup) {
     const name = normalizeFightersPlayerName(row.playerName);
     if (name && new Set(aliases.filter(([alias]) => alias === name).map(([, number]) => number)).size > 1) return true;
@@ -150,10 +151,12 @@ function hasAmbiguousExternalIdentity(lineup, trustedTemporaryPlayers) {
 export function createLineupCandidate(raw, target = {}, {
   source = "official",
   fetchedAt = new Date(),
-  trustedTemporaryPlayers = []
+  trustedTemporaryPlayers = [],
+  targetTeam = teamContext.FIGHTERS
 } = {}) {
+  targetTeam = teamContext.requireTeamContext(targetTeam);
   const normalizedTarget = normalizeTarget(target);
-  const candidate = normalizeCandidateMetadata(raw, normalizedTarget, { source, fetchedAt });
+  const candidate = normalizeCandidateMetadata(raw, normalizedTarget, { source, fetchedAt, targetTeam });
   const identityReasons = identityMismatch(normalizedTarget, candidate);
   if (identityReasons.length) {
     return {
@@ -177,10 +180,10 @@ export function createLineupCandidate(raw, target = {}, {
     return unresolvedCandidateResult(candidate, { ok: false, code: "LINEUP_STATUS_INVALID", rejectionReasons: ["LINEUP_STATUS_INVALID"] });
   }
 
-  if (hasAmbiguousExternalIdentity(candidate.lineup, trustedTemporaryPlayers)) {
+  if (hasAmbiguousExternalIdentity(candidate.lineup, trustedTemporaryPlayers, targetTeam)) {
     return unresolvedCandidateResult(candidate, { ok: false, code: "LINEUP_PLAYER_AMBIGUOUS", rejectionReasons: ["LINEUP_PLAYER_AMBIGUOUS"] });
   }
-  const normalized = normalizeManualLineupInput(canonicalizeKnownPlayerIds(candidate.lineup), { trustedTemporaryPlayers });
+  const normalized = normalizeManualLineupInput(canonicalizeKnownPlayerIds(candidate.lineup, targetTeam), { trustedTemporaryPlayers, targetTeam });
   if (!normalized.ok) return unresolvedCandidateResult(candidate, normalized);
   const rawByOrder = new Map(candidate.lineup.map((row) => [Number(row.battingOrder), row]));
   const canonicalCandidate = {
@@ -491,23 +494,23 @@ export function buildLineupAlertSignal(result, { missingAfterGrace = false } = {
 }
 
 export async function runLineupCandidatePipeline({ env = {}, target = {}, db = null, fetchOfficial, fetchImpl, signal, now = new Date(), autoFinalEnabled = false, trustedTemporaryPlayers = [], shadowMode = false } = {}) {
+  const targetTeam = targetTeamForEnvironment(env);
   const fetched = await fetchLineupCandidateForGame(env, target, { fetchOfficial, fetchImpl, signal, now });
   if (!fetched.ok) return { ...fetched, alertSignal: buildLineupAlertSignal(fetched) };
   const normalized = createLineupCandidate(fetched.payload, target, {
     source: fetched.source,
     fetchedAt: fetched.fetchedAt || now,
-    trustedTemporaryPlayers
+    trustedTemporaryPlayers,
+    targetTeam
   });
   if (!normalized.ok) {
     const persisted = db ? await persistLineupCandidate(db, normalized.candidate, normalized.validation, { now, shadowMode }) : null;
     return { ...normalized, persisted, alertSignal: buildLineupAlertSignal(normalized) };
   }
   let candidate = normalized.candidate;
-  let targetTeam = null;
   if (db) {
     const lineupColumns = await tableColumns(db, "game_lineups");
     if (lineupColumns.has("contest_id")) {
-      targetTeam = targetTeamForEnvironment(env);
       const contest = await ensureGameContest(db, candidate.internalGameId, targetTeam, target?.contestId || "");
       if (!contest.ok) return { ...normalized, ok: false, status: "identity_mismatch", code: contest.code, alertSignal: buildLineupAlertSignal({ status: "identity_mismatch" }) };
       candidate = { ...candidate, contestId: contest.contestId, targetTeamKey: targetTeam.key };

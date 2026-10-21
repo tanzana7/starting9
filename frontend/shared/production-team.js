@@ -21,10 +21,27 @@
   }
 
   window.Starting9TargetTeam = requestedTeam;
+  document.documentElement.dataset.team = requestedTeam.key;
   context.applyBranding(document.documentElement, requestedTeam);
+  // Public Fighters keeps its shipped, slightly darker display palette. Other teams receive
+  // their canonical Team Context colors on the body, where the legacy public palette is scoped.
+  if (document.body) {
+    document.body.dataset.team = requestedTeam.key;
+    if (requestedTeam.key !== "fighters") context.applyBranding(document.body, requestedTeam);
+  }
   document.title = `Starting9 | ${requestedTeam.shortName}のスタメン予想`;
   const description = document.querySelector('meta[name="description"]');
-  if (description) description.content = `Starting9で${requestedTeam.displayName}のスタメンを予想。試合後は採点やランキングを確認できます。`;
+  const pageDescription = `Starting9で${requestedTeam.displayName}のスタメンを予想。試合後は採点やランキングを確認できます。`;
+  if (description) description.content = pageDescription;
+  for (const [selector, content] of [
+    ['meta[property="og:title"]', document.title],
+    ['meta[property="og:description"]', pageDescription],
+    ['meta[name="twitter:title"]', document.title],
+    ['meta[name="twitter:description"]', pageDescription]
+  ]) {
+    const meta = document.querySelector(selector);
+    if (meta) meta.content = content;
+  }
 
   const host = document.querySelector(".header-inner, .admin-v3-header");
   if (!host || document.getElementById("productionTeamSelector")) return;

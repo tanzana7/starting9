@@ -217,7 +217,7 @@ test("保存済み予想は打順・守備位置・選手名の表形式で表�
 });
 
 test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、更新済みURLで読み込む", () => {
-  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-single-game-1[^"]*npb-only-phase-a1">/);
+  assert.match(html, /<link rel="stylesheet" href="style\.css\?v=public-single-game-1[^"]*npb-only-phase-a1-standard-team-ui-1">/);
   for (const [className, label, source] of [
     ["lineup-builder", "左右カラム", html],
     ["lineup-panel", "予想オーダー", html],
@@ -239,8 +239,8 @@ test("PC用CSSは実DOMの入力要素へ適用できるセレクタを持ち、
 
 test("公開予想入力は結果画面と共通の青系テーマを使い、操作領域を維持する", () => {
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\):has\(#predictionForm\)/);
-  assert.match(css, /#predictionForm \.slot-order[\s\S]*color: #ffffff[\s\S]*background: #1168a8/);
-  assert.match(css, /#predictionForm \.roster-filter-button\.is-selected[\s\S]*background: #1168a8[\s\S]*#d5a11e/);
+  assert.match(css, /#predictionForm \.slot-order[\s\S]*color: var\(--team-on-primary\)[\s\S]*background: var\(--team-primary\)/);
+  assert.match(css, /#predictionForm \.roster-filter-button\.is-selected[\s\S]*background: var\(--team-primary\)[\s\S]*var\(--team-accent\)/);
   assert.match(css, /#predictionForm \.position-menu[\s\S]*border-color: #9fc2df/);
   assert.match(css, /#predictionForm \.player-chip[\s\S]*border-color: #b9cfe2/);
   assert.match(css, /#predictionForm \.lineup-slot\.is-drop-target/);
@@ -253,7 +253,7 @@ test("公開予想入力は結果画面と共通の青系テーマを使い、�
 
 test("公開画面はスコアボード風の落ち着いたテーマを使い、管理画面へ漏らさない", () => {
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \{/);
-  assert.match(css, /--fighters-deep-blue: #14213d/);
+  assert.match(css, /--team-secondary: #14213d/);
   assert.match(css, /background: #f4f6f8/);
   assert.match(css, /\.daily-best-nine-card[\s\S]*border-left-color: var\(--fighters-gold\)/);
   assert.match(css, /\.ranking-tab\.is-active[\s\S]*background: var\(--fighters-deep-blue\)/);

@@ -71,8 +71,8 @@ test("採点結果テーブルは罫線主体のExcel風表組みでスマホに
   assert.match(css, /\.result-table\s*\{[\s\S]*min-width: 520px/);
   assert.match(css, /\.result-table\s*\{[\s\S]*border-collapse: collapse/);
   assert.match(css, /\.result-table-wrap\s*\{[\s\S]*border-radius: 0/);
-  assert.match(css, /\.result-table th\s*\{[\s\S]*color: #ffffff[\s\S]*background: var\(--fighters-blue\)/);
-  assert.match(css, /\.result-table \.result-order-cell strong\s*\{[\s\S]*color: #ffffff[\s\S]*background: var\(--fighters-blue\)/);
+  assert.match(css, /\.result-table th\s*\{[\s\S]*color: var\(--team-on-primary\)[\s\S]*background: var\(--fighters-blue\)/);
+  assert.match(css, /\.result-table \.result-order-cell strong\s*\{[\s\S]*color: var\(--team-on-primary\)[\s\S]*background: var\(--fighters-blue\)/);
   assert.match(css, /\.result-table th,[\s\S]*\.result-table td\s*\{[\s\S]*border: 1px solid #d3dfeb/);
   assert.match(css, /\.result-player-card\s*\{[\s\S]*border-radius: 0/);
   assert.match(css, /\.result-judgement-stack\s*\{[\s\S]*display: flex[\s\S]*flex-wrap: nowrap/);
@@ -104,7 +104,7 @@ test("結果表の横罫線を判定・点数列まで連続させる", () => {
 
 test("公開結果エリアは保存済み予想に近い青白い配色を使う", () => {
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.app-layout:not\(\.is-admin-screen\) > \.result-card\s*\{[\s\S]*background: #eef5fb/);
-  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.result-table th,[\s\S]*background: #1168a8/);
+  assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.result-table th,[\s\S]*background: var\(--team-strong-primary\)/);
   assert.match(css, /body:not\(:has\(\.app-layout\.is-admin-screen\)\) \.result-table tbody td\s*\{[\s\S]*background: #ffffff/);
 });
 

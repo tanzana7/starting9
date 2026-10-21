@@ -17,6 +17,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OLD_GAME = "old-game";
 const FUTURE_GAME = "future-game";
 const LIVE_GAME = "live-game";
+const fightersContestId = (gameId) => createContestId(gameId, "fighters");
 
 function d1(database) {
   return {
@@ -68,7 +69,7 @@ function insertGame(database, gameId, gameStatus, startTime) {
   database.prepare(`
     INSERT INTO game_contests (contest_id, internal_game_id, target_team_key)
     VALUES (?, ?, 'fighters')
-  `).run(createContestId(gameId, "fighters"), gameId);
+  `).run(fightersContestId(gameId), gameId);
 }
 
 function insertRankingGame(database, gameId, status = "scored") {
@@ -94,9 +95,9 @@ function insertPrediction(database, gameId) {
 
 function insertDependentRows(database) {
   database.prepare(`
-    INSERT INTO game_jobs_v3 (internal_game_id, job_type, scheduled_at, scheduled_slot_at, status, completed_at, created_at, updated_at)
-    VALUES (?, 'score', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z', 'completed', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z')
-  `).run(OLD_GAME);
+    INSERT INTO game_jobs_v3 (internal_game_id, contest_id, job_type, scheduled_at, scheduled_slot_at, status, completed_at, created_at, updated_at)
+    VALUES (?, ?, 'score', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z', 'completed', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z')
+  `).run(OLD_GAME, fightersContestId(OLD_GAME));
   const jobId = database.prepare("SELECT id FROM game_jobs_v3 WHERE internal_game_id = ?").get(OLD_GAME).id;
   database.prepare(`
     INSERT INTO score_attempts (
@@ -184,9 +185,9 @@ test("pre-beta purge refuses a target plan with active jobs", async () => {
   insertGame(database, OLD_GAME, "completed", "2026-09-10T10:00:00.000Z");
   insertRankingGame(database, OLD_GAME);
   database.prepare(`
-    INSERT INTO game_jobs_v3 (internal_game_id, job_type, scheduled_at, scheduled_slot_at, status, created_at, updated_at)
-    VALUES (?, 'ranking_rebuild', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z', 'retry_wait', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z')
-  `).run(OLD_GAME);
+    INSERT INTO game_jobs_v3 (internal_game_id, contest_id, job_type, scheduled_at, scheduled_slot_at, status, created_at, updated_at)
+    VALUES (?, ?, 'ranking_rebuild', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z', 'retry_wait', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z')
+  `).run(OLD_GAME, fightersContestId(OLD_GAME));
   const adapter = d1(database);
   const plan = await previewPreBetaPurge(adapter);
   await assert.rejects(
@@ -199,11 +200,11 @@ test("stale target jobs require an explicit maintenance window and are then remo
   const database = createDatabase();
   insertGame(database, OLD_GAME, "scheduled", "2026-09-10T10:00:00.000Z");
   database.prepare(`
-    INSERT INTO game_jobs_v3 (internal_game_id, job_type, scheduled_at, scheduled_slot_at,
+    INSERT INTO game_jobs_v3 (internal_game_id, contest_id, job_type, scheduled_at, scheduled_slot_at,
       status, lease_expires_at, created_at, updated_at)
-    VALUES (?, 'publish', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z',
+    VALUES (?, ?, 'publish', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z',
       'claimed', '2026-09-10T01:00:00.000Z', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z')
-  `).run(OLD_GAME);
+  `).run(OLD_GAME, fightersContestId(OLD_GAME));
   database.prepare(`
     INSERT INTO game_job_runs (internal_game_id, job_type, scheduled_slot_at,
       status, created_at, updated_at)
@@ -236,11 +237,11 @@ test("stale target jobs can be cancelled without recovery and the operation is r
   const database = createDatabase();
   insertGame(database, OLD_GAME, "scheduled", "2026-09-10T10:00:00.000Z");
   database.prepare(`
-    INSERT INTO game_jobs_v3 (internal_game_id, job_type, scheduled_at, scheduled_slot_at,
+    INSERT INTO game_jobs_v3 (internal_game_id, contest_id, job_type, scheduled_at, scheduled_slot_at,
       status, lease_expires_at, claimed_at, claim_token, created_at, updated_at)
-    VALUES (?, 'publish', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z',
+    VALUES (?, ?, 'publish', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z',
       'claimed', '2026-09-10T01:00:00.000Z', '2026-09-10T00:30:00.000Z', 'claim-1', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z')
-  `).run(OLD_GAME);
+  `).run(OLD_GAME, fightersContestId(OLD_GAME));
   database.prepare(`
     INSERT INTO game_job_runs (internal_game_id, job_type, scheduled_slot_at,
       status, next_attempt_at, claim_token, created_at, updated_at)
@@ -285,11 +286,11 @@ test("stale target job resolution refuses a live executor and non-target job", a
       'running', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z')
   `).run(OLD_GAME);
   database.prepare(`
-    INSERT INTO game_jobs_v3 (internal_game_id, job_type, scheduled_at, scheduled_slot_at,
+    INSERT INTO game_jobs_v3 (internal_game_id, contest_id, job_type, scheduled_at, scheduled_slot_at,
       status, created_at, updated_at)
-    VALUES (?, 'publish', '2099-09-20T00:00:00.000Z', '2099-09-20T00:00:00.000Z',
+    VALUES (?, ?, 'publish', '2099-09-20T00:00:00.000Z', '2099-09-20T00:00:00.000Z',
       'pending', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z')
-  `).run(futureGame);
+  `).run(futureGame, fightersContestId(futureGame));
   const adapter = d1(database);
   const plan = await previewPreBetaPurge(adapter);
   await assert.rejects(
@@ -332,11 +333,11 @@ test("non-target active jobs continue to block the purge", async () => {
   insertGame(database, OLD_GAME, "scheduled", "2026-09-10T10:00:00.000Z");
   insertGame(database, futureGame, "scheduled", "2026-09-20T10:00:00.000Z");
   database.prepare(`
-    INSERT INTO game_jobs_v3 (internal_game_id, job_type, scheduled_at, scheduled_slot_at,
+    INSERT INTO game_jobs_v3 (internal_game_id, contest_id, job_type, scheduled_at, scheduled_slot_at,
       status, created_at, updated_at)
-    VALUES (?, 'publish', '2099-09-20T00:00:00.000Z', '2099-09-20T00:00:00.000Z',
+    VALUES (?, ?, 'publish', '2099-09-20T00:00:00.000Z', '2099-09-20T00:00:00.000Z',
       'pending', '2026-09-10T00:00:00.000Z', '2026-09-10T00:00:00.000Z')
-  `).run(futureGame);
+  `).run(futureGame, fightersContestId(futureGame));
 
   const adapter = d1(database);
   const plan = await previewPreBetaPurge(adapter);

@@ -89,11 +89,11 @@ function planningDb(state) {
         bind(...params) {
           return {
             async first() {
-              if (query.includes("select state from game_automation_v3_state")) {
+              if (query.includes("from game_automation_v3_state")) {
+                if (query.includes("scoring_revision_id")) {
+                  return { scoring_revision_id: state.scoringRevisionId || null };
+                }
                 return { state: state.persistedState || "scheduled" };
-              }
-              if (query.includes("select scoring_revision_id from game_automation_v3_state")) {
-                return { scoring_revision_id: state.scoringRevisionId || null };
               }
               if (query.includes("select * from game_jobs_v3") && query.includes("where internal_game_id")) {
                 const job = (state.jobs || []).find((entry) => String(entry.internal_game_id) === String(params[0])

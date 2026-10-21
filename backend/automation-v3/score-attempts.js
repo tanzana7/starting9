@@ -1,5 +1,8 @@
 import { SCORING_MAX_SCORE, SCORING_RULES } from "../domain/scoring.js";
 
+const contestAutomationStateAvailable = new WeakMap();
+const contestJobIdentityAvailable = new WeakMap();
+
 // A score attempt is deliberately independent from the current read model.
 // Workers may die after any staging write; only commitScoreAttempt can make
 // the staged lineage visible to ranking, publication, or personal results.
@@ -480,6 +483,17 @@ async function commitContestScoreAttempt(db, input) {
   const at = input.now.toISOString();
   const nonce = crypto.randomUUID();
   const owned = ownedAttempt("?1", "?2").replaceAll("score_attempts", "contest_score_attempts");
+  let jobContestIdentity = contestJobIdentityAvailable.get(db);
+  if (jobContestIdentity === undefined) {
+    try {
+      const columns = await db.prepare("PRAGMA table_info(game_jobs_v3)").all();
+      jobContestIdentity = (columns.results || []).some((column) => String(column.name) === "contest_id");
+    } catch {
+      jobContestIdentity = false;
+    }
+    contestJobIdentityAvailable.set(db, jobContestIdentity);
+  }
+  const ownerContestGuard = jobContestIdentity ? "AND owner.contest_id=?10" : "";
   const statements = [
     db.prepare(`UPDATE contest_score_attempts SET status='committing', commit_nonce=?1
       WHERE attempt_id=?2 AND status='ready' AND contest_id=?10 AND job_id=?3 AND claim_token=?4
@@ -496,7 +510,7 @@ async function commitContestScoreAttempt(db, input) {
         AND NOT EXISTS (SELECT 1 FROM contest_scoring_revisions conflict WHERE conflict.contest_id=?10
           AND conflict.id=?8 AND (conflict.lineup_revision_id<>?7 OR conflict.revision_number<>?9))
         AND EXISTS (SELECT 1 FROM game_jobs_v3 owner WHERE owner.id=?3 AND owner.internal_game_id=?5
-          AND owner.job_type='score' AND owner.status='claimed' AND owner.claim_token=?4
+          ${ownerContestGuard} AND owner.job_type='score' AND owner.status='claimed' AND owner.claim_token=?4
           AND julianday(owner.lease_expires_at)>julianday('now'))`)
       .bind(nonce,input.attemptId,Number(input.jobId),input.claimToken,input.internalGameId,
         input.canonicalLineupRevisionId,input.scoringLineupRevisionId,input.scoringRevisionId,
@@ -587,6 +601,25 @@ async function commitContestScoreAttempt(db, input) {
     db.prepare("UPDATE contest_score_attempts SET status='committed',committed_at=?3 WHERE attempt_id=?1 AND status='committing' AND commit_nonce=?2")
       .bind(input.attemptId,nonce,at)
   ];
+  let stateTableAvailable = contestAutomationStateAvailable.get(db);
+  if (stateTableAvailable === undefined) {
+    try {
+      const columns = await db.prepare("PRAGMA table_info(contest_automation_v3_state)").all();
+      stateTableAvailable = (columns.results || []).some((column) => String(column.name) === "contest_id");
+    } catch {
+      stateTableAvailable = false;
+    }
+    contestAutomationStateAvailable.set(db, stateTableAvailable);
+  }
+  if (stateTableAvailable) {
+    statements.splice(9, 0, db.prepare(`UPDATE contest_automation_v3_state SET scoring_revision_id=?1,updated_at=?2
+      WHERE contest_id=?3 AND internal_game_id=?4
+        AND EXISTS (SELECT 1 FROM game_jobs_v3 owner WHERE owner.id=?5 AND owner.contest_id=?3
+          AND owner.internal_game_id=?4 AND owner.job_type='score' AND owner.status='claimed'
+          AND owner.claim_token=?6 AND julianday(owner.lease_expires_at)>julianday('now'))`)
+      .bind(input.scoringRevisionId, at, input.contestId, input.internalGameId,
+        Number(input.jobId), input.claimToken));
+  }
   statements.splice(10, 0,
     db.prepare(`UPDATE contest_game_rescore_jobs SET status='completed',error_code=NULL,updated_at=?1,
         scoring_revision=?2

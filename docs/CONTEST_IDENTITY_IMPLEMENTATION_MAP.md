@@ -1,6 +1,6 @@
-# Contest Identity Implementation Map — C-4A3
+# Contest Identity Implementation Map — C-4A4
 
-Status: **C-4A3 scoring, revision, correction, ranking, publication, and result-read paths are contest-scoped locally. Formal job identity remains game-scoped for C-4A4. No remote migration or deployment.**
+Status: **C-4A1–A4 implementation and local verification are complete on the long-lived feature branch. Formal contest work is contest-scoped; physical source work remains shared. Production D1 migration and all deploys remain out of scope.**
 
 ## Identity contract
 
@@ -35,7 +35,7 @@ The additive schema is `contest_identity_teams`, `game_contests`, and `contest_i
 | `test_games`, `auto_scoring_tests` | Synthetic/test `game_id` | Isolated test-game identity, never production contest identity | LEGACY_COMPAT / TEST_ONLY | No A1 | Admin test/scoring routes; A2–A4 must keep test rows and their predictions/results isolated from production contests. |
 | Publication state/artifacts and result readback | Physical game ID and publication revision; result lookup by game ID | Published contest + source revision; result game ID resolves only under selected trusted team context | CONTEST_SCOPED / DERIVED_FROM_CONTEST | C-4A3 migration 0048 | Publication pointers and public result/history handlers are contest-scoped; public response shape remains compatible. |
 | Daily Best Nine source | Latest published physical game/result, independent widget state | Latest published contest for selected route team; still independent of personal result selection | DERIVED_FROM_CONTEST | C-4A3 migration 0048 | Latest published contest resolves in team scope; personal result selection cannot steer this widget. |
-| `game_automation_v3_state`, `game_jobs_v3`, `game_automation_v3_audit` | `internal_game_id`; V3 unique `(internal_game_id, job_type, scheduled_slot_at)` | Contest formal work keyed by `contest_id`; physical schedule/source tasks remain keyed by game | CONTEST_SCOPED / PHYSICAL_GAME_ONLY | C-4A4 | `backend/automation-v3/repository.js`: `createV3Job`, `claimV3Job`, `completeV3Job`, `retryV3Job`, `listDueV3Jobs`; `orchestrator.js:claimDueJobs`; `auth-worker.js` formal Cron entrypoint. Plan/discovery remains once per game; each registered participating contest receives bounded fair work. Maintain claim/lease/idempotency/retry. |
+| `contest_automation_v3_state`, `game_jobs_v3`, `game_automation_v3_audit` | Legacy state/job key was `internal_game_id`; legacy unique `(internal_game_id, job_type, scheduled_slot_at)` | Formal work keyed by `contest_id` plus game; physical source work keyed by game | CONTEST_SCOPED / LEGITIMATE_GAME_SCOPED / LEGACY_FIGHTERS_COMPAT | C-4A4 migration 0049 + audit migration 0002 | `repository.js`, `orchestrator.js`, `executor.js`, `auth-worker.js`: planning, enqueue, due-claim, state transitions, retry/lease and audit preserve contest identity. Discovery stays bounded and physical-game based; target-team formal planning is explicit. |
 | Shared users, sessions, admin roles | `user_id` / session | Same account identity shared across target teams | PHYSICAL/ACCOUNT SCOPE | No contest migration | Existing Auth Worker session/auth; team context is not authorization. Mutation handlers independently enforce admin role and contest/game/team participation. |
 | Test Site fixtures | Three separate synthetic `internal_game_id` values, one per team | One physical game with separate contest IDs | DERIVED_FROM_CONTEST | C-4A4 | `tooling/test-site/worker.js`, `tooling/test-site/teams.js`, `tests/test-site-multi-team.test.js`; replace the separate-game proof with interleaved same-game dual-contest pipeline only after A2/A3/A4 are complete. A1 intentionally does not rewrite it. |
 
@@ -46,11 +46,11 @@ The additive schema is `contest_identity_teams`, `game_contests`, and `contest_i
 | `auth-worker.js` prediction handlers | Resolve physical game, then read/insert/update/delete by `(user_id, contest_id)`; retain physical game for composite consistency | CONTEST_SCOPED — C-4A2 DONE |
 | `auth-worker.js` lineup/admin handlers | Canonical row and revision reads/writes use `(contest_id, internal_game_id)` / `(contest_id, version)`; explicit Fighters/Test Site mirroring is compatibility-only | CONTEST_SCOPED — C-4A2 DONE |
 | `backend/automation-v3/lineup-candidate-service.js` | Legacy game-scoped scorer/automation consumer | LEGACY_COMPAT until A3/A4; no non-Fighters revision is copied to the legacy table |
-| `auth-worker.js` score/revision handlers and `backend/automation-v3/score-attempts.js` | Score artifact/commit identity is contest-fenced; formal job identity remains game-only | CONTEST_SCOPED artifacts — C-4A3 DONE; job identity — C-4A4 |
+| `auth-worker.js` score/revision handlers and `backend/automation-v3/score-attempts.js` | Contest-fenced score artifact/commit; job contest identity is passed to the executor | CONTEST_SCOPED — C-4A3/A4 DONE |
 | `auth-worker.js` ranking and `backend/repositories/ranking-repository.js` | Eligibility/reflection, ranking inputs and user aggregates | CONTEST_SCOPED — C-4A3 DONE; global settings retain explicit global scope |
 | `auth-worker.js` publication/result handlers and `backend/domain/public-results.js` | Publication pointers and result selection | CONTEST_SCOPED — C-4A3 DONE; API shape preserved |
-| `backend/automation-v3/repository.js` | `listV3Games` and recovery queries read physical games; `createV3Job`, state/audit/job queries key work by `internal_game_id` | Split physical discovery from contest due-work identity — C-4A4 |
-| `backend/automation-v3/orchestrator.js`, `executor.js`, `planner.js`, `planning-engine.js` | Due selection, claim, retry, state transitions and executor dispatch carry game ID | CONTEST_SCOPED formal jobs; physical-source jobs remain game-scoped — C-4A4 |
+| `backend/automation-v3/repository.js` | Physical game candidate discovery; formal work resolves trusted contest identity before enqueue/claim/state | Physical discovery shared; formal due work and state contest-scoped — C-4A4 DONE |
+| `backend/automation-v3/orchestrator.js`, `executor.js`, `planner.js`, `planning-engine.js` | Formal plan, claim, retry, transitions and dispatch | Contest ID propagates through formal work; physical source jobs remain shared — C-4A4 DONE |
 
 ## Migration and legacy contract
 
@@ -74,12 +74,28 @@ Status note: the following paragraph is the original phase plan; implementation 
 
 Convert `game_scoring_revisions`, score-attempt lineage/rows, eligibility/reflection, ranking generation inputs, publication source artifacts, result reads, and Best Nine selection to contest identity. Update `executeV3ScoreExecutor`, score-attempt staging/commit, ranking executor/repository, publication/recovery and public result handlers. Required proof: stale score attempts cannot commit after a contest correction; independent team rankings/publications; API result isolation; Daily Best Nine resolves latest published contest for the team route and remains independent of selected personal result detail.
 
-### C-4A4 — Formal jobs, automation, same-game E2E
+### C-4A4 — Formal jobs, automation, same-game E2E — IMPLEMENTED LOCALLY
 
-Remaining ownership: formal job schema/identity and uniqueness, planner/discovery/enqueue, claim/lease, executor dispatch, retry/recovery, fairness/boundedness, physical source-work deduplication, and full interleaved same-game multi-team E2E. A4 migrates this boundary instead of reverting A3 artifacts to game identity.
+Migration `0049_contest_scoped_formal_jobs.sql` gives contest-owned jobs a partial unique key `(contest_id, job_type, scheduled_slot_at)` and keeps physical source work unique by `(internal_game_id, job_type, scheduled_slot_at)`. Contest state is stored in `contest_automation_v3_state`; old state/jobs are backfilled only when ownership is unique. Ambiguous ownership and progressed shared state fail closed. Audit migration `0002_contest_automation_audit.sql` adds optional contest identity without changing physical audit events.
 
-Convert contest-owned state/jobs/audits and planner/executor/claim/retry keys to contest identity while retaining physical schedule, cancellation, probable-starter source discovery at game scope. Update `listV3Games`, recovery candidate selection, `createV3Job`, claim/orchestrator/executor/audit and Test Site fixtures. Required proof: one physical game, two contest IDs, one shared account, interleaved prediction → close → lineup → score → ranking → publish, independent retry/recovery, no duplicate physical source work, fairness/bounded processing, and full regression.
+Formal prediction-close, lineup, score, ranking and publish work carries the trusted target contest from planner through claim, lease/retry, executor and result read. Each target still uses the existing bounded due claim; physical game discovery/source retrieval is not duplicated per team. The prediction-close executor updates only the selected contest's rows. Old schema compatibility is intentionally Fighters-only until the separately gated C-4B migration; multi-contest writes fail closed when the schema is old.
+
+| Job type | Identity classification | Rationale |
+|---|---|---|
+| `prediction_close`, `lineup_fetch`, `lineup_finalize`, `score`, `ranking_rebuild`, `publish` | CONTEST_SCOPED | Predictions, canonical lineup, scoring, ranking and publication belong to the user's selected target contest even when a physical game is shared. |
+| `npb_identity_resolve`, `probable_starter_fetch` | LEGITIMATE_GAME_SCOPED | Provider identity and official probable-starter source data describe the one physical event; duplicate target-team fetches would waste bounded Cron work. |
+| `roster_fetch` | LEGACY_FIGHTERS_COMPAT / TEAM-SOURCE FOLLOW-UP | Existing enabled automation remains Fighters-only; the job is not proof that team-specific roster automation is enabled for Marines. Reclassify only when that product path is explicitly built. |
+
+Same-game E2E uses one physical game, two contest IDs and one shared synthetic user, with independent prediction-close→score→ranking→publish. It runs serial, interleaved and with one injected Marines score failure followed by retry. See C-4A4 tests for migration, bounded claim, failure isolation and public result read-back. Production remains Fighters-only; this proof does not enable a multi-team Cron loop, public selector or admin selector.
+
+### Residual identity classification
+
+- **LEGITIMATE_PHYSICAL_GAME:** schedule/provider identity, game start/end facts, cancellation/source checks, probable-starter source data and physical candidate discovery.
+- **LEGACY_FIGHTERS_COMPAT:** game-only runtime fallback for pre-0049 schema, legacy V1/V2 tables, and Fighters scoring bridge. Multi-contest use is rejected until migration 0049 is applied.
+- **NON_CONTEST_ENTITY:** shared user/session/account identity and physical source audit facts.
+- **FUTURE_PRODUCT_ROUTING:** public team selection, team-specific production automation enablement and multi-team admin UX; intentionally deferred.
+- **BLOCKER:** none identified for contest identity in the exercised C-4A formal pipeline. Production migration classification still requires C-4B data preflight.
 
 ## A2 verification boundary
 
-This paragraph records the A2 verification boundary: local A2 fixtures proved prediction/lineup isolation and ambiguous-row rollback, but did not prove downstream scoring. C-4A3 adds separate local fixtures for contest-scoped scoring, ranking, publication lineage and legacy score backfill; formal job identity and interleaved automation remain A4 gates. No local fixture proves production historical data is classifiable or that a remote D1 migration is safe.
+Historical note: A2 fixtures originally proved prediction/lineup isolation only. A3 added scoring, ranking and publication lineage; A4 adds formal jobs and same-game automation. All evidence is isolated/local. No local fixture proves production historical data is classifiable or makes a remote D1 migration safe.

@@ -1,6 +1,7 @@
 import authWorker, { executeGameAutomationV3Job } from "../../auth-worker.js";
 import { planMainWorkflowJobs, runGameAutomationV3 } from "../../game-automation-v3.js";
 import { transitionV3State } from "../../backend/automation-v3/repository.js";
+import { createContestId } from "../../backend/contest-identity.js";
 import { isIsolatedTestEnvironment, validatePublishedScenario } from "./isolation.js";
 import { assertDistinctTestTeamIdentity, testTeamFixture } from "./teams.js";
 
@@ -10,6 +11,7 @@ export function createTestTeamWorker(teamKey = "fighters", { rosterPlayers = nul
 assertDistinctTestTeamIdentity();
 const { team: targetTeam, internalGameId: INTERNAL_GAME_ID, playerPrefix } = testTeamFixture(teamKey);
 const LEGACY_GAME_ID = INTERNAL_GAME_ID;
+const CONTEST_ID = createContestId(INTERNAL_GAME_ID, targetTeam.key);
 const E2E_ADMIN_USERNAME_PREFIX = "e2e-";
 const POSITIONS = Object.freeze(["捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
 const CLEANUP_ORDER = Object.freeze([
@@ -23,7 +25,7 @@ const CLEANUP_ORDER = Object.freeze([
   "contest_lineup_revisions",
   "game_lineup_revisions", "game_automation_v3_audit", "game_jobs_v3",
   "game_workflow_logs", "game_lineups", "predictions", "ranking_games",
-  "game_automation_v3_state", "game_pregame_automation", "game_roster_snapshots",
+  "contest_automation_v3_state", "game_automation_v3_state", "game_pregame_automation", "game_roster_snapshots",
   "probable_starters", "game_identifiers", "detected_game_schedule", "game_contests", "games"
 ]);
 
@@ -158,6 +160,12 @@ async function seedScenarioGame(db, offsetMinutes) {
       (internal_game_id, game_date, start_time, home_team, away_team, game_status, created_at, updated_at)
       VALUES (?1, ?2, ?3, ?5, ?6, 'scheduled', ?4, ?4)`)
       .bind(INTERNAL_GAME_ID, gameDate, startAt, now, targetTeam.key, opponent),
+    db.prepare(`INSERT INTO game_contests (contest_id,internal_game_id,target_team_key,created_at)
+      VALUES (?1,?2,?3,?4)`)
+      .bind(CONTEST_ID, INTERNAL_GAME_ID, targetTeam.key, now),
+    db.prepare(`INSERT INTO contest_automation_v3_state
+      (contest_id,internal_game_id,state,created_at,updated_at) VALUES (?1,?2,'scheduled',?3,?3)`)
+      .bind(CONTEST_ID, INTERNAL_GAME_ID, now),
     db.prepare(`INSERT INTO detected_game_schedule
       (game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, venue,
        game_status, detected_at, schedule_checked_at, created_at, updated_at, internal_game_id)
@@ -189,11 +197,13 @@ async function seedScenarioGame(db, offsetMinutes) {
 
 async function currentScenarioGame(db) {
   return db.prepare(`SELECT games.internal_game_id, games.game_date, games.start_time, games.home_team,
-      games.away_team, state.state, lineup.scoring_status, ranking.publication_status
+      games.away_team, COALESCE(contest_state.state,state.state) AS state, lineup.scoring_status, ranking.publication_status
     FROM games
     LEFT JOIN game_automation_v3_state AS state USING (internal_game_id)
     LEFT JOIN game_contests AS contest ON contest.internal_game_id = games.internal_game_id
       AND contest.target_team_key = ?2
+    LEFT JOIN contest_automation_v3_state AS contest_state ON contest_state.internal_game_id = games.internal_game_id
+      AND contest_state.contest_id = contest.contest_id
     LEFT JOIN game_lineups AS lineup ON lineup.internal_game_id = games.internal_game_id
       AND lineup.contest_id = contest.contest_id
     LEFT JOIN contest_ranking_games AS ranking ON ranking.internal_game_id = games.internal_game_id
@@ -203,9 +213,9 @@ async function currentScenarioGame(db) {
 
 async function markManualLineupReadyScenario(db) {
   const [state, lineup, predictionClose] = await Promise.all([
-    db.prepare("SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(INTERNAL_GAME_ID).first(),
-    db.prepare("SELECT final_lineup_revision_id FROM game_lineups WHERE internal_game_id = ?1 LIMIT 1").bind(INTERNAL_GAME_ID).first(),
-    db.prepare("SELECT id FROM game_jobs_v3 WHERE internal_game_id = ?1 AND job_type = 'prediction_close' AND status = 'completed' LIMIT 1").bind(INTERNAL_GAME_ID).first()
+    db.prepare("SELECT state FROM contest_automation_v3_state WHERE contest_id = ?1 AND internal_game_id = ?2 LIMIT 1").bind(CONTEST_ID, INTERNAL_GAME_ID).first(),
+    db.prepare("SELECT final_lineup_revision_id FROM game_lineups WHERE internal_game_id = ?1 AND contest_id = ?2 LIMIT 1").bind(INTERNAL_GAME_ID, CONTEST_ID).first(),
+    db.prepare("SELECT id FROM game_jobs_v3 WHERE internal_game_id = ?1 AND contest_id = ?2 AND job_type = 'prediction_close' AND status = 'completed' LIMIT 1").bind(INTERNAL_GAME_ID, CONTEST_ID).first()
   ]);
   if (state?.state !== "prediction_closed" || !String(lineup?.final_lineup_revision_id || "").trim() || !predictionClose?.id) {
     throw new Error("synthetic lineup-ready transition requires a closed prediction and canonical final lineup");
@@ -216,6 +226,7 @@ async function markManualLineupReadyScenario(db) {
   // leaving the due score job untouched lets the UI inspect lineup_ready.
   return transitionV3State(db, {
     internalGameId: INTERNAL_GAME_ID,
+    contestId: CONTEST_ID,
     from: "prediction_closed",
     to: "lineup_ready",
     now: new Date()

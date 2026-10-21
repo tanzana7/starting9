@@ -10,6 +10,51 @@ import { PRODUCTION_TEAM, teamContext } from "../target-team.js";
 // historical artifacts indefinitely.
 const V3_AUTOMATION_HISTORICAL_LOOKBACK_DAYS = 2;
 const gamesActualStartColumnCache = new WeakMap();
+const contestJobIdentityColumnCache = new WeakMap();
+
+async function hasContestJobIdentity(db) {
+  if (db && typeof db === "object" && contestJobIdentityColumnCache.has(db)) {
+    return contestJobIdentityColumnCache.get(db);
+  }
+  let available = false;
+  try {
+    const columns = await db.prepare("PRAGMA table_info(game_jobs_v3)").all();
+    available = (columns.results || []).some((column) => String(column.name) === "contest_id");
+  } catch {
+    // Older D1-compatible adapters intentionally use the Fighters-only path.
+  }
+  if (db && typeof db === "object") contestJobIdentityColumnCache.set(db, available);
+  return available;
+}
+
+async function hasContestAutomationState(db) {
+  try {
+    return Boolean(await db.prepare(
+      "SELECT 1 AS found FROM sqlite_master WHERE type='table' AND name='contest_automation_v3_state' LIMIT 1"
+    ).first());
+  } catch {
+    return false;
+  }
+}
+
+export async function getV3State(db, internalGameId, contestId = null) {
+  const id = normalizeV3InternalGameId(internalGameId);
+  if (contestId && await hasContestAutomationState(db)) {
+    return db.prepare("SELECT * FROM contest_automation_v3_state WHERE contest_id=?1 AND internal_game_id=?2 LIMIT 1")
+      .bind(String(contestId), id).first();
+  }
+  return db.prepare("SELECT * FROM game_automation_v3_state WHERE internal_game_id=?1 LIMIT 1").bind(id).first();
+}
+
+export async function resolveV3ContestId(db, internalGameId, targetTeamKey) {
+  const id = normalizeV3InternalGameId(internalGameId);
+  const key = String(targetTeamKey || "").trim().toLowerCase();
+  if (!key) return null;
+  const contest = await db.prepare(
+    "SELECT contest_id FROM game_contests WHERE internal_game_id=?1 AND target_team_key=?2 LIMIT 1"
+  ).bind(id, key).first();
+  return String(contest?.contest_id || "") || null;
+}
 
 async function getV3GamesActualStartColumn(db) {
   if (db && typeof db === "object" && gamesActualStartColumnCache.has(db)) {
@@ -177,10 +222,14 @@ export async function hasPotentialFormalWork(db, now = new Date(), {
 export async function getV3SchemaState(db) {
   const rows = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('games', 'game_jobs_v3', 'game_automation_v3_state')").all();
   const names = new Set((rows.results || []).map((row) => row.name));
+  const contestJobs = names.has("game_jobs_v3") ? await hasContestJobIdentity(db) : false;
+  const contestState = await hasContestAutomationState(db);
   return {
     games: names.has("games"),
     jobs: names.has("game_jobs_v3"),
     state: names.has("game_automation_v3_state"),
+    contestJobs,
+    contestState,
     ready: names.has("games") && names.has("game_jobs_v3") && names.has("game_automation_v3_state")
   };
 }
@@ -919,9 +968,19 @@ export async function hydrateV3GameIdentityFromIdentifiers(db, game = {}) {
   };
 }
 
-export async function ensureV3State(db, internalGameId, now = new Date()) {
+export async function ensureV3State(db, internalGameId, now = new Date(), contestId = null) {
   const id = normalizeV3InternalGameId(internalGameId);
   const timestamp = (now instanceof Date ? now : new Date(now)).toISOString();
+  if (contestId && await hasContestAutomationState(db)) {
+    await db.prepare(
+      `INSERT INTO contest_automation_v3_state
+         (contest_id, internal_game_id, state, version, created_at, updated_at)
+       VALUES (?1, ?2, 'scheduled', 0, ?3, ?3)
+       ON CONFLICT(contest_id) DO NOTHING`
+    ).bind(String(contestId), id, timestamp).run();
+    return db.prepare("SELECT * FROM contest_automation_v3_state WHERE contest_id = ?1 AND internal_game_id = ?2 LIMIT 1")
+      .bind(String(contestId), id).first();
+  }
   await db.prepare(
     `INSERT INTO game_automation_v3_state
        (internal_game_id, state, version, created_at, updated_at)
@@ -931,12 +990,15 @@ export async function ensureV3State(db, internalGameId, now = new Date()) {
   return db.prepare("SELECT * FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(id).first();
 }
 
-export async function transitionV3State(db, { internalGameId, from, to, now = new Date(), failureCode = null, failureMessage = null } = {}) {
+export async function transitionV3State(db, { internalGameId, contestId = null, from, to, now = new Date(), failureCode = null, failureMessage = null } = {}) {
   const id = normalizeV3InternalGameId(internalGameId);
   assertV3Transition(from, to);
   const timestamp = (now instanceof Date ? now : new Date(now)).toISOString();
+  const contestScoped = Boolean(contestId && await hasContestAutomationState(db));
+  const table = contestScoped ? "contest_automation_v3_state" : "game_automation_v3_state";
+  const identityWhere = contestScoped ? "contest_id = ?5 AND internal_game_id = ?6" : "internal_game_id = ?5";
   const result = await db.prepare(
-    `UPDATE game_automation_v3_state
+    `UPDATE ${table}
         SET state = ?1, version = version + 1, failure_code = ?2,
             failure_message = ?3,
             prediction_closed_at = CASE WHEN ?1 = 'prediction_closed' THEN COALESCE(prediction_closed_at, ?4) ELSE prediction_closed_at END,
@@ -945,15 +1007,19 @@ export async function transitionV3State(db, { internalGameId, from, to, now = ne
             published_at = CASE WHEN ?1 = 'published' THEN COALESCE(published_at, ?4) ELSE published_at END,
             excluded_at = CASE WHEN ?1 = 'excluded' THEN COALESCE(excluded_at, ?4) ELSE excluded_at END,
             updated_at = ?4
-      WHERE internal_game_id = ?5 AND state = ?6`
-  ).bind(to, failureCode, failureMessage, timestamp, id, from).run();
+      WHERE ${identityWhere} AND state = ?${contestScoped ? 7 : 6}`
+  ).bind(...(contestScoped
+    ? [to, failureCode, failureMessage, timestamp, String(contestId), id, from]
+    : [to, failureCode, failureMessage, timestamp, id, from])).run();
   if (Number(result?.meta?.changes || 0) !== 1) {
     throw createV3Error("V3_STATE_VERSION_CONFLICT", "V3状態が別の実行で更新されました。");
   }
-  return db.prepare("SELECT * FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(id).first();
+  return contestScoped
+    ? db.prepare("SELECT * FROM contest_automation_v3_state WHERE contest_id = ?1 AND internal_game_id = ?2 LIMIT 1").bind(String(contestId), id).first()
+    : db.prepare("SELECT * FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1").bind(id).first();
 }
 
-export async function createV3Job(db, { internalGameId, jobType, scheduledSlotAt, scheduledAt = scheduledSlotAt, maxAttempts = 12, source = "cron" } = {}) {
+export async function createV3Job(db, { internalGameId, contestId = null, jobType, scheduledSlotAt, scheduledAt = scheduledSlotAt, maxAttempts = 12, source = "cron" } = {}) {
   const id = normalizeV3InternalGameId(internalGameId);
   if (!V3_JOB_TYPES.includes(jobType)) throw createV3Error("V3_JOB_TYPE_INVALID", "V3ジョブ種別が不正です。");
   const slot = scheduledSlotAt instanceof Date ? scheduledSlotAt : new Date(scheduledSlotAt);
@@ -961,17 +1027,47 @@ export async function createV3Job(db, { internalGameId, jobType, scheduledSlotAt
   if (Number.isNaN(slot.getTime()) || Number.isNaN(due.getTime())) {
     throw createV3Error("V3_JOB_TIME_INVALID", "V3ジョブの実行時刻が不正です。");
   }
+  const contestScopedTypes = new Set([V3_JOB_TYPE.PREDICTION_CLOSE, V3_JOB_TYPE.LINEUP_FETCH,
+    V3_JOB_TYPE.LINEUP_FINALIZE, V3_JOB_TYPE.SCORE, V3_JOB_TYPE.RANKING_REBUILD, V3_JOB_TYPE.PUBLISH]);
+  const contestIdentityAvailable = await hasContestJobIdentity(db);
+  let resolvedContestId = contestId ? String(contestId).trim() : null;
+  if (contestScopedTypes.has(jobType)) {
+    if (contestIdentityAvailable && !resolvedContestId) {
+      throw createV3Error("V3_CONTEST_ID_REQUIRED", "contest formal jobにはcontest identityが必要です。");
+    }
+    if (!contestIdentityAvailable && resolvedContestId) {
+      const count = await db.prepare("SELECT COUNT(*) AS count FROM game_contests WHERE internal_game_id = ?1")
+        .bind(id).first().catch(() => null);
+      if (Number(count?.count || 0) > 1) {
+        throw createV3Error("V3_CONTEST_JOB_SCHEMA_REQUIRED", "複数contestのformal jobには対応schemaが必要です。");
+      }
+      // Old production schemas are Fighters-only. Keep the old runtime contract
+      // until the separately gated C-4B migration is applied.
+      resolvedContestId = null;
+    }
+  } else if (resolvedContestId) {
+    throw createV3Error("V3_PHYSICAL_JOB_CONTEST_FORBIDDEN", "physical-game source jobにcontest identityは設定できません。");
+  }
   const timestamp = new Date().toISOString();
-  const result = await db.prepare(
-    `INSERT OR IGNORE INTO game_jobs_v3
-       (internal_game_id, job_type, scheduled_at, scheduled_slot_at, status,
-        attempt_count, max_attempts, created_at, updated_at)
-     VALUES (?1, ?2, ?3, ?4, 'pending', 0, ?5, ?6, ?6)`
-  ).bind(id, jobType, due.toISOString(), slot.toISOString(), maxAttempts, timestamp).run();
-  const row = await db.prepare(
-    `SELECT * FROM game_jobs_v3
-      WHERE internal_game_id = ?1 AND job_type = ?2 AND scheduled_slot_at = ?3 LIMIT 1`
-  ).bind(id, jobType, slot.toISOString()).first();
+  const result = contestIdentityAvailable
+    ? await db.prepare(
+      `INSERT OR IGNORE INTO game_jobs_v3
+         (internal_game_id, contest_id, job_type, scheduled_at, scheduled_slot_at, status,
+          attempt_count, max_attempts, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, 'pending', 0, ?6, ?7, ?7)`
+    ).bind(id, resolvedContestId, jobType, due.toISOString(), slot.toISOString(), maxAttempts, timestamp).run()
+    : await db.prepare(
+      `INSERT OR IGNORE INTO game_jobs_v3
+         (internal_game_id, job_type, scheduled_at, scheduled_slot_at, status,
+          attempt_count, max_attempts, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, 'pending', 0, ?5, ?6, ?6)`
+    ).bind(id, jobType, due.toISOString(), slot.toISOString(), maxAttempts, timestamp).run();
+  const row = contestIdentityAvailable
+    ? await db.prepare(`SELECT * FROM game_jobs_v3 WHERE internal_game_id=?1 AND contest_id=?2
+        AND job_type=?3 AND scheduled_slot_at=?4 LIMIT 1`)
+      .bind(id, resolvedContestId, jobType, slot.toISOString()).first()
+    : await db.prepare(`SELECT * FROM game_jobs_v3 WHERE internal_game_id=?1 AND job_type=?2
+        AND scheduled_slot_at=?3 LIMIT 1`).bind(id, jobType, slot.toISOString()).first();
   return { created: Number(result?.meta?.changes || 0) === 1, job: row, source };
 }
 
@@ -1028,7 +1124,7 @@ export async function retryV3Job(db, { jobId, claimToken, attemptCount, maxAttem
   return { updated: Number(result?.meta?.changes || 0) === 1, status: terminal ? "failed" : "retry_wait" };
 }
 
-export async function listDueV3Jobs(db, now = new Date(), limit = 50, cursor = null) {
+export async function listDueV3Jobs(db, now = new Date(), limit = 50, cursor = null, targetTeamKey = "") {
   const timestamp = (now instanceof Date ? now : new Date(now)).toISOString();
   const boundedLimit = Math.max(1, Math.min(100, Number(limit) || 50));
   const cursorPriority = Number(cursor?.priority);
@@ -1055,12 +1151,22 @@ export async function listDueV3Jobs(db, now = new Date(), limit = 50, cursor = n
     : hasLegacyCursor
       ? [timestamp, boundedLimit, cursorScheduledAt, cursorId]
     : [timestamp, boundedLimit];
+  const targetTeam = String(targetTeamKey || "").trim() && await hasContestJobIdentity(db)
+    ? String(targetTeamKey).trim()
+    : "";
+  const targetTeamPlaceholder = targetTeam ? `?${params.length + 1}` : "";
+  if (targetTeam) {
+    params.push(String(targetTeamKey).trim());
+  }
   const result = await db.prepare(
     `SELECT * FROM game_jobs_v3
       WHERE (status IN ('pending', 'retry_wait')
          OR (status = 'claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?1))
         AND scheduled_at <= ?1
         AND (next_retry_at IS NULL OR next_retry_at <= ?1)
+        ${targetTeam
+          ? `AND (contest_id IS NULL OR contest_id IN (SELECT contest_id FROM game_contests WHERE target_team_key = ${targetTeamPlaceholder}))`
+          : ""}
         ${cursorClause}
       ORDER BY ${prioritySql}, scheduled_at,
         id LIMIT ?2`

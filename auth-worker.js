@@ -240,6 +240,7 @@ import {
   getV3NextAction,
   getV3WorkflowDiagnostics,
   getV3OperationalMode,
+  getV3State,
   planMainWorkflowJobs,
   planAuxiliaryJobs,
   hasV3ProbableStarterCandidate,
@@ -1767,6 +1768,7 @@ async function runScheduledProbableStarter(env, now, { runId = "" } = {}) {
       disabledJobTypes: V3_MAIN_JOB_TYPES
     });
     const execution = await executeClaimedJobs(env, claimReport.claimed, games, now, {
+      targetTeamKey: targetTeamForEnvironment(env).key,
       executeJob: (context) => executeGameAutomationV3Job({ ...context, v4SemiAuto: operationalMode.isV4SemiAuto })
     });
     const result = {
@@ -2199,6 +2201,7 @@ async function runScheduledGameAutomationV3(env, now, { runId: providedRunId = n
       autoRosterFetch: operationalMode.autoRosterFetch
     }),
     disabledJobTypes: operationalMode.disabledJobTypes,
+    targetTeamKey: targetTeamForEnvironment(env).key,
     v4SemiAuto: operationalMode.isV4SemiAuto,
     includeHistoricalRecovery: !auxiliaryOnly && isV3StorageMaintenanceWindow(now),
     runAuxiliary: !criticalOnly,
@@ -2696,7 +2699,7 @@ async function applyOfficialGameCancellation(env, game, stateBefore, now, { stat
     })
     : { status: "skipped", noOp: true, reason: "RANKING_GAME_NOT_FOUND" };
   const cancelledJobs = await cancelOpenV3Jobs(env.AUTH_DB, internalGameId, reason);
-  const transitioned = await transitionV3State(env.AUTH_DB, { internalGameId, from: stateBefore, to: "excluded", now });
+  const transitioned = await transitionV3State(env.AUTH_DB, { internalGameId, contestId: context.metadata.contestId || null, from: stateBefore, to: "excluded", now });
   await recordV3AdminAudit(getV3AuditDb(env), {
     internalGameId,
     jobType: "system:official_cancellation",
@@ -2890,11 +2893,13 @@ async function executeV3RosterExecutor({ env, internalGameId, now, target, state
   };
 }
 
-async function executeV3PredictionCloseExecutor({ env, internalGameId, stateBefore }) {
+async function executeV3PredictionCloseExecutor({ env, internalGameId, contestId = null, stateBefore }) {
+  const predictionColumns = await getTableColumnSet(env.AUTH_DB, "predictions");
+  const contestScope = predictionColumns.has("contest_id") && contestId ? " AND contest_id = ?2" : "";
   await env.AUTH_DB.prepare(
-    `UPDATE predictions SET status = CASE WHEN status = 'pending' THEN 'locked' ELSE status END
-      WHERE internal_game_id = ?1 AND is_test_prediction = 0`
-  ).bind(internalGameId).run();
+    `UPDATE predictions SET status = CASE WHEN status IN ('draft','submitted') THEN 'locked' ELSE status END
+      WHERE internal_game_id = ?1 AND is_test_prediction = 0${contestScope}`
+  ).bind(...(contestScope ? [internalGameId, contestId] : [internalGameId])).run();
   return { status: "prediction_closed", stateBefore, stateAfter: "prediction_closed" };
 }
 
@@ -3124,6 +3129,9 @@ export async function releaseStaleGameLineupScoringMarker(db, { internalGameId =
     if (!columns.has("scoring_status") || !columns.has("scoring_started_at")) return false;
     const scopeColumn = columns.has("internal_game_id") ? "internal_game_id" : "game_id";
     const contestScope = columns.has("contest_id") && contestId ? " AND contest_id = ?6" : "";
+    const jobContestScope = await getTableColumnSet(db, "game_jobs_v3").then((jobColumns) =>
+      jobColumns.has("contest_id") && contestId ? " AND owner.contest_id = ?6" : "");
+    const competingContestScope = jobContestScope ? " AND other_score_job.contest_id = ?6" : "";
     const result = await db.prepare(
       `UPDATE game_lineups
           SET scoring_status = 'pending', scoring_started_at = NULL,
@@ -3134,17 +3142,18 @@ export async function releaseStaleGameLineupScoringMarker(db, { internalGameId =
             SELECT 1 FROM game_jobs_v3 AS owner
              WHERE owner.id = ?3 AND owner.internal_game_id = ?2
                AND owner.job_type = 'score' AND owner.status = 'claimed'
-               AND owner.claim_token = ?4 AND owner.lease_expires_at > ?5
+               AND owner.claim_token = ?4 AND owner.lease_expires_at > ?5${jobContestScope}
           )
           AND NOT EXISTS (
             SELECT 1 FROM game_jobs_v3 AS other_score_job
              WHERE other_score_job.internal_game_id = ?2
                AND other_score_job.job_type = 'score'
                AND other_score_job.status = 'claimed'
+               ${competingContestScope}
                AND other_score_job.id <> ?3
                AND other_score_job.lease_expires_at > ?5
           )`
-    ).bind(now.toISOString(), internalGameId, jobId, claimToken, new Date().toISOString(), ...(contestScope ? [contestId] : [])).run();
+    ).bind(now.toISOString(), internalGameId, jobId, claimToken, new Date().toISOString(), ...(contestScope || jobContestScope ? [contestId] : [])).run();
     return Number(result?.meta?.changes || 0) === 1;
   } catch (error) {
     if (!isPregameSchemaError(error)) throw error;
@@ -3158,14 +3167,12 @@ export async function releaseStaleGameLineupScoringMarker(db, { internalGameId =
 // to restore the missing boundary before the score job advances to scored.
 // Keep this narrow: only a manual final revision may repair this exact edge;
 // an official fetch result still requires its normal lineup_finalize job.
-export async function reconcileV3ManualFinalLineupState(db, internalGameId, stateBefore, now = new Date()) {
-  const current = await db.prepare(
-    "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
-  ).bind(internalGameId).first();
+export async function reconcileV3ManualFinalLineupState(db, internalGameId, stateBefore, now = new Date(), contestId = null) {
+  const current = await getV3State(db, internalGameId, contestId);
   const currentState = String(current?.state || stateBefore || "scheduled");
   if (currentState !== "prediction_closed") return { state: currentState, reconciled: false, revisionId: null };
 
-  const revisions = await getV3LineupRevisionRows(db, internalGameId, internalGameId);
+  const revisions = await getV3LineupRevisionRows(db, internalGameId, internalGameId, contestId || "");
   const manualFinal = revisions.find((row) => Number(row.is_final || 0) === 1
     && ["manual", "manual-revision"].includes(String(row.source || "").trim().toLowerCase()));
   if (!manualFinal) return { state: currentState, reconciled: false, revisionId: null };
@@ -3176,7 +3183,7 @@ export async function reconcileV3ManualFinalLineupState(db, internalGameId, stat
     });
   }
 
-  const health = await getV3LineupDataHealth(db, internalGameId, currentState);
+  const health = await getV3LineupDataHealth(db, internalGameId, currentState, contestId || "");
   if (health.finalizedValid !== true) {
     throw createV3Error("V3_FINAL_LINEUP_REQUIRED", "正式スタメン確定済みの採点対象を検証できません。", {
       retryable: true,
@@ -3185,6 +3192,7 @@ export async function reconcileV3ManualFinalLineupState(db, internalGameId, stat
   }
   await transitionV3State(db, {
     internalGameId,
+    contestId,
     from: currentState,
     to: "lineup_ready",
     now
@@ -3198,11 +3206,17 @@ export async function reconcileV3ManualFinalLineupState(db, internalGameId, stat
 
 async function hasCurrentV3ScoreJobLease(db, internalGameId, job, now = new Date()) {
   if (!job?.id || !job?.claim_token) return false;
+  const columns = await getTableColumnSet(db, "game_jobs_v3");
+  const contestScope = columns.has("contest_id") && job?.contest_id
+    ? " AND contest_id = ?5"
+    : "";
   const owner = await db.prepare(
     `SELECT 1 AS owned FROM game_jobs_v3 WHERE id = ?1 AND internal_game_id = ?2
        AND job_type = 'score' AND status = 'claimed'
-       AND claim_token = ?3 AND lease_expires_at > ?4 LIMIT 1`
-  ).bind(job.id, internalGameId, job.claim_token, now.toISOString()).first();
+       AND claim_token = ?3 AND lease_expires_at > ?4${contestScope} LIMIT 1`
+  ).bind(...(contestScope
+    ? [job.id, internalGameId, job.claim_token, now.toISOString(), job.contest_id]
+    : [job.id, internalGameId, job.claim_token, now.toISOString()])).first();
   return Boolean(owner?.owned);
 }
 
@@ -3221,7 +3235,7 @@ async function executeV3ScoreExecutor({ env, internalGameId, now, stateBefore, j
   // The physical-game workflow state remains the Fighters compatibility
   // bridge until A4; never let it become authority for another team's lineup.
   const stateSync = targetTeam.key === PRODUCTION_TEAM.key
-    ? await reconcileV3ManualFinalLineupState(env.AUTH_DB, internalGameId, stateBefore, now)
+    ? await reconcileV3ManualFinalLineupState(env.AUTH_DB, internalGameId, stateBefore, now, contestId)
     : { state: stateBefore, reconciled: false };
   const scoringStateBefore = stateSync.state;
   const canonical = await evaluateCanonicalArtifactsFromDb(env.AUTH_DB, internalGameId, contestId);
@@ -3497,6 +3511,13 @@ async function executeV3RankingExecutor({ env, internalGameId, now, stateBefore 
           activeRevision = { id: revisionId, revision_number: revisionNumber, lineup_revision_id: lineupRevisionId, status: "completed", created_at: now.toISOString() };
         }
       }
+      try {
+        await env.AUTH_DB.prepare(`UPDATE contest_automation_v3_state SET scoring_revision_id=?1,updated_at=?2
+          WHERE contest_id=?3 AND internal_game_id=?4`)
+          .bind(activeRevision?.id || null, now.toISOString(), contestId, internalGameId).run();
+      } catch (error) {
+        if (!isPregameSchemaError(error)) throw error;
+      }
     }
   }
   if (!activeRevision?.id) throw createV3Error("V3_SCORING_REVISION_REQUIRED", "有効な採点revisionがありません。", { retryable: false });
@@ -3618,7 +3639,7 @@ export const V3_JOB_EXECUTORS = Object.freeze({
   [V3_JOB_TYPE.PUBLISH]: executeV3PublishExecutor
 });
 
-async function resolveV3ExecutorState({ env, jobType, internalGameId, persistedState }) {
+async function resolveV3ExecutorState({ env, jobType, internalGameId, contestId = null, persistedState }) {
   const state = String(persistedState || "scheduled").trim().toLowerCase() || "scheduled";
   // A manual finalize intentionally leaves the persisted state unchanged until
   // the next formal Cron.  Likewise, a prior executor may have persisted the
@@ -3633,9 +3654,9 @@ async function resolveV3ExecutorState({ env, jobType, internalGameId, persistedS
     publish: "rankingReady"
   }[String(jobType || "")];
   if (!requiredStage) return state;
-  const contest = await getGameContest(env.AUTH_DB, internalGameId, targetTeamForEnvironment(env));
-  if (!contest.ok || !contest.persisted) return state;
-  const canonical = await evaluateCanonicalArtifactsFromDb(env.AUTH_DB, internalGameId, contest.contestId);
+  const resolvedContestId = contestId || (await getGameContest(env.AUTH_DB, internalGameId, targetTeamForEnvironment(env))).contestId;
+  if (!resolvedContestId) return state;
+  const canonical = await evaluateCanonicalArtifactsFromDb(env.AUTH_DB, internalGameId, resolvedContestId);
   if (canonical?.aggregate?.[requiredStage] !== true) return state;
   if (jobType === "score" && ["scheduled", "prediction_closed"].includes(state)) return "lineup_ready";
   if (jobType === "ranking_rebuild" && ["scheduled", "prediction_closed", "lineup_ready"].includes(state)) return "scored";
@@ -3643,7 +3664,7 @@ async function resolveV3ExecutorState({ env, jobType, internalGameId, persistedS
   return state;
 }
 
-async function reconcileV3ExecutorState({ env, internalGameId, persistedState, effectiveState, now }) {
+async function reconcileV3ExecutorState({ env, internalGameId, contestId = null, persistedState, effectiveState, now }) {
   let current = String(persistedState || "scheduled").trim().toLowerCase() || "scheduled";
   const target = String(effectiveState || current).trim().toLowerCase() || current;
   const nextState = {
@@ -3656,7 +3677,7 @@ async function reconcileV3ExecutorState({ env, internalGameId, persistedState, e
   // path and never bypass the initial prediction-close gate or terminal states.
   while (current !== target && current !== "scheduled" && nextState[current]) {
     const next = nextState[current];
-    await transitionV3State(env.AUTH_DB, { internalGameId, from: current, to: next, now });
+    await transitionV3State(env.AUTH_DB, { internalGameId, contestId, from: current, to: next, now });
     current = next;
   }
   return current;
@@ -3678,19 +3699,37 @@ export async function executeGameAutomationV3Job({ env, job, internalGameId, now
     });
   }
   const target = await loadV3GameTarget(env.AUTH_DB, internalGameId);
-  const state = await env.AUTH_DB.prepare(
-    "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
-  ).bind(internalGameId).first();
+  const formalTypes = new Set([V3_JOB_TYPE.PREDICTION_CLOSE, V3_JOB_TYPE.LINEUP_FETCH,
+    V3_JOB_TYPE.LINEUP_FINALIZE, V3_JOB_TYPE.SCORE, V3_JOB_TYPE.RANKING_REBUILD, V3_JOB_TYPE.PUBLISH]);
+  const schema = await getV3SchemaState(env.AUTH_DB);
+  const targetTeam = targetTeamForEnvironment(env);
+  let contestId = job?.contest_id ? String(job.contest_id) : null;
+  if (formalTypes.has(jobType)) {
+    const targetContest = await getGameContest(env.AUTH_DB, internalGameId, targetTeam);
+    if (!targetContest.ok || !targetContest.persisted) {
+      throw createV3Error("V3_CONTEST_REQUIRED", "formal jobのcontestを一意に確認できません。", { retryable: false });
+    }
+    if (schema.contestJobs && !contestId) {
+      throw createV3Error("V3_JOB_CONTEST_REQUIRED", "contest identityのないformal jobは実行できません。", { retryable: false });
+    }
+    if (contestId && contestId !== String(targetContest.contestId)) {
+      throw createV3Error("V3_JOB_CONTEST_MISMATCH", "formal jobのcontestとWorker対象が一致しません。", { retryable: false });
+    }
+    contestId = String(targetContest.contestId);
+  }
+  const state = await getV3State(env.AUTH_DB, internalGameId, contestId);
   const persistedState = String(state?.state || "scheduled");
   const effectiveState = await resolveV3ExecutorState({
     env,
     jobType,
     internalGameId,
+    contestId,
     persistedState
   });
   const stateBefore = await reconcileV3ExecutorState({
     env,
     internalGameId,
+    contestId,
     persistedState,
     effectiveState,
     now
@@ -3699,6 +3738,7 @@ export async function executeGameAutomationV3Job({ env, job, internalGameId, now
     env,
     job,
     internalGameId,
+    contestId,
     now,
     target,
     stateBefore,
@@ -8287,6 +8327,9 @@ async function handleAdminV3JobCreate(request, env, cors, internalGameId) {
     const now = new Date();
     const created = await createV3Job(env.AUTH_DB, {
       internalGameId: id,
+      contestId: V3_MAIN_JOB_TYPES.includes(jobType)
+        ? (await getGameContest(env.AUTH_DB, id, targetTeamForEnvironment(env))).contestId || null
+        : null,
       jobType,
       scheduledAt: now,
       scheduledSlotAt: input?.scheduledSlotAt || now,
@@ -9535,11 +9578,12 @@ async function handleAdminV3LineupCorrection(request, env, cors, route) {
     await activateLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, version: revision.version, internalGameId: context.id, contestId: context.metadata.contestId || "", targetTeam, finalizedAt: now, finalizedBy: `admin:${String(access.user.id)}` });
     await linkFinalLineupRevision(env.AUTH_DB, { gameId: context.metadata.gameId, internalGameId: context.id, contestId: context.metadata.contestId || "", targetTeam, version: revision.version, finalizedAt: now, finalizedBy: `admin:${String(access.user.id)}` });
     if (currentState !== "manual_action_required") {
-      await transitionV3State(env.AUTH_DB, { internalGameId: context.id, from: currentState, to: "manual_action_required", now });
+      await transitionV3State(env.AUTH_DB, { internalGameId: context.id, contestId: context.metadata.contestId || null, from: currentState, to: "manual_action_required", now });
     }
     const scoreJob = await createV3AdminActionJob(env.AUTH_DB, context.id, "score", now, "admin-lineup-correction", {
       allowAfterCompleted: true,
-      scheduledSlotAt: revision.created_at || now
+      scheduledSlotAt: revision.created_at || now,
+      contestId: context.metadata.contestId || null
     });
     if (context.metadata.contestId) {
       const priorVersion = Number(revision.version) > 1 ? Number(revision.version) - 1 : null;
@@ -9711,7 +9755,7 @@ async function handleAdminV3StateReconcile(request, env, cors, context, user) {
     });
   }
   const now = new Date();
-  await transitionV3State(env.AUTH_DB, { internalGameId: context.id, from: transition.from, to: transition.to, now });
+  await transitionV3State(env.AUTH_DB, { internalGameId: context.id, contestId: context.metadata.contestId || null, from: transition.from, to: transition.to, now });
   const detail = `[v3_details=${JSON.stringify({ action: "state_reconcile", reason, actorId: user?.id || null, jobType: transition.jobType, artifactHealth })}]`;
   await recordV3AdminAudit(getV3AuditDb(env), {
     internalGameId: context.id,
@@ -9807,18 +9851,26 @@ async function getV3Job(db, internalGameId, jobId) {
   return db.prepare("SELECT * FROM game_jobs_v3 WHERE id = ?1 AND internal_game_id = ?2 LIMIT 1").bind(Number(jobId), internalGameId).first();
 }
 
-async function createV3AdminActionJob(db, internalGameId, jobType, now, source = "admin", { allowAfterCompleted = false, scheduledSlotAt = null } = {}) {
+async function createV3AdminActionJob(db, internalGameId, jobType, now, source = "admin", { allowAfterCompleted = false, scheduledSlotAt = null, contestId = null } = {}) {
+  const columns = await getTableColumnSet(db, "game_jobs_v3");
+  if (columns.has("contest_id") && V3_MAIN_JOB_TYPES.includes(jobType) && !contestId) {
+    throw createV3Error("V3_CONTEST_ID_REQUIRED", "contest formal jobにはcontest identityが必要です。");
+  }
+  const contestFilter = columns.has("contest_id") && contestId ? " AND contest_id = ?3" : "";
+  const bindings = columns.has("contest_id") && contestId
+    ? [internalGameId, jobType, contestId]
+    : [internalGameId, jobType];
   const open = await db.prepare(
     `SELECT * FROM game_jobs_v3 WHERE internal_game_id = ?1 AND job_type = ?2
-       AND status IN ('pending', 'claimed', 'retry_wait') ORDER BY id DESC LIMIT 1`
-  ).bind(internalGameId, jobType).first();
+       ${contestFilter} AND status IN ('pending', 'claimed', 'retry_wait') ORDER BY id DESC LIMIT 1`
+  ).bind(...bindings).first();
   if (open) return { created: false, noOp: true, job: open };
   const completed = await db.prepare(
     `SELECT * FROM game_jobs_v3 WHERE internal_game_id = ?1 AND job_type = ?2
-       AND status = 'completed' ORDER BY id DESC LIMIT 1`
-  ).bind(internalGameId, jobType).first();
+       ${contestFilter} AND status = 'completed' ORDER BY id DESC LIMIT 1`
+  ).bind(...bindings).first();
   if (completed && !allowAfterCompleted) return { created: false, noOp: true, job: completed };
-  return createV3Job(db, { internalGameId, jobType, scheduledAt: now, scheduledSlotAt: scheduledSlotAt || now, source });
+  return createV3Job(db, { internalGameId, contestId, jobType, scheduledAt: now, scheduledSlotAt: scheduledSlotAt || now, source });
 }
 
 async function invokeV3RescoreCore(requestBody, env, cors, metadata, user, action, options = {}) {
@@ -10458,7 +10510,8 @@ async function handleAdminV3ScoringConfirm(request, env, cors, context, user) {
   }
   const job = await createV3AdminActionJob(env.AUTH_DB, context.id, "score", readiness.now, "admin", {
     allowAfterCompleted: true,
-    scheduledSlotAt: readiness.finalRevision?.created_at || readiness.now
+    scheduledSlotAt: readiness.finalRevision?.created_at || readiness.now,
+    contestId: context.metadata.contestId || null
   });
   // Keep the preview lifecycle visible to existing diagnostics. The formal
   // score job remains the only source of scoring writes and fencing.
@@ -10727,7 +10780,8 @@ async function handleAdminV3RankingRebuild(request, env, cors, context, user) {
   }
   const job = await createV3AdminActionJob(env.AUTH_DB, context.id, "ranking_rebuild", new Date(), "admin", {
     allowAfterCompleted: true,
-    scheduledSlotAt: activeRevision?.created_at || deriveV3Schedule(context.target).publicationAt
+    scheduledSlotAt: activeRevision?.created_at || deriveV3Schedule(context.target).publicationAt,
+    contestId: context.metadata.contestId || null
   });
   await recordWorkflowLog(env.AUTH_DB, { eventType: "v3_admin_ranking_rebuild", status: "info", gameId: context.metadata.gameId, occurredAt: new Date(), message: "V3管理者がランキング再構築jobを投入しました。", metadata: { internalGameId: context.id, reason }, source: "admin" });
   await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobId: job.job?.id || null, jobType: "admin:ranking_rebuild" });
@@ -10824,7 +10878,8 @@ async function handleAdminV3PublicationQueue(request, env, cors, context, user, 
   }
   const job = await createV3AdminActionJob(env.AUTH_DB, context.id, "publish", new Date(), "admin", {
     allowAfterCompleted: republish,
-    scheduledSlotAt: activeRevision.created_at || deriveV3Schedule(context.target).publicationAt
+    scheduledSlotAt: activeRevision.created_at || deriveV3Schedule(context.target).publicationAt,
+    contestId: context.metadata.contestId || null
   });
   await recordWorkflowLog(env.AUTH_DB, { eventType: republish ? "v3_admin_republish" : "v3_admin_publish", status: "info", gameId: context.metadata.gameId, occurredAt: new Date(), message: republish ? "V3管理者が結果再公開jobを投入しました。" : "V3管理者が結果公開jobを投入しました。", metadata: { internalGameId: context.id, reason }, source: "admin" });
   await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobId: job.job?.id || null, jobType: republish ? "admin:republish" : "admin:publish" });
@@ -10900,7 +10955,8 @@ async function handleAdminV3EligibilityUpdate(request, env, cors, context, user)
     ? { created: false, noOp: true, reason: "RANKING_REFLECTION_REVOKED_BY_ELIGIBILITY", job: null }
     : await createV3AdminActionJob(env.AUTH_DB, context.id, "ranking_rebuild", new Date(), "admin", {
       allowAfterCompleted: true,
-      scheduledSlotAt: eligibility?.rankingEligibilityUpdatedAt || new Date()
+      scheduledSlotAt: eligibility?.rankingEligibilityUpdatedAt || new Date(),
+      contestId: context.metadata.contestId || null
     });
   await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobType: "admin:ranking_eligibility", stateAfter: status, failureMessage: `[v3_details=${JSON.stringify({ reason, rankingRevocation })}]` });
   return jsonResponse({ ok: true, internalGameId: context.id, rankingEligibility: eligibility, rankingJob, rankingRevocation }, 200, cors);
@@ -11061,7 +11117,7 @@ async function handleAdminV3ScheduleUpdate(request, env, cors, context, user) {
   let stateAfter = currentState;
   if (requestedStatus !== "scheduled" && ["scheduled", "prediction_closed", "manual_action_required", "lineup_ready", "scored", "ranked"].includes(currentState)) {
     try {
-      const excluded = await transitionV3State(env.AUTH_DB, { internalGameId: context.id, from: currentState, to: "excluded", now: new Date() });
+      const excluded = await transitionV3State(env.AUTH_DB, { internalGameId: context.id, contestId: context.metadata.contestId || null, from: currentState, to: "excluded", now: new Date() });
       stateAfter = excluded?.state || "excluded";
     } catch (error) {
       await recordV3AdminAudit(getV3AuditDb(env), { internalGameId: context.id, jobType: "admin:schedule", stateBefore: currentState, failureCode: String(error?.code || "V3_SCHEDULE_STATE_EXCLUDE_FAILED"), failureMessage: String(error?.message || "") });
@@ -22378,21 +22434,20 @@ async function createManualLineupRevision(db, metadata, actualLineup, userId, re
     finalizedAt: new Date(),
     finalizedBy: "admin"
   });
-  await markManualLineupCorrectionPending(db, metadata.internalGameId || "", new Date());
+  await markManualLineupCorrectionPending(db, metadata.internalGameId || "", new Date(), metadata.contestId || null);
   return activated;
 }
 
-async function markManualLineupCorrectionPending(db, internalGameId, now) {
+async function markManualLineupCorrectionPending(db, internalGameId, now, contestId = null) {
   if (!internalGameId) return false;
-  const current = await db.prepare(
-    "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
-  ).bind(internalGameId).first();
+  const current = await getV3State(db, internalGameId, contestId);
   if (!current) return false;
   const currentState = String(current.state || "");
   if (currentState === "manual_action_required") return true;
   if (currentState !== "published") return false;
   await transitionV3State(db, {
     internalGameId,
+    contestId,
     from: currentState,
     to: "manual_action_required",
     now,
@@ -22402,16 +22457,15 @@ async function markManualLineupCorrectionPending(db, internalGameId, now) {
   return true;
 }
 
-async function markManualRescoreCompleted(db, internalGameId, publicationStatus, now, { deferPublication = false } = {}) {
+async function markManualRescoreCompleted(db, internalGameId, publicationStatus, now, { deferPublication = false, contestId = null } = {}) {
   if (!internalGameId) return false;
-  const current = await db.prepare(
-    "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
-  ).bind(internalGameId).first();
+  const current = await getV3State(db, internalGameId, contestId);
   if (!current) return false;
   let currentState = String(current.state || "");
   if (currentState === "published") {
     await transitionV3State(db, {
       internalGameId,
+      contestId,
       from: currentState,
       to: "manual_action_required",
       now,
@@ -22423,6 +22477,7 @@ async function markManualRescoreCompleted(db, internalGameId, publicationStatus,
   if (currentState !== "manual_action_required") return false;
   await transitionV3State(db, {
     internalGameId,
+    contestId,
     from: currentState,
     to: "scored",
     now
@@ -22431,6 +22486,7 @@ async function markManualRescoreCompleted(db, internalGameId, publicationStatus,
   if (!deferPublication) {
     await transitionV3State(db, {
       internalGameId,
+      contestId,
       from: currentState,
       to: "ranked",
       now
@@ -22440,6 +22496,7 @@ async function markManualRescoreCompleted(db, internalGameId, publicationStatus,
   if (!deferPublication && publicationStatus === "published") {
     await transitionV3State(db, {
       internalGameId,
+      contestId,
       from: currentState,
       to: "published",
       now
@@ -22646,7 +22703,7 @@ async function handleAdminRescoreConfirm(request, env, cors, metadata, user, { d
     } catch (error) {
       console.warn(`[RANKING_TEST] supplemental_rescore_failed internalGameId=${metadata.internalGameId || metadata.gameId} code=${error?.code || "RANKING_TEST_RESCORE_FAILED"}`);
     }
-    await markManualRescoreCompleted(env.AUTH_DB, metadata.internalGameId || "", result.publicationStatus, now, { deferPublication });
+    await markManualRescoreCompleted(env.AUTH_DB, metadata.internalGameId || "", result.publicationStatus, now, { deferPublication, contestId: metadata.contestId || null });
     await recordWorkflowLog(env.AUTH_DB, {
       eventType: "admin_rescore_confirmed",
       status: "success",

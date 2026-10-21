@@ -43,7 +43,7 @@ test("no_gameはservice_unavailableへ変換されずcanonical除外へ進む", 
   assert.match(authWorker, /requestedStatus === "no_game"/);
   assert.match(authWorker, /status: requestedStatus/);
   assert.match(authWorker, /RANKING_ELIGIBILITY_STATUS\.EXCLUDED/);
-  assert.match(authWorker, /transitionV3State\(env\.AUTH_DB, \{ internalGameId, from: stateBefore, to: "excluded"/);
+  assert.match(authWorker, /transitionV3State\(env\.AUTH_DB, \{ internalGameId, contestId: context\.metadata\.contestId \|\| null, from: stateBefore, to: "excluded"/);
 });
 
 test("外部statusの一時障害と未知値をno_game扱いしない", () => {

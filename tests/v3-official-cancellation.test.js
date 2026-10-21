@@ -55,7 +55,7 @@ test("当日の日程を短い間隔で再確認し、公式中止を既存の�
   assert.match(authSource, /applyScheduleChange\(env\.AUTH_DB/);
   assert.match(authSource, /applyEligibilityChange\(\{/);
   assert.match(authSource, /cancelOpenV3Jobs\(env\.AUTH_DB, internalGameId/);
-  assert.match(authSource, /transitionV3State\(env\.AUTH_DB, \{ internalGameId, from: stateBefore, to: "excluded"/);
+  assert.match(authSource, /transitionV3State\(env\.AUTH_DB, \{ internalGameId, contestId: context\.metadata\.contestId \|\| null, from: stateBefore, to: "excluded"/);
   assert.match(authSource, /official_game_cancelled/);
   assert.match(cloudflareSource, /cancellationStatus: "official_cancelled"/);
   assert.match(executorSource, /OFFICIAL_CANCELLATION_RECONCILE_REQUIRED/);

@@ -65,7 +65,9 @@ export function buildV3CronJobAuditInsert({
 } = {}) {
   const columns = [
     ...(auditColumns.has("event_type") ? ["event_type"] : []),
-    "internal_game_id", "job_id", "job_type", "scheduled_slot_at", "claim_id",
+    "internal_game_id",
+    ...(auditColumns.has("contest_id") ? ["contest_id"] : []),
+    "job_id", "job_type", "scheduled_slot_at", "claim_id",
     "state_before", "state_after", "attempt_count", "failure_code", "failure_message",
     ...(auditColumns.has("data_status") ? ["data_status"] : []), "occurred_at", "source",
     ...(auditColumns.has("severity") ? ["severity"] : []),
@@ -130,6 +132,7 @@ export function buildV3CronJobAuditInsert({
   const values = [
     ...(auditColumns.has("event_type") ? [resolvedEventType] : []),
     resolvedInternalGameId,
+    ...(auditColumns.has("contest_id") ? [job?.contest_id || execution?.contestId || null] : []),
     job?.id || null,
     auditJobType,
     job?.scheduled_slot_at || null,

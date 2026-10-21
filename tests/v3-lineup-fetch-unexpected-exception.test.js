@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import worker from "../auth-worker.js";
+import { createContestId } from "../backend/contest-identity.js";
 import {
   createOfficialLineupFromNpb,
   executeGameAutomationV3Job,
@@ -27,6 +28,7 @@ function createDbAdapter(database) {
     prepare(sql) {
       const statement = database.prepare(sql);
       return {
+        all: async () => ({ results: statement.all() }),
         bind(...parameters) {
           return {
             all: async () => ({ results: statement.all(...parameters) }),
@@ -90,6 +92,13 @@ function createV3ExecutorFixture({ lineup = lineupRows().map((row) => ({
       internal_game_id TEXT PRIMARY KEY,
       state TEXT NOT NULL
     );
+    CREATE TABLE contest_identity_teams (team_key TEXT PRIMARY KEY);
+    CREATE TABLE game_contests (
+      contest_id TEXT PRIMARY KEY,
+      internal_game_id TEXT NOT NULL,
+      target_team_key TEXT NOT NULL,
+      UNIQUE(internal_game_id, target_team_key)
+    );
     CREATE TABLE game_lineups (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       game_id TEXT,
@@ -139,6 +148,10 @@ function createV3ExecutorFixture({ lineup = lineupRows().map((row) => ({
        stadium, game_status, is_active)
     VALUES (?, '2026-09-01', '2026-09-01T09:00:00.000Z', 'fighters', 'hawks', 'f-h-21', 'エスコンF', 'scheduled', 1)
   `).run(internalGameId);
+  const contestId = createContestId(internalGameId, "fighters");
+  database.prepare("INSERT INTO contest_identity_teams (team_key) VALUES ('fighters')").run();
+  database.prepare("INSERT INTO game_contests (contest_id, internal_game_id, target_team_key) VALUES (?, ?, 'fighters')")
+    .run(contestId, internalGameId);
   database.prepare("INSERT INTO game_automation_v3_state (internal_game_id, state) VALUES (?, 'prediction_closed')").run(internalGameId);
   let fetchCount = 0;
   const env = {

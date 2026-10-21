@@ -208,6 +208,22 @@ async function createGoldenDb({ npbGameCode = "f-h-golden-1" } = {}) {
     INSERT INTO game_automation_v3_state (internal_game_id, state, version, created_at, updated_at)
     VALUES (?, 'scheduled', 0, ?, ?)
   `).run(GAME_ID, timestamp, timestamp);
+  database.prepare(`INSERT INTO contest_automation_v3_state
+    (contest_id,internal_game_id,state,version,created_at,updated_at)
+    VALUES(?1,?2,'scheduled',0,?3,?3)`).run(createContestId(GAME_ID, "fighters"), GAME_ID, timestamp);
+  // Legacy-only fixture assertions still observe the Fighters mirror. The
+  // production state machine uses contest_automation_v3_state; these triggers
+  // are test-only and deliberately do nothing once a second contest exists.
+  database.exec(`CREATE TRIGGER fixture_sync_single_contest_state_to_legacy
+    AFTER UPDATE OF state ON contest_automation_v3_state
+    WHEN (SELECT COUNT(*) FROM game_contests WHERE internal_game_id=NEW.internal_game_id)=1
+    BEGIN UPDATE game_automation_v3_state SET state=NEW.state,version=NEW.version,updated_at=NEW.updated_at
+      WHERE internal_game_id=NEW.internal_game_id; END;
+    CREATE TRIGGER fixture_sync_legacy_state_to_single_contest
+    AFTER UPDATE OF state ON game_automation_v3_state
+    WHEN (SELECT COUNT(*) FROM game_contests WHERE internal_game_id=NEW.internal_game_id)=1
+    BEGIN UPDATE contest_automation_v3_state SET state=NEW.state,version=NEW.version,updated_at=NEW.updated_at
+      WHERE internal_game_id=NEW.internal_game_id; END;`);
   database.prepare(`
     INSERT INTO probable_starters (
       game_id, internal_game_id, status, home_pitcher_name, away_pitcher_name,
@@ -246,6 +262,7 @@ async function createGoldenDb({ npbGameCode = "f-h-golden-1" } = {}) {
 
 async function runFormalCron(env, now, executed = [], { formalPlanner = null, v4SemiAuto = false } = {}) {
   return runGameAutomationV3(env, now, {
+    targetTeamKey: "fighters",
     formalPlanner: formalPlanner || ((db, games, at) => planMainWorkflowJobs(db, games, at, {
       disabledStages: ["roster_fetch", "lineup_fetch"],
       v4SemiAuto,
@@ -281,6 +298,7 @@ function planningGame(fixture, workflowState = "scheduled") {
 async function createDueJob(fixture, jobType, at, suffix) {
   return createV3Job(fixture.env.AUTH_DB, {
     internalGameId: GAME_ID,
+    contestId: createContestId(GAME_ID, "fighters"),
     jobType,
     scheduledAt: new Date(at.getTime() - 1000),
     scheduledSlotAt: new Date(at.getTime() - 1000 + suffix).toISOString()
@@ -703,7 +721,7 @@ test("Negative paths: published-only artifact不備とfuture・wrong-date・canc
     const canonical = await evaluateGoldenCanonical(fixture);
     assert.equal(canonical.aggregate.fullyPublished, false);
     await assert.rejects(
-      () => executeGameAutomationV3Job({ env: fixture.env, job: { job_type: "publish" }, internalGameId: GAME_ID, now: new Date() }),
+      () => executeGameAutomationV3Job({ env: fixture.env, job: { job_type: "publish", contest_id: createContestId(GAME_ID, "fighters") }, internalGameId: GAME_ID, now: new Date() }),
       (error) => error?.code === "V3_RANKING_ARTIFACT_NOT_READY"
     );
 

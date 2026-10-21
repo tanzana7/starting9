@@ -39,6 +39,7 @@ test("account isolation cutover config carries the exact source Cron set without
   assert.equal(source.vars.MIGRATION_MAINTENANCE, "false");
   assert.equal(cutover.account_id, TARGET_ACCOUNT);
   assert.equal(cutover.vars.MIGRATION_MAINTENANCE, "false");
+  assert.equal(cutover.vars.REQUIRE_CONTEST_SCHEMA, "true");
   assert.deepEqual(
     cutover.d1_databases.map(({ binding, database_name }) => ({ binding, database_name })),
     [

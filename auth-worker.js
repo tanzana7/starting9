@@ -160,6 +160,7 @@ import {
 } from "./backend/admin-alerts/storage.js";
 import { normalizeScoringPosition } from "./backend/domain/scoring-position.js";
 import { ensureGameContest, getGameContest } from "./backend/contest-identity.js";
+import { inspectContestSchemaReadiness } from "./backend/contest-schema-readiness.js";
 import { evaluateAndNotifyAdminAlerts } from "./backend/admin-alerts/runtime.js";
 import { sendAdminTestPush } from "./backend/admin-alerts/test-push.js";
 import { runLineupCandidatePipeline } from "./backend/automation-v3/lineup-candidate-service.js";
@@ -429,6 +430,14 @@ const PERFECT_ACHIEVER_MUTATION_RETIRED_CODE = "PERFECT_ACHIEVER_MUTATION_RETIRE
 const PERFECT_ACHIEVER_MUTATION_RETIRED_MESSAGE = "満点者はサーバー側の正式採点結果から自動集計されます。";
 const MIGRATION_MAINTENANCE_CODE = "MIGRATION_MAINTENANCE";
 const MIGRATION_MAINTENANCE_MESSAGE = "現在メンテナンス中です。しばらくお待ちください。";
+const SCHEMA_MIGRATION_REQUIRED_CODE = "SCHEMA_MIGRATION_REQUIRED";
+
+function isContestSchemaGateEnabled(env) {
+  // The production cutover config opts into this bridge explicitly. Keeping
+  // it config-gated lets older isolated API fixtures model their own schemas;
+  // the target production config is contract-tested to keep it enabled.
+  return String(env?.REQUIRE_CONTEST_SCHEMA || "").trim().toLowerCase() === "true";
+}
 
 function getBuildIdentifier(env) {
   const configured = String(env?.BUILD_COMMIT || "").trim();
@@ -456,6 +465,21 @@ function migrationMaintenanceResponse(cors) {
     code: MIGRATION_MAINTENANCE_CODE,
     error: MIGRATION_MAINTENANCE_MESSAGE
   }, 503, cors);
+}
+
+function contestSchemaMaintenanceResponse(cors) {
+  return jsonResponse({
+    ok: false,
+    code: SCHEMA_MIGRATION_REQUIRED_CODE,
+    error: MIGRATION_MAINTENANCE_MESSAGE
+  }, 503, cors);
+}
+
+function isAuthControlRequest(path) {
+  return path === "/api/auth/register"
+    || path === "/api/auth/login"
+    || path === "/api/auth/logout"
+    || path === "/api/auth/me";
 }
 
 // V1/V2 automation and update paths are retired. Production automation uses
@@ -752,10 +776,14 @@ export default {
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
     if (path === "/health" && request.method === "GET") {
+      const schema = await inspectContestSchemaReadiness(env.AUTH_DB);
       return noStoreJsonResponse({
         ok: true,
         service: "starting9-auth",
         database: "not_checked",
+        schemaReady: schema.ready,
+        maintenance: !schema.ready,
+        reasonCode: schema.ready ? null : SCHEMA_MIGRATION_REQUIRED_CODE,
         build: getBuildIdentifier(env),
         generatedAt: new Date().toISOString()
       }, 200, cors);
@@ -767,6 +795,11 @@ export default {
 
     if (!env.AUTH_DB) {
       return jsonResponse({ ok: false, error: "認証サービスが現在利用できません。" }, 503, cors);
+    }
+
+    if (isContestSchemaGateEnabled(env) && path.startsWith("/api/") && !isAuthControlRequest(path)) {
+      const schema = await inspectContestSchemaReadiness(env.AUTH_DB);
+      if (!schema.ready) return contestSchemaMaintenanceResponse(cors);
     }
 
     try {
@@ -1069,6 +1102,18 @@ export default {
         skipped: true,
         reasonCode: MIGRATION_MAINTENANCE_CODE
       };
+    }
+    if (isContestSchemaGateEnabled(env)) {
+      const schema = await inspectContestSchemaReadiness(env.AUTH_DB);
+      if (!schema.ready) {
+        console.info(`[GAME_AUTOMATION_V3] schema_ready=false action=skip reasonCode=${SCHEMA_MIGRATION_REQUIRED_CODE}`);
+        return {
+          ok: true,
+          cronMode,
+          skipped: true,
+          reasonCode: SCHEMA_MIGRATION_REQUIRED_CODE
+        };
+      }
     }
     const isCriticalCron = cronMode === "critical";
     if (isCriticalCron) ctx.waitUntil(writeCronHeartbeatSafely(env, recordCronInvocation, invocationAt, "invocation"));

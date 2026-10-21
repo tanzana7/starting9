@@ -62,6 +62,160 @@ BEGIN
   SELECT RAISE(ABORT, 'CONTEST_TARGET_NOT_A_GAME_PARTICIPANT');
 END;
 
+-- These historical compact IDs predate the internal game registry, and their
+-- games were never materialized in `games`. The source schedule URLs are
+-- official NPB score pages; name-based UUIDv5 values make this small, reviewed
+-- exception stable across local migration tests and production. If a physical
+-- game already exists, reuse it only when its schedule identity is unique.
+CREATE TABLE contest_identity_a2_legacy_game_map (
+  legacy_game_id TEXT PRIMARY KEY NOT NULL,
+  internal_game_id TEXT NOT NULL UNIQUE,
+  game_date TEXT NOT NULL CHECK (length(game_date) = 10 AND date(game_date) = game_date),
+  start_time TEXT NOT NULL,
+  home_team TEXT NOT NULL,
+  away_team TEXT NOT NULL,
+  npb_game_code TEXT NOT NULL,
+  npb_game_url TEXT NOT NULL,
+  CHECK (home_team <> away_team),
+  CHECK (home_team = 'fighters' OR away_team = 'fighters'),
+  CHECK (legacy_game_id = game_date || '-' || npb_game_code)
+);
+
+INSERT INTO contest_identity_a2_legacy_game_map
+  (legacy_game_id, internal_game_id, game_date, start_time, home_team, away_team, npb_game_code, npb_game_url)
+VALUES
+  ('2026-07-22-l-f-16', '8194933c-6116-5460-ba32-61bad1344a5d', '2026-07-22', '2026-07-22T09:00:00.000Z', 'lions', 'fighters', 'l-f-16', 'https://npb.jp/scores/2026/0722/l-f-16/'),
+  ('2026-07-25-f-e-15', '0b4ac3b2-9387-59a3-a3f2-056d98ad73df', '2026-07-25', '2026-07-25T05:00:00.000Z', 'fighters', 'eagles', 'f-e-15', 'https://npb.jp/scores/2026/0725/f-e-15/'),
+  ('2026-07-26-f-e-16', '6723a50c-e243-527f-a0eb-c0890303726f', '2026-07-26', '2026-07-26T04:00:00.000Z', 'fighters', 'eagles', 'f-e-16', 'https://npb.jp/scores/2026/0726/f-e-16/'),
+  ('2026-07-31-f-m-14', '331a0778-204e-5457-87bc-e5a36f0b8d21', '2026-07-31', '2026-07-31T09:00:00.000Z', 'fighters', 'marines', 'f-m-14', 'https://npb.jp/scores/2026/0731/f-m-14/');
+
+-- Do not materialize historical games merely because they are listed in the
+-- reviewed map. Only map identities actually referenced by legacy artifacts.
+CREATE TABLE contest_identity_a2_legacy_game_map_active AS
+SELECT m.* FROM contest_identity_a2_legacy_game_map m
+ WHERE EXISTS (SELECT 1 FROM predictions p WHERE p.game_id = m.legacy_game_id AND p.is_test_prediction = 0)
+    OR EXISTS (SELECT 1 FROM game_lineups l WHERE l.game_id = m.legacy_game_id
+                 AND NOT EXISTS (SELECT 1 FROM test_games t WHERE t.game_id = l.game_id))
+    OR EXISTS (SELECT 1 FROM ranking_games r WHERE r.game_id = m.legacy_game_id AND r.is_test_game = 0)
+    OR EXISTS (SELECT 1 FROM game_lineup_revisions l WHERE l.game_id = m.legacy_game_id)
+    OR EXISTS (SELECT 1 FROM probable_starters p WHERE p.game_id = m.legacy_game_id)
+    OR EXISTS (SELECT 1 FROM game_roster_snapshots r WHERE r.game_id = m.legacy_game_id)
+    OR EXISTS (SELECT 1 FROM game_pregame_automation p WHERE p.game_id = m.legacy_game_id)
+    OR EXISTS (SELECT 1 FROM ranking_eligibility_history h WHERE h.game_id = m.legacy_game_id)
+    OR EXISTS (SELECT 1 FROM game_rescore_jobs j WHERE j.game_id = m.legacy_game_id)
+    OR EXISTS (SELECT 1 FROM game_rescore_previews p WHERE p.game_id = m.legacy_game_id)
+    OR EXISTS (SELECT 1 FROM game_rescore_audits a WHERE a.game_id = m.legacy_game_id)
+    OR EXISTS (SELECT 1 FROM perfect_achievers a WHERE a.game_id = m.legacy_game_id)
+    OR EXISTS (SELECT 1 FROM prediction_score_revisions s WHERE s.game_id = m.legacy_game_id AND s.is_test_prediction = 0);
+
+-- Fail before writing if a compact identifier is already claimed by another
+-- game, a same-card doubleheader is ambiguous, or a pre-existing UUID points
+-- to different physical facts. A missing physical row is created below only
+-- for one of the four exact, source-verified mappings above.
+CREATE TABLE contest_identity_a2_legacy_map_assert (valid INTEGER NOT NULL CHECK (valid = 1));
+INSERT INTO contest_identity_a2_legacy_map_assert(valid)
+SELECT CASE WHEN EXISTS (
+  SELECT 1 FROM contest_identity_a2_legacy_game_map_active m
+   WHERE (SELECT COUNT(*) FROM games g
+           WHERE g.game_date = m.game_date AND g.home_team = m.home_team AND g.away_team = m.away_team
+             AND (g.npb_game_code = m.npb_game_code OR g.npb_game_code IS NULL)) > 1
+      OR EXISTS (SELECT 1 FROM games g WHERE g.internal_game_id = m.internal_game_id
+                   AND (g.game_date <> m.game_date OR g.home_team <> m.home_team OR g.away_team <> m.away_team
+                     OR (g.npb_game_code IS NOT NULL AND g.npb_game_code <> m.npb_game_code)))
+      OR EXISTS (SELECT 1 FROM games g WHERE g.internal_game_id = m.legacy_game_id
+                   AND (g.game_date <> m.game_date OR g.home_team <> m.home_team OR g.away_team <> m.away_team))
+      OR EXISTS (SELECT 1 FROM games g WHERE g.npb_game_code = m.npb_game_code
+                   AND (g.game_date <> m.game_date OR g.home_team <> m.home_team OR g.away_team <> m.away_team))
+      OR EXISTS (SELECT 1 FROM game_identifiers gi WHERE gi.identifier_value = m.legacy_game_id
+                   AND gi.internal_game_id <> m.internal_game_id
+                   AND NOT EXISTS (SELECT 1 FROM games g WHERE g.game_date = m.game_date
+                     AND g.home_team = m.home_team AND g.away_team = m.away_team
+                     AND (g.npb_game_code = m.npb_game_code OR g.npb_game_code IS NULL)
+                     AND g.internal_game_id = gi.internal_game_id))
+) THEN 0 ELSE 1 END;
+DROP TABLE contest_identity_a2_legacy_map_assert;
+
+-- Prefer a unique existing physical row over the deterministic fallback ID.
+UPDATE contest_identity_a2_legacy_game_map_active
+   SET internal_game_id = (
+     SELECT g.internal_game_id FROM games g
+      WHERE g.game_date = contest_identity_a2_legacy_game_map_active.game_date
+        AND g.home_team = contest_identity_a2_legacy_game_map_active.home_team
+        AND g.away_team = contest_identity_a2_legacy_game_map_active.away_team
+        AND (g.npb_game_code = contest_identity_a2_legacy_game_map_active.npb_game_code OR g.npb_game_code IS NULL)
+      LIMIT 1
+   )
+ WHERE EXISTS (
+   SELECT 1 FROM games g
+    WHERE g.game_date = contest_identity_a2_legacy_game_map_active.game_date
+      AND g.home_team = contest_identity_a2_legacy_game_map_active.home_team
+      AND g.away_team = contest_identity_a2_legacy_game_map_active.away_team
+      AND (g.npb_game_code = contest_identity_a2_legacy_game_map_active.npb_game_code OR g.npb_game_code IS NULL)
+ );
+
+INSERT INTO games (
+  internal_game_id, game_date, start_time, home_team, away_team, npb_game_code, game_status,
+  created_at, updated_at, updated_by, is_active, npb_game_url, source_schedule_key,
+  npb_identity_status, npb_identity_resolved_at, npb_identity_source, season
+)
+SELECT m.internal_game_id, m.game_date, m.start_time, m.home_team, m.away_team, m.npb_game_code, 'completed',
+       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'contest_identity_migration', 1, m.npb_game_url,
+       m.legacy_game_id, 'resolved', CURRENT_TIMESTAMP, 'official_npb_legacy_map', 2026
+  FROM contest_identity_a2_legacy_game_map_active m
+ WHERE NOT EXISTS (SELECT 1 FROM games g WHERE g.internal_game_id = m.internal_game_id);
+
+INSERT INTO game_identifiers (
+  internal_game_id, provider, identifier_type, identifier_value, is_primary, created_at, updated_at
+)
+SELECT m.internal_game_id, 'npb', 'legacy_compact_game_id', m.legacy_game_id, 0,
+       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+  FROM contest_identity_a2_legacy_game_map_active m
+ WHERE NOT EXISTS (
+   SELECT 1 FROM game_identifiers gi
+    WHERE gi.provider = 'npb' AND gi.identifier_type = 'legacy_compact_game_id'
+      AND gi.identifier_value = m.legacy_game_id AND gi.internal_game_id = m.internal_game_id
+ );
+
+INSERT INTO game_contests (contest_id, internal_game_id, target_team_key)
+SELECT 'contest_' || lower(hex(m.internal_game_id)) || '_6669676874657273', m.internal_game_id, 'fighters'
+  FROM contest_identity_a2_legacy_game_map_active m
+ WHERE NOT EXISTS (SELECT 1 FROM game_contests c
+                     WHERE c.internal_game_id = m.internal_game_id AND c.target_team_key = 'fighters');
+
+-- Carry the same canonical physical identity through existing game-keyed
+-- artifacts before A2/A3 rebuild their tables. Keep legacy game_id values as
+-- compatibility keys; only the nullable canonical identity is backfilled.
+UPDATE predictions SET internal_game_id = (
+  SELECT m.internal_game_id FROM contest_identity_a2_legacy_game_map_active m WHERE m.legacy_game_id = predictions.game_id
+) WHERE internal_game_id IS NULL AND game_id IN (SELECT legacy_game_id FROM contest_identity_a2_legacy_game_map_active);
+UPDATE game_lineups SET internal_game_id = (
+  SELECT m.internal_game_id FROM contest_identity_a2_legacy_game_map_active m WHERE m.legacy_game_id = game_lineups.game_id
+) WHERE internal_game_id IS NULL AND game_id IN (SELECT legacy_game_id FROM contest_identity_a2_legacy_game_map_active);
+UPDATE ranking_games SET internal_game_id = (
+  SELECT m.internal_game_id FROM contest_identity_a2_legacy_game_map_active m WHERE m.legacy_game_id = ranking_games.game_id
+) WHERE internal_game_id IS NULL AND game_id IN (SELECT legacy_game_id FROM contest_identity_a2_legacy_game_map_active);
+UPDATE game_lineup_revisions SET internal_game_id = (
+  SELECT m.internal_game_id FROM contest_identity_a2_legacy_game_map_active m WHERE m.legacy_game_id = game_lineup_revisions.game_id
+) WHERE internal_game_id IS NULL AND game_id IN (SELECT legacy_game_id FROM contest_identity_a2_legacy_game_map_active);
+UPDATE probable_starters SET internal_game_id = (
+  SELECT m.internal_game_id FROM contest_identity_a2_legacy_game_map_active m WHERE m.legacy_game_id = probable_starters.game_id
+) WHERE internal_game_id IS NULL AND game_id IN (SELECT legacy_game_id FROM contest_identity_a2_legacy_game_map_active);
+UPDATE game_roster_snapshots SET internal_game_id = (
+  SELECT m.internal_game_id FROM contest_identity_a2_legacy_game_map_active m WHERE m.legacy_game_id = game_roster_snapshots.game_id
+) WHERE internal_game_id IS NULL AND game_id IN (SELECT legacy_game_id FROM contest_identity_a2_legacy_game_map_active);
+UPDATE game_pregame_automation SET internal_game_id = (
+  SELECT m.internal_game_id FROM contest_identity_a2_legacy_game_map_active m WHERE m.legacy_game_id = game_pregame_automation.game_id
+) WHERE internal_game_id IS NULL AND game_id IN (SELECT legacy_game_id FROM contest_identity_a2_legacy_game_map_active);
+UPDATE ranking_eligibility_history SET internal_game_id = (
+  SELECT m.internal_game_id FROM contest_identity_a2_legacy_game_map_active m WHERE m.legacy_game_id = ranking_eligibility_history.game_id
+) WHERE internal_game_id IS NULL AND game_id IN (SELECT legacy_game_id FROM contest_identity_a2_legacy_game_map_active);
+UPDATE game_rescore_jobs SET internal_game_id = (
+  SELECT m.internal_game_id FROM contest_identity_a2_legacy_game_map_active m WHERE m.legacy_game_id = game_rescore_jobs.game_id
+) WHERE internal_game_id IS NULL AND game_id IN (SELECT legacy_game_id FROM contest_identity_a2_legacy_game_map_active);
+UPDATE prediction_score_revisions SET internal_game_id = (
+  SELECT m.internal_game_id FROM contest_identity_a2_legacy_game_map_active m WHERE m.legacy_game_id = prediction_score_revisions.game_id
+) WHERE internal_game_id IS NULL AND game_id IN (SELECT legacy_game_id FROM contest_identity_a2_legacy_game_map_active);
+
 -- Legacy production rows can be assigned only when their persisted physical
 -- identity (or a unique historical identifier) proves exactly one Fighters
 -- contest. Test-only rows keep contest_id NULL and retain their existing scope.
@@ -175,8 +329,24 @@ SELECT p.id, p.user_id, p.game_id,
   LEFT JOIN prediction_games pg ON pg.id = p.id
   LEFT JOIN game_contests c ON c.internal_game_id = pg.internal_game_id AND c.target_team_key = 'fighters';
 
+-- predictions_a2 replaces the parent table. Preserve its append-only score
+-- history outside the FK graph so DROP TABLE cannot cascade-delete audit data.
+CREATE TABLE _a2_prediction_score_revision_backup AS
+SELECT id, prediction_id, game_id, internal_game_id, is_test_prediction, scoring_revision,
+       lineup_revision_id, score, max_score, actual_lineup_json, scored_at, scored_by, created_at
+  FROM prediction_score_revisions;
+
 DROP TABLE predictions;
 ALTER TABLE predictions_a2 RENAME TO predictions;
+
+INSERT INTO prediction_score_revisions (
+  id, prediction_id, game_id, internal_game_id, is_test_prediction, scoring_revision,
+  lineup_revision_id, score, max_score, actual_lineup_json, scored_at, scored_by, created_at
+)
+SELECT id, prediction_id, game_id, internal_game_id, is_test_prediction, scoring_revision,
+       lineup_revision_id, score, max_score, actual_lineup_json, scored_at, scored_by, created_at
+  FROM _a2_prediction_score_revision_backup;
+DROP TABLE _a2_prediction_score_revision_backup;
 
 CREATE INDEX idx_predictions_game_id ON predictions(game_id);
 CREATE INDEX idx_predictions_user_updated ON predictions(user_id, updated_at);
@@ -354,6 +524,9 @@ SELECT contests.contest_id, contests.internal_game_id, revisions.game_id, revisi
   JOIN game_contests AS contests
     ON contests.internal_game_id = revisions.internal_game_id
    AND contests.target_team_key = 'fighters';
+
+DROP TABLE contest_identity_a2_legacy_game_map;
+DROP TABLE contest_identity_a2_legacy_game_map_active;
 
 CREATE UNIQUE INDEX idx_contest_lineup_revisions_current
   ON contest_lineup_revisions(contest_id) WHERE is_current = 1;

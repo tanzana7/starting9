@@ -338,7 +338,14 @@ WITH artifacts AS (
   UNION ALL SELECT 'game_rescore_jobs', COALESCE(j.internal_game_id, g.internal_game_id)
     FROM game_rescore_jobs j LEFT JOIN games g ON g.internal_game_id = j.game_id OR g.internal_game_id = j.internal_game_id
   UNION ALL SELECT 'game_rescore_audits', g.internal_game_id
-    FROM game_rescore_audits a LEFT JOIN games g ON g.internal_game_id = a.game_id
+    FROM game_rescore_audits a LEFT JOIN games g
+      ON g.internal_game_id = a.game_id
+      OR g.internal_game_id = (
+        SELECT MIN(gi.internal_game_id) FROM game_identifiers gi
+         WHERE gi.identifier_value = a.game_id
+         GROUP BY gi.identifier_value
+        HAVING COUNT(DISTINCT gi.internal_game_id) = 1
+      )
   UNION ALL SELECT 'perfect_achievers', COALESCE(g.internal_game_id, p.internal_game_id)
     FROM perfect_achievers a LEFT JOIN games g ON g.internal_game_id = a.game_id
     LEFT JOIN predictions p ON p.game_id = a.game_id AND p.user_id = a.user_id
@@ -479,7 +486,14 @@ INSERT INTO contest_game_rescore_audits (
 SELECT a.id, c.contest_id, c.internal_game_id, a.game_id, a.game_date,
        a.previous_version, a.lineup_version, a.reason, a.executed_by, a.executed_at, a.prediction_count,
        a.changed_score_count, a.perfect_count_delta, a.status, a.error_code, a.created_at, a.updated_at
-  FROM game_rescore_audits a JOIN games g ON g.internal_game_id = a.game_id
+  FROM game_rescore_audits a JOIN games g
+    ON g.internal_game_id = a.game_id
+    OR g.internal_game_id IN (
+      SELECT gi.internal_game_id FROM game_identifiers gi
+       WHERE gi.identifier_value = a.game_id
+       GROUP BY gi.identifier_value
+      HAVING COUNT(DISTINCT gi.internal_game_id) = 1
+    )
   JOIN game_contests c ON c.internal_game_id = g.internal_game_id AND c.target_team_key = 'fighters'
  WHERE (SELECT COUNT(*) FROM game_contests c2 WHERE c2.internal_game_id = g.internal_game_id AND c2.target_team_key = 'fighters') = 1;
 

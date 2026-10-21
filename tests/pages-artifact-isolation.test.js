@@ -48,8 +48,17 @@ test("production Pages artifact excludes Test Site controls and preserves produc
 });
 
 test("Test Site Pages artifact retains scenario UI, controls, banner, and shared app assets", () => {
+  fs.mkdirSync(testOutput, { recursive: true });
+  fs.writeFileSync(path.join(testOutput, "stale-production-asset.html"), "must not survive an allowlisted build");
+  fs.mkdirSync(path.join(testOutput, "functions", "api"), { recursive: true });
+  fs.writeFileSync(path.join(testOutput, "functions", "api", "stale-proxy.js"), "must not be uploaded");
   build("tooling/test-site/build-pages.mjs");
   const files = listFiles(testOutput);
+  assert.equal(files.includes("stale-production-asset.html"), false);
+  assert.equal(files.some((file) => file.startsWith("functions/")), false);
+  for (const forbidden of ["contact.html", "fighters-player-master.js", "game-schedule-2026.json", "game-schedule.js", "_headers", "_redirects"]) {
+    assert.equal(files.includes(forbidden), false, `Test Site artifact must exclude ${forbidden}`);
+  }
   assert.ok(files.includes("test-scenarios.html"));
   assert.ok(files.includes("scenario-controls.js"));
   assert.ok(files.includes("index.html"));

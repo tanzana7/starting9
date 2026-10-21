@@ -10,7 +10,24 @@ const pagesProject = path.join(root, "dist", "test-site-project");
 const testOnlyDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), "static");
 const testOnlyFiles = ["test-scenarios.html", "scenario-controls.js"];
 
-fs.mkdirSync(output, { recursive: true });
+function resetGeneratedDirectory(directory, expectedName) {
+  const distRoot = path.resolve(root, "dist");
+  const resolved = path.resolve(directory);
+  if (path.dirname(resolved) !== distRoot || path.basename(resolved) !== expectedName) {
+    throw new Error(`refusing to reset unexpected generated directory: ${resolved}`);
+  }
+  if (fs.existsSync(resolved) && fs.lstatSync(resolved).isSymbolicLink()) {
+    throw new Error(`refusing to reset symlinked generated directory: ${resolved}`);
+  }
+  // Pages uploads every file in the output directory. Recreate these two
+  // fixed build outputs so files left by an older build cannot escape the
+  // Test Site asset allowlist or become Functions/static assets by accident.
+  fs.rmSync(resolved, { recursive: true, force: true });
+  fs.mkdirSync(resolved, { recursive: true });
+}
+
+resetGeneratedDirectory(output, "test-site");
+resetGeneratedDirectory(pagesProject, "test-site-project");
 for (const file of TEST_SITE_PAGE_FILES) {
   const source = path.join(root, file);
   if (!fs.existsSync(source)) throw new Error(`required Pages asset missing: ${file}`);

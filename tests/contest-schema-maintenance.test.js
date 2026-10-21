@@ -102,7 +102,7 @@ test("full contest schema readiness batches column probes for D1 compound-select
   const d1WithCompoundSelectLimit = {
     prepare(sql) {
       const terms = String(sql).split(/\bUNION\s+ALL\b/i).length;
-      if (terms > 10) throw new Error("too many terms in compound SELECT: SQLITE_ERROR");
+      if (terms > 5) throw new Error("too many terms in compound SELECT: SQLITE_ERROR");
       return localD1.prepare(sql);
     }
   };

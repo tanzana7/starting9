@@ -73,7 +73,7 @@ const REQUIRED_TRIGGERS = Object.freeze([
 // D1's SQLite build limits the number of compound SELECT terms more tightly
 // than the local SQLite test runtime. Keep each read-only metadata probe below
 // that platform limit so the production schema gate can resume after migration.
-const COLUMN_PROBE_BATCH_SIZE = 8;
+const COLUMN_PROBE_BATCH_SIZE = 4;
 const COLUMN_PROBE_SQL = Array.from(
   { length: Math.ceil(REQUIRED_COLUMNS.length / COLUMN_PROBE_BATCH_SIZE) },
   (_, index) => REQUIRED_COLUMNS

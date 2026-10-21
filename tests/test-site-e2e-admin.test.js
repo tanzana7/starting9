@@ -40,7 +40,7 @@ async function fixture() {
       body = { ...body, runId: requestNumber.toString(16).padStart(12, "0") };
     }
     const headers = {
-      Origin: "https://starting9-test.pages.dev",
+      Origin: "https://s9simu.pages.dev",
       "Content-Type": "application/json",
       "CF-Connecting-IP": `198.51.100.${10 + (requestNumber % 200)}`
     };
@@ -101,6 +101,26 @@ test("normal synthetic user cannot operate scenario controls", async (t) => {
   assert.equal(result.response.status, 401);
   assert.equal(result.payload.code, "ADMIN_REQUIRED");
   assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM games").get().count, before);
+});
+
+test("successful simulator cleanup can revoke admin access while retaining its ranking identity", async (t) => {
+  const f = await fixture();
+  t.after(() => { f.database.close(); f.audit.close(); });
+
+  const provisioned = await f.request("/api/test/e2e-admin", { method: "POST", body: { action: "provision" } });
+  assert.equal(provisioned.response.status, 201);
+  const cookie = (provisioned.response.headers.get("Set-Cookie") || "").split(";", 1)[0];
+  const identity = f.database.prepare("SELECT id FROM users WHERE username = ?").get(provisioned.payload.username);
+  assert.ok(identity?.id);
+
+  const retained = await f.request("/api/test/e2e-admin", {
+    method: "POST", body: { action: "cleanup", preserveUser: true }, cookie
+  });
+  assert.equal(retained.response.status, 200);
+  assert.equal(retained.payload.retainedAsUser, true);
+  const user = f.database.prepare("SELECT role FROM users WHERE id = ?").get(identity.id);
+  assert.equal(user.role, "user");
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM sessions WHERE user_id = ?").get(identity.id).count, 0);
 });
 
 test("E2E admin endpoint is disabled when the trusted test database identity is wrong", async (t) => {

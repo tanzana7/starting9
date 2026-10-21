@@ -7,9 +7,10 @@ import { assertDistinctTestTeamIdentity, testTeamFixture, TEST_TEAMS, TEST_TEAM_
 
 // Every request receives a separate fixture scope. No module-level mutable target can leak
 // from one team's asynchronous request into another team's game, roster, or pipeline.
-export function createTestTeamWorker(teamKey = "fighters", { rosterPlayers = null } = {}) {
+export function createTestTeamWorker(teamKey = "fighters", { rosterPlayers = null, internalGameId = "" } = {}) {
 assertDistinctTestTeamIdentity();
-const { team: targetTeam, internalGameId: INTERNAL_GAME_ID, playerPrefix, homeTeam, awayTeam } = testTeamFixture(teamKey);
+const { team: targetTeam, internalGameId: fixtureGameId, playerPrefix, homeTeam, awayTeam } = testTeamFixture(teamKey);
+const INTERNAL_GAME_ID = internalGameId || fixtureGameId;
 const LEGACY_GAME_ID = INTERNAL_GAME_ID;
 const CONTEST_ID = createContestId(INTERNAL_GAME_ID, targetTeam.key);
 const E2E_ADMIN_USERNAME_PREFIX = "e2e-";
@@ -63,12 +64,14 @@ if (teamRoster.length < 15 || teamRoster.some((player) => !player.playerId || !p
   throw new Error("Test Site roster must be complete, uniquely identified, and scoped to the selected team");
 }
 
+const TEST_SITE_ORIGINS = new Set(["https://s9simu.pages.dev", "https://starting9-test.pages.dev"]);
+
 function jsonResponse(body, status = 200, origin = "") {
   const headers = new Headers({
     "Cache-Control": "no-store",
     "Content-Type": "application/json; charset=utf-8"
   });
-  if (origin === "https://starting9-test.pages.dev") {
+  if (TEST_SITE_ORIGINS.has(origin)) {
     headers.set("Access-Control-Allow-Origin", origin);
     headers.set("Access-Control-Allow-Credentials", "true");
     headers.set("Vary", "Origin");
@@ -88,35 +91,27 @@ function currentTimes(offsetMinutes) {
 
 function createProductEnvironment(env) {
   if (!isIsolatedTestEnvironment(env)) return env;
-  // The production Auth Worker resolves temporary players through its NPB
-  // service binding. Replace that boundary only inside this test Worker with
-  // a fixed synthetic roster response; never bind or call the production NPB
-  // Worker from the test environment.
   return {
     ...env,
     TARGET_TEAM_CONTEXT: targetTeam,
-    TARGET_ROSTER_SOURCE: async (game) => {
-      if ((game.internalGameId || game.internal_game_id) !== INTERNAL_GAME_ID) return null;
-      const response = await serveSyntheticRoster(new Request(`https://test.internal/api/game-day-roster?internalGameId=${INTERNAL_GAME_ID}`), env);
-      return response ? response.json() : null;
-    },
+    S9SIMU_ENABLED: String(env.S9SIMU_ENABLED || "false"),
+    // The legacy in-memory fixture has no simulator HTTP round trip. Expose
+    // its one team-scoped roster through the same read boundary used by
+    // prediction validation and admin lineup validation, so official-looking
+    // temporary IDs are trusted consistently without weakening product rules.
+    ...(env.S9SIMU_ENABLED === "true" ? {} : {
+      TARGET_ROSTER_SOURCE: async (game) => String(game?.internalGameId || game?.internal_game_id || "") === INTERNAL_GAME_ID
+        ? { ok: true, internalGameId: INTERNAL_GAME_ID, gameDate: game?.gameDate || game?.game_date || "",
+            status: "captured", rosterStatus: "captured", displayRosterSource: "test_fixture",
+            sourceOfTruth: "verified_snapshot", rosterUse: "verified_snapshot", freshness: "verified",
+            verified: true, stale: false, playerCount: teamRoster.length, players: teamRoster }
+        : { ok: false, code: "ROSTER_NOT_FOUND", players: [] }
+    }),
+    NPB_SOURCE: "simulator",
+    S9SIMU_BASE_URL: String(env.S9SIMU_BASE_URL || "https://s9simu.pages.dev"),
     NPB_FETCH_DISABLED: "false",
-    NPB_FETCH_WORKER: {
-      async fetch(request) {
-        const url = new URL(request.url);
-        const mode = url.searchParams.get("mode");
-        if (mode !== "roster") {
-          return jsonResponse({ ok: false, code: "TEST_FIXTURE_MODE_UNSUPPORTED" }, 404);
-        }
-        return jsonResponse({
-          ok: true,
-          players: teamRoster,
-          fetchedAt: new Date().toISOString(),
-          sourceUrl: "test-fixture://fighters-roster",
-          cacheStatus: "fixture"
-        });
-      }
-    }
+    ENABLE_AUTO_ROSTER_FETCH: "true",
+    ENABLE_AUTO_LINEUP_FETCH: "true"
   };
 }
 
@@ -281,11 +276,11 @@ async function removeE2EAdmin(env, userId, username) {
 async function provisionE2EAdmin(request, env, ctx, input = {}) {
   // The same-origin Pages proxy deliberately removes Origin before forwarding.
   // Its fixed test-site routing plus the temporary server secret are the trust boundary.
-  const origin = request.headers.get("Origin") || "https://starting9-test.pages.dev";
+  const origin = request.headers.get("Origin") || "https://s9simu.pages.dev";
   const expected = String(env.TEST_E2E_SETUP_TOKEN || "");
   const supplied = String(request.headers.get("x-test-e2e-token") || "");
   if (!isIsolatedTestEnvironment(env) || !constantTimeSecretMatch(supplied, expected)
-      || origin !== "https://starting9-test.pages.dev") {
+      || origin !== "https://s9simu.pages.dev") {
     return jsonResponse({ ok: false, code: "NOT_FOUND" }, 404, origin);
   }
 
@@ -341,11 +336,11 @@ async function provisionE2EAdmin(request, env, ctx, input = {}) {
 }
 
 async function cleanupE2EAdmin(request, env, ctx, input = {}) {
-  const origin = request.headers.get("Origin") || "https://starting9-test.pages.dev";
+  const origin = request.headers.get("Origin") || "https://s9simu.pages.dev";
   const expected = String(env.TEST_E2E_SETUP_TOKEN || "");
   const supplied = String(request.headers.get("x-test-e2e-token") || "");
   if (!isIsolatedTestEnvironment(env) || !constantTimeSecretMatch(supplied, expected)
-      || origin !== "https://starting9-test.pages.dev") {
+      || origin !== "https://s9simu.pages.dev") {
     return jsonResponse({ ok: false, code: "NOT_FOUND" }, 404, origin);
   }
   let userId = "";
@@ -381,6 +376,16 @@ async function cleanupE2EAdmin(request, env, ctx, input = {}) {
     }), env, ctx);
   }
   if (userId) await env.AUTH_DB.prepare("DELETE FROM sessions WHERE user_id = ?1").bind(userId).run();
+  if (input?.preserveUser === true) {
+    const demoted = userId
+      ? await env.AUTH_DB.prepare("UPDATE users SET role = 'user', updated_at = ?1 WHERE id = ?2 AND username = ?3 AND role = 'admin'")
+        .bind(new Date().toISOString(), userId, username).run()
+      : { meta: { changes: 0 } };
+    if (Number(demoted?.meta?.changes || 0) !== 1) {
+      return jsonResponse({ ok: false, code: "E2E_ADMIN_CLEANUP_FAILED" }, 500, origin);
+    }
+    return jsonResponse({ ok: true, removed: false, retainedAsUser: true }, 200, origin);
+  }
   const removed = await removeE2EAdmin(env, userId, username);
   if (!removed) {
     // D1's write response may be ambiguous after a successful cascade. A
@@ -398,7 +403,7 @@ async function cleanupE2EAdmin(request, env, ctx, input = {}) {
 async function callAdminApi(request, env, ctx, pathname, body) {
   const headers = new Headers({
     Cookie: request.headers.get("Cookie") || "",
-    Origin: request.headers.get("Origin") || "https://starting9-test.pages.dev",
+    Origin: request.headers.get("Origin") || "https://s9simu.pages.dev",
     "Content-Type": "application/json"
   });
   return authWorker.fetch(new Request(`https://starting9-test-auth.internal${pathname}`, {
@@ -434,7 +439,7 @@ async function finalizeSyntheticLineup(request, env, ctx) {
   return finalized;
 }
 
-async function runPipeline(env, { target = "published", failAt = "", stageOnly = false } = {}) {
+async function runPipeline(env, { target = "published", failAt = "", stageOnly = false, nowOverride = null } = {}) {
   env = createProductEnvironment(env);
   const disabledStages = target === "scored"
     ? ["ranking_rebuild", "publish"]
@@ -442,6 +447,8 @@ async function runPipeline(env, { target = "published", failAt = "", stageOnly =
       ? ["publish"]
       : target === "closed"
         ? ["lineup_finalize", "score", "ranking_rebuild", "publish"]
+        : target === "lineup-captured"
+          ? ["score", "ranking_rebuild", "publish"]
         : target === "lineup-ready"
           ? ["lineup_finalize", "ranking_rebuild", "publish"]
         : [];
@@ -456,6 +463,8 @@ async function runPipeline(env, { target = "published", failAt = "", stageOnly =
           ? ["prediction_close", "lineup_finalize", "score", "ranking_rebuild"]
           : target === "closed"
             ? ["lineup_finalize", "score", "ranking_rebuild", "publish"]
+          : target === "lineup-captured"
+            ? ["prediction_close", "score", "ranking_rebuild", "publish"]
           : []
     : [];
   const stageOnlyDisabledStages = stageOnly
@@ -467,12 +476,15 @@ async function runPipeline(env, { target = "published", failAt = "", stageOnly =
           ? ["prediction_close", "lineup_finalize", "score", "ranking_rebuild"]
         : target === "closed"
           ? ["lineup_finalize", "score", "ranking_rebuild", "publish"]
+          : target === "lineup-captured"
+            ? ["prediction_close", "score", "ranking_rebuild", "publish"]
           : []
     : [];
   const passLimit = stageOnly ? 1 : 8;
   let currentGame = null;
   for (let pass = 0; pass < passLimit; pass += 1) {
-    const now = new Date();
+    const now = nowOverride ? new Date(nowOverride) : new Date();
+    if (Number.isNaN(now.getTime())) throw new Error("TEST_CLOCK_INVALID");
     latest = await runGameAutomationV3(env, now, {
       gameListOptions: { includeRecentHistory: true, internalGameId: INTERNAL_GAME_ID, targetTeam },
       formalPlanner: (db, games, at) => planMainWorkflowJobs(db, games, at, {
@@ -508,13 +520,15 @@ async function runPipeline(env, { target = "published", failAt = "", stageOnly =
   return { result: latest || null, failureInjected: injected, game: currentGame };
 }
 
-async function applyScenario(request, env, ctx, scenario, { stageOnly = false } = {}) {
-  const allowed = new Set(["no-game", "pre-open", "open", "deadline-imminent", "closed", "lineup-ready", "scored", "ranked", "published", "retry", "probable-unannounced", "probable-announced", "probable-unavailable"]);
+async function applyScenario(request, env, ctx, scenario, { stageOnly = false, simulatorMode = false, nowOverride = null } = {}) {
+  const allowed = new Set(["no-game", "pre-open", "open", "deadline-imminent", "closed", "lineup-ready", "lineup-captured", "scored", "ranked", "published", "retry", "probable-unannounced", "probable-announced", "probable-unavailable"]);
   if (!allowed.has(scenario)) return jsonResponse({ ok: false, code: "INVALID_SCENARIO" }, 400);
+  if (simulatorMode && scenario === "lineup-ready") return jsonResponse({ ok: false, code: "SIMULATOR_SCENARIO_UNSUPPORTED" }, 400);
   let pipelineGame = null;
   let failureInjected = false;
   if (scenario === "no-game") {
     await deleteScenarioRows(env.AUTH_DB);
+    await deleteScenarioAuditRows(env.AUDIT_DB);
     return jsonResponse({ ok: true, scenario, game: null });
   }
 
@@ -523,9 +537,10 @@ async function applyScenario(request, env, ctx, scenario, { stageOnly = false } 
       : scenario === "deadline-imminent" ? 65
         : -12;
   let game = await currentScenarioGame(env.AUTH_DB);
-  if (!game) {
+  if (simulatorMode && !game) return jsonResponse({ ok: false, code: "SIMULATED_GAME_NOT_FOUND" }, 404);
+  if (!game && !simulatorMode) {
     game = await seedScenarioGame(env.AUTH_DB, offset);
-  } else {
+  } else if (!simulatorMode) {
     const times = currentTimes(offset);
     await env.AUTH_DB.batch([
       env.AUTH_DB.prepare("UPDATE games SET game_date = ?1, start_time = ?2, game_status = 'scheduled', updated_at = ?3 WHERE internal_game_id = ?4")
@@ -554,7 +569,7 @@ async function applyScenario(request, env, ctx, scenario, { stageOnly = false } 
         status === "error" ? "TEST_FIXTURE_UNAVAILABLE" : null, INTERNAL_GAME_ID).run();
   }
 
-  if (["closed", "lineup-ready", "scored", "ranked", "published", "retry"].includes(scenario)) {
+  if (["closed", "lineup-ready", "lineup-captured", "scored", "ranked", "published", "retry"].includes(scenario)) {
     const existingLineup = await env.AUTH_DB.prepare(`SELECT final_lineup_revision_id FROM game_lineups
       WHERE internal_game_id = ?1 AND contest_id=(SELECT contest_id FROM game_contests
         WHERE internal_game_id=?1 AND target_team_key=?2 LIMIT 1) LIMIT 1`)
@@ -571,7 +586,7 @@ async function applyScenario(request, env, ctx, scenario, { stageOnly = false } 
       if (!readyStates.has(currentState) || !existingLineup?.final_lineup_revision_id) {
         return jsonResponse({ ok: false, code: "SCENARIO_STAGE_PREREQUISITE", game: await currentScenarioGame(env.AUTH_DB) }, 409);
       }
-    } else {
+    } else if (!simulatorMode) {
       const pipeline = await runPipeline(env, { target: "closed",
         stageOnly: scenario === "retry" || (stageOnly && scenario === "closed") });
       pipelineGame = pipeline.game;
@@ -582,11 +597,16 @@ async function applyScenario(request, env, ctx, scenario, { stageOnly = false } 
       if (!existingLineup?.final_lineup_revision_id) await finalizeSyntheticLineup(request, env, ctx);
     }
   }
+  if (simulatorMode && ["closed", "lineup-captured", "scored", "ranked", "published"].includes(scenario)) {
+    const target = scenario === "lineup-captured" ? "lineup-captured" : scenario;
+    const pipeline = await runPipeline(env, { target, stageOnly: true, nowOverride });
+    pipelineGame = pipeline.game;
+  }
   if (scenario === "lineup-ready") {
     await markManualLineupReadyScenario(env.AUTH_DB);
     await runPipeline(env, { target: "lineup-ready" });
   }
-  if (["scored", "ranked", "published"].includes(scenario)) {
+  if (["scored", "ranked", "published"].includes(scenario) && !simulatorMode) {
     const target = scenario;
     const pipeline = await runPipeline(env, { target, stageOnly });
     pipelineGame = pipeline.game;
@@ -623,10 +643,10 @@ async function handleTestControl(request, env, ctx) {
   const url = new URL(request.url);
   const origin = request.headers.get("Origin") || "";
   if (!isIsolatedTestEnvironment(env)) return jsonResponse({ ok: false, code: "TEST_ENVIRONMENT_REQUIRED" }, 404, origin);
-  if (origin && origin !== "https://starting9-test.pages.dev") return jsonResponse({ ok: false, code: "ORIGIN_NOT_ALLOWED" }, 403, origin);
+  if (origin && !TEST_SITE_ORIGINS.has(origin)) return jsonResponse({ ok: false, code: "ORIGIN_NOT_ALLOWED" }, 403, origin);
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: {
-      "Access-Control-Allow-Origin": "https://starting9-test.pages.dev",
+      "Access-Control-Allow-Origin": origin || "https://s9simu.pages.dev",
       "Access-Control-Allow-Credentials": "true",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, X-Test-E2E-Token",
@@ -638,6 +658,31 @@ async function handleTestControl(request, env, ctx) {
     if (input?.action === "provision") return provisionE2EAdmin(request, env, ctx, input);
     if (input?.action === "cleanup") return cleanupE2EAdmin(request, env, ctx, input);
     return jsonResponse({ ok: false, code: "INVALID_ACTION" }, 400, origin);
+  }
+  if (url.pathname === "/api/test/simu/schedule" && request.method === "POST") {
+    if (!await requireTestAdmin(request, env, ctx)) return jsonResponse({ ok: false, code: "ADMIN_REQUIRED" }, 401, origin);
+    const pending = [];
+    const scheduledContext = { waitUntil(promise) { pending.push(Promise.resolve(promise)); } };
+    await authWorker.scheduled({
+      cron: "1,16,31,46 * * * *",
+      scheduledTime: Date.now()
+    }, createProductEnvironment(env), scheduledContext);
+    const taskResults = await Promise.allSettled(pending);
+    const failed = taskResults.find((result) => result.status === "rejected");
+    if (failed) {
+      console.error(`[S9SIMU] formal_schedule_sync_failed code=${failed.reason?.code || "SCHEDULE_SYNC_FAILED"}`);
+      return jsonResponse({ ok: false, code: "SIMULATED_SCHEDULE_SYNC_FAILED" }, 502, origin);
+    }
+    const date = simulatorGameDate();
+    const games = await env.AUTH_DB.prepare(
+      `SELECT game_id, internal_game_id, game_date, start_at, home_team, away_team, game_code, game_status
+         FROM detected_game_schedule WHERE game_date = ?1 ORDER BY start_at, game_id LIMIT 6`
+    ).bind(date).all();
+    const contests = await env.AUTH_DB.prepare(
+      `SELECT COUNT(*) AS count FROM game_contests WHERE internal_game_id IN
+         (SELECT internal_game_id FROM detected_game_schedule WHERE game_date = ?1 LIMIT 6)`
+    ).bind(date).first();
+    return jsonResponse({ ok: true, date, physicalGames: games.results || [], contestCount: Number(contests?.count || 0) }, 200, origin);
   }
   if (url.pathname === "/api/test/status" && request.method === "GET") {
     return jsonResponse({ ok: true, game: await currentScenarioGame(env.AUTH_DB) }, 200, origin);
@@ -656,7 +701,12 @@ async function handleTestControl(request, env, ctx) {
   if (url.pathname === "/api/test/scenario" && request.method === "POST") {
     if (!await requireTestAdmin(request, env, ctx)) return jsonResponse({ ok: false, code: "ADMIN_REQUIRED" }, 401, origin);
     const input = await request.json().catch(() => null);
-    return applyScenario(request, env, ctx, String(input?.scenario || ""), { stageOnly: input?.stageOnly === true });
+    const simulatorMode = url.searchParams.get("simuNpb") === "1" && Boolean(url.searchParams.get("internalGameId"));
+    return applyScenario(request, env, ctx, String(input?.scenario || ""), {
+      stageOnly: input?.stageOnly === true,
+      simulatorMode,
+      nowOverride: simulatorMode ? String(input?.now || "") : null
+    });
   }
   if (url.pathname === "/api/test/reset" && request.method === "POST") {
     if (!await requireTestAdmin(request, env, ctx)) return jsonResponse({ ok: false, code: "ADMIN_REQUIRED" }, 401, origin);
@@ -710,7 +760,8 @@ return {
         return jsonResponse({ ok: false, code: "TEST_USERNAME_RESERVED" }, 400, request.headers.get("Origin") || "");
       }
     }
-    if (url.pathname === "/api/game-day-roster" && request.method === "GET" && isIsolatedTestEnvironment(env)) {
+    if (url.pathname === "/api/game-day-roster" && request.method === "GET" && isIsolatedTestEnvironment(env)
+        && env.S9SIMU_ENABLED !== "true") {
       const roster = await serveSyntheticRoster(request, env);
       if (roster) return roster;
     }
@@ -722,9 +773,21 @@ return {
 export default {
   async fetch(request, env, ctx) {
     if (!isIsolatedTestEnvironment(env)) return authWorker.fetch(request, env, ctx);
-    const key = new URL(request.url).searchParams.get("testTeam") || "fighters";
+    const url = new URL(request.url);
+    const key = url.searchParams.get("testTeam") || "fighters";
     if (!TEST_TEAM_KEYS.includes(key)) return jsonResponseForUnknownTeam();
-    return createTestTeamWorker(key).fetch(request, env, ctx);
+    let internalGameId = "";
+    const requestedGameId = url.searchParams.get("internalGameId") || "";
+    if (url.searchParams.get("simuNpb") === "1" && requestedGameId) {
+      const game = await env.AUTH_DB.prepare(
+        `SELECT games.internal_game_id FROM games
+          JOIN game_contests ON game_contests.internal_game_id = games.internal_game_id
+         WHERE games.internal_game_id = ?1 AND game_contests.target_team_key = ?2 LIMIT 1`
+      ).bind(requestedGameId, key).first();
+      if (!game) return Response.json({ ok: false, code: "SIMULATED_GAME_NOT_FOUND" }, { status: 404 });
+      internalGameId = String(game.internal_game_id);
+    }
+    return createTestTeamWorker(key, { internalGameId }).fetch(request, env, ctx);
   }
 };
 

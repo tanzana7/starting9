@@ -44,8 +44,10 @@ test("productionのsimulator指定はofficialへfail-closedする", () => {
 
 test("simulator URLは設定されたoriginから安全に構成する", () => {
   assert.equal(normalizeSimulatorBaseUrl(`${SIMULATOR}/`), SIMULATOR);
-  assert.equal(buildSimulatorSourceUrl(SIMULATOR, { mode: "starter" }), `${SIMULATOR}/announcement/starter/`);
-  assert.equal(buildSimulatorSourceUrl(SIMULATOR, { mode: "lineup", date: "2026-09-28", gameCode: "M-F-25" }), `${SIMULATOR}/scores/2026/0928/m-f-25/`);
+  assert.equal(buildSimulatorSourceUrl(SIMULATOR, { mode: "starter" }), `${SIMULATOR}/simu-npb/announcement/starter/`);
+  assert.equal(buildSimulatorSourceUrl(SIMULATOR, { mode: "roster", team: "marines" }), `${SIMULATOR}/simu-npb/announcement/roster/marines/`);
+  assert.equal(buildSimulatorSourceUrl(SIMULATOR, { mode: "schedule", date: "2026-09-28", team: "all" }), `${SIMULATOR}/simu-npb/games/2026/schedule_09_detail.html?date=2026-09-28&team=all`);
+  assert.equal(buildSimulatorSourceUrl(SIMULATOR, { mode: "lineup", date: "2026-09-28", gameCode: "M-F-25" }), `${SIMULATOR}/simu-npb/scores/2026/0928/m-f-25/`);
   assert.throws(() => normalizeSimulatorBaseUrl("https://example.test/proxy"), /not allowed|origin/);
   assert.throws(() => buildSimulatorSourceUrl(SIMULATOR, { mode: "lineup", date: "2026-09-28", gameCode: "../../secret" }), /identity is invalid/);
 });
@@ -160,6 +162,6 @@ test("fetchSimulatorSourceはmock fetchで外部networkなしにURLを検証で�
   const result = await fetchSimulatorSource({ S9SIMU_BASE_URL: SIMULATOR }, { mode: "lineup", date: "2026-09-28", gameCode: "m-f-25" }, {
     fetchImpl: async (url) => { requested = url; return response(lineupHtml); }
   });
-  assert.equal(new URL(requested).pathname, "/scores/2026/0928/m-f-25/");
+  assert.equal(new URL(requested).pathname, "/simu-npb/scores/2026/0928/m-f-25/");
   assert.equal(result.response.status, 200);
 });

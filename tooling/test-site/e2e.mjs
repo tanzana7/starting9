@@ -7,7 +7,7 @@ import { testTeamFixture, TEST_TEAMS, TEST_TEAM_GROUPS, TEST_TEAM_KEYS } from ".
 import { fetchReadWith503Retry, hasReachedFormalState, invokeFormalStageWithLeaseRetry } from "./formal-stage-retry.mjs";
 
 const TARGET_ACCOUNT_ID = "02580fab1c09e144db7da89478e252c8";
-const SITE_ORIGIN = "https://starting9-test.pages.dev";
+const SITE_ORIGIN = "https://s9simu.pages.dev";
 const token = String(process.env.S9_TEST_E2E_SETUP_TOKEN || "");
 if (token.length < 32) throw new Error("S9_TEST_E2E_SETUP_TOKEN must be supplied from the temporary secret source");
 

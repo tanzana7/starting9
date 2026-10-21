@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { onRequest, resolveAuthWorkerOrigin, resolveTestTeam } from "../functions/api/[[path]].js";
+import { onRequest, resolveAuthWorkerOrigin, resolveTestSimulatorMode, resolveTestTeam } from "../functions/api/[[path]].js";
 
 const TARGET_ORIGIN = "https://starting9-auth.starting9.workers.dev";
 
@@ -20,6 +20,13 @@ test("test team selection is cookie/query scoped to the isolated Pages environme
   assert.equal(resolveTestTeam(new Request("https://starting9-app.pages.dev/api/public/games?testTeam=giants", { headers: { Cookie: "s9_test_team=giants" } }), { SITE_ENVIRONMENT: "production" }), "");
 });
 
+test("simulated provider routing is opt-in by the Test Site cookie and impossible in production", () => {
+  const request = new Request("https://s9simu.pages.dev/api/public/games", { headers: { Cookie: "s9_test_source=simu-npb" } });
+  assert.equal(resolveTestSimulatorMode(request, { SITE_ENVIRONMENT: "test" }), true);
+  assert.equal(resolveTestSimulatorMode(request, { SITE_ENVIRONMENT: "production" }), false);
+  assert.equal(resolveTestSimulatorMode(new Request("https://s9simu.pages.dev/api/public/games"), { SITE_ENVIRONMENT: "test" }), false);
+});
+
 test("Pages test proxy forwards only the allowlisted synthetic team and never alters production requests", async () => {
   const originalFetch = globalThis.fetch;
   const requests = [];
@@ -32,8 +39,11 @@ test("Pages test proxy forwards only the allowlisted synthetic team and never al
       env: { SITE_ENVIRONMENT: "test", STARTING9_AUTH_ORIGIN: "https://starting9-test-auth.starting9.workers.dev" } });
     await onRequest({ request: new Request("https://starting9-app.pages.dev/api/public/games", { headers: { Cookie: "s9_test_team=giants" } }),
       env: { SITE_ENVIRONMENT: "production", STARTING9_AUTH_ORIGIN: TARGET_ORIGIN } });
+    await onRequest({ request: new Request("https://s9simu.pages.dev/api/public/games", { headers: { Cookie: "s9_test_team=marines; s9_test_source=simu-npb" } }),
+      env: { SITE_ENVIRONMENT: "test", STARTING9_AUTH_ORIGIN: "https://starting9-test-auth.starting9.workers.dev" } });
     assert.equal(requests[0], "https://starting9-test-auth.starting9.workers.dev/api/public/games?testTeam=giants");
     assert.equal(requests[1], `${TARGET_ORIGIN}/api/public/games`);
+    assert.equal(requests[2], "https://starting9-test-auth.starting9.workers.dev/api/public/games?testTeam=marines&simuNpb=1");
   } finally {
     globalThis.fetch = originalFetch;
   }

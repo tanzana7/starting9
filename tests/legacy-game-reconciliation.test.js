@@ -213,7 +213,7 @@ function rollbackError(db, callback) {
   }
 }
 
-test("legacy game reconciliation migrates 0001-0045 fixtures through 0049 without losing data", () => {
+test("legacy game reconciliation keeps source history intact while starting contest result history clean", () => {
   const db = new DatabaseSync(":memory:");
   try {
     applyThrough(db, "0045_cron_heartbeat.sql");
@@ -237,17 +237,8 @@ test("legacy game reconciliation migrates 0001-0045 fixtures through 0049 withou
 
     applyAfter(db, "0045_cron_heartbeat.sql", "0047_contest_scoped_predictions_lineups.sql");
     applyMigrationWithStatementContext(db, "0048_contest_scoped_results.sql");
-    assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM contest_score_attempts a
-      JOIN game_contests c ON c.contest_id = a.contest_id AND c.internal_game_id = a.internal_game_id
-      JOIN contest_lineup_revisions canonical ON canonical.contest_id = a.contest_id AND canonical.revision_id = a.canonical_lineup_revision_id
-      JOIN contest_lineup_revisions scoring ON scoring.contest_id = a.contest_id AND scoring.revision_id = a.scoring_lineup_revision_id
-      JOIN contest_scoring_revisions s ON s.contest_id = a.contest_id AND s.id = a.scoring_revision_id
-      JOIN game_jobs_v3 j ON j.id = a.job_id AND j.internal_game_id = a.internal_game_id
-      WHERE a.attempt_id = 'legacy-attempt'`).get().n, 1);
-    assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM contest_score_attempt_prediction_rows r
-      JOIN contest_score_attempts a ON a.attempt_id = r.attempt_id AND a.contest_id = r.contest_id
-      JOIN predictions p ON p.id = r.prediction_id AND p.contest_id = r.contest_id AND p.internal_game_id = a.internal_game_id
-      WHERE r.attempt_id = 'legacy-attempt'`).get().n, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_score_attempts WHERE attempt_id='legacy-attempt'").get().n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_score_attempt_prediction_rows WHERE attempt_id='legacy-attempt'").get().n, 0);
     applyMigrationWithStatementContext(db, "0049_contest_scoped_formal_jobs.sql");
 
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM games").get().n, 11);
@@ -255,12 +246,15 @@ test("legacy game reconciliation migrates 0001-0045 fixtures through 0049 withou
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM predictions").get().n, before.predictionRows.length);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM game_lineups").get().n, 1);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM ranking_games").get().n, before.rankingCount);
-    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_prediction_score_revisions").get().n, before.scoreHistoryRows.length);
-    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_score_attempt_prediction_rows").get().n, before.scoreAttemptRows.length);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_prediction_score_revisions").get().n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_score_attempt_prediction_rows").get().n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM prediction_score_revisions").get().n, before.scoreHistoryRows.length);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM score_attempt_prediction_rows").get().n, before.scoreAttemptRows.length);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM probable_starters").get().n, before.probableCount);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM game_roster_snapshots").get().n, before.rosterCount);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM game_pregame_automation").get().n, before.pregameCount);
-    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_game_rescore_audits").get().n, before.rescoreAuditCount);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_game_rescore_audits").get().n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM game_rescore_audits").get().n, before.rescoreAuditCount);
 
     for (const game of PREDICTION_GAMES) {
       const physical = db.prepare("SELECT internal_game_id, game_date, start_time, home_team, away_team, npb_game_code, npb_identity_status FROM games WHERE npb_game_code = ?").get(game.code);
@@ -301,18 +295,8 @@ test("legacy game reconciliation migrates 0001-0045 fixtures through 0049 withou
       assert.equal(db.prepare("SELECT internal_game_id FROM game_identifiers WHERE identifier_value = ?").get(id).internal_game_id, game.internalId);
       assert.equal(db.prepare("SELECT internal_game_id FROM detected_game_schedule WHERE game_id = ?").get(id).internal_game_id, game.internalId);
     }
-    assert.deepEqual({ ...db.prepare(`SELECT id, prediction_id, game_id, internal_game_id, is_test_prediction,
-      scoring_revision, lineup_revision_id, score, max_score, actual_lineup_json, scored_at, scored_by, created_at
-      FROM contest_prediction_score_revisions WHERE id = 'legacy-score-revision'`).get() }, {
-      ...before.scoreHistoryRows[0], internal_game_id: GAMES[0].internalId
-    });
-    assert.deepEqual({ ...db.prepare(`SELECT attempt_id, contest_id, prediction_id, outcome, validity_status, total_score, max_score,
-      participation_score, batting_order_score, defense_score, perfect_bonus, player_hits, order_hits,
-      position_hits, perfect_hits, exclusion_reason, lineage_json
-      FROM contest_score_attempt_prediction_rows WHERE attempt_id = 'legacy-attempt'`).get() }, {
-      ...before.scoreAttemptRows[0], contest_id: createContestId(ATTEMPT_GAME.internalId, "fighters")
-    });
-    assert.equal(db.prepare("SELECT internal_game_id FROM contest_game_rescore_audits WHERE id = 'legacy-rescore-audit'").get().internal_game_id, GAMES[0].internalId);
+    assert.equal(db.prepare("SELECT internal_game_id FROM prediction_score_revisions WHERE id = 'legacy-score-revision'").get().internal_game_id, GAMES[0].internalId);
+    assert.equal(db.prepare("SELECT internal_game_id FROM score_attempts WHERE attempt_id = 'legacy-attempt'").get().internal_game_id, ATTEMPT_GAME.internalId);
     assert.equal(db.prepare("SELECT COUNT(DISTINCT internal_game_id) AS n FROM games").get().n, 11);
     assert.equal(db.prepare("SELECT COUNT(DISTINCT internal_game_id || ':' || target_team_key) AS n FROM game_contests").get().n, 11);
     assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);

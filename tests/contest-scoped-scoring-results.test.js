@@ -10,6 +10,7 @@ import { createScoreAttempt, stageScorePrediction, markScoreAttemptReady, commit
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MIGRATIONS = path.join(ROOT, "migrations");
 const A3 = "0048_contest_scoped_results.sql";
+const A2 = "0047_contest_scoped_predictions_lineups.sql";
 
 function applyThrough(db, last) {
   for (const file of fs.readdirSync(MIGRATIONS).filter(name => name.endsWith(".sql") && name <= last).sort()) {
@@ -39,6 +40,172 @@ function d1(database) {
     }
   };
 }
+
+function seedPublishedRankingIdentityCollision({ reverseInsertOrder = false, conflictingEligibility = false } = {}) {
+  const db = new DatabaseSync(":memory:");
+  applyThrough(db, "0045_cron_heartbeat.sql");
+  const internalGameId = "b0c9cf20-3df8-4d6f-9809-a8656c6463a7";
+  const legacyGameId = "2026-08-06-fighters-hawks-1800";
+  const contestId = `contest_${Buffer.from(internalGameId).toString("hex")}_6669676874657273`;
+  const initialAt = "2026-08-06T09:03:23.000Z";
+  const scoringAt = "2026-09-01T13:26:13.814Z";
+  const publishedAt = "2026-09-01T13:27:13.937Z";
+  db.prepare(`INSERT INTO games (internal_game_id,game_date,start_time,home_team,away_team,game_status,created_at,updated_at)
+    VALUES (?,'2026-08-06','2026-08-06T09:00:00.000Z','fighters','hawks','scheduled',?,?)`)
+    .run(internalGameId, initialAt, initialAt);
+  db.exec(fs.readFileSync(path.join(MIGRATIONS, "0046_contest_identity_foundation.sql"), "utf8"));
+  db.prepare(`INSERT INTO game_identifiers
+    (internal_game_id,provider,identifier_type,identifier_value,is_primary,created_at,updated_at)
+    VALUES (?,'starting9','descriptive_game_id',?,0,?,?)`)
+    .run(internalGameId, legacyGameId, initialAt, initialAt);
+  db.prepare(`INSERT INTO game_lineup_revisions
+    (game_id,version,actual_lineup_json,lineup_fingerprint,source,created_at,reason,is_current,is_final,
+     internal_game_id,revision_id,finalized_at)
+    VALUES (?,1,'[]','fixture-fingerprint','npb-auto',?,'fixture',1,1,?,?,?)`)
+    .run(legacyGameId, initialAt, internalGameId, `${legacyGameId}:1`, initialAt);
+  db.exec(fs.readFileSync(path.join(MIGRATIONS, A2), "utf8"));
+  const lineupRevisionId = db.prepare(`SELECT revision_id FROM contest_lineup_revisions
+    WHERE contest_id=? AND internal_game_id=? AND is_current=1`).get(contestId, internalGameId).revision_id;
+  db.prepare(`INSERT INTO game_lineups
+    (id,game_id,contest_id,actual_lineup_json,lineup_fingerprint,lineup_detected_at,scoring_due_at,
+     scored_at,scoring_status,created_at,updated_at,publication_status,published_at,internal_game_id,
+     final_lineup_revision_id,finalized_at,scoring_revision)
+    VALUES('fixture-lineup',?,?, '[]','fixture-fingerprint',?,?,?,'scored',?,?,'pending',NULL,?,?,?,1)`)
+    .run(legacyGameId, contestId, initialAt, scoringAt, scoringAt, initialAt, scoringAt, internalGameId, lineupRevisionId, initialAt);
+  const scoringRevisionId = `${internalGameId}:scoring:1`;
+  db.prepare(`INSERT INTO game_scoring_revisions
+    (id,internal_game_id,game_id,revision_number,lineup_revision_id,status,reason,created_by,
+     created_at,completed_at,is_active)
+    VALUES (?,?,?,1,?,'completed','V3_SCORING_NO_PREDICTIONS','system',?,?,1)`)
+    .run(scoringRevisionId, internalGameId, internalGameId, lineupRevisionId, scoringAt, scoringAt);
+  db.prepare(`INSERT INTO ranking_reflection_revisions
+    (id,internal_game_id,scoring_revision_id,ranking_eligibility_version,ranking_update_revision,status,reflected_at,created_at)
+    VALUES ('fixture-reflection',?,?,1,1,'reflected',?,?)`)
+    .run(internalGameId, scoringRevisionId, scoringAt, scoringAt);
+
+  const rows = [
+    {
+      gameId: legacyGameId,
+      eligibleAt: initialAt,
+      publicationStatus: "scored_private",
+      scoredPrivateAt: initialAt,
+      publishedAt: null,
+      createdAt: "2026-08-06T08:20:34.461Z",
+      updatedAt: initialAt,
+      eligibilityNote: null
+    },
+    {
+      gameId: internalGameId,
+      eligibleAt: publishedAt,
+      publicationStatus: "published",
+      scoredPrivateAt: scoringAt,
+      publishedAt,
+      createdAt: scoringAt,
+      updatedAt: publishedAt,
+      eligibilityNote: conflictingEligibility ? "conflict" : null
+    }
+  ];
+  if (reverseInsertOrder) rows.reverse();
+  const insertRanking = db.prepare(`INSERT INTO ranking_games
+    (game_id,internal_game_id,game_date,is_ranking_eligible,ranking_eligible_at,game_status,is_test_game,
+     created_at,updated_at,scored_private_at,published_at,publication_status,ranking_eligibility_status,
+     ranking_eligibility_version,ranking_eligibility_updated_by,ranking_eligibility_note)
+    VALUES (?,?,'2026-08-06',1,?,'scored',0,?,?,?,?,?,'eligible',1,'system',?)`);
+  for (const row of rows) {
+    insertRanking.run(row.gameId, internalGameId, row.eligibleAt, row.createdAt, row.updatedAt,
+      row.scoredPrivateAt, row.publishedAt, row.publicationStatus, row.eligibilityNote);
+  }
+  return { db, contestId, internalGameId, legacyGameId, initialAt, scoringAt, publishedAt };
+}
+
+test("0048 collapses duplicate ranking identities using canonical lineup publication evidence", () => {
+  for (const reverseInsertOrder of [false, true]) {
+    for (const conflictingEligibility of [false, true]) {
+      const fixture = seedPublishedRankingIdentityCollision({ reverseInsertOrder, conflictingEligibility });
+      const { db, contestId, internalGameId } = fixture;
+      try {
+        db.exec(fs.readFileSync(path.join(MIGRATIONS, A3), "utf8"));
+        const ranking = db.prepare(`SELECT contest_id,internal_game_id,game_id,publication_status,published_at
+          FROM contest_ranking_games WHERE contest_id=?`).get(contestId);
+        assert.deepEqual({ ...ranking }, {
+          contest_id: contestId, internal_game_id: internalGameId, game_id: internalGameId,
+          publication_status: "scored_private", published_at: null
+        }, "a published ranking projection cannot override the pending canonical lineup artifact");
+        assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_ranking_games WHERE internal_game_id=?").get(internalGameId).n, 1);
+        for (const table of ["contest_scoring_revisions", "contest_prediction_score_revisions",
+          "contest_ranking_games", "contest_ranking_reflection_revisions", "contest_perfect_achievers"]) {
+          if (table !== "contest_ranking_games") {
+            assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE contest_id=?`).get(contestId).n, 0, `${table} starts without legacy history`);
+          }
+        }
+        assert.equal(db.prepare("SELECT COUNT(*) AS n FROM ranking_games WHERE internal_game_id=?").get(internalGameId).n, 2,
+          "legacy source history remains untouched");
+        assert.equal(db.prepare("SELECT COUNT(*) AS n FROM game_scoring_revisions WHERE internal_game_id=?").get(internalGameId).n, 1);
+        assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
+        assert.equal(db.prepare("PRAGMA integrity_check").get().integrity_check, "ok");
+      } finally { db.close(); }
+    }
+  }
+});
+
+test("0048 deduplicates ranking identities per physical game without dropping other games in a contest", () => {
+  const fixture = seedPublishedRankingIdentityCollision();
+  const { db, contestId, internalGameId } = fixture;
+  const secondGameId = "second-game-in-same-contest";
+  const now = "2026-09-02T00:00:00.000Z";
+  try {
+    db.prepare(`INSERT INTO games
+      (internal_game_id,game_date,start_time,home_team,away_team,game_status,created_at,updated_at)
+      VALUES (?,'2026-08-07','2026-08-07T09:00:00.000Z','fighters','hawks','scheduled',?,?)`)
+      .run(secondGameId, now, now);
+    db.prepare(`INSERT INTO game_contests (contest_id,internal_game_id,target_team_key,created_at)
+      VALUES (?,?, 'fighters', ?)`)
+      .run(`contest_${Buffer.from(secondGameId).toString("hex")}_6669676874657273`, secondGameId, now);
+    db.prepare(`INSERT INTO ranking_games
+      (game_id,internal_game_id,game_date,is_ranking_eligible,game_status,is_test_game,created_at,updated_at,publication_status)
+      VALUES (?,?,'2026-08-07',1,'scored',0,?,?,'scored_private')`)
+      .run(secondGameId, secondGameId, now, now);
+
+    db.exec(fs.readFileSync(path.join(MIGRATIONS, A3), "utf8"));
+    const rows = db.prepare(`SELECT internal_game_id,game_id FROM contest_ranking_games
+      WHERE contest_id IN (?,?) ORDER BY internal_game_id`).all(
+      contestId, `contest_${Buffer.from(secondGameId).toString("hex")}_6669676874657273`
+    );
+    assert.deepEqual(rows.map(row => ({ ...row })), [
+      { internal_game_id: internalGameId, game_id: internalGameId },
+      { internal_game_id: secondGameId, game_id: secondGameId }
+    ]);
+  } finally { db.close(); }
+});
+
+test("0048 preserves publication only when canonical lineup status and timestamp agree", () => {
+  const fixture = seedPublishedRankingIdentityCollision();
+  const { db, contestId, internalGameId, publishedAt } = fixture;
+  try {
+    db.prepare(`UPDATE game_lineups SET publication_status='published',published_at=?
+      WHERE internal_game_id=?`).run(publishedAt, internalGameId);
+    db.exec(fs.readFileSync(path.join(MIGRATIONS, A3), "utf8"));
+    const row = db.prepare("SELECT publication_status,published_at FROM contest_ranking_games WHERE contest_id=?").get(contestId);
+    assert.deepEqual({ ...row }, { publication_status: "published", published_at: publishedAt });
+  } finally { db.close(); }
+});
+
+test("0048 fails closed when canonical publication status and timestamp contradict", () => {
+  for (const change of [
+    "UPDATE game_lineups SET publication_status='published',published_at=NULL",
+    "UPDATE game_lineups SET publication_status='pending',published_at='2026-09-01T13:27:13.937Z'"
+  ]) {
+    const fixture = seedPublishedRankingIdentityCollision();
+    const { db } = fixture;
+    try {
+      db.exec(change);
+      db.exec("BEGIN");
+      assert.throws(() => db.exec(fs.readFileSync(path.join(MIGRATIONS, A3), "utf8")), /CHECK constraint failed/);
+      db.exec("ROLLBACK");
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='contest_ranking_games'").get().n, 0);
+    } finally { db.close(); }
+  }
+});
 
 test("0048 fresh migration creates contest-owned scoring, ranking, rescore and publication artifacts", () => {
   const db = new DatabaseSync(":memory:");
@@ -241,7 +408,7 @@ test("same-game score commits write independent contest scores and revision line
   } finally { database.close(); }
 });
 
-test("0048 preserves uniquely-owned legacy score, revision, ranking, publication and rescore rows", () => {
+test("0048 leaves legacy game result records untouched and does not import unsupported result history", () => {
   const db = new DatabaseSync(":memory:");
   try {
     applyThrough(db, "0047_contest_scoped_predictions_lineups.sql");
@@ -320,20 +487,23 @@ test("0048 preserves uniquely-owned legacy score, revision, ranking, publication
     db.exec(fs.readFileSync(path.join(MIGRATIONS, A3), "utf8"));
     assert.deepEqual({ ...db.prepare("SELECT id,final_lineup_revision_id,scoring_revision,publication_status,published_at,updated_at FROM game_lineups WHERE id='legacy-lineup'").get() }, { ...before.lineup });
     assert.deepEqual({ ...db.prepare("SELECT id,score,scoring_revision,scored_lineup_revision_id,scored_at FROM predictions WHERE id='legacy-prediction'").get() }, { ...before.prediction });
-    assert.deepEqual({ ...db.prepare("SELECT id,revision_number,lineup_revision_id,status,completed_at,is_active FROM contest_scoring_revisions WHERE contest_id=?").get(contestId) }, { ...before.score });
-    assert.deepEqual({ ...db.prepare("SELECT internal_game_id AS game_id,game_status,published_at,publication_status,ranking_eligibility_version FROM contest_ranking_games WHERE contest_id=?").get(contestId) }, { ...before.ranking });
-    assert.equal(db.prepare("SELECT lineup_revision_id FROM contest_game_rescore_jobs WHERE id='legacy-rescore-job' AND contest_id=?").get(contestId).lineup_revision_id, "legacy-game:2");
-    assert.equal(db.prepare("SELECT status FROM contest_game_rescore_audits WHERE id='legacy-rescore-audit' AND contest_id=?").get(contestId).status, "completed");
-    assert.equal(db.prepare("SELECT score FROM contest_prediction_score_revisions WHERE id='legacy-prediction:2' AND contest_id=?").get(contestId).score, 77);
-    assert.equal(db.prepare("SELECT include_in_public_ranking FROM contest_ranking_test_game_settings WHERE contest_id=?").get(contestId).include_in_public_ranking, 1);
-    assert.equal(db.prepare("SELECT score FROM contest_ranking_test_predictions WHERE contest_id=? AND slot=1").get(contestId).score, 99);
-    assert.equal(db.prepare("SELECT scoring_revision_id FROM contest_ranking_reflection_revisions WHERE id=?").get(`${contestId}:legacy-excluded-reflection`).scoring_revision_id, "legacy-score-r2");
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_scoring_revisions WHERE contest_id=?").get(contestId).n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_prediction_score_revisions WHERE contest_id=?").get(contestId).n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_ranking_games WHERE contest_id=?").get(contestId).n, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_ranking_reflection_revisions WHERE contest_id=?").get(contestId).n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_game_rescore_jobs WHERE contest_id=?").get(contestId).n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_game_rescore_audits WHERE contest_id=?").get(contestId).n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_ranking_test_game_settings WHERE contest_id=?").get(contestId).n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_ranking_test_predictions WHERE contest_id=?").get(contestId).n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_perfect_achievers WHERE contest_id=?").get(contestId).n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM game_rescore_jobs WHERE id='legacy-rescore-job'").get().n, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM predictions WHERE id='legacy-prediction'").get().n, 1);
     assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
     assert.equal(db.prepare("PRAGMA integrity_check").get().integrity_check, "ok");
   } finally { db.close(); }
 });
 
-test("0048 migrates a partial legacy state with ranking eligibility but no scoring lineage", () => {
+test("0048 does not infer contest ranking state from a legacy ranking eligibility row", () => {
   const db = new DatabaseSync(":memory:");
   try {
     applyThrough(db, "0047_contest_scoped_predictions_lineups.sql");
@@ -349,18 +519,16 @@ test("0048 migrates a partial legacy state with ranking eligibility but no scori
       .run(now,now);
 
     db.exec(fs.readFileSync(path.join(MIGRATIONS, A3), "utf8"));
-    const row = db.prepare(`SELECT game_status,ranking_eligibility_status,ranking_eligibility_version,publication_status
-      FROM contest_ranking_games WHERE contest_id='partial-fighters-contest'`).get();
-    assert.deepEqual({ ...row }, {
-      game_status: "pending", ranking_eligibility_status: "eligible", ranking_eligibility_version: 2, publication_status: "pending"
-    });
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_ranking_games WHERE contest_id='partial-fighters-contest'").get().n, 1);
+    assert.equal(db.prepare("SELECT publication_status FROM contest_ranking_games WHERE contest_id='partial-fighters-contest'").get().publication_status, "pending");
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM ranking_games WHERE game_id='partial-game'").get().n, 1);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_scoring_revisions WHERE contest_id='partial-fighters-contest'").get().n, 0);
     assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
     assert.equal(db.prepare("PRAGMA integrity_check").get().integrity_check, "ok");
   } finally { db.close(); }
 });
 
-test("0048 refuses to guess legacy game-only ownership when a second contest exists", () => {
+test("0048 leaves ambiguous multi-contest legacy ranking data in the source table", () => {
   const db = new DatabaseSync(":memory:");
   try {
     applyThrough(db, "0047_contest_scoped_predictions_lineups.sql");
@@ -371,15 +539,13 @@ test("0048 refuses to guess legacy game-only ownership when a second contest exi
       VALUES ('ambiguous-f','ambiguous-game','fighters','${now}'),('ambiguous-m','ambiguous-game','marines','${now}')`);
     db.prepare(`INSERT INTO ranking_games (game_id,internal_game_id,is_ranking_eligible,game_status,is_test_game,created_at,updated_at,game_date,publication_status)
       VALUES ('ambiguous-game','ambiguous-game',1,'scored',0,?,?,'2026-10-19','published')`).run(now,now);
-    db.exec("BEGIN");
-    assert.throws(() => db.exec(fs.readFileSync(path.join(MIGRATIONS, A3), "utf8")), /CHECK constraint failed/);
-    db.exec("ROLLBACK");
+    db.exec(fs.readFileSync(path.join(MIGRATIONS, A3), "utf8"));
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM ranking_games WHERE game_id='ambiguous-game'").get().n, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='contest_ranking_games'").get().n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_ranking_games").get().n, 0);
   } finally { db.close(); }
 });
 
-test("0048 refuses to silently drop ambiguous legacy ranking test settings", () => {
+test("0048 leaves legacy test-game settings in the original game-only table", () => {
   const db = new DatabaseSync(":memory:");
   try {
     applyThrough(db, "0047_contest_scoped_predictions_lineups.sql");
@@ -391,10 +557,8 @@ test("0048 refuses to silently drop ambiguous legacy ranking test settings", () 
     db.prepare(`INSERT INTO ranking_test_game_settings
       (internal_game_id,include_in_public_ranking,updated_by,created_at,updated_at)
       VALUES ('ambiguous-test-game',1,'test',?,?)`).run(now,now);
-    db.exec("BEGIN");
-    assert.throws(() => db.exec(fs.readFileSync(path.join(MIGRATIONS, A3), "utf8")), /CHECK constraint failed/);
-    db.exec("ROLLBACK");
+    db.exec(fs.readFileSync(path.join(MIGRATIONS, A3), "utf8"));
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM ranking_test_game_settings WHERE internal_game_id='ambiguous-test-game'").get().n, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='contest_ranking_games'").get().n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM contest_ranking_test_game_settings").get().n, 0);
   } finally { db.close(); }
 });

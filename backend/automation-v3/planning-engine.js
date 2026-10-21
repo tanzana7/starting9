@@ -155,10 +155,11 @@ export function getLateLineupFetchDecision({ game = {}, effectiveState = null, n
   return { late: true, allowed: true, reasonCode: "LATE_LINEUP_FETCH_REQUIRED", deadline: deadline.toISOString() };
 }
 
-function jobBelongsToGame(job, gameId) {
+function jobBelongsToGame(job, gameId, contestId = null) {
   if (!gameId) return false;
   const id = first(job, "internalGameId", "internal_game_id");
-  return Boolean(id) && String(id) === String(gameId);
+  if (!id || String(id) !== String(gameId)) return false;
+  return !contestId || String(first(job, "contestId", "contest_id") || "") === String(contestId);
 }
 
 function artifactReady(value) {
@@ -166,16 +167,16 @@ function artifactReady(value) {
     || (value.available === true && value.verificationStatus === "verified")));
 }
 
-function stageJobs(jobs, stage, gameId) {
+function stageJobs(jobs, stage, gameId, contestId = null) {
   const jobType = JOB_TYPE_BY_STAGE[stage];
   return (Array.isArray(jobs) ? jobs : []).filter((job) => {
-    return jobBelongsToGame(job, gameId)
+    return jobBelongsToGame(job, gameId, contestId)
       && isV3JobForStage(job, stage || jobType);
   });
 }
 
-function latestJob(jobs, stage, gameId, now = null) {
-  const selected = stageJobs(jobs, stage, gameId);
+function latestJob(jobs, stage, gameId, now = null, contestId = null) {
+  const selected = stageJobs(jobs, stage, gameId, contestId);
   if (!selected.length) return null;
   const current = asDate(now)?.getTime();
   const dueSelected = Number.isFinite(current)
@@ -191,7 +192,8 @@ function effectiveStateOf(input) {
   const persisted = normalize(input.persistedState || input.workflowState || "scheduled") || "scheduled";
   const jobs = Array.isArray(input.jobs) ? input.jobs : [];
   const gameId = first(input.game, "internalGameId", "internal_game_id") || input.gameId;
-  const scopedJobs = jobs.filter((job) => jobBelongsToGame(job, gameId));
+  const contestId = input.contestId || null;
+  const scopedJobs = jobs.filter((job) => jobBelongsToGame(job, gameId, contestId));
   const artifacts = input.artifacts || {};
   const completed = (stage, ...jobTypes) => scopedJobs.some((job) => isV3JobForStage(job, jobTypes[0] || stage)
     && normalize(first(job, "status", "jobStatus")) === "completed");
@@ -246,7 +248,7 @@ function stateAllows(state, stage) {
   return false;
 }
 
-export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], effectiveState = null, persistedState = null, now = new Date(), canonicalArtifacts = null, v4SemiAuto = false } = {}) {
+export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], effectiveState = null, persistedState = null, now = new Date(), canonicalArtifacts = null, contestId = null, v4SemiAuto = false } = {}) {
   let baseSchedule = null;
   let displaySchedule = null;
   try {
@@ -276,7 +278,8 @@ export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], eff
       publish: { dueAt: v4SemiAuto ? displaySchedule.predictionDeadline : displaySchedule.publicationAt }
     }
   };
-  const planningJobs = Array.isArray(jobs) ? jobs : [];
+  const planningJobs = (Array.isArray(jobs) ? jobs : []).filter((job) =>
+    !contestId || String(first(job, "contestId", "contest_id") || "") === String(contestId));
   const canonicalStageArtifacts = toCanonicalArtifactStageArtifacts(canonicalArtifacts);
   const canonicalPlanningArtifacts = hasCanonicalArtifactEvidence(canonicalArtifacts)
     ? canonicalArtifacts
@@ -284,10 +287,11 @@ export function buildV3PlanningState({ game = {}, artifacts = {}, jobs = [], eff
   const planningArtifacts = Object.keys(canonicalStageArtifacts).length
     ? { ...(artifacts || {}), ...canonicalStageArtifacts }
     : (artifacts || {});
-  const state = effectiveStateOf({ game, effectiveState, persistedState: persistedState || game.workflowState || game.workflow_state, jobs: planningJobs, artifacts: planningArtifacts });
+  const state = effectiveStateOf({ game, contestId, effectiveState, persistedState: persistedState || game.workflowState || game.workflow_state, jobs: planningJobs, artifacts: planningArtifacts });
   const gameId = first(game, "internalGameId", "internal_game_id");
   return {
     game,
+    contestId,
     gameId,
     artifacts: planningArtifacts,
     canonicalArtifacts: canonicalArtifacts || null,
@@ -340,13 +344,13 @@ function canonicalStateGate(state, stage) {
 
 export function buildStagePlan(planningState, stage, { disabled = false, disabledReason = "AUTO_FETCH_DISABLED" } = {}) {
   const state = planningState || buildV3PlanningState();
-  const { game, gameId, artifacts, jobs, effectiveState, schedule, now, identityResolved, v4SemiAuto } = state;
+  const { game, gameId, contestId, artifacts, jobs, effectiveState, schedule, now, identityResolved, v4SemiAuto } = state;
   const dueAt = dueAtFor(schedule, stage);
   const dueSlots = dueSlotsFor(schedule, stage);
   const selectedSlotAt = ["roster_fetch", "lineup_fetch"].includes(stage)
     ? dueSlots.filter((slot) => now >= slot).at(-1) || dueSlots[0] || dueAt
     : dueAt;
-  const job = latestJob(jobs, stage, gameId, now);
+  const job = latestJob(jobs, stage, gameId, now, contestId);
   const status = normalize(first(job, "status", "jobStatus"));
   const artifact = artifacts[stage] || artifacts[JOB_TYPE_BY_STAGE[stage]];
   const due = Boolean(selectedSlotAt && now >= selectedSlotAt);

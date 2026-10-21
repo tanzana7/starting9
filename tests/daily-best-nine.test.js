@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { getLatestPublishedRankingGame } from "../backend/repositories/ranking-repository.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const workerUrl = pathToFileURL(path.join(root, "auth-worker.js")).href;
@@ -146,6 +147,18 @@ function insertPublishedGame(db, { internalGameId, gameId, date, publishedAt, ho
     `${date}T09:00:00.000Z`, publishedAt
   );
 }
+
+test("legacy latest-published lookup never infers a non-Fighters contest from game-only ranking state", async () => {
+  const fixture = createDatabase();
+  try {
+    assert.equal(await getLatestPublishedRankingGame(createD1Adapter(fixture.db), { targetTeamKey: "marines" }), null);
+    const fighters = await getLatestPublishedRankingGame(createD1Adapter(fixture.db), { targetTeamKey: "fighters" });
+    assert.equal(fighters.internalGameId, fixture.internalGameId);
+    assert.equal(fighters.contestId, "");
+  } finally {
+    fixture.db.close();
+  }
+});
 
 test("今日のベストナインは公開済み採点結果をscore desc、提出時刻、nicknameで最大9人返す", async () => {
   const { getDailyBestNineForGame } = await import(workerUrl);

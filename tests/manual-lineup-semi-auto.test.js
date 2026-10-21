@@ -292,7 +292,7 @@ test("manual finalize後は既存V3 Cronのscore→ranking→publish契約へ接
 });
 
 test("手動スタメンはjob投入なしで保存・確定し、自動取得保護とモバイルUIを持つ", () => {
-  assert.match(workerSource, /normalizeManualLineupInput\(input\?\.lineup \|\| input\?\.actualLineup\)/);
+  assert.match(workerSource, /normalizeManualLineupInput\(input\?\.lineup \|\| input\?\.actualLineup, \{ targetTeam \}\)/);
   assert.equal((workerSource.match(/input\?\.confirmed !== true/g) || []).length >= 2, true);
   assert.match(workerSource, /nextAction: "formal_cron_score"/);
   assert.match(workerSource, /manualLineupProtected: true/);

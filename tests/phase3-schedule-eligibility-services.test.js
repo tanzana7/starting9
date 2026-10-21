@@ -47,6 +47,11 @@ function createDatabase() {
       ranking_eligibility_reason TEXT, ranking_eligibility_note TEXT,
       ranking_eligibility_version INTEGER, ranking_eligibility_updated_by TEXT
     );
+    CREATE TABLE contest_ranking_games (
+      contest_id TEXT PRIMARY KEY, internal_game_id TEXT NOT NULL, game_id TEXT NOT NULL, game_status TEXT NOT NULL,
+      ranking_eligibility_status TEXT NOT NULL, ranking_eligibility_reason TEXT, ranking_eligibility_note TEXT,
+      ranking_eligibility_version INTEGER NOT NULL, ranking_eligibility_updated_by TEXT NOT NULL, updated_at TEXT
+    );
   `);
   database.prepare(`INSERT INTO games
     (internal_game_id, game_date, start_time, home_team, away_team, game_status, updated_by, updated_at)
@@ -139,5 +144,40 @@ test("管理者のeligibility変更中は通常Cronが復帰させず、公式�
   assert.equal(cron.reason, "MANUAL_OVERRIDE_ACTIVE");
   const official = await applyEligibilityChange({ db, gameId: GAME_KEY, internalGameId: GAME_ID, status: "eligible", source: "cron", actor: "official-correction", officialCorrection: true, persist });
   assert.equal(official.status, "updated");
+  database.close();
+});
+
+test("contest-scoped eligibility変更は同じ物理試合の別teamとlegacy ranking rowを変更しない", async () => {
+  const { database, db } = createDatabase();
+  database.prepare(`INSERT INTO contest_ranking_games
+    (contest_id,internal_game_id,game_id,game_status,ranking_eligibility_status,ranking_eligibility_version,ranking_eligibility_updated_by)
+    VALUES ('contest-f',?,'contest-f-game','scheduled','eligible',1,'system'),
+           ('contest-m',?,'contest-m-game','scheduled','eligible',1,'system')`).run(GAME_ID, GAME_ID);
+  const persist = async ({ contestId, status, reason, note, updatedBy }) => {
+    database.prepare(`UPDATE contest_ranking_games SET ranking_eligibility_status=?, ranking_eligibility_reason=?,
+      ranking_eligibility_note=?, ranking_eligibility_version=ranking_eligibility_version+1,
+      ranking_eligibility_updated_by=? WHERE contest_id=?`).run(status, reason, note, updatedBy, contestId);
+    return { rankingEligibilityStatus: status, contestId };
+  };
+
+  const result = await applyEligibilityChange({
+    db, gameId: "contest-f-game", internalGameId: GAME_ID, contestId: "contest-f",
+    status: "excluded", reason: "team-specific correction", source: "admin", actor: "operator-1",
+    gameStatus: "cancelled", now: new Date("2026-09-20T02:00:00.000Z"), persist
+  });
+
+  assert.equal(result.status, "updated");
+  assert.equal(result.eligibility.contestId, "contest-f");
+  assert.deepEqual(
+    database.prepare(`SELECT contest_id,game_status,ranking_eligibility_status FROM contest_ranking_games ORDER BY contest_id`).all().map(row => ({ ...row })),
+    [
+      { contest_id: "contest-f", game_status: "cancelled", ranking_eligibility_status: "excluded" },
+      { contest_id: "contest-m", game_status: "scheduled", ranking_eligibility_status: "eligible" }
+    ]
+  );
+  assert.deepEqual(
+    { ...database.prepare("SELECT game_status,ranking_eligibility_status FROM ranking_games WHERE game_id=?").get(GAME_KEY) },
+    { game_status: "scheduled", ranking_eligibility_status: "eligible" }
+  );
   database.close();
 });

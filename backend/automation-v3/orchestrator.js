@@ -15,7 +15,10 @@ import {
   createV3Job,
   findV3ProbableStarterStartCheckGame,
   hasV3StartedFightersGameForProbableStarterBoundary,
-  listDueV3Jobs
+  listDueV3Jobs,
+  ensureV3State,
+  getV3State,
+  resolveV3ContestId
 } from "./repository.js";
 import {
   getV3DuePlan,
@@ -50,14 +53,18 @@ export function assertV3AuxiliaryJobResult(job, result, now) {
   throw error;
 }
 
-async function hasOpenV3Job(db, internalGameId, jobType, excludeJobId = null) {
+async function hasOpenV3Job(db, internalGameId, jobType, excludeJobId = null, contestId = null) {
+  const contestScope = contestId ? " AND (contest_id = ?4 OR contest_id IS NULL)" : "";
+  const parameters = contestId
+    ? [internalGameId, jobType, excludeJobId, contestId]
+    : [internalGameId, jobType, excludeJobId];
   const row = await db.prepare(
     `SELECT id FROM game_jobs_v3
       WHERE internal_game_id = ?1 AND job_type = ?2
-        AND (?3 IS NULL OR id <> ?3)
+        AND (?3 IS NULL OR id <> ?3)${contestScope}
         AND status IN (${V3_OPEN_JOB_STATUS_SQL})
       LIMIT 1`
-  ).bind(internalGameId, jobType, excludeJobId).first();
+  ).bind(...parameters).first();
   return Boolean(row?.id);
 }
 
@@ -227,26 +234,29 @@ async function readV3WorkflowArtifactHealth(db, internalGameId, workflowState = 
   return health;
 }
 
-async function readV3StateForPlanning(db, internalGameId) {
+async function readV3StateForPlanning(db, internalGameId, contestId = null) {
   try {
-    return await db.prepare(
-      "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
-    ).bind(internalGameId).first();
+    return await getV3State(db, internalGameId, contestId);
   } catch {
     return null;
   }
 }
 
-async function deriveV3PlanningState(db, gameOrId, persistedState = "scheduled", now = new Date(), { v4SemiAuto = false } = {}) {
+async function deriveV3PlanningState(db, gameOrId, persistedState = "scheduled", now = new Date(), { v4SemiAuto = false, targetTeamKey = "" } = {}) {
   const game = typeof gameOrId === "string"
     ? { internalGameId: gameOrId }
     : (gameOrId || {});
   const internalGameId = game.internalGameId || game.internal_game_id;
+  const contestId = targetTeamKey
+    ? await resolveV3ContestId(db, internalGameId, targetTeamKey).catch(() => null)
+    : null;
   let jobs = [];
   try {
-    const result = await db.prepare(
-      "SELECT * FROM game_jobs_v3 WHERE internal_game_id = ?1 ORDER BY scheduled_slot_at, id"
-    ).bind(internalGameId).all();
+    const result = contestId
+      ? await db.prepare(`SELECT * FROM game_jobs_v3 WHERE internal_game_id=?1
+          AND (contest_id=?2 OR contest_id IS NULL) ORDER BY scheduled_slot_at,id`).bind(internalGameId, contestId).all()
+      : await db.prepare("SELECT * FROM game_jobs_v3 WHERE internal_game_id = ?1 ORDER BY scheduled_slot_at, id")
+        .bind(internalGameId).all();
     jobs = result.results || [];
   } catch {
     jobs = [];
@@ -257,10 +267,21 @@ async function deriveV3PlanningState(db, gameOrId, persistedState = "scheduled",
   });
   let canonicalArtifacts = null;
   try {
-    canonicalArtifacts = await evaluateCanonicalArtifactsFromDb(db, internalGameId);
+    if (targetTeamKey && contestId) {
+      // A3 stores canonical artifacts per contest, while the formal job's
+      // identity remains game-scoped until A4. Resolve only the trusted
+      // worker's contest here; never let a sibling team's result unblock its
+      // publication job.
+      canonicalArtifacts = await evaluateCanonicalArtifactsFromDb(db, internalGameId, contestId);
+    } else {
+      // Legacy planners without an explicit target context retain the prior
+      // game-scoped behavior; production passes targetTeamKey explicitly.
+      canonicalArtifacts = await evaluateCanonicalArtifactsFromDb(db, internalGameId);
+    }
   } catch {
     // Keep the formal planner compatible with databases where optional canonical reads are unavailable.
   }
+  const scopedReadiness = targetTeamKey ? (canonicalArtifacts?.aggregate || {}) : null;
   const artifacts = {
     roster_fetch: {
       available: Boolean(rosterSnapshot?.exists),
@@ -272,20 +293,27 @@ async function deriveV3PlanningState(db, gameOrId, persistedState = "scheduled",
     },
     lineup_fetch: workflowArtifacts.lineup,
     lineup_finalize: {
-      available: workflowArtifacts.lineup.finalizedValid,
-      valid: workflowArtifacts.lineup.finalizedValid
+      available: scopedReadiness ? scopedReadiness.lineupReady === true : workflowArtifacts.lineup.finalizedValid,
+      valid: scopedReadiness ? scopedReadiness.lineupReady === true : workflowArtifacts.lineup.finalizedValid
     },
-    scoring: { available: workflowArtifacts.scoreReady, valid: workflowArtifacts.scoreReady },
+    scoring: {
+      available: scopedReadiness ? scopedReadiness.scoringReady === true : workflowArtifacts.scoreReady,
+      valid: scopedReadiness ? scopedReadiness.scoringReady === true : workflowArtifacts.scoreReady
+    },
     ranking_reflect: {
-      available: workflowArtifacts.rankingReflected,
-      valid: workflowArtifacts.rankingReflected,
-      revisionMismatch: workflowArtifacts.rankingRevisionMismatch === true,
-      reprocessRequired: workflowArtifacts.rankingReprocessRequired === true
+      available: scopedReadiness ? scopedReadiness.rankingReady === true : workflowArtifacts.rankingReflected,
+      valid: scopedReadiness ? scopedReadiness.rankingReady === true : workflowArtifacts.rankingReflected,
+      revisionMismatch: scopedReadiness ? canonicalArtifacts.aggregate.artifactMismatch === true : workflowArtifacts.rankingRevisionMismatch === true,
+      reprocessRequired: scopedReadiness ? canonicalArtifacts.aggregate.reprocessingRequired === true : workflowArtifacts.rankingReprocessRequired === true
     },
-    publish: { available: workflowArtifacts.publicationReady, valid: workflowArtifacts.publicationReady }
+    publish: {
+      available: scopedReadiness ? scopedReadiness.publicationReady === true : workflowArtifacts.publicationReady,
+      valid: scopedReadiness ? scopedReadiness.publicationReady === true : workflowArtifacts.publicationReady
+    }
   };
   const planningState = buildV3PlanningState({
     game,
+    contestId,
     persistedState,
     jobs,
     artifacts,
@@ -385,11 +413,13 @@ function emptyV3PlanResult(error = null) {
   return { created: 0, planned: [], diagnostics: [], errors: error ? [{ game: null, plan: null, error }] : [] };
 }
 
-async function readV3JobsForPlanning(db, internalGameId) {
+async function readV3JobsForPlanning(db, internalGameId, contestId = null) {
   try {
-    const result = await db.prepare(
-      `SELECT * FROM game_jobs_v3 WHERE internal_game_id = ?1 ORDER BY scheduled_slot_at, id`
-    ).bind(internalGameId).all();
+    const result = contestId
+      ? await db.prepare(`SELECT * FROM game_jobs_v3 WHERE internal_game_id=?1
+          AND (contest_id=?2 OR contest_id IS NULL) ORDER BY scheduled_slot_at,id`).bind(internalGameId, contestId).all()
+      : await db.prepare("SELECT * FROM game_jobs_v3 WHERE internal_game_id=?1 ORDER BY scheduled_slot_at,id")
+        .bind(internalGameId).all();
     return result.results || [];
   } catch {
     return [];
@@ -493,7 +523,7 @@ export async function planMainWorkflowJobs(db, games = [], now = new Date(), opt
   }
 }
 
-export async function claimDueJobs(db, now = new Date(), plannedEntries = [], { disabledJobTypes = [] } = {}) {
+export async function claimDueJobs(db, now = new Date(), plannedEntries = [], { disabledJobTypes = [], targetTeamKey = "" } = {}) {
   // Drain the due set in a deliberately small bounded window. The query is
   // due-first and the next Cron tick continues from rows left pending or in
   // retry_wait; claimV3Job keeps the lease/token race safe. A full backlog
@@ -509,7 +539,7 @@ export async function claimDueJobs(db, now = new Date(), plannedEntries = [], { 
   let hasMoreDue = false;
   let cursor = null;
   for (let batch = 0; batch < maxBatches; batch += 1) {
-    const rows = await listDueV3Jobs(db, now, batchSize, cursor);
+    const rows = await listDueV3Jobs(db, now, batchSize, cursor, targetTeamKey);
     if (rows.length === 0) break;
     const fresh = rows.filter((job) => {
       const key = String(job?.id || "");
@@ -568,16 +598,20 @@ export async function claimDueJobs(db, now = new Date(), plannedEntries = [], { 
   return { due, claimed, skipped, hasMoreDue };
 }
 
-export async function planV3MainJobs(db, games = [], now = new Date(), { disabledStages = [], v4SemiAuto = false } = {}) {
+export async function planV3MainJobs(db, games = [], now = new Date(), { disabledStages = [], v4SemiAuto = false, targetTeamKey = "" } = {}) {
   const planned = [];
   const errors = [];
   const diagnostics = [];
   for (const game of Array.isArray(games) ? games : []) {
     if (!isV3GameEligible(game)) continue;
     try {
-      const stateRow = await readV3StateForPlanning(db, game.internalGameId);
+      const contestId = targetTeamKey
+        ? await resolveV3ContestId(db, game.internalGameId, targetTeamKey).catch(() => null)
+        : null;
+      if (contestId) await ensureV3State(db, game.internalGameId, now, contestId);
+      const stateRow = await readV3StateForPlanning(db, game.internalGameId, contestId);
       const persistedState = String(stateRow?.state || game.workflowState || "scheduled").trim().toLowerCase() || "scheduled";
-      const derivedPlanningState = await deriveV3PlanningState(db, game, persistedState, now, { v4SemiAuto });
+      const derivedPlanningState = await deriveV3PlanningState(db, game, persistedState, now, { v4SemiAuto, targetTeamKey });
       const state = derivedPlanningState.effectiveState;
       const workflowArtifacts = derivedPlanningState.workflowArtifacts || await readV3WorkflowArtifactHealth(db, game.internalGameId, state);
       const canonicalAvailable = hasCanonicalArtifactEvidence(derivedPlanningState.canonicalArtifacts);
@@ -616,10 +650,11 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
         continue;
       }
       if (workflowArtifacts.publicationReady && (!canonicalAvailable || canonicalFullyPublished)) continue;
-      const existingJobs = await readV3JobsForPlanning(db, game.internalGameId);
+      const existingJobs = await readV3JobsForPlanning(db, game.internalGameId, contestId);
       const sharedPlanningState = buildV3PlanningState({
         ...derivedPlanningState,
         game,
+        contestId,
         persistedState,
         effectiveState: correctionRecovery ? "manual_action_required" : state,
         correctionRecovery,
@@ -702,26 +737,29 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
         diagnostics.push(diagnostic);
       }
       for (const plan of plans) {
+        // A3 keeps game-scoped job identity, but the readiness that suppresses
+        // duplicate downstream jobs must come from the trusted contest's
+        // canonical artifacts when that scoped read is available.
+        const planningArtifacts = derivedPlanningState.artifacts || {};
         const artifactReady = plan.jobType === V3_JOB_TYPE.LINEUP_FETCH
-          ? workflowArtifacts.available && workflowArtifacts.lineup.ready === true
+          ? planningArtifacts.lineup_fetch?.valid === true
           : plan.jobType === V3_JOB_TYPE.LINEUP_FINALIZE
-            ? workflowArtifacts.available && workflowArtifacts.lineup.finalizedValid === true
+            ? planningArtifacts.lineup_finalize?.valid === true
             : plan.jobType === V3_JOB_TYPE.SCORE
-              ? workflowArtifacts.scoreReady
+              ? planningArtifacts.scoring?.valid === true
               : plan.jobType === V3_JOB_TYPE.RANKING_REBUILD
-                ? workflowArtifacts.rankingReflected
+                ? planningArtifacts.ranking_reflect?.valid === true
                 : false;
         const downstreamArtifactReady = plan.jobType === V3_JOB_TYPE.PREDICTION_CLOSE
-          && workflowArtifacts.available
-          && (workflowArtifacts.scoreReady
-            || workflowArtifacts.rankingReflected
-            || workflowArtifacts.publicationReady);
+          && (planningArtifacts.scoring?.valid === true
+            || planningArtifacts.ranking_reflect?.valid === true
+            || planningArtifacts.publish?.valid === true);
         if (artifactReady || downstreamArtifactReady) continue;
         let effectivePlan = plan;
         let recoveryOfJobId = null;
         let recoveryKind = null;
         let diagnostic = createV3PlanningDiagnostic(game, effectivePlan, state);
-        let result = await createV3Job(db, { internalGameId: game.internalGameId, ...effectivePlan });
+        let result = await createV3Job(db, { internalGameId: game.internalGameId, contestId, ...effectivePlan });
         const recoveryJobType = plan.jobType === V3_JOB_TYPE.SCORE
           ? "score"
           : plan.jobType === V3_JOB_TYPE.RANKING_REBUILD
@@ -739,14 +777,14 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
             ? isV3ScoreRecoveryTerminalJob(result.job)
             : isV3RankingRecoveryTerminalJob(result.job));
         if (predictionCloseRecovery) {
-          const openRecovery = await hasOpenV3Job(db, game.internalGameId, V3_JOB_TYPE.PREDICTION_CLOSE, result.job?.id || null);
+          const openRecovery = await hasOpenV3Job(db, game.internalGameId, V3_JOB_TYPE.PREDICTION_CLOSE, result.job?.id || null, contestId);
           recoveryOfJobId = result.job?.id || null;
           recoveryKind = "prediction_close";
           if (!openRecovery) {
             const recoverySlot = new Date(new Date(now).getTime() + 1000);
             effectivePlan = { ...plan, scheduledSlotAt: recoverySlot, scheduledAt: new Date(now) };
             diagnostic = createV3PlanningDiagnostic(game, effectivePlan, state);
-            result = await createV3Job(db, { internalGameId: game.internalGameId, ...effectivePlan });
+            result = await createV3Job(db, { internalGameId: game.internalGameId, contestId, ...effectivePlan });
             diagnostic.recoveryOfJobId = recoveryOfJobId;
             diagnostic.recoveryScheduledSlotAt = recoverySlot.toISOString();
           } else {
@@ -759,24 +797,32 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
           effectivePlan = { ...plan, scheduledSlotAt: recoverySlot, scheduledAt: recoverySlot };
           recoveryOfJobId = result.job?.id || null;
           diagnostic = createV3PlanningDiagnostic(game, effectivePlan, state);
-          result = await createV3Job(db, { internalGameId: game.internalGameId, ...effectivePlan });
+          result = await createV3Job(db, { internalGameId: game.internalGameId, contestId, ...effectivePlan });
           diagnostic.recoveryOfJobId = recoveryOfJobId;
           diagnostic.recoveryScheduledSlotAt = recoverySlot.toISOString();
           recoveryKind = recoveryJobType;
         } else if (artifactRecoveryType && !result.created && isV3TerminalJobStatus(result.job?.status)) {
           const health = await readV3WorkflowArtifactHealth(db, game.internalGameId, state);
+          const canonical = derivedPlanningState.canonicalArtifacts?.available === true
+            ? derivedPlanningState.canonicalArtifacts.aggregate
+            : null;
           const missingArtifact = artifactRecoveryType === V3_JOB_TYPE.LINEUP_FINALIZE
-            ? health.available
+            ? canonical
+              ? canonical.lineupReady !== true
+              : health.available
               && (health.lineup.finalizedValid === false || health.lineup.finalizedLineupExists === false)
               && (health.lineup.candidateValid === true || health.lineup.candidateExists === true)
-            : health.available && health.publicationReady === false && health.rankingReflected === true;
+            : canonical
+              ? canonical.publicationReady !== true && canonical.rankingReady === true
+              : health.available && health.publicationReady === false && health.rankingReflected === true;
           Object.assign(diagnostic, {
             ...health,
+            canonicalArtifacts: canonical,
             completedWithoutArtifact: missingArtifact,
             recoveryReason: missingArtifact ? `${artifactRecoveryType.toUpperCase()}_COMPLETED_WITHOUT_ARTIFACT` : null
           });
           if (missingArtifact) {
-            const openRecovery = await hasOpenV3Job(db, game.internalGameId, artifactRecoveryType);
+            const openRecovery = await hasOpenV3Job(db, game.internalGameId, artifactRecoveryType, null, contestId);
             recoveryOfJobId = result.job?.id || null;
             recoveryKind = artifactRecoveryType;
             if (!openRecovery) {
@@ -790,7 +836,7 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
                 completedWithoutArtifact: true,
                 recoveryReason: `${artifactRecoveryType.toUpperCase()}_COMPLETED_WITHOUT_ARTIFACT`
               };
-              result = await createV3Job(db, { internalGameId: game.internalGameId, ...effectivePlan });
+              result = await createV3Job(db, { internalGameId: game.internalGameId, contestId, ...effectivePlan });
               diagnostic.recoveryOfJobId = recoveryOfJobId;
               diagnostic.recoveryScheduledSlotAt = recoverySlot.toISOString();
             }
@@ -805,7 +851,7 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
             completedWithoutCandidate: health.available && !health.ready
           });
           if (health.available && !health.ready) {
-            const openRecovery = await hasOpenV3Job(db, game.internalGameId, V3_JOB_TYPE.LINEUP_FETCH);
+            const openRecovery = await hasOpenV3Job(db, game.internalGameId, V3_JOB_TYPE.LINEUP_FETCH, null, contestId);
             recoveryOfJobId = result.job?.id || null;
             recoveryKind = "lineup";
             if (!openRecovery) {
@@ -820,7 +866,7 @@ export async function planV3MainJobs(db, games = [], now = new Date(), { disable
                 lineupDataReady: health.ready,
                 completedWithoutCandidate: true
               };
-              result = await createV3Job(db, { internalGameId: game.internalGameId, ...effectivePlan });
+              result = await createV3Job(db, { internalGameId: game.internalGameId, contestId, ...effectivePlan });
               diagnostic.recoveryOfJobId = recoveryOfJobId;
               diagnostic.recoveryScheduledSlotAt = recoverySlot.toISOString();
             } else {

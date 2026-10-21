@@ -7,6 +7,8 @@ import {
   hasPotentialFormalWork,
   listV3Games,
   getV3SchemaState,
+  getV3State,
+  resolveV3ContestId,
   monotonicV3JobTimestamp,
   retryV3Job,
   transitionV3State
@@ -107,8 +109,49 @@ function isLaterV3State(currentState, expectedState) {
   return currentIndex >= 0 && expectedIndex >= 0 && currentIndex > expectedIndex;
 }
 
-async function canReconcileCompletedV3StateTransition(db, internalGameId, transition) {
+async function canReconcileCompletedV3StateTransition(db, internalGameId, transition, contestId = null) {
   try {
+    if (contestId) {
+      switch (transition.jobType) {
+        case V3_JOB_TYPE.PREDICTION_CLOSE:
+          return true;
+        case V3_JOB_TYPE.LINEUP_FINALIZE: {
+          const final = await db.prepare(
+            `SELECT actual_lineup_json FROM contest_lineup_revisions
+              WHERE contest_id=?1 AND internal_game_id=?2 AND is_final=1
+              ORDER BY version DESC LIMIT 1`
+          ).bind(contestId, internalGameId).first();
+          return hasVerifiedLineupPayload(final?.actual_lineup_json);
+        }
+        case V3_JOB_TYPE.SCORE: {
+          const lineup = await db.prepare(
+            `SELECT scoring_status,scored_at FROM game_lineups
+              WHERE contest_id=?1 AND internal_game_id=?2 LIMIT 1`
+          ).bind(contestId, internalGameId).first();
+          return String(lineup?.scoring_status || "") === "scored" && Boolean(lineup?.scored_at);
+        }
+        case V3_JOB_TYPE.RANKING_REBUILD: {
+          const [state, reflection] = await Promise.all([
+            db.prepare(`SELECT scoring_revision_id FROM contest_automation_v3_state
+              WHERE contest_id=?1 AND internal_game_id=?2 LIMIT 1`).bind(contestId, internalGameId).first(),
+            db.prepare(`SELECT status,scoring_revision_id FROM contest_ranking_reflection_revisions
+              WHERE contest_id=?1 AND internal_game_id=?2
+              ORDER BY ranking_update_revision DESC,id DESC LIMIT 1`).bind(contestId, internalGameId).first()
+          ]);
+          const expected = String(state?.scoring_revision_id || "").trim();
+          return Boolean(expected && String(reflection?.status || "") === "reflected"
+            && String(reflection?.scoring_revision_id || "") === expected);
+        }
+        case V3_JOB_TYPE.PUBLISH: {
+          const publication = await db.prepare(`SELECT publication_status,published_at
+            FROM contest_ranking_games WHERE contest_id=?1 AND internal_game_id=?2 LIMIT 1`)
+            .bind(contestId, internalGameId).first();
+          return String(publication?.publication_status || "") === "published" && Boolean(publication?.published_at);
+        }
+        default:
+          return false;
+      }
+    }
     switch (transition.jobType) {
       case V3_JOB_TYPE.PREDICTION_CLOSE:
         return true;
@@ -188,7 +231,7 @@ async function canReconcileCompletedV3StateTransition(db, internalGameId, transi
   }
 }
 
-async function reconcileCompletedV3StateTransitions(env, games = [], now = new Date(), { onError = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null } = {}) {
+async function reconcileCompletedV3StateTransitions(env, games = [], now = new Date(), { contestId = null, onError = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null } = {}) {
   let recovered = 0;
   let failed = 0;
   const recoveredJobIds = [];
@@ -199,25 +242,26 @@ async function reconcileCompletedV3StateTransitions(env, games = [], now = new D
       // Walk only the finite canonical graph. This also repairs multiple
       // consecutive post-completion transition failures in one Cron run.
       for (let step = 0; step < V3_COMPLETED_STATE_TRANSITIONS.length; step += 1) {
-        const stateRow = await env.AUTH_DB.prepare(
-          "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
-        ).bind(game.internalGameId).first();
+        const stateRow = await getV3State(env.AUTH_DB, game.internalGameId, contestId);
         const currentState = String(stateRow?.state || "");
         const transition = V3_COMPLETED_STATE_TRANSITIONS.find((candidate) => candidate.from === currentState);
         if (!transition) break;
+        const schema = await getV3SchemaState(env.AUTH_DB);
+        const jobContestFilter = schema.contestJobs
+          ? contestId ? "AND contest_id=?2" : "AND contest_id IS NULL"
+          : "";
         const completedJobs = await env.AUTH_DB.prepare(
-          `SELECT *
-             FROM game_jobs_v3
-            WHERE internal_game_id = ?1
-              AND status = 'completed'`
-        ).bind(game.internalGameId).all();
+          `SELECT * FROM game_jobs_v3 WHERE internal_game_id=?1
+            ${jobContestFilter}
+            AND status='completed'`
+        ).bind(...(schema.contestJobs && contestId ? [game.internalGameId, contestId] : [game.internalGameId])).all();
         const completedJob = (completedJobs.results || [])
           .filter((job) => isV3JobForStage(job, transition.jobType))
           .sort((left, right) => String(right.completed_at || right.updated_at || right.created_at || "")
             .localeCompare(String(left.completed_at || left.updated_at || left.created_at || ""))
             || Number(right.id || 0) - Number(left.id || 0))[0] || null;
         if (!completedJob) break;
-        if (!(await canReconcileCompletedV3StateTransition(env.AUTH_DB, game.internalGameId, transition))) {
+        if (!(await canReconcileCompletedV3StateTransition(env.AUTH_DB, game.internalGameId, transition, contestId))) {
           skipped.push({
             jobType: transition.jobType,
             jobId: Number(completedJob.id),
@@ -228,6 +272,7 @@ async function reconcileCompletedV3StateTransitions(env, games = [], now = new D
         }
         await transitionV3State(env.AUTH_DB, {
           internalGameId: game.internalGameId,
+          contestId,
           from: transition.from,
           to: transition.to,
           now
@@ -360,7 +405,7 @@ export async function runV3OptionalPhases(env, games, now, {
 }
 
 // Claim execution lifecycle. Job-type business executors remain injected by auth-worker.
-export async function executeClaimedJobs(env, claims = [], games = [], now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, v4SemiAuto = false } = {}) {
+export async function executeClaimedJobs(env, claims = [], games = [], now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, targetTeamKey = "", observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, v4SemiAuto = false } = {}) {
   let processed = 0;
   let failed = 0;
   let retryWait = 0;
@@ -429,11 +474,9 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
           env,
           games.filter((game) => game?.internalGameId === claimed.internal_game_id),
           executionNow,
-          { onError, observerTimeoutMs, observerScheduler }
+          { contestId: claimed.contest_id || null, onError, observerTimeoutMs, observerScheduler }
         );
-        const currentStateRow = await env.AUTH_DB.prepare(
-          "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
-        ).bind(claimed.internal_game_id).first();
+        const currentStateRow = await getV3State(env.AUTH_DB, claimed.internal_game_id, claimed.contest_id || null);
         const currentState = String(currentStateRow?.state || "");
         if (currentState === result.stateAfter) {
           // The reconciliation already applied this transition.
@@ -445,6 +488,7 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
         } else if (currentState === result.stateBefore) {
           await transitionV3State(env.AUTH_DB, {
             internalGameId: claimed.internal_game_id,
+            contestId: claimed.contest_id || null,
             from: result.stateBefore,
             to: result.stateAfter,
             now: executionNow,
@@ -463,21 +507,24 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
       if (claimed.job_type === V3_JOB_TYPE.NPB_IDENTITY_RESOLVE && result?.identityResolved) {
         const followupGame = games.find((game) => game.internalGameId === claimed.internal_game_id);
         if (followupGame) {
-          followupGame.npbIdentityStatus = "resolved";
-          const followupState = await env.AUTH_DB.prepare(
-            "SELECT state FROM game_automation_v3_state WHERE internal_game_id = ?1 LIMIT 1"
-          ).bind(claimed.internal_game_id).first();
-          const followupPlan = getV3DuePlan(
-            followupGame,
-            followupState?.state || V3_STATE.SCHEDULED,
-            now,
-            {
-              v4SemiAuto: Boolean(v4SemiAuto),
-              disabledStages: v4SemiAuto ? ["roster_fetch", "lineup_fetch"] : []
+          const contestId = targetTeamKey
+            ? await resolveV3ContestId(env.AUTH_DB, claimed.internal_game_id, targetTeamKey)
+            : null;
+          if (contestId) {
+            followupGame.npbIdentityStatus = "resolved";
+            const followupState = await getV3State(env.AUTH_DB, claimed.internal_game_id, contestId);
+            const followupPlan = getV3DuePlan(
+              followupGame,
+              followupState?.state || V3_STATE.SCHEDULED,
+              now,
+              {
+                v4SemiAuto: Boolean(v4SemiAuto),
+                disabledStages: v4SemiAuto ? ["roster_fetch", "lineup_fetch"] : []
+              }
+            );
+            if (followupPlan && [V3_JOB_TYPE.LINEUP_FETCH, V3_JOB_TYPE.LINEUP_FINALIZE].includes(followupPlan.jobType)) {
+              await createV3Job(env.AUTH_DB, { internalGameId: claimed.internal_game_id, contestId, ...followupPlan });
             }
-          );
-          if (followupPlan && [V3_JOB_TYPE.LINEUP_FETCH, V3_JOB_TYPE.LINEUP_FINALIZE].includes(followupPlan.jobType)) {
-            await createV3Job(env.AUTH_DB, { internalGameId: claimed.internal_game_id, ...followupPlan });
           }
         }
       }
@@ -522,7 +569,7 @@ export async function executeClaimedJobs(env, claims = [], games = [], now = new
   return { processed, failed, retryWait, terminalFailed, failedJobIds, retryErrors };
 }
 
-export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, onPhase = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, formalPlanner = planMainWorkflowJobs, auxiliaryPlanner = planAuxiliaryJobs, scheduleOptional = null, disabledJobTypes = [], v4SemiAuto = false, includeHistoricalRecovery = true, gameListOptions = {}, auxiliaryGameListOptions = null, runAuxiliary = true, auxiliaryOnly = false, skipFormalDiscoveryIfIdle = false } = {}) {
+export async function runGameAutomationV3(env, now = new Date(), { executeJob, onError = null, onSuccess = null, onPlan = null, onPhase = null, observerTimeoutMs = V3_OBSERVER_TIMEOUT_MS, observerScheduler = null, formalPlanner = planMainWorkflowJobs, auxiliaryPlanner = planAuxiliaryJobs, scheduleOptional = null, disabledJobTypes = [], targetTeamKey = "", v4SemiAuto = false, includeHistoricalRecovery = true, gameListOptions = {}, auxiliaryGameListOptions = null, runAuxiliary = true, auxiliaryOnly = false, skipFormalDiscoveryIfIdle = false } = {}) {
   if (!isGameAutomationV3Enabled(env)) return { enabled: false, processed: 0, created: 0 };
   const schema = await getV3SchemaState(env.AUTH_DB);
   if (!schema.ready) return { enabled: true, schemaReady: false, errorCode: "GAME_AUTOMATION_V3_SCHEMA_UNAVAILABLE", processed: 0, created: 0 };
@@ -704,7 +751,7 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
     gameCount: games.length,
     plannedCount: allPlanned.length
   }], observerTimeoutMs, observerScheduler);
-  const claimReport = await claimDueJobs(env.AUTH_DB, now, allPlanned, { disabledJobTypes }).catch(async (error) => {
+  const claimReport = await claimDueJobs(env.AUTH_DB, now, allPlanned, { disabledJobTypes, targetTeamKey }).catch(async (error) => {
     failed += 1;
     await invokeV3Observer(onError, [error, { stage: "claim" }], observerTimeoutMs, observerScheduler);
     return {
@@ -715,6 +762,7 @@ export async function runGameAutomationV3(env, now = new Date(), { executeJob, o
   });
   const execution = await executeClaimedJobs(env, claimReport.claimed, games, now, {
     executeJob,
+    targetTeamKey,
     onError,
     onSuccess,
     onPlan,

@@ -6,6 +6,8 @@ import {
   normalizeFightersPlayerName
 } from "../../fighters-player-master.js";
 import { normalizeScheduleTeamCode } from "../../game-schedule-detection.js";
+import { ensureGameContest } from "../contest-identity.js";
+import { targetTeamForEnvironment } from "../target-team.js";
 import {
   fetchSimulatorSource,
   normalizeExternalGameStatus,
@@ -267,7 +269,10 @@ export async function persistLineupCandidate(db, candidate, validation, { now = 
   const fingerprint = btoa(String.fromCharCode(...new Uint8Array(fingerprintBuffer)))
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
   const same = existingRows.find((row) => text(row.lineup_fingerprint) === fingerprint);
-  if (same) return { ok: true, status: "no_op", noOp: true, revision: same };
+  if (same) {
+    if (candidate.contestId) await mirrorContestLineupRevision(db, candidate, same);
+    return { ok: true, status: "no_op", noOp: true, revision: same };
+  }
 
   const version = Number(existingRows[0]?.version || 0) + 1;
   const createdAt = iso(now);
@@ -296,11 +301,41 @@ export async function persistLineupCandidate(db, candidate, validation, { now = 
     return { ok: false, status: "conflict", code: "LINEUP_CANDIDATE_REVISION_CONFLICT" };
   }
   const revision = await db.prepare(`SELECT * FROM game_lineup_revisions WHERE ${scope.column} = ?1 AND version = ?2 LIMIT 1`).bind(scope.value, version).first();
+  if (candidate.contestId) await mirrorContestLineupRevision(db, candidate, revision);
   return { ok: true, status: "created", noOp: false, revision };
 }
 
-export async function finalizeVerifiedLineupCandidate(db, { candidate, revision, now = new Date(), allowTestGame = false } = {}) {
+async function mirrorContestLineupRevision(db, candidate, revision) {
+  const existing = await db.prepare(
+    "SELECT lineup_fingerprint FROM contest_lineup_revisions WHERE contest_id = ?1 AND version = ?2 LIMIT 1"
+  ).bind(candidate.contestId, Number(revision.version)).first();
+  if (existing) {
+    if (String(existing.lineup_fingerprint || "") !== String(revision.lineup_fingerprint || "")) {
+      throw Object.assign(new Error("Contest lineup revision conflicts with the legacy bridge revision"), { code: "CONTEST_LINEUP_REVISION_CONFLICT" });
+    }
+    return;
+  }
+  await db.prepare(`INSERT INTO contest_lineup_revisions
+    (contest_id,internal_game_id,game_id,version,revision_id,actual_lineup_json,lineup_fingerprint,
+     source,created_at,created_by,reason,is_current,superseded_at,captured_at,validation_json,
+     finalized_at,finalized_by,unresolved_player_count,is_final)
+    VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)`)
+    .bind(candidate.contestId,candidate.internalGameId,revision.game_id,Number(revision.version),revision.revision_id,
+      revision.actual_lineup_json,revision.lineup_fingerprint,revision.source,revision.created_at,
+      revision.created_by ?? null,revision.reason,Number(revision.is_current || 0),revision.superseded_at ?? null,
+      revision.captured_at ?? null,revision.validation_json ?? null,revision.finalized_at ?? null,
+      revision.finalized_by ?? null,Number(revision.unresolved_player_count || 0),Number(revision.is_final || 0)).run();
+}
+
+export async function finalizeVerifiedLineupCandidate(db, { candidate, revision, now = new Date(), allowTestGame = false, contestId = "", targetTeam = null } = {}) {
   if (!db || !candidate?.internalGameId || !revision) return { ok: false, status: "invalid_data", code: "LINEUP_FINALIZE_INPUT_INVALID" };
+  const lineupColumns = await tableColumns(db, "game_lineups");
+  const resolvedTargetTeam = targetTeam || targetTeamForEnvironment({});
+  if (lineupColumns.has("contest_id")) {
+    const contest = await ensureGameContest(db, candidate.internalGameId, resolvedTargetTeam, contestId);
+    if (!contest.ok) return { ok: false, status: "identity_mismatch", code: contest.code };
+    contestId = contest.contestId;
+  }
   const columns = await tableColumns(db, "game_lineup_revisions");
   if (!(columns.has("internal_game_id") && columns.has("is_final") && columns.has("is_current"))) {
     return { ok: false, status: "schema_unavailable", code: "LINEUP_CANDIDATE_SCHEMA_NOT_READY" };
@@ -346,6 +381,22 @@ export async function finalizeVerifiedLineupCandidate(db, { candidate, revision,
       : { ok: false, status: "conflict", code: "LINEUP_FINALIZE_CONFLICT" };
   }
 
+  if (contestId) {
+    const timestamp = iso(now);
+    await db.batch([
+      db.prepare(`UPDATE contest_lineup_revisions SET is_current=0,superseded_at=?1
+        WHERE contest_id=?2 AND is_current=1 AND is_final=0 AND version<>?3`).bind(timestamp,contestId,Number(revision.version)),
+      db.prepare(`UPDATE contest_lineup_revisions SET is_current=1,is_final=1,finalized_at=?1,finalized_by='phase7:auto'
+        WHERE contest_id=?2 AND version=?3 AND lineup_fingerprint=?4 AND actual_lineup_json=?5`)
+        .bind(timestamp,contestId,Number(revision.version),revision.lineup_fingerprint,revision.actual_lineup_json)
+    ]);
+    const scopedFinal = await db.prepare(`SELECT is_current,is_final FROM contest_lineup_revisions
+      WHERE contest_id=?1 AND version=?2 LIMIT 1`).bind(contestId,Number(revision.version)).first();
+    if (Number(scopedFinal?.is_current || 0) !== 1 || Number(scopedFinal?.is_final || 0) !== 1) {
+      return { ok: false, status: "conflict", code: "CONTEST_LINEUP_FINALIZE_CONFLICT" };
+    }
+  }
+
   try {
     // Manual finalization first creates the canonical game_lineups row through
     // the shared scoring-compatible writer. Reuse that boundary so an
@@ -358,15 +409,19 @@ export async function finalizeVerifiedLineupCandidate(db, { candidate, revision,
       new Date(timestamp),
       {
         allowTestGame,
-        isTestGame: allowTestGame,
+        // Legacy fixtures without A2 schema keep their isolated game-only
+        // writer. Once contest columns exist, even Test Site finalization must
+        // identify the exact registered contest before touching the canonical row.
+        isTestGame: !lineupColumns.has("contest_id"),
         allowAfterStart: allowTestGame,
         internalGameId: candidate.internalGameId,
+        contestId,
+        targetTeam: resolvedTargetTeam,
         source: SOURCE_COLUMN_VALUE,
         scoringDueAt: new Date(timestamp),
         now: new Date(timestamp)
       }
     );
-    const lineupColumns = await tableColumns(db, "game_lineups");
     if (lineupColumns.has("internal_game_id") && lineupColumns.has("final_lineup_revision_id")) {
       const fields = ["actual_lineup_json", "lineup_fingerprint", "final_lineup_revision_id"];
       const values = [finalized.actual_lineup_json, finalized.lineup_fingerprint, finalized.revision_id || `${candidate.internalGameId}:${Number(revision.version)}`];
@@ -375,7 +430,9 @@ export async function finalizeVerifiedLineupCandidate(db, { candidate, revision,
       if (lineupColumns.has("lineup_source")) { fields.push("lineup_source"); values.push("npb-auto"); }
       if (lineupColumns.has("updated_at")) { fields.push("updated_at"); values.push(timestamp); }
       values.push(candidate.internalGameId);
-      await db.prepare(`UPDATE game_lineups SET ${fields.map((field, index) => `${field} = ?${index + 1}`).join(", ")} WHERE internal_game_id = ?${values.length}`).bind(...values).run();
+      const contestFilter = lineupColumns.has("contest_id") ? ` AND contest_id = ?${values.length + 1}` : "";
+      if (lineupColumns.has("contest_id")) values.push(contestId);
+      await db.prepare(`UPDATE game_lineups SET ${fields.map((field, index) => `${field} = ?${index + 1}`).join(", ")} WHERE internal_game_id = ?${values.length - (lineupColumns.has("contest_id") ? 1 : 0)}${contestFilter}`).bind(...values).run();
     }
   } catch (error) {
     if (!/no such table|table .* not found/i.test(String(error?.message || ""))) throw error;
@@ -445,7 +502,18 @@ export async function runLineupCandidatePipeline({ env = {}, target = {}, db = n
     const persisted = db ? await persistLineupCandidate(db, normalized.candidate, normalized.validation, { now, shadowMode }) : null;
     return { ...normalized, persisted, alertSignal: buildLineupAlertSignal(normalized) };
   }
-  const persisted = db ? await persistLineupCandidate(db, normalized.candidate, normalized.validation, { now, shadowMode }) : null;
+  let candidate = normalized.candidate;
+  let targetTeam = null;
+  if (db) {
+    const lineupColumns = await tableColumns(db, "game_lineups");
+    if (lineupColumns.has("contest_id")) {
+      targetTeam = targetTeamForEnvironment(env);
+      const contest = await ensureGameContest(db, candidate.internalGameId, targetTeam, target?.contestId || "");
+      if (!contest.ok) return { ...normalized, ok: false, status: "identity_mismatch", code: contest.code, alertSignal: buildLineupAlertSignal({ status: "identity_mismatch" }) };
+      candidate = { ...candidate, contestId: contest.contestId, targetTeamKey: targetTeam.key };
+    }
+  }
+  const persisted = db ? await persistLineupCandidate(db, candidate, normalized.validation, { now, shadowMode }) : null;
   if (persisted?.status === "manual_final_exists") {
     return { ...normalized, status: "manual_final_exists", code: "MANUAL_FINAL_EXISTS", persisted, eligibility: { eligible: false, reason: "MANUAL_FINAL_EXISTS" } };
   }
@@ -457,10 +525,12 @@ export async function runLineupCandidatePipeline({ env = {}, target = {}, db = n
   const eligibility = isAutoFinalEligible({ candidate: normalized.candidate, verification, environment, autoFinalEnabled, manualFinalExists, shadowMode });
   if (!eligibility.eligible || !autoFinalEnabled || !persisted?.revision || !db) return { ...normalized, source: normalized.candidate.source, persisted, verification, eligibility, alertSignal: {} };
   const finalized = await finalizeVerifiedLineupCandidate(db, {
-    candidate: normalized.candidate,
+    candidate,
     revision: persisted.revision,
     now,
-    allowTestGame: true
+    allowTestGame: true,
+    contestId: candidate.contestId || "",
+    targetTeam
   });
   return { ...normalized, source: normalized.candidate.source, persisted, verification, eligibility, finalized, alertSignal: {} };
 }

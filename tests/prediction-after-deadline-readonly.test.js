@@ -39,23 +39,23 @@ test("締切後のアカウント同期はサーバー値を正本にし、未�
   t.after(app.dispose);
   app.state.predictionDeadline = { status: "closed", isClosed: true };
   app.state.prediction = { gameId: "canonical-game", lineup: [{ order: 1, player: "端末の古い予想", position: "左" }] };
-  app.stored.set("hamStarting9Prediction:game:canonical-game", JSON.stringify(app.state.prediction));
+  app.stored.set("hamStarting9Prediction:contest:fighters:game:canonical-game", JSON.stringify(app.state.prediction));
 
   await app.operations.initializePredictionRemoteSync();
 
   assert.equal(app.state.prediction.lineup[0].player, "サーバー予想");
   assert.equal(app.state.predictionRemote.status, "success");
-  assert.equal(app.stored.has("hamStarting9Prediction:game:canonical-game"), true);
-  assert.equal(JSON.parse(app.stored.get("hamStarting9Prediction:game:canonical-game")).lineup[0].player, "サーバー予想");
+  assert.equal(app.stored.has("hamStarting9Prediction:contest:fighters:game:canonical-game"), true);
+  assert.equal(JSON.parse(app.stored.get("hamStarting9Prediction:contest:fighters:game:canonical-game")).lineup[0].player, "サーバー予想");
 
   const empty = createPublicRuntime({ fetchImpl: async () => ({ ok: true, json: async () => ({ ok: true, prediction: null }) }) });
   t.after(empty.dispose);
   empty.state.predictionDeadline = { status: "closed", isClosed: true };
   empty.state.prediction = { gameId: "canonical-game", lineup: [{ order: 1, player: "端末のみ", position: "左" }] };
-  empty.stored.set("hamStarting9Prediction:game:canonical-game", JSON.stringify(empty.state.prediction));
+  empty.stored.set("hamStarting9Prediction:contest:fighters:game:canonical-game", JSON.stringify(empty.state.prediction));
   await empty.operations.initializePredictionRemoteSync();
   assert.equal(empty.state.prediction, null);
-  assert.equal(empty.stored.has("hamStarting9Prediction:game:canonical-game"), false);
+  assert.equal(empty.stored.has("hamStarting9Prediction:contest:fighters:game:canonical-game"), false);
   assert.match(script, /isClosedWithoutSavedPrediction = getEffectivePredictionDeadline\(\)\.status === "closed"/);
 });
 

@@ -255,7 +255,13 @@ const formatPlayerNameForDisplay = publicFrontend.formatPlayerNameForDisplay || 
 });
 const basePublicStorage = publicFrontend.createPublicStorage(window.localStorage);
 
-function getGameScopedStorageKey(key, gameId) {
+function getGameScopedStorageKey(key, gameId, teamKey = targetTeam.key) {
+  const normalizedGameId = String(gameId || "").trim();
+  const contestKey = `${key}:contest:${encodeURIComponent(teamKey)}`;
+  return normalizedGameId ? `${contestKey}:game:${encodeURIComponent(normalizedGameId)}` : contestKey;
+}
+
+function getLegacyGameScopedStorageKey(key, gameId) {
   const normalizedGameId = String(gameId || "").trim();
   return normalizedGameId ? `${key}:game:${encodeURIComponent(normalizedGameId)}` : key;
 }
@@ -272,21 +278,28 @@ function getActiveStorageGameId() {
 function saveGameScopedStorage(key, value) {
   if (!GAME_SCOPED_STORAGE_KEYS.has(key)) return basePublicStorage.save(key, value);
   const gameId = getStorageValueGameId(key, value) || getActiveStorageGameId();
-  return basePublicStorage.save(getGameScopedStorageKey(key, gameId), value);
+  return basePublicStorage.save(getGameScopedStorageKey(key, gameId, targetTeam.key), value);
 }
 
 function loadGameScopedStorage(key) {
   if (!GAME_SCOPED_STORAGE_KEYS.has(key)) return basePublicStorage.load(key);
   const gameId = getActiveStorageGameId();
-  if (!gameId) return basePublicStorage.load(key);
-  const scopedValue = basePublicStorage.load(getGameScopedStorageKey(key, gameId));
+  if (!gameId) {
+    const scopedValue = basePublicStorage.load(getGameScopedStorageKey(key, "", targetTeam.key));
+    if (scopedValue) return scopedValue;
+    return targetTeam.key === "fighters" ? basePublicStorage.load(key) : null;
+  }
+  const scopedValue = basePublicStorage.load(getGameScopedStorageKey(key, gameId, targetTeam.key));
   if (scopedValue) return scopedValue;
 
-  // 旧キーは、保存された試合IDが現在試合と一致する場合だけ移行します。
-  const legacyValue = basePublicStorage.load(key);
+  // Legacy keys predate contest routing and are safe to import only for the
+  // original Fighters product. Other contests must never inherit that draft.
+  const legacyValue = targetTeam.key === "fighters"
+    ? basePublicStorage.load(getLegacyGameScopedStorageKey(key, gameId)) || basePublicStorage.load(key)
+    : null;
   const legacyGameId = getStorageValueGameId(key, legacyValue);
   if (legacyValue && legacyGameId === gameId) {
-    basePublicStorage.save(getGameScopedStorageKey(key, gameId), legacyValue);
+    basePublicStorage.save(getGameScopedStorageKey(key, gameId, targetTeam.key), legacyValue);
     return legacyValue;
   }
   return null;
@@ -295,8 +308,9 @@ function loadGameScopedStorage(key) {
 function removeGameScopedStorage(key) {
   if (!GAME_SCOPED_STORAGE_KEYS.has(key)) return basePublicStorage.remove(key);
   const gameId = getActiveStorageGameId();
-  if (!gameId) return basePublicStorage.remove(key);
-  return basePublicStorage.remove(getGameScopedStorageKey(key, gameId));
+  const removed = basePublicStorage.remove(getGameScopedStorageKey(key, gameId, targetTeam.key));
+  if (!gameId && targetTeam.key === "fighters") basePublicStorage.remove(key);
+  return removed;
 }
 
 const publicStorage = {
@@ -307,7 +321,7 @@ const publicStorage = {
 const appState = publicFrontend.state.createPublicAppState(state);
 const publicRequestGuard = publicFrontend.createPublicRequestGuard(appState.requests);
 const publicApiClient = publicFrontend.createPublicApiClient();
-const publicPredictionPersistence = publicFrontend.createPublicPredictionPersistence({ apiClient: publicApiClient });
+const publicPredictionPersistence = publicFrontend.createPublicPredictionPersistence({ apiClient: publicApiClient, targetTeam });
 
 function syncPublicAppState() {
   publicFrontend.state.syncPublicAppState(appState, state);

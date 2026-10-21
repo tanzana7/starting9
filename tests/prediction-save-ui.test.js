@@ -27,7 +27,11 @@ async function predictionApp(t, { lineup = completeLineup, user, save } = {}) {
       ok: true, internalGameId: "canonical-game", gameDate: "2099-07-21", status: "fresh",
       rosterUse: "official_live", canUseForPrediction: true, players: completeLineup.map(({ player }) => ({ name: player }))
     }) };
-    assert.equal(url, "https://starting9.test/api/predictions/current?internalGameId=canonical-game");
+    const parsedUrl = new URL(url);
+    assert.equal(parsedUrl.origin, "https://starting9.test");
+    assert.equal(parsedUrl.pathname, "/api/predictions/current");
+    assert.equal(parsedUrl.searchParams.get("internalGameId"), "canonical-game");
+    assert.equal(parsedUrl.searchParams.get("contestId"), "contest_63616e6f6e6963616c2d67616d65_6669676874657273");
     assert.equal(options.method, "PUT");
     return save ? save() : { ok: true, json: async () => ({ ok: true }) };
   } });
@@ -85,6 +89,7 @@ test("complete submit saves locally and remotely once; in-flight button is disab
   assert.equal(put.length, 1);
   assert.equal(put[0].options.credentials, "include");
   assert.equal(JSON.parse(put[0].options.body).internalGameId, "canonical-game");
+  assert.equal(JSON.parse(put[0].options.body).contestId, "contest_63616e6f6e6963616c2d67616d65_6669676874657273");
   assert.equal(JSON.parse(put[0].options.body).prediction.lineup.length, 9);
   assert.ok([...app.stored.values()].some((value) => JSON.parse(value)?.lineup?.length === 9));
   finish({ ok: true, json: async () => ({ ok: true }) });

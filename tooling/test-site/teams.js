@@ -12,7 +12,14 @@ export const TEST_TEAMS = Object.freeze({
     branding: { primary: "#774411", secondary: "#442211", accent: "#eebbaa", surface: "#fff5ee" },
     logo: null, icon: null
   }),
-  marines: teamContext.MARINES
+  // Test Site must not exercise the production Marines identity. A synthetic
+  // key keeps its legacy end-to-end scoring fixture isolated from the real
+  // contest-scoped Marines data introduced in C-4A2.
+  marines: teamContext.defineTeamContext({
+    ...teamContext.MARINES, key: "test-marines", slug: "test-marines",
+    displayName: "TEST Marines", shortName: "TEST Marines", playerTeamId: "TM", providerTeamCode: "tm",
+    npbProviderKey: "marines", aliases: [...teamContext.MARINES.aliases, "marines"]
+  })
 });
 
 export function assertDistinctTestTeamIdentity(teams = TEST_TEAMS) {

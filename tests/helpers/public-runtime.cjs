@@ -223,7 +223,7 @@ function createPublicRuntime({ fetchImpl, user = { id: "user-1" }, candidateName
   };
   const context = vm.createContext({
     window, URL, URLSearchParams, AbortController,
-    console, document, Date: ClockDate, Element: RuntimeElement, HTMLSelectElement: RuntimeElement,
+    console, document, Date: ClockDate, Element: RuntimeElement, HTMLSelectElement: RuntimeElement, TextEncoder,
     setTimeout: (callback, delay) => { timers.set(++timerId, { callback, delay, interval: false }); return timerId; },
     setInterval: (callback, delay) => { timers.set(++timerId, { callback, delay, interval: true }); return timerId; },
     clearTimeout: (id) => timers.delete(id), clearInterval: (id) => timers.delete(id),

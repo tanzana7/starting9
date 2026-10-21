@@ -9,6 +9,7 @@ import {
   readFormalPipelineResults,
   runFormalPipeline
 } from "../tooling/offseason/formal-pipeline.js";
+import { createContestId } from "../backend/contest-identity.js";
 
 const GAME_COUNT = 6;
 const EXPECTED_HISTORY_PER_GAME = Object.freeze({
@@ -48,28 +49,29 @@ function assertPerGameHistory(fixture) {
   assert.equal(fixture.games.length, GAME_COUNT);
   for (const game of fixture.games) {
     const id = game.internalGameId;
+    const contestId = createContestId(id, "fighters");
     const counts = {
       scoringRevisions: fixture.database.prepare(
-        "SELECT COUNT(*) AS count FROM game_scoring_revisions WHERE internal_game_id = ?"
-      ).get(id).count,
+        "SELECT COUNT(*) AS count FROM contest_scoring_revisions WHERE contest_id = ? AND internal_game_id = ?"
+      ).get(contestId, id).count,
       activeScoringRevisions: fixture.database.prepare(
-        "SELECT COUNT(*) AS count FROM game_scoring_revisions WHERE internal_game_id = ? AND is_active = 1 AND status = 'completed'"
-      ).get(id).count,
+        "SELECT COUNT(*) AS count FROM contest_scoring_revisions WHERE contest_id = ? AND internal_game_id = ? AND is_active = 1 AND status = 'completed'"
+      ).get(contestId, id).count,
       rankingReflections: fixture.database.prepare(
-        "SELECT COUNT(*) AS count FROM ranking_reflection_revisions WHERE internal_game_id = ? AND status = 'reflected'"
-      ).get(id).count,
+        "SELECT COUNT(*) AS count FROM contest_ranking_reflection_revisions WHERE contest_id = ? AND internal_game_id = ? AND status = 'reflected'"
+      ).get(contestId, id).count,
       predictionScoreRevisions: fixture.database.prepare(
-        "SELECT COUNT(*) AS count FROM prediction_score_revisions WHERE internal_game_id = ?"
-      ).get(id).count,
+        "SELECT COUNT(*) AS count FROM contest_prediction_score_revisions WHERE contest_id = ? AND internal_game_id = ?"
+      ).get(contestId, id).count,
       scoreAttempts: fixture.database.prepare(
-        "SELECT COUNT(*) AS count FROM score_attempts WHERE internal_game_id = ? AND status = 'committed'"
-      ).get(id).count,
+        "SELECT COUNT(*) AS count FROM contest_score_attempts WHERE contest_id = ? AND internal_game_id = ? AND status = 'committed'"
+      ).get(contestId, id).count,
       publishedLineups: fixture.database.prepare(
-        "SELECT COUNT(*) AS count FROM game_lineups WHERE internal_game_id = ? AND publication_status = 'published'"
-      ).get(id).count,
+        "SELECT COUNT(*) AS count FROM game_lineups WHERE contest_id = ? AND internal_game_id = ? AND publication_status = 'published'"
+      ).get(contestId, id).count,
       publishedRankingGames: fixture.database.prepare(
-        "SELECT COUNT(*) AS count FROM ranking_games WHERE internal_game_id = ? AND publication_status = 'published'"
-      ).get(id).count
+        "SELECT COUNT(*) AS count FROM contest_ranking_games WHERE contest_id = ? AND internal_game_id = ? AND publication_status = 'published'"
+      ).get(contestId, id).count
     };
     assert.deepEqual(counts, EXPECTED_HISTORY_PER_GAME, id);
   }
@@ -97,9 +99,9 @@ test("off-season formal pipeline: six simultaneous games are closed, scored, ran
   try {
     const before = await runFormalPipeline(fixture, { now: fixture.beforeDeadline, maxPasses: 2 });
     assert.equal(before.executed.some(({ jobType }) => ["score", "ranking_rebuild", "publish"].includes(jobType)), false);
-    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM game_scoring_revisions").get().count, 0);
-    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM ranking_reflection_revisions").get().count, 0);
-    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM game_lineups WHERE publication_status = 'published'").get().count, 0);
+    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM contest_scoring_revisions").get().count, 0);
+    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM contest_ranking_reflection_revisions").get().count, 0);
+    assert.equal(fixture.database.prepare("SELECT COUNT(*) AS count FROM game_lineups WHERE contest_id IS NOT NULL AND publication_status = 'published'").get().count, 0);
 
     const finalized = await finalizeSyntheticLineups(fixture);
     assert.equal(finalized.length, 6);

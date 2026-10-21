@@ -10,6 +10,7 @@ const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
 const worker = fs.readFileSync(workerPath, "utf8");
 const { getResolvedPredictionDeadlineStatus, parsePredictionGameId, resolveApiGameReference, resolvePredictionGameMetadata } = await import(pathToFileURL(workerPath).href);
 const { createPublicRuntime } = await import(pathToFileURL(path.join(root, "tests", "helpers", "public-runtime.cjs")).href);
+const { default: teamContext } = await import(pathToFileURL(path.join(root, "frontend", "shared", "team-context.js")).href);
 
 function createScheduleDb({ directRow = null, candidateRows = [] } = {}) {
   return {
@@ -206,21 +207,40 @@ test("V2の日本語チーム名を含むgames行から8月4日の内部試合ID
   assert.equal(resolved.startAt, "2026-08-04T09:00:00.000Z");
 });
 
-test("選択中の対象試合はcanonical internalGameIdで予想APIを読む", async (t) => {
+test("選択中の対象試合はcanonical identityと現在のcontestで予想APIを読む", async (t) => {
   const calls = [];
   const app = createPublicRuntime({ fetchImpl: async (url, options) => {
     calls.push({ url, options });
     return { ok: true, json: async () => ({ ok: true, prediction: null }) };
-  } });
+  }, targetTeam: teamContext.MARINES });
   t.after(app.dispose);
   await app.operations.initializePredictionRemoteSync();
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, "https://starting9.test/api/predictions/current?internalGameId=canonical-game");
+  const requestUrl = new URL(calls[0].url);
+  assert.equal(requestUrl.pathname, "/api/predictions/current");
+  assert.equal(requestUrl.searchParams.get("internalGameId"), "canonical-game");
+  assert.equal(requestUrl.searchParams.get("contestId"), teamContext.contestIdForGame("canonical-game", teamContext.MARINES));
   assert.equal(calls[0].options.credentials, "include");
-  assert.match(worker, /reference = await resolveV3PredictionReference\(env\.AUTH_DB, input\?\.internalGameId(?:, targetTeamForEnvironment\(env\))?\)/);
-  assert.match(worker, /internalGameId: metadata\.internalGameId \|\| ""/);
-  assert.match(worker, /const storageGameId = metadata\.internalGameId && existing\?\.game_id/);
-  assert.match(worker, /storageGameId,\s*\.\.\.\(predictionStorage\.predictions/);
+});
+
+test("contestごとのdraft keyを使い、旧共通draftはFightersだけで互換読込する", (t) => {
+  const sharedDraft = { gameId: "canonical-game", lineup: [] };
+  const marines = createPublicRuntime({ targetTeam: teamContext.MARINES });
+  t.after(marines.dispose);
+  marines.stored.set("hamStarting9Prediction", JSON.stringify(sharedDraft));
+  marines.state.predictionTargetGameId = "canonical-game";
+  marines.operations.loadState();
+  assert.equal(marines.state.prediction, null);
+  marines.stored.set("hamStarting9Prediction:contest:marines:game:canonical-game", JSON.stringify({ gameId: "canonical-game", lineup: [] }));
+  marines.operations.loadState();
+  assert.equal(marines.state.prediction.gameId, "canonical-game");
+
+  const fighters = createPublicRuntime({ targetTeam: teamContext.FIGHTERS });
+  t.after(fighters.dispose);
+  fighters.stored.set("hamStarting9Prediction", JSON.stringify(sharedDraft));
+  fighters.state.predictionTargetGameId = "canonical-game";
+  fighters.operations.loadState();
+  assert.equal(fighters.state.prediction.gameId, "canonical-game");
 });
 
 test("対象試合APIの一時障害時は、既存静的日程へ戻って保存対象を失わない", () => {

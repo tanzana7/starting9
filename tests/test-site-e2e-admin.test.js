@@ -3,8 +3,9 @@ import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import testSiteWorker, { createTestTeamWorker } from "../tooling/test-site/worker.js";
-import { simulatorGameDate } from "../tooling/test-site/simu-npb/source.js";
+import { handleSimulatedNpbRequest, simulatorGameDate } from "../tooling/test-site/simu-npb/source.js";
 import { TEST_TEAM_GROUPS } from "../tooling/test-site/teams.js";
+import { TEST_TEAMS } from "../tooling/test-site/teams.js";
 
 let requestNumber = 0;
 
@@ -165,6 +166,59 @@ test("simulator no-game cleanup removes only the requested internal game", async
   });
   assert.equal(adminCleanup.response.status, 200);
   assert.equal(adminCleanup.payload.removed, true);
+});
+
+test("parsed simulator roster IDs are trusted by the same Test prediction save path", async (t) => {
+  const f = await fixture();
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; f.database.close(); f.audit.close(); });
+  f.env.S9SIMU_ENABLED = "true";
+  f.env.S9SIMU_BASE_URL = "https://s9simu.pages.dev";
+  f.env.NPB_SOURCE = "simulator";
+  f.env.ENABLE_GAME_AUTOMATION_V3 = "true";
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.origin !== "https://s9simu.pages.dev") return originalFetch(input, init);
+    return handleSimulatedNpbRequest(new Request(url, init), {
+      SIMU_NPB_STATE: { async get() { return "pre-lineup"; } }
+    }, { TEST_TEAMS, TEST_TEAM_GROUPS });
+  };
+
+  const setup = await f.request("/api/test/e2e-admin", { method: "POST", body: { action: "provision" } });
+  assert.equal(setup.response.status, 201);
+  const cookie = (setup.response.headers.get("Set-Cookie") || "").split(";", 1)[0];
+  const scheduled = await f.request("/api/test/simu/schedule?testTeam=fighters", {
+    method: "POST", body: {}, cookie
+  });
+  assert.equal(scheduled.response.status, 200);
+  const game = scheduled.payload.physicalGames.find((row) => row.game_code === "g-t-1");
+  assert.ok(game);
+  const team = TEST_TEAMS.giants;
+  const query = `?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=giants&simuNpb=1`;
+  const roster = await f.request(`/api/game-day-roster${query}`, { cookie });
+  assert.equal(roster.response.status, 200);
+  assert.equal(roster.payload.players.length, 15);
+  const lineup = roster.payload.players.slice(0, 9).map((player, index) => ({
+    playerId: player.playerId,
+    playerName: player.name,
+    uniformNumber: player.uniformNumber || player.number,
+    teamCode: team.key,
+    teamId: team.playerTeamId,
+    battingOrder: index + 1,
+    position: ["捕", "一", "二", "三", "遊", "左", "中", "右", "指"][index]
+  }));
+  const saved = await f.request(`/api/predictions/current${query}`, {
+    method: "PUT", cookie,
+    body: { internalGameId: game.internal_game_id, prediction: { schemaVersion: 1, lineup } }
+  });
+  assert.equal(saved.response.status, 200, saved.payload.error);
+  assert.equal(saved.payload.status, "submitted");
+
+  const cleanup = await f.request("/api/test/e2e-admin", {
+    method: "POST", body: { action: "cleanup" }, cookie
+  });
+  assert.equal(cleanup.response.status, 200);
+  assert.equal(cleanup.payload.removed, true);
 });
 
 test("normal synthetic user cannot operate scenario controls", async (t) => {

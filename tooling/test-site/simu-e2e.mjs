@@ -49,7 +49,8 @@ async function call(path, { method = "GET", body, admin = false, setup = false, 
   });
   const payload = await response.json().catch(() => null);
   if (response.status !== expectedStatus) {
-    throw new Error(`${method} ${new URL(path, SITE_ORIGIN).pathname} returned ${response.status} (${payload?.code || "unexpected-response"})`);
+    const reason = payload?.code || payload?.error || "unexpected-response";
+    throw new Error(`${method} ${new URL(path, SITE_ORIGIN).pathname} returned ${response.status} (${String(reason).slice(0, 180)})`);
   }
   return { response, payload };
 }
@@ -73,8 +74,12 @@ async function savePrediction(teamKey, internalGameId) {
   const roster = await call(`/api/game-day-roster${query}`, { admin: true });
   assert.equal(roster.payload.players?.length, 15, `${teamKey}: simulator roster should contain 15 parsed players`);
   assert.ok(roster.payload.players.every((player) => player.teamCode === teamKey), `${teamKey}: roster identity must stay scoped`);
+  assert.ok(roster.payload.players.every((player) => /^npb:\d{8}$/.test(player.playerId)), `${teamKey}: parsed simulator NPB identities must remain intact`);
   const lineup = roster.payload.players.slice(0, 9).map((player, index) => ({
-    playerId: player.playerId,
+    // Keep fake NPB IDs observable in the parsed source above, but submit the
+    // same team-number IDs accepted by the public prediction form. This avoids
+    // coupling synthetic predictions to the separate live-roster trust cache.
+    playerId: `${TEST_TEAMS[teamKey].playerTeamId}-${player.uniformNumber || player.number}`,
     playerName: player.name,
     uniformNumber: player.uniformNumber || player.number,
     teamCode: teamKey,

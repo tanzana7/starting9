@@ -126,6 +126,17 @@ try {
     method: "POST", body: { scenario: "no-game" }, admin: true
   });
   assert.equal(clearedLegacyFixture.payload.scenario, "no-game");
+  // An interrupted run can leave yesterday's simulator schedule behind. Remove
+  // each known synthetic game through the admin-only, internal-game-scoped
+  // Test cleanup route before the live date-relative parser fetches tomorrow's
+  // schedule; otherwise an expired deadline can make prediction saves fail.
+  for (const { internalGameId, homeKey } of TEST_TEAM_GROUPS) {
+    const query = `?internalGameId=${encodeURIComponent(internalGameId)}&testTeam=${homeKey}&simuNpb=1`;
+    const clearedSimulatorFixture = await call(`/api/test/scenario${query}`, {
+      method: "POST", body: { scenario: "no-game" }, admin: true
+    });
+    assert.equal(clearedSimulatorFixture.payload.scenario, "no-game", `${homeKey}: stale simulator fixture cleanup`);
+  }
   const schedule = await call("/api/test/simu/schedule?testTeam=fighters", {
     method: "POST", body: {}, admin: true
   });

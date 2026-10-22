@@ -3089,7 +3089,12 @@ async function executeV3LineupExecutor({ env, internalGameId, now, target, state
     }), { internalGameId, now, target, job, lineupIdentity, stage: "finalize_official_lineup" });
   }
   if (jobType === V3_JOB_TYPE.LINEUP_FETCH) {
-    const lineupDataHealth = await getV3LineupDataHealth(env.AUTH_DB, internalGameId, stateBefore);
+    const targetTeam = targetTeamForEnvironment(env);
+    const contest = await getGameContest(env.AUTH_DB, internalGameId, targetTeam);
+    const lineupColumns = await getTableColumnSet(env.AUTH_DB, "game_lineups");
+    const contestId = contest?.persisted && lineupColumns.has("contest_id")
+      ? String(contest.contestId || "") : "";
+    const lineupDataHealth = await getV3LineupDataHealth(env.AUTH_DB, internalGameId, stateBefore, contestId);
     if (!lineupDataHealth.available) {
       throw createV3Error("V3_LINEUP_DATA_HEALTH_UNAVAILABLE", "lineup_fetchの候補データを確認できないため、完了扱いにできません。", {
         retryable: true,
@@ -3133,7 +3138,12 @@ async function executeV3LineupExecutor({ env, internalGameId, now, target, state
       npbDiagnostics: result.npbDiagnostics || null
     };
   }
-  const finalizedHealth = await getV3LineupDataHealth(env.AUTH_DB, internalGameId, stateBefore);
+  const targetTeam = targetTeamForEnvironment(env);
+  const contest = await getGameContest(env.AUTH_DB, internalGameId, targetTeam);
+  const lineupColumns = await getTableColumnSet(env.AUTH_DB, "game_lineups");
+  const contestId = contest?.persisted && lineupColumns.has("contest_id")
+    ? String(contest.contestId || "") : "";
+  const finalizedHealth = await getV3LineupDataHealth(env.AUTH_DB, internalGameId, stateBefore, contestId);
   if (!finalizedHealth.available) {
     throw createV3Error("V3_LINEUP_DATA_HEALTH_UNAVAILABLE", "正式スタメンの確定状態を確認できないため、完了扱いにできません。", {
       retryable: true,
@@ -15208,11 +15218,12 @@ function normalizeRosterForSnapshot(players, targetTeam = PRODUCTION_TEAM, minim
   return normalized;
 }
 
-export function createOfficialLineupFromNpb(lineup) {
+export function createOfficialLineupFromNpb(lineup, { targetTeam = PRODUCTION_TEAM } = {}) {
+  targetTeam = teamContext.requireTeamContext(targetTeam);
   const parsedCount = Array.isArray(lineup) ? lineup.length : 0;
   const validation = {
     parseStage: "official_lineup",
-    expectedTeams: [FIGHTERS_TEAM_CODE],
+    expectedTeams: [targetTeam.key],
     detectedTeams: [],
     expectedCount: SCORING_LINEUP_SIZE,
     parsedCount,
@@ -15250,7 +15261,9 @@ export function createOfficialLineupFromNpb(lineup) {
   const players = new Set();
   for (const row of lineup) {
     const rawPlayerName = String(row?.playerName || "").trim();
-    const player = findFightersPlayerByName(rawPlayerName);
+    // The historical NPB path is Fighters-only; other team contexts must not
+    // resolve same-named players against the Fighters roster.
+    const player = targetTeam.key === PRODUCTION_TEAM.key ? findFightersPlayerByName(rawPlayerName) : null;
     const battingOrder = Number(row?.order);
     const position = normalizeScoringPosition(row?.position);
     if (!Number.isInteger(battingOrder) || battingOrder < 1 || battingOrder > 9 || orders.has(battingOrder)) {
@@ -15267,7 +15280,8 @@ export function createOfficialLineupFromNpb(lineup) {
         missingPositionCount: 1
       });
     }
-    const playerId = player ? createFightersPlayerId(player.uniformNumber) : null;
+    const suppliedPlayerId = normalizeOfficialNpbPlayerId(row?.playerId);
+    const playerId = player ? createFightersPlayerId(player.uniformNumber) : suppliedPlayerId || null;
     if (playerId && players.has(playerId)) {
       return invalid("LINEUP_DUPLICATE_PLAYER", "NPBのスタメンに同一選手が重複しています。", {
         resolvedPlayerCount: result.length,
@@ -15282,8 +15296,8 @@ export function createOfficialLineupFromNpb(lineup) {
     validation.battingOrderMax = validation.battingOrderMax === null ? battingOrder : Math.max(validation.battingOrderMax, battingOrder);
     result.push({
       playerId,
-      teamId: FIGHTERS_TEAM_ID,
-      teamCode: FIGHTERS_TEAM_CODE,
+      teamId: targetTeam.playerTeamId,
+      teamCode: targetTeam.key,
       uniformNumber: player?.uniformNumber || String(row?.uniformNumber || "").trim(),
       playerName: player?.name || rawPlayerName || "不明",
       battingOrder,
@@ -15291,7 +15305,7 @@ export function createOfficialLineupFromNpb(lineup) {
       ...(playerId ? {} : { resolutionStatus: "unresolved", rawPlayerName: rawPlayerName || "不明" })
     });
   }
-  const sanitized = sanitizeActualLineupForScoring(result, { allowUnresolvedPlayer: true });
+  const sanitized = sanitizeActualLineupForScoring(result, { allowUnresolvedPlayer: true, targetTeam });
   if (!sanitized.ok) {
     return invalid("LINEUP_INVALID_POSITION", sanitized.error || "NPBの守備位置を検証できません。", {
       resolvedPlayerCount: result.length,
@@ -15992,7 +16006,7 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
         parseStage: "official_game_status"
       });
     }
-    const actual = createOfficialLineupFromNpb(payload.lineup);
+    const actual = createOfficialLineupFromNpb(payload.lineup, { targetTeam });
     if (!actual.ok) {
       throw createPregameError(actual.code || "LINEUP_PARSE_FAILED", actual.error, {
         parseStage: "official_lineup",
@@ -16037,7 +16051,8 @@ async function captureOfficialLineup(env, gameId, now, { force = false, phase = 
       capturedAt: detectedAt,
       validation: actual.validation || null,
       reason: "NPB公式スタメン最終候補",
-      allowUnresolvedPlayer: true
+      allowUnresolvedPlayer: true,
+      targetTeam
     });
     const record = await approveActualLineupForAutoScoring(env, gameId, actual.lineup, detectedAt, {
       source: "npb-auto",

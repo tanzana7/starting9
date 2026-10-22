@@ -4,9 +4,9 @@ import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import testSiteWorker, { createTestTeamWorker } from "../tooling/test-site/worker.js";
+import { classifyE2ECleanupResult } from "../tooling/test-site/cleanup-contract.js";
 import { handleSimulatedNpbRequest, simulatorGameDate } from "../tooling/test-site/simu-npb/source.js";
-import { TEST_TEAM_GROUPS } from "../tooling/test-site/teams.js";
-import { TEST_TEAMS } from "../tooling/test-site/teams.js";
+import { TEST_TEAM_GROUPS, TEST_TEAMS, testPredictionPlayerId } from "../tooling/test-site/teams.js";
 
 let requestNumber = 0;
 const GITHUB_JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks";
@@ -47,12 +47,24 @@ function d1(database) {
       const bind = (...args) => ({
         all: async () => ({ results: statement.all(...args) }),
         first: async () => statement.get(...args),
-        run: async () => ({ meta: { changes: Number(statement.run(...args).changes || 0) } })
+        run: async () => {
+          try {
+            return { meta: { changes: Number(statement.run(...args).changes || 0) } };
+          } catch (error) {
+            throw new Error(`${error.message}; SQL=${sql}`);
+          }
+        }
       });
       return { ...bind(), bind };
     },
     async batch(statements) {
-      return statements.map((statement) => statement.run());
+      return statements.map((statement) => {
+        try {
+          return statement.run();
+        } catch (error) {
+          throw new Error(`${error.message}; failed SQL=${statement.sql}`);
+        }
+      });
     }
   };
 }
@@ -141,16 +153,20 @@ test("E2E admin provisioning uses ordinary registration/login and revokes its se
   const cleaned = await f.request("/api/test/e2e-admin", { method: "POST", body: { action: "cleanup" }, cookie });
   assert.equal(cleaned.response.status, 200);
   assert.equal(cleaned.payload.removed, false);
+  assert.ok(Date.parse(cleaned.payload.replayMarkerRetainedUntil) > Date.now());
   assert.equal(f.database.prepare("SELECT status, role FROM users WHERE id = ?").get(temporary.id).status, "disabled");
   assert.equal(f.database.prepare("SELECT role FROM users WHERE id = ?").get(temporary.id).role, "user");
   assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM sessions").get().count, 0);
+  const staleSession = await f.request("/api/auth/me", { cookie });
+  assert.equal(staleSession.payload.authenticated, false);
 });
 
 test("E2E provisioning rejects invalid, expired, wrong-workflow, and mismatched run proofs without writes", async (t) => {
   const f = await fixture();
   t.after(() => { f.restoreFetch(); f.database.close(); f.audit.close(); });
   const valid = f.createOidcToken();
-  const invalidSignature = `${valid.token.slice(0, -1)}${valid.token.endsWith("a") ? "b" : "a"}`;
+  const [header, payload, signature] = valid.token.split(".");
+  const invalidSignature = `${header}.${payload}.${signature[0] === "A" ? "B" : "A"}${signature.slice(1)}`;
   const invalid = await f.request("/api/test/e2e-admin", {
     method: "POST", body: { action: "provision", runId: valid.runId }, authorization: invalidSignature
   });
@@ -269,6 +285,16 @@ test("simulator no-game cleanup removes only the requested internal game", async
       VALUES (?, ?, ?)`)
       .run(`contest-${internalGameId}`, internalGameId, teamKey);
   }
+  f.database.prepare(`INSERT INTO detected_game_schedule
+    (game_id, source_game_key, game_date, start_at, home_team, away_team, game_code, venue,
+     game_status, detected_at, schedule_checked_at, created_at, updated_at, internal_game_id)
+    VALUES (?, ?, '2027-03-01', '2027-03-01T18:00:00+09:00', 'giants', 'tigers', 'g-t-91', 'simulator',
+     'scheduled', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)`)
+    .run("simu-provider-row-91", "simu-run:2027-03-01:g-t-91", targetId);
+  f.audit.prepare(`INSERT INTO game_automation_v3_audit
+    (internal_game_id, job_type, occurred_at, source, contest_id)
+    VALUES (?, 'lineup_fetch', CURRENT_TIMESTAMP, 'test', ?)`)
+    .run(targetId, `contest-${targetId}`);
 
   const setup = await f.request("/api/test/e2e-admin", { method: "POST", body: { action: "provision" } });
   assert.equal(setup.response.status, 201);
@@ -281,6 +307,9 @@ test("simulator no-game cleanup removes only the requested internal game", async
   assert.equal(cleaned.payload.scenario, "no-game");
   assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM games WHERE internal_game_id = ?").get(targetId).count, 0);
   assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM games WHERE internal_game_id = ?").get(unrelatedId).count, 1);
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM detected_game_schedule WHERE internal_game_id = ?").get(targetId).count, 0);
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM detected_game_schedule WHERE game_id = 'simu-provider-row-91'").get().count, 0);
+  assert.equal(f.audit.prepare("SELECT COUNT(*) AS count FROM game_automation_v3_audit WHERE internal_game_id = ?").get(targetId).count, 0);
 
   const absentGroup = TEST_TEAM_GROUPS[2];
   const absentQuery = `?internalGameId=${encodeURIComponent(absentGroup.internalGameId)}&testTeam=${absentGroup.homeKey}&simuNpb=1`;
@@ -355,6 +384,154 @@ test("parsed simulator roster IDs are trusted by the same Test prediction save p
   });
   assert.equal(cleanup.response.status, 200);
   assert.equal(cleanup.payload.removed, false);
+});
+
+test("official simulator lineups finalize through the formal pipeline for all twelve contest contexts", async (t) => {
+  const f = await fixture();
+  const originalFetch = globalThis.fetch;
+  const simulatorState = { value: "available" };
+  t.after(() => { globalThis.fetch = originalFetch; f.restoreFetch(); f.database.close(); f.audit.close(); });
+  f.env.S9SIMU_ENABLED = "true";
+  f.env.S9SIMU_BASE_URL = "https://s9simu.pages.dev";
+  f.env.NPB_SOURCE = "simulator";
+  f.env.ENABLE_GAME_AUTOMATION_V3 = "true";
+  // Match the inherited Test config so this test proves its per-request
+  // product environment explicitly selects the automated official path.
+  f.env.ENABLE_SEMI_AUTO_LINEUP = "true";
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.origin !== "https://s9simu.pages.dev") return originalFetch(input, init);
+    return handleSimulatedNpbRequest(new Request(url, init), {
+      SIMU_NPB_STATE: {
+        async get() { return simulatorState.value; },
+        async put(_key, value) { simulatorState.value = value; }
+      }
+    }, { TEST_TEAMS, TEST_TEAM_GROUPS });
+  };
+
+  const setup = await f.request("/api/test/e2e-admin", { method: "POST", body: { action: "provision" } });
+  assert.equal(setup.response.status, 201);
+  const cookie = (setup.response.headers.get("Set-Cookie") || "").split(";", 1)[0];
+  const scheduled = await f.request("/api/test/simu/schedule?testTeam=fighters", {
+    method: "POST", body: {}, cookie
+  });
+  assert.equal(scheduled.response.status, 200);
+  const physicalGames = scheduled.payload.physicalGames;
+  assert.equal(physicalGames.length, 6);
+
+  const teamsByKey = new Map(Object.entries(TEST_TEAMS));
+  const contexts = [];
+  for (const game of physicalGames) {
+    const groupIndex = Number(String(game.game_code).match(/^g-t-(\d+)$/)?.[1]) - 1;
+    const group = TEST_TEAM_GROUPS[groupIndex];
+    assert.ok(group, `unexpected simulator game code ${game.game_code}`);
+    assert.equal(game.home_team, TEST_TEAMS[group.homeKey].key);
+    assert.equal(game.away_team, TEST_TEAMS[group.awayKey].key);
+    for (const teamKey of [group.homeKey, group.awayKey]) {
+      const query = `?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=${teamKey}&simuNpb=1`;
+      const roster = await f.request(`/api/game-day-roster${query}`, { cookie });
+      assert.equal(roster.response.status, 200, `${teamKey}: roster fetch`);
+      assert.equal(roster.payload.players.length, 15);
+      assert.ok(roster.payload.players.every((player) => player.teamCode === teamKey));
+      assert.ok(roster.payload.players.every((player) => player.teamId === teamsByKey.get(teamKey).playerTeamId));
+      const lineup = roster.payload.players.slice(0, 9).map((player, index) => ({
+        playerId: testPredictionPlayerId(teamKey, player.uniformNumber || player.number),
+        playerName: player.name,
+        uniformNumber: player.uniformNumber || player.number,
+        teamCode: teamKey,
+        teamId: teamsByKey.get(teamKey).playerTeamId,
+        battingOrder: index + 1,
+        position: ["捕", "一", "二", "三", "遊", "左", "中", "右", "指"][index]
+      }));
+      const prediction = await f.request(`/api/predictions/current${query}`, {
+        method: "PUT", cookie,
+        body: { internalGameId: game.internal_game_id, prediction: { schemaVersion: 1, lineup } }
+      });
+      assert.equal(prediction.response.status, 200, `${teamKey}: prediction save ${JSON.stringify(prediction.payload)}`);
+      contexts.push({ game, group, teamKey, query });
+    }
+  }
+  assert.equal(contexts.length, 12);
+
+  for (const context of contexts) {
+    const startAt = new Date(context.game.start_at);
+    const closedAt = new Date(startAt.getTime() - 59 * 60_000);
+    const closed = await f.request(`/api/test/scenario${context.query}`, {
+      method: "POST", cookie,
+      body: { scenario: "closed", stageOnly: true, now: closedAt.toISOString() }
+    });
+    assert.equal(closed.response.status, 200, `${context.teamKey}: prediction close`);
+    assert.equal(closed.payload.game.state, "prediction_closed");
+  }
+
+  simulatorState.value = "available";
+  for (const context of contexts) {
+    const postGame = new Date(new Date(context.game.start_at).getTime() + 10 * 60_000);
+    let captured;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const executionAt = new Date(postGame.getTime() + attempt * 60_000);
+      captured = await f.request(`/api/test/scenario${context.query}`, {
+        method: "POST", cookie,
+        body: { scenario: "lineup-captured", stageOnly: true, now: executionAt.toISOString() }
+      });
+      if (captured.payload.game?.state === "lineup_ready") break;
+    }
+    assert.equal(captured.response.status, 200, `${context.teamKey}: official lineup fetch`);
+    const capturedJobs = f.database.prepare(`SELECT job_type, status, scheduled_at, scheduled_slot_at, failure_code, failure_message, attempt_count
+      FROM game_jobs_v3 WHERE internal_game_id = ? AND contest_id = (
+        SELECT contest_id FROM game_contests WHERE internal_game_id = ? AND target_team_key = ?
+      ) ORDER BY job_type`).all(context.game.internal_game_id, context.game.internal_game_id, context.teamKey);
+    assert.equal(captured.payload.game.state, "lineup_ready",
+      `${context.teamKey}: formal transition ${JSON.stringify({ game: captured.payload.game, jobs: capturedJobs })}`);
+    const lineup = f.database.prepare(`SELECT revision.actual_lineup_json, current.final_lineup_revision_id
+      FROM game_lineups AS current
+      JOIN contest_lineup_revisions AS revision
+        ON revision.contest_id = current.contest_id AND revision.revision_id = current.final_lineup_revision_id
+      WHERE current.internal_game_id = ? AND current.contest_id = (
+        SELECT contest_id FROM game_contests WHERE internal_game_id = ? AND target_team_key = ?
+      )`).get(context.game.internal_game_id, context.game.internal_game_id, context.teamKey);
+    assert.ok(lineup?.final_lineup_revision_id, `${context.teamKey}: canonical final lineup missing`);
+    const actual = JSON.parse(lineup.actual_lineup_json);
+    assert.equal(actual.length, 9);
+    assert.ok(actual.every((player) => player.teamCode === context.teamKey), `${context.teamKey}: lineup identity crossed contests`);
+    const jobs = f.database.prepare(`SELECT job_type, status FROM game_jobs_v3
+      WHERE internal_game_id = ? AND contest_id = (
+        SELECT contest_id FROM game_contests WHERE internal_game_id = ? AND target_team_key = ?
+      ) AND job_type IN ('lineup_fetch', 'lineup_finalize') ORDER BY job_type`).all(
+      context.game.internal_game_id, context.game.internal_game_id, context.teamKey
+    );
+    assert.equal(jobs.some((job) => job.job_type === "lineup_fetch" && job.status === "completed"), true);
+    assert.equal(jobs.some((job) => job.job_type === "lineup_finalize" && job.status === "completed"), true);
+    assert.equal(jobs.every((job) => job.job_type === "lineup_fetch" || job.status === "completed"), true);
+  }
+
+  // Cleanup uses the exact six canonical IDs returned by this schedule run;
+  // a separate game remains as a guard against any cross-run/global delete.
+  const unrelatedId = "22222222-2027-4000-8000-000000000099";
+  f.database.prepare(`INSERT INTO games
+    (internal_game_id, game_date, start_time, home_team, away_team, created_at, updated_at)
+    VALUES (?, '2027-03-01', '2027-03-01T18:00:00+09:00', 'fighters', 'hawks', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)
+    .run(unrelatedId);
+  f.database.prepare(`INSERT INTO game_contests (contest_id, internal_game_id, target_team_key)
+    VALUES ('contest-unrelated-s9simu', ?, 'fighters')`).run(unrelatedId);
+  for (const game of physicalGames) {
+    const group = TEST_TEAM_GROUPS[Number(String(game.game_code).match(/^g-t-(\d+)$/)?.[1]) - 1];
+    const query = `?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=${group.homeKey}&simuNpb=1`;
+    const cleaned = await f.request(`/api/test/scenario${query}`, {
+      method: "POST", body: { scenario: "no-game" }, cookie
+    });
+    assert.equal(cleaned.response.status, 200);
+  }
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM games WHERE internal_game_id = ?").get(unrelatedId).count, 1);
+  for (const game of physicalGames) {
+    assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM games WHERE internal_game_id = ?").get(game.internal_game_id).count, 0);
+  }
+
+  const cleanup = await f.request("/api/test/e2e-admin", {
+    method: "POST", body: { action: "cleanup" }, cookie
+  });
+  assert.equal(cleanup.response.status, 200);
+  assert.ok(["replay-blocked", "deleted"].includes(classifyE2ECleanupResult(cleanup.payload)));
 });
 
 test("normal synthetic user cannot operate scenario controls", async (t) => {
@@ -440,6 +617,14 @@ test("OIDC cleanup is limited to the current run's reserved E2E identity", async
   assert.ok(cleaned.payload.replayMarkerRetainedUntil);
   assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM users WHERE username = ?").get(username).count, 1);
   assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM sessions").get().count, 0);
+  const replay = await f.request("/api/test/e2e-admin", {
+    method: "POST", body: { action: "provision", runId: setup.runId },
+    authorization: setup.authorizationToken
+  });
+  assert.equal(replay.response.status, 409);
+  assert.equal(replay.payload.code, "E2E_RUN_REPLAYED");
+  assert.equal(f.database.prepare("SELECT role, status FROM users WHERE username = ?").get(username).role, "user");
+  assert.equal(f.database.prepare("SELECT status FROM users WHERE username = ?").get(username).status, "disabled");
 
   const ordinary = await f.request("/api/auth/register", {
     method: "POST", body: { username: "e2e-normal", password: "Synthetic-Password-2026", passwordConfirmation: "Synthetic-Password-2026" }

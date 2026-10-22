@@ -4,6 +4,18 @@ import teamContext from "../../frontend/shared/team-context.js";
 // Test Site D1s. Production target-team resolution remains hard-pinned to F.
 export const TEST_TEAMS = teamContext.NPB_TEAMS;
 export const TEST_TEAM_KEYS = Object.freeze(Object.keys(TEST_TEAMS));
+const TEST_PREDICTION_PLAYER_ID_PREFIXES = Object.freeze({
+  ...Object.fromEntries(TEST_TEAM_KEYS.map((key) => [key, TEST_TEAMS[key].playerTeamId])),
+  buffaloes: "Bs"
+});
+
+export function testPredictionPlayerId(teamKey, uniformNumber) {
+  if (!Object.hasOwn(TEST_PREDICTION_PLAYER_ID_PREFIXES, teamKey)
+      || !/^\d{1,3}$/.test(String(uniformNumber || ""))) {
+    throw new Error("Invalid Test Site prediction player identity");
+  }
+  return `${TEST_PREDICTION_PLAYER_ID_PREFIXES[teamKey]}-${uniformNumber}`;
+}
 
 const GAME_PAIRS = Object.freeze([
   Object.freeze(["giants", "tigers"]),

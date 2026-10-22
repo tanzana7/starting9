@@ -6,6 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import worker from "../auth-worker.js";
 import { createContestId } from "../backend/contest-identity.js";
+import { teamContext } from "../backend/target-team.js";
 import {
   createOfficialLineupFromNpb,
   executeGameAutomationV3Job,
@@ -140,6 +141,28 @@ function createV3ExecutorFixture({ lineup = lineupRows().map((row) => ({
       finalized_at TEXT,
       finalized_by TEXT,
       is_final INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE contest_lineup_revisions (
+      contest_id TEXT NOT NULL,
+      internal_game_id TEXT NOT NULL,
+      game_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      revision_id TEXT NOT NULL,
+      actual_lineup_json TEXT NOT NULL,
+      lineup_fingerprint TEXT NOT NULL,
+      source TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      created_by INTEGER,
+      reason TEXT NOT NULL,
+      is_current INTEGER NOT NULL DEFAULT 0,
+      superseded_at TEXT,
+      captured_at TEXT,
+      validation_json TEXT,
+      finalized_at TEXT,
+      finalized_by TEXT,
+      unresolved_player_count INTEGER NOT NULL DEFAULT 0,
+      is_final INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (contest_id, version)
     );
   `);
   database.prepare(`
@@ -324,6 +347,29 @@ test("nine valid NPB rows produce a verified candidate payload", () => {
   assert.equal(parsed.validation.valid, true);
   assert.equal(parsed.parserDiagnostics.parserReason, "VALID");
   assert.equal(parsed.parserDiagnostics.totalCandidatePlayerCount, 9);
+});
+
+test("official lineup parsing preserves the selected contest team without cross-resolving Fighters players", () => {
+  const rows = ["遊", "二", "三", "一", "左", "中", "右", "捕", "指"].map((position, index) => ({
+    playerName: `公式選手${index + 1}`,
+    uniformNumber: String(index + 1),
+    order: index + 1,
+    position
+  }));
+
+  for (const targetTeam of Object.values(teamContext.NPB_TEAMS)) {
+    const parsed = createOfficialLineupFromNpb(rows, { targetTeam });
+    assert.equal(parsed.ok, true, targetTeam.key);
+    assert.equal(parsed.validation.expectedTeams[0], targetTeam.key);
+    assert.deepEqual(new Set(parsed.lineup.map((player) => player.teamCode)), new Set([targetTeam.key]));
+    assert.deepEqual(new Set(parsed.lineup.map((player) => player.teamId)), new Set([targetTeam.playerTeamId]));
+    assert.equal(parsed.lineup.every((player) => !player.playerId && player.resolutionStatus === "unresolved"), true);
+  }
+
+  const defaultParsed = createOfficialLineupFromNpb(rows);
+  assert.equal(defaultParsed.ok, true);
+  assert.equal(defaultParsed.lineup.every((player) => player.teamCode === teamContext.FIGHTERS.key), true);
+  assert.equal(defaultParsed.lineup.every((player) => player.teamId === teamContext.FIGHTERS.playerTeamId), true);
 });
 
 test("V3 late executor saves a candidate and exposes continuation-ready artifact diagnostics", async () => {

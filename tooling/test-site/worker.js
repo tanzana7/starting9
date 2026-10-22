@@ -18,18 +18,19 @@ const CONTEST_ID = createContestId(INTERNAL_GAME_ID, targetTeam.key);
 const E2E_ADMIN_USERNAME_PREFIX = "e2e-";
 const POSITIONS = Object.freeze(["捕", "一", "二", "三", "遊", "左", "中", "右", "指"]);
 const CLEANUP_ORDER = Object.freeze([
-  "contest_score_attempts", "contest_prediction_score_revisions", "contest_ranking_reflection_revisions",
+  "contest_score_attempt_prediction_rows", "contest_score_attempt_test_rows",
+  "contest_prediction_score_revisions", "contest_score_attempts", "contest_ranking_reflection_revisions",
   "contest_game_rescore_previews", "contest_game_rescore_jobs", "contest_game_rescore_audits",
   "contest_perfect_achievers", "contest_ranking_eligibility_history", "contest_ranking_test_predictions",
   "contest_ranking_test_game_settings", "contest_ranking_games", "contest_scoring_revisions",
   "score_attempt_prediction_rows", "score_attempt_test_rows", "score_attempts",
   "prediction_score_revisions", "ranking_reflection_revisions", "game_scoring_revisions",
   "ranking_eligibility_history", "game_rescore_audits", "game_rescore_previews", "game_rescore_jobs",
-  "contest_lineup_revisions",
-  "game_lineup_revisions", "game_automation_v3_audit", "game_jobs_v3",
-  "game_workflow_logs", "game_lineups", "predictions", "ranking_games",
+  "game_lineups", "contest_lineup_revisions", "game_lineup_revisions",
+  "game_automation_v3_audit", "game_jobs_v3", "game_workflow_logs", "predictions", "ranking_games",
   "contest_automation_v3_state", "game_automation_v3_state", "game_pregame_automation", "game_roster_snapshots",
-  "probable_starters", "game_identifiers", "detected_game_schedule", "game_contests", "games"
+  "probable_starters", "game_identifiers", "game_schedule_change_history", "detected_game_schedule", "contest_identity_backfill_issues",
+  "game_contests", "games"
 ]);
 
 const TEST_PLAYERS = Object.freeze(Array.from({ length: 15 }, (_, index) => Object.freeze({
@@ -91,7 +92,7 @@ function currentTimes(offsetMinutes) {
   return { now: now.toISOString(), startAt: startAt.toISOString(), deadlineAt: deadlineAt.toISOString(), gameDate };
 }
 
-function createProductEnvironment(env) {
+function createProductEnvironment(env, { automaticOfficialLineup = false } = {}) {
   if (!isIsolatedTestEnvironment(env)) return env;
   return {
     ...env,
@@ -113,38 +114,85 @@ function createProductEnvironment(env) {
     S9SIMU_BASE_URL: String(env.S9SIMU_BASE_URL || "https://s9simu.pages.dev"),
     NPB_FETCH_DISABLED: "false",
     ENABLE_AUTO_ROSTER_FETCH: "true",
-    ENABLE_AUTO_LINEUP_FETCH: "true"
+    ENABLE_AUTO_LINEUP_FETCH: "true",
+    // Preserve the existing Test site's semi-auto mode outside simulator E2E.
+    // That E2E explicitly selects the automatic official-lineup path it tests.
+    ...(automaticOfficialLineup ? { ENABLE_SEMI_AUTO_LINEUP: "false" } : {})
   };
 }
 
 async function deleteScenarioRows(db) {
+  const [contestResult, scheduleResult] = await Promise.all([
+    db.prepare("SELECT contest_id FROM game_contests WHERE internal_game_id = ?1").bind(INTERNAL_GAME_ID).all(),
+    db.prepare("SELECT game_id FROM detected_game_schedule WHERE internal_game_id = ?1").bind(INTERNAL_GAME_ID).all()
+  ]);
+  const contestIds = [...new Set((contestResult.results || []).map((row) => String(row.contest_id || "").trim()).filter(Boolean))];
+  const gameIds = [...new Set([INTERNAL_GAME_ID,
+    ...(scheduleResult.results || []).map((row) => String(row.game_id || "").trim())
+  ].filter(Boolean))];
   const statements = [];
   for (const table of CLEANUP_ORDER) {
+    // Score attempt test rows are keyed only by attempt_id. Delete them through
+    // their exact game/contest-owned parent before removing that parent.
+    if (table === "contest_score_attempt_test_rows" && contestIds.length) {
+      const placeholders = contestIds.map((_, index) => `?${index + 2}`).join(",");
+      statements.push(db.prepare(`DELETE FROM ${table} WHERE attempt_id IN (
+        SELECT attempt_id FROM contest_score_attempts
+         WHERE internal_game_id = ?1 OR contest_id IN (${placeholders})
+      )`).bind(INTERNAL_GAME_ID, ...contestIds));
+      continue;
+    }
+    if (table === "score_attempt_test_rows") {
+      statements.push(db.prepare(`DELETE FROM ${table} WHERE attempt_id IN (
+        SELECT attempt_id FROM score_attempts WHERE internal_game_id = ?1
+      )`).bind(INTERNAL_GAME_ID));
+      continue;
+    }
     const columnsResult = await db.prepare(`PRAGMA table_info(${table})`).all();
     const columns = new Set((columnsResult.results || []).map((row) => String(row.name)));
     if (!columns.size) continue;
     const predicates = [];
     const values = [];
     if (columns.has("internal_game_id")) {
-      predicates.push("internal_game_id = ?1");
+      predicates.push(`internal_game_id = ?${values.length + 1}`);
       values.push(INTERNAL_GAME_ID);
     }
-    if (columns.has("game_id")) {
-      predicates.push(`game_id = ?${values.length + 1}`);
-      values.push(LEGACY_GAME_ID);
+    if (columns.has("game_id") && gameIds.length) {
+      const first = values.length + 1;
+      predicates.push(`game_id IN (${gameIds.map((_, index) => `?${first + index}`).join(",")})`);
+      values.push(...gameIds);
+    }
+    if (columns.has("contest_id") && contestIds.length) {
+      const first = values.length + 1;
+      predicates.push(`contest_id IN (${contestIds.map((_, index) => `?${first + index}`).join(",")})`);
+      values.push(...contestIds);
     }
     if (!predicates.length) continue;
-    const clauses = [...new Set(predicates)];
-    statements.push(db.prepare(`DELETE FROM ${table} WHERE ${clauses.join(" OR ")}`).bind(...values));
+    statements.push(db.prepare(`DELETE FROM ${table} WHERE ${predicates.join(" OR ")}`).bind(...values));
   }
   if (statements.length) await db.batch(statements);
+  return { contestIds, gameIds };
 }
 
-async function deleteScenarioAuditRows(db) {
+async function deleteScenarioAuditRows(db, { contestIds = [] } = {}) {
   // Test resets must not leave synthetic E2E audit entries carrying the
   // temporary operator identity after the corresponding game is re-seeded.
-  await db.prepare("DELETE FROM game_automation_v3_audit WHERE internal_game_id = ?1")
-    .bind(INTERNAL_GAME_ID).run();
+  const columnsResult = await db.prepare("PRAGMA table_info(game_automation_v3_audit)").all();
+  const columns = new Set((columnsResult.results || []).map((row) => String(row.name)));
+  const predicates = [];
+  const values = [];
+  if (columns.has("internal_game_id")) {
+    predicates.push(`internal_game_id = ?${values.length + 1}`);
+    values.push(INTERNAL_GAME_ID);
+  }
+  if (columns.has("contest_id") && contestIds.length) {
+    const first = values.length + 1;
+    predicates.push(`contest_id IN (${contestIds.map((_, index) => `?${first + index}`).join(",")})`);
+    values.push(...contestIds);
+  }
+  if (predicates.length) {
+    await db.prepare(`DELETE FROM game_automation_v3_audit WHERE ${predicates.join(" OR ")}`).bind(...values).run();
+  }
 }
 
 async function seedScenarioGame(db, offsetMinutes) {
@@ -513,8 +561,8 @@ async function finalizeSyntheticLineup(request, env, ctx) {
   return finalized;
 }
 
-async function runPipeline(env, { target = "published", failAt = "", stageOnly = false, nowOverride = null } = {}) {
-  env = createProductEnvironment(env);
+async function runPipeline(env, { target = "published", failAt = "", stageOnly = false, nowOverride = null, automaticOfficialLineup = false } = {}) {
+  env = createProductEnvironment(env, { automaticOfficialLineup });
   const disabledStages = target === "scored"
     ? ["ranking_rebuild", "publish"]
     : target === "ranked"
@@ -601,8 +649,8 @@ async function applyScenario(request, env, ctx, scenario, { stageOnly = false, s
   let pipelineGame = null;
   let failureInjected = false;
   if (scenario === "no-game") {
-    await deleteScenarioRows(env.AUTH_DB);
-    await deleteScenarioAuditRows(env.AUDIT_DB);
+    const cleanupScope = await deleteScenarioRows(env.AUTH_DB);
+    await deleteScenarioAuditRows(env.AUDIT_DB, cleanupScope);
     return jsonResponse({ ok: true, scenario, game: null });
   }
 
@@ -673,7 +721,7 @@ async function applyScenario(request, env, ctx, scenario, { stageOnly = false, s
   }
   if (simulatorMode && ["closed", "lineup-captured", "scored", "ranked", "published"].includes(scenario)) {
     const target = scenario === "lineup-captured" ? "lineup-captured" : scenario;
-    const pipeline = await runPipeline(env, { target, stageOnly: true, nowOverride });
+    const pipeline = await runPipeline(env, { target, stageOnly: true, nowOverride, automaticOfficialLineup: true });
     pipelineGame = pipeline.game;
   }
   if (scenario === "lineup-ready") {
@@ -784,8 +832,8 @@ async function handleTestControl(request, env, ctx) {
   }
   if (url.pathname === "/api/test/reset" && request.method === "POST") {
     if (!await requireTestAdmin(request, env, ctx)) return jsonResponse({ ok: false, code: "ADMIN_REQUIRED" }, 401, origin);
-    await deleteScenarioRows(env.AUTH_DB);
-    await deleteScenarioAuditRows(env.AUDIT_DB);
+    const cleanupScope = await deleteScenarioRows(env.AUTH_DB);
+    await deleteScenarioAuditRows(env.AUDIT_DB, cleanupScope);
     const game = await seedScenarioGame(env.AUTH_DB, 180);
     return jsonResponse({ ok: true, scenario: "open", game }, 200, origin);
   }

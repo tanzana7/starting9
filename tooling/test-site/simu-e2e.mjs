@@ -1,37 +1,33 @@
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { TEST_TEAM_GROUPS, TEST_TEAMS, TEST_TEAM_KEYS } from "./teams.js";
 import { assertTestAuthConfig, TEST_AUTH_DB_ID, TEST_AUDIT_DB_ID } from "./isolation.js";
 import fs from "node:fs";
 
 const SITE_ORIGIN = "https://s9simu.pages.dev";
 const TARGET_ACCOUNT_ID = "02580fab1c09e144db7da89478e252c8";
-const setupToken = String(process.env.S9_TEST_E2E_SETUP_TOKEN || "");
-if (setupToken.length < 32) throw new Error("S9_TEST_E2E_SETUP_TOKEN is required");
 
 const config = JSON.parse(fs.readFileSync(new URL("../../wrangler.test-auth.jsonc", import.meta.url), "utf8"));
 assertTestAuthConfig(config);
 assert.equal(config.d1_databases.find((binding) => binding.binding === "AUTH_DB")?.database_id, TEST_AUTH_DB_ID);
 assert.equal(config.d1_databases.find((binding) => binding.binding === "AUDIT_DB")?.database_id, TEST_AUDIT_DB_ID);
-const identity = spawnSync("npx", ["wrangler", "whoami", "--json", "--account", TARGET_ACCOUNT_ID], {
-  encoding: "utf8", shell: process.platform === "win32", windowsHide: true
-});
-if (identity.status !== 0 || !JSON.parse(identity.stdout).accounts?.some((account) => account.id === TARGET_ACCOUNT_ID)) {
-  throw new Error("TARGET Cloudflare account verification failed");
-}
+// Account access is verified by the explicit TARGET-only deployment command.
+// The remote workflow needs no Cloudflare credential; it receives only a
+// short-lived GitHub OIDC token for this repository's manual main-branch run.
+assert.equal(config.account_id, TARGET_ACCOUNT_ID);
 
-const runId = randomBytes(6).toString("hex");
-const temporaryAdminUsername = `e2e-${runId}`;
+let runId = "";
+let temporaryAdminUsername = "";
 const positions = ["捕", "一", "二", "三", "遊", "左", "中", "右", "指"];
 let cookie = "";
+let githubOidcToken = "";
 let temporaryAdminCreated = false;
 let temporaryUserRetained = false;
 let primaryError = null;
 let cleanupError = null;
 let publishedContests = 0;
 
-async function call(path, { method = "GET", body, admin = false, setup = false, expectedStatus = 200 } = {}) {
+async function call(path, { method = "GET", body, admin = false, authorizationToken = "", expectedStatus = 200 } = {}) {
   const team = new URL(`https://local.invalid${path}`).searchParams.get("testTeam") || "fighters";
   const headers = {
     Origin: SITE_ORIGIN,
@@ -40,7 +36,7 @@ async function call(path, { method = "GET", body, admin = false, setup = false, 
   };
   if (admin && cookie) headers.Cookie += `; ${cookie}`;
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  if (setup) headers["X-Test-E2E-Token"] = setupToken;
+  if (authorizationToken) headers.Authorization = `Bearer ${authorizationToken}`;
   const response = await fetch(`${SITE_ORIGIN}${path}`, {
     method,
     headers,
@@ -56,17 +52,69 @@ async function call(path, { method = "GET", body, admin = false, setup = false, 
 }
 
 async function provisionAdmin() {
+  const unauthorized = await call("/api/test/e2e-admin", {
+    method: "POST", body: { action: "provision" }, expectedStatus: 404
+  });
+  assert.equal(unauthorized.payload.code, "NOT_FOUND");
+  githubOidcToken = await requestGitHubOidcToken();
+  const claims = decodeJwtPayload(githubOidcToken);
+  runId = `${claims.run_id}:${claims.run_attempt}`;
+  temporaryAdminUsername = deriveRunUsername(claims);
+  temporaryAdminCreated = true;
   const response = await call("/api/test/e2e-admin", {
-    method: "POST", body: { action: "provision", runId }, setup: true, expectedStatus: 201
+    method: "POST", body: { action: "provision", runId },
+    authorizationToken: githubOidcToken, expectedStatus: 201
   });
   assert.equal(response.payload.username, temporaryAdminUsername);
-  temporaryAdminCreated = true;
   cookie = response.response.headers.get("Set-Cookie")?.split(";", 1)[0] || "";
   assert.match(cookie, /^s9_session=/);
   const auth = await call("/api/auth/me?testTeam=fighters", { admin: true });
   assert.equal(auth.payload.authenticated, true);
   const isAdmin = await call("/api/admin/me?testTeam=fighters", { admin: true });
   assert.equal(isAdmin.payload.admin, true);
+}
+
+async function requestGitHubOidcToken() {
+  const endpoint = String(process.env.ACTIONS_ID_TOKEN_REQUEST_URL || "");
+  const requestToken = String(process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN || "");
+  if (!endpoint || !requestToken) throw new Error("GitHub Actions OIDC is unavailable; run this from the authorized main workflow");
+  const url = new URL(endpoint);
+  if (url.protocol !== "https:" || url.username || url.password) throw new Error("GitHub Actions OIDC endpoint is invalid");
+  url.searchParams.set("audience", "starting9-simu-e2e");
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${requestToken}` }, cache: "no-store" });
+  if (!response.ok) throw new Error(`GitHub Actions OIDC request failed (${response.status})`);
+  const payload = await response.json();
+  if (typeof payload?.value !== "string" || payload.value.length < 100) throw new Error("GitHub Actions OIDC response is invalid");
+  return payload.value;
+}
+
+function decodeJwtPayload(token) {
+  const segments = String(token).split(".");
+  if (segments.length !== 3) throw new Error("GitHub Actions OIDC token is malformed");
+  try {
+    return JSON.parse(Buffer.from(segments[1], "base64url").toString("utf8"));
+  } catch {
+    throw new Error("GitHub Actions OIDC claims are malformed");
+  }
+}
+
+function deriveRunUsername(claims) {
+  assert.equal(claims.iss, "https://token.actions.githubusercontent.com");
+  assert.equal(claims.aud, "starting9-simu-e2e");
+  assert.equal(claims.sub, "repo:tanzana7/starting9:ref:refs/heads/main");
+  assert.equal(claims.repository, "tanzana7/starting9");
+  assert.equal(String(claims.repository_id), "1293016764");
+  assert.equal(claims.ref, "refs/heads/main");
+  assert.equal(claims.event_name, "workflow_dispatch");
+  assert.equal(claims.workflow_ref,
+    "tanzana7/starting9/.github/workflows/s9simu-remote-e2e.yml@refs/heads/main");
+  assert.match(String(claims.run_id || ""), /^\d{1,20}$/);
+  assert.match(String(claims.run_attempt || ""), /^[1-9]\d{0,5}$/);
+  assert.ok(typeof claims.jti === "string" && claims.jti.length >= 8);
+  const suffix = createHash("sha256")
+    .update(`${claims.repository_id}:${claims.run_id}:${claims.run_attempt}:${claims.jti}`)
+    .digest().subarray(0, 6).toString("hex");
+  return `e2e-${suffix}`;
 }
 
 async function savePrediction(teamKey, internalGameId) {
@@ -202,9 +250,10 @@ try {
         method: "POST", body: {
           action: "cleanup",
           username: temporaryAdminUsername,
-          preserveUser: primaryError === null && publishedContests === 12
+          preserveUser: primaryError === null && publishedContests === 12,
+          runId
         },
-        admin: Boolean(cookie), setup: true
+        admin: Boolean(cookie), authorizationToken: cookie ? "" : githubOidcToken
       });
       if (cleanup.payload.retainedAsUser === true) {
         assert.equal(cleanup.payload.removed, false);
@@ -217,6 +266,7 @@ try {
       cleanupError = error;
     }
   }
+  githubOidcToken = "";
 }
 
 if (primaryError && cleanupError) throw new AggregateError([primaryError, cleanupError], "S9simu run failed and temporary admin cleanup failed");

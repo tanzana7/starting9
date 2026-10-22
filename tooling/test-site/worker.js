@@ -3,7 +3,7 @@ import { planMainWorkflowJobs, runGameAutomationV3 } from "../../game-automation
 import { transitionV3State } from "../../backend/automation-v3/repository.js";
 import { createContestId } from "../../backend/contest-identity.js";
 import { isIsolatedTestEnvironment, validatePublishedScenario } from "./isolation.js";
-import { assertDistinctTestTeamIdentity, testTeamFixture, TEST_TEAMS, TEST_TEAM_KEYS } from "./teams.js";
+import { assertDistinctTestTeamIdentity, testTeamFixture, TEST_TEAMS, TEST_TEAM_KEYS, TEST_TEAM_GROUPS } from "./teams.js";
 import { simulatorGameDate } from "./simu-npb/source.js";
 
 // Every request receives a separate fixture scope. No module-level mutable target can leak
@@ -781,13 +781,22 @@ export default {
     let internalGameId = "";
     const requestedGameId = url.searchParams.get("internalGameId") || "";
     if (url.searchParams.get("simuNpb") === "1" && requestedGameId) {
+      const input = request.method === "POST" ? await request.clone().json().catch(() => null) : null;
+      const knownSimulatorGroup = TEST_TEAM_GROUPS.find((group) => group.internalGameId === requestedGameId);
+      const requestedTeamIsParticipant = knownSimulatorGroup
+        && [knownSimulatorGroup.homeKey, knownSimulatorGroup.awayKey].includes(key);
       const game = await env.AUTH_DB.prepare(
         `SELECT games.internal_game_id FROM games
           JOIN game_contests ON game_contests.internal_game_id = games.internal_game_id
          WHERE games.internal_game_id = ?1 AND game_contests.target_team_key = ?2 LIMIT 1`
       ).bind(requestedGameId, key).first();
-      if (!game) return Response.json({ ok: false, code: "SIMULATED_GAME_NOT_FOUND" }, { status: 404 });
-      internalGameId = String(game.internal_game_id);
+      const cleaningMissingSimulatorFixture = !game
+        && input?.scenario === "no-game"
+        && Boolean(requestedTeamIsParticipant);
+      if (!game && !cleaningMissingSimulatorFixture) {
+        return Response.json({ ok: false, code: "SIMULATED_GAME_NOT_FOUND" }, { status: 404 });
+      }
+      internalGameId = String(game?.internal_game_id || requestedGameId);
     }
     return createTestTeamWorker(key, { internalGameId }).fetch(request, env, ctx);
   }

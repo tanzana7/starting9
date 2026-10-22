@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`starting9-test.pages.dev` is an isolated environment for exercising the existing Starting9 public UI, authentication, prediction, lineup, scoring, ranking, publication, and admin paths with synthetic data. It is not a mock-only UI and must not use production records.
+`s9simu.pages.dev` is an isolated environment for exercising the existing Starting9 public UI, authentication, prediction, lineup, scoring, ranking, publication, and admin paths with synthetic data. It is not a mock-only UI and must not use production records.
 
 ## Resource boundary
 
@@ -16,9 +16,9 @@
 
 ## Synthetic scenario controls
 
-`node tooling/test-site/e2e.mjs` runs the deployed synthetic Team A/B flow without a human login. It requires the short-lived `TEST_E2E_SETUP_TOKEN` Worker secret to be supplied to the runner through `S9_TEST_E2E_SETUP_TOKEN`; the runner never prints it. The test-only provision route creates a random disposable identity through the ordinary registration handler, grants that identity the test admin role, and obtains its cookie through the ordinary login handler. Scenario operations still pass `/api/admin/me` authorization. The runner resets both game-scoped fixtures and deletes that exact disposable identity/session in `finally`; it does not reset existing users or sessions. Remove the setup secret immediately after the run. No production credential or account should be used.
+`node tooling/test-site/simu-e2e.mjs` runs the deployed 12-team simulator flow only from the manually dispatched `S9simu Remote E2E` workflow on `main`. The workflow requests a short-lived GitHub Actions OIDC token with audience `starting9-simu-e2e`; the Test Worker verifies GitHub's signature and pins the repository ID, main ref, workflow path, event type, and token time window before creating a run-derived, one-time E2E admin identity. A duplicate workflow proof is rejected by the reserved identity's unique username. The issued admin session expires after 30 minutes and is revoked during cleanup. Successful runs retain only the demoted ranking identity; failed runs retain a disabled replay marker until the OIDC proof expires, then the next authorized run removes that expired marker. No persistent setup secret, Cloudflare credential, or production account is used by the workflow.
 
-The provision/cleanup route exists only in `tooling/test-site/worker.js` and fails closed unless the Worker environment, exact test D1 IDs, origin, and temporary server-side secret match. It is not part of the production Auth Worker entrypoint. Existing test admins are not modified or required.
+The provision/cleanup route exists only in `tooling/test-site/worker.js` and fails closed unless the Worker environment, exact test D1 IDs, origin, and signed workflow identity match. It is not part of the production Auth Worker entrypoint. Existing test admins are not modified or required.
 
 Scenarios:
 

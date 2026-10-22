@@ -49,6 +49,37 @@ test("Pages test proxy forwards only the allowlisted synthetic team and never al
   }
 });
 
+test("Pages test proxy preserves the one-time Authorization header for the isolated Test Worker", async () => {
+  const originalFetch = globalThis.fetch;
+  let upstreamRequest;
+  globalThis.fetch = async (request) => {
+    upstreamRequest = request;
+    return Response.json({ ok: true }, { status: 201 });
+  };
+  try {
+    await onRequest({
+      request: new Request("https://s9simu.pages.dev/api/test/e2e-admin", {
+        method: "POST",
+        headers: {
+          Origin: "https://s9simu.pages.dev",
+          Authorization: "Bearer short-lived-oidc-proof",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ action: "provision" })
+      }),
+      env: {
+        SITE_ENVIRONMENT: "test",
+        STARTING9_AUTH_ORIGIN: "https://starting9-test-auth.starting9.workers.dev"
+      }
+    });
+    assert.equal(upstreamRequest.url, "https://starting9-test-auth.starting9.workers.dev/api/test/e2e-admin?testTeam=fighters");
+    assert.equal(upstreamRequest.headers.get("Authorization"), "Bearer short-lived-oidc-proof");
+    assert.equal(upstreamRequest.headers.get("Origin"), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("invalid Test Site team fails closed before contacting the Worker", async () => {
   const originalFetch = globalThis.fetch;
   let fetchCalled = false;

@@ -3,6 +3,7 @@ import { planMainWorkflowJobs, runGameAutomationV3 } from "../../game-automation
 import { transitionV3State } from "../../backend/automation-v3/repository.js";
 import { createContestId } from "../../backend/contest-identity.js";
 import { isIsolatedTestEnvironment, validatePublishedScenario } from "./isolation.js";
+import { verifyS9SimuRunToken } from "./github-oidc.js";
 import { assertDistinctTestTeamIdentity, testTeamFixture, TEST_TEAMS, TEST_TEAM_KEYS, TEST_TEAM_GROUPS } from "./teams.js";
 import { simulatorGameDate } from "./simu-npb/source.js";
 
@@ -246,15 +247,6 @@ async function requireTestAdmin(request, env, ctx) {
   return body?.ok === true && body?.admin === true;
 }
 
-function constantTimeSecretMatch(actual, expected) {
-  if (!actual || !expected || expected.length < 32 || actual.length !== expected.length) return false;
-  let difference = 0;
-  for (let index = 0; index < actual.length; index += 1) {
-    difference |= actual.charCodeAt(index) ^ expected.charCodeAt(index);
-  }
-  return difference === 0;
-}
-
 function secureRandomHex(byteCount) {
   const bytes = crypto.getRandomValues(new Uint8Array(byteCount));
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -266,6 +258,31 @@ function readSessionCookie(response) {
   return cookie.startsWith("s9_session=") ? cookie : "";
 }
 
+async function hashSessionToken(token) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  let binary = "";
+  for (const byte of new Uint8Array(digest)) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function withSessionExpiry(setCookie, expiresAt) {
+  const maxAge = Math.max(0, Math.floor((expiresAt.getTime() - Date.now()) / 1000));
+  return String(setCookie || "")
+    .replace(/Max-Age=\d+/i, `Max-Age=${maxAge}`)
+    .replace(/Expires=[^;]+/i, `Expires=${expiresAt.toUTCString()}`);
+}
+
+async function removeExpiredE2ERunMarkers(db, now) {
+  // Failed runs retain a disabled reserved-name row until the GitHub OIDC
+  // proof expires. Keeping this unique username temporarily prevents replay
+  // even if cleanup happens before the proof's short expiry window.
+  await db.prepare(`DELETE FROM users
+    WHERE status = 'disabled' AND role = 'user' AND updated_at <= ?1
+      AND length(username) = 16 AND substr(username, 1, 4) = 'e2e-'
+      AND substr(username, 5) NOT GLOB '*[^0-9a-f]*'`)
+    .bind(now.toISOString()).run();
+}
+
 async function removeE2EAdmin(env, userId, username) {
   if (!/^e2e-[a-f0-9]{12}$/.test(username)) return false;
   const result = await env.AUTH_DB.prepare(
@@ -275,24 +292,37 @@ async function removeE2EAdmin(env, userId, username) {
 }
 
 async function provisionE2EAdmin(request, env, ctx, input = {}) {
-  // The same-origin Pages proxy deliberately removes Origin before forwarding.
-  // Its fixed test-site routing plus the temporary server secret are the trust boundary.
+  // The Pages proxy deliberately removes Origin. The signed, run-scoped GitHub
+  // Actions identity is the sole bootstrap authority; the ordinary admin
+  // cookie returned below then protects scenario controls for this Test run.
   const origin = request.headers.get("Origin") || "https://s9simu.pages.dev";
-  const expected = String(env.TEST_E2E_SETUP_TOKEN || "");
-  const supplied = String(request.headers.get("x-test-e2e-token") || "");
-  if (!isIsolatedTestEnvironment(env) || !constantTimeSecretMatch(supplied, expected)
-      || origin !== "https://s9simu.pages.dev") {
+  if (!isIsolatedTestEnvironment(env) || origin !== "https://s9simu.pages.dev") {
     return jsonResponse({ ok: false, code: "NOT_FOUND" }, 404, origin);
   }
 
   let userId = "";
   let username = "";
+  const authorization = String(request.headers.get("Authorization") || "");
+  const match = authorization.match(/^Bearer ([A-Za-z0-9._~-]+)$/);
+  if (!match) return jsonResponse({ ok: false, code: "NOT_FOUND" }, 404, origin);
+  let runIdentity;
   try {
-    const runId = String(input?.runId || "");
-    if (!/^[a-f0-9]{12}$/.test(runId)) {
-      return jsonResponse({ ok: false, code: "INVALID_E2E_RUN_ID" }, 400, origin);
+    runIdentity = await verifyS9SimuRunToken(match[1]);
+  } catch (error) {
+    const status = error?.message === "OIDC_KEYSET_UNAVAILABLE" ? 503 : 404;
+    return jsonResponse({ ok: false, code: status === 503 ? "E2E_AUTH_UNAVAILABLE" : "NOT_FOUND" }, status, origin);
+  }
+  try {
+    if (String(input?.runId || "") !== runIdentity.runId) {
+      return jsonResponse({ ok: false, code: "E2E_RUN_MISMATCH" }, 403, origin);
     }
-    username = `${E2E_ADMIN_USERNAME_PREFIX}${runId}`;
+    const now = new Date();
+    await removeExpiredE2ERunMarkers(env.AUTH_DB, now);
+    username = runIdentity.username;
+    const previousRun = await env.AUTH_DB.prepare(
+      "SELECT id FROM users WHERE username_normalized = ?1 LIMIT 1"
+    ).bind(username).first();
+    if (previousRun) return jsonResponse({ ok: false, code: "E2E_RUN_REPLAYED" }, 409, origin);
     const password = secureRandomHex(32);
     const clientIp = request.headers.get("CF-Connecting-IP") || "127.0.0.1";
     const register = await authWorker.fetch(new Request("https://starting9-test-auth.internal/api/auth/register", {
@@ -307,7 +337,7 @@ async function provisionE2EAdmin(request, env, ctx, input = {}) {
     userId = String(registered.user.id);
     const promoted = await env.AUTH_DB.prepare(
       "UPDATE users SET role = 'admin', updated_at = ?1 WHERE id = ?2 AND username = ?3 AND role = 'user'"
-    ).bind(new Date().toISOString(), userId, username).run();
+    ).bind(runIdentity.expiresAt, userId, username).run();
     if (Number(promoted?.meta?.changes || 0) !== 1) {
       await removeE2EAdmin(env, userId, username);
       return jsonResponse({ ok: false, code: "E2E_ADMIN_PROVISION_FAILED" }, 409, origin);
@@ -326,8 +356,29 @@ async function provisionE2EAdmin(request, env, ctx, input = {}) {
       await removeE2EAdmin(env, userId, username);
       return jsonResponse({ ok: false, code: "E2E_ADMIN_LOGIN_FAILED" }, 500, origin);
     }
-    const response = jsonResponse({ ok: true, username }, 201, origin);
-    response.headers.set("Set-Cookie", login.headers.get("Set-Cookie"));
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+    const token = cookie.slice(cookie.indexOf("=") + 1);
+    const sessionHash = await hashSessionToken(decodeURIComponent(token));
+    await env.AUTH_DB.prepare(
+      "DELETE FROM sessions WHERE user_id = ?1 AND token_hash <> ?2"
+    ).bind(userId, sessionHash).run();
+    const shortened = await env.AUTH_DB.prepare(
+      "UPDATE sessions SET expires_at = ?1 WHERE user_id = ?2 AND token_hash = ?3"
+    ).bind(expiresAt.toISOString(), userId, sessionHash).run();
+    if (Number(shortened?.meta?.changes || 0) !== 1) {
+      await removeE2EAdmin(env, userId, username);
+      return jsonResponse({ ok: false, code: "E2E_ADMIN_SESSION_FAILED" }, 500, origin);
+    }
+    const activeSession = await env.AUTH_DB.prepare(
+      "SELECT id FROM sessions WHERE token_hash = ?1 AND user_id = ?2 LIMIT 1"
+    ).bind(sessionHash, userId).first();
+    if (!activeSession) {
+      await removeE2EAdmin(env, userId, username);
+      return jsonResponse({ ok: false, code: "E2E_ADMIN_SESSION_FAILED" }, 500, origin);
+    }
+    const response = jsonResponse({ ok: true, username, runId: runIdentity.runId,
+      capabilityExpiresAt: runIdentity.expiresAt, sessionExpiresAt: expiresAt.toISOString() }, 201, origin);
+    response.headers.set("Set-Cookie", withSessionExpiry(login.headers.get("Set-Cookie"), expiresAt));
     return response;
   } catch {
     if (userId && username) {
@@ -339,16 +390,15 @@ async function provisionE2EAdmin(request, env, ctx, input = {}) {
 
 async function cleanupE2EAdmin(request, env, ctx, input = {}) {
   const origin = request.headers.get("Origin") || "https://s9simu.pages.dev";
-  const expected = String(env.TEST_E2E_SETUP_TOKEN || "");
-  const supplied = String(request.headers.get("x-test-e2e-token") || "");
-  if (!isIsolatedTestEnvironment(env) || !constantTimeSecretMatch(supplied, expected)
-      || origin !== "https://s9simu.pages.dev") {
+  if (!isIsolatedTestEnvironment(env) || origin !== "https://s9simu.pages.dev") {
     return jsonResponse({ ok: false, code: "NOT_FOUND" }, 404, origin);
   }
   let userId = "";
   let username = "";
+  let runIdentity = null;
   const cookie = request.headers.get("Cookie") || "";
-  if (cookie) {
+  const hasSessionCookie = /(?:^|;\s*)s9_session=/.test(cookie);
+  if (hasSessionCookie) {
     const me = await authWorker.fetch(new Request("https://starting9-test-auth.internal/api/auth/me", {
       headers: { Cookie: cookie, Origin: origin }
     }), env, ctx);
@@ -357,36 +407,58 @@ async function cleanupE2EAdmin(request, env, ctx, input = {}) {
     username = String(identity?.user?.username || "");
     if (identity?.authenticated !== true) return jsonResponse({ ok: false, code: "E2E_ADMIN_REQUIRED" }, 403, origin);
   } else {
-    // This token-only fallback is for cleanup if the proxy fails to preserve
-    // Set-Cookie. It can target only the random reserved identity this route creates.
-    username = String(input?.username || "");
+    // If the provisioning response was lost, the same signed run proof may
+    // remove only the identity deterministically bound to that workflow run.
+    const authorization = String(request.headers.get("Authorization") || "");
+    const match = authorization.match(/^Bearer ([A-Za-z0-9._~-]+)$/);
+    if (!match) return jsonResponse({ ok: false, code: "NOT_FOUND" }, 404, origin);
+    try {
+      runIdentity = await verifyS9SimuRunToken(match[1]);
+    } catch {
+      return jsonResponse({ ok: false, code: "NOT_FOUND" }, 404, origin);
+    }
+    if (String(input?.runId || "") !== runIdentity.runId || input?.preserveUser === true) {
+      return jsonResponse({ ok: false, code: "E2E_RUN_MISMATCH" }, 403, origin);
+    }
+    username = runIdentity.username;
   }
   if (!/^e2e-[a-f0-9]{12}$/.test(username)) {
     return jsonResponse({ ok: false, code: "E2E_ADMIN_REQUIRED" }, 403, origin);
   }
   const row = userId
-    ? await env.AUTH_DB.prepare("SELECT id, role FROM users WHERE id = ?1 AND username = ?2 LIMIT 1").bind(userId, username).first()
-    : await env.AUTH_DB.prepare("SELECT id, role FROM users WHERE username = ?1 LIMIT 1").bind(username).first();
+    ? await env.AUTH_DB.prepare("SELECT id, role, updated_at FROM users WHERE id = ?1 AND username = ?2 LIMIT 1").bind(userId, username).first()
+    : await env.AUTH_DB.prepare("SELECT id, role, updated_at FROM users WHERE username = ?1 LIMIT 1").bind(username).first();
   if (!row) return jsonResponse({ ok: true, removed: false, alreadyAbsent: true }, 200, origin);
   if (!userId && row?.role === "admin") userId = String(row.id || "");
   if (row?.role !== "admin") return jsonResponse({ ok: false, code: "E2E_ADMIN_REQUIRED" }, 403, origin);
 
   let logout = null;
-  if (cookie) {
+  if (hasSessionCookie) {
     logout = await authWorker.fetch(new Request("https://starting9-test-auth.internal/api/auth/logout", {
       method: "POST", headers: { Cookie: cookie, Origin: origin }
     }), env, ctx);
   }
   if (userId) await env.AUTH_DB.prepare("DELETE FROM sessions WHERE user_id = ?1").bind(userId).run();
   if (input?.preserveUser === true) {
+    if (!hasSessionCookie) return jsonResponse({ ok: false, code: "E2E_ADMIN_REQUIRED" }, 403, origin);
     const demoted = userId
-      ? await env.AUTH_DB.prepare("UPDATE users SET role = 'user', updated_at = ?1 WHERE id = ?2 AND username = ?3 AND role = 'admin'")
+      ? await env.AUTH_DB.prepare("UPDATE users SET role = 'user', status = 'active', updated_at = ?1 WHERE id = ?2 AND username = ?3 AND role = 'admin'")
         .bind(new Date().toISOString(), userId, username).run()
       : { meta: { changes: 0 } };
     if (Number(demoted?.meta?.changes || 0) !== 1) {
       return jsonResponse({ ok: false, code: "E2E_ADMIN_CLEANUP_FAILED" }, 500, origin);
     }
     return jsonResponse({ ok: true, removed: false, retainedAsUser: true }, 200, origin);
+  }
+  const replayExpiresAt = runIdentity?.expiresAt || row?.updated_at || "";
+  if (Date.parse(replayExpiresAt) > Date.now()) {
+    const marker = await env.AUTH_DB.prepare(
+      "UPDATE users SET role = 'user', status = 'disabled', updated_at = ?1 WHERE id = ?2 AND username = ?3 AND role = 'admin'"
+    ).bind(replayExpiresAt, userId, username).run();
+    if (Number(marker?.meta?.changes || 0) !== 1) {
+      return jsonResponse({ ok: false, code: "E2E_ADMIN_CLEANUP_FAILED" }, 500, origin);
+    }
+    return jsonResponse({ ok: true, removed: false, replayMarkerRetainedUntil: replayExpiresAt }, 200, origin);
   }
   const removed = await removeE2EAdmin(env, userId, username);
   if (!removed) {
@@ -651,7 +723,7 @@ async function handleTestControl(request, env, ctx) {
       "Access-Control-Allow-Origin": origin || "https://s9simu.pages.dev",
       "Access-Control-Allow-Credentials": "true",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, X-Test-E2E-Token",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type",
       "Cache-Control": "no-store"
     } });
   }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { createTestTeamWorker } from "../tooling/test-site/worker.js";
+import testSiteWorker, { createTestTeamWorker } from "../tooling/test-site/worker.js";
 import { simulatorGameDate } from "../tooling/test-site/simu-npb/source.js";
 
 let requestNumber = 0;
@@ -47,7 +47,10 @@ async function fixture() {
     };
     if (token) headers["X-Test-E2E-Token"] = token;
     if (cookie) headers.Cookie = cookie;
-    const response = await createTestTeamWorker("fighters").fetch(new Request(`https://starting9-test-auth.internal${path}`, {
+    const worker = new URL(path, "https://starting9-test-auth.internal").searchParams.has("simuNpb")
+      ? testSiteWorker
+      : createTestTeamWorker("fighters");
+    const response = await worker.fetch(new Request(`https://starting9-test-auth.internal${path}`, {
       method, headers, body: body === undefined ? undefined : JSON.stringify(body)
     }), env, { waitUntil() {} });
     return { response, payload: await response.json() };
@@ -107,6 +110,45 @@ test("simulator schedule control reports the shared NPB fixture date", async (t)
   });
   assert.equal(cleanup.response.status, 200);
   assert.equal(cleanup.payload.removed, true);
+});
+
+test("simulator no-game cleanup removes only the requested internal game", async (t) => {
+  const f = await fixture();
+  t.after(() => { f.database.close(); f.audit.close(); });
+
+  const targetId = "11111111-2027-4000-8000-000000000001";
+  const unrelatedId = "11111111-2027-4000-8000-000000000002";
+  f.database.prepare("INSERT INTO contest_identity_teams (team_key) VALUES ('giants'), ('tigers')").run();
+  for (const [internalGameId, homeTeam, awayTeam, teamKey] of [
+    [targetId, "giants", "tigers", "giants"],
+    [unrelatedId, "fighters", "giants", "fighters"]
+  ]) {
+    f.database.prepare(`INSERT INTO games
+      (internal_game_id, game_date, start_time, home_team, away_team, created_at, updated_at)
+      VALUES (?, '2027-03-01', '2027-03-01T18:00:00+09:00', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)
+      .run(internalGameId, homeTeam, awayTeam);
+    f.database.prepare(`INSERT INTO game_contests (contest_id, internal_game_id, target_team_key)
+      VALUES (?, ?, ?)`)
+      .run(`contest-${internalGameId}`, internalGameId, teamKey);
+  }
+
+  const setup = await f.request("/api/test/e2e-admin", { method: "POST", body: { action: "provision" } });
+  assert.equal(setup.response.status, 201);
+  const cookie = (setup.response.headers.get("Set-Cookie") || "").split(";", 1)[0];
+  const query = `?internalGameId=${encodeURIComponent(targetId)}&testTeam=giants&simuNpb=1`;
+  const cleaned = await f.request(`/api/test/scenario${query}`, {
+    method: "POST", body: { scenario: "no-game" }, cookie
+  });
+  assert.equal(cleaned.response.status, 200);
+  assert.equal(cleaned.payload.scenario, "no-game");
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM games WHERE internal_game_id = ?").get(targetId).count, 0);
+  assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM games WHERE internal_game_id = ?").get(unrelatedId).count, 1);
+
+  const adminCleanup = await f.request("/api/test/e2e-admin", {
+    method: "POST", body: { action: "cleanup" }, cookie
+  });
+  assert.equal(adminCleanup.response.status, 200);
+  assert.equal(adminCleanup.payload.removed, true);
 });
 
 test("normal synthetic user cannot operate scenario controls", async (t) => {

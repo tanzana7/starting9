@@ -5825,6 +5825,7 @@ async function syncFightersScheduleForDate(env, date, now, { intervalMs = AUTOMA
       status: changed ? "success_changed" : "success_no_change",
       date,
       gameCount: payload.games.length,
+      sourceDiagnostics: payload.__scheduleDiagnostics || null,
       gamesInserted: normalizedGames.filter(({ existingRow }) => !existingRow).length,
       gamesUpdated: changedItems.filter(({ existingRow }) => Boolean(existingRow)).length,
       canonicalScheduleUpdated: normalizedGames.filter(({ scheduleMutation }) => scheduleMutation?.status === "updated").length,
@@ -15096,6 +15097,21 @@ async function fetchSimulatorNpbJson(env, params, sourceSelection, { fetchImpl =
       });
     }
     const payload = parsed.payload;
+    if (String(requestParams?.mode || "").trim().toLowerCase() === "schedule") {
+      const sourceUrl = new URL(resource.url);
+      Object.defineProperty(payload, "__scheduleDiagnostics", {
+        value: {
+          requestedDate: String(requestParams.date || requestParams.gameDate || ""),
+          requestedTeam: String(requestParams.team || "fighters"),
+          upstreamPath: `${sourceUrl.pathname}${sourceUrl.search}`,
+          upstreamStatus: resource.response.status,
+          contentType: resource.response.headers.get("content-type") || "",
+          ...(payload.scheduleDiagnostics || {})
+        },
+        enumerable: false
+      });
+      delete payload.scheduleDiagnostics;
+    }
     Object.defineProperty(payload, "__fetchMeta", {
       value: {
         httpStatus: resource.response.status,

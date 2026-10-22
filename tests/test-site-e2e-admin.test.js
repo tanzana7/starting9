@@ -246,10 +246,21 @@ test("an expired replay marker is deleted by the next authorized provisioning ru
   assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM users WHERE username = ?").get(first.payload.username).count, 0);
 });
 
-test("simulator schedule control reports the shared NPB fixture date", async (t) => {
+test("formal simulator schedule sync reads six games and reports each persistence stage", async (t) => {
   const f = await fixture();
+  const upstreamRequests = [];
   t.after(() => { f.restoreFetch(); f.database.close(); f.audit.close(); });
-  f.env.ENABLE_GAME_AUTOMATION_V3 = "false";
+  f.env.S9SIMU_ENABLED = "true";
+  f.env.S9SIMU_BASE_URL = "https://s9simu.pages.dev";
+  f.env.NPB_SOURCE = "simulator";
+  f.env.ENABLE_GAME_AUTOMATION_V3 = "true";
+  const fixtureFetch = globalThis.fetch;
+  f.setFetch(async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.origin !== "https://s9simu.pages.dev") return fixtureFetch(input, init);
+    upstreamRequests.push(`${url.pathname}${url.search}`);
+    return handleSimulatedNpbRequest(new Request(url, init), {}, { TEST_TEAMS, TEST_TEAM_GROUPS });
+  });
 
   const provisioned = await f.request("/api/test/e2e-admin", { method: "POST", body: { action: "provision" } });
   assert.equal(provisioned.response.status, 201);
@@ -257,7 +268,43 @@ test("simulator schedule control reports the shared NPB fixture date", async (t)
   const schedule = await f.request("/api/test/simu/schedule", { method: "POST", body: {}, cookie });
   assert.equal(schedule.response.status, 200);
   assert.equal(schedule.payload.date, simulatorGameDate());
-  assert.equal(schedule.payload.physicalGames.length, 0);
+  assert.equal(schedule.payload.physicalGames.length, 6);
+  assert.equal(schedule.payload.contestCount, 12);
+  assert.equal(upstreamRequests.some((path) => path === `/simu-npb/api/public/games?date=${schedule.payload.date}&team=all`), true);
+  assert.deepEqual(schedule.payload.scheduleDiagnostics, {
+    requestedDate: schedule.payload.date,
+    requestedTeam: "all",
+    upstreamPath: `/simu-npb/api/public/games?date=${schedule.payload.date}&team=all`,
+    upstreamStatus: 200,
+    contentType: "application/json",
+    rawGamesCount: 6,
+    parsedGamesCount: 6,
+    filteredGamesCount: 6,
+    normalizedGamesCount: 6,
+    attemptedUpsertCount: 6,
+    insertedCount: 6,
+    updatedCount: 0,
+    readBackCount: 6,
+    internalGameIds: schedule.payload.physicalGames.map((game) => game.internal_game_id)
+  });
+  assert.equal(new Set(schedule.payload.physicalGames.flatMap((game) => [game.home_team, game.away_team])).size, 12);
+
+  for (const game of schedule.payload.physicalGames) {
+    const groupIndex = Number(String(game.game_code).match(/^g-t-(\d+)$/)?.[1]) - 1;
+    const group = TEST_TEAM_GROUPS[groupIndex];
+    assert.ok(group);
+    const query = `?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=${group.homeKey}&simuNpb=1`;
+    const cleanupGame = await f.request(`/api/test/scenario${query}`, {
+      method: "POST", body: { scenario: "no-game" }, cookie
+    });
+    assert.equal(cleanupGame.response.status, 200);
+  }
+  const rescheduled = await f.request("/api/test/simu/schedule", { method: "POST", body: {}, cookie });
+  assert.equal(rescheduled.response.status, 200);
+  assert.equal(rescheduled.payload.physicalGames.length, 6);
+  assert.equal(rescheduled.payload.contestCount, 12);
+  assert.equal(rescheduled.payload.scheduleDiagnostics.rawGamesCount, 6);
+  assert.equal(rescheduled.payload.scheduleDiagnostics.readBackCount, 6);
 
   const cleanup = await f.request("/api/test/e2e-admin", {
     method: "POST", body: { action: "cleanup" }, cookie

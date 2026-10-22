@@ -85,8 +85,7 @@ export function buildSimulatorSourceUrl(baseUrl, params = {}) {
   if (mode === "schedule") {
     const date = String(params.date || params.gameDate || "").trim();
     if (!DATE_PATTERN.test(date)) throw adapterError("SIMULATOR_DATE_INVALID", "S9simu schedule date is invalid.");
-    const [, year, month] = date.match(/^(\d{4})-(\d{2})-\d{2}$/);
-    const url = new URL(`${origin}/simu-npb/games/${year}/schedule_${month}_detail.html`);
+    const url = new URL(`${origin}/simu-npb/api/public/games`);
     url.searchParams.set("date", date);
     url.searchParams.set("team", String(params.team || "fighters"));
     return url.href;
@@ -230,23 +229,56 @@ function parseScheduleJson(text, params = {}) {
   let body;
   try { body = JSON.parse(text); } catch { return { ok: false, code: "NPB_RESPONSE_INVALID", parseStage: "simulator_schedule_json" }; }
   if (!Array.isArray(body?.games)) return { ok: false, code: "NPB_RESPONSE_INVALID", parseStage: "simulator_schedule_json" };
+  const requestedDate = String(params.date || params.gameDate || "").trim();
+  const extracted = body.games.map((game) => {
+    const { replacementGame: _replacementGame, replacement_game_id: _replacementGameId, ...sourceGame } = game || {};
+    const replacementGameId = String(_replacementGame?.gameId || _replacementGameId || game?.replacementGameId || "").trim();
+    const gameDate = String(game?.gameDate || game?.date || requestedDate);
+    const gameCode = String(game?.npbGameCode || game?.gameCode || "").trim().toLowerCase();
+    const startAt = String(game?.startAt || game?.startTime || "");
+    const startTime = /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(startAt)
+      ? startAt
+      : /T((?:[01]\d|2[0-3]):[0-5]\d)(?::[0-5]\d)?(?:[.+-]|$)/.exec(startAt)?.[1] || "";
+    return {
+      ...sourceGame,
+      // Formal sync requires a stable row ID, while replacement discovery
+      // relies on the provider's original external ID when it supplies one.
+      gameId: String(game?.gameId || (gameCode ? `${gameDate}-${gameCode}` : "")),
+      date: gameDate,
+      gameCode,
+      npbGameUrl: gameCode ? `simulator:${gameCode}` : "",
+      startTime,
+      homeTeam: normalizeScheduleTeamCode(game?.homeTeam || game?.homeTeamId),
+      awayTeam: normalizeScheduleTeamCode(game?.awayTeam || game?.awayTeamId),
+      status: normalizeExternalGameStatus(game.status || game.gameStatus || game.game_status),
+      venue: String(game?.venue || ""),
+      replacementGameId: replacementGameId || null
+    };
+  });
+  const parsed = extracted.filter((game) => game.gameId && (!requestedDate || game.date === requestedDate)
+    && game.homeTeam && game.awayTeam && game.startTime && game.gameCode);
+  const team = String(params.team || "all").trim().toLowerCase();
+  const requestedTeam = normalizeScheduleTeamCode(team);
+  const filtered = team === "all" ? parsed
+    : requestedTeam ? parsed.filter((game) => game.homeTeam === requestedTeam || game.awayTeam === requestedTeam) : [];
+  const games = filtered.map((game) => ({
+    ...game,
+    gameDate: game.date,
+    npbGameCode: game.gameCode,
+    npbGameUrl: game.gameCode ? `simulator:${game.gameCode}` : "",
+    startAt: `${game.date}T${game.startTime}:00+09:00`
+  }));
   return {
     ok: true,
     payload: {
       ok: true,
-      games: body.games.map((game) => {
-        const { replacementGame: _replacementGame, replacement_game_id: _replacementGameId, ...sourceGame } = game || {};
-        const replacementGameId = String(_replacementGame?.gameId || _replacementGameId || game?.replacementGameId || "").trim();
-        return {
-          ...sourceGame,
-          date: game.gameDate,
-          gameCode: game.npbGameCode,
-          npbGameUrl: game.npbGameCode ? `simulator:${game.npbGameCode}` : "",
-          startTime: game.startAt,
-          status: normalizeExternalGameStatus(game.status || game.gameStatus || game.game_status),
-          replacementGameId: replacementGameId || null
-        };
-      }),
+      games,
+      scheduleDiagnostics: {
+        rawGamesCount: body.games.length,
+        parsedGamesCount: parsed.length,
+        filteredGamesCount: filtered.length,
+        normalizedGamesCount: games.length
+      },
       fetchedAt: new Date().toISOString(),
       sourceUrl: "simulator"
     }
@@ -260,19 +292,26 @@ function parseScheduleHtml(html, params = {}) {
   const team = String(params.team || "fighters").trim().toLowerCase();
   const normalizedAll = normalizeAllNpbScheduleGames(extracted, date);
   const requestedTeam = normalizeScheduleTeamCode(team);
-  const normalized = team === "all" ? normalizedAll
+  const filtered = team === "all" ? normalizedAll
     : requestedTeam ? normalizedAll.filter((game) => game.homeTeam === requestedTeam || game.awayTeam === requestedTeam) : [];
+  const normalized = filtered.map((game) => ({
+    ...game,
+    gameDate: date,
+    npbGameCode: game.gameCode,
+    npbGameUrl: game.gameCode ? `simulator:${game.gameCode}` : "",
+    startAt: `${date}T${game.startTime}:00+09:00`
+  }));
   return {
     ok: true,
     payload: {
       ok: true,
-      games: normalized.map((game) => ({
-        ...game,
-        gameDate: date,
-        npbGameCode: game.gameCode,
-        npbGameUrl: game.gameCode ? `simulator:${game.gameCode}` : "",
-        startAt: `${date}T${game.startTime}:00+09:00`
-      })),
+      games: normalized,
+      scheduleDiagnostics: {
+        rawGamesCount: extracted.length,
+        parsedGamesCount: normalizedAll.length,
+        filteredGamesCount: filtered.length,
+        normalizedGamesCount: normalized.length
+      },
       fetchedAt: new Date().toISOString(),
       sourceUrl: "simulator"
     }

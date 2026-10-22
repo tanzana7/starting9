@@ -7,6 +7,8 @@ import fs from "node:fs";
 
 const SITE_ORIGIN = "https://s9simu.pages.dev";
 const TARGET_ACCOUNT_ID = "02580fab1c09e144db7da89478e252c8";
+const RUN_MODE = String(process.env.S9SIMU_MODE || "full").trim().toLowerCase();
+assert.ok(["full", "schedule-check"].includes(RUN_MODE), "S9SIMU_MODE must be full or schedule-check");
 
 const config = JSON.parse(fs.readFileSync(new URL("../../wrangler.test-auth.jsonc", import.meta.url), "utf8"));
 assertTestAuthConfig(config);
@@ -27,6 +29,7 @@ let temporaryUserRetained = false;
 let primaryError = null;
 let cleanupError = null;
 let publishedContests = 0;
+let lastScheduleDiagnostics = null;
 
 async function call(path, { method = "GET", body, admin = false, authorizationToken = "", expectedStatus = 200 } = {}) {
   const team = new URL(`https://local.invalid${path}`).searchParams.get("testTeam") || "fighters";
@@ -179,13 +182,26 @@ async function verifyPublished(teamKey, internalGameId) {
     `${teamKey}: broken formal job state remains`);
 }
 
-async function fetchSimulatorSchedule() {
+async function fetchSimulatorSchedule({ requireFreshSync = false } = {}) {
   const response = await call("/api/test/simu/schedule?testTeam=fighters", {
     method: "POST", body: {}, admin: true
   });
   const physicalGames = response.payload.physicalGames || [];
   assert.equal(physicalGames.length, 6);
   assert.equal(response.payload.contestCount, 12);
+  const diagnostics = response.payload.scheduleDiagnostics || {};
+  assert.equal(diagnostics.requestedDate, response.payload.date);
+  if (requireFreshSync || diagnostics.rawGamesCount !== null) {
+    assert.match(String(diagnostics.upstreamPath || ""), /^\/simu-npb\/api\/public\/games\?date=\d{4}-\d{2}-\d{2}&team=all$/);
+    assert.equal(diagnostics.upstreamStatus, 200);
+    assert.match(String(diagnostics.contentType || ""), /application\/json/i);
+    for (const key of ["rawGamesCount", "parsedGamesCount", "filteredGamesCount", "normalizedGamesCount", "attemptedUpsertCount"]) {
+      assert.equal(diagnostics[key], 6, `schedule diagnostic ${key}`);
+    }
+    assert.equal(diagnostics.readBackCount, 6);
+    assert.equal(new Set(diagnostics.internalGameIds).size, 6);
+  }
+  lastScheduleDiagnostics = diagnostics;
   return physicalGames;
 }
 
@@ -202,20 +218,32 @@ function simulatorGroupForGame(game) {
 
 try {
   await provisionAdmin();
+  if (RUN_MODE === "schedule-check") {
+    const games = await fetchSimulatorSchedule({ requireFreshSync: true });
+    console.log(`S9SIMU_SCHEDULE_CHECK: ${JSON.stringify({
+      date: lastScheduleDiagnostics.requestedDate,
+      diagnostics: lastScheduleDiagnostics,
+      physicalGames: games.map(({ game_code, internal_game_id, home_team, away_team }) => ({ game_code, internal_game_id, home_team, away_team }))
+    })}`);
+  } else {
   // Discover the simulator's actual canonical IDs first. Cleanup is then
   // bounded to those read-back IDs and participant contexts; never send a
   // legacy fixture ID or invoke an unscoped no-game reset from this runner.
   const previousRunGames = await fetchSimulatorSchedule();
   assert.equal(new Set(previousRunGames.map((game) => game.internal_game_id)).size, previousRunGames.length);
+  let staleFixtureRemoved = false;
   for (const game of previousRunGames) {
     const { homeKey } = simulatorGroupForGame(game);
     const query = `?internalGameId=${encodeURIComponent(game.internal_game_id)}&testTeam=${homeKey}&simuNpb=1`;
+    const jobResponse = await call(`/api/test/jobs${query}`, { admin: true });
+    if (!jobResponse.payload.jobs.length) continue;
     const clearedSimulatorFixture = await call(`/api/test/scenario${query}`, {
       method: "POST", body: { scenario: "no-game" }, admin: true
     });
     assert.equal(clearedSimulatorFixture.payload.scenario, "no-game", `${homeKey}: stale run cleanup`);
+    staleFixtureRemoved = true;
   }
-  const physicalGames = await fetchSimulatorSchedule();
+  const physicalGames = staleFixtureRemoved ? await fetchSimulatorSchedule() : previousRunGames;
   const gamesByGroup = new Map();
   for (const game of physicalGames) {
     const group = simulatorGroupForGame(game);
@@ -255,6 +283,7 @@ try {
   }
   assert.equal(publishedContests, 12);
   console.log("S9SIMU_PIPELINE_COMPLETE: 6 physical games, 12 published contests; fixture retained.");
+  }
 } catch (error) {
   primaryError = error;
 } finally {
@@ -289,6 +318,12 @@ try {
 if (primaryError && cleanupError) throw new AggregateError([primaryError, cleanupError], "S9simu run failed and temporary admin cleanup failed");
 if (primaryError) throw primaryError;
 if (cleanupError) throw cleanupError;
-assert.equal(publishedContests, 12);
-assert.equal(temporaryUserRetained, true);
-console.log(`Completed ${publishedContests}/12 contests; simulation data and a non-admin ranking identity were retained without a reset.`);
+if (RUN_MODE === "full") {
+  assert.equal(publishedContests, 12);
+  assert.equal(temporaryUserRetained, true);
+  console.log(`Completed ${publishedContests}/12 contests; simulation data and a non-admin ranking identity were retained without a reset.`);
+} else {
+  assert.equal(publishedContests, 0);
+  assert.equal(temporaryUserRetained, false);
+  console.log("Completed one schedule-only diagnostic; temporary admin access was revoked.");
+}

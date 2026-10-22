@@ -46,7 +46,7 @@ test("simulator URLは設定されたoriginから安全に構成する", () => {
   assert.equal(normalizeSimulatorBaseUrl(`${SIMULATOR}/`), SIMULATOR);
   assert.equal(buildSimulatorSourceUrl(SIMULATOR, { mode: "starter" }), `${SIMULATOR}/simu-npb/announcement/starter/`);
   assert.equal(buildSimulatorSourceUrl(SIMULATOR, { mode: "roster", team: "marines" }), `${SIMULATOR}/simu-npb/announcement/roster/marines/`);
-  assert.equal(buildSimulatorSourceUrl(SIMULATOR, { mode: "schedule", date: "2026-09-28", team: "all" }), `${SIMULATOR}/simu-npb/games/2026/schedule_09_detail.html?date=2026-09-28&team=all`);
+  assert.equal(buildSimulatorSourceUrl(SIMULATOR, { mode: "schedule", date: "2026-09-28", team: "all" }), `${SIMULATOR}/simu-npb/api/public/games?date=2026-09-28&team=all`);
   assert.equal(buildSimulatorSourceUrl(SIMULATOR, { mode: "lineup", date: "2026-09-28", gameCode: "M-F-25" }), `${SIMULATOR}/simu-npb/scores/2026/0928/m-f-25/`);
   assert.throws(() => normalizeSimulatorBaseUrl("https://example.test/proxy"), /not allowed|origin/);
   assert.throws(() => buildSimulatorSourceUrl(SIMULATOR, { mode: "lineup", date: "2026-09-28", gameCode: "../../secret" }), /identity is invalid/);
@@ -77,18 +77,35 @@ test("simulator lineup HTMLは9人のcanonical lineupへ変換される", async 
   assert.equal(createOfficialLineupFromNpb(result.payload.lineup).ok, true);
 });
 
-test("simulator schedule JSONもexisting schedule candidate shapeへ変換される", async () => {
-  const result = await parseSimulatorResponse(response(JSON.stringify({ games: [{ gameId: "game-a", gameDate: "2026-09-28", startAt: "2026-09-28T18:00:00+09:00", homeTeam: "marines", awayTeam: "fighters", npbGameCode: "m-f-25", status: "scheduled" }] }), 200, "application/json"), { mode: "schedule" });
+test("simulator schedule JSONはformal sync candidate shapeと段階件数へ変換される", async () => {
+  const result = await parseSimulatorResponse(response(JSON.stringify({ games: [{ gameId: "game-a", gameDate: "2026-09-28", startAt: "2026-09-28T18:00:00+09:00", homeTeam: "marines", awayTeam: "fighters", npbGameCode: "m-f-25", status: "scheduled" }] }), 200, "application/json"), { mode: "schedule", date: "2026-09-28", team: "all" });
   assert.equal(result.ok, true);
+  assert.equal(result.payload.games[0].gameId, "game-a");
   assert.equal(result.payload.games[0].gameCode, "m-f-25");
-  assert.equal(result.payload.games[0].startTime, "2026-09-28T18:00:00+09:00");
+  assert.equal(result.payload.games[0].startTime, "18:00");
+  assert.deepEqual(result.payload.scheduleDiagnostics, {
+    rawGamesCount: 1,
+    parsedGamesCount: 1,
+    filteredGamesCount: 1,
+    normalizedGamesCount: 1
+  });
+});
+
+test("simulator schedule JSON rejects rows outside the requested date", async () => {
+  const result = await parseSimulatorResponse(response(JSON.stringify({ games: [
+    { gameId: "wrong-date", gameDate: "2026-09-29", startAt: "2026-09-29T18:00:00+09:00", homeTeam: "marines", awayTeam: "fighters", npbGameCode: "m-f-25", status: "scheduled" }
+  ] }), 200, "application/json"), { mode: "schedule", date: "2026-09-28", team: "all" });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.payload.games, []);
+  assert.equal(result.payload.scheduleDiagnostics.rawGamesCount, 1);
+  assert.equal(result.payload.scheduleDiagnostics.parsedGamesCount, 0);
 });
 
 test("S9simuの試合前中止とno-gameをcanonical statusへ正規化する", async () => {
   const result = await parseSimulatorResponse(response(JSON.stringify({ games: [
     { gameId: "cancelled", gameDate: "2026-09-28", startAt: "2026-09-28T18:00:00+09:00", homeTeam: "marines", awayTeam: "fighters", npbGameCode: "m-f-25", status: "canceled" },
     { gameId: "no-game", gameDate: "2026-09-29", startAt: "2026-09-29T18:00:00+09:00", homeTeam: "marines", awayTeam: "fighters", npbGameCode: "m-f-26", status: "no-game" }
-  ] }), 200, "application/json"), { mode: "schedule" });
+  ] }), 200, "application/json"), { mode: "schedule", team: "all" });
   assert.deepEqual(result.payload.games.map((game) => game.status), ["cancelled", "no_game"]);
   assert.equal(classifyExternalGameStatus("no-game"), "no_game");
   assert.equal(normalizeExternalGameStatus("unknown-future-state"), "unknown_future_state");
